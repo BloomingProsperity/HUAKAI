@@ -13,14 +13,16 @@ Define the expected API surface at a product-contract level without copying refe
 - Authentication.
 - User API keys.
 - Provider accounts.
+- **Pooling Groups** (relay-station identity per [01_PROJECT_BRIEF.md](01_PROJECT_BRIEF.md)) — first-class entity with CRUD, member-Account add/remove, health view, and routing-policy attachment.
 - Channels.
-- Routes.
+- Routes (resolves to a Pooling Group + Account-selection policy).
 - Model registry and aliases.
-- Gateway request handling.
+- Gateway request handling (including sticky session routing and pool-aware Account selection).
 - Protocol conversion.
-- Quota and rate limits.
-- Usage records.
-- Billing records.
+- Quota and rate limits (including per-User × per-Account concurrency caps).
+- Usage records (with Pooling Group, chosen Account, and routing reason fields).
+- Billing records (pool-aware reconciliation).
+- Edition / run-mode introspection endpoint (read-only; surfaces which Edition this deployment runs as, per [DR-002](decisions/DR-002-product-editions.md)).
 - Admin audit logs.
 - Health and observability.
 - Feature flags.
@@ -34,6 +36,7 @@ Define the expected API surface at a product-contract level without copying refe
 - Error responses must be actionable and must not leak secrets.
 - Request IDs must support operational investigation.
 - Compatibility APIs must preserve documented behavior across streaming and non-streaming flows.
+- **OpenAPI / JSON Schema is the contract source of truth** ([DR-003](decisions/DR-003-technology-stack.md)). The Go backend defines the contract via OpenAPI artifact; the TypeScript frontend's request/response types are generated from that artifact via codegen. Hand-written shared types between backend and frontend are not allowed.
 
 ## Clean-Room Rule
 

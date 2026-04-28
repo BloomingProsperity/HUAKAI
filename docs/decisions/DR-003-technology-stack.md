@@ -2,9 +2,10 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Discussion |
+| Status | Decided |
 | Date opened | 2026-04-28 |
-| Date decided | — |
+| Date decided | 2026-04-28 |
+| Date implemented | (pending) |
 | Owner | Owner |
 | Affected docs | docs/13_API_CONTRACTS.md, docs/14_UI_CONTRACTS.md, docs/16_PHASED_DELIVERY_PLAN.md, docs/19_DOMAIN_MODEL.md |
 | Supersedes | — |
@@ -16,12 +17,17 @@ Pick one technology stack for Phase 2-9 Personal Edition implementation, with th
 
 ## Context
 
-- Phase 0.5 governance is complete; 35 features mapped in [03_FEATURE_PARITY_MATRIX.md](../03_FEATURE_PARITY_MATRIX.md) across 4 references (one-api MIT, LiteLLM MIT, Portkey MIT, New API AGPL).
-- 10 L1 MVP features have acceptance test directions ([11_ACCEPTANCE_TEST_MATRIX.md](../11_ACCEPTANCE_TEST_MATRIX.md)).
+- Phase 0.5 governance is complete; **56 features** mapped in [03_FEATURE_PARITY_MATRIX.md](../03_FEATURE_PARITY_MATRIX.md) across **8 references** (one-api MIT, LiteLLM MIT, Portkey MIT, New API AGPL, Sub2API LGPL, All API Hub AGPL, Helicone GPL-3.0, Envoy AI Gateway Apache-2.0).
+- **13 L1 MVP features** have acceptance test directions in [11_ACCEPTANCE_TEST_MATRIX.md](../11_ACCEPTANCE_TEST_MATRIX.md), including AT-POOL-001, AT-MODE-001, and AT-SEC-005 added after the Codex Phase 1 audit.
 - DR-001 commits to tenant-aware schema from day 1.
 - DR-002 commits to Personal Edition first, SaaS in Phase 10+, both on one codebase.
+- Owner-confirmed product identity (2026-04-28, [01_PROJECT_BRIEF.md §Product Identity](../01_PROJECT_BRIEF.md)): HUAKAI is a relay-station / quota-pooling AI gateway, not a generic AI gateway. F-POOL-001 promoted to L1 MVP.
 - Owner is a solo developer doing both backend and frontend.
-- Mining anchors: one-api and New API are Go; LiteLLM is Python; Portkey is TypeScript. The choice should reflect technical fit, not reference imitation, per the clean-room methodology in [05_CLEAN_ROOM_POLICY.md](../05_CLEAN_ROOM_POLICY.md).
+- Mining anchors: one-api and New API are Go; LiteLLM is Python; Portkey is TypeScript; Helicone is Rust. The choice should reflect technical fit, not reference imitation, per the clean-room methodology in [05_CLEAN_ROOM_POLICY.md](../05_CLEAN_ROOM_POLICY.md).
+
+## Staleness Refresh
+
+- **2026-04-28** — Context numbers refreshed from 35 features / 4 references / 10 L1 tests to 56 features / 8 references / 13 L1 tests. Relay-station product identity acknowledged; no change to recommendation. Per [docs/21 Staleness Protocol](../21_DECISION_PROCESS.md).
 
 ## Candidate Stacks
 
@@ -79,17 +85,27 @@ No material conflicts. Claude and Codex independently converge on **Go backend +
 
 | Field | Value |
 | --- | --- |
-| Decision | _(Owner to write)_ |
-| Decision date | _(YYYY-MM-DD)_ |
-| Reasoning | _(short)_ |
-| Constraints attached | _(e.g. specific HTTP framework, DB choice, OpenAPI codegen tool)_ |
+| Decision | **Go** for the Phase 2-9 backend gateway and control plane; **TypeScript** for the admin / operations frontend with types generated from the backend's OpenAPI / JSON Schema contract. |
+| Decision date | 2026-04-28 |
+| Reasoning | Claude (PM) and Codex (Reviewer) independently converged on the same answer on streaming + retry + concurrency + cancellation + license-hygiene grounds. Owner accepts the synthesized recommendation. |
+| Constraints attached | (see numbered constraints below) |
+
+### Constraints (binding for Phase 2-9)
+
+1. **Minimal permissive Go runtime deps.** Stay close to the standard library plus a small permissive set; pick **one** HTTP framework early and do not churn (no Gin -> Echo -> Fiber).
+2. **OpenAPI / JSON Schema is the contract source of truth.** Frontend TypeScript types are GENERATED from the backend's OpenAPI artifact; no hand-written shared types. Codegen tool selected in a follow-up DR or in Phase 3 skeleton.
+3. **Provider-neutral streaming abstraction lands BEFORE provider integrations.** A single internal streaming type carries OpenAI-compatible, Anthropic, Gemini, and self-hosted streaming under one shape; provider adapters convert in.
+4. **Deterministic tests for the relay-station hot paths.** Retry, fallback, request cancellation, quota reservation/release, and concurrent usage accounting must each have table-driven Go tests runnable under `go test -race`.
+5. **Tenant-aware schema from day 1** ([DR-001](DR-001-multi-tenancy.md)). Every primary table carries a non-null `tenant_id`; MVP uses a single hard-coded default tenant; cross-tenant isolation tests are mandatory at Phase 2 schema review.
+6. **Option C strict-mode specs required for these areas before implementation** (per [DR-000](DR-000-clean-room-methodology.md) carve-out): pool-aware routing logic, billing reconciliation across pooled accounts, provider/account-health heuristics. These are the highest-AGPL-exposure feature areas; spec-leakage review against [_REVIEW_CHECKLIST.md](../specs/_REVIEW_CHECKLIST.md) is non-negotiable before any implementer-lane work consumes them.
+7. **Frontend framework deferred to DR-004.** Owner Decision here only commits to TypeScript as a language; React / Vue / Svelte choice waits for Gemini view in DR-004.
 
 ## Propagation Checklist
 
 - [ ] Open DR-004 (frontend framework: React / Vue / Svelte) — Gemini view material, not deferred.
 - [ ] Open DR-005 (Go HTTP framework: Gin / Echo / Fiber / stdlib only) — narrow technical call.
 - [ ] Open DR-006 (database: PostgreSQL / SQLite / MySQL) — affects Phase 3 skeleton.
-- [ ] Update [13_API_CONTRACTS.md](../13_API_CONTRACTS.md) to note OpenAPI is the contract source-of-truth and frontend types are generated from it.
-- [ ] Update [16_PHASED_DELIVERY_PLAN.md](../16_PHASED_DELIVERY_PLAN.md) Phase 3 deliverable list to call out Go module + OpenAPI codegen as initial scaffolding.
-- [ ] Update [19_DOMAIN_MODEL.md](../19_DOMAIN_MODEL.md) §Open Questions for Phase 2 — close the language-choice question.
-- [ ] Mark Status = Implemented when all above are done.
+- [x] Update [13_API_CONTRACTS.md](../13_API_CONTRACTS.md) to note OpenAPI is the contract source-of-truth and frontend types are generated from it.
+- [x] Update [16_PHASED_DELIVERY_PLAN.md](../16_PHASED_DELIVERY_PLAN.md) Phase 3 deliverable list to call out Go module + OpenAPI codegen as initial scaffolding.
+- [x] Update [19_DOMAIN_MODEL.md](../19_DOMAIN_MODEL.md) §Open Questions for Phase 2 — close the language-choice question.
+- [ ] Mark Status = Implemented when DR-004/005/006 are also opened.
