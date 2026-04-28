@@ -283,7 +283,7 @@ These are HUAKAI-specific design improvements; the synthesis must label them as 
 - **Mid-stream failover with Idempotent-Stream-Replay opt-in**. Sub2API has no mid-stream failover.
 - **Configurable failover status codes per Account / Route**. Sub2API hardcodes 401/403/429/529 + 5xx.
 - **Structured `routing_reason` on Usage Record** (already in F-POOL-001 synthesis).
-- **Atomic Tx2 with Usage Record + slot release + claim status finalization**. Sub2API runs Usage Record creation as **best-effort, detached-context, non-atomic with billing** (`gateway_service.go:7812 writeUsageLogBestEffort` uses `detachedBillingContext(ctx)` so Usage Record creation continues if the request context cancels, and falls back to synchronous `repo.Create` if the best-effort writer rejects, but billing settlement and Usage Record write are NOT in one transaction). HUAKAI's improvement is Tx2 atomicity, not "Sub2API has fire-and-forget".
+- **Atomic Tx2 with Usage Record + slot release + claim status finalization**. **Sub2API's billing IS atomic** (`applyUsageBilling → repo.Apply` runs idempotent claim + 5 effects in one PostgreSQL transaction; see [observability-source-verified.md](../sub2api/observability-source-verified.md)). What Sub2API does NOT do is fold the **Usage Record write** into that same transaction; `writeUsageLogBestEffort` (gateway_service.go:7812) uses `detachedBillingContext(ctx)` and a queued/batched writer with synchronous fallback. **HUAKAI's improvement is promoting Usage Record into Tx2 alongside billing**, not "adding atomic billing where there is none."
 
 ### AVOID (Sub2API anti-patterns)
 
