@@ -49,20 +49,23 @@ Which clean-room methodology does HUAKAI adopt: **A** (single-agent behavior-onl
 
 ## Gemini (UI / Ops) view
 
-> Edited only by Gemini.
+> Edited only by Gemini. **Section deferred by Owner (2026-04-28).**
 
-- **UI / operability impact:** _(Gemini to fill — e.g. how much UI evidence is needed from AGPL UIs vs how much can be designed from product contracts)_
-- **API-shape impact:** _(Gemini to fill)_
-- **Operator workflow concerns:** _(Gemini to fill)_
-- **Recommendation:** _(A / B / C / custom — Gemini to fill)_
-- **Confidence:** _(Gemini to fill)_
-- **Updated:** _(Gemini to fill)_
+- **Status:** No Gemini input collected for this DR. Owner has elected to skip Gemini's view because admin UI work is deferred to Phase 7+ per [16_PHASED_DELIVERY_PLAN.md](../16_PHASED_DELIVERY_PLAN.md), and the clean-room methodology choice has limited immediate UI/Ops impact at this phase. If a later DR materially intersects UI clean-room concerns (e.g. how much UI evidence may be borrowed from AGPL admin dashboards), this DR may be revisited or a follow-up DR opened.
+- **Updated:** 2026-04-28
 
 ## Conflicts
 
 > Synthesized by Claude PM after the three views are in.
 
-- _(none yet — Codex and Gemini have not filled their sections)_
+No material conflicts. Claude and Codex both recommend **Option B** as the default. Codex's section sharpens — not opposes — the recommendation with two refinements:
+
+1. **Option C carve-out for highest-risk AGPL-derived feature areas.** Codex names billing ledger behavior, account-pool routing edge cases, and provider failover / account-health heuristics. Claude's original framing already allowed selective Option C use; Codex's contribution is making the carve-out list explicit instead of left to per-feature judgment.
+2. **Spec-leakage review is a hard prerequisite.** Claude's "one extra spec file" framing was too lightweight. A spec that copies upstream names, schemas, UI structure, or algorithmic detail just moves contamination from code into docs. A spec-review step (checklist or [.agents/skills/](../../.agents/skills/) skill) must exist before any spec is released from the specifier lane to the implementer lane.
+
+Gemini view deferred by Owner (see above) — no UI/Ops dimension to reconcile in this DR.
+
+**Synthesized recommendation entering the Owner Decision:** Option B as default, with Option C carve-out for the three named high-risk areas, and a mandatory spec-leakage review step that must be in place before Phase 1 evidence work becomes implementation-facing.
 
 ## Owner Decision
 
