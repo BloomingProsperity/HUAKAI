@@ -44,6 +44,27 @@ Reference projects are empirical evidence, not source-code providers.
 
 License risk can change implementation method, isolation boundary, rollout strategy, or documentation requirements. It cannot delete a feature.
 
-## Methodology Decision Pending
+## Methodology: Decided
 
-Two of the three primary references are AGPL-3.0; one is LGPL-3.0. See verified status in [06_REFERENCE_PROJECTS.md](06_REFERENCE_PROJECTS.md) and [07_REFERENCE_EVIDENCE_LEDGER.md](07_REFERENCE_EVIDENCE_LEDGER.md). The Owner has not yet selected a clean-room methodology; until selected, agents must operate under Option B (two-lane separation) as documented in [20_CLEAN_ROOM_METHODOLOGY_OPTIONS.md](20_CLEAN_ROOM_METHODOLOGY_OPTIONS.md).
+**Decided 2026-04-28 in [DR-000](decisions/DR-000-clean-room-methodology.md).**
+
+HUAKAI operates under **Option B (two-lane separation)** as the project default, with an **Option C carve-out** for the highest-risk AGPL-derived feature areas. All specifier-lane outputs must pass a spec-leakage review before being released to the implementer lane.
+
+### Lane Definitions
+
+- **Specifier lane (dirty).** May read public reference material — docs, issues, public source code from non-MIT references. Produces only abstract specs in [`specs/`](specs/). Never writes implementation, schema, UI, or test code. Once an agent session has read non-MIT source, that session enters specifier-only contamination state for the rest of the session and must not be reused for implementer work; open a new session for the other lane.
+- **Implementer lane (clean).** Reads only this repository's own docs, specs from [`specs/`](specs/), and MIT-licensed anchor references (currently [songquanpeng/one-api](https://github.com/songquanpeng/one-api)). Produces all code, schema, UI, and tests. Never reads non-MIT reference source.
+
+### Option C Carve-out (Strict Mode)
+
+The following feature areas use Option C: the implementer lane reads only the spec, not even MIT-licensed analogues, because the AGPL reference is the dominant behavior source:
+
+- Billing ledger reconciliation logic.
+- Account-pool routing edge cases (cross-provider failover, balance-aware account selection).
+- Provider failover and account-health heuristics.
+
+Other features default to Option B.
+
+### Spec-Leakage Review
+
+Every spec produced in the specifier lane must pass review against [`specs/_REVIEW_CHECKLIST.md`](specs/_REVIEW_CHECKLIST.md) before the implementer lane is allowed to consume it. A spec that copies upstream names, schemas, UI structure, or algorithmic detail simply moves contamination from code to docs, defeating the methodology.
