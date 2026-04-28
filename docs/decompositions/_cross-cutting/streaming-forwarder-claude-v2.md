@@ -127,6 +127,30 @@ for scanner.Scan() {
 - ✅ First-token latency tracking (`firstTokenMs`).
 - ❌ **No drain after client disconnect**: when `processAnthropicEvent` returns `true`, the for-loop returns at line 454. Function returns; `defer resp.Body.Close()` (line 142) closes the upstream socket.
 
+### 1.4b Bedrock Path Has a Drain (Source-Verified Correction)
+
+**v2 first draft was wrong** — Codex source-verification 2026-04-28 caught this. The "no drain" claim above is scoped to the **Anthropic-conversion paths only** (`gateway_forward_as_chat_completions.go` + `gateway_forward_as_responses.go`). The **Bedrock path is different**.
+
+Source `backend/internal/service/bedrock_stream.go:148-176`:
+```go
+if !clientDisconnected {
+    // ... write to client ...
+    if writeErr != nil {
+        clientDisconnected = true
+        logger.LegacyPrintf("service.gateway", "[Bedrock] Client disconnected during streaming, continue draining for usage: account=%d", account.ID)
+    }
+}
+// note: case <-intervalCh: branch (line 163) returns only on inter-event timeout
+```
+
+Bedrock's loop: when downstream write fails, set `clientDisconnected = true` and **continue reading upstream**. The for-loop keeps fetching events and `parseSSEUsagePassthrough` keeps extracting usage — just suppressing the write. Drain ends only when `intervalCh` fires (per-stream `streamInterval` timeout) AND `clientDisconnected` is true (line 168-170).
+
+So Sub2API has a **per-protocol drain policy**:
+- **Anthropic-conversion paths**: no drain (loop exits immediately on disconnect).
+- **Bedrock passthrough path**: drain-until-interval-timeout (no byte / cost cap, only time).
+
+HUAKAI's design unifies these: **bounded drain with three budgets** (max_seconds / max_bytes / max_estimated_cost) for ALL paths, so neither "no drain" (chat-completions) nor "drain forever until interval timeout" (Bedrock) is the answer — both are operationally wrong.
+
 ### 1.5 The "Billing-Preserving" Primitive — Actual Behavior
 
 Source `gateway_service.go:7781`:
@@ -259,7 +283,7 @@ These are HUAKAI-specific design improvements; the synthesis must label them as 
 - **Mid-stream failover with Idempotent-Stream-Replay opt-in**. Sub2API has no mid-stream failover.
 - **Configurable failover status codes per Account / Route**. Sub2API hardcodes 401/403/429/529 + 5xx.
 - **Structured `routing_reason` on Usage Record** (already in F-POOL-001 synthesis).
-- **Atomic Tx2 with Usage Record + slot release + claim status finalization**. Sub2API runs Usage Record creation as best-effort fire-and-forget (line 7812 `writeUsageLogBestEffort`), separated from billing.
+- **Atomic Tx2 with Usage Record + slot release + claim status finalization**. Sub2API runs Usage Record creation as **best-effort, detached-context, non-atomic with billing** (`gateway_service.go:7812 writeUsageLogBestEffort` uses `detachedBillingContext(ctx)` so Usage Record creation continues if the request context cancels, and falls back to synchronous `repo.Create` if the best-effort writer rejects, but billing settlement and Usage Record write are NOT in one transaction). HUAKAI's improvement is Tx2 atomicity, not "Sub2API has fire-and-forget".
 
 ### AVOID (Sub2API anti-patterns)
 

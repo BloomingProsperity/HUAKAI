@@ -1,8 +1,11 @@
 # F-POOL-001 Provider Account Selection Algorithm (Codex pass)
 
+> ⚠️ **REJECTED — DO NOT USE AS SYNTHESIS INPUT** (2026-04-28).
+> Per Codex's own source-verification report at [docs/reviews/2026-04-28-codex-source-verification.md](../../reviews/2026-04-28-codex-source-verification.md) §3, this pass FAILS CL-011 (no file:line citations) and CL-011b (KEEP blends reference behavior with unverified HUAKAI design). It contains claims that subsequent source verification refuted: continuation-affinity layer, capability shift / safe-equivalent fallback, strong-band scoring with weighted signals. See [pool-selection-claude-v2.md](pool-selection-claude-v2.md) for the source-verified replacement and [docs/reviews/2026-04-28-codex-reviewer-cycle1-cycle2-cl011.md](../../reviews/2026-04-28-codex-reviewer-cycle1-cycle2-cl011.md) §4 for the REJECT verdict + required fixes.
+
 | Field | Value |
 | --- | --- |
-| Status | Draft |
+| Status | **REJECTED** (2026-04-28) — see banner above |
 | Lane mode | Option C strict carve-out |
 | Author | Codex specifier lane |
 | Date | 2026-04-28 |
