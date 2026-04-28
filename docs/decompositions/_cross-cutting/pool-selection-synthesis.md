@@ -1,8 +1,10 @@
 # Provider Account Pool Selection — Synthesis & Final Action Plan
 
+> ⚠️ **PARTIAL CORRECTION REQUIRED** (2026-04-28). This synthesis was built on Claude's v1 specifier pass which had multiple source-truth errors (no continuation layer, no top-K random + scoring formula, no serializable-txn slot acquisition in Sub2API). The Q1..Q4 PM decisions remain valid (HUAKAI policy choices). The "Convergence" + "Where Codex Sharpens Claude" / "Where Claude Sharpens Codex" sections need re-derivation against [pool-selection-claude-v2.md](pool-selection-claude-v2.md). The Pattern B integration choice remains correct because it is a HUAKAI design (Sub2API uses cache-only slot accounting and never had the choice). See [docs/reviews/2026-04-28-source-truth-corrections.md](../../reviews/2026-04-28-source-truth-corrections.md).
+
 | Field | Value |
 | --- | --- |
-| Status | Action Plan (Draft) |
+| Status | Action Plan (Draft, v1 — partial correction needed; see banner) |
 | Author | Claude (PM-Orchestrator), synthesizing Claude's pass + Codex's pass |
 | Date | 2026-04-28 |
 | Mutual review | [Claude pass](pool-selection-claude.md) and [Codex pass](pool-selection-codex.md) authored independently in parallel sessions per Owner directive 2026-04-28 ("同样的事情你们都要做，然后互审对方的结果。然后给出最终的优化排版行动方案"). This file is the synthesized final action plan. |
