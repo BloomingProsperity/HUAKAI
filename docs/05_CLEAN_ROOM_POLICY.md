@@ -68,3 +68,21 @@ Other features default to Option B.
 ### Spec-Leakage Review
 
 Every spec produced in the specifier lane must pass review against [`specs/_REVIEW_CHECKLIST.md`](specs/_REVIEW_CHECKLIST.md) before the implementer lane is allowed to consume it. A spec that copies upstream names, schemas, UI structure, or algorithmic detail simply moves contamination from code to docs, defeating the methodology.
+
+### What the Specifier Lane Is Allowed To Do (Owner Clarification, 2026-04-28)
+
+The specifier lane is **explicitly allowed and encouraged** to:
+
+- Read non-MIT reference source code, public docs, public issues, and public discussions.
+- Borrow ideas, design rationale, failure-mode learnings, edge-case inventories, and behavioral logic at the conceptual level.
+- Extract empirical operator wisdom (what works, what fails, why) and record it as evidence.
+
+The line is **verbatim copying**, not "reading source". Reading and learning from upstream is the entire point of mining; specs are the mechanism for converting reading into legally-defensible local knowledge.
+
+What remains forbidden, regardless of how casually the source was read:
+
+- Pasting upstream source code, comments, schema, UI source, or test code into any file in this repository.
+- Translating an upstream algorithm line-by-line into local words; the leakage checklist (CL-005 in [specs/_REVIEW_CHECKLIST.md](specs/_REVIEW_CHECKLIST.md)) catches this.
+- Carrying upstream function names, file structure, schema column names, or distinctive UI component names into specs or implementation.
+
+Stand on the shoulders of giants — but write the standing pose in your own anatomy. The specifier lane reads; the implementer lane builds; specs are the only handover surface.
