@@ -1,8 +1,11 @@
 # Provider Account Pool Selection — Claude's Independent Pass
 
+> ⚠️ **WITHDRAWN — SUPERSEDED BY [pool-selection-claude-v2.md](pool-selection-claude-v2.md)** (2026-04-28).
+> This v1 file was paraphrased from prior prose decompositions and the evidence ledger, NOT from direct source reading. Multiple claims in this file are hallucinated (no continuation-marker layer, no top-K randomization, no scoring formula, no serializable-txn slot acquisition in Sub2API). See [docs/reviews/2026-04-28-source-truth-corrections.md](../../reviews/2026-04-28-source-truth-corrections.md) for the catalogue of v1 errors. Read v2 for the source-verified version.
+
 | Field | Value |
 | --- | --- |
-| Status | Specifier-lane draft (Claude pass, independent) |
+| Status | **WITHDRAWN** (2026-04-28) — see banner above |
 | Author | Claude (PM-Orchestrator), specifier lane |
 | Date | 2026-04-28 |
 | Lane | Specifier — Option C strict spec input per [DR-000](../../decisions/DR-000-clean-room-methodology.md) carve-out for F-POOL-001 |
