@@ -93,7 +93,7 @@ Owner directive 2026-04-28: "整体代码和逻辑都读完". Portkey is HUAKAI'
 
 | Feature | HUAKAI matrix row | Status | Notes |
 | --- | --- | --- | --- |
-| SOC2 / HIPAA / GDPR / CCPA claims | F-SEC-003 (L3 Phase 8) + Phase 10+ | shallow-evidence (E-PK-011 README) | claims require independent attestation; HUAKAI design only |
+| SOC2 / HIPAA / GDPR / CCPA claims | F-SEC-003 (L3 Phase 8) + Phase 10+ | unmined (README marketing claim — no E-PK ledger row) | claims require independent attestation; HUAKAI design only |
 | RBAC with instant revocation diff | F-RBAC-001 (L2) | shallow-evidence (E-PK-008 README) | unmined source — revocation propagation |
 
 ## Coverage Summary (2026-04-28)

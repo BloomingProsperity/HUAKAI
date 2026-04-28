@@ -6,7 +6,7 @@
 | Inventory owner | Claude (PM-Orchestrator) |
 | Inventory created | 2026-04-28 |
 | Last refreshed | 2026-04-28 |
-| Top-level dirs (verified via api.github.com contents) | `.github` `bin` `common` `constant` `controller` `dto` `electron` `i18n` `logger` `middleware` `model` `oauth` `pkg` `relay` `router` `service` `setting` `types` `web` |
+| Top-level dirs (verified) | **REDACTED 2026-04-28** per Codex review CRITICAL #2: AGPL distinctive file structure must NOT appear in public artifacts (CL-002). The verification was done; the resulting top-level directory enumeration is retained in specifier-private session notes only. The inventory below groups features by **behavior**, not by source path. |
 
 ## Why This File Exists
 
@@ -18,7 +18,7 @@ Owner directive 2026-04-28: "整体代码和逻辑都读完". New API is **AGPL-
 
 ## Inventory
 
-### Gateway / Relay (extends one-api `relay/`)
+### Gateway / Relay (behavior extends one-api gateway core)
 
 | Feature | HUAKAI matrix row | Status | Notes |
 | --- | --- | --- | --- |
@@ -26,11 +26,11 @@ Owner directive 2026-04-28: "整体代码和逻辑都读完". New API is **AGPL-
 | Cross-format protocol translation: OpenAI ⇄ Claude / Gemini → OpenAI | F-PROTO-002 (L2) | shallow-evidence (E-NAI-003 README) | **unmined source** — high priority |
 | Cache-aware request handling (prompt-cache vs fresh) | F-BILL-003 (L3 Phase 6+) | shallow-evidence (E-NAI-001 README) | **unmined source** — pricing dependency |
 | Reasoning-effort parameter pass-through (high/med/low + thinking-token budget) | F-MODEL-001 (L2) | shallow-evidence (E-NAI-004 README) | **unmined source** |
-| Realtime API support (OpenAI Realtime + Azure variants) | F-RT-001 (L3 Phase 9+) | shallow-evidence (E-NAI-010 README) | **unmined source** |
+| Realtime API support (OpenAI Realtime + Azure variants) | F-RT-001 (L3 Phase 9+) | unmined (README only — no E-NAI ledger row yet) | **unmined source**; first-pass README evidence row pending in [docs/07](../../07_REFERENCE_EVIDENCE_LEDGER.md) |
 | Rerank model dedicated interface | F-MODEL-002 (L3 Phase 9+) | shallow-evidence (E-NAI-005 README) | **unmined source** |
 | Channel weighted-random + auto-retry | F-GW-004 (L1) | shallow-evidence (E-NAI-007 README + E-OAI-DEEP shared) | needs source confirmation of weighting algorithm |
 
-### Channel / Account (`model/`, `service/`)
+### Channel / Account (behavior surface)
 
 | Feature | HUAKAI matrix row | Status | Notes |
 | --- | --- | --- | --- |
@@ -38,7 +38,7 @@ Owner directive 2026-04-28: "整体代码和逻辑都读完". New API is **AGPL-
 | Channel health probe + auto-disable (inherited) | F-CH-002 (L2) | see one-api inventory | shared base |
 | Per-User × per-Model rate limit | F-SEC-004 (L2) | shallow-evidence (E-NAI-006 README) | **unmined source** — extends one-api per-IP limit |
 
-### Pricing / Billing (`model/`, `service/`)
+### Pricing / Billing (behavior surface)
 
 | Feature | HUAKAI matrix row | Status | Notes |
 | --- | --- | --- | --- |
@@ -47,7 +47,7 @@ Owner directive 2026-04-28: "整体代码和逻辑都读完". New API is **AGPL-
 | Usage Record token-level granularity | F-BILL-001 (L2) | unmined (source) | how token counts flow from upstream events |
 | User Group × Channel Group differential pricing (inherited) | F-GROUP-001 (L2) | see one-api inventory | shared base |
 
-### Identity / Auth (`oauth/`, `service/auth*`)
+### Identity / Auth (behavior surface)
 
 | Feature | HUAKAI matrix row | Status | Notes |
 | --- | --- | --- | --- |
@@ -55,7 +55,7 @@ Owner directive 2026-04-28: "整体代码和逻辑都读完". New API is **AGPL-
 | OAuth providers: Discord / Telegram / LinuxDo | F-AUTH-004 (L2 Plugin) | shallow-evidence (E-NAI-007 README) | **unmined source** — community-platform extensions |
 | Session persistence (inherited) | F-AUTH-002 (L1) | see one-api inventory | shared base |
 
-### Operator / Admin (`controller/`, `service/`, `setting/`)
+### Operator / Admin (behavior surface)
 
 | Feature | HUAKAI matrix row | Status | Notes |
 | --- | --- | --- | --- |
@@ -63,31 +63,31 @@ Owner directive 2026-04-28: "整体代码和逻辑都读完". New API is **AGPL-
 | Admin dashboard with stats / console | F-OPS-003 (L3 Phase 7+) | shallow-evidence (E-NAI-003 README) | unmined source — dashboard UI patterns |
 | Branding / homepage / announcements (inherited) | F-UI-001 (L3 Phase 7+) | see one-api inventory | shared base |
 
-### Internationalization (`i18n/`)
+### Internationalization (behavior surface)
 
 | Feature | HUAKAI matrix row | Status | Notes |
 | --- | --- | --- | --- |
 | Multi-language UI (5+ languages: zh-CN / zh-TW / en / fr / ja) | F-I18N-001 (L3 Phase 7+) | shallow-evidence (E-NAI-002 README) | **unmined source** — translation file format, glossary discipline |
 
-### Desktop App (`electron/`)
+### Desktop App (behavior surface)
 
 | Feature | HUAKAI matrix row | Status | Notes |
 | --- | --- | --- | --- |
 | Electron desktop application | (out-of-scope for HUAKAI core) | unmined | New API ships an Electron desktop client; HUAKAI focuses on web admin. Out-of-scope unless Owner promotes. |
 
-### Configuration / Constants (`constant/`, `setting/`, `pkg/`)
+### Configuration / Constants (behavior surface)
 
 | Feature | HUAKAI matrix row | Status | Notes |
 | --- | --- | --- | --- |
 | Application setting model + persistence | F-CONFIG-001 (L2) | unmined (source) | how settings flow at runtime |
 | Constants (price multipliers, default ratios, etc.) | F-BILL-001 (L2) | unmined (source) | **must NOT copy specific values** (CL-001a) |
-| Logger configuration (`logger/`) | F-OBS-002 (L2) | unmined (source) | log format, level, sinks |
+| Logger configuration | F-OBS-002 (L2) | unmined (source) | log format, level, sinks |
 
-### Routing / Middleware (`router/`, `middleware/`)
+### Routing / Middleware (behavior surface)
 
 | Feature | HUAKAI matrix row | Status | Notes |
 | --- | --- | --- | --- |
-| Endpoint table (extends one-api) | F-GW-001 (L1) | unmined (source) | new-api adds Realtime, Rerank, multi-format endpoints |
+| Endpoint behavior surface (extends one-api) | F-GW-001 (L1) | unmined (source) | new-api adds Realtime, Rerank, multi-format endpoints |
 | Middleware chain (auth + rate + audit) | F-AUTH-001 + F-SEC-001 + F-OPS-001 (L1/L2) | unmined (source) | enumerate the chain order |
 
 ## Coverage Summary (2026-04-28)

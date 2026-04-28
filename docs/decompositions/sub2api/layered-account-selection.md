@@ -3,10 +3,11 @@
 | Field | Value |
 | --- | --- |
 | Status | Draft |
+| **Lane mode** | **Option C (strict carve-out per [DR-000](../../decisions/DR-000-clean-room-methodology.md))** — account-pool routing is on the Option C carve-out list. This decomposition cannot be cited by an implementer-lane agent until a strict spec exists at `docs/specs/pool-routing.md` and that spec passes [_REVIEW_CHECKLIST.md](../specs/_REVIEW_CHECKLIST.md) CL-001..010 by a fresh reviewer-lane session. (Added 2026-04-28 in response to Codex review CRITICAL #1.) |
 | Reference | Sub2API (LGPL-3.0, [E-LIC-001](../../07_REFERENCE_EVIDENCE_LEDGER.md)) |
 | Feature in HUAKAI matrix | [F-POOL-001](../../03_FEATURE_PARITY_MATRIX.md) (L1 MVP) |
 | Evidence ledger rows | [E-S2A-DEEP-006, E-S2A-DEEP-007, E-S2A-DEEP-009](../../07_REFERENCE_EVIDENCE_LEDGER.md) |
-| Specifier session | Codex (`omc ask codex --agent-prompt critic`, 2026-04-28T05:18 UTC) |
+| Specifier session | Codex (`omc ask codex --agent-prompt critic`, 2026-04-28T05:18 UTC) authored the underlying evidence; Claude (PM-Orchestrator) wrote this prose synthesis from Codex's specifier-lane output. (Provenance clarified 2026-04-28 per Codex review.) |
 | Specifier date | 2026-04-28 |
 | Reviewer session | TBD |
 | Reviewer date | TBD |

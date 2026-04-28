@@ -84,7 +84,7 @@ Owner directive 2026-04-28: "整体代码和逻辑都读完" — the question of
 | Admin dashboard (overview / stats / Pool view) | F-OPS-003 (L3 Phase 7+) | unmined | unmined |
 | User self-service top-up UI | F-PAY-001 (L4 SaaS) | unmined | unmined |
 | Announcements / branding / homepage customization | F-UI-001 (L3 Phase 7+) | shallow-evidence (E-OAI-011/012 README) | unmined (source) |
-| Antigravity hybrid scheduling | (niche, low priority) | shallow-evidence (E-S2A-012 README) | unmined (source) |
+| Antigravity hybrid scheduling | (niche, low priority) | unmined (README only — no E-S2A ledger row yet) | unmined (source); first-pass README evidence row pending in [docs/07](../../07_REFERENCE_EVIDENCE_LEDGER.md) |
 
 ## Open Inventory Items (Promote To Matrix Or Discard)
 
