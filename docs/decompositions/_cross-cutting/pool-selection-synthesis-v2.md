@@ -55,10 +55,24 @@ Per [docs/decompositions/one-api/quota-billing-source-verified.md](../one-api/qu
 
 ## 3. The Source-Verified LiteLLM Cross-Reference (TODO-3 resolution)
 
-Per [docs/decompositions/litellm/pool-fallback-source-verified.md](../litellm/pool-fallback-source-verified.md):
+Per [docs/decompositions/litellm/pool-fallback-source-verified.md](../litellm/pool-fallback-source-verified.md) §1:
 
-- **TODO-3 verdict**: Codex looked for "single-Account exemption" pattern. *(Read the litellm pass for the precise verdict — verbatim "CONFIRMED-IN-SOURCE" / "NOT-FOUND" / "DIFFERENT-PATTERN-FOUND" outcome lives there.)* HUAKAI's `allow_last_resort` opt-in flag is therefore tagged **HUAKAI-DESIGN**, not "inherited from LiteLLM".
-- LiteLLM's actual fallback structure provides comparison material for HUAKAI's design.
+**TODO-3 verdict: DIFFERENT-PATTERN-FOUND.**
+
+What LiteLLM actually has (NOT "last remaining"):
+
+- **"Exactly-one-configured-deployment" exemption**: when a logical model group has exactly one configured deployment, default 429 cooldown and ordinary percentage-threshold cooldown skip it. Evidence: `router_utils/cooldown_handlers.py:190-194, 223-239`.
+- **Traffic-volume floor**: protects single transient misses from triggering cooldown when traffic is below a minimum threshold. Evidence: `constants.py:88-93`.
+- **`APIConnectionError` ignored** by cooldown eligibility. Evidence: `router_utils/cooldown_handlers.py:57-63`.
+- **Health-check "do-not-remove-all" safety net**: a separate path bypasses cooldown filtering when health-check routing plus allowed-fail policy would otherwise put every deployment in cooldown. Evidence: `router.py:9536-9547, 10010-10018`. **NOT** a "last-remaining" exemption — it's an emergency safety valve.
+
+What LiteLLM does NOT have:
+- A generic "last remaining healthy Account in a small Pool" exemption that checks runtime-remaining size.
+- The exemption is on **configured** size (1 deployment), not **remaining after cooldown** size.
+
+Implications for HUAKAI:
+- HUAKAI's `allow_last_resort` opt-in flag (proposed in §12) is **HUAKAI-DESIGN** if it triggers on remaining-after-cooldown == 1; it is **LITELLM-INSPIRED** if it triggers on configured == 1. Synthesis chooses **remaining-after-cooldown semantics** (HUAKAI-DESIGN) because that's the operationally useful case for relay-station: at runtime, all-but-one healthy is more common than configured-as-single.
+- HUAKAI **inherits** LiteLLM's traffic-volume floor pattern + APIConnectionError exclusion + health-check "do-not-remove-all" safety net. These are LITELLM-VERIFIED behaviors HUAKAI should replicate.
 
 ## 4. The Source-Verified Sub2API Billing Picture (from F-OBS-001)
 
