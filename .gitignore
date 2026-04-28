@@ -49,3 +49,6 @@ temp/
 coverage/
 .nyc_output/
 *.lcov
+
+# OMC artifacts (ask / ccg outputs are session-local)
+.omc/

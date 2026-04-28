@@ -16,6 +16,8 @@ Establishing the license tier of every primary reference is a prerequisite to an
 | E-LIC-002 | New API | github.com/QuantumNous/new-api/blob/main/LICENSE | AGPL-3.0-or-later | 2026-04-27 | Claude (PM) | Network copyleft; service distribution triggers source disclosure. Forked from MIT one-api. |
 | E-LIC-003 | All API Hub | github.com/qixing-jk/all-api-hub/blob/main/LICENSE | AGPL-3.0 (+ MIT upstream portions) | 2026-04-27 | Claude (PM) | Browser extension; client-side management UI for relay stations, not a gateway. |
 | E-LIC-004 | one-api | github.com/songquanpeng/one-api/blob/main/LICENSE | MIT | 2026-04-27 | Claude (PM) | Anchor reference. Safe to read freely; New API is a derivative fork. |
+| E-LIC-005 | LiteLLM | github.com/BerriAI/litellm/blob/main/LICENSE | MIT | 2026-04-28 | Claude (PM) | Safe anchor. Note: `enterprise/` subdirectory has separate terms — do not read enterprise/* without separate license review. |
+| E-LIC-006 | Portkey AI Gateway | github.com/Portkey-AI/gateway/blob/main/LICENSE | MIT | 2026-04-28 | Claude (PM) | Safe anchor. Copyright Portkey, Inc 2024. |
 
 ## Behavior Evidence — one-api (MIT, E-LIC-004)
 
@@ -38,6 +40,34 @@ First batch from one-api public README (Phase 1 kickoff, 2026-04-28). Specifier 
 | E-OAI-013 | one-api (E-LIC-004) | Public README | Per-request quota detail and per-channel success-rate metrics drive an operator dashboard; auto-disable threshold is configurable. | Observability dashboard + operator-tuned auto-disable. | Silent auto-disable hides upstream incidents; require alert + operator-confirm-resume. | Behavior only. | 2026-04-28 | Claude |
 | E-OAI-014 | one-api (E-LIC-004) | Public README | Cloudflare Turnstile gates registration/login; per-IP rate limit (e.g. 180 API / 60 web per 3 minutes by default) protects abuse paths. | Anti-abuse: CAPTCHA plugin + per-IP rate limit. | Default thresholds may be too generous for SaaS Edition; expose as operator-tunable. | Behavior only; specific numbers not adopted. | 2026-04-28 | Claude |
 | E-OAI-015 | one-api (E-LIC-004) | Public README | Privileged management API is gated by a special "system access token"; default first-run admin credentials exist. | Privileged management API + privileged credential bootstrap. | Default-credentials antipattern (`root/123456`) is unacceptable; force-change on first login. | Behavior only. | 2026-04-28 | Claude |
+
+## Behavior Evidence — LiteLLM (MIT, E-LIC-005)
+
+Second batch from LiteLLM public README (Phase 1, 2026-04-28). MIT-safe; `enterprise/` subtree excluded by license note. Specifier lane: Claude.
+
+| Evidence ID | Reference | Source Type | Observed Behavior Or Scenario | Feature Candidate | Risk Notes | Clean-Room Notes | Date | Agent |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| E-LM-001 | LiteLLM (E-LIC-005) | Public README | Gateway publishes a concrete latency-target SLO (e.g. 8ms P95 at 1k RPS) as a public commitment. | Performance budget as a published, testable SLO. | Marketing benchmarks rarely match production payload mix; SLO must be measured locally. | Behavior only; no benchmark code copied. | 2026-04-28 | Claude |
+| E-LM-002 | LiteLLM (E-LIC-005) | Public README | Router falls over to alternate provider deployments (Azure / OpenAI / etc.) when a primary fails, retrying transparently. | Cross-deployment runtime fallback (more aggressive than per-channel auto-disable). | Fallback chains can silently drain low-quota accounts; require per-account spend cap and alert. | Behavior only. | 2026-04-28 | Claude |
+| E-LM-003 | LiteLLM (E-LIC-005) | Public README | Virtual API keys carry per-tenant configuration: logging, guardrails, caching policy. | Per-tenant config attached to credential, not just to user. | Misattributed config can leak between tenants if scoped wrong (DR-001 isolation tests). | Behavior only. | 2026-04-28 | Claude |
+| E-LM-004 | LiteLLM (E-LIC-005) | Public README | Container images are signed with Cosign and pinned to commit hashes. | Container supply-chain integrity (signed images, SBOM). | Verification optional in many deployments; must be required for SaaS Edition. | Behavior only. | 2026-04-28 | Claude |
+| E-LM-005 | LiteLLM (E-LIC-005) | Public README | Enterprise tier adds SSO and dedicated SLA support. | Enterprise SSO / advanced auth as Plugin. | Single-tenant SSO behaves differently from SaaS multi-tenant SSO; design abstraction now. | Behavior only. | 2026-04-28 | Claude |
+| E-LM-006 | LiteLLM (E-LIC-005) | Public README | Bridge to MCP (Model Context Protocol) tools and A2A (Agent-to-Agent) protocol. | External agent / tool protocol bridging. | Tool-execution sandboxing critical; malicious tool = execution surface. Phase 9+. | Behavior only. | 2026-04-28 | Claude |
+
+## Behavior Evidence — Portkey AI Gateway (MIT, E-LIC-006)
+
+Third batch from Portkey public README (Phase 1, 2026-04-28). MIT-safe. Specifier lane: Claude.
+
+| Evidence ID | Reference | Source Type | Observed Behavior Or Scenario | Feature Candidate | Risk Notes | Clean-Room Notes | Date | Agent |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| E-PK-001 | Portkey (E-LIC-006) | Public README | Failed requests retry up to N times with exponential backoff between attempts. | Retry policy with explicit backoff schedule. | Retries can multiply cost on systematic failures; cap by spend not just by attempts (BUG-GW-001). | Behavior only. | 2026-04-28 | Claude |
+| E-PK-002 | Portkey (E-LIC-006) | Public README | Fallback triggers on configurable error conditions, not just on connection failure. | Error-condition-driven fallback rules. | Wider trigger surface = more accidental fallback; require operator-visible reason on each fallback. | Behavior only. | 2026-04-28 | Claude |
+| E-PK-003 | Portkey (E-LIC-006) | Public README | Output guardrails validate LLM responses against pre-built rule packs (40+ in reference). | Pluggable output-content guardrail engine. | False positives reject valid output; provide bypass path with audit. | Behavior only; no rule list copied. | 2026-04-28 | Claude |
+| E-PK-004 | Portkey (E-LIC-006) | Public README | Multi-modal requests: vision input, audio input/output, image generation, all under one OpenAI-compatible signature. | Multi-modal request normalization. | Provider compatibility varies wildly; need explicit capability matrix per model. Phase 9+. | Behavior only. | 2026-04-28 | Claude |
+| E-PK-005 | Portkey (E-LIC-006) | Public README | Response caching with both simple (key-based) and semantic (embedding-based) modes. | Response cache: simple + semantic. | Stale cache for time-sensitive queries; require TTL + invalidation hooks. | Behavior only. | 2026-04-28 | Claude |
+| E-PK-006 | Portkey (E-LIC-006) | Public README | OpenAI Realtime API surface (WebSocket-based) is supported. | Real-time WebSocket protocol surface. | Connection drops mid-stream require resumption protocol; otherwise lost partial usage. Phase 9+. | Behavior only. | 2026-04-28 | Claude |
+| E-PK-007 | Portkey (E-LIC-006) | Public README | Per-request timeout thresholds are operator-tunable. | Granular per-request timeout policy. | Aggressive timeout cuts legitimate long completions; tune per model. | Behavior only. | 2026-04-28 | Claude |
+| E-PK-008 | Portkey (E-LIC-006) | Public README | RBAC: roles defined per user, workspace, and API key; revocation is instant. | RBAC with revocation propagation guarantee. | Cascading role changes can surprise operators; surface "who lost access because of this" diff. | Behavior only. | 2026-04-28 | Claude |
 
 ## Evidence Template
 
