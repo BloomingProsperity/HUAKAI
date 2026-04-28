@@ -138,12 +138,14 @@ Create the implementation skeleton only after Phase 2 locks the MVP.
 
 ### Deliverables
 
-- Chosen runtime and framework.
-- Project skeleton.
-- Test framework.
-- Basic lint or type checks if available.
+- Go module skeleton (per [DR-003](decisions/DR-003-technology-stack.md)) with one HTTP framework picked and locked.
+- TypeScript frontend skeleton with types **generated** from the backend's OpenAPI artifact (codegen tool selected here or in a follow-up DR).
+- Test framework: `go test` with `-race` enabled by default; vitest or equivalent for the frontend.
+- Provider-neutral streaming abstraction stub (must exist before any provider integration begins, per DR-003 Constraint 3).
+- Basic lint or type checks: `go vet`, `staticcheck`, `golangci-lint` for Go; `tsc --noEmit` for TS.
 - Configuration examples without real secrets.
-- Minimal CI or local check plan if applicable.
+- Minimal CI or local check plan that runs lint + tests on every commit.
+- DR-005 (Go HTTP framework) and DR-006 (database) decided BEFORE skeleton is committed.
 
 ### Risk Rule
 

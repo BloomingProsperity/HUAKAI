@@ -14,9 +14,11 @@ Per [DR-000](../decisions/DR-000-clean-room-methodology.md), every spec produced
 
 ## Checks
 
-### CL-001 — No upstream function or method names
+### CL-001 — No upstream function, method, or configuration-constant names
 
-The spec must not contain function, method, or handler names verbatim from non-MIT references (e.g. `OpenAIController.handleChat`, `ratio_billing_calculate`). Use behavior verbs from this project's glossary instead.
+The spec must not contain function, method, handler, or **configuration-constant names with values** verbatim from non-MIT references (e.g. `OpenAIController.handleChat`, `ratio_billing_calculate`, or specific `CONFIG_FLAG=value` strings drawn from a non-MIT source). Use behavior verbs from this project's glossary instead.
+
+Sub-clause **CL-001a** (added 2026-04-28 after a real leak at E-S2A-005): a configuration constant's *name plus value pair* (e.g. `RUN_MODE=simple`) is a fingerprint of the upstream project even if either piece alone is generic. Specs and evidence rows must paraphrase as "an edition-mode flag", "a deployment-profile selector", etc.
 
 ### CL-002 — No upstream schema column names
 
