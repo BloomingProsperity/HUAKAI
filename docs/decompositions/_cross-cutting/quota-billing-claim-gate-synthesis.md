@@ -163,6 +163,105 @@ When implementer-lane work begins on this algorithm:
 - The implementer's session is recorded in `docs/sessions/<id>.md` with `lane: implementer; references_read: none; spec_consumed: this file`.
 - Test suite green is the implementation completion signal, not "code is written".
 
+## V2 Review Findings Applied (2026-04-28)
+
+After this synthesis was first written, a deeper second review of Codex's pass surfaced 9 MAJOR + 4 MINOR findings (see [v2 review](../../reviews/2026-04-28-claude-reviews-codex-phase1-v2.md)). The 9 MAJOR are folded into the algorithm below; v2 reviews supersede earlier sections where they conflict.
+
+### D1 — Lock order made explicit
+
+Lock acquisition order, deterministic, alphabetical on entity-id pair, prevents deadlock under contention:
+
+```
+1. Billing Ledger claim row     (claim_id ASC)
+2. User row                      (tenant_id, user_id)
+3. API Key row                   (tenant_id, api_key_id)
+4. Subscription row              (tenant_id, subscription_id NULLS LAST)
+5. Provider Account quota row    (tenant_id, provider_account_id)
+6. Rate-window row(s)            (tenant_id, window_id)
+```
+
+Every transaction acquires locks in exactly this order.
+
+### D2 — Lease heartbeat semantics
+
+`T_lease = 60s` default (per-Route configurable). `T_heartbeat = T_lease/3 = 20s` default, owned by gateway request-handling goroutine. Heartbeat extends `lease_expires_at` to `now + T_lease` and touches no other state. Heartbeat failure is logged + Audit Event'd; reservation falls to orphan sweep next cycle. Process crash stops heartbeat automatically; orphan sweep handles within `T_sweep = 30s`.
+
+### D3 — Tx2 (reconcile) failure path
+
+Tx2 is **idempotent** within a request lifecycle. Re-running produces same final state. On serializable abort or constraint violation: 5 retries with exponential backoff (50, 100, 200, 400, 800 ms), then escalate to manual-investigation queue with Audit Event `tx2_escalation_after_N_retries`; claim row stays `reserved` for orphan sweep.
+
+### D4 — `overdraft_policy` enum (per-tenant, default `reject`)
+
+| Value | Behavior on `delta > 0` (User used more than estimate) |
+| --- | --- |
+| `reject` | Tx2 aborts; reservation held; sweep orphans. Default. |
+| `charge_with_warning` | Commits shortfall; balance can drop to (current - shortfall) but not below zero (else `reject` fallback); Audit Event. |
+| `charge_with_balance_negative_audit` | Commits shortfall regardless; balance can go negative; Audit Event severity OVERDRAFT_NEGATIVE_BALANCE; operator notified. |
+
+### D5 — Per-attempt record race fix
+
+Per-attempt record is inserted ONLY in Tx1 of the FIRST claim. Losing-race worker (sees existing claim with same `idempotency_key`) exits without writing any per-attempt record.
+
+### D6 — Money type
+
+All cost values use **PostgreSQL `numeric(20, 8)`**. Allows totals up to 10^12 with 8 decimal places (sufficient for fractional-token pricing across years). All arithmetic via DB exact-decimal operators inside locked transactions. No float math anywhere. Go-side: thin wrapper over `*big.Rat` or dedicated decimal library; never `float64` / `float32`.
+
+### D7 — Currency
+
+HUAKAI v1 ships **single currency per Tenant**, set at tenant onboarding, immutable thereafter. FX is L4 SaaS Phase 10+. Reservation locks an FX rate snapshot when Tenant currency differs from upstream Provider's billing currency.
+
+### D8 — Reversal pattern (chargeback / dispute)
+
+Out-of-band Billing Ledger row referencing original `Billing_Ledger_id`; carries `reversal_reason` enum (`chargeback`, `dispute_resolved`, `operator_correction`, `accidental_double_claim_recovery`); idempotent (at most one Reversal per `(reversal_trigger_id, original_Billing_Ledger_id)`); mutates User balance / API Key quota / Provider Account quota OPPOSITE the original direction in the same lock-ordered transaction. Original entry is NEVER mutated.
+
+### D9 — Top-up uses same lock-order
+
+User-balance top-up locks User balance row, increments balance, writes Billing Ledger entry of type `top_up`, writes Audit Event, commits. Top-up never races with reservation/reconcile (both serialize on the same row lock).
+
+### E1 — Failure taxonomy extended to 12 categories + recovery_policy
+
+Original 7 (E-S2A-PROXY-026): `request_failure`, `auth_quota_rate_limit_exhaustion`, `malformed_request`, `compatibility_correction`, `overload`, `stream_timeout`. v2 adds 5 more: `network_pre_response`, `network_mid_stream`, `provider_protocol_violation`, `subscription_expired_mid_request`, `tenant_suspended_mid_request`, `payment_overdue_mid_request`, `api_key_rotated_mid_request`, `policy_violation_mid_request`.
+
+| Category | Default `recovery_policy` |
+| --- | --- |
+| `network_pre_response` | `retry_different_account` |
+| `network_mid_stream` | `partial_bill_then_fail` |
+| `provider_protocol_violation` | `retry_different_account_audited` |
+| `auth_quota_rate_limit_exhaustion` | `cooldown_account_then_retry` |
+| `malformed_request` | `fail_no_retry_no_bill` |
+| `compatibility_correction` | `retry_same_account_with_correction` |
+| `overload` | `cooldown_account_then_fallback_pool` |
+| `stream_timeout` | `partial_bill_then_fail` |
+| `subscription_expired_mid_request` | `partial_bill_then_fail_with_user_notification` |
+| `tenant_suspended_mid_request` | `partial_bill_then_fail` |
+| `payment_overdue_mid_request` | `fail_after_grace_period` |
+| `api_key_rotated_mid_request` | `retry_with_new_credential` |
+| `policy_violation_mid_request` | `partial_bill_then_fail_with_audit` |
+
+### G1 — Sub2API "Usage Record best-effort" flagged unverified-by-second-source
+
+Codex's claim that Sub2API writes Usage Record outside billing transaction (motivating HUAKAI's improvement: Usage Record INSIDE Tx2) is **unverified by a second source**. A future fresh specifier-lane session must re-read Sub2API's billing path. Until verified, HUAKAI's design is conservatively safer regardless of the verification outcome.
+
+### H1 — Fingerprint composition fixed
+
+Fingerprint contains ONLY deterministic-input fields:
+
+```
+HASH(
+  tenant_id,
+  api_key_id,
+  logical_request_id,
+  endpoint_family,
+  normalized_request_payload_hash,
+  requested_model,
+  pooling_group_id,
+  billing_policy_version,
+  request_class
+)
+```
+
+Cost values are the OUTCOME, not an input. (Earlier draft incorrectly included monetary values; v2 removed.)
+
 ## Reviewer Sign-Off
 
 | Field | Value |
