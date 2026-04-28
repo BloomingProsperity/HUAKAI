@@ -138,6 +138,69 @@ Eighth batch from Envoy AI Gateway public README (Phase 1, 2026-04-28). Apache-2
 | E-EAG-002 | Envoy AI Gateway (E-LIC-008) | Public README | Endpoint-picker policy chooses the optimal inference endpoint within a model cluster (e.g. picks between replica instances of the same self-hosted model). | Inference-endpoint selection policy under a Channel/Pool. | Misconfigured picker silently routes to suboptimal endpoint; need operator-visible "why this endpoint" reason. | Behavior only. | 2026-04-28 | Claude (specifier) |
 | E-EAG-003 | Envoy AI Gateway (E-LIC-008) | Public README | Kubernetes-native deployment is the primary deployment surface; CNCF-aligned operational patterns (CRDs, operators) are first-class. | Kubernetes-native deployment posture. | K8s requirement excludes simpler self-hosters; Personal Edition must remain non-K8s-runnable. | Behavior only. | 2026-04-28 | Claude (specifier) |
 
+## Deep Source Decomposition (Phase 1 second pass, 2026-04-28)
+
+Phase 1 first pass mined READMEs only. Phase 1 second pass reads actual upstream source code under specifier-lane discipline (per [DR-000](decisions/DR-000-clean-room-methodology.md), [05_CLEAN_ROOM_POLICY.md §What the Specifier Lane Is Allowed To Do](05_CLEAN_ROOM_POLICY.md)). Behaviors below are extracted from real source reads via WebFetch summaries; Verified column cites the exact file URL successfully read. Behaviors are paraphrased into HUAKAI vocabulary; no upstream function names, struct fields, or schema columns appear here.
+
+### Behavior Evidence — one-api source (MIT, E-LIC-004)
+
+Verified URL: `https://raw.githubusercontent.com/songquanpeng/one-api/main/controller/relay.go` (read 2026-04-28)
+Verified URL: `https://raw.githubusercontent.com/songquanpeng/one-api/main/model/token.go` (read 2026-04-28)
+
+| Evidence ID | Reference | Source Type | Observed Behavior Or Scenario | Feature Candidate | Risk Notes | Clean-Room Notes | Date | Agent |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| E-OAI-DEEP-001 | one-api (E-LIC-004) | Source code (controller/relay.go) | A request is routed to a Channel from the User's Pool that supports the requested model, with preference for Channels not recently failed. | Pool selection prefers not-recently-failed Channels. | "Recently failed" must be defined; otherwise persistent low-grade flapping bias. | Behavior only; no upstream func names. | 2026-04-28 | Claude (specifier) |
+| E-OAI-DEEP-002 | one-api (E-LIC-004) | Source code (controller/relay.go) | Retry triggers on rate-limit responses and 5xx upstream errors; retry skips when the User explicitly named a Channel or when the error is a client misconfiguration. | Retry policy with operator-actionable error class filter. | Misclassifying a 4xx as retryable causes wasted upstream calls. | Behavior only. | 2026-04-28 | Claude (specifier) |
+| E-OAI-DEEP-003 | one-api (E-LIC-004) | Source code (controller/relay.go) | On retry, the failed Channel is excluded from the retry pool; the same payload is re-sent to a different Channel from the same Pool. | Failed-Channel exclusion across retries within a request. | Excluded Channel must remain excluded only for this request, not globally. | Behavior only. | 2026-04-28 | Claude (specifier) |
+| E-OAI-DEEP-004 | one-api (E-LIC-004) | Source code (controller/relay.go) | **No explicit quota reservation occurs before the upstream call**; the gateway processes requests and handles errors reactively. | **Gap to fix**: HUAKAI must add atomic quota reservation BEFORE upstream call. | Concurrent requests can over-spend quota under load (BUG-QUOTA-001). | Behavior only; HUAKAI design will diverge here. | 2026-04-28 | Claude (specifier) |
+| E-OAI-DEEP-005 | one-api (E-LIC-004) | Source code (controller/relay.go) | **Duplicate-billing prevention across retry attempts is implicit**; each attempt is handled independently with no cross-attempt deduplication visible. | **Gap to fix**: HUAKAI must add per-request idempotency key spanning all retry attempts. | Successful retry after slow-success on first attempt could double-charge (BUG-GW-001). | Behavior only; HUAKAI design will diverge here. | 2026-04-28 | Claude (specifier) |
+| E-OAI-DEEP-006 | one-api (E-LIC-004) | Source code (controller/relay.go) | A Channel may be auto-disabled when the failure pattern indicates permanent unavailability rather than transient. | Auto-disable on permanent-error pattern. | Permanence detection must distinguish CF block / auth revoke / quota exhaustion / network flap (F-CH-002). | Behavior only. | 2026-04-28 | Claude (specifier) |
+| E-OAI-DEEP-007 | one-api (E-LIC-004) | Source code (model/token.go) | API Key quota check is two-stage: pre-deduction validates remaining quota, post-deduction adjusts balance, allowing reconciliation when actual usage differs from estimate. | Two-stage quota: estimate-then-reconcile. | Estimate accuracy directly affects user-visible "balance OK but key out" surprises (E-OAI-005 risk). | Behavior only. | 2026-04-28 | Claude (specifier) |
+| E-OAI-DEEP-008 | one-api (E-LIC-004) | Source code (model/token.go) | **Validation check and the actual database deduction are NOT atomic** — concurrent requests can pass the check then both deduct, causing overspend. | **Gap to fix**: HUAKAI must use atomic reservation (DB-level row lock or compare-and-swap) for quota mutations. | This is the upstream bug pattern that motivates BUG-QUOTA-001 in HUAKAI's bug pattern library. | Behavior only; HUAKAI design will diverge here. | 2026-04-28 | Claude (specifier) |
+| E-OAI-DEEP-009 | one-api (E-LIC-004) | Source code (model/token.go) | API Key state is cached in memory for performance; freshness depends on cache invalidation. | In-memory API Key cache. | Disabled-key state must invalidate fast across instances; otherwise revoked keys keep working briefly (security gap). | Behavior only. | 2026-04-28 | Claude (specifier) |
+
+### Behavior Evidence — LiteLLM source (MIT, E-LIC-005)
+
+Verified URL: `https://raw.githubusercontent.com/BerriAI/litellm/main/litellm/router_utils/cooldown_handlers.py` (read 2026-04-28)
+
+| Evidence ID | Reference | Source Type | Observed Behavior Or Scenario | Feature Candidate | Risk Notes | Clean-Room Notes | Date | Agent |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| E-LM-DEEP-001 | LiteLLM (E-LIC-005) | Source code (router_utils/cooldown_handlers.py) | An Account becomes unhealthy on specific HTTP status (rate-limit, auth-fail, timeout, not-found) OR when the failure rate this minute exceeds a threshold percentage AND a minimum traffic volume threshold has been met. | Failure-rate cooldown with traffic-volume floor. | Without volume floor, low-traffic Accounts flap on any single failure. | Behavior only. | 2026-04-28 | Claude (specifier) |
+| E-LM-DEEP-002 | LiteLLM (E-LIC-005) | Source code (router_utils/cooldown_handlers.py) | Cooldown duration is a configurable default with policy-specific overrides. | Configurable per-policy cooldown duration. | Default value selection is a tuning question; expose to operator. | Behavior only. | 2026-04-28 | Claude (specifier) |
+| E-LM-DEEP-003 | LiteLLM (E-LIC-005) | Source code (router_utils/cooldown_handlers.py) | Auto re-enable after cooldown expires; cooldown registry queried by model identifier and time-window. | Time-windowed auto re-enable. | Re-enable surge to a still-flaky Account causes re-flap; jittered backoff helps. | Behavior only. | 2026-04-28 | Claude (specifier) |
+| E-LM-DEEP-004 | LiteLLM (E-LIC-005) | Source code (router_utils/cooldown_handlers.py) | When an Account is in cooldown, the router excludes it from selection and routes to remaining healthy Accounts. | Cooldown'd Account excluded from selection. | If all Accounts are in cooldown, fallback chain must surface "all degraded" not silently fail. | Behavior only. | 2026-04-28 | Claude (specifier) |
+| E-LM-DEEP-005 | LiteLLM (E-LIC-005) | Source code (router_utils/cooldown_handlers.py) | **Single-Account exemption**: when an Account is the sole deployment in its group, error-rate cooldown is bypassed to prevent total service outage. | Last-resort Account protection. | Without this, a single-Account Pool self-disables on first error. | Behavior only; HUAKAI must adopt or document explicit alternative. | 2026-04-28 | Claude (specifier) |
+| E-LM-DEEP-006 | LiteLLM (E-LIC-005) | Source code (router_utils/cooldown_handlers.py) | **Connection errors and certain transient failures explicitly skip cooldown** to avoid cascading blacklist on temporary network issues. | Network-vs-API error class distinction in cooldown. | Conflating these blacklists healthy Accounts during ISP/CF blips. | Behavior only. | 2026-04-28 | Claude (specifier) |
+
+### Behavior Evidence — Sub2API source (LGPL-3.0, E-LIC-001)
+
+Verified URL: `https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/backend/internal/service/channel_monitor_service.go` (read 2026-04-28)
+**Not verified yet (404 on first attempt or path correction needed)**: account selection / pool routing / sticky-session source files. Defer to next pass.
+
+| Evidence ID | Reference | Source Type | Observed Behavior Or Scenario | Feature Candidate | Risk Notes | Clean-Room Notes | Date | Agent |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| E-S2A-DEEP-001 | Sub2API (E-LIC-001) | Source code (channel_monitor_service.go) | Health probe runs at configurable interval per Account and tracks last-checked timestamp; primary and secondary models can be probed concurrently. | Per-Account periodic probe with model-tier coverage. | Probe interval too short = upstream rate-limit; too long = stale health. | Behavior only. | 2026-04-28 | Claude (specifier) |
+| E-S2A-DEEP-002 | Sub2API (E-LIC-001) | Source code (channel_monitor_service.go) | Account is marked unhealthy when credential decryption fails OR validation results indicate degraded availability (status codes + latency tracked in history). | Health verdict combines auth failures and response signal history. | Mixed criteria need explicit operator-visible diagnostic. | Behavior only. | 2026-04-28 | Claude (specifier) |
+| E-S2A-DEEP-003 | Sub2API (E-LIC-001) | Source code (channel_monitor_service.go) | Re-enablement is operator-driven: operator flips the enabled flag; system reschedules monitoring tasks automatically on state change. | Operator-confirmed re-enable (matches HUAKAI F-CH-002 "auto-disable raises alert + requires operator-confirm-resume"). | Confirms HUAKAI's planned divergence from one-api silent auto-disable is industry pattern. | Behavior only. | 2026-04-28 | Claude (specifier) |
+| E-S2A-DEEP-004 | Sub2API (E-LIC-001) | Source code (channel_monitor_service.go) | Health checks have two execution modes: synchronous (operator-triggered, write-through to history) and asynchronous (background scheduler, periodic). | Two-mode probing (interactive + background). | Both modes must produce identical history entries; schema must support both writers. | Behavior only. | 2026-04-28 | Claude (specifier) |
+| E-S2A-DEEP-005 | Sub2API (E-LIC-001) | Source code (channel_monitor_service.go) | A watermark on aggregated daily rollups prevents redundant duplicate processing across maintenance cycles. | Idempotent daily rollup via watermark. | Operator must be able to re-process a day if needed (admin override). | Behavior only. | 2026-04-28 | Claude (specifier) |
+
+### Decomposition Gaps (What Was NOT Verified This Pass)
+
+Per Owner directive (2026-04-28): "no guessing, must be real". Items below were NOT successfully read this pass and are DEFERRED, not asserted:
+
+- Sub2API pool selection algorithm (file path `backend/internal/gateway/openai_messages_dispatch.go` returned 404 on raw fetch; correct path TBD).
+- Sub2API sticky session implementation (no file successfully read).
+- Sub2API per-Account concurrency enforcement point (no file successfully read).
+- Sub2API per-token billing computation (no file successfully read).
+- one-api channel selection details (only relay-controller-level decisions verified; deeper selection-algorithm files not yet read).
+- one-api streaming forwarder (file not yet read).
+- LiteLLM fallback chain ordering (file not yet read).
+- LiteLLM concurrent-request-limit enforcement (file not yet read).
+- New API / All API Hub / Helicone / Portkey / Envoy: zero source-level decomposition done yet.
+
+These are tracked tasks for the **third Phase 1 pass**.
+
 ## Evidence Template
 
 | Evidence ID | Reference | Source Type | Observed Behavior Or Scenario | Feature Candidate | Risk Notes | Clean-Room Notes | Date | Agent |
