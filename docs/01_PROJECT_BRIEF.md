@@ -6,6 +6,28 @@ This file is agent-facing and authoritative.
 
 An AI Gateway + Account Hub + Admin Ops Platform for managing model providers, accounts, keys, quota, billing, routing, protocol conversion, reliability, security, observability, and operator workflows.
 
+## Owner-Stated Goal (Authoritative, 2026-04-28)
+
+> "驱动：赚钱（成功后项目会开源）。主要的目的是在 sub2api 的基础上搭建出全面的更好的产品。因为 sub2api 的功能底座很好，但是能接入的 API 以及模型太少了。我需要增加完善。"
+
+This is the **North Star** for every downstream PM decision, design tradeoff, and feature priority. Translation:
+
+- **Commercial driver**: HUAKAI is a paid SaaS (monetization is required for success criterion). Open-sourcing happens AFTER commercial validation, not before.
+- **Strategy**: HUAKAI is **Sub2API plus comprehensive breadth**. Sub2API's algorithmic foundation is acknowledged as already good (relay-station / pooling / billing claim gate / sticky session) — HUAKAI adopts it, does not try to outdo it on those axes.
+- **Differentiator**: HUAKAI exceeds Sub2API on **provider integration breadth** and **completeness of supported models / protocols**. Sub2API's bottleneck is too few upstream integrations; HUAKAI's advantage is solving that gap.
+- **Phasing implication**: Provider adapter coverage is **promoted from "long-tail catalog work" to a first-class L1/L2 concern**. Phase 5–9 must include provider-integration milestones, not just core gateway plumbing.
+- **Quality / authenticity rule**: "必须要真实" (Owner directive 2026-04-28). Inventory completion is not understanding. Every L1/L2 algorithm requires source-verified deep decomposition + reviewer-lane sign-off before implementation. Ship slow, ship real.
+
+### Success Criteria (Refined)
+
+A HUAKAI v1.0 release is successful when **all** are true:
+
+1. The commercial Personal Edition (single-tenant) ships with at least Sub2API's full algorithmic feature base — no functional regression.
+2. Provider catalog covers materially more upstream APIs / models than Sub2API, measured by a published catalog comparison.
+3. SaaS Edition activation criteria are documented and an early-access SaaS deployment is reachable.
+4. Open-source release happens **after** commercial validation (paying-customer or recurring-revenue threshold to be set later by Owner).
+5. Every core algorithm (selection / quota / billing claim / streaming / retry / cooldown) has a source-verified prose decomposition and HUAKAI's design strictly equals or improves upstream behavior.
+
 ## Product Identity (Owner-Confirmed 2026-04-28)
 
 HUAKAI sits in the **relay-station (中转站) / quota-pooling** product category, validated by Sub2API (14.5k stars) and the broader Chinese-ecosystem relay-station product family. The defining capability is **multi-account quota pooling**: operators bring their own upstream subscription / API accounts, the platform pools them into one shared logical capacity, and end-users consume that pooled capacity through platform-issued API Keys.

@@ -262,11 +262,15 @@ Move from MVP to production usable.
 - Normal path, failure path, and operator recovery path are tested for each core module.
 - High-risk release blockers are closed or explicitly blocked.
 
-## Phase 9: Advanced Parity And Better Than Reference
+## Phase 9: Advanced Parity, Provider Catalog Breadth, and Better Than Reference
 
 ### Goal
 
-Close remaining reference parity gaps and improve beyond references.
+Close remaining reference parity gaps; deliver the Provider Catalog Breadth that is HUAKAI's commercial differentiator per [DR-007](decisions/DR-007-product-positioning-and-breadth.md); improve beyond references.
+
+### Provider Catalog Breadth Exit Criterion (per DR-007)
+
+By the end of Phase 9, HUAKAI's supported Provider catalog must **materially exceed Sub2API's catalog** (target: 15+ unique upstream Providers with verified per-provider acceptance tests). This is a binding exit criterion for Phase 9, not a stretch goal.
 
 ### Deliverables
 
