@@ -2,9 +2,10 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Discussion |
+| Status | Implemented |
 | Date opened | 2026-04-27 |
-| Date decided | — |
+| Date decided | 2026-04-28 |
+| Date implemented | 2026-04-28 |
 | Owner | Owner |
 | Affected docs | docs/05_CLEAN_ROOM_POLICY.md, docs/06_REFERENCE_PROJECTS.md, docs/10_RISK_REGISTER.md, docs/12_AGENT_WORKFLOW.md, docs/20_CLEAN_ROOM_METHODOLOGY_OPTIONS.md |
 | Supersedes | — |
@@ -73,16 +74,16 @@ Gemini view deferred by Owner (see above) — no UI/Ops dimension to reconcile i
 
 | Field | Value |
 | --- | --- |
-| Decision | _(Owner to write: A / B / C / custom)_ |
-| Decision date | _(YYYY-MM-DD)_ |
-| Reasoning | _(short)_ |
-| Constraints attached | _(e.g. "Option B with Option C carve-out for billing ledger work")_ |
+| Decision | Option B (two-lane separation) as default + Option C carve-out for billing ledger, account-pool routing, and provider failover/account-health heuristics. |
+| Decision date | 2026-04-28 |
+| Reasoning | AGPL exposure (2 of 3 primary references) makes Option A too weak as a defense if a contamination claim ever arises, and is incompatible with the SaaS Distribution Edition planned in [DR-002](DR-002-product-editions.md). Option C across-the-board would block reading even MIT one-api which is wasteful given one-api is the safe anchor. Codex's carve-out + spec-leakage review addresses the "spec becomes contamination vector" failure mode without crippling velocity. |
+| Constraints attached | A spec-leakage review checklist or skill must exist before specs leave the specifier lane and enter implementer-facing work. Lane definitions must be reflected in [12_AGENT_WORKFLOW.md](../12_AGENT_WORKFLOW.md). |
 
 ## Propagation Checklist
 
-- [ ] Update [05_CLEAN_ROOM_POLICY.md](../05_CLEAN_ROOM_POLICY.md) — replace "methodology decision pending" with the chosen option, inline.
-- [ ] Update [12_AGENT_WORKFLOW.md](../12_AGENT_WORKFLOW.md) — add lane definitions if Option B or C.
-- [ ] Update [10_RISK_REGISTER.md](../10_RISK_REGISTER.md) R-LIC-001 — sharpen mitigation to the chosen option.
-- [ ] Update [20_CLEAN_ROOM_METHODOLOGY_OPTIONS.md](../20_CLEAN_ROOM_METHODOLOGY_OPTIONS.md) — add a "Decided" header pointing to this DR.
-- [ ] If Option B or C: add `docs/specs/` directory and a spec template.
-- [ ] Mark Status = Implemented when all above are done.
+- [x] Update [05_CLEAN_ROOM_POLICY.md](../05_CLEAN_ROOM_POLICY.md) — Methodology section replaced; lane definitions, carve-out list, and spec-leakage review pointer added.
+- [x] Update [12_AGENT_WORKFLOW.md](../12_AGENT_WORKFLOW.md) — Clean-Room Lanes section added with role-to-lane mapping.
+- [x] Update [10_RISK_REGISTER.md](../10_RISK_REGISTER.md) R-LIC-001 — Mitigation sharpened to reference DR-000; status flipped to Mitigated.
+- [x] Update [20_CLEAN_ROOM_METHODOLOGY_OPTIONS.md](../20_CLEAN_ROOM_METHODOLOGY_OPTIONS.md) — Decided header added at top pointing to DR-000.
+- [x] Add `docs/specs/` directory with [README](../specs/README.md), [_TEMPLATE.md](../specs/_TEMPLATE.md), and [_REVIEW_CHECKLIST.md](../specs/_REVIEW_CHECKLIST.md) (10 checks CL-001..010).
+- [x] Mark Status = Implemented (header above).

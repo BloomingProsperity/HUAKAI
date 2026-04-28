@@ -1,6 +1,8 @@
 This file is agent-facing and authoritative.
 
-# Clean-Room Methodology Options (Owner Decision Pending)
+> **Decided 2026-04-28 in [DR-000](decisions/DR-000-clean-room-methodology.md).** This document is retained as the option catalog and analysis record. The active methodology is **Option B (default) + Option C carve-out + spec-leakage review**, codified inline in [05_CLEAN_ROOM_POLICY.md §Methodology: Decided](05_CLEAN_ROOM_POLICY.md).
+
+# Clean-Room Methodology Options
 
 ## Why this document exists
 

@@ -49,6 +49,19 @@ After Owner confirmation, agents should:
 4. Codex audits feature parity, production risk, clean-room compliance, and scenario tests.
 5. Claude resolves conflicts and updates release gates.
 
+## Clean-Room Lanes
+
+Per [DR-000](decisions/DR-000-clean-room-methodology.md) (Decided 2026-04-28), HUAKAI uses two-lane separation (Option B) with Option C carve-outs. Full lane definitions and carve-out list are authoritative in [05_CLEAN_ROOM_POLICY.md §Methodology: Decided](05_CLEAN_ROOM_POLICY.md).
+
+| Lane | Reads | Produces | Typical agent role |
+| --- | --- | --- | --- |
+| Specifier (dirty) | Public docs, issues, source from non-MIT references | Abstract specs in `docs/specs/` (no code) | Claude or Codex (per task assignment) |
+| Implementer (clean) | Project docs, specs from `docs/specs/`, MIT anchor reference (one-api) | All code, schema, UI, tests | Claude (architecture/lead), Gemini (UI), Codex (small patches/tests) |
+
+Lane assignment is per-task, not per-agent. Agents may serve in either lane depending on the task, but never in both lanes within the same session. Once an agent session has been used for specifier work (i.e. has read non-MIT source), its conversation context is contamination-state — open a new session before doing implementer work.
+
+Specifier outputs must pass spec-leakage review (checklist at [specs/_REVIEW_CHECKLIST.md](../docs/specs/_REVIEW_CHECKLIST.md)) before the implementer lane is allowed to consume them.
+
 ## PM Autonomy Rule
 
 Claude PM-Orchestrator may coordinate work after Owner confirmation.
