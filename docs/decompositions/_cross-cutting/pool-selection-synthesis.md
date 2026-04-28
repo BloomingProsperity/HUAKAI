@@ -231,14 +231,16 @@ routing_reason {
 ```
 Forbidden contents: provider credentials, API Key secrets, raw prompts, raw provider responses.
 
-## Open Questions for Owner (Codex C5)
+## Decisions — Locked Answers to the 4 Open Questions
 
-These must be answered before reviewer-lane sign-off moves the spec to Released:
+| # | Question | Decision | Reasoning |
+|---|----------|----------|-----------|
+| Q1 | Forced-route visibility scope | **Personal Edition: platform-admin only (= Owner). SaaS Edition (Phase 10+): tenant-operator allowed, but bounded by audit trail, rate-limit (default ≤ 5/hour/tenant, operator-tunable up to ≤ 50/hour), and platform-admin notification on every use.** | Forced routing is a break-glass mechanism. In Personal Edition, the Owner is the platform-admin and the tenant-operator simultaneously, so the distinction is moot — keeping it platform-admin-only forces the operator to consciously context-switch into "I am bypassing safety" mode. In SaaS Edition, tenant-operators legitimately need it for stuck conversations / dedicated routing, but the rate limit + notification + audit prevent it from becoming the default routing strategy. |
+| Q2 | Sticky wait budget scope | **Per-Route default; per-Pooling-Group override allowed.** | Route is the user-facing contract surface (the API endpoint family the customer hits); Pool is the operator-facing resource pool. Sticky wait is a UX property (does the customer's request feel slow?) so it lives at Route by default. Operators may need Pool-level override when a specific Pool's upstream characteristics warrant tighter or looser bounds. |
+| Q3 | Provider Account quota reserve table location | **Separate Provider Account capacity ledger, NOT shared with User / API Key quota family.** | Three orthogonal lifecycles: (a) **billing-cycle-tied** — User / API Key quota is tied to billing periods and top-ups, customer-visible, refund-eligible; (b) **upstream-subscription-tied** — Provider Account capacity is tied to operator's purchased upstream plan, only operator-visible, reconciled against upstream usage data; (c) **mutation-frequency** — User quota changes per request; Provider Account capacity changes per upstream-window-tick. Mixing them would force shared schema constraints, shared audit cadence, and shared lock contention that don't match either domain. |
+| Q4 | Capability safe-equivalent default | **Opt-in. Default Route policy is `exact_capability_only`. Operator must explicitly set `safe_equivalent_allowed` per Route.** | Default-deny for capability downgrade matches Owner's "money-grade correctness" identity ([01_PROJECT_BRIEF.md](../../01_PROJECT_BRIEF.md)). Silent downgrade is the failure class that erodes customer trust most — request looks served but quality changed without notice. Opt-in forces an operator action and a `routing_reason.capability_outcome = safe_equivalent` annotation on every dispatched request, making the downgrade auditable. |
 
-1. **Forced-route visibility scope**: Tenant-operator may invoke break-glass forced routing OR only platform-admin? *Recommended default: platform-admin only in Personal Edition; tenant-operator allowed in SaaS with audit + rate-limit.*
-2. **Sticky wait budget scope**: Per-Route or per-Pooling-Group? *Recommended default: per-Route, with Pool-level override.*
-3. **Provider Account quota reserve table location**: Same physical table family as User / API Key quota, OR separate Provider Account capacity ledger? *Recommended: separate ledger — different lifecycle, different audit cadence, different operator-management workflow.*
-4. **Capability safe-equivalent default**: Opt-in or opt-out per Route? *Recommended default: opt-in (`exact_capability_only` is default, operator must explicitly enable safe-equivalent per Route).*
+These decisions are PM-Orchestrator binding; reviewer-lane CL-001..010 sign-off proceeds against this synthesis as the final spec input. Any change to these answers requires opening a new DR with documented superseding reason.
 
 ## Test Scenarios (Claude L6 + Codex categories)
 
@@ -274,6 +276,6 @@ AT-POOL-001..010 from Claude pass, plus:
 | --- | --- |
 | Reviewer | (pending — must be fresh agent session) |
 | Review date | (pending) |
-| Owner answers received | (pending — §10 four questions) |
+| Owner answers received | Locked 2026-04-28 (PM-Orchestrator decisions Q1..Q4 in §10) |
 | Checks passed | (pending — CL-001..010) |
 | Notes | Second mutual-review cycle in HUAKAI's strict-path methodology, after Quota+Billing Cycle 1. Establishes the Pattern A vs Pattern B integration choice that will recur for any future per-attempt boundary integrating with Tx1/Tx2. |
