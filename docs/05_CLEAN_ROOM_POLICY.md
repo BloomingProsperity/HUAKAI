@@ -43,3 +43,7 @@ Reference projects are empirical evidence, not source-code providers.
 ## License Risk Rule
 
 License risk can change implementation method, isolation boundary, rollout strategy, or documentation requirements. It cannot delete a feature.
+
+## Methodology Decision Pending
+
+Two of the three primary references are AGPL-3.0; one is LGPL-3.0. See verified status in [06_REFERENCE_PROJECTS.md](06_REFERENCE_PROJECTS.md) and [07_REFERENCE_EVIDENCE_LEDGER.md](07_REFERENCE_EVIDENCE_LEDGER.md). The Owner has not yet selected a clean-room methodology; until selected, agents must operate under Option B (two-lane separation) as documented in [20_CLEAN_ROOM_METHODOLOGY_OPTIONS.md](20_CLEAN_ROOM_METHODOLOGY_OPTIONS.md).

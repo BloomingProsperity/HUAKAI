@@ -296,6 +296,38 @@ Close remaining reference parity gaps and improve beyond references.
 | 8 | Manage release risks | Run release readiness review | Review operations dashboard |
 | 9 | Close parity gaps | Audit final parity | Improve UI parity |
 
+## Phase 10: SaaS Distribution Edition (Post-MVP, Owner-Triggered)
+
+### Goal
+
+Activate the SaaS Edition after Personal Edition (Phase 1-9) has validated user feedback. See [DR-002](decisions/DR-002-product-editions.md).
+
+### Trigger
+
+Owner explicit signal that Personal Edition feedback supports SaaS. Phase 10 is **not** a default exit gate from Phase 9; it is opt-in.
+
+### Deliverables
+
+- Tenant onboarding workflow (UI and API).
+- Tenant suspension and termination workflows.
+- Per-tenant billing dashboard and ledger isolation.
+- Cross-tenant abuse investigation tools (operator-only).
+- Compliance export per-tenant.
+- Tenant-scoped feature flags and rate limits.
+- Multi-tenant admin UI surfaces (tenant switcher, per-tenant settings panel).
+- Marketing or onboarding surfaces if applicable.
+
+### Edition Gating Rule
+
+All Phase 10 features must be gated by configuration / feature flag and must default **off** in Personal Edition deployments. No Phase 10 code path may execute by default in a Personal Edition install.
+
+### Exit Criteria
+
+- A new SaaS deployment can onboard a tenant end-to-end.
+- Two tenants on the same deployment cannot observe each other's data, even via crafted queries.
+- Per-tenant billing reconciles correctly.
+- Personal Edition deployments are unaffected (regression-tested).
+
 ## Anti-Big-Bang Rule
 
 Agents must not treat full parity as a single implementation task. Full parity is the destination. Each phase must have a small, testable outcome.
