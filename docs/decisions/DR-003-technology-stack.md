@@ -99,6 +99,11 @@ No material conflicts. Claude and Codex independently converge on **Go backend +
 5. **Tenant-aware schema from day 1** ([DR-001](DR-001-multi-tenancy.md)). Every primary table carries a non-null `tenant_id`; MVP uses a single hard-coded default tenant; cross-tenant isolation tests are mandatory at Phase 2 schema review.
 6. **Option C strict-mode specs required for these areas before implementation** (per [DR-000](DR-000-clean-room-methodology.md) carve-out): pool-aware routing logic, billing reconciliation across pooled accounts, provider/account-health heuristics. These are the highest-AGPL-exposure feature areas; spec-leakage review against [_REVIEW_CHECKLIST.md](../specs/_REVIEW_CHECKLIST.md) is non-negotiable before any implementer-lane work consumes them.
 7. **Frontend framework deferred to DR-004.** Owner Decision here only commits to TypeScript as a language; React / Vue / Svelte choice waits for Gemini view in DR-004.
+8. **Naming and code-redundancy discipline (Owner directive 2026-04-28).** Frontend and backend project naming must be standardized and clean: one consistent identifier per concept (single canonical name from [18_GLOSSARY.md](../18_GLOSSARY.md), no synonyms in code), one consistent file/module naming convention picked early and applied repo-wide, no duplicate logic across modules, no parallel "for now / temporary / will-clean-later" abstractions. Concretely:
+    - Entity names in code match the glossary exactly (e.g. `Pool` not `PoolingGroup` *and* `Pool` mixed; `ProviderAccount` not `Provider_Account` *and* `provider-account`).
+    - One source of truth per concept: e.g. quota math lives in one package, called from everywhere; not reimplemented in three handlers.
+    - Linter-enforceable conventions captured in `golangci-lint.yml` and the frontend ESLint config; CI fails on drift.
+    - DRY applies to specs and docs too: a behavior described in one spec must be referenced from other specs, not redescribed.
 
 ## Propagation Checklist
 
