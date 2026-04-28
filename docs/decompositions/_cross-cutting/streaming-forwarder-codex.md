@@ -1,8 +1,11 @@
 # F-GW-002 Streaming Forwarder + Usage Accounting - Codex Specifier Pass
 
+> ⚠️ **REJECTED — DO NOT USE AS SYNTHESIS INPUT** (2026-04-28).
+> Per Codex's own source-verification report at [docs/reviews/2026-04-28-codex-source-verification.md](../../reviews/2026-04-28-codex-source-verification.md) §3: FAILS CL-011 (no file:line citations) + CL-011b (Sub2API behavior blended across paths and references). Disconnect drain claim is overgeneralized — only Bedrock drains, not the Anthropic-conversion paths. Use [streaming-forwarder-claude-v2.md](streaming-forwarder-claude-v2.md) for the source-verified replacement and [docs/reviews/2026-04-28-codex-reviewer-cycle1-cycle2-cl011.md](../../reviews/2026-04-28-codex-reviewer-cycle1-cycle2-cl011.md) §4 for the REJECT verdict.
+
 | Field | Value |
 | --- | --- |
-| Status | Draft - specifier-lane decomposition, pending mutual review |
+| Status | **REJECTED** (2026-04-28) — see banner above |
 | Feature ID | F-GW-002 |
 | Lane mode | Option C strict carve-out: gateway hot path intersects Provider Account failover, account-health, and Billing Ledger reconciliation |
 | Date | 2026-04-28 |

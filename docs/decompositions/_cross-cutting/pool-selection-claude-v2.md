@@ -78,7 +78,13 @@ func (s *GatewayService) tryAcquireAccountSlot(ctx context.Context, accountID in
 }
 ```
 
-Slot is acquired via `concurrencyService.AcquireAccountSlot`. Per `testutil/stubs.go:24` the interface is `AcquireAccountSlot(ctx, accountID, maxConcurrency, requestID) (bool, error)` — a cache-backed primitive (likely Redis, given the broader cache-service pattern in this codebase). **Not a serializable DB transaction.** This is a noted gap: Sub2API's slot accounting is eventual-consistent w.r.t. crashes; slot leak is bounded by the cache TTL configured at `gateway.concurrency_slot_ttl_minutes` (config_test.go:1246).
+Slot acquisition has **two layers** (Codex source-verification 2026-04-28 caught the conflation in v1):
+
+1. **Service-level entry**: `tryAcquireAccountSlot` (gateway_service.go:2250) is a thin wrapper that delegates to `concurrencyService.AcquireAccountSlot(ctx, accountID, maxConcurrency)` (interface, returns `*AcquireResult{Acquired bool, ReleaseFunc func()}`). When `concurrencyService == nil` (e.g. minimum config), wrapper returns `Acquired=true` with no-op release — slot accounting is bypassed entirely.
+
+2. **Cache-level implementation**: per `testutil/stubs.go:24` the wider concurrency interface includes `(ctx, accountID, maxConcurrency, requestID) (bool, error)` — a cache-backed atomic increment with TTL fallback for crash recovery. Configured via `gateway.concurrency_slot_ttl_minutes` (config_test.go:1246). The implementation is **not a serializable DB transaction**; it is cache-only with TTL-bounded crash recovery.
+
+This is a noted gap: Sub2API's slot accounting is eventual-consistent w.r.t. crashes; slot leak is bounded by `concurrency_slot_ttl_minutes`. Distinct from HUAKAI's Pattern B which uses PostgreSQL row-locked counters as authoritative + cache as hint.
 
 ### 2.5 Wait Plans
 
