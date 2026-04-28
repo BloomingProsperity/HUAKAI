@@ -24,11 +24,11 @@ License verification dates and evidence IDs are recorded in [07_REFERENCE_EVIDEN
 
 Agents may consider similar high-star, actively maintained open-source AI gateway, provider routing, account hub, API key management, billing, quota, and admin operations projects. Examples to consider, each subject to license verification before use:
 
-- LiteLLM (Python LLM proxy, BSD-3-Clause).
-- Portkey-AI/gateway (TypeScript, MIT).
-- Helicone/ai-gateway (Apache-2.0).
+- LiteLLM (Python LLM proxy, MIT — verified E-LIC-005).
+- Portkey-AI/gateway (TypeScript, MIT — verified E-LIC-006).
+- Helicone/ai-gateway (Rust, **GPL-3.0-or-later — verified E-LIC-007**, NOT Apache-2.0 as marketing pages sometimes claim).
 - Cloudflare AI Gateway (proprietary; public docs only).
-- songquanpeng/one-api (MIT, anchor — see above).
+- songquanpeng/one-api (Go, MIT, anchor — see above).
 
 Each candidate must be added to this table with verified SPDX before being used as evidence.
 
