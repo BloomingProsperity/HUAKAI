@@ -98,14 +98,15 @@ Define the first buildable product slice.
 
 ### L1 MVP Modules
 
-- API key intake.
-- One or more manually configured provider accounts.
+- API key intake (platform-issued keys for end-users).
+- **Provider Account pooling**: one or more manually configured upstream Provider Accounts grouped into one logical pool that the platform routes against. This is the relay-station identity feature ([F-POOL-001](03_FEATURE_PARITY_MATRIX.md), [01_PROJECT_BRIEF.md §Product Identity](01_PROJECT_BRIEF.md)) and must be in L1, not deferred.
 - OpenAI-compatible request path for a small model set.
 - Basic provider forwarding.
-- Basic routing selection.
-- Basic usage log.
+- Basic routing selection (with pool-aware selection inside one Channel).
+- Basic usage log with token-level granularity (sets up F-POOL-001 fairness).
 - Basic request log.
 - Basic admin inspection surface or documented admin API.
+- Edition-flag plumbing ([F-MODE-001](03_FEATURE_PARITY_MATRIX.md)) so SaaS-only features can be turned off cleanly in Personal Edition deployments.
 
 ### Deferred But Preserved
 

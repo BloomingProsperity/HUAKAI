@@ -19,6 +19,7 @@ Establishing the license tier of every primary reference is a prerequisite to an
 | E-LIC-005 | LiteLLM | github.com/BerriAI/litellm/blob/main/LICENSE | MIT | 2026-04-28 | Claude (PM) | Safe anchor. Note: `enterprise/` subdirectory has separate terms — do not read enterprise/* without separate license review. |
 | E-LIC-006 | Portkey AI Gateway | github.com/Portkey-AI/gateway/blob/main/LICENSE | MIT | 2026-04-28 | Claude (PM) | Safe anchor. Copyright Portkey, Inc 2024. |
 | E-LIC-007 | Helicone AI Gateway | github.com/Helicone/ai-gateway/blob/main/LICENSE | GPL-3.0-or-later | 2026-04-28 | Claude (specifier) | NOT a safe anchor despite some marketing claiming Apache-2.0. Network use does not trigger GPL distribution requirements (unlike AGPL), but binary distribution does. Read for behavior only. |
+| E-LIC-008 | Envoy AI Gateway | github.com/envoyproxy/ai-gateway/blob/main/LICENSE | Apache-2.0 | 2026-04-28 | Claude (specifier) | Safe anchor (4th confirmed: one-api MIT, LiteLLM MIT, Portkey MIT, Envoy AI Gateway Apache-2.0). Built on Envoy Proxy, CNCF lineage. |
 
 ## Behavior Evidence — one-api (MIT, E-LIC-004)
 
@@ -126,6 +127,16 @@ Seventh batch from Helicone AI Gateway public README (Phase 1, 2026-04-28). Heli
 | E-HLC-005 | Helicone (E-LIC-007) | Public README | Resource footprint and cold-start time are stated as design constraints with concrete numbers (memory, binary size, latency, cold start). | Explicit performance budget (extends F-GW-003 SLO concept). | Comparing against marketing numbers is misleading; budget must be measured under our own payload mix. | Behavior only; numbers not adopted. | 2026-04-28 | Claude (specifier) |
 | E-HLC-006 | Helicone (E-LIC-007) | Public README | Per-endpoint routing strategies defined declaratively in YAML or via UI wizard, allowing one deployment to serve multiple distinct routing policies. | Declarative per-endpoint routing policy. | YAML drift across deployments; require config-as-code with audit. | Behavior only. | 2026-04-28 | Claude (specifier) |
 | E-HLC-007 | Helicone (E-LIC-007) | Public README | Multiple deployment surfaces from the same artifact: cloud-hosted, Docker, npm package — operator picks at install time. | Multi-deployment-target packaging. | Feature gaps between targets create "feature exists in cloud but not in self-host" drift. | Behavior only. | 2026-04-28 | Claude (specifier) |
+
+## Behavior Evidence — Envoy AI Gateway (Apache-2.0, E-LIC-008)
+
+Eighth batch from Envoy AI Gateway public README (Phase 1, 2026-04-28). Apache-2.0 safe anchor; novel value is the enterprise / Kubernetes-native two-tier deployment pattern.
+
+| Evidence ID | Reference | Source Type | Observed Behavior Or Scenario | Feature Candidate | Risk Notes | Clean-Room Notes | Date | Agent |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| E-EAG-001 | Envoy AI Gateway (E-LIC-008) | Public README | Two-tier deployment: an outer "Tier One" gateway handles auth + global rate limiting + identity, while an inner "Tier Two" gateway handles self-hosted model cluster access and inference endpoint selection. | Two-tier gateway architecture for separation of concerns. | Two tiers double operational complexity if not justified by scale; Personal Edition should not require two tiers. | Behavior only. | 2026-04-28 | Claude (specifier) |
+| E-EAG-002 | Envoy AI Gateway (E-LIC-008) | Public README | Endpoint-picker policy chooses the optimal inference endpoint within a model cluster (e.g. picks between replica instances of the same self-hosted model). | Inference-endpoint selection policy under a Channel/Pool. | Misconfigured picker silently routes to suboptimal endpoint; need operator-visible "why this endpoint" reason. | Behavior only. | 2026-04-28 | Claude (specifier) |
+| E-EAG-003 | Envoy AI Gateway (E-LIC-008) | Public README | Kubernetes-native deployment is the primary deployment surface; CNCF-aligned operational patterns (CRDs, operators) are first-class. | Kubernetes-native deployment posture. | K8s requirement excludes simpler self-hosters; Personal Edition must remain non-K8s-runnable. | Behavior only. | 2026-04-28 | Claude (specifier) |
 
 ## Evidence Template
 
