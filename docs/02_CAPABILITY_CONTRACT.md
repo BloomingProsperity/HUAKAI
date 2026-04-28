@@ -37,6 +37,13 @@ Capabilities are product obligations. A capability may be redesigned, merged, is
 - Credential rotation workflow.
 - Expiration and disablement controls.
 
+### Authentication and Identity
+
+- Pluggable authentication-provider abstraction supporting email/password and one or more OAuth identity sources without hardcoding any one source.
+- Session persistence requiring an operator-supplied secret; default-generated secrets must not be accepted in production.
+- First-run bootstrap workflow that forces a credential change before any other privileged operation.
+- Single Sign-On (SSO) integration as a Plugin (Personal Edition L3 / SaaS Edition L4); see [DR-002](decisions/DR-002-product-editions.md).
+
 ### Channels And Providers
 
 - Channel creation and configuration.
