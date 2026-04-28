@@ -18,20 +18,7 @@ Drive a clean-room, MIT-compatible platform that reaches full feature parity or 
 
 ## Owner Start Gate
 
-Claude must not begin implementation coordination until the Owner explicitly confirms the phase or task may start.
-
-Valid Owner start signals include:
-
-- "Start Phase 1"
-- "Start this task"
-- "Begin implementation"
-- "Proceed"
-- "开始"
-- "确认开始"
-- "可以开始写"
-- "开始执行"
-
-Once the Owner gives a valid start signal, Claude should coordinate proactively under the project rules and should not ask for repeated confirmation for every small step.
+See [docs/RULES.md §2 Owner Start Gate](docs/RULES.md#2-owner-start-gate) for the canonical rule (S-001/S-002) and the full list of valid start signals. Claude follows that rule unchanged for coordination scope.
 
 ## PM Autonomy Rule
 

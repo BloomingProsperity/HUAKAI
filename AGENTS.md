@@ -16,22 +16,7 @@ This project builds an MIT clean-room AI Gateway + Account Hub + Admin Ops Platf
 
 ## Owner Start Gate
 
-Agents must not begin implementation work until the Owner explicitly confirms the phase or task may start.
-
-Valid Owner start signals include:
-
-- "Start Phase 1"
-- "Start this task"
-- "Begin implementation"
-- "Proceed"
-- "开始"
-- "确认开始"
-- "可以开始写"
-- "开始执行"
-
-Once the Owner gives a valid start signal, agents should proceed proactively under the project rules.
-
-Agents should not ask for repeated confirmation for every small step.
+See [docs/RULES.md §2 Owner Start Gate](docs/RULES.md#2-owner-start-gate) for the canonical rule (S-001/S-002) and the full list of valid start signals. All agents follow that rule unchanged.
 
 ## Proactive Execution Rule
 
