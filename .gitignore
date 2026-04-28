@@ -1,0 +1,51 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors / IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json.example
+*.swp
+*.swo
+
+# Local agent / CLI state (must never be committed)
+.claude/settings.local.json
+.gemini/settings.local.json
+.codex/local/
+
+# Secrets & env
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+secrets/
+credentials.json
+
+# Build output (placeholder for future phases)
+dist/
+build/
+out/
+target/
+*.exe
+*.bin
+node_modules/
+vendor/
+.venv/
+__pycache__/
+*.pyc
+
+# Logs & runtime
+*.log
+logs/
+tmp/
+temp/
+
+# Coverage / test artifacts
+coverage/
+.nyc_output/
+*.lcov
