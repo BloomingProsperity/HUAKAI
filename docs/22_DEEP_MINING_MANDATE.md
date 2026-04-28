@@ -10,6 +10,17 @@ Phase 1 first pass mined READMEs only — 8–15 high-level behaviors per refere
 
 This mandate fixes the unevenness. **No feature shall enter implementation without a per-reference × per-feature deep decomposition that meets the acceptance bar below.**
 
+## Owner Sharpening 2026-04-28
+
+> "必须对借鉴项目的功能一个一个的拆解！不能只读潜在的表象。"
+
+A row in [07_REFERENCE_EVIDENCE_LEDGER.md](07_REFERENCE_EVIDENCE_LEDGER.md) is **not enough**. A 100-character table cell, even if marked `Source code (deep read)`, is still surface-form. The mandate now requires:
+
+- **One file per `(reference, feature)` pair** under [decompositions/](decompositions/), prose-form, ~600–1500 words.
+- The decomposition file expands the seven fields below into paragraphs with concrete edge cases, signals, state transitions, race windows, and operator-visible artifacts.
+- The ledger row in `docs/07` becomes a one-line index entry pointing at the decomposition file. The decomposition file is where the work lives.
+- A reference's features are **enumerated first** (full feature inventory) before any deep dive begins — no "I dove into the 3 features I happened to find"; the inventory is owned by the specifier-lane agent assigned to that reference, and the inventory is auditable.
+
 ## What Is Mandatory
 
 For every feature row in [03_FEATURE_PARITY_MATRIX.md](03_FEATURE_PARITY_MATRIX.md) that targets **L1 MVP** or **L2 Production Usable**:
@@ -40,9 +51,10 @@ A feature row in [03_FEATURE_PARITY_MATRIX.md](03_FEATURE_PARITY_MATRIX.md) is *
 - [ ] The row's `Evidence ID` column cites at least one `E-X-DEEP-NNN` row.
 - [ ] If the feature is multi-source (cites multiple references), each cited reference contributes at least one `E-X-DEEP-NNN` row.
 - [ ] The corresponding `E-X-DEEP-NNN` row(s) carry source-code-verified attribution (verified URL of the source file read, in [07_REFERENCE_EVIDENCE_LEDGER.md](07_REFERENCE_EVIDENCE_LEDGER.md)).
+- [ ] **One prose-form decomposition file exists at `docs/decompositions/<reference>/<feature-slug>.md`** (Owner Sharpening 2026-04-28). The file is ~600–1500 words and answers all seven fields (WHY / WHAT / INPUTS / FAILURES HANDLED / FAILURES NOT HANDLED / KEEP-IMPROVE-AVOID / ATTRIBUTION).
 - [ ] At least one HUAKAI `KEEP / IMPROVE / AVOID` directive in [07 §Algorithmic Insights](07_REFERENCE_EVIDENCE_LEDGER.md) addresses this feature.
 - [ ] If the feature is in the [Option C carve-out list](decisions/DR-000-clean-room-methodology.md) (billing reconciliation, pool-aware routing, provider failover/account-health), an Option C strict spec exists in [specs/](specs/) for it AND that spec passed CL-001..010 review.
-- [ ] No upstream function name, schema column name, file path, or distinctive identifier appears anywhere in the deep-evidence rows or downstream specs.
+- [ ] No upstream function name, schema column name, file path, or distinctive identifier appears anywhere in the deep-evidence rows, decomposition files, or downstream specs.
 
 ## Phase Exit Gate
 
