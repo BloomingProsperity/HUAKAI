@@ -223,3 +223,16 @@ Phase 3+ 实现:           ░░░░░░░░░░░░░░░░░�
 - Codex 并行能砍 30-50%
 
 **Owner 判断**：是否接受这个时间预期？还是需要重新考虑 scope（缩小 L1 / 加速节奏 / 改方法论）？
+
+## 十三、Owner 方法论决策（2026-04-28）
+
+> **Owner Decision: A — 严格走，慢但真。**
+
+正式锁定为 [DR-008 Methodology Choice — Strict Authenticity Over Speed](decisions/DR-008-methodology-choice-strict-authenticity.md)。
+
+后果：
+- **每一个 L1/L2 功能**必须走完整 `prose decomposition → 互审 → 综合 → reviewer-lane CL-001..010 → Released`
+- **Phase 2 契约锁定**不能在 Phase 1.2/1.3 完成前开始
+- **任何代码（含骨架）** 不在 Phase 2 完成前写
+- **时间预期：250–500 小时纯专注工程**（Owner 接受）；schedule slip 优先于 scope 缩水
+- 加速手段：Claude + Codex 并行；不允许通过降低真实度加速
