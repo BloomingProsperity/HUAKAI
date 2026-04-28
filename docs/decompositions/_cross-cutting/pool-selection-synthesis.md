@@ -1,6 +1,6 @@
 # Provider Account Pool Selection — Synthesis & Final Action Plan
 
-> ⚠️ **PARTIAL CORRECTION REQUIRED** (2026-04-28). This synthesis was built on Claude's v1 specifier pass which had multiple source-truth errors (no continuation layer, no top-K random + scoring formula, no serializable-txn slot acquisition in Sub2API). The Q1..Q4 PM decisions remain valid (HUAKAI policy choices). The "Convergence" + "Where Codex Sharpens Claude" / "Where Claude Sharpens Codex" sections need re-derivation against [pool-selection-claude-v2.md](pool-selection-claude-v2.md). The Pattern B integration choice remains correct because it is a HUAKAI design (Sub2API uses cache-only slot accounting and never had the choice). See [docs/reviews/2026-04-28-source-truth-corrections.md](../../reviews/2026-04-28-source-truth-corrections.md).
+> ⚠️ **SUPERSEDED — DO NOT USE** (2026-04-28). Codex reviewer REJECTED this synthesis (per `docs/reviews/2026-04-28-codex-reviewer-cycle1-cycle2-cl011.md` §4 verdict matrix). Use [pool-selection-synthesis-v2.md](pool-selection-synthesis-v2.md) regenerated from source-verified inputs. Q1..Q4 PM decisions remain valid in v2.
 
 | Field | Value |
 | --- | --- |
