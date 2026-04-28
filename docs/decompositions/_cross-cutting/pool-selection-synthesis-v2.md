@@ -2,12 +2,14 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Action Plan v2 (regenerated from source-verified inputs) |
+| Status | Released-Inputs (2026-04-28). The implementer-facing Released spec is at [docs/specs/pool-routing.md](../../specs/pool-routing.md) Status=Released. This file is retained as the source-traceable backing artifact for spec; implementer lane MUST read the Released spec, NOT this file. |
+| Feature ID | F-POOL-001 |
+| Lane mode | Option C (account-pool routing carve-out per [DR-000](../../decisions/DR-000-clean-room-methodology.md)) |
 | Author | Claude (PM-Orchestrator), synthesizing source-verified passes |
 | Date | 2026-04-28 |
-| Supersedes | [pool-selection-synthesis.md](pool-selection-synthesis.md) (v1) — REJECTED by Codex reviewer 2026-04-28 for retaining v1/Codex-derived false convergence claims (continuation layer, top-K scoring, capability shift, last-resort exemption) per [docs/reviews/2026-04-28-codex-reviewer-cycle1-cycle2-cl011.md](../../reviews/2026-04-28-codex-reviewer-cycle1-cycle2-cl011.md) §4. |
-| Inputs | [pool-selection-claude-v2.md](pool-selection-claude-v2.md) (Sub2API source-verified), [docs/decompositions/litellm/pool-fallback-source-verified.md](../litellm/pool-fallback-source-verified.md) (Codex LiteLLM cross-verify), [docs/decompositions/one-api/quota-billing-source-verified.md](../one-api/quota-billing-source-verified.md) (Codex one-api re-verify), [observability-source-verified.md](../sub2api/observability-source-verified.md) (Sub2API atomic-billing finding) |
-| Becomes | After reviewer-lane CL-001..011 sign-off, file moves to `docs/specs/pool-routing.md` Status=Released. |
+| Sources | Sub2API ([E-LIC-001](../../07_REFERENCE_EVIDENCE_LEDGER.md), LGPL-3.0, commit `b0a2252ed19c3720e6adafde6083e64fbac2efa9`); one-api ([E-LIC-004](../../07_REFERENCE_EVIDENCE_LEDGER.md), MIT, commit `8df4a2670b98266bd287c698243fff327d9748cf`); LiteLLM (E-LIC-005, MIT — pinned via Codex litellm cross-verify); plus [pool-selection-claude-v2.md](pool-selection-claude-v2.md), [pool-fallback-source-verified.md](../litellm/pool-fallback-source-verified.md), [quota-billing-source-verified.md](../one-api/quota-billing-source-verified.md), [observability-source-verified.md](../sub2api/observability-source-verified.md) |
+| Supersedes | [pool-selection-synthesis.md](pool-selection-synthesis.md) (v1) — REJECTED by Codex reviewer 2026-04-28 |
+| Becomes | After 10 Codex final-review fixes applied (this revision), file moves to `docs/specs/pool-routing.md` Status=Released. |
 | Owner Q1..Q4 | Locked 2026-04-28 (still valid — these are HUAKAI policy decisions, not source extraction; see §10) |
 
 ## What Changed vs v1
@@ -36,7 +38,11 @@ Layer 3   — Fallback queue       (lines 1913–1927)
 
 Each layer applies the **7-gate revalidation chain** (`isAccountSchedulableForSelection`, `isAccountAllowedForPlatform`, `isModelSupportedByAccountWithContext`, `isAccountSchedulableForModelSelection`, `isAccountSchedulableForQuota`, `isAccountSchedulableForWindowCost`, `isAccountSchedulableForRPM`) plus per-request `excludedIDs` filter.
 
-Layer 2 sort is **strict lexicographic** on `(priority asc, load_rate asc, last_used_at asc)`, then `shuffleWithinSortGroups` randomizes within ties (gateway_service.go:1691–1710).
+**Path-scoped sort behavior** (Codex final-review correction 2026-04-28):
+- **Routing-branch path** (when group has ModelRouting config): strict lexicographic sort `(priority asc, load_rate asc, last_used_at asc)`, then shuffle ONLY inside exact tied sort groups (gateway_service.go:1691–1710 + 2718–2720 `shuffleWithinSortGroups`).
+- **Layer 2 fresh path** (no ModelRouting config): three-step iterative selection — `filterByMinPriority` → `filterByMinLoadRate` → `selectByLRU` with random tie handling (gateway_service.go:1879–1883 + 2595–2637).
+
+These are NOT identical algorithms; the routing branch sorts globally, the fresh path filters tier-by-tier.
 
 Slot acquisition delegates to **`concurrencyService.AcquireAccountSlot`** (gateway_service.go:2250–2255 wrapper; testutil/stubs.go:24 interface) — cache-backed atomic increment with TTL fallback (configured via `gateway.concurrency_slot_ttl_minutes`). **Not** a serializable DB transaction.
 
@@ -48,10 +54,19 @@ Wait plans use distinct limits: `StickySessionMaxWaiting` vs `FallbackMaxWaiting
 
 Per [docs/decompositions/one-api/quota-billing-source-verified.md](../one-api/quota-billing-source-verified.md):
 
-- one-api selection is much simpler than Sub2API: priority sort + tie-random + forceChannel admin override.
-- No load-aware sort, no sticky session, no model routing per-User.
-- one-api's quota path has the gaps E-OAI-DEEP-001..008 (re-verified at current commit by Codex).
-- one-api has **no idempotent claim gate**; HUAKAI's idempotent claim is therefore a real improvement, not a Sub2API copy.
+one-api provides a simpler group/model/channel selection baseline:
+- highest-priority eligible bucket
+- random tie choice
+- specific-channel override (forceChannel)
+- retry reselection after failure
+
+one-api's quota path corrections (per Codex one-api re-verify; do NOT cite E-OAI-DEEP-001..008 as a single valid range — rows 001 and 004 marked FALSE, 003 marked DRIFT):
+- **Non-atomic quota mutation**: separate operations not in one transaction.
+- **Reservation/refund-based duplicate-billing mitigation** (post-call only).
+- **Endpoint-specific charging windows**: text/audio/image differ.
+- **No durable request fingerprint**: no idempotent claim gate.
+
+HUAKAI's idempotent claim gate is therefore a real improvement, not a Sub2API copy.
 
 ## 3. The Source-Verified LiteLLM Cross-Reference (TODO-3 resolution)
 
@@ -104,7 +119,10 @@ This refutes earlier prose that implied Sub2API's billing was non-atomic. The sy
 - HUAKAI score formula (HUAKAI-DESIGN, NOT in Sub2API):
   - Required signals (HUAKAI-mandatory): `priority`, `load_rate`, `last_used_at` — lex-sort tier as in Sub2API.
   - Optional signals (operator-tunable, default weight 0): `recent_error_rate`, `recent_p50_first_token_latency`, `quota_headroom`, `fairness_debt`, `snapshot_freshness`.
-- Top-K with K operator-tunable (HUAKAI-DESIGN; default K=3, lower bound 1, upper bound `min(eligible_count, 10)`). Final pick uniform random within band. **Sub2API does NOT do top-K random**; it does strict lex-sort + tie-shuffle. HUAKAI generalizes this for stampede prevention under heavy load on tied tier.
+- Top-K policy (HUAKAI-DESIGN, Codex final-review correction 2026-04-28):
+  - **Default compatibility mode**: K=1 unless all top candidates are in the same exact tie group, matching Sub2API's "lex-sort + tie-shuffle" behavior. Operator gets Sub2API-equivalent routing by default; no surprising routing drift.
+  - **Broad Top-K randomization** (K>1 across non-tied candidates) is **opt-in by policy** per Pool, requiring explicit operator config + acceptance-test scenario AT-POOL-004 to verify expected stampede-prevention behavior.
+  - This avoids the trap where default K=3 picks the second or third candidate when priority/load/last-used differ — which is NOT Sub2API-compatible.
 - If operator sets all optional weights to 0, HUAKAI degenerates to Sub2API behavior. Default operator config: optional weights = 0.
 
 **Phase C — Atomic Admission (Revalidation Gate + Pool Acquire)**:
@@ -192,19 +210,21 @@ These remain valid because they are HUAKAI policy choices, not source extraction
 - Coupling to Quota+Billing Tx1/Tx2 (Sub2API's billing is atomic but Pool slot is cache-only — HUAKAI unifies).
 - Top-K randomization for stampede prevention (Sub2API uses lex-sort + tie-shuffle only).
 - Structured `routing_reason` payload on Usage Record.
-- Re-validation on wait-plan resume (TODO-1 still pending verification of Sub2API behavior; HUAKAI codifies as required invariant either way).
+- Re-validation on wait-plan resume (HUAKAI-DESIGN, Codex final-review verified 2026-04-28). Sub2API source confirmed negative: `gateway_helper.go:278-349` shows wait resume retries slot acquisition only and does NOT rerun the schedulability gate chain. HUAKAI requires full Phase C revalidation on resume.
 - Optional score signals (error_rate, latency, quota_headroom, fairness_debt) — operator-tunable, default 0.
-- LiteLLM-style single-Account exemption opt-in flag (`allow_last_resort`) — HUAKAI-DESIGN until LiteLLM source confirms.
+- HUAKAI last-healthy opt-in flag (HUAKAI-DESIGN): remaining-after-cooldown semantics, inspired by but not identical to LiteLLM's configured-single-deployment guard. LiteLLM source confirms a different pattern (configured-size-1, not remaining-after-cooldown), per `pool-fallback-source-verified.md` §1.
 - Configurable failover status code list per Account / Pool.
-- Tx2 atomicity for slot release + Usage Record + claim status (Sub2API has the first two atomic, third detached; HUAKAI unifies).
+- Tx2 atomicity for slot release + Usage Record + claim status (HUAKAI-DESIGN). Sub2API has atomic billing claim/effects, detached Usage Record write, and cache-based slot release; HUAKAI unifies these three effects into one Tx2.
 
-## 13. Open TODOs
+## 13. Verified Source Resolutions
 
-- **TODO-1**: Verify whether `ConcurrencyHelper.AcquireAccountSlotWithWait` (gateway_helper.go:267) re-validates schedulability on waiter resume. If yes → KEEP from Sub2API; if no → HUAKAI-DESIGN.
-- **TODO-2**: Locate (or refute) "capability shift" pattern in Sub2API source. If absent, Q4 framing is "HUAKAI design choice"; if present, Q4 framing is "operator default differs from Sub2API".
-- **TODO-3**: Read LiteLLM cross-verify report (Codex completed) for "single-Account exemption" verdict; update `allow_last_resort` framing accordingly.
-- **TODO-4**: Verify whether `forcePlatform` in Sub2API is platform-only or extends to Account-level.
-- **TODO-5**: Verify what `LoadRate` actually computes in Sub2API.
+(Previously TODO-1..TODO-5 in pre-Released drafts. All 5 closed via Codex final review 2026-04-28; no open source dependencies remain. Per CL-009, a Released spec carries no open questions.)
+
+- **Wait-resume revalidation**: VERIFIED NEGATIVE. Sub2API wait helper retries slot acquisition only; does NOT rerun the full schedulability gate chain before returning the slot. HUAKAI requires full Phase C revalidation on resume — this is a HUAKAI-DESIGN improvement, not Sub2API-inherited. Evidence: `internal/handler/gateway_helper.go:278-349`.
+- **Capability safe-equivalent (Q4)**: HUAKAI-DESIGN ONLY. No Sub2API source behavior is claimed for capability shift in this spec. Q4 default-deny is a pure HUAKAI policy choice with no source dependency.
+- **LiteLLM single-Account exemption**: RESOLVED via §3 above. DIFFERENT-PATTERN-FOUND. HUAKAI's `allow_last_resort` (remaining-after-cooldown semantics) is HUAKAI-DESIGN, distinct from LiteLLM's configured-single-deployment exemption.
+- **forcePlatform scope**: VERIFIED. Sub2API's force-platform is platform-level context, NOT Account-level forcing. Evidence: `gateway_service.go:2080-2082` + `gateway_handler.go:267-270`. HUAKAI's tenant-level forced-route override is HUAKAI-DESIGN.
+- **LoadRate computation**: VERIFIED. Sub2API computes `LoadRate = (currentConcurrency + waitingCount) * 100 / maxConcurrency`. Evidence: `concurrency_cache.go:416-424`. HUAKAI inherits this formula for compatibility mode.
 
 ## 14. Provenance
 
