@@ -252,6 +252,52 @@ Codex's recommendations after the deep source dive. These will drive the F-POOL-
 - **IMPROVE** token-per-minute enforcement with pre-call token reservation and post-call reconciliation, especially for long streams.
 - **AVOID** hidden override precedence. Route-level vs Channel-level vs Account-level retry policy must have a documented deterministic order.
 
+### Sub2API Reverse-Proxy Hot Path (Codex deep dive 2026-04-28)
+
+Owner directive 2026-04-28: "最主要的核心是 sub2api 里面的网关以及反代核心算法". Codex was dispatched on a focused reverse-proxy core dive (`omc ask codex --agent-prompt critic`, gpt-5.5 + xhigh, raw artifact retained under `.omc/artifacts/ask/`). The 14 rows below form the load-bearing evidence base for HUAKAI's gateway core (F-GW-001 / F-GW-002 / F-GW-004 / F-PROTO-001 / F-PROTO-002 / F-POOL-001 streaming branch).
+
+| Evidence ID | Reference | Source Type | Observed Behavior Or Scenario | Feature Candidate | Risk Notes | Clean-Room Notes | Date | Agent |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| E-S2A-PROXY-014 | Sub2API (E-LIC-001) | Source code (Codex deep read) | Cross-protocol request conversion is **full-body parse-and-rebuild** before upstream dispatch; inbound JSON is not transformed as a byte stream. | Protocol Translation Pipeline (full-body normalize). | Large payloads increase memory and latency pressure; needs explicit payload-size budget. | Behavior only. | 2026-04-28 | Codex (specifier) |
+| E-S2A-PROXY-015 | Sub2API (E-LIC-001) | Source code (Codex deep read) | Chat / Responses / Anthropic / Gemini-style envelopes are normalized across roles, tools, tool-choice, function-call records, and streaming preference. | Multi-Protocol Envelope Normalizer. | Semantic loss can be silent when provider capabilities differ; HUAKAI must record per-Route compatibility notes. | Behavior only. | 2026-04-28 | Codex (specifier) |
+| E-S2A-PROXY-016 | Sub2API (E-LIC-001) | Source code (Codex deep read) | Vision payloads are converted between image URL, data URI, base64, and inline-media representations; unsupported or empty media can be skipped or flattened. | Vision Payload Normalization. | Dropped images create correctness and audit risk; HUAKAI must fail-closed or warn explicitly. | Behavior only. | 2026-04-28 | Codex (specifier) |
+| E-S2A-PROXY-017 | Sub2API (E-LIC-001) | Source code (Codex deep read) | Reasoning / thinking fields are mapped between effort, budget, and signature-based provider models; invalid thinking metadata may be downgraded or disabled. | Thinking-Mode Compatibility Guard. | Hidden downgrade silently changes Model behavior; surface downgrade flags on Usage Record + operator events. | Behavior only. | 2026-04-28 | Codex (specifier) |
+| E-S2A-PROXY-018 | Sub2API (E-LIC-001) | Source code (Codex deep read) | Upstream HTTP clients are cached and reused with isolation selectable by outbound proxy, Provider Account, or Provider Account + outbound proxy; **active streams are protected from eviction**. | Provider Account Transport Pool. | Weak isolation can mix connection identity across Accounts; HUAKAI default = Account + outbound-proxy isolation. | Behavior only. | 2026-04-28 | Codex (specifier) |
+| E-S2A-PROXY-019 | Sub2API (E-LIC-001) | Source code (Codex deep read) | Transport pools have configurable idle / per-host / total caps, idle eviction, response-header timeout, max cached clients, and Account-concurrency-derived caps; **streaming body reads are not globally bounded**. | Bounded Upstream Transport. | Long streams can occupy sockets indefinitely; HUAKAI must add distinct stream-idle and total-stream budgets. | Behavior only. | 2026-04-28 | Codex (specifier) |
+| E-S2A-PROXY-020 | Sub2API (E-LIC-001) | Source code (Codex deep read) | Optional transport identity profiles can use customized TLS / proxy dialing; normal Routes can validate resolved upstream hosts before request and redirect. | Provider Account Transport Identity Profile. | TLS mimicry is compliance-sensitive if buried in core; HUAKAI must make identity profiles explicit, auditable, feature-flagged. | Behavior only. | 2026-04-28 | Codex (specifier) |
+| E-S2A-PROXY-021 | Sub2API (E-LIC-001) | Source code (Codex deep read) | Streaming forwarders are **protocol-aware SSE line/event processors**, not raw chunk pipes; they parse events, rewrite safe fields, flush after event or chunk batches. | Protocol-Aware Stream Forwarder. | Large events can exceed scanner / buffer limits; expose response-too-large as a typed terminal condition. | Behavior only. | 2026-04-28 | Codex (specifier) |
+| E-S2A-PROXY-022 | Sub2API (E-LIC-001) | Source code (Codex deep read) | Slow-client handling relies on blocking downstream writes plus bounded upstream read queues; **after downstream write failure some paths keep draining upstream to collect usage**. | Billing-Preserving Stream Drain. | Provider quota can be spent after the client is gone; HUAKAI must add drain byte/time/cost budgets. | Behavior only. | 2026-04-28 | Codex (specifier) |
+| E-S2A-PROXY-023 | Sub2API (E-LIC-001) | Source code (Codex deep read) | Streaming usage is extracted **inline** from provider events and metadata, including cache, thinking, and image-output variants; non-streaming-over-stream buffers terminal output. | Inline Usage Record Extractor. | Usage depends on provider reporting and normalization; HUAKAI must track reported / normalized / inferred / partial sources separately. | Behavior only. | 2026-04-28 | Codex (specifier) |
+| E-S2A-PROXY-024 | Sub2API (E-LIC-001) | Source code (Codex deep read) | Missing terminal stream events are treated as usage-incomplete or stream errors; response content may be reconstructed from deltas, but **token usage is not universally inferred**. | Partial-Stream Terminal Detection. | Content success can coexist with billing uncertainty; HUAKAI must require atomic partial-output and partial-usage settlement. | Behavior only. | 2026-04-28 | Codex (specifier) |
+| E-S2A-PROXY-025 | Sub2API (E-LIC-001) | Source code (Codex deep read) | Upstream errors are normalized into client-safe errors + operator-detail events; selected safe passthrough is allowed while raw details are sanitized or truncated. | Error Normalization + Operator Diagnostics. | Over-generic client errors hurt debuggability; over-detailed logs leak data; HUAKAI must maintain redaction tests + operator-only detail boundaries. | Behavior only. | 2026-04-28 | Codex (specifier) |
+| E-S2A-PROXY-026 | Sub2API (E-LIC-001) | Source code (Codex deep read) | Retry / failover classification distinguishes request failure, auth/quota/rate-limit/account exhaustion, malformed request, compatibility correction, overload, and stream timeout; **mid-stream reroute after emitted output is not observed**. | Typed Proxy Failure Taxonomy. | Compatibility retries can mask client bugs; HUAKAI must emit Audit Events for every correction retry. | Behavior only. | 2026-04-28 | Codex (specifier) |
+| E-S2A-PROXY-027 | Sub2API (E-LIC-001) | Source code (Codex deep read) | Request and response headers use allowlists; client credentials are stripped, Provider Account credentials are injected, session identifiers are isolated, hop-by-hop headers blocked. | Header Firewall + Credential Rewrite. | Allowlist drift can leak upstream metadata; HUAKAI must require per-Channel header-policy tests. | Behavior only. | 2026-04-28 | Codex (specifier) |
+
+### Algorithmic Insights — Sub2API Reverse-Proxy Core (Codex synthesis)
+
+- **KEEP** (014): Treat protocol conversion as full-body normalization with explicit payload-size budgets.
+- **IMPROVE** (015): Every lossy conversion must write a Route or Usage Record compatibility note.
+- **IMPROVE** (016): Vision conversion fails closed or emits an explicit unsupported-media warning; never silently drops.
+- **KEEP** (017): Reasoning compatibility needs downgrade handling, but downgrades must be visible to operator and on Usage Record.
+- **KEEP** (018): Default transport isolation = Provider Account + outbound proxy.
+- **IMPROVE** (019): Split timeout policy into 8 separate budgets — connect, TLS, request-write, response-header, first-token, inter-event, total-stream, downstream-write.
+- **AVOID** (020): Do not bury transport identity mimicry in core; make it explicit, auditable, feature-flagged.
+- **KEEP** (021): Protocol-aware SSE forwarding so usage extraction and normalization stay inline.
+- **IMPROVE** (022): Post-disconnect drain has byte + time + cost caps; otherwise quota burns after client is gone.
+- **IMPROVE** (023): Usage Records distinguish four sources — reported / normalized / inferred / partial.
+- **AVOID** (024): Returning reconstructed content while leaving billing state ambiguous.
+- **KEEP** (025): Client-safe error body separated from operator-diagnostic event.
+- **IMPROVE** (026): Typed failure taxonomy directly drives Route retry and Provider Account cooldown decisions.
+- **KEEP** (027): Credential rewrite + header firewall mandatory even in passthrough-style Channels.
+
+### Critical Defects in Sub2API HUAKAI Must NOT Inherit
+
+1. **Missing universal usage inference / confidence path.** Countermeasure: HUAKAI Usage Record requires `reported | normalized | inferred | partial` source labeling, tokenizer or provider-estimator fallback, and later reconciliation if upstream reports usage out-of-band.
+2. **Post-disconnect upstream drain can waste Provider Account quota.** Countermeasure: enforce per-Route drain limits for time, bytes, and estimated cost; settle partial usage with an explicit disconnect reason.
+3. **Hot-path timeout taxonomy is incomplete.** Countermeasure: model connect / TLS / write / response-header / first-token / inter-event / total-stream / downstream-write as **separate** Route policy fields.
+4. **Lossy transformations can be silent.** Countermeasure: every conversion returns `losses`, `downgrades`, and `compatibility_mode`, persisted to Usage Record and optional debug metadata.
+5. **No mid-stream failover contract after emitted output.** Countermeasure: forbid automatic reroute after client-visible output unless the client opts into duplicate-output recovery; otherwise emit terminal stream error and settle partial usage.
+
 ### Convergence and Divergence (Claude vs Codex passes)
 
 Both agents read the same sources independently. Notable convergences and divergences:
