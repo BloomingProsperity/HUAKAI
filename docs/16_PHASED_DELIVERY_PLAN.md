@@ -145,6 +145,7 @@ Create the implementation skeleton only after Phase 2 locks the MVP.
 - Basic lint or type checks: `go vet`, `staticcheck`, `golangci-lint` for Go; `tsc --noEmit` for TS.
 - Configuration examples without real secrets.
 - Minimal CI or local check plan that runs lint + tests on every commit.
+- **Naming-discipline guardrails** (per [DR-003](decisions/DR-003-technology-stack.md) Constraint 8): `golangci-lint.yml` and ESLint configs include lint rules enforcing glossary-aligned naming (e.g. forbidden synonyms list), no-duplicate-logic linters where available, and import-cycle / dead-code detection on by default. CI rejects PRs that introduce naming drift or redundant logic.
 - DR-005 (Go HTTP framework) and DR-006 (database) decided BEFORE skeleton is committed.
 
 ### Risk Rule
