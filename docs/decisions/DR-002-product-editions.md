@@ -60,6 +60,24 @@ Does HUAKAI ship as a single product, or as two intentional editions delivered i
 | Reasoning | Currently personal use; SaaS is a real future plan but should be triggered by validated user feedback, not pre-built. Schema (DR-001) already supports both, so no migration cost. |
 | Constraints attached | One codebase, no fork. Edition gated by configuration / feature flags. Personal Edition deployments must default all SaaS-only features off. |
 
+## Owner Refinement 2026-04-28: Two Business Models, Mapped To Editions
+
+> "我有两种营业模式，一个是通过自用基座卖 API，一个是卖 SaaS"
+
+The two Editions correspond directly to two distinct revenue streams Owner intends to operate:
+
+| Business Model | Edition | Owner role | Customer | Customer pays for | Phase target |
+| --- | --- | --- | --- | --- | --- |
+| **Model 1: Self-deployment + sell API** | Personal Edition | Owner is the relay-station operator | End-user developers / consumers | Token usage / subscription / quota top-up | Phase 1-9 (Owner's own deployment goes commercial as soon as Phase 6+ has working billing) |
+| **Model 2: Sell SaaS** | SaaS Edition | Owner provides hosted multi-tenant platform | Other operators who want to run a relay-station as a business themselves | SaaS subscription / per-tenant fee / revenue share | Phase 10+ (after Model 1 has validated the product) |
+
+### Implications That Sharpen Earlier Decisions
+
+1. **Payment integration ([F-PAY-001](../03_FEATURE_PARITY_MATRIX.md)) cannot remain "L4 SaaS Phase 10+"**. Model 1 requires Owner to charge end-users for API access starting at Owner's commercial launch (Phase 6 billing surfaces and beyond). The payment plugin layer must be available to Personal Edition operators who choose to monetize. Personal Edition does NOT force payment off; it makes payment **optional but available**. The SaaS-only carve-out is **multi-tenant payment orchestration** (Owner takes a cut of each tenant's revenue), not the "can a Personal Edition operator collect money at all" question.
+2. **Edition is not just a feature flag.** Personal Edition is a deployable commercial product (a relay-station operator can run it and earn money); SaaS Edition is a **commercial managed-platform** (Owner runs it; tenants pay Owner; tenants in turn run their own Model-1-style business inside the SaaS). The same codebase serves both. Configuration distinguishes them.
+3. **L1/L2 priority must include "Owner-can-go-commercial minimum"**: API Key issuance + per-key quota + token-level usage record + payment plugin + cost-ceiling alert + per-User × per-Account concurrency + audit log + admin dashboard for the operator. Until this set ships, Owner cannot run Model 1 commercially.
+4. **Open-source release timing** (per [DR-007](DR-007-product-positioning-and-breadth.md)): the codebase is open-sourced **after commercial validation**, which means after Model 1 has paying customers. SaaS Edition (Model 2) need not have launched yet for open-sourcing to happen, but typically would have followed shortly.
+
 ## Propagation Checklist
 
 - [ ] Update [01_PROJECT_BRIEF.md](../01_PROJECT_BRIEF.md) — add Product Editions section.
