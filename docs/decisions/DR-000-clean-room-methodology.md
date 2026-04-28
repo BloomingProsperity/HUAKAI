@@ -40,12 +40,12 @@ Which clean-room methodology does HUAKAI adopt: **A** (single-agent behavior-onl
 
 > Edited only by Codex.
 
-- **Critique of Claude's view:** _(Codex to fill)_
-- **Production / testability concerns:** _(Codex to fill — e.g. does Option B make scenario tests easier or harder; can spec files be turned into acceptance test inputs)_
-- **License / dependency concerns:** _(Codex to fill)_
-- **Recommendation:** _(A / B / C / custom — Codex to fill)_
-- **Confidence:** _(Codex to fill)_
-- **Updated:** _(Codex to fill)_
+- **Critique of Claude's view:** I agree with Claude's Option B recommendation, but the success condition is stricter than "one extra spec file." Option B only reduces contamination risk if spec files are treated as the sole implementation input for non-MIT references and are reviewed for leakage before implementers or test writers use them. A weak spec that copies upstream names, schemas, UI structure, or algorithmic detail would simply move contamination from code into docs.
+- **Production / testability concerns:** Option B improves testability if every spec includes actors, preconditions, normal path, failure path, operator recovery, audit/log evidence, and acceptance-test direction. It can hurt delivery if specs are vague, because implementers will fill gaps from memory or external reference exposure. Specifier-lane agents should not write implementation tests directly; they should write behavior scenarios that the clean implementer lane converts into local tests.
+- **License / dependency concerns:** Option A is too weak for AGPL-adjacent gateway work because this product is explicitly a network service. Option C is strongest but likely too slow as the default. Option B is the right baseline, with Option C reserved for high-risk areas where AGPL references are the main source of behavior knowledge, especially billing ledger behavior, account-pool routing edge cases, and provider failover/account-health heuristics. MIT/BSD/Apache references may be read more freely, but still should not override local contracts or attribution requirements.
+- **Recommendation:** Option B as the default methodology, plus an explicit Option C carve-out for highest-risk AGPL-derived feature areas. Add a `docs/specs/` template before Phase 1 evidence mining becomes implementation-facing.
+- **Confidence:** High
+- **Updated:** 2026-04-28
 
 ## Gemini (UI / Ops) view
 
