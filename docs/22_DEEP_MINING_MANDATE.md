@@ -20,6 +20,7 @@ A row in [07_REFERENCE_EVIDENCE_LEDGER.md](07_REFERENCE_EVIDENCE_LEDGER.md) is *
 - The decomposition file expands the seven fields below into paragraphs with concrete edge cases, signals, state transitions, race windows, and operator-visible artifacts.
 - The ledger row in `docs/07` becomes a one-line index entry pointing at the decomposition file. The decomposition file is where the work lives.
 - A reference's features are **enumerated first** (full feature inventory) before any deep dive begins — no "I dove into the 3 features I happened to find"; the inventory is owned by the specifier-lane agent assigned to that reference, and the inventory is auditable.
+- **The inventory lives at [`docs/decompositions/<reference>/_INVENTORY.md`](decompositions/)** and lists every feature area in the reference, each with a Status column: `unmined / shallow-evidence / deep-decomposed (linked file)`. Owner directive 2026-04-28: "整体代码和逻辑都读完" — the inventory is the audit instrument that proves comprehensive coverage. A reference whose inventory has any L1/L2-relevant feature in `unmined` state cannot be cited as Phase-1-complete.
 
 ## What Is Mandatory
 
