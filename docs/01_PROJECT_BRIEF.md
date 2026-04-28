@@ -17,6 +17,7 @@ This is the **North Star** for every downstream PM decision, design tradeoff, an
 - **Differentiator**: HUAKAI exceeds Sub2API on **provider integration breadth** and **completeness of supported models / protocols**. Sub2API's bottleneck is too few upstream integrations; HUAKAI's advantage is solving that gap.
 - **Phasing implication**: Provider adapter coverage is **promoted from "long-tail catalog work" to a first-class L1/L2 concern**. Phase 5–9 must include provider-integration milestones, not just core gateway plumbing.
 - **Quality / authenticity rule**: "必须要真实" (Owner directive 2026-04-28). Inventory completion is not understanding. Every L1/L2 algorithm requires source-verified deep decomposition + reviewer-lane sign-off before implementation. Ship slow, ship real.
+- **Continuous learning rule**: "我们后续的维护也主要看借鉴平台的更新，他们更新后我们吸取问题，然后自查，更新我们的产品" (Owner directive 2026-04-28). HUAKAI's maintenance phase is operationalized in [24_REFERENCE_TRACKING_POLICY.md](24_REFERENCE_TRACKING_POLICY.md) — every tracked reference's release triggers a HUAKAI self-audit cycle. The mining pass is not a one-time event; it is the start of a continuous practice.
 
 ### Owner's Two Business Models (2026-04-28 refinement)
 

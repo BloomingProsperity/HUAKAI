@@ -17,6 +17,7 @@ Release gates do not authorize over-blocking. After the Owner starts a phase or 
 | Scenario Gate | Material capabilities have real-world scenarios. | Claude |
 | Acceptance Gate | Acceptance tests cover normal, failure, and operator recovery paths. | Codex |
 | Deep Mining Gate | Every L1 MVP feature in [03_FEATURE_PARITY_MATRIX.md](03_FEATURE_PARITY_MATRIX.md) cites at least one `E-X-DEEP-NNN` source-code-verified evidence row per [22_DEEP_MINING_MANDATE.md](22_DEEP_MINING_MANDATE.md); multi-source rows cover each cited reference. Required at Phase 1 → Phase 2 transition. | Codex |
+| Reference Tracking Continuous Gate | Per [24_REFERENCE_TRACKING_POLICY.md](24_REFERENCE_TRACKING_POLICY.md), the tracking ledger under `docs/tracking/` is current within its cadence windows (per-release within 7 days; monthly sweep last business day; quarterly strategic at quarter end). Every HUAKAI release requires the tracking ledger to be current. **Continuous, never closes.** | Claude PM |
 | Security Gate | Secrets, permissions, audit logs, and abuse controls are reviewed. | Claude |
 | Billing Gate | Usage, quota, and billing behavior is testable and reconciled. | Codex |
 | UI Ops Gate | Admin workflows are complete and operable. | Gemini |
