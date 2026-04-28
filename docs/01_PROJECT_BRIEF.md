@@ -18,15 +18,29 @@ This is the **North Star** for every downstream PM decision, design tradeoff, an
 - **Phasing implication**: Provider adapter coverage is **promoted from "long-tail catalog work" to a first-class L1/L2 concern**. Phase 5–9 must include provider-integration milestones, not just core gateway plumbing.
 - **Quality / authenticity rule**: "必须要真实" (Owner directive 2026-04-28). Inventory completion is not understanding. Every L1/L2 algorithm requires source-verified deep decomposition + reviewer-lane sign-off before implementation. Ship slow, ship real.
 
+### Owner's Two Business Models (2026-04-28 refinement)
+
+> "我有两种营业模式，一个是通过自用基座卖 API，一个是卖 SaaS"
+
+HUAKAI directly enables both, mapped one-to-one to the DR-002 Editions:
+
+| Model | Edition | Customer | Revenue |
+| --- | --- | --- | --- |
+| **Model 1: Owner self-deploys + sells API** | Personal Edition | End-user developers / consumers | Token usage / subscriptions |
+| **Model 2: Owner sells SaaS** | SaaS Edition | Other operators who want to run their own Model-1 business | SaaS subscription / per-tenant fee |
+
+Per [DR-002 §Owner Refinement](decisions/DR-002-product-editions.md), Personal Edition is a deployable **commercial** product (Owner runs it to earn money); SaaS Edition is a **managed platform** (tenants pay Owner; tenants in turn run their own Model-1 business). One codebase serves both.
+
 ### Success Criteria (Refined)
 
 A HUAKAI v1.0 release is successful when **all** are true:
 
-1. The commercial Personal Edition (single-tenant) ships with at least Sub2API's full algorithmic feature base — no functional regression.
-2. Provider catalog covers materially more upstream APIs / models than Sub2API, measured by a published catalog comparison.
-3. SaaS Edition activation criteria are documented and an early-access SaaS deployment is reachable.
-4. Open-source release happens **after** commercial validation (paying-customer or recurring-revenue threshold to be set later by Owner).
-5. Every core algorithm (selection / quota / billing claim / streaming / retry / cooldown) has a source-verified prose decomposition and HUAKAI's design strictly equals or improves upstream behavior.
+1. The commercial Personal Edition ships with at least Sub2API's full algorithmic feature base — no functional regression.
+2. **Owner can run Model 1 commercially**: Personal Edition has the minimum operator surface to issue API Keys, charge end-users via at least one payment surface, enforce quota / rate / concurrency, and surface usage / billing / audit to both operator and end-user.
+3. Provider catalog covers materially more upstream APIs / models than Sub2API, measured by a published catalog comparison ([DR-007](decisions/DR-007-product-positioning-and-breadth.md)).
+4. SaaS Edition activation criteria are documented and an early-access SaaS deployment is reachable; SaaS Edition supports tenant onboarding, isolation, per-tenant billing, and gives each tenant the tools to operate Model 1 themselves.
+5. Open-source release happens **after** Model-1 commercial validation (paying-customer or recurring-revenue threshold to be set later by Owner).
+6. Every core algorithm (selection / quota / billing claim / streaming / retry / cooldown) has a source-verified prose decomposition and HUAKAI's design strictly equals or improves upstream behavior ([22 Deep Mining Mandate](22_DEEP_MINING_MANDATE.md)).
 
 ## Product Identity (Owner-Confirmed 2026-04-28)
 
