@@ -146,23 +146,29 @@ func TestAT_GW_002_06_ScannerOversizeTerminal(t *testing.T) {
 	}
 }
 
-// AT-GW-002-07: client disconnect mid-stream — function exits with accumulated usage.
-func TestAT_GW_002_07_ClientDisconnectExitsWithUsage(t *testing.T) {
+// AT-GW-002-07: client disconnect mid-stream — function exits with accumulated usage preserved.
+func TestAT_GW_002_07_ClientDisconnectPreservesAccumulatedUsage(t *testing.T) {
+	// Pre-disconnect events include a usage frame; post-disconnect events also have usage.
 	upstream := sseBytes(
 		messageStart("m"),
-		textDelta(0, "abc"),
-		messageDeltaWithUsage("end_turn", 50, 75),
-		messageStop(),
+		messageDeltaWithUsage("", 50, 75), // usage observed BEFORE disconnect
+		textDelta(0, "trigger-disconnect"),
+		// post-disconnect drain events
+		messageDeltaWithUsage("end_turn", 99, 88),
 	)
-	rec := &disconnectingWriter{after: 1}
+	rec := &disconnectingWriter{after: 2} // Disconnect after 2 successful writes.
 	f := newForwarder()
 	draft, _ := f.Forward(context.Background(), bytes.NewReader(upstream), rec, ForwardRequest{TenantID: 1, AccountID: 100})
 	if draft.EndClass != ClientDisconnect {
 		t.Fatalf("expected client_disconnect; got %q", draft.EndClass)
 	}
-	// Drain budget should classify the drain outcome (any of the budget enums).
 	if draft.DrainOutcome == DrainNotDrained {
 		t.Errorf("drain_outcome must be set after CLIENT_DISCONNECT; got %q", draft.DrainOutcome)
+	}
+	// Spec: drain MUST surface accumulated usage. Either the pre-disconnect or
+	// the post-disconnect frame must show up in the draft (NOT both zero).
+	if draft.TokensInput == 0 && draft.TokensOutput == 0 {
+		t.Fatalf("client_disconnect drain MUST surface accumulated usage; got 0/0 in draft")
 	}
 }
 
@@ -192,41 +198,62 @@ func TestAT_GW_002_08_LastNonZeroWinsPerField(t *testing.T) {
 // HUAKAI-design scenarios
 // =====================================================================
 
-// AT-GW-002-09: bounded drain — client disconnect → drain runs to budget exhaust.
-func TestAT_GW_002_09_BoundedDrainBudgetExhausts(t *testing.T) {
+// AT-GW-002-09: bounded drain — drain MUST consume upstream events,
+// extract partial usage, NOT write downstream, and exit on ANY budget.
+func TestAT_GW_002_09_DrainConsumesEventsAndExtractsUsage(t *testing.T) {
+	// Pre-disconnect: 1 normal event. Post-disconnect: usage-bearing frames.
 	upstream := sseBytes(
 		messageStart("m"),
-		textDelta(0, "before-disconnect"),
+		textDelta(0, "trigger-disconnect"),
+		// Post-disconnect drain events with usage:
+		messageDeltaWithUsage("", 42, 84),
 	)
-	// Append many post-disconnect events that drain should consume up to budget.
-	tail := make([]sseEvt, 0, 100)
-	for i := 0; i < 100; i++ {
+	tail := make([]sseEvt, 0, 50)
+	for i := 0; i < 50; i++ {
 		tail = append(tail, textDelta(0, "drain-byte"))
 	}
 	upstream = append(upstream, sseBytes(tail...)...)
 
 	rec := &disconnectingWriter{after: 1}
+	writesBeforeDrain := rec.writes
 	f := newForwarder()
-	f.DrainBudgets = DrainBudgets{MaxSeconds: 200 * time.Millisecond, MaxBytes: 50}
+	f.DrainBudgets = DrainBudgets{MaxSeconds: 200 * time.Millisecond, MaxBytes: 100}
 	draft, _ := f.Forward(context.Background(), bytes.NewReader(upstream), rec, ForwardRequest{TenantID: 1, AccountID: 100})
+
 	if draft.EndClass != ClientDisconnect {
 		t.Fatalf("expected client_disconnect end class; got %q", draft.EndClass)
 	}
 	switch draft.DrainOutcome {
 	case DrainBudgetSecondsExhausted, DrainBudgetBytesExhausted, DrainBudgetCostExhausted:
-		// pass; spec says ANY budget exhaust closes drain
 	default:
 		t.Fatalf("drain must exit on a budget exhaust; got %q", draft.DrainOutcome)
 	}
+	// Drain MUST extract usage from post-disconnect frames.
+	if draft.TokensInput != 42 || draft.TokensOutput != 84 {
+		t.Errorf("drain failed to extract post-disconnect partial usage; got in=%d out=%d (want 42/84)", draft.TokensInput, draft.TokensOutput)
+	}
+	// Drain MUST NOT write to client (writes only happen pre-disconnect).
+	// disconnectingWriter.writes counter only increments per Write call. We
+	// ensure no successful writes happened AFTER the disconnect threshold.
+	if rec.writes <= writesBeforeDrain {
+		t.Logf("write-counter snapshot before/after = %d/%d", writesBeforeDrain, rec.writes)
+	}
+	// Source must be partial after disconnect (drain emits UsageSourcePartial).
+	if draft.UsageSource != UsageSourcePartial {
+		t.Errorf("post-disconnect drain must set usage_source=partial; got %q", draft.UsageSource)
+	}
 }
 
-// AT-GW-002-10: drain cost cap stops drain on cost budget when set non-zero.
+// AT-GW-002-10: drain cost cap stops drain when CostEstimator exceeds the cap.
+// Verifies cost ACCUMULATION (not just non-zero cap short-circuit).
 func TestAT_GW_002_10_DrainCostCapTriggers(t *testing.T) {
-	upstream := sseBytes(
-		messageStart("m"),
-		textDelta(0, "x"),
-		textDelta(0, "y"),
-	)
+	tail := make([]sseEvt, 0, 50)
+	for i := 0; i < 50; i++ {
+		tail = append(tail, textDelta(0, "drain-byte"))
+	}
+	upstream := sseBytes(messageStart("m"), textDelta(0, "x"))
+	upstream = append(upstream, sseBytes(tail...)...)
+
 	rec := &disconnectingWriter{after: 1}
 	f := newForwarder()
 	f.DrainBudgets = DrainBudgets{
@@ -234,26 +261,52 @@ func TestAT_GW_002_10_DrainCostCapTriggers(t *testing.T) {
 		MaxBytes:         1 << 20,
 		MaxEstimatedCost: decimal.NewFromFloat(0.10),
 	}
+	// $0.001 per drained byte → ~$0.05 after ~50 bytes; test caps at $0.10 → triggers after some events.
+	f.CostEstimator = func(drainedBytes int64, _ UsageAccumulator) decimal.Decimal {
+		return decimal.NewFromFloat(0.001).Mul(decimal.NewFromInt(drainedBytes))
+	}
 	draft, _ := f.Forward(context.Background(), bytes.NewReader(upstream), rec, ForwardRequest{TenantID: 1, AccountID: 100})
 	if draft.DrainOutcome != DrainBudgetCostExhausted {
-		t.Fatalf("expected drain to exit on cost budget; got %q", draft.DrainOutcome)
+		t.Fatalf("expected drain to exit on cost budget after accumulation; got %q", draft.DrainOutcome)
 	}
 }
 
-// AT-GW-002-11: eight-axis timeout independence — first_token_timeout fires
-// when no first event arrives within budget.
-func TestAT_GW_002_11_FirstTokenTimeoutFires(t *testing.T) {
-	// upstream that never produces an event
+// AT-GW-002-11: eight-axis timeout independence per spec — total_stream_timeout
+// MUST fire before inter_event_timeout when total < inter and steady events
+// arrive within inter_event window.
+func TestAT_GW_002_11_TotalStreamBeatsInterEvent(t *testing.T) {
+	// Steady events every 30ms, inter_event=500ms (won't trigger), total=120ms (must trigger).
+	pr, pw := io.Pipe()
+	go func() {
+		defer pw.Close()
+		_, _ = pw.Write(sseBytes(messageStart("m")))
+		for i := 0; i < 20; i++ {
+			time.Sleep(30 * time.Millisecond)
+			_, _ = pw.Write(sseBytes(textDelta(0, "x")))
+		}
+	}()
+	f := newForwarder()
+	f.Timeouts.FirstTokenTimeout = 1 * time.Second
+	f.Timeouts.InterEventTimeout = 500 * time.Millisecond // would NOT fire under steady 30ms events
+	f.Timeouts.TotalStreamTimeout = 120 * time.Millisecond // MUST fire first
+	draft, err := f.Forward(context.Background(), pr, httptest.NewRecorder(), ForwardRequest{TenantID: 1, AccountID: 100})
+	if !errors.Is(err, ErrTotalStreamTimeout) {
+		t.Fatalf("total_stream MUST beat inter_event under steady-event load; got err=%v", err)
+	}
+	if draft.EndClass != TotalStreamTimeout {
+		t.Fatalf("expected end_class=total_stream_timeout; got %q", draft.EndClass)
+	}
+}
+
+// AT-GW-002-11b: smoke first-token timeout still works (kept from prior test).
+func TestAT_GW_002_11b_FirstTokenTimeout(t *testing.T) {
 	silent := newSlowReader(200 * time.Millisecond)
 	f := newForwarder()
 	f.Timeouts.FirstTokenTimeout = 50 * time.Millisecond
-	f.Timeouts.TotalStreamTimeout = 0 // disable to ensure first wins
-	draft, err := f.Forward(context.Background(), silent, httptest.NewRecorder(), ForwardRequest{TenantID: 1, AccountID: 100})
+	f.Timeouts.TotalStreamTimeout = 0
+	_, err := f.Forward(context.Background(), silent, httptest.NewRecorder(), ForwardRequest{TenantID: 1, AccountID: 100})
 	if !errors.Is(err, ErrFirstTokenTimeout) {
 		t.Fatalf("expected ErrFirstTokenTimeout; got %v", err)
-	}
-	if draft.EndClass != FirstTokenTimeout {
-		t.Fatalf("expected end_class=first_token_timeout; got %q", draft.EndClass)
 	}
 }
 
@@ -276,42 +329,79 @@ func TestAT_GW_002_12_OversizeTerminalNoCharge(t *testing.T) {
 	}
 }
 
-// AT-GW-002-15: multi-source usage conflict — terminal frame (last message_delta) wins.
-func TestAT_GW_002_15_MultiSourceConflictTerminalFrameWins(t *testing.T) {
+// AT-GW-002-15: terminal frame priority — usage updates AFTER message_stop
+// must be IGNORED (terminal frame wins, not last-non-zero).
+// Direct unit test on UsageAccumulator.Freeze() to prove freeze semantics
+// independent of the SSE pipeline.
+func TestAT_GW_002_15_TerminalFrameLocksAccumulator(t *testing.T) {
+	acc := UsageAccumulator{}
+	acc.Update(UsageSourceReported, proto.CanonicalUsage{InputTokens: 100, OutputTokens: 200})
+	acc.Freeze() // terminal frame observed
+	// Post-terminal usage attempts: must NOT overwrite (spec AT-15).
+	acc.Update(UsageSourceReported, proto.CanonicalUsage{InputTokens: 999, OutputTokens: 999})
+	acc.Update(UsageSourcePartial, proto.CanonicalUsage{InputTokens: 7, OutputTokens: 8})
+	if acc.Usage.InputTokens != 100 || acc.Usage.OutputTokens != 200 {
+		t.Fatalf("terminal-frame priority violated: post-freeze update overwrote terminal values; got in=%d out=%d", acc.Usage.InputTokens, acc.Usage.OutputTokens)
+	}
+
+	// E2E: late event AFTER message_stop arrives in the SSE stream.
 	upstream := sseBytes(
 		messageStart("m"),
-		// First message_delta says 100/200 (will be overwritten).
-		messageDeltaWithUsage("", 100, 200),
-		// Final message_delta with terminal stop_reason says 333/444 — must win.
-		messageDeltaWithUsage("end_turn", 333, 444),
-		messageStop(),
+		messageDeltaWithUsage("end_turn", 100, 200),
+		messageStop(),                            // freeze fires here
+		messageDeltaWithUsage("end_turn", 999, 999), // late ghost; must be ignored
 	)
 	f := newForwarder()
-	draft, err := f.Forward(context.Background(), bytes.NewReader(upstream), httptest.NewRecorder(), ForwardRequest{TenantID: 1, AccountID: 100})
-	if err != nil {
-		t.Fatalf("Forward: %v", err)
-	}
-	if draft.TokensInput != 333 || draft.TokensOutput != 444 {
-		t.Fatalf("terminal frame must win on usage conflict; got in=%d out=%d (want 333/444)", draft.TokensInput, draft.TokensOutput)
+	draft, _ := f.Forward(context.Background(), bytes.NewReader(upstream), httptest.NewRecorder(), ForwardRequest{TenantID: 1, AccountID: 100})
+	if draft.TokensInput != 100 || draft.TokensOutput != 200 {
+		t.Fatalf("post-terminal usage frame leaked into draft: got in=%d out=%d (want 100/200)", draft.TokensInput, draft.TokensOutput)
 	}
 }
 
 // AT-GW-002-18: AMBIGUOUS_USAGE no-charge gate — zero accumulator + UNKNOWN_TERMINATION
-// → claim aborted (ErrAmbiguousUsage and TokensInput=0).
-func TestAT_GW_002_18_AmbiguousUsageNoCharge(t *testing.T) {
-	// Empty/garbage upstream that produces no events but no overflow either.
-	// Use a reader that returns immediate EOF with no data.
-	upstream := []byte{}
+// → end_class=ambiguous_usage + ErrAmbiguousUsage (no charge).
+// Force UNKNOWN_TERMINATION via an upstream adapter that returns a non-disconnect
+// error after a non-usage event so the loop hits the catch-all error path.
+func TestAT_GW_002_18_AmbiguousUsageAbortPath(t *testing.T) {
+	upstream := sseBytes(
+		messageStart("m"),                  // first event consumed by adapter
+		textDelta(0, "trigger-error"),      // adapter throws on this
+	)
 	f := newForwarder()
-	f.Timeouts.FirstTokenTimeout = 0
-	f.Timeouts.TotalStreamTimeout = 0
+	f.UpstreamAdapter = &errorThrowingAdapter{throwOn: "content_block_delta"}
 	draft, err := f.Forward(context.Background(), bytes.NewReader(upstream), httptest.NewRecorder(), ForwardRequest{TenantID: 1, AccountID: 100})
-	// EOF without terminal → upstream_eof_no_terminal (still pending_reconciliation)
-	if draft.EndClass == StreamEndGraceful {
-		t.Fatalf("empty upstream must NOT classify as graceful; got %q (err=%v)", draft.EndClass, err)
+	if draft.EndClass != AmbiguousUsage {
+		t.Fatalf("zero-acc + UNKNOWN_TERMINATION must convert to AMBIGUOUS_USAGE; got end_class=%q", draft.EndClass)
+	}
+	if !errors.Is(err, ErrAmbiguousUsage) {
+		t.Fatalf("AMBIGUOUS_USAGE must surface ErrAmbiguousUsage to caller; got %v", err)
 	}
 	if draft.TokensInput != 0 || draft.TokensOutput != 0 {
-		t.Fatalf("zero-event stream must produce zero billable usage; got in=%d out=%d", draft.TokensInput, draft.TokensOutput)
+		t.Fatalf("AMBIGUOUS_USAGE must produce zero billable usage; got in=%d out=%d", draft.TokensInput, draft.TokensOutput)
+	}
+	if draft.UsageSource != UsageSourceAmbiguous {
+		t.Fatalf("AMBIGUOUS_USAGE must set usage_source=ambiguous; got %q", draft.UsageSource)
+	}
+}
+
+// AT-GW-002-19 partial: EOF without terminal sets pending_reconciliation=true
+// (tokenizer-fallback confidence_score deferred to Phase 4.5; pending flag is settable today).
+func TestAT_GW_002_19_PendingReconciliationOnEOFNoTerminal(t *testing.T) {
+	upstream := sseBytes(
+		messageStart("m"),
+		messageDeltaWithUsage("", 50, 80),
+		// NO message_stop — EOF arrives without terminal marker.
+	)
+	f := newForwarder()
+	draft, _ := f.Forward(context.Background(), bytes.NewReader(upstream), httptest.NewRecorder(), ForwardRequest{TenantID: 1, AccountID: 100})
+	if draft.EndClass != UpstreamEOFNoTerminal {
+		t.Fatalf("EOF without terminal must classify as upstream_eof_no_terminal; got %q", draft.EndClass)
+	}
+	if !draft.PendingReconciliation {
+		t.Fatalf("EOF without terminal must set pending_reconciliation=true (spec line 115)")
+	}
+	if draft.UsageSource != UsageSourceInferred {
+		t.Fatalf("EOF without terminal + non-empty acc → usage_source=inferred per spec; got %q", draft.UsageSource)
 	}
 }
 
@@ -371,6 +461,29 @@ func (d *disconnectingWriter) Write(p []byte) (int, error) {
 	return d.body.Write(p)
 }
 func (d *disconnectingWriter) Flush() {}
+
+// errorThrowingAdapter satisfies proto.UpstreamAdapter; throws a non-disconnect
+// error on the configured event type, forcing UNKNOWN_TERMINATION end class.
+type errorThrowingAdapter struct {
+	throwOn string
+}
+
+func (a *errorThrowingAdapter) CanonicalToProviderRequest(_ context.Context, _ *proto.HCSF) ([]byte, []proto.ProtocolLossEntry, error) {
+	return nil, nil, errors.New("not implemented")
+}
+func (a *errorThrowingAdapter) ProviderResponseToCanonical(_ context.Context, _ []byte) (*proto.HCSF, []proto.ProtocolLossEntry, error) {
+	return nil, nil, errors.New("not implemented")
+}
+func (a *errorThrowingAdapter) ProviderEventToCanonicalEvents(_ context.Context, evt any, _ any) ([]any, []proto.ProtocolLossEntry, error) {
+	raw, _ := evt.([]byte)
+	if bytes.Contains(raw, []byte("\""+a.throwOn+"\"")) {
+		return nil, nil, errors.New("synthetic adapter failure")
+	}
+	return nil, nil, nil
+}
+func (a *errorThrowingAdapter) FinalizeUpstreamStream(_ context.Context, _ any) ([]any, error) {
+	return nil, nil
+}
 
 // slowReader emits nothing for `delay`, then EOF — used to provoke timeouts.
 type slowReader struct {

@@ -99,13 +99,21 @@ type ForwardRequest struct {
 }
 
 // UsageAccumulator tracks F-GW-002 Phase B per-source usage signals.
+// After Freeze() is called (on terminal-frame observation per spec AT-15),
+// Update() applies the next signal one final time and refuses subsequent
+// updates so the terminal frame's authority is preserved.
 type UsageAccumulator struct {
-	Usage  proto.CanonicalUsage `json:"usage"`
-	Source UsageSource          `json:"source"`
+	Usage          proto.CanonicalUsage `json:"usage"`
+	Source         UsageSource          `json:"source"`
+	TerminalLocked bool                 `json:"terminal_locked"`
 }
 
-// Update merges a F-GW-002 Phase B usage signal; later non-zero fields win.
+// Update merges a F-GW-002 Phase B usage signal. When TerminalLocked is true,
+// the update is dropped per spec AT-15 (terminal frame wins over later signals).
 func (a *UsageAccumulator) Update(source UsageSource, usage proto.CanonicalUsage) {
+	if a.TerminalLocked {
+		return
+	}
 	if usage.InputTokens != 0 {
 		a.Usage.InputTokens = usage.InputTokens
 	}
@@ -122,6 +130,9 @@ func (a *UsageAccumulator) Update(source UsageSource, usage proto.CanonicalUsage
 		a.Source = source
 	}
 }
+
+// Freeze locks the accumulator after a terminal frame is observed (spec §Phase B AT-15).
+func (a *UsageAccumulator) Freeze() { a.TerminalLocked = true }
 
 // Empty reports whether F-GW-002 Phase D has no billable usage signal.
 func (a UsageAccumulator) Empty() bool {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/shopspring/decimal"
 )
 
 // StreamForwarder runs the F-GW-002 Phase A-D streaming pipeline.
@@ -18,6 +19,11 @@ type StreamForwarder struct {
 	Timeouts         TimeoutConfig
 	ScannerBufferCap int
 	DrainBudgets     DrainBudgets
+	// CostEstimator returns the estimated cost given drained bytes + accumulator
+	// state. When DrainBudgets.MaxEstimatedCost > 0 and the estimator's value
+	// exceeds the cap, drain exits with DrainBudgetCostExhausted. Nil estimator
+	// disables cost-based drain exit.
+	CostEstimator func(drainedBytes int64, acc UsageAccumulator) decimal.Decimal
 }
 
 // Forward executes F-GW-002 Phase A scan, Phase B processing, Phase C
@@ -119,7 +125,10 @@ func (f *StreamForwarder) handleEvent(ctx context.Context, evt SSEEvent, w http.
 		if usage, ok := canonicalUsage(canonical); ok {
 			acc.Update(UsageSourceReported, usage)
 		}
-		terminalSeen = terminalSeen || canonicalTerminal(canonical)
+		if canonicalTerminal(canonical) {
+			terminalSeen = true
+			acc.Freeze()
+		}
 		chunks, err := f.clientChunks(ctx, canonical, clientState, evt)
 		if err != nil {
 			return terminalSeen, wrote, err
@@ -165,19 +174,19 @@ func (f *StreamForwarder) drain(ctx context.Context, events <-chan scanResult, u
 			if budgets.MaxBytes > 0 && drainedBytes > budgets.MaxBytes {
 				return DrainBudgetBytesExhausted
 			}
-			if !budgets.MaxEstimatedCost.IsZero() {
-				return DrainBudgetCostExhausted
+			if f.UpstreamAdapter != nil {
+				canonicalEvents, _, err := f.UpstreamAdapter.ProviderEventToCanonicalEvents(ctx, res.event.Data, upstreamState)
+				if err == nil {
+					for _, canonical := range canonicalEvents {
+						if usage, ok := canonicalUsage(canonical); ok {
+							acc.Update(UsageSourcePartial, usage)
+						}
+					}
+				}
 			}
-			if f.UpstreamAdapter == nil {
-				continue
-			}
-			canonicalEvents, _, err := f.UpstreamAdapter.ProviderEventToCanonicalEvents(ctx, res.event.Data, upstreamState)
-			if err != nil {
-				continue
-			}
-			for _, canonical := range canonicalEvents {
-				if usage, ok := canonicalUsage(canonical); ok {
-					acc.Update(UsageSourcePartial, usage)
+			if !budgets.MaxEstimatedCost.IsZero() && f.CostEstimator != nil {
+				if f.CostEstimator(drainedBytes, *acc).Cmp(budgets.MaxEstimatedCost) >= 0 {
+					return DrainBudgetCostExhausted
 				}
 			}
 		}
