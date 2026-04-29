@@ -196,3 +196,25 @@ After each completed task, agents must output a Chinese summary:
 6. 有没有安全风险
 7. 哪些地方需要 Owner 确认
 8. 下一步建议
+
+## Cross-Review Protocol (added 2026-04-29)
+
+When dispatched as **reviewer-lane** (e.g. `codex exec --sandbox read-only` with `docs/templates/codex-reviewer.md` piped to stdin), you MUST follow these rules — they survive `AGENTS.md` truncation only if you read the full template, so always read the template before producing output.
+
+1. **Read-only physical guarantee**: you cannot edit any file. Output is a written report.
+2. **Quoted evidence required**: every finding cites `file:line` for both the spec and the test code. Findings without citations are invalid.
+3. **Coverage matrix is the spine**: every AT-* ID in the spec must appear in your matrix as one of COVERED / COVERED-WEAK / SKIPPED (with validity check) / MISSING.
+4. **Severity is binding**:
+   - HIGH = blocks Released-spec status. Owner cannot ship unfixed.
+   - MED = must fix before opening the next vertical slice.
+   - LOW = backlog item.
+5. **Smell library** — flag these even if tests pass:
+   - assertions like `res.X != bad` but never `res.X == good`
+   - tests that `t.Skip` when a field is zero — coverage hole disguised as defense
+   - "100 goroutines" in comment but `N=12` in code
+   - test fixtures where winner and loser share the distinguishing feature
+   - stubs not mirroring production SQL `WHERE` clauses
+   - gate chains all `AllowAllGate` in tests, hiding gate-failure paths
+6. **Output ends with Chinese 1-paragraph summary** for Owner: 总体覆盖度、最高优先级补测、是否阻塞下一 slice.
+
+The cross-review template lives at `docs/templates/codex-reviewer.md`. Owner triggers it via `/cross-review` slash command in Claude Code.
