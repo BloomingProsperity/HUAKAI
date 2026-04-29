@@ -7,7 +7,9 @@ package billing
 
 import (
 	"context"
+	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
@@ -29,49 +31,62 @@ type Settler interface {
 	Settle(ctx context.Context, req SettleRequest) (*SettleResult, error)
 
 	// Abort aborts the claim with usage_values=0 (terminal upstream failure
-	// or AMBIGUOUS_USAGE end class).
-	Abort(ctx context.Context, claimID int64, reason string) error
+	// or AMBIGUOUS_USAGE end class). Tenant-scoped to prevent cross-tenant
+	// abort via stale claim id.
+	Abort(ctx context.Context, tenantID, claimID int64, reason string) error
 }
 
 // ReserveRequest carries Tx1 inputs.
 type ReserveRequest struct {
-	TenantID                  int64
-	APIKeyID                  int64
-	UserID                    int64
-	LogicalRequestID          string
-	EndpointFamily            string
-	NormalizedPayloadHash     string
-	RequestedModel            string
-	PoolingGroupID            int64
-	BillingPolicyVersion      string
-	RequestClass              string
-	PredictedCost             decimal.Decimal
+	TenantID                   int64
+	APIKeyID                   int64
+	UserID                     int64
+	LogicalRequestID           string
+	EndpointFamily             string
+	NormalizedPayloadHash      string
+	RequestedModel             string
+	PoolingGroupID             int64
+	BillingPolicyVersion       string
+	RequestClass               string
+	PredictedCost              decimal.Decimal
 	IdempotencyKeyClientHeader string
 }
 
 // ReserveResult identifies the claim row and whether a cached prior response applies.
 type ReserveResult struct {
-	ClaimID                int64
-	CachedPriorResponse    []byte // empty unless replay hit
-	FingerprintConflict    bool
-	IdempotencyHit         bool
+	ClaimID             int64
+	CachedPriorResponse []byte // empty unless replay hit
+	FingerprintConflict bool
+	IdempotencyHit      bool
 }
 
 // SettleRequest carries Tx2 inputs.
 type SettleRequest struct {
-	ClaimID                int64
-	AccountID              int64
-	AcquisitionToken       uuid.UUID
-	UsageRecordPayload     []byte // ready-to-insert
-	BillingEventPayload    []byte // ready-to-insert
-	ActualCost             decimal.Decimal
+	ClaimID             int64
+	AccountID           int64
+	AcquisitionToken    uuid.UUID
+	UsageRecordPayload  []byte // ready-to-insert
+	BillingEventPayload []byte // ready-to-insert
+	ActualCost          decimal.Decimal
+	TenantID            int64
+	APIKeyID            int64
+	UserID              int64
+	ProviderAccountID   int64
+	AttemptSeq          int32
+	RequestedModel      string
+	RequestedAt         time.Time
+	UpstreamModel       string
+	Stream              bool
+	Draft               gateway.UsageRecordDraft
+	Fingerprint         string
+	OutboxEmitter       func() bool
 }
 
 // SettleResult is the Tx2 commit outcome.
 type SettleResult struct {
-	NewUserBalance         decimal.Decimal
-	APIKeyQuotaExhausted   bool
-	OutboxEventsEnqueued   int
+	NewUserBalance       decimal.Decimal
+	APIKeyQuotaExhausted bool
+	OutboxEventsEnqueued int
 }
 
 // TODO(phase-4): implement ClaimGate + Settler against billing_ledger_claims,
