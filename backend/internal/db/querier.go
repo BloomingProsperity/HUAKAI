@@ -11,23 +11,35 @@ import (
 type Querier interface {
 	DecrementInFlightCount(ctx context.Context, id int64) error
 	DeleteExpiredStickyBindings(ctx context.Context) error
+	ExpireCurrentProtocolPolicy(ctx context.Context, arg ExpireCurrentProtocolPolicyParams) error
 	GetAccountForRefresh(ctx context.Context, arg GetAccountForRefreshParams) (GetAccountForRefreshRow, error)
 	GetAccountForRevalidation(ctx context.Context, arg GetAccountForRevalidationParams) (ProviderAccount, error)
+	// F-PROTO-002 protocol policy version registry queries.
+	// Backed by protocol_policy_versions table in docs/schema/protocol-translation.sql.
+	GetActiveProtocolPolicy(ctx context.Context, tenantID int64) (ProtocolPolicyVersion, error)
 	GetModelRoutingForGroup(ctx context.Context, arg GetModelRoutingForGroupParams) ([]GetModelRoutingForGroupRow, error)
 	GetOrCreateAccountStormBudget(ctx context.Context, arg GetOrCreateAccountStormBudgetParams) (GetOrCreateAccountStormBudgetRow, error)
+	GetProtocolPolicyByVersion(ctx context.Context, arg GetProtocolPolicyByVersionParams) (ProtocolPolicyVersion, error)
 	GetStickyBinding(ctx context.Context, arg GetStickyBindingParams) (int64, error)
 	GetTokenVersion(ctx context.Context, arg GetTokenVersionParams) (int32, error)
 	IncrementInFlightCount(ctx context.Context, arg IncrementInFlightCountParams) (int64, error)
 	InsertOAuthRefreshAuditEvent(ctx context.Context, arg InsertOAuthRefreshAuditEventParams) error
 	InsertPoolRoutingAuditEvent(ctx context.Context, arg InsertPoolRoutingAuditEventParams) error
+	InsertProtocolPolicyVersion(ctx context.Context, arg InsertProtocolPolicyVersionParams) (InsertProtocolPolicyVersionRow, error)
 	InsertSlotAcquisition(ctx context.Context, arg InsertSlotAcquisitionParams) (int64, error)
+	// F-PROTO-002 protocol capability matrix queries.
+	// Backed by docs/schema/protocol-translation.sql (capability + policy tables).
+	ListCapabilityCellsForPair(ctx context.Context, arg ListCapabilityCellsForPairParams) ([]ListCapabilityCellsForPairRow, error)
+	ListCapabilityCellsForTenant(ctx context.Context, tenantID int64) ([]ListCapabilityCellsForTenantRow, error)
 	ListEligibleAccounts(ctx context.Context, arg ListEligibleAccountsParams) ([]ProviderAccount, error)
+	ListLossyCellsForOperatorUI(ctx context.Context, tenantID int64) ([]ListLossyCellsForOperatorUIRow, error)
 	ListOrphanedAcquisitions(ctx context.Context) ([]PoolSlotAcquisition, error)
 	MarkAccountTempUnschedulable(ctx context.Context, arg MarkAccountTempUnschedulableParams) error
 	ReleaseAccountStormSlot(ctx context.Context, id int64) error
 	ReleaseSlotAcquisition(ctx context.Context, arg ReleaseSlotAcquisitionParams) error
 	TryAcquireAccountStormSlot(ctx context.Context, id int64) (int32, error)
 	UpdateAccountCredentialsCAS(ctx context.Context, arg UpdateAccountCredentialsCASParams) (int64, error)
+	UpsertCapabilityCell(ctx context.Context, arg UpsertCapabilityCellParams) error
 	UpsertStickyBinding(ctx context.Context, arg UpsertStickyBindingParams) error
 }
 
