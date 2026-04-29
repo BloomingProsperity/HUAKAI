@@ -1,208 +1,246 @@
-# Protocol Translation — Synthesis (Source-Verified)
+# Protocol Translation — Synthesis (Source-Verified, Regenerated as F-PROTO-002)
 
 | Field | Value |
 | --- | --- |
-| Status | Action Plan (synthesized from source-verified inputs) |
-| Feature ID | F-PROTO-001 |
-| Lane mode | Option B (multi-protocol gateway is L1 but not on Option C carve-out per [DR-000](../../decisions/DR-000-clean-room-methodology.md)) |
+| Status | Action Plan (regenerated 2026-04-28 after Codex final review REJECT verdict on the F-PROTO-001-mislabeled prior version) |
+| Feature ID | **F-PROTO-002** (NOT F-PROTO-001 — the prior label was wrong; F-PROTO-001 in the parity matrix is MCP/A2A external agent/tool protocol bridging, deferred to L3 Phase 9+) |
+| Lane mode | Option B (multi-protocol gateway is L1/L2 but not on Option C carve-out per [DR-000](../../decisions/DR-000-clean-room-methodology.md)) |
 | Author | Claude (PM-Orchestrator) |
 | Date | 2026-04-28 |
-| Sources | Sub2API ([E-LIC-001](../../07_REFERENCE_EVIDENCE_LEDGER.md), LGPL-3.0, commit `b0a2252ed19c3720e6adafde6083e64fbac2efa9`); Portkey ([E-LIC-006](../../07_REFERENCE_EVIDENCE_LEDGER.md), MIT) |
-| Inputs | [protocol-translation-source-verified.md](../sub2api/protocol-translation-source-verified.md) (Claude Sub2API pass, F-PROTO-001 §12 attribution), [portkey/protocol-translation-source-verified.md](../portkey/protocol-translation-source-verified.md) (Codex Portkey cross-verify) |
+| Sources | Sub2API ([E-LIC-001](../../07_REFERENCE_EVIDENCE_LEDGER.md), LGPL-3.0, commit `b0a2252ed19c3720e6adafde6083e64fbac2efa9`); Portkey ([E-LIC-008](../../07_REFERENCE_EVIDENCE_LEDGER.md), MIT, commit pinned in input file) |
+| Inputs | [protocol-translation-source-verified.md](../sub2api/protocol-translation-source-verified.md) (Claude Sub2API pass with 3 verified-resolution items), [portkey/protocol-translation-source-verified.md](../portkey/protocol-translation-source-verified.md) (Codex Portkey cross-verify) |
 | Becomes | After CL-001..011 review APPROVE, file moves (cleaned of source identifiers) to `docs/specs/protocol-translation.md` Status=Released. |
+| Supersedes | Earlier draft mislabeled as F-PROTO-001 (rejected 2026-04-28). |
 
-## 1. The Architectural Choice — Hub-and-Spoke Wins
+## 0. Feature Identity Correction
 
-Two patterns exist in the wild:
+Per [03_FEATURE_PARITY_MATRIX.md](../../03_FEATURE_PARITY_MATRIX.md):
+
+- **F-PROTO-001** = External agent/tool protocol bridging (MCP, A2A). L3 Phase 9+. Plugin. **NOT this synthesis.**
+- **F-PROTO-002** = Single client request shape translated across provider protocols (OpenAI ↔ Claude, Gemini → OpenAI), with **explicit capability matrix exposing what is lost in translation**. Source: New API E-NAI-003. **THIS synthesis covers F-PROTO-002.**
+
+## 1. F-PROTO-002 Required Scope (per parity matrix)
+
+The matrix row mandates:
+
+1. **Protocol translator with explicit per-pair capability matrix**.
+2. **Conversion that loses capability emits operator-visible warning** + **records `protocol_loss` field on Usage Record**.
+
+Both requirements are HUAKAI-DESIGN improvements over Sub2API and Portkey, neither of which has a structured capability-loss matrix or per-Usage-Record `protocol_loss` field.
+
+## 2. The Architectural Choice — Hub-and-Spoke (KEEP from Sub2API)
+
+Two patterns observed:
 
 | Pattern | Reference | Topology |
 |---------|-----------|----------|
-| **Hub-and-spoke** | Sub2API | One canonical intermediate (OpenAI Responses); M client-format adapters + N upstream-format adapters; M+N translators. |
-| **Endpoint-as-canonical fan-out** | Portkey | Each endpoint (chat / messages / responses) has its own local canonical type; provider adapters per (provider, endpoint) pair. |
+| **Hub-and-spoke** | Sub2API | Canonical intermediate (HUAKAI domain: HCSF — HUAKAI Canonical Stream Format); M client adapters + N upstream adapters; M+N. |
+| **Endpoint-as-canonical fan-out** | Portkey | Each client endpoint has its own local canonical; provider adapters per (provider, endpoint) pair. |
 
-**HUAKAI chooses hub-and-spoke.** Rationale (per Codex Portkey cross-verify recommendation):
+**HUAKAI chooses hub-and-spoke** (per Codex Portkey cross-verify recommendation):
+- One loss-auditable semantic model across OpenAI Chat / OpenAI Responses / Anthropic Messages.
+- Hub topology directly enables F-PROTO-002 capability matrix: every translation pair is `client_protocol → HCSF → upstream_protocol`, so a single capability-matrix per (HCSF feature × adapter) covers all pairs.
 
-- **One loss-auditable semantic model** across OpenAI Chat / OpenAI Responses / Anthropic Messages. Adding a fourth protocol = M+1 client adapter. Adding a fourth upstream = N+1 upstream adapter.
-- Portkey's fan-out scales provider breadth but does NOT provide unified semantic model — chat-completions cannot represent Anthropic stream output-item lifecycle losslessly.
-- HUAKAI's product identity is **relay-station**, not "broadest provider catalog". Semantic fidelity matters more than provider count.
+## 3. Convergence (Both References Agree)
 
-## 2. Convergence (Both References Agree)
+1. **Stateful streaming converter** — both use per-request state machine.
+2. **Per-event flush to client** — real-time visibility.
+3. **Idempotent terminal emission** — guard against double-emit on retry.
+4. **Provider-specific request transformation** — OAuth token injection, model id mapping, system-prompt conditioning.
+5. **Provider-specific response interpretation** — usage shape, tool-call shape, stop_reason mapping per-provider.
 
-These behaviors appear in both Sub2API and Portkey; HUAKAI inherits them:
+## 4. F-PROTO-002 Capability Matrix (HUAKAI-DESIGN, the matrix-row mandate)
 
-1. **Stateful streaming converter** — both use a per-request state machine, not stateless byte transformation. Sub2API has explicit `Created/CompletedSent/Finalized` flags; Portkey has equivalent per-stream state in chunk handlers.
-2. **Per-event flush to client** — both flush after every event so customer sees real-time output.
-3. **Idempotent terminal emission** — both guard against double-emitting `[DONE]` / `response.completed` on retry.
-4. **Provider-specific request transformation** — both have provider-specific request body massage (OAuth token injection, model id mapping, system-prompt conditioning).
-5. **Provider-specific response interpretation** — usage extraction, tool-call shape, stop_reason mapping is per-provider.
+Per-pair capability matrix exposes what each (client_protocol, upstream_protocol) pair preserves vs loses. The matrix is operator-visible in admin UI; conversion losses produce structured Usage Record `protocol_loss` field.
 
-## 3. Where Sub2API Sharpens Portkey
+### 4.1 Matrix structure
 
-These Sub2API patterns Portkey lacks:
+```
+ProtocolCapabilityMatrix[client_protocol][upstream_protocol] = {
+   text_streaming:           PRESERVED | LOSSY | UNSUPPORTED
+   tool_use:                 PRESERVED | LOSSY | UNSUPPORTED
+   reasoning_summary:        PRESERVED | LOSSY | UNSUPPORTED  
+   parallel_tool_calls:      PRESERVED | LOSSY | UNSUPPORTED
+   structured_output_schema: PRESERVED | LOSSY | UNSUPPORTED
+   image_input:              PRESERVED | LOSSY | UNSUPPORTED
+   audio_input:              PRESERVED | LOSSY | UNSUPPORTED
+   image_output:             PRESERVED | LOSSY | UNSUPPORTED
+   max_tokens_finish_reason: PRESERVED | LOSSY | UNSUPPORTED
+   max_completion_tokens:    PRESERVED | LOSSY | UNSUPPORTED
+   stop_sequence_emit:       PRESERVED | LOSSY | UNSUPPORTED
+   cache_breakpoints:        PRESERVED | LOSSY | UNSUPPORTED
+   signature_delta:          PRESERVED | LOSSY | UNSUPPORTED
+}
+```
 
-- **S1 — Canonical intermediate (Responses) for cross-protocol semantic fidelity**. Without a canonical intermediate, lossy mappings between client and upstream protocols compound silently.
-- **S2 — `OutputIndex` monotonic increment** preserves interleaving order across reasoning / message / tool_use blocks. Portkey's chat-completions canonical loses this.
-- **S3 — Synthetic terminal events** in `FinalizeAnthropicResponsesStream` and `FinalizeResponsesChatStream` cleanly handle upstream EOF without `message_stop`.
-- **S4 — Defensive empty-response normalization** when upstream returns zero blocks. Portkey may pass through; Sub2API synthesizes an empty message item.
-- **S5 — Tool-call ID bidirectional translation** (`toResponsesCallID` / `fromResponsesCallID` pattern). Critical for tool-result correlation across protocol boundaries.
+Operator UI surfaces this matrix; tooling generates "what does my product support" docs from it automatically.
 
-## 4. Where Portkey Sharpens Sub2API
+### 4.2 `protocol_loss` field on Usage Record (HUAKAI-DESIGN)
 
-These Portkey patterns Sub2API lacks:
+Every Usage Record carries:
+```
+protocol_loss: [
+   { feature: "max_tokens_finish_reason", direction: "responses_to_chat", verdict: LOSSY, note: "Sub2API drops length finish_reason at Responses→Chat boundary" },
+   { feature: "signature_delta", direction: "anthropic_upstream", verdict: LOSSY, note: "skipped per default policy" },
+   ...
+]
+```
 
-- **P1 — Provider adapter registry pattern**: `ProviderConfigs[provider][endpoint]` lookup with explicit interface. Adding a new provider is mechanical (implement the interface). Sub2API duplicates per-provider logic across hand-rolled files.
-- **P2 — Per-provider awareness of usage shapes** in adapter modules. HUAKAI's hub-and-spoke must avoid losing this — each adapter knows its provider's quirks.
+Empty array when translation is fully PRESERVED. Operator can query Usage Records with non-empty `protocol_loss` to identify systematic capability loss patterns.
 
-## 5. Where Both Are Insufficient (HUAKAI Design Improvements)
+### 4.3 Operator-visible warning emission
 
-These are HUAKAI-DESIGN, NOT inherited:
+When a request triggers LOSSY conversion:
+- Structured warning entry in Usage Record `protocol_loss`.
+- Optional response header `X-HUAKAI-Protocol-Loss: <feature_list>` for client developers (operator-tunable per Route).
+- Counter increment on operator dashboard for the (feature, direction) tuple.
 
-- **H1 — Typed warning on unknown event/block/delta types** instead of silent drop. Both references silently drop unknown protocol elements; HUAKAI emits structured telemetry.
-- **H2 — Lossless stop-reason mapping**: enumerate all upstream stop_reasons explicitly, no default-completed silent fallback.
-- **H3 — `length` finish_reason preserved across Responses→Chat boundary** when upstream `max_tokens`. Sub2API loses this; HUAKAI propagates via state.SawIncomplete.
-- **H4 — Streaming-vs-buffered semantic equivalence test**: same upstream events → equivalent final Usage Record values, regardless of streaming mode. Both refs lack formal test.
-- **H5 — Conditional `signature_delta` carry-forward** for Anthropic OAuth flows. Sub2API hardcodes skip; HUAKAI makes it Route policy.
-- **H6 — Buffered-path interleaving preservation**: Sub2API buffered translator batches all text into one message item, losing interleaving with tool_use. HUAKAI emits separate message items per text block when tool_use intervenes.
-- **H7 — Translation latency SLO** (≤ 100µs per event in streaming hot path). Neither reference has explicit budget.
-- **H8 — Provider adapter interface borrowed from Portkey** (P1) under HUAKAI hub-and-spoke topology. Best of both: HUAKAI adapter implements (a) request: client-format → canonical, (b) request: canonical → upstream-format, (c) response: upstream-format → canonical, (d) response: canonical → client-format. Adding a new client protocol = implement (a)(d). Adding a new upstream = implement (b)(c).
+## 5. Where Sub2API Sharpens Portkey (KEEP from Sub2API)
 
-## 6. The Synthesized HUAKAI Algorithm — Final
+Sub2API patterns Portkey lacks:
 
-### 6.1 Architectural primitives
+- **S1 — Canonical intermediate** (HCSF in HUAKAI vocabulary; OpenAI Responses in Sub2API) for cross-protocol semantic fidelity.
+- **S2 — `OutputIndex` monotonic increment** preserves interleaving order across reasoning / message / tool_use blocks.
+- **S3 — Synthetic terminal events** clean up upstream EOF without `message_stop` (idempotent).
+- **S4 — Defensive empty-response normalization** when upstream returns zero blocks.
+- **S5 — Tool-call ID bidirectional translation** — see §6 for VERIFIED format.
 
-- **Canonical intermediate**: HUAKAI Canonical Stream Format (HCSF), structurally aligned with OpenAI Responses but in HUAKAI's own type definitions (no upstream type names).
+## 6. Tool-Call ID Translation (VERIFIED CORRECTION)
+
+**Earlier prose said `toolu_x → call_x`; that was incorrect.** Verified format from Sub2API source:
+
+| Direction | Sub2API actual | HUAKAI canonical |
+|-----------|----------------|-------------------|
+| Anthropic upstream `tool_use_id` | `toolu_<hex>` | `toolu_<hex>` |
+| Responses canonical `call_id` | `fc_toolu_<hex>` (Sub2API uses `fc_` prefix on Anthropic IDs) | `call_<hex>` (HUAKAI redesign — no upstream-prefix leakage in HUAKAI canonical) |
+| OpenAI client `tool_call_id` | `call_<hex>` | `call_<hex>` |
+
+HUAKAI's translation function strips upstream-format prefixes when entering canonical, applies upstream-format prefixes when exiting canonical. Round-trip stability is a tested invariant (P5).
+
+## 7. Where Portkey Sharpens Sub2API
+
+- **P1 — Provider adapter registry pattern**: explicit interface per (provider, endpoint). Adding new provider = implement interface once. Sub2API duplicates per-provider logic across hand-rolled files.
+
+## 8. HUAKAI Design Improvements (NOT in either reference)
+
+- **H1 — F-PROTO-002 capability matrix** (the mandate, see §4).
+- **H2 — `protocol_loss` field on Usage Record** (the mandate, see §4.2).
+- **H3 — Typed warning on unknown event/block/delta types** (replaces Sub2API silent drop).
+- **H4 — Lossless stop-reason mapping**: enumerate all upstream stop_reasons explicitly, no default-completed silent fallback.
+- **H5 — `length` finish_reason preserved across Responses→Chat boundary** when upstream `max_tokens` (Sub2API loses this).
+- **H6 — Streaming-vs-buffered semantic equivalence test** (formal property test).
+- **H7 — Conditional `signature_delta` carry-forward** for Anthropic OAuth flows when needed (Sub2API hardcodes skip; HUAKAI Route policy).
+- **H8 — Buffered-path interleaving preservation** (Sub2API batches text, loses interleaving with tool_use).
+- **H9 — Translation latency SLO** with explicit measurement scope: payload size class + event size class + adapter class + parse-time included. Default: p99 < 200µs per event with payload < 4 KiB excluding JSON parse.
+- **H10 — Provider adapter registry** under hub-and-spoke topology (Portkey-inspired but NOT abandoning canonical hub).
+
+## 9. The Synthesized HUAKAI Algorithm — Final
+
+### 9.1 Architectural primitives
+
+- **Canonical intermediate**: HCSF (HUAKAI Canonical Stream Format), structurally aligned with OpenAI Responses semantics but in HUAKAI's own type definitions.
 - **Adapter interface** (HUAKAI-DESIGN, Portkey-inspired):
   ```
-  type ClientAdapter {
-      RequestToCanonical(client_request) → CanonicalRequest
-      CanonicalToClientResponse(canonical_response) → client_response
-      CanonicalEventToClientChunk(canonical_event, state) → []client_chunk
-      FinalizeClientStream(state) → []client_chunk
+  type ClientAdapter interface {
+      RequestToCanonical(client_request, ctx) (CanonicalRequest, []protocol_loss_entry)
+      CanonicalToClientResponse(canonical_response) (client_response, []protocol_loss_entry)
+      CanonicalEventToClientChunk(canonical_event, state) ([]client_chunk, []protocol_loss_entry)
+      FinalizeClientStream(state) []client_chunk
   }
-  type UpstreamAdapter {
-      CanonicalToProviderRequest(canonical_request) → provider_request
-      ProviderResponseToCanonical(provider_response) → CanonicalResponse
-      ProviderEventToCanonicalEvents(provider_event, state) → []CanonicalEvent
-      FinalizeUpstreamStream(state) → []CanonicalEvent
+  type UpstreamAdapter interface {
+      CanonicalToProviderRequest(canonical_request) (provider_request, []protocol_loss_entry)
+      ProviderResponseToCanonical(provider_response) (CanonicalResponse, []protocol_loss_entry)
+      ProviderEventToCanonicalEvents(provider_event, state) ([]CanonicalEvent, []protocol_loss_entry)
+      FinalizeUpstreamStream(state) []CanonicalEvent
   }
   ```
-- **State machines** are **per-stream** not per-process.
-- **Idempotent finalization** flags: `CreatedSent`, `CompletedSent`, `Finalized` (HUAKAI naming).
+- Each adapter method returns `[]protocol_loss_entry` so the gateway accumulates losses across both client and upstream sides for the Usage Record.
 
-### 6.2 Streaming hot-path algorithm
+### 9.2 Streaming hot-path algorithm
 
-**Phase A — Upstream event parsing**: pluggable per-provider parser produces `UpstreamEvent` records with `envelope_type` enum, `parsed_json`, `observed_at`. Buffer overflow → typed `RESPONSE_EVENT_TOO_LARGE` terminal failure (NOT silent truncation, per F-GW-002 §4 fix).
+**Phase A — Upstream event parsing**: pluggable per-provider parser produces UpstreamEvent records. Buffer overflow → typed `RESPONSE_EVENT_TOO_LARGE` terminal failure.
 
-**Phase B — Upstream → Canonical translation**: `ProviderEventToCanonicalEvents` runs per event. Updates per-stream upstream state. Returns 0..N canonical events.
+**Phase B — Upstream → Canonical translation**: `ProviderEventToCanonicalEvents` runs per event; updates upstream state; returns 0..N canonical events + protocol_loss entries.
 
-**Phase C — Canonical event handling**: usage merge into accumulator; tool-call accumulator update; routing reason payload field updates.
+**Phase C — Canonical event handling**: usage merge into accumulator; tool-call accumulator update; routing reason payload field updates; protocol_loss accumulator update.
 
-**Phase D — Canonical → Client translation**: `CanonicalEventToClientChunk` runs per canonical event. Updates per-stream client state.
+**Phase D — Canonical → Client translation**: `CanonicalEventToClientChunk` runs per canonical event; updates client state; returns client chunks + protocol_loss entries.
 
 **Phase E — Client emission**: write to ResponseWriter; explicit flush; track `firstTokenMs` on first chunk.
 
-**Phase F — Stream end handling**: graceful (terminal marker) → run both finalizes (idempotent). Non-graceful → run synthetic terminal generation in both finalizes; record `end_class` in Usage Record.
+**Phase F — Stream end handling**: graceful (terminal marker) → run both finalizes (idempotent). Non-graceful → run synthetic terminal generation. Record `end_class` + accumulated `protocol_loss` in Usage Record.
 
-### 6.3 Tool-call ID translation
+### 9.3 Failure taxonomy
 
-Bidirectional helpers `toCanonicalCallID` / `fromCanonicalCallID` per upstream-format. Anthropic-style `toolu_<hex>` → canonical `call_<hex>` → OpenAI client. Round-trip stability is a tested invariant (P5).
+(per F-GW-002 §5.4 streaming taxonomy)
 
-### 6.4 Failure taxonomy
+Plus protocol-specific:
 
 | Reason | Source-verified or HUAKAI-design | Action |
 |--------|-----------------------------------|--------|
-| `UPSTREAM_PARSE_ERROR` | SUB2API-VERIFIED + HUAKAI-IMPROVED | Skip event in Sub2API; HUAKAI emits typed warning + telemetry |
-| `UNKNOWN_EVENT_TYPE` | SUB2API-VERIFIED + HUAKAI-IMPROVED | Silent drop in Sub2API; HUAKAI emits typed warning |
-| `UNKNOWN_BLOCK_TYPE` | SUB2API-VERIFIED + HUAKAI-IMPROVED | Silent omit in Sub2API; HUAKAI emits typed warning |
-| `UNKNOWN_DELTA_TYPE` | SUB2API-VERIFIED + HUAKAI-IMPROVED | Same |
-| `UNKNOWN_STOP_REASON` | HUAKAI-DESIGN | Sub2API silently maps to `completed`; HUAKAI maps to typed `paused` / `tool_required` / etc. or rejects |
-| `RESPONSE_EVENT_TOO_LARGE` | HUAKAI-DESIGN | Sub2API has no terminal; HUAKAI emits typed terminal failure |
+| `UNKNOWN_EVENT_TYPE` | SUB2API-VERIFIED (silent drop) + HUAKAI-IMPROVED | Typed warning + telemetry counter; protocol_loss entry |
+| `UNKNOWN_BLOCK_TYPE` | Same | Same |
+| `UNKNOWN_DELTA_TYPE` | Same | Same |
+| `UNKNOWN_STOP_REASON` | HUAKAI-DESIGN | Map to typed `paused` / `tool_required` etc.; reject default-completed; protocol_loss entry |
+| `RESPONSE_EVENT_TOO_LARGE` | HUAKAI-DESIGN | Typed terminal failure (NOT silent truncation) |
 | `EMPTY_UPSTREAM_RESPONSE` | SUB2API-VERIFIED | Synthesize empty message item |
-| `STREAM_ENDED_WITHOUT_TERMINAL` | SUB2API-VERIFIED | Synthetic terminal events from finalize |
-| `TOOL_CALL_ID_TRANSLATION_FAIL` | HUAKAI-DESIGN | Sub2API trusts blindly; HUAKAI rejects malformed |
-| `STREAMING_VS_BUFFERED_USAGE_MISMATCH` | HUAKAI-DESIGN | Test-only invariant H4 |
-| `TRANSLATION_LATENCY_SLO_VIOLATION` | HUAKAI-DESIGN | New telemetry |
+| `STREAM_ENDED_WITHOUT_TERMINAL` | SUB2API-VERIFIED | Synthetic terminal events |
+| `TOOL_CALL_ID_TRANSLATION_FAIL` | HUAKAI-DESIGN | Reject malformed; protocol_loss entry |
+| `STREAMING_VS_BUFFERED_USAGE_MISMATCH` | HUAKAI-DESIGN | Test-only invariant |
+| `TRANSLATION_LATENCY_SLO_VIOLATION` | HUAKAI-DESIGN | Telemetry only |
 
-## 7. Concurrency / Correctness Invariants
+## 10. Concurrency / Correctness Invariants
 
-- **P1**: Each translator is pure (or has only state-machine state). No global mutation. Verified in Sub2API (functions are pure), KEEP.
+- **P1**: Each translator pure or per-stream-state only. KEEP from Sub2API.
 - **P2**: Streaming and buffered paths produce equivalent Usage Records given identical upstream input. HUAKAI test-only.
-- **P3**: Unknown event/block/delta types produce typed warning + telemetry counter. HUAKAI improvement over silent drop.
-- **P4**: Stop-reason mapping is total. No default-completed.
-- **P5**: Tool-call ID translation is bijective; round-trip test verifies.
-- **P6**: Translation latency ≤ 100µs per event in streaming hot path. HUAKAI SLO.
-- **P7**: `OutputIndex` monotonic across stream lifetime; no duplicate item index. KEEP from Sub2API.
-- **P8**: Tenant isolation: every translator state object scoped to tenant_id; no cross-tenant data.
+- **P3**: Unknown event/block/delta types produce typed warning + protocol_loss entry + telemetry counter.
+- **P4**: Stop-reason mapping total. No default-completed.
+- **P5**: Tool-call ID translation bijective with verified format (§6).
+- **P6**: Translation latency p99 ≤ 200µs per event (with explicit measurement scope).
+- **P7**: `OutputIndex` monotonic across stream lifetime. KEEP from Sub2API.
+- **P8**: Tenant isolation: every translator state object scoped to tenant_id.
+- **P9** (HUAKAI mandate): every conversion that loses capability emits `protocol_loss` entry on Usage Record.
 
-## 8. Sub2API Behavior to KEEP (with HUAKAI vocabulary translation)
+## 11. Test Scenarios (AT-PROTO-002-01..15)
 
-| Behavior | Sub2API vocabulary | HUAKAI vocabulary |
-|----------|---------------------|-------------------|
-| 6 Anthropic SSE event types handled | `message_start`, `content_block_start`, `content_block_delta`, `content_block_stop`, `message_delta`, `message_stop` | Upstream-event handler dispatch on envelope_type enum |
-| 7 Responses event types handled (Chat conversion) | `response.created`, `response.output_text.delta`, `response.output_item.added`, etc. | Canonical-event handler dispatch on canonical envelope enum |
-| Idempotent terminal flags | `CreatedSent`, `CompletedSent`, `Finalized` | Same names in HUAKAI state struct (these are HUAKAI domain names, not borrowed) |
-| Synthetic finalize | `FinalizeAnthropicResponsesStream`, `FinalizeResponsesChatStream` | `FinalizeUpstreamStream`, `FinalizeClientStream` per adapter |
-
-## 9. Provider Adapter Pattern (HUAKAI-DESIGN, Portkey-inspired)
-
-```
-package adapter
-
-type ClientAdapter interface { ... }   // §6.1
-type UpstreamAdapter interface { ... }  // §6.1
-
-var ClientAdapters = map[ClientProtocol]ClientAdapter{
-    ClientProtocolOpenAIChat:      &openaiChatAdapter{},
-    ClientProtocolOpenAIResponses: &openaiResponsesAdapter{},
-    ClientProtocolAnthropic:       &anthropicMessagesAdapter{},
-}
-
-var UpstreamAdapters = map[UpstreamProtocol]UpstreamAdapter{
-    UpstreamProtocolAnthropic:  &anthropicUpstreamAdapter{},
-    UpstreamProtocolOpenAI:     &openaiUpstreamAdapter{},
-    UpstreamProtocolGemini:     &geminiUpstreamAdapter{},
-    UpstreamProtocolBedrock:    &bedrockUpstreamAdapter{},
-}
-```
-
-Adding a fourth client protocol = implement `ClientAdapter` once. Adding a fifth upstream = implement `UpstreamAdapter` once. Hub-and-spoke topology preserved (canonical = `Canonical*` types).
-
-## 10. Test Scenarios (AT-PROTO-001..014)
+(Re-numbered from original `AT-PROTO-001..014` to avoid colliding with F-PROTO-001 MCP/A2A test ID.)
 
 Sub2API-inheritable:
-- AT-PROTO-001 / Anthropic SSE → Canonical → Chat chunks: 50-event stream.
-- AT-PROTO-002 / Tool-call interleaving preserves OutputIndex.
-- AT-PROTO-003 / Reasoning preserved through canonical.
-- AT-PROTO-004 / `signature_delta` skipped by default (Sub2API behavior).
-- AT-PROTO-005 / Stream ended without `message_stop`: synthetic terminal.
-- AT-PROTO-006 / Empty upstream Content: synthetic empty message.
-- AT-PROTO-007 / `max_tokens` stop_reason → buffered Status=`incomplete` + IncompleteDetails.
+- AT-PROTO-002-01 / Anthropic SSE → Canonical → Chat chunks: 50-event stream graceful path.
+- AT-PROTO-002-02 / Tool-call interleaving preserves OutputIndex; round-trip ID bijection (§6).
+- AT-PROTO-002-03 / Reasoning preserved through canonical.
+- AT-PROTO-002-04 / `signature_delta` carry-forward governed by Route policy (default skip).
+- AT-PROTO-002-05 / Stream ended without `message_stop`: synthetic terminal.
+- AT-PROTO-002-06 / Empty upstream Content: synthetic empty message.
+- AT-PROTO-002-07 / `max_tokens` stop_reason → buffered Status=incomplete + IncompleteDetails.
 
-HUAKAI-design:
-- AT-PROTO-008 / Unknown event type → typed warning + telemetry counter (NOT silent drop).
-- AT-PROTO-009 / Unknown stop_reason → typed canonical status (NOT default-completed).
-- AT-PROTO-010 / Buffered-path interleaving: text → tool_use → text emits 3 items, NOT 1 batched message.
-- AT-PROTO-011 / Streaming-vs-buffered usage equivalence (H4).
-- AT-PROTO-012 / Tool-call ID round-trip bijection (P5).
-- AT-PROTO-013 / `length` finish_reason preserved across Responses→Chat (H3).
-- AT-PROTO-014 / Translation latency SLO p99 < 100µs over 1000-event stream.
+HUAKAI-design (F-PROTO-002 mandate):
+- AT-PROTO-002-08 / Unknown event type → typed warning + protocol_loss entry (NOT silent drop).
+- AT-PROTO-002-09 / Unknown stop_reason → typed canonical status (NOT default-completed).
+- AT-PROTO-002-10 / Buffered-path interleaving: text → tool_use → text emits 3 items, NOT 1 batched message.
+- AT-PROTO-002-11 / Streaming-vs-buffered usage equivalence (P2 test).
+- AT-PROTO-002-12 / Tool-call ID round-trip bijection (P5 test).
+- AT-PROTO-002-13 / `length` finish_reason preserved across Responses→Chat (H5).
+- AT-PROTO-002-14 / Translation latency SLO p99 < 200µs over 1000-event stream.
+- **AT-PROTO-002-15 / Capability matrix matches reality**: every cell asserted via property test that runs each (client × upstream) pair through a multi-feature canonical request and verifies the matrix entry matches the actual translation outcome.
+- **AT-PROTO-002-16 / `protocol_loss` field populated**: when conversion is LOSSY for any feature, Usage Record `protocol_loss` array contains entry with feature name + direction + verdict.
 
-## 11. Open TODOs
+## 12. Verified Source Resolutions
 
-- **TODO-1**: Verify by reading `chatcompletions_to_responses.go` and `responses_to_anthropic_request.go` full bodies whether Sub2API's request-side translators silently drop fields. (Claude pass surveyed function lists; bodies not read.)
-- **TODO-2**: Verify exact transformation in `toResponsesCallID` / `fromResponsesCallID` (Sub2API).
-- **TODO-3**: Cross-check Bedrock state machine — does it piggyback on Anthropic SSE state or have its own?
+(Previously TODO-1..3. All closed; per CL-009 a Released spec carries no open questions.)
 
-These do NOT block synthesis sign-off; they DO block Released spec (per CL-009).
+- **Request-side translator field handling**: VERIFIED. Sub2API request-side translators (`chatcompletions_to_responses.go`, `responses_to_anthropic_request.go`) silently drop unsupported fields. HUAKAI MUST emit protocol_loss entries instead (P9, mandate).
+- **Tool-call ID format**: VERIFIED in §6 above. Sub2API uses `toolu_<hex>` upstream → `fc_toolu_<hex>` canonical → `call_<hex>` client. HUAKAI canonical strips prefix leakage.
+- **Bedrock state machine**: VERIFIED. Bedrock has its own SSE handling but does NOT piggyback on Anthropic-conversion state machine. HUAKAI adapter pattern accommodates.
 
-## 12. Provenance
+## 13. Provenance
 
-- Sub2API: commit `b0a2252...`, files `apicompat/anthropic_to_responses_response.go` (lines 1-449), `apicompat/responses_to_chatcompletions.go` (lines 130-230 + listings), function-name surveys of 5 other apicompat files. Source-verified by Claude PM 2026-04-28.
-- Portkey: commit verified by Codex; behavior covered in `docs/decompositions/portkey/protocol-translation-source-verified.md`.
-- This synthesis: Claude PM, after both inputs read.
+- Sub2API: commit `b0a2252...`, files `pkg/apicompat/anthropic_to_responses_response.go`, `pkg/apicompat/responses_to_chatcompletions.go`, `pkg/apicompat/anthropic_to_responses.go`, `pkg/apicompat/chatcompletions_to_responses.go`, `pkg/apicompat/responses_to_anthropic_request.go`. Source-verified by Claude PM.
+- Portkey: behavioral cross-verify by Codex 2026-04-28. MIT license. Comparison shows DIFFERENT-PATTERN (endpoint-as-canonical fan-out vs Sub2API hub-and-spoke).
+- This synthesis: Claude PM, regenerated 2026-04-28 after F-PROTO-001-mislabel REJECT verdict.
 - Reviewer-lane sign-off: pending Codex final review CL-001..011.
 
-## 13. Review Sign-Off
+## 14. Review Sign-Off
 
 | Field | Value |
 | --- | --- |
@@ -210,4 +248,4 @@ These do NOT block synthesis sign-off; they DO block Released spec (per CL-009).
 | Review date | (pending) |
 | Owner answers received | N/A (no Owner-decision questions in this feature) |
 | Checks passed | (pending) |
-| Notes | F-PROTO-001 synthesis. Hub-and-spoke from Sub2API + provider adapter registry from Portkey. 8 HUAKAI-design improvements clearly labeled. 3 open TODOs. |
+| Notes | F-PROTO-002 synthesis (NOT F-PROTO-001 — corrected). Hub-and-spoke from Sub2API + adapter registry from Portkey + capability matrix and `protocol_loss` field per F-PROTO-002 mandate. 10 HUAKAI-design improvements clearly labeled. AT-PROTO-002-NN test IDs (no collision with F-PROTO-001 MCP/A2A). 3 prior TODOs all closed. |
