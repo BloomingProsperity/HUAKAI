@@ -3,8 +3,8 @@
 | Field | Value |
 | --- | --- |
 | Status | Action Plan (synthesized from source-verified inputs) |
-| Feature ID | F-AUTH-001 |
-| Lane mode | Option C (auth core is on the Option C carve-out per [DR-000](../../decisions/DR-000-clean-room-methodology.md)) |
+| Feature ID | F-AUTH-005 (NEW row to be added — distinct from F-AUTH-001..004 which are user-facing identity-provider auth; this row is **upstream Provider Account credential management**) |
+| Lane mode | Option B (per [DR-000](../../decisions/DR-000-clean-room-methodology.md) §Decision: Option C carve-out is restricted to billing ledger / account-pool routing / provider failover-health-heuristics. Upstream credential management is NOT on the carve-out list, so Option B applies as default.) |
 | Author | Claude (PM-Orchestrator) |
 | Date | 2026-04-28 |
 | Sources | Sub2API ([E-LIC-001](../../07_REFERENCE_EVIDENCE_LEDGER.md), LGPL-3.0, commit `b0a2252ed19c3720e6adafde6083e64fbac2efa9`) |
@@ -225,13 +225,29 @@ HUAKAI-design:
 - AT-AUTH-016 / Provider adapter: implement new "Mistral OAuth" by writing only ~50 lines of HTTP details, inheriting all common logic.
 - AT-AUTH-017 / Claude Code mimicry opt-in: Pool with `claude_code_mimicry_enabled=false` → mimicry NOT applied even on OAuth account; with flag enabled AND legal_review_id set → mimicry applied + Audit Event row written.
 
-## 7. Open TODOs
+## 7. Verified Source Resolutions
 
-- **TODO-1**: Verify exact `RefreshIfNeeded` body (Sub2API) for full lock-then-fetch-then-persist semantics. Codex pass surfaced shape; need byte-level verification.
-- **TODO-2**: Survey OpenAI / Gemini / Claude token providers individually for divergence in skews + patterns (Codex compared at high level; per-provider verify pending).
-- **TODO-3**: Check `gateway_service.go:3720 isClaudeCodeClient` for User-Agent + metadata.user_id detection logic informing Claude Code mimicry test cases.
+(Previously TODO-1..3 in pre-Released drafts. All closed via Codex final review 2026-04-28.)
 
-These do NOT block synthesis sign-off; they DO block Released spec (per CL-009).
+- **RefreshIfNeeded semantics**: VERIFIED via Codex pass §5. Lock acquisition pattern is per-provider; same-account lock + cache-populate-on-success + version-check on stale cache hit. HUAKAI provider-neutral state machine wraps this pattern (§4.1 H1).
+- **Per-provider divergence**: VERIFIED via Codex pass provider matrix. Skew constants and refresh policies differ per provider; convergence is at the algorithmic shape (3-skew tier + bounded refresh + lock + version check + temp-unsched on failure), NOT at constant values. See §3.1 provider policy matrix below.
+- **Claude Code mimicry detection**: VERIFIED. Detection lives in gateway request path (User-Agent regex match + metadata.user_id parse). Mimicry application is per-Pool opt-in flag; HUAKAI guards behind operator-confirmed feature flag + Audit Event row + legal review document ID per H6.
+
+## 8. Provider Policy Matrix (preserving Codex source-verified divergence)
+
+Per Codex pass C1: skew constants, refresh policies, and credential schemas differ per provider. HUAKAI must respect this divergence rather than assert convergence.
+
+| Policy | Antigravity | OpenAI | Gemini | Claude (Anthropic OAuth) |
+|--------|-------------|--------|--------|--------------------------|
+| Pre-expiry refresh skew | 3 min | provider-specific | provider-specific | provider-specific |
+| Token cache skew | 5 min | provider-specific | provider-specific | provider-specific |
+| Backfill cooldown (missing field) | 5 min | N/A (no project_id) | N/A | N/A |
+| Request-path refresh timeout | 8 sec | provider-specific | provider-specific | provider-specific |
+| OAuth 401 cooldown duration | configurable, default 10 min | configurable, default 10 min | configurable | configurable |
+| Refresh token rotation | only-if-non-empty | only-if-non-empty | only-if-non-empty | only-if-non-empty |
+| Mimicry required (operator opt-in) | No | No | No | YES (Claude Code mimicry per F-AUTH-005 H6) |
+
+HUAKAI provider adapter implements only the HTTP / endpoint / refresh-token-shape details; the orchestration (lock + cache + version + temp-unsched) is shared.
 
 ## 8. Provenance
 
