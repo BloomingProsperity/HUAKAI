@@ -1,0 +1,95 @@
+package gateway
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"io"
+	"iter"
+	"strings"
+	"time"
+)
+
+const (
+	defaultScannerBufferCap = 1 << 20
+	maxScannerBufferCap     = 64 << 20
+)
+
+// SSEEvent is the F-GW-002 Phase A bounded upstream event envelope.
+type SSEEvent struct {
+	Type       string    `json:"type"`
+	Data       []byte    `json:"data"`
+	ObservedAt time.Time `json:"observed_at"`
+}
+
+// ScanSSEEvents scans F-GW-002 Phase A SSE events with a bounded buffer.
+func ScanSSEEvents(ctx context.Context, r io.Reader, bufferCap int) iter.Seq2[SSEEvent, error] {
+	return func(yield func(SSEEvent, error) bool) {
+		capBytes := normalizeScannerCap(bufferCap)
+		scanner := bufio.NewScanner(r)
+		scanner.Buffer(make([]byte, 64*1024), capBytes)
+
+		var typ string
+		var data bytes.Buffer
+		emit := func() bool {
+			if data.Len() == 0 && typ == "" {
+				return true
+			}
+			payload := bytes.Clone(bytes.TrimSuffix(data.Bytes(), []byte{'\n'}))
+			evt := SSEEvent{Type: typ, Data: payload, ObservedAt: time.Now()}
+			typ = ""
+			data.Reset()
+			return yield(evt, nil)
+		}
+
+		for scanner.Scan() {
+			select {
+			case <-ctx.Done():
+				yield(SSEEvent{}, ctx.Err())
+				return
+			default:
+			}
+			line := scanner.Bytes()
+			if len(line) == 0 {
+				if !emit() {
+					return
+				}
+				continue
+			}
+			if bytes.HasPrefix(line, []byte(":")) {
+				continue
+			}
+			if bytes.HasPrefix(line, []byte("event:")) {
+				typ = strings.TrimSpace(string(bytes.TrimPrefix(line, []byte("event:"))))
+				continue
+			}
+			if bytes.HasPrefix(line, []byte("data:")) {
+				part := bytes.TrimPrefix(line, []byte("data:"))
+				if len(part) > 0 && part[0] == ' ' {
+					part = part[1:]
+				}
+				if data.Len()+len(part)+1 > capBytes {
+					yield(SSEEvent{}, ErrScannerOverflow)
+					return
+				}
+				data.Write(part)
+				data.WriteByte('\n')
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			yield(SSEEvent{}, ErrScannerOverflow)
+			return
+		}
+		emit()
+	}
+}
+
+func normalizeScannerCap(bufferCap int) int {
+	if bufferCap <= 0 {
+		return defaultScannerBufferCap
+	}
+	if bufferCap > maxScannerBufferCap {
+		return maxScannerBufferCap
+	}
+	return bufferCap
+}
