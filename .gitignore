@@ -31,13 +31,22 @@ dist/
 build/
 out/
 target/
+bin/
 *.exe
 *.bin
+*.test
 node_modules/
 vendor/
 .venv/
 __pycache__/
 *.pyc
+
+# Generated code (sqlc — regenerate via `make generate`)
+internal/db/
+
+# Operator config (never commit; only config.example.yaml is tracked)
+config.yaml
+!config.example.yaml
 
 # Logs & runtime
 *.log
