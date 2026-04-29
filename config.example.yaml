@@ -1,0 +1,56 @@
+# HUAKAI Gateway example configuration.
+# Phase 3 skeleton — operator config schema is illustrative; Phase 4
+# implementation may refine.
+# See docs/specs/api-contract.md and docs/specs/*.md for the locked
+# behavior contracts.
+
+server:
+  addr: ":8080"
+  read_header_timeout_ms: 10000
+  shutdown_timeout_ms: 30000
+
+database:
+  # PostgreSQL connection string (DR-006).
+  url: "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable"
+  pool:
+    max_open_conns: 32
+    max_idle_conns: 8
+    conn_max_lifetime_ms: 1800000
+
+cache:
+  # Redis used for: token cache, sticky sessions, rate-limit hint, scheduler snapshot.
+  url: "redis://localhost:6379/0"
+
+tenancy:
+  # DR-001: MVP hard-codes a single default tenant.
+  default_tenant_id: 1
+
+billing:
+  policy_version: "1.0"
+  # F-OBS-001 H4: numeric(20,8) money type end-to-end.
+  currency_default: "USD"
+
+routes:
+  # Per-Route streaming policy (F-GW-002 §5.2). Operator may override per Route in DB.
+  default_scanner_buffer_max_bytes: 1048576    # 1 MiB
+  default_first_token_timeout_ms: 60000
+  default_inter_event_timeout_ms: 30000
+  default_total_stream_timeout_ms: 600000
+  default_drain_max_seconds: 30
+  default_drain_max_bytes: 1048576
+  default_drain_max_estimated_cost_usd: "0.10"
+
+oauth_refresh:
+  # F-AUTH-005 storm budget defaults.
+  global_concurrent_refreshes: 16
+  global_refreshes_per_minute: 240
+  default_request_path_timeout_ms: 8000
+
+logging:
+  # Token-leakage-safe logging discipline (F-AUTH-005 H5).
+  level: "info"
+  redact_credential_fragments: true
+
+observability:
+  # F-OBS-001 outbox lag alert threshold.
+  scheduler_outbox_lag_alert_seconds: 60
