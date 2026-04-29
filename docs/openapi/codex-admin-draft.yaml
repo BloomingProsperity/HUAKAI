@@ -1,0 +1,580 @@
+openapi: 3.1.0
+info:
+  title: HUAKAI Operator Admin API
+  version: 0.1.0-draft
+  description: >-
+    Admin-only OpenAPI draft for HUAKAI Pool Groups, Provider Accounts, Usage
+    Records, Billing Ledger claims, Audit Events, and Usage Record DLQ replay.
+    This file intentionally excludes gateway endpoints. Pagination uses an
+    opaque base64url cursor; clients must treat cursor values as non-parseable.
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+x-huakai-spec-source:
+  - docs/specs/pool-routing.md @ Status=Released (F-POOL-001)
+  - docs/specs/upstream-credential-management.md @ Status=Released (F-AUTH-005)
+  - docs/specs/rate-limiting.md @ Status=Released (F-RATE-001)
+  - docs/specs/observability-billing.md @ Status=Released (F-OBS-001)
+x-huakai-open-questions:
+  - Should Admin list endpoints expose tenant_id in SaaS Edition, or keep tenant scope server-resolved until Phase 9?
+  - Should Provider Account create accept raw upstream credentials directly, or require a one-time credential upload exchange first?
+  - Should Usage Record and Billing Ledger list endpoints share one common date filter name across UI and API?
+  - Should clear-rate-limit be allowed for tenant_operator in Personal Edition, or platform_admin only?
+x-huakai-owner-summary: >-
+  已创建 Codex 独立 Admin-only OpenAPI 草案，覆盖 Pool Group、Provider Account、
+  Usage Record、Billing Ledger claim、Audit Event、Usage Record DLQ replay 等端点；
+  没有加入 gateway 端点；所有 money 字段用 string 表示
+  numeric(20,8)，每个 schema 和 endpoint 都标注 Released spec 来源，未做功能缩水，
+  clean-room 风险低，安全风险主要是 Provider Account 凭据写入方式仍需 Owner 后续确认。
+servers:
+  - url: /api
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Pool Groups
+  - name: Provider Accounts
+  - name: Observability
+  - name: Audit
+
+paths:
+  /admin/v1/pools:
+    get:
+      tags: [Pool Groups]
+      summary: List Pool Groups
+      description: Lists operator-visible Pool Groups with routing policy and capacity summary.
+      security: [{ bearerAuth: [] }]
+      x-huakai-required-roles: [platform_admin, tenant_operator]
+      x-huakai-spec-source: [docs/specs/pool-routing.md @ Status=Released (F-POOL-001)]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Enabled'
+        - $ref: '#/components/parameters/Search'
+      responses:
+        '200': { description: Pool Group page, content: { application/json: { schema: { $ref: '#/components/schemas/PoolGroupList' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    post:
+      tags: [Pool Groups]
+      summary: Create Pool Group
+      description: Creates a Pool Group carrying F-POOL-001 routing policy and Q1..Q4 owner decisions.
+      security: [{ bearerAuth: [] }]
+      x-huakai-required-roles: [platform_admin, tenant_operator]
+      x-huakai-spec-source: [docs/specs/pool-routing.md @ Status=Released (F-POOL-001)]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PoolGroupCreate' } } } }
+      responses:
+        '201': { description: Created Pool Group, content: { application/json: { schema: { $ref: '#/components/schemas/PoolGroup' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/v1/pools/{id}:
+    get:
+      tags: [Pool Groups]
+      summary: Get Pool Group detail
+      description: Returns one Pool Group, including routing policy, wait budgets, and forced-route visibility settings.
+      security: [{ bearerAuth: [] }]
+      x-huakai-required-roles: [platform_admin, tenant_operator]
+      x-huakai-spec-source: [docs/specs/pool-routing.md @ Status=Released (F-POOL-001)]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Pool Group detail, content: { application/json: { schema: { $ref: '#/components/schemas/PoolGroup' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    patch:
+      tags: [Pool Groups]
+      summary: Update Pool Group
+      description: >-
+        Updates Pool Group routing policy. Q1 forced-route visibility is platform_admin-only in
+        Personal Edition; SaaS tenant_operator access requires audit trail, rate limit, and notification.
+      security: [{ bearerAuth: [] }]
+      x-huakai-required-roles: [platform_admin, tenant_operator]
+      x-huakai-spec-source: [docs/specs/pool-routing.md @ Status=Released (F-POOL-001 Q1..Q4)]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PoolGroupUpdate' } } } }
+      responses:
+        '200': { description: Updated Pool Group, content: { application/json: { schema: { $ref: '#/components/schemas/PoolGroup' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/v1/provider-accounts:
+    get:
+      tags: [Provider Accounts]
+      summary: List Provider Accounts
+      description: Lists upstream Provider Accounts with credential state, quota, health, and cooldown state; credentials are redacted.
+      security: [{ bearerAuth: [] }]
+      x-huakai-required-roles: [platform_admin, tenant_operator]
+      x-huakai-spec-source:
+        - docs/specs/pool-routing.md @ Status=Released (F-POOL-001)
+        - docs/specs/upstream-credential-management.md @ Status=Released (F-AUTH-005)
+        - docs/specs/rate-limiting.md @ Status=Released (F-RATE-001)
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/PoolGroupId'
+        - $ref: '#/components/parameters/ChannelId'
+        - $ref: '#/components/parameters/ProviderId'
+        - $ref: '#/components/parameters/HealthState'
+        - $ref: '#/components/parameters/CredentialState'
+        - $ref: '#/components/parameters/Search'
+      responses:
+        '200': { description: Provider Account page, content: { application/json: { schema: { $ref: '#/components/schemas/ProviderAccountList' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    post:
+      tags: [Provider Accounts]
+      summary: Create Provider Account
+      description: Creates a Provider Account with upstream credentials; response always redacts credential material.
+      security: [{ bearerAuth: [] }]
+      x-huakai-required-roles: [platform_admin, tenant_operator]
+      x-huakai-spec-source:
+        - docs/specs/pool-routing.md @ Status=Released (F-POOL-001)
+        - docs/specs/upstream-credential-management.md @ Status=Released (F-AUTH-005)
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ProviderAccountCreate' } } } }
+      responses:
+        '201': { description: Created Provider Account, content: { application/json: { schema: { $ref: '#/components/schemas/ProviderAccount' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/v1/provider-accounts/{id}:
+    get:
+      tags: [Provider Accounts]
+      summary: Get Provider Account detail
+      description: Returns one Provider Account with credentials redacted and cooldown state visible.
+      security: [{ bearerAuth: [] }]
+      x-huakai-required-roles: [platform_admin, tenant_operator]
+      x-huakai-spec-source:
+        - docs/specs/pool-routing.md @ Status=Released (F-POOL-001)
+        - docs/specs/upstream-credential-management.md @ Status=Released (F-AUTH-005)
+        - docs/specs/rate-limiting.md @ Status=Released (F-RATE-001)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Provider Account detail, content: { application/json: { schema: { $ref: '#/components/schemas/ProviderAccount' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    patch:
+      tags: [Provider Accounts]
+      summary: Update Provider Account
+      description: Updates Provider Account lifecycle, credential, quota, capacity, model, and cooldown policy fields.
+      security: [{ bearerAuth: [] }]
+      x-huakai-required-roles: [platform_admin, tenant_operator]
+      x-huakai-spec-source:
+        - docs/specs/pool-routing.md @ Status=Released (F-POOL-001)
+        - docs/specs/upstream-credential-management.md @ Status=Released (F-AUTH-005)
+        - docs/specs/rate-limiting.md @ Status=Released (F-RATE-001)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ProviderAccountUpdate' } } } }
+      responses:
+        '200': { description: Updated Provider Account, content: { application/json: { schema: { $ref: '#/components/schemas/ProviderAccount' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/v1/provider-accounts/{id}/clear-rate-limit:
+    post:
+      tags: [Provider Accounts]
+      summary: Clear Provider Account rate-limit state
+      description: Atomically clears rate_limit, overload, model_rate_limits, temp_unschedulable, caches, and provider 403 counters.
+      security: [{ bearerAuth: [] }]
+      x-huakai-required-roles: [platform_admin, tenant_operator]
+      x-huakai-spec-source: [docs/specs/rate-limiting.md @ Status=Released (F-RATE-001 Phase F)]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody: { required: false, content: { application/json: { schema: { type: object, additionalProperties: false, properties: { reason: { type: string, maxLength: 500 } } } } } }
+      responses:
+        '200': { description: Cleared Provider Account, content: { application/json: { schema: { $ref: '#/components/schemas/ProviderAccount' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/v1/usage:
+    get:
+      tags: [Observability]
+      summary: Query Usage Records
+      description: Queries immutable Usage Records for operator observability, billing investigation, and pending reconciliation review.
+      security: [{ bearerAuth: [] }]
+      x-huakai-required-roles: [platform_admin, tenant_operator]
+      x-huakai-spec-source: [docs/specs/observability-billing.md @ Status=Released (F-OBS-001)]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/ProviderAccountId'
+        - $ref: '#/components/parameters/ClaimId'
+        - $ref: '#/components/parameters/UsageSource'
+        - $ref: '#/components/parameters/PendingReconciliation'
+      responses:
+        '200': { description: Usage Record page, content: { application/json: { schema: { $ref: '#/components/schemas/UsageRecordList' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/v1/billing/claims:
+    get:
+      tags: [Observability]
+      summary: Query Billing Ledger claims
+      description: Queries Tx1/Tx2 Billing Ledger claim rows, including committed and aborted request settlements.
+      security: [{ bearerAuth: [] }]
+      x-huakai-required-roles: [platform_admin, tenant_operator]
+      x-huakai-spec-source: [docs/specs/observability-billing.md @ Status=Released (F-OBS-001)]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/ProviderAccountId'
+        - $ref: '#/components/parameters/ClaimStatus'
+        - $ref: '#/components/parameters/LogicalRequestId'
+      responses:
+        '200': { description: Billing Ledger claim page, content: { application/json: { schema: { $ref: '#/components/schemas/BillingLedgerClaimList' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/v1/audit-events:
+    get:
+      tags: [Audit]
+      summary: Query unified Audit Events
+      description: Queries a unified audit feed across Pool routing, rate-limit state mutations, and billing-grade events.
+      security: [{ bearerAuth: [] }]
+      x-huakai-required-roles: [platform_admin, tenant_operator]
+      x-huakai-spec-source:
+        - docs/specs/pool-routing.md @ Status=Released (F-POOL-001)
+        - docs/specs/rate-limiting.md @ Status=Released (F-RATE-001)
+        - docs/specs/observability-billing.md @ Status=Released (F-OBS-001)
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/AuditSource'
+        - $ref: '#/components/parameters/EventType'
+        - $ref: '#/components/parameters/ActorId'
+        - $ref: '#/components/parameters/ProviderAccountId'
+      responses:
+        '200': { description: Audit Event page, content: { application/json: { schema: { $ref: '#/components/schemas/AuditEventList' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/v1/usage-record-dlq/{id}/replay:
+    post:
+      tags: [Observability]
+      summary: Replay Usage Record DLQ row
+      description: Replays one durable Usage Record DLQ row and records replay outcome for operator recovery.
+      security: [{ bearerAuth: [] }]
+      x-huakai-required-roles: [platform_admin, tenant_operator]
+      x-huakai-spec-source: [docs/specs/observability-billing.md @ Status=Released (F-OBS-001 H10)]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody: { required: false, content: { application/json: { schema: { type: object, additionalProperties: false, properties: { reason: { type: string, maxLength: 500 } } } } } }
+      responses:
+        '202': { description: DLQ replay accepted, content: { application/json: { schema: { type: object, required: [id, replayStatus], properties: { id: { type: string }, replayStatus: { type: string, enum: [accepted, replayed, failed] } } } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    Id: { name: id, in: path, required: true, schema: { type: string }, description: HUAKAI resource id. }
+    Cursor: { name: cursor, in: query, schema: { type: string }, description: Opaque base64url pagination cursor. }
+    Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 }, description: Page size. }
+    Search: { name: search, in: query, schema: { type: string, maxLength: 200 }, description: Case-insensitive name or label search. }
+    Enabled: { name: enabled, in: query, schema: { type: boolean }, description: Filter by enabled state. }
+    PoolGroupId: { name: poolGroupId, in: query, schema: { type: string }, description: Filter by Pool Group id. }
+    ChannelId: { name: channelId, in: query, schema: { type: string }, description: Filter by Channel id. }
+    ProviderId: { name: providerId, in: query, schema: { type: string }, description: Filter by Provider id. }
+    ProviderAccountId: { name: providerAccountId, in: query, schema: { type: string }, description: Filter by Provider Account id. }
+    ClaimId: { name: claimId, in: query, schema: { type: string }, description: Filter by Billing Ledger claim id. }
+    From: { name: from, in: query, schema: { type: string, format: date-time }, description: Inclusive start timestamp. }
+    To: { name: to, in: query, schema: { type: string, format: date-time }, description: Exclusive end timestamp. }
+    HealthState: { name: healthState, in: query, schema: { $ref: '#/components/schemas/HealthState' }, description: Filter by Provider Account health state. }
+    CredentialState: { name: credentialState, in: query, schema: { $ref: '#/components/schemas/CredentialState' }, description: Filter by credential state. }
+    UsageSource: { name: usageSource, in: query, schema: { $ref: '#/components/schemas/UsageSource' }, description: Filter by usage source. }
+    PendingReconciliation: { name: pendingReconciliation, in: query, schema: { type: boolean }, description: Filter pending reconciliation records. }
+    ClaimStatus: { name: status, in: query, schema: { type: string, enum: [reserving, committed, aborted] }, description: Filter Billing Ledger claim status. }
+    LogicalRequestId: { name: logicalRequestId, in: query, schema: { type: string }, description: Filter by logical request id. }
+    AuditSource: { name: source, in: query, schema: { type: string, enum: [pool_routing, rate_limit, billing] }, description: Filter unified audit source. }
+    EventType: { name: eventType, in: query, schema: { type: string }, description: Filter by audit event type. }
+    ActorId: { name: actorId, in: query, schema: { type: string }, description: Filter by operator actor id. }
+  responses:
+    BadRequest: { description: Bad request, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    Unauthorized: { description: Missing or invalid bearer token, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    Forbidden: { description: Role check failed, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    NotFound: { description: Resource not found in tenant scope, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    Conflict: { description: Conflict or idempotency fingerprint mismatch, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+  schemas:
+    PageMeta:
+      type: object
+      required: [limit, hasMore]
+      properties:
+        nextCursor: { type: [string, 'null'] }
+        limit: { type: integer }
+        hasMore: { type: boolean }
+      x-huakai-spec-source: [docs/specs/observability-billing.md @ Status=Released (F-OBS-001)]
+    PoolGroup:
+      type: object
+      required: [id, name, routingPolicyVersion, capabilityDefault, enabled, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        routingPolicyVersion: { type: string }
+        topKDefault: { type: integer, minimum: 1, maximum: 10 }
+        capabilityDefault: { type: string, enum: [exact_capability_only, safe_equivalent_allowed] }
+        allowTenantOperatorForce: { type: boolean }
+        allowLastResort: { type: boolean }
+        stickyWaitMaxWaiting: { type: integer, minimum: 0 }
+        fallbackWaitMaxWaiting: { type: integer, minimum: 0 }
+        stickyWaitTimeoutMs: { type: integer, minimum: 0 }
+        fallbackWaitTimeoutMs: { type: integer, minimum: 0 }
+        forcedRouteRateLimitPerHour: { type: integer, minimum: 0 }
+        enabled: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+      x-huakai-spec-source: [docs/specs/pool-routing.md @ Status=Released (F-POOL-001)]
+    PoolGroupCreate:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        routingPolicyVersion: { type: string, default: '1.0' }
+        topKDefault: { type: integer, minimum: 1, maximum: 10, default: 1 }
+        capabilityDefault: { type: string, enum: [exact_capability_only, safe_equivalent_allowed], default: exact_capability_only }
+        allowTenantOperatorForce: { type: boolean, default: false }
+        allowLastResort: { type: boolean, default: false }
+        stickyWaitTimeoutMs: { type: integer, minimum: 0, default: 5000 }
+        fallbackWaitTimeoutMs: { type: integer, minimum: 0, default: 30000 }
+      x-huakai-spec-source: [docs/specs/pool-routing.md @ Status=Released (F-POOL-001) Q1..Q4]
+    PoolGroupUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        routingPolicyVersion: { type: string }
+        topKDefault: { type: integer, minimum: 1, maximum: 10 }
+        capabilityDefault: { type: string, enum: [exact_capability_only, safe_equivalent_allowed] }
+        allowTenantOperatorForce: { type: boolean }
+        allowLastResort: { type: boolean }
+        stickyWaitMaxWaiting: { type: integer, minimum: 0 }
+        fallbackWaitMaxWaiting: { type: integer, minimum: 0 }
+        stickyWaitTimeoutMs: { type: integer, minimum: 0 }
+        fallbackWaitTimeoutMs: { type: integer, minimum: 0 }
+        forcedRouteRateLimitPerHour: { type: integer, minimum: 0 }
+        enabled: { type: boolean }
+      x-huakai-spec-source: [docs/specs/pool-routing.md @ Status=Released (F-POOL-001) Q1..Q4]
+    PoolGroupList:
+      type: object
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/PoolGroup' } }
+        page: { $ref: '#/components/schemas/PageMeta' }
+      x-huakai-spec-source: [docs/specs/pool-routing.md @ Status=Released (F-POOL-001)]
+    HealthState: { type: string, enum: [operational, degraded, failed, cooling_down, error] }
+    CredentialState: { type: string, enum: [valid, refreshing, refreshing_with_grace, refresh_failed, revoked] }
+    AccountType: { type: string, enum: [oauth, api_key, service_account, upstream_static] }
+    MoneyString: { type: string, pattern: '^-?[0-9]{1,12}(\\.[0-9]{1,8})?$', description: JSON string representation of PostgreSQL numeric(20,8). }
+    ProviderAccount:
+      type: object
+      required: [id, providerId, channelId, name, accountType, enabled, healthState, credentialState, credentialsRedacted]
+      properties:
+        id: { type: string }
+        providerId: { type: string }
+        channelId: { type: string }
+        name: { type: string }
+        accountType: { $ref: '#/components/schemas/AccountType' }
+        enabled: { type: boolean }
+        expiresAt: { type: [string, 'null'], format: date-time }
+        healthState: { $ref: '#/components/schemas/HealthState' }
+        credentialState: { $ref: '#/components/schemas/CredentialState' }
+        credentialsRedacted: { type: boolean, const: true }
+        capConcurrency: { type: integer, minimum: 1 }
+        inFlightCount: { type: integer, minimum: 0, readOnly: true }
+        priority: { type: integer }
+        modelAllowList: { type: array, items: { type: string } }
+        capabilityFlags: { type: array, items: { type: string } }
+        capQuotaTotal: { $ref: '#/components/schemas/MoneyString' }
+        quotaUsedTotal: { $ref: '#/components/schemas/MoneyString' }
+        quotaStatus: { type: string, enum: [active, exhausted, paused] }
+        rateLimitResetAt: { type: [string, 'null'], format: date-time }
+        rateLimitReason: { type: [string, 'null'] }
+        overloadUntil: { type: [string, 'null'], format: date-time }
+        tempUnschedulableUntil: { type: [string, 'null'], format: date-time }
+        modelRateLimits: { type: object, additionalProperties: true }
+      x-huakai-spec-source:
+        - docs/specs/pool-routing.md @ Status=Released (F-POOL-001)
+        - docs/specs/upstream-credential-management.md @ Status=Released (F-AUTH-005)
+        - docs/specs/rate-limiting.md @ Status=Released (F-RATE-001)
+    ProviderAccountCreate:
+      type: object
+      required: [providerId, channelId, name, accountType, credentials]
+      properties:
+        providerId: { type: string }
+        channelId: { type: string }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        accountType: { $ref: '#/components/schemas/AccountType' }
+        credentials: { type: object, additionalProperties: true, writeOnly: true, description: Upstream credential material; never returned. }
+        expiresAt: { type: string, format: date-time }
+        capConcurrency: { type: integer, minimum: 1, default: 4 }
+        modelAllowList: { type: array, items: { type: string } }
+        capabilityFlags: { type: array, items: { type: string } }
+      x-huakai-spec-source:
+        - docs/specs/pool-routing.md @ Status=Released (F-POOL-001)
+        - docs/specs/upstream-credential-management.md @ Status=Released (F-AUTH-005)
+    ProviderAccountUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        enabled: { type: boolean }
+        credentials: { type: object, additionalProperties: true, writeOnly: true }
+        expiresAt: { type: [string, 'null'], format: date-time }
+        healthState: { $ref: '#/components/schemas/HealthState' }
+        capConcurrency: { type: integer, minimum: 1 }
+        priority: { type: integer }
+        modelAllowList: { type: array, items: { type: string } }
+        capabilityFlags: { type: array, items: { type: string } }
+        capQuotaTotal: { $ref: '#/components/schemas/MoneyString' }
+        quotaStatus: { type: string, enum: [active, exhausted, paused] }
+      x-huakai-spec-source:
+        - docs/specs/pool-routing.md @ Status=Released (F-POOL-001)
+        - docs/specs/upstream-credential-management.md @ Status=Released (F-AUTH-005)
+        - docs/specs/rate-limiting.md @ Status=Released (F-RATE-001)
+    ProviderAccountList:
+      type: object
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ProviderAccount' } }
+        page: { $ref: '#/components/schemas/PageMeta' }
+      x-huakai-spec-source: [docs/specs/pool-routing.md @ Status=Released (F-POOL-001)]
+    UsageSource: { type: string, enum: [reported, normalized, inferred, partial, ambiguous] }
+    UsageRecord:
+      type: object
+      required: [id, claimId, apiKeyId, userId, providerAccountId, tokensInput, tokensOutput, actualCost, usageSource, pendingReconciliation, settledAt]
+      properties:
+        id: { type: string }
+        claimId: { type: string }
+        apiKeyId: { type: string }
+        userId: { type: string }
+        providerAccountId: { type: string }
+        tokensInput: { type: integer, minimum: 0 }
+        tokensOutput: { type: integer, minimum: 0 }
+        cacheCreationTokens: { type: integer, minimum: 0 }
+        cacheReadTokens: { type: integer, minimum: 0 }
+        actualCost: { $ref: '#/components/schemas/MoneyString' }
+        usageSource: { $ref: '#/components/schemas/UsageSource' }
+        confidenceScore: { type: [number, 'null'], minimum: 0, maximum: 1 }
+        pendingReconciliation: { type: boolean }
+        routingReason: { type: object, additionalProperties: true }
+        endClass: { type: string }
+        requestedModel: { type: string }
+        upstreamModel: { type: [string, 'null'] }
+        stream: { type: boolean }
+        settledAt: { type: string, format: date-time }
+      x-huakai-spec-source: [docs/specs/observability-billing.md @ Status=Released (F-OBS-001)]
+    UsageRecordList:
+      type: object
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/UsageRecord' } }
+        page: { $ref: '#/components/schemas/PageMeta' }
+      x-huakai-spec-source: [docs/specs/observability-billing.md @ Status=Released (F-OBS-001)]
+    BillingLedgerClaim:
+      type: object
+      required: [id, idempotencyKey, requestFingerprint, status, predictedCost, currencyCode, reservedAt]
+      properties:
+        id: { type: string }
+        idempotencyKey: { type: string }
+        requestFingerprint: { type: string }
+        apiKeyId: { type: string }
+        userId: { type: string }
+        logicalRequestId: { type: string }
+        endpointFamily: { type: string }
+        requestedModel: { type: string }
+        poolingGroupId: { type: [string, 'null'] }
+        providerAccountId: { type: [string, 'null'] }
+        predictedCost: { $ref: '#/components/schemas/MoneyString' }
+        actualCost: { anyOf: [{ $ref: '#/components/schemas/MoneyString' }, { type: 'null' }] }
+        currencyCode: { type: string, minLength: 3, maxLength: 3 }
+        status: { type: string, enum: [reserving, committed, aborted] }
+        abortedReason: { type: [string, 'null'] }
+        reservedAt: { type: string, format: date-time }
+        settledAt: { type: [string, 'null'], format: date-time }
+      x-huakai-spec-source: [docs/specs/observability-billing.md @ Status=Released (F-OBS-001)]
+    BillingLedgerClaimList:
+      type: object
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/BillingLedgerClaim' } }
+        page: { $ref: '#/components/schemas/PageMeta' }
+      x-huakai-spec-source: [docs/specs/observability-billing.md @ Status=Released (F-OBS-001)]
+    AuditEvent:
+      type: object
+      required: [id, source, eventType, occurredAt]
+      properties:
+        id: { type: string }
+        source: { type: string, enum: [pool_routing, rate_limit, billing] }
+        eventType: { type: string }
+        poolGroupId: { type: [string, 'null'] }
+        providerAccountId: { type: [string, 'null'] }
+        claimId: { type: [string, 'null'] }
+        requestId: { type: [string, 'null'] }
+        actorId: { type: [string, 'null'] }
+        actorRole: { type: [string, 'null'], enum: [platform_admin, tenant_operator, null] }
+        reason: { type: [string, 'null'] }
+        payload: { type: object, additionalProperties: true }
+        occurredAt: { type: string, format: date-time }
+      x-huakai-spec-source:
+        - docs/specs/pool-routing.md @ Status=Released (F-POOL-001)
+        - docs/specs/rate-limiting.md @ Status=Released (F-RATE-001)
+        - docs/specs/observability-billing.md @ Status=Released (F-OBS-001)
+    AuditEventList:
+      type: object
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AuditEvent' } }
+        page: { $ref: '#/components/schemas/PageMeta' }
+      x-huakai-spec-source:
+        - docs/specs/pool-routing.md @ Status=Released (F-POOL-001)
+        - docs/specs/rate-limiting.md @ Status=Released (F-RATE-001)
+        - docs/specs/observability-billing.md @ Status=Released (F-OBS-001)
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            requestId: { type: string }
+            details: { type: object, additionalProperties: true }
+      x-huakai-spec-source:
+        - docs/specs/pool-routing.md @ Status=Released (F-POOL-001)
+        - docs/specs/rate-limiting.md @ Status=Released (F-RATE-001)
+        - docs/specs/observability-billing.md @ Status=Released (F-OBS-001)
+
