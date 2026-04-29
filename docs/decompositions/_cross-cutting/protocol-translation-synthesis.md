@@ -7,7 +7,7 @@
 | Lane mode | Option B (multi-protocol gateway is L1/L2 but not on Option C carve-out per [DR-000](../../decisions/DR-000-clean-room-methodology.md)) |
 | Author | Claude (PM-Orchestrator) |
 | Date | 2026-04-28 |
-| Sources | Sub2API ([E-LIC-001](../../07_REFERENCE_EVIDENCE_LEDGER.md), LGPL-3.0, commit `b0a2252ed19c3720e6adafde6083e64fbac2efa9`); Portkey ([E-LIC-008](../../07_REFERENCE_EVIDENCE_LEDGER.md), MIT, commit pinned in input file) |
+| Sources | Sub2API ([E-LIC-001](../../07_REFERENCE_EVIDENCE_LEDGER.md), LGPL-3.0, commit `b0a2252ed19c3720e6adafde6083e64fbac2efa9`); Portkey ([E-LIC-006](../../07_REFERENCE_EVIDENCE_LEDGER.md), MIT, commit pinned in [portkey/protocol-translation-source-verified.md](../portkey/protocol-translation-source-verified.md)); New API ([E-LIC-002](../../07_REFERENCE_EVIDENCE_LEDGER.md), AGPL-3.0, behavioral capability matrix evidence at E-NAI-003 only — no source code consulted for clean-room policy) |
 | Inputs | [protocol-translation-source-verified.md](../sub2api/protocol-translation-source-verified.md) (Claude Sub2API pass with 3 verified-resolution items), [portkey/protocol-translation-source-verified.md](../portkey/protocol-translation-source-verified.md) (Codex Portkey cross-verify) |
 | Becomes | After CL-001..011 review APPROVE, file moves (cleaned of source identifiers) to `docs/specs/protocol-translation.md` Status=Released. |
 | Supersedes | Earlier draft mislabeled as F-PROTO-001 (rejected 2026-04-28). |
@@ -52,6 +52,16 @@ Two patterns observed:
 ## 4. F-PROTO-002 Capability Matrix (HUAKAI-DESIGN, the matrix-row mandate)
 
 Per-pair capability matrix exposes what each (client_protocol, upstream_protocol) pair preserves vs loses. The matrix is operator-visible in admin UI; conversion losses produce structured Usage Record `protocol_loss` field.
+
+### 4.0 Capability verdict semantics (decision criteria)
+
+For each (client_protocol × upstream_protocol × feature) cell, the verdict is decided as:
+
+- **PRESERVED** = round-trip semantic equivalence verified: encoding the feature in client format → translating to canonical → translating to upstream → upstream-side semantics match → upstream response → translating back to canonical → translating to client format → result preserves the feature exactly. Verified by acceptance test AT-PROTO-002-15.
+- **LOSSY** = at least one direction loses some sub-feature (e.g. `length` finish_reason loses incomplete-details mapping at Responses→Chat boundary). Translation succeeds but result is approximate. Operator warning emitted on Usage Record `protocol_loss`.
+- **UNSUPPORTED** = the feature has no defined translation path; request rejected at Phase A or response rejected at Phase D. Client receives 400 + structured error explaining unsupported feature.
+
+Operator UI shows the matrix; tooling generates "what does my product support" docs by selecting cells where verdict is PRESERVED for the configured client × upstream combinations.
 
 ### 4.1 Matrix structure
 
@@ -127,7 +137,7 @@ HUAKAI's translation function strips upstream-format prefixes when entering cano
 - **H2 — `protocol_loss` field on Usage Record** (the mandate, see §4.2).
 - **H3 — Typed warning on unknown event/block/delta types** (replaces Sub2API silent drop).
 - **H4 — Lossless stop-reason mapping**: enumerate all upstream stop_reasons explicitly, no default-completed silent fallback.
-- **H5 — `length` finish_reason preserved across Responses→Chat boundary** when upstream `max_tokens` (Sub2API loses this).
+- **H5 — `length` finish_reason preserved end-to-end**: at the Anthropic upstream boundary, `stop_reason: max_tokens` translates into canonical incomplete-details signal; at the Anthropic→Canonical boundary, that signal is preserved; at the Canonical→Chat boundary, finish_reason='length' is emitted (not 'stop'). Sub2API loses this at the Anthropic→Responses-canonical boundary because incomplete-details is dropped from streaming events. HUAKAI canonical event type carries an explicit `incomplete_reason` field that the Chat adapter consumes.
 - **H6 — Streaming-vs-buffered semantic equivalence test** (formal property test).
 - **H7 — Conditional `signature_delta` carry-forward** for Anthropic OAuth flows when needed (Sub2API hardcodes skip; HUAKAI Route policy).
 - **H8 — Buffered-path interleaving preservation** (Sub2API batches text, loses interleaving with tool_use).
