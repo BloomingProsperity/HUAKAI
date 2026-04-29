@@ -7,8 +7,8 @@
 | Lane mode | Option C (gateway hot path intersects Provider Account failover, account-health, and Billing Ledger reconciliation per [DR-000](../../decisions/DR-000-clean-room-methodology.md)) |
 | Author | Claude (PM-Orchestrator) |
 | Date | 2026-04-28 |
-| Sources | Sub2API ([E-LIC-001](../../07_REFERENCE_EVIDENCE_LEDGER.md), LGPL-3.0, commit `b0a2252...`); cross-references to Helicone (analytics decoupling) and one-api (simpler streaming baseline) |
-| Inputs | [streaming-forwarder-claude-v2.md](streaming-forwarder-claude-v2.md) (Sub2API source-verified Claude pass with Bedrock drain correction + atomic-billing framing fix); [streaming-forwarder-codex.md](streaming-forwarder-codex.md) is REJECTED (no CL-011 citations) and serves only as historical reference; [helicone observability cross-verify](../helicone/observability-source-verified.md) for analytics-decoupling discipline |
+| Sources | Sub2API ([E-LIC-001](../../07_REFERENCE_EVIDENCE_LEDGER.md), LGPL-3.0, commit `b0a2252ed19c3720e6adafde6083e64fbac2efa9`); Helicone ([E-LIC-007](../../07_REFERENCE_EVIDENCE_LEDGER.md), GPL-3.0-or-later, commit `548832f8e763a33732ead27d8b2dcaeccc665a39`, behavior-only); one-api ([E-LIC-004](../../07_REFERENCE_EVIDENCE_LEDGER.md), MIT — simpler streaming baseline cross-reference) |
+| Inputs | [streaming-forwarder-claude-v2.md](streaming-forwarder-claude-v2.md) (Sub2API source-verified Claude pass with Bedrock drain correction + atomic-billing framing fix); [helicone observability cross-verify](../helicone/observability-source-verified.md) for analytics-decoupling discipline; [observability-synthesis.md](observability-synthesis.md) for Tx2 atomicity invariant (S2 / O2). The earlier `streaming-forwarder-codex.md` is REJECTED and is NOT a synthesis input. |
 | Becomes | After CL-001..011 review APPROVE, file moves (cleaned of source identifiers) to `docs/specs/streaming-forwarder.md` Status=Released. |
 
 ## 1. The Sub2API Source Picture (per claude-v2 with Bedrock correction)
@@ -19,8 +19,13 @@ Per [streaming-forwarder-claude-v2.md](streaming-forwarder-claude-v2.md):
 
 | Path | Disconnect drain? | Buffer default | Failover at | Usage merge |
 |------|-------------------|----------------|-------------|-------------|
-| Anthropic-conversion (chat-completions / responses) | NO drain | 500 MiB scanner | pre-stream status≥400 only | last-non-zero-wins |
-| Bedrock passthrough | YES — until intervalCh timeout | (likely same default) | pre-stream only | parsed via `parseSSEUsagePassthrough` |
+| Anthropic-conversion (chat-completions / responses) | NO drain — for-loop exits on first failed write | 500 MiB scanner | pre-stream status≥400 only | last-non-zero-wins per field |
+| OpenAI passthrough | continues reading upstream until interval timeout (drain-like) | 500 MiB | pre-stream only | passthrough usage parser |
+| Anthropic passthrough (non-conversion) | continues reading upstream until interval timeout (drain-like) | 500 MiB | pre-stream only | passthrough usage parser |
+| Bedrock passthrough | YES — continues reading until intervalCh timeout | 500 MiB | pre-stream only | `parseSSEUsagePassthrough` |
+| Gemini compatibility | mixed; depends on path variant | 500 MiB | pre-stream only | per-event extraction |
+
+**Gap**: Sub2API drain behavior is path-dependent and only the Anthropic-conversion path exits cleanly on disconnect. All other passthrough paths continue reading upstream without explicit byte/cost cap. HUAKAI unifies bounded drain across ALL paths (H3).
 
 **Common to both paths**:
 - `bufio.Scanner` line-based SSE parsing.
@@ -60,7 +65,7 @@ These are HUAKAI-DESIGN (Sub2API anti-patterns or absences):
 
 - **H1 — Bounded scanner buffer per Route**: HUAKAI default 1 MiB (vs Sub2API's 500 MiB), oversize → typed `RESPONSE_EVENT_TOO_LARGE` terminal failure. 500 MiB is a memory DoS surface in shared-tenant deployment.
 - **H2 — Eight-axis timeout policy** per Route: connect / TLS / request-write / response-header / first-token / inter-event / total-stream / downstream-write. Sub2API has only transport-level coarse settings.
-- **H3 — Bounded post-disconnect drain**: `drain_max_bytes`, `drain_max_seconds`, `drain_max_estimated_cost`. Applies to ALL paths uniformly. Sub2API has Bedrock-only unbounded drain + zero drain in Anthropic-conversion paths — both are operationally wrong.
+- **H3 — Bounded post-disconnect drain** with three caps (`drain_max_bytes`, `drain_max_seconds`, `drain_max_estimated_cost`) applied uniformly to ALL streaming paths (Anthropic-conversion, OpenAI passthrough, Anthropic passthrough, Bedrock, Gemini). Sub2API has path-divergent drain semantics (zero drain on Anthropic-conversion, unbounded interval-timeout drain on Bedrock/passthrough) — both extremes are operationally wrong: zero-drain leaks billing, unbounded-drain leaks operator cost when client gone.
 - **H4 — Usage source taxonomy** (`reported` / `normalized` / `inferred` / `partial` / `ambiguous`) with explicit per-source action. Sub2API has none.
 - **H5 — Tokenizer-based fallback for missing terminal usage**. Sub2API has no fallback.
 - **H6 — Mid-stream failover with `Idempotent-Stream-Replay` opt-in header**. Sub2API has no mid-stream failover at all (structurally absent). HUAKAI adds it as opt-in with safety guards.
@@ -114,7 +119,7 @@ Phase D — Tx2 finalization (per F-OBS-001 synthesis O2):
    atomic: slot release + Usage Record (with usage_source taxonomy) + claim status + audit event + outbox cross-threshold
 ```
 
-### 5.4 Failure taxonomy (15 reasons)
+### 5.4 Failure taxonomy (14 reasons)
 
 | Reason | Recovery Policy | Usage Record annotation |
 |--------|-----------------|-------------------------|
@@ -201,13 +206,13 @@ HUAKAI-design:
 - AT-GW-002-18 / AMBIGUOUS_USAGE no-charge gate: zero accumulator + UNKNOWN_TERMINATION → claim aborted.
 - AT-GW-002-19 / Tokenizer fallback: stream EOF without terminal → inferred usage with confidence_score.
 
-## 8. Open TODOs
+## 8. Verified Source Resolutions
 
-- **TODO-1**: Verify `gateway_helper.go` `AcquireAccountSlotWithWait` makes Pool slot atomic with usage (probably not — relevant for S2 invariant testing strategy).
-- **TODO-2**: Cross-check one-api `relay/controller/text.go` streaming path to confirm one-api has even less than Sub2API.
-- **TODO-3**: Check `bedrock_stream.go` for additional drain semantics not captured in claude-v2.
+(Previously TODO-1..3. All closed via Codex final review 2026-04-28; no open source dependencies remain. Per CL-009, a Released spec carries no open questions.)
 
-These do NOT block synthesis sign-off; they DO block Released spec (per CL-009).
+- **AcquireAccountSlotWithWait + Tx2 atomicity**: VERIFIED. Sub2API's wait helper retries slot acquisition only and is NOT atomic with billing/usage settlement. HUAKAI Tx2 atomicity (S2) is therefore HUAKAI-DESIGN per [observability-synthesis.md](observability-synthesis.md) §O2.
+- **one-api streaming baseline**: VERIFIED. Per [one-api Codex re-verify](../one-api/quota-billing-source-verified.md), one-api streaming is significantly simpler than Sub2API (priority-bucket selection + simple SSE forwarding without inline usage extraction). Confirms Sub2API is the stronger baseline for HUAKAI's relay-station identity.
+- **Bedrock drain semantics**: VERIFIED. Bedrock passthrough loops on `intervalCh` until inter-event timeout fires; on `clientDisconnected=true`, suppresses downstream write but continues upstream read until timeout. No byte/cost cap. HUAKAI improvement (H3) unifies bounded drain.
 
 ## 9. Provenance
 
