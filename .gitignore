@@ -41,12 +41,12 @@ vendor/
 __pycache__/
 *.pyc
 
-# Generated code (sqlc — regenerate via `make generate`)
-# NOTE: We DO track backend/internal/db/db.go (Phase 3/4-bridge stub) so a
-# fresh clone compiles. Phase 4 implementer-lane deletes that stub and lets
-# sqlc-generated files appear here.
-backend/internal/db/*
-!backend/internal/db/db.go
+# Generated code (sqlc).
+# NOTE: We track sqlc-generated files at backend/internal/db/ so a fresh
+# clone compiles without requiring `make generate` (sqlc binary install
+# can be flaky behind some networks). Regenerate via `make generate`
+# whenever a sql/queries/*.sql file changes; commit the diff together
+# with the SQL change.
 
 # Operator config (never commit; only config.example.yaml is tracked)
 backend/config.yaml
