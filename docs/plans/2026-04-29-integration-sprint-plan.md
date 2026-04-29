@@ -58,7 +58,7 @@ Goal: a real PostgreSQL container running migrations + ONE Tx1/Tx2 happy-path in
 ### B.4 — REAL Tx1 ClaimGate (no fake success)
 Discard the broken slice 5 ClaimGate. Rewrite from scratch with these invariants:
 - `Reserve` MUST open a transaction via the injected `*pgxpool.Pool`. If pool is nil, return `ErrNotConfigured` — never silently succeed.
-- Idempotency key SHA-256 over the 9 fields per spec, including `IdempotencyKeyClientHeader` (the field that Codex flagged Claude was ignoring).
+- Idempotency key SHA-256 over **the 9 persisted fields per spec** (`tenant_id, api_key_id, logical_request_id, endpoint_family, normalized_payload_hash, requested_model, pooling_group_id, billing_policy_version, request_class`). The `IdempotencyKeyClientHeader` is NOT part of the hash — it is recorded on the claim row for audit but does not affect dedup. (Corrected after Codex review of Phase A commit flagged that earlier draft incorrectly included the header in the hash, which would let same-request retries with different headers escape dedup and cause double-charge.)
 - 6-row lock acquisition in alphabetical entity order via `SELECT ... FOR UPDATE`.
 - Insert claim row with `status='reserving'`, return `ClaimID`.
 - On fingerprint conflict (different normalized hash, same logical request id) → return `ErrFingerprintConflict`.
@@ -67,7 +67,7 @@ Discard the broken slice 5 ClaimGate. Rewrite from scratch with these invariants
 Same: discard broken version. Real version:
 - `Settle` opens a transaction. Verifies claim status is `reserving`. Rolls back if not.
 - Writes Usage Record + BillingEvent in same `BEGIN/COMMIT`.
-- Decrements `provider_accounts.in_flight_count` with `WHERE acquisition_token=$1 AND in_flight_count>0`.
+- Decrements `provider_accounts.in_flight_count` for the account referenced by the acquisition token. The `acquisition_token` lives on `pool_slot_acquisitions`, NOT `provider_accounts`, so the decrement requires a join: `UPDATE provider_accounts pa SET in_flight_count = in_flight_count - 1 FROM pool_slot_acquisitions psa WHERE psa.acquisition_token=$1 AND psa.provider_account_id=pa.id AND pa.in_flight_count > 0`. (Corrected after Codex review of Phase A flagged that earlier draft tried to filter `provider_accounts` directly on a column that does not exist there.)
 - Updates claim row to `committed`.
 - All-or-nothing: any failure rolls everything back.
 

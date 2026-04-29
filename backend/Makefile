@@ -1,4 +1,5 @@
-.PHONY: build test fmt vet tidy generate migrate-up migrate-down run docker-build clean help
+.PHONY: build test fmt vet tidy generate migrate-up migrate-down run docker-build clean help \
+	db-up db-down db-reset db-migrate db-psql test-integration
 
 GO          ?= go
 BIN_DIR     := bin
@@ -43,3 +44,33 @@ docker-build: ## Build the gateway Docker image.
 
 clean: ## Remove build artifacts.
 	rm -rf $(BIN_DIR)
+
+db-up: ## Start dev PostgreSQL container (Phase B integration sprint).
+	docker compose -f docker-compose.dev.yml up -d postgres
+	@echo "Waiting for PostgreSQL to be ready..."
+	@for i in $$(seq 1 30); do \
+	  docker compose -f docker-compose.dev.yml exec -T postgres pg_isready -U huakai -d huakai >/dev/null 2>&1 && echo "ready" && exit 0; \
+	  sleep 1; \
+	done; \
+	echo "PostgreSQL not ready after 30s" && exit 1
+
+db-down: ## Stop dev PostgreSQL (preserve volume).
+	docker compose -f docker-compose.dev.yml stop postgres
+
+db-reset: ## Drop dev PostgreSQL volume + restart (destructive).
+	docker compose -f docker-compose.dev.yml down -v
+	$(MAKE) db-up
+
+db-migrate: ## Apply migrations via golang-migrate (tracks schema_migrations; idempotent).
+	@MSYS_NO_PATHCONV=1 docker run --rm --network=huakai-dev-net \
+	  -v "$(CURDIR)/sql/migrations:/migrations" \
+	  migrate/migrate:v4.18.1 \
+	  -path=/migrations \
+	  -database "postgres://huakai:huakai@huakai-dev-pg:5432/huakai?sslmode=disable" \
+	  up
+
+db-psql: ## Open a psql shell against dev PG.
+	docker compose -f docker-compose.dev.yml exec postgres psql -U huakai -d huakai
+
+test-integration: ## Run integration tests (requires db-up + db-migrate first).
+	HUAKAI_DATABASE_URL="$(DATABASE_URL)" $(GO) test -tags=integration_pg -race -count=1 ./...

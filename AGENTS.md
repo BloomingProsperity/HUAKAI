@@ -218,3 +218,124 @@ When dispatched as **reviewer-lane** (e.g. `codex exec --sandbox read-only` with
 6. **Output ends with Chinese 1-paragraph summary** for Owner: 总体覆盖度、最高优先级补测、是否阻塞下一 slice.
 
 The cross-review template lives at `docs/templates/codex-reviewer.md`. Owner triggers it via `/cross-review` slash command in Claude Code.
+
+## Truth-First Discipline (added 2026-04-29 third Owner directive)
+
+> "保证真实 不造假"
+
+The single most load-bearing rule in this project. It overrides every other rule when in conflict.
+
+### What it means
+
+- **A 4000-word honest file > a 9000-word file with 4000 words of speculation padding.**
+- **Word count and section length are signals, not targets.** If a target says "minimum 6000 words" and you can only honestly cover 4000 from real source reading, write 4000 with a clear note in metadata that the source did not support more depth at this time.
+- Every factual claim about upstream behavior must be traceable to a source region the agent actually read. Add inline citation markers. If a claim cannot be traced, it is speculation — either drop it, or move to "Open Questions".
+- Three explicit categories for any behavior assertion:
+  - **Observed** — agent read the source region and saw this behavior. Default category.
+  - **Inferred** — agent did not directly observe but the claim follows from observed regions; mark explicitly `(inferred from §10 region X)`.
+  - **Speculative** — NOT ALLOWED. Move to Open Questions or drop.
+- HUAKAI-fit risk reasoning is its own category: comparing observed upstream behavior against HUAKAI's design constraints (DR-001 multi-tenant, DR-002 dual editions, DR-006 PostgreSQL). Reasoning is allowed; speculation about upstream is not.
+
+### Why this matters more than depth targets
+
+Pressure to hit a word count creates incentive to fabricate. The project's value depends on every decomposition being a faithful witness to upstream behavior. Synthesis stages combine multiple decompositions; if one is fabricated, downstream specs derived from it inherit the error and the cascade is invisible until production breaks.
+
+### How agents enforce truth-first on themselves
+
+- Before claiming a behavior in writing, ask: "Did I read the region that supports this?" If no, do not write it.
+- After drafting a section, scan for unsupported claims; either cite or remove.
+- In §10 Source Coverage Proof, list **every** region read and **what each contributed**. If §2 makes a claim no §10 region supports, the claim is speculation by definition.
+- When critic-lane reviews, every uncited claim is a defect.
+
+### Owner-facing signals
+
+- Metadata block in every decomposition file MUST include: `Observed regions: N` / `Inferences: M` / `Open questions: K`. Owner reads these three numbers first to gauge depth-vs-honesty tradeoff.
+- 1-paragraph Chinese summary at end of every decomposition must explicitly call out: 哪些是真观察 / 哪些是合理推断 / open question 数量.
+
+## Plan-Before-Execute Discipline (added 2026-04-29 second Owner directive)
+
+> "你自己执行的时候也要plan给我。"
+
+The rule applies to **every agent in this project — not just Codex, not just Claude**. Before any non-trivial action, write a plan artifact to `docs/plans/YYYY-MM-DD-<descriptor>.md` and surface it for Owner review BEFORE execution.
+
+### What counts as non-trivial (plan required)
+
+- Codex batch dispatch (any number of parallel jobs)
+- Writing more than ~200 lines of code in one work unit
+- Schema migration / DB structural change
+- Deleting files / branches / records
+- Restructuring multi-file modules
+- Cross-cutting refactors
+- Long-running Codex reasoning tasks (decompositions, source-verified reads)
+- Any task that could leave the repo / DB / running system in an inconsistent state mid-flight
+
+### What counts as trivial (no plan needed)
+
+- Typo / single-character fix
+- Adding a single test case to an existing suite
+- Reading files for understanding (no mutation)
+- Running already-planned tests / linters
+- Replying to a question with text only
+
+### Plan content (minimum)
+
+```
+# YYYY-MM-DD <descriptor>
+| Owner directive | <quote that triggered this work> |
+| Scope | <what is in / out> |
+| Success criteria | <how we know it worked> |
+| Time estimate | <wall clock + agent time> |
+| Blast radius | <what breaks if this fails> |
+| Failure modes | <what could go wrong + mitigation> |
+| Decision points | <what needs Owner sign-off mid-flight> |
+| Pre-execution checklist | <ordered list of dependencies + sanity checks> |
+```
+
+### Discipline-of-discipline
+
+If the temptation to skip planning arises ("this is small enough", "I'll just do it"), that itself is the signal that planning is needed. The agents that keep this codebase healthy plan small, plan often, and surface the plan even when it feels overhead. Skipping the plan is how earlier rounds in this project produced shallow specifier output that wasted Owner's time and required round-2 redo.
+
+## Per-Commit Cross-Review Discipline (added 2026-04-29 by Owner directive)
+
+> "所有的动作和行为都要和 codex 进行交叉处理！包括代码。熟练运行 agent 利用 codex 得 renew 功能"
+
+Effective immediately, **every commit must pass through a Codex review before landing**. The lighter-weight `codex exec review` subcommand is the standard tool — full reviewer-lane audit (`docs/templates/codex-reviewer.md` piped to stdin) is reserved for slice-completion gating.
+
+### Standard workflow for any code change
+
+1. Make the change locally; run unit tests; ensure build is clean.
+2. **Stage** the change (`git add ...`) but DO NOT commit yet.
+3. Run: `codex exec review --uncommitted --full-auto`. Read findings.
+4. If findings exist:
+   - HIGH severity → fix before committing. Repeat step 3.
+   - MED severity → fix or document explicitly in commit message why deferred.
+   - LOW severity → may proceed; mention in commit message.
+5. Commit. Reference the review verdict in the commit body.
+6. (Optional but encouraged) Run `codex exec review --commit <SHA> --full-auto` post-commit for an independent retro-check; archive findings if non-trivial.
+
+### CLI flag notes
+
+- `codex exec review` does NOT accept `--sandbox` / `-C` flags directly. Run from the repo root.
+- `--uncommitted` and `--commit <SHA>` are mutually exclusive with a positional `[PROMPT]`. To customize the review focus, write notes into `docs/reviews/PENDING-<descriptor>.md` first; Codex picks that up via the working tree.
+- Use `--full-auto` for sandboxed automatic execution (recommended for review of working-tree changes).
+
+### When NOT to skip
+
+The discipline applies even when:
+- The change is a single-file doc edit (catches stale assertions, broken cross-references).
+- The change is "obviously safe" (the reviewer catches what looks safe but isn't, e.g. silent fallback paths).
+- Time pressure (skipping the review is how slice 5's 5 HIGH defects got past the maintainer; do not repeat).
+
+### When to escalate to full reviewer-lane
+
+- Slice completion (vertical slice declared "done")
+- Cross-feature integration commits
+- Money-path changes (any code that writes to `usage_records`, `billing_events`, or quota tables)
+- Schema migrations
+- Authentication / authorization core changes
+
+In those cases, run `codex exec --full-auto --sandbox read-only -C <repo> -` with the template at `docs/templates/codex-reviewer.md` piped to stdin.
+
+### Renew / version sync
+
+If `codex exec review` syntax errors with "unexpected argument" or "cannot be used with [PROMPT]", the Codex CLI was updated. Check `codex exec review --help`; the canonical option list as of this writing is: `--uncommitted`, `--commit <SHA>`, `--base <BRANCH>`, `--full-auto`, `--ignore-rules`, `--ephemeral`, `--json`. Update this section if the CLI changes.

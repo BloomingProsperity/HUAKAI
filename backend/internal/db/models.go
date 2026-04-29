@@ -62,17 +62,17 @@ type BillingLedgerClaim struct {
 	BillingPolicyVersion string `db:"billing_policy_version" json:"billing_policy_version"`
 	RequestClass         string `db:"request_class" json:"request_class"`
 	// Pattern B placeholder per F-POOL-001 §6. NULL during reserving; populated by Pool acquire writeback in same Tx1 commit.
-	ProviderAccountID *int64             `db:"provider_account_id" json:"provider_account_id"`
-	AcquisitionToken  uuid.UUID          `db:"acquisition_token" json:"acquisition_token"`
-	AttemptSeq        int32              `db:"attempt_seq" json:"attempt_seq"`
-	PredictedCost     decimal.Decimal    `db:"predicted_cost" json:"predicted_cost"`
-	ActualCost        decimal.Decimal    `db:"actual_cost" json:"actual_cost"`
-	CurrencyCode      string             `db:"currency_code" json:"currency_code"`
-	Status            string             `db:"status" json:"status"`
-	AbortedReason     *string            `db:"aborted_reason" json:"aborted_reason"`
-	ReservedAt        pgtype.Timestamptz `db:"reserved_at" json:"reserved_at"`
-	SettledAt         pgtype.Timestamptz `db:"settled_at" json:"settled_at"`
-	LeaseExpiresAt    pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
+	ProviderAccountID *int64              `db:"provider_account_id" json:"provider_account_id"`
+	AcquisitionToken  uuid.UUID           `db:"acquisition_token" json:"acquisition_token"`
+	AttemptSeq        int32               `db:"attempt_seq" json:"attempt_seq"`
+	PredictedCost     decimal.Decimal     `db:"predicted_cost" json:"predicted_cost"`
+	ActualCost        decimal.NullDecimal `db:"actual_cost" json:"actual_cost"`
+	CurrencyCode      string              `db:"currency_code" json:"currency_code"`
+	Status            string              `db:"status" json:"status"`
+	AbortedReason     *string             `db:"aborted_reason" json:"aborted_reason"`
+	ReservedAt        pgtype.Timestamptz  `db:"reserved_at" json:"reserved_at"`
+	SettledAt         pgtype.Timestamptz  `db:"settled_at" json:"settled_at"`
+	LeaseExpiresAt    pgtype.Timestamptz  `db:"lease_expires_at" json:"lease_expires_at"`
 }
 
 // F-BILL-001 framing: versioned pricing context. Reprice operates on stored version, not live config.

@@ -9,6 +9,8 @@ import (
 )
 
 type Querier interface {
+	// Tx2 abort path: terminal upstream failure or AMBIGUOUS_USAGE end class.
+	AbortClaim(ctx context.Context, arg AbortClaimParams) (int64, error)
 	DecrementInFlightCount(ctx context.Context, id int64) error
 	DeleteExpiredStickyBindings(ctx context.Context) error
 	ExpireCurrentProtocolPolicy(ctx context.Context, arg ExpireCurrentProtocolPolicyParams) error
@@ -17,12 +19,29 @@ type Querier interface {
 	// F-PROTO-002 protocol policy version registry queries.
 	// Backed by protocol_policy_versions table in docs/schema/protocol-translation.sql.
 	GetActiveProtocolPolicy(ctx context.Context, tenantID int64) (ProtocolPolicyVersion, error)
+	// F-OBS-001 Tx1/Tx2 billing ledger claim queries.
+	// Backed by billing_ledger_claims in docs/schema/observability-billing.sql.
+	// Hot-path Tx1 lookup with FOR UPDATE row lock per spec §Tx1 step 2.
+	// Selects ONLY the columns the gate needs to make a control-flow decision;
+	// nullable money/token fields (actual_cost, acquisition_token) are populated
+	// in Tx2 and would otherwise force NullDecimal/pgtype.UUID round-trips on
+	// every replay lookup. Other audit fields are queried separately when needed.
+	GetClaimByIdempotency(ctx context.Context, arg GetClaimByIdempotencyParams) (GetClaimByIdempotencyRow, error)
+	// Replay-attack detection: same logical_request_id with different fingerprint
+	// means an attacker reused the request id across different payloads. Spec §Tx1 step 3
+	// third bullet → return FINGERPRINT_CONFLICT (409). Hash differs so the unique
+	// idempotency index does NOT catch this; we scan by logical_request_id.
+	GetClaimFingerprintByLogicalRequestID(ctx context.Context, arg GetClaimFingerprintByLogicalRequestIDParams) ([]GetClaimFingerprintByLogicalRequestIDRow, error)
 	GetModelRoutingForGroup(ctx context.Context, arg GetModelRoutingForGroupParams) ([]GetModelRoutingForGroupRow, error)
 	GetOrCreateAccountStormBudget(ctx context.Context, arg GetOrCreateAccountStormBudgetParams) (GetOrCreateAccountStormBudgetRow, error)
 	GetProtocolPolicyByVersion(ctx context.Context, arg GetProtocolPolicyByVersionParams) (ProtocolPolicyVersion, error)
 	GetStickyBinding(ctx context.Context, arg GetStickyBindingParams) (int64, error)
 	GetTokenVersion(ctx context.Context, arg GetTokenVersionParams) (int32, error)
 	IncrementInFlightCount(ctx context.Context, arg IncrementInFlightCountParams) (int64, error)
+	// Insert a new reserving claim. Caller MUST hold the row lock acquired via
+	// GetClaimByIdempotency (which returns 0 rows when no prior claim exists),
+	// so this insert is conflict-free under serializable isolation.
+	InsertClaim(ctx context.Context, arg InsertClaimParams) (InsertClaimRow, error)
 	InsertOAuthRefreshAuditEvent(ctx context.Context, arg InsertOAuthRefreshAuditEventParams) error
 	InsertPoolRoutingAuditEvent(ctx context.Context, arg InsertPoolRoutingAuditEventParams) error
 	InsertProtocolPolicyVersion(ctx context.Context, arg InsertProtocolPolicyVersionParams) (InsertProtocolPolicyVersionRow, error)
@@ -35,12 +54,22 @@ type Querier interface {
 	ListLossyCellsForOperatorUI(ctx context.Context, tenantID int64) ([]ListLossyCellsForOperatorUIRow, error)
 	ListOrphanedAcquisitions(ctx context.Context) ([]PoolSlotAcquisition, error)
 	MarkAccountTempUnschedulable(ctx context.Context, arg MarkAccountTempUnschedulableParams) error
+	// Re-attempt path: an earlier attempt aborted (transient upstream failure,
+	// not FINGERPRINT_CONFLICT). Operator policy allows resurrecting the row
+	// under the same idempotency_key rather than inserting a duplicate (which
+	// would violate uq_claims_idempotency). attempt_seq increments so audits
+	// can count retries. Returns the row's id and bumped attempt_seq.
+	ReReserveAbortedClaim(ctx context.Context, arg ReReserveAbortedClaimParams) (ReReserveAbortedClaimRow, error)
 	ReleaseAccountStormSlot(ctx context.Context, id int64) error
 	ReleaseSlotAcquisition(ctx context.Context, arg ReleaseSlotAcquisitionParams) error
 	TryAcquireAccountStormSlot(ctx context.Context, id int64) (int32, error)
 	UpdateAccountCredentialsCAS(ctx context.Context, arg UpdateAccountCredentialsCASParams) (int64, error)
 	UpsertCapabilityCell(ctx context.Context, arg UpsertCapabilityCellParams) error
 	UpsertStickyBinding(ctx context.Context, arg UpsertStickyBindingParams) error
+	// Pattern B placeholder writeback per F-POOL-001 §6 + F-OBS-001 §Tx1 step 6.
+	// Pool acquire returns; we set provider_account_id + acquisition_token onto
+	// the existing reserving claim row.
+	WriteAcquisitionToken(ctx context.Context, arg WriteAcquisitionTokenParams) (int64, error)
 }
 
 var _ Querier = (*Queries)(nil)
