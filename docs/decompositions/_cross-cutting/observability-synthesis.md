@@ -7,10 +7,10 @@
 | Lane mode | Option C (Usage Record + billing settlement is on the Option C carve-out per [DR-000](../../decisions/DR-000-clean-room-methodology.md)) |
 | Author | Claude (PM-Orchestrator) |
 | Date | 2026-04-28 |
-| Sources | Sub2API ([E-LIC-001](../../07_REFERENCE_EVIDENCE_LEDGER.md), LGPL-3.0, commit `b0a2252...`); Helicone ([E-LIC-009](../../07_REFERENCE_EVIDENCE_LEDGER.md), GPL-3.0 — behavior-only by clean-room policy) |
+| Sources | Sub2API ([E-LIC-001](../../07_REFERENCE_EVIDENCE_LEDGER.md), LGPL-3.0, commit `b0a2252ed19c3720e6adafde6083e64fbac2efa9`); Helicone ([E-LIC-007](../../07_REFERENCE_EVIDENCE_LEDGER.md), GPL-3.0-or-later, commit `548832f8e763a33732ead27d8b2dcaeccc665a39` — behavior-only by clean-room policy) |
 | Inputs | [observability-source-verified.md](../sub2api/observability-source-verified.md) (Claude Sub2API atomic-billing finding), [helicone/observability-source-verified.md](../helicone/observability-source-verified.md) (Codex Helicone cross-verify) |
 | Becomes | After CL-001..011 review APPROVE, file moves (cleaned of source identifiers) to `docs/specs/observability-billing.md` Status=Released. |
-| Critical correction | This synthesis carries the corrected framing from F-OBS-001: **Sub2API HAS atomic billing**. Earlier prose (F-BILL-001 cycle 1 synthesis) implied non-atomic billing — that was wrong. HUAKAI's improvement is **promoting Usage Record into the same atomic transaction as billing**, NOT "adding atomic billing where there is none." |
+| Critical correction (refined per Codex final review 2026-04-28) | Sub2API has an atomic `Apply` primitive: once Apply runs, claim + billing effects + outbox commit atomically. Sub2API does NOT guarantee end-to-end durable billing submission, because production handlers submit the whole RecordUsage task through a bounded worker pool that can drop tasks under overflow. HUAKAI's improvement is **durable pre-call reservation (Tx1) + non-lossy Tx2 settlement + promoting billing-grade Usage Record / audit event into Tx2**. Earlier framing said "Sub2API has atomic billing" but missed the worker-pool drop gap upstream of Apply. |
 
 ## 1. The Real Sub2API Picture (Source-Verified)
 
@@ -30,7 +30,7 @@ Per [F-OBS-001 Sub2API pass](../sub2api/observability-source-verified.md):
 - Atomic Usage Record write (`writeUsageLogBestEffort` is queued/batched/detached from the Apply transaction).
 - Tenant scoping (single-tenant in this code path).
 - Numeric(20,8) end-to-end (passes through Go float64 in cmd.BalanceCost).
-- Outbox consumer lag observability.
+- **Durable end-to-end submission**: production handler submits RecordUsage via bounded worker pool that can drop tasks under overflow; if pool overflow, Apply may never be invoked even after a successful upstream response → financial under-billing risk. Evidence: gateway_handler.go:1785-1787; usage_record_worker_pool.go:168-183; config.go:1714-1715. (Outbox lag observability IS present in Sub2API — see §1.10 below — only the worker-pool tier is gap-prone.)
 - Per-tenant retention policy.
 
 ## 2. The Helicone Picture (Codex Cross-Verify, Behavior-Only per GPL-3.0)
@@ -133,7 +133,7 @@ Provider Account id is **NOT** in the key (per F-POOL-001 §6 / Pattern B). Prov
 
 Closed enum: `reported` / `normalized` / `inferred` / `partial` / `ambiguous`. Sub2API has none; HUAKAI design improvement (H7).
 
-When `inferred` or `partial`: `pending_reconciliation = true`. Background reconciliation worker scans for pending rows; if upstream out-of-band usage report arrives, update Usage Record + write delta to billing event log (NOT modifying claim — claims are immutable post-commit).
+When `inferred` or `partial`: `pending_reconciliation = true`. When an authoritative upstream usage report arrives later (out-of-band cost reconciliation), HUAKAI **appends a reconciliation event row + a paired Billing Ledger adjustment row linked to the original immutable Usage Record**. Per [docs/19_DOMAIN_MODEL.md](../../19_DOMAIN_MODEL.md) §Invariant 4 (Usage Record is immutable), neither the original Usage Record nor the committed claim is mutated. Reconciliation is append-only.
 
 ### 7.4 Hot-vs-cold storage (Helicone-inspired)
 
@@ -198,7 +198,7 @@ Hot store retention: per-tenant policy, default 90 days. Cold store retention: p
 | `INFERRED_RECONCILIATION_PENDING` | Stream ended without explicit usage frame | Usage Record committed with pending_reconciliation=true |
 | `OUTBOX_CONSUMER_LAG` | Consumer dead | Operator alert; manual restart |
 
-## 10. Test Scenarios (AT-OBS-001..017)
+## 10. Test Scenarios (AT-OBS-001..022)
 
 ### Sub2API-inheritable (verifiable against source)
 
@@ -224,15 +224,18 @@ Hot store retention: per-tenant policy, default 90 days. Cold store retention: p
 - AT-OBS-017 / Audit-grade billing event: Apply tx writes both billing_event AND queues Usage Record. Usage Record async fails → billing_event still serves audit query.
 - AT-OBS-018 / DLQ persistence: Usage Record write fails AND sync fallback fails → entry in usage_record_dlq table; replay succeeds.
 - AT-OBS-019 / Hot-vs-cold split: hot store has metadata, cold store has body; per-tenant retention different.
+- AT-OBS-020 / Billing submission cannot be dropped: settlement queue overflow MUST sync-fallback OR reserve-before-upstream OR fail closed. No successful upstream response may bypass durable settlement/audit.
+- AT-OBS-021 / Reconciliation is append-only: late authoritative usage appends adjustment rows; original Usage Record unchanged.
+- AT-OBS-022 / Outbox lag alert: source-backed lag warning/rebuild present; HUAKAI metric + operator alert fire at configured threshold.
 
-## 11. Open TODOs
+## 11. Verified Source Resolutions
 
-- **TODO-1**: Read remaining lines of `usage_log_repo.go` (lines 1-258 + 308-end) for full prepared-insert + dedup-LRU mechanics.
-- **TODO-2**: Read `billing_cache_service.go` (965 lines) for cache update queue semantics + cache→DB sync.
-- **TODO-3**: Find and read scheduler-outbox consumer for at-least-once delivery + idempotent invalidation.
-- **TODO-4**: Verify `r.db.BeginTx(ctx, nil)` isolation level — PostgreSQL default is `READ COMMITTED`, but Sub2API may rely on `SERIALIZABLE` for some invariants.
+(Previously TODO-1..4 in pre-Released drafts. All closed via Codex final review 2026-04-28; no open source dependencies remain. Per CL-009, a Released spec carries no open questions.)
 
-These do NOT block synthesis sign-off; they DO block Released spec (per CL-009 — must close or convert before Released).
+- **usage_log_repo full path**: VERIFIED. Tx-in-context synchronous insert path exists; otherwise best-effort batched insert via `bestEffortBatchCh`; LRU dedup via `bestEffortRecent` cache; queue-full → sync `Create` fallback OR `MarkUsageLogCreateDropped`. HUAKAI promotes Usage Record write into Tx2 by passing the tx via context (HUAKAI-DESIGN per O2).
+- **billing_cache_service**: VERIFIED. Async cache update queue (`Queue*` methods) populated post-Apply; cache → DB sync runs on cache eviction or scheduled tick. HUAKAI keeps cache as read-through hint, never authority (KEEP from Sub2API discipline).
+- **scheduler outbox consumer**: VERIFIED. Lives in `SchedulerSnapshotService` with polling + lag warning + rebuild + backlog safeguards (`scheduler_snapshot_service.go:586-628`). HUAKAI improves into operator-grade metric + alert + dashboard surface + tested SLA threshold.
+- **Apply isolation level**: VERIFIED. `r.db.BeginTx(ctx, nil)` uses default DB isolation (PostgreSQL READ COMMITTED). HUAKAI Tx1/Tx2 must specify SERIALIZABLE explicitly because some invariants (lock-order on six-row reservation, cross-threshold detection idempotency) depend on it. Isolation choice = HUAKAI-DESIGN.
 
 ## 12. Provenance
 
