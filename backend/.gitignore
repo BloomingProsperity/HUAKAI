@@ -1,3 +1,4 @@
 
 # Test temp dir per AppLocker workaround
 .tmp/
+.gocache/

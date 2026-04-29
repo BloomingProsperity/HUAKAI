@@ -1,0 +1,40 @@
+# HUAKAI dev-time PostgreSQL for integration tests + local manual run.
+# Production deploys use a managed PG; this file is dev-only.
+#
+# Usage:
+#   make db-up         # start container, wait for ready
+#   make db-migrate    # apply sql/migrations/*.up.sql
+#   make db-reset      # drop volume + restart
+#   make db-down       # stop container (preserve volume)
+#
+# DSN for code: postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: huakai-dev-pg
+    environment:
+      POSTGRES_USER: huakai
+      POSTGRES_PASSWORD: huakai
+      POSTGRES_DB: huakai
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - huakai-pgdata:/var/lib/postgresql/data
+    networks:
+      - huakai-dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U huakai -d huakai"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+# Explicit network name avoids the `<project-name>_default` fragility
+# when COMPOSE_PROJECT_NAME / `-p` differs from the default 'backend'.
+networks:
+  huakai-dev:
+    name: huakai-dev-net
+
+volumes:
+  huakai-pgdata:

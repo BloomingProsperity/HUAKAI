@@ -32,7 +32,7 @@ overrides:
       - column: "billing_ledger_claims.predicted_cost"
         go_type: "github.com/shopspring/decimal.Decimal"
       - column: "billing_ledger_claims.actual_cost"
-        go_type: "github.com/shopspring/decimal.Decimal"
+        go_type: "github.com/shopspring/decimal.NullDecimal"
       - column: "usage_records.actual_cost"
         go_type: "github.com/shopspring/decimal.Decimal"
       - column: "billing_events.actual_cost"
