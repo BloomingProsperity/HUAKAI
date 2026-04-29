@@ -632,6 +632,7 @@ components:
             include_usage: { type: boolean }
 
     ChatMessage:
+      x-huakai-spec-source: [docs/specs/protocol-translation.md]
       type: object
       additionalProperties: true
       required: [role]
@@ -642,6 +643,7 @@ components:
         tool_call_id: { type: string }
 
     ToolSpec:
+      x-huakai-spec-source: [docs/specs/protocol-translation.md]
       type: object
       additionalProperties: true
       properties:
@@ -771,6 +773,9 @@ components:
     # ---- Admin schemas (strict: additionalProperties: false) ----
 
     PageMeta:
+      x-huakai-spec-source:
+        - docs/specs/pool-routing.md
+        - docs/specs/observability-billing.md
       type: object
       additionalProperties: false
       required: [has_more]
@@ -822,6 +827,7 @@ components:
         updated_at: { type: string, format: date-time }
 
     PoolGroupCreate:
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
       type: object
       additionalProperties: false
       required: [name]
@@ -838,6 +844,7 @@ components:
         allow_mid_stream_failover: { type: boolean, default: false }
 
     PoolGroupUpdate:
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
       type: object
       additionalProperties: false
       properties:
@@ -857,6 +864,7 @@ components:
         enabled: { type: boolean }
 
     PoolGroupList:
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
       type: object
       additionalProperties: false
       required: [items, page]
@@ -929,6 +937,9 @@ components:
         updated_at: { type: string, format: date-time }
 
     ProviderAccountCreate:
+      x-huakai-spec-source:
+        - docs/specs/pool-routing.md
+        - docs/specs/upstream-credential-management.md
       type: object
       additionalProperties: false
       required: [provider_id, channel_id, name, account_type, credentials]
@@ -952,6 +963,10 @@ components:
         capability_flags: { type: array, items: { type: string } }
 
     ProviderAccountUpdate:
+      x-huakai-spec-source:
+        - docs/specs/pool-routing.md
+        - docs/specs/upstream-credential-management.md
+        - docs/specs/rate-limiting.md
       type: object
       additionalProperties: false
       properties:
@@ -977,6 +992,10 @@ components:
               description: { type: string }
 
     ProviderAccountList:
+      x-huakai-spec-source:
+        - docs/specs/pool-routing.md
+        - docs/specs/upstream-credential-management.md
+        - docs/specs/rate-limiting.md
       type: object
       additionalProperties: false
       required: [items, page]
@@ -1013,7 +1032,24 @@ components:
           type: string
           description: 'numeric(20,8) money; rendered as string for client BigNumber safety.'
           pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
-        end_class: { type: string }
+        end_class:
+          type: string
+          enum:
+            - stream_end_graceful
+            - stream_end_no_terminal_marker
+            - upstream_error_4xx
+            - upstream_error_5xx
+            - upstream_rate_limit
+            - upstream_auth_failure
+            - first_token_timeout
+            - inter_event_timeout
+            - total_stream_timeout
+            - client_disconnect
+            - event_size_exceeded
+            - orchestrator_cancelled
+            - usage_ambiguous
+            - unknown_termination
+            - non_streaming
         usage_source:
           type: string
           enum: [reported, normalized, inferred, partial, ambiguous]
@@ -1022,7 +1058,9 @@ components:
           minimum: 0
           maximum: 1
         pending_reconciliation: { type: boolean, default: false }
-        drain_outcome: { type: [string, 'null'] }
+        drain_outcome:
+          type: [string, 'null']
+          enum: [max_seconds, max_bytes, max_estimated_cost, null]
         routing_reason: { type: object, additionalProperties: true }
         protocol_loss:
           type: array
@@ -1034,6 +1072,7 @@ components:
         stream: { type: boolean, default: false }
 
     UsageRecordList:
+      x-huakai-spec-source: [docs/specs/observability-billing.md]
       type: object
       additionalProperties: false
       required: [items, page]
@@ -1082,6 +1121,7 @@ components:
         settled_at: { type: [string, 'null'], format: date-time }
 
     BillingLedgerClaimList:
+      x-huakai-spec-source: [docs/specs/observability-billing.md]
       type: object
       additionalProperties: false
       required: [items, page]
@@ -1117,6 +1157,11 @@ components:
         occurred_at: { type: string, format: date-time }
 
     AuditEventList:
+      x-huakai-spec-source:
+        - docs/specs/observability-billing.md
+        - docs/specs/pool-routing.md
+        - docs/specs/rate-limiting.md
+        - docs/specs/upstream-credential-management.md
       type: object
       additionalProperties: false
       required: [items, page]
