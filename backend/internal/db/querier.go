@@ -9,14 +9,26 @@ import (
 )
 
 type Querier interface {
+	DecrementInFlightCount(ctx context.Context, id int64) error
+	DeleteExpiredStickyBindings(ctx context.Context) error
 	GetAccountForRefresh(ctx context.Context, arg GetAccountForRefreshParams) (GetAccountForRefreshRow, error)
+	GetAccountForRevalidation(ctx context.Context, arg GetAccountForRevalidationParams) (ProviderAccount, error)
+	GetModelRoutingForGroup(ctx context.Context, arg GetModelRoutingForGroupParams) ([]GetModelRoutingForGroupRow, error)
 	GetOrCreateAccountStormBudget(ctx context.Context, arg GetOrCreateAccountStormBudgetParams) (GetOrCreateAccountStormBudgetRow, error)
+	GetStickyBinding(ctx context.Context, arg GetStickyBindingParams) (int64, error)
 	GetTokenVersion(ctx context.Context, arg GetTokenVersionParams) (int32, error)
+	IncrementInFlightCount(ctx context.Context, arg IncrementInFlightCountParams) (int64, error)
 	InsertOAuthRefreshAuditEvent(ctx context.Context, arg InsertOAuthRefreshAuditEventParams) error
+	InsertPoolRoutingAuditEvent(ctx context.Context, arg InsertPoolRoutingAuditEventParams) error
+	InsertSlotAcquisition(ctx context.Context, arg InsertSlotAcquisitionParams) (int64, error)
+	ListEligibleAccounts(ctx context.Context, arg ListEligibleAccountsParams) ([]ProviderAccount, error)
+	ListOrphanedAcquisitions(ctx context.Context) ([]PoolSlotAcquisition, error)
 	MarkAccountTempUnschedulable(ctx context.Context, arg MarkAccountTempUnschedulableParams) error
 	ReleaseAccountStormSlot(ctx context.Context, id int64) error
+	ReleaseSlotAcquisition(ctx context.Context, arg ReleaseSlotAcquisitionParams) error
 	TryAcquireAccountStormSlot(ctx context.Context, id int64) (int32, error)
 	UpdateAccountCredentialsCAS(ctx context.Context, arg UpdateAccountCredentialsCASParams) (int64, error)
+	UpsertStickyBinding(ctx context.Context, arg UpsertStickyBindingParams) error
 }
 
 var _ Querier = (*Queries)(nil)
