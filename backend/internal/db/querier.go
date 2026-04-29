@@ -32,12 +32,23 @@ type Querier interface {
 	// third bullet → return FINGERPRINT_CONFLICT (409). Hash differs so the unique
 	// idempotency index does NOT catch this; we scan by logical_request_id.
 	GetClaimFingerprintByLogicalRequestID(ctx context.Context, arg GetClaimFingerprintByLogicalRequestIDParams) ([]GetClaimFingerprintByLogicalRequestIDRow, error)
+	// F-OBS-001 Tx2 Settler queries.
+	// Backed by billing_ledger_claims + usage_records + billing_events tables
+	// in docs/schema/observability-billing.sql + scheduler_outbox in
+	// docs/schema/pool-routing.sql.
+	// Tx2 entry: lock the claim row + verify still-settle-able state.
+	// Spec §Tx2 step 9: re-fetch claim row; verify status='reserving' AND
+	// acquisition_token matches.
+	GetClaimForSettle(ctx context.Context, arg GetClaimForSettleParams) (GetClaimForSettleRow, error)
 	GetModelRoutingForGroup(ctx context.Context, arg GetModelRoutingForGroupParams) ([]GetModelRoutingForGroupRow, error)
 	GetOrCreateAccountStormBudget(ctx context.Context, arg GetOrCreateAccountStormBudgetParams) (GetOrCreateAccountStormBudgetRow, error)
 	GetProtocolPolicyByVersion(ctx context.Context, arg GetProtocolPolicyByVersionParams) (ProtocolPolicyVersion, error)
 	GetStickyBinding(ctx context.Context, arg GetStickyBindingParams) (int64, error)
 	GetTokenVersion(ctx context.Context, arg GetTokenVersionParams) (int32, error)
 	IncrementInFlightCount(ctx context.Context, arg IncrementInFlightCountParams) (int64, error)
+	// Spec §Tx2 step 13: audit-grade event row in same Tx; survives Usage Record
+	// async failure (per F-OBS-001 H8). event_type per CHECK constraint.
+	InsertBillingEvent(ctx context.Context, arg InsertBillingEventParams) (InsertBillingEventRow, error)
 	// Insert a new reserving claim. Caller MUST hold the row lock acquired via
 	// GetClaimByIdempotency (which returns 0 rows when no prior claim exists),
 	// so this insert is conflict-free under serializable isolation.
@@ -45,7 +56,14 @@ type Querier interface {
 	InsertOAuthRefreshAuditEvent(ctx context.Context, arg InsertOAuthRefreshAuditEventParams) error
 	InsertPoolRoutingAuditEvent(ctx context.Context, arg InsertPoolRoutingAuditEventParams) error
 	InsertProtocolPolicyVersion(ctx context.Context, arg InsertProtocolPolicyVersionParams) (InsertProtocolPolicyVersionRow, error)
+	// Spec §Tx2 step 11: cross-threshold notification, in same Tx.
+	// For Phase B.5 v0.1, the threshold detection itself is stubbed (operator
+	// policy returns false unless explicitly forced in test); when the policy
+	// returns true, this query enqueues the row.
+	InsertSchedulerOutboxRow(ctx context.Context, arg InsertSchedulerOutboxRowParams) (InsertSchedulerOutboxRowRow, error)
 	InsertSlotAcquisition(ctx context.Context, arg InsertSlotAcquisitionParams) (int64, error)
+	// Spec §Tx2 step 12: write Usage Record into the same Tx as everything else.
+	InsertUsageRecord(ctx context.Context, arg InsertUsageRecordParams) (int64, error)
 	// F-PROTO-002 protocol capability matrix queries.
 	// Backed by docs/schema/protocol-translation.sql (capability + policy tables).
 	ListCapabilityCellsForPair(ctx context.Context, arg ListCapabilityCellsForPairParams) ([]ListCapabilityCellsForPairRow, error)
@@ -62,8 +80,21 @@ type Querier interface {
 	ReReserveAbortedClaim(ctx context.Context, arg ReReserveAbortedClaimParams) (ReReserveAbortedClaimRow, error)
 	ReleaseAccountStormSlot(ctx context.Context, id int64) error
 	ReleaseSlotAcquisition(ctx context.Context, arg ReleaseSlotAcquisitionParams) error
+	// Spec §Tx2 step 14: TRULY IDEMPOTENT in_flight decrement (codex P1 review fix).
+	// Atomic CTE: flip pool_slot_acquisitions.status acquired -> released_success
+	// AND ONLY THEN decrement provider_accounts.in_flight_count. If the token is
+	// replayed (e.g. retry storm), the inner UPDATE returns 0 rows because status
+	// is no longer 'acquired'; the outer UPDATE no-ops; in_flight_count stays correct.
+	// $2 = release_reason text ('settled_committed' / 'settled_aborted' / etc.)
+	ReleaseSlotAndDecrementInFlight(ctx context.Context, arg ReleaseSlotAndDecrementInFlightParams) (int64, error)
 	TryAcquireAccountStormSlot(ctx context.Context, id int64) (int32, error)
 	UpdateAccountCredentialsCAS(ctx context.Context, arg UpdateAccountCredentialsCASParams) (int64, error)
+	// Abort path: claim status reserving → aborted; usage_record/billing_event
+	// still written (with zero cost) for audit completeness.
+	// Tenant-scoped to prevent cross-tenant abort via stale claim id.
+	UpdateClaimAbortedWithReason(ctx context.Context, arg UpdateClaimAbortedWithReasonParams) (int64, error)
+	// Spec §Tx2 step 15: claim status reserving → committed.
+	UpdateClaimCommitted(ctx context.Context, arg UpdateClaimCommittedParams) (int64, error)
 	UpsertCapabilityCell(ctx context.Context, arg UpsertCapabilityCellParams) error
 	UpsertStickyBinding(ctx context.Context, arg UpsertStickyBindingParams) error
 	// Pattern B placeholder writeback per F-POOL-001 §6 + F-OBS-001 §Tx1 step 6.

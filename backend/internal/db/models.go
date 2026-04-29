@@ -461,11 +461,11 @@ type UsageRecord struct {
 	CacheCreation1hTokens int32              `db:"cache_creation_1h_tokens" json:"cache_creation_1h_tokens"`
 	ImageOutputTokens     int32              `db:"image_output_tokens" json:"image_output_tokens"`
 	ActualCost            decimal.Decimal    `db:"actual_cost" json:"actual_cost"`
-	InputCost             pgtype.Numeric     `db:"input_cost" json:"input_cost"`
-	OutputCost            pgtype.Numeric     `db:"output_cost" json:"output_cost"`
-	CacheCreationCost     pgtype.Numeric     `db:"cache_creation_cost" json:"cache_creation_cost"`
-	CacheReadCost         pgtype.Numeric     `db:"cache_read_cost" json:"cache_read_cost"`
-	ImageOutputCost       pgtype.Numeric     `db:"image_output_cost" json:"image_output_cost"`
+	InputCost             decimal.Decimal    `db:"input_cost" json:"input_cost"`
+	OutputCost            decimal.Decimal    `db:"output_cost" json:"output_cost"`
+	CacheCreationCost     decimal.Decimal    `db:"cache_creation_cost" json:"cache_creation_cost"`
+	CacheReadCost         decimal.Decimal    `db:"cache_read_cost" json:"cache_read_cost"`
+	ImageOutputCost       decimal.Decimal    `db:"image_output_cost" json:"image_output_cost"`
 	EndClass              string             `db:"end_class" json:"end_class"`
 	UsageSource           string             `db:"usage_source" json:"usage_source"`
 	ConfidenceScore       pgtype.Numeric     `db:"confidence_score" json:"confidence_score"`
