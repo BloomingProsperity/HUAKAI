@@ -175,7 +175,7 @@ These are HUAKAI-DESIGN, NOT inherited:
 - **H13 — Per-failure-class temp-unsched duration**: refresh-timeout / OAuth-401 / OAuth-invalid-grant / OAuth-network-error each have separate duration knobs.
 - **H14 — Provider abstraction**: HUAKAI factors out shared OAuth refresh + 429 handling, leaving only HTTP details per provider. Sub2API has copy-paste-similar logic across providers.
 
-## 5. Failure Taxonomy (15 reasons)
+## 5. Failure Taxonomy (19 reasons)
 
 Aligned with [pool-selection-synthesis-v2 §4](pool-selection-synthesis-v2.md) and [streaming-forwarder-synthesis §5.4](streaming-forwarder-synthesis.md):
 
@@ -199,7 +199,7 @@ Aligned with [pool-selection-synthesis-v2 §4](pool-selection-synthesis-v2.md) a
 | `OPENAI_403_COUNTED` | OpenAI 403 + counter < 3 | temp_unsched(10m) | SUB2API-VERIFIED |
 | `OPENAI_403_DISABLED` | OpenAI 403 + counter ≥ 3 | permanent_disable | SUB2API-VERIFIED |
 | `ANTIGRAVITY_403_VALIDATION` | Antigravity 403 validation | permanent_disable + show_url | SUB2API-VERIFIED |
-| `CUSTOM_ERROR_CODE` | operator-configured | account_cooldown(operator_configured) | SUB2API-VERIFIED |
+| `CUSTOM_ERROR_CODE` | operator-configured status code policy match | terminal account error/disable behavior unless HUAKAI chooses a separate cooldown variant | SUB2API-VERIFIED for terminal behavior; HUAKAI-DESIGN for any recoverable-cooldown variant |
 
 ## 6. The Synthesized HUAKAI Algorithm — Final
 
@@ -252,7 +252,7 @@ KEEP Sub2API's three-step sequence (§1.7); ADD:
 | R10 | Pool mode short-circuit on uncustomized errors. | KEEP from Sub2API. |
 | R11 | Retry-After propagated to client. | HUAKAI-DESIGN. |
 
-## 8. Test Scenarios (AT-RATE-001..017)
+## 8. Test Scenarios (AT-RATE-001..020)
 
 Sub2API-inheritable:
 - AT-RATE-001 / OpenAI 429 with x-codex-* headers + 7d exhausted → SetRateLimited(now + reset_7d).
@@ -267,7 +267,7 @@ Sub2API-inheritable:
 - AT-RATE-010 / OpenAI 403 with counter ≥ 3 → permanent disable.
 - AT-RATE-011 / Antigravity 403 validation → permanent disable + URL extraction.
 - AT-RATE-012 / Antigravity model-specific 429 → model_only_cooldown.
-- AT-RATE-013 / ClearRateLimit cascade: clears overload / model / temp / 403 counter atomically.
+- AT-RATE-013 / ClearRateLimit cascade clears overload / model / temp / 403 counter; HUAKAI-design variant verifies the cascade is atomic or compensation-safe across DB / cache / counter state (Sub2API source shows sequential clears, not a single-tx cascade).
 
 HUAKAI-design:
 - AT-RATE-014 / Tenant-level rate limit: T1 hits per-tenant cap → T1 rejected; T2 unaffected.
@@ -278,14 +278,14 @@ HUAKAI-design:
 - AT-RATE-019 / Reason taxonomy: every 429 produces `routing_reason.rate_limit_reason` with valid enum, no free-form.
 - AT-RATE-020 / Token-leakage-safe logging: simulate refresh failure with fragment in error → log line contains `[REDACTED]`.
 
-## 9. Open TODOs
+## 9. Verified Source Resolutions
 
-- **TODO-1**: Read `model_rate_limit.go` full body (101 lines) for granular Antigravity-specific edge cases.
-- **TODO-2**: Verify `tryTempUnschedulable` body (line 1481+) for full rule-matching algorithm (Codex pass summary above; verify against source).
-- **TODO-3**: Cross-check one-api's rate-limit (much simpler than Sub2API per Codex one-api pass) for KEEP candidates.
-- **TODO-4**: Verify whether `SetRateLimited` is row-level locked in PostgreSQL or just cached.
+(Previously TODO-1..4 in pre-Released drafts. All closed via Codex final review 2026-04-28; per CL-009 a Released spec carries no open questions.)
 
-These do NOT block synthesis sign-off; they DO block Released spec (per CL-009).
+- **model_rate_limit granularity**: VERIFIED. Per Codex pass §1.8, model-level limits stored in account `extra.model_rate_limits`; key is mapped-model + thinking-suffix (Antigravity); active when reset_at parses RFC3339 AND in future. Source: `model_rate_limit.go:9-12, 30-37, 68-96`.
+- **Temp-unsched matching**: VERIFIED. Matcher starts at `ratelimit_service.go:1432`; matching algorithm at `:1432-1482`; trigger persistence at `:1517-1557`. Per-account opt-in via `temp_unschedulable_enabled` boolean; rules array with `error_code` / `keywords` / `duration_minutes` / `description`; 64 KiB body cap; case-insensitive substring; 2 KiB message snapshot.
+- **one-api rate-limit comparison**: REMOVED FROM SCOPE. The one-api pass already covers it; this synthesis treats one-api as background-only comparison and does NOT inherit one-api-specific patterns. HUAKAI's rate-limit design is Sub2API-rooted with HUAKAI improvements.
+- **SetRateLimited locking**: VERIFIED via Codex pass. Repository writes via direct UPDATE statement (`account_repo.go:1048-1053`). NOT serializable-locked; cache + DB write executed sequentially in service layer. HUAKAI invariant R2 (distributed coordination via row-lock or Redis-Lua atomic) is therefore HUAKAI-DESIGN, not inherited.
 
 ## 10. Provenance
 
