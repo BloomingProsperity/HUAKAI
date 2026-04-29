@@ -1,7 +1,6 @@
 // Package main is the HUAKAI gateway entry point.
 //
-// Phase 3 skeleton per docs/16_PHASED_DELIVERY_PLAN.md §Phase 3.
-// DR-008 §1: skeleton ONLY — no business logic until per-feature spec implementation.
+// Phase C wiring per docs/plans/2026-04-30-phase-c-gateway-wiring.md.
 //
 // Released specs governing this binary:
 //   - docs/specs/pool-routing.md (F-POOL-001)
@@ -26,6 +25,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"go.uber.org/zap"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/config"
+	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 )
 
 func main() {
@@ -41,18 +45,48 @@ func main() {
 	}
 }
 
+// deps is the live dependency tree handlers receive after run() boots.
+//
+// Phase C.1: pool selector is intentionally absent — its production
+// AccountSource + SlotManager + ClaimGate adapters land in C.2. The chat
+// handler in C.3 will fail-closed if Pool.Select is unreachable, instead of
+// silently routing to a no-op selector.
+type deps struct {
+	cfg       *config.Config
+	queries   *db.Queries
+	claimGate billing.ClaimGate
+	settler   billing.Settler
+	forwarder *gateway.StreamForwarder
+}
+
 func run(logger *zap.Logger) error {
-	cfgPath := os.Getenv("HUAKAI_CONFIG")
-	if cfgPath == "" {
-		cfgPath = "config.yaml"
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
 	}
+	logger.Info("config loaded",
+		zap.String("listen", cfg.Listen),
+		zap.Bool("smoke_auth_configured", cfg.SmokeAuthConfigured()),
+	)
 
-	// TODO: load + validate config per docs/specs/api-contract.md
-	logger.Info("config path", zap.String("path", cfgPath))
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
-	// TODO: open DB pool per DR-006 (PostgreSQL via pgx)
-	// TODO: open Redis pool per DR-006 (cache + rate-limit + token-cache)
-	// TODO: wire feature modules per docs/specs/*.md
+	pgPool, err := db.Open(ctx, db.PoolConfig{DSN: cfg.DatabaseURL})
+	if err != nil {
+		return fmt.Errorf("open db: %w", err)
+	}
+	defer pgPool.Close()
+
+	q := db.New(pgPool)
+
+	d := &deps{
+		cfg:       cfg,
+		queries:   q,
+		claimGate: billing.NewClaimGate(pgPool),
+		settler:   billing.NewSettler(pgPool),
+		forwarder: &gateway.StreamForwarder{},
+	}
 
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID)
@@ -60,23 +94,16 @@ func run(logger *zap.Logger) error {
 	router.Use(middleware.Recoverer)
 	router.Use(middleware.Timeout(60 * time.Second))
 
-	mountRoutes(router, logger)
+	mountRoutes(router, d, logger)
 
-	addr := os.Getenv("HUAKAI_ADDR")
-	if addr == "" {
-		addr = ":8080"
-	}
 	srv := &http.Server{
-		Addr:              addr,
+		Addr:              cfg.Listen,
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
 	go func() {
-		logger.Info("listening", zap.String("addr", addr))
+		logger.Info("listening", zap.String("addr", cfg.Listen))
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server error", zap.Error(err))
 			cancel()
@@ -94,8 +121,9 @@ func run(logger *zap.Logger) error {
 // mountRoutes wires the HTTP routes per docs/openapi/openapi.yaml.
 // All handlers return 501 Not Implemented in skeleton; per-feature implementation
 // happens in Phase 4+ vertical slices.
-func mountRoutes(r chi.Router, logger *zap.Logger) {
+func mountRoutes(r chi.Router, _ *deps, logger *zap.Logger) {
 	// Gateway endpoints (F-GW-002)
+	// Phase C.3 will replace this with the real chat handler that uses deps.
 	r.Post("/v1/chat/completions", notImplemented("F-GW-002 chat-completions handler"))
 	r.Post("/v1/responses", notImplemented("F-GW-002 responses handler"))
 	r.Post("/v1/messages", notImplemented("F-GW-002 anthropic-messages handler"))
