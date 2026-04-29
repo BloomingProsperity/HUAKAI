@@ -295,6 +295,68 @@ The rule applies to **every agent in this project — not just Codex, not just C
 
 If the temptation to skip planning arises ("this is small enough", "I'll just do it"), that itself is the signal that planning is needed. The agents that keep this codebase healthy plan small, plan often, and surface the plan even when it feels overhead. Skipping the plan is how earlier rounds in this project produced shallow specifier output that wasted Owner's time and required round-2 redo.
 
+## Parallel Plans + Cross-Discuss (added 2026-04-30 Owner directive — corrected)
+
+> "这个计划和 codex 讨论了吗？以后计划也要相互交叉讨论验证。做任何事情都需要"
+> "不是让他对你的计划进行交叉审查，而是他也定计划 你也定，交叉讨论"
+
+The Plan-Before-Execute discipline (above) produces the artifact. This rule says: **for non-trivial work, both Claude and Codex independently produce their own plan, then reconcile through cross-discussion**. It is parallel-draft, NOT sequential review of one plan.
+
+The first interpretation Claude tried — "Codex reviews Claude's plan" — was explicitly rejected by Owner. Sequential review only catches mistakes IN one person's mental model. Independent drafts surface different starting assumptions, different blind spots, different priorities. Same round-table logic as the DR governance protocol.
+
+### Workflow
+
+1. Owner authorizes a non-trivial work unit. Plan-Before-Execute rule says "write a plan."
+2. **Both agents draft independently:**
+   - Claude writes `docs/plans/YYYY-MM-DD-<descriptor>-claude.md`
+   - Codex writes `docs/plans/YYYY-MM-DD-<descriptor>-codex.md`
+   - Each writes WITHOUT seeing the other's draft. Same brief / Owner directive / scope; fresh independent thinking.
+3. Compare the two plans. Surface to Owner:
+   - **Agreements** — points both plans landed on (likely correct)
+   - **Conflicts** — points where they disagree (Owner picks)
+   - **Gaps** — things one plan caught that the other missed
+4. Owner approves a synthesized plan. Either:
+   - Write `docs/plans/YYYY-MM-DD-<descriptor>.md` (no suffix) as the merged authoritative version, OR
+   - Amend one of the two with a "synthesized after diff" header — record which.
+5. Only after the synthesized plan exists does execution begin.
+
+### Codex dispatch prompt template
+
+```
+codex exec --full-auto "Owner has authorized <work unit description>.
+
+Independently write your own plan to docs/plans/YYYY-MM-DD-<descriptor>-codex.md.
+Do NOT read any docs/plans/YYYY-MM-DD-<descriptor>-claude.md if it exists — the
+point is independent thinking.
+
+Plan content (per AGENTS.md Plan-Before-Execute):
+  - Owner directive (quote that triggered this work)
+  - Scope (in / out)
+  - Success criteria
+  - Time estimate
+  - Blast radius
+  - Failure modes + mitigations
+  - Decision points needing Owner sign-off
+  - Pre-execution checklist
+  - Concrete execution order
+
+Spec context to consider: <list relevant spec paths>
+Code context to consider: <list relevant module paths>
+
+Write the plan and exit. Do NOT execute anything from the plan."
+```
+
+### What parallel-draft catches that single-plan-review misses
+
+- **Different priors** — Claude may default to one architectural pattern; Codex may default to another. Surfacing the divergence early prevents lock-in.
+- **Hidden assumptions** — when one plan assumes table X exists and the other reads migrations and finds X doesn't, the gap is explicit before any code is written.
+- **Dropped requirements** — one plan may quietly defer something the other treats as in-scope; surfaces a real decision instead of an accidental omission.
+- **Sequence disagreements** — one plan may put DI before handler; the other handler before DI. Different starting points often imply different risk models.
+
+### Exemption
+
+Same trivial-action exemption as Plan-Before-Execute: typo fixes, single-line changes, reading-only operations.
+
 ## Per-Commit Cross-Review Discipline (added 2026-04-29 by Owner directive)
 
 > "所有的动作和行为都要和 codex 进行交叉处理！包括代码。熟练运行 agent 利用 codex 得 renew 功能"
