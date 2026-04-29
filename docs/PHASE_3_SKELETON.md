@@ -8,22 +8,23 @@ Per [DR-008 §1](decisions/DR-008-methodology-choice-strict-authenticity.md): sk
 
 | Path | Purpose |
 | --- | --- |
-| `go.mod` | Go module root: `github.com/BloomingProsperity/HUAKAI` |
-| `cmd/gateway/main.go` | Entry point + chi router with `notImplemented` stubs for all OpenAPI paths |
-| `internal/pool/` | F-POOL-001 selector interface |
-| `internal/billing/` | F-OBS-001 + F-BILL-001 framing: ClaimGate (Tx1) + Settler (Tx2) interfaces |
-| `internal/gateway/` | F-GW-002 streaming Forwarder interface + EndClass + UsageSource enums |
-| `internal/rate/` | F-RATE-001 cooldown Service interface + 19-reason taxonomy enum |
-| `internal/auth/` | F-AUTH-005 TokenProvider + MimicryEngine interfaces |
-| `internal/proto/` | F-PROTO-002 ClientAdapter + UpstreamAdapter interfaces |
-| `internal/obs/` | F-OBS-001 Repository interface |
-| `pkg/adapter/` | Concrete protocol adapters live here (Phase 4) |
-| `sql/migrations/` | 6 ordered migration files (0001..0006), copies of `docs/schema/*.sql` |
-| `sql/queries/` | sqlc query files (Phase 4 vertical-slice implementer-lane adds) |
-| `sqlc.yaml` | sqlc config: pgx/v5, decimal money types, UUID acquisition tokens |
-| `Makefile` | build / test / fmt / vet / generate / migrate-up / migrate-down / run / docker-build |
-| `config.example.yaml` | Operator config schema (illustrative; Phase 4 may refine) |
-| `Dockerfile` | Development image (operator-grade hardening in Phase 8) |
+| `backend/go.mod` | Go module root: `github.com/BloomingProsperity/HUAKAI` |
+| `backend/cmd/gateway/main.go` | Entry point + chi router with `notImplemented` stubs for all OpenAPI paths |
+| `backend/internal/pool/` | F-POOL-001 selector interface |
+| `backend/internal/billing/` | F-OBS-001 + F-BILL-001 framing: ClaimGate (Tx1) + Settler (Tx2) interfaces |
+| `backend/internal/gateway/` | F-GW-002 streaming Forwarder interface + EndClass + UsageSource enums |
+| `backend/internal/rate/` | F-RATE-001 cooldown Service interface + 19-reason taxonomy enum |
+| `backend/internal/auth/` | F-AUTH-005 TokenProvider + MimicryEngine interfaces |
+| `backend/internal/proto/` | F-PROTO-002 ClientAdapter + UpstreamAdapter interfaces |
+| `backend/internal/obs/` | F-OBS-001 Repository interface |
+| `backend/pkg/adapter/` | Concrete protocol adapters live here (Phase 4) |
+| `backend/sql/migrations/` | 6 ordered migration files (0001..0006), copies of `docs/schema/*.sql` |
+| `backend/sql/queries/` | sqlc query files (Phase 4 vertical-slice implementer-lane adds) |
+| `backend/sqlc.yaml` | sqlc config: pgx/v5, decimal money types, UUID acquisition tokens |
+| `backend/Makefile` | build / test / fmt / vet / generate / migrate-up / migrate-down / run / docker-build |
+| `backend/config.example.yaml` | Operator config schema (illustrative; Phase 4 may refine) |
+| `backend/Dockerfile` | Development image (operator-grade hardening in Phase 8) |
+| `frontend/` | TypeScript admin UI placeholder (Gemini, Phase 7+) |
 
 ## What is NOT in the skeleton (deferred)
 
