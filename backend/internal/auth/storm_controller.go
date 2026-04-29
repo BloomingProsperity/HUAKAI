@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"sync"
-	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 )
@@ -27,7 +26,7 @@ func (c *StormController) Acquire(ctx context.Context, tenantID, accountID int64
 
 	budget, err := c.queries.GetOrCreateAccountStormBudget(ctx, db.GetOrCreateAccountStormBudgetParams{
 		TenantID:          tenantID,
-		ProviderAccountID: accountID,
+		ProviderAccountID: &accountID,
 	})
 	if err != nil {
 		return nil, "", err
@@ -59,9 +58,3 @@ func (c *StormController) AcquireGlobal(ctx context.Context, tenantID int64) (fu
 	panic("TODO: global storm scope deferred")
 }
 
-func TestStormControllerSmoke(t *testing.T) {
-	controller := NewStormController(nil)
-	if controller == nil {
-		t.Fatalf("controller is nil")
-	}
-}
