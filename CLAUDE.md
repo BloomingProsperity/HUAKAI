@@ -53,6 +53,7 @@ After Owner confirmation, Claude should read relevant rules, understand the assi
 4. Use `.agents/skills/feature-merger/SKILL.md` when combining similar features.
 5. Use `.agents/skills/clean-room-license-guard/SKILL.md` before approving implementation plans influenced by non-MIT references.
 6. Use `docs/15_RELEASE_GATES.md` before release decisions.
+7. **After completing each vertical slice (impl + tests committed)**: run cross-validation via `/cross-review <slice-id> <feature-id> <spec-path>` BEFORE opening the next slice. The slash command physically loads `docs/templates/codex-reviewer.md` into a read-only Codex reviewer; you may not hand-write the prompt. If the reviewer returns REJECT, you MUST NOT proceed — surface to Owner.
 
 ## Authority Boundaries
 

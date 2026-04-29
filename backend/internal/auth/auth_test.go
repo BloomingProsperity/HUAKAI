@@ -8,6 +8,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -141,7 +142,8 @@ func TestAT_AUTH_005_002_RefreshLockSerialization(t *testing.T) {
 	r := newRig(t, handler)
 	r.addAccount(2, 200, oauthAccountType, oauthCredJSON(t, "old"+goodToken, "rt"+goodToken, r.upstream.URL, time.Now().Add(1*time.Minute)))
 
-	const N = 12
+	// Spec AT-AUTH-005-002: 100 concurrent requests; exactly 1 acquires lock; others wait/use stale.
+	const N = 100
 	var wg sync.WaitGroup
 	wg.Add(N)
 	for i := 0; i < N; i++ {
@@ -153,8 +155,8 @@ func TestAT_AUTH_005_002_RefreshLockSerialization(t *testing.T) {
 	wg.Wait()
 	mu.Lock()
 	defer mu.Unlock()
-	if refreshCount > N/2 {
-		t.Fatalf("expected refresh to be serialized; got %d upstream calls for %d goroutines", refreshCount, N)
+	if refreshCount != 1 {
+		t.Fatalf("storm invariant violated: spec requires exactly 1 upstream refresh under same-account contention; got %d for %d goroutines", refreshCount, N)
 	}
 }
 
@@ -240,8 +242,16 @@ func TestAT_AUTH_005_009_TokenShapeAttestation(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected ERR_TOKEN_MALFORMED on garbage token")
 	}
+	if !errors.Is(err, ErrTokenMalformed) {
+		t.Fatalf("expected typed ErrTokenMalformed sentinel; got %v", err)
+	}
 	if !contains(r.audit.entries, OutcomeTokenMalformed) {
 		t.Fatalf("expected audit entry with OutcomeTokenMalformed; got %+v", r.audit.entries)
+	}
+	r.marker.mu.Lock()
+	defer r.marker.mu.Unlock()
+	if _, ok := r.marker.operatorAttention[storeKey(9, 900)]; !ok {
+		t.Fatalf("malformed token must trigger MarkOperatorAttention; got %+v", r.marker.operatorAttention)
 	}
 }
 
@@ -284,6 +294,64 @@ func TestAT_AUTH_005_011_TokenLeakageSafeSanitizer(t *testing.T) {
 			t.Errorf("sanitizer left token-shaped pattern in: %q", out)
 		}
 	}
+}
+
+// AT-AUTH-005-012: CAS conflict loser uses winner's token + db_version_conflict audit.
+// Forces CAS-loss path by wrapping memStore to fake `RowsAffected=0` with a known winner.
+func TestAT_AUTH_005_012_CASLoserUsesWinnerToken(t *testing.T) {
+	winnerToken := "winner" + goodToken
+	r := newRig(t, okOAuthHandler("loser"+goodToken, "rt"+goodToken, 3600))
+	r.addAccount(12, 1200, oauthAccountType, oauthCredJSON(t, "old"+goodToken, "rt"+goodToken, r.upstream.URL, time.Now().Add(1*time.Minute)))
+
+	// Override the inner store with a forcing wrapper.
+	winnerCred := antigravityCredential{AccessToken: winnerToken, RefreshToken: "rt" + goodToken, ExpiresAt: time.Now().Add(1 * time.Hour), OAuthEndpoint: r.upstream.URL}
+	winnerJSON, err := json.Marshal(winnerCred)
+	if err != nil {
+		t.Fatalf("marshal winner: %v", err)
+	}
+	winning := ProviderAccountCredential{
+		TenantID: 12, AccountID: 1200, Provider: antigravityProvider,
+		AccountType: oauthAccountType, Enabled: true,
+		CredentialJSON: winnerJSON, TokenVersion: 99,
+	}
+	forcing := &casForcingStore{inner: r.store, winning: &winning}
+	r.provider = NewAntigravityTokenProvider(forcing, r.audit, r.cache, r.lock, r.marker, r.upstream.Client(), nil)
+
+	tok, err := r.provider.GetAccessToken(context.Background(), 12, 1200)
+	if err != nil {
+		t.Fatalf("CAS-loser path returned error: %v", err)
+	}
+	if tok != winnerToken {
+		t.Fatalf("CAS loser must use winner's access_token; got %q want %q", tok, winnerToken)
+	}
+	conflicts := r.audit.byOutcome(OutcomeDBVersionConflict)
+	if len(conflicts) == 0 {
+		t.Fatalf("CAS-loser path must emit OutcomeDBVersionConflict audit; got %+v", r.audit.entries)
+	}
+}
+
+// casForcingStore wraps memStore to force RowsAffected=0 (CAS-loss) on the first
+// SaveRefreshedCredential call, returning a known winning credential.
+type casForcingStore struct {
+	inner   *memStore
+	winning *ProviderAccountCredential
+	mu      sync.Mutex
+	fired   bool
+}
+
+func (s *casForcingStore) LoadProviderAccount(ctx context.Context, tenantID, accountID int64) (ProviderAccountCredential, error) {
+	return s.inner.LoadProviderAccount(ctx, tenantID, accountID)
+}
+
+func (s *casForcingStore) SaveRefreshedCredential(ctx context.Context, u RefreshedCredentialUpdate) (CredentialSaveResult, error) {
+	s.mu.Lock()
+	if !s.fired {
+		s.fired = true
+		s.mu.Unlock()
+		return CredentialSaveResult{RowsAffected: 0, Winning: s.winning}, nil
+	}
+	s.mu.Unlock()
+	return s.inner.SaveRefreshedCredential(ctx, u)
 }
 
 // =====================================================================

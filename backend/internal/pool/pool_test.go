@@ -4,6 +4,7 @@ package pool
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -13,14 +14,15 @@ import (
 // =====================================================================
 
 // AT-POOL-001: Layer 1 routing-config hit.
-// Group has model_routing config mapping requested_model → [101,102];
-// only Account 101 is healthy. Selector returns 101.
+// Routing config maps requested_model → [101, 102]; HealthGate marks 102 unhealthy.
+// Selector MUST return 101 (in routing list AND healthy), NOT 102 (in list but unhealthy)
+// nor 999 (healthier but outside routing list).
 func TestAT_POOL_001_RoutingConfigHit(t *testing.T) {
 	now := time.Now()
 	src := &stubAccountSource{accounts: []*AccountSnapshot{
 		snap(101, 1, 100, 0.1, now.Add(-1*time.Hour)),
-		snap(102, 1, 100, 0.5, now.Add(-30*time.Minute)),
-		snap(999, 1, 50, 0.05, now.Add(-2*time.Hour)), // higher priority but NOT in routing list
+		snap(102, 1, 100, 0.5, now.Add(-30*time.Minute)), // unhealthy via HealthGate
+		snap(999, 1, 50, 0.05, now.Add(-2*time.Hour)),    // healthier but NOT in routing list
 	}}
 	policy := &stubPolicy{p: &RoutingPolicy{
 		ModelAccountIDs: map[string][]int64{"claude-3-5-sonnet": {101, 102}},
@@ -28,11 +30,14 @@ func TestAT_POOL_001_RoutingConfigHit(t *testing.T) {
 	}}
 	claims := &captureClaimGate{}
 	slots := newMemSlotManager()
+	gates := DefaultGateChain()
+	gates.Health = unhealthyAccountsGate{102: {}}
 
 	sel := NewDefaultSelector(src,
 		WithRoutingPolicySource(policy),
 		WithSlotManager(slots),
 		WithClaimGate(claims),
+		WithGateChain(gates),
 	)
 	res, err := sel.Select(context.Background(), SelectionRequest{
 		TenantID: 1, ClaimID: 50, RequestedModel: "claude-3-5-sonnet",
@@ -40,12 +45,68 @@ func TestAT_POOL_001_RoutingConfigHit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Select: %v", err)
 	}
-	if res.AccountID != 101 && res.AccountID != 102 {
-		t.Fatalf("expected routing-config account 101 or 102; got %d", res.AccountID)
+	if res.AccountID != 101 {
+		t.Fatalf("expected only-healthy routing-list winner 101; got %d", res.AccountID)
 	}
-	if res.AccountID == 999 {
-		t.Fatalf("selector picked a non-routing-list account")
+}
+
+// AT-POOL-011: routing reason JSON schema-conformant on every selection result.
+func TestAT_POOL_011_RoutingReasonSchema(t *testing.T) {
+	now := time.Now()
+	src := &stubAccountSource{accounts: []*AccountSnapshot{
+		snap(40, 1, 100, 0.1, now.Add(-1*time.Hour)),
+		snap(41, 1, 100, 0.2, now.Add(-30*time.Minute)),
+	}}
+	policy := &stubPolicy{p: &RoutingPolicy{TopKDefault: 1}}
+	gates := DefaultGateChain()
+	gates.Health = unhealthyAccountsGate{41: {}}
+
+	sel := NewDefaultSelector(src,
+		WithRoutingPolicySource(policy),
+		WithSlotManager(newMemSlotManager()),
+		WithClaimGate(&captureClaimGate{}),
+		WithGateChain(gates),
+	)
+	res, err := sel.Select(context.Background(), SelectionRequest{
+		TenantID: 1, ClaimID: 70, RequestedModel: "x",
+		ExcludedAccounts: nil,
+	})
+	if err != nil {
+		t.Fatalf("Select: %v", err)
 	}
+	if len(res.RoutingReasonJSON) == 0 {
+		t.Fatalf("RoutingReasonJSON must always be populated; got empty")
+	}
+	var got map[string]any
+	if err := json.Unmarshal(res.RoutingReasonJSON, &got); err != nil {
+		t.Fatalf("RoutingReasonJSON not valid JSON: %v", err)
+	}
+	for _, key := range []string{
+		"selection_layer", "affinity_key_class", "capability_outcome",
+		"candidate_counts_by_exclusion", "pooling_group_id",
+		"scoring_policy_version", "signal_contributions",
+	} {
+		if _, ok := got[key]; !ok {
+			t.Errorf("RoutingReasonJSON missing required key %q; got %+v", key, got)
+		}
+	}
+	if got["selection_layer"] != "fresh" {
+		t.Errorf("selection_layer should be 'fresh' for Layer-2 win; got %v", got["selection_layer"])
+	}
+	exclSummary, _ := got["candidate_counts_by_exclusion"].(map[string]any)
+	if v, ok := exclSummary["health"]; !ok || v.(float64) < 1 {
+		t.Errorf("expected at least 1 health-gate exclusion (account 41); got %+v", exclSummary)
+	}
+}
+
+// unhealthyAccountsGate rejects accounts in its set; used to model HealthGate in tests.
+type unhealthyAccountsGate map[int64]struct{}
+
+func (u unhealthyAccountsGate) Allow(_ context.Context, account *AccountSnapshot, _ SelectionRequest) (bool, GateFailureReason, error) {
+	if _, bad := u[account.ID]; bad {
+		return false, GateFailureHealth, nil
+	}
+	return true, "", nil
 }
 
 // AT-POOL-003: sticky-standalone hit.
@@ -179,8 +240,22 @@ func TestAT_POOL_009_AcquisitionTokenIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Select: %v", err)
 	}
-	if res.AcquisitionToken == [16]byte{} {
-		t.Skip("Selector did not surface AcquisitionToken in result yet (Phase 4.5 wiring); skip idempotent assertion.")
+	if res.AcquisitionToken == ([16]byte{}) {
+		t.Fatalf("Selector must surface AcquisitionToken in result for idempotent release contract")
+	}
+	// Look up the release fn the slot manager handed out.
+	release := slots.releaseFor(res.AcquisitionToken)
+	if release == nil {
+		t.Fatalf("memSlotManager has no release fn for token %v", res.AcquisitionToken)
+	}
+	if err := release(context.Background()); err != nil {
+		t.Fatalf("release #1: %v", err)
+	}
+	if err := release(context.Background()); err != nil {
+		t.Fatalf("release #2: %v", err)
+	}
+	if got := slots.releaseCount(res.AcquisitionToken); got != 1 {
+		t.Fatalf("idempotent release violated: token released %d times (must be exactly 1)", got)
 	}
 }
 
@@ -202,8 +277,8 @@ func TestAT_POOL_010_TenantIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Select: %v", err)
 	}
-	if res.AccountID == 2 {
-		t.Fatalf("cross-tenant leak: selector picked Tenant 2's account from Tenant 1 request")
+	if res.AccountID != 1 {
+		t.Fatalf("tenant 1 must select its OWN account 1; got %d (cross-tenant leak risk)", res.AccountID)
 	}
 }
 

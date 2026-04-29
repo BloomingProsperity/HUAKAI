@@ -66,12 +66,16 @@ func (c *captureClaimGate) WriteAcquisition(_ context.Context, claimID, accountI
 
 // memSlotManager hands out tokens; tracks releases.
 type memSlotManager struct {
-	mu       sync.Mutex
-	releases map[uuid.UUID]int
+	mu          sync.Mutex
+	releases    map[uuid.UUID]int
+	releaseFns  map[uuid.UUID]ReleaseFunc
 }
 
 func newMemSlotManager() *memSlotManager {
-	return &memSlotManager{releases: make(map[uuid.UUID]int)}
+	return &memSlotManager{
+		releases:   make(map[uuid.UUID]int),
+		releaseFns: make(map[uuid.UUID]ReleaseFunc),
+	}
 }
 
 func (m *memSlotManager) Acquire(_ context.Context, account *AccountSnapshot, _ SelectionRequest) (*AcquireResult, error) {
@@ -82,6 +86,9 @@ func (m *memSlotManager) Acquire(_ context.Context, account *AccountSnapshot, _ 
 		m.releases[tok]++
 		return nil
 	})
+	m.mu.Lock()
+	m.releaseFns[tok] = release
+	m.mu.Unlock()
 	return &AcquireResult{AcquisitionToken: tok, Release: release}, nil
 }
 
@@ -89,6 +96,12 @@ func (m *memSlotManager) releaseCount(tok uuid.UUID) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.releases[tok]
+}
+
+func (m *memSlotManager) releaseFor(tok uuid.UUID) ReleaseFunc {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.releaseFns[tok]
 }
 
 // snap is shorthand for an AccountSnapshot literal.
