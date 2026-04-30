@@ -7,6 +7,8 @@ package db
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const decrementInFlightCount = `-- name: DecrementInFlightCount :exec
@@ -376,6 +378,86 @@ func (q *Queries) ListEligibleAccounts(ctx context.Context, arg ListEligibleAcco
 			&i.LastRefreshAt,
 			&i.LastRefreshOutcome,
 			&i.OAuthEndpointHealth,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listEligibleAccountsByPoolGroup = `-- name: ListEligibleAccountsByPoolGroup :many
+SELECT
+    pa.id,
+    pa.tenant_id,
+    pa.provider_id,
+    pa.channel_id,
+    pa.cap_concurrency,
+    pa.in_flight_count,
+    pa.priority,
+    pa.last_dispatch_at,
+    pa.model_allow_list,
+    pa.cap_queue_sticky,
+    pa.cap_queue_fallback
+FROM provider_accounts pa
+INNER JOIN channels c ON c.id = pa.channel_id
+WHERE pa.tenant_id = $1
+  AND c.pool_group_id = $2
+  AND c.tenant_id = $1
+  AND pa.enabled = true
+  AND pa.deleted_at IS NULL
+  AND pa.health_state IN ('operational', 'degraded')
+ORDER BY pa.priority, pa.last_dispatch_at NULLS FIRST
+`
+
+type ListEligibleAccountsByPoolGroupParams struct {
+	TenantID    int64 `db:"tenant_id" json:"tenant_id"`
+	PoolGroupID int64 `db:"pool_group_id" json:"pool_group_id"`
+}
+
+type ListEligibleAccountsByPoolGroupRow struct {
+	ID               int64              `db:"id" json:"id"`
+	TenantID         int64              `db:"tenant_id" json:"tenant_id"`
+	ProviderID       int64              `db:"provider_id" json:"provider_id"`
+	ChannelID        int64              `db:"channel_id" json:"channel_id"`
+	CapConcurrency   int32              `db:"cap_concurrency" json:"cap_concurrency"`
+	InFlightCount    int32              `db:"in_flight_count" json:"in_flight_count"`
+	Priority         int32              `db:"priority" json:"priority"`
+	LastDispatchAt   pgtype.Timestamptz `db:"last_dispatch_at" json:"last_dispatch_at"`
+	ModelAllowList   []string           `db:"model_allow_list" json:"model_allow_list"`
+	CapQueueSticky   int32              `db:"cap_queue_sticky" json:"cap_queue_sticky"`
+	CapQueueFallback int32              `db:"cap_queue_fallback" json:"cap_queue_fallback"`
+}
+
+// Phase C.2: pool-group-keyed eligibility lookup for the gateway selector.
+// Joins channels → provider_accounts so a SelectionRequest with PoolGroupID
+// (and no explicit ChannelID) can resolve to the candidate account set.
+// cap_queue_sticky/fallback are returned so the selector can construct
+// WaitPlan fallback when every eligible account is at concurrency cap.
+func (q *Queries) ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListEligibleAccountsByPoolGroupParams) ([]ListEligibleAccountsByPoolGroupRow, error) {
+	rows, err := q.db.Query(ctx, listEligibleAccountsByPoolGroup, arg.TenantID, arg.PoolGroupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListEligibleAccountsByPoolGroupRow
+	for rows.Next() {
+		var i ListEligibleAccountsByPoolGroupRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.ProviderID,
+			&i.ChannelID,
+			&i.CapConcurrency,
+			&i.InFlightCount,
+			&i.Priority,
+			&i.LastDispatchAt,
+			&i.ModelAllowList,
+			&i.CapQueueSticky,
+			&i.CapQueueFallback,
 		); err != nil {
 			return nil, err
 		}

@@ -68,6 +68,34 @@ WHERE tenant_id = sqlc.arg(tenant_id)
   AND health_state IN ('operational', 'degraded')
 ORDER BY priority, last_dispatch_at NULLS FIRST;
 
+-- name: ListEligibleAccountsByPoolGroup :many
+-- Phase C.2: pool-group-keyed eligibility lookup for the gateway selector.
+-- Joins channels → provider_accounts so a SelectionRequest with PoolGroupID
+-- (and no explicit ChannelID) can resolve to the candidate account set.
+-- cap_queue_sticky/fallback are returned so the selector can construct
+-- WaitPlan fallback when every eligible account is at concurrency cap.
+SELECT
+    pa.id,
+    pa.tenant_id,
+    pa.provider_id,
+    pa.channel_id,
+    pa.cap_concurrency,
+    pa.in_flight_count,
+    pa.priority,
+    pa.last_dispatch_at,
+    pa.model_allow_list,
+    pa.cap_queue_sticky,
+    pa.cap_queue_fallback
+FROM provider_accounts pa
+INNER JOIN channels c ON c.id = pa.channel_id
+WHERE pa.tenant_id = sqlc.arg(tenant_id)
+  AND c.pool_group_id = sqlc.arg(pool_group_id)
+  AND c.tenant_id = sqlc.arg(tenant_id)
+  AND pa.enabled = true
+  AND pa.deleted_at IS NULL
+  AND pa.health_state IN ('operational', 'degraded')
+ORDER BY pa.priority, pa.last_dispatch_at NULLS FIRST;
+
 -- name: GetAccountForRevalidation :one
 SELECT
     id,

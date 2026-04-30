@@ -30,6 +30,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 )
 
 func main() {
@@ -46,14 +47,10 @@ func main() {
 }
 
 // deps is the live dependency tree handlers receive after run() boots.
-//
-// Phase C.1: pool selector is intentionally absent — its production
-// AccountSource + SlotManager + ClaimGate adapters land in C.2. The chat
-// handler in C.3 will fail-closed if Pool.Select is unreachable, instead of
-// silently routing to a no-op selector.
 type deps struct {
 	cfg       *config.Config
 	queries   *db.Queries
+	selector  *pool.DefaultSelector
 	claimGate billing.ClaimGate
 	settler   billing.Settler
 	forwarder *gateway.StreamForwarder
@@ -79,10 +76,16 @@ func run(logger *zap.Logger) error {
 	defer pgPool.Close()
 
 	q := db.New(pgPool)
+	selector := pool.NewDefaultSelector(
+		pool.NewDBAccountSource(q),
+		pool.WithSlotManager(pool.NewDBSlotManager(pgPool)),
+		pool.WithClaimGate(pool.NewDBClaimGate(q)),
+	)
 
 	d := &deps{
 		cfg:       cfg,
 		queries:   q,
+		selector:  selector,
 		claimGate: billing.NewClaimGate(pgPool),
 		settler:   billing.NewSettler(pgPool),
 		forwarder: &gateway.StreamForwarder{},
