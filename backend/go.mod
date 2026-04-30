@@ -9,6 +9,7 @@ require (
 	github.com/shopspring/decimal v1.4.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/crypto v0.50.0
+	golang.org/x/text v0.36.0
 )
 
 require (
@@ -17,5 +18,4 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/text v0.36.0 // indirect
 )

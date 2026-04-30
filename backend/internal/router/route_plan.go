@@ -11,9 +11,10 @@ type RequestContext struct {
 }
 
 // ResolvedModel is the registry-resolved model identity — output of
-// registry.ResolveModel. Phase C v0.1 has no Registry yet, so the chat
-// handler constructs a minimal ResolvedModel inline. Slice 2 will replace
-// the inline construction with a real Registry call.
+// registry.ResolveModel. Slice 2 (N+5a) populates this via the real
+// Registry; the chat handler still threads the legacy
+// PlanInput.ExplicitPoolGroupID escape hatch alongside until N+5b removes
+// it.
 type ResolvedModel struct {
 	PublicAlias        string   // what the client asked for, e.g. "claude-3-5-sonnet"
 	InternalModelID    string   // canonical id, e.g. "anthropic/claude-3.5-sonnet-20241022"
@@ -22,6 +23,20 @@ type ResolvedModel struct {
 	Capabilities       []string // "stream" / "tools" / "vision" / "json"
 	PricingClass       string   // free-form tag for Phase E pricing-table lookup; not a number
 	ProtocolFamily     string   // "openai_chat" / "anthropic_messages" / etc.
+
+	// PoolCandidates is the ordered list of pool_group_id values the
+	// Registry resolved for this (alias, tenant) pair, sorted by binding
+	// priority then id. Index 0 is the primary candidate. Slice 2 (N+5a)
+	// populates this; N+5b switches the Router to consume it instead of
+	// PlanInput.ExplicitPoolGroupID.
+	PoolCandidates []int64
+
+	// SnapshotVersion is the Registry-portion stamp produced by
+	// registry.ResolveModel: "registry:<tenant_id>:<version>". The Router
+	// concatenates its own policy version when writing
+	// RoutePlan.SnapshotVersion. Audit replay reads this back from
+	// usage_records.snapshot_version (added in migration 0008).
+	SnapshotVersion string
 }
 
 // RequestFeatures expresses what the request actually wants done. Used by

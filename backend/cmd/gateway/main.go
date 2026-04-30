@@ -34,6 +34,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
 
 // smokeBuildStamp is overridden via -ldflags during smoke test builds to
@@ -57,13 +58,18 @@ func main() {
 
 // deps is the live dependency tree handlers receive after run() boots.
 type deps struct {
-	cfg       *config.Config
-	queries   *db.Queries
-	selector  *pool.DefaultSelector
-	claimGate billing.ClaimGate
-	settler   billing.Settler
-	forwarder *gateway.StreamForwarder
+	cfg         *config.Config
+	queries     *db.Queries
+	selector    *pool.DefaultSelector
+	claimGate   billing.ClaimGate
+	settler     billing.Settler
+	forwarder   *gateway.StreamForwarder
 	inboundAuth *auth.APIKeyResolver
+	// Slice 2 (N+5a): real Registry resolver. Wired but not consumed by
+	// the chat handler — the body-side pool_group_id escape hatch is
+	// removed in N+5b. Construct early so integration tests can exercise
+	// the resolver without booting the HTTP path.
+	modelRegistry *registry.PostgresRegistry
 }
 
 func run(logger *zap.Logger) error {
@@ -113,7 +119,13 @@ func run(logger *zap.Logger) error {
 		// SmokeAuthResolver kept behind `//go:build smoke_only` for emergency
 		// rollback; see docs/plans/2026-04-30-n4-l0-minimum.md D7.
 		inboundAuth: auth.NewAPIKeyResolver(q),
+		// Slice 2 (N+5a) registry resolver. cache=nil → noopCache (D2: no
+		// L0 cache; LRU lands in Slice 5 keyed on registry_version).
+		// Takes pgxpool.Pool because Resolve runs all reads inside a
+		// REPEATABLE READ + read-only TX (codex N+5a P2 fix).
+		modelRegistry: registry.NewPostgresRegistry(pgPool, nil),
 	}
+	_ = d.modelRegistry // wired now; consumed by N+5b chat handler rewrite
 
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID)

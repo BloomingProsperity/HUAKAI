@@ -44,10 +44,22 @@ type Querier interface {
 	// Spec §Tx2 step 9: re-fetch claim row; verify status='reserving' AND
 	// acquisition_token matches.
 	GetClaimForSettle(ctx context.Context, arg GetClaimForSettleParams) (GetClaimForSettleRow, error)
+	// Resolves the canonical model row, constrained to the requesting tenant
+	// (scope='tenant' AND tenant_id=$tenant) OR scope='global'. This blocks
+	// a misconfigured tenant alias from reaching another tenant's model row
+	// (codex N+5a P3 finding 2026-04-30 — defense in depth in addition to
+	// admin-write-time validation).
+	GetModelByID(ctx context.Context, arg GetModelByIDParams) (GetModelByIDRow, error)
 	GetModelRoutingForGroup(ctx context.Context, arg GetModelRoutingForGroupParams) ([]GetModelRoutingForGroupRow, error)
 	GetOrCreateAccountStormBudget(ctx context.Context, arg GetOrCreateAccountStormBudgetParams) (GetOrCreateAccountStormBudgetRow, error)
 	GetProtocolPolicyByVersion(ctx context.Context, arg GetProtocolPolicyByVersionParams) (ProtocolPolicyVersion, error)
 	GetStickyBinding(ctx context.Context, arg GetStickyBindingParams) (int64, error)
+	// Returns whether a tenant has opted into global-catalog inheritance.
+	// Missing row -> nothing returned -> resolver treats as false.
+	GetTenantInheritGlobal(ctx context.Context, tenantID int64) (bool, error)
+	// Returns the per-tenant registry version stamp. Missing row means the
+	// tenant has no admin writes yet; resolver treats as version 1.
+	GetTenantSnapshotVersion(ctx context.Context, tenantID int64) (int64, error)
 	GetTokenVersion(ctx context.Context, arg GetTokenVersionParams) (int32, error)
 	// Tenant-scoped user lookup. Used by admin/audit queries (Phase E)
 	// and by the resolver to confirm user.status = 'active'.
@@ -86,6 +98,17 @@ type Querier interface {
 	// WaitPlan fallback when every eligible account is at concurrency cap.
 	ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListEligibleAccountsByPoolGroupParams) ([]ListEligibleAccountsByPoolGroupRow, error)
 	ListLossyCellsForOperatorUI(ctx context.Context, tenantID int64) ([]ListLossyCellsForOperatorUIRow, error)
+	// Returns capability rows visible to (tenant_id, model_id), including
+	// global capabilities for the same model. enabled rows only.
+	ListModelCapabilities(ctx context.Context, arg ListModelCapabilitiesParams) ([]ListModelCapabilitiesRow, error)
+	// Returns enabled bindings ordered by priority then id, filtered by the
+	// effective_from/until time window. ALWAYS tenant-scoped: pool_groups
+	// are tenant-owned so a global binding would leak pool_group ids across
+	// tenants (codex N+5a P1 finding 2026-04-30 — addressed by removing the
+	// scope column from model_pool_bindings entirely; bindings are inherently
+	// tenant-local even for global models). Slice 2 emits all candidates;
+	// Router selects index 0 only at L0 (AttemptBudget=1).
+	ListModelPoolBindings(ctx context.Context, arg ListModelPoolBindingsParams) ([]ListModelPoolBindingsRow, error)
 	ListOrphanedAcquisitions(ctx context.Context) ([]PoolSlotAcquisition, error)
 	// F-OBS-001 read-only query surface for the admin/audit lane.
 	// Per docs/specs/_invariants/cross-module-boundaries.md CMB-7: this file
@@ -112,6 +135,20 @@ type Querier interface {
 	// parent tables means soft-deleted tenants/users never surface a
 	// candidate row at all.
 	LookupAPIKeysByPrefix(ctx context.Context, keyPrefix string) ([]LookupAPIKeysByPrefixRow, error)
+	// Step 2 of resolve. Only called when tenant lookup misses AND the tenant
+	// policy permits global inheritance.
+	LookupGlobalAlias(ctx context.Context, aliasLower string) (LookupGlobalAliasRow, error)
+	// Slice 2 (N+5a) Model Registry queries.
+	// Per docs/plans/2026-04-30-n5-model-registry.md.
+	// Per CMB-7: SELECT-only at request time. Snapshot version increments
+	// happen via a future Phase E admin writer outside this package.
+	// Per CMB-1: NEVER select credentials; this package never joins
+	// provider_accounts.credentials, OAuth tokens, or api_keys.key_hash.
+	// Step 1 of resolve. Returns the tenant-scoped alias row regardless of
+	// status (active/disabled/deleted-protected). The Go resolver checks
+	// status: tenant disabled is an EXPLICIT DENY that blocks global fallback
+	// per D3 invariant (integration test #5).
+	LookupTenantAlias(ctx context.Context, arg LookupTenantAliasParams) (LookupTenantAliasRow, error)
 	MarkAccountTempUnschedulable(ctx context.Context, arg MarkAccountTempUnschedulableParams) error
 	// Re-attempt path: an earlier attempt aborted (transient upstream failure,
 	// not FINGERPRINT_CONFLICT). Operator policy allows resurrecting the row

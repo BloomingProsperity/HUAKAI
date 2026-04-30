@@ -78,3 +78,6 @@ coverage/
 
 # OMC artifacts (ask / ccg outputs are session-local)
 .omc/
+
+# OMC dispatch scratch — codex prompt drafts (per CLAUDE.md #11 clean-room)
+docs/plans/.codex-prompt-*.md
