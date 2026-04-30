@@ -52,15 +52,16 @@ type captureClaimGate struct {
 }
 
 type claimWrite struct {
+	TenantID  int64
 	ClaimID   int64
 	AccountID int64
 	Token     uuid.UUID
 }
 
-func (c *captureClaimGate) WriteAcquisition(_ context.Context, claimID, accountID int64, token uuid.UUID) error {
+func (c *captureClaimGate) WriteAcquisition(_ context.Context, tenantID, claimID, accountID int64, token uuid.UUID) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.calls = append(c.calls, claimWrite{claimID, accountID, token})
+	c.calls = append(c.calls, claimWrite{tenantID, claimID, accountID, token})
 	return nil
 }
 

@@ -49,7 +49,7 @@ type StickyStore interface {
 }
 
 type ClaimGate interface {
-	WriteAcquisition(ctx context.Context, claimID, accountID int64, token uuid.UUID) error
+	WriteAcquisition(ctx context.Context, tenantID, claimID, accountID int64, token uuid.UUID) error
 }
 
 type SelectorOption func(*DefaultSelector)
@@ -201,7 +201,7 @@ func (s *DefaultSelector) tryLayer(ctx context.Context, req SelectionRequest, ca
 			continue
 		}
 		if s.claims != nil && req.ClaimID != 0 {
-			if err := s.claims.WriteAcquisition(ctx, req.ClaimID, account.ID, acquired.AcquisitionToken); err != nil {
+			if err := s.claims.WriteAcquisition(ctx, req.TenantID, req.ClaimID, account.ID, acquired.AcquisitionToken); err != nil {
 				_ = acquired.release(ctx)
 				if errors.Is(err, ErrClaimRace) {
 					return nil, false, nil

@@ -69,6 +69,12 @@ type Querier interface {
 	ListCapabilityCellsForPair(ctx context.Context, arg ListCapabilityCellsForPairParams) ([]ListCapabilityCellsForPairRow, error)
 	ListCapabilityCellsForTenant(ctx context.Context, tenantID int64) ([]ListCapabilityCellsForTenantRow, error)
 	ListEligibleAccounts(ctx context.Context, arg ListEligibleAccountsParams) ([]ProviderAccount, error)
+	// Phase C.2: pool-group-keyed eligibility lookup for the gateway selector.
+	// Joins channels → provider_accounts so a SelectionRequest with PoolGroupID
+	// (and no explicit ChannelID) can resolve to the candidate account set.
+	// cap_queue_sticky/fallback are returned so the selector can construct
+	// WaitPlan fallback when every eligible account is at concurrency cap.
+	ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListEligibleAccountsByPoolGroupParams) ([]ListEligibleAccountsByPoolGroupRow, error)
 	ListLossyCellsForOperatorUI(ctx context.Context, tenantID int64) ([]ListLossyCellsForOperatorUIRow, error)
 	ListOrphanedAcquisitions(ctx context.Context) ([]PoolSlotAcquisition, error)
 	MarkAccountTempUnschedulable(ctx context.Context, arg MarkAccountTempUnschedulableParams) error
