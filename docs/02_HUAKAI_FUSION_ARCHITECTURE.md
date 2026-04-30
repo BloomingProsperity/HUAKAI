@@ -2,12 +2,14 @@
 
 | 字段 | 值 |
 | --- | --- |
-| Status | v0.1 (合成自 21 份独立深度拆解材料) |
+| Status | **v0.2** — 加入 3-tier 切分 + 5 复杂度轴 + L0/L1/L2 商业路线图 + 实测进度 |
 | 作者 | Claude PM-Orchestrator (Opus) |
-| 日期 | 2026-04-29 |
-| 输入材料 | 7 项目 × 3 视角（codex specifier R3 + codex critic + claude deep）= 21 份；7 个 inventory；7 份 Released spec；DR-001/002/006 决议；01_PROJECT_BRIEF |
-| 形态 | 中文 executive 总览（Part A）+ 可视化 + 4 张表（Part B） |
+| 日期 | 2026-04-30 (v0.1: 2026-04-29) |
+| v0.2 driver | Owner 2026-04-30 三条纠正：(1) 3-tier 责任切分（Router/Pool/Executor）；(2) "融合怪 = 8 灵魂全部融合，不是 sub2 一家底座"；(3) "拆解还不够"——增加 5 复杂度轴的 mechanism 跟踪 |
+| 输入材料 | 21 份独立深度拆解 + 7 个 inventory + 7 份 Released spec + DR-001/002/006/008 + 01_PROJECT_BRIEF + 50 个 Tx2 invariant + 7 条 CMB cross-module invariant + Slice 1+4 落地证据 |
+| 形态 | 中文 executive 总览（Part A）+ 可视化 + 5 张表（Part B） |
 | 读者 | Owner（决策入口）+ 后续 contributor（执行入口） |
+| 当前实测进度 | **加权 ~30%** — money path 70% (Phase B.5/C.4 落地 + commit ce133da) + 治理 100% + Router skeleton 30% (Slice 1) + Obs query 40% (Slice 4) + L0 商业化 0% + 真 upstream 0% |
 
 ---
 
@@ -15,46 +17,156 @@
 
 ## 一句话产品定位
 
-**HUAKAI 是 Sub2API 算法底座 + 多项目最佳实践融合的多租户 AI Gateway，主面向"卖 API（自部署）+ 卖 SaaS（卖给别人运营）"双业务模式（DR-002）。**
+**HUAKAI 是把 8 个开源 AI gateway 项目的灵魂全部融合在一个 PG schema + 一个 binary 里活下来的"融合怪"，主面向"卖 API（自部署）+ 卖 SaaS（卖给别人运营）"双业务模式（DR-002）。**
 
-不是再造一个 sub2api / one-api。是**取 sub2api 的 layered routing + claim-gate 底座，加上 7 个参考项目里实测有效的零碎能力，做成一个能在多租户、money-grade、PostgreSQL 后端上跑得起来的产品**。
+商业本质：sub2api 给的灵魂是「用 $20/月 Anthropic Pro 订阅跑 API 价的 token 套利」。HUAKAI 卖 SaaS = 代别人跑这个套利 + new-api 的运营壳 + portkey 的成本优化器 + helicone 的透明日志 + litellm 的统一 SDK + envoy 的声明式配置 + one-api 的额度分账，all-api-hub 当反例不抄。
 
-## 简化架构（5 层）
+**不是 sub2api fork**，也不是堆 8 个项目的功能清单，是把 8 个项目"分散的灵魂"按统一架构重写成一个产品。
+
+## 顶层架构（3-tier 责任切分，2026-04-30 Owner 定调）
+
+Owner 2026-04-30 quote: "Router 决定应该尝试哪些路线；Resource Pool 决定这条路线下哪个资源现在能 claim；Gateway Executor 负责按 RoutePlan 跑 attempt、claim、forward、settle、fallback。"
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│  L1  HTTP entry  (chi router + auth middleware)          │
-│      ↓ 解析 API Key → tenant_id + user_id                │
-├──────────────────────────────────────────────────────────┤
-│  L2  Tx1 ClaimGate  (F-OBS-001)                          │
-│      → 计算 idempotency 9 字段 SHA-256                   │
-│      → 6-row lock + insert claim row                     │
-│      → 失败 = 409 / 402 / 503，从不静默丢钱              │
-├──────────────────────────────────────────────────────────┤
-│  L3  Pool Selector  (F-POOL-001)                         │
-│      → 5 层选号: routing-config → sticky → fresh         │
-│      → 9-gate 链: tenant / lifecycle / channel / model   │
-│        / capability / credential* / health / group / excl│
-│      → 写回 acquisition_token 到 claim row (Pattern B)   │
-├──────────────────────────────────────────────────────────┤
-│  L4  Auth + Proto + Forwarder (F-AUTH-005 / F-PROTO-002 │
-│      / F-GW-002)                                          │
-│      → 凭证刷新（OAuth + 风暴预算 + CAS）                │
-│      → 协议翻译（HCSF canonical 中介）                   │
-│      → SSE 流转 + 13-class end_class + drain 预算        │
-├──────────────────────────────────────────────────────────┤
-│  L5  Tx2 Settler  (F-OBS-001)                            │
-│      → 5-effect 原子化（subscription / user / api-key    │
-│        / rate-windows / provider-quota）                  │
-│      → 写 usage_record + billing_event + outbox 同事务   │
-│      → in_flight_count -1 (acquisition_token 校验)       │
-│      → claim status: reserving → committed/aborted       │
-└──────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  Inbound HTTP  →  Auth (resolve)  →  Registry (resolve model)    │
+│                                          │                        │
+│                                          ▼                        │
+│  ┌──────────────────┐    ┌─────────────────────┐                  │
+│  │  Router Engine   │───▶│  Gateway Executor   │                  │
+│  │  Plan(...)       │    │  for each AttemptPlan:                 │
+│  │  - cross pool /  │    │    1. Pool.Claim    │                  │
+│  │    cross model / │    │    2. Adapter.Forward                   │
+│  │    cross cost    │    │    3. Settler.Settle / Refund           │
+│  │  - emit          │    │    4. on retryable err → next attempt   │
+│  │    RoutePlan     │    └─────────────────────┘                  │
+│  └──────────────────┘             │                                │
+│        │                          ▼                                │
+│        │                  ┌──────────────────┐    ┌──────────────┐│
+│        │                  │  Resource Pool   │───▶│   Adapter    ││
+│        │                  │  intra-pool 9-gate│   │  upstream/   ││
+│        │                  │  权重/冷却/槽位 │   │   client     ││
+│        │                  │  Claim → Lease   │   └──────┬───────┘│
+│        │                  └──────────────────┘          │        │
+│        │                                                ▼        │
+│        │                                          Upstream API   │
+│        ▼                                                          │
+│  ┌──────────────────────────────────────────────────────────────┐│
+│  │  Ledger (Reserve / Settle / Refund / RecordAttempt /         ││
+│  │          RecordUsage / Abort)                                ││
+│  │  Tx1 / Tx2 / append-only 50 invariants                       ││
+│  └──────────────────────────────────────────────────────────────┘│
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-`*` Credential gate 是 F-POOL-001 ↔ F-AUTH-005 跨边界，已通过 AT-XFEAT-001 集成测试。
+**6 公开契约**（[docs/specs/_invariants/cross-module-boundaries.md](specs/_invariants/cross-module-boundaries.md)）:
+```go
+ResolveInboundAuth(ctx, *http.Request) → RequestContext   // internal/auth
+ResolveModel(ctx, publicModel, tenant)  → ResolvedModel   // internal/registry
+Plan(ctx, RequestContext, ResolvedModel, RequestFeatures) → RoutePlan  // internal/router
+Claim(ctx, AttemptPlan) → Lease                           // internal/pool
+Forward(ctx, Lease, NormalizedRequest, w) → UpstreamResult  // internal/proto + pkg/adapter
+Reserve / Settle / Refund / RecordAttempt / RecordUsage / Abort  // internal/billing + internal/obs
+```
 
-## 7 个参考项目 — 1 句定位 + 1 件吸收
+**3-ID 系统** (Owner 2026-04-30 定):
+- `request_id` — 一次用户请求，全链路唯一（chi middleware 设最先）
+- `attempt_id` — 一次上游尝试（Executor 每次循环 iteration 设；fallback 后多个）
+- `lease_id = pool_slot_acquisitions.id` — 一次资源占用（Pool 设）
+- `claim_id`（既有）— Tx1 操作 ID
+- `acquisition_token`（既有）— **降级为 Internal 防重复释放令牌**，不是业务审计 ID
+- 审计链：`request_id → claim_id(s) → attempt_id(s) → lease_id(s) → usage_record(s)`
+
+**7 条 CMB invariant**（[cross-module-boundaries.md](specs/_invariants/cross-module-boundaries.md)）：
+- CMB-1: Router 不读凭证；CMB-2: Pool 不算 cost；CMB-3: Adapter 不绕 Ledger
+- CMB-4: Ledger 只通过事件结算；CMB-5: Credential 永不进日志
+- CMB-6: 三 ID 必须存在；CMB-7: Router 写 0 行，Pool 只写自己槽位行，Ledger 写其他
+
+## 5 复杂度轴（sub2api"抓刀"清单 + 实测进度）
+
+Owner 2026-04-30 quote: "sub2api 核心复杂度集中在'上下文状态 + 渠道调度 + 协议转换 + 计费补偿 + 异步任务'"。HUAKAI 必须在每条轴上吃透 mechanism，不只是功能列表。
+
+| 轴 | sub2api 是怎么做的 | HUAKAI 现状 | % | 关键 spec/code |
+|---|---|---|---|---|
+| **1. 上下文状态** | 续接 marker / sticky session / 跨账号 fallback | sticky_bindings 表 schema 有；逻辑代码 0 行 | **10%** | F-POOL-001 §Layer 1-2 |
+| **2. 渠道调度** | 5 层 routing + 9-gate + claim-gate Pattern B | 9-gate selector + Phase C.2 三 adapter (DBSlotManager / DBClaimGate / DBAccountSource) 已实现 | **60%** | [pool/](../backend/internal/pool/) + Slice 1 router skeleton |
+| **3. 协议转换** | OpenAI ↔ Anthropic ↔ Gemini canonical 中介 | 1 个 anthropic_sse upstream adapter；OpenAI client adapter 0；HCSF canonical 类型空 | **15%** | [proto/anthropic_sse.go](../backend/internal/proto/anthropic_sse.go) |
+| **4. 计费补偿** | claim-gate Tx1 + 5-effect Tx2 + audit billing event | F-OBS-001 + 50 invariants + Phase B.5 真实 PG + 7 集成测试 + 端到端 smoke | **70%** | [billing/](../backend/internal/billing/) + [F-OBS-001-tx2-invariants-checklist.md](specs/_invariants/F-OBS-001-tx2-invariants-checklist.md) |
+| **5. 异步任务** | orphan-sweep / DLQ replay / outbox consumer / token cache invalidation | spec 提名字；实现 0 行 | **0%** | (Phase 4.5 全部) |
+
+**5 轴评分: 1.55/5**。计费补偿吃透；渠道调度中等；其他三轴还浅。下一步重点（按 Slice 2-5）补 1/3，再补 5。
+
+## 8 灵魂融合表（"融合怪" — 不是 sub2 一家底座）
+
+| 项目 | License | 灵魂 | HUAKAI 吸收形态 | 当前 % |
+|---|---|---|---|---|
+| **sub2api** | LGPL-3.0 | OAuth 套利核心：登录 bootstrap + refresh + Claude Code mimicry + 5h window | F-AUTH-005 spec 有；refresh/mimicry/bootstrap 实现 0；登录 bootstrap 是 L0 必须 | **5%** |
+| **one-api** | MIT (anchor) | 多租户 + channel + 额度包分账 + 2-gate auto-disable | tenant + channel schema 有；额度包 0；auto-disable 0；分账 0 | **25%** |
+| **new-api** | AGPL-3.0 | 充值订单 + 邀请码 + 礼品卡 + admin 面板 + 缓存差价计费 + reasoning effort 透传 | 全 0（Phase 4 stub admin endpoints 14 个全 501） | **0%** |
+| **portkey** | MIT | Gateway as cost optimizer：fallback / retry / load balance / cache / virtual key | 9-gate 部分；fallback 0；retry 0；cache 0；virtual key 0；Slice 1 Router skeleton 已起 | **10%** |
+| **helicone** | GPL-3.0 | Transparent proxy 日志：不动客户端就拿 prompt+usage | usage_record 写入 70%；prompt body cold store 0；query API 40% (Slice 4) | **20%** |
+| **litellm** | MIT | 统一 SDK 100 模型 normalization + Router 重试 hierarchy | proto 抽象有；OpenAI/Gemini adapter 0；客户 SDK 0；只有 anthropic_sse | **10%** |
+| **all-api-hub** | AGPL-3.0 | (反例) 浏览器自动登录抓 30+ 账号 + 明文凭证 | DR-006 + RB-4 反例已记 → 不抄；只学"账号池概念" | **100% (反例完成)** |
+| **envoy-ai-gw** | Apache-2.0 | 企业 K8s CRD 声明式配置 | 思想保留；不上 K8s；Phase 9+ SaaS Edition packaging blueprint | **0%** |
+
+## 商业化路线图（L0/L1/L2 — 离"能赚钱"还差什么）
+
+按蓝图全部跑起来到 100%，目前在 ~30%。剩下分三层：
+
+### L0 — 必须补，否则 SaaS 跑不起来（"能不能开张"）
+
+| # | 项 | 当前 | 阻塞原因 |
+|---|---|---|---|
+| L0-1 | **sub2 登录 → OAuth refresh token bootstrap** | 0 行 | F-AUTH-005 只管"已有 token 的 refresh"，没管"首次拿 token"；操作员手工粘贴方案需要 admin form |
+| L0-2 | **End-user API key 签发** | 0 行 | 现在是 SmokeAuthResolver；需要 0007 schema (api_keys + users 表) + bcrypt + 签发 endpoint |
+| L0-3 | **Tenant 注册 / 登录**（SaaS 版） | 0 行 | DR-002 双版本前提；和 L0-2 一同进 0007 |
+| L0-4 | **Real pricing per model**（取代 hardcode 0.01） | 0 行 | 接 F-BILL-001 pricing-table；本身可以 hardcode JSON 第一版 |
+| L0-5 | **充值 / 支付 / 余额扣减** | 0 行 | Stripe / Alipay 接通；schema 加 wallet 表 |
+| L0-6 | **Admin UI** 起码能看 + 改账号 / 看用量 | 14 个 stub 全 501 | 现在 Slice 4 Obs Reader 提供 list-by-tenant 后端，需要前端壳 |
+
+### L1 — 应该补（产品基本完整，"能不能用"）
+
+| # | 项 | 当前 |
+|---|---|---|
+| L1-1 | **Real Anthropic upstream**（取代 mock SSE） | mock_upstream.go only |
+| L1-2 | **OpenAI client adapter**（取代 passthrough Anthropic） | 0；handler 注释标 Phase E scope-deferred |
+| L1-3 | **F-RATE-001 实现** | spec 有；代码 0 |
+| L1-4 | **DLQ + orphan sweep worker** | 0；spec 在 F-OBS-001 H8 |
+| L1-5 | **Multi-attempt fallback chain（真实 retry）** | Slice 1 Router skeleton 单 attempt；需 Slice 2 Registry + executor 抽出 |
+
+### L2 — 收尾（生产就绪，"能不能扩"）
+
+监控告警 / Backup-DR / CI-CD / KMS secrets / 客户 SDK / 公开文档站 / 法务 ToS+Privacy+DPA / 多 region HA — 全 0%。
+
+## 加权进度 ~30%（B.5/C.4 + Slice 1+4 落地后）
+
+| 维度 | 权重 | 进度 |
+|---|---|---|
+| 治理基线（DR + clean-room + 平行 plan + per-commit codex review + CMB） | 5% | 100% |
+| 计费补偿（money path） | 25% | 70% |
+| 渠道调度 | 15% | 60% |
+| 协议转换 | 10% | 15% |
+| 上下文状态 | 5% | 10% |
+| 异步任务 | 5% | 0% |
+| L0 商业化 | 20% | 0% |
+| L1 产品完整 | 10% | 0% |
+| L2 生产就绪 | 5% | 0% |
+
+**总加权 ≈ 30%**。money path 走完 70% 因最难、最贵；剩 70% 集中在 L0。
+
+## 接下来的 Slice 路线（codex 5-slice plan，Slice 1+4 已完成）
+
+| Slice | 状态 | 说明 |
+|---|---|---|
+| **Slice 1** Router skeleton | ✅ 已落 (commit 5d1fbd7) | `internal/router/` + 6 单测；handler 还没切过去 |
+| **Slice 2** Model Registry | ⏳ 等 Owner 批 0007 migration | 模型→capability 映射；删 PlanWithPoolGroupID 转接 |
+| **Slice 3** 3-ID schema chain | ⏳ 等 Owner 批 0008 migration | claim/usage/billing 加 request_id, attempt_id 列；Executor 真起 |
+| **Slice 4** Obs Reader | ✅ 已落 (commit 5d1fbd7) | `internal/obs/` + 5 集成测试；admin UI 后端就绪 |
+| **Slice 5** First real adapter | ⏳ 等 Owner 提供真凭证 | 取代 mock；OpenAI client adapter |
+| **L0 minimum** api_keys/users | ⏳ 等 Owner 批 0009 migration | bcrypt + SmokeAuthResolver 退役 |
+| **B12** credentials 加密 | ⏳ 等 Owner 批 0010 migration | jsonb → bytea + KMS envelope |
+
+## 7 个参考项目 — 1 句定位 + 1 件吸收（v0.1 保留；详细灵魂表见上方 8 灵魂融合表）
 
 | 项目 | License | 1 句定位 | HUAKAI 吸收的关键 1 件事 |
 | --- | --- | --- | --- |
@@ -75,13 +187,14 @@
 4. **all-api-hub 明文凭证模式绝不能进 HUAKAI**——服务端 KMS envelope encryption 强制（DR-006）。`provider_accounts.credentials_encrypted` bytea 列必加密层，admin export 默认排除。
 5. **Pool Phase C 真 SlotManager + audit 还是 stub**（来源：codex 自审）。HUAKAI 现有代码 in-memory mock；接 PostgreSQL 后必须真用 `pool_slot_acquisitions` 表，`InsertSlotAcquisition` + `ReleaseSlotAcquisition` 配 in_flight_count CAS。
 
-## 接下来 2-3 个工作 session 必做
+## 接下来 2-3 个工作 session 必做（v0.2 重排，v0.1 已完成的 N+1/N+3 标 ✅）
 
-按 [docs/plans/2026-04-29-integration-sprint-plan.md](plans/2026-04-29-integration-sprint-plan.md) §B-D：
-
-- **session N+1**：把 `cmd/gateway/main.go` 接通 → POST `/v1/chat/completions` 端到端串成（带真 PostgreSQL 的 Tx1+pool+auth+forwarder+Tx2 一条线）
-- **session N+2**：基于本框架补 spec deltas（见 Part B 表 C），合成成稳定 v1 specs
-- **session N+3**：integration test 套件（AT-OBS-001..014 + AT-XFEAT-001 + 端到端 smoke）
+- ✅ **N+1 完成**（commit `ce133da`）：`cmd/gateway/main.go` 端到端 POST `/v1/chat/completions` + smoke test 5/5 PG state 断言绿
+- ✅ **N+3 完成**（多个 commit）：Phase B.5 settler 7 集成测试 + Phase C.4 smoke + Slice 1 router 6 单测 + Slice 4 obs 5 集成测试
+- ⏳ **N+4 (next)**: L0 minimum — 0009 schema (api_keys + users 表) + bcrypt + 退役 SmokeAuthResolver；这是从 30% → 40% 的最直接路径
+- ⏳ **N+5**: Slice 2 Model Registry → 0007 migration → handler 切到 Router.Plan（不再走 PlanWithPoolGroupID 转接）
+- ⏳ **N+6**: Slice 5 First real adapter → OpenAI client adapter + 真 Anthropic upstream（取代 mock_upstream.go）
+- ⏳ **N+7**: Slice 3 三 ID schema chain → 0008 migration → Executor 真起（取代 chat handler 兼任）
 
 ---
 
@@ -305,13 +418,39 @@ docs/decompositions/
 
 ## 附：交付状态
 
+### v0.1 (2026-04-29)
 - [x] 21 份独立深度拆解（codex specifier R3 + codex critic + claude deep）
 - [x] truth-first 协议落档（AGENTS.md + CLAUDE.md）
 - [x] plan-before-execute 协议落档
 - [x] 本文件（融合架构总论）
-- [ ] 7 份 per-feature synthesis（暂缓——需要时分别合成）
-- [ ] Sprint plan §B 集成（PostgreSQL + Tx1/Tx2 真实现 + main.go 接通）
+
+### v0.2 增量（2026-04-30）
+- [x] **3-tier 架构切分** + 6 公开契约 + 3-ID 系统 + 7 条 CMB invariant 落档（[cross-module-boundaries.md](specs/_invariants/cross-module-boundaries.md)）
+- [x] **平行 plan 规则** 落档（CLAUDE.md #10 + AGENTS.md §Parallel Plans）
+- [x] **Clean-room prompt 治理** 落档（CLAUDE.md #11 + AGENTS.md §Clean-Room Codex Prompt Template）
+- [x] **5 个 sub2 复杂度轴** 跟踪进度（本文件 §5 复杂度轴）
+- [x] **8 灵魂融合表** 加 % 进度（本文件 §8 灵魂融合表）
+- [x] **L0/L1/L2 商业化路线图** 写出（本文件 §商业化路线图）
+- [x] **Phase B.5 settler** 真实 PG + 7 集成测试 + 50 invariant checklist（commit `fb340d2`）
+- [x] **Phase C.1-4** main.go DI + 3 selector adapters + chat handler + 端到端 smoke（commit `5d1fbd7..ce133da`）
+- [x] **Slice 1 Router skeleton** + 6 单测（commit `5d1fbd7`）
+- [x] **Slice 4 Obs Reader** + 5 集成测试（commit `5d1fbd7`）
+- [x] **AppLocker / SAC 解决方案** + run-go-test wrapper（commit `5d1fbd7`）
+
+### v0.2 待办（路线图 N+4..N+7）
+- [ ] **N+4 L0 minimum**: 0009 schema (api_keys + users) + bcrypt + 退役 SmokeAuthResolver
+- [ ] **N+5 Slice 2**: 0007 schema (model_registry) + handler 切到 `Router.Plan(ExplicitPoolGroupID)` 路径
+- [ ] **N+6 Slice 5**: OpenAI client adapter + 真 Anthropic upstream
+- [ ] **N+7 Slice 3**: 0008 schema (request_id + attempt_id 列) + Executor 抽出
+- [ ] **B12**: 0010 schema (credentials_encrypted bytea + KMS envelope)
 - [ ] Spec deltas D-1..D-15 落档到对应 spec 文件
+- [ ] L1 完整 + L2 生产就绪
 - [ ] v1.0 release gate decision
 
-下次 session 入口：从表 C 选 ≤3 个 D-id 作为单 session 目标，按 plan-before-execute 写 plan，然后执行。
+### 进度小结
+- v0.1 → v0.2 增量进度：~22% → ~30%
+- money path 已经走完 70%（最难、最贵的部分）
+- L0 商业化整体 0% — N+4 启动后是最快从 30% → 40% 的路径
+- 治理基线 100%（DR + clean-room + 平行 plan + per-commit codex review + CMB invariants）
+
+下次 session 入口：N+4 是默认起点（L0 minimum），不需要等任何 spec 决议；只需 Owner 批 0009 schema 即可开工。
