@@ -26,11 +26,14 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"go.uber.org/zap"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
 
 func main() {
@@ -54,6 +57,7 @@ type deps struct {
 	claimGate billing.ClaimGate
 	settler   billing.Settler
 	forwarder *gateway.StreamForwarder
+	authSmoke *auth.SmokeAuthResolver
 }
 
 func run(logger *zap.Logger) error {
@@ -88,7 +92,22 @@ func run(logger *zap.Logger) error {
 		selector:  selector,
 		claimGate: billing.NewClaimGate(pgPool),
 		settler:   billing.NewSettler(pgPool),
-		forwarder: &gateway.StreamForwarder{},
+		forwarder: &gateway.StreamForwarder{
+			UpstreamAdapter: &proto.AnthropicAdapter{},
+			Timeouts: gateway.TimeoutConfig{
+				FirstTokenTimeout:  5 * time.Second,
+				InterEventTimeout:  10 * time.Second,
+				TotalStreamTimeout: 60 * time.Second,
+				DrainMaxSeconds:    1 * time.Second,
+			},
+			ScannerBufferCap: 1 << 20,
+		},
+		authSmoke: &auth.SmokeAuthResolver{
+			BearerToken: cfg.SmokeBearerToken,
+			TenantID:    cfg.SmokeTenantID,
+			APIKeyID:    cfg.SmokeAPIKeyID,
+			UserID:      cfg.SmokeUserID,
+		},
 	}
 
 	router := chi.NewRouter()
@@ -122,12 +141,19 @@ func run(logger *zap.Logger) error {
 }
 
 // mountRoutes wires the HTTP routes per docs/openapi/openapi.yaml.
-// All handlers return 501 Not Implemented in skeleton; per-feature implementation
-// happens in Phase 4+ vertical slices.
-func mountRoutes(r chi.Router, _ *deps, logger *zap.Logger) {
-	// Gateway endpoints (F-GW-002)
-	// Phase C.3 will replace this with the real chat handler that uses deps.
-	r.Post("/v1/chat/completions", notImplemented("F-GW-002 chat-completions handler"))
+// All handlers return 501 Not Implemented except the Phase C.3 chat
+// completions endpoint which runs the full Tx1 → forward → Tx2 pipeline.
+func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
+	// Gateway endpoints (F-GW-002) — chat-completions is real (Phase C.3).
+	r.Post("/v1/chat/completions", gatewayhttp.NewChatCompletionsHandler(gatewayhttp.ChatHandlerDeps{
+		Auth:                 d.authSmoke,
+		ClaimGate:            d.claimGate,
+		Selector:             d.selector,
+		Forwarder:            d.forwarder,
+		Settler:              d.settler,
+		BillingPolicyVersion: d.cfg.BillingPolicyVersion,
+		RequestClass:         d.cfg.RequestClass,
+	}))
 	r.Post("/v1/responses", notImplemented("F-GW-002 responses handler"))
 	r.Post("/v1/messages", notImplemented("F-GW-002 anthropic-messages handler"))
 
