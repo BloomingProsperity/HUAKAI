@@ -357,6 +357,69 @@ Write the plan and exit. Do NOT execute anything from the plan."
 
 Same trivial-action exemption as Plan-Before-Execute: typo fixes, single-line changes, reading-only operations.
 
+## Clean-Room Codex Prompt Template (added 2026-04-30 Owner directive)
+
+> "你给自己的MD和codex提示词要注意禁止违规"
+
+ANY prompt — Claude self-instruction or Codex dispatch — that touches non-MIT reference project source MUST paste this block at the top, fill in the angle-bracket fields, and refuse if any field cannot be filled honestly. The block is normative: copy verbatim, do not paraphrase.
+
+```
+=== CLEAN-ROOM LANE GUARD (DR-000 Option C carve-out + 05_CLEAN_ROOM_POLICY) ===
+
+LANE: <specifier | reviewer>
+  - specifier = read source files, produce behavior-only summary
+  - reviewer  = verify behavior summary WITHOUT re-reading source
+  - On the same artifact, lane MUST be a different agent session than
+    any prior lane (no same agent doing both lanes on same file).
+
+PRIOR LANES ON THIS ARTIFACT: <list (agent + lane + UTC) | "none">
+
+REFERENCE PROJECTS IN SCOPE: <list e.g. sub2api / one-api / portkey>
+
+HARD PROHIBITIONS:
+  - NEVER copy function names verbatim
+  - NEVER copy struct field names verbatim
+  - NEVER copy comments verbatim
+  - NEVER copy file paths verbatim into output (cite as "Source files read"
+    block ONLY at end, not as in-prose references)
+  - NEVER do line-by-line algorithmic translation; behaviors must be
+    expressed in different sentence structure than upstream code ordering
+  - NEVER paste raw upstream code blocks (even small snippets)
+  - When upstream uses a distinctive identifier, rename in summary
+
+REQUIRED OUTPUT TAIL (must appear at end of every artifact):
+  Source files read: <relative paths>
+  Lane: <specifier | reviewer>
+  Agent: <model + ID>
+  UTC timestamp: <ISO 8601>
+
+ESCALATION: if you cannot honestly produce behavior summary without
+violating the prohibitions, RETURN A NO-OP "cannot summarize within
+clean-room" rather than violating. The Owner prefers a partial gap to
+a clean-room breach.
+
+=== END CLEAN-ROOM LANE GUARD ===
+```
+
+After this block the prompt continues with the actual decomposition / question / task. The block itself is the guardrail; if it is missing or partially filled, the dispatch is invalid.
+
+### When to use
+
+- ANY decomposition task (R1/R2/R3/Rn) on the 7 reference projects
+- ANY mechanism question that requires reading reference source
+- ANY compare-and-contrast task spanning multiple references
+- ANY "how does project X handle Y" investigation
+
+### When NOT needed
+
+- Reading HUAKAI-internal code (`backend/`, `docs/specs/`, `docs/decisions/`)
+- Reading official spec documents (Anthropic Messages API docs, OpenAI Chat Completions docs) — these are public protocols, not reference-project source
+- Reading reference-project README / public docs (which are intentionally published) — but if README contains code blocks they are still upstream source and the guard applies
+
+### Rationale
+
+DR-000 picked Option C with carve-outs (account-pool routing, auth core, billing ledger). The Option C lane separation is what makes the carve-outs defensible later. Skipping the lane guard turns Option C into Option A by accident, which would re-open R-LIC-001 (LGPL contamination risk) and burn the clean-room defense at trial / acquisition diligence.
+
 ## Per-Commit Cross-Review Discipline (added 2026-04-29 by Owner directive)
 
 > "所有的动作和行为都要和 codex 进行交叉处理！包括代码。熟练运行 agent 利用 codex 得 renew 功能"
