@@ -36,7 +36,13 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
 
+// smokeBuildStamp is overridden via -ldflags during smoke test builds to
+// produce a unique binary hash per run, dodging Smart App Control's
+// per-hash block cache. Empty in normal/production builds.
+var smokeBuildStamp string
+
 func main() {
+	_ = smokeBuildStamp // referenced only by the smoke build to defeat dead-code elimination
 	logger, err := zap.NewProduction()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "logger init failed: %v\n", err)
@@ -57,7 +63,7 @@ type deps struct {
 	claimGate billing.ClaimGate
 	settler   billing.Settler
 	forwarder *gateway.StreamForwarder
-	authSmoke *auth.SmokeAuthResolver
+	inboundAuth *auth.APIKeyResolver
 }
 
 func run(logger *zap.Logger) error {
@@ -67,7 +73,7 @@ func run(logger *zap.Logger) error {
 	}
 	logger.Info("config loaded",
 		zap.String("listen", cfg.Listen),
-		zap.Bool("smoke_auth_configured", cfg.SmokeAuthConfigured()),
+		zap.String("auth_mode", "api_keys_table"),
 	)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -102,12 +108,11 @@ func run(logger *zap.Logger) error {
 			},
 			ScannerBufferCap: 1 << 20,
 		},
-		authSmoke: &auth.SmokeAuthResolver{
-			BearerToken: cfg.SmokeBearerToken,
-			TenantID:    cfg.SmokeTenantID,
-			APIKeyID:    cfg.SmokeAPIKeyID,
-			UserID:      cfg.SmokeUserID,
-		},
+		// Phase L0 minimum (N+4a): table-backed inbound auth via api_keys.
+		// Replaces the SmokeAuthResolver env-injected single bearer pattern.
+		// SmokeAuthResolver kept behind `//go:build smoke_only` for emergency
+		// rollback; see docs/plans/2026-04-30-n4-l0-minimum.md D7.
+		inboundAuth: auth.NewAPIKeyResolver(q),
 	}
 
 	router := chi.NewRouter()
@@ -146,7 +151,7 @@ func run(logger *zap.Logger) error {
 func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	// Gateway endpoints (F-GW-002) — chat-completions is real (Phase C.3).
 	r.Post("/v1/chat/completions", gatewayhttp.NewChatCompletionsHandler(gatewayhttp.ChatHandlerDeps{
-		Auth:                 d.authSmoke,
+		Auth:                 d.inboundAuth,
 		ClaimGate:            d.claimGate,
 		Selector:             d.selector,
 		Forwarder:            d.forwarder,

@@ -179,6 +179,22 @@ Owner 2026-04-30 quote: "sub2api 核心复杂度集中在'上下文状态 + 渠�
 | **all-api-hub** | AGPL-3.0 | 浏览器扩展凭证金库 | counter-evidence：明文存储**绝不可继承**；UX 模式（per-profile 遥测快照）可借 |
 | **envoy-ai-gw** | Apache-2.0 | K8s CRD + outer/inner 双层 | 双层结构留作 SaaS Edition Phase 9+ packaging blueprint，Personal 不用 |
 
+## 性能瓶颈 watchlist（sub2api 用户社区实测痛点）
+
+Owner 2026-04-30 quote: "很多用 sub2api 的人说客户群体一多请求速度就满了。记得优化一下"。HUAKAI 必须避开这条坑——按出现频率排：
+
+| # | 瓶颈来源 | HUAKAI 当前对策 | 状态 |
+|---|---|---|---|
+| 1 | `pgxpool` MaxConns 饱和（默认 16，并发 8 客户即满） | **PLANNED** — env `HUAKAI_PG_MAX_CONNS` + prod default ≥64；当前 `db.Open` 仍是硬编码 16，`config.Load` 没接 env | ❌ 未实现，L1 load test 前必做 |
+| 2 | `provider_accounts.in_flight_count` Serializable Tx 冲突 SQLSTATE 40001 | retry loop with jitter (codex Phase C.2 P2 finding 已留 TODO) | ⏳ Slice 5 / Phase E |
+| 3 | 同步 Settler.Settle 阻塞 | Tx2 内 5-effect batch 合并 UPDATE | ⏳ Phase E |
+| 4 | OAuth 凭证刷新风暴（同 token 同时过期触发 N 个 refresh） | F-AUTH-005 风暴预算 spec 已 lock；代码未实现 | ⏳ N+6 真 upstream 接通时 |
+| 5 | 缺 LRU dedup cache（同租户重放走完整 Tx1） | Phase E.3 计划 | ⏳ Phase E |
+| 6 | 缺 per-tenant rate limit（单租户暴涨拖垮邻居） | F-RATE-001 spec 已 lock；代码 0 | ⏳ L1 |
+| 7 | 真 upstream 单 goroutine + scanner buffer | bounded buffer 1MiB（已实现）；goroutine count cap 待 L1 | 🟡 部分 |
+
+**Don't 列表**：不为速度降 Tx2 隔离级别；不把 settler 改异步；不为缓存默认 log prompt body（CMB-5）。
+
 ## 5 个最大风险（跨 21 份材料抽出，Owner 必看）
 
 1. **HUAKAI Personal Edition 默认 auto-disable 必须开**（来源：one-api 默认两 gate 全关——HUAKAI 多租户 false-pass cost > false-disable cost，必须反过来 default-on）。修：调 schema 默认值 + spec 改 §Default Values 节。

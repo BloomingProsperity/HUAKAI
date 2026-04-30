@@ -1,0 +1,166 @@
+// Phase L0 minimum (N+4a): table-backed inbound auth resolver.
+// Replaces the SmokeAuthResolver path used during Phase C v0.1.
+//
+// Pipeline per docs/plans/2026-04-30-n4-l0-minimum.md (synthesized):
+//
+//	parse Bearer header → derive 16-char key_prefix → LookupAPIKeysByPrefix
+//	(<= 5 candidates) → bcrypt.CompareHashAndPassword on each → check
+//	status + expires_at → return Identity{TenantID, APIKeyID, UserID}
+//
+// Boundary contracts (docs/specs/_invariants/cross-module-boundaries.md):
+//   - CMB-1: This is the Auth layer; the layered call order is
+//     Auth → Registry → Router. Resolver does NOT import router or call
+//     Pool/Adapter/Ledger.
+//   - CMB-5: Plaintext bearer is never logged. Errors return only the
+//     key_prefix (never the suffix or full token) for debugging.
+//   - CMB-7: This package writes nothing in N+4a. last_used_at update
+//     is intentionally omitted; scheduled for N+4b.
+//
+// All authentication failures map to a single ErrUnauthorized return
+// (D10 in synthesized plan) so the handler can map to HTTP 401 without
+// leaking enumeration signal (revoked vs expired vs not-found).
+
+package auth
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	"golang.org/x/crypto/bcrypt"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/db"
+)
+
+// Identity is the resolved inbound auth context produced by Resolve.
+// Mirrors the fields the chat handler needs to populate
+// router.RequestContext + ledger ReserveRequest. Fields are populated
+// only on success; partial values are never returned.
+type Identity struct {
+	TenantID int64
+	APIKeyID int64
+	UserID   int64
+}
+
+// APIKeyPrefixLen is the number of leading characters of the bearer
+// token that are stored verbatim in api_keys.key_prefix and used for
+// indexed lookup. 16 chars (covers "hk_live_" or "hk_test_" plus 8
+// chars of randomness) keeps lookup selective enough to bound the
+// bcrypt-verify-fanout caused by colliding prefixes.
+const APIKeyPrefixLen = 16
+
+// MaxBcryptFanout caps how many candidate rows a single Resolve call
+// will bcrypt-compare. The SQL query also LIMITs to this value; the
+// constant exists so the cap is visible at the resolver layer too.
+const MaxBcryptFanout = 5
+
+// ErrUnauthorized is returned for ANY CREDENTIAL-LEVEL failure: bad
+// header, malformed bearer, prefix miss, bcrypt mismatch, key revoked,
+// key expired, user disabled. The handler maps this to HTTP 401.
+//
+// Discriminating credential failure modes externally would leak account
+// enumeration signal (codex synthesized plan D10). Operators see the
+// distinction in audit logs only.
+var ErrUnauthorized = errors.New("auth: unauthorized")
+
+// ErrAuthMisconfigured signals the resolver was constructed without a
+// valid db.Queries handle. The handler maps this to HTTP 503 (D9).
+var ErrAuthMisconfigured = errors.New("auth: resolver not configured")
+
+// ErrAuthBackend signals a transient datastore failure during auth
+// lookup (PG connection broken, context cancelled mid-query, missing
+// table). The handler maps this to HTTP 503 — NOT 401 — so legitimate
+// clients are not told their valid credentials are invalid during an
+// infrastructure outage. Codex N+4a P1 finding 2026-04-30.
+var ErrAuthBackend = errors.New("auth: backend datastore error")
+
+// APIKeyResolver authenticates inbound requests against the api_keys
+// table. Construct via NewAPIKeyResolver.
+type APIKeyResolver struct {
+	q *db.Queries
+}
+
+// NewAPIKeyResolver wraps a sqlc.Queries handle. Pool/connection
+// lifecycle is the caller's responsibility.
+func NewAPIKeyResolver(q *db.Queries) *APIKeyResolver {
+	return &APIKeyResolver{q: q}
+}
+
+// Resolve parses the Authorization header and authenticates the request.
+// On success, returns Identity populated from the matching api_keys row.
+// On any failure, returns ErrUnauthorized — the handler chooses the
+// HTTP status (401 for ErrUnauthorized, 503 for ErrAuthMisconfigured).
+func (r *APIKeyResolver) Resolve(ctx context.Context, req *http.Request) (Identity, error) {
+	if r == nil || r.q == nil {
+		return Identity{}, ErrAuthMisconfigured
+	}
+	bearer, ok := parseBearer(req.Header.Get("Authorization"))
+	if !ok {
+		return Identity{}, ErrUnauthorized
+	}
+	if !validBearerFormat(bearer) {
+		return Identity{}, ErrUnauthorized
+	}
+	if len(bearer) < APIKeyPrefixLen {
+		return Identity{}, ErrUnauthorized
+	}
+	prefix := bearer[:APIKeyPrefixLen]
+
+	rows, err := r.q.LookupAPIKeysByPrefix(ctx, prefix)
+	if err != nil {
+		// Codex N+4a pass1 P1: do not collapse infra failures to credential
+		// failure. Handler maps ErrAuthBackend to 503.
+		return Identity{}, fmt.Errorf("%w: lookup: %v", ErrAuthBackend, err)
+	}
+	now := time.Now().UTC()
+	for _, row := range rows {
+		if row.KeyStatus != "active" {
+			continue
+		}
+		if row.ExpiresAt.Valid && !row.ExpiresAt.Time.After(now) {
+			continue
+		}
+		// Codex N+4a pass1 P1 + pass3 P1: tenant + user status checked
+		// per-row via INNER JOIN (deleted_at IS NULL filters parents at
+		// SQL layer; status is enforced here). One DB roundtrip total.
+		if row.UserStatus != "active" {
+			continue
+		}
+		if row.TenantStatus != "active" {
+			continue
+		}
+		if err := bcrypt.CompareHashAndPassword([]byte(row.KeyHash), []byte(bearer)); err != nil {
+			continue
+		}
+		return Identity{
+			TenantID: row.TenantID,
+			APIKeyID: row.ID,
+			UserID:   row.UserID,
+		}, nil
+	}
+	return Identity{}, ErrUnauthorized
+}
+
+// parseBearer extracts the token from "Authorization: Bearer <token>".
+// Returns ("", false) when the header is missing or malformed.
+func parseBearer(header string) (string, bool) {
+	const prefix = "Bearer "
+	if !strings.HasPrefix(header, prefix) {
+		return "", false
+	}
+	tok := strings.TrimSpace(strings.TrimPrefix(header, prefix))
+	if tok == "" {
+		return "", false
+	}
+	return tok, true
+}
+
+// validBearerFormat enforces the HUAKAI bearer namespace: starts with
+// "hk_live_" or "hk_test_" (D2 in synthesized plan). This refuses
+// obviously-foreign tokens (e.g. "sk-...") before we waste a DB lookup.
+func validBearerFormat(token string) bool {
+	return strings.HasPrefix(token, "hk_live_") || strings.HasPrefix(token, "hk_test_")
+}

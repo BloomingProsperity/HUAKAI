@@ -19,20 +19,25 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"strconv"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 )
 
 const (
-	smokeBearer        = "phase-c-smoke-bearer"
-	smokeBinaryName    = "gateway-smoke.exe"
+	// Phase L0 minimum (N+4a, 2026-04-30): smoke uses real api_keys row
+	// instead of env-injected single bearer. The bearer prefix must match
+	// auth.APIKeyResolver's namespace check (`hk_live_` or `hk_test_`).
+	smokeBearerPrefix  = "hk_test_"
+	// Renamed in N+4a to dodge cached SAC reputation block on the prior
+	// hash chain. If SAC blocks this name too, rotate the suffix again.
+	smokeBinaryName    = "gateway-smoke-l0.exe"
 	smokeBootRetries   = 30
 	smokeBootRetryWait = 200 * time.Millisecond
 )
@@ -70,7 +75,7 @@ func TestPhaseC_Smoke_ChatCompletions(t *testing.T) {
 		t.Fatalf("NewRequest: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+smokeBearer)
+	req.Header.Set("Authorization", "Bearer "+seed.bearer)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -108,6 +113,9 @@ type smokeSeed struct {
 	poolGroupID       int64
 	channelID         int64
 	providerAccountID int64
+	// Phase L0 minimum (N+4a): plaintext bearer generated at seed time;
+	// matched against the bcrypt hash stored in api_keys.key_hash.
+	bearer string
 }
 
 func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *smokeSeed {
@@ -121,11 +129,38 @@ func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *sm
 	).Scan(&s.tenantID); err != nil {
 		t.Fatalf("seed tenant: %v", err)
 	}
-	s.apiKeyID = s.tenantID*100 + 1
-	s.userID = s.tenantID*100 + 2
+
+	// Phase L0 minimum (N+4a): real users + api_keys rows replace synthetic
+	// (apiKeyID = tenantID*100+1) IDs. The plaintext bearer is held only
+	// in this test for the POST request; the DB stores the bcrypt hash.
+	if err := pgPool.QueryRow(ctx,
+		`INSERT INTO users (tenant_id, display_name) VALUES ($1, $2) RETURNING id`,
+		s.tenantID, "smoke-user-"+unique,
+	).Scan(&s.userID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	s.bearer = smokeBearerPrefix + unique // "hk_test_<uuid36>" — well above 16-char prefix
+	keyPrefix := s.bearer
+	if len(keyPrefix) > 16 {
+		keyPrefix = keyPrefix[:16]
+	}
+	keyHash, err := bcrypt.GenerateFromPassword([]byte(s.bearer), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("bcrypt hash bearer: %v", err)
+	}
+	if err := pgPool.QueryRow(ctx,
+		`INSERT INTO api_keys (tenant_id, user_id, name, key_hash, key_prefix, status)
+		 VALUES ($1, $2, $3, $4, $5, 'active') RETURNING id`,
+		s.tenantID, s.userID, "smoke-key-"+unique, string(keyHash), keyPrefix,
+	).Scan(&s.apiKeyID); err != nil {
+		t.Fatalf("seed api_key: %v", err)
+	}
 
 	t.Cleanup(func() {
 		c := context.Background()
+		// Cleanup order respects FKs: ledger/usage rows reference api_key_id
+		// transitively via tenant_id; users/api_keys composite FK requires
+		// api_keys deleted before users.
 		_, _ = pgPool.Exec(c, `DELETE FROM usage_records WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, s.tenantID)
@@ -134,6 +169,8 @@ func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *sm
 		_, _ = pgPool.Exec(c, `DELETE FROM channels WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM pool_groups WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM providers WHERE tenant_id=$1`, s.tenantID)
+		_, _ = pgPool.Exec(c, `DELETE FROM api_keys WHERE tenant_id=$1`, s.tenantID)
+		_, _ = pgPool.Exec(c, `DELETE FROM users WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM tenants WHERE id=$1`, s.tenantID)
 	})
 
@@ -177,7 +214,15 @@ func buildGateway(t *testing.T) string {
 	// `go test -c + manual ./smoke.test.exe` (cwd=$pwd) — Codex pass1+2
 	// caught both wrong-cwd scenarios.
 	binPath := moduleRoot + "/" + smokeBinaryName
-	cmd := exec.Command("go", "build", "-o", binPath, "./cmd/gateway")
+	// Inject a per-run timestamp via ldflags so each smoke build produces
+	// a unique binary hash. Smart App Control (Win11) caches block decisions
+	// per binary hash; without this, a single SAC block would persist
+	// across all subsequent runs until a content change. See
+	// docs/01_APPLOCKER_DEFENDER_RESOLUTION.md.
+	stamp := fmt.Sprintf("smoke-%d", time.Now().UnixNano())
+	cmd := exec.Command("go", "build",
+		"-ldflags", "-X main.smokeBuildStamp="+stamp,
+		"-o", binPath, "./cmd/gateway")
 	cmd.Dir = moduleRoot
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = os.Stdout
@@ -235,10 +280,8 @@ func startGateway(t *testing.T, _ context.Context, binPath, dsn, addr string, se
 	cmd.Env = append(os.Environ(),
 		"HUAKAI_DATABASE_URL="+dsn,
 		"HUAKAI_ADDR="+addr,
-		"HUAKAI_SMOKE_BEARER_TOKEN="+smokeBearer,
-		"HUAKAI_SMOKE_TENANT_ID="+strconv.FormatInt(seed.tenantID, 10),
-		"HUAKAI_SMOKE_API_KEY_ID="+strconv.FormatInt(seed.apiKeyID, 10),
-		"HUAKAI_SMOKE_USER_ID="+strconv.FormatInt(seed.userID, 10),
+		// Phase L0 minimum (N+4a): SMOKE env vars no longer set; auth
+		// resolves via api_keys table seeded by seedSmokeGraph above.
 	)
 	stderr, _ := cmd.StderrPipe()
 	stdout, _ := cmd.StdoutPipe()

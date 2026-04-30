@@ -10,6 +10,26 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// L0 minimum (2026-04-30 N+4a) inbound bearer storage. key_hash is bcrypt; key_prefix indexed for tenant-scoped lookup. CMB-5: no plaintext bearer EVER persisted; CMB-7: last_used_at NOT updated synchronously in N+4.
+type ApiKey struct {
+	ID       int64  `db:"id" json:"id"`
+	TenantID int64  `db:"tenant_id" json:"tenant_id"`
+	UserID   int64  `db:"user_id" json:"user_id"`
+	Name     string `db:"name" json:"name"`
+	// bcrypt hash of the full plaintext bearer (cost=10). NEVER append to logs; CMB-5.
+	KeyHash string `db:"key_hash" json:"key_hash"`
+	// First 16 chars of plaintext bearer (incl. "hk_live_" or "hk_test_" namespace prefix). Indexed for hot-path; insufficient on its own to authenticate.
+	KeyPrefix     string             `db:"key_prefix" json:"key_prefix"`
+	Status        string             `db:"status" json:"status"`
+	ExpiresAt     pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	LastUsedAt    pgtype.Timestamptz `db:"last_used_at" json:"last_used_at"`
+	RevokedAt     pgtype.Timestamptz `db:"revoked_at" json:"revoked_at"`
+	RevokedReason *string            `db:"revoked_reason" json:"revoked_reason"`
+	CreatedAt     pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DeletedAt     pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
+}
+
 // F-OBS-001 H8: audit-grade event row in Tx2; survives Usage Record async failure. Append-only.
 type BillingEvent struct {
 	ID               int64              `db:"id" json:"id"`
@@ -509,4 +529,16 @@ type UsageRecordReconciliationEvent struct {
 	CostDelta                 pgtype.Numeric     `db:"cost_delta" json:"cost_delta"`
 	ReconciliationSource      string             `db:"reconciliation_source" json:"reconciliation_source"`
 	ReconciledAt              pgtype.Timestamptz `db:"reconciled_at" json:"reconciled_at"`
+}
+
+// L0 minimum (2026-04-30 N+4a) end-user identity. No password column — HUAKAI authenticates via api_keys.
+type User struct {
+	ID          int64              `db:"id" json:"id"`
+	TenantID    int64              `db:"tenant_id" json:"tenant_id"`
+	Email       *string            `db:"email" json:"email"`
+	DisplayName string             `db:"display_name" json:"display_name"`
+	Status      string             `db:"status" json:"status"`
+	CreatedAt   pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DeletedAt   pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
 }
