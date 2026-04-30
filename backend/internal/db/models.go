@@ -138,6 +138,98 @@ type MimicryPolicy struct {
 	EnabledAt              pgtype.Timestamptz `db:"enabled_at" json:"enabled_at"`
 }
 
+// Slice 2: canonical model identities. provider-agnostic. tenant_id NULL iff scope=global (D20). pricing_class is a free-form tag; decimal pricing lives in billing (CMB-2 carve-out).
+type Model struct {
+	ID                      int64              `db:"id" json:"id"`
+	TenantID                *int64             `db:"tenant_id" json:"tenant_id"`
+	Scope                   string             `db:"scope" json:"scope"`
+	CanonicalID             string             `db:"canonical_id" json:"canonical_id"`
+	ProtocolFamily          string             `db:"protocol_family" json:"protocol_family"`
+	DefaultProviderModelID  string             `db:"default_provider_model_id" json:"default_provider_model_id"`
+	DefaultContextWindow    int32              `db:"default_context_window" json:"default_context_window"`
+	DefaultRequestTimeoutMs int32              `db:"default_request_timeout_ms" json:"default_request_timeout_ms"`
+	PricingClass            string             `db:"pricing_class" json:"pricing_class"`
+	ModelOwner              string             `db:"model_owner" json:"model_owner"`
+	ModelCreatedAt          pgtype.Timestamptz `db:"model_created_at" json:"model_created_at"`
+	Status                  string             `db:"status" json:"status"`
+	CreatedAt               pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DeletedAt               pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
+}
+
+// Slice 2: (tenant, public_alias) -> model. Lookup is on normalized lower-case alias; display alias preserves operator-set casing for audit. Tenant-disabled rows always block global fallback (explicit deny).
+type ModelAlias struct {
+	ID                    int64              `db:"id" json:"id"`
+	TenantID              *int64             `db:"tenant_id" json:"tenant_id"`
+	Scope                 string             `db:"scope" json:"scope"`
+	ModelID               int64              `db:"model_id" json:"model_id"`
+	PublicAliasNormalized string             `db:"public_alias_normalized" json:"public_alias_normalized"`
+	PublicAliasDisplay    string             `db:"public_alias_display" json:"public_alias_display"`
+	Status                string             `db:"status" json:"status"`
+	DisabledReason        *string            `db:"disabled_reason" json:"disabled_reason"`
+	Source                string             `db:"source" json:"source"`
+	CreatedAt             pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt             pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DeletedAt             pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
+}
+
+// Slice 2: ordered tenant-scoped model -> pool_group binding. Reference citations: LiteLLM proxy types (rpm/tpm/max_parallel) + Portkey strategy.mode (selection_mode) + one-api ModelMapping (override) + envoy AIGatewayRouteRuleBackendRef (weight/priority) + LiteLLM typed-fallback (fallback_class). All verified via WebFetch 2026-04-30. Codex N+5a P1: scope column removed — global bindings would cross-tenant-leak pool ids.
+type ModelPoolBinding struct {
+	ID                      int64              `db:"id" json:"id"`
+	TenantID                int64              `db:"tenant_id" json:"tenant_id"`
+	ModelID                 int64              `db:"model_id" json:"model_id"`
+	PoolGroupID             int64              `db:"pool_group_id" json:"pool_group_id"`
+	Priority                int32              `db:"priority" json:"priority"`
+	Weight                  int32              `db:"weight" json:"weight"`
+	SelectionMode           string             `db:"selection_mode" json:"selection_mode"`
+	ProviderModelIDOverride *string            `db:"provider_model_id_override" json:"provider_model_id_override"`
+	RpmLimit                *int32             `db:"rpm_limit" json:"rpm_limit"`
+	TpmLimit                *int32             `db:"tpm_limit" json:"tpm_limit"`
+	MaxParallelRequests     *int32             `db:"max_parallel_requests" json:"max_parallel_requests"`
+	FallbackClass           string             `db:"fallback_class" json:"fallback_class"`
+	Enabled                 bool               `db:"enabled" json:"enabled"`
+	DisabledReason          *string            `db:"disabled_reason" json:"disabled_reason"`
+	EffectiveFrom           pgtype.Timestamptz `db:"effective_from" json:"effective_from"`
+	EffectiveUntil          pgtype.Timestamptz `db:"effective_until" json:"effective_until"`
+	Reason                  string             `db:"reason" json:"reason"`
+	CreatedAt               pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DeletedAt               pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
+}
+
+// Slice 2: per-model capability rows. capability_params jsonb supports parameterized capabilities (e.g. reasoning_effort {"levels":["high","medium","low"]} per E-NAI-004).
+type ModelRegistryCapability struct {
+	ID               int64              `db:"id" json:"id"`
+	TenantID         *int64             `db:"tenant_id" json:"tenant_id"`
+	Scope            string             `db:"scope" json:"scope"`
+	ModelID          int64              `db:"model_id" json:"model_id"`
+	Capability       string             `db:"capability" json:"capability"`
+	CapabilityValue  *string            `db:"capability_value" json:"capability_value"`
+	CapabilityParams []byte             `db:"capability_params" json:"capability_params"`
+	Enabled          bool               `db:"enabled" json:"enabled"`
+	Source           string             `db:"source" json:"source"`
+	CreatedAt        pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DeletedAt        pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
+}
+
+// Slice 2: per-tenant monotonic registry version. Admin writers MUST UPDATE version+1 in the same TX as any model/alias/binding/capability change. ResolveModel reads version into RoutePlan.SnapshotVersion (registry:<tid>:<v>) for audit replay.
+type ModelRegistrySnapshot struct {
+	TenantID       int64              `db:"tenant_id" json:"tenant_id"`
+	Version        int64              `db:"version" json:"version"`
+	Reason         *string            `db:"reason" json:"reason"`
+	UpdatedByActor *string            `db:"updated_by_actor" json:"updated_by_actor"`
+	UpdatedAt      pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
+// Slice 2: opt-in global-catalog inheritance. inherit_global_catalog=true allows ResolveModel to fall through to scope=global rows on tenant miss. Tenant-scoped DISABLED rows always block (explicit deny per integration test #5).
+type ModelRegistryTenantPolicy struct {
+	TenantID             int64              `db:"tenant_id" json:"tenant_id"`
+	InheritGlobalCatalog bool               `db:"inherit_global_catalog" json:"inherit_global_catalog"`
+	UpdatedAt            pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	UpdatedByActor       *string            `db:"updated_by_actor" json:"updated_by_actor"`
+}
+
 // F-POOL-001 Layer 1: Model Routing config. Empty array = no override; selection skips Layer 1 and goes to Layer 1.5b.
 type ModelRoutingOverride struct {
 	ID                 int64              `db:"id" json:"id"`
@@ -502,6 +594,8 @@ type UsageRecord struct {
 	RequestedModel        string             `db:"requested_model" json:"requested_model"`
 	UpstreamModel         *string            `db:"upstream_model" json:"upstream_model"`
 	Stream                bool               `db:"stream" json:"stream"`
+	// Slice 2: registry+router snapshot stamp at billing time. Format registry:<tid>:<v>;router:<rv>. Audit replay reads this to re-derive what routing config was active.
+	SnapshotVersion *string `db:"snapshot_version" json:"snapshot_version"`
 }
 
 // F-OBS-001 H10: durable DLQ for Usage Record write failures. Operator-replayable; auto-replay cadence configurable.
