@@ -56,7 +56,7 @@ import (
 // satisfies this implicitly via duck typing — handler stays decoupled
 // from main package layout.
 type ChatHandlerDeps struct {
-	Auth                 *auth.SmokeAuthResolver
+	Auth                 *auth.APIKeyResolver
 	ClaimGate            billing.ClaimGate
 	Selector             *pool.DefaultSelector
 	Forwarder            *gateway.StreamForwarder
@@ -86,18 +86,24 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
-		// Auth.
+		// Auth — table-backed APIKeyResolver per N+4a synthesized plan
+		// docs/plans/2026-04-30-n4-l0-minimum.md.
+		// Three error classes mapped to distinct HTTP status:
+		//   ErrAuthMisconfigured → 503 (boot-time config gap; D9)
+		//   ErrAuthBackend       → 503 (transient infra outage; codex P1 fix)
+		//   ErrUnauthorized      → 401 (credential failure; D10 collapses all
+		//                              credential modes to one signal)
 		ident, err := d.Auth.Resolve(ctx, r)
-		if errors.Is(err, auth.ErrSmokeAuthMisconfigured) {
-			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "smoke auth env not fully set")
+		if errors.Is(err, auth.ErrAuthMisconfigured) {
+			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "auth tables unavailable")
 			return
 		}
-		if errors.Is(err, auth.ErrSmokeBearerMismatch) {
-			writeJSONError(w, http.StatusUnauthorized, "unauthorized", "bearer token did not match")
+		if errors.Is(err, auth.ErrAuthBackend) {
+			writeJSONError(w, http.StatusServiceUnavailable, "auth_backend_error", "auth backend transient failure")
 			return
 		}
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "auth_error", err.Error())
+			writeJSONError(w, http.StatusUnauthorized, "unauthorized", "invalid bearer")
 			return
 		}
 

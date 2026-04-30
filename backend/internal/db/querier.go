@@ -49,6 +49,9 @@ type Querier interface {
 	GetProtocolPolicyByVersion(ctx context.Context, arg GetProtocolPolicyByVersionParams) (ProtocolPolicyVersion, error)
 	GetStickyBinding(ctx context.Context, arg GetStickyBindingParams) (int64, error)
 	GetTokenVersion(ctx context.Context, arg GetTokenVersionParams) (int32, error)
+	// Tenant-scoped user lookup. Used by admin/audit queries (Phase E)
+	// and by the resolver to confirm user.status = 'active'.
+	GetUserByID(ctx context.Context, arg GetUserByIDParams) (GetUserByIDRow, error)
 	IncrementInFlightCount(ctx context.Context, arg IncrementInFlightCountParams) (int64, error)
 	// Spec §Tx2 step 13: audit-grade event row in same Tx; survives Usage Record
 	// async failure (per F-OBS-001 H8). event_type per CHECK constraint.
@@ -93,6 +96,22 @@ type Querier interface {
 	// provider_accounts (or any synonym). Audit views surface metadata only.
 	// Page through usage_records for one tenant. Most-recent-first.
 	ListUsageByTenant(ctx context.Context, arg ListUsageByTenantParams) ([]ListUsageByTenantRow, error)
+	// Phase L0 minimum inbound auth queries.
+	// Per docs/specs/_invariants/cross-module-boundaries.md CMB-5:
+	//   queries here MUST NOT return key_hash to logs / traces; the resolver
+	//   only uses key_hash for bcrypt comparison and discards it.
+	// Per CMB-7: this set is read-only (Auth is a read-only layer in N+4a);
+	//   last_used_at update intentionally omitted, scheduled for N+4b.
+	// Returns active candidates whose key_prefix matches. Capped at 5 to
+	// bound bcrypt-verify-fanout DOS via colliding prefixes (codex
+	// synthesized plan §risk matrix).
+	//
+	// Joins tenants + users so the resolver can check all three status
+	// fields in one DB roundtrip (codex pass3 P1: tenant status was missed
+	// in the per-row check). INNER JOIN with deleted_at IS NULL on both
+	// parent tables means soft-deleted tenants/users never surface a
+	// candidate row at all.
+	LookupAPIKeysByPrefix(ctx context.Context, keyPrefix string) ([]LookupAPIKeysByPrefixRow, error)
 	MarkAccountTempUnschedulable(ctx context.Context, arg MarkAccountTempUnschedulableParams) error
 	// Re-attempt path: an earlier attempt aborted (transient upstream failure,
 	// not FINGERPRINT_CONFLICT). Operator policy allows resurrecting the row
