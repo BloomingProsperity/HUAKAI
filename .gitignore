@@ -16,6 +16,13 @@ desktop.ini
 .gemini/settings.local.json
 .codex/local/
 
+# Go test/build caches pinned by backend/scripts/run-go-test.* (Defender-
+# excluded paths used to dodge SAC/AppLocker blocks; see
+# docs/01_APPLOCKER_DEFENDER_RESOLUTION.md). Each can hit ~150 MB; never commit.
+backend/.tmp/
+backend/.gotmp/
+backend/.gocache/
+
 # Secrets & env
 .env
 .env.*

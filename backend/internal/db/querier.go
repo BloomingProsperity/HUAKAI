@@ -11,6 +11,8 @@ import (
 type Querier interface {
 	// Tx2 abort path: terminal upstream failure or AMBIGUOUS_USAGE end class.
 	AbortClaim(ctx context.Context, arg AbortClaimParams) (int64, error)
+	// Operator overview: how many claims are in each status for one tenant.
+	CountClaimsByStatus(ctx context.Context, tenantID int64) ([]CountClaimsByStatusRow, error)
 	DecrementInFlightCount(ctx context.Context, id int64) error
 	DeleteExpiredStickyBindings(ctx context.Context) error
 	ExpireCurrentProtocolPolicy(ctx context.Context, arg ExpireCurrentProtocolPolicyParams) error
@@ -19,6 +21,8 @@ type Querier interface {
 	// F-PROTO-002 protocol policy version registry queries.
 	// Backed by protocol_policy_versions table in docs/schema/protocol-translation.sql.
 	GetActiveProtocolPolicy(ctx context.Context, tenantID int64) (ProtocolPolicyVersion, error)
+	// Single claim lookup, tenant-scoped (refuse cross-tenant reads).
+	GetClaimByID(ctx context.Context, arg GetClaimByIDParams) (GetClaimByIDRow, error)
 	// F-OBS-001 Tx1/Tx2 billing ledger claim queries.
 	// Backed by billing_ledger_claims in docs/schema/observability-billing.sql.
 	// Hot-path Tx1 lookup with FOR UPDATE row lock per spec §Tx1 step 2.
@@ -64,6 +68,9 @@ type Querier interface {
 	InsertSlotAcquisition(ctx context.Context, arg InsertSlotAcquisitionParams) (int64, error)
 	// Spec §Tx2 step 12: write Usage Record into the same Tx as everything else.
 	InsertUsageRecord(ctx context.Context, arg InsertUsageRecordParams) (int64, error)
+	// Audit-grade event stream for one tenant. event_type filter optional;
+	// pass empty string to disable filter.
+	ListBillingEventsByTenant(ctx context.Context, arg ListBillingEventsByTenantParams) ([]BillingEvent, error)
 	// F-PROTO-002 protocol capability matrix queries.
 	// Backed by docs/schema/protocol-translation.sql (capability + policy tables).
 	ListCapabilityCellsForPair(ctx context.Context, arg ListCapabilityCellsForPairParams) ([]ListCapabilityCellsForPairRow, error)
@@ -77,6 +84,15 @@ type Querier interface {
 	ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListEligibleAccountsByPoolGroupParams) ([]ListEligibleAccountsByPoolGroupRow, error)
 	ListLossyCellsForOperatorUI(ctx context.Context, tenantID int64) ([]ListLossyCellsForOperatorUIRow, error)
 	ListOrphanedAcquisitions(ctx context.Context) ([]PoolSlotAcquisition, error)
+	// F-OBS-001 read-only query surface for the admin/audit lane.
+	// Per docs/specs/_invariants/cross-module-boundaries.md CMB-7: this file
+	// contains SELECT-only queries; the Repository wrapper enforces tenant
+	// scope on every call.
+	//
+	// Per CMB-5: NONE of these SELECTs include the `credentials` column from
+	// provider_accounts (or any synonym). Audit views surface metadata only.
+	// Page through usage_records for one tenant. Most-recent-first.
+	ListUsageByTenant(ctx context.Context, arg ListUsageByTenantParams) ([]ListUsageByTenantRow, error)
 	MarkAccountTempUnschedulable(ctx context.Context, arg MarkAccountTempUnschedulableParams) error
 	// Re-attempt path: an earlier attempt aborted (transient upstream failure,
 	// not FINGERPRINT_CONFLICT). Operator policy allows resurrecting the row
