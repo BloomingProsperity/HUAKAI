@@ -82,6 +82,8 @@ type Querier interface {
 	InsertSchedulerOutboxRow(ctx context.Context, arg InsertSchedulerOutboxRowParams) (InsertSchedulerOutboxRowRow, error)
 	InsertSlotAcquisition(ctx context.Context, arg InsertSlotAcquisitionParams) (int64, error)
 	// Spec §Tx2 step 12: write Usage Record into the same Tx as everything else.
+	// Slice 2 (N+5b 2026-05-01): added snapshot_version (column from migration
+	// 0008). Format documented there as "registry:<tid>:<v>;router:<rv>".
 	InsertUsageRecord(ctx context.Context, arg InsertUsageRecordParams) (int64, error)
 	// Audit-grade event stream for one tenant. event_type filter optional;
 	// pass empty string to disable filter.

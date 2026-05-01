@@ -1,7 +1,9 @@
 // Package pool implements F-POOL-001: Provider Account Pool Selection.
 //
 // See docs/specs/pool-routing.md for the released spec.
-// Phase 3 skeleton ONLY — no business logic implemented per DR-008.
+// Current slice includes the L0 DefaultSelector, PostgreSQL account source,
+// DB slot acquisition, and Pattern B claim writeback. Redis sticky state and
+// scheduler-driven queueing remain Phase E+ work.
 package pool
 
 import (
@@ -51,5 +53,5 @@ type WaitPlan struct {
 	MaxWaiting     int
 }
 
-// TODO(phase-4): implement Selector backed by PostgreSQL row-locked
-// provider_accounts queries + Redis sticky cache + scheduler outbox consumer.
+// TODO(phase-e): add Redis-backed sticky state, queue/scheduler integration,
+// and Serializable retry loops around slot acquisition conflicts.

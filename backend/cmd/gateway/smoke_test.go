@@ -67,8 +67,11 @@ func TestPhaseC_Smoke_ChatCompletions(t *testing.T) {
 
 	waitForGateway(t, addr)
 
-	// POST request.
-	body := fmt.Sprintf(`{"model":"gpt-4.1-mini","messages":[{"role":"user","content":"hi"}],"stream":true,"pool_group_id":%d}`, seed.poolGroupID)
+	// POST request. Slice 2 (N+5b 2026-05-01): the gateway no longer
+	// accepts pool_group_id in the body — Registry resolves the pool
+	// from the model alias seeded in seedSmokeGraph below.
+	body := `{"model":"gpt-4.1-mini","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	_ = seed.poolGroupID // retained for PG state assertions only
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		"http://"+addr+"/v1/chat/completions", bytes.NewBufferString(body))
 	if err != nil {
@@ -113,6 +116,10 @@ type smokeSeed struct {
 	poolGroupID       int64
 	channelID         int64
 	providerAccountID int64
+	// Slice 2 (N+5b 2026-05-01): Registry rows that resolve the request
+	// body's `model` alias into the seeded pool group.
+	modelID int64
+	aliasID int64
 	// Phase L0 minimum (N+4a): plaintext bearer generated at seed time;
 	// matched against the bcrypt hash stored in api_keys.key_hash.
 	bearer string
@@ -158,13 +165,21 @@ func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *sm
 
 	t.Cleanup(func() {
 		c := context.Background()
-		// Cleanup order respects FKs: ledger/usage rows reference api_key_id
-		// transitively via tenant_id; users/api_keys composite FK requires
-		// api_keys deleted before users.
+		// Cleanup order respects FKs. Slice 2 (N+5b) prepends registry
+		// rows BEFORE pool_groups (model_pool_bindings has a composite FK
+		// (tenant_id, pool_group_id) → pool_groups). model_aliases and
+		// model_registry_capabilities reference models(id), so models
+		// goes last among registry tables.
 		_, _ = pgPool.Exec(c, `DELETE FROM usage_records WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM billing_ledger_claims WHERE tenant_id=$1`, s.tenantID)
+		_, _ = pgPool.Exec(c, `DELETE FROM model_pool_bindings WHERE tenant_id=$1`, s.tenantID)
+		_, _ = pgPool.Exec(c, `DELETE FROM model_registry_capabilities WHERE tenant_id=$1`, s.tenantID)
+		_, _ = pgPool.Exec(c, `DELETE FROM model_aliases WHERE tenant_id=$1`, s.tenantID)
+		_, _ = pgPool.Exec(c, `DELETE FROM models WHERE tenant_id=$1`, s.tenantID)
+		_, _ = pgPool.Exec(c, `DELETE FROM model_registry_snapshots WHERE tenant_id=$1`, s.tenantID)
+		_, _ = pgPool.Exec(c, `DELETE FROM model_registry_tenant_policies WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM provider_accounts WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM channels WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM pool_groups WHERE tenant_id=$1`, s.tenantID)
@@ -201,6 +216,43 @@ func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *sm
 		s.tenantID, s.providerID, s.channelID, "smoke-acct-"+unique,
 	).Scan(&s.providerAccountID); err != nil {
 		t.Fatalf("seed provider account: %v", err)
+	}
+
+	// Slice 2 (N+5b 2026-05-01): seed Registry rows so the smoke alias
+	// resolves to the seeded pool group end-to-end. Mirrors the rows the
+	// admin endpoint (Phase E) will write.
+	if err := pgPool.QueryRow(ctx,
+		`INSERT INTO models (tenant_id, scope, canonical_id, protocol_family,
+		                     default_provider_model_id, default_context_window, status)
+		 VALUES ($1, 'tenant', $2, 'anthropic_messages', 'gpt-4.1-mini', 128000, 'active')
+		 RETURNING id`,
+		s.tenantID, "smoke-canonical-"+unique,
+	).Scan(&s.modelID); err != nil {
+		t.Fatalf("seed model: %v", err)
+	}
+	if err := pgPool.QueryRow(ctx,
+		`INSERT INTO model_aliases (tenant_id, scope, model_id,
+		                            public_alias_normalized, public_alias_display, status)
+		 VALUES ($1, 'tenant', $2, 'gpt-4.1-mini', 'gpt-4.1-mini', 'active')
+		 RETURNING id`,
+		s.tenantID, s.modelID,
+	).Scan(&s.aliasID); err != nil {
+		t.Fatalf("seed model_alias: %v", err)
+	}
+	if _, err := pgPool.Exec(ctx,
+		`INSERT INTO model_pool_bindings (tenant_id, model_id, pool_group_id, priority, weight, enabled)
+		 VALUES ($1, $2, $3, 100, 1, true)`,
+		s.tenantID, s.modelID, s.poolGroupID,
+	); err != nil {
+		t.Fatalf("seed model_pool_bindings: %v", err)
+	}
+	if _, err := pgPool.Exec(ctx,
+		`INSERT INTO model_registry_snapshots (tenant_id, version)
+		 VALUES ($1, 1)
+		 ON CONFLICT (tenant_id) DO UPDATE SET version = 1`,
+		s.tenantID,
+	); err != nil {
+		t.Fatalf("seed model_registry_snapshots: %v", err)
 	}
 	return s
 }
@@ -387,5 +439,25 @@ func checkPGState(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed 
 	}
 	if slotCount != 1 {
 		t.Fatalf("PG check 5: expected 1 released_success slot; got %d", slotCount)
+	}
+
+	// PG check 6 (N+5b 2026-05-01): the success-path usage row must carry
+	// the registry+router snapshot stamp from migration 0008. Format
+	// "registry:<tenant_id>:<v>;router:<router_policy_v>".
+	var snapshot *string
+	if err := pgPool.QueryRow(ctx,
+		`SELECT snapshot_version FROM usage_records WHERE claim_id=$1`, claimID,
+	).Scan(&snapshot); err != nil {
+		t.Fatalf("PG check 6 (snapshot_version): %v", err)
+	}
+	if snapshot == nil {
+		t.Fatalf("PG check 6: expected non-null snapshot_version; got NULL")
+	}
+	wantPrefix := fmt.Sprintf("registry:%d:", seed.tenantID)
+	if !bytes.HasPrefix([]byte(*snapshot), []byte(wantPrefix)) {
+		t.Fatalf("PG check 6: snapshot_version = %q; want prefix %q", *snapshot, wantPrefix)
+	}
+	if !bytes.Contains([]byte(*snapshot), []byte(";router:")) {
+		t.Fatalf("PG check 6: snapshot_version = %q; want concatenated router stamp", *snapshot)
 	}
 }

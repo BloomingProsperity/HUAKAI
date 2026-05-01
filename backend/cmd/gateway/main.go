@@ -35,6 +35,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
+	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
 
 // smokeBuildStamp is overridden via -ldflags during smoke test builds to
@@ -65,11 +66,11 @@ type deps struct {
 	settler     billing.Settler
 	forwarder   *gateway.StreamForwarder
 	inboundAuth *auth.APIKeyResolver
-	// Slice 2 (N+5a): real Registry resolver. Wired but not consumed by
-	// the chat handler — the body-side pool_group_id escape hatch is
-	// removed in N+5b. Construct early so integration tests can exercise
-	// the resolver without booting the HTTP path.
+	// Slice 2 (N+5a): real Registry resolver.
 	modelRegistry *registry.PostgresRegistry
+	// Slice 2 (N+5b 2026-05-01): Router consumes Registry's PoolCandidates
+	// and stamps the registry+router snapshot onto every plan.
+	routePlanner *router.DefaultRouter
 }
 
 func run(logger *zap.Logger) error {
@@ -116,16 +117,18 @@ func run(logger *zap.Logger) error {
 		},
 		// Phase L0 minimum (N+4a): table-backed inbound auth via api_keys.
 		// Replaces the SmokeAuthResolver env-injected single bearer pattern.
-		// SmokeAuthResolver kept behind `//go:build smoke_only` for emergency
-		// rollback; see docs/plans/2026-04-30-n4-l0-minimum.md D7.
+		// Rollback path is git revert; no SmokeAuthResolver is wired into the
+		// default build.
 		inboundAuth: auth.NewAPIKeyResolver(q),
 		// Slice 2 (N+5a) registry resolver. cache=nil → noopCache (D2: no
 		// L0 cache; LRU lands in Slice 5 keyed on registry_version).
 		// Takes pgxpool.Pool because Resolve runs all reads inside a
 		// REPEATABLE READ + read-only TX (codex N+5a P2 fix).
 		modelRegistry: registry.NewPostgresRegistry(pgPool, nil),
+		// Slice 2 (N+5b) router. Stateless; SnapshotVersion is "v0.1-phase-c"
+		// until Slice 5 introduces multi-attempt + cross-pool fallback.
+		routePlanner: router.NewDefaultRouter(),
 	}
-	_ = d.modelRegistry // wired now; consumed by N+5b chat handler rewrite
 
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID)
@@ -158,12 +161,14 @@ func run(logger *zap.Logger) error {
 }
 
 // mountRoutes wires the HTTP routes per docs/openapi/openapi.yaml.
-// All handlers return 501 Not Implemented except the Phase C.3 chat
+// All handlers return 501 Not Implemented except the Phase C / N+5b chat
 // completions endpoint which runs the full Tx1 → forward → Tx2 pipeline.
 func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
-	// Gateway endpoints (F-GW-002) — chat-completions is real (Phase C.3).
+	// Gateway endpoints (F-GW-002) — chat-completions is real (Phase C / N+5b).
 	r.Post("/v1/chat/completions", gatewayhttp.NewChatCompletionsHandler(gatewayhttp.ChatHandlerDeps{
 		Auth:                 d.inboundAuth,
+		Registry:             d.modelRegistry,
+		Router:               d.routePlanner,
 		ClaimGate:            d.claimGate,
 		Selector:             d.selector,
 		Forwarder:            d.forwarder,
@@ -197,13 +202,13 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Get("/admin/v1/audit-events", notImplemented("F-OBS-001 + F-RATE-001 + F-AUTH-005 audit query"))
 	r.Post("/admin/v1/usage-record-dlq/{id}/replay", notImplemented("F-OBS-001 DLQ replay"))
 
-	logger.Info("routes mounted (skeleton)")
+	logger.Info("routes mounted")
 }
 
 func notImplemented(label string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotImplemented)
-		_, _ = fmt.Fprintf(w, `{"error":{"code":"NOT_IMPLEMENTED","message":"%s — Phase 3 skeleton; awaits Phase 4 implementation"}}`, label)
+		_, _ = fmt.Fprintf(w, `{"error":{"code":"NOT_IMPLEMENTED","message":"%s — not implemented in the current Phase C / N+5b slice"}}`, label)
 	}
 }

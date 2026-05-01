@@ -180,7 +180,7 @@ INSERT INTO usage_records (
     end_class, usage_source, confidence_score, pending_reconciliation,
     drain_outcome, routing_reason, protocol_loss,
     requested_at, upstream_request_at, first_byte_at, first_event_at, last_event_at,
-    requested_model, upstream_model, stream
+    requested_model, upstream_model, stream, snapshot_version
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7,
@@ -192,7 +192,7 @@ INSERT INTO usage_records (
     $21, $22, $23, $24,
     $25, $26, $27,
     $28, $29, $30, $31, $32,
-    $33, $34, $35
+    $33, $34, $35, $36
 )
 RETURNING id
 `
@@ -233,9 +233,12 @@ type InsertUsageRecordParams struct {
 	RequestedModel        string             `db:"requested_model" json:"requested_model"`
 	UpstreamModel         *string            `db:"upstream_model" json:"upstream_model"`
 	Stream                bool               `db:"stream" json:"stream"`
+	SnapshotVersion       *string            `db:"snapshot_version" json:"snapshot_version"`
 }
 
 // Spec §Tx2 step 12: write Usage Record into the same Tx as everything else.
+// Slice 2 (N+5b 2026-05-01): added snapshot_version (column from migration
+// 0008). Format documented there as "registry:<tid>:<v>;router:<rv>".
 func (q *Queries) InsertUsageRecord(ctx context.Context, arg InsertUsageRecordParams) (int64, error) {
 	row := q.db.QueryRow(ctx, insertUsageRecord,
 		arg.TenantID,
@@ -273,6 +276,7 @@ func (q *Queries) InsertUsageRecord(ctx context.Context, arg InsertUsageRecordPa
 		arg.RequestedModel,
 		arg.UpstreamModel,
 		arg.Stream,
+		arg.SnapshotVersion,
 	)
 	var id int64
 	err := row.Scan(&id)

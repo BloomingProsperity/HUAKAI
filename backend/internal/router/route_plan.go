@@ -11,10 +11,8 @@ type RequestContext struct {
 }
 
 // ResolvedModel is the registry-resolved model identity — output of
-// registry.ResolveModel. Slice 2 (N+5a) populates this via the real
-// Registry; the chat handler still threads the legacy
-// PlanInput.ExplicitPoolGroupID escape hatch alongside until N+5b removes
-// it.
+// registry.ResolveModel. Populated entirely by the Registry as of N+5b;
+// the legacy PlanInput.ExplicitPoolGroupID escape hatch is gone.
 type ResolvedModel struct {
 	PublicAlias        string   // what the client asked for, e.g. "claude-3-5-sonnet"
 	InternalModelID    string   // canonical id, e.g. "anthropic/claude-3.5-sonnet-20241022"
@@ -26,9 +24,9 @@ type ResolvedModel struct {
 
 	// PoolCandidates is the ordered list of pool_group_id values the
 	// Registry resolved for this (alias, tenant) pair, sorted by binding
-	// priority then id. Index 0 is the primary candidate. Slice 2 (N+5a)
-	// populates this; N+5b switches the Router to consume it instead of
-	// PlanInput.ExplicitPoolGroupID.
+	// priority then id. Index 0 is the primary candidate. As of N+5b
+	// this is the ONLY pool carrier into Router.Plan; the legacy
+	// ExplicitPoolGroupID escape hatch is gone.
 	PoolCandidates []int64
 
 	// SnapshotVersion is the Registry-portion stamp produced by

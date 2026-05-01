@@ -3,7 +3,9 @@
 // via HUAKAI Canonical Stream Format (HCSF).
 //
 // See docs/specs/protocol-translation.md for the released spec.
-// Phase 3 skeleton ONLY per DR-008.
+// Current slice has the shared protocol contracts plus an Anthropic streaming
+// adapter path used by the gateway smoke flow. Full HCSF and additional
+// provider/client adapters remain Phase E+ work.
 package proto
 
 import "context"
