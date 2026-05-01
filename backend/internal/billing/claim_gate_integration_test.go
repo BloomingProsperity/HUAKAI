@@ -32,25 +32,61 @@ func dsn(t *testing.T) string {
 	return v
 }
 
-// seedTenant inserts a fresh tenant and registers cleanup. Returns IDs;
-// api_key + user IDs are derived deterministically from tenant_id (no FKs
-// in the 0002 migration ledger schema for those columns).
+// seedTenant inserts a fresh tenant + real users + api_keys row + registers
+// cleanup. Returns IDs. Slice 2 (N+4b1 2026-05-01) replaced the previous
+// synthetic-id pattern (apiKeyID = tenantID*100 + 1) with a real seed
+// because migration 0009 added composite FKs from billing_ledger_claims
+// (tenant_id, api_key_id) -> api_keys (tenant_id, id) and from
+// (tenant_id, user_id) -> users (tenant_id, id).
+//
+// The bcrypt hash + key_prefix are placeholders — the resolver path is
+// not exercised by these tests; the FK target just needs an api_keys row
+// to exist with the same (tenant_id, id) pair.
 func seedTenant(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suffix string) (tenantID, apiKeyID, userID int64) {
 	t.Helper()
-	row := pool.QueryRow(ctx,
+	if err := pool.QueryRow(ctx,
 		`INSERT INTO tenants (name) VALUES ($1) RETURNING id`,
 		"test-tenant-"+suffix,
-	)
-	if err := row.Scan(&tenantID); err != nil {
+	).Scan(&tenantID); err != nil {
 		t.Fatalf("seed tenant: %v", err)
 	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO users (tenant_id, display_name) VALUES ($1, $2) RETURNING id`,
+		tenantID, "user-"+suffix,
+	).Scan(&userID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO api_keys (tenant_id, user_id, name, key_hash, key_prefix, status)
+		 VALUES ($1, $2, $3, $4, $5, 'active') RETURNING id`,
+		tenantID, userID, "key-"+suffix,
+		"$2a$10$placeholder-not-resolved-by-billing-tests",
+		"hk_test_"+suffix[:min(len(suffix), 8)],
+	).Scan(&apiKeyID); err != nil {
+		t.Fatalf("seed api_key: %v", err)
+	}
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM billing_ledger_claims WHERE tenant_id=$1`, tenantID)
-		_, _ = pool.Exec(context.Background(), `DELETE FROM tenants WHERE id=$1`, tenantID)
+		c := context.Background()
+		// FK chain: claims/usage/archive -> api_keys -> users -> tenants.
+		_, _ = pool.Exec(c, `DELETE FROM usage_records WHERE tenant_id=$1`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM billing_ledger_claims WHERE tenant_id=$1`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM billing_ledger_archive WHERE tenant_id=$1`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM api_keys WHERE tenant_id=$1`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM users WHERE tenant_id=$1`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM tenants WHERE id=$1`, tenantID)
 	})
-	apiKeyID = tenantID*100 + 1
-	userID = tenantID*100 + 2
 	return tenantID, apiKeyID, userID
+}
+
+// min is a tiny helper since the std-lib min(int, int) is only Go 1.21+.
+// Once the module is verified to be on >= 1.21 this can be deleted.
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func openPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
