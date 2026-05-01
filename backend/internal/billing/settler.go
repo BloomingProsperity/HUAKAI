@@ -113,6 +113,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 		RequestedModel:        coalesceString(req.RequestedModel, claim.RequestedModel),
 		UpstreamModel:         nullableString(req.UpstreamModel),
 		Stream:                req.Stream,
+		SnapshotVersion:       nullableString(req.SnapshotVersion),
 	}); err != nil {
 		return nil, fmt.Errorf("billing: insert usage record: %w", err)
 	}

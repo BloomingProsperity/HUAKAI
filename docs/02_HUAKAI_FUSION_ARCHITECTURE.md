@@ -2,14 +2,14 @@
 
 | 字段 | 值 |
 | --- | --- |
-| Status | **v0.2** — 加入 3-tier 切分 + 5 复杂度轴 + L0/L1/L2 商业路线图 + 实测进度 |
+| Status | **v0.3 implementation sync** — v0.2 架构保留；已同步 Phase C / N+5b 当前代码状态 |
 | 作者 | Claude PM-Orchestrator (Opus) |
-| 日期 | 2026-04-30 (v0.1: 2026-04-29) |
+| 日期 | 2026-05-01 (v0.2: 2026-04-30; v0.1: 2026-04-29) |
 | v0.2 driver | Owner 2026-04-30 三条纠正：(1) 3-tier 责任切分（Router/Pool/Executor）；(2) "融合怪 = 8 灵魂全部融合，不是 sub2 一家底座"；(3) "拆解还不够"——增加 5 复杂度轴的 mechanism 跟踪 |
 | 输入材料 | 21 份独立深度拆解 + 7 个 inventory + 7 份 Released spec + DR-001/002/006/008 + 01_PROJECT_BRIEF + 50 个 Tx2 invariant + 7 条 CMB cross-module invariant + Slice 1+4 落地证据 |
 | 形态 | 中文 executive 总览（Part A）+ 可视化 + 5 张表（Part B） |
 | 读者 | Owner（决策入口）+ 后续 contributor（执行入口） |
-| 当前实测进度 | **加权 ~30%** — money path 70% (Phase B.5/C.4 落地 + commit ce133da) + 治理 100% + Router skeleton 30% (Slice 1) + Obs query 40% (Slice 4) + L0 商业化 0% + 真 upstream 0% |
+| 当前实测进度 | **Phase C / N+5b 已进入实现态** — inbound API key resolver、Model Registry、Router.Plan、ClaimGate、Resource Pool selector、stream forwarder、Tx2 Settler、Obs Reader 已落；仍缺 admin UI、支付/充值、真实 pricing、真实 upstream provider、multi-attempt executor |
 
 ---
 
@@ -118,7 +118,7 @@ Owner 2026-04-30 quote: "sub2api 核心复杂度集中在'上下文状态 + 渠�
 | # | 项 | 当前 | 阻塞原因 |
 |---|---|---|---|
 | L0-1 | **sub2 登录 → OAuth refresh token bootstrap** | 0 行 | F-AUTH-005 只管"已有 token 的 refresh"，没管"首次拿 token"；操作员手工粘贴方案需要 admin form |
-| L0-2 | **End-user API key 签发** | 0 行 | 现在是 SmokeAuthResolver；需要 0007 schema (api_keys + users 表) + bcrypt + 签发 endpoint |
+| L0-2 | **End-user API key 签发** | 存储 + resolver 已落；签发入口未落 | 0007 schema + bcrypt + `APIKeyResolver` 已替代 SmokeAuthResolver；还需要 admin/API key issuance endpoint |
 | L0-3 | **Tenant 注册 / 登录**（SaaS 版） | 0 行 | DR-002 双版本前提；和 L0-2 一同进 0007 |
 | L0-4 | **Real pricing per model**（取代 hardcode 0.01） | 0 行 | 接 F-BILL-001 pricing-table；本身可以 hardcode JSON 第一版 |
 | L0-5 | **充值 / 支付 / 余额扣减** | 0 行 | Stripe / Alipay 接通；schema 加 wallet 表 |
@@ -158,12 +158,12 @@ Owner 2026-04-30 quote: "sub2api 核心复杂度集中在'上下文状态 + 渠�
 
 | Slice | 状态 | 说明 |
 |---|---|---|
-| **Slice 1** Router skeleton | ✅ 已落 (commit 5d1fbd7) | `internal/router/` + 6 单测；handler 还没切过去 |
-| **Slice 2** Model Registry | ⏳ 等 Owner 批 0007 migration | 模型→capability 映射；删 PlanWithPoolGroupID 转接 |
+| **Slice 1** Router skeleton | ✅ 已落并接入 handler | `internal/router/` + 单测；N+5b 起 handler 走 `Router.Plan` |
+| **Slice 2** Model Registry | ✅ 已落 | 0008 schema + `internal/registry` + handler 模型解析；`PlanWithPoolGroupID`/body `pool_group_id` escape hatch 已移除 |
 | **Slice 3** 3-ID schema chain | ⏳ 等 Owner 批 0008 migration | claim/usage/billing 加 request_id, attempt_id 列；Executor 真起 |
 | **Slice 4** Obs Reader | ✅ 已落 (commit 5d1fbd7) | `internal/obs/` + 5 集成测试；admin UI 后端就绪 |
 | **Slice 5** First real adapter | ⏳ 等 Owner 提供真凭证 | 取代 mock；OpenAI client adapter |
-| **L0 minimum** api_keys/users | ⏳ 等 Owner 批 0009 migration | bcrypt + SmokeAuthResolver 退役 |
+| **L0 minimum** api_keys/users | ✅ N+4a 已落；签发入口待做 | 0007 schema + bcrypt + table-backed API key resolver；SmokeAuthResolver 已从默认构建退役 |
 | **B12** credentials 加密 | ⏳ 等 Owner 批 0010 migration | jsonb → bytea + KMS envelope |
 
 ## 7 个参考项目 — 1 句定位 + 1 件吸收（v0.1 保留；详细灵魂表见上方 8 灵魂融合表）
@@ -201,14 +201,14 @@ Owner 2026-04-30 quote: "很多用 sub2api 的人说客户群体一多请求速�
 2. **billing_policy_version 必须在 Tx1 锁定，Tx2 复用**（来源：new-api cache_ratio 全局热重载 TOCTOU）。修：claim row 已有 `billing_policy_version` 字段，settler 必须读自 claim 不读 current。
 3. **Helicone 类的"宣传 ≠ 实有"风险登记进流程**（来源：truth-first 协议第一次抓到）。所有 evidence ledger 行加 "advertised vs source-confirmed" 标签；synthesis 阶段降级。
 4. **all-api-hub 明文凭证模式绝不能进 HUAKAI**——服务端 KMS envelope encryption 强制（DR-006）。`provider_accounts.credentials_encrypted` bytea 列必加密层，admin export 默认排除。
-5. **Pool Phase C 真 SlotManager + audit 还是 stub**（来源：codex 自审）。HUAKAI 现有代码 in-memory mock；接 PostgreSQL 后必须真用 `pool_slot_acquisitions` 表，`InsertSlotAcquisition` + `ReleaseSlotAcquisition` 配 in_flight_count CAS。
+5. **Pool Phase C SlotManager 已接 PostgreSQL；audit/竞争重试仍需补齐**（来源：codex 自审后实现同步）。当前 `DBSlotManager` 已真用 `pool_slot_acquisitions` 表，并通过 `InsertSlotAcquisition` + `ReleaseSlotAndDecrementInFlight` 配合 `in_flight_count`；剩余风险是 routing audit 写入 selector 主链路、SQLSTATE 40001 retry loop、orphan lease sweeper。
 
 ## 接下来 2-3 个工作 session 必做（v0.2 重排，v0.1 已完成的 N+1/N+3 标 ✅）
 
 - ✅ **N+1 完成**（commit `ce133da`）：`cmd/gateway/main.go` 端到端 POST `/v1/chat/completions` + smoke test 5/5 PG state 断言绿
 - ✅ **N+3 完成**（多个 commit）：Phase B.5 settler 7 集成测试 + Phase C.4 smoke + Slice 1 router 6 单测 + Slice 4 obs 5 集成测试
-- ⏳ **N+4 (next)**: L0 minimum — 0009 schema (api_keys + users 表) + bcrypt + 退役 SmokeAuthResolver；这是从 30% → 40% 的最直接路径
-- ⏳ **N+5**: Slice 2 Model Registry → 0007 migration → handler 切到 Router.Plan（不再走 PlanWithPoolGroupID 转接）
+- ✅ **N+4a 完成**: L0 minimum — 0007 schema (api_keys + users 表) + bcrypt + `APIKeyResolver`；SmokeAuthResolver 已不在默认构建路径
+- ✅ **N+5a/N+5b 完成**: Slice 2 Model Registry → 0008 migration → handler 切到 `Router.Plan`，不再走 `PlanWithPoolGroupID` 转接，public body `pool_group_id` 返回 400
 - ⏳ **N+6**: Slice 5 First real adapter → OpenAI client adapter + 真 Anthropic upstream（取代 mock_upstream.go）
 - ⏳ **N+7**: Slice 3 三 ID schema chain → 0008 migration → Executor 真起（取代 chat handler 兼任）
 
@@ -319,7 +319,7 @@ sequenceDiagram
 | RB-2 | Pricing-version mid-flight TOCTOU race | new-api cache_ratio 热重载 | F-OBS-001 §Tx1 step 1 | claim row 锁 billing_policy_version + Tx2 复用 | HIGH |
 | RB-3 | helicone-类宣传 vs 实有差距未登记 | helicone counter-evidence | clean-room CL-001 | evidence ledger 加 "advertised/source-confirmed" 标签 | HIGH |
 | RB-4 | all-api-hub 明文凭证模式被误抄 | all-api-hub plaintext storage | DR-006 + F-AUTH-005 | provider_accounts.credentials_encrypted bytea + KMS envelope; 默认 export 排除 | HIGH |
-| RB-5 | Pool Phase C SlotManager 仍是 in-memory mock | codex 自审 | F-POOL-001 §Phase C | 接 pool_slot_acquisitions 表 + CAS in_flight_count | HIGH |
+| RB-5 | Pool Phase C audit/retry/sweeper 未闭环 | codex 自审 + N+5b 实现同步 | F-POOL-001 §Phase C | SlotManager 已接 PG；继续补 routing audit 写入、40001 retry loop、orphan lease sweeper | MED |
 | RB-6 | per-tenant retry budget 缺失，DOS 向量 | litellm L4 policy bypass | DR-001 + F-GW-004 | per-tenant retry-per-minute cap | HIGH |
 | RB-7 | 单部署豁免按租户判定不按全局 | litellm S-5 + DR-001 | F-CH-002 | exemption check uses tenant deployment count | HIGH |
 | RB-8 | Anthropic 5m vs 1h cache 子桶未拆字段 | new-api S-2 | F-OBS-001 schema | 加 cache_creation_5m_tokens + cache_creation_1h_tokens | HIGH |
@@ -454,8 +454,8 @@ docs/decompositions/
 - [x] **AppLocker / SAC 解决方案** + run-go-test wrapper（commit `5d1fbd7`）
 
 ### v0.2 待办（路线图 N+4..N+7）
-- [ ] **N+4 L0 minimum**: 0009 schema (api_keys + users) + bcrypt + 退役 SmokeAuthResolver
-- [ ] **N+5 Slice 2**: 0007 schema (model_registry) + handler 切到 `Router.Plan(ExplicitPoolGroupID)` 路径
+- [x] **N+4a L0 minimum**: 0007 schema (api_keys + users) + bcrypt + `APIKeyResolver` 替代 SmokeAuthResolver
+- [x] **N+5 Slice 2**: 0008 schema (model_registry) + handler 切到 `Router.Plan`，移除 `ExplicitPoolGroupID`/`PlanWithPoolGroupID`
 - [ ] **N+6 Slice 5**: OpenAI client adapter + 真 Anthropic upstream
 - [ ] **N+7 Slice 3**: 0008 schema (request_id + attempt_id 列) + Executor 抽出
 - [ ] **B12**: 0010 schema (credentials_encrypted bytea + KMS envelope)

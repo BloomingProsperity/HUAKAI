@@ -1,6 +1,8 @@
 # HUAKAI 项目总规划 / Project Master Plan
 
-> 这是 **Owner 总览文档**——把散在 25+ 份治理文件里的关键信息汇总到一处。**正式规则仍以分散的英文权威文件为准**（如 docs/01..24, docs/decisions/DR-*）。本文档每次重大决策后由 Claude PM 刷新。最近刷新：**2026-04-28**。
+> 这是 **Owner 总览文档**——把散在 25+ 份治理文件里的关键信息汇总到一处。**正式规则仍以分散的英文权威文件为准**（如 docs/01..24, docs/decisions/DR-*）。本文档每次重大决策后由 Claude PM 刷新。最近实现同步：**2026-05-01**。
+>
+> **Current implementation sync:** 项目已不是“Phase 3+ 未启动”。当前代码处于 **Phase C / N+5b**：`/v1/chat/completions` 已串起 inbound API key auth、Model Registry、Router.Plan、ClaimGate、Resource Pool selector、stream forwarder、Tx2 Settler 与 Obs Reader。仍未完成的是 admin UI、支付/充值、真实 pricing、真实 upstream provider、multi-attempt executor。
 
 ## 一、项目本质（一句话）
 
@@ -30,23 +32,23 @@
 |---|---|---|---|
 | **调研** | Phase 0-0.5 治理基线 + Phase 1 第一趟 mining | ✅ 完成 | 8 个参考项目 license 已查；READMEs 全挖；12 份 inventory（Claude 4 + Codex 7 + Sub2API 1） |
 | **研究** | Phase 1 第二趟 deep decomposition + 互审 | 🚧 5-10% 完成 | 3 份 Sub2API prose decomposition + 1 份跨职能 prose（Quota+Billing claim gate）+ 2 份互审报告（v1 + v2）+ 1 份综合方案 |
-| **项目+功能规划** | Phase 2 contract lock | ⏳ 未启动 | 待写：API contracts 锁定、UI contracts 锁定、Domain Model 锁定（schema + 字段）|
-| **落实** | Phase 3-9 实现 | ⏳ 未启动 | Phase 3 骨架 → Phase 4 网关核心 → Phase 5 账号路由 → Phase 6 计费配额 → Phase 7 Admin 轻量 → Phase 8 生产硬化 → Phase 9 高级 parity + 接入广度爆发 |
-| **检测** | 持续（Phase 1 起到 Phase 9）+ Phase 8 集中 | ⏳ 未启动 | docs/11 验收测试矩阵 + docs/15 发布门禁 + docs/24 持续追踪政策 |
+| **项目+功能规划** | Phase 2 contract lock + slice specs | 🚧 进行中 | 已有 released specs + N+4/N+5 implementation plans；后续 admin/payment/executor contracts 继续补 |
+| **落实** | Phase 3-9 实现 | 🚧 已启动（Phase C / N+5b） | 后端核心 slice 已跑通：auth → registry → router → claim/pool → forward → settle；下一步是真 upstream、executor、pricing/payment、admin |
+| **检测** | 持续（Phase 1 起到 Phase 9）+ Phase 8 集中 | 🚧 已启动 | Go unit/integration/smoke 已覆盖当前 slice；生产硬化与完整验收矩阵仍待 Phase E+ |
 
 ### 当前**真实进度**（不灌水）
 
 ```
-治理基线 (Phase 0.5):  ████████████████████ 100%
-8 项目 license 查证:   ████████████████████ 100%
-README 挖矿 (Phase 1.1): ████████████████████ 100% (118 条证据)
-源码深拆 (Phase 1.2):    ██░░░░░░░░░░░░░░░░░░  ~5% (prose 文件 4 / ~30+)
-互审 cycle (Phase 1.3):  ████░░░░░░░░░░░░░░░░  ~15% (Quota+Billing 完整跑过 1 轮)
-Phase 2 契约锁定:        ░░░░░░░░░░░░░░░░░░░░  0%
-Phase 3+ 实现:           ░░░░░░░░░░░░░░░░░░░░  0%
+治理基线 (Phase 0.5):      ████████████████████ 100%
+8 项目 license 查证:       ████████████████████ 100%
+README 挖矿 (Phase 1.1):   ████████████████████ 100% (118 条证据)
+核心 specs / slice plans:  ████████████░░░░░░░░  约 60%（当前核心链路够实现；后续 admin/payment/executor 待补）
+Phase C / N+5b 后端核心:  ██████████░░░░░░░░░░  约 50%（chat streaming money path 已通；真 upstream/定价/executor 未通）
+L0 商业化闭环:             ████░░░░░░░░░░░░░░░░  约 20%（API key resolver 已落；充值、签发 UI、余额扣减待做）
+Admin / Frontend:          ░░░░░░░░░░░░░░░░░░░░  0%
 ```
 
-**Phase 1 → Phase 2 退出门**：[docs/22 Deep Mining Mandate](22_DEEP_MINING_MANDATE.md) 要求每个 L1/L2 功能必须有源码级 prose decomposition + 互审。当前 ~30+ 份待写。
+**执行口径更新**：DR-008 后项目已采用“严格 clean-room + slice 互审 + 小步实现”的路径推进，不再停留在 Phase 1/2 门禁前。后续新增 L1/L2 能力仍必须保留源码级逆推、互审、spec 与测试证据。
 
 ## 四、功能规划全景（53 行功能矩阵）
 

@@ -1,6 +1,6 @@
 # HUAKAI Gateway example configuration.
-# Phase 3 skeleton — operator config schema is illustrative; Phase 4
-# implementation may refine.
+# Current Phase C example configuration. Operator config schema remains
+# illustrative and may be refined by Phase E+ admin/config work.
 # See docs/specs/api-contract.md and docs/specs/*.md for the locked
 # behavior contracts.
 

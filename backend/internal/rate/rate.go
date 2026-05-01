@@ -1,7 +1,8 @@
 // Package rate implements F-RATE-001: upstream rate-limit + cooldown.
 //
 // See docs/specs/rate-limiting.md for the released spec.
-// Phase 3 skeleton ONLY — no business logic per DR-008.
+// Current slice defines the rate/cooldown contract. Enforcement and provider-
+// specific classifiers remain Phase E+ work.
 package rate
 
 import (

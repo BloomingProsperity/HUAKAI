@@ -2,7 +2,9 @@
 // Tx1/Tx2 atomic billing with Usage Record finalization.
 //
 // See docs/specs/observability-billing.md for the released spec.
-// Phase 3 skeleton ONLY — no business logic per DR-008.
+// Current slice includes PostgreSQL-backed ClaimGate and DefaultSettler
+// implementations. Dynamic pricing, outbox emission, and reconciliation
+// workers remain Phase E+ work.
 package billing
 
 import (
@@ -80,6 +82,11 @@ type SettleRequest struct {
 	Draft               gateway.UsageRecordDraft
 	Fingerprint         string
 	OutboxEmitter       func() bool
+	// SnapshotVersion is the registry+router stamp produced by
+	// router.Plan as of N+5b (format "registry:<tid>:<v>;router:<rv>").
+	// Written into usage_records.snapshot_version so audit replay can
+	// reconstruct the routing config that built this plan.
+	SnapshotVersion string
 }
 
 // SettleResult is the Tx2 commit outcome.
@@ -89,6 +96,6 @@ type SettleResult struct {
 	OutboxEventsEnqueued int
 }
 
-// TODO(phase-4): implement ClaimGate + Settler against billing_ledger_claims,
-// billing_events, usage_records, billing_ledger_adjustments tables per
-// docs/schema/observability-billing.sql.
+// TODO(phase-e): replace placeholder pricing with versioned pricing tables,
+// wire scheduler outbox emission, and add reconciliation workers for pending
+// usage records.

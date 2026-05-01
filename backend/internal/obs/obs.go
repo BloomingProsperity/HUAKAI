@@ -3,7 +3,8 @@
 //
 // Closely coupled with internal/billing for Tx2 atomic settlement.
 // See docs/specs/observability-billing.md for the released spec.
-// Phase 3 skeleton ONLY per DR-008.
+// Current slice includes a sqlc-backed read-side Reader in repository.go.
+// Admin HTTP endpoints and DLQ replay orchestration remain Phase E+ work.
 package obs
 
 import "context"
@@ -69,6 +70,6 @@ type AuditPage struct {
 	Page  PageMeta
 }
 
-// TODO(phase-4): implement Repository against PostgreSQL via sqlc-generated
-// queries; reconciliation worker for pending_reconciliation Usage Records;
-// outbox consumer with lag metric.
+// TODO(phase-e): expose Reader through admin HTTP endpoints, add DLQ replay,
+// reconciliation workers for pending_reconciliation usage records, and outbox
+// lag metrics.

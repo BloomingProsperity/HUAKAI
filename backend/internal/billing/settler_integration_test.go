@@ -55,6 +55,23 @@ func TestAT_OBS_004_AtomicFiveEffect(t *testing.T) {
 		t.Fatalf("expected one usage_record with claim_id=%d; got %d", seed.claimID, usageCount)
 	}
 
+	// Slice 2 (N+5b 2026-05-01): the success-path usage row carries the
+	// router+registry stamp from migration 0008's snapshot_version column.
+	var snapshot *string
+	if err := pool.QueryRow(ctx,
+		`SELECT snapshot_version FROM usage_records WHERE claim_id=$1`,
+		seed.claimID,
+	).Scan(&snapshot); err != nil {
+		t.Fatalf("read snapshot_version: %v", err)
+	}
+	if snapshot == nil || *snapshot != "registry:99:7;router:v0.1-phase-c" {
+		got := "<nil>"
+		if snapshot != nil {
+			got = *snapshot
+		}
+		t.Fatalf("usage_records.snapshot_version mismatch; got %q want %q", got, "registry:99:7;router:v0.1-phase-c")
+	}
+
 	var eventCount int
 	if err := pool.QueryRow(ctx,
 		`SELECT count(*) FROM billing_events WHERE claim_id=$1 AND event_type='claim_committed' AND actual_cost=$2`,
@@ -344,6 +361,7 @@ func settleRequest(seed settlerSeed, actualCost decimal.Decimal) SettleRequest {
 		UpstreamModel:     "gpt-4.1-mini",
 		Stream:            false,
 		Fingerprint:       seed.fingerprint,
+		SnapshotVersion:   "registry:99:7;router:v0.1-phase-c",
 		Draft: gateway.UsageRecordDraft{
 			TokensInput:           10,
 			TokensOutput:          20,

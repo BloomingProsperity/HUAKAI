@@ -1,9 +1,11 @@
-// Package auth implements F-AUTH-005: upstream Provider Account credential
-// management (OAuth refresh, token cache, storm prevention, mimicry policy).
+// Package auth implements inbound API-key resolution plus F-AUTH-005 upstream
+// Provider Account credential management (OAuth refresh, token cache, storm
+// prevention, mimicry policy).
 //
-// NOT user-facing auth (that is F-AUTH-001..004). See
-// docs/specs/upstream-credential-management.md for the released spec.
-// Phase 3 skeleton ONLY per DR-008.
+// See docs/specs/upstream-credential-management.md for the released upstream
+// credential spec. Current slice includes table-backed inbound API key auth,
+// Antigravity token-provider building blocks, and account-scope storm budget;
+// other provider adapters and wider storm scopes remain Phase E+ work.
 package auth
 
 import "context"
@@ -50,6 +52,6 @@ const (
 	OutcomeMimicryApplied            Outcome = "mimicry_applied"
 )
 
-// TODO(phase-4): implement provider-neutral refresh state machine + per-provider
-// adapters (Antigravity, OpenAI, Gemini, Anthropic) + 3-scope storm controller
-// + CAS persistence + OAuth error sanitizer + mimicry engine.
+// TODO(phase-e): finish the provider-neutral refresh state machine, add
+// OpenAI/Gemini/Anthropic adapters, complete provider-endpoint/global storm
+// scopes, and wire mimicry policy enforcement.

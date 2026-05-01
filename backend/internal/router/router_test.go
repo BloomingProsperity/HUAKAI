@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -12,7 +13,7 @@ func TestRouter_Plan_RejectsMissingRequestID(t *testing.T) {
 	r := NewDefaultRouter()
 	_, err := r.Plan(context.Background(), PlanInput{
 		Context: RequestContext{TenantID: 1},
-		Model:   ResolvedModel{ProtocolFamily: "anthropic_messages"},
+		Model:   ResolvedModel{ProtocolFamily: "anthropic_messages", PoolCandidates: []int64{42}},
 	})
 	if err == nil {
 		t.Fatal("expected PlanError for missing RequestID")
@@ -29,7 +30,7 @@ func TestRouter_Plan_RejectsMissingTenant(t *testing.T) {
 	r := NewDefaultRouter()
 	_, err := r.Plan(context.Background(), PlanInput{
 		Context: RequestContext{RequestID: "req-x"},
-		Model:   ResolvedModel{ProtocolFamily: "anthropic_messages"},
+		Model:   ResolvedModel{ProtocolFamily: "anthropic_messages", PoolCandidates: []int64{42}},
 	})
 	var pe *PlanError
 	if !errors.As(err, &pe) || pe.Code != "missing_tenant" {
@@ -43,7 +44,7 @@ func TestRouter_Plan_RejectsUnknownModel(t *testing.T) {
 	r := NewDefaultRouter()
 	_, err := r.Plan(context.Background(), PlanInput{
 		Context: RequestContext{RequestID: "r1", TenantID: 99},
-		Model:   ResolvedModel{}, // no ProtocolFamily
+		Model:   ResolvedModel{PoolCandidates: []int64{42}}, // no ProtocolFamily
 	})
 	var pe *PlanError
 	if !errors.As(err, &pe) || pe.Code != "model_unsupported" {
@@ -51,38 +52,48 @@ func TestRouter_Plan_RejectsUnknownModel(t *testing.T) {
 	}
 }
 
-// TestRouter_PlanWithPoolGroupID_HappyPath verifies the Phase C escape
-// hatch produces a 1-attempt plan whose PoolGroupID matches the input
-// and whose RequiredCapabilities reflect Features.
-func TestRouter_PlanWithPoolGroupID_HappyPath(t *testing.T) {
+// TestRouter_Plan_RequiresPoolCandidates verifies the Router fails closed
+// when Registry surfaces an empty PoolCandidates list. Registry should
+// have already returned ErrTenantNoAccess upstream — this is defense in
+// depth (N+5b synthesized plan §"requestPoolGroupID rewrite").
+func TestRouter_Plan_RequiresPoolCandidates(t *testing.T) {
 	r := NewDefaultRouter()
-	plan, err := r.PlanWithPoolGroupID(
-		context.Background(),
-		PlanInput{
-			Context:  RequestContext{RequestID: "r2", TenantID: 7, APIKeyID: 11, UserID: 3},
-			Model:    ResolvedModel{ProtocolFamily: "anthropic_messages"},
-			Features: RequestFeatures{Stream: true, WantsToolUse: true},
-		},
-		42,
-	)
+	_, err := r.Plan(context.Background(), PlanInput{
+		Context: RequestContext{RequestID: "rNP", TenantID: 7},
+		Model:   ResolvedModel{ProtocolFamily: "anthropic_messages"}, // no PoolCandidates
+	})
+	var pe *PlanError
+	if !errors.As(err, &pe) || pe.Code != "no_eligible_pool" {
+		t.Fatalf("expected no_eligible_pool PlanError; got %v", err)
+	}
+}
+
+// TestRouter_Plan_UsesPrimaryCandidate verifies the Router takes the head
+// of PoolCandidates as the single attempt at L0 (AttemptBudget=1).
+func TestRouter_Plan_UsesPrimaryCandidate(t *testing.T) {
+	r := NewDefaultRouter()
+	plan, err := r.Plan(context.Background(), PlanInput{
+		Context:  RequestContext{RequestID: "r-pri", TenantID: 5, APIKeyID: 6, UserID: 7},
+		Model:    ResolvedModel{ProtocolFamily: "anthropic_messages", PoolCandidates: []int64{99, 100, 101}},
+		Features: RequestFeatures{Stream: true, WantsToolUse: true},
+	})
 	if err != nil {
-		t.Fatalf("PlanWithPoolGroupID: %v", err)
+		t.Fatalf("Plan: %v", err)
 	}
 	if len(plan.Attempts) != 1 {
 		t.Fatalf("expected 1 attempt; got %d", len(plan.Attempts))
 	}
-	a := plan.Attempts[0]
-	if a.PoolGroupID != 42 {
-		t.Fatalf("expected PoolGroupID=42; got %d", a.PoolGroupID)
+	if plan.Attempts[0].PoolGroupID != 99 {
+		t.Fatalf("expected PoolGroupID=99 (head of candidates); got %d", plan.Attempts[0].PoolGroupID)
 	}
-	if a.Reason != "primary" {
-		t.Fatalf("expected Reason=primary; got %q", a.Reason)
+	if plan.Attempts[0].Reason != "primary" {
+		t.Fatalf("expected Reason=primary; got %q", plan.Attempts[0].Reason)
 	}
 	want := map[string]bool{"stream": true, "tools": true}
-	if len(a.RequiredCapabilities) != len(want) {
-		t.Fatalf("RequiredCapabilities mismatch; got %v want %v", a.RequiredCapabilities, want)
+	if len(plan.Attempts[0].RequiredCapabilities) != len(want) {
+		t.Fatalf("RequiredCapabilities mismatch; got %v want %v", plan.Attempts[0].RequiredCapabilities, want)
 	}
-	for _, c := range a.RequiredCapabilities {
+	for _, c := range plan.Attempts[0].RequiredCapabilities {
 		if !want[c] {
 			t.Fatalf("unexpected capability %q in plan; want only stream+tools", c)
 		}
@@ -90,42 +101,50 @@ func TestRouter_PlanWithPoolGroupID_HappyPath(t *testing.T) {
 	if plan.AttemptBudget != 1 {
 		t.Fatalf("expected AttemptBudget=1; got %d", plan.AttemptBudget)
 	}
-	if plan.SnapshotVersion == "" {
-		t.Fatal("expected non-empty SnapshotVersion stamp")
-	}
 }
 
-// TestRouter_Plan_HappyPathThroughInterface verifies the public Plan()
-// method works end-to-end when the chat handler threads
-// ExplicitPoolGroupID. This is the path real callers will use; the
-// PlanWithPoolGroupID escape hatch is a Phase C v0.1 transitional
-// helper only.
-func TestRouter_Plan_HappyPathThroughInterface(t *testing.T) {
+// TestRouter_Plan_StampsConcatenatedSnapshot verifies the registry+router
+// snapshot is concatenated onto RoutePlan.SnapshotVersion in the format
+// documented in migration 0008.
+func TestRouter_Plan_StampsConcatenatedSnapshot(t *testing.T) {
 	r := NewDefaultRouter()
 	plan, err := r.Plan(context.Background(), PlanInput{
-		Context:             RequestContext{RequestID: "r-iface", TenantID: 5, APIKeyID: 6, UserID: 7},
-		Model:               ResolvedModel{ProtocolFamily: "anthropic_messages"},
-		Features:            RequestFeatures{Stream: true},
-		ExplicitPoolGroupID: 99,
+		Context: RequestContext{RequestID: "r-stamp", TenantID: 8},
+		Model: ResolvedModel{
+			ProtocolFamily:  "anthropic_messages",
+			PoolCandidates:  []int64{42},
+			SnapshotVersion: "registry:8:5",
+		},
 	})
 	if err != nil {
-		t.Fatalf("Plan via interface should succeed when ExplicitPoolGroupID set; got %v", err)
+		t.Fatalf("Plan: %v", err)
 	}
-	if len(plan.Attempts) != 1 || plan.Attempts[0].PoolGroupID != 99 {
-		t.Fatalf("expected 1 attempt against pool 99; got %+v", plan.Attempts)
+	want := "registry:8:5;router:v0.1-phase-c"
+	if plan.SnapshotVersion != want {
+		t.Fatalf("SnapshotVersion = %q; want %q", plan.SnapshotVersion, want)
 	}
 }
 
-// TestRouter_PlanWithPoolGroupID_RejectsZeroPool checks the escape hatch
-// fail-closes when caller forgets to thread pool_group_id.
-func TestRouter_PlanWithPoolGroupID_RejectsZeroPool(t *testing.T) {
+// TestRouter_Plan_StampsFallbackOnEmptyRegistryStamp covers the defensive
+// branch where Resolved.SnapshotVersion is empty (legacy / boot edge).
+// The stamp must never start with a bare semicolon.
+func TestRouter_Plan_StampsFallbackOnEmptyRegistryStamp(t *testing.T) {
 	r := NewDefaultRouter()
-	_, err := r.PlanWithPoolGroupID(
-		context.Background(),
-		PlanInput{Context: RequestContext{RequestID: "r3", TenantID: 1}},
-		0,
-	)
-	if !errors.Is(err, errPoolGroupRequired) {
-		t.Fatalf("expected errPoolGroupRequired; got %v", err)
+	plan, err := r.Plan(context.Background(), PlanInput{
+		Context: RequestContext{RequestID: "r-fb", TenantID: 9},
+		Model: ResolvedModel{
+			ProtocolFamily: "anthropic_messages",
+			PoolCandidates: []int64{42},
+			// SnapshotVersion intentionally empty
+		},
+	})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if strings.HasPrefix(plan.SnapshotVersion, ";") {
+		t.Fatalf("SnapshotVersion %q must not start with semicolon", plan.SnapshotVersion)
+	}
+	if !strings.HasPrefix(plan.SnapshotVersion, "registry:unknown;") {
+		t.Fatalf("SnapshotVersion %q should fall back to registry:unknown prefix", plan.SnapshotVersion)
 	}
 }

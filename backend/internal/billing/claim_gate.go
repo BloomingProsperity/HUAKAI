@@ -175,6 +175,15 @@ func (g *DefaultClaimGate) Reserve(ctx context.Context, req ReserveRequest) (*Re
 // step 1. The IdempotencyKeyClientHeader in ReserveRequest is intentionally
 // EXCLUDED from this hash — see docs/plans/2026-04-29-integration-sprint-plan.md
 // (Codex review of Phase A flagged earlier draft that included it).
+//
+// PoolingGroupID is also EXCLUDED as of N+5b (codex pass-3 P2 finding
+// 2026-05-01): the pool group is now derived by Registry/Router from
+// mutable admin state, not from the client request. If an admin reroutes
+// a model→pool binding mid-flight, a legitimate retry with the same
+// Idempotency-Key would otherwise hash to a new fingerprint and surface
+// as idempotency_conflict. Excluding it makes idempotency depend only
+// on client-controlled inputs (tenant + key + logical id + payload +
+// model alias + endpoint + billing policy + request class).
 func ComputeIdempotencyFingerprint(r ReserveRequest) string {
 	h := sha256.New()
 	for _, field := range []string{
@@ -184,7 +193,6 @@ func ComputeIdempotencyFingerprint(r ReserveRequest) string {
 		r.EndpointFamily,
 		r.NormalizedPayloadHash,
 		r.RequestedModel,
-		strconv.FormatInt(r.PoolingGroupID, 10),
 		r.BillingPolicyVersion,
 		r.RequestClass,
 	} {

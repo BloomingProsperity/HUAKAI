@@ -1,6 +1,6 @@
 # HUAKAI Gateway development Dockerfile.
-# Phase 3 skeleton; operator-grade hardening (distroless, non-root, healthcheck)
-# added in Phase 8.
+# Development image for the current Phase C gateway slice. Operator-grade
+# hardening (distroless, non-root, healthcheck) is deferred to Phase 8.
 
 FROM golang:1.23-alpine AS builder
 WORKDIR /src

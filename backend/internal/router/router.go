@@ -27,20 +27,14 @@ type Router interface {
 }
 
 // PlanInput bundles what the Router needs to decide: who's calling, what
-// model they asked for, what they want done, and (Phase C v0.1) which
-// pool group to target. Each piece comes from a different upstream layer
-// (auth / registry / handler).
-//
-// Phase C v0.1: ExplicitPoolGroupID is a temporary carrier. The chat
-// handler resolves pool_group_id from the request body and threads it
-// here directly, since Slice 2 (Model Registry) hasn't landed yet. Once
-// Registry is in place, ResolvedModel will carry candidate pools and
-// this field gets removed. Plan() prefers ExplicitPoolGroupID when set.
+// model they asked for, and what they want done. Each piece comes from a
+// different upstream layer (Auth / Registry / handler). The pool group
+// to target is carried inside Model.PoolCandidates per Slice 2 N+5b —
+// the legacy ExplicitPoolGroupID escape hatch is gone.
 type PlanInput struct {
-	Context             RequestContext
-	Model               ResolvedModel
-	Features            RequestFeatures
-	ExplicitPoolGroupID int64
+	Context  RequestContext
+	Model    ResolvedModel
+	Features RequestFeatures
 }
 
 // PlanError is the typed error Router returns when no plan is buildable.
