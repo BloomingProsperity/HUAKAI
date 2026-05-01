@@ -58,17 +58,43 @@ func seedAdapterGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suf
 	).Scan(&seed.tenantID); err != nil {
 		t.Fatalf("seed tenant: %v", err)
 	}
-	seed.apiKeyID = seed.tenantID*100 + 1
-	seed.userID = seed.tenantID*100 + 2
+	// Slice 2 (N+4b1 2026-05-01): real users + api_keys rows replace the
+	// previous synthetic-id pattern. Migration 0009 added composite FKs
+	// from billing_ledger_claims/usage_records/billing_ledger_archive
+	// (tenant_id, api_key_id) -> api_keys, so claim seeds must reference
+	// real api_keys rows.
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO users (tenant_id, display_name) VALUES ($1, $2) RETURNING id`,
+		seed.tenantID, "adapter-user-"+unique,
+	).Scan(&seed.userID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO api_keys (tenant_id, user_id, name, key_hash, key_prefix, status)
+		 VALUES ($1, $2, $3, $4, $5, 'active') RETURNING id`,
+		seed.tenantID, seed.userID, "adapter-key-"+unique,
+		"$2a$10$placeholder-not-resolved-by-pool-tests",
+		"hk_test_adp"+unique[:5],
+	).Scan(&seed.apiKeyID); err != nil {
+		t.Fatalf("seed api_key: %v", err)
+	}
 
 	t.Cleanup(func() {
 		ctx := context.Background()
+		// FK chain post-N+4b1: pool_slot_acquisitions -> claims;
+		//                      claims/usage/archive -> api_keys/users;
+		//                      api_keys -> users.
+		_, _ = pool.Exec(ctx, `DELETE FROM usage_records WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pool.Exec(ctx, `DELETE FROM billing_events WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(ctx, `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(ctx, `DELETE FROM billing_ledger_claims WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pool.Exec(ctx, `DELETE FROM billing_ledger_archive WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(ctx, `DELETE FROM provider_accounts WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(ctx, `DELETE FROM channels WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(ctx, `DELETE FROM pool_groups WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(ctx, `DELETE FROM providers WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pool.Exec(ctx, `DELETE FROM api_keys WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(ctx, `DELETE FROM tenants WHERE id=$1`, seed.tenantID)
 	})
 

@@ -68,20 +68,41 @@ func seedReaderGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *rea
 	).Scan(&s.otherTenantID); err != nil {
 		t.Fatalf("seed other tenant: %v", err)
 	}
-	s.apiKeyID = s.tenantID*100 + 1
-	s.userID = s.tenantID*100 + 2
+	// Slice 2 (N+4b1 2026-05-01): real users + api_keys rows replace the
+	// previous synthetic-id pattern (`s.apiKeyID = s.tenantID*100 + 1`).
+	// Migration 0009 added composite FKs from billing_ledger_claims +
+	// usage_records (tenant_id, api_key_id|user_id) -> api_keys|users.
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO users (tenant_id, display_name) VALUES ($1, $2) RETURNING id`,
+		s.tenantID, "obs-user-"+unique,
+	).Scan(&s.userID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO api_keys (tenant_id, user_id, name, key_hash, key_prefix, status)
+		 VALUES ($1, $2, $3, $4, $5, 'active') RETURNING id`,
+		s.tenantID, s.userID, "obs-key-"+unique,
+		"$2a$10$placeholder-not-resolved-by-obs-tests",
+		"hk_test_obs"+unique[:5],
+	).Scan(&s.apiKeyID); err != nil {
+		t.Fatalf("seed api_key: %v", err)
+	}
 
 	t.Cleanup(func() {
 		c := context.Background()
 		for _, tid := range []int64{s.tenantID, s.otherTenantID} {
+			// FK chain post-N+4b1: claims/usage/archive -> api_keys -> users -> tenants.
 			_, _ = pool.Exec(c, `DELETE FROM usage_records WHERE tenant_id=$1`, tid)
 			_, _ = pool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1`, tid)
 			_, _ = pool.Exec(c, `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, tid)
 			_, _ = pool.Exec(c, `DELETE FROM billing_ledger_claims WHERE tenant_id=$1`, tid)
+			_, _ = pool.Exec(c, `DELETE FROM billing_ledger_archive WHERE tenant_id=$1`, tid)
 			_, _ = pool.Exec(c, `DELETE FROM provider_accounts WHERE tenant_id=$1`, tid)
 			_, _ = pool.Exec(c, `DELETE FROM channels WHERE tenant_id=$1`, tid)
 			_, _ = pool.Exec(c, `DELETE FROM pool_groups WHERE tenant_id=$1`, tid)
 			_, _ = pool.Exec(c, `DELETE FROM providers WHERE tenant_id=$1`, tid)
+			_, _ = pool.Exec(c, `DELETE FROM api_keys WHERE tenant_id=$1`, tid)
+			_, _ = pool.Exec(c, `DELETE FROM users WHERE tenant_id=$1`, tid)
 			_, _ = pool.Exec(c, `DELETE FROM tenants WHERE id=$1`, tid)
 		}
 	})
