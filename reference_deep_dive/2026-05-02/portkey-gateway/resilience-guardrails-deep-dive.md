@@ -138,4 +138,3 @@ HUAKAI delta: this belongs in HUAKAI L1 if operators can configure provider base
 - L2 should absorb retry budget, fallback stop conditions, and circuit-breaker filtering, because HUAKAI's commercial product depends on account-pool stability.
 - L3 can absorb conditional routing, cache, and hooks once billing sessions and route decision logs are stable.
 - L4 should include broad provider-specific header/config compatibility; useful later, but it can distract from getting a reliable paid gateway online.
-

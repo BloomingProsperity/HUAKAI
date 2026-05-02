@@ -180,4 +180,3 @@ HUAKAI delta: this maps directly to HUAKAI's account-pool and billing correctnes
 - L2: wallet escrow, webhook idempotency, admin correction, disallow-list recovery, and analytics rollups. These are the difference between a demo gateway and a commercial gateway.
 - L3: native/OpenAI dual body archive, advanced sessions, cache-savings analytics, and full dispute lifecycle UI.
 - L4: Helicone-style broad prompt/session/feedback platform can wait unless HUAKAI intentionally becomes an observability SaaS.
-
