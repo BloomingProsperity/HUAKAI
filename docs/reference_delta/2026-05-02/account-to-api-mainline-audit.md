@@ -114,7 +114,10 @@ Postgres FK does not support polymorphic targets, so a single `target_id` column
 - Composite FK `(tenant_id, provider_account_id) → provider_accounts(tenant_id, id)` (cross-tenant defense)
 - `priority integer NOT NULL DEFAULT 100` (lower = higher priority; multi-binding fallback order)
 - `enabled boolean`, `created_at`, `updated_at`, `deleted_at`, `created_by_actor`, `last_modified_by_actor`
-- Partial-unique index `(tenant_id, api_key_id, binding_kind, COALESCE(pool_group_id, provider_account_id, 0), tenant_default_token)` WHERE `deleted_at IS NULL` — prevents duplicate same-target bindings under the same key
+- **Three** partial-unique indexes — one per `binding_kind`, each scoped to the relevant target column. Postgres treats NULL columns inside a unique index as distinct values (pre-PG15 default), so a single combined index over the polymorphic columns leaks duplicate active bindings (Codex pass-12 P2). Per-kind partial indexes avoid the NULL-distinct trap:
+  - `UNIQUE (tenant_id, api_key_id, pool_group_id) WHERE binding_kind = 'pool_group' AND deleted_at IS NULL`
+  - `UNIQUE (tenant_id, api_key_id, provider_account_id) WHERE binding_kind = 'provider_account' AND deleted_at IS NULL`
+  - `UNIQUE (tenant_id, api_key_id, tenant_default_token) WHERE binding_kind = 'tenant_default' AND deleted_at IS NULL`
 
 **tenant_default behavior** (Owner directive): NEVER persist a binding with all three target columns NULL. When a customer key falls back to tenant default, the system writes an explicit `binding_kind='tenant_default'` row with `tenant_default_token='default'`. This way `usage_records.binding_id` is non-NULL for all post-spine traffic and admin trace can always answer "which binding was used?". `binding_id` is NULL ONLY for pre-migration historical rows.
 
