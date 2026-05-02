@@ -47,8 +47,12 @@ durable in the ledger and the reference deep-dive workspace at
 - Every behavior we adopted is recorded as a separate evidence row
   (`E-OAI-*`, `E-LM-*`, `E-PK-*`, `E-EAG-*`, `E-S2A-*`, `E-HLC-*`, `E-NAI-*`,
   `E-AAH-*`).
-- The reference repository sources are pinned by commit hash in the deep-dive
-  workspace at [reference_deep_dive/2026-05-02/_INDEX.md](reference_deep_dive/2026-05-02/_INDEX.md).
+- The reference repository sources are pinned by commit hash in the
+  delta workspace at
+  [docs/reference_delta/2026-05-02/_INDEX.md §"Reference snapshots"](docs/reference_delta/2026-05-02/_INDEX.md)
+  (Codex specifier-lane first pass; both `_INDEX.md` files exist —
+  the per-repo commit hashes live in the `docs/reference_delta/`
+  one, not in `reference_deep_dive/`).
 
 **Clean-room workflow**:
 - Specifier sessions read source and write behavior summaries with file:line
