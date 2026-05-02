@@ -70,14 +70,15 @@ See §5 below.
 
 See §7 below.
 
-### D. New candidate references (outside Codex's 8-repo set)
+### D. New candidate references (outside Codex's 8-repo set) — UNVERIFIED LEADS
 
-WebSearch 2026-05-02 surfaced 3 high-relevance projects Codex did not see:
-- **CLIProxyAPI** (`router-for-me/CLIProxyAPI`, github): wraps Gemini CLI / Antigravity / ChatGPT Codex / Claude Code as OpenAI/Gemini/Claude/Codex compatible API. Same identity-arbitrage angle as Sub2API but broader. License pending fetch.
-- **OmniRoute** (`diegosouzapw/OmniRoute`): 160+ providers, 4-tier auto-fallback (Subscription→API→Cheap→Free), prompt compression. The 4-tier fallback model is exactly HUAKAI Pool semantics in product form.
-- **Bifrost** (Maxim AI, Go): sub-microsecond overhead, 20+ providers, MCP gateway, enterprise governance. Useful as F-GW-003 SLO benchmark.
+WebSearch 2026-05-02 surfaced 3 candidate projects Codex did not see. **All claims below are from web search summaries, NOT source-confirmed**. Treat each row as a lead requiring its own Phase 2 specifier session before any feature claim.
 
-These should be added to `docs/07_REFERENCE_EVIDENCE_LEDGER.md` as `E-LIC-009..011` after a Phase 2 specifier session against each.
+- **CLIProxyAPI** (`router-for-me/CLIProxyAPI`): claimed to wrap Gemini CLI / Antigravity / ChatGPT Codex / Claude Code as OpenAI/Gemini/Claude/Codex compatible API. Same identity-arbitrage angle as Sub2API but broader. **License confirmed MIT** post-clone (commit `56df36895a0e`, 2026-05-02). **Specifier-lane first-pass shipped 2026-05-02** at `reference_deep_dive/2026-05-02/cliproxy-api/account-to-api-deep-dive.md` (commit `a106cca`).
+- **OmniRoute** (`diegosouzapw/OmniRoute`): web-search claim of 160+ providers, 4-tier auto-fallback (Subscription→API→Cheap→Free), prompt compression. License pending fetch. The 4-tier fallback model, IF source-confirmed, would be exactly HUAKAI Pool semantics in product form. Not yet specifier-read.
+- **Bifrost** (Maxim AI, Go): web-search claim of sub-microsecond overhead, 20+ providers, MCP gateway, enterprise governance. License pending fetch. Useful as F-GW-003 SLO benchmark IF source-confirmed. Not yet specifier-read.
+
+These should be added to `docs/07_REFERENCE_EVIDENCE_LEDGER.md` as `E-LIC-009..011` only AFTER a Phase 2 specifier session against each confirms license + observed behavior.
 
 ### E. CLAUDE.md #11 lane discipline
 
@@ -147,7 +148,7 @@ Aggregating capabilities across all 8 repos. ✓ = source-confirmed by Codex or 
 - "1 ✓" (sub2api unique) → TLS fingerprint, upstream proxy, TOTP, affiliate, setup wizard, backup. → **L3 niche / sub2api leadership**
 - "1 ✓" (other unique) → ai-gateway K8s CRD, all-api-hub auto-check-in. → **L4 plugin or non-goal**
 
-The Venn confirms HUAKAI's existing L-targets in `docs/17_FEATURE_LEVEL_MATRIX.md` are roughly right, with one shift: **versioned pricing snapshot** appears in 3+ projects (new-api expression DSL, ai-gateway CEL, helicone retention) so it should be promoted from "deferred" to L2.
+The Venn confirms HUAKAI's existing L-targets in `docs/17_FEATURE_LEVEL_MATRIX.md` are roughly right, with one shift: **versioned pricing snapshot** appears in 3 projects of the 8 (new-api expression DSL = best; ai-gateway CEL = best; litellm = basic — see Venn line `Versioned pricing snapshot` in §5). It should be promoted from "deferred" to L2 because it's table-stakes for any commercial gateway with token/cache pricing variability. Helicone is `(no)` for versioned pricing — it has body retention but not pricing-version snapshot; an earlier draft of this section incorrectly cited it.
 
 ## 6. Reconciliation: Codex's new F-IDs vs existing 03 matrix
 
