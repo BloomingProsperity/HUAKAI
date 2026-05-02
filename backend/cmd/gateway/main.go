@@ -26,6 +26,8 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"go.uber.org/zap"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
@@ -71,6 +73,11 @@ type deps struct {
 	// Slice 2 (N+5b 2026-05-01): Router consumes Registry's PoolCandidates
 	// and stamps the registry+router snapshot onto every plan.
 	routePlanner *router.DefaultRouter
+	// Slice 2 (N+4b2 2026-05-02): admin operator surface — auth resolver,
+	// key issuer, key revoker. Wired into /admin/v1/api-keys.
+	adminAuth    *admin.AdminResolver
+	adminIssuer  *admin.KeyIssuer
+	adminRevoker *admin.KeyRevoker
 }
 
 func run(logger *zap.Logger) error {
@@ -128,6 +135,20 @@ func run(logger *zap.Logger) error {
 		// Slice 2 (N+5b) router. Stateless; SnapshotVersion is "v0.1-phase-c"
 		// until Slice 5 introduces multi-attempt + cross-pool fallback.
 		routePlanner: router.NewDefaultRouter(),
+		// Slice 2 (N+4b2) admin trio. Resolver looks up admin_tokens by
+		// prefix + bcrypt-verifies; issuer mints api_keys via admin path;
+		// revoker soft-revokes. All three live entirely under
+		// internal/admin (CMB-1: zero overlap with hot inbound resolver).
+		adminAuth:    admin.NewAdminResolver(q),
+		adminIssuer:  admin.NewKeyIssuer(pgPool),
+		adminRevoker: admin.NewKeyRevoker(pgPool),
+	}
+
+	// Bootstrap-token issuance: env-var seeded first admin token. No-op
+	// after the table has any active row (the env path is one-shot per
+	// life of the database).
+	if err := admin.MaybeBootstrap(ctx, pgPool, logger); err != nil {
+		return fmt.Errorf("admin bootstrap: %w", err)
 	}
 
 	router := chi.NewRouter()
@@ -178,6 +199,17 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	}))
 	r.Post("/v1/responses", notImplemented("F-GW-002 responses handler"))
 	r.Post("/v1/messages", notImplemented("F-GW-002 anthropic-messages handler"))
+
+	// Admin: API Keys (Slice 2 N+4b2). Replaces hand-written SQL INSERT
+	// for operator key issuance. POST=issue / GET=list / POST revoke.
+	r.Route("/admin/v1/api-keys", func(r chi.Router) {
+		adminhttp.MountAPIKeyRoutes(r, adminhttp.AdminAPIKeysDeps{
+			Auth:    d.adminAuth,
+			Issuer:  d.adminIssuer,
+			Revoker: d.adminRevoker,
+			Queries: d.queries,
+		})
+	})
 
 	// Admin: Pool Groups (F-POOL-001)
 	r.Route("/admin/v1/pools", func(r chi.Router) {

@@ -10,6 +10,42 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// Slice 2 (N+4b2): append-only admin audit. Aligns with OpenAPI AuditEvent schema. payload jsonb MUST NEVER contain plaintext bearer or key_hash (CMB-5).
+type AdminAuditEvent struct {
+	ID         int64              `db:"id" json:"id"`
+	TenantID   *int64             `db:"tenant_id" json:"tenant_id"`
+	ActorID    string             `db:"actor_id" json:"actor_id"`
+	ActorRole  string             `db:"actor_role" json:"actor_role"`
+	Action     string             `db:"action" json:"action"`
+	TargetType string             `db:"target_type" json:"target_type"`
+	TargetID   *int64             `db:"target_id" json:"target_id"`
+	RequestID  *string            `db:"request_id" json:"request_id"`
+	Reason     *string            `db:"reason" json:"reason"`
+	Payload    []byte             `db:"payload" json:"payload"`
+	OccurredAt pgtype.Timestamptz `db:"occurred_at" json:"occurred_at"`
+}
+
+// Slice 2 (N+4b2): operator credentials. Separate table from api_keys; CMB-1 keeps the inbound resolver away from this table. Bootstrap row is env-var seeded; rotate before public exposure.
+type AdminToken struct {
+	ID   int64  `db:"id" json:"id"`
+	Name string `db:"name" json:"name"`
+	// bcrypt hash of the full plaintext bearer (cost=10). NEVER appended to logs; CMB-5.
+	KeyHash string `db:"key_hash" json:"key_hash"`
+	// First 16 chars of plaintext bearer (e.g. "hk_admin_xxxxxxxx"). Indexed for hot-path; insufficient on its own to authenticate.
+	KeyPrefix     string             `db:"key_prefix" json:"key_prefix"`
+	Role          string             `db:"role" json:"role"`
+	ScopeTenantID *int64             `db:"scope_tenant_id" json:"scope_tenant_id"`
+	Bootstrap     bool               `db:"bootstrap" json:"bootstrap"`
+	Status        string             `db:"status" json:"status"`
+	ExpiresAt     pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	LastUsedAt    pgtype.Timestamptz `db:"last_used_at" json:"last_used_at"`
+	RevokedAt     pgtype.Timestamptz `db:"revoked_at" json:"revoked_at"`
+	RevokedReason *string            `db:"revoked_reason" json:"revoked_reason"`
+	CreatedAt     pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DeletedAt     pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
+}
+
 // L0 minimum (2026-04-30 N+4a) inbound bearer storage. key_hash is bcrypt; key_prefix indexed for tenant-scoped lookup. CMB-5: no plaintext bearer EVER persisted; CMB-7: last_used_at NOT updated synchronously in N+4.
 type ApiKey struct {
 	ID       int64  `db:"id" json:"id"`
