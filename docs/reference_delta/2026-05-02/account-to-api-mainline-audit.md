@@ -65,8 +65,7 @@ These are NEW F-* IDs that should sit ABOVE F-POOL-001 / F-AUTH-005 / F-KEY-001 
 | `F-ACCAPI-BIND-001` | API key binding entity | New table `api_key_bindings` mapping `(api_key_id) → (target_type, target_id)` where target_type ∈ {`account`, `pool_group`, `tenant_default`}. Includes binding state, fallback ordering, override policy. | **L1** |
 | `F-ACCAPI-LEASE-001` | Credential lease | New entity capturing "request R, account A, credential version V, valid until T, used X tokens". Either a row in a `credential_leases` table OR a structured field on usage_records carrying `lease_token / credential_version / credential_kind`. Resolves "which token was actually used" forensically. | **L1** |
 | `F-ACCAPI-CAP-SNAP-001` | Per-account capability snapshot | Versioned snapshot of `(account_id, capability_version, model_allow_list, capability_flags, quota_remaining, health_class)` so a request frozen at start has stable capability view even if admin edits the account row mid-request. Mirror of F-MODEL-001 registry version pattern. | **L2** (correctness improvement, not blocker for L1 single-version case) |
-| `F-ACCAPI-PROTO-001` | Protocol adapter (existing F-PROTO-002 alias) | Translates request/response **shape** between client protocol (OpenAI Chat / Anthropic Messages / Gemini / Bedrock) and upstream protocol. Already covered by released F-PROTO-002 spec (2026-04-28). Listed here only for completeness — the spine references it but does not own it. | **L1** (already shipped spec) |
-| `F-ACCAPI-CRED-INJECT-001` | Credential injector | Per-credential-kind contract that takes `provider_accounts.credentials jsonb` + a request being sent → injects auth header / cookie / Bearer / session / signature according to the upstream provider's credential model. Distinct from PROTO-001 (which only translates body shape). Distinct from F-AUTH-005 (which manages credential lifecycle); CRED-INJECT-001 is the per-request mount point. | **L1** |
+| `F-ACCAPI-CRED-INJECT-001` | Credential injector | Registry-dispatched contract that takes `provider_accounts.credentials jsonb` + a request being sent → injects auth header / cookie / Bearer / session / signature. Registry lookup is `(provider, credential_kind)` with fallback to `(*, credential_kind)`: e.g. `(anthropic, oauth_access)` impl differs from `(openai, oauth_access)` because OAuth bearers carry provider-specific session cookies / x-headers; the generic `oauth_access` impl is the floor. Distinct from F-PROTO-002 (which only translates body shape). Distinct from F-AUTH-005 (which manages credential lifecycle); CRED-INJECT-001 is the per-request mount point. | **L1** |
 | `F-ACCAPI-ERR-CLASSIFY-001` | Error classifier | Takes raw upstream HTTP response → normalized HUAKAI error envelope + `AccountStateTransition` advice (e.g. 401 → needs_refresh, 429 → cooling_down with Retry-After, 402 → quota_exhausted). Drives the unified state machine in F-ACCAPI-STATE-001. Distinct from F-RATE-001 (which owns cooldown enforcement); CLASSIFY-001 is the input signal. | **L1** |
 | `F-ACCAPI-ATTEMPT-001` | Upstream attempt audit | New table `request_attempts` (or `upstream_attempts`) capturing per-retry/per-fallback row: `request_id, attempt_number, provider_account_id, binding_id, credential_version, started_at, finished_at, status, error_class, retry_after_ms, transition_emitted`. Without this, multi-account retry/fallback chains are forensically opaque (admin can see "request failed" but not "tried account A v1, got 401, refreshed, tried v2, got 429, fell over to account B"). | **L1** |
 | `F-ACCAPI-STATE-001` | Unified account state machine | Single computed state field exposed to operator UI + scheduler: `normal / cooling_down / expired / needs_refresh / needs_manual_recovery / quota_exhausted / disabled`. Computed deterministically from existing `health_state + credential_state + quota_status + enabled + expires_at`. Documented precedence. | **L1** |
@@ -91,8 +90,7 @@ The new spine doesn't replace existing rows. It **owns the contract** and points
 | F-ACCAPI-BIND-001 | (none — net-new, no existing F-ID owns this) |
 | F-ACCAPI-LEASE-001 | F-AUTH-005 covers refresh; LEASE owns the per-request snapshot of which token was used |
 | F-ACCAPI-CAP-SNAP-001 | F-POOL-001 has pool_snapshot_version; CAP-SNAP adds per-account version |
-| F-ACCAPI-PROTO-001 | F-PROTO-002 (already released spec) — alias only, spine references it |
-| F-ACCAPI-CRED-INJECT-001 | F-AUTH-005 covers credential lifecycle but NOT per-request injection. Net-new mount point. |
+| F-ACCAPI-CRED-INJECT-001 | F-AUTH-005 covers credential lifecycle but NOT per-request injection. Net-new mount point. Composes with F-PROTO-002 (which translates body shape); spine does not re-own protocol concerns. |
 | F-ACCAPI-ERR-CLASSIFY-001 | F-RATE-001 owns cooldown enforcement; CLASSIFY-001 is the input signal that drives transitions. F-AUTH-005 oauth-error sanitizer overlaps but stays at adapter boundary; CLASSIFY-001 outputs HUAKAI envelope. |
 | F-ACCAPI-ATTEMPT-001 | F-OBS-001 audit covers events but NOT structured per-attempt rows. Net-new table. |
 | F-ACCAPI-STATE-001 | health/credential/quota states from F-POOL-001 + F-RATE-001 + F-AUTH-005 — STATE-001 composes them |
@@ -100,16 +98,27 @@ The new spine doesn't replace existing rows. It **owns the contract** and points
 
 ## 5. Schema additions sketched (analysis only — no migration written yet)
 
-### 5.1 `api_key_bindings`
+### 5.1 `api_key_bindings` (revised v3 — Owner directive 2026-05-02)
+
+Postgres FK does not support polymorphic targets, so a single `target_id` column with `binding_kind` discriminator forces FK validation into the service layer (lossy). HUAKAI uses explicit per-target columns + CHECK constraint:
+
 - `id bigserial PK`
 - `tenant_id bigint NOT NULL` (cross-tenant defense)
 - `api_key_id bigint NOT NULL` with composite FK to `(tenant_id, id)` of api_keys
-- `binding_kind text CHECK IN ('pool_group', 'provider_account', 'tenant_default')`
-- `target_id bigint` (nullable iff `binding_kind = 'tenant_default'`)
-- `priority integer NOT NULL DEFAULT 100` (when key has multiple bindings, fallback order)
-- `enabled boolean`, `created_at`, `updated_at`, `deleted_at`, `created_by_actor`
-- Composite uniqueness on `(tenant_id, api_key_id, binding_kind, target_id)` partial-unique where deleted_at IS NULL
-- One api_key MAY have multiple bindings (primary + fallback)
+- `binding_kind text NOT NULL CHECK IN ('pool_group', 'provider_account', 'tenant_default')`
+- `pool_group_id bigint` — FK to pool_groups when binding_kind = 'pool_group'
+- `provider_account_id bigint` — FK to provider_accounts when binding_kind = 'provider_account'
+- `tenant_default_token text` — fixed sentinel `'default'` when binding_kind = 'tenant_default'; allows uniqueness without a NULL discriminator
+- CHECK constraint enforces exactly one of `(pool_group_id, provider_account_id, tenant_default_token)` is non-NULL per row, matching the binding_kind value
+- Composite FK `(tenant_id, pool_group_id) → pool_groups(tenant_id, id)` (cross-tenant defense)
+- Composite FK `(tenant_id, provider_account_id) → provider_accounts(tenant_id, id)` (cross-tenant defense)
+- `priority integer NOT NULL DEFAULT 100` (lower = higher priority; multi-binding fallback order)
+- `enabled boolean`, `created_at`, `updated_at`, `deleted_at`, `created_by_actor`, `last_modified_by_actor`
+- Partial-unique index `(tenant_id, api_key_id, binding_kind, COALESCE(pool_group_id, provider_account_id, 0), tenant_default_token)` WHERE `deleted_at IS NULL` — prevents duplicate same-target bindings under the same key
+
+**tenant_default behavior** (Owner directive): NEVER persist a binding with all three target columns NULL. When a customer key falls back to tenant default, the system writes an explicit `binding_kind='tenant_default'` row with `tenant_default_token='default'`. This way `usage_records.binding_id` is non-NULL for all post-spine traffic and admin trace can always answer "which binding was used?". `binding_id` is NULL ONLY for pre-migration historical rows.
+
+**Multiplicity rule** (Owner-recommended L1 default per §10): one api_key has 1 PRIMARY binding + 0..N ordered FALLBACK bindings. The `priority` column defines the order. CLIProxyAPI uses 1-to-1; sub2api uses N-to-N at account_groups level — HUAKAI defaults to the disciplined middle ground.
 
 ### 5.2 Credential lease — L1 lightweight, L2 separate table (Owner-decided 2026-05-02)
 
@@ -167,38 +176,49 @@ Why this is L1: without this table, a multi-account retry/fallback flow leaves o
 
 Append-only. Settles before usage_records (Tx2 settlement reads request_attempts to know which account to credit).
 
-## 6. Three-piece adapter design (revised v2 — Owner directive 2026-05-02)
+## 6. Account-aware adapter design (revised v3 — Owner directive 2026-05-02)
 
-The earlier draft had a single `ReverseProxyAdapter` keyed on `account_type`. Owner's correction: split into three orthogonal interfaces because shape / credential / error are independent concerns. Cross-product (account_type × provider) was the wrong slice.
+The earlier draft had a single `ReverseProxyAdapter` keyed on `account_type`. Owner's correction: split into three orthogonal concerns because shape / credential / error are independent. Cross-product (account_type × provider) was the wrong slice. Of those three, **shape is already owned by released spec F-PROTO-002**, so the spine adds only the other two as net-new interfaces.
 
 ```
-// (A) ProtocolAdapter — already shipped F-PROTO-002 spec. Listed for completeness.
-type ProtocolAdapter interface {
-    Name() string                                          // 'anthropic_messages' / 'openai_chat' / 'openai_responses' / 'gemini' / 'bedrock'
-    TranslateRequest(in []byte, ctx *RequestContext) ([]byte, error)
-    TranslateResponse(in []byte, ctx *RequestContext) ([]byte, error)
-    StreamFrameNormalize(frame []byte, ctx *StreamContext) ([]byte, error)
-}
+// (A) ProtocolAdapter — ALREADY OWNED by released F-PROTO-002 spec (2026-04-28).
+// Spine references it; spine does not re-own it. No new F-ID.
+//   TranslateRequest / TranslateResponse / StreamFrameNormalize
+//   keyed on (client_protocol, upstream_protocol) pair.
 
 // (B) CredentialInjector — F-ACCAPI-CRED-INJECT-001. Net-new.
-// Keyed on credential_kind, not account_type. One credential_kind may serve
-// multiple providers; one provider may use multiple credential_kinds (e.g.
-// Anthropic API key vs Claude Code OAuth on same provider record).
+// Registry lookup keyed on (provider, credential_kind) FIRST, with
+// fallback to (*, credential_kind) generic impl. Rationale: an
+// `oauth_access` token for Anthropic carries provider-specific
+// session cookies / x-app-id / x-anthropic-version headers that an
+// `oauth_access` token for OpenAI Codex does not, so a single
+// credential_kind impl is too coarse. Provider-specific impls
+// override the generic impl when registered.
 type CredentialInjector interface {
-    Kind() string                                          // 'oauth_access' / 'api_key' / 'service_account_jwt' / 'session_cookie' / 'upstream_static'
-    Inject(req *http.Request, creds Credentials) error    // header / cookie / Bearer / signature injection
-    Validate(creds Credentials) error                     // pre-flight check (e.g. JWT not expired); returns specific error class
-    RedactForLog(creds Credentials) string                // structured redaction for audit/incident log
+    Provider() string         // 'anthropic' / 'openai' / 'gemini' / 'bedrock' / '*' (generic)
+    Kind() string             // 'oauth_access' / 'api_key' / 'service_account_jwt' / 'session_cookie' / 'upstream_static'
+    Inject(req *http.Request, creds Credentials) error
+    Validate(creds Credentials) error                  // pre-flight check (e.g. JWT not expired); returns specific error class
+    RedactForLog(creds Credentials) string             // structured redaction for audit/incident log
+}
+
+type CredentialInjectorRegistry interface {
+    Register(inj CredentialInjector)
+    // Resolve picks (provider, kind) impl first; falls back to ('*', kind);
+    // returns ErrNoInjector if neither exists.
+    Resolve(provider, kind string) (CredentialInjector, error)
 }
 
 // (C) ErrorClassifier — F-ACCAPI-ERR-CLASSIFY-001. Net-new.
+// Provider-specific because Anthropic's `429` body shape differs from
+// OpenAI's, and per-provider Retry-After header semantics differ.
 type ErrorClassifier interface {
-    Provider() string                                     // 'anthropic' / 'openai' / 'gemini' / 'bedrock' (provider-specific error semantics)
+    Provider() string                                  // 'anthropic' / 'openai' / 'gemini' / 'bedrock'
     Classify(resp *http.Response, body []byte) ErrorClassification
 }
 
 type ErrorClassification struct {
-    Class            string                  // HUAKAI taxonomy: 'upstream_5xx' / 'upstream_4xx_auth' / 'upstream_4xx_quota' / 'upstream_429' / 'invalid_request' / ...
+    Class             string                 // HUAKAI taxonomy: 'upstream_5xx' / 'upstream_4xx_auth' / 'upstream_4xx_quota' / 'upstream_429' / 'invalid_request' / ...
     AccountTransition AccountStateTransition // suggested transition for F-ACCAPI-STATE-001 ('needs_refresh' / 'cooling_down' / 'quota_exhausted' / 'no_change')
     RetryAfterMs      int                    // parsed from upstream Retry-After / x-ratelimit-reset / per-provider header
     Retryable         bool                   // can the executor try another account / attempt?
@@ -206,29 +226,28 @@ type ErrorClassification struct {
 }
 ```
 
-**Why three pieces, not one**:
-- A protocol adapter (Anthropic Messages → OpenAI Chat) is independent of which credential is on the request.
-- A credential injector (`oauth_access`) injects the same way whether the upstream is Anthropic or Claude Code, both consume an OAuth Bearer.
-- An error classifier is provider-specific because Anthropic's `429` body shape differs from OpenAI's, but classifier doesn't care about the credential kind.
+**Why two new pieces, not one** (PROTO already exists):
+- A credential injector for `oauth_access` differs subtly per provider (Anthropic OAuth wants `x-anthropic-version` and a session cookie; OpenAI OAuth wants only Bearer). Provider-specific impls beat a single generic impl, but the generic floor must exist for upstream_static / api_key cases.
+- An error classifier is provider-specific (status mapping + Retry-After parsing) but doesn't care about the credential kind.
 
-Folding all three into one `account_type`-keyed interface forces an N×M matrix of impls. Splitting yields O(N) + O(M) + O(K) impls, each independently testable.
+Folding both into one `account_type`-keyed interface would force an N×M matrix; splitting yields O(M)+O(K) plus the registry fallback rule.
 
 **Where they compose** (in `internal/gatewayhttp` Slice 5+ implementation):
 
 ```
 client request
-  -> ProtocolAdapter.TranslateRequest   (F-PROTO-002 / F-ACCAPI-PROTO-001)
-  -> CredentialInjector.Inject          (F-ACCAPI-CRED-INJECT-001)
-  -> StreamForwarder.Send               (F-GW-002, already shipped spec)
-  -> ErrorClassifier.Classify           (F-ACCAPI-ERR-CLASSIFY-001)
-  -> AccountState.Transition            (F-ACCAPI-STATE-001) AND/OR retry-fallback decision
-  -> ProtocolAdapter.TranslateResponse  (F-PROTO-002 / F-ACCAPI-PROTO-001)
+  -> F-PROTO-002 ProtocolAdapter.TranslateRequest
+  -> F-ACCAPI-CRED-INJECT-001 CredentialInjector.Inject       (registry: provider + kind, fallback kind)
+  -> F-GW-002 StreamForwarder.Send
+  -> F-ACCAPI-ERR-CLASSIFY-001 ErrorClassifier.Classify       (per provider)
+  -> F-ACCAPI-STATE-001 AccountState.Transition               AND/OR retry-fallback decision
+  -> F-PROTO-002 ProtocolAdapter.TranslateResponse
   -> usage_records + request_attempts row
 ```
 
-Today the gateway handler does only `ProtocolAdapter.Translate*` and ad-hoc credential injection inline. Slice 5 should land all three interfaces together; otherwise the inline credential code becomes load-bearing and refactoring it later is the same 500+ LOC change Owner is trying to prevent.
+Today the gateway handler does only `ProtocolAdapter.Translate*` and ad-hoc credential injection inline. Slice 5 should land both new interfaces; otherwise the inline credential code becomes load-bearing and refactoring it later is the same 500+ LOC change Owner is trying to prevent.
 
-Concrete impls go under `internal/adapter/proto/` (existing), `internal/adapter/credential/` (new), `internal/adapter/errclass/` (new).
+Concrete impls: existing `internal/proto/` for protocol; new `internal/adapter/credential/` and `internal/adapter/errclass/` for the spine additions.
 
 ## 7. Admin UI / API surface implied
 
@@ -249,7 +268,7 @@ These are NOT yet in `cmd/gateway/main.go` route table (which currently has plac
 
 Concrete risks if we proceed with current Codex / Claude backlog as-is:
 
-1. **The next slice (Slice 5 real upstream)** will likely hard-code credential injection inline in the gateway handler because there's no `ReverseProxyAdapter` interface. Once that lands, refactoring later is a 500+ LOC change.
+1. **The next slice (Slice 5 real upstream)** will likely hard-code credential injection inline in the gateway handler because there's no `CredentialInjector` mount point and no `ErrorClassifier` mount point. Once that lands, refactoring later is a 500+ LOC change.
 2. **Per-key cost tracking** can't be done correctly because there's no `api_key_bindings`. Today usage_records joins api_key_id → tenant → group → ... but cannot answer "this customer key has access to pools P1 and P2; how much did they spend on each?".
 3. **Admin "rotate this account's credential"** flow can't be safe because there's no credential lease — admin can't see "this account has 3 in-flight requests holding credential v1; if I revoke v1 now, those requests fail mid-stream". The pool_slot_acquisitions table tracks slots not credentials.
 4. **The Codex feature-backlog-insertions-v2.md "P0 / L1" items can land in parallel** (Owner directive 2026-05-02): F-REQ-BODY-001 (decompression guard) and F-LOG-SAFE-001 (panic / log sanitization) are independent of the spine — they touch ingress + log emission, not the account chain — so blocking them on spine progress is wrong. They can ship while spine schema work proceeds. The risk to watch is OTHER P0 items (`F-RESP-META-001`, `F-UPSTREAM-RETRY-002`, `F-UPSTREAM-FALLBACK-001`, `F-ROUTER-HEALTH-001`) which DO touch spine surfaces — those should wait until binding + attempt schema is in.
@@ -262,12 +281,11 @@ Concrete risks if we proceed with current Codex / Claude backlog as-is:
 ### Track 1 — Account-to-API spine (must precede Slice 5 real upstream)
 
 1. **Owner approves this audit's framing**. If the spine framing is right, the rest follows. If wrong, fix it now before any code lands.
-2. **Add 8 new F-* rows to `docs/03_FEATURE_PARITY_MATRIX.md`** under "HUAKAI-native features" (they don't have reference projects to mine — they're our spine):
+2. **Add 9 new F-* rows to `docs/03_FEATURE_PARITY_MATRIX.md`** under "HUAKAI-native features" (they don't have reference projects to mine — they're our spine). Protocol shape is NOT a new row; the spine references existing released spec F-PROTO-002:
    - F-ACCAPI-CORE-001 (META)
    - F-ACCAPI-BIND-001
    - F-ACCAPI-LEASE-001 (lightweight: lease fields on usage_records + request_attempts)
    - F-ACCAPI-CAP-SNAP-001
-   - F-ACCAPI-PROTO-001 (alias of existing F-PROTO-002 — listed for completeness)
    - F-ACCAPI-CRED-INJECT-001
    - F-ACCAPI-ERR-CLASSIFY-001
    - F-ACCAPI-ATTEMPT-001
@@ -307,9 +325,9 @@ Concrete risks if we proceed with current Codex / Claude backlog as-is:
 ## 10. Open questions (Owner to resolve)
 
 1. ~~Lease design~~ — **resolved in §5.2 by Owner**: L1 lightweight (fields on usage_records + request_attempts); L2 separate `credential_leases` table only if operations need it.
-2. ~~Adapter granularity~~ — **resolved in §6 by Owner**: split into three orthogonal interfaces (ProtocolAdapter / CredentialInjector / ErrorClassifier), not keyed on account_type.
-3. **Binding multiplicity**: 1 key has 1 primary binding + N fallback (ordered)? Or 1 key has multiple equal bindings (random/weighted pick)? Sub2API allows N-to-N at account_groups level. CLIProxyAPI uses 1-to-1. HUAKAI's product positioning decides — recommended L1 default: 1 primary + N ordered fallback.
-4. **Tenant default binding fallback**: if api_key has no explicit binding, falls back to tenant-level default pool? Or rejects with `no_binding`? Defaulting is friendlier (lets MVP ship without forcing every customer to bind); rejecting is more disciplined. Recommended L1 default: defaulting allowed but with audit emission.
+2. ~~Adapter granularity~~ — **resolved in §6 by Owner**: spine adds two net-new interfaces (CredentialInjector keyed on (provider, credential_kind) with generic-kind fallback; ErrorClassifier per provider). Protocol shape stays in F-PROTO-002, not duplicated as an F-ACCAPI row.
+3. ~~Binding multiplicity~~ — **resolved in §5.1 by Owner-recommended default**: 1 primary + N ordered fallback per api_key, ordered by `priority` column.
+4. ~~Tenant default binding~~ — **resolved in §5.1 by Owner**: NEVER persist NULL-target bindings. When fallback fires, write an explicit `binding_kind='tenant_default'` row with `tenant_default_token='default'`. `usage_records.binding_id` is always non-NULL for new traffic; NULL only for pre-migration historical rows.
 5. **State machine transition authority**: admin-only (manual transitions), system-driven (background daemon flips states based on observed signals), or hybrid? Sub2API is hybrid. Recommended L1 default: hybrid — system flips to `cooling_down/needs_refresh/quota_exhausted` based on F-ACCAPI-ERR-CLASSIFY-001 signals; admin can manually flip to `disabled/needs_manual_recovery`.
 6. **CLIProxyAPI as primary reference**: CLIProxyAPI is the closest existing project to HUAKAI's account-to-API spine. Should we open a Phase 2 specifier session against it BEFORE shipping spine schema, so we don't reinvent? Owner approved CLIProxyAPI as a new reference candidate earlier today. Recommended: yes, schedule alongside Track 1 step 4 DR.
 7. **Codex meta-review P1 (verbatim schema names in claude-reviewer-notes.md §3.A)**: Codex flagged that listing exact LGPL ent column names (`target_user_id`, `completion_code_hash`, etc.) in a reviewer-lane file weakens lane separation. Per Owner's clean-room relaxation memory the same day (algorithm/state-machine details OK to capture; only verbatim copy still prohibited), the existing wording is allowable IF treated as behavior evidence. Recommendation: leave reviewer-notes as-is BUT mark §3.A explicitly as "specifier-derived behavior summary" so the lane status is unambiguous.
@@ -317,4 +335,4 @@ Concrete risks if we proceed with current Codex / Claude backlog as-is:
 
 ## 11. Single-line summary
 
-HUAKAI's current code + plan covers `provider_accounts` (✅ rich) + `api_keys` (✅ N+4b2) + protocol adapters (⚠️ shape only, no credential injection) + multi-axis account state (⚠️ fragmented) + multi-dim usage (⚠️ missing pool_group_id + binding_id), but **completely lacks** `api_key_bindings`, lease metadata, unified `AccountState`, the three-piece account-aware adapter (PROTO + CRED-INJECT + ERR-CLASSIFY), `request_attempts` audit, and the admin end-to-end trace endpoint. Without these, HUAKAI is one Slice-5 commit away from being structurally a generic gateway. Recommendation: run **two parallel tracks** — Track 1 ships 10 F-ACCAPI-* spine rows + 1 minimal migration (api_key_bindings + usage_records lease/binding/pool_group columns + request_attempts table) BEFORE Slice 5; Track 2 ships F-REQ-BODY-001 + F-LOG-SAFE-001 in parallel because they don't touch the spine.
+HUAKAI's current code + plan covers `provider_accounts` (✅ rich) + `api_keys` (✅ N+4b2) + protocol adapters (⚠️ shape only, no credential injection) + multi-axis account state (⚠️ fragmented) + multi-dim usage (⚠️ missing pool_group_id + binding_id), but **completely lacks** `api_key_bindings`, lease metadata, unified `AccountState`, the three-piece account-aware adapter (PROTO + CRED-INJECT + ERR-CLASSIFY), `request_attempts` audit, and the admin end-to-end trace endpoint. Without these, HUAKAI is one Slice-5 commit away from being structurally a generic gateway. Recommendation: run **two parallel tracks** — Track 1 ships 9 F-ACCAPI-* spine rows (PROTOCOL stays in F-PROTO-002) + 1 minimal migration (api_key_bindings with explicit pool_group_id/provider_account_id/tenant_default_token columns + CHECK + usage_records lease/binding/pool_group columns + request_attempts table) BEFORE Slice 5; Track 2 ships F-REQ-BODY-001 + F-LOG-SAFE-001 in parallel because they don't touch the spine.
