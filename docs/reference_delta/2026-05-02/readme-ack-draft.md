@@ -67,15 +67,24 @@ durable in the ledger and the reference deep-dive workspace at
 
 ## ⚠ Upstream Provider Terms — Operator Responsibility
 
-HUAKAI is a self-hostable reverse-proxy gateway. **Operators are responsible
-for ensuring their use of upstream LLM providers complies with each
-provider's Terms of Service (ToS), Acceptable Use Policy (AUP), and rate-limit
-agreements.**
+HUAKAI is a self-hostable reverse-proxy gateway built as **open-source
+infrastructure**. The HUAKAI project occupies the same legal position as
+other widely-used open-source network tooling (Wireshark, Nmap,
+Metasploit, Burp Suite): the **project is a tool maker, not a tool user**.
+Project maintainers may legally develop, test, and ship every feature
+needed for production-grade gateway operations, including features that
+sit in ToS-grey territory for some upstream providers.
 
-The HUAKAI project does NOT endorse, encourage, or enable any usage pattern
-that violates upstream provider rules. The following operator usage patterns
-are common ToS-grey areas and **operators must verify compliance themselves**
-before deploying HUAKAI in those modes:
+**The legal responsibility line**:
+
+| Role | Responsibility |
+| --- | --- |
+| HUAKAI project (maintainers) | Ships the tool. Discloses ToS-grey features in this README. Does not vouch for any operator's specific usage being lawful. |
+| Operator (you, deploying HUAKAI) | **Solely responsible** for ensuring your deployment respects each upstream provider's ToS, AUP, rate-limit agreements, your jurisdiction's law, and any contracts you have with end customers. Use of HUAKAI = your acceptance of this responsibility. |
+| End customer (your customers using your HUAKAI deployment) | Has whatever contract YOU give them. HUAKAI project is not a party. |
+
+**Operators MUST verify compliance themselves** before deploying HUAKAI
+in any of the following ToS-grey modes:
 
 - **Pooling personal subscriptions for commercial resale** — most providers'
   consumer-tier subscriptions (e.g. ChatGPT Plus / Pro / Claude Pro / Max,
