@@ -10,6 +10,8 @@ Companion (must be written independently): `docs/plans/2026-05-02-huakai-reverse
 
 但 HUAKAI 本质上就是一个反向代理 — 它的热路径就是反代核心。如果反代核心做得粗，所有周边能力（资产估值、capacity 预测、ToS 跟踪）都建立在不可靠的根基上：客户拿到错误的响应、流式中断、错误信息不可读、credentials 注入错乱。
 
+**Framing**（Owner 2026-05-02 directive）: HUAKAI 是开源 AI gateway 竞赛产品，目标是**产品级超越** Commercial-Pool-Ref 等竞品。任何竞品已做的产品级核心，HUAKAI 都要做；合规风险通过**操作员 opt-in 插件 + README 明示警告 + 启用 audit log** 转移给操作员，而不是通过阉割功能规避。
+
 这份 plan 把反代核心拆成 30 个具体到算法/数据结构/状态机/边界条件级别的子模块，每个对照 (a) 9 个开源参考的代号 + (b) 5 个上游供应商的代号 + (c) HUAKAI 具体改动。
 
 ## 0.1 代号系统（参考 codename-mapping.md）
@@ -616,7 +618,7 @@ Companion (must be written independently): `docs/plans/2026-05-02-huakai-reverse
 
 1. R1.4 binary event-stream parser 是否值得 12-16 小时投入？或者推到 L2（只支持 X1+X2 先）？
 2. R2 WebSocket 整体（R2.1+R2.2+R2.3 = ~40 小时）是否在 Personal Edition L1 范围内？
-3. R5 TLS plugin 是否进 backlog 还是直接拒绝（合规 + 维护负担太大）？
+3. ~~R5 TLS plugin 是否进 backlog 还是直接拒绝~~ **已确认做**（Owner 2026-05-02：HUAKAI 竞赛产品定位，合规靠操作员 opt-in + README 警告而非阉割）。Open question 收窄为：**R5.1+R5.2 进 P2 plugin 还是 P3 plugin** — 即在 Personal Edition launch 前要不要做？
 4. R7 mutation rule scope（global/tenant/pool/binding）4 层是否过度？L1 是否只 binding 级足够？
 5. R8.3 暴露面板是否需要实时（流式聚合）还是 1h 延迟（cron）？
 6. R10 disk tier 16MB 上限会不会太小（Vision 请求 base64 图片可能更大）？

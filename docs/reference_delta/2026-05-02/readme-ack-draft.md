@@ -117,11 +117,25 @@ before deploying HUAKAI in those modes:
 - Use [docs/05_CLEAN_ROOM_POLICY.md](docs/05_CLEAN_ROOM_POLICY.md) +
   this README as legal baseline for their internal compliance review.
 
-**HUAKAI maintainers' position**: we ship the substrate (pool, binding,
-trace, recovery) that supports legitimate multi-account operations. We do
-not ship abuse tooling. If your usage pattern requires defeating upstream
-detection, your usage pattern needs an honest re-evaluation, not better
-tooling.
+**HUAKAI maintainers' position**: HUAKAI is open-source AI gateway
+infrastructure designed to reach feature parity with — or exceed — the
+strongest commercial gateway products. We ship the **full set of
+production-tested gateway capabilities** that operators in this space
+expect, including pool aggregation, multi-account scheduling, and
+configurable upstream-presentation profiles (e.g. TLS fingerprint
+plugin, custom upstream proxy).
+
+We **do not gatekeep features that other projects in our space ship**.
+Aspects with ToS-grey usage patterns ship as **operator-opt-in plugins**
+(default OFF, build-flag gated, audit-logged on enable, ToS-warning
+splash on activation). Operators who enable such plugins make an
+informed decision and accept the responsibility this section describes.
+
+If you, the operator, are uncertain whether your specific usage pattern
+violates a particular upstream provider's ToS for your jurisdiction or
+contract terms, **consult counsel**. HUAKAI maintainers cannot make
+that determination on your behalf; we provide the tools you asked for
+plus the disclosures this README ships.
 
 This README section is **not legal advice**. For commercial deployments,
 consult counsel familiar with both your jurisdiction's law and the
