@@ -62,6 +62,70 @@ durable in the ledger and the reference deep-dive workspace at
 - Both sessions are recorded in
   [docs/05_CLEAN_ROOM_POLICY.md](docs/05_CLEAN_ROOM_POLICY.md) and the
   per-session "Source files read" footer.
+
+---
+
+## ⚠ Upstream Provider Terms — Operator Responsibility
+
+HUAKAI is a self-hostable reverse-proxy gateway. **Operators are responsible
+for ensuring their use of upstream LLM providers complies with each
+provider's Terms of Service (ToS), Acceptable Use Policy (AUP), and rate-limit
+agreements.**
+
+The HUAKAI project does NOT endorse, encourage, or enable any usage pattern
+that violates upstream provider rules. The following operator usage patterns
+are common ToS-grey areas and **operators must verify compliance themselves**
+before deploying HUAKAI in those modes:
+
+- **Pooling personal subscriptions for commercial resale** — most providers'
+  consumer-tier subscriptions (e.g. ChatGPT Plus / Pro / Claude Pro / Max,
+  Gemini Advanced) are licensed for individual end-user usage and explicitly
+  prohibit redistribution or commercial proxy/relay. HUAKAI's pool concept
+  works just as well with **API-tier credentials** (which are licensed for
+  multi-user serving). Operators choosing to pool consumer-tier accounts
+  carry full legal/financial risk.
+- **Multi-account credentials on a single billing identity** — some providers
+  prohibit one person/entity from holding multiple accounts. Operators should
+  verify per-provider rules (e.g. OpenAI's per-organization vs per-account
+  rules; Anthropic Workspace allowances).
+- **Automated provider sign-up / daily check-in** — provider-side automation
+  detection may treat such patterns as ToS violations and result in account
+  termination. HUAKAI ships no auto-sign-up; any "auto check-in" plugin is
+  off by default and operator opt-in.
+- **Bypassing provider-side rate limits** — HUAKAI's pooling is intended to
+  combine **legitimate** capacity, not to circumvent per-account rate limits.
+  Operators must size their account fleet to match their actual demand within
+  each account's per-account limit.
+- **Using HUAKAI to obscure caller identity from the upstream provider** —
+  HUAKAI does NOT ship TLS-fingerprint impersonation by default. The TLS
+  fingerprint plugin (if added in a future release) is operator opt-in only,
+  carries explicit ToS-compliance warnings, and may not be enabled in any
+  HUAKAI-distributed deployment without explicit operator action.
+- **Storing/logging upstream provider responses against provider data
+  retention policies** — HUAKAI's body retention is OFF by default
+  (Personal Edition) and operator-opt-in (any Edition). Operators enabling
+  body retention must respect provider Zero-Data-Retention (ZDR) flags and
+  per-tenant data-residency rules where applicable.
+
+**Operators using HUAKAI commercially** should:
+- Review each upstream provider's ToS and AUP before deployment.
+- Prefer API-tier credentials over consumer-tier subscriptions.
+- Set up alerts (planned: ToS-drift detection feature) to catch upstream
+  policy changes that affect their setup.
+- Keep audit logs of provider account credential rotation, since most
+  providers' incident-response procedures require usage logs.
+- Use [docs/05_CLEAN_ROOM_POLICY.md](docs/05_CLEAN_ROOM_POLICY.md) +
+  this README as legal baseline for their internal compliance review.
+
+**HUAKAI maintainers' position**: we ship the substrate (pool, binding,
+trace, recovery) that supports legitimate multi-account operations. We do
+not ship abuse tooling. If your usage pattern requires defeating upstream
+detection, your usage pattern needs an honest re-evaluation, not better
+tooling.
+
+This README section is **not legal advice**. For commercial deployments,
+consult counsel familiar with both your jurisdiction's law and the
+upstream providers' contracts.
 ```
 
 ---
