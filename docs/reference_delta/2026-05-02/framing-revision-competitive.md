@@ -110,6 +110,145 @@ HUAKAI 维护者在内部**不需要任何额外 confirm**：
 
 **唯一卡的是**：当 operator 在生产 HUAKAI 实例上启用灰区功能时，必须经过 4 层 plugin opt-in 流程 + 写 audit + 看 splash。这是合规分界线。
 
+## v3 锁死（Owner 2026-05-02 第三轮：开发必做 + OCAW UX 差异化）
+
+> 总之 sub2 的核心功能是开发阶段必须需要的，不能丢失和遗漏，必须要优化变强。更加的稳定且优秀。但是使用者阶段必须提供警告和禁止说明，搞一个一键启动按钮，启动时弹出警告。这一点在竞赛上是加分项。
+
+### 终态 framing — 三件套
+
+1. **开发阶段（HUAKAI 维护者）**：Commercial-Pool-Ref（sub2api）已经做的**所有核心功能 = 100% 必做**，且 HUAKAI 实现版本必须**更强、更稳、更优**（不只是打平）。**禁止以合规 / 风险 / 复杂度任何理由阉割**。
+2. **使用阶段（operator）**：灰区功能必须经过 **OCAW**（One-Click Activation with Warning）流程，不是阉割也不是默认开 — 是显式启用 + 明确警告。
+3. **OCAW UX 本身 = 竞赛加分项**：sub2api / 其他竞品都默认开灰区功能（无警告），HUAKAI 是第一个把 ToS 警告 UX 化的产品。同样能用，多一道操作员安心。
+
+### OCAW（One-Click Activation with Warning）设计模式
+
+灰区功能在 admin UI 显示状态如下:
+
+```
+┌─────────────────────────────────────────────────┐
+│  TLS Fingerprint Profile (Plugin)               │
+│  ⚠ ToS-grey: 启用前请阅读上游 ToS               │
+│                                                 │
+│  状态: 已编译 / 未启用                          │
+│  [一键启用]                                     │
+└─────────────────────────────────────────────────┘
+```
+
+operator 点 [一键启用] → 弹出 modal:
+
+```
+┌──────────────────────────────────────────────────┐
+│  ⚠ 启用警告                                      │
+│                                                  │
+│  您即将启用「TLS Fingerprint Profile」。         │
+│                                                  │
+│  此功能将让 HUAKAI 上游请求伪装成浏览器 TLS      │
+│  指纹。多数上游供应商 ToS 禁止此类规避行为。     │
+│                                                  │
+│  禁止说明：                                      │
+│  - 不得用此功能违反任何上游 ToS                  │
+│  - 上游一旦检测可能批量封号                      │
+│  - 您的使用行为与 HUAKAI 项目无关                │
+│  - 您必须自行咨询法律意见                        │
+│                                                  │
+│  ☐ 我已阅读并承担全部法律 / 合规责任             │
+│  ☐ 我已咨询 / 确认在我的司法管辖区下合法        │
+│                                                  │
+│  [取消]      [我承担责任，启用]                  │
+└──────────────────────────────────────────────────┘
+```
+
+启用后写 `compliance_audit_log` 表 + 触发 webhook（如果配置了）。**这个 UX 是 HUAKAI 的差异化** — 同样的功能，多一道仪式 = operator 心里有底。
+
+### Sub2API 核心功能 100% 必做清单（不可省略）
+
+按 Commercial-Pool-Ref 已做 = HUAKAI 必做。注意：每项 HUAKAI 实现要做得**更强**（标记后括号里说明优化方向）。
+
+**调度 / 路由**：
+- ☐ 多账号池化（任何 account_type，operator 不受 HUAKAI 限制）→ 更强：明确 binding 表 + 跨租户 FK
+- ☐ 账号 5 状态 cooldown 状态机（operational/degraded/failed/cooling_down/error）→ 更强：扁平化为 7-state 单一字段
+- ☐ Sticky session affinity + 8 reason 断 sticky → 更强：显式 migration manifest 决策
+- ☐ Per-account 并发槽 + bounded wait → 更强：分 sticky vs fallback 两个 budget
+- ☐ Layered 5 层 selection（前序 → sticky → bind → session hash → weighted）→ 更强：加 binding 预过滤层
+- ☐ Outbox events on state mutation（refresh scheduler snapshot）→ 一致
+
+**反代核心**：
+- ☐ Bounded transport pool（idle / per-host / total + active-stream protect）→ 一致 / 加 dial-time DNS
+- ☐ Per-account 隔离 transport（cookie jar）→ 一致
+- ☐ TLS 指纹 / impersonation profile（10 字段 JA3）→ **OCAW plugin opt-in**
+- ☐ 协议适配多 provider（Anthropic Messages / OpenAI Chat / OpenAI Responses / Gemini / Bedrock / Codex CLI）→ 更强：每对 protocol × 每 stream event 完整覆盖 + 100+ 单测
+- ☐ Stream forwarder + scanner buffer + 客户断线 drain → 一致 / 加自适应 buffer
+- ☐ 错误归一化 + retry 类别 → 更强：12 类标准错误 + 跨 vendor 统一
+- ☐ Header firewall + 凭据重写 → 更强：双向 allowlist + operator 三档选 (strict / forward-vendor / full-forward)
+- ☐ 上游 HTTP/SOCKS proxy 支持（Proxy 表 + per-account 绑定）→ 一致
+
+**计费 / 配额**：
+- ☐ Idempotent billing claim gate（请求 fingerprint）→ 一致 + N+5b 已 spec released
+- ☐ Token-level cost engine（input/output/cache/image/tier multipliers）→ 更强：versioned snapshot
+- ☐ API key 多窗口配额（5h/1d/7d 滑窗）→ 一致
+- ☐ Per-user × per-account 并发限制 → 一致
+
+**支付 / 充值**：
+- ☐ Payment order 12 状态生命周期（pending → paid → recharging → completed / failed / cancelled / expired / refund_*）→ 一致
+- ☐ Refund pinning（绑原 provider/order）+ rollback → 一致
+- ☐ Webhook 幂等（unknown order → 2xx）→ 一致
+- ☐ Resume token HMAC + canonical return URL → 一致
+- ☐ 多支付通道（Alipay / WeChat / Stripe / Epay 各 plugin）→ OCAW 不需要（这是 operator 自己的支付集成）
+
+**用户 / 认证**：
+- ☐ 多 OAuth identity（GitHub / WeChat / LinuxDo / Discord / Google / OIDC 通用）→ 一致
+- ☐ TOTP 2FA → 一致 + admin 强制
+- ☐ Pending auth multi-step session（intent / channel / verification 状态机）→ 一致
+- ☐ Identity adoption decision（OAuth bind 时选择 adopt 哪些字段）→ 一致
+
+**用户体验**：
+- ☐ 用户自定义属性（UserAttributeDefinition + Value）→ 一致
+- ☐ 余额阈值通知 → 一致
+- ☐ 公告 + 已读追踪 → 一致
+- ☐ Promo code（带 max_uses，区分 redeem code）→ 一致
+- ☐ User subscription（plan + 多窗口配额 daily/weekly/monthly）→ 一致
+- ☐ Affiliate / rebate（migrations 130-133 套件）→ 一致
+
+**运营**：
+- ☐ Channel monitor 全套（runner + history + daily rollup + request template + SSRF guard + bounded worker pool）→ 一致 + 探针写入 unified state machine
+- ☐ Auto check-in（自动签到上游 OAuth）→ **OCAW plugin opt-in**
+- ☐ 周期清理任务（usage cleanup with filters / cancellation / progress）→ 一致
+- ☐ Bounded usage write worker pool（防 unbounded goroutines）→ 一致
+- ☐ 备份 / 恢复 → 一致 + WebDAV 加密同步
+- ☐ Setup wizard（首次自动化）→ 一致
+- ☐ Error passthrough rules（operator 可配错误透传）→ **OCAW plugin opt-in**（影响客户体验）
+
+### 不走 OCAW 的（产品功能，非合规问题）
+
+以下功能直接 ship 默认开（ no warning UX 需要）：
+- 客户端身份桥接（Codex CLI / Claude Code / Cursor 兼容）— 是产品力，不是 ToS 灰区
+- Session 迁移（cross-account context rebuild）— 同上
+- 资产估值 / capacity 预测 / SLA oracle — 同上
+- 凭据自动恢复 — 同上
+- WebDAV 加密同步 — operator 自己的数据
+- 多账号 in single billing identity — operator 决策，HUAKAI 不限制
+
+### 走 OCAW 的灰区功能清单（共 4 项）
+
+按"启用 = operator 主动走灰区" 标准筛：
+
+1. **TLS 指纹 / impersonation plugin**（R5）— 多数 ToS 禁止规避 detection
+2. **Auto check-in plugin** — 多数 ToS 禁止 automated signup
+3. **Error passthrough rules** — 改写客户错误体验，可能误导客户
+4. **Response header full-forward 模式** — 暴露 vendor identity 给客户
+
+每项在 admin UI 是一个 [一键启用] 按钮 + warning splash + audit log。
+
+### 维护者内部 0 卡
+
+dev / test / CI 完全没有 OCAW UX：
+- 默认 build 可以全带 plugin
+- dev DB 默认全启用所有 plugin
+- 单测 / 集成测试 / benchmark 都直接跑
+- CI 跑全套覆盖
+
+**OCAW 只在生产 HUAKAI 实例的 admin UI 上出现**。
+
 ## 一行总结
 
-HUAKAI 是竞赛产品，竞品做了的核心 HUAKAI 必做。**开发者无限制开发权 + 使用者自决合规义务**（tool maker not tool user 立场）。Plugin opt-in 是 4 层机制（compile / runtime / splash+audit / README 声明），不是阉割功能 — 而是把启用决策 + 法律责任转给 operator。之前 7 项过度合规化，本次 v2 进一步开放：客户端桥接 P0、auto check-in L2、TLS plugin P2、WebDAV L2、响应头 forward 给 operator 选项。
+HUAKAI = sub2api 核心 100% 必做且做更强 + 灰区功能走 OCAW（一键启动 + 警告对话框 + audit log）= 工具完整 + UX 上的合规叙事 = 竞赛差异化。开发者无限制 / operator 自决合规 / OCAW 是 ux 礼仪不是阉割。
