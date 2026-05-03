@@ -50,6 +50,66 @@ Owner 修正：HUAKAI 是**竞赛产品**，不是法律咨询服务。竞品已
 3. **客户端身份桥接 + body mutation 联动**作为 differentiator 优先级（vs 资产估值 / capacity 预测 / 等）排哪？
 4. **WebDAV 同步加密 plugin** 升 L2 还是保持 L3？
 
+## v2 修正（Owner 2026-05-02 第二轮：再开放）
+
+> 必须严正说明！！ 开发者可以全程进行操作并允许这些功能的开发，但使用者禁止违反官方规定！！！
+
+### 关键 framing：开发者 vs 使用者 vs 终端客户
+
+| 角色 | HUAKAI 立场 |
+|---|---|
+| **开发者**（HUAKAI 项目维护者） | **100% 自由开发权** — 所有功能（含 ToS 灰区）都可以开发、测试、默认启用、ship 进官方二进制。**HUAKAI 项目本身合法**（同 Wireshark / Metasploit / Nmap / Burp Suite 等开源工具立场） |
+| **使用者**（部署 HUAKAI 的 operator） | **100% 自决合规** — 必须自己评估上游 ToS / 当地法律 / 司法管辖区义务 / 商业合同 |
+| **终端客户**（通过 HUAKAI 调用 LLM 的 end user） | 与 HUAKAI 项目无关；operator 向终端客户负责 |
+
+**这是 "tool maker, not tool user" 立场**：开发开源工具不违法，操作员用工具违法不归项目责任。
+
+### plugin opt-in 完整解释（4 层）
+
+第 1 层 - 代码层（compile-time）：
+- 灰区功能代码在 `internal/plugin/<name>/` 目录
+- 默认 build flag 不带 — `go build` 不编译进二进制
+- 想要功能 → 操作员**自己 build**：`go build -tags=tls_fingerprint`
+- 官方 release 是否默认带这些 plugin = **release-time 决策**（不一定不带）
+
+第 2 层 - 运行时层：
+- 二进制即使有代码，运行时默认 disable
+- 操作员在 admin UI / config 主动 enable
+
+第 3 层 - 启用 splash + audit：
+- enable 时强制 confirm dialog："您确认启用此功能 + 不违反任何上游 ToS"
+- 写 `compliance_audit_log(actor, action, target, reason, occurred_at)` 表
+- 这条 audit 在法律纠纷时是 "operator 主动决策" 的可证明证据
+
+第 4 层 - README 责任声明：
+- README ack 公开 "HUAKAI 项目不为 operator 使用承担法律责任"
+- operator 启用 = operator 自负责任
+
+### 进一步开放（Owner 2026-05-02 第二轮：还不够）
+
+之前 framing 把 plugin opt-in **当成默认门关上**。修正：
+
+| 旧 framing | 新 framing |
+|---|---|
+| TLS 指纹 plugin 默认 build flag 不带 | **可考虑官方 release 默认带 plugin（但运行时仍默认 disable）** — operator 不需要重新 build 才能用 |
+| 池化 consumer 订阅 framed 为 "ToS 灰区警告" | **HUAKAI 不区分 account_type 是 consumer 还是 enterprise** — 任何凭据 operator 想加进 pool 都可以加，HUAKAI 不限制 |
+| 客户端身份桥接（Codex CLI / Claude Code 等）说 "P1" | **直接 P0**：这是 HUAKAI 核心产品力，不是边缘功能 |
+| Auto check-in plugin 标 L3 | **L2 plugin 默认 ship**（运行时 disable，operator 一键启用）|
+| 响应头 strip 默认 P0 强制 | **operator config 选择三档：strict / forward-vendor-headers-too / 完全 forward** — HUAKAI 不替 operator 决定客户能看什么 |
+| WebDAV 同步加密 L4 | **L2 ship**，operator 工具的标配 |
+| TLS impersonation R5.1+R5.2 P3 | **P2 plugin** — 跟 sub2api 打平的必要功能 |
+
+### 开发者可以全程开发的具体含义
+
+HUAKAI 维护者在内部**不需要任何额外 confirm**：
+- 写代码、跑测试、单测、集成测试、benchmark — 都不卡
+- 默认 build / dev build 可以带所有 plugin 试用
+- 内部 dev DB / test environment 可以预先启用所有功能
+- CI 跑全套测试覆盖所有 plugin
+- Release 配置由维护者按 distribution 决定（个人版可全带，企业版可剥离）
+
+**唯一卡的是**：当 operator 在生产 HUAKAI 实例上启用灰区功能时，必须经过 4 层 plugin opt-in 流程 + 写 audit + 看 splash。这是合规分界线。
+
 ## 一行总结
 
-HUAKAI 是竞赛产品，竞品做了的核心 HUAKAI 必做；合规靠 plugin opt-in + 警告 + 操作员自决，不靠阉割功能。之前 7 项被我过度合规化，需要 Owner 评一下哪些升回 P0/P1/P2。
+HUAKAI 是竞赛产品，竞品做了的核心 HUAKAI 必做。**开发者无限制开发权 + 使用者自决合规义务**（tool maker not tool user 立场）。Plugin opt-in 是 4 层机制（compile / runtime / splash+audit / README 声明），不是阉割功能 — 而是把启用决策 + 法律责任转给 operator。之前 7 项过度合规化，本次 v2 进一步开放：客户端桥接 P0、auto check-in L2、TLS plugin P2、WebDAV L2、响应头 forward 给 operator 选项。
