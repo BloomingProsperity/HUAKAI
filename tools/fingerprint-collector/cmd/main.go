@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/gopacket/layers"
+	"github.com/google/gopacket/pcap"
 
 	"github.com/BloomingProsperity/HUAKAI/tools/fingerprint-collector/internal/capture"
 	"github.com/BloomingProsperity/HUAKAI/tools/fingerprint-collector/internal/mitm"
@@ -152,9 +153,9 @@ func main() {
 	log.Printf("[capture] 请在另一个终端运行第一方客户端并发出 5-10 次请求...")
 
 	var (
-		samples  []*tlspkg.ClientHello
-		ja3s     []tlspkg.JA3Result
-		ja4s     []tlspkg.JA4Result
+		samples []*tlspkg.ClientHello
+		ja3s    []tlspkg.JA3Result
+		ja4s    []tlspkg.JA4Result
 	)
 
 	pkgSrc := collector.PacketSource()
@@ -172,6 +173,9 @@ captureLoop:
 
 		packet, err := pkgSrc.NextPacket()
 		if err != nil {
+			if err == pcap.NextErrorTimeoutExpired {
+				continue
+			}
 			// io.EOF 或 pcap 句柄关闭时退出
 			break captureLoop
 		}
@@ -216,6 +220,9 @@ captureLoop:
 		// 达到最小样本数后提前通知（继续捕获到超时）
 		if len(samples) == *flagMinSamples {
 			log.Printf("[capture] 已达到最少样本数 %d，继续捕获直到超时...", *flagMinSamples)
+		}
+		if len(samples) >= *flagMinSamples {
+			break captureLoop
 		}
 	}
 
