@@ -31,6 +31,9 @@ func TestValidateModeForProvider_Matrix(t *testing.T) {
 		{name: "Copilot + mimicry_copilot 允许", provider: ProviderCopilot, mode: TransportModeMimicryCopilot},
 		{name: "Kiro + mimicry_kiro 允许", provider: ProviderKiro, mode: TransportModeMimicryKiro},
 		{name: "Windsurf + mimicry_windsurf 允许", provider: ProviderWindsurf, mode: TransportModeMimicryWindsurf},
+		{name: "GeminiAdvanced + standard 允许", provider: ProviderGeminiAdvanced, mode: TransportModeStandard},
+		{name: "GeminiAdvanced + mimicry_gemini_advanced 允许", provider: ProviderGeminiAdvanced, mode: TransportModeMimicryGeminiAdvanced},
+		{name: "GeminiAdvanced + mimicry_chatgpt 跨 vendor 拒绝", provider: ProviderGeminiAdvanced, mode: TransportModeMimicryChatGPT, wantErrIs: ErrModeNotAllowedForProvider},
 		{name: "OpenRouter + 任意 mimicry 拒绝（meta-aggregator 不反转）", provider: ProviderOpenRouter, mode: TransportModeMimicryChatGPT, wantErrIs: ErrModeNotAllowedForProvider},
 		{name: "Grok + mimicry 拒绝", provider: ProviderGrok, mode: TransportModeMimicryChatGPT, wantErrIs: ErrModeNotAllowedForProvider},
 		// 6 家 OpenAI 兼容直通 — standard 允许
@@ -79,6 +82,7 @@ func TestAllowedModesForProvider(t *testing.T) {
 		{ProviderKiro, 2},
 		{ProviderWindsurf, 2},
 		{ProviderAntigravity, 2},
+		{ProviderGeminiAdvanced, 3}, // standard / mimicry_gemini_advanced / diagnostics
 		// 6 家 OpenAI 兼容直通：standard + diagnostics = 2 种 mode
 		{ProviderDeepSeek, 2},
 		{ProviderMistral, 2},

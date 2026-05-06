@@ -25,6 +25,12 @@ func TestBuild_AllProtocolFamiliesRegistered(t *testing.T) {
 		ProtocolTogetherChat,
 		ProtocolPerplexityChat,
 		ProtocolFireworksChat,
+		ProtocolCursorSession,
+		ProtocolCopilotSession,
+		ProtocolGeminiAdvancedSession,
+		ProtocolAntigravitySession,
+		ProtocolKiroSession,
+		ProtocolWindsurfSession,
 	}
 	got := r.RegisteredProtocolFamilies()
 	sort.Strings(got)
@@ -74,12 +80,18 @@ func TestBuild_PlatformIDsCorrect(t *testing.T) {
 		ProtocolOpenRouterChat:    "openrouter",
 		ProtocolBedrockInvoke:     "bedrock",
 		ProtocolGrokChat:          "grok",
-		ProtocolDeepSeekChat:      "deepseek",
-		ProtocolMistralChat:       "mistral",
-		ProtocolGroqCloudChat:     "groqcloud",
-		ProtocolTogetherChat:      "together",
-		ProtocolPerplexityChat:    "perplexity",
-		ProtocolFireworksChat:     "fireworks",
+		ProtocolDeepSeekChat:          "deepseek",
+		ProtocolMistralChat:           "mistral",
+		ProtocolGroqCloudChat:         "groqcloud",
+		ProtocolTogetherChat:          "together",
+		ProtocolPerplexityChat:        "perplexity",
+		ProtocolFireworksChat:         "fireworks",
+		ProtocolCursorSession:         "cursor",
+		ProtocolCopilotSession:        "copilot",
+		ProtocolGeminiAdvancedSession: "gemini_advanced",
+		ProtocolAntigravitySession:    "antigravity",
+		ProtocolKiroSession:           "kiro",
+		ProtocolWindsurfSession:       "windsurf",
 	}
 	for pf, wantPlatform := range cases {
 		a, err := r.For(pf)
@@ -95,11 +107,10 @@ func TestBuild_PlatformIDsCorrect(t *testing.T) {
 func TestBuild_UnregisteredReturnsErrAdapterNotRegistered(t *testing.T) {
 	r := Build()
 	for _, pf := range []string{
-		"chatgpt_session",  // OpenAI 反转，未实现
-		"anthropic_oauth",  // Anthropic 反转（暂停）
-		"cursor_session",   // Cursor 反转，未实现
-		"copilot_oauth",    // Copilot 反转，未实现
-		"unknown",          // 完全未知
+		"chatgpt_session", // OpenAI 反转旧名（现 openai_codex），未注册
+		"anthropic_oauth", // Anthropic 反转（暂停）
+		"copilot_oauth",   // Copilot OAuth 旧名（现 copilot_session），未注册
+		"unknown",         // 完全未知
 	} {
 		_, err := r.For(pf)
 		if err == nil {

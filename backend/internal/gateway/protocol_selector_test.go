@@ -154,6 +154,9 @@ func TestBuildDefaultProtocolAdapterRegistry(t *testing.T) {
 		// 6 家 OpenAI 兼容直通，均注册为 OpenAIAdapter
 		"deepseek_chat", "mistral_chat", "groqcloud_chat",
 		"together_chat", "perplexity_chat", "fireworks_chat",
+		// session 反转占位 SSE 解析（实测前先复用 OpenAIAdapter）
+		"copilot_session", "cursor_session",
+		"antigravity_session", "kiro_session", "windsurf_session",
 	} {
 		got, err := r.For(family)
 		if err != nil {
@@ -167,12 +170,14 @@ func TestBuildDefaultProtocolAdapterRegistry(t *testing.T) {
 		}
 	}
 
-	gemini, err := r.For("gemini_messages")
-	if err != nil {
-		t.Fatalf("For(gemini_messages) error = %v", err)
-	}
-	if _, ok := gemini.(*proto.GeminiAdapter); !ok {
-		t.Fatalf("gemini_messages adapter type = %T, want *proto.GeminiAdapter", gemini)
+	for _, family := range []string{"gemini_messages", "gemini_advanced_session"} {
+		got, err := r.For(family)
+		if err != nil {
+			t.Fatalf("For(%s) error = %v", family, err)
+		}
+		if _, ok := got.(*proto.GeminiAdapter); !ok {
+			t.Fatalf("For(%s) adapter type = %T, want *proto.GeminiAdapter", family, got)
+		}
 	}
 }
 

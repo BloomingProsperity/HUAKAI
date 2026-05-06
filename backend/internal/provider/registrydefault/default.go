@@ -8,36 +8,47 @@
 //   ErrAdapterNotRegistered，由配置层 reject 阻止误用。
 //
 // Protocol family 字符串约定（与 router.ResolvedModel.ProtocolFamily 对齐）：
-//   - openai_chat            OpenAI Chat Completions 兼容
-//   - openai_responses       OpenAI Responses API
-//   - openai_codex           OpenAI Codex CLI / ChatGPT Plus session 反转
-//   - anthropic_messages     Anthropic Messages
-//   - gemini_messages        Google Gemini generativelanguage
-//   - openrouter_chat        OpenRouter（OpenAI 兼容）
-//   - bedrock_invoke         AWS Bedrock Runtime invoke
-//   - grok_chat              xAI Grok（OpenAI 兼容）
-//   - deepseek_chat          DeepSeek（OpenAI 兼容）
-//   - mistral_chat           Mistral AI（OpenAI 兼容）
-//   - groqcloud_chat         Groq Cloud（OpenAI 兼容）
-//   - together_chat          Together AI（OpenAI 兼容）
-//   - perplexity_chat        Perplexity AI（OpenAI 兼容）
-//   - fireworks_chat         Fireworks AI（OpenAI 兼容）
+//   - openai_chat              OpenAI Chat Completions 兼容
+//   - openai_responses         OpenAI Responses API
+//   - openai_codex             OpenAI Codex CLI / ChatGPT Plus session 反转
+//   - anthropic_messages       Anthropic Messages
+//   - gemini_messages          Google Gemini generativelanguage
+//   - openrouter_chat          OpenRouter（OpenAI 兼容）
+//   - bedrock_invoke           AWS Bedrock Runtime invoke
+//   - grok_chat                xAI Grok（OpenAI 兼容）
+//   - deepseek_chat            DeepSeek（OpenAI 兼容）
+//   - mistral_chat             Mistral AI（OpenAI 兼容）
+//   - groqcloud_chat           Groq Cloud（OpenAI 兼容）
+//   - together_chat            Together AI（OpenAI 兼容）
+//   - perplexity_chat          Perplexity AI（OpenAI 兼容）
+//   - fireworks_chat           Fireworks AI（OpenAI 兼容）
+//   - cursor_session           Cursor IDE 网页 session 反转
+//   - copilot_session          GitHub Copilot session 反转
+//   - gemini_advanced_session  Google Gemini Advanced 网页 session 反转
+//   - antigravity_session      Antigravity AI session 反转（占位）
+//   - kiro_session             AWS Kiro session 反转（占位）
+//   - windsurf_session         Codeium Windsurf session 反转（占位）
 package registrydefault
 
 import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/anthropic"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/antigravity"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/bedrock"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/cursor"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/deepseek"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/fireworks"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/gemini"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/grok"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/groqcloud"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/kiro"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/mistral"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openrouter"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/perplexity"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/together"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/windsurf"
 )
 
 // Protocol family 常量。供配置层与 router 共享。
@@ -56,6 +67,13 @@ const (
 	ProtocolTogetherChat      = "together_chat"
 	ProtocolPerplexityChat    = "perplexity_chat"
 	ProtocolFireworksChat     = "fireworks_chat"
+	// 6 家订阅 session 反转路径（OCAW 实施前为 scaffold + TODO header）
+	ProtocolCursorSession         = "cursor_session"
+	ProtocolCopilotSession        = "copilot_session"
+	ProtocolGeminiAdvancedSession = "gemini_advanced_session"
+	ProtocolAntigravitySession    = "antigravity_session"
+	ProtocolKiroSession           = "kiro_session"
+	ProtocolWindsurfSession       = "windsurf_session"
 )
 
 // Build 创建注册表并注册全部已实现 vendor adapter。失败时 panic — 启动
@@ -91,6 +109,15 @@ func Build() *provider.StaticRegistry {
 	r.MustRegister(ProtocolTogetherChat, &together.PassthroughAdapter{})
 	r.MustRegister(ProtocolPerplexityChat, &perplexity.PassthroughAdapter{})
 	r.MustRegister(ProtocolFireworksChat, &fireworks.PassthroughAdapter{})
+
+	// 6 家订阅 session 反转路径。每家凭据形态 = SessionToken / UpstreamPassthrough
+	// （拒 apikey）；endpoint 部分为占位 TODO，等 OCAW 抓包后替换。
+	r.MustRegister(ProtocolCursorSession, &cursor.CursorSessionAdapter{})
+	r.MustRegister(ProtocolCopilotSession, &copilot.CopilotSessionAdapter{})
+	r.MustRegister(ProtocolGeminiAdvancedSession, &gemini.GeminiAdvancedSessionAdapter{})
+	r.MustRegister(ProtocolAntigravitySession, &antigravity.AntigravitySessionAdapter{})
+	r.MustRegister(ProtocolKiroSession, &kiro.KiroSessionAdapter{})
+	r.MustRegister(ProtocolWindsurfSession, &windsurf.WindsurfSessionAdapter{})
 
 	return r
 }
