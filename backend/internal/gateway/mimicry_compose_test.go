@@ -26,14 +26,15 @@ const composerInputBody = `{
 	}
 }`
 
-// TestApplyMimicryPlan_AllStepsSkipped 不启用任何步骤时 body 不变。
-func TestApplyMimicryPlan_AllStepsSkipped(t *testing.T) {
+// TestApplyMimicryPlan_FeatureDisabled 验证默认 (Enabled=false) 走 feature
+// flag 短路，6 步全 skipped + reason="feature_disabled" + body 拷贝。
+func TestApplyMimicryPlan_FeatureDisabled(t *testing.T) {
 	res, err := ApplyMimicryPlan([]byte(composerInputBody), MimicryPlan{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.AnyApplied {
-		t.Errorf("AnyApplied=true 但所有步骤都禁用")
+		t.Errorf("Enabled=false 时不应 AnyApplied")
 	}
 	if len(res.Steps) != 6 {
 		t.Errorf("步骤数 = %d want 6", len(res.Steps))
@@ -42,20 +43,37 @@ func TestApplyMimicryPlan_AllStepsSkipped(t *testing.T) {
 		if !s.Skipped {
 			t.Errorf("步骤 %s 应当 skipped", s.Step)
 		}
+		if s.Reason != mimicryStepFeatureDisabled {
+			t.Errorf("步骤 %s reason=%q want feature_disabled", s.Step, s.Reason)
+		}
 	}
-	// body 与输入字节相等（仅做了拷贝）
-	var got, want map[string]interface{}
-	if err := json.Unmarshal(res.Body, &got); err != nil {
+}
+
+// TestApplyMimicryPlan_EnabledButAllNil 验证 Enabled=true 但所有 step 字段
+// 都 nil/false 时，6 步全 skipped + reason="step_disabled"（与 feature_disabled
+// 不同，便于 admin 区分"整层关"和"部分步骤未配"）。
+func TestApplyMimicryPlan_EnabledButAllNil(t *testing.T) {
+	res, err := ApplyMimicryPlan([]byte(composerInputBody), MimicryPlan{Enabled: true})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal([]byte(composerInputBody), &want); err != nil {
-		t.Fatal(err)
+	if res.AnyApplied {
+		t.Errorf("AnyApplied=true 但所有步骤字段都 nil")
+	}
+	for _, s := range res.Steps {
+		if !s.Skipped {
+			t.Errorf("步骤 %s 应当 skipped", s.Step)
+		}
+		if s.Reason != mimicryStepSkippedReason {
+			t.Errorf("步骤 %s reason=%q want step_disabled", s.Step, s.Reason)
+		}
 	}
 }
 
 // TestApplyMimicryPlan_Step1Only 仅启动 step 1 系统提示词重写。
 func TestApplyMimicryPlan_Step1Only(t *testing.T) {
 	plan := MimicryPlan{
+		Enabled:       true,
 		SystemRewrite: &SystemRewritePlan{PrefixText: "你是 Claude Code。"},
 	}
 	res, err := ApplyMimicryPlan([]byte(composerInputBody), plan)
@@ -78,7 +96,7 @@ func TestApplyMimicryPlan_Step1Only(t *testing.T) {
 
 // TestApplyMimicryPlan_Step2StripCacheControl 验证 step 2 删除 system 块上的 cache_control。
 func TestApplyMimicryPlan_Step2StripCacheControl(t *testing.T) {
-	plan := MimicryPlan{StripSystemCacheControl: true}
+	plan := MimicryPlan{Enabled: true, StripSystemCacheControl: true}
 	res, err := ApplyMimicryPlan([]byte(composerInputBody), plan)
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +125,7 @@ func TestApplyMimicryPlan_Step2StripCacheControl(t *testing.T) {
 // TestApplyMimicryPlan_Step2NothingToStrip system 不带 cache_control 时不动。
 func TestApplyMimicryPlan_Step2NothingToStrip(t *testing.T) {
 	body := `{"system":[{"type":"text","text":"clean"}]}`
-	res, err := ApplyMimicryPlan([]byte(body), MimicryPlan{StripSystemCacheControl: true})
+	res, err := ApplyMimicryPlan([]byte(body), MimicryPlan{Enabled: true, StripSystemCacheControl: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,6 +141,7 @@ func TestApplyMimicryPlan_Step2NothingToStrip(t *testing.T) {
 // TestApplyMimicryPlan_Step4ToolNames 验证 step 4 调用 R7.4。
 func TestApplyMimicryPlan_Step4ToolNames(t *testing.T) {
 	plan := MimicryPlan{
+		Enabled: true,
 		ToolNames: &ToolNameRewritePlan{
 			Mapping: ToolNameMapping{"mcp_search": "analyze_sea00"},
 		},
@@ -156,6 +175,7 @@ func TestApplyMimicryPlan_Step4ToolNames(t *testing.T) {
 // TestApplyMimicryPlan_Step5MetadataUserID 验证 step 5 重写 metadata.user_id。
 func TestApplyMimicryPlan_Step5MetadataUserID(t *testing.T) {
 	plan := MimicryPlan{
+		Enabled: true,
 		MetadataUserID: &MetadataUserIDPlan{
 			Mode:     MetadataInjectRewrite,
 			DeviceID: "1111111111111111111111111111111111111111111111111111111111111111",
@@ -176,7 +196,7 @@ func TestApplyMimicryPlan_Step5MetadataUserID(t *testing.T) {
 
 // TestApplyMimicryPlan_Step6ToolsTailCacheBP 验证 step 6 给 tools[-1] 加 cache_control。
 func TestApplyMimicryPlan_Step6ToolsTailCacheBP(t *testing.T) {
-	plan := MimicryPlan{ApplyToolsTailCacheBP: true}
+	plan := MimicryPlan{Enabled: true, ApplyToolsTailCacheBP: true}
 	res, err := ApplyMimicryPlan([]byte(composerInputBody), plan)
 	if err != nil {
 		t.Fatal(err)
@@ -202,7 +222,7 @@ func TestApplyMimicryPlan_Step6ToolsTailCacheBP(t *testing.T) {
 
 // TestApplyMimicryPlan_Step6WithTTL 验证 ttl 字段写入 cache_control。
 func TestApplyMimicryPlan_Step6WithTTL(t *testing.T) {
-	plan := MimicryPlan{ApplyToolsTailCacheBP: true, ToolsTailTTL: "1h"}
+	plan := MimicryPlan{Enabled: true, ApplyToolsTailCacheBP: true, ToolsTailTTL: "1h"}
 	res, err := ApplyMimicryPlan([]byte(composerInputBody), plan)
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +235,7 @@ func TestApplyMimicryPlan_Step6WithTTL(t *testing.T) {
 // TestApplyMimicryPlan_Step6NoTools tools 字段缺失时 step 6 报 no_tools_array。
 func TestApplyMimicryPlan_Step6NoTools(t *testing.T) {
 	body := `{"messages":[]}`
-	res, err := ApplyMimicryPlan([]byte(body), MimicryPlan{ApplyToolsTailCacheBP: true})
+	res, err := ApplyMimicryPlan([]byte(body), MimicryPlan{Enabled: true, ApplyToolsTailCacheBP: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +251,7 @@ func TestApplyMimicryPlan_Step6NoTools(t *testing.T) {
 // TestApplyMimicryPlan_Step6EmptyTools tools 为空数组时 step 6 报 tools_array_empty。
 func TestApplyMimicryPlan_Step6EmptyTools(t *testing.T) {
 	body := `{"tools":[]}`
-	res, err := ApplyMimicryPlan([]byte(body), MimicryPlan{ApplyToolsTailCacheBP: true})
+	res, err := ApplyMimicryPlan([]byte(body), MimicryPlan{Enabled: true, ApplyToolsTailCacheBP: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +271,7 @@ func TestApplyMimicryPlan_Step6SkipWhenTailHasCacheControl(t *testing.T) {
 		{"name":"a"},
 		{"name":"b","cache_control":{"type":"ephemeral","ttl":"1h"}}
 	]}`
-	res, err := ApplyMimicryPlan([]byte(body), MimicryPlan{ApplyToolsTailCacheBP: true, ToolsTailTTL: "5m"})
+	res, err := ApplyMimicryPlan([]byte(body), MimicryPlan{Enabled: true, ApplyToolsTailCacheBP: true, ToolsTailTTL: "5m"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +304,7 @@ func TestApplyMimicryPlan_Step6SkipWhenAtCap(t *testing.T) {
 		"tools":[{"name":"x"}],
 		"messages":[{"role":"user","content":"hi"}]
 	}`
-	res, err := ApplyMimicryPlan([]byte(body), MimicryPlan{ApplyToolsTailCacheBP: true})
+	res, err := ApplyMimicryPlan([]byte(body), MimicryPlan{Enabled: true, ApplyToolsTailCacheBP: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,6 +320,7 @@ func TestApplyMimicryPlan_Step6SkipWhenAtCap(t *testing.T) {
 // TestApplyMimicryPlan_AllStepsEnabled 端到端 6 步全启动，验证组合效果。
 func TestApplyMimicryPlan_AllStepsEnabled(t *testing.T) {
 	plan := MimicryPlan{
+		Enabled:                 true,
 		SystemRewrite:           &SystemRewritePlan{PrefixText: "You are Claude Code."},
 		StripSystemCacheControl: true,
 		// 注：CacheBreakpoints 真实场景由 SuggestBreakpoints 输出；这里给一个简化空 plan
@@ -349,6 +370,7 @@ func TestApplyMimicryPlan_AllStepsEnabled(t *testing.T) {
 // TestApplyMimicryPlan_InvalidBodyAtStep1 step 1 报错时返回部分结果 + error。
 func TestApplyMimicryPlan_InvalidBodyAtStep1(t *testing.T) {
 	plan := MimicryPlan{
+		Enabled:       true,
 		SystemRewrite: &SystemRewritePlan{PrefixText: "x"},
 	}
 	res, err := ApplyMimicryPlan([]byte("not json"), plan)
