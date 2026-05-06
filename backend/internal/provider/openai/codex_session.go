@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 )
@@ -82,13 +83,13 @@ func (a *CodexSessionAdapter) BuildRequest(ctx context.Context, in provider.Buil
 		return nil, fmt.Errorf("openai codex session: 不支持的凭据形态 %q", in.Credential.Type)
 	}
 
-	// session token 不能为空
-	if in.Credential.Value == "" {
-		return nil, errors.New("openai codex session: 凭据 Value 为空（session token 必填）")
+	// session token 不能为空（含纯空白）
+	if strings.TrimSpace(in.Credential.Value) == "" {
+		return nil, errors.New("openai codex session: 凭据 Value 为空或仅含空白（session token 必填）")
 	}
 
-	// UpstreamModelID 对应 chatgpt.com 的 default_model_slug，不能为空
-	if in.UpstreamModelID == "" {
+	// UpstreamModelID 对应 chatgpt.com 的 default_model_slug，不能为空（含纯空白）
+	if strings.TrimSpace(in.UpstreamModelID) == "" {
 		return nil, errors.New("openai codex session: UpstreamModelID 为空（对应 chatgpt.com default_model_slug，必填）")
 	}
 
