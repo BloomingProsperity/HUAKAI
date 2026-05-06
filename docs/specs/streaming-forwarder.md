@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Released |
+| Status | Released — Extended by A12a/A25/A26/A27 (DR-009 2026-05-02) |
 | Feature ID | F-GW-002 |
 | Specifier | Claude (PM-Orchestrator), 2026-04-28 |
 | Specifier date | 2026-04-28 |
@@ -208,3 +208,221 @@ None remaining at release. All three prior open questions resolved during Codex 
 > Filled by implementer after consuming the spec.
 
 (empty until implementer-lane work begins)
+
+---
+
+## A12a Stream-Safe Retry Boundary FSM (DR-009 Phase B, P0, 硬底线)
+
+> Authority: synthesis §2 A12a + §6 Q8 + §6.6 硬底线; DR-009 Q8 决议 + 客户响应头清单.
+
+### Purpose
+
+Prevent double-charge disputes and duplicate-content complaints by enforcing a strict FSM gate before any mid-stream retry or account failover is attempted. Once content bytes have been flushed to the client, a retry is unsafe by default.
+
+### FSM States
+
+| State | Entry Condition |
+|---|---|
+| `BEFORE_UPSTREAM` | Request received; upstream HTTP connection not yet opened. |
+| `BEFORE_FIRST_TOKEN` | Upstream connection open; upstream response status 2xx received; no content event emitted to client yet. |
+| `CONTENT_STARTED` | First content token (text chunk or partial tool-call delta) has been flushed to the client downstream writer. |
+| `TOOL_SIDE_EFFECT_STARTED` | A tool-call event with side-effect semantics has been emitted (e.g. `tool_use` block with `id` present). |
+| `TERMINAL` | Stream classified (any `StreamEndClass`); FSM frozen. |
+
+State advances monotonically: `BEFORE_UPSTREAM` → `BEFORE_FIRST_TOKEN` → `CONTENT_STARTED` → `TOOL_SIDE_EFFECT_STARTED` → `TERMINAL`. Transitions are one-way and irreversible within a single stream lifecycle.
+
+### Retry-Allowed Matrix
+
+| FSM State at retry decision point | Default retry_allowed | With `Idempotent-Stream-Replay: true` |
+|---|---|---|
+| `BEFORE_UPSTREAM` | **YES** | YES |
+| `BEFORE_FIRST_TOKEN` | **YES** | YES |
+| `CONTENT_STARTED` | **NO** | **YES** (client opts in; self-bears risk) |
+| `TOOL_SIDE_EFFECT_STARTED` | **NO** | **NO** (side effects cannot be replayed safely regardless of header) |
+| `TERMINAL` | **NO** | NO |
+
+### Q8 Client Opt-In: `Idempotent-Stream-Replay: true`
+
+Per DR-009 Q8 (synthesis §6 Q8, Owner选项 B): clients who control their own idempotency layer may send the request header `Idempotent-Stream-Replay: true`. This header:
+
+- Lifts the retry block in `CONTENT_STARTED` state only.
+- Has no effect in `TOOL_SIDE_EFFECT_STARTED` or `TERMINAL` states (always blocked).
+- Is the client's explicit acknowledgment that duplicate stream content is acceptable to them.
+- Must be logged in the attempt audit row for downstream billing reconciliation.
+
+### Response Header: `X-Huakai-Stream-Boundary` (debug mode only)
+
+When the gateway operates in debug mode (`X-Huakai-Debug: true` request header or operator route flag), and A12a blocks a retry, the response includes:
+
+```
+X-Huakai-Stream-Boundary: <state>
+```
+
+where `<state>` is one of `BEFORE_FIRST_TOKEN`, `CONTENT_STARTED`, or `TOOL_SIDE_EFFECT_STARTED`. This header is suppressed in production mode to avoid leaking internal state. DR-009 客户响应头清单 entry: `X-Huakai-Stream-Boundary`.
+
+### Acceptance Tests
+
+- **AT-GW-002-021** — FSM blocks retry at `CONTENT_STARTED` by default; response contains no duplicate prefix bytes at client.
+- **AT-GW-002-022** — `Idempotent-Stream-Replay: true` permits retry at `CONTENT_STARTED`; audit row records header presence; attempt count incremented.
+- **AT-GW-002-023** — `TOOL_SIDE_EFFECT_STARTED` blocks retry unconditionally regardless of `Idempotent-Stream-Replay` header value.
+
+---
+
+## A25 Adaptive Stream Buffer Controller (DR-009 Phase C, P0)
+
+> Authority: synthesis §1 A25 (Codex memory_pressure signal + Claude AIMD boundary); DR-009 Phase C.
+
+### Purpose
+
+Dynamically size the per-stream upstream event scanner buffer based on observed tail latency and runtime memory pressure, replacing the static 1 MiB default with a buffer that self-tunes per (provider, model, event_class) sketch.
+
+### Algorithm
+
+```python
+def compute_buffer_cap(provider: str, model: str, event_class: str,
+                        memory_pressure: float,  # 0.0–1.0; 1.0 = OOM imminent
+                        global_cap_bytes: int = 64 * 1024 * 1024) -> int:
+    sketch_key = (provider, model, event_class)
+    p99_bytes = sketch_get_p99(sketch_key)          # from rolling t-digest sketch
+    if p99_bytes is None:
+        p99_bytes = 1 * 1024 * 1024                 # cold-start default: 1 MiB
+
+    target = p99_bytes * 4                           # 4× P99 headroom
+
+    # AIMD memory-pressure clamp (synthesis Claude boundary)
+    pressure_factor = max(0.25, 1.0 - memory_pressure)
+    target = int(target * pressure_factor)
+
+    # Hard caps
+    target = max(target, 64 * 1024)                 # floor: 64 KiB
+    target = min(target, global_cap_bytes)           # ceiling: operator-configured global cap
+
+    return target
+```
+
+### Sketch Maintenance
+
+- One t-digest sketch per `(provider, model, event_class)` triple; event_class values: `text_chunk`, `tool_delta`, `usage_event`, `control_frame`.
+- Sketch updated on every completed stream: observed max single-event byte size fed as sample.
+- Sketch TTL: 24 hours rolling; evicted if (provider, model) combo unseen for 7 days.
+- `memory_pressure` signal sourced from the process/container memory monitor at buffer-allocation time, not at stream start.
+
+### Acceptance Tests
+
+- **AT-GW-002-024** — Buffer cap for a (provider, model, event_class) with observed P99 = 200 KiB computes to ≤ 800 KiB under zero memory pressure and ≤ 200 KiB under 75% memory pressure; overflow still emits typed `RESPONSE_EVENT_TOO_LARGE` terminal.
+
+---
+
+## A26 Expected-Value Drain Decision (DR-009 Phase C, P0, 硬底线)
+
+> Authority: synthesis §1 A26 (Codex forensic_value + incident_probability + Claude three-budget early-stop) + §6.6 硬底线 + §6 Q5 drain privacy; DR-009 硬底线.
+
+### Purpose
+
+Replace the unconditional CLIENT_DISCONNECT drain (Phase C-bis) with an expected-value gate: drain only when E[value_remaining] > E[cost_to_drain]. Default is greedy-drain (billing capture); the budget caps act as anti-abuse stoppers, not the primary decision.
+
+### Formula
+
+```
+E[value_remaining] = tokens_remaining_estimate
+                     × price_per_output_token
+                     × (forensic_value_weight + incident_probability_weight)
+
+E[cost_to_drain]   = tokens_remaining_estimate
+                     × cost_per_output_token_to_gateway
+                     + drain_overhead_fixed_usd
+
+drain_decision = DRAIN  if E[value_remaining] > E[cost_to_drain]
+                 ABORT  otherwise
+```
+
+Where:
+- `tokens_remaining_estimate`: derived from `reported` usage accumulator if available; else tokenizer estimate on bytes-remaining. **Never derived from prompt body content** (Q5 privacy boundary — see below).
+- `forensic_value_weight`: operator-configured weight (default 1.0) reflecting value of capturing usage for audit/billing purposes.
+- `incident_probability_weight`: operator-configured weight (default 0.1) reflecting probability the stream is part of an ongoing incident requiring forensic data.
+- `cost_per_output_token_to_gateway`: from the versioned pricing snapshot (A15) for this provider/model.
+- `drain_overhead_fixed_usd`: fixed per-drain operational cost estimate (default $0.0001).
+
+### Q5 Privacy Boundary
+
+Per DR-009 Q5 (Owner option A): the drain decision function reads **only token usage metadata** — accumulator values, byte counts, pricing snapshots. It must not read, parse, or hash the prompt body or any partial response content. This constraint applies to all sub-functions including `tokens_remaining_estimate`.
+
+### Three Budget Caps (Hard Stoppers)
+
+Even when the expected-value formula returns DRAIN, three budget caps provide unconditional exit gates:
+
+| Budget | Default | Operator tunable |
+|---|---|---|
+| `drain_max_seconds` | 30s | Per-Route |
+| `drain_max_bytes` | 1 MiB | Per-Route |
+| `drain_max_estimated_cost` | $0.10 | Per-Route |
+
+Exit triggers when ANY single budget exhausts. `drain_outcome` annotation records which budget fired. These caps exist in Phase C-bis of the Normal Path and remain unchanged; this section defines the pre-gate that runs before the drain loop begins.
+
+### Acceptance Tests
+
+- **AT-GW-002-025** — CLIENT_DISCONNECT with E[value_remaining] > E[cost_to_drain]: drain loop runs; usage captured; Tx2 commits with `usage_source = partial`.
+- **AT-GW-002-026** — CLIENT_DISCONNECT with E[value_remaining] ≤ E[cost_to_drain] (e.g. upstream nearly complete, cost exceeds value): drain loop skipped; Tx2 commits immediately with available accumulator values; `drain_outcome = ev_abort`.
+
+---
+
+## A27 Stream-Time Dynamic Reserve Adjustment (DR-009 Phase E, P2)
+
+> Authority: synthesis §3 gaps table (Claude A27, adopted as new ID) + §5 domain 4 A27; DR-009 Phase E.
+
+### Purpose
+
+For long-running streams where token generation may exceed the Tx1 reservation ceiling, periodically check whether the running cost is approaching the reserved amount and attempt to extend the reservation inline, or terminate gracefully before the quota is hard-exceeded.
+
+### Algorithm
+
+```python
+RESERVE_CHECK_INTERVAL_TOKENS = 100   # check every N output tokens emitted
+
+def on_token_emitted(stream_ctx: StreamContext) -> None:
+    stream_ctx.tokens_emitted_since_last_check += 1
+    if stream_ctx.tokens_emitted_since_last_check < RESERVE_CHECK_INTERVAL_TOKENS:
+        return
+
+    stream_ctx.tokens_emitted_since_last_check = 0
+    running_cost_usd = estimate_cost(
+        stream_ctx.usage_accumulator,
+        stream_ctx.pricing_snapshot,
+    )
+    reserve_remaining_usd = (
+        stream_ctx.tx1_reserved_usd - running_cost_usd
+    )
+
+    if reserve_remaining_usd > stream_ctx.reserve_low_water_usd:
+        return  # ample headroom; no action
+
+    # Approaching ceiling — attempt to extend reservation
+    extended = try_extend_reserve(
+        claim_id=stream_ctx.claim_id,
+        additional_usd=stream_ctx.reserve_extension_usd,
+    )
+
+    if extended:
+        stream_ctx.tx1_reserved_usd += stream_ctx.reserve_extension_usd
+        log_metric("stream_reserve_extended", claim_id=stream_ctx.claim_id)
+        return
+
+    # Extension failed (quota exhausted or binding limit reached) — soft terminate
+    soft_terminate(stream_ctx, reason="quota_exhausted")
+```
+
+### Parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `RESERVE_CHECK_INTERVAL_TOKENS` | 100 | Output tokens between reserve checks |
+| `reserve_low_water_usd` | $0.05 | Remaining reserve threshold that triggers extension attempt |
+| `reserve_extension_usd` | $0.50 | Amount requested per extension attempt |
+
+### `soft_terminate` Behavior
+
+`soft_terminate(reason="quota_exhausted")` closes the upstream connection cleanly, emits a protocol-level termination marker if possible (so client sees a well-formed stream end), sets `StreamEndClass = ORCHESTRATOR_CANCEL` with `cancel_reason = quota_exhausted`, and proceeds to Phase D (Tx2 finalization) with accumulated usage values. No content is truncated mid-token.
+
+### Acceptance Tests
+
+- **AT-GW-002-027** — Stream emitting tokens beyond Tx1 reservation: reserve check fires at N-token boundary; `try_extend_reserve` succeeds → stream continues; OR `try_extend_reserve` fails → `soft_terminate("quota_exhausted")` fires; Tx2 commits with partial usage; client stream closes with valid terminal marker.
