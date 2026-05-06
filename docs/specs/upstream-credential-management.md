@@ -3,6 +3,7 @@
 | Field | Value |
 | --- | --- |
 | Status | Released |
+| Extended by | A07 (DR-009 2026-05-02) |
 | Feature ID | F-AUTH-005 (NEW row distinct from F-AUTH-001..004 which are user-facing identity-provider auth; this row is upstream Provider Account credential management) |
 | Specifier | Claude (PM-Orchestrator) + Codex (4-provider matrix), 2026-04-28 |
 | Specifier date | 2026-04-28 |
@@ -181,3 +182,165 @@ None remaining at release.
 > Filled by implementer after consuming the spec.
 
 (empty until implementer-lane work begins)
+
+---
+
+## A07 Three-Scope Refresh Storm Controller (Algorithm Upgrade, DR-009 §Phase A)
+
+| Field | Value |
+| --- | --- |
+| Algorithm ID | A07 |
+| Priority | P0 |
+| Phase | A (with N+5b spine) |
+| Effort | 10h |
+| DR reference | [DR-009-algorithm-upgrade-policy.md](../decisions/DR-009-algorithm-upgrade-policy.md) §Phase A + §Seller Hard Floor |
+| F-* link | F-AUTH-005 (extend) |
+| Synthesis reference | [2026-05-02-huakai-algo-upgrade-synthesis.md](../plans/2026-05-02-huakai-algo-upgrade-synthesis.md) §1 A07, §4 P0, §6.6 |
+
+### Interaction with Existing F-AUTH-005
+
+A07 **replaces** the single worker-pool budget described in F-AUTH-005 §Phase B ("Storm Budget") with a three-scope token-bucket architecture. The existing steps 4–5 are superseded as follows:
+
+- **Before (Phase B, steps 4–5)**: a flat global worker-pool cap; any budget exhaustion marks the account `temp_unschedulable`.
+- **After (A07)**: three independent token buckets—account, endpoint, global—evaluated in order; each scope can independently throttle or yield. The account-scope `temp_unschedulable` behavior is preserved; endpoint-scope throttling adds a new `ENDPOINT_THROTTLED` signal visible to the scheduler.
+
+All other phases (C through H) and the Provider Policy Matrix are unchanged.
+
+### Algorithm
+
+The controller evaluates three concentric token buckets before executing any OAuth refresh. Pseudocode (paraphrased; do not copy verbatim into implementation without independent re-derivation):
+
+```
+# Entry point — called by Background TokenRefreshService before each refresh
+function acquire_refresh_permit(account, endpoint, global_buckets, singleflight_map):
+
+    # 1. Account scope — prevent same-account thundering herd
+    acct_key = (account.id,)
+    if not global_buckets.account[acct_key].try_consume(1):
+        emit_signal("storm_throttle_total", scope="account", provider=account.provider)
+        return Err(ACCOUNT_THROTTLED)
+
+    # 2. Endpoint scope — protect the vendor OAuth endpoint
+    ep_key = (account.provider, account.oauth_endpoint)
+    if not global_buckets.endpoint[ep_key].try_consume(1):
+        emit_signal("storm_throttle_total", scope="endpoint", provider=account.provider)
+        global_buckets.account[acct_key].release(1)   # cooperatively yield account token
+        return Err(ENDPOINT_THROTTLED)
+
+    # 3. Global scope — hard ceiling on total concurrent refreshes
+    if not global_buckets.global_.try_consume(1):
+        emit_signal("storm_throttle_total", scope="global", provider=account.provider)
+        global_buckets.endpoint[ep_key].release(1)
+        global_buckets.account[acct_key].release(1)
+        return Err(GLOBAL_THROTTLED)
+
+    # 4. Singleflight dedup — collapse concurrent refreshes for same account
+    sf_key = acct_key
+    if sf_key in singleflight_map:
+        # Another goroutine is already refreshing this account; join its result
+        result = singleflight_map[sf_key].wait()
+        global_buckets.global_.release(1)
+        global_buckets.endpoint[ep_key].release(1)
+        global_buckets.account[acct_key].release(1)
+        emit_signal("refresh_singleflight_join_total", provider=account.provider)
+        return result
+
+    # 5. Cooperative yield — if endpoint is near-saturated, defer to less-loaded endpoint
+    if global_buckets.endpoint[ep_key].fill_ratio() > ENDPOINT_YIELD_THRESHOLD:
+        # Signal scheduler to prefer a different endpoint on next attempt
+        return Err(ENDPOINT_THROTTLED)   # releases happen at caller via defer
+
+    # All scopes acquired — proceed with actual refresh
+    singleflight_map[sf_key] = new Future()
+    try:
+        token = do_oauth_refresh(account)
+        singleflight_map[sf_key].resolve(Ok(token))
+        return Ok(token)
+    except Exception as e:
+        singleflight_map[sf_key].resolve(Err(e))
+        return Err(e)
+    finally:
+        del singleflight_map[sf_key]
+        global_buckets.global_.release(1)
+        global_buckets.endpoint[ep_key].release(1)
+        global_buckets.account[acct_key].release(1)
+```
+
+**Cooperative yield**: when `ENDPOINT_THROTTLED` is returned, the scheduler records a hint and selects a different endpoint on the next scheduling cycle, spreading refresh load across endpoints rather than queuing behind one.
+
+### Data Structures
+
+**In-memory TokenBucket (per scope key)**:
+
+```
+TokenBucket:
+    capacity        int          # max tokens (burst ceiling)
+    refill_rate     float        # tokens per second
+    current_tokens  atomic_float
+    last_refill_ns  atomic_int64
+
+    try_consume(n) -> bool       # non-blocking; returns false if insufficient tokens
+    release(n)                   # returns tokens (used for cooperative yield)
+    fill_ratio() -> float        # current_tokens / capacity; used for yield threshold
+```
+
+**Configuration — `oauth_storm_policy` (per-operator, per-provider)**:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `account_bucket_capacity` | int | 2 | max concurrent refreshes per account |
+| `account_bucket_refill_rate` | float | 0.5 /s | steady-state refresh throughput per account |
+| `endpoint_bucket_capacity` | int | 20 | max concurrent refreshes per (provider, oauth_endpoint) |
+| `endpoint_bucket_refill_rate` | float | 5.0 /s | vendor endpoint throughput ceiling |
+| `global_bucket_capacity` | int | 100 | max total concurrent OAuth refreshes across all accounts |
+| `global_bucket_refill_rate` | float | 20.0 /s | global throughput ceiling |
+| `endpoint_yield_threshold` | float | 0.80 | fill_ratio above which cooperative yield triggers |
+| `singleflight_wait_timeout_ms` | int | 5000 | max ms to wait for singleflight result before returning stale |
+
+Buckets are instantiated lazily on first key access; evicted after `bucket_idle_ttl_s` (default 300s) of zero-traffic.
+
+### Invariants
+
+1. **Vendor endpoint protection**: 100 accounts on the same OAuth endpoint expiring simultaneously MUST NOT all attempt concurrent refreshes. The endpoint bucket caps the throughput; excess callers receive `ENDPOINT_THROTTLED` and are rescheduled rather than dropped.
+2. **Per-endpoint independence**: accounts distributed across N distinct endpoints each have their own endpoint bucket. Saturation on endpoint A does not throttle endpoint B.
+3. **Cooperative yield on ENDPOINT_THROTTLED**: when the scheduler receives `ENDPOINT_THROTTLED`, the next scheduling attempt for that account MUST pick a different endpoint (if available) rather than retrying the same saturated one immediately.
+4. **Singleflight collapse**: at most one live HTTP refresh request per account at any moment; all other concurrent callers for the same account join the in-flight result without issuing additional HTTP requests.
+5. **No double-throttle on singleflight join**: goroutines that join a singleflight immediately release all three bucket tokens; they do not hold capacity for the duration of the in-flight refresh.
+6. **Release on every code path**: all three bucket tokens acquired before the singleflight check MUST be released in a `finally`/`defer` block, including on error and panic paths.
+
+### Acceptance Tests
+
+**AT-AUTH-005-018** — Endpoint bucket caps simultaneous expiry on single endpoint
+
+- Setup: 200 accounts, all configured with the same OAuth endpoint, all tokens expire at T=0.
+- Trigger: background TokenRefreshService runs at T=0.
+- Assert: the number of concurrent outbound HTTP refresh requests to that endpoint never exceeds `endpoint_bucket_capacity` (default 20) at any instant.
+- Assert: all 200 accounts eventually complete refresh (no account permanently dropped).
+- Assert: `storm_throttle_total{scope="endpoint"}` counter increments ≥ 180 times.
+
+**AT-AUTH-005-019** — Independent endpoint buckets under multi-endpoint load
+
+- Setup: 200 accounts distributed evenly across 5 distinct OAuth endpoints (40 accounts each), all tokens expire at T=0.
+- Trigger: background TokenRefreshService runs at T=0.
+- Assert: each endpoint's concurrent refresh count is independently capped at `endpoint_bucket_capacity`; endpoint B throughput is not reduced because endpoint A is saturated.
+- Assert: `storm_throttle_total{scope="endpoint"}` counter shows throttle events per endpoint label, not globally collapsed.
+- Assert: all 200 accounts complete refresh within a bounded window (≤ `endpoint_bucket_capacity / endpoint_bucket_refill_rate * ceil(40 / endpoint_bucket_capacity)` seconds per endpoint).
+
+**AT-AUTH-005-020** — Scheduler cooperative yield on ENDPOINT_THROTTLED hint
+
+- Setup: 1 account with 2 eligible OAuth endpoints (primary saturated, secondary has capacity).
+- Trigger: refresh attempt returns `ENDPOINT_THROTTLED` on primary endpoint.
+- Assert: scheduler records hint `ENDPOINT_THROTTLED` for that account.
+- Assert: next scheduled refresh attempt for that account selects the secondary endpoint, not the primary.
+- Assert: `storm_throttle_total{scope="endpoint"}` increments exactly once (no retry storm on same endpoint).
+
+### Signals (Metrics)
+
+| Signal | Type | Labels | Description |
+|---|---|---|---|
+| `storm_throttle_total` | counter | `scope` ∈ {account, endpoint, global}, `provider` | Increments each time a refresh attempt is throttled at the given scope. Use to detect storm events and size bucket parameters. |
+| `refresh_singleflight_join_total` | counter | `provider` | Increments each time a goroutine joins an in-flight singleflight result instead of issuing a new HTTP refresh. High values indicate effective dedup. |
+
+Both signals are per-provider to allow operator dashboards to isolate vendor-specific storm events.
+
+**Audit Event additions**: the existing Audit Event row (F-AUTH-005 §Audit) gains two new outcome enum values: `endpoint_throttled` and `singleflight_joined`. Token leakage discipline unchanged — no credential bytes in any signal or audit detail.
