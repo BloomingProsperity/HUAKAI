@@ -52,11 +52,21 @@ const (
 	mimicryStepBPAppliedReason     = "applied"
 	mimicryStepTailAlreadyHas      = "tools_tail_already_has_cache_control"
 	mimicryStepTailExceedsCap      = "would_exceed_cache_control_cap"
+	mimicryStepFeatureDisabled     = "feature_disabled"
 )
 
 // MimicryPlan 描述一次 6-step 强伪装管线的入参。任一字段 nil/false 即跳过
 // 对应步骤。
+//
+// Feature flag (lane 一致项 #4)：Enabled=false（默认）时整个管线 no-op，
+// 全部 6 step 标记 Skipped。这是产线安全默认 — 仅当 caller 在配置/policy
+// 层确认"该 provider 该 binding 应当走强伪装"才显式置 true。详见
+// docs/plans/2026-05-06-r3-transport-mimicry-synthesis.md §5。
 type MimicryPlan struct {
+	// Enabled 是 R7 强伪装层的 feature flag。零值 false 时整个 ApplyMimicryPlan
+	// 直接返回 body 拷贝 + 6 step 全标记 Skipped + Reason="feature_disabled"。
+	// 仅 caller 在 policy 层确认开启时才显式 true。
+	Enabled bool
 	// SystemRewrite 启动 step 1：系统提示词重写。
 	SystemRewrite *SystemRewritePlan
 	// StripSystemCacheControl=true 启动 step 2：清除 system 各块上的
@@ -96,8 +106,27 @@ type MimicryResult struct {
 
 // ApplyMimicryPlan 串行执行 6 步并返回结果。任一步返回 error 时，前置步骤
 // 的 audit 会保留在结果里再附上 error；body 此时是最后一次成功步骤的结果。
+//
+// Feature flag 短路：plan.Enabled=false 时直接返回 body 拷贝 + 6 step 全
+// 标记 Skipped + Reason="feature_disabled"，不解析 body、不调任何子原子。
 func ApplyMimicryPlan(body []byte, plan MimicryPlan) (MimicryResult, error) {
 	out := MimicryResult{Body: append([]byte(nil), body...)}
+
+	if !plan.Enabled {
+		for _, step := range []string{
+			MimicryStepSystemRewrite,
+			MimicryStepStripSystemCC,
+			MimicryStepCacheBreakpoints,
+			MimicryStepToolNames,
+			MimicryStepMetadataUserID,
+			MimicryStepToolsTailCacheBP,
+		} {
+			out.Steps = append(out.Steps, MimicryStepResult{
+				Step: step, Skipped: true, Reason: mimicryStepFeatureDisabled,
+			})
+		}
+		return out, nil
+	}
 
 	// step 1: system rewrite
 	if plan.SystemRewrite != nil {
