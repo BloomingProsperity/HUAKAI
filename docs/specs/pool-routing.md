@@ -236,6 +236,14 @@ None remaining at release. All five prior open questions resolved during Codex f
 
 Any change to these requires opening a new DR with documented superseding reason.
 
+## Vendor Drift Notes (2026-05-06)
+
+Added per [docs/reference_delta/2026-05-06/vendor-drift-audit.md](../reference_delta/2026-05-06/vendor-drift-audit.md) D9.
+
+**OpenRouter (Vendor-Meta) sticky routing — drift D9**: OpenRouter does NOT expose a dedicated sticky-session mechanism (no session header, no cookie-based affinity). Stickiness against an OpenRouter-as-upstream account is achieved via the request body `provider.order: ["preferred-provider"]` + `provider.allow_fallbacks: false` flags. Source: openrouter.ai/docs/guides/routing/provider-selection.mdx (fetched 2026-05-06).
+
+Implication for HUAKAI A04 sticky migration: when an HUAKAI request fans out to an OpenRouter upstream account, the HUAKAI sticky binding (`sticky_bindings` table) refers to the HUAKAI-side account; the OpenRouter-side provider stickiness must be encoded in the request body (`provider.order`) by the HUAKAI request rewriter, NOT relied upon as an upstream-managed session.
+
 ## Implementer Notes (added by implementer lane)
 
 > This section is filled by the implementer after consuming the spec, NOT by the specifier. Notes here record local design choices, dependencies, and deviations.
