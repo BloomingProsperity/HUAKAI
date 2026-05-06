@@ -35,9 +35,11 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
-	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
 // smokeBuildStamp is overridden via -ldflags during smoke test builds to
@@ -66,8 +68,10 @@ type deps struct {
 	selector    *pool.DefaultSelector
 	claimGate   billing.ClaimGate
 	settler     billing.Settler
-	forwarder   *gateway.StreamForwarder
-	inboundAuth *auth.APIKeyResolver
+	forwarder       *gateway.StreamForwarder
+	credentialVault provider.CredentialVault
+	dispatcher      *gateway.UpstreamDispatcher
+	inboundAuth     *auth.APIKeyResolver
 	// Slice 2 (N+5a): real Registry resolver.
 	modelRegistry *registry.PostgresRegistry
 	// Slice 2 (N+5b 2026-05-01): Router consumes Registry's PoolCandidates
@@ -113,7 +117,10 @@ func run(logger *zap.Logger) error {
 		claimGate: billing.NewClaimGate(pgPool),
 		settler:   billing.NewSettler(pgPool),
 		forwarder: &gateway.StreamForwarder{
-			UpstreamAdapter: &proto.AnthropicAdapter{},
+			// 协议适配器注册表：按 ForwardRequest.ProtocolFamily 选 SSE 解析器。
+			// 当前注册：anthropic_messages / openai_chat / openai_responses /
+			// gemini_messages（详见 BuildDefaultProtocolAdapterRegistry）。
+			ProtocolAdapters: gateway.BuildDefaultProtocolAdapterRegistry(),
 			Timeouts: gateway.TimeoutConfig{
 				FirstTokenTimeout:  5 * time.Second,
 				InterEventTimeout:  10 * time.Second,
@@ -121,6 +128,12 @@ func run(logger *zap.Logger) error {
 				DrainMaxSeconds:    1 * time.Second,
 			},
 			ScannerBufferCap: 1 << 20,
+		},
+		// 内存 vault：dev/test 用空表占位；DB-backed vault 后续 atomic 接入。
+		credentialVault: provider.NewStaticVault(),
+		dispatcher: &gateway.UpstreamDispatcher{
+			Adapters:         registrydefault.Build(),
+			TransportFactory: transport.NewFactory(),
 		},
 		// Phase L0 minimum (N+4a): table-backed inbound auth via api_keys.
 		// Replaces the SmokeAuthResolver env-injected single bearer pattern.
@@ -192,6 +205,8 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		Router:               d.routePlanner,
 		ClaimGate:            d.claimGate,
 		Selector:             d.selector,
+		CredentialVault:      d.credentialVault,
+		Dispatcher:           d.dispatcher,
 		Forwarder:            d.forwarder,
 		Settler:              d.settler,
 		BillingPolicyVersion: d.cfg.BillingPolicyVersion,
