@@ -58,10 +58,16 @@ func TestStaticProxyResolver_NotFound(t *testing.T) {
 }
 
 func TestStaticProxyResolver_NilReceiver(t *testing.T) {
+	// nil receiver 是 DI 错误，必须 fail-loud 为 ErrProxyResolverMisconfigured
+	// （不能返回 ErrAccountNotFound，否则 dispatcher 把它当成直连
+	// → fail-open 绕过代理 → 破坏账号级 IP 隔离）
 	var r *StaticProxyResolver
 	_, err := r.Resolve(context.Background(), 1)
-	if !errors.Is(err, ErrAccountNotFound) {
-		t.Errorf("nil receiver err=%v want ErrAccountNotFound", err)
+	if !errors.Is(err, ErrProxyResolverMisconfigured) {
+		t.Errorf("nil receiver err=%v want ErrProxyResolverMisconfigured", err)
+	}
+	if errors.Is(err, ErrAccountNotFound) {
+		t.Error("nil receiver 不应混淆为 ErrAccountNotFound（fail-open 风险）")
 	}
 	if r.Size() != 0 {
 		t.Errorf("nil receiver Size=%d want 0", r.Size())
