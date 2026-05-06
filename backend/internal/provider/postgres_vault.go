@@ -168,6 +168,15 @@ type rawUpstreamStatic struct {
 	AuthHeaderValue string `json:"auth_header_value"`
 }
 
+// rawSession 对应 account_type='session' 的 credentials JSONB 结构。
+// session 类型用于订阅反转（cursor / copilot / gemini_advanced 等），
+// session_token 为主值，extra 透传 vendor-specific 元数据
+// （cookie / oai_device_id / codeium_extension_version 等）。
+type rawSession struct {
+	SessionToken string            `json:"session_token"`
+	Extra        map[string]string `json:"extra,omitempty"`
+}
+
 // mapCredential 根据 accountType 将原始 JSONB 字节映射为 Credential。
 // 解析失败或必填字段为空时返回包装了 ErrCredentialFormat 的错误。
 func mapCredential(accountType string, raw []byte) (Credential, error) {
@@ -180,10 +189,35 @@ func mapCredential(accountType string, raw []byte) (Credential, error) {
 		return mapServiceAccount(raw)
 	case "upstream_static":
 		return mapUpstreamStatic(raw)
+	case "session":
+		return mapSession(raw)
 	default:
 		// 未知 account_type：包装为格式错误，避免静默返回零值凭据。
 		return Credential{}, fmt.Errorf("%w: unknown account_type %q", ErrCredentialFormat, accountType)
 	}
+}
+
+// mapSession 解析 session 类型凭据。
+// session_token 为主值；extra 字段可选，透传 vendor 元数据。
+func mapSession(raw []byte) (Credential, error) {
+	var r rawSession
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return Credential{}, fmt.Errorf("%w: session unmarshal: %v", ErrCredentialFormat, err)
+	}
+	if r.SessionToken == "" {
+		return Credential{}, fmt.Errorf("%w: session_token field is empty", ErrCredentialFormat)
+	}
+	cred := Credential{
+		Type:  CredentialTypeSessionToken,
+		Value: r.SessionToken,
+	}
+	if len(r.Extra) > 0 {
+		cred.Extra = make(map[string]string, len(r.Extra))
+		for k, v := range r.Extra {
+			cred.Extra[k] = v
+		}
+	}
+	return cred, nil
 }
 
 // mapAPIKey 解析 api_key 类型凭据。

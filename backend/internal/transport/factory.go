@@ -66,7 +66,19 @@ func (f *Factory) For(provider ProviderCode, mode TransportMode) (http.RoundTrip
 			return f.standard, nil
 		}
 		return http.DefaultTransport, nil
-	case TransportModeMimicryClaudeCode:
+	case TransportModeMimicryClaudeCode,
+		TransportModeMimicryChatGPT,
+		TransportModeMimicryGeminiAdvanced,
+		TransportModeMimicryAntigravity,
+		TransportModeMimicryCursor,
+		TransportModeMimicryCopilot,
+		TransportModeMimicryKiro,
+		TransportModeMimicryWindsurf:
+		// 所有 mimicry mode 共享同一 RoundTripper 注入点。R3 实施时通过
+		// SetMimicry 注入 utls dialer + per-mode fingerprint 路由（具体
+		// fingerprint 模板由内层 RoundTripper 按 ctx 携带的 mode hint 选）。
+		// 未注入时一律 fail-loud 为 ErrTransportNotImplemented，与 ErrUnknownMode
+		// 区分（policy 知道 mode，只是 transport 没实施）。
 		if f.mimicry != nil {
 			return f.mimicry, nil
 		}
