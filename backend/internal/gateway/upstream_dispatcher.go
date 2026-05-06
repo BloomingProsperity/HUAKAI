@@ -30,12 +30,9 @@ type AdapterRegistry interface {
 	//   "openai_chat" / "openai_responses" / "anthropic_messages" /
 	//   "gemini_messages" / "antigravity" / "cursor" / "copilot" /
 	//   "kiro" / "windsurf" / "bedrock_invoke"
-	// 未注册时返回 ErrAdapterNotFound。
+	// 未注册时返回 provider.ErrAdapterNotRegistered（或 wrap 它）。
 	For(protocolFamily string) (provider.Adapter, error)
 }
-
-// ErrAdapterNotFound 表示 protocolFamily 没有注册对应的 adapter。
-var ErrAdapterNotFound = errors.New("dispatcher: 未注册该 protocol family 的 adapter")
 
 // DispatchInput 是 Dispatch 的入参。
 type DispatchInput struct {

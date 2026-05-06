@@ -127,13 +127,13 @@ func TestDispatcher_HappyPath(t *testing.T) {
 
 func TestDispatcher_AdapterNotFound(t *testing.T) {
 	d := &UpstreamDispatcher{
-		Adapters:         &stubRegistry{err: ErrAdapterNotFound},
+		Adapters:         &stubRegistry{err: provider.ErrAdapterNotRegistered},
 		TransportFactory: transport.NewFactory(),
 		HTTPClient:       &stubDoer{},
 	}
 	_, err := d.Dispatch(context.Background(), DispatchInput{ProtocolFamily: "unknown"})
-	if !errors.Is(err, ErrAdapterNotFound) {
-		t.Errorf("err=%v want wraps ErrAdapterNotFound", err)
+	if !errors.Is(err, provider.ErrAdapterNotRegistered) {
+		t.Errorf("err=%v want wraps provider.ErrAdapterNotRegistered", err)
 	}
 }
 
