@@ -3,7 +3,33 @@
 **Date:** 2026-05-06
 **Lane:** claude (drafted independently per CLAUDE.md #10)
 **Author:** Claude Opus 4.7 (1M context)
-**Status:** Draft (awaiting Codex parallel plan + synthesis)
+**Status:** **Paused (2026-05-06)**
+
+> **Owner 2026-05-06 directive：** "目前不做 claude 账号反转这一块。留空。
+> 注意 只是先不写 claude 账号反转这一块"
+>
+> 本 plan 描述的 R3 transport mimicry（包括 utls dialer / 抓包后续消费 /
+> JA3 一致性验证 / 真 Anthropic 端到端）全部**暂停实施**。
+>
+> 已完成 + 保留的部分：
+> - 边界文档（README/LEGAL/collector README）— commit 370838f
+> - R3 plan trio + synthesis — commit c34eae8
+> - fingerprint-collector v1（工具本身）— commit 5bf7d20 + 010f17b
+> - transport policy 隔离矩阵 — commit be8519e（mimicry mode 仅 Anthropic
+>   允许的策略保留，未来重启时直接消费）
+> - R7 应用层伪装 atomic（R7.1-R7.6）— commit 1eac73f / 540ff7b / d505577
+>   / 60d6fb8 / e0ef55e / 3ba3344；feature flag 默认 off
+>
+> Owner 已采集到的 fingerprint template 留在 operator 本地，**不进 git**
+> （`.gitignore` 已屏蔽）。
+>
+> **何时重启**：Owner 显式给信号；可能触发条件包括：
+>   - Anthropic 公开授权 enterprise pooling
+>   - Owner 取得书面授权
+>   - 项目方向变化（如转向私有部署不再公开发布）
+>
+> 当前优先方向：OpenAI / Vertex / Bedrock / OpenRouter 等公开 API 路径 +
+> 跨 provider 通用基础设施。
 
 ---
 
