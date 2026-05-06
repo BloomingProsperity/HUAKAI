@@ -1,12 +1,12 @@
 // Package gateway provider error normalization (A13 ERROR_RULES rule table).
-// Spec: docs/specs/rate-limiting.md §A13 / DR-009 §1 Q1.
+// Spec: docs/specs/rate-limiting.md A13 / DR-009 1 Q1.
 //
 // This file is the synthesis of two parallel-draft implementations
 // (Claude lane + Codex lane) per CLAUDE.md #10 + 2026-05-04 directive
 // expanding parallel-draft to all code. Synthesis notes:
 // docs/plans/2026-05-04-r6-codeparallel-synthesis.md.
 //
-// Hard floor (DR-009 §6.6): the FSM must never auto-reach `disabled`
+// Hard floor (DR-009 6.6): the FSM must never auto-reach `disabled`
 // on an `ambiguous` signal alone. Enforced structurally: `ambiguous`
 // rules can only emit RetryActionCountedDisable / Cooldown / WarnOnly,
 // never RetryActionPermanentDisable.
@@ -114,7 +114,7 @@ type Classification struct {
 	RetryAfterMs  int64
 }
 
-// IronCladKeywords is the exactly-5 keyword set per DR-009 §1 Q1.
+// IronCladKeywords is the exactly-5 keyword set per DR-009 1 Q1.
 // External callers (custom rule loaders, audit re-classification) should
 // consult this set rather than hardcoding the list locally.
 var IronCladKeywords = map[string]struct{}{
@@ -126,30 +126,32 @@ var IronCladKeywords = map[string]struct{}{
 }
 
 // IsIronCladKeyword reports whether a keyword belongs to the exactly-5
-// iron_clad set per DR-009 §1 Q1 / synthesis §6.6.
+// iron_clad set per DR-009 1 Q1 / synthesis 6.6.
 func IsIronCladKeyword(keyword string) bool {
 	_, ok := IronCladKeywords[strings.ToLower(strings.TrimSpace(keyword))]
 	return ok
 }
 
 const (
-	keywordInvalidGrant         = "invalid_grant"
-	keywordIdentityVerification = "identity verification"
-	keywordOrgDisabled          = "org_disabled"
-	keywordTokenRevoked         = "token_revoked"
-	keywordDeactivatedWorkspace = "deactivated_workspace"
-	keywordTokenInvalidated     = "token_invalidated"
-	keywordCredit               = "credit"
-	keywordCreditBalance        = "credit balance"
-	keywordValidation           = "validation"
-	keywordPermissionDenied     = "permission denied"
-	keywordThrottling           = "throttling"
-	keywordTimeout              = "timeout"
+	keywordInvalidGrant                = "invalid_grant"
+	keywordIdentityVerification        = "identity verification"
+	keywordOrgDisabled                 = "org_disabled"
+	keywordTokenRevoked                = "token_revoked"
+	keywordDeactivatedWorkspace        = "deactivated_workspace"
+	keywordTokenInvalidated            = "token_invalidated"
+	keywordCredit                      = "credit"
+	keywordCreditBalance               = "credit balance"
+	keywordValidation                  = "validation"
+	keywordPermissionDenied            = "permission denied"
+	keywordThrottling                  = "throttling"
+	keywordThrottlingException         = "ThrottlingException"
+	keywordServiceUnavailableException = "ServiceUnavailableException"
+	keywordTimeout                     = "timeout"
 )
 
 // errorRules is the A13 rule table, evaluated in priority-then-specificity order.
 var errorRules = []ErrorRule{
-	// Priority 10 — iron_clad permanent signals (5 mandated + 1 alias)
+	// Priority 10 - iron_clad permanent signals (5 mandated + 1 alias)
 	{RuleID: "R-001", Version: 1, Priority: 10, Provider: "*", HTTPStatus: "401",
 		BodyKeyword: keywordInvalidGrant, Class: ErrorClassOAuthInvalidGrant,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
@@ -162,7 +164,12 @@ var errorRules = []ErrorRule{
 	{RuleID: "R-004", Version: 1, Priority: 10, Provider: "*", HTTPStatus: "401",
 		BodyKeyword: keywordTokenRevoked, Class: ErrorClassTokenRevoked,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
-	{RuleID: "R-005", Version: 1, Priority: 10, Provider: "*", HTTPStatus: "402",
+	// Drift D3 (docs/reference_delta/2026-05-06/vendor-drift-audit.md):
+	// OpenAI docs no longer publish 402 for billing/deactivation. Keep the
+	// deactivated_workspace keyword as an OpenAI-scoped defensive match across
+	// statuses. Fetch URLs: https://developers.openai.com/api/docs/guides/error-codes
+	// and https://platform.claude.com/docs/en/api/errors (fetched 2026-05-06).
+	{RuleID: "R-005", Version: 2, Priority: 10, Provider: "openai", HTTPStatus: "*",
 		BodyKeyword: keywordDeactivatedWorkspace, Class: ErrorClassWorkspaceDeactivated,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
 	// R-006 token_invalidated is treated as token_revoked equivalent (vendor synonym).
@@ -170,61 +177,69 @@ var errorRules = []ErrorRule{
 		BodyKeyword: keywordTokenInvalidated, Class: ErrorClassTokenRevoked,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
 
-	// Priority 20 — credit / billing iron_clad
-	{RuleID: "R-007", Version: 1, Priority: 20, Provider: "*", HTTPStatus: "402",
+	// Priority 20 - credit / billing iron_clad.
+	// Drift D3 scopes legacy 402/400 credit keywords to Anthropic only; OpenAI
+	// current docs use 429 for rate_limit_error and do not document 402.
+	{RuleID: "R-007", Version: 2, Priority: 20, Provider: "anthropic", HTTPStatus: "402",
 		BodyKeyword: keywordCredit, Class: ErrorClassCreditExhausted,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
-	{RuleID: "R-008", Version: 1, Priority: 20, Provider: "*", HTTPStatus: "400",
+	{RuleID: "R-008", Version: 2, Priority: 20, Provider: "anthropic", HTTPStatus: "400",
 		BodyKeyword: keywordCreditBalance, Class: ErrorClassCreditExhausted,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
 
-	// Priority 30 — generic 401 (no keyword): permanent disable per spec
+	// Priority 30 - generic 401 (no keyword): permanent disable per spec
 	{RuleID: "R-009", Version: 1, Priority: 30, Provider: "*", HTTPStatus: "401",
-		Class: ErrorClassOAuthInvalidGrant,
+		Class:  ErrorClassOAuthInvalidGrant,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
 
-	// Priority 35 — Gemini-specific 403 with permission_denied (counted, not iron_clad)
+	// Priority 35 - Gemini-specific 403 with permission_denied (counted, not iron_clad)
 	{RuleID: "R-017", Version: 1, Priority: 35, Provider: "gemini", HTTPStatus: "403",
 		BodyKeyword: keywordPermissionDenied, Class: ErrorClassPlatformPolicy,
 		Action: RetryActionCountedDisable, Tier: TierAmbiguous},
 
-	// Priority 40 — 403 platform-specific
+	// Priority 40 - 403 platform-specific
 	{RuleID: "R-010", Version: 1, Priority: 40, Provider: "openai", HTTPStatus: "403",
-		Class: ErrorClassPlatformPolicy,
+		Class:  ErrorClassPlatformPolicy,
 		Action: RetryActionCountedDisable, Tier: TierAmbiguous},
 	{RuleID: "R-011", Version: 1, Priority: 40, Provider: "anthropic", HTTPStatus: "403",
 		BodyKeyword: keywordValidation, Class: ErrorClassPlatformPolicy,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
 	{RuleID: "R-012", Version: 1, Priority: 40, Provider: "*", HTTPStatus: "403",
-		Class: ErrorClassPlatformPolicy,
+		Class:  ErrorClassPlatformPolicy,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
 
-	// Priority 45 — Bedrock 503 with throttling hint = rate-limited
-	{RuleID: "R-018", Version: 1, Priority: 45, Provider: "bedrock", HTTPStatus: "503",
-		BodyKeyword: keywordThrottling, Class: ErrorClassRateLimited,
+	// Priority 45 - Bedrock drift D2 (2026-05-06 vendor audit):
+	// 429 ThrottlingException is quota/rate limiting; 503
+	// ServiceUnavailableException is capacity/overload, not rate limiting.
+	// Fetch URL: https://docs.aws.amazon.com/bedrock/latest/userguide/troubleshooting-api-error-codes.html
+	{RuleID: "R-018", Version: 2, Priority: 45, Provider: "bedrock", HTTPStatus: "429",
+		BodyKeyword: keywordThrottlingException, Class: ErrorClassRateLimited,
+		Action: RetryActionCooldown, Tier: TierAmbiguous},
+	{RuleID: "R-020", Version: 1, Priority: 45, Provider: "bedrock", HTTPStatus: "503",
+		BodyKeyword: keywordServiceUnavailableException, Class: ErrorClassOverloaded,
 		Action: RetryActionCooldown, Tier: TierAmbiguous},
 
-	// Priority 50 — rate limit and overload (always ambiguous, cooldown only)
+	// Priority 50 - rate limit and overload (always ambiguous, cooldown only)
 	{RuleID: "R-013", Version: 1, Priority: 50, Provider: "*", HTTPStatus: "429",
-		Class: ErrorClassRateLimited,
+		Class:  ErrorClassRateLimited,
 		Action: RetryActionCooldown, Tier: TierAmbiguous},
 	{RuleID: "R-014", Version: 1, Priority: 50, Provider: "*", HTTPStatus: "529",
-		Class: ErrorClassOverloaded,
+		Class:  ErrorClassOverloaded,
 		Action: RetryActionCooldown, Tier: TierAmbiguous},
 
-	// Priority 55 — synthesized network timeout (status 0 + body hint)
+	// Priority 55 - synthesized network timeout (status 0 + body hint)
 	{RuleID: "R-019", Version: 1, Priority: 55, Provider: "*", HTTPStatus: "0",
 		BodyKeyword: keywordTimeout, Class: ErrorClassNetworkTimeout,
 		Action: RetryActionCooldown, Tier: TierAmbiguous},
 
-	// Priority 60 — generic 5xx (warn only)
+	// Priority 60 - generic 5xx (warn only)
 	{RuleID: "R-015", Version: 1, Priority: 60, Provider: "*", HTTPStatus: "5xx",
-		Class: ErrorClassServerError,
+		Class:  ErrorClassServerError,
 		Action: RetryActionWarnOnly, Tier: TierAmbiguous},
 
-	// Priority 70 — wildcard catch-all
+	// Priority 70 - wildcard catch-all
 	{RuleID: "R-016", Version: 1, Priority: 70, Provider: "*", HTTPStatus: "*",
-		Class: ErrorClassUnknown,
+		Class:  ErrorClassUnknown,
 		Action: RetryActionPassThrough, Tier: TierNone},
 }
 
@@ -237,7 +252,7 @@ var ErrNoMatchingRule = errors.New("no matching error normalization rule")
 // is a hint, the FSM caller (A22) owns the actual transition.
 //
 // httpStatus 0 represents a synthesized response (no upstream reply, e.g.
-// network timeout) — combined with BodyKeyword "timeout" matches R-019.
+// network timeout) - combined with BodyKeyword "timeout" matches R-019.
 func Classify(httpStatus int, headers http.Header, body []byte, provider string) (Classification, error) {
 	if httpStatus < 0 {
 		return Classification{}, errors.New("http status must be non-negative")
@@ -368,7 +383,7 @@ func confidenceForTier(tier DisableTier) Confidence {
 	}
 }
 
-// transitionFor enforces the DR-009 §6.6 hard floor structurally:
+// transitionFor enforces the DR-009 6.6 hard floor structurally:
 // ambiguous-tier rules cannot reach FsmTransitionDisabled regardless of action.
 func transitionFor(action RetryAction, tier DisableTier) FsmTransition {
 	switch action {
