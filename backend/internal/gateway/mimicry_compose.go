@@ -50,6 +50,8 @@ const (
 	mimicryStepStripNothingReason  = "nothing_to_strip"
 	mimicryStepStripNotArrayReason = "system_not_array_skip"
 	mimicryStepBPAppliedReason     = "applied"
+	mimicryStepTailAlreadyHas      = "tools_tail_already_has_cache_control"
+	mimicryStepTailExceedsCap      = "would_exceed_cache_control_cap"
 )
 
 // MimicryPlan 描述一次 6-step 强伪装管线的入参。任一字段 nil/false 即跳过
@@ -270,6 +272,10 @@ func stripSystemCacheControl(body []byte) ([]byte, bool, string, error) {
 
 // applyToolsTailCacheBreakpoint 在 body.tools[-1] 上挂 ephemeral cache_control。
 // ttl 为空时 cache_control = {"type":"ephemeral"}；非空时 = {"type":"ephemeral","ttl":ttl}。
+//
+// 守卫两条不变量（codex P1 finding 2026-05-06）：
+//   - 当前 body 已有 4 个 cache_control 时拒写（CacheControlMaxAllowed）
+//   - tools[-1] 已带 cache_control 时拒写，避免覆盖客户原 TTL
 func applyToolsTailCacheBreakpoint(body []byte, ttl string) ([]byte, bool, string, error) {
 	root, err := decodeMetaBody(body)
 	if err != nil {
@@ -290,6 +296,16 @@ func applyToolsTailCacheBreakpoint(body []byte, ttl string) ([]byte, bool, strin
 	lastObj, err := decodeRawObject(tools[lastIdx])
 	if err != nil {
 		return appendCopy(body), false, mimicryStepEmptyToolsReason, nil
+	}
+	// 守卫一：tools[-1] 已带 cache_control 时拒写。
+	if _, has := lastObj["cache_control"]; has {
+		return appendCopy(body), false, mimicryStepTailAlreadyHas, nil
+	}
+	// 守卫二：检查当前 body 总 cache_control 数量是否达到 cap。InspectCacheControl
+	// 走与既有 R7.1 inspector 一致的路径，确保两边对"已有几个"的视角统一。
+	snapshot, inspectErr := InspectCacheControl(body)
+	if inspectErr == nil && len(snapshot.Locations) >= CacheControlMaxAllowed {
+		return appendCopy(body), false, mimicryStepTailExceedsCap, nil
 	}
 	cc := map[string]string{"type": "ephemeral"}
 	if ttl != "" {

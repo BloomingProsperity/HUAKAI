@@ -156,8 +156,27 @@ func TestRewriteSystem_Table(t *testing.T) {
 			},
 		},
 		{
-			name:        "对象形态视为不支持",
+			name:        "单对象形态归一化为单元素数组",
 			input:       []byte(`{"system":{"type":"text","text":"Foo"}}`),
+			plan:        SystemRewritePlan{PrefixText: testRewritePrefix},
+			wantApplied: true,
+			wantReason:  reasonRewroteArray,
+			assertBody: func(t *testing.T, body []byte) {
+				blocks := readSystemBlocks(t, body)
+				if len(blocks) != 2 {
+					t.Fatalf("blocks 数量=%d，want 2", len(blocks))
+				}
+				if got := blockText(t, blocks[0]); got != testRewritePrefix {
+					t.Errorf("blocks[0].text=%q", got)
+				}
+				if got := blockText(t, blocks[1]); got != "Foo" {
+					t.Errorf("blocks[1].text=%q", got)
+				}
+			},
+		},
+		{
+			name:        "数字形态视为不支持",
+			input:       []byte(`{"system":42}`),
 			plan:        SystemRewritePlan{PrefixText: testRewritePrefix},
 			wantApplied: false,
 			wantReason:  reasonUnsupported,

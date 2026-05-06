@@ -82,21 +82,22 @@ func RewriteToolNames(body []byte, plan ToolNameRewritePlan) (ToolNameRewriteRes
 	}
 
 	var renames []ToolRename
+	terminals := buildTerminals(plan.Mapping)
 
 	// 步骤一：顶层 tools[]。
-	toolsTouched, err := rewriteToolsArray(root, plan.Mapping, &renames)
+	toolsTouched, err := rewriteToolsArray(root, plan.Mapping, terminals, &renames)
 	if err != nil {
 		return toolUnchanged(body, reasonToolInvalidBody), err
 	}
 	// 步骤二：messages[].content[] 中的 tool_use 块。
-	hasToolUse, err := rewriteMessagesToolUse(root, plan.Mapping, &renames)
+	hasToolUse, err := rewriteMessagesToolUse(root, plan.Mapping, terminals, &renames)
 	if err != nil {
 		return toolUnchanged(body, reasonToolInvalidBody), err
 	}
 	// 步骤三：顶层 tool_choice.name（仅 type=="tool" 时改写）。强制工具
 	// 调用场景下，tool_choice.name 必须与 tools[] 同步改名，否则上游会因
 	// "无此工具"报错。
-	hasToolChoice, err := rewriteToolChoice(root, plan.Mapping, &renames)
+	hasToolChoice, err := rewriteToolChoice(root, plan.Mapping, terminals, &renames)
 	if err != nil {
 		return toolUnchanged(body, reasonToolInvalidBody), err
 	}
@@ -117,7 +118,7 @@ func RewriteToolNames(body []byte, plan ToolNameRewritePlan) (ToolNameRewriteRes
 
 // rewriteToolsArray 改写 root["tools"] 中每个元素的 name 字段。返回 bool
 // 表示 tools 字段是否存在（无论是否产生改写）。
-func rewriteToolsArray(root rawObject, mapping ToolNameMapping, renames *[]ToolRename) (bool, error) {
+func rewriteToolsArray(root rawObject, mapping ToolNameMapping, terminals map[string]struct{}, renames *[]ToolRename) (bool, error) {
 	raw, ok := root["tools"]
 	if !ok {
 		return false, nil
@@ -135,7 +136,7 @@ func rewriteToolsArray(root rawObject, mapping ToolNameMapping, renames *[]ToolR
 			continue // 元素不是对象时静默跳过
 		}
 		path := fmt.Sprintf("tools[%d].name", i)
-		if !rewriteNameField(obj, mapping, path, renames) {
+		if !rewriteNameField(obj, mapping, terminals, path, renames) {
 			continue
 		}
 		newRaw, err := json.Marshal(obj)
@@ -158,7 +159,7 @@ func rewriteToolsArray(root rawObject, mapping ToolNameMapping, renames *[]ToolR
 // rewriteMessagesToolUse 遍历 root["messages"][].content[]，对每个 type==
 // "tool_use" 块改写其 name。返回 bool 表示是否检测到任何 tool_use 块（用于
 // 区分 no_tools 与 no_match）。
-func rewriteMessagesToolUse(root rawObject, mapping ToolNameMapping, renames *[]ToolRename) (bool, error) {
+func rewriteMessagesToolUse(root rawObject, mapping ToolNameMapping, terminals map[string]struct{}, renames *[]ToolRename) (bool, error) {
 	raw, ok := root["messages"]
 	if !ok {
 		return false, nil
@@ -198,7 +199,7 @@ func rewriteMessagesToolUse(root rawObject, mapping ToolNameMapping, renames *[]
 			}
 			hasToolUse = true
 			path := fmt.Sprintf("messages[%d].content[%d].name", mi, ci)
-			if !rewriteNameField(block, mapping, path, renames) {
+			if !rewriteNameField(block, mapping, terminals, path, renames) {
 				continue
 			}
 			newBlock, err := json.Marshal(block)
@@ -237,7 +238,7 @@ func rewriteMessagesToolUse(root rawObject, mapping ToolNameMapping, renames *[]
 // "none" 字符串、{"type":"auto"}、{"type":"any"} 等）一律不触碰。
 // 返回 bool 表示 tool_choice 字段是否表明请求"涉及工具"（用于区分
 // no_tools 与 no_match）：tool_choice 存在且不是 "none" 时即视为涉及工具。
-func rewriteToolChoice(root rawObject, mapping ToolNameMapping, renames *[]ToolRename) (bool, error) {
+func rewriteToolChoice(root rawObject, mapping ToolNameMapping, terminals map[string]struct{}, renames *[]ToolRename) (bool, error) {
 	raw, ok := root["tool_choice"]
 	if !ok {
 		return false, nil
@@ -258,7 +259,7 @@ func rewriteToolChoice(root rawObject, mapping ToolNameMapping, renames *[]ToolR
 		// 视为涉及工具（除非显式 none），但不调 rewriteNameField。
 		return t != "none", nil
 	}
-	if !rewriteNameField(obj, mapping, "tool_choice.name", renames) {
+	if !rewriteNameField(obj, mapping, terminals, "tool_choice.name", renames) {
 		return true, nil
 	}
 	newRaw, err := json.Marshal(obj)
@@ -271,9 +272,18 @@ func rewriteToolChoice(root rawObject, mapping ToolNameMapping, renames *[]ToolR
 
 // rewriteNameField 检查 obj.name 是否在 mapping 中；命中且非幂等情形时改名
 // 并追加审计行。返回 true 表示发生改名。
-func rewriteNameField(obj rawObject, mapping ToolNameMapping, path string, renames *[]ToolRename) bool {
+//
+// terminals 是 mapping 所有 value 集合 — 用于判断"当前名是否已是某条规则的
+// 目标"。codex P2 finding 2026-05-06：当 mapping 含链式情形（如 a→b、b→c）
+// 时，重试一次会把 a 改成 b，再跑一次又把 b 改成 c，违反幂等承诺。守卫做法：
+// 若 from 已经是任意 mapping 的 target（即 from ∈ terminals），视为终态，跳过。
+// 这样无论链多长，过一次后再跑都不变。
+func rewriteNameField(obj rawObject, mapping ToolNameMapping, terminals map[string]struct{}, path string, renames *[]ToolRename) bool {
 	from, ok := decodeRawString(obj["name"])
 	if !ok {
+		return false
+	}
+	if _, isTerminal := terminals[from]; isTerminal {
 		return false
 	}
 	to, ok := mapping[from]
@@ -287,6 +297,15 @@ func rewriteNameField(obj rawObject, mapping ToolNameMapping, path string, renam
 	obj["name"] = newName
 	*renames = append(*renames, ToolRename{Path: path, From: from, To: to})
 	return true
+}
+
+// buildTerminals 把 mapping 所有 value 收集为集合，用于幂等守卫。
+func buildTerminals(mapping ToolNameMapping) map[string]struct{} {
+	out := make(map[string]struct{}, len(mapping))
+	for _, v := range mapping {
+		out[v] = struct{}{}
+	}
+	return out
 }
 
 // decodeToolBody 把 body 解码为顶层 raw 对象。

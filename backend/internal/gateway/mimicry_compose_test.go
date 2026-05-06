@@ -244,6 +244,59 @@ func TestApplyMimicryPlan_Step6EmptyTools(t *testing.T) {
 	}
 }
 
+// TestApplyMimicryPlan_Step6SkipWhenTailHasCacheControl tools[-1] 已带
+// cache_control 时 step 6 拒写避免覆盖（codex P1 守卫一）。
+func TestApplyMimicryPlan_Step6SkipWhenTailHasCacheControl(t *testing.T) {
+	body := `{"tools":[
+		{"name":"a"},
+		{"name":"b","cache_control":{"type":"ephemeral","ttl":"1h"}}
+	]}`
+	res, err := ApplyMimicryPlan([]byte(body), MimicryPlan{ApplyToolsTailCacheBP: true, ToolsTailTTL: "5m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step6 := findStep(t, res, MimicryStepToolsTailCacheBP)
+	if step6.Applied {
+		t.Errorf("step 6 不应触发（tools[-1] 已有 cache_control）")
+	}
+	if step6.Reason != mimicryStepTailAlreadyHas {
+		t.Errorf("reason=%q want %q", step6.Reason, mimicryStepTailAlreadyHas)
+	}
+	// 校验原 ttl 未被覆盖
+	if !strings.Contains(string(res.Body), `"ttl":"1h"`) {
+		t.Errorf("原 ttl=1h 被覆盖")
+	}
+}
+
+// TestApplyMimicryPlan_Step6SkipWhenAtCap body 已有 4 个 cache_control 时
+// step 6 拒写避免越过 CacheControlMaxAllowed=4 上限（codex P1 守卫二）。
+func TestApplyMimicryPlan_Step6SkipWhenAtCap(t *testing.T) {
+	// 构造正好 4 个 cache_control 的 body：4 个 system 块各一个。
+	// 注意：InspectCacheControl 要求 messages 字段必须存在，否则返回 error
+	// 导致 cap 检查走空 snapshot；这里加一条最简 user 消息满足该不变量。
+	body := `{
+		"system":[
+			{"type":"text","text":"a","cache_control":{"type":"ephemeral"}},
+			{"type":"text","text":"b","cache_control":{"type":"ephemeral"}},
+			{"type":"text","text":"c","cache_control":{"type":"ephemeral"}},
+			{"type":"text","text":"d","cache_control":{"type":"ephemeral"}}
+		],
+		"tools":[{"name":"x"}],
+		"messages":[{"role":"user","content":"hi"}]
+	}`
+	res, err := ApplyMimicryPlan([]byte(body), MimicryPlan{ApplyToolsTailCacheBP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step6 := findStep(t, res, MimicryStepToolsTailCacheBP)
+	if step6.Applied {
+		t.Errorf("step 6 不应触发（已达 4 cap）")
+	}
+	if step6.Reason != mimicryStepTailExceedsCap {
+		t.Errorf("reason=%q want %q", step6.Reason, mimicryStepTailExceedsCap)
+	}
+}
+
 // TestApplyMimicryPlan_AllStepsEnabled 端到端 6 步全启动，验证组合效果。
 func TestApplyMimicryPlan_AllStepsEnabled(t *testing.T) {
 	plan := MimicryPlan{
