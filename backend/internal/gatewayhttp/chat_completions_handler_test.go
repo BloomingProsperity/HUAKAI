@@ -17,6 +17,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
@@ -112,6 +113,12 @@ func minimalDeps() ChatHandlerDeps {
 		Router:               stubRouter{plan: router.RoutePlan{Attempts: []router.AttemptPlan{{PoolGroupID: 42}}, SnapshotVersion: "registry:7:1;router:v0.1-phase-c"}},
 		ClaimGate:            stubClaimGate{},
 		Selector:             stubSelector{},
+		// 真出站链路 N+5b 后置依赖（dispatcher / vault）：测试占位，让
+		// nil-guard 通过；具体上游 Dispatch 不会被这些 stub 测试触及，因为
+		// 这一组测试聚焦于 handler 入口校验与计费 / claim 路径，没有真正
+		// 进入 forwarder.Forward。
+		CredentialVault:      provider.NewStaticVault(),
+		Dispatcher:           &gateway.UpstreamDispatcher{},
 		Forwarder:            &gateway.StreamForwarder{},
 		Settler:              &stubSettler{},
 		BillingPolicyVersion: "test-policy",

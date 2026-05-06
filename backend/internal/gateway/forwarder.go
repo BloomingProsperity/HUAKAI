@@ -1,3 +1,5 @@
+// 注意：本文件是 PATCH 提案文件（_patch.go 后缀），不参与 Go build。
+// 将此文件内容合并到 backend/internal/gateway/forwarder.go 后删除本文件。
 package gateway
 
 import (
@@ -12,23 +14,55 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// StreamForwarder runs the F-GW-002 Phase A-D streaming pipeline.
+// StreamForwarder 执行 F-GW-002 A-D 阶段的流式转发流水线。
+//
+// 变更说明（wire-up 重构）：
+//   - 新增 ProtocolAdapters 字段，替代原先硬编码的 proto.AnthropicAdapter。
+//   - 删除原 UpstreamAdapter 字段（由 ProtocolAdapters + ForwardRequest.ProtocolFamily 动态解析）。
+//   - Forward 入口校验 ProtocolFamily 非空、ProtocolAdapters 非 nil。
 type StreamForwarder struct {
-	UpstreamAdapter  proto.UpstreamAdapter
-	ClientAdapter    proto.ClientAdapter
+	// ProtocolAdapters 是协议适配器注册表，Forward 按 ForwardRequest.ProtocolFamily 查询。
+	// 必须非 nil；若为 nil，Forward 将立即返回错误。
+	ProtocolAdapters ProtocolAdapterRegistry
+
+	// ClientAdapter 将 canonical event 转换为客户端协议块（可选）。
+	// 若为 nil，则透传原始 SSE 给客户端。
+	ClientAdapter proto.ClientAdapter
+
 	Timeouts         TimeoutConfig
 	ScannerBufferCap int
 	DrainBudgets     DrainBudgets
-	// CostEstimator returns the estimated cost given drained bytes + accumulator
-	// state. When DrainBudgets.MaxEstimatedCost > 0 and the estimator's value
-	// exceeds the cap, drain exits with DrainBudgetCostExhausted. Nil estimator
-	// disables cost-based drain exit.
+
+	// CostEstimator 根据已 drain 字节数 + 累加器状态估算费用。
+	// 当 DrainBudgets.MaxEstimatedCost > 0 且估算值超限时，drain 以 DrainBudgetCostExhausted 退出。
+	// nil 表示禁用基于费用的 drain 退出。
 	CostEstimator func(drainedBytes int64, acc UsageAccumulator) decimal.Decimal
 }
 
-// Forward executes F-GW-002 Phase A scan, Phase B processing, Phase C
-// classification, Phase C-bis drain, and returns the Phase D draft.
+// Forward 执行 F-GW-002 Phase A 扫描、Phase B 处理、Phase C 分类、
+// Phase C-bis drain，并返回 Phase D draft。
+//
+// 校验顺序：
+//  1. ProtocolAdapters 为 nil → ErrNilProtocolAdapterRegistry
+//  2. ProtocolFamily 为空    → ErrEmptyProtocolFamily（封装 ErrUnknownProtocolFamily）
+//  3. ProtocolAdapters.For 失败 → 透传 registry 返回的 error
 func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader, clientWriter http.ResponseWriter, req ForwardRequest) (UsageRecordDraft, error) {
+	// --- 入口校验：ProtocolAdapters 注册表必须已注入 ---
+	if f.ProtocolAdapters == nil {
+		return UsageRecordDraft{}, ErrNilProtocolAdapterRegistry
+	}
+
+	// --- 入口校验：ProtocolFamily 不得为空，调用方必须明确指定协议族 ---
+	if req.ProtocolFamily == "" {
+		return UsageRecordDraft{}, fmt.Errorf("%w: ProtocolFamily 未指定", ErrUnknownProtocolFamily)
+	}
+
+	// --- 按请求的 ProtocolFamily 解析 upstream adapter；不 fallback 到默认 ---
+	adapter, err := f.ProtocolAdapters.For(req.ProtocolFamily)
+	if err != nil {
+		return UsageRecordDraft{}, err
+	}
+
 	start := time.Now()
 	draft := UsageRecordDraft{
 		RoutingReason: req.RoutingReasonPayload,
@@ -87,7 +121,8 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 				}
 				stopTimer(interTimer)
 				interTimer = newTimer(f.Timeouts.InterEventTimeout)
-				seen, wrote, err := f.handleEvent(upstreamCtx, res.event, clientWriter, upstreamState, clientState, &acc)
+				// 将解析好的 adapter 传入 handleEvent，避免重复 registry 查询
+				seen, wrote, err := f.handleEventWithAdapter(upstreamCtx, adapter, res.event, clientWriter, upstreamState, clientState, &acc)
 				terminalSeen = terminalSeen || seen
 				if wrote && !firstEmitted {
 					firstEmitted = true
@@ -98,7 +133,8 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 				}
 				if errors.Is(err, ErrClientDisconnect) {
 					draft.EndClass, endErr = ClientDisconnect, err
-					draft.DrainOutcome = f.drain(upstreamCtx, events, upstreamState, &acc)
+					// drain 阶段同样使用同一 adapter，保证 usage 解析一致
+					draft.DrainOutcome = f.drainWithAdapter(upstreamCtx, adapter, events, upstreamState, &acc)
 				} else {
 					draft.EndClass, endErr = UnknownTermination, err
 				}
@@ -108,15 +144,28 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 	}
 }
 
-func (f *StreamForwarder) handleEvent(ctx context.Context, evt SSEEvent, w http.ResponseWriter, upstreamState any, clientState any, acc *UsageAccumulator) (bool, bool, error) {
+// handleEventWithAdapter 使用调用方已解析的 adapter 处理单个 SSE 事件。
+// 原 handleEvent 被替换为此方法，消除对 f.UpstreamAdapter 的依赖。
+func (f *StreamForwarder) handleEventWithAdapter(
+	ctx context.Context,
+	adapter proto.UpstreamAdapter,
+	evt SSEEvent,
+	w http.ResponseWriter,
+	upstreamState any,
+	clientState any,
+	acc *UsageAccumulator,
+) (bool, bool, error) {
 	terminalSeen := evt.Type == "message_stop" || string(evt.Data) == "[DONE]"
-	if f.UpstreamAdapter == nil {
+
+	// adapter 为 nil 时透传原始 SSE（保留既有 nil-adapter 行为）
+	if adapter == nil {
 		if err := writeAndFlush(w, rawSSE(evt)); err != nil {
 			return terminalSeen, false, ErrClientDisconnect
 		}
 		return terminalSeen, true, nil
 	}
-	canonicalEvents, _, err := f.UpstreamAdapter.ProviderEventToCanonicalEvents(ctx, evt.Data, upstreamState)
+
+	canonicalEvents, _, err := adapter.ProviderEventToCanonicalEvents(ctx, evt.Data, upstreamState)
 	if err != nil {
 		return terminalSeen, false, err
 	}
@@ -146,15 +195,15 @@ func (f *StreamForwarder) handleEvent(ctx context.Context, evt SSEEvent, w http.
 	return terminalSeen, wrote, nil
 }
 
-func (f *StreamForwarder) clientChunks(ctx context.Context, canonical any, state any, fallback SSEEvent) ([][]byte, error) {
-	if f.ClientAdapter == nil {
-		return [][]byte{rawSSE(fallback)}, nil
-	}
-	chunks, _, err := f.ClientAdapter.CanonicalEventToClientChunk(ctx, canonical, state)
-	return chunks, err
-}
-
-func (f *StreamForwarder) drain(ctx context.Context, events <-chan scanResult, upstreamState any, acc *UsageAccumulator) DrainOutcome {
+// drainWithAdapter 使用调用方已解析的 adapter 执行 Phase C-bis bounded drain。
+// 原 drain 方法被替换为此方法，消除对 f.UpstreamAdapter 的依赖。
+func (f *StreamForwarder) drainWithAdapter(
+	ctx context.Context,
+	adapter proto.UpstreamAdapter,
+	events <-chan scanResult,
+	upstreamState any,
+	acc *UsageAccumulator,
+) DrainOutcome {
 	budgets := f.effectiveDrainBudgets()
 	deadline := time.NewTimer(budgets.MaxSeconds)
 	defer deadline.Stop()
@@ -174,8 +223,9 @@ func (f *StreamForwarder) drain(ctx context.Context, events <-chan scanResult, u
 			if budgets.MaxBytes > 0 && drainedBytes > budgets.MaxBytes {
 				return DrainBudgetBytesExhausted
 			}
-			if f.UpstreamAdapter != nil {
-				canonicalEvents, _, err := f.UpstreamAdapter.ProviderEventToCanonicalEvents(ctx, res.event.Data, upstreamState)
+			// 用传入的 adapter 解析 drain 阶段的 usage，保证与主流水线一致
+			if adapter != nil {
+				canonicalEvents, _, err := adapter.ProviderEventToCanonicalEvents(ctx, res.event.Data, upstreamState)
 				if err == nil {
 					for _, canonical := range canonicalEvents {
 						if usage, ok := canonicalUsage(canonical); ok {
@@ -191,6 +241,14 @@ func (f *StreamForwarder) drain(ctx context.Context, events <-chan scanResult, u
 			}
 		}
 	}
+}
+
+func (f *StreamForwarder) clientChunks(ctx context.Context, canonical any, state any, fallback SSEEvent) ([][]byte, error) {
+	if f.ClientAdapter == nil {
+		return [][]byte{rawSSE(fallback)}, nil
+	}
+	chunks, _, err := f.ClientAdapter.CanonicalEventToClientChunk(ctx, canonical, state)
+	return chunks, err
 }
 
 func (f *StreamForwarder) finishDraft(d UsageRecordDraft, acc UsageAccumulator, startedAt time.Time, err error) (UsageRecordDraft, error) {
@@ -216,10 +274,11 @@ func (f *StreamForwarder) finishDraft(d UsageRecordDraft, acc UsageAccumulator, 
 	return d, err
 }
 
+// newUpstreamState 构造上游协议状态对象。
+// 重构后：所有协议族均用 proto.UpstreamState{}；未来按需扩展。
 func (f *StreamForwarder) newUpstreamState(req ForwardRequest) any {
-	if req.UpstreamProtocol == "anthropic" || req.UpstreamProtocol == "anthropic_messages" {
-		return &proto.UpstreamState{}
-	}
+	// 当前 proto.UpstreamState 对所有已注册协议族均适用。
+	// 若未来 gemini / openai 需要专属状态，在此按 req.ProtocolFamily switch。
 	return &proto.UpstreamState{}
 }
 
