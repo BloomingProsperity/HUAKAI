@@ -88,6 +88,14 @@ func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	// 复用 OpenAIAdapter；若后续观测到形态差异再做专用 CodexSessionSSEAdapter。
 	r.MustRegister("openai_codex", &proto.OpenAIAdapter{})
 	r.MustRegister("gemini_messages", &proto.GeminiAdapter{})
+	// OpenRouter 是 OpenAI Chat Completions 兼容 meta-aggregator，SSE 形态同 OpenAI。
+	r.MustRegister("openrouter_chat", &proto.OpenAIAdapter{})
+	// xAI Grok v1/chat/completions 严格 OpenAI 兼容。
+	r.MustRegister("grok_chat", &proto.OpenAIAdapter{})
+	// 注意：bedrock_invoke **不在此处注册** —— AWS Bedrock 走二进制 EventStream
+	// （非 SSE），需 BedrockEventStreamAdapter 专用解析器。当前 chat-completions
+	// 路径不接 Bedrock；Bedrock 走 /v1/messages 或专用 admin 路径（待实施）。
+	// 在 forwarder registry 留出这条 gap 等专用 adapter 实现，避免错误复用。
 	// 以下 6 家均走 OpenAI Chat Completions 兼容 SSE；复用 OpenAIAdapter。
 	r.MustRegister("deepseek_chat", &proto.OpenAIAdapter{})
 	r.MustRegister("mistral_chat", &proto.OpenAIAdapter{})

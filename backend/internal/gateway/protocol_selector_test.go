@@ -151,6 +151,8 @@ func TestBuildDefaultProtocolAdapterRegistry(t *testing.T) {
 
 	for _, family := range []string{
 		"openai_chat", "openai_responses", "openai_codex",
+		// OpenRouter / Grok 也走 OpenAI 兼容 SSE
+		"openrouter_chat", "grok_chat",
 		// 6 家 OpenAI 兼容直通，均注册为 OpenAIAdapter
 		"deepseek_chat", "mistral_chat", "groqcloud_chat",
 		"together_chat", "perplexity_chat", "fireworks_chat",
@@ -178,6 +180,12 @@ func TestBuildDefaultProtocolAdapterRegistry(t *testing.T) {
 		if _, ok := got.(*proto.GeminiAdapter); !ok {
 			t.Fatalf("For(%s) adapter type = %T, want *proto.GeminiAdapter", family, got)
 		}
+	}
+
+	// bedrock_invoke 故意不在此注册表（AWS 二进制 EventStream，需专用 adapter）。
+	// 防止后续误注册错配 SSE adapter，回归测试守住这条边界。
+	if _, err := r.For("bedrock_invoke"); !errors.Is(err, ErrUnknownProtocolFamily) {
+		t.Errorf("bedrock_invoke 应明确未注册（待 BedrockEventStreamAdapter 专用实现），err=%v", err)
 	}
 }
 

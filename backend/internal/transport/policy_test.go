@@ -168,3 +168,68 @@ func TestFactory_For_DiagnosticsNotImplemented(t *testing.T) {
 		t.Errorf("未注入 diagnostics 应返回 ErrTransportNotImplemented，得到 %v", err)
 	}
 }
+
+// TestFactory_For_AllMimicryModesNotImplemented 验证 R3 暂停期间所有
+// mimicry mode（含 ChatGPT / GeminiAdvanced / Antigravity / Cursor /
+// Copilot / Kiro / Windsurf）未注入时一律 fail-loud 为
+// ErrTransportNotImplemented，而不是 ErrUnknownMode（旧行为会让 admin
+// 误以为 mode 拼写错）。
+func TestFactory_For_AllMimicryModesNotImplemented(t *testing.T) {
+	cases := []struct {
+		provider ProviderCode
+		mode     TransportMode
+	}{
+		{ProviderAnthropic, TransportModeMimicryClaudeCode},
+		{ProviderOpenAI, TransportModeMimicryChatGPT},
+		{ProviderOpenAICodex, TransportModeMimicryChatGPT},
+		{ProviderVertex, TransportModeMimicryGeminiAdvanced},
+		{ProviderVertex, TransportModeMimicryAntigravity},
+		{ProviderGeminiAdvanced, TransportModeMimicryGeminiAdvanced},
+		{ProviderCursor, TransportModeMimicryCursor},
+		{ProviderCopilot, TransportModeMimicryCopilot},
+		{ProviderKiro, TransportModeMimicryKiro},
+		{ProviderBedrock, TransportModeMimicryKiro},
+		{ProviderWindsurf, TransportModeMimicryWindsurf},
+		{ProviderAntigravity, TransportModeMimicryAntigravity},
+	}
+	f := NewFactory() // 不注入 mimicry
+	for _, tc := range cases {
+		_, err := f.For(tc.provider, tc.mode)
+		if !errors.Is(err, ErrTransportNotImplemented) {
+			t.Errorf("%s+%s 未注入 mimicry 应返回 ErrTransportNotImplemented，得到 %v", tc.provider, tc.mode, err)
+		}
+		if errors.Is(err, ErrUnknownMode) {
+			t.Errorf("%s+%s 不应返回 ErrUnknownMode（mode 在枚举中）", tc.provider, tc.mode)
+		}
+	}
+}
+
+// TestFactory_For_AllMimicryModesUseInjected 验证注入 mimicry 后所有
+// mimicry mode 都拿到同一 RoundTripper（R3 实施时通过 SetMimicry 注入
+// per-mode 路由 RoundTripper）。
+func TestFactory_For_AllMimicryModesUseInjected(t *testing.T) {
+	custom := &http.Transport{}
+	f := NewFactory()
+	f.SetMimicry(custom)
+	cases := []struct {
+		provider ProviderCode
+		mode     TransportMode
+	}{
+		{ProviderAnthropic, TransportModeMimicryClaudeCode},
+		{ProviderOpenAI, TransportModeMimicryChatGPT},
+		{ProviderCursor, TransportModeMimicryCursor},
+		{ProviderCopilot, TransportModeMimicryCopilot},
+		{ProviderKiro, TransportModeMimicryKiro},
+		{ProviderWindsurf, TransportModeMimicryWindsurf},
+	}
+	for _, tc := range cases {
+		rt, err := f.For(tc.provider, tc.mode)
+		if err != nil {
+			t.Errorf("%s+%s 注入 mimicry 后应返回 RoundTripper，得到 err=%v", tc.provider, tc.mode, err)
+			continue
+		}
+		if rt != custom {
+			t.Errorf("%s+%s RoundTripper 不是注入实例", tc.provider, tc.mode)
+		}
+	}
+}
