@@ -31,8 +31,9 @@ const (
 	ProviderCursor      ProviderCode = "cursor"   // Cursor IDE 反转
 	ProviderCopilot     ProviderCode = "copilot"  // GitHub Copilot 反转
 	ProviderKiro        ProviderCode = "kiro"     // AWS Kiro 反转（独立于 Bedrock）
-	ProviderWindsurf    ProviderCode = "windsurf" // Codeium Windsurf 反转
-	ProviderAntigravity ProviderCode = "antigravity"
+	ProviderWindsurf       ProviderCode = "windsurf" // Codeium Windsurf 反转
+	ProviderAntigravity    ProviderCode = "antigravity"
+	ProviderGeminiAdvanced ProviderCode = "gemini_advanced" // Gemini Advanced 网页 session 反转，路径走 gemini.google.com
 	// 以下 6 家为 OpenAI 兼容直通 API key 路径，不做订阅反转。
 	ProviderDeepSeek   ProviderCode = "deepseek"
 	ProviderMistral    ProviderCode = "mistral"
@@ -161,6 +162,14 @@ var allowedModesByProvider = map[ProviderCode]map[TransportMode]bool{
 		TransportModeMimicryAntigravity: true,
 		// Google Antigravity 反转（独立 ProviderCode 视未来规划，可能走
 		// Vertex 后端）
+	},
+	ProviderGeminiAdvanced: {
+		// Gemini Advanced 网页 session 反转：endpoint = gemini.google.com
+		// （非 generativelanguage.googleapis.com）。standard 直连用于 dev；
+		// mimicry_gemini_advanced 是真正的浏览器伪装路径。
+		TransportModeStandard:              true,
+		TransportModeMimicryGeminiAdvanced: true,
+		TransportModeDiagnosticsOnly:       true,
 	},
 	// 以下 6 家走 API key 直通；不是订阅反转目标，仅 standard + diagnostics。
 	ProviderDeepSeek: {

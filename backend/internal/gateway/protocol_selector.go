@@ -95,6 +95,18 @@ func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	r.MustRegister("together_chat", &proto.OpenAIAdapter{})
 	r.MustRegister("perplexity_chat", &proto.OpenAIAdapter{})
 	r.MustRegister("fireworks_chat", &proto.OpenAIAdapter{})
+	// 订阅 session 反转路径。响应 SSE 形态分两类：
+	//   - copilot_session:               OpenAI Chat Completions 兼容 → OpenAIAdapter
+	//   - gemini_advanced_session:       Google 内部 SSE 形态，近似 Gemini 官方 → GeminiAdapter
+	//   - cursor / antigravity / kiro / windsurf: SSE 形态待 OCAW 采集后确认；
+	//     先复用 OpenAIAdapter 作占位（多数采用 OpenAI Chat 兼容形态），
+	//     若实测形态不同再做专用 adapter。
+	r.MustRegister("copilot_session", &proto.OpenAIAdapter{})
+	r.MustRegister("gemini_advanced_session", &proto.GeminiAdapter{})
+	r.MustRegister("cursor_session", &proto.OpenAIAdapter{})
+	r.MustRegister("antigravity_session", &proto.OpenAIAdapter{})
+	r.MustRegister("kiro_session", &proto.OpenAIAdapter{})
+	r.MustRegister("windsurf_session", &proto.OpenAIAdapter{})
 	return r
 }
 
