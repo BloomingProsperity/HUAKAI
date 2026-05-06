@@ -42,8 +42,11 @@ func NewStaticProxyResolver() *StaticProxyResolver {
 }
 
 // Set 注册账号的代理配置。proxyURL 为 nil 时表示该账号明确直连
-// （与未注册区分）。accountID==0 视为无效。
+// （与未注册区分）。accountID==0 视为无效。nil receiver 也明确报错。
 func (r *StaticProxyResolver) Set(accountID int64, proxyURL *url.URL) error {
+	if r == nil {
+		return errProxyNilReceiver
+	}
 	if accountID == 0 {
 		return errProxyInvalidAccountID
 	}
@@ -82,6 +85,9 @@ var _ ProxyResolver = (*StaticProxyResolver)(nil)
 
 // errProxyInvalidAccountID 是 Set 拒绝 accountID==0 时的本地错误。
 var errProxyInvalidAccountID = simpleError("provider: proxy resolver Set 拒绝 accountID==0")
+
+// errProxyNilReceiver 是 Set 调用方传入 nil receiver 时的本地错误。
+var errProxyNilReceiver = simpleError("provider: proxy resolver Set 调用了 nil receiver")
 
 type simpleError string
 
