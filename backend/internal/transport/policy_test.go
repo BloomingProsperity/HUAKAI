@@ -21,6 +21,9 @@ func TestValidateModeForProvider_Matrix(t *testing.T) {
 		{name: "OpenAI + standard 允许", provider: ProviderOpenAI, mode: TransportModeStandard},
 		{name: "OpenAI + mimicry_chatgpt 允许（ChatGPT/Codex 反转）", provider: ProviderOpenAI, mode: TransportModeMimicryChatGPT},
 		{name: "OpenAI + mimicry_claude_code 跨 vendor 拒绝", provider: ProviderOpenAI, mode: TransportModeMimicryClaudeCode, wantErrIs: ErrModeNotAllowedForProvider},
+		{name: "OpenAICodex + standard 允许", provider: ProviderOpenAICodex, mode: TransportModeStandard},
+		{name: "OpenAICodex + mimicry_chatgpt 允许（chatgpt.com 反转）", provider: ProviderOpenAICodex, mode: TransportModeMimicryChatGPT},
+		{name: "OpenAICodex + mimicry_claude_code 跨 vendor 拒绝", provider: ProviderOpenAICodex, mode: TransportModeMimicryClaudeCode, wantErrIs: ErrModeNotAllowedForProvider},
 		{name: "Vertex + mimicry_gemini_advanced 允许", provider: ProviderVertex, mode: TransportModeMimicryGeminiAdvanced},
 		{name: "Vertex + mimicry_antigravity 允许", provider: ProviderVertex, mode: TransportModeMimicryAntigravity},
 		{name: "Vertex + mimicry_claude_code 跨 vendor 拒绝", provider: ProviderVertex, mode: TransportModeMimicryClaudeCode, wantErrIs: ErrModeNotAllowedForProvider},
@@ -54,9 +57,10 @@ func TestAllowedModesForProvider(t *testing.T) {
 		provider ProviderCode
 		want     int
 	}{
-		{ProviderAnthropic, 3},  // standard / mimicry_claude_code / diagnostics
-		{ProviderOpenAI, 3},     // standard / mimicry_chatgpt / diagnostics
-		{ProviderVertex, 4},     // standard / mimicry_gemini_advanced / mimicry_antigravity / diagnostics
+		{ProviderAnthropic, 3},   // standard / mimicry_claude_code / diagnostics
+		{ProviderOpenAI, 3},      // standard / mimicry_chatgpt / diagnostics
+		{ProviderOpenAICodex, 3}, // standard / mimicry_chatgpt / diagnostics
+		{ProviderVertex, 4},      // standard / mimicry_gemini_advanced / mimicry_antigravity / diagnostics
 		{ProviderBedrock, 3},    // standard / mimicry_kiro / diagnostics
 		{ProviderOpenRouter, 2}, // standard / diagnostics（无反转）
 		{ProviderGrok, 2},       // standard / diagnostics

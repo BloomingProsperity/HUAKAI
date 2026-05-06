@@ -149,7 +149,7 @@ func TestBuildDefaultProtocolAdapterRegistry(t *testing.T) {
 		t.Fatal("anthropic_messages CarryForwardSignatureDelta = true, want false")
 	}
 
-	for _, family := range []string{"openai_chat", "openai_responses"} {
+	for _, family := range []string{"openai_chat", "openai_responses", "openai_codex"} {
 		got, err := r.For(family)
 		if err != nil {
 			t.Fatalf("For(%s) error = %v", family, err)

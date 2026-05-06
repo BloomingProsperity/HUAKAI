@@ -80,6 +80,10 @@ type UpstreamDispatcher struct {
 	// HTTPClient 用于 Do() 调用。空值时按 transport 选好的 RoundTripper
 	// 现场构造一个 http.Client。注入便于测试。
 	HTTPClient HTTPDoer
+	// ProxyResolver 可选：按 accountID 解析出站代理。nil 表示全部走直连。
+	// 未注册 account（ErrAccountNotFound）= 直连，不视为错误。
+	// 仅在 HTTPClient 为 nil 的生产路径生效。
+	ProxyResolver provider.ProxyResolver
 }
 
 // Dispatch 执行一次完整出站。失败时 result 可能为 nil；调用方按 err
@@ -125,6 +129,10 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 	// 4. 发出请求
 	client := d.HTTPClient
 	if client == nil {
+		rt, err = d.applyProxy(ctx, rt, in.Account.AccountID)
+		if err != nil {
+			return nil, err
+		}
 		client = &http.Client{Transport: rt}
 	}
 	resp, err := client.Do(req)
@@ -139,4 +147,26 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 		Headers:        resp.Header,
 		Close:          resp.Body.Close,
 	}, nil
+}
+
+// applyProxy 按 ProxyResolver 决定是否给 rt 包上代理。
+// 返回 (wrapped_rt, err)。下列情况返回原 rt + nil err：
+//   - ProxyResolver 未配置（nil）
+//   - accountID == 0（无账号信息，无法解析）
+//   - resolver 返回 ErrAccountNotFound（未注册 = 直连，非错误）
+//   - resolver 返回 nil URL（已注册但明确直连）
+//
+// 仅在 resolver 返回非 NotFound 错误时返回 (nil, err)。
+func (d *UpstreamDispatcher) applyProxy(ctx context.Context, rt http.RoundTripper, accountID int64) (http.RoundTripper, error) {
+	if d.ProxyResolver == nil || accountID == 0 {
+		return rt, nil
+	}
+	proxyURL, err := d.ProxyResolver.Resolve(ctx, accountID)
+	if errors.Is(err, provider.ErrAccountNotFound) {
+		return rt, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("dispatcher: ProxyResolver.Resolve 失败: %w", err)
+	}
+	return provider.WrapTransportWithProxy(rt, proxyURL), nil
 }

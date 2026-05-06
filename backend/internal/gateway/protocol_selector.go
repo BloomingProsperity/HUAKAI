@@ -74,6 +74,10 @@ func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	r.MustRegister("anthropic_messages", &proto.AnthropicAdapter{CarryForwardSignatureDelta: false})
 	r.MustRegister("openai_chat", &proto.OpenAIAdapter{})
 	r.MustRegister("openai_responses", &proto.OpenAIAdapter{})
+	// openai_codex 出站到 chatgpt.com/backend-api/codex/completions，
+	// 但响应 SSE 形态与 OpenAI Chat Completions 兼容（data: {"choices":[...]}）。
+	// 复用 OpenAIAdapter；若后续观测到形态差异再做专用 CodexSessionSSEAdapter。
+	r.MustRegister("openai_codex", &proto.OpenAIAdapter{})
 	r.MustRegister("gemini_messages", &proto.GeminiAdapter{})
 	return r
 }

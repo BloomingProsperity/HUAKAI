@@ -13,6 +13,7 @@ func TestBuild_AllProtocolFamiliesRegistered(t *testing.T) {
 	want := []string{
 		ProtocolOpenAIChat,
 		ProtocolOpenAIResponses,
+		ProtocolOpenAICodex,
 		ProtocolAnthropicMessages,
 		ProtocolGeminiMessages,
 		ProtocolOpenRouterChat,
@@ -61,6 +62,7 @@ func TestBuild_PlatformIDsCorrect(t *testing.T) {
 	cases := map[string]string{
 		ProtocolOpenAIChat:        "openai",
 		ProtocolOpenAIResponses:   "openai",
+		ProtocolOpenAICodex:       "openai_codex",
 		ProtocolAnthropicMessages: "anthropic",
 		ProtocolGeminiMessages:    "gemini",
 		ProtocolOpenRouterChat:    "openrouter",

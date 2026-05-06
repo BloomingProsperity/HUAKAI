@@ -23,6 +23,7 @@ type ProviderCode string
 const (
 	ProviderAnthropic   ProviderCode = "anthropic"
 	ProviderOpenAI      ProviderCode = "openai"
+	ProviderOpenAICodex ProviderCode = "openai_codex" // ChatGPT Plus / Codex CLI session 反转，路径走 chatgpt.com
 	ProviderVertex      ProviderCode = "vertex"
 	ProviderBedrock     ProviderCode = "bedrock"
 	ProviderOpenRouter  ProviderCode = "openrouter"
@@ -96,6 +97,14 @@ var allowedModesByProvider = map[ProviderCode]map[TransportMode]bool{
 	ProviderOpenAI: {
 		TransportModeStandard:        true,
 		TransportModeMimicryChatGPT:  true, // ChatGPT Plus / Codex CLI 反转
+		TransportModeDiagnosticsOnly: true,
+	},
+	ProviderOpenAICodex: {
+		// 目标 endpoint chatgpt.com（非 api.openai.com），所以独立 provider
+		// 而非 ProviderOpenAI 复用。standard 直连用于 dev / 非伪装走法；
+		// mimicry_chatgpt 是真正的 ChatGPT Plus / Codex CLI 客户端伪装路径。
+		TransportModeStandard:        true,
+		TransportModeMimicryChatGPT:  true,
 		TransportModeDiagnosticsOnly: true,
 	},
 	ProviderVertex: {
