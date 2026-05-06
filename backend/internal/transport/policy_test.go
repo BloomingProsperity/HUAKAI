@@ -15,13 +15,21 @@ func TestValidateModeForProvider_Matrix(t *testing.T) {
 		wantErrIs error
 	}{
 		{name: "Anthropic + standard 允许", provider: ProviderAnthropic, mode: TransportModeStandard},
-		{name: "Anthropic + mimicry 允许", provider: ProviderAnthropic, mode: TransportModeMimicryClaudeCode},
+		{name: "Anthropic + mimicry_claude_code 允许（mode 保留供未来重启用）", provider: ProviderAnthropic, mode: TransportModeMimicryClaudeCode},
 		{name: "Anthropic + diagnostics 允许", provider: ProviderAnthropic, mode: TransportModeDiagnosticsOnly},
+		{name: "Anthropic + mimicry_chatgpt 跨 vendor 拒绝", provider: ProviderAnthropic, mode: TransportModeMimicryChatGPT, wantErrIs: ErrModeNotAllowedForProvider},
 		{name: "OpenAI + standard 允许", provider: ProviderOpenAI, mode: TransportModeStandard},
-		{name: "OpenAI + mimicry 拒绝", provider: ProviderOpenAI, mode: TransportModeMimicryClaudeCode, wantErrIs: ErrModeNotAllowedForProvider},
-		{name: "Vertex + mimicry 拒绝", provider: ProviderVertex, mode: TransportModeMimicryClaudeCode, wantErrIs: ErrModeNotAllowedForProvider},
-		{name: "Bedrock + mimicry 拒绝", provider: ProviderBedrock, mode: TransportModeMimicryClaudeCode, wantErrIs: ErrModeNotAllowedForProvider},
-		{name: "OpenRouter + mimicry 拒绝", provider: ProviderOpenRouter, mode: TransportModeMimicryClaudeCode, wantErrIs: ErrModeNotAllowedForProvider},
+		{name: "OpenAI + mimicry_chatgpt 允许（ChatGPT/Codex 反转）", provider: ProviderOpenAI, mode: TransportModeMimicryChatGPT},
+		{name: "OpenAI + mimicry_claude_code 跨 vendor 拒绝", provider: ProviderOpenAI, mode: TransportModeMimicryClaudeCode, wantErrIs: ErrModeNotAllowedForProvider},
+		{name: "Vertex + mimicry_gemini_advanced 允许", provider: ProviderVertex, mode: TransportModeMimicryGeminiAdvanced},
+		{name: "Vertex + mimicry_antigravity 允许", provider: ProviderVertex, mode: TransportModeMimicryAntigravity},
+		{name: "Vertex + mimicry_claude_code 跨 vendor 拒绝", provider: ProviderVertex, mode: TransportModeMimicryClaudeCode, wantErrIs: ErrModeNotAllowedForProvider},
+		{name: "Cursor + mimicry_cursor 允许", provider: ProviderCursor, mode: TransportModeMimicryCursor},
+		{name: "Copilot + mimicry_copilot 允许", provider: ProviderCopilot, mode: TransportModeMimicryCopilot},
+		{name: "Kiro + mimicry_kiro 允许", provider: ProviderKiro, mode: TransportModeMimicryKiro},
+		{name: "Windsurf + mimicry_windsurf 允许", provider: ProviderWindsurf, mode: TransportModeMimicryWindsurf},
+		{name: "OpenRouter + 任意 mimicry 拒绝（meta-aggregator 不反转）", provider: ProviderOpenRouter, mode: TransportModeMimicryChatGPT, wantErrIs: ErrModeNotAllowedForProvider},
+		{name: "Grok + mimicry 拒绝", provider: ProviderGrok, mode: TransportModeMimicryChatGPT, wantErrIs: ErrModeNotAllowedForProvider},
 		{name: "未知 provider", provider: ProviderCode("acme"), mode: TransportModeStandard, wantErrIs: ErrUnknownProvider},
 		{name: "未知 mode", provider: ProviderAnthropic, mode: TransportMode("turbo"), wantErrIs: ErrUnknownMode},
 	}
@@ -42,16 +50,29 @@ func TestValidateModeForProvider_Matrix(t *testing.T) {
 }
 
 func TestAllowedModesForProvider(t *testing.T) {
-	got := AllowedModesForProvider(ProviderAnthropic)
-	if len(got) != 3 {
-		t.Errorf("Anthropic 应允许 3 种 mode，得到 %d: %v", len(got), got)
+	cases := []struct {
+		provider ProviderCode
+		want     int
+	}{
+		{ProviderAnthropic, 3},  // standard / mimicry_claude_code / diagnostics
+		{ProviderOpenAI, 3},     // standard / mimicry_chatgpt / diagnostics
+		{ProviderVertex, 4},     // standard / mimicry_gemini_advanced / mimicry_antigravity / diagnostics
+		{ProviderBedrock, 3},    // standard / mimicry_kiro / diagnostics
+		{ProviderOpenRouter, 2}, // standard / diagnostics（无反转）
+		{ProviderGrok, 2},       // standard / diagnostics
+		{ProviderCursor, 2},     // standard / mimicry_cursor
+		{ProviderCopilot, 2},
+		{ProviderKiro, 2},
+		{ProviderWindsurf, 2},
+		{ProviderAntigravity, 2},
 	}
-	got = AllowedModesForProvider(ProviderOpenAI)
-	if len(got) != 2 {
-		t.Errorf("OpenAI 应允许 2 种 mode，得到 %d: %v", len(got), got)
+	for _, c := range cases {
+		got := AllowedModesForProvider(c.provider)
+		if len(got) != c.want {
+			t.Errorf("%s 应允许 %d 种 mode，得到 %d: %v", c.provider, c.want, len(got), got)
+		}
 	}
-	got = AllowedModesForProvider(ProviderCode("acme"))
-	if got != nil {
+	if got := AllowedModesForProvider(ProviderCode("acme")); got != nil {
 		t.Errorf("未知 provider 应返回 nil，得到 %v", got)
 	}
 }
