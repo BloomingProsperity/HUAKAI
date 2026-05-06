@@ -134,6 +134,9 @@ func run(logger *zap.Logger) error {
 		dispatcher: &gateway.UpstreamDispatcher{
 			Adapters:         registrydefault.Build(),
 			TransportFactory: transport.NewFactory(),
+			// 内存 ProxyResolver：dev/test 默认空（所有账号直连）。
+			// DB-backed resolver 后续 atomic 接入；接入后此处替换实例。
+			ProxyResolver: provider.NewStaticProxyResolver(),
 		},
 		// Phase L0 minimum (N+4a): table-backed inbound auth via api_keys.
 		// Replaces the SmokeAuthResolver env-injected single bearer pattern.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -209,5 +210,147 @@ func TestDispatcher_RequiresAdaptersAndFactory(t *testing.T) {
 	d2 := &UpstreamDispatcher{Adapters: &stubRegistry{}}
 	if _, err := d2.Dispatch(context.Background(), DispatchInput{}); err == nil {
 		t.Error("缺 TransportFactory 应报错")
+	}
+}
+
+// recordingProxyResolver 记录 Resolve 调用，便于断言 dispatcher 是否
+// 把 accountID 正确透传给 ProxyResolver。
+type recordingProxyResolver struct {
+	calls    []int64
+	proxyURL *url.URL
+	err      error
+}
+
+func (r *recordingProxyResolver) Resolve(_ context.Context, accountID int64) (*url.URL, error) {
+	r.calls = append(r.calls, accountID)
+	return r.proxyURL, r.err
+}
+
+func TestDispatcher_ApplyProxy_NilResolver(t *testing.T) {
+	d := &UpstreamDispatcher{}
+	rt := &http.Transport{}
+	out, err := d.applyProxy(context.Background(), rt, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != http.RoundTripper(rt) {
+		t.Error("ProxyResolver 未配置时应返回原 rt")
+	}
+}
+
+func TestDispatcher_ApplyProxy_ZeroAccountID(t *testing.T) {
+	res := &recordingProxyResolver{}
+	d := &UpstreamDispatcher{ProxyResolver: res}
+	rt := &http.Transport{}
+	out, err := d.applyProxy(context.Background(), rt, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != http.RoundTripper(rt) {
+		t.Error("accountID==0 应返回原 rt（不查 resolver）")
+	}
+	if len(res.calls) != 0 {
+		t.Errorf("accountID==0 不应触发 Resolve 调用，calls=%v", res.calls)
+	}
+}
+
+func TestDispatcher_ApplyProxy_NotFoundFallsThrough(t *testing.T) {
+	res := &recordingProxyResolver{err: provider.ErrAccountNotFound}
+	d := &UpstreamDispatcher{ProxyResolver: res}
+	rt := &http.Transport{}
+	out, err := d.applyProxy(context.Background(), rt, 42)
+	if err != nil {
+		t.Fatalf("ErrAccountNotFound 不应作为错误传播: %v", err)
+	}
+	if out != http.RoundTripper(rt) {
+		t.Error("未注册账号应返回原 rt")
+	}
+	if len(res.calls) != 1 || res.calls[0] != 42 {
+		t.Errorf("Resolve 应收到 accountID=42，实际 calls=%v", res.calls)
+	}
+}
+
+func TestDispatcher_ApplyProxy_DirectConnectExplicit(t *testing.T) {
+	// 已注册但 proxyURL=nil → 明确直连，wrap 应返回原 rt
+	res := &recordingProxyResolver{proxyURL: nil}
+	d := &UpstreamDispatcher{ProxyResolver: res}
+	rt := &http.Transport{}
+	out, err := d.applyProxy(context.Background(), rt, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != http.RoundTripper(rt) {
+		t.Error("已注册直连账号应返回原 rt（WrapTransportWithProxy nil 短路）")
+	}
+}
+
+func TestDispatcher_ApplyProxy_WithProxy(t *testing.T) {
+	proxyURL, _ := url.Parse("http://proxy.example.com:3128")
+	res := &recordingProxyResolver{proxyURL: proxyURL}
+	d := &UpstreamDispatcher{ProxyResolver: res}
+	rt := &http.Transport{}
+	out, err := d.applyProxy(context.Background(), rt, 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned, ok := out.(*http.Transport)
+	if !ok {
+		t.Fatalf("期望 *http.Transport（Clone），实际 %T", out)
+	}
+	if cloned == rt {
+		t.Error("应是 Clone 出来的新实例")
+	}
+	if cloned.Proxy == nil {
+		t.Error("Proxy func 未设置")
+	}
+	req, _ := http.NewRequest("GET", "https://example.com", nil)
+	got, _ := cloned.Proxy(req)
+	if got.String() != proxyURL.String() {
+		t.Errorf("Proxy func 返回 %q want %q", got, proxyURL)
+	}
+}
+
+func TestDispatcher_ApplyProxy_ResolverErrorPropagates(t *testing.T) {
+	res := &recordingProxyResolver{err: errors.New("db down")}
+	d := &UpstreamDispatcher{ProxyResolver: res}
+	rt := &http.Transport{}
+	_, err := d.applyProxy(context.Background(), rt, 11)
+	if err == nil {
+		t.Fatal("非 NotFound 错误应传播")
+	}
+	if !strings.Contains(err.Error(), "ProxyResolver.Resolve 失败") {
+		t.Errorf("err=%v want 含 'ProxyResolver.Resolve 失败'", err)
+	}
+}
+
+// TestDispatcher_ProxyConsultedInDispatchPath 验证 Dispatch 在
+// HTTPClient 为 nil 的生产路径会调用 ProxyResolver.Resolve。
+// 用 stubDoer 注入会绕过该路径，因此本测试故意 NOT 注入 HTTPClient，
+// 但因没有真实 transport 会真发 HTTP 请求 — 通过 ErrAccountNotFound
+// 让 resolver fall-through 后 dispatcher 走原 rt（避免污染网络）。
+// 我们只断言 resolver 被调用 + accountID 正确。
+func TestDispatcher_ProxyConsultedInDispatchPath(t *testing.T) {
+	res := &recordingProxyResolver{err: provider.ErrAccountNotFound}
+	adapter := &stubAdapter{platform: "openai", endpoint: "http://127.0.0.1:1/unreachable"}
+	d := &UpstreamDispatcher{
+		Adapters:         &stubRegistry{adapter: adapter},
+		TransportFactory: transport.NewFactory(),
+		ProxyResolver:    res,
+		// 故意不设 HTTPClient → 走生产路径 → applyProxy 被调用
+	}
+	_, _ = d.Dispatch(context.Background(), DispatchInput{
+		ProtocolFamily:  "openai_chat",
+		UpstreamModelID: "gpt-4o",
+		InboundBody:     []byte("{}"),
+		Account: provider.AccountInfo{
+			AccountID: 73, Platform: "openai", AccountType: "apikey",
+		},
+		Credential: provider.Credential{
+			Type: provider.CredentialTypeAPIKey, Value: "sk-x",
+		},
+	})
+	// 断言 resolver 被调用、accountID=73；HTTP Do 失败/成功不重要
+	if len(res.calls) != 1 || res.calls[0] != 73 {
+		t.Errorf("ProxyResolver 应在生产路径被调用 accountID=73，实际 calls=%v", res.calls)
 	}
 }
