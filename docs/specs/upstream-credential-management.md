@@ -61,9 +61,10 @@ This spec satisfies F-AUTH-005 (NEW): upstream Provider Account credential manag
 8. If lock not acquired (another goroutine refreshing): per policy, wait for cache OR continue with stale access_token.
 9. HTTP refresh via provider adapter:
    - **Antigravity**: per-Antigravity OAuth endpoint.
-   - **OpenAI**: per-OpenAI OAuth endpoint.
-   - **Gemini**: per-Gemini OAuth endpoint.
-   - **Claude (Anthropic)**: per-Anthropic OAuth endpoint.
+   - **OpenAI**: ⚠ **drift 2026-05-06 (D10)** — OpenAI does NOT run its own OAuth authorization server for API access. Apps SDK delegates to a third-party IdP (Auth0/Okta/Cognito); machine-to-machine client-credentials is explicitly unsupported. Standard API access uses static API keys (`Authorization: Bearer sk-...` — no expiry, no refresh). For OpenAI accounts, the F-AUTH-005 refresh path is a **no-op** (treat as `account_type=upstream_static` regardless of how the credential was obtained); the A07 storm controller does NOT trigger on OpenAI accounts. Source: developers.openai.com/apps-sdk/build/auth (fetched 2026-05-06).
+   - **Gemini (AI Studio)**: API key only — same no-op refresh treatment as OpenAI.
+   - **Vertex AI**: SA OAuth2 bearer (1h lifetime, scope `cloud-platform`) — refresh path **active**.
+   - **Claude (Anthropic)**: per-Anthropic OAuth endpoint (Console OAuth) — refresh path active. Standard API key (`x-api-key`) accounts skip refresh.
 10. Provider adapter parses upstream response into shared TokenResponse type.
 
 ### Phase D — Token Shape Attestation (HUAKAI design)

@@ -10,6 +10,13 @@
 // on an `ambiguous` signal alone. Enforced structurally: `ambiguous`
 // rules can only emit RetryActionCountedDisable / Cooldown / WarnOnly,
 // never RetryActionPermanentDisable.
+//
+// D8 additions (2026-05-06 vendor-drift-audit.md):
+// Anthropic now documents 3 new typed error classes:
+//   402 → billing_error   (R-021, catch-all after keyword-specific R-007)
+//   504 → timeout_error   (R-022, upstream gateway timeout)
+//   413 → request_too_large (R-023, client error, no retry)
+// Source: platform.claude.com/docs/en/api/errors (fetched 2026-05-06).
 package gateway
 
 import (
@@ -20,7 +27,7 @@ import (
 	"time"
 )
 
-// ErrorClass enumerates the 12 normalized error categories from A13.
+// ErrorClass enumerates the 14 normalized error categories from A13 (updated D8).
 type ErrorClass string
 
 const (
@@ -36,6 +43,12 @@ const (
 	ErrorClassServerError          ErrorClass = "upstream_5xx"
 	ErrorClassNetworkTimeout       ErrorClass = "network_timeout"
 	ErrorClassUnknown              ErrorClass = "unknown_upstream"
+
+	// D8 additions — Anthropic new typed error classes (2026-05-06).
+	// ErrorClassUpstreamTimeout distinguishes upstream-self gateway timeout (504)
+	// from local network timeout (R-019 ErrorClassNetworkTimeout, status=0).
+	ErrorClassUpstreamTimeout  ErrorClass = "upstream_timeout"
+	ErrorClassRequestTooLarge  ErrorClass = "request_too_large"
 )
 
 // Confidence is a coarse signal-quality indicator carried in the Classification.
@@ -187,6 +200,14 @@ var errorRules = []ErrorRule{
 		BodyKeyword: keywordCreditBalance, Class: ErrorClassCreditExhausted,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
 
+	// Priority 25 - D8: Anthropic 402 catch-all billing_error.
+	// Fires after R-007 (priority 20, keyword-specific). Any Anthropic 402 without
+	// a credit keyword still represents billing_error per new Anthropic typed error
+	// class docs (platform.claude.com/docs/en/api/errors, fetched 2026-05-06).
+	{RuleID: "R-021", Version: 1, Priority: 25, Provider: "anthropic", HTTPStatus: "402",
+		BodyKeyword: "", Class: ErrorClassCreditExhausted,
+		Action: RetryActionPermanentDisable, Tier: TierIronClad},
+
 	// Priority 30 - generic 401 (no keyword): permanent disable per spec
 	{RuleID: "R-009", Version: 1, Priority: 30, Provider: "*", HTTPStatus: "401",
 		Class:  ErrorClassOAuthInvalidGrant,
@@ -226,6 +247,20 @@ var errorRules = []ErrorRule{
 	{RuleID: "R-014", Version: 1, Priority: 50, Provider: "*", HTTPStatus: "529",
 		Class:  ErrorClassOverloaded,
 		Action: RetryActionCooldown, Tier: TierAmbiguous},
+
+	// D8: Anthropic 504 timeout_error — upstream gateway timeout (ambiguous, cooldown).
+	// Distinct from R-019 network timeout (status=0, local synthesized).
+	// Source: platform.claude.com/docs/en/api/errors (fetched 2026-05-06).
+	{RuleID: "R-022", Version: 1, Priority: 50, Provider: "anthropic", HTTPStatus: "504",
+		Class:  ErrorClassUpstreamTimeout,
+		Action: RetryActionCooldown, Tier: TierAmbiguous},
+
+	// D8: Anthropic 413 request_too_large — client payload error, no retry.
+	// PassThrough: caller must reduce request size; no FSM state change.
+	// Source: platform.claude.com/docs/en/api/errors (fetched 2026-05-06).
+	{RuleID: "R-023", Version: 1, Priority: 50, Provider: "anthropic", HTTPStatus: "413",
+		Class:  ErrorClassRequestTooLarge,
+		Action: RetryActionPassThrough, Tier: TierNone},
 
 	// Priority 55 - synthesized network timeout (status 0 + body hint)
 	{RuleID: "R-019", Version: 1, Priority: 55, Provider: "*", HTTPStatus: "0",

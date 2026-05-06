@@ -42,9 +42,12 @@ func streamEndClassForErrorClass(class ErrorClass) StreamEndClass {
 		return UpstreamRateLimit
 	case ErrorClassServerError, ErrorClassOverloaded:
 		return UpstreamError5xx
-	case ErrorClassPlatformPolicy:
+	case ErrorClassPlatformPolicy, ErrorClassRequestTooLarge:
+		// 413 request_too_large is a 4xx-class client error; same end-class.
 		return UpstreamError4xx
-	case ErrorClassNetworkTimeout:
+	case ErrorClassNetworkTimeout, ErrorClassUpstreamTimeout:
+		// upstream_timeout (504) and network_timeout (gateway-side) both map to
+		// the inter-event timeout end-class for retry-budget accounting.
 		return InterEventTimeout
 	default:
 		return UnknownTermination
