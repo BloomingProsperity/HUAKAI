@@ -10,6 +10,17 @@
 // This module surfaces that cap to callers and helps choose where to place
 // new breakpoints when room remains.
 //
+// D5 (2026-05-06): Added TTL field to CacheControlLocation. Anthropic now
+// supports {"type":"ephemeral"} (5 min default) and {"type":"ephemeral","ttl":"1h"}
+// (1 hour). Longer-TTL entries must precede shorter-TTL entries in the request.
+// ValidateTTLOrdering enforces this constraint.
+//
+// D6 (2026-05-06): Added per-model minimum cacheable token thresholds.
+// ModelMinCacheableTokens maps model IDs to their documented minimums.
+// MinCacheableTokensForModel provides lookup with conservative fallback.
+// SuggestBreakpoints accepts optional estimatedBlockTokens to skip blocks
+// below the per-model threshold.
+//
 // Synthesis of two parallel-draft lanes (CLAUDE.md #10 + 2026-05-04 directive).
 package gateway
 
@@ -27,6 +38,7 @@ type CacheControlLocation struct {
 	Path  string // "system" | "messages" | "tools"
 	Index int    // array index; -1 means top-level (e.g. system as a single object)
 	Type  string // cache_control type (e.g. "ephemeral")
+	TTL   string // cache_control ttl: "" = 5 min default, "1h" = 1 hour
 }
 
 // CacheControlSnapshot summarizes all cache_control occurrences in a request.
@@ -37,11 +49,69 @@ type CacheControlSnapshot struct {
 }
 
 // BreakpointSuggestion describes which positions to add cache_control to and
-// which positions were skipped due to the MaxAllowed cap. Both fields are
-// human-actionable plans only — body is never mutated.
+// which positions were skipped due to the MaxAllowed cap or token threshold.
+// Both fields are human-actionable plans only — body is never mutated.
 type BreakpointSuggestion struct {
 	Add     []CacheControlLocation
 	Skipped []string
+}
+
+// ModelMinCacheableTokens maps Anthropic model IDs to their documented minimum
+// cacheable token thresholds. Source: platform.claude.com/docs/en/docs/build-with-claude/prompt-caching
+// fetched 2026-05-06.
+var ModelMinCacheableTokens = map[string]int{
+	// Opus 4.x series
+	"claude-opus-4-5": 4096,
+	"claude-opus-4-6": 4096,
+	"claude-opus-4-7": 4096,
+	// Opus 4.1 / 4 (earlier generation)
+	"claude-opus-4-1": 1024,
+	"claude-opus-4":   1024,
+	// Sonnet 4.6
+	"claude-sonnet-4-6": 2048,
+	// Sonnet 4.5 / 4 / 3.7
+	"claude-sonnet-4-5": 1024,
+	"claude-sonnet-4":   1024,
+	"claude-sonnet-3-7": 1024,
+	// Haiku 4.5
+	"claude-haiku-4-5": 4096,
+	// Haiku 3.5
+	"claude-haiku-3-5": 2048,
+}
+
+// MinCacheableTokensForModel returns the minimum cacheable token threshold for
+// the given model. Falls back to a conservative 4096 if the model is unknown.
+func MinCacheableTokensForModel(model string) int {
+	if threshold, ok := ModelMinCacheableTokens[model]; ok {
+		return threshold
+	}
+	return 4096
+}
+
+// ValidateTTLOrdering checks that within a snapshot, any longer-TTL ("1h")
+// locations precede all shorter-TTL ("" = 5 min default) locations. Anthropic
+// requires longer-TTL breakpoints to appear earlier in the request than
+// shorter-TTL ones.
+//
+// Returns nil if the ordering is valid, or a descriptive error on violation.
+func ValidateTTLOrdering(snapshot CacheControlSnapshot) error {
+	// Once we see a short-TTL entry, no long-TTL entry may follow.
+	sawShortTTL := false
+	for i, loc := range snapshot.Locations {
+		isLong := loc.TTL == "1h"
+		isShort := loc.TTL == ""
+		if isShort {
+			sawShortTTL = true
+		}
+		if isLong && sawShortTTL {
+			return fmt.Errorf(
+				"cache_control: TTL ordering violation at index %d (%s[%d]): "+
+					"long-TTL (\"1h\") entry must precede all short-TTL (5 min default) entries",
+				i, loc.Path, loc.Index,
+			)
+		}
+	}
+	return nil
 }
 
 // InspectCacheControl parses an Anthropic Messages API request body and
@@ -59,7 +129,14 @@ func InspectCacheControl(body []byte) (CacheControlSnapshot, error) {
 // snapshot. Priority order: last system block → last tool definition →
 // last user message. Body is never mutated. Already-occupied positions are
 // skipped. Candidates beyond MaxAllowed go to Skipped.
-func SuggestBreakpoints(body []byte, snapshot CacheControlSnapshot) (BreakpointSuggestion, error) {
+//
+// estimatedBlockTokens is an optional map from CacheControlLocation to
+// estimated token count for that block. When provided, candidates whose
+// estimated token count is below the per-model threshold (derived from the
+// "model" field in the request body, or MinCacheableTokensForModel fallback)
+// are placed in Skipped instead of Add. Pass nil to disable threshold
+// filtering (preserves backward compatibility).
+func SuggestBreakpoints(body []byte, snapshot CacheControlSnapshot, estimatedBlockTokens map[CacheControlLocation]int) (BreakpointSuggestion, error) {
 	root, err := decodeMessagesRequest(body)
 	if err != nil {
 		return BreakpointSuggestion{}, err
@@ -82,8 +159,25 @@ func SuggestBreakpoints(body []byte, snapshot CacheControlSnapshot) (BreakpointS
 		remaining = 0
 	}
 
+	// Determine per-model threshold when token estimates are provided.
+	var tokenThreshold int
+	if estimatedBlockTokens != nil {
+		model, _ := root["model"].(string)
+		tokenThreshold = MinCacheableTokensForModel(model)
+	}
+
 	var suggestion BreakpointSuggestion
 	for _, candidate := range candidates {
+		// Check token threshold first (before cap check).
+		if estimatedBlockTokens != nil {
+			tokens, hasEstimate := estimatedBlockTokens[candidate]
+			if hasEstimate && tokens < tokenThreshold {
+				suggestion.Skipped = append(suggestion.Skipped,
+					formatSkippedThreshold(candidate, tokens, tokenThreshold))
+				continue
+			}
+		}
+
 		if remaining > 0 {
 			suggestion.Add = append(suggestion.Add, candidate)
 			remaining--
@@ -227,25 +321,30 @@ func appendCacheControl(snapshot *CacheControlSnapshot, block map[string]interfa
 	if !ok {
 		return nil
 	}
-	cacheType, err := cacheControlType(raw, where)
+	cacheType, ttl, err := cacheControlType(raw, where)
 	if err != nil {
 		return err
 	}
 	location.Type = cacheType
+	location.TTL = ttl
 	snapshot.Locations = append(snapshot.Locations, location)
 	return nil
 }
 
-func cacheControlType(value interface{}, where string) (string, error) {
+// cacheControlType extracts the type and ttl from a cache_control object.
+// Returns (type, ttl, error). ttl is "" for 5-min default, "1h" for 1-hour.
+func cacheControlType(value interface{}, where string) (string, string, error) {
 	control, ok := value.(map[string]interface{})
 	if !ok {
-		return "", fmt.Errorf("cache_control: %s.cache_control must be an object", where)
+		return "", "", fmt.Errorf("cache_control: %s.cache_control must be an object", where)
 	}
 	cacheType, ok := control["type"].(string)
 	if !ok || cacheType == "" {
-		return "", fmt.Errorf("cache_control: %s.cache_control.type must be a non-empty string", where)
+		return "", "", fmt.Errorf("cache_control: %s.cache_control.type must be a non-empty string", where)
 	}
-	return cacheType, nil
+	// ttl is optional; "" means 5-min default.
+	ttl, _ := control["ttl"].(string)
+	return cacheType, ttl, nil
 }
 
 // breakpointCandidates returns ordered candidates: at each round, system →
@@ -412,4 +511,11 @@ func formatSkipped(location CacheControlLocation) string {
 		return fmt.Sprintf("%s[top-level] skipped: cache_control max reached", location.Path)
 	}
 	return fmt.Sprintf("%s[%d] skipped: cache_control max reached", location.Path, location.Index)
+}
+
+func formatSkippedThreshold(location CacheControlLocation, tokens, threshold int) string {
+	if location.Index < 0 {
+		return fmt.Sprintf("%s[top-level] skipped: estimated %d tokens below threshold %d", location.Path, tokens, threshold)
+	}
+	return fmt.Sprintf("%s[%d] skipped: estimated %d tokens below threshold %d", location.Path, location.Index, tokens, threshold)
 }
