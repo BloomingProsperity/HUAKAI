@@ -68,13 +68,18 @@ For status codes not handled by Phase A:
 13. **5xx (no custom codes)**: warn log only; no state change.
 14. **Custom error codes enabled, other status**: handle as configured by operator policy.
 
-### Phase C — 429 Reset Extraction (5 fallback layers)
+### Phase C — 429 Reset Extraction (4 layers, drift-rev 2026-05-06)
 
-15. **Layer 1 (OpenAI)**: parse `x-codex-*` headers → 5h / 7d window utilization + reset; choose actually-exhausted window; if both, prefer longer cooldown.
-16. **Layer 2 (Anthropic per-window)**: parse `anthropic-ratelimit-unified-{5h,7d}-{reset,utilization,surpassed-threshold}` headers; choose between 5h vs 7d based on which exceeded.
-17. **Layer 3 (aggregate header)**: fall back to `anthropic-ratelimit-unified-reset` (older format).
-18. **Layer 4 (body parse)**: per-platform body parsers — OpenAI `usage_limit_reached`, Gemini reset format.
-19. **Layer 5 (default)**: 5-minute default for non-Anthropic. **Anthropic 429 with NO reset header → pass-through, no state change** (treats as Extra Usage Required, NOT real rate-limit).
+> **Drift 2026-05-06**: pre-rev Layer 1 parsed `x-codex-*` headers (D4) and pre-rev Layer 2 parsed `anthropic-ratelimit-unified-{5h,7d}-*` headers (D1). Neither header family appears in current vendor documentation (fetched 2026-05-06). This phase is rewritten against the actual documented headers. See [docs/reference_delta/2026-05-06/vendor-drift-audit.md](../reference_delta/2026-05-06/vendor-drift-audit.md).
+
+15. **Layer 1 (OpenAI standard)** — parse `x-ratelimit-{limit,remaining,reset}-{requests,tokens}` plus the usage-based variants `x-ratelimit-{limit,remaining,reset}-tokens_usage_based` (per-day TPD). Choose the axis with the lowest `remaining` and use that `reset` value. **Note**: `x-codex-*` headers do NOT exist in current OpenAI documentation — the legacy parser is removed. Source: developers.openai.com/api/docs/guides/rate-limits (fetched 2026-05-06).
+16. **Layer 2 (Anthropic per-type)** — parse the four-axis Anthropic header set:
+    - `anthropic-ratelimit-{requests,tokens,input-tokens,output-tokens}-{limit,remaining,reset}`
+    - `anthropic-priority-{input-tokens,output-tokens}-{limit,remaining,reset}` (Priority Tier only)
+    All `reset` values are RFC 3339 timestamps. Choose the axis with `remaining == 0` (or the lowest `remaining` if no axis is fully exhausted) and apply that reset. Source: platform.claude.com/docs/en/api/rate-limits (fetched 2026-05-06).
+17. **Layer 3 (Retry-After)** — universal fallback header. `Retry-After` is integer seconds (Anthropic per current docs); HTTP-date format also accepted per RFC 7231 and decoded as absolute time delta.
+18. **Layer 4 (body parse)** — per-platform last-resort parsers: OpenAI `error.message` containing `Rate limit reached for ...` patterns; Vertex/Gemini 429 `RESOURCE_EXHAUSTED` body (no documented reset timestamp; falls back to default cooldown).
+19. **Default** — when no layer extracts a reset, use a 5-minute default with ±15% jitter (Phase A14 harmonizer §A14).
 
 Set Account state to `rate_limited` until reset_at. Apply HUAKAI cooldown jitter ±15%.
 
@@ -103,11 +108,13 @@ When operator or auto-clear triggers ClearRateLimit:
 
 ### Phase G — UpdateSessionWindow (recovery signal handler)
 
+> **Drift 2026-05-06**: pre-rev parsed `anthropic-ratelimit-unified-5h-status` which is not in current Anthropic docs. Recovery now derives from per-type `remaining` deltas across the documented header set.
+
 On successful upstream response:
-29. If headers contain `anthropic-ratelimit-unified-5h-status`:
-    - Parse 5h reset (defensive: detect millisecond timestamps; range-validate `[now-5h, now+7d]`).
-    - Update stored 5h session window.
-    - If status `allowed` while Account currently rate_limited → clear rate_limit (recovery signal).
+29. Parse the documented Anthropic per-type headers (`anthropic-ratelimit-{requests,tokens,input-tokens,output-tokens}-remaining` and matching `-reset`).
+    - For each axis, compare `remaining` against the last-stored value for that account+axis.
+    - If any axis crossed back over the recovery threshold (e.g. `remaining > 25%` of `limit`) while Account is currently `rate_limited` → emit a recovery candidate event to the A22 FSM (which decides if state should clear after additional clean probes).
+    - Defensive: range-validate `reset` timestamps fall within `[now-5h, now+7d]`; ignore obviously-corrupt values.
 
 ## Failure Path
 
@@ -157,9 +164,9 @@ Every failure produces:
 Per [11_ACCEPTANCE_TEST_MATRIX.md](../11_ACCEPTANCE_TEST_MATRIX.md), tests AT-RATE-001..020.
 
 Sub2API-inheritable:
-- AT-RATE-001 / OpenAI 429 with x-codex-* headers + 7d exhausted → SetRateLimited(now + reset_7d).
-- AT-RATE-002 / Anthropic 429 with both windows → SetRateLimited(7d.reset).
-- AT-RATE-003 / Anthropic 429 with NO reset → no state change.
+- AT-RATE-001 / OpenAI 429 with `x-ratelimit-remaining-tokens=0` + `x-ratelimit-reset-tokens=<seconds>` → SetRateLimited(now + reset). (Drift-rev 2026-05-06: pre-rev tested `x-codex-*` which is not in current OpenAI docs; corrected to documented `x-ratelimit-*` headers.)
+- AT-RATE-002 / Anthropic 429 with `anthropic-ratelimit-tokens-remaining=0` + `anthropic-ratelimit-tokens-reset=<RFC3339>` → SetRateLimited(parsed reset). (Drift-rev: pre-rev tested `anthropic-ratelimit-unified-5h-*` and `-7d-*` headers which are not in current Anthropic docs.)
+- AT-RATE-003 / Anthropic 429 with NO documented header AND no `Retry-After` → 5-minute default cooldown with jitter.
 - AT-RATE-004 / OpenAI 401 token_invalidated → permanent disable.
 - AT-RATE-005 / OAuth 401 → temp_unsched + invalidate cache + force expires_at.
 - AT-RATE-006 / Pool mode + 429 + no custom codes → no state change.
