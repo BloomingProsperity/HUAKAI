@@ -3,13 +3,27 @@
 **Date:** 2026-05-06
 **Lane:** claude (drafted independently per CLAUDE.md #10)
 **Author:** Claude Opus 4.7 (1M context)
-**Status:** **Paused (2026-05-06)**
+**Status:** **Anthropic 路径暂停 / 其它 vendor 继续推进 (2026-05-06 修正)**
 
 > **Owner 2026-05-06 directive：** "目前不做 claude 账号反转这一块。留空。
 > 注意 只是先不写 claude 账号反转这一块"
 >
-> 本 plan 描述的 R3 transport mimicry（包括 utls dialer / 抓包后续消费 /
-> JA3 一致性验证 / 真 Anthropic 端到端）全部**暂停实施**。
+> **2026-05-06 修正（Owner 二次澄清）：** "R3 里面只是 claude 账号模块没做，
+> 别的应该要做啊"
+>
+> **范围更新：仅 Anthropic 路径的 R3 transport mimicry（Claude Code 客户端
+> TLS/HTTP2 伪装）暂停**。其它 vendor 反转 + 对应 R3 transport mimicry 应继
+> 续推进：
+> - OpenAI 反转 (ChatGPT Plus / Codex CLI session) → TransportModeMimicryChatGPT
+> - Gemini Advanced 反转 → TransportModeMimicryGeminiAdvanced
+> - Antigravity 反转 → TransportModeMimicryAntigravity
+> - Cursor 反转 → TransportModeMimicryCursor
+> - Copilot 反转 → TransportModeMimicryCopilot
+> - Kiro 反转 → TransportModeMimicryKiro
+> - Windsurf 反转 → TransportModeMimicryWindsurf
+>
+> 这些 mode 已在 transport.allowedModesByProvider 矩阵中注册（commit
+> 待加），utls dialer 实施按 vendor 各家 fingerprint template 分别落地。
 >
 > 已完成 + 保留的部分：
 > - 边界文档（README/LEGAL/collector README）— commit 370838f

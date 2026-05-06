@@ -21,11 +21,17 @@ import (
 type ProviderCode string
 
 const (
-	ProviderAnthropic  ProviderCode = "anthropic"
-	ProviderOpenAI     ProviderCode = "openai"
-	ProviderVertex     ProviderCode = "vertex"
-	ProviderBedrock    ProviderCode = "bedrock"
-	ProviderOpenRouter ProviderCode = "openrouter"
+	ProviderAnthropic   ProviderCode = "anthropic"
+	ProviderOpenAI      ProviderCode = "openai"
+	ProviderVertex      ProviderCode = "vertex"
+	ProviderBedrock     ProviderCode = "bedrock"
+	ProviderOpenRouter  ProviderCode = "openrouter"
+	ProviderGrok        ProviderCode = "grok"
+	ProviderCursor      ProviderCode = "cursor"   // Cursor IDE 反转
+	ProviderCopilot     ProviderCode = "copilot"  // GitHub Copilot 反转
+	ProviderKiro        ProviderCode = "kiro"     // AWS Kiro 反转（独立于 Bedrock）
+	ProviderWindsurf    ProviderCode = "windsurf" // Codeium Windsurf 反转
+	ProviderAntigravity ProviderCode = "antigravity"
 )
 
 // TransportMode 决定 RoundTripper 的形态。
@@ -35,10 +41,32 @@ const (
 	// TransportModeStandard 走 Go 标准 net/http 默认 transport。所有
 	// provider 默认。
 	TransportModeStandard TransportMode = "standard"
-	// TransportModeMimicryClaudeCode 走 R3 transport mimicry：自定义
-	// TLS ClientHello + HTTP/2 SETTINGS 与 Claude Code CLI 一致。**仅
-	// Anthropic provider 允许**。
+	// 各 vendor 反转模式下的 mimicry transport 选项。每家伪装目标不同
+	// （TLS ClientHello + HTTP/2 SETTINGS + ALPN 等），由调用方在 R3
+	// 实施时按 fingerprint template 配置 utls dialer。
+	//
+	// Anthropic 路径（Owner 2026-05-06 directive 暂停反转），但 mode 常量
+	// 保留供未来重启用。
 	TransportModeMimicryClaudeCode TransportMode = "mimicry_claude_code"
+	// TransportModeMimicryChatGPT 伪装为 ChatGPT 网页 / Codex CLI 客户端。
+	// 仅 OpenAI provider 允许。
+	TransportModeMimicryChatGPT TransportMode = "mimicry_chatgpt"
+	// TransportModeMimicryGeminiAdvanced 伪装为 Gemini Advanced 网页客户端。
+	// 仅 Gemini provider 允许。
+	TransportModeMimicryGeminiAdvanced TransportMode = "mimicry_gemini_advanced"
+	// TransportModeMimicryAntigravity 伪装为 Google Antigravity AI agent
+	// 客户端。仅 Gemini/Antigravity provider 允许。
+	TransportModeMimicryAntigravity TransportMode = "mimicry_antigravity"
+	// TransportModeMimicryCursor 伪装为 Cursor IDE 客户端。仅 Cursor 允许。
+	TransportModeMimicryCursor TransportMode = "mimicry_cursor"
+	// TransportModeMimicryCopilot 伪装为 GitHub Copilot 客户端。仅 Copilot 允许。
+	TransportModeMimicryCopilot TransportMode = "mimicry_copilot"
+	// TransportModeMimicryKiro 伪装为 AWS Kiro 客户端。仅 Kiro 允许。
+	TransportModeMimicryKiro TransportMode = "mimicry_kiro"
+	// TransportModeMimicryWindsurf 伪装为 Codeium Windsurf IDE 客户端。
+	// 仅 Windsurf 允许。
+	TransportModeMimicryWindsurf TransportMode = "mimicry_windsurf"
+
 	// TransportModeDiagnosticsOnly 仅做出站连通性诊断（不发真请求体）。
 	// Codex lane plan 提议的 Safe Equivalent 路径，未来 R3 实施时回退用。
 	TransportModeDiagnosticsOnly TransportMode = "diagnostics_only"
@@ -56,28 +84,67 @@ var ErrUnknownMode = errors.New("transport: unknown mode")
 
 // allowedModesByProvider 是 provider × mode 的允许矩阵。在此表外的组合一
 // 律 reject，避免任何"默认放行"的合规漏洞。
+//
+// Owner 2026-05-06 directive：仅 Anthropic 反转（含 ClaudeCode 传输层
+// 伪装）暂停；其它 vendor 的反转 + 对应 mimicry mode 正常允许。
 var allowedModesByProvider = map[ProviderCode]map[TransportMode]bool{
 	ProviderAnthropic: {
 		TransportModeStandard:          true,
-		TransportModeMimicryClaudeCode: true, // 唯一允许 mimicry 的 provider
+		TransportModeMimicryClaudeCode: true, // mode 常量保留，但 caller 不应启用（反转暂停）
 		TransportModeDiagnosticsOnly:   true,
 	},
 	ProviderOpenAI: {
 		TransportModeStandard:        true,
+		TransportModeMimicryChatGPT:  true, // ChatGPT Plus / Codex CLI 反转
 		TransportModeDiagnosticsOnly: true,
-		// 显式不含 mimicry — OpenAI 公开 API 不需要也不应伪装
 	},
 	ProviderVertex: {
-		TransportModeStandard:        true,
-		TransportModeDiagnosticsOnly: true,
+		TransportModeStandard:              true,
+		TransportModeMimicryGeminiAdvanced: true, // Gemini Advanced 反转
+		TransportModeMimicryAntigravity:    true, // Google Antigravity 反转
+		TransportModeDiagnosticsOnly:       true,
 	},
 	ProviderBedrock: {
 		TransportModeStandard:        true,
+		TransportModeMimicryKiro:     true, // AWS Kiro 反转（走 Bedrock 后端）
 		TransportModeDiagnosticsOnly: true,
 	},
 	ProviderOpenRouter: {
 		TransportModeStandard:        true,
 		TransportModeDiagnosticsOnly: true,
+		// OpenRouter 是 meta-aggregator，本身不是反转目标
+	},
+	ProviderGrok: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
+		// xAI Grok 走 API key 直通；本身不是订阅反转目标
+	},
+	ProviderCursor: {
+		TransportModeStandard:      true,
+		TransportModeMimicryCursor: true,
+		// Cursor 反转：用 Cursor 订阅 session 反转成 API
+	},
+	ProviderCopilot: {
+		TransportModeStandard:       true,
+		TransportModeMimicryCopilot: true,
+		// GitHub Copilot 反转：用 GitHub Copilot 订阅 OAuth 反转
+	},
+	ProviderKiro: {
+		TransportModeStandard:    true,
+		TransportModeMimicryKiro: true,
+		// AWS Kiro 反转（独立 ProviderCode；如果走 Bedrock 后端则用
+		// ProviderBedrock + TransportModeMimicryKiro 组合也允许）
+	},
+	ProviderWindsurf: {
+		TransportModeStandard:        true,
+		TransportModeMimicryWindsurf: true,
+		// Codeium Windsurf 反转
+	},
+	ProviderAntigravity: {
+		TransportModeStandard:           true,
+		TransportModeMimicryAntigravity: true,
+		// Google Antigravity 反转（独立 ProviderCode 视未来规划，可能走
+		// Vertex 后端）
 	},
 }
 
@@ -114,7 +181,16 @@ func AllowedModesForProvider(provider ProviderCode) []TransportMode {
 // isKnownMode 判断 mode 是否在 TransportMode 枚举内。
 func isKnownMode(mode TransportMode) bool {
 	switch mode {
-	case TransportModeStandard, TransportModeMimicryClaudeCode, TransportModeDiagnosticsOnly:
+	case TransportModeStandard,
+		TransportModeMimicryClaudeCode,
+		TransportModeMimicryChatGPT,
+		TransportModeMimicryGeminiAdvanced,
+		TransportModeMimicryAntigravity,
+		TransportModeMimicryCursor,
+		TransportModeMimicryCopilot,
+		TransportModeMimicryKiro,
+		TransportModeMimicryWindsurf,
+		TransportModeDiagnosticsOnly:
 		return true
 	}
 	return false
