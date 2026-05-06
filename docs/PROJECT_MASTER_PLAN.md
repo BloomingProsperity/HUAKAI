@@ -83,7 +83,7 @@ Admin / Frontend:          ░░░░░░░░░░░░░░░░░�
 
 **安全增强**：F-RBAC-001 RBAC + 撤销 diff / F-SEC-004 User × Model 限速 / F-SEC-006 多 scope 限速 + 限额 / F-GUARD-001 输出守卫插件
 
-**协议 + 模型**：F-PROTO-002 跨格式翻译 + 损失矩阵 / F-MODEL-001 reasoning_effort 透传
+**协议 + 模型**：F-PROTO-002 跨格式翻译 + 损失矩阵 / F-MODEL-001 reasoning 透传（drift 2026-05-06: OpenAI 当前 nested `reasoning: {effort: ..., summary: ...}` 为 canonical；top-level `reasoning_effort` 是 legacy/deprecated；F-MODEL-001 须以 nested form 为正态）
 
 **计费 + 多租户**：F-BILL-001 价格上下文版本化 / F-GROUP-001 用户组 × 渠道组定价 / F-TENANT-001 租户配置随 API Key 走
 
