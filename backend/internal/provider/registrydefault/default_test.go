@@ -19,6 +19,12 @@ func TestBuild_AllProtocolFamiliesRegistered(t *testing.T) {
 		ProtocolOpenRouterChat,
 		ProtocolBedrockInvoke,
 		ProtocolGrokChat,
+		ProtocolDeepSeekChat,
+		ProtocolMistralChat,
+		ProtocolGroqCloudChat,
+		ProtocolTogetherChat,
+		ProtocolPerplexityChat,
+		ProtocolFireworksChat,
 	}
 	got := r.RegisteredProtocolFamilies()
 	sort.Strings(got)
@@ -68,6 +74,12 @@ func TestBuild_PlatformIDsCorrect(t *testing.T) {
 		ProtocolOpenRouterChat:    "openrouter",
 		ProtocolBedrockInvoke:     "bedrock",
 		ProtocolGrokChat:          "grok",
+		ProtocolDeepSeekChat:      "deepseek",
+		ProtocolMistralChat:       "mistral",
+		ProtocolGroqCloudChat:     "groqcloud",
+		ProtocolTogetherChat:      "together",
+		ProtocolPerplexityChat:    "perplexity",
+		ProtocolFireworksChat:     "fireworks",
 	}
 	for pf, wantPlatform := range cases {
 		a, err := r.For(pf)

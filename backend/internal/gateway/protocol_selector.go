@@ -69,6 +69,15 @@ func (r *StaticProtocolAdapterRegistry) For(family string) (proto.UpstreamAdapte
 }
 
 // BuildDefaultProtocolAdapterRegistry 构造包含当前已实现 adapters 的默认注册表。
+//
+// 以下 6 家 vendor 使用 OpenAIAdapter 解析 SSE，因为它们均实现了
+// OpenAI Chat Completions 兼容协议（data: {"choices":[...]} 形态）：
+//   - deepseek_chat   DeepSeek
+//   - mistral_chat    Mistral AI
+//   - groqcloud_chat  Groq Cloud
+//   - together_chat   Together AI
+//   - perplexity_chat Perplexity AI
+//   - fireworks_chat  Fireworks AI
 func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	r := NewStaticProtocolAdapterRegistry()
 	r.MustRegister("anthropic_messages", &proto.AnthropicAdapter{CarryForwardSignatureDelta: false})
@@ -79,6 +88,13 @@ func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	// 复用 OpenAIAdapter；若后续观测到形态差异再做专用 CodexSessionSSEAdapter。
 	r.MustRegister("openai_codex", &proto.OpenAIAdapter{})
 	r.MustRegister("gemini_messages", &proto.GeminiAdapter{})
+	// 以下 6 家均走 OpenAI Chat Completions 兼容 SSE；复用 OpenAIAdapter。
+	r.MustRegister("deepseek_chat", &proto.OpenAIAdapter{})
+	r.MustRegister("mistral_chat", &proto.OpenAIAdapter{})
+	r.MustRegister("groqcloud_chat", &proto.OpenAIAdapter{})
+	r.MustRegister("together_chat", &proto.OpenAIAdapter{})
+	r.MustRegister("perplexity_chat", &proto.OpenAIAdapter{})
+	r.MustRegister("fireworks_chat", &proto.OpenAIAdapter{})
 	return r
 }
 

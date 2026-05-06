@@ -33,6 +33,13 @@ const (
 	ProviderKiro        ProviderCode = "kiro"     // AWS Kiro 反转（独立于 Bedrock）
 	ProviderWindsurf    ProviderCode = "windsurf" // Codeium Windsurf 反转
 	ProviderAntigravity ProviderCode = "antigravity"
+	// 以下 6 家为 OpenAI 兼容直通 API key 路径，不做订阅反转。
+	ProviderDeepSeek   ProviderCode = "deepseek"
+	ProviderMistral    ProviderCode = "mistral"
+	ProviderGroqCloud  ProviderCode = "groqcloud"
+	ProviderTogether   ProviderCode = "together"
+	ProviderPerplexity ProviderCode = "perplexity"
+	ProviderFireworks  ProviderCode = "fireworks"
 )
 
 // TransportMode 决定 RoundTripper 的形态。
@@ -154,6 +161,31 @@ var allowedModesByProvider = map[ProviderCode]map[TransportMode]bool{
 		TransportModeMimicryAntigravity: true,
 		// Google Antigravity 反转（独立 ProviderCode 视未来规划，可能走
 		// Vertex 后端）
+	},
+	// 以下 6 家走 API key 直通；不是订阅反转目标，仅 standard + diagnostics。
+	ProviderDeepSeek: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
+	},
+	ProviderMistral: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
+	},
+	ProviderGroqCloud: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
+	},
+	ProviderTogether: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
+	},
+	ProviderPerplexity: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
+	},
+	ProviderFireworks: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
 	},
 }
 
