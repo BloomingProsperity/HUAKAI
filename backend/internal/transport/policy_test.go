@@ -33,6 +33,16 @@ func TestValidateModeForProvider_Matrix(t *testing.T) {
 		{name: "Windsurf + mimicry_windsurf 允许", provider: ProviderWindsurf, mode: TransportModeMimicryWindsurf},
 		{name: "OpenRouter + 任意 mimicry 拒绝（meta-aggregator 不反转）", provider: ProviderOpenRouter, mode: TransportModeMimicryChatGPT, wantErrIs: ErrModeNotAllowedForProvider},
 		{name: "Grok + mimicry 拒绝", provider: ProviderGrok, mode: TransportModeMimicryChatGPT, wantErrIs: ErrModeNotAllowedForProvider},
+		// 6 家 OpenAI 兼容直通 — standard 允许
+		{name: "DeepSeek + standard 允许", provider: ProviderDeepSeek, mode: TransportModeStandard},
+		{name: "Mistral + standard 允许", provider: ProviderMistral, mode: TransportModeStandard},
+		{name: "GroqCloud + standard 允许", provider: ProviderGroqCloud, mode: TransportModeStandard},
+		{name: "Together + standard 允许", provider: ProviderTogether, mode: TransportModeStandard},
+		{name: "Perplexity + standard 允许", provider: ProviderPerplexity, mode: TransportModeStandard},
+		{name: "Fireworks + standard 允许", provider: ProviderFireworks, mode: TransportModeStandard},
+		// 跨 vendor mimicry 拒绝
+		{name: "DeepSeek + mimicry_chatgpt 跨 vendor 拒绝", provider: ProviderDeepSeek, mode: TransportModeMimicryChatGPT, wantErrIs: ErrModeNotAllowedForProvider},
+		{name: "Fireworks + mimicry_cursor 跨 vendor 拒绝", provider: ProviderFireworks, mode: TransportModeMimicryCursor, wantErrIs: ErrModeNotAllowedForProvider},
 		{name: "未知 provider", provider: ProviderCode("acme"), mode: TransportModeStandard, wantErrIs: ErrUnknownProvider},
 		{name: "未知 mode", provider: ProviderAnthropic, mode: TransportMode("turbo"), wantErrIs: ErrUnknownMode},
 	}
@@ -69,6 +79,13 @@ func TestAllowedModesForProvider(t *testing.T) {
 		{ProviderKiro, 2},
 		{ProviderWindsurf, 2},
 		{ProviderAntigravity, 2},
+		// 6 家 OpenAI 兼容直通：standard + diagnostics = 2 种 mode
+		{ProviderDeepSeek, 2},
+		{ProviderMistral, 2},
+		{ProviderGroqCloud, 2},
+		{ProviderTogether, 2},
+		{ProviderPerplexity, 2},
+		{ProviderFireworks, 2},
 	}
 	for _, c := range cases {
 		got := AllowedModesForProvider(c.provider)

@@ -16,16 +16,28 @@
 //   - openrouter_chat        OpenRouter（OpenAI 兼容）
 //   - bedrock_invoke         AWS Bedrock Runtime invoke
 //   - grok_chat              xAI Grok（OpenAI 兼容）
+//   - deepseek_chat          DeepSeek（OpenAI 兼容）
+//   - mistral_chat           Mistral AI（OpenAI 兼容）
+//   - groqcloud_chat         Groq Cloud（OpenAI 兼容）
+//   - together_chat          Together AI（OpenAI 兼容）
+//   - perplexity_chat        Perplexity AI（OpenAI 兼容）
+//   - fireworks_chat         Fireworks AI（OpenAI 兼容）
 package registrydefault
 
 import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/bedrock"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/deepseek"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/fireworks"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/gemini"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/grok"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/groqcloud"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/mistral"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openrouter"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/perplexity"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/together"
 )
 
 // Protocol family 常量。供配置层与 router 共享。
@@ -38,6 +50,12 @@ const (
 	ProtocolOpenRouterChat    = "openrouter_chat"
 	ProtocolBedrockInvoke     = "bedrock_invoke"
 	ProtocolGrokChat          = "grok_chat"
+	ProtocolDeepSeekChat      = "deepseek_chat"
+	ProtocolMistralChat       = "mistral_chat"
+	ProtocolGroqCloudChat     = "groqcloud_chat"
+	ProtocolTogetherChat      = "together_chat"
+	ProtocolPerplexityChat    = "perplexity_chat"
+	ProtocolFireworksChat     = "fireworks_chat"
 )
 
 // Build 创建注册表并注册全部已实现 vendor adapter。失败时 panic — 启动
@@ -65,6 +83,14 @@ func Build() *provider.StaticRegistry {
 	r.MustRegister(ProtocolOpenRouterChat, &openrouter.PassthroughAdapter{})
 	r.MustRegister(ProtocolBedrockInvoke, &bedrock.PassthroughAdapter{})
 	r.MustRegister(ProtocolGrokChat, &grok.PassthroughAdapter{})
+
+	// 以下 6 家为 OpenAI Chat Completions 兼容直通 API key 路径。
+	r.MustRegister(ProtocolDeepSeekChat, &deepseek.PassthroughAdapter{})
+	r.MustRegister(ProtocolMistralChat, &mistral.PassthroughAdapter{})
+	r.MustRegister(ProtocolGroqCloudChat, &groqcloud.PassthroughAdapter{})
+	r.MustRegister(ProtocolTogetherChat, &together.PassthroughAdapter{})
+	r.MustRegister(ProtocolPerplexityChat, &perplexity.PassthroughAdapter{})
+	r.MustRegister(ProtocolFireworksChat, &fireworks.PassthroughAdapter{})
 
 	return r
 }

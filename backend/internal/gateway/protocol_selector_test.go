@@ -149,7 +149,12 @@ func TestBuildDefaultProtocolAdapterRegistry(t *testing.T) {
 		t.Fatal("anthropic_messages CarryForwardSignatureDelta = true, want false")
 	}
 
-	for _, family := range []string{"openai_chat", "openai_responses", "openai_codex"} {
+	for _, family := range []string{
+		"openai_chat", "openai_responses", "openai_codex",
+		// 6 家 OpenAI 兼容直通，均注册为 OpenAIAdapter
+		"deepseek_chat", "mistral_chat", "groqcloud_chat",
+		"together_chat", "perplexity_chat", "fireworks_chat",
+	} {
 		got, err := r.For(family)
 		if err != nil {
 			t.Fatalf("For(%s) error = %v", family, err)
