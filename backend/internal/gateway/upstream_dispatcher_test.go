@@ -16,10 +16,10 @@ import (
 
 // stubAdapter 是测试用的最小 Adapter 实现。
 type stubAdapter struct {
-	platform   string
-	endpoint   string
-	buildErr   error
-	lastInput  provider.BuildInput
+	platform  string
+	endpoint  string
+	buildErr  error
+	lastInput provider.BuildInput
 }
 
 func (s *stubAdapter) Platform() string { return s.platform }
@@ -320,6 +320,22 @@ func TestDispatcher_ApplyProxy_ResolverErrorPropagates(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ProxyResolver.Resolve 失败") {
 		t.Errorf("err=%v want 含 'ProxyResolver.Resolve 失败'", err)
+	}
+}
+
+// TestDispatcher_ApplyProxy_MisconfiguredPropagates 安全回归：
+// ErrProxyResolverMisconfigured（DI 错误）必须传播，不能 fall-through 为
+// 直连——否则所有账号会静默绕过代理，破坏账号级 IP 隔离。
+func TestDispatcher_ApplyProxy_MisconfiguredPropagates(t *testing.T) {
+	res := &recordingProxyResolver{err: provider.ErrProxyResolverMisconfigured}
+	d := &UpstreamDispatcher{ProxyResolver: res}
+	rt := &http.Transport{}
+	_, err := d.applyProxy(context.Background(), rt, 13)
+	if err == nil {
+		t.Fatal("ErrProxyResolverMisconfigured 必须传播，绝不能当成直连")
+	}
+	if !errors.Is(err, provider.ErrProxyResolverMisconfigured) {
+		t.Errorf("err=%v want wraps ErrProxyResolverMisconfigured", err)
 	}
 }
 

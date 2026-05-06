@@ -14,6 +14,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"sync"
@@ -24,11 +25,20 @@ import (
 // Resolve 返回值语义：
 //   - (*url.URL, nil)：成功，非 nil URL 表示使用该代理，nil URL 表示
 //     直连（已明确配置无代理）
-//   - (nil, ErrAccountNotFound)：账号未在 resolver 中注册
+//   - (nil, ErrAccountNotFound)：账号未在 resolver 中注册（生产路径视为直连）
+//   - (nil, ErrProxyResolverMisconfigured)：resolver 自身 nil / pool nil
+//     等基础设施错误（**不能**当成 ErrAccountNotFound 处理，否则
+//     misconfig 会让所有账号 fail-open 绕过代理 → 破坏账号级 IP 隔离）
 //   - (nil, other error)：其他解析错误
 type ProxyResolver interface {
 	Resolve(ctx context.Context, accountID int64) (*url.URL, error)
 }
+
+// ErrProxyResolverMisconfigured 表示 ProxyResolver 自身基础设施错误
+// （nil receiver / nil pool / 未初始化）。与 ErrAccountNotFound 严格区分：
+// 后者是"账号无代理偏好 → 直连"，前者是"resolver 不可用 → 必须 fail-loud
+// 让 dispatcher 拒绝放行请求"。
+var ErrProxyResolverMisconfigured = errors.New("provider: proxy resolver misconfigured")
 
 // StaticProxyResolver 是基于内存 map 的静态代理解析器。线程安全。
 type StaticProxyResolver struct {
@@ -57,10 +67,11 @@ func (r *StaticProxyResolver) Set(accountID int64, proxyURL *url.URL) error {
 }
 
 // Resolve 按 accountID 返回代理 URL。
-// nil URL + nil error 表示已注册且直连；ErrAccountNotFound 表示未注册。
+// nil URL + nil error 表示已注册且直连；ErrAccountNotFound 表示未注册；
+// ErrProxyResolverMisconfigured 表示 resolver 自身 nil（DI 错误，必须 fail-loud）。
 func (r *StaticProxyResolver) Resolve(_ context.Context, accountID int64) (*url.URL, error) {
 	if r == nil {
-		return nil, ErrAccountNotFound
+		return nil, ErrProxyResolverMisconfigured
 	}
 	r.mu.RLock()
 	proxyURL, ok := r.entries[accountID]

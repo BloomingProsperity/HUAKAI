@@ -2,12 +2,12 @@
 // 客户端拼成一次出站调用。chat_completions_handler 调它替代既有 mock。
 //
 // 责任：
-//   1. 按 ProtocolFamily 选对应 provider.Adapter
-//   2. 调 Adapter.BuildRequest 构造 *http.Request
-//   3. 按 (provider, mode) 从 transport.Factory 取 RoundTripper
-//   4. 发出请求，拿 response.Body 给 forwarder 消费
-//   5. 不解析 body / 不消费 stream / 不计费 — 这些由 forwarder + proto
-//      adapter 负责
+//  1. 按 ProtocolFamily 选对应 provider.Adapter
+//  2. 调 Adapter.BuildRequest 构造 *http.Request
+//  3. 按 (provider, mode) 从 transport.Factory 取 RoundTripper
+//  4. 发出请求，拿 response.Body 给 forwarder 消费
+//  5. 不解析 body / 不消费 stream / 不计费 — 这些由 forwarder + proto
+//     adapter 负责
 //
 // 故意保持薄：所有 vendor-specific 行为收敛到 Adapter；所有 transport-
 // specific 行为收敛到 transport.Factory；本文件只做组装。
@@ -156,7 +156,10 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 //   - resolver 返回 ErrAccountNotFound（未注册 = 直连，非错误）
 //   - resolver 返回 nil URL（已注册但明确直连）
 //
-// 仅在 resolver 返回非 NotFound 错误时返回 (nil, err)。
+// 仅在 resolver 返回非 NotFound 错误时返回 (nil, err)。特别地，
+// ErrProxyResolverMisconfigured（DI / 配置错误）会**直接传播**，
+// 不会 fail-open 到直连——否则 misconfig 会让所有账号绕过代理，破坏
+// 账号级 IP 隔离。
 func (d *UpstreamDispatcher) applyProxy(ctx context.Context, rt http.RoundTripper, accountID int64) (http.RoundTripper, error) {
 	if d.ProxyResolver == nil || accountID == 0 {
 		return rt, nil
