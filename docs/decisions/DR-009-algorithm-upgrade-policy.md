@@ -83,6 +83,8 @@ Phase C (~56h, capacity + stream):
 
 Phase D (~84h, P1):
   A03, A05a, A05b, A08a, A08b, A10, A12b, A14, A16a, A18, A20, A24, A29
+  注: A20 includes merged A28 (Claude 跨 vendor fault-domain 故障感知 →
+      A20 Fault-Domain Spillover Guard 的 domain_health 指数衰减输入)
 
 Phase E (~16h, P2/P3):
   A16b, A27, A14b

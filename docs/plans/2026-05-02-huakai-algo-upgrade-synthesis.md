@@ -305,13 +305,22 @@ Phase C (~56h, capacity + stream):
   A26 drain decision
   A04 sticky migration manifest
 
-Phase D (~80h, P1 提升):
-  A03, A05a, A05b, A08a, A08b, A10, A12b, A14, A16a, A18, A20, A24
+Phase D (~84h, P1 提升):
+  A03, A05a, A05b, A08a, A08b, A10, A12b, A14, A16a, A18, A20, A24, A29
 
 Phase E (~11h, P2/P3):
   A16b, A27, A14b
 ```
 
-## 8. 一行总结
+注：Claude A28（跨 vendor fault-domain 故障感知）已合并入 Codex A20（Fault-Domain Spillover Guard）— A20 现包含 A28 的指数衰减 domain_health counter 作为 residual 输入。30 个最终 A-IDs（A01-A27 + A29，A05/A08/A12/A14/A16 各拆 a/b 子项）；A28 不再独立列出。
 
-**Claude 提供"算法不变量 + 伪代码深度"，Codex 提供"schema 字段 + 测试 ID + attribution 完整性"，合并后 30 项 A-编号、3 phase ~210h P0 + 80h P1**，把 Commercial-Pool-Ref 的 5 层调度替换为 binding-first × Pareto-band × attempt-DAG × hysteresis-FSM × min-residual-graph 的"每决策都有数学不变量"路径，执行起点是 Phase A 6 项与 N+5b spine 协同落地。
+## 8. 修订计数（per Codex retro-review fc4460d 之后）
+
+§4 P0 实列 17 项（A01/A02/A04/A06/A07/A09/A11/A12a/A13/A15/A17/A19/A21/A22/A23/A25/A26）— ~206h
+§4 P1 实列 13 项含 A29（A03/A05a/A05b/A08a/A08b/A10/A12b/A14/A16a/A18/A20/A24/A29）— ~84h
+§4 P2 2 项（A16b/A27）+ P3 1 项（A14b）— ~11h
+**合计 33 子项落地（30 个 A-IDs，5 个有 a/b 子拆）；总 effort ~301h**
+
+## 9. 一行总结
+
+**Claude 提供"算法不变量 + 伪代码深度"，Codex 提供"schema 字段 + 测试 ID + attribution 完整性"，合并后 30 个 A-IDs（含 5 个 a/b 子拆）共 33 子项 ~301h（P0 17 项 ~206h + P1 13 项 ~84h + P2/P3 3 项 ~11h）**，把 Commercial-Pool-Ref 的 5 层调度替换为 binding-first × Pareto-band × attempt-DAG × hysteresis-FSM × min-residual-graph 的"每决策都有数学不变量"路径，执行起点是 Phase A 6 项与 N+5b spine 协同落地。
