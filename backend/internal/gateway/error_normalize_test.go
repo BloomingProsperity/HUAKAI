@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// AT-RATE-021 — invalid_grant in 401 body → R-001 → iron_clad → disabled.
+// AT-RATE-021 - invalid_grant in 401 body -> R-001 -> iron_clad -> disabled.
 func TestClassify_R001_InvalidGrant(t *testing.T) {
 	c, err := Classify(401, nil, []byte(`{"error":"invalid_grant"}`), "openai")
 	if err != nil {
@@ -21,7 +21,7 @@ func TestClassify_R001_InvalidGrant(t *testing.T) {
 	}
 }
 
-// AT-RATE-022 — generic 5xx → R-015 → ambiguous → degraded, NOT disabled.
+// AT-RATE-022 - generic 5xx -> R-015 -> ambiguous -> degraded, NOT disabled.
 func TestClassify_R015_5xx_NeverDisabled(t *testing.T) {
 	c, err := Classify(503, nil, []byte("internal error"), "openai")
 	if err != nil {
@@ -35,7 +35,7 @@ func TestClassify_R015_5xx_NeverDisabled(t *testing.T) {
 	}
 }
 
-// AT-RATE-023 — unknown error → R-016 catch-all → pass_through.
+// AT-RATE-023 - unknown error -> R-016 catch-all -> pass_through.
 func TestClassify_R016_Wildcard(t *testing.T) {
 	c, err := Classify(418, nil, []byte("teapot"), "fictional_provider")
 	if err != nil {
@@ -46,7 +46,7 @@ func TestClassify_R016_Wildcard(t *testing.T) {
 	}
 }
 
-// DR-009 §6.6 hard-floor invariant: no ambiguous rule can yield disabled.
+// DR-009 6.6 hard-floor invariant: no ambiguous rule can yield disabled.
 func TestSixSixInvariant_AmbiguousNeverDisables(t *testing.T) {
 	for _, r := range errorRules {
 		if r.Tier != TierAmbiguous {
@@ -54,7 +54,7 @@ func TestSixSixInvariant_AmbiguousNeverDisables(t *testing.T) {
 		}
 		got := transitionFor(r.Action, r.Tier)
 		if got == FsmTransitionDisabled {
-			t.Fatalf("rule %s ambiguous→disabled violation", r.RuleID)
+			t.Fatalf("rule %s ambiguous->disabled violation", r.RuleID)
 		}
 	}
 }
@@ -67,7 +67,15 @@ func TestIsIronCladKeyword_Exactly5(t *testing.T) {
 			t.Errorf("missing iron_clad keyword %q", k)
 		}
 	}
-	for _, k := range []string{"token_invalidated", "credit", "credit balance", "validation", "throttling"} {
+	for _, k := range []string{
+		"token_invalidated",
+		"credit",
+		"credit balance",
+		"validation",
+		"throttling",
+		"ThrottlingException",
+		"ServiceUnavailableException",
+	} {
 		if IsIronCladKeyword(k) {
 			t.Errorf("keyword %q must NOT be iron_clad (only 5 are)", k)
 		}
@@ -77,7 +85,7 @@ func TestIsIronCladKeyword_Exactly5(t *testing.T) {
 	}
 }
 
-// 429 with Retry-After integer header → cooldown + retry_after_ms parsed.
+// 429 with Retry-After integer header -> cooldown + retry_after_ms parsed.
 func TestClassify_R013_RateLimitedWithRetryAfter(t *testing.T) {
 	h := http.Header{"Retry-After": []string{"30"}}
 	c, _ := Classify(429, h, nil, "openai")
@@ -89,7 +97,7 @@ func TestClassify_R013_RateLimitedWithRetryAfter(t *testing.T) {
 	}
 }
 
-// Retry-After HTTP-date format (RFC 7231) — Codex side strength preserved.
+// Retry-After HTTP-date format (RFC 7231) - Codex side strength preserved.
 func TestRetryAfter_HttpDateFormat(t *testing.T) {
 	future := time.Now().Add(2 * time.Minute).UTC().Format(http.TimeFormat)
 	h := http.Header{"Retry-After": []string{future}}
@@ -99,23 +107,55 @@ func TestRetryAfter_HttpDateFormat(t *testing.T) {
 	}
 }
 
-// Provider-specific rule wins over wildcard at same priority.
+// Bedrock 429 ThrottlingException uses R-018 ahead of generic 429.
 func TestProviderSpecificity_BedrockThrottling(t *testing.T) {
-	c, _ := Classify(503, nil, []byte("throttling exception"), "bedrock")
+	c, _ := Classify(429, nil, []byte("ThrottlingException"), "bedrock")
 	if c.RuleID != "R-018" {
 		t.Fatalf("got rule=%s; want R-018 (bedrock throttling)", c.RuleID)
 	}
 	if c.Class != ErrorClassRateLimited {
 		t.Fatalf("class=%s; want upstream_rate_limited", c.Class)
 	}
-	// Other provider with the same 503: falls through to R-015.
-	c2, _ := Classify(503, nil, []byte("throttling"), "openai")
-	if c2.RuleID != "R-015" {
-		t.Fatalf("openai 503 got rule=%s; want R-015", c2.RuleID)
+	// Other provider with the same 429 falls through to generic R-013.
+	c2, _ := Classify(429, nil, []byte("ThrottlingException"), "openai")
+	if c2.RuleID != "R-013" {
+		t.Fatalf("openai 429 got rule=%s; want R-013", c2.RuleID)
 	}
 }
 
-// Anthropic 403 with "validation" body → permanent disable (R-011).
+func TestR018_BedrockThrottling429(t *testing.T) {
+	c, err := Classify(429, nil, []byte(`{"type":"ThrottlingException"}`), "bedrock")
+	if err != nil {
+		t.Fatalf("classify err: %v", err)
+	}
+	if c.RuleID != "R-018" || c.RuleVersion != 2 {
+		t.Fatalf("got rule=%s version=%d; want R-018 version 2", c.RuleID, c.RuleVersion)
+	}
+	if c.Class != ErrorClassRateLimited || c.RetryAction != RetryActionCooldown || c.Tier != TierAmbiguous {
+		t.Fatalf("got class=%s action=%s tier=%s; want rate_limited cooldown ambiguous", c.Class, c.RetryAction, c.Tier)
+	}
+}
+
+func TestR020_Bedrock503ServiceUnavailable(t *testing.T) {
+	c, err := Classify(503, nil, []byte(`{"type":"ServiceUnavailableException"}`), "bedrock")
+	if err != nil {
+		t.Fatalf("classify err: %v", err)
+	}
+	if c.RuleID != "R-020" {
+		t.Fatalf("got rule=%s; want R-020", c.RuleID)
+	}
+	if c.Class != ErrorClassOverloaded {
+		t.Fatalf("class=%s; want upstream_overloaded", c.Class)
+	}
+	if c.Class == ErrorClassRateLimited {
+		t.Fatal("bedrock ServiceUnavailableException must not be rate_limited")
+	}
+	if c.RetryAction != RetryActionCooldown || c.Tier != TierAmbiguous || c.FsmTransition != FsmTransitionCooling {
+		t.Fatalf("got action=%s tier=%s fsm=%s; want cooldown ambiguous cooling", c.RetryAction, c.Tier, c.FsmTransition)
+	}
+}
+
+// Anthropic 403 with "validation" body -> permanent disable (R-011).
 func TestAnthropic403Validation_R011(t *testing.T) {
 	c, _ := Classify(403, nil, []byte(`{"error":"validation failed"}`), "anthropic")
 	if c.RuleID != "R-011" {
@@ -134,7 +174,7 @@ func TestProviderAlias_AnthropicMessages(t *testing.T) {
 	}
 }
 
-// Generic 401 without keyword → R-009 permanent disable.
+// Generic 401 without keyword -> R-009 permanent disable.
 func TestClassify_R009_Generic401(t *testing.T) {
 	c, _ := Classify(401, nil, []byte(`{"detail":"unauthorized"}`), "openai")
 	if c.RuleID != "R-009" {
@@ -145,9 +185,9 @@ func TestClassify_R009_Generic401(t *testing.T) {
 	}
 }
 
-// 402 with credit_balance keyword → R-007 (priority 20 wins over generic R-014).
+// Anthropic 402 with credit keyword -> R-007.
 func TestClassify_R007_CreditExhausted(t *testing.T) {
-	c, _ := Classify(402, nil, []byte("Insufficient credit balance"), "openai")
+	c, _ := Classify(402, nil, []byte("Insufficient credit balance"), "anthropic")
 	if c.RuleID != "R-007" {
 		t.Fatalf("got rule=%s; want R-007", c.RuleID)
 	}
@@ -156,7 +196,59 @@ func TestClassify_R007_CreditExhausted(t *testing.T) {
 	}
 }
 
-// Iron-clad token_invalidated alias → R-006 → token_revoked.
+func TestR005_OpenAIDeactivatedWorkspaceAnyStatus(t *testing.T) {
+	c, err := Classify(400, nil, []byte(`{"code":"deactivated_workspace"}`), "openai")
+	if err != nil {
+		t.Fatalf("classify err: %v", err)
+	}
+	if c.RuleID != "R-005" || c.RuleVersion != 2 {
+		t.Fatalf("got rule=%s version=%d; want R-005 version 2", c.RuleID, c.RuleVersion)
+	}
+	if c.Class != ErrorClassWorkspaceDeactivated || c.Tier != TierIronClad {
+		t.Fatalf("got class=%s tier=%s; want workspace_deactivated iron_clad", c.Class, c.Tier)
+	}
+}
+
+func TestR007_AnthropicCreditExhausted(t *testing.T) {
+	c, err := Classify(402, nil, []byte(`{"error":"credit exhausted"}`), "anthropic")
+	if err != nil {
+		t.Fatalf("classify err: %v", err)
+	}
+	if c.RuleID != "R-007" || c.RuleVersion != 2 {
+		t.Fatalf("got rule=%s version=%d; want R-007 version 2", c.RuleID, c.RuleVersion)
+	}
+	if c.Class != ErrorClassCreditExhausted || c.FsmTransition != FsmTransitionDisabled {
+		t.Fatalf("got class=%s fsm=%s; want credit_exhausted disabled", c.Class, c.FsmTransition)
+	}
+}
+
+func TestR007_NotOpenAI(t *testing.T) {
+	c, err := Classify(402, nil, []byte(`{"error":"credit exhausted"}`), "openai")
+	if err != nil {
+		t.Fatalf("classify err: %v", err)
+	}
+	if c.RuleID == "R-007" {
+		t.Fatal("openai 402+credit must not match R-007")
+	}
+	if c.RuleID != "R-016" || c.Class != ErrorClassUnknown {
+		t.Fatalf("got rule=%s class=%s; want R-016 unknown", c.RuleID, c.Class)
+	}
+}
+
+func TestR008_AnthropicCreditBalance400(t *testing.T) {
+	c, err := Classify(400, nil, []byte("credit balance too low"), "anthropic")
+	if err != nil {
+		t.Fatalf("classify err: %v", err)
+	}
+	if c.RuleID != "R-008" || c.RuleVersion != 2 {
+		t.Fatalf("got rule=%s version=%d; want R-008 version 2", c.RuleID, c.RuleVersion)
+	}
+	if c.Class != ErrorClassCreditExhausted {
+		t.Fatalf("class=%s; want credit_exhausted", c.Class)
+	}
+}
+
+// Iron-clad token_invalidated alias -> R-006 -> token_revoked.
 func TestClassify_R006_TokenInvalidatedAlias(t *testing.T) {
 	c, _ := Classify(401, nil, []byte("token_invalidated"), "openai")
 	if c.RuleID != "R-006" || c.Class != ErrorClassTokenRevoked {
@@ -164,7 +256,7 @@ func TestClassify_R006_TokenInvalidatedAlias(t *testing.T) {
 	}
 }
 
-// Synthesized network timeout: status 0 + body "timeout" → R-019.
+// Synthesized network timeout: status 0 + body "timeout" -> R-019.
 func TestClassify_R019_SynthesizedTimeout(t *testing.T) {
 	c, _ := Classify(0, nil, []byte("upstream connection timeout"), "openai")
 	if c.RuleID != "R-019" {
@@ -282,6 +374,6 @@ func TestClassify_NilBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(string(c.Class), "upstream_") {
-		// Acceptable result is rate_limited
+		// Acceptable result is rate_limited.
 	}
 }
