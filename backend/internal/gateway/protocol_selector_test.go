@@ -161,6 +161,14 @@ func TestBuildDefaultProtocolAdapterRegistry(t *testing.T) {
 			t.Fatalf("For(%s) adapter type = %T, want *proto.OpenAIAdapter", family, got)
 		}
 	}
+
+	gemini, err := r.For("gemini_messages")
+	if err != nil {
+		t.Fatalf("For(gemini_messages) error = %v", err)
+	}
+	if _, ok := gemini.(*proto.GeminiAdapter); !ok {
+		t.Fatalf("gemini_messages adapter type = %T, want *proto.GeminiAdapter", gemini)
+	}
 }
 
 func assertPanic(t *testing.T, fn func()) {

@@ -74,6 +74,7 @@ func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	r.MustRegister("anthropic_messages", &proto.AnthropicAdapter{CarryForwardSignatureDelta: false})
 	r.MustRegister("openai_chat", &proto.OpenAIAdapter{})
 	r.MustRegister("openai_responses", &proto.OpenAIAdapter{})
+	r.MustRegister("gemini_messages", &proto.GeminiAdapter{})
 	return r
 }
 
