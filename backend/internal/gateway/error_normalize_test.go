@@ -347,26 +347,6 @@ func TestConfidenceForTier(t *testing.T) {
 	}
 }
 
-// 12 ErrorClass constants distinct + accounted for.
-func TestErrorClass_TwelveDistinct(t *testing.T) {
-	classes := []ErrorClass{
-		ErrorClassOAuthInvalidGrant, ErrorClassTokenRevoked, ErrorClassKYCRequired,
-		ErrorClassOrgDisabled, ErrorClassWorkspaceDeactivated, ErrorClassCreditExhausted,
-		ErrorClassPlatformPolicy, ErrorClassRateLimited, ErrorClassOverloaded,
-		ErrorClassServerError, ErrorClassNetworkTimeout, ErrorClassUnknown,
-	}
-	if len(classes) != 12 {
-		t.Fatalf("class list size = %d; want 12", len(classes))
-	}
-	seen := map[ErrorClass]struct{}{}
-	for _, c := range classes {
-		if _, dup := seen[c]; dup {
-			t.Fatalf("duplicate ErrorClass: %s", c)
-		}
-		seen[c] = struct{}{}
-	}
-}
-
 // Body matching does not panic on nil body.
 func TestClassify_NilBody(t *testing.T) {
 	c, err := Classify(429, nil, nil, "openai")
@@ -375,5 +355,134 @@ func TestClassify_NilBody(t *testing.T) {
 	}
 	if !strings.HasPrefix(string(c.Class), "upstream_") {
 		// Acceptable result is rate_limited.
+	}
+}
+
+// ---------------------------------------------------------------------------
+// D8 new tests (5+)
+// ---------------------------------------------------------------------------
+
+// TestR021_Anthropic402Billing: anthropic 402 no body -> R-021 -> CreditExhausted iron_clad.
+// R-021 is the catch-all billing rule at priority 25, after keyword-specific R-007 (priority 20).
+func TestR021_Anthropic402Billing(t *testing.T) {
+	c, err := Classify(402, nil, []byte(`{"type":"billing_error"}`), "anthropic")
+	if err != nil {
+		t.Fatalf("classify err: %v", err)
+	}
+	if c.RuleID != "R-021" {
+		t.Fatalf("got rule=%s; want R-021 (anthropic 402 catch-all billing)", c.RuleID)
+	}
+	if c.Class != ErrorClassCreditExhausted {
+		t.Fatalf("class=%s; want credit_exhausted", c.Class)
+	}
+	if c.Tier != TierIronClad {
+		t.Fatalf("tier=%s; want iron_clad", c.Tier)
+	}
+	if c.FsmTransition != FsmTransitionDisabled {
+		t.Fatalf("fsm=%s; want disabled (iron_clad permanent_disable)", c.FsmTransition)
+	}
+	if c.RetryAction != RetryActionPermanentDisable {
+		t.Fatalf("action=%s; want permanent_disable", c.RetryAction)
+	}
+}
+
+// TestR022_Anthropic504Timeout: anthropic 504 -> R-022 -> UpstreamTimeout ambiguous cooldown.
+func TestR022_Anthropic504Timeout(t *testing.T) {
+	c, err := Classify(504, nil, []byte(`{"type":"timeout_error"}`), "anthropic")
+	if err != nil {
+		t.Fatalf("classify err: %v", err)
+	}
+	if c.RuleID != "R-022" {
+		t.Fatalf("got rule=%s; want R-022 (anthropic 504 upstream timeout)", c.RuleID)
+	}
+	if c.Class != ErrorClassUpstreamTimeout {
+		t.Fatalf("class=%s; want upstream_timeout", c.Class)
+	}
+	if c.Tier != TierAmbiguous {
+		t.Fatalf("tier=%s; want ambiguous", c.Tier)
+	}
+	if c.RetryAction != RetryActionCooldown {
+		t.Fatalf("action=%s; want cooldown", c.RetryAction)
+	}
+	if c.FsmTransition != FsmTransitionCooling {
+		t.Fatalf("fsm=%s; want cooling_down", c.FsmTransition)
+	}
+	// Hard-floor check: ambiguous must never reach disabled.
+	if c.FsmTransition == FsmTransitionDisabled {
+		t.Fatal("DR-009 6.6 violation: ambiguous R-022 reached disabled")
+	}
+}
+
+// TestR023_Anthropic413RequestTooLarge: anthropic 413 -> R-023 -> RequestTooLarge
+// none tier pass_through (client error, no FSM change).
+func TestR023_Anthropic413RequestTooLarge(t *testing.T) {
+	c, err := Classify(413, nil, []byte(`{"type":"request_too_large"}`), "anthropic")
+	if err != nil {
+		t.Fatalf("classify err: %v", err)
+	}
+	if c.RuleID != "R-023" {
+		t.Fatalf("got rule=%s; want R-023 (anthropic 413 request too large)", c.RuleID)
+	}
+	if c.Class != ErrorClassRequestTooLarge {
+		t.Fatalf("class=%s; want request_too_large", c.Class)
+	}
+	if c.Tier != TierNone {
+		t.Fatalf("tier=%s; want none (client error, not provider fault)", c.Tier)
+	}
+	if c.RetryAction != RetryActionPassThrough {
+		t.Fatalf("action=%s; want pass_through (caller must reduce payload)", c.RetryAction)
+	}
+	if c.FsmTransition != FsmTransitionNoChange {
+		t.Fatalf("fsm=%s; want no_transition (413 is client error, no FSM impact)", c.FsmTransition)
+	}
+}
+
+// TestR007_StillFiresWithCreditKeyword: anthropic 402+credit keyword -> R-007 (priority 20)
+// wins over R-021 (priority 25). Lower priority number = higher priority.
+func TestR007_StillFiresWithCreditKeyword(t *testing.T) {
+	c, err := Classify(402, nil, []byte(`{"error":"credit exhausted, billing failed"}`), "anthropic")
+	if err != nil {
+		t.Fatalf("classify err: %v", err)
+	}
+	if c.RuleID != "R-007" {
+		t.Fatalf("got rule=%s; want R-007 (priority 20 wins over R-021 priority 25 when keyword present)", c.RuleID)
+	}
+	if c.Class != ErrorClassCreditExhausted {
+		t.Fatalf("class=%s; want credit_exhausted", c.Class)
+	}
+	if c.RuleVersion != 2 {
+		t.Fatalf("version=%d; want 2 (R-007 version 2)", c.RuleVersion)
+	}
+}
+
+// TestErrorClass_AllDistinct: 14 ErrorClass constants (D8 adds 2) are all unique.
+// Replaces the original TestErrorClass_TwelveDistinct.
+func TestErrorClass_AllDistinct(t *testing.T) {
+	classes := []ErrorClass{
+		ErrorClassOAuthInvalidGrant,
+		ErrorClassTokenRevoked,
+		ErrorClassKYCRequired,
+		ErrorClassOrgDisabled,
+		ErrorClassWorkspaceDeactivated,
+		ErrorClassCreditExhausted,
+		ErrorClassPlatformPolicy,
+		ErrorClassRateLimited,
+		ErrorClassOverloaded,
+		ErrorClassServerError,
+		ErrorClassNetworkTimeout,
+		ErrorClassUnknown,
+		// D8 additions:
+		ErrorClassUpstreamTimeout,
+		ErrorClassRequestTooLarge,
+	}
+	if len(classes) != 14 {
+		t.Fatalf("class list size = %d; want 14 (12 original + 2 D8 additions)", len(classes))
+	}
+	seen := map[ErrorClass]struct{}{}
+	for _, c := range classes {
+		if _, dup := seen[c]; dup {
+			t.Fatalf("duplicate ErrorClass: %s", c)
+		}
+		seen[c] = struct{}{}
 	}
 }
