@@ -81,3 +81,10 @@ coverage/
 
 # OMC dispatch scratch — codex prompt drafts (per CLAUDE.md #11 clean-room)
 docs/plans/.codex-prompt-*.md
+
+# Fingerprint collector output — operator-local 私有数据；按 README 承诺
+# "ships with no fingerprint templates"，公开仓库不应携带任何 captured
+# template / pcap / JA3 / JA4 / metadata。Operator 自行采集后放本地配置目录。
+tools/fingerprint-collector/output/
+tools/fingerprint-collector/fpc.exe
+tools/fingerprint-collector/fpc
