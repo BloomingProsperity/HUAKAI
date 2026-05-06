@@ -1,19 +1,19 @@
-// R7.3：Anthropic Messages API system 字段重写引擎（强伪装层 6 步 body
-// 变换的第 1 步）。Spec：docs/specs/upstream-credential-management.md §Phase C
-// 第 27 步。
+// Anthropic Messages API system 字段重写引擎。Spec：
+// docs/specs/upstream-credential-management.md §Phase C 第 27 步 step 1 of 6。
 //
-// 纯 JSON 变换，不做 IO/网络/凭据接触。覆盖 system 字段的三种合法形态：
-// 缺省/null、字符串、内容块数组（block 形如 {"type":"text","text":"...",
-// "cache_control":{...}}）。EnsurePrefix 模式幂等：已经以 PrefixText
-// 开头的请求第二次过会原样返回。
+// 纯 JSON 变换，不做 IO/网络/凭据接触。覆盖 system 字段的合法形态：
+// 缺省/null、字符串、单个内容块对象（{"type":"text","text":"...",
+// "cache_control":{...}}）、内容块数组（同 block 形态的数组）。
+// EnsurePrefix 模式幂等：已经以 PrefixText 开头的请求第二次过会原样返回。
 //
-// HUAKAI 相对 sub2api 的差异：preamble 文本走配置（PrefixText 入参），不再
-// 硬编码常量；rewrite 是纯函数，与具体 service 解耦；mode 用枚举切换三种
-// 策略；数组形态下用 raw block 重新拼接，保住已有块上的 cache_control 与
-// 任何未知字段（cache_control 在 prefix 注入块上由 R7.4 决定，本步不放）。
-//
-// Code-parallel 双 lane 合成（CLAUDE.md #10 + 2026-05-04 directive）：取 Codex
-// 紧凑结构 + Claude 文档化决策 + 全中文注释。
+// 设计要点：
+//   - PrefixText 走调用方配置（不硬编码常量），策略由 SystemRewriteMode
+//     enum 切换三种（EnsurePrefix / ReplaceAll / AppendAfter）
+//   - rewrite 是纯函数，无 service 耦合
+//   - 单对象形态归一化为单元素数组后走数组路径，避免 unsupported_shape
+//   - 数组形态下用 raw block 重新拼接，保住已有块上的 cache_control 与
+//     任何未知字段（cache_control 在 prefix 注入块上由后续 mimicry step 决定，
+//     本步不放）
 package gateway
 
 import (
@@ -135,7 +135,28 @@ func ensureSystemPrefix(root map[string]json.RawMessage, prefix string, body []b
 		root["system"] = mustMarshalRaw(next)
 		return finishRewrite(root, reasonRewroteArray)
 	}
+	// 单对象形态（{"type":"text","text":"...",...}）归一化为单元素数组并继续
+	// 走数组路径。R7.1 inspector 在 Index=-1 接受这种形态，本步保持一致。
+	if obj, ok := decodeRawObjectGeneric(raw); ok {
+		single := []json.RawMessage{mustMarshalRaw(obj)}
+		if first, ok := firstBlockText(single); ok && strings.HasPrefix(first, prefix) {
+			return unchanged(body, reasonAlreadyPrefixed), nil
+		}
+		next := append([]json.RawMessage{textBlockRaw(prefix)}, single...)
+		root["system"] = mustMarshalRaw(next)
+		return finishRewrite(root, reasonRewroteArray)
+	}
 	return unchanged(body, reasonUnsupported), nil
+}
+
+// decodeRawObjectGeneric 尝试把 raw 解析为字段 map（与 tool_name_rewrite 中的
+// decodeRawObject 同义；但本文件不导入 fmt，只在解析成功时返回 ok=true）。
+func decodeRawObjectGeneric(raw json.RawMessage) (map[string]json.RawMessage, bool) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil || obj == nil {
+		return nil, false
+	}
+	return obj, true
 }
 
 // appendSystemText 实现 AppendAfter 策略：缺失/null → 单字符串；字符串 → 拼

@@ -5,6 +5,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -309,6 +310,36 @@ func TestRewriteToolNames_Idempotent(t *testing.T) {
 	}
 	if r2.Reason != reasonToolNoMatch {
 		t.Errorf("第二次 reason=%q want=no_match", r2.Reason)
+	}
+}
+
+// TestRewriteToolNames_ChainedMappingIdempotent 验证 codex P2 finding 守卫：
+// 当 mapping 含链式情形（如 a→b、b→c）时，第一次过将 a 改成 b，第二次过
+// 不应再把 b 改成 c。守卫做法是把所有 target 视为"终态"，已在 target
+// 集合中的名称跳过改写。
+func TestRewriteToolNames_ChainedMappingIdempotent(t *testing.T) {
+	plan := ToolNameRewritePlan{
+		Mapping: ToolNameMapping{"a": "b", "b": "c"},
+	}
+	// 第一次：tool 名为 "a" → 改成 "b"
+	in := []byte(`{"tools":[{"name":"a"}]}`)
+	r1, err := RewriteToolNames(in, plan)
+	if err != nil || !r1.Applied {
+		t.Fatalf("第一次：err=%v applied=%v", err, r1.Applied)
+	}
+	if r1.Renames[0].To != "b" {
+		t.Errorf("第一次 To=%q want b", r1.Renames[0].To)
+	}
+	// 第二次：tool 名已是 "b"（target），不应再变 "c"
+	r2, err := RewriteToolNames(r1.Body, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r2.Applied {
+		t.Errorf("第二次应当无改名（b 是 a 的 target，视为终态）")
+	}
+	if !strings.Contains(string(r2.Body), `"name":"b"`) {
+		t.Errorf("body 中工具名应保持 b，实际：%s", r2.Body)
 	}
 }
 
