@@ -1,0 +1,18 @@
+2026/05/06 18:37:02 [mitm] 正在验证 api.anthropic.com 的证书链，超时 10s...
+2026/05/06 18:37:03 [mitm] 证书链验证通过：叶证书 CN="api.anthropic.com"，根 CA="GTS Root R4"
+2026/05/06 18:37:03 [capture] BPF 过滤器: tcp port 443 and host 160.79.104.10
+2026/05/06 18:37:03 [capture] 目标 IP: [160.79.104.10]
+2026/05/06 18:37:03 [警告] ══════════════════════════════════════════════════════════
+2026/05/06 18:37:03 [警告] 原始 pcap 文件写入: output\raw-pcap-snippet.pcap
+2026/05/06 18:37:03 [警告] 此文件包含原始网络包，切勿提交到版本库或对外分享！
+2026/05/06 18:37:03 [警告] ══════════════════════════════════════════════════════════
+2026/05/06 18:37:03 [capture] 开始在接口 "\\Device\\NPF_{B738A021-9842-444C-10B0-A4E3F65AB5B6}" 上捕获 "api.anthropic.com" 的 TLS ClientHello，超时 600s，最少 5 个样本
+2026/05/06 18:37:03 [capture] 请在另一个终端运行第一方客户端并发出 5-10 次请求...
+2026/05/06 18:37:22 [tls] ClientHello #1: cipher_suites=17 exts=15 JA3=de88744b20558d50f03a5f0ea176ee98 JA4=t13d1715_ht_ca21dff6868a_bd55c1d574e4
+2026/05/06 18:37:22 [tls] ClientHello #2: cipher_suites=17 exts=14 JA3=de88744b20558d50f03a5f0ea176ee98 JA4=t13d1714_ht_ca21dff6868a_4634136b8335
+2026/05/06 18:37:22 [tls] ClientHello #3: cipher_suites=17 exts=14 JA3=de88744b20558d50f03a5f0ea176ee98 JA4=t13d1714_ht_ca21dff6868a_4634136b8335
+2026/05/06 18:37:23 [tls] ClientHello #4: cipher_suites=17 exts=14 JA3=de88744b20558d50f03a5f0ea176ee98 JA4=t13d1714_ht_ca21dff6868a_4634136b8335
+2026/05/06 18:37:23 [tls] ClientHello #5: cipher_suites=17 exts=14 JA3=de88744b20558d50f03a5f0ea176ee98 JA4=t13d1714_ht_ca21dff6868a_4634136b8335
+2026/05/06 18:37:23 [capture] 已达到最少样本数 5，继续捕获直到超时...
+2026/05/06 18:37:23 [done] 捕获完成，共 5 个样本，输出目录: .\output\
+2026/05/06 18:37:23 [done] 请勿提交 output\raw-pcap-snippet.pcap！
