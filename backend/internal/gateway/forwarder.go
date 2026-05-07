@@ -16,7 +16,15 @@ import (
 
 // StreamForwarder 执行 F-GW-002 A-D 阶段的流式转发流水线。
 //
-// 变更说明（wire-up 重构）：
+// 变更说明（A1 atomic）：
+//   - 加 Scanners 字段（StreamScannerRegistry），替代之前硬编码的
+//     ScanSSEEvents 调用。Forward 按 ForwardRequest.ProtocolFamily 查询
+//     scanner，把 wire-format 切帧职责从 forwarder 解耦出去。
+//   - SSE 行为通过 SSEStreamScanner 保持等价（行为不变 refactor）。
+//   - Bedrock binary EventStream 在 A2+A3 atomic 接入对应 scanner，
+//     无需再动 forwarder 主流程。
+//
+// 历史变更说明（wire-up 重构）：
 //   - 新增 ProtocolAdapters 字段，替代原先硬编码的 proto.AnthropicAdapter。
 //   - 删除原 UpstreamAdapter 字段（由 ProtocolAdapters + ForwardRequest.ProtocolFamily 动态解析）。
 //   - Forward 入口校验 ProtocolFamily 非空、ProtocolAdapters 非 nil。
@@ -24,6 +32,11 @@ type StreamForwarder struct {
 	// ProtocolAdapters 是协议适配器注册表，Forward 按 ForwardRequest.ProtocolFamily 查询。
 	// 必须非 nil；若为 nil，Forward 将立即返回错误。
 	ProtocolAdapters ProtocolAdapterRegistry
+
+	// Scanners 是 wire-format scanner 注册表，按 ForwardRequest.ProtocolFamily
+	// 查询 StreamScanner。必须非 nil（A1 之后）；nil 时 Forward 立即返回错误，
+	// 避免静默回落到 SSE 把 binary 流切碎。
+	Scanners StreamScannerRegistry
 
 	// ClientAdapter 将 canonical event 转换为客户端协议块（可选）。
 	// 若为 nil，则透传原始 SSE 给客户端。
@@ -39,6 +52,10 @@ type StreamForwarder struct {
 	CostEstimator func(drainedBytes int64, acc UsageAccumulator) decimal.Decimal
 }
 
+// ErrNilStreamScannerRegistry 表示 StreamForwarder.Scanners 未注入。
+// 与 ErrNilProtocolAdapterRegistry 同形态：fail-loud，禁止静默 fallback。
+var ErrNilStreamScannerRegistry = errors.New("gateway: StreamForwarder.Scanners 未注入")
+
 // Forward 执行 F-GW-002 Phase A 扫描、Phase B 处理、Phase C 分类、
 // Phase C-bis drain，并返回 Phase D draft。
 //
@@ -52,6 +69,13 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 		return UsageRecordDraft{}, ErrNilProtocolAdapterRegistry
 	}
 
+	// --- 入口校验：Scanners 注册表必须已注入（A1 之后强制） ---
+	// 不允许 nil fallback 到 SSE — 那样 Bedrock binary 流会被切碎，
+	// 不如 fail-loud 让启动期 misconfig 立刻暴露。
+	if f.Scanners == nil {
+		return UsageRecordDraft{}, ErrNilStreamScannerRegistry
+	}
+
 	// --- 入口校验：ProtocolFamily 不得为空，调用方必须明确指定协议族 ---
 	if req.ProtocolFamily == "" {
 		return UsageRecordDraft{}, fmt.Errorf("%w: ProtocolFamily 未指定", ErrUnknownProtocolFamily)
@@ -59,6 +83,12 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 
 	// --- 按请求的 ProtocolFamily 解析 upstream adapter；不 fallback 到默认 ---
 	adapter, err := f.ProtocolAdapters.For(req.ProtocolFamily)
+	if err != nil {
+		return UsageRecordDraft{}, err
+	}
+
+	// --- 按请求的 ProtocolFamily 解析 wire-format scanner；不 fallback 到 SSE ---
+	scanner, err := f.Scanners.For(req.ProtocolFamily)
 	if err != nil {
 		return UsageRecordDraft{}, err
 	}
@@ -75,7 +105,7 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 	defer upstreamCancel()
 
 	events := make(chan scanResult, 1)
-	go scanInto(upstreamCtx, upstreamReader, f.ScannerBufferCap, events)
+	go scanInto(upstreamCtx, scanner, upstreamReader, f.ScannerBufferCap, events)
 
 	upstreamState := f.newUpstreamState(req)
 	var clientState any
@@ -301,9 +331,11 @@ type scanResult struct {
 	err   error
 }
 
-func scanInto(ctx context.Context, r io.Reader, cap int, out chan<- scanResult) {
+// scanInto 把 StreamScanner 切出的事件流送到 channel。A1 之前直接 hard-call
+// ScanSSEEvents；现在通过 scanner 抽象，由调用方决定 wire format。
+func scanInto(ctx context.Context, scanner StreamScanner, r io.Reader, cap int, out chan<- scanResult) {
 	defer close(out)
-	for evt, err := range ScanSSEEvents(ctx, r, cap) {
+	for evt, err := range scanner.Scan(ctx, r, cap) {
 		select {
 		case out <- scanResult{event: evt, err: err}:
 		case <-ctx.Done():

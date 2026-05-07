@@ -77,11 +77,13 @@ func messageStop() sseEvt {
 }
 
 // newForwarder 构造测试用 StreamForwarder。
-// 重构后：注入 BuildDefaultProtocolAdapterRegistry()，不再直接设置 UpstreamAdapter。
+// 重构后（A1）：除 ProtocolAdapters 之外注入 Scanners 默认注册表（全部 SSE）。
 func newForwarder() *StreamForwarder {
 	return &StreamForwarder{
-		// 注入默认注册表，覆盖所有已知协议族（anthropic_messages / openai_chat / gemini_messages 等）
+		// 注入默认 protocol adapter 注册表
 		ProtocolAdapters: BuildDefaultProtocolAdapterRegistry(),
+		// 注入默认 stream scanner 注册表（19 个 family 全部 SSE，行为与 A1 之前等价）
+		Scanners: BuildDefaultStreamScannerRegistry(),
 		Timeouts: TimeoutConfig{
 			FirstTokenTimeout:  500 * time.Millisecond,
 			InterEventTimeout:  500 * time.Millisecond,
@@ -456,6 +458,28 @@ func TestAT_GW_002_PF_02_NilRegistryReturnsError(t *testing.T) {
 	})
 	if !errors.Is(err, ErrNilProtocolAdapterRegistry) {
 		t.Fatalf("nil ProtocolAdapters must return ErrNilProtocolAdapterRegistry; got %v", err)
+	}
+}
+
+// AT-GW-002-PF-02b: Scanners 为 nil 时 Forward 返回 ErrNilStreamScannerRegistry。
+// fail-loud — 不静默 fallback 到 SSE，否则 Bedrock binary 会被切碎。
+func TestAT_GW_002_PF_02b_NilScannerRegistryReturnsError(t *testing.T) {
+	f := &StreamForwarder{
+		ProtocolAdapters: BuildDefaultProtocolAdapterRegistry(),
+		Scanners:         nil, // 故意不注入 — 启动 misconfig 必须 fail-loud
+		Timeouts: TimeoutConfig{
+			FirstTokenTimeout: 500 * time.Millisecond,
+		},
+		ScannerBufferCap: 1 << 20,
+	}
+	upstream := sseBytes(messageStart("m"), messageStop())
+	_, err := f.Forward(context.Background(), bytes.NewReader(upstream), httptest.NewRecorder(), ForwardRequest{
+		TenantID:       1,
+		AccountID:      100,
+		ProtocolFamily: "anthropic_messages",
+	})
+	if !errors.Is(err, ErrNilStreamScannerRegistry) {
+		t.Fatalf("nil Scanners must return ErrNilStreamScannerRegistry; got %v", err)
 	}
 }
 

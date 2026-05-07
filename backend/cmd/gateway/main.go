@@ -117,10 +117,13 @@ func run(logger *zap.Logger) error {
 		claimGate: billing.NewClaimGate(pgPool),
 		settler:   billing.NewSettler(pgPool),
 		forwarder: &gateway.StreamForwarder{
-			// 协议适配器注册表：按 ForwardRequest.ProtocolFamily 选 SSE 解析器。
-			// 当前注册：anthropic_messages / openai_chat / openai_responses /
-			// gemini_messages（详见 BuildDefaultProtocolAdapterRegistry）。
+			// 协议适配器注册表：按 ForwardRequest.ProtocolFamily 选语义层 adapter。
+			// 当前注册：详见 gateway.BuildDefaultProtocolAdapterRegistry。
 			ProtocolAdapters: gateway.BuildDefaultProtocolAdapterRegistry(),
+			// Wire-format scanner 注册表（A1 atomic 引入）：按 ProtocolFamily
+			// 选 wire 切帧实现。当前 19 个 family 全走 SSE；Bedrock binary
+			// EventStream 在 A2+A3 atomic 加入专用 scanner。
+			Scanners: gateway.BuildDefaultStreamScannerRegistry(),
 			Timeouts: gateway.TimeoutConfig{
 				FirstTokenTimeout:  5 * time.Second,
 				InterEventTimeout:  10 * time.Second,
