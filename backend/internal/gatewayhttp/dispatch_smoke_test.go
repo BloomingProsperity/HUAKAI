@@ -277,6 +277,9 @@ func TestDispatch_FullPipeline_OpenAIChat(t *testing.T) {
 
 	forwarder := &gateway.StreamForwarder{
 		ProtocolAdapters: protoReg,
+		// A1 atomic：Forward 现要求 Scanners 非 nil。注入默认注册表
+		// （19 个 family 全 SSE，与本测试期望的 SSE wire 行为一致）。
+		Scanners: gateway.BuildDefaultStreamScannerRegistry(),
 	}
 
 	// --- 5. 构建计费 stub ---
