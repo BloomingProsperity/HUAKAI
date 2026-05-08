@@ -4,8 +4,12 @@
 // endpoint，并完成 AWS SigV4 签名。
 //
 // 设计边界：
-//   - 本 adapter 不对 body 做任何 reshape（Bedrock 各模型 body 形态差异极大，
+//   - 默认 adapter 不对 body 做任何 reshape（Bedrock 各模型 body 形态差异极大，
 //     由上游调用方或 protocol-translation 层保证 body 已是目标模型期望的形态）。
+//   - 当 AutoTranslateAnthropicAPIBody=true 时，adapter 在签名前会做两步可控
+//     的 body 变换：(1) Anthropic Messages API → Bedrock invoke 翻译；
+//     (2) Track C 自动 cache_control 注入（长 system prompt 自动命中缓存）。
+//     默认 false 保持纯 passthrough。
 //   - SigV4 签名完全自实现（见 sigv4.go），不依赖 aws-sdk-go 或任何第三方库。
 //   - CredentialTypeUpstreamPassthrough 模式下 caller 已预签名，adapter 仅
 //     注入 Authorization header value，不重新签名。
@@ -19,6 +23,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/cache_routing"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 )
 
@@ -91,11 +96,21 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		return nil, errors.New("bedrock passthrough: Extra[\"aws_region\"] 不能为空")
 	}
 
+	// AutoTranslate 是否对当前请求生效（codex BLOCKING B1 修复）：
+	//   - upstream_passthrough 模式: caller 已签 SigV4 over original body，
+	//     adapter 改 body 会让 SigV4 hash 失配 → 必须保持 raw passthrough
+	//   - 非 Anthropic Messages 形态 body: bedrock_invoke 同时承载 Cohere /
+	//     Llama / Mistral / Titan 等多家 vendor，盲翻译会破坏其它 vendor
+	//     body（注 anthropic_version 等无关字段）→ 仅 Anthropic 形态才翻译
+	autoTranslate := a.AutoTranslateAnthropicAPIBody &&
+		in.Credential.Type != provider.CredentialTypeUpstreamPassthrough &&
+		IsAnthropicMessagesShape(in.InboundBody)
+
 	// 模型 ID 必填——但 AutoTranslate 模式下若 caller 未填，从 body 抽取
 	// （sonnet F1/F7 闭环修复——否则 Anthropic CLI body 含 "model" 字段时
 	// translator 抽到的 UpstreamModelID 被丢弃，闭环失败）。
 	modelID := in.UpstreamModelID
-	if modelID == "" && a.AutoTranslateAnthropicAPIBody {
+	if modelID == "" && autoTranslate {
 		// 提前 peek 一次 translator（在主翻译块之前），仅用于 fallback model ID。
 		// 解析失败让主翻译块在下面正常报错，不在这里 short-circuit。
 		if peek, perr := TranslateAnthropicAPIToBedrock(in.InboundBody); perr == nil {
@@ -119,10 +134,11 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 	// A8 闭环原子: AutoTranslateAnthropicAPIBody 开启时把 Anthropic API 形
 	// body 翻译成 Bedrock 形，并允许翻译结果决定 stream 标志（caller 仍可
 	// 通过 Extra["stream"] 显式覆盖）。in.UpstreamModelID 始终优先（管理员
-	// model alias 配置权威）。
+	// model alias 配置权威）。autoTranslate 已经把 credential type + body
+	// shape 两道闸门考虑进去（codex BLOCKING B1 修复）。
 	body := in.InboundBody
 	stream := in.Credential.Extra["stream"] == "true"
-	if a.AutoTranslateAnthropicAPIBody {
+	if autoTranslate {
 		translated, terr := TranslateAnthropicAPIToBedrock(in.InboundBody)
 		if terr != nil {
 			return nil, fmt.Errorf("bedrock passthrough: Anthropic API 翻译失败: %w", terr)
@@ -131,6 +147,15 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		// 仅当 caller 没有显式声明 stream Extra 时使用翻译器结果
 		if _, set := in.Credential.Extra["stream"]; !set {
 			stream = translated.Stream
+		}
+		// Track C: 翻译后顺手自动注入 system cache_control 让 vendor 缓存
+		// 长 system prompt（≥ 4096 bytes 默认阈值）。caller 已显式声明
+		// cache_control 时不动. 与 Track B sticky routing 联动 → 万人级
+		// SaaS 共享 system prompt 自动命中缓存。
+		// hot-path 优化: 只在 body 还没 cache_control marker 时才尝试注入,
+		// 避免每请求都跑 unmarshal/marshal cycle (sonnet SHOULD_FIX)。
+		if !cache_routing.HasCacheControlMarker(body) {
+			body = cache_routing.AutoInjectSystemCacheControl(body, 0)
 		}
 	}
 

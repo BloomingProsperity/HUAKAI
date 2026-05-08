@@ -48,6 +48,34 @@ import (
 // 参 AWS 公开文档 https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages.html
 const AnthropicVersionBedrock = "bedrock-2023-05-31"
 
+// IsAnthropicMessagesShape 判断 body 是否看起来像 Anthropic Messages API
+// 形态。判据：顶层 JSON object 含 "messages" 字段（array 形）。
+//
+// 用途（codex BLOCKING B1 修复）：bedrock_invoke 协议族同时承载
+// Anthropic / Cohere / Llama / Mistral / Titan 等多家 vendor，AutoTranslate
+// 不能盲目对所有 body 跑。Cohere/Llama/Titan body 形态分别用 prompt /
+// inputText / message 等字段，没有 messages array — 这个 helper 让 caller
+// 先确认是 Anthropic 形态再翻译。
+//
+// 行为：
+//   - 空 body / 非 JSON object → false
+//   - JSON object 但没有 "messages" 字段 → false
+//   - JSON object 有 "messages" 字段（任意值，包括 null/空数组）→ true
+//
+// 注：本 helper 是粗粒度形态检测，不严格 schema 校验；后续翻译流程仍会
+// 处理边界（如 messages: null 时 Bedrock 会拒绝）。
+func IsAnthropicMessagesShape(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil || raw == nil {
+		return false
+	}
+	_, has := raw["messages"]
+	return has
+}
+
 // ErrEmptyAnthropicBody 表示输入 body 为空。
 var ErrEmptyAnthropicBody = errors.New("bedrock: Anthropic API body 为空")
 
