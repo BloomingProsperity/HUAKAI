@@ -93,11 +93,29 @@ func (s *AnthropicAdapter) providerEventToCanonicalEvents(evt anthropicEvent, st
 		state.BlocksInProgress = map[int]bool{}
 	}
 	var env anthropicEnvelope
+	// U7-D：用 UnmarshalWithExtras 同时拿 known + 上游 unknown（envelope 级
+	// 字段：vendor 在 message_start / message_delta 等顶层加新字段时透传）。
+	// 内层 message.usage / delta / content_block 的 unknown 暂不抓——若需扩，
+	// 在对应嵌套 typed struct 各加一层 envelope（U7 后续）。
+	var passthrough PassthroughEnvelope
 	if len(evt.Raw) > 0 {
-		if err := json.Unmarshal(evt.Raw, &env); err != nil {
+		if err := UnmarshalWithExtras(evt.Raw, &env, &passthrough); err != nil {
 			return nil, nil, err
 		}
 	}
+	events, losses, switchErr := s.providerEventSwitch(evt, env, state)
+	if switchErr != nil {
+		return events, losses, switchErr
+	}
+	if len(passthrough.Extra) > 0 && len(events) > 0 {
+		events[0].Passthrough = &passthrough
+	}
+	return events, losses, nil
+}
+
+// providerEventSwitch 是原 switch 主体，提取出来便于上层在 unmarshal 后
+// 附加 Passthrough。逻辑与之前等价——纯重构。
+func (s *AnthropicAdapter) providerEventSwitch(evt anthropicEvent, env anthropicEnvelope, state *UpstreamState) ([]CanonicalEvent, []ProtocolLossEntry, error) {
 	switch evt.Type {
 	case "message_start":
 		state.MessageID = env.Message.ID
