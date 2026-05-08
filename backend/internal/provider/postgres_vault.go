@@ -191,10 +191,76 @@ func mapCredential(accountType string, raw []byte) (Credential, error) {
 		return mapUpstreamStatic(raw)
 	case "session":
 		return mapSession(raw)
+	case "aws_sigv4":
+		return mapAWSSigV4(raw)
 	default:
 		// 未知 account_type：包装为格式错误，避免静默返回零值凭据。
 		return Credential{}, fmt.Errorf("%w: unknown account_type %q", ErrCredentialFormat, accountType)
 	}
+}
+
+// rawAWSSigV4 是 provider_accounts.credentials JSONB 中 aws_sigv4 形态：
+//
+//	{
+//	  "aws_access_key_id":     "AKIDEXAMPLE",
+//	  "aws_secret_access_key": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+//	  "aws_region":            "us-east-1",
+//	  "aws_session_token":     "FQoDYXdz..."          // 可选 (STS 临时凭据)
+//	}
+//
+// HUAKAI 内部保持字段名 snake_case 与 AWS 官方命名一致。
+type rawAWSSigV4 struct {
+	AccessKeyID     string            `json:"aws_access_key_id"`
+	SecretAccessKey string            `json:"aws_secret_access_key"`
+	Region          string            `json:"aws_region"`
+	SessionToken    string            `json:"aws_session_token,omitempty"`
+	Extra           map[string]string `json:"extra,omitempty"`
+}
+
+// mapAWSSigV4 解析 aws_sigv4 类型凭据，输出 Bedrock PassthroughAdapter
+// 期望的 Credential 形态：
+//
+//   - Value 携带 secret access key
+//   - Extra["aws_access_key_id"] / Extra["aws_region"] 必填
+//   - Extra["aws_session_token"] 可选 (STS)
+//   - Extra 中 caller 自定义字段透传 (如 "stream" 等 hint)
+//
+// 必填字段 (access_key_id / secret / region) 缺失时返回 ErrCredentialFormat。
+func mapAWSSigV4(raw []byte) (Credential, error) {
+	var r rawAWSSigV4
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return Credential{}, fmt.Errorf("%w: aws_sigv4 unmarshal: %v", ErrCredentialFormat, err)
+	}
+	if r.AccessKeyID == "" {
+		return Credential{}, fmt.Errorf("%w: aws_access_key_id is empty", ErrCredentialFormat)
+	}
+	if r.SecretAccessKey == "" {
+		return Credential{}, fmt.Errorf("%w: aws_secret_access_key is empty", ErrCredentialFormat)
+	}
+	if r.Region == "" {
+		return Credential{}, fmt.Errorf("%w: aws_region is empty", ErrCredentialFormat)
+	}
+	cred := Credential{
+		Type:  CredentialTypeAWSSigV4,
+		Value: r.SecretAccessKey,
+		Extra: map[string]string{
+			"aws_access_key_id": r.AccessKeyID,
+			"aws_region":        r.Region,
+		},
+	}
+	if r.SessionToken != "" {
+		cred.Extra["aws_session_token"] = r.SessionToken
+	}
+	// 透传 caller 自定义 extra（如 "stream" hint），但必填字段已设置不允许覆盖
+	for k, v := range r.Extra {
+		switch k {
+		case "aws_access_key_id", "aws_region", "aws_session_token":
+			// 必填字段已从顶层字段填充；防 extra 覆盖打乱语义
+			continue
+		}
+		cred.Extra[k] = v
+	}
+	return cred, nil
 }
 
 // mapSession 解析 session 类型凭据。

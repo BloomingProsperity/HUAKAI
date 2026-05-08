@@ -235,7 +235,23 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		RequestClass:         d.cfg.RequestClass,
 	}))
 	r.Post("/v1/responses", notImplemented("F-GW-002 responses handler"))
-	r.Post("/v1/messages", notImplemented("F-GW-002 anthropic-messages handler"))
+	// /v1/messages = Anthropic Messages API endpoint。复用 chat-completions
+	// pipeline (同 deps + EndpointFamily="messages")。registry 把 model alias
+	// 解析到 bedrock_invoke + AutoTranslateAnthropicAPIBody=true 的 PassthroughAdapter
+	// 即可让 Anthropic CLI / Claude Code 直连 AWS Bedrock。
+	r.Post("/v1/messages", gatewayhttp.NewMessagesHandler(gatewayhttp.ChatHandlerDeps{
+		Auth:                 d.inboundAuth,
+		Registry:             d.modelRegistry,
+		Router:               d.routePlanner,
+		ClaimGate:            d.claimGate,
+		Selector:             d.selector,
+		CredentialVault:      d.credentialVault,
+		Dispatcher:           d.dispatcher,
+		Forwarder:            d.forwarder,
+		Settler:              d.settler,
+		BillingPolicyVersion: d.cfg.BillingPolicyVersion,
+		RequestClass:         d.cfg.RequestClass,
+	}))
 
 	// Admin: API Keys (Slice 2 N+4b2). Replaces hand-written SQL INSERT
 	// for operator key issuance. POST=issue / GET=list / POST revoke.

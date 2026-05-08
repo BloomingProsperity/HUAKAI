@@ -39,6 +39,20 @@ type ChatHandlerDeps struct {
 	Settler              billing.Settler
 	BillingPolicyVersion string
 	RequestClass         string
+
+	// EndpointFamily 标记 billing 字段; 空字符串退化为 "chat"。
+	// /v1/chat/completions: "chat"
+	// /v1/messages:         "messages"
+	EndpointFamily string
+}
+
+// effectiveEndpointFamily 返回 d.EndpointFamily 若非空，否则 "chat"
+// （向后兼容: 既有 caller 不必填）。
+func (d ChatHandlerDeps) effectiveEndpointFamily() string {
+	if d.EndpointFamily == "" {
+		return "chat"
+	}
+	return d.EndpointFamily
 }
 
 type chatRequest struct {
@@ -48,8 +62,11 @@ type chatRequest struct {
 }
 
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role string `json:"role"`
+	// Content 是 raw JSON: OpenAI Chat 用 string, Anthropic Messages API
+	// 允许 string 或 [{"type":"text","text":"..."}] content block 数组。
+	// 用 RawMessage 防止 string 类型时 array 被静默丢失（sonnet F1 BLOCKING 修复）。
+	Content json.RawMessage `json:"content"`
 }
 
 func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
@@ -171,7 +188,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			APIKeyID:                   ident.APIKeyID,
 			UserID:                     ident.UserID,
 			LogicalRequestID:           logicalRequestID,
-			EndpointFamily:             "chat",
+			EndpointFamily:             d.effectiveEndpointFamily(),
 			NormalizedPayloadHash:      payloadHash,
 			RequestedModel:             req.Model,
 			PoolingGroupID:             attempt.PoolGroupID,
@@ -201,7 +218,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			APIKeyID:        ident.APIKeyID,
 			PoolGroupID:     attempt.PoolGroupID,
 			RequestedModel:  req.Model,
-			EndpointFamily:  "chat",
+			EndpointFamily:  d.effectiveEndpointFamily(),
 			ClaimID:         reserveRes.ClaimID,
 			AttemptSeq:      1,
 			CapabilityFlags: attempt.RequiredCapabilities,
@@ -353,6 +370,23 @@ func writeNormalizedUpstreamError(w http.ResponseWriter, status int, fallbackCod
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", (c.RetryAfterMs+999)/1000))
 	}
 	writeJSONError(w, status, code, "upstream request failed")
+}
+
+// NewMessagesHandler 是 /v1/messages 端点 handler——形态与 chat completions
+// 等价（同 deps，相同 routing/billing pipeline），只是 EndpointFamily 标
+// "messages" 让 billing 数据按 endpoint 区分。
+//
+// 当前 chat / messages 共用同一 generic handler——下游 forwarder + provider
+// adapter 看 ProtocolFamily（来自 model alias 配置）决定真实 wire format。
+//
+// Anthropic CLI / Claude Code 可直接对此 handler 发 Anthropic Messages API
+// body, registry 把 model 别名解析到 bedrock_invoke + AutoTranslateAnthropicAPIBody=true
+// 的 PassthroughAdapter 即可路由到 AWS Bedrock。
+func NewMessagesHandler(d ChatHandlerDeps) http.HandlerFunc {
+	if d.EndpointFamily == "" {
+		d.EndpointFamily = "messages"
+	}
+	return NewChatCompletionsHandler(d)
 }
 
 func clientStatusForUpstreamError(upstreamStatus int, class gateway.ErrorClass) int {
