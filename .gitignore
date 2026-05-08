@@ -88,3 +88,4 @@ docs/plans/.codex-prompt-*.md
 tools/fingerprint-collector/output/
 tools/fingerprint-collector/fpc.exe
 tools/fingerprint-collector/fpc
+frontend/tsconfig.tsbuildinfo
