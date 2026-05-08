@@ -97,6 +97,13 @@ type CanonicalUsage struct {
 	InputTokens  int `json:"input_tokens,omitempty"`
 	OutputTokens int `json:"output_tokens,omitempty"`
 	TotalTokens  int `json:"total_tokens,omitempty"`
+
+	// CacheCreationInputTokens: vendor 写入新缓存的 prompt token 数（首次见
+	// 该 prefix）。Anthropic Messages API + Bedrock 同字段。命中率指标分母。
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	// CacheReadInputTokens: vendor 从已有缓存读出的 prompt token 数（命中）。
+	// 命中率指标分子。
+	CacheReadInputTokens int `json:"cache_read_input_tokens,omitempty"`
 }
 
 // CanonicalStopReason is the HCSF stop reason enum from spec sections 1-3.
