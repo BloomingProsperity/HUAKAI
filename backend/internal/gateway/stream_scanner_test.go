@@ -92,8 +92,8 @@ func TestStaticStreamScannerRegistry_RejectsEmptyFamily(t *testing.T) {
 	}
 }
 
-// TestBuildDefaultStreamScannerRegistry 验证默认注册表覆盖所有当前
-// 注册了 protocol adapter 的 family（除 bedrock_invoke）。
+// TestBuildDefaultStreamScannerRegistry 验证默认注册表覆盖所有 protocol family。
+// 19 个 SSE family 走 SSEStreamScanner；bedrock_invoke 走专用 binary 切帧器。
 func TestBuildDefaultStreamScannerRegistry(t *testing.T) {
 	r := BuildDefaultStreamScannerRegistry()
 	if r == nil {
@@ -118,9 +118,13 @@ func TestBuildDefaultStreamScannerRegistry(t *testing.T) {
 		}
 	}
 
-	// bedrock_invoke 故意未注册（A2+A3 才加）
-	if _, err := r.For("bedrock_invoke"); !errors.Is(err, ErrUnknownStreamScanner) {
-		t.Errorf("bedrock_invoke 应明确未注册，err=%v", err)
+	// bedrock_invoke 走专用 BedrockEventStreamScanner（A3 atomic 实现）
+	bedrock, err := r.For("bedrock_invoke")
+	if err != nil {
+		t.Errorf("bedrock_invoke 应已注册（A5+A6 atomic），err=%v", err)
+	}
+	if _, ok := bedrock.(*BedrockEventStreamScanner); !ok {
+		t.Errorf("bedrock_invoke scanner 类型=%T 期望 *BedrockEventStreamScanner", bedrock)
 	}
 }
 

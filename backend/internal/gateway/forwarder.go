@@ -176,6 +176,12 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 
 // handleEventWithAdapter 使用调用方已解析的 adapter 处理单个 SSE 事件。
 // 原 handleEvent 被替换为此方法，消除对 f.UpstreamAdapter 的依赖。
+//
+// 旁路 adapter 的特殊事件类型：
+//   - evt.Type == "error" — protocol-level error 帧（如 Bedrock exception
+//     scanner 在 yield ErrBedrockException 前 emit 的 error SSEEvent）。
+//     这些 payload 不是 model 事件，喂给 adapter 会触发 JSON 解析失败。
+//     做法：直接 raw passthrough 给客户端，让客户端看到原始错误体。
 func (f *StreamForwarder) handleEventWithAdapter(
 	ctx context.Context,
 	adapter proto.UpstreamAdapter,
@@ -189,6 +195,17 @@ func (f *StreamForwarder) handleEventWithAdapter(
 
 	// adapter 为 nil 时透传原始 SSE（保留既有 nil-adapter 行为）
 	if adapter == nil {
+		if err := writeAndFlush(w, rawSSE(evt)); err != nil {
+			return terminalSeen, false, ErrClientDisconnect
+		}
+		return terminalSeen, true, nil
+	}
+
+	// protocol-level error 帧旁路 adapter，直接 raw passthrough。
+	// 例如 Bedrock binary stream 的 :message-type=exception 帧由
+	// BedrockEventStreamScanner 翻为 SSEEvent{Type:"error", Data:<exception payload>}。
+	// 这些 payload 是 protocol 错误体（非 model 事件），不应被 adapter 解析。
+	if evt.Type == "error" {
 		if err := writeAndFlush(w, rawSSE(evt)); err != nil {
 			return terminalSeen, false, ErrClientDisconnect
 		}

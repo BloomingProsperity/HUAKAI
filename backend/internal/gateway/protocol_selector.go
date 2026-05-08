@@ -92,10 +92,12 @@ func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	r.MustRegister("openrouter_chat", &proto.OpenAIAdapter{})
 	// xAI Grok v1/chat/completions 严格 OpenAI 兼容。
 	r.MustRegister("grok_chat", &proto.OpenAIAdapter{})
-	// 注意：bedrock_invoke **不在此处注册** —— AWS Bedrock 走二进制 EventStream
-	// （非 SSE），需 BedrockEventStreamAdapter 专用解析器。当前 chat-completions
-	// 路径不接 Bedrock；Bedrock 走 /v1/messages 或专用 admin 路径（待实施）。
-	// 在 forwarder registry 留出这条 gap 等专用 adapter 实现，避免错误复用。
+	// AWS Bedrock 走二进制 EventStream（非 SSE），由专用 BedrockEventStreamAdapter
+	// （proto/bedrock_eventstream.go，A4 atomic）+ BedrockEventStreamScanner
+	// （gateway/bedrock_stream_scanner.go，A3 atomic）成对处理。
+	// 当前限定 Bedrock-on-Anthropic（Claude on Bedrock）；future Llama/Cohere
+	// on Bedrock 时再 model-family 分流。
+	r.MustRegister("bedrock_invoke", proto.NewBedrockEventStreamAdapter())
 	// 以下 6 家均走 OpenAI Chat Completions 兼容 SSE；复用 OpenAIAdapter。
 	r.MustRegister("deepseek_chat", &proto.OpenAIAdapter{})
 	r.MustRegister("mistral_chat", &proto.OpenAIAdapter{})
