@@ -43,6 +43,10 @@ type GeminiUpstreamState struct {
 	LastStopReason        CanonicalStopReason
 	RawFinishReason       string
 	SkippedExtraCandidate bool
+	// AccountID（Track P）: forwarder 注入. cachemetrics.ObserveByAccount 用。
+	// Gemini 自身 cache observation hook 后续 atomic 接入 (CachedContentTokens
+	// 已 carry-over, 但终态触发点 future)。
+	AccountID int64
 }
 
 type geminiGenerateContentResponse struct {

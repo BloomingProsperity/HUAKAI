@@ -12,4 +12,16 @@ func resetForTesting() {
 			v.Set(0)
 		}
 	}
+	// 清 per-account map (Track P)
+	if countersByAccount != nil {
+		countersByAccount.Do(func(kv expvar.KeyValue) {
+			if sub, ok := kv.Value.(*expvar.Map); ok {
+				sub.Do(func(subkv expvar.KeyValue) {
+					if iv, ok := subkv.Value.(*expvar.Int); ok {
+						iv.Set(0)
+					}
+				})
+			}
+		})
+	}
 }

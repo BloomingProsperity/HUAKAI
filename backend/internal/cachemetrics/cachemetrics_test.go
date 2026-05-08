@@ -72,6 +72,61 @@ func TestExpvarPublished(t *testing.T) {
 	}
 }
 
+func TestObserveByAccount_Counts(t *testing.T) {
+	resetForTesting()
+	defer resetForTesting()
+
+	ObserveByAccount(100, 50, 42)  // account 42: c=100 r=50
+	ObserveByAccount(0, 200, 42)   // account 42: c=0 r=200
+	ObserveByAccount(80, 30, 99)   // account 99: c=80 r=30
+
+	c, r, req := SnapshotByAccount(42)
+	if c != 100 || r != 250 || req != 2 {
+		t.Errorf("account 42 c=%d r=%d req=%d want 100/250/2", c, r, req)
+	}
+	c, r, req = SnapshotByAccount(99)
+	if c != 80 || r != 30 || req != 1 {
+		t.Errorf("account 99 c=%d r=%d req=%d want 80/30/1", c, r, req)
+	}
+	// account 1 未观测过
+	c, r, req = SnapshotByAccount(1)
+	if c != 0 || r != 0 || req != 0 {
+		t.Errorf("account 1 应零值, 得 %d/%d/%d", c, r, req)
+	}
+	// 全局也应累计 (per-account = 全局之和)
+	gc, gr, greq := Snapshot()
+	if gc != 180 || gr != 280 || greq != 3 {
+		t.Errorf("全局 c=%d r=%d req=%d want 180/280/3", gc, gr, greq)
+	}
+}
+
+func TestObserveByAccount_AccountIDZeroFallsBackToGlobalOnly(t *testing.T) {
+	resetForTesting()
+	defer resetForTesting()
+
+	ObserveByAccount(50, 100, 0) // accountID=0 退化为全局 only
+	gc, gr, greq := Snapshot()
+	if gc != 50 || gr != 100 || greq != 1 {
+		t.Errorf("全局应累计, 得 %d/%d/%d", gc, gr, greq)
+	}
+	// 任何 account 不应有 entry
+	c, r, req := SnapshotByAccount(0)
+	if c != 0 || r != 0 || req != 0 {
+		t.Errorf("accountID=0 不应建 per-account entry, 得 %d/%d/%d", c, r, req)
+	}
+}
+
+func TestObserveByAccount_ZeroInputsSkipped(t *testing.T) {
+	resetForTesting()
+	defer resetForTesting()
+
+	ObserveByAccount(0, 0, 42) // 0/0 不应增 per-account 也不应增全局
+	c, r, req := SnapshotByAccount(42)
+	if c != 0 || r != 0 || req != 0 {
+		t.Errorf("0/0 输入 per-account 不应累计, 得 %d/%d/%d", c, r, req)
+	}
+}
+
 func TestObserve_Concurrent(t *testing.T) {
 	resetForTesting()
 	defer resetForTesting()
