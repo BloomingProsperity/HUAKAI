@@ -8,6 +8,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 )
 
 // anthropicAPIBody 是典型 Anthropic Messages API 请求体形态。
@@ -129,19 +131,24 @@ func TestAutoTranslate_ExtraStreamOverridesTranslator(t *testing.T) {
 	// 注意: extra=true 也应该覆盖；此测试只测 false 路径
 }
 
-func TestAutoTranslate_InvalidBody_ReturnsError(t *testing.T) {
+// codex BLOCKING B1 行为变更后：AutoTranslate=true 但 body 非 Anthropic 形态
+// （包括非 JSON 垃圾数据）→ 不报错，body 原样发送，让 Bedrock server-side 拒收。
+// 这与"AutoTranslate 仅对 Anthropic Messages 形态生效"语义一致。
+func TestAutoTranslate_InvalidBody_PassThrough(t *testing.T) {
 	a := newTestAdapter()
 	a.AutoTranslateAnthropicAPIBody = true
 
+	garbage := []byte(`not valid json`)
 	in := validSigV4Input()
-	in.InboundBody = []byte(`not valid json`)
+	in.InboundBody = garbage
 
-	_, err := a.BuildRequest(context.Background(), in)
-	if err == nil {
-		t.Fatal("非合法 JSON 应报错")
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatalf("非 Anthropic 形态 body 不应报错（应原样透传由 server-side 拒）: %v", err)
 	}
-	if !strings.Contains(err.Error(), "Anthropic API 翻译失败") {
-		t.Errorf("error 应提及翻译失败，got: %v", err)
+	gotBody, _ := io.ReadAll(req.Body)
+	if string(gotBody) != string(garbage) {
+		t.Errorf("body 应原样透传\n  原: %s\n  得: %s", garbage, gotBody)
 	}
 }
 
@@ -207,5 +214,84 @@ func TestAutoTranslate_NonStreamBody_RoutesToInvoke(t *testing.T) {
 	}
 	if !strings.Contains(req.URL.Path, "/invoke") {
 		t.Errorf("应路由 /invoke endpoint，得 %q", req.URL.Path)
+	}
+}
+
+// codex BLOCKING B1 回归: AutoTranslate=true 但 credential 是
+// upstream_passthrough（caller 已签名）时不能改 body — 否则 SigV4 hash 失配。
+func TestAutoTranslate_SkipsForUpstreamPassthrough(t *testing.T) {
+	a := newTestAdapter()
+	a.AutoTranslateAnthropicAPIBody = true
+
+	preSignedBody := []byte(`{"messages":[{"role":"user","content":"hi"}],"max_tokens":1024,"anthropic_version":"bedrock-2023-05-31"}`)
+	in := provider.BuildInput{
+		UpstreamModelID: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		InboundBody:     preSignedBody,
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeUpstreamPassthrough,
+			Value: "AWS4-HMAC-SHA256 Credential=...",
+			Extra: map[string]string{"aws_region": "us-east-1"},
+		},
+	}
+
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	gotBody, _ := io.ReadAll(req.Body)
+	if string(gotBody) != string(preSignedBody) {
+		t.Errorf("upstream_passthrough 应原样发送 body，但被改了\n  原 body: %s\n  发出去: %s",
+			preSignedBody, gotBody)
+	}
+}
+
+// codex BLOCKING B1 回归: AutoTranslate=true 但 body 不是 Anthropic Messages
+// 形态（如 Cohere / Llama / Titan）时不能盲翻译 — 否则会注入无关 anthropic_version
+// 字段，可能破坏目标 vendor 的解析。
+func TestAutoTranslate_SkipsForNonAnthropicShape(t *testing.T) {
+	a := newTestAdapter()
+	a.AutoTranslateAnthropicAPIBody = true
+
+	// Llama on Bedrock 形态：用 prompt 字段，没有 messages
+	llamaBody := []byte(`{"prompt":"hello world","max_gen_len":256,"temperature":0.5}`)
+	in := validSigV4Input()
+	in.UpstreamModelID = "meta.llama3-70b-instruct-v1:0"
+	in.InboundBody = llamaBody
+
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	gotBody, _ := io.ReadAll(req.Body)
+	if string(gotBody) != string(llamaBody) {
+		t.Errorf("非 Anthropic 形态 body 应原样发送，但被翻译了\n  原 body: %s\n  发出去: %s",
+			llamaBody, gotBody)
+	}
+}
+
+// IsAnthropicMessagesShape 直接单测。
+func TestIsAnthropicMessagesShape(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"empty", "", false},
+		{"non-json", "not json", false},
+		{"null", "null", false},
+		{"array top-level", `[1,2,3]`, false},
+		{"anthropic shape", `{"messages":[{"role":"user","content":"hi"}]}`, true},
+		{"anthropic with extras", `{"model":"x","messages":[]}`, true},
+		{"empty messages", `{"messages":[]}`, true},
+		{"null messages", `{"messages":null}`, true},
+		{"llama shape", `{"prompt":"hi","max_gen_len":100}`, false},
+		{"cohere shape", `{"message":"hi","temperature":0.5}`, false},
+		{"titan shape", `{"inputText":"hi","textGenerationConfig":{}}`, false},
+	}
+	for _, c := range cases {
+		got := IsAnthropicMessagesShape([]byte(c.body))
+		if got != c.want {
+			t.Errorf("IsAnthropicMessagesShape(%s)=%v want %v", c.name, got, c.want)
+		}
 	}
 }

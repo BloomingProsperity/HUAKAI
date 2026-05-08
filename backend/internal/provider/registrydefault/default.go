@@ -99,7 +99,14 @@ func Build() *provider.StaticRegistry {
 	r.MustRegister(ProtocolAnthropicMessages, &anthropic.PassthroughAdapter{})
 	r.MustRegister(ProtocolGeminiMessages, &gemini.PassthroughAdapter{})
 	r.MustRegister(ProtocolOpenRouterChat, &openrouter.PassthroughAdapter{})
-	r.MustRegister(ProtocolBedrockInvoke, &bedrock.PassthroughAdapter{})
+	// AutoTranslateAnthropicAPIBody=true 让 Anthropic CLI / Claude Code 直发的
+	// Anthropic Messages API body 自动翻译为 Bedrock invoke body
+	// (剥离 model + stream, 注入 anthropic_version)。同时联动 Track C
+	// 自动 cache_control 注入，长 system prompt 自动命中 vendor 缓存。
+	// 这是 Bedrock 端 production 路径的唯一启用方式。
+	r.MustRegister(ProtocolBedrockInvoke, &bedrock.PassthroughAdapter{
+		AutoTranslateAnthropicAPIBody: true,
+	})
 	r.MustRegister(ProtocolGrokChat, &grok.PassthroughAdapter{})
 
 	// 以下 6 家为 OpenAI Chat Completions 兼容直通 API key 路径。
