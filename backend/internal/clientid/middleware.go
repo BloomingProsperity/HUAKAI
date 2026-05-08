@@ -38,6 +38,8 @@ func Middleware(logger *zap.Logger) func(http.Handler) http.Handler {
 			signal := SignalFromRequest(r)
 			id, conf := Detect(signal)
 			ctx := WithIdentity(r.Context(), id, conf)
+			// U6-C: 累计 per-identity 请求计数（expvar，零依赖）
+			IncrementRequestCount(id)
 			if logger != nil {
 				logger.Debug("client identity detected",
 					zap.String("request_id", middleware.GetReqID(ctx)),
