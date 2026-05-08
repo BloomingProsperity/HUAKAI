@@ -30,6 +30,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
@@ -175,6 +176,15 @@ func run(logger *zap.Logger) error {
 	router.Use(middleware.RealIP)
 	router.Use(middleware.Recoverer)
 	router.Use(middleware.Timeout(60 * time.Second))
+	// U6-B: 把 client identity（Cursor / Claude Code / Cody / 等）写入
+	// request ctx，让下游 handler / quota / metrics 通过 IdentityFromContext
+	// 读取。无副作用 stateless middleware，加在 Recoverer 之后。
+	//
+	// **顺序 invariant**: 必须在任何 auth / quota / billing middleware **之前**——
+	// 这样下游 auth/quota 才能读 IdentityFromContext 做 per-client 决策。
+	// 当前没有 auth middleware（auth 在 ChatHandlerDeps.Auth 内做），将来若
+	// 加 router.Use(authMiddleware) 需放在本行之后。
+	router.Use(clientid.Middleware(logger))
 
 	mountRoutes(router, d, logger)
 
