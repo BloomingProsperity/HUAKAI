@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
 )
 
 var ErrUnknownEventType = errors.New("proto: unknown upstream event type")
@@ -145,6 +147,12 @@ func (s *AnthropicAdapter) providerEventSwitch(evt anthropicEvent, env anthropic
 			return nil, []ProtocolLossEntry{loss}, nil
 		}
 		state.Terminated = true
+		// 观测 vendor cache token 命中率（D 原子）。0/0 不增 counter
+		// (Observe 内置 short-circuit 防 inflate 分母).
+		cachemetrics.Observe(
+			int64(state.AccumulatedUsage.CacheCreationInputTokens),
+			int64(state.AccumulatedUsage.CacheReadInputTokens),
+		)
 		return []CanonicalEvent{{Type: "message_stop"}}, nil, nil
 	default:
 		loss := newLossEntry(FeatureTextStreaming, DirectionUpstreamToCanonical, VerdictLossy, "unknown upstream event type skipped")
@@ -161,6 +169,11 @@ func (s *AnthropicAdapter) FinalizeUpstreamStream(ctx context.Context, state any
 	if st.Terminated {
 		return nil, nil
 	}
+	// 合成 terminal 路径也观测 cache 命中（与 message_stop case 同等语义）。
+	cachemetrics.Observe(
+		int64(st.AccumulatedUsage.CacheCreationInputTokens),
+		int64(st.AccumulatedUsage.CacheReadInputTokens),
+	)
 	var out []any
 	for idx := range st.BlocksInProgress {
 		out = append(out, CanonicalEvent{Type: "content_block_stop", Index: idx})
@@ -223,7 +236,8 @@ func (s *AnthropicAdapter) canonicalDelta(d anthropicDeltaPayload) (*CanonicalCo
 }
 
 func mergeUsage(base, a, b CanonicalUsage) CanonicalUsage {
-	if a.InputTokens != 0 || a.OutputTokens != 0 || a.TotalTokens != 0 {
+	if a.InputTokens != 0 || a.OutputTokens != 0 || a.TotalTokens != 0 ||
+		a.CacheCreationInputTokens != 0 || a.CacheReadInputTokens != 0 {
 		base = a
 	}
 	if b.InputTokens != 0 {
@@ -234,6 +248,12 @@ func mergeUsage(base, a, b CanonicalUsage) CanonicalUsage {
 	}
 	if b.TotalTokens != 0 {
 		base.TotalTokens = b.TotalTokens
+	}
+	if b.CacheCreationInputTokens != 0 {
+		base.CacheCreationInputTokens = b.CacheCreationInputTokens
+	}
+	if b.CacheReadInputTokens != 0 {
+		base.CacheReadInputTokens = b.CacheReadInputTokens
 	}
 	if base.TotalTokens == 0 {
 		base.TotalTokens = base.InputTokens + base.OutputTokens

@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
 )
 
 // OpenAIAdapter 将 OpenAI Chat Completions SSE 转换为 HCSF 事件。
@@ -87,6 +89,16 @@ type openAIUsage struct {
 	PromptTokens     int `json:"prompt_tokens,omitempty"`
 	CompletionTokens int `json:"completion_tokens,omitempty"`
 	TotalTokens      int `json:"total_tokens,omitempty"`
+	// OpenAI prompt caching: usage.prompt_tokens_details.cached_tokens
+	// 表示该请求命中缓存的 prompt token 数。OpenAI 没有"创建缓存"的概念
+	// （implicit caching），只暴露读命中。映射到 CanonicalUsage.CacheReadInputTokens。
+	// (sonnet F4 MEDIUM 修复: 缺失 OpenAI cache 观测)
+	PromptTokensDetails *openAIPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+}
+
+type openAIPromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens,omitempty"`
+	AudioTokens  int `json:"audio_tokens,omitempty"`
 }
 
 type openAIChatCompletionResponse struct {
@@ -389,6 +401,9 @@ func finalizeOpenAIState(state *OpenAIUpstreamState, fromDone bool) ([]Canonical
 		state.UsageEmitted = true
 	}
 	state.Terminated = true
+	// 观测 OpenAI prompt cache 命中（sonnet F4 修复）。OpenAI 只有 read 概念
+	// (无 creation), 所以传 0 给 creation. Observe 内置 0/0 short-circuit。
+	cachemetrics.Observe(0, int64(state.AccumulatedUsage.CacheReadInputTokens))
 	events = append(events, CanonicalEvent{Type: "message_stop"})
 	return events, nil
 }
@@ -411,6 +426,10 @@ func (u openAIUsage) canonical() CanonicalUsage {
 		InputTokens:  u.PromptTokens,
 		OutputTokens: u.CompletionTokens,
 		TotalTokens:  u.TotalTokens,
+	}
+	if u.PromptTokensDetails != nil {
+		// OpenAI 只暴露 read（命中）；creation 永远 0
+		out.CacheReadInputTokens = u.PromptTokensDetails.CachedTokens
 	}
 	if out.TotalTokens == 0 {
 		out.TotalTokens = out.InputTokens + out.OutputTokens
