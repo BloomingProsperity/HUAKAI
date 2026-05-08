@@ -89,3 +89,4 @@ tools/fingerprint-collector/output/
 tools/fingerprint-collector/fpc.exe
 tools/fingerprint-collector/fpc
 frontend/tsconfig.tsbuildinfo
+frontend/next-env.d.ts

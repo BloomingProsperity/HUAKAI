@@ -242,3 +242,8 @@ input[type="text"]:focus {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* 首页面板卡片 hover 效果（CSS-only, 保持 page.tsx 是 Server Component）。 */
+.panel-card-link:hover .panel-card {
+  border-color: #58a6ff !important;
+}
