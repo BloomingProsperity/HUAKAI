@@ -241,10 +241,12 @@ func (t *SegmentTable) LookupOrCreate(prefixHash []byte, ring *AccountRing) *Pre
 	seg.LastWriteAt.Store(now)
 	node := t.lruOrder.PushFront(key)
 	t.segments[key] = &segmentEntry{seg: seg, lruNode: node}
+	IncSegmentCreates() // metrics: cold-start 频率
 
 	// LRU evict back if cap exceeded
 	if len(t.segments) > t.maxSegments {
 		t.evictOldestLocked()
+		AddEvictions(1)
 	}
 
 	return seg
