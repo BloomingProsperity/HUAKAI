@@ -131,6 +131,17 @@ func (s *DefaultSelector) Select(ctx context.Context, req SelectionRequest) (*Se
 
 	fresh := s.rankFresh(eligible, policy)
 	if res, done, err := s.tryLayer(ctx, req, fresh, RoutingLayerFresh, reason); done || err != nil {
+		// Track B 闭环最后一片: fresh 选定后写 sticky_bindings 让后续相同
+		// prompt prefix 命中此账号. 用 type assertion 让 StickyStore 接口
+		// 不被强制扩展（实测 stub 不实现 Upsert 也不破现有测试）。
+		// 写失败 best-effort 不阻塞主流程（绑定丢一次就再次走 fresh）。
+		if done && err == nil && res != nil && res.AccountID != 0 && req.SessionHash != "" {
+			if writer, ok := s.sticky.(interface {
+				Upsert(ctx context.Context, tenantID int64, sessionHash, model string, accountID int64) error
+			}); ok {
+				_ = writer.Upsert(ctx, req.TenantID, req.SessionHash, req.RequestedModel, res.AccountID)
+			}
+		}
 		return res, err
 	}
 	if plan := fallbackPlan(fresh, policy); plan != nil {
