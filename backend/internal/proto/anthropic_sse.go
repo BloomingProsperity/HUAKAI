@@ -14,12 +14,17 @@ var ErrUnknownEventType = errors.New("proto: unknown upstream event type")
 var ErrNotImplemented = errors.New("proto: not implemented")
 
 // UpstreamState tracks Anthropic SSE translation state from spec section 3 Phase C.
+//
+// AccountID（Track P）: forwarder 注入选定的 provider_account_id, 让 adapter
+// 在终态调 cachemetrics.ObserveByAccount 累计 per-account 维度。零值表示
+// 不分账号 (退化全局观测)。
 type UpstreamState struct {
 	MessageID         string
 	CurrentBlockIndex int
 	BlocksInProgress  map[int]bool
 	Terminated        bool
 	AccumulatedUsage  CanonicalUsage
+	AccountID         int64
 }
 
 // AnthropicAdapter translates Anthropic SSE events through HCSF per spec section 3 Phase C.
@@ -149,9 +154,10 @@ func (s *AnthropicAdapter) providerEventSwitch(evt anthropicEvent, env anthropic
 		state.Terminated = true
 		// 观测 vendor cache token 命中率（D 原子）。0/0 不增 counter
 		// (Observe 内置 short-circuit 防 inflate 分母).
-		cachemetrics.Observe(
+		cachemetrics.ObserveByAccount(
 			int64(state.AccumulatedUsage.CacheCreationInputTokens),
 			int64(state.AccumulatedUsage.CacheReadInputTokens),
+			state.AccountID,
 		)
 		return []CanonicalEvent{{Type: "message_stop"}}, nil, nil
 	default:
@@ -170,9 +176,10 @@ func (s *AnthropicAdapter) FinalizeUpstreamStream(ctx context.Context, state any
 		return nil, nil
 	}
 	// 合成 terminal 路径也观测 cache 命中（与 message_stop case 同等语义）。
-	cachemetrics.Observe(
+	cachemetrics.ObserveByAccount(
 		int64(st.AccumulatedUsage.CacheCreationInputTokens),
 		int64(st.AccumulatedUsage.CacheReadInputTokens),
+		st.AccountID,
 	)
 	var out []any
 	for idx := range st.BlocksInProgress {

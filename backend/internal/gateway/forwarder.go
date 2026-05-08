@@ -322,11 +322,27 @@ func (f *StreamForwarder) finishDraft(d UsageRecordDraft, acc UsageAccumulator, 
 }
 
 // newUpstreamState 构造上游协议状态对象。
-// 重构后：所有协议族均用 proto.UpstreamState{}；未来按需扩展。
+//
+// 修复 (sonnet F3 HIGH): 之前一律返回 *proto.UpstreamState — 但 OpenAIAdapter
+// 与 GeminiAdapter 在 ProviderEventToCanonicalEvents 内 type-assert 到
+// 各自的 state 类型, OpenAI/Gemini 流过来 type assertion 失败直接报错。
+// 当前按 ProtocolAdapters 注册的 adapter 实际类型选 state 类型.
+//
+// AccountID 注入: Track P per-account cache metrics 需要 adapter 知道
+// 当前选定的 provider_account_id, 终态 ObserveByAccount 时分账号累计.
 func (f *StreamForwarder) newUpstreamState(req ForwardRequest) any {
-	// 当前 proto.UpstreamState 对所有已注册协议族均适用。
-	// 若未来 gemini / openai 需要专属状态，在此按 req.ProtocolFamily switch。
-	return &proto.UpstreamState{}
+	if f.ProtocolAdapters != nil {
+		if adapter, err := f.ProtocolAdapters.For(req.ProtocolFamily); err == nil {
+			switch adapter.(type) {
+			case *proto.OpenAIAdapter:
+				return &proto.OpenAIUpstreamState{AccountID: req.AccountID}
+			case *proto.GeminiAdapter:
+				return &proto.GeminiUpstreamState{AccountID: req.AccountID}
+			}
+		}
+	}
+	// fallthrough: Anthropic / Bedrock-on-Anthropic / 其它都用 UpstreamState
+	return &proto.UpstreamState{AccountID: req.AccountID}
 }
 
 func (f *StreamForwarder) effectiveDrainBudgets() DrainBudgets {

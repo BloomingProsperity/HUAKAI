@@ -37,6 +37,8 @@ type OpenAIUpstreamState struct {
 	LastStopReason     CanonicalStopReason
 	RawFinishReason    string
 	ToolCalls          map[int]*OpenAIToolCallState
+	// AccountID（Track P）: forwarder 注入. cachemetrics.ObserveByAccount 用。
+	AccountID int64
 }
 
 // OpenAIToolCallState 累计同一个 tool_call.index 的增量内容。
@@ -403,7 +405,7 @@ func finalizeOpenAIState(state *OpenAIUpstreamState, fromDone bool) ([]Canonical
 	state.Terminated = true
 	// 观测 OpenAI prompt cache 命中（sonnet F4 修复）。OpenAI 只有 read 概念
 	// (无 creation), 所以传 0 给 creation. Observe 内置 0/0 short-circuit。
-	cachemetrics.Observe(0, int64(state.AccumulatedUsage.CacheReadInputTokens))
+	cachemetrics.ObserveByAccount(0, int64(state.AccumulatedUsage.CacheReadInputTokens), state.AccountID)
 	events = append(events, CanonicalEvent{Type: "message_stop"})
 	return events, nil
 }

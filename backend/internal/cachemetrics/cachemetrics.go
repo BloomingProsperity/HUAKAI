@@ -24,6 +24,7 @@ package cachemetrics
 
 import (
 	"expvar"
+	"strconv"
 	"sync"
 )
 
@@ -34,8 +35,15 @@ const (
 )
 
 var (
-	once     sync.Once
-	counters *expvar.Map
+	once             sync.Once
+	counters         *expvar.Map
+	countersByAccount *expvar.Map
+	// accountMu 保护 countersByAccount 的 lazy-init Get/Set 序列;
+	// expvar.Map 内部对单 key Get/Set 各自 thread-safe, 但 "Get-then-Set"
+	// 这种复合操作不是 atomic, 多 goroutine 同 accountID 首次观测时可能
+	// 都进入 nil 分支双 Set, 第一个 sub.Add 写到被覆盖的孤立 map → 计数丢失.
+	// (sonnet F1 MEDIUM 修复)
+	accountMu sync.Mutex
 )
 
 func initCounters() {
@@ -44,6 +52,10 @@ func initCounters() {
 		counters.Add(keyCreationTotal, 0)
 		counters.Add(keyReadTotal, 0)
 		counters.Add(keyRequestCount, 0)
+
+		// per-account 维度（万人级运维 audit: 哪些 provider_account 缓存
+		// 命中率高/低）。expvar.Map 嵌套: 每 account_id → expvar.Map(三计数)
+		countersByAccount = expvar.NewMap("cache_token_count_by_account")
 	})
 }
 
@@ -90,6 +102,84 @@ func Snapshot() (creation, read, requests int64) {
 		read = v.Value()
 	}
 	if v, ok := counters.Get(keyRequestCount).(*expvar.Int); ok {
+		requests = v.Value()
+	}
+	return
+}
+
+// ObserveByAccount 在 Observe 基础上额外累计 per-account 维度计数器。
+// accountID == 0 时退化为只调 Observe (与全局等价)。
+//
+// expvar 结构暴露 (/debug/vars):
+//   "cache_token_count_by_account": {
+//     "42": {"creation_total": ..., "read_total": ..., "request_count": ...},
+//     "99": {...}
+//   }
+//
+// 运维查 hit_ratio_by_account = read_total/(creation+read) 找出哪个账号
+// 缓存命中率显著低 → 流量调度或换 prompt-pool 类型。
+func ObserveByAccount(cacheCreation, cacheRead int64, accountID int64) {
+	Observe(cacheCreation, cacheRead) // 先全局
+	if accountID == 0 {
+		return
+	}
+	if cacheCreation == 0 && cacheRead == 0 {
+		return
+	}
+	if cacheCreation < 0 || cacheRead < 0 {
+		return
+	}
+	initCounters()
+
+	key := strconv.FormatInt(accountID, 10)
+	// sonnet F1 race 修复: lazy-init Get-then-Set 必须 atomic
+	accountMu.Lock()
+	subVar := countersByAccount.Get(key)
+	if subVar == nil {
+		sub := new(expvar.Map).Init()
+		sub.Add(keyCreationTotal, 0)
+		sub.Add(keyReadTotal, 0)
+		sub.Add(keyRequestCount, 0)
+		countersByAccount.Set(key, sub)
+		subVar = sub
+	}
+	accountMu.Unlock()
+	sub, ok := subVar.(*expvar.Map)
+	if !ok {
+		return
+	}
+	if cacheCreation > 0 {
+		sub.Add(keyCreationTotal, cacheCreation)
+	}
+	if cacheRead > 0 {
+		sub.Add(keyReadTotal, cacheRead)
+	}
+	sub.Add(keyRequestCount, 1)
+}
+
+// SnapshotByAccount 给测试用——返回某 account_id 的累计计数。
+// account 未观测过返回 0/0/0。
+func SnapshotByAccount(accountID int64) (creation, read, requests int64) {
+	initCounters()
+	if accountID == 0 {
+		return
+	}
+	key := strconv.FormatInt(accountID, 10)
+	subVar := countersByAccount.Get(key)
+	if subVar == nil {
+		return
+	}
+	sub, ok := subVar.(*expvar.Map)
+	if !ok {
+		return
+	}
+	if v, ok := sub.Get(keyCreationTotal).(*expvar.Int); ok {
+		creation = v.Value()
+	}
+	if v, ok := sub.Get(keyReadTotal).(*expvar.Int); ok {
+		read = v.Value()
+	}
+	if v, ok := sub.Get(keyRequestCount).(*expvar.Int); ok {
 		requests = v.Value()
 	}
 	return
