@@ -18,6 +18,12 @@ var ErrNotImplemented = errors.New("proto: not implemented")
 // AccountID（Track P）: forwarder 注入选定的 provider_account_id, 让 adapter
 // 在终态调 cachemetrics.ObserveByAccount 累计 per-account 维度。零值表示
 // 不分账号 (退化全局观测)。
+//
+// PrefixHash（PASR-lite A4）: forwarder 注入 ForwardRequest.SessionHash
+// (上游已 hash 的 prompt prefix), 让 adapter 在终态调
+// cachemetrics.ObserveByAccountWithPrefix, 把 (acc, prefix, creation, read)
+// 推给 PASR observer 更新 PrefixSegment.HasCacheBitmap / LastReadAt。
+// 空串表示无 prefix 信息 (退化为只更新 per-account counter, 不触发 PASR)。
 type UpstreamState struct {
 	MessageID         string
 	CurrentBlockIndex int
@@ -25,6 +31,7 @@ type UpstreamState struct {
 	Terminated        bool
 	AccumulatedUsage  CanonicalUsage
 	AccountID         int64
+	PrefixHash        string
 }
 
 // AnthropicAdapter translates Anthropic SSE events through HCSF per spec section 3 Phase C.
@@ -152,12 +159,15 @@ func (s *AnthropicAdapter) providerEventSwitch(evt anthropicEvent, env anthropic
 			return nil, []ProtocolLossEntry{loss}, nil
 		}
 		state.Terminated = true
-		// 观测 vendor cache token 命中率（D 原子）。0/0 不增 counter
-		// (Observe 内置 short-circuit 防 inflate 分母).
-		cachemetrics.ObserveByAccount(
+		// 观测 vendor cache token 命中率（Track D + PASR-lite A4）。
+		// 0/0 不增 counter (Observe 内置 short-circuit 防 inflate 分母).
+		// WithPrefix 比 ObserveByAccount 多触发 PASR-lite observer, 把
+		// (acc, prefix, creation, read) 推给 PASRSelector 更新 segment 状态。
+		cachemetrics.ObserveByAccountWithPrefix(
 			int64(state.AccumulatedUsage.CacheCreationInputTokens),
 			int64(state.AccumulatedUsage.CacheReadInputTokens),
 			state.AccountID,
+			state.PrefixHash,
 		)
 		return []CanonicalEvent{{Type: "message_stop"}}, nil, nil
 	default:
@@ -176,10 +186,12 @@ func (s *AnthropicAdapter) FinalizeUpstreamStream(ctx context.Context, state any
 		return nil, nil
 	}
 	// 合成 terminal 路径也观测 cache 命中（与 message_stop case 同等语义）。
-	cachemetrics.ObserveByAccount(
+	// PASR-lite A4: 用 WithPrefix 变体让 PASR observer 也收到反馈。
+	cachemetrics.ObserveByAccountWithPrefix(
 		int64(st.AccumulatedUsage.CacheCreationInputTokens),
 		int64(st.AccumulatedUsage.CacheReadInputTokens),
 		st.AccountID,
+		st.PrefixHash,
 	)
 	var out []any
 	for idx := range st.BlocksInProgress {

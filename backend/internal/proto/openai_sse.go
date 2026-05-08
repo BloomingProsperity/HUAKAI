@@ -39,6 +39,9 @@ type OpenAIUpstreamState struct {
 	ToolCalls          map[int]*OpenAIToolCallState
 	// AccountID（Track P）: forwarder 注入. cachemetrics.ObserveByAccount 用。
 	AccountID int64
+	// PrefixHash（PASR-lite A4）: forwarder 注入 ForwardRequest.SessionHash;
+	// finalize 时调 ObserveByAccountWithPrefix 让 PASR-lite observer 收反馈。
+	PrefixHash string
 }
 
 // OpenAIToolCallState 累计同一个 tool_call.index 的增量内容。
@@ -403,9 +406,10 @@ func finalizeOpenAIState(state *OpenAIUpstreamState, fromDone bool) ([]Canonical
 		state.UsageEmitted = true
 	}
 	state.Terminated = true
-	// 观测 OpenAI prompt cache 命中（sonnet F4 修复）。OpenAI 只有 read 概念
-	// (无 creation), 所以传 0 给 creation. Observe 内置 0/0 short-circuit。
-	cachemetrics.ObserveByAccount(0, int64(state.AccumulatedUsage.CacheReadInputTokens), state.AccountID)
+	// 观测 OpenAI prompt cache 命中（sonnet F4 修复 + PASR-lite A4）。OpenAI 只
+	// 有 read 概念(无 creation), 所以传 0 给 creation. Observe 内置 0/0
+	// short-circuit。WithPrefix 变体让 PASR observer 也收 read 命中事件。
+	cachemetrics.ObserveByAccountWithPrefix(0, int64(state.AccumulatedUsage.CacheReadInputTokens), state.AccountID, state.PrefixHash)
 	events = append(events, CanonicalEvent{Type: "message_stop"})
 	return events, nil
 }

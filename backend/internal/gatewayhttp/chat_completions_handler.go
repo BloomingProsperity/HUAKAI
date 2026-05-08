@@ -315,6 +315,9 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			AcquisitionToken: acquisitionToken,
 			Model:            upstreamModelID,
 			ProtocolFamily:   resolved.ProtocolFamily,
+			// PASR-lite A4: SessionHash 流入 UpstreamState.PrefixHash, 终态
+			// ObserveByAccountWithPrefix 触发 PASR observer 更新段状态。
+			SessionHash: promptHash,
 		})
 		if fwdErr != nil {
 			_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "forwarder_error")

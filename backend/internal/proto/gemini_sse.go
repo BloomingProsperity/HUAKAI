@@ -47,6 +47,10 @@ type GeminiUpstreamState struct {
 	// Gemini 自身 cache observation hook 后续 atomic 接入 (CachedContentTokens
 	// 已 carry-over, 但终态触发点 future)。
 	AccountID int64
+	// PrefixHash（PASR-lite A4）: forwarder 注入 ForwardRequest.SessionHash;
+	// 当 Gemini 终态触发点接入后, 通过 ObserveByAccountWithPrefix 让 PASR
+	// observer 收反馈。当前字段保留, observation 暂未走 PASR 路径。
+	PrefixHash string
 }
 
 type geminiGenerateContentResponse struct {

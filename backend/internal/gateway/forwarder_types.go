@@ -118,6 +118,12 @@ type ForwardRequest struct {
 	ClientProtocol       string `json:"client_protocol"`
 	Model                string `json:"model"`
 	RoutingReasonPayload []byte `json:"routing_reason_payload"`
+
+	// SessionHash（PASR-lite A4）: 上游已 hash 的 prompt prefix, 流入 proto
+	// adapter UpstreamState.PrefixHash, 终态调
+	// cachemetrics.ObserveByAccountWithPrefix 让 PASR observer 收反馈。
+	// 空串 → PASR 路径退化, 仅 per-account counter 累积。
+	SessionHash string `json:"session_hash"`
 }
 
 // UsageAccumulator 跟踪 F-GW-002 Phase B 各来源 usage 信号。
