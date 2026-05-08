@@ -73,9 +73,10 @@ export default function HomePage() {
           <a
             key={panel.href}
             href={panel.href}
+            className="panel-card-link"
             style={{ textDecoration: 'none', display: 'block' }}
           >
-            <div style={{
+            <div className="panel-card" style={{
               background: '#161b22',
               border: '1px solid #30363d',
               borderRadius: 8,
@@ -83,10 +84,7 @@ export default function HomePage() {
               transition: 'border-color 0.15s',
               cursor: 'pointer',
               height: '100%',
-            }}
-              onMouseEnter={(e) => ((e.currentTarget as HTMLDivElement).style.borderColor = '#58a6ff')}
-              onMouseLeave={(e) => ((e.currentTarget as HTMLDivElement).style.borderColor = '#30363d')}
-            >
+            }}>
               {/* 面板编号 + MOCK badge */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem' }}>
                 <span style={{
