@@ -157,6 +157,76 @@ func ObserveByAccount(cacheCreation, cacheRead int64, accountID int64) {
 	sub.Add(keyRequestCount, 1)
 }
 
+// CacheObservation 是一次 cache token 观测的结构化事件 (PASR-lite A4 用)。
+// 比 ObserveByAccount 多 PrefixHash 字段, 让 PASR-lite 调度器把 cache
+// 信号反馈到 PrefixSegment 的 HasCacheBitmap 和 LastReadAt。
+type CacheObservation struct {
+	AccountID     int64
+	PrefixHash    string // proto.UpstreamState.PrefixHash 透传, 可能为空
+	CacheCreation int64
+	CacheRead     int64
+}
+
+// observerRegistry 用单独锁保护订阅列表, 不与 expvar.Map 锁竞争。
+type observerRegistry struct {
+	mu        sync.RWMutex
+	observers []func(CacheObservation)
+}
+
+var globalObservers = &observerRegistry{}
+
+// RegisterCacheObserver 订阅 cache 观测事件。
+// 用法: PASR-lite 调度器在初始化期注册一个 observer, 把 (accountID,
+// prefixHash, creation, read) 转化为 segment.MarkCacheSeen / MarkRead。
+//
+// 线程安全: 注册和触发都加锁; observers 加进来后整个生命周期保留, 没
+// Unregister。如需 Unregister 后续 atomic 加。
+func RegisterCacheObserver(fn func(CacheObservation)) {
+	if fn == nil {
+		return
+	}
+	globalObservers.mu.Lock()
+	globalObservers.observers = append(globalObservers.observers, fn)
+	globalObservers.mu.Unlock()
+}
+
+// notifyObservers 在每次 ObserveByAccountWithPrefix 内部调, 把事件推给
+// 所有订阅者。observer 内部异常不应影响 caller, 用 panic recover 隔离。
+func notifyObservers(obs CacheObservation) {
+	globalObservers.mu.RLock()
+	defer globalObservers.mu.RUnlock()
+	for _, fn := range globalObservers.observers {
+		func() {
+			defer func() {
+				_ = recover() // observer 不能炸掉 cachemetrics 调用方
+			}()
+			fn(obs)
+		}()
+	}
+}
+
+// ObserveByAccountWithPrefix 是 ObserveByAccount 的扩展形态, 把 prefixHash
+// 一起携带, 让 PASR-lite 等订阅者能更新自己的 segment 状态。
+//
+// 行为:
+//   - 现有 expvar global + per-account counter 累计完全等价 ObserveByAccount
+//   - 额外触发所有 RegisterCacheObserver 订阅的 observer fn
+func ObserveByAccountWithPrefix(cacheCreation, cacheRead int64, accountID int64, prefixHash string) {
+	ObserveByAccount(cacheCreation, cacheRead, accountID)
+	if cacheCreation == 0 && cacheRead == 0 {
+		return
+	}
+	if cacheCreation < 0 || cacheRead < 0 {
+		return
+	}
+	notifyObservers(CacheObservation{
+		AccountID:     accountID,
+		PrefixHash:    prefixHash,
+		CacheCreation: cacheCreation,
+		CacheRead:     cacheRead,
+	})
+}
+
 // SnapshotByAccount 给测试用——返回某 account_id 的累计计数。
 // account 未观测过返回 0/0/0。
 func SnapshotByAccount(accountID int64) (creation, read, requests int64) {

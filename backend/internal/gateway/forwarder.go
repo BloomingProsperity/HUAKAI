@@ -330,19 +330,23 @@ func (f *StreamForwarder) finishDraft(d UsageRecordDraft, acc UsageAccumulator, 
 //
 // AccountID 注入: Track P per-account cache metrics 需要 adapter 知道
 // 当前选定的 provider_account_id, 终态 ObserveByAccount 时分账号累计.
+//
+// PrefixHash 注入 (PASR-lite A4): 复用 ForwardRequest.SessionHash 作 prefix
+// hash, 终态调 ObserveByAccountWithPrefix 让 PASR-lite observer 把
+// (acc, prefix, creation, read) 反馈到 PrefixSegment.HasCacheBitmap。
 func (f *StreamForwarder) newUpstreamState(req ForwardRequest) any {
 	if f.ProtocolAdapters != nil {
 		if adapter, err := f.ProtocolAdapters.For(req.ProtocolFamily); err == nil {
 			switch adapter.(type) {
 			case *proto.OpenAIAdapter:
-				return &proto.OpenAIUpstreamState{AccountID: req.AccountID}
+				return &proto.OpenAIUpstreamState{AccountID: req.AccountID, PrefixHash: req.SessionHash}
 			case *proto.GeminiAdapter:
-				return &proto.GeminiUpstreamState{AccountID: req.AccountID}
+				return &proto.GeminiUpstreamState{AccountID: req.AccountID, PrefixHash: req.SessionHash}
 			}
 		}
 	}
 	// fallthrough: Anthropic / Bedrock-on-Anthropic / 其它都用 UpstreamState
-	return &proto.UpstreamState{AccountID: req.AccountID}
+	return &proto.UpstreamState{AccountID: req.AccountID, PrefixHash: req.SessionHash}
 }
 
 func (f *StreamForwarder) effectiveDrainBudgets() DrainBudgets {
