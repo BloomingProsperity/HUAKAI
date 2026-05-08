@@ -20,6 +20,7 @@ Establishing the license tier of every primary reference is a prerequisite to an
 | E-LIC-006 | Portkey AI Gateway | github.com/Portkey-AI/gateway/blob/main/LICENSE | MIT | 2026-04-28 | Claude (PM) | Safe anchor. Copyright Portkey, Inc 2024. |
 | E-LIC-007 | Helicone AI Gateway | github.com/Helicone/ai-gateway/blob/main/LICENSE | GPL-3.0-or-later | 2026-04-28 | Claude (specifier) | NOT a safe anchor despite some marketing claiming Apache-2.0. Network use does not trigger GPL distribution requirements (unlike AGPL), but binary distribution does. Read for behavior only. |
 | E-LIC-008 | Envoy AI Gateway | github.com/envoyproxy/ai-gateway/blob/main/LICENSE | Apache-2.0 | 2026-04-28 | Claude (specifier) | Safe anchor (4th confirmed: one-api MIT, LiteLLM MIT, Portkey MIT, Envoy AI Gateway Apache-2.0). Built on Envoy Proxy, CNCF lineage. |
+| E-LIC-009 | CLIProxyAPI (CPA) | github.com/router-for-me/CLIProxyAPI/blob/main/LICENSE | MIT | 2026-05-08 | Claude (specifier) | Safe anchor. Owner 召回 "和我们的也差不多，只是另一种 OAuth 授权" — 31.3k stars, Go gateway, sub2api 同生态。已在量产 browser-redirect OAuth (Anthropic Pro/Max + Codex + Antigravity + Qwen)，是 HUAKAI 5-passthrough OAuth roadmap 关键参考。详见 [docs/plans/2026-05-08-cpa-cliproxyapi-reference-scan.md](plans/2026-05-08-cpa-cliproxyapi-reference-scan.md)。 |
 
 ## Behavior Evidence — one-api (MIT, E-LIC-004)
 
