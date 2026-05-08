@@ -182,10 +182,14 @@ func TestBuildDefaultProtocolAdapterRegistry(t *testing.T) {
 		}
 	}
 
-	// bedrock_invoke 故意不在此注册表（AWS 二进制 EventStream，需专用 adapter）。
-	// 防止后续误注册错配 SSE adapter，回归测试守住这条边界。
-	if _, err := r.For("bedrock_invoke"); !errors.Is(err, ErrUnknownProtocolFamily) {
-		t.Errorf("bedrock_invoke 应明确未注册（待 BedrockEventStreamAdapter 专用实现），err=%v", err)
+	// bedrock_invoke 走专用 BedrockEventStreamAdapter（A4 atomic 接入；
+	// AWS Binary EventStream 与 SSE 不兼容，A2+A3 提供 binary scanner）。
+	bedrockAdapter, err := r.For("bedrock_invoke")
+	if err != nil {
+		t.Errorf("bedrock_invoke 应已注册（A5+A6 atomic），err=%v", err)
+	}
+	if _, ok := bedrockAdapter.(*proto.BedrockEventStreamAdapter); !ok {
+		t.Errorf("bedrock_invoke adapter 类型=%T 期望 *proto.BedrockEventStreamAdapter", bedrockAdapter)
 	}
 }
 

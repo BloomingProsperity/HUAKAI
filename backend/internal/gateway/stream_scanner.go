@@ -117,18 +117,15 @@ func (s *SSEStreamScanner) Scan(ctx context.Context, r io.Reader, bufferCap int)
 }
 
 // BuildDefaultStreamScannerRegistry 构造默认 scanner 注册表。
-// 当前阶段所有 19 个 protocol family 全部走 SSE；Bedrock 专属 scanner
-// 在 A2+A3 atomic 加入。注册顺序与 BuildDefaultProtocolAdapterRegistry
-// 保持一致便于代码 cross-check。
-//
-// 注意：bedrock_invoke 故意不在此注册（与 protocol_selector 保持一致），
-// 待 A2+A3 BedrockEventStreamScanner 实现后再补。
+// 当前阶段除 bedrock_invoke 外所有 family 走 SSE；bedrock_invoke 走专用
+// BedrockEventStreamScanner（A3 atomic 实现，binary EventStream 切帧）。
+// 注册顺序与 BuildDefaultProtocolAdapterRegistry 保持一致便于代码 cross-check。
 func BuildDefaultStreamScannerRegistry() *StaticStreamScannerRegistry {
 	r := NewStaticStreamScannerRegistry()
 	sse := &SSEStreamScanner{}
 
-	// 19 个 family（与 protocol_selector.BuildDefaultProtocolAdapterRegistry
-	// 注册顺序对齐）。bedrock_invoke 故意缺席。
+	// 19 个走 SSE 的 family（与 protocol_selector.BuildDefaultProtocolAdapterRegistry
+	// 注册顺序对齐）。bedrock_invoke 走 binary scanner，单独注册在下方。
 	for _, family := range []string{
 		// 既有官方 API 路径
 		"anthropic_messages",
@@ -155,6 +152,11 @@ func BuildDefaultStreamScannerRegistry() *StaticStreamScannerRegistry {
 	} {
 		r.MustRegister(family, sse)
 	}
+
+	// AWS Bedrock invoke-with-response-stream 走 binary EventStream wire format
+	// （非 SSE），需 BedrockEventStreamScanner 切帧并解 chunk envelope。
+	r.MustRegister("bedrock_invoke", &BedrockEventStreamScanner{})
+
 	return r
 }
 
