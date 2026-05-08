@@ -5,14 +5,16 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	"github.com/jackc/pgx/v5"
 )
 
-// stubStickyRepo 实现 stickyBindingReader 用于测试。
+// stubStickyRepo 实现 stickyBindingReader + (可选) stickyBindingWriter 测试用。
 type stubStickyRepo struct {
-	get func(ctx context.Context, arg db.GetStickyBindingParams) (int64, error)
+	get    func(ctx context.Context, arg db.GetStickyBindingParams) (int64, error)
+	upsert func(ctx context.Context, arg db.UpsertStickyBindingParams) error
 }
 
 func (s *stubStickyRepo) GetStickyBinding(ctx context.Context, arg db.GetStickyBindingParams) (int64, error) {
@@ -20,6 +22,13 @@ func (s *stubStickyRepo) GetStickyBinding(ctx context.Context, arg db.GetStickyB
 		return s.get(ctx, arg)
 	}
 	return 0, pgx.ErrNoRows
+}
+
+func (s *stubStickyRepo) UpsertStickyBinding(ctx context.Context, arg db.UpsertStickyBindingParams) error {
+	if s.upsert != nil {
+		return s.upsert(ctx, arg)
+	}
+	return nil
 }
 
 func TestDBStickyStore_HappyHit(t *testing.T) {
@@ -112,6 +121,89 @@ func TestDBStickyStore_PassesThroughOtherErrors(t *testing.T) {
 	})
 	if !errors.Is(err, wantErr) {
 		t.Errorf("非 ErrNoRows 错误应透传, got %v", err)
+	}
+}
+
+func TestDBStickyStore_UpsertHappy(t *testing.T) {
+	var captured db.UpsertStickyBindingParams
+	called := false
+	repo := &stubStickyRepo{
+		upsert: func(ctx context.Context, arg db.UpsertStickyBindingParams) error {
+			captured = arg
+			called = true
+			return nil
+		},
+	}
+	store := NewDBStickyStore(repo)
+	err := store.Upsert(context.Background(), 1, "h-abc", "claude-3", 42)
+	if err != nil {
+		t.Fatalf("Upsert err=%v", err)
+	}
+	if !called {
+		t.Error("Upsert 应调 writer")
+	}
+	if captured.TenantID != 1 || captured.SessionHash != "h-abc" ||
+		captured.Model != "claude-3" || captured.ProviderAccountID != 42 {
+		t.Errorf("captured=%+v", captured)
+	}
+	if !captured.ExpiresAt.Valid || captured.ExpiresAt.Time.IsZero() ||
+		time.Until(captured.ExpiresAt.Time) > defaultStickyTTL+time.Second ||
+		time.Until(captured.ExpiresAt.Time) < defaultStickyTTL-time.Second {
+		t.Errorf("ExpiresAt 应约为 now+%v, 得 %v", defaultStickyTTL, captured.ExpiresAt)
+	}
+}
+
+func TestDBStickyStore_UpsertSkipsDegenerate(t *testing.T) {
+	called := false
+	repo := &stubStickyRepo{
+		upsert: func(ctx context.Context, arg db.UpsertStickyBindingParams) error {
+			called = true
+			return nil
+		},
+	}
+	store := NewDBStickyStore(repo)
+	cases := []struct {
+		t  int64
+		h  string
+		m  string
+		id int64
+	}{
+		{0, "h", "m", 1},
+		{1, "", "m", 1},
+		{1, "h", "", 1},
+		{1, "h", "m", 0},
+	}
+	for _, tc := range cases {
+		_ = store.Upsert(context.Background(), tc.t, tc.h, tc.m, tc.id)
+	}
+	if called {
+		t.Error("degenerate input 应静默跳过, 不调 writer")
+	}
+}
+
+func TestDBStickyStore_UpsertReadOnlyMode(t *testing.T) {
+	repo := &stubStickyRepo{}
+	store := NewDBStickyStoreReadOnly(repo) // writer = nil
+	err := store.Upsert(context.Background(), 1, "h", "m", 42)
+	if err != nil {
+		t.Errorf("read-only store Upsert 应静默 nil, 得 %v", err)
+	}
+}
+
+func TestDBStickyStore_UpsertCustomTTL(t *testing.T) {
+	var captured db.UpsertStickyBindingParams
+	repo := &stubStickyRepo{
+		upsert: func(ctx context.Context, arg db.UpsertStickyBindingParams) error {
+			captured = arg
+			return nil
+		},
+	}
+	store := NewDBStickyStore(repo)
+	store.TTL = 5 * time.Minute
+	_ = store.Upsert(context.Background(), 1, "h", "m", 42)
+	delta := time.Until(captured.ExpiresAt.Time)
+	if delta < 4*time.Minute || delta > 6*time.Minute {
+		t.Errorf("custom TTL=5min 期望 ExpiresAt ≈ +5min, 得 %v", delta)
 	}
 }
 

@@ -14,16 +14,29 @@ package pool
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // stickyBindingReader 是 DBRepository 的最小子集——只读路径。
-// selector.trySticky 只调 GetStickyBinding；upsert 由 selector 选定后
-// 单独路径写（未来 atomic）。
+// selector.trySticky 只调 GetStickyBinding。
 type stickyBindingReader interface {
 	GetStickyBinding(ctx context.Context, arg db.GetStickyBindingParams) (int64, error)
+}
+
+// stickyBindingWriter 是写路径的最小子集——selector 选定 fresh 账号后调用
+// 持久化绑定, 后续 same-prefix 请求即可命中。
+type stickyBindingWriter interface {
+	UpsertStickyBinding(ctx context.Context, arg db.UpsertStickyBindingParams) error
+}
+
+// stickyBindingRepo 是读+写两面（实现都是 *db.Queries 或 DBRepository）。
+type stickyBindingRepo interface {
+	stickyBindingReader
+	stickyBindingWriter
 }
 
 // DBStickyStore 实现 pool.StickyStore 接口。
@@ -33,10 +46,29 @@ type stickyBindingReader interface {
 // 最大化 vendor prompt cache 命中率。
 type DBStickyStore struct {
 	repo stickyBindingReader
+	// writer 可选; 非 nil 时 selector 选定 fresh 账号后通过 Upsert 写入。
+	// nil 时 store 退化为 read-only (不会持久化新 binding, 适合测试 / 部分场景)。
+	writer stickyBindingWriter
+
+	// TTL 控制 sticky_bindings.expires_at = now() + TTL。
+	// 默认 1h 对齐 Anthropic extended prompt cache（5min 默认窗口的扩展形态）。
+	// 0 = 用 default。
+	TTL time.Duration
 }
 
-// NewDBStickyStore 用 DBRepository (或任何 stickyBindingReader 实现) 构造 store。
-func NewDBStickyStore(repo stickyBindingReader) *DBStickyStore {
+// defaultStickyTTL = 1h, 对齐 Anthropic prompt cache extended TTL。
+const defaultStickyTTL = time.Hour
+
+// NewDBStickyStore 用 DBRepository (或任何 stickyBindingRepo 实现) 构造 read+write store.
+//
+// repo 类型可以是 *db.Queries 或 DBRepository，二者都满足 stickyBindingRepo。
+func NewDBStickyStore(repo stickyBindingRepo) *DBStickyStore {
+	return &DBStickyStore{repo: repo, writer: repo}
+}
+
+// NewDBStickyStoreReadOnly 仅注入 reader (适合不需 upsert 的场景，例如
+// 测试或灰度阶段不写新 binding)。
+func NewDBStickyStoreReadOnly(repo stickyBindingReader) *DBStickyStore {
 	return &DBStickyStore{repo: repo}
 }
 
@@ -70,6 +102,35 @@ func (s *DBStickyStore) Lookup(ctx context.Context, req SelectionRequest) (int64
 		return 0, false, err
 	}
 	return accountID, true, nil
+}
+
+// Upsert 把 (tenant, sessionHash, model) → accountID 写入 sticky_bindings,
+// 让后续相同 prefix 的请求 sticky 到同一账号 = vendor cache hit。
+//
+// 行为:
+//   - SessionHash / TenantID / Model / accountID 任一缺失 → 静默跳过（无 binding 可写）
+//   - writer == nil → 静默跳过 (read-only store 模式)
+//   - DB 错传播给 caller (selector 决定是否吞掉, 写失败不应阻塞主流程)
+//
+// expires_at = now() + TTL (默认 1h 对齐 Anthropic extended cache)。
+func (s *DBStickyStore) Upsert(ctx context.Context, tenantID int64, sessionHash, model string, accountID int64) error {
+	if s == nil || s.writer == nil {
+		return nil
+	}
+	if tenantID == 0 || sessionHash == "" || model == "" || accountID == 0 {
+		return nil
+	}
+	ttl := s.TTL
+	if ttl <= 0 {
+		ttl = defaultStickyTTL
+	}
+	return s.writer.UpsertStickyBinding(ctx, db.UpsertStickyBindingParams{
+		TenantID:          tenantID,
+		SessionHash:       sessionHash,
+		Model:             model,
+		ProviderAccountID: accountID,
+		ExpiresAt:         pgtype.Timestamptz{Time: time.Now().Add(ttl), Valid: true},
+	})
 }
 
 // 编译期接口断言
