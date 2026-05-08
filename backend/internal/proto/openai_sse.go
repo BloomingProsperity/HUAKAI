@@ -177,12 +177,24 @@ func (a *OpenAIAdapter) providerDataToCanonicalEvents(data []byte, state *OpenAI
 		return finalizeOpenAIState(state, true)
 	}
 
+	// U7-C：用 UnmarshalWithExtras 同时拿 known 字段 + 上游 unknown 字段
+	// （system_fingerprint / service_tier / logprobs / prompt_filter_results 等）
+	// unknown 字段透传到第一条 emit 的 CanonicalEvent.Passthrough，由
+	// ClientAdapter 在响应序列化时合并回客户端输出。
 	var chunk openAIChatCompletionChunk
-	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+	var env PassthroughEnvelope
+	if err := UnmarshalWithExtras([]byte(payload), &chunk, &env); err != nil {
 		loss := newLossEntry(FeatureTextStreaming, DirectionUpstreamToCanonical, VerdictLossy, "malformed OpenAI SSE JSON chunk skipped")
 		return nil, []ProtocolLossEntry{loss}
 	}
-	return openAIChunkToCanonicalEvents(chunk, state)
+	events, losses := openAIChunkToCanonicalEvents(chunk, state)
+	// 把 unknown 字段附到第一条事件——避免重复 emit；如果本 chunk 没产
+	// 出任何 event（如 usage-only 在 UsageEmitted 之后），unknown 字段丢失
+	// 是可接受的（极罕见），不影响主路径正确性。
+	if len(env.Extra) > 0 && len(events) > 0 {
+		events[0].Passthrough = &env
+	}
+	return events, losses
 }
 
 func openAIChunkToCanonicalEvents(chunk openAIChatCompletionChunk, state *OpenAIUpstreamState) ([]CanonicalEvent, []ProtocolLossEntry) {
@@ -489,11 +501,18 @@ func extractOpenAISSEData(raw []byte) []byte {
 }
 
 func openAIResponseToCanonicalResponse(raw []byte) (CanonicalResponse, []ProtocolLossEntry, error) {
+	// U7-C：non-streaming 响应路径也走 UnmarshalWithExtras，把顶层 unknown
+	// 字段塞进 CanonicalResponse.Passthrough（system_fingerprint /
+	// service_tier 等同样会出现在 chat.completion 响应顶层）。
 	var resp openAIChatCompletionResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
+	var env PassthroughEnvelope
+	if err := UnmarshalWithExtras(raw, &resp, &env); err != nil {
 		return CanonicalResponse{}, nil, err
 	}
 	out := CanonicalResponse{ID: resp.ID, Model: resp.Model}
+	if len(env.Extra) > 0 {
+		out.Passthrough = &env
+	}
 	if resp.Usage != nil {
 		out.Usage = resp.Usage.canonical()
 	}
