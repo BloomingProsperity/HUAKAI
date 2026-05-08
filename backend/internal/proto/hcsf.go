@@ -3,6 +3,11 @@ package proto
 import "encoding/json"
 
 // CanonicalRequest is the HCSF request envelope from spec sections 1-3.
+//
+// Passthrough（U7-B）：携带上游 / 客户端 JSON 中 HUAKAI 当前 typed 结构未
+// 声明的字段。ClientAdapter 与 UpstreamAdapter 在 unmarshal 阶段用
+// UnmarshalWithExtras 灌入，序列化阶段用 MergeExtrasInto 合并到输出。
+// nil 表示无 unknown 字段（与既有行为兼容）。
 type CanonicalRequest struct {
 	Model             string             `json:"model"`
 	Messages          []CanonicalMessage `json:"messages,omitempty"`
@@ -16,6 +21,9 @@ type CanonicalRequest struct {
 	Stream            bool               `json:"stream"`
 	ParallelToolCalls bool               `json:"parallel_tool_calls,omitempty"`
 	ResponseFormat    map[string]any     `json:"response_format,omitempty"`
+
+	// Passthrough 字段不上 wire（json:"-"）；由 helper 序列化时 merge。
+	Passthrough *PassthroughEnvelope `json:"-"`
 }
 
 // CanonicalTool is an HCSF tool declaration carried by CanonicalRequest from spec sections 1-3.
@@ -44,6 +52,10 @@ type CanonicalContentBlock struct {
 }
 
 // CanonicalEvent is the HCSF streaming event union from spec sections 1-3.
+//
+// Passthrough（U7-B）：上游 vendor 在事件 JSON 顶层携带的 unknown 字段
+// （system_fingerprint / service_tier / cache_creation_input_tokens 等）。
+// nil 表示无 unknown 字段。
 type CanonicalEvent struct {
 	Type         string                 `json:"type"`
 	MessageID    string                 `json:"message_id,omitempty"`
@@ -53,6 +65,8 @@ type CanonicalEvent struct {
 	Delta        *CanonicalContentDelta `json:"delta,omitempty"`
 	Usage        *CanonicalUsage        `json:"usage,omitempty"`
 	StopReason   CanonicalStopReason    `json:"stop_reason,omitempty"`
+
+	Passthrough *PassthroughEnvelope `json:"-"`
 }
 
 // CanonicalContentDelta is the HCSF content_block_delta payload from spec sections 1-3.
@@ -65,12 +79,17 @@ type CanonicalContentDelta struct {
 }
 
 // CanonicalResponse is the HCSF buffered response envelope from spec sections 1-3.
+//
+// Passthrough（U7-B）：non-streaming 上游响应 JSON 顶层 unknown 字段。
+// nil 表示无 unknown 字段。
 type CanonicalResponse struct {
 	ID         string                  `json:"id"`
 	Model      string                  `json:"model"`
 	Content    []CanonicalContentBlock `json:"content,omitempty"`
 	Usage      CanonicalUsage          `json:"usage,omitempty"`
 	StopReason CanonicalStopReason     `json:"stop_reason"`
+
+	Passthrough *PassthroughEnvelope `json:"-"`
 }
 
 // CanonicalUsage is the HCSF usage update payload from spec sections 1-3.
