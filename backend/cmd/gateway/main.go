@@ -15,6 +15,7 @@ package main
 import (
 	"context"
 	"errors"
+	"expvar"
 	"fmt"
 	"net/http"
 	"os"
@@ -185,6 +186,11 @@ func run(logger *zap.Logger) error {
 	// 当前没有 auth middleware（auth 在 ChatHandlerDeps.Auth 内做），将来若
 	// 加 router.Use(authMiddleware) 需放在本行之后。
 	router.Use(clientid.Middleware(logger))
+
+	// /debug/vars 暴露 stdlib expvar metrics（含 clientid_request_count 等）。
+	// 当前未加 auth；admin 暴露面有限期间放在主路由 root 上方便 ops curl。
+	// TODO: 接入 admin auth middleware 后挪到 admin 路径下。
+	router.Handle("/debug/vars", expvar.Handler())
 
 	mountRoutes(router, d, logger)
 
