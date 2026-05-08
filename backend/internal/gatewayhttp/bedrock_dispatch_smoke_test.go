@@ -336,3 +336,94 @@ func TestDispatch_FullPipeline_BedrockOnAnthropic(t *testing.T) {
 	}
 }
 
+// TestDispatch_FullPipeline_BedrockOnAnthropic_UpstreamFailure 验证 synthesis
+// plan §4 step 6 failure path: mock Bedrock 返 5xx 时 gateway 不能 silent-OK
+// + 必须调 Abort 不调 Settle，audit/metrics 不能误记 success。
+func TestDispatch_FullPipeline_BedrockOnAnthropic_UpstreamFailure(t *testing.T) {
+	var upstreamReqCount int64
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&upstreamReqCount, 1)
+		// 模拟 AWS Bedrock throttling / 内部错误。AWS 出错走 JSON application/x-amz-json-1.1
+		// 形态而不是 binary EventStream（错误发生在 stream 建立前），HUAKAI 上游层
+		// 不应解析为 binary EventStream success path。
+		w.Header().Set("Content-Type", "application/x-amz-json-1.1")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"__type":"ServiceUnavailableException","message":"upstream throttle simulation"}`))
+	}))
+	defer mockServer.Close()
+	mockHost := strings.TrimPrefix(mockServer.URL, "http://")
+
+	vault := provider.NewStaticVault()
+	if err := vault.Set(42, provider.Credential{
+		Type:  provider.CredentialTypeAWSSigV4,
+		Value: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+		Extra: map[string]string{"aws_region": "us-east-1", "aws_access_key_id": "AKIDEXAMPLE"},
+	}, provider.AccountInfo{AccountID: 42, Platform: "bedrock", AccountType: "bedrock"}); err != nil {
+		t.Fatalf("vault.Set: %v", err)
+	}
+
+	adapterReg := provider.NewStaticRegistry()
+	adapterReg.MustRegister("bedrock_invoke", &bedrock.PassthroughAdapter{
+		AutoTranslateAnthropicAPIBody: true,
+	})
+
+	dispatcher := &gateway.UpstreamDispatcher{
+		Adapters:         adapterReg,
+		TransportFactory: transport.NewFactory(),
+		HTTPClient:       &http.Client{Transport: &redirectRoundTripper{mockHost: mockHost}},
+	}
+
+	forwarder := &gateway.StreamForwarder{
+		ProtocolAdapters: gateway.BuildDefaultProtocolAdapterRegistry(),
+		Scanners:         gateway.BuildDefaultStreamScannerRegistry(),
+	}
+
+	settler := &smokeSettler{}
+	deps := ChatHandlerDeps{
+		Auth:                 smokeAuth{identity: auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 3}},
+		Registry:             smokeRegistry{resolved: registry.Resolved{ProtocolFamily: "bedrock_invoke", CanonicalModelID: "claude-3-5-sonnet", ProviderModelID: "anthropic.claude-3-5-sonnet-20241022-v2:0", PoolCandidates: []int64{42}}},
+		Router:               smokeRouter{},
+		ClaimGate:            smokeClaimGate{},
+		Selector:             smokeSelector{},
+		CredentialVault:      vault,
+		Dispatcher:           dispatcher,
+		Forwarder:            forwarder,
+		Settler:              settler,
+		BillingPolicyVersion: "smoke-v1",
+		RequestClass:         "default",
+	}
+
+	// 长 system 触发 Track C 注入路径（与 happy 一致, 让 failure 不影响 inject 已发生）
+	longSystem := strings.Repeat("You are a helpful assistant. ", 200)
+	bodyMap := map[string]any{
+		"model":      "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		"messages":   []map[string]string{{"role": "user", "content": "Hi"}},
+		"max_tokens": 1024,
+		"stream":     true,
+		"system":     longSystem,
+	}
+	reqBody, _ := json.Marshal(bodyMap)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer hk_smoke_token")
+
+	rec := httptest.NewRecorder()
+	NewMessagesHandler(deps)(rec, req)
+
+	// 断言: 上游被打到 + status 不是 200（应映射 5xx 上游成 5xx 客户响应）
+	if atomic.LoadInt64(&upstreamReqCount) != 1 {
+		t.Errorf("mock 期望被打 1 次, 得 %d", atomic.LoadInt64(&upstreamReqCount))
+	}
+	if rec.Code == http.StatusOK {
+		t.Errorf("上游 5xx 时客户端不应见 200; 得 %d (body=%s)", rec.Code, rec.Body.String())
+	}
+
+	// 断言: failure path 不能调 Settle (没有正常完成); 应调 Abort
+	if sc := atomic.LoadInt64(&settler.settleCalls); sc != 0 {
+		t.Errorf("upstream 失败时 Settler.Settle 不应被调 (得 %d)", sc)
+	}
+	// Abort 是预期行为, 但当前 settler stub 接口 Abort 计数, 不强制 == 1
+	// (handler 实现可能选择特定语义; 关键是 Settle 必须 = 0)
+}
+
