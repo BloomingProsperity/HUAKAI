@@ -37,6 +37,18 @@ type PassthroughAdapter struct {
 	// 主要供单元测试注入本地 httptest.Server。
 	Endpoint string
 
+	// AutoTranslateAnthropicAPIBody 启用 Anthropic Messages API → Bedrock
+	// 形态自动翻译（A8 闭环原子）。
+	//
+	// 当 true 时，BuildRequest 在签名前调 TranslateAnthropicAPIToBedrock：
+	//   - 剥离 body 中的 model 字段（Bedrock URL 已含 model_id）
+	//   - 剥离 body 中的 stream 字段（Bedrock 用 endpoint 选流式）
+	//   - 注入 anthropic_version: "bedrock-2023-05-31"
+	// 让 Anthropic CLI 等客户端的原始请求体可直接路由到 Bedrock。
+	//
+	// 默认 false 保持原有 passthrough 语义（caller 已发 Bedrock 形态 body）。
+	AutoTranslateAnthropicAPIBody bool
+
 	// nowFunc 注入当前时间（测试用），nil 时使用 time.Now()。
 	nowFunc func() time.Time
 }
@@ -79,8 +91,18 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		return nil, errors.New("bedrock passthrough: Extra[\"aws_region\"] 不能为空")
 	}
 
-	// 模型 ID 必填
-	if in.UpstreamModelID == "" {
+	// 模型 ID 必填——但 AutoTranslate 模式下若 caller 未填，从 body 抽取
+	// （sonnet F1/F7 闭环修复——否则 Anthropic CLI body 含 "model" 字段时
+	// translator 抽到的 UpstreamModelID 被丢弃，闭环失败）。
+	modelID := in.UpstreamModelID
+	if modelID == "" && a.AutoTranslateAnthropicAPIBody {
+		// 提前 peek 一次 translator（在主翻译块之前），仅用于 fallback model ID。
+		// 解析失败让主翻译块在下面正常报错，不在这里 short-circuit。
+		if peek, perr := TranslateAnthropicAPIToBedrock(in.InboundBody); perr == nil {
+			modelID = peek.UpstreamModelID
+		}
+	}
+	if modelID == "" {
 		return nil, errors.New("bedrock passthrough: UpstreamModelID 不能为空")
 	}
 
@@ -94,14 +116,32 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		}
 	}
 
-	// 构造 endpoint URL
-	endpoint, err := a.buildEndpoint(region, in.UpstreamModelID, in.Credential.Extra["stream"] == "true")
+	// A8 闭环原子: AutoTranslateAnthropicAPIBody 开启时把 Anthropic API 形
+	// body 翻译成 Bedrock 形，并允许翻译结果决定 stream 标志（caller 仍可
+	// 通过 Extra["stream"] 显式覆盖）。in.UpstreamModelID 始终优先（管理员
+	// model alias 配置权威）。
+	body := in.InboundBody
+	stream := in.Credential.Extra["stream"] == "true"
+	if a.AutoTranslateAnthropicAPIBody {
+		translated, terr := TranslateAnthropicAPIToBedrock(in.InboundBody)
+		if terr != nil {
+			return nil, fmt.Errorf("bedrock passthrough: Anthropic API 翻译失败: %w", terr)
+		}
+		body = translated.Body
+		// 仅当 caller 没有显式声明 stream Extra 时使用翻译器结果
+		if _, set := in.Credential.Extra["stream"]; !set {
+			stream = translated.Stream
+		}
+	}
+
+	// 构造 endpoint URL（用 modelID，可能是 caller 给的或 translator 抽的）
+	endpoint, err := a.buildEndpoint(region, modelID, stream)
 	if err != nil {
 		return nil, fmt.Errorf("bedrock passthrough: 构造 endpoint 失败: %w", err)
 	}
 
-	// 构造请求（body 原样透传）
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(in.InboundBody))
+	// 构造请求（body 已可能被翻译）
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("bedrock passthrough: 构造请求失败: %w", err)
 	}
@@ -125,7 +165,9 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 			},
 			now: now,
 		}
-		if err := signer.Sign(req, in.InboundBody); err != nil {
+		// 注意: 用 body（可能已翻译）签名，而不是原始 InboundBody——
+		// 否则 SigV4 hash 与实际发出的 body 不匹配。
+		if err := signer.Sign(req, body); err != nil {
 			return nil, fmt.Errorf("bedrock passthrough: SigV4 签名失败: %w", err)
 		}
 
