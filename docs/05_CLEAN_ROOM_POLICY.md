@@ -19,18 +19,25 @@ Reference projects are empirical evidence, not source-code providers.
 - Public documentation facts.
 - Test ideas and acceptance expectations expressed independently.
 
-## Prohibited From Non-MIT References
+## Prohibited Outputs (Owner reaffirmed 2026-05-08: 必读源码 + 不抄)
 
-- Source code.
-- Distinctive file structures.
-- Comments.
-- Database schemas.
-- API implementation details.
+Reading borrowed reference source code is **mandatory** for behavior fidelity
+(see specifier-lane permissions §Workflow Methodology below). The clean-room
+boundary is on what flows OUT into this repository, not on what gets read.
+
+The forbidden outputs (do not write into HUAKAI):
+
+- Verbatim source code (function bodies, struct field listings copy/paste).
+- Distinctive file structures preserved across rename.
+- Verbatim comments.
+- Database schema names or column names.
+- API implementation details copied without rewording in HUAKAI vocabulary.
 - UI source.
-- Unique layout or styling.
-- Internal naming conventions.
-- Algorithms expressed in code.
-- Copied test code.
+- Unique layout or styling lifted from upstream.
+- Internal naming conventions (function/method/constant names) — see
+  CL-001 / CL-001a in [specs/_REVIEW_CHECKLIST.md](specs/_REVIEW_CHECKLIST.md).
+- Algorithms expressed as line-by-line translation of upstream code (CL-005).
+- Copied test code (verbatim test bodies / fixture data).
 
 ## Required Clean-Room Method
 
