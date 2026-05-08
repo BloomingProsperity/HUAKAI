@@ -16,6 +16,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/cache_routing"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -212,6 +213,12 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			return
 		}
 
+		// Track B: 计算 prompt-prefix hash 作 sticky 路由 key——同 (system,
+		// tools) prefix 的请求路由到同一 provider account, 最大化 vendor 端
+		// prompt cache 命中率。messages 不参与 hash, 让 multi-turn 对话稳定。
+		// 空 hash (短 prompt 无 cacheable prefix) → 不参与 sticky, 走 round-robin。
+		promptHash := cache_routing.ComputePromptHash(body)
+
 		selRes, err := d.Selector.Select(ctx, pool.SelectionRequest{
 			TenantID:        ident.TenantID,
 			UserID:          ident.UserID,
@@ -222,6 +229,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			ClaimID:         reserveRes.ClaimID,
 			AttemptSeq:      1,
 			CapabilityFlags: attempt.RequiredCapabilities,
+			SessionHash:     promptHash,
 		})
 		if errors.Is(err, pool.ErrNoEligibleAccount) || errors.Is(err, pool.ErrNoSlotAvailable) {
 			if abortErr := d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "pool_no_capacity"); abortErr != nil {

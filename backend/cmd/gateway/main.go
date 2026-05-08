@@ -110,6 +110,11 @@ func run(logger *zap.Logger) error {
 		pool.NewDBAccountSource(q),
 		pool.WithSlotManager(pool.NewDBSlotManager(pgPool)),
 		pool.WithClaimGate(pool.NewDBClaimGate(q)),
+		// Track B: 把 sticky_bindings 表接入 selector. 之前 WithStickyStore 没
+		// 任何 caller 注入, sticky 路由整体 dead. 现在 chat_completions_handler
+		// 把 cache_routing.ComputePromptHash(body) 作 SessionHash → 同 prefix
+		// 锁定到同 provider_account → 最大化 vendor prompt cache 命中。
+		pool.WithStickyStore(pool.NewDBStickyStore(q)),
 	)
 
 	d := &deps{
