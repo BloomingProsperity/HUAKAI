@@ -166,6 +166,13 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 		}
 	}
 
+	// metrics: first-pick (idx 0) vs failover (idx 1/2)
+	if chosen.idx == 0 {
+		IncFirstPick()
+	} else {
+		IncFailover()
+	}
+
 	// 7. claim 写入 + 返
 	return p.acquireAndReturn(ctx, req, chosen.accountID)
 }
@@ -196,6 +203,7 @@ func (p *PASRSelector) scheduleHRWFullRing(
 	ring *AccountRing, snapshots map[int64]*AccountSnapshot,
 	excludedSegmentMembers [PASRSegmentSize]int64,
 ) (*SelectionResult, error) {
+	IncFullRingFallback()
 	prefixKey := []byte(req.SessionHash)
 	if len(prefixKey) == 0 {
 		prefixKey = []byte(req.RequestedModel)

@@ -69,9 +69,11 @@ func (f *PASRCacheFeedback) handle(obs cachemetrics.CacheObservation) {
 	if obs.CacheCreation > 0 {
 		seg.MarkCacheSeen(idx)
 		seg.LastWriteAt.Store(f.now().UnixNano())
+		IncCacheCreationObs()
 	}
 	if obs.CacheRead > 0 {
 		f.segments.MarkRead(seg, f.now())
+		IncCacheHitObs()
 	}
 }
 

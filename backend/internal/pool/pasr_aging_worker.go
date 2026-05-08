@@ -96,7 +96,10 @@ func (w *PASRAgingWorker) tick() {
 	n := w.segments.EvictExpired(w.now())
 	if n > 0 {
 		w.evictedTotal.Add(uint64(n))
+		AddEvictions(int64(n))
 	}
+	// 段表大小快照, 5min 一次, 不每请求开销
+	SetSegmentCount(int64(w.segments.Size()))
 }
 
 // Stop 优雅停止 worker, 等 loop 退出 (最长 interval)。
