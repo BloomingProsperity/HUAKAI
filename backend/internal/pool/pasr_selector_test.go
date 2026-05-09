@@ -331,6 +331,9 @@ func TestPASR_Select_LoadCap_FiltersOverloaded(t *testing.T) {
 }
 
 func TestPASR_NewPASRSelector_Validates(t *testing.T) {
+	// M5 起 RingProvider 不再 mandatory — RingProvider=nil 时 Select 走
+	// request-scoped ring (synthesis D3)。 M5 单测在 pasr_selector_ring_test.go
+	// 单独验证 RingProvider=nil 场景, 此处只检查剩余必填字段。
 	tbl := NewSegmentTable(SegmentTableConfig{})
 	cases := []struct {
 		name string
@@ -338,7 +341,6 @@ func TestPASR_NewPASRSelector_Validates(t *testing.T) {
 	}{
 		{"no Accounts", PASRSelectorConfig{Segments: tbl, RingProvider: func() *AccountRing { return nil }}},
 		{"no Segments", PASRSelectorConfig{Accounts: &fakeAccountSource{}, RingProvider: func() *AccountRing { return nil }}},
-		{"no RingProvider", PASRSelectorConfig{Accounts: &fakeAccountSource{}, Segments: tbl}},
 	}
 	for _, tc := range cases {
 		_, err := NewPASRSelector(tc.cfg)

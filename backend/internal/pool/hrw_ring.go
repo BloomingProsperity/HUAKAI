@@ -2,10 +2,11 @@
 // 数据结构 + top-K 选段。
 //
 // 算法（参 Thaler & Ravishankar 1996, 公开学术算法，无 license 风险）:
-//   每个 (prefix_hash, account_id) pair 计算一个 64-bit "权重":
-//     mixed_acc = splitmix64(account_id)            // 高熵化低字节集中的 ID
-//     score = FNV64a(seed_8B || prefix_hash || mixed_acc_8B)
-//   选取分值最高的 top-K 账号作为该 prefix 的"段"。
+//
+//	每个 (prefix_hash, account_id) pair 计算一个 64-bit "权重":
+//	  mixed_acc = splitmix64(account_id)            // 高熵化低字节集中的 ID
+//	  score = FNV64a(seed_8B || prefix_hash || mixed_acc_8B)
+//	选取分值最高的 top-K 账号作为该 prefix 的"段"。
 //
 // splitmix64 是公开 PRNG 混合函数（Steele/Lea 2014, public domain），把
 // 1..N 这样低熵账号 ID 散到全 64-bit 空间，避免 FNV-1a 对低熵 trailing
@@ -57,6 +58,31 @@ type AccountRing struct {
 	// Seed 是 HRW 哈希种子，参与每次 score 计算。Owner 可 30 天轮换防对手
 	// 猜测命中（DR-009 A05a 同源策略）。
 	Seed uint64
+}
+
+// BuildAccountRingFromSnapshots 从 ListAccounts 拿到的 snapshots 直接派生 ring,
+// 给 M4 SelectorDispatcher / M6 main.go 走 request-scoped 路径用 (synthesis D3 +
+// 决策点 3): per (tenant, pool_group) 已经在 ListAccounts 上游过滤好, 这里
+// 不需要额外缓存或 ticker, 也不需要新 SQL — 直接拿当前请求的可见 account 集
+// 派生 HRW ring, 天然避开跨租户泄漏 + DB 抖动雪崩两类风险。
+//
+// 性能预期: O(N) 单遍提 ID + 一次 NewAccountRing (内含排序 O(N log N))。 N
+// 通常 < 200, hot path 一次 ~1µs, 不构成瓶颈; 段命中后是 O(K=3) 不再用全 ring。
+//
+// 不做去重 — NewAccountRing 内已处理。 nil snapshots 返空 ring (caller 自决断
+// ErrNoEligibleAccount)。
+func BuildAccountRingFromSnapshots(snapshots []*AccountSnapshot, seed uint64) *AccountRing {
+	if len(snapshots) == 0 {
+		return NewAccountRing(nil, seed)
+	}
+	ids := make([]int64, 0, len(snapshots))
+	for _, s := range snapshots {
+		if s == nil || s.ID == 0 {
+			continue
+		}
+		ids = append(ids, s.ID)
+	}
+	return NewAccountRing(ids, seed)
 }
 
 // NewAccountRing 构造 ring，对 accounts 去重并升序排序保证 deterministic。
