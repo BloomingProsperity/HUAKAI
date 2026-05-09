@@ -143,6 +143,7 @@ curl -s http://localhost:8080/debug/vars 2>/dev/null | jq '.pasr_dispatch' | hea
 # }
 
 # 查看 cache_token_count_by_account (应按 vendor 有数据)
+# 注意: 先用 jq 展开完整 JSON, 再 head 截断行数, 避免截断 JSON mid-object
 curl -s http://localhost:8080/debug/vars 2>/dev/null | jq '.cache_token_count_by_account' | head -50
 # 应看到 4 个不同的 account_id 对应的 creation_total / read_total / request_count
 ```
@@ -219,10 +220,10 @@ curl -s http://localhost:8080/debug/vars 2>/dev/null | jq '.pasr'
 
 # 应看到 (stage 1 末期):
 # {
-#   "segment_count": 0,              ← shadow ReadOnly, 段表不创建
-#   "segment_creates_total": 0,
-#   "segment_evictions_total": 0,
-#   "first_pick_total": 0,           ← 因为 segment_count==0
+#   "pasr_segment_count": 0,              ← shadow ReadOnly, 段表不创建
+#   "pasr_segment_creates_total": 0,
+#   "pasr_evictions_total": 0,            ← 注意: 无 "segment_" 中缀
+#   "pasr_first_pick_total": 0,           ← 因为 pasr_segment_count==0
 #   ...
 # }
 ```
@@ -331,12 +332,13 @@ curl -s http://localhost:8080/debug/vars 2>/dev/null | jq '.pasr_dispatch'
 curl -s http://localhost:8080/debug/vars 2>/dev/null | jq '.pasr'
 
 # 期望 (因为 stage 3 shadow 仍是 ReadOnly, 不应写):
-# "segment_count": 0,              ← shadow ReadOnly 不污染
-# "segment_creates_total": 0,
+# "pasr_segment_count": 0,              ← shadow ReadOnly 不污染
+# "pasr_segment_creates_total": 0,
+# "pasr_evictions_total": 0,            ← 注意: 无 "segment_" 中缀
 
 # 但如果段表 *确实被污染* (比如误配置), 会看到:
-# "segment_count": 100-500,
-# "segment_creates_total": 100+,
+# "pasr_segment_count": 100-500,
+# "pasr_segment_creates_total": 100+,
 # → 这表示 shadow 参数有问题, ABORT 查代码
 ```
 
@@ -348,7 +350,7 @@ curl -s http://localhost:8080/debug/vars 2>/dev/null | jq '.pasr'
 | | < 70% | ❌ ABORT (PASR 选择有问题) |
 | `shadow_drop_total` | 0 | ✅ |
 | | > 0 | ❌ ABORT |
-| segment 未被污染 | `segment_count == 0` | ✅ |
+| segment 未被污染 | `pasr_segment_count == 0` | ✅ |
 | | > 0 | ❌ ABORT (ReadOnly 失效) |
 
 **关键决策**: 这是 shadow 的终点。通过 stage 3 即说明 PASR 逻辑基本可靠，可进 **canary 真写** 阶段。
@@ -373,11 +375,15 @@ export HUAKAI_POOL_SELECTOR_CANARY_PCT="5"
 ```bash
 curl -s http://localhost:8080/debug/vars 2>/dev/null | jq '.pasr_dispatch'
 
-# 新增关键行:
-# "canary_pasr_used_total": 5%,                  ← PASR 真写的请求数
-# "canary_default_used_total": 95%,
-# "canary_pre_mutation_fail_fallback_total": <5,  ← pre-mutation 失败 fallback default
-# "canary_post_mutation_fail_release_total": 0,   ← post-mutation 失败数 (必须为 0!)
+# 新增关键行 (expvar 输出整数计数, 不是百分比字符串):
+# "canary_pasr_used_total": <≈5% of total requests>,   ← PASR 真写的请求数 (整数)
+# "canary_default_used_total": <≈95% of total requests>,
+# "canary_pre_mutation_fail_fallback_total": <5,        ← pre-mutation 失败 fallback default
+# "canary_post_mutation_fail_release_total": 0,         ← post-mutation 失败数 (必须为 0!)
+#
+# 注意: Owner 需手动计算比率:
+#   canary_pct = canary_pasr_used_total / (canary_pasr_used_total + canary_default_used_total)
+#   应约等于 0.05 (5%)。 expvar 不输出 "5%", 只输出原始整数。
 ```
 
 ### 6.3 数据库验证
@@ -438,24 +444,37 @@ sleep 5  # 让 stop handler 优雅关闭
 export HUAKAI_POOL_SELECTOR_MODE="pasr-primary"
 # canary_pct 此时被忽略 (mode 改为 pasr-primary 即全量走 PASR)
 # 但 pre-mutation fail 仍可 fallback default
+
+# 重启网关 (与 §7.2 相同步骤):
+ps aux | grep "gateway.*main"
+# 找到 PID, 然后:
+kill -SIGTERM <PID>
+sleep 5  # 让 stop handler 优雅关闭
+cd /path/to/HUAKAI/backend
+HUAKAI_POOL_SELECTOR_MODE="pasr-primary" \
+HUAKAI_DATABASE_URL="postgres://postgres:password@localhost:5432/huakai" \
+HUAKAI_ADDR=":8080" \
+HUAKAI_LOG_LEVEL="info" \
+  go run ./cmd/gateway/main.go &
+# 确认启动: 应看到 "[INFO] gateway listening on :8080"
 ```
 
-### 7.4 新指标: first_pick_total
+### 7.4 新指标: pasr_first_pick_total
 
 ```bash
 curl -s http://localhost:8080/debug/vars 2>/dev/null | jq '.pasr'
 
-# 应看到 (与 stage 3 shadow 不同):
-# "segment_count": 100-500,        ← 实际在学习 cache locality
-# "first_pick_total": 1000+,       ← PASR segment 直接命中
-# "failover_total": 100-300,       ← segment miss → HRW fallback
-# "cache_hit_observations": 2000+, ← segment 记录的 cache hits
+# 应看到 (与 stage 3 shadow 不同, 所有 key 含 pasr_ 前缀):
+# "pasr_segment_count": 100-500,        ← 实际在学习 cache locality
+# "pasr_first_pick_total": 1000+,       ← PASR segment 直接命中
+# "pasr_failover_total": 100-300,       ← segment miss → HRW fallback
+# "pasr_cache_hit_observations": 2000+, ← segment 记录的 cache hits
 ```
 
 ### 7.5 决策条件
 
 - `canary_post_mutation_fail_release_total` 继续为 0
-- `first_pick_total` / (first_pick + failover) ≥ 70% (segment 学习效果)
+- `pasr_first_pick_total` / (pasr_first_pick_total + pasr_failover_total) ≥ 70% (segment 学习效果)
 - 无新 alert / error 日志
 
 ---
@@ -482,9 +501,12 @@ export HUAKAI_POOL_SELECTOR_MODE="pasr-strict"
 # 最终确认:
 curl -s http://localhost:8080/debug/vars 2>/dev/null | jq '.pasr_dispatch | {mode_pasr_strict_total, mode_default_total}'
 
-# 应看到:
-# "mode_pasr_strict_total": 100%,
-# "mode_default_total": 0,
+# 应看到 (expvar 输出整数计数, 不是百分比字符串):
+# "mode_pasr_strict_total": <total_request_count>,  ← 应等于总请求数 (所有请求走 strict)
+# "mode_default_total": 0,                          ← 必须为 0; 任何非 0 表示 dispatcher bug
+#
+# 注意: 不会输出 "100%", 只输出原始整数。
+#   验算: mode_pasr_strict_total 应与总发送请求数相符。
 ```
 
 ---
@@ -520,12 +542,17 @@ HUAKAI_DATABASE_URL="..." \
 - **无 DB 迁移**: 段表在内存, 进程 stop 时自动清空, PG 不污染
 - **无 cache 清空**: 下次启动 default 不需要任何 init 步骤
 - **总耗时**: 5 pod ≈ 3min, 50 pod ≈ 5-8min (k8s 滚动重启)
+- **selectorCleanup() 与 srv.Shutdown(30s) 顺序**: 正常流量下 30s 内排空 in-flight 请求; 极端滞留情况下 cleanup 可能与残余请求并行执行 — 不影响 rollback 正确性, 仅可能产生少量 ERROR log (段表清空后仍有请求进来), 可忽略。
 
 ---
 
 ## 10. 监控 Dashboard 必备面板
 
-实操中需要在 Prometheus / Grafana 或类似工具中建立以下 dashboard panels:
+> **⚠ 未来 Prometheus 接入路径 — 当前实施仅 expvar / `/debug/vars`**
+> 本节 PromQL 表达式为 reference，当前代码未接 Prometheus exporter，**不可立即跑**。
+> 实际验证请使用前面各 Stage 中的 `curl -s http://localhost:8080/debug/vars | jq '...'` 命令。
+
+实操中需要在 Prometheus / Grafana 或类似工具中建立以下 dashboard panels (待 Prometheus 接入后生效):
 
 ### 10.1 模式分布
 
@@ -657,7 +684,7 @@ Stage 3 shadow 100% 到 stage 4 canary 5% 之间的观察时长。
 
 | 现象 | 可能原因 | 排查命令 |
 | --- | --- | --- |
-| segment_count 不为 0 (shadow 期) | shadow ReadOnly 失效或未生效 | `grep "ReadOnlySegments: true" selector_wiring.go` |
+| pasr_segment_count 不为 0 (shadow 期) | shadow ReadOnly 失效或未生效 | `grep "ReadOnlySegments: true" backend/cmd/gateway/selector_wiring.go` |
 | shadow_diff_ratio > 80% | PASR 选择逻辑有 bug | 对比 default 与 shadow 选的 account_id |
 | canary_post_mutation_fail > 0 | slot acquire 或 claim write 失败 | 检查 PG 连接、quota 状态、disk 空间 |
 | P95 latency 上升 > 10% | shadow worker 过载或 DB 响应慢 | 看 shadow_drop_total, 如 >0 说明队列满 |
@@ -681,13 +708,13 @@ Stage 3 shadow 100% 到 stage 4 canary 5% 之间的观察时长。
 - `canary_pre_mutation_fail_fallback_total` — pre-mutation 失败 fallback
 - `canary_post_mutation_fail_release_total` — post-mutation 失败数
 
-**pasr** namespace:
-- `segment_count` — 当前活跃段数
-- `segment_creates_total` — 段创建总数
-- `segment_evictions_total` — 段老化清理总数
-- `first_pick_total` — 段直接命中次数
-- `failover_total` — segment miss → HRW fallback 次数
-- `cache_hit_observations` — segment 记录的 cache hits 总数
+**pasr** namespace (所有 key 含 `pasr_` 前缀，与 expvar map 内实际 key 一致):
+- `pasr_segment_count` — 当前活跃段数
+- `pasr_segment_creates_total` — 段创建总数
+- `pasr_evictions_total` — 段老化清理总数 (注意: 无 "segment_" 中缀)
+- `pasr_first_pick_total` — 段直接命中次数
+- `pasr_failover_total` — segment miss → HRW fallback 次数
+- `pasr_cache_hit_observations` — segment 记录的 cache hits 总数
 
 **cache_token_count_by_account.<account_id>**:
 - `creation_total` — 该账号 cache 创建次数
