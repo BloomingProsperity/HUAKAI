@@ -206,27 +206,39 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 		return p.scheduleHRWFullRing(ctx, req, ring, snapshots, seg.Members)
 	}
 
-	// 5. 优先 HasCache 段员 (synthesis D2: bitmap 优先)
-	pool := candidates
-	cached := candidates[:0]
-	for _, c := range candidates {
+	// 5-6. score-based ranking (cache-aware A2, 替代纯 hasCache 优先 + tie-break):
+	//
+	//   score = localityBonus + headroomBonus
+	//   localityBonus = hasCache ? 1.0 : 0.0   (vendor 真已 warm 是强信号)
+	//   headroomBonus = (1 - LoadRate) * 0.3   (账号还能接多少活的弱信号)
+	//
+	// 设计意图:
+	//   - hasCache=true 永远胜过 hasCache=false (1.0 vs 最大 0.3, 不会翻盘)
+	//   - 同 hasCache 状态下, LoadRate 低 (headroom 高) 胜出
+	//   - 解决 Owner 关切: PASR 不再只看 cache locality, 同时考虑账号
+	//     剩余并发容量, 避免把请求堆到已经爆满的 hot steward 上
+	//   - score 相等时 LastUsedAt 最久未用胜 (round-robin 兜底, 保留之前行为)
+	const localityWeight = 1.0
+	const headroomWeight = 0.3
+	score := func(c candidate) float64 {
+		s := 0.0
 		if c.hasCache {
-			cached = append(cached, c)
+			s += localityWeight
 		}
+		s += (1 - c.snapshot.LoadRate) * headroomWeight
+		return s
 	}
-	if len(cached) > 0 {
-		pool = cached
-	}
-
-	// 6. tie-break: LoadRate 最低胜 (synthesis 同质 RR 替代 — 用 load 排序)
-	chosen := pool[0]
-	for _, c := range pool[1:] {
-		if c.snapshot.LoadRate < chosen.snapshot.LoadRate {
+	chosen := candidates[0]
+	chosenScore := score(chosen)
+	for _, c := range candidates[1:] {
+		cs := score(c)
+		switch {
+		case cs > chosenScore:
 			chosen = c
-		} else if c.snapshot.LoadRate == chosen.snapshot.LoadRate &&
-			c.snapshot.LastUsedAt.Before(chosen.snapshot.LastUsedAt) {
-			// load 相等时取最久未用 — 接近 round-robin 行为
+			chosenScore = cs
+		case cs == chosenScore && c.snapshot.LastUsedAt.Before(chosen.snapshot.LastUsedAt):
 			chosen = c
+			// chosenScore 不变 (相等)
 		}
 	}
 

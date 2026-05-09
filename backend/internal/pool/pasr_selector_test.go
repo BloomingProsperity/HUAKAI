@@ -365,3 +365,199 @@ func TestPASR_DefaultLoadCap(t *testing.T) {
 		t.Errorf("默认 LoadCap 应 0.95, 得 %v", sel.loadCap)
 	}
 }
+
+// =====================================================================
+// cache-aware A2: ranking score = locality + headroom
+// =====================================================================
+
+// loadOf 在 src 里找 acc 对应 snapshot 设 LoadRate (test helper).
+func setLoadRate(src *fakeAccountSource, accID int64, rate float64) {
+	for _, s := range src.snapshots {
+		if s.ID == accID {
+			s.LoadRate = rate
+			return
+		}
+	}
+}
+
+// setLastUsed 同上, 设 LastUsedAt.
+func setLastUsed(src *fakeAccountSource, accID int64, t time.Time) {
+	for _, s := range src.snapshots {
+		if s.ID == accID {
+			s.LastUsedAt = t
+			return
+		}
+	}
+}
+
+// TestA2_LocalityBeatsHeadroom 段内 hasCache=true LoadRate=0.9 vs
+// hasCache=false LoadRate=0.0 → hasCache 必胜 (locality 1.0 > 最大 headroom 0.3).
+func TestA2_LocalityBeatsHeadroom(t *testing.T) {
+	accs := []int64{10, 20, 30, 40, 50}
+	sel, tbl, _, src, _ := newPASRTestRig(t, accs)
+	prefix := "a2-locality"
+
+	// 先创段 (一次 Select)
+	res1, err := sel.Select(context.Background(), SelectionRequest{
+		TenantID: 1, ClaimID: 1, RequestedModel: "m", SessionHash: prefix,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seg := tbl.Lookup(1, []byte(prefix))
+	if seg == nil {
+		t.Fatal("段未创建")
+	}
+	idxRes1 := seg.IndexOf(res1.AccountID)
+	otherIdx := (idxRes1 + 1) % PASRSegmentSize
+	if seg.Members[otherIdx] == 0 {
+		t.Skip("段无第二成员")
+	}
+
+	// 标 res1 acc hasCache=true, LoadRate=0.9 (高负载)
+	seg.MarkCacheSeen(idxRes1)
+	setLoadRate(src, res1.AccountID, 0.9)
+	// otherIdx acc hasCache=false (默认), LoadRate=0.0 (空闲)
+	setLoadRate(src, seg.Members[otherIdx], 0.0)
+
+	// 第二次 Select: 即使 res1 高负载 (0.9), hasCache 强信号让它胜
+	res2, err := sel.Select(context.Background(), SelectionRequest{
+		TenantID: 1, ClaimID: 2, RequestedModel: "m", SessionHash: prefix,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.AccountID != res1.AccountID {
+		t.Errorf("locality 强信号 (hasCache+0.9 LoadRate) 应胜过 headroom (空闲但无 cache); 实选 %d, want %d",
+			res2.AccountID, res1.AccountID)
+	}
+}
+
+// TestA2_HeadroomBreaksTieAmongCached 两个段员都 hasCache=true,
+// LoadRate 0.9 vs 0.1 → headroom 决胜, 选 0.1 那个.
+func TestA2_HeadroomBreaksTieAmongCached(t *testing.T) {
+	accs := []int64{10, 20, 30, 40, 50}
+	sel, tbl, _, src, _ := newPASRTestRig(t, accs)
+	prefix := "a2-tie-cached"
+
+	res1, err := sel.Select(context.Background(), SelectionRequest{
+		TenantID: 1, ClaimID: 1, RequestedModel: "m", SessionHash: prefix,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seg := tbl.Lookup(1, []byte(prefix))
+	if seg == nil {
+		t.Fatal("段未创建")
+	}
+	idxRes1 := seg.IndexOf(res1.AccountID)
+	otherIdx := (idxRes1 + 1) % PASRSegmentSize
+	if seg.Members[otherIdx] == 0 {
+		t.Skip("段无第二成员")
+	}
+
+	// 两个都 hasCache=true
+	seg.MarkCacheSeen(idxRes1)
+	seg.MarkCacheSeen(otherIdx)
+	// res1 高负载, otherIdx 空闲
+	setLoadRate(src, res1.AccountID, 0.9)
+	setLoadRate(src, seg.Members[otherIdx], 0.1)
+
+	res2, err := sel.Select(context.Background(), SelectionRequest{
+		TenantID: 1, ClaimID: 2, RequestedModel: "m", SessionHash: prefix,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.AccountID != seg.Members[otherIdx] {
+		t.Errorf("两 hasCache 段员中 headroom 高的胜; 实选 %d, want %d",
+			res2.AccountID, seg.Members[otherIdx])
+	}
+}
+
+// TestA2_HeadroomDecidesAmongUncached 全段员 hasCache=false,
+// LoadRate 0.9 vs 0.1 → 选 0.1 (headroom 高).
+func TestA2_HeadroomDecidesAmongUncached(t *testing.T) {
+	accs := []int64{10, 20, 30, 40, 50}
+	sel, tbl, _, src, _ := newPASRTestRig(t, accs)
+	prefix := "a2-tie-uncached"
+
+	res1, err := sel.Select(context.Background(), SelectionRequest{
+		TenantID: 1, ClaimID: 1, RequestedModel: "m", SessionHash: prefix,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seg := tbl.Lookup(1, []byte(prefix))
+	if seg == nil {
+		t.Fatal("段未创建")
+	}
+	// 不 set 任何 hasCache bit (全 false)
+	idxRes1 := seg.IndexOf(res1.AccountID)
+	otherIdx := (idxRes1 + 1) % PASRSegmentSize
+	thirdIdx := (idxRes1 + 2) % PASRSegmentSize
+	if seg.Members[otherIdx] == 0 {
+		t.Skip("段无第二成员")
+	}
+	// res1 + 第三段员高负载, otherIdx 唯一空闲, 让 headroom 决胜
+	setLoadRate(src, res1.AccountID, 0.9)
+	if seg.Members[thirdIdx] != 0 {
+		setLoadRate(src, seg.Members[thirdIdx], 0.9)
+	}
+	setLoadRate(src, seg.Members[otherIdx], 0.1)
+
+	res2, err := sel.Select(context.Background(), SelectionRequest{
+		TenantID: 1, ClaimID: 2, RequestedModel: "m", SessionHash: prefix,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.AccountID != seg.Members[otherIdx] {
+		t.Errorf("全 hasCache=false 段中 headroom 高胜; 实选 %d, want %d",
+			res2.AccountID, seg.Members[otherIdx])
+	}
+}
+
+// TestA2_TieBreaksByLastUsed score 完全相等 (同 hasCache + 同 LoadRate)
+// → LastUsedAt 久的胜 (round-robin 兜底).
+func TestA2_TieBreaksByLastUsed(t *testing.T) {
+	accs := []int64{10, 20, 30, 40, 50}
+	sel, tbl, _, src, _ := newPASRTestRig(t, accs)
+	prefix := "a2-tie-lastused"
+
+	res1, err := sel.Select(context.Background(), SelectionRequest{
+		TenantID: 1, ClaimID: 1, RequestedModel: "m", SessionHash: prefix,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seg := tbl.Lookup(1, []byte(prefix))
+	if seg == nil {
+		t.Fatal("段未创建")
+	}
+	idxRes1 := seg.IndexOf(res1.AccountID)
+	otherIdx := (idxRes1 + 1) % PASRSegmentSize
+	if seg.Members[otherIdx] == 0 {
+		t.Skip("段无第二成员")
+	}
+	// 同 hasCache=true + 同 LoadRate=0.5
+	seg.MarkCacheSeen(idxRes1)
+	seg.MarkCacheSeen(otherIdx)
+	setLoadRate(src, res1.AccountID, 0.5)
+	setLoadRate(src, seg.Members[otherIdx], 0.5)
+	// res1 LastUsedAt 较新, otherIdx LastUsedAt 较老 (该胜)
+	now := time.Now()
+	setLastUsed(src, res1.AccountID, now)
+	setLastUsed(src, seg.Members[otherIdx], now.Add(-1*time.Hour))
+
+	res2, err := sel.Select(context.Background(), SelectionRequest{
+		TenantID: 1, ClaimID: 2, RequestedModel: "m", SessionHash: prefix,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.AccountID != seg.Members[otherIdx] {
+		t.Errorf("score tie + LastUsedAt 久的胜; 实选 %d, want %d",
+			res2.AccountID, seg.Members[otherIdx])
+	}
+}
