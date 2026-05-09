@@ -86,8 +86,61 @@ type PrefixSegment struct {
 	// SetExtendedCacheTTL 写入。
 	ExtendedCacheTTL atomic.Int64
 
+	// MissCount per-member 连续 cache miss 计数 (cache-aware A3)。
+	// observe(cache_creation==0 && cache_read==0) → RecordMiss(idx) 累 1;
+	// observe(cache_read>0) → ResetMissCount(idx) 归 0; 达到 PASRDemoteThreshold
+	// (默认 2) 时 caller (pasr_feedback.handle) 调 Demote(idx) 清 HasCache bit。
+	// 设计意图: 段成员标 hasCache=true 后, 若实际 vendor cache 已掉, 连续
+	// miss 应 demote 让其他成员获得机会 (Owner 关切 #3, A3 atom)。
+	MissCount [PASRSegmentSize]atomic.Uint32
+
 	// CreatedAt 段创建 unix nanos (用于 ops 调试 + 软迁移过渡判断)。
 	CreatedAt int64
+}
+
+// PASRDemoteThreshold cache-aware A3: 连续 miss 达此阈值时 demote 段成员。
+//   - 1 太敏感: 单次抖动就 demote
+//   - 3 太钝: 浪费 vendor cache 机会
+//   - 2 平衡 (Owner delegated 拍板)
+const PASRDemoteThreshold uint32 = 2
+
+// RecordMiss 段成员 idx 收到一次 cache miss 信号, 返新计数值。
+// caller (pasr_feedback) 据返值与 PASRDemoteThreshold 比, 决定是否 Demote。
+// idx 越界 → no-op + 返 0.
+func (s *PrefixSegment) RecordMiss(idx int) uint32 {
+	if idx < 0 || idx >= PASRSegmentSize {
+		return 0
+	}
+	return s.MissCount[idx].Add(1)
+}
+
+// ResetMissCount 段成员 idx 收到 cache_read > 0 → 归零 miss 计数 (cache 又
+// hot 了, 之前积累的 miss 序列作废, 重新观察)。 idx 越界 → no-op。
+func (s *PrefixSegment) ResetMissCount(idx int) {
+	if idx < 0 || idx >= PASRSegmentSize {
+		return
+	}
+	s.MissCount[idx].Store(0)
+}
+
+// Demote 清 HasCacheBitmap[idx] + 重置 MissCount[idx] (A3 demote 路径)。
+// 触发场景: 段成员连续 miss 达阈值 → vendor cache 实际已掉, 撤销
+// hasCache=true 标记, 让 ranking 不再为它加 locality 分。
+// 段成员要重新通过 cache_creation observation 才能再 set hasCache。
+// idx 越界 → no-op。
+func (s *PrefixSegment) Demote(idx int) {
+	if idx < 0 || idx >= PASRSegmentSize {
+		return
+	}
+	mask := uint32(1) << idx
+	for {
+		old := s.HasCacheBitmap.Load()
+		new := old &^ mask // clear bit
+		if old == new || s.HasCacheBitmap.CompareAndSwap(old, new) {
+			break
+		}
+	}
+	s.MissCount[idx].Store(0)
 }
 
 // SetExtendedCacheTTL 标记本段使用 extended cache TTL (1h 默认)。

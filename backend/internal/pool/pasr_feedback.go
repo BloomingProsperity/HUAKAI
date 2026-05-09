@@ -51,6 +51,12 @@ func (f *PASRCacheFeedback) Observer() func(cachemetrics.CacheObservation) {
 //   - accountID 0    → 测试或退化 case
 //   - 段不存在        → 该 prefix 段已老化或从未通过 PASRSelector 创建
 //   - 段成员中找不到 accountID → rebalance 滞后, 段已迁移; 跳过避免误标
+//
+// cache-aware A3 (Owner 2026-05-09 关切 #3): 加 miss 反馈路径 — 段成员
+// 标 hasCache=true 后, 若实际 vendor cache 已掉, ranking 还在为它加 locality
+// 分。 修复: cache_creation==0 && cache_read==0 时累 MissCount[idx], 达到
+// PASRDemoteThreshold (默认 2) → 调 Demote 清 HasCache bit。 cache_read 命
+// 中时重置 MissCount (cache 又 hot 了)。
 func (f *PASRCacheFeedback) handle(obs cachemetrics.CacheObservation) {
 	if obs.PrefixHash == "" || obs.AccountID == 0 {
 		return
@@ -71,14 +77,32 @@ func (f *PASRCacheFeedback) handle(obs cachemetrics.CacheObservation) {
 	if idx < 0 {
 		return
 	}
-	if obs.CacheCreation > 0 {
+	switch {
+	case obs.CacheCreation > 0:
+		// vendor 真启动 cache → 标 hasCache + 重置 miss 计数 (新一轮观察)
 		seg.MarkCacheSeen(idx)
 		seg.LastWriteAt.Store(f.now().UnixNano())
+		seg.ResetMissCount(idx)
 		IncCacheCreationObs()
-	}
-	if obs.CacheRead > 0 {
+		// cache_read 也可能 > 0 (创建 + 命中同时), 一并处理 read 路径
+		if obs.CacheRead > 0 {
+			f.segments.MarkRead(seg, f.now())
+			IncCacheHitObs()
+		}
+	case obs.CacheRead > 0:
+		// vendor 命中 cache → 刷 LastReadAt + 重置 miss 计数
 		f.segments.MarkRead(seg, f.now())
+		seg.ResetMissCount(idx)
 		IncCacheHitObs()
+	default:
+		// cache_creation==0 && cache_read==0 → vendor 没用 cache (此次 miss)
+		// 累计 miss 计数, 达阈值 → demote (清 hasCache bit, 给其他成员机会)
+		IncMissObs()
+		count := seg.RecordMiss(idx)
+		if count >= PASRDemoteThreshold {
+			seg.Demote(idx)
+			IncDemote()
+		}
 	}
 }
 

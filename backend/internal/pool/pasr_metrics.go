@@ -30,6 +30,9 @@ const (
 	pasrKeySegmentCreatesTotal = "pasr_segment_creates_total"
 	pasrKeyCacheHitObs         = "pasr_cache_hit_observations"
 	pasrKeyCacheCreationObs    = "pasr_cache_creation_obs"
+	// cache-aware A3 metrics:
+	pasrKeyMissObsTotal = "pasr_miss_obs_total" // observe(cache_creation==0 && cache_read==0)
+	pasrKeyDemoteTotal  = "pasr_demote_total"   // 连续 miss 达阈值, 段成员 hasCache 被清
 )
 
 var (
@@ -48,6 +51,8 @@ func initPASRMetrics() {
 		pasrMetrics.Add(pasrKeySegmentCreatesTotal, 0)
 		pasrMetrics.Add(pasrKeyCacheHitObs, 0)
 		pasrMetrics.Add(pasrKeyCacheCreationObs, 0)
+		pasrMetrics.Add(pasrKeyMissObsTotal, 0)
+		pasrMetrics.Add(pasrKeyDemoteTotal, 0)
 	})
 }
 
@@ -87,6 +92,20 @@ func IncCacheCreationObs() {
 	pasrMetrics.Add(pasrKeyCacheCreationObs, 1)
 }
 
+// IncMissObs cache-aware A3: feedback observer 收到 cache_creation==0 &&
+// cache_read==0 事件时累 1 (vendor 实际未用 cache, 段成员 miss 计数累加)。
+func IncMissObs() {
+	initPASRMetrics()
+	pasrMetrics.Add(pasrKeyMissObsTotal, 1)
+}
+
+// IncDemote cache-aware A3: 段成员连续 miss 达 PASRDemoteThreshold,
+// HasCacheBitmap 该成员位被清时累 1 (vendor cache 已掉的可观测信号)。
+func IncDemote() {
+	initPASRMetrics()
+	pasrMetrics.Add(pasrKeyDemoteTotal, 1)
+}
+
 // AddEvictions 老化 / LRU evict 时累加 evict 段数。
 func AddEvictions(n int64) {
 	if n <= 0 {
@@ -114,6 +133,8 @@ type PASRMetricsSnapshot struct {
 	SegmentCreatesTotal int64
 	CacheHitObs         int64
 	CacheCreationObs    int64
+	MissObsTotal        int64 // A3: cache miss observation 累计
+	DemoteTotal         int64 // A3: hasCache bit 被清的累计
 }
 
 // SnapshotPASRMetrics 读所有 PASR 指标当前值, 给测试 + introspection 用。
@@ -134,5 +155,7 @@ func SnapshotPASRMetrics() PASRMetricsSnapshot {
 		SegmentCreatesTotal: get(pasrKeySegmentCreatesTotal),
 		CacheHitObs:         get(pasrKeyCacheHitObs),
 		CacheCreationObs:    get(pasrKeyCacheCreationObs),
+		MissObsTotal:        get(pasrKeyMissObsTotal),
+		DemoteTotal:         get(pasrKeyDemoteTotal),
 	}
 }
