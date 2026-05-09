@@ -230,6 +230,9 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			AttemptSeq:      1,
 			CapabilityFlags: attempt.RequiredCapabilities,
 			SessionHash:     promptHash,
+			// D2: vendor 从 ResolvedModel.ProtocolFamily 派生, 给 dispatcher
+			// 写 per-vendor 切片 metric (4 vendor: anthropic/openai/gemini/codex)
+			Vendor: pool.VendorFromProtocolFamily(resolved.ProtocolFamily),
 		})
 		if errors.Is(err, pool.ErrNoEligibleAccount) || errors.Is(err, pool.ErrNoSlotAvailable) {
 			if abortErr := d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "pool_no_capacity"); abortErr != nil {
