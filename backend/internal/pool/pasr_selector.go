@@ -68,20 +68,32 @@ type PASRSelector struct {
 	// (D2 决策: shadow 实例段表只读, 不污染 actual 段 bitmap 学习数据)。
 	// 段未命中 → 直接走 HRW 全 ring 接力, 等价于 cold-miss 路径。
 	readOnlySegments bool
+
+	// ringSeed 用于 RingProvider 未注入时的 request-scoped ring 构造 (synthesis D3)。
+	// 0 时用默认 0xCAFEBABE — 与现有测试保持一致。
+	ringSeed uint64
 }
+
+// defaultPASRRingSeed 是 RingSeed 字段未指定时的默认 HRW 种子, 与 atom A1
+// 测试矩阵 (newPASRTestRig) 一致, 保证向后兼容。 Owner 30 天轮换 seed 时由
+// main.go 在构造 PASRSelectorConfig 时显式注入。
+const defaultPASRRingSeed uint64 = 0xCAFEBABE
 
 // PASRSelectorConfig 构造期参数。
 type PASRSelectorConfig struct {
 	Accounts         AccountSource
 	Claims           ClaimGate
 	Slots            SlotManager         // M3: nil → 兼容路径 (不持 slot 不写 claim, shadow / 老测试)
-	RingProvider     func() *AccountRing // hot-swap 支持; nil 时调用方自行预填
+	RingProvider     func() *AccountRing // M5: 可选; nil 时 Select 用 request-scoped ring (synthesis D3)
 	Segments         *SegmentTable
 	LoadCap          float64 // 0 用 0.95
 	ReadOnlySegments bool    // M4 (D2): true 时 Select 走 Lookup-only 段表路径, 不污染段
+	RingSeed         uint64  // M5: request-scoped ring 的 HRW seed; 0 时用默认 0xCAFEBABE
 }
 
-// NewPASRSelector 构造实例。
+// NewPASRSelector 构造实例。 M5 起 RingProvider 不再 mandatory — nil 时
+// Select 走 request-scoped ring (synthesis D3 选项 A: per-request 从 ListAccounts
+// snapshots build ring, 避免全局 ticker / 新 SQL / 跨租户泄漏)。
 func NewPASRSelector(cfg PASRSelectorConfig) (*PASRSelector, error) {
 	if cfg.Accounts == nil {
 		return nil, errors.New("pasr: AccountSource 必填")
@@ -89,12 +101,13 @@ func NewPASRSelector(cfg PASRSelectorConfig) (*PASRSelector, error) {
 	if cfg.Segments == nil {
 		return nil, errors.New("pasr: SegmentTable 必填")
 	}
-	if cfg.RingProvider == nil {
-		return nil, errors.New("pasr: RingProvider 必填")
-	}
 	cap := cfg.LoadCap
 	if cap <= 0 {
 		cap = 0.95
+	}
+	seed := cfg.RingSeed
+	if seed == 0 {
+		seed = defaultPASRRingSeed
 	}
 	return &PASRSelector{
 		accounts:         cfg.Accounts,
@@ -104,6 +117,7 @@ func NewPASRSelector(cfg PASRSelectorConfig) (*PASRSelector, error) {
 		segments:         cfg.Segments,
 		loadCap:          cap,
 		readOnlySegments: cfg.ReadOnlySegments,
+		ringSeed:         seed,
 	}, nil
 }
 
@@ -126,7 +140,16 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 	}
 
 	// 2. 取/建段 - prefix key 用 req.SessionHash; 空 hash 直降级到 HRW 全 ring
-	ring := p.ringProvider()
+	// M5: RingProvider 注入则用注入路径 (向后兼容老 atom 测试 + 显式 hot-swap);
+	// 否则用 request-scoped ring (synthesis D3): 直接从 ListAccounts snapshots
+	// 派生 — per (tenant, pool_group) 已经在 ListAccounts 上游过滤好,
+	// 天然避开跨租户泄漏 + 不需要全局 ticker / 新 SQL。
+	var ring *AccountRing
+	if p.ringProvider != nil {
+		ring = p.ringProvider()
+	} else {
+		ring = BuildAccountRingFromSnapshots(accs, p.ringSeed)
+	}
 	if ring == nil || len(ring.Accounts) == 0 {
 		return nil, ErrNoEligibleAccount
 	}
