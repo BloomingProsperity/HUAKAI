@@ -65,11 +65,11 @@ func main() {
 
 // deps is the live dependency tree handlers receive after run() boots.
 type deps struct {
-	cfg         *config.Config
-	queries     *db.Queries
-	selector    *pool.DefaultSelector
-	claimGate   billing.ClaimGate
-	settler     billing.Settler
+	cfg             *config.Config
+	queries         *db.Queries
+	selector        pool.Selector // M6: 接口化, 由 buildSelector 按 PoolSelectorConfig 装配 default 或 dispatcher
+	claimGate       billing.ClaimGate
+	settler         billing.Settler
 	forwarder       *gateway.StreamForwarder
 	credentialVault provider.CredentialVault
 	dispatcher      *gateway.UpstreamDispatcher
@@ -106,16 +106,24 @@ func run(logger *zap.Logger) error {
 	defer pgPool.Close()
 
 	q := db.New(pgPool)
-	selector := pool.NewDefaultSelector(
-		pool.NewDBAccountSource(q),
-		pool.WithSlotManager(pool.NewDBSlotManager(pgPool)),
-		pool.WithClaimGate(pool.NewDBClaimGate(q)),
-		// Track B: 把 sticky_bindings 表接入 selector. 之前 WithStickyStore 没
-		// 任何 caller 注入, sticky 路由整体 dead. 现在 chat_completions_handler
-		// 把 cache_routing.ComputePromptHash(body) 作 SessionHash → 同 prefix
-		// 锁定到同 provider_account → 最大化 vendor prompt cache 命中。
-		pool.WithStickyStore(pool.NewDBStickyStore(q)),
+
+	// M6 main-wire: 按 PoolSelectorConfig 装配 selector。 default 模式等价现状
+	// (零回归); shadow / canary / pasr-* 启动 PASR 基础设施 (SegmentTable +
+	// AgingWorker + cache feedback observer + dispatcher)。
+	selectorCfg, err := config.LoadPoolSelector()
+	if err != nil {
+		return fmt.Errorf("load pool selector config: %w", err)
+	}
+	logger.Info("pool selector config loaded",
+		zap.String("mode", string(selectorCfg.Mode)),
+		zap.Int("shadow_pct", selectorCfg.ShadowPercent),
+		zap.Int("canary_pct", selectorCfg.CanaryPercent),
 	)
+	selector, selectorCleanup, err := buildSelector(ctx, q, pgPool, selectorCfg, logger)
+	if err != nil {
+		return fmt.Errorf("build selector: %w", err)
+	}
+	defer selectorCleanup()
 
 	d := &deps{
 		cfg:       cfg,
