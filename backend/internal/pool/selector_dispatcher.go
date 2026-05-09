@@ -155,6 +155,9 @@ func NewSelectorDispatcher(cfg SelectorDispatcherConfig) (*SelectorDispatcher, e
 // Select 实现 pool.Selector 接口主入口, 按 mode 分发。
 func (d *SelectorDispatcher) Select(ctx context.Context, req SelectionRequest) (*SelectionResult, error) {
 	IncDispatchMode(d.mode)
+	// D2: 同时按 vendor 切片记录 mode 命中, dashboard 可看 per-(vendor, mode)
+	// 数据 (memory: project_real_vendor_account_scope)。 req.Vendor 空时静默。
+	IncDispatchVendorMode(d.mode, req.Vendor)
 	switch d.mode {
 	case DispatchModeDefault:
 		return d.defaultSel.Select(ctx, req)

@@ -432,6 +432,35 @@ func TestDispatcher_NewSelectorDispatcher_Misconfigure(t *testing.T) {
 	}
 }
 
+func TestDispatcher_VendorMetric_WiredFromRequest(t *testing.T) {
+	// D2: dispatcher.Select 时按 req.Vendor 切片记录 mode 命中。
+	// dispatcher 内部调 IncDispatchVendorMode(d.mode, req.Vendor) 之后,
+	// SnapshotPASRDispatchVendor(vendor)[mode_<x>_total] 应 +1。
+	d, _, _, _ := newDispatcher(t, DispatchModeDefault, 0, 0, 11, 22)
+
+	for _, vendor := range []string{"anthropic", "openai", "gemini", "codex"} {
+		pre := SnapshotPASRDispatchVendor(vendor)
+		req := SelectionRequest{TenantID: 1, ClaimID: 1, SessionHash: "v-" + vendor, Vendor: vendor}
+		_, err := d.Select(context.Background(), req)
+		if err != nil {
+			t.Fatalf("[%s] Select err=%v", vendor, err)
+		}
+		post := SnapshotPASRDispatchVendor(vendor)
+		got := post[pasrDispKeyModeDefault] - pre[pasrDispKeyModeDefault]
+		if got != 1 {
+			t.Errorf("[%s] vendor sub-counter mode_default_total 应 +1, 实增 %d", vendor, got)
+		}
+	}
+
+	// vendor="" → dispatcher 仍记全局 mode_default_total, 但不记 vendor 切片
+	preBogus := SnapshotPASRDispatchVendor("anthropic")
+	_, _ = d.Select(context.Background(), SelectionRequest{TenantID: 1, ClaimID: 99, SessionHash: "novendor"})
+	postBogus := SnapshotPASRDispatchVendor("anthropic")
+	if postBogus[pasrDispKeyModeDefault] != preBogus[pasrDispKeyModeDefault] {
+		t.Errorf("vendor 空 不应改 anthropic sub-counter")
+	}
+}
+
 // waitFor polls until cond returns true or timeout, then logs failure。
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool, msg string) {
 	t.Helper()

@@ -66,6 +66,9 @@ var PASRDispatchVendors = []string{"anthropic", "openai", "gemini", "codex"}
 
 // pasrDispatchVendorKeys 是每个 vendor sub-map 的 key 列表 (子 metric 集)。
 // 加新维度同步改这里 + IncDispatchVendor switch + 每 vendor sub-map 重 init。
+//
+// D2 (2026-05-09): 加 5 mode_<x>_total — dispatcher.Select 调 IncDispatchVendorMode
+// 时按 mode 写 vendor sub-counter, 让 dashboard 看 per-(vendor, mode) 切片。
 var pasrDispatchVendorKeys = []string{
 	pasrDispKeyShadowSampled,
 	pasrDispKeyShadowMatch,
@@ -73,6 +76,11 @@ var pasrDispatchVendorKeys = []string{
 	pasrDispKeyShadowTimeout,
 	pasrDispKeyShadowPASRErr,
 	pasrDispKeyCanaryPASRUsed,
+	pasrDispKeyModeDefault,
+	pasrDispKeyModeShadow,
+	pasrDispKeyModeCanary,
+	pasrDispKeyModePASRPrimary,
+	pasrDispKeyModePASRStrict,
 }
 
 func init() {
@@ -223,6 +231,35 @@ type PASRDispatchSnapshot struct {
 	ModeCanary                int64
 	ModePASRPrimary           int64
 	ModePASRStrict            int64
+}
+
+// IncDispatchVendorMode 把 (mode, vendor) 二维写到 pasr_dispatch_by_vendor。
+// dispatcher.Select 在 IncDispatchMode (全局维度) 之后调本 helper, vendor
+// 由 SelectionRequest.Vendor 透传 (chat handler 从 ResolvedModel.ProtocolFamily
+// 派生)。 vendor 空 / 非法 / mode 非法均静默丢弃 (caller 上游已校验)。
+//
+// 支持 mode: default / shadow / canary / pasr-primary / pasr-strict (与
+// IncDispatchMode 一致)。
+func IncDispatchVendorMode(mode, vendor string) {
+	if vendor == "" {
+		return
+	}
+	var key string
+	switch mode {
+	case DispatchModeDefault:
+		key = pasrDispKeyModeDefault
+	case DispatchModeShadow:
+		key = pasrDispKeyModeShadow
+	case DispatchModeCanary:
+		key = pasrDispKeyModeCanary
+	case DispatchModePASRPrimary:
+		key = pasrDispKeyModePASRPrimary
+	case DispatchModePASRStrict:
+		key = pasrDispKeyModePASRStrict
+	default:
+		return
+	}
+	IncDispatchVendor(key, vendor)
 }
 
 // SnapshotPASRDispatchVendor 读某 vendor 的 sub-counter 快照。 不在
