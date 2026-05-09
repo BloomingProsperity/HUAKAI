@@ -5,11 +5,11 @@
 // HUAKAI proto adapter 解析后调本包累计到全局计数器, 通过 /debug/vars
 // 暴露给运维:
 //
-//   "cache_token_count": {
-//     "creation_total":  N,
-//     "read_total":      M,
-//     "request_count":   K     // 总观测到 cache fields 的请求数
-//   }
+//	"cache_token_count": {
+//	  "creation_total":  N,
+//	  "read_total":      M,
+//	  "request_count":   K     // 总观测到 cache fields 的请求数
+//	}
 //
 // 命中率粗算: read_total / (creation_total + read_total)。
 //
@@ -35,8 +35,8 @@ const (
 )
 
 var (
-	once             sync.Once
-	counters         *expvar.Map
+	once              sync.Once
+	counters          *expvar.Map
 	countersByAccount *expvar.Map
 	// accountMu 保护 countersByAccount 的 lazy-init Get/Set 序列;
 	// expvar.Map 内部对单 key Get/Set 各自 thread-safe, 但 "Get-then-Set"
@@ -111,10 +111,11 @@ func Snapshot() (creation, read, requests int64) {
 // accountID == 0 时退化为只调 Observe (与全局等价)。
 //
 // expvar 结构暴露 (/debug/vars):
-//   "cache_token_count_by_account": {
-//     "42": {"creation_total": ..., "read_total": ..., "request_count": ...},
-//     "99": {...}
-//   }
+//
+//	"cache_token_count_by_account": {
+//	  "42": {"creation_total": ..., "read_total": ..., "request_count": ...},
+//	  "99": {...}
+//	}
 //
 // 运维查 hit_ratio_by_account = read_total/(creation+read) 找出哪个账号
 // 缓存命中率显著低 → 流量调度或换 prompt-pool 类型。
@@ -158,9 +159,15 @@ func ObserveByAccount(cacheCreation, cacheRead int64, accountID int64) {
 }
 
 // CacheObservation 是一次 cache token 观测的结构化事件 (PASR-lite A4 用)。
-// 比 ObserveByAccount 多 PrefixHash 字段, 让 PASR-lite 调度器把 cache
-// 信号反馈到 PrefixSegment 的 HasCacheBitmap 和 LastReadAt。
+// 比 ObserveByAccount 多 PrefixHash + TenantID 字段, 让 PASR-lite 调度器把
+// cache 信号反馈到正确的 (tenant, prefix) 段。
+//
+// M5b (2026-05-09): 新增 TenantID 字段。 之前 CacheObservation 不含 tenant,
+// PASRCacheFeedback.handle 找段时跨租户共享 segments map → 同 prompt 跨 tenant
+// 段成员混选, cache locality 失效。 现在 SegmentTable.Lookup(tenantID, prefix)
+// 用双字段查段, 跨租户隔离恢复。
 type CacheObservation struct {
+	TenantID      int64 // M5b: 必填; 0 时退化只走全局 + per-account counter, observer 静默跳过段
 	AccountID     int64
 	PrefixHash    string // proto.UpstreamState.PrefixHash 透传, 可能为空
 	CacheCreation int64
@@ -211,7 +218,12 @@ func notifyObservers(obs CacheObservation) {
 // 行为:
 //   - 现有 expvar global + per-account counter 累计完全等价 ObserveByAccount
 //   - 额外触发所有 RegisterCacheObserver 订阅的 observer fn
-func ObserveByAccountWithPrefix(cacheCreation, cacheRead int64, accountID int64, prefixHash string) {
+//
+// M5b (2026-05-09): tenantID 参数新增, 透传到 CacheObservation 让 observer
+// 用 (TenantID, PrefixHash) 双字段查段, 修跨租户共段 cache locality 失效。
+// caller (forwarder + vendor SSE adapter) 必须从 ForwardRequest.TenantID 注入。
+// tenantID == 0 时 observer 仍能记 expvar counter 但跳过段表更新 (无 tenant 信息)。
+func ObserveByAccountWithPrefix(cacheCreation, cacheRead int64, tenantID, accountID int64, prefixHash string) {
 	ObserveByAccount(cacheCreation, cacheRead, accountID)
 	if cacheCreation == 0 && cacheRead == 0 {
 		return
@@ -220,6 +232,7 @@ func ObserveByAccountWithPrefix(cacheCreation, cacheRead int64, accountID int64,
 		return
 	}
 	notifyObservers(CacheObservation{
+		TenantID:      tenantID,
 		AccountID:     accountID,
 		PrefixHash:    prefixHash,
 		CacheCreation: cacheCreation,

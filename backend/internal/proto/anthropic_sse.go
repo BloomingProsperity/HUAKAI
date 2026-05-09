@@ -32,6 +32,10 @@ type UpstreamState struct {
 	AccumulatedUsage  CanonicalUsage
 	AccountID         int64
 	PrefixHash        string
+	// M5b: TenantID 透传 — ObserveByAccountWithPrefix 必填; 0 时 observer
+	// 仍记 expvar counter 但跳过段表更新 (无 tenant 信息)。 forwarder.go
+	// newUpstreamState 从 ForwardRequest.TenantID 注入。
+	TenantID int64
 }
 
 // AnthropicAdapter translates Anthropic SSE events through HCSF per spec section 3 Phase C.
@@ -166,6 +170,7 @@ func (s *AnthropicAdapter) providerEventSwitch(evt anthropicEvent, env anthropic
 		cachemetrics.ObserveByAccountWithPrefix(
 			int64(state.AccumulatedUsage.CacheCreationInputTokens),
 			int64(state.AccumulatedUsage.CacheReadInputTokens),
+			state.TenantID,
 			state.AccountID,
 			state.PrefixHash,
 		)
@@ -190,6 +195,7 @@ func (s *AnthropicAdapter) FinalizeUpstreamStream(ctx context.Context, state any
 	cachemetrics.ObserveByAccountWithPrefix(
 		int64(st.AccumulatedUsage.CacheCreationInputTokens),
 		int64(st.AccumulatedUsage.CacheReadInputTokens),
+		st.TenantID,
 		st.AccountID,
 		st.PrefixHash,
 	)

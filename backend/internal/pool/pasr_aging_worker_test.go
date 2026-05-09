@@ -26,9 +26,9 @@ func TestPASRAgingWorker_TickOnce_EvictsExpired(t *testing.T) {
 	})
 	ring := NewAccountRing([]int64{10, 20, 30}, 1)
 
-	tbl.LookupOrCreate([]byte("old"), ring)  // 创建时 LastReadAt=12:00
-	clock = clock.Add(40 * time.Minute)      // 12:40
-	tbl.LookupOrCreate([]byte("fresh"), ring) // LastReadAt=12:40
+	tbl.LookupOrCreate(1, []byte("old"), ring)   // 创建时 LastReadAt=12:00
+	clock = clock.Add(40 * time.Minute)          // 12:40
+	tbl.LookupOrCreate(1, []byte("fresh"), ring) // LastReadAt=12:40
 
 	w := NewPASRAgingWorker(PASRAgingWorkerConfig{
 		Segments: tbl,
@@ -42,10 +42,10 @@ func TestPASRAgingWorker_TickOnce_EvictsExpired(t *testing.T) {
 	if w.EvictedTotal() != 1 {
 		t.Errorf("EvictedTotal=%d want 1", w.EvictedTotal())
 	}
-	if tbl.Lookup([]byte("old")) != nil {
+	if tbl.Lookup(1, []byte("old")) != nil {
 		t.Error("old 段应被 evict")
 	}
-	if tbl.Lookup([]byte("fresh")) == nil {
+	if tbl.Lookup(1, []byte("fresh")) == nil {
 		t.Error("fresh 段应保留")
 	}
 }

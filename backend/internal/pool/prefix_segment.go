@@ -18,6 +18,7 @@ package pool
 import (
 	"container/list"
 	"crypto/sha256"
+	"encoding/binary"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -181,8 +182,9 @@ func (t *SegmentTable) Size() int {
 }
 
 // Lookup 仅查找已存在段, 不创建。命中时 LRU MoveToFront (touch).
-func (t *SegmentTable) Lookup(prefixHash []byte) *PrefixSegment {
-	key := segmentKey(prefixHash)
+// M5b: 加 tenantID 参数防跨租户共段。
+func (t *SegmentTable) Lookup(tenantID int64, prefixHash []byte) *PrefixSegment {
+	key := segmentKey(tenantID, prefixHash)
 	t.mu.Lock() // touch LRU 需写锁
 	defer t.mu.Unlock()
 	if entry, ok := t.segments[key]; ok {
@@ -196,8 +198,9 @@ func (t *SegmentTable) Lookup(prefixHash []byte) *PrefixSegment {
 // 命中已存段 → MoveToFront；新建段 → push front + 必要时 LRU evict back。
 //
 // 这是 PASR-lite hot path; 单请求 1 次调用。
-func (t *SegmentTable) LookupOrCreate(prefixHash []byte, ring *AccountRing) *PrefixSegment {
-	key := segmentKey(prefixHash)
+// M5b: 加 tenantID 参数防跨租户共段。
+func (t *SegmentTable) LookupOrCreate(tenantID int64, prefixHash []byte, ring *AccountRing) *PrefixSegment {
+	key := segmentKey(tenantID, prefixHash)
 
 	// 第一遍: 读锁查命中 (常见情况, 走快路径)
 	t.mu.RLock()
@@ -314,8 +317,9 @@ func (t *SegmentTable) EvictExpired(now time.Time) int {
 }
 
 // Delete 单个段删除 (rebalance / 测试用)。
-func (t *SegmentTable) Delete(prefixHash []byte) bool {
-	key := segmentKey(prefixHash)
+// M5b: 加 tenantID 参数防跨租户共段。
+func (t *SegmentTable) Delete(tenantID int64, prefixHash []byte) bool {
+	key := segmentKey(tenantID, prefixHash)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	entry, ok := t.segments[key]
@@ -339,14 +343,28 @@ func (t *SegmentTable) PrefixHashes() [][]byte {
 	return out
 }
 
-// segmentKey 把 prefix hash 转成 string map key。
-// 当前直接 string conversion；如 prefix 长度极不一致 (32B vs 64B) 后续可
-// 改用 sha256 截 16B 统一长度，节省 map memory。
-func segmentKey(prefixHash []byte) string {
+// segmentKey 把 (tenant_id, prefix_hash) 转成 string map key (M5b: 加 tenant
+// 维度防跨租户共段, 修 fresh retro 抓的 HIGH-1)。
+//
+// 编码: 8 字节 big-endian tenant_id + prefix_hash (或 sha256 截前 16B 控长度)。
+// tenant_id 在前是为了字典序按 tenant 聚类, 利于 LRU evict 时 cache locality。
+//
+// 退化路径: tenant_id == 0 时仍编码 0 byte 头, 段表内部 (0, prefix) 与
+// (1, prefix) 自然区分; caller 上游应保证 production 路径 tenant_id != 0
+// (admin / system 流量也分配 tenant_id, 不应漏)。
+func segmentKey(tenantID int64, prefixHash []byte) string {
+	var head [8]byte
+	binary.BigEndian.PutUint64(head[:], uint64(tenantID))
 	if len(prefixHash) <= 32 {
-		return string(prefixHash)
+		out := make([]byte, 0, 8+len(prefixHash))
+		out = append(out, head[:]...)
+		out = append(out, prefixHash...)
+		return string(out)
 	}
-	// 长 prefix (> 32B) 哈希到 sha256 前 16B 当 key, 控制 map 内存占用。
+	// 长 prefix (> 32B) 哈希到 sha256 前 16B 当 key 后段, 控制 map 内存占用。
 	h := sha256.Sum256(prefixHash)
-	return string(h[:16])
+	out := make([]byte, 0, 8+16)
+	out = append(out, head[:]...)
+	out = append(out, h[:16]...)
+	return string(out)
 }

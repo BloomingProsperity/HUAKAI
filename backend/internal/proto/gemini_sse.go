@@ -51,6 +51,8 @@ type GeminiUpstreamState struct {
 	// 当 Gemini 终态触发点接入后, 通过 ObserveByAccountWithPrefix 让 PASR
 	// observer 收反馈。当前字段保留, observation 暂未走 PASR 路径。
 	PrefixHash string
+	// M5b: TenantID 透传; Gemini 终态触发点接入后用于 observer 跨租户隔离。
+	TenantID int64
 }
 
 type geminiGenerateContentResponse struct {

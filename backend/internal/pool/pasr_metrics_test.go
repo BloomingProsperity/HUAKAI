@@ -65,9 +65,9 @@ func TestPASRMetrics_SegmentCreates_Wired(t *testing.T) {
 	tbl := NewSegmentTable(SegmentTableConfig{})
 	ring := NewAccountRing([]int64{1, 2, 3}, 1)
 
-	tbl.LookupOrCreate([]byte("create-test-1"), ring)
-	tbl.LookupOrCreate([]byte("create-test-2"), ring)
-	tbl.LookupOrCreate([]byte("create-test-1"), ring) // 重复, 不应创建
+	tbl.LookupOrCreate(1, []byte("create-test-1"), ring)
+	tbl.LookupOrCreate(1, []byte("create-test-2"), ring)
+	tbl.LookupOrCreate(1, []byte("create-test-1"), ring) // 重复, 不应创建
 
 	post := SnapshotPASRMetrics().SegmentCreatesTotal
 	if post-pre != 2 {
@@ -82,16 +82,18 @@ func TestPASRMetrics_CacheObs_Wired(t *testing.T) {
 	tbl := NewSegmentTable(SegmentTableConfig{})
 	ring := NewAccountRing([]int64{42, 99, 100}, 1)
 	prefix := "metrics-feedback"
-	seg := tbl.LookupOrCreate([]byte(prefix), ring)
+	seg := tbl.LookupOrCreate(1, []byte(prefix), ring)
 	chosenAcc := seg.Members[0]
 
 	fb := NewPASRCacheFeedback(tbl, time.Now)
 	fb.handle(cachemetrics.CacheObservation{
+		TenantID:      1,
 		AccountID:     chosenAcc,
 		PrefixHash:    prefix,
 		CacheCreation: 100,
 	})
 	fb.handle(cachemetrics.CacheObservation{
+		TenantID:   1,
 		AccountID:  chosenAcc,
 		PrefixHash: prefix,
 		CacheRead:  50,
@@ -118,7 +120,7 @@ func TestPASRMetrics_Evictions_Wired(t *testing.T) {
 	})
 	ring := NewAccountRing([]int64{1, 2, 3}, 1)
 
-	tbl.LookupOrCreate([]byte("expire-test"), ring)
+	tbl.LookupOrCreate(1, []byte("expire-test"), ring)
 	clock = clock.Add(40 * time.Minute)
 
 	w := NewPASRAgingWorker(PASRAgingWorkerConfig{
@@ -135,9 +137,9 @@ func TestPASRMetrics_Evictions_Wired(t *testing.T) {
 func TestPASRMetrics_SegmentCount_Snapshot(t *testing.T) {
 	tbl := NewSegmentTable(SegmentTableConfig{})
 	ring := NewAccountRing([]int64{1, 2, 3}, 1)
-	tbl.LookupOrCreate([]byte("c1"), ring)
-	tbl.LookupOrCreate([]byte("c2"), ring)
-	tbl.LookupOrCreate([]byte("c3"), ring)
+	tbl.LookupOrCreate(1, []byte("c1"), ring)
+	tbl.LookupOrCreate(1, []byte("c2"), ring)
+	tbl.LookupOrCreate(1, []byte("c3"), ring)
 
 	w := NewPASRAgingWorker(PASRAgingWorkerConfig{Segments: tbl})
 	w.TickOnce()

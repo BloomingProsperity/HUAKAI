@@ -51,9 +51,9 @@ func newPASRTestRig(t *testing.T, accountIDs []int64) (*PASRSelector, *SegmentTa
 	snaps := make([]*AccountSnapshot, 0, len(accountIDs))
 	for _, id := range accountIDs {
 		snaps = append(snaps, &AccountSnapshot{
-			ID:       id,
-			LoadRate: 0.1,
-			Priority: 1,
+			ID:         id,
+			LoadRate:   0.1,
+			Priority:   1,
 			LastUsedAt: now.Add(-time.Duration(id) * time.Second),
 		})
 	}
@@ -123,7 +123,7 @@ func TestPASR_Select_PrefersCachedSegmentMember(t *testing.T) {
 	}
 
 	// 模拟 res1 命中并标记 cache: 找出 res1 在段内的 idx, set bitmap
-	seg := tbl.Lookup([]byte(prefix))
+	seg := tbl.Lookup(1, []byte(prefix))
 	if seg == nil {
 		t.Fatal("段未被创建")
 	}
@@ -204,7 +204,7 @@ func TestPASR_Select_RespectExcludedAccounts(t *testing.T) {
 	top3 := ring.Top3([]byte(prefix))
 
 	req := SelectionRequest{
-		TenantID:    1, ClaimID: 1, RequestedModel: "m",
+		TenantID: 1, ClaimID: 1, RequestedModel: "m",
 		SessionHash: prefix,
 		ExcludedAccounts: map[int64]struct{}{
 			top3[0]: {}, // 排除首选
@@ -291,7 +291,7 @@ func TestPASR_Select_RingProvider_HotSwap(t *testing.T) {
 	src.snapshots = snaps2
 
 	// 必须先清段表 (ring 内成员变了, 旧段引用的 acc 已不存在)
-	tbl.Delete([]byte("swap-test"))
+	tbl.Delete(1, []byte("swap-test"))
 
 	res, _ = sel.Select(context.Background(), req)
 	if res.AccountID != 40 && res.AccountID != 50 && res.AccountID != 60 {

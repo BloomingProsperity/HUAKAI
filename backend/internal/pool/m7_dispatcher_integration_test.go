@@ -172,6 +172,57 @@ func TestM7_ActualMode_SegmentTableLearns(t *testing.T) {
 	}
 }
 
+func TestM5b_SegmentTable_TenantIsolation_SamePromptDifferentTenants(t *testing.T) {
+	// M5b 核心验证: 两 tenant 用同 prompt (相同 prefixHash) 不应共段。
+	// 修 fresh retro HIGH-1: 之前 segmentKey(prefixHash) 不含 tenant 维度,
+	// segment.Members 跨租户复用第一 tenant 的 account ID。
+	// 现在 segmentKey(tenantID, prefixHash), 双 tenant 自然分隔。
+	tbl := NewSegmentTable(SegmentTableConfig{})
+	ringT1 := NewAccountRing([]int64{11, 12, 13}, 0xCAFEBABE)
+	ringT2 := NewAccountRing([]int64{21, 22, 23}, 0xCAFEBABE)
+	samePrefix := []byte("shared-prompt-system-content")
+
+	segT1 := tbl.LookupOrCreate(1, samePrefix, ringT1)
+	segT2 := tbl.LookupOrCreate(2, samePrefix, ringT2)
+
+	if segT1 == segT2 {
+		t.Fatalf("M5b 隔离失败: 两 tenant 同 prompt 共段对象")
+	}
+	if tbl.Size() != 2 {
+		t.Errorf("应有 2 段 (tenant 1 + tenant 2 各 1), 实 %d", tbl.Size())
+	}
+
+	// segT1.Members 必须只含 tenant 1 的 account ID
+	for _, mid := range segT1.Members {
+		if mid == 0 {
+			continue
+		}
+		if mid != 11 && mid != 12 && mid != 13 {
+			t.Errorf("tenant 1 段含跨租户 acc %d (应在 {11,12,13})", mid)
+		}
+	}
+	// segT2.Members 必须只含 tenant 2 的 account ID
+	for _, mid := range segT2.Members {
+		if mid == 0 {
+			continue
+		}
+		if mid != 21 && mid != 22 && mid != 23 {
+			t.Errorf("tenant 2 段含跨租户 acc %d (应在 {21,22,23})", mid)
+		}
+	}
+
+	// Lookup 也按 tenant 隔离
+	if tbl.Lookup(1, samePrefix) != segT1 {
+		t.Errorf("Lookup(1, prefix) 应返 tenant 1 段")
+	}
+	if tbl.Lookup(2, samePrefix) != segT2 {
+		t.Errorf("Lookup(2, prefix) 应返 tenant 2 段")
+	}
+	if tbl.Lookup(3, samePrefix) != nil {
+		t.Errorf("Lookup(3, prefix) 不存在 tenant 3 段, 应返 nil")
+	}
+}
+
 func TestM7_DispatchMode_LiteralsMatchConfig(t *testing.T) {
 	// cross-check dispatcher mode const 与 config.PoolSelectorMode 完全一致 —
 	// 防字符串 drift (M2/M4 reviewer 都建议过的 M7 守门测试)。
