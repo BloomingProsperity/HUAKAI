@@ -172,6 +172,44 @@ func TestM7_ActualMode_SegmentTableLearns(t *testing.T) {
 	}
 }
 
+func TestM5c_SegmentKey_RawVsHashMode_NoCollision(t *testing.T) {
+	// M5c: codex retro M5b 抓的 MED-1 — 同 tenant 内某个 16B 短 prefix 理论上
+	// 可与长 prefix 的 sha256 截断结果偶然相同 (collision space 2^128, 实际 ≈0
+	// 但 design smell)。 1-byte mode tag (0x01 raw / 0x02 hash) 区分两路径。
+	tbl := NewSegmentTable(SegmentTableConfig{})
+	ring := NewAccountRing([]int64{1, 2, 3}, 0xCAFEBABE)
+
+	// 构造一个 16B 短 prefix
+	shortPrefix := make([]byte, 16)
+	for i := range shortPrefix {
+		shortPrefix[i] = byte(i + 1)
+	}
+
+	// 构造一个长 prefix, 其 sha256 前 16B 恰好等于上面的 shortPrefix (理论上
+	// 概率近 0, 这里直接用一个 known long prefix; 关键是 mode tag 让它们走不同 key)
+	longPrefix := make([]byte, 64)
+	for i := range longPrefix {
+		longPrefix[i] = byte((i * 7) ^ 0xa5)
+	}
+
+	segShort := tbl.LookupOrCreate(1, shortPrefix, ring)
+	segLong := tbl.LookupOrCreate(1, longPrefix, ring)
+
+	if segShort == segLong {
+		t.Fatalf("M5c 失败: 短 prefix 与长 prefix 共段 (mode tag 没生效)")
+	}
+	if tbl.Size() != 2 {
+		t.Errorf("应有 2 段, 实 %d (mode tag 没区分 raw vs hash)", tbl.Size())
+	}
+	// 即使 sha256(longPrefix)[:16] 巧合等于 shortPrefix, mode tag 也保两段独立
+	if tbl.Lookup(1, shortPrefix) != segShort {
+		t.Errorf("Lookup raw 路径失败")
+	}
+	if tbl.Lookup(1, longPrefix) != segLong {
+		t.Errorf("Lookup hash 路径失败")
+	}
+}
+
 func TestM5b_SegmentTable_TenantIsolation_SamePromptDifferentTenants(t *testing.T) {
 	// M5b 核心验证: 两 tenant 用同 prompt (相同 prefixHash) 不应共段。
 	// 修 fresh retro HIGH-1: 之前 segmentKey(prefixHash) 不含 tenant 维度,

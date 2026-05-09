@@ -344,26 +344,36 @@ func (t *SegmentTable) PrefixHashes() [][]byte {
 }
 
 // segmentKey 把 (tenant_id, prefix_hash) 转成 string map key (M5b: 加 tenant
-// 维度防跨租户共段, 修 fresh retro 抓的 HIGH-1)。
+// 维度防跨租户共段; M5c: 加 mode tag 防 raw 与 hash 同段碰撞)。
 //
-// 编码: 8 字节 big-endian tenant_id + prefix_hash (或 sha256 截前 16B 控长度)。
-// tenant_id 在前是为了字典序按 tenant 聚类, 利于 LRU evict 时 cache locality。
+// 编码: 8 字节 big-endian tenant_id + 1 字节 mode tag + prefix_hash (或 sha256
+// 截前 16B 控长度)。 mode tag 0x01 = raw, 0x02 = hash; 防止某 16B 短 prefix
+// 与长 prefix 的 sha256 截断结果偶然相同 (理论 collision space 2^128, 实际
+// ≈0 但 design smell)。 tenant_id 在前是为了字典序按 tenant 聚类, 利于
+// LRU evict 时 cache locality。
 //
 // 退化路径: tenant_id == 0 时仍编码 0 byte 头, 段表内部 (0, prefix) 与
 // (1, prefix) 自然区分; caller 上游应保证 production 路径 tenant_id != 0
 // (admin / system 流量也分配 tenant_id, 不应漏)。
+const (
+	segmentKeyModeRaw  byte = 0x01 // ≤32B prefix, 直接拼
+	segmentKeyModeHash byte = 0x02 // >32B prefix, sha256 截 16B
+)
+
 func segmentKey(tenantID int64, prefixHash []byte) string {
-	var head [8]byte
-	binary.BigEndian.PutUint64(head[:], uint64(tenantID))
+	var head [9]byte // 8B tenant_id + 1B mode tag
+	binary.BigEndian.PutUint64(head[:8], uint64(tenantID))
 	if len(prefixHash) <= 32 {
-		out := make([]byte, 0, 8+len(prefixHash))
+		head[8] = segmentKeyModeRaw
+		out := make([]byte, 0, 9+len(prefixHash))
 		out = append(out, head[:]...)
 		out = append(out, prefixHash...)
 		return string(out)
 	}
 	// 长 prefix (> 32B) 哈希到 sha256 前 16B 当 key 后段, 控制 map 内存占用。
+	head[8] = segmentKeyModeHash
 	h := sha256.Sum256(prefixHash)
-	out := make([]byte, 0, 8+16)
+	out := make([]byte, 0, 9+16)
 	out = append(out, head[:]...)
 	out = append(out, h[:16]...)
 	return string(out)
