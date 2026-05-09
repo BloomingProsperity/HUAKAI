@@ -324,3 +324,155 @@ func TestSegmentTable_EmptyRing(t *testing.T) {
 		}
 	}
 }
+
+// =====================================================================
+// cache-aware A1: aging 5min default + ExtendedCacheTTL 1h
+// =====================================================================
+
+// TestA1_DefaultSegmentMaxAge_Is5Min 锁定常量值, 防回归到 30min。
+func TestA1_DefaultSegmentMaxAge_Is5Min(t *testing.T) {
+	if DefaultSegmentMaxAge != 5*time.Minute {
+		t.Fatalf("DefaultSegmentMaxAge = %v want 5min (Anthropic default cache TTL 对齐)",
+			DefaultSegmentMaxAge)
+	}
+	if DefaultExtendedCacheTTL != 1*time.Hour {
+		t.Fatalf("DefaultExtendedCacheTTL = %v want 1h (Anthropic extended cache TTL 对齐)",
+			DefaultExtendedCacheTTL)
+	}
+}
+
+// TestA1_DefaultMaxAge_Evicts5MinOldSegment 不传 MaxAge 用默认 (5min),
+// 验证段在 6min 后会被 evict (5min cutoff)。
+func TestA1_DefaultMaxAge_Evicts5MinOldSegment(t *testing.T) {
+	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	clock := now
+	tbl := NewSegmentTable(SegmentTableConfig{
+		// 不指定 MaxAge → 用 DefaultSegmentMaxAge = 5min
+		Now: func() time.Time { return clock },
+	})
+	ring := newTestRing()
+
+	tbl.LookupOrCreate(1, []byte("p"), ring) // LastReadAt = 12:00
+
+	// 推进 6min: cutoff = 12:06 - 5min = 12:01, LastReadAt=12:00 < 12:01 → evict
+	clock = clock.Add(6 * time.Minute)
+	evicted := tbl.EvictExpired(clock)
+	if evicted != 1 {
+		t.Fatalf("默认 5min 老化, 6min 后应 evict 1 段, 实 %d", evicted)
+	}
+	if tbl.Lookup(1, []byte("p")) != nil {
+		t.Error("段应被 evict")
+	}
+}
+
+// TestA1_ExtendedCacheTTL_KeepsBeyondDefault 标 ExtendedCacheTTL=1h 的段
+// 在 30min 后不被 evict (>= 默认 5min, 但 < 1h extended TTL)。
+func TestA1_ExtendedCacheTTL_KeepsBeyondDefault(t *testing.T) {
+	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	clock := now
+	tbl := NewSegmentTable(SegmentTableConfig{
+		Now: func() time.Time { return clock },
+	})
+	ring := newTestRing()
+
+	seg := tbl.LookupOrCreate(1, []byte("ext"), ring) // LastReadAt = 12:00
+	seg.SetExtendedCacheTTL(1 * time.Hour)            // 标 extended
+
+	// 推进 30min: 默认 5min 早过, 但 extended 1h 还没到
+	clock = clock.Add(30 * time.Minute)
+	evicted := tbl.EvictExpired(clock)
+	if evicted != 0 {
+		t.Fatalf("ExtendedCacheTTL=1h 段在 30min 不应 evict, 实 %d", evicted)
+	}
+	if tbl.Lookup(1, []byte("ext")) == nil {
+		t.Error("extended 段不应被 evict")
+	}
+}
+
+// TestA1_ExtendedCacheTTL_EvictsAfterTTL 标 ExtendedCacheTTL=1h 的段
+// 在 65min (> 1h) 后被 evict。
+func TestA1_ExtendedCacheTTL_EvictsAfterTTL(t *testing.T) {
+	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	clock := now
+	tbl := NewSegmentTable(SegmentTableConfig{
+		Now: func() time.Time { return clock },
+	})
+	ring := newTestRing()
+
+	seg := tbl.LookupOrCreate(1, []byte("ext"), ring)
+	seg.SetExtendedCacheTTL(1 * time.Hour)
+
+	// 推进 65min: 已超 1h extended TTL → evict
+	clock = clock.Add(65 * time.Minute)
+	evicted := tbl.EvictExpired(clock)
+	if evicted != 1 {
+		t.Fatalf("ExtendedCacheTTL=1h 段在 65min 应 evict 1 段, 实 %d", evicted)
+	}
+	if tbl.Lookup(1, []byte("ext")) != nil {
+		t.Error("extended 段过期应被清")
+	}
+}
+
+// TestA1_MixedTTL_PerSegmentEffective 同表内 default + extended 两段,
+// 验证 EvictExpired 按段独立 TTL 判。
+func TestA1_MixedTTL_PerSegmentEffective(t *testing.T) {
+	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	clock := now
+	tbl := NewSegmentTable(SegmentTableConfig{
+		Now: func() time.Time { return clock },
+	})
+	ring := newTestRing()
+
+	// 段 default: 用默认 5min
+	tbl.LookupOrCreate(1, []byte("default"), ring)
+	// 段 extended: 标 1h
+	segExt := tbl.LookupOrCreate(1, []byte("ext"), ring)
+	segExt.SetExtendedCacheTTL(1 * time.Hour)
+
+	// 推进 30min: default 段过期 (5min cutoff), ext 段还活 (1h cutoff)
+	clock = clock.Add(30 * time.Minute)
+	evicted := tbl.EvictExpired(clock)
+	if evicted != 1 {
+		t.Fatalf("混合 TTL 30min 后应 evict 1 段 (default), 实 %d", evicted)
+	}
+	if tbl.Lookup(1, []byte("default")) != nil {
+		t.Error("default 段 (5min TTL) 30min 后应被 evict")
+	}
+	if tbl.Lookup(1, []byte("ext")) == nil {
+		t.Error("extended 段 (1h TTL) 30min 后应保留")
+	}
+
+	// 推进到 70min (从原始时刻): ext 段也过期
+	clock = clock.Add(40 * time.Minute) // total now = 70min after start
+	evicted2 := tbl.EvictExpired(clock)
+	if evicted2 != 1 {
+		t.Fatalf("70min 后 ext 段也应 evict, 实 %d", evicted2)
+	}
+}
+
+// TestA1_SetExtendedCacheTTL_ZeroResetsToDefault 显式传 0 / 负值 → 还原 default。
+func TestA1_SetExtendedCacheTTL_ZeroResetsToDefault(t *testing.T) {
+	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	clock := now
+	tbl := NewSegmentTable(SegmentTableConfig{
+		Now: func() time.Time { return clock },
+	})
+	ring := newTestRing()
+
+	seg := tbl.LookupOrCreate(1, []byte("p"), ring)
+	seg.SetExtendedCacheTTL(1 * time.Hour) // 先设 extended
+	seg.SetExtendedCacheTTL(0)             // 还原 default
+	if seg.ExtendedCacheTTL.Load() != 0 {
+		t.Errorf("SetExtendedCacheTTL(0) 应还原 0, 实 %d", seg.ExtendedCacheTTL.Load())
+	}
+	seg.SetExtendedCacheTTL(-1) // 负值也 reset
+	if seg.ExtendedCacheTTL.Load() != 0 {
+		t.Errorf("SetExtendedCacheTTL(<0) 应还原 0, 实 %d", seg.ExtendedCacheTTL.Load())
+	}
+
+	// 推进 6min → default (5min) 老化生效, evict
+	clock = clock.Add(6 * time.Minute)
+	if tbl.EvictExpired(clock) != 1 {
+		t.Error("ExtendedCacheTTL=0 后应回归 default 5min 老化")
+	}
+}

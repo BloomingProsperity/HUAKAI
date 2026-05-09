@@ -1,8 +1,10 @@
 // pasr_aging_worker.go — PASR-lite A5: 段表老化 + LRU evict 后台 worker。
 //
-// 一个 goroutine, 每 5min ticker 调 SegmentTable.EvictExpired 把超过 30min
-// 无 cache_read 的段清掉 (synthesis D8 时间触发部分; LRU evict 在
-// LookupOrCreate 写入路径同步触发, 不需后台).
+// 一个 goroutine, 每 1min ticker 调 SegmentTable.EvictExpired 把超过段
+// 独立 effective TTL (默认 5min, ExtendedCache 1h) 无 cache_read 的段清掉
+// (cache-aware A1; 之前 5min ticker + 30min cutoff 不与 vendor cache TTL
+// 对齐, 段表保留过长导致 cold-miss 累积; LRU evict 在 LookupOrCreate 写入
+// 路径同步触发, 不需后台).
 //
 // 接 context cancellation 优雅退出。
 package pool
@@ -34,12 +36,18 @@ type PASRAgingWorker struct {
 // PASRAgingWorkerConfig 构造期参数。
 type PASRAgingWorkerConfig struct {
 	Segments *SegmentTable
-	Interval time.Duration // 0 用 5 * time.Minute
+	Interval time.Duration // 0 用 DefaultAgingInterval (1min)
 	Now      func() time.Time
 }
 
-// DefaultAgingInterval 默认 ticker 周期 (synthesis D8 5min)。
-const DefaultAgingInterval = 5 * time.Minute
+// DefaultAgingInterval 默认 ticker 周期。
+//
+// cache-aware A1 (Owner 2026-05-09): 5min → 1min。 之前 ticker 周期 = aging
+// 窗口 (5min) 意味着段在过期后最多再撑一个完整 ticker 周期 (= 5min) 才被
+// evict, 等于实际 TTL = 5-10min, 不与 Anthropic default cache (5min) 严格
+// 对齐。 改 1min 后 段过期 → 最多再撑 1min 被清, 实际 TTL = 5-6min。
+// 100k 段上限下每次 ticker 全 LRU 链扫描 ~100ms, 1min 一次开销可接受。
+const DefaultAgingInterval = 1 * time.Minute
 
 // NewPASRAgingWorker 构造实例。
 func NewPASRAgingWorker(cfg PASRAgingWorkerConfig) *PASRAgingWorker {
@@ -98,7 +106,7 @@ func (w *PASRAgingWorker) tick() {
 		w.evictedTotal.Add(uint64(n))
 		AddEvictions(int64(n))
 	}
-	// 段表大小快照, 5min 一次, 不每请求开销
+	// 段表大小快照, 1min 一次 (A1 cache-aware), 不每请求开销
 	SetSegmentCount(int64(w.segments.Size()))
 }
 

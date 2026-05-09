@@ -8,10 +8,12 @@
 // 创新）：hot path 完全脱离 DB，PG 持久化在 A6 atomic 加，运行时只读
 // in-memory。
 //
-// 设计决策（per pasr-lite-v2-synthesis §3 §4 §7）:
+// 设计决策（per pasr-lite-v2-synthesis §3 §4 §7 + cache-aware A1）:
 //   - bitmap = 3 bits / segment (member 是否见过 cache_creation_input_tokens > 0)
 //   - LastReadAt 老化锚: cache_read_input_tokens > 0 时刷新
-//   - 段过期: 30min 无 cache_read OR 段表上限 100k LRU evict (codex D8 双触发)
+//   - 段过期: 5min 无 cache_read (Anthropic default cache TTL 对齐) OR 段
+//     标 ExtendedCacheTTL=1h (extended cache 客户场景) OR 段表上限 100k
+//     LRU evict (cache-aware A1 双 + 单触发组合)
 //   - rebalance 软迁移 1h: 见 A6 atomic
 package pool
 
@@ -27,8 +29,18 @@ import (
 // PASRSegmentSize K=3 是 Owner 锁定的段大小 (Owner 2026-05-08 "可以K3")。
 const PASRSegmentSize = 3
 
-// DefaultSegmentMaxAge 默认段无 cache_read 老化时间 (synthesis D8 30min)。
-const DefaultSegmentMaxAge = 30 * time.Minute
+// DefaultSegmentMaxAge 默认段无 cache_read 老化时间。
+//
+// 设计 (cache-aware A1, Owner 2026-05-09): 5min 与 Anthropic prompt cache
+// default TTL 对齐 (memory: 之前 30min 偏长导致段表保留时间超出 vendor 实
+// 际 cache 寿命 → 路由到 steward 时 vendor cache 已掉 → 白费精确路由)。
+// extended cache 客户场景另行设 PrefixSegment.ExtendedCacheTTL=1h, EvictExpired
+// 每段独立判断有效 TTL。
+const DefaultSegmentMaxAge = 5 * time.Minute
+
+// DefaultExtendedCacheTTL 标记为 extended cache 的段允许保留的最大无命中
+// 时间 (1h, 与 Anthropic extended cache TTL 对齐)。
+const DefaultExtendedCacheTTL = 1 * time.Hour
 
 // DefaultSegmentTableCap 默认段表上限 (synthesis D8: codex 100k)。
 const DefaultSegmentTableCap = 100_000
@@ -57,15 +69,46 @@ type PrefixSegment struct {
 	HasCacheBitmap atomic.Uint32
 
 	// LastReadAt 最近一次 cache_read_input_tokens > 0 的 unix nanos。
-	// PASR-lite 用此时间戳老化（30min 无命中即回收）。
+	// PASR-lite 用此时间戳老化 (5min 默认无命中即回收, ExtendedCacheTTL 标
+	// 记的段则用 1h)。
 	LastReadAt atomic.Int64
 
 	// LastWriteAt 最近一次 cache_creation_input_tokens > 0 的 unix nanos。
 	// 弱信号: 段成员"刚开始"积累 cache, 未必稳定。
 	LastWriteAt atomic.Int64
 
+	// ExtendedCacheTTL 段独立的有效 TTL (cache-aware A1)。
+	// 单位: nanoseconds (匹配 time.Duration).
+	// 0 → 用 SegmentTable.maxAge (默认 5min, 对齐 Anthropic default cache);
+	// 非 0 → extended cache 客户场景用 (例 Anthropic extended 1h),
+	// EvictExpired 单独判每段是否过期。
+	// caller 在段创建后 (或 first cache_creation observation 命中) 调
+	// SetExtendedCacheTTL 写入。
+	ExtendedCacheTTL atomic.Int64
+
 	// CreatedAt 段创建 unix nanos (用于 ops 调试 + 软迁移过渡判断)。
 	CreatedAt int64
+}
+
+// SetExtendedCacheTTL 标记本段使用 extended cache TTL (1h 默认)。
+// 0 / 负值 → 还原到 SegmentTable 默认 maxAge (5min)。
+// hot path 安全 (atomic store)。
+func (s *PrefixSegment) SetExtendedCacheTTL(ttl time.Duration) {
+	if ttl <= 0 {
+		s.ExtendedCacheTTL.Store(0)
+		return
+	}
+	s.ExtendedCacheTTL.Store(int64(ttl))
+}
+
+// effectiveMaxAge 段独立有效 TTL: ExtendedCacheTTL 非 0 用它, 否则用
+// SegmentTable 的 maxAge 默认。 EvictExpired 调用本函数判每段。
+func (s *PrefixSegment) effectiveMaxAge(tableDefault time.Duration) time.Duration {
+	ext := s.ExtendedCacheTTL.Load()
+	if ext > 0 {
+		return time.Duration(ext)
+	}
+	return tableDefault
 }
 
 // HasCache 检查 Members[idx] 是否标记为见过 cache_creation。
@@ -280,38 +323,47 @@ func (t *SegmentTable) MarkRead(seg *PrefixSegment, now time.Time) {
 	t.mu.Unlock()
 }
 
-// EvictExpired 老化清理: 删除 LastReadAt 早于 (now - maxAge) 的段。
+// EvictExpired 老化清理: 删除 LastReadAt + 段独立 effectiveMaxAge 已过期的段。
 // 返回被 evict 的段数。
 //
-// 调用方: 5min ticker goroutine (A5 atomic 实现)。
+// 调用方: 1min ticker goroutine (A5 atomic 实现, A1 cache-aware 缩到 1min)。
+//
+// cache-aware A1: 段不再共享单一 cutoff — ExtendedCacheTTL 非 0 的段用 1h
+// 等独立 TTL, 默认段用 5min。 不能再"扫到首个活段就 break", 必须遍历整条
+// LRU 链。 100k 段上限 + 1min ticker = ~100ms 一次扫描, 可接受。
 func (t *SegmentTable) EvictExpired(now time.Time) int {
-	cutoff := now.Add(-t.maxAge).UnixNano()
+	nowNs := now.UnixNano()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// 从 LRU 末尾扫: 一旦碰到非 expired 的段就停 (LRU 顺序保证后面的都新)
 	count := 0
-	for {
-		back := t.lruOrder.Back()
-		if back == nil {
-			break
-		}
-		key, ok := back.Value.(string)
+	// 全 LRU 链遍历 (从 back 向 front), 每段独立判 effective TTL。
+	elem := t.lruOrder.Back()
+	for elem != nil {
+		prev := elem.Prev()
+		key, ok := elem.Value.(string)
 		if !ok {
-			t.lruOrder.Remove(back)
+			t.lruOrder.Remove(elem)
+			elem = prev
 			continue
 		}
 		entry, exists := t.segments[key]
 		if !exists {
-			t.lruOrder.Remove(back)
+			t.lruOrder.Remove(elem)
+			elem = prev
 			continue
 		}
-		if entry.seg.LastReadAt.Load() >= cutoff {
-			break // 该段还活着，后面（更新）的也活着
+		seg := entry.seg
+		// 段独立 effective TTL: ExtendedCacheTTL 非 0 用它, 否则 t.maxAge。
+		ttl := seg.effectiveMaxAge(t.maxAge)
+		if (nowNs - seg.LastReadAt.Load()) < int64(ttl) {
+			elem = prev
+			continue // 段在自己的 TTL 内还活着, 跳过
 		}
-		t.lruOrder.Remove(back)
+		t.lruOrder.Remove(elem)
 		delete(t.segments, key)
 		count++
+		elem = prev
 	}
 	return count
 }
