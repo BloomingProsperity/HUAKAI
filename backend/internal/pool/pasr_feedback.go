@@ -6,11 +6,11 @@
 //
 // 调用流向 (PASR-lite 全闭环):
 //
-//   1. PASRSelector.Select 时段成员被选 → claim 写入 → forwarder 派发请求
-//   2. 上游响应 SSE 终态事件 (anthropic message_stop / openai final chunk)
-//      → proto adapter 调 cachemetrics.ObserveByAccountWithPrefix
-//   3. 本文件注册的 observer fn 触发 → 找段 + 找成员 idx → 更新 bitmap/age
-//   4. 下次相同 prefix 请求 PASRSelector.Select → 优先选 bitmap 标记成员
+//  1. PASRSelector.Select 时段成员被选 → claim 写入 → forwarder 派发请求
+//  2. 上游响应 SSE 终态事件 (anthropic message_stop / openai final chunk)
+//     → proto adapter 调 cachemetrics.ObserveByAccountWithPrefix
+//  3. 本文件注册的 observer fn 触发 → 找段 + 找成员 idx → 更新 bitmap/age
+//  4. 下次相同 prefix 请求 PASRSelector.Select → 优先选 bitmap 标记成员
 //
 // caller 在启动期把 PASR 实例 + segment table 给本工厂, 调
 // RegisterCacheObserver 一次后就不再操心。
@@ -55,10 +55,15 @@ func (f *PASRCacheFeedback) handle(obs cachemetrics.CacheObservation) {
 	if obs.PrefixHash == "" || obs.AccountID == 0 {
 		return
 	}
+	// M5b: TenantID 必填; 0 时段表查不到 (segmentKey 编码 tenant=0 vs 真实
+	// tenant!=0 自然区分), 直接 short-circuit 省 lookup 开销。
+	if obs.TenantID == 0 {
+		return
+	}
 	if f.segments == nil {
 		return
 	}
-	seg := f.segments.Lookup([]byte(obs.PrefixHash))
+	seg := f.segments.Lookup(obs.TenantID, []byte(obs.PrefixHash))
 	if seg == nil {
 		return
 	}

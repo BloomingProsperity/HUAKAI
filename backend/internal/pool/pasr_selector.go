@@ -160,14 +160,15 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 	}
 	// M4 (D2): readOnlySegments=true (shadow 实例) 用 Lookup 不创建; 段未命中
 	// 直接走 HRW 全 ring 接力, 不污染段表 — 让 actual 路径独占段学习数据。
+	// M5b: 段表 key 加 tenant 维度, 防跨租户共段 (fresh retro HIGH-1)。
 	var seg *PrefixSegment
 	if p.readOnlySegments {
-		seg = p.segments.Lookup(prefixKey)
+		seg = p.segments.Lookup(req.TenantID, prefixKey)
 		if seg == nil {
 			return p.scheduleHRWFullRing(ctx, req, ring, snapshots, [PASRSegmentSize]int64{})
 		}
 	} else {
-		seg = p.segments.LookupOrCreate(prefixKey, ring)
+		seg = p.segments.LookupOrCreate(req.TenantID, prefixKey, ring)
 	}
 
 	// 3. 段内过滤 healthy + 未超载

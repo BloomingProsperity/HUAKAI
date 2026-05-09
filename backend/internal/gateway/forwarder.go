@@ -335,18 +335,19 @@ func (f *StreamForwarder) finishDraft(d UsageRecordDraft, acc UsageAccumulator, 
 // hash, 终态调 ObserveByAccountWithPrefix 让 PASR-lite observer 把
 // (acc, prefix, creation, read) 反馈到 PrefixSegment.HasCacheBitmap。
 func (f *StreamForwarder) newUpstreamState(req ForwardRequest) any {
+	// M5b: TenantID 透传 — observer 用 (TenantID, PrefixHash) 查段防跨租户混选
 	if f.ProtocolAdapters != nil {
 		if adapter, err := f.ProtocolAdapters.For(req.ProtocolFamily); err == nil {
 			switch adapter.(type) {
 			case *proto.OpenAIAdapter:
-				return &proto.OpenAIUpstreamState{AccountID: req.AccountID, PrefixHash: req.SessionHash}
+				return &proto.OpenAIUpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}
 			case *proto.GeminiAdapter:
-				return &proto.GeminiUpstreamState{AccountID: req.AccountID, PrefixHash: req.SessionHash}
+				return &proto.GeminiUpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}
 			}
 		}
 	}
 	// fallthrough: Anthropic / Bedrock-on-Anthropic / 其它都用 UpstreamState
-	return &proto.UpstreamState{AccountID: req.AccountID, PrefixHash: req.SessionHash}
+	return &proto.UpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}
 }
 
 func (f *StreamForwarder) effectiveDrainBudgets() DrainBudgets {
