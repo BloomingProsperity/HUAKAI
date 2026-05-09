@@ -1,0 +1,11 @@
+[workspace]
+members = ["crates/core_gateway"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+rust-version = "1.95"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
