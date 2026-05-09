@@ -8,33 +8,38 @@ package pool
 
 import (
 	"context"
-	"strings"
 
 	"github.com/google/uuid"
 )
 
-// VendorFromProtocolFamily 派生 vendor 字面量 (D2: dispatcher metric vendor
-// 维度用)。 ProtocolFamily 字面量目前已知: anthropic_messages / openai_chat /
-// openai_responses / gemini_messages / bedrock_invoke (Bedrock 走 anthropic
-// 翻译, 但底层 vendor 是 bedrock; Owner 无 AWS 凭据测试范围外)。
+// VendorFromProtocolFamily 把已注册 ProtocolFamily (gateway/protocol_selector.go)
+// 映射到 4-vendor 真实账号测试集合 (memory: project_real_vendor_account_scope):
+// anthropic / openai / gemini / codex。 用于 dispatcher metric 按 vendor 切片。
 //
-// 真实账号测试限定 4 vendor (memory: project_real_vendor_account_scope):
-// anthropic / openai / gemini / codex。 codex 暂时通过 OpenAI 兼容协议
-// 接入, 未来加独立 codex_complete ProtocolFamily 时本 helper 同步更新。
+// 显式 exact-match (避免 prefix 误判, 例如 openai_codex 不能落到 openai 槽):
+//   - openai_codex 是 ChatGPT Plus / Codex CLI 反转 session 的 ProtocolFamily,
+//     虽底层走 OpenAI Adapter, 但属真实独立 vendor "codex" (Owner 真账号 4
+//     vendor 之一), 必须单独切片;
+//   - openai_chat / openai_responses → vendor "openai";
+//   - gemini_messages / gemini_advanced_session → vendor "gemini";
+//   - anthropic_messages → vendor "anthropic"。
 //
-// 不在集合内 → 返空字符串, dispatcher metric 静默不记 vendor 维度。
+// 其他 ProtocolFamily (bedrock_invoke / openrouter_chat / grok_chat /
+// deepseek_chat / mistral_chat / groqcloud_chat / together_chat /
+// perplexity_chat / fireworks_chat / copilot_session / cursor_session /
+// antigravity_session / kiro_session / windsurf_session) 不在 4-vendor
+// 真实账号集合, 静默返空字符串 → dispatcher metric 不记 vendor 维度。
 func VendorFromProtocolFamily(pf string) string {
-	switch {
-	case strings.HasPrefix(pf, "anthropic"):
+	switch pf {
+	case "anthropic_messages":
 		return "anthropic"
-	case strings.HasPrefix(pf, "openai"):
+	case "openai_chat", "openai_responses":
 		return "openai"
-	case strings.HasPrefix(pf, "gemini"):
-		return "gemini"
-	case strings.HasPrefix(pf, "codex"):
+	case "openai_codex":
 		return "codex"
+	case "gemini_messages", "gemini_advanced_session":
+		return "gemini"
 	default:
-		// bedrock_invoke / 其他 vendor: 静默返空, 不进 4-vendor 切片 metric
 		return ""
 	}
 }
