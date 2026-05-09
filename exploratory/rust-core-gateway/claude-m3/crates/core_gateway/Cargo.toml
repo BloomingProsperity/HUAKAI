@@ -1,0 +1,47 @@
+[package]
+name = "core_gateway"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# 异步运行时
+axum = { version = "0.8", features = ["http1", "json", "tokio"] }
+bytes = "1"
+# M-rust-3: 无锁并发 hashmap, 用于短 TTL route plan cache
+dashmap = "6"
+# 环境变量解析 (带前缀, 强类型)
+envy = "0.4"
+futures-core = "0.3"
+http = "1"
+http-body = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "tokio"] }
+pin-project-lite = "0.2"
+# M-rust-3: HTTP/JSON client 用于 Go control plane RPC
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tower-http = { version = "0.6", features = ["limit"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+uuid = { version = "1", features = ["serde", "v7"] }
+
+# OpenTelemetry OTLP — M-rust-1 初始化 stub, 真实 exporter 留 M-rust-2 接线
+opentelemetry = { version = "0.27", features = ["trace"] }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic"] }
+
+[dev-dependencies]
+futures-util = "0.3"
+serde_json = "1"
+tower = { version = "0.5", features = ["util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
