@@ -327,3 +327,58 @@ func TestPackageCompiles(t *testing.T) {
 		t.Fatalf("clock skew")
 	}
 }
+
+// TestVendorFromProtocolFamily 锁定 4-vendor 真实账号 metric 切片映射
+// (memory: project_real_vendor_account_scope)。 表驱动覆盖 gateway/
+// protocol_selector.go 当前注册的全部 ProtocolFamily, 防止再出现 prefix
+// 误判 (历史 bug: openai_codex 被 prefix "openai" 抢走, 导致 codex 切片
+// 永远 0、 openai 切片双重计数)。
+func TestVendorFromProtocolFamily(t *testing.T) {
+	cases := []struct {
+		pf   string
+		want string
+	}{
+		// 4-vendor 真实账号集合 — 必须正确分流
+		{"anthropic_messages", "anthropic"},
+		{"openai_chat", "openai"},
+		{"openai_responses", "openai"},
+		{"openai_codex", "codex"}, // 不能落到 openai (反转 ChatGPT Plus / Codex CLI session)
+		{"gemini_messages", "gemini"},
+		{"gemini_advanced_session", "gemini"},
+
+		// 已注册但不在 4-vendor 真账号集合 — 静默返空
+		{"bedrock_invoke", ""},
+		{"openrouter_chat", ""},
+		{"grok_chat", ""},
+		{"deepseek_chat", ""},
+		{"mistral_chat", ""},
+		{"groqcloud_chat", ""},
+		{"together_chat", ""},
+		{"perplexity_chat", ""},
+		{"fireworks_chat", ""},
+		{"copilot_session", ""},
+		{"cursor_session", ""},
+		{"antigravity_session", ""},
+		{"kiro_session", ""},
+		{"windsurf_session", ""},
+
+		// 边界 — 空字符串 / 未注册字面量 / 大小写敏感 / 裸 vendor 名
+		{"", ""},
+		{"unknown_family", ""},
+		{"OPENAI_CHAT", ""}, // exact-match case-sensitive
+		{"openai", ""},      // 裸 vendor 名 (无 family suffix) 不许通过
+		{"codex", ""},
+		{"anthropic", ""},
+	}
+	for _, tc := range cases {
+		name := tc.pf
+		if name == "" {
+			name = "(empty)"
+		}
+		t.Run(name, func(t *testing.T) {
+			if got := VendorFromProtocolFamily(tc.pf); got != tc.want {
+				t.Fatalf("VendorFromProtocolFamily(%q) = %q, want %q", tc.pf, got, tc.want)
+			}
+		})
+	}
+}
