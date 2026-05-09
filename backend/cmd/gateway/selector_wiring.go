@@ -1,0 +1,136 @@
+// selector_wiring.go — PASR-lite main-wire M6 atomic: 启动期根据 PoolSelectorConfig
+// 装配 default / shadow / canary / pasr-primary / pasr-strict 5 mode 的具体
+// Selector 实现, 暴露给 deps.selector 用 (handler 看到的统一 pool.Selector 接口)。
+//
+// 关键不变量 (synthesis §3 + Owner D1-D6 全 A 决策):
+//   - default mode 完全等价现状 — 不构造 PASR / SegmentTable / AgingWorker /
+//     不注册 cache feedback observer; 主线零回归
+//   - 启动期失败 → fail-fast 让 main 退出 (LoadPoolSelector 已守门, 这里再一次
+//     Validate; misconfigure 不允许 silent 退化)
+//   - shadow / canary / pasr-* 模式才启动 PASR 基础设施: SegmentTable +
+//     AgingWorker (5 min ticker) + RegisterPASRCacheFeedback (cachemetrics
+//     全局 observer)
+//   - shadow 实例 Slots=nil + Claims=nil + ReadOnlySegments=true (D2 段表只读
+//   - 三层防御之一)
+//   - canary / pasr-* 实例: Slots = DBSlotManager + Claims = DBClaimGate
+//     (D1 强制 slot parity)
+//   - cleanup 函数包 dispatcher.Stop + agingWorker.Stop, 由 caller defer
+//     在 srv.Shutdown 之前执行 (synthesis §9 rollback contract)
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/zap"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/config"
+	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+)
+
+// buildSelector 装配 selector 链, 返 (Selector 接口, cleanup 闭包, error)。
+// caller 应 defer cleanup() 在 server shutdown 之前调用。
+//
+// 装配策略按 cfg.Mode 分:
+//   - default: 仅 DefaultSelector, 不启动任何 PASR 基础设施 (零回归)
+//   - shadow:  DefaultSelector + shadow PASR 实例 (Slots=nil, Claims=nil,
+//     ReadOnlySegments=true) + SegmentTable + AgingWorker + 注册
+//     cache feedback observer; dispatcher 异步比对
+//   - canary / pasr-primary / pasr-strict:
+//     DefaultSelector + actual PASR 实例 (真 Slots + Claims) +
+//     SegmentTable + AgingWorker + 注册 cache feedback observer
+func buildSelector(
+	ctx context.Context,
+	q *db.Queries,
+	pgPool *pgxpool.Pool,
+	selectorCfg *config.PoolSelectorConfig,
+	logger *zap.Logger,
+) (pool.Selector, func(), error) {
+	if selectorCfg == nil {
+		return nil, nil, errors.New("buildSelector: PoolSelectorConfig 必填")
+	}
+	if err := selectorCfg.Validate(); err != nil {
+		return nil, nil, fmt.Errorf("buildSelector: invalid config: %w", err)
+	}
+
+	// 1. default selector 总是构造 — 即使 PASR 模式也作为 fallback 实例
+	defaultSel := pool.NewDefaultSelector(
+		pool.NewDBAccountSource(q),
+		pool.WithSlotManager(pool.NewDBSlotManager(pgPool)),
+		pool.WithClaimGate(pool.NewDBClaimGate(q)),
+		pool.WithStickyStore(pool.NewDBStickyStore(q)),
+	)
+
+	// 2. default mode: 直接返, 不启动 PASR 基础设施
+	if !selectorCfg.IsPASR() {
+		logger.Info("selector mode=default — PASR 基础设施未启动")
+		return defaultSel, func() {}, nil
+	}
+
+	// 3. PASR 基础设施: SegmentTable + AgingWorker + cache feedback observer
+	segments := pool.NewSegmentTable(pool.SegmentTableConfig{})
+	agingWorker := pool.NewPASRAgingWorker(pool.PASRAgingWorkerConfig{
+		Segments: segments,
+	})
+	agingWorker.Start(ctx)
+	pool.RegisterPASRCacheFeedback(segments)
+	logger.Info("PASR 基础设施已启动",
+		zap.String("mode", string(selectorCfg.Mode)),
+		zap.Int("shadow_pct", selectorCfg.ShadowPercent),
+		zap.Int("canary_pct", selectorCfg.CanaryPercent),
+	)
+
+	// 4. 按 mode 构造 actual / shadow PASR 实例
+	dispatcherCfg := pool.SelectorDispatcherConfig{
+		Mode:          string(selectorCfg.Mode),
+		ShadowPercent: selectorCfg.ShadowPercent,
+		CanaryPercent: selectorCfg.CanaryPercent,
+		SamplingSalt:  selectorCfg.SamplingSalt,
+		Default:       defaultSel,
+	}
+
+	if selectorCfg.NeedsActualPASR() {
+		actual, err := pool.NewPASRSelector(pool.PASRSelectorConfig{
+			Accounts: pool.NewDBAccountSource(q),
+			Claims:   pool.NewDBClaimGate(q),
+			Slots:    pool.NewDBSlotManager(pgPool),
+			Segments: segments,
+			// RingProvider 不注入 — 走 M5 request-scoped ring (synthesis D3)
+		})
+		if err != nil {
+			agingWorker.Stop()
+			return nil, nil, fmt.Errorf("buildSelector: actual PASR: %w", err)
+		}
+		dispatcherCfg.PASR = actual
+	}
+
+	if selectorCfg.NeedsShadowInstance() {
+		shadow, err := pool.NewPASRSelector(pool.PASRSelectorConfig{
+			Accounts: pool.NewDBAccountSource(q),
+			// Claims 显式 nil — 三层防御第一层 (shadow 不写 billing_claims)
+			// Slots 显式 nil — shadow 不持 slot
+			Segments:         segments,
+			ReadOnlySegments: true, // D2: shadow 段表只读, 不污染 actual 学习数据
+		})
+		if err != nil {
+			agingWorker.Stop()
+			return nil, nil, fmt.Errorf("buildSelector: shadow PASR: %w", err)
+		}
+		dispatcherCfg.Shadow = shadow
+	}
+
+	dispatcher, err := pool.NewSelectorDispatcher(dispatcherCfg)
+	if err != nil {
+		agingWorker.Stop()
+		return nil, nil, fmt.Errorf("buildSelector: dispatcher: %w", err)
+	}
+
+	cleanup := func() {
+		dispatcher.Stop()
+		agingWorker.Stop()
+	}
+	return dispatcher, cleanup, nil
+}
