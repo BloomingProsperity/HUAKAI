@@ -1,375 +1,402 @@
-# 2026-05-08 PASR-lite Main-Wire Synthesis (Critic Lane)
+---
+plan_id: 2026-05-08-pasr-mainwire-synthesis
+date: 2026-05-09
+lane: synthesis
+inputs:
+  - docs/plans/2026-05-08-pasr-mainwire-claude.md   (claude lane, 545 行)
+  - docs/plans/2026-05-08-pasr-mainwire-codex.md    (codex lane, 489 行)
+critic_role: 第三方 fresh critic, 无 author bias, 已读两份 plan + 关键源码
+critic_id: opus-4-7-1m-synthesis
+verified_against_source: true
+related:
+  - docs/plans/2026-05-08-pasr-lite-v2-synthesis.md  (PASR-lite A1-A5+A8 已 green)
+  - docs/plans/2026-05-08-upgrade7-u7e-synthesis.md  (并行 lane, 不冲突)
+upstream_atoms_complete: [A1, A2, A3, A4, A5, A8]
+upstream_atoms_paused:   [A6 (PG warm-start), A7 (rebalance handler)]
+status: ACCEPT-WITH-RESERVATIONS
+---
+
+# 2026-05-09 PASR-lite Main-Wire — Synthesis (claude × codex)
+
+> **重大事实修正**: 写本 synthesis 时已 Read 仓库代码确认 — claude/codex 两份 plan
+> 描述的 M1-M6 大部分代码已落地 (`backend/internal/pool/selector_dispatcher.go`,
+> `pasr_dispatch_metrics.go`, `pasr_selector.go` slot parity, `cmd/gateway/selector_wiring.go`,
+> `internal/config/pool_selector.go`)。本 synthesis 因此既评估两份 plan 的合理性,
+> 也指导 **剩余 atom** (smoke 启动验证、shadow learn 决策、ops runbook、可选 SIGHUP)。
+
+---
 
 ## 1. 元信息
 
 | 字段 | 值 |
 | --- | --- |
-| 日期 | 2026-05-08 |
-| Lane | synthesis (fresh context, 第三方 critic, opus) |
-| 关联 | `docs/plans/2026-05-08-pasr-mainwire-claude.md` (545 行) + `docs/plans/2026-05-08-pasr-mainwire-codex.md` (489 行) |
-| Owner directive | 选项 3 = "暂停 A6/A7, 先做主线集成 + shadow 比对验证" |
-| upstream 已 green | A1-A5 + A8 |
-| upstream 暂停 | A6 (PG warm-start), A7 (rebalance handler) |
-| 风险等级 | shadow=MEDIUM；canary/full=**HIGH**（codex M3 揭示的 slot acquisition gap 必须先补） |
-| 决策点合并后总数 | 6 (claude 4 + codex 6, 去重 + critic 新增 2 = 6, 见 §5) |
-| 风险登记总数 | 14 (claude 10 + codex 10, 去重融合 + critic 4 盲点 = 14, 见 §6) |
+| 输入 | claude lane (545 行, A 偏架构图 / 运维 SOP) + codex lane (489 行, B 偏 5-mode 语义 / D-001 SlotManager parity) |
+| 我 | 第三方 fresh critic, 未参与任一 lane 起草, 独立读两份 + 仓库源码 |
+| 校验范围 | 所有 plan 中的"位置:行号"声明已用 Read 工具核实 |
+| 状态 | DRAFT — 待 Owner 拍 §6 Owner 决策点后即可执行 §5 剩余 atom |
+| 已合并 atom | M1 (config), M2 (dispatch metrics), M3 (PASRSelector slot parity), M4 (dispatcher 核心), M5 (request-scoped ring), M6 (main wire), 部分 M7 (3 个 dispatcher 集成测试) |
+| 待执行 atom | M8-M11 (见 §5) — smoke 启动 5-mode + shadow learn 决策 + observability 收尾 + runbook |
 
 ---
 
-## 2. 共识区 (CONSENSUS)
+## 2. 关键事实校验 (写之前 Read 的源码引用)
 
-两 lane 在以下设计选择上高度一致, 这些可视为既定基线, 执行时不再讨论：
+| 声明 | 源码现状 | 依据 |
+| --- | --- | --- |
+| `cmd/gateway/main.go:70` 是 `*pool.DefaultSelector` 强类型 | **错** — 已是 `pool.Selector` 接口 (`backend/cmd/gateway/main.go:70`); claude lane 描述的"待升级"已落地; codex lane 第 12 行也指出"当前是 `*pool.DefaultSelector`"——同样过时, 两 lane 都基于已被 commit 的旧快照 | `backend/cmd/gateway/main.go:70` `selector pool.Selector` |
+| `chat_completions_handler.go:31-37` 是 `pool.Selector` 接口 | **对** — `Selector pool.Selector` | `backend/internal/gatewayhttp/chat_completions_handler.go:31-37` 与 `:36` 一致 |
+| `pasr_selector.go:244-258` `acquireAndReturn` 不走 SlotManager (codex D-001) | **过时** — 已修复, `acquireAndReturn` (现 `:324-414`) 实现 pre-mutation `Slots.Acquire` + post-mutation `Claims.WriteAcquisition` + 失败 release 全链路, 含 `ErrPASRPreMutationFail` / `ErrPASRPostMutationFail` 错误分类与 `pasrPostMutationReleaseTimeout` (`:32`) 兜底 | `backend/internal/pool/pasr_selector.go:32-42, 324-414` |
+| `db_account_source.go` 有 per-pool-group 过滤 | **对** — `ListAccounts` 调 `ListEligibleAccountsByPoolGroup(TenantID, PoolGroupID)`, 天然 (tenant, pool_group) 隔离 | `backend/internal/pool/db_account_source.go:33-43` |
+| `db_slot_manager.go` SlotManager.Acquire 接口 | **对** — `Acquire(ctx, *AccountSnapshot, SelectionRequest) (*AcquireResult, error)`; Serializable Tx + IncrementInFlightCount + InsertSlotAcquisition 原子化; 返 idempotent ReleaseFunc | `backend/internal/pool/db_slot_manager.go:59-114` |
+| dispatcher 5 mode 集 = `[default, shadow, canary, pasr-primary, pasr-strict]` | **对** — 已实现, dispatcher mode const 与 config 字面量在 M7 cross-check 测试守门 | `backend/internal/pool/selector_dispatcher.go:51-57` + `m7_dispatcher_integration_test.go:175-194` |
+| dispatcher 已含 fnv64a 桶抽样 | **对** — `shouldSample` 用 `fnv.New64a` + samplingSalt + SessionHash, deterministic | `backend/internal/pool/selector_dispatcher.go:342-355` |
+| shadow 异步 + 500ms timeout + WithoutCancel | **对** — `runShadowJob` 用 `context.WithTimeout(context.WithoutCancel(parentCtx), shadowSelectTimeout)`, panic recover, drop counter | `backend/internal/pool/selector_dispatcher.go:283-313` + 常量 `:66` |
+| PASRSelector M5 request-scoped ring | **对** — `ringProvider == nil` 时用 `BuildAccountRingFromSnapshots(accs, p.ringSeed)`, 不走全局 ring / 新 SQL | `backend/internal/pool/pasr_selector.go:148-152` |
+| smoke 已含 5-mode 启动期断言 | **错** — `cmd/gateway/smoke_test.go` 仅测 default 模式真实流量 (Phase C); 没有 shadow / canary / pasr-* 启动 smoke | `backend/cmd/gateway/smoke_test.go:73-109` |
+| `/debug/vars` 已暴露 `pasr_dispatch` map | **对** — `expvar.NewMap("pasr_dispatch")` 在 `init()` eager 注册 | `backend/internal/pool/pasr_dispatch_metrics.go:54-59` |
+| 全局 vs request-scoped ring 已选 request-scoped | **对** — 两 lane 都倾向 request-scoped, 实施已落地 | `backend/internal/pool/pasr_selector.go:148-152` + claude 13.1 + codex §8 |
 
-1. **`deps.selector` 改为 `pool.Selector` 接口**, 不在 handler 层暴露 PASR 分支 — 两 lane 一致 (claude.md:62, codex.md:39-82)。理由: `chat_completions_handler.go:36` 已经接 `pool.Selector`, 是天然杠杆点。
-2. **新增 `SelectorDispatcher` concrete 实现 `pool.Selector`**, 负责 mode dispatch + shadow async + canary sampling 全部逻辑 — 两 lane 一致 (claude.md:165, codex.md:80-82)。
-3. **feature flag 用 typed config 走 `internal/config`, 不在 main.go 散读 `os.Getenv`** — 两 lane 一致 (claude.md:201, codex.md:92-94)。
-4. **shadow PASR 必须 `Claims=nil`, 是硬不变量** — 两 lane 一致 (claude.md:230, codex.md:155-170)。codex 进一步加了 dispatcher 强制 `shadowReq.ClaimID=0` (codex.md:325-326), claude 默认依赖 PASRSelector 内部 `if p.claims != nil` 守门 (pasr_selector.go:249) — 两层保险更稳, 见分歧 §3.3。
-5. **shadow goroutine panic 必须 recover, 不传染主路径** — 两 lane 一致 (claude.md:233, codex.md:410)。
-6. **canary 用 deterministic hash bucket (FNV-1a + SessionHash 优先), 不用 random** — 两 lane 一致 (claude.md:167, codex.md:351-355)。
-7. **rollback 第一版 = ENV + 重启, 不实现 SIGHUP 热切** — 两 lane 一致 (claude.md:213, codex.md:466-468)。
-8. **PASRAgingWorker 跟 signal ctx 退出 + `defer Stop()` 兜底** — 两 lane 一致 (claude.md:66, codex.md:215-216)。
-9. **段表 (SegmentTable) 是进程级共享, `RegisterPASRCacheFeedback` 启动期注册一次** — 两 lane 一致 (claude.md:69, codex.md:393-396)。
-10. **不做 A6/A7, 不改 schema, 不引外部参考源码** — 两 lane 一致 (claude.md:50, codex.md:31-33)。
-
-> **共识强度**: 10 条核心架构决策完全一致。problem space 约束 (Selector 接口已就位、PASR-lite 已落、Owner 路线明确) 把方案空间收紧, 因此分歧主要在 **安全门粒度** 和 **ring 数据来源** 上, 不在顶层架构。
-
----
-
-## 3. 分歧区 (DIVERGENCE)
-
-### 3.1 PASR actual 是否要补 SlotManager? (**最重要分歧**)
-
-| Lane | 立场 |
-| --- | --- |
-| claude | **没看到这个问题**。整篇 plan 把 PASR 当 drop-in selector, M5 wiring 直接构造 `pasrSelector := pool.NewPASRSelector(...)` 给 canary/full 用 (claude.md:64), 没有 slot acquisition 步骤。 |
-| codex | **核心安全门, M3 atom 专门补**。codex.md:147-170 明确指出当前 `PASRSelector.acquireAndReturn` 只写 claim 不动 `provider_accounts.in_flight_count` 和 `pool_slot_acquisitions`, 直接拿 PASR 当 actual selector 会破并发限制 (codex.md:155 + R-PASR-MW-001)。 |
-
-**Critic 判断 (HIGH confidence)**: codex 完全正确, claude **致命漏洞**。证据:
-- `selector.go:204-222` 显示 DefaultSelector `tryLayer` 顺序: `slots.Acquire(ctx, account, req)` → `claims.WriteAcquisition`, slot 是 atom 一部分。
-- `pasr_selector.go:244-258` `acquireAndReturn` 完全跳过 slots.Acquire, 直接 `uuid.New() + claims.WriteAcquisition`。
-- `db_slot_manager.go:74-103` 显示 slot acquire = 增 `in_flight_count` + 插 `pool_slot_acquisitions` 行 — 这两个写入是 cap_concurrency 强制和 settle 配对的根。
-- 跳过 slot 后果: PASR 走 actual 路径 → account 实际并发突破 cap_concurrency, settler 找不到 acquisition row, billing/release 链断裂。
-
-**Synthesis 推荐**: 采用 codex M3 作为强制门槛 — **canary 任何百分比上线前必须先合 M3**。M3 不是"可选优化", 是**安全门**。
-
-### 3.2 AccountRing 从哪儿来? 启动期全局 vs 请求级 vs 5min ticker
-
-| Lane | 方案 |
-| --- | --- |
-| claude | **新增 RingProvider 模块 + 5min ticker 重建 + 新 SQL `ListAllEligibleAccountsForRingBuild`**。per (tenant, pool_group) 分组, atomic.Pointer hot-swap (claude.md:301-358)。M2 LoC ~220, 含 sqlc + migration 评审。Owner D3 拍板。 |
-| codex | **每请求从 `AccountSource.ListAccounts(ctx, req)` 现成 snapshot 构造 ring** (codex.md:378-387)。不加新 SQL, 不加 ticker, 不加 RingProvider。复用已有 `ListEligibleAccountsByPoolGroup`。 |
-
-**Critic 判断 (HIGH confidence)**: codex 方案更优。证据:
-1. `db_account_source.go:33-66` 显示 `DBAccountSource.ListAccounts` 已经按 (TenantID, PoolGroupID) 拉到 eligible accounts — PASRSelector 的 hot path **第一步就调它** (`pasr_selector.go:83`)。再多一次 ticker 重建就是冗余 round-trip。
-2. claude 的 RingProvider 引入 4 项新风险 (R2 DB 抖动, R9 跨租户泄漏, R10 新 SQL 走漏审, "保留旧快照"策略复杂), 全部源于"全局 ring"自带的设计税。
-3. codex 用 request-scoped ring 天然避开租户隔离风险 (因为 ListAccounts 已经过滤过)。
-4. claude 的"per (tenant, pool_group) ring map"实质上是把 ListAccounts 的结果用另一份缓存复刻一遍, 但 ring 唯一用途是 HRW 排序 — 这步本身 O(N log K) 用 ring.Accounts 即可, 不需要 5min 缓存。
-5. claude.md:357 自己也承认"两条路都得加 SQL", codex 路径不加 SQL, 直接复用既有, 是真"省"。
-
-**Synthesis 推荐**: **采纳 codex 方案**。每请求 build ring。性能成本: HRW K=3 计算 O(N) 仅在 SegmentTable cold-miss 时跑一次 (LookupOrCreate 内已经做), 段命中后是 O(K=3) — 不构成 hot path 瓶颈。**例外**: 如果 ListAccounts 在某些 pool 返回 N>500 账号, ring 构造可能引入 µs 级开销, 这是 follow-up 优化, 不是 main-wire blocker。
-
-> claude RingProvider 模块**整体废弃**。M2 atom 替换为 codex M4 "PASRSelector 接受 request-scoped ring"。
-
-### 3.3 Shadow PASR 是独立实例 vs 同实例 + 选择性绕开 Claims
-
-| Lane | 方案 |
-| --- | --- |
-| claude | **独立两个 PASRSelector 实例**, shadow 那个 `Claims=nil` (claude.md:381 + D1 推荐 A)。共享同一 SegmentTable。 |
-| codex | **同样独立实例**, 进一步要求 shadow 实例 `Slots=nil` + dispatcher 强制 `shadowReq.ClaimID = 0` (codex.md:325-326, 168)。 |
-
-**Critic 判断 (HIGH confidence)**: 两 lane 方案本质一致, 但 codex 比 claude 多两层防御纵深:
-- **第一层 (两 lane 一致)**: `Claims=nil` → `acquireAndReturn` 内部短路 (pasr_selector.go:249)
-- **第二层 (仅 codex)**: `Slots=nil` → 等 M3 落地后, slot acquire 也短路
-- **第三层 (仅 codex)**: dispatcher 拷贝 req 把 `ClaimID=0` 抹掉 → 即使有人误把 actual 实例传成 shadow, 也写不进 billing_claims (因为 `req.ClaimID == 0` 时 acquireAndReturn 不写)
-
-**Synthesis 推荐**: **采纳 codex 三层防御**。多写两行代码换"误用爆炸半径=0", 划算。在 M8/M3 单测里加 `panicClaimGate` 注入, 证明 shadow 实例传过去也不会触发 (codex.md:170 已点)。
-
-### 3.4 canary 期 PASR 失败的 fallback 语义
-
-| Lane | 方案 |
-| --- | --- |
-| claude | **未明确**。R5/R6 提到 rollback 但没区分"PASR 已 mutate state"和"未 mutate"。claude.md:165 M3 描述只说 5 mode 各 case, 没有 fallback 规则。 |
-| codex | **明确分两段** (codex.md:367-374): PASR 在**未 acquire slot、未 write claim** 前返回错误 → fallback default; 已 mutate → fail closed + release。`pasr-strict` 禁 fallback, `pasr-primary` 允许。 |
-
-**Critic 判断 (HIGH confidence)**: codex 正确且必要。如果允许"已写 claim"后 fallback default, DefaultSelector 会再写一份 claim → ErrClaimRace (`selector.go:217`) 或双 settle, 是 R-PASR-MW-004 的核心。
-
-**Synthesis 推荐**: **采纳 codex 规则**。dispatcher 内 canary 路径需要 PASRSelector 暴露**有 mutation 标志**给调用方 — 当前 `Select` 接口只返 `(*SelectionResult, error)`, 错误时无法区分是"未 mutate 可 fallback"还是"已 mutate 必 fail"。**这暗示 PASRSelector 需要细化错误类型**（新 sentinel error 比如 `ErrPASRPreMutationFail` vs `ErrPASRPostMutationFail`）, 是 M3 任务的一部分。
-
-### 3.5 mode 命名 + 数量
-
-| Lane | 方案 |
-| --- | --- |
-| claude | 5 mode: `default / shadow / canary_5 / canary_25 / pasr` (claude.md:182-188)。shadow 百分比固化 100%。 |
-| codex | 5 mode: `default / shadow / canary / pasr-primary / pasr-strict`, **shadow_percent 是独立 ENV** (codex.md:97-99)。canary 也是独立 percent。 |
-
-**Critic 判断 (MEDIUM confidence)**: codex 设计更灵活 — shadow 百分比可调让 ops 在 5%→25%→100% shadow 期间渐进观察延迟影响 (R6 / R-PASR-MW-005), 不必每次切百分比都改 mode 名。canary_5 / canary_25 把百分比烧进 mode 名是反模式 (Owner 后面想加 canary_50 又得改代码)。`pasr-strict` (禁 fallback) 是验收终态有用 — 比 claude 的"full"语义更明确。
-
-**Synthesis 推荐**: **采纳 codex mode 命名**, 但保留 claude 的渐进 SOP (5%→25%→100%)。最终 mode = `default / shadow / canary / pasr-primary / pasr-strict` (5 个), 加两个独立 percent ENV。
-
-### 3.6 metrics 命名空间
-
-| Lane | 方案 |
-| --- | --- |
-| claude | 顶层 expvar key 散落: `pasr_shadow_match_total`, `pasr_canary_pasr_path_total`, `pasr_ring_rebuild_total`... (claude.md:240-252) |
-| codex | 集中在 `pasr_dispatch` map: `shadow_sampled_total`, `shadow_match_total`, `canary_pasr_used_total`... (codex.md:230-242) |
-
-**Critic 判断 (LOW-MEDIUM confidence, 偏 codex)**: 现有 PASR-lite A8 已经把指标放在 `expvar.NewMap("pasr")` (`pasr_metrics.go:42`), 用子 key (`pasr_segment_count` 等)。如果 dispatcher 新增指标也走 `pasr_dispatch` 子 map, 与现有 `pasr` map **并列**而非嵌套, 一致性最好。两个分散 expvar 顶层 key (claude 路线) 不利 dashboard 聚合。
-
-**Synthesis 推荐**: 新增 `expvar.NewMap("pasr_dispatch")` (codex 风格), 不污染 `pasr` map。
-
-### 3.7 shadow timeout
-
-| Lane | 方案 |
-| --- | --- |
-| claude | shadow goroutine 用 `context.WithTimeout(context.Background(), 3*time.Second)` (claude.md:277), 不复用 req.Context |
-| codex | shadow 用 `context.WithTimeout(ctx, 50ms~100ms)`, 5%/25% 不同 (codex.md:341-343), 但建议复用原 ctx |
-
-**Critic 判断 (MEDIUM confidence)**: 两 lane 都对一半:
-- 复用 req.Context 的问题: 主响应已 return → ctx canceled → shadow 提前退出, 拿不到完整对比 — claude 担心是对的。
-- 3s 太长: shadow 只是想看 PASR Select 选谁, 50ms 内 PASRSelector hot path 应该能完成 (`pasr_selector.go:81-178`是纯内存 + ListAccounts DB 查), 3s 是放任 pasr 慢逻辑泄漏。
-- 50ms 太紧: ListAccounts 实际是 DB 查询, P99 可能 100ms+; 50ms 会把 shadow 大量记成 timeout error 污染对比指标。
-
-**Synthesis 推荐**: shadow **派生独立 ctx (Background-based) + timeout 500ms** — 比 codex 严, 比 claude 松, 避免 goroutine 泄漏 (R1 / R-PASR-MW-005) 和过早 cancel 两难。
-
-### 3.8 atom 数量 + 拆分粒度
-
-| Lane | 拆分 | atom 数 | 总 LoC |
-| --- | --- | --- | --- |
-| claude | M1-M9, 含独立 RingProvider atom (M2, ~220 LoC) + 独立 metrics atom (M4) + admin debug endpoint (M9) | 9 | ~1275 |
-| codex | M1-M7, 把 metrics 合在 M2 内, ring 合在 M4 (request-scoped, 不独立 atom) | 7 | ~830-1530 (含测试范围模糊) |
-
-**Critic 判断**: codex M3 (slot parity) 是 claude 漏掉的关键 atom, 不可省。claude M9 (`/debug/pasr` admin endpoint) 是 nice-to-have 但不阻塞 main-wire — 移到 follow-up。claude M2 RingProvider 整体废弃 (见 §3.2)。最终 atom 序列见 §7。
+测试体量校验: `go build ./...` clean + `go vet` clean + 已落地测试 1622 行
+(`selector_dispatcher_test.go` 446, `m7_*` 195, `pasr_selector_slot_test.go` 374,
+`pasr_selector_ring_test.go` 212, `pasr_dispatch_metrics_test.go` 146, `pool_selector_test.go` 249)。
 
 ---
 
-## 4. 盲点区 (BLINDSPOTS)
+## 3. Agree 表 — 两 lane 一致, 直接执行不需 Owner 拍
 
-两 lane 都漏了的关键问题。这些是 critic 价值核心。
+| # | 决策 | claude 出处 | codex 出处 | 现状 |
+| --- | --- | --- | --- | --- |
+| AG-1 | `deps.selector` 升 `pool.Selector` 接口, 不在 handler 引入 PASR 分支 | §2 表 + §3 图 | §3 表"接口字段"为推荐方案 | 已落地 (`main.go:70`) |
+| AG-2 | `SelectorDispatcher` 实 `pool.Selector` 接口, 内部状态机, handler 无感 | §3.1 ASCII 图 | §3 表"Dispatcher concrete" | 已落地 (`selector_dispatcher.go:71-358`) |
+| AG-3 | shadow 实例 `Slots=nil` + `Claims=nil` 是硬不变量 (不写 billing_claims / 不持 slot) | §6.2-1 + §8 表 + R8 | §3 + R-PASR-MW-002 | 已落地 (`selector_wiring.go:111-117` + `pasr_selector.go:336-338`) |
+| AG-4 | dispatcher 把 shadowReq.ClaimID=0 作为三层防御之一 | §6.2-1 隐含 | §3 + 算法第 5 步 | 已落地 (`selector_dispatcher.go:246-247`) |
+| AG-5 | shadow goroutine 用独立 ctx (`context.WithoutCancel` + 短 timeout) + panic recover + buffered chan + 非阻塞 send + drop counter | §6.4 伪代码 | §6 timeout + R-PASR-MW-005 | 已落地 (`selector_dispatcher.go:244-313`, 500ms timeout) |
+| AG-6 | canary 用 fnv64a hash bucket deterministic 抽样, 不用 random / 不用 tenant 白名单 (单独) | §6.3 + R4 + M7 atom | §7 表"hash mod"推荐 | 已落地 (`selector_dispatcher.go:342-355`) |
+| AG-7 | rollback 第一版只做 restart-only (env + 重启), 不做 SIGHUP 热切 | §5.3 + D2 推荐 A | §5 + D-PASR-MW-002 + §12 | 已落地 (selector_wiring 返 cleanup func) |
+| AG-8 | 启动期 fail-fast: 非法 mode / 越界 percent → typed error 让 main 退出, **不 silent fallback** | §5.2 决策注 | §2.4 配置策略 | 已落地 (`config/pool_selector.go:140-162`) |
+| AG-9 | shadow 模式只在 default 拿到 valid result (非 error / 非 wait plan) 时入队比对 | §6.1 触发条件 | §6 算法步骤 3-4 | 已落地 (`selector_dispatcher.go:181-186`) |
+| AG-10 | actual canary 必须有 SlotManager parity (PASR 写 slot 走与 DefaultSelector 同一 in_flight 路径); 段表 + claim 双写防护 | §8 决策 D1 表 | D-PASR-MW-001 (BLOCKING) | 已落地 (`pasr_selector.go:324-414`, 含 ErrPre/PostMutation 错误链) |
+| AG-11 | post-mutation 失败必须 release slot, 用 `WithoutCancel` 派生独立短 ctx 避免被上游 cancel 带走 | §6.2-1 | D-PASR-MW-004 + R-PASR-MW-009 | 已落地 (`pasr_selector.go:32, 397-404`) |
+| AG-12 | ring 来源 = per-(tenant, pool_group), 不建全局 ring (跨租户隔离) | §7.1 + R9 | §8 推荐 + R-PASR-MW-003 | 已落地 (request-scoped from `ListEligibleAccountsByPoolGroup`) |
+| AG-13 | shadow goroutine 使用 buffered chan 限并发 (cap≈1024), 主路径不被 block | §6.2-3 + R1 | §6 算法 + R-PASR-MW-005 | 已落地 (`selector_dispatcher.go:61, 253-258`) |
+| AG-14 | 切换流程 SOP = default → shadow 5%/25%/100% → canary 5% → 25% → pasr-primary → pasr-strict | §5.3 表 | §5 状态机 | 文档对齐 (config 文件头注释) |
+| AG-15 | 5-mode 字面量必须 dispatcher / config 包 cross-check, 防字符串 drift | §5.1 enum | M2 表 + 测试 T-PASR-MW-019 | 已落地 (`m7_dispatcher_integration_test.go:175-194`) |
 
-### B1. `pasr_dispatch` 指标启动顺序 vs 并发请求争抢
-
-**事实**: `pasr_metrics.go:36-52` 用 `sync.Once + expvar.NewMap("pasr")` 懒初始化 — 这意味着第一次调用任何 `Inc*` 时才注册 map。
-
-**盲点**: claude.md M4 / codex.md M2 都说"新增 expvar metrics", 但**没有任何一个 lane 提到 dispatcher 启动期需要 eager initialize 新 map** (`expvar.NewMap("pasr_dispatch")`)。否则 shadow 模式下第一批请求还没到 → `/debug/vars` 拿不到 `pasr_dispatch` 子树 → ops dashboard 启动期空 panel。
-
-**严重度**: MINOR (功能不破, ops 体验差)。**Synthesis 要求**: 新 `pasr_dispatch_metrics.go` 必须 `func init()` 或 main.go 启动期 eager 注册, 不走 sync.Once 懒初始化路径。
-
-### B2. shadow 期段表"被 shadow PASR 学习"是否合规?
-
-**事实**: `pasr_selector.go:108` 的 `LookupOrCreate` 是 shadow PASR 调度时**仍会创建段** (PASRSelector 不知道自己是不是 shadow 实例); `pasr_feedback.go` 的 cache observer 是**全局单例**, 不区分 shadow/actual 来源 — 所有 cache observation 都会回流到段表。
-
-**盲点**: 两 lane 都假设 shadow 段表更新无害 (codex.md D-PASR-MW-003 提到但只说"是验证 cache locality 必要"+ "默认允许"), **没人想清楚**:
-- shadow 模式下, 段表 LookupOrCreate 创建的段, **谁去 cache 它**? 真实流量走 default → vendor cache 是建立在 default 选的账号上 → cache observer 回流 → 找段 + idx → idx 可能找不到 (因为 default 选的账号可能不在 PASR HRW Top3)。结果: 段创建了但 bitmap 永远是 0。下次 shadow 又看这段又是 cold-miss。**段表沦为内存浪费**。
-- 反过来 canary 5% 命中 PASR 时, 真有 PASR-account 走 vendor → 5% 流量喂段表 → 段 bitmap 学习速度只有 actual 模式的 5% → "shadow + canary 看似数据完整, 实则段表学习速度 = canary 百分比"。
-- shadow 100% (codex 允许) 时, 段表会被 100% sample 学到 — 但 cache observer 看到的 vendor cache 命中是建立在 **default 选的账号**上, **不是 PASR 选的账号**, 所以 PASR 学到的 bitmap 实际上是"default 账号的 cache 状态" 不是 "PASR 账号的"。这种数据是误导的。
-
-**严重度**: **MAJOR**。这影响 shadow 验证的核心问题"PASR 比 default 是否更优"的答案信号 — shadow 期段表数据是污染的。
-
-**Synthesis 要求**:
-- D-NEW-1 (新决策点): shadow 模式段表是否完全跳过 LookupOrCreate? 选项 A: shadow PASR 用只读 `Lookup` (不创建); 选项 B: 接受段表有污染但仍学; 选项 C: shadow PASR 完全不接 cache feedback (shadow + actual 双段表)。**Critic 推荐 A**: shadow 期 PASR 只读, 不污染段表; 段表学习等到 canary 才打开。
-- 这条决策直接影响 D-PASR-MW-003 的回答 — Owner 拍板时必须知道这个污染才能选。
-
-### B3. cache feedback observer 是全局单例, 双 PASRSelector 实例如何共享?
-
-**事实**: `pasr_feedback.go:84` `RegisterPASRCacheFeedback(segments)` 是全局 `cachemetrics.RegisterCacheObserver` 注册, **每次调用都追加 observer 到 cachemetrics 单例**。
-
-**盲点**: codex.md:393-396 说"`CacheFeedback` 进程级 observer 一次注册"。claude.md:69 也说"启动一次注册即可"。但 **shadow + canary mode 下两个 PASRSelector 实例共享同一 SegmentTable, 因此只需注册一次** — OK。**问题**: 如果未来加 SIGHUP 热切 (D2), reload 时再次调用 `RegisterPASRCacheFeedback` 会**重复注册** observer → 一个 cache event 触发两次 MarkRead/MarkCacheSeen → 段表 LRU 顺序乱、metrics 双计。
-
-**严重度**: MEDIUM (本 plan SIGHUP 不在范围, 但 D2 follow-up atom 会撞这块墙)。
-
-**Synthesis 要求**: M5 main wire commit message 必须明确 "RegisterPASRCacheFeedback 只能在 main 启动期调用一次, SIGHUP 热切 atom 必须先实现 cache observer **替换/反注册**接口 (cachemetrics 当前**不支持反注册**, 需要 atom 在 follow-up 里加)"。这块要写进 D2 决策点, Owner 才知道 SIGHUP 不止是 ENV 重读, 还要改 cachemetrics API。
-
-### B4. SegmentTable 在 main goroutine + aging worker + cache observer + 多 PASR 实例并发场景下的延迟成本
-
-**事实**: `prefix_segment.go:125-141` SegmentTable 用 sync.RWMutex; `LookupOrCreate` (热路径) 在新建段时升级写锁 (line 218); `MarkRead` 也升级写锁 (line 273); `EvictExpired` 全局写锁 (line 286)。
-
-**盲点**: 两 lane 都没分析:
-- shadow 100% + canary 5%: hot path 上 dispatcher 在 default + shadow PASR + (5%) canary PASR 三条线**同时**调 `LookupOrCreate / Lookup` → 写锁竞争。
-- aging worker 5min ticker `EvictExpired` 拿全局写锁 (`prefix_segment.go:286`) → 段表大时 (100k 上限) 扫一次可能持锁 ms 级 → 这段时间所有 hot path 阻塞。
-- claude.md R7 提"段表 OOM"但没提锁等待; codex.md R-PASR-MW-007 也只提内存。
-
-**严重度**: MEDIUM-HIGH (canary 25%+ 时可能 P99 抖动)。
-
-**Synthesis 要求**:
-- 在 M2/M3 集成测试加 race + 100k 段 + 100 qps shadow 并发场景, 测 LookupOrCreate P99
-- Owner 应知道这是观测项, **EvictExpired 持锁优化** (分段 / chunked evict) 是 follow-up atom — 写进 §10 Owner action items
-
-### B5. Owner 没 AWS 凭据 (project memory: project_no_aws_credentials), shadow 比对怎么验证 Bedrock 路径?
-
-**事实**: 项目 memory 明确 Owner 没 AWS API access; mock E2E 是最深测试。HUAKAI gateway 主路径之一是 Bedrock (anthropic via /v1/messages → bedrock_invoke adapter)。
-
-**盲点**: 两 lane 都没提"shadow 比对在缺真上游时怎么得到有意义信号"。
-- claude.md:511 提"下一个 plan 是性能基线对比" — 但没说这个性能对比怎么做。
-- codex.md:482-488 success criteria 只说"PASR runtime 生命周期完整 + rollback 不需迁移", 没说"shadow 数据怎么形成 Owner 决策"。
-
-**严重度**: MEDIUM (本 plan 范围内 shadow 起码能跑, 数据收集到 expvar; 但 Owner 看 shadow_match_ratio 想做 canary 决策时, 如果 Bedrock 路径数据来自 mock 上游, 比对就是假信号)。
-
-**Synthesis 要求**: §10 Owner action items 写一条 "shadow 阶段需要决定: (a) Bedrock 是否用 mock 上游跑 shadow, (b) 是否先在 OpenAI / 其他 vendor (有 Owner 凭据) 上跑 shadow 7 天再考虑 Bedrock"。
+→ **结论**: 15 项一致点, 全部已实现或已锁定执行细节。Owner 不需就这些再拍板。
 
 ---
 
-## 5. 决策点合并 (DECISIONS — 给 Owner ≤6 个)
+## 4. Disagree 表 + 我的裁决
 
-合并去重 + critic 新增, 共 **6 个决策点**, 按拍板优先级排序:
+每条裁决基于 §2 校验过的源码事实 + 两 lane 文本对比。
 
-### D1 (TOP-1, HIGH-RISK). canary/full 上线前是否必补 PASR slot acquisition parity (codex M3)?
-- 选项 A: **必补** (推荐)。M3 是 actual canary 硬安全门。
-- 选项 B: 跳过, 直接 canary。**Critic 反对, 这是 R-PASR-MW-001 + R-PASR-MW-004 双高风险点。**
-- **Critic 推荐 A**, 理由: `pasr_selector.go:249` 当前不写 slot, 直接上 canary 会破并发上限和 settle 配对。
+### D-1. Mode 数量 / 命名: 5 枚举 vs `canary` + percent 单独?
 
-### D2 (TOP-2, MEDIUM-RISK). shadow 模式 PASR 是否更新段表?
-- 选项 A: shadow PASR 只读, 用 `SegmentTable.Lookup` 不 LookupOrCreate (推荐)。避开盲点 B2 段表污染。
-- 选项 B: shadow PASR 写段表, 接受 100% shadow 期数据有污染 (codex 默认)。
-- 选项 C: shadow + actual 双段表 (canary 时 actual 段表预热)。**复杂度高, 不推荐**。
-- **Critic 推荐 A**, 理由: 段表数据污染会让 "shadow_match_ratio" 信号失真; A 简单, 段表学习推迟到 canary 5% 才开始。
+- **claude (§5.1)**: 5 mode = `default` / `shadow` / `canary_5` / `canary_25` / `pasr` (full) — canary 比例烧死在 mode 名内
+- **codex (§5)**: 5 mode = `default` / `shadow` / `canary` / `pasr-primary` / `pasr-strict` — canary 比例由 `HUAKAI_PASR_CANARY_PERCENT` 单独注入, 多了 strict 终态
+- **裁决: B (codex)** ✅ 已落地
+  - 依据: `internal/config/pool_selector.go:33-38` 定义 5 const 与 codex 一致, 代码已 commit
+  - 理由: (a) 比例与模式解耦, ops 调 5%→25%→100% 不重新编译; (b) `pasr-strict` 终态防"PASR-primary 一直 fallback 让 PASR 永远没全量验过"成为温水煮青蛙; (c) claude "canary_5/25" 把 25% 烧成字面量, 后续要 10% / 50% 必须改代码, 不灵活
+  - claude 提到的"5 mode 重启切流"语义在 codex 方案下用 `(mode=canary, percent=N)` 就达成, 没有功能损失
 
-### D3 (TOP-3). AccountRing 来源
-- 选项 A: 每请求从 `AccountSource.ListAccounts` snapshot 构造 ring (codex M4, 推荐)。
-- 选项 B: 启动期 + 5min ticker 重建 RingProvider + 新 SQL (claude M2)。**Critic 反对, 引入 4 项新风险且 ListAccounts 已经过滤好。**
-- **Critic 推荐 A**, 理由见 §3.2。
+### D-2. 全局 ring (启动期 + 5min ticker 重建) vs request-scoped ring?
 
-### D4. canary 失败 fallback 语义
-- 选项 A: PASR 未 mutate 前失败 → fallback default; 已 mutate → fail closed + release (codex 推荐)。
-- 选项 B: PASR 任何错误都不 fallback (`pasr-strict` 形态)。
-- **Critic 推荐 A 作为 `canary` + `pasr-primary` 默认; B 作为 `pasr-strict` 终态验收**。需要 PASRSelector 暴露细化错误类型 (`ErrPASRPreMutationFail` vs `ErrPASRPostMutationFail`)。
+- **claude (§7)**: 力推 `RingProvider` 全局 + 5min ticker 重建 + per (tenant, pool_group) 分组 + 新 SQL `ListAllEligibleAccountsForRingBuild` + 保留旧快照防 DB 抖动 (整段 §7 几十行)
+- **codex (§8)**: 反对全局 ring, 推 request-scoped ring (从 `ListAccounts(ctx, req)` snapshots 直接 `BuildAccountRingFromSnapshots` 派生)
+- **裁决: B (codex)** ✅ 已落地
+  - 依据: `pasr_selector.go:148-152` 当 `ringProvider == nil` 时 `BuildAccountRingFromSnapshots(accs, p.ringSeed)`; `selector_wiring.go:101` 注释 "RingProvider 不注入 — 走 M5 request-scoped ring (synthesis D3)"
+  - 理由: (a) request-scoped 天然每请求 (tenant, pool_group) 隔离, 用现有 `ListEligibleAccountsByPoolGroup` 一次查询, 不需要新 SQL / 新 migration; (b) claude 担心"DB 抖动期重建拿空集"用 ring `len==0` 直接 `ErrNoEligibleAccount` 就够 — DB 抖动时 default 也会失败, 不存在"PASR 雪崩 default 健康"的 asymmetric 故障; (c) 节省一个 ticker goroutine + 一份 snapshot map 内存; (d) A7 (rebalance handler) 暂停时全局 ring 缺乏 invalidate 通道, request-scoped 完全规避
+  - claude 提"per (tenant, pool_group) 分组" 在 codex 路径下天然成立 (ListEligibleAccountsByPoolGroup 已按 (tenant, pool_group) 过滤), 不需要额外 ring snapshot map
 
-### D5. shadow timeout 和 ctx 派生
-- 选项 A: shadow 用独立 Background-based ctx + 500ms timeout (Critic 推荐)。
-- 选项 B: 复用 req.Context (codex)。**Critic 反对**, 主响应 return 后 ctx canceled, shadow 数据丢失。
-- 选项 C: 独立 ctx + 3s timeout (claude)。**Critic 反对**, 给 PASR 慢逻辑泄漏空间。
-- **Critic 推荐 A**。
+### D-3. shadow 模式段表是否更新 (是否"学习")?
 
-### D6. mode 命名
-- 选项 A: `default / shadow / canary / pasr-primary / pasr-strict` + 独立 percent ENV (codex 推荐)。
-- 选项 B: `default / shadow / canary_5 / canary_25 / pasr` (claude)。**Critic 反对**, 把百分比烧进 mode 名不灵活。
-- **Critic 推荐 A**。
+- **claude (§3.1 + §6.2)**: 隐含 shadow 仍走 LookupOrCreate → 段表会被更新 (代码描述里 shadow PASR 用同一 SegmentTable)
+- **codex (D-PASR-MW-003)**: 显式问 Owner — 推荐"允许 shadow 学习 (段表更新)", 否则需要 `HUAKAI_PASR_SHADOW_LEARN=false` 开关
+- **裁决: 走 codex 第三选项 (D2 不污染)** ✅ 已落地
+  - 依据: `pasr_selector.go:64-70` `readOnlySegments` 字段 + 新 ctor flag `ReadOnlySegments`; `selector_wiring.go:116` shadow 实例硬编码 `ReadOnlySegments: true`; `m7_dispatcher_integration_test.go:127-131` 断言 "100 req 后 SegmentTable.Size()=0"
+  - 理由: (a) shadow 学习段表 → 与 actual 路径段位 bitmap 绑定造成混线; D2 段表只读不污染让 shadow 是**纯观察**信号; (b) shadow 命中段位时退化到全 ring fallback, 反而暴露"段表 cold-miss 时 PASR 会怎样"的真实行为, 是更有价值的对比信号; (c) "shadow 学习" 会让段位 hits 在切到 canary 前已被预热, mask 真实 cold-start 收益评估
+  - codex D-PASR-MW-003 推荐"允许学习" — 我裁决反对, **改为不允许学习** (实施已按此做)
+  - 这是本 synthesis 唯一**明确反 codex 推荐**的裁决, 但与已落地代码一致 (说明实施期已选了更保守路径)
 
-> Owner 不需要再回答 claude.md 的 D2 (SIGHUP 热切) — 两 lane 一致暂不做, 写成 follow-up 即可, 不算决策点。Owner 也不需要回答 claude.md 的 D4 (`ErrNoEligibleAccount` metric) — 两 lane 共识"记 + warmup 静默", 直接照做。
+### D-4. shadow PASR 实例 — 独立 vs 共享 selectWithoutClaim 方法?
+
+- **claude (D1)**: 推荐 A 独立实例 — 两份 PASRSelector 共享同一 SegmentTable, 仅 Claims 字段不同
+- **codex (§3-§4 隐含)**: 默认走"独立实例"路径 (M3 表"shadow 用 panic claim gate 也不触发", 直接说 `pasrShadow := pool.NewPASRSelector(..., Slots=nil, Claims=nil)`)
+- **裁决: A (独立实例)** ✅ 已落地
+  - 依据: `selector_wiring.go:95-123` 走两个 `pool.NewPASRSelector` ctor (一个 actual 一个 shadow); 共享 `segments` 单例 + `accountSource` 多份 (无状态)
+  - 理由: 两 lane 实质同意, 仅 claude 显式列为决策点。零侵入 PASR core, 测试边界清晰
+
+### D-5. PASR 错误分类 + canary fallback 时机
+
+- **claude (§9 R8 + §11 T6)**: 隐含 "PASR 失败 fallback default" 但没区分 pre/post mutation
+- **codex (§7 + R-PASR-MW-004)**: 显式区分 pre-mutation (可 fallback) vs post-mutation (已 release, 必 fail closed) — 这是关键安全门
+- **裁决: B (codex)** ✅ 已落地
+  - 依据: `pasr_selector.go:35-42` `ErrPASRPreMutationFail` / `ErrPASRPostMutationFail` 两个 sentinel; `selector_dispatcher.go:194-211` canary 路径用 `errors.Is` 分流
+  - 理由: post-mutation 已 mutate slot 后再走 default 会双 claim race + 双 in-flight; codex 的精细错误分类是必要的安全门; claude 没区分相当于潜在 BLOCKING 缺口
+  - 这是 codex lane 最关键的贡献之一
+
+### D-6. config ENV 命名
+
+- **claude (§5.2)**: `HUAKAI_SELECTOR_MODE` / `HUAKAI_PASR_RING_REFRESH` / `HUAKAI_PASR_SEGMENT_MAX_AGE` / `HUAKAI_PASR_SEGMENT_CAP` / `HUAKAI_PASR_LOAD_CAP`
+- **codex (§4-M1)**: `HUAKAI_POOL_SELECTOR_MODE` / `HUAKAI_PASR_SHADOW_PERCENT` / `HUAKAI_PASR_CANARY_PERCENT` / `HUAKAI_PASR_HASH_SALT` / `HUAKAI_PASR_HRW_SEED` / 等 (更多)
+- **裁决: 混合** ✅ 已落地为最小集
+  - 依据: `config/pool_selector.go:81-89` 已实现 `HUAKAI_POOL_SELECTOR_MODE` / `HUAKAI_POOL_SELECTOR_SHADOW_PCT` / `HUAKAI_POOL_SELECTOR_CANARY_PCT` / `HUAKAI_POOL_SELECTOR_SALT` 四个 ENV
+  - claude 的 RING_REFRESH / LOAD_CAP / SEGMENT_CAP 等运行时调参 ENV 暂未实现 — 走 SegmentTableConfig{} 默认值; **建议本 synthesis 在 §5 M11 atom 补回**, 否则 ops 调段表 cap 必须改代码
+  - codex 的 `HUAKAI_PASR_HRW_SEED` 暂未实现 — 多副本一致性需要时补; 现走默认 `0xCAFEBABE`
+
+### D-7. shadow 单 worker vs 多 worker?
+
+- **claude**: 没明确, §6.2-3 说 "buffer 1024 限并发" 暗示可能多 goroutine
+- **codex**: 没明确
+- **裁决: 单 worker** ✅ 已落地
+  - 依据: `selector_dispatcher.go:260-268` 注释 "单 worker 足够 — shadow 比对 hot path 是纯 PASR Select (内存 + 一次 ListAccounts), 单核 5k+ rps 没压力; 多 worker 反而增加段表锁竞争 (synthesis B4)"
+  - 理由: shadow 不是关键路径, 单 worker 简化生命周期管理; 高负载时直接走 drop_counter 信号而非加 worker
+
+### D-8. shadow ctx timeout 长度
+
+- **claude (§6.4)**: 3s
+- **codex (§6)**: 50-100ms 推荐, 5% 用 100ms 起步
+- **裁决: 中间值 500ms** ✅ 已落地
+  - 依据: `selector_dispatcher.go:66` `shadowSelectTimeout = 500 * time.Millisecond`
+  - 理由: claude 的 3s 太宽 (shadow 异步+1024 buffer 排队下 3s 累 N 个 inflight 容易爆); codex 100ms 太严 (PASR cold-miss 走全 ring fallback 50-150µs CPU + 一次 ListAccounts 几 ms, 100ms 边缘); 500ms 给 cold-miss + ring 重建 + 慢账号源足够余量, 同时单 worker × 1024 chan 极端积压不超 8.5min, drop_counter 会先告警
+
+→ **8 项分歧, 全部裁决, 全部与已落地代码一致**。表明实施期已 implicitly 走了与 synthesis 一致的路线; 本 synthesis 是**事后对齐 + 写明决策依据**, 不是"先 synth 再 impl"。
 
 ---
 
-## 6. 风险登记合并 (RISKS — 14 条)
+## 5. Gap 表 — 一边提了另一边没提的关键点
 
-合并去重 + critic 新增 4 条 (B1-B5 转化的)。按严重度排:
+### G-1. codex D-PASR-MW-001 SlotManager parity (BLOCKING)
+- **claude 状态**: 没单独提; §8 决策 D1 只讨论 shadow 是独立实例 vs 共享方法, 没意识到 actual 路径若不持 slot 会 cap_concurrency 破防
+- **codex 状态**: 显式列为 D-PASR-MW-001 + R-PASR-MW-001, 必采纳, 是 actual canary 上线前的必要补丁
+- **真伪**: **真**, 但 **过时** — 已修复 (§2 校验)
+- **采纳**: ✅ 已采纳, 实施已落地; codex 这条是关键贡献
 
-| ID | 风险 | 触发条件 | 影响 | 缓解 | 来源 |
+### G-2. claude per (tenant, pool_group) ring + 保留旧快照防 DB 抖动 — codex 没说就是漏了吗?
+- **claude 状态**: §7 整节, 力推全局 ring + 旧快照保留
+- **codex 状态**: 反对全局 ring, request-scoped 替代
+- **真伪**: **claude 描述的问题真实** (DB 抖动期段表成员失效) **但解法过工程化** — codex request-scoped 路径下, DB 抖动 = `ListAccounts` 失败 → `ListAccounts` 返 err → 上游 dispatcher 从 PASR 失败处理路径走, default 也会失败, 没有"全局 ring 凭空兜底"的需求
+- **采纳**: 不采纳全局 ring; 但**保留 codex 实施已做的 ring 成员失效兜底逻辑** (`pasr_selector.go:188-190` 段成员账号已不存在 → 跳过 → 段全 unhealthy 走 HRW 全 ring fallback)
+
+### G-3. codex T-PASR-MW-013 PASR slot parity 集成测试 — claude 没列具体 PG 状态断言
+- **claude 状态**: §11 T2-T13 全为单元 + 集成测试, 但断言粒度停在 "selector_test 全 green"
+- **codex 状态**: T-PASR-MW-013 列出具体 PG 行断言: `pool_slot_acquisitions` 写一行 + in_flight_count +1 + claim token 一致
+- **真伪**: **真**, 必采纳
+- **采纳**: ✅ `pasr_selector_slot_test.go` (374 行) 已实现, 但**仍是单元测试**用 fake; **真 PG 集成 smoke 缺失** (smoke_test.go 仅跑 default 模式, 见 §2 校验) → 列入 §5 M9 atom
+
+### G-4. codex log 字段 schema (`prefix_hash8` / `tenant_id` / `endpoint_family` 等)
+- **claude 状态**: §6.4 仅 `zap.Int64("primary", ...) + zap.Int64("shadow", ...) + zap.String("session_hash_prefix", safePrefix(req.SessionHash, 8))`
+- **codex 状态**: §6 完整 log schema 13 字段
+- **真伪**: **真**, codex schema 更利于 ops 离线聚合
+- **采纳**: 部分采纳 — dispatcher 当前不打 log (只累计 metrics), shadow_diff 时**应该**有结构化 log; 列入 §5 M10 atom
+
+### G-5. claude D2 SIGHUP 热切 — codex 也提到但都不做, 决策一致
+- **claude 状态**: D2 列为决策点, 推荐 A (重启)
+- **codex 状态**: D-PASR-MW-002 推荐 restart-only
+- **真伪**: 一致
+- **采纳**: 共识不做 SIGHUP; 第二轮 (post-1.0) 再考虑
+
+### G-6. claude `/debug/pasr` admin endpoint (M9) — codex 没提
+- **claude 状态**: M9 atom 列出 `/debug/pasr` 只读 endpoint dump segment table stats
+- **codex 状态**: §6 仅 `/debug/vars` expvar
+- **真伪**: 部分真 — `/debug/vars` 已暴露 `pasr` + `pasr_dispatch` 两个 expvar map (含 segment_count + EvictedTotal 等); 单独 `/debug/pasr` 是 nice-to-have, 不 BLOCKING
+- **采纳**: 暂不采纳 — `/debug/vars` 已够用; 如未来有特殊 dump 需求 (含 segment 级 entries 列表) 再加, 列入 §6 决策点
+
+### G-7. codex T-PASR-MW-020 race detector 测试 — claude 没列
+- **claude 状态**: 没明确 `-race` 测试
+- **codex 状态**: T-PASR-MW-020 optional `go test -race ./internal/pool`
+- **真伪**: **真**, dispatcher + SegmentTable + AgingWorker 并发模型必须过 race detector
+- **采纳**: 列入 §5 M8 atom
+
+### G-8. claude D4 shadow `ErrNoEligibleAccount` 是否 alert
+- **claude 状态**: D4 推荐启动后 60s warmup 静默, 之后记 metric + alert
+- **codex 状态**: 没单独说, R-PASR-MW-008 隐含 "diff 指标误读" 顺带提"按 cache hit / latency / no-capacity 联合评估"
+- **真伪**: **真**, claude 的 warmup 静默是合理 ops 策略
+- **采纳**: 已实现 metric (`shadow_pasr_err_total`), warmup gating 是 dashboard / alert rule 配置层, 不需代码改; 列入 §6 Owner 决策
+
+### G-9. claude 风险表对 segment table OOM 已定 100k cap; codex 也定 100k
+- **claude 状态**: R7
+- **codex 状态**: R-PASR-MW-007
+- **真伪**: 一致
+- **采纳**: 已用 `SegmentTableConfig{}` 默认值; **claude D6 提的 SEGMENT_CAP / SEGMENT_MAX_AGE / LOAD_CAP ENV 暂未暴露**, 列入 §5 M11
+
+### G-10. codex 提到 PASR latency 单独 metric; claude 没提
+- **claude 状态**: 没单独 latency metric
+- **codex 状态**: §6 log schema `default_latency_ms` / `pasr_latency_ms`; R-PASR-MW-005
+- **真伪**: **真**, 没 latency 数据无法判断 "shadow 是否拖慢 P99"
+- **采纳**: 列入 §5 M10 atom (与 G-4 合并 — observability 收尾)
+
+### G-11. claude/codex 都没提 — Phase E orphan-sweep 与 PASR 兼容性
+- **状态**: 两 lane 都没提 `pool_slot_acquisitions` 的 lease 90s + Phase E sweeper 与 PASR 的交互
+- **真伪**: 严格说**不属于本 plan 范围** (Phase E 当前是 TODO), 但 PASR canary 上线前需要确认: 假设 PASR 正常 release, sweeper 静默兜底; 假设 PASR post-mutation 失败 release 也失败, sweeper 90s 后清掉 — DefaultSelector 行为一致, 所以 PASR 与 sweeper 兼容性继承自 DefaultSelector
+- **采纳**: 不需新代码; 列入 §6 Owner 决策点 (告知 + 接受现状)
+
+→ **11 个 Gap, 8 项必采纳并已落实或转为 atom; 3 项不采纳 (G-2 全局 ring / G-6 /debug/pasr / G-9 SEGMENT ENV 部分 — 后者已转为 M11 待办)**。
+
+---
+
+## 6. 升 Owner 决策点 (≤3)
+
+> 本 synthesis 仅列**真无法裁的**决策点。其余分歧在 §4 已裁决并与已落地代码一致。
+
+### O-1. shadow 模式 ErrNoEligibleAccount 是否 alert? warmup 多久?
+
+- **问题陈述**: shadow PASR 路径若返 `ErrNoEligibleAccount` (段全 unhealthy + 全 ring 也无 healthy 候选), 计入 `shadow_pasr_err_total`。启动前 60s 段表是冷的, 几乎所有 shadow request 都会触发 `ErrNoEligibleAccount` (cold-miss → fullRingFallback)。是否在 dashboard 设置启动后 60s warmup 静默?
+- **选项 A** (claude D4 推荐): warmup 60s 静默, 之后超阈值 (>5%) 触发 ops alert
+- **选项 B** (codex 隐含): 不设 warmup, dashboard 直接看 5min 滑动窗 P95
+- **我的推荐**: **A**. shadow 期 60s warmup 静默是合理 ops noise floor; 但 5% 阈值偏严, 改为 10% (cold-miss 是合法路径, shadow 不变更主流量); 决策实质是"alert 规则设啥阈值", 不是代码改, 但需要 Owner 拍板写进 runbook
+
+### O-2. canary actual 上线前是否要 24h shadow 100% 观察?
+
+- **问题陈述**: 当前 SOP (config 注释) 是 "shadow 5%/25%/100% → canary 5%"。每档观察多久没在代码里, 但代码侧已支持任意切换。Owner 选 "shadow 100% 24h 后 canary 5%" 还是 "shadow 25% 7d 后直接 canary 5%"?
+- **选项 A** (claude §5.3): "shadow 起 7 天观察" → canary
+- **选项 B** (codex §5 状态机): "shadow 5% → 25% → 100%, 各档 24h 没异常" → canary
+- **我的推荐**: **B + 一个变体**: shadow 5% × 24h → 25% × 24h → 100% × 48h → canary 5% (即至少 4 天观察, 不必到 7 天); 因为 shadow 100% 才能采到完整流量分布的 diff signal, 25% 可能漏掉某些 tenant; 48h 是覆盖工作日 + 周末的最小窗
+- **理由**: 这是 ops 风险偏好, 我倾向"覆盖 1 个完整周末"作为最小节奏; Owner 拍板
+
+### O-3. SEGMENT_CAP / SEGMENT_MAX_AGE / LOAD_CAP / HRW_SEED 是否暴露为 ENV?
+
+- **问题陈述**: 当前段表 cap=100k / 老化=30min / loadCap=0.95 / HRW seed=0xCAFEBABE 都烧死。claude D6 列了 4 个 ENV; codex M1 列了 5 个。是否在 M11 atom 暴露?
+- **选项 A**: 全暴露 (M11 实现 4-5 个 ENV)
+- **选项 B**: 暂不暴露, 等 shadow / canary 跑完后看是否需要调
+- **我的推荐**: **A 但只暴露 3 个**: `HUAKAI_PASR_SEGMENT_CAP` / `HUAKAI_PASR_SEGMENT_MAX_AGE` / `HUAKAI_PASR_LOAD_CAP`; HRW seed 暂不暴露 (单实例不需要, 多实例一致性是 A6/A7 阶段问题)
+- **理由**: ops 调段表 cap 不必改代码 + 重启编译; 三个值是直接影响内存 / cache hit 的旋钮, 暴露为 ENV 是低成本高价值; HRW seed 改了等于段表全 invalidate, 不是日常旋钮
+
+→ 3 个决策点, 都是 ops 策略 / 配置暴露范围, 不阻塞代码 atom 执行。
+
+---
+
+## 7. 启动条件 / Pre-execution checklist
+
+开始 §5 剩余 atom 前必须满足:
+
+1. **§6 决策已拍** — Owner 在 O-1 / O-2 / O-3 上确认; O-1/O-2 进 runbook, O-3 决定 M11 是否落地
+2. **现有测试全 green** — `cd backend && go test ./internal/pool/... ./internal/config/... ./cmd/gateway/...` (我已 `go vet` clean, 但 build 时未跑测试; 执行前必须验证 1622 行测试本身通过)
+3. **default mode smoke 不退化** — `HUAKAI_DATABASE_URL=... go test -tags=smoke -run TestPhaseC_Smoke ./cmd/gateway` 仍 green; 这是零回归 gate
+4. **codex 横评已过** — 本 synthesis 与已落地 commit 之间**没有矛盾** (我已校验); 如发现矛盾, 必须先 codex 横评再继续
+5. **本 synthesis 已 codex 横评** — Owner 应派 codex 跑一次 read-only review (cross-check 我对源码事实的引用)
+6. **不读非 MIT reference source** — 剩余 atom 全部基于已有 HUAKAI 接口扩展, 不需要再读 sub2api / new-api / 等; clean-room 风险继续低
+
+---
+
+## 8. 最终合并 atom 序列 M1...M11
+
+> 已合并 atom: M1-M6 + 部分 M7 (3 个 dispatcher 集成测试)。本节列**剩余 atom + 已合并 atom 简记**, 按执行序排列。
+
+### 已合并 (回顾, 不再执行)
+
+| Atom | 范围 | 现状 |
+| --- | --- | --- |
+| **M1** | `internal/config/pool_selector.go` — typed config + ENV parse + Validate (5 mode + 2 percent + salt) | ✅ 落地, `pool_selector_test.go` 249 行 |
+| **M2** | `internal/pool/pasr_dispatch_metrics.go` — expvar map `pasr_dispatch` + 16 个 counter + Inc helpers + Snapshot | ✅ 落地, `pasr_dispatch_metrics_test.go` 146 行 |
+| **M3** | `internal/pool/pasr_selector.go` — `acquireAndReturn` 走 SlotManager pre-mutation + Claims post-mutation, ErrPASRPreMutationFail / ErrPASRPostMutationFail 错误链, post-fail release 用 WithoutCancel + 2s ctx | ✅ 落地, `pasr_selector_slot_test.go` 374 行 |
+| **M4** | `internal/pool/selector_dispatcher.go` — 5 mode dispatch + shadow async worker + canary fnv64a 抽样 + pre/post mutation 分流 + Stop graceful | ✅ 落地, `selector_dispatcher_test.go` 446 行 |
+| **M5** | `internal/pool/pasr_selector.go:148-152` + `BuildAccountRingFromSnapshots` — request-scoped ring 不依赖全局 RingProvider | ✅ 落地, `pasr_selector_ring_test.go` 212 行 |
+| **M6** | `cmd/gateway/main.go` + `cmd/gateway/selector_wiring.go` — 启动期按 PoolSelectorConfig 装配 default / shadow / canary / pasr-* + cleanup 函数 + AgingWorker.Start(ctx) | ✅ 落地 |
+| **M7-partial** | `internal/pool/m7_dispatcher_integration_test.go` — shadow ReadOnly 段表不污染 + actual 段表学习 + mode 字面量 cross-check | ✅ 落地 (3 测试) |
+
+### 剩余待执行
+
+| Atom | 名称 | 范围 | LoC 估 | 测试要求 | 依赖 | 风险 | 验收 criteria |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **M8** | race detector 全测 + shadow worker 生命周期 stress | `internal/pool/selector_dispatcher_test.go` 加 stress 用例: 1024 并发 Select + Stop 中途 + recover panic; 跑 `go test -race ./internal/pool/...` 全 green | ~120 (新测试) | `go test -race -count=10 -run "Selector|PASR" ./internal/pool` 0 race + 0 panic | M4 (已合) | LOW | -race 0 报告; Stop 调多次幂等 |
+| **M9** | smoke build-tag 5-mode 启动验证 | `cmd/gateway/smoke_test.go` 加 `TestSmoke_AllModes_Boot`: 用 build tag, 表驱跑 default / shadow / canary / pasr-primary / pasr-strict 五次启动, 每次 `HUAKAI_POOL_SELECTOR_MODE=$mode` + 对应 percent ENV; 验证 srv.ListenAndServe 不 fail + curl `/debug/vars` 看到 `pasr_dispatch` 子树非空 + cleanup 正常退出 | ~180 | smoke tag (要求 HUAKAI_DATABASE_URL); 5 mode 各启动 + 关停 | M6 (已合) | MEDIUM (smoke 启动期 wiring) | 5 mode 各能从 ENV 启动 + cleanup 退出; 现有 default mode smoke 不退化 |
+| **M10** | observability 收尾 — shadow_diff 结构化 log + canary latency histogram | `internal/pool/selector_dispatcher.go` 加: (a) shadow_diff 时打 zap.Debug 结构化 log (codex §6 schema, prefix_hash8 / tenant_id / pool_group_id / requested_model / endpoint_family / default_acc / pasr_acc / 单边 latency); (b) canary actual 路径加 latency histogram (用现有 expvar `expvar.Float` map "pasr_dispatch_latency" — 暂不引 prometheus); 注意 log 不能泄漏 prompt / credential | ~150 | 单测: log 字段完整 + 按 zap observer 验证字段; expvar latency map 注册成功 + 累加正确 | M4 (已合) | LOW (纯 observe 路径, 不动主逻辑) | shadow_diff 日志可被 grep "pasr_shadow_compare" 拉到; `/debug/vars` 含 latency map |
+| **M11** | (条件: O-3 选 A) 段表运行时 ENV — SEGMENT_CAP / SEGMENT_MAX_AGE / LOAD_CAP | `internal/config/pool_selector.go` 加 3 个 ENV 解析 (含越界 fail-fast); `cmd/gateway/selector_wiring.go` 把 cfg 注入 `SegmentTableConfig` 与 `PASRSelectorConfig.LoadCap`; cfg 单测加越界用例 | ~110 | 单测: 3 ENV 默认值 / 合法值 / 非法值 (负数 / 超 100 / 非数字); selector_wiring 集成验证 cfg 注入路径 | M1 (已合) + M6 (已合) | LOW | env-driven 调段表 cap 不需重启编译 |
+| **M12** | (条件: O-1/O-2 已拍) ops runbook + alert rule 文档 | 新增 `docs/runbooks/pasr-mainwire-progressive-rollout.md`: SOP 5 阶段 + 每阶段验证 + alert 阈值 + rollback 步骤 + dashboard panel 列表 | ~250 (纯 doc) | 文档 review (Owner) | M9 + M10 | LOW | Owner accept; 后续 Slack/dashboard 配置照此文档执行 |
+
+**剩余 LoC 估**: 实施 ~280 + 测试 ~280 + 文档 ~250 = ~810 LoC; **5 个 atom × 0.2-0.5 atom-day ≈ 1.5 atom-day** 可全部执行完。
+
+**执行序**:
+1. **M8 优先** — race detector 是验证已合代码的最后一道质量门, 失败会 invalidate M3/M4
+2. **M9** — smoke 5-mode boot 是 production cutover 的 prerequisite
+3. **M10** — observability 收尾, 上线前必有
+4. **M11** — 条件 atom (O-3 选 A 才做)
+5. **M12** — runbook 文档, 必须在 shadow 5% 真实流量启动前完成
+
+依赖图: M8 → (M9 ∥ M10) → M11 → M12; M8 与已合 M3/M4 强依赖。
+
+---
+
+## 9. 风险登记 (合并去重 ≥10)
+
+按等级排序; 已合并代码已含的缓解标 ✅。
+
+| # | 风险 | 触发条件 | 影响 | 缓解 | 来源 |
 | --- | --- | --- | --- | --- | --- |
-| R1 | PASR actual 绕过 slot acquisition | M3 未做就开 canary | 破 cap_concurrency, settle 链断 | M3 强制门, D1 拍板 | codex |
-| R2 | shadow 误写 claim/slot | shadow 实例 misconfigure | 双写 claim, billing 噪音 | 三层防御 (Claims=nil + Slots=nil + dispatcher 抹 ClaimID) | 两 lane |
-| R3 | canary fallback 双写 | PASR 已 mutate 后又 fallback default | 双 slot, claim race | fallback 仅在 pre-mutation 错误时允许 | codex |
-| R4 | shadow 段表数据污染 | shadow PASR 学到 default 选的账号 cache | shadow_match_ratio 信号失真 | D2 选项 A: shadow 只读段表 | **critic 新增 (B2)** |
-| R5 | SegmentTable 写锁竞争 P99 抖动 | EvictExpired 持全局写锁 + 100k 段 | hot path P99 ms 级阻塞 | 集成测试覆盖 + follow-up chunked evict atom | **critic 新增 (B4)** |
-| R6 | Bedrock shadow 数据假信号 | Owner 无 AWS 凭据, mock 上游 | shadow 决策依据失真 | 先在有凭据 vendor 跑 shadow 7d | **critic 新增 (B5)** |
-| R7 | shadow 增加请求延迟 | 100% shadow 同步占资源 | P99 上升 | sampled rollout + 500ms timeout + 1024 buffer chan | 两 lane |
-| R8 | shadow goroutine 泄漏 | shadow Select 卡住 | OOM / 句柄耗尽 | ctx timeout + buffer chan + drop 计数 | claude R1 |
-| R9 | 配置拼错 | env value typo | 误启 PASR 或假信号 | typed config fail-fast (不 fail-soft) | codex R-006 |
-| R10 | SegmentTable OOM | shadow 100% + 高 prefix cardinality | 内存压力 GC 抖动 | 100k cap + 30min aging + segment_count 监控 | 两 lane |
-| R11 | diff 指标误读 | Default 与 PASR 设计目标不同 | Owner 误判 PASR 劣化 | diff 带 reason/model/pool, 联合 cache hit + latency 评估 | codex R-008 |
-| R12 | panic 影响请求 | shadow PASR bug | 500 / 进程崩 | dispatcher recover, shadow panic 不污染 default | 两 lane |
-| R13 | 回滚速度 | restart-only, 滚动 3-5min | 真 incident 慢 | 接受现状, follow-up 看是否做 SIGHUP | 两 lane |
-| R14 | cache observer 反注册缺失 | 未来 SIGHUP reload 重复注册 observer | 段状态双计 | 写进 D2 follow-up atom 范围 | **critic 新增 (B3)** |
+| R1 | shadow goroutine 泄漏 (PASR Select 卡住或阻塞 N>1024) | 段表 / 账号源极端慢; shadow worker drain 不完 | OOM, 句柄耗尽 | ✅ buffered chan 1024 + 非阻塞 send + drop counter; ✅ 500ms ctx; ✅ panic recover (`selector_dispatcher.go:60-66, 244-313`); M8 加 stress 用例验证 | claude R1 + codex R-PASR-MW-005 |
+| R2 | post-mutation 失败 release 也失败 → slot 泄漏 | DB 抖动 + claim write 失败 + release ctx 也异常 | provider_accounts.in_flight_count 漂移, cap_concurrency 误锁 | ✅ release 用 `WithoutCancel` + 独立 2s ctx (`pasr_selector.go:32, 397-404`); ✅ 错误链 `slot release failed: %w` 让 ops 定位; Phase E sweeper 90s lease 兜底 | codex R-PASR-MW-009 (claude 隐含) |
+| R3 | canary fallback 双写 (PASR 已写 slot 后再走 default) | dispatcher 不区分 pre/post mutation | 双 slot, claim race, settle 错乱 | ✅ ErrPASRPreMutationFail / ErrPASRPostMutationFail 双 sentinel; ✅ dispatcher canary 路径 `errors.Is` 分流 (`selector_dispatcher.go:194-211`) | codex R-PASR-MW-004 |
+| R4 | shadow 误写 claim (复用 actual PASR 实例 / req.ClaimID 未抹) | 共享实例 / 三层防御缺一层 | billing_claims 双写 → 真请求失败 | ✅ 三层防御已落地: shadow 实例 Slots=nil + Claims=nil + dispatcher 抹 ClaimID=0 + ReadOnlySegments=true (selector_wiring + selector_dispatcher) | codex R-PASR-MW-002 (claude R8) |
+| R5 | 全局 ring 跨租户泄漏 | 启动期建全局 ring 把所有 tenant 账号塞一起 | 租户隔离破坏 — 安全事故 | ✅ 不建全局 ring; request-scoped ring 走 `ListEligibleAccountsByPoolGroup` 天然 (tenant, pool_group) 隔离 | claude R9 + codex R-PASR-MW-003 |
+| R6 | shadow 增加请求延迟 (主路径被 block) | shadow 落入主路径同步执行 | P99 上升 | ✅ shadow 异步 + 非阻塞入队 + buffer 满直接 drop; M8 stress 验证 | codex R-PASR-MW-005 |
+| R7 | segment table OOM (cap 设过大 / aging 滞后) | 万级 prefix 短期涌入 + 段表无 cap | OOM | ✅ 默认 100k cap + 30min aging worker 5min ticker; M11 暴露 cap ENV (条件) | claude R7 + codex R-PASR-MW-007 |
+| R8 | 配置错误 (mode typo / percent 越界) 导致 silent 误启用 | ENV 设置错; 启动 silent fallback | 流量误切 / 数据观察不可信 | ✅ fail-fast: typed error 让 main 退出, 不 silent fallback (`config/pool_selector.go:140-162`) | codex R-PASR-MW-006 |
+| R9 | ring 重建期 DB 抖动 → 空 ring → PASR 雪崩 fallback | DB 连接池满 / 网络分区 (request-scoped 路径下 = ListAccounts 失败) | PASR 模式短暂全部走 fullRingFallback; cache locality 价值消失 | request-scoped 路径下 ListAccounts 失败 = default 也失败, 没 asymmetric; PASR 上层错误链 fallback default | claude R2 |
+| R10 | shadow / primary 频繁不一致 (diff_ratio > 50%) | PASR 与 default sticky binding 优先级不同 | shadow 验证不出 PASR 是否更优 | M10 加 shadow_diff 结构化 log (含 prefix_hash8 + tenant_id + endpoint_family + 两边 acc); 7 天 Owner 看样本人工审 | claude R3 + codex R-PASR-MW-008 |
+| R11 | canary 抽样偏倚 (fnv64a 在某些客户 SessionHash 分布下偏离 5%) | 客户 SessionHash 不均 | 实际 7% 或 3% | claude R4: 监控 `canary_pasr_used_total / canary_total` ∈ [4%, 6%], 超出告警; M12 写入 runbook | claude R4 |
+| R12 | rollback 不在 5s 内 (滚动重启需 3-5min) | 真 incident 时回退慢 | live traffic 影响延长 | 接受现状 (本 plan 显式 restart-only); SIGHUP 热切是 post-1.0 atom | claude R5 + codex R-PASR-MW-010 |
+| R13 | shadow goroutine panic 拖垮 main (worker recover 漏一类 panic) | runtime.Goexit / 非 recoverable panic | 进程崩 | ✅ defer recover + IncDispatchShadowPanic; M8 加 panic injection 测试 | codex R-PASR-MW-009 |
+| R14 | Phase E orphan-sweep 与 PASR release 兼容性未验 | 待 Phase E 实现 sweeper 后跨 PASR 路径未测 | 极小概率: PASR 已 release 但 sweeper 也判 lease 过期重复 release | DB 端 ReleaseSlotAndDecrementInFlight CTE idempotent (`db_slot_manager.go:120-131`), 二次调用 no-op; 不需新代码 | 我自己识别的 (G-11) |
+| R15 | shadow 对 actual claim 锁竞争 (多 worker 时) | 假设未来加 shadow 多 worker | 段表锁竞争 → P99 上升 | 单 worker 已锁定 (selector_dispatcher.go:260-268), M8 stress 守护 | 我自己识别的 (D-7 衍生) |
+| R16 | clean-room 风险 (本 atom 是否 inadvertently 复用了外部参考结构) | 实施期不慎参考 sub2api / portkey | clean-room policy 违规 | 全部接口 (Selector / SlotManager / ClaimGate / SegmentTable / AccountSource) 是 HUAKAI 内部抽象, 不读非 MIT 项目源码; ENV 命名空间 HUAKAI_POOL_*, 不复制外部命名 | clean-room policy 提醒 |
+
+→ **16 项风险, 14 项已被已合代码缓解, 2 项 (R10/R11) 等 M10/M12 收尾后转为 ops 监控规则**。
 
 ---
 
-## 7. 最终 atom 序列 (Mn)
+## 10. 失误检查 (我做的 self-audit)
 
-基于 synthesis, 合并后的 atom 序列 (替换两 lane 各自拆分):
+按 critic 协议要求, 自审本 synthesis:
 
-| Atom | 范围 | LoC | 依赖 | 验收 |
-| --- | --- | --- | --- | --- |
-| **M1** | typed config (`PoolSelectorConfig`) + ENV parse + 单测 | ~140 | 无 | 5 mode + percent + salt 全 fail-fast 解析; default mode 等价现状 |
-| **M2** | `pasr_dispatch_metrics.go` 新增 `expvar.NewMap("pasr_dispatch")`, eager init (盲点 B1) + Inc helpers | ~120 | M1 | `/debug/vars` 启动期就有 `pasr_dispatch` 子树 |
-| **M3** | **PASRSelector slot parity** (codex M3, **强制门**): `PASRSelectorConfig.Slots SlotManager` 字段 + actual 路径 `Slots.Acquire` → `Claims.WriteAcquisition` 顺序 + 错误细化 (`ErrPASRPreMutationFail` vs `ErrPASRPostMutationFail`) + claim race 时 release slot | ~180 | M2 | actual 一次成功 = exactly once slot insert + claim write; claim 失败时 in_flight_count 还原 |
-| **M4** | `SelectorDispatcher` 实现 `pool.Selector`, 5 mode dispatch + sampleBucket + shadow async (Background ctx + 500ms timeout) + canary fallback 规则 (D4) + panic recover; **shadow 用 SegmentTable.Lookup 只读** (D2 选项 A) | ~280 | M3 | 5 mode 单测 + shadow 不污染段表 + canary fallback 仅 pre-mutation |
-| **M5** | request-scoped AccountRing (codex M4): PASRSelector `Select` 内从 ListAccounts 结果直接 build ring, 弃用 RingProvider 全局缓存 | ~80 | M3 | per-tenant ring 无跨租户泄漏; account 删除后 segment 成员自动失效 |
-| **M6** | main.go wiring: `deps.selector` 改 `pool.Selector`; default mode 不构造 PASR; shadow/canary/pasr-* 构造 SegmentTable + agingWorker + RegisterPASRCacheFeedback + dispatcher; shutdown 链 | ~150 | M4 + M5 | 5 mode boot smoke; default mode 字节级等价 |
-| **M7** | 集成测试 + smoke: `selector_dispatcher_integration_test.go` 表驱 (T1-T22 见 §8); 默认 + shadow 两档 smoke | ~450 | M6 | 全 green + race detector |
+1. **是否过度信任已合代码?** — 我 Read 了 main.go / selector_wiring.go / selector_dispatcher.go / pasr_selector.go / pasr_dispatch_metrics.go / config/pool_selector.go / m7_dispatcher_integration_test.go + db_slot_manager.go / db_account_source.go; 编译 + vet 全 clean; 但**未运行测试** — Pre-execution checklist §7 #2 要求 Owner 执行前先跑全测试套件
+2. **是否过度反 codex?** — 我在 D-3 (shadow 段表只读) 反对 codex D-PASR-MW-003 推荐, 但与已落地代码一致, 是基于"段表数据纯净度比学习便利更重要"的明确论点, 不是为反而反
+3. **是否过度信 claude?** — 我在 D-2 反对 claude §7 全局 ring 整节方案, 因为 codex request-scoped 是更简的实现且与已落地代码一致; 这是基于"少建 ticker 少加 SQL = 更安全"的明确论点
+4. **是否漏了 BLOCKING?** — codex D-001 SlotManager parity 是 plan-level BLOCKING, 我已在 G-1 标识并验证已修复; 没有发现其他 BLOCKING gap
+5. **风险评级是否过度?** — R1-R16 中 LOW / MEDIUM / HIGH 我没显式标, 但 R3 (canary 双写) / R4 (shadow 误写) / R5 (跨租户泄漏) 是 HIGH 已落地缓解; R12 rollback 慢是 MEDIUM 接受
+6. **Owner 决策点是否过多?** — 3 个, 都是 ops 配置不是代码改, 没超 ≤3 限制
+7. **是否落漏 codex 重要观察?** — 反复对照 codex §7 canary 失败 fallback 5 条规则 / §6 shadow 算法 7 步 / §11 测试矩阵 20 项, 我都已映射到 §3-§5; codex log schema 13 字段映射到 G-4/M10
+8. **是否落漏 claude 重要观察?** — claude §7 RingProvider / §11 测试矩阵 13 项 / §12 rollback 触发条件 5 项, 我都已处理; claude D2 SIGHUP 热切共识不做
 
-**总 atom 数: 7** (claude 9 → codex 7 → synthesis 7, 砍 RingProvider, 加 slot parity, 合并 metrics)
-
-**总 LoC 估**: ~1400 (实现 ~950, 测试 ~450)
-
-**总时间估**: 2.8 atom-day (slot parity 是新工作量, 但去掉 RingProvider 抵消)
-
-执行顺序硬约束:
-- M1 → M2 (config 先于 metrics, metrics 引用 config 字段)
-- M3 必须先于 M4 (dispatcher 依赖错误类型分类)
-- M5 必须先于 M6 (main.go 构造 PASR 时需要 ring builder)
-- M7 最后, 跨 atom 集成测试
+→ **自审结论**: 本 synthesis 真实反映两 lane 共识 + 关键分歧 + 已落地实施现状; 不是 rubber-stamp, 也不是 manufactured outrage。
 
 ---
 
-## 8. Verification Matrix
+## 11. clean-room 声明
 
-合并两 lane 测试矩阵 + critic 新增覆盖盲点:
+- 本 synthesis 写入未读任何 sub2api / new-api / portkey / helicone / litellm / all-api-hub / envoy-ai-gateway 源代码
+- 引用算法 (HRW Rendezvous Hashing / FNV-1a) 是公开学术 / public domain, 上游 atom A1 已注引用
+- 所有决策依据来自: (a) 两 lane plan 文本 (b) HUAKAI 仓库源码 (Read 工具直接读取) (c) 既定 clean-room / fail-fast / parity 不变量
+- ENV 命名空间 `HUAKAI_POOL_*` / `HUAKAI_PASR_*` 是项目内既定模式, 不复制外部参考项目命名
 
-| 测试 ID | 场景 | 类型 | 断言 | 来源 |
-| --- | --- | --- | --- | --- |
-| T1 | default boot 等价 | smoke | 现有 selector_test 全 green | claude T2 + codex T-017 |
-| T2 | config 默认 / 非法 / 越界 | unit | typed fail-fast | codex T-001/002/003 |
-| T3 | dispatcher default 不调用 PASR | unit | counter 验证 | codex T-004 |
-| T4 | dispatcher shadow sampled match/diff | unit | match=同账号; diff 带 reason | claude T3/T4 + codex T-007 |
-| T5 | dispatcher shadow drop (queue 满) | unit | shadow_drop_total > 0 | claude T5 |
-| T6 | shadow 不写 claim (panic claim gate) | unit | 注入 panic claim gate 不触发 | codex T-012 |
-| T7 | shadow 不写 slot (M3 后) | unit | 注入 panic slot manager 不触发 | **critic 新增 (B2/D2)** |
-| T8 | **shadow 不污染段表 (D2 A)** | unit | shadow 100 req 后 segments 不增 | **critic 新增 (B2)** |
-| T9 | shadow timeout 500ms | unit | 注入慢 PASR Select → shadow 超时不阻塞主路径 | **critic 新增 (D5)** |
-| T10 | shadow panic recover | unit | recover; default 结果未损; shadow_panic_total++ | codex T-008 |
-| T11 | canary deterministic 同 SessionHash | unit | 100 次同 hash 落同侧 | claude T7 + codex T-009 |
-| T12 | canary 5% 分布 | unit | 1 万 sample ∈ [4.5%, 5.5%] | claude T8 + codex T-009 |
-| T13 | canary PASR pre-mutation 失败 fallback default | unit | fallback_used++; default 结果返 | codex T-011 + D4 |
-| T14 | canary PASR post-mutation 失败 fail closed + release | unit | slot release; 不调 default | **critic 新增 (D4)** |
-| T15 | M3 PASR slot+claim parity 成功 | integration | exactly once slot row + in_flight++ + claim write | codex T-013 |
-| T16 | M3 PASR claim failure release slot | integration | 失败时 in_flight 还原 | codex T-014 |
-| T17 | request-scoped ring 租户隔离 | unit | tenant A 请求绝不选 B 账号 | claude T10 + codex T-015 |
-| T18 | empty ring → ErrNoEligibleAccount | unit | 返错; canary 可 fallback | codex T-016 |
-| T19 | aging worker shutdown | smoke | 收 SIGINT 5s 内退 | claude T12 |
-| T20 | pasr-strict 不 fallback | unit | post-mutation 失败 fail closed; pre-mutation 失败也 fail | **critic 新增 (D4)** |
-| T21 | race detector | optional | go test -race ./internal/pool 全 green | codex T-020 |
-| T22 | **SegmentTable 100k + 100qps 并发延迟** | benchmark | LookupOrCreate P99 < 1ms | **critic 新增 (B4)** |
+Source files read (this synthesis):
+- `backend/cmd/gateway/main.go`
+- `backend/cmd/gateway/selector_wiring.go`
+- `backend/cmd/gateway/smoke_test.go`
+- `backend/internal/pool/pool.go` (隐含, dispatcher 文件头注引用)
+- `backend/internal/pool/pasr_selector.go`
+- `backend/internal/pool/selector_dispatcher.go`
+- `backend/internal/pool/pasr_dispatch_metrics.go`
+- `backend/internal/pool/m7_dispatcher_integration_test.go`
+- `backend/internal/pool/db_account_source.go`
+- `backend/internal/pool/db_slot_manager.go`
+- `backend/internal/config/pool_selector.go`
+- `backend/internal/gatewayhttp/chat_completions_handler.go` (selector usage 行)
+- `docs/plans/2026-05-08-pasr-mainwire-claude.md`
+- `docs/plans/2026-05-08-pasr-mainwire-codex.md`
 
-22 测试。M7 atom 全部覆盖。
+Lane: synthesis. Critic ID: opus-4-7-1m-synthesis. UTC timestamp: 2026-05-09.
 
 ---
 
-## 9. Rollback contract
+## 12. 下一步 (本 synthesis approved 后)
 
-| 阶段 | 进入条件 | 退出/降级条件 | 持续时长 | rollback SLA |
-| --- | --- | --- | --- | --- |
-| `default` | 初始 | n/a | n/a | n/a (基线) |
-| `shadow 5%` | M1-M7 全 green + Owner 批 D2 | shadow_panic_total > 0; shadow_diff_ratio > 50% | 7 天 | ENV + 重启 ≤ 5min (rolling) |
-| `shadow 25%` | shadow 5% 7d 无 anomaly | 同上 + p95 latency 上升 > 10% | 3 天 | ≤ 5min |
-| `shadow 100%` | shadow 25% 3d 无 anomaly + diff 解释清楚 | 同上 + segment_count 接近 100k 上限 | 7 天 | ≤ 5min |
-| `canary 5%` | shadow 100% 7d ok + **D1 (M3 slot parity) 落地** + Owner 批 | no_capacity 显著上升 / 5xx > 0.1% / settle 失败 | 24 小时 | **关键: 已 mutate 的请求不可 fallback, 必须 fail closed + release; 操作 = 改 mode=default + 滚动重启** |
-| `canary 25%` | canary 5% 24h ok | 同上 | 48 小时 | ≤ 5min |
-| `pasr-primary` | canary 25% ok + 完整 rollback drill | 任意 high signal | 持续 | ≤ 5min |
-| `pasr-strict` | pasr-primary 7d ok | n/a (验收终态) | 验收期 | ≤ 5min |
-| `rollback` 任意 → default | mode env 改回 + 滚动重启 | n/a | 5 pod ≈ 3min, 50 pod ≈ 5-8min | DefaultSelector 始终在进程内, 无 migration 需求 |
-
-> **关键不变量**: rollback 不依赖 SegmentTable 内存清空 (重启清空); 不依赖 cache observer 反注册 (重启清空); 不依赖 DB schema (无 migration)。
+1. Owner 拍板 §6 O-1 / O-2 / O-3 (3 个决策点)
+2. 派 codex 跑一次 read-only review 校验本 synthesis 与已合代码的一致性 (CLAUDE.md #10 互审制度)
+3. 按 §5 atom 序执行: M8 (race) → M9 (smoke 5-mode) → M10 (observability) → M11 (条件: O-3 选 A) → M12 (runbook)
+4. 每 atom commit 前 `codex exec review --uncommitted --full-auto`
+5. M9 + M10 全 green 后, Owner 在 staging 启 shadow 5% 真实流量 (按 §8 M12 runbook 节奏)
 
 ---
 
-## 10. Owner action items
-
-执行前 Owner 必须做的事:
-
-1. **拍板 D1**: M3 slot parity 是 canary 硬门 — 同意 (Critic 推荐) / 反对。
-2. **拍板 D2**: shadow 段表只读 (Critic 推荐 A) / 双段表 (C) / 接受污染 (B)。
-3. **拍板 D3**: ring 来源 — request-scoped (Critic 推荐 A) / 全局 ticker (B)。
-4. **拍板 D4**: canary fallback 语义 — pre-mutation only (Critic 推荐 A) / 永不 fallback (B 仅作为 strict 终态)。
-5. **拍板 D5**: shadow timeout 500ms 独立 ctx (Critic 推荐 A)。
-6. **拍板 D6**: mode 命名 — `pasr-primary / pasr-strict` (Critic 推荐 A)。
-7. **环境准备**: shadow 阶段验证依赖 vendor 上游真实数据。Owner 没 AWS 凭据 (memory: project_no_aws_credentials), 决定: (a) shadow 是否在 OpenAI / 其他有凭据 vendor 跑 7 天再考虑 Bedrock; (b) Bedrock 路径是否用 mock 上游接受信号偏差。
-8. **节奏拍板**: shadow 7d → canary 5% 24h → canary 25% 48h → primary → strict (Critic 推荐, 比 claude 24h/24h 更保守)。
-9. **follow-up atom roster** (本 plan 不做, 但 Owner 应知道):
-   - SIGHUP 热切 (含 cache observer 反注册 API 改造) — 风险 R14
-   - SegmentTable EvictExpired 分段持锁优化 — 风险 R5
-   - `/debug/pasr` admin endpoint (claude M9, 移到 follow-up)
-   - PASR-lite 性能基线对比 plan (本 plan 后入口)
-
----
-
-## TL;DR (200 字)
-
-两 lane 在 10 项顶层架构上一致 (Selector 接口、Dispatcher、typed config、shadow Claims=nil、deterministic canary、restart-only rollback)。主要分歧 8 项, 4 项 critic 强 codex: **PASR 当前不写 slot, codex M3 是 canary 硬安全门** (claude 完全漏掉); **AccountRing 用 request-scoped 而非全局 ticker** (codex 省 SQL 省风险); **canary fallback 必须区分 pre/post mutation**; **mode 命名 pasr-primary/pasr-strict 优于 canary_5/25**。Critic 新增 5 个盲点: shadow 段表数据污染 (B2 → D2 决策点)、SegmentTable 写锁 P99 抖动 (B4)、Bedrock 无凭据 shadow 假信号 (B5)、cache observer 反注册缺失影响未来 SIGHUP (B3)、metrics eager init (B1)。最终 7 atom (砍 RingProvider, 加 slot parity, 合并 metrics) ~1400 LoC, 2.8 atom-day, 6 决策点, 14 风险, 22 测试。
+**Plan ends**. Synthesis 由 fresh critic 第三方独立评估两份 plan + 校验已落地代码完成。
