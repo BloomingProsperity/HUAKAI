@@ -167,3 +167,183 @@ func TestPASRCacheFeedback_E2E_RegisterAndObserve(t *testing.T) {
 		t.Error("e2e: cache_read 后 LastReadAt 应非 0")
 	}
 }
+
+// =====================================================================
+// cache-aware A3: cache miss demote (MissCount + N=2 阈值)
+// =====================================================================
+
+// TestA3_MissAccumulates 一次 miss → MissCount[idx]==1, hasCache 未动。
+func TestA3_MissAccumulates(t *testing.T) {
+	tbl := NewSegmentTable(SegmentTableConfig{})
+	ring := NewAccountRing([]int64{10, 20, 30}, 1)
+	prefix := "a3-miss-1"
+	seg := tbl.LookupOrCreate(1, []byte(prefix), ring)
+	chosenAcc := seg.Members[0]
+	// 先标 hasCache=true (模拟之前 cache_creation 见过)
+	seg.MarkCacheSeen(0)
+
+	fb := NewPASRCacheFeedback(tbl, time.Now)
+	fb.handle(cachemetrics.CacheObservation{
+		TenantID:      1,
+		AccountID:     chosenAcc,
+		PrefixHash:    prefix,
+		CacheCreation: 0,
+		CacheRead:     0,
+	})
+
+	if got := seg.MissCount[0].Load(); got != 1 {
+		t.Errorf("一次 miss 后 MissCount[0]=%d want 1", got)
+	}
+	if !seg.HasCache(0) {
+		t.Error("一次 miss 不应 demote, hasCache bit 应保留")
+	}
+}
+
+// TestA3_MissThresholdDemotes 连 miss 2 次 → HasCache bit 清 + MissCount 重置.
+func TestA3_MissThresholdDemotes(t *testing.T) {
+	tbl := NewSegmentTable(SegmentTableConfig{})
+	ring := NewAccountRing([]int64{10, 20, 30}, 1)
+	prefix := "a3-miss-2"
+	seg := tbl.LookupOrCreate(1, []byte(prefix), ring)
+	chosenAcc := seg.Members[0]
+	seg.MarkCacheSeen(0)
+
+	fb := NewPASRCacheFeedback(tbl, time.Now)
+	miss := cachemetrics.CacheObservation{
+		TenantID: 1, AccountID: chosenAcc, PrefixHash: prefix,
+		CacheCreation: 0, CacheRead: 0,
+	}
+	fb.handle(miss) // miss 1
+	fb.handle(miss) // miss 2 → 应 demote
+
+	if seg.HasCache(0) {
+		t.Error("连 miss 2 次后 hasCache bit 应被清 (demote)")
+	}
+	if got := seg.MissCount[0].Load(); got != 0 {
+		t.Errorf("demote 后 MissCount[0] 应重置 0, 实 %d", got)
+	}
+}
+
+// TestA3_CacheReadResetsMissCount miss 1 次 → cache_read 命中 → MissCount 归 0.
+func TestA3_CacheReadResetsMissCount(t *testing.T) {
+	tbl := NewSegmentTable(SegmentTableConfig{})
+	ring := NewAccountRing([]int64{10, 20, 30}, 1)
+	prefix := "a3-reset-by-read"
+	seg := tbl.LookupOrCreate(1, []byte(prefix), ring)
+	chosenAcc := seg.Members[0]
+	seg.MarkCacheSeen(0)
+
+	fb := NewPASRCacheFeedback(tbl, time.Now)
+	fb.handle(cachemetrics.CacheObservation{
+		TenantID: 1, AccountID: chosenAcc, PrefixHash: prefix,
+		CacheCreation: 0, CacheRead: 0,
+	})
+	if seg.MissCount[0].Load() != 1 {
+		t.Fatal("miss 后 MissCount 应为 1")
+	}
+
+	// cache_read 命中 → 重置
+	fb.handle(cachemetrics.CacheObservation{
+		TenantID: 1, AccountID: chosenAcc, PrefixHash: prefix,
+		CacheCreation: 0, CacheRead: 500,
+	})
+	if got := seg.MissCount[0].Load(); got != 0 {
+		t.Errorf("cache_read 后 MissCount 应重置 0, 实 %d", got)
+	}
+	if !seg.HasCache(0) {
+		t.Error("cache_read 不应清 hasCache bit (只是重置 miss 计数)")
+	}
+}
+
+// TestA3_CacheCreationResetsMissCount miss 1 次 → cache_creation → 重新 set
+// hasCache + MissCount 归 0 (重新观察一轮).
+func TestA3_CacheCreationResetsMissCount(t *testing.T) {
+	tbl := NewSegmentTable(SegmentTableConfig{})
+	ring := NewAccountRing([]int64{10, 20, 30}, 1)
+	prefix := "a3-reset-by-creation"
+	seg := tbl.LookupOrCreate(1, []byte(prefix), ring)
+	chosenAcc := seg.Members[0]
+
+	fb := NewPASRCacheFeedback(tbl, time.Now)
+	// 先 cache_creation 标 hasCache=true
+	fb.handle(cachemetrics.CacheObservation{
+		TenantID: 1, AccountID: chosenAcc, PrefixHash: prefix,
+		CacheCreation: 1024, CacheRead: 0,
+	})
+	if !seg.HasCache(0) {
+		t.Fatal("cache_creation 应 set hasCache=true")
+	}
+
+	// 一次 miss
+	fb.handle(cachemetrics.CacheObservation{
+		TenantID: 1, AccountID: chosenAcc, PrefixHash: prefix,
+		CacheCreation: 0, CacheRead: 0,
+	})
+	if seg.MissCount[0].Load() != 1 {
+		t.Fatal("miss 后 MissCount 应 1")
+	}
+
+	// 再次 cache_creation → MissCount 重置 + hasCache 仍 set
+	fb.handle(cachemetrics.CacheObservation{
+		TenantID: 1, AccountID: chosenAcc, PrefixHash: prefix,
+		CacheCreation: 2048, CacheRead: 0,
+	})
+	if got := seg.MissCount[0].Load(); got != 0 {
+		t.Errorf("cache_creation 后 MissCount 应重置 0, 实 %d", got)
+	}
+	if !seg.HasCache(0) {
+		t.Error("cache_creation 后 hasCache 仍应为 true")
+	}
+}
+
+// TestA3_DemoteMetric 验证 demote 触发 IncDemote + miss 累计 IncMissObs.
+func TestA3_DemoteMetric(t *testing.T) {
+	tbl := NewSegmentTable(SegmentTableConfig{})
+	ring := NewAccountRing([]int64{10, 20, 30}, 1)
+	prefix := "a3-demote-metric"
+	seg := tbl.LookupOrCreate(1, []byte(prefix), ring)
+	chosenAcc := seg.Members[0]
+	seg.MarkCacheSeen(0)
+
+	before := SnapshotPASRMetrics()
+
+	fb := NewPASRCacheFeedback(tbl, time.Now)
+	miss := cachemetrics.CacheObservation{
+		TenantID: 1, AccountID: chosenAcc, PrefixHash: prefix,
+		CacheCreation: 0, CacheRead: 0,
+	}
+	fb.handle(miss)
+	fb.handle(miss) // 触发 demote
+
+	after := SnapshotPASRMetrics()
+	if got := after.MissObsTotal - before.MissObsTotal; got != 2 {
+		t.Errorf("MissObsTotal delta=%d want 2", got)
+	}
+	if got := after.DemoteTotal - before.DemoteTotal; got != 1 {
+		t.Errorf("DemoteTotal delta=%d want 1", got)
+	}
+}
+
+// TestA3_CombinedCreationAndRead 验证 cache_creation > 0 && cache_read > 0
+// 同时事件: 标 hasCache + 刷 LastReadAt + 重置 miss + 双 metric 累.
+func TestA3_CombinedCreationAndRead(t *testing.T) {
+	tbl := NewSegmentTable(SegmentTableConfig{})
+	ring := NewAccountRing([]int64{10, 20, 30}, 1)
+	prefix := "a3-combined"
+	seg := tbl.LookupOrCreate(1, []byte(prefix), ring)
+	chosenAcc := seg.Members[0]
+
+	now := time.Now()
+	fb := NewPASRCacheFeedback(tbl, func() time.Time { return now })
+	fb.handle(cachemetrics.CacheObservation{
+		TenantID: 1, AccountID: chosenAcc, PrefixHash: prefix,
+		CacheCreation: 512, CacheRead: 1024,
+	})
+
+	if !seg.HasCache(0) {
+		t.Error("combined 事件应 set hasCache")
+	}
+	if seg.LastReadAt.Load() != now.UnixNano() {
+		t.Error("combined 事件应刷 LastReadAt (cache_read>0 路径触发 MarkRead)")
+	}
+}
