@@ -137,6 +137,48 @@ func TestPASRDispatchMetrics_IncDispatchMode_UnknownSilent(t *testing.T) {
 	}
 }
 
+func TestPASRDispatchMetrics_VendorEagerInit(t *testing.T) {
+	// D follow-up: 4 vendor 启动期 eager init, /debug/vars 立即可见
+	v := expvar.Get("pasr_dispatch_by_vendor")
+	if v == nil {
+		t.Fatalf("pasr_dispatch_by_vendor 未注册")
+	}
+	m, ok := v.(*expvar.Map)
+	if !ok {
+		t.Fatalf("pasr_dispatch_by_vendor 非 expvar.Map")
+	}
+	for _, vendor := range PASRDispatchVendors {
+		if m.Get(vendor) == nil {
+			t.Errorf("vendor %q sub-map 未 eager 注册", vendor)
+		}
+	}
+}
+
+func TestPASRDispatchMetrics_IncVendor_OnlyKnownVendors(t *testing.T) {
+	// 合法 vendor 累计 + 非法 vendor 静默 + 空字符串静默
+	for _, vendor := range PASRDispatchVendors {
+		pre := SnapshotPASRDispatchVendor(vendor)
+		IncDispatchVendor(pasrDispKeyShadowMatch, vendor)
+		post := SnapshotPASRDispatchVendor(vendor)
+		if post[pasrDispKeyShadowMatch]-pre[pasrDispKeyShadowMatch] != 1 {
+			t.Errorf("vendor %s ShadowMatch 应 +1", vendor)
+		}
+	}
+	// 非法 vendor 静默
+	preBogus := SnapshotPASRDispatchVendor("bogus")
+	IncDispatchVendor(pasrDispKeyShadowMatch, "bogus")
+	postBogus := SnapshotPASRDispatchVendor("bogus")
+	for k := range preBogus {
+		if postBogus[k] != preBogus[k] {
+			t.Errorf("bogus vendor 不应改任何 sub-counter, key=%s pre=%d post=%d",
+				k, preBogus[k], postBogus[k])
+		}
+	}
+	// 空字符串静默
+	IncDispatchVendor(pasrDispKeyShadowMatch, "")
+	// 不应 panic — 已通过执行验证
+}
+
 func TestPASRDispatchMetrics_KeysCount(t *testing.T) {
 	// 防回归 — 加新指标必须同步更新 pasrDispatchKeys + Snapshot 字段。
 	want := 16

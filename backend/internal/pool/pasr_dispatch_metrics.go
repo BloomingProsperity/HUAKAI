@@ -51,11 +51,70 @@ const (
 // pasrDispatchMetrics 是 dispatcher 计数器汇总, eager 初始化, 不可重入。
 var pasrDispatchMetrics *expvar.Map
 
+// pasrDispatchByVendor 是 per-vendor 切片维度 (D follow-up: shadow/canary 决策
+// 必须按 vendor 切片读不跨平均, memory: project_real_vendor_account_scope)。
+// expvar 嵌套 map: 顶层 key = vendor (anthropic/openai/gemini/codex), 子 map
+// 含 dispatcher 维度计数器 (shadow_match / shadow_diff / mode_<x>_total 等)。
+//
+// 4 vendor × ~6 子 metric (M-rust-5 + project memory 锁定): 启动期 eager
+// init 24 sub-counter 全 0 预填, /debug/vars 启动即可见 dashboard panel。
+var pasrDispatchByVendor *expvar.Map
+
+// PASRDispatchVendors 是真实账号测试范围 (Owner 2026-05-09 锁定);
+// metric eager init 用此列表, caller 也用同 string 调 IncDispatchVendor。
+var PASRDispatchVendors = []string{"anthropic", "openai", "gemini", "codex"}
+
+// pasrDispatchVendorKeys 是每个 vendor sub-map 的 key 列表 (子 metric 集)。
+// 加新维度同步改这里 + IncDispatchVendor switch + 每 vendor sub-map 重 init。
+var pasrDispatchVendorKeys = []string{
+	pasrDispKeyShadowSampled,
+	pasrDispKeyShadowMatch,
+	pasrDispKeyShadowDiff,
+	pasrDispKeyShadowTimeout,
+	pasrDispKeyShadowPASRErr,
+	pasrDispKeyCanaryPASRUsed,
+}
+
 func init() {
 	pasrDispatchMetrics = expvar.NewMap(pasrDispatchMapName)
 	for _, k := range pasrDispatchKeys() {
 		pasrDispatchMetrics.Add(k, 0)
 	}
+	pasrDispatchByVendor = expvar.NewMap(pasrDispatchMapName + "_by_vendor")
+	for _, vendor := range PASRDispatchVendors {
+		sub := new(expvar.Map).Init()
+		for _, mk := range pasrDispatchVendorKeys {
+			sub.Add(mk, 0)
+		}
+		pasrDispatchByVendor.Set(vendor, sub)
+	}
+}
+
+// IncDispatchVendor 按 vendor 切片累计某 dispatcher 子 metric。 vendor 必须
+// 在 PASRDispatchVendors 集合内, 否则静默丢弃 (caller 上游 chat_completions_
+// handler 应保证仅传 PASRDispatchVendors 中的字面量)。 metric key 必须在
+// pasrDispatchVendorKeys 里, 否则也静默 (子 sub.Add 不会 panic, 但 Snapshot
+// 不能可见 — 加新 metric 要更 pasrDispatchVendorKeys)。
+//
+// 用法: chat_completions_handler 在 dispatcher.Select 返成功后调:
+//
+//	IncDispatchVendor(pasrDispKeyShadowSampled, "anthropic")
+//
+// 由于 vendor 字面量与 PASRDispatchVendors 一致 (Owner 锁定 4 vendor),
+// dashboard 可以按 vendor 维度独立读 PASR shadow/diff 决策信号。
+func IncDispatchVendor(metricKey, vendor string) {
+	if vendor == "" {
+		return
+	}
+	subVar := pasrDispatchByVendor.Get(vendor)
+	if subVar == nil {
+		return
+	}
+	sub, ok := subVar.(*expvar.Map)
+	if !ok {
+		return
+	}
+	sub.Add(metricKey, 1)
 }
 
 // pasrDispatchKeys 返完整 key 列表 — eager init + Snapshot 共用。 加新指标只需
@@ -164,6 +223,30 @@ type PASRDispatchSnapshot struct {
 	ModeCanary                int64
 	ModePASRPrimary           int64
 	ModePASRStrict            int64
+}
+
+// SnapshotPASRDispatchVendor 读某 vendor 的 sub-counter 快照。 不在
+// PASRDispatchVendors 集合内 / 子 map 不存在时返全 0。 给测试 +
+// introspection 用; caller 不应在 hot path 调 (Snapshot 涉及 expvar 锁)。
+func SnapshotPASRDispatchVendor(vendor string) map[string]int64 {
+	out := make(map[string]int64, len(pasrDispatchVendorKeys))
+	for _, k := range pasrDispatchVendorKeys {
+		out[k] = 0
+	}
+	subVar := pasrDispatchByVendor.Get(vendor)
+	if subVar == nil {
+		return out
+	}
+	sub, ok := subVar.(*expvar.Map)
+	if !ok {
+		return out
+	}
+	for _, k := range pasrDispatchVendorKeys {
+		if v, ok := sub.Get(k).(*expvar.Int); ok {
+			out[k] = v.Value()
+		}
+	}
+	return out
 }
 
 // SnapshotPASRDispatchMetrics 读 dispatcher 全部计数器当前值。
