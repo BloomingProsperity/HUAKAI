@@ -63,16 +63,22 @@ type PASRSelector struct {
 
 	// loadCap 段成员被剔出 candidates 的 LoadRate 上限。 0.95 默认。
 	loadCap float64
+
+	// readOnlySegments 当为 true 时, Select 用 SegmentTable.Lookup 不创建段
+	// (D2 决策: shadow 实例段表只读, 不污染 actual 段 bitmap 学习数据)。
+	// 段未命中 → 直接走 HRW 全 ring 接力, 等价于 cold-miss 路径。
+	readOnlySegments bool
 }
 
 // PASRSelectorConfig 构造期参数。
 type PASRSelectorConfig struct {
-	Accounts     AccountSource
-	Claims       ClaimGate
-	Slots        SlotManager         // M3: nil → 兼容路径 (不持 slot 不写 claim, shadow / 老测试)
-	RingProvider func() *AccountRing // hot-swap 支持; nil 时调用方自行预填
-	Segments     *SegmentTable
-	LoadCap      float64 // 0 用 0.95
+	Accounts         AccountSource
+	Claims           ClaimGate
+	Slots            SlotManager         // M3: nil → 兼容路径 (不持 slot 不写 claim, shadow / 老测试)
+	RingProvider     func() *AccountRing // hot-swap 支持; nil 时调用方自行预填
+	Segments         *SegmentTable
+	LoadCap          float64 // 0 用 0.95
+	ReadOnlySegments bool    // M4 (D2): true 时 Select 走 Lookup-only 段表路径, 不污染段
 }
 
 // NewPASRSelector 构造实例。
@@ -91,12 +97,13 @@ func NewPASRSelector(cfg PASRSelectorConfig) (*PASRSelector, error) {
 		cap = 0.95
 	}
 	return &PASRSelector{
-		accounts:     cfg.Accounts,
-		claims:       cfg.Claims,
-		slots:        cfg.Slots, // 可为 nil — 兼容 shadow + 老测试路径
-		ringProvider: cfg.RingProvider,
-		segments:     cfg.Segments,
-		loadCap:      cap,
+		accounts:         cfg.Accounts,
+		claims:           cfg.Claims,
+		slots:            cfg.Slots, // 可为 nil — 兼容 shadow + 老测试路径
+		ringProvider:     cfg.RingProvider,
+		segments:         cfg.Segments,
+		loadCap:          cap,
+		readOnlySegments: cfg.ReadOnlySegments,
 	}, nil
 }
 
@@ -128,7 +135,17 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 		// 客户端没给 prompt prefix hash → PASR 退化, 全 ring 选首个 healthy
 		return p.scheduleNoSegment(ctx, req, ring, snapshots)
 	}
-	seg := p.segments.LookupOrCreate(prefixKey, ring)
+	// M4 (D2): readOnlySegments=true (shadow 实例) 用 Lookup 不创建; 段未命中
+	// 直接走 HRW 全 ring 接力, 不污染段表 — 让 actual 路径独占段学习数据。
+	var seg *PrefixSegment
+	if p.readOnlySegments {
+		seg = p.segments.Lookup(prefixKey)
+		if seg == nil {
+			return p.scheduleHRWFullRing(ctx, req, ring, snapshots, [PASRSegmentSize]int64{})
+		}
+	} else {
+		seg = p.segments.LookupOrCreate(prefixKey, ring)
+	}
 
 	// 3. 段内过滤 healthy + 未超载
 	type candidate struct {
