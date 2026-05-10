@@ -84,3 +84,19 @@ Every feature discovered from references must receive:
 ## Practical Rule
 
 If a feature is too large for L1, do not remove it. Assign it to L2, L3, or L4 and record the reason.
+
+## MISSING_DISPOSITION 修补 — Codex Feature Parity Audit (2026-05-09)
+
+来源：[docs/research/2026-05-09-codex-feature-parity-audit.md](research/2026-05-09-codex-feature-parity-audit.md) §6 — 8 条 HIGH `MISSING_DISPOSITION` 各分配 L 级与目前完成度。完整 disposition 见 [docs/03_FEATURE_PARITY_MATRIX.md](03_FEATURE_PARITY_MATRIX.md) 同名 §。
+
+| Feature ID | Capability 归属 | L 级 | 目前完成度 | Phase 引用 | 备注 |
+| --- | --- | --- | --- | --- | --- |
+| [F-AUTH-006](03_FEATURE_PARITY_MATRIX.md) | Provider Account Hub | L0 Not Started | 0% | Phase 6 | OAuth 引导：登录 bootstrap + 短窗/长窗 + 客户端身份伪装 plugin；commercial blocker |
+| [F-COMPAT-001](03_FEATURE_PARITY_MATRIX.md) | Gateway Core | L3 Reference Parity | 0% | Phase 5+ Personal Edition | Warm-up interception 凭据 flag plugin（默认关）；DECISION-POINT-Q1 |
+| [F-COMM-001](03_FEATURE_PARITY_MATRIX.md) | Billing | L3 Reference Parity | 0% | Phase 6+ commercial | 邀请 / 推荐子系统 plugin 壳；DECISION-POINT-Q2 |
+| [F-OBS-003](03_FEATURE_PARITY_MATRIX.md) | Usage Logging / Billing | L2 Production Usable | 0% | Phase 4.5 (axis 5 扩展) | 4-state 失败流计费扩展 F-OBS-001 |
+| [F-OBS-004](03_FEATURE_PARITY_MATRIX.md) | Observability | L2 Production Usable | 0% | Phase 4.5 (axis 5 扩展) | 14 段异步处理器链 + 每批 drain 边界 |
+| [F-OBS-005](03_FEATURE_PARITY_MATRIX.md) | Reliability / Observability | L2 Production Usable | 0% | Phase 4.5 (axis 5 扩展) | DLQ + 15 min 超时降级 + 优先级 lane + 主备非对称双写 |
+| [F-CRED-001](03_FEATURE_PARITY_MATRIX.md) | Provider Account Hub / Security | L4 Better Than Reference | 0% | Phase 9+ SaaS enterprise | TokenProvider + preRotation + OIDC→cloud STS（非 K8s 表驱动） |
+| [F-PROTO-003](03_FEATURE_PARITY_MATRIX.md) | Protocol Conversion | L2 Production Usable | 0% | covered by P-4 native passthrough | OpenAI 服务侧压缩透传；DECISION-POINT-Q3 是否升 first-class capability |
+

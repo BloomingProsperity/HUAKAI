@@ -192,6 +192,7 @@ Make provider accounts manageable and routable.
 - Manual credential rotation path.
 - Basic route selection.
 - Disabled accounts are excluded from routing.
+- [F-COMPAT-001](03_FEATURE_PARITY_MATRIX.md) — Warm-up interception 凭据 flag（Personal Edition opt-in plugin；DECISION-POINT-Q1 待 Owner 复核是否 reject 不做）。
 
 ### Exit Criteria
 
@@ -212,12 +213,32 @@ Record usage reliably and add simple quota controls without pretending to have f
 - Basic token or request count estimate.
 - Simple quota check.
 - Billing ledger design notes for later phases.
+- [F-AUTH-006](03_FEATURE_PARITY_MATRIX.md) — OAuth 引导子系统（commercial blocker，配合 F-AUTH-005 续期形成完整 OAuth 套利路径；L0-1 in 02_HUAKAI_FUSION_ARCHITECTURE.md）。
+- [F-COMM-001](03_FEATURE_PARITY_MATRIX.md) — 邀请 / 推荐子系统 plugin 壳（与 F-PAY-001 并列；DECISION-POINT-Q2 待 Owner 复核是否升 Mandatory Roadmap）。
 
 ### Exit Criteria
 
 - Usage can be inspected by user, key, model, and provider account.
 - Quota failure path is tested.
 - Billing parity gaps are recorded as roadmap items.
+
+## Phase 4.5: Async Task Backbone (axis 5 扩展, 2026-05-09 Codex audit 修补)
+
+### Goal
+
+补齐 axis 5 异步任务实现（[02_HUAKAI_FUSION_ARCHITECTURE.md](02_HUAKAI_FUSION_ARCHITECTURE.md) §5 复杂度轴当前 0%）；同时补齐 F-OBS-001 失败流计费 4-state 语义。挂在 Phase 4 与 Phase 5 之间，作为先于 Account Hub 完整化、先于真实 upstream 接入的运行时基础。
+
+### Deliverables
+
+- [F-OBS-003](03_FEATURE_PARITY_MATRIX.md) — 4-state 失败流计费扩展（client_gone / upstream_timeout / output_token_zero / upstream_5xx），落在 F-OBS-001 Tx2 结算钩子内，不另开 spec。
+- [F-OBS-004](03_FEATURE_PARITY_MATRIX.md) — 14 段异步处理器链 + 每批 drain 边界（按角色命名，避免上游 identifier 抄袭）。
+- [F-OBS-005](03_FEATURE_PARITY_MATRIX.md) — DLQ + 15 min 超时降级 + 显式低优先级 lane + 主备队列非对称双写。
+
+### Exit Criteria
+
+- 四种失败终态在 Usage Record 上有显式 `terminal_class` 字段且各自路径有正常 / 退款 / 部分计费断言。
+- 14 段链每段有幂等键 + 每批 drain 边界单测。
+- DLQ 重投幂等闸 + 优先级 lane 不会让账单类事件被 starve；双写分歧有对账接口。
 
 ## Phase 7: Admin Lite
 
@@ -282,6 +303,8 @@ By the end of Phase 9, HUAKAI's supported Provider catalog must **materially exc
 - Plugin boundaries.
 - Feature flags.
 - Better observability and investigation workflows.
+- [F-CRED-001](03_FEATURE_PARITY_MATRIX.md) — 凭据提供者 + 预轮换 + OIDC→cloud STS 子系统（Phase 9+ SaaS enterprise tier；与 F-AUTH-005 续期 / F-AUTH-006 引导职能边界明确分割）。
+- [F-PROTO-003](03_FEATURE_PARITY_MATRIX.md) — 服务侧压缩 native passthrough 路径 `/v1/native/openai/responses/compact`（已被 P-4 passthrough 覆盖；DECISION-POINT-Q3 待 Owner 复核是否升级到 first-class HCSF capability，14→15）。
 
 ### Exit Criteria
 
