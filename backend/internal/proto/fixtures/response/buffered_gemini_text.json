@@ -1,0 +1,61 @@
+{
+  "version": "0.4",
+  "request_meta": {
+    "request_id": "req_fxt_resp_gemini_text_001",
+    "client_protocol": "openai_chat",
+    "protocol_family": "openai_chat",
+    "upstream_protocol": "gemini",
+    "provider": "gemini",
+    "model": "gemini-2.0-flash",
+    "ingress_path": "/v1/chat/completions",
+    "native_passthrough": false
+  },
+  "request_controls": {},
+  "messages": [
+    {"role": "user", "content": [{"type": "text", "text": "fixture greeting"}]}
+  ],
+  "buffered_response": {
+    "id": "gen_fxt_gemini_001",
+    "model": "gemini-2.0-flash",
+    "content": [
+      {"type": "text", "text": "fixture greeting reply"}
+    ],
+    "usage": {"input_tokens": 3, "output_tokens": 4, "total_tokens": 7},
+    "stop_reason": "end_turn"
+  },
+  "capability_graph": {
+    "nodes": [
+      {
+        "id": "n_gemini_text_001",
+        "kind": "text",
+        "stream_ready": "yes",
+        "text": {"role": "assistant", "block": {"type": "text", "text": "fixture greeting reply"}}
+      }
+    ],
+    "edges": []
+  },
+  "provider_projection": {
+    "target_vendor": "gemini",
+    "target_protocol": "gemini",
+    "capability_results": [
+      {"capability": "text", "node_id": "n_gemini_text_001", "verdict": "preserved"}
+    ],
+    "overall_verdict": "preserved"
+  },
+  "stream_plan": {
+    "mode": "buffered",
+    "event_classes": [],
+    "flush_policy": "per_event",
+    "terminal_required": true,
+    "synthetic_terminal_allowed": true,
+    "fallback_boundary": "after_first_byte_blocked",
+    "mid_stream_fallback_policy": "none"
+  },
+  "accounting": {"usage": {"input_tokens": 3, "output_tokens": 4, "total_tokens": 7}},
+  "policy": {
+    "data_retention": {"value": "unknown", "enforcement": "unknown", "audit_label": "unknown"},
+    "auth": "standard",
+    "audit": {"visibility": "visible", "label": "default"},
+    "redaction": "public"
+  }
+}
