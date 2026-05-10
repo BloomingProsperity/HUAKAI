@@ -380,12 +380,17 @@ HARD PROHIBITIONS:
   - NEVER copy function names verbatim
   - NEVER copy struct field names verbatim
   - NEVER copy comments verbatim
-  - NEVER copy file paths verbatim into output (cite as "Source files read"
-    block ONLY at end, not as in-prose references)
   - NEVER do line-by-line algorithmic translation; behaviors must be
     expressed in different sentence structure than upstream code ordering
   - NEVER paste raw upstream code blocks (even small snippets)
   - When upstream uses a distinctive identifier, rename in summary
+
+CITATION POLICY (reconciled 2026-05-10 with CLAUDE.md #12):
+  - file:line citations are ALLOWED in prose as evidence anchors —
+    `<repo>@<sha>:<file>:<line>` style satisfies #12 per-claim citation
+  - the cited identifier itself must NOT appear verbatim in the prose
+    surrounding the citation; reference it by paraphrased role only
+  - "Source files read" tail block remains required (see below)
 
 REQUIRED OUTPUT TAIL (must appear at end of every artifact):
   Source files read: <relative paths>
