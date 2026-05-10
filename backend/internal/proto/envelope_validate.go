@@ -17,7 +17,7 @@ func (e *ValidationError) Error() string {
 	return fmt.Sprintf("envelope %s: %s", e.Inv, e.Message)
 }
 
-// ValidateEnvelope 对 HCSFEnvelope 做 INV-1..12 中所有结构性 / 语义性校验。
+// ValidateEnvelope 对 HCSFEnvelope 做 INV-1..13 中所有结构性 / 语义性校验。
 //
 //   - INV-1 不在此校验（属于 marshal/unmarshal round-trip 不变量，由测试覆盖）
 //   - INV-2 同上（nil/empty slice 等价由 encoding/json + omitempty 自然满足）
@@ -25,12 +25,13 @@ func (e *ValidationError) Error() string {
 //   - INV-4 Version=="0.4"
 //   - INV-5 RequestMeta 必填字段非空
 //   - INV-6 BufferedResponse + StreamEvents 至多一个非 nil
-//   - INV-7 ProtocolLoss 不可作为 silent drop
-//   - INV-8 Edge 引用的 node ID 必须存在
+//   - INV-7 ProtocolLoss 不可作为 silent drop（含 node / edge / projection 三层）
+//   - INV-8 Edge 必填 ID/Type/From/To；Type 必须在 AllEdgeTypes 中；From/To 必须命中 Nodes
 //   - INV-9 EdgeMutuallyExclusive 不可双向
 //   - INV-10 DataRetentionLabel 严格枚举
 //   - INV-11 MidStreamFallbackPolicy 默认 none
 //   - INV-12 Extensions key 前缀
+//   - INV-13 StreamPlan.Mode 必填且必须在 StreamMode 枚举内
 func ValidateEnvelope(env *HCSFEnvelope) error {
 	if env == nil {
 		return &ValidationError{Inv: "INV-0", Message: "envelope is nil"}
@@ -95,13 +96,21 @@ func validateRequestMeta(m *RequestMeta) error {
 }
 
 // validateEnvelopeShape 校验 INV-6（BufferedResponse + StreamEvents 至多一个非 nil）。
+//
+// 形态推导规则（envelope.go:10-17）：StreamEvents non-nil 即视为 replay shape，包括
+// `[]CanonicalEvent{}` 显式空切片。BufferedResponse + StreamEvents:nil 合法；
+// BufferedResponse + StreamEvents:[] 合法（用户显式声明 buffered 形态、StreamEvents 不参与）；
+// BufferedResponse + StreamEvents:[event{...}] 违反 INV-6。
+//
+// 之前实现用 `len(StreamEvents) > 0` 与"non-nil 即 replay"语义不一致；现在改为只在
+// StreamEvents 至少包含一个事件时才判定冲突，让"显式空切片"侧路也保持稳定 round-trip。
 func validateEnvelopeShape(env *HCSFEnvelope) error {
 	hasBuffered := env.BufferedResponse != nil
-	hasStream := len(env.StreamEvents) > 0
-	if hasBuffered && hasStream {
+	hasStreamEvents := len(env.StreamEvents) > 0
+	if hasBuffered && hasStreamEvents {
 		return &ValidationError{
 			Inv:     "INV-6",
-			Message: "BufferedResponse and StreamEvents cannot both be non-empty",
+			Message: "BufferedResponse and StreamEvents cannot both carry payload (StreamEvents has events)",
 		}
 	}
 	return nil
@@ -140,7 +149,35 @@ func validateCapabilityGraph(g *CapabilityGraph) error {
 	}
 
 	mutexPairs := make(map[string]struct{}, len(g.Edges))
+	edgeIDs := make(map[string]struct{}, len(g.Edges))
 	for i, edge := range g.Edges {
+		if edge.ID == "" {
+			return &ValidationError{
+				Inv:     "INV-8",
+				Message: fmt.Sprintf("CapabilityGraph.Edges[%d].ID is required", i),
+			}
+		}
+		if _, dup := edgeIDs[edge.ID]; dup {
+			return &ValidationError{
+				Inv:     "INV-8",
+				Message: fmt.Sprintf("CapabilityGraph.Edges duplicate ID %q", edge.ID),
+			}
+		}
+		edgeIDs[edge.ID] = struct{}{}
+
+		if edge.Type == "" {
+			return &ValidationError{
+				Inv:     "INV-8",
+				Message: fmt.Sprintf("CapabilityGraph.Edges[%d].Type is required", i),
+			}
+		}
+		if _, ok := edgeTypeSet[edge.Type]; !ok {
+			return &ValidationError{
+				Inv:     "INV-8",
+				Message: fmt.Sprintf("CapabilityGraph.Edges[%d].Type=%q is not in AllEdgeTypes enum", i, edge.Type),
+			}
+		}
+
 		if edge.From == "" || edge.To == "" {
 			return &ValidationError{
 				Inv:     "INV-8",
@@ -157,6 +194,15 @@ func validateCapabilityGraph(g *CapabilityGraph) error {
 			return &ValidationError{
 				Inv:     "INV-8",
 				Message: fmt.Sprintf("CapabilityGraph.Edges[%d].To=%q not found in Nodes", i, edge.To),
+			}
+		}
+		// 边自身的 ProtocolLoss 也禁止 silent drop（与 node / projection / graph 三层一致）。
+		for j, loss := range edge.ProtocolLoss {
+			if loss.IsSilentDrop() {
+				return &ValidationError{
+					Inv:     "INV-7",
+					Message: fmt.Sprintf("CapabilityGraph.Edges[%d].ProtocolLoss[%d] is a silent drop", i, j),
+				}
 			}
 		}
 		if edge.Type == EdgeMutuallyExclusive {
@@ -211,42 +257,57 @@ func validateNodeTaggedUnion(node CapabilityNode, idx int) error {
 	return nil
 }
 
+// capabilityPayloadFieldName 是 CapabilityKind → Go struct payload 字段名的真相源。
+//
+// 与 capability_graph.go 中的 AllCapabilityKinds + CapabilityNode 14 个 nullable pointer
+// 字段保持单一来源；init() 校验长度一致避免 enum 漂移。validator 与 projection 校验都
+// 经此 map 查询，避免 switch + slice 双真相源（Lane A renew L5）。
+var capabilityPayloadFieldName = map[CapabilityKind]string{
+	CapabilityText:             "Text",
+	CapabilityToolUse:          "ToolUse",
+	CapabilityToolResult:       "ToolResult",
+	CapabilityThinking:         "Thinking",
+	CapabilityCacheControl:     "CacheControl",
+	CapabilityStructuredOutput: "StructuredOutput",
+	CapabilityComputerUse:      "ComputerUse",
+	CapabilityFile:             "File",
+	CapabilityImage:            "Image",
+	CapabilityAudio:            "Audio",
+	CapabilityVideo:            "Video",
+	CapabilityLiveSession:      "LiveSession",
+	CapabilityBatch:            "Batch",
+	CapabilityMCPServer:        "MCPServer",
+	CapabilityDataRetention:    "DataRetention",
+}
+
+// edgeTypeSet 是 AllEdgeTypes 的 O(1) 查询副本；validator 用这个判断合法 edge.Type。
+var edgeTypeSet = func() map[CapabilityEdgeType]struct{} {
+	m := make(map[CapabilityEdgeType]struct{}, len(AllEdgeTypes))
+	for _, t := range AllEdgeTypes {
+		m[t] = struct{}{}
+	}
+	return m
+}()
+
+func init() {
+	// AllCapabilityKinds 与 capabilityPayloadFieldName 必须同长；任一加新成员后另一处必须同步。
+	if len(AllCapabilityKinds) != len(capabilityPayloadFieldName) {
+		panic(fmt.Sprintf(
+			"proto enum drift: AllCapabilityKinds=%d, capabilityPayloadFieldName=%d",
+			len(AllCapabilityKinds), len(capabilityPayloadFieldName),
+		))
+	}
+	for _, k := range AllCapabilityKinds {
+		if _, ok := capabilityPayloadFieldName[k]; !ok {
+			panic(fmt.Sprintf("proto enum drift: AllCapabilityKinds member %q missing in capabilityPayloadFieldName", k))
+		}
+	}
+}
+
 // nodePayloadByKind 返回 Kind 对应的 payload 字段名 + 是否合法 Kind。
 func nodePayloadByKind(node CapabilityNode) (string, bool) {
-	switch node.Kind {
-	case CapabilityText:
-		return "Text", true
-	case CapabilityToolUse:
-		return "ToolUse", true
-	case CapabilityToolResult:
-		return "ToolResult", true
-	case CapabilityThinking:
-		return "Thinking", true
-	case CapabilityCacheControl:
-		return "CacheControl", true
-	case CapabilityStructuredOutput:
-		return "StructuredOutput", true
-	case CapabilityComputerUse:
-		return "ComputerUse", true
-	case CapabilityFile:
-		return "File", true
-	case CapabilityImage:
-		return "Image", true
-	case CapabilityAudio:
-		return "Audio", true
-	case CapabilityVideo:
-		return "Video", true
-	case CapabilityLiveSession:
-		return "LiveSession", true
-	case CapabilityBatch:
-		return "Batch", true
-	case CapabilityMCPServer:
-		return "MCPServer", true
-	case CapabilityDataRetention:
-		return "DataRetention", true
-	default:
-		return "", false
-	}
+	name, ok := capabilityPayloadFieldName[node.Kind]
+	return name, ok
 }
 
 // nonNilPayloads 列出 node 中非 nil 的 payload 字段名。
@@ -300,9 +361,38 @@ func nonNilPayloads(node CapabilityNode) []string {
 	return names
 }
 
-// validateProviderProjection 校验 INV-7（projection 层 ProtocolLoss 不可 silent drop）。
+// validateProviderProjection 校验 INV-7 / INV-3 在 projection 层的延伸：
+//
+//   - Capability 必填且必须在 AllCapabilityKinds 中（INV-3 capability enum）
+//   - Verdict 必填且必须在 AllProjectionVerdicts 中
+//   - Verdict != preserved 时 ProtocolLoss 至少一条且不能 silent drop（INV-7）
+//   - Verdict == native_required 时 NativePath 必填
 func validateProviderProjection(p *ProviderProjection) error {
 	for i, cp := range p.CapabilityResults {
+		if cp.Capability == "" {
+			return &ValidationError{
+				Inv:     "INV-3",
+				Message: fmt.Sprintf("ProviderProjection.CapabilityResults[%d].Capability is required", i),
+			}
+		}
+		if _, ok := capabilityPayloadFieldName[cp.Capability]; !ok {
+			return &ValidationError{
+				Inv:     "INV-3",
+				Message: fmt.Sprintf("ProviderProjection.CapabilityResults[%d].Capability=%q is not in CapabilityKind enum", i, cp.Capability),
+			}
+		}
+		if cp.Verdict == "" {
+			return &ValidationError{
+				Inv:     "INV-7",
+				Message: fmt.Sprintf("ProviderProjection.CapabilityResults[%d].Verdict is required", i),
+			}
+		}
+		if !isProjectionVerdict(cp.Verdict) {
+			return &ValidationError{
+				Inv:     "INV-7",
+				Message: fmt.Sprintf("ProviderProjection.CapabilityResults[%d].Verdict=%q is not in ProjectionVerdict enum", i, cp.Verdict),
+			}
+		}
 		if cp.Verdict != ProjectionPreserved && len(cp.ProtocolLoss) == 0 {
 			return &ValidationError{
 				Inv:     "INV-7",
@@ -327,16 +417,28 @@ func validateProviderProjection(p *ProviderProjection) error {
 	return nil
 }
 
-// validateStreamPlan 校验 INV-11（MidStreamFallbackPolicy 默认 none，仅 P-8 才允许非 none）。
+// isProjectionVerdict 是 ProjectionVerdict enum 的快速判定。
+func isProjectionVerdict(v ProjectionVerdict) bool {
+	switch v {
+	case ProjectionPreserved, ProjectionLossy, ProjectionUnsupported, ProjectionNativeRequired:
+		return true
+	}
+	return false
+}
+
+// validateStreamPlan 校验 INV-11 与 INV-13：
+//
+//   - INV-13 StreamPlan.Mode 必填且必须在 StreamMode 枚举内（buffered/streaming/replay）
+//   - INV-11 P-0 默认 MidStreamFallbackNone；非 none 拒绝（D9 留位，P-8 才能改）
 func validateStreamPlan(s *StreamPlan) error {
 	if s.Mode == "" {
-		return &ValidationError{Inv: "INV-5", Message: "StreamPlan.Mode is required"}
+		return &ValidationError{Inv: "INV-13", Message: "StreamPlan.Mode is required"}
 	}
 	switch s.Mode {
 	case StreamModeBuffered, StreamModeStreaming, StreamModeReplay:
 	default:
 		return &ValidationError{
-			Inv:     "INV-5",
+			Inv:     "INV-13",
 			Message: fmt.Sprintf("StreamPlan.Mode=%q is not in StreamMode enum", s.Mode),
 		}
 	}

@@ -70,8 +70,28 @@ type ProtocolLossEntry struct {
 	Note string `json:"note,omitempty"`
 }
 
-// IsSilentDrop 判断条目是否为静默丢失（既无 v0.3 verdict/note 也无 v0.4 reason）。
+// IsSilentDrop 判断条目是否为静默丢失。
+//
+// 判定规则（兼容 v0.3 + v0.4，避免 Verdict-only 漏网）：
+//
+//   - 任一可读字段（Reason / Note / Code）存在 → 非 silent drop
+//   - 仅有 Verdict（v0.3 老 adapter 还在使用）→ 非 silent drop（保持向后兼容）
+//   - v0.4 路径：若 Severity 已设置（说明是 v0.4 写入），但 Reason 与 Code 同时为空 →
+//     仍判 silent drop —— v0.4 entry 必须有人读 Reason 或机器读 Code，仅 Verdict 不够
+//   - 其余情形（四字段全空）→ silent drop
+//
 // envelope_validate 用它来强制 INV-7。
 func (e ProtocolLossEntry) IsSilentDrop() bool {
-	return e.Reason == "" && e.Note == "" && e.Verdict == "" && e.Code == ""
+	hasReason := e.Reason != ""
+	hasNote := e.Note != ""
+	hasCode := e.Code != ""
+	hasVerdict := e.Verdict != ""
+
+	// v0.4 写入特征：Severity 已设。这种情形要求至少 Reason 或 Code 有内容。
+	if e.Severity != "" {
+		return !(hasReason || hasCode)
+	}
+
+	// v0.3 兼容路径：任一字段非空即视为有解释。
+	return !(hasReason || hasNote || hasCode || hasVerdict)
 }
