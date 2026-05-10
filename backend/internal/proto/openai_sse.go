@@ -147,12 +147,28 @@ func (a *OpenAIAdapter) CanonicalToProviderRequest(ctx context.Context, canonica
 
 func (a *OpenAIAdapter) ProviderResponseToCanonical(ctx context.Context, raw []byte) (*HCSF, []ProtocolLossEntry, error) {
 	_ = ctx
-	_, losses, err := openAIResponseToCanonicalResponse(raw)
+	resp, losses, err := openAIResponseToCanonicalResponse(raw)
 	if err != nil {
 		return nil, losses, err
 	}
-	losses = append(losses, newLossEntry(FeatureTextStreaming, DirectionUpstreamToCanonical, VerdictLossy, "HCSF envelope has no buffered response slot in this slice"))
-	return &HCSF{}, losses, nil
+	// P-0c-C D-FailLoud: 之前返回 `&HCSF{}` 零值会让 caller 误以为成功——
+	// envelope.Version 空字符串穿过 alias sunset 后没有任何下游能识别这是
+	// 半构造态。改为返回带 Version + BufferedResponse 的最小合法 envelope。
+	//
+	// 注意：本 envelope 仅作为 buffered response 容器，**不要求**通过完整
+	// ValidateEnvelope（RequestMeta 几个必填字段需要 forwarder 层注入；
+	// ProviderResponseToCanonical 的纯 raw bytes 入参里不一定有 RequestID /
+	// IngressPath 等信息）。Caller 在拼装 forwarder envelope 时应填写
+	// RequestMeta，本函数只负责把 vendor response 装进 BufferedResponse。
+	//
+	// 调用方建议：先 ValidateEnvelopeVersionGuard 守边界，需要完整 INV
+	// 校验时（debug build / fixture 入口）走 ValidateEnvelopeDebug。
+	bufferedResp := resp
+	env := &HCSF{
+		Version:          HCSFVersion,
+		BufferedResponse: &bufferedResp,
+	}
+	return env, losses, nil
 }
 
 func (a *OpenAIAdapter) ProviderEventToCanonicalEvents(ctx context.Context, providerEvt any, state any) ([]any, []ProtocolLossEntry, error) {
