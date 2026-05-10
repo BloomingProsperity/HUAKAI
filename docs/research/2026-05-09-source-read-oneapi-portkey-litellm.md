@@ -17,12 +17,12 @@ Citations use the `<repo>@<sha>:<file>:<line>` form. Identifiers below are HUAKA
 
 | Claim                                                  | Verdict after source read                                                                                                                                                                                          |
 | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| "No project does cross-account prompt-cache locality"  | **PARTIALLY FALSE.** LiteLLM has a working pre-call filter that pins prompts with `cache_control` markers to the deployment that previously served the same cacheable prefix.                                       |
+| "No project does cross-account prompt-cache locality"  | **PARTIALLY FALSE.** LiteLLM has a working pre-call filter that pins prompts carrying ephemeral cache-control markers to the deployment that previously served the same cacheable prefix.                          |
 | "No project proactively warms caches on backup accounts" | **TRUE** for these three. None warm a backup deployment's cache. Warmup terminology in litellm is for spend counters / Swagger / OAuth tokens, not prompt cache.                                                  |
 | "No project decomposes one inbound request into N upstream calls" | **TRUE for chat-style requests** in all three. The only fan-out is litellm's `batch_completion`, which is N inbound `messages` lists in one Python call (user-driven), not gateway-internal split. |
 | "No project does predictive migration / pre-error failover" | **TRUE.** All three are reactive (cooldown / circuit-open after failure). No predictive demotion based on rising-latency or rising-error trend before threshold.                                                  |
 
-**Key correction for HUAKAI architecture deck**: the "first-mover" framing on prompt-cache locality is incorrect. LiteLLM (MIT) ships it as `PromptCachingDeploymentCheck`. HUAKAI's PASR remains differentiated on (a) cross-account replication of cache fingerprint, (b) score-based locality+headroom blending, (c) cache-miss demotion — none of which appear in litellm's per-prefix pin model.
+**Key correction for HUAKAI architecture deck**: the "first-mover" framing on prompt-cache locality is incorrect. LiteLLM (MIT) ships a pre-call deployment-check that does locality routing (upstream-side identifier omitted; see file:line citations in §A1). HUAKAI's PASR remains differentiated on (a) cross-account replication of cache fingerprint, (b) score-based locality+headroom blending, (c) cache-miss demotion — none of which appear in litellm's per-prefix pin model.
 
 ---
 
@@ -30,32 +30,56 @@ Citations use the `<repo>@<sha>:<file>:<line>` form. Identifiers below are HUAKA
 
 ### A1. Prompt-cache locality routing — LiteLLM has it
 
-LiteLLM ships a router pre-call filter that, for prompts containing `cache_control: {"type": "ephemeral"}` markers, pins the request to the same deployment ID that previously served the same cacheable prefix.
+LiteLLM ships a router pre-call filter that, for prompts carrying an
+ephemeral cache-control marker, pins the request to the same
+deployment id that previously served the same cacheable prefix.
 
 How it works (paraphrased):
 
-1. The cacheable prefix is reconstructed by walking messages and stopping at the last `cache_control` marker (covers both content-block-level and message-level markers).
-2. A SHA-256 fingerprint is computed over the canonicalized (sorted-key JSON) prefix plus the tools array.
-3. The fingerprint maps to a `model_id` in a dual-tier (memory + Redis-style) cache with a 300-second TTL. Lookup happens before deployment selection; if a stored model_id matches a healthy deployment, the filter narrows the candidate set to that single deployment.
-4. The handler also requires that the prompt would actually trigger upstream prompt caching (`is_prompt_caching_valid_prompt`, e.g. >1024 tokens for Anthropic).
+1. The cacheable prefix is reconstructed by walking the messages and
+   stopping at the deepest cache-control marker (the extractor handles
+   both content-block-level and message-level marker placement).
+2. A SHA-256 fingerprint is computed over a canonicalized (sorted-key
+   JSON) representation of the prefix plus the tools array.
+3. The fingerprint maps to a deployment id in a dual-tier
+   (memory + Redis-style) cache with a 300-second TTL. Lookup happens
+   before deployment selection; if a stored deployment id matches a
+   healthy deployment, the filter narrows the candidate set to that
+   single deployment.
+4. The handler also gates on a "would this prompt actually trigger
+   upstream prompt caching?" predicate (e.g. >1024 tokens for
+   Anthropic), so locality is only applied when caching is plausible.
 
-Citations:
+Citations (file:line evidence; upstream-side identifiers omitted):
 
-- `litellm@b5d3a5fc:litellm/router_utils/prompt_caching_cache.py:31` — class definition
+- `litellm@b5d3a5fc:litellm/router_utils/prompt_caching_cache.py:31` — locality cache class definition
 - `litellm@b5d3a5fc:litellm/router_utils/prompt_caching_cache.py:55-142` — cacheable-prefix extraction (handles both message-level and content-block-level markers)
-- `litellm@b5d3a5fc:litellm/router_utils/prompt_caching_cache.py:144-180` — SHA-256 fingerprinting; key namespaced as `deployment:<hash>:prompt_caching`
-- `litellm@b5d3a5fc:litellm/router_utils/prompt_caching_cache.py:196-220` — `add_model_id` writes with 300 s TTL
-- `litellm@b5d3a5fc:litellm/router_utils/pre_call_checks/prompt_caching_deployment_check.py:23-49` — pre-call filter narrows healthy_deployments to the stored model_id when it matches
-- `litellm@b5d3a5fc:litellm/router_utils/pre_call_checks/prompt_caching_deployment_check.py:51-100` — `async_log_success_event` writes the model_id back to cache after a successful chat / `anthropic_messages` call
+- `litellm@b5d3a5fc:litellm/router_utils/prompt_caching_cache.py:144-180` — SHA-256 fingerprinting; namespaced cache key per deployment
+- `litellm@b5d3a5fc:litellm/router_utils/prompt_caching_cache.py:196-220` — write helper persists deployment id with 300 s TTL
+- `litellm@b5d3a5fc:litellm/router_utils/pre_call_checks/prompt_caching_deployment_check.py:23-49` — pre-call filter narrows the healthy-deployments candidate set to the stored deployment id when it matches
+- `litellm@b5d3a5fc:litellm/router_utils/pre_call_checks/prompt_caching_deployment_check.py:51-100` — post-success hook writes the deployment id back to the locality cache after a successful chat / Anthropic messages call
 
 What litellm does NOT do (PASR's differentiators still hold):
 
-- No replication of the locality marker across accounts (fingerprint binds to **one** deployment_id; if it's down, the filter falls back to the full healthy_deployments set without any locality awareness).
-- No score blending (locality + headroom). It's hard pin: "if cache hit recorded, narrow to that one deployment, else use baseline strategy."
-- No cache-miss demotion. If the pinned deployment turns out not to actually have the cache (e.g. Anthropic evicted), the response is still served and counted as success — no penalty applied to the locality cache itself, no fallback narrowing logic.
-- No support for non-`cache_control` providers (i.e. providers that auto-cache without explicit markers) — `extract_cacheable_prefix` returns empty, so no key, so no locality.
+- No replication of the locality marker across accounts (fingerprint
+  binds to **one** deployment id; if it's down, the filter falls back
+  to the full healthy-deployments set without any locality awareness).
+- No score blending (locality + headroom). It's hard pin: "if cache
+  hit recorded, narrow to that one deployment, else use baseline
+  strategy."
+- No cache-miss demotion. If the pinned deployment turns out not to
+  actually have the cache (e.g. Anthropic evicted), the response is
+  still served and counted as success — no penalty applied to the
+  locality cache itself, no fallback narrowing logic.
+- No support for providers that auto-cache without explicit markers —
+  the prefix extractor returns empty for those, so no key, so no
+  locality.
 
-There is also a distinct `AnthropicCacheControlHook` (`litellm@b5d3a5fc:litellm/integrations/anthropic_cache_control_hook.py:1-60`) which **injects** `cache_control` markers at user-specified message indices. This is a request-shaping hook, not a routing decision — it does not consult any locality store.
+There is also a distinct Anthropic cache-control injection hook
+(`litellm@b5d3a5fc:litellm/integrations/anthropic_cache_control_hook.py:1-60`)
+which **injects** cache-control markers at user-specified message
+indices. This is a request-shaping hook, not a routing decision — it
+does not consult any locality store.
 
 ### A2. Cache warming on backup accounts
 
@@ -194,7 +218,7 @@ There is one narrow case in litellm where a single inbound semantic request beco
 | --------- | ------------------------------------------------------------------------------------------------------------- | ---------------------- | ---------------------- |
 | one-api   | After a failed relay, retry up to `RetryTimes` with a different bucket; auto-disable channel after rolling success rate threshold breached | Per-channel            | No (each retry replays request body fresh) |
 | Portkey   | `onStatusCodes` match → next target in `fallback` chain; circuit breaker disables `isOpen` targets per session | Per-target             | No                     |
-| LiteLLM   | Exception → cooldown deployment for `time_to_cooldown` seconds; on stream failure, MidStreamFallbackError triggers `stream_with_fallbacks` to switch deployment **mid-stream** with a continuation prompt synthesized from accumulated chunks | Per-deployment         | Partial — see D3       |
+| LiteLLM   | Exception → cooldown deployment for a configured cooldown duration; on stream failure, a dedicated mid-stream-fallback exception triggers a stream-fallback wrapper to switch deployment **mid-stream** with a continuation prompt synthesized from accumulated chunks | Per-deployment         | Partial — see D3       |
 
 ### D2. one-api auto-disable
 
@@ -207,17 +231,31 @@ There is no time-based cooldown. Disabled channels stay disabled until manually 
 
 ### D3. LiteLLM mid-stream fallback (notable design pattern)
 
-`litellm@b5d3a5fc:litellm/router.py:2052-2194` (`_acompletion_streaming_iterator`):
+`litellm@b5d3a5fc:litellm/router.py:2052-2194` — async streaming
+wrapper method (upstream-side identifier omitted).
 
-When a streaming response raises `MidStreamFallbackError` part-way through, the wrapper:
+When a streaming response raises a dedicated mid-stream-fallback
+exception type part-way through, the wrapper:
 
-1. Reconstructs the partially-generated content from accumulated chunks (`stream_chunk_builder`).
-2. Synthesizes a continuation prompt: original messages + a system message instructing the next model to continue from the partial assistant text + the partial assistant message with `prefix: True`.
+1. Reconstructs the partially-generated content from accumulated
+   chunks via a chunk-accumulation helper.
+2. Synthesizes a continuation prompt: original messages + a system
+   message instructing the next model to continue from the partial
+   assistant text + the partial assistant message tagged with the
+   vendor's assistant-prefill marker (Anthropic-style).
 3. Triggers the standard fallback chain with the new messages.
-4. Fallback stream's chunks are forwarded to the client; usage objects are merged so the partial-stream usage is added to the fallback-stream usage on the same chunk (`_combine_fallback_usage`, `litellm/router.py:2032-2050`).
-5. On client disconnect, both streams are closed via `aclose()` shielded from cancellation (anyio).
+4. Fallback stream's chunks are forwarded to the client; usage objects
+   are merged via a usage-combine helper so the partial-stream usage
+   is added to the fallback-stream usage on the same chunk
+   (`litellm@b5d3a5fc:litellm/router.py:2032-2050`).
+5. On client disconnect, both streams are closed via an async-close
+   call shielded from cancellation by an AsyncIO scope-shield
+   primitive.
 
-This is request-state migration (partial generation) but **not** prompt-cache state migration. The new deployment will have to recompute its own prompt cache. There is no mechanism that says "and please prime deployment B's cache with prefix X first."
+This is request-state migration (partial generation) but **not**
+prompt-cache state migration. The new deployment will have to
+recompute its own prompt cache. There is no mechanism that says "and
+please prime deployment B's cache with prefix X first."
 
 ### D4. Portkey circuit breaker
 
@@ -259,7 +297,7 @@ LiteLLM's lowest_latency is reactive (uses observed latency for ranking, not for
 
 ### E3. LiteLLM cacheable-prefix extraction (for HUAKAI's cache fingerprinting)
 
-`litellm@b5d3a5fc:litellm/router_utils/prompt_caching_cache.py:55-142` correctly handles both message-level and content-block-level `cache_control` markers, plus the "last marker wins" semantics that match Anthropic's actual cache behavior. Worth borrowing the **idea** (clean-room reimplementation): walk messages, find the deepest cache_control marker, hash everything up to and including that block. HUAKAI should hash the prefix per-vendor-family because OpenAI and Anthropic disagree on what's cacheable.
+`litellm@b5d3a5fc:litellm/router_utils/prompt_caching_cache.py:55-142` correctly handles both message-level and content-block-level cache-control markers, plus the "last (deepest) marker wins" semantics that match Anthropic's actual cache behavior. Worth borrowing the **idea** (clean-room reimplementation): walk messages, find the deepest cache-control marker, hash everything up to and including that block. HUAKAI should hash the prefix per-vendor-family because OpenAI and Anthropic disagree on what's cacheable.
 
 ### E4. one-api priority bucketing as a primitive
 
@@ -269,9 +307,18 @@ LiteLLM's lowest_latency is reactive (uses observed latency for ranking, not for
 
 `portkey-gateway@351692fd:src/services/conditionalRouter.ts:44-156` — compact MongoDB-style DSL (`$eq`, `$gt`, `$in`, `$regex`, `$and`, `$or`) over request metadata / params / URL. HUAKAI's claim_gate could expose a similar declarative router for "if `metadata.tier == 'premium'` and `model in ['claude-3-opus', 'gpt-4-turbo']` → route via VIP pool" without writing Go.
 
-### E6. LiteLLM `MidStreamFallbackError` (high-leverage idea, hard to clean-room well)
+### E6. LiteLLM mid-stream fallback (high-leverage idea, hard to clean-room well)
 
-The "synthesize continuation prompt with `prefix: True` + merge usage objects" pattern (`litellm@b5d3a5fc:litellm/router.py:2085-2194`) is a real production differentiator: streaming-time deployment swap with cost accounting preserved. The "prefix: True" is Anthropic-specific (their assistant-prefill feature), so the cross-vendor case is harder. HUAKAI's R5/R7/R8 stability layer should consider whether streaming continuation is in scope; if yes, this is the best reference behavior for clean-room reimplementation.
+The "synthesize a continuation prompt that carries the vendor's
+assistant-prefill marker + merge usage objects from both legs" pattern
+(`litellm@b5d3a5fc:litellm/router.py:2085-2194`; upstream-side
+identifiers omitted) is a real production differentiator:
+streaming-time deployment swap with cost accounting preserved. The
+prefill marker is Anthropic-specific (their assistant-prefill
+feature), so the cross-vendor case is harder. HUAKAI's R5/R7/R8
+stability layer should consider whether streaming continuation is in
+scope; if yes, this is the best reference behavior for clean-room
+reimplementation.
 
 ### E7. Portkey strategy composition (recursive targets)
 

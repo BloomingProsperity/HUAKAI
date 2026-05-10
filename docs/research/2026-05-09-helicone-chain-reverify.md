@@ -7,7 +7,7 @@ Reference repo: Helicone/helicone (Apache-2.0), HEAD `3f4bd44b85f9837feb4a696cce
 
 ## Verdict in one line
 
-Lane C is **right in spirit, slightly overstated in handler count and slightly imprecise on dual-write durability**. Specifically: there ARE 15 handler files on disk, but only **14** are actually wired into the live chain — `ExperimentHandler.ts` is defined and exported but never imported or `setNext`-chained anywhere in the cold-path consumer. Dual-write is real but is **NOT a synchronous fan-out**: it is a "primary best-effort + secondary authoritative" pattern in both the worker (edge) and the cold-path consumer.
+Lane C is **right in spirit, slightly overstated in handler count and slightly imprecise on dual-write durability**. Specifically: there ARE 15 handler files on disk, but only **14** are actually wired into the live chain — the experiment-related handler file is defined and exported but never imported or successor-chained anywhere in the cold-path consumer. Dual-write is real but is **NOT a synchronous fan-out**: it is a "primary best-effort + secondary authoritative" pattern in both the worker (edge) and the cold-path consumer.
 
 ## Q1: Hot path writes ONE message to a queue?
 
@@ -27,65 +27,65 @@ So Lane C's "one message per request" claim is correct for the queue-enabled pat
 
 **Almost — actually 14 wired handlers, plus 4 cross-cutting result-flush calls.**
 
-Chain construction site: `valhalla/jawn/src/managers/LogManager.ts:71-118` (`processLogEntries`). Each handler is `new`'d fresh per batch and assembled with `setNext()`:
+Chain construction site: `valhalla/jawn/src/managers/LogManager.ts:71-118` (per-batch processor entrypoint). Each handler is constructed fresh per batch and assembled in a chain-of-responsibility via per-batch successor wiring (head node followed by 13 successors).
 
-```
-authHandler
-  .setNext(rateLimitHandler)      // L105
-  .setNext(s3Reader)              // L106
-  .setNext(requestHandler)        // L107
-  .setNext(responseBodyHandler)   // L108
-  .setNext(promptHandler)         // L109
-  .setNext(onlineEvalHandler)     // L110
-  .setNext(stripeIntegrationHandler) // L112 (intentionally before logging — it mutates props)
-  .setNext(loggingHandler)        // L113
-  .setNext(posthogHandler)        // L114
-  .setNext(lytixHandler)          // L115
-  .setNext(webhookHandler)        // L116
-  .setNext(segmentHandler)        // L117
-  .setNext(stripeLogHandler);     // L118
-```
+Wired role sequence (upstream-side class identifiers omitted; cited via file:line below):
 
-Plus the head node `authHandler`. That is **14 nodes**, not 15. Each batch-message is then driven through the chain via `authHandler.handle(handlerContext)` wrapped in a 15-minute timeout (`LogManager.ts:125-128`).
+1. auth gate (head)
+2. rate-limit gate
+3. read-side object-storage payload reader
+4. request-body gate
+5. response-body gate
+6. prompt extraction
+7. online-eval
+8. billing-integration (intentionally placed before write-log because it mutates props that write-log later persists)
+9. write-log (DB upsert)
+10. analytics fanout — posthog
+11. analytics fanout — lytix
+12. webhook
+13. segment-log
+14. stripe-meter
+
+That is **14 nodes**, not 15. Each batch-message is then driven through the chain by invoking the head node's handle method on a shared per-batch context object, wrapped in a 15-minute timeout (`LogManager.ts:125-128`).
 
 Then there are four cross-cutting "results-flush" calls outside the per-message chain that finalize side-effects:
-- `logRateLimits(rateLimitHandler, …)` — `LogManager.ts:220, 337`
-- `logHandlerResults(loggingHandler, …)` — `LogManager.ts:221, 271` (DB upsert; pushes to DLQ on error)
-- `logStripeMeter(stripeLogHandler, …)` — `LogManager.ts:222, 232`
-- `logStripeIntegration(stripeIntegrationHandler, …)` — `LogManager.ts:223, 253`
+- rate-limit drain — `LogManager.ts:220, 337`
+- write-log results drain (DB upsert; pushes to DLQ on error) — `LogManager.ts:221, 271`
+- stripe-meter drain — `LogManager.ts:222, 232`
+- billing-integration drain — `LogManager.ts:223, 253`
 
-And four best-effort flushes:
-- `logPosthogEvents`, `logLytixEvents`, `logSegmentEvents`, `logWebhooks` — `LogManager.ts:226-229, 411/375/393/429`
+And four best-effort flushes (analytics + webhook fanout):
+- posthog / lytix / segment / webhook events — `LogManager.ts:226-229, 411/375/393/429`
 
 So the architecture is "chain-of-responsibility for per-message processing, then per-batch handler-result drains for IO that benefits from batching."
 
 ## Q3: Are the handler names the literal Auth/RateLimit/Logging/…/Webhook list?
 
-**Lane C named 15; only 14 of those classes are actually wired.** Cross-check against `valhalla/jawn/src/lib/handlers/`:
+**Lane C named 15; only 14 of those roles are actually wired.** Cross-check against `valhalla/jawn/src/lib/handlers/` (file:line citations preserved per #12; upstream-side class identifiers omitted):
 
-| Lane C name | Actual class file | Wired? | Citation |
-|---|---|---|---|
-| Auth | `AuthenticationHandler.ts` | YES | `LogManager.ts:4, 83, 104` |
-| RateLimit | `RateLimitHandler.ts` | YES | `LogManager.ts:14, 84, 105` |
-| Logging | `LoggingHandler.ts` | YES | `LogManager.ts:9, 90-94, 113` |
-| Prompt | `PromptHandler.ts` | YES | `LogManager.ts:13, 88, 109` |
-| Experiment | `ExperimentHandler.ts` | **NO — dead in this chain** | file exists at `valhalla/jawn/src/lib/handlers/ExperimentHandler.ts:6` but no import in `LogManager.ts`; no `new ExperimentHandler` anywhere under `valhalla/jawn/src` |
-| OnlineEval | `OnlineEvalHandler.ts` | YES | `LogManager.ts:11, 89, 110` |
-| RequestBody | `RequestBodyHandler.ts` | YES | `LogManager.ts:15, 86, 107` |
-| ResponseBody | `ResponseBodyHandler.ts` | YES | `LogManager.ts:16, 87, 108` |
-| S3 | `S3ReaderHandler.ts` (read-side) | YES | `LogManager.ts:17, 85, 106` |
-| PostHog | `PostHogHandler.ts` | YES | `LogManager.ts:12, 96, 114` |
-| Lytix | `LytixHandler.ts` | YES | `LogManager.ts:10, 97, 115` |
-| Segment | `SegmentLogHandler.ts` (note suffix) | YES | `LogManager.ts:18, 100, 117` |
-| StripeIntegration | `StripeIntegrationHandler.ts` | YES | `LogManager.ts:20, 102, 112` |
-| StripeLog | `StripeLogHandler.ts` | YES | `LogManager.ts:19, 101, 118` |
-| Webhook | `WebhookHandler.ts` | YES | `LogManager.ts:21, 99, 116` |
+| Lane C role name | Wired? | Citation (LogManager.ts) |
+|---|---|---|
+| Auth (head) | YES | L4, 83, 104 |
+| RateLimit | YES | L14, 84, 105 |
+| Write-log (DB upsert) | YES | L9, 90-94, 113 |
+| Prompt extraction | YES | L13, 88, 109 |
+| Experiment | **NO — dead in this chain** | file exists under `valhalla/jawn/src/lib/handlers/` (per file:6) but no import in `LogManager.ts`; no constructor call anywhere under `valhalla/jawn/src` |
+| OnlineEval | YES | L11, 89, 110 |
+| RequestBody | YES | L15, 86, 107 |
+| ResponseBody | YES | L16, 87, 108 |
+| Object-storage read-side | YES | L17, 85, 106 |
+| PostHog | YES | L12, 96, 114 |
+| Lytix | YES | L10, 97, 115 |
+| Segment-log | YES | L18, 100, 117 |
+| StripeIntegration (billing) | YES | L20, 102, 112 |
+| Stripe-meter | YES | L19, 101, 118 |
+| Webhook | YES | L21, 99, 116 |
 
 Naming nuance Lane C smoothed over:
-- The S3 step is **`S3ReaderHandler`**, not "S3" — i.e. it READS payloads back from object storage (because the worker writes raw bodies to S3 before queueing). Writing to S3 happens in the worker hot path, not here.
-- It's **`SegmentLogHandler`** (the "Log" suffix matches StripeLog/StripeIntegration); Lane C dropped the suffix.
+- The object-storage step is **read-side**, not "S3" — i.e. it READS payloads back from object storage (because the worker writes raw bodies to object storage before queueing). Writing happens in the worker hot path, not here.
+- The segment-side handler carries a "log" suffix in its file name (matching the stripe-log / stripe-integration suffix convention); Lane C dropped that nuance.
 
-Verified base class: `valhalla/jawn/src/lib/handlers/AbstractLogHandler.ts:5-26` — classic textbook chain-of-responsibility (`setNext` returns the next handler so calls chain, `handle` delegates to `nextHandler` if set, else returns "Chain complete."). Every concrete handler `extends AbstractLogHandler`.
+Verified base class: `valhalla/jawn/src/lib/handlers/AbstractLogHandler.ts:5-26` — classic textbook chain-of-responsibility (the successor-setter returns the next handler so calls chain, the handle method delegates to the recorded successor if set, else returns a "chain complete" sentinel). Every concrete handler extends this base class. (Upstream-side class identifiers omitted.)
 
 ## Q4: Dual-write Kafka + SQS?
 
@@ -104,9 +104,9 @@ Consumer side (jawn / cold path), `valhalla/jawn/src/lib/`:
 - `clients/HeliconeQueueProducer.ts:16-29` — same factory switch (`"dual"`/`"sqs"`/`"kafka"`), used by `LogManager` to push failures to `request-response-logs-prod-dlq`.
 
 Consumers themselves are NOT dual-read; they are independent loops:
-- `valhalla/jawn/src/workers/sqsConsumer.ts` (37 LoC entry) → `lib/clients/sqsConsumers/sqsConsumers.ts:112-216` (`consumeRequestResponseLogs`, `consumeRequestResponseLogsLowPriority`, `consumeRequestResponseLogsDlq`, `consumeHeliconeScores`, `consumeHeliconeScoresDlq`) — pulls SQS, calls `LogManager.processLogEntries` or `ScoreManager.handleScores`, deletes on success.
-- `valhalla/jawn/src/workers/kafkaConsumer.ts` (35 LoC entry) → `lib/clients/kafkaConsumers/KafkaConsumer.ts` (527 LoC) — Kafka-side equivalent, drives `consumeMiniBatch`/`consumeMiniBatchScores` via the same `LogManager` chain.
-- `valhalla/jawn/src/lib/consumer/consumeMiniBatch.ts:7-45` — thin adapter: instantiates `LogManager`, calls `processLogEntries`, on error returns `err`, on success returns `ok(miniBatchId)`.
+- `valhalla/jawn/src/workers/sqsConsumer.ts` (37 LoC entry) → `lib/clients/sqsConsumers/sqsConsumers.ts:112-216` — five SQS consumer loops: main request/response logs, a low-priority lane, a DLQ drain, a scores lane, a scores-DLQ drain. Each loop pulls SQS, dispatches to the per-batch chain processor (or scores manager), deletes on success.
+- `valhalla/jawn/src/workers/kafkaConsumer.ts` (35 LoC entry) → `lib/clients/kafkaConsumers/KafkaConsumer.ts` (527 LoC) — Kafka-side equivalent, drives the mini-batch processing path (request/response and scores variants) through the same per-batch chain.
+- `valhalla/jawn/src/lib/consumer/consumeMiniBatch.ts:7-45` — thin adapter: instantiates the per-batch processor, dispatches the chain processing call, returns an error tuple on failure or a success tuple containing the mini-batch id on success.
 
 ## Q5: Actual durability model
 
@@ -119,22 +119,22 @@ Lane C said "dual-write Kafka+SQS for durability". The **real** model is more nu
 2. **Mode is environment-flagged.** Set by `QUEUE_PROVIDER` env var (`"sqs" | "dual" | "kafka" | <unset>`) on both worker and jawn. When unset on the worker and Upstash creds are missing, the worker silently falls back to **synchronous HTTP POST** to jawn (`HeliconeProducer.ts:58-80`) — no queue durability at all. This is a deploy-mode / self-host concession, not a durability feature.
 3. **DLQ is the actual durability backstop.** Errors inside the 14-handler chain (auth, upsert) trigger pushes to `request-response-logs-prod-dlq` via `HeliconeQueueProducer.sendMessages` — `LogManager.ts:174-205` (per-message handler errors) and `LogManager.ts:309-333` (batch upsert errors). Those DLQ pushes themselves go through the same `MessageProducerFactory`, so DLQ also honors `"dual"`/`"sqs"`/`"kafka"`.
 4. **Two-tier priority lanes.** SQS path has both `requestResponseLogs` and `requestResponseLogsLowPriority` queues consumed by separate loops (`sqsConsumers.ts:112-127` vs `129-144`), and the worker producer has a `setLowerPriority()` plumb (`HeliconeProducer.ts:40-44`, `DualProducer.ts:15-22`) that recurses through DualWriteProducer to flip the underlying producer to its low-priority queue.
-5. **Per-message timeout is 15 minutes.** `LogManager.ts:125-128` wraps the chain in `withTimeout(authHandler.handle(handlerContext), 60_000 * 15)` — so a stuck handler cannot block forever, but degraded latency is tolerated for up to 15 min before the message is rejected and DLQ'd.
+5. **Per-message timeout is 15 minutes.** `LogManager.ts:125-128` wraps the chain invocation (head node's handle method on the shared per-batch context) in a 15-minute timeout helper — so a stuck handler cannot block forever, but degraded latency is tolerated for up to 15 min before the message is rejected and DLQ'd. (Upstream-side identifiers omitted.)
 
 ## Where Lane C is precise vs imprecise
 
 **Precise (matches source):**
 - "Hot path writes ONE message to a queue" — confirmed (one `producer.sendMessage` per request in `DBLoggable.ts:1032`).
-- "Cold path is chain-of-responsibility through ~15 isolated handlers" — qualitatively right (14 wired + 1 dead file = "~15"); the chain uses textbook setNext / handle.
+- "Cold path is chain-of-responsibility through ~15 isolated handlers" — qualitatively right (14 wired + 1 dead file = "~15"); the chain uses textbook successor-setter / handle-method semantics.
 - The handler name list is essentially correct in spirit and reflects real concerns (auth, rate-limit, body read, prompt, online eval, logging, analytics fanout, billing).
 - "Dual-write Kafka + SQS" — confirmed at the producer class level.
 
 **Imprecise / overstated:**
-- **Count is 14, not 15.** ExperimentHandler.ts exists on disk but is not wired into `LogManager.processLogEntries` and has no constructor call anywhere in `valhalla/jawn/src`. Treat as dead code or pending feature.
-- **Order matters and Lane C's order was wrong.** Real order: Auth → RateLimit → S3Reader → RequestBody → ResponseBody → Prompt → OnlineEval → **StripeIntegration (before Logging on purpose, mutates props)** → Logging → PostHog → Lytix → Webhook → SegmentLog → StripeLog. The StripeIntegration-before-Logging ordering is load-bearing and explicitly commented in source (`LogManager.ts:111`).
+- **Count is 14, not 15.** The experiment-related handler file exists on disk but is not wired into the per-batch chain-processor entrypoint in `LogManager.ts` and has no constructor call anywhere under `valhalla/jawn/src`. Treat as dead code or pending feature.
+- **Order matters and Lane C's order was wrong.** Real order (role-equivalent labels): auth → rate-limit → object-storage read-side → request-body → response-body → prompt extraction → online-eval → **billing-integration (before write-log on purpose, mutates props)** → write-log → posthog → lytix → webhook → segment-log → stripe-meter. The billing-integration-before-write-log ordering is load-bearing and explicitly commented in source (`LogManager.ts:111`).
 - **"For durability" oversimplifies.** Dual-write is asymmetric (Kafka best-effort, SQS authoritative) — it is closer to a migration / shadow pattern than to "redundant durability." Real durability backstop is the DLQ, not the dual write.
-- **S3 step is read, not write.** Writes happen in the worker before queue enqueue; the cold-path handler is `S3ReaderHandler` (pulls bodies back). Lane C's bare "S3" obscured the direction.
-- **"~15 isolated handlers"** — they are not fully isolated: `HandlerContext` is shared mutable state across all chain nodes, several handlers (rate-limit, logging, stripe, posthog, lytix, segment, webhook) accumulate batch results that are flushed by `LogManager`'s post-chain `logXxx` methods (`LogManager.ts:220-229`). So per-message they look like a chain, but per-batch they are also collaborators on shared state. Coupling is real.
+- **Object-storage step is read, not write.** Writes happen in the worker before queue enqueue; the cold-path handler is the read-side variant (pulls bodies back). Lane C's bare "S3" label obscured the direction.
+- **"~15 isolated handlers"** — they are not fully isolated: a shared mutable per-batch context object is threaded across all chain nodes, and several handlers (rate-limit, write-log, billing-integration, posthog, lytix, segment, webhook) accumulate batch results that are flushed by post-chain drain methods (`LogManager.ts:220-229`). So per-message they look like a chain, but per-batch they are also collaborators on shared state. Coupling is real.
 
 ## Citations (paths + line numbers)
 
