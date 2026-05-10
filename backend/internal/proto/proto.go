@@ -13,9 +13,11 @@ import "context"
 // HCSF v0.4 实化为 HCSFEnvelope 的临时 alias；P-2 ClientAdapter 落地时删除 alias，
 // 调用方改用 HCSFEnvelope 直接命名。Day 8 sunset 标记保留于此。
 //
-// 兼容性：现有 ClientAdapter / UpstreamAdapter 接口签名 *HCSF 等价 *HCSFEnvelope；
-// 现有 `&HCSF{}` 调用点（openai_sse.go / gemini_sse.go 等）将构造零值 envelope，
-// 通过 ValidateEnvelope 时会因 Version 非 "0.4" 而失败 —— 这是计划中的迁移压力。
+// 兼容性：现有 ClientAdapter / UpstreamAdapter 接口签名 *HCSF 等价 *HCSFEnvelope。
+// P-0c-C 已修复历史 `&HCSF{}` 零值穿透问题（openai_sse.go / gemini_sse.go），现统一返回
+// 至少 Version + BufferedResponse 的最小 envelope；adapter 边界处用
+// ValidateEnvelopeVersionGuard 做轻量守门，debug build 用 ValidateEnvelopeDebug
+// 触发完整 INV-3..INV-13 校验。
 type HCSF = HCSFEnvelope
 
 // ClientAdapter handles client-protocol ↔ canonical translation.

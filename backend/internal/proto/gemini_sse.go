@@ -102,12 +102,20 @@ func (a *GeminiAdapter) CanonicalToProviderRequest(ctx context.Context, canonica
 
 func (a *GeminiAdapter) ProviderResponseToCanonical(ctx context.Context, raw []byte) (*HCSF, []ProtocolLossEntry, error) {
 	_ = ctx
-	_, losses, err := geminiResponseToCanonicalResponse(raw)
+	resp, losses, err := geminiResponseToCanonicalResponse(raw)
 	if err != nil {
 		return nil, losses, err
 	}
-	losses = append(losses, newLossEntry(FeatureTextStreaming, DirectionUpstreamToCanonical, VerdictLossy, "HCSF envelope has no buffered response slot in this slice"))
-	return &HCSF{}, losses, nil
+	// P-0c-C D-FailLoud: 见 openai_sse.go 同名注释。返回带 Version +
+	// BufferedResponse 的最小 envelope，避免零值穿过边界。
+	// envelope 仅适用 ValidateEnvelopeVersionGuard，不保证通过完整
+	// ValidateEnvelope（RequestMeta 由 forwarder 层注入）。
+	bufferedResp := resp
+	env := &HCSF{
+		Version:          HCSFVersion,
+		BufferedResponse: &bufferedResp,
+	}
+	return env, losses, nil
 }
 
 func (a *GeminiAdapter) ProviderEventToCanonicalEvents(ctx context.Context, providerEvt any, state any) ([]any, []ProtocolLossEntry, error) {
