@@ -1,0 +1,50 @@
+{
+  "version": "0.4",
+  "request_meta": {
+    "request_id": "req_fxt_image_001",
+    "client_protocol": "openai_chat",
+    "protocol_family": "openai_chat",
+    "model": "gpt-4o-mini",
+    "ingress_path": "/v1/chat/completions",
+    "native_passthrough": false
+  },
+  "request_controls": {},
+  "messages": [],
+  "capability_graph": {
+    "nodes": [
+      {
+        "id": "n_image_001",
+        "kind": "image",
+        "stream_ready": "no",
+        "image": {
+          "source_kind": "url",
+          "media_type": "image/png",
+          "locator": {"kind": "url", "value": "https://fixture.example/img.png"},
+          "dimensions": {"width": 1024, "height": 768}
+        }
+      }
+    ],
+    "edges": []
+  },
+  "provider_projection": {
+    "capability_results": [
+      {"capability": "image", "node_id": "n_image_001", "verdict": "preserved"}
+    ]
+  },
+  "stream_plan": {
+    "mode": "buffered",
+    "event_classes": [],
+    "flush_policy": "per_event",
+    "terminal_required": true,
+    "synthetic_terminal_allowed": true,
+    "fallback_boundary": "after_first_byte_blocked",
+    "mid_stream_fallback_policy": "none"
+  },
+  "accounting": {},
+  "policy": {
+    "data_retention": {"value": "unknown", "enforcement": "unknown", "audit_label": "unknown"},
+    "auth": "standard",
+    "audit": {"visibility": "visible", "label": "default"},
+    "redaction": "public"
+  }
+}

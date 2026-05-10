@@ -10,12 +10,13 @@ package proto
 
 import "context"
 
-// HCSF is the HUAKAI Canonical Stream Format — the intermediate type
-// across all client × upstream pairs.
-type HCSF struct {
-	// TODO(phase-4): canonical request + response + event types.
-	// Aligned with OpenAI Responses semantics but in HUAKAI's own type names.
-}
+// HCSF v0.4 实化为 HCSFEnvelope 的临时 alias；P-2 ClientAdapter 落地时删除 alias，
+// 调用方改用 HCSFEnvelope 直接命名。Day 8 sunset 标记保留于此。
+//
+// 兼容性：现有 ClientAdapter / UpstreamAdapter 接口签名 *HCSF 等价 *HCSFEnvelope；
+// 现有 `&HCSF{}` 调用点（openai_sse.go / gemini_sse.go 等）将构造零值 envelope，
+// 通过 ValidateEnvelope 时会因 Version 非 "0.4" 而失败 —— 这是计划中的迁移压力。
+type HCSF = HCSFEnvelope
 
 // ClientAdapter handles client-protocol ↔ canonical translation.
 type ClientAdapter interface {
@@ -33,13 +34,7 @@ type UpstreamAdapter interface {
 	FinalizeUpstreamStream(ctx context.Context, state any) ([]any, error)
 }
 
-// ProtocolLossEntry per spec §4.2.
-type ProtocolLossEntry struct {
-	Feature   string  `json:"feature"`
-	Direction string  `json:"direction"`
-	Verdict   Verdict `json:"verdict"`
-	Note      string  `json:"note"`
-}
+// ProtocolLossEntry v0.3 stub 已迁移至 protocol_loss.go（v0.4 升级，含 v0.3 兼容字段）。
 
 // Verdict per spec §4.0 capability decision criteria.
 type Verdict string

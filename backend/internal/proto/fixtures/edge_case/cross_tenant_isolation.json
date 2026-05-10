@@ -1,0 +1,91 @@
+{
+  "version": "0.4",
+  "request_meta": {
+    "request_id": "req_fxt_edge_tenant_001",
+    "tenant_id": 4096,
+    "route_id": "route_fxt_tenant_4096",
+    "account_id": 9001,
+    "acquisition_token": "00000000-0000-4000-8000-fixture00001",
+    "client_protocol": "openai_chat",
+    "protocol_family": "openai_chat",
+    "upstream_protocol": "anthropic",
+    "provider": "anthropic",
+    "model": "gpt-4o-mini",
+    "upstream_model": "claude-sonnet-4-5",
+    "ingress_path": "/v1/chat/completions",
+    "session_hash": "fxt_tenant_session_4096",
+    "native_passthrough": false,
+    "evidence_label": "mock"
+  },
+  "request_controls": {},
+  "messages": [
+    {"role": "user", "content": [{"type": "text", "text": "fixture: tenant-scoped routing"}]}
+  ],
+  "capability_graph": {
+    "nodes": [
+      {
+        "id": "n_edge_tenant_text_001",
+        "kind": "text",
+        "stream_ready": "yes",
+        "text": {"role": "user", "block": {"type": "text", "text": "fixture: tenant-scoped routing"}}
+      },
+      {
+        "id": "n_edge_tenant_dr_001",
+        "kind": "data_retention",
+        "stream_ready": "yes",
+        "data_retention": {
+          "value": "regional_asserted",
+          "enforcement": "asserted",
+          "region": "us-west-2",
+          "no_train": true,
+          "audit_label": "tenant_4096_regional"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "e_edge_tenant_dr_001",
+        "type": "provides",
+        "from": "n_edge_tenant_dr_001",
+        "to": "n_edge_tenant_text_001",
+        "required": true,
+        "reason": "tenant data_retention policy applies to all canonical text in this envelope"
+      }
+    ]
+  },
+  "provider_projection": {
+    "target_vendor": "anthropic",
+    "target_protocol": "anthropic",
+    "capability_results": [
+      {"capability": "text", "node_id": "n_edge_tenant_text_001", "verdict": "preserved"},
+      {"capability": "data_retention", "node_id": "n_edge_tenant_dr_001", "verdict": "preserved"}
+    ],
+    "overall_verdict": "preserved"
+  },
+  "stream_plan": {
+    "mode": "buffered",
+    "event_classes": [],
+    "flush_policy": "per_event",
+    "terminal_required": true,
+    "synthetic_terminal_allowed": true,
+    "fallback_boundary": "after_first_byte_blocked",
+    "mid_stream_fallback_policy": "none"
+  },
+  "accounting": {"evidence_label": "mock"},
+  "policy": {
+    "data_retention": {
+      "value": "regional_asserted",
+      "enforcement": "asserted",
+      "region": "us-west-2",
+      "no_train": true,
+      "audit_label": "tenant_4096_regional"
+    },
+    "auth": "standard",
+    "audit": {"visibility": "masked", "label": "tenant_4096"},
+    "redaction": "redacted"
+  },
+  "extensions": {
+    "vendor:anthropic": {"beta": "fixture-tenant-isolation"},
+    "experimental:tenant_quota_hint": {"daily_token_cap": 100000}
+  }
+}

@@ -1,0 +1,96 @@
+{
+  "version": "0.4",
+  "request_meta": {
+    "request_id": "req_fxt_reg_newapi4678_001",
+    "client_protocol": "anthropic_messages",
+    "protocol_family": "anthropic",
+    "upstream_protocol": "openai",
+    "provider": "openai-compatible-bailian",
+    "model": "claude-sonnet-4-5",
+    "upstream_model": "qwen-plus-compat",
+    "ingress_path": "/v1/messages",
+    "native_passthrough": false,
+    "session_hash": "fxt_session_4678"
+  },
+  "request_controls": {
+    "system_prompt": "fixture: system body without dynamic billing tag"
+  },
+  "messages": [
+    {"role": "user", "content": [{"type": "text", "text": "fixture: long context cache hit test"}]}
+  ],
+  "capability_graph": {
+    "nodes": [
+      {
+        "id": "n_reg_cache_001",
+        "kind": "cache_control",
+        "stream_ready": "yes",
+        "cache_control": {
+          "scope": "request",
+          "breakpoint_refs": ["n_reg_text_001"],
+          "sanitize_system_metadata": true,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 1024,
+          "locality_hint": "account_pin"
+        }
+      },
+      {
+        "id": "n_reg_text_001",
+        "kind": "text",
+        "stream_ready": "yes",
+        "text": {"role": "user", "block": {"type": "text", "text": "fixture: long context cache hit test"}}
+      }
+    ],
+    "edges": [
+      {
+        "id": "e_reg_cache_text_001",
+        "type": "provides",
+        "from": "n_reg_cache_001",
+        "to": "n_reg_text_001",
+        "required": true,
+        "reason": "cache_control covers user text block prefix"
+      }
+    ]
+  },
+  "provider_projection": {
+    "target_vendor": "openai-compatible",
+    "target_protocol": "openai",
+    "capability_results": [
+      {
+        "capability": "cache_control",
+        "node_id": "n_reg_cache_001",
+        "verdict": "lossy",
+        "protocol_loss": [
+          {
+            "field": "cache_control.scope",
+            "vendor": "openai-compatible",
+            "severity": "warning",
+            "reason": "downstream openai-compatible channel does not honor anthropic cache_control; sanitize transient billing markers in system prompt to avoid prefix cache invalidation",
+            "code": "cache_control_downgraded",
+            "capability": "cache_control",
+            "verdict": "LOSSY"
+          }
+        ]
+      },
+      {"capability": "text", "node_id": "n_reg_text_001", "verdict": "preserved"}
+    ],
+    "overall_verdict": "lossy"
+  },
+  "stream_plan": {
+    "mode": "buffered",
+    "event_classes": [],
+    "flush_policy": "per_event",
+    "terminal_required": true,
+    "synthetic_terminal_allowed": true,
+    "fallback_boundary": "after_first_byte_blocked",
+    "mid_stream_fallback_policy": "none"
+  },
+  "accounting": {
+    "usage": {"input_tokens": 1100, "output_tokens": 50, "total_tokens": 1150, "cache_read_input_tokens": 1024}
+  },
+  "policy": {
+    "data_retention": {"value": "unknown", "enforcement": "unknown", "audit_label": "unknown"},
+    "auth": "standard",
+    "audit": {"visibility": "visible", "label": "regression_fixture"},
+    "redaction": "public"
+  }
+}

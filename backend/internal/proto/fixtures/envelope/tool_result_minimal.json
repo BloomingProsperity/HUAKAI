@@ -1,0 +1,52 @@
+{
+  "version": "0.4",
+  "request_meta": {
+    "request_id": "req_fxt_toolresult_001",
+    "client_protocol": "anthropic_messages",
+    "protocol_family": "anthropic",
+    "model": "claude-sonnet-4-5",
+    "ingress_path": "/v1/messages",
+    "native_passthrough": false
+  },
+  "request_controls": {},
+  "messages": [],
+  "capability_graph": {
+    "nodes": [
+      {
+        "id": "n_toolresult_001",
+        "kind": "tool_result",
+        "stream_ready": "yes",
+        "tool_result": {
+          "tool_call_id": "tc_fxt_a1b2c3d4",
+          "content": [
+            {"type": "text", "text": "fixture: 24C, sunny"}
+          ],
+          "status": "complete",
+          "is_error": false
+        }
+      }
+    ],
+    "edges": []
+  },
+  "provider_projection": {
+    "capability_results": [
+      {"capability": "tool_result", "node_id": "n_toolresult_001", "verdict": "preserved"}
+    ]
+  },
+  "stream_plan": {
+    "mode": "buffered",
+    "event_classes": [],
+    "flush_policy": "per_event",
+    "terminal_required": true,
+    "synthetic_terminal_allowed": true,
+    "fallback_boundary": "after_first_byte_blocked",
+    "mid_stream_fallback_policy": "none"
+  },
+  "accounting": {},
+  "policy": {
+    "data_retention": {"value": "unknown", "enforcement": "unknown", "audit_label": "unknown"},
+    "auth": "standard",
+    "audit": {"visibility": "visible", "label": "default"},
+    "redaction": "public"
+  }
+}

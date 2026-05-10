@@ -1,0 +1,76 @@
+{
+  "version": "0.4",
+  "request_meta": {
+    "request_id": "req_fxt_resp_openai_struct_001",
+    "client_protocol": "openai_chat",
+    "protocol_family": "openai_chat",
+    "model": "gpt-4o-mini",
+    "ingress_path": "/v1/chat/completions",
+    "native_passthrough": false
+  },
+  "request_controls": {
+    "response_format": {
+      "type": "json_schema",
+      "schema": {"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"]},
+      "strict": true
+    }
+  },
+  "messages": [
+    {"role": "user", "content": [{"type": "text", "text": "give json answer"}]}
+  ],
+  "buffered_response": {
+    "id": "chatcmpl_fxt_struct_001",
+    "model": "gpt-4o-mini",
+    "content": [
+      {"type": "text", "text": "{\"answer\": \"yes\"}"}
+    ],
+    "usage": {"input_tokens": 5, "output_tokens": 6, "total_tokens": 11},
+    "stop_reason": "end_turn"
+  },
+  "capability_graph": {
+    "nodes": [
+      {
+        "id": "n_resp_struct_001",
+        "kind": "structured_output",
+        "stream_ready": "yes",
+        "structured_output": {
+          "mode": "json_schema",
+          "strict": true,
+          "schema": {"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"]}
+        }
+      },
+      {
+        "id": "n_resp_struct_text_001",
+        "kind": "text",
+        "stream_ready": "yes",
+        "text": {"role": "assistant", "block": {"type": "text", "text": "{\"answer\": \"yes\"}"}}
+      }
+    ],
+    "edges": []
+  },
+  "provider_projection": {
+    "target_vendor": "openai",
+    "target_protocol": "openai",
+    "capability_results": [
+      {"capability": "structured_output", "node_id": "n_resp_struct_001", "verdict": "preserved"},
+      {"capability": "text", "node_id": "n_resp_struct_text_001", "verdict": "preserved"}
+    ],
+    "overall_verdict": "preserved"
+  },
+  "stream_plan": {
+    "mode": "buffered",
+    "event_classes": [],
+    "flush_policy": "per_event",
+    "terminal_required": true,
+    "synthetic_terminal_allowed": true,
+    "fallback_boundary": "after_first_byte_blocked",
+    "mid_stream_fallback_policy": "none"
+  },
+  "accounting": {"usage": {"input_tokens": 5, "output_tokens": 6, "total_tokens": 11}},
+  "policy": {
+    "data_retention": {"value": "unknown", "enforcement": "unknown", "audit_label": "unknown"},
+    "auth": "standard",
+    "audit": {"visibility": "visible", "label": "default"},
+    "redaction": "public"
+  }
+}
