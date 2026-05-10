@@ -40,16 +40,18 @@ UI / migration / billing files were skipped.
   matches on warm-request issuance against an idle channel. The single
   channel-level proactive call is the operator-facing "channel test"
   endpoint, which is admin-triggered, not background prefix replay.
-- **sub2api**: there is a credential flag spelled
-  `intercept_warmup_requests`. **Important: it is the inverse of HUAKAI's
-  fabric idea.** When set true on a backend account, the gateway
-  *intercepts* warm-up-shaped client requests (Claude Code's "extract a
-  2-3 word title", short "Warmup" probes) and returns a synthetic
-  "New Conversation" mock response **without forwarding to the upstream
-  account at all**, in order to *protect* that account's quota from
-  client-side keep-alive traffic. There is no logic that *issues* a
-  warm-up request from the gateway to an idle account. No replay, no
-  shadow, no preheat.
+- **sub2api**: there is a per-credential warm-up interception flag
+  (boolean, account-scoped). **Important: it is the inverse of HUAKAI's
+  fabric idea.** When the flag is enabled on a backend account, the
+  gateway *intercepts* short client probe requests (the kind of
+  3-5-word title-extraction or keep-alive shapes that some client
+  agents emit between turns) and returns a synthetic short mock
+  response **without forwarding to the upstream account at all**,
+  in order to *protect* that account's quota from client-side
+  keep-alive traffic. There is no logic that *issues* a warm-up
+  request from the gateway to an idle account. No replay, no shadow,
+  no preheat. (Upstream identifier omitted; see Source files block
+  for file:line evidence.)
 
 ### A.3 Cross-account cache replication
 
@@ -205,7 +207,7 @@ UI / migration / billing files were skipped.
 
 | HUAKAI direction | sub2api evidence | new-api evidence |
 |---|---|---|
-| (1) Account Cache Fabric — proactive cross-account warm-up replay | None. The only "warmup" string refers to *intercepting* (dropping) client warmups to save quota, opposite intent. | None. No background prefix replay. |
+| (1) Account Cache Fabric — proactive cross-account warm-up replay | None. The only related code path describes *intercepting* (dropping) client probe traffic to save quota — opposite intent to fabric replay. | None. No background prefix replay. |
 | (2) Multi-Account Request Decomposition — split one request into N sub-requests | None. 1:1 inbound→outbound across all relay paths. | None. 1:1 inbound→outbound. |
 | (3) Predictive Session Migration — pre-warm backup before failure | None. Reactive failover only; sticky entry is deleted on failure, replacement account starts cold. | None. Reactive retry; channel monitor is observational/admin-only. |
 
@@ -242,10 +244,10 @@ round-robin gateway
     selectively pulled into an Anthropic group's candidate set via a
     per-account flag, allowing one transport to serve another
     platform's requests;
-  - **client-side warmup interception** (not warm-up issuance): drop
-    short Claude-Code warmup probes with a synthetic mock to save
-    upstream quota — useful for upstream accounts that bill on every
-    /v1/messages call;
+  - **client-side probe interception** (not warm-up issuance): drop
+    short client-side keep-alive / title-extraction probes with a
+    synthetic mock to save upstream quota — useful for upstream
+    accounts that bill on every messages-endpoint call;
   - **routing-account override**: per-(group, model) explicit account
     routing list applied before the regular priority pool.
 
@@ -263,8 +265,8 @@ cross-account latency, prefix-leakage policy).
 
 ## Source files read
 
-- sub2api/backend/internal/service/account.go:943 (warmup-intercept flag — exact line, M2 corrected post-review 2026-05-09)
-- sub2api/backend/internal/service/account_intercept_warmup_test.go
+- sub2api/backend/internal/service/account.go:943 (warm-up-intercept flag site — upstream identifier omitted; M2 corrected post-review 2026-05-09)
+- sub2api/backend/internal/service/account_intercept_warmup_test.go (upstream-side test naming preserved as path evidence only)
 - sub2api/backend/internal/service/openai_messages_dispatch.go
 - sub2api/backend/internal/domain/openai_messages_dispatch.go
 - sub2api/backend/internal/service/openai_sticky_compat.go
