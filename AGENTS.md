@@ -420,6 +420,59 @@ After this block the prompt continues with the actual decomposition / question /
 
 DR-000 picked Option C with carve-outs (account-pool routing, auth core, billing ledger). The Option C lane separation is what makes the carve-outs defensible later. Skipping the lane guard turns Option C into Option A by accident, which would re-open R-LIC-001 (LGPL contamination risk) and burn the clean-room defense at trial / acquisition diligence.
 
+## Source-Must-Read Trigger Matrix (added 2026-05-09 Owner directive)
+
+> "去读源码！讲规则里面改下必须读源码"
+
+CLAUDE.md #11 governs **how** to read reference source safely. CLAUDE.md #12 governs **when** reading is mandatory. The two rules compose:
+
+- If a claim type below is in scope → reading source is mandatory (#12)
+- Once source is read → lane guard + paraphrase prohibitions kick in (#11)
+
+### Triggers — must read source
+
+| Claim type | Example | Required citation |
+|------------|---------|-------------------|
+| Capability | "sub2api supports failover loop" | `Wei-Shaw/sub2api@<sha>:<file>:<line>` |
+| Mechanism | "Helicone batches usage writes via Postgres outbox" | `Helicone/helicone@<sha>:<file>:<line>` |
+| Differentiation | "HUAKAI's PASR is unlike LiteLLM's routing" | `BerriAI/litellm@<sha>:<file>:<line>` for the LiteLLM half |
+| Algorithm | "one-api selects accounts by least-conn weighted" | `songquanpeng/one-api@<sha>:<file>:<line>` |
+| Parity verdict | "Project X has feature F" / "X lacks F" | `<owner>/<repo>@<sha>:<file>:<line>` showing presence/absence |
+| Comparative table | Any cell naming a reference project | one citation per non-trivial cell |
+
+### Source-NOT-required (carve-outs)
+
+- HUAKAI-internal claims (cite `backend/`, `docs/specs/`, `docs/decisions/` paths)
+- Public protocol contracts (Anthropic Messages, OpenAI Chat Completions, Gemini API spec)
+- Prior `docs/plans/*.md` artifacts already source-cited at write time
+- Vendor pricing / TTL / model lists from official docs (cite docs URL + section)
+
+### Where to clone
+
+Default location: `~/refs/<project>/`. One-time per evaluator. `git clone --depth=1` is acceptable for behavior-summary work; full clone only when commit history is the subject. Per #11, the clone act itself is fine — the lane guard governs subsequent reading and paraphrase.
+
+Currently relevant repo URLs (Owner-confirmed):
+
+- Sub2API: `https://github.com/Wei-Shaw/sub2api.git`
+- All-API-Hub: `https://github.com/qixing-jk/all-api-hub.git`
+- New-API: `https://github.com/Calcium-Ion/new-api.git`
+- One-API: `https://github.com/songquanpeng/one-api.git`
+- LiteLLM: `https://github.com/BerriAI/litellm.git`
+- Portkey gateway: `https://github.com/Portkey-AI/gateway.git`
+- Helicone: `https://github.com/Helicone/helicone.git`
+- Envoy AI Gateway: `https://github.com/envoyproxy/ai-gateway.git`
+
+### Stale-citation policy
+
+A citation older than 30 days from current UTC date requires re-fetch of HEAD before being relied upon for new claims. Reference projects move fast; "what sub2api did 3 months ago" is not evidence of "what sub2api does now". Cited commit SHA must be one currently reachable from the default branch — verify with `git log --oneline <sha>..HEAD` before re-use.
+
+### Enforcement
+
+- Codex per-commit review (#8) MUST flag any unsourced reference-project claim as HIGH severity
+- Slice cross-review (#7) MUST reject decomposition / parity / differentiation artifacts that fail the citation rule
+- Self-check before producing output: every paragraph naming a non-HUAKAI project should carry at least one `<repo>@<sha>:<file>:<line>` reference; if none exists, either remove the claim or read source first
+- "I remember" / "in my training data" / "as I recall" are explicit anti-patterns — drop the claim before drawing on memory
+
 ## Per-Commit Cross-Review Discipline (added 2026-04-29 by Owner directive)
 
 > "所有的动作和行为都要和 codex 进行交叉处理！包括代码。熟练运行 agent 利用 codex 得 renew 功能"
