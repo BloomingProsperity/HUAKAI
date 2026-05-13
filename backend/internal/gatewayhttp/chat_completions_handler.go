@@ -19,6 +19,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/cache_routing"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
@@ -36,6 +37,7 @@ type ChatHandlerDeps struct {
 	Selector             pool.Selector
 	CredentialVault      provider.CredentialVault
 	Dispatcher           *gateway.UpstreamDispatcher
+	CanonicalDispatcher  CanonicalBufferedDispatcher
 	Forwarder            *gateway.StreamForwarder
 	Settler              billing.Settler
 	BillingPolicyVersion string
@@ -45,6 +47,24 @@ type ChatHandlerDeps struct {
 	// /v1/chat/completions: "chat"
 	// /v1/messages:         "messages"
 	EndpointFamily string
+}
+
+// CanonicalBufferedDispatcher 是 non-streaming HCSF 路径的可选 dispatcher
+// 能力。生产 UpstreamDispatcher 当前只有 raw body Dispatch；未注入此接口时
+// handler 明确返回 non_streaming_not_yet_wired，避免误走 silent fallback。
+type CanonicalBufferedDispatcher interface {
+	DispatchCanonicalBuffered(ctx context.Context, in CanonicalBufferedDispatchInput) (*proto.HCSF, error)
+}
+
+// CanonicalBufferedDispatchInput 携带 client adapter 产出的请求 envelope 以及
+// 既有 dispatcher/forwarder 路径会使用的账号、凭据和模型元数据。
+type CanonicalBufferedDispatchInput struct {
+	RequestEnvelope *proto.HCSF
+	ProtocolFamily  string
+	UpstreamModelID string
+	Account         provider.AccountInfo
+	Credential      provider.Credential
+	RawBody         []byte
 }
 
 // effectiveEndpointFamily 返回 d.EndpointFamily 若非空，否则 "chat"
@@ -119,10 +139,23 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "invalid_json", err.Error())
 			return
 		}
+		var clientProtocol proto.ClientProtocol
+		var clientAdapter proto.ClientAdapter
 		if !req.Stream {
-			writeJSONError(w, http.StatusBadRequest, "non_streaming_unsupported",
-				"non-streaming responses are Phase E scope; set stream=true")
-			return
+			var ok bool
+			clientProtocol, ok = proto.ClientProtocolByIngressPath(r.URL.Path)
+			if !ok {
+				writeJSONError(w, http.StatusNotFound, "unknown_route",
+					fmt.Sprintf("no client protocol registered for ingress path %q", r.URL.Path))
+				return
+			}
+			var adapterOK bool
+			clientAdapter, adapterOK = proto.DefaultClientAdapterRegistry().Lookup(clientProtocol)
+			if !adapterOK {
+				writeJSONError(w, http.StatusServiceUnavailable, "adapter_unregistered",
+					fmt.Sprintf("client adapter not registered for protocol %q", clientProtocol))
+				return
+			}
 		}
 		if req.Model == "" {
 			writeJSONError(w, http.StatusBadRequest, "missing_model", "model field required")
@@ -274,6 +307,84 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			accInfo.AccountID = acquiredAccountID
 		}
 
+		if !req.Stream {
+			seed := requestMetaSeed(ctx, r, ident, clientProtocol, resolved.ProtocolFamily, acquiredAccountID, acquisitionToken)
+			seedCtx := proto.ContextWithRequestMetaSeed(ctx, seed)
+			canonicalReq, _, err := clientAdapter.RequestToCanonical(seedCtx, body)
+			if err != nil {
+				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "invalid_request_body")
+				writeJSONError(w, http.StatusBadRequest, "invalid_request_body", err.Error())
+				return
+			}
+			if canonicalReq == nil {
+				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "invalid_request_body")
+				writeJSONError(w, http.StatusBadRequest, "invalid_request_body", "client adapter returned nil canonical envelope")
+				return
+			}
+			enrichCanonicalRequestMeta(canonicalReq, upstreamModelID, accInfo.Platform, idempotencyHeader, promptHash)
+
+			canonicalDispatcher := canonicalBufferedDispatcher(d)
+			if canonicalDispatcher == nil {
+				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "non_streaming_not_yet_wired")
+				writeJSONError(w, http.StatusServiceUnavailable, "non_streaming_not_yet_wired",
+					fmt.Sprintf("dispatcher lacks HCSF buffered dispatch support for client_protocol=%q protocol_family=%q", clientProtocol, resolved.ProtocolFamily))
+				return
+			}
+
+			bufferedEnv, err := canonicalDispatcher.DispatchCanonicalBuffered(seedCtx, CanonicalBufferedDispatchInput{
+				RequestEnvelope: canonicalReq,
+				ProtocolFamily:  resolved.ProtocolFamily,
+				UpstreamModelID: upstreamModelID,
+				Account:         accInfo,
+				Credential:      cred,
+				RawBody:         body,
+			})
+			if err != nil {
+				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_dispatch_error")
+				writeJSONError(w, http.StatusBadGateway, "upstream_dispatch_error", err.Error())
+				return
+			}
+			if bufferedEnv == nil || bufferedEnv.BufferedResponse == nil {
+				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_empty_response")
+				writeJSONError(w, http.StatusBadGateway, "upstream_empty_response", "dispatcher returned no buffered HCSF response")
+				return
+			}
+
+			clientBody, _, err := clientAdapter.CanonicalToClientResponse(seedCtx, bufferedEnv)
+			if err != nil {
+				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "canonical_response_error")
+				writeJSONError(w, http.StatusBadGateway, "canonical_response_error", err.Error())
+				return
+			}
+
+			actualCost := decimal.NewFromFloat(0.01)
+			if _, err := d.Settler.Settle(ctx, billing.SettleRequest{
+				ClaimID:           reserveRes.ClaimID,
+				AccountID:         acquiredAccountID,
+				AcquisitionToken:  acquisitionToken,
+				TenantID:          ident.TenantID,
+				APIKeyID:          ident.APIKeyID,
+				UserID:            ident.UserID,
+				ProviderAccountID: acquiredAccountID,
+				AttemptSeq:        1,
+				RequestedModel:    req.Model,
+				UpstreamModel:     upstreamModelID,
+				Stream:            false,
+				ActualCost:        actualCost,
+				Fingerprint:       payloadHash,
+				Draft:             nonStreamingUsageDraft(bufferedEnv, actualCost, selRes.RoutingReasonJSON),
+				SnapshotVersion:   plan.SnapshotVersion,
+			}); err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "settle_error", err.Error())
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(clientBody)
+			return
+		}
+
 		dispatchRes, err := d.Dispatcher.Dispatch(ctx, gateway.DispatchInput{
 			ProtocolFamily:  resolved.ProtocolFamily,
 			UpstreamModelID: upstreamModelID,
@@ -372,6 +483,80 @@ func writeJSONError(w http.ResponseWriter, status int, code, message string) {
 func closeDispatchResult(res *gateway.DispatchResult) {
 	if res != nil && res.Close != nil {
 		_ = res.Close()
+	}
+}
+
+func requestMetaSeed(ctx context.Context, r *http.Request, ident auth.Identity, clientProtocol proto.ClientProtocol, protocolFamily string, accountID int64, acquisitionToken uuid.UUID) proto.RequestMetaSeed {
+	requestID := middleware.GetReqID(ctx)
+	if requestID == "" {
+		requestID = uuid.NewString()
+	}
+	token := ""
+	if acquisitionToken != uuid.Nil {
+		token = acquisitionToken.String()
+	}
+	return proto.RequestMetaSeed{
+		RequestID:        requestID,
+		ClientProtocol:   clientProtocol,
+		ProtocolFamily:   protocolFamily,
+		IngressPath:      r.URL.Path,
+		TenantID:         ident.TenantID,
+		AccountID:        accountID,
+		AcquisitionToken: token,
+		EvidenceLabel:    proto.EvidenceMock,
+	}
+}
+
+func enrichCanonicalRequestMeta(env *proto.HCSF, upstreamModelID, providerName, idempotencyKey, sessionHash string) {
+	if env == nil {
+		return
+	}
+	env.RequestMeta.UpstreamModel = upstreamModelID
+	env.RequestMeta.Provider = providerName
+	env.RequestMeta.IdempotencyKey = idempotencyKey
+	env.RequestMeta.SessionHash = sessionHash
+	if env.RequestMeta.EvidenceLabel == "" {
+		env.RequestMeta.EvidenceLabel = proto.EvidenceMock
+	}
+	if env.Accounting.EvidenceLabel == "" {
+		env.Accounting.EvidenceLabel = proto.EvidenceMock
+	}
+}
+
+func canonicalBufferedDispatcher(d ChatHandlerDeps) CanonicalBufferedDispatcher {
+	if d.CanonicalDispatcher != nil {
+		return d.CanonicalDispatcher
+	}
+	if d.Dispatcher == nil {
+		return nil
+	}
+	if dispatcher, ok := any(d.Dispatcher).(CanonicalBufferedDispatcher); ok {
+		return dispatcher
+	}
+	return nil
+}
+
+func nonStreamingUsageDraft(env *proto.HCSF, actualCost decimal.Decimal, routingReason []byte) gateway.UsageRecordDraft {
+	usage := proto.CanonicalUsage{}
+	if env != nil {
+		usage = env.Accounting.Usage
+		if env.BufferedResponse != nil {
+			usage = env.BufferedResponse.Usage
+		}
+	}
+	confidence := 1.0
+	return gateway.UsageRecordDraft{
+		TokensInput:           usage.InputTokens,
+		TokensOutput:          usage.OutputTokens,
+		CacheCreationTokens:   usage.CacheCreationInputTokens,
+		CacheReadTokens:       usage.CacheReadInputTokens,
+		ActualCost:            actualCost,
+		RoutingReason:         routingReason,
+		EndClass:              gateway.StreamEndGraceful,
+		UsageSource:           gateway.UsageSourceReported,
+		ConfidenceScore:       &confidence,
+		DrainOutcome:          gateway.DrainNotDrained,
+		PendingReconciliation: false,
 	}
 }
 

@@ -108,11 +108,11 @@ func invokeHandler(t *testing.T, deps ChatHandlerDeps, body string) *httptest.Re
 // covered by cmd/gateway/smoke_test.go.
 func minimalDeps() ChatHandlerDeps {
 	return ChatHandlerDeps{
-		Auth:                 stubAuth{identity: validIdentity()},
-		Registry:             stubRegistry{resolved: registry.Resolved{ProtocolFamily: "anthropic_messages", PoolCandidates: []int64{42}}},
-		Router:               stubRouter{plan: router.RoutePlan{Attempts: []router.AttemptPlan{{PoolGroupID: 42}}, SnapshotVersion: "registry:7:1;router:v0.1-phase-c"}},
-		ClaimGate:            stubClaimGate{},
-		Selector:             stubSelector{},
+		Auth:      stubAuth{identity: validIdentity()},
+		Registry:  stubRegistry{resolved: registry.Resolved{ProtocolFamily: "anthropic_messages", PoolCandidates: []int64{42}}},
+		Router:    stubRouter{plan: router.RoutePlan{Attempts: []router.AttemptPlan{{PoolGroupID: 42}}, SnapshotVersion: "registry:7:1;router:v0.1-phase-c"}},
+		ClaimGate: stubClaimGate{},
+		Selector:  stubSelector{},
 		// 真出站链路 N+5b 后置依赖（dispatcher / vault）：测试占位，让
 		// nil-guard 通过；具体上游 Dispatch 不会被这些 stub 测试触及，因为
 		// 这一组测试聚焦于 handler 入口校验与计费 / claim 路径，没有真正
@@ -261,15 +261,16 @@ func assertNoAuditHeader(t *testing.T, rec *httptest.ResponseRecorder) {
 	}
 }
 
-// 9. NoStream — preserve existing Phase C behavior: stream=false → 400.
+// 9. NoStream — non-streaming 进入 ClientAdapter；当 dispatcher 尚未提供
+// HCSF buffered 能力时显式 503，而不是 silent fallback。
 func TestHandler_NoStream(t *testing.T) {
-	d := minimalDeps()
-	rec := invokeHandler(t, d, `{"model":"claude-opus-4-7","stream":false,"messages":[]}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d; want 400", rec.Code)
+	d := clientAdapterDeps(t)
+	rec := invokeHandler(t, d, `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d; want 503", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "non_streaming_unsupported") {
-		t.Fatalf("body = %q; want non_streaming_unsupported", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "non_streaming_not_yet_wired") {
+		t.Fatalf("body = %q; want non_streaming_not_yet_wired", rec.Body.String())
 	}
 }
 
