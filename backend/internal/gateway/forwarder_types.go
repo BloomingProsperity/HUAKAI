@@ -106,7 +106,10 @@ type ForwardRequest struct {
 	TenantID         int64     `json:"tenant_id"`
 	AccountID        int64     `json:"account_id"`
 	AcquisitionToken uuid.UUID `json:"acquisition_token"`
+	RequestID        string    `json:"request_id"`
 	RouteID          string    `json:"route_id"`
+	PoolID           string    `json:"pool_id"`
+	IngressPath      string    `json:"ingress_path"`
 
 	// ProtocolFamily 指定上游协议族，用于从 ProtocolAdapterRegistry 查询对应 adapter。
 	// 必须非空；Forward 在入口处校验，空值返回 ErrUnknownProtocolFamily 封装的错误。
@@ -117,6 +120,8 @@ type ForwardRequest struct {
 	UpstreamProtocol     string `json:"upstream_protocol"`
 	ClientProtocol       string `json:"client_protocol"`
 	Model                string `json:"model"`
+	RequestedModel       string `json:"requested_model"`
+	Provider             string `json:"provider"`
 	RoutingReasonPayload []byte `json:"routing_reason_payload"`
 
 	// SessionHash（PASR-lite A4）: 上游已 hash 的 prompt prefix, 流入 proto

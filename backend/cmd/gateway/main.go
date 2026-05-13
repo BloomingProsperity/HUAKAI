@@ -29,6 +29,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
@@ -41,6 +42,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
@@ -74,6 +76,7 @@ type deps struct {
 	credentialVault provider.CredentialVault
 	dispatcher      *gateway.UpstreamDispatcher
 	inboundAuth     *auth.APIKeyResolver
+	auditLedger     auditledger.Ledger
 	// Slice 2 (N+5a): real Registry resolver.
 	modelRegistry *registry.PostgresRegistry
 	// Slice 2 (N+5b 2026-05-01): Router consumes Registry's PoolCandidates
@@ -125,6 +128,15 @@ func run(logger *zap.Logger) error {
 	}
 	defer selectorCleanup()
 
+	auditSigner, err := sign.GenerateKey()
+	if err != nil {
+		return fmt.Errorf("generate audit ledger signer: %w", err)
+	}
+	auditLedger, err := auditledger.NewMemoryLedger(auditSigner)
+	if err != nil {
+		return fmt.Errorf("build audit ledger: %w", err)
+	}
+
 	d := &deps{
 		cfg:       cfg,
 		queries:   q,
@@ -161,6 +173,7 @@ func run(logger *zap.Logger) error {
 		// Rollback path is git revert; no SmokeAuthResolver is wired into the
 		// default build.
 		inboundAuth: auth.NewAPIKeyResolver(q),
+		auditLedger: auditLedger,
 		// Slice 2 (N+5a) registry resolver. cache=nil → noopCache (D2: no
 		// L0 cache; LRU lands in Slice 5 keyed on registry_version).
 		// Takes pgxpool.Pool because Resolve runs all reads inside a
@@ -265,6 +278,8 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		BillingPolicyVersion: d.cfg.BillingPolicyVersion,
 		RequestClass:         d.cfg.RequestClass,
 	}))
+
+	gatewayhttp.MountAuditVerifyRoutes(r, gatewayhttp.AuditVerifyStaticDeps{Ledger: d.auditLedger})
 
 	// Admin: API Keys (Slice 2 N+4b2). Replaces hand-written SQL INSERT
 	// for operator key issuance. POST=issue / GET=list / POST revoke.

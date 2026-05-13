@@ -140,6 +140,14 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 					if !acc.Empty() {
 						acc.Source = UsageSourceInferred
 					}
+					if err := f.emitFinalUpstreamEvents(ctx, adapter, upstreamState, clientWriter, clientState, &acc, req); err != nil {
+						if errors.Is(err, ErrClientDisconnect) {
+							draft.EndClass = ClientDisconnect
+						} else {
+							draft.EndClass = UnknownTermination
+						}
+						return f.finishDraft(draft, acc, start, err)
+					}
 				}
 				if err := f.finalizeClientStream(ctx, clientWriter, clientState); err != nil {
 					if errors.Is(err, ErrClientDisconnect) {
@@ -160,7 +168,7 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 				stopTimer(interTimer)
 				interTimer = newTimer(f.Timeouts.InterEventTimeout)
 				// 将解析好的 adapter 传入 handleEvent，避免重复 registry 查询
-				seen, wrote, err := f.handleEventWithAdapter(upstreamCtx, adapter, res.event, clientWriter, upstreamState, clientState, &acc)
+				seen, wrote, err := f.handleEventWithAdapter(upstreamCtx, adapter, res.event, clientWriter, upstreamState, clientState, &acc, req)
 				terminalSeen = terminalSeen || seen
 				if wrote && !firstEmitted {
 					firstEmitted = true
@@ -208,6 +216,7 @@ func (f *StreamForwarder) handleEventWithAdapter(
 	upstreamState any,
 	clientState any,
 	acc *UsageAccumulator,
+	req ForwardRequest,
 ) (bool, bool, error) {
 	terminalSeen := evt.Type == "message_stop" || string(evt.Data) == "[DONE]"
 
@@ -234,6 +243,7 @@ func (f *StreamForwarder) handleEventWithAdapter(
 	if err != nil {
 		return terminalSeen, false, err
 	}
+	annotateForwardHopChainEvents(canonicalEvents, req)
 	wrote := false
 	for _, canonical := range canonicalEvents {
 		if usage, ok := canonicalUsage(canonical); ok {

@@ -141,14 +141,14 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 		}
 		var clientProtocol proto.ClientProtocol
 		var clientAdapter proto.ClientAdapter
+		if inferred, ok := proto.ClientProtocolByIngressPath(r.URL.Path); ok {
+			clientProtocol = inferred
+		} else if !req.Stream {
+			writeJSONError(w, http.StatusNotFound, "unknown_route",
+				fmt.Sprintf("no client protocol registered for ingress path %q", r.URL.Path))
+			return
+		}
 		if !req.Stream {
-			var ok bool
-			clientProtocol, ok = proto.ClientProtocolByIngressPath(r.URL.Path)
-			if !ok {
-				writeJSONError(w, http.StatusNotFound, "unknown_route",
-					fmt.Sprintf("no client protocol registered for ingress path %q", r.URL.Path))
-				return
-			}
 			var adapterOK bool
 			clientAdapter, adapterOK = proto.DefaultClientAdapterRegistry().Lookup(clientProtocol)
 			if !adapterOK {
@@ -160,6 +160,10 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 		if req.Model == "" {
 			writeJSONError(w, http.StatusBadRequest, "missing_model", "model field required")
 			return
+		}
+		requestID := middleware.GetReqID(ctx)
+		if requestID == "" {
+			requestID = uuid.NewString()
 		}
 
 		resolved, err := d.Registry.ResolveModel(ctx, req.Model, ident.TenantID)
@@ -184,7 +188,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 				TenantID:  ident.TenantID,
 				UserID:    ident.UserID,
 				APIKeyID:  ident.APIKeyID,
-				RequestID: middleware.GetReqID(ctx),
+				RequestID: requestID,
 			},
 			Model: router.ResolvedModel{
 				PublicAlias:     resolved.PublicAlias,
@@ -209,6 +213,10 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			return
 		}
 		attempt := plan.Attempts[0]
+		routeID := plan.SnapshotVersion
+		if attempt.Reason != "" {
+			routeID = fmt.Sprintf("%s:%s", routeID, attempt.Reason)
+		}
 
 		idempotencyHeader := r.Header.Get("Idempotency-Key")
 		logicalRequestID := idempotencyHeader
@@ -306,9 +314,25 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 		if accInfo.AccountID == 0 {
 			accInfo.AccountID = acquiredAccountID
 		}
+		forwardReq := gateway.ForwardRequest{
+			TenantID:             ident.TenantID,
+			AccountID:            acquiredAccountID,
+			AcquisitionToken:     acquisitionToken,
+			RequestID:            requestID,
+			RouteID:              routeID,
+			PoolID:               fmt.Sprintf("%d", attempt.PoolGroupID),
+			IngressPath:          r.URL.Path,
+			ProtocolFamily:       resolved.ProtocolFamily,
+			ClientProtocol:       string(clientProtocol),
+			Model:                upstreamModelID,
+			RequestedModel:       req.Model,
+			Provider:             accInfo.Platform,
+			RoutingReasonPayload: selRes.RoutingReasonJSON,
+			SessionHash:          promptHash,
+		}
 
 		if !req.Stream {
-			seed := requestMetaSeed(ctx, r, ident, clientProtocol, resolved.ProtocolFamily, acquiredAccountID, acquisitionToken)
+			seed := requestMetaSeed(r, ident, clientProtocol, resolved.ProtocolFamily, routeID, requestID, acquiredAccountID, acquisitionToken)
 			seedCtx := proto.ContextWithRequestMetaSeed(ctx, seed)
 			canonicalReq, _, err := clientAdapter.RequestToCanonical(seedCtx, body)
 			if err != nil {
@@ -322,6 +346,9 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 				return
 			}
 			enrichCanonicalRequestMeta(canonicalReq, upstreamModelID, accInfo.Platform, idempotencyHeader, promptHash)
+			setAccountingModelRequested(canonicalReq, req.Model)
+			setAccountingModelRouteDecided(canonicalReq, forwardReq.Model)
+			gateway.ApplyForwardRequestHopChain(canonicalReq, forwardReq)
 
 			canonicalDispatcher := canonicalBufferedDispatcher(d)
 			if canonicalDispatcher == nil {
@@ -349,6 +376,9 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 				writeJSONError(w, http.StatusBadGateway, "upstream_empty_response", "dispatcher returned no buffered HCSF response")
 				return
 			}
+			setAccountingModelRequested(bufferedEnv, req.Model)
+			setAccountingModelRouteDecided(bufferedEnv, forwardReq.Model)
+			gateway.ApplyForwardRequestHopChain(bufferedEnv, forwardReq)
 
 			clientBody, _, err := clientAdapter.CanonicalToClientResponse(seedCtx, bufferedEnv)
 			if err != nil {
@@ -380,6 +410,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			}
 
 			w.Header().Set("Content-Type", "application/json")
+			setHUAKAIModelHeaders(w.Header(), req.Model, bufferedEnv)
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write(clientBody)
 			return
@@ -423,16 +454,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
-		draft, fwdErr := d.Forwarder.Forward(ctx, dispatchRes.UpstreamReader, w, gateway.ForwardRequest{
-			TenantID:         ident.TenantID,
-			AccountID:        acquiredAccountID,
-			AcquisitionToken: acquisitionToken,
-			Model:            upstreamModelID,
-			ProtocolFamily:   resolved.ProtocolFamily,
-			// PASR-lite A4: SessionHash 流入 UpstreamState.PrefixHash, 终态
-			// ObserveByAccountWithPrefix 触发 PASR observer 更新段状态。
-			SessionHash: promptHash,
-		})
+		draft, fwdErr := d.Forwarder.Forward(ctx, dispatchRes.UpstreamReader, w, forwardReq)
 		if fwdErr != nil {
 			_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "forwarder_error")
 			w.Header().Set("X-Huakai-Forward-Error", fwdErr.Error())
@@ -486,11 +508,7 @@ func closeDispatchResult(res *gateway.DispatchResult) {
 	}
 }
 
-func requestMetaSeed(ctx context.Context, r *http.Request, ident auth.Identity, clientProtocol proto.ClientProtocol, protocolFamily string, accountID int64, acquisitionToken uuid.UUID) proto.RequestMetaSeed {
-	requestID := middleware.GetReqID(ctx)
-	if requestID == "" {
-		requestID = uuid.NewString()
-	}
+func requestMetaSeed(r *http.Request, ident auth.Identity, clientProtocol proto.ClientProtocol, protocolFamily, routeID, requestID string, accountID int64, acquisitionToken uuid.UUID) proto.RequestMetaSeed {
 	token := ""
 	if acquisitionToken != uuid.Nil {
 		token = acquisitionToken.String()
@@ -501,6 +519,7 @@ func requestMetaSeed(ctx context.Context, r *http.Request, ident auth.Identity, 
 		ProtocolFamily:   protocolFamily,
 		IngressPath:      r.URL.Path,
 		TenantID:         ident.TenantID,
+		RouteID:          routeID,
 		AccountID:        accountID,
 		AcquisitionToken: token,
 		EvidenceLabel:    proto.EvidenceMock,
