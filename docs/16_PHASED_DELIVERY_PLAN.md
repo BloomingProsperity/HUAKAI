@@ -192,7 +192,7 @@ Make provider accounts manageable and routable.
 - Manual credential rotation path.
 - Basic route selection.
 - Disabled accounts are excluded from routing.
-- [F-COMPAT-001](03_FEATURE_PARITY_MATRIX.md) — Warm-up interception 凭据 flag（Personal Edition opt-in plugin；DECISION-POINT-Q1 待 Owner 复核是否 reject 不做）。
+- [F-COMPAT-001](03_FEATURE_PARITY_MATRIX.md) — Warm-up interception 凭据 flag（Personal Edition opt-in plugin；Q1 已裁决 2026-05-12 维持 Plugin opt-in）。
 
 ### Exit Criteria
 
@@ -214,7 +214,7 @@ Record usage reliably and add simple quota controls without pretending to have f
 - Simple quota check.
 - Billing ledger design notes for later phases.
 - [F-AUTH-006](03_FEATURE_PARITY_MATRIX.md) — OAuth 引导子系统（commercial blocker，配合 F-AUTH-005 续期形成完整 OAuth 套利路径；L0-1 in 02_HUAKAI_FUSION_ARCHITECTURE.md）。
-- [F-COMM-001](03_FEATURE_PARITY_MATRIX.md) — 邀请 / 推荐子系统 plugin 壳（与 F-PAY-001 并列；DECISION-POINT-Q2 待 Owner 复核是否升 Mandatory Roadmap）。
+- [F-COMM-001](03_FEATURE_PARITY_MATRIX.md) — 邀请 / 推荐子系统（与 F-PAY-001 并列；Q2 已裁决 2026-05-12 升 Mandatory Roadmap，共账本 first-class schema）。
 
 ### Exit Criteria
 
@@ -304,7 +304,7 @@ By the end of Phase 9, HUAKAI's supported Provider catalog must **materially exc
 - Feature flags.
 - Better observability and investigation workflows.
 - [F-CRED-001](03_FEATURE_PARITY_MATRIX.md) — 凭据提供者 + 预轮换 + OIDC→cloud STS 子系统（Phase 9+ SaaS enterprise tier；与 F-AUTH-005 续期 / F-AUTH-006 引导职能边界明确分割）。
-- [F-PROTO-003](03_FEATURE_PARITY_MATRIX.md) — 服务侧压缩 native passthrough 路径 `/v1/native/openai/responses/compact`（已被 P-4 passthrough 覆盖；DECISION-POINT-Q3 待 Owner 复核是否升级到 first-class HCSF capability，14→15）。
+- [F-PROTO-003](03_FEATURE_PARITY_MATRIX.md) — 服务侧压缩 native passthrough 路径 `/v1/native/openai/responses/compact`（已被 P-4 passthrough 覆盖；Q3 已裁决 2026-05-12 维持 Native passthrough，不升 first-class capability）。
 
 ### Exit Criteria
 
