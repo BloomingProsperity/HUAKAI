@@ -23,6 +23,25 @@ type Accounting struct {
 
 	// EvidenceLabel 可选；与 RequestMeta.EvidenceLabel 同语义；空值等价 mock。
 	EvidenceLabel EvidenceLabel `json:"evidence_label,omitempty"`
+
+	// HopChain 可选；HUAKAI 信任链 T1+：记录 request → router → pool → account →
+	// provider → response 的每跳证据；T2 由 forwarder 写入。
+	// 详见 internal/proto/trust_chain_types.go HopAttestation。
+	HopChain []HopAttestation `json:"hop_chain,omitempty"`
+
+	// ModelChain 可选；HUAKAI 信任链 T3：三方比对 model 字段防商家偷换。
+	// 详见 internal/proto/trust_chain_types.go ModelChain。
+	ModelChain *ModelChain `json:"model_chain,omitempty"`
+
+	// LedgerID 可选；HUAKAI 信任链 T4：引用 audit_ledger 表的行 ID；T4 才写入。
+	LedgerID string `json:"ledger_id,omitempty"`
+
+	// Signature 可选；HUAKAI 信任链 T2：ed25519 签名（base64）；T2 由 settler 写入。
+	Signature string `json:"signature,omitempty"`
+
+	// PubkeyFingerprint 可选；HUAKAI 信任链 T2：sha256(pubkey)[:16] hex；
+	// Signature 非空时本字段必须非空（INV-51，T2 落地时启用守门）。
+	PubkeyFingerprint string `json:"pubkey_fp,omitempty"`
 }
 
 // LiveUsage 是 live_session capability 的 usage 子结构。
