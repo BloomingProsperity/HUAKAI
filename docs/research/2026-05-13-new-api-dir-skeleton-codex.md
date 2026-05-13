@@ -8,8 +8,8 @@
 | Last commit date | 2026-05-09 |
 | Lane | specifier / codex |
 | Mining started | 2026-05-13T07:52:51Z |
-| Mining done | TBD |
-| Output LoC | TBD |
+| Mining done | 2026-05-13T08:21:30Z |
+| Output LoC | 942 |
 | Observed regions | 92 |
 | Inferences | 44 |
 | Open questions | 8 |
@@ -273,7 +273,7 @@ HUAKAI 升级点总览：new-api 的价值不在单个 adapter，而在“账号
 
 3. **入口 / 调用关系**
 
-- `router/api-router.go` 把 setup/status、pricing、OAuth、用户、订阅、option、性能、ratio sync、channel、token、usage、log、vendor、models、deployments 等接口映射到 controller；证据见 `Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:48`、`Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:181`、`Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:251`、`Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:294`、`Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:398`。
+- `router/api-router.go` 把 setup/status、pricing、OAuth、用户、订阅、option、性能、ratio sync、channel、token、usage、log、vendor、models、deployments 等接口映射到 controller；证据见 `Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:48`、`Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:181`、`Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:251`、`Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:294`、`Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:364`。
 - relay controller 从 helper 解析请求，生成 relay info，做敏感词检查、token 估算、价格计算、预扣、重试和错误处理；证据见 `Calcium-Ion/new-api@d146e45e2f95:controller/relay.go:109`、`Calcium-Ion/new-api@d146e45e2f95:controller/relay.go:120`、`Calcium-Ion/new-api@d146e45e2f95:controller/relay.go:126`、`Calcium-Ion/new-api@d146e45e2f95:controller/relay.go:145`、`Calcium-Ion/new-api@d146e45e2f95:controller/relay.go:153`、`Calcium-Ion/new-api@d146e45e2f95:controller/relay.go:164`、`Calcium-Ion/new-api@d146e45e2f95:controller/relay.go:190`。
 
 4. **核心 logic / 算法**
@@ -347,7 +347,7 @@ HUAKAI 升级点总览：new-api 的价值不在单个 adapter，而在“账号
 
 3. **入口 / 调用关系**
 
-- `relay/helper` 根据 relay format 读取和验证 DTO；证据见 `Calcium-Ion/new-api@d146e45e2f95:relay/helper/valid_request.go:1452`、`Calcium-Ion/new-api@d146e45e2f95:relay/helper/valid_request.go:1456`、`Calcium-Ion/new-api@d146e45e2f95:relay/helper/valid_request.go:1466`、`Calcium-Ion/new-api@d146e45e2f95:relay/helper/valid_request.go:1468`。
+- `relay/helper` 根据 relay format 读取和验证 DTO；证据见 `Calcium-Ion/new-api@d146e45e2f95:relay/helper/valid_request.go:19`、`Calcium-Ion/new-api@d146e45e2f95:relay/helper/valid_request.go:23`、`Calcium-Ion/new-api@d146e45e2f95:relay/helper/valid_request.go:33`、`Calcium-Ion/new-api@d146e45e2f95:relay/helper/valid_request.go:35`。
 - `service/convert` 在协议之间转换 DTO；证据见 `Calcium-Ion/new-api@d146e45e2f95:service/convert.go:17`、`Calcium-Ion/new-api@d146e45e2f95:service/convert.go:607`、`Calcium-Ion/new-api@d146e45e2f95:service/convert.go:658`、`Calcium-Ion/new-api@d146e45e2f95:service/convert.go:828`。
 
 4. **核心 logic / 算法**
@@ -421,7 +421,7 @@ HUAKAI 升级点总览：new-api 的价值不在单个 adapter，而在“账号
 3. **入口 / 调用关系**
 
 - `middleware/i18n.go` 从请求中检测语言并设置上下文；证据见 `Calcium-Ion/new-api@d146e45e2f95:middleware/i18n.go:13`、`Calcium-Ion/new-api@d146e45e2f95:middleware/i18n.go:23`。
-- auth/rate-limit/controller error path 会通过 i18n key 输出用户可读消息；证据见 `Calcium-Ion/new-api@d146e45e2f95:middleware/auth.go:47`、`Calcium-Ion/new-api@d146e45e2f95:middleware/auth.go:63`、`Calcium-Ion/new-api@d146e45e2f95:middleware/distributor.go:475`。
+- auth/rate-limit/controller error path 会通过 i18n key 输出用户可读消息；证据见 `Calcium-Ion/new-api@d146e45e2f95:middleware/auth.go:47`、`Calcium-Ion/new-api@d146e45e2f95:middleware/auth.go:63`、`Calcium-Ion/new-api@d146e45e2f95:middleware/distributor.go:36`。
 
 4. **核心 logic / 算法**
 
@@ -488,8 +488,8 @@ HUAKAI 升级点总览：new-api 的价值不在单个 adapter，而在“账号
 
 3. **入口 / 调用关系**
 
-- API 路由挂全局 API rate limit、body cleanup 和 gzip；relay 路由挂 CORS、解压、body cleanup、stats、token auth、模型限流和分发；证据见 `Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:50`、`Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:52`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:438`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:441`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:496`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:509`。
-- 分发中间件调用模型请求解析、token model limit、group access、channel selection 和 selected channel context；证据见 `Calcium-Ion/new-api@d146e45e2f95:middleware/distributor.go:30`、`Calcium-Ion/new-api@d146e45e2f95:middleware/distributor.go:496`、`Calcium-Ion/new-api@d146e45e2f95:middleware/distributor.go:532`、`Calcium-Ion/new-api@d146e45e2f95:middleware/distributor.go:345`。
+- API 路由挂全局 API rate limit、body cleanup 和 gzip；relay 路由挂 CORS、解压、body cleanup、stats、token auth、模型限流和分发；证据见 `Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:50`、`Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:52`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:14`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:17`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:72`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:85`。
+- 分发中间件调用模型请求解析、token model limit、group access、channel selection 和 selected channel context；证据见 `Calcium-Ion/new-api@d146e45e2f95:middleware/distributor.go:30`、`Calcium-Ion/new-api@d146e45e2f95:middleware/distributor.go:57`、`Calcium-Ion/new-api@d146e45e2f95:middleware/distributor.go:82`、`Calcium-Ion/new-api@d146e45e2f95:middleware/distributor.go:345`。
 
 4. **核心 logic / 算法**
 
@@ -595,7 +595,7 @@ HUAKAI 升级点总览：new-api 的价值不在单个 adapter，而在“账号
 
 3. **入口 / 调用关系**
 
-- price helper 调用表达式计费包做预扣估算和 snapshot；证据见 `Calcium-Ion/new-api@d146e45e2f95:relay/helper/price.go:1197`、`Calcium-Ion/new-api@d146e45e2f95:relay/helper/price.go:1366`、`Calcium-Ion/new-api@d146e45e2f95:relay/helper/price.go:1382`、`Calcium-Ion/new-api@d146e45e2f95:relay/helper/price.go:1403`。
+- price helper 调用表达式计费包做预扣估算和 snapshot；证据见 `Calcium-Ion/new-api@d146e45e2f95:relay/helper/price.go:67`、`Calcium-Ion/new-api@d146e45e2f95:relay/helper/price.go:241`、`Calcium-Ion/new-api@d146e45e2f95:relay/helper/price.go:257`、`Calcium-Ion/new-api@d146e45e2f95:relay/helper/price.go:278`。
 - relay 失败/成功后会记录性能样本，main 初始化指标包；证据见 `Calcium-Ion/new-api@d146e45e2f95:main.go:310`、`Calcium-Ion/new-api@d146e45e2f95:controller/relay.go:244`、`Calcium-Ion/new-api@d146e45e2f95:pkg/perf_metrics/metrics.go:23`、`Calcium-Ion/new-api@d146e45e2f95:pkg/perf_metrics/metrics.go:27`。
 - deployment controller 调用外部部署 client 做连接测试、列表、创建、容器和日志；证据见 `Calcium-Ion/new-api@d146e45e2f95:controller/deployment.go:42`、`Calcium-Ion/new-api@d146e45e2f95:controller/deployment.go:206`、`Calcium-Ion/new-api@d146e45e2f95:controller/deployment.go:494`、`Calcium-Ion/new-api@d146e45e2f95:controller/deployment.go:646`。
 
@@ -671,13 +671,13 @@ HUAKAI 升级点总览：new-api 的价值不在单个 adapter，而在“账号
 
 3. **入口 / 调用关系**
 
-- API route 装配 setup/status/pricing/perf、用户、订阅、系统 option、性能、ratio sync、channel、token、usage、log、data、vendor、models、deployments；证据见 `Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:55`、`Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:98`、`Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:181`、`Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:251`、`Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:294`、`Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:398`。
-- relay route 装配 `/v1`、`/v1beta`、`/pg`、MJ 和 Suno/task-style 路径；证据见 `Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:437`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:493`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:511`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:592`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:603`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:613`。
+- API route 装配 setup/status/pricing/perf、用户、订阅、系统 option、性能、ratio sync、channel、token、usage、log、data、vendor、models、deployments；证据见 `Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:55`、`Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:98`、`Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:181`、`Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:251`、`Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:294`、`Calcium-Ion/new-api@d146e45e2f95:router/api-router.go:364`。
+- relay route 装配 `/v1`、`/v1beta`、`/pg`、MJ 和 Suno/task-style 路径；证据见 `Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:13`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:69`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:88`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:168`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:179`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:189`。
 
 4. **核心 logic / 算法**
 
 - Router 主要是访问控制和协议路径分层：API route 按用户/admin/root/token 分组，relay route 按协议格式进入统一 controller。
-- Web fallback 会排除 `/v1`、`/api` 和 `/assets`，其余路径返回当前主题 index；证据见 `Calcium-Ion/new-api@d146e45e2f95:router/web-router.go:24`、`Calcium-Ion/new-api@d146e45e2f95:router/web-router.go:681`、`Calcium-Ion/new-api@d146e45e2f95:router/web-router.go:688`。
+- Web fallback 会排除 `/v1`、`/api` 和 `/assets`，其余路径返回当前主题 index；证据见 `Calcium-Ion/new-api@d146e45e2f95:router/web-router.go:24`、`Calcium-Ion/new-api@d146e45e2f95:router/web-router.go:33`、`Calcium-Ion/new-api@d146e45e2f95:router/web-router.go:40`。
 
 5. **暴露功能**
 
@@ -748,7 +748,7 @@ HUAKAI 升级点总览：new-api 的价值不在单个 adapter，而在“账号
 3. **入口 / 调用关系**
 
 - main 启动时初始化 ratio settings，model 初始化 option map 后加载配置；证据见 `Calcium-Ion/new-api@d146e45e2f95:main.go:273`、`Calcium-Ion/new-api@d146e45e2f95:main.go:290`。
-- middleware/model-rate-limit 和 price helper 实时读取配置；证据见 `Calcium-Ion/new-api@d146e45e2f95:middleware/model-rate-limit.go:1249`、`Calcium-Ion/new-api@d146e45e2f95:middleware/model-rate-limit.go:1266`、`Calcium-Ion/new-api@d146e45e2f95:relay/helper/price.go:1192`。
+- middleware/model-rate-limit 和 price helper 实时读取配置；证据见 `Calcium-Ion/new-api@d146e45e2f95:middleware/model-rate-limit.go:170`、`Calcium-Ion/new-api@d146e45e2f95:middleware/model-rate-limit.go:187`、`Calcium-Ion/new-api@d146e45e2f95:relay/helper/price.go:67`。
 
 4. **核心 logic / 算法**
 
@@ -807,7 +807,7 @@ HUAKAI 升级点总览：new-api 的价值不在单个 adapter，而在“账号
 1. **用途**
 
 - `web` 包含两套前端：default 是较新的 React/TypeScript/Rsbuild/TanStack route 体系，classic 是 React/Vite/Semi Design 体系。
-- 后端 embed 两套 build 产物，web router 根据主题选择静态资源；证据见 `Calcium-Ion/new-api@d146e45e2f95:main.go:38`、`Calcium-Ion/new-api@d146e45e2f95:main.go:44`、`Calcium-Ion/new-api@d146e45e2f95:router/web-router.go:24`、`Calcium-Ion/new-api@d146e45e2f95:router/web-router.go:688`。
+- 后端 embed 两套 build 产物，web router 根据主题选择静态资源；证据见 `Calcium-Ion/new-api@d146e45e2f95:main.go:38`、`Calcium-Ion/new-api@d146e45e2f95:main.go:44`、`Calcium-Ion/new-api@d146e45e2f95:router/web-router.go:24`、`Calcium-Ion/new-api@d146e45e2f95:router/web-router.go:40`。
 
 2. **关键文件**
 
@@ -844,15 +844,15 @@ HUAKAI 升级点总览：new-api 的价值不在单个 adapter，而在“账号
 
 ### A. Relay 文本请求主链路
 
-1. `router/relay-router.go` 暴露 `/v1` 和协议兼容路径，挂系统性能检查、token 鉴权、模型限流和通道分发；证据见 `Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:493`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:495`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:496`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:497`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:509`。
+1. `router/relay-router.go` 暴露 `/v1` 和协议兼容路径，挂系统性能检查、token 鉴权、模型限流和通道分发；证据见 `Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:69`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:71`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:72`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:73`、`Calcium-Ion/new-api@d146e45e2f95:router/relay-router.go:85`。
 2. `middleware/auth.go` 解析 API key、用户状态、group 和 token 限制；证据见 `Calcium-Ion/new-api@d146e45e2f95:middleware/auth.go:332`、`Calcium-Ion/new-api@d146e45e2f95:middleware/auth.go:367`、`Calcium-Ion/new-api@d146e45e2f95:middleware/auth.go:421`。
-3. `middleware/distributor.go` 从请求提取模型，校验 token model limit 和 group access，再设置 selected channel context；证据见 `Calcium-Ion/new-api@d146e45e2f95:middleware/distributor.go:473`、`Calcium-Ion/new-api@d146e45e2f95:middleware/distributor.go:496`、`Calcium-Ion/new-api@d146e45e2f95:middleware/distributor.go:532`、`Calcium-Ion/new-api@d146e45e2f95:middleware/distributor.go:345`。
+3. `middleware/distributor.go` 从请求提取模型，校验 token model limit 和 group access，再设置 selected channel context；证据见 `Calcium-Ion/new-api@d146e45e2f95:middleware/distributor.go:34`、`Calcium-Ion/new-api@d146e45e2f95:middleware/distributor.go:57`、`Calcium-Ion/new-api@d146e45e2f95:middleware/distributor.go:82`、`Calcium-Ion/new-api@d146e45e2f95:middleware/distributor.go:345`。
 4. `controller/relay.go` 验证请求、生成 relay info、估算 token、价格计算、预扣、循环重试；证据见 `Calcium-Ion/new-api@d146e45e2f95:controller/relay.go:109`、`Calcium-Ion/new-api@d146e45e2f95:controller/relay.go:120`、`Calcium-Ion/new-api@d146e45e2f95:controller/relay.go:145`、`Calcium-Ion/new-api@d146e45e2f95:controller/relay.go:153`、`Calcium-Ion/new-api@d146e45e2f95:controller/relay.go:164`、`Calcium-Ion/new-api@d146e45e2f95:controller/relay.go:190`。
 5. `relay` helper 选择协议处理，adapter 发送上游请求，失败时回到 controller 的 retry/error path；证据见 `Calcium-Ion/new-api@d146e45e2f95:controller/relay.go:212`、`Calcium-Ion/new-api@d146e45e2f95:relay/channel/api_request.go:290`、`Calcium-Ion/new-api@d146e45e2f95:controller/relay.go:231`、`Calcium-Ion/new-api@d146e45e2f95:controller/relay.go:324`。
 
 ### B. 计费与订阅预扣链路
 
-1. `relay/helper/price.go` 先按模型价格/倍率/group ratio 或表达式计费计算预扣；证据见 `Calcium-Ion/new-api@d146e45e2f95:relay/helper/price.go:1192`、`Calcium-Ion/new-api@d146e45e2f95:relay/helper/price.go:1197`、`Calcium-Ion/new-api@d146e45e2f95:relay/helper/price.go:1245`、`Calcium-Ion/new-api@d146e45e2f95:relay/helper/price.go:1366`。
+1. `relay/helper/price.go` 先按模型价格/倍率/group ratio 或表达式计费计算预扣；证据见 `Calcium-Ion/new-api@d146e45e2f95:relay/helper/price.go:67`、`Calcium-Ion/new-api@d146e45e2f95:relay/helper/price.go:70`、`Calcium-Ion/new-api@d146e45e2f95:relay/helper/price.go:88`、`Calcium-Ion/new-api@d146e45e2f95:relay/helper/price.go:241`。
 2. `service/billing_session.go` 统一 reserve、pre-consume、refund 和 settle；证据见 `Calcium-Ion/new-api@d146e45e2f95:service/billing_session.go:152`、`Calcium-Ion/new-api@d146e45e2f95:service/billing_session.go:186`、`Calcium-Ion/new-api@d146e45e2f95:service/billing_session.go:82`、`Calcium-Ion/new-api@d146e45e2f95:service/billing_session.go:41`。
 3. `model/subscription.go` 支持订阅预扣、退款、到期失效和周期重置；证据见 `Calcium-Ion/new-api@d146e45e2f95:model/subscription.go:970`、`Calcium-Ion/new-api@d146e45e2f95:model/subscription.go:1074`、`Calcium-Ion/new-api@d146e45e2f95:model/subscription.go:823`、`Calcium-Ion/new-api@d146e45e2f95:model/subscription.go:1100`。
 4. `service/text_quota.go` 和 `service/quota.go` 在响应后根据真实 usage 做后结算与日志；证据见 `Calcium-Ion/new-api@d146e45e2f95:service/text_quota.go:322`、`Calcium-Ion/new-api@d146e45e2f95:service/quota.go:408`。
@@ -927,9 +927,9 @@ Pushed: 2026-05-09
 
 Mining started: 2026-05-13T07:52:51Z
 
-Mining done: TBD
+Mining done: 2026-05-13T08:21:30Z
 
-Output LoC: TBD
+Output LoC: 942
 
 Source files read (per CLAUDE.md #11 closing): see "Source coverage proof" above.
 
@@ -937,6 +937,6 @@ Lane: specifier
 
 Agent ID: Codex / GPT-5
 
-UTC timestamp: TBD
+UTC timestamp: 2026-05-13T08:21:30Z
 
 Owner 中文摘要：本轮对 new-api 做了 T1 顶层目录骨架拆解；真实观察主要来自启动、router、middleware、controller、model、service、relay、setting、web、CI 和 docs 的 file:line 证据；合理推断集中在 HUAKAI 升级点，不把 ref 结构复制为 HUAKAI 设计；open questions 为 8 个，主要是未读 HUAKAI 代码、未跑测试、未做 T2/T3 文件级精读。
