@@ -108,7 +108,7 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 	go scanInto(upstreamCtx, scanner, upstreamReader, f.ScannerBufferCap, events)
 
 	upstreamState := f.newUpstreamState(req)
-	var clientState any
+	clientState := f.newClientState()
 	var terminalSeen bool
 	var firstEmitted bool
 	var endErr error
@@ -141,6 +141,14 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 						acc.Source = UsageSourceInferred
 					}
 				}
+				if err := f.finalizeClientStream(ctx, clientWriter, clientState); err != nil {
+					if errors.Is(err, ErrClientDisconnect) {
+						draft.EndClass = ClientDisconnect
+					} else {
+						draft.EndClass = UnknownTermination
+					}
+					return f.finishDraft(draft, acc, start, err)
+				}
 				return f.finishDraft(draft, acc, start, nil)
 			}
 			if res.err != nil {
@@ -172,6 +180,16 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 		}
 		return f.finishDraft(draft, acc, start, endErr)
 	}
+}
+
+// BufferedResponse 将 canonical buffered envelope 转回客户端协议响应。
+// 它只服务非 streaming 路径；Forward 的 streaming 热路径不调用此方法。
+func (f *StreamForwarder) BufferedResponse(ctx context.Context, canonical *proto.HCSF) ([]byte, error) {
+	if f.ClientAdapter == nil {
+		return nil, errors.New("gateway: ClientAdapter 未注入")
+	}
+	body, _, err := f.ClientAdapter.CanonicalToClientResponse(ctx, canonical)
+	return body, err
 }
 
 // handleEventWithAdapter 使用调用方已解析的 adapter 处理单个 SSE 事件。
@@ -240,6 +258,27 @@ func (f *StreamForwarder) handleEventWithAdapter(
 		}
 	}
 	return terminalSeen, wrote, nil
+}
+
+// finalizeClientStream 在上游 reader 结束后调用 client adapter 收尾 hook。
+// nil ClientAdapter 保留 raw passthrough：不合成任何客户端尾块。
+func (f *StreamForwarder) finalizeClientStream(ctx context.Context, w http.ResponseWriter, state any) error {
+	if f.ClientAdapter == nil {
+		return nil
+	}
+	chunks, err := f.ClientAdapter.FinalizeClientStream(ctx, state)
+	if err != nil {
+		return err
+	}
+	for _, chunk := range chunks {
+		if len(chunk) == 0 {
+			continue
+		}
+		if err := writeAndFlush(w, chunk); err != nil {
+			return ErrClientDisconnect
+		}
+	}
+	return nil
 }
 
 // drainWithAdapter 使用调用方已解析的 adapter 执行 Phase C-bis bounded drain。
@@ -348,6 +387,21 @@ func (f *StreamForwarder) newUpstreamState(req ForwardRequest) any {
 	}
 	// fallthrough: Anthropic / Bedrock-on-Anthropic / 其它都用 UpstreamState
 	return &proto.UpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}
+}
+
+// newClientState 按 client adapter 的具体协议创建 per-stream 状态。
+// 未注入 ClientAdapter 时返回 nil，让 raw SSE passthrough 行为保持原样。
+func (f *StreamForwarder) newClientState() any {
+	switch f.ClientAdapter.(type) {
+	case *proto.AnthropicMessagesClient:
+		return proto.NewAnthropicMessagesStreamState()
+	case *proto.OpenAIChatClient:
+		return proto.NewOpenAIChatStreamState()
+	case *proto.OpenAIResponsesClient:
+		return proto.NewOpenAIResponsesStreamState()
+	default:
+		return nil
+	}
 }
 
 func (f *StreamForwarder) effectiveDrainBudgets() DrainBudgets {

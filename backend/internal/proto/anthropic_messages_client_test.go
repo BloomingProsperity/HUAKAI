@@ -154,29 +154,30 @@ func TestAnthropicMessagesClient_ContentAsBlockArray(t *testing.T) {
 }
 
 func TestAnthropicMessagesClient_ContentUnsupportedBlockType_NonSilentLoss(t *testing.T) {
+	// Image / thinking content blocks 已在 D1.x 升级；此 case 改测真正未识别的 type。
 	adapter := &AnthropicMessagesClient{}
 	body := []byte(`{
 		"model":"claude-3","max_tokens":10,
-		"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAA"}}]}]
+		"messages":[{"role":"user","content":[{"type":"exotic_future_type"}]}]
 	}`)
 	_, losses, err := adapter.RequestToCanonical(newTestAnthropicCtx(t), body)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if len(losses) == 0 {
-		t.Fatal("expected at least 1 loss for image block (D1 pending)")
+		t.Fatal("expected at least 1 loss for unknown block type")
 	}
-	var foundImg bool
+	var foundUnknown bool
 	for _, l := range losses {
 		if l.Severity == "" {
 			t.Errorf("loss missing severity (must not be silent): %+v", l)
 		}
-		if strings.Contains(l.Reason, "image") {
-			foundImg = true
+		if strings.Contains(l.Reason, "unknown_block_type") {
+			foundUnknown = true
 		}
 	}
-	if !foundImg {
-		t.Errorf("expected reason to mention image, got: %+v", losses)
+	if !foundUnknown {
+		t.Errorf("expected unknown_block_type loss, got: %+v", losses)
 	}
 }
 
@@ -738,6 +739,192 @@ func TestAnthropicMessages_D4_FinalizeIdempotent(t *testing.T) {
 	}
 	if len(out2) != 0 {
 		t.Errorf("second Finalize must be no-op, got %d chunks", len(out2))
+	}
+}
+
+// --------------------------------------------------------------------------
+// D1.x continuations: cache_control / image / thinking
+// --------------------------------------------------------------------------
+
+func TestAnthropicMessages_D1x_CacheControlOnTextBlock(t *testing.T) {
+	adapter := &AnthropicMessagesClient{}
+	body := []byte(`{
+		"model":"claude-3","max_tokens":10,
+		"messages":[{"role":"user","content":[
+			{"type":"text","text":"big prompt"},
+			{"type":"text","text":"trailing","cache_control":{"type":"ephemeral"}}
+		]}]
+	}`)
+	env, _, err := adapter.RequestToCanonical(newTestAnthropicCtx(t), body)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	var cacheNode, textNodeID *CapabilityNode
+	for i, n := range env.CapabilityGraph.Nodes {
+		if n.Kind == CapabilityCacheControl {
+			cacheNode = &env.CapabilityGraph.Nodes[i]
+		}
+		if n.Kind == CapabilityText && n.Text != nil && n.Text.Block.Text == "trailing" {
+			textNodeID = &env.CapabilityGraph.Nodes[i]
+		}
+	}
+	if cacheNode == nil {
+		t.Fatal("expected CapabilityCacheControl node")
+	}
+	if textNodeID == nil {
+		t.Fatal("expected trailing text node")
+	}
+	if len(cacheNode.CacheControl.BreakpointRefs) != 1 || cacheNode.CacheControl.BreakpointRefs[0] != textNodeID.ID {
+		t.Errorf("CacheControl.BreakpointRefs should point to trailing text node, got %+v", cacheNode.CacheControl.BreakpointRefs)
+	}
+	if !cacheNode.CacheControl.SanitizeSystemMetadata {
+		t.Error("SanitizeSystemMetadata must default true")
+	}
+}
+
+func TestAnthropicMessages_D1x_ImageBlockBase64(t *testing.T) {
+	adapter := &AnthropicMessagesClient{}
+	body := []byte(`{
+		"model":"claude-3","max_tokens":10,
+		"messages":[{"role":"user","content":[
+			{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBOR..."}}
+		]}]
+	}`)
+	env, _, err := adapter.RequestToCanonical(newTestAnthropicCtx(t), body)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	var imgNode *CapabilityNode
+	for i, n := range env.CapabilityGraph.Nodes {
+		if n.Kind == CapabilityImage {
+			imgNode = &env.CapabilityGraph.Nodes[i]
+			break
+		}
+	}
+	if imgNode == nil {
+		t.Fatal("expected CapabilityImage node")
+	}
+	if imgNode.Image.SourceKind != DataSourceInlineBase64 {
+		t.Errorf("SourceKind: %s", imgNode.Image.SourceKind)
+	}
+	if imgNode.Image.MediaType != "image/png" {
+		t.Errorf("MediaType: %s", imgNode.Image.MediaType)
+	}
+	if imgNode.Image.Locator.Value != "iVBOR..." {
+		t.Errorf("Locator.Value: %s", imgNode.Image.Locator.Value)
+	}
+}
+
+func TestAnthropicMessages_D1x_ImageBlockURL(t *testing.T) {
+	adapter := &AnthropicMessagesClient{}
+	body := []byte(`{
+		"model":"claude-3","max_tokens":10,
+		"messages":[{"role":"user","content":[
+			{"type":"image","source":{"type":"url","media_type":"image/jpeg","url":"https://x/y.jpg"}}
+		]}]
+	}`)
+	env, _, err := adapter.RequestToCanonical(newTestAnthropicCtx(t), body)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	var imgNode *CapabilityNode
+	for i, n := range env.CapabilityGraph.Nodes {
+		if n.Kind == CapabilityImage {
+			imgNode = &env.CapabilityGraph.Nodes[i]
+			break
+		}
+	}
+	if imgNode == nil || imgNode.Image.SourceKind != DataSourceURL || imgNode.Image.Locator.Value != "https://x/y.jpg" {
+		t.Errorf("URL image wrong: %+v", imgNode)
+	}
+}
+
+func TestAnthropicMessages_D1x_ImageMissingMediaTypeRejected(t *testing.T) {
+	adapter := &AnthropicMessagesClient{}
+	body := []byte(`{
+		"model":"claude-3","max_tokens":10,
+		"messages":[{"role":"user","content":[
+			{"type":"image","source":{"type":"base64","data":"x"}}
+		]}]
+	}`)
+	_, _, err := adapter.RequestToCanonical(newTestAnthropicCtx(t), body)
+	if err == nil || !strings.Contains(err.Error(), "media_type required") {
+		t.Errorf("expected media_type required, got %v", err)
+	}
+}
+
+func TestAnthropicMessages_D1x_ImageBase64MissingDataRejected(t *testing.T) {
+	adapter := &AnthropicMessagesClient{}
+	body := []byte(`{
+		"model":"claude-3","max_tokens":10,
+		"messages":[{"role":"user","content":[
+			{"type":"image","source":{"type":"base64","media_type":"image/png"}}
+		]}]
+	}`)
+	_, _, err := adapter.RequestToCanonical(newTestAnthropicCtx(t), body)
+	if err == nil || !strings.Contains(err.Error(), "data required") {
+		t.Errorf("expected data required, got %v", err)
+	}
+}
+
+func TestAnthropicMessages_D1x_ImageUnsupportedSourceType(t *testing.T) {
+	adapter := &AnthropicMessagesClient{}
+	body := []byte(`{
+		"model":"claude-3","max_tokens":10,
+		"messages":[{"role":"user","content":[
+			{"type":"image","source":{"type":"exotic_future_kind","media_type":"image/png"}}
+		]}]
+	}`)
+	_, _, err := adapter.RequestToCanonical(newTestAnthropicCtx(t), body)
+	if err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Errorf("expected unsupported source type, got %v", err)
+	}
+}
+
+func TestAnthropicMessages_D1x_ThinkingTopLevel(t *testing.T) {
+	adapter := &AnthropicMessagesClient{}
+	body := []byte(`{
+		"model":"claude-3","max_tokens":10,
+		"thinking":{"type":"enabled","budget_tokens":2048},
+		"messages":[{"role":"user","content":"hi"}]
+	}`)
+	env, _, err := adapter.RequestToCanonical(newTestAnthropicCtx(t), body)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	var thinkNode *CapabilityNode
+	for i, n := range env.CapabilityGraph.Nodes {
+		if n.Kind == CapabilityThinking {
+			thinkNode = &env.CapabilityGraph.Nodes[i]
+			break
+		}
+	}
+	if thinkNode == nil {
+		t.Fatal("expected CapabilityThinking node")
+	}
+	if thinkNode.Thinking.BudgetTokens != 2048 {
+		t.Errorf("BudgetTokens: %d", thinkNode.Thinking.BudgetTokens)
+	}
+	if thinkNode.Thinking.Redaction != RedactionPublic {
+		t.Errorf("Redaction: %s", thinkNode.Thinking.Redaction)
+	}
+}
+
+func TestAnthropicMessages_D1x_ThinkingDisabledIgnored(t *testing.T) {
+	adapter := &AnthropicMessagesClient{}
+	body := []byte(`{
+		"model":"claude-3","max_tokens":10,
+		"thinking":{"type":"disabled","budget_tokens":0},
+		"messages":[{"role":"user","content":"hi"}]
+	}`)
+	env, _, err := adapter.RequestToCanonical(newTestAnthropicCtx(t), body)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	for _, n := range env.CapabilityGraph.Nodes {
+		if n.Kind == CapabilityThinking {
+			t.Error("expected no thinking node when type=disabled")
+		}
 	}
 }
 
