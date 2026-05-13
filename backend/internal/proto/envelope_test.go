@@ -708,7 +708,7 @@ func makeFullCapabilityNodes() []CapabilityNode {
 				Endpoint:        "/v1/batches",
 				InputRef:        "n_file_1",
 				Validation:      BatchValidated,
-				OutputRef:       "file_output_001",
+				OutputRef:       "",
 				ErrorRef:        "",
 				RetryPolicy:     &RetryPolicy{MaxAttempts: 3, Backoff: "exponential"},
 				CostAttribution: "tenant_42",
@@ -1047,5 +1047,1666 @@ func TestINV2_NilSliceCompat(t *testing.T) {
 	}
 	if string(raw) != string(raw2) {
 		t.Fatalf("INV-2 second-round JSON not stable:\n1=%s\n2=%s", raw, raw2)
+	}
+}
+
+// --------------------------------------------------------------------------
+// P-1 D1：capability payload enum 守门（INV-14/16/18/23/39/41）
+// --------------------------------------------------------------------------
+
+// TestINV14_StreamReadyEnum 验证每个 node 的 StreamReady 必须在 {yes,no,partial} 内。
+func TestINV14_StreamReadyEnum(t *testing.T) {
+	cases := []struct {
+		name      string
+		value     StreamReadiness
+		expectInv string
+	}{
+		{"empty string", "", "INV-14"},
+		{"bogus", "almost", "INV-14"},
+		{"yes accepted", StreamReadyYes, ""},
+		{"no accepted", StreamReadyNo, ""},
+		{"partial accepted", StreamReadyPartial, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = []CapabilityNode{{
+				ID:          "n1",
+				Kind:        CapabilityText,
+				StreamReady: tc.value,
+				Text:        &TextNode{Role: "user", Block: CanonicalContentBlock{Type: "text", Text: "hi"}},
+			}}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV16_ToolUseStatusEnum 验证 ToolUse.Status enum 守门（D1 部分）。
+func TestINV16_ToolUseStatusEnum(t *testing.T) {
+	cases := []struct {
+		name      string
+		value     ToolNodeStatus
+		expectInv string
+	}{
+		{"empty string", "", "INV-16"},
+		{"bogus", "in_flight", "INV-16"},
+		{"pending accepted", ToolNodePending, ""},
+		{"partial accepted", ToolNodePartial, ""},
+		{"complete accepted", ToolNodeComplete, ""},
+		{"error accepted", ToolNodeError, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = []CapabilityNode{{
+				ID:          "n1",
+				Kind:        CapabilityToolUse,
+				StreamReady: StreamReadyYes,
+				ToolUse: &ToolUseNode{
+					ToolCallID: "t1",
+					Name:       "calc",
+					Input:      json.RawMessage(`{}`),
+					Status:     tc.value,
+				},
+			}}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV18_ToolResultStatusEnum 验证 ToolResult.Status 限定 {complete, error}（D1 部分）。
+//
+// 与 ToolUse 不同：pending/partial 在 ToolResult 上语义不成立 — 结果必须落地。
+func TestINV18_ToolResultStatusEnum(t *testing.T) {
+	cases := []struct {
+		name      string
+		value     ToolNodeStatus
+		expectInv string
+	}{
+		{"empty string", "", "INV-18"},
+		{"pending rejected", ToolNodePending, "INV-18"},
+		{"partial rejected", ToolNodePartial, "INV-18"},
+		{"bogus", "queued", "INV-18"},
+		{"complete accepted", ToolNodeComplete, ""},
+		{"error accepted", ToolNodeError, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = []CapabilityNode{
+				{
+					ID: "n_tu", Kind: CapabilityToolUse, StreamReady: StreamReadyYes,
+					ToolUse: &ToolUseNode{ToolCallID: "t1", Name: "calc", Input: json.RawMessage(`{}`), Status: ToolNodeComplete},
+				},
+				{
+					ID: "n_tr", Kind: CapabilityToolResult, StreamReady: StreamReadyNo,
+					ToolResult: &ToolResultNode{
+						ToolCallID: "t1",
+						Content:    []CanonicalContentBlock{},
+						Status:     tc.value,
+						IsError:    tc.value == ToolNodeError,
+					},
+				},
+			}
+			env.CapabilityGraph.Edges = []CapabilityEdge{
+				{ID: "e_req", Type: EdgeRequires, From: "n_tr", To: "n_tu", Required: true},
+			}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV23_AudioTransportEnum 验证 Audio.Transport enum 守门（D1 仅守 transport，
+// transport↔Locator.Kind 映射延后 D2）。
+func TestINV23_AudioTransportEnum(t *testing.T) {
+	cases := []struct {
+		name      string
+		value     MediaTransport
+		expectInv string
+	}{
+		{"empty string", "", "INV-23"},
+		{"bogus", "rtmp", "INV-23"},
+		{"inline accepted", MediaTransportInline, ""},
+		{"file accepted", MediaTransportFile, ""},
+		{"url accepted", MediaTransportURL, ""},
+		{"stream accepted", MediaTransportStream, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = []CapabilityNode{{
+				ID:          "n1",
+				Kind:        CapabilityAudio,
+				StreamReady: StreamReadyPartial,
+				Audio: &AudioNode{
+					Transport: tc.value,
+					Format:    "pcm16",
+					Locator:   DataLocator{Kind: DataSourceInlineBase64, Value: "BASE64==="},
+				},
+			}}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV39_ThinkingRedactionEnum 验证 Thinking.Redaction enum 守门。
+func TestINV39_ThinkingRedactionEnum(t *testing.T) {
+	cases := []struct {
+		name      string
+		value     RedactionClass
+		expectInv string
+	}{
+		{"empty string", "", "INV-39"},
+		{"bogus", "secret", "INV-39"},
+		{"public accepted", RedactionPublic, ""},
+		{"redacted accepted", RedactionRedacted, ""},
+		{"hidden accepted", RedactionHidden, ""},
+		{"provider_only accepted", RedactionProviderOnly, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = []CapabilityNode{{
+				ID:          "n1",
+				Kind:        CapabilityThinking,
+				StreamReady: StreamReadyPartial,
+				Thinking: &ThinkingNode{
+					BudgetTokens: 1024,
+					Blocks:       []CanonicalContentBlock{},
+					Redaction:    tc.value,
+				},
+			}}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// --------------------------------------------------------------------------
+// P-1 D2：复合 payload validator（INV-15/16 收口/17/18 收口/25/27/29/34/36/37 部分/39 收口）
+// --------------------------------------------------------------------------
+
+// TestINV15_TextNodePayload 验证 TextNode.Role + Block.Type。
+func TestINV15_TextNodePayload(t *testing.T) {
+	cases := []struct {
+		name      string
+		role      string
+		blockType string
+		expectInv string
+	}{
+		{"empty role", "", "text", "INV-15"},
+		{"bogus role", "moderator", "text", "INV-15"},
+		{"block type empty", "user", "", "INV-15"},
+		{"block type wrong", "user", "image", "INV-15"},
+		{"user accepted", "user", "text", ""},
+		{"assistant accepted", "assistant", "text", ""},
+		{"system accepted", "system", "text", ""},
+		{"tool accepted", "tool", "text", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = []CapabilityNode{{
+				ID:          "n1",
+				Kind:        CapabilityText,
+				StreamReady: StreamReadyYes,
+				Text:        &TextNode{Role: tc.role, Block: CanonicalContentBlock{Type: tc.blockType, Text: "hi"}},
+			}}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV16_ToolUseRequiredFields 验证 ToolUse 必填 + Input JSON 形态守门。
+func TestINV16_ToolUseRequiredFields(t *testing.T) {
+	cases := []struct {
+		name       string
+		toolCallID string
+		toolName   string
+		input      json.RawMessage
+		expectInv  string
+	}{
+		{"missing tool_call_id", "", "calc", json.RawMessage(`{}`), "INV-16"},
+		{"missing name", "t1", "", json.RawMessage(`{}`), "INV-16"},
+		{"input empty bytes", "t1", "calc", json.RawMessage{}, "INV-16"},
+		{"input invalid JSON", "t1", "calc", json.RawMessage(`{garbage`), "INV-16"},
+		{"input is array", "t1", "calc", json.RawMessage(`[1,2]`), "INV-16"},
+		{"input is string", "t1", "calc", json.RawMessage(`"hi"`), "INV-16"},
+		{"input is number", "t1", "calc", json.RawMessage(`42`), "INV-16"},
+		{"input object accepted", "t1", "calc", json.RawMessage(`{"x":1}`), ""},
+		{"input null accepted", "t1", "calc", json.RawMessage(`null`), ""},
+		{"input empty object accepted", "t1", "calc", json.RawMessage(`{}`), ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = []CapabilityNode{{
+				ID:          "n1",
+				Kind:        CapabilityToolUse,
+				StreamReady: StreamReadyYes,
+				ToolUse: &ToolUseNode{
+					ToolCallID: tc.toolCallID,
+					Name:       tc.toolName,
+					Input:      tc.input,
+					Status:     ToolNodeComplete,
+				},
+			}}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV17_ToolUsePartialInputState 验证 PartialInput 仅 status=pending/partial 允许。
+func TestINV17_ToolUsePartialInputState(t *testing.T) {
+	cases := []struct {
+		name      string
+		status    ToolNodeStatus
+		partial   json.RawMessage
+		expectInv string
+	}{
+		{"partial input on complete", ToolNodeComplete, json.RawMessage(`{"x":1}`), "INV-17"},
+		{"partial input on error", ToolNodeError, json.RawMessage(`{"x":1}`), "INV-17"},
+		{"partial input on pending", ToolNodePending, json.RawMessage(`{"x":1}`), ""},
+		{"partial input on partial", ToolNodePartial, json.RawMessage(`{"x":1}`), ""},
+		{"null partial on complete", ToolNodeComplete, json.RawMessage(`null`), ""},
+		{"empty partial on complete", ToolNodeComplete, nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = []CapabilityNode{{
+				ID:          "n1",
+				Kind:        CapabilityToolUse,
+				StreamReady: StreamReadyYes,
+				ToolUse: &ToolUseNode{
+					ToolCallID:   "t1",
+					Name:         "calc",
+					Input:        json.RawMessage(`{}`),
+					PartialInput: tc.partial,
+					Status:       tc.status,
+				},
+			}}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV18_ToolResultRequiredAndIsError 验证 ToolResult 必填 + IsError↔Status 一致。
+func TestINV18_ToolResultRequiredAndIsError(t *testing.T) {
+	cases := []struct {
+		name       string
+		toolCallID string
+		content    []CanonicalContentBlock
+		status     ToolNodeStatus
+		isError    bool
+		expectInv  string
+	}{
+		{"missing tool_call_id", "", []CanonicalContentBlock{}, ToolNodeComplete, false, "INV-18"},
+		{"nil content", "t1", nil, ToolNodeComplete, false, "INV-18"},
+		{"error status without is_error", "t1", []CanonicalContentBlock{}, ToolNodeError, false, "INV-18"},
+		{"complete status with is_error", "t1", []CanonicalContentBlock{}, ToolNodeComplete, true, "INV-18"},
+		{"complete + false accepted", "t1", []CanonicalContentBlock{}, ToolNodeComplete, false, ""},
+		{"error + true accepted", "t1", []CanonicalContentBlock{}, ToolNodeError, true, ""},
+		{"empty content accepted", "t1", []CanonicalContentBlock{}, ToolNodeComplete, false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			// 配合 D3 INV-19：ToolResult 节点必须有同 envelope 内的 ToolUse + requires edge。
+			// 仅当 tc.toolCallID 非空时建立配对，否则 ToolResult 单独存在以触发 INV-18 必填守门。
+			env.CapabilityGraph.Nodes = []CapabilityNode{}
+			if tc.toolCallID != "" {
+				env.CapabilityGraph.Nodes = append(env.CapabilityGraph.Nodes, CapabilityNode{
+					ID: "n_tu", Kind: CapabilityToolUse, StreamReady: StreamReadyYes,
+					ToolUse: &ToolUseNode{ToolCallID: tc.toolCallID, Name: "calc", Input: json.RawMessage(`{}`), Status: ToolNodeComplete},
+				})
+				env.CapabilityGraph.Edges = []CapabilityEdge{
+					{ID: "e_req", Type: EdgeRequires, From: "n_tr", To: "n_tu", Required: true},
+				}
+			}
+			env.CapabilityGraph.Nodes = append(env.CapabilityGraph.Nodes, CapabilityNode{
+				ID:          "n_tr",
+				Kind:        CapabilityToolResult,
+				StreamReady: StreamReadyNo,
+				ToolResult: &ToolResultNode{
+					ToolCallID: tc.toolCallID,
+					Content:    tc.content,
+					Status:     tc.status,
+					IsError:    tc.isError,
+				},
+			})
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV25_CachePayload 验证 Cache.Scope enum + LocalityHint 白名单。
+//
+// Scope=block/message 在 INV-26 (D3 cross_ref.go) 要求 BreakpointRefs 非空 + 可解析；
+// 本测试用 helper 自动补 target 节点。
+func TestINV25_CachePayload(t *testing.T) {
+	cases := []struct {
+		name      string
+		scope     CacheScope
+		locality  string
+		expectInv string
+	}{
+		{"empty scope", "", "", "INV-25"},
+		{"bogus scope", "global_segment", "", "INV-25"},
+		{"bogus locality hint", CacheScopeRequest, "regional", "INV-25"},
+		{"request + empty locality accepted", CacheScopeRequest, "", ""},
+		{"block + account_pin accepted", CacheScopeBlock, "account_pin", ""},
+		{"message + account_pin accepted", CacheScopeMessage, "account_pin", ""},
+		{"session + account_recent accepted", CacheScopeSession, "account_recent", ""},
+		{"vendor + global accepted", CacheScopeVendor, "global", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			refs := []string{}
+			needsTarget := tc.scope == CacheScopeBlock || tc.scope == CacheScopeMessage
+			if needsTarget {
+				refs = []string{"n_target"}
+			}
+			env.CapabilityGraph.Nodes = []CapabilityNode{{
+				ID:          "n1",
+				Kind:        CapabilityCacheControl,
+				StreamReady: StreamReadyYes,
+				CacheControl: &CacheControlNode{
+					Scope:          tc.scope,
+					BreakpointRefs: refs,
+					LocalityHint:   tc.locality,
+				},
+			}}
+			if needsTarget {
+				env.CapabilityGraph.Nodes = append(env.CapabilityGraph.Nodes, CapabilityNode{
+					ID: "n_target", Kind: CapabilityText, StreamReady: StreamReadyYes,
+					Text: &TextNode{Role: "user", Block: CanonicalContentBlock{Type: "text", Text: "x"}},
+				})
+			}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV27_BatchPayload 验证 BatchNode 必填 + Validation enum。
+func TestINV27_BatchPayload(t *testing.T) {
+	cases := []struct {
+		name       string
+		jobID      string
+		endpoint   string
+		inputRef   string
+		validation BatchStatus
+		expectInv  string
+	}{
+		{"missing job_id", "", "/v1/batch", "n_file", BatchPending, "INV-27"},
+		{"missing endpoint", "job_1", "", "n_file", BatchPending, "INV-27"},
+		{"missing input_ref", "job_1", "/v1/batch", "", BatchPending, "INV-27"},
+		{"bogus validation", "job_1", "/v1/batch", "n_file", "queued", "INV-27"},
+		{"empty validation", "job_1", "/v1/batch", "n_file", "", "INV-27"},
+		{"pending accepted", "job_1", "/v1/batch", "n_file", BatchPending, ""},
+		{"validated accepted", "job_1", "/v1/batch", "n_file", BatchValidated, ""},
+		{"failed accepted", "job_1", "/v1/batch", "n_file", BatchFailed, ""},
+		{"complete accepted", "job_1", "/v1/batch", "n_file", BatchComplete, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			// 配合 D5 INV-28：BatchNode.InputRef 必须解析到 FileNode。
+			env.CapabilityGraph.Nodes = []CapabilityNode{
+				{
+					ID: "n_file", Kind: CapabilityFile, StreamReady: StreamReadyNo,
+					File: &FileNode{
+						SourceKind: DataSourceFileID,
+						MediaType:  "application/jsonl",
+						Locator:    DataLocator{Kind: DataSourceFileID, Value: "openai_file_xyz"},
+					},
+				},
+				{
+					ID: "n_batch", Kind: CapabilityBatch, StreamReady: StreamReadyNo,
+					Batch: &BatchNode{
+						JobID:      tc.jobID,
+						Endpoint:   tc.endpoint,
+						InputRef:   tc.inputRef,
+						Validation: tc.validation,
+					},
+				},
+			}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV29_RetryPolicy 验证 RetryPolicy 数值 + Backoff 白名单。
+func TestINV29_RetryPolicy(t *testing.T) {
+	cases := []struct {
+		name      string
+		policy    *RetryPolicy
+		expectInv string
+	}{
+		{"nil policy accepted", nil, ""},
+		{"negative max_attempts", &RetryPolicy{MaxAttempts: -1, Backoff: "fixed"}, "INV-29"},
+		{"bogus backoff", &RetryPolicy{MaxAttempts: 3, Backoff: "polynomial"}, "INV-29"},
+		{"fixed accepted", &RetryPolicy{MaxAttempts: 3, Backoff: "fixed"}, ""},
+		{"exponential accepted", &RetryPolicy{MaxAttempts: 5, Backoff: "exponential"}, ""},
+		{"provider_default accepted", &RetryPolicy{MaxAttempts: 0, Backoff: "provider_default"}, ""},
+		{"zero attempts empty backoff accepted", &RetryPolicy{MaxAttempts: 0, Backoff: ""}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			// 配合 D5 INV-28：BatchNode.InputRef 必须解析到 FileNode。
+			env.CapabilityGraph.Nodes = []CapabilityNode{
+				{
+					ID: "n_file", Kind: CapabilityFile, StreamReady: StreamReadyNo,
+					File: &FileNode{
+						SourceKind: DataSourceFileID,
+						MediaType:  "application/jsonl",
+						Locator:    DataLocator{Kind: DataSourceFileID, Value: "openai_file_xyz"},
+					},
+				},
+				{
+					ID: "n_batch", Kind: CapabilityBatch, StreamReady: StreamReadyNo,
+					Batch: &BatchNode{
+						JobID:       "job_1",
+						Endpoint:    "/v1/batch",
+						InputRef:    "n_file",
+						Validation:  BatchPending,
+						RetryPolicy: tc.policy,
+					},
+				},
+			}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV34_ComputerUsePayload 验证 ComputerUse Environment 白名单 + Action 必填 + Approval enum。
+func TestINV34_ComputerUsePayload(t *testing.T) {
+	cases := []struct {
+		name      string
+		env       string
+		action    string
+		approval  ApprovalState
+		expectInv string
+	}{
+		{"bogus environment", "tablet", "screenshot", ApprovalRequired, "INV-34"},
+		{"empty environment", "", "screenshot", ApprovalRequired, "INV-34"},
+		{"empty action", "browser", "", ApprovalNotRequired, "INV-34"},
+		{"bogus approval", "browser", "screenshot", "auto", "INV-34"},
+		{"empty approval", "browser", "screenshot", "", "INV-34"},
+		{"browser + granted accepted", "browser", "screenshot", ApprovalGranted, ""},
+		{"desktop + denied accepted", "desktop", "click", ApprovalDenied, ""},
+		{"mobile + required accepted", "mobile", "tap", ApprovalRequired, ""},
+		{"other + not_required accepted", "other", "noop", ApprovalNotRequired, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = []CapabilityNode{{
+				ID:          "n1",
+				Kind:        CapabilityComputerUse,
+				StreamReady: StreamReadyNo,
+				ComputerUse: &ComputerUseNode{
+					Environment: tc.env,
+					Action:      tc.action,
+					Approval:    tc.approval,
+				},
+			}}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV36_StructuredOutputMode 验证 Mode enum 守门。
+func TestINV36_StructuredOutputMode(t *testing.T) {
+	cases := []struct {
+		name      string
+		mode      StructuredOutputMode
+		schema    json.RawMessage
+		expectInv string
+	}{
+		{"empty mode", "", json.RawMessage(`null`), "INV-36"},
+		{"bogus mode", "json_strict", json.RawMessage(`null`), "INV-36"},
+		{"json_mode accepted", StructuredOutputJSONMode, json.RawMessage(`null`), ""},
+		{"tool_strategy accepted", StructuredOutputToolStrategy, json.RawMessage(`null`), ""},
+		{"provider_native accepted", StructuredOutputProviderNative, json.RawMessage(`null`), ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = []CapabilityNode{{
+				ID:          "n1",
+				Kind:        CapabilityStructuredOutput,
+				StreamReady: StreamReadyNo,
+				StructuredOutput: &StructuredOutputNode{
+					Mode:   tc.mode,
+					Schema: tc.schema,
+				},
+			}}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV37_StructuredSchemaJSONObject 验证 mode=json_schema 时 Schema 必须 JSON object。
+func TestINV37_StructuredSchemaJSONObject(t *testing.T) {
+	cases := []struct {
+		name      string
+		schema    json.RawMessage
+		expectInv string
+	}{
+		{"null schema rejected", json.RawMessage(`null`), "INV-37"},
+		{"array schema rejected", json.RawMessage(`[]`), "INV-37"},
+		{"string schema rejected", json.RawMessage(`"obj"`), "INV-37"},
+		{"invalid JSON rejected", json.RawMessage(`{garbage`), "INV-37"},
+		{"empty bytes rejected", json.RawMessage{}, "INV-37"},
+		{"object accepted", json.RawMessage(`{"type":"object"}`), ""},
+		{"empty object accepted", json.RawMessage(`{}`), ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = []CapabilityNode{{
+				ID:          "n1",
+				Kind:        CapabilityStructuredOutput,
+				StreamReady: StreamReadyNo,
+				StructuredOutput: &StructuredOutputNode{
+					Mode:   StructuredOutputJSONSchema,
+					Schema: tc.schema,
+				},
+			}}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV39_ThinkingNumericNonNeg 验证 Thinking BudgetTokens/HiddenTokens 非负（D2 收口）。
+func TestINV39_ThinkingNumericNonNeg(t *testing.T) {
+	cases := []struct {
+		name      string
+		budget    int
+		hidden    int
+		expectInv string
+	}{
+		{"negative budget", -1, 0, "INV-39"},
+		{"negative hidden", 0, -100, "INV-39"},
+		{"zero accepted", 0, 0, ""},
+		{"positive accepted", 1024, 512, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = []CapabilityNode{{
+				ID:          "n1",
+				Kind:        CapabilityThinking,
+				StreamReady: StreamReadyPartial,
+				Thinking: &ThinkingNode{
+					BudgetTokens: tc.budget,
+					HiddenTokens: tc.hidden,
+					Blocks:       []CanonicalContentBlock{},
+					Redaction:    RedactionPublic,
+				},
+			}}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// --------------------------------------------------------------------------
+// P-1 D4：条件必填 + Policy/graph 一致性（INV-30/31/32/33/40/45）
+// --------------------------------------------------------------------------
+
+// drNode 是构造 data_retention 节点的辅助 helper（测试用）。
+func drNode(value DataRetentionLabel, enforce, region, evidence, label string, store *bool) CapabilityNode {
+	return CapabilityNode{
+		ID:          "n_dr",
+		Kind:        CapabilityDataRetention,
+		StreamReady: StreamReadyYes,
+		DataRetention: &DataRetentionNode{
+			Value:        value,
+			Enforcement:  enforce,
+			Region:       region,
+			RequestStore: store,
+			EvidenceRef:  evidence,
+			AuditLabel:   label,
+		},
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+// TestINV30_DataRetentionRequestStoreFalse 验证 value=request_store_false 必须显式 RequestStore=false。
+func TestINV30_DataRetentionRequestStoreFalse(t *testing.T) {
+	cases := []struct {
+		name        string
+		store       *bool
+		expectInv   string
+	}{
+		{"nil request_store", nil, "INV-30"},
+		{"request_store=true", boolPtr(true), "INV-30"},
+		{"request_store=false accepted", boolPtr(false), ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = []CapabilityNode{drNode(
+				DataRetentionRequestStoreFalse, "asserted", "", "", "label_x", tc.store,
+			)}
+			env.Policy.DataRetention = DataRetentionNode{Value: DataRetentionRequestStoreFalse, Enforcement: "asserted", RequestStore: tc.store, AuditLabel: "label_x"}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV31_DataRetentionRegionalAsserted 验证 regional_asserted 必须有 Region。
+func TestINV31_DataRetentionRegionalAsserted(t *testing.T) {
+	env := minimalValidEnvelope()
+	env.CapabilityGraph.Nodes = []CapabilityNode{drNode(
+		DataRetentionRegionalAsserted, "asserted", "", "", "label_x", nil,
+	)}
+	env.Policy.DataRetention = DataRetentionNode{Value: DataRetentionRegionalAsserted, Enforcement: "asserted", AuditLabel: "label_x"}
+	err := ValidateEnvelope(env)
+	if err == nil || !strings.Contains(err.Error(), "INV-31") {
+		t.Fatalf("expected INV-31 missing region, got: %v", err)
+	}
+
+	env.CapabilityGraph.Nodes[0].DataRetention.Region = "us-west-2"
+	env.Policy.DataRetention.Region = "us-west-2"
+	if err := ValidateEnvelope(env); err != nil {
+		t.Fatalf("with region set, should validate: %v", err)
+	}
+}
+
+// TestINV31_DataRetentionZDRVerified 验证 zdr_verified 必须有 EvidenceRef + Enforcement=verified。
+func TestINV31_DataRetentionZDRVerified(t *testing.T) {
+	env := minimalValidEnvelope()
+	env.CapabilityGraph.Nodes = []CapabilityNode{drNode(
+		DataRetentionZDRVerified, "asserted", "", "evid_x", "label_x", nil,
+	)}
+	env.Policy.DataRetention = DataRetentionNode{Value: DataRetentionZDRVerified, Enforcement: "asserted", EvidenceRef: "evid_x", AuditLabel: "label_x"}
+	err := ValidateEnvelope(env)
+	if err == nil || !strings.Contains(err.Error(), "INV-31") {
+		t.Fatalf("expected INV-31 enforcement!=verified, got: %v", err)
+	}
+
+	env.CapabilityGraph.Nodes[0].DataRetention.Enforcement = "verified"
+	env.Policy.DataRetention.Enforcement = "verified"
+	if err := ValidateEnvelope(env); err != nil {
+		t.Fatalf("with enforcement=verified, should validate: %v", err)
+	}
+
+	env.CapabilityGraph.Nodes[0].DataRetention.EvidenceRef = ""
+	env.Policy.DataRetention.EvidenceRef = ""
+	err = ValidateEnvelope(env)
+	if err == nil || !strings.Contains(err.Error(), "INV-31") {
+		t.Fatalf("expected INV-31 missing evidence_ref, got: %v", err)
+	}
+}
+
+// TestINV32_DataRetentionProviderContractRequired 验证 provider_contract_required 三联约束。
+func TestINV32_DataRetentionProviderContractRequired(t *testing.T) {
+	env := minimalValidEnvelope()
+	env.CapabilityGraph.Nodes = []CapabilityNode{drNode(
+		DataRetentionProviderContractRequired, "asserted", "", "evid_x", "label_x", nil,
+	)}
+	env.Policy.DataRetention = DataRetentionNode{Value: DataRetentionProviderContractRequired, Enforcement: "asserted", EvidenceRef: "evid_x", AuditLabel: "label_x"}
+	err := ValidateEnvelope(env)
+	if err == nil || !strings.Contains(err.Error(), "INV-32") {
+		t.Fatalf("expected INV-32 enforcement mismatch, got: %v", err)
+	}
+
+	env.CapabilityGraph.Nodes[0].DataRetention.Enforcement = "contract_required"
+	env.Policy.DataRetention.Enforcement = "contract_required"
+	if err := ValidateEnvelope(env); err != nil {
+		t.Fatalf("with enforcement=contract_required, should validate: %v", err)
+	}
+
+	env.CapabilityGraph.Nodes[0].DataRetention.EvidenceRef = ""
+	env.Policy.DataRetention.EvidenceRef = ""
+	err = ValidateEnvelope(env)
+	if err == nil || !strings.Contains(err.Error(), "INV-32") {
+		t.Fatalf("expected INV-32 missing evidence_ref, got: %v", err)
+	}
+}
+
+// TestINV33_DataRetentionPolicyConsistency 验证 graph data_retention node 与 Policy 一致。
+func TestINV33_DataRetentionPolicyConsistency(t *testing.T) {
+	t.Run("value mismatch", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.Nodes = []CapabilityNode{drNode(
+			DataRetentionRequestStoreFalse, "asserted", "", "", "label_x", boolPtr(false),
+		)}
+		env.Policy.DataRetention = DataRetentionNode{Value: DataRetentionUnknown, Enforcement: "unknown", AuditLabel: "x"}
+		err := ValidateEnvelope(env)
+		if err == nil || !strings.Contains(err.Error(), "INV-33") {
+			t.Fatalf("expected INV-33 value mismatch, got: %v", err)
+		}
+	})
+	t.Run("enforcement mismatch", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.Nodes = []CapabilityNode{drNode(
+			DataRetentionRequestStoreFalse, "verified", "", "", "label_x", boolPtr(false),
+		)}
+		env.Policy.DataRetention = DataRetentionNode{Value: DataRetentionRequestStoreFalse, Enforcement: "asserted", RequestStore: boolPtr(false), AuditLabel: "label_x"}
+		err := ValidateEnvelope(env)
+		if err == nil || !strings.Contains(err.Error(), "INV-33") {
+			t.Fatalf("expected INV-33 enforcement mismatch, got: %v", err)
+		}
+	})
+	t.Run("two data_retention nodes rejected", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.Nodes = []CapabilityNode{
+			drNode(DataRetentionRequestStoreFalse, "asserted", "", "", "label_x", boolPtr(false)),
+			func() CapabilityNode {
+				n := drNode(DataRetentionUnknown, "unknown", "", "", "label_y", nil)
+				n.ID = "n_dr_2"
+				return n
+			}(),
+		}
+		env.Policy.DataRetention = DataRetentionNode{Value: DataRetentionRequestStoreFalse, Enforcement: "asserted", RequestStore: boolPtr(false), AuditLabel: "label_x"}
+		err := ValidateEnvelope(env)
+		if err == nil || !strings.Contains(err.Error(), "INV-33") {
+			t.Fatalf("expected INV-33 multi-node rejection, got: %v", err)
+		}
+	})
+}
+
+// TestINV40_ThinkingRedactionVisibleBlocks 验证 hidden/provider_only 不得携带可见 text。
+func TestINV40_ThinkingRedactionVisibleBlocks(t *testing.T) {
+	cases := []struct {
+		name      string
+		redaction RedactionClass
+		blocks    []CanonicalContentBlock
+		expectInv string
+	}{
+		{"hidden with visible text", RedactionHidden, []CanonicalContentBlock{{Type: "text", Text: "secret"}}, "INV-40"},
+		{"provider_only with visible text", RedactionProviderOnly, []CanonicalContentBlock{{Type: "text", Text: "x"}}, "INV-40"},
+		{"hidden with empty blocks accepted", RedactionHidden, []CanonicalContentBlock{}, ""},
+		{"hidden with empty text accepted", RedactionHidden, []CanonicalContentBlock{{Type: "text", Text: ""}}, ""},
+		{"public with visible text accepted", RedactionPublic, []CanonicalContentBlock{{Type: "text", Text: "ok"}}, ""},
+		{"redacted with visible text accepted", RedactionRedacted, []CanonicalContentBlock{{Type: "text", Text: "redacted"}}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = []CapabilityNode{{
+				ID:          "n_t",
+				Kind:        CapabilityThinking,
+				StreamReady: StreamReadyPartial,
+				Thinking:    &ThinkingNode{BudgetTokens: 0, Blocks: tc.blocks, Redaction: tc.redaction},
+			}}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV45_ProtocolLossEntryFields 验证 ProtocolLossEntry 4 处的 Severity/NodeID/Capability 守门。
+func TestINV45_ProtocolLossEntryFields(t *testing.T) {
+	t.Run("invalid severity", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.ProtocolLoss = []ProtocolLossEntry{{Severity: "critical", Reason: "x"}}
+		err := ValidateEnvelope(env)
+		if err == nil || !strings.Contains(err.Error(), "INV-45") {
+			t.Fatalf("expected INV-45, got: %v", err)
+		}
+	})
+	t.Run("unresolved node_id", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.ProtocolLoss = []ProtocolLossEntry{{NodeID: "n_missing", Reason: "x"}}
+		err := ValidateEnvelope(env)
+		if err == nil || !strings.Contains(err.Error(), "INV-45") {
+			t.Fatalf("expected INV-45 unresolved node, got: %v", err)
+		}
+	})
+	t.Run("invalid capability", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.ProtocolLoss = []ProtocolLossEntry{{Capability: "made_up_kind", Reason: "x"}}
+		err := ValidateEnvelope(env)
+		if err == nil || !strings.Contains(err.Error(), "INV-45") {
+			t.Fatalf("expected INV-45 capability, got: %v", err)
+		}
+	})
+	t.Run("valid entries accepted", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.Nodes = []CapabilityNode{{
+			ID: "n_t", Kind: CapabilityText, StreamReady: StreamReadyYes,
+			Text: &TextNode{Role: "user", Block: CanonicalContentBlock{Type: "text", Text: "x"}},
+		}}
+		env.CapabilityGraph.ProtocolLoss = []ProtocolLossEntry{
+			{Severity: ProtocolLossWarning, NodeID: "n_t", Capability: CapabilityText, Reason: "ok"},
+		}
+		if err := ValidateEnvelope(env); err != nil {
+			t.Fatalf("expected pass, got: %v", err)
+		}
+	})
+}
+
+// --------------------------------------------------------------------------
+// P-1 D3：跨 node / projection 引用完整性（INV-26/35/41 modalities/42/43/46）
+// --------------------------------------------------------------------------
+
+// TestINV26_CacheBreakpointRefs 验证 Cache.BreakpointRefs 解析 + Scope 条件。
+func TestINV26_CacheBreakpointRefs(t *testing.T) {
+	target := CapabilityNode{
+		ID: "n_target", Kind: CapabilityText, StreamReady: StreamReadyYes,
+		Text: &TextNode{Role: "user", Block: CanonicalContentBlock{Type: "text", Text: "x"}},
+	}
+	cases := []struct {
+		name      string
+		scope     CacheScope
+		refs      []string
+		expectInv string
+	}{
+		{"block scope empty refs rejected", CacheScopeBlock, []string{}, "INV-26"},
+		{"message scope empty refs rejected", CacheScopeMessage, []string{}, "INV-26"},
+		{"empty string ref rejected", CacheScopeBlock, []string{""}, "INV-26"},
+		{"unresolved ref rejected", CacheScopeBlock, []string{"n_missing"}, "INV-26"},
+		{"request scope empty refs accepted", CacheScopeRequest, []string{}, ""},
+		{"session scope empty refs accepted", CacheScopeSession, []string{}, ""},
+		{"resolved ref accepted", CacheScopeBlock, []string{"n_target"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = []CapabilityNode{
+				{
+					ID:          "n_cache",
+					Kind:        CapabilityCacheControl,
+					StreamReady: StreamReadyYes,
+					CacheControl: &CacheControlNode{
+						Scope:          tc.scope,
+						BreakpointRefs: tc.refs,
+					},
+				},
+				target,
+			}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV35_ComputerScreenshotRef 验证 ScreenshotRef 解析到 image/file。
+func TestINV35_ComputerScreenshotRef(t *testing.T) {
+	textTarget := CapabilityNode{
+		ID: "n_text", Kind: CapabilityText, StreamReady: StreamReadyYes,
+		Text: &TextNode{Role: "user", Block: CanonicalContentBlock{Type: "text", Text: "x"}},
+	}
+	imageTarget := CapabilityNode{
+		ID: "n_image", Kind: CapabilityImage, StreamReady: StreamReadyNo,
+		Image: &ImageNode{
+			SourceKind: DataSourceURL,
+			MediaType:  "image/png",
+			Locator:    DataLocator{Kind: DataSourceURL, Value: "https://x/y.png"},
+		},
+	}
+	fileTarget := CapabilityNode{
+		ID: "n_file", Kind: CapabilityFile, StreamReady: StreamReadyNo,
+		File: &FileNode{
+			SourceKind: DataSourceFileID,
+			MediaType:  "application/pdf",
+			Locator:    DataLocator{Kind: DataSourceFileID, Value: "file_x"},
+		},
+	}
+	cases := []struct {
+		name         string
+		screenshotID string
+		extra        []CapabilityNode
+		expectInv    string
+	}{
+		{"unresolved ref", "n_missing", []CapabilityNode{textTarget}, "INV-35"},
+		{"ref to text node", "n_text", []CapabilityNode{textTarget}, "INV-35"},
+		{"ref to image accepted", "n_image", []CapabilityNode{imageTarget}, ""},
+		{"ref to file accepted", "n_file", []CapabilityNode{fileTarget}, ""},
+		{"empty ref accepted", "", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = append([]CapabilityNode{{
+				ID:          "n_cu",
+				Kind:        CapabilityComputerUse,
+				StreamReady: StreamReadyNo,
+				ComputerUse: &ComputerUseNode{
+					Environment:   "browser",
+					Action:        "screenshot",
+					Approval:      ApprovalGranted,
+					ScreenshotRef: tc.screenshotID,
+				},
+			}}, tc.extra...)
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV41_LiveSessionModalities 验证 modalities ⊂ {text,audio,video}。
+func TestINV41_LiveSessionModalities(t *testing.T) {
+	cases := []struct {
+		name       string
+		modalities []string
+		expectInv  string
+	}{
+		{"bogus modality", []string{"haptic"}, "INV-41"},
+		{"empty string modality", []string{"text", ""}, "INV-41"},
+		{"text accepted", []string{"text"}, ""},
+		{"text+audio accepted", []string{"text", "audio"}, ""},
+		{"text+audio+video accepted", []string{"text", "audio", "video"}, ""},
+		{"empty slice accepted", []string{}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = []CapabilityNode{{
+				ID:          "n_live",
+				Kind:        CapabilityLiveSession,
+				StreamReady: StreamReadyYes,
+				LiveSession: &LiveSessionNode{
+					SessionID:  "sess_001",
+					Transport:  LiveTransportWSS,
+					Modalities: tc.modalities,
+				},
+			}}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV42_MCPServerLabel 验证 MCPServer.ServerLabel 必填。
+func TestINV42_MCPServerLabel(t *testing.T) {
+	cases := []struct {
+		name      string
+		label     string
+		expectInv string
+	}{
+		{"empty label", "", "INV-42"},
+		{"non-empty accepted", "fixture-mcp", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = []CapabilityNode{{
+				ID:          "n_mcp",
+				Kind:        CapabilityMCPServer,
+				StreamReady: StreamReadyNo,
+				MCPServer: &MCPServerNode{
+					ServerLabel:       tc.label,
+					AllowedOperations: []string{},
+				},
+			}}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV43_ProjectionNodeRefs 验证 projection.NodeID 解析 + Capability == node.Kind。
+func TestINV43_ProjectionNodeRefs(t *testing.T) {
+	cases := []struct {
+		name           string
+		projNodeID     string
+		projCapability CapabilityKind
+		expectInv      string
+	}{
+		{"unresolved node_id", "n_missing", CapabilityText, "INV-43"},
+		{"capability mismatch", "n_text", CapabilityImage, "INV-43"},
+		{"matched accepted", "n_text", CapabilityText, ""},
+		{"empty node_id accepted", "", CapabilityText, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = []CapabilityNode{{
+				ID:          "n_text",
+				Kind:        CapabilityText,
+				StreamReady: StreamReadyYes,
+				Text:        &TextNode{Role: "user", Block: CanonicalContentBlock{Type: "text", Text: "x"}},
+			}}
+			env.ProviderProjection.CapabilityResults = []CapabilityProjection{{
+				Capability: tc.projCapability,
+				NodeID:     tc.projNodeID,
+				Verdict:    ProjectionPreserved,
+			}}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV46_NodeSourceRefBounds 验证 source 索引非负 + 范围内。
+func TestINV46_NodeSourceRefBounds(t *testing.T) {
+	intPtr := func(v int) *int { return &v }
+	cases := []struct {
+		name      string
+		source    *NodeSourceRef
+		msgs      []CanonicalMessage
+		stream    []CanonicalEvent
+		expectInv string
+	}{
+		{"negative message_index", &NodeSourceRef{MessageIndex: intPtr(-1)}, nil, nil, "INV-46"},
+		{"negative block_index", &NodeSourceRef{BlockIndex: intPtr(-1)}, nil, nil, "INV-46"},
+		{"negative event_index", &NodeSourceRef{EventIndex: intPtr(-1)}, nil, nil, "INV-46"},
+		{"message_index out of range",
+			&NodeSourceRef{MessageIndex: intPtr(5)},
+			[]CanonicalMessage{{Role: "user"}, {Role: "assistant"}},
+			nil,
+			"INV-46"},
+		{"event_index out of range",
+			&NodeSourceRef{EventIndex: intPtr(3)},
+			nil,
+			[]CanonicalEvent{{Type: "message_start"}},
+			"INV-46"},
+		{"source nil accepted", nil, nil, nil, ""},
+		{"within bounds accepted",
+			&NodeSourceRef{MessageIndex: intPtr(0), BlockIndex: intPtr(2)},
+			[]CanonicalMessage{{Role: "user"}},
+			nil,
+			""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			if tc.msgs != nil {
+				env.Messages = tc.msgs
+			}
+			if tc.stream != nil {
+				env.StreamEvents = tc.stream
+				env.StreamPlan.Mode = StreamModeReplay
+			}
+			env.CapabilityGraph.Nodes = []CapabilityNode{{
+				ID:          "n1",
+				Kind:        CapabilityText,
+				StreamReady: StreamReadyYes,
+				Source:      tc.source,
+				Text:        &TextNode{Role: "user", Block: CanonicalContentBlock{Type: "text", Text: "x"}},
+			}}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV41_LiveSessionTransportEnum 验证 Live.Transport enum 守门。
+func TestINV41_LiveSessionTransportEnum(t *testing.T) {
+	cases := []struct {
+		name      string
+		value     LiveTransport
+		expectInv string
+	}{
+		{"empty string", "", "INV-41"},
+		{"bogus", "grpc", "INV-41"},
+		{"http rejected", "http", "INV-41"},
+		{"wss accepted", LiveTransportWSS, ""},
+		{"sse accepted", LiveTransportSSE, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = []CapabilityNode{{
+				ID:          "n1",
+				Kind:        CapabilityLiveSession,
+				StreamReady: StreamReadyYes,
+				LiveSession: &LiveSessionNode{
+					SessionID:  "sess_001",
+					Transport:  tc.value,
+					Modalities: []string{"text"},
+				},
+			}}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// --------------------------------------------------------------------------
+// P-1 D5：fixture sweep + 剩余 strict cross-ref + 新枚举
+// （INV-19 strict / INV-23 Format / INV-28 / INV-41 ToolNodeIDs / INV-42 / INV-49）
+// --------------------------------------------------------------------------
+
+// TestINV19_ToolResultRefStrict 验证 ToolResult.ToolCallID 必须匹配 ToolUse + requires edge。
+func TestINV19_ToolResultRefStrict(t *testing.T) {
+	mkToolUse := func(id, callID string) CapabilityNode {
+		return CapabilityNode{
+			ID: id, Kind: CapabilityToolUse, StreamReady: StreamReadyYes,
+			ToolUse: &ToolUseNode{ToolCallID: callID, Name: "calc", Input: json.RawMessage(`{}`), Status: ToolNodeComplete},
+		}
+	}
+	mkToolResult := func(id, callID string) CapabilityNode {
+		return CapabilityNode{
+			ID: id, Kind: CapabilityToolResult, StreamReady: StreamReadyNo,
+			ToolResult: &ToolResultNode{
+				ToolCallID: callID, Content: []CanonicalContentBlock{}, Status: ToolNodeComplete, IsError: false,
+			},
+		}
+	}
+
+	t.Run("unresolved tool_call_id", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.Nodes = []CapabilityNode{mkToolResult("n_tr", "t_missing")}
+		err := ValidateEnvelope(env)
+		if err == nil || !strings.Contains(err.Error(), "INV-19") {
+			t.Fatalf("expected INV-19 unresolved, got: %v", err)
+		}
+	})
+	t.Run("missing requires edge", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.Nodes = []CapabilityNode{mkToolUse("n_tu", "t1"), mkToolResult("n_tr", "t1")}
+		err := ValidateEnvelope(env)
+		if err == nil || !strings.Contains(err.Error(), "INV-19") {
+			t.Fatalf("expected INV-19 missing edge, got: %v", err)
+		}
+	})
+	t.Run("duplicate tool_call_id rejected", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.Nodes = []CapabilityNode{
+			mkToolUse("n_tu1", "t1"),
+			mkToolUse("n_tu2", "t1"),
+		}
+		err := ValidateEnvelope(env)
+		if err == nil || !strings.Contains(err.Error(), "INV-19") {
+			t.Fatalf("expected INV-19 duplicate, got: %v", err)
+		}
+	})
+	t.Run("matched + edge accepted", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.Nodes = []CapabilityNode{mkToolUse("n_tu", "t1"), mkToolResult("n_tr", "t1")}
+		env.CapabilityGraph.Edges = []CapabilityEdge{{ID: "e1", Type: EdgeRequires, From: "n_tr", To: "n_tu", Required: true}}
+		if err := ValidateEnvelope(env); err != nil {
+			t.Fatalf("expected pass, got: %v", err)
+		}
+	})
+}
+
+// TestINV23_AudioFormatWhitelist 验证 Audio.Format 必须在 P-1 白名单内（D5 收口）。
+func TestINV23_AudioFormatWhitelist(t *testing.T) {
+	cases := []struct {
+		name      string
+		format    string
+		expectInv string
+	}{
+		{"empty format", "", "INV-23"},
+		{"bogus format", "raw_pcm32", "INV-23"},
+		{"wav accepted", "wav", ""},
+		{"mp3 accepted", "mp3", ""},
+		{"opus accepted", "opus", ""},
+		{"pcm16 accepted", "pcm16", ""},
+		{"flac accepted", "flac", ""},
+		{"m4a accepted", "m4a", ""},
+		{"webm accepted", "webm", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = []CapabilityNode{{
+				ID: "n_audio", Kind: CapabilityAudio, StreamReady: StreamReadyPartial,
+				Audio: &AudioNode{
+					Transport: MediaTransportInline,
+					Format:    tc.format,
+					Locator:   DataLocator{Kind: DataSourceInlineBase64, Value: "ABC="},
+				},
+			}}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
+	}
+}
+
+// TestINV28_BatchFileRefs 验证 Batch.InputRef/OutputRef/ErrorRef 必须解析到 FileNode。
+func TestINV28_BatchFileRefs(t *testing.T) {
+	mkFile := func(id string) CapabilityNode {
+		return CapabilityNode{
+			ID: id, Kind: CapabilityFile, StreamReady: StreamReadyNo,
+			File: &FileNode{
+				SourceKind: DataSourceFileID,
+				MediaType:  "application/jsonl",
+				Locator:    DataLocator{Kind: DataSourceFileID, Value: "ext_id"},
+			},
+		}
+	}
+	mkText := func(id string) CapabilityNode {
+		return CapabilityNode{
+			ID: id, Kind: CapabilityText, StreamReady: StreamReadyYes,
+			Text: &TextNode{Role: "user", Block: CanonicalContentBlock{Type: "text", Text: "x"}},
+		}
+	}
+	mkBatch := func(input, output, errRef string) CapabilityNode {
+		return CapabilityNode{
+			ID: "n_batch", Kind: CapabilityBatch, StreamReady: StreamReadyNo,
+			Batch: &BatchNode{
+				JobID:      "job_1",
+				Endpoint:   "/v1/batches",
+				InputRef:   input,
+				OutputRef:  output,
+				ErrorRef:   errRef,
+				Validation: BatchValidated,
+			},
+		}
+	}
+
+	t.Run("input_ref unresolved", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.Nodes = []CapabilityNode{mkBatch("n_missing", "", "")}
+		err := ValidateEnvelope(env)
+		if err == nil || !strings.Contains(err.Error(), "INV-28") {
+			t.Fatalf("expected INV-28, got: %v", err)
+		}
+	})
+	t.Run("input_ref points to text node", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.Nodes = []CapabilityNode{mkText("n_text"), mkBatch("n_text", "", "")}
+		err := ValidateEnvelope(env)
+		if err == nil || !strings.Contains(err.Error(), "INV-28") {
+			t.Fatalf("expected INV-28 wrong kind, got: %v", err)
+		}
+	})
+	t.Run("output_ref unresolved", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.Nodes = []CapabilityNode{mkFile("n_file_in"), mkBatch("n_file_in", "n_missing", "")}
+		err := ValidateEnvelope(env)
+		if err == nil || !strings.Contains(err.Error(), "INV-28") {
+			t.Fatalf("expected INV-28 output_ref unresolved, got: %v", err)
+		}
+	})
+	t.Run("all three refs accepted", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.Nodes = []CapabilityNode{
+			mkFile("n_in"), mkFile("n_out"), mkFile("n_err"),
+			mkBatch("n_in", "n_out", "n_err"),
+		}
+		if err := ValidateEnvelope(env); err != nil {
+			t.Fatalf("expected pass, got: %v", err)
+		}
+	})
+}
+
+// TestINV41_LiveSessionToolNodeRefs 验证 ToolNodeIDs 必须解析到 tool_use/computer_use/mcp_server。
+func TestINV41_LiveSessionToolNodeRefs(t *testing.T) {
+	mkTool := func(id string) CapabilityNode {
+		return CapabilityNode{
+			ID: id, Kind: CapabilityToolUse, StreamReady: StreamReadyYes,
+			ToolUse: &ToolUseNode{ToolCallID: id + "_tc", Name: "x", Input: json.RawMessage(`{}`), Status: ToolNodeComplete},
+		}
+	}
+	mkText := func(id string) CapabilityNode {
+		return CapabilityNode{
+			ID: id, Kind: CapabilityText, StreamReady: StreamReadyYes,
+			Text: &TextNode{Role: "user", Block: CanonicalContentBlock{Type: "text", Text: "x"}},
+		}
+	}
+	mkLive := func(refs []string) CapabilityNode {
+		return CapabilityNode{
+			ID: "n_live", Kind: CapabilityLiveSession, StreamReady: StreamReadyYes,
+			LiveSession: &LiveSessionNode{
+				SessionID:   "s1",
+				Transport:   LiveTransportWSS,
+				Modalities:  []string{"text"},
+				ToolNodeIDs: refs,
+			},
+		}
+	}
+
+	t.Run("ref unresolved", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.Nodes = []CapabilityNode{mkLive([]string{"n_missing"})}
+		err := ValidateEnvelope(env)
+		if err == nil || !strings.Contains(err.Error(), "INV-41") {
+			t.Fatalf("expected INV-41 unresolved, got: %v", err)
+		}
+	})
+	t.Run("ref to text node rejected", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.Nodes = []CapabilityNode{mkText("n_text"), mkLive([]string{"n_text"})}
+		err := ValidateEnvelope(env)
+		if err == nil || !strings.Contains(err.Error(), "INV-41") {
+			t.Fatalf("expected INV-41 wrong kind, got: %v", err)
+		}
+	})
+	t.Run("ref to tool_use accepted", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.Nodes = []CapabilityNode{mkTool("n_tu"), mkLive([]string{"n_tu"})}
+		if err := ValidateEnvelope(env); err != nil {
+			t.Fatalf("expected pass, got: %v", err)
+		}
+	})
+}
+
+// TestINV42_MCPServerNodeRefs 验证 InvocationNodeIDs / ResultNodeIDs 引用解析。
+func TestINV42_MCPServerNodeRefs(t *testing.T) {
+	mkTool := func(id string) CapabilityNode {
+		return CapabilityNode{
+			ID: id, Kind: CapabilityToolUse, StreamReady: StreamReadyYes,
+			ToolUse: &ToolUseNode{ToolCallID: id + "_tc", Name: "x", Input: json.RawMessage(`{}`), Status: ToolNodeComplete},
+		}
+	}
+	mkResult := func(id, callID string) CapabilityNode {
+		return CapabilityNode{
+			ID: id, Kind: CapabilityToolResult, StreamReady: StreamReadyNo,
+			ToolResult: &ToolResultNode{ToolCallID: callID, Content: []CanonicalContentBlock{}, Status: ToolNodeComplete},
+		}
+	}
+	mkText := func(id string) CapabilityNode {
+		return CapabilityNode{
+			ID: id, Kind: CapabilityText, StreamReady: StreamReadyYes,
+			Text: &TextNode{Role: "user", Block: CanonicalContentBlock{Type: "text", Text: "x"}},
+		}
+	}
+	mkMCP := func(inv, res []string) CapabilityNode {
+		return CapabilityNode{
+			ID: "n_mcp", Kind: CapabilityMCPServer, StreamReady: StreamReadyPartial,
+			MCPServer: &MCPServerNode{
+				ServerLabel:       "x",
+				AllowedOperations: []string{},
+				InvocationNodeIDs: inv,
+				ResultNodeIDs:     res,
+			},
+		}
+	}
+
+	t.Run("invocation unresolved", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.Nodes = []CapabilityNode{mkMCP([]string{"n_missing"}, nil)}
+		err := ValidateEnvelope(env)
+		if err == nil || !strings.Contains(err.Error(), "INV-42") {
+			t.Fatalf("expected INV-42 invocation unresolved, got: %v", err)
+		}
+	})
+	t.Run("invocation points to text rejected", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.Nodes = []CapabilityNode{mkText("n_text"), mkMCP([]string{"n_text"}, nil)}
+		err := ValidateEnvelope(env)
+		if err == nil || !strings.Contains(err.Error(), "INV-42") {
+			t.Fatalf("expected INV-42 invocation wrong kind, got: %v", err)
+		}
+	})
+	t.Run("result points to tool_use rejected", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.Nodes = []CapabilityNode{mkTool("n_tu"), mkMCP(nil, []string{"n_tu"})}
+		err := ValidateEnvelope(env)
+		if err == nil || !strings.Contains(err.Error(), "INV-42") {
+			t.Fatalf("expected INV-42 result wrong kind, got: %v", err)
+		}
+	})
+	t.Run("matched accepted", func(t *testing.T) {
+		env := minimalValidEnvelope()
+		env.CapabilityGraph.Nodes = []CapabilityNode{
+			mkTool("n_tu"),
+			mkResult("n_tr", "n_tu_tc"),
+			mkMCP([]string{"n_tu"}, []string{"n_tr"}),
+		}
+		env.CapabilityGraph.Edges = []CapabilityEdge{{ID: "e1", Type: EdgeRequires, From: "n_tr", To: "n_tu", Required: true}}
+		if err := ValidateEnvelope(env); err != nil {
+			t.Fatalf("expected pass, got: %v", err)
+		}
+	})
+}
+
+// TestINV49_VideoTimeRangeMonotonic 验证 Video.TimeRange 非负 + end >= start。
+func TestINV49_VideoTimeRangeMonotonic(t *testing.T) {
+	mkVideo := func(tr *TimeRange) CapabilityNode {
+		return CapabilityNode{
+			ID: "n_video", Kind: CapabilityVideo, StreamReady: StreamReadyNo,
+			Video: &VideoNode{
+				SourceKind: DataSourceURL,
+				MediaType:  "video/mp4",
+				Locator:    DataLocator{Kind: DataSourceURL, Value: "https://x/y.mp4"},
+				TimeRange:  tr,
+			},
+		}
+	}
+	cases := []struct {
+		name      string
+		tr        *TimeRange
+		expectInv string
+	}{
+		{"nil time_range accepted", nil, ""},
+		{"negative start", &TimeRange{StartMillis: -1, EndMillis: 10}, "INV-49"},
+		{"negative end", &TimeRange{StartMillis: 0, EndMillis: -1}, "INV-49"},
+		{"end < start", &TimeRange{StartMillis: 100, EndMillis: 50}, "INV-49"},
+		{"zero end accepted", &TimeRange{StartMillis: 100, EndMillis: 0}, ""},
+		{"end > start accepted", &TimeRange{StartMillis: 100, EndMillis: 200}, ""},
+		{"equal accepted", &TimeRange{StartMillis: 100, EndMillis: 100}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := minimalValidEnvelope()
+			env.CapabilityGraph.Nodes = []CapabilityNode{mkVideo(tc.tr)}
+			err := ValidateEnvelope(env)
+			if tc.expectInv == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.expectInv) {
+				t.Fatalf("expected %s violation, got: %v", tc.expectInv, err)
+			}
+		})
 	}
 }
