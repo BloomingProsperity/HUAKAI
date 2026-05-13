@@ -13,6 +13,17 @@
   "capability_graph": {
     "nodes": [
       {
+        "id": "n_tooluse_001",
+        "kind": "tool_use",
+        "stream_ready": "yes",
+        "tool_use": {
+          "tool_call_id": "tc_fxt_a1b2c3d4",
+          "name": "get_weather",
+          "input": {"city": "Tokyo"},
+          "status": "complete"
+        }
+      },
+      {
         "id": "n_toolresult_001",
         "kind": "tool_result",
         "stream_ready": "yes",
@@ -26,10 +37,20 @@
         }
       }
     ],
-    "edges": []
+    "edges": [
+      {
+        "id": "e_tr_requires_tu",
+        "type": "requires",
+        "from": "n_toolresult_001",
+        "to": "n_tooluse_001",
+        "required": true,
+        "reason": "tool_result must reference its tool_use"
+      }
+    ]
   },
   "provider_projection": {
     "capability_results": [
+      {"capability": "tool_use", "node_id": "n_tooluse_001", "verdict": "preserved"},
       {"capability": "tool_result", "node_id": "n_toolresult_001", "verdict": "preserved"}
     ]
   },

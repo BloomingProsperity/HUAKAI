@@ -13,6 +13,16 @@
   "capability_graph": {
     "nodes": [
       {
+        "id": "file_fxt_batch_input_001",
+        "kind": "file",
+        "stream_ready": "no",
+        "file": {
+          "source_kind": "file_id",
+          "media_type": "application/jsonl",
+          "locator": {"kind": "file_id", "value": "openai_file_input_xyz"}
+        }
+      },
+      {
         "id": "n_batch_001",
         "kind": "batch",
         "stream_ready": "no",
@@ -28,6 +38,7 @@
   },
   "provider_projection": {
     "capability_results": [
+      {"capability": "file", "node_id": "file_fxt_batch_input_001", "verdict": "preserved"},
       {"capability": "batch", "node_id": "n_batch_001", "verdict": "preserved"}
     ]
   },
