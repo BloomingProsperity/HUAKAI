@@ -38,6 +38,10 @@ type RequestMeta struct {
 	// ProtocolFamily 必填；forwarder/dispatcher 用它选择 upstream adapter。
 	ProtocolFamily string `json:"protocol_family"`
 
+	// EndpointFamily 可选；HCSF provider-request marshal 使用的目标 endpoint schema。
+	// 合法值与 provider 协议族保持一致：anthropic_messages / openai_chat / openai_responses。
+	EndpointFamily string `json:"endpoint_family,omitempty"`
+
 	// UpstreamProtocol 可选；用于 capability matrix 与 projection。
 	UpstreamProtocol UpstreamProtocol `json:"upstream_protocol,omitempty"`
 

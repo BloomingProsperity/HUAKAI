@@ -10,9 +10,11 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
@@ -20,6 +22,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 )
 
 // ---------------------------------------------------------------------------
@@ -261,9 +264,10 @@ func assertNoAuditHeader(t *testing.T, rec *httptest.ResponseRecorder) {
 	}
 }
 
-// 9. NoStream — 默认不开 HUAKAI_DISPATCH_HCSF 时保留 raw dispatcher fallback；
+// 9. NoStream — HUAKAI_DISPATCH_HCSF=0 时保留 raw dispatcher fallback；
 // 当前最小依赖没有配置 raw dispatcher registry，因此应在上游 dispatch 处失败。
 func TestHandler_NoStream(t *testing.T) {
+	t.Setenv("HUAKAI_DISPATCH_HCSF", "0")
 	d := clientAdapterDeps(t)
 	rec := invokeHandler(t, d, `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
 	if rec.Code != http.StatusBadGateway {
@@ -286,6 +290,88 @@ func TestHandler_MissingModel(t *testing.T) {
 	}
 }
 
+func TestHandler_DefaultHCSFOn(t *testing.T) {
+	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = dispatcher
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if dispatcher.calls != 1 {
+		t.Fatalf("canonical dispatcher calls = %d; want 1", dispatcher.calls)
+	}
+}
+
+func TestHandler_EnvOffHCSFOff(t *testing.T) {
+	t.Setenv("HUAKAI_DISPATCH_HCSF", "0")
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = dispatcher
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusBadGateway || dispatcher.calls != 0 {
+		t.Fatalf("status/calls = %d/%d; body = %s", rec.Code, dispatcher.calls, rec.Body.String())
+	}
+}
+
+func TestHandler_AnthropicEndpointFamilySet(t *testing.T) {
+	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	d := anthropicClientAdapterDeps(t)
+	d.CanonicalDispatcher = dispatcher
+	body := `{"model":"claude-3-5-sonnet","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`
+	rec := invokeHandlerPath(t, d, "/v1/messages", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if dispatcher.observed == nil || dispatcher.observed.RequestMeta.EndpointFamily != "anthropic_messages" {
+		t.Fatalf("EndpointFamily = %+v", dispatcher.observed)
+	}
+}
+
+func TestHandler_OpenAIEndpointFamilySet(t *testing.T) {
+	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = dispatcher
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if dispatcher.observed == nil || dispatcher.observed.RequestMeta.EndpointFamily != "openai_chat" {
+		t.Fatalf("EndpointFamily = %+v", dispatcher.observed)
+	}
+}
+
+func unsetEnvForTest(t *testing.T, key string) {
+	t.Helper()
+	old, ok := os.LookupEnv(key)
+	_ = os.Unsetenv(key)
+	t.Cleanup(func() {
+		if ok {
+			_ = os.Setenv(key, old)
+		} else {
+			_ = os.Unsetenv(key)
+		}
+	})
+}
+
+func anthropicClientAdapterDeps(t *testing.T) ChatHandlerDeps {
+	t.Helper()
+	d := minimalDeps()
+	d.Registry = stubRegistry{resolved: registry.Resolved{
+		PublicAlias: "claude-3-5-sonnet", CanonicalModelID: "anthropic/claude-3-5-sonnet",
+		ProviderModelID: "claude-3-5-sonnet", ProtocolFamily: "anthropic_messages", PoolCandidates: []int64{42},
+	}}
+	vault := provider.NewStaticVault()
+	if err := vault.Set(1, provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-ant-test"}, provider.AccountInfo{AccountID: 1, Platform: "anthropic", AccountType: "apikey"}); err != nil {
+		t.Fatalf("vault.Set: %v", err)
+	}
+	d.CredentialVault = vault
+	return d
+}
+
 // 11. UnauthorizedAuth — auth.Resolve returns ErrUnauthorized → 401.
 func TestHandler_UnauthorizedAuth(t *testing.T) {
 	d := minimalDeps()
@@ -296,5 +382,58 @@ func TestHandler_UnauthorizedAuth(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "unauthorized") {
 		t.Fatalf("body = %q; want unauthorized", rec.Body.String())
+	}
+}
+
+func TestChatCompletions_AuditLedgerNilGracefulNoPanic(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.Signer = signer
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get(headerHUAKAIAuditLedgerID); got != "" {
+		t.Fatalf("%s=%q want empty when ledger is nil", headerHUAKAIAuditLedgerID, got)
+	}
+}
+
+func TestChatCompletions_AuditLedgerAppendWritesHeaders(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	ledger, err := auditledger.NewMemoryLedger(signer)
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.AuditLedger = ledger
+	d.Signer = signer
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if ledger.Size(context.Background()) != 1 {
+		t.Fatalf("ledger size=%d want 1", ledger.Size(context.Background()))
+	}
+	if got := rec.Header().Get(headerHUAKAIAuditLedgerID); got == "" {
+		t.Fatalf("%s header is empty", headerHUAKAIAuditLedgerID)
+	}
+	if got := rec.Header().Get(headerHUAKAIAuditSigFingerprint); got != signer.Fingerprint() {
+		t.Fatalf("%s=%q want %q", headerHUAKAIAuditSigFingerprint, got, signer.Fingerprint())
+	}
+	verifyHeader := rec.Header().Get(headerHUAKAIAuditVerify)
+	if !strings.Contains(verifyHeader, "ledger-id=") || !strings.Contains(verifyHeader, "request_id=") {
+		t.Fatalf("%s=%q want ledger-id and request_id", headerHUAKAIAuditVerify, verifyHeader)
 	}
 }

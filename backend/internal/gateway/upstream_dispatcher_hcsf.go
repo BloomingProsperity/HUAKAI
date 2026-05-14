@@ -60,6 +60,7 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 	if family == "" {
 		return nil, errors.New("dispatcher: HCSF ProtocolFamily 未指定")
 	}
+	endpointFamily := firstNonEmpty(env.RequestMeta.EndpointFamily, family)
 	upstreamModel := firstNonEmpty(in.UpstreamModelID, env.RequestMeta.UpstreamModel, env.RequestMeta.Model)
 	account := in.Account
 	if account.AccountID == 0 {
@@ -77,7 +78,7 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 		UpstreamModelID: upstreamModel,
 		Credential:      in.Credential,
 		Account:         account,
-	}, env, in.RawBody)
+	}, env, endpointFamily, in.RawBody)
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: BuildRequestFromEnvelope/BuildRequest 失败: %w", err)
 	}
@@ -138,11 +139,11 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 	return out, nil
 }
 
-func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provider.BuildInput, env *proto.HCSF, rawFallback []byte) (*http.Request, error) {
+func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provider.BuildInput, env *proto.HCSF, endpointFamily string, rawFallback []byte) (*http.Request, error) {
 	if b, ok := a.(envelopeRequestBuilder); ok {
 		return b.BuildRequestFromEnvelope(ctx, in, env)
 	}
-	body, err := hcsfRequestBody(env)
+	body, err := hcsfRequestBody(env, endpointFamily)
 	if err != nil {
 		if len(rawFallback) == 0 {
 			return nil, err
@@ -153,51 +154,16 @@ func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provid
 	return a.BuildRequest(ctx, in)
 }
 
-func hcsfRequestBody(env *proto.HCSF) ([]byte, error) {
-	model := firstNonEmpty(env.RequestMeta.UpstreamModel, env.RequestMeta.Model)
-	msgs := hcsfMessagesFromGraph(env)
-	if len(msgs) == 0 {
-		return nil, errors.New("dispatcher: HCSF messages 为空")
+func hcsfRequestBody(env *proto.HCSF, endpointFamily string) ([]byte, error) {
+	body, err := MarshalToProviderRequest(env, endpointFamily)
+	if err != nil {
+		return nil, err
 	}
-	body := map[string]any{"model": model, "messages": msgs, "stream": false}
-	c := env.RequestControls
-	if c.MaxTokens != nil {
-		body["max_tokens"] = *c.MaxTokens
+	body, err = injectRequestControls(body, env, endpointFamily)
+	if err != nil {
+		return nil, fmt.Errorf("dispatcher: HCSF request controls 注入失败: %w", err)
 	}
-	if c.Temperature != nil {
-		body["temperature"] = *c.Temperature
-	}
-	if c.TopP != nil {
-		body["top_p"] = *c.TopP
-	}
-	if c.ParallelToolCalls != nil {
-		body["parallel_tool_calls"] = *c.ParallelToolCalls
-	}
-	if len(c.Stop) > 0 {
-		body["stop"] = c.Stop
-	} else if len(c.StopSequences) > 0 {
-		body["stop"] = c.StopSequences
-	}
-	if len(c.ToolChoice) > 0 {
-		body["tool_choice"] = c.ToolChoice
-	}
-	if len(c.Tools) > 0 {
-		body["tools"] = c.Tools
-	}
-	if c.ResponseFormat != nil {
-		body["response_format"] = c.ResponseFormat
-	}
-	return json.Marshal(body)
-}
-
-func hcsfMessagesFromGraph(env *proto.HCSF) []map[string]any {
-	out := make([]map[string]any, 0, len(env.CapabilityGraph.Nodes))
-	for _, n := range env.CapabilityGraph.Nodes {
-		if n.Text != nil {
-			out = append(out, map[string]any{"role": n.Text.Role, "content": n.Text.Block.Text})
-		}
-	}
-	return out
+	return body, nil
 }
 
 func cloneHCSF(env *proto.HCSF) (*proto.HCSF, error) {

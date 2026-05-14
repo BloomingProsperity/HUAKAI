@@ -14,12 +14,18 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"expvar"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,6 +41,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker/adapters"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
@@ -79,6 +86,7 @@ type deps struct {
 	dispatcher      *gateway.UpstreamDispatcher
 	inboundAuth     *auth.APIKeyResolver
 	auditLedger     auditledger.Ledger
+	auditSigner     *sign.Signer
 	// Slice 2 (N+5a): real Registry resolver.
 	modelRegistry *registry.PostgresRegistry
 	// Slice 2 (N+5b 2026-05-01): Router consumes Registry's PoolCandidates
@@ -134,9 +142,9 @@ func run(logger *zap.Logger) error {
 	}
 	defer selectorCleanup()
 
-	auditSigner, err := sign.GenerateKey()
+	auditSigner, err := loadAuditSigner(logger)
 	if err != nil {
-		return fmt.Errorf("generate audit ledger signer: %w", err)
+		return fmt.Errorf("load audit ledger signer: %w", err)
 	}
 	auditLedger, err := auditledger.NewMemoryLedger(auditSigner)
 	if err != nil {
@@ -165,14 +173,13 @@ func run(logger *zap.Logger) error {
 			},
 			ScannerBufferCap: 1 << 20,
 		},
-		// 内存 vault：dev/test 用空表占位；DB-backed vault 后续 atomic 接入。
-		credentialVault: provider.NewStaticVault(),
+		// 生产 vault：从 provider_accounts / providers 读取账号凭据。
+		credentialVault: provider.NewPostgresCredentialVault(pgPool),
 		dispatcher: &gateway.UpstreamDispatcher{
 			Adapters:         registrydefault.Build(),
 			TransportFactory: transport.NewFactory(mimicryRegistry),
-			// 内存 ProxyResolver：dev/test 默认空（所有账号直连）。
-			// DB-backed resolver 后续 atomic 接入；接入后此处替换实例。
-			ProxyResolver: provider.NewStaticProxyResolver(),
+			// 生产 ProxyResolver：按 provider_accounts.proxy_url 做账号级出站代理。
+			ProxyResolver: provider.NewPostgresProxyResolver(pgPool),
 		},
 		// Phase L0 minimum (N+4a): table-backed inbound auth via api_keys.
 		// Replaces the SmokeAuthResolver env-injected single bearer pattern.
@@ -180,6 +187,7 @@ func run(logger *zap.Logger) error {
 		// default build.
 		inboundAuth: auth.NewAPIKeyResolver(q),
 		auditLedger: auditLedger,
+		auditSigner: auditSigner,
 		// Slice 2 (N+5a) registry resolver. cache=nil → noopCache (D2: no
 		// L0 cache; LRU lands in Slice 5 keyed on registry_version).
 		// Takes pgxpool.Pool because Resolve runs all reads inside a
@@ -204,13 +212,18 @@ func run(logger *zap.Logger) error {
 		return fmt.Errorf("admin bootstrap: %w", err)
 	}
 
-	// Q3 credential refresh worker：先接调度主链路。provider-specific adapter
-	// 由后续子模块注册；缺 adapter 时失败会进审计，不伪造刷新成功。
+	refreshRegistry := credentialworker.NewAdapterRegistry()
+	if err := registerCredentialRefreshAdapters(refreshRegistry); err != nil {
+		return fmt.Errorf("register credential refresh adapters: %w", err)
+	}
+
+	// Q3 credential refresh worker：真 vendor 走 OAuth adapter；Owner 2026-05-09
+	// scope 外 vendor 显式 mock-only，避免再把占位壳当生产刷新路径。
 	credentialScheduler := credentialworker.NewScheduler(
 		q,
 		auth.NewStormController(q),
 		auditSigner,
-		credentialworker.ProviderDispatchRefresher{},
+		credentialworker.NewRegistryRefresher(refreshRegistry, credentialworker.NewPostgresRefreshStore(pgPool)),
 		credentialworker.WithAuditLedger(auditLedger),
 	)
 	if err := credentialScheduler.Start(ctx); err != nil {
@@ -271,6 +284,29 @@ func run(logger *zap.Logger) error {
 	return nil
 }
 
+func registerCredentialRefreshAdapters(registry *credentialworker.AdapterRegistry) error {
+	registrations := []struct {
+		name    string
+		adapter credentialworker.RefreshAdapter
+	}{
+		{name: "anthropic", adapter: adapters.AnthropicRefresh{}},
+		{name: "openai", adapter: adapters.OpenAIRefresh{}},
+		{name: "gemini", adapter: adapters.GeminiRefresh{}},
+		{name: "codex", adapter: adapters.CodexRefresh{}},
+	}
+	for _, item := range registrations {
+		if err := registry.Register(item.name, item.adapter); err != nil {
+			return err
+		}
+	}
+	for _, name := range credentialworker.MockOnlyProviders {
+		if err := registry.Register(name, credentialworker.MockOnlyAdapter{}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func loadMimicryTemplateRegistry(logger *zap.Logger) (*mimicry.TemplateRegistry, error) {
 	candidates := []string{
 		"tools/fingerprint-collector/templates",
@@ -295,6 +331,53 @@ func loadMimicryTemplateRegistry(logger *zap.Logger) (*mimicry.TemplateRegistry,
 	return nil, nil
 }
 
+func loadAuditSigner(logger *zap.Logger) (*sign.Signer, error) {
+	path := strings.TrimSpace(os.Getenv("HUAKAI_AUDIT_PRIVATE_KEY_PATH"))
+	if path == "" {
+		logger.Warn("using ephemeral key — restart loses chain")
+		return sign.GenerateKey()
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read HUAKAI_AUDIT_PRIVATE_KEY_PATH: %w", err)
+	}
+	signer, err := parseAuditPrivateKey(raw)
+	if err != nil {
+		return nil, err
+	}
+	logger.Info("audit private key loaded", zap.String("path", path), zap.String("fingerprint", signer.Fingerprint()))
+	return signer, nil
+}
+
+func parseAuditPrivateKey(raw []byte) (*sign.Signer, error) {
+	if len(raw) == ed25519.PrivateKeySize {
+		return sign.NewSignerFromKey(ed25519.PrivateKey(raw))
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if block, _ := pem.Decode([]byte(trimmed)); block != nil {
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse audit PEM private key: %w", err)
+		}
+		priv, ok := key.(ed25519.PrivateKey)
+		if !ok {
+			return nil, sign.ErrInvalidPrivateKey
+		}
+		return sign.NewSignerFromKey(priv)
+	}
+	for _, decode := range []func(string) ([]byte, error){
+		base64.StdEncoding.DecodeString,
+		base64.RawStdEncoding.DecodeString,
+		hex.DecodeString,
+	} {
+		decoded, err := decode(trimmed)
+		if err == nil && len(decoded) == ed25519.PrivateKeySize {
+			return sign.NewSignerFromKey(ed25519.PrivateKey(decoded))
+		}
+	}
+	return nil, sign.ErrInvalidPrivateKey
+}
+
 // mountRoutes wires the HTTP routes per docs/openapi/openapi.yaml.
 // All handlers return 501 Not Implemented except the Phase C / N+5b chat
 // completions endpoint which runs the full Tx1 → forward → Tx2 pipeline.
@@ -310,6 +393,8 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		Dispatcher:           d.dispatcher,
 		Forwarder:            d.forwarder,
 		Settler:              d.settler,
+		AuditLedger:          d.auditLedger,
+		Signer:               d.auditSigner,
 		BillingPolicyVersion: d.cfg.BillingPolicyVersion,
 		RequestClass:         d.cfg.RequestClass,
 	}))
@@ -328,6 +413,8 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		Dispatcher:           d.dispatcher,
 		Forwarder:            d.forwarder,
 		Settler:              d.settler,
+		AuditLedger:          d.auditLedger,
+		Signer:               d.auditSigner,
 		BillingPolicyVersion: d.cfg.BillingPolicyVersion,
 		RequestClass:         d.cfg.RequestClass,
 	}))
@@ -359,15 +446,6 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		r.Post("/", notImplemented("F-POOL-001 create pool"))
 		r.Get("/{id}", notImplemented("F-POOL-001 get pool"))
 		r.Patch("/{id}", notImplemented("F-POOL-001 update pool"))
-	})
-
-	// Admin: Provider Accounts (F-POOL-001 + F-AUTH-005 + F-RATE-001)
-	r.Route("/admin/v1/provider-accounts", func(r chi.Router) {
-		r.Get("/", notImplemented("F-POOL-001 list provider-accounts"))
-		r.Post("/", notImplemented("F-AUTH-005 create provider-account"))
-		r.Get("/{id}", notImplemented("F-POOL-001 get provider-account"))
-		r.Patch("/{id}", notImplemented("F-POOL-001 update provider-account"))
-		r.Post("/{id}/clear-rate-limit", notImplemented("F-RATE-001 cascade clear"))
 	})
 
 	// Admin: Usage / Billing / Audit / DLQ (F-OBS-001)
