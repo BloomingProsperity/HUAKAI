@@ -1,0 +1,20 @@
+{
+  "_comment": "placeholder：等 Owner 跑 capture playbook 后回填真 JA3/JA4",
+  "mode_name": "gemini_advanced",
+  "collected_at": "2026-05-14T00:00:00Z",
+  "target_host": "gemini.google.com",
+  "sample_count": 0,
+  "ja3": "",
+  "ja4": "",
+  "cipher_suites": [],
+  "extensions": [],
+  "supported_versions": [],
+  "curves": [],
+  "sig_algos": [],
+  "alpn_protocols": [],
+  "ec_point_formats": [],
+  "key_share_groups": [],
+  "psk_modes": [],
+  "padding_len": 0,
+  "early_data_enabled": false
+}

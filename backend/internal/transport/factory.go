@@ -1,13 +1,16 @@
 // 包 transport — RoundTripper 工厂：按 provider + mode 选具体 transport。
 //
-// R3 transport mimicry 实施完成前，mimicry / diagnostics_only 两个 mode
-// 调用方会拿到明确的 ErrTransportNotImplemented，方便 admin 知道为啥配置
-// 加载没问题但实际请求失败。
+// R3 transport mimicry Phase A 已接入 uTLS dialer；diagnostics_only 仍保留
+// fail-loud 占位，避免调用方误以为诊断路径已经完整实现。
 package transport
 
 import (
 	"errors"
+	"log"
 	"net/http"
+	"sync"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 )
 
 // ErrTransportNotImplemented 表示 (provider, mode) 组合策略允许但具体
@@ -20,17 +23,27 @@ type Factory struct {
 	// standard 是 standard mode 用的 RoundTripper。nil 时回落到
 	// http.DefaultTransport。注入便于测试。
 	standard http.RoundTripper
-	// mimicry 是 R3 transport mimicry 用的 RoundTripper。nil 表示尚未
-	// 实施（当前默认）。
+	// mimicry 是测试或外部装配注入点。nil 时按 registry 查 per-mode 模板。
 	mimicry http.RoundTripper
+	// templateRegistry 保存 Phase B per-mode ClientHello 模板。
+	templateRegistry *mimicry.TemplateRegistry
+	mimicryMu        sync.Mutex
+	mimicryByMode    map[TransportMode]http.RoundTripper
 	// diagnostics 是仅做连通性诊断的 RoundTripper。nil 表示尚未实施。
 	diagnostics http.RoundTripper
 }
 
 // NewFactory 构造一个新的 Factory。所有 RoundTripper 字段为 nil — 调用
 // SetXxx 注入实例。standard 在未注入时回落到 http.DefaultTransport。
-func NewFactory() *Factory {
-	return &Factory{}
+func NewFactory(registries ...*mimicry.TemplateRegistry) *Factory {
+	var registry *mimicry.TemplateRegistry
+	if len(registries) > 0 {
+		registry = registries[0]
+	}
+	return &Factory{
+		templateRegistry: registry,
+		mimicryByMode:    make(map[TransportMode]http.RoundTripper),
+	}
 }
 
 // SetStandard 注入 standard RoundTripper（覆盖 http.DefaultTransport
@@ -39,7 +52,8 @@ func (f *Factory) SetStandard(rt http.RoundTripper) {
 	f.standard = rt
 }
 
-// SetMimicry 注入 R3 transport mimicry RoundTripper。R3 实施时调一次。
+// SetMimicry 注入 R3 transport mimicry RoundTripper，主要供测试和未来
+// per-mode 路由器使用。
 func (f *Factory) SetMimicry(rt http.RoundTripper) {
 	f.mimicry = rt
 }
@@ -62,10 +76,7 @@ func (f *Factory) For(provider ProviderCode, mode TransportMode) (http.RoundTrip
 	}
 	switch mode {
 	case TransportModeStandard:
-		if f.standard != nil {
-			return f.standard, nil
-		}
-		return http.DefaultTransport, nil
+		return f.standardRoundTripper(), nil
 	case TransportModeMimicryClaudeCode,
 		TransportModeMimicryChatGPT,
 		TransportModeMimicryGeminiAdvanced,
@@ -74,15 +85,10 @@ func (f *Factory) For(provider ProviderCode, mode TransportMode) (http.RoundTrip
 		TransportModeMimicryCopilot,
 		TransportModeMimicryKiro,
 		TransportModeMimicryWindsurf:
-		// 所有 mimicry mode 共享同一 RoundTripper 注入点。R3 实施时通过
-		// SetMimicry 注入 utls dialer + per-mode fingerprint 路由（具体
-		// fingerprint 模板由内层 RoundTripper 按 ctx 携带的 mode hint 选）。
-		// 未注入时一律 fail-loud 为 ErrTransportNotImplemented，与 ErrUnknownMode
-		// 区分（policy 知道 mode，只是 transport 没实施）。
 		if f.mimicry != nil {
 			return f.mimicry, nil
 		}
-		return nil, ErrTransportNotImplemented
+		return f.mimicryRoundTripper(mode, f.mimicryTemplate(mode)), nil
 	case TransportModeDiagnosticsOnly:
 		if f.diagnostics != nil {
 			return f.diagnostics, nil
@@ -91,4 +97,42 @@ func (f *Factory) For(provider ProviderCode, mode TransportMode) (http.RoundTrip
 	}
 	// ValidateModeForProvider 已确保 mode 已知，理论不可达。
 	return nil, ErrUnknownMode
+}
+
+func (f *Factory) standardRoundTripper() http.RoundTripper {
+	if f.standard != nil {
+		return f.standard
+	}
+	return http.DefaultTransport
+}
+
+func (f *Factory) mimicryRoundTripper(mode TransportMode, tmpl *mimicry.ClientHelloTemplate) http.RoundTripper {
+	f.mimicryMu.Lock()
+	defer f.mimicryMu.Unlock()
+	if f.mimicryByMode == nil {
+		f.mimicryByMode = make(map[TransportMode]http.RoundTripper)
+	}
+	if rt := f.mimicryByMode[mode]; rt != nil {
+		return rt
+	}
+	rt := mimicry.NewRoundTripper(tmpl)
+	f.mimicryByMode[mode] = rt
+	return rt
+}
+
+func (f *Factory) mimicryTemplate(mode TransportMode) *mimicry.ClientHelloTemplate {
+	if f.templateRegistry != nil {
+		tmpl, ok := f.templateRegistry.Lookup(mimicry.TransportMode(mode))
+		if ok && !tmpl.IsStub() {
+			return tmpl
+		}
+		if ok {
+			log.Printf("warning: stub template for mode %s, using Phase A default template", mode)
+		} else {
+			log.Printf("warning: no template for mode %s, using Phase A default template", mode)
+		}
+	}
+	// Phase A：8 个 mimicry mode 先共享 Anthropic 样本模板，Phase B
+	// 改为 templates/<mode-name>.json 的 per-mode 指纹。
+	return mimicry.PhaseADefaultTemplate()
 }
