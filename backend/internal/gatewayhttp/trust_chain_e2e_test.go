@@ -21,13 +21,10 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
-	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/anthropic"
-	"github.com/BloomingProsperity/HUAKAI/internal/registry"
-	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
@@ -37,8 +34,6 @@ const (
 	trustE2ERequestID  = "req-t10-e2e"
 	trustE2ELedgerID   = "ledger-t10-e2e"
 	trustE2ETenantID   = int64(7)
-	trustE2EAPIKeyID   = int64(11)
-	trustE2EUserID     = int64(3)
 	trustE2EAccountID  = int64(1)
 	trustE2EPoolID     = int64(42)
 	trustE2ERouteID    = "registry:7:1;router:t10"
@@ -252,19 +247,10 @@ func newTrustChainE2E(t *testing.T) *trustChainE2EEnv {
 		t.Fatalf("vault.Set: %v", err)
 	}
 
-	deps := ChatHandlerDeps{
-		Auth:                 trustE2EAuth{},
-		Registry:             trustE2ERegistry{},
-		Router:               trustE2ERouter{},
-		ClaimGate:            trustE2EClaimGate{},
-		Selector:             trustE2ESelector{},
-		CredentialVault:      vault,
-		Dispatcher:           &gateway.UpstreamDispatcher{Adapters: providerAdapters, TransportFactory: transport.NewFactory(), ProtocolAdapters: protocolAdapters, HTTPClient: upstream.Client()},
-		Forwarder:            &gateway.StreamForwarder{ProtocolAdapters: protocolAdapters, Scanners: gateway.BuildDefaultStreamScannerRegistry()},
-		Settler:              &trustE2ESettler{},
-		BillingPolicyVersion: "trust-e2e",
-		RequestClass:         "default",
-	}
+	deps := minimalDeps()
+	deps.CredentialVault = vault
+	deps.Dispatcher = &gateway.UpstreamDispatcher{Adapters: providerAdapters, TransportFactory: transport.NewFactory(), ProtocolAdapters: protocolAdapters, HTTPClient: upstream.Client()}
+	deps.Forwarder = &gateway.StreamForwarder{ProtocolAdapters: protocolAdapters, Scanners: gateway.BuildDefaultStreamScannerRegistry()}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -331,12 +317,11 @@ func (e *trustChainE2EEnv) getJSON(t *testing.T, path string, dst any) {
 }
 
 type trustE2ELedger struct {
-	signer *sign.Signer
-	inner  *auditledger.MemoryLedger
-	mu     sync.RWMutex
-	byReq  map[string]auditledger.LedgerEntry
-	byID   map[string]string
-	order  []string
+	signer   *sign.Signer
+	inner    *auditledger.MemoryLedger
+	mu       sync.RWMutex
+	byID     map[string]string
+	tampered map[string]auditledger.LedgerEntry
 }
 
 func newTrustE2ELedger(t *testing.T, signer *sign.Signer) *trustE2ELedger {
@@ -346,10 +331,10 @@ func newTrustE2ELedger(t *testing.T, signer *sign.Signer) *trustE2ELedger {
 		t.Fatalf("memory ledger: %v", err)
 	}
 	return &trustE2ELedger{
-		signer: signer,
-		inner:  inner,
-		byReq:  map[string]auditledger.LedgerEntry{},
-		byID:   map[string]string{},
+		signer:   signer,
+		inner:    inner,
+		byID:     map[string]string{},
+		tampered: map[string]auditledger.LedgerEntry{},
 	}
 }
 
@@ -360,53 +345,54 @@ func (l *trustE2ELedger) Append(ctx context.Context, entry auditledger.LedgerEnt
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.byReq[appended.RequestID] = cloneLedgerEntry(appended)
 	l.byID[appended.LedgerID] = appended.RequestID
-	l.order = append(l.order, appended.RequestID)
 	return cloneLedgerEntry(appended), nil
 }
 
-func (l *trustE2ELedger) GetByRequestID(_ context.Context, requestID string) (auditledger.LedgerEntry, error) {
+func (l *trustE2ELedger) GetByRequestID(ctx context.Context, requestID string) (auditledger.LedgerEntry, error) {
 	l.mu.RLock()
-	defer l.mu.RUnlock()
-	entry, ok := l.byReq[requestID]
-	if !ok {
-		return auditledger.LedgerEntry{}, auditledger.ErrLedgerEntryNotFound
+	entry, ok := l.tampered[requestID]
+	l.mu.RUnlock()
+	if ok {
+		return cloneLedgerEntry(entry), nil
+	}
+	entry, err := l.inner.GetByRequestID(ctx, requestID)
+	if err != nil {
+		return auditledger.LedgerEntry{}, err
 	}
 	return cloneLedgerEntry(entry), nil
 }
 
 func (l *trustE2ELedger) GetByLedgerID(ledgerID string) (auditledger.LedgerEntry, error) {
 	l.mu.RLock()
-	defer l.mu.RUnlock()
 	requestID, ok := l.byID[ledgerID]
+	l.mu.RUnlock()
 	if !ok {
 		return auditledger.LedgerEntry{}, auditledger.ErrLedgerEntryNotFound
 	}
-	return cloneLedgerEntry(l.byReq[requestID]), nil
+	return l.GetByRequestID(context.Background(), requestID)
 }
 
-func (l *trustE2ELedger) LatestMerkleRoot(_ context.Context) ([32]byte, error) {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
-	if len(l.order) == 0 {
-		return auditledger.ZeroRoot, nil
-	}
-	return l.byReq[l.order[len(l.order)-1]].MerkleRoot, nil
+func (l *trustE2ELedger) LatestMerkleRoot(ctx context.Context) ([32]byte, error) {
+	return l.inner.LatestMerkleRoot(ctx)
 }
 
-func (l *trustE2ELedger) Size(context.Context) int {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
-	return len(l.order)
+func (l *trustE2ELedger) Size(ctx context.Context) int {
+	return l.inner.Size(ctx)
 }
 
 func (l *trustE2ELedger) Snapshot() []auditledger.LedgerEntry {
 	l.mu.RLock()
-	defer l.mu.RUnlock()
-	out := make([]auditledger.LedgerEntry, 0, len(l.order))
-	for _, requestID := range l.order {
-		out = append(out, cloneLedgerEntry(l.byReq[requestID]))
+	ids := make([]string, 0, len(l.byID))
+	for _, requestID := range l.byID {
+		ids = append(ids, requestID)
+	}
+	l.mu.RUnlock()
+	out := make([]auditledger.LedgerEntry, 0, len(ids))
+	for _, requestID := range ids {
+		if entry, err := l.GetByRequestID(context.Background(), requestID); err == nil {
+			out = append(out, entry)
+		}
 	}
 	return out
 }
@@ -418,12 +404,16 @@ func (l *trustE2ELedger) TamperFirstHop(ledgerID string) error {
 	if !ok {
 		return auditledger.ErrLedgerEntryNotFound
 	}
-	entry := cloneLedgerEntry(l.byReq[requestID])
+	entry, err := l.inner.GetByRequestID(context.Background(), requestID)
+	if err != nil {
+		return err
+	}
+	entry = cloneLedgerEntry(entry)
 	if len(entry.HopChain) == 0 {
 		return errors.New("empty hop chain")
 	}
 	entry.HopChain[0].RequestID = entry.HopChain[0].RequestID + "-tampered"
-	l.byReq[requestID] = entry
+	l.tampered[requestID] = entry
 	return nil
 }
 
@@ -436,9 +426,8 @@ func (l *trustE2ELedger) Reset(t *testing.T) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.inner = inner
-	l.byReq = map[string]auditledger.LedgerEntry{}
 	l.byID = map[string]string{}
-	l.order = nil
+	l.tampered = map[string]auditledger.LedgerEntry{}
 }
 
 func cloneLedgerEntry(in auditledger.LedgerEntry) auditledger.LedgerEntry {
@@ -462,29 +451,6 @@ type trustE2EAnthropicAdapter struct {
 	mu               sync.Mutex
 	upstreamReported string
 	appended         bool
-}
-
-type trustE2EClientAdapter struct {
-	base *proto.AnthropicMessagesClient
-}
-
-func (a trustE2EClientAdapter) RequestToCanonical(ctx context.Context, raw []byte) (*proto.HCSF, []proto.ProtocolLossEntry, error) {
-	return a.base.RequestToCanonical(ctx, raw)
-}
-
-func (a trustE2EClientAdapter) CanonicalToClientResponse(ctx context.Context, env *proto.HCSF) ([]byte, []proto.ProtocolLossEntry, error) {
-	return a.base.CanonicalToClientResponse(ctx, env)
-}
-
-func (a trustE2EClientAdapter) CanonicalEventToClientChunk(ctx context.Context, event any, state any) ([][]byte, []proto.ProtocolLossEntry, error) {
-	if value, ok := event.(proto.CanonicalEvent); ok {
-		event = &value
-	}
-	return a.base.CanonicalEventToClientChunk(ctx, event, state)
-}
-
-func (a trustE2EClientAdapter) FinalizeClientStream(ctx context.Context, state any) ([][]byte, error) {
-	return a.base.FinalizeClientStream(ctx, state)
 }
 
 func (a *trustE2EAnthropicAdapter) CanonicalToProviderRequest(ctx context.Context, env *proto.HCSF) ([]byte, []proto.ProtocolLossEntry, error) {
@@ -670,65 +636,6 @@ func verifyTrustE2ESignature(entry auditledger.LedgerEntry, pub ed25519.PublicKe
 		return false
 	}
 	return sign.Verify(pub, hash[:], sig) == nil
-}
-
-type trustE2EAuth struct{}
-
-func (trustE2EAuth) Resolve(context.Context, *http.Request) (auth.Identity, error) {
-	return auth.Identity{TenantID: trustE2ETenantID, APIKeyID: trustE2EAPIKeyID, UserID: trustE2EUserID}, nil
-}
-
-type trustE2ERegistry struct{}
-
-func (trustE2ERegistry) ResolveModel(context.Context, string, int64) (registry.Resolved, error) {
-	return registry.Resolved{
-		PublicAlias:      trustE2EModel,
-		CanonicalModelID: "anthropic/" + trustE2EModel,
-		ProviderModelID:  trustE2EModel,
-		ProtocolFamily:   "anthropic_messages",
-		PoolCandidates:   []int64{trustE2EPoolID},
-		SnapshotVersion:  "registry:7:1",
-	}, nil
-}
-
-type trustE2ERouter struct{}
-
-func (trustE2ERouter) Plan(context.Context, router.PlanInput) (router.RoutePlan, error) {
-	return router.RoutePlan{
-		Attempts:        []router.AttemptPlan{{PoolGroupID: trustE2EPoolID}},
-		AttemptBudget:   1,
-		SnapshotVersion: trustE2ERouteID,
-	}, nil
-}
-
-type trustE2EClaimGate struct{}
-
-func (trustE2EClaimGate) Reserve(context.Context, billing.ReserveRequest) (*billing.ReserveResult, error) {
-	return &billing.ReserveResult{ClaimID: 1001}, nil
-}
-
-type trustE2ESelector struct{}
-
-func (trustE2ESelector) Select(context.Context, pool.SelectionRequest) (*pool.SelectionResult, error) {
-	return &pool.SelectionResult{
-		AccountID:        trustE2EAccountID,
-		AcquisitionToken: uuid.MustParse("11111111-1111-1111-1111-111111111111"),
-	}, nil
-}
-
-type trustE2ESettler struct {
-	settleCalls int64
-	abortCalls  int64
-}
-
-func (s *trustE2ESettler) Settle(context.Context, billing.SettleRequest) (*billing.SettleResult, error) {
-	atomic.AddInt64(&s.settleCalls, 1)
-	return &billing.SettleResult{NewUserBalance: decimal.Zero}, nil
-}
-
-func (s *trustE2ESettler) Abort(context.Context, int64, int64, string) error {
-	atomic.AddInt64(&s.abortCalls, 1)
-	return nil
 }
 
 func writeAnthropicSSE(t *testing.T, w http.ResponseWriter, event string, payload map[string]any) {

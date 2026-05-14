@@ -3,18 +3,22 @@ package gatewayhttp
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/cache_routing"
@@ -24,6 +28,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 )
 
 type authResolver interface {
@@ -41,6 +46,8 @@ type ChatHandlerDeps struct {
 	CanonicalDispatcher  HCSFDispatcher
 	Forwarder            *gateway.StreamForwarder
 	Settler              billing.Settler
+	AuditLedger          auditledger.Ledger
+	Signer               *sign.Signer
 	BillingPolicyVersion string
 	RequestClass         string
 
@@ -81,6 +88,7 @@ type chatMessage struct {
 func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
+		requestStartedAt := time.Now()
 
 		// 启动期依赖缺失必须 fail closed，避免请求路径 panic。
 		if d.Registry == nil || d.Router == nil || d.Auth == nil ||
@@ -337,6 +345,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 					return
 				}
 				enrichCanonicalRequestMeta(canonicalReq, upstreamModelID, accInfo.Platform, idempotencyHeader, promptHash)
+				canonicalReq.RequestMeta.EndpointFamily = resolved.ProtocolFamily
 				setAccountingModelRequested(canonicalReq, req.Model)
 				setAccountingModelRouteDecided(canonicalReq, forwardReq.Model)
 				gateway.ApplyForwardRequestHopChain(canonicalReq, forwardReq)
@@ -421,7 +430,14 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			}
 			setAccountingModelRequested(bufferedEnv, req.Model)
 			setAccountingModelRouteDecided(bufferedEnv, forwardReq.Model)
-			gateway.ApplyForwardRequestHopChain(bufferedEnv, forwardReq)
+			fillAccountingModelUpstreamReported(bufferedEnv)
+			bufferedEnv.Accounting.HopChain = gateway.BuildHopChain(forwardReq, "", requestStartedAt, time.Now())
+			ledgerEntry, err := submitAuditLedgerEntry(ctx, d, bufferedEnv, ident.TenantID, requestID)
+			if err != nil {
+				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "audit_ledger_error")
+				writeJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())
+				return
+			}
 
 			clientBody, _, err := clientAdapter.CanonicalToClientResponse(seedCtx, bufferedEnv)
 			if err != nil {
@@ -453,7 +469,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			}
 
 			w.Header().Set("Content-Type", "application/json")
-			setHUAKAIModelHeaders(w.Header(), req.Model, bufferedEnv)
+			WriteHuakaiHeaders(w.Header(), req.Model, bufferedEnv, ledgerEntry)
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write(clientBody)
 			return
@@ -586,7 +602,7 @@ func enrichCanonicalRequestMeta(env *proto.HCSF, upstreamModelID, providerName, 
 }
 
 func hcsfDispatchEnabled() bool {
-	return os.Getenv("HUAKAI_DISPATCH_HCSF") == "1"
+	return os.Getenv("HUAKAI_DISPATCH_HCSF") != "0"
 }
 
 func hcsfDispatcher(d ChatHandlerDeps) HCSFDispatcher {
@@ -608,6 +624,110 @@ func protocolAdapterForBuffered(f *gateway.StreamForwarder, protocolFamily strin
 		adapters = gateway.BuildDefaultProtocolAdapterRegistry()
 	}
 	return adapters.For(protocolFamily)
+}
+
+const (
+	headerHUAKAIAuditLedgerID       = "X-HUAKAI-Ledger-ID"
+	headerHUAKAIAuditVerify         = "X-HUAKAI-Verify"
+	headerHUAKAIAuditSigFingerprint = "X-HUAKAI-Sig-Fingerprint"
+)
+
+func WriteHuakaiHeaders(h http.Header, requested string, env *proto.HCSF, entry *auditledger.LedgerEntry) {
+	setHUAKAIModelHeaders(h, requested, env)
+	if h == nil || entry == nil {
+		return
+	}
+	if entry.LedgerID != "" {
+		h.Set(headerHUAKAIAuditLedgerID, entry.LedgerID)
+	}
+	if entry.PubkeyFingerprint != "" {
+		h.Set(headerHUAKAIAuditSigFingerprint, entry.PubkeyFingerprint)
+	}
+	if entry.RequestID != "" {
+		query := url.Values{}
+		query.Set("request_id", entry.RequestID)
+		if entry.LedgerID != "" {
+			query.Set("ledger-id", entry.LedgerID)
+		}
+		h.Set(headerHUAKAIAuditVerify, "/v1/audit/verify?"+query.Encode())
+	}
+}
+
+func submitAuditLedgerEntry(ctx context.Context, d ChatHandlerDeps, env *proto.HCSF, tenantID int64, requestID string) (*auditledger.LedgerEntry, error) {
+	if env == nil {
+		return nil, nil
+	}
+	if d.AuditLedger == nil {
+		appendTrustChainWarning(env, "audit_ledger_not_configured", "audit ledger dependency unset; trust-chain ledger entry skipped")
+		return nil, nil
+	}
+	if d.Signer == nil {
+		appendTrustChainWarning(env, "audit_signer_not_configured", "audit signer dependency unset; trust-chain ledger entry skipped")
+		return nil, nil
+	}
+	if requestID == "" {
+		requestID = env.RequestMeta.RequestID
+	}
+	entry := auditledger.LedgerEntry{
+		LedgerID:          uuid.NewString(),
+		Timestamp:         time.Now().UTC().Format(time.RFC3339Nano),
+		RequestID:         requestID,
+		TenantID:          tenantID,
+		HopChain:          cloneHopChain(env.Accounting.HopChain),
+		ModelChain:        cloneModelChain(env.Accounting.ModelChain),
+		PubkeyFingerprint: d.Signer.Fingerprint(),
+	}
+	hash, err := auditledger.EntryHash(&entry)
+	if err != nil {
+		return nil, fmt.Errorf("audit ledger entry hash: %w", err)
+	}
+	entry.Signature = base64.StdEncoding.EncodeToString(d.Signer.Sign(hash[:]))
+	appended, err := d.AuditLedger.Append(ctx, entry)
+	if err != nil {
+		return nil, fmt.Errorf("audit ledger append: %w", err)
+	}
+	env.Accounting.LedgerID = appended.LedgerID
+	env.Accounting.Signature = appended.Signature
+	env.Accounting.PubkeyFingerprint = appended.PubkeyFingerprint
+	return &appended, nil
+}
+
+func appendTrustChainWarning(env *proto.HCSF, code, reason string) {
+	if env == nil {
+		return
+	}
+	env.CapabilityGraph.ProtocolLoss = append(env.CapabilityGraph.ProtocolLoss, proto.ProtocolLossEntry{
+		Severity: proto.ProtocolLossWarning,
+		Code:     code,
+		Reason:   reason,
+	})
+}
+
+func fillAccountingModelUpstreamReported(env *proto.HCSF) {
+	if env == nil || env.BufferedResponse == nil || env.BufferedResponse.Model == "" {
+		return
+	}
+	mc := ensureAccountingModelChain(env)
+	if mc.UpstreamReported == "" {
+		mc.UpstreamReported = env.BufferedResponse.Model
+	}
+}
+
+func cloneHopChain(in []proto.HopAttestation) []proto.HopAttestation {
+	if in == nil {
+		return nil
+	}
+	out := make([]proto.HopAttestation, len(in))
+	copy(out, in)
+	return out
+}
+
+func cloneModelChain(in *proto.ModelChain) *proto.ModelChain {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
 }
 
 func nonStreamingUsageDraft(env *proto.HCSF, actualCost decimal.Decimal, routingReason []byte) gateway.UsageRecordDraft {

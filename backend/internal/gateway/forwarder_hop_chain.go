@@ -22,6 +22,35 @@ func ApplyForwardRequestHopChain(env *proto.HCSF, req ForwardRequest) {
 	env.Accounting.HopChain = buildForwardHopChain(req, time.Now())
 }
 
+// BuildHopChain 返回一次已完成 non-streaming 请求的完整 audit 链：
+// gateway ingress/router/pool/account 加 provider/response 两跳，且不写入
+// prompt / response 内容。
+func BuildHopChain(req ForwardRequest, providerEndpoint string, startedAt, completedAt time.Time) []proto.HopAttestation {
+	if startedAt.IsZero() {
+		startedAt = time.Now()
+	}
+	if completedAt.IsZero() || completedAt.Before(startedAt) {
+		completedAt = startedAt
+	}
+	chain := buildForwardHopChain(req, startedAt)
+	chain = append(chain,
+		proto.HopAttestation{
+			Hop:       proto.HopProvider,
+			Timestamp: hopTimestamp(startedAt, 4),
+			RequestID: req.RequestID,
+			Provider:  req.Provider,
+			Endpoint:  providerEndpoint,
+		},
+		proto.HopAttestation{
+			Hop:        proto.HopResponse,
+			Timestamp:  hopTimestamp(completedAt, 0),
+			RequestID:  req.RequestID,
+			DurationMS: completedAt.Sub(startedAt).Milliseconds(),
+		},
+	)
+	return chain
+}
+
 // FinalizeUpstream calls the upstream adapter finalizer and annotates any HCSF
 // envelopes it returns with the same hop chain used by Forward.
 func (f *StreamForwarder) FinalizeUpstream(ctx context.Context, adapter proto.UpstreamAdapter, state any, req ForwardRequest) ([]any, error) {

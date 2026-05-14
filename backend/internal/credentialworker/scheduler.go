@@ -51,7 +51,7 @@ type Scheduler struct {
 
 func NewScheduler(queries *db.Queries, storm *auth.StormController, signer Signer, refresher Refresher, opts ...Option) *Scheduler {
 	if refresher == nil {
-		refresher = ProviderDispatchRefresher{}
+		refresher = NewRegistryRefresher(NewAdapterRegistry(), nil)
 	}
 	s := &Scheduler{
 		Queries:         queries,

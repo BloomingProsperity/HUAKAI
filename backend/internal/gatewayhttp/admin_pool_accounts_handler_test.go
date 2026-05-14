@@ -68,6 +68,21 @@ func TestAdminPoolAccounts_CreateHappyPathInsertsAccount(t *testing.T) {
 	}
 }
 
+func TestAdminPoolAccounts_CreateSessionTypeInsertsAccount(t *testing.T) {
+	store := &adminPoolStoreStub{insertID: 88}
+	rec := invokeAdminPool(t, store, adminPoolAdmin(), http.MethodPost, "/v1/admin/pool-accounts",
+		`{"tenant_id":7,"provider_id":8,"channel_id":9,"name":"cursor-sub","account_type":"session","credentials":{"session_token":"sess-live"}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if store.insert == nil {
+		t.Fatal("InsertProviderAccount was not called")
+	}
+	if store.insert.AccountType != "session" {
+		t.Fatalf("AccountType=%q want session", store.insert.AccountType)
+	}
+}
+
 func TestAdminPoolAccounts_CreateWritesAuditEventWithoutCredentialBytes(t *testing.T) {
 	store := &adminPoolStoreStub{insertID: 77}
 	rec := invokeAdminPool(t, store, adminPoolAdmin(), http.MethodPost, "/v1/admin/pool-accounts",
