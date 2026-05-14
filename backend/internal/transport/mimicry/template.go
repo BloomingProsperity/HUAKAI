@@ -13,22 +13,49 @@ import (
 
 // ClientHelloTemplate 是 collector 净化输出到 uTLS ClientHelloSpec 的中间格式。
 type ClientHelloTemplate struct {
-	ModeName            string   `json:"mode_name,omitempty"`
-	CollectedAt         string   `json:"collected_at,omitempty"`
-	TargetHost          string   `json:"target_host,omitempty"`
-	JA3                 string   `json:"ja3"`
-	JA4                 string   `json:"ja4"`
-	CipherSuites        []uint16 `json:"cipher_suites"`
-	Extensions          []uint16 `json:"extensions"`
-	SupportedVersions   []uint16 `json:"supported_versions"`
-	EllipticCurves      []uint16 `json:"curves"`
-	SignatureAlgorithms []uint16 `json:"sig_algos"`
-	ALPNProtocols       []string `json:"alpn_protocols,omitempty"`
-	ECPointFormats      []uint8  `json:"ec_point_formats,omitempty"`
-	KeyShareGroups      []uint16 `json:"key_share_groups,omitempty"`
-	PSKModes            []uint8  `json:"psk_modes,omitempty"`
-	PaddingLen          int      `json:"padding_len,omitempty"`
-	EarlyDataEnabled    bool     `json:"early_data_enabled"`
+	ModeName            string    `json:"mode_name,omitempty"`
+	CollectedAt         string    `json:"collected_at,omitempty"`
+	TargetHost          string    `json:"target_host,omitempty"`
+	TLSBackend          string    `json:"tls_backend,omitempty"`
+	GREASE              bool      `json:"grease"`
+	ExtensionOrder      string    `json:"extension_order,omitempty"`
+	JA3                 string    `json:"ja3"`
+	JA4                 string    `json:"ja4"`
+	CipherSuites        []uint16  `json:"cipher_suites"`
+	Extensions          []uint16  `json:"extensions"`
+	SupportedVersions   []uint16  `json:"supported_versions"`
+	EllipticCurves      []uint16  `json:"curves"`
+	SignatureAlgorithms []uint16  `json:"sig_algos"`
+	ALPNProtocols       []string  `json:"alpn_protocols,omitempty"`
+	ECPointFormats      []uint8   `json:"ec_point_formats,omitempty"`
+	KeyShareGroups      []uint16  `json:"key_share_groups,omitempty"`
+	PSKModes            []uint8   `json:"psk_modes,omitempty"`
+	PaddingLen          int       `json:"padding_len,omitempty"`
+	EarlyDataEnabled    bool      `json:"early_data_enabled"`
+	HTTPLayer           HTTPLayer `json:"http_layer,omitempty"`
+	AuthLayer           AuthLayer `json:"auth_layer,omitempty"`
+}
+
+// HTTPLayer 记录模型 API 的 HTTP 指纹元数据。
+// 这些字段用于请求构造与运维审计；旧 stub 缺失时不影响 TLS 模板加载。
+type HTTPLayer struct {
+	Protocol        string   `json:"protocol,omitempty"`
+	Endpoint        string   `json:"endpoint,omitempty"`
+	UserAgent       string   `json:"user_agent,omitempty"`
+	HeaderOrder     []string `json:"header_order,omitempty"`
+	AuthMechanism   string   `json:"auth_mechanism,omitempty"`
+	RefreshEndpoint string   `json:"refresh_endpoint,omitempty"`
+}
+
+// AuthLayer 记录鉴权层摘要。真实 secret 必须只用占位符描述。
+type AuthLayer struct {
+	Mechanism           string   `json:"mechanism,omitempty"`
+	AuthorizationHeader string   `json:"authorization_header,omitempty"`
+	AccountHeader       string   `json:"account_header,omitempty"`
+	ConditionalHeaders  []string `json:"conditional_headers,omitempty"`
+	RefreshEndpoint     string   `json:"refresh_endpoint,omitempty"`
+	TelemetryMechanism  string   `json:"telemetry_mechanism,omitempty"`
+	TokenSource         string   `json:"token_source,omitempty"`
 }
 
 // LoadFromCollectorOutput 读取 collector v1 输出或 Phase A 合并模板。
@@ -124,8 +151,8 @@ func (t *ClientHelloTemplate) Validate() error {
 	if stub {
 		return nil
 	}
-	if t.JA3 == "" || t.JA4 == "" {
-		return errors.New("mimicry: ja3 and ja4 must both be set or both be empty for stub")
+	if t.JA4 == "" {
+		return errors.New("mimicry: ja4 must be set when ja3 marks a real template")
 	}
 	if _, _, _, _, err := parseJA3(t.JA3); err != nil {
 		return err
@@ -133,7 +160,7 @@ func (t *ClientHelloTemplate) Validate() error {
 	return nil
 }
 
-func (t *ClientHelloTemplate) IsStub() bool { return t != nil && t.JA3 == "" && t.JA4 == "" }
+func (t *ClientHelloTemplate) IsStub() bool { return t != nil && t.JA3 == "" }
 
 // PhaseADefaultTemplate 是 2026-05-06 Anthropic 样本的净化模板。
 func PhaseADefaultTemplate() *ClientHelloTemplate {

@@ -12,6 +12,9 @@ import (
 const collectorFixture = "../../../../tools/fingerprint-collector/templates/anthropic-claude-code.json"
 const mergedTemplateFixture = "../../../../tools/fingerprint-collector/templates/anthropic-claude-code.json"
 const legacyCollectorFixture = "../../../../tools/fingerprint-collector/output/clienthello-template.json"
+const codexTemplateFixture = "../../../../tools/fingerprint-collector/templates/codex-cli.json"
+const kiroTemplateFixture = "../../../../tools/fingerprint-collector/templates/kiro-cli.json"
+const geminiTemplateFixture = "../../../../tools/fingerprint-collector/templates/gemini-advanced.json"
 
 func TestLoadFromCollectorOutput_AnthropicSample(t *testing.T) {
 	tmpl, err := LoadFromCollectorOutput(collectorFixture)
@@ -33,6 +36,101 @@ func TestLoadFromCollectorOutput_PhaseAMergedTemplate(t *testing.T) {
 	}
 	if tmpl.ModeName != "anthropic-claude-code" {
 		t.Fatalf("mode_name = %q, want anthropic-claude-code", tmpl.ModeName)
+	}
+}
+
+func TestLoadFromCollectorOutput_R3RealTemplatesHaveHTTPLayer(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		protocol   string
+		endpoint   string
+		tlsBackend string
+		grease     bool
+	}{
+		{
+			name:       "codex",
+			path:       codexTemplateFixture,
+			protocol:   "h2_or_http1.1_reqwest_default",
+			endpoint:   "https://chatgpt.com/backend-api/codex/responses",
+			tlsBackend: "native-tls/openssl",
+			grease:     false,
+		},
+		{
+			name:       "kiro",
+			path:       kiroTemplateFixture,
+			protocol:   "http1.1",
+			endpoint:   "https://q.us-east-1.amazonaws.com/",
+			tlsBackend: "rustls",
+			grease:     true,
+		},
+		{
+			name:       "gemini",
+			path:       geminiTemplateFixture,
+			protocol:   "http1.1",
+			endpoint:   "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+			tlsBackend: "nodejs",
+			grease:     false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpl, err := LoadFromCollectorOutput(tt.path)
+			if err != nil {
+				t.Fatalf("load %s template: %v", tt.name, err)
+			}
+			if tmpl.IsStub() {
+				t.Fatalf("%s 模板已回填，不应再是 stub", tt.name)
+			}
+			if tmpl.TLSBackend != tt.tlsBackend {
+				t.Fatalf("tls_backend = %q, want %q", tmpl.TLSBackend, tt.tlsBackend)
+			}
+			if tmpl.GREASE != tt.grease {
+				t.Fatalf("grease = %v, want %v", tmpl.GREASE, tt.grease)
+			}
+			if tmpl.HTTPLayer.Protocol != tt.protocol {
+				t.Fatalf("protocol = %q, want %q", tmpl.HTTPLayer.Protocol, tt.protocol)
+			}
+			if tmpl.HTTPLayer.Endpoint != tt.endpoint {
+				t.Fatalf("endpoint = %q, want %q", tmpl.HTTPLayer.Endpoint, tt.endpoint)
+			}
+			if tmpl.HTTPLayer.UserAgent == "" {
+				t.Fatal("user_agent 不应为空")
+			}
+			if len(tmpl.HTTPLayer.HeaderOrder) == 0 {
+				t.Fatal("header_order 不应为空")
+			}
+			if tmpl.HTTPLayer.AuthMechanism == "" {
+				t.Fatal("auth_mechanism 不应为空")
+			}
+		})
+	}
+}
+
+func TestLoadFromCollectorOutput_GeminiAdvancedBackfilled(t *testing.T) {
+	tmpl, err := LoadFromCollectorOutput(geminiTemplateFixture)
+	if err != nil {
+		t.Fatalf("load gemini template: %v", err)
+	}
+	if tmpl.IsStub() {
+		t.Fatal("gemini-advanced 已回填真实指纹，不应再是 stub")
+	}
+	if tmpl.HTTPLayer.Protocol == "" || tmpl.HTTPLayer.Endpoint == "" {
+		t.Fatalf("gemini http_layer 未完整加载: %#v", tmpl.HTTPLayer)
+	}
+	wantOrder := []string{
+		"Content-Type",
+		"User-Agent",
+		"Authorization",
+		"x-goog-api-client",
+		"Accept",
+		"Content-Length",
+		"Accept-Encoding",
+		"Host",
+		"Connection",
+	}
+	if !reflect.DeepEqual(tmpl.HTTPLayer.HeaderOrder, wantOrder) {
+		t.Fatalf("gemini header_order = %v, want %v", tmpl.HTTPLayer.HeaderOrder, wantOrder)
 	}
 }
 

@@ -60,11 +60,19 @@ func TestTemplateRegistry_LoadFromDirectoryScansRealTemplates(t *testing.T) {
 	}
 	claude, _ := registry.Lookup(ModeMimicryClaudeCode)
 	codex, _ := registry.Lookup(ModeMimicryChatGPT)
+	gemini, _ := registry.Lookup(ModeMimicryGeminiAdvanced)
+	kiro, _ := registry.Lookup(ModeMimicryKiro)
 	if claude.IsStub() {
 		t.Fatal("anthropic 模板应是 real template")
 	}
-	if !codex.IsStub() {
-		t.Fatal("codex-cli 当前应是 stub template")
+	if codex.IsStub() {
+		t.Fatal("codex-cli 模板已回填，应是 real template")
+	}
+	if gemini.IsStub() {
+		t.Fatal("gemini-advanced 模板已回填，应是 real template")
+	}
+	if kiro.IsStub() {
+		t.Fatal("kiro-cli 模板已回填，应是 real template")
 	}
 }
 

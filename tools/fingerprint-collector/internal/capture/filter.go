@@ -5,7 +5,22 @@ import (
 	"fmt"
 	"net"
 	"strings"
+
+	"github.com/google/gopacket/layers"
+	"github.com/google/gopacket/pcap"
 )
+
+// ValidateBPF 校验操作员提供的原始 BPF 表达式是否非空且可由 libpcap 编译。
+func ValidateBPF(expr string) error {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return fmt.Errorf("BPF 表达式不能为空")
+	}
+	if _, err := pcap.CompileBPFFilter(layers.LinkTypeEthernet, 65535, expr); err != nil {
+		return fmt.Errorf("BPF 表达式无法编译: %w", err)
+	}
+	return nil
+}
 
 // BuildBPFFilter 为给定的目标主机和端口构建 BPF 过滤表达式。
 // 过滤规则：只捕获到/来自目标主机 IP 的 443 端口 TCP 流量。

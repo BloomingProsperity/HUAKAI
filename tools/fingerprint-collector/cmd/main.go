@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -56,6 +57,7 @@ type commandFlags struct {
 	IncludeOperatorInfo bool
 	ListIfaces          bool
 	Config              string
+	RawBPF              string
 }
 
 type captureOptions struct {
@@ -65,6 +67,7 @@ type captureOptions struct {
 	SampleCount int
 	OutputDir   string
 	TargetName  string
+	RawBPF      string
 }
 
 func parseCommandFlags(args []string, output io.Writer) (commandFlags, *flag.FlagSet, error) {
@@ -85,6 +88,7 @@ func parseCommandFlags(args []string, output io.Writer) (commandFlags, *flag.Fla
 	fs.BoolVar(&flags.IncludeOperatorInfo, "include-operator-info", false, "在 metadata.json 中包含操作员主机名（默认不收集）")
 	fs.BoolVar(&flags.ListIfaces, "list-ifaces", false, "列出所有可用网络接口后退出")
 	fs.StringVar(&flags.Config, "config", "", "配置文件路径（TOML 或 YAML，可选）")
+	fs.StringVar(&flags.RawBPF, "bpf", "", "原始 BPF 过滤表达式; 设置后**覆盖** -host 推导的过滤器（用于 ECH/anycast 漂移目标，如 'net 64.239.0.0/16 and tcp port 443'）")
 	err := fs.Parse(args)
 	return flags, fs, err
 }
@@ -101,6 +105,9 @@ func (f commandFlags) captureOptions(fs *flag.FlagSet) (captureOptions, error) {
 	if err != nil {
 		return captureOptions{}, err
 	}
+	if strings.TrimSpace(f.RawBPF) != "" && !isFlagSet(fs, "host") {
+		return captureOptions{}, fmt.Errorf("使用 -bpf 时仍必须通过 -host 指定目标主机名（用于 metadata 和 MITM 检测）")
+	}
 	return captureOptions{
 		Iface:       f.Iface,
 		Host:        f.Host,
@@ -108,6 +115,7 @@ func (f commandFlags) captureOptions(fs *flag.FlagSet) (captureOptions, error) {
 		SampleCount: sampleCount,
 		OutputDir:   outputDir,
 		TargetName:  f.TargetName,
+		RawBPF:      f.RawBPF,
 	}, nil
 }
 
@@ -160,6 +168,18 @@ func resolveOutputDir(targetName, outDir, outputDir string, outSet, outputDirSet
 		return "", fmt.Errorf("output-dir 不能为空")
 	}
 	return resolved, nil
+}
+
+func resolveCaptureFilter(host, rawBPF string) (string, []string, bool, error) {
+	if rawBPF != "" {
+		expr := strings.TrimSpace(rawBPF)
+		if err := capture.ValidateBPF(expr); err != nil {
+			return "", nil, false, err
+		}
+		return expr, nil, true, nil
+	}
+	bpfFilter, resolvedIPs, err := capture.BuildBPFFilter(host, 443)
+	return bpfFilter, resolvedIPs, false, err
 }
 
 func buildMetadata(opts captureOptions, captureStart, captureEnd time.Time, sampleCount int, mitmResult string, mitmEnabled bool) output.Metadata {
@@ -244,11 +264,15 @@ func main() {
 	}
 
 	// 3. 构建 BPF 过滤器
-	bpfFilter, resolvedIPs, err := capture.BuildBPFFilter(opts.Host, 443)
+	bpfFilter, resolvedIPs, usedRawBPF, err := resolveCaptureFilter(opts.Host, opts.RawBPF)
 	if err != nil {
-		log.Fatalf("[capture] 构建 BPF 过滤器失败: %v", err)
+		log.Fatalf("[capture] 验证/构建 BPF 过滤器失败: %v", err)
 	}
-	log.Printf("[capture] BPF 过滤器: %s", bpfFilter)
+	if usedRawBPF {
+		log.Printf("[capture] 使用操作员提供的 raw BPF: %s", bpfFilter)
+	} else {
+		log.Printf("[capture] BPF 过滤器: %s", bpfFilter)
+	}
 	if len(resolvedIPs) > 0 {
 		log.Printf("[capture] 目标 IP: %v", resolvedIPs)
 	}
