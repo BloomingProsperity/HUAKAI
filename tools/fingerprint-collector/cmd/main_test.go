@@ -2,8 +2,11 @@ package main
 
 import (
 	"io"
+	"reflect"
 	"testing"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/tools/fingerprint-collector/internal/capture"
 )
 
 func TestCaptureOptions_DefaultParametersStayCompatible(t *testing.T) {
@@ -84,5 +87,69 @@ func TestCaptureOptions_SampleCountOverridesLegacyMinSamples(t *testing.T) {
 	}
 	if opts.SampleCount != 7 {
 		t.Fatalf("sample count = %d, want 7", opts.SampleCount)
+	}
+}
+
+func TestCaptureFilter_RawBPFFlagOverridesHostDerivedFilter(t *testing.T) {
+	rawBPF := "net 64.239.0.0/16 and tcp port 443"
+	flags, fs, err := parseCommandFlags([]string{
+		"-host", "chatgpt.com",
+		"-bpf", rawBPF,
+	}, io.Discard)
+	if err != nil {
+		t.Fatalf("parse bpf flags: %v", err)
+	}
+	opts, err := flags.captureOptions(fs)
+	if err != nil {
+		t.Fatalf("resolve bpf options: %v", err)
+	}
+
+	filter, resolvedIPs, usedRawBPF, err := resolveCaptureFilter(opts.Host, opts.RawBPF)
+	if err != nil {
+		t.Fatalf("resolve raw bpf filter: %v", err)
+	}
+	if !usedRawBPF {
+		t.Fatalf("usedRawBPF = false, want true")
+	}
+	if filter != rawBPF {
+		t.Fatalf("filter = %q, want raw BPF %q", filter, rawBPF)
+	}
+	if resolvedIPs != nil {
+		t.Fatalf("resolved IPs = %v, want nil for raw BPF", resolvedIPs)
+	}
+}
+
+func TestCaptureFilter_EmptyBPFUsesBuildBPFFilter(t *testing.T) {
+	flags, fs, err := parseCommandFlags([]string{"-host", "127.0.0.1"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parse host flags: %v", err)
+	}
+	opts, err := flags.captureOptions(fs)
+	if err != nil {
+		t.Fatalf("resolve host options: %v", err)
+	}
+
+	filter, resolvedIPs, usedRawBPF, err := resolveCaptureFilter(opts.Host, opts.RawBPF)
+	if err != nil {
+		t.Fatalf("resolve derived bpf filter: %v", err)
+	}
+	wantFilter, wantIPs, err := capture.BuildBPFFilter(opts.Host, 443)
+	if err != nil {
+		t.Fatalf("build expected bpf filter: %v", err)
+	}
+	if usedRawBPF {
+		t.Fatalf("usedRawBPF = true, want false")
+	}
+	if filter != wantFilter {
+		t.Fatalf("filter = %q, want %q", filter, wantFilter)
+	}
+	if !reflect.DeepEqual(resolvedIPs, wantIPs) {
+		t.Fatalf("resolved IPs = %v, want %v", resolvedIPs, wantIPs)
+	}
+}
+
+func TestValidateBPF_RejectsEmptyExpression(t *testing.T) {
+	if err := capture.ValidateBPF(" \t "); err == nil {
+		t.Fatalf("ValidateBPF(empty) returned nil, want error")
 	}
 }

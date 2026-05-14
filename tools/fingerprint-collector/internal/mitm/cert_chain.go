@@ -20,6 +20,9 @@ import (
 // 退出，并提示运维安装 ca-certificates 或对应平台等价物。
 var ErrNoSystemCertPool = errors.New("mitm: 系统证书池不可用，无法做信任决策")
 
+// loadSystemCertPool 默认读取系统信任库；测试可替换为包含临时根 CA 的池。
+var loadSystemCertPool = x509.SystemCertPool
+
 // CheckResult 保存证书链检查的结果。
 type CheckResult struct {
 	// OK 为 true 表示证书链通过验证，未检测到 MITM
@@ -61,7 +64,8 @@ func CheckHost(host string, timeout time.Duration) (*CheckResult, error) {
 }
 
 // CheckCertChain 检查已解析的证书链是否可信且与预期主机名匹配。
-// certs[0] 应为叶证书，certs[len-1] 应为根或中间 CA。
+// certs[0] 应为叶证书，certs[1:] 是服务端发送的非叶证书。
+// 标准 TLS 服务端通常不发送根证书，可信根必须来自系统信任库。
 //
 // 返回 (CheckResult, error)。当系统证书池不可用时返回 ErrNoSystemCertPool —
 // 调用方必须 fail-closed，不可继续运行（运维需安装 ca-certificates 或在
@@ -93,7 +97,7 @@ func CheckCertChain(expectedHost string, certs []*x509.Certificate) (*CheckResul
 
 	// 第二步：必须能拿到系统证书池作为唯一信任来源。
 	// 拿不到时硬失败；不接受 fallback。
-	systemPool, err := x509.SystemCertPool()
+	systemPool, err := loadSystemCertPool()
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrNoSystemCertPool, err)
 	}
@@ -107,10 +111,11 @@ func CheckCertChain(expectedHost string, certs []*x509.Certificate) (*CheckResul
 		Roots:   systemPool,
 	}
 
-	// 添加中间 CA（如有）
-	if len(certs) > 2 {
+	// 服务端发送的所有非叶证书都只能作为中间证书候选；
+	// 不假设最后一张证书是根，根信任只来自系统池。
+	if len(certs) > 1 {
 		intermediates := x509.NewCertPool()
-		for _, cert := range certs[1 : len(certs)-1] {
+		for _, cert := range certs[1:] {
 			intermediates.AddCert(cert)
 		}
 		opts.Intermediates = intermediates
@@ -120,14 +125,11 @@ func CheckCertChain(expectedHost string, certs []*x509.Certificate) (*CheckResul
 	chains, err := leaf.Verify(opts)
 	if err != nil {
 		result.OK = false
-		if len(certs) > 0 {
-			result.RootCN = certs[len(certs)-1].Subject.CommonName
-		}
 		result.Warning = fmt.Sprintf(
-			"证书链验证失败，根 CA 不在系统信任库中（呈现的根 CN=%q）。"+
+			"证书链验证失败，无法使用系统信任库验证到可信根。"+
 				"可能存在企业 MITM 代理（如 Zscaler / BlueCoat / FortiGate / 杀毒软件 TLS 拦截）。"+
 				"若确信这是预期环境，可使用 -disable-mitm-detection 跳过此检查。原始错误: %v",
-			result.RootCN, err,
+			err,
 		)
 		return result, nil
 	}
