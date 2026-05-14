@@ -97,9 +97,72 @@ type GetAccountForRevalidationParams struct {
 	TenantID int64 `db:"tenant_id" json:"tenant_id"`
 }
 
-func (q *Queries) GetAccountForRevalidation(ctx context.Context, arg GetAccountForRevalidationParams) (ProviderAccount, error) {
+type GetAccountForRevalidationRow struct {
+	ID                         int64              `db:"id" json:"id"`
+	TenantID                   int64              `db:"tenant_id" json:"tenant_id"`
+	ProviderID                 int64              `db:"provider_id" json:"provider_id"`
+	ChannelID                  int64              `db:"channel_id" json:"channel_id"`
+	Name                       string             `db:"name" json:"name"`
+	AccountType                string             `db:"account_type" json:"account_type"`
+	Enabled                    bool               `db:"enabled" json:"enabled"`
+	ExpiresAt                  pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	HealthState                string             `db:"health_state" json:"health_state"`
+	HealthStateUntil           pgtype.Timestamptz `db:"health_state_until" json:"health_state_until"`
+	CredentialState            string             `db:"credential_state" json:"credential_state"`
+	Credentials                []byte             `db:"credentials" json:"credentials"`
+	CapConcurrency             int32              `db:"cap_concurrency" json:"cap_concurrency"`
+	InFlightCount              int32              `db:"in_flight_count" json:"in_flight_count"`
+	CapQueueSticky             int32              `db:"cap_queue_sticky" json:"cap_queue_sticky"`
+	CapQueueFallback           int32              `db:"cap_queue_fallback" json:"cap_queue_fallback"`
+	QueueDepth                 int32              `db:"queue_depth" json:"queue_depth"`
+	Priority                   int32              `db:"priority" json:"priority"`
+	LastDispatchAt             pgtype.Timestamptz `db:"last_dispatch_at" json:"last_dispatch_at"`
+	ModelAllowList             []string           `db:"model_allow_list" json:"model_allow_list"`
+	CapabilityFlags            []string           `db:"capability_flags" json:"capability_flags"`
+	CapQuotaTotal              pgtype.Numeric     `db:"cap_quota_total" json:"cap_quota_total"`
+	QuotaUsedTotal             pgtype.Numeric     `db:"quota_used_total" json:"quota_used_total"`
+	CapQuotaDaily              pgtype.Numeric     `db:"cap_quota_daily" json:"cap_quota_daily"`
+	QuotaUsedDaily             pgtype.Numeric     `db:"quota_used_daily" json:"quota_used_daily"`
+	QuotaWindowDailyStart      pgtype.Timestamptz `db:"quota_window_daily_start" json:"quota_window_daily_start"`
+	CapQuotaWeekly             pgtype.Numeric     `db:"cap_quota_weekly" json:"cap_quota_weekly"`
+	QuotaUsedWeekly            pgtype.Numeric     `db:"quota_used_weekly" json:"quota_used_weekly"`
+	QuotaWindowWeeklyStart     pgtype.Timestamptz `db:"quota_window_weekly_start" json:"quota_window_weekly_start"`
+	QuotaStatus                string             `db:"quota_status" json:"quota_status"`
+	CreatedAt                  pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt                  pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DeletedAt                  pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
+	CreatedByActor             *string            `db:"created_by_actor" json:"created_by_actor"`
+	LastModifiedByActor        *string            `db:"last_modified_by_actor" json:"last_modified_by_actor"`
+	RateLimitedAt              pgtype.Timestamptz `db:"rate_limited_at" json:"rate_limited_at"`
+	RateLimitResetAt           pgtype.Timestamptz `db:"rate_limit_reset_at" json:"rate_limit_reset_at"`
+	RateLimitReason            *string            `db:"rate_limit_reason" json:"rate_limit_reason"`
+	OverloadUntil              pgtype.Timestamptz `db:"overload_until" json:"overload_until"`
+	TempUnschedulableUntil     pgtype.Timestamptz `db:"temp_unschedulable_until" json:"temp_unschedulable_until"`
+	TempUnschedulableReason    *string            `db:"temp_unschedulable_reason" json:"temp_unschedulable_reason"`
+	TempUnschedulableRuleIndex *int32             `db:"temp_unschedulable_rule_index" json:"temp_unschedulable_rule_index"`
+	SessionWindow5hStart       pgtype.Timestamptz `db:"session_window_5h_start" json:"session_window_5h_start"`
+	SessionWindow5hEnd         pgtype.Timestamptz `db:"session_window_5h_end" json:"session_window_5h_end"`
+	SessionWindow5hStatus      *string            `db:"session_window_5h_status" json:"session_window_5h_status"`
+	OpenAI403Counter           int32              `db:"openai_403_counter" json:"openai_403_counter"`
+	Openai403WindowStart       pgtype.Timestamptz `db:"openai_403_window_start" json:"openai_403_window_start"`
+	CustomErrorCodesEnabled    bool               `db:"custom_error_codes_enabled" json:"custom_error_codes_enabled"`
+	CustomErrorCodes           []int32            `db:"custom_error_codes" json:"custom_error_codes"`
+	PoolMode                   bool               `db:"pool_mode" json:"pool_mode"`
+	TempUnschedulableEnabled   bool               `db:"temp_unschedulable_enabled" json:"temp_unschedulable_enabled"`
+	TempUnschedulableRules     []byte             `db:"temp_unschedulable_rules" json:"temp_unschedulable_rules"`
+	ModelRateLimits            []byte             `db:"model_rate_limits" json:"model_rate_limits"`
+	RefreshAttemptCount        int32              `db:"refresh_attempt_count" json:"refresh_attempt_count"`
+	RefreshAttemptWindowStart  pgtype.Timestamptz `db:"refresh_attempt_window_start" json:"refresh_attempt_window_start"`
+	TokenVersion               int32              `db:"token_version" json:"token_version"`
+	RefreshTokenFingerprint    *string            `db:"refresh_token_fingerprint" json:"refresh_token_fingerprint"`
+	LastRefreshAt              pgtype.Timestamptz `db:"last_refresh_at" json:"last_refresh_at"`
+	LastRefreshOutcome         *string            `db:"last_refresh_outcome" json:"last_refresh_outcome"`
+	OAuthEndpointHealth        string             `db:"oauth_endpoint_health" json:"oauth_endpoint_health"`
+}
+
+func (q *Queries) GetAccountForRevalidation(ctx context.Context, arg GetAccountForRevalidationParams) (GetAccountForRevalidationRow, error) {
 	row := q.db.QueryRow(ctx, getAccountForRevalidation, arg.ID, arg.TenantID)
-	var i ProviderAccount
+	var i GetAccountForRevalidationRow
 	err := row.Scan(
 		&i.ID,
 		&i.TenantID,
@@ -312,6 +375,57 @@ func (q *Queries) InsertProviderAccount(ctx context.Context, arg InsertProviderA
 	return id, err
 }
 
+const listAccountsForRefresh = `-- name: ListAccountsForRefresh :many
+SELECT
+    id,
+    tenant_id,
+    provider_id,
+    expires_at
+FROM provider_accounts
+WHERE deleted_at IS NULL
+  AND enabled
+  AND (expires_at IS NULL OR expires_at < $1)
+ORDER BY COALESCE(expires_at, NOW() + interval '1 year') ASC
+LIMIT $2
+`
+
+type ListAccountsForRefreshParams struct {
+	RefreshBefore pgtype.Timestamptz `db:"refresh_before" json:"refresh_before"`
+	LimitCount    int32              `db:"limit_count" json:"limit_count"`
+}
+
+type ListAccountsForRefreshRow struct {
+	ID         int64              `db:"id" json:"id"`
+	TenantID   int64              `db:"tenant_id" json:"tenant_id"`
+	ProviderID int64              `db:"provider_id" json:"provider_id"`
+	ExpiresAt  pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+}
+
+func (q *Queries) ListAccountsForRefresh(ctx context.Context, arg ListAccountsForRefreshParams) ([]ListAccountsForRefreshRow, error) {
+	rows, err := q.db.Query(ctx, listAccountsForRefresh, arg.RefreshBefore, arg.LimitCount)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAccountsForRefreshRow
+	for rows.Next() {
+		var i ListAccountsForRefreshRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.ProviderID,
+			&i.ExpiresAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listEligibleAccounts = `-- name: ListEligibleAccounts :many
 SELECT
     id,
@@ -388,15 +502,78 @@ type ListEligibleAccountsParams struct {
 	ChannelID int64 `db:"channel_id" json:"channel_id"`
 }
 
-func (q *Queries) ListEligibleAccounts(ctx context.Context, arg ListEligibleAccountsParams) ([]ProviderAccount, error) {
+type ListEligibleAccountsRow struct {
+	ID                         int64              `db:"id" json:"id"`
+	TenantID                   int64              `db:"tenant_id" json:"tenant_id"`
+	ProviderID                 int64              `db:"provider_id" json:"provider_id"`
+	ChannelID                  int64              `db:"channel_id" json:"channel_id"`
+	Name                       string             `db:"name" json:"name"`
+	AccountType                string             `db:"account_type" json:"account_type"`
+	Enabled                    bool               `db:"enabled" json:"enabled"`
+	ExpiresAt                  pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	HealthState                string             `db:"health_state" json:"health_state"`
+	HealthStateUntil           pgtype.Timestamptz `db:"health_state_until" json:"health_state_until"`
+	CredentialState            string             `db:"credential_state" json:"credential_state"`
+	Credentials                []byte             `db:"credentials" json:"credentials"`
+	CapConcurrency             int32              `db:"cap_concurrency" json:"cap_concurrency"`
+	InFlightCount              int32              `db:"in_flight_count" json:"in_flight_count"`
+	CapQueueSticky             int32              `db:"cap_queue_sticky" json:"cap_queue_sticky"`
+	CapQueueFallback           int32              `db:"cap_queue_fallback" json:"cap_queue_fallback"`
+	QueueDepth                 int32              `db:"queue_depth" json:"queue_depth"`
+	Priority                   int32              `db:"priority" json:"priority"`
+	LastDispatchAt             pgtype.Timestamptz `db:"last_dispatch_at" json:"last_dispatch_at"`
+	ModelAllowList             []string           `db:"model_allow_list" json:"model_allow_list"`
+	CapabilityFlags            []string           `db:"capability_flags" json:"capability_flags"`
+	CapQuotaTotal              pgtype.Numeric     `db:"cap_quota_total" json:"cap_quota_total"`
+	QuotaUsedTotal             pgtype.Numeric     `db:"quota_used_total" json:"quota_used_total"`
+	CapQuotaDaily              pgtype.Numeric     `db:"cap_quota_daily" json:"cap_quota_daily"`
+	QuotaUsedDaily             pgtype.Numeric     `db:"quota_used_daily" json:"quota_used_daily"`
+	QuotaWindowDailyStart      pgtype.Timestamptz `db:"quota_window_daily_start" json:"quota_window_daily_start"`
+	CapQuotaWeekly             pgtype.Numeric     `db:"cap_quota_weekly" json:"cap_quota_weekly"`
+	QuotaUsedWeekly            pgtype.Numeric     `db:"quota_used_weekly" json:"quota_used_weekly"`
+	QuotaWindowWeeklyStart     pgtype.Timestamptz `db:"quota_window_weekly_start" json:"quota_window_weekly_start"`
+	QuotaStatus                string             `db:"quota_status" json:"quota_status"`
+	CreatedAt                  pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt                  pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DeletedAt                  pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
+	CreatedByActor             *string            `db:"created_by_actor" json:"created_by_actor"`
+	LastModifiedByActor        *string            `db:"last_modified_by_actor" json:"last_modified_by_actor"`
+	RateLimitedAt              pgtype.Timestamptz `db:"rate_limited_at" json:"rate_limited_at"`
+	RateLimitResetAt           pgtype.Timestamptz `db:"rate_limit_reset_at" json:"rate_limit_reset_at"`
+	RateLimitReason            *string            `db:"rate_limit_reason" json:"rate_limit_reason"`
+	OverloadUntil              pgtype.Timestamptz `db:"overload_until" json:"overload_until"`
+	TempUnschedulableUntil     pgtype.Timestamptz `db:"temp_unschedulable_until" json:"temp_unschedulable_until"`
+	TempUnschedulableReason    *string            `db:"temp_unschedulable_reason" json:"temp_unschedulable_reason"`
+	TempUnschedulableRuleIndex *int32             `db:"temp_unschedulable_rule_index" json:"temp_unschedulable_rule_index"`
+	SessionWindow5hStart       pgtype.Timestamptz `db:"session_window_5h_start" json:"session_window_5h_start"`
+	SessionWindow5hEnd         pgtype.Timestamptz `db:"session_window_5h_end" json:"session_window_5h_end"`
+	SessionWindow5hStatus      *string            `db:"session_window_5h_status" json:"session_window_5h_status"`
+	OpenAI403Counter           int32              `db:"openai_403_counter" json:"openai_403_counter"`
+	Openai403WindowStart       pgtype.Timestamptz `db:"openai_403_window_start" json:"openai_403_window_start"`
+	CustomErrorCodesEnabled    bool               `db:"custom_error_codes_enabled" json:"custom_error_codes_enabled"`
+	CustomErrorCodes           []int32            `db:"custom_error_codes" json:"custom_error_codes"`
+	PoolMode                   bool               `db:"pool_mode" json:"pool_mode"`
+	TempUnschedulableEnabled   bool               `db:"temp_unschedulable_enabled" json:"temp_unschedulable_enabled"`
+	TempUnschedulableRules     []byte             `db:"temp_unschedulable_rules" json:"temp_unschedulable_rules"`
+	ModelRateLimits            []byte             `db:"model_rate_limits" json:"model_rate_limits"`
+	RefreshAttemptCount        int32              `db:"refresh_attempt_count" json:"refresh_attempt_count"`
+	RefreshAttemptWindowStart  pgtype.Timestamptz `db:"refresh_attempt_window_start" json:"refresh_attempt_window_start"`
+	TokenVersion               int32              `db:"token_version" json:"token_version"`
+	RefreshTokenFingerprint    *string            `db:"refresh_token_fingerprint" json:"refresh_token_fingerprint"`
+	LastRefreshAt              pgtype.Timestamptz `db:"last_refresh_at" json:"last_refresh_at"`
+	LastRefreshOutcome         *string            `db:"last_refresh_outcome" json:"last_refresh_outcome"`
+	OAuthEndpointHealth        string             `db:"oauth_endpoint_health" json:"oauth_endpoint_health"`
+}
+
+func (q *Queries) ListEligibleAccounts(ctx context.Context, arg ListEligibleAccountsParams) ([]ListEligibleAccountsRow, error) {
 	rows, err := q.db.Query(ctx, listEligibleAccounts, arg.TenantID, arg.ChannelID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ProviderAccount
+	var items []ListEligibleAccountsRow
 	for rows.Next() {
-		var i ProviderAccount
+		var i ListEligibleAccountsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TenantID,
@@ -591,52 +768,11 @@ type UpdateProviderAccountEnabledParams struct {
 }
 
 func (q *Queries) UpdateProviderAccountEnabled(ctx context.Context, arg UpdateProviderAccountEnabledParams) error {
-	_, err := q.db.Exec(ctx, updateProviderAccountEnabled, arg.Enabled, arg.ActorID, arg.ID, arg.TenantID)
+	_, err := q.db.Exec(ctx, updateProviderAccountEnabled,
+		arg.Enabled,
+		arg.ActorID,
+		arg.ID,
+		arg.TenantID,
+	)
 	return err
-}
-
-const listAccountsForRefresh = `-- name: ListAccountsForRefresh :many
-SELECT
-    id,
-    tenant_id,
-    provider_id,
-    expires_at
-FROM provider_accounts
-WHERE deleted_at IS NULL
-  AND enabled
-  AND (expires_at IS NULL OR expires_at < $1)
-ORDER BY COALESCE(expires_at, NOW() + interval '1 year') ASC
-LIMIT $2
-`
-
-type ListAccountsForRefreshParams struct {
-	RefreshBefore pgtype.Timestamptz `db:"refresh_before" json:"refresh_before"`
-	Limit         int32              `db:"limit_count" json:"limit_count"`
-}
-
-type ListAccountsForRefreshRow struct {
-	ID         int64              `db:"id" json:"id"`
-	TenantID   int64              `db:"tenant_id" json:"tenant_id"`
-	ProviderID int64              `db:"provider_id" json:"provider_id"`
-	ExpiresAt  pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
-}
-
-func (q *Queries) ListAccountsForRefresh(ctx context.Context, arg ListAccountsForRefreshParams) ([]ListAccountsForRefreshRow, error) {
-	rows, err := q.db.Query(ctx, listAccountsForRefresh, arg.RefreshBefore, arg.Limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListAccountsForRefreshRow
-	for rows.Next() {
-		var i ListAccountsForRefreshRow
-		if err := rows.Scan(&i.ID, &i.TenantID, &i.ProviderID, &i.ExpiresAt); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }

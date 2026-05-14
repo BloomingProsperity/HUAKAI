@@ -8,8 +8,8 @@ import (
 
 // AccountRepository is the Phase 4.5 persistence seam for account selection.
 type AccountRepository interface {
-	ListEligibleAccounts(ctx context.Context, arg db.ListEligibleAccountsParams) ([]db.ProviderAccount, error)
-	GetAccountForRevalidation(ctx context.Context, arg db.GetAccountForRevalidationParams) (db.ProviderAccount, error)
+	ListEligibleAccounts(ctx context.Context, arg db.ListEligibleAccountsParams) ([]db.ListEligibleAccountsRow, error)
+	GetAccountForRevalidation(ctx context.Context, arg db.GetAccountForRevalidationParams) (db.GetAccountForRevalidationRow, error)
 	IncrementInFlightCount(ctx context.Context, arg db.IncrementInFlightCountParams) (int64, error)
 	DecrementInFlightCount(ctx context.Context, id int64) error
 	GetModelRoutingForGroup(ctx context.Context, arg db.GetModelRoutingForGroupParams) ([]db.GetModelRoutingForGroupRow, error)
@@ -42,11 +42,11 @@ func NewDBRepository(q *db.Queries) *DBRepository {
 	return &DBRepository{q: q}
 }
 
-func (r *DBRepository) ListEligibleAccounts(ctx context.Context, arg db.ListEligibleAccountsParams) ([]db.ProviderAccount, error) {
+func (r *DBRepository) ListEligibleAccounts(ctx context.Context, arg db.ListEligibleAccountsParams) ([]db.ListEligibleAccountsRow, error) {
 	return r.q.ListEligibleAccounts(ctx, arg)
 }
 
-func (r *DBRepository) GetAccountForRevalidation(ctx context.Context, arg db.GetAccountForRevalidationParams) (db.ProviderAccount, error) {
+func (r *DBRepository) GetAccountForRevalidation(ctx context.Context, arg db.GetAccountForRevalidationParams) (db.GetAccountForRevalidationRow, error) {
 	return r.q.GetAccountForRevalidation(ctx, arg)
 }
 

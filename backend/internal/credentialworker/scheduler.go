@@ -148,7 +148,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 	before := s.now().Add(s.warningWindow)
 	accounts, err := s.queryer.ListAccountsForRefresh(ctx, db.ListAccountsForRefreshParams{
 		RefreshBefore: pgtype.Timestamptz{Time: before, Valid: true},
-		Limit:         s.limit,
+		LimitCount:    s.limit,
 	})
 	if err != nil {
 		return err

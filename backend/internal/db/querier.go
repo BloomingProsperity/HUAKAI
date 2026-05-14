@@ -68,6 +68,9 @@ type Querier interface {
 	// breaks the "one-shot" guarantee. Counting all non-deleted rows closes
 	// that hole; if you want to wipe and re-bootstrap, hard-delete the row.
 	CountAdminTokensIncludingInactive(ctx context.Context) (int64, error)
+	CountAuditEvents(ctx context.Context, arg CountAuditEventsParams) (int64, error)
+	CountAuditLedgerEntries(ctx context.Context) (int64, error)
+	CountBillingClaims(ctx context.Context, arg CountBillingClaimsParams) (int64, error)
 	// Operator overview: how many claims are in each status for one tenant.
 	CountClaimsByStatus(ctx context.Context, tenantID int64) ([]CountClaimsByStatusRow, error)
 	// D4 rate-limit window: how many SUCCESSFUL 'issue_api_key' actions has
@@ -79,18 +82,21 @@ type Querier interface {
 	// excluded from the cap. Otherwise an actor that hits the cap keeps
 	// refreshing the window with deny rows on every retry and never recovers.
 	CountIssuanceInWindow(ctx context.Context, arg CountIssuanceInWindowParams) (int64, error)
+	CountUsageRecords(ctx context.Context, arg CountUsageRecordsParams) (int64, error)
 	DecrementInFlightCount(ctx context.Context, id int64) error
 	DeleteExpiredStickyBindings(ctx context.Context) error
+	DeletePool(ctx context.Context, arg DeletePoolParams) (PoolGroup, error)
 	// After the operator issues a real (non-bootstrap) admin token, the
 	// bootstrap rows should be auto-disabled so the env-var token is no
 	// longer accepted by the resolver. Idempotent.
 	DisableBootstrapAdminTokens(ctx context.Context) (int64, error)
 	ExpireCurrentProtocolPolicy(ctx context.Context, arg ExpireCurrentProtocolPolicyParams) error
 	GetAccountForRefresh(ctx context.Context, arg GetAccountForRefreshParams) (GetAccountForRefreshRow, error)
-	GetAccountForRevalidation(ctx context.Context, arg GetAccountForRevalidationParams) (ProviderAccount, error)
+	GetAccountForRevalidation(ctx context.Context, arg GetAccountForRevalidationParams) (GetAccountForRevalidationRow, error)
 	// F-PROTO-002 protocol policy version registry queries.
 	// Backed by protocol_policy_versions table in docs/schema/protocol-translation.sql.
 	GetActiveProtocolPolicy(ctx context.Context, tenantID int64) (ProtocolPolicyVersion, error)
+	GetAuditLedgerEntryByRequestID(ctx context.Context, requestID string) (GetAuditLedgerEntryByRequestIDRow, error)
 	// Single claim lookup, tenant-scoped (refuse cross-tenant reads).
 	GetClaimByID(ctx context.Context, arg GetClaimByIDParams) (GetClaimByIDRow, error)
 	// F-OBS-001 Tx1/Tx2 billing ledger claim queries.
@@ -114,6 +120,7 @@ type Querier interface {
 	// Spec §Tx2 step 9: re-fetch claim row; verify status='reserving' AND
 	// acquisition_token matches.
 	GetClaimForSettle(ctx context.Context, arg GetClaimForSettleParams) (GetClaimForSettleRow, error)
+	GetLatestAuditLedgerMerkleRoot(ctx context.Context) ([]byte, error)
 	// Resolves the canonical model row, constrained to the requesting tenant
 	// (scope='tenant' AND tenant_id=$tenant) OR scope='global'. This blocks
 	// a misconfigured tenant alias from reaching another tenant's model row
@@ -122,6 +129,7 @@ type Querier interface {
 	GetModelByID(ctx context.Context, arg GetModelByIDParams) (GetModelByIDRow, error)
 	GetModelRoutingForGroup(ctx context.Context, arg GetModelRoutingForGroupParams) ([]GetModelRoutingForGroupRow, error)
 	GetOrCreateAccountStormBudget(ctx context.Context, arg GetOrCreateAccountStormBudgetParams) (GetOrCreateAccountStormBudgetRow, error)
+	GetPool(ctx context.Context, arg GetPoolParams) (PoolGroup, error)
 	GetProtocolPolicyByVersion(ctx context.Context, arg GetProtocolPolicyByVersionParams) (ProtocolPolicyVersion, error)
 	GetStickyBinding(ctx context.Context, arg GetStickyBindingParams) (int64, error)
 	// Returns whether a tenant has opted into global-catalog inheritance.
@@ -145,6 +153,7 @@ type Querier interface {
 	// Creates an admin_tokens row. Caller passes a pre-bcrypt-hashed key_hash
 	// and the prefix derived from the plaintext (first 16 chars).
 	InsertAdminToken(ctx context.Context, arg InsertAdminTokenParams) (int64, error)
+	InsertAuditLedgerEntry(ctx context.Context, arg InsertAuditLedgerEntryParams) error
 	// Spec §Tx2 step 13: audit-grade event row in same Tx; survives Usage Record
 	// async failure (per F-OBS-001 H8). event_type per CHECK constraint.
 	InsertBillingEvent(ctx context.Context, arg InsertBillingEventParams) (InsertBillingEventRow, error)
@@ -153,9 +162,11 @@ type Querier interface {
 	// so this insert is conflict-free under serializable isolation.
 	InsertClaim(ctx context.Context, arg InsertClaimParams) (InsertClaimRow, error)
 	InsertOAuthRefreshAuditEvent(ctx context.Context, arg InsertOAuthRefreshAuditEventParams) error
+	// Admin Pool Group CRUD (F-POOL-001).
+	InsertPool(ctx context.Context, arg InsertPoolParams) (PoolGroup, error)
 	InsertPoolRoutingAuditEvent(ctx context.Context, arg InsertPoolRoutingAuditEventParams) error
-	InsertProviderAccount(ctx context.Context, arg InsertProviderAccountParams) (int64, error)
 	InsertProtocolPolicyVersion(ctx context.Context, arg InsertProtocolPolicyVersionParams) (InsertProtocolPolicyVersionRow, error)
+	InsertProviderAccount(ctx context.Context, arg InsertProviderAccountParams) (int64, error)
 	// Spec §Tx2 step 11: cross-threshold notification, in same Tx.
 	// For Phase B.5 v0.1, the threshold detection itself is stubbed (operator
 	// policy returns false unless explicitly forced in test); when the policy
@@ -166,6 +177,9 @@ type Querier interface {
 	// Slice 2 (N+5b 2026-05-01): added snapshot_version (column from migration
 	// 0008). Format documented there as "registry:<tid>:<v>;router:<rv>".
 	InsertUsageRecord(ctx context.Context, arg InsertUsageRecordParams) (int64, error)
+	ListAccountsForRefresh(ctx context.Context, arg ListAccountsForRefreshParams) ([]ListAccountsForRefreshRow, error)
+	ListAuditEvents(ctx context.Context, arg ListAuditEventsParams) ([]ListAuditEventsRow, error)
+	ListBillingClaims(ctx context.Context, arg ListBillingClaimsParams) ([]ListBillingClaimsRow, error)
 	// Audit-grade event stream for one tenant. event_type filter optional;
 	// pass empty string to disable filter.
 	ListBillingEventsByTenant(ctx context.Context, arg ListBillingEventsByTenantParams) ([]BillingEvent, error)
@@ -173,8 +187,7 @@ type Querier interface {
 	// Backed by docs/schema/protocol-translation.sql (capability + policy tables).
 	ListCapabilityCellsForPair(ctx context.Context, arg ListCapabilityCellsForPairParams) ([]ListCapabilityCellsForPairRow, error)
 	ListCapabilityCellsForTenant(ctx context.Context, tenantID int64) ([]ListCapabilityCellsForTenantRow, error)
-	ListAccountsForRefresh(ctx context.Context, arg ListAccountsForRefreshParams) ([]ListAccountsForRefreshRow, error)
-	ListEligibleAccounts(ctx context.Context, arg ListEligibleAccountsParams) ([]ProviderAccount, error)
+	ListEligibleAccounts(ctx context.Context, arg ListEligibleAccountsParams) ([]ListEligibleAccountsRow, error)
 	// Phase C.2: pool-group-keyed eligibility lookup for the gateway selector.
 	// Joins channels → provider_accounts so a SelectionRequest with PoolGroupID
 	// (and no explicit ChannelID) can resolve to the candidate account set.
@@ -194,6 +207,7 @@ type Querier interface {
 	// Router selects index 0 only at L0 (AttemptBudget=1).
 	ListModelPoolBindings(ctx context.Context, arg ListModelPoolBindingsParams) ([]ListModelPoolBindingsRow, error)
 	ListOrphanedAcquisitions(ctx context.Context) ([]PoolSlotAcquisition, error)
+	ListPools(ctx context.Context, arg ListPoolsParams) ([]PoolGroup, error)
 	// F-OBS-001 read-only query surface for the admin/audit lane.
 	// Per docs/specs/_invariants/cross-module-boundaries.md CMB-7: this file
 	// contains SELECT-only queries; the Repository wrapper enforces tenant
@@ -203,6 +217,9 @@ type Querier interface {
 	// provider_accounts (or any synonym). Audit views surface metadata only.
 	// Page through usage_records for one tenant. Most-recent-first.
 	ListUsageByTenant(ctx context.Context, arg ListUsageByTenantParams) ([]ListUsageByTenantRow, error)
+	// F-OBS-001 admin read APIs. SELECT-only: no hot-path, quota, billing,
+	// auth, or trust-chain mutation is allowed here.
+	ListUsageRecords(ctx context.Context, arg ListUsageRecordsParams) ([]ListUsageRecordsRow, error)
 	// Phase L0 minimum inbound auth queries.
 	// Per docs/specs/_invariants/cross-module-boundaries.md CMB-5:
 	//   queries here MUST NOT return key_hash to logs / traces; the resolver
@@ -219,8 +236,6 @@ type Querier interface {
 	// parent tables means soft-deleted tenants/users never surface a
 	// candidate row at all.
 	LookupAPIKeysByPrefix(ctx context.Context, keyPrefix string) ([]LookupAPIKeysByPrefixRow, error)
-	SoftDeleteProviderAccount(ctx context.Context, arg SoftDeleteProviderAccountParams) error
-	UpdateProviderAccountEnabled(ctx context.Context, arg UpdateProviderAccountEnabledParams) error
 	// Slice 2 (N+4b2) admin_tokens queries.
 	// Per docs/plans/2026-05-01-n4b-admin-keys.md §Scope A.
 	// Per CMB-1: this file is consumed only by internal/admin and never by
@@ -271,6 +286,7 @@ type Querier interface {
 	// because admin_tokens has no tenant ownership for platform_admin rows;
 	// the handler-side RBAC check decides whether the caller can revoke.
 	RevokeAdminToken(ctx context.Context, arg RevokeAdminTokenParams) (int64, error)
+	SoftDeleteProviderAccount(ctx context.Context, arg SoftDeleteProviderAccountParams) error
 	TryAcquireAccountStormSlot(ctx context.Context, id int64) (int32, error)
 	UpdateAccountCredentialsCAS(ctx context.Context, arg UpdateAccountCredentialsCASParams) (int64, error)
 	// Abort path: claim status reserving → aborted; usage_record/billing_event
@@ -279,6 +295,8 @@ type Querier interface {
 	UpdateClaimAbortedWithReason(ctx context.Context, arg UpdateClaimAbortedWithReasonParams) (int64, error)
 	// Spec §Tx2 step 15: claim status reserving → committed.
 	UpdateClaimCommitted(ctx context.Context, arg UpdateClaimCommittedParams) (int64, error)
+	UpdatePool(ctx context.Context, arg UpdatePoolParams) (PoolGroup, error)
+	UpdateProviderAccountEnabled(ctx context.Context, arg UpdateProviderAccountEnabledParams) error
 	UpsertCapabilityCell(ctx context.Context, arg UpsertCapabilityCellParams) error
 	UpsertStickyBinding(ctx context.Context, arg UpsertStickyBindingParams) error
 	// Pattern B placeholder writeback per F-POOL-001 §6 + F-OBS-001 §Tx1 step 6.

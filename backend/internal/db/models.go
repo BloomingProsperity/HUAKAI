@@ -66,6 +66,27 @@ type ApiKey struct {
 	DeletedAt     pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
 }
 
+// HUAKAI trust-chain T4: append-only signed ledger; each row = one user-verifiable request attestation. NEVER UPDATE/DELETE.
+type AuditLedgerEntry struct {
+	ID         int64              `db:"id" json:"id"`
+	LedgerID   string             `db:"ledger_id" json:"ledger_id"`
+	OccurredAt pgtype.Timestamptz `db:"occurred_at" json:"occurred_at"`
+	RequestID  string             `db:"request_id" json:"request_id"`
+	TenantID   *int64             `db:"tenant_id" json:"tenant_id"`
+	// JSON array of HopAttestation; 6 hops typical. NEVER contains user prompt/completion (redact allowlist enforced).
+	HopChain []byte `db:"hop_chain" json:"hop_chain"`
+	// JSON object: {requested, route_decided, upstream_reported}. NULL when streaming-in-flight or not enabled.
+	ModelChain []byte `db:"model_chain" json:"model_chain"`
+	// sha256[:32] of previous entry chain root; first entry uses 32 zero bytes.
+	PrevMerkleRoot []byte `db:"prev_merkle_root" json:"prev_merkle_root"`
+	// sha256[:32] of this entry = sha256(prev_merkle_root || entry_hash).
+	MerkleRoot []byte `db:"merkle_root" json:"merkle_root"`
+	// sha256(pubkey)[:8] hex (16 chars); user looks up public key at /.well-known/huakai-pubkey.json.
+	PubkeyFingerprint string `db:"pubkey_fingerprint" json:"pubkey_fingerprint"`
+	// base64-encoded ed25519 signature over entry_hash bytes (64-byte sig → ~88-char base64).
+	Signature string `db:"signature" json:"signature"`
+}
+
 // F-OBS-001 H8: audit-grade event row in Tx2; survives Usage Record async failure. Append-only.
 type BillingEvent struct {
 	ID               int64              `db:"id" json:"id"`
@@ -176,10 +197,11 @@ type MimicryPolicy struct {
 
 // Slice 2: canonical model identities. provider-agnostic. tenant_id NULL iff scope=global (D20). pricing_class is a free-form tag; decimal pricing lives in billing (CMB-2 carve-out).
 type Model struct {
-	ID                      int64              `db:"id" json:"id"`
-	TenantID                *int64             `db:"tenant_id" json:"tenant_id"`
-	Scope                   string             `db:"scope" json:"scope"`
-	CanonicalID             string             `db:"canonical_id" json:"canonical_id"`
+	ID          int64  `db:"id" json:"id"`
+	TenantID    *int64 `db:"tenant_id" json:"tenant_id"`
+	Scope       string `db:"scope" json:"scope"`
+	CanonicalID string `db:"canonical_id" json:"canonical_id"`
+	// Protocol family 字符串。与 registrydefault.Protocol* 常量一一对应。新增 family 时必须同步更新此 CHECK 约束。
 	ProtocolFamily          string             `db:"protocol_family" json:"protocol_family"`
 	DefaultProviderModelID  string             `db:"default_provider_model_id" json:"default_provider_model_id"`
 	DefaultContextWindow    int32              `db:"default_context_window" json:"default_context_window"`
@@ -410,11 +432,12 @@ type Provider struct {
 
 // F-POOL-001: upstream credential + capacity unit. Selected by 5-layer algorithm. Credentials JSONB redacted at rest.
 type ProviderAccount struct {
-	ID               int64              `db:"id" json:"id"`
-	TenantID         int64              `db:"tenant_id" json:"tenant_id"`
-	ProviderID       int64              `db:"provider_id" json:"provider_id"`
-	ChannelID        int64              `db:"channel_id" json:"channel_id"`
-	Name             string             `db:"name" json:"name"`
+	ID         int64  `db:"id" json:"id"`
+	TenantID   int64  `db:"tenant_id" json:"tenant_id"`
+	ProviderID int64  `db:"provider_id" json:"provider_id"`
+	ChannelID  int64  `db:"channel_id" json:"channel_id"`
+	Name       string `db:"name" json:"name"`
+	// Account type 决定 credentials JSONB 解析路径。session 类型用于订阅 session 反转（cursor / copilot / gemini_advanced 等）。新增类型时必须同步更新 PostgresCredentialVault.mapCredential。
 	AccountType      string             `db:"account_type" json:"account_type"`
 	Enabled          bool               `db:"enabled" json:"enabled"`
 	ExpiresAt        pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
@@ -485,6 +508,8 @@ type ProviderAccount struct {
 	LastRefreshOutcome      *string            `db:"last_refresh_outcome" json:"last_refresh_outcome"`
 	// F-AUTH-005 H4 provider-endpoint-scope: circuit-breaker state for upstream OAuth endpoint.
 	OAuthEndpointHealth string `db:"oauth_endpoint_health" json:"oauth_endpoint_health"`
+	// 账号级出站代理 URL。NULL 表示直连。PostgresProxyResolver 读取此列，配合 transport.WrapTransportWithProxy 注入到 RoundTripper。格式：完整 URL（含 scheme + host + 可选 port）；解析在应用层用 net/url.Parse 完成。
+	ProxyUrl *string `db:"proxy_url" json:"proxy_url"`
 }
 
 // F-RATE-001: append-only audit trail for state mutations. Operator dashboard query source.

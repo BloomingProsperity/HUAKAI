@@ -62,6 +62,15 @@ func (stubClaimGate) Reserve(_ context.Context, _ billing.ReserveRequest) (*bill
 	return &billing.ReserveResult{ClaimID: 999}, nil
 }
 
+type recordingClaimGate struct {
+	endpointFamily string
+}
+
+func (g *recordingClaimGate) Reserve(_ context.Context, req billing.ReserveRequest) (*billing.ReserveResult, error) {
+	g.endpointFamily = req.EndpointFamily
+	return &billing.ReserveResult{ClaimID: 999}, nil
+}
+
 type stubSelector struct{}
 
 func (stubSelector) Select(_ context.Context, _ pool.SelectionRequest) (*pool.SelectionResult, error) {
@@ -96,6 +105,16 @@ func invokeHandler(t *testing.T, deps ChatHandlerDeps, body string) *httptest.Re
 	t.Helper()
 	h := NewChatCompletionsHandler(deps)
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	return rec
+}
+
+func invokeResponsesHandlerPath(t *testing.T, deps ChatHandlerDeps, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	h := NewResponsesHandler(deps)
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h(rec, req)
@@ -344,6 +363,46 @@ func TestHandler_OpenAIEndpointFamilySet(t *testing.T) {
 	}
 }
 
+func TestResponsesRoute200RoundTrip(t *testing.T) {
+	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	d := responsesClientAdapterDeps(t)
+	d.CanonicalDispatcher = dispatcher
+	rec := invokeResponsesHandlerPath(t, d, "/v1/responses", `{"model":"gpt-4o","stream":false,"input":"hi"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"object":"response"`) {
+		t.Fatalf("body = %s; want OpenAI Responses response object", rec.Body.String())
+	}
+	if dispatcher.calls != 1 {
+		t.Fatalf("canonical dispatcher calls = %d; want 1", dispatcher.calls)
+	}
+}
+
+func TestResponsesFamilySetEndpointFamily(t *testing.T) {
+	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	claimGate := &recordingClaimGate{}
+	d := responsesClientAdapterDeps(t)
+	d.CanonicalDispatcher = dispatcher
+	d.ClaimGate = claimGate
+	rec := invokeResponsesHandlerPath(t, d, "/v1/responses", `{"model":"gpt-4o","stream":false,"input":"hi"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if claimGate.endpointFamily != "openai_responses" {
+		t.Fatalf("billing EndpointFamily=%q want openai_responses", claimGate.endpointFamily)
+	}
+	if dispatcher.observed == nil {
+		t.Fatal("canonical dispatcher did not observe request")
+	}
+	if string(dispatcher.observed.RequestMeta.ClientProtocol) != "openai_responses" ||
+		dispatcher.observed.RequestMeta.EndpointFamily != "openai_responses" {
+		t.Fatalf("responses meta client/family=%q/%q", dispatcher.observed.RequestMeta.ClientProtocol, dispatcher.observed.RequestMeta.EndpointFamily)
+	}
+}
+
 func unsetEnvForTest(t *testing.T, key string) {
 	t.Helper()
 	old, ok := os.LookupEnv(key)
@@ -369,6 +428,16 @@ func anthropicClientAdapterDeps(t *testing.T) ChatHandlerDeps {
 		t.Fatalf("vault.Set: %v", err)
 	}
 	d.CredentialVault = vault
+	return d
+}
+
+func responsesClientAdapterDeps(t *testing.T) ChatHandlerDeps {
+	t.Helper()
+	d := clientAdapterDeps(t)
+	d.Registry = stubRegistry{resolved: registry.Resolved{
+		PublicAlias: "gpt-4o", CanonicalModelID: "openai/gpt-4o",
+		ProviderModelID: "gpt-4o", ProtocolFamily: "openai_responses", PoolCandidates: []int64{42},
+	}}
 	return d
 }
 

@@ -23,7 +23,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/shopspring/decimal"
 )
 
@@ -51,7 +53,7 @@ type sseEvt struct {
 
 func messageStart(id string) sseEvt {
 	return sseEvt{typ: "message_start", payload: map[string]any{
-		"type": "message_start",
+		"type":    "message_start",
 		"message": map[string]any{"id": id, "model": "claude-3-5-sonnet"},
 	}}
 }
@@ -211,7 +213,7 @@ func TestAT_GW_002_08_LastNonZeroWinsPerField(t *testing.T) {
 	upstream := sseBytes(
 		messageStart("m"),
 		messageDeltaWithUsage("", 10, 20),
-		messageDeltaWithUsage("", 0, 30),  // output 覆盖；input 保持 10
+		messageDeltaWithUsage("", 0, 30), // output 覆盖；input 保持 10
 		messageDeltaWithUsage("end_turn", 0, 0),
 		messageStop(),
 	)
@@ -423,6 +425,142 @@ func TestAT_GW_002_19_PendingReconciliationOnEOFNoTerminal(t *testing.T) {
 	}
 }
 
+func TestStreamingLedgerSubmitAfterForwardHasEntry(t *testing.T) {
+	ctx := context.Background()
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	ledger, err := auditledger.NewMemoryLedger(signer)
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	req := anthropicForwardRequest(7, 42)
+	req.RequestID = "req-stream-ledger"
+	req.RouteID = "route-stream"
+	req.PoolID = "pool-42"
+	req.Provider = "anthropic"
+
+	f := newForwarder()
+	f.AuditLedger = ledger
+	f.Signer = signer
+	upstream := sseBytes(
+		messageStart("msg-ledger"),
+		messageDeltaWithUsage("end_turn", 3, 5),
+		messageStop(),
+	)
+	if _, err := f.Forward(ctx, bytes.NewReader(upstream), httptest.NewRecorder(), req); err != nil {
+		t.Fatalf("Forward: %v", err)
+	}
+	if got := ledger.Size(ctx); got != 1 {
+		t.Fatalf("ledger size=%d want 1", got)
+	}
+	entry, err := ledger.GetByRequestID(ctx, req.RequestID)
+	if err != nil {
+		t.Fatalf("ledger entry by request_id: %v", err)
+	}
+	if len(entry.HopChain) != 6 {
+		t.Fatalf("hop chain len=%d want 6: %+v", len(entry.HopChain), entry.HopChain)
+	}
+	if entry.PubkeyFingerprint != signer.Fingerprint() {
+		t.Fatalf("fingerprint=%q want %q", entry.PubkeyFingerprint, signer.Fingerprint())
+	}
+}
+
+func TestStreamingLedgerCallbackBeforeFirstChunk(t *testing.T) {
+	ctx := context.Background()
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	ledger, err := auditledger.NewMemoryLedger(signer)
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	writer := &firstChunkHeaderWriter{header: http.Header{}}
+	req := anthropicForwardRequest(7, 42)
+	req.RequestID = "req-stream-header-order"
+
+	f := newForwarder()
+	f.AuditLedger = ledger
+	f.Signer = signer
+	f.LedgerCallback = func(entryID, sigFingerprint string) {
+		writer.Header().Set("X-Test-Ledger-ID", entryID)
+		writer.Header().Set("X-Test-Sig-Fingerprint", sigFingerprint)
+	}
+	upstream := sseBytes(messageStart("msg-order"), textDelta(0, "first"), messageStop())
+	if _, err := f.Forward(ctx, bytes.NewReader(upstream), writer, req); err != nil {
+		t.Fatalf("Forward: %v", err)
+	}
+	if writer.writes == 0 {
+		t.Fatal("writer saw no chunks")
+	}
+	if writer.firstWriteLedgerID == "" {
+		t.Fatalf("ledger callback ran after first chunk; first-write headers=%v", writer.firstWriteHeader)
+	}
+	if writer.firstWriteSigFingerprint != signer.Fingerprint() {
+		t.Fatalf("first-write fingerprint=%q want %q", writer.firstWriteSigFingerprint, signer.Fingerprint())
+	}
+}
+
+func TestStreamingNilLedgerGracefulSkip(t *testing.T) {
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	var warnings []string
+	callbackCalled := false
+	f := newForwarder()
+	f.Signer = signer
+	f.LedgerCallback = func(_, _ string) { callbackCalled = true }
+	f.LedgerWarning = func(code, _ string) { warnings = append(warnings, code) }
+
+	upstream := sseBytes(messageStart("msg-nil-ledger"), textDelta(0, "ok"), messageStop())
+	if _, err := f.Forward(context.Background(), bytes.NewReader(upstream), httptest.NewRecorder(), anthropicForwardRequest(7, 42)); err != nil {
+		t.Fatalf("Forward with nil ledger: %v", err)
+	}
+	if callbackCalled {
+		t.Fatal("ledger callback must not run when ledger is nil")
+	}
+	if len(warnings) != 1 || warnings[0] != "audit_ledger_not_configured" {
+		t.Fatalf("warnings=%v want [audit_ledger_not_configured]", warnings)
+	}
+}
+
+func TestResponsesFamilyMarshalRoundTrip(t *testing.T) {
+	env := proto.NewEmptyEnvelope()
+	env.RequestMeta.UpstreamModel = "gpt-4o"
+	env.CapabilityGraph.Nodes = []proto.CapabilityNode{{
+		ID:          "n_text_responses",
+		Kind:        proto.CapabilityText,
+		StreamReady: proto.StreamReadyYes,
+		Text: &proto.TextNode{
+			Role:  "user",
+			Block: proto.CanonicalContentBlock{Type: "text", Text: "hello responses"},
+		},
+	}}
+	raw, err := MarshalToProviderRequest(env, "openai_responses")
+	if err != nil {
+		t.Fatalf("MarshalToProviderRequest(openai_responses): %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("responses body json: %v\n%s", err, raw)
+	}
+	if body["model"] != "gpt-4o" {
+		t.Fatalf("model=%q want gpt-4o", body["model"])
+	}
+	input, ok := body["input"].([]any)
+	if !ok || len(input) != 1 {
+		t.Fatalf("input=%T/%v want one responses input item", body["input"], body["input"])
+	}
+	msg := input[0].(map[string]any)
+	content := msg["content"].([]any)[0].(map[string]any)
+	if msg["type"] != "message" || content["type"] != "input_text" || content["text"] != "hello responses" {
+		t.Fatalf("responses projection wrong: %+v", msg)
+	}
+}
+
 // =====================================================================
 // 新增：ProtocolFamily 校验测试
 // =====================================================================
@@ -553,6 +691,38 @@ func (d *disconnectingWriter) Write(p []byte) (int, error) {
 	return d.body.Write(p)
 }
 func (d *disconnectingWriter) Flush() {}
+
+// firstChunkHeaderWriter 记录第一次 body write 发生时 header 的状态，
+// 用于守住 T12：ledger callback 必须早于首个 SSE chunk。
+type firstChunkHeaderWriter struct {
+	header                   http.Header
+	body                     bytes.Buffer
+	writes                   int
+	firstWriteHeader         http.Header
+	firstWriteLedgerID       string
+	firstWriteSigFingerprint string
+}
+
+func (w *firstChunkHeaderWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = http.Header{}
+	}
+	return w.header
+}
+
+func (w *firstChunkHeaderWriter) WriteHeader(int) {}
+
+func (w *firstChunkHeaderWriter) Write(p []byte) (int, error) {
+	if w.writes == 0 {
+		w.firstWriteHeader = w.Header().Clone()
+		w.firstWriteLedgerID = w.firstWriteHeader.Get("X-Test-Ledger-ID")
+		w.firstWriteSigFingerprint = w.firstWriteHeader.Get("X-Test-Sig-Fingerprint")
+	}
+	w.writes++
+	return w.body.Write(p)
+}
+
+func (w *firstChunkHeaderWriter) Flush() {}
 
 // errorThrowingAdapter 满足 proto.UpstreamAdapter；在配置的事件类型上抛出非断连错误，
 // 强制产生 UNKNOWN_TERMINATION 终态。
