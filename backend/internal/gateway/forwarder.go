@@ -4,15 +4,23 @@ package gateway
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/sign"
+	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
+
+// StreamingHopChainBuilder 允许测试或后续 provider endpoint 观测层替换 hop 链构造。
+// nil 时使用 BuildHopChain，保持与 non-streaming ledger 相同的六跳形态。
+type StreamingHopChainBuilder func(req ForwardRequest, providerEndpoint string, startedAt, completedAt time.Time) []proto.HopAttestation
 
 // StreamForwarder 执行 F-GW-002 A-D 阶段的流式转发流水线。
 //
@@ -50,6 +58,17 @@ type StreamForwarder struct {
 	// 当 DrainBudgets.MaxEstimatedCost > 0 且估算值超限时，drain 以 DrainBudgetCostExhausted 退出。
 	// nil 表示禁用基于费用的 drain 退出。
 	CostEstimator func(drainedBytes int64, acc UsageAccumulator) decimal.Decimal
+
+	// AuditLedger / Signer 是 T12 streaming trust-chain ledger 的可选依赖。
+	// 两者任一缺失时 graceful skip，并通过 LedgerWarning 记录一次 loss。
+	AuditLedger auditledger.Ledger
+	Signer      *sign.Signer
+
+	// HopChainBuilder 默认走 BuildHopChain；LedgerCallback 在 ledger entry
+	// 生成后、首个 SSE chunk 写出前触发，供 HTTP handler 写 X-HUAKAI-* 头。
+	HopChainBuilder StreamingHopChainBuilder
+	LedgerCallback  func(entryID, sigFingerprint string)
+	LedgerWarning   func(code, reason string)
 }
 
 // ErrNilStreamScannerRegistry 表示 StreamForwarder.Scanners 未注入。
@@ -94,6 +113,14 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 	}
 
 	start := time.Now()
+	ledgerWriter := newStreamingLedgerHeaderWriter(clientWriter, func(completedAt time.Time) {
+		f.emitStreamingLedger(ctx, req, "", start, completedAt)
+	})
+	clientWriter = ledgerWriter
+	finish := func(d UsageRecordDraft, acc UsageAccumulator, err error) (UsageRecordDraft, error) {
+		ledgerWriter.ensureLedger(time.Now())
+		return f.finishDraft(d, acc, start, err)
+	}
 	draft := UsageRecordDraft{
 		RoutingReason: req.RoutingReasonPayload,
 		EndClass:      UnknownTermination,
@@ -146,7 +173,7 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 						} else {
 							draft.EndClass = UnknownTermination
 						}
-						return f.finishDraft(draft, acc, start, err)
+						return finish(draft, acc, err)
 					}
 				}
 				if err := f.finalizeClientStream(ctx, clientWriter, clientState); err != nil {
@@ -155,9 +182,9 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 					} else {
 						draft.EndClass = UnknownTermination
 					}
-					return f.finishDraft(draft, acc, start, err)
+					return finish(draft, acc, err)
 				}
-				return f.finishDraft(draft, acc, start, nil)
+				return finish(draft, acc, nil)
 			}
 			if res.err != nil {
 				draft.EndClass, endErr = classifyScanError(res.err)
@@ -186,7 +213,7 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 				}
 			}
 		}
-		return f.finishDraft(draft, acc, start, endErr)
+		return finish(draft, acc, endErr)
 	}
 }
 
@@ -488,6 +515,97 @@ func writeAndFlush(w http.ResponseWriter, b []byte) error {
 		flusher.Flush()
 	}
 	return nil
+}
+
+type streamingLedgerHeaderWriter struct {
+	http.ResponseWriter
+	before func(time.Time)
+	done   bool
+}
+
+func newStreamingLedgerHeaderWriter(w http.ResponseWriter, before func(time.Time)) *streamingLedgerHeaderWriter {
+	return &streamingLedgerHeaderWriter{ResponseWriter: w, before: before}
+}
+
+func (w *streamingLedgerHeaderWriter) ensureLedger(completedAt time.Time) {
+	if w == nil || w.done {
+		return
+	}
+	w.done = true
+	if completedAt.IsZero() {
+		completedAt = time.Now()
+	}
+	if w.before != nil {
+		w.before(completedAt)
+	}
+}
+
+func (w *streamingLedgerHeaderWriter) WriteHeader(statusCode int) {
+	w.ensureLedger(time.Now())
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *streamingLedgerHeaderWriter) Write(b []byte) (int, error) {
+	w.ensureLedger(time.Now())
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *streamingLedgerHeaderWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (f *StreamForwarder) emitStreamingLedger(ctx context.Context, req ForwardRequest, providerEndpoint string, startedAt, completedAt time.Time) {
+	if f.AuditLedger == nil {
+		f.warnLedgerLoss("audit_ledger_not_configured", "streaming trust-chain ledger skipped because audit ledger is nil")
+		return
+	}
+	switch f.AuditLedger.(type) {
+	case auditledger.NoopLedger, *auditledger.NoopLedger:
+		f.warnLedgerLoss("audit_ledger_noop", "streaming trust-chain ledger skipped because audit ledger is noop")
+		return
+	}
+	if f.Signer == nil {
+		f.warnLedgerLoss("audit_signer_not_configured", "streaming trust-chain ledger skipped because signer is nil")
+		return
+	}
+	requestID := req.RequestID
+	if requestID == "" {
+		requestID = uuid.NewString()
+	}
+	builder := f.HopChainBuilder
+	if builder == nil {
+		builder = BuildHopChain
+	}
+	entry := auditledger.LedgerEntry{
+		LedgerID:          uuid.NewString(),
+		Timestamp:         time.Now().UTC().Format(time.RFC3339Nano),
+		RequestID:         requestID,
+		TenantID:          req.TenantID,
+		HopChain:          builder(req, providerEndpoint, startedAt, completedAt),
+		PubkeyFingerprint: f.Signer.Fingerprint(),
+	}
+	hash, err := auditledger.EntryHash(&entry)
+	if err != nil {
+		f.warnLedgerLoss("audit_ledger_entry_hash_failed", err.Error())
+		return
+	}
+	entry.Signature = base64.StdEncoding.EncodeToString(f.Signer.Sign(hash[:]))
+	appended, err := f.AuditLedger.Append(ctx, entry)
+	if err != nil {
+		f.warnLedgerLoss("audit_ledger_append_failed", err.Error())
+		return
+	}
+	if f.LedgerCallback != nil {
+		f.LedgerCallback(appended.LedgerID, appended.PubkeyFingerprint)
+	}
+}
+
+func (f *StreamForwarder) warnLedgerLoss(code, reason string) {
+	if f != nil && f.LedgerWarning != nil {
+		f.LedgerWarning(code, reason)
+	}
 }
 
 func newTimer(d time.Duration) *time.Timer {

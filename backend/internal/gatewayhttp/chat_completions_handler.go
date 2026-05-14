@@ -513,7 +513,17 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
-		draft, fwdErr := d.Forwarder.Forward(ctx, dispatchRes.UpstreamReader, w, forwardReq)
+		streamForwarder := *d.Forwarder
+		if streamForwarder.AuditLedger == nil {
+			streamForwarder.AuditLedger = d.AuditLedger
+		}
+		if streamForwarder.Signer == nil {
+			streamForwarder.Signer = d.Signer
+		}
+		streamForwarder.LedgerCallback = func(entryID, sigFingerprint string) {
+			WriteHuakaiLedgerHeaders(w.Header(), requestID, entryID, sigFingerprint)
+		}
+		draft, fwdErr := streamForwarder.Forward(ctx, dispatchRes.UpstreamReader, w, forwardReq)
 		if fwdErr != nil {
 			_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "forwarder_error")
 			w.Header().Set("X-Huakai-Forward-Error", fwdErr.Error())
@@ -637,17 +647,24 @@ func WriteHuakaiHeaders(h http.Header, requested string, env *proto.HCSF, entry 
 	if h == nil || entry == nil {
 		return
 	}
-	if entry.LedgerID != "" {
-		h.Set(headerHUAKAIAuditLedgerID, entry.LedgerID)
+	WriteHuakaiLedgerHeaders(h, entry.RequestID, entry.LedgerID, entry.PubkeyFingerprint)
+}
+
+func WriteHuakaiLedgerHeaders(h http.Header, requestID, ledgerID, sigFingerprint string) {
+	if h == nil {
+		return
 	}
-	if entry.PubkeyFingerprint != "" {
-		h.Set(headerHUAKAIAuditSigFingerprint, entry.PubkeyFingerprint)
+	if ledgerID != "" {
+		h.Set(headerHUAKAIAuditLedgerID, ledgerID)
 	}
-	if entry.RequestID != "" {
+	if sigFingerprint != "" {
+		h.Set(headerHUAKAIAuditSigFingerprint, sigFingerprint)
+	}
+	if requestID != "" {
 		query := url.Values{}
-		query.Set("request_id", entry.RequestID)
-		if entry.LedgerID != "" {
-			query.Set("ledger-id", entry.LedgerID)
+		query.Set("request_id", requestID)
+		if ledgerID != "" {
+			query.Set("ledger-id", ledgerID)
 		}
 		h.Set(headerHUAKAIAuditVerify, "/v1/audit/verify?"+query.Encode())
 	}
@@ -778,6 +795,16 @@ func writeNormalizedUpstreamError(w http.ResponseWriter, status int, fallbackCod
 func NewMessagesHandler(d ChatHandlerDeps) http.HandlerFunc {
 	if d.EndpointFamily == "" {
 		d.EndpointFamily = "messages"
+	}
+	return NewChatCompletionsHandler(d)
+}
+
+// NewResponsesHandler 是 /v1/responses 端点 handler。它复用同一条
+// auth/routing/billing/forwarding pipeline，仅把 billing endpoint family 标为
+// openai_responses；真实上下游协议仍由 registry 的 ProtocolFamily 决定。
+func NewResponsesHandler(d ChatHandlerDeps) http.HandlerFunc {
+	if d.EndpointFamily == "" {
+		d.EndpointFamily = "openai_responses"
 	}
 	return NewChatCompletionsHandler(d)
 }

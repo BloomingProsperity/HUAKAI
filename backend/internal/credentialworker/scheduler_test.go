@@ -169,7 +169,7 @@ type listSpy struct {
 func (l *listSpy) ListAccountsForRefresh(_ context.Context, arg db.ListAccountsForRefreshParams) ([]db.ListAccountsForRefreshRow, error) {
 	l.calls++
 	l.before = arg.RefreshBefore.Time
-	l.limit = arg.Limit
+	l.limit = arg.LimitCount
 	return l.rows, nil
 }
 

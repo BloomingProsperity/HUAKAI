@@ -99,6 +99,14 @@ type deps struct {
 	adminRevoker *admin.KeyRevoker
 }
 
+func (d *deps) AdminObservabilityAuth() gatewayhttp.AdminObservabilityAuth {
+	return d.adminAuth
+}
+
+func (d *deps) AdminObservabilityStore() gatewayhttp.AdminObservabilityStore {
+	return d.queries
+}
+
 func run(logger *zap.Logger) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -172,6 +180,8 @@ func run(logger *zap.Logger) error {
 				DrainMaxSeconds:    1 * time.Second,
 			},
 			ScannerBufferCap: 1 << 20,
+			AuditLedger:      auditLedger,
+			Signer:           auditSigner,
 		},
 		// 生产 vault：从 provider_accounts / providers 读取账号凭据。
 		credentialVault: provider.NewPostgresCredentialVault(pgPool),
@@ -398,7 +408,21 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		BillingPolicyVersion: d.cfg.BillingPolicyVersion,
 		RequestClass:         d.cfg.RequestClass,
 	}))
-	r.Post("/v1/responses", notImplemented("F-GW-002 responses handler"))
+	r.Post("/v1/responses", gatewayhttp.NewResponsesHandler(gatewayhttp.ChatHandlerDeps{
+		Auth:                 d.inboundAuth,
+		Registry:             d.modelRegistry,
+		Router:               d.routePlanner,
+		ClaimGate:            d.claimGate,
+		Selector:             d.selector,
+		CredentialVault:      d.credentialVault,
+		Dispatcher:           d.dispatcher,
+		Forwarder:            d.forwarder,
+		Settler:              d.settler,
+		AuditLedger:          d.auditLedger,
+		Signer:               d.auditSigner,
+		BillingPolicyVersion: d.cfg.BillingPolicyVersion,
+		RequestClass:         d.cfg.RequestClass,
+	}))
 	// /v1/messages = Anthropic Messages API endpoint。复用 chat-completions
 	// pipeline (同 deps + EndpointFamily="messages")。registry 把 model alias
 	// 解析到 bedrock_invoke + AutoTranslateAnthropicAPIBody=true 的 PassthroughAdapter
@@ -442,16 +466,16 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 
 	// Admin: Pool Groups (F-POOL-001)
 	r.Route("/admin/v1/pools", func(r chi.Router) {
-		r.Get("/", notImplemented("F-POOL-001 list pools"))
-		r.Post("/", notImplemented("F-POOL-001 create pool"))
-		r.Get("/{id}", notImplemented("F-POOL-001 get pool"))
-		r.Patch("/{id}", notImplemented("F-POOL-001 update pool"))
+		r.Mount("/", gatewayhttp.NewAdminPoolsHandler(gatewayhttp.AdminPoolsDeps{
+			Auth:  d.adminAuth,
+			Store: d.queries,
+		}))
 	})
 
 	// Admin: Usage / Billing / Audit / DLQ (F-OBS-001)
-	r.Get("/admin/v1/usage", notImplemented("F-OBS-001 usage query"))
-	r.Get("/admin/v1/billing/claims", notImplemented("F-OBS-001 claims query"))
-	r.Get("/admin/v1/audit-events", notImplemented("F-OBS-001 + F-RATE-001 + F-AUTH-005 audit query"))
+	r.Get("/admin/v1/usage", gatewayhttp.NewUsageHandler(d))
+	r.Get("/admin/v1/billing/claims", gatewayhttp.NewClaimsHandler(d))
+	r.Get("/admin/v1/audit-events", gatewayhttp.NewAuditEventsHandler(d))
 	r.Post("/admin/v1/usage-record-dlq/{id}/replay", notImplemented("F-OBS-001 DLQ replay"))
 
 	logger.Info("routes mounted")
