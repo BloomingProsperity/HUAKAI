@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
@@ -37,7 +38,7 @@ type ChatHandlerDeps struct {
 	Selector             pool.Selector
 	CredentialVault      provider.CredentialVault
 	Dispatcher           *gateway.UpstreamDispatcher
-	CanonicalDispatcher  CanonicalBufferedDispatcher
+	CanonicalDispatcher  HCSFDispatcher
 	Forwarder            *gateway.StreamForwarder
 	Settler              billing.Settler
 	BillingPolicyVersion string
@@ -49,22 +50,9 @@ type ChatHandlerDeps struct {
 	EndpointFamily string
 }
 
-// CanonicalBufferedDispatcher 是 non-streaming HCSF 路径的可选 dispatcher
-// 能力。生产 UpstreamDispatcher 当前只有 raw body Dispatch；未注入此接口时
-// handler 明确返回 non_streaming_not_yet_wired，避免误走 silent fallback。
-type CanonicalBufferedDispatcher interface {
-	DispatchCanonicalBuffered(ctx context.Context, in CanonicalBufferedDispatchInput) (*proto.HCSF, error)
-}
-
-// CanonicalBufferedDispatchInput 携带 client adapter 产出的请求 envelope 以及
-// 既有 dispatcher/forwarder 路径会使用的账号、凭据和模型元数据。
-type CanonicalBufferedDispatchInput struct {
-	RequestEnvelope *proto.HCSF
-	ProtocolFamily  string
-	UpstreamModelID string
-	Account         provider.AccountInfo
-	Credential      provider.Credential
-	RawBody         []byte
+// HCSFDispatcher 是 non-streaming HCSF 主链路；默认关闭，由 env 开关启用。
+type HCSFDispatcher interface {
+	DispatchHCSF(ctx context.Context, envelope *proto.HCSF) (*proto.HCSF, error)
 }
 
 // effectiveEndpointFamily 返回 d.EndpointFamily 若非空，否则 "chat"
@@ -334,42 +322,97 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 		if !req.Stream {
 			seed := requestMetaSeed(r, ident, clientProtocol, resolved.ProtocolFamily, routeID, requestID, acquiredAccountID, acquisitionToken)
 			seedCtx := proto.ContextWithRequestMetaSeed(ctx, seed)
-			canonicalReq, _, err := clientAdapter.RequestToCanonical(seedCtx, body)
-			if err != nil {
-				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "invalid_request_body")
-				writeJSONError(w, http.StatusBadRequest, "invalid_request_body", err.Error())
-				return
-			}
-			if canonicalReq == nil {
-				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "invalid_request_body")
-				writeJSONError(w, http.StatusBadRequest, "invalid_request_body", "client adapter returned nil canonical envelope")
-				return
-			}
-			enrichCanonicalRequestMeta(canonicalReq, upstreamModelID, accInfo.Platform, idempotencyHeader, promptHash)
-			setAccountingModelRequested(canonicalReq, req.Model)
-			setAccountingModelRouteDecided(canonicalReq, forwardReq.Model)
-			gateway.ApplyForwardRequestHopChain(canonicalReq, forwardReq)
+			var bufferedEnv *proto.HCSF
 
-			canonicalDispatcher := canonicalBufferedDispatcher(d)
-			if canonicalDispatcher == nil {
-				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "non_streaming_not_yet_wired")
-				writeJSONError(w, http.StatusServiceUnavailable, "non_streaming_not_yet_wired",
-					fmt.Sprintf("dispatcher lacks HCSF buffered dispatch support for client_protocol=%q protocol_family=%q", clientProtocol, resolved.ProtocolFamily))
-				return
-			}
+			if hcsfDispatchEnabled() {
+				canonicalReq, _, err := clientAdapter.RequestToCanonical(seedCtx, body)
+				if err != nil {
+					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "invalid_request_body")
+					writeJSONError(w, http.StatusBadRequest, "invalid_request_body", err.Error())
+					return
+				}
+				if canonicalReq == nil {
+					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "invalid_request_body")
+					writeJSONError(w, http.StatusBadRequest, "invalid_request_body", "client adapter returned nil canonical envelope")
+					return
+				}
+				enrichCanonicalRequestMeta(canonicalReq, upstreamModelID, accInfo.Platform, idempotencyHeader, promptHash)
+				setAccountingModelRequested(canonicalReq, req.Model)
+				setAccountingModelRouteDecided(canonicalReq, forwardReq.Model)
+				gateway.ApplyForwardRequestHopChain(canonicalReq, forwardReq)
 
-			bufferedEnv, err := canonicalDispatcher.DispatchCanonicalBuffered(seedCtx, CanonicalBufferedDispatchInput{
-				RequestEnvelope: canonicalReq,
-				ProtocolFamily:  resolved.ProtocolFamily,
-				UpstreamModelID: upstreamModelID,
-				Account:         accInfo,
-				Credential:      cred,
-				RawBody:         body,
-			})
-			if err != nil {
-				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_dispatch_error")
-				writeJSONError(w, http.StatusBadGateway, "upstream_dispatch_error", err.Error())
-				return
+				dispatcher := hcsfDispatcher(d)
+				if dispatcher == nil {
+					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "non_streaming_not_yet_wired")
+					writeJSONError(w, http.StatusServiceUnavailable, "non_streaming_not_yet_wired",
+						fmt.Sprintf("dispatcher lacks HCSF dispatch support for client_protocol=%q protocol_family=%q", clientProtocol, resolved.ProtocolFamily))
+					return
+				}
+				dispatchCtx := gateway.ContextWithHCSFDispatchInput(seedCtx, gateway.HCSFDispatchInput{
+					ProtocolFamily:  resolved.ProtocolFamily,
+					UpstreamModelID: upstreamModelID,
+					Account:         accInfo,
+					Credential:      cred,
+					RawBody:         body,
+				})
+				bufferedEnv, err = dispatcher.DispatchHCSF(dispatchCtx, canonicalReq)
+				if err != nil {
+					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_dispatch_error")
+					writeJSONError(w, http.StatusBadGateway, "upstream_dispatch_error", err.Error())
+					return
+				}
+			} else {
+				dispatchRes, err := d.Dispatcher.Dispatch(ctx, gateway.DispatchInput{
+					ProtocolFamily:  resolved.ProtocolFamily,
+					UpstreamModelID: upstreamModelID,
+					InboundBody:     body,
+					Account:         accInfo,
+					Credential:      cred,
+				})
+				if err != nil {
+					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_dispatch_error")
+					classification, _ := gateway.Classify(0, nil, []byte(err.Error()), accInfo.Platform)
+					writeNormalizedUpstreamError(w, http.StatusBadGateway, "upstream_dispatch_error", classification)
+					return
+				}
+				if dispatchRes == nil || dispatchRes.UpstreamReader == nil {
+					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_empty_response")
+					writeJSONError(w, http.StatusBadGateway, "upstream_empty_response", "upstream returned no response body")
+					return
+				}
+				defer closeDispatchResult(dispatchRes)
+				raw, readErr := io.ReadAll(io.LimitReader(dispatchRes.UpstreamReader, 1<<20))
+				if readErr != nil {
+					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_read_error")
+					writeJSONError(w, http.StatusBadGateway, "upstream_read_error", readErr.Error())
+					return
+				}
+				if dispatchRes.StatusCode < 200 || dispatchRes.StatusCode >= 300 {
+					classification, classifyErr := gateway.Classify(dispatchRes.StatusCode, dispatchRes.Headers, raw, accInfo.Platform)
+					abortReason := "upstream_error"
+					if classifyErr == nil && classification.Class != "" {
+						abortReason = "upstream_" + string(classification.Class)
+					}
+					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, abortReason)
+					writeNormalizedUpstreamError(w, clientStatusForUpstreamError(dispatchRes.StatusCode, classification.Class), "upstream_error", classification)
+					return
+				}
+				upstreamAdapter, err := protocolAdapterForBuffered(d.Forwarder, resolved.ProtocolFamily)
+				if err != nil {
+					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_adapter_error")
+					writeJSONError(w, http.StatusBadGateway, "upstream_adapter_error", err.Error())
+					return
+				}
+				bufferedEnv, _, err = upstreamAdapter.ProviderResponseToCanonical(seedCtx, raw)
+				if err != nil {
+					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "canonical_response_error")
+					writeJSONError(w, http.StatusBadGateway, "canonical_response_error", err.Error())
+					return
+				}
+				if bufferedEnv != nil {
+					_ = seed.ApplyToRequestMeta(&bufferedEnv.RequestMeta)
+					enrichCanonicalRequestMeta(bufferedEnv, upstreamModelID, accInfo.Platform, idempotencyHeader, promptHash)
+				}
 			}
 			if bufferedEnv == nil || bufferedEnv.BufferedResponse == nil {
 				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_empty_response")
@@ -542,17 +585,29 @@ func enrichCanonicalRequestMeta(env *proto.HCSF, upstreamModelID, providerName, 
 	}
 }
 
-func canonicalBufferedDispatcher(d ChatHandlerDeps) CanonicalBufferedDispatcher {
+func hcsfDispatchEnabled() bool {
+	return os.Getenv("HUAKAI_DISPATCH_HCSF") == "1"
+}
+
+func hcsfDispatcher(d ChatHandlerDeps) HCSFDispatcher {
 	if d.CanonicalDispatcher != nil {
 		return d.CanonicalDispatcher
 	}
 	if d.Dispatcher == nil {
 		return nil
 	}
-	if dispatcher, ok := any(d.Dispatcher).(CanonicalBufferedDispatcher); ok {
-		return dispatcher
+	return d.Dispatcher
+}
+
+func protocolAdapterForBuffered(f *gateway.StreamForwarder, protocolFamily string) (proto.UpstreamAdapter, error) {
+	var adapters gateway.ProtocolAdapterRegistry
+	if f != nil {
+		adapters = f.ProtocolAdapters
 	}
-	return nil
+	if adapters == nil {
+		adapters = gateway.BuildDefaultProtocolAdapterRegistry()
+	}
+	return adapters.For(protocolFamily)
 }
 
 func nonStreamingUsageDraft(env *proto.HCSF, actualCost decimal.Decimal, routingReason []byte) gateway.UsageRecordDraft {

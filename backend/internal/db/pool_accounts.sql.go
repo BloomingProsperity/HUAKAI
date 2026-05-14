@@ -232,6 +232,86 @@ func (q *Queries) IncrementInFlightCount(ctx context.Context, arg IncrementInFli
 	return result.RowsAffected(), nil
 }
 
+const insertProviderAccount = `-- name: InsertProviderAccount :one
+INSERT INTO provider_accounts (
+    tenant_id,
+    provider_id,
+    channel_id,
+    name,
+    account_type,
+    enabled,
+    expires_at,
+    credentials,
+    cap_concurrency,
+    cap_queue_sticky,
+    cap_queue_fallback,
+    priority,
+    model_allow_list,
+    capability_flags,
+    created_by_actor,
+    last_modified_by_actor
+) VALUES (
+    $1::bigint,
+    $2::bigint,
+    $3::bigint,
+    $4::text,
+    $5::text,
+    COALESCE($6::boolean, true),
+    $7::timestamptz,
+    $8::jsonb,
+    COALESCE($9::integer, 4),
+    COALESCE($10::integer, 2),
+    COALESCE($11::integer, 8),
+    COALESCE($12::integer, 100),
+    COALESCE($13::text[], ARRAY[]::text[]),
+    COALESCE($14::text[], ARRAY[]::text[]),
+    $15::text,
+    $15::text
+)
+RETURNING id
+`
+
+type InsertProviderAccountParams struct {
+	TenantID         int64              `db:"tenant_id" json:"tenant_id"`
+	ProviderID       int64              `db:"provider_id" json:"provider_id"`
+	ChannelID        int64              `db:"channel_id" json:"channel_id"`
+	Name             string             `db:"name" json:"name"`
+	AccountType      string             `db:"account_type" json:"account_type"`
+	Enabled          *bool              `db:"enabled" json:"enabled"`
+	ExpiresAt        pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	Credentials      []byte             `db:"credentials" json:"credentials"`
+	CapConcurrency   *int32             `db:"cap_concurrency" json:"cap_concurrency"`
+	CapQueueSticky   *int32             `db:"cap_queue_sticky" json:"cap_queue_sticky"`
+	CapQueueFallback *int32             `db:"cap_queue_fallback" json:"cap_queue_fallback"`
+	Priority         *int32             `db:"priority" json:"priority"`
+	ModelAllowList   []string           `db:"model_allow_list" json:"model_allow_list"`
+	CapabilityFlags  []string           `db:"capability_flags" json:"capability_flags"`
+	ActorID          *string            `db:"actor_id" json:"actor_id"`
+}
+
+func (q *Queries) InsertProviderAccount(ctx context.Context, arg InsertProviderAccountParams) (int64, error) {
+	row := q.db.QueryRow(ctx, insertProviderAccount,
+		arg.TenantID,
+		arg.ProviderID,
+		arg.ChannelID,
+		arg.Name,
+		arg.AccountType,
+		arg.Enabled,
+		arg.ExpiresAt,
+		arg.Credentials,
+		arg.CapConcurrency,
+		arg.CapQueueSticky,
+		arg.CapQueueFallback,
+		arg.Priority,
+		arg.ModelAllowList,
+		arg.CapabilityFlags,
+		arg.ActorID,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const listEligibleAccounts = `-- name: ListEligibleAccounts :many
 SELECT
     id,
@@ -459,6 +539,98 @@ func (q *Queries) ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListE
 			&i.CapQueueSticky,
 			&i.CapQueueFallback,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const softDeleteProviderAccount = `-- name: SoftDeleteProviderAccount :exec
+UPDATE provider_accounts
+SET
+    deleted_at = COALESCE(deleted_at, NOW()),
+    updated_at = NOW(),
+    enabled = false,
+    last_modified_by_actor = $1::text
+WHERE id = $2::bigint
+  AND tenant_id = $3::bigint
+  AND deleted_at IS NULL
+`
+
+type SoftDeleteProviderAccountParams struct {
+	ActorID  *string `db:"actor_id" json:"actor_id"`
+	ID       int64   `db:"id" json:"id"`
+	TenantID int64   `db:"tenant_id" json:"tenant_id"`
+}
+
+func (q *Queries) SoftDeleteProviderAccount(ctx context.Context, arg SoftDeleteProviderAccountParams) error {
+	_, err := q.db.Exec(ctx, softDeleteProviderAccount, arg.ActorID, arg.ID, arg.TenantID)
+	return err
+}
+
+const updateProviderAccountEnabled = `-- name: UpdateProviderAccountEnabled :exec
+UPDATE provider_accounts
+SET
+    enabled = $1::boolean,
+    updated_at = NOW(),
+    last_modified_by_actor = $2::text
+WHERE id = $3::bigint
+  AND tenant_id = $4::bigint
+  AND deleted_at IS NULL
+`
+
+type UpdateProviderAccountEnabledParams struct {
+	Enabled  bool    `db:"enabled" json:"enabled"`
+	ActorID  *string `db:"actor_id" json:"actor_id"`
+	ID       int64   `db:"id" json:"id"`
+	TenantID int64   `db:"tenant_id" json:"tenant_id"`
+}
+
+func (q *Queries) UpdateProviderAccountEnabled(ctx context.Context, arg UpdateProviderAccountEnabledParams) error {
+	_, err := q.db.Exec(ctx, updateProviderAccountEnabled, arg.Enabled, arg.ActorID, arg.ID, arg.TenantID)
+	return err
+}
+
+const listAccountsForRefresh = `-- name: ListAccountsForRefresh :many
+SELECT
+    id,
+    tenant_id,
+    provider_id,
+    expires_at
+FROM provider_accounts
+WHERE deleted_at IS NULL
+  AND enabled
+  AND (expires_at IS NULL OR expires_at < $1)
+ORDER BY COALESCE(expires_at, NOW() + interval '1 year') ASC
+LIMIT $2
+`
+
+type ListAccountsForRefreshParams struct {
+	RefreshBefore pgtype.Timestamptz `db:"refresh_before" json:"refresh_before"`
+	Limit         int32              `db:"limit_count" json:"limit_count"`
+}
+
+type ListAccountsForRefreshRow struct {
+	ID         int64              `db:"id" json:"id"`
+	TenantID   int64              `db:"tenant_id" json:"tenant_id"`
+	ProviderID int64              `db:"provider_id" json:"provider_id"`
+	ExpiresAt  pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+}
+
+func (q *Queries) ListAccountsForRefresh(ctx context.Context, arg ListAccountsForRefreshParams) ([]ListAccountsForRefreshRow, error) {
+	rows, err := q.db.Query(ctx, listAccountsForRefresh, arg.RefreshBefore, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAccountsForRefreshRow
+	for rows.Next() {
+		var i ListAccountsForRefreshRow
+		if err := rows.Scan(&i.ID, &i.TenantID, &i.ProviderID, &i.ExpiresAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

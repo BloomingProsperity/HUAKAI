@@ -9,6 +9,7 @@ import (
 )
 
 func TestChatCompletionsClientAdapter_NonStreamingModelChainAndHeaders(t *testing.T) {
+	enableHCSFDispatchForTest(t)
 	dispatcher := &mockCanonicalBufferedDispatcher{}
 	d := clientAdapterDeps(t)
 	d.Registry = stubRegistry{resolved: registry.Resolved{
@@ -30,10 +31,10 @@ func TestChatCompletionsClientAdapter_NonStreamingModelChainAndHeaders(t *testin
 	if got := rec.Header().Get(headerHUAKAIModelDelivered); got != "gpt-4o-2024-08-06" {
 		t.Fatalf("%s=%q want gpt-4o-2024-08-06", headerHUAKAIModelDelivered, got)
 	}
-	if dispatcher.observed == nil || dispatcher.observed.RequestEnvelope == nil {
+	if dispatcher.observed == nil {
 		t.Fatal("dispatcher did not observe request envelope")
 	}
-	accounting := dispatcher.observed.RequestEnvelope.Accounting
+	accounting := dispatcher.observed.Accounting
 	if accounting.ModelChain == nil {
 		t.Fatal("request envelope ModelChain is nil")
 	}

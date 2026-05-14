@@ -34,6 +34,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
@@ -198,6 +199,19 @@ func run(logger *zap.Logger) error {
 		return fmt.Errorf("admin bootstrap: %w", err)
 	}
 
+	// Q3 credential refresh worker：先接调度主链路。provider-specific adapter
+	// 由后续子模块注册；缺 adapter 时失败会进审计，不伪造刷新成功。
+	credentialScheduler := credentialworker.NewScheduler(
+		q,
+		auth.NewStormController(q),
+		auditSigner,
+		credentialworker.ProviderDispatchRefresher{},
+		credentialworker.WithAuditLedger(auditLedger),
+	)
+	if err := credentialScheduler.Start(ctx); err != nil {
+		return fmt.Errorf("start credential refresh scheduler: %w", err)
+	}
+
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID)
 	router.Use(middleware.RealIP)
@@ -237,9 +251,19 @@ func run(logger *zap.Logger) error {
 	<-ctx.Done()
 	logger.Info("shutting down")
 
+	credentialStopCtx, credentialStopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer credentialStopCancel()
+	credentialStopErr := credentialScheduler.Stop(credentialStopCtx)
+
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
-	return srv.Shutdown(shutdownCtx)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return err
+	}
+	if credentialStopErr != nil {
+		return fmt.Errorf("stop credential refresh scheduler: %w", credentialStopErr)
+	}
+	return nil
 }
 
 // mountRoutes wires the HTTP routes per docs/openapi/openapi.yaml.
@@ -289,6 +313,14 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			Issuer:  d.adminIssuer,
 			Revoker: d.adminRevoker,
 			Queries: d.queries,
+		})
+	})
+
+	// Admin: Provider Account writes for the reverse-proxy main path Q1.
+	r.Route("/v1/admin/pool-accounts", func(r chi.Router) {
+		gatewayhttp.MountAdminPoolAccountRoutes(r, gatewayhttp.AdminPoolAccountDeps{
+			Auth:  d.adminAuth,
+			Store: d.queries,
 		})
 	})
 

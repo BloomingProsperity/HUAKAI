@@ -18,21 +18,20 @@ import (
 type mockCanonicalBufferedDispatcher struct {
 	calls    int
 	err      error
-	observed *CanonicalBufferedDispatchInput
+	observed *proto.HCSF
 }
 
-func (m *mockCanonicalBufferedDispatcher) DispatchCanonicalBuffered(_ context.Context, in CanonicalBufferedDispatchInput) (*proto.HCSF, error) {
+func (m *mockCanonicalBufferedDispatcher) DispatchHCSF(_ context.Context, requestEnvelope *proto.HCSF) (*proto.HCSF, error) {
 	m.calls++
-	observed := in
-	m.observed = &observed
+	m.observed = requestEnvelope
 	if m.err != nil {
 		return nil, m.err
 	}
 	env := proto.NewEmptyEnvelope()
-	env.RequestMeta = in.RequestEnvelope.RequestMeta
+	env.RequestMeta = requestEnvelope.RequestMeta
 	env.BufferedResponse = &proto.CanonicalResponse{
 		ID:         "chatcmpl-clientadapter-test",
-		Model:      in.UpstreamModelID,
+		Model:      requestEnvelope.RequestMeta.UpstreamModel,
 		Content:    []proto.CanonicalContentBlock{{Type: "text", Text: "hello from canonical"}},
 		Usage:      proto.CanonicalUsage{InputTokens: 2, OutputTokens: 3},
 		StopReason: proto.CanonicalStopEndTurn,
@@ -40,6 +39,11 @@ func (m *mockCanonicalBufferedDispatcher) DispatchCanonicalBuffered(_ context.Co
 	env.Accounting.Usage = env.BufferedResponse.Usage
 	env.Accounting.EvidenceLabel = proto.EvidenceMock
 	return env, nil
+}
+
+func enableHCSFDispatchForTest(t *testing.T) {
+	t.Helper()
+	t.Setenv("HUAKAI_DISPATCH_HCSF", "1")
 }
 
 func clientAdapterDeps(t *testing.T) ChatHandlerDeps {
@@ -78,6 +82,7 @@ func invokeHandlerPath(t *testing.T, deps ChatHandlerDeps, path, body string) *h
 }
 
 func TestChatCompletionsClientAdapter_NonStreamingHappyPath(t *testing.T) {
+	enableHCSFDispatchForTest(t)
 	dispatcher := &mockCanonicalBufferedDispatcher{}
 	d := clientAdapterDeps(t)
 	d.CanonicalDispatcher = dispatcher
@@ -92,10 +97,10 @@ func TestChatCompletionsClientAdapter_NonStreamingHappyPath(t *testing.T) {
 	if dispatcher.calls != 1 {
 		t.Fatalf("canonical dispatcher calls = %d; want 1", dispatcher.calls)
 	}
-	if dispatcher.observed == nil || dispatcher.observed.RequestEnvelope == nil {
+	if dispatcher.observed == nil {
 		t.Fatal("canonical dispatcher did not receive request envelope")
 	}
-	meta := dispatcher.observed.RequestEnvelope.RequestMeta
+	meta := dispatcher.observed.RequestMeta
 	if meta.RequestID == "" {
 		t.Fatal("RequestMeta.RequestID must be populated")
 	}
@@ -147,6 +152,7 @@ func TestChatCompletionsClientAdapter_NonStreamingHappyPath(t *testing.T) {
 }
 
 func TestChatCompletionsClientAdapter_NonStreamingUnknownPath(t *testing.T) {
+	enableHCSFDispatchForTest(t)
 	dispatcher := &mockCanonicalBufferedDispatcher{}
 	d := clientAdapterDeps(t)
 	d.CanonicalDispatcher = dispatcher
@@ -164,6 +170,7 @@ func TestChatCompletionsClientAdapter_NonStreamingUnknownPath(t *testing.T) {
 }
 
 func TestChatCompletionsClientAdapter_NonStreamingInvalidRequestBody(t *testing.T) {
+	enableHCSFDispatchForTest(t)
 	dispatcher := &mockCanonicalBufferedDispatcher{}
 	d := clientAdapterDeps(t)
 	d.CanonicalDispatcher = dispatcher
@@ -184,6 +191,7 @@ func TestChatCompletionsClientAdapter_NonStreamingInvalidRequestBody(t *testing.
 }
 
 func TestChatCompletionsClientAdapter_StreamTrueBypassesCanonicalDispatcher(t *testing.T) {
+	enableHCSFDispatchForTest(t)
 	dispatcher := &mockCanonicalBufferedDispatcher{err: errors.New("canonical path must not run for stream=true")}
 	d := clientAdapterDeps(t)
 	d.CanonicalDispatcher = dispatcher

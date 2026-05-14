@@ -77,6 +77,9 @@ type UpstreamDispatcher struct {
 	Adapters AdapterRegistry
 	// TransportFactory 按 provider/mode 取 RoundTripper；必须非 nil。
 	TransportFactory *transport.Factory
+	// ProtocolAdapters 按 protocol family 取 HCSF upstream adapter；nil 时
+	// DispatchHCSF 使用默认注册表。raw Dispatch 不读取本字段。
+	ProtocolAdapters ProtocolAdapterRegistry
 	// HTTPClient 用于 Do() 调用。空值时按 transport 选好的 RoundTripper
 	// 现场构造一个 http.Client。注入便于测试。
 	HTTPClient HTTPDoer
