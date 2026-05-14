@@ -7,6 +7,7 @@ import {
   BarChart3,
   ChevronLeft,
   Database,
+  FileCheck2,
   KeyRound,
   LayoutDashboard,
   Settings,
@@ -47,6 +48,13 @@ const navItems = [
     href: '/usage',
     active: false,
     disabled: true,
+  },
+  {
+    icon: FileCheck2,
+    label: '审计',
+    href: '/audit',
+    active: false,
+    disabled: false,
   },
   {
     icon: Settings,
@@ -96,7 +104,7 @@ const Sidebar = (_props: SidebarProps) => {
       <nav className="flex-1 p-3" aria-label="主导航">
         <ul className="flex flex-col gap-1">
           {navItems.map((item) => {
-            const isActive = item.active || pathname === item.href;
+            const isActive = item.active || pathname === item.href || pathname.startsWith(`${item.href}/`);
             const itemClassName = cn(
               'flex min-h-11 w-full items-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors',
               collapsed && 'justify-center px-0',

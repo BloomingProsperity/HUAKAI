@@ -17,6 +17,10 @@ const nextConfig = {
         source: '/debug/:path*',
         destination: 'http://localhost:8080/debug/:path*',
       },
+      {
+        source: '/.well-known/:path*',
+        destination: 'http://localhost:8080/.well-known/:path*',
+      },
     ];
   },
 };
