@@ -154,6 +154,7 @@ type Querier interface {
 	InsertClaim(ctx context.Context, arg InsertClaimParams) (InsertClaimRow, error)
 	InsertOAuthRefreshAuditEvent(ctx context.Context, arg InsertOAuthRefreshAuditEventParams) error
 	InsertPoolRoutingAuditEvent(ctx context.Context, arg InsertPoolRoutingAuditEventParams) error
+	InsertProviderAccount(ctx context.Context, arg InsertProviderAccountParams) (int64, error)
 	InsertProtocolPolicyVersion(ctx context.Context, arg InsertProtocolPolicyVersionParams) (InsertProtocolPolicyVersionRow, error)
 	// Spec §Tx2 step 11: cross-threshold notification, in same Tx.
 	// For Phase B.5 v0.1, the threshold detection itself is stubbed (operator
@@ -172,6 +173,7 @@ type Querier interface {
 	// Backed by docs/schema/protocol-translation.sql (capability + policy tables).
 	ListCapabilityCellsForPair(ctx context.Context, arg ListCapabilityCellsForPairParams) ([]ListCapabilityCellsForPairRow, error)
 	ListCapabilityCellsForTenant(ctx context.Context, tenantID int64) ([]ListCapabilityCellsForTenantRow, error)
+	ListAccountsForRefresh(ctx context.Context, arg ListAccountsForRefreshParams) ([]ListAccountsForRefreshRow, error)
 	ListEligibleAccounts(ctx context.Context, arg ListEligibleAccountsParams) ([]ProviderAccount, error)
 	// Phase C.2: pool-group-keyed eligibility lookup for the gateway selector.
 	// Joins channels → provider_accounts so a SelectionRequest with PoolGroupID
@@ -217,6 +219,8 @@ type Querier interface {
 	// parent tables means soft-deleted tenants/users never surface a
 	// candidate row at all.
 	LookupAPIKeysByPrefix(ctx context.Context, keyPrefix string) ([]LookupAPIKeysByPrefixRow, error)
+	SoftDeleteProviderAccount(ctx context.Context, arg SoftDeleteProviderAccountParams) error
+	UpdateProviderAccountEnabled(ctx context.Context, arg UpdateProviderAccountEnabledParams) error
 	// Slice 2 (N+4b2) admin_tokens queries.
 	// Per docs/plans/2026-05-01-n4b-admin-keys.md §Scope A.
 	// Per CMB-1: this file is consumed only by internal/admin and never by

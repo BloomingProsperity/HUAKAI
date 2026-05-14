@@ -261,16 +261,16 @@ func assertNoAuditHeader(t *testing.T, rec *httptest.ResponseRecorder) {
 	}
 }
 
-// 9. NoStream — non-streaming 进入 ClientAdapter；当 dispatcher 尚未提供
-// HCSF buffered 能力时显式 503，而不是 silent fallback。
+// 9. NoStream — 默认不开 HUAKAI_DISPATCH_HCSF 时保留 raw dispatcher fallback；
+// 当前最小依赖没有配置 raw dispatcher registry，因此应在上游 dispatch 处失败。
 func TestHandler_NoStream(t *testing.T) {
 	d := clientAdapterDeps(t)
 	rec := invokeHandler(t, d, `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d; want 503", rec.Code)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d; want 502", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "non_streaming_not_yet_wired") {
-		t.Fatalf("body = %q; want non_streaming_not_yet_wired", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "upstream_unknown_upstream") {
+		t.Fatalf("body = %q; want normalized upstream error", rec.Body.String())
 	}
 }
 
