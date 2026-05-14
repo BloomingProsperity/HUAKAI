@@ -45,6 +45,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
+	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 )
 
 // smokeBuildStamp is overridden via -ldflags during smoke test builds to
@@ -99,6 +100,10 @@ func run(logger *zap.Logger) error {
 		zap.String("listen", cfg.Listen),
 		zap.String("auth_mode", "api_keys_table"),
 	)
+	mimicryRegistry, err := loadMimicryTemplateRegistry(logger)
+	if err != nil {
+		return err
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -164,7 +169,7 @@ func run(logger *zap.Logger) error {
 		credentialVault: provider.NewStaticVault(),
 		dispatcher: &gateway.UpstreamDispatcher{
 			Adapters:         registrydefault.Build(),
-			TransportFactory: transport.NewFactory(),
+			TransportFactory: transport.NewFactory(mimicryRegistry),
 			// 内存 ProxyResolver：dev/test 默认空（所有账号直连）。
 			// DB-backed resolver 后续 atomic 接入；接入后此处替换实例。
 			ProxyResolver: provider.NewStaticProxyResolver(),
@@ -264,6 +269,30 @@ func run(logger *zap.Logger) error {
 		return fmt.Errorf("stop credential refresh scheduler: %w", credentialStopErr)
 	}
 	return nil
+}
+
+func loadMimicryTemplateRegistry(logger *zap.Logger) (*mimicry.TemplateRegistry, error) {
+	candidates := []string{
+		"tools/fingerprint-collector/templates",
+		"../tools/fingerprint-collector/templates",
+	}
+	for _, dir := range candidates {
+		registry := mimicry.NewTemplateRegistry()
+		err := registry.LoadFromDirectory(dir)
+		if err == nil {
+			logger.Info("mimicry template registry loaded",
+				zap.String("dir", dir),
+				zap.Int("mode_count", len(registry.Modes())),
+			)
+			return registry, nil
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		return nil, fmt.Errorf("load mimicry template registry from %s: %w", dir, err)
+	}
+	logger.Warn("mimicry template registry not found; using Phase A default template fallback")
+	return nil, nil
 }
 
 // mountRoutes wires the HTTP routes per docs/openapi/openapi.yaml.

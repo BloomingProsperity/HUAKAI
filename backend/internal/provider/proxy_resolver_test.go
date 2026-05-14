@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"sync"
 	"testing"
@@ -167,5 +168,9 @@ func TestWrapTransportWithProxy_NonStandardTransport(t *testing.T) {
 	}
 	if pw.inner != rt {
 		t.Error("inner 应是原 rt")
+	}
+	_, err := wrapped.RoundTrip(httptest.NewRequest(http.MethodGet, "https://api.example.test", nil))
+	if !errors.Is(err, ErrProxyUnsupportedTransport) {
+		t.Fatalf("非标准 transport 带 proxy 必须 fail-loud，得到 %v", err)
 	}
 }

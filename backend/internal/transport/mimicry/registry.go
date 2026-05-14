@@ -1,0 +1,210 @@
+package mimicry
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+// TransportMode 是 mimicry 子包内的 mode key，值与 transport.TransportMode 保持一致。
+type TransportMode string
+
+const (
+	ModeMimicryClaudeCode     TransportMode = "mimicry_claude_code"
+	ModeMimicryChatGPT        TransportMode = "mimicry_chatgpt"
+	ModeMimicryGeminiAdvanced TransportMode = "mimicry_gemini_advanced"
+	ModeMimicryAntigravity    TransportMode = "mimicry_antigravity"
+	ModeMimicryCursor         TransportMode = "mimicry_cursor"
+	ModeMimicryCopilot        TransportMode = "mimicry_copilot"
+	ModeMimicryKiro           TransportMode = "mimicry_kiro"
+	ModeMimicryWindsurf       TransportMode = "mimicry_windsurf"
+)
+
+// TemplateRegistry 保存每个 mimicry mode 对应的 ClientHello 模板。
+type TemplateRegistry struct {
+	templates map[TransportMode]*ClientHelloTemplate
+}
+
+// NewTemplateRegistry 返回空 registry。
+func NewTemplateRegistry() *TemplateRegistry {
+	return &TemplateRegistry{templates: make(map[TransportMode]*ClientHelloTemplate)}
+}
+
+// Register 注册单个 mode 模板；重复注册会 fail-loud，避免目录里双写覆盖。
+func (r *TemplateRegistry) Register(mode TransportMode, tmpl *ClientHelloTemplate) error {
+	if r == nil {
+		return fmt.Errorf("mimicry: nil template registry")
+	}
+	if mode == "" {
+		return fmt.Errorf("mimicry: empty transport mode")
+	}
+	if tmpl == nil {
+		return fmt.Errorf("mimicry: nil template for mode %s", mode)
+	}
+	if err := tmpl.Validate(); err != nil {
+		return fmt.Errorf("mimicry: validate template for mode %s: %w", mode, err)
+	}
+	if r.templates == nil {
+		r.templates = make(map[TransportMode]*ClientHelloTemplate)
+	}
+	if _, ok := r.templates[mode]; ok {
+		return fmt.Errorf("mimicry: duplicate template for mode %s", mode)
+	}
+	r.templates[mode] = tmpl
+	return nil
+}
+
+// Lookup 查询 mode 模板。
+func (r *TemplateRegistry) Lookup(mode TransportMode) (*ClientHelloTemplate, bool) {
+	if r == nil || r.templates == nil {
+		return nil, false
+	}
+	tmpl, ok := r.templates[mode]
+	return tmpl, ok
+}
+
+// LoadFromDirectory 扫描目录内全部 *.json，并按文件名或 mode_name 注册模板。
+func (r *TemplateRegistry) LoadFromDirectory(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	loaded := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		tmpl, err := LoadFromCollectorOutput(path)
+		if err != nil {
+			return fmt.Errorf("mimicry: load template %s: %w", path, err)
+		}
+		mode, ok := modeFromStem(strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())))
+		if !ok {
+			mode, ok = modeFromName(tmpl.ModeName)
+		}
+		if !ok {
+			return fmt.Errorf("mimicry: unknown template mode for %s", path)
+		}
+		if tmpl.IsStub() {
+			log.Printf("warning: mimicry template %s for mode %s is placeholder; placeholder：等 Owner 跑 capture playbook 后回填真 JA3/JA4", path, mode)
+		}
+		if err := r.Register(mode, tmpl); err != nil {
+			return err
+		}
+		loaded++
+	}
+	if loaded == 0 {
+		return fmt.Errorf("mimicry: no template json loaded from %s", dir)
+	}
+	return nil
+}
+
+// Modes 返回已注册 mode，排序后便于测试和 admin 展示。
+func (r *TemplateRegistry) Modes() []TransportMode {
+	if r == nil || r.templates == nil {
+		return nil
+	}
+	out := make([]TransportMode, 0, len(r.templates))
+	for mode := range r.templates {
+		out = append(out, mode)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+func modeFromStem(stem string) (TransportMode, bool) {
+	return modeFromKey(strings.ReplaceAll(stem, "_", "-"))
+}
+
+func modeFromName(name string) (TransportMode, bool) {
+	return modeFromKey(strings.ReplaceAll(name, "_", "-"))
+}
+
+func modeFromKey(key string) (TransportMode, bool) {
+	switch strings.ToLower(key) {
+	case "anthropic-claude-code", "claude-code":
+		return ModeMimicryClaudeCode, true
+	case "chatgpt", "chatgpt-web", "codex-cli", "openai-codex", "openai-codex-cli":
+		return ModeMimicryChatGPT, true
+	case "gemini-advanced":
+		return ModeMimicryGeminiAdvanced, true
+	case "antigravity":
+		return ModeMimicryAntigravity, true
+	case "cursor", "cursor-cli":
+		return ModeMimicryCursor, true
+	case "copilot", "github-copilot":
+		return ModeMimicryCopilot, true
+	case "kiro", "kiro-cli":
+		return ModeMimicryKiro, true
+	case "windsurf", "windsurf-cli":
+		return ModeMimicryWindsurf, true
+	}
+	return "", false
+}
+
+type collectorOutput struct {
+	ModeName     string `json:"mode_name"`
+	CollectedAt  string `json:"collected_at"`
+	CaptureTime  string `json:"capture_time"`
+	TargetHost   string `json:"target_host"`
+	CipherSuites []struct {
+		Value uint16 `json:"value"`
+	} `json:"cipher_suites"`
+	Extensions []struct {
+		Type                uint16   `json:"type"`
+		DataLen             int      `json:"data_len"`
+		SignatureAlgorithms []uint16 `json:"signature_algorithms"`
+	} `json:"extensions"`
+	ALPNProtocols     []string `json:"alpn_protocols"`
+	SupportedGroups   []uint16 `json:"supported_groups"`
+	ECPointFormats    []uint8  `json:"ec_point_formats"`
+	SupportedVersions []uint16 `json:"supported_versions"`
+	JA3               struct {
+		InputString string `json:"input_string"`
+	} `json:"ja3"`
+	JA4 struct {
+		Raw  string `json:"raw"`
+		Hash string `json:"hash"`
+	} `json:"ja4"`
+}
+
+func (r collectorOutput) cipherIDs() []uint16 {
+	out := make([]uint16, len(r.CipherSuites))
+	for i, c := range r.CipherSuites {
+		out[i] = c.Value
+	}
+	return out
+}
+
+func (r collectorOutput) extensionIDs() []uint16 {
+	out := make([]uint16, len(r.Extensions))
+	for i, e := range r.Extensions {
+		out[i] = e.Type
+	}
+	return out
+}
+
+func (r collectorOutput) paddingLen() int {
+	for _, e := range r.Extensions {
+		if e.Type == 21 {
+			return e.DataLen
+		}
+	}
+	return 0
+}
+
+func (r collectorOutput) signatureAlgorithms() []uint16 {
+	for _, e := range r.Extensions {
+		if e.Type == 13 && len(e.SignatureAlgorithms) > 0 {
+			return append([]uint16(nil), e.SignatureAlgorithms...)
+		}
+		if e.Type == 13 && e.DataLen == 20 {
+			return anthropicSigAlgos()
+		}
+	}
+	return nil
+}

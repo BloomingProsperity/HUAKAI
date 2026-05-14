@@ -1,0 +1,43 @@
+{
+  "mode_name": "anthropic-claude-code",
+  "collected_at": "2026-05-06T10:37:23Z",
+  "target_host": "api.anthropic.com",
+  "sample_count": 5,
+  "ja3": "772,4865-4866-4867-49195-49199-49196-49200-52393-52392-49161-49171-49162-49172-156-157-47-53,0-65037-23-65281-10-11-35-16-5-13-18-51-45-43,29-23-24,0",
+  "ja3_hash": "de88744b20558d50f03a5f0ea176ee98",
+  "ja4": "t13d1715_ht_ca21dff6868a_bd55c1d574e4",
+  "ja4_samples": [
+    "t13d1715_ht_ca21dff6868a_bd55c1d574e4",
+    "t13d1714_ht_ca21dff6868a_4634136b8335"
+  ],
+  "cipher_suites": [4865, 4866, 4867, 49195, 49199, 49196, 49200, 52393, 52392, 49161, 49171, 49162, 49172, 156, 157, 47, 53],
+  "extensions": [0, 65037, 23, 65281, 10, 11, 35, 16, 5, 13, 18, 51, 45, 43, 21],
+  "supported_versions": [
+    772,
+    771
+  ],
+  "curves": [
+    29,
+    23,
+    24
+  ],
+  "sig_algos": [1027, 2052, 1025, 1283, 2053, 1281, 2054, 1537, 513],
+  "alpn_protocols": [
+    "http/1.1"
+  ],
+  "ec_point_formats": [
+    0
+  ],
+  "key_share_groups": [
+    29
+  ],
+  "psk_modes": [
+    1
+  ],
+  "padding_len": 41,
+  "early_data_enabled": false,
+  "h2_settings": {
+    "available": false,
+    "limitation_note": "collector v1 无 TLS 解密材料，HTTP/2 SETTINGS 为空是预期行为。"
+  }
+}

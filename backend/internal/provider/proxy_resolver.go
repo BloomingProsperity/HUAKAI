@@ -40,6 +40,10 @@ type ProxyResolver interface {
 // 让 dispatcher 拒绝放行请求"。
 var ErrProxyResolverMisconfigured = errors.New("provider: proxy resolver misconfigured")
 
+// ErrProxyUnsupportedTransport 表示账号已配置代理，但 RoundTripper 不能安全
+// 注入代理。这里必须 fail-loud，避免账号级 IP 隔离被静默旁路。
+var ErrProxyUnsupportedTransport = errors.New("provider: proxy unsupported for non-standard transport")
+
 // StaticProxyResolver 是基于内存 map 的静态代理解析器。线程安全。
 type StaticProxyResolver struct {
 	mu      sync.RWMutex
@@ -108,9 +112,8 @@ func (e simpleError) Error() string { return string(e) }
 //   - proxyURL == nil → 返回原 rt 不变（零开销直连）
 //   - rt 是 *http.Transport → Clone() 浅拷贝并设 Proxy func（保留连接池
 //     参数，不影响原实例）
-//   - 其它 rt（utls dialer / 测试 mock 等） → wrap 为 proxyWrappedRoundTripper
-//     注意：非 *http.Transport 的 wrap 仅传播 proxy 意图给查询方；实际
-//     代理隧道由内层 RoundTripper 自行处理（utls 实施时按需扩展）。
+//   - 其它 rt（utls dialer / 测试 mock 等） → wrap 为 fail-loud
+//     proxyWrappedRoundTripper，避免静默直连绕过账号级代理隔离。
 func WrapTransportWithProxy(rt http.RoundTripper, proxyURL *url.URL) http.RoundTripper {
 	if proxyURL == nil {
 		return rt
@@ -130,7 +133,7 @@ type proxyWrappedRoundTripper struct {
 }
 
 func (p *proxyWrappedRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	return p.inner.RoundTrip(req)
+	return nil, ErrProxyUnsupportedTransport
 }
 
 // ProxyURL 返回包装的代理 URL，供测试断言。
