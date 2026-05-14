@@ -19,6 +19,10 @@ var Version = "0.1.0"
 type ClientHelloTemplate struct {
 	// SchemaVersion 用于未来格式兼容性检测
 	SchemaVersion string `json:"schema_version"`
+	// ModeName 是捕获目标模式名；旧版无 target 时为空。
+	ModeName string `json:"mode_name,omitempty"`
+	// TargetHost 是本次过滤的目标主机名，不含 IP/MAC。
+	TargetHost string `json:"target_host,omitempty"`
 	// CaptureTime 是捕获时的 UTC 时间戳（ISO 8601）
 	CaptureTime string `json:"capture_time"`
 	// SampleCount 是用于生成此模板的 ClientHello 样本数
@@ -62,17 +66,20 @@ type CipherSuiteEntry struct {
 
 // ExtensionEntry 是单个扩展在输出模板中的简化表示。
 type ExtensionEntry struct {
-	Type     uint16 `json:"type"`
-	TypeHex  string `json:"type_hex"`
-	TypeName string `json:"type_name,omitempty"`
-	IsGREASE bool   `json:"is_grease,omitempty"`
-	DataLen  int    `json:"data_len"`
+	Type                uint16   `json:"type"`
+	TypeHex             string   `json:"type_hex"`
+	TypeName            string   `json:"type_name,omitempty"`
+	IsGREASE            bool     `json:"is_grease,omitempty"`
+	DataLen             int      `json:"data_len"`
+	SignatureAlgorithms []uint16 `json:"signature_algorithms,omitempty"`
 }
 
 // Metadata 是 metadata.json 的内容结构。
 type Metadata struct {
 	// ToolVersion 是工具版本号
 	ToolVersion string `json:"tool_version"`
+	// ModeName 是本次捕获对应的客户端模式名，例如 openai_codex / kiro_cli / gemini_advanced。
+	ModeName string `json:"mode_name,omitempty"`
 	// CaptureStartTime 是开始捕获的 UTC 时间
 	CaptureStartTime string `json:"capture_start_time"`
 	// CaptureEndTime 是结束捕获的 UTC 时间
@@ -117,6 +124,10 @@ type HTTP2SettingEntry struct {
 type Writer struct {
 	// OutDir 是输出目录路径
 	OutDir string
+	// ModeName 是本次捕获的客户端模式名
+	ModeName string
+	// TargetHost 是本次捕获过滤的目标主机
+	TargetHost string
 	// IncludeSNI 控制是否在模板中保留真实 SNI 值
 	IncludeSNI bool
 	// IncludeOperatorInfo 控制是否在 metadata.json 中包含主机名
@@ -133,7 +144,7 @@ func NewWriter(outDir string) (*Writer, error) {
 
 // WriteClientHelloTemplate 将 ClientHello 模板写入 clienthello-template.json。
 func (w *Writer) WriteClientHelloTemplate(ch *tlspkg.ClientHello, ja3 tlspkg.JA3Result, ja4 tlspkg.JA4Result, sampleCount int) error {
-	tmpl := buildTemplate(ch, ja3, ja4, sampleCount, w.IncludeSNI)
+	tmpl := buildTemplate(ch, ja3, ja4, sampleCount, w.ModeName, w.TargetHost, w.IncludeSNI)
 	return w.writeJSON("clienthello-template.json", tmpl)
 }
 
@@ -200,7 +211,7 @@ func (w *Writer) writeJSON(filename string, v interface{}) error {
 }
 
 // buildTemplate 从已解析的 ClientHello 构建输出模板。
-func buildTemplate(ch *tlspkg.ClientHello, ja3 tlspkg.JA3Result, ja4 tlspkg.JA4Result, sampleCount int, includeSNI bool) ClientHelloTemplate {
+func buildTemplate(ch *tlspkg.ClientHello, ja3 tlspkg.JA3Result, ja4 tlspkg.JA4Result, sampleCount int, modeName string, targetHost string, includeSNI bool) ClientHelloTemplate {
 	// 构建密码套件列表（带 GREASE 标记）
 	ciphers := make([]CipherSuiteEntry, len(ch.CipherSuites))
 	for i, c := range ch.CipherSuites {
@@ -215,11 +226,12 @@ func buildTemplate(ch *tlspkg.ClientHello, ja3 tlspkg.JA3Result, ja4 tlspkg.JA4R
 	exts := make([]ExtensionEntry, len(ch.Extensions))
 	for i, e := range ch.Extensions {
 		exts[i] = ExtensionEntry{
-			Type:     e.Type,
-			TypeHex:  fmt.Sprintf("0x%04x", e.Type),
-			TypeName: e.TypeName,
-			IsGREASE: e.IsGREASEValue,
-			DataLen:  e.DataLen,
+			Type:                e.Type,
+			TypeHex:             fmt.Sprintf("0x%04x", e.Type),
+			TypeName:            e.TypeName,
+			IsGREASE:            e.IsGREASEValue,
+			DataLen:             e.DataLen,
+			SignatureAlgorithms: e.SignatureAlgorithms,
 		}
 	}
 
@@ -231,6 +243,8 @@ func buildTemplate(ch *tlspkg.ClientHello, ja3 tlspkg.JA3Result, ja4 tlspkg.JA4R
 
 	return ClientHelloTemplate{
 		SchemaVersion:      "1.0",
+		ModeName:           modeName,
+		TargetHost:         targetHost,
 		CaptureTime:        time.Now().UTC().Format(time.RFC3339),
 		SampleCount:        sampleCount,
 		LegacyVersion:      ch.LegacyVersion,
