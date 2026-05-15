@@ -35,3 +35,17 @@ Track risks that can affect implementation method, rollout, testing, or release 
 ## Rule
 
 Each high or release-blocking risk must map to mitigation, test coverage, and release gate status.
+
+## 2026-05-15 Triage Notes
+
+3 HIGH risk 已做 retrospective triage（codex γ lane + Claude 平行 review）：
+
+- **R-SEC-002** (Rust 数据面 / 控制面 transport, HIGH)：保留 Open，前置条件已并入 `docs/plans/2026-05-15-r-3-r-e-mainline-codex.md` 的 R-E 切换闸门（必须先实施 mTLS / UDS / 本地认证 transport）。Last triage 2026-05-15。下一步:UDS vs TCP+mTLS 设计决策点在 R-E plan OCAW D1。
+- **R-TRANSPORT-001** (Exact TLS mimicry patch burden, HIGH)：保留 Open。L2-A5 系列已落 feature flag + KnownGap 严格 fail-fast + provenance 记录；未来 OpenSSL upstream 升级时仍需打 patch 的风险无法零。Last triage 2026-05-15。下一步:补 OpenSSL patch policy 文 + 真上游回放回归定时任务（R-E ramp Phase 2 之前必须就位）。
+- **R-LIC-003** (GPL/LGPL runtime dep creep, HIGH)：保留 Open。本轮 γ lane `cargo deny` 因沙箱网络受限未完成；fallback `cargo tree --edges=normal | grep -Ei 'gpl|lgpl|agpl'` 在 default 与 mimicry-openssl/mimicry-http2-fork feature graph 上**均未命中**任何 GPL/LGPL/AGPL 包名（弱证据）。Last triage 2026-05-15。下一步:在有网络的环境里实跑 cargo deny + 写 deny.toml + CI 接入；额外把 `wreq-util` / `rquest-util` 显式写入 deny.toml ban 列表。
+
+证据收敛文档：
+- 详细 mitigation 收敛 + 命令清单：[docs/reviews/2026-05-15-high-risks-mitigation-codex.md](reviews/2026-05-15-high-risks-mitigation-codex.md)
+- Claude 平行视角：[docs/reviews/2026-05-15-high-risks-mitigation-claude.md](reviews/2026-05-15-high-risks-mitigation-claude.md)
+
+未删除、未降级任何 risk 行；只在表后追加 triage 记录。
