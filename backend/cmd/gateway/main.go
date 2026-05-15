@@ -38,6 +38,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
@@ -84,6 +85,7 @@ type deps struct {
 	forwarder       *gateway.StreamForwarder
 	credentialVault provider.CredentialVault
 	dispatcher      *gateway.UpstreamDispatcher
+	responseCache   l2cache.Store
 	inboundAuth     *auth.APIKeyResolver
 	auditLedger     auditledger.Ledger
 	auditSigner     *sign.Signer
@@ -144,6 +146,19 @@ func run(logger *zap.Logger) error {
 		zap.Int("shadow_pct", selectorCfg.ShadowPercent),
 		zap.Int("canary_pct", selectorCfg.CanaryPercent),
 	)
+	cacheCfg, err := config.LoadL2Cache()
+	if err != nil {
+		return fmt.Errorf("load L2 cache config: %w", err)
+	}
+	var responseCache l2cache.Store
+	if cacheCfg.Enabled {
+		responseCache = l2cache.NewMemoryStore(cacheCfg.SizeBytes, cacheCfg.TTL)
+	}
+	logger.Info("L2 response cache config loaded",
+		zap.Bool("enabled", cacheCfg.Enabled),
+		zap.Int64("size_bytes", cacheCfg.SizeBytes),
+		zap.Duration("ttl", cacheCfg.TTL),
+	)
 	selector, selectorCleanup, err := buildSelector(ctx, q, pgPool, selectorCfg, logger)
 	if err != nil {
 		return fmt.Errorf("build selector: %w", err)
@@ -185,6 +200,7 @@ func run(logger *zap.Logger) error {
 		},
 		// 生产 vault：从 provider_accounts / providers 读取账号凭据。
 		credentialVault: provider.NewPostgresCredentialVault(pgPool),
+		responseCache:   responseCache,
 		dispatcher: &gateway.UpstreamDispatcher{
 			Adapters:         registrydefault.Build(),
 			TransportFactory: transport.NewFactory(mimicryRegistry),
@@ -402,6 +418,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		CredentialVault:      d.credentialVault,
 		Dispatcher:           d.dispatcher,
 		Forwarder:            d.forwarder,
+		ResponseCache:        d.responseCache,
 		Settler:              d.settler,
 		AuditLedger:          d.auditLedger,
 		Signer:               d.auditSigner,
@@ -417,6 +434,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		CredentialVault:      d.credentialVault,
 		Dispatcher:           d.dispatcher,
 		Forwarder:            d.forwarder,
+		ResponseCache:        d.responseCache,
 		Settler:              d.settler,
 		AuditLedger:          d.auditLedger,
 		Signer:               d.auditSigner,
@@ -436,6 +454,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		CredentialVault:      d.credentialVault,
 		Dispatcher:           d.dispatcher,
 		Forwarder:            d.forwarder,
+		ResponseCache:        d.responseCache,
 		Settler:              d.settler,
 		AuditLedger:          d.auditLedger,
 		Signer:               d.auditSigner,
@@ -477,6 +496,12 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Get("/admin/v1/billing/claims", gatewayhttp.NewClaimsHandler(d))
 	r.Get("/admin/v1/audit-events", gatewayhttp.NewAuditEventsHandler(d))
 	r.Post("/admin/v1/usage-record-dlq/{id}/replay", notImplemented("F-OBS-001 DLQ replay"))
+	r.Route("/admin/v1/cache/l2", func(r chi.Router) {
+		gatewayhttp.MountAdminL2CacheRoutes(r, gatewayhttp.AdminL2CacheDeps{
+			Auth:  d.adminAuth,
+			Store: d.responseCache,
+		})
+	})
 
 	logger.Info("routes mounted")
 }
