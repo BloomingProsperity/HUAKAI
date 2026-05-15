@@ -3,8 +3,8 @@
 // F-OBS-001 Tx1 ClaimGate integration tests against real PostgreSQL.
 // Requires the dev PG container + applied migrations:
 //
-//   make db-up && make db-migrate
-//   make test-integration
+//	make db-up && make db-migrate
+//	make test-integration
 //
 // Strong assertions per spec §Tx1 + AT-OBS-001/002.
 package billing
@@ -68,6 +68,7 @@ func seedTenant(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suffix st
 	t.Cleanup(func() {
 		c := context.Background()
 		// FK chain: claims/usage/archive -> api_keys -> users -> tenants.
+		_, _ = pool.Exec(c, `DELETE FROM usage_record_dlq WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM usage_records WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, tenantID)

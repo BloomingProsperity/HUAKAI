@@ -68,7 +68,7 @@ paths:
   # ==========================================================================
 
   /v1/chat/completions:
-    post:
+    get:
       tags: [gateway]
       summary: OpenAI Chat Completions compatible relay
       operationId: postChatCompletions
@@ -585,6 +585,52 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AuditEventList' }
 
+  /admin/v1/dlq/{handler}:
+    parameters:
+      - name: handler
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [usage_record, billing_event_replica, audit_event_replica, account_health, metrics]
+    post:
+      tags: [admin-dlq]
+      summary: List DLQ entries by handler
+      operationId: listObservabilityDLQ
+      x-huakai-spec-source: [docs/specs/observability-billing.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, inflight, delivered, operator_review, dlq, quarantined]
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: Matching DLQ entries.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DLQEntryList' }
+
+  /admin/v1/dlq/{id}/replay:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-dlq]
+      summary: Replay a generic DLQ entry
+      operationId: replayObservabilityDLQ
+      x-huakai-spec-source: [docs/specs/observability-billing.md]
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: Replay attempted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DLQReplayResult' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
   /admin/v1/usage-record-dlq/{id}/replay:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
@@ -595,7 +641,11 @@ paths:
       x-huakai-spec-source: [docs/specs/observability-billing.md]
       x-huakai-required-role: platform_admin
       responses:
-        '204': { description: Replayed. }
+        '200':
+          description: Replay attempted. Backward-compatible alias for generic DLQ replay.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DLQReplayResult' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
@@ -1380,6 +1430,70 @@ components:
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/AuditEvent' } }
         page: { $ref: '#/components/schemas/PageMeta' }
+
+    DLQEntry:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/observability-billing.md]
+      required:
+        - id
+        - tenant_id
+        - event_kind
+        - lane
+        - status
+        - payload
+        - failure_reason
+        - replay_attempts
+        - replica_status
+        - replica_target
+        - idempotency_key
+      properties:
+        id: { type: integer, format: int64 }
+        tenant_id: { type: integer, format: int64 }
+        claim_id: { type: [integer, 'null'], format: int64 }
+        event_kind:
+          type: string
+          enum: [usage_record, billing_event_replica, audit_event_replica, account_health, metrics]
+        lane:
+          type: string
+          enum: [HIGH, MED, LOW]
+        status:
+          type: string
+          enum: [pending, inflight, delivered, operator_review, dlq, quarantined]
+        payload: { type: object, additionalProperties: true }
+        failure_reason: { type: string }
+        failure_at: { type: string, format: date-time }
+        replay_attempts: { type: integer }
+        last_replay_at: { type: [string, 'null'], format: date-time }
+        replayed_at: { type: [string, 'null'], format: date-time }
+        replay_failure_reason: { type: [string, 'null'] }
+        next_retry_at: { type: string, format: date-time }
+        lease_owner: { type: [string, 'null'] }
+        lease_until: { type: [string, 'null'], format: date-time }
+        replica_status:
+          type: string
+          enum: [none, pending, delivered, failed]
+        replica_target: { type: string }
+        replica_committed_at: { type: [string, 'null'], format: date-time }
+        idempotency_key: { type: string }
+        source_table: { type: string }
+        source_id: { type: [integer, 'null'], format: int64 }
+        operator_review_at: { type: [string, 'null'], format: date-time }
+
+    DLQEntryList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/DLQEntry' } }
+
+    DLQReplayResult:
+      type: object
+      additionalProperties: false
+      required: [item, replayed]
+      properties:
+        item: { $ref: '#/components/schemas/DLQEntry' }
+        replayed: { type: boolean }
 
 # ============================================================================
 # Synthesis metadata
