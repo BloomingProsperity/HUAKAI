@@ -239,6 +239,7 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "http2",
  "hyper",
  "hyper-rustls",
  "hyper-util",
@@ -625,6 +626,24 @@ dependencies = [
  "http",
  "http-body",
  "pin-project-lite",
+]
+
+[[package]]
+name = "http2"
+version = "0.5.17"
+source = "git+https://github.com/0x676e67/http2?rev=a33b27e469434a99105f35670c9970f22112e892#a33b27e469434a99105f35670c9970f22112e892"
+dependencies = [
+ "atomic-waker",
+ "bytes",
+ "fnv",
+ "futures-core",
+ "futures-sink",
+ "http",
+ "indexmap 2.14.0",
+ "slab",
+ "smallvec",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

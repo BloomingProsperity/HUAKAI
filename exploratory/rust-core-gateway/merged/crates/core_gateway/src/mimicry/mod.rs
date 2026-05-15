@@ -3,6 +3,8 @@
 //! L2-A1 只产出 transport backend intent，不接入 ProxyEngine。
 
 pub mod backend;
+#[cfg(feature = "mimicry-http2-fork")]
+pub mod http2_adapter;
 pub mod http_profile;
 #[cfg(feature = "mimicry-openssl")]
 pub mod openssl_adapter;

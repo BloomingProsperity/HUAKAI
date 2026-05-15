@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -43,6 +45,36 @@ pub struct Http2SettingsCapture {
     pub source: Option<String>,
     #[serde(default)]
     pub settings: Vec<Value>,
+    #[serde(default)]
+    pub limitation_note: Option<String>,
+}
+
+/// HTTP/2 初始 SETTINGS frame 的 wire 顺序和值；未抓到时 available=false。
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Http2SettingsFrameProfile {
+    #[serde(default)]
+    pub available: bool,
+    #[serde(default)]
+    pub raw_order: Vec<u16>,
+    #[serde(default)]
+    pub values: BTreeMap<u16, u32>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub limitation_note: Option<String>,
+}
+
+/// HTTP/2 request pseudo-header 的 wire 顺序；只记录 `:method` 这类字段名。
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Http2PseudoHeaderOrderProfile {
+    #[serde(default)]
+    pub available: bool,
+    #[serde(default)]
+    pub order: Vec<String>,
+    #[serde(default)]
+    pub source: Option<String>,
     #[serde(default)]
     pub limitation_note: Option<String>,
 }

@@ -6,7 +6,10 @@ use thiserror::Error;
 
 use super::{
     backend::BackendIntent,
-    http_profile::{AuthLayerProfile, Http2SettingsCapture, HttpLayerProfile},
+    http_profile::{
+        AuthLayerProfile, Http2PseudoHeaderOrderProfile, Http2SettingsCapture,
+        Http2SettingsFrameProfile, HttpLayerProfile,
+    },
     tls_profile::{
         ExtensionOrder, TlsBackend, TlsFieldGap, TlsProfile, TlsVariant, codex_cli_known_gap_fields,
     },
@@ -123,6 +126,11 @@ pub struct FingerprintProfile {
     pub sample_count: u16,
     pub tls: TlsProfile,
     pub h2_settings: Http2SettingsCapture,
+    pub h2_settings_frame: Http2SettingsFrameProfile,
+    pub h2_pseudo_header_capture: Http2PseudoHeaderOrderProfile,
+    pub h2_settings_order: Vec<u16>,
+    pub h2_settings_values: BTreeMap<u16, u32>,
+    pub h2_pseudo_header_order: Vec<String>,
     pub http_layer: HttpLayerProfile,
     pub auth_layer: AuthLayerProfile,
 }
@@ -243,6 +251,11 @@ impl TryFrom<RawFingerprintProfile> for FingerprintProfile {
             sample_count: raw.sample_count,
             tls,
             h2_settings: raw.h2_settings,
+            h2_settings_order: raw.h2_settings_frame.raw_order.clone(),
+            h2_settings_values: raw.h2_settings_frame.values.clone(),
+            h2_pseudo_header_order: raw.h2_pseudo_header_order.order.clone(),
+            h2_settings_frame: raw.h2_settings_frame,
+            h2_pseudo_header_capture: raw.h2_pseudo_header_order,
             http_layer: raw.http_layer,
             auth_layer: raw.auth_layer,
         };
@@ -307,6 +320,25 @@ impl FingerprintProfile {
                     field: "h2_settings.limitation_note",
                 }),
             }
+        }
+        if self.h2_settings_frame.available {
+            push_non_empty(
+                errors,
+                "h2_settings_frame.raw_order",
+                &self.h2_settings_frame.raw_order,
+            );
+            if self.h2_settings_frame.values.is_empty() {
+                errors.push(ProfileValidationError::MissingRequiredField {
+                    field: "h2_settings_frame.values",
+                });
+            }
+        }
+        if self.h2_pseudo_header_capture.available {
+            push_non_empty(
+                errors,
+                "h2_pseudo_header_order.order",
+                &self.h2_pseudo_header_capture.order,
+            );
         }
 
         push_empty(errors, "http_layer.protocol", &self.http_layer.protocol);
@@ -414,6 +446,10 @@ struct RawFingerprintProfile {
     padding_len: u16,
     early_data_enabled: bool,
     h2_settings: Http2SettingsCapture,
+    #[serde(default)]
+    h2_settings_frame: Http2SettingsFrameProfile,
+    #[serde(default)]
+    h2_pseudo_header_order: Http2PseudoHeaderOrderProfile,
     http_layer: HttpLayerProfile,
     auth_layer: AuthLayerProfile,
 }

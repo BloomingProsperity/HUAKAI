@@ -89,6 +89,19 @@ cipher、extension 和 supported group。
 - `settings`：可选，真实 SETTINGS 列表。
 - `limitation_note`：未捕获时必须说明原因。
 
+`h2_settings_frame` 保存可复核的初始 SETTINGS frame wire 信息：
+
+- `available`：是否有真实 frame 数据。
+- `raw_order`：按 wire 顺序记录 setting identifier 数字。
+- `values`：setting identifier 到 32-bit value 的映射。
+- `source` / `limitation_note`：记录抓包来源或不可用原因。
+
+`h2_pseudo_header_order` 保存 request pseudo-header wire 顺序：
+
+- `available`：是否有真实 HEADERS/HPACK 数据。
+- `order`：例如 `:method`、`:authority`、`:scheme`、`:path`。
+- `source` / `limitation_note`：记录抓包来源或不可用原因。
+
 ## HTTP 层字段
 
 `http_layer.protocol` 是模型 API 的业务 HTTP 协议，例如 `http1.1`、
