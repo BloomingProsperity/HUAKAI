@@ -16,7 +16,7 @@ import (
 
 const (
 	DefaultInterval      = 60 * time.Second
-	DefaultWarningWindow = 5 * time.Minute
+	DefaultWarningWindow = 15 * time.Minute
 	DefaultAccountLimit  = int32(100)
 	DefaultMaxAttempts   = 3
 )

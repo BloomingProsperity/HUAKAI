@@ -48,6 +48,10 @@ func WithTickChannel(ch <-chan time.Time) Option {
 	return func(s *Scheduler) { s.ticks = ch }
 }
 
+func WithRefreshQueries(q refreshQueries) Option {
+	return func(s *Scheduler) { s.queryer = q }
+}
+
 func withRefreshQueries(q refreshQueries) Option {
 	return func(s *Scheduler) { s.queryer = q }
 }

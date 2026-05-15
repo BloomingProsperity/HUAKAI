@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -25,7 +26,8 @@ var ErrCredentialFormat = errors.New("provider credential format invalid")
 // 从 provider_accounts JOIN providers 表中读取凭据。
 // 使用 REPEATABLE READ + READ ONLY 事务，与 postgres_registry.go 保持一致。
 type PostgresCredentialVault struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	store *credentialstore.Store
 }
 
 // 编译期接口合规断言。
@@ -37,6 +39,12 @@ func NewPostgresCredentialVault(pool *pgxpool.Pool) *PostgresCredentialVault {
 	return &PostgresCredentialVault{pool: pool}
 }
 
+// NewPostgresCredentialVaultWithStore 优先读取 account_credentials v2；
+// 找不到 v2 行时回落旧 provider_accounts.credentials，便于灰度迁移。
+func NewPostgresCredentialVaultWithStore(pool *pgxpool.Pool, store *credentialstore.Store) *PostgresCredentialVault {
+	return &PostgresCredentialVault{pool: pool, store: store}
+}
+
 // providerAccountRow 是查询结果的内部映射结构。
 type providerAccountRow struct {
 	id              int64
@@ -46,8 +54,8 @@ type providerAccountRow struct {
 	accountType     string
 	enabled         bool
 	credentialState string
-	credentials     []byte  // 原始 JSONB 字节
-	platform        string  // providers.code via JOIN
+	credentials     []byte // 原始 JSONB 字节
+	platform        string // providers.code via JOIN
 }
 
 // Resolve 按 accountID 查询 provider_accounts 和关联的 providers 表，
@@ -59,6 +67,28 @@ type providerAccountRow struct {
 //   - JSONB 解析失败      → ErrCredentialFormat（包装底层错误）
 //   - 数据库基础设施故障  → 包装底层 pgx 错误
 func (v *PostgresCredentialVault) Resolve(ctx context.Context, accountID int64) (Credential, AccountInfo, error) {
+	if v.store != nil {
+		rec, err := v.store.ResolveActive(ctx, accountID)
+		if err == nil {
+			handler, err := v.store.HandlerRegistry().MustLookup(rec.Vendor, rec.AuthMode)
+			if err != nil {
+				return Credential{}, AccountInfo{}, err
+			}
+			material, err := handler.RuntimeMaterial(rec.PlaintextPayload)
+			if err != nil {
+				return Credential{}, AccountInfo{}, err
+			}
+			return mapRuntimeMaterial(material), AccountInfo{
+				AccountID:   rec.ProviderAccountID,
+				Platform:    rec.Vendor,
+				AccountType: rec.AuthMode,
+			}, nil
+		}
+		if !errors.Is(err, credentialstore.ErrCredentialNotFound) {
+			return Credential{}, AccountInfo{}, err
+		}
+	}
+
 	// 开启 REPEATABLE READ + READ ONLY 事务，与 postgres_registry.go 保持一致，
 	// 确保 JOIN 读取在同一快照下完成，避免 mid-read 凭据状态撕裂。
 	tx, err := v.pool.BeginTx(ctx, pgx.TxOptions{
@@ -100,6 +130,30 @@ func (v *PostgresCredentialVault) Resolve(ctx context.Context, accountID int64) 
 	}
 
 	return cred, info, nil
+}
+
+func mapRuntimeMaterial(m credentialstore.RuntimeMaterial) Credential {
+	extra := map[string]string(nil)
+	if len(m.Extra) > 0 {
+		extra = make(map[string]string, len(m.Extra))
+		for k, v := range m.Extra {
+			extra[k] = v
+		}
+	}
+	typ := CredentialType(m.Kind)
+	switch m.Kind {
+	case credentialstore.RuntimeAPIKey:
+		typ = CredentialTypeAPIKey
+	case credentialstore.RuntimeOAuthAccessToken:
+		typ = CredentialTypeOAuthAccessToken
+	case credentialstore.RuntimeSessionToken:
+		typ = CredentialTypeSessionToken
+	case credentialstore.RuntimeAWSSigV4:
+		typ = CredentialTypeAWSSigV4
+	case credentialstore.RuntimeUpstreamPassthrough:
+		typ = CredentialTypeUpstreamPassthrough
+	}
+	return Credential{Type: typ, Value: m.Value, Extra: extra}
 }
 
 // queryProviderAccount 执行 provider_accounts JOIN providers 查询。
