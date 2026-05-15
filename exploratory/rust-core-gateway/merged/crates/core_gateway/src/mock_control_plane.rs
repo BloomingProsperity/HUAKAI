@@ -21,7 +21,7 @@ use tonic::{Request, Response, Status, transport::Server};
 
 use crate::route_proto::v1::{
     AttemptReportRequest, AttemptReportResponse, HealthCheckRequest, HealthCheckResponse,
-    HeartbeatRequest, HeartbeatResponse, RoutePlan, RouteQueryRequest,
+    HeartbeatRequest, HeartbeatResponse, RoutePlan, RouteQueryRequest, UpstreamAuthMaterial,
     route_service_server::{RouteService, RouteServiceServer},
 };
 
@@ -336,7 +336,7 @@ pub fn mock_route_plan(vendor_endpoint: impl Into<String>) -> RoutePlan {
     RoutePlan {
         route_plan_id: "route-plan-mock-1".to_owned(),
         account_id: "account-mock-1".to_owned(),
-        acquisition_token: Bytes::from_static(b"acquisition-token-mock-1"),
+        acquisition_token: Bytes::from_static(b"lease-token-mock-1"),
         vendor: "anthropic".to_owned(),
         upstream_model: "claude-mock".to_owned(),
         vendor_endpoint: vendor_endpoint.into(),
@@ -346,6 +346,12 @@ pub fn mock_route_plan(vendor_endpoint: impl Into<String>) -> RoutePlan {
         attempt_deadline_ms: 30_000,
         max_body_bytes: 4 * 1024 * 1024,
         max_stream_frame_bytes: 64 * 1024,
+        upstream_auth: Some(UpstreamAuthMaterial {
+            material_kind: "bearer_token".to_owned(),
+            material: Bytes::from_static(b"upstream-secret-mock-1"),
+            header_name: String::new(),
+            expires_at_unix_ms: 0,
+        }),
     }
 }
 

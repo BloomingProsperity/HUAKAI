@@ -1,5 +1,5 @@
 // M-rust-5 listener glue
-// 职责: 接收 vendor API 请求, 规划 account route, 调用 proxy engine, 并保留 M-rust-2 fallback。
+// 职责: 接收 vendor API 请求, 规划 account route, 调用 proxy engine。
 
 use axum::{
     Router,
@@ -18,11 +18,13 @@ use crate::{
     GatewayState,
     account_planner::{GatewayProtocol, PlanningError},
     attempt_reporter::{AttemptReportContext, AttemptReportStats, AttemptStatus},
-    proxy_engine::{ProxyError, echo_response},
+    proxy_engine::ProxyError,
+    redaction::redact_untrusted_text,
     request_id::RequestId,
 };
 
 const DEFAULT_CONTENT_TYPE: &str = "application/json";
+const LISTENER_ERROR_LIMIT: usize = 256;
 
 /// 构建业务 endpoint router; `/healthz` 由 lib.rs 保留。
 pub fn build_router() -> Router<GatewayState> {
@@ -85,24 +87,32 @@ async fn handle_gateway_request(
         {
             Ok(planned) => planned,
             Err(PlanningError::ControlPlane(err)) => {
-                warn!(error = %err, "control plane unavailable, using local echo fallback");
+                let err_redacted = redact_untrusted_text(&err.to_string(), LISTENER_ERROR_LIMIT);
+                warn!(error = %err_redacted, "control plane unavailable, failing closed");
                 report_listener_planning_error(
                     &state,
                     &request_id,
                     AttemptStatus::ControlPlaneError,
+                    StatusCode::SERVICE_UNAVAILABLE,
                     "control_plane_error",
-                    &err.to_string(),
+                    &err_redacted,
                 );
-                return echo_response(request, &request_id);
+                return json_error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    &request_id,
+                    "control_plane_unavailable",
+                );
             }
             Err(PlanningError::InvalidRoutePlan(err)) => {
-                warn!(error = %err, "route plan invalid");
+                let err_redacted = redact_untrusted_text(&err, LISTENER_ERROR_LIMIT);
+                warn!(error = %err_redacted, "route plan invalid");
                 report_listener_planning_error(
                     &state,
                     &request_id,
                     AttemptStatus::ControlPlaneError,
-                    "control_plane_error",
-                    &err,
+                    StatusCode::BAD_GATEWAY,
+                    "bad_route_plan",
+                    &err_redacted,
                 );
                 return json_error_response(StatusCode::BAD_GATEWAY, &request_id, "bad_route_plan");
             }
@@ -132,7 +142,8 @@ async fn handle_gateway_request(
 }
 
 fn proxy_error_response(err: ProxyError, request_id: &RequestId) -> Response<Body> {
-    warn!(error = %err, "proxy request failed");
+    let err_redacted = redact_untrusted_text(&err.to_string(), LISTENER_ERROR_LIMIT);
+    warn!(error = %err_redacted, "proxy request failed");
     json_error_response(err.status_code(), request_id, err.code())
 }
 
@@ -140,6 +151,7 @@ fn report_listener_planning_error(
     state: &GatewayState,
     request_id: &RequestId,
     status: AttemptStatus,
+    http_status: StatusCode,
     error_class: &str,
     error_message_redacted: &str,
 ) {
@@ -147,7 +159,7 @@ fn report_listener_planning_error(
     let reporter = state.attempt_reporter().terminal_reporter(context);
     let _ = reporter.report(
         status,
-        Some(StatusCode::BAD_GATEWAY.as_u16()),
+        Some(http_status.as_u16()),
         AttemptReportStats::default(),
         Some(error_class),
         Some(error_message_redacted),
@@ -171,7 +183,10 @@ fn content_length_exceeds_u64(headers: &HeaderMap, max_body_bytes: u64) -> bool 
 }
 
 fn json_error_response(status: StatusCode, request_id: &RequestId, code: &str) -> Response<Body> {
-    let payload = Bytes::from(format!(r#"{{"error":"{code}"}}"#));
+    let payload = Bytes::from(format!(
+        r#"{{"error":"{code}","request_id":"{}"}}"#,
+        request_id.as_str()
+    ));
     let mut response = Response::new(Body::from(payload));
     *response.status_mut() = status;
     response

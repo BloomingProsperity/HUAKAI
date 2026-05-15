@@ -189,7 +189,7 @@ async fn attempt_report_returns_ack() {
             request_id: "request-route-1".to_owned(),
             route_plan_id: "route-plan-mock-1".to_owned(),
             attempt_id: "attempt-1".to_owned(),
-            acquisition_token: Bytes::from_static(b"acquisition-token-mock-1"),
+            acquisition_token: Bytes::from_static(b"lease-token-mock-1"),
             status: "success".to_owned(),
             http_status: 200,
             started_at: 1,
@@ -270,7 +270,7 @@ async fn listener_uses_route_plan_endpoint_to_forward_messages() {
 }
 
 #[tokio::test]
-async fn listener_falls_back_to_echo_when_control_plane_is_down() {
+async fn listener_fails_closed_when_control_plane_is_down() {
     let (endpoint, _addr) = unused_http_endpoint().await;
     let config = test_config(endpoint, 4 * 1024 * 1024, 50, 0, 0);
     let payload = Bytes::from_static(br#"{"fallback":true}"#);
@@ -281,17 +281,57 @@ async fn listener_falls_back_to_echo_when_control_plane_is_down() {
                 .method("POST")
                 .uri("/v1/chat/completions")
                 .header("content-type", "application/json")
+                .header(REQUEST_ID_HEADER, "fail-closed-rid")
                 .body(Body::from(payload.clone()))
                 .expect("request 构建应成功"),
         )
         .await
         .expect("listener 应响应");
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response.headers().get(REQUEST_ID_HEADER).unwrap(),
+        "fail-closed-rid"
+    );
     let body = body::to_bytes(response.into_body(), 1024)
         .await
         .expect("错误响应 body 应可读取");
-    assert_eq!(body, payload);
+    assert_ne!(body, payload);
+    let body_text = std::str::from_utf8(&body).expect("错误响应应为 UTF-8");
+    assert!(body_text.contains("control_plane_unavailable"));
+    assert!(body_text.contains("fail-closed-rid"));
+}
+
+#[tokio::test]
+async fn listener_fail_closed_does_not_echo_sensitive_body() {
+    let (endpoint, _addr) = unused_http_endpoint().await;
+    let config = test_config(endpoint, 4 * 1024 * 1024, 50, 0, 0);
+    let payload = Bytes::from_static(
+        br#"{"messages":[{"role":"user","content":"secret prompt"}],"api_key":"sk-test-sensitive"}"#,
+    );
+
+    let response = build_router(config)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .header(REQUEST_ID_HEADER, "sensitive-fail-rid")
+                .body(Body::from(payload.clone()))
+                .expect("request 构建应成功"),
+        )
+        .await
+        .expect("listener 应响应");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = body::to_bytes(response.into_body(), 1024)
+        .await
+        .expect("错误响应 body 应可读取");
+    assert_ne!(body, payload);
+    let body_text = std::str::from_utf8(&body).expect("错误响应应为 UTF-8");
+    assert!(body_text.contains("control_plane_unavailable"));
+    assert!(!body_text.contains("secret prompt"));
+    assert!(!body_text.contains("sk-test-sensitive"));
 }
 
 #[tokio::test]
@@ -314,7 +354,7 @@ async fn route_cache_default_disabled_queries_control_plane_each_time() {
 }
 
 #[tokio::test]
-async fn route_cache_ttl_enabled_reuses_plan() {
+async fn route_cache_ttl_enabled_still_queries_control_plane_each_time() {
     let mut plan = mock_route_plan("http://127.0.0.1:9");
     plan.route_ttl_ms = 1_000;
     let control_plane = MockControlPlane::spawn(plan).await;
@@ -329,9 +369,9 @@ async fn route_cache_ttl_enabled_reuses_plan() {
     client
         .query_route(route_query())
         .await
-        .expect("第二次 route query 应命中 cache");
+        .expect("第二次 route query 应继续访问 control plane");
 
-    assert_eq!(control_plane.route_queries_seen(), 1);
+    assert_eq!(control_plane.route_queries_seen(), 2);
 }
 
 #[tokio::test]

@@ -8,8 +8,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_build::configure()
         .build_client(true)
         .build_server(true)
+        .skip_debug(".huakai.route.v1.RoutePlan")
+        .skip_debug(".huakai.route.v1.UpstreamAuthMaterial")
+        .skip_debug(".huakai.route.v1.AttemptReportRequest")
         .bytes([
             ".huakai.route.v1.RoutePlan.acquisition_token",
+            ".huakai.route.v1.UpstreamAuthMaterial.material",
             ".huakai.route.v1.AttemptReportRequest.acquisition_token",
         ])
         .compile_protos_with_config(prost_config, &["../../proto/route.proto"], &["../../proto"])?;

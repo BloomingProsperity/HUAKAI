@@ -18,9 +18,11 @@ use core_gateway::{
     },
     build_router,
     config::StartupConfig,
-    mock_control_plane::{MockControlPlane, MockControlPlaneConfig, mock_route_plan},
+    mock_control_plane::{
+        MockControlPlane, MockControlPlaneBehavior, MockControlPlaneConfig, mock_route_plan,
+    },
     route_client::{RouteClient, RouteClientOptions},
-    route_proto::v1::{AttemptReportRequest, RoutePlan},
+    route_proto::v1::{AttemptReportRequest, RoutePlan, UpstreamAuthMaterial},
 };
 use futures_util::StreamExt;
 use tokio::{net::TcpListener, task::JoinHandle};
@@ -77,14 +79,20 @@ fn test_config(control_plane_endpoint: String) -> StartupConfig {
 fn vendor_plan(
     endpoint: impl Into<String>,
     vendor: &str,
-    token: &str,
+    upstream_secret: &str,
     attempt_deadline_ms: u64,
 ) -> RoutePlan {
     let mut plan = mock_route_plan(endpoint);
     plan.vendor = vendor.to_owned();
-    plan.acquisition_token = Bytes::from(token.to_owned());
+    plan.acquisition_token = Bytes::from(format!("lease-token-{upstream_secret}"));
     plan.auth_mode = "bearer".to_owned();
     plan.attempt_deadline_ms = attempt_deadline_ms;
+    plan.upstream_auth = Some(UpstreamAuthMaterial {
+        material_kind: "bearer_token".to_owned(),
+        material: Bytes::from(upstream_secret.to_owned()),
+        header_name: String::new(),
+        expires_at_unix_ms: 0,
+    });
     plan
 }
 
@@ -132,6 +140,21 @@ async fn wait_for_attempt_count(control_plane: &MockControlPlane, min: usize) {
     }
 }
 
+async fn wait_for_reporter_ack(reporter: &AttemptReporter, min: u64) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        if reporter.acked_count() >= min {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "等待 reporter ack_count>={min} 超时, seen={}",
+            reporter.acked_count()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 fn make_report(
     request_id: &str,
     attempt_id: &str,
@@ -155,7 +178,7 @@ async fn listener_success_path_reports_one_success_attempt() {
     let control_plane = MockControlPlane::spawn(vendor_plan(
         upstream.endpoint(),
         "anthropic",
-        "success-token",
+        "upstream-secret-success",
         30_000,
     ))
     .await;
@@ -184,9 +207,77 @@ async fn listener_success_path_reports_one_success_attempt() {
     let report = wait_for_report(&control_plane, "success").await;
     assert_eq!(control_plane.attempt_reports_seen(), 1);
     assert_eq!(report.request_id, "attempt-success-rid");
+    assert_eq!(
+        report.acquisition_token,
+        Bytes::from_static(b"lease-token-upstream-secret-success")
+    );
     assert_eq!(report.http_status, 200);
     assert_eq!(report.bytes_in, payload.len() as u64);
     assert!(report.idempotency_key.starts_with("idem-v7-"));
+}
+
+#[tokio::test]
+async fn listener_control_plane_unavailable_reports_503_control_plane_error() {
+    let control_plane = MockControlPlane::spawn_with_config(
+        MockControlPlaneConfig::new(mock_route_plan("http://127.0.0.1:9"))
+            .with_behavior(MockControlPlaneBehavior::Unavailable),
+    )
+    .await;
+
+    let response = build_router(test_config(control_plane.endpoint()))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-request-id", "attempt-cp-down-rid")
+                .body(Body::from(Bytes::from_static(
+                    br#"{"messages":[{"content":"must not echo"}]}"#,
+                )))
+                .expect("request 构建应成功"),
+        )
+        .await
+        .expect("listener 应响应");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let report = wait_for_report(&control_plane, "control_plane_error").await;
+    assert_eq!(report.request_id, "attempt-cp-down-rid");
+    assert_eq!(
+        report.http_status,
+        StatusCode::SERVICE_UNAVAILABLE.as_u16() as i32
+    );
+    assert_eq!(report.error_class, "control_plane_error");
+}
+
+#[tokio::test]
+async fn listener_bad_route_plan_report_redacts_untrusted_control_plane_error() {
+    let mut plan = mock_route_plan("http://127.0.0.1:9");
+    plan.upstream_auth
+        .as_mut()
+        .expect("mock plan 应带 upstream_auth")
+        .material_kind = "Bearer lease-token-value sk-test-sensitive-value".to_owned();
+    let control_plane = MockControlPlane::spawn(plan).await;
+
+    let response = build_router(test_config(control_plane.endpoint()))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .body(Body::from(Bytes::from_static(b"{}")))
+                .expect("request 构建应成功"),
+        )
+        .await
+        .expect("listener 应响应");
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let report = wait_for_report(&control_plane, "control_plane_error").await;
+    assert_eq!(report.error_class, "bad_route_plan");
+    assert!(!report.error_message_redacted.contains("lease-token-value"));
+    assert!(
+        !report
+            .error_message_redacted
+            .contains("sk-test-sensitive-value")
+    );
+    assert!(report.error_message_redacted.contains("[REDACTED_SECRET]"));
 }
 
 #[tokio::test]
@@ -195,7 +286,7 @@ async fn listener_upstream_5xx_reports_upstream_5xx_attempt() {
     let control_plane = MockControlPlane::spawn(vendor_plan(
         upstream.endpoint(),
         "anthropic",
-        "upstream-5xx-token",
+        "upstream-secret-upstream-5xx",
         30_000,
     ))
     .await;
@@ -232,7 +323,7 @@ async fn listener_timeout_reports_timeout_attempt() {
     let control_plane = MockControlPlane::spawn(vendor_plan(
         upstream.endpoint(),
         "anthropic",
-        "timeout-token",
+        "upstream-secret-timeout",
         40,
     ))
     .await;
@@ -273,7 +364,7 @@ async fn openai_done_stream_reports_success_with_usage() {
     let control_plane = MockControlPlane::spawn(vendor_plan(
         upstream.endpoint(),
         "openai",
-        "openai-done-token",
+        "upstream-secret-openai-done",
         30_000,
     ))
     .await;
@@ -313,7 +404,7 @@ async fn stream_protocol_error_reports_protocol_error_attempt() {
     let control_plane = MockControlPlane::spawn(vendor_plan(
         upstream.endpoint(),
         "openai",
-        "protocol-error-token",
+        "upstream-secret-protocol-error",
         30_000,
     ))
     .await;
@@ -357,7 +448,7 @@ async fn client_cancel_mid_stream_reports_client_cancel_attempt() {
     let control_plane = MockControlPlane::spawn(vendor_plan(
         upstream.endpoint(),
         "openai",
-        "cancel-token",
+        "upstream-secret-cancel",
         30_000,
     ))
     .await;
@@ -470,5 +561,5 @@ async fn reporter_retries_transient_failure_then_acks() {
     let report = wait_for_report(&control_plane, "success").await;
     assert_eq!(report.request_id, "retry-rid");
     assert!(reporter.retry_count() >= 1);
-    assert!(reporter.acked_count() >= 1);
+    wait_for_reporter_ack(&reporter, 1).await;
 }
