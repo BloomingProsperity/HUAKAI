@@ -1,0 +1,13 @@
+# HUAKAI Rust data-plane -> Go control-plane route RPC.
+# 当前 lane 只定义配置形态和 endpoint 构造, 不承载真实证书生命周期。
+
+transport_baseline = "uds"
+uds_socket_path = "/var/run/huakai/route-control.sock"
+
+# SaaS / 多机部署切到 mTLS 时使用:
+# transport_baseline = "mtls"
+# control_plane_endpoint = "https://control-plane.internal:9443"
+# mtls_domain_name = "control-plane.internal"
+# mtls_cert_chain_path = "/etc/huakai/route-client/client-chain.pem"
+# mtls_key_path = "/etc/huakai/route-client/client-key.pem"
+# mtls_ca_cert_path = "/etc/huakai/route-client/ca.pem"

@@ -1,13 +1,16 @@
 // 网关启动期类型化配置 — 来自环境变量, 缺失必填字段立即 fail-fast
 // 标识符保持英文, 注释一律中文
 
-use std::{net::SocketAddr, thread};
+use std::{net::SocketAddr, path::PathBuf, thread};
 
 use http::Uri;
 use serde::Deserialize;
 use tracing_subscriber::filter::LevelFilter;
 
-use crate::error::GatewayError;
+use crate::{
+    error::GatewayError,
+    route_client::{RouteClientMtlsConfig, RouteClientTransportConfig, RouteTransportBaseline},
+};
 
 /// 环境变量前缀
 pub const ENV_PREFIX: &str = "HUAKAI_";
@@ -22,6 +25,18 @@ pub struct StartupConfig {
     pub listen_addr: SocketAddr,
     /// Go control plane 端点 (如 "http://127.0.0.1:9090")
     pub control_plane_endpoint: Uri,
+    /// Rust->Go route RPC transport baseline, 默认 UDS
+    pub transport_baseline: RouteTransportBaseline,
+    /// UDS baseline socket path
+    pub uds_socket_path: PathBuf,
+    /// mTLS server name/SNI override; 未配置时使用 endpoint host
+    pub mtls_domain_name: Option<String>,
+    /// mTLS client cert chain path; 仅 mTLS baseline 必填
+    pub mtls_cert_chain_path: Option<PathBuf>,
+    /// mTLS client private key path; 仅 mTLS baseline 必填
+    pub mtls_key_path: Option<PathBuf>,
+    /// mTLS CA cert path; 仅 mTLS baseline 必填
+    pub mtls_ca_cert_path: Option<PathBuf>,
     /// 日志级别
     pub log_level: LevelFilter,
     /// OTLP 导出端点 (如 "http://127.0.0.1:4317"), 可选
@@ -52,6 +67,18 @@ pub struct StartupConfig {
 struct RawStartupConfig {
     listen_addr: String,
     control_plane_endpoint: String,
+    #[serde(default = "default_transport_baseline")]
+    transport_baseline: String,
+    #[serde(default = "default_uds_socket_path")]
+    uds_socket_path: String,
+    #[serde(default)]
+    mtls_domain_name: Option<String>,
+    #[serde(default)]
+    mtls_cert_chain_path: Option<String>,
+    #[serde(default)]
+    mtls_key_path: Option<String>,
+    #[serde(default)]
+    mtls_ca_cert_path: Option<String>,
     log_level: String,
     /// OTLP 端点可选
     #[serde(default)]
@@ -121,7 +148,37 @@ impl StartupConfig {
                     .to_owned(),
             ));
         }
+        if self.transport_baseline == RouteTransportBaseline::Mtls {
+            self.route_transport_config()?;
+        }
         Ok(())
+    }
+
+    pub fn route_transport_config(&self) -> Result<RouteClientTransportConfig, GatewayError> {
+        match self.transport_baseline {
+            RouteTransportBaseline::Uds => Ok(RouteClientTransportConfig::uds(
+                self.uds_socket_path.clone(),
+            )),
+            RouteTransportBaseline::Mtls => {
+                let mtls = RouteClientMtlsConfig {
+                    endpoint: self.control_plane_endpoint.clone(),
+                    domain_name: self.mtls_domain_name.clone(),
+                    cert_chain_path: required_path(
+                        "HUAKAI_MTLS_CERT_CHAIN_PATH",
+                        &self.mtls_cert_chain_path,
+                    )?,
+                    key_path: required_path("HUAKAI_MTLS_KEY_PATH", &self.mtls_key_path)?,
+                    ca_cert_path: required_path(
+                        "HUAKAI_MTLS_CA_CERT_PATH",
+                        &self.mtls_ca_cert_path,
+                    )?,
+                };
+                Ok(RouteClientTransportConfig::mtls(
+                    self.uds_socket_path.clone(),
+                    mtls,
+                ))
+            }
+        }
     }
 
     fn from_raw(raw: RawStartupConfig) -> Result<Self, GatewayError> {
@@ -132,6 +189,8 @@ impl StartupConfig {
 
         let control_plane_endpoint =
             parse_endpoint("HUAKAI_CONTROL_PLANE_ENDPOINT", &raw.control_plane_endpoint)?;
+        let transport_baseline = RouteTransportBaseline::parse(&raw.transport_baseline)?;
+        let uds_socket_path = PathBuf::from(raw.uds_socket_path);
 
         let log_level = raw
             .log_level
@@ -172,9 +231,15 @@ impl StartupConfig {
             .map(|s| parse_endpoint("HUAKAI_MOCK_UPSTREAM_ENDPOINT", s))
             .transpose()?;
 
-        Ok(Self {
+        let config = Self {
             listen_addr,
             control_plane_endpoint,
+            transport_baseline,
+            uds_socket_path,
+            mtls_domain_name: raw.mtls_domain_name,
+            mtls_cert_chain_path: raw.mtls_cert_chain_path.map(PathBuf::from),
+            mtls_key_path: raw.mtls_key_path.map(PathBuf::from),
+            mtls_ca_cert_path: raw.mtls_ca_cert_path.map(PathBuf::from),
             log_level,
             otlp_endpoint,
             json_logs: raw.json_logs,
@@ -187,7 +252,9 @@ impl StartupConfig {
             control_plane_circuit_breaker_failures: raw.control_plane_circuit_breaker_failures,
             control_plane_circuit_breaker_cooldown_ms: raw
                 .control_plane_circuit_breaker_cooldown_ms,
-        })
+        };
+        config.validate()?;
+        Ok(config)
     }
 }
 
@@ -206,8 +273,22 @@ fn parse_endpoint(name: &str, value: &str) -> Result<Uri, GatewayError> {
     Ok(uri)
 }
 
+fn required_path(name: &str, value: &Option<PathBuf>) -> Result<PathBuf, GatewayError> {
+    value
+        .clone()
+        .ok_or_else(|| GatewayError::Config(format!("{name} is required when mTLS is enabled")))
+}
+
 fn default_json_logs() -> bool {
     true
+}
+
+fn default_transport_baseline() -> String {
+    "uds".to_owned()
+}
+
+fn default_uds_socket_path() -> String {
+    "/var/run/huakai/route-control.sock".to_owned()
 }
 
 fn default_worker_threads() -> usize {
@@ -268,6 +349,11 @@ mod tests {
         assert!(cfg.json_logs);
         assert!(cfg.otlp_endpoint.is_none());
         assert!(cfg.mock_upstream_endpoint.is_none());
+        assert_eq!(cfg.transport_baseline, RouteTransportBaseline::Uds);
+        assert_eq!(
+            cfg.uds_socket_path,
+            PathBuf::from("/var/run/huakai/route-control.sock")
+        );
     }
 
     #[test]
@@ -325,6 +411,25 @@ mod tests {
         env.push(("HUAKAI_LISTEN_ADDR".to_owned(), "not_an_addr".to_owned()));
         let result = StartupConfig::from_env_iter(env);
         assert!(result.is_err(), "非法 listen_addr 应解析失败");
+    }
+
+    #[test]
+    fn config_rejects_invalid_transport_baseline() {
+        let mut env = valid_env();
+        env.push((
+            "HUAKAI_TRANSPORT_BASELINE".to_owned(),
+            "tcp_plaintext".to_owned(),
+        ));
+        let result = StartupConfig::from_env_iter(env);
+        assert!(result.is_err(), "非法 transport_baseline 应 fail-fast");
+    }
+
+    #[test]
+    fn config_rejects_mtls_without_cert_paths() {
+        let mut env = valid_env();
+        env.push(("HUAKAI_TRANSPORT_BASELINE".to_owned(), "mtls".to_owned()));
+        let result = StartupConfig::from_env_iter(env);
+        assert!(result.is_err(), "mTLS 缺少证书路径应 fail-fast");
     }
 
     #[test]
