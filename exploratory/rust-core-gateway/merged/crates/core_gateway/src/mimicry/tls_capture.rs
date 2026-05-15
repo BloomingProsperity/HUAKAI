@@ -1,13 +1,13 @@
-// L2-A2 test-only TLS ClientHello capture helper.
-// 只解析首条明文 TLS handshake record, 用于本地 baseline/diff 自检；不完成 TLS 握手。
+//! Local TLS ClientHello capture helper for OpenSSL mimicry preflight.
+//!
+//! The helper only reads the first plaintext TLS handshake record and never
+//! completes a TLS handshake. It is feature-gated by the parent module.
 
-#[cfg(feature = "mimicry-openssl")]
-pub use core_gateway::mimicry::tls_capture::*;
-
-#[cfg(not(feature = "mimicry-openssl"))]
-#[rustfmt::skip]
-mod local {
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    io::Read,
+    net::{SocketAddr, TcpStream as StdTcpStream},
+    time::Duration,
+};
 
 use thiserror::Error;
 use tokio::{
@@ -103,9 +103,35 @@ pub async fn spawn_capture_once(
     Ok((local_addr, task))
 }
 
-async fn capture_from_listener(
-    listener: TcpListener,
+pub fn capture_from_std_stream(
+    stream: &mut StdTcpStream,
 ) -> Result<CapturedClientHello, CaptureError> {
+    let mut header = [0u8; 5];
+    stream
+        .read_exact(&mut header)
+        .map_err(|source| CaptureError::Io {
+            context: "reading TLS record header",
+            source,
+        })?;
+
+    validate_tls_record_header(&header)?;
+
+    let body_len = u16::from_be_bytes([header[3], header[4]]) as usize;
+    if body_len == 0 {
+        return Err(CaptureError::Invalid("TLS record body length is zero"));
+    }
+    let mut body = vec![0u8; body_len];
+    stream
+        .read_exact(&mut body)
+        .map_err(|source| CaptureError::Io {
+            context: "reading TLS record body",
+            source,
+        })?;
+
+    parse_tls_record_body(&body)
+}
+
+async fn capture_from_listener(listener: TcpListener) -> Result<CapturedClientHello, CaptureError> {
     let (mut stream, _) = time::timeout(ACCEPT_TIMEOUT, listener.accept())
         .await
         .map_err(|_| CaptureError::Timeout("accepting first TLS client"))?
@@ -117,13 +143,7 @@ async fn capture_from_listener(
     let mut header = [0u8; 5];
     read_exact_timeout(&mut stream, &mut header, "reading TLS record header").await?;
 
-    if header[0] != TLS_HANDSHAKE_RECORD {
-        return Err(CaptureError::UnexpectedRecordType(header[0]));
-    }
-    let record_version = u16::from_be_bytes([header[1], header[2]]);
-    if !(0x0301..=0x0304).contains(&record_version) {
-        return Err(CaptureError::UnexpectedRecordVersion(record_version));
-    }
+    validate_tls_record_header(&header)?;
 
     let body_len = u16::from_be_bytes([header[3], header[4]]) as usize;
     if body_len == 0 {
@@ -145,6 +165,17 @@ async fn read_exact_timeout(
         .map_err(|_| CaptureError::Timeout(context))?
         .map(|_| ())
         .map_err(|source| CaptureError::Io { context, source })
+}
+
+fn validate_tls_record_header(header: &[u8; 5]) -> Result<(), CaptureError> {
+    if header[0] != TLS_HANDSHAKE_RECORD {
+        return Err(CaptureError::UnexpectedRecordType(header[0]));
+    }
+    let record_version = u16::from_be_bytes([header[1], header[2]]);
+    if !(0x0301..=0x0304).contains(&record_version) {
+        return Err(CaptureError::UnexpectedRecordVersion(record_version));
+    }
+    Ok(())
 }
 
 fn parse_tls_record_body(record_body: &[u8]) -> Result<CapturedClientHello, CaptureError> {
@@ -334,7 +365,3 @@ impl<'a> Cursor<'a> {
         self.take(len, context)
     }
 }
-}
-
-#[cfg(not(feature = "mimicry-openssl"))]
-pub use local::*;

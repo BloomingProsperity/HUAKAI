@@ -5,22 +5,36 @@
 //! 本文件建立 native OpenSSL async handshake 边界，并先接入 L2-A5.1 的
 //! cipher_suites / ALPN profile 注入。生产 dispatch 接线留给后续 atom。
 
-use std::{error::Error, net::SocketAddr, pin::Pin};
+use std::{
+    error::Error,
+    net::{SocketAddr, TcpListener as StdTcpListener, TcpStream as StdTcpStream},
+    pin::Pin,
+    thread,
+    time::{Duration, Instant},
+};
 
 use openssl::{
     error::ErrorStack,
-    ssl::{Ssl, SslContext, SslContextBuilder, SslMethod, SslVerifyMode},
+    ssl::{
+        Ssl, SslContext, SslContextBuilder, SslMethod, SslStream as BlockingSslStream,
+        SslVerifyMode,
+    },
     x509::X509,
 };
 use thiserror::Error;
 use tokio::net::TcpStream;
-use tokio_openssl::SslStream;
+use tokio_openssl::SslStream as TokioSslStream;
 
-use super::FingerprintProfile;
+use super::{FingerprintProfile, tls_capture};
+
+const OPENSSL_NATIVE_EC_POINT_FORMATS: &[u8] = &[0, 1, 2];
+const OPENSSL_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(10);
+const OPENSSL_PREFLIGHT_SNI: &str = "localhost";
 
 #[derive(Debug)]
 pub struct OpenSslMimicryAdapter {
     ssl_ctx: SslContext,
+    preflight_passed: bool,
 }
 
 #[derive(Debug, Error)]
@@ -37,6 +51,16 @@ pub enum OpenSslAdapterError {
     UnsupportedSigalg(u16),
     #[error("failed to apply OpenSSL fingerprint profile: {0}")]
     ProfileApplyFailed(String),
+    #[error(
+        "OpenSSL runtime preflight failed for {field}: expected {expected:?}, actual {actual:?}"
+    )]
+    PreflightFailed {
+        field: &'static str,
+        expected: Vec<u8>,
+        actual: Vec<u8>,
+    },
+    #[error("OpenSSL runtime preflight capture failed: {0}")]
+    PreflightCaptureFailed(String),
     #[error("failed to complete OpenSSL TLS handshake")]
     TlsHandshakeFailed(#[source] Box<dyn Error + Send + Sync>),
 }
@@ -50,6 +74,7 @@ impl OpenSslMimicryAdapter {
 
         Ok(Self {
             ssl_ctx: builder.build(),
+            preflight_passed: false,
         })
     }
 
@@ -62,10 +87,15 @@ impl OpenSslMimicryAdapter {
         apply_alpn(&mut builder, profile)?;
         apply_supported_groups(&mut builder, profile)?;
         apply_signature_algorithms(&mut builder, profile)?;
+        apply_ec_point_formats(&mut builder, profile)?;
 
-        Ok(Self {
+        let mut adapter = Self {
             ssl_ctx: builder.build(),
-        })
+            preflight_passed: false,
+        };
+        adapter.run_ec_point_formats_preflight()?;
+        adapter.preflight_passed = true;
+        Ok(adapter)
     }
 
     pub fn new_with_extra_trust_anchor(ca_cert: X509) -> Result<Self, OpenSslAdapterError> {
@@ -80,14 +110,19 @@ impl OpenSslMimicryAdapter {
 
         Ok(Self {
             ssl_ctx: builder.build(),
+            preflight_passed: false,
         })
+    }
+
+    pub const fn preflight_passed(&self) -> bool {
+        self.preflight_passed
     }
 
     pub async fn connect(
         &self,
         target: SocketAddr,
         sni: &str,
-    ) -> Result<SslStream<TcpStream>, OpenSslAdapterError> {
+    ) -> Result<TokioSslStream<TcpStream>, OpenSslAdapterError> {
         let tcp_stream = TcpStream::connect(target)
             .await
             .map_err(OpenSslAdapterError::ConnectFailed)?;
@@ -97,13 +132,63 @@ impl OpenSslMimicryAdapter {
         ssl.set_hostname(sni).map_err(tls_error)?;
         ssl.param_mut().set_host(sni).map_err(tls_error)?;
 
-        let mut tls_stream = SslStream::new(ssl, tcp_stream).map_err(tls_error)?;
+        let mut tls_stream = TokioSslStream::new(ssl, tcp_stream).map_err(tls_error)?;
         Pin::new(&mut tls_stream)
             .connect()
             .await
             .map_err(tls_error)?;
 
         Ok(tls_stream)
+    }
+
+    fn run_ec_point_formats_preflight(&self) -> Result<(), OpenSslAdapterError> {
+        let listener = StdTcpListener::bind("127.0.0.1:0").map_err(|source| {
+            OpenSslAdapterError::PreflightCaptureFailed(format!(
+                "binding local capture listener failed: {source}"
+            ))
+        })?;
+        listener.set_nonblocking(true).map_err(|source| {
+            OpenSslAdapterError::PreflightCaptureFailed(format!(
+                "setting local capture listener nonblocking failed: {source}"
+            ))
+        })?;
+        let capture_addr = listener.local_addr().map_err(|source| {
+            OpenSslAdapterError::PreflightCaptureFailed(format!(
+                "reading local capture listener address failed: {source}"
+            ))
+        })?;
+
+        let capture_thread = thread::spawn(move || capture_first_client_hello(listener));
+        let client_result = drive_preflight_client(&self.ssl_ctx, capture_addr);
+
+        let captured = capture_thread
+            .join()
+            .map_err(|_| {
+                OpenSslAdapterError::PreflightCaptureFailed(
+                    "local capture thread panicked".to_owned(),
+                )
+            })?
+            .map_err(|capture_error| {
+                let client_context = client_result
+                    .as_ref()
+                    .err()
+                    .map(|error| format!("; client_result={error}"))
+                    .unwrap_or_default();
+                OpenSslAdapterError::PreflightCaptureFailed(format!(
+                    "{capture_error}{client_context}"
+                ))
+            })?;
+
+        let actual = captured.ec_point_formats;
+        if actual == OPENSSL_NATIVE_EC_POINT_FORMATS {
+            return Ok(());
+        }
+
+        Err(OpenSslAdapterError::PreflightFailed {
+            field: "ec_point_formats",
+            expected: OPENSSL_NATIVE_EC_POINT_FORMATS.to_vec(),
+            actual,
+        })
     }
 }
 
@@ -226,6 +311,77 @@ fn apply_signature_algorithms(
                 "set_sigalgs_list failed for signature_algorithms: {error}"
             ))
         })
+}
+
+fn apply_ec_point_formats(
+    _builder: &mut SslContextBuilder,
+    profile: &FingerprintProfile,
+) -> Result<(), OpenSslAdapterError> {
+    if profile.tls.ec_point_formats == OPENSSL_NATIVE_EC_POINT_FORMATS {
+        return Ok(());
+    }
+
+    // rust-openssl / OpenSSL 当前不暴露 setter，且 custom extension 不能覆盖内建 type 11。
+    Err(OpenSslAdapterError::ProfileApplyFailed(format!(
+        "unsupported ec_point_formats {:?}; OpenSSL native client profile only exposes {:?}",
+        profile.tls.ec_point_formats, OPENSSL_NATIVE_EC_POINT_FORMATS
+    )))
+}
+
+fn capture_first_client_hello(
+    listener: StdTcpListener,
+) -> Result<tls_capture::CapturedClientHello, tls_capture::CaptureError> {
+    let started = Instant::now();
+    loop {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                stream
+                    .set_read_timeout(Some(OPENSSL_PREFLIGHT_TIMEOUT))
+                    .map_err(|source| tls_capture::CaptureError::Io {
+                        context: "setting TLS capture read timeout",
+                        source,
+                    })?;
+                return tls_capture::capture_from_std_stream(&mut stream);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if started.elapsed() >= OPENSSL_PREFLIGHT_TIMEOUT {
+                    return Err(tls_capture::CaptureError::Timeout(
+                        "accepting first TLS client",
+                    ));
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(source) => {
+                return Err(tls_capture::CaptureError::Io {
+                    context: "accepting first TLS client",
+                    source,
+                });
+            }
+        }
+    }
+}
+
+fn drive_preflight_client(
+    ssl_ctx: &SslContext,
+    target: SocketAddr,
+) -> Result<(), OpenSslAdapterError> {
+    let tcp_stream = StdTcpStream::connect(target).map_err(OpenSslAdapterError::ConnectFailed)?;
+    tcp_stream
+        .set_read_timeout(Some(OPENSSL_PREFLIGHT_TIMEOUT))
+        .map_err(OpenSslAdapterError::ConnectFailed)?;
+    tcp_stream
+        .set_write_timeout(Some(OPENSSL_PREFLIGHT_TIMEOUT))
+        .map_err(OpenSslAdapterError::ConnectFailed)?;
+
+    let mut ssl = Ssl::new(ssl_ctx).map_err(tls_error)?;
+    ssl.set_connect_state();
+    ssl.set_hostname(OPENSSL_PREFLIGHT_SNI).map_err(tls_error)?;
+    ssl.param_mut()
+        .set_host(OPENSSL_PREFLIGHT_SNI)
+        .map_err(tls_error)?;
+
+    let mut tls_stream = BlockingSslStream::new(ssl, tcp_stream).map_err(tls_error)?;
+    tls_stream.connect().map_err(tls_error)
 }
 
 fn cipher_id_to_name(id: u16) -> Option<&'static str> {
