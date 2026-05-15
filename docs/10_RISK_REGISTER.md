@@ -42,7 +42,7 @@ Each high or release-blocking risk must map to mitigation, test coverage, and re
 
 - **R-SEC-002** (Rust 数据面 / 控制面 transport, HIGH)：保留 Open，前置条件已并入 `docs/plans/2026-05-15-r-3-r-e-mainline-codex.md` 的 R-E 切换闸门（必须先实施 mTLS / UDS / 本地认证 transport）。Last triage 2026-05-15。下一步:UDS vs TCP+mTLS 设计决策点在 R-E plan OCAW D1。
 - **R-TRANSPORT-001** (Exact TLS mimicry patch burden, HIGH)：保留 Open。L2-A5 系列已落 feature flag + KnownGap 严格 fail-fast + provenance 记录；未来 OpenSSL upstream 升级时仍需打 patch 的风险无法零。Last triage 2026-05-15。下一步:补 OpenSSL patch policy 文 + 真上游回放回归定时任务（R-E ramp Phase 2 之前必须就位）。
-- **R-LIC-003** (GPL/LGPL runtime dep creep, HIGH)：保留 Open。本轮 γ lane `cargo deny` 因沙箱网络受限未完成；fallback `cargo tree --edges=normal | grep -Ei 'gpl|lgpl|agpl'` 在 default 与 mimicry-openssl/mimicry-http2-fork feature graph 上**均未命中**任何 GPL/LGPL/AGPL 包名（弱证据）。Last triage 2026-05-15。下一步:在有网络的环境里实跑 cargo deny + 写 deny.toml + CI 接入；额外把 `wreq-util` / `rquest-util` 显式写入 deny.toml ban 列表。
+- **R-LIC-003** (GPL/LGPL runtime dep creep, HIGH)：保留 Open。Round 2-A deny 修复已确认 `webpki-roots 1.0.7` 使用 SPDX 标识 `CDLA-Permissive-2.0`；该许可证按 permissive 数据许可加入 `deny.toml` allow-list，不触发 GPL/LGPL/AGPL/copyleft 路径。`protobuf 2.28.0` 命中 `RUSTSEC-2024-0437`，cargo-deny 给出的修复线为 `>=3.7.2`；当前由 `prometheus 0.13.4` 默认 feature 拉入且 `cargo update -p protobuf --offline` 无法升出 2.x，处置为关闭 `prometheus` 默认 feature，保留文本 scrape 指标并移除 vulnerable transitive dependency，未添加 advisory ignore。Last triage 2026-05-15。下一步:保持 `cargo deny check` 作为 R-LIC-003 gate；`wreq-util` / `rquest-util` ban 不放松。
 
 证据收敛文档：
 - 详细 mitigation 收敛 + 命令清单：[docs/reviews/2026-05-15-high-risks-mitigation-codex.md](reviews/2026-05-15-high-risks-mitigation-codex.md)
