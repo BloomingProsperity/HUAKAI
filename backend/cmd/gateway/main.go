@@ -41,9 +41,11 @@ import (
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker/adapters"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	obsdlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
@@ -84,8 +86,10 @@ type deps struct {
 	settler         billing.Settler
 	forwarder       *gateway.StreamForwarder
 	credentialVault provider.CredentialVault
+	credentialStore *credentialstore.Store
 	dispatcher      *gateway.UpstreamDispatcher
 	responseCache   l2cache.Store
+	dlqService      *obsdlq.Service
 	inboundAuth     *auth.APIKeyResolver
 	auditLedger     auditledger.Ledger
 	auditSigner     *sign.Signer
@@ -107,6 +111,14 @@ func (d *deps) AdminObservabilityAuth() gatewayhttp.AdminObservabilityAuth {
 
 func (d *deps) AdminObservabilityStore() gatewayhttp.AdminObservabilityStore {
 	return d.queries
+}
+
+func (d *deps) AdminDLQAuth() gatewayhttp.AdminDLQAuth {
+	return d.adminAuth
+}
+
+func (d *deps) AdminDLQStore() gatewayhttp.AdminDLQStore {
+	return d.dlqService
 }
 
 func run(logger *zap.Logger) error {
@@ -133,6 +145,12 @@ func run(logger *zap.Logger) error {
 	defer pgPool.Close()
 
 	q := db.New(pgPool)
+	credentialKeys, err := loadCredentialKeyProvider()
+	if err != nil {
+		return fmt.Errorf("load credential encryption key: %w", err)
+	}
+	credentialModeRegistry := credentialstore.DefaultHandlerRegistry()
+	credentialStore := credentialstore.NewStore(pgPool, credentialKeys, credentialModeRegistry)
 
 	// M6 main-wire: 按 PoolSelectorConfig 装配 selector。 default 模式等价现状
 	// (零回归); shadow / canary / pasr-* 启动 PASR 基础设施 (SegmentTable +
@@ -159,6 +177,17 @@ func run(logger *zap.Logger) error {
 		zap.Int64("size_bytes", cacheCfg.SizeBytes),
 		zap.Duration("ttl", cacheCfg.TTL),
 	)
+	obsDLQCfg, err := config.LoadObsDLQ()
+	if err != nil {
+		return fmt.Errorf("load obs DLQ config: %w", err)
+	}
+	logger.Info("observability DLQ config loaded",
+		zap.Bool("enabled", obsDLQCfg.Enabled),
+		zap.Bool("replica_configured", obsDLQCfg.ReplicaDSN != ""),
+		zap.Int("high_workers", obsDLQCfg.HighWorkers),
+		zap.Int("medium_workers", obsDLQCfg.MediumWorkers),
+		zap.Int("low_workers", obsDLQCfg.LowWorkers),
+	)
 	selector, selectorCleanup, err := buildSelector(ctx, q, pgPool, selectorCfg, logger)
 	if err != nil {
 		return fmt.Errorf("build selector: %w", err)
@@ -173,13 +202,40 @@ func run(logger *zap.Logger) error {
 	if err != nil {
 		return fmt.Errorf("build audit ledger: %w", err)
 	}
+	dlqStore := obsdlq.NewStore(pgPool)
+	dlqService := obsdlq.NewService(dlqStore, obsdlq.WithPolicy(obsdlq.RetryPolicy{
+		BaseBackoff: obsDLQCfg.BaseBackoff,
+		CapBackoff:  obsDLQCfg.CapBackoff,
+		MaxAttempts: obsDLQCfg.MaxAttempts,
+		DLQAfter:    obsDLQCfg.DLQAfter,
+	}))
+	dlqService.Register(obsdlq.EventKindUsageRecord, obsdlq.NewUsageRecordHandler(pgPool))
+	replicaTarget := ""
+	var closeReplica func()
+	if obsDLQCfg.ReplicaDSN != "" {
+		replicaTarget = "postgres"
+		replicaHandler, cleanup := obsdlq.NewLazyPostgresReplicaHandler(obsDLQCfg.ReplicaDSN)
+		closeReplica = cleanup
+		dlqService.Register(obsdlq.EventKindBillingEventReplica, replicaHandler)
+		dlqService.Register(obsdlq.EventKindAuditEventReplica, replicaHandler)
+	}
+	if closeReplica != nil {
+		defer closeReplica()
+	}
+	dlqWorker := obsdlq.NewWorker(dlqService, obsdlq.WorkerConfig{
+		HighWorkers:   obsDLQCfg.HighWorkers,
+		MediumWorkers: obsDLQCfg.MediumWorkers,
+		LowWorkers:    obsDLQCfg.LowWorkers,
+		LeaseTTL:      obsDLQCfg.LeaseTTL,
+		IdleSleep:     time.Second,
+	})
 
 	d := &deps{
 		cfg:       cfg,
 		queries:   q,
 		selector:  selector,
 		claimGate: billing.NewClaimGate(pgPool),
-		settler:   billing.NewSettler(pgPool),
+		settler:   billing.NewSettler(pgPool, billing.WithDLQStore(dlqStore), billing.WithReplicaTarget(replicaTarget)),
 		forwarder: &gateway.StreamForwarder{
 			// 协议适配器注册表：按 ForwardRequest.ProtocolFamily 选语义层 adapter。
 			// 当前注册：详见 gateway.BuildDefaultProtocolAdapterRegistry。
@@ -198,9 +254,11 @@ func run(logger *zap.Logger) error {
 			AuditLedger:      auditLedger,
 			Signer:           auditSigner,
 		},
-		// 生产 vault：从 provider_accounts / providers 读取账号凭据。
-		credentialVault: provider.NewPostgresCredentialVault(pgPool),
+		// 生产 vault：优先读取 account_credentials v2；旧 JSONB 仅作迁移回退。
+		credentialVault: provider.NewPostgresCredentialVaultWithStore(pgPool, credentialStore),
+		credentialStore: credentialStore,
 		responseCache:   responseCache,
+		dlqService:      dlqService,
 		dispatcher: &gateway.UpstreamDispatcher{
 			Adapters:         registrydefault.Build(),
 			TransportFactory: transport.NewFactory(mimicryRegistry),
@@ -238,22 +296,21 @@ func run(logger *zap.Logger) error {
 		return fmt.Errorf("admin bootstrap: %w", err)
 	}
 
-	refreshRegistry := credentialworker.NewAdapterRegistry()
-	if err := registerCredentialRefreshAdapters(refreshRegistry); err != nil {
-		return fmt.Errorf("register credential refresh adapters: %w", err)
-	}
-
-	// Q3 credential refresh worker：真 vendor 走 OAuth adapter；Owner 2026-05-09
-	// scope 外 vendor 显式 mock-only，避免再把占位壳当生产刷新路径。
+	// F-AUTH-005 v2：按 (vendor, auth_mode) 扫 account_credentials，
+	// 15 个 Owner 指定模式默认注册，刷新窗口按 OCAW-34 为 15 分钟。
 	credentialScheduler := credentialworker.NewScheduler(
 		q,
 		auth.NewStormController(q),
 		auditSigner,
-		credentialworker.NewRegistryRefresher(refreshRegistry, credentialworker.NewPostgresRefreshStore(pgPool)),
+		credentialworker.NewAccountCredentialRefresher(credentialStore, credentialworker.DefaultModeAdapterRegistry()),
 		credentialworker.WithAuditLedger(auditLedger),
+		credentialworker.WithRefreshQueries(credentialworker.NewAccountCredentialRefreshQueries(pgPool)),
 	)
 	if err := credentialScheduler.Start(ctx); err != nil {
 		return fmt.Errorf("start credential refresh scheduler: %w", err)
+	}
+	if obsDLQCfg.Enabled {
+		dlqWorker.Start(ctx)
 	}
 
 	router := chi.NewRouter()
@@ -298,6 +355,10 @@ func run(logger *zap.Logger) error {
 	credentialStopCtx, credentialStopCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer credentialStopCancel()
 	credentialStopErr := credentialScheduler.Stop(credentialStopCtx)
+	var dlqStopErr error
+	if obsDLQCfg.Enabled {
+		dlqStopErr = dlqWorker.Stop(credentialStopCtx)
+	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
@@ -306,6 +367,9 @@ func run(logger *zap.Logger) error {
 	}
 	if credentialStopErr != nil {
 		return fmt.Errorf("stop credential refresh scheduler: %w", credentialStopErr)
+	}
+	if dlqStopErr != nil {
+		return fmt.Errorf("stop observability DLQ worker: %w", dlqStopErr)
 	}
 	return nil
 }
@@ -331,6 +395,22 @@ func registerCredentialRefreshAdapters(registry *credentialworker.AdapterRegistr
 		}
 	}
 	return nil
+}
+
+func loadCredentialKeyProvider() (credentialstore.KeyProvider, error) {
+	keyID := strings.TrimSpace(os.Getenv("HUAKAI_CREDENTIAL_KEY_ID"))
+	if keyID == "" {
+		keyID = "local-v1"
+	}
+	raw := strings.TrimSpace(os.Getenv("HUAKAI_CREDENTIAL_KEY_B64"))
+	if raw == "" {
+		return nil, fmt.Errorf("%w: HUAKAI_CREDENTIAL_KEY_B64", credentialstore.ErrKeyUnavailable)
+	}
+	material, err := credentialstore.DecodeKeyMaterial(raw)
+	if err != nil {
+		return nil, err
+	}
+	return credentialstore.NewStaticKeyProvider(keyID, material)
 }
 
 func loadMimicryTemplateRegistry(logger *zap.Logger) (*mimicry.TemplateRegistry, error) {
@@ -478,8 +558,14 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	// Admin: Provider Account writes for the reverse-proxy main path Q1.
 	r.Route("/v1/admin/pool-accounts", func(r chi.Router) {
 		gatewayhttp.MountAdminPoolAccountRoutes(r, gatewayhttp.AdminPoolAccountDeps{
-			Auth:  d.adminAuth,
-			Store: d.queries,
+			Auth:        d.adminAuth,
+			Store:       d.queries,
+			Credentials: d.credentialStore,
+		})
+		gatewayhttp.MountAdminCredentialRoutes(r, gatewayhttp.AdminCredentialDeps{
+			Auth:        d.adminAuth,
+			Credentials: d.credentialStore,
+			AuditStore:  d.queries,
 		})
 	})
 
@@ -495,7 +581,9 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Get("/admin/v1/usage", gatewayhttp.NewUsageHandler(d))
 	r.Get("/admin/v1/billing/claims", gatewayhttp.NewClaimsHandler(d))
 	r.Get("/admin/v1/audit-events", gatewayhttp.NewAuditEventsHandler(d))
-	r.Post("/admin/v1/usage-record-dlq/{id}/replay", notImplemented("F-OBS-001 DLQ replay"))
+	r.Get("/admin/v1/dlq/{handler}", gatewayhttp.NewAdminDLQListHandler(d))
+	r.Post("/admin/v1/dlq/{id}/replay", gatewayhttp.NewAdminDLQReplayHandler(d))
+	r.Post("/admin/v1/usage-record-dlq/{id}/replay", gatewayhttp.NewAdminDLQReplayHandler(d))
 	r.Route("/admin/v1/cache/l2", func(r chi.Router) {
 		gatewayhttp.MountAdminL2CacheRoutes(r, gatewayhttp.AdminL2CacheDeps{
 			Auth:  d.adminAuth,

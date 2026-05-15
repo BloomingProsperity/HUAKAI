@@ -2,8 +2,10 @@ package billing
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,6 +15,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 )
 
@@ -23,15 +26,36 @@ var (
 )
 
 type DefaultSettler struct {
-	pool *pgxpool.Pool
-	q    *db.Queries
+	pool          *pgxpool.Pool
+	q             *db.Queries
+	dlqStore      *dlq.Store
+	replicaTarget string
 }
 
-func NewSettler(pool *pgxpool.Pool) *DefaultSettler {
+type SettlerOption func(*DefaultSettler)
+
+func WithDLQStore(store *dlq.Store) SettlerOption {
+	return func(s *DefaultSettler) { s.dlqStore = store }
+}
+
+func WithReplicaTarget(target string) SettlerOption {
+	return func(s *DefaultSettler) {
+		target = strings.TrimSpace(target)
+		if target != "" {
+			s.replicaTarget = target
+		}
+	}
+}
+
+func NewSettler(pool *pgxpool.Pool, opts ...SettlerOption) *DefaultSettler {
 	if pool == nil {
 		return &DefaultSettler{pool: nil}
 	}
-	return &DefaultSettler{pool: pool, q: db.New(pool)}
+	s := &DefaultSettler{pool: pool, q: db.New(pool), dlqStore: dlq.NewStore(pool)}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*SettleResult, error) {
@@ -75,13 +99,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 		requestedAt = time.Now().UTC()
 	}
 
-	// Phase B.5 v0.1: synchronous usage_record write only. Per spec
-	// USAGE_RECORD_WRITE_FAIL (T2-INV-34..37): if this insert fails the whole
-	// Tx2 rolls back and no audit billing_event survives. The DLQ + async
-	// retry path that preserves the audit trail is DEFERRED-PHASE-4.5 per
-	// docs/specs/_invariants/F-OBS-001-tx2-invariants-checklist.md and
-	// docs/plans/2026-04-29-phase-b5-settler.md (out-of-scope list).
-	if _, err := qtx.InsertUsageRecord(ctx, db.InsertUsageRecordParams{
+	usageParams := db.InsertUsageRecordParams{
 		TenantID:              claim.TenantID,
 		ClaimID:               claim.ID,
 		APIKeyID:              coalesceInt64(req.APIKeyID, claim.APIKeyID),
@@ -114,13 +132,11 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 		UpstreamModel:         nullableString(req.UpstreamModel),
 		Stream:                req.Stream,
 		SnapshotVersion:       nullableString(req.SnapshotVersion),
-	}); err != nil {
-		return nil, fmt.Errorf("billing: insert usage record: %w", err)
 	}
 
 	endClass := normalizeEndClass(req.Draft.EndClass, req.Stream)
 	usageSource := normalizeUsageSource(req.Draft.UsageSource)
-	if _, err := qtx.InsertBillingEvent(ctx, db.InsertBillingEventParams{
+	billingEventParams := db.InsertBillingEventParams{
 		TenantID:         claim.TenantID,
 		ClaimID:          claim.ID,
 		EventType:        "claim_committed",
@@ -129,8 +145,16 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 		EndClass:         &endClass,
 		UsageSource:      &usageSource,
 		Fingerprint:      coalesceString(req.Fingerprint, claim.RequestFingerprint),
-	}); err != nil {
+	}
+	billingEvent, err := qtx.InsertBillingEvent(ctx, billingEventParams)
+	if err != nil {
 		return nil, fmt.Errorf("billing: insert billing event: %w", err)
+	}
+	if err := s.enqueueBillingEventReplica(ctx, tx, billingEvent, billingEventParams); err != nil {
+		return nil, err
+	}
+	if err := s.insertUsageRecordOrDLQ(ctx, tx, qtx, usageParams, "usage_record_insert_failed"); err != nil {
+		return nil, err
 	}
 
 	// TODO: outbox emission deferred until Phase 4.5; CrossThreshold callback hook is in SettleRequest.OutboxEmitter func() bool - when true, an outbox row is inserted.
@@ -226,7 +250,7 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 	}
 	abortEndClass := "unknown_termination"
 	abortUsageSource := string(gateway.UsageSourceInferred)
-	if _, err := qtx.InsertBillingEvent(ctx, db.InsertBillingEventParams{
+	abortEventParams := db.InsertBillingEventParams{
 		TenantID:         tenantID,
 		ClaimID:          claimID,
 		EventType:        "claim_aborted",
@@ -235,8 +259,13 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 		EndClass:         &abortEndClass,
 		UsageSource:      &abortUsageSource,
 		Fingerprint:      fingerprint,
-	}); err != nil {
+	}
+	abortEvent, err := qtx.InsertBillingEvent(ctx, abortEventParams)
+	if err != nil {
 		return fmt.Errorf("billing: insert abort billing event: %w", err)
+	}
+	if err := s.enqueueBillingEventReplica(ctx, tx, abortEvent, abortEventParams); err != nil {
+		return err
 	}
 
 	// Audit-grade Usage Record on abort path (T2-INV-42): every Tx2 commit,
@@ -247,7 +276,7 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 	if providerAccountID != nil && acquisitionToken.Valid {
 		var tokAbort uuid.UUID
 		copy(tokAbort[:], acquisitionToken.Bytes[:])
-		if _, err := qtx.InsertUsageRecord(ctx, db.InsertUsageRecordParams{
+		usageParams := db.InsertUsageRecordParams{
 			TenantID:              tenantID,
 			ClaimID:               claimID,
 			APIKeyID:              apiKeyID,
@@ -268,8 +297,9 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 			ProtocolLoss:          []byte("[]"),
 			RequestedAt:           pgTimestamp(time.Now().UTC()),
 			RequestedModel:        requestedModel,
-		}); err != nil {
-			return fmt.Errorf("billing: insert abort usage record: %w", err)
+		}
+		if err := s.insertUsageRecordOrDLQ(ctx, tx, qtx, usageParams, "abort_usage_record_insert_failed"); err != nil {
+			return err
 		}
 	}
 
@@ -319,8 +349,145 @@ func (s *DefaultSettler) classifySettleNoRows(ctx context.Context, tx pgx.Tx, re
 	return ErrClaimNotReserving
 }
 
+func (s *DefaultSettler) insertUsageRecordOrDLQ(ctx context.Context, tx pgx.Tx, qtx *db.Queries, params db.InsertUsageRecordParams, failurePrefix string) error {
+	if _, err := tx.Exec(ctx, "SAVEPOINT huakai_usage_record_insert"); err != nil {
+		return fmt.Errorf("billing: create usage savepoint: %w", err)
+	}
+	if _, err := qtx.InsertUsageRecord(ctx, params); err == nil {
+		if _, releaseErr := tx.Exec(ctx, "RELEASE SAVEPOINT huakai_usage_record_insert"); releaseErr != nil {
+			return fmt.Errorf("billing: release usage savepoint: %w", releaseErr)
+		}
+		return nil
+	} else {
+		if ctx.Err() != nil {
+			return fmt.Errorf("billing: insert usage record: %w", err)
+		}
+		usageErr := err
+		if _, rollbackErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT huakai_usage_record_insert"); rollbackErr != nil {
+			return fmt.Errorf("billing: rollback usage savepoint after %v: %w", usageErr, rollbackErr)
+		}
+		if _, releaseErr := tx.Exec(ctx, "RELEASE SAVEPOINT huakai_usage_record_insert"); releaseErr != nil {
+			return fmt.Errorf("billing: release rolled-back usage savepoint: %w", releaseErr)
+		}
+		if s.dlqStore == nil {
+			return fmt.Errorf("billing: insert usage record: %w", usageErr)
+		}
+		payload, marshalErr := marshalUsageRecordPayload(params)
+		if marshalErr != nil {
+			return fmt.Errorf("billing: marshal usage DLQ payload: %w", marshalErr)
+		}
+		_, enqueueErr := s.dlqStore.EnqueueTx(ctx, tx, dlq.Event{
+			TenantID:       params.TenantID,
+			ClaimID:        params.ClaimID,
+			EventKind:      dlq.EventKindUsageRecord,
+			Lane:           dlq.LaneHigh,
+			Payload:        payload,
+			FailureReason:  failurePrefix + ": " + usageErr.Error(),
+			IdempotencyKey: fmt.Sprintf("usage_record:%d:%d", params.TenantID, params.ClaimID),
+			SourceTable:    "usage_records",
+			SourceID:       params.ClaimID,
+		})
+		if enqueueErr != nil {
+			return fmt.Errorf("billing: enqueue usage DLQ after insert failure: %w", enqueueErr)
+		}
+		return nil
+	}
+}
+
+func (s *DefaultSettler) enqueueBillingEventReplica(ctx context.Context, tx pgx.Tx, row db.InsertBillingEventRow, params db.InsertBillingEventParams) error {
+	if s.replicaTarget == "" {
+		return nil
+	}
+	if s.dlqStore == nil {
+		return fmt.Errorf("billing: replica intent configured without DLQ store")
+	}
+	payload, err := json.Marshal(dlq.BillingEventReplicaPayload{
+		BillingEventID:   row.ID,
+		TenantID:         params.TenantID,
+		ClaimID:          params.ClaimID,
+		EventType:        params.EventType,
+		ActualCost:       params.ActualCost.StringFixed(8),
+		ActualCostSigned: params.ActualCostSigned.StringFixed(8),
+		EndClass:         params.EndClass,
+		UsageSource:      params.UsageSource,
+		Fingerprint:      params.Fingerprint,
+		OccurredAt:       timestampString(row.OccurredAt),
+	})
+	if err != nil {
+		return fmt.Errorf("billing: marshal billing replica payload: %w", err)
+	}
+	_, err = s.dlqStore.EnqueueTx(ctx, tx, dlq.Event{
+		TenantID:       params.TenantID,
+		ClaimID:        params.ClaimID,
+		EventKind:      dlq.EventKindBillingEventReplica,
+		Lane:           dlq.LaneHigh,
+		Payload:        payload,
+		FailureReason:  "replica_pending",
+		ReplicaTarget:  s.replicaTarget,
+		ReplicaStatus:  dlq.ReplicaStatusPending,
+		IdempotencyKey: fmt.Sprintf("billing_event_replica:%d:%d", params.TenantID, row.ID),
+		SourceTable:    "billing_events",
+		SourceID:       row.ID,
+	})
+	if err != nil {
+		return fmt.Errorf("billing: enqueue billing replica intent: %w", err)
+	}
+	return nil
+}
+
+func marshalUsageRecordPayload(params db.InsertUsageRecordParams) (json.RawMessage, error) {
+	payload := dlq.UsageRecordPayload{
+		TenantID:              params.TenantID,
+		ClaimID:               params.ClaimID,
+		APIKeyID:              params.APIKeyID,
+		UserID:                params.UserID,
+		ProviderAccountID:     params.ProviderAccountID,
+		AcquisitionToken:      pgUUIDString(params.AcquisitionToken),
+		AttemptSeq:            params.AttemptSeq,
+		TokensInput:           params.TokensInput,
+		TokensOutput:          params.TokensOutput,
+		CacheCreationTokens:   params.CacheCreationTokens,
+		CacheReadTokens:       params.CacheReadTokens,
+		CacheCreation5mTokens: params.CacheCreation5mTokens,
+		CacheCreation1hTokens: params.CacheCreation1hTokens,
+		ImageOutputTokens:     params.ImageOutputTokens,
+		ActualCost:            params.ActualCost.StringFixed(8),
+		InputCost:             params.InputCost.StringFixed(8),
+		OutputCost:            params.OutputCost.StringFixed(8),
+		CacheCreationCost:     params.CacheCreationCost.StringFixed(8),
+		CacheReadCost:         params.CacheReadCost.StringFixed(8),
+		ImageOutputCost:       params.ImageOutputCost.StringFixed(8),
+		EndClass:              params.EndClass,
+		UsageSource:           params.UsageSource,
+		ConfidenceScore:       numericString(params.ConfidenceScore),
+		PendingReconciliation: params.PendingReconciliation,
+		DrainOutcome:          params.DrainOutcome,
+		RoutingReason:         json.RawMessage(jsonOrEmptyObject(params.RoutingReason)),
+		ProtocolLoss:          json.RawMessage(jsonOrEmptyArray(params.ProtocolLoss)),
+		RequestedAt:           timestampString(params.RequestedAt),
+		UpstreamRequestAt:     timestampStringPtr(params.UpstreamRequestAt),
+		FirstByteAt:           timestampStringPtr(params.FirstByteAt),
+		FirstEventAt:          timestampStringPtr(params.FirstEventAt),
+		LastEventAt:           timestampStringPtr(params.LastEventAt),
+		RequestedModel:        params.RequestedModel,
+		UpstreamModel:         params.UpstreamModel,
+		Stream:                params.Stream,
+		SnapshotVersion:       params.SnapshotVersion,
+	}
+	raw, err := json.Marshal(payload)
+	return json.RawMessage(raw), err
+}
+
 func pgUUID(v uuid.UUID) pgtype.UUID {
 	return pgtype.UUID{Bytes: v, Valid: true}
+}
+
+func pgUUIDString(v pgtype.UUID) string {
+	if !v.Valid {
+		return ""
+	}
+	u := uuid.UUID(v.Bytes)
+	return u.String()
 }
 
 func pgTimestamp(v time.Time) pgtype.Timestamptz {
@@ -372,6 +539,40 @@ func jsonOrEmptyObject(v []byte) []byte {
 		return []byte("{}")
 	}
 	return v
+}
+
+func jsonOrEmptyArray(v []byte) []byte {
+	if len(v) == 0 {
+		return []byte("[]")
+	}
+	return v
+}
+
+func timestampString(v pgtype.Timestamptz) string {
+	if !v.Valid {
+		return ""
+	}
+	return v.Time.UTC().Format(time.RFC3339Nano)
+}
+
+func timestampStringPtr(v pgtype.Timestamptz) *string {
+	if !v.Valid {
+		return nil
+	}
+	s := timestampString(v)
+	return &s
+}
+
+func numericString(v pgtype.Numeric) *string {
+	if !v.Valid {
+		return nil
+	}
+	raw, err := v.Value()
+	if err != nil || raw == nil {
+		return nil
+	}
+	s := fmt.Sprint(raw)
+	return &s
 }
 
 func normalizeUsageSource(v gateway.UsageSource) string {

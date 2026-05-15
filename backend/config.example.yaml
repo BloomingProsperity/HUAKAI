@@ -45,6 +45,14 @@ oauth_refresh:
   global_concurrent_refreshes: 16
   global_refreshes_per_minute: 240
   default_request_path_timeout_ms: 8000
+  refresh_window_seconds: 900
+
+credential_encryption:
+  # F-AUTH-005 OCAW-31: Personal Edition v1 uses local AES-256-GCM key provider.
+  # Runtime env: HUAKAI_CREDENTIAL_KEY_B64 must decode to exactly 32 bytes.
+  mode: "local"
+  active_key_id: "local-v1"
+  env_key: "HUAKAI_CREDENTIAL_KEY_B64"
 
 logging:
   # Token-leakage-safe logging discipline (F-AUTH-005 H5).
@@ -54,3 +62,18 @@ logging:
 observability:
   # F-OBS-001 outbox lag alert threshold.
   scheduler_outbox_lag_alert_seconds: 60
+  dlq:
+    # Runtime env equivalents:
+    # HUAKAI_OBS_DLQ_ENABLED=true
+    # HUAKAI_OBS_REPLICA_DSN=postgres://replica-writer:.../huakai_obs_replica
+    enabled: true
+    priority_lanes:
+      high_workers: 2   # Billing + audit
+      med_workers: 1    # Account health
+      low_workers: 1    # Metrics; drain-on-shutdown
+    retry:
+      base_backoff_seconds: 1
+      cap_backoff_seconds: 300
+      max_attempts: 10
+      operator_review_after_seconds: 900
+      lease_seconds: 30

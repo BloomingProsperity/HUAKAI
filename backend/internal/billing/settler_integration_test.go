@@ -255,6 +255,86 @@ func TestSettler_AlreadyCommitted_NoOp(t *testing.T) {
 	}
 }
 
+func TestSettler_UsageInsertFailureKeepsBillingEventAndDLQ(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	seed := seedSettlerGraph(t, ctx, pool, "settle-usage-dlq")
+	settler := NewSettler(pool)
+
+	req := settleRequest(seed, decimal.RequireFromString("0.02000000"))
+	req.Draft.EndClass = gateway.StreamEndClass("bad_end_class_for_dlq")
+	if _, err := settler.Settle(ctx, req); err != nil {
+		t.Fatalf("Settle must commit billing_event + DLQ when usage insert fails; got %v", err)
+	}
+
+	var eventCount int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM billing_events WHERE claim_id=$1 AND event_type='claim_committed'`,
+		seed.claimID,
+	).Scan(&eventCount); err != nil {
+		t.Fatalf("count billing_events: %v", err)
+	}
+	if eventCount != 1 {
+		t.Fatalf("billing_event must survive usage insert failure; got %d", eventCount)
+	}
+
+	var usageCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM usage_records WHERE claim_id=$1`, seed.claimID).Scan(&usageCount); err != nil {
+		t.Fatalf("count usage_records: %v", err)
+	}
+	if usageCount != 0 {
+		t.Fatalf("bad usage row must not be inserted; got %d", usageCount)
+	}
+
+	var dlqCount int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM usage_record_dlq
+		 WHERE tenant_id=$1 AND claim_id=$2 AND event_kind='usage_record'
+		   AND lane='HIGH' AND status='pending'`,
+		seed.tenantID, seed.claimID,
+	).Scan(&dlqCount); err != nil {
+		t.Fatalf("count usage_record_dlq: %v", err)
+	}
+	if dlqCount != 1 {
+		t.Fatalf("usage insert failure must enqueue one HIGH usage_record DLQ row; got %d", dlqCount)
+	}
+}
+
+func TestSettler_ReplicaIntentQueuedPrimaryStillCommits(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	seed := seedSettlerGraph(t, ctx, pool, "settle-replica-intent")
+	settler := NewSettler(pool, WithReplicaTarget("replica-test"))
+
+	req := settleRequest(seed, decimal.RequireFromString("0.02000000"))
+	if _, err := settler.Settle(ctx, req); err != nil {
+		t.Fatalf("Settle with async replica intent: %v", err)
+	}
+
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM billing_ledger_claims WHERE id=$1`, seed.claimID).Scan(&status); err != nil {
+		t.Fatalf("read claim: %v", err)
+	}
+	if status != "committed" {
+		t.Fatalf("primary claim must commit while replica is async; status=%q", status)
+	}
+
+	var replicaRows int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM usage_record_dlq
+		 WHERE tenant_id=$1 AND claim_id=$2 AND event_kind='billing_event_replica'
+		   AND replica_target='replica-test' AND replica_status='pending'`,
+		seed.tenantID, seed.claimID,
+	).Scan(&replicaRows); err != nil {
+		t.Fatalf("count replica intent: %v", err)
+	}
+	if replicaRows != 1 {
+		t.Fatalf("expected one async replica intent; got %d", replicaRows)
+	}
+}
+
 type settlerSeed struct {
 	tenantID          int64
 	apiKeyID          int64
@@ -280,6 +360,7 @@ func seedSettlerGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suf
 		fingerprint:      "fingerprint-" + unique,
 	}
 	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM usage_record_dlq WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM usage_records WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM billing_events WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, tenantID)
