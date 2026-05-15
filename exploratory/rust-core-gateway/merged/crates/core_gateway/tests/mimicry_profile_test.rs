@@ -7,7 +7,8 @@ use std::{
 use core_gateway::mimicry::profile::scan_template_for_secrets;
 use core_gateway::mimicry::tls_profile::{ExtensionOrder, TlsBackend};
 use core_gateway::mimicry::{
-    BuiltinProfile, ProfileMatchPolicy, ProfileMode, ProfileVendor, load_builtin_profile,
+    BackendIntent, BuiltinProfile, FingerprintProfile, ProfileMatchPolicy, ProfileMode,
+    ProfileVendor, load_builtin_profile,
 };
 
 #[test]
@@ -195,6 +196,70 @@ fn mimicry_profile_codex_known_gap_blocks_capture_pass_with_field_diffs() {
         vec![0, 1, 2],
         "codex template ec_point_formats 必须锁定为 [0,1,2]；字段级差异: {gap_report}"
     );
+}
+
+#[test]
+fn mimicry_backend_intent_blocks_codex_known_gap() {
+    let codex = load_builtin_profile(BuiltinProfile::CodexCli).expect("codex profile 应加载");
+
+    match codex.backend_intent() {
+        BackendIntent::KnownGapBlocked { reason } => {
+            assert!(
+                !reason.trim().is_empty(),
+                "KnownGapBlocked 必须携带 gap reason"
+            );
+            assert!(
+                reason.contains("cipher_suites") && reason.contains("extensions"),
+                "KnownGapBlocked reason 必须来自既有字段级 gap 描述，实际: {reason}"
+            );
+        }
+        intent => panic!("codex KnownGapBlocked profile 不允许 dispatch，实际: {intent:?}"),
+    }
+}
+
+#[test]
+fn mimicry_backend_intent_keeps_kiro_on_rustls() {
+    let kiro = load_builtin_profile(BuiltinProfile::KiroCli).expect("kiro profile 应加载");
+
+    assert_eq!(kiro.backend_intent(), BackendIntent::Rustls);
+}
+
+#[test]
+fn mimicry_backend_intent_rejects_gemini_unsupported_backend() {
+    let gemini =
+        load_builtin_profile(BuiltinProfile::GeminiAdvanced).expect("gemini profile 应加载");
+
+    match gemini.backend_intent() {
+        BackendIntent::UnsupportedTemplate { reason } => {
+            assert!(
+                reason.contains("nodejs"),
+                "gemini 当前 nodejs TLS backend 不能静默 dispatch，实际: {reason}"
+            );
+        }
+        intent => panic!("gemini unsupported backend 应停在 UnsupportedTemplate，实际: {intent:?}"),
+    }
+}
+
+#[test]
+fn mimicry_backend_intent_accepts_stable_native_tls_openssl() {
+    let mut raw = serde_json::from_str::<serde_json::Value>(BuiltinProfile::KiroCli.raw_json())
+        .expect("kiro raw JSON 应可解析");
+    let ja3_hash = raw["ja3_hash"]
+        .as_str()
+        .expect("ja3_hash 应存在")
+        .to_owned();
+    let ja4 = raw["ja4"].as_str().expect("ja4 应存在").to_owned();
+
+    raw["tls_backend"] = serde_json::json!("native-tls/openssl");
+    raw["extension_order"] = serde_json::json!("stable");
+    raw["ja3_hash_samples"] = serde_json::json!([ja3_hash]);
+    raw["ja4_samples"] = serde_json::json!([ja4]);
+
+    let profile = FingerprintProfile::from_json(&raw.to_string())
+        .expect("合成 stable openssl profile 应加载");
+
+    assert_eq!(profile.match_policy(), ProfileMatchPolicy::ExactStable);
+    assert_eq!(profile.backend_intent(), BackendIntent::OpenSslAdapter);
 }
 
 fn assert_gap_field(
