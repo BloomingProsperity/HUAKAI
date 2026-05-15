@@ -11,8 +11,10 @@ use std::{
 };
 
 use common::{
-    capture_diff::{CaptureDiff, ListFieldStatus, diff_capture_against_profile},
-    tls_capture::spawn_capture_once,
+    capture_diff::{
+        CaptureDiff, ExtensionsListStatus, ListFieldStatus, diff_capture_against_profile,
+    },
+    tls_capture::{CapturedClientHello, spawn_capture_once},
 };
 use core_gateway::mimicry::{
     BuiltinProfile, FingerprintProfile, load_builtin_profile,
@@ -229,20 +231,14 @@ async fn profile_driven_extension_22_capture_diff() {
     let diff = capture_profile_diff(&adapter, &profile, "extension_22").await;
 
     match &diff.extensions {
-        ListFieldStatus::OrderedMatch { value } => {
+        ExtensionsListStatus::Subset { value, .. } => {
             assert!(
                 value.contains(&22),
-                "extensions OrderedMatch 应包含 encrypt_then_mac 22，实际 diff: {diff:?}"
-            );
-        }
-        ListFieldStatus::OrderMismatch { expected, actual } => {
-            assert!(
-                expected.contains(&22) && actual.contains(&22),
-                "extensions diff 必须同时暴露模板和 capture 中的 encrypt_then_mac 22，实际 diff: {diff:?}"
+                "extensions Subset 应包含 encrypt_then_mac 22，实际 diff: {diff:?}"
             );
         }
         status => {
-            panic!("ExactStable OpenSSL profile 应输出有序 extensions diff，实际: {status:?}")
+            panic!("ExactStable OpenSSL profile 应输出 extensions Subset，实际: {status:?}")
         }
     }
 }
@@ -345,6 +341,131 @@ fn profile_driven_ec_point_formats_wrong_order_fails_fast() {
         .expect_err("[2,1,0] ec_point_formats 必须 fail-fast，不能构造 adapter");
 
     assert_ec_point_formats_profile_apply_failed(error, "[2, 1, 0]");
+}
+
+#[test]
+fn extensions_subset_independent_vector() {
+    let baseline = openssl_native_ec_point_formats_profile();
+    let baseline_adapter = OpenSslMimicryAdapter::new_with_profile(&baseline)
+        .expect("baseline OpenSSL profile preflight 应通过");
+    let baseline_wire_extras = baseline_adapter
+        .preflight_extras()
+        .wire_extension_extras
+        .clone();
+    let runtime_extensions = runtime_extensions_from_missing_probe(&baseline);
+    assert_eq!(
+        baseline_wire_extras,
+        expected_wire_extras(&runtime_extensions, &baseline.tls.extensions),
+        "baseline extras 应等于 runtime capture 中 baseline profile 未声明的 extensions"
+    );
+
+    let mut profile = baseline.clone();
+    let skipped = vec![baseline.tls.extensions[1], baseline.tls.extensions[3]];
+    profile
+        .tls
+        .extensions
+        .retain(|extension| !skipped.contains(extension));
+    assert!(
+        !profile.tls.extensions.is_empty()
+            && profile.tls.extensions.len() < baseline.tls.extensions.len(),
+        "子集 profile 必须保留真子集 extensions"
+    );
+
+    let adapter = OpenSslMimicryAdapter::new_with_profile(&profile)
+        .expect("OpenSSL profile extension 真子集应通过 ordered-subset preflight");
+    let wire_extras = adapter.preflight_extras().wire_extension_extras.clone();
+    let expected_wire_extras = expected_wire_extras(&runtime_extensions, &profile.tls.extensions);
+    assert_eq!(
+        wire_extras, expected_wire_extras,
+        "wire_extension_extras 应暴露 runtime capture 中 profile 未声明的 extensions"
+    );
+
+    assert!(
+        skipped
+            .iter()
+            .all(|extension| wire_extras.contains(extension)),
+        "wire_extension_extras 必须包含从 baseline profile 跳过的 extensions"
+    );
+
+    let captured = captured_from_runtime_extensions(&baseline, runtime_extensions);
+    let diff = diff_capture_against_profile(&captured, &profile);
+    match &diff.extensions {
+        ExtensionsListStatus::Subset { value, unexpected } => {
+            assert_eq!(value, &profile.tls.extensions);
+            assert!(
+                !unexpected.is_empty(),
+                "subset diff 必须把跳过的 runtime extension 记为 unexpected"
+            );
+        }
+        status => panic!("extension 真子集应输出 Subset，实际: {status:?}"),
+    }
+}
+
+#[test]
+fn extensions_missing_independent_vector() {
+    let baseline = openssl_native_ec_point_formats_profile();
+    let runtime_extensions = runtime_extensions_from_missing_probe(&baseline);
+    let synthetic_missing = pick_missing_id_not_in_wire(&runtime_extensions);
+
+    let mut profile = baseline;
+    profile.tls.extensions.push(synthetic_missing);
+
+    let error = OpenSslMimicryAdapter::new_with_profile(&profile)
+        .expect_err("profile 声明 runtime 不会发送的 extension 必须 preflight fail-closed");
+
+    match error {
+        OpenSslAdapterError::PreflightFailed {
+            field,
+            missing,
+            unexpected,
+            ..
+        } => {
+            assert_eq!(field, "extensions");
+            assert!(
+                missing.contains(&synthetic_missing),
+                "missing 必须包含 runtime-derived 合成 extension {synthetic_missing:#06x}，实际: {missing:?}"
+            );
+            assert!(
+                !unexpected.contains(&synthetic_missing),
+                "runtime 未发送的 extension 不应被归入 unexpected，实际: {unexpected:?}"
+            );
+        }
+        error => panic!("extension 缺失应返回 PreflightFailed，实际: {error:?}"),
+    }
+}
+
+#[test]
+fn extensions_wrong_order_independent_vector() {
+    let baseline = openssl_native_ec_point_formats_profile();
+    let _baseline_extras = OpenSslMimicryAdapter::new_with_profile(&baseline)
+        .expect("baseline OpenSSL profile preflight 应通过")
+        .preflight_extras()
+        .wire_extension_extras
+        .clone();
+
+    let first = baseline
+        .tls
+        .extensions
+        .iter()
+        .position(|extension| *extension == 22)
+        .and_then(|index| baseline.tls.extensions.get(index + 1).copied())
+        .expect("baseline profile 中 extension 22 后应存在另一个 extension");
+    let mut profile = baseline;
+    profile.tls.extensions = vec![first, 22];
+
+    let error = OpenSslMimicryAdapter::new_with_profile(&profile)
+        .expect_err("profile extension 顺序乱序时必须 preflight fail-closed");
+
+    match error {
+        OpenSslAdapterError::PreflightFailed { field, missing, .. } => {
+            assert_eq!(field, "extensions");
+            assert!(
+                missing.is_empty(),
+                "乱序场景应是集合存在但顺序错误，missing 应为空，实际: {missing:?}"
+            );
+        }
+        error => panic!("extension 乱序应返回 PreflightFailed，实际: {error:?}"),
+    }
 }
 
 struct LocalTlsServer {
@@ -662,6 +783,73 @@ fn openssl_native_ec_point_formats_profile() -> FingerprintProfile {
     profile.tls.signature_algorithms = profile.tls.sig_algos.clone();
     profile.tls.ec_point_formats = vec![0, 1, 2];
     profile
+}
+
+fn runtime_extensions_from_missing_probe(profile: &FingerprintProfile) -> Vec<u16> {
+    let mut probe = profile.clone();
+    let baseline_actual = actual_wire_extensions_from_preflight(profile);
+    let synthetic_missing = pick_missing_id_not_in_wire(&baseline_actual);
+    probe.tls.extensions.push(synthetic_missing);
+
+    match OpenSslMimicryAdapter::new_with_profile(&probe)
+        .expect_err("probe profile 应因合成 extension 缺失触发 preflight 失败")
+    {
+        OpenSslAdapterError::PreflightFailed { field, actual, .. } => {
+            assert_eq!(field, "extensions");
+            actual
+        }
+        error => panic!("probe profile 应返回 extensions PreflightFailed，实际: {error:?}"),
+    }
+}
+
+fn actual_wire_extensions_from_preflight(profile: &FingerprintProfile) -> Vec<u16> {
+    let adapter = OpenSslMimicryAdapter::new_with_profile(profile)
+        .expect("baseline OpenSSL profile preflight 应通过");
+    let mut actual = profile.tls.extensions.clone();
+    for extension in &adapter.preflight_extras().wire_extension_extras {
+        if !actual.contains(extension) {
+            actual.push(*extension);
+        }
+    }
+    actual
+}
+
+fn pick_missing_id_not_in_wire(actual: &[u16]) -> u16 {
+    // GREASE/reserved-style candidate IDs are only used when absent from the
+    // current runtime wire extensions, keeping the missing case runtime-derived.
+    const SYNTHETIC_EXTENSION_CANDIDATES: &[u16] = &[
+        0x0a0a, 0x1a1a, 0x2a2a, 0x3a3a, 0x4a4a, 0x5a5a, 0x6a6a, 0x7a7a, 0x8a8a, 0x9a9a, 0xaaaa,
+        0xbaba, 0xcaca, 0xdada, 0xeaea, 0xfafa,
+    ];
+
+    SYNTHETIC_EXTENSION_CANDIDATES
+        .iter()
+        .copied()
+        .find(|extension| !actual.contains(extension))
+        .expect("synthetic extension candidate pool 必须至少有一个未出现在 runtime wire 中")
+}
+
+fn expected_wire_extras(runtime_extensions: &[u16], profile_extensions: &[u16]) -> Vec<u16> {
+    runtime_extensions
+        .iter()
+        .copied()
+        .filter(|extension| !profile_extensions.contains(extension))
+        .collect()
+}
+
+fn captured_from_runtime_extensions(
+    profile: &FingerprintProfile,
+    extensions: Vec<u16>,
+) -> CapturedClientHello {
+    CapturedClientHello {
+        legacy_version: 772,
+        cipher_suites: profile.tls.cipher_suites.clone(),
+        extensions,
+        supported_groups: profile.tls.supported_groups.clone(),
+        signature_algorithms: profile.tls.signature_algorithms.clone(),
+        ec_point_formats: profile.tls.ec_point_formats.clone(),
+        alpn_protocols: profile.tls.alpn_protocols.clone(),
+    }
 }
 
 fn profile_with_ec_point_formats(ec_point_formats: Vec<u8>) -> FingerprintProfile {

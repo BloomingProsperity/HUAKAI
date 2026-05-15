@@ -36,6 +36,12 @@ const OPENSSL_PREFLIGHT_SNI: &str = "localhost";
 pub struct OpenSslMimicryAdapter {
     ssl_ctx: SslContext,
     preflight_passed: bool,
+    preflight_extras: PreflightExtras,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PreflightExtras {
+    pub wire_extension_extras: Vec<u16>,
 }
 
 #[derive(Debug, Error)]
@@ -55,12 +61,14 @@ pub enum OpenSslAdapterError {
     #[error("failed to apply OpenSSL fingerprint profile: {0}")]
     ProfileApplyFailed(String),
     #[error(
-        "OpenSSL runtime preflight failed for {field}: expected {expected:?}, actual {actual:?}"
+        "OpenSSL runtime preflight failed for {field}: expected {expected:?}, actual {actual:?}, missing {missing:?}, unexpected {unexpected:?}"
     )]
     PreflightFailed {
         field: &'static str,
         expected: Vec<u16>,
         actual: Vec<u16>,
+        missing: Vec<u16>,
+        unexpected: Vec<u16>,
     },
     #[error("OpenSSL runtime preflight capture failed: {0}")]
     PreflightCaptureFailed(String),
@@ -78,6 +86,7 @@ impl OpenSslMimicryAdapter {
         Ok(Self {
             ssl_ctx: builder.build(),
             preflight_passed: false,
+            preflight_extras: PreflightExtras::default(),
         })
     }
 
@@ -96,8 +105,9 @@ impl OpenSslMimicryAdapter {
         let mut adapter = Self {
             ssl_ctx: builder.build(),
             preflight_passed: false,
+            preflight_extras: PreflightExtras::default(),
         };
-        adapter.run_profile_preflight()?;
+        adapter.preflight_extras = adapter.run_profile_preflight(profile)?;
         adapter.preflight_passed = true;
         Ok(adapter)
     }
@@ -115,11 +125,16 @@ impl OpenSslMimicryAdapter {
         Ok(Self {
             ssl_ctx: builder.build(),
             preflight_passed: false,
+            preflight_extras: PreflightExtras::default(),
         })
     }
 
     pub const fn preflight_passed(&self) -> bool {
         self.preflight_passed
+    }
+
+    pub const fn preflight_extras(&self) -> &PreflightExtras {
+        &self.preflight_extras
     }
 
     pub async fn connect(
@@ -145,10 +160,13 @@ impl OpenSslMimicryAdapter {
         Ok(tls_stream)
     }
 
-    fn run_profile_preflight(&self) -> Result<(), OpenSslAdapterError> {
+    fn run_profile_preflight(
+        &self,
+        profile: &FingerprintProfile,
+    ) -> Result<PreflightExtras, OpenSslAdapterError> {
         let captured = self.capture_runtime_client_hello()?;
         verify_ec_point_formats_preflight(&captured)?;
-        verify_encrypt_then_mac_preflight(&captured)
+        verify_extensions_preflight(&profile.tls.extensions, &captured)
     }
 
     fn capture_runtime_client_hello(
@@ -360,24 +378,64 @@ fn verify_ec_point_formats_preflight(
             .iter()
             .map(|value| u16::from(*value))
             .collect(),
+        missing: vec![1, 2],
+        unexpected: captured
+            .ec_point_formats
+            .iter()
+            .map(|value| u16::from(*value))
+            .filter(|value| !OPENSSL_NATIVE_EC_POINT_FORMATS.contains(&(*value as u8)))
+            .collect(),
     })
 }
 
-fn verify_encrypt_then_mac_preflight(
+fn verify_extensions_preflight(
+    profile_extensions: &[u16],
     captured: &tls_capture::CapturedClientHello,
-) -> Result<(), OpenSslAdapterError> {
-    if captured
-        .extensions
-        .contains(&OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION)
-    {
-        return Ok(());
+) -> Result<PreflightExtras, OpenSslAdapterError> {
+    let check = check_ordered_extension_subset(profile_extensions, &captured.extensions);
+    if check.ordered_subset {
+        return Ok(PreflightExtras {
+            wire_extension_extras: check.unexpected,
+        });
     }
 
     Err(OpenSslAdapterError::PreflightFailed {
         field: "extensions",
-        expected: vec![OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION],
+        expected: profile_extensions.to_vec(),
         actual: captured.extensions.clone(),
+        missing: check.missing,
+        unexpected: check.unexpected,
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExtensionSubsetCheck {
+    ordered_subset: bool,
+    missing: Vec<u16>,
+    unexpected: Vec<u16>,
+}
+
+fn check_ordered_extension_subset(expected: &[u16], actual: &[u16]) -> ExtensionSubsetCheck {
+    let missing = expected
+        .iter()
+        .copied()
+        .filter(|extension| !actual.contains(extension))
+        .collect::<Vec<_>>();
+    let unexpected = actual
+        .iter()
+        .copied()
+        .filter(|extension| !expected.contains(extension))
+        .collect::<Vec<_>>();
+    let mut actual_iter = actual.iter();
+    let ordered_subset = expected.iter().all(|expected_extension| {
+        actual_iter.any(|actual_extension| actual_extension == expected_extension)
+    });
+
+    ExtensionSubsetCheck {
+        ordered_subset,
+        missing,
+        unexpected,
+    }
 }
 
 fn capture_first_client_hello(

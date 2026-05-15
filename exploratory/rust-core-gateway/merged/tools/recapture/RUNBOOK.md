@@ -482,19 +482,38 @@ production dispatch。
 
 OpenSSL adapter 在 `new_with_profile` 构造后会立即启动本地 ClientHello capture
 preflight，并验证当前运行时真实发出的 `ec_point_formats` 精确等于 `[0, 1, 2]`，
-同时验证 ClientHello extensions 含 `22` (`encrypt_then_mac`)。如果生产 image 的
-OpenSSL build flag、disabled algorithms 或动态链接版本导致实际 ClientHello 只发
-`[0]` 或其他顺序/集合，或不再自然发送 extension 22，adapter 必须 fail-closed，
-返回 `PreflightFailed`，生产 dispatch 也就拿不到可用 adapter。模板如果声明
-`native-tls/openssl` 但缺少 extension 22，也必须在 dispatch/adapter 构造阶段被视为
-unsupported；当前公开 API 没有安全 disable native ETM extension 的路径。
+同时验证 profile `extensions` 是当前运行时 ClientHello extensions 的有序子集。
+这不是精确相等策略：OpenSSL runtime 多发、而 profile 没有声明的 extensions 会记录到
+`PreflightExtras::wire_extension_extras`，并通过
+`OpenSslMimicryAdapter::preflight_extras()` 提供给上层接入；当前 slice 只到
+adapter API 层，尚未接入 dispatch / log / metrics 等 ops channel。这些 wire
+extras 不视为 preflight 失败。
+
+fail-closed 边界仍然存在：
+
+- profile 必须承认当前 OpenSSL 无法安全关闭的 native extension，例如 `22`
+  (`encrypt_then_mac`)；模板缺少 extension 22 时，adapter 构造阶段仍返回
+  `UnsupportedExtension`，不能静默用 runtime 默认值代替模板。
+- profile 声明了 runtime ClientHello 没有发出的 extension 时，preflight 返回
+  `PreflightFailed { field: "extensions", missing, unexpected, .. }`，其中 `missing`
+  暴露模板要求但 capture 缺失的 id。
+- profile 中的 extension 集合都能在 capture 中找到、但顺序不是 capture 顺序的有序子集时，
+  preflight 返回 `PreflightFailed { field: "extensions", missing: [], unexpected, .. }`；
+  `unexpected` 仍记录 capture 中 profile 未声明的 wire extras，便于 ops 判断 runtime
+  与模板之间的差异。
+- 如果生产 image 的 OpenSSL build flag、disabled algorithms 或动态链接版本导致
+  `ec_point_formats` 不再是 `[0, 1, 2]`，或 native extension 22 不再自然出现，
+  adapter 必须 fail-closed，生产 dispatch 也就拿不到可用 adapter。
 
 Operator 要求：
 
 - 部署前记录生产 image 的 OpenSSL version / build options / disabled algorithms。
 - 部署前用同一 binary/runtime 跑一次 OpenSSL profile preflight，记录
-  `ec_point_formats` 和 extension 22 的实际 capture 结果。
+  `ec_point_formats`、profile extensions 的 ordered-subset 结果，以及
+  `PreflightExtras::wire_extension_extras`。
 - 部署后把 `PreflightFailed` 和 `PreflightCaptureFailed` surface 到 ops 通道。
+- 后续 slice 需要把 `PreflightExtras::wire_extension_extras` 接到 ops surface，
+  至少包含 log 和 metric，避免 adapter API 层信息停留在测试/手动检查阶段。
 - preflight 失败时暂停该 profile 的 OpenSSL mimicry dispatch；不能静默降级为
   “当前 OpenSSL 默认值”。
 - 修复路径是换用通过 preflight 的 OpenSSL runtime，或把该 feature 保持为
@@ -503,7 +522,17 @@ Operator 要求：
 ## 11. Source files read
 
 - `docs/RULES.md`
+- `.agents/skills/acceptance-test-writer/SKILL.md`
+- `.agents/skills/clean-room-license-guard/SKILL.md`
+- `docs/plans/2026-05-15-l2-a5-5-extension-list-codex.md`
+- `docs/reviews/2026-05-15-l2-a5-5-codex-review.md`
 - `docs/plans/2026-05-14-r3-on-merged-closure-codex.md`
+- `exploratory/rust-core-gateway/merged/crates/core_gateway/src/mimicry/openssl_adapter.rs`
+- `exploratory/rust-core-gateway/merged/crates/core_gateway/src/mimicry/profile.rs`
+- `exploratory/rust-core-gateway/merged/crates/core_gateway/tests/common/capture_diff.rs`
+- `exploratory/rust-core-gateway/merged/crates/core_gateway/tests/mimicry_capture_diff_test.rs`
+- `exploratory/rust-core-gateway/merged/crates/core_gateway/tests/mimicry_openssl_adapter_test.rs`
+- `exploratory/rust-core-gateway/merged/tools/recapture/RUNBOOK.md`
 - `tools/fingerprint-collector/templates/SCHEMA.md`
 - `tools/fingerprint-collector/README.md`
 - `tools/fingerprint-collector/PLAYBOOK.md`
@@ -518,4 +547,4 @@ Lane: specifier
 
 Agent: Codex GPT-5
 
-UTC timestamp: 2026-05-15T04:03:57Z
+UTC timestamp: 2026-05-15T11:14:40Z

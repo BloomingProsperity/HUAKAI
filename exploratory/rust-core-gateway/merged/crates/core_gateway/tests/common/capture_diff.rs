@@ -12,7 +12,7 @@ pub struct CaptureDiff {
     pub profile_blocked: bool,
     pub legacy_version: FieldStatus<u16>,
     pub cipher_suites: ListFieldStatus<u16>,
-    pub extensions: ListFieldStatus<u16>,
+    pub extensions: ExtensionsListStatus,
     pub supported_groups: ListFieldStatus<u16>,
     pub signature_algorithms: ListFieldStatus<u16>,
     pub ec_point_formats: ListFieldStatus<u8>,
@@ -35,6 +35,25 @@ pub enum ListFieldStatus<T> {
     SetMismatch { extra: Vec<T>, missing: Vec<T> },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtensionsListStatus {
+    Subset {
+        value: Vec<u16>,
+        unexpected: Vec<u16>,
+    },
+    Missing {
+        expected: Vec<u16>,
+        actual: Vec<u16>,
+        missing: Vec<u16>,
+        unexpected: Vec<u16>,
+    },
+    WrongOrder {
+        expected: Vec<u16>,
+        actual: Vec<u16>,
+        unexpected: Vec<u16>,
+    },
+}
+
 pub fn diff_capture_against_profile(
     captured: &CapturedClientHello,
     profile: &FingerprintProfile,
@@ -52,7 +71,7 @@ pub fn diff_capture_against_profile(
             &captured.cipher_suites,
             match_policy,
         ),
-        extensions: compare_list(&profile.tls.extensions, &captured.extensions, match_policy),
+        extensions: compare_extensions(&profile.tls.extensions, &captured.extensions, match_policy),
         supported_groups: compare_list(
             &profile.tls.supported_groups,
             &captured.supported_groups,
@@ -79,7 +98,7 @@ pub fn diff_capture_against_profile(
 pub fn diff_has_mismatch(diff: &CaptureDiff) -> bool {
     field_has_mismatch(&diff.legacy_version)
         || list_has_mismatch(&diff.cipher_suites)
-        || list_has_mismatch(&diff.extensions)
+        || extensions_has_mismatch(&diff.extensions)
         || list_has_mismatch(&diff.supported_groups)
         || list_has_mismatch(&diff.signature_algorithms)
         || list_has_mismatch(&diff.ec_point_formats)
@@ -135,10 +154,72 @@ where
     T: Clone + Ord,
 {
     match match_policy {
+        // Non-extension list fields keep exact set semantics for randomized samples.
         ProfileMatchPolicy::SampleSetRandomized => compare_set(expected, actual),
         ProfileMatchPolicy::ExactStable | ProfileMatchPolicy::KnownGapBlocked => {
             compare_ordered(expected, actual)
         }
+    }
+}
+
+fn compare_extensions(
+    expected: &[u16],
+    actual: &[u16],
+    match_policy: ProfileMatchPolicy,
+) -> ExtensionsListStatus {
+    match match_policy {
+        // Extensions use subset semantics: SampleSetRandomized SetMatch maps to
+        // Subset { unexpected: empty }, while runtime extras are recorded but non-fatal.
+        ProfileMatchPolicy::SampleSetRandomized => compare_extension_set(expected, actual),
+        ProfileMatchPolicy::ExactStable | ProfileMatchPolicy::KnownGapBlocked => {
+            compare_extension_ordered_subset(expected, actual)
+        }
+    }
+}
+
+fn compare_extension_set(expected: &[u16], actual: &[u16]) -> ExtensionsListStatus {
+    let missing = missing_values(expected, actual);
+    let unexpected = unexpected_values(expected, actual);
+
+    if missing.is_empty() {
+        return ExtensionsListStatus::Subset {
+            value: expected.to_vec(),
+            unexpected,
+        };
+    }
+
+    ExtensionsListStatus::Missing {
+        expected: expected.to_vec(),
+        actual: actual.to_vec(),
+        missing,
+        unexpected,
+    }
+}
+
+fn compare_extension_ordered_subset(expected: &[u16], actual: &[u16]) -> ExtensionsListStatus {
+    let missing = missing_values(expected, actual);
+    let unexpected = unexpected_values(expected, actual);
+
+    if !missing.is_empty() {
+        return ExtensionsListStatus::Missing {
+            expected: expected.to_vec(),
+            actual: actual.to_vec(),
+            missing,
+            unexpected,
+        };
+    }
+
+    if is_ordered_subset(expected, actual) {
+        return ExtensionsListStatus::Subset {
+            value: expected.to_vec(),
+            unexpected,
+        };
+    }
+
+    ExtensionsListStatus::WrongOrder {
+        expected: expected.to_vec(),
+        actual: actual.to_vec(),
+        unexpected,
     }
 }
 
@@ -187,6 +268,29 @@ where
     ListFieldStatus::SetMismatch { extra, missing }
 }
 
+fn is_ordered_subset(expected: &[u16], actual: &[u16]) -> bool {
+    let mut actual_iter = actual.iter();
+    expected
+        .iter()
+        .all(|expected_value| actual_iter.any(|actual_value| actual_value == expected_value))
+}
+
+fn missing_values(expected: &[u16], actual: &[u16]) -> Vec<u16> {
+    expected
+        .iter()
+        .copied()
+        .filter(|value| !actual.contains(value))
+        .collect()
+}
+
+fn unexpected_values(expected: &[u16], actual: &[u16]) -> Vec<u16> {
+    actual
+        .iter()
+        .copied()
+        .filter(|value| !expected.contains(value))
+        .collect()
+}
+
 fn sorted_unique<T>(values: &[T]) -> Vec<T>
 where
     T: Clone + Ord,
@@ -207,5 +311,12 @@ fn list_has_mismatch<T>(status: &ListFieldStatus<T>) -> bool {
     matches!(
         status,
         ListFieldStatus::OrderMismatch { .. } | ListFieldStatus::SetMismatch { .. }
+    )
+}
+
+fn extensions_has_mismatch(status: &ExtensionsListStatus) -> bool {
+    matches!(
+        status,
+        ExtensionsListStatus::Missing { .. } | ExtensionsListStatus::WrongOrder { .. }
     )
 }
