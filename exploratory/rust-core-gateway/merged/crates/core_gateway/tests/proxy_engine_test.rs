@@ -18,7 +18,7 @@ use core_gateway::{
     proxy_engine::{ProxyEngine, StreamObservation, build_http_client},
     request_id::RequestId,
     route_client::{RouteClient, RouteClientOptions},
-    route_proto::v1::RoutePlan,
+    route_proto::v1::{RoutePlan, UpstreamAuthMaterial},
     stream_pipeline::{StreamEvent, UsageDelta},
 };
 use futures_util::StreamExt;
@@ -80,14 +80,20 @@ fn route_client(endpoint: &str) -> RouteClient {
 fn vendor_plan(
     endpoint: impl Into<String>,
     vendor: &str,
-    token: &str,
+    upstream_secret: &str,
     attempt_deadline_ms: u64,
 ) -> RoutePlan {
     let mut plan = mock_route_plan(endpoint);
     plan.vendor = vendor.to_owned();
-    plan.acquisition_token = Bytes::from(token.to_owned());
+    plan.acquisition_token = Bytes::from(format!("lease-token-{upstream_secret}"));
     plan.auth_mode = "bearer".to_owned();
     plan.attempt_deadline_ms = attempt_deadline_ms;
+    plan.upstream_auth = Some(UpstreamAuthMaterial {
+        material_kind: "bearer_token".to_owned(),
+        material: Bytes::from(upstream_secret.to_owned()),
+        header_name: String::new(),
+        expires_at_unix_ms: 0,
+    });
     plan
 }
 
@@ -118,9 +124,14 @@ async fn drain_observations(
 }
 
 #[tokio::test]
-async fn account_planner_extracts_fields_and_reuses_short_ttl_cache() {
+async fn account_planner_extracts_fields_and_ignores_short_ttl_cache() {
     let upstream = MockUpstream::spawn(MockBehavior::EchoBody).await;
-    let mut plan = vendor_plan(upstream.endpoint(), "anthropic", "planner-token", 30_000);
+    let mut plan = vendor_plan(
+        upstream.endpoint(),
+        "anthropic",
+        "upstream-secret-planner",
+        30_000,
+    );
     plan.route_ttl_ms = 1_000;
     let control_plane = MockControlPlane::spawn(plan).await;
     let planner = AccountPlanner::new(
@@ -150,7 +161,7 @@ async fn account_planner_extracts_fields_and_reuses_short_ttl_cache() {
     assert_eq!(first.account_id, "account-mock-1");
     assert_eq!(
         first.acquisition_token,
-        Bytes::from_static(b"planner-token")
+        Bytes::from_static(b"lease-token-upstream-secret-planner")
     );
     assert_eq!(first.auth_mode, AuthMode::Bearer);
     assert_eq!(
@@ -158,7 +169,7 @@ async fn account_planner_extracts_fields_and_reuses_short_ttl_cache() {
         upstream.addr_string()
     );
     assert_ne!(first.attempt.attempt_id(), second.attempt.attempt_id());
-    assert_eq!(control_plane.route_queries_seen(), 1);
+    assert_eq!(control_plane.route_queries_seen(), 2);
 }
 
 #[test]
@@ -181,7 +192,7 @@ async fn anthropic_non_streaming_request_is_forwarded_with_plan_bearer() {
     let control_plane = MockControlPlane::spawn(vendor_plan(
         upstream.endpoint(),
         "anthropic",
-        "anthropic-secret",
+        "upstream-secret-anthropic",
         30_000,
     ))
     .await;
@@ -208,12 +219,141 @@ async fn anthropic_non_streaming_request_is_forwarded_with_plan_bearer() {
     assert_eq!(body, payload);
     assert_eq!(
         upstream.last_authorization().await.as_deref(),
-        Some("Bearer anthropic-secret")
+        Some("Bearer upstream-secret-anthropic")
     );
     assert_eq!(
         upstream.last_content_type().await.as_deref(),
         Some("application/json")
     );
+}
+
+#[tokio::test]
+async fn route_plan_rejects_upstream_auth_material_reusing_acquisition_token() {
+    let upstream = MockUpstream::spawn(MockBehavior::EchoBody).await;
+    let mut plan = mock_route_plan(upstream.endpoint());
+    let shared = Bytes::from_static(b"same-lease-and-upstream-secret");
+    plan.acquisition_token = shared.clone();
+    plan.upstream_auth
+        .as_mut()
+        .expect("mock plan 应带 upstream_auth")
+        .material = shared;
+    let control_plane = MockControlPlane::spawn(plan).await;
+
+    let response = build_router(test_config(control_plane.endpoint(), 0))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .body(Body::from(Bytes::from_static(b"{}")))
+                .expect("request 构建应成功"),
+        )
+        .await
+        .expect("listener 应响应");
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = body::to_bytes(response.into_body(), 1024)
+        .await
+        .expect("错误响应 body 应可读取");
+    let body_text = std::str::from_utf8(&body).expect("错误响应应为 UTF-8");
+    assert!(body_text.contains("bad_route_plan"));
+    assert_eq!(upstream.requests_seen(), 0);
+}
+
+#[tokio::test]
+async fn route_plan_rejects_trimmed_upstream_auth_material_reusing_acquisition_token() {
+    let upstream = MockUpstream::spawn(MockBehavior::EchoBody).await;
+    let mut plan = mock_route_plan(upstream.endpoint());
+    plan.acquisition_token = Bytes::from_static(b"lease-token");
+    plan.upstream_auth
+        .as_mut()
+        .expect("mock plan 应带 upstream_auth")
+        .material = Bytes::from_static(b" lease-token\n");
+    let control_plane = MockControlPlane::spawn(plan).await;
+
+    let response = build_router(test_config(control_plane.endpoint(), 0))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .body(Body::from(Bytes::from_static(b"{}")))
+                .expect("request 构建应成功"),
+        )
+        .await
+        .expect("listener 应响应");
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = body::to_bytes(response.into_body(), 1024)
+        .await
+        .expect("错误响应 body 应可读取");
+    let body_text = std::str::from_utf8(&body).expect("错误响应应为 UTF-8");
+    assert!(body_text.contains("bad_route_plan"));
+    assert_eq!(upstream.requests_seen(), 0);
+}
+
+#[tokio::test]
+async fn route_plan_allows_non_utf8_acquisition_token() {
+    let upstream = MockUpstream::spawn(MockBehavior::EchoBody).await;
+    let mut plan = vendor_plan(
+        upstream.endpoint(),
+        "anthropic",
+        "upstream-secret-non-utf8-acq",
+        30_000,
+    );
+    plan.acquisition_token = Bytes::from(vec![0xff, 0xfe, 0x00, 0x01, 0x02, 0x03]);
+    let control_plane = MockControlPlane::spawn(plan).await;
+    let payload = Bytes::from_static(br#"{"model":"claude-test","messages":[]}"#);
+
+    let response = build_router(test_config(control_plane.endpoint(), 0))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(payload.clone()))
+                .expect("request 构建应成功"),
+        )
+        .await
+        .expect("listener 应响应");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body::to_bytes(response.into_body(), 1024)
+        .await
+        .expect("响应 body 应可读取");
+    assert_eq!(body, payload);
+    assert_eq!(
+        upstream.last_authorization().await.as_deref(),
+        Some("Bearer upstream-secret-non-utf8-acq")
+    );
+}
+
+#[tokio::test]
+async fn route_plan_rejects_upstream_auth_material_with_embedded_control_character() {
+    let upstream = MockUpstream::spawn(MockBehavior::EchoBody).await;
+    let mut plan = mock_route_plan(upstream.endpoint());
+    plan.upstream_auth
+        .as_mut()
+        .expect("mock plan 应带 upstream_auth")
+        .material = Bytes::from_static(b"upstream-secret-\x1fvalue");
+    let control_plane = MockControlPlane::spawn(plan).await;
+
+    let response = build_router(test_config(control_plane.endpoint(), 0))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .body(Body::from(Bytes::from_static(b"{}")))
+                .expect("request 构建应成功"),
+        )
+        .await
+        .expect("listener 应响应");
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = body::to_bytes(response.into_body(), 1024)
+        .await
+        .expect("错误响应 body 应可读取");
+    let body_text = std::str::from_utf8(&body).expect("错误响应应为 UTF-8");
+    assert!(body_text.contains("bad_route_plan"));
+    assert_eq!(upstream.requests_seen(), 0);
 }
 
 #[tokio::test]
@@ -234,7 +374,7 @@ async fn openai_streaming_sse_seven_chunks_are_passed_through() {
     let control_plane = MockControlPlane::spawn(vendor_plan(
         upstream.endpoint(),
         "openai",
-        "openai-secret",
+        "upstream-secret-openai",
         30_000,
     ))
     .await;
@@ -267,7 +407,7 @@ async fn openai_streaming_sse_seven_chunks_are_passed_through() {
     assert_eq!(upstream.chunks_sent(), 7);
     assert_eq!(
         upstream.last_authorization().await.as_deref(),
-        Some("Bearer openai-secret")
+        Some("Bearer upstream-secret-openai")
     );
     let query = control_plane
         .last_route_query()
@@ -299,7 +439,7 @@ async fn proxy_stream_tap_extracts_openai_usage_without_changing_body() {
     let control_plane = MockControlPlane::spawn(vendor_plan(
         upstream.endpoint(),
         "openai",
-        "tap-secret",
+        "upstream-secret-tap",
         30_000,
     ))
     .await;
@@ -370,7 +510,7 @@ async fn proxy_stream_tap_respects_client_cancel_mid_stream() {
     let control_plane = MockControlPlane::spawn(vendor_plan(
         upstream.endpoint(),
         "openai",
-        "tap-cancel-secret",
+        "upstream-secret-tap-cancel",
         30_000,
     ))
     .await;
@@ -429,7 +569,7 @@ async fn upstream_5xx_status_and_body_are_passed_through() {
     let control_plane = MockControlPlane::spawn(vendor_plan(
         upstream.endpoint(),
         "anthropic",
-        "error-secret",
+        "upstream-secret-error",
         30_000,
     ))
     .await;
@@ -462,7 +602,7 @@ async fn upstream_response_timeout_returns_504() {
     let control_plane = MockControlPlane::spawn(vendor_plan(
         upstream.endpoint(),
         "anthropic",
-        "timeout-secret",
+        "upstream-secret-timeout",
         40,
     ))
     .await;
@@ -484,7 +624,8 @@ async fn upstream_response_timeout_returns_504() {
     let body = body::to_bytes(response.into_body(), 1024)
         .await
         .expect("错误响应 body 应可读取");
-    assert_eq!(body, Bytes::from_static(br#"{"error":"upstream_timeout"}"#));
+    let body_text = std::str::from_utf8(&body).expect("错误响应应为 UTF-8");
+    assert!(body_text.contains("upstream_timeout"));
     assert_eq!(upstream.requests_seen(), 1);
 }
 
@@ -501,7 +642,7 @@ async fn client_cancel_mid_stream_aborts_upstream_response_relay() {
     let control_plane = MockControlPlane::spawn(vendor_plan(
         upstream.endpoint(),
         "openai",
-        "cancel-secret",
+        "upstream-secret-cancel",
         30_000,
     ))
     .await;
@@ -537,7 +678,7 @@ async fn client_cancel_mid_stream_aborts_upstream_response_relay() {
 async fn bearer_auth_is_applied_for_owner_approved_vendor_matrix() {
     for vendor in ["anthropic", "openai", "codex", "gemini"] {
         let upstream = MockUpstream::spawn(MockBehavior::EchoBody).await;
-        let token = format!("{vendor}-matrix-token");
+        let token = format!("upstream-secret-{vendor}-matrix");
         let control_plane =
             MockControlPlane::spawn(vendor_plan(upstream.endpoint(), vendor, &token, 30_000)).await;
 

@@ -3,3 +3,5 @@
 pub mod v1 {
     tonic::include_proto!("huakai.route.v1");
 }
+
+mod redacting_debug;

@@ -1,20 +1,20 @@
 // M-rust-5 account planner
-// 职责: 将 listener 请求映射为 route query, 缓存短 TTL plan, 并维护 attempt 状态机。
+// 职责: 将 listener 请求映射为 route query, 校验 per-attempt plan, 并维护 attempt 状态机。
 
 use std::{
+    fmt,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use bytes::Bytes;
-use dashmap::DashMap;
 use http::{HeaderMap, Uri, header::ACCEPT};
 use thiserror::Error;
-use tracing::debug;
 use uuid::Uuid;
 
 use crate::{
     error::GatewayError,
+    redaction::redact_acquisition_token,
     request_id::RequestId,
     route_client::RouteClient,
     route_proto::v1::{RoutePlan, RouteQueryRequest},
@@ -33,14 +33,6 @@ pub struct AccountPlanner {
 
 struct AccountPlannerInner {
     route_client: RouteClient,
-    cache: DashMap<String, CachedPlannedRoute>,
-    cache_ttl: Duration,
-}
-
-#[derive(Clone)]
-struct CachedPlannedRoute {
-    plan: RoutePlan,
-    expires_at_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -156,7 +148,7 @@ impl AttemptLifecycle {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PlannedAttempt {
     pub route_plan: RoutePlan,
     pub account_id: String,
@@ -166,14 +158,26 @@ pub struct PlannedAttempt {
     pub attempt: AttemptLifecycle,
 }
 
+impl fmt::Debug for PlannedAttempt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PlannedAttempt")
+            .field("route_plan", &self.route_plan)
+            .field("account_id", &self.account_id)
+            .field(
+                "acquisition_token",
+                &redact_acquisition_token(self.acquisition_token.as_ref()),
+            )
+            .field("vendor_endpoint", &self.vendor_endpoint)
+            .field("auth_mode", &self.auth_mode)
+            .field("attempt", &self.attempt)
+            .finish()
+    }
+}
+
 impl AccountPlanner {
-    pub fn new(route_client: RouteClient, cache_ttl: Duration) -> Self {
+    pub fn new(route_client: RouteClient, _cache_ttl: Duration) -> Self {
         Self {
-            inner: Arc::new(AccountPlannerInner {
-                route_client,
-                cache: DashMap::new(),
-                cache_ttl,
-            }),
+            inner: Arc::new(AccountPlannerInner { route_client }),
         }
     }
 
@@ -188,51 +192,9 @@ impl AccountPlanner {
         request_id: &RequestId,
     ) -> Result<PlannedAttempt, PlanningError> {
         let query = build_route_query(headers, protocol, request_id);
-        let plan = match self.cache_get(&query) {
-            Some(plan) => plan,
-            None => {
-                let plan = self.inner.route_client.query_route(query.clone()).await?;
-                self.cache_put(&query, &plan);
-                plan
-            }
-        };
+        let plan = self.inner.route_client.query_route(query).await?;
 
         planned_attempt(plan)
-    }
-
-    fn cache_get(&self, query: &RouteQueryRequest) -> Option<RoutePlan> {
-        let key = route_cache_key(query)?;
-        let now = now_unix_ms();
-        let entry = self.inner.cache.get(&key)?;
-
-        if entry.expires_at_ms > now {
-            debug!(cache_key = %key, "account planner route plan cache hit");
-            Some(entry.plan.clone())
-        } else {
-            drop(entry);
-            self.inner.cache.remove(&key);
-            None
-        }
-    }
-
-    fn cache_put(&self, query: &RouteQueryRequest, plan: &RoutePlan) {
-        let Some(key) = route_cache_key(query) else {
-            return;
-        };
-
-        let configured_ms = duration_millis_u64(self.inner.cache_ttl);
-        if configured_ms == 0 || plan.route_ttl_ms == 0 {
-            return;
-        }
-
-        let ttl_ms = configured_ms.min(plan.route_ttl_ms);
-        self.inner.cache.insert(
-            key,
-            CachedPlannedRoute {
-                plan: plan.clone(),
-                expires_at_ms: now_unix_ms().saturating_add(ttl_ms),
-            },
-        );
     }
 }
 
@@ -273,6 +235,12 @@ fn planned_attempt(plan: RoutePlan) -> Result<PlannedAttempt, PlanningError> {
         ));
     }
 
+    if plan.credentials_handle.is_empty() {
+        return Err(PlanningError::InvalidRoutePlan(
+            "missing credentials_handle".to_owned(),
+        ));
+    }
+
     let vendor_endpoint = plan
         .vendor_endpoint
         .parse::<Uri>()
@@ -285,6 +253,7 @@ fn planned_attempt(plan: RoutePlan) -> Result<PlannedAttempt, PlanningError> {
     }
 
     let auth_mode = AuthMode::parse(&plan.auth_mode)?;
+    validate_upstream_auth_material(&plan, auth_mode)?;
     let attempt_id = format!("attempt-{}", Uuid::now_v7());
 
     Ok(PlannedAttempt {
@@ -295,6 +264,63 @@ fn planned_attempt(plan: RoutePlan) -> Result<PlannedAttempt, PlanningError> {
         route_plan: plan,
         attempt: AttemptLifecycle::new(attempt_id),
     })
+}
+
+fn validate_upstream_auth_material(
+    plan: &RoutePlan,
+    auth_mode: AuthMode,
+) -> Result<(), PlanningError> {
+    match auth_mode {
+        AuthMode::Bearer => {
+            let upstream_auth = plan.upstream_auth.as_ref().ok_or_else(|| {
+                PlanningError::InvalidRoutePlan("missing upstream_auth".to_owned())
+            })?;
+            if upstream_auth.material_kind != "bearer_token" {
+                return Err(PlanningError::InvalidRoutePlan(format!(
+                    "unsupported upstream_auth.material_kind {:?}",
+                    upstream_auth.material_kind
+                )));
+            }
+            if upstream_auth.material.is_empty() {
+                return Err(PlanningError::InvalidRoutePlan(
+                    "missing upstream_auth.material".to_owned(),
+                ));
+            }
+            let material = std::str::from_utf8(upstream_auth.material.as_ref()).map_err(|err| {
+                PlanningError::InvalidRoutePlan(format!(
+                    "upstream_auth.material must be utf8: {err}"
+                ))
+            })?;
+            if material.trim().as_bytes() != upstream_auth.material.as_ref()
+                || material.chars().any(char::is_control)
+            {
+                return Err(PlanningError::InvalidRoutePlan(
+                    "upstream_auth.material must not contain leading, trailing, or control whitespace"
+                        .to_owned(),
+                ));
+            }
+            if upstream_auth.material == plan.acquisition_token {
+                return Err(PlanningError::InvalidRoutePlan(
+                    "upstream_auth.material must differ from acquisition_token".to_owned(),
+                ));
+            }
+            if material.as_bytes().trim_ascii() == plan.acquisition_token.as_ref().trim_ascii() {
+                return Err(PlanningError::InvalidRoutePlan(
+                    "upstream_auth.material must differ from acquisition_token after trim"
+                        .to_owned(),
+                ));
+            }
+            if upstream_auth.expires_at_unix_ms != 0
+                && upstream_auth.expires_at_unix_ms < now_unix_ms()
+            {
+                return Err(PlanningError::InvalidRoutePlan(
+                    "upstream_auth.material expired".to_owned(),
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -308,39 +334,6 @@ fn wants_stream(headers: &HeaderMap) -> bool {
         .get(ACCEPT)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.contains("text/event-stream"))
-}
-
-fn route_cache_key(query: &RouteQueryRequest) -> Option<String> {
-    if !query.previous_attempts.is_empty() {
-        return None;
-    }
-
-    let mut key = String::with_capacity(192);
-    push_key_part(&mut key, &query.tenant_id);
-    push_key_part(&mut key, &query.requested_model);
-    push_key_part(&mut key, &query.session_hash);
-    push_key_part(&mut key, &query.request_protocol);
-    push_key_part(&mut key, if query.stream { "1" } else { "0" });
-
-    let mut hints: Vec<_> = query.capability_hints.iter().collect();
-    hints.sort_by(|a, b| a.name.cmp(&b.name).then(a.value.cmp(&b.value)));
-    for hint in hints {
-        push_key_part(&mut key, &hint.name);
-        push_key_part(&mut key, &hint.value);
-    }
-
-    Some(key)
-}
-
-fn push_key_part(key: &mut String, part: &str) {
-    key.push_str(&part.len().to_string());
-    key.push(':');
-    key.push_str(part);
-    key.push('|');
-}
-
-fn duration_millis_u64(duration: Duration) -> u64 {
-    duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 fn now_unix_ms() -> u64 {
@@ -372,5 +365,86 @@ mod tests {
         let mut attempt = AttemptLifecycle::new("attempt-test".to_owned());
         assert!(attempt.mark_reporting().is_err());
         assert_eq!(attempt.state(), AttemptState::Planned);
+    }
+
+    #[test]
+    fn planned_attempt_debug_redacts_nested_and_local_tokens() {
+        let plan = RoutePlan {
+            route_plan_id: "route-plan-redact-1".to_owned(),
+            account_id: "account-redact-1".to_owned(),
+            acquisition_token: Bytes::from_static(b"lease-token-mock-1"),
+            vendor: "anthropic".to_owned(),
+            upstream_model: "claude-mock".to_owned(),
+            vendor_endpoint: "https://api.anthropic.com".to_owned(),
+            credentials_handle: "credential-handle-mock-1".to_owned(),
+            auth_mode: "bearer".to_owned(),
+            route_ttl_ms: 1000,
+            attempt_deadline_ms: 30_000,
+            max_body_bytes: 4 * 1024 * 1024,
+            max_stream_frame_bytes: 64 * 1024,
+            upstream_auth: Some(crate::route_proto::v1::UpstreamAuthMaterial {
+                material_kind: "bearer_token".to_owned(),
+                material: Bytes::from_static(b"upstream-secret-mock-1"),
+                header_name: "authorization".to_owned(),
+                expires_at_unix_ms: 0,
+            }),
+        };
+
+        let planned = planned_attempt(plan).expect("测试 RoutePlan 应合法");
+        let debug = format!("{:?}", planned);
+
+        assert!(!debug.contains("lease-token-mock-1"));
+        assert!(!debug.contains("upstream-secret-mock-1"));
+        assert!(!debug.contains("credential-handle-mock-1"));
+        assert!(debug.contains("[ACQUISITION_TOKEN_REDACTED]"));
+        assert!(debug.contains("[UPSTREAM_AUTH_MATERIAL_REDACTED]"));
+        assert!(debug.contains("[CREDENTIAL_HANDLE_REDACTED]"));
+        assert!(debug.contains("route-plan-redact-1"));
+        assert!(debug.contains("account-redact-1"));
+        assert!(debug.contains("anthropic"));
+    }
+
+    #[test]
+    fn planned_attempt_rejects_trimmed_material_reusing_acquisition_token() {
+        let mut plan = valid_route_plan_for_auth();
+        plan.acquisition_token = Bytes::from_static(b"lease-token");
+        plan.upstream_auth.as_mut().unwrap().material = Bytes::from_static(b" lease-token\n");
+
+        let err = planned_attempt(plan).expect_err("planner 必须先拒绝 trim 绕过");
+
+        assert!(matches!(err, PlanningError::InvalidRoutePlan(_)));
+    }
+
+    #[test]
+    fn planned_attempt_rejects_material_with_embedded_control_character() {
+        let mut plan = valid_route_plan_for_auth();
+        plan.upstream_auth.as_mut().unwrap().material = Bytes::from_static(b"upstream-\x1fsecret");
+
+        let err = planned_attempt(plan).expect_err("planner 必须拒绝内嵌控制字符");
+
+        assert!(matches!(err, PlanningError::InvalidRoutePlan(_)));
+    }
+
+    fn valid_route_plan_for_auth() -> RoutePlan {
+        RoutePlan {
+            route_plan_id: "route-plan-auth-test".to_owned(),
+            account_id: "account-auth-test".to_owned(),
+            acquisition_token: Bytes::from_static(b"lease-token-auth-test"),
+            vendor: "anthropic".to_owned(),
+            upstream_model: "claude-test".to_owned(),
+            vendor_endpoint: "https://api.anthropic.com".to_owned(),
+            credentials_handle: "credential-auth-test".to_owned(),
+            auth_mode: "bearer".to_owned(),
+            route_ttl_ms: 0,
+            attempt_deadline_ms: 30_000,
+            max_body_bytes: 1024 * 1024,
+            max_stream_frame_bytes: 64 * 1024,
+            upstream_auth: Some(crate::route_proto::v1::UpstreamAuthMaterial {
+                material_kind: "bearer_token".to_owned(),
+                material: Bytes::from_static(b"upstream-secret-auth-test"),
+                header_name: String::new(),
+                expires_at_unix_ms: 0,
+            }),
+        }
     }
 }

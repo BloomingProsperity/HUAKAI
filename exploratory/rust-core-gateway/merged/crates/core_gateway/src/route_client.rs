@@ -1,5 +1,5 @@
 // Rust 数据面到 Go control plane 的 gRPC client。
-// v0 只做 typed contract、deadline、retry、短 TTL cache 和 circuit breaker 骨架。
+// v0 只做 typed contract、deadline、retry 和 circuit breaker 骨架。
 
 use std::{
     sync::{
@@ -9,7 +9,6 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use dashmap::DashMap;
 use http::Uri;
 use tokio::time;
 use tonic::{
@@ -20,6 +19,7 @@ use tracing::{debug, warn};
 
 use crate::{
     error::GatewayError,
+    redaction::redact_untrusted_text,
     route_proto::v1::{
         AttemptReportRequest, AttemptReportResponse, HealthCheckRequest, HealthCheckResponse,
         HeartbeatRequest, HeartbeatResponse, RoutePlan, RouteQueryRequest,
@@ -28,6 +28,7 @@ use crate::{
 };
 
 pub const ROUTE_SCHEMA_VERSION: &str = "route.v1";
+const CONTROL_PLANE_ERROR_LIMIT: usize = 256;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RouteClientOptions {
@@ -60,15 +61,8 @@ pub struct RouteClient {
 struct RouteClientInner {
     client: RouteServiceClient<Channel>,
     options: RouteClientOptions,
-    cache: DashMap<String, CachedRoutePlan>,
     consecutive_failures: AtomicU32,
     circuit_open_until_ms: AtomicU64,
-}
-
-#[derive(Clone)]
-struct CachedRoutePlan {
-    plan: RoutePlan,
-    expires_at_ms: u64,
 }
 
 impl RouteClient {
@@ -96,7 +90,6 @@ impl RouteClient {
             inner: Arc::new(RouteClientInner {
                 client,
                 options,
-                cache: DashMap::new(),
                 consecutive_failures: AtomicU32::new(0),
                 circuit_open_until_ms: AtomicU64::new(0),
             }),
@@ -116,10 +109,6 @@ impl RouteClient {
     }
 
     pub async fn query_route(&self, query: RouteQueryRequest) -> Result<RoutePlan, GatewayError> {
-        if let Some(plan) = self.cache_get(&query) {
-            return Ok(plan);
-        }
-
         if self.circuit_is_open() {
             return Err(GatewayError::ControlPlane(
                 "route circuit breaker open".to_owned(),
@@ -133,7 +122,6 @@ impl RouteClient {
             match self.route_query_once(query.clone()).await {
                 Ok(plan) => {
                     self.record_success();
-                    self.cache_put(&query, &plan);
                     return Ok(plan);
                 }
                 Err(err) => {
@@ -238,42 +226,6 @@ impl RouteClient {
         Ok(response.into_inner())
     }
 
-    fn cache_get(&self, query: &RouteQueryRequest) -> Option<RoutePlan> {
-        let key = route_cache_key(query)?;
-        let now = now_unix_ms();
-        let entry = self.inner.cache.get(&key)?;
-
-        if entry.expires_at_ms > now {
-            debug!(cache_key = %key, "route plan cache hit");
-            Some(entry.plan.clone())
-        } else {
-            drop(entry);
-            self.inner.cache.remove(&key);
-            None
-        }
-    }
-
-    fn cache_put(&self, query: &RouteQueryRequest, plan: &RoutePlan) {
-        let Some(key) = route_cache_key(query) else {
-            return;
-        };
-
-        let configured_ms = duration_millis_u64(self.inner.options.route_cache_ttl);
-        if configured_ms == 0 || plan.route_ttl_ms == 0 {
-            return;
-        }
-
-        let ttl_ms = configured_ms.min(plan.route_ttl_ms);
-        let expires_at_ms = now_unix_ms().saturating_add(ttl_ms);
-        self.inner.cache.insert(
-            key,
-            CachedRoutePlan {
-                plan: plan.clone(),
-                expires_at_ms,
-            },
-        );
-    }
-
     fn record_success(&self) {
         self.inner.consecutive_failures.store(0, Ordering::Relaxed);
         self.inner.circuit_open_until_ms.store(0, Ordering::Release);
@@ -317,11 +269,9 @@ fn status_to_route_call_error(status: tonic::Status) -> RouteCallError {
 }
 
 fn status_to_gateway_error(status: tonic::Status) -> GatewayError {
-    GatewayError::ControlPlane(format!(
-        "control plane gRPC {:?}: {}",
-        status.code(),
-        status.message()
-    ))
+    let code = status.code();
+    let message = redact_untrusted_text(status.message(), CONTROL_PLANE_ERROR_LIMIT);
+    GatewayError::ControlPlane(format!("control plane gRPC {:?}: {}", code, message))
 }
 
 fn retryable_status(code: Code) -> bool {
@@ -334,35 +284,6 @@ fn retryable_status(code: Code) -> bool {
 fn retry_delay(base: Duration, attempt: usize) -> Duration {
     let multiplier = attempt.saturating_add(1).min(8) as u32;
     base.saturating_mul(multiplier)
-}
-
-fn route_cache_key(query: &RouteQueryRequest) -> Option<String> {
-    if !query.previous_attempts.is_empty() {
-        return None;
-    }
-
-    let mut key = String::with_capacity(192);
-    push_key_part(&mut key, &query.tenant_id);
-    push_key_part(&mut key, &query.requested_model);
-    push_key_part(&mut key, &query.session_hash);
-    push_key_part(&mut key, &query.request_protocol);
-    push_key_part(&mut key, if query.stream { "1" } else { "0" });
-
-    let mut hints: Vec<_> = query.capability_hints.iter().collect();
-    hints.sort_by(|a, b| a.name.cmp(&b.name).then(a.value.cmp(&b.value)));
-    for hint in hints {
-        push_key_part(&mut key, &hint.name);
-        push_key_part(&mut key, &hint.value);
-    }
-
-    Some(key)
-}
-
-fn push_key_part(key: &mut String, part: &str) {
-    key.push_str(&part.len().to_string());
-    key.push(':');
-    key.push_str(part);
-    key.push('|');
 }
 
 fn duration_millis_u64(duration: Duration) -> u64 {
@@ -380,36 +301,6 @@ fn now_unix_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::route_proto::v1::CapabilityHint;
-
-    #[test]
-    fn route_cache_key_ignores_hint_order() {
-        let mut left = RouteQueryRequest {
-            tenant_id: "tenant".to_owned(),
-            requested_model: "model".to_owned(),
-            session_hash: "session".to_owned(),
-            request_protocol: "openai_chat_completions".to_owned(),
-            stream: true,
-            capability_hints: vec![
-                CapabilityHint {
-                    name: "vision".to_owned(),
-                    value: "true".to_owned(),
-                },
-                CapabilityHint {
-                    name: "tool".to_owned(),
-                    value: "true".to_owned(),
-                },
-            ],
-            ..Default::default()
-        };
-        let mut right = left.clone();
-        right.capability_hints.reverse();
-
-        assert_eq!(route_cache_key(&left), route_cache_key(&right));
-
-        left.previous_attempts.push(Default::default());
-        assert!(route_cache_key(&left).is_none());
-    }
 
     // ── circuit breaker 单元测试 (源自 claude-m3 lane) ───────────────────────
     // RouteClient::new 内部的 tonic channel 需要 Tokio 运行时, 故用 #[tokio::test]
@@ -504,82 +395,16 @@ mod tests {
         assert_eq!(client.consecutive_failures(), 0);
     }
 
-    // ── DashMap route cache 单元测试 (源自 claude-m3 lane) ──────────────────
-
-    fn make_cached_plan(ttl_ms: u64) -> RoutePlan {
-        RoutePlan {
-            route_plan_id: "plan-unit-1".to_owned(),
-            account_id: "acct-1".to_owned(),
-            acquisition_token: bytes::Bytes::from_static(b"tok"),
-            vendor: "anthropic".to_owned(),
-            upstream_model: "claude-mock".to_owned(),
-            vendor_endpoint: "https://api.anthropic.com".to_owned(),
-            credentials_handle: "hdl-1".to_owned(),
-            auth_mode: "bearer".to_owned(),
-            route_ttl_ms: ttl_ms,
-            attempt_deadline_ms: 30_000,
-            max_body_bytes: 4 * 1024 * 1024,
-            max_stream_frame_bytes: 64 * 1024,
-        }
-    }
-
-    fn make_query(model: &str) -> RouteQueryRequest {
-        RouteQueryRequest {
-            tenant_id: "t1".to_owned(),
-            requested_model: model.to_owned(),
-            session_hash: "s1".to_owned(),
-            request_protocol: "anthropic_messages".to_owned(),
-            stream: false,
-            ..Default::default()
-        }
-    }
-
-    /// ttl_ms=0 时不应插入缓存 (cache_put 是 no-op)
-    #[tokio::test]
-    async fn route_cache_disabled_when_ttl_zero() {
-        let opts = RouteClientOptions {
-            route_cache_ttl: Duration::from_secs(10), // client 侧 TTL 非零
-            ..RouteClientOptions::default()
-        };
-        let client = RouteClient::new("http://127.0.0.1:1".parse().unwrap(), opts).unwrap();
-
-        let query = make_query("claude-mock");
-        let plan = make_cached_plan(0); // plan 下发 ttl=0, 禁止缓存
-        client.cache_put(&query, &plan);
-
-        // 缓存应为空
-        assert!(
-            client.inner.cache.is_empty(),
-            "plan.route_ttl_ms=0 时不应写入缓存"
-        );
-    }
-
-    /// ttl > 0 时 cache_put + cache_get 应命中
-    #[tokio::test]
-    async fn route_cache_hit_within_ttl() {
-        let opts = RouteClientOptions {
-            route_cache_ttl: Duration::from_secs(10),
-            ..RouteClientOptions::default()
-        };
-        let client = RouteClient::new("http://127.0.0.1:1".parse().unwrap(), opts).unwrap();
-
-        let query = make_query("claude-mock");
-        let plan = make_cached_plan(5_000);
-        client.cache_put(&query, &plan);
-
-        let hit = client.cache_get(&query);
-        assert!(hit.is_some(), "TTL 内应命中缓存");
-        assert_eq!(hit.unwrap().route_plan_id, "plan-unit-1");
-    }
-
-    /// previous_attempts 非空时 cache key 应为 None (不缓存)
     #[test]
-    fn route_cache_key_none_when_previous_attempts_present() {
-        let mut query = make_query("claude-mock");
-        query.previous_attempts.push(Default::default());
-        assert!(
-            route_cache_key(&query).is_none(),
-            "有 previous_attempts 时不应生成 cache key"
-        );
+    fn status_to_gateway_error_redacts_untrusted_status_message() {
+        let err = status_to_gateway_error(tonic::Status::unavailable(
+            "vendor said Authorization: Bearer lease-token-value and sk-test-sensitive-value",
+        ));
+        let rendered = err.to_string();
+
+        assert!(rendered.contains("Unavailable"));
+        assert!(rendered.contains("control plane gRPC"));
+        assert!(!rendered.contains("lease-token-value"));
+        assert!(!rendered.contains("sk-test-sensitive-value"));
     }
 }

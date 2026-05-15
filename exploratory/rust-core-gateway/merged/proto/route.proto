@@ -37,6 +37,13 @@ message RouteQueryRequest {
   repeated CapabilityHint capability_hints = 9;
 }
 
+message UpstreamAuthMaterial {
+  string material_kind = 1;
+  bytes material = 2;
+  string header_name = 3;
+  uint64 expires_at_unix_ms = 4;
+}
+
 message RoutePlan {
   string route_plan_id = 1;
   string account_id = 2;
@@ -50,6 +57,7 @@ message RoutePlan {
   uint64 attempt_deadline_ms = 10;
   uint64 max_body_bytes = 11;
   uint64 max_stream_frame_bytes = 12;
+  UpstreamAuthMaterial upstream_auth = 13;
 }
 
 message TokensUsed {

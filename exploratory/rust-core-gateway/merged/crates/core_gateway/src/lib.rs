@@ -8,6 +8,7 @@ pub mod error;
 pub mod heartbeat;
 pub mod listener;
 pub mod metrics;
+pub mod mimicry;
 pub mod mock_control_plane;
 pub mod proxy_engine;
 pub mod redaction;
@@ -23,7 +24,7 @@ use axum::{Router, extract::State, http::header, response::IntoResponse, routing
 use bytes::Bytes;
 use tokio::net::TcpListener;
 use tower_http::limit::RequestBodyLimitLayer;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::metrics::encode_metrics;
 
@@ -56,6 +57,7 @@ impl std::fmt::Debug for GatewayState {
 
 impl GatewayState {
     pub fn new(config: StartupConfig) -> Self {
+        log_route_plan_cache_disabled(config.route_cache_ttl_ms);
         let http_client: GatewayHttpClient = build_http_client();
         let route_client = RouteClient::new(
             config.control_plane_endpoint.clone(),
@@ -113,6 +115,20 @@ impl GatewayState {
 
     pub fn attempt_reporter(&self) -> &AttemptReporter {
         &self.attempt_reporter
+    }
+}
+
+fn log_route_plan_cache_disabled(route_cache_ttl_ms: u64) {
+    if route_cache_ttl_ms > 0 {
+        warn!(
+            route_cache_ttl_ms,
+            "RoutePlan cache disabled because plans carry per-attempt lease/auth material"
+        );
+    } else {
+        info!(
+            route_cache_ttl_ms,
+            "RoutePlan cache disabled because plans carry per-attempt lease/auth material"
+        );
     }
 }
 
