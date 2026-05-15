@@ -5,7 +5,10 @@ mod common;
 use std::{net::SocketAddr, time::Duration};
 
 use axum::body::Body;
-use common::tls_capture::{CaptureError, spawn_capture_once};
+use common::{
+    capture_artifact::write_tls_clienthello_artifact,
+    tls_capture::{CaptureError, spawn_capture_once},
+};
 use core_gateway::proxy_engine::build_http_client;
 use http::Request;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
@@ -45,6 +48,12 @@ async fn baseline_hyper_rustls_capture() {
         capture.signature_algorithms,
         capture.ec_point_formats,
         capture.alpn_protocols,
+    );
+    let artifact_path = write_tls_clienthello_artifact("baseline-hyper-rustls", &capture)
+        .expect("R-D local TLS capture artifact 应能写入 CARGO_TARGET_DIR");
+    eprintln!(
+        "R-D local TLS capture artifact: {}",
+        artifact_path.display()
     );
 
     assert!(
