@@ -29,12 +29,12 @@ type ListFilter struct {
 	Limit     int
 }
 
-const recordColumns = `
-	id, tenant_id, claim_id, payload, failure_reason, failure_at,
-	replay_attempts, last_replay_at, replayed_at, replay_failure_reason,
-	event_kind, lane, status, next_retry_at, lease_owner, lease_until,
-	replica_status, replica_target, replica_committed_at, idempotency_key,
-	source_table, source_id, operator_review_at`
+const recordColumnsDLQ = `
+	d.id, d.tenant_id, d.claim_id, d.payload, d.failure_reason, d.failure_at,
+	d.replay_attempts, d.last_replay_at, d.replayed_at, d.replay_failure_reason,
+	d.event_kind, d.lane, d.status, d.next_retry_at, d.lease_owner, d.lease_until,
+	d.replica_status, d.replica_target, d.replica_committed_at, d.idempotency_key,
+	d.source_table, d.source_id, d.operator_review_at`
 
 func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
@@ -63,12 +63,12 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Record, error) {
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `
-SELECT `+recordColumns+`
-FROM usage_record_dlq
-WHERE ($1::text = '' OR event_kind = $1)
-  AND ($2::text = '' OR status = $2)
-  AND ($3::bigint IS NULL OR tenant_id = $3)
-ORDER BY failure_at DESC, id DESC
+SELECT `+recordColumnsDLQ+`
+FROM usage_record_dlq d
+WHERE ($1::text = '' OR d.event_kind = $1)
+  AND ($2::text = '' OR d.status = $2)
+  AND ($3::bigint IS NULL OR d.tenant_id = $3)
+ORDER BY d.failure_at DESC, d.id DESC
 LIMIT $4`,
 		string(f.EventKind), string(f.Status), nullableInt64Ptr(f.TenantID), limit,
 	)
@@ -103,14 +103,14 @@ func (s *Store) Claim(ctx context.Context, lane Lane, workerID string, leaseTTL 
 	}
 	rec, err := scanRecord(s.pool.QueryRow(ctx, `
 WITH candidate AS (
-	SELECT id
-	FROM usage_record_dlq
-	WHERE lane = $1
+	SELECT q.id
+	FROM usage_record_dlq q
+	WHERE q.lane = $1
 	  AND (
-		(status = 'pending' AND next_retry_at <= now())
-		OR (status = 'inflight' AND lease_until < now())
+		(q.status = 'pending' AND q.next_retry_at <= now())
+		OR (q.status = 'inflight' AND q.lease_until < now())
 	  )
-	ORDER BY next_retry_at ASC, failure_at ASC, id ASC
+	ORDER BY q.next_retry_at ASC, q.failure_at ASC, q.id ASC
 	LIMIT 1
 	FOR UPDATE SKIP LOCKED
 )
@@ -123,7 +123,7 @@ SET status = 'inflight',
     updated_at = now()
 FROM candidate
 WHERE d.id = candidate.id
-RETURNING `+recordColumns,
+RETURNING `+recordColumnsDLQ,
 		string(lane), workerID, intervalLiteral(leaseTTL),
 	))
 	if err == pgx.ErrNoRows {
@@ -143,7 +143,7 @@ func (s *Store) ClaimByID(ctx context.Context, id int64, actorID string, leaseTT
 		leaseTTL = 30 * time.Second
 	}
 	rec, err := scanRecord(s.pool.QueryRow(ctx, `
-UPDATE usage_record_dlq
+UPDATE usage_record_dlq d
 SET status = 'inflight',
     lane = 'HIGH',
     lease_owner = $2,
@@ -151,8 +151,8 @@ SET status = 'inflight',
     lease_until = now() + $3::interval,
     last_replay_at = now(),
     updated_at = now()
-WHERE id = $1 AND status <> 'delivered'
-RETURNING `+recordColumns,
+WHERE d.id = $1 AND d.status <> 'delivered'
+RETURNING `+recordColumnsDLQ,
 		id, "manual:"+actorID, intervalLiteral(leaseTTL),
 	))
 	if err == pgx.ErrNoRows {
