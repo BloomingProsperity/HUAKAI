@@ -159,11 +159,5 @@ pub fn codex_cli_known_gap_fields() -> Vec<TlsFieldGap> {
             current_backend_value: "reproducible public subset only",
             reason: "完整 sigalg 列表当前无法通过公开 API 表达",
         },
-        TlsFieldGap {
-            field: "ec_point_formats",
-            template_value: "[0, 1, 2]",
-            current_backend_value: "[0]",
-            reason: "当前 backend 只发 uncompressed point format",
-        },
     ]
 }

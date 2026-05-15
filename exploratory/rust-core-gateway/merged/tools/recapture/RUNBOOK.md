@@ -473,7 +473,29 @@ fail-closed 规则：
 - 对每个 mismatch 写明：observed value、expected builtin value、是否 GREASE/randomized、是否阻塞 production。
 - R-D 不以 CI local capture 单独通过作为 Released gate；必须有 Owner 本机真实上游样本。
 
-## 10. Source files read
+## 10. OpenSSL build/runtime preflight
+
+生产 image 启用 `mimicry-openssl` 时，必须把 OpenSSL build/runtime 本身视为
+fingerprint 输入，而不是只信任开发机 capture。未编译 `mimicry-openssl` 的 binary
+必须把 `native-tls/openssl` profile 视为 unsupported template，不能进入 OpenSSL
+production dispatch。
+
+OpenSSL adapter 在 `new_with_profile` 构造后会立即启动本地 ClientHello capture
+preflight，并验证当前运行时真实发出的 `ec_point_formats` 精确等于 `[0, 1, 2]`。
+如果生产 image 的 OpenSSL build flag、disabled algorithms 或动态链接版本导致实际
+ClientHello 只发 `[0]` 或其他顺序/集合，adapter 必须 fail-closed，返回
+`PreflightFailed`，生产 dispatch 也就拿不到可用 adapter。
+
+Operator 要求：
+
+- 部署前记录生产 image 的 OpenSSL version / build options / disabled algorithms。
+- 部署后把 `PreflightFailed` 和 `PreflightCaptureFailed` surface 到 ops 通道。
+- preflight 失败时暂停该 profile 的 OpenSSL mimicry dispatch；不能静默降级为
+  “当前 OpenSSL 默认值”。
+- 修复路径是换用通过 preflight 的 OpenSSL runtime，或把该 feature 保持为
+  Mandatory Roadmap / Feature Flag off；不能删除对应 mimicry 能力。
+
+## 11. Source files read
 
 - `docs/RULES.md`
 - `docs/plans/2026-05-14-r3-on-merged-closure-codex.md`

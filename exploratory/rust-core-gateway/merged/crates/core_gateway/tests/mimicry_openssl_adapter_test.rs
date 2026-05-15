@@ -190,6 +190,45 @@ async fn profile_driven_groups_and_sigalgs_capture_diff() {
     }
 }
 
+#[tokio::test]
+async fn profile_driven_ec_point_formats_capture_diff() {
+    let codex_profile =
+        load_builtin_profile(BuiltinProfile::CodexCli).expect("codex profile 应加载");
+    let adapter = OpenSslMimicryAdapter::new_with_profile(&codex_profile)
+        .expect("OpenSSL adapter 应能应用 profile ec_point_formats");
+    assert!(
+        adapter.preflight_passed(),
+        "new_with_profile 必须记录 OpenSSL runtime preflight provenance"
+    );
+    let diff = capture_profile_diff(&adapter, &codex_profile, "ec_point_formats").await;
+
+    eprintln!(
+        "profile_driven_ec_point_formats_capture_diff ec_point_formats={:?}",
+        diff.ec_point_formats
+    );
+
+    assert!(
+        matches!(
+            &diff.ec_point_formats,
+            ListFieldStatus::OrderedMatch { value } if value == &vec![0, 1, 2]
+        ),
+        "ec_point_formats 应与 Codex profile [0, 1, 2] 顺序一致，实际 diff: {diff:?}"
+    );
+}
+
+#[test]
+fn profile_driven_ec_point_formats_preflight_records_provenance() {
+    let profile = openssl_native_ec_point_formats_profile();
+
+    let adapter = OpenSslMimicryAdapter::new_with_profile(&profile)
+        .expect("OpenSSL native ec_point_formats runtime preflight 必须通过");
+
+    assert!(
+        adapter.preflight_passed(),
+        "OpenSSL adapter 应记录 new_with_profile 已通过 ec_point_formats preflight"
+    );
+}
+
 #[test]
 fn profile_driven_unsupported_group_fails_fast() {
     let profile = codex_profile_with_first_supported_group(0xffff);
@@ -214,6 +253,36 @@ fn profile_driven_unsupported_sigalg_fails_fast() {
         matches!(error, OpenSslAdapterError::UnsupportedSigalg(0xffff)),
         "unsupported sigalg 应精确返回 0xffff，实际错误: {error:?}"
     );
+}
+
+#[test]
+fn profile_driven_ec_point_formats_empty_list_fails_fast() {
+    let profile = profile_with_ec_point_formats(Vec::new());
+
+    let error = OpenSslMimicryAdapter::new_with_profile(&profile)
+        .expect_err("empty ec_point_formats 必须 fail-fast，不能构造 adapter");
+
+    assert_ec_point_formats_profile_apply_failed(error, "[]");
+}
+
+#[test]
+fn profile_driven_ec_point_formats_partial_fails_fast() {
+    let profile = profile_with_ec_point_formats(vec![0]);
+
+    let error = OpenSslMimicryAdapter::new_with_profile(&profile)
+        .expect_err("[0] ec_point_formats 必须 fail-fast，不能构造 adapter");
+
+    assert_ec_point_formats_profile_apply_failed(error, "[0]");
+}
+
+#[test]
+fn profile_driven_ec_point_formats_wrong_order_fails_fast() {
+    let profile = profile_with_ec_point_formats(vec![2, 1, 0]);
+
+    let error = OpenSslMimicryAdapter::new_with_profile(&profile)
+        .expect_err("[2,1,0] ec_point_formats 必须 fail-fast，不能构造 adapter");
+
+    assert_ec_point_formats_profile_apply_failed(error, "[2, 1, 0]");
 }
 
 struct LocalTlsServer {
@@ -472,9 +541,7 @@ async fn capture_profile_diff(
         .expect("ClientHello 应能按 wire length 成功解析");
     let diff = diff_capture_against_profile(&captured, profile);
 
-    eprintln!(
-        "profile_driven_groups_and_sigalgs_capture_diff label={label} captured={captured:?} diff={diff:?}"
-    );
+    eprintln!("capture_profile_diff label={label} captured={captured:?} diff={diff:?}");
 
     diff
 }
@@ -523,6 +590,38 @@ fn codex_profile_with_first_signature_algorithm(sigalg_id: u16) -> FingerprintPr
         raw,
         "插入 unsupported signature_algorithm 后的 codex profile 应仍合法",
     )
+}
+
+fn openssl_native_ec_point_formats_profile() -> FingerprintProfile {
+    let mut profile = load_builtin_profile(BuiltinProfile::CodexCli).expect("codex profile 应加载");
+    profile.tls.curves = vec![0x001d, 0x0017, 0x0018];
+    profile.tls.supported_groups = profile.tls.curves.clone();
+    profile.tls.sig_algos = vec![0x0403, 0x0804, 0x0401];
+    profile.tls.signature_algorithms = profile.tls.sig_algos.clone();
+    profile.tls.ec_point_formats = vec![0, 1, 2];
+    profile
+}
+
+fn profile_with_ec_point_formats(ec_point_formats: Vec<u8>) -> FingerprintProfile {
+    let mut profile = openssl_native_ec_point_formats_profile();
+    profile.tls.ec_point_formats = ec_point_formats;
+    profile
+}
+
+fn assert_ec_point_formats_profile_apply_failed(error: OpenSslAdapterError, expected: &str) {
+    match error {
+        OpenSslAdapterError::ProfileApplyFailed(message) => {
+            assert!(
+                message.contains("unsupported ec_point_formats"),
+                "ec_point_formats fail-fast 应说明 unsupported，实际: {message}"
+            );
+            assert!(
+                message.contains(expected),
+                "ec_point_formats fail-fast 应包含输入 {expected}，实际: {message}"
+            );
+        }
+        error => panic!("ec_point_formats fail-fast 应返回 ProfileApplyFailed，实际: {error:?}"),
+    }
 }
 
 fn prepend_u16_json_field(raw: &mut serde_json::Value, field: &str, value: u16) {

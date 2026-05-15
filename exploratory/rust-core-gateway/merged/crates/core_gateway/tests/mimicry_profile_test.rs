@@ -175,7 +175,6 @@ fn mimicry_profile_codex_known_gap_blocks_capture_pass_with_field_diffs() {
     assert_gap_field(&gaps, "extensions", "22 encrypt_then_mac");
     assert_gap_field(&gaps, "supported_groups", "4588");
     assert_gap_field(&gaps, "signature_algorithms", "26 template ids");
-    assert_gap_field(&gaps, "ec_point_formats", "[0, 1, 2]");
 
     assert!(
         codex.tls.extensions.contains(&22),
