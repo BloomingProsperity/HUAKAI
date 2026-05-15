@@ -481,14 +481,19 @@ fingerprint 输入，而不是只信任开发机 capture。未编译 `mimicry-op
 production dispatch。
 
 OpenSSL adapter 在 `new_with_profile` 构造后会立即启动本地 ClientHello capture
-preflight，并验证当前运行时真实发出的 `ec_point_formats` 精确等于 `[0, 1, 2]`。
-如果生产 image 的 OpenSSL build flag、disabled algorithms 或动态链接版本导致实际
-ClientHello 只发 `[0]` 或其他顺序/集合，adapter 必须 fail-closed，返回
-`PreflightFailed`，生产 dispatch 也就拿不到可用 adapter。
+preflight，并验证当前运行时真实发出的 `ec_point_formats` 精确等于 `[0, 1, 2]`，
+同时验证 ClientHello extensions 含 `22` (`encrypt_then_mac`)。如果生产 image 的
+OpenSSL build flag、disabled algorithms 或动态链接版本导致实际 ClientHello 只发
+`[0]` 或其他顺序/集合，或不再自然发送 extension 22，adapter 必须 fail-closed，
+返回 `PreflightFailed`，生产 dispatch 也就拿不到可用 adapter。模板如果声明
+`native-tls/openssl` 但缺少 extension 22，也必须在 dispatch/adapter 构造阶段被视为
+unsupported；当前公开 API 没有安全 disable native ETM extension 的路径。
 
 Operator 要求：
 
 - 部署前记录生产 image 的 OpenSSL version / build options / disabled algorithms。
+- 部署前用同一 binary/runtime 跑一次 OpenSSL profile preflight，记录
+  `ec_point_formats` 和 extension 22 的实际 capture 结果。
 - 部署后把 `PreflightFailed` 和 `PreflightCaptureFailed` surface 到 ops 通道。
 - preflight 失败时暂停该 profile 的 OpenSSL mimicry dispatch；不能静默降级为
   “当前 OpenSSL 默认值”。

@@ -143,9 +143,9 @@ pub fn codex_cli_known_gap_fields() -> Vec<TlsFieldGap> {
         },
         TlsFieldGap {
             field: "extensions",
-            template_value: "contains 22 encrypt_then_mac",
-            current_backend_value: "missing 22 in spike capture",
-            reason: "当前公开 backend 不能安全插入任意 TLS extension",
+            template_value: "stable list contains 22 encrypt_then_mac",
+            current_backend_value: "22 is native-preflighted; full OpenSSL extension list remains capture-dependent",
+            reason: "L2-A5.4 only safe-equivalents native ETM; exact extension list/order still needs capture diff gate",
         },
         TlsFieldGap {
             field: "supported_groups",

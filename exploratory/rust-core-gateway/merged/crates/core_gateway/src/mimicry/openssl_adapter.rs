@@ -28,6 +28,7 @@ use tokio_openssl::SslStream as TokioSslStream;
 use super::{FingerprintProfile, tls_capture};
 
 const OPENSSL_NATIVE_EC_POINT_FORMATS: &[u8] = &[0, 1, 2];
+const OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION: u16 = 22;
 const OPENSSL_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(10);
 const OPENSSL_PREFLIGHT_SNI: &str = "localhost";
 
@@ -49,6 +50,8 @@ pub enum OpenSslAdapterError {
     UnsupportedGroup(u16),
     #[error("unsupported OpenSSL profile signature algorithm 0x{0:04x}")]
     UnsupportedSigalg(u16),
+    #[error("unsupported OpenSSL profile extension {id}: {reason}")]
+    UnsupportedExtension { id: u16, reason: &'static str },
     #[error("failed to apply OpenSSL fingerprint profile: {0}")]
     ProfileApplyFailed(String),
     #[error(
@@ -56,8 +59,8 @@ pub enum OpenSslAdapterError {
     )]
     PreflightFailed {
         field: &'static str,
-        expected: Vec<u8>,
-        actual: Vec<u8>,
+        expected: Vec<u16>,
+        actual: Vec<u16>,
     },
     #[error("OpenSSL runtime preflight capture failed: {0}")]
     PreflightCaptureFailed(String),
@@ -88,12 +91,13 @@ impl OpenSslMimicryAdapter {
         apply_supported_groups(&mut builder, profile)?;
         apply_signature_algorithms(&mut builder, profile)?;
         apply_ec_point_formats(&mut builder, profile)?;
+        apply_extensions(&profile.tls.extensions)?;
 
         let mut adapter = Self {
             ssl_ctx: builder.build(),
             preflight_passed: false,
         };
-        adapter.run_ec_point_formats_preflight()?;
+        adapter.run_profile_preflight()?;
         adapter.preflight_passed = true;
         Ok(adapter)
     }
@@ -141,7 +145,15 @@ impl OpenSslMimicryAdapter {
         Ok(tls_stream)
     }
 
-    fn run_ec_point_formats_preflight(&self) -> Result<(), OpenSslAdapterError> {
+    fn run_profile_preflight(&self) -> Result<(), OpenSslAdapterError> {
+        let captured = self.capture_runtime_client_hello()?;
+        verify_ec_point_formats_preflight(&captured)?;
+        verify_encrypt_then_mac_preflight(&captured)
+    }
+
+    fn capture_runtime_client_hello(
+        &self,
+    ) -> Result<tls_capture::CapturedClientHello, OpenSslAdapterError> {
         let listener = StdTcpListener::bind("127.0.0.1:0").map_err(|source| {
             OpenSslAdapterError::PreflightCaptureFailed(format!(
                 "binding local capture listener failed: {source}"
@@ -179,16 +191,7 @@ impl OpenSslMimicryAdapter {
                 ))
             })?;
 
-        let actual = captured.ec_point_formats;
-        if actual == OPENSSL_NATIVE_EC_POINT_FORMATS {
-            return Ok(());
-        }
-
-        Err(OpenSslAdapterError::PreflightFailed {
-            field: "ec_point_formats",
-            expected: OPENSSL_NATIVE_EC_POINT_FORMATS.to_vec(),
-            actual,
-        })
+        Ok(captured)
     }
 }
 
@@ -326,6 +329,55 @@ fn apply_ec_point_formats(
         "unsupported ec_point_formats {:?}; OpenSSL native client profile only exposes {:?}",
         profile.tls.ec_point_formats, OPENSSL_NATIVE_EC_POINT_FORMATS
     )))
+}
+
+fn apply_extensions(profile_extensions: &[u16]) -> Result<(), OpenSslAdapterError> {
+    if profile_extensions.contains(&OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION) {
+        return Ok(());
+    }
+
+    Err(OpenSslAdapterError::UnsupportedExtension {
+        id: OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION,
+        reason: "OpenSSL cannot disable native ETM extension via public API",
+    })
+}
+
+fn verify_ec_point_formats_preflight(
+    captured: &tls_capture::CapturedClientHello,
+) -> Result<(), OpenSslAdapterError> {
+    if captured.ec_point_formats == OPENSSL_NATIVE_EC_POINT_FORMATS {
+        return Ok(());
+    }
+
+    Err(OpenSslAdapterError::PreflightFailed {
+        field: "ec_point_formats",
+        expected: OPENSSL_NATIVE_EC_POINT_FORMATS
+            .iter()
+            .map(|value| u16::from(*value))
+            .collect(),
+        actual: captured
+            .ec_point_formats
+            .iter()
+            .map(|value| u16::from(*value))
+            .collect(),
+    })
+}
+
+fn verify_encrypt_then_mac_preflight(
+    captured: &tls_capture::CapturedClientHello,
+) -> Result<(), OpenSslAdapterError> {
+    if captured
+        .extensions
+        .contains(&OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION)
+    {
+        return Ok(());
+    }
+
+    Err(OpenSslAdapterError::PreflightFailed {
+        field: "extensions",
+        expected: vec![OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION],
+        actual: captured.extensions.clone(),
+    })
 }
 
 fn capture_first_client_hello(

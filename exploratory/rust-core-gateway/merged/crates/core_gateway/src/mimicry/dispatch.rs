@@ -1,6 +1,7 @@
 use super::{BackendIntent, FingerprintProfile};
 
 const OPENSSL_NATIVE_EC_POINT_FORMATS: &[u8] = &[0, 1, 2];
+const OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION: u16 = 22;
 
 /// mimicry 生产 dispatch gate 的最终判定。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,7 +27,20 @@ pub fn decide_dispatch(profile: &FingerprintProfile) -> DispatchDecision {
         BackendIntent::OpenSslAdapter
             if profile.tls.ec_point_formats == OPENSSL_NATIVE_EC_POINT_FORMATS =>
         {
-            DispatchDecision::AllowOpenSsl
+            if profile
+                .tls
+                .extensions
+                .contains(&OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION)
+            {
+                DispatchDecision::AllowOpenSsl
+            } else {
+                DispatchDecision::BlockUnsupportedTemplate {
+                    reason: format!(
+                        "native-tls/openssl cannot disable encrypt_then_mac extension {}; profile extensions are {:?}",
+                        OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION, profile.tls.extensions
+                    ),
+                }
+            }
         }
         BackendIntent::OpenSslAdapter => DispatchDecision::BlockUnsupportedTemplate {
             reason: format!(
