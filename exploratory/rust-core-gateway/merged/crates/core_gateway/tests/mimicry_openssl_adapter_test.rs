@@ -11,11 +11,12 @@ use std::{
 };
 
 use common::{
-    capture_diff::{ListFieldStatus, diff_capture_against_profile},
+    capture_diff::{CaptureDiff, ListFieldStatus, diff_capture_against_profile},
     tls_capture::spawn_capture_once,
 };
 use core_gateway::mimicry::{
-    BuiltinProfile, load_builtin_profile, openssl_adapter::OpenSslMimicryAdapter,
+    BuiltinProfile, FingerprintProfile, load_builtin_profile,
+    openssl_adapter::{OpenSslAdapterError, OpenSslMimicryAdapter},
 };
 use openssl::{
     asn1::Asn1Time,
@@ -103,6 +104,115 @@ async fn profile_driven_cipher_and_alpn_capture_diff() {
     assert!(
         matches!(&diff.alpn_protocols, ListFieldStatus::OrderedMatch { .. }),
         "alpn_protocols 应与测试 profile 顺序一致，实际 diff: {diff:?}"
+    );
+}
+
+#[tokio::test]
+async fn profile_driven_groups_and_sigalgs_capture_diff() {
+    let codex_profile =
+        load_builtin_profile(BuiltinProfile::CodexCli).expect("codex profile 应加载");
+
+    match OpenSslMimicryAdapter::new_with_profile(&codex_profile) {
+        Ok(adapter) => {
+            let diff = capture_profile_diff(&adapter, &codex_profile, "full_codex_profile").await;
+
+            assert!(
+                matches!(&diff.supported_groups, ListFieldStatus::OrderedMatch { .. }),
+                "supported_groups 应与 Codex profile 顺序一致，实际 diff: {diff:?}"
+            );
+            assert!(
+                matches!(
+                    &diff.signature_algorithms,
+                    ListFieldStatus::OrderedMatch { .. }
+                ),
+                "signature_algorithms 应与 Codex profile 顺序一致，实际 diff: {diff:?}"
+            );
+        }
+        Err(OpenSslAdapterError::UnsupportedGroup(4588)) => {
+            eprintln!(
+                "profile_driven_groups_and_sigalgs_capture_diff full_codex_profile unsupported_group=4588"
+            );
+            let without_pq_group = codex_profile_without_supported_group(4588);
+            match OpenSslMimicryAdapter::new_with_profile(&without_pq_group) {
+                Ok(adapter) => {
+                    let diff = capture_profile_diff(
+                        &adapter,
+                        &without_pq_group,
+                        "codex_profile_without_4588",
+                    )
+                    .await;
+
+                    assert!(
+                        matches!(&diff.supported_groups, ListFieldStatus::OrderedMatch { .. }),
+                        "4588-stripped supported_groups 应与 profile 顺序一致，实际 diff: {diff:?}"
+                    );
+                    assert!(
+                        matches!(
+                            &diff.signature_algorithms,
+                            ListFieldStatus::OrderedMatch { .. }
+                        ),
+                        "4588-stripped signature_algorithms 应与 profile 顺序一致，实际 diff: {diff:?}"
+                    );
+                }
+                Err(OpenSslAdapterError::UnsupportedSigalg(sigalg_id)) => {
+                    assert!(
+                        without_pq_group
+                            .tls
+                            .signature_algorithms
+                            .contains(&sigalg_id),
+                        "UnsupportedSigalg 应来自 profile.signature_algorithms，实际 id=0x{sigalg_id:04x}"
+                    );
+                    eprintln!(
+                        "profile_driven_groups_and_sigalgs_capture_diff codex_profile_without_4588 unsupported_sigalg=0x{sigalg_id:04x}"
+                    );
+                }
+                Err(error) => {
+                    panic!(
+                        "4588-stripped profile 应只可能成功或暴露 UnsupportedSigalg，实际错误: {error:?}"
+                    );
+                }
+            }
+        }
+        Err(OpenSslAdapterError::UnsupportedSigalg(sigalg_id)) => {
+            assert!(
+                codex_profile.tls.signature_algorithms.contains(&sigalg_id),
+                "UnsupportedSigalg 应来自 profile.signature_algorithms，实际 id=0x{sigalg_id:04x}"
+            );
+            eprintln!(
+                "profile_driven_groups_and_sigalgs_capture_diff full_codex_profile unsupported_sigalg=0x{sigalg_id:04x}"
+            );
+        }
+        Err(error) => {
+            panic!(
+                "Codex profile 应只可能成功或暴露 typed unsupported group/sigalg，实际错误: {error:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn profile_driven_unsupported_group_fails_fast() {
+    let profile = codex_profile_with_first_supported_group(0xffff);
+
+    let error = OpenSslMimicryAdapter::new_with_profile(&profile)
+        .expect_err("unsupported group 0xffff 必须 fail-fast，不能构造 adapter");
+
+    assert!(
+        matches!(error, OpenSslAdapterError::UnsupportedGroup(0xffff)),
+        "unsupported group 应精确返回 0xffff，实际错误: {error:?}"
+    );
+}
+
+#[test]
+fn profile_driven_unsupported_sigalg_fails_fast() {
+    let profile = codex_profile_with_first_signature_algorithm(0xffff);
+
+    let error = OpenSslMimicryAdapter::new_with_profile(&profile)
+        .expect_err("unsupported sigalg 0xffff 必须 fail-fast，不能构造 adapter");
+
+    assert!(
+        matches!(error, OpenSslAdapterError::UnsupportedSigalg(0xffff)),
+        "unsupported sigalg 应精确返回 0xffff，实际错误: {error:?}"
     );
 }
 
@@ -332,4 +442,110 @@ fn alpn_wire_format_for_test(protocols: &[String]) -> Vec<u8> {
         wire_format.extend(bytes);
     }
     wire_format
+}
+
+async fn capture_profile_diff(
+    adapter: &OpenSslMimicryAdapter,
+    profile: &FingerprintProfile,
+    label: &str,
+) -> CaptureDiff {
+    let bind_addr: SocketAddr = "127.0.0.1:0"
+        .parse()
+        .expect("本地 ephemeral capture 地址应合法");
+    let (capture_addr, capture_task) = spawn_capture_once(bind_addr)
+        .await
+        .expect("capture listener 应可启动");
+
+    let connect_result =
+        tokio::time::timeout(TEST_TIMEOUT, adapter.connect(capture_addr, "localhost"))
+            .await
+            .expect("OpenSSL profile capture connect 不应超时");
+    assert!(
+        connect_result.is_err(),
+        "capture helper 只读取 ClientHello 后关闭连接，不应完成 TLS 握手"
+    );
+
+    let captured = tokio::time::timeout(TEST_TIMEOUT, capture_task)
+        .await
+        .expect("capture task 应在本地请求失败后结束")
+        .expect("capture task 不应 panic")
+        .expect("ClientHello 应能按 wire length 成功解析");
+    let diff = diff_capture_against_profile(&captured, profile);
+
+    eprintln!(
+        "profile_driven_groups_and_sigalgs_capture_diff label={label} captured={captured:?} diff={diff:?}"
+    );
+
+    diff
+}
+
+fn codex_profile_without_supported_group(group_id: u16) -> FingerprintProfile {
+    let mut raw: serde_json::Value =
+        serde_json::from_str(BuiltinProfile::CodexCli.raw_json()).expect("codex raw JSON 应合法");
+
+    for field in ["curves", "supported_groups"] {
+        raw.get_mut(field)
+            .and_then(serde_json::Value::as_array_mut)
+            .expect("codex profile 应包含 curves/supported_groups 数组")
+            .retain(|value| value.as_u64() != Some(u64::from(group_id)));
+    }
+
+    let raw_json = serde_json::to_string(&raw).expect("变种 codex profile 应可序列化");
+    FingerprintProfile::from_json(&raw_json).expect("去掉 4588 后的 codex profile 应仍合法")
+}
+
+fn codex_profile_with_first_supported_group(group_id: u16) -> FingerprintProfile {
+    let mut raw: serde_json::Value =
+        serde_json::from_str(BuiltinProfile::CodexCli.raw_json()).expect("codex raw JSON 应合法");
+
+    for field in ["curves", "supported_groups"] {
+        prepend_u16_json_field(&mut raw, field, group_id);
+    }
+
+    codex_profile_from_raw_value(
+        raw,
+        "插入 unsupported supported_group 后的 codex profile 应仍合法",
+    )
+}
+
+fn codex_profile_with_first_signature_algorithm(sigalg_id: u16) -> FingerprintProfile {
+    let mut raw: serde_json::Value =
+        serde_json::from_str(BuiltinProfile::CodexCli.raw_json()).expect("codex raw JSON 应合法");
+
+    for field in ["curves", "supported_groups"] {
+        set_u16_json_field(&mut raw, field, &[0x001d]);
+    }
+    for field in ["sig_algos", "signature_algorithms"] {
+        prepend_u16_json_field(&mut raw, field, sigalg_id);
+    }
+
+    codex_profile_from_raw_value(
+        raw,
+        "插入 unsupported signature_algorithm 后的 codex profile 应仍合法",
+    )
+}
+
+fn prepend_u16_json_field(raw: &mut serde_json::Value, field: &str, value: u16) {
+    raw.get_mut(field)
+        .and_then(serde_json::Value::as_array_mut)
+        .expect("codex profile 应包含目标 u16 数组")
+        .insert(0, serde_json::Value::from(u64::from(value)));
+}
+
+fn set_u16_json_field(raw: &mut serde_json::Value, field: &str, values: &[u16]) {
+    let field_value = raw
+        .get_mut(field)
+        .and_then(serde_json::Value::as_array_mut)
+        .expect("codex profile 应包含目标 u16 数组");
+    field_value.clear();
+    field_value.extend(
+        values
+            .iter()
+            .map(|value| serde_json::Value::from(u64::from(*value))),
+    );
+}
+
+fn codex_profile_from_raw_value(raw: serde_json::Value, message: &str) -> FingerprintProfile {
+    let raw_json = serde_json::to_string(&raw).expect("变种 codex profile 应可序列化");
+    FingerprintProfile::from_json(&raw_json).expect(message)
 }

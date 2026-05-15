@@ -31,6 +31,10 @@ pub enum OpenSslAdapterError {
     ConnectFailed(#[source] std::io::Error),
     #[error("unsupported OpenSSL profile cipher suite 0x{0:04x}")]
     UnsupportedCipher(u16),
+    #[error("unsupported OpenSSL profile supported group 0x{0:04x}")]
+    UnsupportedGroup(u16),
+    #[error("unsupported OpenSSL profile signature algorithm 0x{0:04x}")]
+    UnsupportedSigalg(u16),
     #[error("failed to apply OpenSSL fingerprint profile: {0}")]
     ProfileApplyFailed(String),
     #[error("failed to complete OpenSSL TLS handshake")]
@@ -56,6 +60,8 @@ impl OpenSslMimicryAdapter {
             .map_err(OpenSslAdapterError::BuildContextFailed)?;
         apply_cipher_suites(&mut builder, profile)?;
         apply_alpn(&mut builder, profile)?;
+        apply_supported_groups(&mut builder, profile)?;
+        apply_signature_algorithms(&mut builder, profile)?;
 
         Ok(Self {
             ssl_ctx: builder.build(),
@@ -178,6 +184,50 @@ fn alpn_wire_format(protocols: &[String]) -> Result<Vec<u8>, OpenSslAdapterError
     Ok(wire_format)
 }
 
+fn apply_supported_groups(
+    builder: &mut SslContextBuilder,
+    profile: &FingerprintProfile,
+) -> Result<(), OpenSslAdapterError> {
+    if profile.tls.supported_groups.is_empty() {
+        return Ok(());
+    }
+
+    let mut group_names = Vec::new();
+    for group_id in &profile.tls.supported_groups {
+        group_names.push(supported_group_id_to_name(*group_id)?);
+    }
+
+    builder
+        .set_groups_list(&group_names.join(":"))
+        .map_err(|error| {
+            OpenSslAdapterError::ProfileApplyFailed(format!(
+                "set_groups_list failed for supported_groups: {error}"
+            ))
+        })
+}
+
+fn apply_signature_algorithms(
+    builder: &mut SslContextBuilder,
+    profile: &FingerprintProfile,
+) -> Result<(), OpenSslAdapterError> {
+    if profile.tls.signature_algorithms.is_empty() {
+        return Ok(());
+    }
+
+    let mut sigalg_names = Vec::new();
+    for sigalg_id in &profile.tls.signature_algorithms {
+        sigalg_names.push(signature_algorithm_id_to_name(*sigalg_id)?);
+    }
+
+    builder
+        .set_sigalgs_list(&sigalg_names.join(":"))
+        .map_err(|error| {
+            OpenSslAdapterError::ProfileApplyFailed(format!(
+                "set_sigalgs_list failed for signature_algorithms: {error}"
+            ))
+        })
+}
+
 fn cipher_id_to_name(id: u16) -> Option<&'static str> {
     match id {
         0x1301 => Some("TLS_AES_128_GCM_SHA256"),
@@ -212,6 +262,76 @@ fn cipher_id_to_name(id: u16) -> Option<&'static str> {
         0xccaa => Some("DHE-RSA-CHACHA20-POLY1305"),
         _ => None,
     }
+}
+
+fn supported_group_id_to_name(id: u16) -> Result<&'static str, OpenSslAdapterError> {
+    let candidates = match id {
+        0x11ec => &["X25519MLKEM768"][..],
+        0x001d => &["X25519"][..],
+        0x0017 => &["P-256"][..],
+        0x001e => &["X448"][..],
+        0x0018 => &["P-384"][..],
+        0x0019 => &["P-521"][..],
+        0x0100 => &["ffdhe2048"][..],
+        0x0101 => &["ffdhe3072"][..],
+        _ => return Err(OpenSslAdapterError::UnsupportedGroup(id)),
+    };
+
+    for candidate in candidates {
+        if openssl_accepts_group_name(candidate)? {
+            return Ok(candidate);
+        }
+    }
+
+    Err(OpenSslAdapterError::UnsupportedGroup(id))
+}
+
+fn signature_algorithm_id_to_name(id: u16) -> Result<&'static str, OpenSslAdapterError> {
+    let name = match id {
+        0x0904 => "mldsa44",
+        0x0905 => "mldsa65",
+        0x0906 => "mldsa87",
+        0x0403 => "ecdsa_secp256r1_sha256",
+        0x0503 => "ecdsa_secp384r1_sha384",
+        0x0603 => "ecdsa_secp521r1_sha512",
+        0x0807 => "ed25519",
+        0x0808 => "ed448",
+        0x081a => "ecdsa_brainpoolP256r1tls13_sha256",
+        0x081b => "ecdsa_brainpoolP384r1tls13_sha384",
+        0x081c => "ecdsa_brainpoolP512r1tls13_sha512",
+        0x0809 => "rsa_pss_pss_sha256",
+        0x080a => "rsa_pss_pss_sha384",
+        0x080b => "rsa_pss_pss_sha512",
+        0x0804 => "rsa_pss_rsae_sha256",
+        0x0805 => "rsa_pss_rsae_sha384",
+        0x0806 => "rsa_pss_rsae_sha512",
+        0x0401 => "rsa_pkcs1_sha256",
+        0x0501 => "rsa_pkcs1_sha384",
+        0x0601 => "rsa_pkcs1_sha512",
+        0x0303 => "ecdsa_sha224",
+        0x0301 => "rsa_pkcs1_sha224",
+        0x0302 => "dsa_sha224",
+        0x0402 => "dsa_sha256",
+        0x0502 => "dsa_sha384",
+        0x0602 => "dsa_sha512",
+        _ => return Err(OpenSslAdapterError::UnsupportedSigalg(id)),
+    };
+
+    if openssl_accepts_sigalg_name(name)? {
+        Ok(name)
+    } else {
+        Err(OpenSslAdapterError::UnsupportedSigalg(id))
+    }
+}
+
+fn openssl_accepts_group_name(name: &str) -> Result<bool, OpenSslAdapterError> {
+    let mut builder = verified_context_builder()?;
+    Ok(builder.set_groups_list(name).is_ok())
+}
+
+fn openssl_accepts_sigalg_name(name: &str) -> Result<bool, OpenSslAdapterError> {
+    let mut builder = verified_context_builder()?;
+    Ok(builder.set_sigalgs_list(name).is_ok())
 }
 
 fn tls_error<E>(source: E) -> OpenSslAdapterError

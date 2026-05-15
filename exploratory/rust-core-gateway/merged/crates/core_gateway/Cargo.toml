@@ -9,6 +9,8 @@ rust-version.workspace = true
 default = []
 # L2-A4: OpenSSL mimicry backend skeleton, 默认不编译进网关 binary。
 mimicry-openssl = ["dep:openssl", "dep:tokio-openssl"]
+# L2-A6: MIT http2 fork 仅用于 SETTINGS / pseudo-header 顺序表达。
+mimicry-http2-fork = ["dep:http2"]
 
 [lints]
 workspace = true
@@ -22,6 +24,7 @@ dashmap = "6.1"
 envy = "0.4"
 futures-core = "0.3"
 http = "1"
+http2 = { git = "https://github.com/0x676e67/http2", rev = "a33b27e469434a99105f35670c9970f22112e892", optional = true, package = "http2", features = ["unstable"] }
 http-body = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1", "http2"] }
