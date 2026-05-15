@@ -9,6 +9,8 @@ pub enum TlsBackend {
     Rustls,
     #[serde(rename = "nodejs")]
     NodeJs,
+    #[serde(rename = "unknown-backend")]
+    UnknownBackend,
 }
 
 impl TlsBackend {
@@ -17,6 +19,7 @@ impl TlsBackend {
             Self::NativeTlsOpenSsl => "native-tls/openssl",
             Self::Rustls => "rustls",
             Self::NodeJs => "nodejs",
+            Self::UnknownBackend => "unknown-backend",
         }
     }
 }
