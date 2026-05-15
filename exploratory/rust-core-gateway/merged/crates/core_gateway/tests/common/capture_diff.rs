@@ -3,7 +3,10 @@
 
 use std::collections::BTreeSet;
 
-use core_gateway::mimicry::{BackendIntent, FingerprintProfile, ProfileMatchPolicy};
+use core_gateway::mimicry::{
+    AvailableMimicryFeatures, BackendIntent, BackendResolverError, FingerprintProfile,
+    ProfileMatchPolicy, resolve_mimicry_backend,
+};
 
 use super::tls_capture::CapturedClientHello;
 
@@ -93,6 +96,17 @@ pub fn diff_capture_against_profile(
             match_policy,
         ),
     }
+}
+
+pub fn diff_capture_against_resolved_backend(
+    profile_id: &str,
+    captured: &CapturedClientHello,
+    profile: &FingerprintProfile,
+    available_features: AvailableMimicryFeatures,
+) -> Result<CaptureDiff, BackendResolverError> {
+    // L2-A8: dispatch backend 先解析，字段 diff 仍复用同一组状态枚举。
+    let _backend = resolve_mimicry_backend(profile_id, profile, available_features)?;
+    Ok(diff_capture_against_profile(captured, profile))
 }
 
 pub fn diff_has_mismatch(diff: &CaptureDiff) -> bool {

@@ -3,6 +3,7 @@
 //! L2-A1 只产出 transport backend intent，不接入 ProxyEngine。
 
 pub mod backend;
+pub mod backend_resolver;
 pub mod dispatch;
 #[cfg(feature = "mimicry-http2-fork")]
 pub mod http2_adapter;
@@ -15,6 +16,10 @@ pub mod tls_capture;
 pub mod tls_profile;
 
 pub use backend::BackendIntent;
+pub use backend_resolver::{
+    AvailableMimicryFeatures, BackendResolverError, MimicryBackend, anthropic_known_gap_reason,
+    resolve_mimicry_backend, resolve_profile_mimicry_backend,
+};
 pub use dispatch::{DispatchDecision, decide_dispatch, is_dispatch_allowed};
 pub use profile::{
     BuiltinProfile, FingerprintProfile, ProfileLoadError, ProfileMatchPolicy, ProfileMode,

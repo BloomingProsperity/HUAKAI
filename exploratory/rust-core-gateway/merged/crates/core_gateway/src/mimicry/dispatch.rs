@@ -1,7 +1,7 @@
-use super::{BackendIntent, FingerprintProfile};
-
-const OPENSSL_NATIVE_EC_POINT_FORMATS: &[u8] = &[0, 1, 2];
-const OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION: u16 = 22;
+use super::{
+    AvailableMimicryFeatures, BackendResolverError, FingerprintProfile, MimicryBackend,
+    resolve_profile_mimicry_backend,
+};
 
 /// mimicry 生产 dispatch gate 的最终判定。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,43 +17,53 @@ pub enum DispatchDecision {
 }
 
 pub fn decide_dispatch(profile: &FingerprintProfile) -> DispatchDecision {
-    match profile.backend_intent() {
-        BackendIntent::OpenSslAdapter if !openssl_adapter_available() => {
-            DispatchDecision::BlockUnsupportedTemplate {
-                reason: "native-tls/openssl dispatch requires the mimicry-openssl feature"
-                    .to_owned(),
-            }
-        }
-        BackendIntent::OpenSslAdapter
-            if profile.tls.ec_point_formats == OPENSSL_NATIVE_EC_POINT_FORMATS =>
-        {
-            if profile
-                .tls
-                .extensions
-                .contains(&OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION)
-            {
-                DispatchDecision::AllowOpenSsl
-            } else {
-                DispatchDecision::BlockUnsupportedTemplate {
-                    reason: format!(
-                        "native-tls/openssl cannot disable encrypt_then_mac extension {}; profile extensions are {:?}",
-                        OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION, profile.tls.extensions
-                    ),
-                }
-            }
-        }
-        BackendIntent::OpenSslAdapter => DispatchDecision::BlockUnsupportedTemplate {
-            reason: format!(
-                "native-tls/openssl requires ec_point_formats {:?}; profile has {:?}",
-                OPENSSL_NATIVE_EC_POINT_FORMATS, profile.tls.ec_point_formats
-            ),
-        },
-        BackendIntent::Rustls => DispatchDecision::AllowRustls,
-        BackendIntent::KnownGapBlocked { reason } => DispatchDecision::BlockKnownGap { reason },
-        BackendIntent::UnsupportedTemplate { reason } => {
-            DispatchDecision::BlockUnsupportedTemplate { reason }
-        }
+    match try_decide_dispatch(profile) {
+        Ok(decision) => decision,
+        Err(
+            BackendResolverError::ProfileBackendMismatch { reason }
+            | BackendResolverError::BackendUnavailable { reason }
+            | BackendResolverError::UnsupportedTemplate { reason },
+        ) => DispatchDecision::BlockUnsupportedTemplate { reason },
     }
+}
+
+pub fn try_decide_dispatch(
+    profile: &FingerprintProfile,
+) -> Result<DispatchDecision, BackendResolverError> {
+    let backend = resolve_profile_mimicry_backend(profile, AvailableMimicryFeatures::current())?;
+
+    Ok(match backend {
+        MimicryBackend::Openssl => DispatchDecision::AllowOpenSsl,
+        MimicryBackend::Rustls => DispatchDecision::AllowRustls,
+        MimicryBackend::KnownGapBlocked { reason } => DispatchDecision::BlockKnownGap { reason },
+    })
+}
+
+pub fn decide_dispatch_with_features(
+    profile: &FingerprintProfile,
+    available_features: AvailableMimicryFeatures,
+) -> DispatchDecision {
+    match try_decide_dispatch_with_features(profile, available_features) {
+        Ok(decision) => decision,
+        Err(
+            BackendResolverError::ProfileBackendMismatch { reason }
+            | BackendResolverError::BackendUnavailable { reason }
+            | BackendResolverError::UnsupportedTemplate { reason },
+        ) => DispatchDecision::BlockUnsupportedTemplate { reason },
+    }
+}
+
+pub fn try_decide_dispatch_with_features(
+    profile: &FingerprintProfile,
+    available_features: AvailableMimicryFeatures,
+) -> Result<DispatchDecision, BackendResolverError> {
+    let backend = resolve_profile_mimicry_backend(profile, available_features)?;
+
+    Ok(match backend {
+        MimicryBackend::Openssl => DispatchDecision::AllowOpenSsl,
+        MimicryBackend::Rustls => DispatchDecision::AllowRustls,
+        MimicryBackend::KnownGapBlocked { reason } => DispatchDecision::BlockKnownGap { reason },
+    })
 }
 
 pub fn is_dispatch_allowed(decision: &DispatchDecision) -> bool {
@@ -61,8 +71,4 @@ pub fn is_dispatch_allowed(decision: &DispatchDecision) -> bool {
         decision,
         DispatchDecision::AllowOpenSsl | DispatchDecision::AllowRustls
     )
-}
-
-const fn openssl_adapter_available() -> bool {
-    cfg!(feature = "mimicry-openssl")
 }
