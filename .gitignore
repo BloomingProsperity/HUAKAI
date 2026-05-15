@@ -30,6 +30,9 @@ backend/.gocache/
 *.pem
 *.key
 *.crt
+# 例外: Rust route-client mTLS 测试 placeholder 证书 (`-----BEGIN HUAKAI TEST … PLACEHOLDER-----`)
+# 不是真证书,只是 build_client_tls_config tests 需要文件存在
+!exploratory/rust-core-gateway/merged/crates/core_gateway/tests/fixtures/mtls/*.pem
 secrets/
 credentials.json
 
@@ -38,6 +41,8 @@ dist/
 build/
 out/
 target/
+.cargo-targets/
+cargo-targets/
 bin/
 *.exe
 *.bin
