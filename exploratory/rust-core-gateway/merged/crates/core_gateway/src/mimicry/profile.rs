@@ -5,6 +5,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use super::{
+    backend::BackendIntent,
     http_profile::{AuthLayerProfile, Http2SettingsCapture, HttpLayerProfile},
     tls_profile::{
         ExtensionOrder, TlsBackend, TlsFieldGap, TlsProfile, TlsVariant, codex_cli_known_gap_fields,
@@ -148,6 +149,29 @@ impl FingerprintProfile {
             codex_cli_known_gap_fields()
         } else {
             Vec::new()
+        }
+    }
+
+    pub fn backend_intent(&self) -> BackendIntent {
+        if self.match_policy() == ProfileMatchPolicy::KnownGapBlocked {
+            let reason = self
+                .known_gap_fields()
+                .into_iter()
+                .map(|gap| gap.message())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            return BackendIntent::KnownGapBlocked { reason };
+        }
+
+        match self.tls.backend {
+            TlsBackend::NativeTlsOpenSsl => BackendIntent::OpenSslAdapter,
+            TlsBackend::Rustls => BackendIntent::Rustls,
+            backend => BackendIntent::UnsupportedTemplate {
+                reason: format!(
+                    "tls_backend={} 尚未声明可用 transport backend",
+                    backend.as_str()
+                ),
+            },
         }
     }
 }
