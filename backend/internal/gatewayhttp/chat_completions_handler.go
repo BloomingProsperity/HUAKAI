@@ -21,7 +21,9 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/cache_routing"
+	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
@@ -45,6 +47,7 @@ type ChatHandlerDeps struct {
 	Dispatcher           *gateway.UpstreamDispatcher
 	CanonicalDispatcher  HCSFDispatcher
 	Forwarder            *gateway.StreamForwarder
+	ResponseCache        l2cache.Store
 	Settler              billing.Settler
 	AuditLedger          auditledger.Ledger
 	Signer               *sign.Signer
@@ -296,6 +299,51 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 		if upstreamModelID == "" {
 			upstreamModelID = req.Model
 		}
+		cacheVendor := pool.VendorFromProtocolFamily(resolved.ProtocolFamily)
+		cacheKey := ""
+		if d.ResponseCache != nil && !req.Stream {
+			var canonicalErr error
+			cacheKey, _, canonicalErr = l2cache.BuildKey(l2cache.KeyInput{
+				TenantID: ident.TenantID,
+				Vendor:   cacheVendor,
+				Model:    upstreamModelID,
+				Body:     body,
+			})
+			if canonicalErr != nil {
+				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "cache_key_error")
+				writeJSONError(w, http.StatusBadRequest, "cache_key_error", canonicalErr.Error())
+				return
+			}
+			if cached, ok := d.ResponseCache.Get(ctx, cacheKey); ok {
+				cachemetrics.ObserveL2Hit(cacheVendor, upstreamModelID)
+				if serveL2CacheHit(ctx, w, r, d, l2CacheHitInput{
+					Entry:             cached,
+					Ident:             ident,
+					ClientProtocol:    clientProtocol,
+					ProtocolFamily:    resolved.ProtocolFamily,
+					RouteID:           routeID,
+					RequestID:         requestID,
+					AccountID:         acquiredAccountID,
+					AcquisitionToken:  acquisitionToken,
+					PoolID:            fmt.Sprintf("%d", attempt.PoolGroupID),
+					UpstreamModelID:   upstreamModelID,
+					RequestedModel:    req.Model,
+					Provider:          cacheVendor,
+					IdempotencyHeader: idempotencyHeader,
+					PromptHash:        promptHash,
+					RequestStartedAt:  requestStartedAt,
+					ReserveResult:     reserveRes,
+					SelectionResult:   selRes,
+					PlanSnapshot:      plan.SnapshotVersion,
+					PayloadHash:       payloadHash,
+				}) {
+					return
+				}
+				d.ResponseCache.Delete(ctx, cacheKey)
+				syncL2SizeMetrics(d.ResponseCache)
+			}
+			cachemetrics.ObserveL2Miss(cacheVendor, upstreamModelID)
+		}
 
 		cred, accInfo, err := d.CredentialVault.Resolve(ctx, acquiredAccountID)
 		if err != nil {
@@ -445,6 +493,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 				writeJSONError(w, http.StatusBadGateway, "canonical_response_error", err.Error())
 				return
 			}
+			cacheEnvelope, cacheEnvelopeOK := encodeL2CacheEnvelope(bufferedEnv)
 
 			actualCost := decimal.NewFromFloat(0.01)
 			if _, err := d.Settler.Settle(ctx, billing.SettleRequest{
@@ -467,8 +516,23 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 				writeJSONError(w, http.StatusInternalServerError, "settle_error", err.Error())
 				return
 			}
+			if d.ResponseCache != nil && cacheKey != "" && cacheEnvelopeOK {
+				d.ResponseCache.Set(ctx, l2cache.Entry{
+					Key:      cacheKey,
+					TenantID: ident.TenantID,
+					Vendor:   cacheVendor,
+					Model:    upstreamModelID,
+					Status:   http.StatusOK,
+					Body:     clientBody,
+					Envelope: cacheEnvelope,
+				})
+				syncL2SizeMetrics(d.ResponseCache)
+			}
 
 			w.Header().Set("Content-Type", "application/json")
+			if d.ResponseCache != nil && cacheKey != "" {
+				w.Header().Set("X-HUAKAI-Cache-L2", "miss")
+			}
 			WriteHuakaiHeaders(w.Header(), req.Model, bufferedEnv, ledgerEntry)
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write(clientBody)
@@ -513,6 +577,9 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
+		if d.ResponseCache != nil {
+			w.Header().Set("X-HUAKAI-Cache-L2", "skip")
+		}
 		streamForwarder := *d.Forwarder
 		if streamForwarder.AuditLedger == nil {
 			streamForwarder.AuditLedger = d.AuditLedger
@@ -575,6 +642,142 @@ func closeDispatchResult(res *gateway.DispatchResult) {
 	if res != nil && res.Close != nil {
 		_ = res.Close()
 	}
+}
+
+type l2CacheHitInput struct {
+	Entry             l2cache.Entry
+	Ident             auth.Identity
+	ClientProtocol    proto.ClientProtocol
+	ProtocolFamily    string
+	RouteID           string
+	RequestID         string
+	AccountID         int64
+	AcquisitionToken  uuid.UUID
+	PoolID            string
+	UpstreamModelID   string
+	RequestedModel    string
+	Provider          string
+	IdempotencyHeader string
+	PromptHash        string
+	RequestStartedAt  time.Time
+	ReserveResult     *billing.ReserveResult
+	SelectionResult   *pool.SelectionResult
+	PlanSnapshot      string
+	PayloadHash       string
+}
+
+func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request, d ChatHandlerDeps, in l2CacheHitInput) bool {
+	cachedEnv, err := decodeL2CacheEnvelope(in.Entry.Envelope)
+	if err != nil || cachedEnv == nil || cachedEnv.BufferedResponse == nil {
+		return false
+	}
+	seed := requestMetaSeed(r, in.Ident, in.ClientProtocol, in.ProtocolFamily, in.RouteID, in.RequestID, in.AccountID, in.AcquisitionToken)
+	_ = seed.ApplyToRequestMeta(&cachedEnv.RequestMeta)
+	enrichCanonicalRequestMeta(cachedEnv, in.UpstreamModelID, in.Provider, in.IdempotencyHeader, in.PromptHash)
+	setAccountingModelRequested(cachedEnv, in.RequestedModel)
+	setAccountingModelRouteDecided(cachedEnv, in.UpstreamModelID)
+	fillAccountingModelUpstreamReported(cachedEnv)
+	var routingReason []byte
+	if in.SelectionResult != nil {
+		routingReason = in.SelectionResult.RoutingReasonJSON
+	}
+	forwardReq := gateway.ForwardRequest{
+		TenantID:             in.Ident.TenantID,
+		AccountID:            in.AccountID,
+		AcquisitionToken:     in.AcquisitionToken,
+		RequestID:            in.RequestID,
+		RouteID:              in.RouteID,
+		PoolID:               in.PoolID,
+		IngressPath:          r.URL.Path,
+		ProtocolFamily:       in.ProtocolFamily,
+		ClientProtocol:       string(in.ClientProtocol),
+		Model:                in.UpstreamModelID,
+		RequestedModel:       in.RequestedModel,
+		Provider:             in.Provider,
+		RoutingReasonPayload: routingReason,
+		SessionHash:          in.PromptHash,
+	}
+	cachedEnv.Accounting.HopChain = gateway.BuildHopChain(forwardReq, "", in.RequestStartedAt, time.Now())
+	appendTrustChainWarning(cachedEnv, "response_cache_l2_hit", "served from HUAKAI L2 response cache")
+	ledgerEntry, err := submitAuditLedgerEntry(ctx, d, cachedEnv, in.Ident.TenantID, in.RequestID)
+	if err != nil {
+		_ = d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error")
+		writeJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())
+		return true
+	}
+	actualCost := decimal.Zero
+	if _, err := d.Settler.Settle(ctx, billing.SettleRequest{
+		ClaimID:           in.ReserveResult.ClaimID,
+		AccountID:         in.AccountID,
+		AcquisitionToken:  in.AcquisitionToken,
+		TenantID:          in.Ident.TenantID,
+		APIKeyID:          in.Ident.APIKeyID,
+		UserID:            in.Ident.UserID,
+		ProviderAccountID: in.AccountID,
+		AttemptSeq:        1,
+		RequestedModel:    in.RequestedModel,
+		UpstreamModel:     in.UpstreamModelID,
+		Stream:            false,
+		ActualCost:        actualCost,
+		Fingerprint:       in.PayloadHash,
+		Draft:             nonStreamingUsageDraft(cachedEnv, actualCost, routingReasonWithCacheHit(routingReason, true, in.Entry.Key)),
+		SnapshotVersion:   in.PlanSnapshot,
+	}); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "settle_error", err.Error())
+		return true
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-HUAKAI-Cache-L2", "hit")
+	WriteHuakaiHeaders(w.Header(), in.RequestedModel, cachedEnv, ledgerEntry)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(in.Entry.Body)
+	return true
+}
+
+func encodeL2CacheEnvelope(env *proto.HCSF) ([]byte, bool) {
+	if env == nil {
+		return nil, false
+	}
+	raw, err := json.Marshal(env)
+	if err != nil {
+		return nil, false
+	}
+	var clone proto.HCSF
+	if err := json.Unmarshal(raw, &clone); err != nil {
+		return nil, false
+	}
+	clone.Accounting.LedgerID = ""
+	clone.Accounting.Signature = ""
+	clone.Accounting.PubkeyFingerprint = ""
+	raw, err = json.Marshal(&clone)
+	return raw, err == nil
+}
+
+func decodeL2CacheEnvelope(raw []byte) (*proto.HCSF, error) {
+	var env proto.HCSF
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return nil, err
+	}
+	return &env, nil
+}
+
+func routingReasonWithCacheHit(base []byte, hit bool, key string) []byte {
+	payload := map[string]any{}
+	if len(base) > 0 {
+		_ = json.Unmarshal(base, &payload)
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["cache_hit"] = hit
+	if key != "" {
+		payload["cache_key"] = key
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return []byte(`{"cache_hit":true}`)
+	}
+	return raw
 }
 
 func requestMetaSeed(r *http.Request, ident auth.Identity, clientProtocol proto.ClientProtocol, protocolFamily, routeID, requestID string, accountID int64, acquisitionToken uuid.UUID) proto.RequestMetaSeed {

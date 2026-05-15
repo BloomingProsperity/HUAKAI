@@ -22,6 +22,7 @@ desktop.ini
 backend/.tmp/
 backend/.gotmp/
 backend/.gocache/
+.gocache/
 
 # Secrets & env
 .env

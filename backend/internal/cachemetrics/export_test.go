@@ -7,6 +7,7 @@ import "expvar"
 // 不导出, 不暴露到 production 二进制 (sonnet U6-C F1 模式)。
 func resetForTesting() {
 	initCounters()
+	initL2Counters()
 	for _, key := range []string{keyCreationTotal, keyReadTotal, keyRequestCount} {
 		if v, ok := counters.Get(key).(*expvar.Int); ok {
 			v.Set(0)
@@ -24,4 +25,14 @@ func resetForTesting() {
 			}
 		})
 	}
+	for _, m := range []*expvar.Map{l2HitTotal, l2MissTotal, l2SizeBytes} {
+		m.Do(func(kv expvar.KeyValue) {
+			if iv, ok := kv.Value.(*expvar.Int); ok {
+				iv.Set(0)
+			}
+		})
+	}
+	l2SizeMu.Lock()
+	l2KnownLabels = map[string]struct{}{}
+	l2SizeMu.Unlock()
 }
