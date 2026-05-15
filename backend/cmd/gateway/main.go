@@ -46,8 +46,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker/adapters"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	obsdlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
+	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/observability"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
@@ -90,6 +92,7 @@ type deps struct {
 	dispatcher      *gateway.UpstreamDispatcher
 	responseCache   l2cache.Store
 	dlqService      *obsdlq.Service
+	completionBus   *eventbus.Bus
 	inboundAuth     *auth.APIKeyResolver
 	auditLedger     auditledger.Ledger
 	auditSigner     *sign.Signer
@@ -188,6 +191,20 @@ func run(logger *zap.Logger) error {
 		zap.Int("medium_workers", obsDLQCfg.MediumWorkers),
 		zap.Int("low_workers", obsDLQCfg.LowWorkers),
 	)
+	eventBusCfg, err := config.LoadEventBus()
+	if err != nil {
+		return fmt.Errorf("load eventbus config: %w", err)
+	}
+	logger.Info("async processor eventbus config loaded",
+		zap.Bool("enabled", eventBusCfg.Enabled),
+		zap.Int("high_workers", eventBusCfg.HighWorkers),
+		zap.Int("medium_workers", eventBusCfg.MediumWorkers),
+		zap.Int("low_workers", eventBusCfg.LowWorkers),
+		zap.Int("high_buffer", eventBusCfg.HighBuffer),
+		zap.Int("medium_buffer", eventBusCfg.MediumBuffer),
+		zap.Int("low_buffer", eventBusCfg.LowBuffer),
+		zap.Duration("handler_timeout", eventBusCfg.HandlerTimeout),
+	)
 	selector, selectorCleanup, err := buildSelector(ctx, q, pgPool, selectorCfg, logger)
 	if err != nil {
 		return fmt.Errorf("build selector: %w", err)
@@ -230,12 +247,18 @@ func run(logger *zap.Logger) error {
 		IdleSleep:     time.Second,
 	})
 
+	settler := billing.NewSettler(pgPool, billing.WithDLQStore(dlqStore), billing.WithReplicaTarget(replicaTarget))
+	completionBus, err := buildCompletionEventBus(eventBusCfg, settler, dlqService, logger)
+	if err != nil {
+		return fmt.Errorf("build completion eventbus: %w", err)
+	}
+
 	d := &deps{
 		cfg:       cfg,
 		queries:   q,
 		selector:  selector,
 		claimGate: billing.NewClaimGate(pgPool),
-		settler:   billing.NewSettler(pgPool, billing.WithDLQStore(dlqStore), billing.WithReplicaTarget(replicaTarget)),
+		settler:   settler,
 		forwarder: &gateway.StreamForwarder{
 			// 协议适配器注册表：按 ForwardRequest.ProtocolFamily 选语义层 adapter。
 			// 当前注册：详见 gateway.BuildDefaultProtocolAdapterRegistry。
@@ -259,6 +282,7 @@ func run(logger *zap.Logger) error {
 		credentialStore: credentialStore,
 		responseCache:   responseCache,
 		dlqService:      dlqService,
+		completionBus:   completionBus,
 		dispatcher: &gateway.UpstreamDispatcher{
 			Adapters:         registrydefault.Build(),
 			TransportFactory: transport.NewFactory(mimicryRegistry),
@@ -355,6 +379,10 @@ func run(logger *zap.Logger) error {
 	credentialStopCtx, credentialStopCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer credentialStopCancel()
 	credentialStopErr := credentialScheduler.Stop(credentialStopCtx)
+	var eventBusStopErr error
+	if d.completionBus != nil {
+		eventBusStopErr = d.completionBus.Stop(credentialStopCtx)
+	}
 	var dlqStopErr error
 	if obsDLQCfg.Enabled {
 		dlqStopErr = dlqWorker.Stop(credentialStopCtx)
@@ -368,10 +396,54 @@ func run(logger *zap.Logger) error {
 	if credentialStopErr != nil {
 		return fmt.Errorf("stop credential refresh scheduler: %w", credentialStopErr)
 	}
+	if eventBusStopErr != nil {
+		return fmt.Errorf("stop completion eventbus: %w", eventBusStopErr)
+	}
 	if dlqStopErr != nil {
 		return fmt.Errorf("stop observability DLQ worker: %w", dlqStopErr)
 	}
 	return nil
+}
+
+func buildCompletionEventBus(cfg *config.EventBusConfig, settler billing.Settler, dlqService *obsdlq.Service, logger *zap.Logger) (*eventbus.Bus, error) {
+	if cfg == nil || !cfg.Enabled {
+		return nil, nil
+	}
+	bus := eventbus.New(eventbus.Config{
+		Enabled:              cfg.Enabled,
+		HighWorkers:          cfg.HighWorkers,
+		MediumWorkers:        cfg.MediumWorkers,
+		LowWorkers:           cfg.LowWorkers,
+		HighBuffer:           cfg.HighBuffer,
+		MediumBuffer:         cfg.MediumBuffer,
+		LowBuffer:            cfg.LowBuffer,
+		HandlerTimeout:       cfg.HandlerTimeout,
+		ShutdownDrainTimeout: cfg.ShutdownDrainTimeout,
+	}, eventbus.WithDLQ(dlqService), eventbus.WithDropHook(func(notice eventbus.DropNotice) {
+		if logger != nil {
+			logger.Warn("async processor dropped oldest queued event",
+				zap.String("handler_id", string(notice.HandlerID)),
+				zap.String("tier", string(notice.Tier)),
+				zap.String("event_id", notice.EventID),
+				zap.String("reason", notice.Reason),
+			)
+		}
+	}))
+	reconciler := observability.NewDualRunReconciler(observability.DefaultDualRunWindow)
+	handlers := []eventbus.Handler{
+		observability.NewBillingPersisterHandler(settler, cfg.HandlerTimeout,
+			observability.WithBillingPersisterReconciler(reconciler)),
+		observability.NewAuditLoggerHandler(cfg.HandlerTimeout),
+		observability.NewReconciliationHandler(cfg.HandlerTimeout, reconciler),
+		observability.NewAccountHealthProbeHandler(cfg.HandlerTimeout, nil),
+		observability.NewMetricsAggregatorHandler(cfg.HandlerTimeout),
+	}
+	for _, h := range handlers {
+		if err := bus.Register(h); err != nil {
+			return nil, err
+		}
+	}
+	return bus, nil
 }
 
 func registerCredentialRefreshAdapters(registry *credentialworker.AdapterRegistry) error {
@@ -500,6 +572,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		Forwarder:            d.forwarder,
 		ResponseCache:        d.responseCache,
 		Settler:              d.settler,
+		CompletionBus:        d.completionBus,
 		AuditLedger:          d.auditLedger,
 		Signer:               d.auditSigner,
 		BillingPolicyVersion: d.cfg.BillingPolicyVersion,
@@ -516,6 +589,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		Forwarder:            d.forwarder,
 		ResponseCache:        d.responseCache,
 		Settler:              d.settler,
+		CompletionBus:        d.completionBus,
 		AuditLedger:          d.auditLedger,
 		Signer:               d.auditSigner,
 		BillingPolicyVersion: d.cfg.BillingPolicyVersion,
@@ -536,6 +610,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		Forwarder:            d.forwarder,
 		ResponseCache:        d.responseCache,
 		Settler:              d.settler,
+		CompletionBus:        d.completionBus,
 		AuditLedger:          d.auditLedger,
 		Signer:               d.auditSigner,
 		BillingPolicyVersion: d.cfg.BillingPolicyVersion,

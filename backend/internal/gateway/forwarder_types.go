@@ -79,11 +79,13 @@ type DrainBudgets struct {
 type UsageRecordDraft struct {
 	TokensInput             int             `json:"tokens_input"`
 	TokensOutput            int             `json:"tokens_output"`
+	DeliveredTokenCount     int64           `json:"delivered_token_count"`
 	CacheCreationTokens     int             `json:"cache_creation_tokens"`
 	CacheReadTokens         int             `json:"cache_read_tokens"`
 	ActualCost              decimal.Decimal `json:"actual_cost"`
 	RoutingReason           []byte          `json:"routing_reason"`
 	EndClass                StreamEndClass  `json:"end_class"`
+	StreamTerminatedReason  string          `json:"stream_terminated_reason"`
 	UsageSource             UsageSource     `json:"usage_source"`
 	ConfidenceScore         *float64        `json:"confidence_score"`
 	DrainOutcome            DrainOutcome    `json:"drain_outcome"`
@@ -135,9 +137,10 @@ type ForwardRequest struct {
 // Freeze() 被调用后（终态帧观测，规格 AT-15），Update() 仅再接受一次信号，
 // 此后拒绝后续更新，保留终态帧权威性。
 type UsageAccumulator struct {
-	Usage          proto.CanonicalUsage `json:"usage"`
-	Source         UsageSource          `json:"source"`
-	TerminalLocked bool                 `json:"terminal_locked"`
+	Usage               proto.CanonicalUsage `json:"usage"`
+	Source              UsageSource          `json:"source"`
+	TerminalLocked      bool                 `json:"terminal_locked"`
+	DeliveredChunkCount int64                `json:"delivered_chunk_count"`
 }
 
 // Update 合并 F-GW-002 Phase B usage 信号。
@@ -169,6 +172,16 @@ func (a *UsageAccumulator) Freeze() { a.TerminalLocked = true }
 // Empty 报告 F-GW-002 Phase D 是否没有可计费 usage 信号。
 func (a UsageAccumulator) Empty() bool {
 	return a.Usage.InputTokens == 0 && a.Usage.OutputTokens == 0 && a.Usage.TotalTokens == 0
+}
+
+func (a UsageAccumulator) DeliveredTokenCount() int64 {
+	if a.Usage.OutputTokens > 0 {
+		return int64(a.Usage.OutputTokens)
+	}
+	if a.DeliveredChunkCount > 0 {
+		return a.DeliveredChunkCount
+	}
+	return 0
 }
 
 var (

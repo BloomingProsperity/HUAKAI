@@ -78,8 +78,10 @@ type SettleRequest struct {
 	RequestedModel      string
 	RequestedAt         time.Time
 	UpstreamModel       string
+	Provider            string
 	Stream              bool
 	Draft               gateway.UsageRecordDraft
+	StreamAttempt       *Attempt
 	Fingerprint         string
 	OutboxEmitter       func() bool
 	// SnapshotVersion is the registry+router stamp produced by

@@ -7,6 +7,7 @@ SELECT
     ur.provider_account_id, ur.attempt_seq, ur.tokens_input, ur.tokens_output,
     ur.cache_creation_tokens, ur.cache_read_tokens, ur.actual_cost,
     ur.end_class, ur.usage_source, ur.pending_reconciliation,
+    ur.stream_state, ur.delivered_token_count, ur.stream_terminated_reason,
     ur.requested_at, ur.settled_at AS created_at, ur.requested_model,
     ur.upstream_model, ur.stream, p.code AS provider, blc.pooling_group_id AS pool_id
 FROM usage_records ur
@@ -88,7 +89,11 @@ WITH audit_union AS (
            NULL::bigint AS pool_group_id, NULL::text AS request_id, NULL::text AS actor_id,
            NULL::text AS actor_role, NULL::text AS reason,
            jsonb_build_object('actual_cost', be.actual_cost::text, 'actual_cost_signed', be.actual_cost_signed::text,
-                              'end_class', be.end_class, 'usage_source', be.usage_source, 'fingerprint', be.fingerprint) AS payload,
+                              'end_class', be.end_class, 'usage_source', be.usage_source,
+                              'stream_state', be.stream_state,
+                              'delivered_token_count', be.delivered_token_count,
+                              'stream_terminated_reason', be.stream_terminated_reason,
+                              'fingerprint', be.fingerprint) AS payload,
            be.occurred_at AS created_at
     FROM billing_events be
     UNION ALL

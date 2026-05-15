@@ -10,16 +10,19 @@ import (
 )
 
 type BillingEventReplicaPayload struct {
-	BillingEventID   int64   `json:"billing_event_id"`
-	TenantID         int64   `json:"tenant_id"`
-	ClaimID          int64   `json:"claim_id"`
-	EventType        string  `json:"event_type"`
-	ActualCost       string  `json:"actual_cost"`
-	ActualCostSigned string  `json:"actual_cost_signed"`
-	EndClass         *string `json:"end_class,omitempty"`
-	UsageSource      *string `json:"usage_source,omitempty"`
-	Fingerprint      string  `json:"fingerprint"`
-	OccurredAt       string  `json:"occurred_at"`
+	BillingEventID         int64   `json:"billing_event_id"`
+	TenantID               int64   `json:"tenant_id"`
+	ClaimID                int64   `json:"claim_id"`
+	EventType              string  `json:"event_type"`
+	ActualCost             string  `json:"actual_cost"`
+	ActualCostSigned       string  `json:"actual_cost_signed"`
+	EndClass               *string `json:"end_class,omitempty"`
+	UsageSource            *string `json:"usage_source,omitempty"`
+	StreamState            int16   `json:"stream_state"`
+	DeliveredTokenCount    int64   `json:"delivered_token_count"`
+	StreamTerminatedReason *string `json:"stream_terminated_reason,omitempty"`
+	Fingerprint            string  `json:"fingerprint"`
+	OccurredAt             string  `json:"occurred_at"`
 }
 
 func NewPostgresReplicaHandler(pool *pgxpool.Pool) Handler {

@@ -182,7 +182,7 @@ type Querier interface {
 	ListBillingClaims(ctx context.Context, arg ListBillingClaimsParams) ([]ListBillingClaimsRow, error)
 	// Audit-grade event stream for one tenant. event_type filter optional;
 	// pass empty string to disable filter.
-	ListBillingEventsByTenant(ctx context.Context, arg ListBillingEventsByTenantParams) ([]BillingEvent, error)
+	ListBillingEventsByTenant(ctx context.Context, arg ListBillingEventsByTenantParams) ([]ListBillingEventsByTenantRow, error)
 	// F-PROTO-002 protocol capability matrix queries.
 	// Backed by docs/schema/protocol-translation.sql (capability + policy tables).
 	ListCapabilityCellsForPair(ctx context.Context, arg ListCapabilityCellsForPairParams) ([]ListCapabilityCellsForPairRow, error)

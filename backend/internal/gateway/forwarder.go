@@ -195,8 +195,11 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 				stopTimer(interTimer)
 				interTimer = newTimer(f.Timeouts.InterEventTimeout)
 				// 将解析好的 adapter 传入 handleEvent，避免重复 registry 查询
-				seen, wrote, err := f.handleEventWithAdapter(upstreamCtx, adapter, res.event, clientWriter, upstreamState, clientState, &acc, req)
+				seen, wrote, delivered, err := f.handleEventWithAdapter(upstreamCtx, adapter, res.event, clientWriter, upstreamState, clientState, &acc, req)
 				terminalSeen = terminalSeen || seen
+				if delivered > 0 {
+					acc.DeliveredChunkCount += delivered
+				}
 				if wrote && !firstEmitted {
 					firstEmitted = true
 					draft.FirstTokenLatencyMillis = millisSince(start)
@@ -244,15 +247,15 @@ func (f *StreamForwarder) handleEventWithAdapter(
 	clientState any,
 	acc *UsageAccumulator,
 	req ForwardRequest,
-) (bool, bool, error) {
+) (bool, bool, int64, error) {
 	terminalSeen := evt.Type == "message_stop" || string(evt.Data) == "[DONE]"
 
 	// adapter 为 nil 时透传原始 SSE（保留既有 nil-adapter 行为）
 	if adapter == nil {
 		if err := writeAndFlush(w, rawSSE(evt)); err != nil {
-			return terminalSeen, false, ErrClientDisconnect
+			return terminalSeen, false, 0, ErrClientDisconnect
 		}
-		return terminalSeen, true, nil
+		return terminalSeen, true, 1, nil
 	}
 
 	// protocol-level error 帧旁路 adapter，直接 raw passthrough。
@@ -261,18 +264,20 @@ func (f *StreamForwarder) handleEventWithAdapter(
 	// 这些 payload 是 protocol 错误体（非 model 事件），不应被 adapter 解析。
 	if evt.Type == "error" {
 		if err := writeAndFlush(w, rawSSE(evt)); err != nil {
-			return terminalSeen, false, ErrClientDisconnect
+			return terminalSeen, false, 0, ErrClientDisconnect
 		}
-		return terminalSeen, true, nil
+		return terminalSeen, true, 0, nil
 	}
 
 	canonicalEvents, _, err := adapter.ProviderEventToCanonicalEvents(ctx, evt.Data, upstreamState)
 	if err != nil {
-		return terminalSeen, false, err
+		return terminalSeen, false, 0, err
 	}
 	annotateForwardHopChainEvents(canonicalEvents, req)
 	wrote := false
+	var delivered int64
 	for _, canonical := range canonicalEvents {
+		eventDelivered := canonicalDeliveredChunks(canonical)
 		if usage, ok := canonicalUsage(canonical); ok {
 			acc.Update(UsageSourceReported, usage)
 		}
@@ -282,19 +287,24 @@ func (f *StreamForwarder) handleEventWithAdapter(
 		}
 		chunks, err := f.clientChunks(ctx, canonical, clientState, evt)
 		if err != nil {
-			return terminalSeen, wrote, err
+			return terminalSeen, wrote, delivered, err
 		}
+		wroteEvent := false
 		for _, chunk := range chunks {
 			if len(chunk) == 0 {
 				continue
 			}
 			if err := writeAndFlush(w, chunk); err != nil {
-				return terminalSeen, wrote, ErrClientDisconnect
+				return terminalSeen, wrote, delivered, ErrClientDisconnect
 			}
 			wrote = true
+			wroteEvent = true
+		}
+		if wroteEvent && eventDelivered > 0 {
+			delivered += eventDelivered
 		}
 	}
-	return terminalSeen, wrote, nil
+	return terminalSeen, wrote, delivered, nil
 }
 
 // finalizeClientStream 在上游 reader 结束后调用 client adapter 收尾 hook。
@@ -381,6 +391,7 @@ func (f *StreamForwarder) finishDraft(d UsageRecordDraft, acc UsageAccumulator, 
 	}
 	d.TokensInput = acc.Usage.InputTokens
 	d.TokensOutput = acc.Usage.OutputTokens
+	d.DeliveredTokenCount = acc.DeliveredTokenCount()
 	if d.UsageSource == UsageSourceAmbiguous && acc.Source != "" {
 		d.UsageSource = acc.Source
 	}
@@ -392,6 +403,9 @@ func (f *StreamForwarder) finishDraft(d UsageRecordDraft, acc UsageAccumulator, 
 	}
 	if d.EndClass == AmbiguousUsage {
 		d.UsageSource = UsageSourceAmbiguous
+	}
+	if d.StreamTerminatedReason == "" {
+		d.StreamTerminatedReason = streamTerminatedReason(d.EndClass, d.DeliveredTokenCount)
 	}
 	d.TotalDurationMillis = millisSince(startedAt)
 	return d, err
@@ -480,10 +494,50 @@ func classifyScanError(err error) (StreamEndClass, error) {
 	switch {
 	case errors.Is(err, ErrScannerOverflow):
 		return ResponseEventTooLarge, ErrScannerOverflow
+	case errors.Is(err, ErrBedrockException), errors.Is(err, io.ErrUnexpectedEOF):
+		return UpstreamError5xx, err
 	case errors.Is(err, context.Canceled):
 		return OrchestratorCancel, err
 	default:
 		return UnknownTermination, err
+	}
+}
+
+func canonicalDeliveredChunks(v any) int64 {
+	evt, ok := v.(proto.CanonicalEvent)
+	if !ok || evt.Delta == nil {
+		return 0
+	}
+	switch evt.Delta.Type {
+	case "text_delta", "tool_input_delta", "reasoning_delta":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func streamTerminatedReason(endClass StreamEndClass, delivered int64) string {
+	switch endClass {
+	case ClientDisconnect:
+		return "client_gone"
+	case FirstTokenTimeout, InterEventTimeout, TotalStreamTimeout:
+		return "upstream_timeout"
+	case UpstreamError5xx:
+		return "upstream_5xx"
+	case StreamEndGraceful:
+		return ""
+	case UpstreamEOFNoTerminal, UnknownTermination:
+		if delivered > 0 {
+			return "upstream_5xx"
+		}
+		return "output_token_zero"
+	case AmbiguousUsage:
+		return "output_token_zero"
+	default:
+		if delivered > 0 {
+			return "upstream_5xx"
+		}
+		return "output_token_zero"
 	}
 }
 

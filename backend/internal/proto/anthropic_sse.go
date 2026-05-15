@@ -25,13 +25,14 @@ var ErrNotImplemented = errors.New("proto: not implemented")
 // 推给 PASR observer 更新 PrefixSegment.HasCacheBitmap / LastReadAt。
 // 空串表示无 prefix 信息 (退化为只更新 per-account counter, 不触发 PASR)。
 type UpstreamState struct {
-	MessageID         string
-	CurrentBlockIndex int
-	BlocksInProgress  map[int]bool
-	Terminated        bool
-	AccumulatedUsage  CanonicalUsage
-	AccountID         int64
-	PrefixHash        string
+	MessageID           string
+	CurrentBlockIndex   int
+	BlocksInProgress    map[int]bool
+	Terminated          bool
+	AccumulatedUsage    CanonicalUsage
+	DeliveredChunkCount int64
+	AccountID           int64
+	PrefixHash          string
 	// M5b: TenantID 透传 — ObserveByAccountWithPrefix 必填; 0 时 observer
 	// 仍记 expvar counter 但跳过段表更新 (无 tenant 信息)。 forwarder.go
 	// newUpstreamState 从 ForwardRequest.TenantID 注入。
@@ -145,6 +146,9 @@ func (s *AnthropicAdapter) providerEventSwitch(evt anthropicEvent, env anthropic
 		block, losses := canonicalBlock(env.ContentBlock)
 		return []CanonicalEvent{{Type: "content_block_start", Index: env.Index, ContentBlock: &block}}, losses, nil
 	case "content_block_delta":
+		if anthropicDeltaDelivered(env.Delta) {
+			state.DeliveredChunkCount++
+		}
 		delta, losses := s.canonicalDelta(env.Delta)
 		if delta == nil {
 			return nil, losses, nil
@@ -178,6 +182,15 @@ func (s *AnthropicAdapter) providerEventSwitch(evt anthropicEvent, env anthropic
 	default:
 		loss := newLossEntry(FeatureTextStreaming, DirectionUpstreamToCanonical, VerdictLossy, "unknown upstream event type skipped")
 		return nil, []ProtocolLossEntry{loss}, fmt.Errorf("%w: %s", ErrUnknownEventType, evt.Type)
+	}
+}
+
+func anthropicDeltaDelivered(delta anthropicDeltaPayload) bool {
+	switch delta.Type {
+	case "text_delta", "input_json_delta", "thinking_delta":
+		return delta.Text != "" || len(delta.PartialJSON) > 0
+	default:
+		return false
 	}
 }
 

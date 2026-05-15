@@ -38,6 +38,7 @@ INSERT INTO usage_records (
     actual_cost, input_cost, output_cost,
     cache_creation_cost, cache_read_cost, image_output_cost,
     end_class, usage_source, confidence_score, pending_reconciliation,
+    stream_state, delivered_token_count, stream_terminated_reason,
     drain_outcome, routing_reason, protocol_loss,
     requested_at, upstream_request_at, first_byte_at, first_event_at, last_event_at,
     requested_model, upstream_model, stream, snapshot_version
@@ -51,8 +52,9 @@ INSERT INTO usage_records (
     $18, $19, $20,
     $21, $22, $23, $24,
     $25, $26, $27,
-    $28, $29, $30, $31, $32,
-    $33, $34, $35, $36
+    $28, $29, $30,
+    $31, $32, $33, $34, $35,
+    $36, $37, $38, $39
 )
 RETURNING id;
 
@@ -62,9 +64,11 @@ RETURNING id;
 INSERT INTO billing_events (
     tenant_id, claim_id, event_type,
     actual_cost, actual_cost_signed,
-    end_class, usage_source, fingerprint
+    end_class, usage_source,
+    stream_state, delivered_token_count, stream_terminated_reason,
+    fingerprint
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
 )
 RETURNING id, occurred_at;
 

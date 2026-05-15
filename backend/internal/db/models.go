@@ -10,6 +10,41 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// F-AUTH-005: encrypted upstream credential payloads keyed by provider account, vendor, and auth mode. provider_accounts.credentials remains legacy fallback only.
+type AccountCredential struct {
+	ID                int64  `db:"id" json:"id"`
+	TenantID          int64  `db:"tenant_id" json:"tenant_id"`
+	ProviderAccountID int64  `db:"provider_account_id" json:"provider_account_id"`
+	Vendor            string `db:"vendor" json:"vendor"`
+	AuthMode          string `db:"auth_mode" json:"auth_mode"`
+	State             string `db:"state" json:"state"`
+	CredentialVersion int32  `db:"credential_version" json:"credential_version"`
+	// AES-256-GCM ciphertext. Plaintext must never be logged, audited, or returned by admin APIs.
+	EncryptedPayload []byte `db:"encrypted_payload" json:"encrypted_payload"`
+	EncryptionScheme string `db:"encryption_scheme" json:"encryption_scheme"`
+	KeyID            string `db:"key_id" json:"key_id"`
+	Nonce            []byte `db:"nonce" json:"nonce"`
+	// SHA-256 hash of AES-GCM additional authenticated data binding tenant/account/vendor/auth_mode/version/key_id.
+	AadHash                 string             `db:"aad_hash" json:"aad_hash"`
+	PayloadFingerprint      *string            `db:"payload_fingerprint" json:"payload_fingerprint"`
+	RefreshTokenFingerprint *string            `db:"refresh_token_fingerprint" json:"refresh_token_fingerprint"`
+	AccessExpiresAt         pgtype.Timestamptz `db:"access_expires_at" json:"access_expires_at"`
+	RefreshExpiresAt        pgtype.Timestamptz `db:"refresh_expires_at" json:"refresh_expires_at"`
+	// OCAW-34: refresh scheduler scans this timestamp, normally access_expires_at minus 15 minutes.
+	RefreshBeforeAt     pgtype.Timestamptz `db:"refresh_before_at" json:"refresh_before_at"`
+	GraceUntil          pgtype.Timestamptz `db:"grace_until" json:"grace_until"`
+	LastRefreshAt       pgtype.Timestamptz `db:"last_refresh_at" json:"last_refresh_at"`
+	LastRefreshOutcome  *string            `db:"last_refresh_outcome" json:"last_refresh_outcome"`
+	FailureClass        *string            `db:"failure_class" json:"failure_class"`
+	FailureCount        int32              `db:"failure_count" json:"failure_count"`
+	NextAttemptAt       pgtype.Timestamptz `db:"next_attempt_at" json:"next_attempt_at"`
+	CreatedAt           pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt           pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DeletedAt           pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
+	CreatedByActor      *string            `db:"created_by_actor" json:"created_by_actor"`
+	LastModifiedByActor *string            `db:"last_modified_by_actor" json:"last_modified_by_actor"`
+}
+
 // Slice 2 (N+4b2): append-only admin audit. Aligns with OpenAPI AuditEvent schema. payload jsonb MUST NEVER contain plaintext bearer or key_hash (CMB-5).
 type AdminAuditEvent struct {
 	ID         int64              `db:"id" json:"id"`
@@ -66,6 +101,16 @@ type ApiKey struct {
 	DeletedAt     pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
 }
 
+// F-OBS-004 async processor event ledger. Payload must contain redacted refs and hashes only in v1.
+type AsyncProcessorEvent struct {
+	ID        int64  `db:"id" json:"id"`
+	EventKind string `db:"event_kind" json:"event_kind"`
+	Payload   []byte `db:"payload" json:"payload"`
+	// Aggregate chain state: done, inflight, or failed.
+	HandlerState string             `db:"handler_state" json:"handler_state"`
+	CreatedAt    pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
 // HUAKAI trust-chain T4: append-only signed ledger; each row = one user-verifiable request attestation. NEVER UPDATE/DELETE.
 type AuditLedgerEntry struct {
 	ID         int64              `db:"id" json:"id"`
@@ -99,6 +144,12 @@ type BillingEvent struct {
 	UsageSource      *string            `db:"usage_source" json:"usage_source"`
 	Fingerprint      string             `db:"fingerprint" json:"fingerprint"`
 	OccurredAt       pgtype.Timestamptz `db:"occurred_at" json:"occurred_at"`
+	// F-OBS-003 stream billing state copied from the paired usage attempt for audit fallback.
+	StreamState int16 `db:"stream_state" json:"stream_state"`
+	// F-OBS-003 delivered output token count copied into billing event audit trail.
+	DeliveredTokenCount int64 `db:"delivered_token_count" json:"delivered_token_count"`
+	// F-OBS-003 first-class stream terminal reason copied into billing event audit trail.
+	StreamTerminatedReason *string `db:"stream_terminated_reason" json:"stream_terminated_reason"`
 }
 
 // F-OBS-001 + docs/19 §Invariant 4: append-only paired adjustments. Original claim never mutated; corrections via signed delta rows.
@@ -175,6 +226,22 @@ type Channel struct {
 	CreatedAt           pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 	DeletedAt           pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
+}
+
+// F-TRUST / F-AUTH-005: plaintext-free audit trail for credential create, rotate, disable, delete, resolve, and refresh events.
+type CredentialAuditEvent struct {
+	ID                  int64              `db:"id" json:"id"`
+	TenantID            int64              `db:"tenant_id" json:"tenant_id"`
+	ProviderAccountID   int64              `db:"provider_account_id" json:"provider_account_id"`
+	AccountCredentialID *int64             `db:"account_credential_id" json:"account_credential_id"`
+	EventType           string             `db:"event_type" json:"event_type"`
+	Vendor              *string            `db:"vendor" json:"vendor"`
+	AuthMode            *string            `db:"auth_mode" json:"auth_mode"`
+	CredentialVersion   *int32             `db:"credential_version" json:"credential_version"`
+	ActorID             *string            `db:"actor_id" json:"actor_id"`
+	RequestID           *string            `db:"request_id" json:"request_id"`
+	Payload             []byte             `db:"payload" json:"payload"`
+	OccurredAt          pgtype.Timestamptz `db:"occurred_at" json:"occurred_at"`
 }
 
 // F-AUTH-005 H6: per-Pool Claude Code mimicry. Constraint: enabled requires legal_review_id (no enabling without legal review document attached).
@@ -657,13 +724,19 @@ type UsageRecord struct {
 	Stream                bool               `db:"stream" json:"stream"`
 	// Slice 2: registry+router snapshot stamp at billing time. Format registry:<tid>:<v>;router:<rv>. Audit replay reads this to re-derive what routing config was active.
 	SnapshotVersion *string `db:"snapshot_version" json:"snapshot_version"`
+	// F-OBS-003 stream billing state: 0=Acquired, 1=InFlight, 2=Partial/delivered, 3=Failed/no-charge.
+	StreamState int16 `db:"stream_state" json:"stream_state"`
+	// F-OBS-003 client-visible delivered output token count; falls back to delivered chunk count when upstream usage is absent.
+	DeliveredTokenCount int64 `db:"delivered_token_count" json:"delivered_token_count"`
+	// F-OBS-003 first-class stream terminal reason, e.g. client_gone, upstream_timeout, output_token_zero, upstream_5xx.
+	StreamTerminatedReason *string `db:"stream_terminated_reason" json:"stream_terminated_reason"`
 }
 
-// F-OBS-001 H10: durable DLQ for Usage Record write failures. Operator-replayable; auto-replay cadence configurable.
+// F-OBS-005: generic observability DLQ with priority lane, lease, replica, idempotency, and platform-admin replay.
 type UsageRecordDlq struct {
 	ID                  int64              `db:"id" json:"id"`
 	TenantID            int64              `db:"tenant_id" json:"tenant_id"`
-	ClaimID             int64              `db:"claim_id" json:"claim_id"`
+	ClaimID             *int64             `db:"claim_id" json:"claim_id"`
 	Payload             []byte             `db:"payload" json:"payload"`
 	FailureReason       string             `db:"failure_reason" json:"failure_reason"`
 	FailureAt           pgtype.Timestamptz `db:"failure_at" json:"failure_at"`
@@ -671,6 +744,24 @@ type UsageRecordDlq struct {
 	LastReplayAt        pgtype.Timestamptz `db:"last_replay_at" json:"last_replay_at"`
 	ReplayedAt          pgtype.Timestamptz `db:"replayed_at" json:"replayed_at"`
 	ReplayFailureReason *string            `db:"replay_failure_reason" json:"replay_failure_reason"`
+	EventKind           string             `db:"event_kind" json:"event_kind"`
+	// F-OBS-005 priority lane: HIGH=Billing/Audit, MED=AccountHealth, LOW=Metrics drain-on-shutdown.
+	Lane          string             `db:"lane" json:"lane"`
+	Status        string             `db:"status" json:"status"`
+	NextRetryAt   pgtype.Timestamptz `db:"next_retry_at" json:"next_retry_at"`
+	LeaseTtl      pgtype.Interval    `db:"lease_ttl" json:"lease_ttl"`
+	LeaseOwner    *string            `db:"lease_owner" json:"lease_owner"`
+	LeaseUntil    pgtype.Timestamptz `db:"lease_until" json:"lease_until"`
+	ReplicaStatus string             `db:"replica_status" json:"replica_status"`
+	// Replica sink target label. v1 default is separate PostgreSQL DSN when configured.
+	ReplicaTarget      string             `db:"replica_target" json:"replica_target"`
+	ReplicaCommittedAt pgtype.Timestamptz `db:"replica_committed_at" json:"replica_committed_at"`
+	// Stable per-event key used by retry/replay/replica to avoid duplicate money-path effects.
+	IdempotencyKey   string             `db:"idempotency_key" json:"idempotency_key"`
+	SourceTable      string             `db:"source_table" json:"source_table"`
+	SourceID         *int64             `db:"source_id" json:"source_id"`
+	OperatorReviewAt pgtype.Timestamptz `db:"operator_review_at" json:"operator_review_at"`
+	UpdatedAt        pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
 // F-OBS-001: append-only reconciliation events. Linked to immutable original Usage Record. Per-record reconciliation may produce paired billing_ledger_adjustments.

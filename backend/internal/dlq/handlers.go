@@ -11,42 +11,45 @@ import (
 )
 
 type UsageRecordPayload struct {
-	TenantID              int64           `json:"tenant_id"`
-	ClaimID               int64           `json:"claim_id"`
-	APIKeyID              int64           `json:"api_key_id"`
-	UserID                int64           `json:"user_id"`
-	ProviderAccountID     int64           `json:"provider_account_id"`
-	AcquisitionToken      string          `json:"acquisition_token"`
-	AttemptSeq            int32           `json:"attempt_seq"`
-	TokensInput           int32           `json:"tokens_input"`
-	TokensOutput          int32           `json:"tokens_output"`
-	CacheCreationTokens   int32           `json:"cache_creation_tokens"`
-	CacheReadTokens       int32           `json:"cache_read_tokens"`
-	CacheCreation5mTokens int32           `json:"cache_creation_5m_tokens"`
-	CacheCreation1hTokens int32           `json:"cache_creation_1h_tokens"`
-	ImageOutputTokens     int32           `json:"image_output_tokens"`
-	ActualCost            string          `json:"actual_cost"`
-	InputCost             string          `json:"input_cost"`
-	OutputCost            string          `json:"output_cost"`
-	CacheCreationCost     string          `json:"cache_creation_cost"`
-	CacheReadCost         string          `json:"cache_read_cost"`
-	ImageOutputCost       string          `json:"image_output_cost"`
-	EndClass              string          `json:"end_class"`
-	UsageSource           string          `json:"usage_source"`
-	ConfidenceScore       *string         `json:"confidence_score,omitempty"`
-	PendingReconciliation bool            `json:"pending_reconciliation"`
-	DrainOutcome          *string         `json:"drain_outcome,omitempty"`
-	RoutingReason         json.RawMessage `json:"routing_reason"`
-	ProtocolLoss          json.RawMessage `json:"protocol_loss"`
-	RequestedAt           string          `json:"requested_at"`
-	UpstreamRequestAt     *string         `json:"upstream_request_at,omitempty"`
-	FirstByteAt           *string         `json:"first_byte_at,omitempty"`
-	FirstEventAt          *string         `json:"first_event_at,omitempty"`
-	LastEventAt           *string         `json:"last_event_at,omitempty"`
-	RequestedModel        string          `json:"requested_model"`
-	UpstreamModel         *string         `json:"upstream_model,omitempty"`
-	Stream                bool            `json:"stream"`
-	SnapshotVersion       *string         `json:"snapshot_version,omitempty"`
+	TenantID               int64           `json:"tenant_id"`
+	ClaimID                int64           `json:"claim_id"`
+	APIKeyID               int64           `json:"api_key_id"`
+	UserID                 int64           `json:"user_id"`
+	ProviderAccountID      int64           `json:"provider_account_id"`
+	AcquisitionToken       string          `json:"acquisition_token"`
+	AttemptSeq             int32           `json:"attempt_seq"`
+	TokensInput            int32           `json:"tokens_input"`
+	TokensOutput           int32           `json:"tokens_output"`
+	CacheCreationTokens    int32           `json:"cache_creation_tokens"`
+	CacheReadTokens        int32           `json:"cache_read_tokens"`
+	CacheCreation5mTokens  int32           `json:"cache_creation_5m_tokens"`
+	CacheCreation1hTokens  int32           `json:"cache_creation_1h_tokens"`
+	ImageOutputTokens      int32           `json:"image_output_tokens"`
+	ActualCost             string          `json:"actual_cost"`
+	InputCost              string          `json:"input_cost"`
+	OutputCost             string          `json:"output_cost"`
+	CacheCreationCost      string          `json:"cache_creation_cost"`
+	CacheReadCost          string          `json:"cache_read_cost"`
+	ImageOutputCost        string          `json:"image_output_cost"`
+	EndClass               string          `json:"end_class"`
+	UsageSource            string          `json:"usage_source"`
+	ConfidenceScore        *string         `json:"confidence_score,omitempty"`
+	PendingReconciliation  bool            `json:"pending_reconciliation"`
+	StreamState            int16           `json:"stream_state"`
+	DeliveredTokenCount    int64           `json:"delivered_token_count"`
+	StreamTerminatedReason *string         `json:"stream_terminated_reason,omitempty"`
+	DrainOutcome           *string         `json:"drain_outcome,omitempty"`
+	RoutingReason          json.RawMessage `json:"routing_reason"`
+	ProtocolLoss           json.RawMessage `json:"protocol_loss"`
+	RequestedAt            string          `json:"requested_at"`
+	UpstreamRequestAt      *string         `json:"upstream_request_at,omitempty"`
+	FirstByteAt            *string         `json:"first_byte_at,omitempty"`
+	FirstEventAt           *string         `json:"first_event_at,omitempty"`
+	LastEventAt            *string         `json:"last_event_at,omitempty"`
+	RequestedModel         string          `json:"requested_model"`
+	UpstreamModel          *string         `json:"upstream_model,omitempty"`
+	Stream                 bool            `json:"stream"`
+	SnapshotVersion        *string         `json:"snapshot_version,omitempty"`
 }
 
 func NewUsageRecordHandler(pool *pgxpool.Pool) Handler {
@@ -76,6 +79,7 @@ INSERT INTO usage_records (
 	actual_cost, input_cost, output_cost,
 	cache_creation_cost, cache_read_cost, image_output_cost,
 	end_class, usage_source, confidence_score, pending_reconciliation,
+	stream_state, delivered_token_count, stream_terminated_reason,
 	drain_outcome, routing_reason, protocol_loss,
 	requested_at, upstream_request_at, first_byte_at, first_event_at, last_event_at,
 	requested_model, upstream_model, stream, snapshot_version
@@ -90,8 +94,9 @@ SELECT
 	$18::numeric, $19::numeric, $20::numeric,
 	$21, $22, $23::numeric, $24,
 	$25, $26, $27,
-	$28, $29, $30, $31, $32,
-	$33, $34, $35, $36
+	$28, $29, $30,
+	$31, $32, $33, $34, $35,
+	$36, $37, $38, $39
 WHERE NOT EXISTS (
 	SELECT 1 FROM usage_records WHERE tenant_id = $1 AND claim_id = $2
 )`,
@@ -103,6 +108,7 @@ WHERE NOT EXISTS (
 			p.ActualCost, p.InputCost, p.OutputCost,
 			p.CacheCreationCost, p.CacheReadCost, p.ImageOutputCost,
 			p.EndClass, p.UsageSource, p.ConfidenceScore, p.PendingReconciliation,
+			usagePayloadStreamState(p), p.DeliveredTokenCount, p.StreamTerminatedReason,
 			p.DrainOutcome, jsonDefault(p.RoutingReason, `{}`), jsonDefault(p.ProtocolLoss, `[]`),
 			requestedAt, parseOptionalTime(p.UpstreamRequestAt), parseOptionalTime(p.FirstByteAt),
 			parseOptionalTime(p.FirstEventAt), parseOptionalTime(p.LastEventAt),
@@ -124,6 +130,18 @@ func parseTime(raw string) (time.Time, error) {
 		return time.Time{}, err
 	}
 	return t.UTC(), nil
+}
+
+func usagePayloadStreamState(p UsageRecordPayload) int16 {
+	if p.StreamState >= 0 && p.StreamState <= 3 {
+		if p.StreamState != 0 || p.Stream || p.DeliveredTokenCount == 0 && p.TokensOutput == 0 {
+			return p.StreamState
+		}
+	}
+	if p.DeliveredTokenCount > 0 || p.TokensOutput > 0 || !p.Stream {
+		return 2
+	}
+	return 3
 }
 
 func parseOptionalTime(raw *string) any {

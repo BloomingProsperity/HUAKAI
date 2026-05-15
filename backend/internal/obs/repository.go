@@ -49,26 +49,29 @@ var ErrNotFound = errors.New("obs: not found")
 // secret-bearing columns deliberately absent. Timestamps are surfaced
 // for chronological audit ordering (codex pass2 P2 fix).
 type UsageRow struct {
-	ID                    int64
-	TenantID              int64
-	ClaimID               int64
-	APIKeyID              int64
-	UserID                int64
-	ProviderAccountID     int64
-	AttemptSeq            int32
-	TokensInput           int32
-	TokensOutput          int32
-	CacheCreationTokens   int32
-	CacheReadTokens       int32
-	ActualCost            decimal.Decimal
-	EndClass              string
-	UsageSource           string
-	PendingReconciliation bool
-	RequestedModel        string
-	UpstreamModel         string // empty when null in DB
-	Stream                bool
-	RequestedAt           time.Time  // when the gateway received the request
-	SettledAt             *time.Time // when Tx2 committed; nil means in-flight
+	ID                     int64
+	TenantID               int64
+	ClaimID                int64
+	APIKeyID               int64
+	UserID                 int64
+	ProviderAccountID      int64
+	AttemptSeq             int32
+	TokensInput            int32
+	TokensOutput           int32
+	CacheCreationTokens    int32
+	CacheReadTokens        int32
+	ActualCost             decimal.Decimal
+	EndClass               string
+	UsageSource            string
+	PendingReconciliation  bool
+	StreamState            int16
+	DeliveredTokenCount    int64
+	StreamTerminatedReason string
+	RequestedModel         string
+	UpstreamModel          string // empty when null in DB
+	Stream                 bool
+	RequestedAt            time.Time  // when the gateway received the request
+	SettledAt              *time.Time // when Tx2 committed; nil means in-flight
 }
 
 // ClaimRow is the audit-mode view of one billing_ledger_claims row.
@@ -100,16 +103,19 @@ type ClaimRow struct {
 // BillingEventRow is the audit-grade event view. OccurredAt is the
 // canonical chronological key for audit listings.
 type BillingEventRow struct {
-	ID               int64
-	TenantID         int64
-	ClaimID          int64
-	EventType        string
-	ActualCost       decimal.Decimal
-	ActualCostSigned decimal.Decimal
-	EndClass         string
-	UsageSource      string
-	Fingerprint      string
-	OccurredAt       time.Time
+	ID                     int64
+	TenantID               int64
+	ClaimID                int64
+	EventType              string
+	ActualCost             decimal.Decimal
+	ActualCostSigned       decimal.Decimal
+	EndClass               string
+	UsageSource            string
+	StreamState            int16
+	DeliveredTokenCount    int64
+	StreamTerminatedReason string
+	Fingerprint            string
+	OccurredAt             time.Time
 }
 
 // PgxReader is a Reader backed by sqlc.Queries. Construct via
@@ -153,8 +159,13 @@ func (r *PgxReader) ListUsage(ctx context.Context, tenantID int64, page Page) ([
 			EndClass:              row.EndClass,
 			UsageSource:           row.UsageSource,
 			PendingReconciliation: row.PendingReconciliation,
+			StreamState:           row.StreamState,
+			DeliveredTokenCount:   row.DeliveredTokenCount,
 			RequestedModel:        row.RequestedModel,
 			Stream:                row.Stream,
+		}
+		if row.StreamTerminatedReason != nil {
+			u.StreamTerminatedReason = *row.StreamTerminatedReason
 		}
 		if row.UpstreamModel != nil {
 			u.UpstreamModel = *row.UpstreamModel
@@ -222,10 +233,10 @@ func (r *PgxReader) GetClaim(ctx context.Context, tenantID, claimID int64) (Clai
 func (r *PgxReader) ListBillingEvents(ctx context.Context, tenantID int64, eventTypeFilter string, page Page) ([]BillingEventRow, error) {
 	limit, offset := normalizePage(page)
 	rows, err := r.q.ListBillingEventsByTenant(ctx, db.ListBillingEventsByTenantParams{
-		TenantID:          tenantID,
-		EventTypeFilter:   eventTypeFilter,
-		PageLimit:         limit,
-		PageOffset:        offset,
+		TenantID:        tenantID,
+		EventTypeFilter: eventTypeFilter,
+		PageLimit:       limit,
+		PageOffset:      offset,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("obs: list billing_events: %w", err)
@@ -233,13 +244,18 @@ func (r *PgxReader) ListBillingEvents(ctx context.Context, tenantID int64, event
 	out := make([]BillingEventRow, 0, len(rows))
 	for _, row := range rows {
 		e := BillingEventRow{
-			ID:               row.ID,
-			TenantID:         row.TenantID,
-			ClaimID:          row.ClaimID,
-			EventType:        row.EventType,
-			ActualCost:       row.ActualCost,
-			ActualCostSigned: row.ActualCostSigned,
-			Fingerprint:      row.Fingerprint,
+			ID:                  row.ID,
+			TenantID:            row.TenantID,
+			ClaimID:             row.ClaimID,
+			EventType:           row.EventType,
+			ActualCost:          row.ActualCost,
+			ActualCostSigned:    row.ActualCostSigned,
+			Fingerprint:         row.Fingerprint,
+			StreamState:         row.StreamState,
+			DeliveredTokenCount: row.DeliveredTokenCount,
+		}
+		if row.StreamTerminatedReason != nil {
+			e.StreamTerminatedReason = *row.StreamTerminatedReason
 		}
 		if row.EndClass != nil {
 			e.EndClass = *row.EndClass

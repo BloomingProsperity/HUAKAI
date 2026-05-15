@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -49,6 +50,26 @@ func sseBytes(events ...sseEvt) []byte {
 type sseEvt struct {
 	typ     string
 	payload map[string]any
+}
+
+type rstAfterOneScanner struct{}
+
+func (rstAfterOneScanner) Scan(ctx context.Context, _ io.Reader, _ int) iter.Seq2[SSEEvent, error] {
+	return func(yield func(SSEEvent, error) bool) {
+		select {
+		case <-ctx.Done():
+			yield(SSEEvent{}, ctx.Err())
+			return
+		default:
+		}
+		if !yield(SSEEvent{
+			Type: "content_block_delta",
+			Data: []byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"visible"}}`),
+		}, nil) {
+			return
+		}
+		yield(SSEEvent{}, io.ErrUnexpectedEOF)
+	}
 }
 
 func messageStart(id string) sseEvt {
@@ -422,6 +443,27 @@ func TestAT_GW_002_19_PendingReconciliationOnEOFNoTerminal(t *testing.T) {
 	}
 	if draft.UsageSource != UsageSourceInferred {
 		t.Fatalf("EOF without terminal + non-empty acc → usage_source=inferred per spec; got %q", draft.UsageSource)
+	}
+}
+
+func TestF_OBS_003_RSTAfterChunkProducesPartialDraft(t *testing.T) {
+	scanners := NewStaticStreamScannerRegistry()
+	scanners.MustRegister("anthropic_messages", rstAfterOneScanner{})
+	f := newForwarder()
+	f.Scanners = scanners
+
+	draft, err := f.Forward(context.Background(), bytes.NewReader(nil), httptest.NewRecorder(), anthropicForwardRequest(1, 100))
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("err=%v want io.ErrUnexpectedEOF", err)
+	}
+	if draft.EndClass != UpstreamError5xx {
+		t.Fatalf("end_class=%q want upstream_error_5xx", draft.EndClass)
+	}
+	if draft.DeliveredTokenCount <= 0 {
+		t.Fatalf("delivered_token_count=%d want >0", draft.DeliveredTokenCount)
+	}
+	if draft.StreamTerminatedReason != "upstream_5xx" {
+		t.Fatalf("reason=%q want upstream_5xx", draft.StreamTerminatedReason)
 	}
 }
 

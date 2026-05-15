@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
@@ -24,6 +25,7 @@ import (
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/cache_routing"
 	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
+	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
@@ -49,6 +51,7 @@ type ChatHandlerDeps struct {
 	Forwarder            *gateway.StreamForwarder
 	ResponseCache        l2cache.Store
 	Settler              billing.Settler
+	CompletionBus        *eventbus.Bus
 	AuditLedger          auditledger.Ledger
 	Signer               *sign.Signer
 	BillingPolicyVersion string
@@ -496,7 +499,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			cacheEnvelope, cacheEnvelopeOK := encodeL2CacheEnvelope(bufferedEnv)
 
 			actualCost := decimal.NewFromFloat(0.01)
-			if _, err := d.Settler.Settle(ctx, billing.SettleRequest{
+			settleReq := billing.SettleRequest{
 				ClaimID:           reserveRes.ClaimID,
 				AccountID:         acquiredAccountID,
 				AcquisitionToken:  acquisitionToken,
@@ -507,11 +510,28 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 				AttemptSeq:        1,
 				RequestedModel:    req.Model,
 				UpstreamModel:     upstreamModelID,
+				Provider:          cacheVendor,
 				Stream:            false,
 				ActualCost:        actualCost,
 				Fingerprint:       payloadHash,
 				Draft:             nonStreamingUsageDraft(bufferedEnv, actualCost, selRes.RoutingReasonJSON),
 				SnapshotVersion:   plan.SnapshotVersion,
+			}
+			if _, err := settleCompletion(ctx, d, eventbus.RequestCompletionEvent{
+				ID:                        requestID,
+				TenantID:                  ident.TenantID,
+				ClaimID:                   reserveRes.ClaimID,
+				AccountID:                 acquiredAccountID,
+				RequestID:                 requestID,
+				EndpointFamily:            d.effectiveEndpointFamily(),
+				RequestedModel:            req.Model,
+				UpstreamModel:             upstreamModelID,
+				PayloadHash:               payloadHash,
+				RawBodyHash:               bodyHash(body),
+				RedactedBodyRef:           redactedBodyRef(body),
+				AuditLedgerID:             ledgerID(ledgerEntry),
+				AuditSignatureFingerprint: ledgerFingerprint(ledgerEntry),
+				SettleRequest:             settleReq,
 			}); err != nil {
 				writeJSONError(w, http.StatusInternalServerError, "settle_error", err.Error())
 				return
@@ -580,6 +600,8 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 		if d.ResponseCache != nil {
 			w.Header().Set("X-HUAKAI-Cache-L2", "skip")
 		}
+		declareStreamBillingTrailers(w.Header())
+		writeStreamBillingHeaders(w.Header(), billing.Attempt{State: billing.StreamStateInFlight})
 		streamForwarder := *d.Forwarder
 		if streamForwarder.AuditLedger == nil {
 			streamForwarder.AuditLedger = d.AuditLedger
@@ -591,10 +613,10 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			WriteHuakaiLedgerHeaders(w.Header(), requestID, entryID, sigFingerprint)
 		}
 		draft, fwdErr := streamForwarder.Forward(ctx, dispatchRes.UpstreamReader, w, forwardReq)
+		streamAttempt := billing.AttemptFromGatewayDraft(true, draft)
+		writeStreamBillingHeaders(w.Header(), streamAttempt)
 		if fwdErr != nil {
-			_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "forwarder_error")
 			w.Header().Set("X-Huakai-Forward-Error", fwdErr.Error())
-			return
 		}
 
 		actualCost := decimal.NewFromFloat(0.01)
@@ -609,13 +631,28 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			AttemptSeq:        1,
 			RequestedModel:    req.Model,
 			UpstreamModel:     upstreamModelID,
+			Provider:          cacheVendor,
 			Stream:            true,
 			ActualCost:        actualCost,
 			Fingerprint:       payloadHash,
 			Draft:             draft,
+			StreamAttempt:     &streamAttempt,
 			SnapshotVersion:   plan.SnapshotVersion,
 		}
-		if _, err := d.Settler.Settle(ctx, settleReq); err != nil {
+		if _, err := settleCompletion(ctx, d, eventbus.RequestCompletionEvent{
+			ID:              requestID,
+			TenantID:        ident.TenantID,
+			ClaimID:         reserveRes.ClaimID,
+			AccountID:       acquiredAccountID,
+			RequestID:       requestID,
+			EndpointFamily:  d.effectiveEndpointFamily(),
+			RequestedModel:  req.Model,
+			UpstreamModel:   upstreamModelID,
+			PayloadHash:     payloadHash,
+			RawBodyHash:     bodyHash(body),
+			RedactedBodyRef: redactedBodyRef(body),
+			SettleRequest:   settleReq,
+		}); err != nil {
 			w.Header().Set("X-Huakai-Settle-Error", err.Error())
 			return
 		}
@@ -642,6 +679,51 @@ func closeDispatchResult(res *gateway.DispatchResult) {
 	if res != nil && res.Close != nil {
 		_ = res.Close()
 	}
+}
+
+func settleCompletion(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent) (*billing.SettleResult, error) {
+	if d.CompletionBus == nil {
+		return d.Settler.Settle(ctx, event.SettleRequest)
+	}
+	if err := d.CompletionBus.Emit(ctx, event); err != nil {
+		if shouldDirectSettleFallback(err) {
+			return d.Settler.Settle(ctx, event.SettleRequest)
+		}
+		return nil, err
+	}
+	return &billing.SettleResult{}, nil
+}
+
+func shouldDirectSettleFallback(err error) bool {
+	return errors.Is(err, eventbus.ErrNoHandlers) ||
+		errors.Is(err, eventbus.ErrBusClosed) ||
+		errors.Is(err, eventbus.ErrQueueFull)
+}
+
+func bodyHash(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+func redactedBodyRef(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	return "sha256:" + bodyHash(body)
+}
+
+func ledgerID(entry *auditledger.LedgerEntry) string {
+	if entry == nil {
+		return ""
+	}
+	return entry.LedgerID
+}
+
+func ledgerFingerprint(entry *auditledger.LedgerEntry) string {
+	if entry == nil {
+		return ""
+	}
+	return entry.PubkeyFingerprint
 }
 
 type l2CacheHitInput struct {
@@ -706,7 +788,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		return true
 	}
 	actualCost := decimal.Zero
-	if _, err := d.Settler.Settle(ctx, billing.SettleRequest{
+	settleReq := billing.SettleRequest{
 		ClaimID:           in.ReserveResult.ClaimID,
 		AccountID:         in.AccountID,
 		AcquisitionToken:  in.AcquisitionToken,
@@ -717,11 +799,26 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		AttemptSeq:        1,
 		RequestedModel:    in.RequestedModel,
 		UpstreamModel:     in.UpstreamModelID,
+		Provider:          in.Provider,
 		Stream:            false,
 		ActualCost:        actualCost,
 		Fingerprint:       in.PayloadHash,
 		Draft:             nonStreamingUsageDraft(cachedEnv, actualCost, routingReasonWithCacheHit(routingReason, true, in.Entry.Key)),
 		SnapshotVersion:   in.PlanSnapshot,
+	}
+	if _, err := settleCompletion(ctx, d, eventbus.RequestCompletionEvent{
+		ID:                        in.RequestID,
+		TenantID:                  in.Ident.TenantID,
+		ClaimID:                   in.ReserveResult.ClaimID,
+		AccountID:                 in.AccountID,
+		RequestID:                 in.RequestID,
+		EndpointFamily:            d.effectiveEndpointFamily(),
+		RequestedModel:            in.RequestedModel,
+		UpstreamModel:             in.UpstreamModelID,
+		PayloadHash:               in.PayloadHash,
+		AuditLedgerID:             ledgerID(ledgerEntry),
+		AuditSignatureFingerprint: ledgerFingerprint(ledgerEntry),
+		SettleRequest:             settleReq,
 	}); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "settle_error", err.Error())
 		return true
@@ -843,7 +940,26 @@ const (
 	headerHUAKAIAuditLedgerID       = "X-HUAKAI-Ledger-ID"
 	headerHUAKAIAuditVerify         = "X-HUAKAI-Verify"
 	headerHUAKAIAuditSigFingerprint = "X-HUAKAI-Sig-Fingerprint"
+	headerHUAKAIStreamState         = "X-HUAKAI-Stream-State"
+	headerHUAKAIDeliveredTokens     = "X-HUAKAI-Delivered-Tokens"
 )
+
+func declareStreamBillingTrailers(h http.Header) {
+	if h == nil {
+		return
+	}
+	h.Add("Trailer", headerHUAKAIStreamState)
+	h.Add("Trailer", headerHUAKAIDeliveredTokens)
+}
+
+func writeStreamBillingHeaders(h http.Header, attempt billing.Attempt) {
+	if h == nil {
+		return
+	}
+	attempt = attempt.Normalized()
+	h.Set(headerHUAKAIStreamState, attempt.State.String())
+	h.Set(headerHUAKAIDeliveredTokens, strconv.FormatInt(attempt.DeliveredTokenCount, 10))
+}
 
 func WriteHuakaiHeaders(h http.Header, requested string, env *proto.HCSF, entry *auditledger.LedgerEntry) {
 	setHUAKAIModelHeaders(h, requested, env)
@@ -962,6 +1078,7 @@ func nonStreamingUsageDraft(env *proto.HCSF, actualCost decimal.Decimal, routing
 	return gateway.UsageRecordDraft{
 		TokensInput:           usage.InputTokens,
 		TokensOutput:          usage.OutputTokens,
+		DeliveredTokenCount:   int64(usage.OutputTokens),
 		CacheCreationTokens:   usage.CacheCreationInputTokens,
 		CacheReadTokens:       usage.CacheReadInputTokens,
 		ActualCost:            actualCost,

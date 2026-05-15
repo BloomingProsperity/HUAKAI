@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
@@ -63,5 +64,24 @@ func TestSetHUAKAIModelHeadersOmitsEmptyDelivered(t *testing.T) {
 	}
 	if got := h.Get(headerHUAKAIModelDelivered); got != "" {
 		t.Fatalf("%s=%q want empty", headerHUAKAIModelDelivered, got)
+	}
+}
+
+func TestWriteStreamBillingHeaders(t *testing.T) {
+	h := http.Header{}
+	declareStreamBillingTrailers(h)
+	writeStreamBillingHeaders(h, billing.Attempt{
+		State:               billing.StreamStatePartial,
+		DeliveredTokenCount: 7,
+	})
+
+	if got := h.Get(headerHUAKAIStreamState); got != "partial" {
+		t.Fatalf("%s=%q want partial", headerHUAKAIStreamState, got)
+	}
+	if got := h.Get(headerHUAKAIDeliveredTokens); got != "7" {
+		t.Fatalf("%s=%q want 7", headerHUAKAIDeliveredTokens, got)
+	}
+	if got := h.Values("Trailer"); len(got) != 2 {
+		t.Fatalf("Trailer values=%v want stream-state and delivered-tokens", got)
 	}
 }
