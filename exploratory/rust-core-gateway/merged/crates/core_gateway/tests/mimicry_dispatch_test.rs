@@ -135,24 +135,34 @@ fn join_u8(values: &[u8]) -> String {
         .join("-")
 }
 
+#[cfg(feature = "mimicry-openssl")]
 #[test]
-fn dispatch_blocks_codex_known_gap_profile() {
+fn dispatch_routes_codex_profile_to_openssl_when_adapter_is_compiled() {
+    let profile = load_builtin_profile(BuiltinProfile::CodexCli).expect("codex profile 应加载");
+
+    let decision = decide_dispatch(&profile);
+
+    assert_eq!(decision, DispatchDecision::AllowOpenSsl);
+    assert!(is_dispatch_allowed(&decision));
+}
+
+#[cfg(not(feature = "mimicry-openssl"))]
+#[test]
+fn dispatch_blocks_codex_profile_when_openssl_adapter_is_not_compiled() {
     let profile = load_builtin_profile(BuiltinProfile::CodexCli).expect("codex profile 应加载");
 
     let decision = decide_dispatch(&profile);
 
     match &decision {
-        DispatchDecision::BlockKnownGap { reason } => {
+        DispatchDecision::BlockUnsupportedTemplate { reason } => {
             assert!(
-                !reason.trim().is_empty(),
-                "KnownGapBlocked dispatch 必须携带非空 reason"
-            );
-            assert!(
-                reason.contains("cipher_suites") && reason.contains("extensions"),
-                "KnownGapBlocked reason 必须来自字段级 gap，实际: {reason}"
+                reason.contains("mimicry-openssl"),
+                "feature-off build 必须阻断 Codex OpenSSL dispatch，实际: {reason}"
             );
         }
-        decision => panic!("codex builtin 必须被生产 dispatch 拒绝，实际: {decision:?}"),
+        decision => {
+            panic!("feature-off Codex profile 必须被 dispatch gate 拒绝，实际: {decision:?}")
+        }
     }
     assert!(!is_dispatch_allowed(&decision));
 }
