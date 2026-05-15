@@ -4,6 +4,8 @@
 
 pub mod backend;
 pub mod http_profile;
+#[cfg(feature = "mimicry-openssl")]
+pub mod openssl_adapter;
 pub mod profile;
 pub mod tls_profile;
 
