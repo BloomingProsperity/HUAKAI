@@ -44,6 +44,8 @@ out/
 target/
 .cargo-targets/
 cargo-targets/
+.cache/
+.gocache/
 bin/
 *.exe
 *.bin
