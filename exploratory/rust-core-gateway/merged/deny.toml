@@ -1,0 +1,54 @@
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "warn"
+unmaintained = "workspace"
+unsound = "workspace"
+ignore = []
+
+[licenses]
+# cargo-deny 0.19+ 已移除 licenses.deny/default/unlicensed 字段。
+# 这里用 allow-list 实现同等策略：未列入的 GPL/LGPL/AGPL/unknown/unlicensed 均拒绝。
+# 显式拒绝意图：GPL-3.0、LGPL-3.0、AGPL-3.0、GPL-2.0、LGPL-2.1。
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "Zlib",
+    "MPL-2.0",
+    # SPDX: Community Data License Agreement Permissive 2.0
+    # https://spdx.org/licenses/CDLA-Permissive-2.0.html
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+allow = []
+allow-workspace = true
+# `wreq-util`/`rquest-util` preset 包在内部 spike 结论中已标记为 LGPL/copyleft 风险；
+# HUAKAI 保留 preset-like 能力，但只能通过自有模板或 permissive 依赖实现。
+deny = [
+    { crate = "wreq-util", reason = "R-LIC-003: browser/TLS mimicry preset utility carries GPL/LGPL risk" },
+    { crate = "rquest-util", reason = "R-LIC-003: browser/TLS mimicry preset utility carries GPL/LGPL risk" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = [
+    "https://github.com/rust-lang/crates.io-index",
+    "sparse+https://index.crates.io/",
+]
+allow-git = []
+
+[sources.allow-org]
+github = []
+gitlab = []
+bitbucket = []
