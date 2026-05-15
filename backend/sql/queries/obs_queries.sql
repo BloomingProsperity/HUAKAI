@@ -24,6 +24,9 @@ SELECT
     end_class,
     usage_source,
     pending_reconciliation,
+    stream_state,
+    delivered_token_count,
+    stream_terminated_reason,
     requested_model,
     upstream_model,
     requested_at,
@@ -73,6 +76,9 @@ SELECT
     actual_cost_signed,
     end_class,
     usage_source,
+    stream_state,
+    delivered_token_count,
+    stream_terminated_reason,
     fingerprint,
     occurred_at
 FROM billing_events

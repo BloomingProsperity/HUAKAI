@@ -170,7 +170,11 @@ WITH audit_union AS (
            NULL::bigint AS pool_group_id, NULL::text AS request_id, NULL::text AS actor_id,
            NULL::text AS actor_role, NULL::text AS reason,
            jsonb_build_object('actual_cost', be.actual_cost::text, 'actual_cost_signed', be.actual_cost_signed::text,
-                              'end_class', be.end_class, 'usage_source', be.usage_source, 'fingerprint', be.fingerprint) AS payload,
+                              'end_class', be.end_class, 'usage_source', be.usage_source,
+                              'stream_state', be.stream_state,
+                              'delivered_token_count', be.delivered_token_count,
+                              'stream_terminated_reason', be.stream_terminated_reason,
+                              'fingerprint', be.fingerprint) AS payload,
            be.occurred_at AS created_at
     FROM billing_events be
     UNION ALL
@@ -419,6 +423,7 @@ SELECT
     ur.provider_account_id, ur.attempt_seq, ur.tokens_input, ur.tokens_output,
     ur.cache_creation_tokens, ur.cache_read_tokens, ur.actual_cost,
     ur.end_class, ur.usage_source, ur.pending_reconciliation,
+    ur.stream_state, ur.delivered_token_count, ur.stream_terminated_reason,
     ur.requested_at, ur.settled_at AS created_at, ur.requested_model,
     ur.upstream_model, ur.stream, p.code AS provider, blc.pooling_group_id AS pool_id
 FROM usage_records ur
@@ -456,28 +461,31 @@ type ListUsageRecordsParams struct {
 }
 
 type ListUsageRecordsRow struct {
-	ID                    int64              `db:"id" json:"id"`
-	TenantID              int64              `db:"tenant_id" json:"tenant_id"`
-	ClaimID               int64              `db:"claim_id" json:"claim_id"`
-	APIKeyID              int64              `db:"api_key_id" json:"api_key_id"`
-	UserID                int64              `db:"user_id" json:"user_id"`
-	ProviderAccountID     int64              `db:"provider_account_id" json:"provider_account_id"`
-	AttemptSeq            int32              `db:"attempt_seq" json:"attempt_seq"`
-	TokensInput           int32              `db:"tokens_input" json:"tokens_input"`
-	TokensOutput          int32              `db:"tokens_output" json:"tokens_output"`
-	CacheCreationTokens   int32              `db:"cache_creation_tokens" json:"cache_creation_tokens"`
-	CacheReadTokens       int32              `db:"cache_read_tokens" json:"cache_read_tokens"`
-	ActualCost            decimal.Decimal    `db:"actual_cost" json:"actual_cost"`
-	EndClass              string             `db:"end_class" json:"end_class"`
-	UsageSource           string             `db:"usage_source" json:"usage_source"`
-	PendingReconciliation bool               `db:"pending_reconciliation" json:"pending_reconciliation"`
-	RequestedAt           pgtype.Timestamptz `db:"requested_at" json:"requested_at"`
-	CreatedAt             pgtype.Timestamptz `db:"created_at" json:"created_at"`
-	RequestedModel        string             `db:"requested_model" json:"requested_model"`
-	UpstreamModel         *string            `db:"upstream_model" json:"upstream_model"`
-	Stream                bool               `db:"stream" json:"stream"`
-	Provider              *string            `db:"provider" json:"provider"`
-	PoolID                *int64             `db:"pool_id" json:"pool_id"`
+	ID                     int64              `db:"id" json:"id"`
+	TenantID               int64              `db:"tenant_id" json:"tenant_id"`
+	ClaimID                int64              `db:"claim_id" json:"claim_id"`
+	APIKeyID               int64              `db:"api_key_id" json:"api_key_id"`
+	UserID                 int64              `db:"user_id" json:"user_id"`
+	ProviderAccountID      int64              `db:"provider_account_id" json:"provider_account_id"`
+	AttemptSeq             int32              `db:"attempt_seq" json:"attempt_seq"`
+	TokensInput            int32              `db:"tokens_input" json:"tokens_input"`
+	TokensOutput           int32              `db:"tokens_output" json:"tokens_output"`
+	CacheCreationTokens    int32              `db:"cache_creation_tokens" json:"cache_creation_tokens"`
+	CacheReadTokens        int32              `db:"cache_read_tokens" json:"cache_read_tokens"`
+	ActualCost             decimal.Decimal    `db:"actual_cost" json:"actual_cost"`
+	EndClass               string             `db:"end_class" json:"end_class"`
+	UsageSource            string             `db:"usage_source" json:"usage_source"`
+	PendingReconciliation  bool               `db:"pending_reconciliation" json:"pending_reconciliation"`
+	StreamState            int16              `db:"stream_state" json:"stream_state"`
+	DeliveredTokenCount    int64              `db:"delivered_token_count" json:"delivered_token_count"`
+	StreamTerminatedReason *string            `db:"stream_terminated_reason" json:"stream_terminated_reason"`
+	RequestedAt            pgtype.Timestamptz `db:"requested_at" json:"requested_at"`
+	CreatedAt              pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	RequestedModel         string             `db:"requested_model" json:"requested_model"`
+	UpstreamModel          *string            `db:"upstream_model" json:"upstream_model"`
+	Stream                 bool               `db:"stream" json:"stream"`
+	Provider               *string            `db:"provider" json:"provider"`
+	PoolID                 *int64             `db:"pool_id" json:"pool_id"`
 }
 
 // F-OBS-001 admin read APIs. SELECT-only: no hot-path, quota, billing,
@@ -521,6 +529,9 @@ func (q *Queries) ListUsageRecords(ctx context.Context, arg ListUsageRecordsPara
 			&i.EndClass,
 			&i.UsageSource,
 			&i.PendingReconciliation,
+			&i.StreamState,
+			&i.DeliveredTokenCount,
+			&i.StreamTerminatedReason,
 			&i.RequestedAt,
 			&i.CreatedAt,
 			&i.RequestedModel,

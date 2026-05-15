@@ -88,22 +88,27 @@ const insertBillingEvent = `-- name: InsertBillingEvent :one
 INSERT INTO billing_events (
     tenant_id, claim_id, event_type,
     actual_cost, actual_cost_signed,
-    end_class, usage_source, fingerprint
+    end_class, usage_source,
+    stream_state, delivered_token_count, stream_terminated_reason,
+    fingerprint
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
 )
 RETURNING id, occurred_at
 `
 
 type InsertBillingEventParams struct {
-	TenantID         int64           `db:"tenant_id" json:"tenant_id"`
-	ClaimID          int64           `db:"claim_id" json:"claim_id"`
-	EventType        string          `db:"event_type" json:"event_type"`
-	ActualCost       decimal.Decimal `db:"actual_cost" json:"actual_cost"`
-	ActualCostSigned decimal.Decimal `db:"actual_cost_signed" json:"actual_cost_signed"`
-	EndClass         *string         `db:"end_class" json:"end_class"`
-	UsageSource      *string         `db:"usage_source" json:"usage_source"`
-	Fingerprint      string          `db:"fingerprint" json:"fingerprint"`
+	TenantID               int64           `db:"tenant_id" json:"tenant_id"`
+	ClaimID                int64           `db:"claim_id" json:"claim_id"`
+	EventType              string          `db:"event_type" json:"event_type"`
+	ActualCost             decimal.Decimal `db:"actual_cost" json:"actual_cost"`
+	ActualCostSigned       decimal.Decimal `db:"actual_cost_signed" json:"actual_cost_signed"`
+	EndClass               *string         `db:"end_class" json:"end_class"`
+	UsageSource            *string         `db:"usage_source" json:"usage_source"`
+	StreamState            int16           `db:"stream_state" json:"stream_state"`
+	DeliveredTokenCount    int64           `db:"delivered_token_count" json:"delivered_token_count"`
+	StreamTerminatedReason *string         `db:"stream_terminated_reason" json:"stream_terminated_reason"`
+	Fingerprint            string          `db:"fingerprint" json:"fingerprint"`
 }
 
 type InsertBillingEventRow struct {
@@ -122,6 +127,9 @@ func (q *Queries) InsertBillingEvent(ctx context.Context, arg InsertBillingEvent
 		arg.ActualCostSigned,
 		arg.EndClass,
 		arg.UsageSource,
+		arg.StreamState,
+		arg.DeliveredTokenCount,
+		arg.StreamTerminatedReason,
 		arg.Fingerprint,
 	)
 	var i InsertBillingEventRow
@@ -178,6 +186,7 @@ INSERT INTO usage_records (
     actual_cost, input_cost, output_cost,
     cache_creation_cost, cache_read_cost, image_output_cost,
     end_class, usage_source, confidence_score, pending_reconciliation,
+    stream_state, delivered_token_count, stream_terminated_reason,
     drain_outcome, routing_reason, protocol_loss,
     requested_at, upstream_request_at, first_byte_at, first_event_at, last_event_at,
     requested_model, upstream_model, stream, snapshot_version
@@ -191,49 +200,53 @@ INSERT INTO usage_records (
     $18, $19, $20,
     $21, $22, $23, $24,
     $25, $26, $27,
-    $28, $29, $30, $31, $32,
-    $33, $34, $35, $36
+    $28, $29, $30,
+    $31, $32, $33, $34, $35,
+    $36, $37, $38, $39
 )
 RETURNING id
 `
 
 type InsertUsageRecordParams struct {
-	TenantID              int64              `db:"tenant_id" json:"tenant_id"`
-	ClaimID               int64              `db:"claim_id" json:"claim_id"`
-	APIKeyID              int64              `db:"api_key_id" json:"api_key_id"`
-	UserID                int64              `db:"user_id" json:"user_id"`
-	ProviderAccountID     int64              `db:"provider_account_id" json:"provider_account_id"`
-	AcquisitionToken      pgtype.UUID        `db:"acquisition_token" json:"acquisition_token"`
-	AttemptSeq            int32              `db:"attempt_seq" json:"attempt_seq"`
-	TokensInput           int32              `db:"tokens_input" json:"tokens_input"`
-	TokensOutput          int32              `db:"tokens_output" json:"tokens_output"`
-	CacheCreationTokens   int32              `db:"cache_creation_tokens" json:"cache_creation_tokens"`
-	CacheReadTokens       int32              `db:"cache_read_tokens" json:"cache_read_tokens"`
-	CacheCreation5mTokens int32              `db:"cache_creation_5m_tokens" json:"cache_creation_5m_tokens"`
-	CacheCreation1hTokens int32              `db:"cache_creation_1h_tokens" json:"cache_creation_1h_tokens"`
-	ImageOutputTokens     int32              `db:"image_output_tokens" json:"image_output_tokens"`
-	ActualCost            decimal.Decimal    `db:"actual_cost" json:"actual_cost"`
-	InputCost             decimal.Decimal    `db:"input_cost" json:"input_cost"`
-	OutputCost            decimal.Decimal    `db:"output_cost" json:"output_cost"`
-	CacheCreationCost     decimal.Decimal    `db:"cache_creation_cost" json:"cache_creation_cost"`
-	CacheReadCost         decimal.Decimal    `db:"cache_read_cost" json:"cache_read_cost"`
-	ImageOutputCost       decimal.Decimal    `db:"image_output_cost" json:"image_output_cost"`
-	EndClass              string             `db:"end_class" json:"end_class"`
-	UsageSource           string             `db:"usage_source" json:"usage_source"`
-	ConfidenceScore       pgtype.Numeric     `db:"confidence_score" json:"confidence_score"`
-	PendingReconciliation bool               `db:"pending_reconciliation" json:"pending_reconciliation"`
-	DrainOutcome          *string            `db:"drain_outcome" json:"drain_outcome"`
-	RoutingReason         []byte             `db:"routing_reason" json:"routing_reason"`
-	ProtocolLoss          []byte             `db:"protocol_loss" json:"protocol_loss"`
-	RequestedAt           pgtype.Timestamptz `db:"requested_at" json:"requested_at"`
-	UpstreamRequestAt     pgtype.Timestamptz `db:"upstream_request_at" json:"upstream_request_at"`
-	FirstByteAt           pgtype.Timestamptz `db:"first_byte_at" json:"first_byte_at"`
-	FirstEventAt          pgtype.Timestamptz `db:"first_event_at" json:"first_event_at"`
-	LastEventAt           pgtype.Timestamptz `db:"last_event_at" json:"last_event_at"`
-	RequestedModel        string             `db:"requested_model" json:"requested_model"`
-	UpstreamModel         *string            `db:"upstream_model" json:"upstream_model"`
-	Stream                bool               `db:"stream" json:"stream"`
-	SnapshotVersion       *string            `db:"snapshot_version" json:"snapshot_version"`
+	TenantID               int64              `db:"tenant_id" json:"tenant_id"`
+	ClaimID                int64              `db:"claim_id" json:"claim_id"`
+	APIKeyID               int64              `db:"api_key_id" json:"api_key_id"`
+	UserID                 int64              `db:"user_id" json:"user_id"`
+	ProviderAccountID      int64              `db:"provider_account_id" json:"provider_account_id"`
+	AcquisitionToken       pgtype.UUID        `db:"acquisition_token" json:"acquisition_token"`
+	AttemptSeq             int32              `db:"attempt_seq" json:"attempt_seq"`
+	TokensInput            int32              `db:"tokens_input" json:"tokens_input"`
+	TokensOutput           int32              `db:"tokens_output" json:"tokens_output"`
+	CacheCreationTokens    int32              `db:"cache_creation_tokens" json:"cache_creation_tokens"`
+	CacheReadTokens        int32              `db:"cache_read_tokens" json:"cache_read_tokens"`
+	CacheCreation5mTokens  int32              `db:"cache_creation_5m_tokens" json:"cache_creation_5m_tokens"`
+	CacheCreation1hTokens  int32              `db:"cache_creation_1h_tokens" json:"cache_creation_1h_tokens"`
+	ImageOutputTokens      int32              `db:"image_output_tokens" json:"image_output_tokens"`
+	ActualCost             decimal.Decimal    `db:"actual_cost" json:"actual_cost"`
+	InputCost              decimal.Decimal    `db:"input_cost" json:"input_cost"`
+	OutputCost             decimal.Decimal    `db:"output_cost" json:"output_cost"`
+	CacheCreationCost      decimal.Decimal    `db:"cache_creation_cost" json:"cache_creation_cost"`
+	CacheReadCost          decimal.Decimal    `db:"cache_read_cost" json:"cache_read_cost"`
+	ImageOutputCost        decimal.Decimal    `db:"image_output_cost" json:"image_output_cost"`
+	EndClass               string             `db:"end_class" json:"end_class"`
+	UsageSource            string             `db:"usage_source" json:"usage_source"`
+	ConfidenceScore        pgtype.Numeric     `db:"confidence_score" json:"confidence_score"`
+	PendingReconciliation  bool               `db:"pending_reconciliation" json:"pending_reconciliation"`
+	StreamState            int16              `db:"stream_state" json:"stream_state"`
+	DeliveredTokenCount    int64              `db:"delivered_token_count" json:"delivered_token_count"`
+	StreamTerminatedReason *string            `db:"stream_terminated_reason" json:"stream_terminated_reason"`
+	DrainOutcome           *string            `db:"drain_outcome" json:"drain_outcome"`
+	RoutingReason          []byte             `db:"routing_reason" json:"routing_reason"`
+	ProtocolLoss           []byte             `db:"protocol_loss" json:"protocol_loss"`
+	RequestedAt            pgtype.Timestamptz `db:"requested_at" json:"requested_at"`
+	UpstreamRequestAt      pgtype.Timestamptz `db:"upstream_request_at" json:"upstream_request_at"`
+	FirstByteAt            pgtype.Timestamptz `db:"first_byte_at" json:"first_byte_at"`
+	FirstEventAt           pgtype.Timestamptz `db:"first_event_at" json:"first_event_at"`
+	LastEventAt            pgtype.Timestamptz `db:"last_event_at" json:"last_event_at"`
+	RequestedModel         string             `db:"requested_model" json:"requested_model"`
+	UpstreamModel          *string            `db:"upstream_model" json:"upstream_model"`
+	Stream                 bool               `db:"stream" json:"stream"`
+	SnapshotVersion        *string            `db:"snapshot_version" json:"snapshot_version"`
 }
 
 // Spec §Tx2 step 12: write Usage Record into the same Tx as everything else.
@@ -265,6 +278,9 @@ func (q *Queries) InsertUsageRecord(ctx context.Context, arg InsertUsageRecordPa
 		arg.UsageSource,
 		arg.ConfidenceScore,
 		arg.PendingReconciliation,
+		arg.StreamState,
+		arg.DeliveredTokenCount,
+		arg.StreamTerminatedReason,
 		arg.DrainOutcome,
 		arg.RoutingReason,
 		arg.ProtocolLoss,

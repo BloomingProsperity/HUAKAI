@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
@@ -94,57 +95,65 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 	if actualCost.IsZero() && !req.Draft.ActualCost.IsZero() {
 		actualCost = req.Draft.ActualCost
 	}
+	attempt := AttemptFromSettleRequest(req)
+	actualCost = CostForAttempt(actualCost, attempt)
 	requestedAt := req.RequestedAt
 	if requestedAt.IsZero() {
 		requestedAt = time.Now().UTC()
 	}
 
 	usageParams := db.InsertUsageRecordParams{
-		TenantID:              claim.TenantID,
-		ClaimID:               claim.ID,
-		APIKeyID:              coalesceInt64(req.APIKeyID, claim.APIKeyID),
-		UserID:                coalesceInt64(req.UserID, claim.UserID),
-		ProviderAccountID:     providerAccountID,
-		AcquisitionToken:      pgUUID(req.AcquisitionToken),
-		AttemptSeq:            coalesceInt32(req.AttemptSeq, claim.AttemptSeq),
-		TokensInput:           int32(req.Draft.TokensInput),
-		TokensOutput:          int32(req.Draft.TokensOutput),
-		CacheCreationTokens:   int32(req.Draft.CacheCreationTokens),
-		CacheReadTokens:       int32(req.Draft.CacheReadTokens),
-		CacheCreation5mTokens: 0,
-		CacheCreation1hTokens: 0,
-		ImageOutputTokens:     0,
-		ActualCost:            actualCost,
-		InputCost:             decimal.Zero,
-		OutputCost:            decimal.Zero,
-		CacheCreationCost:     decimal.Zero,
-		CacheReadCost:         decimal.Zero,
-		ImageOutputCost:       decimal.Zero,
-		EndClass:              normalizeEndClass(req.Draft.EndClass, req.Stream),
-		UsageSource:           normalizeUsageSource(req.Draft.UsageSource),
-		ConfidenceScore:       numericFromFloat(req.Draft.ConfidenceScore),
-		PendingReconciliation: req.Draft.PendingReconciliation,
-		DrainOutcome:          normalizeDrainOutcome(req.Draft.DrainOutcome),
-		RoutingReason:         jsonOrEmptyObject(req.Draft.RoutingReason),
-		ProtocolLoss:          []byte("[]"),
-		RequestedAt:           pgTimestamp(requestedAt),
-		RequestedModel:        coalesceString(req.RequestedModel, claim.RequestedModel),
-		UpstreamModel:         nullableString(req.UpstreamModel),
-		Stream:                req.Stream,
-		SnapshotVersion:       nullableString(req.SnapshotVersion),
+		TenantID:               claim.TenantID,
+		ClaimID:                claim.ID,
+		APIKeyID:               coalesceInt64(req.APIKeyID, claim.APIKeyID),
+		UserID:                 coalesceInt64(req.UserID, claim.UserID),
+		ProviderAccountID:      providerAccountID,
+		AcquisitionToken:       pgUUID(req.AcquisitionToken),
+		AttemptSeq:             coalesceInt32(req.AttemptSeq, claim.AttemptSeq),
+		TokensInput:            int32(req.Draft.TokensInput),
+		TokensOutput:           int32(outputTokensForAttempt(req.Draft, attempt)),
+		CacheCreationTokens:    int32(req.Draft.CacheCreationTokens),
+		CacheReadTokens:        int32(req.Draft.CacheReadTokens),
+		CacheCreation5mTokens:  0,
+		CacheCreation1hTokens:  0,
+		ImageOutputTokens:      0,
+		ActualCost:             actualCost,
+		InputCost:              decimal.Zero,
+		OutputCost:             decimal.Zero,
+		CacheCreationCost:      decimal.Zero,
+		CacheReadCost:          decimal.Zero,
+		ImageOutputCost:        decimal.Zero,
+		EndClass:               normalizeEndClass(req.Draft.EndClass, req.Stream),
+		UsageSource:            normalizeUsageSource(req.Draft.UsageSource),
+		ConfidenceScore:        numericFromFloat(req.Draft.ConfidenceScore),
+		PendingReconciliation:  req.Draft.PendingReconciliation,
+		StreamState:            attempt.State.DBValue(),
+		DeliveredTokenCount:    attempt.DeliveredTokenCount,
+		StreamTerminatedReason: nullableString(attempt.StreamTerminatedReason),
+		DrainOutcome:           normalizeDrainOutcome(req.Draft.DrainOutcome),
+		RoutingReason:          jsonOrEmptyObject(req.Draft.RoutingReason),
+		ProtocolLoss:           []byte("[]"),
+		RequestedAt:            pgTimestamp(requestedAt),
+		RequestedModel:         coalesceString(req.RequestedModel, claim.RequestedModel),
+		UpstreamModel:          nullableString(req.UpstreamModel),
+		Stream:                 req.Stream,
+		SnapshotVersion:        nullableString(req.SnapshotVersion),
 	}
 
 	endClass := normalizeEndClass(req.Draft.EndClass, req.Stream)
 	usageSource := normalizeUsageSource(req.Draft.UsageSource)
 	billingEventParams := db.InsertBillingEventParams{
-		TenantID:         claim.TenantID,
-		ClaimID:          claim.ID,
-		EventType:        "claim_committed",
-		ActualCost:       actualCost,
-		ActualCostSigned: actualCost,
-		EndClass:         &endClass,
-		UsageSource:      &usageSource,
-		Fingerprint:      coalesceString(req.Fingerprint, claim.RequestFingerprint),
+		TenantID:               claim.TenantID,
+		ClaimID:                claim.ID,
+		EventType:              "claim_committed",
+		ActualCost:             actualCost,
+		ActualCostSigned:       actualCost,
+		EndClass:               &endClass,
+		UsageSource:            &usageSource,
+		StreamState:            attempt.State.DBValue(),
+		DeliveredTokenCount:    attempt.DeliveredTokenCount,
+		StreamTerminatedReason: nullableString(attempt.StreamTerminatedReason),
+		Fingerprint:            coalesceString(req.Fingerprint, claim.RequestFingerprint),
 	}
 	billingEvent, err := qtx.InsertBillingEvent(ctx, billingEventParams)
 	if err != nil {
@@ -199,6 +208,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("billing: commit Tx2: %w", err)
 	}
+	cachemetrics.ObserveStreamState(attempt.State.String(), req.Provider, coalesceString(req.UpstreamModel, req.RequestedModel))
 	return &SettleResult{NewUserBalance: decimal.Zero, OutboxEventsEnqueued: outboxEvents}, nil
 }
 
@@ -250,15 +260,19 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 	}
 	abortEndClass := "unknown_termination"
 	abortUsageSource := string(gateway.UsageSourceInferred)
+	abortAttempt := Attempt{State: StreamStateFailed, StreamTerminatedReason: normalizeTerminatedReason(reason)}
 	abortEventParams := db.InsertBillingEventParams{
-		TenantID:         tenantID,
-		ClaimID:          claimID,
-		EventType:        "claim_aborted",
-		ActualCost:       decimal.Zero,
-		ActualCostSigned: decimal.Zero,
-		EndClass:         &abortEndClass,
-		UsageSource:      &abortUsageSource,
-		Fingerprint:      fingerprint,
+		TenantID:               tenantID,
+		ClaimID:                claimID,
+		EventType:              "claim_aborted",
+		ActualCost:             decimal.Zero,
+		ActualCostSigned:       decimal.Zero,
+		EndClass:               &abortEndClass,
+		UsageSource:            &abortUsageSource,
+		StreamState:            abortAttempt.State.DBValue(),
+		DeliveredTokenCount:    0,
+		StreamTerminatedReason: nullableString(abortAttempt.StreamTerminatedReason),
+		Fingerprint:            fingerprint,
 	}
 	abortEvent, err := qtx.InsertBillingEvent(ctx, abortEventParams)
 	if err != nil {
@@ -277,26 +291,29 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 		var tokAbort uuid.UUID
 		copy(tokAbort[:], acquisitionToken.Bytes[:])
 		usageParams := db.InsertUsageRecordParams{
-			TenantID:              tenantID,
-			ClaimID:               claimID,
-			APIKeyID:              apiKeyID,
-			UserID:                userID,
-			ProviderAccountID:     *providerAccountID,
-			AcquisitionToken:      pgUUID(tokAbort),
-			AttemptSeq:            attemptSeq,
-			ActualCost:            decimal.Zero,
-			InputCost:             decimal.Zero,
-			OutputCost:            decimal.Zero,
-			CacheCreationCost:     decimal.Zero,
-			CacheReadCost:         decimal.Zero,
-			ImageOutputCost:       decimal.Zero,
-			EndClass:              abortEndClass,
-			UsageSource:           abortUsageSource,
-			PendingReconciliation: false,
-			RoutingReason:         []byte("{}"),
-			ProtocolLoss:          []byte("[]"),
-			RequestedAt:           pgTimestamp(time.Now().UTC()),
-			RequestedModel:        requestedModel,
+			TenantID:               tenantID,
+			ClaimID:                claimID,
+			APIKeyID:               apiKeyID,
+			UserID:                 userID,
+			ProviderAccountID:      *providerAccountID,
+			AcquisitionToken:       pgUUID(tokAbort),
+			AttemptSeq:             attemptSeq,
+			ActualCost:             decimal.Zero,
+			InputCost:              decimal.Zero,
+			OutputCost:             decimal.Zero,
+			CacheCreationCost:      decimal.Zero,
+			CacheReadCost:          decimal.Zero,
+			ImageOutputCost:        decimal.Zero,
+			EndClass:               abortEndClass,
+			UsageSource:            abortUsageSource,
+			PendingReconciliation:  false,
+			StreamState:            abortAttempt.State.DBValue(),
+			DeliveredTokenCount:    0,
+			StreamTerminatedReason: nullableString(abortAttempt.StreamTerminatedReason),
+			RoutingReason:          []byte("{}"),
+			ProtocolLoss:           []byte("[]"),
+			RequestedAt:            pgTimestamp(time.Now().UTC()),
+			RequestedModel:         requestedModel,
 		}
 		if err := s.insertUsageRecordOrDLQ(ctx, tx, qtx, usageParams, "abort_usage_record_insert_failed"); err != nil {
 			return err
@@ -402,16 +419,19 @@ func (s *DefaultSettler) enqueueBillingEventReplica(ctx context.Context, tx pgx.
 		return fmt.Errorf("billing: replica intent configured without DLQ store")
 	}
 	payload, err := json.Marshal(dlq.BillingEventReplicaPayload{
-		BillingEventID:   row.ID,
-		TenantID:         params.TenantID,
-		ClaimID:          params.ClaimID,
-		EventType:        params.EventType,
-		ActualCost:       params.ActualCost.StringFixed(8),
-		ActualCostSigned: params.ActualCostSigned.StringFixed(8),
-		EndClass:         params.EndClass,
-		UsageSource:      params.UsageSource,
-		Fingerprint:      params.Fingerprint,
-		OccurredAt:       timestampString(row.OccurredAt),
+		BillingEventID:         row.ID,
+		TenantID:               params.TenantID,
+		ClaimID:                params.ClaimID,
+		EventType:              params.EventType,
+		ActualCost:             params.ActualCost.StringFixed(8),
+		ActualCostSigned:       params.ActualCostSigned.StringFixed(8),
+		EndClass:               params.EndClass,
+		UsageSource:            params.UsageSource,
+		StreamState:            params.StreamState,
+		DeliveredTokenCount:    params.DeliveredTokenCount,
+		StreamTerminatedReason: params.StreamTerminatedReason,
+		Fingerprint:            params.Fingerprint,
+		OccurredAt:             timestampString(row.OccurredAt),
 	})
 	if err != nil {
 		return fmt.Errorf("billing: marshal billing replica payload: %w", err)
@@ -437,42 +457,45 @@ func (s *DefaultSettler) enqueueBillingEventReplica(ctx context.Context, tx pgx.
 
 func marshalUsageRecordPayload(params db.InsertUsageRecordParams) (json.RawMessage, error) {
 	payload := dlq.UsageRecordPayload{
-		TenantID:              params.TenantID,
-		ClaimID:               params.ClaimID,
-		APIKeyID:              params.APIKeyID,
-		UserID:                params.UserID,
-		ProviderAccountID:     params.ProviderAccountID,
-		AcquisitionToken:      pgUUIDString(params.AcquisitionToken),
-		AttemptSeq:            params.AttemptSeq,
-		TokensInput:           params.TokensInput,
-		TokensOutput:          params.TokensOutput,
-		CacheCreationTokens:   params.CacheCreationTokens,
-		CacheReadTokens:       params.CacheReadTokens,
-		CacheCreation5mTokens: params.CacheCreation5mTokens,
-		CacheCreation1hTokens: params.CacheCreation1hTokens,
-		ImageOutputTokens:     params.ImageOutputTokens,
-		ActualCost:            params.ActualCost.StringFixed(8),
-		InputCost:             params.InputCost.StringFixed(8),
-		OutputCost:            params.OutputCost.StringFixed(8),
-		CacheCreationCost:     params.CacheCreationCost.StringFixed(8),
-		CacheReadCost:         params.CacheReadCost.StringFixed(8),
-		ImageOutputCost:       params.ImageOutputCost.StringFixed(8),
-		EndClass:              params.EndClass,
-		UsageSource:           params.UsageSource,
-		ConfidenceScore:       numericString(params.ConfidenceScore),
-		PendingReconciliation: params.PendingReconciliation,
-		DrainOutcome:          params.DrainOutcome,
-		RoutingReason:         json.RawMessage(jsonOrEmptyObject(params.RoutingReason)),
-		ProtocolLoss:          json.RawMessage(jsonOrEmptyArray(params.ProtocolLoss)),
-		RequestedAt:           timestampString(params.RequestedAt),
-		UpstreamRequestAt:     timestampStringPtr(params.UpstreamRequestAt),
-		FirstByteAt:           timestampStringPtr(params.FirstByteAt),
-		FirstEventAt:          timestampStringPtr(params.FirstEventAt),
-		LastEventAt:           timestampStringPtr(params.LastEventAt),
-		RequestedModel:        params.RequestedModel,
-		UpstreamModel:         params.UpstreamModel,
-		Stream:                params.Stream,
-		SnapshotVersion:       params.SnapshotVersion,
+		TenantID:               params.TenantID,
+		ClaimID:                params.ClaimID,
+		APIKeyID:               params.APIKeyID,
+		UserID:                 params.UserID,
+		ProviderAccountID:      params.ProviderAccountID,
+		AcquisitionToken:       pgUUIDString(params.AcquisitionToken),
+		AttemptSeq:             params.AttemptSeq,
+		TokensInput:            params.TokensInput,
+		TokensOutput:           params.TokensOutput,
+		CacheCreationTokens:    params.CacheCreationTokens,
+		CacheReadTokens:        params.CacheReadTokens,
+		CacheCreation5mTokens:  params.CacheCreation5mTokens,
+		CacheCreation1hTokens:  params.CacheCreation1hTokens,
+		ImageOutputTokens:      params.ImageOutputTokens,
+		ActualCost:             params.ActualCost.StringFixed(8),
+		InputCost:              params.InputCost.StringFixed(8),
+		OutputCost:             params.OutputCost.StringFixed(8),
+		CacheCreationCost:      params.CacheCreationCost.StringFixed(8),
+		CacheReadCost:          params.CacheReadCost.StringFixed(8),
+		ImageOutputCost:        params.ImageOutputCost.StringFixed(8),
+		EndClass:               params.EndClass,
+		UsageSource:            params.UsageSource,
+		ConfidenceScore:        numericString(params.ConfidenceScore),
+		PendingReconciliation:  params.PendingReconciliation,
+		StreamState:            params.StreamState,
+		DeliveredTokenCount:    params.DeliveredTokenCount,
+		StreamTerminatedReason: params.StreamTerminatedReason,
+		DrainOutcome:           params.DrainOutcome,
+		RoutingReason:          json.RawMessage(jsonOrEmptyObject(params.RoutingReason)),
+		ProtocolLoss:           json.RawMessage(jsonOrEmptyArray(params.ProtocolLoss)),
+		RequestedAt:            timestampString(params.RequestedAt),
+		UpstreamRequestAt:      timestampStringPtr(params.UpstreamRequestAt),
+		FirstByteAt:            timestampStringPtr(params.FirstByteAt),
+		FirstEventAt:           timestampStringPtr(params.FirstEventAt),
+		LastEventAt:            timestampStringPtr(params.LastEventAt),
+		RequestedModel:         params.RequestedModel,
+		UpstreamModel:          params.UpstreamModel,
+		Stream:                 params.Stream,
+		SnapshotVersion:        params.SnapshotVersion,
 	}
 	raw, err := json.Marshal(payload)
 	return json.RawMessage(raw), err
@@ -532,6 +555,20 @@ func coalesceInt32(v, fallback int32) int32 {
 		return v
 	}
 	return fallback
+}
+
+func outputTokensForAttempt(draft gateway.UsageRecordDraft, attempt Attempt) int64 {
+	output := int64(draft.TokensOutput)
+	if attempt.DeliveredTokenCount > output {
+		output = attempt.DeliveredTokenCount
+	}
+	if output < 0 {
+		return 0
+	}
+	if output > int64(^uint32(0)>>1) {
+		return int64(^uint32(0) >> 1)
+	}
+	return output
 }
 
 func jsonOrEmptyObject(v []byte) []byte {

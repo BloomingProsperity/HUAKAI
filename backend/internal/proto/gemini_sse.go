@@ -38,6 +38,7 @@ type GeminiUpstreamState struct {
 	GeneratedToolCallSeq  int
 	AccumulatedContent    string
 	AccumulatedUsage      CanonicalUsage
+	DeliveredChunkCount   int64
 	CachedContentTokens   int
 	UsageEmitted          bool
 	LastStopReason        CanonicalStopReason
@@ -217,6 +218,7 @@ func geminiPartToCanonicalEvents(part geminiPart, state *GeminiUpstreamState) ([
 
 	if part.FunctionCall != nil {
 		events = appendGeminiOpenBlockStops(events, state)
+		state.DeliveredChunkCount++
 		index := state.NextBlockIndex
 		state.NextBlockIndex++
 		callID, idLosses := geminiCanonicalCallID(part.FunctionCall.ID, state)
@@ -253,6 +255,7 @@ func geminiPartToCanonicalEvents(part geminiPart, state *GeminiUpstreamState) ([
 	}
 
 	state.AccumulatedContent += *part.Text
+	state.DeliveredChunkCount++
 	events = append(events, CanonicalEvent{
 		Type:  "content_block_delta",
 		Index: state.TextBlockIndex,

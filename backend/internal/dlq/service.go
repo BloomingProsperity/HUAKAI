@@ -49,6 +49,13 @@ func (s *Service) Register(kind EventKind, h Handler) {
 	s.handlers[kind] = h
 }
 
+func (s *Service) Enqueue(ctx context.Context, e Event) (int64, error) {
+	if s == nil || s.store == nil {
+		return 0, ErrStoreNotConfigured
+	}
+	return s.store.Enqueue(ctx, e)
+}
+
 func (s *Service) List(ctx context.Context, f ListFilter) ([]Record, error) {
 	if s == nil || s.store == nil {
 		return nil, ErrStoreNotConfigured

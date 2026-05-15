@@ -141,6 +141,9 @@ SELECT
     actual_cost_signed,
     end_class,
     usage_source,
+    stream_state,
+    delivered_token_count,
+    stream_terminated_reason,
     fingerprint,
     occurred_at
 FROM billing_events
@@ -158,9 +161,25 @@ type ListBillingEventsByTenantParams struct {
 	PageLimit       int32  `db:"page_limit" json:"page_limit"`
 }
 
+type ListBillingEventsByTenantRow struct {
+	ID                     int64              `db:"id" json:"id"`
+	TenantID               int64              `db:"tenant_id" json:"tenant_id"`
+	ClaimID                int64              `db:"claim_id" json:"claim_id"`
+	EventType              string             `db:"event_type" json:"event_type"`
+	ActualCost             decimal.Decimal    `db:"actual_cost" json:"actual_cost"`
+	ActualCostSigned       decimal.Decimal    `db:"actual_cost_signed" json:"actual_cost_signed"`
+	EndClass               *string            `db:"end_class" json:"end_class"`
+	UsageSource            *string            `db:"usage_source" json:"usage_source"`
+	StreamState            int16              `db:"stream_state" json:"stream_state"`
+	DeliveredTokenCount    int64              `db:"delivered_token_count" json:"delivered_token_count"`
+	StreamTerminatedReason *string            `db:"stream_terminated_reason" json:"stream_terminated_reason"`
+	Fingerprint            string             `db:"fingerprint" json:"fingerprint"`
+	OccurredAt             pgtype.Timestamptz `db:"occurred_at" json:"occurred_at"`
+}
+
 // Audit-grade event stream for one tenant. event_type filter optional;
 // pass empty string to disable filter.
-func (q *Queries) ListBillingEventsByTenant(ctx context.Context, arg ListBillingEventsByTenantParams) ([]BillingEvent, error) {
+func (q *Queries) ListBillingEventsByTenant(ctx context.Context, arg ListBillingEventsByTenantParams) ([]ListBillingEventsByTenantRow, error) {
 	rows, err := q.db.Query(ctx, listBillingEventsByTenant,
 		arg.TenantID,
 		arg.EventTypeFilter,
@@ -171,9 +190,9 @@ func (q *Queries) ListBillingEventsByTenant(ctx context.Context, arg ListBilling
 		return nil, err
 	}
 	defer rows.Close()
-	var items []BillingEvent
+	var items []ListBillingEventsByTenantRow
 	for rows.Next() {
-		var i BillingEvent
+		var i ListBillingEventsByTenantRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TenantID,
@@ -183,6 +202,9 @@ func (q *Queries) ListBillingEventsByTenant(ctx context.Context, arg ListBilling
 			&i.ActualCostSigned,
 			&i.EndClass,
 			&i.UsageSource,
+			&i.StreamState,
+			&i.DeliveredTokenCount,
+			&i.StreamTerminatedReason,
 			&i.Fingerprint,
 			&i.OccurredAt,
 		); err != nil {
@@ -214,6 +236,9 @@ SELECT
     end_class,
     usage_source,
     pending_reconciliation,
+    stream_state,
+    delivered_token_count,
+    stream_terminated_reason,
     requested_model,
     upstream_model,
     requested_at,
@@ -233,26 +258,29 @@ type ListUsageByTenantParams struct {
 }
 
 type ListUsageByTenantRow struct {
-	ID                    int64              `db:"id" json:"id"`
-	TenantID              int64              `db:"tenant_id" json:"tenant_id"`
-	ClaimID               int64              `db:"claim_id" json:"claim_id"`
-	APIKeyID              int64              `db:"api_key_id" json:"api_key_id"`
-	UserID                int64              `db:"user_id" json:"user_id"`
-	ProviderAccountID     int64              `db:"provider_account_id" json:"provider_account_id"`
-	AttemptSeq            int32              `db:"attempt_seq" json:"attempt_seq"`
-	TokensInput           int32              `db:"tokens_input" json:"tokens_input"`
-	TokensOutput          int32              `db:"tokens_output" json:"tokens_output"`
-	CacheCreationTokens   int32              `db:"cache_creation_tokens" json:"cache_creation_tokens"`
-	CacheReadTokens       int32              `db:"cache_read_tokens" json:"cache_read_tokens"`
-	ActualCost            decimal.Decimal    `db:"actual_cost" json:"actual_cost"`
-	EndClass              string             `db:"end_class" json:"end_class"`
-	UsageSource           string             `db:"usage_source" json:"usage_source"`
-	PendingReconciliation bool               `db:"pending_reconciliation" json:"pending_reconciliation"`
-	RequestedModel        string             `db:"requested_model" json:"requested_model"`
-	UpstreamModel         *string            `db:"upstream_model" json:"upstream_model"`
-	RequestedAt           pgtype.Timestamptz `db:"requested_at" json:"requested_at"`
-	SettledAt             pgtype.Timestamptz `db:"settled_at" json:"settled_at"`
-	Stream                bool               `db:"stream" json:"stream"`
+	ID                     int64              `db:"id" json:"id"`
+	TenantID               int64              `db:"tenant_id" json:"tenant_id"`
+	ClaimID                int64              `db:"claim_id" json:"claim_id"`
+	APIKeyID               int64              `db:"api_key_id" json:"api_key_id"`
+	UserID                 int64              `db:"user_id" json:"user_id"`
+	ProviderAccountID      int64              `db:"provider_account_id" json:"provider_account_id"`
+	AttemptSeq             int32              `db:"attempt_seq" json:"attempt_seq"`
+	TokensInput            int32              `db:"tokens_input" json:"tokens_input"`
+	TokensOutput           int32              `db:"tokens_output" json:"tokens_output"`
+	CacheCreationTokens    int32              `db:"cache_creation_tokens" json:"cache_creation_tokens"`
+	CacheReadTokens        int32              `db:"cache_read_tokens" json:"cache_read_tokens"`
+	ActualCost             decimal.Decimal    `db:"actual_cost" json:"actual_cost"`
+	EndClass               string             `db:"end_class" json:"end_class"`
+	UsageSource            string             `db:"usage_source" json:"usage_source"`
+	PendingReconciliation  bool               `db:"pending_reconciliation" json:"pending_reconciliation"`
+	StreamState            int16              `db:"stream_state" json:"stream_state"`
+	DeliveredTokenCount    int64              `db:"delivered_token_count" json:"delivered_token_count"`
+	StreamTerminatedReason *string            `db:"stream_terminated_reason" json:"stream_terminated_reason"`
+	RequestedModel         string             `db:"requested_model" json:"requested_model"`
+	UpstreamModel          *string            `db:"upstream_model" json:"upstream_model"`
+	RequestedAt            pgtype.Timestamptz `db:"requested_at" json:"requested_at"`
+	SettledAt              pgtype.Timestamptz `db:"settled_at" json:"settled_at"`
+	Stream                 bool               `db:"stream" json:"stream"`
 }
 
 // F-OBS-001 read-only query surface for the admin/audit lane.
@@ -288,6 +316,9 @@ func (q *Queries) ListUsageByTenant(ctx context.Context, arg ListUsageByTenantPa
 			&i.EndClass,
 			&i.UsageSource,
 			&i.PendingReconciliation,
+			&i.StreamState,
+			&i.DeliveredTokenCount,
+			&i.StreamTerminatedReason,
 			&i.RequestedModel,
 			&i.UpstreamModel,
 			&i.RequestedAt,

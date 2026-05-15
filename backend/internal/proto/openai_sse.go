@@ -23,20 +23,21 @@ type OpenAISSEEvent struct {
 
 // OpenAIUpstreamState 累计 OpenAI 流式 chunk 的跨事件状态。
 type OpenAIUpstreamState struct {
-	MessageID          string
-	Model              string
-	MessageStarted     bool
-	Terminated         bool
-	TextBlockStarted   bool
-	TextBlockOpen      bool
-	TextBlockIndex     int
-	NextBlockIndex     int
-	AccumulatedContent string
-	AccumulatedUsage   CanonicalUsage
-	UsageEmitted       bool
-	LastStopReason     CanonicalStopReason
-	RawFinishReason    string
-	ToolCalls          map[int]*OpenAIToolCallState
+	MessageID           string
+	Model               string
+	MessageStarted      bool
+	Terminated          bool
+	TextBlockStarted    bool
+	TextBlockOpen       bool
+	TextBlockIndex      int
+	NextBlockIndex      int
+	AccumulatedContent  string
+	AccumulatedUsage    CanonicalUsage
+	DeliveredChunkCount int64
+	UsageEmitted        bool
+	LastStopReason      CanonicalStopReason
+	RawFinishReason     string
+	ToolCalls           map[int]*OpenAIToolCallState
 	// AccountID（Track P）: forwarder 注入. cachemetrics.ObserveByAccount 用。
 	AccountID int64
 	// PrefixHash（PASR-lite A4）: forwarder 注入 ForwardRequest.SessionHash;
@@ -258,6 +259,7 @@ func openAIChunkToCanonicalEvents(chunk openAIChatCompletionChunk, state *OpenAI
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
 			events = append(events, ensureOpenAITextBlock(state)...)
 			state.AccumulatedContent += *choice.Delta.Content
+			state.DeliveredChunkCount++
 			events = append(events, CanonicalEvent{
 				Type:  "content_block_delta",
 				Index: state.TextBlockIndex,
@@ -361,6 +363,7 @@ func openAIToolCallDeltaEvents(calls []openAIStreamToolCall, state *OpenAIUpstre
 		}
 		if delta.Function.Arguments != nil && *delta.Function.Arguments != "" {
 			call.Arguments += *delta.Function.Arguments
+			state.DeliveredChunkCount++
 			events = append(events, CanonicalEvent{
 				Type:  "content_block_delta",
 				Index: call.BlockIndex,
