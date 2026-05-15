@@ -240,22 +240,24 @@ fn x509_name(common_name: &str) -> Result<X509Name, String> {
 }
 
 fn set_validity_and_serial(certificate: &mut X509Builder) -> Result<(), String> {
+    let not_before = Asn1Time::days_from_now(0).map_err(|error| error.to_string())?;
     certificate
-        .set_not_before(&Asn1Time::days_from_now(0).map_err(|error| error.to_string())?)
+        .set_not_before(&not_before)
         .map_err(|error| error.to_string())?;
+
+    let not_after = Asn1Time::days_from_now(1).map_err(|error| error.to_string())?;
     certificate
-        .set_not_after(&Asn1Time::days_from_now(1).map_err(|error| error.to_string())?)
+        .set_not_after(&not_after)
         .map_err(|error| error.to_string())?;
 
     let mut serial = BigNum::new().map_err(|error| error.to_string())?;
     serial
         .rand(128, MsbOption::MAYBE_ZERO, false)
         .map_err(|error| error.to_string())?;
+    let serial_asn1 = serial
+        .to_asn1_integer()
+        .map_err(|error| error.to_string())?;
     certificate
-        .set_serial_number(
-            &serial
-                .to_asn1_integer()
-                .map_err(|error| error.to_string())?,
-        )
+        .set_serial_number(&serial_asn1)
         .map_err(|error| error.to_string())
 }
