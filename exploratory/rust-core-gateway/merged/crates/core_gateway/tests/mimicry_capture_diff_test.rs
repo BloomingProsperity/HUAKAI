@@ -1,7 +1,10 @@
 mod common;
 
 use common::{
-    capture_diff::{FieldStatus, ListFieldStatus, diff_capture_against_profile, diff_has_mismatch},
+    capture_diff::{
+        ExtensionsListStatus, FieldStatus, ListFieldStatus, diff_capture_against_profile,
+        diff_has_mismatch,
+    },
     tls_capture::CapturedClientHello,
 };
 use core_gateway::mimicry::{
@@ -31,7 +34,7 @@ fn codex_known_gap_profile_is_blocked_but_diff_still_completes() {
 }
 
 #[test]
-fn kiro_sample_set_profile_reports_set_match_and_set_mismatch() {
+fn kiro_sample_set_profile_reports_extension_subset_and_list_set_statuses() {
     let profile = load_builtin_profile(BuiltinProfile::KiroCli).expect("kiro profile 应加载");
     assert_eq!(
         profile.match_policy(),
@@ -44,8 +47,14 @@ fn kiro_sample_set_profile_reports_set_match_and_set_mismatch() {
         "kiro rustls profile 不应 blocked"
     );
     assert!(
-        matches!(matching_diff.extensions, ListFieldStatus::SetMatch { .. }),
-        "SampleSetRandomized 应忽略 extension 顺序，只核验集合"
+        matches!(
+            &matching_diff.extensions,
+            ExtensionsListStatus::Subset {
+                value: _,
+                unexpected: extras
+            } if extras.is_empty()
+        ),
+        "extensions 的 SampleSetRandomized SetMatch 等价为 Subset {{ unexpected: empty }}"
     );
     assert!(
         matches!(
@@ -53,6 +62,20 @@ fn kiro_sample_set_profile_reports_set_match_and_set_mismatch() {
             ListFieldStatus::SetMatch { .. }
         ),
         "signature_algorithms 集合相同应为 SetMatch"
+    );
+
+    let mut extension_extra = fixture_capture();
+    extension_extra.extensions.push(65000);
+    let extension_extra_diff = diff_capture_against_profile(&extension_extra, &profile);
+    match &extension_extra_diff.extensions {
+        ExtensionsListStatus::Subset { unexpected, .. } => {
+            assert_eq!(unexpected, &vec![65000]);
+        }
+        status => panic!("extension wire extra 应输出 Subset 而不是 mismatch，实际: {status:?}"),
+    }
+    assert!(
+        !diff_has_mismatch(&extension_extra_diff),
+        "extension extras 只记录为 unexpected，不应让 SampleSetRandomized diff 失败"
     );
 
     let mut mismatched = fixture_capture();
@@ -93,8 +116,8 @@ fn exact_stable_profile_positive_verifies_every_field_status() {
         }
     );
     assert!(
-        matches!(diff.extensions, ListFieldStatus::OrderMismatch { .. }),
-        "ExactStable 应把相同集合但不同顺序标记为 OrderMismatch"
+        matches!(&diff.extensions, ExtensionsListStatus::WrongOrder { .. }),
+        "ExactStable 应把相同集合但不同顺序标记为 WrongOrder"
     );
     assert_eq!(
         diff.supported_groups,
@@ -149,9 +172,10 @@ fn unsupported_template_profile_is_blocked_but_diff_still_completes() {
         }
     );
     assert_eq!(
-        diff.extensions,
-        ListFieldStatus::OrderedMatch {
-            value: profile.tls.extensions.clone()
+        &diff.extensions,
+        &ExtensionsListStatus::Subset {
+            value: profile.tls.extensions.clone(),
+            unexpected: Vec::new()
         }
     );
     assert_eq!(
