@@ -2,13 +2,21 @@
 
 // L2-A4 smoke: 只验证 OpenSSL client adapter 能完成本地 TLS 握手。
 
+mod common;
+
 use std::{
     net::{SocketAddr, TcpListener, TcpStream as StdTcpStream},
     thread,
     time::{Duration, Instant},
 };
 
-use core_gateway::mimicry::openssl_adapter::OpenSslMimicryAdapter;
+use common::{
+    capture_diff::{ListFieldStatus, diff_capture_against_profile},
+    tls_capture::spawn_capture_once,
+};
+use core_gateway::mimicry::{
+    BuiltinProfile, load_builtin_profile, openssl_adapter::OpenSslMimicryAdapter,
+};
 use openssl::{
     asn1::Asn1Time,
     bn::{BigNum, MsbOption},
@@ -42,6 +50,60 @@ async fn smoke_test_openssl_adapter_connects_to_local_tls_server() {
         .join()
         .expect("TLS test server thread 不应 panic")
         .expect("TLS test server 应完成一次握手");
+}
+
+#[tokio::test]
+async fn profile_driven_cipher_and_alpn_capture_diff() {
+    let mut codex_profile =
+        load_builtin_profile(BuiltinProfile::CodexCli).expect("codex profile 应加载");
+    if codex_profile.tls.alpn_protocols.is_empty() {
+        // 当前 Codex 抓包模板未观察到 ALPN；本 isolated adapter test 补一个非空族来覆盖注入路径。
+        codex_profile.tls.alpn_protocols = vec!["h2".to_owned(), "http/1.1".to_owned()];
+    }
+    let alpn_wire = alpn_wire_format_for_test(&codex_profile.tls.alpn_protocols);
+    assert_eq!(
+        alpn_wire, b"\x02h2\x08http/1.1",
+        "测试 ALPN wire format 应为 h2 + http/1.1 的 length-prefix bytes"
+    );
+
+    let bind_addr: SocketAddr = "127.0.0.1:0"
+        .parse()
+        .expect("本地 ephemeral capture 地址应合法");
+    let (capture_addr, capture_task) = spawn_capture_once(bind_addr)
+        .await
+        .expect("capture listener 应可启动");
+    let adapter = OpenSslMimicryAdapter::new_with_profile(&codex_profile)
+        .expect("OpenSSL adapter 应能应用 profile cipher_suites 与 ALPN");
+
+    let connect_result =
+        tokio::time::timeout(TEST_TIMEOUT, adapter.connect(capture_addr, "localhost"))
+            .await
+            .expect("OpenSSL profile capture connect 不应超时");
+    assert!(
+        connect_result.is_err(),
+        "capture helper 只读取 ClientHello 后关闭连接，不应完成 TLS 握手"
+    );
+
+    let captured = tokio::time::timeout(TEST_TIMEOUT, capture_task)
+        .await
+        .expect("capture task 应在本地请求失败后结束")
+        .expect("capture task 不应 panic")
+        .expect("ClientHello 应能按 wire length 成功解析");
+    let diff = diff_capture_against_profile(&captured, &codex_profile);
+
+    eprintln!(
+        "profile_driven_cipher_and_alpn_capture_diff captured={captured:?} diff={diff:?} alpn_wire_len={}",
+        alpn_wire.len()
+    );
+
+    assert!(
+        matches!(&diff.cipher_suites, ListFieldStatus::OrderedMatch { .. }),
+        "cipher_suites 应与 Codex profile 顺序一致，实际 diff: {diff:?}"
+    );
+    assert!(
+        matches!(&diff.alpn_protocols, ListFieldStatus::OrderedMatch { .. }),
+        "alpn_protocols 应与测试 profile 顺序一致，实际 diff: {diff:?}"
+    );
 }
 
 struct LocalTlsServer {
@@ -260,4 +322,14 @@ fn set_validity_and_serial(certificate: &mut X509Builder) -> Result<(), String> 
     certificate
         .set_serial_number(&serial_asn1)
         .map_err(|error| error.to_string())
+}
+
+fn alpn_wire_format_for_test(protocols: &[String]) -> Vec<u8> {
+    let mut wire_format = Vec::new();
+    for protocol in protocols {
+        let bytes = protocol.as_bytes();
+        wire_format.push(bytes.len() as u8);
+        wire_format.extend(bytes);
+    }
+    wire_format
 }
