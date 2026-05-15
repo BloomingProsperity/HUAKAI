@@ -216,6 +216,37 @@ async fn profile_driven_ec_point_formats_capture_diff() {
     );
 }
 
+#[tokio::test]
+async fn profile_driven_extension_22_capture_diff() {
+    let profile = openssl_native_ec_point_formats_profile();
+    let adapter = OpenSslMimicryAdapter::new_with_profile(&profile)
+        .expect("OpenSSL adapter 应能应用包含 extension 22 的 profile");
+    assert!(
+        adapter.preflight_passed(),
+        "new_with_profile 必须记录 extension 22 runtime preflight provenance"
+    );
+
+    let diff = capture_profile_diff(&adapter, &profile, "extension_22").await;
+
+    match &diff.extensions {
+        ListFieldStatus::OrderedMatch { value } => {
+            assert!(
+                value.contains(&22),
+                "extensions OrderedMatch 应包含 encrypt_then_mac 22，实际 diff: {diff:?}"
+            );
+        }
+        ListFieldStatus::OrderMismatch { expected, actual } => {
+            assert!(
+                expected.contains(&22) && actual.contains(&22),
+                "extensions diff 必须同时暴露模板和 capture 中的 encrypt_then_mac 22，实际 diff: {diff:?}"
+            );
+        }
+        status => {
+            panic!("ExactStable OpenSSL profile 应输出有序 extensions diff，实际: {status:?}")
+        }
+    }
+}
+
 #[test]
 fn profile_driven_ec_point_formats_preflight_records_provenance() {
     let profile = openssl_native_ec_point_formats_profile();
@@ -227,6 +258,37 @@ fn profile_driven_ec_point_formats_preflight_records_provenance() {
         adapter.preflight_passed(),
         "OpenSSL adapter 应记录 new_with_profile 已通过 ec_point_formats preflight"
     );
+}
+
+#[test]
+fn profile_driven_extension_22_preflight_provenance() {
+    let profile = openssl_native_ec_point_formats_profile();
+
+    let adapter = OpenSslMimicryAdapter::new_with_profile(&profile)
+        .expect("OpenSSL native encrypt_then_mac runtime preflight 必须通过");
+
+    assert!(
+        adapter.preflight_passed(),
+        "OpenSSL adapter 应记录 new_with_profile 已通过 extension 22 preflight"
+    );
+}
+
+#[test]
+fn profile_driven_extension_22_missing_fails_fast() {
+    let profile = profile_without_encrypt_then_mac_extension();
+
+    let error = OpenSslMimicryAdapter::new_with_profile(&profile)
+        .expect_err("缺少 extension 22 的 OpenSSL profile 必须 fail-fast，不能构造 adapter");
+
+    match error {
+        OpenSslAdapterError::UnsupportedExtension { id: 22, reason } => {
+            assert!(
+                reason.contains("cannot disable native ETM extension"),
+                "extension 22 fail-fast 必须说明 OpenSSL public API 无 disable 路径，实际: {reason}"
+            );
+        }
+        error => panic!("缺少 extension 22 应返回 UnsupportedExtension 22，实际: {error:?}"),
+    }
 }
 
 #[test]
@@ -605,6 +667,12 @@ fn openssl_native_ec_point_formats_profile() -> FingerprintProfile {
 fn profile_with_ec_point_formats(ec_point_formats: Vec<u8>) -> FingerprintProfile {
     let mut profile = openssl_native_ec_point_formats_profile();
     profile.tls.ec_point_formats = ec_point_formats;
+    profile
+}
+
+fn profile_without_encrypt_then_mac_extension() -> FingerprintProfile {
+    let mut profile = openssl_native_ec_point_formats_profile();
+    profile.tls.extensions.retain(|extension| *extension != 22);
     profile
 }
 

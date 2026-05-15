@@ -172,7 +172,7 @@ fn mimicry_profile_codex_known_gap_blocks_capture_pass_with_field_diffs() {
         "codex KnownGapBlocked 必须携带字段级 diff，不能只返回 mismatch"
     );
 
-    assert_gap_field(&gaps, "extensions", "22 encrypt_then_mac");
+    assert_gap_field(&gaps, "extensions", "capture diff");
     assert_gap_field(&gaps, "supported_groups", "4588");
     assert_gap_field(&gaps, "signature_algorithms", "26 template ids");
 
