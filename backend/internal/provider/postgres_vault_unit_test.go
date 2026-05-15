@@ -7,6 +7,8 @@ package provider
 import (
 	"errors"
 	"testing"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
 func TestMapCredential_SessionHappyPath(t *testing.T) {
@@ -65,5 +67,19 @@ func TestMapCredential_UnknownAccountTypeStillRejected(t *testing.T) {
 	_, err := mapCredential("totally_unknown", []byte(`{}`))
 	if !errors.Is(err, ErrCredentialFormat) {
 		t.Errorf("未知 account_type 应返回 ErrCredentialFormat，得到 %v", err)
+	}
+}
+
+func TestMapRuntimeMaterialFromAccountCredentials(t *testing.T) {
+	cred := mapRuntimeMaterial(credentialstore.RuntimeMaterial{
+		Kind:  credentialstore.RuntimeUpstreamPassthrough,
+		Value: "Bearer oauth-token",
+		Extra: map[string]string{"auth_header": "Authorization"},
+	})
+	if cred.Type != CredentialTypeUpstreamPassthrough || cred.Value != "Bearer oauth-token" {
+		t.Fatalf("cred=%+v", cred)
+	}
+	if cred.Extra["auth_header"] != "Authorization" {
+		t.Fatalf("extra=%v", cred.Extra)
 	}
 }

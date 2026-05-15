@@ -1,0 +1,781 @@
+package credentialstore
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/db"
+)
+
+const RefreshWindow = 15 * time.Minute
+
+var ErrCredentialNotFound = errors.New("credentialstore: account credential not found")
+
+type CreateCredentialInput struct {
+	TenantID          int64
+	ProviderAccountID int64
+	Vendor            string
+	AuthMode          string
+	Payload           []byte
+	ActorID           string
+}
+
+type RotateCredentialInput struct {
+	TenantID          int64
+	ProviderAccountID int64
+	CredentialID      int64
+	Payload           []byte
+	ActorID           string
+}
+
+type CredentialRecord struct {
+	ID                      int64
+	TenantID                int64
+	ProviderAccountID       int64
+	Vendor                  string
+	AuthMode                string
+	State                   string
+	CredentialVersion       int32
+	EncryptedPayload        []byte
+	EncryptionScheme        string
+	KeyID                   string
+	Nonce                   []byte
+	AADHash                 string
+	PayloadFingerprint      *string
+	RefreshTokenFingerprint *string
+	AccessExpiresAt         time.Time
+	RefreshExpiresAt        time.Time
+	RefreshBeforeAt         time.Time
+	GraceUntil              time.Time
+	LastRefreshAt           time.Time
+	LastRefreshOutcome      *string
+	FailureClass            *string
+	FailureCount            int32
+	NextAttemptAt           time.Time
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
+	DeletedAt               time.Time
+	PlaintextPayload        []byte
+}
+
+type CredentialMetadata struct {
+	ID                 int64      `json:"id"`
+	TenantID           int64      `json:"tenant_id"`
+	ProviderAccountID  int64      `json:"provider_account_id"`
+	Vendor             string     `json:"vendor"`
+	AuthMode           string     `json:"auth_mode"`
+	State              string     `json:"state"`
+	Version            int32      `json:"credential_version"`
+	AccessExpiresAt    *time.Time `json:"access_expires_at,omitempty"`
+	RefreshBeforeAt    *time.Time `json:"refresh_before_at,omitempty"`
+	LastRefreshAt      *time.Time `json:"last_refresh_at,omitempty"`
+	LastRefreshOutcome *string    `json:"last_refresh_outcome,omitempty"`
+	FailureClass       *string    `json:"failure_class,omitempty"`
+	FailureCount       int32      `json:"failure_count"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+}
+
+type Store struct {
+	db       db.DBTX
+	cipher   *Cipher
+	keys     KeyProvider
+	registry *HandlerRegistry
+	now      func() time.Time
+}
+
+func NewStore(database db.DBTX, keys KeyProvider, registry *HandlerRegistry) *Store {
+	if registry == nil {
+		registry = DefaultHandlerRegistry()
+	}
+	return &Store{
+		db:       database,
+		cipher:   NewCipher(keys),
+		keys:     keys,
+		registry: registry,
+		now:      time.Now,
+	}
+}
+
+func (s *Store) WithDB(database db.DBTX) *Store {
+	cp := *s
+	cp.db = database
+	return &cp
+}
+
+func (s *Store) HandlerRegistry() *HandlerRegistry {
+	if s == nil || s.registry == nil {
+		return DefaultHandlerRegistry()
+	}
+	return s.registry
+}
+
+func (s *Store) Create(ctx context.Context, in CreateCredentialInput) (CredentialMetadata, error) {
+	if err := s.validateReady(); err != nil {
+		return CredentialMetadata{}, err
+	}
+	in.Vendor, in.AuthMode = Normalize(in.Vendor), Normalize(in.AuthMode)
+	handler, err := s.registry.MustLookup(in.Vendor, in.AuthMode)
+	if err != nil {
+		return CredentialMetadata{}, err
+	}
+	payload, err := normalizePayload(in.Payload)
+	if err != nil {
+		return CredentialMetadata{}, err
+	}
+	if err := handler.ValidatePayload(payload); err != nil {
+		return CredentialMetadata{}, err
+	}
+	prepared, err := s.prepareEnvelope(ctx, in.TenantID, in.ProviderAccountID, in.Vendor, in.AuthMode, 1, payload, handler)
+	if err != nil {
+		return CredentialMetadata{}, err
+	}
+	const q = `
+INSERT INTO account_credentials (
+    tenant_id, provider_account_id, vendor, auth_mode, state, credential_version,
+    encrypted_payload, encryption_scheme, key_id, nonce, aad_hash,
+    payload_fingerprint, refresh_token_fingerprint,
+    access_expires_at, refresh_expires_at, refresh_before_at,
+    created_by_actor, last_modified_by_actor
+) VALUES (
+    $1, $2, $3, $4, 'active', 1,
+    $5, $6, $7, $8, $9,
+    $10, $11,
+    $12, $13, $14,
+    NULLIF($15, ''), NULLIF($15, '')
+)
+RETURNING id, tenant_id, provider_account_id, vendor, auth_mode, state, credential_version,
+          access_expires_at, refresh_before_at, last_refresh_at, last_refresh_outcome,
+          failure_class, failure_count, created_at, updated_at`
+	var rec credentialMetadataRow
+	err = s.db.QueryRow(ctx, q,
+		in.TenantID, in.ProviderAccountID, in.Vendor, in.AuthMode,
+		prepared.env.Ciphertext, prepared.env.EncryptionScheme, prepared.env.KeyID, prepared.env.Nonce, prepared.env.AADHash,
+		prepared.payloadFingerprint, prepared.refreshFingerprint,
+		nullableTime(prepared.accessExpiresAt), nullableTime(prepared.refreshExpiresAt), nullableTime(prepared.refreshBeforeAt),
+		strings.TrimSpace(in.ActorID),
+	).Scan(&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State, &rec.Version,
+		&rec.AccessExpiresAt, &rec.RefreshBeforeAt, &rec.LastRefreshAt, &rec.LastRefreshOutcome,
+		&rec.FailureClass, &rec.FailureCount, &rec.CreatedAt, &rec.UpdatedAt)
+	if err != nil {
+		return CredentialMetadata{}, err
+	}
+	meta := rec.metadata()
+	_ = s.InsertAuditEvent(ctx, AuditEvent{
+		TenantID: in.TenantID, ProviderAccountID: in.ProviderAccountID, CredentialID: meta.ID,
+		EventType: "credential_created", Vendor: in.Vendor, AuthMode: in.AuthMode,
+		CredentialVersion: meta.Version, ActorID: strings.TrimSpace(in.ActorID),
+		Payload: map[string]any{"credentials_present": true},
+	})
+	return meta, nil
+}
+
+func (s *Store) Rotate(ctx context.Context, in RotateCredentialInput) (CredentialMetadata, error) {
+	if err := s.validateReady(); err != nil {
+		return CredentialMetadata{}, err
+	}
+	current, err := s.getRecord(ctx, in.TenantID, in.ProviderAccountID, in.CredentialID, false)
+	if err != nil {
+		return CredentialMetadata{}, err
+	}
+	handler, err := s.registry.MustLookup(current.Vendor, current.AuthMode)
+	if err != nil {
+		return CredentialMetadata{}, err
+	}
+	payload, err := normalizePayload(in.Payload)
+	if err != nil {
+		return CredentialMetadata{}, err
+	}
+	if err := handler.ValidatePayload(payload); err != nil {
+		return CredentialMetadata{}, err
+	}
+	nextVersion := current.CredentialVersion + 1
+	prepared, err := s.prepareEnvelope(ctx, current.TenantID, current.ProviderAccountID, current.Vendor, current.AuthMode, nextVersion, payload, handler)
+	if err != nil {
+		return CredentialMetadata{}, err
+	}
+	const q = `
+UPDATE account_credentials
+SET encrypted_payload = $1,
+    encryption_scheme = $2,
+    key_id = $3,
+    nonce = $4,
+    aad_hash = $5,
+    payload_fingerprint = $6,
+    refresh_token_fingerprint = $7,
+    access_expires_at = $8,
+    refresh_expires_at = $9,
+    refresh_before_at = $10,
+    state = 'active',
+    credential_version = credential_version + 1,
+    failure_class = NULL,
+    failure_count = 0,
+    next_attempt_at = NULL,
+    updated_at = NOW(),
+    last_modified_by_actor = NULLIF($11, '')
+WHERE id = $12
+  AND tenant_id = $13
+  AND provider_account_id = $14
+  AND deleted_at IS NULL
+  AND credential_version = $15
+RETURNING id, tenant_id, provider_account_id, vendor, auth_mode, state, credential_version,
+          access_expires_at, refresh_before_at, last_refresh_at, last_refresh_outcome,
+          failure_class, failure_count, created_at, updated_at`
+	var rec credentialMetadataRow
+	err = s.db.QueryRow(ctx, q,
+		prepared.env.Ciphertext, prepared.env.EncryptionScheme, prepared.env.KeyID, prepared.env.Nonce, prepared.env.AADHash,
+		prepared.payloadFingerprint, prepared.refreshFingerprint,
+		nullableTime(prepared.accessExpiresAt), nullableTime(prepared.refreshExpiresAt), nullableTime(prepared.refreshBeforeAt),
+		strings.TrimSpace(in.ActorID), current.ID, current.TenantID, current.ProviderAccountID, current.CredentialVersion,
+	).Scan(&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State, &rec.Version,
+		&rec.AccessExpiresAt, &rec.RefreshBeforeAt, &rec.LastRefreshAt, &rec.LastRefreshOutcome,
+		&rec.FailureClass, &rec.FailureCount, &rec.CreatedAt, &rec.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return CredentialMetadata{}, ErrCredentialNotFound
+		}
+		return CredentialMetadata{}, err
+	}
+	meta := rec.metadata()
+	_ = s.InsertAuditEvent(ctx, AuditEvent{
+		TenantID: current.TenantID, ProviderAccountID: current.ProviderAccountID, CredentialID: current.ID,
+		EventType: "credential_rotated", Vendor: current.Vendor, AuthMode: current.AuthMode,
+		CredentialVersion: meta.Version, ActorID: strings.TrimSpace(in.ActorID),
+		Payload: map[string]any{"credentials_present": true},
+	})
+	return meta, nil
+}
+
+func (s *Store) ListByAccount(ctx context.Context, tenantID, providerAccountID int64) ([]CredentialMetadata, error) {
+	if err := s.validateReady(); err != nil {
+		return nil, err
+	}
+	const q = `
+SELECT id, tenant_id, provider_account_id, vendor, auth_mode, state, credential_version,
+       access_expires_at, refresh_before_at, last_refresh_at, last_refresh_outcome,
+       failure_class, failure_count, created_at, updated_at
+FROM account_credentials
+WHERE tenant_id = $1
+  AND provider_account_id = $2
+  AND deleted_at IS NULL
+ORDER BY updated_at DESC, id DESC`
+	rows, err := s.db.Query(ctx, q, tenantID, providerAccountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []CredentialMetadata
+	for rows.Next() {
+		var rec credentialMetadataRow
+		if err := rows.Scan(&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State, &rec.Version,
+			&rec.AccessExpiresAt, &rec.RefreshBeforeAt, &rec.LastRefreshAt, &rec.LastRefreshOutcome,
+			&rec.FailureClass, &rec.FailureCount, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, rec.metadata())
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) SetState(ctx context.Context, tenantID, providerAccountID, credentialID int64, state, actorID string) error {
+	if err := s.validateReady(); err != nil {
+		return err
+	}
+	state = Normalize(state)
+	if !allowedState(state) {
+		return fmt.Errorf("%w: state %q", ErrInvalidPayload, state)
+	}
+	const q = `
+UPDATE account_credentials
+SET state = $1,
+    updated_at = NOW(),
+    last_modified_by_actor = NULLIF($2, '')
+WHERE id = $3
+  AND tenant_id = $4
+  AND provider_account_id = $5
+  AND deleted_at IS NULL
+RETURNING vendor, auth_mode, credential_version`
+	var vendor, authMode string
+	var version int32
+	if err := s.db.QueryRow(ctx, q, state, strings.TrimSpace(actorID), credentialID, tenantID, providerAccountID).Scan(&vendor, &authMode, &version); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrCredentialNotFound
+		}
+		return err
+	}
+	_ = s.InsertAuditEvent(ctx, AuditEvent{
+		TenantID: tenantID, ProviderAccountID: providerAccountID, CredentialID: credentialID,
+		EventType: "credential_disabled", Vendor: vendor, AuthMode: authMode,
+		CredentialVersion: version, ActorID: strings.TrimSpace(actorID),
+		Payload: map[string]any{"state": state},
+	})
+	return nil
+}
+
+func (s *Store) Delete(ctx context.Context, tenantID, providerAccountID, credentialID int64, actorID string) error {
+	if err := s.validateReady(); err != nil {
+		return err
+	}
+	const q = `
+UPDATE account_credentials
+SET deleted_at = COALESCE(deleted_at, NOW()),
+    state = 'revoked',
+    updated_at = NOW(),
+    last_modified_by_actor = NULLIF($1, '')
+WHERE id = $2
+  AND tenant_id = $3
+  AND provider_account_id = $4
+  AND deleted_at IS NULL
+RETURNING vendor, auth_mode, credential_version`
+	var vendor, authMode string
+	var version int32
+	if err := s.db.QueryRow(ctx, q, strings.TrimSpace(actorID), credentialID, tenantID, providerAccountID).Scan(&vendor, &authMode, &version); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrCredentialNotFound
+		}
+		return err
+	}
+	_ = s.InsertAuditEvent(ctx, AuditEvent{
+		TenantID: tenantID, ProviderAccountID: providerAccountID, CredentialID: credentialID,
+		EventType: "credential_deleted", Vendor: vendor, AuthMode: authMode,
+		CredentialVersion: version, ActorID: strings.TrimSpace(actorID),
+	})
+	return nil
+}
+
+func (s *Store) ResolveActive(ctx context.Context, providerAccountID int64) (CredentialRecord, error) {
+	if err := s.validateReady(); err != nil {
+		return CredentialRecord{}, err
+	}
+	const q = `
+SELECT ac.id, ac.tenant_id, ac.provider_account_id, ac.vendor, ac.auth_mode, ac.state,
+       ac.credential_version, ac.encrypted_payload, ac.encryption_scheme, ac.key_id,
+       ac.nonce, ac.aad_hash, ac.payload_fingerprint, ac.refresh_token_fingerprint,
+       ac.access_expires_at, ac.refresh_expires_at, ac.refresh_before_at, ac.grace_until,
+       ac.last_refresh_at, ac.last_refresh_outcome, ac.failure_class, ac.failure_count,
+       ac.next_attempt_at, ac.created_at, ac.updated_at, ac.deleted_at
+FROM account_credentials ac
+JOIN provider_accounts pa ON pa.id = ac.provider_account_id
+WHERE ac.provider_account_id = $1
+  AND ac.deleted_at IS NULL
+  AND pa.deleted_at IS NULL
+  AND pa.enabled
+  AND (
+      ac.state = 'active'
+      OR (ac.state = 'refreshing_with_grace' AND (ac.grace_until IS NULL OR ac.grace_until > NOW()))
+  )
+ORDER BY CASE ac.state WHEN 'active' THEN 0 ELSE 1 END, ac.updated_at DESC
+LIMIT 1`
+	rec, err := s.scanRecord(ctx, q, providerAccountID)
+	if err != nil {
+		return CredentialRecord{}, err
+	}
+	plaintext, err := s.decryptRecord(ctx, rec)
+	if err != nil {
+		return CredentialRecord{}, err
+	}
+	rec.PlaintextPayload = plaintext
+	_ = s.InsertAuditEvent(ctx, AuditEvent{
+		TenantID: rec.TenantID, ProviderAccountID: rec.ProviderAccountID, CredentialID: rec.ID,
+		EventType: "credential_resolved", Vendor: rec.Vendor, AuthMode: rec.AuthMode,
+		CredentialVersion: rec.CredentialVersion,
+		Payload:           map[string]any{"state": rec.State},
+	})
+	return rec, nil
+}
+
+func (s *Store) LoadForRefresh(ctx context.Context, providerAccountID int64) (CredentialRecord, error) {
+	if err := s.validateReady(); err != nil {
+		return CredentialRecord{}, err
+	}
+	const q = `
+SELECT ac.id, ac.tenant_id, ac.provider_account_id, ac.vendor, ac.auth_mode, ac.state,
+       ac.credential_version, ac.encrypted_payload, ac.encryption_scheme, ac.key_id,
+       ac.nonce, ac.aad_hash, ac.payload_fingerprint, ac.refresh_token_fingerprint,
+       ac.access_expires_at, ac.refresh_expires_at, ac.refresh_before_at, ac.grace_until,
+       ac.last_refresh_at, ac.last_refresh_outcome, ac.failure_class, ac.failure_count,
+       ac.next_attempt_at, ac.created_at, ac.updated_at, ac.deleted_at
+FROM account_credentials ac
+WHERE ac.provider_account_id = $1
+  AND ac.deleted_at IS NULL
+  AND ac.state IN ('active', 'refreshing_with_grace', 'temp_unschedulable')
+  AND ac.refresh_before_at IS NOT NULL
+ORDER BY ac.refresh_before_at ASC, ac.updated_at ASC
+LIMIT 1`
+	rec, err := s.scanRecord(ctx, q, providerAccountID)
+	if err != nil {
+		return CredentialRecord{}, err
+	}
+	plaintext, err := s.decryptRecord(ctx, rec)
+	if err != nil {
+		return CredentialRecord{}, err
+	}
+	rec.PlaintextPayload = plaintext
+	return rec, nil
+}
+
+func (s *Store) SaveRefreshSuccess(ctx context.Context, rec CredentialRecord, payload []byte, accessExpiresAt time.Time, outcome string) error {
+	if err := s.validateReady(); err != nil {
+		return err
+	}
+	handler, err := s.registry.MustLookup(rec.Vendor, rec.AuthMode)
+	if err != nil {
+		return err
+	}
+	payload, err = normalizePayload(payload)
+	if err != nil {
+		return err
+	}
+	if err := handler.ValidatePayload(payload); err != nil {
+		return err
+	}
+	version := rec.CredentialVersion + 1
+	prepared, err := s.prepareEnvelope(ctx, rec.TenantID, rec.ProviderAccountID, rec.Vendor, rec.AuthMode, version, payload, handler)
+	if err != nil {
+		return err
+	}
+	if !accessExpiresAt.IsZero() {
+		prepared.accessExpiresAt = accessExpiresAt.UTC()
+		prepared.refreshBeforeAt = prepared.accessExpiresAt.Add(-RefreshWindow)
+	}
+	const q = `
+UPDATE account_credentials
+SET encrypted_payload = $1,
+    encryption_scheme = $2,
+    key_id = $3,
+    nonce = $4,
+    aad_hash = $5,
+    payload_fingerprint = $6,
+    refresh_token_fingerprint = $7,
+    access_expires_at = $8,
+    refresh_expires_at = $9,
+    refresh_before_at = $10,
+    state = 'active',
+    credential_version = credential_version + 1,
+    last_refresh_at = NOW(),
+    last_refresh_outcome = $11,
+    failure_class = NULL,
+    failure_count = 0,
+    next_attempt_at = NULL,
+    updated_at = NOW()
+WHERE id = $12
+  AND tenant_id = $13
+  AND provider_account_id = $14
+  AND credential_version = $15`
+	tag, err := s.db.Exec(ctx, q,
+		prepared.env.Ciphertext, prepared.env.EncryptionScheme, prepared.env.KeyID, prepared.env.Nonce, prepared.env.AADHash,
+		prepared.payloadFingerprint, prepared.refreshFingerprint,
+		nullableTime(prepared.accessExpiresAt), nullableTime(prepared.refreshExpiresAt), nullableTime(prepared.refreshBeforeAt),
+		outcome, rec.ID, rec.TenantID, rec.ProviderAccountID, rec.CredentialVersion,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return errors.New("credentialstore: refresh credential cas lost")
+	}
+	_ = s.InsertAuditEvent(ctx, AuditEvent{
+		TenantID: rec.TenantID, ProviderAccountID: rec.ProviderAccountID, CredentialID: rec.ID,
+		EventType: "credential_refresh_succeeded", Vendor: rec.Vendor, AuthMode: rec.AuthMode,
+		CredentialVersion: version, Payload: map[string]any{"outcome": outcome},
+	})
+	return nil
+}
+
+func (s *Store) SaveRefreshFailure(ctx context.Context, rec CredentialRecord, failureClass string, nextAttemptAt time.Time) error {
+	if err := s.validateReady(); err != nil {
+		return err
+	}
+	state := StateTempUnschedulable
+	if failureClass == "invalid_grant" {
+		state = StateRevoked
+	}
+	if failureClass == "decrypt_failed" || failureClass == "payload_invalid" {
+		state = StateOperatorAttention
+	}
+	const q = `
+UPDATE account_credentials
+SET state = $1,
+    failure_class = $2,
+    failure_count = failure_count + 1,
+    next_attempt_at = $3,
+    last_refresh_at = NOW(),
+    last_refresh_outcome = 'refresh_failed',
+    updated_at = NOW()
+WHERE id = $4
+  AND tenant_id = $5
+  AND provider_account_id = $6
+  AND deleted_at IS NULL`
+	if _, err := s.db.Exec(ctx, q, state, failureClass, nullableTime(nextAttemptAt), rec.ID, rec.TenantID, rec.ProviderAccountID); err != nil {
+		return err
+	}
+	_ = s.InsertAuditEvent(ctx, AuditEvent{
+		TenantID: rec.TenantID, ProviderAccountID: rec.ProviderAccountID, CredentialID: rec.ID,
+		EventType: "credential_refresh_failed", Vendor: rec.Vendor, AuthMode: rec.AuthMode,
+		CredentialVersion: rec.CredentialVersion, Payload: map[string]any{"failure_class": failureClass, "state": state},
+	})
+	return nil
+}
+
+func (s *Store) decryptRecord(ctx context.Context, rec CredentialRecord) ([]byte, error) {
+	env := Envelope{
+		Ciphertext:       rec.EncryptedPayload,
+		Nonce:            rec.Nonce,
+		KeyID:            rec.KeyID,
+		EncryptionScheme: rec.EncryptionScheme,
+		AADHash:          rec.AADHash,
+	}
+	return s.cipher.Decrypt(ctx, env, AAD{
+		TenantID: rec.TenantID, ProviderAccountID: rec.ProviderAccountID,
+		Vendor: rec.Vendor, AuthMode: rec.AuthMode, Version: rec.CredentialVersion,
+	})
+}
+
+func (s *Store) scanRecord(ctx context.Context, query string, args ...any) (CredentialRecord, error) {
+	var rec CredentialRecord
+	var accessExp, refreshExp, refreshBefore, graceUntil, lastRefresh, nextAttempt, createdAt, updatedAt, deletedAt pgtype.Timestamptz
+	err := s.db.QueryRow(ctx, query, args...).Scan(
+		&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State,
+		&rec.CredentialVersion, &rec.EncryptedPayload, &rec.EncryptionScheme, &rec.KeyID,
+		&rec.Nonce, &rec.AADHash, &rec.PayloadFingerprint, &rec.RefreshTokenFingerprint,
+		&accessExp, &refreshExp, &refreshBefore, &graceUntil,
+		&lastRefresh, &rec.LastRefreshOutcome, &rec.FailureClass, &rec.FailureCount,
+		&nextAttempt, &createdAt, &updatedAt, &deletedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return CredentialRecord{}, ErrCredentialNotFound
+		}
+		return CredentialRecord{}, err
+	}
+	rec.AccessExpiresAt = pgTime(accessExp)
+	rec.RefreshExpiresAt = pgTime(refreshExp)
+	rec.RefreshBeforeAt = pgTime(refreshBefore)
+	rec.GraceUntil = pgTime(graceUntil)
+	rec.LastRefreshAt = pgTime(lastRefresh)
+	rec.NextAttemptAt = pgTime(nextAttempt)
+	rec.CreatedAt = pgTime(createdAt)
+	rec.UpdatedAt = pgTime(updatedAt)
+	rec.DeletedAt = pgTime(deletedAt)
+	return rec, nil
+}
+
+func (s *Store) getRecord(ctx context.Context, tenantID, providerAccountID, credentialID int64, decrypt bool) (CredentialRecord, error) {
+	const q = `
+SELECT id, tenant_id, provider_account_id, vendor, auth_mode, state,
+       credential_version, encrypted_payload, encryption_scheme, key_id,
+       nonce, aad_hash, payload_fingerprint, refresh_token_fingerprint,
+       access_expires_at, refresh_expires_at, refresh_before_at, grace_until,
+       last_refresh_at, last_refresh_outcome, failure_class, failure_count,
+       next_attempt_at, created_at, updated_at, deleted_at
+FROM account_credentials
+WHERE id = $1
+  AND tenant_id = $2
+  AND provider_account_id = $3
+  AND deleted_at IS NULL`
+	rec, err := s.scanRecord(ctx, q, credentialID, tenantID, providerAccountID)
+	if err != nil {
+		return CredentialRecord{}, err
+	}
+	if decrypt {
+		payload, err := s.decryptRecord(ctx, rec)
+		if err != nil {
+			return CredentialRecord{}, err
+		}
+		rec.PlaintextPayload = payload
+	}
+	return rec, nil
+}
+
+type preparedEnvelope struct {
+	env                Envelope
+	payloadFingerprint *string
+	refreshFingerprint *string
+	accessExpiresAt    time.Time
+	refreshExpiresAt   time.Time
+	refreshBeforeAt    time.Time
+}
+
+func (s *Store) prepareEnvelope(ctx context.Context, tenantID, providerAccountID int64, vendor, authMode string, version int32, payload []byte, handler ModeHandler) (preparedEnvelope, error) {
+	env, err := s.cipher.Encrypt(ctx, payload, AAD{
+		TenantID: tenantID, ProviderAccountID: providerAccountID,
+		Vendor: vendor, AuthMode: authMode, Version: version,
+	})
+	if err != nil {
+		return preparedEnvelope{}, err
+	}
+	currentKey, err := s.keys.CurrentKey(ctx)
+	if err != nil {
+		return preparedEnvelope{}, err
+	}
+	fields, _ := parsePayloadFields(payload)
+	payloadFP := HMACFingerprint(currentKey, "payload", payload)
+	refreshFP := HMACFingerprint(currentKey, "refresh_token", []byte(fieldString(fields, "refresh_token")))
+	accessExp := expiresAt(fields)
+	refreshExp := parseNamedTime(fields, "refresh_expires_at")
+	var refreshBefore time.Time
+	if handler.Refreshable() && !accessExp.IsZero() {
+		refreshBefore = accessExp.Add(-RefreshWindow)
+	}
+	return preparedEnvelope{
+		env:                env,
+		payloadFingerprint: stringPtr(payloadFP),
+		refreshFingerprint: stringPtr(refreshFP),
+		accessExpiresAt:    accessExp,
+		refreshExpiresAt:   refreshExp,
+		refreshBeforeAt:    refreshBefore,
+	}, nil
+}
+
+func (s *Store) validateReady() error {
+	switch {
+	case s == nil:
+		return errors.New("credentialstore: store is nil")
+	case s.db == nil:
+		return errors.New("credentialstore: db is nil")
+	case s.cipher == nil || s.keys == nil:
+		return fmt.Errorf("%w: store cipher not configured", ErrKeyUnavailable)
+	case s.registry == nil:
+		return errors.New("credentialstore: handler registry missing")
+	default:
+		return nil
+	}
+}
+
+func normalizePayload(raw []byte) ([]byte, error) {
+	fields, err := parsePayloadFields(raw)
+	if err != nil {
+		return nil, err
+	}
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidPayload, err)
+	}
+	return out, nil
+}
+
+func nullableTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t.UTC()
+}
+
+func pgTime(t pgtype.Timestamptz) time.Time {
+	if !t.Valid {
+		return time.Time{}
+	}
+	return t.Time.UTC()
+}
+
+func parseNamedTime(fields map[string]json.RawMessage, key string) time.Time {
+	raw := fieldString(fields, key)
+	if raw == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}
+	}
+	return t.UTC()
+}
+
+func stringPtr(v string) *string {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	out := strings.TrimSpace(v)
+	return &out
+}
+
+func allowedState(state string) bool {
+	switch state {
+	case StateActive, StateRefreshing, StateRefreshingWithGrace, StateExpired,
+		StateTempUnschedulable, StateNeedsRotation, StateRevoked, StateOperatorAttention:
+		return true
+	default:
+		return false
+	}
+}
+
+type credentialMetadataRow struct {
+	ID                 int64
+	TenantID           int64
+	ProviderAccountID  int64
+	Vendor             string
+	AuthMode           string
+	State              string
+	Version            int32
+	AccessExpiresAt    pgtype.Timestamptz
+	RefreshBeforeAt    pgtype.Timestamptz
+	LastRefreshAt      pgtype.Timestamptz
+	LastRefreshOutcome *string
+	FailureClass       *string
+	FailureCount       int32
+	CreatedAt          pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
+}
+
+func (r credentialMetadataRow) metadata() CredentialMetadata {
+	return CredentialMetadata{
+		ID: r.ID, TenantID: r.TenantID, ProviderAccountID: r.ProviderAccountID,
+		Vendor: r.Vendor, AuthMode: r.AuthMode, State: r.State, Version: r.Version,
+		AccessExpiresAt: optionalTime(r.AccessExpiresAt), RefreshBeforeAt: optionalTime(r.RefreshBeforeAt),
+		LastRefreshAt: optionalTime(r.LastRefreshAt), LastRefreshOutcome: r.LastRefreshOutcome,
+		FailureClass: r.FailureClass, FailureCount: r.FailureCount,
+		CreatedAt: pgTime(r.CreatedAt), UpdatedAt: pgTime(r.UpdatedAt),
+	}
+}
+
+func optionalTime(t pgtype.Timestamptz) *time.Time {
+	if !t.Valid {
+		return nil
+	}
+	out := t.Time.UTC()
+	return &out
+}
+
+type AuditEvent struct {
+	TenantID          int64
+	ProviderAccountID int64
+	CredentialID      int64
+	EventType         string
+	Vendor            string
+	AuthMode          string
+	CredentialVersion int32
+	ActorID           string
+	RequestID         string
+	Payload           map[string]any
+}
+
+func (s *Store) InsertAuditEvent(ctx context.Context, e AuditEvent) error {
+	if s == nil || s.db == nil || e.TenantID <= 0 || e.ProviderAccountID <= 0 || strings.TrimSpace(e.EventType) == "" {
+		return nil
+	}
+	payload := e.Payload
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	rawPayload, err := json.Marshal(payload)
+	if err != nil {
+		rawPayload = []byte(`{}`)
+	}
+	const q = `
+INSERT INTO credential_audit_events (
+    tenant_id, provider_account_id, account_credential_id, event_type,
+    vendor, auth_mode, credential_version, actor_id, request_id, payload
+) VALUES (
+    $1, $2, NULLIF($3, 0), $4,
+    NULLIF($5, ''), NULLIF($6, ''), NULLIF($7, 0), NULLIF($8, ''), NULLIF($9, ''), $10::jsonb
+)`
+	_, err = s.db.Exec(ctx, q, e.TenantID, e.ProviderAccountID, e.CredentialID, e.EventType,
+		Normalize(e.Vendor), Normalize(e.AuthMode), e.CredentialVersion, strings.TrimSpace(e.ActorID), strings.TrimSpace(e.RequestID), rawPayload)
+	return err
+}

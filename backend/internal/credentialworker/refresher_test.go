@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync/atomic"
@@ -61,10 +60,9 @@ func TestAdapterRegistryDuplicateRegisterRejected(t *testing.T) {
 
 func TestOpenAIRefreshHTTPRoundTripRetriesOnce(t *testing.T) {
 	var attempts int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if atomic.AddInt32(&attempts, 1) == 1 {
-			http.Error(w, "retry me", http.StatusBadGateway)
-			return
+			return httpStatusResponse(http.StatusBadGateway, "retry me"), nil
 		}
 		assertForm(t, r, map[string]string{
 			"grant_type":    "refresh_token",
@@ -72,11 +70,10 @@ func TestOpenAIRefreshHTTPRoundTripRetriesOnce(t *testing.T) {
 			"client_id":     "cid",
 			"scope":         "openid",
 		})
-		writeTokenResponse(t, w, "openai-new", "openai-rt")
-	}))
-	defer server.Close()
+		return tokenJSONResponse("openai-new", "openai-rt"), nil
+	})}
 
-	newCredential, expiresAt, err := (adapters.OpenAIRefresh{Endpoint: server.URL, Scope: "openid"}).RefreshForProvider(context.Background(), 1, "openai", testCredential())
+	newCredential, expiresAt, err := (adapters.OpenAIRefresh{Endpoint: "http://mock.local/openai", Scope: "openid", HTTPClient: client}).RefreshForProvider(context.Background(), 1, "openai", testCredential())
 	assertRefreshResult(t, newCredential, expiresAt, err, "openai-new", "openai-rt")
 	if got := atomic.LoadInt32(&attempts); got != 2 {
 		t.Fatalf("attempts=%d, want 2", got)
@@ -84,7 +81,7 @@ func TestOpenAIRefreshHTTPRoundTripRetriesOnce(t *testing.T) {
 }
 
 func TestAnthropicRefreshHTTPRoundTrip(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if ct := r.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
 			t.Fatalf("content-type=%q, want json", ct)
 		}
@@ -95,42 +92,39 @@ func TestAnthropicRefreshHTTPRoundTrip(t *testing.T) {
 		if body["grant_type"] != "refresh_token" || body["refresh_token"] != "rt-old" || body["client_id"] != "cid" {
 			t.Fatalf("bad anthropic body: %#v", body)
 		}
-		writeTokenResponse(t, w, "anthropic-new", "anthropic-rt")
-	}))
-	defer server.Close()
+		return tokenJSONResponse("anthropic-new", "anthropic-rt"), nil
+	})}
 
-	newCredential, expiresAt, err := (adapters.AnthropicRefresh{Endpoint: server.URL}).RefreshForProvider(context.Background(), 2, "anthropic", testCredential())
+	newCredential, expiresAt, err := (adapters.AnthropicRefresh{Endpoint: "http://mock.local/anthropic", HTTPClient: client}).RefreshForProvider(context.Background(), 2, "anthropic", testCredential())
 	assertRefreshResult(t, newCredential, expiresAt, err, "anthropic-new", "anthropic-rt")
 }
 
 func TestGeminiRefreshHTTPRoundTrip(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		assertForm(t, r, map[string]string{
 			"grant_type":    "refresh_token",
 			"refresh_token": "rt-old",
 			"client_id":     "cid",
 			"client_secret": "secret",
 		})
-		writeTokenResponse(t, w, "gemini-new", "gemini-rt")
-	}))
-	defer server.Close()
+		return tokenJSONResponse("gemini-new", "gemini-rt"), nil
+	})}
 
-	newCredential, expiresAt, err := (adapters.GeminiRefresh{Endpoint: server.URL}).RefreshForProvider(context.Background(), 3, "gemini", testCredential())
+	newCredential, expiresAt, err := (adapters.GeminiRefresh{Endpoint: "http://mock.local/gemini", HTTPClient: client}).RefreshForProvider(context.Background(), 3, "gemini", testCredential())
 	assertRefreshResult(t, newCredential, expiresAt, err, "gemini-new", "gemini-rt")
 }
 
 func TestCodexRefreshReusesOpenAIHTTPRoundTrip(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		assertForm(t, r, map[string]string{
 			"grant_type":    "refresh_token",
 			"refresh_token": "rt-old",
 			"client_id":     "cid",
 		})
-		writeTokenResponse(t, w, "codex-new", "codex-rt")
-	}))
-	defer server.Close()
+		return tokenJSONResponse("codex-new", "codex-rt"), nil
+	})}
 
-	adapter := adapters.NewCodexRefresh(server.URL, "", "", server.Client())
+	adapter := adapters.NewCodexRefresh("http://mock.local/codex", "", "", client)
 	newCredential, expiresAt, err := adapter.RefreshForProvider(context.Background(), 4, "codex", testCredential())
 	assertRefreshResult(t, newCredential, expiresAt, err, "codex-new", "codex-rt")
 }
@@ -182,11 +176,15 @@ func assertForm(t *testing.T, r *http.Request, want map[string]string) {
 	}
 }
 
-func writeTokenResponse(t *testing.T, w http.ResponseWriter, accessToken, refreshToken string) {
-	t.Helper()
-	w.Header().Set("Content-Type", "application/json")
-	if _, err := w.Write([]byte(`{"access_token":"` + accessToken + `","refresh_token":"` + refreshToken + `","token_type":"bearer","expires_in":3600}`)); err != nil {
-		t.Fatalf("write response: %v", err)
+func tokenJSONResponse(accessToken, refreshToken string) *http.Response {
+	return jsonResponse(`{"access_token":"` + accessToken + `","refresh_token":"` + refreshToken + `","token_type":"bearer","expires_in":3600}`)
+}
+
+func httpStatusResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     http.Header{"Content-Type": []string{"text/plain"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
 	}
 }
 

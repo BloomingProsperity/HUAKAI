@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 )
 
@@ -27,9 +28,14 @@ type AdminPoolAccountStore interface {
 	InsertAdminAuditEvent(context.Context, db.InsertAdminAuditEventParams) (db.InsertAdminAuditEventRow, error)
 }
 
+type AdminPoolAccountCredentialWriter interface {
+	Create(context.Context, credentialstore.CreateCredentialInput) (credentialstore.CredentialMetadata, error)
+}
+
 type AdminPoolAccountDeps struct {
-	Auth  AdminPoolAccountAuth
-	Store AdminPoolAccountStore
+	Auth        AdminPoolAccountAuth
+	Store       AdminPoolAccountStore
+	Credentials AdminPoolAccountCredentialWriter
 }
 
 func MountAdminPoolAccountRoutes(r chi.Router, d AdminPoolAccountDeps) {
@@ -44,6 +50,8 @@ type createProviderAccountRequest struct {
 	ChannelID   int64           `json:"channel_id"`
 	Name        string          `json:"name"`
 	AccountType string          `json:"account_type"`
+	Vendor      string          `json:"vendor,omitempty"`
+	AuthMode    string          `json:"auth_mode,omitempty"`
 	Enabled     *bool           `json:"enabled,omitempty"`
 	Credentials json.RawMessage `json:"credentials"`
 	Reason      string          `json:"reason,omitempty"`
@@ -67,19 +75,38 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		}
 		req.Name = strings.TrimSpace(req.Name)
 		req.AccountType = strings.TrimSpace(req.AccountType)
-		if err := validateCreateProviderAccount(req); err != nil {
+		req.Vendor = credentialstore.Normalize(req.Vendor)
+		req.AuthMode = credentialstore.Normalize(req.AuthMode)
+		if err := validateCreateProviderAccount(req, d.Credentials != nil); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "admin_bad_request", err.Error())
 			return
 		}
 		actorID := fmt.Sprintf("%d", ident.TokenID)
+		dbCredentials := []byte(req.Credentials)
+		if d.Credentials != nil {
+			dbCredentials = []byte(`{}`)
+		}
 		id, err := d.Store.InsertProviderAccount(r.Context(), db.InsertProviderAccountParams{
 			TenantID: req.TenantID, ProviderID: req.ProviderID, ChannelID: req.ChannelID,
 			Name: req.Name, AccountType: req.AccountType, Enabled: req.Enabled,
-			Credentials: []byte(req.Credentials), ActorID: &actorID,
+			Credentials: dbCredentials, ActorID: &actorID,
 		})
 		if err != nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "provider_account_insert_failed", err.Error())
 			return
+		}
+		var credentialID int64
+		if d.Credentials != nil {
+			created, err := d.Credentials.Create(r.Context(), credentialstore.CreateCredentialInput{
+				TenantID: req.TenantID, ProviderAccountID: id,
+				Vendor: req.Vendor, AuthMode: req.AuthMode,
+				Payload: req.Credentials, ActorID: actorID,
+			})
+			if err != nil {
+				writeJSONError(w, http.StatusServiceUnavailable, "account_credential_insert_failed", err.Error())
+				return
+			}
+			credentialID = created.ID
 		}
 		payload, _ := json.Marshal(map[string]any{
 			"tenant_id":           req.TenantID,
@@ -87,6 +114,9 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			"channel_id":          req.ChannelID,
 			"name":                req.Name,
 			"account_type":        req.AccountType,
+			"vendor":              req.Vendor,
+			"auth_mode":           req.AuthMode,
+			"credential_id":       credentialID,
 			"credentials_present": true,
 		})
 		if err := writeProviderAccountAudit(r.Context(), r, d.Store, ident, req.TenantID,
@@ -94,7 +124,7 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusServiceUnavailable, "audit_write_failed", err.Error())
 			return
 		}
-		writeAuditJSON(w, http.StatusCreated, map[string]int64{"id": id})
+		writeAuditJSON(w, http.StatusCreated, map[string]int64{"id": id, "credential_id": credentialID})
 	}
 }
 
@@ -202,7 +232,7 @@ func decodeAdminPoolJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	return true
 }
 
-func validateCreateProviderAccount(req createProviderAccountRequest) error {
+func validateCreateProviderAccount(req createProviderAccountRequest, requireCredentialV2 bool) error {
 	if req.TenantID <= 0 || req.ProviderID <= 0 || req.ChannelID <= 0 || req.Name == "" {
 		return fmt.Errorf("tenant_id, provider_id, channel_id, and name are required")
 	}
@@ -214,6 +244,18 @@ func validateCreateProviderAccount(req createProviderAccountRequest) error {
 	var obj map[string]json.RawMessage
 	if len(req.Credentials) == 0 || json.Unmarshal(req.Credentials, &obj) != nil || obj == nil {
 		return fmt.Errorf("credentials must be a JSON object")
+	}
+	if requireCredentialV2 {
+		if req.Vendor == "" || req.AuthMode == "" {
+			return fmt.Errorf("vendor and auth_mode are required for account_credentials")
+		}
+		handler, err := credentialstore.DefaultHandlerRegistry().MustLookup(req.Vendor, req.AuthMode)
+		if err != nil {
+			return err
+		}
+		if err := handler.ValidatePayload(req.Credentials); err != nil {
+			return err
+		}
 	}
 	return nil
 }
