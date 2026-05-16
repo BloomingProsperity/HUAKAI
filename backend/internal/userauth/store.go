@@ -1,8 +1,13 @@
 package userauth
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -10,11 +15,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 )
 
 type PostgresStore struct {
-	db db.DBTX
+	db     db.DBTX
+	cipher *credentialstore.Cipher
 }
 
 type txBeginner interface {
@@ -23,6 +30,21 @@ type txBeginner interface {
 
 func NewPostgresStore(database db.DBTX) *PostgresStore {
 	return &PostgresStore{db: database}
+}
+
+func NewPostgresStoreWithKeys(database db.DBTX, keys credentialstore.KeyProvider) *PostgresStore {
+	return NewPostgresStore(database).WithKeyProvider(keys)
+}
+
+func (s *PostgresStore) WithKeyProvider(keys credentialstore.KeyProvider) *PostgresStore {
+	if s == nil {
+		return nil
+	}
+	cp := *s
+	if keys != nil {
+		cp.cipher = credentialstore.NewCipher(keys)
+	}
+	return &cp
 }
 
 func (s *PostgresStore) WithTx(ctx context.Context, fn func(Store) error) error {
@@ -38,7 +60,7 @@ func (s *PostgresStore) WithTx(ctx context.Context, fn func(Store) error) error 
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := fn(&PostgresStore{db: tx}); err != nil {
+	if err := fn(&PostgresStore{db: tx, cipher: s.cipher}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -372,13 +394,17 @@ func (s *PostgresStore) CreateOAuthFlowSession(ctx context.Context, challenge OA
 	if s == nil || s.db == nil {
 		return ErrStoreNotConfigured
 	}
-	_, err := s.db.Exec(ctx, `
+	ciphertext, err := s.encryptPKCEVerifier(ctx, challenge)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx, `
 INSERT INTO oauth_flow_sessions (
-    id, tenant_id, provider, state_hash, nonce_hash, pkce_verifier, redirect_uri, expires_at
+    id, tenant_id, provider, state_hash, nonce_hash, pkce_verifier, pkce_verifier_ciphertext, redirect_uri, expires_at
 ) VALUES (
-    $1::uuid, $2, $3, $4, $5, $6, NULLIF($7, ''), $8
+    $1::uuid, $2, $3, $4, $5, $6, $7, NULLIF($8, ''), $9
 )
-`, challenge.ID, challenge.TenantID, challenge.Provider, challenge.StateHash, challenge.NonceHash, challenge.PKCEVerifier, challenge.RedirectURI, challenge.ExpiresAt.UTC())
+`, challenge.ID, challenge.TenantID, challenge.Provider, challenge.StateHash, challenge.NonceHash, "encrypted:v1", ciphertext, challenge.RedirectURI, challenge.ExpiresAt.UTC())
 	return err
 }
 
@@ -394,12 +420,21 @@ WHERE tenant_id = $1
   AND state_hash = $3
   AND consumed_at IS NULL
   AND expires_at > $4
-RETURNING id::text, tenant_id, provider, state_hash, nonce_hash, pkce_verifier, redirect_uri, expires_at, consumed_at, created_at`
+RETURNING id::text, tenant_id, provider, state_hash, nonce_hash,
+          pkce_verifier_ciphertext, pkce_verifier, redirect_uri, expires_at, consumed_at, created_at`
 	flow, err := scanOAuthFlow(s.db.QueryRow(ctx, q, tenantID, normalizeSocialProvider(provider), stateHash, now.UTC()))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return OAuthFlowSession{}, ErrOAuthFlowNotFound
 	}
-	return flow, err
+	if err != nil {
+		return OAuthFlowSession{}, err
+	}
+	verifier, err := s.decryptPKCEVerifier(ctx, flow)
+	if err != nil {
+		return OAuthFlowSession{}, err
+	}
+	flow.PKCEVerifier = verifier
+	return flow, nil
 }
 
 func scanUser(row pgx.Row) (User, error) {
@@ -467,6 +502,7 @@ func scanInvite(row pgx.Row) (InviteCode, error) {
 
 func scanOAuthFlow(row pgx.Row) (OAuthFlowSession, error) {
 	var out OAuthFlowSession
+	var legacyVerifier pgtype.Text
 	var redirectURI pgtype.Text
 	var consumedAt pgtype.Timestamptz
 	if err := row.Scan(
@@ -475,7 +511,8 @@ func scanOAuthFlow(row pgx.Row) (OAuthFlowSession, error) {
 		&out.Provider,
 		&out.StateHash,
 		&out.NonceHash,
-		&out.PKCEVerifier,
+		&out.PKCEVerifierCiphertext,
+		&legacyVerifier,
 		&redirectURI,
 		&out.ExpiresAt,
 		&consumedAt,
@@ -484,12 +521,90 @@ func scanOAuthFlow(row pgx.Row) (OAuthFlowSession, error) {
 		return OAuthFlowSession{}, err
 	}
 	out.Provider = normalizeSocialProvider(out.Provider)
+	out.PKCEVerifier = textValue(legacyVerifier)
 	out.RedirectURI = textValue(redirectURI)
 	if consumedAt.Valid {
 		t := consumedAt.Time
 		out.ConsumedAt = &t
 	}
 	return out, nil
+}
+
+const pkceVerifierEnvelopePrefix = "huakai-userauth-pkce-v1:"
+
+type pkceVerifierEnvelope struct {
+	Ciphertext       []byte `json:"ciphertext"`
+	Nonce            []byte `json:"nonce"`
+	KeyID            string `json:"key_id"`
+	EncryptionScheme string `json:"encryption_scheme"`
+	AADHash          string `json:"aad_hash,omitempty"`
+}
+
+func (s *PostgresStore) encryptPKCEVerifier(ctx context.Context, challenge OAuthFlowChallenge) ([]byte, error) {
+	if strings.TrimSpace(challenge.PKCEVerifier) == "" {
+		return nil, ErrInvalidInput
+	}
+	if s == nil || s.cipher == nil {
+		return nil, fmt.Errorf("%w: userauth pkce cipher not configured", credentialstore.ErrKeyUnavailable)
+	}
+	env, err := s.cipher.Encrypt(ctx, []byte(challenge.PKCEVerifier), pkceVerifierAAD(
+		challenge.TenantID, challenge.Provider, challenge.ID, challenge.StateHash,
+	))
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(pkceVerifierEnvelope{
+		Ciphertext:       env.Ciphertext,
+		Nonce:            env.Nonce,
+		KeyID:            env.KeyID,
+		EncryptionScheme: env.EncryptionScheme,
+		AADHash:          env.AADHash,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(pkceVerifierEnvelopePrefix), raw...), nil
+}
+
+func (s *PostgresStore) decryptPKCEVerifier(ctx context.Context, flow OAuthFlowSession) (string, error) {
+	if len(flow.PKCEVerifierCiphertext) == 0 {
+		if strings.TrimSpace(flow.PKCEVerifier) != "" && flow.PKCEVerifier != "encrypted:v1" {
+			return flow.PKCEVerifier, nil
+		}
+		return "", fmt.Errorf("%w: userauth pkce verifier ciphertext missing", credentialstore.ErrDecryptFailed)
+	}
+	if s == nil || s.cipher == nil {
+		return "", fmt.Errorf("%w: userauth pkce cipher not configured", credentialstore.ErrKeyUnavailable)
+	}
+	if !bytes.HasPrefix(flow.PKCEVerifierCiphertext, []byte(pkceVerifierEnvelopePrefix)) {
+		return "", fmt.Errorf("%w: userauth pkce verifier envelope missing", credentialstore.ErrDecryptFailed)
+	}
+	var packed pkceVerifierEnvelope
+	if err := json.Unmarshal(bytes.TrimPrefix(flow.PKCEVerifierCiphertext, []byte(pkceVerifierEnvelopePrefix)), &packed); err != nil {
+		return "", fmt.Errorf("%w: userauth pkce verifier envelope invalid", credentialstore.ErrDecryptFailed)
+	}
+	plaintext, err := s.cipher.Decrypt(ctx, credentialstore.Envelope{
+		Ciphertext:       packed.Ciphertext,
+		Nonce:            packed.Nonce,
+		KeyID:            packed.KeyID,
+		EncryptionScheme: packed.EncryptionScheme,
+		AADHash:          packed.AADHash,
+	}, pkceVerifierAAD(flow.TenantID, flow.Provider, flow.ID, flow.StateHash))
+	if err != nil {
+		return "", err
+	}
+	return string(plaintext), nil
+}
+
+func pkceVerifierAAD(tenantID int64, provider, flowID string, stateHash []byte) credentialstore.AAD {
+	sum := sha256.Sum256(append(append([]byte("huakai-userauth-pkce-v1:"), []byte(strings.TrimSpace(flowID))...), stateHash...))
+	return credentialstore.AAD{
+		TenantID:          tenantID,
+		ProviderAccountID: int64(binary.BigEndian.Uint64(sum[:8]) & 0x7fffffffffffffff),
+		Vendor:            "userauth_oauth_flow",
+		AuthMode:          normalizeSocialProvider(provider),
+		Version:           1,
+	}
 }
 
 func textValue(value pgtype.Text) string {

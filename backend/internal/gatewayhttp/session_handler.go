@@ -50,7 +50,7 @@ func newSessionRefreshHandler(d SessionHandlerDeps) http.HandlerFunc {
 			return
 		}
 		result, err := d.Sessions.Refresh(r.Context(), usersession.RefreshInput{
-			TenantID: ident.TenantID, RefreshToken: req.RefreshToken,
+			TenantID: ident.TenantID, UserID: ident.UserID, RefreshToken: req.RefreshToken,
 			IP: clientIP(r), UserAgent: r.UserAgent(),
 		})
 		if err != nil {
@@ -145,6 +145,8 @@ func writeSessionError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusUnauthorized, "session_token_not_found", "refresh token is invalid")
 	case errors.Is(err, usersession.ErrRefreshReplay):
 		writeJSONError(w, http.StatusConflict, "refresh_token_replay", "refresh token was already consumed")
+	case errors.Is(err, usersession.ErrSessionUserMismatch):
+		writeJSONError(w, http.StatusUnauthorized, "refresh_token_cross_user_attempt", "refresh token is invalid")
 	case errors.Is(err, usersession.ErrTokenExpired):
 		writeJSONError(w, http.StatusUnauthorized, "refresh_token_expired", "refresh token is expired")
 	case errors.Is(err, usersession.ErrFamilyRevoked), errors.Is(err, usersession.ErrFamilyNotFound):

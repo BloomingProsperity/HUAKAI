@@ -51,6 +51,10 @@ tags:
     description: HUAKAI platform User authentication. F-AUTH-007.
   - name: sessions
     description: HUAKAI platform User session management. F-SESSION-001.
+  - name: user-vouchers
+    description: User voucher redemption. F-BILL-002.
+  - name: admin-vouchers
+    description: Admin voucher creation, listing, batch creation, and revocation. F-BILL-002.
   - name: admin-api-keys
     description: API Key issuance / list / revoke. Slice 2 N+4b2; backed by admin_tokens + admin_audit_events.
   - name: admin-pools
@@ -418,6 +422,133 @@ paths:
                     items: { $ref: '#/components/schemas/SessionFamily' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/users/me/vouchers/redeem:
+    post:
+      tags: [user-vouchers]
+      summary: Redeem a voucher into the authenticated User balance
+      operationId: redeemVoucher
+      x-huakai-spec-source: [docs/specs/voucher-system.md]
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VoucherRedeemRequest' }
+      responses:
+        '200':
+          description: Voucher redeemed or idempotent prior redemption returned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VoucherRedeemResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/vouchers:
+    get:
+      tags: [admin-vouchers]
+      summary: List tenant vouchers
+      operationId: listVouchers
+      x-huakai-spec-source: [docs/specs/voucher-system.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Tenant voucher list.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VoucherListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-vouchers]
+      summary: Create one voucher
+      operationId: createVoucher
+      x-huakai-spec-source: [docs/specs/voucher-system.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VoucherCreateRequest' }
+      responses:
+        '201':
+          description: Voucher created. Raw code is returned once only.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VoucherCreateResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/vouchers/batch:
+    post:
+      tags: [admin-vouchers]
+      summary: Create a voucher batch atomically
+      operationId: createVoucherBatch
+      x-huakai-spec-source: [docs/specs/voucher-system.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VoucherBatchCreateRequest' }
+      responses:
+        '201':
+          description: Batch created all-or-nothing. Raw codes are returned once only.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VoucherBatchCreateResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/vouchers/{id}/revoke:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-vouchers]
+      summary: Revoke a voucher for future redemption
+      operationId: revokeVoucher
+      x-huakai-spec-source: [docs/specs/voucher-system.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VoucherRevokeRequest' }
+      responses:
+        '200':
+          description: Voucher revoked. Prior successful redemptions are not refunded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [voucher]
+                properties:
+                  voucher: { $ref: '#/components/schemas/Voucher' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   # ==========================================================================
@@ -1418,6 +1549,175 @@ components:
         ip_baseline: { type: string }
         revoked_at: { type: [string, 'null'], format: date-time }
         revoked_reason: { type: [string, 'null'] }
+
+    Voucher:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/voucher-system.md]
+      required:
+        - id
+        - tenant_id
+        - code_fingerprint
+        - amount_cents
+        - currency_code
+        - valid_from
+        - valid_until
+        - max_redemptions
+        - redeemed_count
+        - single_use_per_user
+        - status
+        - created_at
+        - updated_at
+      properties:
+        id: { type: integer, format: int64 }
+        tenant_id: { type: integer, format: int64 }
+        batch_id: { type: [integer, 'null'], format: int64 }
+        code_fingerprint: { type: string, description: Non-secret short hash for support/audit; not redeemable. }
+        amount_cents: { type: integer, format: int64, minimum: 1 }
+        currency_code: { type: string, minLength: 3, maxLength: 3 }
+        valid_from: { type: string, format: date-time }
+        valid_until: { type: string, format: date-time }
+        max_redemptions: { type: integer, minimum: 1 }
+        redeemed_count: { type: integer, minimum: 0 }
+        single_use_per_user: { type: boolean }
+        eligible_user_id: { type: [integer, 'null'], format: int64 }
+        status: { type: string, enum: [active, expired, exhausted, revoked] }
+        created_by_admin_id: { type: [integer, 'null'], format: int64 }
+        revoked_by_admin_id: { type: [integer, 'null'], format: int64 }
+        revoked_reason: { type: [string, 'null'] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        revoked_at: { type: [string, 'null'], format: date-time }
+
+    VoucherRedemption:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/voucher-system.md]
+      required: [id, tenant_id, voucher_id, user_id, amount_cents, currency_code, redeemed_at]
+      properties:
+        id: { type: integer, format: int64 }
+        tenant_id: { type: integer, format: int64 }
+        voucher_id: { type: integer, format: int64 }
+        user_id: { type: integer, format: int64 }
+        amount_cents: { type: integer, format: int64 }
+        currency_code: { type: string }
+        billing_event_id: { type: integer, format: int64 }
+        redeemed_at: { type: string, format: date-time }
+        code_fingerprint: { type: string }
+
+    VoucherBatch:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/voucher-system.md]
+      required: [id, tenant_id, requested_count, created_count, amount_cents, status, created_at]
+      properties:
+        id: { type: integer, format: int64 }
+        tenant_id: { type: integer, format: int64 }
+        requested_count: { type: integer, minimum: 1 }
+        created_count: { type: integer, minimum: 0 }
+        amount_cents: { type: integer, format: int64, minimum: 1 }
+        currency_code: { type: string }
+        valid_from: { type: string, format: date-time }
+        valid_until: { type: string, format: date-time }
+        max_redemptions: { type: integer, minimum: 1 }
+        single_use_per_user: { type: boolean }
+        status: { type: string, enum: [active, completed, failed, revoked] }
+        created_at: { type: string, format: date-time }
+
+    VoucherCreateRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/voucher-system.md]
+      required: [tenant_id, amount_cents, valid_from, valid_until]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        code: { type: string, description: Optional raw code. Returned once; never audited or stored raw. }
+        amount_cents: { type: integer, format: int64, minimum: 1 }
+        currency_code: { type: string, default: USD }
+        valid_from: { type: string, format: date-time }
+        valid_until: { type: string, format: date-time }
+        max_redemptions: { type: integer, minimum: 1, default: 1 }
+        single_use_per_user: { type: boolean, default: true }
+        eligible_user_id: { type: [integer, 'null'], format: int64 }
+
+    VoucherCreateResponse:
+      type: object
+      additionalProperties: false
+      required: [voucher, code]
+      properties:
+        voucher: { $ref: '#/components/schemas/Voucher' }
+        code: { type: string, description: Raw code shown once only. }
+
+    VoucherBatchCreateRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/voucher-system.md]
+      required: [tenant_id, count, amount_cents, valid_from, valid_until]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        count: { type: integer, minimum: 1, maximum: 1000 }
+        amount_cents: { type: integer, format: int64, minimum: 1 }
+        currency_code: { type: string, default: USD }
+        valid_from: { type: string, format: date-time }
+        valid_until: { type: string, format: date-time }
+        max_redemptions: { type: integer, minimum: 1, default: 1 }
+        single_use_per_user: { type: boolean, default: true }
+        eligible_user_id: { type: [integer, 'null'], format: int64 }
+
+    VoucherBatchCreateResponse:
+      type: object
+      additionalProperties: false
+      required: [batch, vouchers, codes]
+      properties:
+        batch: { $ref: '#/components/schemas/VoucherBatch' }
+        vouchers:
+          type: array
+          items: { $ref: '#/components/schemas/Voucher' }
+        codes:
+          type: array
+          items:
+            type: object
+            required: [voucher_id, code, code_fingerprint]
+            properties:
+              voucher_id: { type: integer, format: int64 }
+              code: { type: string }
+              code_fingerprint: { type: string }
+
+    VoucherListResponse:
+      type: object
+      additionalProperties: false
+      required: [vouchers]
+      properties:
+        vouchers:
+          type: array
+          items: { $ref: '#/components/schemas/Voucher' }
+
+    VoucherRevokeRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        reason: { type: string }
+
+    VoucherRedeemRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/voucher-system.md]
+      required: [code]
+      properties:
+        code: { type: string }
+        idempotency_key: { type: string, maxLength: 128 }
+
+    VoucherRedeemResponse:
+      type: object
+      additionalProperties: false
+      required: [voucher, redemption, balance_cents, idempotent]
+      properties:
+        voucher: { $ref: '#/components/schemas/Voucher' }
+        redemption: { $ref: '#/components/schemas/VoucherRedemption' }
+        balance_cents: { type: integer, format: int64 }
+        idempotent: { type: boolean }
 
     # ---- Gateway request/response schemas (permissive: additionalProperties: true) ----
 

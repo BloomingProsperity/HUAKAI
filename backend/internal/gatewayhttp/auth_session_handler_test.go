@@ -130,6 +130,54 @@ func TestAT_SESSION_001_004_HandlersRequireBearerAndIgnoreBodyUser(t *testing.T)
 	}
 }
 
+func TestAT_AUTH_007_011_CrossUserRefreshRejected(t *testing.T) {
+	now := time.Date(2026, 5, 16, 15, 0, 0, 0, time.UTC)
+	sessionSvc := usersession.NewService(usersession.NewMemoryStore())
+	sessionSvc.Now = func() time.Time { return now }
+	sessionSvc.SigningKey = testSessionSigningKey()
+	caller, err := sessionSvc.Create(context.Background(), usersession.CreateInput{
+		TenantID: 7, UserID: 7001, IP: "192.0.2.1",
+	})
+	if err != nil {
+		t.Fatalf("Create caller: %v", err)
+	}
+	target, err := sessionSvc.Create(context.Background(), usersession.CreateInput{
+		TenantID: 7, UserID: 7002, IP: "192.0.2.1",
+	})
+	if err != nil {
+		t.Fatalf("Create target: %v", err)
+	}
+	r := chi.NewRouter()
+	r.Route("/v1/sessions", func(r chi.Router) {
+		r.Use(sessionauth.SessionMiddleware(sessionSvc))
+		MountSessionRoutes(r, SessionHandlerDeps{Sessions: sessionSvc})
+	})
+
+	rec := serveJSON(t, r, http.MethodPost, "/v1/sessions/refresh", map[string]any{
+		"refresh_token": target.RefreshToken,
+	}, caller.SessionToken)
+	assertHTTPStatus(t, rec, http.StatusUnauthorized)
+	if strings.Contains(rec.Body.String(), target.RefreshToken) || strings.Contains(rec.Body.String(), caller.SessionToken) {
+		t.Fatalf("response leaked token material: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "refresh_token_cross_user_attempt") {
+		t.Fatalf("response did not expose safe audit code: %s", rec.Body.String())
+	}
+
+	rec = serveJSON(t, r, http.MethodPost, "/v1/sessions/refresh", map[string]any{
+		"refresh_token": target.RefreshToken,
+	}, target.SessionToken)
+	assertHTTPStatus(t, rec, http.StatusUnauthorized)
+	families, err := sessionSvc.List(context.Background(), 7, 7002)
+	if err != nil {
+		t.Fatalf("List target families: %v", err)
+	}
+	if len(families) != 1 || families[0].Status != usersession.FamilyStatusRevoked ||
+		families[0].RevokedReason != "refresh_token_cross_user_attempt" {
+		t.Fatalf("target family was not revoked after cross-user refresh attempt: %+v", families)
+	}
+}
+
 type captureAuthEmail struct {
 	verification string
 	reset        string

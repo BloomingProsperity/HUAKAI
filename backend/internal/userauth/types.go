@@ -83,16 +83,17 @@ type TokenChallenge struct {
 }
 
 type OAuthFlowSession struct {
-	ID           string     `json:"id"`
-	TenantID     int64      `json:"tenant_id"`
-	Provider     string     `json:"provider"`
-	StateHash    []byte     `json:"-"`
-	NonceHash    []byte     `json:"-"`
-	PKCEVerifier string     `json:"-"`
-	RedirectURI  string     `json:"redirect_uri"`
-	ExpiresAt    time.Time  `json:"expires_at"`
-	ConsumedAt   *time.Time `json:"consumed_at,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
+	ID                     string     `json:"id"`
+	TenantID               int64      `json:"tenant_id"`
+	Provider               string     `json:"provider"`
+	StateHash              []byte     `json:"-"`
+	NonceHash              []byte     `json:"-"`
+	PKCEVerifier           string     `json:"-"`
+	PKCEVerifierCiphertext []byte     `json:"-"`
+	RedirectURI            string     `json:"redirect_uri"`
+	ExpiresAt              time.Time  `json:"expires_at"`
+	ConsumedAt             *time.Time `json:"consumed_at,omitempty"`
+	CreatedAt              time.Time  `json:"created_at"`
 }
 
 type OAuthFlowChallenge struct {

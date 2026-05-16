@@ -33,6 +33,7 @@ var (
 	ErrTokenNotFound              = errors.New("usersession: token not found")
 	ErrTokenExpired               = errors.New("usersession: token expired")
 	ErrRefreshReplay              = errors.New("usersession: refresh token replay")
+	ErrSessionUserMismatch        = errors.New("usersession: session user mismatch")
 	ErrAnomalyRejected            = errors.New("usersession: session anomaly rejected")
 	ErrDeviceLimitExceeded        = errors.New("usersession: device limit exceeded")
 	ErrDeviceConfirmationRequired = errors.New("usersession: device confirmation required")
@@ -90,6 +91,7 @@ type CreateInput struct {
 
 type RefreshInput struct {
 	TenantID     int64         `json:"tenant_id"`
+	UserID       int64         `json:"user_id,omitempty"`
 	RefreshToken string        `json:"refresh_token"`
 	IP           string        `json:"ip,omitempty"`
 	UserAgent    string        `json:"user_agent,omitempty"`
