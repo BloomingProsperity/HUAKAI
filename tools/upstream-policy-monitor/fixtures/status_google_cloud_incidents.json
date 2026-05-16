@@ -1,0 +1,7 @@
+[
+  {
+    "id": "fixture-incident",
+    "service_name": "Vertex AI",
+    "external_desc": "Mitigated incident. No policy restrictions announced."
+  }
+]
