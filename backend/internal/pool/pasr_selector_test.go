@@ -197,6 +197,52 @@ func TestPASR_Select_AllAccountsUnhealthy_ErrNoEligibleAccount(t *testing.T) {
 	}
 }
 
+func TestPASR_Select_AllHealthRejected_ErrAllChannelsDegraded(t *testing.T) {
+	accs := []int64{10, 20, 30}
+	sel, _, _, _, _ := newPASRTestRig(t, accs)
+	gates := DefaultGateChain()
+	gates.Health = healthStatusGate{
+		10: {State: HealthStateCoolingDown},
+		20: {State: HealthStateDisabled},
+		30: {State: HealthStatePaused},
+	}
+	sel.gates = gates
+
+	_, err := sel.Select(context.Background(), SelectionRequest{
+		TenantID: 1, ClaimID: 1, RequestedModel: "m", SessionHash: "p",
+	})
+	if !errors.Is(err, ErrAllChannelsDegraded) {
+		t.Fatalf("err=%v want ErrAllChannelsDegraded", err)
+	}
+}
+
+func TestPASR_HRWFallback_DeprioritizesDegradedChannel(t *testing.T) {
+	accs := []int64{10, 20, 30}
+	sel, _, ring, src, _ := newPASRTestRig(t, accs)
+	snapshots := make(map[int64]*AccountSnapshot, len(src.snapshots))
+	for _, snap := range src.snapshots {
+		snapshots[snap.ID] = snap
+	}
+	prefix := "degraded-priority"
+	sorted := ring.TopK([]byte(prefix), len(accs))
+	degraded := sorted[0]
+	gates := DefaultGateChain()
+	gates.Health = healthStatusGate{
+		degraded: {State: HealthStateDegraded},
+	}
+	sel.gates = gates
+
+	res, err := sel.scheduleHRWFullRing(context.Background(), SelectionRequest{
+		TenantID: 1, RequestedModel: "m", SessionHash: prefix,
+	}, ring, snapshots, [PASRSegmentSize]int64{}, selectionFailures{})
+	if err != nil {
+		t.Fatalf("scheduleHRWFullRing: %v", err)
+	}
+	if res.AccountID == degraded {
+		t.Fatalf("selected degraded account %d despite active alternatives; sorted=%v", degraded, sorted)
+	}
+}
+
 func TestPASR_Select_RespectExcludedAccounts(t *testing.T) {
 	accs := []int64{10, 20, 30}
 	sel, _, ring, _, _ := newPASRTestRig(t, accs)
@@ -217,6 +263,33 @@ func TestPASR_Select_RespectExcludedAccounts(t *testing.T) {
 	if res.AccountID == top3[0] {
 		t.Errorf("应跳过被 excluded 的 %d, 实选 %d", top3[0], res.AccountID)
 	}
+}
+
+type healthStatusGate map[int64]HealthStatus
+
+func (g healthStatusGate) Allow(_ context.Context, account *AccountSnapshot, _ SelectionRequest) (bool, GateFailureReason, error) {
+	status := g.status(account)
+	switch status.State {
+	case HealthStateCoolingDown, HealthStateDisabled, HealthStatePaused:
+		return false, GateFailureHealth, nil
+	default:
+		return true, "", nil
+	}
+}
+
+func (g healthStatusGate) HealthStatus(_ context.Context, account *AccountSnapshot, _ SelectionRequest) (HealthStatus, error) {
+	return g.status(account), nil
+}
+
+func (g healthStatusGate) status(account *AccountSnapshot) HealthStatus {
+	if account == nil {
+		return HealthStatus{State: HealthStateActive}
+	}
+	status, ok := g[account.ID]
+	if !ok || status.State == "" {
+		return HealthStatus{State: HealthStateActive}
+	}
+	return status
 }
 
 func TestPASR_Select_NoSessionHash_FallsThroughToModel(t *testing.T) {

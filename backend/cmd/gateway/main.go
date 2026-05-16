@@ -39,6 +39,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
@@ -59,6 +60,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
+	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
+	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
 
 // smokeBuildStamp is overridden via -ldflags during smoke test builds to
@@ -85,12 +88,15 @@ type deps struct {
 	cfg                *config.Config
 	queries            *db.Queries
 	selector           pool.Selector // M6: 接口化, 由 buildSelector 按 PoolSelectorConfig 装配 default 或 dispatcher
+	channelHealth      *channelhealth.Service
 	claimGate          billing.ClaimGate
 	settler            billing.Settler
 	forwarder          *gateway.StreamForwarder
 	credentialVault    provider.CredentialVault
 	credentialStore    *credentialstore.Store
 	credentialAcqStore *credentialacq.PostgresSessionStore
+	userAuth           *userauth.Service
+	userSessions       *usersession.Service
 	dispatcher         *gateway.UpstreamDispatcher
 	responseCache      l2cache.Store
 	dlqService         *obsdlq.Service
@@ -157,6 +163,16 @@ func run(logger *zap.Logger) error {
 	credentialModeRegistry := credentialstore.DefaultHandlerRegistry()
 	credentialStore := credentialstore.NewStore(pgPool, credentialKeys, credentialModeRegistry)
 	credentialAcqStore := credentialacq.NewPostgresSessionStoreWithKeys(pgPool, credentialKeys)
+	userAuthStore := userauth.NewPostgresStore(pgPool)
+	userSessionStore := usersession.NewPostgresStore(pgPool)
+	sessionSigningKey, err := loadSessionSigningKey()
+	if err != nil {
+		return fmt.Errorf("load session signing key: %w", err)
+	}
+	userAuthService := userauth.NewService(userAuthStore)
+	userAuthService.OAuth = buildUserOAuthService(logger)
+	userSessionService := usersession.NewService(userSessionStore)
+	userSessionService.SigningKey = sessionSigningKey
 
 	// M6 main-wire: 按 PoolSelectorConfig 装配 selector。 default 模式等价现状
 	// (零回归); shadow / canary / pasr-* 启动 PASR 基础设施 (SegmentTable +
@@ -208,12 +224,6 @@ func run(logger *zap.Logger) error {
 		zap.Int("low_buffer", eventBusCfg.LowBuffer),
 		zap.Duration("handler_timeout", eventBusCfg.HandlerTimeout),
 	)
-	selector, selectorCleanup, err := buildSelector(ctx, q, pgPool, selectorCfg, logger)
-	if err != nil {
-		return fmt.Errorf("build selector: %w", err)
-	}
-	defer selectorCleanup()
-
 	auditSigner, err := loadAuditSigner(logger)
 	if err != nil {
 		return fmt.Errorf("load audit ledger signer: %w", err)
@@ -222,6 +232,13 @@ func run(logger *zap.Logger) error {
 	if err != nil {
 		return fmt.Errorf("build audit ledger: %w", err)
 	}
+	channelHealthStore := channelhealth.NewPostgresStoreWithAuditSigner(pgPool, auditSigner)
+	channelHealthService := channelhealth.NewService(channelHealthStore, channelhealth.DefaultPolicy(), nil)
+	selector, selectorCleanup, err := buildSelector(ctx, q, pgPool, selectorCfg, channelHealthService, logger)
+	if err != nil {
+		return fmt.Errorf("build selector: %w", err)
+	}
+	defer selectorCleanup()
 	dlqStore := obsdlq.NewStore(pgPool)
 	dlqService := obsdlq.NewService(dlqStore, obsdlq.WithPolicy(obsdlq.RetryPolicy{
 		BaseBackoff: obsDLQCfg.BaseBackoff,
@@ -257,11 +274,12 @@ func run(logger *zap.Logger) error {
 	}
 
 	d := &deps{
-		cfg:       cfg,
-		queries:   q,
-		selector:  selector,
-		claimGate: billing.NewClaimGate(pgPool),
-		settler:   settler,
+		cfg:           cfg,
+		queries:       q,
+		selector:      selector,
+		channelHealth: channelHealthService,
+		claimGate:     billing.NewClaimGate(pgPool),
+		settler:       settler,
 		forwarder: &gateway.StreamForwarder{
 			// 协议适配器注册表：按 ForwardRequest.ProtocolFamily 选语义层 adapter。
 			// 当前注册：详见 gateway.BuildDefaultProtocolAdapterRegistry。
@@ -284,6 +302,8 @@ func run(logger *zap.Logger) error {
 		credentialVault:    provider.NewPostgresCredentialVaultWithStore(pgPool, credentialStore),
 		credentialStore:    credentialStore,
 		credentialAcqStore: credentialAcqStore,
+		userAuth:           userAuthService,
+		userSessions:       userSessionService,
 		responseCache:      responseCache,
 		dlqService:         dlqService,
 		completionBus:      completionBus,
@@ -490,6 +510,91 @@ func loadCredentialKeyProvider() (credentialstore.KeyProvider, error) {
 	return credentialstore.NewStaticKeyProvider(keyID, material)
 }
 
+func loadSessionSigningKey() ([]byte, error) {
+	b64Names := []string{"HUAKAI_SESSION_SIGNING_KEY_B64", "HUAKAI_SESSION_HMAC_KEY_B64"}
+	for _, name := range b64Names {
+		raw := strings.TrimSpace(os.Getenv(name))
+		if raw == "" {
+			continue
+		}
+		for _, decode := range []func(string) ([]byte, error){
+			base64.StdEncoding.DecodeString,
+			base64.RawStdEncoding.DecodeString,
+			base64.RawURLEncoding.DecodeString,
+		} {
+			key, err := decode(raw)
+			if err == nil && len(key) >= 32 {
+				return key, nil
+			}
+		}
+		return nil, fmt.Errorf("%s must decode to at least 32 bytes", name)
+	}
+	if raw := strings.TrimSpace(os.Getenv("HUAKAI_SESSION_SIGNING_KEY_HEX")); raw != "" {
+		key, err := hex.DecodeString(raw)
+		if err != nil {
+			return nil, fmt.Errorf("decode HUAKAI_SESSION_SIGNING_KEY_HEX: %w", err)
+		}
+		if len(key) < 32 {
+			return nil, fmt.Errorf("HUAKAI_SESSION_SIGNING_KEY_HEX must decode to at least 32 bytes")
+		}
+		return key, nil
+	}
+	return nil, fmt.Errorf("HUAKAI_SESSION_SIGNING_KEY_B64 or HUAKAI_SESSION_SIGNING_KEY_HEX is required")
+}
+
+func buildUserOAuthService(logger *zap.Logger) *userauth.OAuthService {
+	providers := make([]userauth.OAuthProvider, 0, 2)
+	if p := buildOAuthProvider(logger, userauth.OAuthConfig{
+		Provider:     userauth.SocialProviderGoogle,
+		ClientID:     os.Getenv("HUAKAI_GOOGLE_OAUTH_CLIENT_ID"),
+		ClientSecret: os.Getenv("HUAKAI_GOOGLE_OAUTH_CLIENT_SECRET"),
+		RedirectURI:  os.Getenv("HUAKAI_GOOGLE_OAUTH_REDIRECT_URI"),
+		AuthURL:      os.Getenv("HUAKAI_GOOGLE_OAUTH_AUTH_URL"),
+		TokenURL:     envDefault("HUAKAI_GOOGLE_OAUTH_TOKEN_URL", "https://oauth2.googleapis.com/token"),
+		JWKSURL:      envDefault("HUAKAI_GOOGLE_OAUTH_JWKS_URL", "https://www.googleapis.com/oauth2/v3/certs"),
+		Issuer:       envDefault("HUAKAI_GOOGLE_OAUTH_ISSUER", "https://accounts.google.com"),
+	}); p != nil {
+		providers = append(providers, p)
+	}
+	if p := buildOAuthProvider(logger, userauth.OAuthConfig{
+		Provider:     userauth.SocialProviderGitHub,
+		ClientID:     os.Getenv("HUAKAI_GITHUB_OAUTH_CLIENT_ID"),
+		ClientSecret: os.Getenv("HUAKAI_GITHUB_OAUTH_CLIENT_SECRET"),
+		RedirectURI:  os.Getenv("HUAKAI_GITHUB_OAUTH_REDIRECT_URI"),
+		AuthURL:      os.Getenv("HUAKAI_GITHUB_OAUTH_AUTH_URL"),
+		TokenURL:     envDefault("HUAKAI_GITHUB_OAUTH_TOKEN_URL", "https://github.com/login/oauth/access_token"),
+		UserURL:      envDefault("HUAKAI_GITHUB_OAUTH_USER_URL", "https://api.github.com/user"),
+		EmailsURL:    envDefault("HUAKAI_GITHUB_OAUTH_EMAILS_URL", "https://api.github.com/user/emails"),
+	}); p != nil {
+		providers = append(providers, p)
+	}
+	return userauth.NewOAuthService(providers...)
+}
+
+func buildOAuthProvider(logger *zap.Logger, cfg userauth.OAuthConfig) userauth.OAuthProvider {
+	if strings.TrimSpace(cfg.ClientID) == "" {
+		if logger != nil {
+			logger.Info("user oauth provider disabled", zap.String("provider", cfg.Provider), zap.String("reason", "client_id_missing"))
+		}
+		return nil
+	}
+	p, err := userauth.NewOAuthHTTPProvider(cfg, http.DefaultClient)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("user oauth provider disabled", zap.String("provider", cfg.Provider), zap.Error(err))
+		}
+		return nil
+	}
+	return p
+}
+
+func envDefault(key, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
+}
+
 func loadMimicryTemplateRegistry(logger *zap.Logger) (*mimicry.TemplateRegistry, error) {
 	candidates := []string{
 		"tools/fingerprint-collector/templates",
@@ -580,6 +685,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		CompletionBus:        d.completionBus,
 		AuditLedger:          d.auditLedger,
 		Signer:               d.auditSigner,
+		ChannelHealth:        d.channelHealth,
 		BillingPolicyVersion: d.cfg.BillingPolicyVersion,
 		RequestClass:         d.cfg.RequestClass,
 	}))
@@ -597,6 +703,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		CompletionBus:        d.completionBus,
 		AuditLedger:          d.auditLedger,
 		Signer:               d.auditSigner,
+		ChannelHealth:        d.channelHealth,
 		BillingPolicyVersion: d.cfg.BillingPolicyVersion,
 		RequestClass:         d.cfg.RequestClass,
 	}))
@@ -618,11 +725,25 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		CompletionBus:        d.completionBus,
 		AuditLedger:          d.auditLedger,
 		Signer:               d.auditSigner,
+		ChannelHealth:        d.channelHealth,
 		BillingPolicyVersion: d.cfg.BillingPolicyVersion,
 		RequestClass:         d.cfg.RequestClass,
 	}))
 
 	gatewayhttp.MountAuditVerifyRoutes(r, gatewayhttp.AuditVerifyStaticDeps{Ledger: d.auditLedger})
+
+	r.Route("/v1/auth", func(r chi.Router) {
+		gatewayhttp.MountAuthRoutes(r, gatewayhttp.AuthHandlerDeps{
+			Auth:        d.userAuth,
+			Sessions:    d.userSessions,
+			EmailSender: gatewayhttp.NoopAuthEmailSender{},
+		})
+	})
+
+	r.Route("/v1/sessions", func(r chi.Router) {
+		r.Use(auth.SessionMiddleware(d.userSessions))
+		gatewayhttp.MountSessionRoutes(r, gatewayhttp.SessionHandlerDeps{Sessions: d.userSessions})
+	})
 
 	// Admin: API Keys (Slice 2 N+4b2). Replaces hand-written SQL INSERT
 	// for operator key issuance. POST=issue / GET=list / POST revoke.
@@ -638,9 +759,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	// Admin: Provider Account writes for the reverse-proxy main path Q1.
 	r.Route("/v1/admin/pool-accounts", func(r chi.Router) {
 		gatewayhttp.MountAdminPoolAccountRoutes(r, gatewayhttp.AdminPoolAccountDeps{
-			Auth:        d.adminAuth,
-			Store:       d.queries,
-			Credentials: d.credentialStore,
+			Auth:          d.adminAuth,
+			Store:         d.queries,
+			Credentials:   d.credentialStore,
+			ChannelHealth: d.channelHealth,
 		})
 		gatewayhttp.MountAdminCredentialRoutes(r, gatewayhttp.AdminCredentialDeps{
 			Auth:        d.adminAuth,
@@ -653,6 +775,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			Credentials:     d.credentialStore,
 			CredentialAudit: d.credentialStore,
 			AuditStore:      d.queries,
+		})
+		gatewayhttp.MountChannelHealthAdminRoutes(r, gatewayhttp.ChannelHealthAdminDeps{
+			Auth:       d.adminAuth,
+			Controller: d.channelHealth,
 		})
 	})
 

@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 )
@@ -35,6 +36,15 @@ type adminPoolStoreStub struct {
 type adminPoolCredentialWriterStub struct {
 	input *credentialstore.CreateCredentialInput
 	id    int64
+}
+
+type adminPoolChannelHealthStub struct {
+	key *channelhealth.ChannelKey
+}
+
+func (s *adminPoolChannelHealthStub) EnsureDefaultActive(_ context.Context, key channelhealth.ChannelKey) (channelhealth.Record, error) {
+	s.key = &key
+	return channelhealth.Record{Key: key, State: channelhealth.StateActive}, nil
 }
 
 func (s *adminPoolCredentialWriterStub) Create(_ context.Context, in credentialstore.CreateCredentialInput) (credentialstore.CredentialMetadata, error) {
@@ -151,6 +161,26 @@ func TestAdminPoolAccounts_CreateWithCredentialV2StoresEmptyLegacyJSON(t *testin
 	}
 }
 
+func TestAdminPoolAccounts_CreateWithCredentialInitializesChannelHealth(t *testing.T) {
+	store := &adminPoolStoreStub{insertID: 77}
+	credentials := &adminPoolCredentialWriterStub{id: 88}
+	health := &adminPoolChannelHealthStub{}
+	rec := invokeAdminPoolWithDeps(t, AdminPoolAccountDeps{
+		Auth: adminPoolAdmin(), Store: store, Credentials: credentials, ChannelHealth: health,
+	}, http.MethodPost, "/v1/admin/pool-accounts",
+		`{"tenant_id":7,"provider_id":8,"channel_id":9,"name":"acct","account_type":"api_key","vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if health.key == nil || health.key.TenantID != 7 || health.key.ProviderAccountID != 77 ||
+		health.key.AccountCredentialID != 88 || health.key.CredentialVersion != 1 || health.key.Vendor != "openai" {
+		t.Fatalf("channel health init key mismatch: %+v", health.key)
+	}
+	if strings.Contains(string(store.audits[0].Payload), "sk-live") {
+		t.Fatalf("audit leaked credential: %s", string(store.audits[0].Payload))
+	}
+}
+
 func TestAdminPoolAccounts_Unauthorized(t *testing.T) {
 	store := &adminPoolStoreStub{}
 	rec := invokeAdminPool(t, store, adminPoolAuthStub{err: admin.ErrAdminUnauthorized}, http.MethodPost,
@@ -217,9 +247,14 @@ func invokeAdminPool(t *testing.T, store *adminPoolStoreStub, auth AdminPoolAcco
 
 func invokeAdminPoolWithCredentialStore(t *testing.T, store *adminPoolStoreStub, credentials AdminPoolAccountCredentialWriter, auth AdminPoolAccountAuth, method, target, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	return invokeAdminPoolWithDeps(t, AdminPoolAccountDeps{Auth: auth, Store: store, Credentials: credentials}, method, target, body)
+}
+
+func invokeAdminPoolWithDeps(t *testing.T, deps AdminPoolAccountDeps, method, target, body string) *httptest.ResponseRecorder {
+	t.Helper()
 	r := chi.NewRouter()
 	r.Route("/v1/admin/pool-accounts", func(r chi.Router) {
-		MountAdminPoolAccountRoutes(r, AdminPoolAccountDeps{Auth: auth, Store: store, Credentials: credentials})
+		MountAdminPoolAccountRoutes(r, deps)
 	})
 	req := httptest.NewRequest(method, target, strings.NewReader(body))
 	rec := httptest.NewRecorder()

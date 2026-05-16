@@ -79,9 +79,11 @@ func (v *PostgresCredentialVault) Resolve(ctx context.Context, accountID int64) 
 				return Credential{}, AccountInfo{}, err
 			}
 			return mapRuntimeMaterial(material), AccountInfo{
-				AccountID:   rec.ProviderAccountID,
-				Platform:    rec.Vendor,
-				AccountType: rec.AuthMode,
+				AccountID:           rec.ProviderAccountID,
+				Platform:            rec.Vendor,
+				AccountType:         rec.AuthMode,
+				AccountCredentialID: rec.ID,
+				CredentialVersion:   int(rec.CredentialVersion),
 			}, nil
 		}
 		if !errors.Is(err, credentialstore.ErrCredentialNotFound) {

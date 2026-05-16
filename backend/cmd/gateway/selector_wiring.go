@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
@@ -47,6 +48,7 @@ func buildSelector(
 	q *db.Queries,
 	pgPool *pgxpool.Pool,
 	selectorCfg *config.PoolSelectorConfig,
+	healthService *channelhealth.Service,
 	logger *zap.Logger,
 ) (pool.Selector, func(), error) {
 	if selectorCfg == nil {
@@ -57,8 +59,13 @@ func buildSelector(
 	}
 
 	// 1. default selector 总是构造 — 即使 PASR 模式也作为 fallback 实例
+	gates := pool.DefaultGateChain()
+	if healthService != nil {
+		gates.Health = channelhealth.NewServicePoolGate(healthService, nil)
+	}
 	defaultSel := pool.NewDefaultSelector(
 		pool.NewDBAccountSource(q),
+		pool.WithGateChain(gates),
 		pool.WithSlotManager(pool.NewDBSlotManager(pgPool)),
 		pool.WithClaimGate(pool.NewDBClaimGate(q)),
 		pool.WithStickyStore(pool.NewDBStickyStore(q)),
@@ -98,6 +105,7 @@ func buildSelector(
 			Claims:   pool.NewDBClaimGate(q),
 			Slots:    pool.NewDBSlotManager(pgPool),
 			Segments: segments,
+			Gates:    gates,
 			// RingProvider 不注入 — 走 M5 request-scoped ring (synthesis D3)
 		})
 		if err != nil {
@@ -114,6 +122,7 @@ func buildSelector(
 			// Slots 显式 nil — shadow 不持 slot
 			Segments:         segments,
 			ReadOnlySegments: true, // D2: shadow 段表只读, 不污染 actual 学习数据
+			Gates:            gates,
 		})
 		if err != nil {
 			agingWorker.Stop()

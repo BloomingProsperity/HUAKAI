@@ -59,6 +59,10 @@ type AccountInfo struct {
 	Platform string
 	// AccountType 账号类型（如 "apikey" / "oauth" / "session" / "bedrock"）。
 	AccountType string
+	// AccountCredentialID 是当前出站凭据行主键，用于 channel-health subject。
+	AccountCredentialID int64
+	// CredentialVersion 是当前出站凭据版本，用于区分轮换前后的健康状态。
+	CredentialVersion int
 }
 
 // BuildInput 是 BuildRequest 的入参。

@@ -69,6 +69,11 @@ type PASRSelector struct {
 	// 段未命中 → 直接走 HRW 全 ring 接力, 等价于 cold-miss 路径。
 	readOnlySegments bool
 
+	// gates keeps PASR aligned with DefaultSelector's lifecycle, credential,
+	// and channel-health predicates. Default is AllowAll plus per-request
+	// exclusion, preserving existing tests unless callers inject stricter gates.
+	gates GateChain
+
 	// ringSeed 用于 RingProvider 未注入时的 request-scoped ring 构造 (synthesis D3)。
 	// 0 时用默认 0xCAFEBABE — 与现有测试保持一致。
 	ringSeed uint64
@@ -88,7 +93,8 @@ type PASRSelectorConfig struct {
 	Segments         *SegmentTable
 	LoadCap          float64 // 0 用 0.95
 	ReadOnlySegments bool    // M4 (D2): true 时 Select 走 Lookup-only 段表路径, 不污染段
-	RingSeed         uint64  // M5: request-scoped ring 的 HRW seed; 0 时用默认 0xCAFEBABE
+	Gates            GateChain
+	RingSeed         uint64 // M5: request-scoped ring 的 HRW seed; 0 时用默认 0xCAFEBABE
 }
 
 // NewPASRSelector 构造实例。 M5 起 RingProvider 不再 mandatory — nil 时
@@ -117,6 +123,7 @@ func NewPASRSelector(cfg PASRSelectorConfig) (*PASRSelector, error) {
 		segments:         cfg.Segments,
 		loadCap:          cap,
 		readOnlySegments: cfg.ReadOnlySegments,
+		gates:            cfg.Gates,
 		ringSeed:         seed,
 	}, nil
 }
@@ -165,7 +172,7 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 	if p.readOnlySegments {
 		seg = p.segments.Lookup(req.TenantID, prefixKey)
 		if seg == nil {
-			return p.scheduleHRWFullRing(ctx, req, ring, snapshots, [PASRSegmentSize]int64{})
+			return p.scheduleHRWFullRing(ctx, req, ring, snapshots, [PASRSegmentSize]int64{}, selectionFailures{})
 		}
 	} else {
 		seg = p.segments.LookupOrCreate(req.TenantID, prefixKey, ring)
@@ -177,8 +184,10 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 		accountID int64
 		snapshot  *AccountSnapshot
 		hasCache  bool
+		health    HealthStatus
 	}
 	var candidates []candidate
+	failures := selectionFailures{}
 	for i, accID := range seg.Members {
 		if accID == 0 {
 			continue
@@ -191,19 +200,27 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 			continue // 段成员账号已不存在 (rebalance 滞后)
 		}
 		if snap.LoadRate >= p.loadCap {
+			failures.other++
 			continue
 		}
+		ok, why := p.allowAccount(ctx, snap, req)
+		if !ok {
+			failures.add(why)
+			continue
+		}
+		health := p.healthStatus(ctx, snap, req)
 		candidates = append(candidates, candidate{
 			idx:       i,
 			accountID: accID,
 			snapshot:  snap,
 			hasCache:  seg.HasCache(i),
+			health:    health,
 		})
 	}
 
 	// 4. 段全 unhealthy → HRW 全 ring 接力 (codex D5)
 	if len(candidates) == 0 {
-		return p.scheduleHRWFullRing(ctx, req, ring, snapshots, seg.Members)
+		return p.scheduleHRWFullRing(ctx, req, ring, snapshots, seg.Members, failures)
 	}
 
 	// 5-6. score-based ranking (cache-aware A2, 替代纯 hasCache 优先 + tie-break):
@@ -226,6 +243,9 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 			s += localityWeight
 		}
 		s += (1 - c.snapshot.LoadRate) * headroomWeight
+		if c.health.State == HealthStateDegraded {
+			s -= 2.0
+		}
 		return s
 	}
 	chosen := candidates[0]
@@ -266,7 +286,7 @@ func (p *PASRSelector) scheduleNoSegment(
 		// 这不是好情况但兜底, caller 应保证 SessionHash 或 RequestedModel 非空
 		prefixKey = []byte("__pasr_noprefix__")
 	}
-	return p.scheduleHRWFullRing(ctx, req, ring, snapshots, [PASRSegmentSize]int64{})
+	return p.scheduleHRWFullRing(ctx, req, ring, snapshots, [PASRSegmentSize]int64{}, selectionFailures{})
 }
 
 // scheduleHRWFullRing: 段全 unhealthy 时 (synthesis D5), 直接对全 ring
@@ -278,6 +298,7 @@ func (p *PASRSelector) scheduleHRWFullRing(
 	ctx context.Context, req SelectionRequest,
 	ring *AccountRing, snapshots map[int64]*AccountSnapshot,
 	excludedSegmentMembers [PASRSegmentSize]int64,
+	failures selectionFailures,
 ) (*SelectionResult, error) {
 	IncFullRingFallback()
 	prefixKey := []byte(req.SessionHash)
@@ -298,11 +319,13 @@ func (p *PASRSelector) scheduleHRWFullRing(
 
 	// HRW 全 ring 排序: TopK(prefix, len(accounts))
 	sorted := ring.TopK(prefixKey, len(ring.Accounts))
+	var firstDegraded *AccountSnapshot
 	for _, accID := range sorted {
 		if tried[accID] {
 			continue
 		}
 		if _, excluded := req.ExcludedAccounts[accID]; excluded {
+			failures.other++
 			continue
 		}
 		snap, ok := snapshots[accID]
@@ -310,11 +333,72 @@ func (p *PASRSelector) scheduleHRWFullRing(
 			continue
 		}
 		if snap.LoadRate >= p.loadCap {
+			failures.other++
+			continue
+		}
+		ok, why := p.allowAccount(ctx, snap, req)
+		if !ok {
+			failures.add(why)
+			continue
+		}
+		if p.healthStatus(ctx, snap, req).State == HealthStateDegraded {
+			if firstDegraded == nil {
+				firstDegraded = snap
+			}
 			continue
 		}
 		return p.acquireAndReturn(ctx, req, snap)
 	}
+	if firstDegraded != nil {
+		return p.acquireAndReturn(ctx, req, firstDegraded)
+	}
+	if failures.onlyHealth() {
+		return nil, ErrAllChannelsDegraded
+	}
 	return nil, ErrNoEligibleAccount
+}
+
+type selectionFailures struct {
+	health int
+	other  int
+}
+
+func (f *selectionFailures) add(reason GateFailureReason) {
+	if reason == GateFailureHealth {
+		f.health++
+		return
+	}
+	f.other++
+}
+
+func (f selectionFailures) onlyHealth() bool {
+	return f.health > 0 && f.other == 0
+}
+
+func (p *PASRSelector) allowAccount(ctx context.Context, snap *AccountSnapshot, req SelectionRequest) (bool, GateFailureReason) {
+	if p == nil {
+		return false, ""
+	}
+	ok, why, err := p.gates.Allow(ctx, snap, req)
+	if err != nil {
+		return false, why
+	}
+	return ok, why
+}
+
+func (p *PASRSelector) healthStatus(ctx context.Context, snap *AccountSnapshot, req SelectionRequest) HealthStatus {
+	if p == nil || p.gates.Health == nil {
+		return HealthStatus{State: HealthStateActive}
+	}
+	statusGate, ok := p.gates.Health.(HealthStatusGate)
+	if !ok {
+		return HealthStatus{State: HealthStateActive}
+	}
+	status, err := statusGate.HealthStatus(ctx, snap, req)
+	if err != nil || status.State == "" {
+		return HealthStatus{State: HealthStateActive}
+	}
+	return status
 }
 
 // acquireAndReturn 走 PASR actual 写入路径: SlotManager.Acquire (pre-mutation) →

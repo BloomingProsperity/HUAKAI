@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 )
@@ -32,10 +33,15 @@ type AdminPoolAccountCredentialWriter interface {
 	Create(context.Context, credentialstore.CreateCredentialInput) (credentialstore.CredentialMetadata, error)
 }
 
+type AdminPoolAccountChannelHealthInitializer interface {
+	EnsureDefaultActive(context.Context, channelhealth.ChannelKey) (channelhealth.Record, error)
+}
+
 type AdminPoolAccountDeps struct {
-	Auth        AdminPoolAccountAuth
-	Store       AdminPoolAccountStore
-	Credentials AdminPoolAccountCredentialWriter
+	Auth          AdminPoolAccountAuth
+	Store         AdminPoolAccountStore
+	Credentials   AdminPoolAccountCredentialWriter
+	ChannelHealth AdminPoolAccountChannelHealthInitializer
 }
 
 func MountAdminPoolAccountRoutes(r chi.Router, d AdminPoolAccountDeps) {
@@ -96,6 +102,8 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			return
 		}
 		var credentialID int64
+		var credentialVersion int
+		channelHealthInitialized := false
 		if d.Credentials != nil {
 			created, err := d.Credentials.Create(r.Context(), credentialstore.CreateCredentialInput{
 				TenantID: req.TenantID, ProviderAccountID: id,
@@ -107,24 +115,38 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 				return
 			}
 			credentialID = created.ID
+			credentialVersion = int(created.Version)
+			if d.ChannelHealth != nil {
+				key := channelhealth.ChannelKey{
+					TenantID: req.TenantID, Vendor: created.Vendor, ProviderAccountID: id,
+					AccountCredentialID: created.ID, CredentialVersion: int(created.Version),
+				}
+				if _, err := d.ChannelHealth.EnsureDefaultActive(r.Context(), key); err == nil {
+					channelHealthInitialized = true
+				}
+			}
 		}
 		payload, _ := json.Marshal(map[string]any{
-			"tenant_id":           req.TenantID,
-			"provider_id":         req.ProviderID,
-			"channel_id":          req.ChannelID,
-			"name":                req.Name,
-			"account_type":        req.AccountType,
-			"vendor":              req.Vendor,
-			"auth_mode":           req.AuthMode,
-			"credential_id":       credentialID,
-			"credentials_present": true,
+			"tenant_id":                  req.TenantID,
+			"provider_id":                req.ProviderID,
+			"channel_id":                 req.ChannelID,
+			"name":                       req.Name,
+			"account_type":               req.AccountType,
+			"vendor":                     req.Vendor,
+			"auth_mode":                  req.AuthMode,
+			"credential_id":              credentialID,
+			"credential_version":         credentialVersion,
+			"channel_health_initialized": channelHealthInitialized,
+			"credentials_present":        true,
 		})
 		if err := writeProviderAccountAudit(r.Context(), r, d.Store, ident, req.TenantID,
 			"create_provider_account", id, chineseReason(req.Reason, "创建 provider account"), payload); err != nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "audit_write_failed", err.Error())
 			return
 		}
-		writeAuditJSON(w, http.StatusCreated, map[string]int64{"id": id, "credential_id": credentialID})
+		writeAuditJSON(w, http.StatusCreated, map[string]int64{
+			"id": id, "credential_id": credentialID, "credential_version": int64(credentialVersion),
+		})
 	}
 }
 

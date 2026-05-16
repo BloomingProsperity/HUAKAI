@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
@@ -61,14 +62,25 @@ func clientAdapterDeps(t *testing.T) ChatHandlerDeps {
 		Type:  provider.CredentialTypeAPIKey,
 		Value: "sk-test",
 	}, provider.AccountInfo{
-		AccountID:   1,
-		Platform:    "openai",
-		AccountType: "apikey",
+		AccountID:           1,
+		Platform:            "openai",
+		AccountType:         "apikey",
+		AccountCredentialID: 9001,
+		CredentialVersion:   1,
 	}); err != nil {
 		t.Fatalf("vault.Set: %v", err)
 	}
 	d.CredentialVault = vault
 	return d
+}
+
+type recordingChannelHealth struct {
+	signals []channelhealth.Signal
+}
+
+func (r *recordingChannelHealth) ApplySignal(_ context.Context, sig channelhealth.Signal) (channelhealth.Record, error) {
+	r.signals = append(r.signals, sig)
+	return channelhealth.Record{Key: sig.Key, State: channelhealth.StateActive}, nil
 }
 
 func invokeHandlerPath(t *testing.T, deps ChatHandlerDeps, path, body string) *httptest.ResponseRecorder {
@@ -148,6 +160,46 @@ func TestChatCompletionsClientAdapter_NonStreamingHappyPath(t *testing.T) {
 	}
 	if out.Usage.PromptTokens != 2 || out.Usage.CompletionTokens != 3 || out.Usage.TotalTokens != 5 {
 		t.Fatalf("usage = %+v; want 2/3/5", out.Usage)
+	}
+}
+
+func TestChatCompletions_ChannelHealthSignalOnHCSFSuccess(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	health := &recordingChannelHealth{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.ChannelHealth = health
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if len(health.signals) != 1 {
+		t.Fatalf("signals=%+v want one success signal", health.signals)
+	}
+	got := health.signals[0]
+	if got.Class != channelhealth.SignalSuccess || got.RawUpstreamText != "" {
+		t.Fatalf("signal=%+v want normalized success without raw upstream text", got)
+	}
+	if got.Key.TenantID != 7 || got.Key.ProviderAccountID != 1 ||
+		got.Key.AccountCredentialID != 9001 || got.Key.CredentialVersion != 1 {
+		t.Fatalf("signal key=%+v", got.Key)
+	}
+}
+
+func TestChatCompletions_ChannelHealthSignalOnHCSFTimeout(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	health := &recordingChannelHealth{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{err: errors.New("upstream connection timeout")}
+	d.ChannelHealth = health
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d; want 502; body = %s", rec.Code, rec.Body.String())
+	}
+	if len(health.signals) != 1 || health.signals[0].Class != channelhealth.SignalTimeout {
+		t.Fatalf("signals=%+v want one timeout signal", health.signals)
 	}
 }
 

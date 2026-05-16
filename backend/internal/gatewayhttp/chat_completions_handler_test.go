@@ -424,7 +424,7 @@ func anthropicClientAdapterDeps(t *testing.T) ChatHandlerDeps {
 		ProviderModelID: "claude-3-5-sonnet", ProtocolFamily: "anthropic_messages", PoolCandidates: []int64{42},
 	}}
 	vault := provider.NewStaticVault()
-	if err := vault.Set(1, provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-ant-test"}, provider.AccountInfo{AccountID: 1, Platform: "anthropic", AccountType: "apikey"}); err != nil {
+	if err := vault.Set(1, provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-ant-test"}, provider.AccountInfo{AccountID: 1, Platform: "anthropic", AccountType: "apikey", AccountCredentialID: 9002, CredentialVersion: 1}); err != nil {
 		t.Fatalf("vault.Set: %v", err)
 	}
 	d.CredentialVault = vault

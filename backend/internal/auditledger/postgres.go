@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
@@ -61,14 +62,39 @@ func (l *PostgresLedger) Append(ctx context.Context, entry LedgerEntry) (LedgerE
 	}
 	defer tx.Rollback(ctx)
 
-	// 串行化所有 writer
-	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", auditLedgerAdvisoryLockID); err != nil {
+	entry, err = AppendInTransaction(ctx, tx, l.signer, entry)
+	if err != nil {
+		return LedgerEntry{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return LedgerEntry{}, fmt.Errorf("auditledger: commit: %w", err)
+	}
+	return entry, nil
+}
+
+// AppendInTransaction appends an audit ledger entry using the caller-owned
+// database transaction. The caller is responsible for commit/rollback.
+func AppendInTransaction(ctx context.Context, q DBTX, signer *sign.Signer, entry LedgerEntry) (LedgerEntry, error) {
+	if signer == nil {
+		return LedgerEntry{}, ErrSignerNil
+	}
+	if entry.RequestID == "" {
+		return LedgerEntry{}, errors.New("auditledger: RequestID required for Postgres Append")
+	}
+	if entry.LedgerID == "" {
+		return LedgerEntry{}, errors.New("auditledger: LedgerID required for Postgres Append")
+	}
+	if entry.Timestamp == "" {
+		entry.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+
+	if _, err := q.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", auditLedgerAdvisoryLockID); err != nil {
 		return LedgerEntry{}, fmt.Errorf("auditledger: advisory lock: %w", err)
 	}
 
-	// 读最新 merkle_root
 	var prev [32]byte
-	prevBytes, err := readLatestMerkleRoot(ctx, tx)
+	prevBytes, err := readLatestMerkleRoot(ctx, q)
 	if err != nil {
 		return LedgerEntry{}, fmt.Errorf("auditledger: read latest merkle: %w", err)
 	}
@@ -76,18 +102,16 @@ func (l *PostgresLedger) Append(ctx context.Context, entry LedgerEntry) (LedgerE
 		copy(prev[:], prevBytes)
 	}
 	entry.PrevMerkleRoot = prev
-	entry.PubkeyFingerprint = l.signer.Fingerprint()
+	entry.PubkeyFingerprint = signer.Fingerprint()
 
-	// 计算 entry hash + merkle root + 签名
 	eh, err := EntryHash(&entry)
 	if err != nil {
 		return LedgerEntry{}, fmt.Errorf("auditledger: entry hash: %w", err)
 	}
 	entry.MerkleRoot = NextMerkleRoot(prev, eh)
-	sig := l.signer.Sign(eh[:])
+	sig := signer.Sign(eh[:])
 	entry.Signature = base64.StdEncoding.EncodeToString(sig)
 
-	// 序列化 hop_chain / model_chain 为 JSONB
 	hopJSON, err := json.Marshal(entry.HopChain)
 	if err != nil {
 		return LedgerEntry{}, fmt.Errorf("auditledger: marshal hop_chain: %w", err)
@@ -111,7 +135,7 @@ func (l *PostgresLedger) Append(ctx context.Context, entry LedgerEntry) (LedgerE
 		tenantArg = entry.TenantID
 	}
 
-	_, err = tx.Exec(ctx,
+	_, err = q.Exec(ctx,
 		`INSERT INTO audit_ledger_entries (
 			ledger_id, occurred_at, request_id, tenant_id,
 			hop_chain, model_chain, prev_merkle_root, merkle_root,
@@ -130,10 +154,6 @@ func (l *PostgresLedger) Append(ctx context.Context, entry LedgerEntry) (LedgerE
 	)
 	if err != nil {
 		return LedgerEntry{}, fmt.Errorf("auditledger: insert: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return LedgerEntry{}, fmt.Errorf("auditledger: commit: %w", err)
 	}
 	return entry, nil
 }
@@ -176,6 +196,11 @@ func (l *PostgresLedger) Size(ctx context.Context) int {
 // pgxQuerier 是 pgxpool.Pool 与 pgx.Tx 共同实现的子集，使 readLatestMerkleRoot
 // 在事务内外都能用。
 type pgxQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+type DBTX interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
