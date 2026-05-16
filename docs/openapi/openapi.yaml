@@ -53,6 +53,8 @@ tags:
     description: Pool Group management. F-POOL-001.
   - name: admin-accounts
     description: Provider Account management. F-POOL-001 + F-AUTH-005 + F-RATE-001.
+  - name: admin-credential-acquisition
+    description: Credential acquisition lifecycle and helper imports. F-CRED-001.
   - name: admin-usage
     description: Usage Record query. F-OBS-001.
   - name: admin-billing
@@ -489,6 +491,257 @@ paths:
           description: Cleared.
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /v1/admin/pool-accounts/{id}/credential-acquisitions:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Start credential acquisition for a Provider Account
+      operationId: startCredentialAcquisition
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CredentialAcquisitionStart' }
+      responses:
+        '201':
+          description: Flow created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CredentialAcquisitionStartResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/admin/pool-accounts/{id}/credential-acquisitions/{flow_id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+      - name: flow_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [admin-credential-acquisition]
+      summary: Get credential acquisition status
+      operationId: getCredentialAcquisition
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: Redacted flow status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CredentialAcquisitionStatusResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/admin/pool-accounts/{id}/credential-acquisitions/{flow_id}/callback:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+      - name: flow_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Consume OAuth callback or callback-equivalent material
+      operationId: callbackCredentialAcquisition
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CredentialAcquisitionCallback' }
+      responses:
+        '200':
+          description: Callback accepted and redacted status returned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CredentialAcquisitionStatusResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/admin/pool-accounts/{id}/credential-acquisitions/{flow_id}/cancel:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+      - name: flow_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Cancel credential acquisition
+      operationId: cancelCredentialAcquisition
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: Cancelled.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CredentialAcquisitionStatusResponse' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/admin/pool-accounts/{id}/credential-acquisitions/{flow_id}/finalize:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+      - name: flow_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Finalize acquisition into encrypted account_credentials
+      operationId: finalizeCredentialAcquisition
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CredentialAcquisitionFinalize' }
+      responses:
+        '200':
+          description: Finalized or idempotent finalized result.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CredentialAcquisitionFinalizeResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/v1/credentials/paste:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Paste credential material into an acquisition flow
+      operationId: pasteCredentialAcquisition
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CredentialAcquisitionHelperImport' }
+      responses:
+        '201': { $ref: '#/components/responses/CredentialAcquisitionHelperCreated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /admin/v1/credentials/cli-import:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Import uploaded or pasted CLI auth content
+      operationId: importCLICredentialAcquisition
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CredentialAcquisitionHelperImport' }
+      responses:
+        '201': { $ref: '#/components/responses/CredentialAcquisitionHelperCreated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /admin/v1/credentials/csv-import:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Import CSV credential rows
+      operationId: importCSVCredentialAcquisition
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CredentialAcquisitionHelperImport' }
+      responses:
+        '201': { $ref: '#/components/responses/CredentialAcquisitionHelperCreated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /admin/v1/credentials/json-import:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Import JSON credential rows
+      operationId: importJSONCredentialAcquisition
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CredentialAcquisitionHelperImport' }
+      responses:
+        '201': { $ref: '#/components/responses/CredentialAcquisitionHelperCreated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /admin/v1/credentials/oauth-init:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Start browser OAuth acquisition
+      operationId: initOAuthCredentialAcquisition
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CredentialAcquisitionStart' }
+      responses:
+        '201':
+          description: OAuth flow created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CredentialAcquisitionStartResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /admin/v1/credentials/oauth-callback:
+    get:
+      tags: [admin-credential-acquisition]
+      summary: Browser OAuth redirect callback
+      operationId: oauthCallbackCredentialAcquisition
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - name: flow_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: state
+          in: query
+          required: true
+          schema: { type: string }
+        - name: code
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Callback accepted and redacted status returned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CredentialAcquisitionStatusResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
   # ==========================================================================
   # Admin: Usage / Billing / Audit / DLQ (F-OBS-001)
   # ==========================================================================
@@ -756,6 +1009,11 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
+    CredentialAcquisitionHelperCreated:
+      description: Acquisition helper created one or more redacted flows.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/CredentialAcquisitionHelperResponse' }
 
   schemas:
     # ---- Gateway request/response schemas (permissive: additionalProperties: true) ----
@@ -1264,6 +1522,182 @@ components:
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/ProviderAccount' } }
         page: { $ref: '#/components/schemas/PageMeta' }
+
+    CredentialAcquisitionStart:
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      type: object
+      additionalProperties: false
+      required: [tenant_id, vendor, auth_mode]
+      properties:
+        tenant_id: { type: integer, format: int64 }
+        provider_account_id: { type: integer, format: int64 }
+        vendor: { type: string, enum: [anthropic, openai, gemini] }
+        auth_mode:
+          type: string
+          enum:
+            - api_key
+            - claude_ai_oauth
+            - claude_code
+            - bedrock
+            - vertex_anthropic
+            - chatgpt_oauth
+            - codex_cli_oauth
+            - azure
+            - refresh_token
+            - aistudio_api_key
+            - vertex_sa
+            - code_assist
+            - google_one
+            - antigravity
+        flow_kind:
+          type: string
+          enum: [oauth, cli_import, paste, csv_import, json_import, cloud_bootstrap, token_exchange, setup_token, manual_first]
+        redirect_uri: { type: string }
+        requested_scopes: { type: array, items: { type: string } }
+        redacted_context: { type: object, additionalProperties: true }
+        long_lived_requested:
+          type: boolean
+          default: false
+          description: Default-disabled Anthropic setup-token path. Requires explicit operator enablement outside this request.
+        oauth_client:
+          type: object
+          additionalProperties: false
+          properties:
+            client_id: { type: string }
+            auth_url: { type: string }
+            token_url: { type: string }
+            redirect_uri: { type: string }
+            scopes: { type: array, items: { type: string } }
+            source:
+              type: string
+              enum: [public_cli_client, operator_config, per_account_override, disabled_missing_config]
+        reason: { type: string }
+
+    CredentialAcquisitionCallback:
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      type: object
+      additionalProperties: false
+      required: [state, code]
+      properties:
+        state: { type: string }
+        code: { type: string, writeOnly: true }
+        credentials:
+          type: object
+          additionalProperties: true
+          writeOnly: true
+          description: Optional callback-equivalent credential material for non-network test/operator exchange paths; never returned.
+
+    CredentialAcquisitionFinalize:
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      type: object
+      additionalProperties: false
+      required: [credentials]
+      properties:
+        credentials:
+          type: object
+          additionalProperties: true
+          writeOnly: true
+          description: Raw credential candidate handed directly to F-AUTH-005 finalizer; not stored in acquisition session metadata.
+        reason: { type: string }
+
+    CredentialAcquisitionHelperImport:
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      type: object
+      additionalProperties: false
+      required: [tenant_id, provider_account_id]
+      properties:
+        tenant_id: { type: integer, format: int64 }
+        provider_account_id: { type: integer, format: int64 }
+        vendor: { type: string, enum: [anthropic, openai, gemini] }
+        auth_mode: { type: string }
+        flow_kind:
+          type: string
+          enum: [oauth, cli_import, paste, csv_import, json_import, cloud_bootstrap, token_exchange, setup_token, manual_first]
+        content:
+          type: string
+          writeOnly: true
+          description: Uploaded/pasted JSON, JSON-lines, CSV, or token text. Server never reads local workstation paths.
+        credentials:
+          type: object
+          additionalProperties: true
+          writeOnly: true
+        finalize:
+          type: boolean
+          default: false
+          description: When true, helper immediately finalizes using the supplied raw material.
+        redacted_context: { type: object, additionalProperties: true }
+        reason: { type: string }
+
+    CredentialAcquisitionFlow:
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      type: object
+      additionalProperties: false
+      required: [id, tenant_id, provider_account_id, vendor, auth_mode, flow_kind, status, client_identity_source, redacted_context, expires_at, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: integer, format: int64 }
+        provider_account_id: { type: integer, format: int64 }
+        vendor: { type: string }
+        auth_mode: { type: string }
+        flow_kind: { type: string }
+        status:
+          type: string
+          enum: [started, waiting_for_user, callback_received, validated, finalized, cancelled, expired, failed]
+        actor_id: { type: string }
+        actor_role: { type: string }
+        client_identity_source:
+          type: string
+          enum: [none, public_cli_client, operator_config, per_account_override, disabled_missing_config]
+        redirect_uri: { type: string }
+        requested_scopes: { type: array, items: { type: string } }
+        redacted_context: { type: object, additionalProperties: true }
+        long_lived_requested: { type: boolean }
+        result_account_credential_id: { type: integer, format: int64 }
+        error_class: { type: string }
+        error_message_redacted: { type: string }
+        expires_at: { type: string, format: date-time }
+        consumed_at: { type: string, format: date-time }
+        cancelled_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CredentialAcquisitionStartResponse:
+      type: object
+      additionalProperties: false
+      required: [flow]
+      properties:
+        flow: { $ref: '#/components/schemas/CredentialAcquisitionFlow' }
+        authorize_url: { type: string }
+        state: { type: string }
+        code_challenge: { type: string }
+
+    CredentialAcquisitionStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [flow]
+      properties:
+        flow: { $ref: '#/components/schemas/CredentialAcquisitionFlow' }
+
+    CredentialAcquisitionFinalizeResponse:
+      type: object
+      additionalProperties: false
+      required: [flow, credential]
+      properties:
+        flow: { $ref: '#/components/schemas/CredentialAcquisitionFlow' }
+        credential: { type: object, additionalProperties: true }
+        already_finalized: { type: boolean }
+
+    CredentialAcquisitionHelperResponse:
+      type: object
+      additionalProperties: false
+      required: [flows, finalized]
+      properties:
+        flows:
+          type: array
+          items: { $ref: '#/components/schemas/CredentialAcquisitionFlow' }
+        finalized:
+          type: array
+          items: { $ref: '#/components/schemas/CredentialAcquisitionFinalizeResponse' }
 
     UsageRecord:
       type: object

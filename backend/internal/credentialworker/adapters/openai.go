@@ -21,10 +21,11 @@ const (
 
 // OpenAIRefresh 用标准 refresh_token grant 刷新 OpenAI / ChatGPT 账号。
 type OpenAIRefresh struct {
-	Endpoint   string
-	ClientID   string
-	Scope      string
-	HTTPClient *http.Client
+	Endpoint               string
+	ClientID               string
+	Scope                  string
+	HTTPClient             *http.Client
+	PrivacyMutationEnabled bool
 }
 
 func (r OpenAIRefresh) RefreshForProvider(ctx context.Context, accountID int64, providerName string, currentCredential []byte) ([]byte, time.Time, error) {
@@ -57,6 +58,10 @@ func (r OpenAIRefresh) RefreshForProvider(ctx context.Context, accountID int64, 
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("openai refresh account %d: %w", accountID, err)
 	}
+	newCredential, err = applyOpenAIRefreshMetadata(newCredential, r.PrivacyMutationEnabled)
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("openai refresh account %d: %w", accountID, err)
+	}
 	return newCredential, expiresAt, nil
 }
 
@@ -65,6 +70,33 @@ func (r OpenAIRefresh) httpClient() *http.Client {
 		return r.HTTPClient
 	}
 	return http.DefaultClient
+}
+
+func applyOpenAIRefreshMetadata(raw []byte, privacyMutationEnabled bool) ([]byte, error) {
+	cred, err := parseCredential(raw)
+	if err != nil {
+		return nil, err
+	}
+	cred["account_check_outcome"] = "not_configured"
+	if privacyMutationEnabled {
+		cred["privacy_action_outcome"] = "pending_operator_policy"
+	} else {
+		cred["privacy_action_outcome"] = "disabled"
+	}
+	return json.Marshal(cred)
+}
+
+func ShouldRefreshOpenAIForRateLimit(raw []byte) bool {
+	cred, err := parseCredential(raw)
+	if err != nil {
+		return false
+	}
+	if credentialString(cred, "expires_at") != "" {
+		return false
+	}
+	state := strings.ToLower(credentialString(cred, "account_state"))
+	reason := strings.ToLower(credentialString(cred, "rate_limit_reason"))
+	return strings.Contains(state, "rate") || strings.Contains(reason, "rate")
 }
 
 type tokenResponse struct {

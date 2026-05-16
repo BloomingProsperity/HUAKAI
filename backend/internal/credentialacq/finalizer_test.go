@@ -3,6 +3,7 @@ package credentialacq
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -42,80 +43,43 @@ func (f *fakeCredentialCreator) Calls() int {
 	return f.calls
 }
 
-type mockFinalizer struct {
-	registry *credentialstore.HandlerRegistry
-	creator  credentialCreator
-	mu       sync.Mutex
-	seen     map[string]credentialstore.CredentialMetadata
-}
-
-func newMockFinalizer(registry *credentialstore.HandlerRegistry, creator credentialCreator) *mockFinalizer {
-	return &mockFinalizer{registry: registry, creator: creator, seen: map[string]credentialstore.CredentialMetadata{}}
-}
-
-func (f *mockFinalizer) Finalize(ctx context.Context, flowID string, candidate acqCandidate) (credentialstore.CredentialMetadata, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if meta, ok := f.seen[flowID]; ok {
-		return meta, nil
-	}
-
-	handler, err := f.registry.MustLookup(candidate.Vendor, candidate.AuthMode)
-	if err != nil {
-		return credentialstore.CredentialMetadata{}, errUnknownMode
-	}
-	if err := handler.ValidatePayload(candidate.Payload); err != nil {
-		return credentialstore.CredentialMetadata{}, err
-	}
-	meta, err := f.creator.Create(ctx, credentialstore.CreateCredentialInput{
-		TenantID: candidate.TenantID, ProviderAccountID: candidate.ProviderAccountID,
-		Vendor: candidate.Vendor, AuthMode: candidate.AuthMode, Payload: candidate.Payload,
-		ActorID: candidate.ActorID,
-	})
-	if err != nil {
-		return credentialstore.CredentialMetadata{}, err
-	}
-
-	f.seen[flowID] = meta
-	return meta, nil
-}
-
 func TestFinalizerValidatesAllFifteenModesAgainstCredentialStoreRegistry(t *testing.T) {
-	finalizer := newMockFinalizer(credentialstore.DefaultHandlerRegistry(), &fakeCredentialCreator{})
+	finalizer := NewFinalizer(nil, credentialstore.DefaultHandlerRegistry(), &fakeCredentialCreator{}, nil)
 	for i, plan := range phaseAModePlans() {
 		payload := samplePayloadForMode(plan.Vendor, plan.AuthMode)
-		meta, err := finalizer.Finalize(context.Background(), plan.Vendor+"/"+plan.AuthMode, acqCandidate{
+		candidate := CredentialCandidate{
 			TenantID: 1, ProviderAccountID: int64(100 + i),
 			Vendor: plan.Vendor, AuthMode: plan.AuthMode, Payload: payload, ActorID: "admin-1",
-		})
-		if err != nil {
-			t.Fatalf("%s/%s finalize: %v", plan.Vendor, plan.AuthMode, err)
 		}
-		if meta.Vendor != plan.Vendor || meta.AuthMode != plan.AuthMode {
-			t.Fatalf("meta target=%s/%s want %s/%s", meta.Vendor, meta.AuthMode, plan.Vendor, plan.AuthMode)
+		if err := finalizer.ValidateCandidate(candidate); err != nil {
+			t.Fatalf("%s/%s validate: %v", plan.Vendor, plan.AuthMode, err)
 		}
 	}
 }
 
 func TestFinalizerIsIdempotentByFlowID(t *testing.T) {
 	creator := &fakeCredentialCreator{}
-	finalizer := newMockFinalizer(credentialstore.DefaultHandlerRegistry(), creator)
-	candidate := acqCandidate{
+	store := newProductionTestStore(t, "flow-idem", credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth)
+	finalizer := NewFinalizer(store, credentialstore.DefaultHandlerRegistry(), creator, nil)
+	candidate := CredentialCandidate{
 		TenantID: 1, ProviderAccountID: 2,
 		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeChatGPTOAuth,
 		Payload: samplePayloadForMode(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth),
 		ActorID: "admin-1",
 	}
-	first, err := finalizer.Finalize(context.Background(), "flow-idem", candidate)
+	first, err := finalizer.Finalize(context.Background(), "flow-idem", candidate, "admin-1", "req-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := finalizer.Finalize(context.Background(), "flow-idem", candidate)
+	second, err := finalizer.Finalize(context.Background(), "flow-idem", candidate, "admin-1", "req-2")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.ID != second.ID {
-		t.Fatalf("idempotency returned different ids: %d vs %d", first.ID, second.ID)
+	if first.Credential.ID != second.Credential.ID {
+		t.Fatalf("idempotency returned different ids: %d vs %d", first.Credential.ID, second.Credential.ID)
+	}
+	if !second.AlreadyFinalized {
+		t.Fatal("second finalize should be reported as already finalized")
 	}
 	if got := creator.Calls(); got != 1 {
 		t.Fatalf("creator calls=%d want 1", got)
@@ -124,8 +88,9 @@ func TestFinalizerIsIdempotentByFlowID(t *testing.T) {
 
 func TestFinalizerConcurrentFinalizeRaceIsIdempotent(t *testing.T) {
 	creator := &fakeCredentialCreator{}
-	finalizer := newMockFinalizer(credentialstore.DefaultHandlerRegistry(), creator)
-	candidate := acqCandidate{
+	store := newProductionTestStore(t, "flow-race", credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth)
+	finalizer := NewFinalizer(store, credentialstore.DefaultHandlerRegistry(), creator, nil)
+	candidate := CredentialCandidate{
 		TenantID: 1, ProviderAccountID: 2,
 		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeChatGPTOAuth,
 		Payload: samplePayloadForMode(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth),
@@ -135,7 +100,7 @@ func TestFinalizerConcurrentFinalizeRaceIsIdempotent(t *testing.T) {
 	const callers = 2
 	start := make(chan struct{})
 	var wg sync.WaitGroup
-	metas := make([]credentialstore.CredentialMetadata, callers)
+	results := make([]FinalizeResult, callers)
 	errs := make([]error, callers)
 
 	for i := 0; i < callers; i++ {
@@ -143,29 +108,47 @@ func TestFinalizerConcurrentFinalizeRaceIsIdempotent(t *testing.T) {
 		go func(index int) {
 			defer wg.Done()
 			<-start
-			metas[index], errs[index] = finalizer.Finalize(context.Background(), "flow-race", candidate)
+			results[index], errs[index] = finalizer.Finalize(context.Background(), "flow-race", candidate, "admin-1", "req-race")
 		}(i)
 	}
 
 	close(start)
 	wg.Wait()
 
+	successes := 0
 	for i, err := range errs {
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrFlowReplay) {
 			t.Fatalf("caller %d finalize: %v", i, err)
 		}
-	}
-	if metas[0].ID == 0 {
-		t.Fatal("first caller returned empty credential id")
-	}
-	for i := 1; i < callers; i++ {
-		if metas[i].ID != metas[0].ID {
-			t.Fatalf("caller %d returned id=%d want %d", i, metas[i].ID, metas[0].ID)
+		if err == nil {
+			if results[i].Credential.ID == 0 {
+				t.Fatalf("caller %d returned empty credential id", i)
+			}
+			successes++
 		}
+	}
+	if successes == 0 {
+		t.Fatal("no caller finalized the flow")
 	}
 	if got := creator.Calls(); got != 1 {
 		t.Fatalf("creator calls=%d want 1", got)
 	}
+}
+
+func newProductionTestStore(t *testing.T, flowID, vendor, authMode string) *PostgresSessionStore {
+	t.Helper()
+	now := time.Date(2026, 5, 16, 5, 0, 0, 0, time.UTC)
+	store := NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now })
+	if _, err := store.Create(context.Background(), Session{
+		ID: flowID, TenantID: 1, ProviderAccountID: 2,
+		Vendor: vendor, AuthMode: authMode, Kind: FlowKindPaste, Status: StatusStarted,
+		ActorID: "admin-1", ActorRole: "platform_admin",
+		ClientIdentitySource: ClientSourceNone, RedactedContext: map[string]any{},
+		ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	return store
 }
 
 func samplePayloadForMode(vendor, mode string) []byte {

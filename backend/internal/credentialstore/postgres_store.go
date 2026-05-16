@@ -110,6 +110,29 @@ func (s *Store) WithDB(database db.DBTX) *Store {
 	return &cp
 }
 
+func (s *Store) WithTransaction(ctx context.Context, fn func(*Store, db.DBTX) error) error {
+	if s == nil || s.db == nil {
+		return errors.New("credentialstore: db is nil")
+	}
+	beginner, ok := s.db.(interface {
+		BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
+	})
+	if !ok {
+		return errors.New("credentialstore: db does not support transactions")
+	}
+	tx, err := beginner.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if fn != nil {
+		if err := fn(s.WithDB(tx), tx); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 func (s *Store) HandlerRegistry() *HandlerRegistry {
 	if s == nil || s.registry == nil {
 		return DefaultHandlerRegistry()

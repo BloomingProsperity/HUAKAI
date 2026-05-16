@@ -2,97 +2,10 @@ package credentialacq
 
 import (
 	"bytes"
-	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
-
-func parseCLIImport(input string) ([]acqCandidate, error) {
-	trimmed := strings.TrimSpace(input)
-	if trimmed == "" {
-		return nil, errInvalidImportBody
-	}
-
-	var decoded any
-	if err := json.Unmarshal([]byte(trimmed), &decoded); err == nil {
-		return candidatesFromDecoded(decoded)
-	}
-
-	lines := strings.Split(trimmed, "\n")
-	candidates := make([]acqCandidate, 0, len(lines))
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var one any
-		if err := json.Unmarshal([]byte(line), &one); err == nil {
-			got, err := candidatesFromDecoded(one)
-			if err != nil {
-				return nil, err
-			}
-			candidates = append(candidates, got...)
-			continue
-		}
-		candidates = append(candidates, tokenCandidate(line))
-	}
-	if len(candidates) == 0 {
-		return nil, errInvalidImportBody
-	}
-	return candidates, nil
-}
-
-func candidatesFromDecoded(decoded any) ([]acqCandidate, error) {
-	switch v := decoded.(type) {
-	case map[string]any:
-		return []acqCandidate{candidateFromMap(v)}, nil
-	case []any:
-		out := make([]acqCandidate, 0, len(v))
-		for _, item := range v {
-			switch typed := item.(type) {
-			case map[string]any:
-				out = append(out, candidateFromMap(typed))
-			case string:
-				out = append(out, tokenCandidate(typed))
-			default:
-				return nil, errInvalidImportBody
-			}
-		}
-		return out, nil
-	case string:
-		return []acqCandidate{tokenCandidate(v)}, nil
-	default:
-		return nil, errInvalidImportBody
-	}
-}
-
-func candidateFromMap(fields map[string]any) acqCandidate {
-	vendor := stringField(fields, "vendor", credentialstore.VendorOpenAI)
-	mode := stringField(fields, "auth_mode", credentialstore.AuthModeCodexCLIOAuth)
-	payload, _ := json.Marshal(fields)
-	return acqCandidate{
-		Vendor: vendor, AuthMode: mode, Payload: payload,
-		RedactedContext: map[string]any{"shape": "json_object"},
-	}
-}
-
-func tokenCandidate(token string) acqCandidate {
-	payload, _ := json.Marshal(map[string]string{"session_token": strings.TrimSpace(token)})
-	return acqCandidate{
-		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth, Payload: payload,
-		RedactedContext: map[string]any{"shape": "single_token"},
-	}
-}
-
-func stringField(fields map[string]any, key, fallback string) string {
-	value, ok := fields[key].(string)
-	if !ok || strings.TrimSpace(value) == "" {
-		return fallback
-	}
-	return strings.TrimSpace(value)
-}
 
 func TestCLIImportParsesMultipleShapes(t *testing.T) {
 	cases := []struct {
@@ -128,7 +41,7 @@ func TestCLIImportParsesMultipleShapes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := parseCLIImport(tc.input)
+			got, err := ParseImportContent(tc.input, credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -146,7 +59,7 @@ func TestCLIImportParsesMultipleShapes(t *testing.T) {
 }
 
 func TestCLIImportRejectsEmptyInput(t *testing.T) {
-	if _, err := parseCLIImport(" \n\t "); err != errInvalidImportBody {
-		t.Fatalf("err=%v want %v", err, errInvalidImportBody)
+	if _, err := ParseImportContent(" \n\t ", credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth); err != ErrInvalidImportBody {
+		t.Fatalf("err=%v want %v", err, ErrInvalidImportBody)
 	}
 }

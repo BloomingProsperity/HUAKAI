@@ -89,7 +89,6 @@ var MockOnlyProviders = []string{
 	"copilot",
 	"kiro",
 	"windsurf",
-	"antigravity",
 	"bedrock",
 	"perplexity",
 }
