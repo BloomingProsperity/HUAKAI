@@ -27,8 +27,7 @@ Satisfies domain 11 "Client identity" in the synthesis coverage map (A23 + A24).
 Local capability statement: HUAKAI 必须能从每个入站请求的多维信号中推断出客户端的稳定身份，以高置信度 score 标注该请求，并将结果写入 sticky 内存缓存；当缓存内容与当前请求信号不一致（漂移）时，系统必须检测到该漂移并以枚举原因码失效缓存条目，防止错误的 sticky 路由决策传播。
 
 关联 Feature IDs：
-- F-SESSION-001 — 会话持久化
-- F-ROUTE-AFFINITY-001 — Sticky 路由亲和性（A04/A05）
+- F-POOL-AFFINITY-001 — Sticky Provider Account 路由亲和性（A04/A05）
 - F-ACCAPI-BIND-001 — API key binding（A01/A09 spine）
 
 ## Actor
@@ -230,7 +229,7 @@ Local capability statement: HUAKAI 必须能从每个入站请求的多维信号
 ## Open Questions
 
 1. **identity_hmac_secret 轮换策略**：密钥轮换时，已缓存的 identity_hash 将全部失效（因 HMAC 输出变化）。是否需要双密钥过渡窗口（old_secret + new_secret 同时有效）？建议 Operator 评估。
-2. **跨实例 sticky_cache 一致性**：当前设计为每实例独立内存缓存，水平扩容时同一客户端可能命中不同实例的不同缓存状态。是否需要引入分布式缓存层（如 Redis）？若引入，需与 F-ROUTE-AFFINITY-001 协同设计。
+2. **跨实例 sticky_cache 一致性**：当前设计为每实例独立内存缓存，水平扩容时同一客户端可能命中不同实例的不同缓存状态。是否需要引入分布式缓存层（如 Redis）？若引入，需与 F-POOL-AFFINITY-001 协同设计。
 3. **`message_prefix_hash` 隐私边界**：该信号对消息体前 N 字节做 hash，是否符合 DR-009 §Decision-5 drain 隐私边界（只看 token usage 元数据，不读 prompt body）的精神？建议 Owner 确认 prefix_hash 是否属于"读 prompt body"范畴。
 4. **churn_threshold 默认值**：当前默认 3 次/TTL，具体数值需 A/B 测试验证；建议在 `identity_signal_config` 中以独立配置行存储，不硬编码。
 

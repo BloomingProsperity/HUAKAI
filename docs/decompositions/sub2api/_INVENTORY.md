@@ -25,7 +25,7 @@ Owner directive 2026-04-28: "整体代码和逻辑都读完" — the question of
 | --- | --- | --- | --- |
 | Layered Account selection (continuation → sticky → fresh, with revalidation gates) | F-POOL-001 (L1) | deep-decomposed | [layered-account-selection.md](layered-account-selection.md) |
 | Adaptive top-k randomized pooled selection | F-POOL-001 (L1) | shallow-evidence (E-S2A-DEEP-007) | TBD — fold into layered-account-selection or split |
-| Sticky session affinity with TTL refresh + 8-reason break taxonomy | F-SESSION-001 (L2) | shallow-evidence (E-S2A-DEEP-009) | TBD: `sticky-session.md` |
+| Sticky session affinity with TTL refresh + 8-reason break taxonomy | F-POOL-AFFINITY-001 (L2; renamed from old F-SESSION-001 on 2026-05-16) | shallow-evidence (E-S2A-DEEP-009) | TBD: `sticky-session.md` |
 | Per-Account concurrency slot + bounded wait, separate sticky vs fallback budgets | F-CONC-001 (L2) | shallow-evidence (E-S2A-DEEP-008) | TBD: `per-account-concurrency.md` |
 | Protocol translation pipeline (full-body parse-and-rebuild) | F-PROTO-002 (L2) | deep-decomposed | [protocol-translation.md](protocol-translation.md) |
 | Multi-protocol envelope normalizer (Chat/Responses/Anthropic/Gemini/Azure) | F-PROTO-002 (L2) | shallow-evidence (E-S2A-PROXY-015) | covered inside [protocol-translation.md](protocol-translation.md) |

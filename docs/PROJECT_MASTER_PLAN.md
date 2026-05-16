@@ -79,7 +79,7 @@ Admin / Frontend:          ░░░░░░░░░░░░░░░░░�
 
 ### L2 生产可用（约 22 个，L1 出货后立刻规划）
 
-**网关增强**：F-GW-003 性能 SLO + 资源预算 / F-CH-002 健康探测 + 告警 / F-SESSION-001 粘连 session / F-CONC-001 双层并发限制 / F-CB-001 计费熔断 / F-ROUTE-001 性能感知路由 / F-ROUTE-002 端点选取策略 / F-CACHE-001 简单缓存 / F-CACHE-002 缓存后端可插拔
+**网关增强**：F-GW-003 性能 SLO + 资源预算 / F-CH-002 健康探测 + 告警 / F-POOL-AFFINITY-001 粘连 Provider Account affinity / F-CONC-001 双层并发限制 / F-CB-001 计费熔断 / F-ROUTE-001 性能感知路由 / F-ROUTE-002 端点选取策略 / F-CACHE-001 简单缓存 / F-CACHE-002 缓存后端可插拔
 
 **安全增强**：F-RBAC-001 RBAC + 撤销 diff / F-SEC-004 User × Model 限速 / F-SEC-006 多 scope 限速 + 限额 / F-GUARD-001 输出守卫插件
 
@@ -91,7 +91,10 @@ Admin / Frontend:          ░░░░░░░░░░░░░░░░░�
 
 ### L3 参考对齐（约 14 个，中长期）
 
-各种增强 + Phase 6+ 计费 + Phase 7+ UI / 国际化 + Phase 8 部署硬化 + Phase 9+ 多模态/Realtime/MCP
+各种增强 + Phase 6+ 用户认证/session/计费 + Phase 7+ UI / 国际化 + Phase 8 部署硬化 + Phase 9+ 多模态/Realtime/MCP
+
+- F-AUTH-007 用户认证（邮箱/密码、邀请码、Google/GitHub 登录）
+- F-SESSION-001 HUAKAI 平台 session 管理（refresh-token family、rotation、invalidation）
 
 ### L4 超越参考（约 5 个，SaaS 版差异化）
 
