@@ -173,7 +173,13 @@ impl FingerprintProfile {
 
         match self.tls.backend {
             TlsBackend::NativeTlsOpenSsl => BackendIntent::OpenSslAdapter,
-            TlsBackend::Rustls => BackendIntent::Rustls,
+            TlsBackend::Rustls => {
+                // D3 burn-the-boats: no fallback to hyper-rustls, fix mimicry path instead
+                BackendIntent::UnsupportedTemplate {
+                    reason: "tls_backend=rustls is observation-only after D3; production dispatch must use the mimicry path"
+                        .to_owned(),
+                }
+            }
             backend => BackendIntent::UnsupportedTemplate {
                 reason: format!(
                     "tls_backend={} 尚未声明可用 transport backend",

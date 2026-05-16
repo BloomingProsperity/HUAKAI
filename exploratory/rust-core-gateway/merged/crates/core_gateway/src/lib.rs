@@ -59,11 +59,7 @@ impl GatewayState {
     pub fn new(config: StartupConfig) -> Self {
         log_route_plan_cache_disabled(config.route_cache_ttl_ms);
         let http_client: GatewayHttpClient = build_http_client();
-        let route_client = RouteClient::new(
-            config.control_plane_endpoint.clone(),
-            route_client_options(&config),
-        )
-        .expect("control_plane_endpoint 已由 StartupConfig 校验");
+        let route_client = route_client_from_transport_baseline(&config);
         let account_planner = AccountPlanner::new(
             route_client.clone(),
             Duration::from_millis(config.route_cache_ttl_ms),
@@ -145,6 +141,15 @@ fn route_client_options(config: &StartupConfig) -> RouteClientOptions {
     }
 }
 
+fn route_client_from_transport_baseline(config: &StartupConfig) -> RouteClient {
+    let transport_config = config
+        .route_transport_config()
+        .expect("route transport baseline 已由 StartupConfig 校验");
+
+    RouteClient::from_transport_config(&transport_config, route_client_options(config))
+        .expect("route transport baseline 应可构造 control plane client")
+}
+
 /// 构建 axum Router (供集成测试 oneshot 调用)
 pub fn build_router(config: StartupConfig) -> Router {
     // 触发 Prometheus 注册表初始化 (幂等)
@@ -168,11 +173,7 @@ pub async fn run(config: StartupConfig) -> Result<(), GatewayError> {
     let local_addr = listener.local_addr()?;
 
     // 启动心跳 worker (5s 定时向 control plane 发送心跳, 读取 drain_mode)
-    let route_client = RouteClient::new(
-        config.control_plane_endpoint.clone(),
-        route_client_options(&config),
-    )
-    .expect("control_plane_endpoint 已由 StartupConfig 校验");
+    let route_client = route_client_from_transport_baseline(&config);
     let _heartbeat_worker = heartbeat::HeartbeatWorker::spawn(route_client);
 
     let router = build_router(config);

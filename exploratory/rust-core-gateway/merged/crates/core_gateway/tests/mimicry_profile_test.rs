@@ -217,10 +217,16 @@ fn mimicry_backend_intent_blocks_codex_known_gap() {
 }
 
 #[test]
-fn mimicry_backend_intent_keeps_kiro_on_rustls() {
+fn mimicry_backend_intent_blocks_kiro_rustls_after_burn_the_boats() {
     let kiro = load_builtin_profile(BuiltinProfile::KiroCli).expect("kiro profile 应加载");
 
-    assert_eq!(kiro.backend_intent(), BackendIntent::Rustls);
+    match kiro.backend_intent() {
+        BackendIntent::UnsupportedTemplate { reason } => {
+            assert!(reason.contains("tls_backend=rustls"));
+            assert!(reason.contains("mimicry path"));
+        }
+        intent => panic!("kiro rustls backend 必须停在 UnsupportedTemplate，实际: {intent:?}"),
+    }
 }
 
 #[test]

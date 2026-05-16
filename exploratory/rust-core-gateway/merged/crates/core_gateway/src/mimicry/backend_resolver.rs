@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use super::{backend::BackendIntent, tls_profile::TlsBackend, FingerprintProfile, ProfileMode};
+use super::{FingerprintProfile, ProfileMode, backend::BackendIntent, tls_profile::TlsBackend};
 
 const OPENSSL_NATIVE_EC_POINT_FORMATS: &[u8] = &[0, 1, 2];
 const OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION: u16 = 22;
@@ -10,7 +10,6 @@ const ANTHROPIC_LANE_2B_REASON: &str = "pending Lane 2b reattach";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MimicryBackend {
     Openssl,
-    Rustls,
     KnownGapBlocked { reason: String },
 }
 
@@ -18,14 +17,12 @@ pub enum MimicryBackend {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AvailableMimicryFeatures {
     pub openssl: bool,
-    pub rustls: bool,
 }
 
 impl AvailableMimicryFeatures {
     pub const fn current() -> Self {
         Self {
             openssl: cfg!(feature = "mimicry-openssl"),
-            rustls: true,
         }
     }
 }
@@ -77,7 +74,6 @@ fn backend_from_profile_intent(
 ) -> Result<MimicryBackend, BackendResolverError> {
     match template.backend_intent() {
         BackendIntent::OpenSslAdapter => Ok(MimicryBackend::Openssl),
-        BackendIntent::Rustls => Ok(MimicryBackend::Rustls),
         BackendIntent::KnownGapBlocked { reason: _ } if template.mode == ProfileMode::CodexCli => {
             // Codex profile 仍保留字段 gap 标记；L2-A8 生产 dispatch 继续走 OpenSSL adapter。
             Ok(MimicryBackend::Openssl)
@@ -98,11 +94,6 @@ fn ensure_backend_features(
             Err(BackendResolverError::BackendUnavailable {
                 reason: "native-tls/openssl dispatch requires the mimicry-openssl feature"
                     .to_owned(),
-            })
-        }
-        MimicryBackend::Rustls if !available_features.rustls => {
-            Err(BackendResolverError::BackendUnavailable {
-                reason: "rustls dispatch requires the hyper-rustls transport path".to_owned(),
             })
         }
         _ => Ok(()),
@@ -189,7 +180,11 @@ impl From<ProfileMode> for MimicryBackend {
     fn from(mode: ProfileMode) -> Self {
         match mode {
             ProfileMode::CodexCli => Self::Openssl,
-            ProfileMode::KiroCli => Self::Rustls,
+            ProfileMode::KiroCli => Self::KnownGapBlocked {
+                reason:
+                    "kiro rustls template requires mimicry path work before production dispatch"
+                        .to_owned(),
+            },
             ProfileMode::GeminiAdvanced => Self::KnownGapBlocked {
                 reason: "gemini requires template tls_backend resolution".to_owned(),
             },

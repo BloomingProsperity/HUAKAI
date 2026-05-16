@@ -8,8 +8,6 @@ use super::{
 pub enum DispatchDecision {
     /// OpenSSL adapter 已通过 exact local capture 后才允许进入生产 dispatch。
     AllowOpenSsl,
-    /// 当前 hyper-rustls 路径允许继续沿用。
-    AllowRustls,
     /// 已知字段 gap profile 只能保留 plumbing/profile/test/local-capture，生产 dispatch 必须拒绝。
     BlockKnownGap { reason: String },
     /// 模板声明的 TLS backend 当前没有可用生产实现。
@@ -34,7 +32,6 @@ pub fn try_decide_dispatch(
 
     Ok(match backend {
         MimicryBackend::Openssl => DispatchDecision::AllowOpenSsl,
-        MimicryBackend::Rustls => DispatchDecision::AllowRustls,
         MimicryBackend::KnownGapBlocked { reason } => DispatchDecision::BlockKnownGap { reason },
     })
 }
@@ -61,14 +58,10 @@ pub fn try_decide_dispatch_with_features(
 
     Ok(match backend {
         MimicryBackend::Openssl => DispatchDecision::AllowOpenSsl,
-        MimicryBackend::Rustls => DispatchDecision::AllowRustls,
         MimicryBackend::KnownGapBlocked { reason } => DispatchDecision::BlockKnownGap { reason },
     })
 }
 
 pub fn is_dispatch_allowed(decision: &DispatchDecision) -> bool {
-    matches!(
-        decision,
-        DispatchDecision::AllowOpenSsl | DispatchDecision::AllowRustls
-    )
+    matches!(decision, DispatchDecision::AllowOpenSsl)
 }

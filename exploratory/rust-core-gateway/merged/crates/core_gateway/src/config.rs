@@ -9,7 +9,10 @@ use tracing_subscriber::filter::LevelFilter;
 
 use crate::{
     error::GatewayError,
-    route_client::{RouteClientMtlsConfig, RouteClientTransportConfig, RouteTransportBaseline},
+    route_client::{
+        DEFAULT_UDS_SOCKET_PATH, RouteClientTransportConfig, TransportBaseline,
+        TransportBaselineKind,
+    },
 };
 
 /// 环境变量前缀
@@ -26,7 +29,7 @@ pub struct StartupConfig {
     /// Go control plane 端点 (如 "http://127.0.0.1:9090")
     pub control_plane_endpoint: Uri,
     /// Rust->Go route RPC transport baseline, 默认 UDS
-    pub transport_baseline: RouteTransportBaseline,
+    pub transport_baseline: TransportBaseline,
     /// UDS baseline socket path
     pub uds_socket_path: PathBuf,
     /// mTLS server name/SNI override; 未配置时使用 endpoint host
@@ -148,36 +151,22 @@ impl StartupConfig {
                     .to_owned(),
             ));
         }
-        if self.transport_baseline == RouteTransportBaseline::Mtls {
+        if matches!(self.transport_baseline, TransportBaseline::Mtls { .. }) {
             self.route_transport_config()?;
         }
         Ok(())
     }
 
     pub fn route_transport_config(&self) -> Result<RouteClientTransportConfig, GatewayError> {
-        match self.transport_baseline {
-            RouteTransportBaseline::Uds => Ok(RouteClientTransportConfig::uds(
-                self.uds_socket_path.clone(),
+        match &self.transport_baseline {
+            TransportBaseline::Uds(path) => Ok(RouteClientTransportConfig::uds(path.clone())),
+            TransportBaseline::Mtls { cert, key, ca } => Ok(RouteClientTransportConfig::mtls(
+                self.control_plane_endpoint.clone(),
+                self.mtls_domain_name.clone(),
+                cert.clone(),
+                key.clone(),
+                ca.clone(),
             )),
-            RouteTransportBaseline::Mtls => {
-                let mtls = RouteClientMtlsConfig {
-                    endpoint: self.control_plane_endpoint.clone(),
-                    domain_name: self.mtls_domain_name.clone(),
-                    cert_chain_path: required_path(
-                        "HUAKAI_MTLS_CERT_CHAIN_PATH",
-                        &self.mtls_cert_chain_path,
-                    )?,
-                    key_path: required_path("HUAKAI_MTLS_KEY_PATH", &self.mtls_key_path)?,
-                    ca_cert_path: required_path(
-                        "HUAKAI_MTLS_CA_CERT_PATH",
-                        &self.mtls_ca_cert_path,
-                    )?,
-                };
-                Ok(RouteClientTransportConfig::mtls(
-                    self.uds_socket_path.clone(),
-                    mtls,
-                ))
-            }
         }
     }
 
@@ -189,8 +178,25 @@ impl StartupConfig {
 
         let control_plane_endpoint =
             parse_endpoint("HUAKAI_CONTROL_PLANE_ENDPOINT", &raw.control_plane_endpoint)?;
-        let transport_baseline = RouteTransportBaseline::parse(&raw.transport_baseline)?;
+        let transport_baseline_kind = TransportBaselineKind::parse(&raw.transport_baseline)?;
         let uds_socket_path = PathBuf::from(raw.uds_socket_path);
+        let transport_baseline = match transport_baseline_kind {
+            TransportBaselineKind::Uds => TransportBaseline::Uds(uds_socket_path.clone()),
+            TransportBaselineKind::Mtls => TransportBaseline::Mtls {
+                cert: required_path(
+                    "HUAKAI_MTLS_CERT_CHAIN_PATH",
+                    &raw.mtls_cert_chain_path.as_ref().map(PathBuf::from),
+                )?,
+                key: required_path(
+                    "HUAKAI_MTLS_KEY_PATH",
+                    &raw.mtls_key_path.as_ref().map(PathBuf::from),
+                )?,
+                ca: required_path(
+                    "HUAKAI_MTLS_CA_CERT_PATH",
+                    &raw.mtls_ca_cert_path.as_ref().map(PathBuf::from),
+                )?,
+            },
+        };
 
         let log_level = raw
             .log_level
@@ -288,7 +294,7 @@ fn default_transport_baseline() -> String {
 }
 
 fn default_uds_socket_path() -> String {
-    "/var/run/huakai/route-control.sock".to_owned()
+    DEFAULT_UDS_SOCKET_PATH.to_owned()
 }
 
 fn default_worker_threads() -> usize {
@@ -349,11 +355,11 @@ mod tests {
         assert!(cfg.json_logs);
         assert!(cfg.otlp_endpoint.is_none());
         assert!(cfg.mock_upstream_endpoint.is_none());
-        assert_eq!(cfg.transport_baseline, RouteTransportBaseline::Uds);
         assert_eq!(
-            cfg.uds_socket_path,
-            PathBuf::from("/var/run/huakai/route-control.sock")
+            cfg.transport_baseline,
+            TransportBaseline::Uds(PathBuf::from(DEFAULT_UDS_SOCKET_PATH))
         );
+        assert_eq!(cfg.uds_socket_path, PathBuf::from(DEFAULT_UDS_SOCKET_PATH));
     }
 
     #[test]
@@ -430,6 +436,86 @@ mod tests {
         env.push(("HUAKAI_TRANSPORT_BASELINE".to_owned(), "mtls".to_owned()));
         let result = StartupConfig::from_env_iter(env);
         assert!(result.is_err(), "mTLS 缺少证书路径应 fail-fast");
+    }
+
+    #[test]
+    fn config_rejects_mtls_when_any_cert_path_is_missing() {
+        for missing_key in [
+            "HUAKAI_MTLS_CERT_CHAIN_PATH",
+            "HUAKAI_MTLS_KEY_PATH",
+            "HUAKAI_MTLS_CA_CERT_PATH",
+        ] {
+            let mut env = valid_env();
+            env.push(("HUAKAI_TRANSPORT_BASELINE".to_owned(), "mtls".to_owned()));
+            env.push((
+                "HUAKAI_MTLS_CERT_CHAIN_PATH".to_owned(),
+                "/etc/huakai/client.pem".to_owned(),
+            ));
+            env.push((
+                "HUAKAI_MTLS_KEY_PATH".to_owned(),
+                "/etc/huakai/client.key".to_owned(),
+            ));
+            env.push((
+                "HUAKAI_MTLS_CA_CERT_PATH".to_owned(),
+                "/etc/huakai/ca.pem".to_owned(),
+            ));
+            env.retain(|(key, _)| key != missing_key);
+
+            let result = StartupConfig::from_env_iter(env);
+            assert!(
+                result.is_err(),
+                "{missing_key} 缺失时 mTLS 配置必须 fail-fast"
+            );
+        }
+    }
+
+    #[test]
+    fn config_builds_mtls_transport_baseline_with_all_paths() {
+        let mut env = valid_env();
+        env.retain(|(key, _)| key != "HUAKAI_CONTROL_PLANE_ENDPOINT");
+        env.push(("HUAKAI_TRANSPORT_BASELINE".to_owned(), "mtls".to_owned()));
+        env.push((
+            "HUAKAI_CONTROL_PLANE_ENDPOINT".to_owned(),
+            "https://control-plane.internal:9443".to_owned(),
+        ));
+        env.push((
+            "HUAKAI_MTLS_DOMAIN_NAME".to_owned(),
+            "control-plane.internal".to_owned(),
+        ));
+        env.push((
+            "HUAKAI_MTLS_CERT_CHAIN_PATH".to_owned(),
+            "/etc/huakai/client.pem".to_owned(),
+        ));
+        env.push((
+            "HUAKAI_MTLS_KEY_PATH".to_owned(),
+            "/etc/huakai/client.key".to_owned(),
+        ));
+        env.push((
+            "HUAKAI_MTLS_CA_CERT_PATH".to_owned(),
+            "/etc/huakai/ca.pem".to_owned(),
+        ));
+
+        let cfg = StartupConfig::from_env_iter(env).expect("完整 mTLS config 应解析成功");
+
+        assert_eq!(
+            cfg.transport_baseline,
+            TransportBaseline::Mtls {
+                cert: PathBuf::from("/etc/huakai/client.pem"),
+                key: PathBuf::from("/etc/huakai/client.key"),
+                ca: PathBuf::from("/etc/huakai/ca.pem"),
+            }
+        );
+        let route_config = cfg
+            .route_transport_config()
+            .expect("完整 mTLS config 应能转 route transport config");
+        assert_eq!(
+            route_config.endpoint.to_string(),
+            "https://control-plane.internal:9443/"
+        );
+        assert_eq!(
+            route_config.domain_name,
+            Some("control-plane.internal".to_owned())
+        );
     }
 
     #[test]
