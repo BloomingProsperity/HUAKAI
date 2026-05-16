@@ -21,6 +21,24 @@ type Gate interface {
 	Allow(ctx context.Context, account *AccountSnapshot, req SelectionRequest) (bool, GateFailureReason, error)
 }
 
+const (
+	HealthStateActive      = "active"
+	HealthStateDegraded    = "degraded"
+	HealthStateCoolingDown = "cooling_down"
+	HealthStateRamping     = "ramping"
+	HealthStateDisabled    = "disabled"
+	HealthStatePaused      = "manual_paused"
+)
+
+type HealthStatus struct {
+	State        string
+	RampStagePct int
+}
+
+type HealthStatusGate interface {
+	HealthStatus(ctx context.Context, account *AccountSnapshot, req SelectionRequest) (HealthStatus, error)
+}
+
 type TenantGate interface{ Gate }
 type LifecycleGate interface{ Gate }
 type ChannelGate interface{ Gate }

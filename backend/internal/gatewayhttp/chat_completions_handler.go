@@ -25,6 +25,7 @@ import (
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/cache_routing"
 	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
@@ -54,6 +55,7 @@ type ChatHandlerDeps struct {
 	CompletionBus        *eventbus.Bus
 	AuditLedger          auditledger.Ledger
 	Signer               *sign.Signer
+	ChannelHealth        channelHealthRecorder
 	BillingPolicyVersion string
 	RequestClass         string
 
@@ -61,6 +63,10 @@ type ChatHandlerDeps struct {
 	// /v1/chat/completions: "chat"
 	// /v1/messages:         "messages"
 	EndpointFamily string
+}
+
+type channelHealthRecorder interface {
+	ApplySignal(context.Context, channelhealth.Signal) (channelhealth.Record, error)
 }
 
 // HCSFDispatcher 是 non-streaming HCSF 主链路；默认关闭，由 env 开关启用。
@@ -277,7 +283,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			// 写 per-vendor 切片 metric (4 vendor: anthropic/openai/gemini/codex)
 			Vendor: pool.VendorFromProtocolFamily(resolved.ProtocolFamily),
 		})
-		if errors.Is(err, pool.ErrNoEligibleAccount) || errors.Is(err, pool.ErrNoSlotAvailable) {
+		if errors.Is(err, pool.ErrNoEligibleAccount) || errors.Is(err, pool.ErrNoSlotAvailable) || errors.Is(err, pool.ErrAllChannelsDegraded) {
 			if abortErr := d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "pool_no_capacity"); abortErr != nil {
 				w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
 			}
@@ -377,8 +383,10 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			RoutingReasonPayload: selRes.RoutingReasonJSON,
 			SessionHash:          promptHash,
 		}
+		healthKey, healthKeyOK := channelHealthKey(ident.TenantID, accInfo)
 
 		if !req.Stream {
+			upstreamAttemptStartedAt := time.Now()
 			seed := requestMetaSeed(r, ident, clientProtocol, resolved.ProtocolFamily, routeID, requestID, acquiredAccountID, acquisitionToken)
 			seedCtx := proto.ContextWithRequestMetaSeed(ctx, seed)
 			var bufferedEnv *proto.HCSF
@@ -418,6 +426,10 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 				bufferedEnv, err = dispatcher.DispatchHCSF(dispatchCtx, canonicalReq)
 				if err != nil {
 					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_dispatch_error")
+					if healthKeyOK {
+						classification, _ := gateway.Classify(0, nil, []byte(err.Error()), accInfo.Platform)
+						recordChannelHealthSignal(ctx, d, healthKey, signalFromDispatchError(err, classification), 0, time.Since(upstreamAttemptStartedAt), requestID, nil)
+					}
 					writeJSONError(w, http.StatusBadGateway, "upstream_dispatch_error", err.Error())
 					return
 				}
@@ -432,11 +444,17 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 				if err != nil {
 					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_dispatch_error")
 					classification, _ := gateway.Classify(0, nil, []byte(err.Error()), accInfo.Platform)
+					if healthKeyOK {
+						recordChannelHealthSignal(ctx, d, healthKey, signalFromDispatchError(err, classification), 0, time.Since(upstreamAttemptStartedAt), requestID, nil)
+					}
 					writeNormalizedUpstreamError(w, http.StatusBadGateway, "upstream_dispatch_error", classification)
 					return
 				}
 				if dispatchRes == nil || dispatchRes.UpstreamReader == nil {
 					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_empty_response")
+					if healthKeyOK {
+						recordChannelHealthSignal(ctx, d, healthKey, channelhealth.SignalChannelError, 0, time.Since(upstreamAttemptStartedAt), requestID, nil)
+					}
 					writeJSONError(w, http.StatusBadGateway, "upstream_empty_response", "upstream returned no response body")
 					return
 				}
@@ -444,6 +462,9 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 				raw, readErr := io.ReadAll(io.LimitReader(dispatchRes.UpstreamReader, 1<<20))
 				if readErr != nil {
 					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_read_error")
+					if healthKeyOK {
+						recordChannelHealthSignal(ctx, d, healthKey, channelhealth.SignalChannelError, dispatchRes.StatusCode, time.Since(upstreamAttemptStartedAt), requestID, nil)
+					}
 					writeJSONError(w, http.StatusBadGateway, "upstream_read_error", readErr.Error())
 					return
 				}
@@ -454,6 +475,9 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 						abortReason = "upstream_" + string(classification.Class)
 					}
 					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, abortReason)
+					if healthKeyOK {
+						recordChannelHealthSignal(ctx, d, healthKey, signalFromClassification(dispatchRes.StatusCode, classification), dispatchRes.StatusCode, time.Since(upstreamAttemptStartedAt), requestID, rateLimitResetFromClassification(classification, time.Now()))
+					}
 					writeNormalizedUpstreamError(w, clientStatusForUpstreamError(dispatchRes.StatusCode, classification.Class), "upstream_error", classification)
 					return
 				}
@@ -466,6 +490,9 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 				bufferedEnv, _, err = upstreamAdapter.ProviderResponseToCanonical(seedCtx, raw)
 				if err != nil {
 					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "canonical_response_error")
+					if healthKeyOK {
+						recordChannelHealthSignal(ctx, d, healthKey, channelhealth.SignalChannelError, dispatchRes.StatusCode, time.Since(upstreamAttemptStartedAt), requestID, nil)
+					}
 					writeJSONError(w, http.StatusBadGateway, "canonical_response_error", err.Error())
 					return
 				}
@@ -476,6 +503,9 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			}
 			if bufferedEnv == nil || bufferedEnv.BufferedResponse == nil {
 				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_empty_response")
+				if healthKeyOK {
+					recordChannelHealthSignal(ctx, d, healthKey, channelhealth.SignalChannelError, 0, time.Since(upstreamAttemptStartedAt), requestID, nil)
+				}
 				writeJSONError(w, http.StatusBadGateway, "upstream_empty_response", "dispatcher returned no buffered HCSF response")
 				return
 			}
@@ -483,6 +513,9 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			setAccountingModelRouteDecided(bufferedEnv, forwardReq.Model)
 			fillAccountingModelUpstreamReported(bufferedEnv)
 			bufferedEnv.Accounting.HopChain = gateway.BuildHopChain(forwardReq, "", requestStartedAt, time.Now())
+			if healthKeyOK {
+				recordChannelHealthSignal(ctx, d, healthKey, channelhealth.SignalSuccess, http.StatusOK, time.Since(upstreamAttemptStartedAt), requestID, nil)
+			}
 			ledgerEntry, err := submitAuditLedgerEntry(ctx, d, bufferedEnv, ident.TenantID, requestID)
 			if err != nil {
 				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "audit_ledger_error")
@@ -559,6 +592,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			return
 		}
 
+		upstreamAttemptStartedAt := time.Now()
 		dispatchRes, err := d.Dispatcher.Dispatch(ctx, gateway.DispatchInput{
 			ProtocolFamily:  resolved.ProtocolFamily,
 			UpstreamModelID: upstreamModelID,
@@ -569,11 +603,17 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 		if err != nil {
 			_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_dispatch_error")
 			classification, _ := gateway.Classify(0, nil, []byte(err.Error()), accInfo.Platform)
+			if healthKeyOK {
+				recordChannelHealthSignal(ctx, d, healthKey, signalFromDispatchError(err, classification), 0, time.Since(upstreamAttemptStartedAt), requestID, nil)
+			}
 			writeNormalizedUpstreamError(w, http.StatusBadGateway, "upstream_dispatch_error", classification)
 			return
 		}
 		if dispatchRes == nil || dispatchRes.UpstreamReader == nil {
 			_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_empty_response")
+			if healthKeyOK {
+				recordChannelHealthSignal(ctx, d, healthKey, channelhealth.SignalChannelError, 0, time.Since(upstreamAttemptStartedAt), requestID, nil)
+			}
 			writeJSONError(w, http.StatusBadGateway, "upstream_empty_response", "upstream returned no response body")
 			return
 		}
@@ -590,6 +630,9 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 				abortReason = "upstream_" + string(classification.Class)
 			}
 			_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, abortReason)
+			if healthKeyOK {
+				recordChannelHealthSignal(ctx, d, healthKey, signalFromClassification(dispatchRes.StatusCode, classification), dispatchRes.StatusCode, time.Since(upstreamAttemptStartedAt), requestID, rateLimitResetFromClassification(classification, time.Now()))
+			}
 			writeNormalizedUpstreamError(w, clientStatusForUpstreamError(dispatchRes.StatusCode, classification.Class), "upstream_error", classification)
 			return
 		}
@@ -617,6 +660,15 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 		writeStreamBillingHeaders(w.Header(), streamAttempt)
 		if fwdErr != nil {
 			w.Header().Set("X-Huakai-Forward-Error", fwdErr.Error())
+			if healthKeyOK {
+				class := channelhealth.SignalChannelError
+				if errors.Is(fwdErr, context.DeadlineExceeded) || os.IsTimeout(fwdErr) {
+					class = channelhealth.SignalTimeout
+				}
+				recordChannelHealthSignal(ctx, d, healthKey, class, dispatchRes.StatusCode, time.Since(upstreamAttemptStartedAt), requestID, nil)
+			}
+		} else if healthKeyOK {
+			recordChannelHealthSignal(ctx, d, healthKey, channelhealth.SignalSuccess, dispatchRes.StatusCode, time.Since(upstreamAttemptStartedAt), requestID, nil)
 		}
 
 		actualCost := decimal.NewFromFloat(0.01)
@@ -679,6 +731,82 @@ func closeDispatchResult(res *gateway.DispatchResult) {
 	if res != nil && res.Close != nil {
 		_ = res.Close()
 	}
+}
+
+func channelHealthKey(tenantID int64, account provider.AccountInfo) (channelhealth.ChannelKey, bool) {
+	key := channelhealth.ChannelKey{
+		TenantID:            tenantID,
+		Vendor:              account.Platform,
+		ProviderAccountID:   account.AccountID,
+		AccountCredentialID: account.AccountCredentialID,
+		CredentialVersion:   account.CredentialVersion,
+	}
+	if err := key.Validate(); err != nil {
+		return channelhealth.ChannelKey{}, false
+	}
+	key.ChannelID = key.StableChannelID()
+	return key, true
+}
+
+func recordChannelHealthSignal(ctx context.Context, d ChatHandlerDeps, key channelhealth.ChannelKey, class channelhealth.SignalClass, statusCode int, latency time.Duration, requestID string, resetAt *time.Time) {
+	if d.ChannelHealth == nil || class == "" {
+		return
+	}
+	latencyMS := latency.Milliseconds()
+	if latencyMS < 0 {
+		latencyMS = 0
+	}
+	_, _ = d.ChannelHealth.ApplySignal(ctx, channelhealth.Signal{
+		Key:              key,
+		Class:            class,
+		StatusCode:       statusCode,
+		LatencyMS:        latencyMS,
+		RequestID:        requestID,
+		RateLimitResetAt: resetAt,
+	})
+}
+
+func signalFromClassification(statusCode int, c gateway.Classification) channelhealth.SignalClass {
+	switch c.Class {
+	case gateway.ErrorClassRateLimited:
+		return channelhealth.SignalRateLimit
+	case gateway.ErrorClassServerError, gateway.ErrorClassOverloaded:
+		return channelhealth.SignalUpstream5xx
+	case gateway.ErrorClassNetworkTimeout, gateway.ErrorClassUpstreamTimeout:
+		return channelhealth.SignalTimeout
+	case gateway.ErrorClassTokenRevoked, gateway.ErrorClassOAuthInvalidGrant:
+		return channelhealth.SignalTokenRevoked
+	case gateway.ErrorClassKYCRequired, gateway.ErrorClassOrgDisabled,
+		gateway.ErrorClassWorkspaceDeactivated, gateway.ErrorClassCreditExhausted:
+		return channelhealth.SignalAccountSuspended
+	case gateway.ErrorClassPlatformPolicy:
+		return channelhealth.SignalForbidden
+	}
+	switch {
+	case statusCode == http.StatusTooManyRequests:
+		return channelhealth.SignalRateLimit
+	case statusCode == http.StatusForbidden:
+		return channelhealth.SignalForbidden
+	case statusCode >= 500:
+		return channelhealth.SignalUpstream5xx
+	default:
+		return channelhealth.SignalChannelError
+	}
+}
+
+func signalFromDispatchError(err error, c gateway.Classification) channelhealth.SignalClass {
+	if errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
+		return channelhealth.SignalTimeout
+	}
+	return signalFromClassification(0, c)
+}
+
+func rateLimitResetFromClassification(c gateway.Classification, now time.Time) *time.Time {
+	if c.RetryAfterMs <= 0 {
+		return nil
+	}
+	reset := now.Add(time.Duration(c.RetryAfterMs) * time.Millisecond)
+	return &reset
 }
 
 func settleCompletion(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent) (*billing.SettleResult, error) {

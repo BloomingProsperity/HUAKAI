@@ -106,6 +106,16 @@ func (b *RoutingReasonBuilder) JSON() []byte {
 	return out
 }
 
+func (b *RoutingReasonBuilder) onlyFailure(reason GateFailureReason, total int) bool {
+	if b == nil || total <= 0 {
+		return false
+	}
+	if len(b.reason.CandidateCountsByExclusion) != 1 {
+		return false
+	}
+	return b.reason.CandidateCountsByExclusion[reason] == total
+}
+
 func affinityKeyClass(req SelectionRequest) string {
 	if req.ContinuationKey != "" {
 		return "continuation_marker"

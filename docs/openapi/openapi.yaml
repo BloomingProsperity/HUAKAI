@@ -47,6 +47,10 @@ security:
 tags:
   - name: gateway
     description: Client-facing relay endpoints. F-GW-002 + F-PROTO-002 + F-AUTH-005.
+  - name: auth
+    description: HUAKAI platform User authentication. F-AUTH-007.
+  - name: sessions
+    description: HUAKAI platform User session management. F-SESSION-001.
   - name: admin-api-keys
     description: API Key issuance / list / revoke. Slice 2 N+4b2; backed by admin_tokens + admin_audit_events.
   - name: admin-pools
@@ -197,6 +201,223 @@ paths:
         '402': { $ref: '#/components/responses/PaymentRequired' }
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  # ==========================================================================
+  # Platform user auth/session endpoints
+  # ==========================================================================
+
+  /v1/auth/register:
+    post:
+      tags: [auth]
+      summary: Register a HUAKAI platform User
+      operationId: authRegister
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthRegisterRequest' }
+      responses:
+        '201':
+          description: User created; verification token is delivered through configured email sender.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthUserResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/auth/login:
+    post:
+      tags: [auth]
+      summary: Login with email and password
+      operationId: authLogin
+      x-huakai-spec-source: [docs/specs/user-authentication.md, docs/specs/session-management.md]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthLoginRequest' }
+      responses:
+        '200':
+          description: Authenticated user plus newly issued session tokens.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSessionResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/auth/verify-email:
+    post:
+      tags: [auth]
+      summary: Consume an email verification token
+      operationId: authVerifyEmail
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthVerifyEmailRequest' }
+      responses:
+        '200':
+          description: Email verified and user activated when no other gate remains.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthUserResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/auth/reset-password:
+    post:
+      tags: [auth]
+      summary: Request or complete password reset
+      operationId: authResetPassword
+      x-huakai-spec-source: [docs/specs/user-authentication.md, docs/specs/session-management.md]
+      security: []
+      description: |
+        When `token` is omitted, requests a reset challenge using account-enumeration-safe output.
+        When `token` and `new_password` are present, consumes the challenge, changes password, and revokes user sessions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthResetPasswordRequest' }
+      responses:
+        '200':
+          description: Password reset completed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthUserResponse' }
+        '202':
+          description: Reset request accepted.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/auth/oauth-init:
+    post:
+      tags: [auth]
+      summary: Start Google/GitHub OAuth authorization flow
+      operationId: authOAuthInit
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthOAuthInitRequest' }
+      responses:
+        '201':
+          description: OAuth authorization URL plus opaque state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthOAuthInitResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/auth/oauth-callback:
+    post:
+      tags: [auth]
+      summary: Complete neutral Google/GitHub OAuth identity callback
+      operationId: authOAuthCallback
+      x-huakai-spec-source: [docs/specs/user-authentication.md, docs/specs/session-management.md]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthOAuthCallbackRequest' }
+      responses:
+        '200':
+          description: Social identity accepted and platform session issued.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSessionResponse' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/sessions/refresh:
+    post:
+      tags: [sessions]
+      summary: Rotate a refresh token and issue a new platform session token
+      operationId: sessionRefresh
+      x-huakai-spec-source: [docs/specs/session-management.md]
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SessionRefreshRequest' }
+      responses:
+        '200':
+          description: Refresh token rotated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionTokenResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/sessions/revoke:
+    post:
+      tags: [sessions]
+      summary: Revoke one refresh token, one family, or all user session families
+      operationId: sessionRevoke
+      x-huakai-spec-source: [docs/specs/session-management.md]
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SessionRevokeRequest' }
+      responses:
+        '200':
+          description: Revocation applied.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked: { type: integer, format: int64 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/sessions/list:
+    post:
+      tags: [sessions]
+      summary: List active and historical session families for a user
+      operationId: sessionList
+      x-huakai-spec-source: [docs/specs/session-management.md]
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SessionListRequest' }
+      responses:
+        '200':
+          description: Session family list.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [families]
+                properties:
+                  families:
+                    type: array
+                    items: { $ref: '#/components/schemas/SessionFamily' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   # ==========================================================================
@@ -912,6 +1133,10 @@ components:
       type: http
       scheme: bearer
       bearerFormat: HUAKAI-API-KEY
+    sessionBearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: HUAKAI-SESSION
 
   parameters:
     IdempotencyKey:
@@ -1016,6 +1241,184 @@ components:
           schema: { $ref: '#/components/schemas/CredentialAcquisitionHelperResponse' }
 
   schemas:
+    AuthUser:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      required: [id, tenant_id, email, email_verified, status, created_at, updated_at]
+      properties:
+        id: { type: integer, format: int64 }
+        tenant_id: { type: integer, format: int64 }
+        email: { type: string, format: email }
+        display_name: { type: string }
+        email_verified: { type: boolean }
+        social_login_provider:
+          type: [string, 'null']
+          enum: [google, github, null]
+        status:
+          type: string
+          enum: [pending_verification, active, disabled, locked, reset_required, deleted]
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    AuthRegisterRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      required: [tenant_id, email, password]
+      properties:
+        tenant_id: { type: integer, format: int64 }
+        email: { type: string, format: email }
+        display_name: { type: string }
+        password: { type: string, format: password, minLength: 8 }
+        invite_code: { type: string }
+
+    AuthLoginRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      required: [tenant_id, email, password]
+      properties:
+        tenant_id: { type: integer, format: int64 }
+        email: { type: string, format: email }
+        password: { type: string, format: password }
+        device_info: { type: object, additionalProperties: true }
+
+    AuthVerifyEmailRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, token]
+      properties:
+        tenant_id: { type: integer, format: int64 }
+        token: { type: string }
+
+    AuthResetPasswordRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      required: [tenant_id]
+      properties:
+        tenant_id: { type: integer, format: int64 }
+        email: { type: string, format: email }
+        token: { type: string }
+        new_password: { type: string, format: password, minLength: 8 }
+
+    AuthOAuthInitRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      required: [tenant_id, provider]
+      properties:
+        tenant_id: { type: integer, format: int64 }
+        provider: { type: string, enum: [google, github] }
+        redirect_uri: { type: string, format: uri }
+
+    AuthOAuthInitResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      required: [provider, state, auth_url, expires_at]
+      properties:
+        provider: { type: string, enum: [google, github] }
+        state: { type: string }
+        auth_url: { type: string, format: uri }
+        expires_at: { type: string, format: date-time }
+
+    AuthOAuthCallbackRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      required: [tenant_id, provider, state, code]
+      properties:
+        tenant_id: { type: integer, format: int64 }
+        provider: { type: string, enum: [google, github] }
+        state: { type: string }
+        code: { type: string }
+        device_info: { type: object, additionalProperties: true }
+
+    AuthUserResponse:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      required: [user]
+      properties:
+        user: { $ref: '#/components/schemas/AuthUser' }
+        verification_required: { type: boolean }
+        email_verified: { type: boolean }
+        sessions_revoked: { type: integer, format: int64 }
+
+    AuthSessionResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/user-authentication.md, docs/specs/session-management.md]
+      required: [user, session]
+      properties:
+        user: { $ref: '#/components/schemas/AuthUser' }
+        session: { $ref: '#/components/schemas/SessionTokenBundle' }
+
+    SessionRefreshRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/session-management.md]
+      required: [refresh_token]
+      properties:
+        refresh_token: { type: string }
+
+    SessionRevokeRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/session-management.md]
+      properties:
+        family_id: { type: string, format: uuid }
+        session_token: { type: string }
+        refresh_token: { type: string }
+        reason: { type: string }
+
+    SessionListRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/session-management.md]
+      properties: {}
+
+    SessionTokenResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/session-management.md]
+      required: [session]
+      properties:
+        session: { $ref: '#/components/schemas/SessionTokenBundle' }
+
+    SessionTokenBundle:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/session-management.md]
+      required: [session_token, refresh_token, session_expires_at, refresh_expires_at, family, generation]
+      properties:
+        session_token: { type: string }
+        refresh_token: { type: string }
+        session_expires_at: { type: string, format: date-time }
+        refresh_expires_at: { type: string, format: date-time }
+        family: { $ref: '#/components/schemas/SessionFamily' }
+        generation: { type: integer }
+
+    SessionFamily:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/session-management.md]
+      required: [id, user_id, tenant_id, status, generation, created_at, last_active_at]
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: integer, format: int64 }
+        tenant_id: { type: integer, format: int64 }
+        status: { type: string, enum: [active, revoked, expired, suspicious, replaced] }
+        generation: { type: integer }
+        created_at: { type: string, format: date-time }
+        last_active_at: { type: string, format: date-time }
+        device_info: { type: object, additionalProperties: true }
+        ip_baseline: { type: string }
+        revoked_at: { type: [string, 'null'], format: date-time }
+        revoked_reason: { type: [string, 'null'] }
+
     # ---- Gateway request/response schemas (permissive: additionalProperties: true) ----
 
     ChatCompletionsRequest:

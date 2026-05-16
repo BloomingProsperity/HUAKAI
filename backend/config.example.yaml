@@ -54,6 +54,18 @@ credential_encryption:
   active_key_id: "local-v1"
   env_key: "HUAKAI_CREDENTIAL_KEY_B64"
 
+user_sessions:
+  # F-SESSION-001: HMAC key for signed HUAKAI platform session tokens.
+  # Runtime env: HUAKAI_SESSION_SIGNING_KEY_B64 or HUAKAI_SESSION_SIGNING_KEY_HEX.
+  signing_key_env: "HUAKAI_SESSION_SIGNING_KEY_B64"
+
+user_oauth:
+  # F-AUTH-007: optional Google/GitHub OAuth identity-source bridge.
+  google_client_id_env: "HUAKAI_GOOGLE_OAUTH_CLIENT_ID"
+  google_client_secret_env: "HUAKAI_GOOGLE_OAUTH_CLIENT_SECRET"
+  github_client_id_env: "HUAKAI_GITHUB_OAUTH_CLIENT_ID"
+  github_client_secret_env: "HUAKAI_GITHUB_OAUTH_CLIENT_SECRET"
+
 logging:
   # Token-leakage-safe logging discipline (F-AUTH-005 H5).
   level: "info"

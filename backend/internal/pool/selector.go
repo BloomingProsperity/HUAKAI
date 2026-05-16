@@ -11,8 +11,9 @@ import (
 )
 
 var (
-	ErrNoEligibleAccount = errors.New("pool has no eligible provider account")
-	ErrClaimRace         = errors.New("pool claim writeback race")
+	ErrNoEligibleAccount   = errors.New("pool has no eligible provider account")
+	ErrAllChannelsDegraded = errors.New("pool has no eligible provider account: all_channels_degraded")
+	ErrClaimRace           = errors.New("pool claim writeback race")
 )
 
 type AccountSnapshot struct {
@@ -112,6 +113,9 @@ func (s *DefaultSelector) Select(ctx context.Context, req SelectionRequest) (*Se
 	}
 	eligible := s.filter(ctx, accounts, req, reason)
 	if len(eligible) == 0 {
+		if reason.onlyFailure(GateFailureHealth, len(accounts)) {
+			return nil, ErrAllChannelsDegraded
+		}
 		return nil, ErrNoEligibleAccount
 	}
 

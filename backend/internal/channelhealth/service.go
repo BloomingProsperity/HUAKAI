@@ -1,0 +1,653 @@
+package channelhealth
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+)
+
+type Service struct {
+	store  Store
+	policy Policy
+	clock  Clock
+}
+
+type transactionalStore interface {
+	WithTx(context.Context, func(Store) error) error
+}
+
+func NewService(store Store, policy Policy, clock Clock) *Service {
+	if clock == nil {
+		clock = realClock{}
+	}
+	return &Service{store: store, policy: policy.normalized(), clock: clock}
+}
+
+func (s *Service) EnsureDefaultActive(ctx context.Context, key ChannelKey) (Record, error) {
+	if s == nil || s.store == nil {
+		return Record{}, errors.New("channelhealth: service not configured")
+	}
+	if err := key.Validate(); err != nil {
+		return Record{}, err
+	}
+	now := s.clock.Now()
+	rec, err := s.store.Get(ctx, key)
+	if err == nil {
+		return rec, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return Record{}, err
+	}
+	rec = newRecord(key, s.policy, now)
+	return s.store.UpsertRecord(ctx, rec)
+}
+
+func (s *Service) ApplySignal(ctx context.Context, sig Signal) (Record, error) {
+	return s.withMutation(ctx, func(tx *Service) (Record, error) {
+		return tx.applySignal(ctx, sig)
+	})
+}
+
+func (s *Service) applySignal(ctx context.Context, sig Signal) (Record, error) {
+	if s == nil || s.store == nil {
+		return Record{}, errors.New("channelhealth: service not configured")
+	}
+	if sig.Key.ChannelID == "" {
+		sig.Key.ChannelID = sig.Key.StableChannelID()
+	}
+	if err := sig.Key.Validate(); err != nil {
+		return Record{}, err
+	}
+	now := s.clock.Now()
+	if sig.At.IsZero() {
+		sig.At = now
+	}
+	rec, err := s.EnsureDefaultActive(ctx, sig.Key)
+	if err != nil {
+		return Record{}, err
+	}
+	prev := rec.State
+	rec.SampleWindow = addSignalToWindow(rec.SampleWindow, s.policy, sig, now)
+	rec.LastSignalClass = normalizeSignalClass(sig.Class)
+	rec.LastSignalAt = &sig.At
+	rec.UpdatedAt = now
+	decision := s.evaluate(rec, sig, now)
+	if decision.state != "" && decision.state != rec.State {
+		if decision.state == StateCoolingDown && hasEvent(decision.eventTypes, EventRampRolledBack) {
+			s.rollbackRamp(&rec, now, decision.reason)
+			if rec.RampFailureCount >= s.policy.RepeatedRampRollbackAlertThreshold {
+				decision.alertType = AlertRepeatedRampRollback
+				decision.alertSeverity = "high"
+				decision.alertPayload = map[string]any{"ramp_failure_count": rec.RampFailureCount}
+			}
+		} else {
+			applyDecision(&rec, decision, now, s.policy)
+		}
+	}
+	rec, err = s.store.UpsertRecord(ctx, rec)
+	if err != nil {
+		return Record{}, err
+	}
+	if prev != rec.State || decision.auditEvenWithoutStateChange {
+		if err := s.emitTransitionEvents(ctx, prev, rec, sig.RequestID, "", decision); err != nil {
+			return Record{}, err
+		}
+	}
+	if decision.alertType != "" {
+		if err := s.emitAlert(ctx, rec, decision.alertType, decision.alertSeverity, decision.alertPayload); err != nil {
+			return Record{}, err
+		}
+	}
+	return rec, nil
+}
+
+func (s *Service) MaybeStartRamp(ctx context.Context, key ChannelKey) (Record, error) {
+	return s.withMutation(ctx, func(tx *Service) (Record, error) {
+		return tx.maybeStartRamp(ctx, key)
+	})
+}
+
+func (s *Service) maybeStartRamp(ctx context.Context, key ChannelKey) (Record, error) {
+	rec, err := s.recordForMutation(ctx, key)
+	if err != nil {
+		return Record{}, err
+	}
+	now := s.clock.Now()
+	if rec.State != StateCoolingDown {
+		return rec, nil
+	}
+	if rec.CooldownUntil == nil || rec.CooldownUntil.After(now) {
+		return rec, nil
+	}
+	prev := rec.State
+	rec.State = StateRamping
+	rec.ReasonClass = SignalNone
+	rec.RampStagePct = 1
+	rec.RampStartedAt = &now
+	rec.CooldownUntil = nil
+	rec.StateEnteredAt = now
+	rec.LastTransitionAt = now
+	rec.UpdatedAt = now
+	rec.PolicyVersion = s.policy.Version
+	rec, err = s.store.UpsertRecord(ctx, rec)
+	if err != nil {
+		return Record{}, err
+	}
+	return rec, s.emitTransitionEvents(ctx, prev, rec, "", "", decision{eventTypes: []AuditEventType{EventRampStarted}})
+}
+
+func (s *Service) AdvanceRamp(ctx context.Context, key ChannelKey) (Record, error) {
+	return s.withMutation(ctx, func(tx *Service) (Record, error) {
+		return tx.advanceRamp(ctx, key)
+	})
+}
+
+func (s *Service) advanceRamp(ctx context.Context, key ChannelKey) (Record, error) {
+	rec, err := s.recordForMutation(ctx, key)
+	if err != nil {
+		return Record{}, err
+	}
+	now := s.clock.Now()
+	if rec.State != StateRamping {
+		return rec, nil
+	}
+	if rec.RampStartedAt != nil && now.Sub(*rec.RampStartedAt) < s.policy.RampStageMinDuration {
+		return rec, nil
+	}
+	recent := windowFor(rec.SampleWindow, s.policy.MinObservation, now)
+	if recent.TotalAttempts < s.policy.RampStageMinSamples {
+		return rec, nil
+	}
+	if rampFailureRate(recent) > s.policy.RampErrorThresholdPct || recent.BanSignals > 0 {
+		prev := rec.State
+		s.rollbackRamp(&rec, now, SignalChannelError)
+		rec, err = s.store.UpsertRecord(ctx, rec)
+		if err != nil {
+			return Record{}, err
+		}
+		dec := decision{
+			eventTypes: []AuditEventType{EventRampRolledBack, EventDisabled},
+		}
+		if rec.RampFailureCount >= s.policy.RepeatedRampRollbackAlertThreshold {
+			dec.alertType = AlertRepeatedRampRollback
+			dec.alertSeverity = "high"
+			dec.alertPayload = map[string]any{"ramp_failure_count": rec.RampFailureCount}
+		}
+		if err := s.emitTransitionEvents(ctx, prev, rec, "", "", dec); err != nil {
+			return Record{}, err
+		}
+		if dec.alertType != "" {
+			if err := s.emitAlert(ctx, rec, dec.alertType, dec.alertSeverity, dec.alertPayload); err != nil {
+				return Record{}, err
+			}
+		}
+		return rec, nil
+	}
+	prev := rec.State
+	switch rec.RampStagePct {
+	case 0:
+		rec.RampStagePct = 1
+	case 1:
+		rec.RampStagePct = 10
+	case 10:
+		rec.RampStagePct = 50
+	case 50:
+		rec.RampStagePct = 100
+	default:
+		rec.State = StateActive
+		rec.RampStagePct = 0
+		rec.RampStartedAt = nil
+		rec.ReasonClass = SignalNone
+	}
+	if rec.State == StateRamping {
+		rec.RampStartedAt = &now
+	}
+	rec.LastTransitionAt = now
+	rec.UpdatedAt = now
+	rec.PolicyVersion = s.policy.Version
+	rec, err = s.store.UpsertRecord(ctx, rec)
+	if err != nil {
+		return Record{}, err
+	}
+	events := []AuditEventType{EventRampStarted}
+	if rec.State == StateActive {
+		events = []AuditEventType{EventRecovered}
+	}
+	return rec, s.emitTransitionEvents(ctx, prev, rec, "", "", decision{eventTypes: events})
+}
+
+func (s *Service) ManualPause(ctx context.Context, key ChannelKey, actorID, reason string) (Record, error) {
+	return s.manualTransition(ctx, key, actorID, reason, StateManualPaused, 0, []AuditEventType{EventManualOverride, EventDisabled}, "")
+}
+
+func (s *Service) ManualResume(ctx context.Context, key ChannelKey, actorID, reason string) (Record, error) {
+	return s.manualTransition(ctx, key, actorID, reason, StateRamping, 1, []AuditEventType{EventManualOverride, EventRampStarted}, "")
+}
+
+func (s *Service) ForceActive(ctx context.Context, key ChannelKey, actorID, reason string) (Record, error) {
+	return s.manualTransition(ctx, key, actorID, reason, StateActive, 0, []AuditEventType{EventManualOverride, EventRecovered}, "security")
+}
+
+func (s *Service) recordForMutation(ctx context.Context, key ChannelKey) (Record, error) {
+	if s == nil || s.store == nil {
+		return Record{}, errors.New("channelhealth: service not configured")
+	}
+	if key.ChannelID == "" {
+		key.ChannelID = key.StableChannelID()
+	}
+	return s.EnsureDefaultActive(ctx, key)
+}
+
+func (s *Service) manualTransition(ctx context.Context, key ChannelKey, actorID, reason string, state HealthState, rampPct int, events []AuditEventType, alertSeverity string) (Record, error) {
+	return s.withMutation(ctx, func(tx *Service) (Record, error) {
+		return tx.manualTransitionLocked(ctx, key, actorID, reason, state, rampPct, events, alertSeverity)
+	})
+}
+
+func (s *Service) manualTransitionLocked(ctx context.Context, key ChannelKey, actorID, reason string, state HealthState, rampPct int, events []AuditEventType, alertSeverity string) (Record, error) {
+	reason = strings.TrimSpace(reason)
+	if s.policy.ManualOverrideRequiresReason && reason == "" {
+		return Record{}, errors.New("manual override reason is required")
+	}
+	rec, err := s.recordForMutation(ctx, key)
+	if err != nil {
+		return Record{}, err
+	}
+	now := s.clock.Now()
+	prev := rec.State
+	rec.State = state
+	rec.ReasonClass = SignalManualOverride
+	rec.Confidence = ConfidenceOperatorOverride
+	rec.ManualOverrideActorID = actorID
+	rec.ManualOverrideReason = reason
+	rec.ManualPauseReason = ""
+	rec.CooldownUntil = nil
+	rec.RampStagePct = rampPct
+	rec.RampStartedAt = nil
+	if state == StateManualPaused {
+		rec.ManualPauseReason = reason
+	}
+	if state == StateRamping {
+		rec.RampStartedAt = &now
+	}
+	rec.StateEnteredAt = now
+	rec.LastTransitionAt = now
+	rec.PolicyVersion = s.policy.Version
+	rec.UpdatedAt = now
+	rec, err = s.store.UpsertRecord(ctx, rec)
+	if err != nil {
+		return Record{}, err
+	}
+	if err := s.emitTransitionEvents(ctx, prev, rec, "", actorID, decision{eventTypes: events}); err != nil {
+		return Record{}, err
+	}
+	if alertSeverity != "" {
+		if err := s.emitAlert(ctx, rec, AlertManualForceActive, alertSeverity, map[string]any{"actor_id": actorID}); err != nil {
+			return Record{}, err
+		}
+	}
+	return rec, nil
+}
+
+func (s *Service) withMutation(ctx context.Context, fn func(*Service) (Record, error)) (Record, error) {
+	if s == nil || s.store == nil {
+		return Record{}, errors.New("channelhealth: service not configured")
+	}
+	txs, ok := s.store.(transactionalStore)
+	if !ok {
+		return fn(s)
+	}
+	var out Record
+	err := txs.WithTx(ctx, func(store Store) error {
+		txService := *s
+		txService.store = store
+		var err error
+		out, err = fn(&txService)
+		return err
+	})
+	return out, err
+}
+
+type decision struct {
+	state                       HealthState
+	reason                      SignalClass
+	cooldown                    time.Duration
+	cooldownUntil               *time.Time
+	recoveryBlockedReason       string
+	confidence                  ConfidenceTier
+	eventTypes                  []AuditEventType
+	alertType                   AlertType
+	alertSeverity               string
+	alertPayload                map[string]any
+	auditEvenWithoutStateChange bool
+}
+
+func (s *Service) evaluate(rec Record, sig Signal, now time.Time) decision {
+	class := normalizeSignalClass(sig.Class)
+	if rec.State == StateManualPaused {
+		return decision{}
+	}
+	if isBanSignal(class) {
+		until := now.Add(s.policy.BanSignalMinCooldown)
+		dec := decision{
+			state:         StateDisabled,
+			reason:        class,
+			cooldownUntil: &until,
+			confidence:    ConfidenceObserved,
+			eventTypes:    []AuditEventType{EventDisabled},
+			alertType:     AlertBanSignal,
+			alertSeverity: "high",
+			alertPayload:  map[string]any{"cooldown_hours": int(s.policy.BanSignalMinCooldown.Hours())},
+		}
+		if !s.policy.AutomaticPostBanRamp {
+			dec.recoveryBlockedReason = "operator_ack_required"
+		}
+		return dec
+	}
+	if rec.State == StateRamping {
+		recent := windowFor(rec.SampleWindow, s.policy.MinObservation, now)
+		if recent.TotalAttempts >= s.policy.RampStageMinSamples && rampFailureRate(recent) > s.policy.RampErrorThresholdPct {
+			return decision{
+				state:      StateCoolingDown,
+				reason:     class,
+				cooldown:   s.policy.ErrorRateCooldown,
+				confidence: ConfidenceObserved,
+				eventTypes: []AuditEventType{EventRampRolledBack, EventDisabled},
+			}
+		}
+	}
+	if dec := s.rateLimitDecision(rec, sig, now); dec.state != "" {
+		return dec
+	}
+	if dec := s.upstream5xxDecision(rec, now); dec.state != "" {
+		return dec
+	}
+	if dec := s.latencyDecision(rec, now); dec.state != "" {
+		return dec
+	}
+	if dec := s.errorRateDecision(rec, now); dec.state != "" {
+		return dec
+	}
+	return decision{}
+}
+
+func (s *Service) rateLimitDecision(rec Record, sig Signal, now time.Time) decision {
+	w := windowFor(rec.SampleWindow, s.policy.RateLimitWindow, now)
+	if w.TotalAttempts < s.policy.MinSampleCount {
+		return decision{}
+	}
+	if rate(w.RateLimitHits, w.TotalAttempts) <= s.policy.RateLimitHitRateThresholdPct {
+		return decision{}
+	}
+	until := now.Add(s.policy.DefaultRateLimitCooldown)
+	if sig.RateLimitResetAt != nil && sig.RateLimitResetAt.After(now) {
+		until = sig.RateLimitResetAt.UTC()
+	}
+	return decision{
+		state:         StateCoolingDown,
+		reason:        SignalRateLimit,
+		cooldownUntil: &until,
+		confidence:    ConfidenceObserved,
+		eventTypes:    []AuditEventType{EventDegraded, EventDisabled},
+	}
+}
+
+func (s *Service) errorRateDecision(rec Record, now time.Time) decision {
+	w := windowFor(rec.SampleWindow, s.policy.ErrorRateWindow, now)
+	attempts := w.TotalAttempts - w.LocalGateway5xxHits
+	if attempts < s.policy.MinSampleCount {
+		return decision{}
+	}
+	if rate(w.FailedAttempts, attempts) <= s.policy.ErrorRateThresholdPct {
+		return decision{}
+	}
+	return decision{
+		state:      StateCoolingDown,
+		reason:     SignalChannelError,
+		cooldown:   s.policy.ErrorRateCooldown,
+		confidence: ConfidenceObserved,
+		eventTypes: []AuditEventType{EventDegraded, EventDisabled},
+	}
+}
+
+func (s *Service) upstream5xxDecision(rec Record, now time.Time) decision {
+	w := windowFor(rec.SampleWindow, s.policy.Upstream5xxWindow, now)
+	attempts := w.TotalAttempts - w.LocalGateway5xxHits
+	if attempts < s.policy.MinSampleCount {
+		return decision{}
+	}
+	if rate(w.Upstream5xxHits, attempts) <= s.policy.Upstream5xxRateThresholdPct {
+		return decision{}
+	}
+	if rec.State == StateDegraded && rec.ReasonClass == SignalUpstream5xx {
+		return decision{
+			state:      StateCoolingDown,
+			reason:     SignalUpstream5xx,
+			cooldown:   s.policy.Upstream5xxCooldown,
+			confidence: ConfidenceObserved,
+			eventTypes: []AuditEventType{EventDisabled},
+		}
+	}
+	return decision{
+		state:      StateDegraded,
+		reason:     SignalUpstream5xx,
+		confidence: ConfidenceObserved,
+		eventTypes: []AuditEventType{EventDegraded},
+	}
+}
+
+func (s *Service) latencyDecision(rec Record, now time.Time) decision {
+	w := windowFor(rec.SampleWindow, s.policy.LatencyWindow, now)
+	if w.TotalAttempts < s.policy.MinSampleCount || w.LatencyP99MS <= s.policy.LatencyP99ThresholdMS {
+		return decision{}
+	}
+	if rec.State == StateDegraded && rec.ReasonClass == SignalLatencyP99 {
+		return decision{
+			state:      StateCoolingDown,
+			reason:     SignalLatencyP99,
+			cooldown:   s.policy.LatencyCooldown,
+			confidence: ConfidenceObserved,
+			eventTypes: []AuditEventType{EventDisabled},
+		}
+	}
+	return decision{
+		state:      StateDegraded,
+		reason:     SignalLatencyP99,
+		confidence: ConfidenceObserved,
+		eventTypes: []AuditEventType{EventDegraded},
+	}
+}
+
+func applyDecision(rec *Record, dec decision, now time.Time, p Policy) {
+	rec.State = dec.state
+	if dec.reason != "" {
+		rec.ReasonClass = dec.reason
+	}
+	if dec.confidence != "" {
+		rec.Confidence = dec.confidence
+	}
+	if dec.cooldownUntil != nil {
+		c := dec.cooldownUntil.UTC()
+		rec.CooldownUntil = &c
+	} else if dec.cooldown > 0 {
+		c := now.Add(dec.cooldown)
+		rec.CooldownUntil = &c
+	}
+	if rec.State == StateCoolingDown && rec.CooldownUntil == nil {
+		c := now.Add(p.ErrorRateCooldown)
+		rec.CooldownUntil = &c
+	}
+	if rec.State != StateRamping {
+		rec.RampStagePct = 0
+		rec.RampStartedAt = nil
+	}
+	rec.RecoveryBlockedReason = dec.recoveryBlockedReason
+	rec.StateEnteredAt = now
+	rec.LastTransitionAt = now
+	rec.PolicyVersion = p.Version
+	rec.UpdatedAt = now
+}
+
+func (s *Service) rollbackRamp(rec *Record, now time.Time, reason SignalClass) {
+	rec.State = StateCoolingDown
+	rec.ReasonClass = reason
+	rec.RampFailureCount++
+	rec.RampStagePct = 0
+	rec.RampStartedAt = nil
+	d := s.policy.ErrorRateCooldown
+	if d <= 0 {
+		d = DefaultPolicy().ErrorRateCooldown
+	}
+	backoff := time.Duration(float64(d) * s.policy.RampBackoffFactor)
+	c := now.Add(backoff)
+	rec.CooldownUntil = &c
+	rec.StateEnteredAt = now
+	rec.LastTransitionAt = now
+	rec.UpdatedAt = now
+	rec.PolicyVersion = s.policy.Version
+}
+
+func (s *Service) emitTransitionEvents(ctx context.Context, prev HealthState, rec Record, requestID, actorID string, dec decision) error {
+	events := dec.eventTypes
+	if len(events) == 0 {
+		events = defaultEvents(prev, rec.State)
+	}
+	for _, typ := range events {
+		if typ == "" {
+			continue
+		}
+		ev := AuditEvent{
+			Type:          typ,
+			Key:           rec.Key,
+			PreviousState: prev,
+			NewState:      rec.State,
+			ReasonClass:   rec.ReasonClass,
+			PolicyVersion: rec.PolicyVersion,
+			RequestID:     requestID,
+			ActorID:       actorID,
+			OccurredAt:    s.clock.Now(),
+			Payload:       auditPayload(rec),
+		}
+		if err := s.store.AppendAudit(ctx, ev); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) emitAlert(ctx context.Context, rec Record, typ AlertType, severity string, payload map[string]any) error {
+	if severity == "" {
+		severity = "high"
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	return s.store.AppendAlert(ctx, Alert{
+		Type:        typ,
+		Key:         rec.Key,
+		Severity:    severity,
+		ReasonClass: rec.ReasonClass,
+		Payload:     payload,
+		CreatedAt:   s.clock.Now(),
+	})
+}
+
+func defaultEvents(prev, next HealthState) []AuditEventType {
+	switch next {
+	case StateDegraded:
+		return []AuditEventType{EventDegraded}
+	case StateCoolingDown, StateDisabled, StateManualPaused:
+		return []AuditEventType{EventDisabled}
+	case StateRamping:
+		return []AuditEventType{EventRampStarted}
+	case StateActive:
+		if prev != "" && prev != StateActive {
+			return []AuditEventType{EventRecovered}
+		}
+	}
+	return nil
+}
+
+func hasEvent(events []AuditEventType, want AuditEventType) bool {
+	for _, event := range events {
+		if event == want {
+			return true
+		}
+	}
+	return false
+}
+
+func auditPayload(rec Record) map[string]any {
+	payload := map[string]any{
+		"tenant_id":             rec.Key.TenantID,
+		"channel_id":            rec.Key.StableChannelID(),
+		"vendor":                rec.Key.Vendor,
+		"provider_account_id":   rec.Key.ProviderAccountID,
+		"account_credential_id": rec.Key.AccountCredentialID,
+		"credential_version":    rec.Key.CredentialVersion,
+		"state":                 rec.State,
+		"reason_class":          rec.ReasonClass,
+		"policy_version":        rec.PolicyVersion,
+		"score":                 rec.Score,
+		"window_summary": map[string]any{
+			"total_attempts":    rec.SampleWindow.TotalAttempts,
+			"failed_attempts":   rec.SampleWindow.FailedAttempts,
+			"rate_limit_hits":   rec.SampleWindow.RateLimitHits,
+			"upstream_5xx_hits": rec.SampleWindow.Upstream5xxHits,
+			"latency_p99_ms":    rec.SampleWindow.LatencyP99MS,
+			"ban_signals":       rec.SampleWindow.BanSignals,
+		},
+		"ramp_stage_pct":     rec.RampStagePct,
+		"ramp_failure_count": rec.RampFailureCount,
+	}
+	if rec.CooldownUntil != nil {
+		payload["cooldown_until"] = rec.CooldownUntil.UTC().Format(time.RFC3339Nano)
+	}
+	if rec.ManualOverrideActorID != "" {
+		payload["manual_override_actor_id"] = rec.ManualOverrideActorID
+	}
+	return payload
+}
+
+func newRecord(key ChannelKey, p Policy, now time.Time) Record {
+	key.ChannelID = key.StableChannelID()
+	return Record{
+		Key:              key,
+		State:            StateActive,
+		Score:            100,
+		ReasonClass:      SignalNone,
+		Confidence:       ConfidenceObserved,
+		StateEnteredAt:   now,
+		LastTransitionAt: now,
+		PolicyVersion:    p.Version,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+}
+
+func rampFailureRate(w WindowSummary) float64 {
+	return rate(w.FailedAttempts, w.TotalAttempts)
+}
+
+func (s *Service) Policy() Policy {
+	if s == nil {
+		return DefaultPolicy()
+	}
+	return s.policy
+}
+
+func (s *Service) Store() Store {
+	if s == nil {
+		return nil
+	}
+	return s.store
+}
+
+func (s *Service) String() string {
+	if s == nil {
+		return "channelhealth.Service<nil>"
+	}
+	return fmt.Sprintf("channelhealth.Service{policy=%s}", s.policy.Version)
+}
