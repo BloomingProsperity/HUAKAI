@@ -39,18 +39,18 @@ HUAKAI 不只 parity sub2api 而是 strict better 在 2 维度:
 
 sub2api 已有的 acquisition 增强功能, HUAKAI **必须 preserve + 更简洁**:
 
-| sub2api feature (cite) | HUAKAI 升级 |
+| sub2api 行为参考点 (paraphrased, cite only) | HUAKAI 升级 |
 |---|---|
-| `AntigravityOAuthService.FillProjectID` + `loadProjectIDWithRetry` (`backend/internal/service/antigravity_oauth_service.go`) — OAuth 后自动 retry 查 antigravity project ID | **HUAKAI 升级**: project ID 自动 fill 是 acquisition flow 内置, 失败 retry 3 次后 fallback 提示用户手动 paste, **不要求用户预先知道 project ID** |
-| `GeminiOAuthService.FetchGoogleOneTier` + `RefreshAccountGoogleOneTier` (`backend/internal/service/gemini_oauth_service.go`) — Google One 订阅级别自动 detect | **HUAKAI 升级**: tier auto-detect + 在 admin UI 显示订阅状态 (Basic / Premium / AI Premium) + 自动按订阅 tier 配置 rate limit; sub2api 仅 detect tier 名, HUAKAI 用 tier 信息驱动业务逻辑 |
-| `OpenAITokenRefresher` + `GeminiTokenRefresher` + `ClaudeTokenRefresher` (`backend/internal/service/token_refresher.go` + `gemini_token_refresher.go`) — per-vendor 后台 token refresh worker | **HUAKAI 升级**: F-AUTH-005 已有统一 credentialworker scheduler (commit 6262551), 但 acquisition stage 触发**首次 refresh in OAuth callback 内** (同步 wait token 真有效再返回 200, 防 user 跳转后凭证 not-yet-active); sub2api 异步 worker schedule 后才 refresh |
-| `PrivacyClientFactory` (sub2api 各 OAuth service 用) — OAuth 出站走隐私 proxy 防上游看 HUAKAI server IP | **HUAKAI 升级**: 与 R-3 transport mimicry 集成 (Rust 数据面 mimicry profile), acquisition OAuth 出站也走 fingerprint profile,sub2api 用 simple HTTP proxy |
-| Per-service `Stop()` lifecycle | **HUAKAI 升级**: 统一 lifecycle manager + graceful shutdown 时 drain in-flight OAuth callback (避免半完成凭证); sub2api 各 service 独立 Stop |
-| `RefreshTokenWithClientID` (OpenAI 服务支持多 clientID) | **HUAKAI 升级**: 多 OAuth app clientID 支持 (例 ChatGPT public + codex CLI 不同 client),acquisition flow 自动按 mode 选 clientID |
-| Antigravity refresh non-retryable error 识别 (`isNonRetryableAntigravityOAuthError`) + Gemini 相同 | **HUAKAI 升级**: 错误识别 + 自动建议下一动作 (non-retryable → 提示用户重新 OAuth; retryable → 后台 retry) |
-| Account credentials 构造 helper (`BuildAccountCredentials` 各 OAuth service) | **HUAKAI 升级**: 复用 F-AUTH-005 account_credentials encrypted blob schema, 不重复 |
-| sub2api migration 122 `pending_auth_completion_token_cleanup` — 半完成 OAuth state 清理 | **HUAKAI 升级**: acquisition_session 表本身带 `expires_at`, scheduled cleanup worker; sub2api 用单独 migration cleanup task |
-| sub2api migration 135 `allow_email_oauth_provider_types` — 多 OAuth provider type | **HUAKAI 升级**: 15 mode 显式 enum,unknown provider 拒绝 (sub2api 灵活但易混) |
+| Antigravity OAuth 服务里负责 project ID 填充 + retry 的方法 (cite `backend/internal/service/antigravity_oauth_service.go`) — OAuth 后自动 retry 查 antigravity project ID | **HUAKAI 升级**: project ID 自动 fill 是 acquisition flow 内置, 失败 retry 3 次后 fallback 提示用户手动 paste, **不要求用户预先知道 project ID** |
+| Gemini OAuth 服务里 Google One tier detect + refresh 的方法 (cite `backend/internal/service/gemini_oauth_service.go`) — Google One 订阅级别自动 detect | **HUAKAI 升级**: tier auto-detect + 在 admin UI 显示订阅状态 (Basic / Premium / AI Premium) + 自动按订阅 tier 配置 rate limit; sub2api 仅 detect tier 名, HUAKAI 用 tier 信息驱动业务逻辑 |
+| per-vendor 后台 token refresh worker (cite `backend/internal/service/token_refresher.go` + `gemini_token_refresher.go`, OpenAI/Gemini/Claude 各一类) | **HUAKAI 升级**: F-AUTH-005 已有统一 credentialworker scheduler (commit 6262551), 但 acquisition stage 触发**首次 refresh in OAuth callback 内** (同步 wait token 真有效再返回 200, 防 user 跳转后凭证 not-yet-active); sub2api 异步 worker schedule 后才 refresh |
+| OAuth 出站 HTTP client 工厂 (走 privacy proxy 防上游看 HUAKAI server IP, sub2api 各 OAuth service 用) | **HUAKAI 升级**: 与 R-3 transport mimicry 集成 (Rust 数据面 mimicry profile), acquisition OAuth 出站也走 fingerprint profile, sub2api 用 simple HTTP proxy |
+| per-service 停服 lifecycle hook | **HUAKAI 升级**: 统一 lifecycle manager + graceful shutdown 时 drain in-flight OAuth callback (避免半完成凭证); sub2api 各 service 独立 Stop |
+| 支持多 OAuth clientID 的 refresh 方法 (OpenAI 服务) | **HUAKAI 升级**: 多 OAuth app clientID 支持 (例 ChatGPT public + codex CLI 不同 client), acquisition flow 自动按 mode 选 clientID |
+| Antigravity OAuth refresh 非 retryable 错误识别 + Gemini 同类 | **HUAKAI 升级**: 错误识别 + 自动建议下一动作 (non-retryable → 提示用户重新 OAuth; retryable → 后台 retry) |
+| account credentials 构造 helper (各 OAuth service 各一) | **HUAKAI 升级**: 复用 F-AUTH-005 account_credentials encrypted blob schema, 不重复 |
+| sub2api migration 122 半完成 OAuth state 清理 | **HUAKAI 升级**: credential_acquisition_flow_sessions 表本身带 `expires_at`, scheduled cleanup worker; sub2api 用单独 migration cleanup task |
+| sub2api migration 135 多 OAuth provider type 容许 | **HUAKAI 升级**: 15 mode 显式 enum, unknown provider 拒绝 (sub2api 灵活但易混) |
 
 ## file-by-file impact
 
@@ -71,35 +71,20 @@ sub2api 已有的 acquisition 增强功能, HUAKAI **必须 preserve + 更简洁
     - Idempotency-Key header 防重复
     - Response: per-row success/fail + 落库后 account_credentials.id
 - `frontend/`: 1-click button 集 + paste detect UI + CSV upload form
-- `backend/sql/migrations/0019_credential_acquisition_session.up.sql + down.sql`: acquisition_session table (OAuth state + nonce + redirect URL + ttl)
-- `docs/openapi/openapi.yaml`: 5 admin endpoints
+- `backend/sql/migrations/0019_credential_acquisition_flow_sessions.up.sql + down.sql`: credential_acquisition_flow_sessions table (OAuth state + nonce + PKCE verifier encrypted + redirect URL + ttl) — actual table landed in commit afc93fb
+- `docs/openapi/openapi.yaml`: 5 canonical lifecycle admin endpoints plus input helper triggers
 
 ## fusion-upgrade taxonomy (per CLAUDE.md #12)
 
 | 维度 | sub2api 当前 | HUAKAI delta |
 |---|---|---|
-| **架构** (architecture) | 单点 OAuth handler per vendor | 通用 `acquisition_flow_session` table + per-mode strategy registry; 一处加新 vendor 一处实现 |
+| **架构** (architecture) | 单点 OAuth handler per vendor | 通用 `credential_acquisition_flow_sessions` table + per-mode strategy registry; 一处加新 vendor 一处实现 |
 | **算法** (algorithm) | 用户手选 vendor + mode | paste detector 自动从 prefix (sk-/sk-ant-/AIza/etc) 推断 vendor; CLI detector 自动扫本机 auth file |
 | **生态** (ecosystem) | OAuth setup 文档 + 操作员手工 | 1-click button + auto-detect + batch CSV import + failure fallback chain (OAuth fail → paste session → paste manual mode) + F-TRUST acquisition_event audit log |
 
 ## data model
 
-```sql
-CREATE TABLE acquisition_session (
-  id              UUID PRIMARY KEY,
-  vendor          TEXT NOT NULL,        -- 推断 OR 用户提供
-  auth_mode       TEXT NOT NULL,
-  state           TEXT NOT NULL CHECK (state IN ('pending','callback_received','exchanged','imported','failed','expired')),
-  oauth_state     TEXT,                  -- OAuth CSRF state (random nonce)
-  oauth_nonce     TEXT,                  -- PKCE / nonce
-  redirect_url    TEXT,
-  initiated_by    TEXT NOT NULL,         -- admin user id
-  initiated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  expires_at      TIMESTAMPTZ NOT NULL,  -- 默认 10 min
-  result_credential_id BIGINT REFERENCES account_credentials(id)
-);
-CREATE INDEX idx_acquisition_session_state ON acquisition_session (state, expires_at);
-```
+**Note (post-implementation sync)**: 实际 schema 已落在 commit afc93fb 的 `backend/sql/migrations/0019_credential_acquisition_flow_sessions.up.sql`, 表名为 `credential_acquisition_flow_sessions` (plural per Owner naming convention). PKCE verifier 字段 encrypted at rest (AES-GCM via KeyProvider). 详见已合入的 migration 文件而非本 plan 草稿 schema.
 
 ## test plan
 
@@ -114,7 +99,7 @@ CREATE INDEX idx_acquisition_session_state ON acquisition_session (state, expire
 
 8-12 天 codex 实施 + 3 天 Claude review + 2 天 frontend Gemini wave 集成 = 13-17 天
 
-实际比 sub2api 实现 (推测 20+ 天 OAuth + per-vendor + admin UI) **节省 1/3 时间** — 因为通用 acquisition_session table + strategy registry 一处加新 vendor 一处实现.
+实际比 sub2api 实现 (推测 20+ 天 OAuth + per-vendor + admin UI) **节省 1/3 时间** — 因为通用 `credential_acquisition_flow_sessions` table + strategy registry 一处加新 vendor 一处实现.
 
 ## blast radius
 
