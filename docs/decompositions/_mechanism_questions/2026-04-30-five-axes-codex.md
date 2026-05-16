@@ -16,7 +16,7 @@
 
 Q-CTX-S2A-01. Does a conversation/session affinity binding persist beyond a single request process, with an explicit TTL and refresh-on-hit contract? Answer type: yes/no + TTL unit + refresh condition enum.
 
--> HUAKAI impact: informs `sticky_bindings`, `SelectionRequest.SessionHash`, and F-SESSION-001/F-POOL-001 sticky lifecycle tests.
+-> HUAKAI impact: informs `sticky_bindings`, `SelectionRequest.SessionHash`, and F-POOL-AFFINITY-001/F-POOL-001 sticky lifecycle tests.
 
 ### one-api
 
