@@ -152,6 +152,17 @@ Additional policy from OCAW:
 - Gemini cross-client fallback is allowed only through a compatibility matrix approved in Phase B. Each fallback attempt emits audit with source/target family labels and success flag.
 - Antigravity dedicated adapter is in scope, but runtime hardening remains Phase R-E+1 roadmap work and must not be specified as Phase A behavior.
 
+Approved Gemini cross-client fallback matrix:
+
+| Source client family | Fallback target family | Default | Audit event |
+| --- | --- | --- | --- |
+| `code_assist` | `ai_studio` | Allowed when `fallback_client_id` is configured. | `gemini_cross_client_fallback` with `from_client=code_assist`, `to_client=ai_studio`, `success`. |
+| `code_assist` | `google_one` | Allowed when the stored credential explicitly sets `fallback_client_family=google_one`. | Same event; no client id or token material. |
+| `google_one` | `ai_studio` | Allowed when `fallback_client_id` is configured. | Same event; no client id or token material. |
+| `google_one` | `code_assist` | Allowed when the stored credential explicitly sets `fallback_client_family=code_assist`. | Same event; no client id or token material. |
+| `ai_studio` | `code_assist` / `google_one` | Not allowed by default because `aistudio_api_key` is a static API-key mode, not an OAuth refresh-token source. | No fallback attempt; normal refresh failure handling applies. |
+| Any other family, including `antigravity` | Any Gemini family | Not allowed until a later Owner-approved matrix row exists. | No fallback attempt; normal refresh failure handling applies. |
+
 ## Refresh Lock (S8)
 
 OCAW S8 maps to the F-AUTH-005 refresh boundary, not to the acquisition finalizer. Phase A specifies the required lock behavior so F-CRED-001-acquired OAuth credentials enter the same refresh safety model after finalization.
@@ -261,6 +272,7 @@ F-CRED-001 emits four F-TRUST event types:
 | `credential_acquisition_completed` | F-AUTH-005 create succeeds. | tenant id, provider account id, credential id, vendor, auth mode, flow kind, redacted metadata keys present, non-blocking warning count. |
 | `credential_acquisition_failed` | Flow cannot proceed or finalizer fails. | tenant id, provider account id, vendor, auth mode, flow kind, error class, retryable flag, redacted message. |
 | `credential_acquisition_cancelled` | Admin cancels before finalization. | tenant id, provider account id, vendor, auth mode, flow kind, actor id, reason code. |
+| `gemini_cross_client_fallback` | Gemini OAuth refresh retries with an approved fallback client family. | tenant id, provider account id, credential id, vendor, auth mode, from client family, to client family, success flag. |
 
 Audit invariants:
 

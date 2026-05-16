@@ -2,8 +2,10 @@ package credentialacq
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,6 +70,41 @@ func TestOAuthCallbackRejectsStateMismatch(t *testing.T) {
 	got, _ := store.Get("flow-oauth")
 	if got.Status != statusFailed {
 		t.Fatalf("status=%q want %q", got.Status, statusFailed)
+	}
+}
+
+func TestStartOAuthFlowPKCEVerifierEncryptedAtRest(t *testing.T) {
+	now := time.Date(2026, 5, 16, 5, 0, 0, 0, time.UTC)
+	keys, err := credentialstore.NewStaticKeyProvider("test-v1", bytes.Repeat([]byte{7}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewPostgresSessionStoreWithKeys(newTestSessionDB(now), keys).WithNow(func() time.Time { return now })
+	result, err := StartOAuthFlow(context.Background(), store, StartInput{
+		TenantID: 1, ProviderAccountID: 2,
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeChatGPTOAuth,
+		ActorID: "admin-1", ActorRole: "platform_admin",
+	}, OAuthClientConfig{
+		ClientID: "client-id", AuthURL: "https://auth.example.test/oauth", RedirectURI: "https://huakai.example.test/callback",
+	})
+	if err != nil {
+		t.Fatalf("StartOAuthFlow: %v", err)
+	}
+	if result.CodeVerifier == "" {
+		t.Fatal("CodeVerifier is empty")
+	}
+	if bytes.Contains(result.Session.EncryptedPKCEVerifier, []byte(result.CodeVerifier)) {
+		t.Fatalf("encrypted_pkce_verifier leaked plaintext verifier")
+	}
+	if strings.Contains(string(result.Session.NonceHash), result.CodeVerifier) {
+		t.Fatalf("pkce metadata leaked plaintext verifier")
+	}
+	plain, err := store.DecryptTransientPayload(context.Background(), result.Session.EncryptedPKCEVerifier, result.Session.NonceHash, pkceAADFromSession(result.Session))
+	if err != nil {
+		t.Fatalf("DecryptTransientPayload: %v", err)
+	}
+	if string(plain) != result.CodeVerifier {
+		t.Fatal("decrypted verifier did not match generated verifier")
 	}
 }
 

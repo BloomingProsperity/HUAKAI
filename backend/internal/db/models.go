@@ -228,6 +228,39 @@ type Channel struct {
 	DeletedAt           pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
 }
 
+// F-CRED-001: short-lived acquisition state. Raw tokens, API keys, cookies, private keys, auth codes, and cloud secrets are forbidden.
+type CredentialAcquisitionFlowSession struct {
+	ID                pgtype.UUID `db:"id" json:"id"`
+	TenantID          int64       `db:"tenant_id" json:"tenant_id"`
+	ProviderAccountID int64       `db:"provider_account_id" json:"provider_account_id"`
+	Vendor            string      `db:"vendor" json:"vendor"`
+	AuthMode          string      `db:"auth_mode" json:"auth_mode"`
+	FlowKind          string      `db:"flow_kind" json:"flow_kind"`
+	Status            string      `db:"status" json:"status"`
+	ActorID           string      `db:"actor_id" json:"actor_id"`
+	ActorRole         string      `db:"actor_role" json:"actor_role"`
+	// Hash of OAuth state; raw state is never stored.
+	StateHash []byte `db:"state_hash" json:"state_hash"`
+	NonceHash []byte `db:"nonce_hash" json:"nonce_hash"`
+	// Encrypted PKCE verifier material only; destroyed by expiry/finalization policy.
+	EncryptedPkceVerifier []byte  `db:"encrypted_pkce_verifier" json:"encrypted_pkce_verifier"`
+	ClientIdentitySource  string  `db:"client_identity_source" json:"client_identity_source"`
+	RedirectUri           *string `db:"redirect_uri" json:"redirect_uri"`
+	RequestedScopes       []byte  `db:"requested_scopes" json:"requested_scopes"`
+	// Allowlisted operator preview metadata only. Secret-shaped keys and values are rejected or redacted by application code.
+	RedactedContext           []byte             `db:"redacted_context" json:"redacted_context"`
+	LongLivedRequested        bool               `db:"long_lived_requested" json:"long_lived_requested"`
+	IdempotencyKeyHash        []byte             `db:"idempotency_key_hash" json:"idempotency_key_hash"`
+	ResultAccountCredentialID *int64             `db:"result_account_credential_id" json:"result_account_credential_id"`
+	ErrorClass                *string            `db:"error_class" json:"error_class"`
+	ErrorMessageRedacted      *string            `db:"error_message_redacted" json:"error_message_redacted"`
+	ExpiresAt                 pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	ConsumedAt                pgtype.Timestamptz `db:"consumed_at" json:"consumed_at"`
+	CancelledAt               pgtype.Timestamptz `db:"cancelled_at" json:"cancelled_at"`
+	CreatedAt                 pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt                 pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
 // F-TRUST / F-AUTH-005: plaintext-free audit trail for credential create, rotate, disable, delete, resolve, and refresh events.
 type CredentialAuditEvent struct {
 	ID                  int64              `db:"id" json:"id"`

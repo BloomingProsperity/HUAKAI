@@ -41,6 +41,7 @@ import (
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker/adapters"
@@ -81,21 +82,22 @@ func main() {
 
 // deps is the live dependency tree handlers receive after run() boots.
 type deps struct {
-	cfg             *config.Config
-	queries         *db.Queries
-	selector        pool.Selector // M6: 接口化, 由 buildSelector 按 PoolSelectorConfig 装配 default 或 dispatcher
-	claimGate       billing.ClaimGate
-	settler         billing.Settler
-	forwarder       *gateway.StreamForwarder
-	credentialVault provider.CredentialVault
-	credentialStore *credentialstore.Store
-	dispatcher      *gateway.UpstreamDispatcher
-	responseCache   l2cache.Store
-	dlqService      *obsdlq.Service
-	completionBus   *eventbus.Bus
-	inboundAuth     *auth.APIKeyResolver
-	auditLedger     auditledger.Ledger
-	auditSigner     *sign.Signer
+	cfg                *config.Config
+	queries            *db.Queries
+	selector           pool.Selector // M6: 接口化, 由 buildSelector 按 PoolSelectorConfig 装配 default 或 dispatcher
+	claimGate          billing.ClaimGate
+	settler            billing.Settler
+	forwarder          *gateway.StreamForwarder
+	credentialVault    provider.CredentialVault
+	credentialStore    *credentialstore.Store
+	credentialAcqStore *credentialacq.PostgresSessionStore
+	dispatcher         *gateway.UpstreamDispatcher
+	responseCache      l2cache.Store
+	dlqService         *obsdlq.Service
+	completionBus      *eventbus.Bus
+	inboundAuth        *auth.APIKeyResolver
+	auditLedger        auditledger.Ledger
+	auditSigner        *sign.Signer
 	// Slice 2 (N+5a): real Registry resolver.
 	modelRegistry *registry.PostgresRegistry
 	// Slice 2 (N+5b 2026-05-01): Router consumes Registry's PoolCandidates
@@ -154,6 +156,7 @@ func run(logger *zap.Logger) error {
 	}
 	credentialModeRegistry := credentialstore.DefaultHandlerRegistry()
 	credentialStore := credentialstore.NewStore(pgPool, credentialKeys, credentialModeRegistry)
+	credentialAcqStore := credentialacq.NewPostgresSessionStoreWithKeys(pgPool, credentialKeys)
 
 	// M6 main-wire: 按 PoolSelectorConfig 装配 selector。 default 模式等价现状
 	// (零回归); shadow / canary / pasr-* 启动 PASR 基础设施 (SegmentTable +
@@ -278,11 +281,12 @@ func run(logger *zap.Logger) error {
 			Signer:           auditSigner,
 		},
 		// 生产 vault：优先读取 account_credentials v2；旧 JSONB 仅作迁移回退。
-		credentialVault: provider.NewPostgresCredentialVaultWithStore(pgPool, credentialStore),
-		credentialStore: credentialStore,
-		responseCache:   responseCache,
-		dlqService:      dlqService,
-		completionBus:   completionBus,
+		credentialVault:    provider.NewPostgresCredentialVaultWithStore(pgPool, credentialStore),
+		credentialStore:    credentialStore,
+		credentialAcqStore: credentialAcqStore,
+		responseCache:      responseCache,
+		dlqService:         dlqService,
+		completionBus:      completionBus,
 		dispatcher: &gateway.UpstreamDispatcher{
 			Adapters:         registrydefault.Build(),
 			TransportFactory: transport.NewFactory(mimicryRegistry),
@@ -455,6 +459,7 @@ func registerCredentialRefreshAdapters(registry *credentialworker.AdapterRegistr
 		{name: "openai", adapter: adapters.OpenAIRefresh{}},
 		{name: "gemini", adapter: adapters.GeminiRefresh{}},
 		{name: "codex", adapter: adapters.CodexRefresh{}},
+		{name: "antigravity", adapter: adapters.AntigravityRefresh{}},
 	}
 	for _, item := range registrations {
 		if err := registry.Register(item.name, item.adapter); err != nil {
@@ -641,6 +646,23 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			Auth:        d.adminAuth,
 			Credentials: d.credentialStore,
 			AuditStore:  d.queries,
+		})
+		gatewayhttp.MountAdminCredentialAcquisitionRoutes(r, gatewayhttp.AdminCredentialAcquisitionDeps{
+			Auth:            d.adminAuth,
+			Sessions:        d.credentialAcqStore,
+			Credentials:     d.credentialStore,
+			CredentialAudit: d.credentialStore,
+			AuditStore:      d.queries,
+		})
+	})
+
+	r.Route("/admin/v1/credentials", func(r chi.Router) {
+		gatewayhttp.MountAdminCredentialAcquisitionHelperRoutes(r, gatewayhttp.AdminCredentialAcquisitionDeps{
+			Auth:            d.adminAuth,
+			Sessions:        d.credentialAcqStore,
+			Credentials:     d.credentialStore,
+			CredentialAudit: d.credentialStore,
+			AuditStore:      d.queries,
 		})
 	})
 

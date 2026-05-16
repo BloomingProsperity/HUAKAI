@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker/adapters"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
@@ -63,9 +64,9 @@ func DefaultModeAdapterRegistry() *ModeAdapterRegistry {
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeRefreshToken, legacyOAuthModeAdapter{providerName: "openai", adapter: adapters.OpenAIRefresh{}})
 	register(credentialstore.VendorGemini, credentialstore.AuthModeAIStudioAPIKey, staticModeAdapter{})
 	register(credentialstore.VendorGemini, credentialstore.AuthModeVertexSA, metadataTokenAdapter{})
-	register(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist, legacyOAuthModeAdapter{providerName: "gemini", adapter: adapters.GeminiRefresh{}})
-	register(credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne, legacyOAuthModeAdapter{providerName: "gemini", adapter: adapters.GeminiRefresh{}})
-	register(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity, legacyOAuthModeAdapter{providerName: "gemini", adapter: adapters.GeminiRefresh{}})
+	register(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist, legacyOAuthModeAdapter{providerName: "gemini", adapter: adapters.GeminiRefresh{AllowCrossClientFallback: true, SourceClientFamily: "code_assist", TierCacheTTL: 24 * time.Hour}})
+	register(credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne, legacyOAuthModeAdapter{providerName: "gemini", adapter: adapters.GeminiRefresh{AllowCrossClientFallback: true, SourceClientFamily: "google_one", TierCacheTTL: 24 * time.Hour}})
+	register(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity, legacyOAuthModeAdapter{providerName: "antigravity", adapter: adapters.AntigravityRefresh{Gemini: adapters.GeminiRefresh{AllowCrossClientFallback: true, SourceClientFamily: "antigravity", TierCacheTTL: 24 * time.Hour}}})
 	return r
 }
 
@@ -108,7 +109,7 @@ func (r *ModeAdapterRegistry) Names() []string {
 }
 
 type AccountCredentialRefresher struct {
-	store    *credentialstore.Store
+	store    accountCredentialRefreshStore
 	registry *ModeAdapterRegistry
 	now      func() time.Time
 }
@@ -117,7 +118,7 @@ func NewAccountCredentialRefresher(store *credentialstore.Store, registry *ModeA
 	if registry == nil {
 		registry = DefaultModeAdapterRegistry()
 	}
-	return &AccountCredentialRefresher{store: store, registry: registry, now: time.Now}
+	return &AccountCredentialRefresher{store: postgresAccountCredentialRefreshStore{store: store}, registry: registry, now: time.Now}
 }
 
 func (r *AccountCredentialRefresher) Refresh(ctx context.Context, accountID int64) error {
@@ -132,14 +133,35 @@ func (r *AccountCredentialRefresher) refresh(ctx context.Context, _ int64, accou
 	if r == nil || r.store == nil {
 		return errors.New("credentialworker: account credential store missing")
 	}
-	rec, err := r.store.LoadForRefresh(ctx, accountID)
+	probe, err := r.store.LoadForRefresh(ctx, accountID)
 	if err != nil {
 		return err
 	}
+	return r.store.WithRefreshTransaction(ctx, func(txStore accountCredentialRefreshTxStore, tx db.DBTX) error {
+		return credentialacq.WithRefreshLock(ctx, tx, probe.ID, func(db.DBTX) error {
+			rec, err := txStore.LoadForRefresh(ctx, accountID)
+			if err != nil {
+				return err
+			}
+			if rec.ID != probe.ID {
+				return credentialacq.WithRefreshLock(ctx, tx, rec.ID, func(db.DBTX) error {
+					lockedRec, err := txStore.LoadForRefresh(ctx, accountID)
+					if err != nil {
+						return err
+					}
+					return r.refreshLockedRecord(ctx, txStore, accountID, lockedRec)
+				})
+			}
+			return r.refreshLockedRecord(ctx, txStore, accountID, rec)
+		})
+	})
+}
+
+func (r *AccountCredentialRefresher) refreshLockedRecord(ctx context.Context, txStore accountCredentialRefreshTxStore, accountID int64, rec credentialstore.CredentialRecord) error {
 	adapter, ok := r.registry.Lookup(rec.Vendor, rec.AuthMode)
 	if !ok {
 		err := fmt.Errorf("%w: vendor=%s auth_mode=%s account_id=%d", ErrProviderAdapterMissing, rec.Vendor, rec.AuthMode, accountID)
-		_ = r.store.SaveRefreshFailure(ctx, rec, "adapter_missing", r.now().Add(time.Minute))
+		_ = txStore.SaveRefreshFailure(ctx, rec, "adapter_missing", r.now().Add(time.Minute))
 		return err
 	}
 	result, err := adapter.RefreshCredential(ctx, ModeRefreshInput{
@@ -150,14 +172,83 @@ func (r *AccountCredentialRefresher) refresh(ctx context.Context, _ int64, accou
 		if errors.Is(err, ErrNoRefreshRequired) {
 			return nil
 		}
-		_ = r.store.SaveRefreshFailure(ctx, rec, classifyModeRefreshError(err), r.now().Add(time.Minute))
+		emitGeminiFallbackAudit(ctx, txStore, rec, err, false)
+		_ = txStore.SaveRefreshFailure(ctx, rec, classifyModeRefreshError(err), r.now().Add(time.Minute))
 		return err
 	}
 	outcome := result.Outcome
 	if outcome == "" {
 		outcome = "refresh_succeeded"
 	}
-	return r.store.SaveRefreshSuccess(ctx, rec, result.Payload, result.AccessExpiresAt, outcome)
+	emitGeminiFallbackAuditFromPayload(ctx, txStore, rec, result.Payload, true)
+	return txStore.SaveRefreshSuccess(ctx, rec, result.Payload, result.AccessExpiresAt, outcome)
+}
+
+type accountCredentialRefreshTxStore interface {
+	LoadForRefresh(context.Context, int64) (credentialstore.CredentialRecord, error)
+	SaveRefreshSuccess(context.Context, credentialstore.CredentialRecord, []byte, time.Time, string) error
+	SaveRefreshFailure(context.Context, credentialstore.CredentialRecord, string, time.Time) error
+	InsertAuditEvent(context.Context, credentialstore.AuditEvent) error
+}
+
+type accountCredentialRefreshStore interface {
+	LoadForRefresh(context.Context, int64) (credentialstore.CredentialRecord, error)
+	WithRefreshTransaction(context.Context, func(accountCredentialRefreshTxStore, db.DBTX) error) error
+}
+
+type postgresAccountCredentialRefreshStore struct {
+	store *credentialstore.Store
+}
+
+func (s postgresAccountCredentialRefreshStore) WithRefreshTransaction(ctx context.Context, fn func(accountCredentialRefreshTxStore, db.DBTX) error) error {
+	if s.store == nil {
+		return errors.New("credentialworker: account credential store missing")
+	}
+	return s.store.WithTransaction(ctx, func(txStore *credentialstore.Store, tx db.DBTX) error {
+		if fn == nil {
+			return nil
+		}
+		return fn(txStore, tx)
+	})
+}
+
+func (s postgresAccountCredentialRefreshStore) LoadForRefresh(ctx context.Context, accountID int64) (credentialstore.CredentialRecord, error) {
+	if s.store == nil {
+		return credentialstore.CredentialRecord{}, errors.New("credentialworker: account credential store missing")
+	}
+	return s.store.LoadForRefresh(ctx, accountID)
+}
+
+func emitGeminiFallbackAuditFromPayload(ctx context.Context, store accountCredentialRefreshTxStore, rec credentialstore.CredentialRecord, payload []byte, success bool) {
+	fromClient, toClient, attempted := adapters.GeminiCrossClientFallbackMetadata(payload)
+	if !attempted {
+		return
+	}
+	emitGeminiFallbackAuditEvent(ctx, store, rec, fromClient, toClient, success)
+}
+
+func emitGeminiFallbackAudit(ctx context.Context, store accountCredentialRefreshTxStore, rec credentialstore.CredentialRecord, err error, success bool) {
+	var fallbackErr *adapters.GeminiFallbackError
+	if !errors.As(err, &fallbackErr) {
+		return
+	}
+	emitGeminiFallbackAuditEvent(ctx, store, rec, fallbackErr.FromClient, fallbackErr.ToClient, success)
+}
+
+func emitGeminiFallbackAuditEvent(ctx context.Context, store accountCredentialRefreshTxStore, rec credentialstore.CredentialRecord, fromClient, toClient string, success bool) {
+	if store == nil || fromClient == "" || toClient == "" {
+		return
+	}
+	_ = store.InsertAuditEvent(ctx, credentialstore.AuditEvent{
+		TenantID: rec.TenantID, ProviderAccountID: rec.ProviderAccountID, CredentialID: rec.ID,
+		EventType: "gemini_cross_client_fallback", Vendor: rec.Vendor, AuthMode: rec.AuthMode,
+		CredentialVersion: rec.CredentialVersion,
+		Payload: map[string]any{
+			"from_client": fromClient,
+			"to_client":   toClient,
+			"success":     success,
+		},
+	})
 }
 
 type AccountCredentialRefreshQueries struct {
