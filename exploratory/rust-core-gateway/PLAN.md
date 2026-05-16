@@ -55,10 +55,10 @@ Owner 战略 directive:
 
 | 模块 | 职责 | 估 LoC | 依赖 crate | Go control plane 接口 | PostgreSQL 边界 |
 | --- | --- | ---: | --- | --- | --- |
-| `m1_listener` | 提供 HTTP/HTTPS server, 接收 `/v1/messages`, `/v1/chat/completions`, Bedrock-compatible endpoint; 处理 header normalization、body size limit、client disconnect、request id。 | 700-1100 | `tokio`, `axum` or `hyper`, `hyper-util`, `http-body-util`, `bytes`, `rustls`, `tokio-rustls`, `tower-http` public API | 调用 `m2_route_client` 间接请求 `RouteQuery`; 不直接理解 Go scheduler。 | 无 |
+| `m1_listener` | 提供 HTTP/HTTPS server, 接收 `/v1/messages`, `/v1/chat/completions`, Bedrock-compatible endpoint; 处理 header normalization、body size limit、client disconnect、request id。 | 700-1100 | `tokio`, `axum` or `hyper`, `hyper-util`, `http-body-util`, `bytes`, TLS listener library, `tower-http` public API | 调用 `m2_route_client` 间接请求 `RouteQuery`; 不直接理解 Go scheduler。 | 无 |
 | `m2_route_client` | Rust 到 Go control plane 的 RPC client; 管理 deadlines、retries、circuit breaker、schema version、idempotency key。 | 600-900 | 推荐生产 `tonic`, `prost`; 探索 mock 可加 `reqwest`, `serde`, `serde_json`; `thiserror` | `RouteQuery`, `AttemptReport`, `HealthCheck`, `Heartbeat`。 | 无 |
 | `m3_account_planner` | 封装一次 client request 的 account acquisition lifecycle; 调 Go `pool.Selector` 等价能力拿 `account_id` + `AcquisitionToken`; 维护 per-request attempt state。 | 500-800 | `uuid`, `time`, `tokio`, `parking_lot` or `dashmap` only if needed | 只通过 `m2_route_client`; 不在 Rust 里实现 PASR。 | 无 |
-| `m4_proxy_engine` | 根据 route plan 建立 upstream connection; bearer auth 用于 Anthropic/OpenAI; SigV4 用于 Bedrock; 处理 timeout、retry handoff、header allowlist、body streaming。 | 1200-1900 | `hyper`, `hyper-rustls`, `bytes`, `http`, `aws-sigv4`, `aws-credential-types`, `pin-project-lite` if needed | route plan 提供 `vendor_endpoint`, `credentials_handle`, `auth_mode`; attempt 完成后交给 `m6_attempt_reporter`。 | 无；禁止直接读 secrets 表 |
+| `m4_proxy_engine` | 根据 route plan 建立 upstream connection; bearer auth 用于 Anthropic/OpenAI; SigV4 用于 Bedrock; 处理 timeout、retry handoff、header allowlist、body streaming。 | 1200-1900 | mimicry transport path, `bytes`, `http`, `aws-sigv4`, `aws-credential-types`, `pin-project-lite` if needed | route plan 提供 `vendor_endpoint`, `credentials_handle`, `auth_mode`; attempt 完成后交给 `m6_attempt_reporter`。 | D3 burn-the-boats: 不保留备用 rustls upstream 通路；mimicry path 坏了修 mimicry path。 |
 | `m5_stream_pipeline` | 处理 Anthropic SSE、OpenAI SSE、Bedrock binary EventStream 的 frame decode/encode、usage extraction、cache metrics extraction、protocol error 分类。 | 1300-2100 | `bytes`, `memchr`, `tokio-util`, `futures`, `serde_json`, `crc32fast`; Bedrock 可评估 `aws-smithy-eventstream` public API | 不直接 RPC; 输出 attempt metrics 给 `m6_attempt_reporter`。 | 无 |
 | `m6_attempt_reporter` | 可靠上报 attempt; 支持 success/failure/cancel/timeout/protocol_error; 保证 idempotency; 将 settle/billing 闭环交给 Go。 | 500-800 | `tonic` or `reqwest`, `tokio`, `serde`, `uuid`, `thiserror` | `AttemptReport(acquisition_token, status, tokens_used, cache_metrics, idempotency_key)`。 | 无；禁止直接写 usage/billing/quota 表 |
 | `m7_observability` | tracing、metrics、logs redaction、OTLP/Prometheus export、health endpoint; 统一 Rust span 与 Go route/attempt id。 | 500-900 | `tracing`, `tracing-subscriber`, `opentelemetry`, `opentelemetry-otlp`, `metrics`, `metrics-exporter-prometheus` | `Heartbeat` 上报 node status; metrics label 与 Go request id 对齐。 | 无 |
@@ -333,10 +333,10 @@ clean-room 边界:
 | Milestone | atom 范围 | 估 LoC | 依赖 | 验收 |
 | --- | --- | ---: | --- | --- |
 | `M-rust-1` | 建立独立 cargo workspace、config、error type、request ids、基础 tracing; 不实现业务 forwarding。 | 500-800 | `tokio`, `tracing`, `thiserror`, `serde` | `cargo test` 通过; 启动 binary 可返回 local health; 不读取真实 PG/Go。 |
-| `M-rust-2` | `m1_listener` HTTP server + mock echo upstream; 支持 request body streaming、client cancel detection、body limit。 | 800-1200 | `axum`/`hyper`, `bytes`, `rustls` optional | e2e: normal request、oversized body、client cancel、slow client。 |
+| `M-rust-2` | `m1_listener` HTTP server + mock echo upstream; 支持 request body streaming、client cancel detection、body limit。 | 800-1200 | `axum`/`hyper`, `bytes`, TLS listener optional | e2e: normal request、oversized body、client cancel、slow client。 |
 | `M-rust-3` | `m2_route_client` + mock Go control plane HTTP/JSON contract; route query/health/heartbeat 初版。 | 700-1000 | `reqwest` or local `axum`, `serde_json` | mock route plan 返回 account/token/endpoint; control plane down 时 Rust 返回明确 5xx 并记录 metrics。 |
 | `M-rust-4` | gRPC proto v0 draft + `tonic` client/server mock; 冻结字段命名、deadline、status mapping。 | 900-1300 | `tonic`, `prost`, `tonic-build` | HTTP/JSON 与 gRPC mock conformance tests 覆盖同一 contract; Owner 可选择是否保留 gRPC。 |
-| `M-rust-5` | `m3_account_planner` + `m4_proxy_engine` bearer vendors; Anthropic/OpenAI non-streaming 与 streaming pass-through。 | 1300-1900 | `hyper`, `hyper-rustls`, `http-body-util` | mock vendor e2e: 200、4xx、5xx、timeout、network reset; Rust 不重写 PASR。 |
+| `M-rust-5` | `m3_account_planner` + `m4_proxy_engine` bearer vendors; Anthropic/OpenAI non-streaming 与 streaming pass-through。 | 1300-1900 | mimicry transport path, `http-body-util` | mock vendor e2e: 200、4xx、5xx、timeout、network reset; Rust 不重写 PASR。 |
 | `M-rust-6` | `m5_stream_pipeline` for Anthropic/OpenAI SSE; usage/cache extraction; `[DONE]` 与 multi-line frame。 | 1000-1600 | `bytes`, `memchr`, `serde_json`, `tokio-util` | golden stream tests; partial line、CRLF、多 data line、bad JSON、client cancel 全覆盖。 |
 | `M-rust-7` | Bedrock SigV4 + binary EventStream parser; CRC、headers、payload、error event 分类。 | 1200-1800 | `aws-sigv4`, `aws-credential-types`, `crc32fast`, `bytes` | mock Bedrock: valid stream、CRC fail、oversized frame、partial frame、SigV4 failure。 |
 | `M-rust-8` | `m6_attempt_reporter`; every terminal path report; idempotency; in-memory retry queue; Go ack semantics。 | 700-1100 | `tonic`/`reqwest`, `uuid`, `tokio` | success/cancel/timeout/protocol_error 都有 attempt report; duplicate report 被 mock Go 幂等接受。 |
@@ -402,4 +402,3 @@ clean-room 边界:
 - 不处理 admin UI。
 - 不处理 provider/account 配置 CRUD。
 - 不把 mock control plane 的行为当作真实 Go control plane 已实现能力。
-

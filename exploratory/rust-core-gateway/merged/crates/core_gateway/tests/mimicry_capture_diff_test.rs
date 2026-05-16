@@ -43,8 +43,8 @@ fn kiro_sample_set_profile_reports_extension_subset_and_list_set_statuses() {
 
     let matching_diff = diff_capture_against_profile(&fixture_capture(), &profile);
     assert!(
-        !matching_diff.profile_blocked,
-        "kiro rustls profile 不应 blocked"
+        matching_diff.profile_blocked,
+        "D3 后 kiro rustls profile 必须 blocked, 但字段 diff 仍应完整输出"
     );
     assert!(
         matches!(
@@ -289,6 +289,7 @@ fn stable_kiro_profile_json() -> serde_json::Value {
     let ja4 = raw["ja4"].as_str().expect("ja4 应存在").to_owned();
 
     raw["extension_order"] = serde_json::json!("stable");
+    raw["tls_backend"] = serde_json::json!("native-tls/openssl");
     raw["ja3_hash_samples"] = serde_json::json!([ja3_hash]);
     raw["ja4_samples"] = serde_json::json!([ja4]);
     raw

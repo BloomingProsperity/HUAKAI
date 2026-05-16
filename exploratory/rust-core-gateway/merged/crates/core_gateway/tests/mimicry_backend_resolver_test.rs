@@ -1,7 +1,7 @@
 mod common;
 
 use common::{
-    capture_diff::{ExtensionsListStatus, diff_capture_against_resolved_backend},
+    capture_diff::{ExtensionsListStatus, diff_capture_against_profile},
     tls_capture::CapturedClientHello,
 };
 use core_gateway::mimicry::{
@@ -20,20 +20,21 @@ fn resolves_codex_to_openssl() {
 }
 
 #[test]
-fn resolves_kiro_to_rustls_and_keeps_capture_diff_extension_shape() {
+fn blocks_kiro_rustls_template_after_burn_the_boats() {
     let profile = load_builtin_profile(BuiltinProfile::KiroCli).expect("kiro profile 应加载");
 
-    let backend = resolve_mimicry_backend("kiro", &profile, all_features())
-        .expect("kiro profile 应解析到 rustls backend");
-    assert_eq!(backend, MimicryBackend::Rustls);
+    let error = resolve_mimicry_backend("kiro", &profile, all_features())
+        .expect_err("kiro rustls template 不允许回退到生产 rustls dispatch");
 
-    let diff = diff_capture_against_resolved_backend(
-        "kiro",
-        &kiro_fixture_capture(),
-        &profile,
-        all_features(),
-    )
-    .expect("kiro rustls backend 应能进入同一 capture diff path");
+    match error {
+        BackendResolverError::UnsupportedTemplate { reason } => {
+            assert!(reason.contains("tls_backend=rustls"));
+            assert!(reason.contains("mimicry path"));
+        }
+        error => panic!("应返回 UnsupportedTemplate，实际: {error:?}"),
+    }
+
+    let diff = diff_capture_against_profile(&kiro_fixture_capture(), &profile);
     assert!(
         matches!(
             diff.extensions,
@@ -42,7 +43,7 @@ fn resolves_kiro_to_rustls_and_keeps_capture_diff_extension_shape() {
                 ..
             } if unexpected.is_empty()
         ),
-        "kiro rustls path 必须复用 ExtensionsListStatus::Subset 表达 extension diff"
+        "kiro 模板字段 diff 仍应复用 ExtensionsListStatus::Subset 表达 extension diff"
     );
 }
 
@@ -87,10 +88,7 @@ fn rejects_rustls_template_with_openssl_only_feature() {
 }
 
 fn all_features() -> AvailableMimicryFeatures {
-    AvailableMimicryFeatures {
-        openssl: true,
-        rustls: true,
-    }
+    AvailableMimicryFeatures { openssl: true }
 }
 
 fn kiro_fixture_capture() -> CapturedClientHello {

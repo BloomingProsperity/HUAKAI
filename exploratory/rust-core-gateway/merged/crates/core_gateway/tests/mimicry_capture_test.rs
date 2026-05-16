@@ -1,75 +1,11 @@
-// L2-A2 baseline: 本地捕获 hyper-rustls 发出的第一条 TLS ClientHello。
+// D3 burn-the-boats: no fallback to hyper-rustls, fix mimicry path instead
 
 mod common;
 
 use std::{net::SocketAddr, time::Duration};
 
-use axum::body::Body;
-use common::{
-    capture_artifact::write_tls_clienthello_artifact,
-    tls_capture::{CaptureError, spawn_capture_once},
-};
-use core_gateway::proxy_engine::build_http_client;
-use http::Request;
+use common::tls_capture::{CaptureError, spawn_capture_once};
 use tokio::{io::AsyncWriteExt, net::TcpStream};
-
-#[tokio::test]
-async fn baseline_hyper_rustls_capture() {
-    let bind_addr: SocketAddr = "127.0.0.1:0"
-        .parse()
-        .expect("本地 ephemeral capture 地址应合法");
-    let (addr, capture_task) = spawn_capture_once(bind_addr)
-        .await
-        .expect("capture listener 应可启动");
-
-    let request = Request::builder()
-        .method("GET")
-        .uri(format!("https://{addr}/"))
-        .body(Body::empty())
-        .expect("baseline HTTPS 请求应可构造");
-    let request_result = build_http_client().request(request).await;
-    assert!(
-        request_result.is_err(),
-        "capture helper 捕获后会关闭连接，不应得到完整 HTTP response"
-    );
-
-    let capture = tokio::time::timeout(Duration::from_secs(5), capture_task)
-        .await
-        .expect("capture task 应在本地请求失败后结束")
-        .expect("capture task 不应 panic")
-        .expect("ClientHello 应能按 wire length 成功解析");
-
-    eprintln!(
-        "captured ClientHello legacy_version=0x{:04x} cipher_suites={:?} extensions={:?} supported_groups={:?} signature_algorithms={:?} ec_point_formats={:?} alpn_protocols={:?}",
-        capture.legacy_version,
-        capture.cipher_suites,
-        capture.extensions,
-        capture.supported_groups,
-        capture.signature_algorithms,
-        capture.ec_point_formats,
-        capture.alpn_protocols,
-    );
-    let artifact_path = write_tls_clienthello_artifact("baseline-hyper-rustls", &capture)
-        .expect("R-D local TLS capture artifact 应能写入 CARGO_TARGET_DIR");
-    eprintln!(
-        "R-D local TLS capture artifact: {}",
-        artifact_path.display()
-    );
-
-    assert!(
-        !capture.cipher_suites.is_empty(),
-        "baseline capture 必须看到非空 cipher suite wire list"
-    );
-    assert!(
-        !capture.extensions.is_empty(),
-        "baseline capture 必须看到非空 extension id wire list"
-    );
-    assert!(
-        matches!(capture.legacy_version, 0x0301 | 0x0303),
-        "baseline legacy_version 应落在常见 TLS ClientHello 范围，实际 0x{:04x}",
-        capture.legacy_version
-    );
-}
 
 #[tokio::test]
 async fn malformed_tls_truncated_record_body_returns_io_error() {

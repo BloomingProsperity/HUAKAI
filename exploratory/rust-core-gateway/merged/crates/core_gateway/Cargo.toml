@@ -7,6 +7,8 @@ rust-version.workspace = true
 
 [features]
 default = []
+# R-E-A+1: explicit gate for tonic's Rustls client TLS support.
+tls = ["tonic/tls", "tonic/tls-roots"]
 # L2-A4: OpenSSL mimicry backend skeleton, 默认不编译进网关 binary。
 mimicry-openssl = ["dep:openssl", "dep:tokio-openssl"]
 # L2-A6: MIT http2 fork 仅用于 SETTINGS / pseudo-header 顺序表达。
@@ -28,6 +30,9 @@ http2 = { git = "https://github.com/0x676e67/http2", rev = "a33b27e469434a99105f
 http-body = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1", "http2"] }
+# R-E-A 阶段性保留: HTTPS forward client 临时用 hyper-rustls 保 TLS (Owner OCAW 2026-05-16 D-TLS-1 后允许);
+# R-E+1 切到 rquest + BoringSSL (整合 rquest sidecar) 后真删本 dep.
+# 不是 dispatch fallback (R-E-A 已 burn-the-boats); 仅 proxy_engine/http_client.rs 出站 TLS 兜底.
 hyper-rustls = { version = "0.27.9", default-features = false, features = ["http1", "http2", "ring", "tls12", "webpki-roots"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "tokio"] }
 memchr = "2.8"

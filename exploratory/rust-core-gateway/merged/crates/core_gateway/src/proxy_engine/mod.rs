@@ -1,5 +1,5 @@
 // M-rust-5 proxy engine
-// 职责: 使用 hyper-rustls 连接 vendor endpoint, 透传请求/响应 body, 并处理取消与 timeout。
+// 职责: 连接 vendor endpoint, 透传请求/响应 body, 并处理取消与 timeout。
 
 use std::{
     io,

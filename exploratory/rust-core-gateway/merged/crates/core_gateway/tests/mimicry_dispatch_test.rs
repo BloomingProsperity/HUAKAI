@@ -168,13 +168,19 @@ fn dispatch_blocks_codex_profile_when_openssl_adapter_is_not_compiled() {
 }
 
 #[test]
-fn dispatch_allows_kiro_rustls_profile() {
+fn dispatch_blocks_kiro_rustls_profile_after_burn_the_boats() {
     let profile = load_builtin_profile(BuiltinProfile::KiroCli).expect("kiro profile 应加载");
 
     let decision = decide_dispatch(&profile);
 
-    assert_eq!(decision, DispatchDecision::AllowRustls);
-    assert!(is_dispatch_allowed(&decision));
+    match &decision {
+        DispatchDecision::BlockUnsupportedTemplate { reason } => {
+            assert!(reason.contains("tls_backend=rustls"));
+            assert!(reason.contains("mimicry path"));
+        }
+        decision => panic!("kiro rustls profile 必须被生产 dispatch 阻断，实际: {decision:?}"),
+    }
+    assert!(!is_dispatch_allowed(&decision));
 }
 
 #[test]
