@@ -77,7 +77,7 @@ func (s *Service) Refresh(ctx context.Context, in RefreshInput) (IssuedTokens, e
 	if s == nil || s.Store == nil {
 		return IssuedTokens{}, ErrStoreNotConfigured
 	}
-	if in.TenantID <= 0 || strings.TrimSpace(in.RefreshToken) == "" {
+	if in.TenantID <= 0 || in.UserID <= 0 || strings.TrimSpace(in.RefreshToken) == "" {
 		return IssuedTokens{}, ErrInvalidInput
 	}
 	now := s.now()
@@ -87,6 +87,10 @@ func (s *Service) Refresh(ctx context.Context, in RefreshInput) (IssuedTokens, e
 	}
 	if rec.Token.TenantID != in.TenantID || rec.Family.TenantID != in.TenantID {
 		return IssuedTokens{}, ErrTokenNotFound
+	}
+	if rec.Family.UserID != in.UserID {
+		_, _ = s.Store.RevokeFamily(ctx, rec.Family.TenantID, rec.Family.ID, "refresh_token_cross_user_attempt", now)
+		return IssuedTokens{}, ErrSessionUserMismatch
 	}
 	if rec.Family.Status != FamilyStatusActive && rec.Family.Status != FamilyStatusSuspicious {
 		return IssuedTokens{}, ErrFamilyRevoked

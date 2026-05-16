@@ -27,14 +27,14 @@ func TestSessionRefreshRotationAndReplayRevokesFamily(t *testing.T) {
 		t.Fatalf("bad issued tokens: %+v", issued)
 	}
 	now = now.Add(time.Minute)
-	rotated, err := svc.Refresh(ctx, RefreshInput{TenantID: 1, RefreshToken: issued.RefreshToken, IP: "10.1.9.9", UserAgent: "Chrome/2"})
+	rotated, err := svc.Refresh(ctx, RefreshInput{TenantID: 1, UserID: 42, RefreshToken: issued.RefreshToken, IP: "10.1.9.9", UserAgent: "Chrome/2"})
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
 	if rotated.Generation != 2 || rotated.RefreshToken == issued.RefreshToken {
 		t.Fatalf("rotation did not advance: old=%q new=%q gen=%d", issued.RefreshToken, rotated.RefreshToken, rotated.Generation)
 	}
-	if _, err := svc.Refresh(ctx, RefreshInput{TenantID: 1, RefreshToken: issued.RefreshToken, IP: "10.1.9.9", UserAgent: "Chrome/2"}); !errors.Is(err, ErrRefreshReplay) {
+	if _, err := svc.Refresh(ctx, RefreshInput{TenantID: 1, UserID: 42, RefreshToken: issued.RefreshToken, IP: "10.1.9.9", UserAgent: "Chrome/2"}); !errors.Is(err, ErrRefreshReplay) {
 		t.Fatalf("replay error = %v, want ErrRefreshReplay", err)
 	}
 	families, err := svc.List(ctx, 1, 42)
@@ -57,7 +57,7 @@ func TestSessionAnomalyHighRevokesFamily(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	now = now.Add(time.Minute)
-	if _, err := svc.Refresh(ctx, RefreshInput{TenantID: 1, RefreshToken: issued.RefreshToken, IP: "172.16.2.3", UserAgent: "Firefox/1"}); !errors.Is(err, ErrAnomalyRejected) {
+	if _, err := svc.Refresh(ctx, RefreshInput{TenantID: 1, UserID: 7, RefreshToken: issued.RefreshToken, IP: "172.16.2.3", UserAgent: "Firefox/1"}); !errors.Is(err, ErrAnomalyRejected) {
 		t.Fatalf("anomaly refresh error = %v, want ErrAnomalyRejected", err)
 	}
 	families, err := svc.List(ctx, 1, 7)
@@ -66,6 +66,43 @@ func TestSessionAnomalyHighRevokesFamily(t *testing.T) {
 	}
 	if got := families[0].RevokedReason; got != "ip_and_ua_changed" {
 		t.Fatalf("revoked reason = %q", got)
+	}
+}
+
+func TestSessionRefreshRejectsCrossUserRefreshToken(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 16, 8, 50, 0, 0, time.UTC)
+	svc := NewService(NewMemoryStore())
+	svc.Now = func() time.Time { return now }
+	svc.SigningKey = testSigningKey()
+
+	if _, err := svc.Create(ctx, CreateInput{TenantID: 1, UserID: 101, IP: "10.1.1.1", UserAgent: "Chrome/1"}); err != nil {
+		t.Fatalf("Create caller: %v", err)
+	}
+	target, err := svc.Create(ctx, CreateInput{TenantID: 1, UserID: 202, IP: "10.2.1.1", UserAgent: "Firefox/1"})
+	if err != nil {
+		t.Fatalf("Create target: %v", err)
+	}
+
+	now = now.Add(time.Minute)
+	if _, err := svc.Refresh(ctx, RefreshInput{
+		TenantID: 1, UserID: 101, RefreshToken: target.RefreshToken,
+		IP: "10.1.1.1", UserAgent: "Chrome/1",
+	}); !errors.Is(err, ErrSessionUserMismatch) {
+		t.Fatalf("cross-user refresh error = %v, want ErrSessionUserMismatch", err)
+	}
+	if _, err := svc.Refresh(ctx, RefreshInput{
+		TenantID: 1, UserID: 202, RefreshToken: target.RefreshToken,
+		IP: "10.2.1.1", UserAgent: "Firefox/1",
+	}); !errors.Is(err, ErrFamilyRevoked) {
+		t.Fatalf("target user's stolen refresh family should be revoked: %v", err)
+	}
+	families, err := svc.List(ctx, 1, 202)
+	if err != nil {
+		t.Fatalf("List target families: %v", err)
+	}
+	if len(families) != 1 || families[0].Status != FamilyStatusRevoked || families[0].RevokedReason != "refresh_token_cross_user_attempt" {
+		t.Fatalf("target family not revoked for cross-user attempt: %+v", families)
 	}
 }
 
@@ -85,7 +122,7 @@ func TestAT_SESSION_001_002_SessionTokenExpiryAndRefresh(t *testing.T) {
 		t.Fatalf("Validate before expiry: %v", err)
 	}
 	now = now.Add(time.Minute)
-	refreshed, err := svc.Refresh(ctx, RefreshInput{TenantID: 1, RefreshToken: issued.RefreshToken, IP: "10.1.1.2", UserAgent: "Chrome/2"})
+	refreshed, err := svc.Refresh(ctx, RefreshInput{TenantID: 1, UserID: 10, RefreshToken: issued.RefreshToken, IP: "10.1.1.2", UserAgent: "Chrome/2"})
 	if err != nil {
 		t.Fatalf("Refresh before expiry: %v", err)
 	}
@@ -227,7 +264,7 @@ func TestAT_SESSION_001_007_ResetRevocationRejectsOldTokens(t *testing.T) {
 	if _, err := svc.Validate(ctx, issued.SessionToken, "10.1.1.1", "Chrome/1"); !errors.Is(err, ErrFamilyRevoked) {
 		t.Fatalf("old session after reset = %v, want ErrFamilyRevoked", err)
 	}
-	if _, err := svc.Refresh(ctx, RefreshInput{TenantID: 1, RefreshToken: issued.RefreshToken, IP: "10.1.1.1", UserAgent: "Chrome/1"}); !errors.Is(err, ErrFamilyRevoked) {
+	if _, err := svc.Refresh(ctx, RefreshInput{TenantID: 1, UserID: 41, RefreshToken: issued.RefreshToken, IP: "10.1.1.1", UserAgent: "Chrome/1"}); !errors.Is(err, ErrFamilyRevoked) {
 		t.Fatalf("old refresh after reset = %v, want ErrFamilyRevoked", err)
 	}
 	fresh, err := svc.Create(ctx, CreateInput{TenantID: 1, UserID: 41, IP: "10.1.1.1", UserAgent: "Chrome/1"})

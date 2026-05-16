@@ -62,6 +62,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
+	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
 )
 
 // smokeBuildStamp is overridden via -ldflags during smoke test builds to
@@ -97,6 +98,7 @@ type deps struct {
 	credentialAcqStore *credentialacq.PostgresSessionStore
 	userAuth           *userauth.Service
 	userSessions       *usersession.Service
+	voucherService     *voucher.Service
 	dispatcher         *gateway.UpstreamDispatcher
 	responseCache      l2cache.Store
 	dlqService         *obsdlq.Service
@@ -163,7 +165,7 @@ func run(logger *zap.Logger) error {
 	credentialModeRegistry := credentialstore.DefaultHandlerRegistry()
 	credentialStore := credentialstore.NewStore(pgPool, credentialKeys, credentialModeRegistry)
 	credentialAcqStore := credentialacq.NewPostgresSessionStoreWithKeys(pgPool, credentialKeys)
-	userAuthStore := userauth.NewPostgresStore(pgPool)
+	userAuthStore := userauth.NewPostgresStoreWithKeys(pgPool, credentialKeys)
 	userSessionStore := usersession.NewPostgresStore(pgPool)
 	sessionSigningKey, err := loadSessionSigningKey()
 	if err != nil {
@@ -234,6 +236,7 @@ func run(logger *zap.Logger) error {
 	}
 	channelHealthStore := channelhealth.NewPostgresStoreWithAuditSigner(pgPool, auditSigner)
 	channelHealthService := channelhealth.NewService(channelHealthStore, channelhealth.DefaultPolicy(), nil)
+	voucherService := voucher.NewService(voucher.NewPostgresStore(pgPool))
 	selector, selectorCleanup, err := buildSelector(ctx, q, pgPool, selectorCfg, channelHealthService, logger)
 	if err != nil {
 		return fmt.Errorf("build selector: %w", err)
@@ -304,6 +307,7 @@ func run(logger *zap.Logger) error {
 		credentialAcqStore: credentialAcqStore,
 		userAuth:           userAuthService,
 		userSessions:       userSessionService,
+		voucherService:     voucherService,
 		responseCache:      responseCache,
 		dlqService:         dlqService,
 		completionBus:      completionBus,
@@ -745,6 +749,11 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		gatewayhttp.MountSessionRoutes(r, gatewayhttp.SessionHandlerDeps{Sessions: d.userSessions})
 	})
 
+	r.Route("/v1/users/me/vouchers", func(r chi.Router) {
+		r.Use(auth.SessionMiddleware(d.userSessions))
+		gatewayhttp.MountVoucherUserRoutes(r, gatewayhttp.VoucherUserDeps{Service: d.voucherService})
+	})
+
 	// Admin: API Keys (Slice 2 N+4b2). Replaces hand-written SQL INSERT
 	// for operator key issuance. POST=issue / GET=list / POST revoke.
 	r.Route("/admin/v1/api-keys", func(r chi.Router) {
@@ -798,6 +807,13 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			Auth:  d.adminAuth,
 			Store: d.queries,
 		}))
+	})
+
+	r.Route("/v1/admin/vouchers", func(r chi.Router) {
+		gatewayhttp.MountVoucherAdminRoutes(r, gatewayhttp.VoucherAdminDeps{
+			Auth:    d.adminAuth,
+			Service: d.voucherService,
+		})
 	})
 
 	// Admin: Usage / Billing / Audit / DLQ (F-OBS-001)
