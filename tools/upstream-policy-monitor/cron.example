@@ -1,0 +1,27 @@
+# HUAKAI upstream policy monitor scheduling examples.
+# These examples do not install or enable anything. Owner decides whether to use them.
+
+# Crontab example: run every Monday at 09:17 UTC from the repo root.
+# Keep stdin closed and append logs outside git-tracked docs.
+17 9 * * 1 cd /path/to/HUAKAI && tools/upstream-policy-monitor/run.sh --live --output-dir docs/alerts </dev/null >> /path/to/HUAKAI/logs/upstream-policy-monitor.log 2>&1
+
+# systemd user service example: ~/.config/systemd/user/huakai-upstream-policy-monitor.service
+[Unit]
+Description=HUAKAI upstream policy monitor
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/HUAKAI
+ExecStart=/path/to/HUAKAI/tools/upstream-policy-monitor/run.sh --live --output-dir /path/to/HUAKAI/docs/alerts
+StandardInput=null
+
+# systemd user timer example: ~/.config/systemd/user/huakai-upstream-policy-monitor.timer
+[Unit]
+Description=Run HUAKAI upstream policy monitor weekly
+
+[Timer]
+OnCalendar=Mon *-*-* 09:17:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
