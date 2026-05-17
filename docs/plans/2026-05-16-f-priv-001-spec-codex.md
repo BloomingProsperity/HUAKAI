@@ -1,0 +1,13 @@
+# 2026-05-16 F-PRIV-001 Privacy / No User Data Logs Codex Plan
+
+| Owner directive | "你是 HUAKAI codex specifier lane (read + write spec doc 不写代码), 任务 = F-PRIV-001 privacy / no user data logs spec parallel-draft" |
+| --- | --- |
+| Scope | In: read HUAKAI internal specs and memory, write one temporary Codex draft at `/tmp/codex-f-priv-001-spec-codex-draft.md`, keep Chinese-first spec text with English enum identifiers, include acceptance test outline and Owner summary. Out: production code, database schema, new dependencies, reference-project source reading, final `docs/specs/privacy-no-user-data-logs.md` edit. |
+| Success criteria | Draft has the requested 14 sections; anchors to F-TRUST-001 redaction guard and partner specs; covers prompt/completion/tool I/O/cookie/token/PII/upstream body classes; defines strict allowlist, structured error logging, phases, risks, and AT-PRIV cases; ends with source files read and `< /dev/null`. |
+| Time estimate | Wall clock: about 45-75 minutes. Agent time: one focused spec pass plus a leakage/self-check pass. |
+| Blast radius | Low. Mutations are limited to this plan artifact and a temporary `/tmp` spec draft. No production code, schema, secrets, deployment, billing, auth, or quota enforcement is touched. |
+| Failure modes | Unsupported upstream claims: avoid by not reading or naming reference implementation details and keeping comparison at category level. Inconsistent with F-TRUST-001: mitigate by reading the existing spec and cross-referencing only observed local requirements. Overbroad logging allowance: mitigate with default-deny allowlist and pre-write guard language. Missing tenant isolation: explicitly bind every persisted/loggable record to `tenant_id` where applicable. |
+| Decision points | Owner must later decide default redaction strictness, whether opt-in content-binding hashes are enabled, whether any reversible audit decryption exists, and whether stack traces may include source file/line in non-production error logs. No mid-flight high-risk action is planned. |
+| Pre-execution checklist | 1. Read `docs/RULES.md` and relevant skills. 2. Read F-TRUST-001 and two format reference specs. 3. Locate and read `project_core_trust_chain_differentiator` memory. 4. Draft the 14-section spec to `/tmp`. 5. Self-check for clean-room leakage, tenant isolation, redaction allowlist, and no-code constraint. |
+| Concrete execution order | Read local sources, extract section patterns and cross-spec anchors, write `/tmp/codex-f-priv-001-spec-codex-draft.md`, run text checks for forbidden upstream names and required tail marker, then report Chinese summary. |
+
