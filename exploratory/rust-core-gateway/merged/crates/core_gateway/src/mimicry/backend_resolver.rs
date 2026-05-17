@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 use super::{
-    FingerprintProfile, ProfileMatchPolicy, ProfileMode, backend::BackendIntent,
+    FingerprintProfile, ProfileMatchPolicy, ProfileMode, ProfileVendor, backend::BackendIntent,
     tls_profile::TlsBackend,
 };
 
@@ -11,6 +11,7 @@ const OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION: u16 = 22;
 /// L2-A8 生产 dispatch 前的显式 profile/backend 选择结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MimicryBackend {
+    Boring,
     Openssl,
     KnownGapBlocked { reason: String },
 }
@@ -19,12 +20,14 @@ pub enum MimicryBackend {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AvailableMimicryFeatures {
     pub openssl: bool,
+    pub boring: bool,
 }
 
 impl AvailableMimicryFeatures {
     pub const fn current() -> Self {
         Self {
             openssl: cfg!(feature = "mimicry-openssl"),
+            boring: cfg!(feature = "mimicry-boring"),
         }
     }
 }
@@ -58,7 +61,31 @@ pub fn resolve_profile_mimicry_backend(
     template: &FingerprintProfile,
     available_features: AvailableMimicryFeatures,
 ) -> Result<MimicryBackend, BackendResolverError> {
+    if template.vendor == ProfileVendor::Anthropic {
+        return resolve_anthropic_mimicry_backend(template, available_features);
+    }
+
     resolve_mimicry_backend(template.mode.as_str(), template, available_features)
+}
+
+fn resolve_anthropic_mimicry_backend(
+    template: &FingerprintProfile,
+    available_features: AvailableMimicryFeatures,
+) -> Result<MimicryBackend, BackendResolverError> {
+    if available_features.boring {
+        return Ok(MimicryBackend::Boring);
+    }
+
+    if available_features.openssl {
+        let backend = MimicryBackend::Openssl;
+        ensure_selected_backend_matches_template(&backend, template)?;
+        return Ok(backend);
+    }
+
+    Ok(MimicryBackend::KnownGapBlocked {
+        reason: "anthropic profile requires mimicry-boring for byte-level JA3 control or mimicry-openssl fallback"
+            .to_owned(),
+    })
 }
 
 fn backend_from_profile_intent(
@@ -82,6 +109,11 @@ fn ensure_backend_features(
     available_features: AvailableMimicryFeatures,
 ) -> Result<(), BackendResolverError> {
     match backend {
+        MimicryBackend::Boring if !available_features.boring => {
+            Err(BackendResolverError::BackendUnavailable {
+                reason: "boring dispatch requires the mimicry-boring feature".to_owned(),
+            })
+        }
         MimicryBackend::Openssl if !available_features.openssl => {
             Err(BackendResolverError::BackendUnavailable {
                 reason: "native-tls/openssl dispatch requires the mimicry-openssl feature"
@@ -184,7 +216,7 @@ impl From<ProfileMode> for MimicryBackend {
     fn from(mode: ProfileMode) -> Self {
         match mode {
             ProfileMode::CodexCli => Self::Openssl,
-            ProfileMode::AnthropicClaudeCode => Self::Openssl,
+            ProfileMode::AnthropicClaudeCode => Self::Boring,
             ProfileMode::KiroCli => Self::KnownGapBlocked {
                 reason:
                     "kiro rustls template requires mimicry path work before production dispatch"

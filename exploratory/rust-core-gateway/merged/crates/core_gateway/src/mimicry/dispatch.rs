@@ -6,6 +6,8 @@ use super::{
 /// mimicry 生产 dispatch gate 的最终判定。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DispatchDecision {
+    /// Boring backend 可进入生产 dispatch；实际 HTTP client 构造由 proxy_engine 侧负责。
+    AllowBoring,
     /// OpenSSL adapter 已通过 exact local capture 后才允许进入生产 dispatch。
     AllowOpenSsl,
     /// 已知字段 gap profile 只能保留 plumbing/profile/test/local-capture，生产 dispatch 必须拒绝。
@@ -31,6 +33,7 @@ pub fn try_decide_dispatch(
     let backend = resolve_profile_mimicry_backend(profile, AvailableMimicryFeatures::current())?;
 
     Ok(match backend {
+        MimicryBackend::Boring => DispatchDecision::AllowBoring,
         MimicryBackend::Openssl => DispatchDecision::AllowOpenSsl,
         MimicryBackend::KnownGapBlocked { reason } => DispatchDecision::BlockKnownGap { reason },
     })
@@ -57,11 +60,15 @@ pub fn try_decide_dispatch_with_features(
     let backend = resolve_profile_mimicry_backend(profile, available_features)?;
 
     Ok(match backend {
+        MimicryBackend::Boring => DispatchDecision::AllowBoring,
         MimicryBackend::Openssl => DispatchDecision::AllowOpenSsl,
         MimicryBackend::KnownGapBlocked { reason } => DispatchDecision::BlockKnownGap { reason },
     })
 }
 
 pub fn is_dispatch_allowed(decision: &DispatchDecision) -> bool {
-    matches!(decision, DispatchDecision::AllowOpenSsl)
+    matches!(
+        decision,
+        DispatchDecision::AllowBoring | DispatchDecision::AllowOpenSsl
+    )
 }
