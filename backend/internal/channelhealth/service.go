@@ -2,27 +2,45 @@ package channelhealth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	obsdlq "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 )
 
 type Service struct {
-	store  Store
-	policy Policy
-	clock  Clock
+	store       Store
+	policy      Policy
+	clock       Clock
+	alertOutbox obsdlq.Outbox
 }
 
 type transactionalStore interface {
 	WithTx(context.Context, func(Store) error) error
 }
 
-func NewService(store Store, policy Policy, clock Clock) *Service {
+type ServiceOption func(*Service)
+
+func WithAlertOutbox(outbox obsdlq.Outbox) ServiceOption {
+	return func(s *Service) {
+		s.alertOutbox = outbox
+	}
+}
+
+func NewService(store Store, policy Policy, clock Clock, opts ...ServiceOption) *Service {
 	if clock == nil {
 		clock = realClock{}
 	}
-	return &Service{store: store, policy: policy.normalized(), clock: clock}
+	s := &Service{store: store, policy: policy.normalized(), clock: clock}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(s)
+		}
+	}
+	return s
 }
 
 func (s *Service) EnsureDefaultActive(ctx context.Context, key ChannelKey) (Record, error) {
@@ -577,14 +595,28 @@ func (s *Service) emitAlert(ctx context.Context, rec Record, typ AlertType, seve
 	if payload == nil {
 		payload = map[string]any{}
 	}
-	return s.store.AppendAlert(ctx, Alert{
+	alert := Alert{
 		Type:        typ,
 		Key:         rec.Key,
 		Severity:    severity,
 		ReasonClass: rec.ReasonClass,
 		Payload:     payload,
 		CreatedAt:   s.clock.Now(),
-	})
+	}
+	if s.alertOutbox != nil {
+		raw, err := json.Marshal(alert)
+		if err != nil {
+			return err
+		}
+		_, err = s.alertOutbox.Enqueue(ctx, obsdlq.OutboxEvent{
+			TenantID:  rec.Key.TenantID,
+			EventType: obsdlq.EventTypeChannelAlert,
+			Priority:  obsdlq.PriorityDefault,
+			Payload:   raw,
+		})
+		return err
+	}
+	return s.store.AppendAlert(ctx, alert)
 }
 
 func defaultEvents(prev, next HealthState) []AuditEventType {
