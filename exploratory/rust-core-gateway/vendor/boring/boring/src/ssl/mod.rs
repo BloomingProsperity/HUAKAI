@@ -1967,6 +1967,22 @@ impl SslContextBuilder {
         unsafe { ffi::SSL_CTX_set_permute_extensions(self.as_ptr(), enabled as _) }
     }
 
+    /// 设置 ClientHello extension wire 顺序 (HUAKAI patch).
+    ///
+    /// `types` 是 IANA extension type id 列表。BoringSSL 会将列表解析成内部
+    /// extension table index 顺序；未列出的内部 extension 仍按默认顺序追加。
+    /// GREASE、padding、PSK 保留 BoringSSL 默认特殊处理位置。
+    #[corresponds(SSL_CTX_set_extension_order)]
+    pub fn set_extension_order(&mut self, types: &[u16]) -> Result<(), ErrorStack> {
+        unsafe {
+            cvt(ffi::SSL_CTX_set_extension_order(
+                self.as_ptr(),
+                types.as_ptr(),
+                types.len(),
+            ))
+        }
+    }
+
     /// Sets the context's supported signature verification algorithms.
     #[corresponds(SSL_CTX_set_verify_algorithm_prefs)]
     pub fn set_verify_algorithm_prefs(

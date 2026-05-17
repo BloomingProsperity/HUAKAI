@@ -41,3 +41,57 @@ HUAKAI 可调用的窄 API。候选范围:
 
 R-3-A-fix-2 实施后必须继续追加本文件，记录实际文件、接口、原因和 Apache-2.0
 attribution 状态。
+
+## R-3-A-fix-2: 加 SSL_CTX_set_extension_order public API
+
+本轮在 vendored BoringSSL C 层和 Rust wrapper 上增加一个 HUAKAI 本地窄 API，
+用于控制 ClientHello 内部 extension table 的写入顺序。输入是 IANA extension
+type id 列表；C 层会校验未知 type 和重复 type，并转换为 `kExtensions[]`
+内部 index。未列出的内部 extension 会按 BoringSSL 默认表顺序追加，避免漏发必需
+extension。GREASE、padding、PSK 保留 BoringSSL 原有特殊处理位置。
+
+### boring-sys/deps/boringssl/
+
+- `ssl/internal.h:2130`: 声明 HUAKAI 本地转换 helper
+  `ssl_huakai_extension_order_from_types`，供 public setter 调用。
+- `ssl/internal.h:3334`: 在 `SSL_CONFIG` 增加 `explicit_extension_order`
+  per-connection copy，ClientHello writer 从这里读取实际顺序。
+- `ssl/internal.h:3960`: 在 `SSL_CTX` 增加 `explicit_extension_order`，
+  保存 context-level 配置。
+- `include/openssl/ssl.h:5238`: 增加 `OPENSSL_EXPORT
+  SSL_CTX_set_extension_order` 声明。该 symbol 是 HUAKAI local API，不是
+  upstream BoringSSL API。
+- `ssl/ssl_lib.cc:537`: `SSL_new` 复制 `SSL_CTX` 上的显式 extension 顺序到
+  `SSL_CONFIG`，保持与现有 `permute_extensions` config copy 路径一致。
+- `ssl/ssl_lib.cc:3102`: 实现 `SSL_CTX_set_extension_order`，处理空输入清除
+  custom order、非空输入校验 null pointer 后转交 helper。
+- `ssl/extensions.cc:3743`: 显式顺序存在时跳过随机 permutation 生成。
+- `ssl/extensions.cc:3779`: 实现 type id 到 `kExtensions[]` index 的校验和
+  补齐逻辑；GREASE/padding/PSK 跳过并保留特殊路径，未知 extension 返回
+  `SSL_R_UNEXPECTED_EXTENSION`，重复 extension 返回 `SSL_R_DUPLICATE_EXTENSION`。
+- `ssl/extensions.cc:3855`: ClientHelloInner extension 写入循环优先读取
+  `explicit_extension_order`。
+- `ssl/extensions.cc:3966`: 普通 ClientHello extension 写入循环优先读取
+  `explicit_extension_order`。
+
+### boring-sys/src/
+
+- `src/lib.rs`: 无需手写 FFI；`build/main.rs` 通过 bindgen 从 public header
+  生成 `SSL_CTX_set_extension_order` binding。
+- `Cargo.lock:138`: 将既有 `libc` lock 调整到本机已缓存的 `0.2.186`，用于当前
+  离线 `cargo check`；不新增依赖。
+
+### boring/src/ssl/
+
+- `mod.rs:1976`: 在 `SslContextBuilder` 增加
+  `set_extension_order(&mut self, types: &[u16]) -> Result<(), ErrorStack>`，
+  直接调用 bindgen 生成的 `ffi::SSL_CTX_set_extension_order`。
+
+### Apache-2.0 §4 attribution
+
+modification 改自 boring 5.1.0 + BoringSSL package tree，package VCS commit
+`3acc9820eb7117f0b36078bf119c81c5ea337e6a`。新加 API
+`SSL_CTX_set_extension_order` 不与 upstream 已有 API 冲突。patch 总 diff 当前低于
+200 行。HUAKAI 维护本地 fork，不强求 upstream merge。
+
+attribution: 修改人 HUAKAI codex executor lane (R-3-A-fix-2), 2026-05-17 UTC。
