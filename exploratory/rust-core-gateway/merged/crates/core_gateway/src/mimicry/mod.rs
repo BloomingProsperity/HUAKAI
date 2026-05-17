@@ -15,10 +15,13 @@ pub mod profile;
 pub mod tls_capture;
 pub mod tls_profile;
 
+#[cfg(test)]
+mod anthropic_test;
+
 pub use backend::BackendIntent;
 pub use backend_resolver::{
-    AvailableMimicryFeatures, BackendResolverError, MimicryBackend, anthropic_known_gap_reason,
-    resolve_mimicry_backend, resolve_profile_mimicry_backend,
+    AvailableMimicryFeatures, BackendResolverError, MimicryBackend, resolve_mimicry_backend,
+    resolve_profile_mimicry_backend,
 };
 pub use dispatch::{DispatchDecision, decide_dispatch, is_dispatch_allowed};
 pub use profile::{
