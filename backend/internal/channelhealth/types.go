@@ -292,6 +292,8 @@ type Record struct {
 	UpdatedAt             time.Time
 }
 
+type ChannelHealthState = Record
+
 type AuditEvent struct {
 	Type          AuditEventType
 	Key           ChannelKey
@@ -316,6 +318,8 @@ type Alert struct {
 
 type Store interface {
 	Get(context.Context, ChannelKey) (Record, error)
+	ListChannelHealth(context.Context, int64, int, int) ([]ChannelHealthState, error)
+	GetChannelHealth(context.Context, int64, string) (ChannelHealthState, []AuditEvent, error)
 	UpsertRecord(context.Context, Record) (Record, error)
 	LatestByProviderAccount(context.Context, int64, int64) (Record, error)
 	AppendAudit(context.Context, AuditEvent) error

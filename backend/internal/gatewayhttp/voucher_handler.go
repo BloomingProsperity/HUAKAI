@@ -75,6 +75,7 @@ func MountVoucherAdminRoutes(r chi.Router, d VoucherAdminDeps) {
 	r.Get("/", newVoucherListHandler(d))
 	r.Post("/", newVoucherCreateHandler(d))
 	r.Post("/batch", newVoucherBatchCreateHandler(d))
+	r.Get("/batches/{batch_id}", newVoucherGetBatchHandler(d))
 	r.Post("/{id}/revoke", newVoucherRevokeHandler(d))
 }
 
@@ -193,7 +194,7 @@ func newVoucherGetBatchHandler(d VoucherAdminDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		id, ok := parseVoucherPathID(w, r)
+		id, ok := parseVoucherPathInt64(w, r, "batch_id", "invalid_batch_id")
 		if !ok {
 			return
 		}
@@ -256,9 +257,13 @@ func resolveVoucherAdmin(w http.ResponseWriter, r *http.Request, d VoucherAdminD
 }
 
 func parseVoucherPathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	return parseVoucherPathInt64(w, r, "id", "invalid_voucher_id")
+}
+
+func parseVoucherPathInt64(w http.ResponseWriter, r *http.Request, paramName, code string) (int64, bool) {
+	id, err := strconv.ParseInt(chi.URLParam(r, paramName), 10, 64)
 	if err != nil || id <= 0 {
-		writeJSONError(w, http.StatusBadRequest, "invalid_voucher_id", "id must be a positive int64")
+		writeJSONError(w, http.StatusBadRequest, code, "id must be a positive int64")
 		return 0, false
 	}
 	return id, true

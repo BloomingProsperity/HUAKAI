@@ -18,10 +18,13 @@ import (
 )
 
 const (
-	defaultAdminPoolsTenantID = int64(1)
-	defaultAdminPoolsLimit    = int32(50)
-	maxAdminPoolsLimit        = int32(200)
-	maxAdminPoolNameRunes     = 64
+	defaultAdminPoolsTenantID         = int64(1)
+	defaultAdminPoolsLimit            = int32(50)
+	maxAdminPoolsLimit                = int32(200)
+	maxAdminPoolNameRunes             = 64
+	defaultAdminPoolTopKDefault       = int32(1)
+	defaultAdminPoolCapabilityDefault = "exact_capability_only"
+	adminPoolCapabilitySafeEquivalent = "safe_equivalent_allowed"
 )
 
 type AdminPoolsAuth interface {
@@ -50,13 +53,19 @@ func NewAdminPoolsHandler(d AdminPoolsDeps) http.Handler {
 }
 
 type adminPoolCreateRequest struct {
-	Name string `json:"name"`
+	Name              string  `json:"name"`
+	TopKDefault       *int32  `json:"top_k_default,omitempty"`
+	CapabilityDefault *string `json:"capability_default,omitempty"`
+	AllowLastResort   *bool   `json:"allow_last_resort,omitempty"`
 	// 兼容本轮 body contract；当前 pool_groups schema 尚无 description 列。
 	Description string `json:"description,omitempty"`
 }
 
 type adminPoolUpdateRequest struct {
-	Name *string `json:"name,omitempty"`
+	Name              *string `json:"name,omitempty"`
+	TopKDefault       *int32  `json:"top_k_default,omitempty"`
+	CapabilityDefault *string `json:"capability_default,omitempty"`
+	AllowLastResort   *bool   `json:"allow_last_resort,omitempty"`
 	// 兼容请求字段；本 slice 不改 schema，因此不落库。
 	Description *string `json:"description,omitempty"`
 	Enabled     *bool   `json:"enabled,omitempty"`
@@ -96,7 +105,17 @@ func newCreatePoolHandler(d AdminPoolsDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "invalid_pool_name", err.Error())
 			return
 		}
-		pool, err := d.Store.InsertPool(r.Context(), db.InsertPoolParams{TenantID: defaultAdminPoolsTenantID, Name: req.Name})
+		topK, capability, allowLastResort, ok := normalizeAdminPoolCreateDefaults(w, req)
+		if !ok {
+			return
+		}
+		pool, err := d.Store.InsertPool(r.Context(), db.InsertPoolParams{
+			TenantID:          defaultAdminPoolsTenantID,
+			Name:              req.Name,
+			TopKDefault:       topK,
+			CapabilityDefault: capability,
+			AllowLastResort:   allowLastResort,
+		})
 		if err != nil {
 			writeAdminPoolMutationError(w, err, "pool_create_failed")
 			return
@@ -146,12 +165,32 @@ func newUpdatePoolHandler(d AdminPoolsDeps) http.HandlerFunc {
 			}
 			req.Name = &name
 		}
-		if req.Name == nil && req.Enabled == nil {
+		if req.TopKDefault != nil {
+			if err := validateAdminPoolTopK(*req.TopKDefault); err != nil {
+				writeJSONError(w, http.StatusBadRequest, "invalid_top_k_default", err.Error())
+				return
+			}
+		}
+		if req.CapabilityDefault != nil {
+			capability := strings.TrimSpace(*req.CapabilityDefault)
+			if err := validateAdminPoolCapabilityDefault(capability); err != nil {
+				writeJSONError(w, http.StatusBadRequest, "invalid_capability_default", err.Error())
+				return
+			}
+			req.CapabilityDefault = &capability
+		}
+		if req.Name == nil && req.TopKDefault == nil && req.CapabilityDefault == nil && req.AllowLastResort == nil && req.Enabled == nil {
 			writeJSONError(w, http.StatusBadRequest, "admin_bad_request", "at least one supported field is required")
 			return
 		}
 		pool, err := d.Store.UpdatePool(r.Context(), db.UpdatePoolParams{
-			Name: req.Name, Enabled: req.Enabled, TenantID: defaultAdminPoolsTenantID, ID: id,
+			Name:              req.Name,
+			TopKDefault:       req.TopKDefault,
+			CapabilityDefault: req.CapabilityDefault,
+			AllowLastResort:   req.AllowLastResort,
+			Enabled:           req.Enabled,
+			TenantID:          defaultAdminPoolsTenantID,
+			ID:                id,
 		})
 		if err != nil {
 			writeAdminPoolMutationError(w, err, "pool_update_failed")
@@ -212,6 +251,46 @@ func validateAdminPoolName(name string) error {
 		return fmt.Errorf("name must be 1-64 characters")
 	}
 	return nil
+}
+
+func normalizeAdminPoolCreateDefaults(w http.ResponseWriter, req adminPoolCreateRequest) (int32, string, bool, bool) {
+	topK := defaultAdminPoolTopKDefault
+	if req.TopKDefault != nil {
+		if err := validateAdminPoolTopK(*req.TopKDefault); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_top_k_default", err.Error())
+			return 0, "", false, false
+		}
+		topK = *req.TopKDefault
+	}
+	capability := defaultAdminPoolCapabilityDefault
+	if req.CapabilityDefault != nil {
+		capability = strings.TrimSpace(*req.CapabilityDefault)
+		if err := validateAdminPoolCapabilityDefault(capability); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_capability_default", err.Error())
+			return 0, "", false, false
+		}
+	}
+	allowLastResort := false
+	if req.AllowLastResort != nil {
+		allowLastResort = *req.AllowLastResort
+	}
+	return topK, capability, allowLastResort, true
+}
+
+func validateAdminPoolTopK(topK int32) error {
+	if topK < 1 || topK > 10 {
+		return fmt.Errorf("top_k_default must be between 1 and 10")
+	}
+	return nil
+}
+
+func validateAdminPoolCapabilityDefault(capability string) error {
+	switch capability {
+	case defaultAdminPoolCapabilityDefault, adminPoolCapabilitySafeEquivalent:
+		return nil
+	default:
+		return fmt.Errorf("capability_default must be exact_capability_only or safe_equivalent_allowed")
+	}
 }
 
 func writeAdminPoolReadError(w http.ResponseWriter, err error, code string) {

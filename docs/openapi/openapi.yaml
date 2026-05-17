@@ -63,6 +63,8 @@ tags:
     description: Pool Group management. F-POOL-001.
   - name: admin-accounts
     description: Provider Account management. F-POOL-001 + F-AUTH-005 + F-RATE-001.
+  - name: admin-channel-health
+    description: Channel health state and operator audit visibility. F-CH-002 + F-PRIV-001.
   - name: admin-credential-acquisition
     description: Credential acquisition lifecycle and helper imports. F-CRED-001.
   - name: admin-usage
@@ -590,6 +592,34 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/vouchers/batches/{batch_id}:
+    parameters:
+      - in: path
+        name: batch_id
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+      - in: query
+        name: tenant_id
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+    get:
+      tags: [admin-vouchers]
+      summary: Get voucher batch detail
+      operationId: getVoucherBatch
+      x-huakai-spec-source: [docs/specs/voucher-system.md]
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: Tenant-scoped voucher batch detail.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VoucherBatchDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/admin/vouchers/{id}/revoke:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
@@ -911,6 +941,67 @@ paths:
         '204':
           description: Cleared.
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/admin/channel-health:
+    get:
+      tags: [admin-channel-health]
+      summary: List channel health states
+      operationId: listChannelHealth
+      x-huakai-spec-source:
+        - docs/specs/channel-health-auto-disable.md
+        - docs/specs/privacy-no-user-data-logs.md
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Tenant-scoped channel health page.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChannelHealthListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/channel-health/{channel_id}:
+    parameters:
+      - in: path
+        name: channel_id
+        required: true
+        schema: { type: string, minLength: 1 }
+      - in: query
+        name: tenant_id
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+    get:
+      tags: [admin-channel-health]
+      summary: Get channel health detail with recent audit events
+      operationId: getChannelHealth
+      x-huakai-spec-source:
+        - docs/specs/channel-health-auto-disable.md
+        - docs/specs/privacy-no-user-data-logs.md
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: Tenant-scoped channel health detail. Audit payload is redacted before response.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChannelHealthDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/provider-accounts/{id}/credential-acquisitions:
     parameters:
@@ -1769,6 +1860,16 @@ components:
               code: { type: string }
               code_fingerprint: { type: string }
 
+    VoucherBatchDetailResponse:
+      type: object
+      additionalProperties: false
+      required: [batch, vouchers]
+      properties:
+        batch: { $ref: '#/components/schemas/VoucherBatch' }
+        vouchers:
+          type: array
+          items: { $ref: '#/components/schemas/Voucher' }
+
     VoucherListResponse:
       type: object
       additionalProperties: false
@@ -2255,6 +2356,141 @@ components:
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/PoolGroup' } }
         page: { $ref: '#/components/schemas/PageMeta' }
+
+    ChannelHealthState:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/specs/channel-health-auto-disable.md
+      required:
+        - tenant_id
+        - channel_id
+        - vendor
+        - provider_account_id
+        - account_credential_id
+        - credential_version
+        - state
+        - score
+        - reason_class
+        - confidence_tier
+        - policy_version
+        - ramp_stage_pct
+        - ramp_failure_count
+      properties:
+        tenant_id: { type: integer, format: int64 }
+        channel_id: { type: string }
+        vendor: { type: string }
+        provider_account_id: { type: integer, format: int64 }
+        account_credential_id: { type: integer, format: int64 }
+        credential_version: { type: integer, minimum: 1 }
+        state:
+          type: string
+          enum: [active, degraded, cooling_down, ramping, disabled, manual_paused]
+        score: { type: number, minimum: 0, maximum: 100 }
+        reason_class:
+          type: string
+          enum:
+            - none
+            - success
+            - channel_error
+            - client_malformed
+            - local_gateway_5xx
+            - upstream_5xx
+            - timeout
+            - rate_limit
+            - forbidden
+            - latency_p99
+            - account_suspended
+            - token_revoked
+            - credential_revoked
+            - account_disabled
+            - subscription_or_workspace_disabled
+            - manual_override
+        confidence_tier:
+          type: string
+          enum: [observed, inferred, operator_override]
+        policy_version: { type: string }
+        ramp_stage_pct: { type: integer, minimum: 0, maximum: 100 }
+        ramp_failure_count: { type: integer, minimum: 0 }
+        cooldown_until: { type: [string, 'null'], format: date-time }
+        ramp_started_at: { type: [string, 'null'], format: date-time }
+        state_entered_at: { type: [string, 'null'], format: date-time }
+        last_transition_at: { type: [string, 'null'], format: date-time }
+        last_signal_class: { type: [string, 'null'] }
+        last_signal_at: { type: [string, 'null'], format: date-time }
+        updated_at: { type: [string, 'null'], format: date-time }
+
+    ChannelHealthAuditEvent:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/specs/channel-health-auto-disable.md
+        - docs/specs/privacy-no-user-data-logs.md
+      required:
+        - event_type
+        - tenant_id
+        - channel_id
+        - vendor
+        - provider_account_id
+        - account_credential_id
+        - credential_version
+        - new_state
+        - reason_class
+        - policy_version
+        - payload
+      properties:
+        event_type:
+          type: string
+          enum:
+            - channel_health_degraded
+            - channel_disabled
+            - channel_recovered
+            - channel_ramp_started
+            - channel_ramp_rolled_back
+            - channel_manual_override
+        tenant_id: { type: integer, format: int64 }
+        channel_id: { type: string }
+        vendor: { type: string }
+        provider_account_id: { type: integer, format: int64 }
+        account_credential_id: { type: integer, format: int64 }
+        credential_version: { type: integer, minimum: 1 }
+        previous_state: { type: [string, 'null'] }
+        new_state: { type: string }
+        reason_class: { type: string }
+        policy_version: { type: string }
+        request_id: { type: [string, 'null'] }
+        actor_id: { type: [string, 'null'] }
+        payload:
+          type: object
+          additionalProperties: true
+          description: Redacted payload; raw upstream body, prompt/completion, credentials, and request/response bodies are removed.
+        occurred_at: { type: [string, 'null'], format: date-time }
+
+    ChannelHealthListResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/channel-health-auto-disable.md]
+      required: [items, limit, offset]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ChannelHealthState' }
+        limit: { type: integer, minimum: 1, maximum: 200 }
+        offset: { type: integer, minimum: 0 }
+
+    ChannelHealthDetailResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/specs/channel-health-auto-disable.md
+        - docs/specs/privacy-no-user-data-logs.md
+      required: [state, audit_events]
+      properties:
+        state: { $ref: '#/components/schemas/ChannelHealthState' }
+        audit_events:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/ChannelHealthAuditEvent' }
 
     ProviderAccount:
       type: object

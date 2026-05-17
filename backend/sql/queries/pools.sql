@@ -4,10 +4,16 @@
 INSERT INTO pool_groups (
     tenant_id,
     name,
+    top_k_default,
+    capability_default,
+    allow_last_resort,
     enabled
 ) VALUES (
     sqlc.arg(tenant_id)::bigint,
     sqlc.arg(name)::text,
+    sqlc.arg(top_k_default)::integer,
+    sqlc.arg(capability_default)::text,
+    sqlc.arg(allow_last_resort)::boolean,
     true
 )
 RETURNING
@@ -82,6 +88,9 @@ LIMIT sqlc.arg(limit_count)::integer;
 UPDATE pool_groups
 SET
     name = COALESCE(sqlc.narg(name)::text, name),
+    top_k_default = COALESCE(sqlc.narg(top_k_default)::integer, top_k_default),
+    capability_default = COALESCE(sqlc.narg(capability_default)::text, capability_default),
+    allow_last_resort = COALESCE(sqlc.narg(allow_last_resort)::boolean, allow_last_resort),
     enabled = COALESCE(sqlc.narg(enabled)::boolean, enabled),
     updated_at = NOW()
 WHERE tenant_id = sqlc.arg(tenant_id)::bigint

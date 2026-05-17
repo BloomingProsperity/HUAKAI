@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -69,6 +70,51 @@ func TestVoucherHandlersAdminAndUserRoutes(t *testing.T) {
 	listResp := doVoucherRequest(t, r, http.MethodGet, "/v1/admin/vouchers?tenant_id=1", nil)
 	if listResp.Code != http.StatusOK {
 		t.Fatalf("list status=%d body=%s", listResp.Code, listResp.Body.String())
+	}
+}
+
+func TestAT_BILL_002_011_VoucherGetBatchRouteTenantScoped(t *testing.T) {
+	now := time.Now().UTC()
+	store := voucher.NewMemoryStore()
+	svc := voucher.NewService(store)
+	auth := staticVoucherAdminAuth{ident: admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}}
+
+	r := chi.NewRouter()
+	r.Route("/v1/admin/vouchers", func(r chi.Router) {
+		MountVoucherAdminRoutes(r, VoucherAdminDeps{Auth: auth, Service: svc})
+	})
+
+	createResp := doVoucherRequest(t, r, http.MethodPost, "/v1/admin/vouchers/batch", map[string]any{
+		"tenant_id": 1, "count": 2, "amount_cents": 500,
+		"valid_from":  now.Add(-time.Minute).Format(time.RFC3339),
+		"valid_until": now.Add(time.Hour).Format(time.RFC3339),
+	})
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("create batch status=%d body=%s", createResp.Code, createResp.Body.String())
+	}
+	var created voucher.BatchCreateResult
+	if err := json.Unmarshal(createResp.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create batch response: %v", err)
+	}
+	if created.Batch.ID == 0 || len(created.Vouchers) != 2 {
+		t.Fatalf("created batch mismatch: %+v", created)
+	}
+
+	detailResp := doVoucherRequest(t, r, http.MethodGet, "/v1/admin/vouchers/batches/"+strconv.FormatInt(created.Batch.ID, 10)+"?tenant_id=1", nil)
+	if detailResp.Code != http.StatusOK {
+		t.Fatalf("get batch status=%d body=%s", detailResp.Code, detailResp.Body.String())
+	}
+	var detail voucher.GetBatchResult
+	if err := json.Unmarshal(detailResp.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("decode get batch response: %v", err)
+	}
+	if detail.Batch.ID != created.Batch.ID || detail.Batch.TenantID != 1 || len(detail.Vouchers) != 2 {
+		t.Fatalf("batch detail mismatch: %+v", detail)
+	}
+
+	crossTenantResp := doVoucherRequest(t, r, http.MethodGet, "/v1/admin/vouchers/batches/"+strconv.FormatInt(created.Batch.ID, 10)+"?tenant_id=2", nil)
+	if crossTenantResp.Code != http.StatusNotFound {
+		t.Fatalf("cross-tenant status=%d body=%s", crossTenantResp.Code, crossTenantResp.Body.String())
 	}
 }
 

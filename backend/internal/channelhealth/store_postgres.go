@@ -15,6 +15,7 @@ import (
 
 type DBTX interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
@@ -104,6 +105,89 @@ ORDER BY credential_version DESC, updated_at DESC
 LIMIT 1`,
 		tenantID, providerAccountID)
 	return scanRecord(row)
+}
+
+func (s *PostgresStore) ListChannelHealth(ctx context.Context, tenantID int64, limit, offset int) ([]ChannelHealthState, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("channelhealth: postgres store not configured")
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT tenant_id, channel_id, vendor, provider_account_id, account_credential_id,
+       credential_version, state, score::float8, reason_class, confidence_tier,
+       cooldown_until, ramp_stage_pct, ramp_started_at, state_entered_at,
+       last_transition_at, policy_version, sample_window, last_signal_class,
+       last_signal_at, manual_pause_reason, manual_override_actor_id,
+       manual_override_reason, ramp_failure_count, recovery_blocked_reason,
+       created_at, updated_at
+FROM channel_health_state
+WHERE tenant_id = $1
+ORDER BY updated_at DESC, channel_id ASC
+LIMIT $2 OFFSET $3`,
+		tenantID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ChannelHealthState
+	for rows.Next() {
+		rec, err := scanRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) GetChannelHealth(ctx context.Context, tenantID int64, channelID string) (ChannelHealthState, []AuditEvent, error) {
+	if s == nil || s.db == nil {
+		return ChannelHealthState{}, nil, errors.New("channelhealth: postgres store not configured")
+	}
+	row := s.db.QueryRow(ctx, `
+SELECT tenant_id, channel_id, vendor, provider_account_id, account_credential_id,
+       credential_version, state, score::float8, reason_class, confidence_tier,
+       cooldown_until, ramp_stage_pct, ramp_started_at, state_entered_at,
+       last_transition_at, policy_version, sample_window, last_signal_class,
+       last_signal_at, manual_pause_reason, manual_override_actor_id,
+       manual_override_reason, ramp_failure_count, recovery_blocked_reason,
+       created_at, updated_at
+FROM channel_health_state
+WHERE tenant_id = $1
+  AND channel_id = $2`,
+		tenantID, channelID)
+	rec, err := scanRecord(row)
+	if err != nil {
+		return ChannelHealthState{}, nil, err
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT event_type, tenant_id, channel_id, vendor, provider_account_id,
+       account_credential_id, credential_version, previous_state, new_state,
+       reason_class, policy_version, request_id, actor_id, payload, occurred_at
+FROM channel_health_audit_events
+WHERE tenant_id = $1
+  AND channel_id = $2
+ORDER BY occurred_at DESC, id DESC
+LIMIT 50`,
+		tenantID, channelID)
+	if err != nil {
+		return ChannelHealthState{}, nil, err
+	}
+	defer rows.Close()
+	var events []AuditEvent
+	for rows.Next() {
+		ev, err := scanAuditEvent(rows)
+		if err != nil {
+			return ChannelHealthState{}, nil, err
+		}
+		events = append(events, ev)
+	}
+	if err := rows.Err(); err != nil {
+		return ChannelHealthState{}, nil, err
+	}
+	return rec, events, nil
 }
 
 func (s *PostgresStore) UpsertRecord(ctx context.Context, rec Record) (Record, error) {
@@ -329,6 +413,61 @@ func scanRecord(row pgx.Row) (Record, error) {
 		}
 	}
 	return rec, nil
+}
+
+func scanAuditEvent(row pgx.Row) (AuditEvent, error) {
+	var (
+		ev                AuditEvent
+		eventType         string
+		providerAccountID *int64
+		previousState     *string
+		newState          string
+		reasonClass       string
+		requestID         *string
+		actorID           *string
+		payloadRaw        []byte
+	)
+	err := row.Scan(
+		&eventType,
+		&ev.Key.TenantID,
+		&ev.Key.ChannelID,
+		&ev.Key.Vendor,
+		&providerAccountID,
+		&ev.Key.AccountCredentialID,
+		&ev.Key.CredentialVersion,
+		&previousState,
+		&newState,
+		&reasonClass,
+		&ev.PolicyVersion,
+		&requestID,
+		&actorID,
+		&payloadRaw,
+		&ev.OccurredAt,
+	)
+	if err != nil {
+		return AuditEvent{}, err
+	}
+	ev.Type = AuditEventType(eventType)
+	if providerAccountID != nil {
+		ev.Key.ProviderAccountID = *providerAccountID
+	}
+	if previousState != nil {
+		ev.PreviousState = HealthState(*previousState)
+	}
+	ev.NewState = HealthState(newState)
+	ev.ReasonClass = SignalClass(reasonClass)
+	if requestID != nil {
+		ev.RequestID = *requestID
+	}
+	if actorID != nil {
+		ev.ActorID = *actorID
+	}
+	if len(payloadRaw) > 0 {
+		if err := json.Unmarshal(payloadRaw, &ev.Payload); err != nil {
+			return AuditEvent{}, fmt.Errorf("channelhealth: unmarshal audit payload: %w", err)
+		}
+	}
+	return ev, nil
 }
 
 var _ Store = (*PostgresStore)(nil)
