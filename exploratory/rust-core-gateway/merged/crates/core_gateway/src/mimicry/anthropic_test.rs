@@ -38,12 +38,12 @@ fn anthropic_backend_resolver_returns_openssl() {
     assert_eq!(backend, MimicryBackend::Openssl);
 }
 
-// R-1 deferred to R-2: OpenSSL Rust public API auto-injects native extensions
-// `[1, 2]` and cannot byte-level reorder per profile sample. R-2 rquest +
-// BoringSSL will provide the lower-level builder needed for exact JA3 wire
-// match; un-ignore once that lane lands.
+// R-1 deferred test preserved as history: OpenSSL Rust public API auto-injects
+// native extensions `[1, 2]` and cannot byte-level reorder per profile sample.
+// R-2-B-4 is covered by `anthropic_boring_client_hello_byte_level_matches_profile`;
+// this OpenSSL path remains ignored because the mismatch is fundamental.
 #[cfg(feature = "mimicry-openssl")]
-#[ignore = "R-2 rquest+BoringSSL required for exact extension order match"]
+#[ignore = "superseded by anthropic_boring_client_hello_byte_level_matches_profile (R-2-B-4); OpenSSL public API cannot byte-level reorder"]
 #[tokio::test]
 async fn anthropic_openssl_adapter_completes_mock_tls_handshake() {
     let profile = load_builtin_profile(BuiltinProfile::AnthropicClaudeCode)
