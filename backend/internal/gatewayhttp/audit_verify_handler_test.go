@@ -32,7 +32,7 @@ func TestAuditVerifyHandler_HappyPath(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.LedgerEntry.RequestID != "req_1" || got.LedgerEntry.TenantID != 7 {
+	if got.LedgerEntry.RequestID != "req_1" || got.LedgerEntry.TenantScopeRef != auditledger.TenantScopeRef(7) {
 		t.Fatalf("ledger entry mismatch: %+v", got.LedgerEntry)
 	}
 	if got.ChainProof.MerkleRoot != rootHex(entry.MerkleRoot) {
@@ -40,6 +40,23 @@ func TestAuditVerifyHandler_HappyPath(t *testing.T) {
 	}
 	if got.ChainProof.Signature == "" || got.ChainProof.PubkeyFingerprint == "" {
 		t.Fatalf("proof missing signature or fingerprint: %+v", got.ChainProof)
+	}
+}
+
+func TestATPRIV001009AuditVerifyTenantScopeRefMismatchReturns404(t *testing.T) {
+	ledger := newAuditVerifyTestLedger(t)
+	_, err := ledger.Append(context.Background(), auditledger.LedgerEntry{
+		LedgerID:  "lid_scope",
+		RequestID: "req_scope",
+		TenantID:  7,
+		HopChain:  []proto.HopAttestation{{Hop: proto.HopIngress, Timestamp: "2026-05-13T10:00:00Z"}},
+	})
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	rec := invokeAuditVerify(t, ledger, "/v1/audit/verify?request_id=req_scope&tenant_scope_ref="+auditledger.TenantScopeRef(8))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d want 404 body=%s", rec.Code, rec.Body.String())
 	}
 }
 

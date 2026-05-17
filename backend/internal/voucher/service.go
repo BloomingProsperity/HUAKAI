@@ -257,6 +257,7 @@ func (s *Service) emit(ctx context.Context, event AuditEvent) error {
 	if event.OccurredAt.IsZero() {
 		event.OccurredAt = time.Now().UTC()
 	}
+	event.Payload = sanitizeAuditPayload(ctx, event.Payload)
 	return s.audit.EmitVoucherAudit(ctx, event)
 }
 

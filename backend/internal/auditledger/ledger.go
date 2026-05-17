@@ -85,6 +85,7 @@ func NewMemoryLedger(signer any) (*MemoryLedger, error) {
 func (m *MemoryLedger) Append(ctx context.Context, entry LedgerEntry) (LedgerEntry, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	entry, _ = sanitizeLedgerEntry(ctx, entry)
 
 	if entry.Timestamp == "" {
 		entry.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)

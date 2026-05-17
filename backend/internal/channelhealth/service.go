@@ -604,6 +604,7 @@ func (s *Service) emitAlert(ctx context.Context, rec Record, typ AlertType, seve
 		CreatedAt:   s.clock.Now(),
 	}
 	if s.alertOutbox != nil {
+		alert.Payload = sanitizePayloadMap(ctx, alert.Payload)
 		raw, err := json.Marshal(alert)
 		if err != nil {
 			return err

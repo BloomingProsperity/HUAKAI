@@ -40,7 +40,11 @@ func canonicalPayload(entry LedgerEntry) ([]byte, error) {
 	writeJSONField(&buf, "ledger_id", entry.LedgerID, false)
 	writeJSONField(&buf, "occurred_at", canonicalTimestamp(entry.Timestamp), false)
 	writeJSONField(&buf, "request_id", entry.RequestID, false)
-	writeJSONField(&buf, "tenant_scope_ref", TenantScopeRef(entry.TenantID), false)
+	scopeRef := entry.TenantScopeRef
+	if scopeRef == "" {
+		scopeRef = TenantScopeRef(entry.TenantID)
+	}
+	writeJSONField(&buf, "tenant_scope_ref", scopeRef, false)
 	writeRawJSONField(&buf, "hop_chain", hopJSON, false)
 	writeRawJSONField(&buf, "model_chain", modelJSON, false)
 	writeJSONField(&buf, "prev_merkle_root", hex.EncodeToString(entry.PrevMerkleRoot[:]), false)
