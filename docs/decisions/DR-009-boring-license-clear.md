@@ -57,9 +57,14 @@ The local sandbox could not fetch crates.io API JSON because outbound sockets ar
 
 ## Verification Notes
 
-`cargo check -p core_gateway` and `cargo check -p core_gateway --features mimicry-boring` were attempted with `CARGO_TARGET_DIR=$HOME/.cargo-target`. Both failed before compilation because Cargo tried to download `https://index.crates.io/config.json` through `127.0.0.1:8118` and the proxy socket was unavailable. Follow-up `--offline` checks failed earlier in dependency resolution because the local registry index lacks `tokio-boring`.
+First attempt: `cargo check -p core_gateway` and `cargo check --features mimicry-boring` failed because `clang` / `cmake` / `libclang-dev` were not installed and the local registry index lacked `tokio-boring`. R-DEP-002 was recorded.
 
-This means R-2-B-1 reached manifest wiring but did not reach native BoringSSL compilation. R-DEP-002 remains Open until an environment with reachable crates.io index and native toolchain can run the same checks.
+Fix (2026-05-17 same day): `sudo apt-get install clang cmake libclang-dev` (Ubuntu 26.04 LTS, llvm-21 toolchain) + export `LIBCLANG_PATH=/usr/lib/llvm-21/lib`. Re-ran:
+
+- `cargo check -p core_gateway` PASS (baseline, no mimicry-boring feature)
+- `cargo check -p core_gateway --features mimicry-boring` PASS (boring-sys 5.1.0 + tokio-boring 5.0.0 compiled successfully via bindgen + clang-sys + cmake; `Finished dev profile in 1m 51s`)
+
+R-2-B-1 sandbox verification complete. R-DEP-002 status flipped to Mitigated. Owner local + CI must replicate the same `clang + cmake + libclang-dev + LIBCLANG_PATH` toolchain before R-8 release gate; recorded as part of `docs/dev-tests.md` follow-up.
 
 ## Metadata Tail
 
