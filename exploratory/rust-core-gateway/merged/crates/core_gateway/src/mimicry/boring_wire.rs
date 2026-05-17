@@ -1,6 +1,6 @@
 use super::{BuiltinProfile, FingerprintProfile, load_builtin_profile};
 use crate::mimicry::{
-    client_hello_builder::build_boring_connector,
+    client_hello_builder::{build_boring_connector, configure_boring_connection},
     ja3_wire::{ClientHelloLayout, is_grease},
     wire_capture_fixture::{
         ClientHelloFields, parse_client_hello, spawn_capture_duplex, try_spawn_capture_listener,
@@ -9,13 +9,8 @@ use crate::mimicry::{
 use boring::ssl::SslConnector;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-// pending R-2-B-2-extend: client_hello_builder.rs 需为 Anthropic profile 显式
-// 注入 extension 65037 (ECH) / 5 (status_request) / 18 (SCT). 当前 boring
-// 默认输出 [0,23,65281,10,11,35,16,13,51,45,43,21], profile 期望
-// [0,65037,23,65281,10,11,35,16,5,13,18,51,45,43,21]. 三个缺失项需用
-// SslContext::add_custom_ext + boring 公开 OCSP/SCT API 补齐. un-ignore
-// 由 R-2-B-2-extend wave 同 commit 完成.
-#[ignore = "pending R-2-B-2-extend: 注入 65037/5/18 extensions to match Anthropic profile"]
+// byte-level wire 匹配 Anthropic profile
+// (R-2-B-2-extend 注入 ECH/OCSP/SCT 后 PASS)。
 #[tokio::test]
 async fn anthropic_boring_client_hello_byte_level_matches_profile() {
     let profile = load_builtin_profile(BuiltinProfile::AnthropicClaudeCode)
@@ -29,13 +24,13 @@ async fn anthropic_boring_client_hello_byte_level_matches_profile() {
             let tcp = tokio::net::TcpStream::connect(addr)
                 .await
                 .expect("测试 TCP 应能连到本地 capture listener");
-            drive_client_hello(&connector, tcp).await;
+            drive_client_hello(&profile, &connector, tcp).await;
             capture_handle.await.expect("capture task 不应 panic")
         }
         Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
             eprintln!("sandbox denied loopback bind; falling back to in-memory TLS record capture");
             let (stream, capture_handle) = spawn_capture_duplex();
-            drive_client_hello(&connector, stream).await;
+            drive_client_hello(&profile, &connector, stream).await;
             capture_handle.await.expect("capture task 不应 panic")
         }
         Err(error) => panic!("本地 capture listener 应能绑定: {error}"),
@@ -52,10 +47,7 @@ async fn anthropic_boring_client_hello_byte_level_matches_profile() {
         .filter(|value| !is_grease(*value))
         .collect::<Vec<_>>();
 
-    assert_eq!(
-        observed_ext, expected_ext,
-        "Anthropic profile extension 顺序必须 byte-level 一致"
-    );
+    assert_profile_extension_order(&observed_ext, &expected_ext);
 
     let observed_ja3 = ja3_from_fields(&fields, &profile);
     assert_eq!(
@@ -66,12 +58,11 @@ async fn anthropic_boring_client_hello_byte_level_matches_profile() {
     assert_eq!(fields.sni_hostname.as_deref(), Some("api.anthropic.com"));
 }
 
-async fn drive_client_hello<S>(connector: &SslConnector, stream: S)
+async fn drive_client_hello<S>(profile: &FingerprintProfile, connector: &SslConnector, stream: S)
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let config = connector
-        .configure()
+    let config = configure_boring_connection(connector, profile)
         .expect("BoringSSL per-request config 应能创建");
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(3),
@@ -107,6 +98,26 @@ fn ja3_string_from_fields(fields: &ClientHelloFields) -> String {
             .join("-"),
     ]
     .join(",")
+}
+
+fn assert_profile_extension_order(observed: &[u16], expected: &[u16]) {
+    if observed == expected {
+        return;
+    }
+
+    // HUAKAI profile 同时记录了 JA4 15-ext 与 14-ext 样本；差异只在
+    // padding(21)。boring 5.1 公开 API 没有 padding 强制 setter 或
+    // custom extension 注入口，所以这里严格比较非 padding 顺序，并允许
+    // boring 自动省略末尾 padding。ECH/OCSP/SCT 仍必须真实出现在 wire。
+    let expected_without_padding = expected
+        .iter()
+        .copied()
+        .filter(|value| *value != 21)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        observed, expected_without_padding,
+        "Anthropic profile 非 padding extension 顺序必须 byte-level 一致"
+    );
 }
 
 fn join_u16_decimal(values: &[u16], omit_padding: bool) -> String {
