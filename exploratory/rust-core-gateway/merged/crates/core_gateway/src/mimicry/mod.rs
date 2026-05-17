@@ -43,7 +43,9 @@ pub use backend_resolver::{
     AvailableMimicryFeatures, BackendResolverError, MimicryBackend, resolve_mimicry_backend,
     resolve_profile_mimicry_backend,
 };
-pub use dispatch::{DispatchDecision, decide_dispatch, is_dispatch_allowed};
+pub use dispatch::{
+    DispatchDecision, MimicryAction, build_mimicry_action, decide_dispatch, is_dispatch_allowed,
+};
 pub use profile::{
     BuiltinProfile, FingerprintProfile, ProfileLoadError, ProfileMatchPolicy, ProfileMode,
     ProfileValidationError, ProfileVendor, load_builtin_profile, load_builtin_profiles,
