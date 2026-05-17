@@ -16,28 +16,29 @@ async fn anthropic_boring_client_hello_byte_level_matches_profile() {
     test_vendor_byte_level(BuiltinProfile::AnthropicClaudeCode, "api.anthropic.com").await;
 }
 
-// R-3-A 真实诊断: boring 5.1 公开 API 默认 extension 排布 (Chrome-like)
-// 跟 CodexCli/KiroCli/GeminiAdvanced 真采样 profile 的 extension 顺序不一致.
-// 例: CodexCli profile 期望 [65281,0,11,10,35,22,23,13,43,45,51], boring 实出
-// [0,23,65281,10,11,35,13,51,45,43]. 差异: 起始 ext (renegotiation_info vs SNI)
-// + 缺 22 (extended_master_secret). 不是 add_custom_ext / set_permute(false) 可
-// 解决, 需更底层 ClientHello bytes 重排 (boring fork OR HUAKAI-owned TLS patch).
-// Owner 决策点: 接受 OpenSSL fallback / boring fork / vendor-by-vendor patch.
-// pending Owner decision: 3 vendor wire test 暂 #[ignore], R-3-A backend_resolver
-// 部分已 PASS, 即使 wire byte-level 不全 byte 匹配也能跑.
-#[ignore = "R-3-A wire mismatch: boring 5.1 default ext order != vendor profile; pending Owner decision (fallback / boring fork / patch)"]
+// R-3-A-fix-4 真实诊断: HUAKAI vendored boring SSL_CTX_set_extension_order
+// 已上, Anthropic profile byte-level PASS. 但 3 vendor 还有 boring 更深层限制:
+// - CodexCli/Gemini profile 含 extension 22 (extended_master_secret),
+//   boring kExtensions[] 没这项 → setter 返 UNEXPECTED_EXTENSION error
+// - KiroCli profile 不含 65281 (renegotiation_info), 但 boring ClientHello
+//   serializer 强制末尾追加 65281 → observed 比 profile 多 1 个 ext
+// 都需 R-3-A-fix-2-deeper (再 patch boring): 加 extended_master_secret entry
+// + 跳 renegotiation_info 默认追加, 或接受 Anthropic-only byte-level + 3 vendor
+// 走 OpenSSL fallback (per Plan §3 backend_resolver 链).
+// pending Owner decision: 当前 #[ignore] 准 R-3-A-fix-4 commit, R-3-A-fix-2 重派.
+#[ignore = "R-3-A-fix-4 partial: boring kExtensions[] 不含 22 + 强追加 65281; pending R-3-A-fix-2-deeper"]
 #[tokio::test]
 async fn codex_cli_boring_client_hello_byte_level_matches_profile() {
     test_vendor_byte_level(BuiltinProfile::CodexCli, "chatgpt.com").await;
 }
 
-#[ignore = "R-3-A wire mismatch: boring 5.1 default ext order != vendor profile; pending Owner decision"]
+#[ignore = "R-3-A-fix-4 partial: boring 强追加 65281 末尾; pending R-3-A-fix-2-deeper"]
 #[tokio::test]
 async fn kiro_boring_client_hello_byte_level_matches_profile() {
     test_vendor_byte_level(BuiltinProfile::KiroCli, "q.us-east-1.amazonaws.com").await;
 }
 
-#[ignore = "R-3-A wire mismatch: boring 5.1 default ext order != vendor profile; pending Owner decision"]
+#[ignore = "R-3-A-fix-4 partial: boring kExtensions[] 不含 22 + 强追加 65281; pending R-3-A-fix-2-deeper"]
 #[tokio::test]
 async fn gemini_advanced_boring_client_hello_byte_level_matches_profile() {
     test_vendor_byte_level(
@@ -105,8 +106,7 @@ async fn drive_client_hello<S>(
     connector: &SslConnector,
     sni_hostname: &str,
     stream: S,
-)
-where
+) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let config = configure_boring_connection(connector, profile)
