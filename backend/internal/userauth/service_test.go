@@ -69,6 +69,36 @@ func TestAuthRegisterVerifyLoginAndResetReplay(t *testing.T) {
 	}
 }
 
+func TestAuthRegisterCanSkipEmailVerificationByPolicy(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	svc := NewService(store)
+	svc.PasswordPolicy = PasswordPolicy{MemoryKiB: 64, Iterations: 1, Parallelism: 1, SaltBytes: 8, KeyBytes: 16}
+	svc.Now = func() time.Time { return now }
+	svc.Verification = staticVerificationPolicy(false)
+
+	registered, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "skip@example.test", Password: "secret"})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if registered.VerificationToken != "" {
+		t.Fatalf("verification token = %q, want empty when policy skips verification", registered.VerificationToken)
+	}
+	if !registered.User.EmailVerified || registered.User.Status != UserStatusActive {
+		t.Fatalf("registered state = verified:%v status:%s", registered.User.EmailVerified, registered.User.Status)
+	}
+	if _, err := svc.Authenticate(ctx, LoginInput{TenantID: 1, Email: "skip@example.test", Password: "secret"}); err != nil {
+		t.Fatalf("Authenticate with verification disabled: %v", err)
+	}
+}
+
+type staticVerificationPolicy bool
+
+func (p staticVerificationPolicy) EmailVerificationEnabled(context.Context, int64) (bool, error) {
+	return bool(p), nil
+}
+
 func TestAT_AUTH_007_005_LockoutAndResetRequired(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)

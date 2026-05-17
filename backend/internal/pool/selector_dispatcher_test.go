@@ -21,8 +21,10 @@
 package pool
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -142,7 +144,18 @@ func TestDispatcher_ShadowMode_AsyncCompare_MatchAndDiff(t *testing.T) {
 }
 
 func TestDispatcher_ShadowMode_DropWhenQueueFull(t *testing.T) {
-	// shadow stub 加 50ms delay 让 queue 容易堆满
+	t.Setenv(dispatcherDrainTimeoutEnv, "0.1")
+	var logBuf bytes.Buffer
+	origLogWriter := log.Writer()
+	origLogFlags := log.Flags()
+	log.SetOutput(&logBuf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(origLogWriter)
+		log.SetFlags(origLogFlags)
+	})
+
+	// shadow stub 加 100ms delay 让 queue 容易堆满
 	def := &stubSelector{result: newStubResult(11)}
 	pasr := &stubSelector{result: newStubResult(22)}
 	shadow := &stubSelector{result: newStubResult(11), delay: 100 * time.Millisecond}
@@ -153,7 +166,7 @@ func TestDispatcher_ShadowMode_DropWhenQueueFull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
-	defer d.Stop()
+	t.Cleanup(d.Stop)
 
 	preDrop := SnapshotPASRDispatchMetrics().ShadowDrop
 	// 灌满 queue (1024) + 多发避免 race 窗口
@@ -165,6 +178,15 @@ func TestDispatcher_ShadowMode_DropWhenQueueFull(t *testing.T) {
 	postDrop := SnapshotPASRDispatchMetrics().ShadowDrop
 	if postDrop-preDrop == 0 {
 		t.Errorf("queue 应满后 drop, 实际 ShadowDrop 增量 0")
+	}
+
+	stopStart := time.Now()
+	d.Stop()
+	if elapsed := time.Since(stopStart); elapsed > time.Second {
+		t.Fatalf("Stop 超过 drain timeout 后仍阻塞: elapsed=%s", elapsed)
+	}
+	if got := logBuf.String(); !strings.Contains(got, "dropped ") || !strings.Contains(got, " shadow jobs") {
+		t.Fatalf("Stop timeout 应记录 dropped N shadow jobs warning, 实际 log=%q", got)
 	}
 }
 

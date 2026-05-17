@@ -48,6 +48,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker/adapters"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	obsdlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
+	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
@@ -95,7 +96,10 @@ type deps struct {
 	forwarder          *gateway.StreamForwarder
 	credentialVault    provider.CredentialVault
 	credentialStore    *credentialstore.Store
+	credentialKeys     credentialstore.KeyProvider
 	credentialAcqStore *credentialacq.PostgresSessionStore
+	emailSettings      *mailinfra.PostgresSettingsStore
+	authEmailSender    gatewayhttp.AuthEmailSender
 	userAuth           *userauth.Service
 	userSessions       *usersession.Service
 	voucherService     *voucher.Service
@@ -165,6 +169,16 @@ func run(logger *zap.Logger) error {
 	credentialModeRegistry := credentialstore.DefaultHandlerRegistry()
 	credentialStore := credentialstore.NewStore(pgPool, credentialKeys, credentialModeRegistry)
 	credentialAcqStore := credentialacq.NewPostgresSessionStoreWithKeys(pgPool, credentialKeys)
+	emailSettingsStore := mailinfra.NewPostgresSettingsStore(pgPool)
+	if releaseModeProduction() {
+		if err := mailinfra.ValidateProductionReleaseGate(ctx, emailSettingsStore, credentialKeys); err != nil {
+			return fmt.Errorf("production email release gate: %w", err)
+		}
+	}
+	authEmailSender, err := buildAuthEmailSender(cfg, emailSettingsStore, credentialKeys, logger)
+	if err != nil {
+		return fmt.Errorf("build auth email sender: %w", err)
+	}
 	userAuthStore := userauth.NewPostgresStoreWithKeys(pgPool, credentialKeys)
 	userSessionStore := usersession.NewPostgresStore(pgPool)
 	sessionSigningKey, err := loadSessionSigningKey()
@@ -173,6 +187,8 @@ func run(logger *zap.Logger) error {
 	}
 	userAuthService := userauth.NewService(userAuthStore)
 	userAuthService.OAuth = buildUserOAuthService(logger)
+	userAuthService.VerificationTTL = mailinfra.DefaultVerificationTTL
+	userAuthService.Verification = mailinfra.NewVerificationPolicy(emailSettingsStore)
 	userSessionService := usersession.NewService(userSessionStore)
 	userSessionService.SigningKey = sessionSigningKey
 
@@ -304,7 +320,10 @@ func run(logger *zap.Logger) error {
 		// 生产 vault：优先读取 account_credentials v2；旧 JSONB 仅作迁移回退。
 		credentialVault:    provider.NewPostgresCredentialVaultWithStore(pgPool, credentialStore),
 		credentialStore:    credentialStore,
+		credentialKeys:     credentialKeys,
 		credentialAcqStore: credentialAcqStore,
+		emailSettings:      emailSettingsStore,
+		authEmailSender:    authEmailSender,
 		userAuth:           userAuthService,
 		userSessions:       userSessionService,
 		voucherService:     voucherService,
@@ -496,6 +515,21 @@ func registerCredentialRefreshAdapters(registry *credentialworker.AdapterRegistr
 		}
 	}
 	return nil
+}
+
+func buildAuthEmailSender(_ *config.Config, store mailinfra.SettingsStore, keys credentialstore.KeyProvider, logger *zap.Logger) (gatewayhttp.AuthEmailSender, error) {
+	sender, err := mailinfra.BuildEmailSender(context.Background(), store, keys)
+	if err != nil {
+		return nil, err
+	}
+	if logger != nil && strings.EqualFold(strings.TrimSpace(os.Getenv("HUAKAI_DEV_AUTH_RETURN_TOKEN")), "true") {
+		logger.Warn("dev mode, do not enable in production", zap.String("env", "HUAKAI_DEV_AUTH_RETURN_TOKEN"))
+	}
+	return sender, nil
+}
+
+func releaseModeProduction() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("HUAKAI_RELEASE_MODE")), "production")
 }
 
 func loadCredentialKeyProvider() (credentialstore.KeyProvider, error) {
@@ -740,7 +774,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		gatewayhttp.MountAuthRoutes(r, gatewayhttp.AuthHandlerDeps{
 			Auth:        d.userAuth,
 			Sessions:    d.userSessions,
-			EmailSender: gatewayhttp.NoopAuthEmailSender{},
+			EmailSender: d.authEmailSender,
 		})
 	})
 
@@ -754,6 +788,14 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		gatewayhttp.MountVoucherUserRoutes(r, gatewayhttp.VoucherUserDeps{Service: d.voucherService})
 	})
 
+	r.Route("/v1/admin/email", func(r chi.Router) {
+		gatewayhttp.MountAdminEmailSettingsRoutes(r, gatewayhttp.AdminEmailSettingsDeps{
+			Auth:  d.adminAuth,
+			Store: d.emailSettings,
+			Keys:  d.credentialKeys,
+		})
+	})
+
 	// Admin: API Keys (Slice 2 N+4b2). Replaces hand-written SQL INSERT
 	// for operator key issuance. POST=issue / GET=list / POST revoke.
 	r.Route("/admin/v1/api-keys", func(r chi.Router) {
@@ -765,8 +807,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		})
 	})
 
-	// Admin: Provider Account writes for the reverse-proxy main path Q1.
-	r.Route("/v1/admin/pool-accounts", func(r chi.Router) {
+	mountProviderAccountAdminRoutes := func(r chi.Router) {
 		gatewayhttp.MountAdminPoolAccountRoutes(r, gatewayhttp.AdminPoolAccountDeps{
 			Auth:          d.adminAuth,
 			Store:         d.queries,
@@ -789,7 +830,13 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			Auth:       d.adminAuth,
 			Controller: d.channelHealth,
 		})
-	})
+	}
+
+	// Admin: Provider Accounts canonical contract for the frontend/OpenAPI.
+	r.Route("/admin/v1/provider-accounts", mountProviderAccountAdminRoutes)
+	r.Route("/v1/admin/provider-accounts", mountProviderAccountAdminRoutes)
+	// TODO(post-Phase-6): delete legacy pool-accounts alias after emergency rollback clients migrate.
+	r.Route("/v1/admin/pool-accounts", mountProviderAccountAdminRoutes)
 
 	r.Route("/admin/v1/credentials", func(r chi.Router) {
 		gatewayhttp.MountAdminCredentialAcquisitionHelperRoutes(r, gatewayhttp.AdminCredentialAcquisitionDeps{
