@@ -27,15 +27,60 @@ fn anthropic_profile_loads_with_sampled_tls_fields() {
 }
 
 #[test]
-fn anthropic_backend_resolver_returns_openssl() {
+fn anthropic_backend_resolver_prefers_openssl_when_boring_absent() {
     let profile = load_builtin_profile(BuiltinProfile::AnthropicClaudeCode)
         .expect("Anthropic Claude Code profile 应加载");
 
-    let backend =
-        resolve_profile_mimicry_backend(&profile, AvailableMimicryFeatures { openssl: true })
-            .expect("Anthropic profile 不应继续停在 KnownGapBlocked");
+    let backend = resolve_profile_mimicry_backend(
+        &profile,
+        AvailableMimicryFeatures {
+            openssl: true,
+            boring: false,
+        },
+    )
+    .expect("Anthropic profile 应能回退到 OpenSSL backend");
 
     assert_eq!(backend, MimicryBackend::Openssl);
+}
+
+#[test]
+fn anthropic_backend_resolver_prefers_boring_when_available() {
+    let profile = load_builtin_profile(BuiltinProfile::AnthropicClaudeCode)
+        .expect("Anthropic Claude Code profile 应加载");
+
+    let backend = resolve_profile_mimicry_backend(
+        &profile,
+        AvailableMimicryFeatures {
+            openssl: true,
+            boring: true,
+        },
+    )
+    .expect("Anthropic profile 应优先使用 Boring backend");
+
+    assert_eq!(backend, MimicryBackend::Boring);
+}
+
+#[test]
+fn anthropic_backend_resolver_blocked_when_no_backend() {
+    let profile = load_builtin_profile(BuiltinProfile::AnthropicClaudeCode)
+        .expect("Anthropic Claude Code profile 应加载");
+
+    let backend = resolve_profile_mimicry_backend(
+        &profile,
+        AvailableMimicryFeatures {
+            openssl: false,
+            boring: false,
+        },
+    )
+    .expect("Anthropic profile 无可用 backend 时应返回显式阻断 backend");
+
+    match backend {
+        MimicryBackend::KnownGapBlocked { reason } => {
+            assert!(reason.contains("mimicry-boring"));
+            assert!(reason.contains("mimicry-openssl"));
+        }
+        backend => panic!("Anthropic profile 无 backend 时应阻断，实际: {backend:?}"),
+    }
 }
 
 // R-1 deferred test preserved as history: OpenSSL Rust public API auto-injects
