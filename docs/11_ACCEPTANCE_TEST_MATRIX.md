@@ -143,6 +143,14 @@ Source: `docs/specs/session-management.md` and `docs/decompositions/_cross-cutti
 | AT-SESSION-001-007 | Password reset revokes or steps up active session families. | F-SESSION-001 / F-AUTH-007 | User has active sessions and completes password reset. | Complete reset, then try old session token and old refresh token; then log in again. | Old sessions are revoked or step-up required according to policy; old refresh tokens cannot rotate; new login creates clean family. | Compromised old sessions surviving reset. | PASS (commit 7770e8c + backend/internal/usersession/rotation_test.go:251) |
 | AT-SESSION-001-008 | Abnormal session detection handles IP/UA drift. | F-SESSION-001 | User has established device baseline; test can vary IP class and User-Agent fingerprint. | Validate/refresh from normal context, then medium-risk drift, then high-risk drift. | Normal context stays active; medium risk marks family suspicious or requires step-up; high risk revokes family or all sessions per policy; audit contains no raw token. | Session hijack, false positives without recovery, raw IP/UA overexposure. | PASS (commit 7770e8c + backend/internal/usersession/rotation_test.go:49) |
 
+## AT-MIMICRY-001 Anthropic TLS Mimicry — Rust Wave R-1
+
+Source: `docs/plans/2026-05-17-rust-core-closure-roadmap-plan-claude.md` Wave R-1 and `tools/fingerprint-collector/templates/anthropic-claude-code.json`. This test targets the feature-gated Rust OpenSSL adapter only; no real `anthropic.com` network call is required in CI.
+
+| Test ID | Scenario | Capability | Preconditions | Steps | Expected Result | Risk Covered | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| AT-MIMICRY-001 | Anthropic Claude Code TLS profile loads and routes to OpenSSL adapter; local mock TLS handshake runs with sampled JA3 fields applied where OpenSSL public APIs can express them. | Rust mimicry / Anthropic Lane 2b | `mimicry-openssl` feature enabled; HUAKAI collector template promoted to builtin; local TLS mock server available. | Load `BuiltinProfile::AnthropicClaudeCode`; assert sampled JA3/JA4/cipher/extensions fields; resolve backend; run OpenSSL adapter against local TLS server; inspect preflight extras. | Resolver returns `MimicryBackend::Openssl`; local TLS handshake succeeds; sampled JA3 hash stays recorded as `de88744b20558d50f03a5f0ea176ee98`; OpenSSL-native extras are surfaced instead of hidden. | Anthropic remaining KnownGapBlocked, silent fallback, or false exact-JA3 claim. | COVERED-WEAK (Wave R-1 local mock; full exact JA3 match remains gated by OpenSSL native extra fields and Owner R-D capture). |
+
 ## F-FP-001 Device Fingerprint Binding — Phase R-E+1 Spec Wave
 
 Source: `docs/specs/device-fingerprint-binding.md`. These tests target the L3 device fingerprint binding (Phase R-E+1, after R-3 R-E rquest integration); implementation is deferred.

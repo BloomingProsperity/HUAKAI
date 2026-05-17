@@ -16,8 +16,8 @@ use std::{
 use openssl::{
     error::ErrorStack,
     ssl::{
-        Ssl, SslContext, SslContextBuilder, SslMethod, SslStream as BlockingSslStream,
-        SslVerifyMode,
+        ExtensionContext, Ssl, SslAlert, SslContext, SslContextBuilder, SslMethod,
+        SslStream as BlockingSslStream, SslVerifyMode, StatusType,
     },
     x509::X509,
 };
@@ -25,23 +25,34 @@ use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio_openssl::SslStream as TokioSslStream;
 
-use super::{FingerprintProfile, tls_capture};
+use super::{FingerprintProfile, ProfileMatchPolicy, tls_capture};
 
 const OPENSSL_NATIVE_EC_POINT_FORMATS: &[u8] = &[0, 1, 2];
 const OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION: u16 = 22;
+const OPENSSL_STATUS_REQUEST_EXTENSION: u16 = 5;
+const OPENSSL_NATIVE_EXTENSION_IDS: &[u16] =
+    &[0, 10, 11, 13, 16, 21, 22, 23, 35, 43, 45, 51, 65281];
 const OPENSSL_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(10);
 const OPENSSL_PREFLIGHT_SNI: &str = "localhost";
 
 #[derive(Debug)]
 pub struct OpenSslMimicryAdapter {
     ssl_ctx: SslContext,
+    client_hello_options: ClientHelloProfileOptions,
     preflight_passed: bool,
     preflight_extras: PreflightExtras,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ClientHelloProfileOptions {
+    status_request_ocsp: bool,
+    custom_extension_ids: Vec<u16>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PreflightExtras {
     pub wire_extension_extras: Vec<u16>,
+    pub wire_ec_point_format_extras: Vec<u8>,
 }
 
 #[derive(Debug, Error)]
@@ -85,6 +96,7 @@ impl OpenSslMimicryAdapter {
 
         Ok(Self {
             ssl_ctx: builder.build(),
+            client_hello_options: ClientHelloProfileOptions::default(),
             preflight_passed: false,
             preflight_extras: PreflightExtras::default(),
         })
@@ -95,15 +107,39 @@ impl OpenSslMimicryAdapter {
         builder
             .set_default_verify_paths()
             .map_err(OpenSslAdapterError::BuildContextFailed)?;
+        Self::from_profile_builder(builder, profile)
+    }
+
+    pub fn new_with_profile_and_extra_trust_anchor(
+        profile: &FingerprintProfile,
+        ca_cert: X509,
+    ) -> Result<Self, OpenSslAdapterError> {
+        let mut builder = verified_context_builder()?;
+        builder
+            .set_default_verify_paths()
+            .map_err(OpenSslAdapterError::BuildContextFailed)?;
+        builder
+            .cert_store_mut()
+            .add_cert(ca_cert)
+            .map_err(OpenSslAdapterError::BuildContextFailed)?;
+
+        Self::from_profile_builder(builder, profile)
+    }
+
+    fn from_profile_builder(
+        mut builder: SslContextBuilder,
+        profile: &FingerprintProfile,
+    ) -> Result<Self, OpenSslAdapterError> {
         apply_cipher_suites(&mut builder, profile)?;
         apply_alpn(&mut builder, profile)?;
         apply_supported_groups(&mut builder, profile)?;
         apply_signature_algorithms(&mut builder, profile)?;
         apply_ec_point_formats(&mut builder, profile)?;
-        apply_extensions(&profile.tls.extensions)?;
+        let client_hello_options = apply_extensions(&mut builder, profile)?;
 
         let mut adapter = Self {
             ssl_ctx: builder.build(),
+            client_hello_options,
             preflight_passed: false,
             preflight_extras: PreflightExtras::default(),
         };
@@ -124,6 +160,7 @@ impl OpenSslMimicryAdapter {
 
         Ok(Self {
             ssl_ctx: builder.build(),
+            client_hello_options: ClientHelloProfileOptions::default(),
             preflight_passed: false,
             preflight_extras: PreflightExtras::default(),
         })
@@ -150,6 +187,7 @@ impl OpenSslMimicryAdapter {
         ssl.set_connect_state();
         ssl.set_hostname(sni).map_err(tls_error)?;
         ssl.param_mut().set_host(sni).map_err(tls_error)?;
+        apply_connection_options(&mut ssl, &self.client_hello_options)?;
 
         let mut tls_stream = TokioSslStream::new(ssl, tcp_stream).map_err(tls_error)?;
         Pin::new(&mut tls_stream)
@@ -165,8 +203,10 @@ impl OpenSslMimicryAdapter {
         profile: &FingerprintProfile,
     ) -> Result<PreflightExtras, OpenSslAdapterError> {
         let captured = self.capture_runtime_client_hello()?;
-        verify_ec_point_formats_preflight(&captured)?;
-        verify_extensions_preflight(&profile.tls.extensions, &captured)
+        let wire_ec_point_format_extras = verify_ec_point_formats_preflight(profile, &captured)?;
+        let mut extras = verify_extensions_preflight(profile, &captured)?;
+        extras.wire_ec_point_format_extras = wire_ec_point_format_extras;
+        Ok(extras)
     }
 
     fn capture_runtime_client_hello(
@@ -189,7 +229,8 @@ impl OpenSslMimicryAdapter {
         })?;
 
         let capture_thread = thread::spawn(move || capture_first_client_hello(listener));
-        let client_result = drive_preflight_client(&self.ssl_ctx, capture_addr);
+        let client_result =
+            drive_preflight_client(&self.ssl_ctx, &self.client_hello_options, capture_addr);
 
         let captured = capture_thread
             .join()
@@ -342,6 +383,15 @@ fn apply_ec_point_formats(
         return Ok(());
     }
 
+    if profile.match_policy() == ProfileMatchPolicy::SampleSetRandomized
+        && is_ordered_u8_subset(
+            &profile.tls.ec_point_formats,
+            OPENSSL_NATIVE_EC_POINT_FORMATS,
+        )
+    {
+        return Ok(());
+    }
+
     // rust-openssl / OpenSSL 当前不暴露 setter，且 custom extension 不能覆盖内建 type 11。
     Err(OpenSslAdapterError::ProfileApplyFailed(format!(
         "unsupported ec_point_formats {:?}; OpenSSL native client profile only exposes {:?}",
@@ -349,59 +399,108 @@ fn apply_ec_point_formats(
     )))
 }
 
-fn apply_extensions(profile_extensions: &[u16]) -> Result<(), OpenSslAdapterError> {
-    if profile_extensions.contains(&OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION) {
-        return Ok(());
+fn apply_extensions(
+    builder: &mut SslContextBuilder,
+    profile: &FingerprintProfile,
+) -> Result<ClientHelloProfileOptions, OpenSslAdapterError> {
+    let allows_native_extras = profile.match_policy() == ProfileMatchPolicy::SampleSetRandomized;
+    if !profile
+        .tls
+        .extensions
+        .contains(&OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION)
+        && !allows_native_extras
+    {
+        return Err(OpenSslAdapterError::UnsupportedExtension {
+            id: OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION,
+            reason: "OpenSSL cannot disable native ETM extension via public API",
+        });
     }
 
-    Err(OpenSslAdapterError::UnsupportedExtension {
-        id: OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION,
-        reason: "OpenSSL cannot disable native ETM extension via public API",
-    })
+    let mut options = ClientHelloProfileOptions::default();
+    for extension_id in &profile.tls.extensions {
+        if *extension_id == OPENSSL_STATUS_REQUEST_EXTENSION {
+            options.status_request_ocsp = true;
+            continue;
+        }
+        if OPENSSL_NATIVE_EXTENSION_IDS.contains(extension_id) {
+            continue;
+        }
+
+        add_empty_client_hello_extension(builder, *extension_id)?;
+        options.custom_extension_ids.push(*extension_id);
+    }
+
+    Ok(options)
 }
 
 fn verify_ec_point_formats_preflight(
+    profile: &FingerprintProfile,
     captured: &tls_capture::CapturedClientHello,
-) -> Result<(), OpenSslAdapterError> {
-    if captured.ec_point_formats == OPENSSL_NATIVE_EC_POINT_FORMATS {
-        return Ok(());
+) -> Result<Vec<u8>, OpenSslAdapterError> {
+    let allows_native_extras = profile.match_policy() == ProfileMatchPolicy::SampleSetRandomized;
+    let exact_match = captured.ec_point_formats == profile.tls.ec_point_formats;
+    let subset_match = allows_native_extras
+        && is_ordered_u8_subset(&profile.tls.ec_point_formats, &captured.ec_point_formats);
+    if exact_match || subset_match {
+        return Ok(captured
+            .ec_point_formats
+            .iter()
+            .copied()
+            .filter(|value| !profile.tls.ec_point_formats.contains(value))
+            .collect());
     }
 
     Err(OpenSslAdapterError::PreflightFailed {
         field: "ec_point_formats",
-        expected: OPENSSL_NATIVE_EC_POINT_FORMATS
+        expected: profile
+            .tls
+            .ec_point_formats
             .iter()
-            .map(|value| u16::from(*value))
+            .copied()
+            .map(u16::from)
             .collect(),
         actual: captured
             .ec_point_formats
             .iter()
             .map(|value| u16::from(*value))
             .collect(),
-        missing: vec![1, 2],
+        missing: profile
+            .tls
+            .ec_point_formats
+            .iter()
+            .copied()
+            .filter(|value| !captured.ec_point_formats.contains(value))
+            .map(u16::from)
+            .collect(),
         unexpected: captured
             .ec_point_formats
             .iter()
-            .map(|value| u16::from(*value))
-            .filter(|value| !OPENSSL_NATIVE_EC_POINT_FORMATS.contains(&(*value as u8)))
+            .copied()
+            .filter(|value| !profile.tls.ec_point_formats.contains(value))
+            .map(u16::from)
             .collect(),
     })
 }
 
 fn verify_extensions_preflight(
-    profile_extensions: &[u16],
+    profile: &FingerprintProfile,
     captured: &tls_capture::CapturedClientHello,
 ) -> Result<PreflightExtras, OpenSslAdapterError> {
-    let check = check_ordered_extension_subset(profile_extensions, &captured.extensions);
-    if check.ordered_subset {
+    let check = check_extension_subset(
+        &profile.tls.extensions,
+        &captured.extensions,
+        profile.match_policy(),
+    );
+    if check.matches {
         return Ok(PreflightExtras {
             wire_extension_extras: check.unexpected,
+            wire_ec_point_format_extras: Vec::new(),
         });
     }
 
     Err(OpenSslAdapterError::PreflightFailed {
         field: "extensions",
-        expected: profile_extensions.to_vec(),
+        expected: profile.tls.extensions.to_vec(),
         actual: captured.extensions.clone(),
         missing: check.missing,
         unexpected: check.unexpected,
@@ -410,12 +509,16 @@ fn verify_extensions_preflight(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ExtensionSubsetCheck {
-    ordered_subset: bool,
+    matches: bool,
     missing: Vec<u16>,
     unexpected: Vec<u16>,
 }
 
-fn check_ordered_extension_subset(expected: &[u16], actual: &[u16]) -> ExtensionSubsetCheck {
+fn check_extension_subset(
+    expected: &[u16],
+    actual: &[u16],
+    match_policy: ProfileMatchPolicy,
+) -> ExtensionSubsetCheck {
     let missing = expected
         .iter()
         .copied()
@@ -426,16 +529,38 @@ fn check_ordered_extension_subset(expected: &[u16], actual: &[u16]) -> Extension
         .copied()
         .filter(|extension| !expected.contains(extension))
         .collect::<Vec<_>>();
-    let mut actual_iter = actual.iter();
-    let ordered_subset = expected.iter().all(|expected_extension| {
-        actual_iter.any(|actual_extension| actual_extension == expected_extension)
-    });
+    let matches = missing.is_empty()
+        && match match_policy {
+            ProfileMatchPolicy::SampleSetRandomized => true,
+            ProfileMatchPolicy::ExactStable | ProfileMatchPolicy::KnownGapBlocked => {
+                is_ordered_u16_subset(expected, actual)
+            }
+        };
 
     ExtensionSubsetCheck {
-        ordered_subset,
+        matches,
         missing,
         unexpected,
     }
+}
+
+fn add_empty_client_hello_extension(
+    builder: &mut SslContextBuilder,
+    extension_id: u16,
+) -> Result<(), OpenSslAdapterError> {
+    builder
+        .add_custom_ext(
+            extension_id,
+            ExtensionContext::CLIENT_HELLO,
+            |_, _, _| -> Result<Option<Vec<u8>>, SslAlert> { Ok(Some(Vec::new())) },
+            |_, _, _, _| -> Result<(), SslAlert> { Ok(()) },
+        )
+        .map_err(|error| OpenSslAdapterError::UnsupportedExtension {
+            id: extension_id,
+            reason: Box::leak(
+                format!("OpenSSL rejected custom ClientHello extension: {error}").into_boxed_str(),
+            ),
+        })
 }
 
 fn capture_first_client_hello(
@@ -473,6 +598,7 @@ fn capture_first_client_hello(
 
 fn drive_preflight_client(
     ssl_ctx: &SslContext,
+    options: &ClientHelloProfileOptions,
     target: SocketAddr,
 ) -> Result<(), OpenSslAdapterError> {
     let tcp_stream = StdTcpStream::connect(target).map_err(OpenSslAdapterError::ConnectFailed)?;
@@ -489,9 +615,34 @@ fn drive_preflight_client(
     ssl.param_mut()
         .set_host(OPENSSL_PREFLIGHT_SNI)
         .map_err(tls_error)?;
+    apply_connection_options(&mut ssl, options)?;
 
     let mut tls_stream = BlockingSslStream::new(ssl, tcp_stream).map_err(tls_error)?;
     tls_stream.connect().map_err(tls_error)
+}
+
+fn apply_connection_options(
+    ssl: &mut Ssl,
+    options: &ClientHelloProfileOptions,
+) -> Result<(), OpenSslAdapterError> {
+    if options.status_request_ocsp {
+        ssl.set_status_type(StatusType::OCSP).map_err(tls_error)?;
+    }
+    Ok(())
+}
+
+fn is_ordered_u16_subset(expected_subset: &[u16], actual: &[u16]) -> bool {
+    let mut actual_iter = actual.iter();
+    expected_subset
+        .iter()
+        .all(|expected| actual_iter.any(|actual_value| actual_value == expected))
+}
+
+fn is_ordered_u8_subset(expected_subset: &[u8], actual: &[u8]) -> bool {
+    let mut actual_iter = actual.iter();
+    expected_subset
+        .iter()
+        .all(|expected| actual_iter.any(|actual_value| actual_value == expected))
 }
 
 fn cipher_id_to_name(id: u16) -> Option<&'static str> {
@@ -574,6 +725,7 @@ fn signature_algorithm_id_to_name(id: u16) -> Result<&'static str, OpenSslAdapte
         0x0401 => "rsa_pkcs1_sha256",
         0x0501 => "rsa_pkcs1_sha384",
         0x0601 => "rsa_pkcs1_sha512",
+        0x0201 => "rsa_pkcs1_sha1",
         0x0303 => "ecdsa_sha224",
         0x0301 => "rsa_pkcs1_sha224",
         0x0302 => "dsa_sha224",

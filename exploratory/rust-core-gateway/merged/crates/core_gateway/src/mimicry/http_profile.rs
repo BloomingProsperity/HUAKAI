@@ -31,6 +31,12 @@ pub struct HttpLayerProfile {
     #[serde(default)]
     pub connection: Option<String>,
     #[serde(default)]
+    pub sec_ch_ua: Option<String>,
+    #[serde(default)]
+    pub sec_ch_ua_mobile: Option<String>,
+    #[serde(default)]
+    pub sec_ch_ua_platform: Option<String>,
+    #[serde(default)]
     pub body_shape: Option<String>,
     #[serde(default)]
     pub auxiliary_endpoints: Vec<String>,
