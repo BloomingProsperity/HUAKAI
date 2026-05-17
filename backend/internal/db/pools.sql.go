@@ -128,10 +128,16 @@ const insertPool = `-- name: InsertPool :one
 INSERT INTO pool_groups (
     tenant_id,
     name,
+    top_k_default,
+    capability_default,
+    allow_last_resort,
     enabled
 ) VALUES (
     $1::bigint,
     $2::text,
+    $3::integer,
+    $4::text,
+    $5::boolean,
     true
 )
 RETURNING
@@ -155,13 +161,22 @@ RETURNING
 `
 
 type InsertPoolParams struct {
-	TenantID int64  `db:"tenant_id" json:"tenant_id"`
-	Name     string `db:"name" json:"name"`
+	TenantID          int64  `db:"tenant_id" json:"tenant_id"`
+	Name              string `db:"name" json:"name"`
+	TopKDefault       int32  `db:"top_k_default" json:"top_k_default"`
+	CapabilityDefault string `db:"capability_default" json:"capability_default"`
+	AllowLastResort   bool   `db:"allow_last_resort" json:"allow_last_resort"`
 }
 
 // Admin Pool Group CRUD (F-POOL-001).
 func (q *Queries) InsertPool(ctx context.Context, arg InsertPoolParams) (PoolGroup, error) {
-	row := q.db.QueryRow(ctx, insertPool, arg.TenantID, arg.Name)
+	row := q.db.QueryRow(ctx, insertPool,
+		arg.TenantID,
+		arg.Name,
+		arg.TopKDefault,
+		arg.CapabilityDefault,
+		arg.AllowLastResort,
+	)
 	var i PoolGroup
 	err := row.Scan(
 		&i.ID,
@@ -258,10 +273,13 @@ const updatePool = `-- name: UpdatePool :one
 UPDATE pool_groups
 SET
     name = COALESCE($1::text, name),
-    enabled = COALESCE($2::boolean, enabled),
+    top_k_default = COALESCE($2::integer, top_k_default),
+    capability_default = COALESCE($3::text, capability_default),
+    allow_last_resort = COALESCE($4::boolean, allow_last_resort),
+    enabled = COALESCE($5::boolean, enabled),
     updated_at = NOW()
-WHERE tenant_id = $3::bigint
-  AND id = $4::bigint
+WHERE tenant_id = $6::bigint
+  AND id = $7::bigint
   AND deleted_at IS NULL
 RETURNING
     id,
@@ -284,15 +302,21 @@ RETURNING
 `
 
 type UpdatePoolParams struct {
-	Name     *string `db:"name" json:"name"`
-	Enabled  *bool   `db:"enabled" json:"enabled"`
-	TenantID int64   `db:"tenant_id" json:"tenant_id"`
-	ID       int64   `db:"id" json:"id"`
+	Name              *string `db:"name" json:"name"`
+	TopKDefault       *int32  `db:"top_k_default" json:"top_k_default"`
+	CapabilityDefault *string `db:"capability_default" json:"capability_default"`
+	AllowLastResort   *bool   `db:"allow_last_resort" json:"allow_last_resort"`
+	Enabled           *bool   `db:"enabled" json:"enabled"`
+	TenantID          int64   `db:"tenant_id" json:"tenant_id"`
+	ID                int64   `db:"id" json:"id"`
 }
 
 func (q *Queries) UpdatePool(ctx context.Context, arg UpdatePoolParams) (PoolGroup, error) {
 	row := q.db.QueryRow(ctx, updatePool,
 		arg.Name,
+		arg.TopKDefault,
+		arg.CapabilityDefault,
+		arg.AllowLastResort,
 		arg.Enabled,
 		arg.TenantID,
 		arg.ID,
