@@ -2,55 +2,25 @@ package auditledger
 
 import (
 	"crypto/sha256"
-	"encoding/json"
-
-	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
 
 // ZeroRoot 是 Merkle 链起点（首条 entry 的 PrevMerkleRoot）。
 var ZeroRoot [32]byte
 
-// EntryHash 计算单条 LedgerEntry 的 hash，作为签名 input 和 Merkle 链 hash 节点。
+// EntryHash computes the canonical entry hash used as the signature payload
+// and Merkle-chain leaf hash.
 //
-// hash input 拼接顺序（注意：bytewise，禁止任何 user prompt/completion 内容
-// 进入此 hash）：
-//
-//	sha256( ledger_id || ts || request_id || tenant_id_be || canonical_json(hop_chain)
-//	       || canonical_json(model_chain) || pubkey_fp )
-//
-// canonical_json 用 encoding/json 默认 marshal；HopChain / ModelChain 字段
-// 均不含 prompt/completion，已通过 T0 redact allowlist 守门。
+// The payload is CanonicalPayload(entry), which follows
+// docs/specs/trust-chain-user-verifiable-ledger.md §2 and excludes Signature.
 func EntryHash(e *LedgerEntry) ([32]byte, error) {
 	if e == nil {
 		return [32]byte{}, nil
 	}
-	h := sha256.New()
-	h.Write([]byte(e.LedgerID))
-	h.Write([]byte{0x1f}) // unit separator
-	h.Write([]byte(e.Timestamp))
-	h.Write([]byte{0x1f})
-	h.Write([]byte(e.RequestID))
-	h.Write([]byte{0x1f})
-	var tidBytes [8]byte
-	encInt64BE(tidBytes[:], e.TenantID)
-	h.Write(tidBytes[:])
-	h.Write([]byte{0x1f})
-	hopBytes, err := json.Marshal(e.HopChain)
+	payload, err := canonicalPayload(*e)
 	if err != nil {
 		return [32]byte{}, err
 	}
-	h.Write(hopBytes)
-	h.Write([]byte{0x1f})
-	mcBytes, err := json.Marshal(e.ModelChain)
-	if err != nil {
-		return [32]byte{}, err
-	}
-	h.Write(mcBytes)
-	h.Write([]byte{0x1f})
-	h.Write([]byte(e.PubkeyFingerprint))
-	var out [32]byte
-	copy(out[:], h.Sum(nil))
-	return out, nil
+	return sha256.Sum256(payload), nil
 }
 
 // NextMerkleRoot 计算下一条 entry 的 root = sha256(prev || entryHash)。
@@ -131,19 +101,3 @@ func itoa(n int) string {
 	}
 	return string(buf[i:])
 }
-
-// encInt64BE 把 int64 写入 8 bytes big-endian；不引入 binary 包以保持本文件 lean。
-func encInt64BE(dst []byte, v int64) {
-	u := uint64(v)
-	dst[0] = byte(u >> 56)
-	dst[1] = byte(u >> 48)
-	dst[2] = byte(u >> 40)
-	dst[3] = byte(u >> 32)
-	dst[4] = byte(u >> 24)
-	dst[5] = byte(u >> 16)
-	dst[6] = byte(u >> 8)
-	dst[7] = byte(u)
-}
-
-// 为防 unused import 警告：proto 包通过 LedgerEntry.HopChain/ModelChain 间接引用。
-var _ = (*proto.HopAttestation)(nil)

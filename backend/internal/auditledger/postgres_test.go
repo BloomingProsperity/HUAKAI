@@ -96,8 +96,8 @@ func TestPostgresLedger_AppendAndGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.LedgerID != "lid_pg_1" {
-		t.Errorf("LedgerID mismatch: %q", got.LedgerID)
+	if got.LedgerID == "" || got.LedgerID != out.LedgerID {
+		t.Errorf("LedgerID mismatch: got %q want %q", got.LedgerID, out.LedgerID)
 	}
 	if got.PubkeyFingerprint != out.PubkeyFingerprint {
 		t.Error("fp roundtrip mismatch")
@@ -127,9 +127,8 @@ func TestPostgresLedger_ChainContinuity(t *testing.T) {
 	ctx := context.Background()
 
 	var prevRoot [32]byte
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 100; i++ {
 		entry := LedgerEntry{
-			LedgerID:  fmt.Sprintf("lid_pg_%d", i),
 			RequestID: fmt.Sprintf("req_pg_%d", i),
 		}
 		out, err := l.Append(ctx, entry)
@@ -150,14 +149,15 @@ func TestPostgresLedger_ChainContinuity(t *testing.T) {
 		t.Errorf("latest root != last appended root")
 	}
 
-	if size := l.Size(ctx); size != 5 {
-		t.Errorf("Size: got %d want 5", size)
+	if size := l.Size(ctx); size != 100 {
+		t.Errorf("Size: got %d want 100", size)
 	}
 }
 
 func TestPostgresLedger_RejectMissingFields(t *testing.T) {
 	pool := openTestPool(t)
 	defer pool.Close()
+	truncateLedger(t, pool)
 
 	signer, _ := sign.GenerateKey()
 	l, _ := NewPostgresLedger(pool, signer)
@@ -166,8 +166,8 @@ func TestPostgresLedger_RejectMissingFields(t *testing.T) {
 	if _, err := l.Append(ctx, LedgerEntry{LedgerID: "x"}); err == nil {
 		t.Error("missing RequestID must reject")
 	}
-	if _, err := l.Append(ctx, LedgerEntry{RequestID: "x"}); err == nil {
-		t.Error("missing LedgerID must reject")
+	if out, err := l.Append(ctx, LedgerEntry{RequestID: "x"}); err != nil || out.LedgerID == "" {
+		t.Errorf("missing LedgerID must auto-generate, out=%+v err=%v", out, err)
 	}
 }
 
@@ -176,6 +176,33 @@ func TestPostgresLedger_NilSignerRejected(t *testing.T) {
 	defer pool.Close()
 	if _, err := NewPostgresLedger(pool, nil); !errors.Is(err, ErrSignerNil) {
 		t.Errorf("expected ErrSignerNil, got %v", err)
+	}
+}
+
+func TestPostgresLedger_AppendOnlyTriggerRejectsUpdateDelete(t *testing.T) {
+	pool := openTestPool(t)
+	defer pool.Close()
+	truncateLedger(t, pool)
+
+	signer, _ := sign.GenerateKey()
+	l, _ := NewPostgresLedger(pool, signer)
+	ctx := context.Background()
+
+	out, err := l.Append(ctx, LedgerEntry{RequestID: "req_append_only"})
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		"UPDATE audit_ledger_entries SET signature = signature WHERE request_id = $1",
+		out.RequestID,
+	); err == nil {
+		t.Fatal("UPDATE must be rejected by append-only trigger")
+	}
+	if _, err := pool.Exec(ctx,
+		"DELETE FROM audit_ledger_entries WHERE request_id = $1",
+		out.RequestID,
+	); err == nil {
+		t.Fatal("DELETE must be rejected by append-only trigger")
 	}
 }
 
