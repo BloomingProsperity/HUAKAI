@@ -13,10 +13,44 @@ use tokio::io::{AsyncRead, AsyncWrite};
 // (R-2-B-2-extend 注入 ECH/OCSP/SCT 后 PASS)。
 #[tokio::test]
 async fn anthropic_boring_client_hello_byte_level_matches_profile() {
-    let profile = load_builtin_profile(BuiltinProfile::AnthropicClaudeCode)
-        .expect("Anthropic Claude Code profile 应加载");
+    test_vendor_byte_level(BuiltinProfile::AnthropicClaudeCode, "api.anthropic.com").await;
+}
 
-    let connector = build_boring_connector(&profile, Some("api.anthropic.com".to_owned()))
+// R-3-A 真实诊断: boring 5.1 公开 API 默认 extension 排布 (Chrome-like)
+// 跟 CodexCli/KiroCli/GeminiAdvanced 真采样 profile 的 extension 顺序不一致.
+// 例: CodexCli profile 期望 [65281,0,11,10,35,22,23,13,43,45,51], boring 实出
+// [0,23,65281,10,11,35,13,51,45,43]. 差异: 起始 ext (renegotiation_info vs SNI)
+// + 缺 22 (extended_master_secret). 不是 add_custom_ext / set_permute(false) 可
+// 解决, 需更底层 ClientHello bytes 重排 (boring fork OR HUAKAI-owned TLS patch).
+// Owner 决策点: 接受 OpenSSL fallback / boring fork / vendor-by-vendor patch.
+// pending Owner decision: 3 vendor wire test 暂 #[ignore], R-3-A backend_resolver
+// 部分已 PASS, 即使 wire byte-level 不全 byte 匹配也能跑.
+#[ignore = "R-3-A wire mismatch: boring 5.1 default ext order != vendor profile; pending Owner decision (fallback / boring fork / patch)"]
+#[tokio::test]
+async fn codex_cli_boring_client_hello_byte_level_matches_profile() {
+    test_vendor_byte_level(BuiltinProfile::CodexCli, "chatgpt.com").await;
+}
+
+#[ignore = "R-3-A wire mismatch: boring 5.1 default ext order != vendor profile; pending Owner decision"]
+#[tokio::test]
+async fn kiro_boring_client_hello_byte_level_matches_profile() {
+    test_vendor_byte_level(BuiltinProfile::KiroCli, "q.us-east-1.amazonaws.com").await;
+}
+
+#[ignore = "R-3-A wire mismatch: boring 5.1 default ext order != vendor profile; pending Owner decision"]
+#[tokio::test]
+async fn gemini_advanced_boring_client_hello_byte_level_matches_profile() {
+    test_vendor_byte_level(
+        BuiltinProfile::GeminiAdvanced,
+        "cloudcode-pa.googleapis.com",
+    )
+    .await;
+}
+
+async fn test_vendor_byte_level(builtin: BuiltinProfile, sni_hostname: &str) {
+    let profile = load_builtin_profile(builtin).expect("builtin profile 应加载");
+
+    let connector = build_boring_connector(&profile, Some(sni_hostname.to_owned()))
         .expect("BoringSSL connector 构造成功");
 
     let raw = match try_spawn_capture_listener().await {
@@ -24,13 +58,13 @@ async fn anthropic_boring_client_hello_byte_level_matches_profile() {
             let tcp = tokio::net::TcpStream::connect(addr)
                 .await
                 .expect("测试 TCP 应能连到本地 capture listener");
-            drive_client_hello(&profile, &connector, tcp).await;
+            drive_client_hello(&profile, &connector, sni_hostname, tcp).await;
             capture_handle.await.expect("capture task 不应 panic")
         }
         Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
             eprintln!("sandbox denied loopback bind; falling back to in-memory TLS record capture");
             let (stream, capture_handle) = spawn_capture_duplex();
-            drive_client_hello(&profile, &connector, stream).await;
+            drive_client_hello(&profile, &connector, sni_hostname, stream).await;
             capture_handle.await.expect("capture task 不应 panic")
         }
         Err(error) => panic!("本地 capture listener 应能绑定: {error}"),
@@ -47,18 +81,31 @@ async fn anthropic_boring_client_hello_byte_level_matches_profile() {
         .filter(|value| !is_grease(*value))
         .collect::<Vec<_>>();
 
-    assert_profile_extension_order(&observed_ext, &expected_ext);
-
     let observed_ja3 = ja3_from_fields(&fields, &profile);
-    assert_eq!(
-        observed_ja3, "de88744b20558d50f03a5f0ea176ee98",
-        "wire JA3 必须跟 Anthropic profile sample 一致"
+    assert_profile_extension_order(
+        &observed_ext,
+        &expected_ext,
+        &observed_ja3,
+        &profile.tls.ja3_hash,
+        builtin.template_name(),
     );
 
-    assert_eq!(fields.sni_hostname.as_deref(), Some("api.anthropic.com"));
+    assert_eq!(
+        observed_ja3,
+        profile.tls.ja3_hash,
+        "{} wire JA3 必须跟 profile sample 一致",
+        builtin.template_name()
+    );
+
+    assert_eq!(fields.sni_hostname.as_deref(), Some(sni_hostname));
 }
 
-async fn drive_client_hello<S>(profile: &FingerprintProfile, connector: &SslConnector, stream: S)
+async fn drive_client_hello<S>(
+    profile: &FingerprintProfile,
+    connector: &SslConnector,
+    sni_hostname: &str,
+    stream: S,
+)
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -66,7 +113,7 @@ where
         .expect("BoringSSL per-request config 应能创建");
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(3),
-        tokio_boring::connect(config, "api.anthropic.com", stream),
+        tokio_boring::connect(config, sni_hostname, stream),
     )
     .await;
 }
@@ -100,7 +147,13 @@ fn ja3_string_from_fields(fields: &ClientHelloFields) -> String {
     .join(",")
 }
 
-fn assert_profile_extension_order(observed: &[u16], expected: &[u16]) {
+fn assert_profile_extension_order(
+    observed: &[u16],
+    expected: &[u16],
+    observed_ja3: &str,
+    expected_ja3: &str,
+    profile_name: &str,
+) {
     if observed == expected {
         return;
     }
@@ -116,7 +169,7 @@ fn assert_profile_extension_order(observed: &[u16], expected: &[u16]) {
         .collect::<Vec<_>>();
     assert_eq!(
         observed, expected_without_padding,
-        "Anthropic profile 非 padding extension 顺序必须 byte-level 一致"
+        "{profile_name} 非 padding extension 顺序必须 byte-level 一致; observed_ja3={observed_ja3}; expected_ja3={expected_ja3}"
     );
 }
 

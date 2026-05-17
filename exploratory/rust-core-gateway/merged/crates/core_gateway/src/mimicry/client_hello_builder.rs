@@ -55,7 +55,7 @@ pub fn build_boring_connector(
             .map_err(BoringMimicryError::from_boring)?;
     }
 
-    // R-2-B-2-extend:
+    // R-2-B-2-extend + R-3-A / R-MIMICRY-003:
     // - OCSP status_request(5): docs.rs/boring 5.1.0
     //   SslConnectorBuilder -> SslContextBuilder::enable_ocsp_stapling()
     //   https://docs.rs/boring/latest/boring/ssl/struct.SslConnectorBuilder.html
@@ -65,12 +65,13 @@ pub fn build_boring_connector(
     // - ECH grease(65037): boring 5.1.0 没有 context-builder setter;
     //   公开 rustdoc 把 set_enable_ech_grease 暴露在 ConnectConfiguration
     //   deref 到的 SslRef 上，所以在 configure_boring_connection 阶段设置。
-    for ext_type in &profile.tls.extensions {
-        match *ext_type {
-            5 => apply_status_request(&mut builder)?,
-            18 => apply_signed_certificate_timestamp(&mut builder)?,
-            _ => {}
-        }
+    // 不按 profile.tls.extensions 出现情况注入会让 wire 多出扩展，导致
+    // byte-level JA3/profile 断言失真。
+    if profile.tls.extensions.contains(&5) {
+        apply_status_request(&mut builder)?;
+    }
+    if profile.tls.extensions.contains(&18) {
+        apply_signed_certificate_timestamp(&mut builder)?;
     }
 
     Ok(builder.build())
@@ -86,10 +87,9 @@ pub fn configure_boring_connection(
         .configure()
         .map_err(BoringMimicryError::from_boring)?;
 
-    for ext_type in &profile.tls.extensions {
-        if *ext_type == 65037 {
-            apply_ech_grease(&config)?;
-        }
+    // R-MIMICRY-003: ECH grease 只在 profile 真实记录 65037 时启用。
+    if profile.tls.extensions.contains(&65037) {
+        apply_ech_grease(&config)?;
     }
 
     Ok(config)
@@ -154,7 +154,7 @@ fn apply_signed_certificate_timestamp(
 pub fn openssl_cipher_names_from_codes(codes: &[u16]) -> Result<String, BoringMimicryError> {
     let mut names = Vec::new();
     for code in codes.iter().copied() {
-        if is_grease(code) || is_tls13_cipher(code) {
+        if is_grease(code) || is_tls13_cipher(code) || is_signaling_cipher_suite_value(code) {
             continue;
         }
         names.push(cipher_name(code).ok_or(BoringMimicryError::UnknownCipher(code))?);
@@ -166,7 +166,7 @@ pub fn openssl_cipher_names_from_codes(codes: &[u16]) -> Result<String, BoringMi
 pub fn openssl_curve_names_from_codes(codes: &[u16]) -> Result<String, BoringMimicryError> {
     let mut names = Vec::new();
     for code in codes.iter().copied() {
-        if is_grease(code) {
+        if is_grease(code) || is_boring_curve_list_gap(code) {
             continue;
         }
         names.push(group_name(code).ok_or(BoringMimicryError::UnknownCurve(code))?);
@@ -178,7 +178,7 @@ pub fn openssl_curve_names_from_codes(codes: &[u16]) -> Result<String, BoringMim
 pub fn openssl_sigalg_names_from_codes(codes: &[u16]) -> Result<String, BoringMimicryError> {
     let mut names = Vec::new();
     for code in codes.iter().copied() {
-        if is_grease(code) {
+        if is_grease(code) || is_boring_sigalg_list_gap(code) {
             continue;
         }
         names.push(sigalg_name(code).ok_or(BoringMimicryError::UnknownSignatureAlgorithm(code))?);
@@ -247,18 +247,30 @@ fn is_tls13_cipher(code: u16) -> bool {
     matches!(code, 0x1301 | 0x1302 | 0x1303 | 0x1304 | 0x1305)
 }
 
+fn is_signaling_cipher_suite_value(code: u16) -> bool {
+    code == 0x00ff
+}
+
 fn cipher_name(code: u16) -> Option<&'static str> {
     match code {
         0x002f => Some("AES128-SHA"),
+        0x0032 => Some("DHE-DSS-AES128-SHA"),
+        0x0033 => Some("DHE-RSA-AES128-SHA"),
         0x0035 => Some("AES256-SHA"),
+        0x0038 => Some("DHE-DSS-AES256-SHA"),
+        0x0039 => Some("DHE-RSA-AES256-SHA"),
         0x003c => Some("AES128-SHA256"),
         0x003d => Some("AES256-SHA256"),
+        0x0040 => Some("DHE-DSS-AES128-SHA256"),
         0x0067 => Some("DHE-RSA-AES128-SHA256"),
+        0x006a => Some("DHE-DSS-AES256-SHA256"),
         0x006b => Some("DHE-RSA-AES256-SHA256"),
         0x009c => Some("AES128-GCM-SHA256"),
         0x009d => Some("AES256-GCM-SHA384"),
         0x009e => Some("DHE-RSA-AES128-GCM-SHA256"),
         0x009f => Some("DHE-RSA-AES256-GCM-SHA384"),
+        0x00a2 => Some("DHE-DSS-AES128-GCM-SHA256"),
+        0x00a3 => Some("DHE-DSS-AES256-GCM-SHA384"),
         0xc009 => Some("ECDHE-ECDSA-AES128-SHA"),
         0xc00a => Some("ECDHE-ECDSA-AES256-SHA"),
         0xc013 => Some("ECDHE-RSA-AES128-SHA"),
@@ -271,6 +283,22 @@ fn cipher_name(code: u16) -> Option<&'static str> {
         0xc02c => Some("ECDHE-ECDSA-AES256-GCM-SHA384"),
         0xc02f => Some("ECDHE-RSA-AES128-GCM-SHA256"),
         0xc030 => Some("ECDHE-RSA-AES256-GCM-SHA384"),
+        0xc050 => Some("ARIA128-GCM-SHA256"),
+        0xc051 => Some("ARIA256-GCM-SHA384"),
+        0xc052 => Some("DHE-RSA-ARIA128-GCM-SHA256"),
+        0xc053 => Some("DHE-RSA-ARIA256-GCM-SHA384"),
+        0xc056 => Some("DHE-DSS-ARIA128-GCM-SHA256"),
+        0xc057 => Some("DHE-DSS-ARIA256-GCM-SHA384"),
+        0xc05c => Some("ECDHE-ECDSA-ARIA128-GCM-SHA256"),
+        0xc05d => Some("ECDHE-ECDSA-ARIA256-GCM-SHA384"),
+        0xc060 => Some("ECDHE-ARIA128-GCM-SHA256"),
+        0xc061 => Some("ECDHE-ARIA256-GCM-SHA384"),
+        0xc09c => Some("AES128-CCM"),
+        0xc09d => Some("AES256-CCM"),
+        0xc09e => Some("DHE-RSA-AES128-CCM"),
+        0xc09f => Some("DHE-RSA-AES256-CCM"),
+        0xc0ac => Some("ECDHE-ECDSA-AES128-CCM"),
+        0xc0ad => Some("ECDHE-ECDSA-AES256-CCM"),
         0xcca8 => Some("ECDHE-RSA-CHACHA20-POLY1305"),
         0xcca9 => Some("ECDHE-ECDSA-CHACHA20-POLY1305"),
         0xccaa => Some("DHE-RSA-CHACHA20-POLY1305"),
@@ -293,6 +321,31 @@ fn group_name(code: u16) -> Option<&'static str> {
         0x11ec => Some("X25519MLKEM768"),
         _ => None,
     }
+}
+
+fn is_boring_curve_list_gap(code: u16) -> bool {
+    // Boring 5.1 当前公开 set_curves_list 在本验证环境拒绝 X448/FFDHE
+    // token；先跳过以暴露真实 wire 差异，避免 connector 构造阶段 panic。
+    matches!(code, 0x001e | 0x0100..=0x0104)
+}
+
+fn is_boring_sigalg_list_gap(code: u16) -> bool {
+    // docs.rs/boring 5.1 的公开签名算法集合没有 DSA、Ed448、
+    // RSA-PSS-PSS、Brainpool TLS1.3、ML-DSA token；跳过后由 wire
+    // 断言暴露 profile 与当前 Boring 输出的差异。
+    matches!(
+        code,
+        0x0301
+            | 0x0302
+            | 0x0303
+            | 0x0402
+            | 0x0502
+            | 0x0602
+            | 0x0808
+            | 0x0809..=0x080b
+            | 0x081a..=0x081c
+            | 0x0904..=0x0906
+    )
 }
 
 fn sigalg_name(code: u16) -> Option<&'static str> {
@@ -318,6 +371,12 @@ fn sigalg_name(code: u16) -> Option<&'static str> {
         0x0809 => Some("rsa_pss_pss_sha256"),
         0x080a => Some("rsa_pss_pss_sha384"),
         0x080b => Some("rsa_pss_pss_sha512"),
+        0x081a => Some("ecdsa_brainpoolP256r1tls13_sha256"),
+        0x081b => Some("ecdsa_brainpoolP384r1tls13_sha384"),
+        0x081c => Some("ecdsa_brainpoolP512r1tls13_sha512"),
+        0x0904 => Some("mldsa44"),
+        0x0905 => Some("mldsa65"),
+        0x0906 => Some("mldsa87"),
         _ => None,
     }
 }
@@ -337,17 +396,21 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_lookup_tables_cover_current_profile_values() {
+    fn lookup_tables_cover_current_profile_values() {
         assert_eq!(
             openssl_cipher_names_from_codes(&[0x1301, 0xc02b, 0xc02f]).unwrap(),
             "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256"
+        );
+        assert_eq!(
+            openssl_cipher_names_from_codes(&[0x0039, 0x00ff, 0xc0ad]).unwrap(),
+            "DHE-RSA-AES256-SHA:ECDHE-ECDSA-AES256-CCM"
         );
         assert_eq!(
             openssl_curve_names_from_codes(&[0x001d, 0x0017]).unwrap(),
             "X25519:P-256"
         );
         assert_eq!(
-            openssl_sigalg_names_from_codes(&[0x0403, 0x0804]).unwrap(),
+            openssl_sigalg_names_from_codes(&[0x0403, 0x0804, 0x081a, 0x0905]).unwrap(),
             "ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256"
         );
     }
