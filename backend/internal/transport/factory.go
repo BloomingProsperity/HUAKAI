@@ -6,7 +6,7 @@ package transport
 
 import (
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 
@@ -127,9 +127,9 @@ func (f *Factory) mimicryTemplate(mode TransportMode) *mimicry.ClientHelloTempla
 			return tmpl
 		}
 		if ok {
-			log.Printf("warning: stub template for mode %s, using Phase A default template", mode)
+			slog.Warn("transport mimicry template stub", "mode", mode, "reason_class", "template_stub")
 		} else {
-			log.Printf("warning: no template for mode %s, using Phase A default template", mode)
+			slog.Warn("transport mimicry template missing", "mode", mode, "reason_class", "template_missing")
 		}
 	}
 	// Phase A：8 个 mimicry mode 先共享 Anthropic 样本模板，Phase B

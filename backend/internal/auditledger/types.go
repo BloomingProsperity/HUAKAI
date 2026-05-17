@@ -36,6 +36,11 @@ type LedgerEntry struct {
 	// TenantID 可选；0 表示无租户上下文。
 	TenantID int64
 
+	// TenantScopeRef is the user-facing tenant reference used by privacy-safe
+	// receipts. Writers may leave it empty; canonicalization derives it from
+	// TenantID. Verifiers that only receive public JSON set this field directly.
+	TenantScopeRef string
+
 	// HopChain 必填；通常 6 跳。Marshal 后的 bytes 是签名 input 的一部分。
 	HopChain []proto.HopAttestation
 

@@ -93,6 +93,7 @@ func AppendInTransaction(ctx context.Context, q DBTX, signer any, entry LedgerEn
 	if err != nil {
 		return LedgerEntry{}, err
 	}
+	entry, _ = sanitizeLedgerEntry(ctx, entry)
 	if entry.RequestID == "" {
 		return LedgerEntry{}, errors.New("auditledger: RequestID required for Postgres Append")
 	}

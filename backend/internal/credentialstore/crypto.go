@@ -12,6 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
 
 const EncryptionSchemeAES256GCM = "aes-256-gcm"
@@ -103,6 +105,7 @@ func (c *Cipher) Encrypt(ctx context.Context, plaintext []byte, aad AAD) (Envelo
 	if err != nil {
 		return Envelope{}, err
 	}
+	defer privacy.Zeroize(key.Material)
 	aad.KeyID = key.ID
 	block, err := aes.NewCipher(key.Material)
 	if err != nil {
@@ -143,6 +146,7 @@ func (c *Cipher) Decrypt(ctx context.Context, env Envelope, aad AAD) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
+	defer privacy.Zeroize(key.Material)
 	block, err := aes.NewCipher(key.Material)
 	if err != nil {
 		return nil, err

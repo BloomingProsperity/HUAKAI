@@ -42,7 +42,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -377,7 +377,10 @@ func (d *SelectorDispatcher) stopShadowWorker(drainTimeout time.Duration) {
 			d.shadowAbortCancel()
 		}
 		dropped := 1 + drainShadowQueue(d.shadowQueue) // include likely in-flight job
-		log.Printf("warning: dispatcher Stop drain timeout; dropped %d shadow jobs", dropped)
+		slog.Warn("dispatcher stop drain timeout",
+			"reason_class", "shadow_drain_timeout",
+			"dropped_count", dropped,
+		)
 		return
 	}
 }

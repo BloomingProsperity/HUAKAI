@@ -126,6 +126,7 @@ func ledgerEntryFromResponse(resp gatewayhttp.AuditVerifyResponse) (auditledger.
 		Timestamp:         resp.LedgerEntry.Timestamp,
 		RequestID:         resp.LedgerEntry.RequestID,
 		TenantID:          resp.LedgerEntry.TenantID,
+		TenantScopeRef:    resp.LedgerEntry.TenantScopeRef,
 		HopChain:          resp.LedgerEntry.HopChain,
 		ModelChain:        resp.LedgerEntry.ModelChain,
 		PrevMerkleRoot:    prev,

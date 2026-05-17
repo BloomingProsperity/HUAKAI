@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
 
 const RefreshWindow = 15 * time.Minute
@@ -638,6 +639,7 @@ func (s *Store) prepareEnvelope(ctx context.Context, tenantID, providerAccountID
 	if err != nil {
 		return preparedEnvelope{}, err
 	}
+	defer privacy.Zeroize(currentKey.Material)
 	fields, _ := parsePayloadFields(payload)
 	payloadFP := HMACFingerprint(currentKey, "payload", payload)
 	refreshFP := HMACFingerprint(currentKey, "refresh_token", []byte(fieldString(fields, "refresh_token")))
@@ -786,9 +788,9 @@ func (s *Store) InsertAuditEvent(ctx context.Context, e AuditEvent) error {
 	if payload == nil {
 		payload = map[string]any{}
 	}
-	rawPayload, err := json.Marshal(payload)
+	rawPayload, err := privacy.DefaultRedactor().SanitizePayload(ctx, payload)
 	if err != nil {
-		rawPayload = []byte(`{}`)
+		rawPayload = privacy.BlockedPayload(privacy.ErrorClassPrivacyGuardHit)
 	}
 	const q = `
 INSERT INTO credential_audit_events (
