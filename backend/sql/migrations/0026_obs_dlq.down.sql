@@ -1,0 +1,6 @@
+BEGIN;
+
+DROP TABLE IF EXISTS dlq_events;
+DROP TABLE IF EXISTS outbox_events;
+
+COMMIT;
