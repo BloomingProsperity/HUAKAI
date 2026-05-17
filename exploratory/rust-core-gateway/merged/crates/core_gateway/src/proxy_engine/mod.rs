@@ -23,6 +23,7 @@ mod error;
 mod headers;
 mod http_client;
 mod relay;
+pub mod sse_parser;
 
 pub use error::ProxyError;
 #[cfg(feature = "mimicry-boring")]
