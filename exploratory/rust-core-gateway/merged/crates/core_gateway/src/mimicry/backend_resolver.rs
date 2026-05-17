@@ -1,10 +1,12 @@
 use thiserror::Error;
 
-use super::{FingerprintProfile, ProfileMode, backend::BackendIntent, tls_profile::TlsBackend};
+use super::{
+    FingerprintProfile, ProfileMatchPolicy, ProfileMode, backend::BackendIntent,
+    tls_profile::TlsBackend,
+};
 
 const OPENSSL_NATIVE_EC_POINT_FORMATS: &[u8] = &[0, 1, 2];
 const OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION: u16 = 22;
-const ANTHROPIC_LANE_2B_REASON: &str = "pending Lane 2b reattach";
 
 /// L2-A8 生产 dispatch 前的显式 profile/backend 选择结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,13 +46,7 @@ pub fn resolve_mimicry_backend(
 ) -> Result<MimicryBackend, BackendResolverError> {
     reject_rustls_template_with_openssl_only_fields(profile_id, template)?;
 
-    let backend = match normalized_profile_id(profile_id).as_str() {
-        "anthropic" | "anthropic-cli" | "anthropic_cli" | "claude" | "claude-code"
-        | "claude_code" => MimicryBackend::KnownGapBlocked {
-            reason: ANTHROPIC_LANE_2B_REASON.to_owned(),
-        },
-        _ => backend_from_profile_intent(template)?,
-    };
+    let backend = backend_from_profile_intent(template)?;
 
     ensure_backend_features(&backend, available_features)?;
     ensure_selected_backend_matches_template(&backend, template)?;
@@ -63,10 +59,6 @@ pub fn resolve_profile_mimicry_backend(
     available_features: AvailableMimicryFeatures,
 ) -> Result<MimicryBackend, BackendResolverError> {
     resolve_mimicry_backend(template.mode.as_str(), template, available_features)
-}
-
-pub const fn anthropic_known_gap_reason() -> &'static str {
-    ANTHROPIC_LANE_2B_REASON
 }
 
 fn backend_from_profile_intent(
@@ -108,10 +100,18 @@ fn ensure_selected_backend_matches_template(
         return Ok(());
     }
 
-    if template.tls.ec_point_formats != OPENSSL_NATIVE_EC_POINT_FORMATS {
+    let allows_native_extras = template.match_policy() == ProfileMatchPolicy::SampleSetRandomized;
+
+    if template.tls.ec_point_formats != OPENSSL_NATIVE_EC_POINT_FORMATS
+        && !(allows_native_extras
+            && is_ordered_u8_subset(
+                &template.tls.ec_point_formats,
+                OPENSSL_NATIVE_EC_POINT_FORMATS,
+            ))
+    {
         return Err(BackendResolverError::ProfileBackendMismatch {
             reason: format!(
-                "native-tls/openssl requires ec_point_formats {:?}; profile has {:?}",
+                "native-tls/openssl exact profiles require ec_point_formats {:?}; profile has {:?}",
                 OPENSSL_NATIVE_EC_POINT_FORMATS, template.tls.ec_point_formats
             ),
         });
@@ -121,10 +121,11 @@ fn ensure_selected_backend_matches_template(
         .tls
         .extensions
         .contains(&OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION)
+        && !allows_native_extras
     {
         return Err(BackendResolverError::ProfileBackendMismatch {
             reason: format!(
-                "native-tls/openssl cannot disable encrypt_then_mac extension {}; profile extensions are {:?}",
+                "native-tls/openssl exact profiles cannot disable encrypt_then_mac extension {}; profile extensions are {:?}",
                 OPENSSL_NATIVE_ENCRYPT_THEN_MAC_EXTENSION, template.tls.extensions
             ),
         });
@@ -172,14 +173,18 @@ fn reject_rustls_template_with_openssl_only_fields(
     }
 }
 
-fn normalized_profile_id(profile_id: &str) -> String {
-    profile_id.trim().to_ascii_lowercase()
+fn is_ordered_u8_subset(expected_subset: &[u8], actual: &[u8]) -> bool {
+    let mut actual_iter = actual.iter();
+    expected_subset
+        .iter()
+        .all(|expected| actual_iter.any(|actual_value| actual_value == expected))
 }
 
 impl From<ProfileMode> for MimicryBackend {
     fn from(mode: ProfileMode) -> Self {
         match mode {
             ProfileMode::CodexCli => Self::Openssl,
+            ProfileMode::AnthropicClaudeCode => Self::Openssl,
             ProfileMode::KiroCli => Self::KnownGapBlocked {
                 reason:
                     "kiro rustls template requires mimicry path work before production dispatch"

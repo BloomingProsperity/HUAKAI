@@ -12,7 +12,7 @@ use core_gateway::mimicry::{
 };
 
 #[test]
-fn mimicry_profile_loads_three_real_templates() {
+fn mimicry_profile_loads_builtin_real_templates() {
     for builtin in BuiltinProfile::ALL {
         let profile = load_builtin_profile(builtin).unwrap_or_else(|error| {
             panic!(
@@ -125,6 +125,15 @@ fn mimicry_profile_vendor_and_mode_mapping_is_explicit() {
     assert_eq!(gemini.mode, ProfileMode::GeminiAdvanced);
     assert_eq!(gemini.tls.backend, TlsBackend::NodeJs);
     assert_eq!(gemini.tls.variants.len(), 2);
+
+    let anthropic = load_builtin_profile(BuiltinProfile::AnthropicClaudeCode)
+        .expect("anthropic profile 应加载");
+    assert_eq!(anthropic.vendor, ProfileVendor::Anthropic);
+    assert_eq!(anthropic.vendor.as_str(), "anthropic");
+    assert_eq!(anthropic.mode, ProfileMode::AnthropicClaudeCode);
+    assert_eq!(anthropic.tls.backend, TlsBackend::NativeTlsOpenSsl);
+    assert_eq!(anthropic.tls.extension_order, ExtensionOrder::Randomized);
+    assert_eq!(anthropic.tls.ja3_hash, "de88744b20558d50f03a5f0ea176ee98");
 }
 
 #[test]
@@ -149,6 +158,14 @@ fn mimicry_profile_match_policy_follows_template_evidence() {
         gemini.match_policy(),
         ProfileMatchPolicy::SampleSetRandomized,
         "gemini Node.js 模板含 2 个 TLS 变体，应使用样本集合策略"
+    );
+
+    let anthropic = load_builtin_profile(BuiltinProfile::AnthropicClaudeCode)
+        .expect("anthropic profile 应加载");
+    assert_eq!(
+        anthropic.match_policy(),
+        ProfileMatchPolicy::SampleSetRandomized,
+        "anthropic Claude Code 模板含多 JA4 样本，应使用样本集合策略"
     );
 }
 
@@ -265,6 +282,14 @@ fn mimicry_backend_intent_accepts_stable_native_tls_openssl() {
 
     assert_eq!(profile.match_policy(), ProfileMatchPolicy::ExactStable);
     assert_eq!(profile.backend_intent(), BackendIntent::OpenSslAdapter);
+}
+
+#[test]
+fn mimicry_backend_intent_accepts_anthropic_openssl_profile() {
+    let anthropic = load_builtin_profile(BuiltinProfile::AnthropicClaudeCode)
+        .expect("anthropic profile 应加载");
+
+    assert_eq!(anthropic.backend_intent(), BackendIntent::OpenSslAdapter);
 }
 
 fn assert_gap_field(

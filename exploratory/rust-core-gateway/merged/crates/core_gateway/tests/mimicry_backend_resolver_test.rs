@@ -6,7 +6,7 @@ use common::{
 };
 use core_gateway::mimicry::{
     AvailableMimicryFeatures, BackendResolverError, BuiltinProfile, MimicryBackend,
-    anthropic_known_gap_reason, load_builtin_profile, resolve_mimicry_backend,
+    load_builtin_profile, resolve_mimicry_backend, resolve_profile_mimicry_backend,
 };
 
 #[test]
@@ -48,18 +48,14 @@ fn blocks_kiro_rustls_template_after_burn_the_boats() {
 }
 
 #[test]
-fn resolves_anthropic_to_known_gap_blocked() {
-    let profile = load_builtin_profile(BuiltinProfile::KiroCli).expect("kiro profile 应加载");
+fn resolves_anthropic_to_openssl_after_lane_2b_reattach() {
+    let profile = load_builtin_profile(BuiltinProfile::AnthropicClaudeCode)
+        .expect("anthropic profile 应加载");
 
-    let backend = resolve_mimicry_backend("anthropic", &profile, all_features())
-        .expect("anthropic profile selector 应返回 KnownGapBlocked backend");
+    let backend = resolve_profile_mimicry_backend(&profile, all_features())
+        .expect("anthropic profile selector 应返回 OpenSSL backend");
 
-    assert_eq!(
-        backend,
-        MimicryBackend::KnownGapBlocked {
-            reason: anthropic_known_gap_reason().to_owned()
-        }
-    );
+    assert_eq!(backend, MimicryBackend::Openssl);
 }
 
 #[test]

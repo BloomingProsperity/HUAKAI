@@ -27,22 +27,33 @@ const GEMINI_ADVANCED_TEMPLATE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../../../../tools/fingerprint-collector/templates/gemini-advanced.json"
 ));
+const ANTHROPIC_CLAUDE_CODE_TEMPLATE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/mimicry/profiles/anthropic_claude_code.json"
+));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinProfile {
     CodexCli,
     KiroCli,
     GeminiAdvanced,
+    AnthropicClaudeCode,
 }
 
 impl BuiltinProfile {
-    pub const ALL: [Self; 3] = [Self::CodexCli, Self::KiroCli, Self::GeminiAdvanced];
+    pub const ALL: [Self; 4] = [
+        Self::CodexCli,
+        Self::KiroCli,
+        Self::GeminiAdvanced,
+        Self::AnthropicClaudeCode,
+    ];
 
     pub const fn template_name(self) -> &'static str {
         match self {
             Self::CodexCli => "codex-cli.json",
             Self::KiroCli => "kiro-cli.json",
             Self::GeminiAdvanced => "gemini-advanced.json",
+            Self::AnthropicClaudeCode => "anthropic-claude-code.json",
         }
     }
 
@@ -51,6 +62,7 @@ impl BuiltinProfile {
             Self::CodexCli => CODEX_CLI_TEMPLATE,
             Self::KiroCli => KIRO_CLI_TEMPLATE,
             Self::GeminiAdvanced => GEMINI_ADVANCED_TEMPLATE,
+            Self::AnthropicClaudeCode => ANTHROPIC_CLAUDE_CODE_TEMPLATE,
         }
     }
 }
@@ -60,6 +72,7 @@ pub enum ProfileVendor {
     OpenAi,
     Kiro,
     Gemini,
+    Anthropic,
 }
 
 impl ProfileVendor {
@@ -68,6 +81,7 @@ impl ProfileVendor {
             Self::OpenAi => "openai",
             Self::Kiro => "kiro",
             Self::Gemini => "gemini",
+            Self::Anthropic => "anthropic",
         }
     }
 }
@@ -77,6 +91,7 @@ pub enum ProfileMode {
     CodexCli,
     KiroCli,
     GeminiAdvanced,
+    AnthropicClaudeCode,
 }
 
 impl ProfileMode {
@@ -85,6 +100,7 @@ impl ProfileMode {
             "openai_codex_cli" => Some(Self::CodexCli),
             "kiro_cli" => Some(Self::KiroCli),
             "gemini_advanced" => Some(Self::GeminiAdvanced),
+            "anthropic-claude-code" | "anthropic_claude_code" => Some(Self::AnthropicClaudeCode),
             _ => None,
         }
     }
@@ -94,6 +110,7 @@ impl ProfileMode {
             Self::CodexCli => "openai_codex_cli",
             Self::KiroCli => "kiro_cli",
             Self::GeminiAdvanced => "gemini_advanced",
+            Self::AnthropicClaudeCode => "anthropic-claude-code",
         }
     }
 
@@ -102,6 +119,7 @@ impl ProfileMode {
             Self::CodexCli => ProfileVendor::OpenAi,
             Self::KiroCli => ProfileVendor::Kiro,
             Self::GeminiAdvanced => ProfileVendor::Gemini,
+            Self::AnthropicClaudeCode => ProfileVendor::Anthropic,
         }
     }
 }
