@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
@@ -19,6 +20,26 @@ import (
 type AuthEmailSender interface {
 	SendVerification(context.Context, userauth.User, string) error
 	SendPasswordReset(context.Context, userauth.User, string) error
+}
+
+type AuthAdminAuth interface {
+	Resolve(context.Context, *http.Request) (admin.AdminIdentity, error)
+}
+
+type AuthEventSink interface {
+	RecordAuthEvent(context.Context, AuthEvent)
+}
+
+type AuthEvent struct {
+	EventType       string `json:"event_type"`
+	TenantID        int64  `json:"tenant_id,omitempty"`
+	UserID          int64  `json:"user_id,omitempty"`
+	Provider        string `json:"provider,omitempty"`
+	Outcome         string `json:"outcome"`
+	ReasonClass     string `json:"reason_class,omitempty"`
+	AuthMethod      string `json:"auth_method,omitempty"`
+	SessionPolicy   string `json:"session_policy,omitempty"`
+	SessionsRevoked int64  `json:"sessions_revoked,omitempty"`
 }
 
 type NoopAuthEmailSender struct{}
@@ -32,6 +53,8 @@ type AuthHandlerDeps struct {
 	Auth        *userauth.Service
 	Sessions    *usersession.Service
 	EmailSender AuthEmailSender
+	AdminAuth   AuthAdminAuth
+	EventSink   AuthEventSink
 }
 
 type authRegisterRequest struct {
@@ -75,6 +98,14 @@ type authOAuthCallbackRequest struct {
 	DeviceInfo map[string]any `json:"device_info,omitempty"`
 }
 
+type authSocialIdentityChangedRequest struct {
+	TenantID   int64  `json:"tenant_id"`
+	UserID     int64  `json:"user_id"`
+	Provider   string `json:"provider"`
+	Subject    string `json:"subject,omitempty"`
+	ChangeType string `json:"change_type,omitempty"`
+}
+
 func MountAuthRoutes(r chi.Router, d AuthHandlerDeps) {
 	r.Post("/register", newAuthRegisterHandler(d))
 	r.Post("/login", newAuthLoginHandler(d))
@@ -82,6 +113,7 @@ func MountAuthRoutes(r chi.Router, d AuthHandlerDeps) {
 	r.Post("/reset-password", newAuthResetPasswordHandler(d))
 	r.Post("/oauth-init", newAuthOAuthInitHandler(d))
 	r.Post("/oauth-callback", newAuthOAuthCallbackHandler(d))
+	r.Post("/social/identity-changed", newAuthSocialIdentityChangedHandler(d))
 }
 
 func newAuthRegisterHandler(d AuthHandlerDeps) http.HandlerFunc {
@@ -99,6 +131,9 @@ func newAuthRegisterHandler(d AuthHandlerDeps) http.HandlerFunc {
 			Password: req.Password, InviteCode: req.InviteCode,
 		})
 		if err != nil {
+			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				EventType: "user_register_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: authReasonClass(err),
+			})
 			writeAuthError(w, err)
 			return
 		}
@@ -114,6 +149,9 @@ func newAuthRegisterHandler(d AuthHandlerDeps) http.HandlerFunc {
 			"verification_required": result.VerificationToken != "",
 		}
 		addDevAuthToken(resp, "verification_token", result.VerificationToken)
+		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			EventType: "user_registered", TenantID: result.User.TenantID, UserID: result.User.ID, Outcome: "success",
+		})
 		writeAuditJSON(w, http.StatusCreated, resp)
 	}
 }
@@ -130,6 +168,9 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		}
 		user, err := d.Auth.Authenticate(r.Context(), userauth.LoginInput{TenantID: req.TenantID, Email: req.Email, Password: req.Password})
 		if err != nil {
+			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				EventType: "user_login_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: authReasonClass(err), AuthMethod: "password",
+			})
 			writeAuthError(w, err)
 			return
 		}
@@ -138,9 +179,16 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			IP: clientIP(r), UserAgent: r.UserAgent(), AuthMethod: "password",
 		})
 		if err != nil {
+			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				EventType: "user_login_session_failed", TenantID: user.TenantID, UserID: user.ID, Outcome: "failure",
+				ReasonClass: sessionReasonClass(err), AuthMethod: "password",
+			})
 			writeSessionError(w, err)
 			return
 		}
+		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			EventType: "user_login_succeeded", TenantID: user.TenantID, UserID: user.ID, Outcome: "success", AuthMethod: "password",
+		})
 		writeAuditJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "session": tokens})
 	}
 }
@@ -177,6 +225,9 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 		if strings.TrimSpace(req.Token) == "" {
 			result, err := d.Auth.RequestPasswordReset(r.Context(), userauth.PasswordResetRequest{TenantID: req.TenantID, Email: req.Email})
 			if err != nil {
+				recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+					EventType: "user_password_reset_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: authReasonClass(err),
+				})
 				writeAuthError(w, err)
 				return
 			}
@@ -188,6 +239,10 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 				}
 				if sender := authEmailSender(d); sender != nil {
 					if err := sender.SendPasswordReset(r.Context(), user, result.Token); err != nil {
+						recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+							EventType: "user_password_reset_failed", TenantID: req.TenantID, UserID: result.UserID,
+							Outcome: "failure", ReasonClass: "email_delivery_failed",
+						})
 						writeAuthEmailError(w, err, "password reset email could not be queued")
 						return
 					}
@@ -195,6 +250,9 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 			}
 			resp := map[string]any{"reset_requested": true}
 			addDevAuthToken(resp, "reset_token", result.Token)
+			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				EventType: "user_password_reset_requested", TenantID: req.TenantID, UserID: result.UserID, Outcome: "success",
+			})
 			writeAuditJSON(w, http.StatusAccepted, resp)
 			return
 		}
@@ -202,6 +260,9 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 			TenantID: req.TenantID, Token: req.Token, NewPassword: req.NewPassword,
 		})
 		if err != nil {
+			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				EventType: "user_password_reset_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: authReasonClass(err),
+			})
 			writeAuthError(w, err)
 			return
 		}
@@ -211,6 +272,10 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 				TenantID: user.TenantID, UserID: user.ID, Reason: "password_reset",
 			})
 		}
+		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			EventType: "user_password_reset_completed", TenantID: user.TenantID, UserID: user.ID,
+			Outcome: "success", SessionPolicy: "revoked", SessionsRevoked: revoked,
+		})
 		writeAuditJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "sessions_revoked": revoked})
 	}
 }
@@ -229,6 +294,10 @@ func newAuthOAuthInitHandler(d AuthHandlerDeps) http.HandlerFunc {
 			TenantID: req.TenantID, Provider: req.Provider, RedirectURI: req.RedirectURI,
 		})
 		if err != nil {
+			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				EventType: "user_social_login_failed", TenantID: req.TenantID, Provider: safeProviderForEvent(req.Provider),
+				Outcome: "failure", ReasonClass: authReasonClass(err), AuthMethod: safeProviderForEvent(req.Provider),
+			})
 			writeAuthError(w, err)
 			return
 		}
@@ -258,10 +327,182 @@ func newAuthOAuthCallbackHandler(d AuthHandlerDeps) http.HandlerFunc {
 			IP: clientIP(r), UserAgent: r.UserAgent(), AuthMethod: req.Provider,
 		})
 		if err != nil {
+			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				EventType: "user_social_login_session_failed", TenantID: user.TenantID, UserID: user.ID,
+				Provider: safeProviderForEvent(req.Provider), Outcome: "failure", ReasonClass: sessionReasonClass(err),
+				AuthMethod: safeProviderForEvent(req.Provider),
+			})
 			writeSessionError(w, err)
 			return
 		}
+		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			EventType: "user_social_login_succeeded", TenantID: user.TenantID, UserID: user.ID,
+			Provider: safeProviderForEvent(req.Provider), Outcome: "success", AuthMethod: safeProviderForEvent(req.Provider),
+		})
 		writeAuditJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "session": tokens})
+	}
+}
+
+func newAuthSocialIdentityChangedHandler(d AuthHandlerDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.Auth == nil || d.Auth.Store == nil || d.Sessions == nil || d.AdminAuth == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "auth/session/admin dependency unset")
+			return
+		}
+		ident, ok := resolveAuthAdmin(w, r, d)
+		if !ok {
+			return
+		}
+		var req authSocialIdentityChangedRequest
+		if !decodeAdminPoolJSON(w, r, &req) {
+			return
+		}
+		provider, ok := safeSocialProvider(req.Provider)
+		if !ok || req.TenantID <= 0 || req.UserID <= 0 {
+			writeJSONError(w, http.StatusBadRequest, "invalid_auth_request", "auth request is invalid")
+			return
+		}
+		if !adminCanAccessTenant(ident, req.TenantID) {
+			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot act on this tenant scope")
+			return
+		}
+		user, err := socialIdentityChangedUser(r.Context(), d.Auth.Store, req, provider)
+		if err != nil {
+			writeAuthError(w, err)
+			return
+		}
+		reason := socialIdentityChangedReason(req.ChangeType)
+		revoked, err := d.Sessions.Revoke(r.Context(), usersession.RevokeInput{
+			TenantID: user.TenantID,
+			UserID:   user.ID,
+			Reason:   reason,
+		})
+		if err != nil {
+			writeSessionError(w, err)
+			return
+		}
+		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			EventType: "user_social_identity_changed", TenantID: user.TenantID, UserID: user.ID, Provider: provider,
+			Outcome: "success", ReasonClass: reason, SessionPolicy: "revoked", SessionsRevoked: revoked,
+		})
+		writeAuditJSON(w, http.StatusOK, map[string]any{
+			"tenant_id":        user.TenantID,
+			"user_id":          user.ID,
+			"provider":         provider,
+			"session_policy":   "revoked",
+			"reason_class":     reason,
+			"sessions_revoked": revoked,
+		})
+	}
+}
+
+func recordAuthEvent(ctx context.Context, sink AuthEventSink, event AuthEvent) {
+	if sink == nil {
+		return
+	}
+	sink.RecordAuthEvent(ctx, event)
+}
+
+func authReasonClass(err error) string {
+	switch {
+	case errors.Is(err, userauth.ErrInvalidInput):
+		return "invalid_auth_request"
+	case errors.Is(err, userauth.ErrInviteRequired):
+		return "invite_required"
+	case errors.Is(err, userauth.ErrInviteInvalid):
+		return "invite_invalid"
+	case errors.Is(err, userauth.ErrEmailUnverified):
+		return "email_unverified"
+	case errors.Is(err, userauth.ErrUserDisabled):
+		return "user_disabled"
+	case errors.Is(err, userauth.ErrUserLocked):
+		return "user_locked"
+	case errors.Is(err, userauth.ErrPasswordResetRequired):
+		return "password_reset_required"
+	case errors.Is(err, userauth.ErrInvalidCredentials):
+		return "invalid_credentials"
+	case errors.Is(err, userauth.ErrTokenInvalid), errors.Is(err, userauth.ErrTokenExpired):
+		return "auth_token_invalid"
+	case errors.Is(err, userauth.ErrUserNotFound):
+		return "user_not_found"
+	case errors.Is(err, userauth.ErrOAuthProviderMissing):
+		return "oauth_provider_not_configured"
+	case errors.Is(err, userauth.ErrOAuthFlowNotFound), errors.Is(err, userauth.ErrOAuthFlowExpired):
+		return "oauth_flow_invalid"
+	case errors.Is(err, userauth.ErrSocialLoginRejected):
+		return "social_login_rejected"
+	default:
+		return "auth_backend_error"
+	}
+}
+
+func safeProviderForEvent(provider string) string {
+	out, ok := safeSocialProvider(provider)
+	if !ok {
+		return ""
+	}
+	return out
+}
+
+func resolveAuthAdmin(w http.ResponseWriter, r *http.Request, d AuthHandlerDeps) (admin.AdminIdentity, bool) {
+	ident, err := d.AdminAuth.Resolve(r.Context(), r)
+	if err != nil {
+		if errors.Is(err, admin.ErrAdminBackend) {
+			writeJSONError(w, http.StatusServiceUnavailable, "admin_backend_error", "admin auth backend transient failure")
+		} else {
+			writeJSONError(w, http.StatusUnauthorized, "admin_unauthorized", "missing or invalid admin credential")
+		}
+		return admin.AdminIdentity{}, false
+	}
+	if ident.Role != admin.RolePlatformAdmin && ident.Role != admin.RoleTenantOperator {
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant scope required")
+		return admin.AdminIdentity{}, false
+	}
+	return ident, true
+}
+
+func socialIdentityChangedUser(ctx context.Context, store userauth.Store, req authSocialIdentityChangedRequest, provider string) (userauth.User, error) {
+	if subject := strings.TrimSpace(req.Subject); subject != "" {
+		user, err := store.GetUserBySocialIdentity(ctx, req.TenantID, provider, subject)
+		if err != nil {
+			return userauth.User{}, err
+		}
+		if user.ID != req.UserID {
+			return userauth.User{}, userauth.ErrUserNotFound
+		}
+		return user, nil
+	}
+	user, err := store.GetUserByID(ctx, req.TenantID, req.UserID)
+	if err != nil {
+		return userauth.User{}, err
+	}
+	if user.SocialLoginProvider != provider {
+		return userauth.User{}, userauth.ErrUserNotFound
+	}
+	return user, nil
+}
+
+func safeSocialProvider(provider string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case userauth.SocialProviderGoogle:
+		return userauth.SocialProviderGoogle, true
+	case userauth.SocialProviderGitHub:
+		return userauth.SocialProviderGitHub, true
+	default:
+		return "", false
+	}
+}
+
+func socialIdentityChangedReason(changeType string) string {
+	switch strings.ToLower(strings.TrimSpace(changeType)) {
+	case "provider_password_changed":
+		return "social_identity_provider_password_changed"
+	case "provider_disabled":
+		return "social_identity_provider_disabled"
+	case "identity_unlinked":
+		return "social_identity_unlinked"
+	default:
+		return "social_identity_changed"
 	}
 }
 
@@ -326,6 +567,8 @@ func writeAuthError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusUnauthorized, "invalid_credentials", "email or password is invalid")
 	case errors.Is(err, userauth.ErrTokenInvalid), errors.Is(err, userauth.ErrTokenExpired):
 		writeJSONError(w, http.StatusBadRequest, "auth_token_invalid", "token is invalid, expired, or already used")
+	case errors.Is(err, userauth.ErrUserNotFound):
+		writeJSONError(w, http.StatusNotFound, "user_not_found", "user was not found")
 	case errors.Is(err, userauth.ErrOAuthProviderMissing):
 		writeJSONError(w, http.StatusServiceUnavailable, "oauth_provider_not_configured", "oauth provider is not configured")
 	case errors.Is(err, userauth.ErrOAuthFlowNotFound), errors.Is(err, userauth.ErrOAuthFlowExpired):
@@ -333,7 +576,7 @@ func writeAuthError(w http.ResponseWriter, err error) {
 	case errors.Is(err, userauth.ErrSocialLoginRejected):
 		writeJSONError(w, http.StatusForbidden, "social_login_rejected", "social identity claims are not sufficient")
 	default:
-		writeJSONError(w, http.StatusServiceUnavailable, "auth_backend_error", err.Error())
+		writeJSONError(w, http.StatusServiceUnavailable, "auth_backend_error", "auth backend transient failure")
 	}
 }
 

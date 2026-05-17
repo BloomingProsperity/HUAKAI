@@ -12,7 +12,8 @@ import (
 )
 
 type SessionHandlerDeps struct {
-	Sessions *usersession.Service
+	Sessions  *usersession.Service
+	EventSink AuthEventSink
 }
 
 type sessionRefreshRequest struct {
@@ -54,9 +55,16 @@ func newSessionRefreshHandler(d SessionHandlerDeps) http.HandlerFunc {
 			IP: clientIP(r), UserAgent: r.UserAgent(),
 		})
 		if err != nil {
+			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				EventType: "session_refresh_failed", TenantID: ident.TenantID, UserID: ident.UserID,
+				Outcome: "failure", ReasonClass: sessionReasonClass(err),
+			})
 			writeSessionError(w, err)
 			return
 		}
+		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			EventType: "session_refreshed", TenantID: ident.TenantID, UserID: ident.UserID, Outcome: "success",
+		})
 		writeAuditJSON(w, http.StatusOK, map[string]any{"session": result})
 	}
 }
@@ -158,6 +166,31 @@ func writeSessionError(w http.ResponseWriter, err error) {
 	case errors.Is(err, usersession.ErrDeviceConfirmationRequired):
 		writeJSONError(w, http.StatusForbidden, "session_device_confirmation_required", "device confirmation is required")
 	default:
-		writeJSONError(w, http.StatusServiceUnavailable, "session_backend_error", err.Error())
+		writeJSONError(w, http.StatusServiceUnavailable, "session_backend_error", "session backend transient failure")
+	}
+}
+
+func sessionReasonClass(err error) string {
+	switch {
+	case errors.Is(err, usersession.ErrInvalidInput):
+		return "invalid_session_request"
+	case errors.Is(err, usersession.ErrTokenNotFound):
+		return "session_token_not_found"
+	case errors.Is(err, usersession.ErrRefreshReplay):
+		return "refresh_token_replay"
+	case errors.Is(err, usersession.ErrSessionUserMismatch):
+		return "refresh_token_cross_user_attempt"
+	case errors.Is(err, usersession.ErrTokenExpired):
+		return "refresh_token_expired"
+	case errors.Is(err, usersession.ErrFamilyRevoked), errors.Is(err, usersession.ErrFamilyNotFound):
+		return "session_family_revoked"
+	case errors.Is(err, usersession.ErrAnomalyRejected):
+		return "session_anomaly_rejected"
+	case errors.Is(err, usersession.ErrDeviceLimitExceeded):
+		return "session_device_limit_exceeded"
+	case errors.Is(err, usersession.ErrDeviceConfirmationRequired):
+		return "session_device_confirmation_required"
+	default:
+		return "session_backend_error"
 	}
 }
