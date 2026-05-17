@@ -1,13 +1,29 @@
 //! 传输指纹 profile 边界。
 //!
 //! L2-A1 只产出 transport backend intent，不接入 ProxyEngine。
+//!
+//! `mimicry-boring` 与 `mimicry-openssl` 在 link 期互斥: boring crate vendor
+//! BoringSSL 后注入的 `-lssl/-lcrypto` 符号集是 OpenSSL 的精简子集 (缺
+//! SSL_CTX_ctrl / ERR_get_error_all / SSL_CTX_set_ciphersuites 等), 与
+//! openssl-sys 公开 binding 冲突. 强制同时启用会在 R-2-B 验证期触发
+//! `rust-lld: undefined symbol`. R-2-B-5 backend_resolver 在二进制内只
+//! 编入其中一种实现, 运行时按 feature cfg 自动选 fallback 链路.
+
+#[cfg(all(feature = "mimicry-boring", feature = "mimicry-openssl"))]
+compile_error!(
+    "feature `mimicry-boring` 与 `mimicry-openssl` 互斥 (BoringSSL/OpenSSL 链接符号冲突); \
+     production 选 mimicry-boring 取得字节级 JA3 控制, dev fallback 用 mimicry-openssl."
+);
 
 pub mod backend;
 pub mod backend_resolver;
+#[cfg(feature = "mimicry-boring")]
+pub mod client_hello_builder;
 pub mod dispatch;
 #[cfg(feature = "mimicry-http2-fork")]
 pub mod http2_adapter;
 pub mod http_profile;
+pub mod ja3_wire;
 #[cfg(feature = "mimicry-openssl")]
 pub mod openssl_adapter;
 pub mod profile;
