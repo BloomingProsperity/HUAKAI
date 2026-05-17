@@ -15,6 +15,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker/adapters"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
 
 var ErrNoRefreshRequired = errors.New("credentialworker: no refresh required")
@@ -137,6 +138,7 @@ func (r *AccountCredentialRefresher) refresh(ctx context.Context, _ int64, accou
 	if err != nil {
 		return err
 	}
+	defer privacy.Zeroize(probe.PlaintextPayload)
 	return r.store.WithRefreshTransaction(ctx, func(txStore accountCredentialRefreshTxStore, tx db.DBTX) error {
 		return credentialacq.WithRefreshLock(ctx, tx, probe.ID, func(db.DBTX) error {
 			rec, err := txStore.LoadForRefresh(ctx, accountID)
@@ -158,6 +160,7 @@ func (r *AccountCredentialRefresher) refresh(ctx context.Context, _ int64, accou
 }
 
 func (r *AccountCredentialRefresher) refreshLockedRecord(ctx context.Context, txStore accountCredentialRefreshTxStore, accountID int64, rec credentialstore.CredentialRecord) error {
+	defer privacy.Zeroize(rec.PlaintextPayload)
 	adapter, ok := r.registry.Lookup(rec.Vendor, rec.AuthMode)
 	if !ok {
 		err := fmt.Errorf("%w: vendor=%s auth_mode=%s account_id=%d", ErrProviderAdapterMissing, rec.Vendor, rec.AuthMode, accountID)

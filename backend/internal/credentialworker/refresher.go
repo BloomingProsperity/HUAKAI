@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -90,7 +90,10 @@ func (r *RegistryRefresher) refresh(ctx context.Context, providerID, accountID i
 		if IsMockOnlyProvider(providerName) {
 			return fmt.Errorf("%w: provider=%s account_id=%d", ErrMockOnly, providerName, accountID)
 		}
-		log.Printf("credentialworker: vendor %s not in mock-only allowlist", providerName)
+		slog.Warn("credentialworker provider adapter missing",
+			"provider", providerName,
+			"reason_class", "adapter_missing",
+		)
 		return fmt.Errorf("%w: provider=%s account_id=%d", ErrProviderAdapterMissing, providerName, accountID)
 	}
 	newCredential, expiresAt, err := adapter.RefreshForProvider(ctx, accountID, providerName, account.CurrentCredential)

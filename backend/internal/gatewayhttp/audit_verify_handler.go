@@ -46,12 +46,13 @@ type AuditVerifyResponse struct {
 }
 
 type AuditLedgerEntryJSON struct {
-	LedgerID   string                 `json:"ledger_id"`
-	Timestamp  string                 `json:"timestamp"`
-	RequestID  string                 `json:"request_id"`
-	TenantID   int64                  `json:"tenant_id"`
-	HopChain   []proto.HopAttestation `json:"hop_chain"`
-	ModelChain *proto.ModelChain      `json:"model_chain,omitempty"`
+	LedgerID       string                 `json:"ledger_id"`
+	Timestamp      string                 `json:"timestamp"`
+	RequestID      string                 `json:"request_id"`
+	TenantID       int64                  `json:"-"`
+	TenantScopeRef string                 `json:"tenant_scope_ref,omitempty"`
+	HopChain       []proto.HopAttestation `json:"hop_chain"`
+	ModelChain     *proto.ModelChain      `json:"model_chain,omitempty"`
 }
 
 type AuditChainProofJSON struct {
@@ -91,6 +92,10 @@ func NewAuditVerifyHandler(d AuditVerifyDeps) http.HandlerFunc {
 			writeAuditJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())
 			return
 		}
+		if scope := r.URL.Query().Get("tenant_scope_ref"); scope != "" && scope != auditledger.TenantScopeRef(entry.TenantID) {
+			writeAuditJSONError(w, http.StatusNotFound, "audit_entry_not_found", "request_id not found")
+			return
+		}
 		writeAuditJSON(w, http.StatusOK, auditVerifyResponse(entry))
 	}
 }
@@ -127,14 +132,19 @@ func auditLedgerFromDeps(d AuditVerifyDeps) (auditVerifyLedger, bool) {
 }
 
 func auditVerifyResponse(entry auditledger.LedgerEntry) AuditVerifyResponse {
+	scopeRef := entry.TenantScopeRef
+	if scopeRef == "" {
+		scopeRef = auditledger.TenantScopeRef(entry.TenantID)
+	}
 	return AuditVerifyResponse{
 		LedgerEntry: AuditLedgerEntryJSON{
-			LedgerID:   entry.LedgerID,
-			Timestamp:  entry.Timestamp,
-			RequestID:  entry.RequestID,
-			TenantID:   entry.TenantID,
-			HopChain:   entry.HopChain,
-			ModelChain: entry.ModelChain,
+			LedgerID:       entry.LedgerID,
+			Timestamp:      entry.Timestamp,
+			RequestID:      entry.RequestID,
+			TenantID:       entry.TenantID,
+			TenantScopeRef: scopeRef,
+			HopChain:       entry.HopChain,
+			ModelChain:     entry.ModelChain,
 		},
 		ChainProof: AuditChainProofJSON{
 			PrevMerkleRoot:    rootHex(entry.PrevMerkleRoot),

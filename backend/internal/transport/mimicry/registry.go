@@ -2,7 +2,7 @@ package mimicry
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -88,7 +88,7 @@ func (r *TemplateRegistry) LoadFromDirectory(dir string) error {
 			return fmt.Errorf("mimicry: unknown template mode for %s", path)
 		}
 		if tmpl.IsStub() {
-			log.Printf("warning: mimicry template %s for mode %s is placeholder; placeholder：等 Owner 跑 capture playbook 后回填真 JA3/JA4", path, mode)
+			slog.Warn("mimicry template placeholder", "mode", mode, "reason_class", "template_placeholder")
 		}
 		if err := r.Register(mode, tmpl); err != nil {
 			return err

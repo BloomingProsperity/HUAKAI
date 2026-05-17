@@ -271,6 +271,7 @@ func (s *PostgresStore) AppendAudit(ctx context.Context, ev AuditEvent) error {
 	if ev.OccurredAt.IsZero() {
 		ev.OccurredAt = time.Now().UTC()
 	}
+	ev.Payload = sanitizePayloadMap(ctx, ev.Payload)
 	payload, err := json.Marshal(ev.Payload)
 	if err != nil {
 		return fmt.Errorf("channelhealth: marshal audit payload: %w", err)
@@ -315,6 +316,7 @@ func (s *PostgresStore) AppendAlert(ctx context.Context, alert Alert) error {
 	if alert.Severity == "" {
 		alert.Severity = "high"
 	}
+	alert.Payload = sanitizePayloadMap(ctx, alert.Payload)
 	payload, err := json.Marshal(alert.Payload)
 	if err != nil {
 		return fmt.Errorf("channelhealth: marshal alert payload: %w", err)

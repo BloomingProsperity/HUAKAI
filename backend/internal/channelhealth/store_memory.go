@@ -130,7 +130,7 @@ func (s *MemoryStore) LatestByProviderAccount(_ context.Context, tenantID, provi
 	return best, nil
 }
 
-func (s *MemoryStore) AppendAudit(_ context.Context, ev AuditEvent) error {
+func (s *MemoryStore) AppendAudit(ctx context.Context, ev AuditEvent) error {
 	if s == nil {
 		return nil
 	}
@@ -139,16 +139,18 @@ func (s *MemoryStore) AppendAudit(_ context.Context, ev AuditEvent) error {
 	if s.failAudit {
 		return errors.New("channelhealth: injected audit failure")
 	}
+	ev.Payload = sanitizePayloadMap(ctx, ev.Payload)
 	s.audits = append(s.audits, ev)
 	return nil
 }
 
-func (s *MemoryStore) AppendAlert(_ context.Context, alert Alert) error {
+func (s *MemoryStore) AppendAlert(ctx context.Context, alert Alert) error {
 	if s == nil {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	alert.Payload = sanitizePayloadMap(ctx, alert.Payload)
 	s.alerts = append(s.alerts, alert)
 	return nil
 }

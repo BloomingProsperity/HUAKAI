@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -70,6 +71,7 @@ func (v *PostgresCredentialVault) Resolve(ctx context.Context, accountID int64) 
 	if v.store != nil {
 		rec, err := v.store.ResolveActive(ctx, accountID)
 		if err == nil {
+			defer privacy.Zeroize(rec.PlaintextPayload)
 			handler, err := v.store.HandlerRegistry().MustLookup(rec.Vendor, rec.AuthMode)
 			if err != nil {
 				return Credential{}, AccountInfo{}, err

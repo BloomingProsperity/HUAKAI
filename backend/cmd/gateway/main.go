@@ -55,6 +55,7 @@ import (
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/observability"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
@@ -407,10 +408,13 @@ func run(logger *zap.Logger) error {
 	outboxWorker.Start(ctx)
 
 	router := chi.NewRouter()
+	privacyRedactor := privacy.DefaultRedactor()
+	privacyLogger := privacy.NewStdoutSystemLogger(privacyRedactor)
 	router.Use(middleware.RequestID)
 	router.Use(middleware.RealIP)
-	router.Use(middleware.Recoverer)
+	router.Use(privacy.Recoverer(privacyLogger))
 	router.Use(middleware.Timeout(60 * time.Second))
+	router.Use(privacy.Middleware(8 << 20))
 	// U6-B: 把 client identity（Cursor / Claude Code / Cody / 等）写入
 	// request ctx，让下游 handler / quota / metrics 通过 IdentityFromContext
 	// 读取。无副作用 stateless middleware，加在 Recoverer 之后。

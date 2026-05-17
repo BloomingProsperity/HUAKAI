@@ -2,9 +2,12 @@ package voucher
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
 
 const (
@@ -48,7 +51,8 @@ func NewMemoryAuditSink() *MemoryAuditSink {
 	return &MemoryAuditSink{}
 }
 
-func (s *MemoryAuditSink) EmitVoucherAudit(_ context.Context, event AuditEvent) error {
+func (s *MemoryAuditSink) EmitVoucherAudit(ctx context.Context, event AuditEvent) error {
+	event.Payload = sanitizeAuditPayload(ctx, event.Payload)
 	if err := ValidateAuditEvent(event); err != nil {
 		return err
 	}
@@ -69,6 +73,12 @@ func (s *MemoryAuditSink) Events() []AuditEvent {
 }
 
 func ValidateAuditEvent(event AuditEvent) error {
+	if event.Payload != nil {
+		raw, _ := json.Marshal(event.Payload)
+		if ContainsForbiddenVoucherAuditData(raw) {
+			return ErrAuditCodeLeakBlocked
+		}
+	}
 	for k := range event.Payload {
 		lower := strings.ToLower(k)
 		if lower == "code" || strings.Contains(lower, "raw_code") || strings.Contains(lower, "voucher_code") {
@@ -76,6 +86,10 @@ func ValidateAuditEvent(event AuditEvent) error {
 		}
 	}
 	return nil
+}
+
+func ContainsForbiddenVoucherAuditData(raw []byte) bool {
+	return privacy.ContainsForbiddenRawData(raw)
 }
 
 func cloneAuditEvent(event AuditEvent) AuditEvent {
