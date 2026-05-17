@@ -427,9 +427,10 @@ func run(logger *zap.Logger) error {
 	router.Use(clientid.Middleware(logger))
 
 	// /debug/vars 暴露 stdlib expvar metrics（含 clientid_request_count 等）。
-	// 当前未加 auth；admin 暴露面有限期间放在主路由 root 上方便 ops curl。
-	// TODO: 接入 admin auth middleware 后挪到 admin 路径下。
-	router.Handle("/debug/vars", expvar.Handler())
+	// 用 admin auth gate 包住：必须带 hk_admin_ bearer，否则 401。
+	// Risk 闭环（Owner deep-review P2.1 / 2026-05-17）：之前无 auth 暴露
+	// counter 给任何能 hit 的客户端，泄漏 metrics + 提供旁路侧信道。
+	router.Handle("/debug/vars", adminGate(d.adminAuth, expvar.Handler()))
 
 	mountRoutes(router, d, logger)
 
@@ -943,6 +944,37 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	})
 
 	logger.Info("routes mounted")
+}
+
+// adminGate 把任意 http.Handler 包到 admin auth 后面。
+// 用于 /debug/vars 等 ops 暴露面：未带合法 hk_admin_ bearer 直接 401，
+// 与 admin/v1/* 路由共用 internal/admin.AdminResolver 统一鉴权。
+// resolver 为 nil 时 fail-closed 返 503 — 不允许悄无声息地裸奔。
+func adminGate(resolver *admin.AdminResolver, h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if resolver == nil {
+			writeAdminGateError(w, http.StatusServiceUnavailable,
+				"admin_gate_not_configured", "admin auth resolver unset")
+			return
+		}
+		if _, err := resolver.Resolve(r.Context(), r); err != nil {
+			if errors.Is(err, admin.ErrAdminBackend) {
+				writeAdminGateError(w, http.StatusServiceUnavailable,
+					"admin_backend_error", "admin auth backend transient failure")
+				return
+			}
+			writeAdminGateError(w, http.StatusUnauthorized,
+				"admin_unauthorized", "missing or invalid admin credential")
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
+func writeAdminGateError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = fmt.Fprintf(w, `{"error":{"code":%q,"message":%q}}`, code, message)
 }
 
 func notImplemented(label string) http.HandlerFunc {
