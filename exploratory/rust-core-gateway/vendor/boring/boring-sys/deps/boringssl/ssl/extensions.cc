@@ -3739,7 +3739,8 @@ static_assert(kNumExtensions <=
               "too many extensions for received bitset");
 
 bool ssl_setup_extension_permutation(SSL_HANDSHAKE *hs) {
-  if (!hs->config->permute_extensions) {
+  if (!hs->config->permute_extensions ||
+      !hs->config->explicit_extension_order.empty()) {
     return true;
   }
 
@@ -3773,6 +3774,46 @@ static const struct tls_extension *tls_extension_find(uint32_t *out_index,
   }
 
   return nullptr;
+}
+
+bool ssl_huakai_extension_order_from_types(Array<uint16_t> *out,
+                                           Span<const uint16_t> types) {
+  static_assert(kNumExtensions <= 0xffff, "extension index is too large");
+  Array<uint16_t> order;
+  bool seen[kNumExtensions] = {};
+  if (!order.InitForOverwrite(kNumExtensions)) {
+    return false;
+  }
+
+  size_t written = 0;
+  for (uint16_t type : types) {
+    // HUAKAI patch: 这些 extension 由 BoringSSL 特殊路径写入，排序 API
+    // 只控制 kExtensions[] 内部表项。
+    if (type == TLSEXT_TYPE_padding || type == TLSEXT_TYPE_pre_shared_key ||
+        ((type & 0x0f0f) == 0x0a0a && (type >> 8) == (type & 0xff))) {
+      continue;
+    }
+
+    uint32_t index = 0;
+    if (tls_extension_find(&index, type) == nullptr) {
+      OPENSSL_PUT_ERROR(SSL, SSL_R_UNEXPECTED_EXTENSION);
+      return false;
+    }
+    if (seen[index]) {
+      OPENSSL_PUT_ERROR(SSL, SSL_R_DUPLICATE_EXTENSION);
+      return false;
+    }
+    seen[index] = true;
+    order[written++] = static_cast<uint16_t>(index);
+  }
+  for (size_t i = 0; i < kNumExtensions; i++) {
+    if (!seen[i]) {
+      order[written++] = static_cast<uint16_t>(i);
+    }
+  }
+  assert(written == kNumExtensions);
+  *out = std::move(order);
+  return true;
 }
 
 static bool add_padding_extension(CBB *cbb, uint16_t ext, size_t len) {
@@ -3818,9 +3859,11 @@ static bool ssl_add_clienthello_tlsext_inner(SSL_HANDSHAKE *hs, CBB *out,
   }
 
   for (size_t unpermuted = 0; unpermuted < kNumExtensions; unpermuted++) {
-    size_t i = hs->extension_permutation.empty()
-                   ? unpermuted
-                   : hs->extension_permutation[unpermuted];
+    size_t i = !hs->config->explicit_extension_order.empty()
+                   ? hs->config->explicit_extension_order[unpermuted]
+                   : hs->extension_permutation.empty()
+                         ? unpermuted
+                         : hs->extension_permutation[unpermuted];
     const size_t len_before = CBB_len(&extensions);
     const size_t len_compressed_before = CBB_len(compressed.get());
     if (!kExtensions[i].add_clienthello(hs, &extensions, compressed.get(),
@@ -3927,9 +3970,11 @@ bool ssl_add_clienthello_tlsext(SSL_HANDSHAKE *hs, CBB *out, CBB *out_encoded,
 
   bool last_was_empty = false;
   for (size_t unpermuted = 0; unpermuted < kNumExtensions; unpermuted++) {
-    size_t i = hs->extension_permutation.empty()
-                   ? unpermuted
-                   : hs->extension_permutation[unpermuted];
+    size_t i = !hs->config->explicit_extension_order.empty()
+                   ? hs->config->explicit_extension_order[unpermuted]
+                   : hs->extension_permutation.empty()
+                         ? unpermuted
+                         : hs->extension_permutation[unpermuted];
     const size_t len_before = CBB_len(&extensions);
     if (!kExtensions[i].add_clienthello(hs, &extensions, &extensions, type)) {
       OPENSSL_PUT_ERROR(SSL, SSL_R_ERROR_ADDING_EXTENSION);
