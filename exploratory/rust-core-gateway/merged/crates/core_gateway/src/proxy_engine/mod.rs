@@ -17,12 +17,16 @@ use tokio::{sync::mpsc, task::AbortHandle, time};
 use tracing::warn;
 
 mod auth;
+#[cfg(feature = "mimicry-boring")]
+pub mod boring_tls_connector;
 mod error;
 mod headers;
 mod http_client;
 mod relay;
 
 pub use error::ProxyError;
+#[cfg(feature = "mimicry-boring")]
+pub use http_client::build_http_client_with_profile;
 pub use http_client::{GatewayHttpClient, GatewayHttpConnector, build_http_client};
 pub use relay::StreamObservation;
 
