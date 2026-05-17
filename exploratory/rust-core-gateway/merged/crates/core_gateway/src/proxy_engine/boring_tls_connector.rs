@@ -28,7 +28,9 @@ use tokio_boring::SslStream;
 use tower::Service;
 
 use crate::mimicry::{
-    client_hello_builder::{BoringMimicryError, build_boring_connector},
+    client_hello_builder::{
+        BoringMimicryError, build_boring_connector, configure_boring_connection,
+    },
     profile::FingerprintProfile,
 };
 
@@ -81,8 +83,7 @@ impl Service<Uri> for BoringTlsConnector {
                 .map_err(|error| BoringConnectError::HttpConnect(error.to_string()))?
                 .into_inner();
             let connector = build_boring_connector(&profile, Some(sni.clone()))?;
-            let config = connector
-                .configure()
+            let config = configure_boring_connection(&connector, &profile)
                 .map_err(|error| BoringConnectError::BoringConfigure(error.to_string()))?;
             let tls = tokio_boring::connect(config, &sni, tcp)
                 .await

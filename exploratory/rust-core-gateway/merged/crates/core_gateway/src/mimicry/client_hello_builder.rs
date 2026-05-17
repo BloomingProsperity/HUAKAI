@@ -4,7 +4,7 @@
 //! 尽量按 HUAKAI profile 排布。这里只用 docs.rs/boring/latest 公开 API。
 
 #[cfg(feature = "mimicry-boring")]
-use boring::ssl::{SslConnector, SslConnectorBuilder, SslMethod, SslVersion};
+use boring::ssl::{ConnectConfiguration, SslConnector, SslConnectorBuilder, SslMethod, SslVersion};
 use thiserror::Error;
 
 use crate::mimicry::ja3_wire::{ClientHelloLayout, is_grease};
@@ -55,7 +55,44 @@ pub fn build_boring_connector(
             .map_err(BoringMimicryError::from_boring)?;
     }
 
+    // R-2-B-2-extend:
+    // - OCSP status_request(5): docs.rs/boring 5.1.0
+    //   SslConnectorBuilder -> SslContextBuilder::enable_ocsp_stapling()
+    //   https://docs.rs/boring/latest/boring/ssl/struct.SslConnectorBuilder.html
+    // - SCT signed_certificate_timestamp(18): docs.rs/boring 5.1.0
+    //   SslConnectorBuilder -> SslContextBuilder::enable_signed_cert_timestamps()
+    //   https://docs.rs/boring/latest/boring/ssl/struct.SslConnectorBuilder.html
+    // - ECH grease(65037): boring 5.1.0 没有 context-builder setter;
+    //   公开 rustdoc 把 set_enable_ech_grease 暴露在 ConnectConfiguration
+    //   deref 到的 SslRef 上，所以在 configure_boring_connection 阶段设置。
+    for ext_type in &profile.tls.extensions {
+        match *ext_type {
+            5 => apply_status_request(&mut builder)?,
+            18 => apply_signed_certificate_timestamp(&mut builder)?,
+            _ => {}
+        }
+    }
+
     Ok(builder.build())
+}
+
+/// 生成每次连接使用的 boring 配置，并补上只能在 per-SSL 层设置的扩展。
+#[cfg(feature = "mimicry-boring")]
+pub fn configure_boring_connection(
+    connector: &SslConnector,
+    profile: &MimicryProfile,
+) -> Result<ConnectConfiguration, BoringMimicryError> {
+    let config = connector
+        .configure()
+        .map_err(BoringMimicryError::from_boring)?;
+
+    for ext_type in &profile.tls.extensions {
+        if *ext_type == 65037 {
+            apply_ech_grease(&config)?;
+        }
+    }
+
+    Ok(config)
 }
 
 #[derive(Debug, Error)]
@@ -81,6 +118,33 @@ impl BoringMimicryError {
     fn from_boring(error: boring::error::ErrorStack) -> Self {
         Self::Boring(error.to_string())
     }
+}
+
+#[cfg(feature = "mimicry-boring")]
+fn apply_ech_grease(config: &ConnectConfiguration) -> Result<(), BoringMimicryError> {
+    // ECH grease 使用 boring 5.1.0 公开 per-SSL API:
+    // ConnectConfiguration deref 到 SslRef, 提供 set_enable_ech_grease(bool)。
+    // docs.rs: https://docs.rs/boring/latest/boring/ssl/struct.ConnectConfiguration.html
+    config.set_enable_ech_grease(true);
+    Ok(())
+}
+
+#[cfg(feature = "mimicry-boring")]
+fn apply_status_request(builder: &mut SslConnectorBuilder) -> Result<(), BoringMimicryError> {
+    // OCSP status_request 使用 boring 5.1.0 公开 context-builder API。
+    // docs.rs: https://docs.rs/boring/latest/boring/ssl/struct.SslConnectorBuilder.html
+    builder.enable_ocsp_stapling();
+    Ok(())
+}
+
+#[cfg(feature = "mimicry-boring")]
+fn apply_signed_certificate_timestamp(
+    builder: &mut SslConnectorBuilder,
+) -> Result<(), BoringMimicryError> {
+    // SCT request 使用 boring 5.1.0 公开 context-builder API。
+    // docs.rs: https://docs.rs/boring/latest/boring/ssl/struct.SslConnectorBuilder.html
+    builder.enable_signed_cert_timestamps();
+    Ok(())
 }
 
 /// IANA TLS Cipher Suite Registry -> Boring/OpenSSL cipher-list token。
