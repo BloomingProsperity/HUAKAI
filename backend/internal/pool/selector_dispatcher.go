@@ -42,6 +42,9 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"log"
+	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -65,6 +68,11 @@ const shadowQueueCap = 1024
 // 派生独立 ctx + 500ms 上限, 避免泄漏 + 信号失真。
 const shadowSelectTimeout = 500 * time.Millisecond
 
+const (
+	defaultDispatcherDrainTimeout = 30 * time.Second
+	dispatcherDrainTimeoutEnv     = "HUAKAI_DISPATCHER_DRAIN_TIMEOUT_SECONDS"
+)
+
 // SelectorDispatcher 实现 pool.Selector 接口, 按 mode 把请求路由到 default /
 // PASR actual / PASR shadow 子 selector。 持有所有 sub-selector 实例 + shadow
 // goroutine 生命周期。
@@ -79,10 +87,14 @@ type SelectorDispatcher struct {
 	shadowSel  pool_selectorImpl // PASR shadow 实例 (Slots=nil, Claims=nil, ReadOnlySegments=true), nil → shadow 模式不可用
 
 	// shadow async 生命周期
-	shadowQueue chan shadowJob
-	shadowWG    sync.WaitGroup
-	shadowOnce  sync.Once
-	shadowDone  chan struct{}
+	shadowQueue    chan shadowJob
+	shadowWG       sync.WaitGroup
+	shadowOnce     sync.Once
+	shadowStopOnce sync.Once
+	shadowDone     chan struct{}
+
+	shadowAbortCtx    context.Context
+	shadowAbortCancel context.CancelFunc
 }
 
 // pool_selectorImpl 局部别名 — 避免与包 export Selector 接口的命名冲突
@@ -135,16 +147,19 @@ func NewSelectorDispatcher(cfg SelectorDispatcherConfig) (*SelectorDispatcher, e
 		return nil, fmt.Errorf("dispatcher: CanaryPercent=%d 越界 [0,100]", cfg.CanaryPercent)
 	}
 
+	shadowAbortCtx, shadowAbortCancel := context.WithCancel(context.Background())
 	d := &SelectorDispatcher{
-		mode:          cfg.Mode,
-		shadowPercent: cfg.ShadowPercent,
-		canaryPercent: cfg.CanaryPercent,
-		samplingSalt:  cfg.SamplingSalt,
-		defaultSel:    cfg.Default,
-		pasrSel:       cfg.PASR,
-		shadowSel:     cfg.Shadow,
-		shadowQueue:   make(chan shadowJob, shadowQueueCap),
-		shadowDone:    make(chan struct{}),
+		mode:              cfg.Mode,
+		shadowPercent:     cfg.ShadowPercent,
+		canaryPercent:     cfg.CanaryPercent,
+		samplingSalt:      cfg.SamplingSalt,
+		defaultSel:        cfg.Default,
+		pasrSel:           cfg.PASR,
+		shadowSel:         cfg.Shadow,
+		shadowQueue:       make(chan shadowJob, shadowQueueCap),
+		shadowDone:        make(chan struct{}),
+		shadowAbortCtx:    shadowAbortCtx,
+		shadowAbortCancel: shadowAbortCancel,
 	}
 	if cfg.Mode == DispatchModeShadow && cfg.Shadow != nil {
 		d.startShadowWorker()
@@ -276,8 +291,21 @@ func (d *SelectorDispatcher) startShadowWorker() {
 func (d *SelectorDispatcher) shadowLoop() {
 	defer d.shadowWG.Done()
 	defer close(d.shadowDone)
-	for job := range d.shadowQueue {
-		d.runShadowJob(job)
+	for {
+		select {
+		case <-d.shadowAbortCtx.Done():
+			return
+		default:
+		}
+		select {
+		case <-d.shadowAbortCtx.Done():
+			return
+		case job, ok := <-d.shadowQueue:
+			if !ok {
+				return
+			}
+			d.runShadowJob(job)
+		}
 	}
 }
 
@@ -293,10 +321,15 @@ func (d *SelectorDispatcher) runShadowJob(job shadowJob) {
 	// trace span 等) 但 cancel 不传染 (主响应 return 后 ctx canceled 不影响 shadow)。
 	shadowCtx, cancel := context.WithTimeout(
 		context.WithoutCancel(job.parentCtx), shadowSelectTimeout)
+	stopCancel := context.AfterFunc(d.shadowAbortCtx, cancel)
+	defer stopCancel()
 	defer cancel()
 
 	res, err := d.shadowSel.Select(shadowCtx, job.req)
 	if err != nil {
+		if errors.Is(err, context.Canceled) && d.shadowAbortCtx.Err() != nil {
+			return
+		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			IncDispatchShadowTimeout()
 			return
@@ -316,28 +349,64 @@ func (d *SelectorDispatcher) runShadowJob(job shadowJob) {
 }
 
 // Stop 优雅关闭 shadow goroutine。 close(queue) → worker drain 剩余 jobs →
-// 退出。 调多次 Stop 安全 (Once 保护)。
+// 退出; 超过 drain timeout 后丢弃剩余 shadow jobs 并返回。 调多次 Stop 安全。
 func (d *SelectorDispatcher) Stop() {
 	if d.shadowQueue == nil {
 		return
 	}
-	// 仅 shadow mode 启动了 worker; 其他 mode close queue 但没 worker 等待 done。
-	closeOnce(&d.shadowOnce, d.shadowQueue, &d.shadowWG, d.shadowDone)
+	d.shadowStopOnce.Do(func() {
+		d.stopShadowWorker(dispatcherDrainTimeout())
+	})
 }
 
-// closeOnce 守门 — 已 Stop 后再次 Stop 不重复 close (避免 close of closed chan panic)。
-// 用 sync.Once 包装但需要外部判断: 通过尝试关闭 done chan 间接判断是否已 Stop。
-func closeOnce(once *sync.Once, queue chan shadowJob, wg *sync.WaitGroup, done <-chan struct{}) {
-	select {
-	case <-done:
-		// worker 已退出, 无需再 close
+func (d *SelectorDispatcher) stopShadowWorker(drainTimeout time.Duration) {
+	close(d.shadowQueue)
+	// 仅 shadow mode 启动了 worker; 其他 mode 无需等待。
+	if d.mode != DispatchModeShadow || d.shadowSel == nil {
 		return
-	default:
 	}
-	// 用 defer + recover 防止重复 close (Stop 并发竞争)
-	defer func() { _ = recover() }()
-	close(queue)
-	wg.Wait()
+
+	drainCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
+	defer cancel()
+
+	select {
+	case <-d.shadowDone:
+		return
+	case <-drainCtx.Done():
+		if d.shadowAbortCancel != nil {
+			d.shadowAbortCancel()
+		}
+		dropped := 1 + drainShadowQueue(d.shadowQueue) // include likely in-flight job
+		log.Printf("warning: dispatcher Stop drain timeout; dropped %d shadow jobs", dropped)
+		return
+	}
+}
+
+func drainShadowQueue(queue chan shadowJob) int {
+	dropped := 0
+	for {
+		select {
+		case _, ok := <-queue:
+			if !ok {
+				return dropped
+			}
+			dropped++
+		default:
+			return dropped
+		}
+	}
+}
+
+func dispatcherDrainTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv(dispatcherDrainTimeoutEnv))
+	if raw == "" {
+		return defaultDispatcherDrainTimeout
+	}
+	timeout, err := time.ParseDuration(raw + "s")
+	if err != nil || timeout <= 0 {
+		return defaultDispatcherDrainTimeout
+	}
+	return timeout
 }
 
 // shouldSample fnv64a(salt + SessionHash) % 100 < pct, deterministic 同 hash

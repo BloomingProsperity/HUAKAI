@@ -3,12 +3,15 @@ package gatewayhttp
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 
+	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
@@ -99,16 +102,19 @@ func newAuthRegisterHandler(d AuthHandlerDeps) http.HandlerFunc {
 			writeAuthError(w, err)
 			return
 		}
-		if sender := authEmailSender(d); sender != nil {
+		if result.VerificationToken != "" {
+			sender := authEmailSender(d)
 			if err := sender.SendVerification(r.Context(), result.User, result.VerificationToken); err != nil {
-				writeJSONError(w, http.StatusServiceUnavailable, "email_delivery_failed", "verification email could not be queued")
+				writeAuthEmailError(w, err, "verification email could not be queued")
 				return
 			}
 		}
-		writeAuditJSON(w, http.StatusCreated, map[string]any{
+		resp := map[string]any{
 			"user":                  publicUser(result.User),
-			"verification_required": true,
-		})
+			"verification_required": result.VerificationToken != "",
+		}
+		addDevAuthToken(resp, "verification_token", result.VerificationToken)
+		writeAuditJSON(w, http.StatusCreated, resp)
 	}
 }
 
@@ -182,12 +188,14 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 				}
 				if sender := authEmailSender(d); sender != nil {
 					if err := sender.SendPasswordReset(r.Context(), user, result.Token); err != nil {
-						writeJSONError(w, http.StatusServiceUnavailable, "email_delivery_failed", "password reset email could not be queued")
+						writeAuthEmailError(w, err, "password reset email could not be queued")
 						return
 					}
 				}
 			}
-			writeAuditJSON(w, http.StatusAccepted, map[string]any{"reset_requested": true})
+			resp := map[string]any{"reset_requested": true}
+			addDevAuthToken(resp, "reset_token", result.Token)
+			writeAuditJSON(w, http.StatusAccepted, resp)
 			return
 		}
 		user, err := d.Auth.ResetPassword(r.Context(), userauth.PasswordResetConfirm{
@@ -262,6 +270,26 @@ func authEmailSender(d AuthHandlerDeps) AuthEmailSender {
 		return d.EmailSender
 	}
 	return NoopAuthEmailSender{}
+}
+
+func writeAuthEmailError(w http.ResponseWriter, err error, message string) {
+	if errors.Is(err, mailinfra.ErrEmailBackendUnconfigured) {
+		writeJSONError(w, http.StatusServiceUnavailable, "EMAIL_BACKEND_UNCONFIGURED", "email backend is not configured")
+		return
+	}
+	writeJSONError(w, http.StatusServiceUnavailable, "email_delivery_failed", message)
+}
+
+func addDevAuthToken(resp map[string]any, key string, token string) {
+	if !devAuthReturnTokenEnabled() || strings.TrimSpace(token) == "" {
+		return
+	}
+	slog.Warn("dev mode, do not enable in production", "env", "HUAKAI_DEV_AUTH_RETURN_TOKEN")
+	resp[key] = token
+}
+
+func devAuthReturnTokenEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("HUAKAI_DEV_AUTH_RETURN_TOKEN")), "true")
 }
 
 func publicUser(user userauth.User) map[string]any {

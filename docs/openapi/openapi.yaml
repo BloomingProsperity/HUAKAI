@@ -55,6 +55,8 @@ tags:
     description: User voucher redemption. F-BILL-002.
   - name: admin-vouchers
     description: Admin voucher creation, listing, batch creation, and revocation. F-BILL-002.
+  - name: admin-email
+    description: Tenant-scoped SMTP email delivery settings for F-AUTH-007.
   - name: admin-api-keys
     description: API Key issuance / list / revoke. Slice 2 N+4b2; backed by admin_tokens + admin_audit_events.
   - name: admin-pools
@@ -225,7 +227,7 @@ paths:
             schema: { $ref: '#/components/schemas/AuthRegisterRequest' }
       responses:
         '201':
-          description: User created; verification token is delivered through configured email sender.
+          description: User created; verification token is delivered through configured email sender. Dev mode may include `verification_token`.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AuthUserResponse' }
@@ -300,7 +302,74 @@ paths:
               schema: { $ref: '#/components/schemas/AuthUserResponse' }
         '202':
           description: Reset request accepted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResetRequestResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/email/settings:
+    get:
+      tags: [admin-email]
+      summary: Read tenant SMTP email settings
+      operationId: getAdminEmailSettings
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      parameters:
+        - name: tenant_id
+          in: query
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: Current email settings. SMTP password value is masked.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminEmailSettingsResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [admin-email]
+      summary: Upsert tenant SMTP email settings
+      operationId: updateAdminEmailSettings
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminEmailSettingsUpdate' }
+      responses:
+        '200':
+          description: Settings updated. SMTP password is encrypted at rest.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminEmailSettingsUpdateResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/email/test:
+    post:
+      tags: [admin-email]
+      summary: Send a test email using tenant SMTP settings
+      operationId: testAdminEmailSettings
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminEmailTestRequest' }
+      responses:
+        '200':
+          description: Test email accepted by configured SMTP backend.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminEmailTestResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/auth/oauth-init:
@@ -843,7 +912,7 @@ paths:
           description: Cleared.
         '404': { $ref: '#/components/responses/NotFound' }
 
-  /v1/admin/pool-accounts/{id}/credential-acquisitions:
+  /admin/v1/provider-accounts/{id}/credential-acquisitions:
     parameters:
       - name: id
         in: path
@@ -872,7 +941,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
-  /v1/admin/pool-accounts/{id}/credential-acquisitions/{flow_id}:
+  /admin/v1/provider-accounts/{id}/credential-acquisitions/{flow_id}:
     parameters:
       - name: id
         in: path
@@ -896,7 +965,7 @@ paths:
               schema: { $ref: '#/components/schemas/CredentialAcquisitionStatusResponse' }
         '404': { $ref: '#/components/responses/NotFound' }
 
-  /v1/admin/pool-accounts/{id}/credential-acquisitions/{flow_id}/callback:
+  /admin/v1/provider-accounts/{id}/credential-acquisitions/{flow_id}/callback:
     parameters:
       - name: id
         in: path
@@ -926,7 +995,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '409': { $ref: '#/components/responses/Conflict' }
 
-  /v1/admin/pool-accounts/{id}/credential-acquisitions/{flow_id}/cancel:
+  /admin/v1/provider-accounts/{id}/credential-acquisitions/{flow_id}/cancel:
     parameters:
       - name: id
         in: path
@@ -950,7 +1019,7 @@ paths:
               schema: { $ref: '#/components/schemas/CredentialAcquisitionStatusResponse' }
         '409': { $ref: '#/components/responses/Conflict' }
 
-  /v1/admin/pool-accounts/{id}/credential-acquisitions/{flow_id}/finalize:
+  /admin/v1/provider-accounts/{id}/credential-acquisitions/{flow_id}/finalize:
     parameters:
       - name: id
         in: path
@@ -1477,6 +1546,23 @@ components:
         verification_required: { type: boolean }
         email_verified: { type: boolean }
         sessions_revoked: { type: integer, format: int64 }
+        verification_token:
+          type: string
+          description: Present only when `HUAKAI_DEV_AUTH_RETURN_TOKEN=true`; never enable this in production.
+        reset_token:
+          type: string
+          description: Present only for password reset requests when `HUAKAI_DEV_AUTH_RETURN_TOKEN=true`.
+
+    AuthResetRequestResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      required: [reset_requested]
+      properties:
+        reset_requested: { type: boolean }
+        reset_token:
+          type: string
+          description: Present only when `HUAKAI_DEV_AUTH_RETURN_TOKEN=true`; never enable this in production.
 
     AuthSessionResponse:
       type: object
@@ -1884,6 +1970,81 @@ components:
 
     # ---- Admin schemas (strict: additionalProperties: false) ----
 
+    AdminEmailSettingItem:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      required: [key, updated_at, updated_by]
+      properties:
+        key:
+          type: string
+          enum: [smtp_host, smtp_port, smtp_username, smtp_password, smtp_from, smtp_from_name, smtp_use_tls, email_verify_enabled]
+        value:
+          type: string
+          description: Empty for smtp_password.
+        configured:
+          type: boolean
+          description: Present for smtp_password to indicate whether a password exists.
+        updated_at: { type: string, format: date-time }
+        updated_by: { type: string }
+
+    AdminEmailSettingsResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      required: [tenant_id, settings]
+      properties:
+        tenant_id: { type: integer, format: int64 }
+        settings:
+          type: array
+          items: { $ref: '#/components/schemas/AdminEmailSettingItem' }
+
+    AdminEmailSettingsUpdate:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      required: [tenant_id]
+      properties:
+        tenant_id: { type: integer, format: int64 }
+        smtp_host: { type: string }
+        smtp_port: { type: integer, minimum: 1, maximum: 65535 }
+        smtp_username: { type: string }
+        smtp_password:
+          type: string
+          format: password
+          description: Write-only; encrypted before storage and never returned by GET.
+        smtp_from: { type: string, format: email }
+        smtp_from_name: { type: string }
+        smtp_use_tls: { type: boolean }
+        email_verify_enabled: { type: boolean }
+
+    AdminEmailSettingsUpdateResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      required: [tenant_id, updated]
+      properties:
+        tenant_id: { type: integer, format: int64 }
+        updated: { type: integer }
+
+    AdminEmailTestRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      required: [tenant_id, to]
+      properties:
+        tenant_id: { type: integer, format: int64 }
+        to: { type: string, format: email }
+
+    AdminEmailTestResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      required: [tenant_id, sent]
+      properties:
+        tenant_id: { type: integer, format: int64 }
+        sent: { type: boolean }
+
     PageMeta:
       x-huakai-spec-source:
         - docs/specs/pool-routing.md
@@ -2126,7 +2287,7 @@ components:
         name: { type: string }
         account_type:
           type: string
-          enum: [oauth, api_key, service_account, upstream_static]
+          enum: [oauth, api_key, service_account, upstream_static, session]
         enabled: { type: boolean }
         expires_at: { type: [string, 'null'], format: date-time }
         health_state:
@@ -2172,7 +2333,13 @@ components:
         name: { type: string, minLength: 1 }
         account_type:
           type: string
-          enum: [oauth, api_key, service_account, upstream_static]
+          enum: [oauth, api_key, service_account, upstream_static, session]
+        vendor:
+          type: string
+          description: Optional credential-v2 vendor. If omitted, credentials are stored in the legacy account field.
+        auth_mode:
+          type: string
+          description: Optional credential-v2 auth mode. Must be supplied together with vendor.
         credentials:
           type: object
           additionalProperties: true
