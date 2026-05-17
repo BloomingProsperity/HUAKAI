@@ -48,14 +48,14 @@ fn blocks_kiro_rustls_template_after_burn_the_boats() {
 }
 
 #[test]
-fn resolves_anthropic_to_openssl_after_lane_2b_reattach() {
+fn resolves_anthropic_to_boring_after_r2_b5_binding() {
     let profile = load_builtin_profile(BuiltinProfile::AnthropicClaudeCode)
         .expect("anthropic profile 应加载");
 
     let backend = resolve_profile_mimicry_backend(&profile, all_features())
-        .expect("anthropic profile selector 应返回 OpenSSL backend");
+        .expect("anthropic profile selector 应返回 Boring backend");
 
-    assert_eq!(backend, MimicryBackend::Openssl);
+    assert_eq!(backend, MimicryBackend::Boring);
 }
 
 #[test]
@@ -84,7 +84,10 @@ fn rejects_rustls_template_with_openssl_only_feature() {
 }
 
 fn all_features() -> AvailableMimicryFeatures {
-    AvailableMimicryFeatures { openssl: true }
+    AvailableMimicryFeatures {
+        openssl: true,
+        boring: true,
+    }
 }
 
 fn kiro_fixture_capture() -> CapturedClientHello {
