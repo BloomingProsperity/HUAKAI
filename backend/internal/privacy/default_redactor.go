@@ -243,7 +243,7 @@ var exactAllowlist = map[string]struct{}{
 	"cost_total_microcents": {}, "created_at": {}, "credential_id": {}, "credential_version": {}, "credentials_present": {}, "currency_code": {},
 	"decision_ref": {}, "delivered_token_count": {}, "detail": {}, "duration_ms": {}, "endpoint": {}, "endpoint_family": {}, "ended_at": {}, "error_class": {}, "event_class": {}, "event_id": {},
 	"event_type": {}, "failed_attempts": {}, "failure_class": {}, "failure_count": {}, "failure_reason_class": {},
-	"feature_refs": {}, "handler_id": {}, "hop_chain": {}, "hop_index": {}, "hop_kind": {}, "id": {}, "input_tokens": {},
+	"feature_refs": {}, "handler_id": {}, "hop": {}, "hop_chain": {}, "hop_index": {}, "hop_kind": {}, "id": {}, "input_tokens": {},
 	"latency_bucket": {}, "latency_p99_ms": {}, "ledger_id": {}, "manual_override_actor_id": {}, "max_redemptions": {},
 	"message_count": {}, "metadata_keys": {}, "model": {}, "model_chain": {}, "model_verdict": {}, "new_state": {}, "occurred_at": {}, "outbox_event_id": {},
 	"outcome": {}, "output_tokens": {}, "panic_class": {}, "payload": {}, "policy_version": {}, "pool_group_id": {}, "previous_state": {},
