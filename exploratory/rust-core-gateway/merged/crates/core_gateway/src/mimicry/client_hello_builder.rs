@@ -1,7 +1,8 @@
 //! HUAKAI BoringSSL SslConnectorBuilder 配置闭包
 //!
 //! 从 ClientHelloLayout 装到 boring SslConnectorBuilder, 让真 TLS 握手
-//! 尽量按 HUAKAI profile 排布。这里只用 docs.rs/boring/latest 公开 API。
+//! 尽量按 HUAKAI profile 排布。常规配置使用 boring 公开 API；
+//! extension wire 顺序使用 HUAKAI vendored boring 的本地 API。
 
 #[cfg(feature = "mimicry-boring")]
 use boring::ssl::{ConnectConfiguration, SslConnector, SslConnectorBuilder, SslMethod, SslVersion};
@@ -73,6 +74,13 @@ pub fn build_boring_connector(
     if profile.tls.extensions.contains(&18) {
         apply_signed_certificate_timestamp(&mut builder)?;
     }
+
+    // R-3-A-fix-4: vendored boring 已提供显式 extension order API。
+    // set_permute_extensions(false) 只防随机重排；这里真正按 profile
+    // 记录的 IANA extension type 顺序交给 TLS writer。
+    builder
+        .set_extension_order(&profile.tls.extensions)
+        .map_err(BoringMimicryError::from_boring)?;
 
     Ok(builder.build())
 }
