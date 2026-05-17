@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	obsdlq "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 )
 
@@ -16,6 +17,7 @@ type AuthSender struct {
 	store                SettingsStore
 	keys                 SecretKeyProvider
 	dispatch             SMTPDispatch
+	outbox               obsdlq.Outbox
 	now                  func() time.Time
 	verificationCooldown time.Duration
 	resetCooldown        time.Duration
@@ -38,6 +40,12 @@ func WithClock(now func() time.Time) AuthSenderOption {
 		if now != nil {
 			sender.now = now
 		}
+	}
+}
+
+func WithOutbox(outbox obsdlq.Outbox) AuthSenderOption {
+	return func(sender *AuthSender) {
+		sender.outbox = outbox
 	}
 }
 
@@ -114,7 +122,20 @@ func (s *AuthSender) sendForTenant(ctx context.Context, tenantID int64, msg Mess
 	if err != nil {
 		return err
 	}
-	return s.dispatch(ctx, settings, msg)
+	if err := validateMessage(settings, msg); err != nil {
+		return err
+	}
+	err = s.dispatch(ctx, settings, msg)
+	if err == nil {
+		return nil
+	}
+	if s.outbox == nil || isPermanentEmailFailure(err) {
+		return err
+	}
+	if enqueueErr := enqueueEmailRetry(ctx, s.outbox, s.keys, settings, msg, err); enqueueErr != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *AuthSender) markAllowed(kind string, tenantID int64, email string, cooldown time.Duration) bool {

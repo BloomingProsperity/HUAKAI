@@ -47,11 +47,12 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker/adapters"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
-	obsdlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
+	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
+	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/observability"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -105,7 +106,7 @@ type deps struct {
 	voucherService     *voucher.Service
 	dispatcher         *gateway.UpstreamDispatcher
 	responseCache      l2cache.Store
-	dlqService         *obsdlq.Service
+	dlqService         *legacydlq.Service
 	completionBus      *eventbus.Bus
 	inboundAuth        *auth.APIKeyResolver
 	auditLedger        auditledger.Ledger
@@ -162,6 +163,16 @@ func run(logger *zap.Logger) error {
 	defer pgPool.Close()
 
 	q := db.New(pgPool)
+	outboxStore := obsoutbox.NewPostgresOutbox(pgPool)
+	outboxRuntime, err := obsoutbox.LoadRuntimeConfigFromEnv()
+	if err != nil {
+		return fmt.Errorf("load async outbox config: %w", err)
+	}
+	logger.Info("async outbox config loaded",
+		zap.Int("max_attempts", outboxRuntime.MaxAttempts),
+		zap.Duration("max_backoff", outboxRuntime.MaxBackoff),
+		zap.Duration("drain_timeout", outboxRuntime.DrainTimeout),
+	)
 	credentialKeys, err := loadCredentialKeyProvider()
 	if err != nil {
 		return fmt.Errorf("load credential encryption key: %w", err)
@@ -175,7 +186,7 @@ func run(logger *zap.Logger) error {
 			return fmt.Errorf("production email release gate: %w", err)
 		}
 	}
-	authEmailSender, err := buildAuthEmailSender(cfg, emailSettingsStore, credentialKeys, logger)
+	authEmailSender, err := buildAuthEmailSender(cfg, emailSettingsStore, credentialKeys, logger, outboxStore)
 	if err != nil {
 		return fmt.Errorf("build auth email sender: %w", err)
 	}
@@ -251,40 +262,50 @@ func run(logger *zap.Logger) error {
 		return fmt.Errorf("build audit ledger: %w", err)
 	}
 	channelHealthStore := channelhealth.NewPostgresStoreWithAuditSigner(pgPool, auditSigner)
-	channelHealthService := channelhealth.NewService(channelHealthStore, channelhealth.DefaultPolicy(), nil)
+	channelHealthService := channelhealth.NewService(channelHealthStore, channelhealth.DefaultPolicy(), nil, channelhealth.WithAlertOutbox(outboxStore))
 	voucherService := voucher.NewService(voucher.NewPostgresStore(pgPool))
 	selector, selectorCleanup, err := buildSelector(ctx, q, pgPool, selectorCfg, channelHealthService, logger)
 	if err != nil {
 		return fmt.Errorf("build selector: %w", err)
 	}
 	defer selectorCleanup()
-	dlqStore := obsdlq.NewStore(pgPool)
-	dlqService := obsdlq.NewService(dlqStore, obsdlq.WithPolicy(obsdlq.RetryPolicy{
+	dlqStore := legacydlq.NewStore(pgPool)
+	dlqService := legacydlq.NewService(dlqStore, legacydlq.WithPolicy(legacydlq.RetryPolicy{
 		BaseBackoff: obsDLQCfg.BaseBackoff,
 		CapBackoff:  obsDLQCfg.CapBackoff,
 		MaxAttempts: obsDLQCfg.MaxAttempts,
 		DLQAfter:    obsDLQCfg.DLQAfter,
 	}))
-	dlqService.Register(obsdlq.EventKindUsageRecord, obsdlq.NewUsageRecordHandler(pgPool))
+	dlqService.Register(legacydlq.EventKindUsageRecord, legacydlq.NewUsageRecordHandler(pgPool))
 	replicaTarget := ""
 	var closeReplica func()
 	if obsDLQCfg.ReplicaDSN != "" {
 		replicaTarget = "postgres"
-		replicaHandler, cleanup := obsdlq.NewLazyPostgresReplicaHandler(obsDLQCfg.ReplicaDSN)
+		replicaHandler, cleanup := legacydlq.NewLazyPostgresReplicaHandler(obsDLQCfg.ReplicaDSN)
 		closeReplica = cleanup
-		dlqService.Register(obsdlq.EventKindBillingEventReplica, replicaHandler)
-		dlqService.Register(obsdlq.EventKindAuditEventReplica, replicaHandler)
+		dlqService.Register(legacydlq.EventKindBillingEventReplica, replicaHandler)
+		dlqService.Register(legacydlq.EventKindAuditEventReplica, replicaHandler)
 	}
 	if closeReplica != nil {
 		defer closeReplica()
 	}
-	dlqWorker := obsdlq.NewWorker(dlqService, obsdlq.WorkerConfig{
+	dlqWorker := legacydlq.NewWorker(dlqService, legacydlq.WorkerConfig{
 		HighWorkers:   obsDLQCfg.HighWorkers,
 		MediumWorkers: obsDLQCfg.MediumWorkers,
 		LowWorkers:    obsDLQCfg.LowWorkers,
 		LeaseTTL:      obsDLQCfg.LeaseTTL,
 		IdleSleep:     time.Second,
 	})
+	outboxWorker := obsoutbox.NewWorker(outboxStore, obsoutbox.WorkerConfig{
+		IdleSleep:    time.Second,
+		DrainTimeout: outboxRuntime.DrainTimeout,
+		RetryPolicy: obsoutbox.RetryPolicy{
+			MaxAttempts: outboxRuntime.MaxAttempts,
+			MaxBackoff:  outboxRuntime.MaxBackoff,
+		},
+	})
+	outboxWorker.Register(obsoutbox.EventTypeEmailRetry, mailinfra.NewDLQHandler(emailSettingsStore, credentialKeys, nil))
+	outboxWorker.Register(obsoutbox.EventTypeChannelAlert, channelhealth.NewAlertDLQHandler(channelHealthStore))
 
 	settler := billing.NewSettler(pgPool, billing.WithDLQStore(dlqStore), billing.WithReplicaTarget(replicaTarget))
 	completionBus, err := buildCompletionEventBus(eventBusCfg, settler, dlqService, logger)
@@ -383,6 +404,7 @@ func run(logger *zap.Logger) error {
 	if obsDLQCfg.Enabled {
 		dlqWorker.Start(ctx)
 	}
+	outboxWorker.Start(ctx)
 
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID)
@@ -434,6 +456,9 @@ func run(logger *zap.Logger) error {
 	if obsDLQCfg.Enabled {
 		dlqStopErr = dlqWorker.Stop(credentialStopCtx)
 	}
+	outboxStopCtx, outboxStopCancel := context.WithTimeout(context.Background(), outboxRuntime.DrainTimeout)
+	defer outboxStopCancel()
+	outboxStopErr := outboxWorker.Stop(outboxStopCtx)
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
@@ -449,10 +474,13 @@ func run(logger *zap.Logger) error {
 	if dlqStopErr != nil {
 		return fmt.Errorf("stop observability DLQ worker: %w", dlqStopErr)
 	}
+	if outboxStopErr != nil {
+		return fmt.Errorf("stop async outbox worker: %w", outboxStopErr)
+	}
 	return nil
 }
 
-func buildCompletionEventBus(cfg *config.EventBusConfig, settler billing.Settler, dlqService *obsdlq.Service, logger *zap.Logger) (*eventbus.Bus, error) {
+func buildCompletionEventBus(cfg *config.EventBusConfig, settler billing.Settler, dlqService *legacydlq.Service, logger *zap.Logger) (*eventbus.Bus, error) {
 	if cfg == nil || !cfg.Enabled {
 		return nil, nil
 	}
@@ -517,8 +545,8 @@ func registerCredentialRefreshAdapters(registry *credentialworker.AdapterRegistr
 	return nil
 }
 
-func buildAuthEmailSender(_ *config.Config, store mailinfra.SettingsStore, keys credentialstore.KeyProvider, logger *zap.Logger) (gatewayhttp.AuthEmailSender, error) {
-	sender, err := mailinfra.BuildEmailSender(context.Background(), store, keys)
+func buildAuthEmailSender(_ *config.Config, store mailinfra.SettingsStore, keys credentialstore.KeyProvider, logger *zap.Logger, outbox obsoutbox.Outbox) (gatewayhttp.AuthEmailSender, error) {
+	sender, err := mailinfra.BuildEmailSender(context.Background(), store, keys, mailinfra.WithOutbox(outbox))
 	if err != nil {
 		return nil, err
 	}
