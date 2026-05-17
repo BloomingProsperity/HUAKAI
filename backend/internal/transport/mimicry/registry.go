@@ -66,23 +66,21 @@ func (r *TemplateRegistry) Lookup(mode TransportMode) (*ClientHelloTemplate, boo
 	return tmpl, ok
 }
 
-// LoadFromDirectory 扫描目录内全部 *.json，并按文件名或 mode_name 注册模板。
+// LoadFromDirectory 递归扫描目录内全部 *.json，并按文件名或 mode_name 注册模板。
 func (r *TemplateRegistry) LoadFromDirectory(dir string) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return err
-	}
 	loaded := 0
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".json") {
-			continue
+	if err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
 		}
-		path := filepath.Join(dir, entry.Name())
+		if info.IsDir() || !strings.EqualFold(filepath.Ext(info.Name()), ".json") {
+			return nil
+		}
 		tmpl, err := LoadFromCollectorOutput(path)
 		if err != nil {
 			return fmt.Errorf("mimicry: load template %s: %w", path, err)
 		}
-		mode, ok := modeFromStem(strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())))
+		mode, ok := modeFromStem(strings.TrimSuffix(info.Name(), filepath.Ext(info.Name())))
 		if !ok {
 			mode, ok = modeFromName(tmpl.ModeName)
 		}
@@ -96,6 +94,9 @@ func (r *TemplateRegistry) LoadFromDirectory(dir string) error {
 			return err
 		}
 		loaded++
+		return nil
+	}); err != nil {
+		return err
 	}
 	if loaded == 0 {
 		return fmt.Errorf("mimicry: no template json loaded from %s", dir)

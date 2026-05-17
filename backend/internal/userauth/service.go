@@ -25,6 +25,10 @@ type Store interface {
 	ConsumeOAuthFlowSession(context.Context, int64, string, []byte, time.Time) (OAuthFlowSession, error)
 }
 
+type EmailVerificationPolicy interface {
+	EmailVerificationEnabled(context.Context, int64) (bool, error)
+}
+
 type Service struct {
 	Store            Store
 	PasswordPolicy   PasswordPolicy
@@ -37,6 +41,7 @@ type Service struct {
 	LockoutThreshold int
 	Now              func() time.Time
 	OAuth            *OAuthService
+	Verification     EmailVerificationPolicy
 }
 
 func NewService(store Store) *Service {
@@ -70,6 +75,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (RegistrationR
 		return RegistrationResult{}, err
 	}
 	var out RegistrationResult
+	requireVerification := s.requireEmailVerification(ctx, in.TenantID)
 	if err := s.withStoreTx(ctx, func(store Store) error {
 		var inviteHash string
 		if strings.TrimSpace(in.InviteCode) != "" {
@@ -81,14 +87,18 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (RegistrationR
 		} else if s.InviteRequired {
 			return ErrInviteRequired
 		}
+		status := UserStatusActive
+		if requireVerification {
+			status = UserStatusPendingVerification
+		}
 		user, err := store.CreateUser(ctx, CreateUserParams{
 			TenantID:       in.TenantID,
 			Email:          email,
 			DisplayName:    strings.TrimSpace(in.DisplayName),
 			PasswordHash:   passwordHash,
-			EmailVerified:  false,
+			EmailVerified:  !requireVerification,
 			InviteCodeUsed: inviteHash,
-			Status:         UserStatusPendingVerification,
+			Status:         status,
 		})
 		if err != nil {
 			return err
@@ -98,11 +108,15 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (RegistrationR
 				return err
 			}
 		}
-		challenge, err := s.startEmailVerificationWithStore(ctx, store, user)
-		if err != nil {
-			return err
+		var token string
+		if requireVerification {
+			challenge, err := s.startEmailVerificationWithStore(ctx, store, user)
+			if err != nil {
+				return err
+			}
+			token = challenge.RawToken
 		}
-		out = RegistrationResult{User: user, VerificationToken: challenge.RawToken}
+		out = RegistrationResult{User: user, VerificationToken: token}
 		return nil
 	}); err != nil {
 		return RegistrationResult{}, err
@@ -136,7 +150,7 @@ func (s *Service) Authenticate(ctx context.Context, in LoginInput) (User, error)
 		_ = s.Store.MarkLoginFailure(ctx, user.TenantID, user.ID, threshold)
 		return User{}, ErrUserLocked
 	}
-	if s.RequireVerified && !user.EmailVerified {
+	if s.requireEmailVerification(ctx, in.TenantID) && !user.EmailVerified {
 		return User{}, ErrEmailUnverified
 	}
 	if user.PasswordHash == "" {
@@ -217,4 +231,14 @@ func (s *Service) now() time.Time {
 		return s.Now().UTC()
 	}
 	return time.Now().UTC()
+}
+
+func (s *Service) requireEmailVerification(ctx context.Context, tenantID int64) bool {
+	if s != nil && s.Verification != nil {
+		enabled, err := s.Verification.EmailVerificationEnabled(ctx, tenantID)
+		if err == nil {
+			return enabled
+		}
+	}
+	return s == nil || s.RequireVerified
 }
