@@ -34,11 +34,25 @@ const (
 //   - Detail 仅放 hop-specific 元数据（如 cache_hit_ratio / latency_ms），
 //     绝不能放 prompt / completion / tool 内容。
 type HopAttestation struct {
+	// SchemaVersion / HopIndex / HopKind / Actor / StartedAt / EndedAt /
+	// DecisionRef are the F-TRUST-001 receipt-facing fields. Older gateway
+	// paths may still fill the compact Hop/Timestamp fields below during
+	// transition.
+	SchemaVersion string   `json:"schema_version,omitempty"`
+	HopIndex      int      `json:"hop_index,omitempty"`
+	HopKind       string   `json:"hop_kind,omitempty"`
+	Actor         string   `json:"actor,omitempty"`
+	StartedAt     string   `json:"started_at,omitempty"`
+	EndedAt       string   `json:"ended_at,omitempty"`
+	DecisionRef   string   `json:"decision_ref,omitempty"`
+	FeatureRefs   []string `json:"feature_refs,omitempty"`
+	AltEventID    string   `json:"alt_event_id,omitempty"`
+
 	// Hop 必填；闭集合枚举。
-	Hop HopHop `json:"hop"`
+	Hop HopHop `json:"hop,omitempty"`
 
 	// Timestamp 必填；RFC3339Nano；ts ↑ monotonic（INV-51）。
-	Timestamp string `json:"ts"`
+	Timestamp string `json:"ts,omitempty"`
 
 	// RequestID 可选；request_id 已在 RequestMeta 顶层；hop 内重复仅做 audit 自包含。
 	RequestID string `json:"request_id,omitempty"`
@@ -71,6 +85,7 @@ type HopAttestation struct {
 //   - Requested = client request body model 字段（用户付费的模型）
 //   - RouteDecided = HUAKAI router/pool 决策选用的模型（HUAKAI 自报）
 //   - UpstreamReported = 上游 response model 字段（vendor 自报）
+//
 // 三者必须一致；任何不一致 → audit_ledger 记 divergence + warning（T3）。
 type ModelChain struct {
 	// Requested 必填；client request body 中 model 字段值。
@@ -83,6 +98,10 @@ type ModelChain struct {
 	// UpstreamReported 可选；上游 vendor response 中携带的 model 字段；
 	// streaming 流尚未结束时为空，response 完成后填。
 	UpstreamReported string `json:"upstream_reported,omitempty"`
+
+	// Verdict 是用户可见的模型一致性裁决：match / allowed_alias /
+	// mismatch / unknown。为空时保持旧路径兼容。
+	Verdict string `json:"verdict,omitempty"`
 }
 
 // IsConsistent 检查 Requested / RouteDecided / UpstreamReported 三方是否一致。

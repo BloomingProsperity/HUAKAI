@@ -6,8 +6,6 @@ import (
 	"errors"
 	"sync"
 	"time"
-
-	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 )
 
 // Ledger 是 HUAKAI 信任链 audit ledger 的抽象。生产用 PostgresLedger（T4.x
@@ -35,6 +33,9 @@ var ErrLedgerEntryNotFound = errors.New("auditledger: ledger entry not found")
 // ErrSignerNil Append 时 signer 未设。
 var ErrSignerNil = errors.New("auditledger: signer not set")
 
+// ErrDuplicateRequestID 表示同一 request_id 已写入 ledger。
+var ErrDuplicateRequestID = errors.New("auditledger: duplicate request_id")
+
 // NoopLedger 是禁用 ledger 时的零开销实现；Append 直接返回不存。
 // Personal Edition 默认配置可用 NoopLedger；SaaS Edition 必须用 MemoryLedger /
 // PostgresLedger。
@@ -61,19 +62,20 @@ func (NoopLedger) Size(ctx context.Context) int { return 0 }
 // MemoryLedger 是 append-only in-memory ledger，用于 dev / test。
 // 并发安全。
 type MemoryLedger struct {
-	signer *sign.Signer
+	signer Signer
 	mu     sync.RWMutex
 	chain  []LedgerEntry
 	byReq  map[string]int // request_id → index
 }
 
 // NewMemoryLedger 用给定 signer 构造 MemoryLedger；signer 为 nil 会返回错误。
-func NewMemoryLedger(signer *sign.Signer) (*MemoryLedger, error) {
-	if signer == nil {
-		return nil, ErrSignerNil
+func NewMemoryLedger(signer any) (*MemoryLedger, error) {
+	normalized, err := normalizeSigner(signer)
+	if err != nil {
+		return nil, err
 	}
 	return &MemoryLedger{
-		signer: signer,
+		signer: normalized,
 		byReq:  make(map[string]int),
 	}, nil
 }
@@ -87,12 +89,24 @@ func (m *MemoryLedger) Append(ctx context.Context, entry LedgerEntry) (LedgerEnt
 	if entry.Timestamp == "" {
 		entry.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
 	}
+	if entry.RequestID != "" {
+		if _, exists := m.byReq[entry.RequestID]; exists {
+			return LedgerEntry{}, ErrDuplicateRequestID
+		}
+	}
+	if entry.LedgerID == "" {
+		entry.LedgerID = memoryLedgerID(entry.TenantID, len(m.chain)+1)
+	}
 	prev := ZeroRoot
 	if len(m.chain) > 0 {
 		prev = m.chain[len(m.chain)-1].MerkleRoot
 	}
 	entry.PrevMerkleRoot = prev
-	entry.PubkeyFingerprint = m.signer.Fingerprint()
+	fp, err := signerFingerprint(ctx, m.signer)
+	if err != nil {
+		return LedgerEntry{}, err
+	}
+	entry.PubkeyFingerprint = fp
 
 	eh, err := EntryHash(&entry)
 	if err != nil {
@@ -100,7 +114,22 @@ func (m *MemoryLedger) Append(ctx context.Context, entry LedgerEntry) (LedgerEnt
 	}
 	entry.MerkleRoot = NextMerkleRoot(prev, eh)
 
-	sig := m.signer.Sign(eh[:])
+	sig, fp, err := m.signer.Sign(ctx, eh[:])
+	if err != nil {
+		return LedgerEntry{}, err
+	}
+	if fp != entry.PubkeyFingerprint {
+		entry.PubkeyFingerprint = fp
+		eh, err = EntryHash(&entry)
+		if err != nil {
+			return LedgerEntry{}, err
+		}
+		entry.MerkleRoot = NextMerkleRoot(prev, eh)
+		sig, _, err = m.signer.Sign(ctx, eh[:])
+		if err != nil {
+			return LedgerEntry{}, err
+		}
+	}
 	entry.Signature = base64.StdEncoding.EncodeToString(sig)
 
 	idx := len(m.chain)
@@ -109,6 +138,32 @@ func (m *MemoryLedger) Append(ctx context.Context, entry LedgerEntry) (LedgerEnt
 		m.byReq[entry.RequestID] = idx
 	}
 	return entry, nil
+}
+
+func memoryLedgerID(tenantID int64, seq int) string {
+	return "ldg_t" + itoa64(tenantID) + "_" + itoa(seq)
+}
+
+func itoa64(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
 }
 
 // GetByRequestID 通过 request_id 取出对应 entry。

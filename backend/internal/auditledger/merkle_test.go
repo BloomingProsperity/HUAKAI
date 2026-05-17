@@ -59,13 +59,13 @@ func TestNextMerkleRoot_ChainChange(t *testing.T) {
 
 func TestVerifyChain_HappyPath(t *testing.T) {
 	e1 := sampleEntry(1)
-	h1, _ := EntryHash(&e1)
 	e1.PrevMerkleRoot = ZeroRoot
+	h1, _ := EntryHash(&e1)
 	e1.MerkleRoot = NextMerkleRoot(ZeroRoot, h1)
 
 	e2 := sampleEntry(2)
-	h2, _ := EntryHash(&e2)
 	e2.PrevMerkleRoot = e1.MerkleRoot
+	h2, _ := EntryHash(&e2)
 	e2.MerkleRoot = NextMerkleRoot(e1.MerkleRoot, h2)
 
 	if err := VerifyChain([]LedgerEntry{e1, e2}); err != nil {
@@ -88,8 +88,8 @@ func TestVerifyChain_DetectTamperedFirstPrev(t *testing.T) {
 
 func TestVerifyChain_DetectTamperedMiddleRoot(t *testing.T) {
 	e1 := sampleEntry(1)
-	h1, _ := EntryHash(&e1)
 	e1.PrevMerkleRoot = ZeroRoot
+	h1, _ := EntryHash(&e1)
 	e1.MerkleRoot = NextMerkleRoot(ZeroRoot, h1)
 
 	e2 := sampleEntry(2)
