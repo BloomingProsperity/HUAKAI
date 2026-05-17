@@ -61,14 +61,17 @@ pub fn resolve_profile_mimicry_backend(
     template: &FingerprintProfile,
     available_features: AvailableMimicryFeatures,
 ) -> Result<MimicryBackend, BackendResolverError> {
-    if template.vendor == ProfileVendor::Anthropic {
-        return resolve_anthropic_mimicry_backend(template, available_features);
+    match template.vendor {
+        ProfileVendor::Anthropic
+        | ProfileVendor::OpenAi
+        | ProfileVendor::Kiro
+        | ProfileVendor::Gemini => {
+            return resolve_vendor_mimicry_backend(template, available_features);
+        }
     }
-
-    resolve_mimicry_backend(template.mode.as_str(), template, available_features)
 }
 
-fn resolve_anthropic_mimicry_backend(
+fn resolve_vendor_mimicry_backend(
     template: &FingerprintProfile,
     available_features: AvailableMimicryFeatures,
 ) -> Result<MimicryBackend, BackendResolverError> {
@@ -83,8 +86,10 @@ fn resolve_anthropic_mimicry_backend(
     }
 
     Ok(MimicryBackend::KnownGapBlocked {
-        reason: "anthropic profile requires mimicry-boring for byte-level JA3 control or mimicry-openssl fallback"
-            .to_owned(),
+        reason: format!(
+            "{} profile requires mimicry-boring for byte-level JA3 control or mimicry-openssl fallback",
+            template.vendor.as_str()
+        ),
     })
 }
 

@@ -83,6 +83,103 @@ fn anthropic_backend_resolver_blocked_when_no_backend() {
     }
 }
 
+#[test]
+fn codex_cli_backend_resolver_prefers_boring_when_available() {
+    assert_vendor_backend_prefers_boring(BuiltinProfile::CodexCli);
+}
+
+#[test]
+fn codex_cli_backend_resolver_falls_back_to_openssl_when_boring_absent() {
+    assert_vendor_backend_falls_back_to_openssl(BuiltinProfile::CodexCli);
+}
+
+#[test]
+fn codex_cli_backend_resolver_blocked_when_no_backend() {
+    assert_vendor_backend_blocked(BuiltinProfile::CodexCli);
+}
+
+#[test]
+fn kiro_backend_resolver_prefers_boring_when_available() {
+    assert_vendor_backend_prefers_boring(BuiltinProfile::KiroCli);
+}
+
+#[test]
+fn kiro_backend_resolver_falls_back_to_openssl_when_boring_absent() {
+    assert_vendor_backend_falls_back_to_openssl(BuiltinProfile::KiroCli);
+}
+
+#[test]
+fn kiro_backend_resolver_blocked_when_no_backend() {
+    assert_vendor_backend_blocked(BuiltinProfile::KiroCli);
+}
+
+#[test]
+fn gemini_advanced_backend_resolver_prefers_boring_when_available() {
+    assert_vendor_backend_prefers_boring(BuiltinProfile::GeminiAdvanced);
+}
+
+#[test]
+fn gemini_advanced_backend_resolver_falls_back_to_openssl_when_boring_absent() {
+    assert_vendor_backend_falls_back_to_openssl(BuiltinProfile::GeminiAdvanced);
+}
+
+#[test]
+fn gemini_advanced_backend_resolver_blocked_when_no_backend() {
+    assert_vendor_backend_blocked(BuiltinProfile::GeminiAdvanced);
+}
+
+fn assert_vendor_backend_prefers_boring(builtin: BuiltinProfile) {
+    let profile = load_builtin_profile(builtin).expect("builtin profile 应加载");
+
+    let backend = resolve_profile_mimicry_backend(
+        &profile,
+        AvailableMimicryFeatures {
+            openssl: true,
+            boring: true,
+        },
+    )
+    .expect("vendor profile 应优先使用 Boring backend");
+
+    assert_eq!(backend, MimicryBackend::Boring);
+}
+
+fn assert_vendor_backend_falls_back_to_openssl(builtin: BuiltinProfile) {
+    let profile = load_builtin_profile(builtin).expect("builtin profile 应加载");
+
+    let backend = resolve_profile_mimicry_backend(
+        &profile,
+        AvailableMimicryFeatures {
+            openssl: true,
+            boring: false,
+        },
+    )
+    .expect("vendor profile 应能回退到 OpenSSL backend");
+
+    assert_eq!(backend, MimicryBackend::Openssl);
+}
+
+fn assert_vendor_backend_blocked(builtin: BuiltinProfile) {
+    let profile = load_builtin_profile(builtin).expect("builtin profile 应加载");
+
+    let backend = resolve_profile_mimicry_backend(
+        &profile,
+        AvailableMimicryFeatures {
+            openssl: false,
+            boring: false,
+        },
+    )
+    .expect("vendor profile 无可用 backend 时应返回显式阻断 backend");
+
+    match backend {
+        MimicryBackend::KnownGapBlocked { reason } => {
+            assert!(reason.contains(profile.vendor.as_str()));
+            assert!(reason.contains("mimicry-boring"));
+            assert!(reason.contains("mimicry-openssl"));
+        }
+        backend => panic!("vendor profile 无 backend 时应阻断，实际: {backend:?}"),
+    }
+}
+
 // R-1 deferred test preserved as history: OpenSSL Rust public API auto-injects
 // native extensions `[1, 2]` and cannot byte-level reorder per profile sample.
 // R-2-B-4 is covered by `anthropic_boring_client_hello_byte_level_matches_profile`;
