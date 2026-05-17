@@ -89,6 +89,9 @@ obj = {
 }
 print(json.dumps(obj, separators=(",", ":")), end="")
 `
+	if _, lookErr := exec.LookPath("python3"); lookErr != nil {
+		t.Skip("python3 不可用，跳过跨语言可复现验证")
+	}
 	out, err := exec.Command("python3", "-c", script).Output()
 	if err != nil {
 		t.Fatalf("python canonical reproduction failed: %v", err)

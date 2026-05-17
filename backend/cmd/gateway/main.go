@@ -31,6 +31,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
@@ -258,7 +259,7 @@ func run(logger *zap.Logger) error {
 	if err != nil {
 		return fmt.Errorf("load audit ledger signer: %w", err)
 	}
-	auditLedger, err := auditledger.NewMemoryLedger(auditSigner)
+	auditLedger, err := buildAuditLedger(ctx, pgPool, auditSigner, logger)
 	if err != nil {
 		return fmt.Errorf("build audit ledger: %w", err)
 	}
@@ -689,9 +690,35 @@ func loadMimicryTemplateRegistry(logger *zap.Logger) (*mimicry.TemplateRegistry,
 	return nil, nil
 }
 
+// buildAuditLedger 根据 HUAKAI_AUDIT_LEDGER_BACKEND 构建 audit ledger。
+//   - memory (默认 / dev): 内存版，重启丢失，打 warn 日志
+//   - postgres: PostgresLedger，持久化；production 模式强制使用此后端
+func buildAuditLedger(_ context.Context, pgPool *pgxpool.Pool, signer *sign.Signer, logger *zap.Logger) (auditledger.Ledger, error) {
+	backend := strings.ToLower(strings.TrimSpace(os.Getenv("HUAKAI_AUDIT_LEDGER_BACKEND")))
+	isProd := releaseModeProduction()
+	if isProd && backend != "postgres" {
+		return nil, fmt.Errorf("production 模式要求 HUAKAI_AUDIT_LEDGER_BACKEND=postgres，当前值: %q", backend)
+	}
+	if backend == "postgres" {
+		l, err := auditledger.NewPostgresLedger(pgPool, signer)
+		if err != nil {
+			return nil, fmt.Errorf("NewPostgresLedger: %w", err)
+		}
+		logger.Info("audit ledger backend: postgres（持久化）")
+		return l, nil
+	}
+	// 默认 memory（dev 模式）
+	logger.Warn("audit ledger backend: memory — 重启后 audit 链丢失，仅适用于开发环境")
+	return auditledger.NewMemoryLedger(signer)
+}
+
 func loadAuditSigner(logger *zap.Logger) (*sign.Signer, error) {
 	path := strings.TrimSpace(os.Getenv("HUAKAI_AUDIT_PRIVATE_KEY_PATH"))
+	isProd := releaseModeProduction()
 	if path == "" {
+		if isProd {
+			return nil, fmt.Errorf("production 模式要求持久私钥：请设置 HUAKAI_AUDIT_PRIVATE_KEY_PATH")
+		}
 		logger.Warn("using ephemeral key — restart loses chain")
 		return sign.GenerateKey()
 	}
