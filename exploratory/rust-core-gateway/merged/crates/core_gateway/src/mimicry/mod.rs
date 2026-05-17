@@ -30,9 +30,13 @@ pub mod profile;
 #[cfg(feature = "mimicry-openssl")]
 pub mod tls_capture;
 pub mod tls_profile;
+#[cfg(all(feature = "mimicry-boring", test))]
+pub mod wire_capture_fixture;
 
 #[cfg(test)]
 mod anthropic_test;
+#[cfg(all(feature = "mimicry-boring", test))]
+mod boring_wire;
 
 pub use backend::BackendIntent;
 pub use backend_resolver::{
