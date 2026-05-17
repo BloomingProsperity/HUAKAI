@@ -95,3 +95,17 @@ modification 改自 boring 5.1.0 + BoringSSL package tree，package VCS commit
 200 行。HUAKAI 维护本地 fork，不强求 upstream merge。
 
 attribution: 修改人 HUAKAI codex executor lane (R-3-A-fix-2), 2026-05-17 UTC。
+
+## R-3-A-fix-3: workspace 接入 vendored boring
+
+- workspace `Cargo.toml` 将 `boring` 改为 vendored path dependency。
+- `[patch.crates-io]` redirect `boring-sys` 到 vendored path，避免 `boring`
+  内部版本依赖回落到 crates.io 未 patch 版本。
+- `[patch.crates-io]` 同时 redirect `boring` 到 vendored path，避免 crates.io
+  `tokio-boring` 的 transitive dependency 混入第二份 registry `boring`。
+- `Cargo.lock` 同步为本地 path `boring` / `boring-sys`，不再记录 registry source
+  和 checksum。
+- `cargo check`、`cargo build` 和 `cargo test -p core_gateway --features
+  mimicry-boring --lib` 已通过；测试结果为 105 passed / 3 ignored。
+
+attribution: 修改人 HUAKAI codex executor lane (R-3-A-fix-3), 2026-05-17 UTC。

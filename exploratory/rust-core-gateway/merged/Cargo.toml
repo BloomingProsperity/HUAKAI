@@ -8,8 +8,15 @@ license = "MIT"
 rust-version = "1.95"
 
 [workspace.dependencies]
-boring = { version = "5.1" }
+# R-3-A-fix-3: vendored boring (本地 patch SSL_CTX_set_extension_order)
+boring = { path = "../vendor/boring/boring" }
 tokio-boring = { version = "5.0" }
+
+[patch.crates-io]
+# R-3-A-fix-3: redirect tokio-boring 的 boring 版本依赖，防止混入 crates.io boring
+boring = { path = "../vendor/boring/boring" }
+# R-3-A-fix-3: redirect boring 内部 boring-sys 版本依赖，防止回落到 crates.io 未 patch 版本
+boring-sys = { path = "../vendor/boring/boring-sys" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
