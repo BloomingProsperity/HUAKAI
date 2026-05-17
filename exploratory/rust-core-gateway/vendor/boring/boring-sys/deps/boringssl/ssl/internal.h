@@ -2127,6 +2127,8 @@ bssl::UniquePtr<SSL_SESSION> tls13_create_session_with_ticket(SSL *ssl,
 // ssl_setup_extension_permutation computes a ClientHello extension permutation
 // for |hs|, if applicable. It returns true on success and false on error.
 bool ssl_setup_extension_permutation(SSL_HANDSHAKE *hs);
+bool ssl_huakai_extension_order_from_types(Array<uint16_t> *out,
+                                           Span<const uint16_t> types);
 
 // ssl_setup_key_shares computes client key shares and saves them in |hs|. It
 // returns true on success and false on failure. In order of precedence:
@@ -3327,6 +3329,10 @@ struct SSL_CONFIG {
   // accepted from the peer in decreasing order of preference.
   Array<uint16_t> verify_sigalgs;
 
+  // HUAKAI patch: ClientHello 扩展写入顺序，保存 kExtensions[] 内部 index。
+  // 空数组表示使用 BoringSSL 默认顺序或 permutation。
+  Array<uint16_t> explicit_extension_order;
+
   // srtp_profiles is the list of configured SRTP protection profiles for
   // DTLS-SRTP.
   UniquePtr<STACK_OF(SRTP_PROTECTION_PROFILE)> srtp_profiles;
@@ -3948,6 +3954,10 @@ struct ssl_ctx_st : public bssl::RefCounted<ssl_ctx_st> {
 
   // Supported group values inherited by SSL structure
   bssl::Array<uint16_t> supported_group_list;
+
+  // HUAKAI patch: ClientHello 扩展写入顺序，保存 kExtensions[] 内部 index。
+  // 空数组表示使用 BoringSSL 默认顺序或 permutation。
+  bssl::Array<uint16_t> explicit_extension_order;
 
   // channel_id_private is the client's Channel ID private key, or null if
   // Channel ID should not be offered on this connection.

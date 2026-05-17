@@ -5231,6 +5231,14 @@ OPENSSL_EXPORT void SSL_CTX_set_grease_enabled(SSL_CTX *ctx, int enabled);
 // permute extensions. For now, this is only implemented for the ClientHello.
 OPENSSL_EXPORT void SSL_CTX_set_permute_extensions(SSL_CTX *ctx, int enabled);
 
+// 设置 ClientHello extension 顺序 (HUAKAI patch, not upstream BoringSSL).
+// |types| 是 IANA extension type id 列表; 函数会将之解析到 kExtensions[]
+// table 内部 index 顺序. 未知 type / 重复 type 返 0 (失败).
+// PSK / GREASE / padding extension 保留 BoringSSL 默认特殊处理位置.
+OPENSSL_EXPORT int SSL_CTX_set_extension_order(SSL_CTX *ctx,
+                                               const uint16_t *types,
+                                               size_t types_len);
+
 // SSL_set_permute_extensions configures whether sockets on |ssl| should
 // permute extensions. For now, this is only implemented for the ClientHello.
 OPENSSL_EXPORT void SSL_set_permute_extensions(SSL *ssl, int enabled);

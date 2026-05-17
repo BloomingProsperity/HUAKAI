@@ -534,6 +534,8 @@ SSL *SSL_new(SSL_CTX *ctx) {
   if (!ssl->config->supported_group_list.CopyFrom(ctx->supported_group_list) ||
       !ssl->config->alpn_client_proto_list.CopyFrom(
           ctx->alpn_client_proto_list) ||
+      !ssl->config->explicit_extension_order.CopyFrom(
+          ctx->explicit_extension_order) ||
       !ssl->config->verify_sigalgs.CopyFrom(ctx->verify_sigalgs)) {
     return nullptr;
   }
@@ -3095,6 +3097,20 @@ void SSL_CTX_set_grease_enabled(SSL_CTX *ctx, int enabled) {
 
 void SSL_CTX_set_permute_extensions(SSL_CTX *ctx, int enabled) {
   ctx->permute_extensions = !!enabled;
+}
+
+int SSL_CTX_set_extension_order(SSL_CTX *ctx, const uint16_t *types,
+                                size_t types_len) {
+  if (types == nullptr && types_len != 0) {
+    OPENSSL_PUT_ERROR(SSL, ERR_R_PASSED_NULL_PARAMETER);
+    return 0;
+  }
+  if (types_len == 0) {
+    ctx->explicit_extension_order.Reset();
+    return 1;
+  }
+  return ssl_huakai_extension_order_from_types(
+      &ctx->explicit_extension_order, Span(types, types_len));
 }
 
 void SSL_set_permute_extensions(SSL *ssl, int enabled) {
