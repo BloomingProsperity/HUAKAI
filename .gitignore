@@ -52,6 +52,9 @@ bin/
 *.test
 node_modules/
 vendor/
+!exploratory/rust-core-gateway/vendor/
+!exploratory/rust-core-gateway/vendor/boring/
+!exploratory/rust-core-gateway/vendor/boring/**
 .venv/
 __pycache__/
 *.pyc
