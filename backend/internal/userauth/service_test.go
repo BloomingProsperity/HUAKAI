@@ -214,7 +214,7 @@ func TestAT_AUTH_007_006_007_OAuthFlowUsesVerifiedProviderClaims(t *testing.T) {
 	}
 }
 
-func TestAT_AUTH_007_010_OAuthRejectsUnverifiedProviderClaims(t *testing.T) {
+func TestAuthOAuthRejectsUnverifiedProviderClaims(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 5, 16, 11, 0, 0, 0, time.UTC)
 	store := newMemoryAuthStore(now)
@@ -239,7 +239,7 @@ func TestAT_AUTH_007_010_OAuthRejectsUnverifiedProviderClaims(t *testing.T) {
 	}
 }
 
-func TestAT_AUTH_007_009_VerifiedSocialLinkPreservesPasswordRecovery(t *testing.T) {
+func TestAuthVerifiedSocialLinkPreservesPasswordRecovery(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 5, 16, 11, 15, 0, 0, time.UTC)
 	store := newMemoryAuthStore(now)
