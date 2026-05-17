@@ -185,8 +185,8 @@ func TestDispatcher_ShadowMode_DropWhenQueueFull(t *testing.T) {
 	if elapsed := time.Since(stopStart); elapsed > time.Second {
 		t.Fatalf("Stop 超过 drain timeout 后仍阻塞: elapsed=%s", elapsed)
 	}
-	if got := logBuf.String(); !strings.Contains(got, "dropped ") || !strings.Contains(got, " shadow jobs") {
-		t.Fatalf("Stop timeout 应记录 dropped N shadow jobs warning, 实际 log=%q", got)
+	if got := logBuf.String(); !strings.Contains(got, "reason_class=shadow_drain_timeout") || !strings.Contains(got, "dropped_count=") {
+		t.Fatalf("Stop timeout 应记录 reason_class=shadow_drain_timeout dropped_count=N warning, 实际 log=%q", got)
 	}
 }
 
