@@ -2,44 +2,42 @@ package auditledger
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 )
-
-// auditLedgerAdvisoryLockID 是 pg_advisory_xact_lock 用的固定 ID，确保任意
-// 时刻只有一个 transaction 在 INSERT audit_ledger_entries（防 Merkle 链断裂）。
-//
-// 取值 = sha256("huakai_audit_ledger_writer")[:8] 转 int64，固定不变；
-// 这里硬编码避免运行期算。
-const auditLedgerAdvisoryLockID int64 = 0x4855414B41495F4C // "HUAKAI_L" 前缀辨识
 
 // PostgresLedger 是生产 audit ledger 实现，用 pgxpool 写入 audit_ledger_entries
 // 表。所有 INSERT 在 transaction 内先获取 advisory lock，再读 latest merkle_root，
 // 计算 prev/root/signature，写入，提交；保证链严格 append-only 不断裂。
 type PostgresLedger struct {
-	pool   *pgxpool.Pool
-	signer *sign.Signer
+	pool        *pgxpool.Pool
+	signer      Signer
+	tenantMu    sync.Mutex
+	tenantLocks map[int64]*sync.Mutex
 }
 
 // NewPostgresLedger 构造 PostgresLedger。signer / pool 均不能为 nil。
 // 调用方负责 pool 的 lifecycle（HUAKAI 由 internal/db.Open 创建并 defer Close）。
-func NewPostgresLedger(pool *pgxpool.Pool, signer *sign.Signer) (*PostgresLedger, error) {
+func NewPostgresLedger(pool *pgxpool.Pool, signer any) (*PostgresLedger, error) {
 	if pool == nil {
 		return nil, errors.New("auditledger: pgxpool.Pool required")
 	}
-	if signer == nil {
-		return nil, ErrSignerNil
+	normalized, err := normalizeSigner(signer)
+	if err != nil {
+		return nil, err
 	}
-	return &PostgresLedger{pool: pool, signer: signer}, nil
+	return &PostgresLedger{pool: pool, signer: normalized, tenantLocks: make(map[int64]*sync.Mutex)}, nil
 }
 
 // Append 把 entry 写入 audit_ledger_entries；自动补 Timestamp / PrevMerkleRoot /
@@ -49,12 +47,12 @@ func (l *PostgresLedger) Append(ctx context.Context, entry LedgerEntry) (LedgerE
 	if entry.RequestID == "" {
 		return LedgerEntry{}, errors.New("auditledger: RequestID required for Postgres Append")
 	}
-	if entry.LedgerID == "" {
-		return LedgerEntry{}, errors.New("auditledger: LedgerID required for Postgres Append")
-	}
 	if entry.Timestamp == "" {
 		entry.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
 	}
+
+	unlock := l.lockTenantWriter(entry.TenantID)
+	defer unlock()
 
 	tx, err := l.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
@@ -73,28 +71,46 @@ func (l *PostgresLedger) Append(ctx context.Context, entry LedgerEntry) (LedgerE
 	return entry, nil
 }
 
+func (l *PostgresLedger) lockTenantWriter(tenantID int64) func() {
+	l.tenantMu.Lock()
+	if l.tenantLocks == nil {
+		l.tenantLocks = make(map[int64]*sync.Mutex)
+	}
+	lock := l.tenantLocks[tenantID]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		l.tenantLocks[tenantID] = lock
+	}
+	l.tenantMu.Unlock()
+	lock.Lock()
+	return lock.Unlock
+}
+
 // AppendInTransaction appends an audit ledger entry using the caller-owned
 // database transaction. The caller is responsible for commit/rollback.
-func AppendInTransaction(ctx context.Context, q DBTX, signer *sign.Signer, entry LedgerEntry) (LedgerEntry, error) {
-	if signer == nil {
-		return LedgerEntry{}, ErrSignerNil
+func AppendInTransaction(ctx context.Context, q DBTX, signer any, entry LedgerEntry) (LedgerEntry, error) {
+	normalized, err := normalizeSigner(signer)
+	if err != nil {
+		return LedgerEntry{}, err
 	}
 	if entry.RequestID == "" {
 		return LedgerEntry{}, errors.New("auditledger: RequestID required for Postgres Append")
-	}
-	if entry.LedgerID == "" {
-		return LedgerEntry{}, errors.New("auditledger: LedgerID required for Postgres Append")
 	}
 	if entry.Timestamp == "" {
 		entry.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
 	}
 
-	if _, err := q.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", auditLedgerAdvisoryLockID); err != nil {
+	if _, err := q.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", auditLedgerAdvisoryLockKey(entry.TenantID)); err != nil {
 		return LedgerEntry{}, fmt.Errorf("auditledger: advisory lock: %w", err)
 	}
+	ledgerID, err := nextLedgerID(ctx, q, entry.TenantID)
+	if err != nil {
+		return LedgerEntry{}, fmt.Errorf("auditledger: next ledger id: %w", err)
+	}
+	entry.LedgerID = ledgerID
 
 	var prev [32]byte
-	prevBytes, err := readLatestMerkleRoot(ctx, q)
+	prevBytes, err := readLatestMerkleRoot(ctx, q, entry.TenantID)
 	if err != nil {
 		return LedgerEntry{}, fmt.Errorf("auditledger: read latest merkle: %w", err)
 	}
@@ -102,14 +118,33 @@ func AppendInTransaction(ctx context.Context, q DBTX, signer *sign.Signer, entry
 		copy(prev[:], prevBytes)
 	}
 	entry.PrevMerkleRoot = prev
-	entry.PubkeyFingerprint = signer.Fingerprint()
+	fp, err := signerFingerprint(ctx, normalized)
+	if err != nil {
+		return LedgerEntry{}, fmt.Errorf("auditledger: signer fingerprint: %w", err)
+	}
+	entry.PubkeyFingerprint = fp
 
 	eh, err := EntryHash(&entry)
 	if err != nil {
 		return LedgerEntry{}, fmt.Errorf("auditledger: entry hash: %w", err)
 	}
 	entry.MerkleRoot = NextMerkleRoot(prev, eh)
-	sig := signer.Sign(eh[:])
+	sig, fp, err := normalized.Sign(ctx, eh[:])
+	if err != nil {
+		return LedgerEntry{}, fmt.Errorf("auditledger: sign: %w", err)
+	}
+	if fp != entry.PubkeyFingerprint {
+		entry.PubkeyFingerprint = fp
+		eh, err = EntryHash(&entry)
+		if err != nil {
+			return LedgerEntry{}, fmt.Errorf("auditledger: entry hash: %w", err)
+		}
+		entry.MerkleRoot = NextMerkleRoot(prev, eh)
+		sig, _, err = normalized.Sign(ctx, eh[:])
+		if err != nil {
+			return LedgerEntry{}, fmt.Errorf("auditledger: sign: %w", err)
+		}
+	}
 	entry.Signature = base64.StdEncoding.EncodeToString(sig)
 
 	hopJSON, err := json.Marshal(entry.HopChain)
@@ -173,7 +208,20 @@ func (l *PostgresLedger) GetByRequestID(ctx context.Context, requestID string) (
 
 // LatestMerkleRoot 返回最新链尾 root；空 ledger 返回 ZeroRoot。
 func (l *PostgresLedger) LatestMerkleRoot(ctx context.Context) ([32]byte, error) {
-	prevBytes, err := readLatestMerkleRoot(ctx, l.pool)
+	prevBytes, err := readLatestMerkleRootAny(ctx, l.pool)
+	if err != nil {
+		return ZeroRoot, err
+	}
+	if prevBytes == nil {
+		return ZeroRoot, nil
+	}
+	var out [32]byte
+	copy(out[:], prevBytes)
+	return out, nil
+}
+
+func (l *PostgresLedger) LatestMerkleRootForTenant(ctx context.Context, tenantID int64) ([32]byte, error) {
+	prevBytes, err := readLatestMerkleRoot(ctx, l.pool, tenantID)
 	if err != nil {
 		return ZeroRoot, err
 	}
@@ -204,7 +252,23 @@ type DBTX interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-func readLatestMerkleRoot(ctx context.Context, q pgxQuerier) ([]byte, error) {
+func readLatestMerkleRoot(ctx context.Context, q pgxQuerier, tenantID int64) ([]byte, error) {
+	var prev []byte
+	tenantArg := tenantDBArg(tenantID)
+	err := q.QueryRow(ctx,
+		"SELECT merkle_root FROM audit_ledger_entries WHERE tenant_id IS NOT DISTINCT FROM $1 ORDER BY id DESC LIMIT 1",
+		tenantArg,
+	).Scan(&prev)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return prev, nil
+}
+
+func readLatestMerkleRootAny(ctx context.Context, q pgxQuerier) ([]byte, error) {
 	var prev []byte
 	err := q.QueryRow(ctx,
 		"SELECT merkle_root FROM audit_ledger_entries ORDER BY id DESC LIMIT 1",
@@ -216,6 +280,36 @@ func readLatestMerkleRoot(ctx context.Context, q pgxQuerier) ([]byte, error) {
 		return nil, err
 	}
 	return prev, nil
+}
+
+func auditLedgerAdvisoryLockKey(tenantID int64) int64 {
+	sum := sha256.Sum256([]byte("huakai-audit-ledger-writer:" + itoa64(tenantID)))
+	return int64(binary.BigEndian.Uint64(sum[:8]))
+}
+
+func nextLedgerID(ctx context.Context, q pgxQuerier, tenantID int64) (string, error) {
+	var n int64
+	if err := q.QueryRow(ctx,
+		"SELECT COUNT(*) FROM audit_ledger_entries WHERE tenant_id IS NOT DISTINCT FROM $1",
+		tenantDBArg(tenantID),
+	).Scan(&n); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("ldg_%s_%020d", ledgerIDTenantPart(tenantID), n+1), nil
+}
+
+func tenantDBArg(tenantID int64) any {
+	if tenantID > 0 {
+		return tenantID
+	}
+	return nil
+}
+
+func ledgerIDTenantPart(tenantID int64) string {
+	if tenantID == 0 {
+		return "global"
+	}
+	return strings.ReplaceAll(TenantScopeRef(tenantID), ":", "_")
 }
 
 // scanLedgerEntry 把一行 PG row 转为 LedgerEntry。
