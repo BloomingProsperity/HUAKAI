@@ -835,6 +835,12 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	// Admin: Provider Accounts canonical contract for the frontend/OpenAPI.
 	r.Route("/admin/v1/provider-accounts", mountProviderAccountAdminRoutes)
 	r.Route("/v1/admin/provider-accounts", mountProviderAccountAdminRoutes)
+	r.Route("/v1/admin/channel-health", func(r chi.Router) {
+		gatewayhttp.MountChannelHealthReadAdminRoutes(r, gatewayhttp.ChannelHealthAdminDeps{
+			Auth:       d.adminAuth,
+			Controller: d.channelHealth,
+		})
+	})
 	// TODO(post-Phase-6): delete legacy pool-accounts alias after emergency rollback clients migrate.
 	r.Route("/v1/admin/pool-accounts", mountProviderAccountAdminRoutes)
 

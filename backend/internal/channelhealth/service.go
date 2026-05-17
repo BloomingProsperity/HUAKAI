@@ -230,6 +230,39 @@ func (s *Service) ForceActive(ctx context.Context, key ChannelKey, actorID, reas
 	return s.manualTransition(ctx, key, actorID, reason, StateActive, 0, []AuditEventType{EventManualOverride, EventRecovered}, "security")
 }
 
+func (s *Service) ListChannelHealth(ctx context.Context, tenantID int64, limit, offset int) ([]ChannelHealthState, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("channelhealth: service not configured")
+	}
+	if tenantID <= 0 {
+		return nil, errors.New("tenant_id must be positive")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	if offset < 0 {
+		return nil, errors.New("offset must be non-negative")
+	}
+	return s.store.ListChannelHealth(ctx, tenantID, limit, offset)
+}
+
+func (s *Service) GetChannelHealth(ctx context.Context, tenantID int64, channelID string) (ChannelHealthState, []AuditEvent, error) {
+	if s == nil || s.store == nil {
+		return ChannelHealthState{}, nil, errors.New("channelhealth: service not configured")
+	}
+	if tenantID <= 0 {
+		return ChannelHealthState{}, nil, errors.New("tenant_id must be positive")
+	}
+	channelID = strings.TrimSpace(channelID)
+	if channelID == "" {
+		return ChannelHealthState{}, nil, errors.New("channel_id is required")
+	}
+	return s.store.GetChannelHealth(ctx, tenantID, channelID)
+}
+
 func (s *Service) recordForMutation(ctx context.Context, key ChannelKey) (Record, error) {
 	if s == nil || s.store == nil {
 		return Record{}, errors.New("channelhealth: service not configured")
