@@ -11,6 +11,8 @@ default = []
 tls = ["tonic/tls", "tonic/tls-roots"]
 # L2-A4: OpenSSL mimicry backend skeleton, 默认不编译进网关 binary。
 mimicry-openssl = ["dep:openssl", "dep:tokio-openssl"]
+# R-2-B: BoringSSL mimicry backend 预接线, 默认不编译进网关 binary。
+mimicry-boring = ["dep:boring", "dep:tokio-boring"]
 # L2-A6: MIT http2 fork 仅用于 SETTINGS / pseudo-header 顺序表达。
 mimicry-http2-fork = ["dep:http2"]
 
@@ -20,6 +22,7 @@ workspace = true
 [dependencies]
 # 异步运行时
 axum = { version = "0.8", features = ["http1", "json", "tokio"] }
+boring = { workspace = true, optional = true }
 bytes = "1"
 dashmap = "6.1"
 # 环境变量解析 (带前缀, 强类型)
@@ -44,6 +47,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-boring = { workspace = true, optional = true }
 tokio-openssl = { version = "0.6", optional = true }
 tokio-stream = { version = "0.1", features = ["net"] }
 tonic = { version = "0.12.3", features = ["transport"] }
