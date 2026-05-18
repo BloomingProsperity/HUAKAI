@@ -362,9 +362,14 @@ func run(logger *zap.Logger) error {
 	if err != nil {
 		return fmt.Errorf("build audit refund pending store: %w", err)
 	}
-	refundWorker := auditreceipt.NewMismatchRefundWorker(refundPendingStore, baseSettler, receiptFormatter,
+	refundWorkerOpts := []auditreceipt.RefundWorkerOption{
 		auditreceipt.WithRefundLedger(auditLedger),
-		auditreceipt.WithRefundReceiptSink(refundReceiptSink{appender: receiptStore}))
+		auditreceipt.WithRefundReceiptSink(receiptStore),
+	}
+	if _, ok := auditLedger.(*auditledger.PostgresLedger); ok {
+		refundWorkerOpts = append(refundWorkerOpts, auditreceipt.WithRefundTxPool(pgPool))
+	}
+	refundWorker := auditreceipt.NewMismatchRefundWorker(refundPendingStore, baseSettler, receiptFormatter, refundWorkerOpts...)
 	dlqService.Register(legacydlq.EventKindAuditMismatchRefund, refundWorker.Handler())
 	refundQueue := auditreceipt.NewMismatchRefundQueue(dlqService)
 	receiptHook := auditreceipt.NewReceiptHookHandler(receiptFormatter, receiptStore,
@@ -911,9 +916,9 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	}
 	r.Route("/v1/receipts", func(r chi.Router) {
 		r.With(auth.SessionMiddleware(d.userSessions)).Get("/{request_id}", gatewayhttp.NewCostReceiptGetHandler(receiptDeps))
-		r.Post("/{request_id}/verify", gatewayhttp.NewCostReceiptVerifyHandler(receiptDeps))
+		r.With(auth.SessionMiddleware(d.userSessions)).Post("/{request_id}/verify", gatewayhttp.NewCostReceiptVerifyHandler(receiptDeps))
 		r.With(auth.SessionMiddleware(d.userSessions)).Get("/*", gatewayhttp.NewCostReceiptGetHandler(receiptDeps))
-		r.Post("/*", gatewayhttp.NewCostReceiptVerifyHandler(receiptDeps))
+		r.With(auth.SessionMiddleware(d.userSessions)).Post("/*", gatewayhttp.NewCostReceiptVerifyHandler(receiptDeps))
 	})
 	r.Get("/v1/pricing/rate-table", gatewayhttp.NewPricingRateTableHandler(receiptDeps))
 	r.Get("/v1/pricing/snapshots", gatewayhttp.NewPricingSnapshotsHandler(receiptDeps))

@@ -133,6 +133,11 @@ func NewCostReceiptVerifyHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "receipt signer dependency unset")
 			return
 		}
+		ident, ok := sessionauth.SessionFromContext(r.Context())
+		if !ok {
+			writeJSONError(w, http.StatusUnauthorized, "session_token_required", "session bearer token is required")
+			return
+		}
 		requestID, ok := receiptVerifyRequestIDFromPath(w, r)
 		if !ok {
 			return
@@ -179,11 +184,20 @@ func NewCostReceiptVerifyHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 		verifyVerdict := ""
 		var mismatch audit.MismatchVerdict
 		var refundEventID int64
+		if valid && !userReceiptBelongsToTenant(req, ident.TenantID) {
+			writeJSONError(w, http.StatusNotFound, "receipt_not_found", "receipt not found")
+			return
+		}
 		if valid && d.DerivedReceipts != nil {
 			derived, err := d.DerivedReceipts.DeriveReceipt(r.Context(), requestID)
 			if err != nil || derived == nil {
 				verifyVerdict = audit.ReceiptVerdictUnknown
 			} else {
+				// 防止已签名的跨租户 receipt 借同一 request_id 触发退款队列。
+				if derived.TenantID != ident.TenantID || !userReceiptBelongsToTenant(req, derived.TenantID) {
+					writeJSONError(w, http.StatusNotFound, "receipt_not_found", "receipt not found")
+					return
+				}
 				submitted := auditReceiptFromUserReceipt(req, derived.TenantID)
 				mismatch, err = audit.DetectReceiptMismatch(derived, submitted)
 				if err != nil {
@@ -193,7 +207,7 @@ func NewCostReceiptVerifyHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 				verifyVerdict = mismatch.State
 				if mismatch.State == audit.ReceiptValidationStateMismatchPending {
 					valid = false
-					if d.MismatchRefunds != nil {
+					if mismatch.RefundEligible() && d.MismatchRefunds != nil {
 						refundEventID, err = d.MismatchRefunds.EnqueueMismatchRefund(r.Context(), derived, mismatch)
 						if err != nil {
 							writeJSONError(w, http.StatusServiceUnavailable, "refund_enqueue_failed", "mismatch refund could not be queued")
@@ -356,6 +370,17 @@ func auditReceiptFromUserReceipt(receipt UserCostReceipt, tenantID int64) *audit
 		Verdict:             strings.TrimSpace(receipt.Verdict),
 		AdjustmentRefs:      canonicalAdjustmentRefs(receipt.AdjustmentRefs),
 		CreatedAt:           userReceiptTime(receipt.OccurredAt),
+	}
+}
+
+func userReceiptBelongsToTenant(receipt UserCostReceipt, tenantID int64) bool {
+	switch strings.TrimSpace(firstNonEmpty(receipt.SchemaVersion, audit.ReceiptSchemaVersion)) {
+	case audit.ReceiptSchemaVersionV1:
+		return receipt.TenantID == tenantID
+	case audit.ReceiptSchemaVersion:
+		return strings.TrimSpace(receipt.TenantScopeRef) == auditledger.TenantScopeRef(tenantID)
+	default:
+		return false
 	}
 }
 

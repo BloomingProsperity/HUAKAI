@@ -76,7 +76,7 @@ func TestAT_AUDIT_001_013_DetachedVerifyPass(t *testing.T) {
 	receipt := signedGatewayReceipt(t, signer, 7, "req-verify")
 	payload := mustUserReceipt(t, receipt)
 
-	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Signer: signer, Now: fixedReceiptNow}), http.MethodPost, "/v1/receipts/req-verify/verify", payload, sessionauth.SessionIdentity{})
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Signer: signer, Now: fixedReceiptNow}), http.MethodPost, "/v1/receipts/req-verify/verify", payload, receiptSession(7))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -115,7 +115,7 @@ func TestAT_AUDIT_001_032_RefundedReceiptVerifyPass(t *testing.T) {
 		t.Fatalf("receipt_sequence=%d want 1 payload=%+v", payload.ReceiptSequence, payload)
 	}
 
-	verifyRec := doReceiptRequest(t, router, http.MethodPost, "/v1/receipts/req-refunded-verify/verify", payload, sessionauth.SessionIdentity{})
+	verifyRec := doReceiptRequest(t, router, http.MethodPost, "/v1/receipts/req-refunded-verify/verify", payload, receiptSession(7))
 	if verifyRec.Code != http.StatusOK {
 		t.Fatalf("verify status=%d body=%s", verifyRec.Code, verifyRec.Body.String())
 	}
@@ -162,7 +162,7 @@ func TestAT_AUDIT_001_014d_DetachedVerifyAdjustmentRefsTamperFails(t *testing.T)
 
 func assertDetachedVerifyInvalid(t *testing.T, signer *sign.Signer, requestID string, payload UserCostReceipt) {
 	t.Helper()
-	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Signer: signer, Now: fixedReceiptNow}), http.MethodPost, "/v1/receipts/"+requestID+"/verify", payload, sessionauth.SessionIdentity{})
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Signer: signer, Now: fixedReceiptNow}), http.MethodPost, "/v1/receipts/"+requestID+"/verify", payload, receiptSession(7))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -262,7 +262,7 @@ func TestAT_AUDIT_001_019_VerifyV2CoversTrustFields(t *testing.T) {
 	payload.Verdict = "mismatch_refund_pending"
 	payload.AdjustmentRefs = []string{"adj-ref-1"}
 
-	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Signer: signer, Now: fixedReceiptNow}), http.MethodPost, "/v1/receipts/req-trust/verify", payload, sessionauth.SessionIdentity{})
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Signer: signer, Now: fixedReceiptNow}), http.MethodPost, "/v1/receipts/req-trust/verify", payload, receiptSession(7))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -279,7 +279,7 @@ func TestAT_AUDIT_001_020_VerifyV1Legacy(t *testing.T) {
 	signer := mustReceiptSigner(t)
 	payload := legacyV1UserReceipt(t, signer, 7, "req-v1-legacy")
 
-	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Signer: signer, Now: fixedReceiptNow}), http.MethodPost, "/v1/receipts/req-v1-legacy/verify", payload, sessionauth.SessionIdentity{})
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Signer: signer, Now: fixedReceiptNow}), http.MethodPost, "/v1/receipts/req-v1-legacy/verify", payload, receiptSession(7))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -298,7 +298,7 @@ func TestAT_AUDIT_001_024_VerifyMismatchEnqueuesRefund(t *testing.T) {
 	payload := mustUserReceipt(t, submitted)
 	derived := *submitted
 	derived.ClaimID = 909
-	derived.CostUSDMicros = submitted.CostUSDMicros + 50
+	derived.CostUSDMicros = submitted.CostUSDMicros - 50
 	queue := &mismatchRefundQueueStub{}
 
 	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{
@@ -306,7 +306,7 @@ func TestAT_AUDIT_001_024_VerifyMismatchEnqueuesRefund(t *testing.T) {
 		Now:             fixedReceiptNow,
 		DerivedReceipts: &derivedReceiptStub{receipt: &derived},
 		MismatchRefunds: queue,
-	}), http.MethodPost, "/v1/receipts/req-mismatch-refund/verify", payload, sessionauth.SessionIdentity{})
+	}), http.MethodPost, "/v1/receipts/req-mismatch-refund/verify", payload, receiptSession(7))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -322,6 +322,127 @@ func TestAT_AUDIT_001_024_VerifyMismatchEnqueuesRefund(t *testing.T) {
 	}
 }
 
+func TestAT_AUDIT_001_049_UnderChargeNoEnqueue(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	submitted := signedGatewayReceipt(t, signer, 7, "req-undercharge-no-enqueue")
+	payload := mustUserReceipt(t, submitted)
+	derived := *submitted
+	derived.ClaimID = 910
+	derived.CostUSDMicros = submitted.CostUSDMicros + 50
+	queue := &mismatchRefundQueueStub{}
+
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{
+		Signer:          signer,
+		Now:             fixedReceiptNow,
+		DerivedReceipts: &derivedReceiptStub{receipt: &derived},
+		MismatchRefunds: queue,
+	}), http.MethodPost, "/v1/receipts/req-undercharge-no-enqueue/verify", payload, receiptSession(7))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got receiptVerifyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Valid || got.Verdict != audit.ReceiptValidationStateMismatchPending || got.DeltaMicroUSD != 50 || got.RefundEventID != 0 {
+		t.Fatalf("verify under-charge response=%+v", got)
+	}
+	if queue.calls != 0 {
+		t.Fatalf("under-charge verify must not enqueue mismatch refund; calls=%d", queue.calls)
+	}
+}
+
+func TestAT_AUDIT_001_041_VerifyRequiresSession(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	payload := mustUserReceipt(t, signedGatewayReceipt(t, signer, 7, "req-verify-session"))
+
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Signer: signer, Now: fixedReceiptNow}), http.MethodPost, "/v1/receipts/req-verify-session/verify", payload, sessionauth.SessionIdentity{})
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d want 401 body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "session_token_required") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestAT_AUDIT_001_042_VerifyCrossTenant404(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	requestID := "req-verify-cross-tenant"
+	submitted := signedGatewayReceipt(t, signer, 8, requestID)
+	payload := mustUserReceipt(t, submitted)
+	derived := *signedGatewayReceipt(t, signer, 7, requestID)
+	queue := &mismatchRefundQueueStub{}
+
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{
+		Signer:          signer,
+		Now:             fixedReceiptNow,
+		DerivedReceipts: &derivedReceiptStub{receipt: &derived},
+		MismatchRefunds: queue,
+	}), http.MethodPost, "/v1/receipts/"+requestID+"/verify", payload, receiptSession(8))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d want 404 body=%s", rec.Code, rec.Body.String())
+	}
+	if queue.calls != 0 {
+		t.Fatalf("cross-tenant verify must not enqueue mismatch refund; calls=%d", queue.calls)
+	}
+}
+
+func TestAT_AUDIT_001_043_VerifyEnqueueOnlySameTenant(t *testing.T) {
+	t.Run("same tenant mismatch enqueues", func(t *testing.T) {
+		signer := mustReceiptSigner(t)
+		submitted := signedGatewayReceipt(t, signer, 7, "req-enqueue-same-tenant")
+		payload := mustUserReceipt(t, submitted)
+		derived := *submitted
+		derived.ClaimID = 1001
+		derived.CostUSDMicros = submitted.CostUSDMicros - 75
+		queue := &mismatchRefundQueueStub{}
+
+		rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{
+			Signer:          signer,
+			Now:             fixedReceiptNow,
+			DerivedReceipts: &derivedReceiptStub{receipt: &derived},
+			MismatchRefunds: queue,
+		}), http.MethodPost, "/v1/receipts/req-enqueue-same-tenant/verify", payload, receiptSession(7))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var got receiptVerifyResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if got.Valid || got.Verdict != audit.ReceiptValidationStateMismatchPending || got.RefundEventID != 808 {
+			t.Fatalf("verify mismatch response=%+v", got)
+		}
+		if queue.calls != 1 || queue.receipt == nil || queue.receipt.TenantID != 7 {
+			t.Fatalf("refund enqueue calls=%d receipt=%+v", queue.calls, queue.receipt)
+		}
+	})
+
+	t.Run("submitted tenant mismatch blocks enqueue", func(t *testing.T) {
+		signer := mustReceiptSigner(t)
+		requestID := "req-enqueue-cross-submitted"
+		submitted := signedGatewayReceipt(t, signer, 8, requestID)
+		payload := mustUserReceipt(t, submitted)
+		derived := *signedGatewayReceipt(t, signer, 7, requestID)
+		derived.ClaimID = 1002
+		derived.CostUSDMicros = submitted.CostUSDMicros + 75
+		queue := &mismatchRefundQueueStub{}
+
+		rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{
+			Signer:          signer,
+			Now:             fixedReceiptNow,
+			DerivedReceipts: &derivedReceiptStub{receipt: &derived},
+			MismatchRefunds: queue,
+		}), http.MethodPost, "/v1/receipts/"+requestID+"/verify", payload, receiptSession(7))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status=%d want 404 body=%s", rec.Code, rec.Body.String())
+		}
+		if queue.calls != 0 {
+			t.Fatalf("cross-tenant verify must not enqueue mismatch refund; calls=%d", queue.calls)
+		}
+	})
+}
+
 func TestAT_AUDIT_001_029_VerifyDerivationErrorReturnsUnknown(t *testing.T) {
 	signer := mustReceiptSigner(t)
 	payload := mustUserReceipt(t, signedGatewayReceipt(t, signer, 7, "req-derive-unavailable"))
@@ -332,7 +453,7 @@ func TestAT_AUDIT_001_029_VerifyDerivationErrorReturnsUnknown(t *testing.T) {
 		Now:             fixedReceiptNow,
 		DerivedReceipts: &derivedReceiptStub{err: errors.New("temporary derivation outage")},
 		MismatchRefunds: queue,
-	}), http.MethodPost, "/v1/receipts/req-derive-unavailable/verify", payload, sessionauth.SessionIdentity{})
+	}), http.MethodPost, "/v1/receipts/req-derive-unavailable/verify", payload, receiptSession(7))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -359,7 +480,7 @@ func TestAT_AUDIT_001_021_RequestIDWithSlash(t *testing.T) {
 		t.Fatalf("get status=%d body=%s", getRec.Code, getRec.Body.String())
 	}
 	payload := mustUserReceipt(t, receipt)
-	verifyRec := doReceiptRequest(t, r, http.MethodPost, "/v1/receipts/host/random-000001/verify", payload, sessionauth.SessionIdentity{})
+	verifyRec := doReceiptRequest(t, r, http.MethodPost, "/v1/receipts/host/random-000001/verify", payload, receiptSession(7))
 	if verifyRec.Code != http.StatusOK {
 		t.Fatalf("verify status=%d body=%s", verifyRec.Code, verifyRec.Body.String())
 	}
@@ -557,6 +678,10 @@ func legacyV1UserReceipt(t *testing.T, signer *sign.Signer, tenantID int64, requ
 
 func fixedReceiptNow() time.Time {
 	return time.Date(2026, 5, 18, 9, 0, 0, 0, time.UTC)
+}
+
+func receiptSession(tenantID int64) sessionauth.SessionIdentity {
+	return sessionauth.SessionIdentity{TenantID: tenantID, UserID: 42}
 }
 
 type receiptStoreStub struct {
