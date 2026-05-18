@@ -35,7 +35,7 @@ type Settler interface {
 	// Abort aborts the claim with usage_values=0 (terminal upstream failure
 	// or AMBIGUOUS_USAGE end class). Tenant-scoped to prevent cross-tenant
 	// abort via stale claim id.
-	Abort(ctx context.Context, tenantID, claimID int64, reason string) error
+	Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string) error
 }
 
 // ReserveRequest carries Tx1 inputs.
@@ -83,6 +83,7 @@ type SettleRequest struct {
 	Draft               gateway.UsageRecordDraft
 	StreamAttempt       *Attempt
 	Fingerprint         string
+	AuditRequestID      string
 	OutboxEmitter       func() bool
 	// SnapshotVersion is the registry+router stamp produced by
 	// router.Plan as of N+5b (format "registry:<tid>:<v>;router:<rv>").

@@ -84,7 +84,7 @@ type stubSettler struct {
 func (s *stubSettler) Settle(_ context.Context, _ billing.SettleRequest) (*billing.SettleResult, error) {
 	return &billing.SettleResult{}, nil
 }
-func (s *stubSettler) Abort(_ context.Context, _, _ int64, _ string) error {
+func (s *stubSettler) Abort(_ context.Context, _, _ int64, _, _ string) error {
 	s.abortCalls++
 	return nil
 }

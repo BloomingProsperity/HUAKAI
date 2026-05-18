@@ -45,11 +45,11 @@ F-AUDIT-001 实施 = per-request user-facing cost receipt + cost validation API 
 | `cache_read_token_count` | cache hit input, 按 D-AUDIT-1 charge ratio (默认 0) |
 | `cache_write_token_count` | cache write input, 按 D-AUDIT-1 ratio (默认 1x) |
 | `cost_rate_version` | rate table 版本 (e.g. anthropic_2025_q1_v3) — historical immutable, 老 receipt 永久按当时 version 验 |
-| `cost_total_microcents` | 本 request 总 cost (microcents = 1/1000 cent) |
+| `cost_total_micro_usd` | 本 request 总 cost (micro-USD = USD × 10^6) |
 | `model_actual_billed` | 实际按哪个 model rate 计 (跟 F-TRUST model_chain.route_decided 一致) |
 | `retry_attempt_count` | retry 次数; 按 D-AUDIT-3 (默认仅 final attempt 计费, failed pre-output 0 charge) |
-| `substitution_refund_microcents` | substitution (opus→sonnet) 退差价 |
-| `voucher_redeemed_microcents` | voucher 抵扣 (F-BILL-002 cross-ref) |
+| `substitution_refund_micro_usd` | substitution (opus→sonnet) 退差价 (micro-USD = USD × 10^6) |
+| `voucher_redeemed_micro_usd` | voucher 抵扣 (F-BILL-002 cross-ref, micro-USD = USD × 10^6) |
 | `upstream_free_tier_used` | 是否走上游 free quota (operator policy 决定是否 0 charge user) |
 | `usage_source` | `authoritative` (upstream 报数) / `provisional` (streaming-in-flight 估) / `inferred` (上游未报, HUAKAI 推算) — 用户透明区分 |
 
@@ -88,8 +88,8 @@ Receipt 严禁含 prompt/completion (F-PRIV-001 redaction enforced).
 
 用户 client-side:
 ```
-cost_expected = sum(token_type × rate) × model_multiplier - substitution_refund - voucher_redeemed
-assert(cost_expected == cost_total_microcents)
+cost_expected = sum(token_type × rate) × model_multiplier - substitution_refund_micro_usd - voucher_redeemed_micro_usd
+assert(cost_expected == cost_total_micro_usd)
 ```
 
 rate 从 `/v1/pricing/{cost_rate_version}` 拿 (public endpoint, 可缓存).
