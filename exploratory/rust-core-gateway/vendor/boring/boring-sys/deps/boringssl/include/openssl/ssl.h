@@ -5239,6 +5239,12 @@ OPENSSL_EXPORT int SSL_CTX_set_extension_order(SSL_CTX *ctx,
                                                const uint16_t *types,
                                                size_t types_len);
 
+// 设置 ClientHello TLS 1.3 cipher suite 顺序 (HUAKAI patch, not upstream
+// BoringSSL). 仅接受 BoringSSL 当前支持的 TLS 1.3 AEAD cipher id。
+OPENSSL_EXPORT int SSL_CTX_set_tls13_cipher_order(SSL_CTX *ctx,
+                                                  const uint16_t *types,
+                                                  size_t types_len);
+
 // SSL_set_permute_extensions configures whether sockets on |ssl| should
 // permute extensions. For now, this is only implemented for the ClientHello.
 OPENSSL_EXPORT void SSL_set_permute_extensions(SSL *ssl, int enabled);

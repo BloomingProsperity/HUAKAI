@@ -1983,6 +1983,18 @@ impl SslContextBuilder {
         }
     }
 
+    /// 设置 ClientHello TLS 1.3 cipher suite 顺序 (HUAKAI patch).
+    #[corresponds(SSL_CTX_set_tls13_cipher_order)]
+    pub fn set_tls13_cipher_order(&mut self, types: &[u16]) -> Result<(), ErrorStack> {
+        unsafe {
+            cvt(ffi::SSL_CTX_set_tls13_cipher_order(
+                self.as_ptr(),
+                types.as_ptr(),
+                types.len(),
+            ))
+        }
+    }
+
     /// Sets the context's supported signature verification algorithms.
     #[corresponds(SSL_CTX_set_verify_algorithm_prefs)]
     pub fn set_verify_algorithm_prefs(

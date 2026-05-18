@@ -34,6 +34,12 @@ pub fn build_boring_connector(
             .set_cipher_list(&cipher_list)
             .map_err(BoringMimicryError::from_boring)?;
     }
+    let tls13_cipher_order = tls13_cipher_order_from_codes(&layout.cipher_suites);
+    if !tls13_cipher_order.is_empty() {
+        builder
+            .set_tls13_cipher_order(&tls13_cipher_order)
+            .map_err(BoringMimicryError::from_boring)?;
+    }
 
     let groups = openssl_curve_names_from_codes(&layout.supported_groups)?;
     if !groups.is_empty() {
@@ -253,6 +259,10 @@ fn ssl_version_from_code(code: u16) -> Result<SslVersion, BoringMimicryError> {
 
 fn is_tls13_cipher(code: u16) -> bool {
     matches!(code, 0x1301 | 0x1302 | 0x1303 | 0x1304 | 0x1305)
+}
+
+fn tls13_cipher_order_from_codes(codes: &[u16]) -> Vec<u16> {
+    codes.iter().copied().filter(|code| is_tls13_cipher(*code)).collect()
 }
 
 fn is_signaling_cipher_suite_value(code: u16) -> bool {

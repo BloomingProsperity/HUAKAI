@@ -130,3 +130,19 @@ R-3-A-fix-4 发现上一轮排序 API 仍会补齐未列出的 `kExtensions[]`�
 ### Apache-2.0 §4 attribution
 modification: HUAKAI codex executor lane (R-3-A-fix-2-deeper), 2026-05-17 UTC。
 未新增非 boring 依赖，未修改 HUAKAI 主仓 LICENSE。
+
+## R-3-A-fix-3-deeper: TLS 1.3 cipher order
+
+本轮确认 extension order 已匹配 profile；Kiro 只差 TLS1.3 cipher suite 顺序，
+Codex/Gemini 仍差 TLS1.2 cipher、group、EC point format，继续保留 diagnostic
+failure，不伪 PASS。
+
+- `include/openssl/ssl.h` / `ssl_lib.cc`: 增加 HUAKAI 本地
+  `SSL_CTX_set_tls13_cipher_order`，校验 TLS1.3 AEAD cipher id 并拒绝重复值。
+- `internal.h` / `handshake_client.cc`: 保存并复制显式 TLS1.3 cipher order；
+  ClientHello 写入优先使用 profile 顺序，未设置时保留 BoringSSL 原逻辑。
+- `boring/src/ssl/mod.rs`: 增加 Rust wrapper
+  `set_tls13_cipher_order(&mut self, types: &[u16]) -> Result<(), ErrorStack>`。
+
+modification: HUAKAI codex executor lane (R-3-A-fix-3-deeper), 2026-05-18 UTC。
+未新增非 boring 依赖，未修改 HUAKAI 主仓 LICENSE。

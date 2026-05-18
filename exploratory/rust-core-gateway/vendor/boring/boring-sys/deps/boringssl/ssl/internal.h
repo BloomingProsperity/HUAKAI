@@ -3333,6 +3333,9 @@ struct SSL_CONFIG {
   // strict mode 为 true 时仅发送数组列出的内部扩展。
   Array<uint16_t> explicit_extension_order;
 
+  // HUAKAI patch: profile 指定的 TLS 1.3 cipher suite 顺序。
+  Array<uint16_t> explicit_tls13_cipher_order;
+
   // srtp_profiles is the list of configured SRTP protection profiles for
   // DTLS-SRTP.
   UniquePtr<STACK_OF(SRTP_PROTECTION_PROFILE)> srtp_profiles;
@@ -3397,6 +3400,7 @@ struct SSL_CONFIG {
   // HUAKAI patch: strict mode suppresses internal extensions absent from
   // |explicit_extension_order|.
   bool has_explicit_order_strict_mode : 1;
+  bool has_explicit_tls13_cipher_order : 1;
   // aes_hw_override if set indicates we should override checking for aes
   // hardware support, and use the value in aes_hw_override_value instead.
   bool aes_hw_override : 1;
@@ -3962,6 +3966,9 @@ struct ssl_ctx_st : public bssl::RefCounted<ssl_ctx_st> {
   // strict mode 为 true 时仅发送数组列出的内部扩展。
   bssl::Array<uint16_t> explicit_extension_order;
 
+  // HUAKAI patch: profile 指定的 TLS 1.3 cipher suite 顺序。
+  bssl::Array<uint16_t> explicit_tls13_cipher_order;
+
   // channel_id_private is the client's Channel ID private key, or null if
   // Channel ID should not be offered on this connection.
   bssl::UniquePtr<EVP_PKEY> channel_id_private;
@@ -4031,6 +4038,7 @@ struct ssl_ctx_st : public bssl::RefCounted<ssl_ctx_st> {
   // HUAKAI patch: strict mode suppresses internal extensions absent from
   // |explicit_extension_order|.
   bool has_explicit_order_strict_mode : 1;
+  bool has_explicit_tls13_cipher_order : 1;
   // allow_unknown_alpn_protos is whether the client allows unsolicited ALPN
   // protocols from the peer.
   bool allow_unknown_alpn_protos : 1;

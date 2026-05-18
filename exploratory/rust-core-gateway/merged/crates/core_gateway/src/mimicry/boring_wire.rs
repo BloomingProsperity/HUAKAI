@@ -16,29 +16,19 @@ async fn anthropic_boring_client_hello_byte_level_matches_profile() {
     test_vendor_byte_level(BuiltinProfile::AnthropicClaudeCode, "api.anthropic.com").await;
 }
 
-// R-3-A-fix-2-deeper (2026-05-17) 已落: boring kExtensions[] 加 22 (encrypt_then_mac
-// per RFC 7366) + SSL_CONFIG/SSL_CTX strict-mode flag + 跳 65281 (renegotiation_info)
-// 默认强追加. Anthropic byte-level PASS, 但 3 vendor 仍 JA3 mismatch:
-// - CodexCli: observed JA3 687fb78f6ca0b877e5d3edbfdefc7ddf vs profile 0e0088de64e0c3adf8e9d8c19c811eb3
-// - GeminiAdvanced: observed fdf6db6f657ddef2a21d7434aa547536 vs profile 55ba290366f110228d176d92fe6f6180
-// - KiroCli: observed 3309ead7bbf4c356272a951be9fdc21a vs profile ed5338278fb7f0fb5cfd4ad58a98241f
-// 根因待 R-3-A-fix-3-deeper 调查: 可能是 profile load 没传 strict_mode flag 进 SSL_CTX,
-// 或 boring ssl_add_clienthello_tlsext 实际写顺序跟 explicit_extension_order 仍偏离.
-// 当前 3 test #[ignore] 让 sandbox CI 跑过, 不伪 PASS.
 #[tokio::test]
-#[ignore = "R-3-A-fix-2-deeper applied 2026-05-17; 3 vendor JA3 still mismatch (codex-cli/kiro/gemini), pending R-3-A-fix-3-deeper root cause"]
+#[ignore = "R-3-A-fix-3-deeper: extension/TLS13 cipher order fixed; Codex still mismatches on TLS1.2 cipher/group/EC point coverage"]
 async fn codex_cli_boring_client_hello_byte_level_matches_profile() {
     test_vendor_byte_level(BuiltinProfile::CodexCli, "chatgpt.com").await;
 }
 
 #[tokio::test]
-#[ignore = "R-3-A-fix-2-deeper applied 2026-05-17; 3 vendor JA3 still mismatch (codex-cli/kiro/gemini), pending R-3-A-fix-3-deeper root cause"]
 async fn kiro_boring_client_hello_byte_level_matches_profile() {
     test_vendor_byte_level(BuiltinProfile::KiroCli, "q.us-east-1.amazonaws.com").await;
 }
 
 #[tokio::test]
-#[ignore = "R-3-A-fix-2-deeper applied 2026-05-17; 3 vendor JA3 still mismatch (codex-cli/kiro/gemini), pending R-3-A-fix-3-deeper root cause"]
+#[ignore = "R-3-A-fix-3-deeper: extension/TLS13 cipher order fixed; Gemini still mismatches on TLS1.2 cipher/group/EC point coverage"]
 async fn gemini_advanced_boring_client_hello_byte_level_matches_profile() {
     test_vendor_byte_level(
         BuiltinProfile::GeminiAdvanced,
@@ -82,6 +72,9 @@ async fn test_vendor_byte_level(builtin: BuiltinProfile, sni_hostname: &str) {
         .collect::<Vec<_>>();
 
     let observed_ja3 = ja3_from_fields(&fields, &profile);
+    if observed_ja3 != profile.tls.ja3_hash {
+        print_wire_diagnostic(builtin.template_name(), &expected_ext, &observed_ext, &fields, &profile, &observed_ja3);
+    }
     assert_profile_extension_order(
         &observed_ext,
         &expected_ext,
@@ -170,6 +163,36 @@ fn assert_profile_extension_order(
         observed, expected_without_padding,
         "{profile_name} 非 padding extension 顺序必须 byte-level 一致; observed_ja3={observed_ja3}; expected_ja3={expected_ja3}"
     );
+}
+
+fn print_wire_diagnostic(
+    profile_name: &str,
+    expected_ext: &[u16],
+    observed_ext: &[u16],
+    fields: &ClientHelloFields,
+    profile: &FingerprintProfile,
+    observed_ja3: &str,
+) {
+    eprintln!(
+        "wire diagnostic for {profile_name}: observed_hash={observed_ja3} expected_hash={}",
+        profile.tls.ja3_hash
+    );
+    eprintln!("ja3 observed={}", ja3_string_from_fields(fields));
+    eprintln!("ja3 expected={}", profile.tls.ja3);
+    eprintln!("position | expected (profile) | observed (wire) | diff");
+    let format =
+        |value: Option<u16>| value.map(|value| value.to_string()).unwrap_or("-".to_owned());
+    let max_len = expected_ext.len().max(observed_ext.len());
+    for index in 0..max_len {
+        let expected = expected_ext.get(index).copied();
+        let observed = observed_ext.get(index).copied();
+        eprintln!(
+            "{index:<8} | {expected:<18} | {observed:<15} | {diff}",
+            expected = format(expected),
+            observed = format(observed),
+            diff = if expected == observed { "" } else { "mismatch" },
+        );
+    }
 }
 
 fn join_u16_decimal(values: &[u16], omit_padding: bool) -> String {

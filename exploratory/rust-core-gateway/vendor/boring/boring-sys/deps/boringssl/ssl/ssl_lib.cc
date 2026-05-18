@@ -398,6 +398,7 @@ ssl_ctx_st::ssl_ctx_st(const SSL_METHOD *ssl_method)
       grease_enabled(false),
       permute_extensions(false),
       has_explicit_order_strict_mode(false),
+      has_explicit_tls13_cipher_order(false),
       allow_unknown_alpn_protos(false),
       false_start_allowed_without_alpn(false),
       handoff(false),
@@ -530,6 +531,8 @@ SSL *SSL_new(SSL_CTX *ctx) {
   ssl->config->permute_extensions = ctx->permute_extensions;
   ssl->config->has_explicit_order_strict_mode =
       ctx->has_explicit_order_strict_mode;
+  ssl->config->has_explicit_tls13_cipher_order =
+      ctx->has_explicit_tls13_cipher_order;
   ssl->config->aes_hw_override = ctx->aes_hw_override;
   ssl->config->aes_hw_override_value = ctx->aes_hw_override_value;
   ssl->config->compliance_policy = ctx->compliance_policy;
@@ -539,6 +542,8 @@ SSL *SSL_new(SSL_CTX *ctx) {
           ctx->alpn_client_proto_list) ||
       !ssl->config->explicit_extension_order.CopyFrom(
           ctx->explicit_extension_order) ||
+      !ssl->config->explicit_tls13_cipher_order.CopyFrom(
+          ctx->explicit_tls13_cipher_order) ||
       !ssl->config->verify_sigalgs.CopyFrom(ctx->verify_sigalgs)) {
     return nullptr;
   }
@@ -592,6 +597,7 @@ SSL_CONFIG::SSL_CONFIG(SSL *ssl_arg)
       quic_use_legacy_codepoint(false),
       permute_extensions(false),
       has_explicit_order_strict_mode(false),
+      has_explicit_tls13_cipher_order(false),
       alps_use_new_codepoint(true) {
   assert(ssl);
 }
@@ -3119,6 +3125,41 @@ int SSL_CTX_set_extension_order(SSL_CTX *ctx, const uint16_t *types,
     return 0;
   }
   ctx->has_explicit_order_strict_mode = true;
+  return 1;
+}
+
+int SSL_CTX_set_tls13_cipher_order(SSL_CTX *ctx, const uint16_t *types,
+                                   size_t types_len) {
+  if (types == nullptr && types_len != 0) {
+    OPENSSL_PUT_ERROR(SSL, ERR_R_PASSED_NULL_PARAMETER);
+    return 0;
+  }
+  if (types_len == 0) {
+    ctx->explicit_tls13_cipher_order.Reset();
+    ctx->has_explicit_tls13_cipher_order = false;
+    return 1;
+  }
+  for (size_t i = 0; i < types_len; i++) {
+    switch (types[i]) {
+      case SSL_CIPHER_AES_128_GCM_SHA256:
+      case SSL_CIPHER_AES_256_GCM_SHA384:
+      case SSL_CIPHER_CHACHA20_POLY1305_SHA256:
+        break;
+      default:
+        OPENSSL_PUT_ERROR(SSL, SSL_R_NO_CIPHERS_AVAILABLE);
+        return 0;
+    }
+    for (size_t j = 0; j < i; j++) {
+      if (types[i] == types[j]) {
+        OPENSSL_PUT_ERROR(SSL, SSL_R_DUPLICATE_EXTENSION);
+        return 0;
+      }
+    }
+  }
+  if (!ctx->explicit_tls13_cipher_order.CopyFrom(Span(types, types_len))) {
+    return 0;
+  }
+  ctx->has_explicit_tls13_cipher_order = true;
   return 1;
 }
 
