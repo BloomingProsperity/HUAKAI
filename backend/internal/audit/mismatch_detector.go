@@ -8,9 +8,22 @@ import (
 var ErrMismatchReceiptRequired = errors.New("audit: mismatch detector receipt required")
 
 type MismatchVerdict struct {
-	State          string   `json:"state"`
-	DeltaMicroUSD  int64    `json:"delta_micro_usd"`
-	FieldsMismatch []string `json:"fields_mismatch"`
+	State             string   `json:"state"`
+	DeltaMicroUSD     int64    `json:"delta_micro_usd"`
+	MismatchDirection string   `json:"mismatch_direction"`
+	FieldsMismatch    []string `json:"fields_mismatch"`
+}
+
+const (
+	MismatchDirectionOverCharge  = "over_charge"
+	MismatchDirectionUnderCharge = "under_charge"
+	MismatchDirectionEqual       = "equal"
+)
+
+func (v MismatchVerdict) RefundEligible() bool {
+	return v.State == ReceiptValidationStateMismatchPending &&
+		v.MismatchDirection == MismatchDirectionOverCharge &&
+		v.DeltaMicroUSD > 0
 }
 
 func DetectReceiptMismatch(derived, submitted *CostReceipt) (MismatchVerdict, error) {
@@ -51,15 +64,24 @@ func DetectReceiptMismatch(derived, submitted *CostReceipt) (MismatchVerdict, er
 	if len(fields) > 0 {
 		state = ReceiptValidationStateMismatchPending
 	}
-	delta := derived.CostUSDMicros - submitted.CostUSDMicros
-	if delta < 0 {
-		delta = 0
-	}
+	delta, direction := mismatchCostDelta(derived.CostUSDMicros, submitted.CostUSDMicros)
 	return MismatchVerdict{
-		State:          state,
-		DeltaMicroUSD:  delta,
-		FieldsMismatch: fields,
+		State:             state,
+		DeltaMicroUSD:     delta,
+		MismatchDirection: direction,
+		FieldsMismatch:    fields,
 	}, nil
+}
+
+func mismatchCostDelta(derived, submitted int64) (int64, string) {
+	switch {
+	case submitted > derived:
+		return submitted - derived, MismatchDirectionOverCharge
+	case derived > submitted:
+		return derived - submitted, MismatchDirectionUnderCharge
+	default:
+		return 0, MismatchDirectionEqual
+	}
 }
 
 func mismatchStateFromDerived(receipt *CostReceipt) string {

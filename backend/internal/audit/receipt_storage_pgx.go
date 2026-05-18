@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -29,6 +30,35 @@ func (rs *PGXReceiptStorage) AppendReceipt(ctx context.Context, receipt *CostRec
 	if rs == nil || rs.pool == nil {
 		return ErrReceiptStorageRequired
 	}
+	return appendReceiptPGX(ctx, rs.pool, receipt)
+}
+
+func (rs *PGXReceiptStorage) AppendRefundReceipt(ctx context.Context, receipt *CostReceipt) error {
+	return rs.AppendReceipt(ctx, receipt)
+}
+
+func (rs *PGXReceiptStorage) AppendInTx(ctx context.Context, tx pgx.Tx, receipt *CostReceipt) error {
+	if rs == nil {
+		return ErrReceiptStorageRequired
+	}
+	if tx == nil {
+		return ErrReceiptStorageRequired
+	}
+	return appendReceiptPGX(ctx, tx, receipt)
+}
+
+func (rs *PGXReceiptStorage) AppendRefundReceiptInTx(ctx context.Context, tx pgx.Tx, receipt *CostReceipt) error {
+	return rs.AppendInTx(ctx, tx, receipt)
+}
+
+type pgxReceiptExecer interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func appendReceiptPGX(ctx context.Context, execer pgxReceiptExecer, receipt *CostReceipt) error {
+	if execer == nil {
+		return ErrReceiptStorageRequired
+	}
 	if err := validateReceiptForStorage(receipt); err != nil {
 		return err
 	}
@@ -36,7 +66,7 @@ func (rs *PGXReceiptStorage) AppendReceipt(ctx context.Context, receipt *CostRec
 	if err != nil {
 		return fmt.Errorf("audit: marshal receipt adjustment refs: %w", err)
 	}
-	_, err = rs.pool.Exec(ctx, `
+	_, err = execer.Exec(ctx, `
 INSERT INTO user_cost_receipts (
     tenant_id, request_id, receipt_sequence, model, input_tokens, output_tokens, cached_tokens,
     cost_usd_micros, rate_table_snapshot_id, signer_fingerprint, signed_hash,
