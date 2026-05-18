@@ -201,30 +201,31 @@ index a69505b47..1f5ce51e6 100644
  
  // DefaultSupportedGroupIds returns the list of IDs for the default groups that
  // are supported when the caller hasn't explicitly configured supported groups.
-@@ -3388,6 +3388,11 @@ struct SSL_CONFIG {
-   // permute_extensions is whether to permute extensions when sending messages.
-   bool permute_extensions : 1;
+@@ -3400,7 +3400,12 @@ struct SSL_CONFIG {
+   // of support for AES hw. The value is only considered if |aes_hw_override| is
+   // true.
+   bool aes_hw_override_value : 1;
  
 +  // As a client by default we will send a non post-quantum share and
 +  // a post-quantum share if available. If disable_second_keyshare is set,
 +  // we will only send the most preferred keyshare.
 +  bool disable_second_keyshare : 1;
 +
-   // aes_hw_override if set indicates we should override checking for aes
-   // hardware support, and use the value in aes_hw_override_value instead.
-   bool aes_hw_override : 1;
-@@ -4015,6 +4020,11 @@ struct ssl_ctx_st : public bssl::RefCounted<ssl_ctx_st> {
-   // permute_extensions is whether to permute extensions when sending messages.
-   bool permute_extensions : 1;
- 
-+  // As a client by default we will send a non post-quantum share and
-+  // a post-quantum share if available. If disable_second_keyshare is set,
-+  // we will only send the most preferred keyshare.
-+  bool disable_second_keyshare : 1;
-+
-   // allow_unknown_alpn_protos is whether the client allows unsolicited ALPN
+   // alps_use_new_codepoint if set indicates we use new ALPS extension codepoint
+   // to negotiate and convey application settings.
+   bool alps_use_new_codepoint : 1;
+@@ -4021,6 +4026,11 @@ struct ssl_ctx_st : public bssl::RefCounted<ssl_ctx_st> {
    // protocols from the peer.
    bool allow_unknown_alpn_protos : 1;
+ 
++  // As a client by default we will send a non post-quantum share and
++  // a post-quantum share if available. If disable_second_keyshare is set,
++  // we will only send the most preferred keyshare.
++  bool disable_second_keyshare : 1;
++
+   // false_start_allowed_without_alpn is whether False Start (if
+   // |SSL_MODE_ENABLE_FALSE_START| is enabled) is allowed without ALPN.
+   bool false_start_allowed_without_alpn : 1;
 diff --git a/ssl/ssl_key_share.cc b/ssl/ssl_key_share.cc
 index d155b5527..4fb08906b 100644
 --- a/ssl/ssl_key_share.cc
@@ -374,26 +375,18 @@ diff --git a/ssl/ssl_lib.cc b/ssl/ssl_lib.cc
 index f64b103fb..fe5bb9bc7 100644
 --- a/ssl/ssl_lib.cc
 +++ b/ssl/ssl_lib.cc
-@@ -397,6 +397,7 @@ ssl_ctx_st::ssl_ctx_st(const SSL_METHOD *ssl_method)
-       channel_id_enabled(false),
-       grease_enabled(false),
-       permute_extensions(false),
-+      disable_second_keyshare(false),
+@@ -402,4 +402,5 @@ ssl_ctx_st::ssl_ctx_st(const SSL_METHOD *ssl_method)
        allow_unknown_alpn_protos(false),
++      disable_second_keyshare(false),
        false_start_allowed_without_alpn(false),
        handoff(false),
-@@ -527,6 +528,7 @@ SSL *SSL_new(SSL_CTX *ctx) {
-   ssl->config->retain_only_sha256_of_client_certs =
-       ctx->retain_only_sha256_of_client_certs;
-   ssl->config->permute_extensions = ctx->permute_extensions;
-+  ssl->config->disable_second_keyshare = ctx->disable_second_keyshare;
+       enable_early_data(false),
+@@ -535,3 +535,4 @@ SSL *SSL_new(SSL_CTX *ctx) {
    ssl->config->aes_hw_override = ctx->aes_hw_override;
    ssl->config->aes_hw_override_value = ctx->aes_hw_override_value;
++  ssl->config->disable_second_keyshare = ctx->disable_second_keyshare;
    ssl->config->compliance_policy = ctx->compliance_policy;
-@@ -586,6 +588,7 @@ SSL_CONFIG::SSL_CONFIG(SSL *ssl_arg)
-       jdk11_workaround(false),
-       quic_use_legacy_codepoint(false),
-       permute_extensions(false),
+@@ -594,3 +595,4 @@ SSL_CONFIG::SSL_CONFIG(SSL *ssl_arg)
 +      disable_second_keyshare(false),
        alps_use_new_codepoint(true) {
    assert(ssl);
@@ -703,4 +696,3 @@ index 0839d4880..be9b79259 100644
              ctx.get(), args_map["-root-certs"].c_str(), nullptr)) {
 -- 
 2.40.0
-

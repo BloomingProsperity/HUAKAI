@@ -16,30 +16,29 @@ async fn anthropic_boring_client_hello_byte_level_matches_profile() {
     test_vendor_byte_level(BuiltinProfile::AnthropicClaudeCode, "api.anthropic.com").await;
 }
 
-// R-3-A-fix-4 真实诊断: HUAKAI vendored boring SSL_CTX_set_extension_order
-// 已上, Anthropic profile byte-level PASS. 但 3 vendor 还有 boring 更深层限制:
-// - CodexCli/Gemini profile 含 extension 22 (extended_master_secret),
-//   boring kExtensions[] 没这项 → setter 返 UNEXPECTED_EXTENSION error
-// - KiroCli profile 不含 65281 (renegotiation_info), 但 boring ClientHello
-//   serializer 强制末尾追加 65281 → observed 比 profile 多 1 个 ext
-// 都需 R-3-A-fix-2-deeper (再 patch boring): 加 extended_master_secret entry
-// + 跳 renegotiation_info 默认追加, 或接受 Anthropic-only byte-level + 3 vendor
-// 走 OpenSSL fallback (per Plan §3 backend_resolver 链).
-// pending Owner decision: 当前 #[ignore] 准 R-3-A-fix-4 commit, R-3-A-fix-2 重派.
-#[ignore = "R-3-A-fix-4 partial: boring kExtensions[] 不含 22 + 强追加 65281; pending R-3-A-fix-2-deeper"]
+// R-3-A-fix-2-deeper (2026-05-17) 已落: boring kExtensions[] 加 22 (encrypt_then_mac
+// per RFC 7366) + SSL_CONFIG/SSL_CTX strict-mode flag + 跳 65281 (renegotiation_info)
+// 默认强追加. Anthropic byte-level PASS, 但 3 vendor 仍 JA3 mismatch:
+// - CodexCli: observed JA3 687fb78f6ca0b877e5d3edbfdefc7ddf vs profile 0e0088de64e0c3adf8e9d8c19c811eb3
+// - GeminiAdvanced: observed fdf6db6f657ddef2a21d7434aa547536 vs profile 55ba290366f110228d176d92fe6f6180
+// - KiroCli: observed 3309ead7bbf4c356272a951be9fdc21a vs profile ed5338278fb7f0fb5cfd4ad58a98241f
+// 根因待 R-3-A-fix-3-deeper 调查: 可能是 profile load 没传 strict_mode flag 进 SSL_CTX,
+// 或 boring ssl_add_clienthello_tlsext 实际写顺序跟 explicit_extension_order 仍偏离.
+// 当前 3 test #[ignore] 让 sandbox CI 跑过, 不伪 PASS.
 #[tokio::test]
+#[ignore = "R-3-A-fix-2-deeper applied 2026-05-17; 3 vendor JA3 still mismatch (codex-cli/kiro/gemini), pending R-3-A-fix-3-deeper root cause"]
 async fn codex_cli_boring_client_hello_byte_level_matches_profile() {
     test_vendor_byte_level(BuiltinProfile::CodexCli, "chatgpt.com").await;
 }
 
-#[ignore = "R-3-A-fix-4 partial: boring 强追加 65281 末尾; pending R-3-A-fix-2-deeper"]
 #[tokio::test]
+#[ignore = "R-3-A-fix-2-deeper applied 2026-05-17; 3 vendor JA3 still mismatch (codex-cli/kiro/gemini), pending R-3-A-fix-3-deeper root cause"]
 async fn kiro_boring_client_hello_byte_level_matches_profile() {
     test_vendor_byte_level(BuiltinProfile::KiroCli, "q.us-east-1.amazonaws.com").await;
 }
 
-#[ignore = "R-3-A-fix-4 partial: boring kExtensions[] 不含 22 + 强追加 65281; pending R-3-A-fix-2-deeper"]
 #[tokio::test]
+#[ignore = "R-3-A-fix-2-deeper applied 2026-05-17; 3 vendor JA3 still mismatch (codex-cli/kiro/gemini), pending R-3-A-fix-3-deeper root cause"]
 async fn gemini_advanced_boring_client_hello_byte_level_matches_profile() {
     test_vendor_byte_level(
         BuiltinProfile::GeminiAdvanced,
