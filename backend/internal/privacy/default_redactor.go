@@ -236,7 +236,7 @@ func allowlistField(field string) bool {
 }
 
 var exactAllowlist = map[string]struct{}{
-	"account": {}, "account_credential_id": {}, "account_id_hash": {}, "actor": {}, "actor_id": {}, "actor_id_ref": {}, "actor_role": {}, "actor_type": {},
+	"account": {}, "account_credential_id": {}, "account_id_hash": {}, "actor": {}, "actor_id": {}, "actor_id_ref": {}, "actor_role": {}, "actor_type": {}, "adjustment_refs": {},
 	"amount_cents": {}, "attempt_count": {}, "attempts": {}, "auth_mode": {}, "balance_cents": {}, "batch_id": {},
 	"billing_event_id": {}, "body_envelope": {}, "cache_hit": {}, "cache_read_input_tokens": {}, "cache_write_input_tokens": {}, "channel": {},
 	"channel_id": {}, "claim_id": {}, "component": {}, "cooldown_hours": {}, "cooldown_until": {}, "cost_rate_version": {},

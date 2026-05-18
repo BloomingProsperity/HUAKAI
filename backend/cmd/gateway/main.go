@@ -36,6 +36,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp"
+	auditreceipt "github.com/BloomingProsperity/HUAKAI/internal/audit"
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
@@ -113,6 +114,8 @@ type deps struct {
 	inboundAuth        *auth.APIKeyResolver
 	auditLedger        auditledger.Ledger
 	auditSigner        *sign.Signer
+	receiptStore       *auditreceipt.PGXReceiptStorage
+	rateTableSource    billing.RateTableSource
 	// Slice 2 (N+5a): real Registry resolver.
 	modelRegistry *registry.PostgresRegistry
 	// Slice 2 (N+5b 2026-05-01): Router consumes Registry's PoolCandidates
@@ -263,6 +266,15 @@ func run(logger *zap.Logger) error {
 	if err != nil {
 		return fmt.Errorf("build audit ledger: %w", err)
 	}
+	receiptStore, err := auditreceipt.NewPGXReceiptStorage(pgPool)
+	if err != nil {
+		return fmt.Errorf("build receipt storage: %w", err)
+	}
+	receiptSource, err := auditreceipt.NewPGXReceiptSource(pgPool)
+	if err != nil {
+		return fmt.Errorf("build receipt source: %w", err)
+	}
+	rateTableSource := billing.NewPGXRateTableSource(pgPool)
 	channelHealthStore := channelhealth.NewPostgresStoreWithAuditSigner(pgPool, auditSigner)
 	channelHealthService := channelhealth.NewService(channelHealthStore, channelhealth.DefaultPolicy(), nil, channelhealth.WithAlertOutbox(outboxStore))
 	voucherService := voucher.NewService(voucher.NewPostgresStore(pgPool))
@@ -309,7 +321,19 @@ func run(logger *zap.Logger) error {
 	outboxWorker.Register(obsoutbox.EventTypeEmailRetry, mailinfra.NewDLQHandler(emailSettingsStore, credentialKeys, nil))
 	outboxWorker.Register(obsoutbox.EventTypeChannelAlert, channelhealth.NewAlertDLQHandler(channelHealthStore))
 
-	settler := billing.NewSettler(pgPool, billing.WithDLQStore(dlqStore), billing.WithReplicaTarget(replicaTarget))
+	baseSettler := billing.NewSettler(pgPool, billing.WithDLQStore(dlqStore), billing.WithReplicaTarget(replicaTarget))
+	receiptFormatter, err := auditreceipt.NewReceiptFormatter(auditLedger, baseSettler, receiptSource, auditSigner)
+	if err != nil {
+		return fmt.Errorf("build receipt formatter: %w", err)
+	}
+	receiptHook := auditreceipt.NewReceiptHookHandler(receiptFormatter, receiptStore,
+		auditreceipt.WithReceiptHookErrorHandler(func(_ context.Context, requestID string, err error) {
+			logger.Warn("cost receipt write failed after settle",
+				zap.String("request_id", requestID),
+				zap.Error(err),
+			)
+		}))
+	settler := auditreceipt.NewReceiptHookSettler(baseSettler, receiptHook)
 	completionBus, err := buildCompletionEventBus(eventBusCfg, settler, dlqService, logger)
 	if err != nil {
 		return fmt.Errorf("build completion eventbus: %w", err)
@@ -363,9 +387,11 @@ func run(logger *zap.Logger) error {
 		// Replaces the SmokeAuthResolver env-injected single bearer pattern.
 		// Rollback path is git revert; no SmokeAuthResolver is wired into the
 		// default build.
-		inboundAuth: auth.NewAPIKeyResolver(q),
-		auditLedger: auditLedger,
-		auditSigner: auditSigner,
+		inboundAuth:     auth.NewAPIKeyResolver(q),
+		auditLedger:     auditLedger,
+		auditSigner:     auditSigner,
+		receiptStore:    receiptStore,
+		rateTableSource: rateTableSource,
 		// Slice 2 (N+5a) registry resolver. cache=nil → noopCache (D2: no
 		// L0 cache; LRU lands in Slice 5 keyed on registry_version).
 		// Takes pgxpool.Pool because Resolve runs all reads inside a
@@ -412,6 +438,7 @@ func run(logger *zap.Logger) error {
 	privacyRedactor := privacy.DefaultRedactor()
 	privacyLogger := privacy.NewStdoutSystemLogger(privacyRedactor)
 	router.Use(middleware.RequestID)
+	router.Use(gatewayhttp.RequestIDLengthLimiter(gatewayhttp.MaxRequestIDLength))
 	router.Use(middleware.RealIP)
 	router.Use(privacy.Recoverer(privacyLogger))
 	router.Use(middleware.Timeout(60 * time.Second))
@@ -829,6 +856,20 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	}))
 
 	gatewayhttp.MountAuditVerifyRoutes(r, gatewayhttp.AuditVerifyStaticDeps{Ledger: d.auditLedger})
+	r.Get("/v1/audit/pubkey", gatewayhttp.NewAuditPubkeyHandler(gatewayhttp.AuditPubkeyDeps{Signer: d.auditSigner}))
+
+	receiptDeps := gatewayhttp.CostReceiptHandlerDeps{
+		Receipts:   d.receiptStore,
+		RateTables: d.rateTableSource,
+		Signer:     d.auditSigner,
+	}
+	r.Route("/v1/receipts", func(r chi.Router) {
+		r.With(auth.SessionMiddleware(d.userSessions)).Get("/*", gatewayhttp.NewCostReceiptGetHandler(receiptDeps))
+		r.Post("/*", gatewayhttp.NewCostReceiptVerifyHandler(receiptDeps))
+	})
+	r.Get("/v1/pricing/rate-table", gatewayhttp.NewPricingRateTableHandler(receiptDeps))
+	r.Get("/v1/pricing/snapshots", gatewayhttp.NewPricingSnapshotsHandler(receiptDeps))
+	r.Get("/v1/pricing/snapshots/{snapshot_id}", gatewayhttp.NewPricingSnapshotHandler(receiptDeps))
 
 	r.Route("/v1/auth", func(r chi.Router) {
 		gatewayhttp.MountAuthRoutes(r, gatewayhttp.AuthHandlerDeps{

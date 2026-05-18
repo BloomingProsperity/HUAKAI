@@ -1,16 +1,17 @@
 // bedrock_dispatch_smoke_test.go — HUAKAI Bedrock-on-Anthropic 全链路冒烟测试。
 //
 // 覆盖链路:
-//   inbound POST /v1/messages (Anthropic Messages API form)
-//     → Auth.Resolve → Registry.Resolve (bedrock_invoke)
-//     → Router.Plan → ClaimGate.Reserve → Selector.Select(account 99)
-//     → CredentialVault.Resolve(99) → {aws_sigv4 fake creds}
-//     → Dispatcher.Dispatch → bedrock.PassthroughAdapter.BuildRequest
-//        (AutoTranslate Anthropic → Bedrock body + Track C cache_control 注入 + SigV4 sign)
-//     → redirectRoundTripper → httptest.Server（模拟 AWS Bedrock invoke-with-response-stream）
-//     → Forwarder.Forward (BedrockEventStreamScanner 解 binary frames + BedrockEventStreamAdapter
-//        转 canonical → SSE 输出给客户端)
-//     → Settler.Settle
+//
+//	inbound POST /v1/messages (Anthropic Messages API form)
+//	  → Auth.Resolve → Registry.Resolve (bedrock_invoke)
+//	  → Router.Plan → ClaimGate.Reserve → Selector.Select(account 99)
+//	  → CredentialVault.Resolve(99) → {aws_sigv4 fake creds}
+//	  → Dispatcher.Dispatch → bedrock.PassthroughAdapter.BuildRequest
+//	     (AutoTranslate Anthropic → Bedrock body + Track C cache_control 注入 + SigV4 sign)
+//	  → redirectRoundTripper → httptest.Server（模拟 AWS Bedrock invoke-with-response-stream）
+//	  → Forwarder.Forward (BedrockEventStreamScanner 解 binary frames + BedrockEventStreamAdapter
+//	     转 canonical → SSE 输出给客户端)
+//	  → Settler.Settle
 //
 // 与 dispatch_smoke_test.go (OpenAI) 共用同包 stubs (smokeAuth/smokeRouter/...)
 // 不依赖真实 AWS 网络，不引新依赖。
@@ -162,7 +163,7 @@ func TestDispatch_FullPipeline_BedrockOnAnthropic(t *testing.T) {
 		upstreamBody     []byte
 	)
 
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mockServer := newGatewayHTTPTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&upstreamReqCount, 1)
 		upstreamAuthHdr = r.Header.Get("Authorization")
 		upstreamPath = r.URL.Path
@@ -342,7 +343,7 @@ func TestDispatch_FullPipeline_BedrockOnAnthropic(t *testing.T) {
 func TestDispatch_FullPipeline_BedrockOnAnthropic_UpstreamFailure(t *testing.T) {
 	var upstreamReqCount int64
 
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mockServer := newGatewayHTTPTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&upstreamReqCount, 1)
 		// 模拟 AWS Bedrock throttling / 内部错误。AWS 出错走 JSON application/x-amz-json-1.1
 		// 形态而不是 binary EventStream（错误发生在 stream 建立前），HUAKAI 上游层
@@ -426,4 +427,3 @@ func TestDispatch_FullPipeline_BedrockOnAnthropic_UpstreamFailure(t *testing.T) 
 	// Abort 是预期行为, 但当前 settler stub 接口 Abort 计数, 不强制 == 1
 	// (handler 实现可能选择特定语义; 关键是 Settle 必须 = 0)
 }
-

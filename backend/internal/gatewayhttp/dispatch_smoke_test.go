@@ -200,7 +200,7 @@ func TestDispatch_FullPipeline_OpenAIChat(t *testing.T) {
 
 	// mockServer 模拟 OpenAI Chat Completions SSE 上游。
 	// 响应 3 个 chunk：hello / world / final（含 usage）+ [DONE]。
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mockServer := newGatewayHTTPTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 记录请求元数据，供断言使用。
 		atomic.AddInt64(&upstreamReqCount, 1)
 		upstreamAuthHeader = r.Header.Get("Authorization")
