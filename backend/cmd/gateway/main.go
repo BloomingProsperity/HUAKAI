@@ -43,6 +43,7 @@ import (
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
+	communityinvitation "github.com/BloomingProsperity/HUAKAI/internal/community/invitation"
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
@@ -107,6 +108,7 @@ type deps struct {
 	userAuth           *userauth.Service
 	userSessions       *usersession.Service
 	voucherService     *voucher.Service
+	invitationService  *communityinvitation.Service
 	dispatcher         *gateway.UpstreamDispatcher
 	responseCache      l2cache.Store
 	dlqService         *legacydlq.Service
@@ -307,6 +309,7 @@ func run(logger *zap.Logger) error {
 	channelHealthStore := channelhealth.NewPostgresStoreWithAuditSigner(pgPool, auditSigner)
 	channelHealthService := channelhealth.NewService(channelHealthStore, channelhealth.DefaultPolicy(), nil, channelhealth.WithAlertOutbox(outboxStore))
 	voucherService := voucher.NewService(voucher.NewPostgresStore(pgPool))
+	invitationService := communityinvitation.NewService(communityinvitation.NewPostgresStore(pgPool))
 	selector, selectorCleanup, err := buildSelector(ctx, q, pgPool, selectorCfg, channelHealthService, logger)
 	if err != nil {
 		return fmt.Errorf("build selector: %w", err)
@@ -412,6 +415,7 @@ func run(logger *zap.Logger) error {
 		userAuth:           userAuthService,
 		userSessions:       userSessionService,
 		voucherService:     voucherService,
+		invitationService:  invitationService,
 		responseCache:      responseCache,
 		dlqService:         dlqService,
 		completionBus:      completionBus,
@@ -932,6 +936,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		r.Use(auth.SessionMiddleware(d.userSessions))
 		gatewayhttp.MountVoucherUserRoutes(r, gatewayhttp.VoucherUserDeps{Service: d.voucherService})
 	})
+
+	r.With(auth.SessionMiddleware(d.userSessions)).Post("/v1/invitations", gatewayhttp.NewInvitationCreateHandler(gatewayhttp.InvitationDeps{
+		Service: d.invitationService,
+	}))
 
 	r.Route("/v1/admin/email", func(r chi.Router) {
 		gatewayhttp.MountAdminEmailSettingsRoutes(r, gatewayhttp.AdminEmailSettingsDeps{
