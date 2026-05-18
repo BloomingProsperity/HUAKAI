@@ -1794,13 +1794,20 @@ static bool ext_ec_point_add_extension(const SSL_HANDSHAKE *hs, CBB *out) {
   CBB contents, formats;
   if (!CBB_add_u16(out, TLSEXT_TYPE_ec_point_formats) ||
       !CBB_add_u16_length_prefixed(out, &contents) ||
-      !CBB_add_u8_length_prefixed(&contents, &formats) ||
-      !CBB_add_u8(&formats, TLSEXT_ECPOINTFORMAT_uncompressed) ||
-      !CBB_flush(out)) {
+      !CBB_add_u8_length_prefixed(&contents, &formats)) {
     return false;
   }
-
-  return true;
+  const auto &explicit_formats = hs->ssl->config->explicit_ec_point_formats;
+  if (explicit_formats.empty()) {
+    return CBB_add_u8(&formats, TLSEXT_ECPOINTFORMAT_uncompressed) &&
+           CBB_flush(out);
+  }
+  for (uint8_t format : explicit_formats) {
+    if (!CBB_add_u8(&formats, format)) {
+      return false;
+    }
+  }
+  return CBB_flush(out);
 }
 
 static bool ext_ec_point_add_clienthello(const SSL_HANDSHAKE *hs, CBB *out,

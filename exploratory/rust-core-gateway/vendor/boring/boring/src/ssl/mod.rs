@@ -1995,6 +1995,24 @@ impl SslContextBuilder {
         }
     }
 
+    /// 设置 HUAKAI profile ClientHello raw 字段 (HUAKAI patch).
+    #[corresponds(SSL_CTX_set_client_hello_profile)]
+    pub fn set_client_hello_profile(&mut self, ciphers: &[u16], groups: &[u16], ec_points: &[u8])
+        -> Result<(), ErrorStack>
+    {
+        unsafe {
+            cvt(ffi::SSL_CTX_set_client_hello_profile(
+                self.as_ptr(),
+                ciphers.as_ptr(),
+                ciphers.len(),
+                groups.as_ptr(),
+                groups.len(),
+                ec_points.as_ptr(),
+                ec_points.len(),
+            ))
+        }
+    }
+
     /// Sets the context's supported signature verification algorithms.
     #[corresponds(SSL_CTX_set_verify_algorithm_prefs)]
     pub fn set_verify_algorithm_prefs(

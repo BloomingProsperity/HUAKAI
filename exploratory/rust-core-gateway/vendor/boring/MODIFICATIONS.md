@@ -146,3 +146,23 @@ failure，不伪 PASS。
 
 modification: HUAKAI codex executor lane (R-3-A-fix-3-deeper), 2026-05-18 UTC。
 未新增非 boring 依赖，未修改 HUAKAI 主仓 LICENSE。
+
+## R-3-A-fix-4-deeper: ClientHello raw profile fields
+
+本轮诊断确认 Codex/Gemini extension order 与 supported_versions 已匹配，剩余
+JA3 mismatch 来自 TLS1.2 cipher advertisement、supported_groups 和
+ec_point_formats。新增 HUAKAI 本地 `SSL_CTX_set_client_hello_profile`，只控制
+ClientHello wire advertisement；未设置时保留 BoringSSL 默认路径。
+
+- `include/openssl/ssl.h` / `ssl_lib.cc`: 增加 profile setter，复制 raw cipher
+  order、raw supported groups、EC point formats。
+- `internal.h` / `handshake_client.cc` / `extensions.cc`: 保存并写出显式 raw
+  cipher order 与 EC point formats；renegotiation/fallback SCSV 不从 profile
+  raw cipher list 写入。
+- `boring/src/ssl/mod.rs`: 增加 Rust wrapper
+  `set_client_hello_profile(&mut self, ciphers, groups, ec_points)`。
+- `boring-sys/build/main.rs`: 追加本地修改文件的 `rerun-if-changed`，避免旧
+  test-profile build output 未感知 vendored header/source 变更。
+
+modification: HUAKAI codex executor lane (R-3-A-fix-4-deeper), 2026-05-18 UTC。
+未新增非 boring 依赖，未修改 HUAKAI 主仓 LICENSE。

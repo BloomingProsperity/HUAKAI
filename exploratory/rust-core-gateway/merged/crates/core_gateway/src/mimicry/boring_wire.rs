@@ -17,7 +17,6 @@ async fn anthropic_boring_client_hello_byte_level_matches_profile() {
 }
 
 #[tokio::test]
-#[ignore = "R-3-A-fix-3-deeper: extension/TLS13 cipher order fixed; Codex still mismatches on TLS1.2 cipher/group/EC point coverage"]
 async fn codex_cli_boring_client_hello_byte_level_matches_profile() {
     test_vendor_byte_level(BuiltinProfile::CodexCli, "chatgpt.com").await;
 }
@@ -28,7 +27,6 @@ async fn kiro_boring_client_hello_byte_level_matches_profile() {
 }
 
 #[tokio::test]
-#[ignore = "R-3-A-fix-3-deeper: extension/TLS13 cipher order fixed; Gemini still mismatches on TLS1.2 cipher/group/EC point coverage"]
 async fn gemini_advanced_boring_client_hello_byte_level_matches_profile() {
     test_vendor_byte_level(
         BuiltinProfile::GeminiAdvanced,
