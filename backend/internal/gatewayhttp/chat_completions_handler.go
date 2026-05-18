@@ -284,7 +284,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			Vendor: pool.VendorFromProtocolFamily(resolved.ProtocolFamily),
 		})
 		if errors.Is(err, pool.ErrNoEligibleAccount) || errors.Is(err, pool.ErrNoSlotAvailable) || errors.Is(err, pool.ErrAllChannelsDegraded) {
-			if abortErr := d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "pool_no_capacity"); abortErr != nil {
+			if abortErr := d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "pool_no_capacity", requestID); abortErr != nil {
 				w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
 			}
 			w.Header().Set("Retry-After", "5")
@@ -292,12 +292,12 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			return
 		}
 		if err != nil {
-			_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "pool_select_error")
+			_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "pool_select_error", requestID)
 			writeJSONError(w, http.StatusInternalServerError, "pool_select_error", err.Error())
 			return
 		}
 		if selRes == nil || selRes.AccountID == 0 {
-			_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "pool_select_no_account")
+			_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "pool_select_no_account", requestID)
 			writeJSONError(w, http.StatusServiceUnavailable, "no_capacity", "pool returned no account")
 			return
 		}
@@ -319,7 +319,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 				Body:     body,
 			})
 			if canonicalErr != nil {
-				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "cache_key_error")
+				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "cache_key_error", requestID)
 				writeJSONError(w, http.StatusBadRequest, "cache_key_error", canonicalErr.Error())
 				return
 			}
@@ -356,7 +356,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 
 		cred, accInfo, err := d.CredentialVault.Resolve(ctx, acquiredAccountID)
 		if err != nil {
-			_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "credential_resolve_error")
+			_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "credential_resolve_error", requestID)
 			status := http.StatusInternalServerError
 			if errors.Is(err, provider.ErrAccountNotFound) {
 				status = http.StatusServiceUnavailable
@@ -394,12 +394,12 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			if hcsfDispatchEnabled() {
 				canonicalReq, _, err := clientAdapter.RequestToCanonical(seedCtx, body)
 				if err != nil {
-					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "invalid_request_body")
+					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "invalid_request_body", requestID)
 					writeJSONError(w, http.StatusBadRequest, "invalid_request_body", err.Error())
 					return
 				}
 				if canonicalReq == nil {
-					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "invalid_request_body")
+					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "invalid_request_body", requestID)
 					writeJSONError(w, http.StatusBadRequest, "invalid_request_body", "client adapter returned nil canonical envelope")
 					return
 				}
@@ -411,7 +411,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 
 				dispatcher := hcsfDispatcher(d)
 				if dispatcher == nil {
-					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "non_streaming_not_yet_wired")
+					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "non_streaming_not_yet_wired", requestID)
 					writeJSONError(w, http.StatusServiceUnavailable, "non_streaming_not_yet_wired",
 						fmt.Sprintf("dispatcher lacks HCSF dispatch support for client_protocol=%q protocol_family=%q", clientProtocol, resolved.ProtocolFamily))
 					return
@@ -425,7 +425,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 				})
 				bufferedEnv, err = dispatcher.DispatchHCSF(dispatchCtx, canonicalReq)
 				if err != nil {
-					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_dispatch_error")
+					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_dispatch_error", requestID)
 					if healthKeyOK {
 						classification, _ := gateway.Classify(0, nil, []byte(err.Error()), accInfo.Platform)
 						recordChannelHealthSignal(ctx, d, healthKey, signalFromDispatchError(err, classification), 0, time.Since(upstreamAttemptStartedAt), requestID, nil)
@@ -442,7 +442,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 					Credential:      cred,
 				})
 				if err != nil {
-					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_dispatch_error")
+					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_dispatch_error", requestID)
 					classification, _ := gateway.Classify(0, nil, []byte(err.Error()), accInfo.Platform)
 					if healthKeyOK {
 						recordChannelHealthSignal(ctx, d, healthKey, signalFromDispatchError(err, classification), 0, time.Since(upstreamAttemptStartedAt), requestID, nil)
@@ -451,7 +451,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 					return
 				}
 				if dispatchRes == nil || dispatchRes.UpstreamReader == nil {
-					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_empty_response")
+					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_empty_response", requestID)
 					if healthKeyOK {
 						recordChannelHealthSignal(ctx, d, healthKey, channelhealth.SignalChannelError, 0, time.Since(upstreamAttemptStartedAt), requestID, nil)
 					}
@@ -461,7 +461,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 				defer closeDispatchResult(dispatchRes)
 				raw, readErr := io.ReadAll(io.LimitReader(dispatchRes.UpstreamReader, 1<<20))
 				if readErr != nil {
-					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_read_error")
+					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_read_error", requestID)
 					if healthKeyOK {
 						recordChannelHealthSignal(ctx, d, healthKey, channelhealth.SignalChannelError, dispatchRes.StatusCode, time.Since(upstreamAttemptStartedAt), requestID, nil)
 					}
@@ -474,7 +474,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 					if classifyErr == nil && classification.Class != "" {
 						abortReason = "upstream_" + string(classification.Class)
 					}
-					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, abortReason)
+					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, abortReason, requestID)
 					if healthKeyOK {
 						recordChannelHealthSignal(ctx, d, healthKey, signalFromClassification(dispatchRes.StatusCode, classification), dispatchRes.StatusCode, time.Since(upstreamAttemptStartedAt), requestID, rateLimitResetFromClassification(classification, time.Now()))
 					}
@@ -483,13 +483,13 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 				}
 				upstreamAdapter, err := protocolAdapterForBuffered(d.Forwarder, resolved.ProtocolFamily)
 				if err != nil {
-					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_adapter_error")
+					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_adapter_error", requestID)
 					writeJSONError(w, http.StatusBadGateway, "upstream_adapter_error", err.Error())
 					return
 				}
 				bufferedEnv, _, err = upstreamAdapter.ProviderResponseToCanonical(seedCtx, raw)
 				if err != nil {
-					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "canonical_response_error")
+					_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "canonical_response_error", requestID)
 					if healthKeyOK {
 						recordChannelHealthSignal(ctx, d, healthKey, channelhealth.SignalChannelError, dispatchRes.StatusCode, time.Since(upstreamAttemptStartedAt), requestID, nil)
 					}
@@ -502,7 +502,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 				}
 			}
 			if bufferedEnv == nil || bufferedEnv.BufferedResponse == nil {
-				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_empty_response")
+				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_empty_response", requestID)
 				if healthKeyOK {
 					recordChannelHealthSignal(ctx, d, healthKey, channelhealth.SignalChannelError, 0, time.Since(upstreamAttemptStartedAt), requestID, nil)
 				}
@@ -518,14 +518,14 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			}
 			ledgerEntry, err := submitAuditLedgerEntry(ctx, d, bufferedEnv, ident.TenantID, requestID)
 			if err != nil {
-				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "audit_ledger_error")
+				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "audit_ledger_error", requestID)
 				writeJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())
 				return
 			}
 
 			clientBody, _, err := clientAdapter.CanonicalToClientResponse(seedCtx, bufferedEnv)
 			if err != nil {
-				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "canonical_response_error")
+				_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "canonical_response_error", requestID)
 				writeJSONError(w, http.StatusBadGateway, "canonical_response_error", err.Error())
 				return
 			}
@@ -601,7 +601,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			Credential:      cred,
 		})
 		if err != nil {
-			_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_dispatch_error")
+			_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_dispatch_error", requestID)
 			classification, _ := gateway.Classify(0, nil, []byte(err.Error()), accInfo.Platform)
 			if healthKeyOK {
 				recordChannelHealthSignal(ctx, d, healthKey, signalFromDispatchError(err, classification), 0, time.Since(upstreamAttemptStartedAt), requestID, nil)
@@ -610,7 +610,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			return
 		}
 		if dispatchRes == nil || dispatchRes.UpstreamReader == nil {
-			_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_empty_response")
+			_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, "upstream_empty_response", requestID)
 			if healthKeyOK {
 				recordChannelHealthSignal(ctx, d, healthKey, channelhealth.SignalChannelError, 0, time.Since(upstreamAttemptStartedAt), requestID, nil)
 			}
@@ -629,7 +629,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			if classifyErr == nil && classification.Class != "" {
 				abortReason = "upstream_" + string(classification.Class)
 			}
-			_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, abortReason)
+			_ = d.Settler.Abort(ctx, ident.TenantID, reserveRes.ClaimID, abortReason, requestID)
 			if healthKeyOK {
 				recordChannelHealthSignal(ctx, d, healthKey, signalFromClassification(dispatchRes.StatusCode, classification), dispatchRes.StatusCode, time.Since(upstreamAttemptStartedAt), requestID, rateLimitResetFromClassification(classification, time.Now()))
 			}
@@ -810,6 +810,9 @@ func rateLimitResetFromClassification(c gateway.Classification, now time.Time) *
 }
 
 func settleCompletion(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent) (*billing.SettleResult, error) {
+	if event.SettleRequest.AuditRequestID == "" {
+		event.SettleRequest.AuditRequestID = event.RequestID
+	}
 	if d.CompletionBus == nil {
 		return d.Settler.Settle(ctx, event.SettleRequest)
 	}
@@ -911,7 +914,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 	appendTrustChainWarning(cachedEnv, "response_cache_l2_hit", "served from HUAKAI L2 response cache")
 	ledgerEntry, err := submitAuditLedgerEntry(ctx, d, cachedEnv, in.Ident.TenantID, in.RequestID)
 	if err != nil {
-		_ = d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error")
+		_ = d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error", in.RequestID)
 		writeJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())
 		return true
 	}

@@ -22,7 +22,7 @@ func TestSettler_NilPool_ReturnsTypedError(t *testing.T) {
 	if !errors.Is(err, ErrPoolNotConfigured) {
 		t.Fatalf("expected ErrPoolNotConfigured from Settle; got %v", err)
 	}
-	if err := settler.Abort(context.Background(), 1, 1, "test abort"); !errors.Is(err, ErrPoolNotConfigured) {
+	if err := settler.Abort(context.Background(), 1, 1, "test abort", "req-abort-nil-pool"); !errors.Is(err, ErrPoolNotConfigured) {
 		t.Fatalf("expected ErrPoolNotConfigured from Abort; got %v", err)
 	}
 }
@@ -114,7 +114,7 @@ func TestSettler_AbortPath(t *testing.T) {
 	seed := seedSettlerGraph(t, ctx, pool, "settle-abort")
 	settler := NewSettler(pool)
 
-	if err := settler.Abort(ctx, seed.tenantID, seed.claimID, "test abort"); err != nil {
+	if err := settler.Abort(ctx, seed.tenantID, seed.claimID, "test abort", "req-settle-abort"); err != nil {
 		t.Fatalf("Abort: %v", err)
 	}
 
@@ -139,6 +139,16 @@ func TestSettler_AbortPath(t *testing.T) {
 	}
 	if eventCount != 1 {
 		t.Fatalf("expected one claim_aborted billing_event; got %d", eventCount)
+	}
+	var auditRequestID *string
+	if err := pool.QueryRow(ctx,
+		`SELECT audit_request_id FROM billing_events WHERE claim_id=$1 AND event_type='claim_aborted'`,
+		seed.claimID,
+	).Scan(&auditRequestID); err != nil {
+		t.Fatalf("read abort billing_event audit_request_id: %v", err)
+	}
+	if auditRequestID == nil || *auditRequestID != "req-settle-abort" {
+		t.Fatalf("abort billing_event audit_request_id=%v want req-settle-abort", auditRequestID)
 	}
 
 	var usageCount int
@@ -170,7 +180,7 @@ func TestSettler_AbortCrossTenantRejected(t *testing.T) {
 	settler := NewSettler(pool)
 
 	wrongTenant := seed.tenantID + 99999
-	if err := settler.Abort(ctx, wrongTenant, seed.claimID, "cross-tenant"); !errors.Is(err, ErrClaimNotReserving) {
+	if err := settler.Abort(ctx, wrongTenant, seed.claimID, "cross-tenant", "req-settle-abort-xtenant"); !errors.Is(err, ErrClaimNotReserving) {
 		t.Fatalf("cross-tenant abort must be rejected with ErrClaimNotReserving; got %v", err)
 	}
 

@@ -22,6 +22,7 @@ type BillingEventReplicaPayload struct {
 	DeliveredTokenCount    int64   `json:"delivered_token_count"`
 	StreamTerminatedReason *string `json:"stream_terminated_reason,omitempty"`
 	Fingerprint            string  `json:"fingerprint"`
+	AuditRequestID         *string `json:"audit_request_id,omitempty"`
 	OccurredAt             string  `json:"occurred_at"`
 }
 
