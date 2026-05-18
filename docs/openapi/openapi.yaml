@@ -51,6 +51,8 @@ tags:
     description: HUAKAI platform User authentication. F-AUTH-007.
   - name: sessions
     description: HUAKAI platform User session management. F-SESSION-001.
+  - name: invitations
+    description: Authenticated User invitation code creation. F-COMM-001.
   - name: user-vouchers
     description: User voucher redemption. F-BILL-002.
   - name: user-audit
@@ -633,6 +635,30 @@ paths:
                     items: { $ref: '#/components/schemas/SessionFamily' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/invitations:
+    post:
+      tags: [invitations]
+      summary: Create an invitation code for the authenticated User
+      operationId: createInvitation
+      x-huakai-spec-source: [docs/specs/community-invitation-referral.md]
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InvitationCreateRequest' }
+      responses:
+        '201':
+          description: Invitation created. Raw code is returned once to the inviter.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InvitationCreateResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/users/me/vouchers/redeem:
@@ -1866,6 +1892,39 @@ components:
         ip_baseline: { type: string }
         revoked_at: { type: [string, 'null'], format: date-time }
         revoked_reason: { type: [string, 'null'] }
+
+    InvitationCreateRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/community-invitation-referral.md]
+      properties:
+        max_usage:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 1
+        expires_in_days:
+          type: integer
+          minimum: 1
+          maximum: 90
+          default: 30
+        client_idempotency_key:
+          type: string
+
+    InvitationCreateResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/community-invitation-referral.md]
+      required: [code, inviter_user_id, expires_at, max_usage]
+      properties:
+        code:
+          type: string
+          minLength: 8
+          maxLength: 8
+          pattern: '^[0-9A-HJKMNP-TV-Z]{8}$'
+        inviter_user_id: { type: integer, format: int64 }
+        expires_at: { type: string, format: date-time }
+        max_usage: { type: integer, minimum: 1, maximum: 100 }
 
     Voucher:
       type: object
