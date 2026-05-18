@@ -90,9 +90,9 @@ INSERT INTO billing_events (
     actual_cost, actual_cost_signed,
     end_class, usage_source,
     stream_state, delivered_token_count, stream_terminated_reason,
-    fingerprint
+    fingerprint, audit_request_id
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 )
 RETURNING id, occurred_at
 `
@@ -109,6 +109,7 @@ type InsertBillingEventParams struct {
 	DeliveredTokenCount    int64           `db:"delivered_token_count" json:"delivered_token_count"`
 	StreamTerminatedReason *string         `db:"stream_terminated_reason" json:"stream_terminated_reason"`
 	Fingerprint            string          `db:"fingerprint" json:"fingerprint"`
+	AuditRequestID         *string         `db:"audit_request_id" json:"audit_request_id"`
 }
 
 type InsertBillingEventRow struct {
@@ -131,6 +132,7 @@ func (q *Queries) InsertBillingEvent(ctx context.Context, arg InsertBillingEvent
 		arg.DeliveredTokenCount,
 		arg.StreamTerminatedReason,
 		arg.Fingerprint,
+		arg.AuditRequestID,
 	)
 	var i InsertBillingEventRow
 	err := row.Scan(&i.ID, &i.OccurredAt)

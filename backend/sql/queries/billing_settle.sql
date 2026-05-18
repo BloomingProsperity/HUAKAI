@@ -66,9 +66,9 @@ INSERT INTO billing_events (
     actual_cost, actual_cost_signed,
     end_class, usage_source,
     stream_state, delivered_token_count, stream_terminated_reason,
-    fingerprint
+    fingerprint, audit_request_id
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 )
 RETURNING id, occurred_at;
 

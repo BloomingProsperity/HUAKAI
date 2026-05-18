@@ -71,6 +71,9 @@ func (h *BillingPersisterHandler) Handle(ctx context.Context, event eventbus.Req
 	if req.AccountID == 0 {
 		req.AccountID = event.AccountID
 	}
+	if req.AuditRequestID == "" {
+		req.AuditRequestID = event.RequestID
+	}
 	res, err := h.settler.Settle(ctx, req)
 	if h.reconciler != nil {
 		h.reconciler.RecordAsync(event, req, res, err)

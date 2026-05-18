@@ -1,14 +1,15 @@
 // dispatch_smoke_test.go — HUAKAI 全链路冒烟测试（httptest 版）
 //
 // 覆盖链路：
-//   inbound POST /v1/chat/completions
-//     → Auth.Resolve → Registry.Resolve (openai_chat)
-//     → Router.Plan → ClaimGate.Reserve → Selector.Select(account 42)
-//     → CredentialVault.Resolve(42) → {api_key=sk-fake}
-//     → Dispatcher.Dispatch → openai.PassthroughAdapter.BuildRequest
-//     → redirectRoundTripper → httptest.Server（模拟 OpenAI 上游）
-//     → Forwarder.Forward（透传 SSE） → 200 + SSE body
-//     → Settler.Settle
+//
+//	inbound POST /v1/chat/completions
+//	  → Auth.Resolve → Registry.Resolve (openai_chat)
+//	  → Router.Plan → ClaimGate.Reserve → Selector.Select(account 42)
+//	  → CredentialVault.Resolve(42) → {api_key=sk-fake}
+//	  → Dispatcher.Dispatch → openai.PassthroughAdapter.BuildRequest
+//	  → redirectRoundTripper → httptest.Server（模拟 OpenAI 上游）
+//	  → Forwarder.Forward（透传 SSE） → 200 + SSE body
+//	  → Settler.Settle
 //
 // Lane: claude-executor | Agent: claude-executor (Sonnet 4.6) | UTC: 2026-05-06
 package gatewayhttp
@@ -88,7 +89,7 @@ func (s *smokeSettler) Settle(_ context.Context, _ billing.SettleRequest) (*bill
 	return &billing.SettleResult{}, nil
 }
 
-func (s *smokeSettler) Abort(_ context.Context, _, _ int64, _ string) error {
+func (s *smokeSettler) Abort(_ context.Context, _, _ int64, _, _ string) error {
 	atomic.AddInt64(&s.abortCalls, 1)
 	return nil
 }

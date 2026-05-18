@@ -225,7 +225,7 @@ func allowlistField(field string) bool {
 	}
 	for _, suffix := range []string{
 		"_id", "_id_ref", "_scope_ref", "_fingerprint", "_version", "_class", "_family",
-		"_count", "_tokens", "_microcents", "_cents", "_ms", "_pct", "_state",
+		"_count", "_tokens", "_micro_usd", "_microcents", "_cents", "_ms", "_pct", "_state",
 		"_status", "_type", "_kind", "_at", "_until", "_seconds", "_hours", "_bytes",
 	} {
 		if strings.HasSuffix(k, suffix) {
@@ -240,7 +240,7 @@ var exactAllowlist = map[string]struct{}{
 	"amount_cents": {}, "attempt_count": {}, "attempts": {}, "auth_mode": {}, "balance_cents": {}, "batch_id": {},
 	"billing_event_id": {}, "body_envelope": {}, "cache_hit": {}, "cache_read_input_tokens": {}, "cache_write_input_tokens": {}, "channel": {},
 	"channel_id": {}, "claim_id": {}, "component": {}, "cooldown_hours": {}, "cooldown_until": {}, "cost_rate_version": {},
-	"cost_total_microcents": {}, "created_at": {}, "credential_id": {}, "credential_version": {}, "credentials_present": {}, "currency_code": {},
+	"cost_total_micro_usd": {}, "created_at": {}, "credential_id": {}, "credential_version": {}, "credentials_present": {}, "currency_code": {},
 	"decision_ref": {}, "delivered_token_count": {}, "detail": {}, "duration_ms": {}, "endpoint": {}, "endpoint_family": {}, "ended_at": {}, "error_class": {}, "event_class": {}, "event_id": {},
 	"event_type": {}, "failed_attempts": {}, "failure_class": {}, "failure_count": {}, "failure_reason_class": {},
 	"feature_refs": {}, "handler_id": {}, "hop": {}, "hop_chain": {}, "hop_index": {}, "hop_kind": {}, "id": {}, "input_tokens": {},
@@ -251,9 +251,9 @@ var exactAllowlist = map[string]struct{}{
 	"ramp_failure_count": {}, "ramp_stage_pct": {}, "rate_limit_hits": {}, "reason": {}, "reason_class": {}, "receipt_id": {},
 	"redaction_result": {}, "redemption_id": {}, "refund_microcents": {}, "request_id": {}, "requested": {}, "requested_model": {},
 	"route_decided": {}, "route_id": {}, "safe": {}, "schema_version": {}, "score": {}, "severity": {}, "single_use_per_user": {},
-	"source_ip_hash": {}, "stack": {}, "started_at": {}, "state": {}, "status": {}, "status_class": {}, "stream": {}, "subject": {}, "tenant_id": {},
+	"source_ip_hash": {}, "stack": {}, "started_at": {}, "state": {}, "status": {}, "status_class": {}, "stream": {}, "subject": {}, "substitution_refund_micro_usd": {}, "tenant_id": {},
 	"tenant_scope": {}, "tenant_scope_ref": {}, "to": {}, "total_attempts": {}, "trace_id": {}, "type": {}, "unredeemed_capacity": {},
-	"upstream_5xx_hits": {}, "upstream_reported": {}, "user_id": {}, "vendor": {}, "verdict": {}, "window_summary": {}, "ts": {},
+	"upstream_5xx_hits": {}, "upstream_reported": {}, "user_id": {}, "vendor": {}, "verdict": {}, "voucher_redeemed_micro_usd": {}, "window_summary": {}, "ts": {},
 }
 
 func sensitiveKey(key string) bool {

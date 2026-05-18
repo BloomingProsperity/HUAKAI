@@ -142,6 +142,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 
 	endClass := normalizeEndClass(req.Draft.EndClass, req.Stream)
 	usageSource := normalizeUsageSource(req.Draft.UsageSource)
+	auditRequestID := strings.TrimSpace(req.AuditRequestID)
 	billingEventParams := db.InsertBillingEventParams{
 		TenantID:               claim.TenantID,
 		ClaimID:                claim.ID,
@@ -154,6 +155,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 		DeliveredTokenCount:    attempt.DeliveredTokenCount,
 		StreamTerminatedReason: nullableString(attempt.StreamTerminatedReason),
 		Fingerprint:            coalesceString(req.Fingerprint, claim.RequestFingerprint),
+		AuditRequestID:         nullableString(auditRequestID),
 	}
 	billingEvent, err := qtx.InsertBillingEvent(ctx, billingEventParams)
 	if err != nil {
@@ -212,7 +214,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 	return &SettleResult{NewUserBalance: decimal.Zero, OutboxEventsEnqueued: outboxEvents}, nil
 }
 
-func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, reason string) error {
+func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string) error {
 	if s == nil || s.pool == nil {
 		return ErrPoolNotConfigured
 	}
@@ -261,6 +263,7 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 	abortEndClass := "unknown_termination"
 	abortUsageSource := string(gateway.UsageSourceInferred)
 	abortAttempt := Attempt{State: StreamStateFailed, StreamTerminatedReason: normalizeTerminatedReason(reason)}
+	auditRequestID = strings.TrimSpace(auditRequestID)
 	abortEventParams := db.InsertBillingEventParams{
 		TenantID:               tenantID,
 		ClaimID:                claimID,
@@ -273,6 +276,7 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 		DeliveredTokenCount:    0,
 		StreamTerminatedReason: nullableString(abortAttempt.StreamTerminatedReason),
 		Fingerprint:            fingerprint,
+		AuditRequestID:         nullableString(auditRequestID),
 	}
 	abortEvent, err := qtx.InsertBillingEvent(ctx, abortEventParams)
 	if err != nil {
@@ -431,6 +435,7 @@ func (s *DefaultSettler) enqueueBillingEventReplica(ctx context.Context, tx pgx.
 		DeliveredTokenCount:    params.DeliveredTokenCount,
 		StreamTerminatedReason: params.StreamTerminatedReason,
 		Fingerprint:            params.Fingerprint,
+		AuditRequestID:         params.AuditRequestID,
 		OccurredAt:             timestampString(row.OccurredAt),
 	})
 	if err != nil {
