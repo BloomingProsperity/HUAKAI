@@ -145,7 +145,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 	auditRequestID := strings.TrimSpace(req.AuditRequestID)
 	billingEventParams := db.InsertBillingEventParams{
 		TenantID:               claim.TenantID,
-		ClaimID:                claim.ID,
+		ClaimID:                nullableInt64(claim.ID),
 		EventType:              "claim_committed",
 		ActualCost:             actualCost,
 		ActualCostSigned:       actualCost,
@@ -266,7 +266,7 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 	auditRequestID = strings.TrimSpace(auditRequestID)
 	abortEventParams := db.InsertBillingEventParams{
 		TenantID:               tenantID,
-		ClaimID:                claimID,
+		ClaimID:                nullableInt64(claimID),
 		EventType:              "claim_aborted",
 		ActualCost:             decimal.Zero,
 		ActualCostSigned:       decimal.Zero,
@@ -422,10 +422,11 @@ func (s *DefaultSettler) enqueueBillingEventReplica(ctx context.Context, tx pgx.
 	if s.dlqStore == nil {
 		return fmt.Errorf("billing: replica intent configured without DLQ store")
 	}
+	claimID := int64Value(params.ClaimID)
 	payload, err := json.Marshal(dlq.BillingEventReplicaPayload{
 		BillingEventID:         row.ID,
 		TenantID:               params.TenantID,
-		ClaimID:                params.ClaimID,
+		ClaimID:                claimID,
 		EventType:              params.EventType,
 		ActualCost:             params.ActualCost.StringFixed(8),
 		ActualCostSigned:       params.ActualCostSigned.StringFixed(8),
@@ -443,7 +444,7 @@ func (s *DefaultSettler) enqueueBillingEventReplica(ctx context.Context, tx pgx.
 	}
 	_, err = s.dlqStore.EnqueueTx(ctx, tx, dlq.Event{
 		TenantID:       params.TenantID,
-		ClaimID:        params.ClaimID,
+		ClaimID:        claimID,
 		EventKind:      dlq.EventKindBillingEventReplica,
 		Lane:           dlq.LaneHigh,
 		Payload:        payload,
@@ -553,6 +554,13 @@ func coalesceInt64(v, fallback int64) int64 {
 		return v
 	}
 	return fallback
+}
+
+func int64Value(v *int64) int64 {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
 
 func coalesceInt32(v, fallback int32) int32 {

@@ -246,7 +246,7 @@ func (r *PgxReader) ListBillingEvents(ctx context.Context, tenantID int64, event
 		e := BillingEventRow{
 			ID:                  row.ID,
 			TenantID:            row.TenantID,
-			ClaimID:             row.ClaimID,
+			ClaimID:             nullableInt64Value(row.ClaimID),
 			EventType:           row.EventType,
 			ActualCost:          row.ActualCost,
 			ActualCostSigned:    row.ActualCostSigned,
@@ -297,6 +297,13 @@ func normalizePage(p Page) (int32, int32) {
 		offset = 0
 	}
 	return limit, offset
+}
+
+func nullableInt64Value(v *int64) int64 {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
 
 var _ Reader = (*PgxReader)(nil)

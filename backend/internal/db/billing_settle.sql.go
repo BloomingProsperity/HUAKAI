@@ -99,7 +99,7 @@ RETURNING id, occurred_at
 
 type InsertBillingEventParams struct {
 	TenantID               int64           `db:"tenant_id" json:"tenant_id"`
-	ClaimID                int64           `db:"claim_id" json:"claim_id"`
+	ClaimID                *int64          `db:"claim_id" json:"claim_id"`
 	EventType              string          `db:"event_type" json:"event_type"`
 	ActualCost             decimal.Decimal `db:"actual_cost" json:"actual_cost"`
 	ActualCostSigned       decimal.Decimal `db:"actual_cost_signed" json:"actual_cost_signed"`

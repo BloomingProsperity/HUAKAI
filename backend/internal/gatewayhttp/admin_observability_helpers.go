@@ -23,8 +23,8 @@ func mapAuditRow(r db.ListAuditEventsRow) any {
 		payload = json.RawMessage(`{}`)
 	}
 	var claimID any
-	if r.ClaimID > 0 {
-		claimID = r.ClaimID
+	if r.ClaimID != nil && *r.ClaimID > 0 {
+		claimID = *r.ClaimID
 	}
 	return map[string]any{
 		"id": r.ID, "tenant_id": r.TenantID, "event_class": r.EventClass,
