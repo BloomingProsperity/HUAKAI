@@ -47,6 +47,13 @@ pub fn build_boring_connector(
             .set_curves_list(&groups)
             .map_err(BoringMimicryError::from_boring)?;
     }
+    builder
+        .set_client_hello_profile(
+            &layout.cipher_suites,
+            &layout.supported_groups,
+            &layout.ec_point_formats,
+        )
+        .map_err(BoringMimicryError::from_boring)?;
 
     let alpn = serialize_alpn(&layout.alpn_protocols)?;
     if !alpn.is_empty() {

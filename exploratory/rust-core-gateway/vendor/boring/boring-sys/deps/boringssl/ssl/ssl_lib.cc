@@ -544,6 +544,9 @@ SSL *SSL_new(SSL_CTX *ctx) {
           ctx->explicit_extension_order) ||
       !ssl->config->explicit_tls13_cipher_order.CopyFrom(
           ctx->explicit_tls13_cipher_order) ||
+      !ssl->config->explicit_cipher_order.CopyFrom(ctx->explicit_cipher_order) ||
+      !ssl->config->explicit_ec_point_formats.CopyFrom(
+          ctx->explicit_ec_point_formats) ||
       !ssl->config->verify_sigalgs.CopyFrom(ctx->verify_sigalgs)) {
     return nullptr;
   }
@@ -3161,6 +3164,22 @@ int SSL_CTX_set_tls13_cipher_order(SSL_CTX *ctx, const uint16_t *types,
   }
   ctx->has_explicit_tls13_cipher_order = true;
   return 1;
+}
+
+int SSL_CTX_set_client_hello_profile(SSL_CTX *ctx, const uint16_t *ciphers,
+                                     size_t ciphers_len, const uint16_t *groups,
+                                     size_t groups_len,
+                                     const uint8_t *ec_points, size_t ec_points_len) {
+  if ((ciphers == nullptr && ciphers_len != 0) ||
+      (groups == nullptr && groups_len != 0) ||
+      (ec_points == nullptr && ec_points_len != 0)) {
+    OPENSSL_PUT_ERROR(SSL, ERR_R_PASSED_NULL_PARAMETER);
+    return 0;
+  }
+  return ctx->explicit_cipher_order.CopyFrom(Span(ciphers, ciphers_len)) &&
+         ctx->supported_group_list.CopyFrom(Span(groups, groups_len)) &&
+         ctx->explicit_ec_point_formats.CopyFrom(
+             Span(ec_points, ec_points_len));
 }
 
 void SSL_set_permute_extensions(SSL *ssl, int enabled) {

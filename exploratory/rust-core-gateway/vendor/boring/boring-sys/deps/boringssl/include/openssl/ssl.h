@@ -5245,6 +5245,13 @@ OPENSSL_EXPORT int SSL_CTX_set_tls13_cipher_order(SSL_CTX *ctx,
                                                   const uint16_t *types,
                                                   size_t types_len);
 
+// 设置 ClientHello profile raw 字段 (HUAKAI patch, not upstream BoringSSL)。
+// 仅影响 wire advertisement；真实协商仍由 BoringSSL 后续握手校验兜底。
+OPENSSL_EXPORT int SSL_CTX_set_client_hello_profile(
+    SSL_CTX *ctx, const uint16_t *ciphers, size_t ciphers_len,
+    const uint16_t *groups, size_t groups_len, const uint8_t *ec_points,
+    size_t ec_points_len);
+
 // SSL_set_permute_extensions configures whether sockets on |ssl| should
 // permute extensions. For now, this is only implemented for the ClientHello.
 OPENSSL_EXPORT void SSL_set_permute_extensions(SSL *ssl, int enabled);

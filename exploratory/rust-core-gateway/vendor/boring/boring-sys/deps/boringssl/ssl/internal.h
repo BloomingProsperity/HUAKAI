@@ -3251,6 +3251,7 @@ struct SSL_CONFIG {
 
   // crypto
   UniquePtr<SSLCipherPreferenceList> cipher_list;
+  Array<uint16_t> explicit_cipher_order;
 
   // This is used to hold the local certificate used (i.e. the server
   // certificate for a server or the client certificate for a client).
@@ -3335,6 +3336,7 @@ struct SSL_CONFIG {
 
   // HUAKAI patch: profile 指定的 TLS 1.3 cipher suite 顺序。
   Array<uint16_t> explicit_tls13_cipher_order;
+  Array<uint8_t> explicit_ec_point_formats;
 
   // srtp_profiles is the list of configured SRTP protection profiles for
   // DTLS-SRTP.
@@ -3961,6 +3963,7 @@ struct ssl_ctx_st : public bssl::RefCounted<ssl_ctx_st> {
 
   // Supported group values inherited by SSL structure
   bssl::Array<uint16_t> supported_group_list;
+  bssl::Array<uint16_t> explicit_cipher_order;
 
   // HUAKAI patch: ClientHello 扩展写入顺序，保存 kExtensions[] 内部 index。
   // strict mode 为 true 时仅发送数组列出的内部扩展。
@@ -3968,6 +3971,7 @@ struct ssl_ctx_st : public bssl::RefCounted<ssl_ctx_st> {
 
   // HUAKAI patch: profile 指定的 TLS 1.3 cipher suite 顺序。
   bssl::Array<uint16_t> explicit_tls13_cipher_order;
+  bssl::Array<uint8_t> explicit_ec_point_formats;
 
   // channel_id_private is the client's Channel ID private key, or null if
   // Channel ID should not be offered on this connection.

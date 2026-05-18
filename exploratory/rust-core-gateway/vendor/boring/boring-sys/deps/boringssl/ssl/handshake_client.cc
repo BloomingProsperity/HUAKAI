@@ -107,6 +107,34 @@ static bool ssl_write_client_cipher_list(const SSL_HANDSHAKE *hs, CBB *out,
     return false;
   }
 
+  if (!ssl->config->explicit_cipher_order.empty()) {
+    for (uint16_t cipher : ssl->config->explicit_cipher_order) {
+      if (cipher == SSL_CIPHER_EMPTY_RENEGOTIATION_INFO_SCSV ||
+          cipher == SSL_CIPHER_FALLBACK_SCSV) {
+        continue;
+      }
+      if (cipher == SSL_CIPHER_AES_128_GCM_SHA256 ||
+          cipher == SSL_CIPHER_AES_256_GCM_SHA384 ||
+          cipher == SSL_CIPHER_CHACHA20_POLY1305_SHA256) {
+        if (hs->max_version >= TLS1_3_VERSION &&
+            !ssl_add_tls13_cipher(&child, cipher,
+                                  ssl->config->compliance_policy)) {
+          return false;
+        }
+      } else if (hs->min_version < TLS1_3_VERSION &&
+                 type != ssl_client_hello_inner &&
+                 !CBB_add_u16(&child, cipher)) {
+        return false;
+      }
+    }
+    if (ssl->mode & SSL_MODE_SEND_FALLBACK_SCSV) {
+      if (!CBB_add_u16(&child, SSL_CIPHER_FALLBACK_SCSV)) {
+        return false;
+      }
+    }
+    return CBB_flush(out);
+  }
+
   // Add TLS 1.3 ciphers. Order ChaCha20-Poly1305 relative to AES-GCM based on
   // hardware support.
   if (hs->max_version >= TLS1_3_VERSION) {
