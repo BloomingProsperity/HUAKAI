@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
@@ -191,6 +192,22 @@ type RefundReceiptSink interface {
 	AppendRefundReceipt(context.Context, *CostReceipt) error
 }
 
+type refundTransactionBeginner interface {
+	BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
+}
+
+type refundSettlerInTx interface {
+	RefundInTx(context.Context, pgx.Tx, billing.RefundRequest) (*billing.RefundResult, error)
+}
+
+type refundLedgerInTx interface {
+	AppendInTx(context.Context, pgx.Tx, auditledger.LedgerEntry) (auditledger.LedgerEntry, error)
+}
+
+type refundReceiptSinkInTx interface {
+	AppendRefundReceiptInTx(context.Context, pgx.Tx, *CostReceipt) error
+}
+
 type refundReceiptSequenceReader interface {
 	GetReceiptBySequence(context.Context, string, int64, int32) (*CostReceipt, error)
 }
@@ -205,6 +222,7 @@ type MismatchRefundWorker struct {
 	formatter   receiptFormatterService
 	ledger      auditledger.Ledger
 	receiptSink RefundReceiptSink
+	txBeginner  refundTransactionBeginner
 	now         func() time.Time
 }
 
@@ -219,6 +237,14 @@ func WithRefundLedger(ledger auditledger.Ledger) RefundWorkerOption {
 
 func WithRefundReceiptSink(sink RefundReceiptSink) RefundWorkerOption {
 	return RefundWorkerOption{applyWorker: func(w *MismatchRefundWorker) { w.receiptSink = sink }}
+}
+
+func WithRefundTxPool(pool *pgxpool.Pool) RefundWorkerOption {
+	return RefundWorkerOption{applyWorker: func(w *MismatchRefundWorker) {
+		if pool != nil {
+			w.txBeginner = pool
+		}
+	}}
 }
 
 func WithRefundNow(now func() time.Time) RefundWorkerOption {
@@ -285,7 +311,13 @@ func (w *MismatchRefundWorker) Apply(ctx context.Context, payload MismatchRefund
 	if rec.Status == "completed" {
 		return nil
 	}
+	if w.txBeginner != nil {
+		return w.applyInTx(ctx, payload)
+	}
+	return w.applyLegacy(ctx, payload)
+}
 
+func (w *MismatchRefundWorker) applyLegacy(ctx context.Context, payload MismatchRefundPayload) error {
 	refund, err := w.settler.Refund(ctx, billing.RefundRequest{
 		TenantID:       payload.TenantID,
 		ClaimID:        payload.ClaimID,
@@ -312,6 +344,73 @@ func (w *MismatchRefundWorker) Apply(ctx context.Context, payload MismatchRefund
 		_ = w.pending.MarkFailed(ctx, payload.ClaimID)
 		return err
 	}
+	return w.pending.MarkCompleted(ctx, payload.ClaimID, w.now())
+}
+
+func (w *MismatchRefundWorker) applyInTx(ctx context.Context, payload MismatchRefundPayload) error {
+	settler, ok := w.settler.(refundSettlerInTx)
+	if !ok {
+		return fmt.Errorf("audit: refund settler does not support transaction-bound refund")
+	}
+	var ledger refundLedgerInTx
+	if w.ledger != nil {
+		var ledgerOK bool
+		ledger, ledgerOK = w.ledger.(refundLedgerInTx)
+		if !ledgerOK {
+			return fmt.Errorf("audit: refund ledger does not support transaction-bound append")
+		}
+	}
+	var receiptSink refundReceiptSinkInTx
+	if w.receiptSink != nil {
+		var receiptOK bool
+		receiptSink, receiptOK = w.receiptSink.(refundReceiptSinkInTx)
+		if !receiptOK {
+			return fmt.Errorf("audit: refund receipt sink does not support transaction-bound append")
+		}
+	}
+
+	tx, err := w.txBeginner.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		_ = w.pending.MarkFailed(ctx, payload.ClaimID)
+		return fmt.Errorf("audit: begin refund transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	refs := []string{}
+	refund, err := settler.RefundInTx(ctx, tx, billing.RefundRequest{
+		TenantID:       payload.TenantID,
+		ClaimID:        payload.ClaimID,
+		AmountMicroUSD: payload.DeltaMicroUSD,
+		Reason:         AuditMismatchRefundReason,
+		AuditRequestID: refundAuditRequestID(payload.RequestID, payload.ClaimID),
+	})
+	if err != nil {
+		_ = w.pending.MarkFailed(ctx, payload.ClaimID)
+		return err
+	}
+	if refund != nil && strings.TrimSpace(refund.AdjustmentRef) != "" {
+		refs = append(refs, strings.TrimSpace(refund.AdjustmentRef))
+	}
+	if ledgerRef, err := w.appendRefundLedgerInTx(ctx, tx, ledger, payload); err != nil {
+		_ = w.pending.MarkFailed(ctx, payload.ClaimID)
+		return err
+	} else if ledgerRef != "" {
+		refs = append(refs, ledgerRef)
+	}
+	if err := w.signRefundedReceiptInTx(ctx, tx, receiptSink, payload, refs); err != nil {
+		_ = w.pending.MarkFailed(ctx, payload.ClaimID)
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		_ = w.pending.MarkFailed(ctx, payload.ClaimID)
+		return fmt.Errorf("audit: commit refund transaction: %w", err)
+	}
+	committed = true
 	return w.pending.MarkCompleted(ctx, payload.ClaimID, w.now())
 }
 
@@ -343,6 +442,32 @@ func (w *MismatchRefundWorker) appendRefundLedger(ctx context.Context, payload M
 	return refundLedgerRef(requestID, entry), nil
 }
 
+func (w *MismatchRefundWorker) appendRefundLedgerInTx(ctx context.Context, tx pgx.Tx, ledger refundLedgerInTx, payload MismatchRefundPayload) (string, error) {
+	if w == nil || ledger == nil {
+		return "", nil
+	}
+	requestID := refundAuditRequestID(payload.RequestID, payload.ClaimID)
+	if existing, err := w.ledger.GetByRequestID(ctx, requestID); err == nil {
+		return refundLedgerRef(requestID, existing), nil
+	} else if !errors.Is(err, auditledger.ErrLedgerEntryNotFound) {
+		return "", fmt.Errorf("audit: lookup existing refund ledger entry: %w", err)
+	}
+	entry, err := ledger.AppendInTx(ctx, tx, auditledger.LedgerEntry{
+		RequestID: requestID,
+		TenantID:  payload.TenantID,
+		ModelChain: &proto.ModelChain{
+			Requested:        "audit_mismatch_refund",
+			RouteDecided:     "audit_mismatch_refund",
+			UpstreamReported: "audit_mismatch_refund",
+			Verdict:          "mismatch",
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("audit: append refund ledger entry: %w", err)
+	}
+	return refundLedgerRef(requestID, entry), nil
+}
+
 func (w *MismatchRefundWorker) signRefundedReceipt(ctx context.Context, payload MismatchRefundPayload, refs []string) error {
 	if w == nil || w.formatter == nil {
 		return nil
@@ -368,6 +493,36 @@ func (w *MismatchRefundWorker) signRefundedReceipt(ctx context.Context, payload 
 				}
 				return nil
 			}
+			return fmt.Errorf("audit: append refunded receipt: %w", err)
+		}
+	}
+	return nil
+}
+
+func (w *MismatchRefundWorker) signRefundedReceiptInTx(ctx context.Context, tx pgx.Tx, sink refundReceiptSinkInTx, payload MismatchRefundPayload, refs []string) error {
+	if w == nil || w.formatter == nil {
+		return nil
+	}
+	receipt, err := w.formatter.DeriveReceipt(ctx, payload.RequestID)
+	if err != nil {
+		return fmt.Errorf("audit: derive refunded receipt: %w", err)
+	}
+	receipt.ClaimID = payload.ClaimID
+	receipt.ReceiptSequence = 1
+	receipt.ValidationState = ReceiptValidationStateMismatchRefunded
+	receipt.Verdict = ReceiptVerdictMismatchRefundPending
+	receipt.AdjustmentRefs = refs
+	signed, err := w.formatter.SignReceipt(ctx, receipt)
+	if err != nil {
+		return fmt.Errorf("audit: sign refunded receipt: %w", err)
+	}
+	if sink != nil {
+		if _, err := w.existingRefundReceipt(ctx, payload); err == nil {
+			return nil
+		} else if !errors.Is(err, ErrReceiptNotFound) && !errors.Is(err, ErrReceiptStorageRequired) {
+			return fmt.Errorf("audit: lookup duplicate refunded receipt: %w", err)
+		}
+		if err := sink.AppendRefundReceiptInTx(ctx, tx, signed); err != nil {
 			return fmt.Errorf("audit: append refunded receipt: %w", err)
 		}
 	}

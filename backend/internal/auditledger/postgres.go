@@ -71,6 +71,23 @@ func (l *PostgresLedger) Append(ctx context.Context, entry LedgerEntry) (LedgerE
 	return entry, nil
 }
 
+func (l *PostgresLedger) AppendInTx(ctx context.Context, tx pgx.Tx, entry LedgerEntry) (LedgerEntry, error) {
+	if l == nil || tx == nil {
+		return LedgerEntry{}, errors.New("auditledger: tx required for Postgres AppendInTx")
+	}
+	if entry.RequestID == "" {
+		return LedgerEntry{}, errors.New("auditledger: RequestID required for Postgres Append")
+	}
+	if entry.Timestamp == "" {
+		entry.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+
+	unlock := l.lockTenantWriter(entry.TenantID)
+	defer unlock()
+
+	return AppendInTransaction(ctx, tx, l.signer, entry)
+}
+
 func (l *PostgresLedger) lockTenantWriter(tenantID int64) func() {
 	l.tenantMu.Lock()
 	if l.tenantLocks == nil {

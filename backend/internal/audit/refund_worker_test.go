@@ -17,14 +17,17 @@ import (
 
 func TestAT_AUDIT_001_019_MismatchDetectTriggersEnqueue(t *testing.T) {
 	ctx := context.Background()
-	derived := refundTestReceipt("req-refund-enqueue", 1001, 240)
-	submitted := refundTestReceipt("req-refund-enqueue", 1001, 200)
+	derived := refundTestReceipt("req-refund-enqueue", 1001, 200)
+	submitted := refundTestReceipt("req-refund-enqueue", 1001, 240)
 
 	verdict, err := DetectReceiptMismatch(derived, submitted)
 	if err != nil {
 		t.Fatalf("DetectReceiptMismatch: %v", err)
 	}
-	if verdict.State != ReceiptValidationStateMismatchPending || verdict.DeltaMicroUSD != 40 {
+	if verdict.State != ReceiptValidationStateMismatchPending ||
+		verdict.DeltaMicroUSD != 40 ||
+		verdict.MismatchDirection != MismatchDirectionOverCharge ||
+		!verdict.RefundEligible() {
 		t.Fatalf("verdict=%+v", verdict)
 	}
 	if len(verdict.FieldsMismatch) != 1 || verdict.FieldsMismatch[0] != "cost_total_micro_usd" {
