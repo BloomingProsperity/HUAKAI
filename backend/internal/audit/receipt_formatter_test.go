@@ -432,6 +432,15 @@ func TestReceiptCanonicalPayloadUsesMicroUSDField(t *testing.T) {
 	if strings.Contains(raw, "cost_total_microcents") {
 		t.Fatalf("canonical payload must not use microcents field: %s", raw)
 	}
+	if !strings.Contains(raw, `"validation_state":"valid"`) {
+		t.Fatalf("canonical payload missing validation_state field: %s", raw)
+	}
+	if !strings.Contains(raw, `"verdict":"match"`) {
+		t.Fatalf("canonical payload missing verdict field: %s", raw)
+	}
+	if !strings.Contains(raw, `"adjustment_refs":[]`) {
+		t.Fatalf("canonical payload missing adjustment_refs field: %s", raw)
+	}
 }
 
 type staticReceiptSource struct {

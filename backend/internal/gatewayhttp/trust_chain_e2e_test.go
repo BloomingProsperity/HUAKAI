@@ -181,7 +181,7 @@ func newTrustChainE2E(t *testing.T) *trustChainE2EEnv {
 	}
 	ledger := newTrustE2ELedger(t, signer)
 
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newGatewayHTTPTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/messages" {
 			http.NotFound(w, r)
 			return
@@ -258,7 +258,7 @@ func newTrustChainE2E(t *testing.T) *trustChainE2EEnv {
 	r.Get("/v1/audit/verify", newTrustE2EVerifyHandler(ledger, signer.PublicKey()))
 	r.Get("/v1/audit/merkle-tree.json", NewAuditMerkleTreeHandler(AuditVerifyStaticDeps{Ledger: ledger}))
 
-	server := httptest.NewServer(r)
+	server := newGatewayHTTPTestServer(t, r)
 	t.Cleanup(func() {
 		server.Close()
 		ledger.Reset(t)

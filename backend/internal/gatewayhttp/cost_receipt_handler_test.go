@@ -1,0 +1,548 @@
+package gatewayhttp
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/audit"
+	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
+	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/sign"
+)
+
+func TestAT_AUDIT_001_009_GetReceiptHit(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	receipt := signedGatewayReceipt(t, signer, 7, "req-hit")
+	store := newReceiptStoreStub(receipt)
+
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Receipts: store, Signer: signer}), http.MethodGet, "/v1/receipts/req-hit", nil, sessionauth.SessionIdentity{TenantID: 7, UserID: 42})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got UserCostReceipt
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.RequestID != "req-hit" || got.TenantScopeRef != auditledger.TenantScopeRef(7) || got.Signature == "" || got.CanonicalHash == "" {
+		t.Fatalf("receipt response mismatch: %+v", got)
+	}
+	if strings.Contains(rec.Body.String(), `"tenant_id"`) {
+		t.Fatalf("receipt response exposed raw tenant_id: %s", rec.Body.String())
+	}
+}
+
+func TestAT_AUDIT_001_010_CrossTenantReceiptReturns404(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	store := newReceiptStoreStub(signedGatewayReceipt(t, signer, 8, "req-cross"))
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Receipts: store, Signer: signer}), http.MethodGet, "/v1/receipts/req-cross", nil, sessionauth.SessionIdentity{TenantID: 7, UserID: 42})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d want 404 body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAT_AUDIT_001_011_ReceiptNotFound(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	store := &receiptStoreStub{err: audit.ErrReceiptNotFound}
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Receipts: store, Signer: signer}), http.MethodGet, "/v1/receipts/missing", nil, sessionauth.SessionIdentity{TenantID: 7, UserID: 42})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d want 404 body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAT_AUDIT_001_012_ReceiptUnavailableReturns202(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	store := &receiptStoreStub{err: audit.ErrReceiptUnavailable}
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Receipts: store, Signer: signer}), http.MethodGet, "/v1/receipts/pending", nil, sessionauth.SessionIdentity{TenantID: 7, UserID: 42})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d want 202 body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAT_AUDIT_001_013_DetachedVerifyPass(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	receipt := signedGatewayReceipt(t, signer, 7, "req-verify")
+	payload := mustUserReceipt(t, receipt)
+
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Signer: signer, Now: fixedReceiptNow}), http.MethodPost, "/v1/receipts/req-verify/verify", payload, sessionauth.SessionIdentity{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got receiptVerifyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.Valid || got.KeyStatus != "active" || got.AgeSeconds <= 0 {
+		t.Fatalf("verify response mismatch: %+v", got)
+	}
+}
+
+func TestAT_AUDIT_001_014_DetachedVerifyTamperFails(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	payload := mustUserReceipt(t, signedGatewayReceipt(t, signer, 7, "req-tamper"))
+	payload.Cost.CostTotalMicroUSD++
+
+	assertDetachedVerifyInvalid(t, signer, "req-tamper", payload)
+}
+
+func TestAT_AUDIT_001_014b_DetachedVerifyValidationStateTamperFails(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	payload := mustUserReceipt(t, signedGatewayReceipt(t, signer, 7, "req-tamper-validation"))
+	payload.ValidationState = "mismatch_refunded"
+
+	assertDetachedVerifyInvalid(t, signer, "req-tamper-validation", payload)
+}
+
+func TestAT_AUDIT_001_014c_DetachedVerifyVerdictTamperFails(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	payload := mustUserReceipt(t, signedGatewayReceipt(t, signer, 7, "req-tamper-verdict"))
+	payload.Verdict = "refund_pending"
+
+	assertDetachedVerifyInvalid(t, signer, "req-tamper-verdict", payload)
+}
+
+func TestAT_AUDIT_001_014d_DetachedVerifyAdjustmentRefsTamperFails(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	payload := mustUserReceipt(t, signedGatewayReceipt(t, signer, 7, "req-tamper-adjustments"))
+	payload.AdjustmentRefs = []string{"adj-ref-1"}
+
+	assertDetachedVerifyInvalid(t, signer, "req-tamper-adjustments", payload)
+}
+
+func assertDetachedVerifyInvalid(t *testing.T, signer *sign.Signer, requestID string, payload UserCostReceipt) {
+	t.Helper()
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Signer: signer, Now: fixedReceiptNow}), http.MethodPost, "/v1/receipts/"+requestID+"/verify", payload, sessionauth.SessionIdentity{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got receiptVerifyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Valid {
+		t.Fatalf("tampered receipt verified: %+v", got)
+	}
+}
+
+func TestAT_AUDIT_001_015_GetPricingRateTableByVersion(t *testing.T) {
+	source := &rateTableSourceStub{table: billing.RateTable{
+		ID: 3, Version: "rate-v3", PricingData: json.RawMessage(`{"models":{"gpt-test":{"input_micro_usd":1}}}`),
+		EffectiveFrom: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
+		CreatedAt:     time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
+	}}
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{RateTables: source}), http.MethodGet, "/v1/pricing/rate-table?version=rate-v3", nil, sessionauth.SessionIdentity{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if source.seenVersion != "rate-v3" || !strings.Contains(rec.Body.String(), `"rate-v3"`) {
+		t.Fatalf("pricing response mismatch version=%q body=%s", source.seenVersion, rec.Body.String())
+	}
+}
+
+func TestAT_AUDIT_001_016_GetPricingSnapshots(t *testing.T) {
+	source := &rateTableSourceStub{snapshots: []billing.RateTableSnapshot{
+		{ID: 1, Version: "rate-v1", EffectiveFrom: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC), CreatedAt: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+		{ID: 2, Version: "rate-v2", EffectiveFrom: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), CreatedAt: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)},
+	}}
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{RateTables: source}), http.MethodGet, "/v1/pricing/snapshots", nil, sessionauth.SessionIdentity{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"rate-v1"`) || !strings.Contains(rec.Body.String(), `"rate-v2"`) {
+		t.Fatalf("snapshots missing versions: %s", rec.Body.String())
+	}
+}
+
+func TestAT_AUDIT_001_023_GetPricingSnapshotByID(t *testing.T) {
+	source := &rateTableSourceStub{table: billing.RateTable{
+		ID: 44, Version: "rate-v44", PricingData: json.RawMessage(`{"models":{"gpt-test":{"input_micro_usd":2}}}`),
+		EffectiveFrom: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
+		CreatedAt:     time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
+	}}
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{RateTables: source}), http.MethodGet, "/v1/pricing/snapshots/44", nil, sessionauth.SessionIdentity{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if source.seenSnapshotID != 44 || !strings.Contains(rec.Body.String(), `"rate-v44"`) {
+		t.Fatalf("snapshot response mismatch id=%d body=%s", source.seenSnapshotID, rec.Body.String())
+	}
+}
+
+func TestAT_AUDIT_001_017_GetAuditPubkeyReturnsFingerprint(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	r := chi.NewRouter()
+	r.Get("/v1/audit/pubkey", NewAuditPubkeyHandler(AuditPubkeyDeps{Signer: signer}))
+
+	rec := doReceiptRequest(t, r, http.MethodGet, "/v1/audit/pubkey", nil, sessionauth.SessionIdentity{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got AuditPubkeyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Algorithm != "ed25519" || got.Fingerprint != signer.Fingerprint() || got.PublicKeyBase64 == "" {
+		t.Fatalf("pubkey response mismatch: %+v", got)
+	}
+}
+
+func TestAT_AUDIT_001_018_RequestIDHeaderTooLongReturns400(t *testing.T) {
+	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
+	r.Use(RequestIDLengthLimiter(MaxRequestIDLength))
+	r.Get("/ok", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok")) })
+
+	req := httptest.NewRequest(http.MethodGet, "/ok", nil)
+	req.Header.Set("X-Request-Id", strings.Repeat("x", MaxRequestIDLength+1))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.TrimSpace(rec.Body.String()) != `{"error":"request_id_too_long"}` {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestAT_AUDIT_001_019_VerifyV2CoversTrustFields(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	payload := mustUserReceipt(t, signedGatewayReceipt(t, signer, 7, "req-trust"))
+	payload.ValidationState = "mismatch_refunded"
+	payload.Verdict = "mismatch_refund_pending"
+	payload.AdjustmentRefs = []string{"adj-ref-1"}
+
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Signer: signer, Now: fixedReceiptNow}), http.MethodPost, "/v1/receipts/req-trust/verify", payload, sessionauth.SessionIdentity{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got receiptVerifyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Valid {
+		t.Fatalf("trust-field tamper verified: %+v", got)
+	}
+}
+
+func TestAT_AUDIT_001_020_VerifyV1Legacy(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	payload := legacyV1UserReceipt(t, signer, 7, "req-v1-legacy")
+
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Signer: signer, Now: fixedReceiptNow}), http.MethodPost, "/v1/receipts/req-v1-legacy/verify", payload, sessionauth.SessionIdentity{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got receiptVerifyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.Valid || got.KeyStatus != "active" {
+		t.Fatalf("legacy v1 receipt did not verify: %+v", got)
+	}
+}
+
+func TestAT_AUDIT_001_021_RequestIDWithSlash(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	receipt := signedGatewayReceipt(t, signer, 7, "host/random-000001")
+	store := newReceiptStoreStub(receipt)
+	r := receiptRouter(CostReceiptHandlerDeps{Receipts: store, Signer: signer, Now: fixedReceiptNow})
+
+	getRec := doReceiptRequest(t, r, http.MethodGet, "/v1/receipts/host/random-000001", nil, sessionauth.SessionIdentity{TenantID: 7, UserID: 42})
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get status=%d body=%s", getRec.Code, getRec.Body.String())
+	}
+	payload := mustUserReceipt(t, receipt)
+	verifyRec := doReceiptRequest(t, r, http.MethodPost, "/v1/receipts/host/random-000001/verify", payload, sessionauth.SessionIdentity{})
+	if verifyRec.Code != http.StatusOK {
+		t.Fatalf("verify status=%d body=%s", verifyRec.Code, verifyRec.Body.String())
+	}
+	var got receiptVerifyResponse
+	if err := json.Unmarshal(verifyRec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.Valid {
+		t.Fatalf("slash request_id did not verify: %+v", got)
+	}
+}
+
+func TestAT_AUDIT_001_022_ChatCompletionWritesReceiptThenGet200(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	signer := mustReceiptSigner(t)
+	ledger, err := auditledger.NewMemoryLedger(signer)
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	source := &flowReceiptSource{inputs: audit.ReceiptInputs{
+		TenantID:            7,
+		Model:               "gpt-4o",
+		InputTokens:         2,
+		OutputTokens:        3,
+		CachedTokens:        0,
+		CostUSDMicros:       10000,
+		RateTableSnapshotID: 77,
+		CreatedAt:           time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC),
+	}}
+	formatter, err := audit.NewReceiptFormatter(ledger, nil, source, signer)
+	if err != nil {
+		t.Fatalf("formatter: %v", err)
+	}
+	store := newReceiptStoreStub()
+	hook := audit.NewReceiptHookHandler(formatter, store)
+
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.AuditLedger = ledger
+	d.Signer = signer
+	d.Settler = audit.NewReceiptHookSettler(&stubSettler{}, hook)
+
+	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
+	r.Post("/v1/chat/completions", NewChatCompletionsHandler(d))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-Id", "req-receipt-flow")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("chat status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if source.seenRequestID != "req-receipt-flow" || source.seenTenantID != 7 {
+		t.Fatalf("receipt source args request=%q tenant=%d", source.seenRequestID, source.seenTenantID)
+	}
+
+	getRec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Receipts: store, Signer: signer}), http.MethodGet, "/v1/receipts/req-receipt-flow", nil, sessionauth.SessionIdentity{TenantID: 7, UserID: 3})
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("receipt status=%d body=%s", getRec.Code, getRec.Body.String())
+	}
+	var got UserCostReceipt
+	if err := json.Unmarshal(getRec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode receipt: %v", err)
+	}
+	if got.RequestID != "req-receipt-flow" || got.Signature == "" || got.CanonicalHash == "" || got.ValidationState != "valid" || got.Verdict != "match" {
+		t.Fatalf("receipt response mismatch: %+v", got)
+	}
+}
+
+func receiptRouter(d CostReceiptHandlerDeps) chi.Router {
+	r := chi.NewRouter()
+	r.Get("/v1/receipts/*", NewCostReceiptGetHandler(d))
+	r.Post("/v1/receipts/*", NewCostReceiptVerifyHandler(d))
+	r.Get("/v1/pricing/rate-table", NewPricingRateTableHandler(d))
+	r.Get("/v1/pricing/snapshots", NewPricingSnapshotsHandler(d))
+	r.Get("/v1/pricing/snapshots/{snapshot_id}", NewPricingSnapshotHandler(d))
+	return r
+}
+
+func doReceiptRequest(t *testing.T, h http.Handler, method, path string, body any, ident sessionauth.SessionIdentity) *httptest.ResponseRecorder {
+	t.Helper()
+	var reader ioReader = bytes.NewReader(nil)
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal body: %v", err)
+		}
+		reader = bytes.NewReader(raw)
+	}
+	req := httptest.NewRequest(method, path, reader)
+	req.Header.Set("Content-Type", "application/json")
+	if ident.TenantID != 0 || ident.UserID != 0 {
+		req = req.WithContext(sessionauth.ContextWithSession(req.Context(), ident))
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+type ioReader interface {
+	Read([]byte) (int, error)
+}
+
+func mustReceiptSigner(t *testing.T) *sign.Signer {
+	t.Helper()
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	return signer
+}
+
+func signedGatewayReceipt(t *testing.T, signer *sign.Signer, tenantID int64, requestID string) *audit.CostReceipt {
+	t.Helper()
+	createdAt := time.Date(2026, 5, 18, 8, 0, 0, 0, time.UTC)
+	receipt := &audit.CostReceipt{
+		RequestID:           requestID,
+		TenantID:            tenantID,
+		Model:               "gpt-test",
+		InputTokens:         100,
+		OutputTokens:        25,
+		CachedTokens:        5,
+		CostUSDMicros:       1234,
+		RateTableSnapshotID: 3,
+		SignerFingerprint:   []byte(signer.Fingerprint()),
+		CreatedAt:           createdAt,
+	}
+	payload := audit.ReceiptCanonicalPayload{
+		SchemaVersion:       audit.ReceiptSchemaVersion,
+		RequestID:           requestID,
+		TenantScopeRef:      auditledger.TenantScopeRef(tenantID),
+		Model:               receipt.Model,
+		InputTokens:         receipt.InputTokens,
+		OutputTokens:        receipt.OutputTokens,
+		CachedTokens:        receipt.CachedTokens,
+		CostTotalMicroUSD:   receipt.CostUSDMicros,
+		RateTableSnapshotID: receipt.RateTableSnapshotID,
+		CreatedAt:           createdAt.Format(time.RFC3339Nano),
+		ValidationState:     "valid",
+		Verdict:             "match",
+		AdjustmentRefs:      []string{},
+	}
+	canonical, err := audit.CanonicalReceiptHashForPayload(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("canonical: %v", err)
+	}
+	receipt.SignedHash = signer.Sign(canonical)
+	return receipt
+}
+
+func mustUserReceipt(t *testing.T, receipt *audit.CostReceipt) UserCostReceipt {
+	t.Helper()
+	out, err := userCostReceiptFromAudit(context.Background(), receipt)
+	if err != nil {
+		t.Fatalf("format receipt: %v", err)
+	}
+	return out
+}
+
+func legacyV1UserReceipt(t *testing.T, signer *sign.Signer, tenantID int64, requestID string) UserCostReceipt {
+	t.Helper()
+	occurredAt := time.Date(2026, 5, 18, 8, 0, 0, 0, time.UTC)
+	out := UserCostReceipt{
+		SchemaVersion: audit.ReceiptSchemaVersionV1,
+		RequestID:     requestID,
+		TenantID:      tenantID,
+		OccurredAt:    occurredAt.Format(time.RFC3339Nano),
+		Cost: UserReceiptCost{
+			Model:               "gpt-test",
+			InputTokens:         100,
+			OutputTokens:        25,
+			CachedTokens:        5,
+			CostTotalMicroUSD:   1234,
+			RateTableSnapshotID: 3,
+		},
+		PubkeyFingerprint: signer.Fingerprint(),
+	}
+	canonical, err := audit.CanonicalReceiptHashForPayloadV1(context.Background(), canonicalPayloadV1FromUserReceipt(out))
+	if err != nil {
+		t.Fatalf("v1 canonical: %v", err)
+	}
+	out.CanonicalHash = hex.EncodeToString(canonical)
+	out.Signature = base64.StdEncoding.EncodeToString(signer.Sign(canonical))
+	return out
+}
+
+func fixedReceiptNow() time.Time {
+	return time.Date(2026, 5, 18, 9, 0, 0, 0, time.UTC)
+}
+
+type receiptStoreStub struct {
+	receipts map[string]*audit.CostReceipt
+	err      error
+}
+
+func newReceiptStoreStub(receipts ...*audit.CostReceipt) *receiptStoreStub {
+	store := &receiptStoreStub{receipts: map[string]*audit.CostReceipt{}}
+	for _, receipt := range receipts {
+		store.receipts[receipt.RequestID] = receipt
+	}
+	return store
+}
+
+func (s *receiptStoreStub) GetReceipt(_ context.Context, requestID string, tenantID int64) (*audit.CostReceipt, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	receipt := s.receipts[requestID]
+	if receipt == nil || receipt.TenantID != tenantID {
+		return nil, audit.ErrReceiptNotFound
+	}
+	return receipt, nil
+}
+
+func (s *receiptStoreStub) AppendReceipt(_ context.Context, receipt *audit.CostReceipt) error {
+	if s.err != nil {
+		return s.err
+	}
+	if s.receipts == nil {
+		s.receipts = map[string]*audit.CostReceipt{}
+	}
+	if _, exists := s.receipts[receipt.RequestID]; exists {
+		return audit.ErrReceiptDuplicate
+	}
+	cloned := *receipt
+	cloned.SignerFingerprint = append([]byte(nil), receipt.SignerFingerprint...)
+	cloned.SignedHash = append([]byte(nil), receipt.SignedHash...)
+	s.receipts[receipt.RequestID] = &cloned
+	return nil
+}
+
+type rateTableSourceStub struct {
+	table          billing.RateTable
+	snapshots      []billing.RateTableSnapshot
+	seenVersion    string
+	seenSnapshotID int64
+	err            error
+}
+
+func (s *rateTableSourceStub) GetRateTable(_ context.Context, version string) (billing.RateTable, error) {
+	s.seenVersion = version
+	if s.err != nil {
+		return billing.RateTable{}, s.err
+	}
+	if s.table.Version != version {
+		return billing.RateTable{}, billing.ErrRateTableNotFound
+	}
+	return s.table, nil
+}
+
+func (s *rateTableSourceStub) GetRateTableSnapshot(_ context.Context, snapshotID int64) (billing.RateTable, error) {
+	s.seenSnapshotID = snapshotID
+	if s.err != nil {
+		return billing.RateTable{}, s.err
+	}
+	if s.table.ID != snapshotID {
+		return billing.RateTable{}, billing.ErrRateTableNotFound
+	}
+	return s.table, nil
+}
+
+func (s *rateTableSourceStub) ListRateTableSnapshots(context.Context) ([]billing.RateTableSnapshot, error) {
+	if s.err != nil && !errors.Is(s.err, billing.ErrRateTableNotFound) {
+		return nil, s.err
+	}
+	return s.snapshots, nil
+}
+
+type flowReceiptSource struct {
+	inputs        audit.ReceiptInputs
+	seenRequestID string
+	seenTenantID  int64
+}
+
+func (s *flowReceiptSource) LookupReceiptInputs(_ context.Context, requestID string, tenantID int64) (audit.ReceiptInputs, error) {
+	s.seenRequestID = requestID
+	s.seenTenantID = tenantID
+	return s.inputs, nil
+}
