@@ -240,7 +240,7 @@ type ListAuditEventsRow struct {
 	EventType         string             `db:"event_type" json:"event_type"`
 	Severity          string             `db:"severity" json:"severity"`
 	LedgerID          string             `db:"ledger_id" json:"ledger_id"`
-	ClaimID           int64              `db:"claim_id" json:"claim_id"`
+	ClaimID           *int64             `db:"claim_id" json:"claim_id"`
 	ProviderAccountID *int64             `db:"provider_account_id" json:"provider_account_id"`
 	PoolGroupID       *int64             `db:"pool_group_id" json:"pool_group_id"`
 	RequestID         *string            `db:"request_id" json:"request_id"`

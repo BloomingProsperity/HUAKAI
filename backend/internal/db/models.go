@@ -136,7 +136,7 @@ type AuditLedgerEntry struct {
 type BillingEvent struct {
 	ID               int64              `db:"id" json:"id"`
 	TenantID         int64              `db:"tenant_id" json:"tenant_id"`
-	ClaimID          int64              `db:"claim_id" json:"claim_id"`
+	ClaimID          *int64             `db:"claim_id" json:"claim_id"`
 	EventType        string             `db:"event_type" json:"event_type"`
 	ActualCost       decimal.Decimal    `db:"actual_cost" json:"actual_cost"`
 	ActualCostSigned decimal.Decimal    `db:"actual_cost_signed" json:"actual_cost_signed"`
@@ -150,6 +150,10 @@ type BillingEvent struct {
 	DeliveredTokenCount int64 `db:"delivered_token_count" json:"delivered_token_count"`
 	// F-OBS-003 first-class stream terminal reason copied into billing event audit trail.
 	StreamTerminatedReason *string `db:"stream_terminated_reason" json:"stream_terminated_reason"`
+	// F-BILL-002 top-up event link. Non-null only when event_type=voucher_redeemed.
+	VoucherRedemptionID *int64 `db:"voucher_redemption_id" json:"voucher_redemption_id"`
+	// Gateway/audit ledger request_id copied from the HTTP request context so user receipts can join audit_ledger_entries to billing facts without conflating idempotency keys.
+	AuditRequestID *string `db:"audit_request_id" json:"audit_request_id"`
 }
 
 // F-OBS-001 + docs/19 §Invariant 4: append-only paired adjustments. Original claim never mutated; corrections via signed delta rows.
@@ -213,6 +217,7 @@ type BillingPricingVersion struct {
 	EffectiveTo    pgtype.Timestamptz `db:"effective_to" json:"effective_to"`
 	CreatedAt      pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	CreatedByActor *string            `db:"created_by_actor" json:"created_by_actor"`
+	IsPublic       bool               `db:"is_public" json:"is_public"`
 }
 
 // F-POOL-001: Channel filter inside Pool Group. Failover status codes configurable per Channel (HUAKAI improvement over Sub2API hardcoded list).
@@ -226,6 +231,76 @@ type Channel struct {
 	CreatedAt           pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 	DeletedAt           pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
+}
+
+// F-CH-002 admin alert sink for ban signals, repeated ramp rollback, manual force-active, and no-healthy-alternate cases.
+type ChannelHealthAdminAlert struct {
+	ID                  int64              `db:"id" json:"id"`
+	TenantID            int64              `db:"tenant_id" json:"tenant_id"`
+	ChannelID           string             `db:"channel_id" json:"channel_id"`
+	ProviderAccountID   *int64             `db:"provider_account_id" json:"provider_account_id"`
+	AccountCredentialID int64              `db:"account_credential_id" json:"account_credential_id"`
+	CredentialVersion   int32              `db:"credential_version" json:"credential_version"`
+	AlertType           string             `db:"alert_type" json:"alert_type"`
+	Severity            string             `db:"severity" json:"severity"`
+	ReasonClass         string             `db:"reason_class" json:"reason_class"`
+	Payload             []byte             `db:"payload" json:"payload"`
+	Status              string             `db:"status" json:"status"`
+	CreatedAt           pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	AcknowledgedAt      pgtype.Timestamptz `db:"acknowledged_at" json:"acknowledged_at"`
+	ResolvedAt          pgtype.Timestamptz `db:"resolved_at" json:"resolved_at"`
+}
+
+// F-TRUST/F-CH-002 operator audit. Payload allowlist excludes raw upstream text, prompts, cookies, tokens, and credential bytes.
+type ChannelHealthAuditEvent struct {
+	ID                  int64              `db:"id" json:"id"`
+	TenantID            int64              `db:"tenant_id" json:"tenant_id"`
+	EventType           string             `db:"event_type" json:"event_type"`
+	ChannelID           string             `db:"channel_id" json:"channel_id"`
+	Vendor              string             `db:"vendor" json:"vendor"`
+	ProviderAccountID   *int64             `db:"provider_account_id" json:"provider_account_id"`
+	AccountCredentialID int64              `db:"account_credential_id" json:"account_credential_id"`
+	CredentialVersion   int32              `db:"credential_version" json:"credential_version"`
+	PreviousState       *string            `db:"previous_state" json:"previous_state"`
+	NewState            string             `db:"new_state" json:"new_state"`
+	ReasonClass         string             `db:"reason_class" json:"reason_class"`
+	PolicyVersion       string             `db:"policy_version" json:"policy_version"`
+	RequestID           *string            `db:"request_id" json:"request_id"`
+	ActorID             *string            `db:"actor_id" json:"actor_id"`
+	Payload             []byte             `db:"payload" json:"payload"`
+	OccurredAt          pgtype.Timestamptz `db:"occurred_at" json:"occurred_at"`
+}
+
+// F-CH-002: tenant-scoped channel health state for (vendor, account credential, credential version). No raw upstream body or credential material.
+type ChannelHealthState struct {
+	ID                  int64              `db:"id" json:"id"`
+	TenantID            int64              `db:"tenant_id" json:"tenant_id"`
+	ChannelID           string             `db:"channel_id" json:"channel_id"`
+	Vendor              string             `db:"vendor" json:"vendor"`
+	ProviderAccountID   *int64             `db:"provider_account_id" json:"provider_account_id"`
+	AccountCredentialID int64              `db:"account_credential_id" json:"account_credential_id"`
+	CredentialVersion   int32              `db:"credential_version" json:"credential_version"`
+	State               string             `db:"state" json:"state"`
+	Score               pgtype.Numeric     `db:"score" json:"score"`
+	ReasonClass         string             `db:"reason_class" json:"reason_class"`
+	ConfidenceTier      string             `db:"confidence_tier" json:"confidence_tier"`
+	CooldownUntil       pgtype.Timestamptz `db:"cooldown_until" json:"cooldown_until"`
+	RampStagePct        *int32             `db:"ramp_stage_pct" json:"ramp_stage_pct"`
+	RampStartedAt       pgtype.Timestamptz `db:"ramp_started_at" json:"ramp_started_at"`
+	StateEnteredAt      pgtype.Timestamptz `db:"state_entered_at" json:"state_entered_at"`
+	LastTransitionAt    pgtype.Timestamptz `db:"last_transition_at" json:"last_transition_at"`
+	PolicyVersion       string             `db:"policy_version" json:"policy_version"`
+	// Safe rolling aggregate/window metadata: counts, status classes, latency values, and reason classes only.
+	SampleWindow          []byte             `db:"sample_window" json:"sample_window"`
+	LastSignalClass       string             `db:"last_signal_class" json:"last_signal_class"`
+	LastSignalAt          pgtype.Timestamptz `db:"last_signal_at" json:"last_signal_at"`
+	ManualPauseReason     *string            `db:"manual_pause_reason" json:"manual_pause_reason"`
+	ManualOverrideActorID *string            `db:"manual_override_actor_id" json:"manual_override_actor_id"`
+	ManualOverrideReason  *string            `db:"manual_override_reason" json:"manual_override_reason"`
+	RampFailureCount      int32              `db:"ramp_failure_count" json:"ramp_failure_count"`
+	RecoveryBlockedReason *string            `db:"recovery_blocked_reason" json:"recovery_blocked_reason"`
+	CreatedAt             pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt             pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
 // F-CRED-001: short-lived acquisition state. Raw tokens, API keys, cookies, private keys, auth codes, and cloud secrets are forbidden.
@@ -275,6 +350,62 @@ type CredentialAuditEvent struct {
 	RequestID           *string            `db:"request_id" json:"request_id"`
 	Payload             []byte             `db:"payload" json:"payload"`
 	OccurredAt          pgtype.Timestamptz `db:"occurred_at" json:"occurred_at"`
+}
+
+// F-OBS-005 durable DLQ rows for events exhausted by retry policy.
+type DlqEvent struct {
+	ID            string             `db:"id" json:"id"`
+	OutboxEventID string             `db:"outbox_event_id" json:"outbox_event_id"`
+	TenantID      int64              `db:"tenant_id" json:"tenant_id"`
+	Payload       []byte             `db:"payload" json:"payload"`
+	DeadAt        pgtype.Timestamptz `db:"dead_at" json:"dead_at"`
+	// Redacted dead-letter reason only.
+	DeadReason string `db:"dead_reason" json:"dead_reason"`
+}
+
+// F-AUTH-007 tenant-scoped email delivery settings. SMTP password is stored as an AES-GCM envelope.
+type EmailSetting struct {
+	ID         int64  `db:"id" json:"id"`
+	TenantID   int64  `db:"tenant_id" json:"tenant_id"`
+	SettingKey string `db:"setting_key" json:"setting_key"`
+	// Text setting value. smtp_password must be an encrypted envelope, never plaintext.
+	SettingValue string             `db:"setting_value" json:"setting_value"`
+	UpdatedAt    pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	UpdatedBy    string             `db:"updated_by" json:"updated_by"`
+}
+
+// F-AUTH-007 one-time email verification challenges. token_hash only; raw token is never stored.
+type EmailVerificationToken struct {
+	ID         pgtype.UUID        `db:"id" json:"id"`
+	TenantID   int64              `db:"tenant_id" json:"tenant_id"`
+	UserID     int64              `db:"user_id" json:"user_id"`
+	TokenHash  []byte             `db:"token_hash" json:"token_hash"`
+	ExpiresAt  pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	ConsumedAt pgtype.Timestamptz `db:"consumed_at" json:"consumed_at"`
+	CreatedAt  pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+// F-AUTH-007 atomic invite redemption binding to the created User.
+type InviteBinding struct {
+	ID         pgtype.UUID        `db:"id" json:"id"`
+	TenantID   int64              `db:"tenant_id" json:"tenant_id"`
+	UserID     int64              `db:"user_id" json:"user_id"`
+	InviteCode string             `db:"invite_code" json:"invite_code"`
+	RedeemedAt pgtype.Timestamptz `db:"redeemed_at" json:"redeemed_at"`
+	CreatedAt  pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+// F-AUTH-007 invite grants. code stores the hashed invite code, not the raw invite.
+type InviteCode struct {
+	Code       string             `db:"code" json:"code"`
+	TenantID   int64              `db:"tenant_id" json:"tenant_id"`
+	CreatedBy  *int64             `db:"created_by" json:"created_by"`
+	MaxUses    int32              `db:"max_uses" json:"max_uses"`
+	UsedCount  int32              `db:"used_count" json:"used_count"`
+	ValidUntil pgtype.Timestamptz `db:"valid_until" json:"valid_until"`
+	Status     string             `db:"status" json:"status"`
+	CreatedAt  pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt  pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
 // F-AUTH-005 H6: per-Pool Claude Code mimicry. Constraint: enabled requires legal_review_id (no enabling without legal review document attached).
@@ -401,6 +532,23 @@ type ModelRoutingOverride struct {
 	DeletedAt          pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
 }
 
+// F-AUTH-007 short-lived OAuth state/nonce/PKCE flow sessions. OAuth access tokens are never stored here.
+type OauthFlowSession struct {
+	ID        pgtype.UUID `db:"id" json:"id"`
+	TenantID  int64       `db:"tenant_id" json:"tenant_id"`
+	Provider  string      `db:"provider" json:"provider"`
+	StateHash []byte      `db:"state_hash" json:"state_hash"`
+	NonceHash []byte      `db:"nonce_hash" json:"nonce_hash"`
+	// Deprecated compatibility column. New application writes a non-secret sentinel; legacy rows may contain plaintext until expiry.
+	PkceVerifier string             `db:"pkce_verifier" json:"pkce_verifier"`
+	RedirectUri  *string            `db:"redirect_uri" json:"redirect_uri"`
+	ExpiresAt    pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	ConsumedAt   pgtype.Timestamptz `db:"consumed_at" json:"consumed_at"`
+	CreatedAt    pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	// AES-256-GCM envelope for short-lived PKCE verifier material. Raw verifier must never be stored here.
+	PkceVerifierCiphertext []byte `db:"pkce_verifier_ciphertext" json:"pkce_verifier_ciphertext"`
+}
+
 // F-AUTH-005: append-only audit trail. Token-leakage-safe (sanitized errors only). Mimicry events recorded with components + policy version.
 type OauthRefreshAuditEvent struct {
 	ID                       int64              `db:"id" json:"id"`
@@ -435,6 +583,34 @@ type OauthStormBudget struct {
 	WindowStart              pgtype.Timestamptz `db:"window_start" json:"window_start"`
 	CircuitOpenUntil         pgtype.Timestamptz `db:"circuit_open_until" json:"circuit_open_until"`
 	LastUpdatedAt            pgtype.Timestamptz `db:"last_updated_at" json:"last_updated_at"`
+}
+
+// F-OBS-005 generic async outbox for email, audit refund, channel alert, and other redacted tenant events.
+type OutboxEvent struct {
+	ID        string `db:"id" json:"id"`
+	TenantID  int64  `db:"tenant_id" json:"tenant_id"`
+	EventType string `db:"event_type" json:"event_type"`
+	Priority  string `db:"priority" json:"priority"`
+	// Redacted JSON payload only; raw prompt/token/cookie/credential data must not be stored here.
+	Payload      []byte             `db:"payload" json:"payload"`
+	CreatedAt    pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	AttemptCount int32              `db:"attempt_count" json:"attempt_count"`
+	NextRetryAt  pgtype.Timestamptz `db:"next_retry_at" json:"next_retry_at"`
+	Status       string             `db:"status" json:"status"`
+	// Redacted failure reason only; no raw upstream body, token, cookie, prompt, or credential.
+	FailureReason *string `db:"failure_reason" json:"failure_reason"`
+}
+
+// F-AUTH-007 one-time password reset challenges. token_hash only; raw token is never stored.
+type PasswordResetToken struct {
+	ID              pgtype.UUID        `db:"id" json:"id"`
+	TenantID        int64              `db:"tenant_id" json:"tenant_id"`
+	UserID          int64              `db:"user_id" json:"user_id"`
+	TokenHash       []byte             `db:"token_hash" json:"token_hash"`
+	PasswordVersion int32              `db:"password_version" json:"password_version"`
+	ExpiresAt       pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	ConsumedAt      pgtype.Timestamptz `db:"consumed_at" json:"consumed_at"`
+	CreatedAt       pgtype.Timestamptz `db:"created_at" json:"created_at"`
 }
 
 // F-POOL-001 §1: logical capacity grouping; routing policy + Q1..Q4 owner decisions live here.
@@ -626,6 +802,19 @@ type RateLimitAuditEvent struct {
 	OccurredAt         pgtype.Timestamptz `db:"occurred_at" json:"occurred_at"`
 }
 
+// F-SESSION-001 rotating refresh tokens. Stores token_hash only; raw token is never stored.
+type RefreshToken struct {
+	ID         pgtype.UUID        `db:"id" json:"id"`
+	TenantID   int64              `db:"tenant_id" json:"tenant_id"`
+	FamilyID   pgtype.UUID        `db:"family_id" json:"family_id"`
+	TokenHash  []byte             `db:"token_hash" json:"token_hash"`
+	Generation int32              `db:"generation" json:"generation"`
+	Status     string             `db:"status" json:"status"`
+	ExpiresAt  pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	CreatedAt  pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	ConsumedAt pgtype.Timestamptz `db:"consumed_at" json:"consumed_at"`
+}
+
 // F-POOL-001 §5.2: routing rule. Per-Route override of Pool defaults per Q2. Optional score weights default 0 (compatibility mode).
 type Route struct {
 	ID                       int64              `db:"id" json:"id"`
@@ -692,6 +881,45 @@ type SchedulerOutbox struct {
 	ConsumedAt               pgtype.Timestamptz `db:"consumed_at" json:"consumed_at"`
 	ConsumerID               *string            `db:"consumer_id" json:"consumer_id"`
 	LagAlertThresholdSeconds int32              `db:"lag_alert_threshold_seconds" json:"lag_alert_threshold_seconds"`
+}
+
+// F-SESSION-001 platform login session family. Not upstream Provider Account credential state.
+type SessionFamily struct {
+	ID            pgtype.UUID        `db:"id" json:"id"`
+	UserID        int64              `db:"user_id" json:"user_id"`
+	TenantID      int64              `db:"tenant_id" json:"tenant_id"`
+	Status        string             `db:"status" json:"status"`
+	Generation    int32              `db:"generation" json:"generation"`
+	CreatedAt     pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	LastActiveAt  pgtype.Timestamptz `db:"last_active_at" json:"last_active_at"`
+	DeviceInfo    []byte             `db:"device_info" json:"device_info"`
+	IpBaseline    string             `db:"ip_baseline" json:"ip_baseline"`
+	RevokedAt     pgtype.Timestamptz `db:"revoked_at" json:"revoked_at"`
+	RevokedReason *string            `db:"revoked_reason" json:"revoked_reason"`
+}
+
+// F-SESSION-001 short-lived signed platform session tokens. Stores token_hash only; raw token is never stored.
+type SessionToken struct {
+	ID         pgtype.UUID        `db:"id" json:"id"`
+	TenantID   int64              `db:"tenant_id" json:"tenant_id"`
+	FamilyID   pgtype.UUID        `db:"family_id" json:"family_id"`
+	TokenHash  []byte             `db:"token_hash" json:"token_hash"`
+	Generation int32              `db:"generation" json:"generation"`
+	ExpiresAt  pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	CreatedAt  pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	LastUsedAt pgtype.Timestamptz `db:"last_used_at" json:"last_used_at"`
+	RevokedAt  pgtype.Timestamptz `db:"revoked_at" json:"revoked_at"`
+}
+
+// F-AUTH-007 verified social identity subjects. No upstream OAuth token material is stored.
+type SocialIdentityLink struct {
+	TenantID      int64              `db:"tenant_id" json:"tenant_id"`
+	UserID        int64              `db:"user_id" json:"user_id"`
+	Provider      string             `db:"provider" json:"provider"`
+	Subject       string             `db:"subject" json:"subject"`
+	EmailVerified bool               `db:"email_verified" json:"email_verified"`
+	CreatedAt     pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
 // F-POOL-001 Layer 1.5/1.5b: sticky session affinity. session_hash derived from cache_control / metadata.user_id / SessionContext per Phase A.
@@ -820,4 +1048,105 @@ type User struct {
 	CreatedAt   pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 	DeletedAt   pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
+	// F-AUTH-007 argon2id password hash. Raw password is never stored.
+	PasswordHash  *string `db:"password_hash" json:"password_hash"`
+	EmailVerified bool    `db:"email_verified" json:"email_verified"`
+	// SHA-256/base64url hash of redeemed invite code; raw invite code is never stored.
+	InviteCodeUsed      *string            `db:"invite_code_used" json:"invite_code_used"`
+	SocialLoginProvider *string            `db:"social_login_provider" json:"social_login_provider"`
+	PasswordVersion     int32              `db:"password_version" json:"password_version"`
+	FailedLoginCount    int32              `db:"failed_login_count" json:"failed_login_count"`
+	LockedUntil         pgtype.Timestamptz `db:"locked_until" json:"locked_until"`
+}
+
+type UserCostReceipt struct {
+	ID                  int64              `db:"id" json:"id"`
+	TenantID            int64              `db:"tenant_id" json:"tenant_id"`
+	RequestID           string             `db:"request_id" json:"request_id"`
+	Model               string             `db:"model" json:"model"`
+	InputTokens         int64              `db:"input_tokens" json:"input_tokens"`
+	OutputTokens        int64              `db:"output_tokens" json:"output_tokens"`
+	CachedTokens        int64              `db:"cached_tokens" json:"cached_tokens"`
+	CostUsdMicros       int64              `db:"cost_usd_micros" json:"cost_usd_micros"`
+	RateTableSnapshotID int64              `db:"rate_table_snapshot_id" json:"rate_table_snapshot_id"`
+	SignerFingerprint   []byte             `db:"signer_fingerprint" json:"signer_fingerprint"`
+	SignedHash          []byte             `db:"signed_hash" json:"signed_hash"`
+	CreatedAt           pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+// F-BILL-002 tenant-scoped voucher code hash and lifecycle. Raw code appears only in create response.
+type Voucher struct {
+	ID       int64  `db:"id" json:"id"`
+	TenantID int64  `db:"tenant_id" json:"tenant_id"`
+	BatchID  *int64 `db:"batch_id" json:"batch_id"`
+	// SHA-256 hash over tenant scope and normalized code; raw voucher code is never stored.
+	CodeHash []byte `db:"code_hash" json:"code_hash"`
+	// Short non-secret fingerprint for audit/support correlation; not redeemable.
+	CodeFingerprint  string             `db:"code_fingerprint" json:"code_fingerprint"`
+	AmountCents      int64              `db:"amount_cents" json:"amount_cents"`
+	CurrencyCode     string             `db:"currency_code" json:"currency_code"`
+	ValidFrom        pgtype.Timestamptz `db:"valid_from" json:"valid_from"`
+	ValidUntil       pgtype.Timestamptz `db:"valid_until" json:"valid_until"`
+	MaxRedemptions   int32              `db:"max_redemptions" json:"max_redemptions"`
+	RedeemedCount    int32              `db:"redeemed_count" json:"redeemed_count"`
+	SingleUsePerUser bool               `db:"single_use_per_user" json:"single_use_per_user"`
+	EligibleUserID   *int64             `db:"eligible_user_id" json:"eligible_user_id"`
+	Status           string             `db:"status" json:"status"`
+	CreatedByAdminID *int64             `db:"created_by_admin_id" json:"created_by_admin_id"`
+	RevokedByAdminID *int64             `db:"revoked_by_admin_id" json:"revoked_by_admin_id"`
+	RevokedReason    *string            `db:"revoked_reason" json:"revoked_reason"`
+	CreatedAt        pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	RevokedAt        pgtype.Timestamptz `db:"revoked_at" json:"revoked_at"`
+}
+
+// F-BILL-002 admin-created voucher batch summary. Raw codes are never stored.
+type VoucherBatch struct {
+	ID               int64              `db:"id" json:"id"`
+	TenantID         int64              `db:"tenant_id" json:"tenant_id"`
+	CreatedByAdminID *int64             `db:"created_by_admin_id" json:"created_by_admin_id"`
+	RequestedCount   int32              `db:"requested_count" json:"requested_count"`
+	CreatedCount     int32              `db:"created_count" json:"created_count"`
+	AmountCents      int64              `db:"amount_cents" json:"amount_cents"`
+	CurrencyCode     string             `db:"currency_code" json:"currency_code"`
+	ValidFrom        pgtype.Timestamptz `db:"valid_from" json:"valid_from"`
+	ValidUntil       pgtype.Timestamptz `db:"valid_until" json:"valid_until"`
+	MaxRedemptions   int32              `db:"max_redemptions" json:"max_redemptions"`
+	SingleUsePerUser bool               `db:"single_use_per_user" json:"single_use_per_user"`
+	Status           string             `db:"status" json:"status"`
+	Metadata         []byte             `db:"metadata" json:"metadata"`
+	CreatedAt        pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+// F-BILL-002 per User+IP redemption attempt window and temporary burst block evidence.
+type VoucherBurstBlock struct {
+	ID                 int64              `db:"id" json:"id"`
+	TenantID           int64              `db:"tenant_id" json:"tenant_id"`
+	UserID             int64              `db:"user_id" json:"user_id"`
+	SourceIpHash       string             `db:"source_ip_hash" json:"source_ip_hash"`
+	WindowStart        pgtype.Timestamptz `db:"window_start" json:"window_start"`
+	Attempts           int32              `db:"attempts" json:"attempts"`
+	BlockedUntil       pgtype.Timestamptz `db:"blocked_until" json:"blocked_until"`
+	ReasonClass        string             `db:"reason_class" json:"reason_class"`
+	VoucherFingerprint *string            `db:"voucher_fingerprint" json:"voucher_fingerprint"`
+	RequestID          *string            `db:"request_id" json:"request_id"`
+	CreatedAt          pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
+// F-BILL-002 successful user voucher redemption. The paired billing_events row carries event_type=voucher_redeemed.
+type VoucherRedemption struct {
+	ID               int64              `db:"id" json:"id"`
+	TenantID         int64              `db:"tenant_id" json:"tenant_id"`
+	VoucherID        int64              `db:"voucher_id" json:"voucher_id"`
+	UserID           int64              `db:"user_id" json:"user_id"`
+	IdempotencyKey   *string            `db:"idempotency_key" json:"idempotency_key"`
+	AmountCents      int64              `db:"amount_cents" json:"amount_cents"`
+	CurrencyCode     string             `db:"currency_code" json:"currency_code"`
+	SingleUsePerUser bool               `db:"single_use_per_user" json:"single_use_per_user"`
+	Status           string             `db:"status" json:"status"`
+	SourceIpHash     string             `db:"source_ip_hash" json:"source_ip_hash"`
+	RequestID        *string            `db:"request_id" json:"request_id"`
+	BillingEventID   *int64             `db:"billing_event_id" json:"billing_event_id"`
+	RedeemedAt       pgtype.Timestamptz `db:"redeemed_at" json:"redeemed_at"`
 }

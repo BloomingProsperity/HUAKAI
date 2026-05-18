@@ -14,8 +14,6 @@ import (
 
 var ErrRateTableNotFound = errors.New("billing: rate table not found")
 
-const PublicScopeTenantID int64 = 0
-
 // RateTable 是公开 pricing endpoint 返回的历史价格表。
 type RateTable struct {
 	ID            int64           `json:"id"`
@@ -56,20 +54,20 @@ const getPublicRateTableSQL = `
 SELECT id, version, pricing_data, effective_from, effective_to, created_at
 FROM billing_pricing_versions
 WHERE version = $1
-  AND tenant_id = $2
+  AND is_public = true
 LIMIT 1`
 
 const getPublicRateTableSnapshotSQL = `
 SELECT id, version, pricing_data, effective_from, effective_to, created_at
 FROM billing_pricing_versions
 WHERE id = $1
-  AND tenant_id = $2
+  AND is_public = true
 LIMIT 1`
 
 const listPublicRateTableSnapshotsSQL = `
 SELECT DISTINCT ON (version) id, version, effective_from, effective_to, created_at
 FROM billing_pricing_versions
-WHERE tenant_id = $1
+WHERE is_public = true
 ORDER BY version ASC, effective_from DESC`
 
 func NewPGXRateTableSource(pool *pgxpool.Pool) *PGXRateTableSource {
@@ -86,7 +84,7 @@ func (s *PGXRateTableSource) GetRateTable(ctx context.Context, version string) (
 		effectiveTo   pgtype.Timestamptz
 		createdAt     pgtype.Timestamptz
 	)
-	err := s.pool.QueryRow(ctx, getPublicRateTableSQL, version, PublicScopeTenantID).Scan(&row.ID, &row.Version, &row.PricingData, &effectiveFrom, &effectiveTo, &createdAt)
+	err := s.pool.QueryRow(ctx, getPublicRateTableSQL, version).Scan(&row.ID, &row.Version, &row.PricingData, &effectiveFrom, &effectiveTo, &createdAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RateTable{}, ErrRateTableNotFound
 	}
@@ -115,7 +113,7 @@ func (s *PGXRateTableSource) GetRateTableSnapshot(ctx context.Context, snapshotI
 		effectiveTo   pgtype.Timestamptz
 		createdAt     pgtype.Timestamptz
 	)
-	err := s.pool.QueryRow(ctx, getPublicRateTableSnapshotSQL, snapshotID, PublicScopeTenantID).Scan(&row.ID, &row.Version, &row.PricingData, &effectiveFrom, &effectiveTo, &createdAt)
+	err := s.pool.QueryRow(ctx, getPublicRateTableSnapshotSQL, snapshotID).Scan(&row.ID, &row.Version, &row.PricingData, &effectiveFrom, &effectiveTo, &createdAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RateTable{}, ErrRateTableNotFound
 	}
@@ -135,7 +133,7 @@ func (s *PGXRateTableSource) ListRateTableSnapshots(ctx context.Context) ([]Rate
 	if s == nil || s.pool == nil {
 		return nil, ErrPoolNotConfigured
 	}
-	rows, err := s.pool.Query(ctx, listPublicRateTableSnapshotsSQL, PublicScopeTenantID)
+	rows, err := s.pool.Query(ctx, listPublicRateTableSnapshotsSQL)
 	if err != nil {
 		return nil, fmt.Errorf("billing: list rate table snapshots: %w", err)
 	}
