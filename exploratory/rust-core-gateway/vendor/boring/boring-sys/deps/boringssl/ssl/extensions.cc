@@ -820,6 +820,24 @@ static bool ext_ri_add_serverhello(SSL_HANDSHAKE *hs, CBB *out) {
 }
 
 
+// Encrypt-then-MAC.
+//
+// RFC 7366. HUAKAI 只在显式 fingerprint order 要求时写入空扩展；
+// 默认 BoringSSL 行为不变。
+
+static bool ext_etm_add_clienthello(const SSL_HANDSHAKE *hs, CBB *out,
+                                    CBB *out_compressible,
+                                    ssl_client_hello_type_t type) {
+  if (!hs->config->has_explicit_order_strict_mode ||
+      hs->min_version >= TLS1_3_VERSION || type == ssl_client_hello_inner) {
+    return true;
+  }
+
+  return CBB_add_u16(out, TLSEXT_TYPE_encrypt_then_mac) &&
+         CBB_add_u16(out, 0 /* length */);
+}
+
+
 // Extended Master Secret.
 //
 // https://tools.ietf.org/html/rfc7627
@@ -3547,6 +3565,13 @@ static const struct tls_extension kExtensions[] = {
         ext_ems_add_serverhello,
     },
     {
+        TLSEXT_TYPE_encrypt_then_mac,
+        ext_etm_add_clienthello,
+        forbid_parse_serverhello,
+        ignore_parse_clienthello,
+        dont_add_serverhello,
+    },
+    {
         TLSEXT_TYPE_renegotiate,
         ext_ri_add_clienthello,
         ext_ri_parse_serverhello,
@@ -3740,7 +3765,7 @@ static_assert(kNumExtensions <=
 
 bool ssl_setup_extension_permutation(SSL_HANDSHAKE *hs) {
   if (!hs->config->permute_extensions ||
-      !hs->config->explicit_extension_order.empty()) {
+      hs->config->has_explicit_order_strict_mode) {
     return true;
   }
 
@@ -3781,14 +3806,13 @@ bool ssl_huakai_extension_order_from_types(Array<uint16_t> *out,
   static_assert(kNumExtensions <= 0xffff, "extension index is too large");
   Array<uint16_t> order;
   bool seen[kNumExtensions] = {};
-  if (!order.InitForOverwrite(kNumExtensions)) {
+  if (!order.InitForOverwrite(types.size())) {
     return false;
   }
 
   size_t written = 0;
   for (uint16_t type : types) {
-    // HUAKAI patch: 这些 extension 由 BoringSSL 特殊路径写入，排序 API
-    // 只控制 kExtensions[] 内部表项。
+    // HUAKAI patch: 这些 extension 由 BoringSSL 特殊路径写入。
     if (type == TLSEXT_TYPE_padding || type == TLSEXT_TYPE_pre_shared_key ||
         ((type & 0x0f0f) == 0x0a0a && (type >> 8) == (type & 0xff))) {
       continue;
@@ -3806,12 +3830,7 @@ bool ssl_huakai_extension_order_from_types(Array<uint16_t> *out,
     seen[index] = true;
     order[written++] = static_cast<uint16_t>(index);
   }
-  for (size_t i = 0; i < kNumExtensions; i++) {
-    if (!seen[i]) {
-      order[written++] = static_cast<uint16_t>(i);
-    }
-  }
-  assert(written == kNumExtensions);
+  order.Shrink(written);
   *out = std::move(order);
   return true;
 }
@@ -3858,8 +3877,11 @@ static bool ssl_add_clienthello_tlsext_inner(SSL_HANDSHAKE *hs, CBB *out,
     }
   }
 
-  for (size_t unpermuted = 0; unpermuted < kNumExtensions; unpermuted++) {
-    size_t i = !hs->config->explicit_extension_order.empty()
+  const size_t num_extensions = hs->config->has_explicit_order_strict_mode
+                                    ? hs->config->explicit_extension_order.size()
+                                    : kNumExtensions;
+  for (size_t unpermuted = 0; unpermuted < num_extensions; unpermuted++) {
+    size_t i = hs->config->has_explicit_order_strict_mode
                    ? hs->config->explicit_extension_order[unpermuted]
                    : hs->extension_permutation.empty()
                          ? unpermuted
@@ -3969,8 +3991,11 @@ bool ssl_add_clienthello_tlsext(SSL_HANDSHAKE *hs, CBB *out, CBB *out_encoded,
   }
 
   bool last_was_empty = false;
-  for (size_t unpermuted = 0; unpermuted < kNumExtensions; unpermuted++) {
-    size_t i = !hs->config->explicit_extension_order.empty()
+  const size_t num_extensions = hs->config->has_explicit_order_strict_mode
+                                    ? hs->config->explicit_extension_order.size()
+                                    : kNumExtensions;
+  for (size_t unpermuted = 0; unpermuted < num_extensions; unpermuted++) {
+    size_t i = hs->config->has_explicit_order_strict_mode
                    ? hs->config->explicit_extension_order[unpermuted]
                    : hs->extension_permutation.empty()
                          ? unpermuted

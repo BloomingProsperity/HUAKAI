@@ -397,6 +397,7 @@ ssl_ctx_st::ssl_ctx_st(const SSL_METHOD *ssl_method)
       channel_id_enabled(false),
       grease_enabled(false),
       permute_extensions(false),
+      has_explicit_order_strict_mode(false),
       allow_unknown_alpn_protos(false),
       false_start_allowed_without_alpn(false),
       handoff(false),
@@ -527,6 +528,8 @@ SSL *SSL_new(SSL_CTX *ctx) {
   ssl->config->retain_only_sha256_of_client_certs =
       ctx->retain_only_sha256_of_client_certs;
   ssl->config->permute_extensions = ctx->permute_extensions;
+  ssl->config->has_explicit_order_strict_mode =
+      ctx->has_explicit_order_strict_mode;
   ssl->config->aes_hw_override = ctx->aes_hw_override;
   ssl->config->aes_hw_override_value = ctx->aes_hw_override_value;
   ssl->config->compliance_policy = ctx->compliance_policy;
@@ -588,6 +591,7 @@ SSL_CONFIG::SSL_CONFIG(SSL *ssl_arg)
       jdk11_workaround(false),
       quic_use_legacy_codepoint(false),
       permute_extensions(false),
+      has_explicit_order_strict_mode(false),
       alps_use_new_codepoint(true) {
   assert(ssl);
 }
@@ -3107,10 +3111,15 @@ int SSL_CTX_set_extension_order(SSL_CTX *ctx, const uint16_t *types,
   }
   if (types_len == 0) {
     ctx->explicit_extension_order.Reset();
+    ctx->has_explicit_order_strict_mode = false;
     return 1;
   }
-  return ssl_huakai_extension_order_from_types(
-      &ctx->explicit_extension_order, Span(types, types_len));
+  if (!ssl_huakai_extension_order_from_types(&ctx->explicit_extension_order,
+                                             Span(types, types_len))) {
+    return 0;
+  }
+  ctx->has_explicit_order_strict_mode = true;
+  return 1;
 }
 
 void SSL_set_permute_extensions(SSL *ssl, int enabled) {

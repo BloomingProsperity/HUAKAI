@@ -109,3 +109,24 @@ attribution: 修改人 HUAKAI codex executor lane (R-3-A-fix-2), 2026-05-17 UTC�
   mimicry-boring --lib` 已通过；测试结果为 105 passed / 3 ignored。
 
 attribution: 修改人 HUAKAI codex executor lane (R-3-A-fix-3), 2026-05-17 UTC。
+
+## R-3-A-fix-2-deeper: strict extension order + extension 22
+
+R-3-A-fix-4 发现上一轮排序 API 仍会补齐未列出的 `kExtensions[]`，导致 Kiro 多发
+65281；Codex/Gemini 的 extension 22 是 RFC 7366 `encrypt_then_mac`，不是 EMS(23)。
+
+### boring-sys/deps/boringssl/
+
+- `include/openssl/tls1.h:71`: 增加 `TLSEXT_TYPE_encrypt_then_mac`(22) 常量。
+- `ssl/extensions.cc:828`: 增加 `ext_etm_add_clienthello`，仅在 HUAKAI strict
+  order 下写入 RFC 7366 空扩展，默认 BoringSSL 路径不发 22。
+- `ssl/extensions.cc:3568`: 将 22 加入 `kExtensions[]`，供 setter 校验和排序。
+- `ssl/extensions.cc:3768` / `3804` / `3880` / `3994`: strict mode 下跳过
+  permutation、只保留显式列出的内部扩展、ClientHello 写入不再补齐 65281。
+- `ssl/internal.h:3399` / `4034` 和 `ssl/ssl_lib.cc:531` / `3114`: 增加并复制
+  `has_explicit_order_strict_mode`，setter 非空输入启用 strict，空输入清除。
+- `patches/boring-pq.patch`: 同步 hunk context，使既有 PQ patch 仍可叠加。
+
+### Apache-2.0 §4 attribution
+modification: HUAKAI codex executor lane (R-3-A-fix-2-deeper), 2026-05-17 UTC。
+未新增非 boring 依赖，未修改 HUAKAI 主仓 LICENSE。

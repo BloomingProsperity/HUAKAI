@@ -67,6 +67,9 @@ extern "C" {
 // ExtensionType value from RFC 7685
 #define TLSEXT_TYPE_padding 21
 
+// ExtensionType value from RFC 7366
+#define TLSEXT_TYPE_encrypt_then_mac 22
+
 // ExtensionType value from RFC 7627
 #define TLSEXT_TYPE_extended_master_secret 23
 
