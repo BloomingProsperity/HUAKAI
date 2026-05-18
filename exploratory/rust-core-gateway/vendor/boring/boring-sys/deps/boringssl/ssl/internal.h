@@ -3330,7 +3330,7 @@ struct SSL_CONFIG {
   Array<uint16_t> verify_sigalgs;
 
   // HUAKAI patch: ClientHello 扩展写入顺序，保存 kExtensions[] 内部 index。
-  // 空数组表示使用 BoringSSL 默认顺序或 permutation。
+  // strict mode 为 true 时仅发送数组列出的内部扩展。
   Array<uint16_t> explicit_extension_order;
 
   // srtp_profiles is the list of configured SRTP protection profiles for
@@ -3394,6 +3394,9 @@ struct SSL_CONFIG {
   // permute_extensions is whether to permute extensions when sending messages.
   bool permute_extensions : 1;
 
+  // HUAKAI patch: strict mode suppresses internal extensions absent from
+  // |explicit_extension_order|.
+  bool has_explicit_order_strict_mode : 1;
   // aes_hw_override if set indicates we should override checking for aes
   // hardware support, and use the value in aes_hw_override_value instead.
   bool aes_hw_override : 1;
@@ -3956,7 +3959,7 @@ struct ssl_ctx_st : public bssl::RefCounted<ssl_ctx_st> {
   bssl::Array<uint16_t> supported_group_list;
 
   // HUAKAI patch: ClientHello 扩展写入顺序，保存 kExtensions[] 内部 index。
-  // 空数组表示使用 BoringSSL 默认顺序或 permutation。
+  // strict mode 为 true 时仅发送数组列出的内部扩展。
   bssl::Array<uint16_t> explicit_extension_order;
 
   // channel_id_private is the client's Channel ID private key, or null if
@@ -4025,6 +4028,9 @@ struct ssl_ctx_st : public bssl::RefCounted<ssl_ctx_st> {
   // permute_extensions is whether to permute extensions when sending messages.
   bool permute_extensions : 1;
 
+  // HUAKAI patch: strict mode suppresses internal extensions absent from
+  // |explicit_extension_order|.
+  bool has_explicit_order_strict_mode : 1;
   // allow_unknown_alpn_protos is whether the client allows unsolicited ALPN
   // protocols from the peer.
   bool allow_unknown_alpn_protos : 1;
