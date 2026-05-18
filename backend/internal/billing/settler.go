@@ -353,6 +353,30 @@ func (s *DefaultSettler) Refund(ctx context.Context, req RefundRequest) (*Refund
 	if s == nil || s.pool == nil {
 		return nil, ErrPoolNotConfigured
 	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return nil, fmt.Errorf("billing: begin refund Tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	res, err := s.RefundInTx(ctx, tx, req)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("billing: commit refund Tx: %w", err)
+	}
+	return res, nil
+}
+
+func (s *DefaultSettler) RefundInTx(ctx context.Context, tx pgx.Tx, req RefundRequest) (*RefundResult, error) {
+	if s == nil || s.q == nil {
+		return nil, ErrPoolNotConfigured
+	}
+	if tx == nil {
+		return nil, fmt.Errorf("billing: refund tx required")
+	}
 	if req.TenantID <= 0 || req.ClaimID <= 0 || req.AmountMicroUSD < 0 {
 		return nil, fmt.Errorf("billing: invalid refund request")
 	}
@@ -365,14 +389,8 @@ func (s *DefaultSettler) Refund(ctx context.Context, req RefundRequest) (*Refund
 		reason = "refund"
 	}
 
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
-	if err != nil {
-		return nil, fmt.Errorf("billing: begin refund Tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
 	var existingID int64
-	err = tx.QueryRow(ctx, `
+	err := tx.QueryRow(ctx, `
 SELECT id
 FROM billing_events
 WHERE tenant_id = $1
@@ -384,9 +402,6 @@ LIMIT 1`,
 		req.TenantID, req.ClaimID, auditRequestID,
 	).Scan(&existingID)
 	if err == nil {
-		if err := tx.Commit(ctx); err != nil {
-			return nil, fmt.Errorf("billing: commit idempotent refund Tx: %w", err)
-		}
 		return &RefundResult{
 			RefundMicroUSD: req.AmountMicroUSD,
 			BillingEventID: existingID,
@@ -428,9 +443,6 @@ FOR UPDATE`,
 		refundMicros = originalMicros
 	}
 	if refundMicros == 0 {
-		if err := tx.Commit(ctx); err != nil {
-			return nil, fmt.Errorf("billing: commit zero refund Tx: %w", err)
-		}
 		return &RefundResult{
 			RefundMicroUSD: 0,
 			AdjustmentRef:  "billing_refund:zero",
@@ -459,9 +471,6 @@ FOR UPDATE`,
 	}
 	if err := s.enqueueBillingEventReplica(ctx, tx, row, refundEventParams); err != nil {
 		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("billing: commit refund Tx: %w", err)
 	}
 	return &RefundResult{
 		RefundMicroUSD: refundMicros,
