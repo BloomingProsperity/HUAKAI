@@ -28,21 +28,32 @@ type CostReceiptReader interface {
 	GetReceipt(ctx context.Context, requestID string, tenantID int64) (*audit.CostReceipt, error)
 }
 
+type CostReceiptDeriver interface {
+	DeriveReceipt(ctx context.Context, requestID string) (*audit.CostReceipt, error)
+}
+
+type MismatchRefundEnqueuer interface {
+	EnqueueMismatchRefund(ctx context.Context, receipt *audit.CostReceipt, verdict audit.MismatchVerdict) (int64, error)
+}
+
 type CostReceiptSigner interface {
 	Fingerprint() string
 	PublicKey() ed25519.PublicKey
 }
 
 type CostReceiptHandlerDeps struct {
-	Receipts   CostReceiptReader
-	RateTables billing.RateTableSource
-	Signer     CostReceiptSigner
-	Now        func() time.Time
+	Receipts        CostReceiptReader
+	DerivedReceipts CostReceiptDeriver
+	MismatchRefunds MismatchRefundEnqueuer
+	RateTables      billing.RateTableSource
+	Signer          CostReceiptSigner
+	Now             func() time.Time
 }
 
 type UserCostReceipt struct {
 	SchemaVersion     string          `json:"schema_version"`
 	RequestID         string          `json:"request_id"`
+	ReceiptSequence   int32           `json:"receipt_sequence"`
 	TenantID          int64           `json:"tenant_id,omitempty"`
 	TenantScopeRef    string          `json:"tenant_scope_ref"`
 	OccurredAt        string          `json:"occurred_at"`
@@ -65,9 +76,14 @@ type UserReceiptCost struct {
 }
 
 type receiptVerifyResponse struct {
-	Valid      bool   `json:"valid"`
-	KeyStatus  string `json:"key_status"`
-	AgeSeconds int64  `json:"age_seconds"`
+	Valid           bool     `json:"valid"`
+	KeyStatus       string   `json:"key_status"`
+	AgeSeconds      int64    `json:"age_seconds"`
+	ReceiptSequence int32    `json:"receipt_sequence"`
+	Verdict         string   `json:"verdict,omitempty"`
+	DeltaMicroUSD   int64    `json:"delta_micro_usd,omitempty"`
+	FieldsMismatch  []string `json:"fields_mismatch,omitempty"`
+	RefundEventID   int64    `json:"refund_event_id,omitempty"`
 }
 
 func NewCostReceiptGetHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
@@ -160,10 +176,42 @@ func NewCostReceiptVerifyHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 		} else if canonicalHashMatches && sign.Verify(d.Signer.PublicKey(), canonical, sig) == nil {
 			valid = true
 		}
+		verifyVerdict := ""
+		var mismatch audit.MismatchVerdict
+		var refundEventID int64
+		if valid && d.DerivedReceipts != nil {
+			derived, err := d.DerivedReceipts.DeriveReceipt(r.Context(), requestID)
+			if err != nil || derived == nil {
+				verifyVerdict = audit.ReceiptVerdictUnknown
+			} else {
+				submitted := auditReceiptFromUserReceipt(req, derived.TenantID)
+				mismatch, err = audit.DetectReceiptMismatch(derived, submitted)
+				if err != nil {
+					writeJSONError(w, http.StatusBadRequest, "invalid_receipt", "receipt mismatch fields are invalid")
+					return
+				}
+				verifyVerdict = mismatch.State
+				if mismatch.State == audit.ReceiptValidationStateMismatchPending {
+					valid = false
+					if d.MismatchRefunds != nil {
+						refundEventID, err = d.MismatchRefunds.EnqueueMismatchRefund(r.Context(), derived, mismatch)
+						if err != nil {
+							writeJSONError(w, http.StatusServiceUnavailable, "refund_enqueue_failed", "mismatch refund could not be queued")
+							return
+						}
+					}
+				}
+			}
+		}
 		writeAuditJSON(w, http.StatusOK, receiptVerifyResponse{
-			Valid:      valid,
-			KeyStatus:  keyStatus,
-			AgeSeconds: receiptAgeSeconds(req.OccurredAt, d.now()),
+			Valid:           valid,
+			KeyStatus:       keyStatus,
+			AgeSeconds:      receiptAgeSeconds(req.OccurredAt, d.now()),
+			ReceiptSequence: req.ReceiptSequence,
+			Verdict:         verifyVerdict,
+			DeltaMicroUSD:   mismatch.DeltaMicroUSD,
+			FieldsMismatch:  mismatch.FieldsMismatch,
+			RefundEventID:   refundEventID,
 		})
 	}
 }
@@ -266,10 +314,11 @@ func validateReceiptPathRequestID(w http.ResponseWriter, requestID string) (stri
 
 func userCostReceiptFromAudit(ctx context.Context, receipt *audit.CostReceipt) (UserCostReceipt, error) {
 	out := UserCostReceipt{
-		SchemaVersion:  audit.ReceiptSchemaVersion,
-		RequestID:      receipt.RequestID,
-		TenantScopeRef: auditledger.TenantScopeRef(receipt.TenantID),
-		OccurredAt:     receipt.CreatedAt.UTC().Format(time.RFC3339Nano),
+		SchemaVersion:   audit.ReceiptSchemaVersion,
+		RequestID:       receipt.RequestID,
+		ReceiptSequence: receipt.ReceiptSequence,
+		TenantScopeRef:  auditledger.TenantScopeRef(receipt.TenantID),
+		OccurredAt:      receipt.CreatedAt.UTC().Format(time.RFC3339Nano),
 		Cost: UserReceiptCost{
 			Model:               receipt.Model,
 			InputTokens:         receipt.InputTokens,
@@ -278,9 +327,9 @@ func userCostReceiptFromAudit(ctx context.Context, receipt *audit.CostReceipt) (
 			CostTotalMicroUSD:   receipt.CostUSDMicros,
 			RateTableSnapshotID: receipt.RateTableSnapshotID,
 		},
-		ValidationState:   "valid",
-		Verdict:           "match",
-		AdjustmentRefs:    []string{},
+		ValidationState:   audit.NormalizeReceiptValidationState(receipt.ValidationState),
+		Verdict:           audit.NormalizeReceiptVerdict(receipt.Verdict),
+		AdjustmentRefs:    canonicalAdjustmentRefs(receipt.AdjustmentRefs),
 		Signature:         base64.StdEncoding.EncodeToString(receipt.SignedHash),
 		PubkeyFingerprint: string(receipt.SignerFingerprint),
 	}
@@ -292,10 +341,29 @@ func userCostReceiptFromAudit(ctx context.Context, receipt *audit.CostReceipt) (
 	return out, nil
 }
 
+func auditReceiptFromUserReceipt(receipt UserCostReceipt, tenantID int64) *audit.CostReceipt {
+	return &audit.CostReceipt{
+		RequestID:           strings.TrimSpace(receipt.RequestID),
+		TenantID:            tenantID,
+		ReceiptSequence:     receipt.ReceiptSequence,
+		Model:               strings.TrimSpace(receipt.Cost.Model),
+		InputTokens:         receipt.Cost.InputTokens,
+		OutputTokens:        receipt.Cost.OutputTokens,
+		CachedTokens:        receipt.Cost.CachedTokens,
+		CostUSDMicros:       receipt.Cost.CostTotalMicroUSD,
+		RateTableSnapshotID: receipt.Cost.RateTableSnapshotID,
+		ValidationState:     strings.TrimSpace(receipt.ValidationState),
+		Verdict:             strings.TrimSpace(receipt.Verdict),
+		AdjustmentRefs:      canonicalAdjustmentRefs(receipt.AdjustmentRefs),
+		CreatedAt:           userReceiptTime(receipt.OccurredAt),
+	}
+}
+
 func canonicalPayloadFromUserReceipt(receipt UserCostReceipt) audit.ReceiptCanonicalPayload {
 	return audit.ReceiptCanonicalPayload{
 		SchemaVersion:       firstNonEmpty(receipt.SchemaVersion, audit.ReceiptSchemaVersion),
 		RequestID:           strings.TrimSpace(receipt.RequestID),
+		ReceiptSequence:     receipt.ReceiptSequence,
 		TenantScopeRef:      strings.TrimSpace(receipt.TenantScopeRef),
 		Model:               strings.TrimSpace(receipt.Cost.Model),
 		InputTokens:         receipt.Cost.InputTokens,
@@ -360,6 +428,14 @@ func canonicalReceiptTime(value string) string {
 		return value
 	}
 	return parsed.UTC().Format(time.RFC3339Nano)
+}
+
+func userReceiptTime(value string) time.Time {
+	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed.UTC()
 }
 
 func receiptAgeSeconds(occurredAt string, now time.Time) int64 {

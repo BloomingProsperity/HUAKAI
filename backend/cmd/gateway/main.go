@@ -115,6 +115,8 @@ type deps struct {
 	auditLedger        auditledger.Ledger
 	auditSigner        *sign.Signer
 	receiptStore       *auditreceipt.PGXReceiptStorage
+	receiptFormatter   *auditreceipt.ReceiptFormatter
+	refundQueue        *auditreceipt.MismatchRefundQueue
 	rateTableSource    billing.RateTableSource
 	// Slice 2 (N+5a): real Registry resolver.
 	modelRegistry *registry.PostgresRegistry
@@ -126,6 +128,33 @@ type deps struct {
 	adminAuth    *admin.AdminResolver
 	adminIssuer  *admin.KeyIssuer
 	adminRevoker *admin.KeyRevoker
+}
+
+type refundReceiptAppender interface {
+	AppendReceipt(context.Context, *auditreceipt.CostReceipt) error
+}
+
+type refundReceiptSequenceReader interface {
+	GetReceiptBySequence(context.Context, string, int64, int32) (*auditreceipt.CostReceipt, error)
+}
+
+type refundReceiptSink struct {
+	appender refundReceiptAppender
+}
+
+func (s refundReceiptSink) AppendRefundReceipt(ctx context.Context, receipt *auditreceipt.CostReceipt) error {
+	if s.appender == nil {
+		return auditreceipt.ErrReceiptStorageRequired
+	}
+	return s.appender.AppendReceipt(ctx, receipt)
+}
+
+func (s refundReceiptSink) GetReceiptBySequence(ctx context.Context, requestID string, tenantID int64, sequence int32) (*auditreceipt.CostReceipt, error) {
+	reader, ok := s.appender.(refundReceiptSequenceReader)
+	if !ok {
+		return nil, auditreceipt.ErrReceiptStorageRequired
+	}
+	return reader.GetReceiptBySequence(ctx, requestID, tenantID, sequence)
 }
 
 func (d *deps) AdminObservabilityAuth() gatewayhttp.AdminObservabilityAuth {
@@ -326,6 +355,15 @@ func run(logger *zap.Logger) error {
 	if err != nil {
 		return fmt.Errorf("build receipt formatter: %w", err)
 	}
+	refundPendingStore, err := auditreceipt.NewPGXRefundPendingStore(pgPool)
+	if err != nil {
+		return fmt.Errorf("build audit refund pending store: %w", err)
+	}
+	refundWorker := auditreceipt.NewMismatchRefundWorker(refundPendingStore, baseSettler, receiptFormatter,
+		auditreceipt.WithRefundLedger(auditLedger),
+		auditreceipt.WithRefundReceiptSink(refundReceiptSink{appender: receiptStore}))
+	dlqService.Register(legacydlq.EventKindAuditMismatchRefund, refundWorker.Handler())
+	refundQueue := auditreceipt.NewMismatchRefundQueue(dlqService)
 	receiptHook := auditreceipt.NewReceiptHookHandler(receiptFormatter, receiptStore,
 		auditreceipt.WithReceiptHookErrorHandler(func(_ context.Context, requestID string, err error) {
 			logger.Warn("cost receipt write failed after settle",
@@ -387,11 +425,13 @@ func run(logger *zap.Logger) error {
 		// Replaces the SmokeAuthResolver env-injected single bearer pattern.
 		// Rollback path is git revert; no SmokeAuthResolver is wired into the
 		// default build.
-		inboundAuth:     auth.NewAPIKeyResolver(q),
-		auditLedger:     auditLedger,
-		auditSigner:     auditSigner,
-		receiptStore:    receiptStore,
-		rateTableSource: rateTableSource,
+		inboundAuth:      auth.NewAPIKeyResolver(q),
+		auditLedger:      auditLedger,
+		auditSigner:      auditSigner,
+		receiptStore:     receiptStore,
+		receiptFormatter: receiptFormatter,
+		refundQueue:      refundQueue,
+		rateTableSource:  rateTableSource,
 		// Slice 2 (N+5a) registry resolver. cache=nil → noopCache (D2: no
 		// L0 cache; LRU lands in Slice 5 keyed on registry_version).
 		// Takes pgxpool.Pool because Resolve runs all reads inside a
@@ -859,11 +899,15 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Get("/v1/audit/pubkey", gatewayhttp.NewAuditPubkeyHandler(gatewayhttp.AuditPubkeyDeps{Signer: d.auditSigner}))
 
 	receiptDeps := gatewayhttp.CostReceiptHandlerDeps{
-		Receipts:   d.receiptStore,
-		RateTables: d.rateTableSource,
-		Signer:     d.auditSigner,
+		Receipts:        d.receiptStore,
+		DerivedReceipts: d.receiptFormatter,
+		MismatchRefunds: d.refundQueue,
+		RateTables:      d.rateTableSource,
+		Signer:          d.auditSigner,
 	}
 	r.Route("/v1/receipts", func(r chi.Router) {
+		r.With(auth.SessionMiddleware(d.userSessions)).Get("/{request_id}", gatewayhttp.NewCostReceiptGetHandler(receiptDeps))
+		r.Post("/{request_id}/verify", gatewayhttp.NewCostReceiptVerifyHandler(receiptDeps))
 		r.With(auth.SessionMiddleware(d.userSessions)).Get("/*", gatewayhttp.NewCostReceiptGetHandler(receiptDeps))
 		r.Post("/*", gatewayhttp.NewCostReceiptVerifyHandler(receiptDeps))
 	})

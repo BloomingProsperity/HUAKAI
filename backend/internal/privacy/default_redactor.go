@@ -248,7 +248,7 @@ var exactAllowlist = map[string]struct{}{
 	"message_count": {}, "metadata_keys": {}, "model": {}, "model_chain": {}, "model_verdict": {}, "new_state": {}, "occurred_at": {}, "outbox_event_id": {},
 	"outcome": {}, "output_tokens": {}, "panic_class": {}, "payload": {}, "policy_version": {}, "pool_group_id": {}, "previous_state": {},
 	"priority": {}, "provider": {}, "provider_account_id": {}, "provider_family": {}, "protocol_family": {}, "pubkey_fingerprint": {},
-	"ramp_failure_count": {}, "ramp_stage_pct": {}, "rate_limit_hits": {}, "reason": {}, "reason_class": {}, "receipt_id": {},
+	"ramp_failure_count": {}, "ramp_stage_pct": {}, "rate_limit_hits": {}, "reason": {}, "reason_class": {}, "receipt_id": {}, "receipt_sequence": {},
 	"redaction_result": {}, "redemption_id": {}, "refund_microcents": {}, "request_id": {}, "requested": {}, "requested_model": {},
 	"route_decided": {}, "route_id": {}, "safe": {}, "schema_version": {}, "score": {}, "severity": {}, "single_use_per_user": {},
 	"source_ip_hash": {}, "stack": {}, "started_at": {}, "state": {}, "status": {}, "status_class": {}, "stream": {}, "subject": {}, "substitution_refund_micro_usd": {}, "tenant_id": {},

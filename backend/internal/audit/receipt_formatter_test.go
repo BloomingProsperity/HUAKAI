@@ -140,6 +140,53 @@ func TestAT_AUDIT_001_003_AppendReceiptUniqueConstraint(t *testing.T) {
 	}
 }
 
+func TestAT_AUDIT_001_030_AppendOriginalAndRefundedReceiptLatest(t *testing.T) {
+	ctx := context.Background()
+	db := newMemoryReceiptDB()
+	store := &ReceiptStorage{exec: db}
+	original := receiptForStorageTest("req-at-030", 88, 0)
+	refunded := cloneReceipt(original)
+	refunded.ReceiptSequence = 1
+	refunded.ValidationState = ReceiptValidationStateMismatchRefunded
+	refunded.Verdict = ReceiptVerdictMismatchRefundPending
+	refunded.AdjustmentRefs = []string{"billing_event:123"}
+	refunded.SignedHash = []byte("signed-refunded")
+
+	if err := store.AppendReceipt(ctx, original); err != nil {
+		t.Fatalf("append original receipt: %v", err)
+	}
+	if err := store.AppendReceipt(ctx, refunded); err != nil {
+		t.Fatalf("append refunded receipt: %v", err)
+	}
+	got, err := store.GetReceipt(ctx, original.RequestID, original.TenantID)
+	if err != nil {
+		t.Fatalf("GetReceipt latest: %v", err)
+	}
+	if got.ReceiptSequence != 1 ||
+		got.ValidationState != ReceiptValidationStateMismatchRefunded ||
+		got.Verdict != ReceiptVerdictMismatchRefundPending ||
+		len(got.AdjustmentRefs) != 1 ||
+		got.AdjustmentRefs[0] != "billing_event:123" {
+		t.Fatalf("latest receipt mismatch: %+v", got)
+	}
+}
+
+func TestAT_AUDIT_001_031_DuplicateSameReceiptSequenceRejected(t *testing.T) {
+	ctx := context.Background()
+	db := newMemoryReceiptDB()
+	store := &ReceiptStorage{exec: db}
+	receipt := receiptForStorageTest("req-at-031", 88, 0)
+	duplicate := cloneReceipt(receipt)
+	duplicate.SignedHash = []byte("signed-duplicate")
+
+	if err := store.AppendReceipt(ctx, receipt); err != nil {
+		t.Fatalf("first AppendReceipt: %v", err)
+	}
+	if err := store.AppendReceipt(ctx, duplicate); !errors.Is(err, ErrReceiptDuplicate) {
+		t.Fatalf("duplicate same sequence got %v want %v", err, ErrReceiptDuplicate)
+	}
+}
+
 func TestAT_AUDIT_001_004_DeriveReceiptCrossesAuditBilling(t *testing.T) {
 	ctx := context.Background()
 	requestID := "host/random-000004"
@@ -164,6 +211,7 @@ func TestAT_AUDIT_001_004_DeriveReceiptCrossesAuditBilling(t *testing.T) {
 
 	query := &scriptedReceiptQueryer{row: scriptedReceiptRow{values: []any{
 		int64(42),
+		int64(7004),
 		sql.NullString{String: "gpt-4.1-mini", Valid: true},
 		sql.NullInt64{Int64: 100, Valid: true},
 		sql.NullInt64{Int64: 25, Valid: true},
@@ -235,6 +283,7 @@ func TestAT_AUDIT_001_006_AbortReceiptZeroCost(t *testing.T) {
 	}
 	query := &scriptedReceiptQueryer{row: scriptedReceiptRow{values: []any{
 		int64(42),
+		int64(7006),
 		sql.NullString{String: "gpt-4.1-mini", Valid: true},
 		sql.NullInt64{Int64: 0, Valid: true},
 		sql.NullInt64{Int64: 0, Valid: true},
@@ -283,6 +332,7 @@ func TestAT_AUDIT_001_007_UsageInDLQReturnsUnavailable(t *testing.T) {
 	}
 	query := &scriptedReceiptQueryer{row: scriptedReceiptRow{values: []any{
 		int64(42),
+		int64(7007),
 		sql.NullString{String: "gpt-4.1-mini", Valid: true},
 		sql.NullInt64{},
 		sql.NullInt64{},
@@ -328,6 +378,7 @@ func TestAT_AUDIT_001_008_RateSnapshotIDFromRegistryFormat(t *testing.T) {
 	}
 	query := &scriptedReceiptQueryer{row: scriptedReceiptRow{values: []any{
 		int64(42),
+		int64(7008),
 		sql.NullString{String: "gpt-4.1-mini", Valid: true},
 		sql.NullInt64{Int64: 81, Valid: true},
 		sql.NullInt64{Int64: 13, Valid: true},
@@ -415,6 +466,7 @@ func TestReceiptCanonicalPayloadUsesMicroUSDField(t *testing.T) {
 	receipt := &CostReceipt{
 		RequestID:           "host/random-000005",
 		TenantID:            7,
+		ReceiptSequence:     2,
 		Model:               "gpt-4.1-mini",
 		InputTokens:         10,
 		OutputTokens:        2,
@@ -428,6 +480,9 @@ func TestReceiptCanonicalPayloadUsesMicroUSDField(t *testing.T) {
 	raw := string(redactor.lastRaw)
 	if !strings.Contains(raw, `"cost_total_micro_usd":1234`) {
 		t.Fatalf("canonical payload missing micro-USD field: %s", raw)
+	}
+	if !strings.Contains(raw, `"receipt_sequence":2`) {
+		t.Fatalf("canonical payload missing receipt_sequence field: %s", raw)
 	}
 	if strings.Contains(raw, "cost_total_microcents") {
 		t.Fatalf("canonical payload must not use microcents field: %s", raw)
@@ -461,53 +516,207 @@ func (s *staticReceiptSource) LookupReceiptInputs(_ context.Context, requestID s
 
 type memoryReceiptDB struct {
 	mu       sync.Mutex
-	requests map[string]struct{}
+	receipts map[memoryReceiptKey]*CostReceipt
 }
 
 func newMemoryReceiptDB() *memoryReceiptDB {
-	return &memoryReceiptDB{requests: map[string]struct{}{}}
+	return &memoryReceiptDB{receipts: map[memoryReceiptKey]*CostReceipt{}}
 }
 
 func (db *memoryReceiptDB) ExecContext(_ context.Context, query string, args ...any) (sql.Result, error) {
 	if !strings.Contains(query, "INSERT INTO user_cost_receipts") {
 		return receiptTestResult(0), nil
 	}
-	if len(args) < 2 {
-		return nil, errors.New("memory receipt db: request_id arg missing")
+	if len(args) < 15 {
+		return nil, errors.New("memory receipt db: insert args missing")
 	}
-	requestID, _ := args[1].(string)
+	receipt, err := receiptFromInsertArgs(args)
+	if err != nil {
+		return nil, err
+	}
+	key := memoryReceiptKey{
+		tenantID:  receipt.TenantID,
+		requestID: receipt.RequestID,
+		sequence:  receipt.ReceiptSequence,
+	}
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	if _, exists := db.requests[requestID]; exists {
+	if _, exists := db.receipts[key]; exists {
 		return nil, ErrReceiptDuplicate
 	}
-	db.requests[requestID] = struct{}{}
+	db.receipts[key] = receipt
 	return receiptTestResult(1), nil
 }
 
-func (db *memoryReceiptDB) QueryRowContext(context.Context, string, ...any) receiptRow {
-	return receiptTestRow{err: sql.ErrNoRows}
+func (db *memoryReceiptDB) QueryRowContext(_ context.Context, query string, args ...any) receiptRow {
+	if !strings.Contains(query, "FROM user_cost_receipts") || len(args) < 2 {
+		return receiptTestRow{err: sql.ErrNoRows}
+	}
+	requestID, _ := args[0].(string)
+	tenantID, _ := args[1].(int64)
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	var latest *CostReceipt
+	for key, receipt := range db.receipts {
+		if key.requestID != requestID || key.tenantID != tenantID {
+			continue
+		}
+		if latest == nil || receipt.ReceiptSequence > latest.ReceiptSequence {
+			latest = receipt
+		}
+	}
+	if latest == nil {
+		return receiptTestRow{err: sql.ErrNoRows}
+	}
+	return receiptTestRow{receipt: cloneReceipt(latest)}
 }
 
 func (db *memoryReceiptDB) hasRequest(requestID string) bool {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	_, ok := db.requests[requestID]
-	return ok
+	for key := range db.receipts {
+		if key.requestID == requestID {
+			return true
+		}
+	}
+	return false
+}
+
+type memoryReceiptKey struct {
+	tenantID  int64
+	requestID string
+	sequence  int32
 }
 
 type receiptTestRow struct {
-	err error
+	receipt *CostReceipt
+	err     error
 }
 
-func (r receiptTestRow) Scan(...any) error {
-	return r.err
+func (r receiptTestRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	if r.receipt == nil {
+		return sql.ErrNoRows
+	}
+	if len(dest) != 15 {
+		return errors.New("memory receipt row: destination count mismatch")
+	}
+	adjustments, err := json.Marshal(normalizedAdjustmentRefs(r.receipt.AdjustmentRefs))
+	if err != nil {
+		return err
+	}
+	values := []any{
+		r.receipt.RequestID,
+		r.receipt.TenantID,
+		r.receipt.Model,
+		r.receipt.InputTokens,
+		r.receipt.OutputTokens,
+		r.receipt.CachedTokens,
+		r.receipt.CostUSDMicros,
+		r.receipt.RateTableSnapshotID,
+		append([]byte(nil), r.receipt.SignerFingerprint...),
+		append([]byte(nil), r.receipt.SignedHash...),
+		r.receipt.CreatedAt,
+		r.receipt.ValidationState,
+		r.receipt.Verdict,
+		adjustments,
+		r.receipt.ReceiptSequence,
+	}
+	for i := range dest {
+		if err := assignReceiptScanValue(dest[i], values[i]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type receiptTestResult int64
 
 func (r receiptTestResult) LastInsertId() (int64, error) { return 0, nil }
 func (r receiptTestResult) RowsAffected() (int64, error) { return int64(r), nil }
+
+func receiptForStorageTest(requestID string, tenantID int64, sequence int32) *CostReceipt {
+	return &CostReceipt{
+		RequestID:           requestID,
+		TenantID:            tenantID,
+		ReceiptSequence:     sequence,
+		Model:               "gpt-4.1-mini",
+		InputTokens:         10,
+		OutputTokens:        5,
+		CachedTokens:        0,
+		CostUSDMicros:       42,
+		RateTableSnapshotID: 5,
+		ValidationState:     ReceiptValidationStateValid,
+		Verdict:             ReceiptVerdictMatch,
+		SignerFingerprint:   []byte("0123456789abcdef"),
+		SignedHash:          []byte("signed-receipt"),
+		CreatedAt:           time.Date(2026, 5, 17, 15, 0, 0, 0, time.UTC),
+	}
+}
+
+func receiptFromInsertArgs(args []any) (*CostReceipt, error) {
+	adjustments, ok := args[14].([]byte)
+	if !ok {
+		return nil, errors.New("memory receipt db: adjustment refs type mismatch")
+	}
+	return &CostReceipt{
+		TenantID:            args[0].(int64),
+		RequestID:           args[1].(string),
+		ReceiptSequence:     args[2].(int32),
+		Model:               args[3].(string),
+		InputTokens:         args[4].(int64),
+		OutputTokens:        args[5].(int64),
+		CachedTokens:        args[6].(int64),
+		CostUSDMicros:       args[7].(int64),
+		RateTableSnapshotID: args[8].(int64),
+		SignerFingerprint:   append([]byte(nil), args[9].([]byte)...),
+		SignedHash:          append([]byte(nil), args[10].([]byte)...),
+		CreatedAt:           args[11].(time.Time),
+		ValidationState:     args[12].(string),
+		Verdict:             args[13].(string),
+		AdjustmentRefs:      decodeReceiptAdjustmentRefs(adjustments),
+	}, nil
+}
+
+func assignReceiptScanValue(dest any, value any) error {
+	switch d := dest.(type) {
+	case *int32:
+		v, ok := value.(int32)
+		if !ok {
+			return errors.New("memory receipt row: int32 type mismatch")
+		}
+		*d = v
+	case *int64:
+		v, ok := value.(int64)
+		if !ok {
+			return errors.New("memory receipt row: int64 type mismatch")
+		}
+		*d = v
+	case *string:
+		v, ok := value.(string)
+		if !ok {
+			return errors.New("memory receipt row: string type mismatch")
+		}
+		*d = v
+	case *[]byte:
+		v, ok := value.([]byte)
+		if !ok {
+			return errors.New("memory receipt row: bytes type mismatch")
+		}
+		*d = append([]byte(nil), v...)
+	case *time.Time:
+		v, ok := value.(time.Time)
+		if !ok {
+			return errors.New("memory receipt row: time type mismatch")
+		}
+		*d = v
+	default:
+		return errors.New("memory receipt row: unsupported destination")
+	}
+	return nil
+}
 
 type scriptedReceiptQueryer struct {
 	sql  string

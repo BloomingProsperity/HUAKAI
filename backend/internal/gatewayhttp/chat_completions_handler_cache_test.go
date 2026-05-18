@@ -28,6 +28,10 @@ func (s *recordingSettler) Abort(context.Context, int64, int64, string, string) 
 	return nil
 }
 
+func (s *recordingSettler) Refund(context.Context, billing.RefundRequest) (*billing.RefundResult, error) {
+	return &billing.RefundResult{}, nil
+}
+
 func TestChatCompletionsL2CacheHitReturnsCachedWithoutUpstreamCall(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	store := l2cache.NewMemoryStore(1<<20, time.Minute)
