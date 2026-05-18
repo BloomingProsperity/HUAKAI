@@ -89,6 +89,10 @@ func (s *stubSettler) Abort(_ context.Context, _, _ int64, _, _ string) error {
 	return nil
 }
 
+func (s *stubSettler) Refund(context.Context, billing.RefundRequest) (*billing.RefundResult, error) {
+	return &billing.RefundResult{}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

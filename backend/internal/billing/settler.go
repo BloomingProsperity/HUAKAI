@@ -349,6 +349,134 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 	return nil
 }
 
+func (s *DefaultSettler) Refund(ctx context.Context, req RefundRequest) (*RefundResult, error) {
+	if s == nil || s.pool == nil {
+		return nil, ErrPoolNotConfigured
+	}
+	if req.TenantID <= 0 || req.ClaimID <= 0 || req.AmountMicroUSD < 0 {
+		return nil, fmt.Errorf("billing: invalid refund request")
+	}
+	auditRequestID := strings.TrimSpace(req.AuditRequestID)
+	if auditRequestID == "" {
+		auditRequestID = fmt.Sprintf("audit-refund-%d", req.ClaimID)
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		reason = "refund"
+	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return nil, fmt.Errorf("billing: begin refund Tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var existingID int64
+	err = tx.QueryRow(ctx, `
+SELECT id
+FROM billing_events
+WHERE tenant_id = $1
+  AND claim_id = $2
+  AND event_type = 'reconciliation_appended'
+  AND audit_request_id = $3
+ORDER BY id ASC
+LIMIT 1`,
+		req.TenantID, req.ClaimID, auditRequestID,
+	).Scan(&existingID)
+	if err == nil {
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("billing: commit idempotent refund Tx: %w", err)
+		}
+		return &RefundResult{
+			RefundMicroUSD: req.AmountMicroUSD,
+			BillingEventID: existingID,
+			AdjustmentRef:  billingAdjustmentRef(existingID),
+			Idempotent:     true,
+		}, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("billing: lookup existing refund: %w", err)
+	}
+
+	var (
+		fingerprint string
+		status      string
+		actualCost  decimal.Decimal
+	)
+	if err := tx.QueryRow(ctx, `
+SELECT request_fingerprint, status, actual_cost
+FROM billing_ledger_claims
+WHERE tenant_id = $1 AND id = $2
+FOR UPDATE`,
+		req.TenantID, req.ClaimID,
+	).Scan(&fingerprint, &status, &actualCost); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrClaimNotReserving
+		}
+		return nil, fmt.Errorf("billing: get claim for refund: %w", err)
+	}
+	if status != "committed" {
+		return nil, ErrClaimNotReserving
+	}
+
+	refundMicros := req.AmountMicroUSD
+	originalMicros := actualCost.Mul(decimal.NewFromInt(1_000_000)).Round(0).IntPart()
+	if originalMicros < 0 {
+		originalMicros = 0
+	}
+	if refundMicros > originalMicros {
+		refundMicros = originalMicros
+	}
+	if refundMicros == 0 {
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("billing: commit zero refund Tx: %w", err)
+		}
+		return &RefundResult{
+			RefundMicroUSD: 0,
+			AdjustmentRef:  "billing_refund:zero",
+		}, nil
+	}
+
+	refundUSD := decimal.NewFromInt(refundMicros).Div(decimal.NewFromInt(1_000_000))
+	signedRefund := refundUSD.Neg()
+	refundEndClass := reason
+	refundUsageSource := "audit_mismatch"
+	refundEventParams := db.InsertBillingEventParams{
+		TenantID:         req.TenantID,
+		ClaimID:          nullableInt64(req.ClaimID),
+		EventType:        "reconciliation_appended",
+		ActualCost:       decimal.Zero,
+		ActualCostSigned: signedRefund,
+		EndClass:         &refundEndClass,
+		UsageSource:      &refundUsageSource,
+		StreamState:      StreamStatePartial.DBValue(),
+		Fingerprint:      fingerprint,
+		AuditRequestID:   nullableString(auditRequestID),
+	}
+	row, err := s.q.WithTx(tx).InsertBillingEvent(ctx, refundEventParams)
+	if err != nil {
+		return nil, fmt.Errorf("billing: insert refund event: %w", err)
+	}
+	if err := s.enqueueBillingEventReplica(ctx, tx, row, refundEventParams); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("billing: commit refund Tx: %w", err)
+	}
+	return &RefundResult{
+		RefundMicroUSD: refundMicros,
+		BillingEventID: row.ID,
+		AdjustmentRef:  billingAdjustmentRef(row.ID),
+	}, nil
+}
+
+func billingAdjustmentRef(eventID int64) string {
+	if eventID <= 0 {
+		return "billing_event:0"
+	}
+	return fmt.Sprintf("billing_event:%d", eventID)
+}
+
 func (s *DefaultSettler) classifySettleNoRows(ctx context.Context, tx pgx.Tx, req SettleRequest) error {
 	var token pgtype.UUID
 	var status string

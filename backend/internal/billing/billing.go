@@ -36,6 +36,10 @@ type Settler interface {
 	// or AMBIGUOUS_USAGE end class). Tenant-scoped to prevent cross-tenant
 	// abort via stale claim id.
 	Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string) error
+
+	// Refund 给已提交 claim 追加幂等负向 reconciliation event；
+	// 原 claim / usage 行保持不可变。
+	Refund(ctx context.Context, req RefundRequest) (*RefundResult, error)
 }
 
 // ReserveRequest carries Tx1 inputs.
@@ -97,6 +101,23 @@ type SettleResult struct {
 	NewUserBalance       decimal.Decimal
 	APIKeyQuotaExhausted bool
 	OutboxEventsEnqueued int
+}
+
+// RefundRequest 是 append-only 退款 / 修正请求。
+type RefundRequest struct {
+	TenantID       int64
+	ClaimID        int64
+	AmountMicroUSD int64
+	Reason         string
+	AuditRequestID string
+}
+
+// RefundResult 标识不可变 adjustment event。
+type RefundResult struct {
+	RefundMicroUSD int64
+	BillingEventID int64
+	AdjustmentRef  string
+	Idempotent     bool
 }
 
 // TODO(phase-e): replace placeholder pricing with versioned pricing tables,

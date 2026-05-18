@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -23,7 +24,7 @@ func NewPGXReceiptStorage(pool *pgxpool.Pool) (*PGXReceiptStorage, error) {
 	return &PGXReceiptStorage{pool: pool}, nil
 }
 
-// AppendReceipt 只在 settlement 成功后写入一次 signed receipt snapshot。
+// AppendReceipt 只在 settlement 成功后写入 signed receipt snapshot。
 func (rs *PGXReceiptStorage) AppendReceipt(ctx context.Context, receipt *CostReceipt) error {
 	if rs == nil || rs.pool == nil {
 		return ErrReceiptStorageRequired
@@ -31,14 +32,19 @@ func (rs *PGXReceiptStorage) AppendReceipt(ctx context.Context, receipt *CostRec
 	if err := validateReceiptForStorage(receipt); err != nil {
 		return err
 	}
-	_, err := rs.pool.Exec(ctx, `
+	adjustmentRefs, err := json.Marshal(normalizedAdjustmentRefs(receipt.AdjustmentRefs))
+	if err != nil {
+		return fmt.Errorf("audit: marshal receipt adjustment refs: %w", err)
+	}
+	_, err = rs.pool.Exec(ctx, `
 INSERT INTO user_cost_receipts (
-    tenant_id, request_id, model, input_tokens, output_tokens, cached_tokens,
+    tenant_id, request_id, receipt_sequence, model, input_tokens, output_tokens, cached_tokens,
     cost_usd_micros, rate_table_snapshot_id, signer_fingerprint, signed_hash,
-    created_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+    created_at, validation_state, verdict, adjustment_refs
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb)`,
 		receipt.TenantID,
 		receipt.RequestID,
+		receipt.ReceiptSequence,
 		receipt.Model,
 		receipt.InputTokens,
 		receipt.OutputTokens,
@@ -48,10 +54,13 @@ INSERT INTO user_cost_receipts (
 		append([]byte(nil), receipt.SignerFingerprint...),
 		append([]byte(nil), receipt.SignedHash...),
 		receipt.CreatedAt.UTC(),
+		NormalizeReceiptValidationState(receipt.ValidationState),
+		NormalizeReceiptVerdict(receipt.Verdict),
+		adjustmentRefs,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
-			return fmt.Errorf("%w: request_id %s", ErrReceiptDuplicate, receipt.RequestID)
+			return fmt.Errorf("%w: request_id %s sequence %d", ErrReceiptDuplicate, receipt.RequestID, receipt.ReceiptSequence)
 		}
 		return fmt.Errorf("audit: append receipt: %w", err)
 	}
@@ -69,36 +78,54 @@ func (rs *PGXReceiptStorage) GetReceipt(ctx context.Context, requestID string, t
 	row := rs.pool.QueryRow(ctx, `
 SELECT request_id, tenant_id, model, input_tokens, output_tokens, cached_tokens,
        cost_usd_micros, rate_table_snapshot_id, signer_fingerprint, signed_hash,
-       created_at
+       created_at, validation_state, verdict, adjustment_refs, receipt_sequence
 FROM user_cost_receipts
-WHERE request_id = $1 AND tenant_id = $2`,
+WHERE request_id = $1 AND tenant_id = $2
+ORDER BY receipt_sequence DESC
+LIMIT 1`,
 		requestID,
 		tenantID,
 	)
-	var (
-		rawRequestID string
-		receipt      CostReceipt
-	)
-	if err := row.Scan(
-		&rawRequestID,
-		&receipt.TenantID,
-		&receipt.Model,
-		&receipt.InputTokens,
-		&receipt.OutputTokens,
-		&receipt.CachedTokens,
-		&receipt.CostUSDMicros,
-		&receipt.RateTableSnapshotID,
-		&receipt.SignerFingerprint,
-		&receipt.SignedHash,
-		&receipt.CreatedAt,
-	); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrReceiptNotFound
+	receipt, err := scanReceiptRow(row, pgx.ErrNoRows)
+	if err != nil {
+		if errors.Is(err, ErrReceiptNotFound) {
+			return nil, err
 		}
 		return nil, fmt.Errorf("audit: get receipt: %w", err)
 	}
-	receipt.RequestID = rawRequestID
-	return &receipt, nil
+	return receipt, nil
+}
+
+// GetReceiptBySequence 按 tenant + request_id + receipt_sequence 读取指定 snapshot。
+func (rs *PGXReceiptStorage) GetReceiptBySequence(ctx context.Context, requestID string, tenantID int64, sequence int32) (*CostReceipt, error) {
+	if rs == nil || rs.pool == nil {
+		return nil, ErrReceiptStorageRequired
+	}
+	if err := validateReceiptRequestID(requestID); err != nil {
+		return nil, err
+	}
+	if sequence < 0 {
+		return nil, fmt.Errorf("%w: receipt_sequence must be non-negative", ErrReceiptInvalidDerivedData)
+	}
+	row := rs.pool.QueryRow(ctx, `
+SELECT request_id, tenant_id, model, input_tokens, output_tokens, cached_tokens,
+       cost_usd_micros, rate_table_snapshot_id, signer_fingerprint, signed_hash,
+       created_at, validation_state, verdict, adjustment_refs, receipt_sequence
+FROM user_cost_receipts
+WHERE request_id = $1 AND tenant_id = $2 AND receipt_sequence = $3
+LIMIT 1`,
+		requestID,
+		tenantID,
+		sequence,
+	)
+	receipt, err := scanReceiptRow(row, pgx.ErrNoRows)
+	if err != nil {
+		if errors.Is(err, ErrReceiptNotFound) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("audit: get receipt by sequence: %w", err)
+	}
+	return receipt, nil
 }
 
 // PGXReceiptSource 用 pgxpool 读取 receipt 派生输入，供 gateway main 直接接线。
@@ -124,6 +151,7 @@ func (s *PGXReceiptSource) LookupReceiptInputs(ctx context.Context, requestID st
 		inputs         ReceiptInputs
 		costUSD        string
 		snapshot       sql.NullString
+		claimID        int64
 		usageRecordID  sql.NullInt64
 		createdAt      sql.NullTime
 		modelNullable  sql.NullString
@@ -133,6 +161,7 @@ func (s *PGXReceiptSource) LookupReceiptInputs(ctx context.Context, requestID st
 	)
 	err := s.pool.QueryRow(ctx, receiptInputsSQL, requestID, tenantID).Scan(
 		&inputs.TenantID,
+		&claimID,
 		&modelNullable,
 		&inputTokens,
 		&outputTokens,
@@ -155,6 +184,7 @@ func (s *PGXReceiptSource) LookupReceiptInputs(ctx context.Context, requestID st
 	if err != nil {
 		return ReceiptInputs{}, err
 	}
+	inputs.ClaimID = claimID
 	inputs.Model = modelNullable.String
 	inputs.InputTokens = inputTokens.Int64
 	inputs.OutputTokens = outputTokens.Int64

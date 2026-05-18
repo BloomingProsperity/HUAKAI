@@ -118,3 +118,10 @@ func (s *ReceiptHookSettler) Abort(ctx context.Context, tenantID, claimID int64,
 	}
 	return s.inner.Abort(ctx, tenantID, claimID, reason, auditRequestID)
 }
+
+func (s *ReceiptHookSettler) Refund(ctx context.Context, req billing.RefundRequest) (*billing.RefundResult, error) {
+	if s == nil || s.inner == nil {
+		return nil, billing.ErrPoolNotConfigured
+	}
+	return s.inner.Refund(ctx, req)
+}

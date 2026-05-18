@@ -345,6 +345,47 @@ func TestSettler_ReplicaIntentQueuedPrimaryStillCommits(t *testing.T) {
 	}
 }
 
+func TestAT_AUDIT_001_028_RefundQueuesBillingEventReplica(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	seed := seedSettlerGraph(t, ctx, pool, "refund-replica-intent")
+	settler := NewSettler(pool, WithReplicaTarget("refund-replica-test"))
+
+	if _, err := settler.Settle(ctx, settleRequest(seed, decimal.RequireFromString("0.02000000"))); err != nil {
+		t.Fatalf("Settle before refund: %v", err)
+	}
+	refund, err := settler.Refund(ctx, RefundRequest{
+		TenantID:       seed.tenantID,
+		ClaimID:        seed.claimID,
+		AmountMicroUSD: 7000,
+		Reason:         "audit_mismatch",
+		AuditRequestID: "req-refund-replica#audit_refund",
+	})
+	if err != nil {
+		t.Fatalf("Refund with async replica intent: %v", err)
+	}
+	if refund == nil || refund.BillingEventID == 0 {
+		t.Fatalf("refund result missing billing event id: %+v", refund)
+	}
+
+	var replicaRows int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM usage_record_dlq
+		 WHERE tenant_id=$1 AND claim_id=$2 AND event_kind='billing_event_replica'
+		   AND replica_target='refund-replica-test' AND replica_status='pending'
+		   AND source_table='billing_events' AND source_id=$3
+		   AND payload->>'event_type'='reconciliation_appended'
+		   AND payload->>'actual_cost_signed'='-0.00700000'`,
+		seed.tenantID, seed.claimID, refund.BillingEventID,
+	).Scan(&replicaRows); err != nil {
+		t.Fatalf("count refund replica intent: %v", err)
+	}
+	if replicaRows != 1 {
+		t.Fatalf("expected one refund replica intent; got %d", replicaRows)
+	}
+}
+
 type settlerSeed struct {
 	tenantID          int64
 	apiKeyID          int64

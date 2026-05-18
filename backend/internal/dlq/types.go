@@ -14,6 +14,7 @@ const (
 	EventKindUsageRecord         EventKind = "usage_record"
 	EventKindBillingEventReplica EventKind = "billing_event_replica"
 	EventKindAuditEventReplica   EventKind = "audit_event_replica"
+	EventKindAuditMismatchRefund EventKind = "audit_mismatch_refund"
 	EventKindAccountHealth       EventKind = "account_health"
 	EventKindMetrics             EventKind = "metrics"
 )
@@ -95,7 +96,7 @@ type Record struct {
 
 func LaneForKind(kind EventKind) Lane {
 	switch kind {
-	case EventKindBillingEventReplica, EventKindAuditEventReplica, EventKindUsageRecord:
+	case EventKindBillingEventReplica, EventKindAuditEventReplica, EventKindAuditMismatchRefund, EventKindUsageRecord:
 		return LaneHigh
 	case EventKindAccountHealth:
 		return LaneMed

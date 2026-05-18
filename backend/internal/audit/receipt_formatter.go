@@ -26,6 +26,20 @@ const (
 )
 const receiptRequestIDMaxLength = 256
 
+const (
+	ReceiptValidationStateValid              = "valid"
+	ReceiptValidationStateProvisional        = "provisional"
+	ReceiptValidationStateMismatchPending    = "mismatch_pending"
+	ReceiptValidationStateMismatchRefunded   = "mismatch_refunded"
+	ReceiptValidationStateNotBillable        = "not_billable"
+	ReceiptValidationStateReceiptUnavailable = "receipt_unavailable"
+
+	ReceiptVerdictMatch                 = "match"
+	ReceiptVerdictSubstitutionRefund    = "substitution_refund"
+	ReceiptVerdictMismatchRefundPending = "mismatch_refund_pending"
+	ReceiptVerdictUnknown               = "unknown"
+)
+
 var (
 	ErrReceiptFormatterNil       = errors.New("audit: receipt formatter is nil")
 	ErrReceiptRequestIDRequired  = errors.New("audit: request_id required")
@@ -42,12 +56,17 @@ var (
 type CostReceipt struct {
 	RequestID           string
 	TenantID            int64
+	ClaimID             int64
+	ReceiptSequence     int32
 	Model               string
 	InputTokens         int64
 	OutputTokens        int64
 	CachedTokens        int64
 	CostUSDMicros       int64
 	RateTableSnapshotID int64
+	ValidationState     string
+	Verdict             string
+	AdjustmentRefs      []string
 	SignerFingerprint   []byte
 	SignedHash          []byte
 	CreatedAt           time.Time
@@ -56,6 +75,7 @@ type CostReceipt struct {
 // ReceiptInputs 是从 billing/usage/audit JOIN 派生出的最小输入集。
 type ReceiptInputs struct {
 	TenantID            int64
+	ClaimID             int64
 	Model               string
 	InputTokens         int64
 	OutputTokens        int64
@@ -83,6 +103,7 @@ type ReceiptCanonicalPayloadV1 struct {
 type ReceiptCanonicalPayloadV2 struct {
 	SchemaVersion       string   `json:"schema_version"`
 	RequestID           string   `json:"request_id"`
+	ReceiptSequence     int32    `json:"receipt_sequence"`
 	TenantScopeRef      string   `json:"tenant_scope_ref"`
 	Model               string   `json:"model"`
 	InputTokens         int64    `json:"input_tokens"`
@@ -252,12 +273,15 @@ func (rf *ReceiptFormatter) DeriveReceipt(ctx context.Context, requestID string)
 	return &CostReceipt{
 		RequestID:           requestID,
 		TenantID:            entry.TenantID,
+		ClaimID:             inputs.ClaimID,
 		Model:               model,
 		InputTokens:         inputs.InputTokens,
 		OutputTokens:        inputs.OutputTokens,
 		CachedTokens:        inputs.CachedTokens,
 		CostUSDMicros:       inputs.CostUSDMicros,
 		RateTableSnapshotID: inputs.RateTableSnapshotID,
+		ValidationState:     receiptValidationStateFromLedger(entry),
+		Verdict:             receiptVerdictFromLedger(entry),
 		CreatedAt:           createdAt.UTC(),
 	}, nil
 }
@@ -277,6 +301,9 @@ func (rf *ReceiptFormatter) SignReceipt(ctx context.Context, receipt *CostReceip
 	if out.CreatedAt.IsZero() {
 		out.CreatedAt = rf.now().UTC()
 	}
+	out.ValidationState = NormalizeReceiptValidationState(out.ValidationState)
+	out.Verdict = NormalizeReceiptVerdict(out.Verdict)
+	out.AdjustmentRefs = normalizedAdjustmentRefs(out.AdjustmentRefs)
 	if err := validateReceiptForSigning(out); err != nil {
 		return nil, err
 	}
@@ -304,6 +331,7 @@ func canonicalReceiptHashWithRedactor(ctx context.Context, redactor privacy.Reda
 	payload := ReceiptCanonicalPayload{
 		SchemaVersion:       ReceiptSchemaVersion,
 		RequestID:           receipt.RequestID,
+		ReceiptSequence:     receipt.ReceiptSequence,
 		TenantScopeRef:      auditledger.TenantScopeRef(receipt.TenantID),
 		Model:               receipt.Model,
 		InputTokens:         receipt.InputTokens,
@@ -312,9 +340,9 @@ func canonicalReceiptHashWithRedactor(ctx context.Context, redactor privacy.Reda
 		CostTotalMicroUSD:   receipt.CostUSDMicros,
 		RateTableSnapshotID: receipt.RateTableSnapshotID,
 		CreatedAt:           receipt.CreatedAt.UTC().Format(time.RFC3339Nano),
-		ValidationState:     "valid",
-		Verdict:             "match",
-		AdjustmentRefs:      []string{},
+		ValidationState:     NormalizeReceiptValidationState(receipt.ValidationState),
+		Verdict:             NormalizeReceiptVerdict(receipt.Verdict),
+		AdjustmentRefs:      normalizedAdjustmentRefs(receipt.AdjustmentRefs),
 	}
 	return CanonicalReceiptHashWithRedactor(ctx, redactor, payload)
 }
@@ -391,6 +419,7 @@ func (s *SQLReceiptSource) LookupReceiptInputs(ctx context.Context, requestID st
 		inputs         ReceiptInputs
 		costUSD        string
 		snapshot       sql.NullString
+		claimID        int64
 		usageRecordID  sql.NullInt64
 		createdAt      time.Time
 		modelNullable  sql.NullString
@@ -401,6 +430,7 @@ func (s *SQLReceiptSource) LookupReceiptInputs(ctx context.Context, requestID st
 	row := query.QueryRowContext(ctx, receiptInputsSQL, requestID, tenantID)
 	if err := row.Scan(
 		&inputs.TenantID,
+		&claimID,
 		&modelNullable,
 		&inputTokens,
 		&outputTokens,
@@ -422,6 +452,7 @@ func (s *SQLReceiptSource) LookupReceiptInputs(ctx context.Context, requestID st
 	if err != nil {
 		return ReceiptInputs{}, err
 	}
+	inputs.ClaimID = claimID
 	inputs.Model = modelNullable.String
 	inputs.InputTokens = inputTokens.Int64
 	inputs.OutputTokens = outputTokens.Int64
@@ -438,6 +469,7 @@ func (s *SQLReceiptSource) LookupReceiptInputs(ctx context.Context, requestID st
 const receiptInputsSQL = `
 SELECT
     be.tenant_id,
+    blc.id::bigint AS claim_id,
     COALESCE(NULLIF(ur.upstream_model, ''), ur.requested_model, blc.requested_model) AS model,
     ur.tokens_input::bigint,
     ur.tokens_output::bigint,
@@ -466,6 +498,8 @@ func validateReceiptInputs(inputs ReceiptInputs) error {
 	switch {
 	case inputs.TenantID <= 0:
 		return fmt.Errorf("%w: tenant_id must be positive", ErrReceiptInvalidDerivedData)
+	case inputs.ClaimID < 0:
+		return fmt.Errorf("%w: claim_id must be non-negative", ErrReceiptInvalidDerivedData)
 	case inputs.InputTokens < 0:
 		return fmt.Errorf("%w: input_tokens must be non-negative", ErrReceiptInvalidDerivedData)
 	case inputs.OutputTokens < 0:
@@ -486,6 +520,9 @@ func validateReceiptForSigning(receipt *CostReceipt) error {
 	}
 	if err := validateReceiptRequestID(receipt.RequestID); err != nil {
 		return err
+	}
+	if receipt.ReceiptSequence < 0 {
+		return fmt.Errorf("%w: receipt_sequence must be non-negative", ErrReceiptInvalidDerivedData)
 	}
 	return validateReceiptInputs(ReceiptInputs{
 		TenantID:            receipt.TenantID,
@@ -535,6 +572,9 @@ func validateReceiptCanonicalPayloadV2(payload *ReceiptCanonicalPayloadV2) error
 	}
 	if err := validateReceiptRequestID(payload.RequestID); err != nil {
 		return err
+	}
+	if payload.ReceiptSequence < 0 {
+		return fmt.Errorf("%w: receipt_sequence must be non-negative", ErrReceiptInvalidDerivedData)
 	}
 	if strings.TrimSpace(payload.TenantScopeRef) == "" {
 		return fmt.Errorf("%w: tenant_scope_ref missing", ErrReceiptInvalidDerivedData)
@@ -586,6 +626,36 @@ func normalizedAdjustmentRefs(refs []string) []string {
 	return out
 }
 
+func NormalizeReceiptValidationState(state string) string {
+	switch strings.TrimSpace(state) {
+	case ReceiptValidationStateProvisional:
+		return ReceiptValidationStateProvisional
+	case ReceiptValidationStateMismatchPending:
+		return ReceiptValidationStateMismatchPending
+	case ReceiptValidationStateMismatchRefunded:
+		return ReceiptValidationStateMismatchRefunded
+	case ReceiptValidationStateNotBillable:
+		return ReceiptValidationStateNotBillable
+	case ReceiptValidationStateReceiptUnavailable:
+		return ReceiptValidationStateReceiptUnavailable
+	default:
+		return ReceiptValidationStateValid
+	}
+}
+
+func NormalizeReceiptVerdict(verdict string) string {
+	switch strings.TrimSpace(verdict) {
+	case ReceiptVerdictSubstitutionRefund:
+		return ReceiptVerdictSubstitutionRefund
+	case ReceiptVerdictMismatchRefundPending:
+		return ReceiptVerdictMismatchRefundPending
+	case ReceiptVerdictUnknown:
+		return ReceiptVerdictUnknown
+	default:
+		return ReceiptVerdictMatch
+	}
+}
+
 func validateReceiptRequestID(requestID string) error {
 	if strings.TrimSpace(requestID) == "" {
 		return ErrReceiptRequestIDRequired
@@ -601,9 +671,40 @@ func cloneReceipt(in *CostReceipt) *CostReceipt {
 		return nil
 	}
 	out := *in
+	out.AdjustmentRefs = normalizedAdjustmentRefs(in.AdjustmentRefs)
 	out.SignerFingerprint = append([]byte(nil), in.SignerFingerprint...)
 	out.SignedHash = append([]byte(nil), in.SignedHash...)
 	return &out
+}
+
+func receiptValidationStateFromLedger(entry auditledger.LedgerEntry) string {
+	if entry.ModelChain == nil {
+		return ReceiptValidationStateValid
+	}
+	switch strings.TrimSpace(entry.ModelChain.Verdict) {
+	case "mismatch":
+		return ReceiptValidationStateMismatchPending
+	case "unknown":
+		return ReceiptValidationStateProvisional
+	default:
+		return ReceiptValidationStateValid
+	}
+}
+
+func receiptVerdictFromLedger(entry auditledger.LedgerEntry) string {
+	if entry.ModelChain == nil {
+		return ReceiptVerdictMatch
+	}
+	switch strings.TrimSpace(entry.ModelChain.Verdict) {
+	case "mismatch":
+		return ReceiptVerdictMismatchRefundPending
+	case "allowed_alias":
+		return ReceiptVerdictSubstitutionRefund
+	case "unknown":
+		return ReceiptVerdictUnknown
+	default:
+		return ReceiptVerdictMatch
+	}
 }
 
 func modelFromLedgerEntry(entry auditledger.LedgerEntry) string {

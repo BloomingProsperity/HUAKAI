@@ -94,6 +94,10 @@ func (s *smokeSettler) Abort(_ context.Context, _, _ int64, _, _ string) error {
 	return nil
 }
 
+func (s *smokeSettler) Refund(context.Context, billing.RefundRequest) (*billing.RefundResult, error) {
+	return &billing.RefundResult{}, nil
+}
+
 // ---------------------------------------------------------------------------
 // redirectRoundTripper — 把出站请求的 Host 重写为 mockServer 的 Host，
 // 其余全部透传给 http.DefaultTransport。

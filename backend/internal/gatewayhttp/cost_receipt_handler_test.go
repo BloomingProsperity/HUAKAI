@@ -89,6 +89,45 @@ func TestAT_AUDIT_001_013_DetachedVerifyPass(t *testing.T) {
 	}
 }
 
+func TestAT_AUDIT_001_032_RefundedReceiptVerifyPass(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	receipt := signedGatewayReceipt(t, signer, 7, "req-refunded-verify")
+	receipt.ReceiptSequence = 1
+	receipt.ValidationState = audit.ReceiptValidationStateMismatchRefunded
+	receipt.Verdict = audit.ReceiptVerdictMismatchRefundPending
+	receipt.AdjustmentRefs = []string{"billing_event:123", "audit_ledger:ldg_t7_2"}
+	signGatewayReceipt(t, signer, receipt)
+	router := receiptRouter(CostReceiptHandlerDeps{
+		Receipts: newReceiptStoreStub(receipt),
+		Signer:   signer,
+		Now:      fixedReceiptNow,
+	})
+
+	getRec := doReceiptRequest(t, router, http.MethodGet, "/v1/receipts/req-refunded-verify", nil, sessionauth.SessionIdentity{TenantID: 7, UserID: 42})
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get status=%d body=%s", getRec.Code, getRec.Body.String())
+	}
+	var payload UserCostReceipt
+	if err := json.Unmarshal(getRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode receipt: %v", err)
+	}
+	if payload.ReceiptSequence != 1 {
+		t.Fatalf("receipt_sequence=%d want 1 payload=%+v", payload.ReceiptSequence, payload)
+	}
+
+	verifyRec := doReceiptRequest(t, router, http.MethodPost, "/v1/receipts/req-refunded-verify/verify", payload, sessionauth.SessionIdentity{})
+	if verifyRec.Code != http.StatusOK {
+		t.Fatalf("verify status=%d body=%s", verifyRec.Code, verifyRec.Body.String())
+	}
+	var got receiptVerifyResponse
+	if err := json.Unmarshal(verifyRec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode verify: %v", err)
+	}
+	if !got.Valid || got.KeyStatus != "active" || got.ReceiptSequence != 1 {
+		t.Fatalf("refunded receipt verify mismatch: %+v", got)
+	}
+}
+
 func TestAT_AUDIT_001_014_DetachedVerifyTamperFails(t *testing.T) {
 	signer := mustReceiptSigner(t)
 	payload := mustUserReceipt(t, signedGatewayReceipt(t, signer, 7, "req-tamper"))
@@ -253,6 +292,62 @@ func TestAT_AUDIT_001_020_VerifyV1Legacy(t *testing.T) {
 	}
 }
 
+func TestAT_AUDIT_001_024_VerifyMismatchEnqueuesRefund(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	submitted := signedGatewayReceipt(t, signer, 7, "req-mismatch-refund")
+	payload := mustUserReceipt(t, submitted)
+	derived := *submitted
+	derived.ClaimID = 909
+	derived.CostUSDMicros = submitted.CostUSDMicros + 50
+	queue := &mismatchRefundQueueStub{}
+
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{
+		Signer:          signer,
+		Now:             fixedReceiptNow,
+		DerivedReceipts: &derivedReceiptStub{receipt: &derived},
+		MismatchRefunds: queue,
+	}), http.MethodPost, "/v1/receipts/req-mismatch-refund/verify", payload, sessionauth.SessionIdentity{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got receiptVerifyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Valid || got.Verdict != audit.ReceiptValidationStateMismatchPending || got.DeltaMicroUSD != 50 {
+		t.Fatalf("verify mismatch response=%+v", got)
+	}
+	if queue.calls != 1 || queue.receipt == nil || queue.receipt.ClaimID != 909 {
+		t.Fatalf("refund enqueue calls=%d receipt=%+v", queue.calls, queue.receipt)
+	}
+}
+
+func TestAT_AUDIT_001_029_VerifyDerivationErrorReturnsUnknown(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	payload := mustUserReceipt(t, signedGatewayReceipt(t, signer, 7, "req-derive-unavailable"))
+	queue := &mismatchRefundQueueStub{}
+
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{
+		Signer:          signer,
+		Now:             fixedReceiptNow,
+		DerivedReceipts: &derivedReceiptStub{err: errors.New("temporary derivation outage")},
+		MismatchRefunds: queue,
+	}), http.MethodPost, "/v1/receipts/req-derive-unavailable/verify", payload, sessionauth.SessionIdentity{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got receiptVerifyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.Valid || got.KeyStatus != "active" || got.Verdict != audit.ReceiptVerdictUnknown {
+		t.Fatalf("verify derivation degrade response=%+v", got)
+	}
+	if queue.calls != 0 {
+		t.Fatalf("derivation failure must not enqueue mismatch refund; calls=%d", queue.calls)
+	}
+}
+
 func TestAT_AUDIT_001_021_RequestIDWithSlash(t *testing.T) {
 	signer := mustReceiptSigner(t)
 	receipt := signedGatewayReceipt(t, signer, 7, "host/random-000001")
@@ -394,27 +489,34 @@ func signedGatewayReceipt(t *testing.T, signer *sign.Signer, tenantID int64, req
 		SignerFingerprint:   []byte(signer.Fingerprint()),
 		CreatedAt:           createdAt,
 	}
+	signGatewayReceipt(t, signer, receipt)
+	return receipt
+}
+
+func signGatewayReceipt(t *testing.T, signer *sign.Signer, receipt *audit.CostReceipt) {
+	t.Helper()
 	payload := audit.ReceiptCanonicalPayload{
 		SchemaVersion:       audit.ReceiptSchemaVersion,
-		RequestID:           requestID,
-		TenantScopeRef:      auditledger.TenantScopeRef(tenantID),
+		RequestID:           receipt.RequestID,
+		ReceiptSequence:     receipt.ReceiptSequence,
+		TenantScopeRef:      auditledger.TenantScopeRef(receipt.TenantID),
 		Model:               receipt.Model,
 		InputTokens:         receipt.InputTokens,
 		OutputTokens:        receipt.OutputTokens,
 		CachedTokens:        receipt.CachedTokens,
 		CostTotalMicroUSD:   receipt.CostUSDMicros,
 		RateTableSnapshotID: receipt.RateTableSnapshotID,
-		CreatedAt:           createdAt.Format(time.RFC3339Nano),
-		ValidationState:     "valid",
-		Verdict:             "match",
-		AdjustmentRefs:      []string{},
+		CreatedAt:           receipt.CreatedAt.UTC().Format(time.RFC3339Nano),
+		ValidationState:     audit.NormalizeReceiptValidationState(receipt.ValidationState),
+		Verdict:             audit.NormalizeReceiptVerdict(receipt.Verdict),
+		AdjustmentRefs:      canonicalAdjustmentRefs(receipt.AdjustmentRefs),
 	}
 	canonical, err := audit.CanonicalReceiptHashForPayload(context.Background(), payload)
 	if err != nil {
 		t.Fatalf("canonical: %v", err)
 	}
+	receipt.SignerFingerprint = []byte(signer.Fingerprint())
 	receipt.SignedHash = signer.Sign(canonical)
-	return receipt
 }
 
 func mustUserReceipt(t *testing.T, receipt *audit.CostReceipt) UserCostReceipt {
@@ -533,6 +635,31 @@ func (s *rateTableSourceStub) ListRateTableSnapshots(context.Context) ([]billing
 		return nil, s.err
 	}
 	return s.snapshots, nil
+}
+
+type derivedReceiptStub struct {
+	receipt *audit.CostReceipt
+	err     error
+}
+
+func (s *derivedReceiptStub) DeriveReceipt(context.Context, string) (*audit.CostReceipt, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.receipt, nil
+}
+
+type mismatchRefundQueueStub struct {
+	calls   int
+	receipt *audit.CostReceipt
+	verdict audit.MismatchVerdict
+}
+
+func (s *mismatchRefundQueueStub) EnqueueMismatchRefund(_ context.Context, receipt *audit.CostReceipt, verdict audit.MismatchVerdict) (int64, error) {
+	s.calls++
+	s.receipt = receipt
+	s.verdict = verdict
+	return 808, nil
 }
 
 type flowReceiptSource struct {

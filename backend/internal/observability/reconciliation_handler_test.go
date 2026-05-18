@@ -29,6 +29,10 @@ func (s *fakeSettler) Abort(context.Context, int64, int64, string, string) error
 	return nil
 }
 
+func (s *fakeSettler) Refund(context.Context, billing.RefundRequest) (*billing.RefundResult, error) {
+	return &billing.RefundResult{}, nil
+}
+
 func TestBillingPersisterRecordsAsyncReconciliation(t *testing.T) {
 	reconciler := NewDualRunReconciler(DefaultDualRunWindow)
 	settler := &fakeSettler{}
