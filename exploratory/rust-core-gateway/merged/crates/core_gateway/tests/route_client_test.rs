@@ -67,6 +67,7 @@ fn test_config(
             "HUAKAI_CONTROL_PLANE_ENDPOINT".to_owned(),
             control_plane_endpoint,
         ),
+        ("HUAKAI_TRANSPORT_BASELINE".to_owned(), "http".to_owned()),
         ("HUAKAI_LOG_LEVEL".to_owned(), "debug".to_owned()),
         ("HUAKAI_JSON_LOGS".to_owned(), "true".to_owned()),
         ("HUAKAI_WORKER_THREADS".to_owned(), "2".to_owned()),
@@ -233,6 +234,7 @@ async fn listener_uses_route_plan_endpoint_to_forward_messages() {
     let payload = Bytes::from_static(br#"{"model":"claude-mock","messages":[]}"#);
 
     let response = build_router(config)
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -276,6 +278,7 @@ async fn listener_fails_closed_when_control_plane_is_down() {
     let payload = Bytes::from_static(br#"{"fallback":true}"#);
 
     let response = build_router(config)
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -311,6 +314,7 @@ async fn listener_fail_closed_does_not_echo_sensitive_body() {
     );
 
     let response = build_router(config)
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -383,6 +387,7 @@ async fn route_plan_body_limit_prevents_upstream_call() {
     let config = test_config(control_plane.endpoint(), 4 * 1024 * 1024, 150, 0, 0);
 
     let response = build_router(config)
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")

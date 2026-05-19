@@ -15,6 +15,7 @@ fn env_pairs() -> Vec<(String, String)> {
     [
         ("HUAKAI_LISTEN_ADDR", "127.0.0.1:0"),
         ("HUAKAI_CONTROL_PLANE_ENDPOINT", "http://127.0.0.1:48080"),
+        ("HUAKAI_TRANSPORT_BASELINE", "http"),
         ("HUAKAI_LOG_LEVEL", "debug"),
         ("HUAKAI_JSON_LOGS", "true"),
         ("HUAKAI_WORKER_THREADS", "2"),
@@ -67,6 +68,7 @@ fn config_with_otlp_endpoint_accepted() {
 async fn health_endpoint_returns_200() {
     let config = StartupConfig::from_env_iter(env_pairs()).expect("config 解析应成功");
     let response = build_router(config)
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .uri("/healthz")
@@ -90,6 +92,7 @@ async fn health_endpoint_returns_200() {
 async fn health_endpoint_content_type_is_json() {
     let config = StartupConfig::from_env_iter(env_pairs()).expect("config 解析应成功");
     let response = build_router(config)
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .uri("/healthz")
@@ -114,6 +117,7 @@ async fn health_endpoint_content_type_is_json() {
 async fn unknown_path_returns_404() {
     let config = StartupConfig::from_env_iter(env_pairs()).expect("config 解析应成功");
     let response = build_router(config)
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .uri("/not_found")

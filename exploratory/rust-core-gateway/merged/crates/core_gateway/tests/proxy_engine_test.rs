@@ -44,6 +44,7 @@ fn test_config(control_plane_endpoint: String, route_cache_ttl_ms: u64) -> Start
             "HUAKAI_CONTROL_PLANE_ENDPOINT".to_owned(),
             control_plane_endpoint,
         ),
+        ("HUAKAI_TRANSPORT_BASELINE".to_owned(), "http".to_owned()),
         ("HUAKAI_LOG_LEVEL".to_owned(), "debug".to_owned()),
         ("HUAKAI_JSON_LOGS".to_owned(), "true".to_owned()),
         ("HUAKAI_WORKER_THREADS".to_owned(), "2".to_owned()),
@@ -102,7 +103,7 @@ async fn spawn_listener(config: StartupConfig) -> (SocketAddr, JoinHandle<()>) {
         .await
         .expect("listener bind 应成功");
     let addr = listener.local_addr().expect("listener addr 应存在");
-    let app = build_router(config);
+    let app = build_router(config).expect("build_router");
     let task = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
@@ -199,6 +200,7 @@ async fn anthropic_non_streaming_request_is_forwarded_with_plan_bearer() {
     let payload = Bytes::from_static(br#"{"model":"claude-test","messages":[]}"#);
 
     let response = build_router(test_config(control_plane.endpoint(), 0))
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -240,6 +242,7 @@ async fn route_plan_rejects_upstream_auth_material_reusing_acquisition_token() {
     let control_plane = MockControlPlane::spawn(plan).await;
 
     let response = build_router(test_config(control_plane.endpoint(), 0))
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -271,6 +274,7 @@ async fn route_plan_rejects_trimmed_upstream_auth_material_reusing_acquisition_t
     let control_plane = MockControlPlane::spawn(plan).await;
 
     let response = build_router(test_config(control_plane.endpoint(), 0))
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -304,6 +308,7 @@ async fn route_plan_allows_non_utf8_acquisition_token() {
     let payload = Bytes::from_static(br#"{"model":"claude-test","messages":[]}"#);
 
     let response = build_router(test_config(control_plane.endpoint(), 0))
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -337,6 +342,7 @@ async fn route_plan_rejects_upstream_auth_material_with_embedded_control_charact
     let control_plane = MockControlPlane::spawn(plan).await;
 
     let response = build_router(test_config(control_plane.endpoint(), 0))
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -575,6 +581,7 @@ async fn upstream_5xx_status_and_body_are_passed_through() {
     .await;
 
     let response = build_router(test_config(control_plane.endpoint(), 0))
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -609,6 +616,7 @@ async fn upstream_response_timeout_returns_504() {
     let started = tokio::time::Instant::now();
 
     let response = build_router(test_config(control_plane.endpoint(), 0))
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -683,6 +691,7 @@ async fn bearer_auth_is_applied_for_owner_approved_vendor_matrix() {
             MockControlPlane::spawn(vendor_plan(upstream.endpoint(), vendor, &token, 30_000)).await;
 
         let response = build_router(test_config(control_plane.endpoint(), 0))
+            .expect("build_router")
             .oneshot(
                 Request::builder()
                     .method("POST")

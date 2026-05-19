@@ -56,6 +56,7 @@ fn test_config(control_plane_endpoint: String) -> StartupConfig {
             "HUAKAI_CONTROL_PLANE_ENDPOINT".to_owned(),
             control_plane_endpoint,
         ),
+        ("HUAKAI_TRANSPORT_BASELINE".to_owned(), "http".to_owned()),
         ("HUAKAI_LOG_LEVEL".to_owned(), "debug".to_owned()),
         ("HUAKAI_JSON_LOGS".to_owned(), "true".to_owned()),
         ("HUAKAI_WORKER_THREADS".to_owned(), "2".to_owned()),
@@ -101,7 +102,7 @@ async fn spawn_listener(config: StartupConfig) -> (SocketAddr, JoinHandle<()>) {
         .await
         .expect("listener bind 应成功");
     let addr = listener.local_addr().expect("listener addr 应存在");
-    let app = build_router(config);
+    let app = build_router(config).expect("build_router");
     let task = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
@@ -185,6 +186,7 @@ async fn listener_success_path_reports_one_success_attempt() {
     let payload = Bytes::from_static(br#"{"model":"claude-test","messages":[]}"#);
 
     let response = build_router(test_config(control_plane.endpoint()))
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -225,6 +227,7 @@ async fn listener_control_plane_unavailable_reports_503_control_plane_error() {
     .await;
 
     let response = build_router(test_config(control_plane.endpoint()))
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -258,6 +261,7 @@ async fn listener_bad_route_plan_report_redacts_untrusted_control_plane_error() 
     let control_plane = MockControlPlane::spawn(plan).await;
 
     let response = build_router(test_config(control_plane.endpoint()))
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -292,6 +296,7 @@ async fn listener_upstream_5xx_reports_upstream_5xx_attempt() {
     .await;
 
     let response = build_router(test_config(control_plane.endpoint()))
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -329,6 +334,7 @@ async fn listener_timeout_reports_timeout_attempt() {
     .await;
 
     let response = build_router(test_config(control_plane.endpoint()))
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -370,6 +376,7 @@ async fn openai_done_stream_reports_success_with_usage() {
     .await;
 
     let response = build_router(test_config(control_plane.endpoint()))
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -410,6 +417,7 @@ async fn stream_protocol_error_reports_protocol_error_attempt() {
     .await;
 
     let response = build_router(test_config(control_plane.endpoint()))
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")

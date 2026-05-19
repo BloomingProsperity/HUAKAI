@@ -44,6 +44,7 @@ const UDS_ENDPOINT_URI: &str = "http://huakai-control-plane.local";
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TransportBaseline {
     Uds(PathBuf),
+    Http,
     Mtls {
         cert: PathBuf,
         key: PathBuf,
@@ -60,6 +61,7 @@ impl Default for TransportBaseline {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransportBaselineKind {
     Uds,
+    Http,
     Mtls,
 }
 
@@ -67,9 +69,10 @@ impl TransportBaselineKind {
     pub fn parse(value: &str) -> Result<Self, GatewayError> {
         match value {
             "uds" => Ok(Self::Uds),
+            "http" => Ok(Self::Http),
             "mtls" => Ok(Self::Mtls),
             other => Err(GatewayError::Config(format!(
-                "HUAKAI_TRANSPORT_BASELINE must be one of uds, mtls; got {other}"
+                "HUAKAI_TRANSPORT_BASELINE must be one of uds, http, mtls; got {other}"
             ))),
         }
     }
@@ -79,6 +82,7 @@ impl TransportBaseline {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Uds(_) => "uds",
+            Self::Http => "http",
             Self::Mtls { .. } => "mtls",
         }
     }
@@ -86,6 +90,7 @@ impl TransportBaseline {
     pub fn uds_socket_path(&self) -> Option<&Path> {
         match self {
             Self::Uds(path) => Some(path.as_path()),
+            Self::Http => None,
             Self::Mtls { .. } => None,
         }
     }
@@ -93,6 +98,7 @@ impl TransportBaseline {
     pub fn mtls_paths(&self) -> Option<(&Path, &Path, &Path)> {
         match self {
             Self::Mtls { cert, key, ca } => Some((cert.as_path(), key.as_path(), ca.as_path())),
+            Self::Http => None,
             Self::Uds(_) => None,
         }
     }
@@ -112,6 +118,14 @@ impl RouteClientTransportConfig {
             endpoint: UDS_ENDPOINT_URI
                 .parse()
                 .expect("static UDS endpoint URI must be valid"),
+            domain_name: None,
+        }
+    }
+
+    pub fn http(endpoint: Uri) -> Self {
+        Self {
+            transport_baseline: TransportBaseline::Http,
+            endpoint,
             domain_name: None,
         }
     }
@@ -211,6 +225,7 @@ impl RouteClient {
                     .endpoint
                     .connect_with_connector_lazy(UnixSocketConnector::new(socket_path))
             }
+            TransportBaseline::Http => parts.endpoint.connect_lazy(),
             TransportBaseline::Mtls { .. } => {
                 #[cfg(feature = "tls")]
                 {
@@ -416,6 +431,16 @@ pub fn build_route_endpoint_parts(
                 transport_baseline: config.transport_baseline.clone(),
                 endpoint: configure_endpoint(endpoint, options),
                 uds_socket_path: Some(socket_path.clone()),
+                tls_material: None,
+            })
+        }
+        TransportBaseline::Http => {
+            let endpoint = build_tcp_endpoint(&config.endpoint, options)?;
+
+            Ok(RouteClientEndpointParts {
+                transport_baseline: config.transport_baseline.clone(),
+                endpoint,
+                uds_socket_path: None,
                 tls_material: None,
             })
         }
@@ -755,6 +780,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn http_transport_builds_endpoint_without_local_socket_or_tls() {
+        let endpoint = "http://127.0.0.1:48080"
+            .parse()
+            .expect("HTTP endpoint fixture 应合法");
+        let config = RouteClientTransportConfig::http(endpoint);
+
+        let parts = build_route_endpoint_parts(&config, &RouteClientOptions::default())
+            .expect("HTTP endpoint parts 应可构造");
+
+        assert_eq!(parts.transport_baseline, TransportBaseline::Http);
+        assert_eq!(parts.endpoint.uri().to_string(), "http://127.0.0.1:48080/");
+        assert!(parts.uds_socket_path.is_none());
+        assert!(parts.tls_material.is_none());
+    }
+
     #[cfg(unix)]
     #[test]
     fn uds_security_rejects_missing_socket_path() {
@@ -862,7 +903,7 @@ mod tests {
             TransportBaselineKind::parse("tcp_plaintext").expect_err("非法 baseline 应立即拒绝");
 
         assert!(err.to_string().contains("HUAKAI_TRANSPORT_BASELINE"));
-        assert!(err.to_string().contains("uds, mtls"));
+        assert!(err.to_string().contains("uds, http, mtls"));
     }
 
     // ── circuit breaker 单元测试 (源自 claude-m3 lane) ───────────────────────

@@ -56,10 +56,10 @@ impl std::fmt::Debug for GatewayState {
 }
 
 impl GatewayState {
-    pub fn new(config: StartupConfig) -> Self {
+    pub fn new(config: StartupConfig) -> Result<Self, GatewayError> {
         log_route_plan_cache_disabled(config.route_cache_ttl_ms);
         let http_client: GatewayHttpClient = build_http_client();
-        let route_client = route_client_from_transport_baseline(&config);
+        let route_client = route_client_from_transport_baseline(&config)?;
         let account_planner = AccountPlanner::new(
             route_client.clone(),
             Duration::from_millis(config.route_cache_ttl_ms),
@@ -68,12 +68,12 @@ impl GatewayState {
         let proxy_engine =
             ProxyEngine::new_with_attempt_reporter(http_client, attempt_reporter.clone());
         // Arc 包装只读配置快照, 启动后不再变更
-        Self {
+        Ok(Self {
             config: Arc::new(config),
             account_planner,
             proxy_engine,
             attempt_reporter,
-        }
+        })
     }
 
     /// 返回监听地址
@@ -141,29 +141,28 @@ fn route_client_options(config: &StartupConfig) -> RouteClientOptions {
     }
 }
 
-fn route_client_from_transport_baseline(config: &StartupConfig) -> RouteClient {
-    let transport_config = config
-        .route_transport_config()
-        .expect("route transport baseline 已由 StartupConfig 校验");
+fn route_client_from_transport_baseline(
+    config: &StartupConfig,
+) -> Result<RouteClient, GatewayError> {
+    let transport_config = config.route_transport_config()?;
 
     RouteClient::from_transport_config(&transport_config, route_client_options(config))
-        .expect("route transport baseline 应可构造 control plane client")
 }
 
 /// 构建 axum Router (供集成测试 oneshot 调用)
-pub fn build_router(config: StartupConfig) -> Router {
+pub fn build_router(config: StartupConfig) -> Result<Router, GatewayError> {
     // 触发 Prometheus 注册表初始化 (幂等)
     let _ = metrics::registry();
 
-    let state = GatewayState::new(config);
+    let state = GatewayState::new(config)?;
     let max_body_bytes = state.max_body_bytes();
 
-    Router::new()
+    Ok(Router::new()
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics_handler))
         .merge(listener::build_router())
         .layer(RequestBodyLimitLayer::new(max_body_bytes))
-        .with_state(state)
+        .with_state(state))
 }
 
 /// 异步主运行函数 — 在 Tokio runtime 内执行
@@ -173,10 +172,10 @@ pub async fn run(config: StartupConfig) -> Result<(), GatewayError> {
     let local_addr = listener.local_addr()?;
 
     // 启动心跳 worker (5s 定时向 control plane 发送心跳, 读取 drain_mode)
-    let route_client = route_client_from_transport_baseline(&config);
+    let route_client = route_client_from_transport_baseline(&config)?;
     let _heartbeat_worker = heartbeat::HeartbeatWorker::spawn(route_client);
 
-    let router = build_router(config);
+    let router = build_router(config)?;
 
     info!(
         listen_addr = %local_addr,

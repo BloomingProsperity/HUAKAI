@@ -30,6 +30,7 @@ async fn spawn_server(
     let config = StartupConfig::from_env_iter(vec![
         ("HUAKAI_LISTEN_ADDR".to_owned(), "127.0.0.1:0".to_owned()),
         ("HUAKAI_CONTROL_PLANE_ENDPOINT".to_owned(), mock_cp_endpoint),
+        ("HUAKAI_TRANSPORT_BASELINE".to_owned(), "http".to_owned()),
         (
             "HUAKAI_MOCK_UPSTREAM_ENDPOINT".to_owned(),
             mock_upstream_endpoint,
@@ -44,7 +45,7 @@ async fn spawn_server(
         .await
         .expect("server bind 应成功");
     let addr = listener.local_addr().expect("server addr 应存在");
-    let router = build_router(config);
+    let router = build_router(config).expect("build_router");
 
     let handle = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;

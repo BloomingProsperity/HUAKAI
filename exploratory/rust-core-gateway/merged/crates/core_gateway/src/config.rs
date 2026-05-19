@@ -160,6 +160,9 @@ impl StartupConfig {
     pub fn route_transport_config(&self) -> Result<RouteClientTransportConfig, GatewayError> {
         match &self.transport_baseline {
             TransportBaseline::Uds(path) => Ok(RouteClientTransportConfig::uds(path.clone())),
+            TransportBaseline::Http => Ok(RouteClientTransportConfig::http(
+                self.control_plane_endpoint.clone(),
+            )),
             TransportBaseline::Mtls { cert, key, ca } => Ok(RouteClientTransportConfig::mtls(
                 self.control_plane_endpoint.clone(),
                 self.mtls_domain_name.clone(),
@@ -182,6 +185,15 @@ impl StartupConfig {
         let uds_socket_path = PathBuf::from(raw.uds_socket_path);
         let transport_baseline = match transport_baseline_kind {
             TransportBaselineKind::Uds => TransportBaseline::Uds(uds_socket_path.clone()),
+            TransportBaselineKind::Http => {
+                // R-SEC-002 守门: HTTP baseline 仅允许 loopback 端点
+                // 非 loopback 会走明文 gRPC, RoutePlan 含 per-attempt upstream 凭据 → 拒绝
+                require_loopback_endpoint(
+                    "HUAKAI_TRANSPORT_BASELINE=http",
+                    &control_plane_endpoint,
+                )?;
+                TransportBaseline::Http
+            }
             TransportBaselineKind::Mtls => TransportBaseline::Mtls {
                 cert: required_path(
                     "HUAKAI_MTLS_CERT_CHAIN_PATH",
@@ -283,6 +295,29 @@ fn required_path(name: &str, value: &Option<PathBuf>) -> Result<PathBuf, Gateway
     value
         .clone()
         .ok_or_else(|| GatewayError::Config(format!("{name} is required when mTLS is enabled")))
+}
+
+/// R-SEC-002 守门: HTTP baseline 走明文 gRPC, 仅允许 loopback (本地测试 / 同机调试)。
+/// 非 loopback 拒绝, 强制走 UDS 或 mTLS。
+fn require_loopback_endpoint(context: &str, endpoint: &Uri) -> Result<(), GatewayError> {
+    let host = endpoint.host().ok_or_else(|| {
+        GatewayError::Config(format!(
+            "{context} requires HUAKAI_CONTROL_PLANE_ENDPOINT with a host"
+        ))
+    })?;
+    // 去掉 IPv6 字面量的方括号: "[::1]" → "::1"
+    let stripped = host.trim_start_matches('[').trim_end_matches(']');
+    let is_loopback = match stripped.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip.is_loopback(),
+        Err(_) => matches!(stripped, "localhost"),
+    };
+    if !is_loopback {
+        return Err(GatewayError::Config(format!(
+            "{context} only permits loopback HUAKAI_CONTROL_PLANE_ENDPOINT \
+             (127.0.0.1 / ::1 / localhost); got {host}. R-SEC-002 禁止明文 gRPC 走非本机网络。"
+        )));
+    }
+    Ok(())
 }
 
 fn default_json_logs() -> bool {
@@ -428,6 +463,71 @@ mod tests {
         ));
         let result = StartupConfig::from_env_iter(env);
         assert!(result.is_err(), "非法 transport_baseline 应 fail-fast");
+    }
+
+    #[test]
+    fn config_builds_http_transport_baseline_from_endpoint() {
+        let mut env = valid_env();
+        env.push(("HUAKAI_TRANSPORT_BASELINE".to_owned(), "http".to_owned()));
+
+        let cfg = StartupConfig::from_env_iter(env).expect("HTTP baseline config 应解析成功");
+
+        assert_eq!(cfg.transport_baseline, TransportBaseline::Http);
+        let route_config = cfg
+            .route_transport_config()
+            .expect("HTTP baseline 应能转 route transport config");
+        assert_eq!(route_config.endpoint.to_string(), "http://127.0.0.1:48080/");
+        assert_eq!(route_config.transport_baseline, TransportBaseline::Http);
+    }
+
+    #[test]
+    fn config_rejects_http_baseline_when_endpoint_is_non_loopback() {
+        // R-SEC-002: HTTP baseline 走明文 gRPC, 非 loopback 端点应被拒
+        let mut env = valid_env();
+        env.retain(|(k, _)| k != "HUAKAI_CONTROL_PLANE_ENDPOINT");
+        env.push((
+            "HUAKAI_CONTROL_PLANE_ENDPOINT".to_owned(),
+            "http://control-plane.internal:9090".to_owned(),
+        ));
+        env.push(("HUAKAI_TRANSPORT_BASELINE".to_owned(), "http".to_owned()));
+
+        let result = StartupConfig::from_env_iter(env);
+        assert!(
+            result.is_err(),
+            "HTTP baseline 配非 loopback 端点应 fail-fast (R-SEC-002)"
+        );
+    }
+
+    #[test]
+    fn config_accepts_http_baseline_with_localhost_alias() {
+        // localhost 作为 loopback 别名应被接受
+        let mut env = valid_env();
+        env.retain(|(k, _)| k != "HUAKAI_CONTROL_PLANE_ENDPOINT");
+        env.push((
+            "HUAKAI_CONTROL_PLANE_ENDPOINT".to_owned(),
+            "http://localhost:48080".to_owned(),
+        ));
+        env.push(("HUAKAI_TRANSPORT_BASELINE".to_owned(), "http".to_owned()));
+
+        let cfg =
+            StartupConfig::from_env_iter(env).expect("localhost endpoint 应允许 HTTP baseline");
+        assert_eq!(cfg.transport_baseline, TransportBaseline::Http);
+    }
+
+    #[test]
+    fn config_accepts_http_baseline_with_ipv6_loopback() {
+        // [::1] IPv6 loopback 字面量应被接受
+        let mut env = valid_env();
+        env.retain(|(k, _)| k != "HUAKAI_CONTROL_PLANE_ENDPOINT");
+        env.push((
+            "HUAKAI_CONTROL_PLANE_ENDPOINT".to_owned(),
+            "http://[::1]:48080".to_owned(),
+        ));
+        env.push(("HUAKAI_TRANSPORT_BASELINE".to_owned(), "http".to_owned()));
+
+        let cfg =
+            StartupConfig::from_env_iter(env).expect("::1 endpoint 应允许 HTTP baseline");
+        assert_eq!(cfg.transport_baseline, TransportBaseline::Http);
     }
 
     #[test]
