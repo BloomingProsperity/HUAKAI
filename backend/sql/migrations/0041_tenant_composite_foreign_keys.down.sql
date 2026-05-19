@@ -20,8 +20,6 @@ ALTER TABLE channels
     ADD CONSTRAINT channels_pool_group_id_fkey
     FOREIGN KEY (pool_group_id) REFERENCES pool_groups(id);
 
-ALTER TABLE provider_accounts DROP CONSTRAINT IF EXISTS provider_accounts_tenant_id_id_key;
 ALTER TABLE channels DROP CONSTRAINT IF EXISTS channels_tenant_id_id_key;
-ALTER TABLE pool_groups DROP CONSTRAINT IF EXISTS pool_groups_tenant_id_id_key;
 
 COMMIT;
