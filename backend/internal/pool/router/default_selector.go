@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math/rand"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,6 +21,7 @@ type DefaultSelector struct {
 	slots    SlotManager
 	claims   ClaimGate
 	rand     *rand.Rand
+	randMu   sync.Mutex // 保护 rand: math/rand.Rand 非并发安全, gateway 多 goroutine 同时调 Shuffle 会 race
 }
 
 func NewDefaultSelector(accounts AccountSource, opts ...SelectorOption) *DefaultSelector {
@@ -201,7 +203,11 @@ func (s *DefaultSelector) rankFresh(accounts []*AccountSnapshot, policy *Routing
 	})
 	k := topK(policy, out)
 	if k > 1 {
+		// math/rand.Rand 非并发安全, 多 goroutine 同时 Shuffle 会 race
+		// (Go race detector 会报). 用 randMu 串行化 Shuffle 调用。
+		s.randMu.Lock()
 		s.rand.Shuffle(k, func(i, j int) { out[i], out[j] = out[j], out[i] })
+		s.randMu.Unlock()
 	}
 	return out
 }
