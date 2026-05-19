@@ -2,6 +2,7 @@
 package registrydefault
 
 import (
+	"errors"
 	"sort"
 	"testing"
 
@@ -9,7 +10,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 )
 
-func TestBuild_AllProtocolFamiliesRegistered(t *testing.T) {
+func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
+	t.Setenv(placeholderSessionAdaptersEnv, "")
 	r := Build()
 	want := []string{
 		ProtocolOpenAIChat,
@@ -26,12 +28,6 @@ func TestBuild_AllProtocolFamiliesRegistered(t *testing.T) {
 		ProtocolTogetherChat,
 		ProtocolPerplexityChat,
 		ProtocolFireworksChat,
-		ProtocolCursorSession,
-		ProtocolCopilotSession,
-		ProtocolGeminiAdvancedSession,
-		ProtocolAntigravitySession,
-		ProtocolKiroSession,
-		ProtocolWindsurfSession,
 	}
 	got := r.RegisteredProtocolFamilies()
 	sort.Strings(got)
@@ -47,6 +43,7 @@ func TestBuild_AllProtocolFamiliesRegistered(t *testing.T) {
 }
 
 func TestBuild_AdaptersAreReachable(t *testing.T) {
+	t.Setenv(placeholderSessionAdaptersEnv, "")
 	r := Build()
 	for _, pf := range []string{
 		ProtocolOpenAIChat,
@@ -71,22 +68,66 @@ func TestBuild_AdaptersAreReachable(t *testing.T) {
 }
 
 func TestBuild_PlatformIDsCorrect(t *testing.T) {
+	t.Setenv(placeholderSessionAdaptersEnv, "")
 	r := Build()
 	cases := map[string]string{
-		ProtocolOpenAIChat:            "openai",
-		ProtocolOpenAIResponses:       "openai",
-		ProtocolOpenAICodex:           "openai_codex",
-		ProtocolAnthropicMessages:     "anthropic",
-		ProtocolGeminiMessages:        "gemini",
-		ProtocolOpenRouterChat:        "openrouter",
-		ProtocolBedrockInvoke:         "bedrock",
-		ProtocolGrokChat:              "grok",
-		ProtocolDeepSeekChat:          "deepseek",
-		ProtocolMistralChat:           "mistral",
-		ProtocolGroqCloudChat:         "groqcloud",
-		ProtocolTogetherChat:          "together",
-		ProtocolPerplexityChat:        "perplexity",
-		ProtocolFireworksChat:         "fireworks",
+		ProtocolOpenAIChat:        "openai",
+		ProtocolOpenAIResponses:   "openai",
+		ProtocolOpenAICodex:       "openai_codex",
+		ProtocolAnthropicMessages: "anthropic",
+		ProtocolGeminiMessages:    "gemini",
+		ProtocolOpenRouterChat:    "openrouter",
+		ProtocolBedrockInvoke:     "bedrock",
+		ProtocolGrokChat:          "grok",
+		ProtocolDeepSeekChat:      "deepseek",
+		ProtocolMistralChat:       "mistral",
+		ProtocolGroqCloudChat:     "groqcloud",
+		ProtocolTogetherChat:      "together",
+		ProtocolPerplexityChat:    "perplexity",
+		ProtocolFireworksChat:     "fireworks",
+	}
+	for pf, wantPlatform := range cases {
+		a, err := r.For(pf)
+		if err != nil {
+			t.Fatalf("For(%q) err=%v", pf, err)
+		}
+		if got := a.Platform(); got != wantPlatform {
+			t.Errorf("%q → Platform=%q want %q", pf, got, wantPlatform)
+		}
+	}
+}
+
+func TestBuild_OpenAIResponsesEndpointIsResponsesAPI(t *testing.T) {
+	t.Setenv(placeholderSessionAdaptersEnv, "")
+	r := Build()
+	a, err := r.For(ProtocolOpenAIResponses)
+	if err != nil {
+		t.Fatalf("For(%q) err=%v", ProtocolOpenAIResponses, err)
+	}
+	passthrough, ok := a.(*openai.PassthroughAdapter)
+	if !ok {
+		t.Fatalf("adapter type=%T want *openai.PassthroughAdapter", a)
+	}
+	if passthrough.Endpoint != "https://api.openai.com/v1/responses" {
+		t.Fatalf("Responses endpoint=%q want https://api.openai.com/v1/responses", passthrough.Endpoint)
+	}
+}
+
+func TestBuild_PlaceholderSessionAdaptersDefaultOff(t *testing.T) {
+	t.Setenv(placeholderSessionAdaptersEnv, "")
+	r := Build()
+	for _, pf := range placeholderSessionProtocolFamilies() {
+		_, err := r.For(pf)
+		if !errors.Is(err, provider.ErrAdapterNotRegistered) {
+			t.Errorf("For(%q) err=%v want ErrAdapterNotRegistered", pf, err)
+		}
+	}
+}
+
+func TestBuild_PlaceholderSessionAdaptersOptIn(t *testing.T) {
+	t.Setenv(placeholderSessionAdaptersEnv, "true")
+	r := Build()
+	cases := map[string]string{
 		ProtocolCursorSession:         "cursor",
 		ProtocolCopilotSession:        "copilot",
 		ProtocolGeminiAdvancedSession: "gemini_advanced",
@@ -105,22 +146,8 @@ func TestBuild_PlatformIDsCorrect(t *testing.T) {
 	}
 }
 
-func TestBuild_OpenAIResponsesEndpointIsResponsesAPI(t *testing.T) {
-	r := Build()
-	a, err := r.For(ProtocolOpenAIResponses)
-	if err != nil {
-		t.Fatalf("For(%q) err=%v", ProtocolOpenAIResponses, err)
-	}
-	passthrough, ok := a.(*openai.PassthroughAdapter)
-	if !ok {
-		t.Fatalf("adapter type=%T want *openai.PassthroughAdapter", a)
-	}
-	if passthrough.Endpoint != "https://api.openai.com/v1/responses" {
-		t.Fatalf("Responses endpoint=%q want https://api.openai.com/v1/responses", passthrough.Endpoint)
-	}
-}
-
 func TestBuild_UnregisteredReturnsErrAdapterNotRegistered(t *testing.T) {
+	t.Setenv(placeholderSessionAdaptersEnv, "")
 	r := Build()
 	for _, pf := range []string{
 		"chatgpt_session", // OpenAI 反转旧名（现 openai_codex），未注册
@@ -143,6 +170,7 @@ func TestBuild_UnregisteredReturnsErrAdapterNotRegistered(t *testing.T) {
 // TestBuild_ConsistentWithProviderInterface 确保所有注册的 adapter
 // 都满足 provider.Adapter 接口（编译期已保证；本测试仅作 smoke）。
 func TestBuild_ConsistentWithProviderInterface(t *testing.T) {
+	t.Setenv(placeholderSessionAdaptersEnv, "")
 	r := Build()
 	var _ provider.Adapter
 	for _, pf := range r.RegisteredProtocolFamilies() {
@@ -153,5 +181,16 @@ func TestBuild_ConsistentWithProviderInterface(t *testing.T) {
 		// 调用接口三个方法不应 panic
 		_ = a.Platform()
 		_ = a.AcceptableCredentialTypes()
+	}
+}
+
+func placeholderSessionProtocolFamilies() []string {
+	return []string{
+		ProtocolCursorSession,
+		ProtocolCopilotSession,
+		ProtocolGeminiAdvancedSession,
+		ProtocolAntigravitySession,
+		ProtocolKiroSession,
+		ProtocolWindsurfSession,
 	}
 }
