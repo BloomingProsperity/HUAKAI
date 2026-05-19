@@ -42,7 +42,9 @@ func (ex *chatExecution) serveL2CacheIfAvailable(w http.ResponseWriter) (bool, b
 		Body:     ex.body,
 	})
 	if err != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "cache_key_error", ex.requestID)
+		if ex.reserveRes != nil {
+			_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "cache_key_error", ex.requestID)
+		}
 		writeJSONError(w, http.StatusBadRequest, "cache_key_error", err.Error())
 		return false, false
 	}

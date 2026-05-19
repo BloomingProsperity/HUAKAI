@@ -36,7 +36,7 @@ func newChatExecution(d ChatHandlerDeps, r *http.Request, ident auth.Identity, v
 	}
 }
 
-func (ex *chatExecution) prepareRouteAndAccount(w http.ResponseWriter) bool {
+func (ex *chatExecution) prepareRoute(w http.ResponseWriter) bool {
 	resolved, err := ex.d.Registry.ResolveModel(ex.ctx, ex.req.Model, ex.ident.TenantID)
 	if errors.Is(err, registry.ErrRegistryBackend) {
 		writeJSONError(w, http.StatusServiceUnavailable, "registry_backend_error",
@@ -89,7 +89,17 @@ func (ex *chatExecution) prepareRouteAndAccount(w http.ResponseWriter) bool {
 	if ex.attempt.Reason != "" {
 		ex.routeID = fmt.Sprintf("%s:%s", ex.routeID, ex.attempt.Reason)
 	}
-	if !ex.reserveClaim(w) {
+	ex.upstreamModelID = ex.resolved.ProviderModelID
+	if ex.upstreamModelID == "" {
+		ex.upstreamModelID = ex.req.Model
+	}
+	ex.cacheVendor = pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily)
+	ex.promptHash = cache_routing.ComputePromptHash(ex.body)
+	return true
+}
+
+func (ex *chatExecution) prepareClaimAndAccount(w http.ResponseWriter) bool {
+	if ex.reserveRes == nil && !ex.reserveClaim(w) {
 		return false
 	}
 	return ex.selectPoolAccount(w)
@@ -169,6 +179,14 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter) bool {
 		writeJSONError(w, http.StatusInternalServerError, "pool_select_error", err.Error())
 		return false
 	}
+	if selRes != nil && selRes.WaitPlan != nil {
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "queue_wait", ex.requestID); abortErr != nil {
+			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+		}
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfterSecondsForWaitPlan(selRes.WaitPlan)))
+		writeJSONError(w, http.StatusTooManyRequests, "queue_wait", "pool returned wait plan; retry later")
+		return false
+	}
 	if selRes == nil || selRes.AccountID == 0 {
 		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pool_select_no_account", ex.requestID)
 		writeJSONError(w, http.StatusServiceUnavailable, "no_capacity", "pool returned no account")
@@ -177,12 +195,14 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter) bool {
 	ex.selRes = selRes
 	ex.acquiredAccountID = selRes.AccountID
 	ex.acquisitionToken = selRes.AcquisitionToken
-	ex.upstreamModelID = ex.resolved.ProviderModelID
-	if ex.upstreamModelID == "" {
-		ex.upstreamModelID = ex.req.Model
-	}
-	ex.cacheVendor = pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily)
 	return true
+}
+
+func retryAfterSecondsForWaitPlan(plan *pool.WaitPlan) int {
+	if plan == nil || plan.TimeoutMS <= 0 {
+		return 1
+	}
+	return (plan.TimeoutMS + 999) / 1000
 }
 
 func (ex *chatExecution) resolveCredential(w http.ResponseWriter) bool {

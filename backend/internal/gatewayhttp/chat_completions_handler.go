@@ -140,7 +140,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			return
 		}
 		exec := newChatExecution(d, r, ident, validated, requestStartedAt)
-		if !exec.prepareRouteAndAccount(w) {
+		if !exec.prepareRoute(w) {
 			return
 		}
 		if !exec.req.Stream {
@@ -148,6 +148,9 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			if !proceed || handled {
 				return
 			}
+		}
+		if !exec.prepareClaimAndAccount(w) {
+			return
 		}
 		if !exec.resolveCredential(w) {
 			return
@@ -159,7 +162,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			// buffered 翻译器实现前 fail-fast 拒 (501 Not Implemented), 让客户端
 			// 改 stream:true 或选 OpenAI 协议路径。
 			//
-			// 注意: 这步走到时已经 prepareRouteAndAccount + resolveCredential 完,
+			// 注意: 这步走到时已经 prepareClaimAndAccount + resolveCredential 完,
 			// 即 ClaimGate.Reserve 已记 claim, pool slot 已 acquire。reject 不 abort
 			// 会让 claim 永远停在 reserving + slot 留 acquired, 反复打反复占, 把 pool
 			// 容量打空 (codex review P1 2026-05-19 catch)。所以必须先 Settler.Abort

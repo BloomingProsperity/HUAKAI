@@ -158,6 +158,18 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 	cachedEnv.Accounting.HopChain = gateway.BuildHopChain(forwardReq, "", in.RequestStartedAt, time.Now())
 	appendTrustChainWarning(cachedEnv, "response_cache_l2_hit", "served from HUAKAI L2 response cache")
 	ledgerEntry, err := submitAuditLedgerEntry(ctx, d, cachedEnv, in.Ident.TenantID, in.RequestID)
+	if in.ReserveResult == nil {
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())
+			return true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-HUAKAI-Cache-L2", "hit")
+		WriteHuakaiHeaders(w.Header(), in.RequestedModel, cachedEnv, ledgerEntry)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(in.Entry.Body)
+		return true
+	}
 	if err != nil {
 		_ = d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error", in.RequestID)
 		writeJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())

@@ -2,17 +2,15 @@ package gatewayhttp
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/shopspring/decimal"
-
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
+	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 )
 
 type recordingSettler struct {
@@ -63,18 +61,37 @@ func TestChatCompletionsL2CacheHitReturnsCachedWithoutUpstreamCall(t *testing.T)
 	if first.Body.String() != second.Body.String() {
 		t.Fatalf("cached body mismatch:\nfirst=%s\nsecond=%s", first.Body.String(), second.Body.String())
 	}
-	if len(settler.calls) != 2 {
-		t.Fatalf("settle calls=%d want 2", len(settler.calls))
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1; cache hit should not reserve/settle billing", len(settler.calls))
 	}
-	if !settler.calls[1].ActualCost.Equal(decimal.Zero) {
-		t.Fatalf("cache hit ActualCost=%s want 0", settler.calls[1].ActualCost)
+}
+
+func TestChatCompletionsL2CacheHitSkipsPoolCapacity(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	store := l2cache.NewMemoryStore(1<<20, time.Minute)
+
+	firstDeps := clientAdapterDeps(t)
+	firstDeps.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	firstDeps.ResponseCache = store
+	first := invokeHandlerPath(t, firstDeps, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
 	}
-	var routing map[string]any
-	if err := json.Unmarshal(settler.calls[1].Draft.RoutingReason, &routing); err != nil {
-		t.Fatalf("routing reason parse: %v", err)
+
+	selector := &cacheHitFailingSelector{}
+	secondDeps := clientAdapterDeps(t)
+	secondDeps.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	secondDeps.ResponseCache = store
+	secondDeps.Selector = selector
+	second := invokeHandlerPath(t, secondDeps, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status=%d body=%s; want cache hit despite pool saturation", second.Code, second.Body.String())
 	}
-	if routing["cache_hit"] != true {
-		t.Fatalf("routing reason=%s want cache_hit=true", settler.calls[1].Draft.RoutingReason)
+	if got := second.Header().Get("X-HUAKAI-Cache-L2"); got != "hit" {
+		t.Fatalf("second cache header=%q want hit", got)
+	}
+	if selector.calls != 0 {
+		t.Fatalf("selector calls=%d want 0 on cache hit", selector.calls)
 	}
 }
 
@@ -103,6 +120,15 @@ func TestChatCompletionsL2CacheTenantIsolation(t *testing.T) {
 	if dispatcher.calls != 2 {
 		t.Fatalf("dispatcher calls=%d want 2 for tenant-isolated miss", dispatcher.calls)
 	}
+}
+
+type cacheHitFailingSelector struct {
+	calls int
+}
+
+func (s *cacheHitFailingSelector) Select(context.Context, pool.SelectionRequest) (*pool.SelectionResult, error) {
+	s.calls++
+	return nil, pool.ErrNoSlotAvailable
 }
 
 func TestChatCompletionsL2CacheStreamSkipsLookup(t *testing.T) {
