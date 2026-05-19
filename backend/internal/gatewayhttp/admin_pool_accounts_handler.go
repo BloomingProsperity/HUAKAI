@@ -19,7 +19,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
 const (
@@ -34,14 +34,14 @@ type AdminPoolAccountAuth interface {
 }
 
 type AdminPoolAccountStore interface {
-	InsertProviderAccount(context.Context, db.InsertProviderAccountParams) (int64, error)
-	ListAdminProviderAccounts(context.Context, db.ListAdminProviderAccountsParams) ([]db.AdminProviderAccountRow, error)
-	GetAdminProviderAccount(context.Context, db.GetAdminProviderAccountParams) (db.AdminProviderAccountRow, error)
-	UpdateAdminProviderAccount(context.Context, db.UpdateAdminProviderAccountParams) (db.AdminProviderAccountRow, error)
-	UpdateProviderAccountEnabled(context.Context, db.UpdateProviderAccountEnabledParams) error
-	ClearProviderAccountRateLimit(context.Context, db.ClearProviderAccountRateLimitParams) (db.AdminProviderAccountRow, error)
-	SoftDeleteProviderAccount(context.Context, db.SoftDeleteProviderAccountParams) error
-	InsertAdminAuditEvent(context.Context, db.InsertAdminAuditEventParams) (db.InsertAdminAuditEventRow, error)
+	InsertProviderAccount(context.Context, admindb.InsertProviderAccountParams) (int64, error)
+	ListAdminProviderAccounts(context.Context, admindb.ListAdminProviderAccountsParams) ([]admindb.AdminProviderAccountRow, error)
+	GetAdminProviderAccount(context.Context, admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error)
+	UpdateAdminProviderAccount(context.Context, admindb.UpdateAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error)
+	UpdateProviderAccountEnabled(context.Context, admindb.UpdateProviderAccountEnabledParams) error
+	ClearProviderAccountRateLimit(context.Context, admindb.ClearProviderAccountRateLimitParams) (admindb.AdminProviderAccountRow, error)
+	SoftDeleteProviderAccount(context.Context, admindb.SoftDeleteProviderAccountParams) error
+	InsertAdminAuditEvent(context.Context, admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error)
 }
 
 type AdminPoolAccountCredentialWriter interface {
@@ -185,7 +185,7 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		if useCredentialStore {
 			dbCredentials = []byte(`{}`)
 		}
-		id, err := d.Store.InsertProviderAccount(r.Context(), db.InsertProviderAccountParams{
+		id, err := d.Store.InsertProviderAccount(r.Context(), admindb.InsertProviderAccountParams{
 			TenantID: tenantID, ProviderID: req.ProviderID, ChannelID: req.ChannelID,
 			Name: req.Name, AccountType: req.AccountType, Enabled: req.Enabled,
 			Credentials: dbCredentials, CapConcurrency: req.CapConcurrency, Priority: req.Priority,
@@ -238,7 +238,7 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusServiceUnavailable, "audit_write_failed", err.Error())
 			return
 		}
-		account, err := d.Store.GetAdminProviderAccount(r.Context(), db.GetAdminProviderAccountParams{ID: id, TenantID: tenantID})
+		account, err := d.Store.GetAdminProviderAccount(r.Context(), admindb.GetAdminProviderAccountParams{ID: id, TenantID: tenantID})
 		if err != nil {
 			writeProviderAccountReadError(w, err, "provider_account_get_failed")
 			return
@@ -271,7 +271,7 @@ func newListProviderAccountsHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		rows, err := d.Store.ListAdminProviderAccounts(r.Context(), db.ListAdminProviderAccountsParams{
+		rows, err := d.Store.ListAdminProviderAccounts(r.Context(), admindb.ListAdminProviderAccountsParams{
 			TenantID: tenantID, AfterID: afterID, LimitCount: limit + 1,
 			PoolGroupID: poolGroupID, StateFilter: stateFilter,
 		})
@@ -309,7 +309,7 @@ func newGetProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		account, err := d.Store.GetAdminProviderAccount(r.Context(), db.GetAdminProviderAccountParams{ID: id, TenantID: tenantID})
+		account, err := d.Store.GetAdminProviderAccount(r.Context(), admindb.GetAdminProviderAccountParams{ID: id, TenantID: tenantID})
 		if err != nil {
 			writeProviderAccountReadError(w, err, "provider_account_get_failed")
 			return
@@ -340,7 +340,7 @@ func newUpdateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			return
 		}
 		actorID := fmt.Sprintf("%d", ident.TokenID)
-		arg := db.UpdateAdminProviderAccountParams{
+		arg := admindb.UpdateAdminProviderAccountParams{
 			ID: id, TenantID: tenantID, ActorID: &actorID,
 			Enabled: req.Enabled, Priority: req.Priority, CapConcurrency: req.CapConcurrency,
 			CustomErrorCodesEnabled: req.CustomErrorCodesEnabled,
@@ -399,7 +399,7 @@ func newUpdateProviderAccountEnabledHandler(d AdminPoolAccountDeps) http.Handler
 			return
 		}
 		actorID := fmt.Sprintf("%d", ident.TokenID)
-		if err := d.Store.UpdateProviderAccountEnabled(r.Context(), db.UpdateProviderAccountEnabledParams{
+		if err := d.Store.UpdateProviderAccountEnabled(r.Context(), admindb.UpdateProviderAccountEnabledParams{
 			Enabled: *req.Enabled, ActorID: &actorID, ID: id, TenantID: tenantID,
 		}); err != nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "provider_account_update_failed", err.Error())
@@ -430,7 +430,7 @@ func newClearProviderAccountRateLimitHandler(d AdminPoolAccountDeps) http.Handle
 			return
 		}
 		actorID := fmt.Sprintf("%d", ident.TokenID)
-		if _, err := d.Store.ClearProviderAccountRateLimit(r.Context(), db.ClearProviderAccountRateLimitParams{
+		if _, err := d.Store.ClearProviderAccountRateLimit(r.Context(), admindb.ClearProviderAccountRateLimitParams{
 			ID: id, TenantID: tenantID, ActorID: &actorID,
 		}); err != nil {
 			writeProviderAccountReadError(w, err, "provider_account_clear_rate_limit_failed")
@@ -464,7 +464,7 @@ func newDeleteProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			return
 		}
 		actorID := fmt.Sprintf("%d", ident.TokenID)
-		if err := d.Store.SoftDeleteProviderAccount(r.Context(), db.SoftDeleteProviderAccountParams{
+		if err := d.Store.SoftDeleteProviderAccount(r.Context(), admindb.SoftDeleteProviderAccountParams{
 			ActorID: &actorID, ID: id, TenantID: tenantID,
 		}); err != nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "provider_account_delete_failed", err.Error())
@@ -684,7 +684,7 @@ func parseProviderAccountStateFilter(w http.ResponseWriter, r *http.Request) (st
 	}
 }
 
-func providerAccountDTO(row db.AdminProviderAccountRow) providerAccountResponse {
+func providerAccountDTO(row admindb.AdminProviderAccountRow) providerAccountResponse {
 	return providerAccountResponse{
 		ID: row.ID, TenantID: row.TenantID, ProviderID: row.ProviderID, ChannelID: row.ChannelID,
 		Name: row.Name, AccountType: row.AccountType, Enabled: row.Enabled, ExpiresAt: pgTimePtr(row.ExpiresAt),
@@ -752,7 +752,7 @@ func chineseReason(got, fallback string) *string {
 func writeProviderAccountAudit(ctx context.Context, r *http.Request, store AdminPoolAccountStore, ident admin.AdminIdentity, tenantID int64, action string, targetID int64, reason *string, payload []byte) error {
 	actorID := fmt.Sprintf("%d", ident.TokenID)
 	reqID := middleware.GetReqID(r.Context())
-	_, err := store.InsertAdminAuditEvent(ctx, db.InsertAdminAuditEventParams{
+	_, err := store.InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
 		TenantID: &tenantID, ActorID: actorID, ActorRole: ident.Role,
 		Action: action, TargetType: "provider_account", TargetID: &targetID,
 		RequestID: &reqID, Reason: reason, Payload: payload,

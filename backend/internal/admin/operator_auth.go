@@ -22,7 +22,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
 // AdminIdentity is the resolved operator context produced by AdminResolver.
@@ -37,11 +37,11 @@ type AdminIdentity struct {
 
 // AdminResolver authenticates inbound admin requests against admin_tokens.
 type AdminResolver struct {
-	q *db.Queries
+	q *admindb.Queries
 }
 
 // NewAdminResolver wraps a sqlc.Queries handle.
-func NewAdminResolver(q *db.Queries) *AdminResolver {
+func NewAdminResolver(q *admindb.Queries) *AdminResolver {
 	return &AdminResolver{q: q}
 }
 

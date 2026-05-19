@@ -9,14 +9,14 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
 func TestSchedulerTickTriggersRefresh(t *testing.T) {
 	ticks := make(chan time.Time, 1)
 	called := make(chan int64, 1)
 	ref := &refresherSpy{called: called}
-	s := newTestScheduler([]db.ListAccountsForRefreshRow{testAccount(11)}, &stormSpy{}, ref, WithTickChannel(ticks))
+	s := newTestScheduler([]dbbilling.ListAccountsForRefreshRow{testAccount(11)}, &stormSpy{}, ref, WithTickChannel(ticks))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -61,7 +61,7 @@ func TestSchedulerStormRejectsSkipsRefresh(t *testing.T) {
 	ref := &refresherSpy{}
 	audit := &auditSpy{}
 	ledger := &ledgerSpy{}
-	s := newTestScheduler([]db.ListAccountsForRefreshRow{testAccount(12)}, storm, ref, withAuditWriter(audit), WithAuditLedger(ledger))
+	s := newTestScheduler([]dbbilling.ListAccountsForRefreshRow{testAccount(12)}, storm, ref, withAuditWriter(audit), WithAuditLedger(ledger))
 
 	if err := s.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce: %v", err)
@@ -81,7 +81,7 @@ func TestSchedulerRefreshSuccessWritesAudit(t *testing.T) {
 	storm := &stormSpy{}
 	audit := &auditSpy{}
 	ledger := &ledgerSpy{}
-	s := newTestScheduler([]db.ListAccountsForRefreshRow{testAccount(13)}, storm, &refresherSpy{}, withAuditWriter(audit), WithAuditLedger(ledger))
+	s := newTestScheduler([]dbbilling.ListAccountsForRefreshRow{testAccount(13)}, storm, &refresherSpy{}, withAuditWriter(audit), WithAuditLedger(ledger))
 
 	if err := s.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce: %v", err)
@@ -102,7 +102,7 @@ func TestSchedulerRefreshFailureBackoffAndAudit(t *testing.T) {
 	ref := &refresherSpy{errs: []error{fail, fail, fail}}
 	audit := &auditSpy{}
 	var delays []time.Duration
-	s := newTestScheduler([]db.ListAccountsForRefreshRow{testAccount(14)}, &stormSpy{}, ref,
+	s := newTestScheduler([]dbbilling.ListAccountsForRefreshRow{testAccount(14)}, &stormSpy{}, ref,
 		WithMaxAttempts(3),
 		WithBackoff(func(attempt int) time.Duration { return time.Duration(attempt) * time.Second }),
 		withSleep(func(_ context.Context, d time.Duration) error {
@@ -146,11 +146,11 @@ func TestSchedulerStopGracefully(t *testing.T) {
 	}
 }
 
-func testAccount(id int64) db.ListAccountsForRefreshRow {
-	return db.ListAccountsForRefreshRow{ID: id, TenantID: 7, ProviderID: 99}
+func testAccount(id int64) dbbilling.ListAccountsForRefreshRow {
+	return dbbilling.ListAccountsForRefreshRow{ID: id, TenantID: 7, ProviderID: 99}
 }
 
-func newTestScheduler(rows []db.ListAccountsForRefreshRow, storm *stormSpy, ref *refresherSpy, opts ...Option) *Scheduler {
+func newTestScheduler(rows []dbbilling.ListAccountsForRefreshRow, storm *stormSpy, ref *refresherSpy, opts ...Option) *Scheduler {
 	return newTestSchedulerWith(&listSpy{rows: rows}, storm, ref, opts...)
 }
 
@@ -160,13 +160,13 @@ func newTestSchedulerWith(l *listSpy, storm *stormSpy, ref *refresherSpy, opts .
 }
 
 type listSpy struct {
-	rows   []db.ListAccountsForRefreshRow
+	rows   []dbbilling.ListAccountsForRefreshRow
 	calls  int
 	before time.Time
 	limit  int32
 }
 
-func (l *listSpy) ListAccountsForRefresh(_ context.Context, arg db.ListAccountsForRefreshParams) ([]db.ListAccountsForRefreshRow, error) {
+func (l *listSpy) ListAccountsForRefresh(_ context.Context, arg dbbilling.ListAccountsForRefreshParams) ([]dbbilling.ListAccountsForRefreshRow, error) {
 	l.calls++
 	l.before = arg.RefreshBefore.Time
 	l.limit = arg.LimitCount

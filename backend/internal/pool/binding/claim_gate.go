@@ -14,7 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
 // DBClaimGate writes the (provider_account_id, acquisition_token) pair onto
@@ -23,11 +23,11 @@ import (
 // no longer in 'reserving' state, was already written by a concurrent
 // selector, or the tenant scope rejected the write.
 type DBClaimGate struct {
-	q *db.Queries
+	q *dbbilling.Queries
 }
 
 // NewDBClaimGate constructs the adapter from a sqlc.Queries handle.
-func NewDBClaimGate(q *db.Queries) *DBClaimGate {
+func NewDBClaimGate(q *dbbilling.Queries) *DBClaimGate {
 	return &DBClaimGate{q: q}
 }
 
@@ -36,7 +36,7 @@ func (g *DBClaimGate) WriteAcquisition(ctx context.Context, tenantID, claimID, a
 	if g == nil || g.q == nil {
 		return errors.New("pool: DBClaimGate not configured")
 	}
-	rows, err := g.q.WriteAcquisitionToken(ctx, db.WriteAcquisitionTokenParams{
+	rows, err := g.q.WriteAcquisitionToken(ctx, dbbilling.WriteAcquisitionTokenParams{
 		ID:                claimID,
 		ProviderAccountID: &accountID,
 		AcquisitionToken:  token,

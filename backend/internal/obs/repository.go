@@ -19,7 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
 // Reader is the public read API. All methods are tenant-scoped —
@@ -121,19 +121,19 @@ type BillingEventRow struct {
 // PgxReader is a Reader backed by sqlc.Queries. Construct via
 // NewPgxReader.
 type PgxReader struct {
-	q *db.Queries
+	q *dbbilling.Queries
 }
 
-// NewPgxReader wraps a sqlc.Queries handle. Pass a *db.Queries
+// NewPgxReader wraps a sqlc.Queries handle. Pass a *dbbilling.Queries
 // derived from a pgxpool.Pool; the caller manages pool lifecycle.
-func NewPgxReader(q *db.Queries) *PgxReader {
+func NewPgxReader(q *dbbilling.Queries) *PgxReader {
 	return &PgxReader{q: q}
 }
 
 // ListUsage implements Reader.
 func (r *PgxReader) ListUsage(ctx context.Context, tenantID int64, page Page) ([]UsageRow, error) {
 	limit, offset := normalizePage(page)
-	rows, err := r.q.ListUsageByTenant(ctx, db.ListUsageByTenantParams{
+	rows, err := r.q.ListUsageByTenant(ctx, dbbilling.ListUsageByTenantParams{
 		TenantID:   tenantID,
 		PageLimit:  limit,
 		PageOffset: offset,
@@ -184,7 +184,7 @@ func (r *PgxReader) ListUsage(ctx context.Context, tenantID int64, page Page) ([
 
 // GetClaim implements Reader.
 func (r *PgxReader) GetClaim(ctx context.Context, tenantID, claimID int64) (ClaimRow, error) {
-	row, err := r.q.GetClaimByID(ctx, db.GetClaimByIDParams{ID: claimID, TenantID: tenantID})
+	row, err := r.q.GetClaimByID(ctx, dbbilling.GetClaimByIDParams{ID: claimID, TenantID: tenantID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ClaimRow{}, ErrNotFound
 	}
@@ -232,7 +232,7 @@ func (r *PgxReader) GetClaim(ctx context.Context, tenantID, claimID int64) (Clai
 // ListBillingEvents implements Reader. eventTypeFilter="" means no filter.
 func (r *PgxReader) ListBillingEvents(ctx context.Context, tenantID int64, eventTypeFilter string, page Page) ([]BillingEventRow, error) {
 	limit, offset := normalizePage(page)
-	rows, err := r.q.ListBillingEventsByTenant(ctx, db.ListBillingEventsByTenantParams{
+	rows, err := r.q.ListBillingEventsByTenant(ctx, dbbilling.ListBillingEventsByTenantParams{
 		TenantID:        tenantID,
 		EventTypeFilter: eventTypeFilter,
 		PageLimit:       limit,

@@ -63,10 +63,10 @@ type registryFixture struct {
 	// Auxiliary tenant (used by cross-tenant probe assertions, if any).
 	otherTenantID int64
 	// IDs created by helpers, batched for cleanup.
-	modelIDs    []int64
-	aliasIDs    []int64
-	bindingIDs  []int64
-	capIDs      []int64
+	modelIDs          []int64
+	aliasIDs          []int64
+	bindingIDs        []int64
+	capIDs            []int64
 	createdGlobalRows bool
 }
 
@@ -123,14 +123,14 @@ func (f *registryFixture) cleanup() {
 }
 
 type modelOpts struct {
-	scope             string // "tenant" or "global"; defaults "tenant"
-	canonicalID       string
-	providerModelID   string
-	protocolFamily    string
-	contextWindow     int
-	pricingClass      string
-	status            string
-	requestTimeoutMS  int
+	scope            string // "tenant" or "global"; defaults "tenant"
+	canonicalID      string
+	providerModelID  string
+	protocolFamily   string
+	contextWindow    int
+	pricingClass     string
+	status           string
+	requestTimeoutMS int
 }
 
 func (f *registryFixture) seedModel(o modelOpts) int64 {
@@ -182,12 +182,12 @@ func (f *registryFixture) seedModel(o modelOpts) int64 {
 }
 
 type aliasOpts struct {
-	scope                string // defaults "tenant"
-	modelID              int64
+	scope                 string // defaults "tenant"
+	modelID               int64
 	publicAliasNormalized string
-	publicAliasDisplay   string
-	status               string
-	deletedAt            *time.Time
+	publicAliasDisplay    string
+	status                string
+	deletedAt             *time.Time
 }
 
 func (f *registryFixture) seedAlias(o aliasOpts) int64 {
@@ -225,20 +225,20 @@ type bindingOpts struct {
 	// Bindings are ALWAYS tenant-scoped (codex N+5a P1 2026-04-30).
 	// modelID may point at a global-scope model — that is the inheritance
 	// path: tenant T sets up its own binding to a globally-shared model.
-	modelID                int64
-	poolGroupID            int64
-	priority               int32
-	weight                 int32
-	selectionMode          string
-	providerModelOverride  *string
-	rpmLimit               *int32
-	tpmLimit               *int32
-	maxParallel            *int32
-	fallbackClass          string
-	enabled                *bool
-	effectiveFrom          *time.Time
-	effectiveUntil         *time.Time
-	reason                 string
+	modelID               int64
+	poolGroupID           int64
+	priority              int32
+	weight                int32
+	selectionMode         string
+	providerModelOverride *string
+	rpmLimit              *int32
+	tpmLimit              *int32
+	maxParallel           *int32
+	fallbackClass         string
+	enabled               *bool
+	effectiveFrom         *time.Time
+	effectiveUntil        *time.Time
+	reason                string
 }
 
 func (f *registryFixture) seedBinding(o bindingOpts) int64 {

@@ -14,7 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
 // RevokeRequest captures the operator's revoke call.
@@ -29,8 +29,8 @@ type RevokeRequest struct {
 // RevokeResult tells the handler what happened. AlreadyRevoked=true
 // when revoke is idempotent (status was not 'active').
 type RevokeResult struct {
-	APIKeyID        int64
-	AlreadyRevoked  bool
+	APIKeyID       int64
+	AlreadyRevoked bool
 }
 
 // KeyRevoker mirrors KeyIssuer's TX shape. Construct via NewKeyRevoker.
@@ -61,10 +61,10 @@ func (r *KeyRevoker) Revoke(ctx context.Context, req RevokeRequest) (RevokeResul
 	}
 
 	out := RevokeResult{APIKeyID: req.APIKeyID}
-	err := r.tx(ctx, func(qtx *db.Queries) error {
+	err := r.tx(ctx, func(qtx *admindb.Queries) error {
 		// Verify the key exists in this tenant first; AdminGetAPIKeyByID
 		// returns NoRows for missing or wrong-tenant keys (D7-style 404).
-		row, err := qtx.AdminGetAPIKeyByID(ctx, db.AdminGetAPIKeyByIDParams{
+		row, err := qtx.AdminGetAPIKeyByID(ctx, admindb.AdminGetAPIKeyByIDParams{
 			ID:       req.APIKeyID,
 			TenantID: req.TenantID,
 		})
@@ -81,7 +81,7 @@ func (r *KeyRevoker) Revoke(ctx context.Context, req RevokeRequest) (RevokeResul
 		if row.Status == "revoked" {
 			out.AlreadyRevoked = true
 		} else {
-			rows, err := qtx.AdminRevokeAPIKey(ctx, db.AdminRevokeAPIKeyParams{
+			rows, err := qtx.AdminRevokeAPIKey(ctx, admindb.AdminRevokeAPIKeyParams{
 				ID:       req.APIKeyID,
 				TenantID: req.TenantID,
 				Reason:   req.Reason,
@@ -106,7 +106,7 @@ func (r *KeyRevoker) Revoke(ctx context.Context, req RevokeRequest) (RevokeResul
 		if actorRole == "" {
 			actorRole = RoleTenantOperator
 		}
-		if _, err := qtx.InsertAdminAuditEvent(ctx, db.InsertAdminAuditEventParams{
+		if _, err := qtx.InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
 			TenantID:   nullableInt64(req.TenantID),
 			ActorID:    fmt.Sprintf("%d", req.Caller.TokenID),
 			ActorRole:  actorRole,
@@ -131,7 +131,7 @@ func (r *KeyRevoker) Revoke(ctx context.Context, req RevokeRequest) (RevokeResul
 // Codex pass-7 P2: invoked from RBAC-rejection paths so denied
 // revoke attempts still appear in incident review.
 func (r *KeyRevoker) auditDeny(ctx context.Context, req RevokeRequest, reason string) error {
-	q := db.New(r.pool)
+	q := admindb.New(r.pool)
 	payload, _ := json.Marshal(map[string]any{
 		"outcome":    "denied",
 		"reason":     reason,
@@ -146,7 +146,7 @@ func (r *KeyRevoker) auditDeny(ctx context.Context, req RevokeRequest, reason st
 	// attacker-supplied tenant_id, otherwise a tenant_operator probing
 	// other tenants pollutes their audit trails. Use NULL tenant scope;
 	// attempted tenant_id stays in the payload jsonb for forensic review.
-	_, err := q.InsertAdminAuditEvent(ctx, db.InsertAdminAuditEventParams{
+	_, err := q.InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
 		TenantID:   nil,
 		ActorID:    fmt.Sprintf("%d", req.Caller.TokenID),
 		ActorRole:  actorRole,
@@ -160,13 +160,13 @@ func (r *KeyRevoker) auditDeny(ctx context.Context, req RevokeRequest, reason st
 	return err
 }
 
-func (r *KeyRevoker) tx(ctx context.Context, fn func(*db.Queries) error) error {
+func (r *KeyRevoker) tx(ctx context.Context, fn func(*admindb.Queries) error) error {
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("%w: begin: %v", ErrAdminBackend, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := fn(db.New(tx)); err != nil {
+	if err := fn(admindb.New(tx)); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {

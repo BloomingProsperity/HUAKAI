@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
 func openIntegrationPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
@@ -152,7 +153,7 @@ func TestDBClaimGate_WriteAcquisition_Success(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	seed := seedAdapterGraph(t, ctx, pool, "cg-success")
 
-	gate := NewDBClaimGate(db.New(pool))
+	gate := NewDBClaimGate(dbbilling.New(pool))
 	token := uuid.New()
 	if err := gate.WriteAcquisition(ctx, seed.tenantID, seed.claimID, seed.providerAccountID, token); err != nil {
 		t.Fatalf("WriteAcquisition: %v", err)
@@ -178,7 +179,7 @@ func TestDBClaimGate_RejectsCrossTenant(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	seed := seedAdapterGraph(t, ctx, pool, "cg-xtenant")
 
-	gate := NewDBClaimGate(db.New(pool))
+	gate := NewDBClaimGate(dbbilling.New(pool))
 	wrongTenant := seed.tenantID + 99999
 	err := gate.WriteAcquisition(ctx, wrongTenant, seed.claimID, seed.providerAccountID, uuid.New())
 	if !errors.Is(err, ErrClaimRace) {
@@ -199,7 +200,7 @@ func TestDBClaimGate_RejectsAlreadyCommitted(t *testing.T) {
 		t.Fatalf("flip claim status: %v", err)
 	}
 
-	gate := NewDBClaimGate(db.New(pool))
+	gate := NewDBClaimGate(dbbilling.New(pool))
 	err := gate.WriteAcquisition(ctx, seed.tenantID, seed.claimID, seed.providerAccountID, uuid.New())
 	if !errors.Is(err, ErrClaimRace) {
 		t.Fatalf("non-reserving claim must return ErrClaimRace; got %v", err)
@@ -326,7 +327,7 @@ func TestDBAccountSource_ListByPoolGroup(t *testing.T) {
 		t.Fatalf("seed second account: %v", err)
 	}
 
-	src := NewDBAccountSource(db.New(pgPool))
+	src := NewDBAccountSource(dbbilling.New(pgPool))
 	accounts, err := src.ListAccounts(ctx, SelectionRequest{
 		TenantID:    seed.tenantID,
 		PoolGroupID: seed.poolGroupID,

@@ -19,6 +19,9 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
@@ -41,7 +44,8 @@ import (
 // deps is the live dependency tree handlers receive after run() boots.
 type deps struct {
 	cfg                 *Config
-	queries             *db.Queries
+	adminQueries        *admindb.Queries
+	billingQueries      *dbbilling.Queries
 	selector            pool.Selector
 	channelHealth       *channelhealth.Service
 	claimGate           billing.ClaimGate
@@ -124,7 +128,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		}
 	}()
 
-	q := db.New(pgPool)
+	adminQueries := admindb.New(pgPool)
+	authQueries := dbauth.New(pgPool)
+	billingQueries := dbbilling.New(pgPool)
 	outboxStore := obsoutbox.NewPostgresOutbox(pgPool)
 	opts, err := loadRuntimeOptions(logger)
 	if err != nil {
@@ -159,7 +165,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	}
 	channelHealthStore := channelhealth.NewPostgresStoreWithAuditSigner(pgPool, auditSigner)
 	channelHealthService := channelhealth.NewService(channelHealthStore, channelhealth.DefaultPolicy(), nil, channelhealth.WithAlertOutbox(outboxStore))
-	selector, selectorCleanup, err := buildSelector(ctx, q, pgPool, opts.selector, channelHealthService, logger)
+	selector, selectorCleanup, err := buildSelector(ctx, billingQueries, pgPool, opts.selector, channelHealthService, logger)
 	if err != nil {
 		return nil, fmt.Errorf("build selector: %w", err)
 	}
@@ -177,7 +183,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 
 	d := &deps{
 		cfg:                cfg,
-		queries:            q,
+		adminQueries:       adminQueries,
+		billingQueries:     billingQueries,
 		selector:           selector,
 		channelHealth:      channelHealthService,
 		claimGate:          billing.NewClaimGate(pgPool),
@@ -201,7 +208,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 			TransportFactory: transport.NewFactory(mimicryRegistry),
 			ProxyResolver:    provider.NewPostgresProxyResolver(pgPool),
 		},
-		inboundAuth:         auth.NewAPIKeyResolver(q),
+		inboundAuth:         auth.NewAPIKeyResolver(authQueries),
 		auditLedger:         auditLedger,
 		auditSigner:         auditSigner,
 		auditPubkeyRegistry: auditPubkeyRegistry,
@@ -211,7 +218,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		rateTableSource:     rateTableSource,
 		modelRegistry:       registry.NewPostgresRegistry(pgPool, nil),
 		routePlanner:        router.NewDefaultRouter(),
-		adminAuth:           admin.NewAdminResolver(q),
+		adminAuth:           admin.NewAdminResolver(adminQueries),
 		adminIssuer:         admin.NewKeyIssuer(pgPool),
 		adminRevoker:        admin.NewKeyRevoker(pgPool),
 	}
@@ -219,10 +226,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		return nil, fmt.Errorf("admin bootstrap: %w", err)
 	}
 	credentialScheduler := credentialworker.NewScheduler(
-		q,
-		auth.NewStormController(q),
+		billingQueries,
+		auth.NewStormController(authQueries),
 		auditSigner,
 		credentialworker.NewAccountCredentialRefresher(credentialStore, credentialworker.DefaultModeAdapterRegistry()),
+		credentialworker.WithAuditQueries(authQueries),
 		credentialworker.WithAuditLedger(auditLedger),
 		credentialworker.WithRefreshQueries(credentialworker.NewAccountCredentialRefreshQueries(pgPool)),
 	)

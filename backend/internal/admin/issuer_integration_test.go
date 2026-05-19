@@ -31,6 +31,8 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
 )
 
 // silence unused import false-positive: zap removed from this file's
@@ -122,7 +124,7 @@ func TestAdminIssue_HappyPath(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	f := newAdminFixture(t, ctx, pool)
 
-	resolver := NewAdminResolver(db.New(pool))
+	resolver := NewAdminResolver(admindb.New(pool))
 	httpReq := httptest.NewRequest("POST", "/admin/v1/api-keys", nil)
 	httpReq.Header.Set("Authorization", "Bearer "+f.adminBearer)
 	ident, err := resolver.Resolve(ctx, httpReq)
@@ -159,7 +161,7 @@ func TestAdminIssue_HappyPath(t *testing.T) {
 	// Issued plaintext must authenticate via the CUSTOMER resolver — the
 	// whole point of N+4b2 is that admin-issued keys behave identically
 	// to hand-SQL'd ones from N+4a's perspective.
-	custResolver := auth.NewAPIKeyResolver(db.New(pool))
+	custResolver := auth.NewAPIKeyResolver(dbauth.New(pool))
 	custReq := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	custReq.Header.Set("Authorization", "Bearer "+result.Plaintext)
 	custIdent, err := custResolver.Resolve(ctx, custReq)
@@ -181,7 +183,7 @@ func TestAdminRevoke_BlocksAuth(t *testing.T) {
 	defer cancel()
 	pool := openIntegrationPool(t, ctx)
 	f := newAdminFixture(t, ctx, pool)
-	resolver := NewAdminResolver(db.New(pool))
+	resolver := NewAdminResolver(admindb.New(pool))
 	httpReq := httptest.NewRequest("POST", "/", nil)
 	httpReq.Header.Set("Authorization", "Bearer "+f.adminBearer)
 	ident, err := resolver.Resolve(ctx, httpReq)
@@ -203,7 +205,7 @@ func TestAdminRevoke_BlocksAuth(t *testing.T) {
 	}
 
 	// Customer resolver works pre-revoke.
-	custResolver := auth.NewAPIKeyResolver(db.New(pool))
+	custResolver := auth.NewAPIKeyResolver(dbauth.New(pool))
 	custReq := httptest.NewRequest("POST", "/", nil)
 	custReq.Header.Set("Authorization", "Bearer "+result.Plaintext)
 	if _, err := custResolver.Resolve(ctx, custReq); err != nil {
@@ -254,7 +256,7 @@ func TestAdminIssue_AuditNeverContainsPlaintext(t *testing.T) {
 	defer cancel()
 	pool := openIntegrationPool(t, ctx)
 	f := newAdminFixture(t, ctx, pool)
-	resolver := NewAdminResolver(db.New(pool))
+	resolver := NewAdminResolver(admindb.New(pool))
 	httpReq := httptest.NewRequest("POST", "/", nil)
 	httpReq.Header.Set("Authorization", "Bearer "+f.adminBearer)
 	ident, _ := resolver.Resolve(ctx, httpReq)
@@ -334,7 +336,7 @@ func TestAdminIssue_TenantOperatorCrossTenantBlocked(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM admin_tokens WHERE id=$1`, opID)
 	})
 
-	resolver := NewAdminResolver(db.New(pool))
+	resolver := NewAdminResolver(admindb.New(pool))
 	req := httptest.NewRequest("POST", "/", nil)
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	ident, err := resolver.Resolve(ctx, req)

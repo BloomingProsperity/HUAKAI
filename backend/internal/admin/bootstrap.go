@@ -29,7 +29,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
 // BootstrapEnv is the environment variable read at boot. The value is
@@ -62,7 +62,7 @@ func MaybeBootstrap(ctx context.Context, pool *pgxpool.Pool, logger *zap.Logger)
 		return fmt.Errorf("%w: begin bootstrap tx: %v", ErrAdminBackend, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	qtx := db.New(tx)
+	qtx := admindb.New(tx)
 
 	if err := qtx.AcquireAdminBootstrapLock(ctx); err != nil {
 		return fmt.Errorf("%w: bootstrap lock: %v", ErrAdminBackend, err)
@@ -100,7 +100,7 @@ func MaybeBootstrap(ctx context.Context, pool *pgxpool.Pool, logger *zap.Logger)
 	}
 	prefix := bearer[:PrefixLen]
 
-	if _, err = qtx.InsertAdminToken(ctx, db.InsertAdminTokenParams{
+	if _, err = qtx.InsertAdminToken(ctx, admindb.InsertAdminTokenParams{
 		Name:      "bootstrap-admin",
 		KeyHash:   string(hash),
 		KeyPrefix: prefix,

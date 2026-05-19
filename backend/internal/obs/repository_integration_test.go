@@ -20,6 +20,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
 func openIntegrationPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
@@ -214,7 +215,7 @@ func TestReader_ListUsage_TenantScopedOnly(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	seed := seedReaderGraph(t, ctx, pool)
 
-	r := NewPgxReader(db.New(pool))
+	r := NewPgxReader(dbbilling.New(pool))
 
 	rows, err := r.ListUsage(ctx, seed.tenantID, Page{Limit: 100})
 	if err != nil {
@@ -244,7 +245,7 @@ func TestReader_GetClaim_HappyPath(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	seed := seedReaderGraph(t, ctx, pool)
 
-	r := NewPgxReader(db.New(pool))
+	r := NewPgxReader(dbbilling.New(pool))
 
 	c, err := r.GetClaim(ctx, seed.tenantID, seed.committedClaimID)
 	if err != nil {
@@ -264,7 +265,7 @@ func TestReader_GetClaim_RejectsCrossTenant(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	seed := seedReaderGraph(t, ctx, pool)
 
-	r := NewPgxReader(db.New(pool))
+	r := NewPgxReader(dbbilling.New(pool))
 
 	_, err := r.GetClaim(ctx, seed.otherTenantID, seed.committedClaimID)
 	if !errors.Is(err, ErrNotFound) {
@@ -278,7 +279,7 @@ func TestReader_ListBillingEvents_FilterByEventType(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	seed := seedReaderGraph(t, ctx, pool)
 
-	r := NewPgxReader(db.New(pool))
+	r := NewPgxReader(dbbilling.New(pool))
 
 	all, err := r.ListBillingEvents(ctx, seed.tenantID, "", Page{Limit: 100})
 	if err != nil {
@@ -303,7 +304,7 @@ func TestReader_CountClaimsByStatus(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	seed := seedReaderGraph(t, ctx, pool)
 
-	r := NewPgxReader(db.New(pool))
+	r := NewPgxReader(dbbilling.New(pool))
 
 	counts, err := r.CountClaimsByStatus(ctx, seed.tenantID)
 	if err != nil {

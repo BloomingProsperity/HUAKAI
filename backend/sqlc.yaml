@@ -2,16 +2,146 @@ version: "2"
 sql:
   - engine: postgresql
     schema: sql/migrations
-    queries: sql/queries
+    queries:
+      - sql/queries/admin_api_keys.sql
+      - sql/queries/admin_audit.sql
+      - sql/queries/admin_provider_account_mutations.sql
+      - sql/queries/admin_tokens.sql
     gen:
       go:
-        package: db
-        out: internal/db
+        package: admin
+        out: internal/db/admin
         sql_package: pgx/v5
         emit_json_tags: true
         emit_db_tags: true
         emit_pointers_for_null_types: true
         emit_interface: true
+        omit_unused_structs: true
+        emit_methods_with_db_argument: false
+        emit_prepared_queries: false
+        rename:
+          tenant_id: TenantID
+          api_key_id: APIKeyID
+          provider_id: ProviderID
+          channel_id: ChannelID
+          pool_group_id: PoolGroupID
+          provider_account_id: ProviderAccountID
+          claim_id: ClaimID
+          acquisition_token: AcquisitionToken
+          dlq: DLQ
+          oauth_endpoint_health: OAuthEndpointHealth
+          openai_403_counter: OpenAI403Counter
+  - engine: postgresql
+    schema: sql/migrations
+    queries:
+      - sql/queries/billing_claims.sql
+      - sql/queries/billing_settle.sql
+      - sql/queries/observability.sql
+      - sql/queries/obs_queries.sql
+      - sql/queries/pool_accounts.sql
+      - sql/queries/pool_audit.sql
+      - sql/queries/pool_slot_acquisitions.sql
+      - sql/queries/pool_sticky_bindings.sql
+      - sql/queries/pools.sql
+    gen:
+      go:
+        package: billing
+        out: internal/db/billing
+        sql_package: pgx/v5
+        emit_json_tags: true
+        emit_db_tags: true
+        emit_pointers_for_null_types: true
+        emit_interface: true
+        omit_unused_structs: true
+        emit_methods_with_db_argument: false
+        emit_prepared_queries: false
+        rename:
+          tenant_id: TenantID
+          api_key_id: APIKeyID
+          provider_id: ProviderID
+          channel_id: ChannelID
+          pool_group_id: PoolGroupID
+          provider_account_id: ProviderAccountID
+          claim_id: ClaimID
+          acquisition_token: AcquisitionToken
+          dlq: DLQ
+          oauth_endpoint_health: OAuthEndpointHealth
+          openai_403_counter: OpenAI403Counter
+  - engine: postgresql
+    schema: sql/migrations
+    queries:
+      - sql/queries/auth_audit.sql
+      - sql/queries/auth_credentials.sql
+      - sql/queries/auth_inbound.sql
+      - sql/queries/auth_storm.sql
+    gen:
+      go:
+        package: auth
+        out: internal/db/auth
+        sql_package: pgx/v5
+        emit_json_tags: true
+        emit_db_tags: true
+        emit_pointers_for_null_types: true
+        emit_interface: true
+        omit_unused_structs: true
+        emit_methods_with_db_argument: false
+        emit_prepared_queries: false
+        rename:
+          tenant_id: TenantID
+          api_key_id: APIKeyID
+          provider_id: ProviderID
+          channel_id: ChannelID
+          pool_group_id: PoolGroupID
+          provider_account_id: ProviderAccountID
+          claim_id: ClaimID
+          acquisition_token: AcquisitionToken
+          dlq: DLQ
+          oauth_endpoint_health: OAuthEndpointHealth
+          openai_403_counter: OpenAI403Counter
+  - engine: postgresql
+    schema: sql/migrations
+    queries:
+      - sql/queries/trust_chain_ledger.sql
+    gen:
+      go:
+        package: audit
+        out: internal/db/audit
+        sql_package: pgx/v5
+        emit_json_tags: true
+        emit_db_tags: true
+        emit_pointers_for_null_types: true
+        emit_interface: true
+        omit_unused_structs: true
+        emit_methods_with_db_argument: false
+        emit_prepared_queries: false
+        rename:
+          tenant_id: TenantID
+          api_key_id: APIKeyID
+          provider_id: ProviderID
+          channel_id: ChannelID
+          pool_group_id: PoolGroupID
+          provider_account_id: ProviderAccountID
+          claim_id: ClaimID
+          acquisition_token: AcquisitionToken
+          dlq: DLQ
+          oauth_endpoint_health: OAuthEndpointHealth
+          openai_403_counter: OpenAI403Counter
+  - engine: postgresql
+    schema: sql/migrations
+    queries:
+      - sql/queries/proto_capability.sql
+      - sql/queries/proto_policy.sql
+      - sql/queries/registry.sql
+    gen:
+      go:
+        package: registry
+        out: internal/db/registry
+        sql_package: pgx/v5
+        emit_json_tags: true
+        emit_db_tags: true
+        emit_pointers_for_null_types: true
+        emit_interface: true
+        omit_unused_structs: true
         emit_methods_with_db_argument: false
         emit_prepared_queries: false
         rename:

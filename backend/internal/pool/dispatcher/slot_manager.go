@@ -24,7 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
 // DefaultLeaseDuration is the slot lease grace window before orphan-sweep
@@ -35,7 +35,7 @@ const DefaultLeaseDuration = 90 * time.Second
 // pool_slot_acquisitions + provider_accounts rows.
 type DBSlotManager struct {
 	pool *pgxpool.Pool
-	q    *db.Queries
+	q    *dbbilling.Queries
 }
 
 // NewDBSlotManager constructs the adapter from a pgx pool. The pool is
@@ -44,7 +44,7 @@ func NewDBSlotManager(pool *pgxpool.Pool) *DBSlotManager {
 	if pool == nil {
 		return &DBSlotManager{}
 	}
-	return &DBSlotManager{pool: pool, q: db.New(pool)}
+	return &DBSlotManager{pool: pool, q: dbbilling.New(pool)}
 }
 
 // Acquire implements pool.SlotManager.
@@ -71,7 +71,7 @@ func (m *DBSlotManager) Acquire(ctx context.Context, account *AccountSnapshot, r
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	qtx := m.q.WithTx(tx)
-	rows, err := qtx.IncrementInFlightCount(ctx, db.IncrementInFlightCountParams{
+	rows, err := qtx.IncrementInFlightCount(ctx, dbbilling.IncrementInFlightCountParams{
 		ID:       account.ID,
 		TenantID: account.TenantID,
 	})
@@ -88,7 +88,7 @@ func (m *DBSlotManager) Acquire(ctx context.Context, account *AccountSnapshot, r
 		c := req.ClaimID
 		claimID = &c
 	}
-	if _, err := qtx.InsertSlotAcquisition(ctx, db.InsertSlotAcquisitionParams{
+	if _, err := qtx.InsertSlotAcquisition(ctx, dbbilling.InsertSlotAcquisitionParams{
 		TenantID:          account.TenantID,
 		ProviderAccountID: account.ID,
 		AcquisitionToken:  token,
@@ -120,7 +120,7 @@ func (m *DBSlotManager) Acquire(ctx context.Context, account *AccountSnapshot, r
 func (m *DBSlotManager) releaseFunc(token uuid.UUID) ReleaseFunc {
 	return func(ctx context.Context) error {
 		reason := "selector_release"
-		if _, err := m.q.ReleaseSlotAndDecrementInFlight(ctx, db.ReleaseSlotAndDecrementInFlightParams{
+		if _, err := m.q.ReleaseSlotAndDecrementInFlight(ctx, dbbilling.ReleaseSlotAndDecrementInFlightParams{
 			AcquisitionToken: token,
 			ReleaseReason:    &reason,
 		}); err != nil {

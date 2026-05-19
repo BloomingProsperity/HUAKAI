@@ -11,7 +11,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
 const (
@@ -23,7 +23,7 @@ const (
 
 // Scheduler 主动扫描快过期的 provider account，并通过 storm controller 限流刷新。
 type Scheduler struct {
-	Queries         *db.Queries
+	Queries         *dbbilling.Queries
 	StormController *auth.StormController
 	Signer          Signer
 
@@ -49,7 +49,7 @@ type Scheduler struct {
 	seq    atomic.Int64
 }
 
-func NewScheduler(queries *db.Queries, storm *auth.StormController, signer Signer, refresher Refresher, opts ...Option) *Scheduler {
+func NewScheduler(queries *dbbilling.Queries, storm *auth.StormController, signer Signer, refresher Refresher, opts ...Option) *Scheduler {
 	if refresher == nil {
 		refresher = NewRegistryRefresher(NewAdapterRegistry(), nil)
 	}
@@ -70,7 +70,6 @@ func NewScheduler(queries *db.Queries, storm *auth.StormController, signer Signe
 	}
 	if queries != nil {
 		s.queryer = queries
-		s.auditWriter = dbAuditWriter{queries: queries}
 	}
 	if storm != nil {
 		s.acquirer = storm
@@ -146,7 +145,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 		return err
 	}
 	before := s.now().Add(s.warningWindow)
-	accounts, err := s.queryer.ListAccountsForRefresh(ctx, db.ListAccountsForRefreshParams{
+	accounts, err := s.queryer.ListAccountsForRefresh(ctx, dbbilling.ListAccountsForRefreshParams{
 		RefreshBefore: pgtype.Timestamptz{Time: before, Valid: true},
 		LimitCount:    s.limit,
 	})
@@ -173,7 +172,7 @@ func (s *Scheduler) validate() error {
 	}
 }
 
-func (s *Scheduler) processAccount(ctx context.Context, account db.ListAccountsForRefreshRow) error {
+func (s *Scheduler) processAccount(ctx context.Context, account dbbilling.ListAccountsForRefreshRow) error {
 	release, outcome, err := s.acquirer.Acquire(ctx, account.TenantID, account.ID)
 	if err != nil {
 		_ = s.recordAudit(ctx, account, auth.OutcomeStormBudgetExhausted, "account", err)
@@ -192,7 +191,7 @@ func (s *Scheduler) processAccount(ctx context.Context, account db.ListAccountsF
 	return s.recordAudit(ctx, account, auth.OutcomeRefreshSucceeded, "", nil)
 }
 
-func (s *Scheduler) refreshWithBackoff(ctx context.Context, account db.ListAccountsForRefreshRow) error {
+func (s *Scheduler) refreshWithBackoff(ctx context.Context, account dbbilling.ListAccountsForRefreshRow) error {
 	var last error
 	for attempt := 1; attempt <= s.maxAttempts; attempt++ {
 		if aware, ok := s.Refresher.(ProviderAwareRefresher); ok {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
 )
 
 func WithAuditLedger(ledger auditledger.Ledger) Option {
@@ -50,6 +51,14 @@ func WithTickChannel(ch <-chan time.Time) Option {
 
 func WithRefreshQueries(q refreshQueries) Option {
 	return func(s *Scheduler) { s.queryer = q }
+}
+
+func WithAuditQueries(q *dbauth.Queries) Option {
+	return func(s *Scheduler) {
+		if q != nil {
+			s.auditWriter = dbAuditWriter{queries: q}
+		}
+	}
 }
 
 func withRefreshQueries(q refreshQueries) Option {

@@ -4,16 +4,16 @@ import (
 	"context"
 	"sync"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
 )
 
 // StormController enforces refresh storm budgets. This slice implements
 // account scope only; provider-endpoint and global scopes remain deferred.
 type StormController struct {
-	queries *db.Queries
+	queries *dbauth.Queries
 }
 
-func NewStormController(queries *db.Queries) *StormController {
+func NewStormController(queries *dbauth.Queries) *StormController {
 	return &StormController{queries: queries}
 }
 
@@ -24,7 +24,7 @@ func (c *StormController) Acquire(ctx context.Context, tenantID, accountID int64
 		panic("TODO: wire sqlc queries before using account storm controller")
 	}
 
-	budget, err := c.queries.GetOrCreateAccountStormBudget(ctx, db.GetOrCreateAccountStormBudgetParams{
+	budget, err := c.queries.GetOrCreateAccountStormBudget(ctx, dbauth.GetOrCreateAccountStormBudgetParams{
 		TenantID:          tenantID,
 		ProviderAccountID: &accountID,
 	})
@@ -57,4 +57,3 @@ func (c *StormController) AcquireProviderEndpoint(ctx context.Context, tenantID 
 func (c *StormController) AcquireGlobal(ctx context.Context, tenantID int64) (func(), Outcome, error) {
 	panic("TODO: global storm scope deferred")
 }
-

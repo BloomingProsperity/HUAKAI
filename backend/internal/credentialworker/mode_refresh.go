@@ -15,6 +15,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker/adapters"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
 
@@ -262,7 +263,7 @@ func NewAccountCredentialRefreshQueries(database db.DBTX) *AccountCredentialRefr
 	return &AccountCredentialRefreshQueries{db: database}
 }
 
-func (q *AccountCredentialRefreshQueries) ListAccountsForRefresh(ctx context.Context, arg db.ListAccountsForRefreshParams) ([]db.ListAccountsForRefreshRow, error) {
+func (q *AccountCredentialRefreshQueries) ListAccountsForRefresh(ctx context.Context, arg dbbilling.ListAccountsForRefreshParams) ([]dbbilling.ListAccountsForRefreshRow, error) {
 	if q == nil || q.db == nil {
 		return nil, errors.New("credentialworker: account credential refresh db missing")
 	}
@@ -284,9 +285,9 @@ LIMIT $2`
 		return nil, err
 	}
 	defer rows.Close()
-	var out []db.ListAccountsForRefreshRow
+	var out []dbbilling.ListAccountsForRefreshRow
 	for rows.Next() {
-		var row db.ListAccountsForRefreshRow
+		var row dbbilling.ListAccountsForRefreshRow
 		if err := rows.Scan(&row.ID, &row.TenantID, &row.ProviderID, &row.ExpiresAt); err != nil {
 			return nil, err
 		}
