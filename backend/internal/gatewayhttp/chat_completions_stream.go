@@ -2,6 +2,7 @@ package gatewayhttp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
 
 const (
@@ -82,10 +84,19 @@ func (ex *chatExecution) cacheHitInput(entry l2cache.Entry) l2CacheHitInput {
 
 func (ex *chatExecution) handleStreamingResponse(w http.ResponseWriter) {
 	upstreamAttemptStartedAt := time.Now()
+	inboundBody := ex.body
+	var clientAdapter proto.ClientAdapter
+	if ex.needsStreamingHCSFTranslation() {
+		var ok bool
+		inboundBody, clientAdapter, ok = ex.translatedStreamingInboundBody(w)
+		if !ok {
+			return
+		}
+	}
 	dispatchRes, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
 		ProtocolFamily:  ex.resolved.ProtocolFamily,
 		UpstreamModelID: ex.upstreamModelID,
-		InboundBody:     ex.body,
+		InboundBody:     inboundBody,
 		Account:         ex.accInfo,
 		Credential:      ex.cred,
 	})
@@ -111,7 +122,7 @@ func (ex *chatExecution) handleStreamingResponse(w http.ResponseWriter) {
 		ex.writeStreamingUpstreamError(w, dispatchRes, upstreamAttemptStartedAt)
 		return
 	}
-	ex.forwardSSEAndSettle(w, dispatchRes, upstreamAttemptStartedAt)
+	ex.forwardSSEAndSettle(w, dispatchRes, upstreamAttemptStartedAt, clientAdapter)
 }
 
 func (ex *chatExecution) writeStreamingUpstreamError(w http.ResponseWriter, dispatchRes *gateway.DispatchResult, startedAt time.Time) {
@@ -131,7 +142,7 @@ func (ex *chatExecution) writeStreamingUpstreamError(w http.ResponseWriter, disp
 	writeNormalizedUpstreamError(w, clientStatusForUpstreamError(dispatchRes.StatusCode, classification.Class), "upstream_error", classification)
 }
 
-func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes *gateway.DispatchResult, startedAt time.Time) {
+func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes *gateway.DispatchResult, startedAt time.Time, clientAdapter proto.ClientAdapter) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -146,6 +157,9 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	}
 	if streamForwarder.Signer == nil {
 		streamForwarder.Signer = ex.d.Signer
+	}
+	if clientAdapter != nil {
+		streamForwarder.ClientAdapter = clientAdapter
 	}
 	streamForwarder.LedgerCallback = func(entryID, sigFingerprint string) {
 		WriteHuakaiLedgerHeaders(w.Header(), ex.requestID, entryID, sigFingerprint)
@@ -168,6 +182,196 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	if _, err := settleCompletion(ex.ctx, ex.d, ex.streamingCompletionEvent(draft, streamAttempt)); err != nil {
 		w.Header().Set("X-Huakai-Settle-Error", err.Error())
 	}
+}
+
+func (ex *chatExecution) needsStreamingHCSFTranslation() bool {
+	if ex.clientProtocol == "" {
+		return false
+	}
+	cp := string(ex.clientProtocol)
+	fam := ex.resolved.ProtocolFamily
+	if cp == fam {
+		return false
+	}
+	// bedrock_invoke 已通过 AutoTranslateAnthropicAPIBody 在 PassthroughAdapter
+	// 里把 anthropic_messages 客户端 body 自动转 Bedrock invoke body, 不需要
+	// 也不应在此再走 HCSF (MarshalToProviderRequest 不支持 bedrock_invoke)
+	if cp == "anthropic_messages" && fam == "bedrock_invoke" {
+		return false
+	}
+	return true
+}
+
+func (ex *chatExecution) translatedStreamingInboundBody(w http.ResponseWriter) ([]byte, proto.ClientAdapter, bool) {
+	clientAdapter, err := ex.streamingClientAdapter()
+	if err != nil {
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "streaming_adapter_unregistered", ex.requestID)
+		writeJSONError(w, http.StatusServiceUnavailable, "streaming_adapter_unregistered", err.Error())
+		return nil, nil, false
+	}
+	seed := requestMetaSeed(ex.r, ex.ident, ex.clientProtocol, ex.resolved.ProtocolFamily, ex.routeID, ex.requestID, ex.acquiredAccountID, ex.acquisitionToken)
+	seedCtx := proto.ContextWithRequestMetaSeed(ex.ctx, seed)
+	canonicalReq, _, err := clientAdapter.RequestToCanonical(seedCtx, ex.body)
+	if err != nil {
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID)
+		writeJSONError(w, http.StatusBadRequest, "invalid_request_body", err.Error())
+		return nil, nil, false
+	}
+	if canonicalReq == nil {
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID)
+		writeJSONError(w, http.StatusBadRequest, "invalid_request_body", "client adapter returned nil canonical envelope")
+		return nil, nil, false
+	}
+	enrichCanonicalRequestMeta(canonicalReq, ex.upstreamModelID, ex.accInfo.Platform, ex.idempotencyHeader, ex.promptHash)
+	canonicalReq.RequestMeta.EndpointFamily = ex.resolved.ProtocolFamily
+	setAccountingModelRequested(canonicalReq, ex.req.Model)
+	setAccountingModelRouteDecided(canonicalReq, ex.forwardReq.Model)
+	gateway.ApplyForwardRequestHopChain(canonicalReq, ex.forwardReq)
+
+	body, err := streamingProviderRequestBody(canonicalReq, ex.resolved.ProtocolFamily)
+	if err != nil {
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "streaming_translation_not_supported", ex.requestID)
+		writeJSONError(w, http.StatusNotImplemented, "streaming_translation_not_supported", err.Error())
+		return nil, nil, false
+	}
+	return body, canonicalEventPointerClientAdapter{inner: clientAdapter}, true
+}
+
+func (ex *chatExecution) streamingClientAdapter() (proto.ClientAdapter, error) {
+	if ex.clientAdapter != nil {
+		return ex.clientAdapter, nil
+	}
+	if ex.clientProtocol == "" {
+		return nil, errors.New("streaming client protocol not inferred")
+	}
+	clientAdapter, ok := proto.DefaultClientAdapterRegistry().Lookup(ex.clientProtocol)
+	if !ok {
+		return nil, fmt.Errorf("client adapter not registered for protocol %q", ex.clientProtocol)
+	}
+	return clientAdapter, nil
+}
+
+func streamingProviderRequestBody(env *proto.HCSF, family string) ([]byte, error) {
+	body, err := gateway.MarshalToProviderRequest(env, family)
+	if err != nil {
+		return nil, err
+	}
+	body, err = injectStreamingRequestControls(body, env, family)
+	if err != nil {
+		return nil, err
+	}
+	return forceStreamingRequest(body)
+}
+
+func injectStreamingRequestControls(raw []byte, env *proto.HCSF, family string) ([]byte, error) {
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, err
+	}
+	c := env.RequestControls
+	if c.MaxTokens != nil {
+		if family == "openai_responses" {
+			body["max_output_tokens"] = *c.MaxTokens
+		} else {
+			body["max_tokens"] = *c.MaxTokens
+		}
+	}
+	if c.Temperature != nil {
+		body["temperature"] = *c.Temperature
+	}
+	if c.TopP != nil {
+		body["top_p"] = *c.TopP
+	}
+	if c.ParallelToolCalls != nil && family != "anthropic_messages" {
+		body["parallel_tool_calls"] = *c.ParallelToolCalls
+	}
+	if len(c.StopSequences) > 0 && family == "anthropic_messages" {
+		body["stop_sequences"] = c.StopSequences
+	} else if len(c.Stop) > 0 {
+		body["stop"] = c.Stop
+	} else if len(c.StopSequences) > 0 {
+		body["stop"] = c.StopSequences
+	}
+	if len(c.ToolChoice) > 0 {
+		body["tool_choice"] = streamingRawJSONValue(c.ToolChoice)
+	}
+	if len(c.Tools) > 0 {
+		body["tools"] = streamingControlTools(family, c.Tools)
+	}
+	if c.ResponseFormat != nil {
+		rf := map[string]any{"type": c.ResponseFormat.Type}
+		if len(c.ResponseFormat.Schema) > 0 {
+			rf["schema"] = streamingRawJSONValue(c.ResponseFormat.Schema)
+		}
+		if c.ResponseFormat.Strict != nil {
+			rf["strict"] = *c.ResponseFormat.Strict
+		}
+		if family == "openai_responses" {
+			body["text"] = map[string]any{"format": rf}
+		} else if family == "openai_chat" {
+			body["response_format"] = rf
+		}
+	}
+	return json.Marshal(body)
+}
+
+func forceStreamingRequest(raw []byte) ([]byte, error) {
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, err
+	}
+	body["stream"] = true
+	return json.Marshal(body)
+}
+
+func streamingControlTools(family string, tools []proto.CanonicalTool) []any {
+	out := make([]any, 0, len(tools))
+	for _, tool := range tools {
+		schema := streamingRawJSONValue(tool.InputSchema)
+		switch family {
+		case "openai_chat":
+			out = append(out, map[string]any{"type": "function", "function": map[string]any{"name": tool.Name, "description": tool.Description, "parameters": schema}})
+		case "openai_responses":
+			out = append(out, map[string]any{"type": "function", "name": tool.Name, "description": tool.Description, "parameters": schema})
+		default:
+			out = append(out, map[string]any{"name": tool.Name, "description": tool.Description, "input_schema": schema})
+		}
+	}
+	return out
+}
+
+func streamingRawJSONValue(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return map[string]any{}
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return map[string]any{}
+	}
+	return v
+}
+
+type canonicalEventPointerClientAdapter struct {
+	inner proto.ClientAdapter
+}
+
+func (a canonicalEventPointerClientAdapter) RequestToCanonical(ctx context.Context, raw []byte) (*proto.HCSF, []proto.ProtocolLossEntry, error) {
+	return a.inner.RequestToCanonical(ctx, raw)
+}
+
+func (a canonicalEventPointerClientAdapter) CanonicalToClientResponse(ctx context.Context, canonical *proto.HCSF) ([]byte, []proto.ProtocolLossEntry, error) {
+	return a.inner.CanonicalToClientResponse(ctx, canonical)
+}
+
+func (a canonicalEventPointerClientAdapter) CanonicalEventToClientChunk(ctx context.Context, canonicalEvt any, state any) ([][]byte, []proto.ProtocolLossEntry, error) {
+	if evt, ok := canonicalEvt.(proto.CanonicalEvent); ok {
+		canonicalEvt = &evt
+	}
+	return a.inner.CanonicalEventToClientChunk(ctx, canonicalEvt, state)
+}
+
+func (a canonicalEventPointerClientAdapter) FinalizeClientStream(ctx context.Context, state any) ([][]byte, error) {
+	return a.inner.FinalizeClientStream(ctx, state)
 }
 
 func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft, streamAttempt billing.Attempt) eventbus.RequestCompletionEvent {
