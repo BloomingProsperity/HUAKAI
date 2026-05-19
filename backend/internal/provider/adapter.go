@@ -94,16 +94,29 @@ func EndpointForCredential(adapterDefault string, cred Credential) string {
 	if err != nil || baseURL.Host == "" {
 		return base
 	}
-	if baseURL.Path != "" && baseURL.Path != "/" {
-		// 用户显式指定完整 path 信任之
-		return base
-	}
 	defaultURL, err := url.Parse(adapterDefault)
 	if err != nil {
 		return base
 	}
+	defaultPath := defaultURL.Path
+	basePath := strings.TrimRight(baseURL.Path, "/")
 	combined := *baseURL
-	combined.Path = defaultURL.Path
+	// codex chunk10 P2: base_url 带版本前缀 (e.g. "/v1") 但缺 adapter endpoint
+	// 后缀时, 自动拼 adapter 的 endpoint suffix 防 POST 到 API 根路径。
+	switch {
+	case basePath == "" || basePath == "/":
+		// base 仅 scheme+host → 用 adapter 的全 path
+		combined.Path = defaultPath
+	case strings.HasSuffix(basePath, defaultPath):
+		// base 已含完整 adapter path (e.g. /api/v1/chat/completions) → 信任
+		combined.Path = basePath
+	case strings.HasPrefix(defaultPath, basePath+"/"):
+		// base 是 adapter path 的前缀 (e.g. base /v1, adapter /v1/chat/completions) → 用 adapter 全 path
+		combined.Path = defaultPath
+	default:
+		// base path 自带额外前缀 (e.g. /api/v1) 不被 adapter path 包含, 拼接
+		combined.Path = basePath + defaultPath
+	}
 	combined.RawQuery = defaultURL.RawQuery
 	return combined.String()
 }
