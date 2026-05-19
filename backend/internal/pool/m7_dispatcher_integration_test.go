@@ -12,11 +12,68 @@ package pool
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
+	"github.com/google/uuid"
 )
+
+type m7AccountSource struct {
+	snapshots []*AccountSnapshot
+	err       error
+}
+
+func (f *m7AccountSource) ListAccounts(_ context.Context, _ SelectionRequest) ([]*AccountSnapshot, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.snapshots, nil
+}
+
+type m7ClaimGate struct{}
+
+func (m7ClaimGate) WriteAcquisition(context.Context, int64, int64, int64, uuid.UUID) error {
+	return nil
+}
+
+type m7StubSelector struct {
+	result    *SelectionResult
+	err       error
+	calls     atomic.Int64
+	gotClaims atomic.Int64
+}
+
+func (s *m7StubSelector) Select(_ context.Context, req SelectionRequest) (*SelectionResult, error) {
+	s.calls.Add(1)
+	if req.ClaimID != 0 {
+		s.gotClaims.Add(1)
+	}
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.result == nil {
+		return nil, ErrNoEligibleAccount
+	}
+	return s.result, nil
+}
+
+func m7StubResult(accountID int64) *SelectionResult {
+	return &SelectionResult{AccountID: accountID, AcquisitionToken: uuid.New()}
+}
+
+func m7WaitFor(t *testing.T, timeout time.Duration, cond func() bool, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("waitFor 超时 (%v): %s", timeout, msg)
+}
 
 func TestM7_ShadowMode_SegmentTableNotPolluted(t *testing.T) {
 	// 用真 PASRSelector 实例 (shadow ReadOnlySegments=true) 跑 dispatcher,
@@ -27,13 +84,13 @@ func TestM7_ShadowMode_SegmentTableNotPolluted(t *testing.T) {
 		{ID: 2, LoadRate: 0.1, Priority: 1, LastUsedAt: now},
 		{ID: 3, LoadRate: 0.1, Priority: 1, LastUsedAt: now},
 	}
-	src := &fakeAccountSource{snapshots: snaps}
+	src := &m7AccountSource{snapshots: snaps}
 	segments := NewSegmentTable(SegmentTableConfig{})
 	ring := NewAccountRing([]int64{1, 2, 3}, 0xCAFEBABE)
 
 	defaultPASR, err := NewPASRSelector(PASRSelectorConfig{
 		Accounts:     src,
-		Claims:       &fakeClaimGate{},
+		Claims:       m7ClaimGate{},
 		RingProvider: func() *AccountRing { return ring },
 		Segments:     segments,
 		LoadCap:      0.95,
@@ -70,7 +127,7 @@ func TestM7_ShadowMode_SegmentTableNotPolluted(t *testing.T) {
 	// 避免 default 路径副作用 — 然后只看 shadow 是否动段表。
 	// 实际上 default = defaultPASR 走 LookupOrCreate 也会建段, 所以这里
 	// 改用 stubSelector 当 Default 让它不动段表, 只看 shadow 副作用。
-	stubDef := &stubSelector{result: newStubResult(1)}
+	stubDef := &m7StubSelector{result: m7StubResult(1)}
 	d2, err := NewSelectorDispatcher(SelectorDispatcherConfig{
 		Mode:          DispatchModeShadow,
 		ShadowPercent: 100,
@@ -119,7 +176,7 @@ func TestM7_ShadowMode_SegmentTableNotPolluted(t *testing.T) {
 	}
 
 	// 等 shadow worker drain 完
-	waitFor(t, 3*time.Second, func() bool {
+	m7WaitFor(t, 3*time.Second, func() bool {
 		snap := SnapshotPASRDispatchMetrics()
 		return snap.ShadowSampled >= 100 || snap.ShadowDrop > 0
 	}, "shadow worker 处理完 100 req")
@@ -140,13 +197,13 @@ func TestM7_ActualMode_SegmentTableLearns(t *testing.T) {
 		{ID: 2, LoadRate: 0.1, Priority: 1, LastUsedAt: now},
 		{ID: 3, LoadRate: 0.1, Priority: 1, LastUsedAt: now},
 	}
-	src := &fakeAccountSource{snapshots: snaps}
+	src := &m7AccountSource{snapshots: snaps}
 	segments := NewSegmentTable(SegmentTableConfig{})
 	ring := NewAccountRing([]int64{1, 2, 3}, 0xCAFEBABE)
 
 	actualPASR, err := NewPASRSelector(PASRSelectorConfig{
 		Accounts:     src,
-		Claims:       &fakeClaimGate{},
+		Claims:       m7ClaimGate{},
 		RingProvider: func() *AccountRing { return ring },
 		Segments:     segments,
 		LoadCap:      0.95,
