@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -110,7 +109,15 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 		return nil, fmt.Errorf("dispatcher: 读取上游响应失败: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("dispatcher: 上游状态码 %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		// 用类型化错误把 status + body 透传到 caller, 由 caller 决定 client 返回
+		// 状态码 / 走 health classification / 触发 cooldown. 不能塌成 string-only,
+		// 否则 chat handler 总是 502 + status=0 health signal 跟流式路径行为分叉
+		// (codex review P1 2026-05-19).
+		return nil, &UpstreamHTTPError{
+			StatusCode: resp.StatusCode,
+			Body:       append([]byte(nil), raw...),
+			Header:     resp.Header.Clone(),
+		}
 	}
 
 	upstreamAdapters := d.ProtocolAdapters

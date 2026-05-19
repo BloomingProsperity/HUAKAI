@@ -262,11 +262,29 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 	bufferedEnv, err := dispatcher.DispatchHCSF(dispatchCtx, canonicalReq)
 	if err != nil {
 		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_dispatch_error", ex.requestID)
-		if ex.healthKeyOK {
-			classification, _ := gateway.Classify(0, nil, []byte(err.Error()), ex.accInfo.Platform)
-			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromDispatchError(err, classification), 0, time.Since(startedAt), ex.requestID, nil)
+
+		// 把上游真实 status / header / body 透传到 client + health classification,
+		// 保留 401/429 retry 语义 + cooldown / rate-limit 信号 (codex review P1
+		// 2026-05-19; 之前总是 502 + status=0 跟流式路径行为分叉).
+		var upstreamErr *gateway.UpstreamHTTPError
+		clientStatus := http.StatusBadGateway
+		healthStatus := 0
+		var healthHeader http.Header
+		var classifyBody []byte
+		if errors.As(err, &upstreamErr) {
+			clientStatus = upstreamErr.StatusCode
+			healthStatus = upstreamErr.StatusCode
+			healthHeader = upstreamErr.Header
+			classifyBody = upstreamErr.Body
+		} else {
+			classifyBody = []byte(err.Error())
 		}
-		writeJSONError(w, http.StatusBadGateway, "upstream_dispatch_error", err.Error())
+
+		if ex.healthKeyOK {
+			classification, _ := gateway.Classify(healthStatus, healthHeader, classifyBody, ex.accInfo.Platform)
+			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromDispatchError(err, classification), healthStatus, time.Since(startedAt), ex.requestID, nil)
+		}
+		writeJSONError(w, clientStatus, "upstream_dispatch_error", err.Error())
 		return nil, false
 	}
 	return ex.finalizeBufferedEnvelope(w, bufferedEnv, 0, startedAt)
