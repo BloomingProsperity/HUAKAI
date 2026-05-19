@@ -75,10 +75,17 @@ type Querier interface {
 	// excluded from the cap. Otherwise an actor that hits the cap keeps
 	// refreshing the window with deny rows on every retry and never recovers.
 	CountIssuanceInWindow(ctx context.Context, arg CountIssuanceInWindowParams) (int64, error)
+	// auth_secret 应由调用方加密后传入 (HUAKAI credentialstore.KeyProvider)。
+	// sqlc 层是字节流, 不强制加密格式 — 业务层负责。
+	CreateProxy(ctx context.Context, arg CreateProxyParams) (CreateProxyRow, error)
+	CreateTLSFingerprintProfile(ctx context.Context, arg CreateTLSFingerprintProfileParams) (CreateTLSFingerprintProfileRow, error)
 	// After the operator issues a real (non-bootstrap) admin token, the
 	// bootstrap rows should be auto-disabled so the env-var token is no
 	// longer accepted by the resolver. Idempotent.
 	DisableBootstrapAdminTokens(ctx context.Context) (int64, error)
+	GetProxy(ctx context.Context, arg GetProxyParams) (GetProxyRow, error)
+	// 单 profile 查询 (按 tenant + id 双过滤); admin UI 编辑 + resolver 走这条。
+	GetTLSFingerprintProfile(ctx context.Context, arg GetTLSFingerprintProfileParams) (GetTLSFingerprintProfileRow, error)
 	// Slice 2 (N+4b2) admin_audit_events queries.
 	// Per CMB-5 + CMB-7: these queries are append-only writes. NEVER store
 	// plaintext bearer or key_hash inside the payload jsonb.
@@ -90,6 +97,21 @@ type Querier interface {
 	// and the prefix derived from the plaintext (first 16 chars).
 	InsertAdminToken(ctx context.Context, arg InsertAdminTokenParams) (int64, error)
 	InsertProviderAccount(ctx context.Context, arg InsertProviderAccountParams) (int64, error)
+	// Phase 3 health check worker 用 (选 active 但 last_check_at 老的 ping)。
+	ListActiveProxiesByTenant(ctx context.Context, tenantID int64) ([]ListActiveProxiesByTenantRow, error)
+	// Drift worker 用; 只取 status='active' 且未软删。
+	ListActiveTLSFingerprintProfilesByTenant(ctx context.Context, tenantID int64) ([]ListActiveTLSFingerprintProfilesByTenantRow, error)
+	// HUAKAI F-FP-POOL Phase 1.3 sqlc queries — 出口代理池 CRUD。
+	//
+	// 多租户约束 (DR-001/TS-006): 所有 query 以 tenant_id 为第一参数过滤,
+	// 跨租户访问被 WHERE 拒绝在 SQL 层。
+	ListProxiesByTenant(ctx context.Context, tenantID int64) ([]ListProxiesByTenantRow, error)
+	// HUAKAI F-FP-POOL Phase 1.3 sqlc queries — TLS 指纹模板池 CRUD。
+	//
+	// 多租户约束 (DR-001/TS-006): 所有 query 必须以 tenant_id 为第一参数过滤,
+	// 跨租户访问被 WHERE 子句拒绝在 SQL 层。
+	// admin 后台列表; 返回该 tenant 下所有未软删行 (含 disabled / drift_detected)。
+	ListTLSFingerprintProfilesByTenant(ctx context.Context, tenantID int64) ([]ListTLSFingerprintProfilesByTenantRow, error)
 	// Slice 2 (N+4b2) admin_tokens queries.
 	// Per docs/process/plans/2026-05-01-n4b-admin-keys.md §Scope A.
 	// Per CMB-1: this file is consumed only by internal/admin and never by
@@ -110,8 +132,20 @@ type Querier interface {
 	// because admin_tokens has no tenant ownership for platform_admin rows;
 	// the handler-side RBAC check decides whether the caller can revoke.
 	RevokeAdminToken(ctx context.Context, arg RevokeAdminTokenParams) (int64, error)
+	// Phase 3 health check worker 标 dead/active, admin 手动 disable 走这。
+	SetProxyStatus(ctx context.Context, arg SetProxyStatusParams) error
+	// status 转换专用; drift worker 标 'drift_detected', admin disable/enable 走这。
+	// 不动 updated_at (status 不算内容变); active 时刷 last_validated_at.
+	SetTLSFingerprintProfileStatus(ctx context.Context, arg SetTLSFingerprintProfileStatusParams) error
 	SoftDeleteProviderAccount(ctx context.Context, arg SoftDeleteProviderAccountParams) error
+	SoftDeleteProxy(ctx context.Context, arg SoftDeleteProxyParams) error
+	// 软删 (设 deleted_at); provider_accounts.tls_fingerprint_profile_id 引用仍存在
+	// (FK 不级联), 但 resolver 走 GetByID 因 deleted_at IS NULL 过滤掉, 降级到 builtin.
+	SoftDeleteTLSFingerprintProfile(ctx context.Context, arg SoftDeleteTLSFingerprintProfileParams) error
 	UpdateProviderAccountEnabled(ctx context.Context, arg UpdateProviderAccountEnabledParams) error
+	UpdateProxy(ctx context.Context, arg UpdateProxyParams) (UpdateProxyRow, error)
+	// 全字段更新; admin UI 修改时调用。updated_at 自动刷; status 走专用 SetStatus 端点。
+	UpdateTLSFingerprintProfile(ctx context.Context, arg UpdateTLSFingerprintProfileParams) (UpdateTLSFingerprintProfileRow, error)
 }
 
 var _ Querier = (*Queries)(nil)

@@ -6,6 +6,8 @@ sql:
       - sql/queries/admin_api_keys.sql
       - sql/queries/admin_audit.sql
       - sql/queries/admin_provider_account_mutations.sql
+      - sql/queries/admin_proxies.sql
+      - sql/queries/admin_tls_fingerprint_profiles.sql
       - sql/queries/admin_tokens.sql
     gen:
       go:
@@ -31,6 +33,11 @@ sql:
           dlq: DLQ
           oauth_endpoint_health: OAuthEndpointHealth
           openai_403_counter: OpenAI403Counter
+          tls_fingerprint_profile_id: TLSFingerprintProfileID
+          tls_supported_versions: TLSSupportedVersions
+          expected_ja3_hash: ExpectedJA3Hash
+          ja3: JA3
+          ja4: JA4
   - engine: postgresql
     schema: sql/migrations
     queries:
