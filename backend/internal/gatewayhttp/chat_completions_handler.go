@@ -143,9 +143,22 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 		if !exec.prepareRoute(w) {
 			return
 		}
+		// codex chunk9 P1: 先 reserve (ClaimGate.Reserve 内部走
+		// uq_claims_idempotency 唯一约束做 idempotency-key + payload fingerprint
+		// 校验), 再查 cache。 否则 client reuse 同 idempotency-key 但 payload 变
+		// 时, cache 命中绕过 fingerprint conflict 检查。 reserve 不占 pool slot
+		// (selectPoolAccount 才占), 所以 cache 命中分支仍能避开 pool acquire。
+		if !exec.reserveClaim(w) {
+			return
+		}
 		if !exec.req.Stream {
 			handled, proceed := exec.serveL2CacheIfAvailable(w)
-			if !proceed || handled {
+			if !proceed {
+				return
+			}
+			if handled {
+				// cache 命中: claim 仍在 reserving, 不占 pool slot, 标 abort 收尾。
+				_ = exec.d.Settler.Abort(exec.ctx, exec.ident.TenantID, exec.reserveRes.ClaimID, "served_from_l2_cache", exec.requestID)
 				return
 			}
 		}
