@@ -68,10 +68,13 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 	}
 
 	defaultEndpoint := a.endpointFor(in.Credential.Extra["stream"] == "true")
+	// codex chunk11 P2: 先替换 {model} 占位再走 EndpointForCredential。 否则
+	// EndpointForCredential 内的 url.Parse 把 "{" "}" 转 "%7B" "%7D",
+	// 后续 strings.ReplaceAll 找不到 "{model}" 子串, model 占位永远换不掉。
+	// codex chunk4 P2: model ID 用 path escape 防 URL 保留字符断 routing。
+	substituted := strings.ReplaceAll(defaultEndpoint, "{model}", url.PathEscape(in.UpstreamModelID))
 	// upstream_passthrough 凭据自带 base_url 优先用之 (codex chunk4 P1)
-	defaultEndpoint = provider.EndpointForCredential(defaultEndpoint, in.Credential)
-	// codex chunk4 P2: model ID 用 path escape 防 URL 保留字符断 routing
-	endpoint := strings.ReplaceAll(defaultEndpoint, "{model}", url.PathEscape(in.UpstreamModelID))
+	endpoint := provider.EndpointForCredential(substituted, in.Credential)
 
 	// API key 在 query 还是 header
 	if in.Credential.Extra["auth_in_query"] == "true" {
