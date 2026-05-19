@@ -77,15 +77,16 @@ type UserReceiptCost struct {
 }
 
 type receiptVerifyResponse struct {
-	Valid           bool     `json:"valid"`
-	KeyStatus       string   `json:"key_status"`
-	Reason          string   `json:"reason,omitempty"`
-	AgeSeconds      int64    `json:"age_seconds"`
-	ReceiptSequence int32    `json:"receipt_sequence"`
-	Verdict         string   `json:"verdict,omitempty"`
-	DeltaMicroUSD   int64    `json:"delta_micro_usd,omitempty"`
-	FieldsMismatch  []string `json:"fields_mismatch,omitempty"`
-	RefundEventID   int64    `json:"refund_event_id,omitempty"`
+	Valid             bool     `json:"valid"`
+	KeyStatus         string   `json:"key_status"`
+	Reason            string   `json:"reason,omitempty"`
+	AgeSeconds        int64    `json:"age_seconds"`
+	ReceiptSequence   int32    `json:"receipt_sequence"`
+	Verdict           string   `json:"verdict,omitempty"`
+	DeltaMicroUSD     int64    `json:"delta_micro_usd,omitempty"`
+	FieldsMismatch    []string `json:"fields_mismatch,omitempty"`
+	RefundEventID     int64    `json:"refund_event_id,omitempty"`
+	SupportedVersions []string `json:"supported_versions,omitempty"`
 }
 
 func NewCostReceiptGetHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
@@ -162,6 +163,18 @@ func NewCostReceiptVerifyHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 		}
 		if strings.TrimSpace(req.RequestID) != requestID {
 			writeJSONError(w, http.StatusBadRequest, "request_id_mismatch", "receipt request_id must match path")
+			return
+		}
+		if !receiptSchemaVersionSupported(receiptSchemaVersion(req)) {
+			writeAuditJSON(w, http.StatusOK, receiptVerifyResponse{
+				Valid:             false,
+				KeyStatus:         "unknown",
+				Reason:            "schema_unsupported",
+				AgeSeconds:        receiptAgeSeconds(req.OccurredAt, d.now()),
+				ReceiptSequence:   req.ReceiptSequence,
+				Verdict:           "schema_unsupported",
+				SupportedVersions: supportedReceiptSchemaVersions(),
+			})
 			return
 		}
 		canonical, err := canonicalHashFromUserReceipt(r.Context(), req)
@@ -317,7 +330,7 @@ func NewPricingSnapshotHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 }
 
 func receiptRequestIDFromPath(w http.ResponseWriter, r *http.Request) (string, bool) {
-	requestID := strings.TrimSpace(chi.URLParam(r, "request_id"))
+	requestID := namedReceiptRequestIDFromPath(r)
 	if requestID == "" {
 		requestID = strings.TrimSpace(chi.URLParam(r, "*"))
 	}
@@ -325,16 +338,29 @@ func receiptRequestIDFromPath(w http.ResponseWriter, r *http.Request) (string, b
 }
 
 func receiptVerifyRequestIDFromPath(w http.ResponseWriter, r *http.Request) (string, bool) {
-	requestID := strings.TrimSpace(chi.URLParam(r, "request_id"))
+	requestID := namedReceiptRequestIDFromPath(r)
 	if requestID == "" {
 		raw := strings.TrimSpace(chi.URLParam(r, "*"))
 		if raw == "" || !strings.HasSuffix(raw, "/verify") {
-			writeJSONError(w, http.StatusNotFound, "receipt_verify_route_not_found", "receipt verify path must end with /verify")
+			http.NotFound(w, r)
 			return "", false
 		}
 		requestID = strings.TrimSuffix(raw, "/verify")
 	}
 	return validateReceiptPathRequestID(w, requestID)
+}
+
+func namedReceiptRequestIDFromPath(r *http.Request) string {
+	requestID := strings.TrimSpace(chi.URLParam(r, "request_id"))
+	if requestID != "" {
+		return requestID
+	}
+	host := strings.TrimSpace(chi.URLParam(r, "request_id_host"))
+	tail := strings.TrimSpace(chi.URLParam(r, "request_id_tail"))
+	if host == "" || tail == "" {
+		return ""
+	}
+	return host + "/" + tail
 }
 
 func validateReceiptPathRequestID(w http.ResponseWriter, requestID string) (string, bool) {
@@ -344,6 +370,10 @@ func validateReceiptPathRequestID(w http.ResponseWriter, requestID string) (stri
 	}
 	if len(requestID) > MaxRequestIDLength {
 		writeJSONError(w, http.StatusBadRequest, "request_id_too_long", "request_id length must be <= 256 bytes")
+		return "", false
+	}
+	if strings.Count(requestID, "/") > 1 {
+		writeJSONError(w, http.StatusNotFound, "receipt_route_not_found", "receipt request_id path may contain at most one slash")
 		return "", false
 	}
 	return requestID, true
@@ -397,7 +427,7 @@ func auditReceiptFromUserReceipt(receipt UserCostReceipt, tenantID int64) *audit
 }
 
 func userReceiptBelongsToTenant(receipt UserCostReceipt, tenantID int64) bool {
-	switch strings.TrimSpace(firstNonEmpty(receipt.SchemaVersion, audit.ReceiptSchemaVersion)) {
+	switch receiptSchemaVersion(receipt) {
 	case audit.ReceiptSchemaVersionV1:
 		return receipt.TenantID == tenantID
 	case audit.ReceiptSchemaVersion:
@@ -409,7 +439,7 @@ func userReceiptBelongsToTenant(receipt UserCostReceipt, tenantID int64) bool {
 
 func canonicalPayloadFromUserReceipt(receipt UserCostReceipt) audit.ReceiptCanonicalPayload {
 	return audit.ReceiptCanonicalPayload{
-		SchemaVersion:       firstNonEmpty(receipt.SchemaVersion, audit.ReceiptSchemaVersion),
+		SchemaVersion:       receiptSchemaVersion(receipt),
 		RequestID:           strings.TrimSpace(receipt.RequestID),
 		ReceiptSequence:     receipt.ReceiptSequence,
 		TenantScopeRef:      strings.TrimSpace(receipt.TenantScopeRef),
@@ -442,7 +472,7 @@ func canonicalPayloadV1FromUserReceipt(receipt UserCostReceipt) audit.ReceiptCan
 }
 
 func canonicalHashFromUserReceipt(ctx context.Context, receipt UserCostReceipt) ([]byte, error) {
-	switch strings.TrimSpace(firstNonEmpty(receipt.SchemaVersion, audit.ReceiptSchemaVersion)) {
+	switch receiptSchemaVersion(receipt) {
 	case audit.ReceiptSchemaVersionV1:
 		return audit.CanonicalReceiptHashForPayloadV1(ctx, canonicalPayloadV1FromUserReceipt(receipt))
 	case audit.ReceiptSchemaVersion:
@@ -450,6 +480,23 @@ func canonicalHashFromUserReceipt(ctx context.Context, receipt UserCostReceipt) 
 	default:
 		return nil, audit.ErrReceiptInvalidDerivedData
 	}
+}
+
+func receiptSchemaVersion(receipt UserCostReceipt) string {
+	return strings.TrimSpace(firstNonEmpty(receipt.SchemaVersion, audit.ReceiptSchemaVersion))
+}
+
+func receiptSchemaVersionSupported(version string) bool {
+	switch strings.TrimSpace(version) {
+	case audit.ReceiptSchemaVersionV1, audit.ReceiptSchemaVersion:
+		return true
+	default:
+		return false
+	}
+}
+
+func supportedReceiptSchemaVersions() []string {
+	return []string{audit.ReceiptSchemaVersionV1, audit.ReceiptSchemaVersion}
 }
 
 func canonicalAdjustmentRefs(refs []string) []string {

@@ -44,6 +44,10 @@ var KnownAliases = map[string]string{
 	// 临时兼容：/v1/admin/provider-accounts 是 main.go 路径上的双注册
 	// （line 895-896）；spec 只暴露规范路径 /admin/v1/provider-accounts。
 	"/v1/admin/provider-accounts": "/admin/v1/provider-accounts",
+	// 兼容带一个 slash 的 request_id：实现用两段 chi param 限界，
+	// OpenAPI 仍用规范的 /v1/receipts/{request_id} 表达同一资源。
+	"/v1/receipts/{request_id_host}/{request_id_tail}":        "/v1/receipts/{request_id}",
+	"/v1/receipts/{request_id_host}/{request_id_tail}/verify": "/v1/receipts/{request_id}/verify",
 }
 
 // ParseSpecPaths 用行解析从 OpenAPI YAML 抽 paths 集合。
