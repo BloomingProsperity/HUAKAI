@@ -152,6 +152,16 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			return
 		}
 		if !exec.req.Stream {
+			// codex review P1 2026-05-19: anthropic_messages adapter
+			// ProviderResponseToCanonical 仍是 ErrNotImplemented stub, 走非流式
+			// 会先扣上游账号, 解析时 502 — 客户端拿 502 但额度已花。
+			// buffered 翻译器实现前 fail-fast 拒 (501 Not Implemented), 让客户端
+			// 改 stream:true 或选 OpenAI 协议路径。
+			if exec.resolved.ProtocolFamily == "anthropic_messages" {
+				writeJSONError(w, http.StatusNotImplemented, "buffered_anthropic_not_supported",
+					"Anthropic /v1/messages 非流式 (stream:false) 暂未实现; 请设 stream:true 走流式路径")
+				return
+			}
 			exec.handleNonStreamingResponse(w)
 			return
 		}
