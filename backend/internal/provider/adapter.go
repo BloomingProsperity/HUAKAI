@@ -17,6 +17,8 @@ package provider
 import (
 	"context"
 	"net/http"
+	"net/url"
+	"strings"
 )
 
 // CredentialType 是凭据形态的封闭枚举。
@@ -73,15 +75,37 @@ type AccountInfo struct {
 //   - cred.Type == UpstreamPassthrough 且 cred.Extra["base_url"] 非空 → 用
 //     account 自带的第三方代理地址 (provider_accounts.upstream_static.base_url)
 //
+// base_url 路径处理 (codex chunk9 P2 修正):
+//   - base_url 只含 scheme + host (e.g. "https://proxy.com" 或 "https://proxy.com/") →
+//     用 adapter default 的 path 拼接, 结果 "https://proxy.com/v1/chat/completions"
+//   - base_url 自带 path (e.g. "https://proxy.com/api/v1/chat") → 信任用户原样返回
+//
 // codex chunk4 P1 防: 第三方 upstream_passthrough 凭据 token 误发到官方
 // vendor endpoint (e.g. 客户配置自托管 proxy 但请求仍发 api.openai.com)。
 func EndpointForCredential(adapterDefault string, cred Credential) string {
-	if cred.Type == CredentialTypeUpstreamPassthrough {
-		if base := cred.Extra["base_url"]; base != "" {
-			return base
-		}
+	if cred.Type != CredentialTypeUpstreamPassthrough {
+		return adapterDefault
 	}
-	return adapterDefault
+	base := strings.TrimSpace(cred.Extra["base_url"])
+	if base == "" {
+		return adapterDefault
+	}
+	baseURL, err := url.Parse(base)
+	if err != nil || baseURL.Host == "" {
+		return base
+	}
+	if baseURL.Path != "" && baseURL.Path != "/" {
+		// 用户显式指定完整 path 信任之
+		return base
+	}
+	defaultURL, err := url.Parse(adapterDefault)
+	if err != nil {
+		return base
+	}
+	combined := *baseURL
+	combined.Path = defaultURL.Path
+	combined.RawQuery = defaultURL.RawQuery
+	return combined.String()
 }
 
 // BuildInput 是 BuildRequest 的入参。

@@ -187,8 +187,8 @@ func TestPostgresCredentialVault_AccountNotFound(t *testing.T) {
 	ctx := context.Background()
 	vault := NewPostgresCredentialVault(testDB)
 
-	// 使用不可能存在的负数 ID。
-	_, _, err := vault.Resolve(ctx, -999999)
+	// 使用不可能存在的负数 ID。tenantID 用 1 占位 (此用例只验账号不存在)。
+	_, _, err := vault.Resolve(ctx, 1, -999999)
 	if err == nil {
 		t.Fatal("期望 ErrAccountNotFound，但得到 nil")
 	}
@@ -210,7 +210,7 @@ func TestPostgresCredentialVault_AccountDisabled(t *testing.T) {
 		"test-account-"+suffix, "api_key", false, creds)
 
 	vault := NewPostgresCredentialVault(testDB)
-	_, _, err := vault.Resolve(ctx, f.providerAccountID)
+	_, _, err := vault.Resolve(ctx, f.tenantID, f.providerAccountID)
 	if err == nil {
 		t.Fatal("期望 ErrAccountDisabled，但得到 nil")
 	}
@@ -238,7 +238,7 @@ func TestPostgresCredentialVault_APIKeyHappyPath(t *testing.T) {
 		"test-account-"+suffix, "api_key", true, creds)
 
 	vault := NewPostgresCredentialVault(testDB)
-	cred, info, err := vault.Resolve(ctx, f.providerAccountID)
+	cred, info, err := vault.Resolve(ctx, f.tenantID, f.providerAccountID)
 	if err != nil {
 		t.Fatalf("期望成功，但得到错误: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestPostgresCredentialVault_OAuthHappyPath(t *testing.T) {
 		"test-account-"+suffix, "oauth", true, creds)
 
 	vault := NewPostgresCredentialVault(testDB)
-	cred, _, err := vault.Resolve(ctx, f.providerAccountID)
+	cred, _, err := vault.Resolve(ctx, f.tenantID, f.providerAccountID)
 	if err != nil {
 		t.Fatalf("期望成功，但得到错误: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestPostgresCredentialVault_ServiceAccountPath(t *testing.T) {
 		"test-account-"+suffix, "service_account", true, creds)
 
 	vault := NewPostgresCredentialVault(testDB)
-	cred, _, err := vault.Resolve(ctx, f.providerAccountID)
+	cred, _, err := vault.Resolve(ctx, f.tenantID, f.providerAccountID)
 	if err != nil {
 		t.Fatalf("期望成功，但得到错误: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestPostgresCredentialVault_UpstreamStaticPath(t *testing.T) {
 		"test-account-"+suffix, "upstream_static", true, creds)
 
 	vault := NewPostgresCredentialVault(testDB)
-	cred, _, err := vault.Resolve(ctx, f.providerAccountID)
+	cred, _, err := vault.Resolve(ctx, f.tenantID, f.providerAccountID)
 	if err != nil {
 		t.Fatalf("期望成功，但得到错误: %v", err)
 	}
@@ -394,7 +394,7 @@ func TestPostgresCredentialVault_MalformedCredentials(t *testing.T) {
 		"test-account-"+suffix, "api_key", true, creds)
 
 	vault := NewPostgresCredentialVault(testDB)
-	_, _, err := vault.Resolve(ctx, f.providerAccountID)
+	_, _, err := vault.Resolve(ctx, f.tenantID, f.providerAccountID)
 	if err == nil {
 		t.Fatal("期望 ErrCredentialFormat，但得到 nil")
 	}
