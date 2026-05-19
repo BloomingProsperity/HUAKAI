@@ -166,3 +166,8 @@ ClientHello wire advertisement；未设置时保留 BoringSSL 默认路径。
 
 modification: HUAKAI codex executor lane (R-3-A-fix-4-deeper), 2026-05-18 UTC。
 未新增非 boring 依赖，未修改 HUAKAI 主仓 LICENSE。
+
+## R-3-A-fix-5-deeper: profile setter hardening
+`ssl_lib.cc`: staged commit、cipher 去重、EC 0/1/2 校验；`extensions.cc`: strict profile 已带 GREASE group 时跳过默认 GREASE；`ssl.h` / `ssl.errordata`: 本地 reason。
+modification: HUAKAI codex executor lane (R-3-A-fix-5-deeper), 2026-05-18 UTC。
+未新增非 boring 依赖，未修改 HUAKAI 主仓 LICENSE。

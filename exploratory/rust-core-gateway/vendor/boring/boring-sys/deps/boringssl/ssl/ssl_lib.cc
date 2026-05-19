@@ -3169,17 +3169,45 @@ int SSL_CTX_set_tls13_cipher_order(SSL_CTX *ctx, const uint16_t *types,
 int SSL_CTX_set_client_hello_profile(SSL_CTX *ctx, const uint16_t *ciphers,
                                      size_t ciphers_len, const uint16_t *groups,
                                      size_t groups_len,
-                                     const uint8_t *ec_points, size_t ec_points_len) {
+                                     const uint8_t *ec_points,
+                                     size_t ec_points_len) {
   if ((ciphers == nullptr && ciphers_len != 0) ||
       (groups == nullptr && groups_len != 0) ||
       (ec_points == nullptr && ec_points_len != 0)) {
     OPENSSL_PUT_ERROR(SSL, ERR_R_PASSED_NULL_PARAMETER);
     return 0;
   }
-  return ctx->explicit_cipher_order.CopyFrom(Span(ciphers, ciphers_len)) &&
-         ctx->supported_group_list.CopyFrom(Span(groups, groups_len)) &&
-         ctx->explicit_ec_point_formats.CopyFrom(
-             Span(ec_points, ec_points_len));
+  for (size_t i = 0; i < ec_points_len; i++) {
+    if (ec_points[i] != 0 && ec_points[i] != 1 && ec_points[i] != 2) {
+      OPENSSL_PUT_ERROR(SSL, SSL_R_UNKNOWN_EC_POINT_FORMAT);
+      return 0;
+    }
+  }
+  Array<uint16_t> staged_ciphers;
+  if (!staged_ciphers.InitForOverwrite(ciphers_len)) {
+    return 0;
+  }
+  size_t ciphers_written = 0;
+  for (size_t i = 0; i < ciphers_len; i++) {
+    size_t j = 0;
+    for (; j < ciphers_written && staged_ciphers[j] != ciphers[i]; j++) {
+    }
+    if (j == ciphers_written) {
+      staged_ciphers[ciphers_written++] = ciphers[i];
+    }
+  }
+  staged_ciphers.Shrink(ciphers_written);
+  Array<uint16_t> staged_groups;
+  Array<uint8_t> staged_ec_points;
+  // HUAKAI patch: 全字段先暂存，所有分配成功后再提交到 SSL_CTX。
+  if (!staged_groups.CopyFrom(Span(groups, groups_len)) ||
+      !staged_ec_points.CopyFrom(Span(ec_points, ec_points_len))) {
+    return 0;
+  }
+  ctx->explicit_cipher_order = std::move(staged_ciphers);
+  ctx->supported_group_list = std::move(staged_groups);
+  ctx->explicit_ec_point_formats = std::move(staged_ec_points);
+  return 1;
 }
 
 void SSL_set_permute_extensions(SSL *ssl, int enabled) {

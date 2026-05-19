@@ -2559,8 +2559,15 @@ static bool ext_supported_groups_add_clienthello(const SSL_HANDSHAKE *hs,
     return false;
   }
 
-  // Add a fake group. See RFC 8701.
-  if (ssl->ctx->grease_enabled &&
+  bool skip_default_grease = false;
+  for (uint16_t group : hs->config->supported_group_list) {
+    skip_default_grease |= hs->config->has_explicit_order_strict_mode &&
+                           ((group & 0x0f0f) == 0x0a0a &&
+                            (group >> 8) == (group & 0xff));
+  }
+
+  // HUAKAI patch: strict profile 已显式带 GREASE group 时不再追加第二个。
+  if (ssl->ctx->grease_enabled && !skip_default_grease &&
       !CBB_add_u16(&groups_bytes, ssl_get_grease_value(hs, ssl_grease_group))) {
     return false;
   }
