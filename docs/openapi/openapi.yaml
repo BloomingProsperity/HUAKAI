@@ -81,6 +81,8 @@ tags:
     description: Billing Ledger query + adjustments. F-OBS-001.
   - name: admin-audit
     description: Audit trail query (rate-limit + pool-routing + oauth-refresh). F-RATE-001 + F-POOL-001 + F-AUTH-005.
+  - name: admin-cache
+    description: L2 response cache inspection and operator eviction. F-CACHE-002.
   - name: admin-dlq
     description: Usage Record DLQ replay. F-OBS-001.
 
@@ -390,6 +392,72 @@ paths:
               schema: { $ref: '#/components/schemas/AuditPubkeysResponse' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/audit/verify:
+    get:
+      tags: [audit]
+      summary: Fetch a signed audit ledger entry by request id
+      operationId: getAuditVerify
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
+      security: []
+      parameters:
+        - in: query
+          name: request_id
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 256 }
+        - in: query
+          name: tenant_scope_ref
+          required: false
+          schema: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        '200':
+          description: Signed audit ledger entry plus chain proof for client-side verification.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditVerifyResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [audit]
+      summary: Detached audit ledger verification lookup
+      operationId: postAuditVerify
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuditVerifyRequest' }
+      responses:
+        '200':
+          description: Signed audit ledger entry plus chain proof for client-side verification.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditVerifyResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413':
+          description: Audit verify body exceeds the 4KB detached lookup limit.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/audit/merkle-tree.json:
+    get:
+      tags: [audit]
+      summary: Fetch the public audit Merkle chain head
+      operationId: getAuditMerkleTree
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
+      security: []
+      responses:
+        '200':
+          description: Current audit Merkle root and append-only ledger size.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditMerkleTree' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   # ==========================================================================
   # Platform user auth/session endpoints
   # ==========================================================================
@@ -592,6 +660,29 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AuthSessionResponse' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/auth/social/identity-changed:
+    post:
+      tags: [auth]
+      summary: Revoke sessions after a social identity change
+      operationId: authSocialIdentityChanged
+      x-huakai-spec-source: [docs/specs/user-authentication.md, docs/specs/session-management.md]
+      x-huakai-required-role: tenant_operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthSocialIdentityChangedRequest' }
+      responses:
+        '200':
+          description: Identity change accepted and affected sessions revoked.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSocialIdentityChangedResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
@@ -1145,6 +1236,253 @@ paths:
           description: Cleared.
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /admin/v1/provider-accounts/{id}/enabled:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    patch:
+      tags: [admin-accounts]
+      summary: Enable or disable a Provider Account
+      operationId: updateProviderAccountEnabled
+      x-huakai-spec-source:
+        - docs/specs/pool-routing.md
+        - docs/specs/rate-limiting.md
+      x-huakai-required-role: tenant_operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderAccountEnabledUpdate' }
+      responses:
+        '200':
+          description: Enabled state updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderAccountEnabledResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/provider-accounts/{id}/credentials:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    get:
+      tags: [admin-accounts]
+      summary: List encrypted credential metadata for a Provider Account
+      operationId: listProviderAccountCredentials
+      x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Credential metadata only; raw credential material is never returned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountCredentialListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-accounts]
+      summary: Create encrypted credential material for a Provider Account
+      operationId: createProviderAccountCredential
+      x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountCredentialWriteRequest' }
+      responses:
+        '201':
+          description: Credential stored; raw credential material is write-only.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountCredentialMetadata' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/provider-accounts/{id}/credentials/{credential_id}:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+      - name: credential_id
+        in: path
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+    delete:
+      tags: [admin-accounts]
+      summary: Delete encrypted credential material for a Provider Account
+      operationId: deleteProviderAccountCredential
+      x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountCredentialStateRequest' }
+      responses:
+        '200':
+          description: Credential deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [id, deleted]
+                properties:
+                  id: { type: integer, format: int64 }
+                  deleted: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/provider-accounts/{id}/credentials/{credential_id}/rotate:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+      - name: credential_id
+        in: path
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+    post:
+      tags: [admin-accounts]
+      summary: Rotate encrypted credential material for a Provider Account
+      operationId: rotateProviderAccountCredential
+      x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountCredentialRotateRequest' }
+      responses:
+        '200':
+          description: Credential rotated; raw credential material is write-only.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountCredentialMetadata' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/provider-accounts/{id}/credentials/{credential_id}/state:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+      - name: credential_id
+        in: path
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+    patch:
+      tags: [admin-accounts]
+      summary: Update encrypted credential state
+      operationId: updateProviderAccountCredentialState
+      x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountCredentialPatchStateRequest' }
+      responses:
+        '200':
+          description: Credential state updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [id, state]
+                properties:
+                  id: { type: integer, format: int64 }
+                  state: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/provider-accounts/{id}/channel-health/pause:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-channel-health]
+      summary: Manually pause channel health for a Provider Account credential
+      operationId: pauseProviderAccountChannelHealth
+      x-huakai-spec-source: [docs/specs/channel-health-auto-disable.md, docs/specs/privacy-no-user-data-logs.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChannelHealthOverrideRequest' }
+      responses:
+        '200':
+          description: Channel health state after override.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChannelHealthState' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/provider-accounts/{id}/channel-health/resume:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-channel-health]
+      summary: Resume channel health for a Provider Account credential
+      operationId: resumeProviderAccountChannelHealth
+      x-huakai-spec-source: [docs/specs/channel-health-auto-disable.md, docs/specs/privacy-no-user-data-logs.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChannelHealthOverrideRequest' }
+      responses:
+        '200':
+          description: Channel health state after override.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChannelHealthState' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/provider-accounts/{id}/channel-health/force-active:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-channel-health]
+      summary: Force channel health active for a Provider Account credential
+      operationId: forceActiveProviderAccountChannelHealth
+      x-huakai-spec-source: [docs/specs/channel-health-auto-disable.md, docs/specs/privacy-no-user-data-logs.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChannelHealthOverrideRequest' }
+      responses:
+        '200':
+          description: Channel health state after override.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChannelHealthState' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/admin/channel-health:
     get:
       tags: [admin-channel-health]
@@ -1460,6 +1798,46 @@ paths:
   # ==========================================================================
   # Admin: Usage / Billing / Audit / DLQ (F-OBS-001)
   # ==========================================================================
+
+  /admin/v1/cache/l2/stats:
+    get:
+      tags: [admin-cache]
+      summary: Inspect L2 response cache stats
+      operationId: getAdminL2CacheStats
+      x-huakai-spec-source: [docs/03_FEATURE_PARITY_MATRIX.md, docs/specs/privacy-no-user-data-logs.md]
+      x-huakai-required-role: tenant_operator
+      responses:
+        '200':
+          description: L2 cache metadata and redacted per-entry stats.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminL2CacheStatsResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/cache/l2/{key}:
+    parameters:
+      - name: key
+        in: path
+        required: true
+        schema: { type: string, minLength: 1 }
+    delete:
+      tags: [admin-cache]
+      summary: Evict one L2 response cache entry
+      operationId: deleteAdminL2CacheEntry
+      x-huakai-spec-source: [docs/03_FEATURE_PARITY_MATRIX.md, docs/specs/privacy-no-user-data-logs.md]
+      x-huakai-required-role: tenant_operator
+      responses:
+        '200':
+          description: Cache entry eviction result.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminL2CacheDeleteResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/usage:
     get:
@@ -1829,6 +2207,31 @@ components:
         state: { type: string }
         code: { type: string }
         device_info: { type: object, additionalProperties: true }
+
+    AuthSocialIdentityChangedRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/user-authentication.md, docs/specs/session-management.md]
+      required: [tenant_id, user_id, provider]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        user_id: { type: integer, format: int64, minimum: 1 }
+        provider: { type: string, enum: [google, github] }
+        subject: { type: string }
+        change_type: { type: string, description: Safe reason class for the social identity mutation. }
+
+    AuthSocialIdentityChangedResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/user-authentication.md, docs/specs/session-management.md]
+      required: [tenant_id, user_id, provider, session_policy, reason_class, sessions_revoked]
+      properties:
+        tenant_id: { type: integer, format: int64 }
+        user_id: { type: integer, format: int64 }
+        provider: { type: string, enum: [google, github] }
+        session_policy: { type: string, enum: [revoked] }
+        reason_class: { type: string }
+        sessions_revoked: { type: integer, format: int64, minimum: 0 }
 
     AuthUserResponse:
       type: object
@@ -2424,6 +2827,141 @@ components:
           type: array
           items: { $ref: '#/components/schemas/AuditPubkeyResponse' }
 
+    AuditVerifyRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
+      required: [request_id]
+      properties:
+        request_id: { type: string, minLength: 1, maxLength: 256 }
+        tenant_scope_ref:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Optional public tenant scope guard; mismatch returns 404 without confirming row existence.
+
+    AuditVerifyResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
+      required: [ledger_entry, chain_proof]
+      properties:
+        ledger_entry:
+          type: object
+          additionalProperties: false
+          required: [ledger_id, timestamp, request_id, tenant_scope_ref, hop_chain]
+          properties:
+            ledger_id: { type: string, minLength: 1 }
+            timestamp: { type: string, format: date-time }
+            request_id: { type: string, minLength: 1, maxLength: 256 }
+            tenant_scope_ref: { type: string }
+            hop_chain:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+                properties:
+                  schema_version: { type: string }
+                  hop_index: { type: integer, minimum: 0 }
+                  hop_kind: { type: string }
+                  actor: { type: string }
+                  started_at: { type: string, format: date-time }
+                  ended_at: { type: string, format: date-time }
+                  decision_ref: { type: string }
+                  feature_refs: { type: array, items: { type: string } }
+                  alt_event_id: { type: string }
+                  hop: { type: string, enum: [ingress, router, pool, account, provider, response] }
+                  ts: { type: string, format: date-time }
+                  request_id: { type: string }
+                  account_id_hash: { type: string }
+                  pool_id: { type: string }
+                  route_id: { type: string }
+                  provider: { type: string }
+                  endpoint: { type: string }
+                  duration_ms: { type: integer, format: int64, minimum: 0 }
+                  detail: { type: object, additionalProperties: true }
+            model_chain:
+              type: object
+              additionalProperties: false
+              required: [requested, route_decided]
+              properties:
+                requested: { type: string }
+                route_decided: { type: string }
+                upstream_reported: { type: string }
+                verdict: { type: string, enum: [match, allowed_alias, mismatch, unknown] }
+        chain_proof:
+          type: object
+          additionalProperties: false
+          required: [prev_merkle_root, merkle_root, signature, pubkey_fingerprint]
+          properties:
+            prev_merkle_root: { type: string, pattern: '^[0-9a-f]{64}$' }
+            merkle_root: { type: string, pattern: '^[0-9a-f]{64}$' }
+            signature: { type: string, description: Base64 ed25519 signature over the canonical audit entry hash. }
+            pubkey_fingerprint: { type: string }
+            signature_valid: { type: boolean }
+            key_status: { type: string, enum: [active, rotated, revoked, unknown] }
+            reason: { type: string }
+
+    AuditMerkleTree:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
+      required: [latest_merkle_root, size]
+      properties:
+        latest_merkle_root: { type: string, pattern: '^[0-9a-f]{64}$' }
+        size: { type: integer, minimum: 0 }
+
+    AdminL2CacheEntryStats:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/03_FEATURE_PARITY_MATRIX.md, docs/specs/privacy-no-user-data-logs.md]
+      required: [key, tenant_id, vendor, model, status, size_bytes, stored_at, expires_at]
+      properties:
+        key: { type: string }
+        tenant_id: { type: integer, format: int64 }
+        vendor: { type: string }
+        model: { type: string }
+        status: { type: integer }
+        size_bytes: { type: integer, format: int64, minimum: 0 }
+        stored_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+
+    AdminL2CacheMetric:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/03_FEATURE_PARITY_MATRIX.md]
+      required: [hit_total, miss_total, size_bytes]
+      properties:
+        hit_total: { type: integer, format: int64, minimum: 0 }
+        miss_total: { type: integer, format: int64, minimum: 0 }
+        size_bytes: { type: integer, format: int64, minimum: 0 }
+
+    AdminL2CacheStatsResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/03_FEATURE_PARITY_MATRIX.md, docs/specs/privacy-no-user-data-logs.md]
+      required: [enabled, size_bytes, max_size_bytes, ttl_seconds, entries, metrics]
+      properties:
+        enabled: { type: boolean }
+        size_bytes: { type: integer, format: int64, minimum: 0 }
+        max_size_bytes: { type: integer, format: int64, minimum: 0 }
+        ttl_seconds: { type: integer, format: int64, minimum: 0 }
+        entries:
+          type: array
+          items: { $ref: '#/components/schemas/AdminL2CacheEntryStats' }
+        metrics:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/AdminL2CacheMetric' }
+
+    AdminL2CacheDeleteResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/03_FEATURE_PARITY_MATRIX.md]
+      required: [key, deleted]
+      properties:
+        key: { type: string }
+        deleted: { type: boolean }
+
     ErrorResponse:
       type: object
       additionalProperties: false
@@ -2742,6 +3280,20 @@ components:
         items: { type: array, items: { $ref: '#/components/schemas/PoolGroup' } }
         page: { $ref: '#/components/schemas/PageMeta' }
 
+    ChannelHealthOverrideRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/specs/channel-health-auto-disable.md
+        - docs/specs/privacy-no-user-data-logs.md
+      required: [tenant_id, vendor, account_credential_id, credential_version, reason]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        vendor: { type: string }
+        account_credential_id: { type: integer, format: int64, minimum: 1 }
+        credential_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 1 }
+
     ChannelHealthState:
       type: object
       additionalProperties: false
@@ -3002,6 +3554,29 @@ components:
               duration_minutes: { type: integer, minimum: 1 }
               description: { type: string }
 
+    ProviderAccountEnabledUpdate:
+      x-huakai-spec-source:
+        - docs/specs/pool-routing.md
+        - docs/specs/rate-limiting.md
+      type: object
+      additionalProperties: false
+      required: [enabled]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        enabled: { type: boolean }
+        reason: { type: string }
+
+    ProviderAccountEnabledResponse:
+      x-huakai-spec-source:
+        - docs/specs/pool-routing.md
+        - docs/specs/rate-limiting.md
+      type: object
+      additionalProperties: false
+      required: [id, enabled]
+      properties:
+        id: { type: integer, format: int64 }
+        enabled: { type: boolean }
+
     ProviderAccountList:
       x-huakai-spec-source:
         - docs/specs/pool-routing.md
@@ -3013,6 +3588,88 @@ components:
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/ProviderAccount' } }
         page: { $ref: '#/components/schemas/PageMeta' }
+
+    AccountCredentialMetadata:
+      x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
+      type: object
+      additionalProperties: false
+      required: [id, tenant_id, provider_account_id, vendor, auth_mode, state, credential_version, failure_count, created_at, updated_at]
+      properties:
+        id: { type: integer, format: int64 }
+        tenant_id: { type: integer, format: int64 }
+        provider_account_id: { type: integer, format: int64 }
+        vendor: { type: string }
+        auth_mode: { type: string }
+        state: { type: string }
+        credential_version: { type: integer, format: int32, minimum: 1 }
+        access_expires_at: { type: string, format: date-time }
+        refresh_before_at: { type: string, format: date-time }
+        last_refresh_at: { type: string, format: date-time }
+        last_refresh_outcome: { type: string }
+        failure_class: { type: string }
+        failure_count: { type: integer, format: int32, minimum: 0 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    AccountCredentialListResponse:
+      x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
+      type: object
+      additionalProperties: false
+      required: [credentials]
+      properties:
+        credentials:
+          type: array
+          items: { $ref: '#/components/schemas/AccountCredentialMetadata' }
+
+    AccountCredentialWriteRequest:
+      x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
+      type: object
+      additionalProperties: false
+      required: [tenant_id, vendor, auth_mode, credentials]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        vendor: { type: string }
+        auth_mode: { type: string }
+        credentials:
+          type: object
+          additionalProperties: true
+          writeOnly: true
+          description: Raw credential payload. The server stores encrypted material and never returns this field.
+        reason: { type: string }
+
+    AccountCredentialRotateRequest:
+      x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
+      type: object
+      additionalProperties: false
+      required: [tenant_id, credentials]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        credentials:
+          type: object
+          additionalProperties: true
+          writeOnly: true
+          description: Raw credential payload. The server stores encrypted material and never returns this field.
+        reason: { type: string }
+
+    AccountCredentialStateRequest:
+      x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
+      type: object
+      additionalProperties: false
+      required: [tenant_id]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        state: { type: string }
+        reason: { type: string }
+
+    AccountCredentialPatchStateRequest:
+      x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
+      type: object
+      additionalProperties: false
+      required: [tenant_id, state]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        state: { type: string }
+        reason: { type: string }
 
     CredentialAcquisitionStart:
       x-huakai-spec-source: [docs/specs/credential-acquisition.md]

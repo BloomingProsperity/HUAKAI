@@ -40,9 +40,8 @@ func buildTestRouter(t *testing.T) chi.Router {
 }
 
 // 主一致性测试：用 openapicheck.Compare 算 spec ↔ impl 漂移。
-// 期望：spec_only 子集为空（或仅有已知占位）；impl_only 列出额外暴露
-// 的 path 但不 fail（main.go 有 /debug/vars、/v1/audit/* 等系统级
-// endpoint 不在 OpenAPI 范围内）。
+// 期望：spec_only 子集为空（或仅有已知占位）；impl_only 也必须为空。
+// 如果 main.go 暴露了新路由，必须同步补 OpenAPI，否则本测试 fail。
 func TestOpenAPI_ImplementationConsistency(t *testing.T) {
 	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
 	if err != nil {
@@ -81,15 +80,21 @@ func TestOpenAPI_ImplementationConsistency(t *testing.T) {
 			len(residualSpecOnly), residualSpecOnly)
 	}
 
-	// 软断言：impl 注册但 spec 未声明的 path 用 Log 报，不 fail。
-	// 已知系统级 endpoint（/v1/audit/verify、/v1/audit/merkle-tree.json、
-	// /v1/auth/social/identity-changed 内部 webhook）不进 OpenAPI；
-	// /admin/v1/cache/l2/* / /admin/v1/provider-accounts/.../credentials/*
-	// 等业务路由若长期不进 spec 则需要补文档 — 这里 Log 出来让
-	// PM 在下次 OpenAPI 校准 wave 闭环。
-	if len(rep.ImplOnly) > 0 {
-		t.Logf("[INFO] impl 注册但 OpenAPI 未声明的 %d 条 path（需文档跟进）：%v",
-			len(rep.ImplOnly), rep.ImplOnly)
+	// impl-only 是硬失败，避免实现已暴露但契约假绿。唯一例外是
+	// /v1/receipts/* 的 chi wildcard 兼容 slash request_id；OpenAPI 已用
+	// /v1/receipts/{request_id} 和 /v1/receipts/{request_id}/verify 表达。
+	knownImplOnly := map[string]struct{}{
+		"/v1/receipts": {},
+	}
+	residualImplOnly := make([]string, 0, len(rep.ImplOnly))
+	for _, p := range rep.ImplOnly {
+		if _, ok := knownImplOnly[p]; !ok {
+			residualImplOnly = append(residualImplOnly, p)
+		}
+	}
+	if len(residualImplOnly) > 0 {
+		t.Errorf("main.go 已注册但 OpenAPI 未声明的 %d 条 path（白名单后剩余）：%v",
+			len(residualImplOnly), residualImplOnly)
 	}
 }
 
@@ -104,8 +109,8 @@ func TestOpenAPI_ParserSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpecPaths: %v", err)
 	}
-	if len(paths) < 30 {
-		t.Errorf("OpenAPI 解析出 %d 条 path — 当前 spec 应 ~45 条。"+
+	if len(paths) < 60 {
+		t.Errorf("OpenAPI 解析出 %d 条 path — 当前 spec 应 ~65 条。"+
 			"parser 退化或 spec 大幅缩减？", len(paths))
 	}
 	// 抽样断言几个 anchor path 必须能解析出。
