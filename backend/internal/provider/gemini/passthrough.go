@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -66,8 +67,11 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		return nil, errors.New("gemini passthrough: UpstreamModelID 不能为空（endpoint 需要 model 名）")
 	}
 
-	endpoint := a.endpointFor(in.Credential.Extra["stream"] == "true")
-	endpoint = strings.ReplaceAll(endpoint, "{model}", in.UpstreamModelID)
+	defaultEndpoint := a.endpointFor(in.Credential.Extra["stream"] == "true")
+	// upstream_passthrough 凭据自带 base_url 优先用之 (codex chunk4 P1)
+	defaultEndpoint = provider.EndpointForCredential(defaultEndpoint, in.Credential)
+	// codex chunk4 P2: model ID 用 path escape 防 URL 保留字符断 routing
+	endpoint := strings.ReplaceAll(defaultEndpoint, "{model}", url.PathEscape(in.UpstreamModelID))
 
 	// API key 在 query 还是 header
 	if in.Credential.Extra["auth_in_query"] == "true" {
@@ -75,7 +79,8 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		if strings.Contains(endpoint, "?") {
 			sep = "&"
 		}
-		endpoint = endpoint + sep + "key=" + in.Credential.Value
+		// codex chunk4 P2: API key 用 query escape 防 reserved 字符破坏 query
+		endpoint = endpoint + sep + "key=" + url.QueryEscape(in.Credential.Value)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(in.InboundBody))

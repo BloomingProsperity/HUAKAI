@@ -57,10 +57,13 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		return nil, errors.New("openai passthrough: 凭据 Value 为空")
 	}
 
-	endpoint := a.Endpoint
-	if endpoint == "" {
-		endpoint = defaultChatCompletionsEndpoint
+	defaultEndpoint := a.Endpoint
+	if defaultEndpoint == "" {
+		defaultEndpoint = defaultChatCompletionsEndpoint
 	}
+	// upstream_passthrough 凭据自带 base_url, 优先用之 (防第三方 token 发到
+	// OpenAI 官方端点)。
+	endpoint := provider.EndpointForCredential(defaultEndpoint, in.Credential)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(in.InboundBody))
 	if err != nil {
