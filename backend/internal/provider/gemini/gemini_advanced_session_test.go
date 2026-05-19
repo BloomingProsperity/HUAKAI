@@ -3,7 +3,10 @@
 package gemini
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -81,4 +84,104 @@ func TestGeminiAdvancedSessionAdapter_HappyPath_InjectsCookie(t *testing.T) {
 	if got := req.Header.Get("X-Origin"); got != "https://gemini.google.com" {
 		t.Errorf("X-Origin=%q want gemini.google.com", got)
 	}
+}
+
+func TestGeminiAdvancedSessionAdapter_NormalSessionReversal_RequestMatchesSpec(t *testing.T) {
+	body := []byte(`f.req=%5B%5B%22prompt%22%5D%5D&at=csrf-token`)
+	in := provider.BuildInput{
+		UpstreamModelID: "gemini-1.5-pro-latest",
+		InboundBody:     body,
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeSessionToken,
+			Value: "__Secure-1PSID=psid; __Secure-3PSID=3psid",
+			Extra: map[string]string{
+				"goog_authuser": "1",
+				"sapisid_hash":  "1700000000_deadbeef",
+				"user_agent":    "Mozilla/5.0 Chrome/124.0.0.0 Safari/537.36",
+			},
+		},
+	}
+
+	defaultReq, err := (&GeminiAdvancedSessionAdapter{}).BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := defaultReq.URL.String(); got != defaultGeminiAdvancedEndpoint {
+		t.Fatalf("默认 endpoint=%q want %q", got, defaultGeminiAdvancedEndpoint)
+	}
+
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		assertGeminiAdvancedRequestMatchesSpec(t, r, body)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader([]byte(`)]}'` + "\n" + `[[["fake-response"]]]`))),
+			Request:    r,
+		}, nil
+	})}
+
+	a := &GeminiAdvancedSessionAdapter{
+		Endpoint: "https://fake.gemini.local/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate?bl=boq_assistant-bard-web-server_20260519.00_p0&_reqid=123456&rt=c",
+	}
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("fake upstream status=%d want 200", resp.StatusCode)
+	}
+}
+
+func TestGeminiAdvancedSessionAdapter_ExpiredSessionTriggersReauthFlow(t *testing.T) {
+	t.Skip("provider.Adapter 只构造请求；401 过期 session 的 reauth flow 尚未接入 provider 层")
+}
+
+func TestGeminiAdvancedSessionAdapter_Upstream5xxEnqueuesDLQRetry(t *testing.T) {
+	t.Skip("provider.Adapter 不处理响应；5xx DLQ retry 与不挂账户语义应由 dispatcher/channel-health 层补测")
+}
+
+func assertGeminiAdvancedRequestMatchesSpec(t *testing.T, r *http.Request, wantBody []byte) {
+	t.Helper()
+
+	if r.Method != http.MethodPost {
+		t.Errorf("Method=%q want POST", r.Method)
+	}
+	if got := r.URL.Path; got != "/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate" {
+		t.Errorf("URL path=%q want Gemini StreamGenerate path", got)
+	}
+	if got := r.URL.RawQuery; got != "bl=boq_assistant-bard-web-server_20260519.00_p0&_reqid=123456&rt=c" {
+		t.Errorf("URL query=%q want Gemini dynamic query", got)
+	}
+	headerWant := map[string]string{
+		"Authorization":   "SAPISIDHASH 1700000000_deadbeef",
+		"Cookie":          "__Secure-1PSID=psid; __Secure-3PSID=3psid",
+		"Content-Type":    "application/x-www-form-urlencoded;charset=UTF-8",
+		"Accept":          "*/*",
+		"User-Agent":      "Mozilla/5.0 Chrome/124.0.0.0 Safari/537.36",
+		"X-Goog-Authuser": "1",
+		"X-Origin":        "https://gemini.google.com",
+	}
+	for name, want := range headerWant {
+		if got := r.Header.Get(name); got != want {
+			t.Errorf("%s=%q want %q", name, got, want)
+		}
+	}
+	gotBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(gotBody, wantBody) {
+		t.Errorf("body=%s want %s", gotBody, wantBody)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }
