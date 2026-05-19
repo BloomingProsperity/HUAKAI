@@ -214,9 +214,9 @@ func (a *OpenAIAdapter) providerDataToCanonicalEvents(data []byte, state *OpenAI
 	}
 
 	// U7-C：用 UnmarshalWithExtras 同时拿 known 字段 + 上游 unknown 字段
-	// （system_fingerprint / service_tier / logprobs / prompt_filter_results 等）
-	// unknown 字段透传到第一条 emit 的 CanonicalEvent.Passthrough，由
-	// ClientAdapter 在响应序列化时合并回客户端输出。
+	// （system_fingerprint / service_tier / logprobs / prompt_filter_results 等）。
+	// 同一个上游 chunk 可能拆成多条 canonical event；extras 必须附到每条
+	// event，避免只有第一条携带而后续可序列化事件丢字段。
 	var chunk openAIChatCompletionChunk
 	var env PassthroughEnvelope
 	if err := UnmarshalWithExtras([]byte(payload), &chunk, &env); err != nil {
@@ -224,12 +224,7 @@ func (a *OpenAIAdapter) providerDataToCanonicalEvents(data []byte, state *OpenAI
 		return nil, []ProtocolLossEntry{loss}
 	}
 	events, losses := openAIChunkToCanonicalEvents(chunk, state)
-	// 把 unknown 字段附到第一条事件——避免重复 emit；如果本 chunk 没产
-	// 出任何 event（如 usage-only 在 UsageEmitted 之后），unknown 字段丢失
-	// 是可接受的（极罕见），不影响主路径正确性。
-	if len(env.Extra) > 0 && len(events) > 0 {
-		events[0].Passthrough = &env
-	}
+	events = attachPassthroughToEvents(events, env)
 	return events, losses
 }
 
