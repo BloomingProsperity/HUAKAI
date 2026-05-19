@@ -20,6 +20,7 @@ fn env_pairs_with_cp(cp_endpoint: &str) -> Vec<(String, String)> {
     [
         ("HUAKAI_LISTEN_ADDR", "127.0.0.1:0"),
         ("HUAKAI_CONTROL_PLANE_ENDPOINT", cp_endpoint),
+        ("HUAKAI_TRANSPORT_BASELINE", "http"),
         ("HUAKAI_LOG_LEVEL", "debug"),
         ("HUAKAI_JSON_LOGS", "false"),
         ("HUAKAI_WORKER_THREADS", "2"),
@@ -39,6 +40,7 @@ fn env_pairs() -> Vec<(String, String)> {
 async fn metrics_endpoint_returns_prometheus_text_format() {
     let config = StartupConfig::from_env_iter(env_pairs()).expect("config 解析应成功");
     let response = build_router(config)
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .uri("/metrics")
@@ -77,6 +79,7 @@ async fn metrics_endpoint_returns_prometheus_text_format() {
 async fn metrics_endpoint_contains_all_required_metric_names() {
     let config = StartupConfig::from_env_iter(env_pairs()).expect("config 解析应成功");
     let response = build_router(config)
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .uri("/metrics")
@@ -113,6 +116,7 @@ async fn metrics_endpoint_contains_all_required_metric_names() {
     // 重新请求 /metrics 确保数据行出现
     let config2 = StartupConfig::from_env_iter(env_pairs()).expect("config 解析应成功");
     let response2 = build_router(config2)
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .uri("/metrics")

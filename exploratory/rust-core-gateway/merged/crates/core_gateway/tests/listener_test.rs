@@ -27,6 +27,7 @@ fn test_config(max_body_bytes: usize, mock_upstream_endpoint: Option<String>) ->
             "HUAKAI_CONTROL_PLANE_ENDPOINT".to_owned(),
             "http://127.0.0.1:48080".to_owned(),
         ),
+        ("HUAKAI_TRANSPORT_BASELINE".to_owned(), "http".to_owned()),
         ("HUAKAI_LOG_LEVEL".to_owned(), "debug".to_owned()),
         ("HUAKAI_JSON_LOGS".to_owned(), "true".to_owned()),
         ("HUAKAI_WORKER_THREADS".to_owned(), "2".to_owned()),
@@ -48,7 +49,7 @@ async fn spawn_listener(config: StartupConfig) -> (SocketAddr, JoinHandle<()>) {
         .await
         .expect("listener bind 应成功");
     let addr = listener.local_addr().expect("listener addr 应存在");
-    let app = build_router(config);
+    let app = build_router(config).expect("build_router");
     let task = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
@@ -62,6 +63,7 @@ async fn normal_messages_request_echoes_body_through_mock_upstream() {
     let payload = Bytes::from_static(br#"{"model":"claude-test","messages":[]}"#);
 
     let response = build_router(config)
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -88,6 +90,7 @@ async fn oversized_body_returns_413_payload_too_large() {
     let payload = Bytes::from_static(b"0123456789abcdef");
 
     let response = build_router(config)
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -234,6 +237,7 @@ async fn request_id_is_propagated_to_upstream_and_response() {
     let config = test_config(4 * 1024 * 1024, Some(mock.endpoint()));
 
     let response = build_router(config)
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -265,6 +269,7 @@ async fn mock_upstream_json_error_and_slow_modes_flow_through_listener() {
     })
     .await;
     let json_response = build_router(test_config(4 * 1024 * 1024, Some(json_mock.endpoint())))
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -278,6 +283,7 @@ async fn mock_upstream_json_error_and_slow_modes_flow_through_listener() {
 
     let error_mock = MockUpstream::spawn(MockBehavior::Error5xx).await;
     let error_response = build_router(test_config(4 * 1024 * 1024, Some(error_mock.endpoint())))
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -296,6 +302,7 @@ async fn mock_upstream_json_error_and_slow_modes_flow_through_listener() {
     .await;
     let started = std::time::Instant::now();
     let slow_response = build_router(test_config(4 * 1024 * 1024, Some(slow_mock.endpoint())))
+        .expect("build_router")
         .oneshot(
             Request::builder()
                 .method("POST")
