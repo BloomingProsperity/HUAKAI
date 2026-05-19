@@ -67,13 +67,26 @@ func (r *TemplateRegistry) Lookup(mode TransportMode) (*ClientHelloTemplate, boo
 }
 
 // LoadFromDirectory 递归扫描目录内全部 *.json，并按文件名或 mode_name 注册模板。
+//
+// 子目录命名以下划线开头的 (如 _pending-backfill/) 会被整体跳过, 跟 Go 工具链
+// 对 _* 目录的默认忽略一致。R-D capture artifact 走 _pending-backfill/ 路径
+// 等 admin 一键 promote 后才进 builtin 池, 不参与 runtime 加载, 避免出现
+// mode_name 跟 builtin 撞 (如 codex-cli.json + openai_codex-real-*.json
+// 都 register mimicry_chatgpt).
 func (r *TemplateRegistry) LoadFromDirectory(dir string) error {
 	loaded := 0
 	if err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		if info.IsDir() || !strings.EqualFold(filepath.Ext(info.Name()), ".json") {
+		if info.IsDir() {
+			// 根目录本身不跳 (即使以 _ 开头也允许); 仅跳子目录
+			if path != dir && strings.HasPrefix(info.Name(), "_") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.EqualFold(filepath.Ext(info.Name()), ".json") {
 			return nil
 		}
 		tmpl, err := LoadFromCollectorOutput(path)
