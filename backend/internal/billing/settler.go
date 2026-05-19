@@ -126,14 +126,17 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 		requestedAt = time.Now().UTC()
 	}
 
+	// codex chunk12 P2: claim 行经 Tx2 锁定, 其 APIKeyID / UserID / AttemptSeq
+	// 是权威值。 req 可能带 stale 值 (e.g. re-reserve 后 caller 仍传 AttemptSeq=1),
+	// 之前 coalesce 偏好 req → usage_record 写错 attempt 序号。 直接用 claim 列。
 	usageParams := dbbilling.InsertUsageRecordParams{
 		TenantID:               claim.TenantID,
 		ClaimID:                claim.ID,
-		APIKeyID:               coalesceInt64(req.APIKeyID, claim.APIKeyID),
-		UserID:                 coalesceInt64(req.UserID, claim.UserID),
+		APIKeyID:               claim.APIKeyID,
+		UserID:                 claim.UserID,
 		ProviderAccountID:      providerAccountID,
 		AcquisitionToken:       pgUUID(req.AcquisitionToken),
-		AttemptSeq:             coalesceInt32(req.AttemptSeq, claim.AttemptSeq),
+		AttemptSeq:             claim.AttemptSeq,
 		TokensInput:            int32(req.Draft.TokensInput),
 		TokensOutput:           int32(outputTokensForAttempt(req.Draft, attempt)),
 		CacheCreationTokens:    int32(req.Draft.CacheCreationTokens),
