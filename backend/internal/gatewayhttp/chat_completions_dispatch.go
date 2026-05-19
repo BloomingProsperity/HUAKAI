@@ -102,7 +102,7 @@ func (ex *chatExecution) reserveClaim(w http.ResponseWriter) bool {
 	if ex.logicalRequestID == "" {
 		ex.logicalRequestID = uuid.NewString()
 	}
-	ex.payloadHash = normalizedPayloadHash(ex.req.Model, ex.req.Messages)
+	ex.payloadHash = normalizedPayloadHash(ex.body)
 
 	reserveRes, err := ex.d.ClaimGate.Reserve(ex.ctx, billing.ReserveRequest{
 		TenantID:                   ex.ident.TenantID,

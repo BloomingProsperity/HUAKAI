@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -97,13 +96,24 @@ func (ex *chatExecution) nonStreamingSettleRequest(env *proto.HCSF, actualCost d
 	}
 }
 
-func normalizedPayloadHash(model string, messages []chatMessage) string {
-	type canonical struct {
-		Model    string        `json:"model"`
-		Messages []chatMessage `json:"messages"`
-	}
-	raw, _ := json.Marshal(canonical{Model: model, Messages: messages})
-	sum := sha256.Sum256(raw)
+// normalizedPayloadHash 对客户端原始请求体做 SHA256 摘要, 作为 idempotency
+// fingerprint。
+//
+// 旧实现只 hash (model, messages), 客户端可以用同 Idempotency-Key 但带不同
+// input / system / tools / temperature / max_tokens 等字段重放, hash 不变
+// 就被当成 replay 命中 cached claim, 出现 "同 key 不同 payload 静默复用同条
+// claim → 跟实际上游响应/成本错配" 风险 (codex review P2 2026-05-19).
+//
+// 新实现 hash 原始 body 字节: 任何字段变更 (含 OpenAI /v1/responses 的 input,
+// Anthropic 的 system, function calling 的 tools, 采样参数 temperature /
+// top_p / max_tokens 等) 都触发新 hash, ClaimGate fingerprint conflict 检测
+// 生效, 重放被拒绝。
+//
+// Note: 字节级 hash, 不做 JSON canonicalization。客户端 whitespace / key
+// order 不同视为不同请求 — idempotency replay detection 角度合理, 因为
+// 上游 upstream 实际看到的请求 body 字节才是判定 dup 的本质。
+func normalizedPayloadHash(body []byte) string {
+	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])
 }
 
