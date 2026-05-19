@@ -46,6 +46,9 @@ func newAdminL2StatsHandler(d AdminL2CacheDeps) http.HandlerFunc {
 			stats = d.Store.Stats(r.Context())
 			stats.Entries = filterL2EntriesForAdmin(stats.Entries, ident)
 		}
+		if stats.Entries == nil {
+			stats.Entries = []l2cache.EntryStats{}
+		}
 		metrics := cachemetrics.SnapshotL2()
 		if ident.Role != admin.RolePlatformAdmin {
 			// 现有指标没有 tenant label，租户操作员只看条目元数据，避免跨租户计数泄露。

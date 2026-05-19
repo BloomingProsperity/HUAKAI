@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -39,11 +40,20 @@ func (d AuditVerifyStaticDeps) AuditPubkeyRegistry() auditledger.PubkeyRegistry 
 
 type AuditVerifyRouter interface {
 	Get(pattern string, h http.HandlerFunc)
+	Post(pattern string, h http.HandlerFunc)
 }
 
 func MountAuditVerifyRoutes(r AuditVerifyRouter, d AuditVerifyDeps) {
 	r.Get("/v1/audit/verify", NewAuditVerifyHandler(d))
+	r.Post("/v1/audit/verify", NewAuditVerifyHandler(d))
 	r.Get("/v1/audit/merkle-tree.json", NewAuditMerkleTreeHandler(d))
+}
+
+const auditVerifyBodyMaxBytes = 4 * 1024
+
+type AuditVerifyRequest struct {
+	RequestID      string `json:"request_id"`
+	TenantScopeRef string `json:"tenant_scope_ref,omitempty"`
 }
 
 type AuditVerifyResponse struct {
@@ -78,8 +88,8 @@ type AuditMerkleTreeResponse struct {
 
 func NewAuditVerifyHandler(d AuditVerifyDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeAuditJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
+		req, ok := auditVerifyRequestFromHTTP(w, r)
+		if !ok {
 			return
 		}
 		ledger, ok := auditLedgerFromDeps(d)
@@ -87,12 +97,11 @@ func NewAuditVerifyHandler(d AuditVerifyDeps) http.HandlerFunc {
 			writeAuditJSONError(w, http.StatusServiceUnavailable, "audit_ledger_not_configured", "audit ledger dependency unset")
 			return
 		}
-		requestID := r.URL.Query().Get("request_id")
-		if requestID == "" {
-			writeAuditJSONError(w, http.StatusBadRequest, "missing_request_id", "request_id query parameter required")
+		if req.RequestID == "" {
+			writeAuditJSONError(w, http.StatusBadRequest, "missing_request_id", "request_id required")
 			return
 		}
-		entry, err := ledger.GetByRequestID(r.Context(), requestID)
+		entry, err := ledger.GetByRequestID(r.Context(), req.RequestID)
 		if errors.Is(err, auditledger.ErrLedgerEntryNotFound) {
 			writeAuditJSONError(w, http.StatusNotFound, "audit_entry_not_found", "request_id not found")
 			return
@@ -101,11 +110,59 @@ func NewAuditVerifyHandler(d AuditVerifyDeps) http.HandlerFunc {
 			writeAuditJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())
 			return
 		}
-		if scope := r.URL.Query().Get("tenant_scope_ref"); scope != "" && scope != auditledger.TenantScopeRef(entry.TenantID) {
+		if scope := req.TenantScopeRef; scope != "" && scope != auditledger.TenantScopeRef(entry.TenantID) {
 			writeAuditJSONError(w, http.StatusNotFound, "audit_entry_not_found", "request_id not found")
 			return
 		}
 		writeAuditJSON(w, http.StatusOK, auditVerifyResponseWithRegistry(r.Context(), entry, auditPubkeyRegistryFromDeps(d)))
+	}
+}
+
+func auditVerifyRequestFromHTTP(w http.ResponseWriter, r *http.Request) (AuditVerifyRequest, bool) {
+	switch r.Method {
+	case http.MethodGet:
+		return AuditVerifyRequest{
+			RequestID:      r.URL.Query().Get("request_id"),
+			TenantScopeRef: r.URL.Query().Get("tenant_scope_ref"),
+		}, true
+	case http.MethodPost:
+		if r.ContentLength > auditVerifyBodyMaxBytes {
+			writeAuditJSONError(w, http.StatusRequestEntityTooLarge, "body_too_large", "audit verify body must be <= 4KB")
+			return AuditVerifyRequest{}, false
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, auditVerifyBodyMaxBytes)
+		var req AuditVerifyRequest
+		dec := json.NewDecoder(r.Body)
+		if err := dec.Decode(&req); err != nil {
+			if errors.Is(err, io.EOF) {
+				return req, true
+			}
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				writeAuditJSONError(w, http.StatusRequestEntityTooLarge, "body_too_large", "audit verify body must be <= 4KB")
+				return AuditVerifyRequest{}, false
+			}
+			writeAuditJSONError(w, http.StatusBadRequest, "invalid_json", err.Error())
+			return AuditVerifyRequest{}, false
+		}
+		var extra any
+		if err := dec.Decode(&extra); err != nil {
+			if errors.Is(err, io.EOF) {
+				return req, true
+			}
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				writeAuditJSONError(w, http.StatusRequestEntityTooLarge, "body_too_large", "audit verify body must be <= 4KB")
+				return AuditVerifyRequest{}, false
+			}
+			writeAuditJSONError(w, http.StatusBadRequest, "invalid_json", err.Error())
+			return AuditVerifyRequest{}, false
+		}
+		writeAuditJSONError(w, http.StatusBadRequest, "invalid_json", "audit verify body must contain a single JSON object")
+		return AuditVerifyRequest{}, false
+	default:
+		writeAuditJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET or POST required")
+		return AuditVerifyRequest{}, false
 	}
 }
 
