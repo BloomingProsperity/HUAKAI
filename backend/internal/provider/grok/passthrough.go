@@ -47,6 +47,9 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		endpoint = defaultChatCompletionsEndpoint
 	}
 
+		// upstream_passthrough 凭据自带 base_url 优先用之 (codex chunk4 P1)
+	endpoint = provider.EndpointForCredential(endpoint, in.Credential)
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(in.InboundBody))
 	if err != nil {
 		return nil, fmt.Errorf("grok passthrough: 构造请求失败: %w", err)

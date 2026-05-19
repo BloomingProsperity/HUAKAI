@@ -68,6 +68,22 @@ type AccountInfo struct {
 	CredentialVersion int
 }
 
+// EndpointForCredential 按账号凭据决定上游 endpoint:
+//   - 默认走 adapter.Endpoint (或调用方传的 adapterDefault)
+//   - cred.Type == UpstreamPassthrough 且 cred.Extra["base_url"] 非空 → 用
+//     account 自带的第三方代理地址 (provider_accounts.upstream_static.base_url)
+//
+// codex chunk4 P1 防: 第三方 upstream_passthrough 凭据 token 误发到官方
+// vendor endpoint (e.g. 客户配置自托管 proxy 但请求仍发 api.openai.com)。
+func EndpointForCredential(adapterDefault string, cred Credential) string {
+	if cred.Type == CredentialTypeUpstreamPassthrough {
+		if base := cred.Extra["base_url"]; base != "" {
+			return base
+		}
+	}
+	return adapterDefault
+}
+
 // BuildInput 是 BuildRequest 的入参。
 type BuildInput struct {
 	// UpstreamModelID 上游真实 model id（registry 已解析；如 binding 重写
