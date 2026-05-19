@@ -10,6 +10,7 @@ import (
 
 type Querier interface {
 	// Tx2 abort path: terminal upstream failure or AMBIGUOUS_USAGE end class.
+	// codex chunk7 P1#4: tenant_id 必须显式预先 caller 提供, 防全局 id 跨租户误改。
 	AbortClaim(ctx context.Context, arg AbortClaimParams) (int64, error)
 	CountAuditEvents(ctx context.Context, arg CountAuditEventsParams) (int64, error)
 	CountBillingClaims(ctx context.Context, arg CountBillingClaimsParams) (int64, error)
@@ -121,6 +122,7 @@ type Querier interface {
 	// Tenant-scoped to prevent cross-tenant abort via stale claim id.
 	UpdateClaimAbortedWithReason(ctx context.Context, arg UpdateClaimAbortedWithReasonParams) (int64, error)
 	// Spec §Tx2 step 15: claim status reserving → committed.
+	// codex chunk7 P1#4: tenant_id 显式 caller 提供, 防全局 id 跨租户误 commit。
 	UpdateClaimCommitted(ctx context.Context, arg UpdateClaimCommittedParams) (int64, error)
 	UpdatePool(ctx context.Context, arg UpdatePoolParams) (PoolGroup, error)
 	UpsertStickyBinding(ctx context.Context, arg UpsertStickyBindingParams) error

@@ -16,17 +16,19 @@ import (
 const abortClaim = `-- name: AbortClaim :execrows
 UPDATE billing_ledger_claims
 SET status = 'aborted', aborted_reason = $2, settled_at = NOW()
-WHERE id = $1 AND status = 'reserving'
+WHERE id = $1 AND status = 'reserving' AND tenant_id = $3
 `
 
 type AbortClaimParams struct {
 	ID            int64   `db:"id" json:"id"`
 	AbortedReason *string `db:"aborted_reason" json:"aborted_reason"`
+	TenantID      int64   `db:"tenant_id" json:"tenant_id"`
 }
 
 // Tx2 abort path: terminal upstream failure or AMBIGUOUS_USAGE end class.
+// codex chunk7 P1#4: tenant_id 必须显式预先 caller 提供, 防全局 id 跨租户误改。
 func (q *Queries) AbortClaim(ctx context.Context, arg AbortClaimParams) (int64, error) {
-	result, err := q.db.Exec(ctx, abortClaim, arg.ID, arg.AbortedReason)
+	result, err := q.db.Exec(ctx, abortClaim, arg.ID, arg.AbortedReason, arg.TenantID)
 	if err != nil {
 		return 0, err
 	}
@@ -194,7 +196,7 @@ SET status = 'reserving',
     lease_expires_at = $2,
     predicted_cost = $3,
     reserved_at = NOW()
-WHERE id = $1 AND status = 'aborted'
+WHERE id = $1 AND status = 'aborted' AND tenant_id = $4
 RETURNING id, attempt_seq
 `
 
@@ -202,6 +204,7 @@ type ReReserveAbortedClaimParams struct {
 	ID             int64              `db:"id" json:"id"`
 	LeaseExpiresAt pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
 	PredictedCost  decimal.Decimal    `db:"predicted_cost" json:"predicted_cost"`
+	TenantID       int64              `db:"tenant_id" json:"tenant_id"`
 }
 
 type ReReserveAbortedClaimRow struct {
@@ -215,7 +218,12 @@ type ReReserveAbortedClaimRow struct {
 // would violate uq_claims_idempotency). attempt_seq increments so audits
 // can count retries. Returns the row's id and bumped attempt_seq.
 func (q *Queries) ReReserveAbortedClaim(ctx context.Context, arg ReReserveAbortedClaimParams) (ReReserveAbortedClaimRow, error) {
-	row := q.db.QueryRow(ctx, reReserveAbortedClaim, arg.ID, arg.LeaseExpiresAt, arg.PredictedCost)
+	row := q.db.QueryRow(ctx, reReserveAbortedClaim,
+		arg.ID,
+		arg.LeaseExpiresAt,
+		arg.PredictedCost,
+		arg.TenantID,
+	)
 	var i ReReserveAbortedClaimRow
 	err := row.Scan(&i.ID, &i.AttemptSeq)
 	return i, err

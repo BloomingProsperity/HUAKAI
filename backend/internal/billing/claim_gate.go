@@ -108,6 +108,7 @@ func (g *DefaultClaimGate) Reserve(ctx context.Context, req ReserveRequest) (*Re
 				ID:             existing.ID,
 				LeaseExpiresAt: pgtype.Timestamptz{Time: leaseExpiresAt, Valid: true},
 				PredictedCost:  req.PredictedCost,
+				TenantID:       req.TenantID,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("billing: re-reserve aborted claim: %w", err)
