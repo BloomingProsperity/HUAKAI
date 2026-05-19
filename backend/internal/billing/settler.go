@@ -90,12 +90,29 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 		return nil, fmt.Errorf("billing: get claim for settle: %w", err)
 	}
 
-	providerAccountID := req.ProviderAccountID
-	if providerAccountID == 0 && claim.ProviderAccountID != nil {
-		providerAccountID = *claim.ProviderAccountID
-	}
-	if providerAccountID == 0 {
+	// 一致性: claim 行经 Tx2 锁定 (tenant_id+claim_id+acquisition_token), 其
+	// providerAccountID / APIKeyID / UserID / AttemptSeq 是权威值; req 字段
+	// 可能来自 caller 上下文 (e.g. retry / shadow), 不可覆盖 claim 列。
+	// 不一致直接 reject 防 usage_record 写错归属。
+	if claim.ProviderAccountID == nil || *claim.ProviderAccountID == 0 {
 		return nil, fmt.Errorf("billing: provider account id missing for claim %d", req.ClaimID)
+	}
+	providerAccountID := *claim.ProviderAccountID
+	if req.ProviderAccountID != 0 && req.ProviderAccountID != providerAccountID {
+		return nil, fmt.Errorf("billing: settle req.ProviderAccountID=%d ≠ claim=%d (claim=%d)",
+			req.ProviderAccountID, providerAccountID, req.ClaimID)
+	}
+	if req.APIKeyID != 0 && req.APIKeyID != claim.APIKeyID {
+		return nil, fmt.Errorf("billing: settle req.APIKeyID=%d ≠ claim=%d (claim=%d)",
+			req.APIKeyID, claim.APIKeyID, req.ClaimID)
+	}
+	if req.UserID != 0 && claim.UserID != 0 && req.UserID != claim.UserID {
+		return nil, fmt.Errorf("billing: settle req.UserID=%d ≠ claim=%d (claim=%d)",
+			req.UserID, claim.UserID, req.ClaimID)
+	}
+	if req.AttemptSeq != 0 && req.AttemptSeq != claim.AttemptSeq {
+		return nil, fmt.Errorf("billing: settle req.AttemptSeq=%d ≠ claim=%d (claim=%d)",
+			req.AttemptSeq, claim.AttemptSeq, req.ClaimID)
 	}
 
 	actualCost := req.ActualCost
@@ -442,12 +459,33 @@ FOR UPDATE`,
 	}
 
 	refundMicros := req.AmountMicroUSD
+	// amount=0 走 skipped 短路, 不查 SUM 节省一次 RT。
+	if refundMicros == 0 {
+		return zeroRefundResult(), nil
+	}
 	originalMicros, err := costUSDToMicros(actualCost)
 	if err != nil {
 		return nil, err
 	}
-	if refundMicros > originalMicros {
-		refundMicros = originalMicros
+	// 累计 refund 上限: 已发的 reconciliation_appended negative events 之和加
+	// 本次请求, 总额不得超 originalMicros。 codex chunk3 P1#3 防多 refund 不
+	// 同 audit_request_id 各自单独 cap 到 original 导致总额超退。
+	var alreadyRefundedMicros int64
+	if err := tx.QueryRow(ctx, `
+SELECT COALESCE(SUM(-amount_micro_usd), 0)::bigint
+FROM billing_events
+WHERE tenant_id = $1 AND claim_id = $2 AND end_class = 'reconciliation_appended'
+  AND amount_micro_usd < 0`,
+		req.TenantID, req.ClaimID,
+	).Scan(&alreadyRefundedMicros); err != nil {
+		return nil, fmt.Errorf("billing: sum prior reconciliation refunds: %w", err)
+	}
+	remainingMicros := originalMicros - alreadyRefundedMicros
+	if remainingMicros < 0 {
+		remainingMicros = 0
+	}
+	if refundMicros > remainingMicros {
+		refundMicros = remainingMicros
 	}
 	if refundMicros == 0 {
 		return zeroRefundResult(), nil
