@@ -132,9 +132,9 @@ func (s *PGXRefundPendingStore) EnsurePending(ctx context.Context, payload Misma
 	var rec RefundPendingRecord
 	err := s.pool.QueryRow(ctx, `
 INSERT INTO audit_refund_pending (
-    claim_id, request_id, delta_micro_usd, status, created_at
+    claim_id, request_id, delta_micro_usd, status, created_at, tenant_id
 ) VALUES (
-    $1, $2, $3, 'pending', COALESCE($4::timestamptz, now())
+    $1, $2, $3, 'pending', COALESCE($4::timestamptz, now()), $5
 )
 ON CONFLICT (claim_id) DO UPDATE SET
     status = CASE
@@ -150,6 +150,7 @@ RETURNING claim_id, request_id, delta_micro_usd, status`,
 		payload.RequestID,
 		payload.DeltaMicroUSD,
 		nullablePayloadTime(payload.CreatedAt),
+		payload.TenantID,
 	).Scan(&rec.ClaimID, &rec.RequestID, &rec.DeltaMicroUSD, &rec.Status)
 	if err != nil {
 		return RefundPendingRecord{}, fmt.Errorf("audit: ensure refund pending: %w", err)
