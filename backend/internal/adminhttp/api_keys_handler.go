@@ -13,6 +13,7 @@
 package adminhttp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,10 +33,28 @@ import (
 // need. Concrete deps in cmd/gateway/main.go satisfy this implicitly via
 // duck typing.
 type AdminAPIKeysDeps struct {
-	Auth    *admin.AdminResolver
-	Issuer  *admin.KeyIssuer
-	Revoker *admin.KeyRevoker
-	Queries *db.Queries // for LIST (read-only)
+	Auth    adminAPIKeysAuth
+	Issuer  adminAPIKeysIssuer
+	Revoker adminAPIKeysRevoker
+	Queries adminAPIKeysQueries // for LIST (read-only)
+}
+
+type adminAPIKeysAuth interface {
+	Resolve(context.Context, *http.Request) (admin.AdminIdentity, error)
+}
+
+type adminAPIKeysIssuer interface {
+	Issue(context.Context, admin.IssueRequest) (admin.IssueResult, error)
+}
+
+type adminAPIKeysRevoker interface {
+	Revoke(context.Context, admin.RevokeRequest) (admin.RevokeResult, error)
+}
+
+type adminAPIKeysQueries interface {
+	AdminCheckTenantExists(context.Context, int64) (bool, error)
+	AdminListAPIKeysForTenant(context.Context, db.AdminListAPIKeysForTenantParams) ([]db.AdminListAPIKeysForTenantRow, error)
+	InsertAdminAuditEvent(context.Context, db.InsertAdminAuditEventParams) (db.InsertAdminAuditEventRow, error)
 }
 
 // MountAPIKeyRoutes attaches POST/GET/POST-revoke handlers under the
