@@ -152,6 +152,7 @@ func TestAT_AUDIT_001_034_RefundReceiptAppendDuplicateRetryCompletes(t *testing.
 	existing.ReceiptSequence = 1
 	existing.ValidationState = ReceiptValidationStateMismatchRefunded
 	existing.Verdict = ReceiptVerdictMismatchRefundPending
+	existing.AdjustmentRefs = []string{refundReceiptIdempotencyKey(payload)}
 	existing.SignerFingerprint = []byte("existing-fingerprint")
 	existing.SignedHash = []byte("existing-signature")
 	sink := &duplicateRefundReceiptSink{existing: existing}
@@ -163,8 +164,90 @@ func TestAT_AUDIT_001_034_RefundReceiptAppendDuplicateRetryCompletes(t *testing.
 	if got := store.Status(payload.ClaimID); got != "completed" {
 		t.Fatalf("pending status=%q want completed", got)
 	}
-	if sink.appendCalls != 1 || sink.lookupCalls != 1 {
+	if sink.appendCalls != 0 || sink.lookupCalls != 1 {
 		t.Fatalf("receipt sink calls append=%d lookup=%d", sink.appendCalls, sink.lookupCalls)
+	}
+}
+
+func TestAT_AUDIT_001_065_RefundRetryUsesExistingReceiptIdempotently(t *testing.T) {
+	ctx := context.Background()
+	worker, settler, store, sink, payload := refundWorkerFixture(t, nil)
+
+	if err := worker.Apply(ctx, payload); err != nil {
+		t.Fatalf("first Apply: %v", err)
+	}
+	store.mu.Lock()
+	rec := store.rows[payload.ClaimID]
+	rec.Status = "failed"
+	store.rows[payload.ClaimID] = rec
+	store.mu.Unlock()
+
+	if err := worker.Apply(ctx, payload); err != nil {
+		t.Fatalf("retry Apply: %v", err)
+	}
+	if settler.refundCalls != 1 {
+		t.Fatalf("refund calls=%d want 1", settler.refundCalls)
+	}
+	if len(sink.receipts) != 1 {
+		t.Fatalf("receipt count=%d want 1", len(sink.receipts))
+	}
+	if got := store.Status(payload.ClaimID); got != "completed" {
+		t.Fatalf("pending status=%q want completed", got)
+	}
+	if sink.idempotencyLookups < 2 {
+		t.Fatalf("idempotency lookups=%d want at least 2", sink.idempotencyLookups)
+	}
+	if !receiptHasAdjustmentRef(sink.receipt, refundReceiptIdempotencyKey(payload)) {
+		t.Fatalf("refunded receipt missing idempotency ref: %+v", sink.receipt)
+	}
+}
+
+func TestAT_AUDIT_001_refund_dup_retry_idempotent(t *testing.T) {
+	ctx := context.Background()
+	worker, settler, store, _, payload := refundWorkerFixture(t, nil)
+	existing := refundTestReceipt(payload.RequestID, payload.ClaimID, 240)
+	existing.TenantID = payload.TenantID
+	existing.ReceiptSequence = 7
+	existing.ValidationState = ReceiptValidationStateMismatchRefunded
+	existing.Verdict = ReceiptVerdictMismatchRefundPending
+	existing.AdjustmentRefs = []string{refundReceiptIdempotencyKey(payload)}
+	existing.SignerFingerprint = []byte("existing-fingerprint")
+	existing.SignedHash = []byte("existing-signature")
+	sink := &duplicateRefundReceiptSink{existing: existing}
+	worker.receiptSink = sink
+
+	if err := worker.Apply(ctx, payload); err != nil {
+		t.Fatalf("Apply with already-written refunded receipt: %v", err)
+	}
+	if got := store.Status(payload.ClaimID); got != "completed" {
+		t.Fatalf("pending status=%q want completed", got)
+	}
+	if settler.refundCalls != 0 {
+		t.Fatalf("refund calls=%d want 0", settler.refundCalls)
+	}
+	if sink.appendCalls != 0 || sink.lookupCalls != 1 {
+		t.Fatalf("receipt sink calls append=%d lookup=%d", sink.appendCalls, sink.lookupCalls)
+	}
+}
+
+func TestAT_AUDIT_001_061_MultipleRefundReceiptSequencesIncrement(t *testing.T) {
+	ctx := context.Background()
+	worker, _, _, sink, payload := refundWorkerFixture(t, nil)
+
+	if err := worker.Apply(ctx, payload); err != nil {
+		t.Fatalf("first Apply: %v", err)
+	}
+	second := payload
+	second.ClaimID = 1002
+	second.DeltaMicroUSD = 20
+	if err := worker.Apply(ctx, second); err != nil {
+		t.Fatalf("second Apply: %v", err)
+	}
+	if len(sink.receipts) != 2 {
+		t.Fatalf("receipt count=%d want 2", len(sink.receipts))
+	}
+	if sink.receipts[0].ReceiptSequence != 1 || sink.receipts[1].ReceiptSequence != 2 {
+		t.Fatalf("receipt sequences=%d,%d want 1,2", sink.receipts[0].ReceiptSequence, sink.receipts[1].ReceiptSequence)
 	}
 }
 
@@ -276,13 +359,36 @@ func (s *recordingRefundSettler) Refund(_ context.Context, req billing.RefundReq
 }
 
 type recordingRefundReceiptSink struct {
-	receipt *CostReceipt
+	receipt            *CostReceipt
+	receipts           []*CostReceipt
+	idempotencyLookups int
 }
 
 func (s *recordingRefundReceiptSink) AppendRefundReceipt(_ context.Context, receipt *CostReceipt) error {
 	clone := cloneReceipt(receipt)
 	s.receipt = clone
+	s.receipts = append(s.receipts, clone)
 	return nil
+}
+
+func (s *recordingRefundReceiptSink) MaxReceiptSequence(_ context.Context, requestID string, tenantID int64) (int32, error) {
+	var maxSequence int32
+	for _, receipt := range s.receipts {
+		if receipt.RequestID == requestID && receipt.TenantID == tenantID && receipt.ReceiptSequence > maxSequence {
+			maxSequence = receipt.ReceiptSequence
+		}
+	}
+	return maxSequence, nil
+}
+
+func (s *recordingRefundReceiptSink) GetByRefundIdempotency(_ context.Context, requestID string, tenantID int64, idempotencyKey string) (*CostReceipt, error) {
+	s.idempotencyLookups++
+	for _, receipt := range s.receipts {
+		if receipt.RequestID == requestID && receipt.TenantID == tenantID && receiptHasAdjustmentRef(receipt, idempotencyKey) {
+			return cloneReceipt(receipt), nil
+		}
+	}
+	return nil, ErrReceiptNotFound
 }
 
 type duplicateRefundLedger struct {
@@ -332,6 +438,17 @@ func (s *duplicateRefundReceiptSink) GetReceiptBySequence(_ context.Context, req
 		s.existing.RequestID != requestID ||
 		s.existing.TenantID != tenantID ||
 		s.existing.ReceiptSequence != sequence {
+		return nil, ErrReceiptNotFound
+	}
+	return cloneReceipt(s.existing), nil
+}
+
+func (s *duplicateRefundReceiptSink) GetByRefundIdempotency(_ context.Context, requestID string, tenantID int64, idempotencyKey string) (*CostReceipt, error) {
+	s.lookupCalls++
+	if s.existing == nil ||
+		s.existing.RequestID != requestID ||
+		s.existing.TenantID != tenantID ||
+		!receiptHasAdjustmentRef(s.existing, idempotencyKey) {
 		return nil, ErrReceiptNotFound
 	}
 	return cloneReceipt(s.existing), nil

@@ -176,6 +176,105 @@ LIMIT 1`,
 	return receipt, nil
 }
 
+func (rs *ReceiptStorage) GetByRefundIdempotency(ctx context.Context, requestID string, tenantID int64, idempotencyKey string) (*CostReceipt, error) {
+	if rs == nil {
+		return nil, ErrReceiptStorageRequired
+	}
+	if err := validateReceiptRequestID(requestID); err != nil {
+		return nil, err
+	}
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if idempotencyKey == "" {
+		return nil, fmt.Errorf("%w: refund idempotency key missing", ErrReceiptInvalidDerivedData)
+	}
+	db, err := rs.backend()
+	if err != nil {
+		return nil, err
+	}
+	needle, err := json.Marshal([]string{idempotencyKey})
+	if err != nil {
+		return nil, fmt.Errorf("audit: marshal refund idempotency lookup: %w", err)
+	}
+	row := db.QueryRowContext(ctx, `
+SELECT request_id, tenant_id, model, input_tokens, output_tokens, cached_tokens,
+       cost_usd_micros, rate_table_snapshot_id, signer_fingerprint, signed_hash,
+       created_at, validation_state, verdict, adjustment_refs, receipt_sequence
+FROM user_cost_receipts
+WHERE request_id = $1 AND tenant_id = $2 AND adjustment_refs @> $3::jsonb
+ORDER BY receipt_sequence DESC
+LIMIT 1`,
+		requestID,
+		tenantID,
+		string(needle),
+	)
+	receipt, err := scanReceiptRow(row, sql.ErrNoRows)
+	if err != nil {
+		if errors.Is(err, ErrReceiptNotFound) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("audit: get refund receipt by idempotency: %w", err)
+	}
+	return receipt, nil
+}
+
+// GetRefundedReceipt 按 tenant + request_id 读取任意序号的已退款 snapshot。
+func (rs *ReceiptStorage) GetRefundedReceipt(ctx context.Context, requestID string, tenantID int64) (*CostReceipt, error) {
+	if rs == nil {
+		return nil, ErrReceiptStorageRequired
+	}
+	if err := validateReceiptRequestID(requestID); err != nil {
+		return nil, err
+	}
+	db, err := rs.backend()
+	if err != nil {
+		return nil, err
+	}
+	row := db.QueryRowContext(ctx, `
+SELECT request_id, tenant_id, model, input_tokens, output_tokens, cached_tokens,
+       cost_usd_micros, rate_table_snapshot_id, signer_fingerprint, signed_hash,
+       created_at, validation_state, verdict, adjustment_refs, receipt_sequence
+FROM user_cost_receipts
+WHERE request_id = $1 AND tenant_id = $2 AND validation_state = $3
+ORDER BY receipt_sequence DESC
+LIMIT 1`,
+		requestID,
+		tenantID,
+		ReceiptValidationStateMismatchRefunded,
+	)
+	receipt, err := scanReceiptRow(row, sql.ErrNoRows)
+	if err != nil {
+		if errors.Is(err, ErrReceiptNotFound) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("audit: get refunded receipt: %w", err)
+	}
+	return receipt, nil
+}
+
+func (rs *ReceiptStorage) MaxReceiptSequence(ctx context.Context, requestID string, tenantID int64) (int32, error) {
+	if rs == nil {
+		return 0, ErrReceiptStorageRequired
+	}
+	if err := validateReceiptRequestID(requestID); err != nil {
+		return 0, err
+	}
+	db, err := rs.backend()
+	if err != nil {
+		return 0, err
+	}
+	var maxSequence int32
+	if err := db.QueryRowContext(ctx, `
+SELECT COALESCE(MAX(receipt_sequence), 0)
+FROM user_cost_receipts
+WHERE request_id = $1 AND tenant_id = $2`,
+		requestID,
+		tenantID,
+	).Scan(&maxSequence); err != nil {
+		return 0, fmt.Errorf("audit: get max receipt sequence: %w", err)
+	}
+	return maxSequence, nil
+}
+
 func (rs *ReceiptStorage) backend() (receiptDB, error) {
 	if rs.exec != nil {
 		return rs.exec, nil

@@ -92,6 +92,8 @@ func mismatchStateFromDerived(receipt *CostReceipt) string {
 		return ReceiptValidationStateMismatchRefunded
 	case ReceiptValidationStateProvisional:
 		return ReceiptValidationStateProvisional
+	case ReceiptValidationStateUnknown:
+		return ReceiptValidationStateUnknown
 	default:
 		return ReceiptValidationStateValid
 	}

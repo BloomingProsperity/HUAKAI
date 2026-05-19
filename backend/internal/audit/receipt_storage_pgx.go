@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -156,6 +157,132 @@ LIMIT 1`,
 		return nil, fmt.Errorf("audit: get receipt by sequence: %w", err)
 	}
 	return receipt, nil
+}
+
+func (rs *PGXReceiptStorage) GetByRefundIdempotency(ctx context.Context, requestID string, tenantID int64, idempotencyKey string) (*CostReceipt, error) {
+	if rs == nil || rs.pool == nil {
+		return nil, ErrReceiptStorageRequired
+	}
+	return getReceiptByRefundIdempotencyPGX(ctx, rs.pool, requestID, tenantID, idempotencyKey)
+}
+
+// GetRefundedReceipt 按 tenant + request_id 读取任意序号的已退款 snapshot。
+func (rs *PGXReceiptStorage) GetRefundedReceipt(ctx context.Context, requestID string, tenantID int64) (*CostReceipt, error) {
+	if rs == nil || rs.pool == nil {
+		return nil, ErrReceiptStorageRequired
+	}
+	return getRefundedReceiptPGX(ctx, rs.pool, requestID, tenantID)
+}
+
+func (rs *PGXReceiptStorage) GetRefundedReceiptInTx(ctx context.Context, tx pgx.Tx, requestID string, tenantID int64) (*CostReceipt, error) {
+	if rs == nil || tx == nil {
+		return nil, ErrReceiptStorageRequired
+	}
+	return getRefundedReceiptPGX(ctx, tx, requestID, tenantID)
+}
+
+func (rs *PGXReceiptStorage) MaxReceiptSequence(ctx context.Context, requestID string, tenantID int64) (int32, error) {
+	if rs == nil || rs.pool == nil {
+		return 0, ErrReceiptStorageRequired
+	}
+	return maxReceiptSequencePGX(ctx, rs.pool, requestID, tenantID)
+}
+
+func (rs *PGXReceiptStorage) MaxReceiptSequenceInTx(ctx context.Context, tx pgx.Tx, requestID string, tenantID int64) (int32, error) {
+	if rs == nil || tx == nil {
+		return 0, ErrReceiptStorageRequired
+	}
+	return maxReceiptSequencePGX(ctx, tx, requestID, tenantID)
+}
+
+type pgxReceiptQueryer interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func getReceiptByRefundIdempotencyPGX(ctx context.Context, queryer pgxReceiptQueryer, requestID string, tenantID int64, idempotencyKey string) (*CostReceipt, error) {
+	if queryer == nil {
+		return nil, ErrReceiptStorageRequired
+	}
+	if err := validateReceiptRequestID(requestID); err != nil {
+		return nil, err
+	}
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if idempotencyKey == "" {
+		return nil, fmt.Errorf("%w: refund idempotency key missing", ErrReceiptInvalidDerivedData)
+	}
+	needle, err := json.Marshal([]string{idempotencyKey})
+	if err != nil {
+		return nil, fmt.Errorf("audit: marshal refund idempotency lookup: %w", err)
+	}
+	row := queryer.QueryRow(ctx, `
+SELECT request_id, tenant_id, model, input_tokens, output_tokens, cached_tokens,
+       cost_usd_micros, rate_table_snapshot_id, signer_fingerprint, signed_hash,
+       created_at, validation_state, verdict, adjustment_refs, receipt_sequence
+FROM user_cost_receipts
+WHERE request_id = $1 AND tenant_id = $2 AND adjustment_refs @> $3::jsonb
+ORDER BY receipt_sequence DESC
+LIMIT 1`,
+		requestID,
+		tenantID,
+		string(needle),
+	)
+	receipt, err := scanReceiptRow(row, pgx.ErrNoRows)
+	if err != nil {
+		if errors.Is(err, ErrReceiptNotFound) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("audit: get refund receipt by idempotency: %w", err)
+	}
+	return receipt, nil
+}
+
+func getRefundedReceiptPGX(ctx context.Context, queryer pgxReceiptQueryer, requestID string, tenantID int64) (*CostReceipt, error) {
+	if queryer == nil {
+		return nil, ErrReceiptStorageRequired
+	}
+	if err := validateReceiptRequestID(requestID); err != nil {
+		return nil, err
+	}
+	row := queryer.QueryRow(ctx, `
+SELECT request_id, tenant_id, model, input_tokens, output_tokens, cached_tokens,
+       cost_usd_micros, rate_table_snapshot_id, signer_fingerprint, signed_hash,
+       created_at, validation_state, verdict, adjustment_refs, receipt_sequence
+FROM user_cost_receipts
+WHERE request_id = $1 AND tenant_id = $2 AND validation_state = $3
+ORDER BY receipt_sequence DESC
+LIMIT 1`,
+		requestID,
+		tenantID,
+		ReceiptValidationStateMismatchRefunded,
+	)
+	receipt, err := scanReceiptRow(row, pgx.ErrNoRows)
+	if err != nil {
+		if errors.Is(err, ErrReceiptNotFound) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("audit: get refunded receipt: %w", err)
+	}
+	return receipt, nil
+}
+
+func maxReceiptSequencePGX(ctx context.Context, queryer pgxReceiptQueryer, requestID string, tenantID int64) (int32, error) {
+	if queryer == nil {
+		return 0, ErrReceiptStorageRequired
+	}
+	if err := validateReceiptRequestID(requestID); err != nil {
+		return 0, err
+	}
+	var maxSequence int32
+	if err := queryer.QueryRow(ctx, `
+SELECT COALESCE(MAX(receipt_sequence), 0)
+FROM user_cost_receipts
+WHERE request_id = $1 AND tenant_id = $2`,
+		requestID,
+		tenantID,
+	).Scan(&maxSequence); err != nil {
+		return 0, fmt.Errorf("audit: get max receipt sequence: %w", err)
+	}
+	return maxSequence, nil
 }
 
 // PGXReceiptSource 用 pgxpool 读取 receipt 派生输入，供 gateway main 直接接线。

@@ -3,6 +3,7 @@ package gatewayhttp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -113,6 +114,21 @@ func TestAuditVerifyHandler_PostBodyRejectsOversizedTrailingData(t *testing.T) {
 	}
 }
 
+func TestAT_AUDIT_001_064_AuditVerifyInternalErrorDoesNotLeak(t *testing.T) {
+	ledger := &failingAuditVerifyLedger{err: errors.New("pq: relation internal_schema.audit_ledger_entries missing at /srv/huakai/backend/internal/audit/store.go:41")}
+	rec := invokeAuditVerifyWithDeps(AuditVerifyStaticDeps{Ledger: ledger}, "/v1/audit/verify?request_id=req_leak")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d want 500 body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "internal_schema") || strings.Contains(body, "/srv/huakai") || strings.Contains(body, "audit_ledger_entries") {
+		t.Fatalf("audit verify leaked internal error details: %s", body)
+	}
+	if !strings.Contains(body, "audit ledger temporarily unavailable") {
+		t.Fatalf("audit verify safe message missing: %s", body)
+	}
+}
+
 func TestAuditMerkleTreeHandler_Empty(t *testing.T) {
 	ledger := newAuditVerifyTestLedger(t)
 	rec := invokeAuditMerkle(t, ledger)
@@ -161,10 +177,7 @@ func newAuditVerifyTestLedger(t *testing.T) *auditledger.MemoryLedger {
 
 func invokeAuditVerify(t *testing.T, ledger *auditledger.MemoryLedger, target string) *httptest.ResponseRecorder {
 	t.Helper()
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, target, nil)
-	NewAuditVerifyHandler(AuditVerifyStaticDeps{Ledger: ledger})(rec, req)
-	return rec
+	return invokeAuditVerifyWithDeps(AuditVerifyStaticDeps{Ledger: ledger}, target)
 }
 
 func invokeAuditMerkle(t *testing.T, ledger *auditledger.MemoryLedger) *httptest.ResponseRecorder {
@@ -173,4 +186,20 @@ func invokeAuditMerkle(t *testing.T, ledger *auditledger.MemoryLedger) *httptest
 	req := httptest.NewRequest(http.MethodGet, "/v1/audit/merkle-tree.json", nil)
 	NewAuditMerkleTreeHandler(AuditVerifyStaticDeps{Ledger: ledger})(rec, req)
 	return rec
+}
+
+type failingAuditVerifyLedger struct {
+	err error
+}
+
+func (l *failingAuditVerifyLedger) GetByRequestID(context.Context, string) (auditledger.LedgerEntry, error) {
+	return auditledger.LedgerEntry{}, l.err
+}
+
+func (l *failingAuditVerifyLedger) LatestMerkleRoot(context.Context) ([32]byte, error) {
+	return [32]byte{}, l.err
+}
+
+func (l *failingAuditVerifyLedger) Size(context.Context) int {
+	return 0
 }
