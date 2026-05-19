@@ -21,7 +21,7 @@ func TestResolveActiveRejectsCrossTenantCredentialJoin(t *testing.T) {
 	}
 	store := NewStore(db, mustTestKeyProvider(t), DefaultHandlerRegistry())
 
-	_, err := store.ResolveActive(context.Background(), 42)
+	_, err := store.ResolveActive(context.Background(), 7, 42)
 	if !errors.Is(err, ErrCredentialNotFound) {
 		t.Fatalf("ResolveActive err=%v want %v", err, ErrCredentialNotFound)
 	}

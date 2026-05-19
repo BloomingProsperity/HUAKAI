@@ -67,9 +67,12 @@ type providerAccountRow struct {
 //   - enabled = false     → ErrAccountDisabled
 //   - JSONB 解析失败      → ErrCredentialFormat（包装底层错误）
 //   - 数据库基础设施故障  → 包装底层 pgx 错误
-func (v *PostgresCredentialVault) Resolve(ctx context.Context, accountID int64) (Credential, AccountInfo, error) {
+func (v *PostgresCredentialVault) Resolve(ctx context.Context, tenantID, accountID int64) (Credential, AccountInfo, error) {
+	if tenantID == 0 {
+		return Credential{}, AccountInfo{}, fmt.Errorf("account %d: tenantID required: %w", accountID, ErrAccountNotFound)
+	}
 	if v.store != nil {
-		rec, err := v.store.ResolveActive(ctx, accountID)
+		rec, err := v.store.ResolveActive(ctx, tenantID, accountID)
 		if err == nil {
 			defer privacy.Zeroize(rec.PlaintextPayload)
 			handler, err := v.store.HandlerRegistry().MustLookup(rec.Vendor, rec.AuthMode)
@@ -82,6 +85,7 @@ func (v *PostgresCredentialVault) Resolve(ctx context.Context, accountID int64) 
 			}
 			return mapRuntimeMaterial(material), AccountInfo{
 				AccountID:           rec.ProviderAccountID,
+				TenantID:            rec.TenantID,
 				Platform:            rec.Vendor,
 				AccountType:         rec.AuthMode,
 				AccountCredentialID: rec.ID,
@@ -112,6 +116,12 @@ func (v *PostgresCredentialVault) Resolve(ctx context.Context, accountID int64) 
 		return Credential{}, AccountInfo{}, fmt.Errorf("provider vault: query: %w", err)
 	}
 
+	// DR-001 防御: legacy fallback 路径同样校验 row.tenant_id 是否跟 caller
+	// 一致。账号属于其他租户时返 ErrAccountNotFound (不暴露存在性侧信道)。
+	if row.tenantID != 0 && row.tenantID != tenantID {
+		return Credential{}, AccountInfo{}, fmt.Errorf("account %d tenant mismatch: %w", accountID, ErrAccountNotFound)
+	}
+
 	// 账号已禁用时提前返回，不解析凭据。
 	if !row.enabled {
 		return Credential{}, AccountInfo{}, fmt.Errorf("account %d: %w", accountID, ErrAccountDisabled)
@@ -129,6 +139,7 @@ func (v *PostgresCredentialVault) Resolve(ctx context.Context, accountID int64) 
 
 	info := AccountInfo{
 		AccountID:   row.id,
+		TenantID:    row.tenantID,
 		Platform:    row.platform,
 		AccountType: row.accountType,
 	}

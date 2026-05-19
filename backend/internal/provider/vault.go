@@ -10,11 +10,13 @@ import (
 // ErrAccountNotFound 表示 vault 中找不到该 accountID。
 var ErrAccountNotFound = errors.New("provider credential account not found")
 
-// CredentialVault 负责把 accountID 解析为上游凭据和账号信息。
+// CredentialVault 负责把 (tenantID, accountID) 解析为上游凭据和账号信息。
+// tenantID 强制 caller 显式声明租户边界, 防 cross-tenant credential 误发。
 type CredentialVault interface {
-	// Resolve 按 accountID 查凭据和 AccountInfo。
-	// 未找到时返回 ErrAccountNotFound，或返回可被 errors.Is 识别的包装错误。
-	Resolve(ctx context.Context, accountID int64) (Credential, AccountInfo, error)
+	// Resolve 按 (tenantID, accountID) 查凭据和 AccountInfo。
+	// 未找到时返回 ErrAccountNotFound, 或返回可被 errors.Is 识别的包装错误。
+	// account.TenantID != tenantID → 返 ErrAccountNotFound (不暴露存在性)。
+	Resolve(ctx context.Context, tenantID, accountID int64) (Credential, AccountInfo, error)
 }
 
 type staticVaultEntry struct {
@@ -62,8 +64,10 @@ func (v *StaticVault) Set(accountID int64, c Credential, a AccountInfo) error {
 	return nil
 }
 
-// Resolve 按 accountID 返回凭据和账号信息。
-func (v *StaticVault) Resolve(ctx context.Context, accountID int64) (Credential, AccountInfo, error) {
+// Resolve 按 (tenantID, accountID) 返回凭据和账号信息。tenantID 与 entry
+// 的 account.TenantID 不一致时返 ErrAccountNotFound (不区分租户错配跟账号
+// 不存在, 避免存在性侧信道)。
+func (v *StaticVault) Resolve(ctx context.Context, tenantID, accountID int64) (Credential, AccountInfo, error) {
 	_ = ctx
 
 	if v == nil {
@@ -75,6 +79,9 @@ func (v *StaticVault) Resolve(ctx context.Context, accountID int64) (Credential,
 	v.mu.RUnlock()
 	if !ok {
 		return Credential{}, AccountInfo{}, fmt.Errorf("account %d: %w", accountID, ErrAccountNotFound)
+	}
+	if tenantID != 0 && entry.account.TenantID != 0 && entry.account.TenantID != tenantID {
+		return Credential{}, AccountInfo{}, fmt.Errorf("account %d tenant mismatch: %w", accountID, ErrAccountNotFound)
 	}
 
 	return entry.credential, entry.account, nil
