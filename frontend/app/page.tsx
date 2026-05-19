@@ -131,11 +131,19 @@ export default function HomePage() {
         </a>
       </div>
 
-      {/* Token 设置提示 */}
+      {/* Token 设置提示 — admin 与 customer 是不同 namespace 不能混用 */}
       <div style={{ fontSize: '0.75rem', color: '#484f58', background: '#161b22', border: '1px solid #21262d', borderRadius: 4, padding: '0.5rem 0.75rem' }}>
-        如需 admin API 鉴权，请在浏览器控制台执行：
-        <code style={{ display: 'block', color: '#8b949e', marginTop: '0.25rem' }}>
-          localStorage.setItem(&apos;huakai_admin_token&apos;, &apos;YOUR_TOKEN&apos;)
+        <div style={{ marginBottom: '0.3rem' }}>
+          调 admin API (/admin/v1/*) 需 admin token (hk_admin_ 开头)：
+        </div>
+        <code style={{ display: 'block', color: '#8b949e', marginBottom: '0.5rem' }}>
+          localStorage.setItem(&apos;huakai_admin_token&apos;, &apos;hk_admin_YOUR_24CHARS&apos;)
+        </code>
+        <div style={{ marginBottom: '0.3rem' }}>
+          调聊天接口 (/v1/chat/completions, /v1/messages) 需客户 API key (hk_live_ / hk_test_ 开头, admin token 会被拒绝)：
+        </div>
+        <code style={{ display: 'block', color: '#8b949e' }}>
+          localStorage.setItem(&apos;huakai_api_key&apos;, &apos;hk_live_YOUR_24CHARS&apos;)
         </code>
       </div>
     </div>
