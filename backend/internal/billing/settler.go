@@ -110,10 +110,10 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 		return nil, fmt.Errorf("billing: settle req.UserID=%d ≠ claim=%d (claim=%d)",
 			req.UserID, claim.UserID, req.ClaimID)
 	}
-	if req.AttemptSeq != 0 && req.AttemptSeq != claim.AttemptSeq {
-		return nil, fmt.Errorf("billing: settle req.AttemptSeq=%d ≠ claim=%d (claim=%d)",
-			req.AttemptSeq, claim.AttemptSeq, req.ClaimID)
-	}
+	// codex chunk10 P1 fix: 之前 AttemptSeq 不一致 → reject 会卡 re-reserve 后
+	// 的 settle (ReReserveAbortedClaim 把 claim.AttemptSeq 加 1, caller 仍传
+	// req.AttemptSeq=1 hardcoded → reject + slot 泄漏)。 AttemptSeq 仅顺序计数,
+	// 不是跨租户防御列; 改用 claim.AttemptSeq 作为权威值, 不再硬 mismatch reject。
 
 	actualCost := req.ActualCost
 	if actualCost.IsZero() && !req.Draft.ActualCost.IsZero() {
@@ -478,7 +478,7 @@ FOR UPDATE`,
 	if err := tx.QueryRow(ctx, `
 SELECT COALESCE(SUM(ROUND(-actual_cost_signed * 1000000)), 0)::bigint
 FROM billing_events
-WHERE tenant_id = $1 AND claim_id = $2 AND end_class = 'reconciliation_appended'
+WHERE tenant_id = $1 AND claim_id = $2 AND event_type = 'reconciliation_appended'
   AND actual_cost_signed < 0`,
 		req.TenantID, req.ClaimID,
 	).Scan(&alreadyRefundedMicros); err != nil {
