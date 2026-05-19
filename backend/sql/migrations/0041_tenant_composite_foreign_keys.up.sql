@@ -10,13 +10,10 @@
 
 BEGIN;
 
--- 父表加 UNIQUE (tenant_id, id) 让其可作 composite FK 目标。
-ALTER TABLE pool_groups
-    ADD CONSTRAINT pool_groups_tenant_id_id_key UNIQUE (tenant_id, id);
+-- pool_groups / provider_accounts 的 UNIQUE (tenant_id, id) 已在 0040 建,
+-- 此处只补 channels 的。
 ALTER TABLE channels
     ADD CONSTRAINT channels_tenant_id_id_key UNIQUE (tenant_id, id);
-ALTER TABLE provider_accounts
-    ADD CONSTRAINT provider_accounts_tenant_id_id_key UNIQUE (tenant_id, id);
 
 -- channels.pool_group_id → pool_groups (tenant_id, id) 复合
 ALTER TABLE channels
