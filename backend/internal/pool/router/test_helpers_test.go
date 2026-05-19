@@ -1,5 +1,5 @@
 // In-memory test stubs for F-POOL-001 contract tests.
-package pool
+package router
 
 import (
 	"context"

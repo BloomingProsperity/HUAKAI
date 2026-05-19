@@ -145,7 +145,7 @@ func TestAT_POOL_004_Layer2TierFilter(t *testing.T) {
 		snap(2, 1, 100, 0.50, now.Add(-2*time.Hour)),
 		snap(3, 1, 100, 0.10, now.Add(-3*time.Hour)), // expected winner: lowest-tier priority=100 + lowest load=0.10 + oldest last_used
 		snap(4, 1, 100, 0.10, now.Add(-30*time.Minute)),
-		snap(5, 1, 300, 0.05, now.Add(-1*time.Hour)),  // lowest load BUT highest priority value loses tier 1
+		snap(5, 1, 300, 0.05, now.Add(-1*time.Hour)), // lowest load BUT highest priority value loses tier 1
 	}}
 	policy := &stubPolicy{p: &RoutingPolicy{TopKDefault: 1}}
 
