@@ -64,6 +64,21 @@ Owner 把通过的 test 输出 (尾 30 行就够) 贴回对话, Claude/Codex 把
 
 ## B. Provider 指纹抓取 (每 vendor ≈ 30 分钟, 共 4-5 vendor)
 
+### B.0 谁跑 (2026-05-19 起规则更新)
+
+两条路均可:
+
+- **Owner 本机自跑** (旧默认): 按下面 B.1-B.7 走。
+- **Claude 在 sandbox 代跑** (新, Owner 2026-05-19 解封): Owner 把 vendor credential 交付 (chat 贴 API key, 或在 sandbox 跑一次 `codex login` / `kiro login` 把 OAuth token 缓存到 `~/.config/<vendor>/`), Claude 跑同一份 RUNBOOK 流程, 把 artifact 落到 `tools/fingerprint-collector/templates/_pending-backfill/`。
+
+代跑时 Claude 守 RUNBOOK §1 (更新版) + §6 redaction:
+
+- creds 不写到 git-tracked 文件 (含 commit msg / docs / config)
+- raw pcap 抓完立刻 tshark 抽 handshake-only 后删原 pcap
+- artifact JSON 不含 token / prompt / cookie / account id / project id
+
+如果 Claude 代跑, B.1-B.7 是 Claude 自己照执行清单, Owner 不用操作。
+
 ### B.1 不重复 RUNBOOK
 
 完整流程在:

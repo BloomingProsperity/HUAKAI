@@ -1,7 +1,11 @@
 # R-D 真实上游指纹重抓 Runbook
 
-本 runbook 只用于 Owner 在自己本机、自己账号、自己可授权网络里重抓真实上游指纹。
-Claude/Codex 不能代跑真实账号请求，也不能接触 Owner 的 token、prompt、raw pcap。
+本 runbook 适用两种执行人：
+
+1. **Owner 本机自跑** — 任意时候可。
+2. **Claude/Codex 代跑** — Owner 显式授权交付账号时可（2026-05-19 起 Owner 解封；取代之前 "不能代跑" 边界）。
+
+代跑仍守 §6 secret redaction：raw pcap 抓完立刻 tshark 抽 handshake-only 后删，secrets / token / API key / prompt / cookie 不进 git，也不留在 sandbox 持久路径。
 
 依据：`docs/process/plans/2026-05-14-r3-on-merged-closure-codex.md` 第 3 节 Phase R-D 要求：
 CI 只能做 local capture，真实上游验真必须由 Owner 本机执行；每个 vendor 至少 3 次样本；
@@ -436,19 +440,19 @@ tools/fingerprint-collector/templates/_pending-backfill/anthropic-real-20260515T
 recapture done: tools/fingerprint-collector/templates/_pending-backfill/<vendor>-real-<utc-date>.json
 ```
 
-Claude/Codex 后续只做：
+Claude/Codex 做：
 
 - 读取 pending artifact。
 - 跑 mimicry profile loader 测试。
 - 做字段级 diff。
 - 通过 R-D gate 后再提升为 builtin template，走 R-C-A1 路径。
+- 若 Owner 授权代跑 capture（2026-05-19 起）：按 §3-§7 跑 tcpdump/mitmproxy + secret scan + artifact JSON 填写。
 
 Claude/Codex 不做：
 
-- 不读取 Owner secret。
-- 不读取 raw pcap。
-- 不代跑真实上游。
-- 不把 pending artifact 静默提升为 builtin。
+- 不静默把 pending artifact 提升为 builtin（必须走 R-D gate 字段级 diff）。
+- 不提交 raw pcap 到 git（抓完立刻 tshark 抽 handshake-only 后删 raw）。
+- 不提交 secret 到 git（token / API key / cookie / prompt 仍守 §6 redaction checklist）。
 
 ## 9. R-D gate
 
