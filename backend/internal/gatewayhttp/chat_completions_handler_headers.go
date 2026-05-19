@@ -160,12 +160,23 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 	ledgerEntry, err := submitAuditLedgerEntry(ctx, d, cachedEnv, in.Ident.TenantID, in.RequestID)
 	// codex chunk10 P1 fix: in.AccountID == 0 表示 cache 检查在 acquire 之前,
 	// reserve 完成但还没拿到 pool slot / acquisition_token, 不能走 settleCompletion
-	// (它 lookup claim by acquisition_token 找不到行返 500)。 caller 负责 Abort
-	// 那条 reserve 行。 写完 body header 直接 return。
+	// (它 lookup claim by acquisition_token 找不到行返 500)。
 	if in.ReserveResult == nil || in.AccountID == 0 {
 		if err != nil {
+			if in.ReserveResult != nil {
+				_ = d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error", in.RequestID)
+			}
 			writeJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())
 			return true
+		}
+		// codex chunk12 P2 fix: reserve 行必须在写 200 body 之前 terminal 结清,
+		// 否则 client 已收成功响应, abort 失败 / 进程退出会让 claim 永卡
+		// reserving, 同 idempotency-key 后续请求 claim-race。 这里先 Abort 再写体。
+		if in.ReserveResult != nil {
+			if abortErr := d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "served_from_l2_cache", in.RequestID); abortErr != nil {
+				writeJSONError(w, http.StatusInternalServerError, "cache_settle_error", abortErr.Error())
+				return true
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-HUAKAI-Cache-L2", "hit")

@@ -152,15 +152,10 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			return
 		}
 		if !exec.req.Stream {
+			// cache 命中时 serveL2CacheHit 内部已在写 200 body 之前 Settler.Abort
+			// 收尾 reserve 行 (codex chunk12 P2)。 这里只需 return。
 			handled, proceed := exec.serveL2CacheIfAvailable(w)
-			if handled {
-				// codex chunk11 P1 fix: 先判 handled 再判 !proceed; cache 命中时
-				// serveL2CacheIfAvailable 返 (true, false), 之前先 !proceed 短路
-				// 让 Abort 永远不跑, claim 卡 reserving。 此处必须先 Abort 再 return。
-				_ = exec.d.Settler.Abort(exec.ctx, exec.ident.TenantID, exec.reserveRes.ClaimID, "served_from_l2_cache", exec.requestID)
-				return
-			}
-			if !proceed {
+			if handled || !proceed {
 				return
 			}
 		}
