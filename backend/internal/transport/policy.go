@@ -21,18 +21,19 @@ import (
 type ProviderCode string
 
 const (
-	ProviderAnthropic   ProviderCode = "anthropic"
-	ProviderOpenAI      ProviderCode = "openai"
-	ProviderOpenAICodex ProviderCode = "openai_codex" // ChatGPT Plus / Codex CLI session 反转，路径走 chatgpt.com
-	ProviderVertex      ProviderCode = "vertex"
-	ProviderBedrock     ProviderCode = "bedrock"
-	ProviderOpenRouter  ProviderCode = "openrouter"
-	ProviderGrok        ProviderCode = "grok"
-	ProviderCursor      ProviderCode = "cursor"   // Cursor IDE 反转
-	ProviderCopilot     ProviderCode = "copilot"  // GitHub Copilot 反转
-	ProviderKiro        ProviderCode = "kiro"     // AWS Kiro 反转（独立于 Bedrock）
+	ProviderAnthropic      ProviderCode = "anthropic"
+	ProviderOpenAI         ProviderCode = "openai"
+	ProviderOpenAICodex    ProviderCode = "openai_codex" // ChatGPT Plus / Codex CLI session 反转，路径走 chatgpt.com
+	ProviderVertex         ProviderCode = "vertex"
+	ProviderBedrock        ProviderCode = "bedrock"
+	ProviderOpenRouter     ProviderCode = "openrouter"
+	ProviderGrok           ProviderCode = "grok"
+	ProviderCursor         ProviderCode = "cursor"   // Cursor IDE 反转
+	ProviderCopilot        ProviderCode = "copilot"  // GitHub Copilot 反转
+	ProviderKiro           ProviderCode = "kiro"     // AWS Kiro 反转（独立于 Bedrock）
 	ProviderWindsurf       ProviderCode = "windsurf" // Codeium Windsurf 反转
 	ProviderAntigravity    ProviderCode = "antigravity"
+	ProviderGemini         ProviderCode = "gemini"          // Gemini generativelanguage API key 直通
 	ProviderGeminiAdvanced ProviderCode = "gemini_advanced" // Gemini Advanced 网页 session 反转，路径走 gemini.google.com
 	// 以下 6 家为 OpenAI 兼容直通 API key 路径，不做订阅反转。
 	ProviderDeepSeek   ProviderCode = "deepseek"
@@ -162,6 +163,11 @@ var allowedModesByProvider = map[ProviderCode]map[TransportMode]bool{
 		TransportModeMimicryAntigravity: true,
 		// Google Antigravity 反转（独立 ProviderCode 视未来规划，可能走
 		// Vertex 后端）
+	},
+	ProviderGemini: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
+		// Gemini 标准 API key 路径走 generativelanguage，不允许网页 session mimicry。
 	},
 	ProviderGeminiAdvanced: {
 		// Gemini Advanced 网页 session 反转：endpoint = gemini.google.com
