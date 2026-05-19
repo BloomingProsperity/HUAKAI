@@ -5,7 +5,7 @@
 //   的 sk-ant-api03-... 开发者 key 转发到 api.anthropic.com）。这是公开
 //   API 路径，不是 sub2api 那种"Pro/Max OAuth 反转"形态。
 //   Pro/Max 反转 (R3 transport mimicry / R7 应用层伪装 / claude_token_provider
-//   等价物) 已 paused — 见 docs/plans/2026-05-06-r3-transport-mimicry-claude.md。
+//   等价物) 已 paused — 见 docs/process/plans/2026-05-06-r3-transport-mimicry-claude.md。
 package anthropic
 
 import (
