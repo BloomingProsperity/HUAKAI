@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
@@ -71,6 +72,44 @@ func TestAuditVerifyHandler_MissingRequestID(t *testing.T) {
 	rec := invokeAuditVerify(t, newAuditVerifyTestLedger(t), "/v1/audit/verify")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d want 400 body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAuditVerifyHandler_PostBody(t *testing.T) {
+	ledger := newAuditVerifyTestLedger(t)
+	entry, err := ledger.Append(context.Background(), auditledger.LedgerEntry{
+		LedgerID:  "lid_post",
+		RequestID: "req_post",
+		TenantID:  7,
+		HopChain:  []proto.HopAttestation{{Hop: proto.HopIngress, Timestamp: "2026-05-13T10:00:00Z"}},
+	})
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audit/verify", strings.NewReader(`{"request_id":"req_post","tenant_scope_ref":"`+auditledger.TenantScopeRef(7)+`"}`))
+	NewAuditVerifyHandler(AuditVerifyStaticDeps{Ledger: ledger})(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got AuditVerifyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.LedgerEntry.RequestID != "req_post" || got.ChainProof.MerkleRoot != rootHex(entry.MerkleRoot) {
+		t.Fatalf("post verify mismatch: %+v", got)
+	}
+}
+
+func TestAuditVerifyHandler_PostBodyRejectsOversizedTrailingData(t *testing.T) {
+	body := `{"request_id":"req_post"}` + strings.Repeat(" ", auditVerifyBodyMaxBytes)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audit/verify", strings.NewReader(body))
+	req.ContentLength = -1
+	NewAuditVerifyHandler(AuditVerifyStaticDeps{Ledger: newAuditVerifyTestLedger(t)})(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d want 413 body=%s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -73,6 +73,19 @@ func TestAdminL2CacheTenantOperatorScope(t *testing.T) {
 	assertStatus(t, rec, http.StatusForbidden)
 }
 
+func TestAdminL2CacheStatsDisabledReturnsEntriesArray(t *testing.T) {
+	r := chi.NewRouter()
+	MountAdminL2CacheRoutes(r, AdminL2CacheDeps{
+		Auth: l2AdminAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+	})
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stats", strings.NewReader("")))
+	assertStatus(t, rec, http.StatusOK)
+	if !strings.Contains(rec.Body.String(), `"entries":[]`) {
+		t.Fatalf("stats entries should be an empty array: %s", rec.Body.String())
+	}
+}
+
 func TestAdminL2CacheUnauthorized(t *testing.T) {
 	r := chi.NewRouter()
 	MountAdminL2CacheRoutes(r, AdminL2CacheDeps{

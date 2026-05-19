@@ -939,6 +939,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			Auth:        d.userAuth,
 			Sessions:    d.userSessions,
 			EmailSender: d.authEmailSender,
+			AdminAuth:   d.adminAuth,
 		})
 	})
 
