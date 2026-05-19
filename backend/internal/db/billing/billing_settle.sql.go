@@ -361,17 +361,19 @@ func (q *Queries) UpdateClaimAbortedWithReason(ctx context.Context, arg UpdateCl
 const updateClaimCommitted = `-- name: UpdateClaimCommitted :execrows
 UPDATE billing_ledger_claims
 SET status = 'committed', actual_cost = $2, settled_at = NOW()
-WHERE id = $1 AND status = 'reserving'
+WHERE id = $1 AND status = 'reserving' AND tenant_id = $3
 `
 
 type UpdateClaimCommittedParams struct {
 	ID         int64               `db:"id" json:"id"`
 	ActualCost decimal.NullDecimal `db:"actual_cost" json:"actual_cost"`
+	TenantID   int64               `db:"tenant_id" json:"tenant_id"`
 }
 
 // Spec §Tx2 step 15: claim status reserving → committed.
+// codex chunk7 P1#4: tenant_id 显式 caller 提供, 防全局 id 跨租户误 commit。
 func (q *Queries) UpdateClaimCommitted(ctx context.Context, arg UpdateClaimCommittedParams) (int64, error) {
-	result, err := q.db.Exec(ctx, updateClaimCommitted, arg.ID, arg.ActualCost)
+	result, err := q.db.Exec(ctx, updateClaimCommitted, arg.ID, arg.ActualCost, arg.TenantID)
 	if err != nil {
 		return 0, err
 	}

@@ -49,9 +49,10 @@ WHERE id = $1 AND status = 'reserving' AND tenant_id = $4;
 
 -- name: AbortClaim :execrows
 -- Tx2 abort path: terminal upstream failure or AMBIGUOUS_USAGE end class.
+-- codex chunk7 P1#4: tenant_id 必须显式预先 caller 提供, 防全局 id 跨租户误改。
 UPDATE billing_ledger_claims
 SET status = 'aborted', aborted_reason = $2, settled_at = NOW()
-WHERE id = $1 AND status = 'reserving';
+WHERE id = $1 AND status = 'reserving' AND tenant_id = $3;
 
 -- name: ReReserveAbortedClaim :one
 -- Re-attempt path: an earlier attempt aborted (transient upstream failure,
@@ -67,5 +68,5 @@ SET status = 'reserving',
     lease_expires_at = $2,
     predicted_cost = $3,
     reserved_at = NOW()
-WHERE id = $1 AND status = 'aborted'
+WHERE id = $1 AND status = 'aborted' AND tenant_id = $4
 RETURNING id, attempt_seq;

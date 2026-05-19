@@ -223,6 +223,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 			Decimal: actualCost,
 			Valid:   true,
 		},
+		TenantID: claim.TenantID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("billing: update claim committed: %w", err)

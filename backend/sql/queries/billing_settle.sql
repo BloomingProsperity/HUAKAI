@@ -106,9 +106,10 @@ WHERE r.provider_account_id = pa.id AND pa.in_flight_count > 0;
 
 -- name: UpdateClaimCommitted :execrows
 -- Spec §Tx2 step 15: claim status reserving → committed.
+-- codex chunk7 P1#4: tenant_id 显式 caller 提供, 防全局 id 跨租户误 commit。
 UPDATE billing_ledger_claims
 SET status = 'committed', actual_cost = $2, settled_at = NOW()
-WHERE id = $1 AND status = 'reserving';
+WHERE id = $1 AND status = 'reserving' AND tenant_id = $3;
 
 -- name: UpdateClaimAbortedWithReason :execrows
 -- Abort path: claim status reserving → aborted; usage_record/billing_event
