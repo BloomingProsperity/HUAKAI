@@ -5,13 +5,13 @@
 //
 //	每个 (prefix_hash, account_id) pair 计算一个 64-bit "权重":
 //	  mixed_acc = splitmix64(account_id)            // 高熵化低字节集中的 ID
-//	  score = FNV64a(seed_8B || prefix_hash || mixed_acc_8B)
+//	  score = SHA256(seed_8B || prefix_hash || mixed_acc_8B)[0:8]
 //	选取分值最高的 top-K 账号作为该 prefix 的"段"。
 //
 // splitmix64 是公开 PRNG 混合函数（Steele/Lea 2014, public domain），把
-// 1..N 这样低熵账号 ID 散到全 64-bit 空间，避免 FNV-1a 对低熵 trailing
-// bytes 的分布偏置（直接 hash account_id 1..200 → top-1 命中只覆盖 ~13
-// 个账号；splitmix 后 → 均匀覆盖全 200 个）。
+// 1..N 这样低熵账号 ID 散到全 64-bit 空间，避免低熵 trailing bytes 造成
+// account 维度分布偏置。score 再用 SHA-256 做强混合, 避免不同 seed 只造成
+// 高相关的线性扰动, 导致 HRW 排序在 seed 变化后仍过度重复。
 //
 // 与一致性哈希 ring（Karger）相比，HRW 的关键性质：
 //   - 账号增减时只有约 1/N 段会换成员（最优 reshuffle 下界）
@@ -22,18 +22,18 @@
 // 2026-05-08: "用我们自己的东西"，本文件是自有调度算法第一个原子。
 //
 // clean-room: 算法引用学术 paper（公开），不读外部参考项目源码。
-// 零新依赖: 仅用 stdlib hash/fnv + encoding/binary。
+// 零新依赖: 仅用 stdlib crypto/sha256 + encoding/binary。
 package pool
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
-	"hash/fnv"
 	"sort"
 )
 
 // splitmix64 是 Steele/Lea 2014 提出的 PRNG 混合函数（public domain），
 // 把任意 uint64 输入映射到 64-bit 空间均匀分布。HRW 用它把低熵 account_id
-// （1..N 这样的小整数）散到全 64-bit 后再喂 FNV，避免分布偏置。
+// （1..N 这样的小整数）散到全 64-bit 后再进入 SHA-256，避免分布偏置。
 func splitmix64(x uint64) uint64 {
 	x ^= x >> 30
 	x *= 0xbf58476d1ce4e5b9
@@ -105,8 +105,8 @@ func NewAccountRing(accounts []int64, seed uint64) *AccountRing {
 
 // HRWScore 计算单个 (prefix_hash, account_id) pair 的 64-bit 权重。
 //
-// 算法: account_id 先经 splitmix64 高熵化, 再以 FNV-1a 64-bit hash
-// (seed_8B || prefix_hash || mixed_account_8B) 得最终 score。
+// 算法: account_id 先经 splitmix64 高熵化, 再以 SHA-256 强混合
+// (seed_8B || prefix_hash || mixed_account_8B), 取 digest 前 8 bytes 得最终 score。
 // 输入域:
 //   - seed_8B          big-endian uint64
 //   - prefix_hash      任意长度 raw bytes（caller 保证 deterministic）
@@ -115,14 +115,20 @@ func NewAccountRing(accounts []int64, seed uint64) *AccountRing {
 // 不可变 / deterministic: 同输入永远同输出。
 func (r *AccountRing) HRWScore(prefixHash []byte, accountID int64) uint64 {
 	mixedAcc := splitmix64(uint64(accountID))
-	h := fnv.New64a()
+	needed := 16 + len(prefixHash)
+	var stack [256]byte
+	payload := stack[:0]
+	if needed > len(stack) {
+		payload = make([]byte, 0, needed)
+	}
 	var buf [8]byte
 	binary.BigEndian.PutUint64(buf[:], r.Seed)
-	_, _ = h.Write(buf[:])
-	_, _ = h.Write(prefixHash)
+	payload = append(payload, buf[:]...)
+	payload = append(payload, prefixHash...)
 	binary.BigEndian.PutUint64(buf[:], mixedAcc)
-	_, _ = h.Write(buf[:])
-	return h.Sum64()
+	payload = append(payload, buf[:]...)
+	sum := sha256.Sum256(payload)
+	return binary.BigEndian.Uint64(sum[:8])
 }
 
 // TopK 选 prefix 在当前 ring 中 HRW score 最高的前 K 个账号。

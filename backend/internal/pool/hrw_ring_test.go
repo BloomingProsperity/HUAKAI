@@ -1,18 +1,20 @@
 // hrw_ring_test.go — PASR-lite A1 HRW + AccountRing 单测。
 //
 // 验证项:
-//   1. NewAccountRing 去重 + 升序排序
-//   2. HRWScore deterministic（同输入永远同输出）
-//   3. HRWScore seed 改 → 输出改
-//   4. TopK 段内顺序按 score 降序
-//   5. TopK 边界（k>N, k=0, 空 ring）
-//   6. Top3 等价 TopK(.,3)
-//   7. Contains 二分正确
-//   8. **HRW 关键性质: 增减 1 个账号时，约 1/N 段被影响**
-//   9. AffectedSegments 增/减场景
+//  1. NewAccountRing 去重 + 升序排序
+//  2. HRWScore deterministic（同输入永远同输出）
+//  3. HRWScore seed 改 → 输出改
+//  4. TopK 段内顺序按 score 降序
+//  5. TopK 边界（k>N, k=0, 空 ring）
+//  6. Top3 等价 TopK(.,3)
+//  7. Contains 二分正确
+//  8. **HRW 关键性质: 增减 1 个账号时，约 1/N 段被影响**
+//  9. AffectedSegments 增/减场景
 package pool
 
 import (
+	"fmt"
+	"math/rand"
 	"testing"
 )
 
@@ -42,7 +44,7 @@ func fixturePrefixes(n int) [][]byte {
 
 func TestNewAccountRing_DedupesAndSorts(t *testing.T) {
 	r := NewAccountRing([]int64{5, 1, 3, 1, 5, 0, 2}, 42) // 含 0 + 重复
-	want := []int64{1, 2, 3, 5}                            // 0 被滤, 重复去掉, 升序
+	want := []int64{1, 2, 3, 5}                           // 0 被滤, 重复去掉, 升序
 	if !int64SliceEqual(r.Accounts, want) {
 		t.Errorf("got %v want %v", r.Accounts, want)
 	}
@@ -71,6 +73,26 @@ func TestHRWScore_SeedAffects(t *testing.T) {
 	prefix := []byte("p1")
 	if r1.HRWScore(prefix, 1) == r2.HRWScore(prefix, 1) {
 		t.Error("seed 改了 score 应不同")
+	}
+}
+
+func TestATPoolPASR001_HRWSeedDiversity(t *testing.T) {
+	// AT-POOL-PASR-001: 同一账号集下, 不同请求 seed 必须稳定改变 HRW 排序,
+	// 避免所有请求因排序重复而压到同一账号顺序。
+	accs := make([]int64, 32)
+	for i := range accs {
+		accs[i] = int64(i + 1)
+	}
+	rng := rand.New(rand.NewSource(0xA11CE))
+	ring := NewAccountRing(accs, 0xCAFEBABE)
+	orders := make(map[string]struct{})
+	for i := 0; i < 10; i++ {
+		seed := fmt.Sprintf("request-seed-%016x", rng.Uint64())
+		got := ring.TopK([]byte(seed), len(accs))
+		orders[fmt.Sprint(got)] = struct{}{}
+	}
+	if len(orders) < 7 {
+		t.Fatalf("不同 seed 未充分改变 HRW 排序: unique_orders=%d want >=7", len(orders))
 	}
 }
 
@@ -138,7 +160,7 @@ func TestHRW_ReshuffleProperty_AddOne(t *testing.T) {
 	const numPrefixes = 1000
 	prefixes := fixturePrefixes(numPrefixes)
 
-	r1 := fixtureRing()                              // 200 accounts
+	r1 := fixtureRing()                                        // 200 accounts
 	r2 := NewAccountRing(append(r1.Accounts, 999), 0xCAFEBABE) // +1 account = 201
 	// 注: 共享 seed 才比较有意义
 
@@ -158,7 +180,7 @@ func TestHRW_ReshuffleProperty_RemoveOne(t *testing.T) {
 	const numPrefixes = 1000
 	prefixes := fixturePrefixes(numPrefixes)
 
-	r1 := fixtureRing()                                          // 200
+	r1 := fixtureRing()                                                // 200
 	r2 := NewAccountRing(r1.Accounts[:len(r1.Accounts)-1], 0xCAFEBABE) // 199 (删最后一个)
 
 	affected := r2.AffectedSegments(prefixes, r1, k)
