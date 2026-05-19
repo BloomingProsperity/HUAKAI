@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
@@ -130,6 +131,39 @@ func TestResponsesFamilySetEndpointFamily(t *testing.T) {
 		dispatcher.observed.RequestMeta.EndpointFamily != "openai_responses" {
 		t.Fatalf("responses meta client/family=%q/%q", dispatcher.observed.RequestMeta.ClientProtocol, dispatcher.observed.RequestMeta.EndpointFamily)
 	}
+}
+
+func TestHandler_WaitPlanReturnsQueueWait(t *testing.T) {
+	settler := &stubSettler{}
+	d := minimalDeps()
+	d.Selector = waitPlanSelector{}
+	d.Settler = settler
+
+	rec := invokeHandler(t, d, `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d body=%s; want 429", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Retry-After"); got != "3" {
+		t.Fatalf("Retry-After=%q want 3", got)
+	}
+	if !strings.Contains(rec.Body.String(), "queue_wait") {
+		t.Fatalf("body=%s; want queue_wait", rec.Body.String())
+	}
+	if settler.abortCalls != 1 || settler.lastAbortClaimID != 999 || settler.lastAbortReason != "queue_wait" {
+		t.Fatalf("abort calls/id/reason=%d/%d/%q; want 1/999/queue_wait",
+			settler.abortCalls, settler.lastAbortClaimID, settler.lastAbortReason)
+	}
+}
+
+type waitPlanSelector struct{}
+
+func (waitPlanSelector) Select(context.Context, pool.SelectionRequest) (*pool.SelectionResult, error) {
+	return &pool.SelectionResult{WaitPlan: &pool.WaitPlan{
+		AccountID:      1,
+		MaxConcurrency: 2,
+		TimeoutMS:      2500,
+		MaxWaiting:     8,
+	}}, nil
 }
 
 func unsetEnvForTest(t *testing.T, key string) {
