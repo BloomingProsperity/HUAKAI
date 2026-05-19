@@ -13,12 +13,12 @@
 ## HIGH severity（必修）
 
 ### H1 — Missing first-cite recency check for ALL 8 ref repos
-**文件**: `docs/plans/2026-05-09-three-directions-synthesis.md:29-38`（SHA 表）+ `~/.claude/projects/-home-codex-HUAKAI/memory/reference_local_refs_clones.md:11-21`
+**文件**: `docs/process/plans/2026-05-09-three-directions-synthesis.md:29-38`（SHA 表）+ `~/.claude/projects/-home-codex-HUAKAI/memory/reference_local_refs_clones.md:11-21`
 **问题**: CLAUDE.md #12 first-cite recency check 要求记录 `archived: false` / `disabled: false` / `pushed_at within 90 days` / `HEAD SHA timestamp + commit message snippet`。当前 SHA 表只有 `Repo@SHA + License + Lane`——4 项必填字段全缺。
 **修法**: 加 4 列 `pushed_at | archived | HEAD msg | UTC timestamp`
 
 ### H2 — Differentiation table missing mandatory delta + dimension columns
-**文件**: `docs/plans/2026-05-09-three-directions-synthesis.md:90-99`
+**文件**: `docs/process/plans/2026-05-09-three-directions-synthesis.md:90-99`
 **问题**: CLAUDE.md #12 明确"Differentiation table column convention: `feature | upstream A cite | upstream B cite | HUAKAI delta | dimension(s)`. Without the dimension column, the table can't survive Owner / Codex review."当前表是 `feature | sub2api | new-api | one-api | LiteLLM | Portkey | Helicone | envoy | HUAKAI PASR` 用 ✅/❌——正是规则 anti-pattern flag 命名的形式。
 **修法**: 重写表，按规则列约定。数据在 `project_pasr_real_diff_matrix.md` 已按架构/算法/生态分类，hoist 进 synthesis 即可。
 

@@ -1,14 +1,14 @@
 # Provider Account Pool Selection — Claude's Independent Pass
 
 > ⚠️ **WITHDRAWN — SUPERSEDED BY [pool-selection-claude-v2.md](pool-selection-claude-v2.md)** (2026-04-28).
-> This v1 file was paraphrased from prior prose decompositions and the evidence ledger, NOT from direct source reading. Multiple claims in this file are hallucinated (no continuation-marker layer, no top-K randomization, no scoring formula, no serializable-txn slot acquisition in Sub2API). See [docs/reviews/2026-04-28-source-truth-corrections.md](../../reviews/2026-04-28-source-truth-corrections.md) for the catalogue of v1 errors. Read v2 for the source-verified version.
+> This v1 file was paraphrased from prior prose decompositions and the evidence ledger, NOT from direct source reading. Multiple claims in this file are hallucinated (no continuation-marker layer, no top-K randomization, no scoring formula, no serializable-txn slot acquisition in Sub2API). See [docs/process/reviews/2026-04-28-source-truth-corrections.md](../../process/reviews/2026-04-28-source-truth-corrections.md) for the catalogue of v1 errors. Read v2 for the source-verified version.
 
 | Field | Value |
 | --- | --- |
 | Status | **WITHDRAWN** (2026-04-28) — see banner above |
 | Author | Claude (PM-Orchestrator), specifier lane |
 | Date | 2026-04-28 |
-| Lane | Specifier — Option C strict spec input per [DR-000](../../decisions/DR-000-clean-room-methodology.md) carve-out for F-POOL-001 |
+| Lane | Specifier — Option C strict spec input per [DR-000](../../process/decisions/DR-000-clean-room-methodology.md) carve-out for F-POOL-001 |
 | Feature | [F-POOL-001](../../03_FEATURE_PARITY_MATRIX.md) (L1 MVP) — three-layer pool selection: continuation → sticky → fresh |
 | Mutual review | This file is authored independently of Codex's parallel specifier pass per Owner directive 2026-04-28 ("同样的事情你们都要做"). Codex's parallel pass lives at [pool-selection-codex.md](pool-selection-codex.md). Synthesis follows after both are complete. |
 | Becomes | After mutual review + reviewer-lane CL-001..010 sign-off, the synthesized version moves to `docs/specs/pool-routing.md` Status=Released; only then may implementer-lane agents cite it. |
@@ -173,7 +173,7 @@ If row-lock contention becomes a bottleneck, the secondary primitive is:
 - **Option A**: PostgreSQL advisory lock per `(tenant_id, provider_account_id)` for fast acquisition (still authoritative).
 - **Option B**: Redis with Lua atomic decrement script + periodic reconciliation against PostgreSQL.
 
-Per [DR-006](../../decisions/DR-006-database-orm-strategy.md) Constraint 3, in-process semaphores are insufficient for SaaS. Choice between A and B deferred until SaaS Phase 10 architecture decision; both are listed here so the Personal Edition design does not foreclose either.
+Per [DR-006](../../process/decisions/DR-006-database-orm-strategy.md) Constraint 3, in-process semaphores are insufficient for SaaS. Choice between A and B deferred until SaaS Phase 10 architecture decision; both are listed here so the Personal Edition design does not foreclose either.
 
 ## 6. Integration with Quota+Billing Claim Gate (F-BILL-001)
 

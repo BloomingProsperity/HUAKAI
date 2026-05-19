@@ -296,7 +296,7 @@ When Owner confirms direction:
 - Per-repo line with license + what we read for + what we did not take
 - Owner asked for this on 2026-05-02
 
-**Step 7** (optional, but suggested) — `docs/decisions/DR-NNN-reference-leveling.md`:
+**Step 7** (optional, but suggested) — `docs/process/decisions/DR-NNN-reference-leveling.md`:
 - Capture Owner's decision on which Codex/Claude proposals enter L1 vs L2
 
 This sequence is bottom-up: ledger first (factual claims), then per-source decomposition, then matrix updates, then plan, then README. Each step's commit can be its own atomic change.

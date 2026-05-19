@@ -4,7 +4,7 @@ import "encoding/json"
 
 // HUAKAI 信任链 T1：HopAttestation + ModelChain 类型定义。
 //
-// 设计依据：docs/plans/2026-05-13-trust-chain-feature-family-claude.md §3-§5。
+// 设计依据：docs/process/plans/2026-05-13-trust-chain-feature-family-claude.md §3-§5。
 // 与 sub2api / new-api / portkey / litellm / helicone 现有项目根本差异：
 //   - 所有现有项目"信任商家"，user 看不到 hop chain；HUAKAI 强制 hop chain 写
 //     入 Accounting，T2 加 ed25519 签名，T4 落 audit_ledger Merkle 链。
@@ -58,7 +58,7 @@ type HopAttestation struct {
 	RequestID string `json:"request_id,omitempty"`
 
 	// AccountIDHash 可选；hop=account 时写；其它 hop 留空。
-	// hash 算法见 docs/plans/2026-05-13-trust-chain-feature-family-claude.md §11.8。
+	// hash 算法见 docs/process/plans/2026-05-13-trust-chain-feature-family-claude.md §11.8。
 	AccountIDHash string `json:"account_id_hash,omitempty"`
 
 	// PoolID 可选；hop=pool 时写。

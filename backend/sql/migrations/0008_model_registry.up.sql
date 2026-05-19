@@ -1,5 +1,5 @@
 -- Slice 2 (N+5a): Model Registry.
--- See docs/plans/2026-04-30-n5-model-registry.md for synthesized rationale.
+-- See docs/process/plans/2026-04-30-n5-model-registry.md for synthesized rationale.
 -- Per CMB-1 (cross-module-boundaries.md): NO credential field anywhere here.
 -- Per CMB-7: registry layer is read-only at request time. Admin writers
 -- (Phase E scope) MUST UPDATE model_registry_snapshots.version IN THE SAME

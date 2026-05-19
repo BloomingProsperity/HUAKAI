@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |---|---|
 | Feature ID | F-PRIV-001 privacy / no user data logs (HUAKAI 6 大差异化 2 + 5) |
-| Lane | Claude PM-Orchestrator synthesis (Claude draft 在 `docs/plans/2026-05-16-f-priv-001-spec-claude.md` + Codex draft 在 `/tmp/codex-f-priv-001-spec-codex-draft.md`, 本 spec PM 合并版) |
+| Lane | Claude PM-Orchestrator synthesis (Claude draft 在 `docs/process/plans/2026-05-16-f-priv-001-spec-claude.md` + Codex draft 在 `/tmp/codex-f-priv-001-spec-codex-draft.md`, 本 spec PM 合并版) |
 | Base | memory `project_core_trust_chain_differentiator` 6 大要求 + F-TRUST-001 spec (commit 158c421) §2 redaction allowlist |
 | Phase | PRIV-1 (5 sub-phase, 5-7 天 codex, P-AUTH/F-AUTH ready) |
 | Memory ref | [[project_core_trust_chain_differentiator]] [[feedback_huakai_better_than_sub2api]] |
@@ -222,7 +222,7 @@ tenant_scope = <tenant_id internal> | <tenant_scope_ref external>
 ### Source files read (synthesis lane)
 - docs/specs/trust-chain-user-verifiable-ledger.md (F-TRUST-001 closure partner)
 - docs/specs/active-anti-detection.md / device-fingerprint-binding.md / request-pacing-mimicry.md / outbound-ip-pool.md / channel-health-auto-disable.md (cross-chain audit ref)
-- docs/plans/2026-05-16-f-priv-001-spec-claude.md (Claude lane parallel-draft, 16KB)
+- docs/process/plans/2026-05-16-f-priv-001-spec-claude.md (Claude lane parallel-draft, 16KB)
 - /tmp/codex-f-priv-001-spec-codex-draft.md (Codex lane parallel-draft, 357KB)
 - memory: `project_core_trust_chain_differentiator`
 

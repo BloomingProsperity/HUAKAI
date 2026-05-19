@@ -4,7 +4,7 @@
 // This file is the synthesis of two parallel-draft implementations
 // (Claude lane + Codex lane) per CLAUDE.md #10 + 2026-05-04 directive
 // expanding parallel-draft to all code. Synthesis notes:
-// docs/plans/2026-05-04-r6-codeparallel-synthesis.md.
+// docs/process/plans/2026-05-04-r6-codeparallel-synthesis.md.
 //
 // Hard floor (DR-009 6.6): the FSM must never auto-reach `disabled`
 // on an `ambiguous` signal alone. Enforced structurally: `ambiguous`

@@ -4,7 +4,7 @@
 //   - mimicry transport（R3 强伪装层）只在 Anthropic 池化路径（Pro/Max
 //     OAuth）启用；OpenAI / Vertex / Bedrock / OpenRouter 等公开 API 路径
 //     永远走 standard transport
-//   - 这是"lane 一致项"（详见 docs/plans/2026-05-06-r3-transport-mimicry-
+//   - 这是"lane 一致项"（详见 docs/process/plans/2026-05-06-r3-transport-mimicry-
 //     synthesis.md §5）：不论 R3 最终是否上线，provider 路径隔离都需要
 //     有，避免跨 provider 配置污染
 //   - 不允许的 (provider, mode) 组合在配置加载阶段直接 reject，不留运行时

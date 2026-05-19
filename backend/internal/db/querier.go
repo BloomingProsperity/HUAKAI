@@ -39,7 +39,7 @@ type Querier interface {
 	// Tenant-scoped read for revocation flow + audit lookup.
 	AdminGetAPIKeyByID(ctx context.Context, arg AdminGetAPIKeyByIDParams) (AdminGetAPIKeyByIDRow, error)
 	// Slice 2 (N+4b2) admin-side api_keys queries.
-	// Per docs/plans/2026-05-01-n4b-admin-keys.md §Scope A.
+	// Per docs/process/plans/2026-05-01-n4b-admin-keys.md §Scope A.
 	// These queries are issued by internal/admin (operator-facing) and are
 	// distinct from internal/auth's customer-facing LookupAPIKeysByPrefix:
 	// admin tooling MUST NOT use the prefix-only lookup that the customer
@@ -237,7 +237,7 @@ type Querier interface {
 	// candidate row at all.
 	LookupAPIKeysByPrefix(ctx context.Context, keyPrefix string) ([]LookupAPIKeysByPrefixRow, error)
 	// Slice 2 (N+4b2) admin_tokens queries.
-	// Per docs/plans/2026-05-01-n4b-admin-keys.md §Scope A.
+	// Per docs/process/plans/2026-05-01-n4b-admin-keys.md §Scope A.
 	// Per CMB-1: this file is consumed only by internal/admin and never by
 	// internal/auth (the inbound customer resolver). Per CMB-5: queries
 	// never SELECT key_hash for any purpose other than bcrypt comparison
@@ -256,7 +256,7 @@ type Querier interface {
 	// policy permits global inheritance.
 	LookupGlobalAlias(ctx context.Context, aliasLower string) (LookupGlobalAliasRow, error)
 	// Slice 2 (N+5a) Model Registry queries.
-	// Per docs/plans/2026-04-30-n5-model-registry.md.
+	// Per docs/process/plans/2026-04-30-n5-model-registry.md.
 	// Per CMB-7: SELECT-only at request time. Snapshot version increments
 	// happen via a future Phase E admin writer outside this package.
 	// Per CMB-1: NEVER select credentials; this package never joins

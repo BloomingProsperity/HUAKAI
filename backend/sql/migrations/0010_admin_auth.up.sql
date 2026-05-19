@@ -1,5 +1,5 @@
 -- Slice 2 (N+4b2): Admin auth surface.
--- Per docs/plans/2026-05-01-n4b-admin-keys.md §Scope A + D1/D5.
+-- Per docs/process/plans/2026-05-01-n4b-admin-keys.md §Scope A + D1/D5.
 --
 -- Purpose:
 --   * admin_tokens: bcrypt-hashed operator credentials, separate from

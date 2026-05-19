@@ -1,6 +1,6 @@
 // Postgres-backed Registry implementation.
 //
-// Resolve flow per docs/plans/2026-04-30-n5-model-registry.md §"Resolve query":
+// Resolve flow per docs/process/plans/2026-04-30-n5-model-registry.md §"Resolve query":
 //
 //   1. Normalize alias.
 //   2. Open a REPEATABLE READ + read-only TX so all reads observe one

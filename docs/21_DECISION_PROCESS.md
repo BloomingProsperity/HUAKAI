@@ -16,7 +16,7 @@ Do **not** use round-table for routine work where one agent is the obvious owner
 
 ## Artifact
 
-A round-table decision is captured in a single file: `docs/decisions/DR-NNN-<slug>.md`, instantiated from [`docs/decisions/_TEMPLATE.md`](decisions/_TEMPLATE.md).
+A round-table decision is captured in a single file: `docs/process/decisions/DR-NNN-<slug>.md`, instantiated from [`docs/process/decisions/_TEMPLATE.md`](process/decisions/_TEMPLATE.md).
 
 `NNN` is a zero-padded sequence (`000`, `001`, …). IDs never reuse, even if a DR is superseded.
 
@@ -101,7 +101,7 @@ Cosmetic disagreements (wording, ordering) are not conflicts. Only material disa
 
 Every Decided DR must be propagated. Claude PM is responsible for:
 
-- Updating each affected doc to reference the DR (e.g. `Decided in [DR-001](decisions/DR-001-...md)`).
+- Updating each affected doc to reference the DR (e.g. `Decided in [DR-001](process/decisions/DR-001-...md)`).
 - Updating [10_RISK_REGISTER.md](10_RISK_REGISTER.md) if the decision changes a risk's mitigation.
 - Updating [03_FEATURE_PARITY_MATRIX.md](03_FEATURE_PARITY_MATRIX.md) if the decision changes a disposition.
 - Updating skills under [.agents/skills/](../.agents/skills/) if the decision changes a workflow.

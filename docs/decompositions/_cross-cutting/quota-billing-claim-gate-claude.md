@@ -11,7 +11,7 @@
 
 ## 1. WHY
 
-Money-grade correctness is non-negotiable for Owner's **Model 1** (self-deployment + sells API to end-users; per [DR-002 §Owner Refinement](../../decisions/DR-002-product-editions.md)). Every billing mistake is real money lost or real user disputes. Two failure shapes are catastrophic for relay-station operators:
+Money-grade correctness is non-negotiable for Owner's **Model 1** (self-deployment + sells API to end-users; per [DR-002 §Owner Refinement](../../process/decisions/DR-002-product-editions.md)). Every billing mistake is real money lost or real user disputes. Two failure shapes are catastrophic for relay-station operators:
 
 1. **Silent overspend**: a User exhausts their Quota but the gateway keeps approving requests because pre-call check and post-call deduct are not atomic. The relay operator pays upstream for tokens the User cannot be charged for.
 2. **Double charge on retry**: a request that succeeds upstream but fails to reach the client is retried; without an idempotency key shared across attempts, the User is billed twice while only one upstream call was honored end-to-end.
@@ -107,7 +107,7 @@ These are the concrete one-api gaps that HUAKAI's design above closes by constru
 - **KEEP**: Sub2API's idempotent fingerprint claim gate as the topology. Two-transaction pattern (reserve then reconcile).
 - **KEEP**: Sub2API's transaction boundary spanning subscription + balance + API Key quota + API Key rate window + Provider Account quota in one mutation. Do NOT split.
 - **KEEP**: pre-call estimate + post-call reconcile (close to one-api's two-stage model), but with the atomicity and idempotency that one-api lacks.
-- **IMPROVE**: explicit isolation level OR explicit row lock — never rely on default. PostgreSQL `SELECT ... FOR UPDATE` is the HUAKAI default per [DR-006](../../decisions/DR-006-database.md).
+- **IMPROVE**: explicit isolation level OR explicit row lock — never rely on default. PostgreSQL `SELECT ... FOR UPDATE` is the HUAKAI default per [DR-006](../../process/decisions/DR-006-database.md).
 - **IMPROVE**: Reservation row TTL + orphan sweep is mandatory, not optional. Without this, gateway crash = quota leak.
 - **IMPROVE**: idempotency key includes `tenant_id` (DR-001 multi-tenant safety); two tenants cannot collide on identical fingerprints by accident.
 - **IMPROVE**: Usage Record's `usage_source` enum (`reported / normalized / inferred / partial`, per [streaming-forwarder.md](../sub2api/streaming-forwarder.md)) is referenced in the Billing Ledger entry. When source is `inferred`, the ledger entry carries a `pending_reconciliation` flag that may be cleared if upstream reports usage out-of-band later.

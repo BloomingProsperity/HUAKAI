@@ -37,11 +37,11 @@ Owner 修正：HUAKAI 是**竞赛产品**，不是法律咨询服务。竞品已
 应改的文件：
 
 - [x] `docs/reference_delta/2026-05-02/readme-ack-draft.md` §"Upstream Provider Terms" — framing 转向"提供工具+警告"（已改）
-- [x] `docs/plans/2026-05-02-huakai-reverse-proxy-core-claude.md` Context + Q3 — 已加竞赛 framing + 收窄 Q3（已改）
+- [x] `docs/process/plans/2026-05-02-huakai-reverse-proxy-core-claude.md` Context + Q3 — 已加竞赛 framing + 收窄 Q3（已改）
 - [ ] `docs/reference_delta/2026-05-02/huakai-creative-strengthening.md` Creative-7 ToS auto-tracking — 立场不变（这是产品功能不是 ToS 灰区）；但 creative-1..10 头部可加竞赛 framing
 - [ ] `docs/reference_delta/2026-05-02/account-to-api-mainline-audit.md` §10 #5 (state machine authority) — 不需要改（hybrid 是工程决策，不是合规决策）
-- [ ] `docs/plans/2026-05-02-huakai-improvements-codex.md`（Codex 写的）— 等下次 Codex 再迭代时一起 propagate
-- [ ] `docs/plans/2026-05-02-huakai-reverse-proxy-core-codex.md`（Codex 写的）— 同上
+- [ ] `docs/process/plans/2026-05-02-huakai-improvements-codex.md`（Codex 写的）— 等下次 Codex 再迭代时一起 propagate
+- [ ] `docs/process/plans/2026-05-02-huakai-reverse-proxy-core-codex.md`（Codex 写的）— 同上
 
 ## Owner 决策点
 

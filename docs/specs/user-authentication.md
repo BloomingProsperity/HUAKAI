@@ -17,8 +17,8 @@
 
 This draft consumes HUAKAI-owned docs and prior review summaries only. It does not read reference-project source.
 
-- `docs/plans/2026-05-16-f-cred-001-ocaw-answers-claude.md` - S9 Owner decision: split HUAKAI user auth into F-AUTH-007 and F-SESSION-001.
-- `docs/plans/2026-05-15-f-cred-001-synthesis-codex.md` - C-RF-8 roadmap summary: user auth refresh-token family invalidation and OAuth email local-account recovery are outside F-CRED-001.
+- `docs/process/plans/2026-05-16-f-cred-001-ocaw-answers-claude.md` - S9 Owner decision: split HUAKAI user auth into F-AUTH-007 and F-SESSION-001.
+- `docs/process/plans/2026-05-15-f-cred-001-synthesis-codex.md` - C-RF-8 roadmap summary: user auth refresh-token family invalidation and OAuth email local-account recovery are outside F-CRED-001.
 - `docs/specs/credential-acquisition.md` - F-CRED-001 boundary: upstream credential acquisition only.
 - `docs/specs/upstream-credential-management.md` - F-AUTH-005 boundary: upstream Provider Account credential management only.
 - `docs/02_CAPABILITY_CONTRACT.md`, `docs/18_GLOSSARY.md`, and `docs/19_DOMAIN_MODEL.md` - local User, Provider Account, API Key, Audit Event, and tenant vocabulary.
@@ -239,7 +239,7 @@ Minimum coverage:
 
 > This section is filled after a future implementation wave. This docs-only wave does not implement code, schema, or dependencies.
 
-Source files read: docs/RULES.md; docs/plans/2026-05-16-user-auth-session-spec-codex.md; docs/plans/2026-05-16-f-cred-001-ocaw-answers-claude.md; docs/plans/2026-05-15-f-cred-001-synthesis-codex.md; docs/specs/credential-acquisition.md; docs/specs/upstream-credential-management.md; docs/02_CAPABILITY_CONTRACT.md; docs/18_GLOSSARY.md; docs/19_DOMAIN_MODEL.md; docs/03_FEATURE_PARITY_MATRIX.md; docs/11_ACCEPTANCE_TEST_MATRIX.md
+Source files read: docs/RULES.md; docs/process/plans/2026-05-16-user-auth-session-spec-codex.md; docs/process/plans/2026-05-16-f-cred-001-ocaw-answers-claude.md; docs/process/plans/2026-05-15-f-cred-001-synthesis-codex.md; docs/specs/credential-acquisition.md; docs/specs/upstream-credential-management.md; docs/02_CAPABILITY_CONTRACT.md; docs/18_GLOSSARY.md; docs/19_DOMAIN_MODEL.md; docs/03_FEATURE_PARITY_MATRIX.md; docs/11_ACCEPTANCE_TEST_MATRIX.md
 Lane: implementer
 Agent: Codex GPT-5
 UTC timestamp: 2026-05-16T06:18:06Z

@@ -60,7 +60,7 @@ Every quarter:
 1. Compare HUAKAI's feature parity matrix against each reference's current feature surface.
 2. Identify features that have appeared upstream but are NOT in HUAKAI's matrix — propose F-* rows.
 3. Identify HUAKAI features that are no longer aligned with the upstream intent (drift).
-4. Update [DR-007](decisions/DR-007-product-positioning-and-breadth.md) success criteria 2 (catalog comparison) with current numbers.
+4. Update [DR-007](process/decisions/DR-007-product-positioning-and-breadth.md) success criteria 2 (catalog comparison) with current numbers.
 5. Owner review of strategic direction relative to reference movement.
 6. Record in `docs/tracking/_quarterly-YYYYqN.md`.
 

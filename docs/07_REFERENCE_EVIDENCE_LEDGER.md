@@ -20,7 +20,7 @@ Establishing the license tier of every primary reference is a prerequisite to an
 | E-LIC-006 | Portkey AI Gateway | github.com/Portkey-AI/gateway/blob/main/LICENSE | MIT | 2026-04-28 | Claude (PM) | Safe anchor. Copyright Portkey, Inc 2024. |
 | E-LIC-007 | Helicone AI Gateway | github.com/Helicone/ai-gateway/blob/main/LICENSE | GPL-3.0-or-later | 2026-04-28 | Claude (specifier) | NOT a safe anchor despite some marketing claiming Apache-2.0. Network use does not trigger GPL distribution requirements (unlike AGPL), but binary distribution does. Read for behavior only. |
 | E-LIC-008 | Envoy AI Gateway | github.com/envoyproxy/ai-gateway/blob/main/LICENSE | Apache-2.0 | 2026-04-28 | Claude (specifier) | Safe anchor (4th confirmed: one-api MIT, LiteLLM MIT, Portkey MIT, Envoy AI Gateway Apache-2.0). Built on Envoy Proxy, CNCF lineage. |
-| E-LIC-009 | CLIProxyAPI (CPA) | github.com/router-for-me/CLIProxyAPI/blob/main/LICENSE | MIT | 2026-05-08 | Claude (specifier) | Safe anchor. Owner 召回 "和我们的也差不多，只是另一种 OAuth 授权" — 31.3k stars, Go gateway, sub2api 同生态。已在量产 browser-redirect OAuth (Anthropic Pro/Max + Codex + Antigravity + Qwen)，是 HUAKAI 5-passthrough OAuth roadmap 关键参考。详见 [docs/plans/2026-05-08-cpa-cliproxyapi-reference-scan.md](plans/2026-05-08-cpa-cliproxyapi-reference-scan.md)。 |
+| E-LIC-009 | CLIProxyAPI (CPA) | github.com/router-for-me/CLIProxyAPI/blob/main/LICENSE | MIT | 2026-05-08 | Claude (specifier) | Safe anchor. Owner 召回 "和我们的也差不多，只是另一种 OAuth 授权" — 31.3k stars, Go gateway, sub2api 同生态。已在量产 browser-redirect OAuth (Anthropic Pro/Max + Codex + Antigravity + Qwen)，是 HUAKAI 5-passthrough OAuth roadmap 关键参考。详见 [docs/process/plans/2026-05-08-cpa-cliproxyapi-reference-scan.md](process/plans/2026-05-08-cpa-cliproxyapi-reference-scan.md)。 |
 
 ## Behavior Evidence — one-api (MIT, E-LIC-004)
 
@@ -141,7 +141,7 @@ Eighth batch from Envoy AI Gateway public README (Phase 1, 2026-04-28). Apache-2
 
 ## Deep Source Decomposition (Phase 1 second pass, 2026-04-28)
 
-Phase 1 first pass mined READMEs only. Phase 1 second pass reads actual upstream source code under specifier-lane discipline (per [DR-000](decisions/DR-000-clean-room-methodology.md), [05_CLEAN_ROOM_POLICY.md §What the Specifier Lane Is Allowed To Do](05_CLEAN_ROOM_POLICY.md)). Behaviors below are extracted from real source reads via WebFetch summaries; Verified column cites the exact file URL successfully read. Behaviors are paraphrased into HUAKAI vocabulary; no upstream function names, struct fields, or schema columns appear here.
+Phase 1 first pass mined READMEs only. Phase 1 second pass reads actual upstream source code under specifier-lane discipline (per [DR-000](process/decisions/DR-000-clean-room-methodology.md), [05_CLEAN_ROOM_POLICY.md §What the Specifier Lane Is Allowed To Do](05_CLEAN_ROOM_POLICY.md)). Behaviors below are extracted from real source reads via WebFetch summaries; Verified column cites the exact file URL successfully read. Behaviors are paraphrased into HUAKAI vocabulary; no upstream function names, struct fields, or schema columns appear here.
 
 ### Behavior Evidence — one-api source (MIT, E-LIC-004)
 

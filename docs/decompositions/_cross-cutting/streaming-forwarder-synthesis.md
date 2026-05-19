@@ -4,7 +4,7 @@
 | --- | --- |
 | Status | Action Plan (synthesized from source-verified inputs) |
 | Feature ID | F-GW-002 |
-| Lane mode | Option C (gateway hot path intersects Provider Account failover, account-health, and Billing Ledger reconciliation per [DR-000](../../decisions/DR-000-clean-room-methodology.md)) |
+| Lane mode | Option C (gateway hot path intersects Provider Account failover, account-health, and Billing Ledger reconciliation per [DR-000](../../process/decisions/DR-000-clean-room-methodology.md)) |
 | Author | Claude (PM-Orchestrator) |
 | Date | 2026-04-28 |
 | Sources | Sub2API ([E-LIC-001](../../07_REFERENCE_EVIDENCE_LEDGER.md), LGPL-3.0, commit `b0a2252ed19c3720e6adafde6083e64fbac2efa9`); Helicone ([E-LIC-007](../../07_REFERENCE_EVIDENCE_LEDGER.md), GPL-3.0-or-later, commit `548832f8e763a33732ead27d8b2dcaeccc665a39`, behavior-only); one-api ([E-LIC-004](../../07_REFERENCE_EVIDENCE_LEDGER.md), MIT — simpler streaming baseline cross-reference) |

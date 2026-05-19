@@ -14,7 +14,7 @@
 //   - CMB-7: this package writes to admin_tokens, api_keys, and
 //     admin_audit_events. Never to billing, pool, or registry tables.
 //
-// Per docs/plans/2026-05-01-n4b-admin-keys.md.
+// Per docs/process/plans/2026-05-01-n4b-admin-keys.md.
 
 package admin
 

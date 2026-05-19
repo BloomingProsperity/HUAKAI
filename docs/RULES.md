@@ -13,11 +13,11 @@
 | ID | 规则 | 来源 |
 | --- | --- | --- |
 | G-001 | 商业目的：赚钱（成功后开源），不接受降低真实度加速 | [01 §Owner-Stated Goal](01_PROJECT_BRIEF.md) |
-| G-002 | 在 Sub2API 基础上做更全面更好；接入广度是差异化 | [DR-007](decisions/DR-007-product-positioning-and-breadth.md) |
+| G-002 | 在 Sub2API 基础上做更全面更好；接入广度是差异化 | [DR-007](process/decisions/DR-007-product-positioning-and-breadth.md) |
 | G-003 | "必须真实"——inventory 不等于理解；spec 不等于实现 | [01 §Owner directives](01_PROJECT_BRIEF.md) |
-| G-004 | 慢无所谓；250-500 工程小时预期；不缩 scope，加并行 | [DR-008](decisions/DR-008-methodology-choice-strict-authenticity.md) |
+| G-004 | 慢无所谓；250-500 工程小时预期；不缩 scope，加并行 | [DR-008](process/decisions/DR-008-methodology-choice-strict-authenticity.md) |
 | G-005 | 持续维护看上游更新→自审→修 | [24](24_REFERENCE_TRACKING_POLICY.md) |
-| G-006 | 两商业模式平行：Personal Edition 卖 API（模式 1），SaaS Edition 卖给运营方（模式 2） | [DR-002 §Owner Refinement](decisions/DR-002-product-editions.md) |
+| G-006 | 两商业模式平行：Personal Edition 卖 API（模式 1），SaaS Edition 卖给运营方（模式 2） | [DR-002 §Owner Refinement](process/decisions/DR-002-product-editions.md) |
 
 ## 2. Owner Start Gate
 
@@ -31,9 +31,9 @@
 | ID | 规则 | 来源 |
 | --- | --- | --- |
 | CR-001 | License 验证先行；非 MIT 参考不记录 license 不写任何行为证据 | [05](05_CLEAN_ROOM_POLICY.md) |
-| CR-002 | Specifier 车道**可读**非 MIT 源；Implementer 车道只读 spec | [05 §Lane Definitions](05_CLEAN_ROOM_POLICY.md), [DR-000](decisions/DR-000-clean-room-methodology.md) |
-| CR-003 | Option C carve-out 区域：账号池路由 / 计费对账 / Provider 健康 — implementer 只能读 spec，**连 MIT 源都不读** | [DR-000](decisions/DR-000-clean-room-methodology.md) |
-| CR-004 | 同 session 不能同时干两车道工作 | [DR-000](decisions/DR-000-clean-room-methodology.md) |
+| CR-002 | Specifier 车道**可读**非 MIT 源；Implementer 车道只读 spec | [05 §Lane Definitions](05_CLEAN_ROOM_POLICY.md), [DR-000](process/decisions/DR-000-clean-room-methodology.md) |
+| CR-003 | Option C carve-out 区域：账号池路由 / 计费对账 / Provider 健康 — implementer 只能读 spec，**连 MIT 源都不读** | [DR-000](process/decisions/DR-000-clean-room-methodology.md) |
+| CR-004 | 同 session 不能同时干两车道工作 | [DR-000](process/decisions/DR-000-clean-room-methodology.md) |
 | CR-005 | 多 session 累积污染（R-LIC-002）：跨 session 也有风险 | [10 §R-LIC-002](10_RISK_REGISTER.md) |
 
 ## 4. CL-001..CL-010 Spec Leakage Checklist（强制每条审查）
@@ -68,17 +68,17 @@
 | M-002 | 每个 L1/L2 功能必须有 prose decomposition 文件（不只是 ledger 行） | [22 §Owner Sharpening](22_DEEP_MINING_MANDATE.md) |
 | M-003 | prose 文件必须含 7 字段（WHY / WHAT / INPUTS / FAILURES_HANDLED / FAILURES_NOT_HANDLED / KEEP-IMPROVE-AVOID / ATTRIBUTION） | [22](22_DEEP_MINING_MANDATE.md) |
 | M-004 | 多 reference 共担一个功能时——**每个 reference 都要独立 prose 文件** | [22](22_DEEP_MINING_MANDATE.md) |
-| M-005 | Phase 1 → Phase 2 退出门：每个 L1/L2 行有 `Released` 决议 | [DR-008](decisions/DR-008-methodology-choice-strict-authenticity.md) |
+| M-005 | Phase 1 → Phase 2 退出门：每个 L1/L2 行有 `Released` 决议 | [DR-008](process/decisions/DR-008-methodology-choice-strict-authenticity.md) |
 
 ## 7. 互审制度（Owner 直接指令）
 
 | ID | 规则 | 来源 |
 | --- | --- | --- |
 | MR-001 | 同样的工作 Claude 和 Codex **各自独立**做一份 | Owner 2026-04-28 |
-| MR-002 | 双方互审对方产出（写到 `docs/reviews/`） | 同上 |
+| MR-002 | 双方互审对方产出（写到 `docs/process/reviews/`） | 同上 |
 | MR-003 | PM 综合产出最终行动方案 | 同上 |
 | MR-004 | reviewer-lane = **第三个不同 session**，跑 CL-001..010 | [22](22_DEEP_MINING_MANDATE.md) |
-| MR-005 | spec Released 才能进 `docs/specs/` 给 implementer 用 | [DR-008](decisions/DR-008-methodology-choice-strict-authenticity.md) |
+| MR-005 | spec Released 才能进 `docs/specs/` 给 implementer 用 | [DR-008](process/decisions/DR-008-methodology-choice-strict-authenticity.md) |
 
 ## 8. Decision 圆桌制度
 
@@ -101,22 +101,22 @@
 
 | ID | 规则 | 来源 |
 | --- | --- | --- |
-| TS-001 | 后端 Go (stdlib net/http + chi); 永禁 Fiber/fasthttp | [DR-003](decisions/DR-003-technology-stack.md), [DR-005](decisions/DR-005-go-http-framework.md) |
-| TS-002 | 前端 TS + React + Vite + TanStack + Tailwind | [DR-004](decisions/DR-004-frontend-framework.md) |
-| TS-003 | 数据库 PostgreSQL + sqlc + Docker Compose；永禁 SQLite 上生产 | [DR-006](decisions/DR-006-database.md) |
-| TS-004 | OpenAPI 是 contract source of truth，前端类型从此 codegen | [DR-003 Constraint 2](decisions/DR-003-technology-stack.md) |
-| TS-005 | 命名跟 [18 术语表](18_GLOSSARY.md) 严格对齐；不许同义词 | [DR-003 Constraint 8](decisions/DR-003-technology-stack.md) |
-| TS-006 | tenant_id 在每张主表 Day 1 就有 | [DR-001](decisions/DR-001-multi-tenancy.md) |
+| TS-001 | 后端 Go (stdlib net/http + chi); 永禁 Fiber/fasthttp | [DR-003](process/decisions/DR-003-technology-stack.md), [DR-005](process/decisions/DR-005-go-http-framework.md) |
+| TS-002 | 前端 TS + React + Vite + TanStack + Tailwind | [DR-004](process/decisions/DR-004-frontend-framework.md) |
+| TS-003 | 数据库 PostgreSQL + sqlc + Docker Compose；永禁 SQLite 上生产 | [DR-006](process/decisions/DR-006-database.md) |
+| TS-004 | OpenAPI 是 contract source of truth，前端类型从此 codegen | [DR-003 Constraint 2](process/decisions/DR-003-technology-stack.md) |
+| TS-005 | 命名跟 [18 术语表](18_GLOSSARY.md) 严格对齐；不许同义词 | [DR-003 Constraint 8](process/decisions/DR-003-technology-stack.md) |
+| TS-006 | tenant_id 在每张主表 Day 1 就有 | [DR-001](process/decisions/DR-001-multi-tenancy.md) |
 | TS-007 | Money 用 PostgreSQL `numeric(20, 8)`；永禁 float | [Quota+Billing 综合](decompositions/_cross-cutting/quota-billing-claim-gate-synthesis.md) |
 
 ## 11. Phase Gates
 
 | ID | 规则 | 来源 |
 | --- | --- | --- |
-| P-001 | Phase 1 → 2: 每个 L1/L2 row 有 Released spec; baseline 文件齐全; 互审 cycle on 核心算法完成 | [DR-008](decisions/DR-008-methodology-choice-strict-authenticity.md) |
+| P-001 | Phase 1 → 2: 每个 L1/L2 row 有 Released spec; baseline 文件齐全; 互审 cycle on 核心算法完成 | [DR-008](process/decisions/DR-008-methodology-choice-strict-authenticity.md) |
 | P-002 | Phase 2 → 3: API contracts 锁定 + UI assumptions + 高风险文件识别 | [16](16_PHASED_DELIVERY_PLAN.md) |
 | P-003 | Phase 3 → 4: Go 骨架 + OpenAPI codegen + provider-neutral streaming abstraction; DR-005/006 完成 | [16](16_PHASED_DELIVERY_PLAN.md) |
-| P-004 | Phase 4-9 任何阶段不写未 Released 功能的代码 | [DR-008 §Constraints](decisions/DR-008-methodology-choice-strict-authenticity.md) |
+| P-004 | Phase 4-9 任何阶段不写未 Released 功能的代码 | [DR-008 §Constraints](process/decisions/DR-008-methodology-choice-strict-authenticity.md) |
 
 ## 12. PM Self-Check（每次 commit 之前）
 

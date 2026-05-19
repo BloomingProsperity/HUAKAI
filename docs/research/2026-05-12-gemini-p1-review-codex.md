@@ -14,7 +14,7 @@
 
 - 被审路径：`frontend/app/dashboard/`
 - 被审 mock：`frontend/lib/dashboard-mock.ts`
-- 参考 brief：`docs/plans/2026-05-12-frontend-gemini-brief.md`
+- 参考 brief：`docs/process/plans/2026-05-12-frontend-gemini-brief.md`
 - 市场反抄袭参考：`docs/research/2026-05-12-frontend-brief-market-sonnet.md`
 - 市场反抄袭参考：`docs/research/2026-05-12-frontend-brief-market-codex.md`
 - 未读取：`docs/research/2026-05-12-gemini-p1-review-sonnet.md`
@@ -45,7 +45,7 @@ Owner 三条硬约束检查结果：
 - 文件:行号：`frontend/app/dashboard/page.tsx:10`
 - 文件:行号：`frontend/app/dashboard/page.tsx:11`
 - 规则编号：I
-- 关联 brief：`docs/plans/2026-05-12-frontend-gemini-brief.md` 的 Mock 数据约束要求用 `process.env.NEXT_PUBLIC_USE_MOCK === '1'` 切换。
+- 关联 brief：`docs/process/plans/2026-05-12-frontend-gemini-brief.md` 的 Mock 数据约束要求用 `process.env.NEXT_PUBLIC_USE_MOCK === '1'` 切换。
 - 现状证据：`page.tsx` 直接 import `MOCK_USAGE`、`MOCK_PROVIDER_ACCOUNTS`、`MOCK_CHART_DATA`。
 - 现状证据：`const usage = MOCK_USAGE;`
 - 现状证据：`const accounts = MOCK_PROVIDER_ACCOUNTS;`

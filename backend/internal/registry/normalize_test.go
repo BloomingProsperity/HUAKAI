@@ -11,7 +11,7 @@ func TestAliasNormalize(t *testing.T) {
 		{"empty", "", ""},
 		{"whitespace_only", "   ", ""},
 		// Test inputs taken from the verified-current model lineup
-		// (docs/plans/2026-04-30-n5-model-registry.md Appendix B):
+		// (docs/process/plans/2026-04-30-n5-model-registry.md Appendix B):
 		// claude-opus-4-7 / claude-haiku-4-5 (Anthropic 2026-04-30T10:08Z),
 		// gpt-5.4-mini (OpenAI 2026-04-30T10:09Z),
 		// gemini-2.5-pro (Google 2026-04-30T10:08Z).

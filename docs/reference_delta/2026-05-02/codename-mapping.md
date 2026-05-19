@@ -5,7 +5,7 @@ Status: source of truth for all internal planning docs that use codenames.
 
 ## 0. 为什么有这份文件
 
-Owner directive 2026-05-02: 内部 plan / 设计文档（如 `docs/plans/2026-05-02-huakai-reverse-proxy-core-codex.md` 等）使用**代号**而不是直接点名参考项目，原因：
+Owner directive 2026-05-02: 内部 plan / 设计文档（如 `docs/process/plans/2026-05-02-huakai-reverse-proxy-core-codex.md` 等）使用**代号**而不是直接点名参考项目，原因：
 
 1. 让文档聚焦"做什么"，而不是"抄哪个"
 2. 避免文档外流时被误读为竞品对照
@@ -47,7 +47,7 @@ Owner directive 2026-05-02: 内部 plan / 设计文档（如 `docs/plans/2026-05
 
 ## 3. 使用约定
 
-**内部 plan 文件**（如 `docs/plans/*.md`、`docs/reference_delta/*.md`）默认使用代号。允许在 §0 头部 footnote 中一次性写"代号映射见 codename-mapping.md"，正文不再点名。
+**内部 plan 文件**（如 `docs/process/plans/*.md`、`docs/reference_delta/*.md`）默认使用代号。允许在 §0 头部 footnote 中一次性写"代号映射见 codename-mapping.md"，正文不再点名。
 
 **对外公开文件**（README、博客、商业合作文档）必须用真名 + license + 链接。所有真名公示的源头是这份 mapping 文件。
 

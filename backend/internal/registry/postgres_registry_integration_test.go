@@ -2,7 +2,7 @@
 
 // Slice 2 (N+5a) integration tests for PostgresRegistry against real
 // PostgreSQL. Validates the 14 cases enumerated in
-// docs/plans/2026-04-30-n5-model-registry.md §"Test Plan":
+// docs/process/plans/2026-04-30-n5-model-registry.md §"Test Plan":
 //
 //   1.  HappyPath
 //   2.  UnknownAlias
@@ -325,7 +325,7 @@ func TestPostgresRegistry_HappyPath(t *testing.T) {
 
 	// Current top-tier Anthropic model per verified WebFetch 2026-04-30T10:08Z
 	// @ https://platform.claude.com/docs/en/docs/about-claude/models/overview.
-	// See docs/plans/2026-04-30-n5-model-registry.md Appendix B.
+	// See docs/process/plans/2026-04-30-n5-model-registry.md Appendix B.
 	mid := f.seedModel(modelOpts{
 		canonicalID:     "anthropic/claude-opus-4-7-" + f.suffix,
 		providerModelID: "claude-opus-4-7",

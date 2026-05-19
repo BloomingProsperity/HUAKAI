@@ -2,7 +2,7 @@
 // Spec: docs/specs/rate-limiting.md §A13 / DR-009 §1 Q1 / F-GW-002 Phase D.
 //
 // Synthesis of two parallel-draft lanes (CLAUDE.md #10 + 2026-05-04 directive).
-// Synthesis notes: docs/plans/2026-05-04-r6-wire-codeparallel-synthesis.md.
+// Synthesis notes: docs/process/plans/2026-05-04-r6-wire-codeparallel-synthesis.md.
 package gateway
 
 import (

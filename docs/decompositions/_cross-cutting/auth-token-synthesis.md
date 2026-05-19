@@ -4,7 +4,7 @@
 | --- | --- |
 | Status | Action Plan (synthesized from source-verified inputs) |
 | Feature ID | F-AUTH-005 (NEW row to be added — distinct from F-AUTH-001..004 which are user-facing identity-provider auth; this row is **upstream Provider Account credential management**) |
-| Lane mode | Option B (per [DR-000](../../decisions/DR-000-clean-room-methodology.md) §Decision: Option C carve-out is restricted to billing ledger / account-pool routing / provider failover-health-heuristics. Upstream credential management is NOT on the carve-out list, so Option B applies as default.) |
+| Lane mode | Option B (per [DR-000](../../process/decisions/DR-000-clean-room-methodology.md) §Decision: Option C carve-out is restricted to billing ledger / account-pool routing / provider failover-health-heuristics. Upstream credential management is NOT on the carve-out list, so Option B applies as default.) |
 | Author | Claude (PM-Orchestrator) |
 | Date | 2026-04-28 |
 | Sources | Sub2API ([E-LIC-001](../../07_REFERENCE_EVIDENCE_LEDGER.md), LGPL-3.0, commit `b0a2252ed19c3720e6adafde6083e64fbac2efa9`) |

@@ -181,8 +181,8 @@ audit payload 严禁含: raw user prompt / response body / token / cookie / PII.
 
 ## 12. Source files read (Claude lane)
 
-- commit `cf4fed4` docs/plans/2026-05-16-antigravity-anti-detection-roadmap-claude.md (D5 anchor)
-- commit `e51e37c` docs/plans/2026-05-16-all-vendor-subscription-anti-detection-roadmap-claude.md (7 层防护栈 L4 Phase R-E+2)
+- commit `cf4fed4` docs/process/plans/2026-05-16-antigravity-anti-detection-roadmap-claude.md (D5 anchor)
+- commit `e51e37c` docs/process/plans/2026-05-16-all-vendor-subscription-anti-detection-roadmap-claude.md (7 层防护栈 L4 Phase R-E+2)
 - commit `06f0ff2` docs/specs/device-fingerprint-binding.md (L3 spec, 同期反代敏感 spec 风格模板)
 - commit `a122a16` docs/specs/active-anti-detection.md (L6 spec, 同期反代敏感 spec 风格模板 + cross-layer hook 风格)
 - commit `e1ba802` tools/upstream-policy-monitor/ (POL-1 L0 联动锚点)

@@ -256,7 +256,7 @@ Pressure to hit a word count creates incentive to fabricate. The project's value
 
 > "你自己执行的时候也要plan给我。"
 
-The rule applies to **every agent in this project — not just Codex, not just Claude**. Before any non-trivial action, write a plan artifact to `docs/plans/YYYY-MM-DD-<descriptor>.md` and surface it for Owner review BEFORE execution.
+The rule applies to **every agent in this project — not just Codex, not just Claude**. Before any non-trivial action, write a plan artifact to `docs/process/plans/YYYY-MM-DD-<descriptor>.md` and surface it for Owner review BEFORE execution.
 
 ### What counts as non-trivial (plan required)
 
@@ -308,15 +308,15 @@ The first interpretation Claude tried — "Codex reviews Claude's plan" — was 
 
 1. Owner authorizes a non-trivial work unit. Plan-Before-Execute rule says "write a plan."
 2. **Both agents draft independently:**
-   - Claude writes `docs/plans/YYYY-MM-DD-<descriptor>-claude.md`
-   - Codex writes `docs/plans/YYYY-MM-DD-<descriptor>-codex.md`
+   - Claude writes `docs/process/plans/YYYY-MM-DD-<descriptor>-claude.md`
+   - Codex writes `docs/process/plans/YYYY-MM-DD-<descriptor>-codex.md`
    - Each writes WITHOUT seeing the other's draft. Same brief / Owner directive / scope; fresh independent thinking.
 3. Compare the two plans. Surface to Owner:
    - **Agreements** — points both plans landed on (likely correct)
    - **Conflicts** — points where they disagree (Owner picks)
    - **Gaps** — things one plan caught that the other missed
 4. Owner approves a synthesized plan. Either:
-   - Write `docs/plans/YYYY-MM-DD-<descriptor>.md` (no suffix) as the merged authoritative version, OR
+   - Write `docs/process/plans/YYYY-MM-DD-<descriptor>.md` (no suffix) as the merged authoritative version, OR
    - Amend one of the two with a "synthesized after diff" header — record which.
 5. Only after the synthesized plan exists does execution begin.
 
@@ -325,8 +325,8 @@ The first interpretation Claude tried — "Codex reviews Claude's plan" — was 
 ```
 codex exec --full-auto "Owner has authorized <work unit description>.
 
-Independently write your own plan to docs/plans/YYYY-MM-DD-<descriptor>-codex.md.
-Do NOT read any docs/plans/YYYY-MM-DD-<descriptor>-claude.md if it exists — the
+Independently write your own plan to docs/process/plans/YYYY-MM-DD-<descriptor>-codex.md.
+Do NOT read any docs/process/plans/YYYY-MM-DD-<descriptor>-claude.md if it exists — the
 point is independent thinking.
 
 Plan content (per AGENTS.md Plan-Before-Execute):
@@ -417,7 +417,7 @@ After this block the prompt continues with the actual decomposition / question /
 
 ### When NOT needed
 
-- Reading HUAKAI-internal code (`backend/`, `docs/specs/`, `docs/decisions/`)
+- Reading HUAKAI-internal code (`backend/`, `docs/specs/`, `docs/process/decisions/`)
 - Reading official spec documents (Anthropic Messages API docs, OpenAI Chat Completions docs) — these are public protocols, not reference-project source
 - Reading reference-project README / public docs (which are intentionally published) — but if README contains code blocks they are still upstream source and the guard applies
 
@@ -447,9 +447,9 @@ CLAUDE.md #11 governs **how** to read reference source safely. CLAUDE.md #12 gov
 
 ### Source-NOT-required (carve-outs)
 
-- HUAKAI-internal claims (cite `backend/`, `docs/specs/`, `docs/decisions/` paths)
+- HUAKAI-internal claims (cite `backend/`, `docs/specs/`, `docs/process/decisions/` paths)
 - Public protocol contracts (Anthropic Messages, OpenAI Chat Completions, Gemini API spec)
-- Prior `docs/plans/*.md` artifacts already source-cited at write time
+- Prior `docs/process/plans/*.md` artifacts already source-cited at write time
 - Vendor pricing / TTL / model lists from official docs (cite docs URL + section)
 
 ### Where to clone
@@ -499,7 +499,7 @@ Effective immediately, **every commit must pass through a Codex review before la
 ### CLI flag notes
 
 - `codex exec review` does NOT accept `--sandbox` / `-C` flags directly. Run from the repo root.
-- `--uncommitted` and `--commit <SHA>` are mutually exclusive with a positional `[PROMPT]`. To customize the review focus, write notes into `docs/reviews/PENDING-<descriptor>.md` first; Codex picks that up via the working tree.
+- `--uncommitted` and `--commit <SHA>` are mutually exclusive with a positional `[PROMPT]`. To customize the review focus, write notes into `docs/process/reviews/PENDING-<descriptor>.md` first; Codex picks that up via the working tree.
 - Use `--full-auto` for sandboxed automatic execution (recommended for review of working-tree changes).
 
 ### When NOT to skip

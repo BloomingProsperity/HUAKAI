@@ -4,7 +4,7 @@
 | --- | --- |
 | Status | Action Plan (regenerated 2026-04-28 after Codex final review REJECT verdict on the F-PROTO-001-mislabeled prior version) |
 | Feature ID | **F-PROTO-002** (NOT F-PROTO-001 — the prior label was wrong; F-PROTO-001 in the parity matrix is MCP/A2A external agent/tool protocol bridging, deferred to L3 Phase 9+) |
-| Lane mode | Option B (multi-protocol gateway is L1/L2 but not on Option C carve-out per [DR-000](../../decisions/DR-000-clean-room-methodology.md)) |
+| Lane mode | Option B (multi-protocol gateway is L1/L2 but not on Option C carve-out per [DR-000](../../process/decisions/DR-000-clean-room-methodology.md)) |
 | Author | Claude (PM-Orchestrator) |
 | Date | 2026-04-28 |
 | Sources | Sub2API ([E-LIC-001](../../07_REFERENCE_EVIDENCE_LEDGER.md), LGPL-3.0, commit `b0a2252ed19c3720e6adafde6083e64fbac2efa9`); Portkey ([E-LIC-006](../../07_REFERENCE_EVIDENCE_LEDGER.md), MIT, commit pinned in [portkey/protocol-translation-source-verified.md](../portkey/protocol-translation-source-verified.md)); New API ([E-LIC-002](../../07_REFERENCE_EVIDENCE_LEDGER.md), AGPL-3.0, behavioral capability matrix evidence at E-NAI-003 only — no source code consulted for clean-room policy) |

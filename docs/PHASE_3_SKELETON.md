@@ -2,7 +2,7 @@ This file is agent-facing and authoritative.
 
 # Phase 3 Skeleton — Status & Map
 
-Per [DR-008 §1](decisions/DR-008-methodology-choice-strict-authenticity.md): skeleton allowed only after Phase 2 contracts Released. All 7 Released specs + Phase 2.2 OpenAPI lock are in place.
+Per [DR-008 §1](process/decisions/DR-008-methodology-choice-strict-authenticity.md): skeleton allowed only after Phase 2 contracts Released. All 7 Released specs + Phase 2.2 OpenAPI lock are in place.
 
 ## What's in the skeleton
 

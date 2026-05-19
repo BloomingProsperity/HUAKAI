@@ -9,7 +9,7 @@
 //   - A4（本文件）: 把 A3 产出的 SSEEvent.Data（已是纯 Anthropic JSON）转
 //     CanonicalEvent
 //
-// 设计决策（详见 docs/plans/2026-05-08-bedrock-a4-claude.md）：
+// 设计决策（详见 docs/process/plans/2026-05-08-bedrock-a4-claude.md）：
 //   - 独立 struct（不直接复用 AnthropicAdapter）：未来 Bedrock-on-Llama /
 //     Bedrock-on-Cohere 不能 delegate Anthropic；matrix 上 Bedrock 的 loss
 //     attribution 与 native Anthropic 不同（虽当前等价，但语义不同）

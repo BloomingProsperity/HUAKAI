@@ -341,7 +341,7 @@ A19 carries the highest effort because it includes the mandatory SaaS tenant iso
 
 ## Related Decisions
 
-- [DR-009](../decisions/DR-009-algorithm-upgrade-policy.md) — Owner decisions Q6 (SaaS capacity graph scope, tenant isolation mandate) and §6.6 (A19 hard floor)
+- [DR-009](../process/decisions/DR-009-algorithm-upgrade-policy.md) — Owner decisions Q6 (SaaS capacity graph scope, tenant isolation mandate) and §6.6 (A19 hard floor)
 - [F-POOL-001 pool-routing.md](pool-routing.md) — Phase C atomic admission gate (authoritative revalidation integrates with A19 Tx1 reserve)
 - A09 two-phase quota spec (observability-billing.md extension, DR-009 Phase B) — Tx1/Tx2 reservation integrates with A19 atomic decrement
 

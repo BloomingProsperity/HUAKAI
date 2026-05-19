@@ -41,7 +41,7 @@ These are Claude's pass contributions Codex's pass did not articulate:
 
 - **L1**: Concrete gap-closure mapping `G1..G8` from one-api → HUAKAI. Codex listed gaps but did not number them or map each to a specific HUAKAI design closure. The numbered map is the auditable artifact for the [docs/24 reference tracking policy](../../24_REFERENCE_TRACKING_POLICY.md) — when one-api ships a fix, HUAKAI checks the gap number directly.
 - **L2**: **`pending_reconciliation` flag on Usage Record** when usage source is `inferred`. Codex's pass mentions `partial` labeling but does not articulate the late-reconciliation lifecycle.
-- **L3**: **Concrete Owner-commercial framing** — HUAKAI's design pressure is mapped to Model 1 commercial launch readiness ([DR-002 §Owner Refinement](../../decisions/DR-002-product-editions.md)), not just "money correctness in general".
+- **L3**: **Concrete Owner-commercial framing** — HUAKAI's design pressure is mapped to Model 1 commercial launch readiness ([DR-002 §Owner Refinement](../../process/decisions/DR-002-product-editions.md)), not just "money correctness in general".
 
 ## The Synthesized HUAKAI Algorithm — Final
 
@@ -152,7 +152,7 @@ Advisory locks: ONLY for background recovery coordination (the orphan sweep). Ne
   - `decompositions/one-api/quota-mutation-gaps.md` — formalize G1..G8.
   - `decompositions/sub2api/billing-claim-gate.md` — formalize Sub2API's full implementation.
   - `decompositions/sub2api/cost-engine.md` — the multiplier / clamp / pricing logic (E-S2A-DEEP-010).
-- Open `docs/sessions/<id>.md` per the contamination ledger gap flagged in [Claude reviews Codex](../../reviews/2026-04-28-claude-reviews-codex-phase1.md) Subject 6.
+- Open `docs/sessions/<id>.md` per the contamination ledger gap flagged in [Claude reviews Codex](../../process/reviews/2026-04-28-claude-reviews-codex-phase1.md) Subject 6.
 - Open follow-up to extend the typed failure taxonomy (`docs/decompositions/sub2api/typed-failure-taxonomy.md`) with the `network_pre_response`, `network_mid_stream`, `provider_protocol_violation` categories.
 
 ### Phase 2-9 implementation guidance
@@ -165,7 +165,7 @@ When implementer-lane work begins on this algorithm:
 
 ## V2 Review Findings Applied (2026-04-28)
 
-After this synthesis was first written, a deeper second review of Codex's pass surfaced 9 MAJOR + 4 MINOR findings (see [v2 review](../../reviews/2026-04-28-claude-reviews-codex-phase1-v2.md)). The 9 MAJOR are folded into the algorithm below; v2 reviews supersede earlier sections where they conflict.
+After this synthesis was first written, a deeper second review of Codex's pass surfaced 9 MAJOR + 4 MINOR findings (see [v2 review](../../process/reviews/2026-04-28-claude-reviews-codex-phase1-v2.md)). The 9 MAJOR are folded into the algorithm below; v2 reviews supersede earlier sections where they conflict.
 
 ### D1 — Lock order made explicit
 

@@ -10,7 +10,7 @@
 | Reviewer | Codex final reviewer-lane, 2026-04-28 (REJECT → fixes applied + ID corrected to F-AUTH-005) |
 | Review date | 2026-04-28 |
 | Released date | 2026-04-28 |
-| Lane mode | Option B (per [DR-000](../decisions/DR-000-clean-room-methodology.md): Option C carve-out applies only to billing ledger / account-pool routing / provider failover-health-heuristics; upstream credential management is NOT on that list) |
+| Lane mode | Option B (per [DR-000](../process/decisions/DR-000-clean-room-methodology.md): Option C carve-out applies only to billing ledger / account-pool routing / provider failover-health-heuristics; upstream credential management is NOT on that list) |
 | Supersedes | — |
 | Superseded by | — |
 
@@ -194,9 +194,9 @@ None remaining at release.
 | Priority | P0 |
 | Phase | A (with N+5b spine) |
 | Effort | 10h |
-| DR reference | [DR-009-algorithm-upgrade-policy.md](../decisions/DR-009-algorithm-upgrade-policy.md) §Phase A + §Seller Hard Floor |
+| DR reference | [DR-009-algorithm-upgrade-policy.md](../process/decisions/DR-009-algorithm-upgrade-policy.md) §Phase A + §Seller Hard Floor |
 | F-* link | F-AUTH-005 (extend) |
-| Synthesis reference | [2026-05-02-huakai-algo-upgrade-synthesis.md](../plans/2026-05-02-huakai-algo-upgrade-synthesis.md) §1 A07, §4 P0, §6.6 |
+| Synthesis reference | [2026-05-02-huakai-algo-upgrade-synthesis.md](../process/plans/2026-05-02-huakai-algo-upgrade-synthesis.md) §1 A07, §4 P0, §6.6 |
 
 ### Interaction with Existing F-AUTH-005
 

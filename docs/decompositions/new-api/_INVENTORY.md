@@ -10,7 +10,7 @@
 
 ## Why This File Exists
 
-Owner directive 2026-04-28: "整体代码和逻辑都读完". New API is **AGPL-3.0** — specifier-lane may read source per [DR-000](../../decisions/DR-000-clean-room-methodology.md), but this session and any session reading New API source enters specifier-only contamination state. New API extends one-api with cache-aware billing, native protocol translation, and reasoning-effort handling — all features HUAKAI explicitly wants. This inventory is the audit instrument for the New-API-derived L1/L2 surface.
+Owner directive 2026-04-28: "整体代码和逻辑都读完". New API is **AGPL-3.0** — specifier-lane may read source per [DR-000](../../process/decisions/DR-000-clean-room-methodology.md), but this session and any session reading New API source enters specifier-only contamination state. New API extends one-api with cache-aware billing, native protocol translation, and reasoning-effort handling — all features HUAKAI explicitly wants. This inventory is the audit instrument for the New-API-derived L1/L2 surface.
 
 ## Status Legend
 
@@ -114,4 +114,4 @@ Owner directive 2026-04-28: "整体代码和逻辑都读完". New API is **AGPL-
 
 ## Specifier-Lane Contamination Note
 
-This inventory was authored by Claude after reading new-api's public README only. Source-level dives for the rows above must be performed in a fresh specifier-lane session (per [DR-000 Option B / Option C](../../decisions/DR-000-clean-room-methodology.md)) with attention to CL-001..010 leakage rules; cache-aware-billing and protocol-translation are Option C carve-out areas (see [22 §Owner Sharpening](../../22_DEEP_MINING_MANDATE.md)).
+This inventory was authored by Claude after reading new-api's public README only. Source-level dives for the rows above must be performed in a fresh specifier-lane session (per [DR-000 Option B / Option C](../../process/decisions/DR-000-clean-room-methodology.md)) with attention to CL-001..010 leakage rules; cache-aware-billing and protocol-translation are Option C carve-out areas (see [22 §Owner Sharpening](../../22_DEEP_MINING_MANDATE.md)).

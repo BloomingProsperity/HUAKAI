@@ -23,19 +23,19 @@
 
 ## Q2 — Synthesis decisions (3-direction + next-pivot)
 
-- 综合判断: mostly right. The three-direction synthesis correctly stops claiming PASR as first-mover and reframes it as finer-grained score/miss-demotion/cross-account intent (docs/plans/2026-05-09-three-directions-synthesis.md:16-24, 90-104).
-- 方向 1/2/3: rejecting direction 2 as gateway scope is reasonable because the synthesis records idempotency, SSE merge, half-failure, and 1:N billing problems (docs/plans/2026-05-09-three-directions-synthesis.md:72-75). Direction 3 being deferred into reactive bridge is also reasonable given the documented economic-risk reasoning (docs/plans/2026-05-09-three-directions-synthesis.md:85-88).
-- Next-pivot C vs Owner axis-3 override: both are defensible. The next-pivot doc correctly identified PASR multi-vendor repair as the best immediate tactical commit (docs/plans/2026-05-09-next-pivot-synthesis.md:11-17, 47-56). Owner's later axis-3 override is strategically defensible because HCSF canonical synthesis identifies L3+L4 PMF as capability-fidelity dependent (docs/plans/2026-05-09-hcsf-canonical-synthesis.md:54-64, 66-75).
+- 综合判断: mostly right. The three-direction synthesis correctly stops claiming PASR as first-mover and reframes it as finer-grained score/miss-demotion/cross-account intent (docs/process/plans/2026-05-09-three-directions-synthesis.md:16-24, 90-104).
+- 方向 1/2/3: rejecting direction 2 as gateway scope is reasonable because the synthesis records idempotency, SSE merge, half-failure, and 1:N billing problems (docs/process/plans/2026-05-09-three-directions-synthesis.md:72-75). Direction 3 being deferred into reactive bridge is also reasonable given the documented economic-risk reasoning (docs/process/plans/2026-05-09-three-directions-synthesis.md:85-88).
+- Next-pivot C vs Owner axis-3 override: both are defensible. The next-pivot doc correctly identified PASR multi-vendor repair as the best immediate tactical commit (docs/process/plans/2026-05-09-next-pivot-synthesis.md:11-17, 47-56). Owner's later axis-3 override is strategically defensible because HCSF canonical synthesis identifies L3+L4 PMF as capability-fidelity dependent (docs/process/plans/2026-05-09-hcsf-canonical-synthesis.md:54-64, 66-75).
 - PASR synergy: not lost. P-0 schema preserves PASR hooks through `RequestMeta.SessionHash` and `CacheControlNode.LocalityHint` (backend/internal/proto/request_meta.go:59-60, backend/internal/proto/capability_cache.go:16-18, 38-40).
 - 评级: **pass with one clean-room blocker inherited from source-read artifacts**.
 
 ## Q3 — HCSF canonical + implementation plan
 
-- 14 capability 完整性: core set is good, but wording is confusing. The approved plan says 14 families and splits file/image/audio/video (docs/plans/2026-05-09-hcsf-v04-implementation-synthesis.md:38-64). Code implements 15 concrete node kinds because `tool_use` and `tool_result` are separate concrete nodes under one tool family (backend/internal/proto/capability_graph.go:3-10, 31-48). Keep "14 product families / 15 concrete node kinds" everywhere.
-- Hosted tools gap: **MED**. `computer_use` and `mcp_server` exist (docs/plans/2026-05-09-hcsf-v04-implementation-synthesis.md:49, 56), and generic `tool_use/tool_result` exists (docs/plans/2026-05-09-hcsf-v04-implementation-synthesis.md:45), but there is no explicit subtype for hosted tools such as web search / code interpreter. P-1 should add a `hosted_tool_kind` or equivalent projection/native-required field rather than silently folding these into generic tools.
-- Anthropic-rich primary: acceptable, not over-tilted. The canonical synthesis keeps OpenAI-compatible storefront as default market entry and Anthropic-native as side-entry (docs/plans/2026-05-09-hcsf-canonical-synthesis.md:70-75, 125-133), while Tier-A includes OpenAI Chat and OpenAI Responses (docs/plans/2026-05-09-hcsf-v04-implementation-synthesis.md:70-76).
-- BufferedResponse + StreamEvents shape: conceptually fine, but implementation has an INV-6 bug listed below. Native passthrough doc drift exists: synthesis says native passthrough is "not in envelope" (docs/plans/2026-05-09-p0-schema-spec-synthesis.md:87-92), while implementation adds `RequestMeta.NativePassthrough` (backend/internal/proto/envelope.go:15, backend/internal/proto/request_meta.go:62-63). Treat it as an audit shell and update docs.
-- 12-15 weeks: optimistic. The plan itself admits true-account smoke is Owner-local and hard-gating (docs/plans/2026-05-09-hcsf-v04-implementation-synthesis.md:177-184). It is plausible as a phase target, not as a committed delivery guarantee.
+- 14 capability 完整性: core set is good, but wording is confusing. The approved plan says 14 families and splits file/image/audio/video (docs/process/plans/2026-05-09-hcsf-v04-implementation-synthesis.md:38-64). Code implements 15 concrete node kinds because `tool_use` and `tool_result` are separate concrete nodes under one tool family (backend/internal/proto/capability_graph.go:3-10, 31-48). Keep "14 product families / 15 concrete node kinds" everywhere.
+- Hosted tools gap: **MED**. `computer_use` and `mcp_server` exist (docs/process/plans/2026-05-09-hcsf-v04-implementation-synthesis.md:49, 56), and generic `tool_use/tool_result` exists (docs/process/plans/2026-05-09-hcsf-v04-implementation-synthesis.md:45), but there is no explicit subtype for hosted tools such as web search / code interpreter. P-1 should add a `hosted_tool_kind` or equivalent projection/native-required field rather than silently folding these into generic tools.
+- Anthropic-rich primary: acceptable, not over-tilted. The canonical synthesis keeps OpenAI-compatible storefront as default market entry and Anthropic-native as side-entry (docs/process/plans/2026-05-09-hcsf-canonical-synthesis.md:70-75, 125-133), while Tier-A includes OpenAI Chat and OpenAI Responses (docs/process/plans/2026-05-09-hcsf-v04-implementation-synthesis.md:70-76).
+- BufferedResponse + StreamEvents shape: conceptually fine, but implementation has an INV-6 bug listed below. Native passthrough doc drift exists: synthesis says native passthrough is "not in envelope" (docs/process/plans/2026-05-09-p0-schema-spec-synthesis.md:87-92), while implementation adds `RequestMeta.NativePassthrough` (backend/internal/proto/envelope.go:15, backend/internal/proto/request_meta.go:62-63). Treat it as an audit shell and update docs.
+- 12-15 weeks: optimistic. The plan itself admits true-account smoke is Owner-local and hard-gating (docs/process/plans/2026-05-09-hcsf-v04-implementation-synthesis.md:177-184). It is plausible as a phase target, not as a committed delivery guarantee.
 - 评级: **concern**.
 
 ## Q4 — P-0 code implementation
@@ -54,19 +54,19 @@
 
 ## Q5 — P-0c follow-up plan
 
-- M1/M2/M3: reasonable. The synthesis correctly targets missing `Capability`/`Verdict` validation, INV-13 for StreamPlan mode, and broad round-trip coverage (docs/plans/2026-05-09-p0c-followup-plan-synthesis.md:19-31, 44-52). Codex's lane adds enum validation details and 15 concrete node coverage (docs/plans/2026-05-09-p0c-followup-plan-codex.md:23-33, 41-47).
-- M4: I agree with Codex (b)+(a). Forwarder currently operates on `SSEEvent -> canonical events -> client chunks`, not full HCSF envelopes (backend/internal/gateway/forwarder.go:185-242, 293-298), so a centralized forwarder entry validate is premature. A production version guard plus debug full validation is the right P-0c shape (docs/plans/2026-05-09-p0c-followup-plan-synthesis.md:34-42).
-- D-FailLoud: not over-coupled; it is required. A Version guard would otherwise immediately expose OpenAI/Gemini zero-envelope fake success (docs/plans/2026-05-09-p0c-followup-plan-synthesis.md:54-60). Prefer fail-loud error first unless the executor can produce a non-fabricated `RequestMeta`; the Codex lane notes the current response adapter signature lacks metadata for full `ValidateEnvelope` (docs/plans/2026-05-09-p0c-followup-plan-codex.md:58-59).
-- INV-13: no numbering conflict. Existing INV-1..12 are listed in the P-0 schema synthesis (docs/plans/2026-05-09-p0-schema-spec-synthesis.md:189-204). StreamPlan mode validity is distinct from INV-6 shape and INV-11 mid-stream policy.
-- Sequencing: P-0c-A/B should precede P-1 code. P-0c-C can be close behind, but do not let P-1 add more envelope consumers before M1/M2/M3 land (docs/plans/2026-05-09-p0c-followup-plan-synthesis.md:89-92).
+- M1/M2/M3: reasonable. The synthesis correctly targets missing `Capability`/`Verdict` validation, INV-13 for StreamPlan mode, and broad round-trip coverage (docs/process/plans/2026-05-09-p0c-followup-plan-synthesis.md:19-31, 44-52). Codex's lane adds enum validation details and 15 concrete node coverage (docs/process/plans/2026-05-09-p0c-followup-plan-codex.md:23-33, 41-47).
+- M4: I agree with Codex (b)+(a). Forwarder currently operates on `SSEEvent -> canonical events -> client chunks`, not full HCSF envelopes (backend/internal/gateway/forwarder.go:185-242, 293-298), so a centralized forwarder entry validate is premature. A production version guard plus debug full validation is the right P-0c shape (docs/process/plans/2026-05-09-p0c-followup-plan-synthesis.md:34-42).
+- D-FailLoud: not over-coupled; it is required. A Version guard would otherwise immediately expose OpenAI/Gemini zero-envelope fake success (docs/process/plans/2026-05-09-p0c-followup-plan-synthesis.md:54-60). Prefer fail-loud error first unless the executor can produce a non-fabricated `RequestMeta`; the Codex lane notes the current response adapter signature lacks metadata for full `ValidateEnvelope` (docs/process/plans/2026-05-09-p0c-followup-plan-codex.md:58-59).
+- INV-13: no numbering conflict. Existing INV-1..12 are listed in the P-0 schema synthesis (docs/process/plans/2026-05-09-p0-schema-spec-synthesis.md:189-204). StreamPlan mode validity is distinct from INV-6 shape and INV-11 mid-stream policy.
+- Sequencing: P-0c-A/B should precede P-1 code. P-0c-C can be close behind, but do not let P-1 add more envelope consumers before M1/M2/M3 land (docs/process/plans/2026-05-09-p0c-followup-plan-synthesis.md:89-92).
 - 评级: **pass after H1 clean-room sanitation**.
 
 ## Q6 — Overall blindspots
 
-- Sonnet dependence: real. The implementation synthesis explicitly records that Codex review tooling failed and sonnet served as backup (docs/plans/2026-05-09-hcsf-v04-implementation-synthesis.md:177-185; docs/research/2026-05-09-uncommitted-changes-review-sonnet.md:1-6). This review exists to close that gap.
-- Cross-discuss: plans generally followed parallel-draft structure: implementation, schema spec, next-pivot, and P-0c all list Claude/Sonnet plus Codex lanes (docs/plans/2026-05-09-hcsf-v04-implementation-synthesis.md:4-7; docs/plans/2026-05-09-p0-schema-spec-synthesis.md:4-7; docs/plans/2026-05-09-next-pivot-synthesis.md:3-7; docs/plans/2026-05-09-p0c-followup-plan-synthesis.md:4-7). The gap is per-commit Codex review enforcement, not planning absence.
+- Sonnet dependence: real. The implementation synthesis explicitly records that Codex review tooling failed and sonnet served as backup (docs/process/plans/2026-05-09-hcsf-v04-implementation-synthesis.md:177-185; docs/research/2026-05-09-uncommitted-changes-review-sonnet.md:1-6). This review exists to close that gap.
+- Cross-discuss: plans generally followed parallel-draft structure: implementation, schema spec, next-pivot, and P-0c all list Claude/Sonnet plus Codex lanes (docs/process/plans/2026-05-09-hcsf-v04-implementation-synthesis.md:4-7; docs/process/plans/2026-05-09-p0-schema-spec-synthesis.md:4-7; docs/process/plans/2026-05-09-next-pivot-synthesis.md:3-7; docs/process/plans/2026-05-09-p0c-followup-plan-synthesis.md:4-7). The gap is per-commit Codex review enforcement, not planning absence.
 - Clean-room: **HIGH issue found**. See H1. Some source-read artifacts contain upstream identifiers or code-shaped snippets despite the hard prohibition (AGENTS.md:379-388).
-- Commercial sustainability: HCSF v0.4 + axis 3 can plausibly target L3+L4, but PMF proof is still inferred. The canonical synthesis admits no real customer interviews (docs/plans/2026-05-09-hcsf-canonical-synthesis.md:190-197). The monthly annualized inference spend metric is useful but aggressive; keep mock/smoke/real labels mandatory (docs/plans/2026-05-09-hcsf-v04-implementation-synthesis.md:99-109).
+- Commercial sustainability: HCSF v0.4 + axis 3 can plausibly target L3+L4, but PMF proof is still inferred. The canonical synthesis admits no real customer interviews (docs/process/plans/2026-05-09-hcsf-canonical-synthesis.md:190-197). The monthly annualized inference spend metric is useful but aggressive; keep mock/smoke/real labels mandatory (docs/process/plans/2026-05-09-hcsf-v04-implementation-synthesis.md:99-109).
 
 ## HIGH severity findings
 
@@ -114,21 +114,21 @@ Evidence: alias comment claims zero envelopes will fail validation (backend/inte
 
 ### M7 — Hosted tool taxonomy is too implicit
 
-Evidence: the capability plan has generic `tool_use/tool_result`, `computer_use`, and `mcp_server` (docs/plans/2026-05-09-hcsf-v04-implementation-synthesis.md:45, 49, 56), while HCSF canonical explicitly cites vendor-only hosted/tool capabilities as a reason not to flatten to OpenAI-only (docs/plans/2026-05-09-hcsf-canonical-synthesis.md:15-18). Add hosted-tool subtyping or native-required projection in P-1.
+Evidence: the capability plan has generic `tool_use/tool_result`, `computer_use`, and `mcp_server` (docs/process/plans/2026-05-09-hcsf-v04-implementation-synthesis.md:45, 49, 56), while HCSF canonical explicitly cites vendor-only hosted/tool capabilities as a reason not to flatten to OpenAI-only (docs/process/plans/2026-05-09-hcsf-canonical-synthesis.md:15-18). Add hosted-tool subtyping or native-required projection in P-1.
 
 ### M8 — PMF/spend metric is a strategic hypothesis, not yet evidence
 
-Evidence: synthesis selects L3+L4 and monthly annualized inference spend (docs/plans/2026-05-09-hcsf-canonical-synthesis.md:54-64, 160-167), but also admits no real customer interviews and possible benchmark overgeneralization (docs/plans/2026-05-09-hcsf-canonical-synthesis.md:190-197). Keep mock/smoke/real labels mandatory.
+Evidence: synthesis selects L3+L4 and monthly annualized inference spend (docs/process/plans/2026-05-09-hcsf-canonical-synthesis.md:54-64, 160-167), but also admits no real customer interviews and possible benchmark overgeneralization (docs/process/plans/2026-05-09-hcsf-canonical-synthesis.md:190-197). Keep mock/smoke/real labels mandatory.
 
 ## LOW severity findings
 
 ### L1 — "14 capability" wording hides 15 concrete node kinds
 
-Evidence: plan line lists `tool_use` and `tool_result` separately inside "14 capability families" (docs/plans/2026-05-09-p0-schema-spec-synthesis.md:21-24); code correctly uses 15 concrete kind values under 14 product families (backend/internal/proto/capability_graph.go:3-10, 31-48).
+Evidence: plan line lists `tool_use` and `tool_result` separately inside "14 capability families" (docs/process/plans/2026-05-09-p0-schema-spec-synthesis.md:21-24); code correctly uses 15 concrete kind values under 14 product families (backend/internal/proto/capability_graph.go:3-10, 31-48).
 
 ### L2 — Native passthrough envelope wording drift
 
-Evidence: schema synthesis says native passthrough is not in envelope (docs/plans/2026-05-09-p0-schema-spec-synthesis.md:87-92), while implementation records `NativePassthrough` in `RequestMeta` (backend/internal/proto/request_meta.go:62-63). Clarify "audit/projection shell only; route remains native."
+Evidence: schema synthesis says native passthrough is not in envelope (docs/process/plans/2026-05-09-p0-schema-spec-synthesis.md:87-92), while implementation records `NativePassthrough` in `RequestMeta` (backend/internal/proto/request_meta.go:62-63). Clarify "audit/projection shell only; route remains native."
 
 ### L3 — `NewEmptyEnvelope` comment says legal envelope but RequestMeta is empty
 
@@ -140,7 +140,7 @@ Evidence: repo root lacks `go.mod`; `cd backend && go test ./...` passes. Future
 
 ### L5 — P-0c dispatch plan still routes implementation/review through sonnet
 
-Evidence: synthesis dispatch table assigns executor and reviewer to sonnet (docs/plans/2026-05-09-p0c-followup-plan-synthesis.md:94-105). After this renew pass, P-0c still needs normal Codex per-commit review before commit (AGENTS.md:480-492).
+Evidence: synthesis dispatch table assigns executor and reviewer to sonnet (docs/process/plans/2026-05-09-p0c-followup-plan-synthesis.md:94-105). After this renew pass, P-0c still needs normal Codex per-commit review before commit (AGENTS.md:480-492).
 
 ## Recommended path
 
@@ -155,14 +155,14 @@ Evidence: synthesis dispatch table assigns executor and reviewer to sonnet (docs
 - `CLAUDE.md:55-115`
 - `AGENTS.md:367-420`, `AGENTS.md:423-519`
 - `docs/templates/codex-reviewer.md:1-77`
-- `docs/plans/2026-05-09-three-directions-synthesis.md:1-201`
-- `docs/plans/2026-05-09-next-pivot-synthesis.md:1-135`
-- `docs/plans/2026-05-09-hcsf-canonical-synthesis.md:1-212`
-- `docs/plans/2026-05-09-hcsf-v04-implementation-synthesis.md:1-207`
-- `docs/plans/2026-05-09-p0-schema-spec-synthesis.md:1-255`
-- `docs/plans/2026-05-09-p0c-followup-plan-synthesis.md:1-131`
-- `docs/plans/2026-05-09-p0c-followup-plan-codex.md:1-146`
-- `docs/plans/2026-05-09-p0c-followup-plan-claude.md:1-235`
+- `docs/process/plans/2026-05-09-three-directions-synthesis.md:1-201`
+- `docs/process/plans/2026-05-09-next-pivot-synthesis.md:1-135`
+- `docs/process/plans/2026-05-09-hcsf-canonical-synthesis.md:1-212`
+- `docs/process/plans/2026-05-09-hcsf-v04-implementation-synthesis.md:1-207`
+- `docs/process/plans/2026-05-09-p0-schema-spec-synthesis.md:1-255`
+- `docs/process/plans/2026-05-09-p0c-followup-plan-synthesis.md:1-131`
+- `docs/process/plans/2026-05-09-p0c-followup-plan-codex.md:1-146`
+- `docs/process/plans/2026-05-09-p0c-followup-plan-claude.md:1-235`
 - `docs/research/2026-05-09-uncommitted-changes-review-sonnet.md:1-115`
 - `docs/research/2026-05-09-source-read-sub2api-newapi.md:1-300`
 - `docs/research/2026-05-09-source-read-oneapi-portkey-litellm.md:1-333`

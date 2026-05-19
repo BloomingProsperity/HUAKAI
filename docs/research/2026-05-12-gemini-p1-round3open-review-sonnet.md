@@ -3,7 +3,7 @@
 - 评审人：Claude Sonnet (frontend UX reviewer lane, Round 3 open-brief 终轮)
 - 评审日期：2026-05-12 (UTC)
 - 评审范围：UX / a11y / 代码可维护性。**不评 clean-room / license 合规** — codex lane 独立评。
-- Round 3 brief：`docs/plans/2026-05-12-gemini-p1-open-brief.md`（Gemini 自由设计）
+- Round 3 brief：`docs/process/plans/2026-05-12-gemini-p1-open-brief.md`（Gemini 自由设计）
 - 对照：`docs/research/2026-05-12-gemini-p1-round2-review-sonnet.md`（我的 round 2 verdict = APPROVE_WITH_MINOR_CHANGES）
 - 平行 reviewer：codex lane round 3 compliance — 未读
 - 严格遵守：read-only，零 frontend/ 文件改动
@@ -278,7 +278,7 @@
   - `frontend/app/dashboard/dashboard.module.css` (256)
   - `frontend/lib/dashboard-mock.ts` (115)
   - `frontend/lib/api/huakai.ts` (21) **NEW**
-  - `docs/plans/2026-05-12-gemini-p1-open-brief.md` (round 3 brief)
+  - `docs/process/plans/2026-05-12-gemini-p1-open-brief.md` (round 3 brief)
   - `docs/research/2026-05-12-gemini-p1-round2-review-sonnet.md` (round 2 self-comparison)
 - 未读 / 不在范围：codex round 3 compliance review（独立 lane）；`docs/research/2026-05-12-frontend-brief-huakai-summary.md` 全文（885 行）；backend admin/v1 endpoints；`next.config.mjs`（与 round 3 改动无关）
 - 工具：`Read` × 11，`Bash grep` × 6，零 file write 除本报告

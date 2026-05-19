@@ -139,7 +139,7 @@ risk changes implementation method rather than scope.
 | [CLAUDE.md](CLAUDE.md) / [GEMINI.md](GEMINI.md) / [AGENTS.md](AGENTS.md) | Per-agent operating charters. |
 | [docs/](docs/) | Authoritative governance, contracts, parity matrix, risk register, release gates, specs, and plans. |
 | [docs_zh/](docs_zh/) | Owner-facing Chinese summaries. English docs remain canonical unless a decision says otherwise. |
-| [docs/plans/](docs/plans/) | Execution plans and Claude/Codex cross-discussion records for implementation slices. |
+| [docs/process/plans/](docs/process/plans/) | Execution plans and Claude/Codex cross-discussion records for implementation slices. |
 | [backend/sql/migrations/](backend/sql/migrations/) | PostgreSQL migrations for pool routing, billing/observability, inbound auth, model registry, and related core tables. |
 | [.agents/skills/](.agents/skills/) | Tool-agnostic skill definitions. |
 | [.claude/skills/](.claude/skills/) | Mirror of `.agents/skills/` for Claude Code discovery. |
@@ -210,7 +210,7 @@ Routine work follows the Standard Flow defined in [docs/12_AGENT_WORKFLOW.md](do
 When a decision needs multiple independent views before the Owner picks, agents
 use the Round-Table mode defined in [docs/21_DECISION_PROCESS.md](docs/21_DECISION_PROCESS.md).
 
-Round-Table decisions live under [docs/decisions/](docs/decisions/). Each agent writes
+Round-Table decisions live under [docs/process/decisions/](docs/process/decisions/). Each agent writes
 only its own section; the Owner writes the final decision in the same file.
 
 ## License

@@ -17,8 +17,8 @@
 
 > Reference material consulted by the specifier. Implementer lane MUST NOT open these.
 
-- docs/plans/2026-05-02-huakai-algo-upgrade-synthesis.md — §2 A23/A24 决议 + §4 合并后清单 + §6 Owner Sign-off
-- docs/decisions/DR-009-algorithm-upgrade-policy.md — Phase B/D 排序 + 客户透明度响应头清单
+- docs/process/plans/2026-05-02-huakai-algo-upgrade-synthesis.md — §2 A23/A24 决议 + §4 合并后清单 + §6 Owner Sign-off
+- docs/process/decisions/DR-009-algorithm-upgrade-policy.md — Phase B/D 排序 + 客户透明度响应头清单
 
 ## Capability
 

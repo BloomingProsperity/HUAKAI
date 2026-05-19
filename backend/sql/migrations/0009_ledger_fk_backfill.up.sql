@@ -1,5 +1,5 @@
 -- Slice 2 (N+4b1): Ledger FK backfill.
--- Per docs/plans/2026-05-01-n4b-admin-keys.md §Scope B + DB1.
+-- Per docs/process/plans/2026-05-01-n4b-admin-keys.md §Scope B + DB1.
 --
 -- N+4a (commit 121db58) added users + api_keys tables behind APIKeyResolver
 -- but explicitly deferred the FKs from billing_ledger_claims / usage_records /

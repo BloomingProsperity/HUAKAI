@@ -24,7 +24,7 @@ info:
     contract lock; Phase 3 implementation skeleton derives from this contract
     via codegen.
 
-    Per [DR-001](../decisions/DR-001-multi-tenancy.md), every endpoint is
+    Per [DR-001](../process/decisions/DR-001-multi-tenancy.md), every endpoint is
     tenant-scoped; tenant is server-resolved from API Key. Cross-tenant data
     access is structurally rejected.
 

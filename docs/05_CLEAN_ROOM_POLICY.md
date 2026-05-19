@@ -53,7 +53,7 @@ License risk can change implementation method, isolation boundary, rollout strat
 
 ## Methodology: Decided
 
-**Decided 2026-04-28 in [DR-000](decisions/DR-000-clean-room-methodology.md).**
+**Decided 2026-04-28 in [DR-000](process/decisions/DR-000-clean-room-methodology.md).**
 
 HUAKAI operates under **Option B (two-lane separation)** as the project default, with an **Option C carve-out** for the highest-risk AGPL-derived feature areas. All specifier-lane outputs must pass a spec-leakage review before being released to the implementer lane.
 

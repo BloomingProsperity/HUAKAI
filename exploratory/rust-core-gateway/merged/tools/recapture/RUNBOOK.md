@@ -3,7 +3,7 @@
 本 runbook 只用于 Owner 在自己本机、自己账号、自己可授权网络里重抓真实上游指纹。
 Claude/Codex 不能代跑真实账号请求，也不能接触 Owner 的 token、prompt、raw pcap。
 
-依据：`docs/plans/2026-05-14-r3-on-merged-closure-codex.md` 第 3 节 Phase R-D 要求：
+依据：`docs/process/plans/2026-05-14-r3-on-merged-closure-codex.md` 第 3 节 Phase R-D 要求：
 CI 只能做 local capture，真实上游验真必须由 Owner 本机执行；每个 vendor 至少 3 次样本；
 codex/gemini/anthropic stable hash 必须全匹配，kiro 走 sample set；任一 hash 漂移必须 surface 并暂停 mimicry production dispatch。
 
@@ -524,9 +524,9 @@ Operator 要求：
 - `docs/RULES.md`
 - `.agents/skills/acceptance-test-writer/SKILL.md`
 - `.agents/skills/clean-room-license-guard/SKILL.md`
-- `docs/plans/2026-05-15-l2-a5-5-extension-list-codex.md`
-- `docs/reviews/2026-05-15-l2-a5-5-codex-review.md`
-- `docs/plans/2026-05-14-r3-on-merged-closure-codex.md`
+- `docs/process/plans/2026-05-15-l2-a5-5-extension-list-codex.md`
+- `docs/process/reviews/2026-05-15-l2-a5-5-codex-review.md`
+- `docs/process/plans/2026-05-14-r3-on-merged-closure-codex.md`
 - `exploratory/rust-core-gateway/merged/crates/core_gateway/src/mimicry/openssl_adapter.rs`
 - `exploratory/rust-core-gateway/merged/crates/core_gateway/src/mimicry/profile.rs`
 - `exploratory/rust-core-gateway/merged/crates/core_gateway/tests/common/capture_diff.rs`

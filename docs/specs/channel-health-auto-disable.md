@@ -26,7 +26,7 @@ This draft consumes HUAKAI-owned specs, plans, matrix rows, and evidence-ledger 
 - `docs/specs/rate-limiting.md` - F-RATE-001 per-response rate-limit and cooldown boundary.
 - `docs/specs/pool-routing.md` - F-POOL-001 / PASR-lite selection boundary and health gate.
 - `docs/decompositions/_cross-cutting/credential-acquisition.md` - cross-module acquisition boundary.
-- `docs/plans/2026-05-16-f-ch-002-channel-health-codex.md` - pre-execution plan for this docs wave.
+- `docs/process/plans/2026-05-16-f-ch-002-channel-health-codex.md` - pre-execution plan for this docs wave.
 
 ## Capability
 
@@ -417,7 +417,7 @@ The test family must cover:
 - 2026-05-16 - Codex GPT-5 - Draft only. No backend code, schema migration, OpenAPI route, runtime dependency, billing/quota/auth-core change, or LICENSE change was made.
 - 2026-05-16 - Codex GPT-5 - R-E+1 anti-detection mechanics are explicitly out of scope.
 
-Source files read: docs/RULES.md; docs/03_FEATURE_PARITY_MATRIX.md; docs/07_REFERENCE_EVIDENCE_LEDGER.md; docs/11_ACCEPTANCE_TEST_MATRIX.md; docs/specs/credential-acquisition.md; docs/specs/upstream-credential-management.md; docs/specs/rate-limiting.md; docs/specs/pool-routing.md; docs/decompositions/_cross-cutting/credential-acquisition.md; docs/decompositions/_cross-cutting/pool-selection-synthesis-v2.md; docs/plans/2026-05-16-f-ch-002-channel-health-codex.md; .agents/skills/acceptance-test-writer/SKILL.md; .agents/skills/feature-parity-auditor/SKILL.md
+Source files read: docs/RULES.md; docs/03_FEATURE_PARITY_MATRIX.md; docs/07_REFERENCE_EVIDENCE_LEDGER.md; docs/11_ACCEPTANCE_TEST_MATRIX.md; docs/specs/credential-acquisition.md; docs/specs/upstream-credential-management.md; docs/specs/rate-limiting.md; docs/specs/pool-routing.md; docs/decompositions/_cross-cutting/credential-acquisition.md; docs/decompositions/_cross-cutting/pool-selection-synthesis-v2.md; docs/process/plans/2026-05-16-f-ch-002-channel-health-codex.md; .agents/skills/acceptance-test-writer/SKILL.md; .agents/skills/feature-parity-auditor/SKILL.md
 Lane: implementer
 Agent: Codex GPT-5
 UTC timestamp: 2026-05-16T07:00:34Z

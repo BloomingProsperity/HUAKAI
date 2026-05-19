@@ -3,7 +3,7 @@
 - 评审人：Claude Sonnet (frontend UX reviewer lane)
 - 评审日期：2026-05-12 (UTC)
 - 评审范围：`/home/codex/HUAKAI/frontend/app/dashboard/**` + `frontend/lib/dashboard-mock.ts`
-- 对照 brief：`docs/plans/2026-05-12-frontend-gemini-brief.md` §A、§E、§G
+- 对照 brief：`docs/process/plans/2026-05-12-frontend-gemini-brief.md` §A、§E、§G
 - 评审维度：**仅 UX / usability / a11y / 代码质量**；clean-room compliance 由 codex lane 独立评
 - 平行 reviewer：codex lane（另一会话，评 compliance / 视觉原创性 / brief §A 三条硬约束）
 
@@ -274,7 +274,7 @@
   - `frontend/app/dashboard/components/MiniTrend.tsx` (40 LoC)
   - `frontend/app/dashboard/dashboard.module.css` (170 LoC)
   - `frontend/lib/dashboard-mock.ts` (116 LoC)
-  - `docs/plans/2026-05-12-frontend-gemini-brief.md` (全文)
+  - `docs/process/plans/2026-05-12-frontend-gemini-brief.md` (全文)
 - 未读 / 不在范围：`frontend/app/page.tsx`（ChatPage，无关）、`frontend/next.config.mjs`、backend endpoints
 - 跨 lane 等待：codex compliance review 完成后做 cross-discuss
 

@@ -7,7 +7,7 @@
 | Lane | evaluation |
 | Prior lanes on this artifact | none |
 | Clean-room note | 本任务只读 HUAKAI 内部 docs/code/sql，没有读取非 MIT 参考项目源代码 |
-| Claude isolation | 未读取任何 `docs/plans/*-claude.md` 内容，也未读取 Claude 对本题的分析文件或聊天转述 |
+| Claude isolation | 未读取任何 `docs/process/plans/*-claude.md` 内容，也未读取 Claude 对本题的分析文件或聊天转述 |
 | Observed regions | 17 个内部证据簇，尾部列出实际读取文件 |
 | Inferences | 18 条，均基于已读 specs/code/sql/docs |
 | Open questions | 9 个，集中在 refactor 顺序、模块边界和阶段优先级 |
@@ -29,7 +29,7 @@
 
 | # | 外建概念 | HUAKAI 现状 | Done / Partial / Missing | 评级 | 证据 |
 | --- | --- | --- | --- | --- | --- |
-| A01 | "不是 fork，做新的 AI Gateway" | HUAKAI 的项目定位已经是 clean-room AI Gateway + Account Hub + Admin Ops Platform，强调 Sub2API 底座加综合产品宽度。 | Done | 平行 | `docs/01_PROJECT_BRIEF.md`, `docs/02_HUAKAI_FUSION_ARCHITECTURE.md`, `docs/decisions/DR-000-clean-room-methodology.md` |
+| A01 | "不是 fork，做新的 AI Gateway" | HUAKAI 的项目定位已经是 clean-room AI Gateway + Account Hub + Admin Ops Platform，强调 Sub2API 底座加综合产品宽度。 | Done | 平行 | `docs/01_PROJECT_BRIEF.md`, `docs/02_HUAKAI_FUSION_ARCHITECTURE.md`, `docs/process/decisions/DR-000-clean-room-methodology.md` |
 | A02 | 三层大链路 Client → Gateway → Auth → Router → Pool → Adapter → Upstream | HUAKAI 当前是 5 层：HTTP entry、Tx1 ClaimGate、Pool Selector、Auth+Proto+Forwarder、Tx2 Settler。外建链路更直观，但 HUAKAI 把 money path 前后事务拆得更硬。 | Done | HUAKAI 对 | `docs/02_HUAKAI_FUSION_ARCHITECTURE.md`, `docs/specs/observability-billing.md`, `backend/cmd/gateway/main.go` |
 | A03 | Resource Pool 是所有上游资源库存系统 | HUAKAI 已有 `internal/pool`、`provider_accounts`、`pool_groups`、`channels`、`pool_slot_acquisitions`、sticky bindings，但包名仍是 pool，不是显式 `resourcepool`。 | Partial | 平行 | `docs/specs/pool-routing.md`, `backend/internal/pool/selector.go`, `backend/sql/migrations/0001_pool_routing.up.sql` |
 | A04 | Resource Pool 管 Provider/Pool/Resource/Credential/Capability/Lease/HealthEvent | Provider/Pool/Account/Credential/Capability/Lease/Health 基础字段存在；HealthEvent 作为独立事件流不完整，health/rate/auth audit 分散。 | Partial | 外建对 | `backend/sql/migrations/0001_pool_routing.up.sql`, `0004_rate_limiting.up.sql`, `0006_upstream_credential_management.up.sql` |
@@ -39,7 +39,7 @@
 | A08 | Billing + Observability Ledger 是 append-only 事实账本 | HUAKAI 在 spec/schema 上比外建更深：billing claims、billing_events、usage_records、reconciliation_events、adjustments、DLQ、outbox 都有设计。代码 Tx2 已写 usage + event + claim + slot release，但多维扣费/DLQ/reconciliation 仍未完成。 | Partial | HUAKAI 对 | `docs/specs/observability-billing.md`, `docs/specs/_invariants/F-OBS-001-tx2-invariants-checklist.md`, `backend/internal/billing/settler.go`, `backend/sql/migrations/0002_observability_billing.up.sql` |
 | A09 | request_id / attempt_id / lease_id 串联 | HUAKAI 有 claim id、logical_request_id、attempt_seq、acquisition_token、lease_expires_at；HTTP middleware 有 request id，但 usage/billing schema 未显式统一 `request_id` / `attempt_id` / `lease_id` 命名。 | Partial | 外建对 | `backend/internal/billing/billing.go`, `backend/sql/queries/billing_claims.sql`, `backend/sql/queries/pool_slot_acquisitions.sql`, `backend/cmd/gateway/main.go` |
 | A10 | Claim-Gate Pattern B：先候选，attempt 时原子 claim | HUAKAI 已明确 Pattern B：Tx1 claim row 先 reserving，Pool acquire 后写回 provider_account_id/acquisition_token。代码有 DBClaimGate 和 DBSlotManager。 | Done | HUAKAI 对 | `docs/specs/pool-routing.md`, `docs/specs/observability-billing.md`, `backend/internal/pool/db_claim_gate.go`, `backend/internal/pool/db_slot_manager.go` |
-| A11 | 9-Gate: Tenant Gate | Spec 已有 tenant gate，schema every primary table tenant-aware，代码 DB queries 基本带 tenant_id；DefaultGateChain 的 TenantGate 仍是 AllowAll unless injected。 | Partial | 平行 | `docs/decisions/DR-001-multi-tenancy.md`, `backend/internal/pool/gates.go`, `backend/sql/queries/pool_accounts.sql` |
+| A11 | 9-Gate: Tenant Gate | Spec 已有 tenant gate，schema every primary table tenant-aware，代码 DB queries 基本带 tenant_id；DefaultGateChain 的 TenantGate 仍是 AllowAll unless injected。 | Partial | 平行 | `docs/process/decisions/DR-001-multi-tenancy.md`, `backend/internal/pool/gates.go`, `backend/sql/queries/pool_accounts.sql` |
 | A12 | 9-Gate: Model Gate | Spec 有 model-support gate，schema 有 model_allow_list 和 model_routing_overrides；代码当前 DBAccountSource 不把 model_allow_list 纳入 AccountSnapshot 过滤，默认 gate 仍 AllowAll。 | Partial | 外建对 | `docs/specs/pool-routing.md`, `backend/sql/migrations/0001_pool_routing.up.sql`, `backend/internal/pool/db_account_source.go` |
 | A13 | 9-Gate: Capability Gate | Spec 和 protocol capability matrix 已有；代码 capability gate 默认 AllowAll，protocol matrix 是内存/SQL基础但未接入 request path。 | Partial | 外建对 | `docs/specs/protocol-translation.md`, `backend/internal/proto/capability_matrix.go`, `backend/internal/pool/gates.go` |
 | A14 | 9-Gate: Budget Gate | HUAKAI 的 Budget/Billing Gate 比外建更严，Tx1/Tx2 specs 有 5-effect 和 pricing version pin；代码 Tx1 只插 claim/predicted_cost，尚未做真实 5 维预扣。 | Partial | HUAKAI 对 | `docs/specs/observability-billing.md`, `backend/internal/billing/claim_gate.go`, `backend/internal/billing/settler.go` |
@@ -56,16 +56,16 @@
 | A25 | 目录结构 internal/{gateway,auth,registry,router,resourcepool,adapters,ledger,usage,policy,admin} | HUAKAI 当前有 `gateway/auth/pool/billing/obs/proto/rate/config/db/gatewayhttp`；缺 registry/router/resourcepool/adapters/ledger/usage/policy/admin 的显式边界。 | Partial | 外建对 | `backend/internal/*`, `backend/pkg/adapter/adapter.go` |
 | A26 | MVP 阶段 1：干净核心 + Fake Provider | HUAKAI 已在 Phase C 做 real PG money path + mock upstream；不是纯 fake core。 | Partial | HUAKAI 对 | `backend/cmd/gateway/main.go`, `backend/internal/gatewayhttp/mock_upstream.go`, `backend/cmd/gateway/smoke_test.go` |
 | A27 | MVP 阶段 2：真实 provider + usage parser + fallback/retry | HUAKAI usage parser 部分有；真实 provider、retry/fallback、pricing parser 未完成。 | Partial | 外建对 | `backend/internal/proto/anthropic_sse.go`, `backend/internal/rate/rate.go`, `backend/pkg/adapter/adapter.go` |
-| A28 | MVP 阶段 3：接 sub2api 底座作为 AccountPoolAdapter | HUAKAI 因 clean-room 不能直接接非 MIT 源实现；可以做 AccountPoolAdapter 语义边界，但实现必须本地 clean-room。 | Missing | HUAKAI 对 | `docs/decisions/DR-000-clean-room-methodology.md`, `docs/10_RISK_REGISTER.md` |
+| A28 | MVP 阶段 3：接 sub2api 底座作为 AccountPoolAdapter | HUAKAI 因 clean-room 不能直接接非 MIT 源实现；可以做 AccountPoolAdapter 语义边界，但实现必须本地 clean-room。 | Missing | HUAKAI 对 | `docs/process/decisions/DR-000-clean-room-methodology.md`, `docs/10_RISK_REGISTER.md` |
 | A29 | MVP 阶段 4：充值、订阅、套餐、admin dashboard、日志检索、成本报表 | HUAKAI parity matrix 已把 payment/admin/ops 作为必需；代码 admin routes mostly 501，obs repository skeleton。 | Partial | 外建对 | `docs/03_FEATURE_PARITY_MATRIX.md`, `backend/cmd/gateway/main.go`, `backend/internal/obs/obs.go` |
-| A30 | MVP 阶段 5：声明式 route policy、缓存、A/B、成本优化、SLA、企业多租户 | HUAKAI spec/matrix 覆盖 declarative config/cache/SLO/SaaS，但多数是 Open/Mandatory Roadmap。 | Partial | 平行 | `docs/03_FEATURE_PARITY_MATRIX.md`, `docs/decisions/DR-002-product-editions.md`, `docs/specs/api-contract.md` |
-| A31 | New-API 适合作为运营壳 | HUAKAI 同意需要用户、key、额度、渠道、充值、日志、分组；但外建低估了 HUAKAI clean-room 和两版商业模型约束。 | Partial | 平行 | `docs/01_PROJECT_BRIEF.md`, `docs/03_FEATURE_PARITY_MATRIX.md`, `docs/decisions/DR-002-product-editions.md` |
+| A30 | MVP 阶段 5：声明式 route policy、缓存、A/B、成本优化、SLA、企业多租户 | HUAKAI spec/matrix 覆盖 declarative config/cache/SLO/SaaS，但多数是 Open/Mandatory Roadmap。 | Partial | 平行 | `docs/03_FEATURE_PARITY_MATRIX.md`, `docs/process/decisions/DR-002-product-editions.md`, `docs/specs/api-contract.md` |
+| A31 | New-API 适合作为运营壳 | HUAKAI 同意需要用户、key、额度、渠道、充值、日志、分组；但外建低估了 HUAKAI clean-room 和两版商业模型约束。 | Partial | 平行 | `docs/01_PROJECT_BRIEF.md`, `docs/03_FEATURE_PARITY_MATRIX.md`, `docs/process/decisions/DR-002-product-editions.md` |
 | A32 | LiteLLM 学 model standardization/provider adapter/fallback/budget/team key | HUAKAI 已把 provider breadth、protocol capability matrix、budget/tenant 作为核心方向；实际 adapter registry 和 team/key 权限仍缺。 | Partial | 外建对 | `docs/01_PROJECT_BRIEF.md`, `docs/specs/protocol-translation.md`, `backend/pkg/adapter/adapter.go` |
 | A33 | Portkey 学 fallback/retry/load balance/conditional/cache/virtual key | HUAKAI matrix 覆盖 F-GW-004、F-CACHE、F-RBAC/F-KEY；代码还没实现完整 virtual key/user auth/key management。 | Partial | 外建对 | `docs/03_FEATURE_PARITY_MATRIX.md`, `backend/internal/auth/smoke_resolver.go`, `backend/cmd/gateway/main.go` |
 | A34 | Helicone 学透明代理日志 request/response/usage/trace/cost/latency/prompt | HUAKAI F-OBS-001 已比透明日志更 money-grade；但 request/response cold store、trace export、operator query repo 未实现。 | Partial | HUAKAI 对 | `docs/specs/observability-billing.md`, `backend/internal/obs/obs.go`, `backend/sql/migrations/0002_observability_billing.up.sql` |
 | A35 | Envoy AI Gateway 学声明式配置 | HUAKAI parity matrix 有 F-CONFIG-001/F-ARCH/F-DEPLOY；当前 runtime 仍 env + DB columns，没有 config-as-code reload。 | Missing | 外建对 | `docs/03_FEATURE_PARITY_MATRIX.md`, `backend/internal/config/config.go` |
 | A36 | all-api-hub 只学账号资产管理/模型同步/导出配置 | HUAKAI 已以 Plugin/Mandatory Roadmap 处理 OPS/EXPORT/SYNC，并有明文凭证风险登记；方向一致。 | Partial | 平行 | `docs/03_FEATURE_PARITY_MATRIX.md`, `docs/10_RISK_REGISTER.md`, `docs/02_HUAKAI_FUSION_ARCHITECTURE.md` |
-| A37 | 不复制凭证抓取/自动化账号操作/站点绕过逻辑 | HUAKAI clean-room 和安全风险规则支持这个边界；但未来插件必须明确禁止越界。 | Done | HUAKAI 对 | `docs/decisions/DR-000-clean-room-methodology.md`, `docs/10_RISK_REGISTER.md`, `docs/03_FEATURE_PARITY_MATRIX.md` |
+| A37 | 不复制凭证抓取/自动化账号操作/站点绕过逻辑 | HUAKAI clean-room 和安全风险规则支持这个边界；但未来插件必须明确禁止越界。 | Done | HUAKAI 对 | `docs/process/decisions/DR-000-clean-room-methodology.md`, `docs/10_RISK_REGISTER.md`, `docs/03_FEATURE_PARITY_MATRIX.md` |
 | A38 | Adapter 不能绕过 Ledger | HUAKAI 当前 handler 是 Forwarder 后同步 Settler，无队列绕过；但未来 provider adapter registry 需要接口级强制。 | Partial | 外建对 | `backend/internal/gatewayhttp/chat_completions_handler.go`, `docs/specs/observability-billing.md` |
 | A39 | Billing 只能事件结算 | HUAKAI schema 支持 append-only events/adjustments；代码 Tx2 仍直接更新 claim status 和写 event，合理但需要避免后续余额裸写绕过 ledger。 | Partial | 平行 | `backend/internal/billing/settler.go`, `backend/sql/migrations/0002_observability_billing.up.sql` |
 | A40 | Credential 永远不进日志 | HUAKAI 有 sanitizer、audit redaction、token leakage tests/spec；DB at-rest encryption 未强制，schema comment 说 redacted at rest 但实际列是 jsonb。 | Partial | 外建对 | `docs/specs/upstream-credential-management.md`, `backend/internal/auth/sanitizer.go`, `backend/sql/migrations/0001_pool_routing.up.sql` |
@@ -200,35 +200,35 @@
 - 保留理由：外建只说不 fork，但没有方法论。
 - HUAKAI 已有 DR-000，明确 Option B default 和 Option C carve-out。
 - HUAKAI 还登记 R-LIC-001/R-LIC-002，覆盖 AGPL/LGPL/GPL 风险和跨 session 污染风险。
-- 设计依据：`docs/decisions/DR-000-clean-room-methodology.md`, `docs/10_RISK_REGISTER.md`
+- 设计依据：`docs/process/decisions/DR-000-clean-room-methodology.md`, `docs/10_RISK_REGISTER.md`
 - 执行影响：任何 "接 sub2api 底座" 都只能接 clean-room 语义边界，不能接源代码或文件结构。
 
 ### C02. Strict Authenticity Gate 比外建 MVP 节奏更硬
 
 - 保留理由：外建阶段规划偏产品工程，缺 "每个 L1/L2 必须 Released spec" 的硬门。
 - HUAKAI DR-008 明确选择 Strict，慢但真实。
-- 设计依据：`docs/decisions/DR-008-methodology-choice-strict-authenticity.md`
+- 设计依据：`docs/process/decisions/DR-008-methodology-choice-strict-authenticity.md`
 - 执行影响：不能为了做 Router/Registry 重构跳过 spec/review。
 
 ### C03. Tenant-aware from day 1
 
 - 保留理由：外建提到 enterprise multi-tenant 在高级阶段，但 HUAKAI 已把 tenant_id 放进第一迁移。
 - DR-001 决定 MVP 单默认 tenant，但 schema 从第一天多租户。
-- 设计依据：`docs/decisions/DR-001-multi-tenancy.md`, `backend/sql/migrations/0001_pool_routing.up.sql`
+- 设计依据：`docs/process/decisions/DR-001-multi-tenancy.md`, `backend/sql/migrations/0001_pool_routing.up.sql`
 - 执行影响：任何新 router/registry/policy table 必须带 `tenant_id`。
 
 ### C04. Personal Edition + SaaS Edition 两业务模型
 
 - 保留理由：外建 "New-API 运营 SaaS 壳" 太单一；HUAKAI 有 Model 1 自用基座卖 API 和 Model 2 SaaS。
 - DR-002 明确 Personal Edition 也可以商业化，payment optional but available。
-- 设计依据：`docs/decisions/DR-002-product-editions.md`, `docs/01_PROJECT_BRIEF.md`
+- 设计依据：`docs/process/decisions/DR-002-product-editions.md`, `docs/01_PROJECT_BRIEF.md`
 - 执行影响：admin/payment 不能被推到很晚才考虑，否则 Owner 不能跑 Model 1。
 
 ### C05. PostgreSQL 是 correctness 选择，不只是存储选择
 
 - 保留理由：外建没有讨论 DB 隔离和事务正确性。
 - HUAKAI DR-006 要求 PostgreSQL-only、sqlc、显式事务、row locks、no ORM hiding tx boundaries。
-- 设计依据：`docs/decisions/DR-006-database.md`, `backend/sqlc.yaml`, `backend/internal/db/pgconn.go`
+- 设计依据：`docs/process/decisions/DR-006-database.md`, `backend/sqlc.yaml`, `backend/internal/db/pgconn.go`
 - 执行影响：RoutePlan/Registry/Policy 不能用临时内存 map 当 production source of truth。
 
 ### C06. Tx1/Tx2 money path 已比 "Ledger" 概念更细
@@ -312,7 +312,7 @@
 ### D02. 不采纳 "sub2api 作为 AccountPoolAdapter" 的字面接入
 
 - 反对理由：clean-room 和 LGPL/AGPL 风险要求行为等价，不允许直接接源码/结构。
-- HUAKAI 依据：`docs/decisions/DR-000-clean-room-methodology.md`, `docs/10_RISK_REGISTER.md`
+- HUAKAI 依据：`docs/process/decisions/DR-000-clean-room-methodology.md`, `docs/10_RISK_REGISTER.md`
 - 实操结论：可以定义 `AccountPoolAdapter` 接口，但实现必须是 HUAKAI 本地 clean-room code。
 
 ### D03. 外建低估了 Billing Ledger 的 failure modes
@@ -330,7 +330,7 @@
 ### D05. 外建没有强调 PostgreSQL transactional correctness
 
 - 反对理由：Router/Pool/Ledger 的边界如果没有 DB isolation 约束，会重现并发超卖和 double settlement。
-- HUAKAI 依据：`docs/decisions/DR-006-database.md`
+- HUAKAI 依据：`docs/process/decisions/DR-006-database.md`
 - 实操结论：任何 refactor 必须保持 sqlc + explicit transaction + tenant-scoped queries。
 
 ### D06. 外建没有处理 user-facing auth/key/payment 的实际商业闭环
@@ -348,7 +348,7 @@
 ### D08. 外建把 Envoy 声明式配置提得太早
 
 - 反对理由：HUAKAI 当前最大的真实缺口是 provider adapter、router attempt loop、admin query、auth/key/payment。Declarative config 在这些之前会增加抽象债。
-- HUAKAI 依据：`docs/plans/2026-04-29-integration-sprint-plan.md`, `backend/cmd/gateway/main.go`
+- HUAKAI 依据：`docs/process/plans/2026-04-29-integration-sprint-plan.md`, `backend/cmd/gateway/main.go`
 - 实操结论：Config-as-code 应排在 RoutePlan 和 policy snapshot 后。
 
 ### D09. 外建没有区分 spec 完成和 code 完成
@@ -360,13 +360,13 @@
 ### D10. 外建没有处理 clean-room reviewer-lane 输出质量
 
 - 反对理由：HUAKAI 的真值约束要求 source-observed、inferred、open question 分类，外建缺这个治理层。
-- HUAKAI 依据：AGENTS.md Owner directives, `docs/decisions/DR-008-methodology-choice-strict-authenticity.md`
+- HUAKAI 依据：AGENTS.md Owner directives, `docs/process/decisions/DR-008-methodology-choice-strict-authenticity.md`
 - 实操结论：任何新 architecture spec 仍要按 HUAKAI released-spec 模板走，不应直接把外建意见当架构决议。
 
 ### D11. 外建的 MVP 阶段顺序需要调整
 
 - 反对理由：阶段 4 才做充值/admin/logs 对 HUAKAI Model 1 商业化太晚；但阶段 5 的高级 policy/cache/SLA 也不能抢在 money path 和 provider adapter 前。
-- HUAKAI 依据：`docs/decisions/DR-002-product-editions.md`, `docs/01_PROJECT_BRIEF.md`
+- HUAKAI 依据：`docs/process/decisions/DR-002-product-editions.md`, `docs/01_PROJECT_BRIEF.md`
 - 实操结论：应采用 "Phase C/E 增量补核心 + 最小 admin/obs + provider breadth" 的顺序。
 
 ### D12. 外建没有点名 credentials at rest 的当前代码差距
@@ -581,12 +581,12 @@ docs/01_PROJECT_BRIEF.md
 docs/02_HUAKAI_FUSION_ARCHITECTURE.md
 docs/03_FEATURE_PARITY_MATRIX.md
 docs/10_RISK_REGISTER.md
-docs/decisions/DR-000-clean-room-methodology.md
-docs/decisions/DR-001-multi-tenancy.md
-docs/decisions/DR-002-product-editions.md
-docs/decisions/DR-006-database.md
-docs/decisions/DR-008-methodology-choice-strict-authenticity.md
-docs/plans/2026-04-29-integration-sprint-plan.md
+docs/process/decisions/DR-000-clean-room-methodology.md
+docs/process/decisions/DR-001-multi-tenancy.md
+docs/process/decisions/DR-002-product-editions.md
+docs/process/decisions/DR-006-database.md
+docs/process/decisions/DR-008-methodology-choice-strict-authenticity.md
+docs/process/plans/2026-04-29-integration-sprint-plan.md
 docs/specs/api-contract.md
 docs/specs/observability-billing.md
 docs/specs/pool-routing.md

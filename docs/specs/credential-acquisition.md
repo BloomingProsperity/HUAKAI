@@ -10,18 +10,18 @@
 | Review date | Pending |
 | Released date | Pending |
 | Lane mode | Option B, implementer-consuming draft from HUAKAI plans and prior review artifacts only |
-| Supersedes | `docs/plans/2026-05-15-f-cred-001-acquisition-codex.md` implementation outline |
+| Supersedes | `docs/process/plans/2026-05-15-f-cred-001-acquisition-codex.md` implementation outline |
 | Superseded by | — |
 
 ## Sources
 
 This Phase A draft consumes HUAKAI-owned plans, specs, and review artifacts. It does **not** reread reference-project source.
 
-- `docs/plans/2026-05-16-f-cred-001-ocaw-answers-claude.md` — Owner OCAW decisions S1-S9.
-- `docs/plans/2026-05-15-f-cred-001-synthesis-codex.md` — RF union, AT-CRED-001-016..026, and AT-AUTH-SESSION-001.
-- `docs/plans/2026-05-15-f-cred-001-acquisition-codex.md` — AT-CRED-001-001..015 and prior acquisition boundary.
-- `docs/reviews/2026-05-15-f-cred-001-preservation-codex-review.md` — prior reviewer-lane findings, read as a review artifact only.
-- `docs/reviews/2026-05-15-f-cred-001-preservation-sonnet-review.md` — prior reviewer-lane findings, read as a review artifact only.
+- `docs/process/plans/2026-05-16-f-cred-001-ocaw-answers-claude.md` — Owner OCAW decisions S1-S9.
+- `docs/process/plans/2026-05-15-f-cred-001-synthesis-codex.md` — RF union, AT-CRED-001-016..026, and AT-AUTH-SESSION-001.
+- `docs/process/plans/2026-05-15-f-cred-001-acquisition-codex.md` — AT-CRED-001-001..015 and prior acquisition boundary.
+- `docs/process/reviews/2026-05-15-f-cred-001-preservation-codex-review.md` — prior reviewer-lane findings, read as a review artifact only.
+- `docs/process/reviews/2026-05-15-f-cred-001-preservation-sonnet-review.md` — prior reviewer-lane findings, read as a review artifact only.
 - `docs/specs/upstream-credential-management.md` — F-AUTH-005 final encrypted credential store boundary.
 - `backend/internal/credentialstore/types.go` — HUAKAI-owned 15-mode handler registry shape.
 - `docs/03_FEATURE_PARITY_MATRIX.md` — F-CRED-001 row.
@@ -313,7 +313,7 @@ None for Phase A. Phase B still requires Owner confirmation before:
 - 2026-05-16 — Codex GPT-5 — Phase A creates mock-only tests under `backend/internal/credentialacq`; no production package files, schema migrations, real credential store changes, or existing admin credential handler edits.
 - 2026-05-16 — Codex GPT-5 — Review-fix pass closes endpoint drift, table-name drift, S8 refresh-lock mapping, and concurrent finalize scaffold gap without reading reference-project source.
 
-Source files read: docs/specs/credential-acquisition.md; docs/decompositions/_cross-cutting/credential-acquisition.md; docs/03_FEATURE_PARITY_MATRIX.md; docs/11_ACCEPTANCE_TEST_MATRIX.md; docs/plans/2026-05-16-f-cred-001-phase-a-codex.md; docs/plans/2026-05-15-f-cred-001-acquisition-codex.md; docs/plans/2026-05-15-f-cred-001-acquisition-claude.md; backend/internal/credentialacq/finalizer_test.go; .agents/skills/acceptance-test-writer/SKILL.md
+Source files read: docs/specs/credential-acquisition.md; docs/decompositions/_cross-cutting/credential-acquisition.md; docs/03_FEATURE_PARITY_MATRIX.md; docs/11_ACCEPTANCE_TEST_MATRIX.md; docs/process/plans/2026-05-16-f-cred-001-phase-a-codex.md; docs/process/plans/2026-05-15-f-cred-001-acquisition-codex.md; docs/process/plans/2026-05-15-f-cred-001-acquisition-claude.md; backend/internal/credentialacq/finalizer_test.go; .agents/skills/acceptance-test-writer/SKILL.md
 Lane: implementer
 Agent: Codex GPT-5
 UTC timestamp: 2026-05-16T05:47:06Z

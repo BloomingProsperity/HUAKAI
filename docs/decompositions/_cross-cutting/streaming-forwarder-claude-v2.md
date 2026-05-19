@@ -5,9 +5,9 @@
 | Status | Specifier-lane draft (Claude pass v2, source-verified) |
 | Author | Claude (PM-Orchestrator), specifier lane |
 | Date | 2026-04-28 |
-| Lane | Specifier — Option C strict spec input per [DR-000](../../decisions/DR-000-clean-room-methodology.md) carve-out for F-GW-002 |
+| Lane | Specifier — Option C strict spec input per [DR-000](../../process/decisions/DR-000-clean-room-methodology.md) carve-out for F-GW-002 |
 | Feature | [F-GW-002](../../03_FEATURE_PARITY_MATRIX.md) (L1 MVP) |
-| Supersedes | [streaming-forwarder-claude.md](streaming-forwarder-claude.md) (v1) — withdrawn per [2026-04-28-source-truth-corrections.md](../../reviews/2026-04-28-source-truth-corrections.md). v1 was paraphrased from prior prose; this v2 is read directly from source. |
+| Supersedes | [streaming-forwarder-claude.md](streaming-forwarder-claude.md) (v1) — withdrawn per [2026-04-28-source-truth-corrections.md](../../process/reviews/2026-04-28-source-truth-corrections.md). v1 was paraphrased from prior prose; this v2 is read directly from source. |
 | Sub2API verified | commit `b0a2252ed19c3720e6adafde6083e64fbac2efa9` |
 
 ## 1. What Sub2API Actually Does (Source-Verified)
@@ -369,4 +369,4 @@ This is HUAKAI's design (Sub2API has no comparable enum). Keep the v1 taxonomy b
   - `c:/HUAKAI/repo/.omc/reference-src/sub2api/backend/internal/service/gateway_service.go` (lines 46, 3669–3676, 4267–4339, 7781–7789)
 - All upstream identifier names (function names, struct fields, log keys) appear here only because this is a SPECIFIER-LANE file. Implementer-lane files (any future `docs/specs/*.md`) must use HUAKAI domain language only.
 - This pass was authored AFTER reading source. Codex's parallel pass at `streaming-forwarder-codex.md` (output of background task `b8qpb5fzv`, completed 2026-04-28) was authored independently. Mutual review and synthesis follow this v2.
-- v1 (`streaming-forwarder-claude.md`) is **withdrawn**; see `docs/reviews/2026-04-28-source-truth-corrections.md` for the catalogue of v1 hallucinations.
+- v1 (`streaming-forwarder-claude.md`) is **withdrawn**; see `docs/process/reviews/2026-04-28-source-truth-corrections.md` for the catalogue of v1 hallucinations.

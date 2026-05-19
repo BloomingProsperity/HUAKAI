@@ -270,7 +270,7 @@ Minimum coverage:
 
 This docs wave does not implement code, schema, migrations, dependencies, or runtime configuration. Phase 6 implementation needs Owner confirmation before touching billing ledger tables, quota enforcement, auth core, or production anti-fraud defaults.
 
-Source files read: docs/RULES.md; .agents/skills/acceptance-test-writer/SKILL.md; docs/03_FEATURE_PARITY_MATRIX.md; docs/11_ACCEPTANCE_TEST_MATRIX.md; docs/specs/observability-billing.md; docs/specs/user-authentication.md; docs/specs/session-management.md; docs/specs/credential-acquisition.md; docs/decompositions/_cross-cutting/quota-billing-claim-gate-synthesis.md; docs/plans/2026-05-16-user-auth-session-spec-codex.md; docs/02_CAPABILITY_CONTRACT.md; docs/18_GLOSSARY.md; docs/19_DOMAIN_MODEL.md
+Source files read: docs/RULES.md; .agents/skills/acceptance-test-writer/SKILL.md; docs/03_FEATURE_PARITY_MATRIX.md; docs/11_ACCEPTANCE_TEST_MATRIX.md; docs/specs/observability-billing.md; docs/specs/user-authentication.md; docs/specs/session-management.md; docs/specs/credential-acquisition.md; docs/decompositions/_cross-cutting/quota-billing-claim-gate-synthesis.md; docs/process/plans/2026-05-16-user-auth-session-spec-codex.md; docs/02_CAPABILITY_CONTRACT.md; docs/18_GLOSSARY.md; docs/19_DOMAIN_MODEL.md
 
 Lane: implementer
 

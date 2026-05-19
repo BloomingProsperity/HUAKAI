@@ -9,7 +9,7 @@
 //
 // The four classes exist so audit logs and structured fields can record
 // the precise internal reason while the public response stays uniform —
-// per docs/plans/2026-04-30-n5-model-registry.md D4.
+// per docs/process/plans/2026-04-30-n5-model-registry.md D4.
 
 package registry
 

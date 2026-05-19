@@ -116,7 +116,7 @@ parity，且保持 MIT 兼容。参考项目仅作行为证据来源；任何参
 | [CLAUDE.md](CLAUDE.md) / [GEMINI.md](GEMINI.md) / [AGENTS.md](AGENTS.md) | 各 agent 的运营章程 |
 | [docs/](docs/) | 治理、契约、parity 矩阵、风险登记、release gate、spec、plan 的权威源 |
 | [docs_zh/](docs_zh/) | Owner 中文摘要文档。除非有决策另行规定，英文文档为权威 |
-| [docs/plans/](docs/plans/) | 实施切片的执行计划 + Claude/Codex 交叉讨论记录 |
+| [docs/process/plans/](docs/process/plans/) | 实施切片的执行计划 + Claude/Codex 交叉讨论记录 |
 | [backend/sql/migrations/](backend/sql/migrations/) | PostgreSQL 迁移：pool routing / 计费 / 入站鉴权 / 模型注册表等 |
 | [LEGAL.md](LEGAL.md) | 商标声明、合规与责任条款、DMCA 联系、数据处理规则 |
 
@@ -178,7 +178,7 @@ go test -tags smoke ./cmd/gateway
 
 常规工作走 [docs/12_AGENT_WORKFLOW.md](docs/12_AGENT_WORKFLOW.md) 的 Standard Flow。
 需要多视角独立意见后再由 Owner 拍板的决策走 [docs/21_DECISION_PROCESS.md](docs/21_DECISION_PROCESS.md)
-的 Round-Table 模式。Round-Table 决策落在 [docs/decisions/](docs/decisions/)。
+的 Round-Table 模式。Round-Table 决策落在 [docs/process/decisions/](docs/process/decisions/)。
 
 ## License
 
