@@ -24,7 +24,14 @@ var (
 	ErrClaimNotReserving        = errors.New("billing: claim is not reserving")
 	ErrAcquisitionTokenMismatch = errors.New("billing: acquisition token mismatch")
 	ErrSlotReleaseMissed        = errors.New("billing: pool_slot_acquisitions row not in 'acquired' state for token")
+	ErrCostOverflow             = errors.New("billing: cost overflow")
 )
+
+const maxCostMicroUSDInt64 int64 = 1<<63 - 1
+
+const RefundSkippedAmountZeroRef = "refund_skipped_amount_zero"
+
+var maxCostMicroUSDDecimal = decimal.NewFromInt(maxCostMicroUSDInt64)
 
 type DefaultSettler struct {
 	pool          *pgxpool.Pool
@@ -435,18 +442,15 @@ FOR UPDATE`,
 	}
 
 	refundMicros := req.AmountMicroUSD
-	originalMicros := actualCost.Mul(decimal.NewFromInt(1_000_000)).Round(0).IntPart()
-	if originalMicros < 0 {
-		originalMicros = 0
+	originalMicros, err := costUSDToMicros(actualCost)
+	if err != nil {
+		return nil, err
 	}
 	if refundMicros > originalMicros {
 		refundMicros = originalMicros
 	}
 	if refundMicros == 0 {
-		return &RefundResult{
-			RefundMicroUSD: 0,
-			AdjustmentRef:  "billing_refund:zero",
-		}, nil
+		return zeroRefundResult(), nil
 	}
 
 	refundUSD := decimal.NewFromInt(refundMicros).Div(decimal.NewFromInt(1_000_000))
@@ -477,6 +481,24 @@ FOR UPDATE`,
 		BillingEventID: row.ID,
 		AdjustmentRef:  billingAdjustmentRef(row.ID),
 	}, nil
+}
+
+func zeroRefundResult() *RefundResult {
+	return &RefundResult{
+		RefundMicroUSD: 0,
+		AdjustmentRef:  RefundSkippedAmountZeroRef,
+	}
+}
+
+func costUSDToMicros(cost decimal.Decimal) (int64, error) {
+	micros := cost.Mul(decimal.NewFromInt(1_000_000)).Round(0)
+	if micros.IsNegative() {
+		return 0, nil
+	}
+	if micros.GreaterThan(maxCostMicroUSDDecimal) {
+		return 0, ErrCostOverflow
+	}
+	return micros.IntPart(), nil
 }
 
 func billingAdjustmentRef(eventID int64) string {

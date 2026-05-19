@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -91,5 +92,22 @@ func TestAttemptReasonClamped(t *testing.T) {
 	attempt := (Attempt{State: StreamStateFailed, StreamTerminatedReason: long}).Normalized()
 	if len(attempt.StreamTerminatedReason) != maxStreamTerminatedReasonLen {
 		t.Fatalf("reason length=%d want %d", len(attempt.StreamTerminatedReason), maxStreamTerminatedReasonLen)
+	}
+}
+
+func TestAT_AUDIT_001_060_ZeroRefundReturnsSkippedCode(t *testing.T) {
+	res := zeroRefundResult()
+	if res == nil || res.RefundMicroUSD != 0 || res.AdjustmentRef != RefundSkippedAmountZeroRef {
+		t.Fatalf("zero refund result=%+v want adjustment_ref %q", res, RefundSkippedAmountZeroRef)
+	}
+	if res.AdjustmentRef == "billing_refund:zero" {
+		t.Fatalf("zero refund must not use ambiguous legacy ref %q", res.AdjustmentRef)
+	}
+}
+
+func TestAT_AUDIT_001_062_BillingRefundCostOverflowRejected(t *testing.T) {
+	_, err := costUSDToMicros(decimal.RequireFromString("9223372036854.775808"))
+	if !errors.Is(err, ErrCostOverflow) {
+		t.Fatalf("overflow error=%v want %v", err, ErrCostOverflow)
 	}
 }
