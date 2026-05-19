@@ -26,7 +26,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
 // AdminAPIKeysDeps is the subset of the deps tree the api_keys handlers
@@ -53,8 +53,8 @@ type adminAPIKeysRevoker interface {
 
 type adminAPIKeysQueries interface {
 	AdminCheckTenantExists(context.Context, int64) (bool, error)
-	AdminListAPIKeysForTenant(context.Context, db.AdminListAPIKeysForTenantParams) ([]db.AdminListAPIKeysForTenantRow, error)
-	InsertAdminAuditEvent(context.Context, db.InsertAdminAuditEventParams) (db.InsertAdminAuditEventRow, error)
+	AdminListAPIKeysForTenant(context.Context, admindb.AdminListAPIKeysForTenantParams) ([]admindb.AdminListAPIKeysForTenantRow, error)
+	InsertAdminAuditEvent(context.Context, admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error)
 }
 
 // MountAPIKeyRoutes attaches POST/GET/POST-revoke handlers under the
@@ -277,7 +277,7 @@ func newListHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 			offset = int32(v)
 		}
 
-		rows, err := d.Queries.AdminListAPIKeysForTenant(r.Context(), db.AdminListAPIKeysForTenantParams{
+		rows, err := d.Queries.AdminListAPIKeysForTenant(r.Context(), admindb.AdminListAPIKeysForTenantParams{
 			TenantID:   tenantID,
 			PageLimit:  limit,
 			PageOffset: offset,
@@ -311,7 +311,7 @@ func newListHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 		// reads. If we can't write it, fail closed (503) so the operator
 		// re-tries against a healthy audit pipe rather than silently
 		// dropping the trail.
-		if _, err := d.Queries.InsertAdminAuditEvent(r.Context(), db.InsertAdminAuditEventParams{
+		if _, err := d.Queries.InsertAdminAuditEvent(r.Context(), admindb.InsertAdminAuditEventParams{
 			TenantID:   &tenantPtr,
 			ActorID:    fmt.Sprintf("%d", ident.TokenID),
 			ActorRole:  actorRole,

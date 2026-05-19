@@ -13,7 +13,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
 type obsAuthStub struct{ err error }
@@ -34,41 +34,41 @@ func (d obsDepsStub) AdminObservabilityAuth() AdminObservabilityAuth   { return 
 func (d obsDepsStub) AdminObservabilityStore() AdminObservabilityStore { return d.s }
 
 type obsStoreStub struct {
-	usage, usageCursor []db.ListUsageRecordsRow
-	claims             []db.ListBillingClaimsRow
-	audit              []db.ListAuditEventsRow
-	usageArg           db.ListUsageRecordsParams
-	claimsArg          db.ListBillingClaimsParams
-	auditArg           db.ListAuditEventsParams
+	usage, usageCursor []dbbilling.ListUsageRecordsRow
+	claims             []dbbilling.ListBillingClaimsRow
+	audit              []dbbilling.ListAuditEventsRow
+	usageArg           dbbilling.ListUsageRecordsParams
+	claimsArg          dbbilling.ListBillingClaimsParams
+	auditArg           dbbilling.ListAuditEventsParams
 }
 
-func (s *obsStoreStub) CountUsageRecords(context.Context, db.CountUsageRecordsParams) (int64, error) {
+func (s *obsStoreStub) CountUsageRecords(context.Context, dbbilling.CountUsageRecordsParams) (int64, error) {
 	return int64(len(s.usage)), nil
 }
-func (s *obsStoreStub) ListUsageRecords(_ context.Context, arg db.ListUsageRecordsParams) ([]db.ListUsageRecordsRow, error) {
+func (s *obsStoreStub) ListUsageRecords(_ context.Context, arg dbbilling.ListUsageRecordsParams) ([]dbbilling.ListUsageRecordsRow, error) {
 	s.usageArg = arg
 	if arg.HasCursor && s.usageCursor != nil {
 		return s.usageCursor, nil
 	}
 	return s.usage, nil
 }
-func (s *obsStoreStub) CountBillingClaims(context.Context, db.CountBillingClaimsParams) (int64, error) {
+func (s *obsStoreStub) CountBillingClaims(context.Context, dbbilling.CountBillingClaimsParams) (int64, error) {
 	return int64(len(s.claims)), nil
 }
-func (s *obsStoreStub) ListBillingClaims(_ context.Context, arg db.ListBillingClaimsParams) ([]db.ListBillingClaimsRow, error) {
+func (s *obsStoreStub) ListBillingClaims(_ context.Context, arg dbbilling.ListBillingClaimsParams) ([]dbbilling.ListBillingClaimsRow, error) {
 	s.claimsArg = arg
 	return s.claims, nil
 }
-func (s *obsStoreStub) CountAuditEvents(context.Context, db.CountAuditEventsParams) (int64, error) {
+func (s *obsStoreStub) CountAuditEvents(context.Context, dbbilling.CountAuditEventsParams) (int64, error) {
 	return int64(len(s.audit)), nil
 }
-func (s *obsStoreStub) ListAuditEvents(_ context.Context, arg db.ListAuditEventsParams) ([]db.ListAuditEventsRow, error) {
+func (s *obsStoreStub) ListAuditEvents(_ context.Context, arg dbbilling.ListAuditEventsParams) ([]dbbilling.ListAuditEventsRow, error) {
 	s.auditArg = arg
 	return s.audit, nil
 }
 
 func TestAdminObsUsageSuccessWithFilters(t *testing.T) {
-	store := &obsStoreStub{usage: []db.ListUsageRecordsRow{usageRow(1)}}
+	store := &obsStoreStub{usage: []dbbilling.ListUsageRecordsRow{usageRow(1)}}
 	rec := invokeObs(NewUsageHandler(obsDepsStub{auth: obsAuthStub{}, s: store}), "/admin/v1/usage?from=2026-05-01T00:00:00Z&provider=anthropic&pool_id=9&limit=50")
 	assertStatus(t, rec, http.StatusOK)
 	if store.usageArg.PageLimit != 51 || store.usageArg.Provider == nil || *store.usageArg.Provider != "anthropic" || store.usageArg.PoolID == nil || *store.usageArg.PoolID != 9 {
@@ -77,7 +77,7 @@ func TestAdminObsUsageSuccessWithFilters(t *testing.T) {
 }
 
 func TestAdminObsClaimsSuccess(t *testing.T) {
-	store := &obsStoreStub{claims: []db.ListBillingClaimsRow{claimRow(3)}}
+	store := &obsStoreStub{claims: []dbbilling.ListBillingClaimsRow{claimRow(3)}}
 	rec := invokeObs(NewClaimsHandler(obsDepsStub{auth: obsAuthStub{}, s: store}), "/admin/v1/billing/claims?status=committed")
 	assertStatus(t, rec, http.StatusOK)
 	if store.claimsArg.Status == nil || *store.claimsArg.Status != "committed" {
@@ -86,7 +86,7 @@ func TestAdminObsClaimsSuccess(t *testing.T) {
 }
 
 func TestAdminObsAuditSuccess(t *testing.T) {
-	store := &obsStoreStub{audit: []db.ListAuditEventsRow{auditRow(5, "error", "ledger-5")}}
+	store := &obsStoreStub{audit: []dbbilling.ListAuditEventsRow{auditRow(5, "error", "ledger-5")}}
 	rec := invokeObs(NewAuditEventsHandler(obsDepsStub{auth: obsAuthStub{}, s: store}), "/admin/v1/audit-events?event_class=rate_limit")
 	assertStatus(t, rec, http.StatusOK)
 	if store.auditArg.EventClass == nil || *store.auditArg.EventClass != "rate_limit" {
@@ -120,7 +120,7 @@ func TestAdminObsLargeLimit(t *testing.T) {
 }
 
 func TestAdminObsPaginationRoundTrip(t *testing.T) {
-	store := &obsStoreStub{usage: []db.ListUsageRecordsRow{usageRow(3), usageRow(2), usageRow(1)}, usageCursor: []db.ListUsageRecordsRow{usageRow(1)}}
+	store := &obsStoreStub{usage: []dbbilling.ListUsageRecordsRow{usageRow(3), usageRow(2), usageRow(1)}, usageCursor: []dbbilling.ListUsageRecordsRow{usageRow(1)}}
 	h := NewUsageHandler(obsDepsStub{auth: obsAuthStub{}, s: store})
 	rec := invokeObs(h, "/admin/v1/usage?limit=2")
 	assertStatus(t, rec, http.StatusOK)
@@ -139,7 +139,7 @@ func TestAdminObsPaginationRoundTrip(t *testing.T) {
 }
 
 func TestAdminObsAuditFiltersNarrowQuery(t *testing.T) {
-	store := &obsStoreStub{audit: []db.ListAuditEventsRow{auditRow(9, "error", "ledger-9")}}
+	store := &obsStoreStub{audit: []dbbilling.ListAuditEventsRow{auditRow(9, "error", "ledger-9")}}
 	rec := invokeObs(NewAuditEventsHandler(obsDepsStub{auth: obsAuthStub{}, s: store}), "/admin/v1/audit-events?event_type=permanent_disable_set&severity=error&ledger_id=ledger-9")
 	assertStatus(t, rec, http.StatusOK)
 	if *store.auditArg.EventType != "permanent_disable_set" || *store.auditArg.Severity != "error" || *store.auditArg.LedgerID != "ledger-9" {
@@ -161,14 +161,14 @@ func assertStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
 	}
 }
 
-func usageRow(id int64) db.ListUsageRecordsRow {
-	return db.ListUsageRecordsRow{ID: id, TenantID: 7, ClaimID: 20 + id, APIKeyID: 30, UserID: 40, ProviderAccountID: 50, AttemptSeq: 1, ActualCost: decimal.RequireFromString("0.01000000"), EndClass: "non_streaming", UsageSource: "reported", CreatedAt: ts(id)}
+func usageRow(id int64) dbbilling.ListUsageRecordsRow {
+	return dbbilling.ListUsageRecordsRow{ID: id, TenantID: 7, ClaimID: 20 + id, APIKeyID: 30, UserID: 40, ProviderAccountID: 50, AttemptSeq: 1, ActualCost: decimal.RequireFromString("0.01000000"), EndClass: "non_streaming", UsageSource: "reported", CreatedAt: ts(id)}
 }
-func claimRow(id int64) db.ListBillingClaimsRow {
-	return db.ListBillingClaimsRow{ID: id, TenantID: 7, IdempotencyKey: "idem", APIKeyID: 1, UserID: 2, LogicalRequestID: "lr", EndpointFamily: "chat", RequestedModel: "m", AttemptSeq: 1, PredictedCost: decimal.RequireFromString("0.01000000"), CurrencyCode: "USD", Status: "committed", CreatedAt: ts(id)}
+func claimRow(id int64) dbbilling.ListBillingClaimsRow {
+	return dbbilling.ListBillingClaimsRow{ID: id, TenantID: 7, IdempotencyKey: "idem", APIKeyID: 1, UserID: 2, LogicalRequestID: "lr", EndpointFamily: "chat", RequestedModel: "m", AttemptSeq: 1, PredictedCost: decimal.RequireFromString("0.01000000"), CurrencyCode: "USD", Status: "committed", CreatedAt: ts(id)}
 }
-func auditRow(id int64, severity, ledgerID string) db.ListAuditEventsRow {
-	return db.ListAuditEventsRow{ID: id, TenantID: 7, EventClass: "rate_limit", EventType: "permanent_disable_set", Severity: severity, LedgerID: ledgerID, Payload: []byte(`{"ok":true}`), CreatedAt: ts(id)}
+func auditRow(id int64, severity, ledgerID string) dbbilling.ListAuditEventsRow {
+	return dbbilling.ListAuditEventsRow{ID: id, TenantID: 7, EventClass: "rate_limit", EventType: "permanent_disable_set", Severity: severity, LedgerID: ledgerID, Payload: []byte(`{"ok":true}`), CreatedAt: ts(id)}
 }
 func ts(id int64) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: time.Date(2026, 5, 14, 0, 0, int(id), 0, time.UTC), Valid: true}

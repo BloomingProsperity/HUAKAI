@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
 // Signer 是审计签名器的最小接口；*sign.Signer 满足它。
@@ -14,7 +14,7 @@ type Signer interface {
 }
 
 type refreshQueries interface {
-	ListAccountsForRefresh(ctx context.Context, arg db.ListAccountsForRefreshParams) ([]db.ListAccountsForRefreshRow, error)
+	ListAccountsForRefresh(ctx context.Context, arg dbbilling.ListAccountsForRefreshParams) ([]dbbilling.ListAccountsForRefreshRow, error)
 }
 
 type stormAcquirer interface {

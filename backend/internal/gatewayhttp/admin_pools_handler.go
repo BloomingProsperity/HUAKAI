@@ -14,7 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
 const (
@@ -32,10 +32,10 @@ type AdminPoolsAuth interface {
 }
 
 type AdminPoolsStore interface {
-	InsertPool(context.Context, db.InsertPoolParams) (db.PoolGroup, error)
-	GetPool(context.Context, db.GetPoolParams) (db.PoolGroup, error)
-	ListPools(context.Context, db.ListPoolsParams) ([]db.PoolGroup, error)
-	UpdatePool(context.Context, db.UpdatePoolParams) (db.PoolGroup, error)
+	InsertPool(context.Context, dbbilling.InsertPoolParams) (dbbilling.PoolGroup, error)
+	GetPool(context.Context, dbbilling.GetPoolParams) (dbbilling.PoolGroup, error)
+	ListPools(context.Context, dbbilling.ListPoolsParams) ([]dbbilling.PoolGroup, error)
+	UpdatePool(context.Context, dbbilling.UpdatePoolParams) (dbbilling.PoolGroup, error)
 }
 
 type AdminPoolsDeps struct {
@@ -81,7 +81,7 @@ func newListPoolsHandler(d AdminPoolsDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		items, err := d.Store.ListPools(r.Context(), db.ListPoolsParams{TenantID: defaultAdminPoolsTenantID, LimitCount: limit})
+		items, err := d.Store.ListPools(r.Context(), dbbilling.ListPoolsParams{TenantID: defaultAdminPoolsTenantID, LimitCount: limit})
 		if err != nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "pool_list_failed", err.Error())
 			return
@@ -109,7 +109,7 @@ func newCreatePoolHandler(d AdminPoolsDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		pool, err := d.Store.InsertPool(r.Context(), db.InsertPoolParams{
+		pool, err := d.Store.InsertPool(r.Context(), dbbilling.InsertPoolParams{
 			TenantID:          defaultAdminPoolsTenantID,
 			Name:              req.Name,
 			TopKDefault:       topK,
@@ -134,7 +134,7 @@ func newGetPoolHandler(d AdminPoolsDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		pool, err := d.Store.GetPool(r.Context(), db.GetPoolParams{TenantID: defaultAdminPoolsTenantID, ID: id})
+		pool, err := d.Store.GetPool(r.Context(), dbbilling.GetPoolParams{TenantID: defaultAdminPoolsTenantID, ID: id})
 		if err != nil {
 			writeAdminPoolReadError(w, err, "pool_get_failed")
 			return
@@ -183,7 +183,7 @@ func newUpdatePoolHandler(d AdminPoolsDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "admin_bad_request", "at least one supported field is required")
 			return
 		}
-		pool, err := d.Store.UpdatePool(r.Context(), db.UpdatePoolParams{
+		pool, err := d.Store.UpdatePool(r.Context(), dbbilling.UpdatePoolParams{
 			Name:              req.Name,
 			TopKDefault:       req.TopKDefault,
 			CapabilityDefault: req.CapabilityDefault,

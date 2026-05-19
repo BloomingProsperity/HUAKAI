@@ -15,17 +15,17 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
 // DBAccountSource implements AccountSource over the
 // ListEligibleAccountsByPoolGroup sqlc query.
 type DBAccountSource struct {
-	q *db.Queries
+	q *dbbilling.Queries
 }
 
 // NewDBAccountSource constructs the adapter from a sqlc.Queries handle.
-func NewDBAccountSource(q *db.Queries) *DBAccountSource {
+func NewDBAccountSource(q *dbbilling.Queries) *DBAccountSource {
 	return &DBAccountSource{q: q}
 }
 
@@ -34,7 +34,7 @@ func (s *DBAccountSource) ListAccounts(ctx context.Context, req SelectionRequest
 	if s == nil || s.q == nil {
 		return nil, fmt.Errorf("pool: DBAccountSource not configured")
 	}
-	rows, err := s.q.ListEligibleAccountsByPoolGroup(ctx, db.ListEligibleAccountsByPoolGroupParams{
+	rows, err := s.q.ListEligibleAccountsByPoolGroup(ctx, dbbilling.ListEligibleAccountsByPoolGroupParams{
 		TenantID:    req.TenantID,
 		PoolGroupID: req.PoolGroupID,
 	})

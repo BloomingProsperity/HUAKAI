@@ -16,7 +16,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -24,16 +24,16 @@ import (
 // stickyBindingReader 是 DBRepository 的最小子集——只读路径。
 // selector.trySticky 只调 GetStickyBinding。
 type stickyBindingReader interface {
-	GetStickyBinding(ctx context.Context, arg db.GetStickyBindingParams) (int64, error)
+	GetStickyBinding(ctx context.Context, arg dbbilling.GetStickyBindingParams) (int64, error)
 }
 
 // stickyBindingWriter 是写路径的最小子集——selector 选定 fresh 账号后调用
 // 持久化绑定, 后续 same-prefix 请求即可命中。
 type stickyBindingWriter interface {
-	UpsertStickyBinding(ctx context.Context, arg db.UpsertStickyBindingParams) error
+	UpsertStickyBinding(ctx context.Context, arg dbbilling.UpsertStickyBindingParams) error
 }
 
-// stickyBindingRepo 是读+写两面（实现都是 *db.Queries 或 DBRepository）。
+// stickyBindingRepo 是读+写两面（实现都是 *dbbilling.Queries 或 DBRepository）。
 type stickyBindingRepo interface {
 	stickyBindingReader
 	stickyBindingWriter
@@ -65,7 +65,7 @@ const defaultStickyTTL = time.Hour
 
 // NewDBStickyStore 用 DBRepository (或任何 stickyBindingRepo 实现) 构造 read+write store.
 //
-// repo 类型可以是 *db.Queries 或 DBRepository，二者都满足 stickyBindingRepo。
+// repo 类型可以是 *dbbilling.Queries 或 DBRepository，二者都满足 stickyBindingRepo。
 func NewDBStickyStore(repo stickyBindingRepo) *DBStickyStore {
 	return &DBStickyStore{repo: repo, writer: repo}
 }
@@ -94,7 +94,7 @@ func (s *DBStickyStore) Lookup(ctx context.Context, req SelectionRequest) (int64
 	if req.SessionHash == "" || req.TenantID == 0 || req.RequestedModel == "" {
 		return 0, false, nil
 	}
-	accountID, err := s.repo.GetStickyBinding(ctx, db.GetStickyBindingParams{
+	accountID, err := s.repo.GetStickyBinding(ctx, dbbilling.GetStickyBindingParams{
 		TenantID:    req.TenantID,
 		SessionHash: req.SessionHash,
 		Model:       req.RequestedModel,
@@ -128,7 +128,7 @@ func (s *DBStickyStore) Upsert(ctx context.Context, tenantID int64, sessionHash,
 	if ttl <= 0 {
 		ttl = defaultStickyTTL
 	}
-	return s.writer.UpsertStickyBinding(ctx, db.UpsertStickyBindingParams{
+	return s.writer.UpsertStickyBinding(ctx, dbbilling.UpsertStickyBindingParams{
 		TenantID:          tenantID,
 		SessionHash:       sessionHash,
 		Model:             model,

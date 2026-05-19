@@ -7,7 +7,7 @@
 //
 // 真实 admin token 验证 + 整条 lifecycle 走 integration_pg
 // (internal/admin/issuer_integration_test.go) 验，避免本测试依赖
-// 真实 *db.Queries / pgxpool。
+// 真实 *admindb.Queries / pgxpool。
 package main
 
 import (

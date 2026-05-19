@@ -28,6 +28,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
 )
 
 func openIntegrationPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
@@ -45,11 +46,11 @@ func openIntegrationPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 }
 
 type seededAPIKey struct {
-	tenantID  int64
+	tenantID      int64
 	otherTenantID int64
-	userID    int64
-	apiKeyID  int64
-	plaintext string
+	userID        int64
+	apiKeyID      int64
+	plaintext     string
 }
 
 func seedAPIKey(t *testing.T, ctx context.Context, pool *pgxpool.Pool, opts apiKeySeedOpts) *seededAPIKey {
@@ -132,7 +133,7 @@ func TestAPIKeyResolver_HappyPath(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	seed := seedAPIKey(t, ctx, pool, apiKeySeedOpts{})
 
-	r := NewAPIKeyResolver(db.New(pool))
+	r := NewAPIKeyResolver(dbauth.New(pool))
 	ident, err := r.Resolve(ctx, newRequest(t, "Bearer "+seed.plaintext))
 	if err != nil {
 		t.Fatalf("happy path: %v", err)
@@ -148,7 +149,7 @@ func TestAPIKeyResolver_WrongBearer(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	seed := seedAPIKey(t, ctx, pool, apiKeySeedOpts{})
 
-	r := NewAPIKeyResolver(db.New(pool))
+	r := NewAPIKeyResolver(dbauth.New(pool))
 	// Same prefix but wrong suffix → bcrypt mismatch
 	bad := seed.plaintext[:APIKeyPrefixLen] + "_WRONG_SUFFIX_HERE"
 	_, err := r.Resolve(ctx, newRequest(t, "Bearer "+bad))
@@ -163,7 +164,7 @@ func TestAPIKeyResolver_RevokedKey(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	seed := seedAPIKey(t, ctx, pool, apiKeySeedOpts{status: "revoked"})
 
-	r := NewAPIKeyResolver(db.New(pool))
+	r := NewAPIKeyResolver(dbauth.New(pool))
 	_, err := r.Resolve(ctx, newRequest(t, "Bearer "+seed.plaintext))
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("revoked key must return ErrUnauthorized (no leakage); got %v", err)
@@ -177,7 +178,7 @@ func TestAPIKeyResolver_ExpiredKey(t *testing.T) {
 	expired := time.Now().Add(-1 * time.Hour)
 	seed := seedAPIKey(t, ctx, pool, apiKeySeedOpts{expiresAt: expired})
 
-	r := NewAPIKeyResolver(db.New(pool))
+	r := NewAPIKeyResolver(dbauth.New(pool))
 	_, err := r.Resolve(ctx, newRequest(t, "Bearer "+seed.plaintext))
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("expired key must return ErrUnauthorized; got %v", err)
@@ -194,7 +195,7 @@ func TestAPIKeyResolver_CrossTenantProbeRejected(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	seed := seedAPIKey(t, ctx, pool, apiKeySeedOpts{})
 
-	r := NewAPIKeyResolver(db.New(pool))
+	r := NewAPIKeyResolver(dbauth.New(pool))
 	ident, err := r.Resolve(ctx, newRequest(t, "Bearer "+seed.plaintext))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -255,7 +256,7 @@ func TestAPIKeyResolver_PrefixCollisionPicksRightRow(t *testing.T) {
 		ids = append(ids, id)
 	}
 
-	r := NewAPIKeyResolver(db.New(pool))
+	r := NewAPIKeyResolver(dbauth.New(pool))
 	// Resolve the SECOND plaintext — verify resolver returns the second
 	// row's id, not the first.
 	ident, err := r.Resolve(ctx, newRequest(t, "Bearer "+plaintexts[1]))
@@ -274,7 +275,7 @@ func TestAPIKeyResolver_RejectsForeignFormat(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	_ = seedAPIKey(t, ctx, pool, apiKeySeedOpts{})
 
-	r := NewAPIKeyResolver(db.New(pool))
+	r := NewAPIKeyResolver(dbauth.New(pool))
 	for _, bad := range []string{
 		"Bearer sk-1234567890abcdef",
 		"Bearer xyz_random_token_here",
@@ -312,7 +313,7 @@ func TestAPIKeyResolver_DisabledUserRejected(t *testing.T) {
 		t.Fatalf("flip user disabled: %v", err)
 	}
 
-	r := NewAPIKeyResolver(db.New(pool))
+	r := NewAPIKeyResolver(dbauth.New(pool))
 	_, err := r.Resolve(ctx, newRequest(t, "Bearer "+seed.plaintext))
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("disabled user must collapse to ErrUnauthorized; got %v", err)
@@ -333,7 +334,7 @@ func TestAPIKeyResolver_DisabledTenantRejected(t *testing.T) {
 		t.Fatalf("flip tenant suspended: %v", err)
 	}
 
-	r := NewAPIKeyResolver(db.New(pool))
+	r := NewAPIKeyResolver(dbauth.New(pool))
 	_, err := r.Resolve(ctx, newRequest(t, "Bearer "+seed.plaintext))
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("disabled tenant must collapse to ErrUnauthorized; got %v", err)
@@ -355,7 +356,7 @@ func TestAPIKeyResolver_SoftDeletedTenantRejected(t *testing.T) {
 		t.Fatalf("soft-delete tenant: %v", err)
 	}
 
-	r := NewAPIKeyResolver(db.New(pool))
+	r := NewAPIKeyResolver(dbauth.New(pool))
 	_, err := r.Resolve(ctx, newRequest(t, "Bearer "+seed.plaintext))
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("soft-deleted tenant must collapse to ErrUnauthorized; got %v", err)
@@ -376,7 +377,7 @@ func TestAPIKeyResolver_SoftDeletedUserRejected(t *testing.T) {
 		t.Fatalf("soft-delete user: %v", err)
 	}
 
-	r := NewAPIKeyResolver(db.New(pool))
+	r := NewAPIKeyResolver(dbauth.New(pool))
 	_, err := r.Resolve(ctx, newRequest(t, "Bearer "+seed.plaintext))
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("soft-deleted user must collapse to ErrUnauthorized; got %v", err)

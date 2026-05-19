@@ -7,7 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool/binding"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool/dispatcher"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool/router"
@@ -121,7 +121,7 @@ func NewAuthCredentialGate(provider auth.TokenProvider) AuthCredentialGate {
 	return AuthCredentialGate{Provider: provider}
 }
 
-func NewDBClaimGate(q *db.Queries) *DBClaimGate { return binding.NewDBClaimGate(q) }
+func NewDBClaimGate(q *dbbilling.Queries) *DBClaimGate { return binding.NewDBClaimGate(q) }
 
 func NewDBStickyStore(repo binding.StickyBindingRepo) *DBStickyStore {
 	return binding.NewDBStickyStore(repo)
@@ -153,13 +153,15 @@ const (
 
 var PASRDispatchVendors = dispatcher.PASRDispatchVendors
 
-func NewDBAccountSource(q *db.Queries) *DBAccountSource { return dispatcher.NewDBAccountSource(q) }
+func NewDBAccountSource(q *dbbilling.Queries) *DBAccountSource {
+	return dispatcher.NewDBAccountSource(q)
+}
 
 func NewDBSlotManager(pool *pgxpool.Pool) *DBSlotManager {
 	return dispatcher.NewDBSlotManager(pool)
 }
 
-func NewDBRepository(q *db.Queries) *DBRepository { return dispatcher.NewDBRepository(q) }
+func NewDBRepository(q *dbbilling.Queries) *DBRepository { return dispatcher.NewDBRepository(q) }
 
 func NewSelectorDispatcher(cfg SelectorDispatcherConfig) (*SelectorDispatcher, error) {
 	return dispatcher.NewSelectorDispatcher(cfg)

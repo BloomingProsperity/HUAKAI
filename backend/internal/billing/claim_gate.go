@@ -15,7 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
 // Sentinel errors per F-OBS-001 Failure Path classes.
@@ -41,7 +41,7 @@ var (
 // transaction and never silently succeed when stores are missing.
 type DefaultClaimGate struct {
 	pool *pgxpool.Pool
-	q    *db.Queries
+	q    *dbbilling.Queries
 	// Lease window for claim row orphan-sweep recovery; default 90s.
 	LeaseWindow time.Duration
 }
@@ -55,7 +55,7 @@ func NewClaimGate(pool *pgxpool.Pool) *DefaultClaimGate {
 	}
 	return &DefaultClaimGate{
 		pool:        pool,
-		q:           db.New(pool),
+		q:           dbbilling.New(pool),
 		LeaseWindow: 90 * time.Second,
 	}
 }
@@ -83,7 +83,7 @@ func (g *DefaultClaimGate) Reserve(ctx context.Context, req ReserveRequest) (*Re
 	qtx := g.q.WithTx(tx)
 
 	// Step 1: idempotent lookup with row lock.
-	existing, err := qtx.GetClaimByIdempotency(ctx, db.GetClaimByIdempotencyParams{
+	existing, err := qtx.GetClaimByIdempotency(ctx, dbbilling.GetClaimByIdempotencyParams{
 		TenantID:       req.TenantID,
 		APIKeyID:       req.APIKeyID,
 		IdempotencyKey: idempotencyKey,
@@ -104,7 +104,7 @@ func (g *DefaultClaimGate) Reserve(ctx context.Context, req ReserveRequest) (*Re
 			// would violate uq_claims_idempotency. ReReserveAbortedClaim flips
 			// status back to 'reserving' and bumps attempt_seq.
 			leaseExpiresAt := time.Now().UTC().Add(g.leaseWindow())
-			row, err := qtx.ReReserveAbortedClaim(ctx, db.ReReserveAbortedClaimParams{
+			row, err := qtx.ReReserveAbortedClaim(ctx, dbbilling.ReReserveAbortedClaimParams{
 				ID:             existing.ID,
 				LeaseExpiresAt: pgtype.Timestamptz{Time: leaseExpiresAt, Valid: true},
 				PredictedCost:  req.PredictedCost,
@@ -123,7 +123,7 @@ func (g *DefaultClaimGate) Reserve(ctx context.Context, req ReserveRequest) (*Re
 
 	// Step 2: replay-attack check — same logical_request_id with a different fingerprint.
 	if req.LogicalRequestID != "" {
-		rows, err := qtx.GetClaimFingerprintByLogicalRequestID(ctx, db.GetClaimFingerprintByLogicalRequestIDParams{
+		rows, err := qtx.GetClaimFingerprintByLogicalRequestID(ctx, dbbilling.GetClaimFingerprintByLogicalRequestIDParams{
 			TenantID:         req.TenantID,
 			APIKeyID:         req.APIKeyID,
 			LogicalRequestID: req.LogicalRequestID,
@@ -140,7 +140,7 @@ func (g *DefaultClaimGate) Reserve(ctx context.Context, req ReserveRequest) (*Re
 
 	// Step 3: insert a new reserving claim.
 	leaseExpiresAt := time.Now().UTC().Add(g.leaseWindow())
-	inserted, err := qtx.InsertClaim(ctx, db.InsertClaimParams{
+	inserted, err := qtx.InsertClaim(ctx, dbbilling.InsertClaimParams{
 		TenantID:             req.TenantID,
 		IdempotencyKey:       idempotencyKey,
 		RequestFingerprint:   idempotencyKey,

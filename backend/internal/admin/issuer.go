@@ -28,21 +28,21 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
 // IssueRequest is the input to KeyIssuer.Issue. Caller is the resolved
 // admin identity. TenantID/UserID are the target tenant + end-user the
 // new api_keys row will belong to.
 type IssueRequest struct {
-	Caller        AdminIdentity
-	TenantID      int64
-	UserID        int64
-	Name          string
-	Environment   Environment // EnvLive or EnvTest; EnvAdmin is rejected
-	ExpiresAt     *time.Time
-	Reason        string
-	RequestID     string // chi middleware-set; recorded into audit
+	Caller      AdminIdentity
+	TenantID    int64
+	UserID      int64
+	Name        string
+	Environment Environment // EnvLive or EnvTest; EnvAdmin is rejected
+	ExpiresAt   *time.Time
+	Reason      string
+	RequestID   string // chi middleware-set; recorded into audit
 }
 
 // IssueResult is what the issuer returns. Plaintext is shown ONCE in
@@ -112,8 +112,8 @@ func (i *KeyIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult, e
 	// or — worse — a perfectly-issued key that the customer resolver
 	// rejects on the next request because of soft-delete state.
 	{
-		q := db.New(i.pool)
-		check, err := q.AdminCheckIssuanceTarget(ctx, db.AdminCheckIssuanceTargetParams{
+		q := admindb.New(i.pool)
+		check, err := q.AdminCheckIssuanceTarget(ctx, admindb.AdminCheckIssuanceTargetParams{
 			TenantID: req.TenantID,
 			UserID:   req.UserID,
 		})
@@ -135,8 +135,8 @@ func (i *KeyIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult, e
 	// The authoritative atomic check still runs inside the TX with the
 	// per-actor advisory lock — this preflight is best-effort.
 	{
-		q := db.New(i.pool)
-		count, err := q.CountIssuanceInWindow(ctx, db.CountIssuanceInWindowParams{
+		q := admindb.New(i.pool)
+		count, err := q.CountIssuanceInWindow(ctx, admindb.CountIssuanceInWindowParams{
 			ActorID:       fmt.Sprintf("%d", req.Caller.TokenID),
 			WindowSeconds: int32(i.rateLimitWindowSecs),
 		})
@@ -168,11 +168,11 @@ func (i *KeyIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult, e
 	actorID := fmt.Sprintf("%d", req.Caller.TokenID)
 	rateLimited := false
 	out := IssueResult{KeyPrefix: prefix, Status: "active"}
-	err = i.tx(ctx, func(qtx *db.Queries) error {
+	err = i.tx(ctx, func(qtx *admindb.Queries) error {
 		if err := qtx.AcquireAdminIssuanceLock(ctx, actorID); err != nil {
 			return fmt.Errorf("%w: advisory lock: %v", ErrAdminBackend, err)
 		}
-		count, err := qtx.CountIssuanceInWindow(ctx, db.CountIssuanceInWindowParams{
+		count, err := qtx.CountIssuanceInWindow(ctx, admindb.CountIssuanceInWindowParams{
 			ActorID:       actorID,
 			WindowSeconds: int32(i.rateLimitWindowSecs),
 		})
@@ -183,13 +183,13 @@ func (i *KeyIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult, e
 			rateLimited = true
 			return ErrAdminRateLimited
 		}
-		row, err := qtx.AdminInsertAPIKey(ctx, db.AdminInsertAPIKeyParams{
-			TenantID:   req.TenantID,
-			UserID:     req.UserID,
-			Name:       req.Name,
-			KeyHash:    string(hash),
-			KeyPrefix:  prefix,
-			ExpiresAt:  pgTimestampPtr(req.ExpiresAt),
+		row, err := qtx.AdminInsertAPIKey(ctx, admindb.AdminInsertAPIKeyParams{
+			TenantID:  req.TenantID,
+			UserID:    req.UserID,
+			Name:      req.Name,
+			KeyHash:   string(hash),
+			KeyPrefix: prefix,
+			ExpiresAt: pgTimestampPtr(req.ExpiresAt),
 		})
 		if err != nil {
 			// Codex pass-9 P2: AdminInsertAPIKey is now conditional on
@@ -217,16 +217,16 @@ func (i *KeyIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult, e
 		if actorRole == "" {
 			actorRole = RoleTenantOperator
 		}
-		if _, err := qtx.InsertAdminAuditEvent(ctx, db.InsertAdminAuditEventParams{
-			TenantID:    nullableInt64(req.TenantID),
-			ActorID:     fmt.Sprintf("%d", req.Caller.TokenID),
-			ActorRole:   actorRole,
-			Action:      "issue_api_key",
-			TargetType:  "api_key",
-			TargetID:    nullableInt64(row.ID),
-			RequestID:   nullableString(req.RequestID),
-			Reason:      nullableString(req.Reason),
-			Payload:     payloadBytes,
+		if _, err := qtx.InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
+			TenantID:   nullableInt64(req.TenantID),
+			ActorID:    fmt.Sprintf("%d", req.Caller.TokenID),
+			ActorRole:  actorRole,
+			Action:     "issue_api_key",
+			TargetType: "api_key",
+			TargetID:   nullableInt64(row.ID),
+			RequestID:  nullableString(req.RequestID),
+			Reason:     nullableString(req.Reason),
+			Payload:    payloadBytes,
 		}); err != nil {
 			return fmt.Errorf("%w: insert audit: %v", ErrAdminBackend, err)
 		}
@@ -259,7 +259,7 @@ func (i *KeyIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult, e
 // Returns the insert error (for logging by caller); we swallow at the
 // call sites because the deny outcome is already returned to the caller.
 func (i *KeyIssuer) audit(ctx context.Context, req IssueRequest, outcome, reason string, targetID int64) error {
-	q := db.New(i.pool)
+	q := admindb.New(i.pool)
 	payload, _ := json.Marshal(map[string]any{
 		"outcome":   outcome,
 		"reason":    reason,
@@ -275,7 +275,7 @@ func (i *KeyIssuer) audit(ctx context.Context, req IssueRequest, outcome, reason
 	// admin_audit_events.tenant_id would otherwise reject the row and we
 	// would silently lose the deny event. The attempted tenant_id stays
 	// in the payload jsonb for forensic review.
-	_, err := q.InsertAdminAuditEvent(ctx, db.InsertAdminAuditEventParams{
+	_, err := q.InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
 		TenantID:   nil,
 		ActorID:    fmt.Sprintf("%d", req.Caller.TokenID),
 		ActorRole:  actorRole,
@@ -293,14 +293,14 @@ func (i *KeyIssuer) audit(ctx context.Context, req IssueRequest, outcome, reason
 // registry.PostgresRegistry.ResolveModel (which uses REPEATABLE READ
 // read-only). Issuance writes so we use the default isolation but keep
 // the same shape.
-func (i *KeyIssuer) tx(ctx context.Context, fn func(*db.Queries) error) error {
+func (i *KeyIssuer) tx(ctx context.Context, fn func(*admindb.Queries) error) error {
 	tx, err := i.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("%w: begin: %v", ErrAdminBackend, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if err := fn(db.New(tx)); err != nil {
+	if err := fn(admindb.New(tx)); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {

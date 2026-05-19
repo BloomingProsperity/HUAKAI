@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
 type AdminObservabilityAuth interface {
@@ -19,12 +19,12 @@ type AdminObservabilityAuth interface {
 }
 
 type AdminObservabilityStore interface {
-	CountUsageRecords(context.Context, db.CountUsageRecordsParams) (int64, error)
-	ListUsageRecords(context.Context, db.ListUsageRecordsParams) ([]db.ListUsageRecordsRow, error)
-	CountBillingClaims(context.Context, db.CountBillingClaimsParams) (int64, error)
-	ListBillingClaims(context.Context, db.ListBillingClaimsParams) ([]db.ListBillingClaimsRow, error)
-	CountAuditEvents(context.Context, db.CountAuditEventsParams) (int64, error)
-	ListAuditEvents(context.Context, db.ListAuditEventsParams) ([]db.ListAuditEventsRow, error)
+	CountUsageRecords(context.Context, dbbilling.CountUsageRecordsParams) (int64, error)
+	ListUsageRecords(context.Context, dbbilling.ListUsageRecordsParams) ([]dbbilling.ListUsageRecordsRow, error)
+	CountBillingClaims(context.Context, dbbilling.CountBillingClaimsParams) (int64, error)
+	ListBillingClaims(context.Context, dbbilling.ListBillingClaimsParams) ([]dbbilling.ListBillingClaimsRow, error)
+	CountAuditEvents(context.Context, dbbilling.CountAuditEventsParams) (int64, error)
+	ListAuditEvents(context.Context, dbbilling.ListAuditEventsParams) ([]dbbilling.ListAuditEventsRow, error)
 }
 
 type AdminObservabilityDeps interface {
@@ -56,15 +56,15 @@ type obsListResponse struct {
 }
 
 func NewUsageHandler(d AdminObservabilityDeps) http.HandlerFunc {
-	return newObsHandler(d, "usage", countUsage, listUsage, func(r db.ListUsageRecordsRow) (pgtype.Timestamptz, int64) { return r.CreatedAt, r.ID }, identityRow[db.ListUsageRecordsRow])
+	return newObsHandler(d, "usage", countUsage, listUsage, func(r dbbilling.ListUsageRecordsRow) (pgtype.Timestamptz, int64) { return r.CreatedAt, r.ID }, identityRow[dbbilling.ListUsageRecordsRow])
 }
 
 func NewClaimsHandler(d AdminObservabilityDeps) http.HandlerFunc {
-	return newObsHandler(d, "claims", countClaims, listClaims, func(r db.ListBillingClaimsRow) (pgtype.Timestamptz, int64) { return r.CreatedAt, r.ID }, identityRow[db.ListBillingClaimsRow])
+	return newObsHandler(d, "claims", countClaims, listClaims, func(r dbbilling.ListBillingClaimsRow) (pgtype.Timestamptz, int64) { return r.CreatedAt, r.ID }, identityRow[dbbilling.ListBillingClaimsRow])
 }
 
 func NewAuditEventsHandler(d AdminObservabilityDeps) http.HandlerFunc {
-	return newObsHandler(d, "audit", countAudit, listAudit, func(r db.ListAuditEventsRow) (pgtype.Timestamptz, int64) { return r.CreatedAt, r.ID }, mapAuditRow)
+	return newObsHandler(d, "audit", countAudit, listAudit, func(r dbbilling.ListAuditEventsRow) (pgtype.Timestamptz, int64) { return r.CreatedAt, r.ID }, mapAuditRow)
 }
 
 func newObsHandler[T any](d AdminObservabilityDeps, kind string, count func(context.Context, AdminObservabilityStore, obsQuery) (int64, error), list func(context.Context, AdminObservabilityStore, obsQuery) ([]T, error), pos func(T) (pgtype.Timestamptz, int64), mapRow func(T) any) http.HandlerFunc {
@@ -192,20 +192,20 @@ func parseTenantScope(w http.ResponseWriter, raw string, ident admin.AdminIdenti
 }
 
 func countUsage(ctx context.Context, s AdminObservabilityStore, q obsQuery) (int64, error) {
-	return s.CountUsageRecords(ctx, db.CountUsageRecordsParams{TenantID: q.TenantID, FromTs: q.FromTs, ToTs: q.ToTs, Provider: q.Provider, PoolID: q.PoolID, APIKeyID: q.APIKeyID, ProviderAccountID: q.ProviderAccountID, Model: q.Model, PendingReconciliationOnly: q.PendingOnly})
+	return s.CountUsageRecords(ctx, dbbilling.CountUsageRecordsParams{TenantID: q.TenantID, FromTs: q.FromTs, ToTs: q.ToTs, Provider: q.Provider, PoolID: q.PoolID, APIKeyID: q.APIKeyID, ProviderAccountID: q.ProviderAccountID, Model: q.Model, PendingReconciliationOnly: q.PendingOnly})
 }
-func listUsage(ctx context.Context, s AdminObservabilityStore, q obsQuery) ([]db.ListUsageRecordsRow, error) {
-	return s.ListUsageRecords(ctx, db.ListUsageRecordsParams{TenantID: q.TenantID, FromTs: q.FromTs, ToTs: q.ToTs, Provider: q.Provider, PoolID: q.PoolID, APIKeyID: q.APIKeyID, ProviderAccountID: q.ProviderAccountID, Model: q.Model, PendingReconciliationOnly: q.PendingOnly, HasCursor: q.HasCursor, CursorCreatedAt: q.CursorCreatedAt, CursorID: q.CursorID, PageLimit: q.FetchLimit})
+func listUsage(ctx context.Context, s AdminObservabilityStore, q obsQuery) ([]dbbilling.ListUsageRecordsRow, error) {
+	return s.ListUsageRecords(ctx, dbbilling.ListUsageRecordsParams{TenantID: q.TenantID, FromTs: q.FromTs, ToTs: q.ToTs, Provider: q.Provider, PoolID: q.PoolID, APIKeyID: q.APIKeyID, ProviderAccountID: q.ProviderAccountID, Model: q.Model, PendingReconciliationOnly: q.PendingOnly, HasCursor: q.HasCursor, CursorCreatedAt: q.CursorCreatedAt, CursorID: q.CursorID, PageLimit: q.FetchLimit})
 }
 func countClaims(ctx context.Context, s AdminObservabilityStore, q obsQuery) (int64, error) {
-	return s.CountBillingClaims(ctx, db.CountBillingClaimsParams{TenantID: q.TenantID, FromTs: q.FromTs, ToTs: q.ToTs, Status: q.Status, Provider: q.Provider, PoolID: q.PoolID, APIKeyID: q.APIKeyID, ProviderAccountID: q.ProviderAccountID, Model: q.Model})
+	return s.CountBillingClaims(ctx, dbbilling.CountBillingClaimsParams{TenantID: q.TenantID, FromTs: q.FromTs, ToTs: q.ToTs, Status: q.Status, Provider: q.Provider, PoolID: q.PoolID, APIKeyID: q.APIKeyID, ProviderAccountID: q.ProviderAccountID, Model: q.Model})
 }
-func listClaims(ctx context.Context, s AdminObservabilityStore, q obsQuery) ([]db.ListBillingClaimsRow, error) {
-	return s.ListBillingClaims(ctx, db.ListBillingClaimsParams{TenantID: q.TenantID, FromTs: q.FromTs, ToTs: q.ToTs, Status: q.Status, Provider: q.Provider, PoolID: q.PoolID, APIKeyID: q.APIKeyID, ProviderAccountID: q.ProviderAccountID, Model: q.Model, HasCursor: q.HasCursor, CursorCreatedAt: q.CursorCreatedAt, CursorID: q.CursorID, PageLimit: q.FetchLimit})
+func listClaims(ctx context.Context, s AdminObservabilityStore, q obsQuery) ([]dbbilling.ListBillingClaimsRow, error) {
+	return s.ListBillingClaims(ctx, dbbilling.ListBillingClaimsParams{TenantID: q.TenantID, FromTs: q.FromTs, ToTs: q.ToTs, Status: q.Status, Provider: q.Provider, PoolID: q.PoolID, APIKeyID: q.APIKeyID, ProviderAccountID: q.ProviderAccountID, Model: q.Model, HasCursor: q.HasCursor, CursorCreatedAt: q.CursorCreatedAt, CursorID: q.CursorID, PageLimit: q.FetchLimit})
 }
 func countAudit(ctx context.Context, s AdminObservabilityStore, q obsQuery) (int64, error) {
-	return s.CountAuditEvents(ctx, db.CountAuditEventsParams{TenantID: q.TenantID, FromTs: q.FromTs, ToTs: q.ToTs, EventClass: q.EventClass, EventType: q.EventType, Severity: q.Severity, LedgerID: q.LedgerID, ActorID: q.ActorID})
+	return s.CountAuditEvents(ctx, dbbilling.CountAuditEventsParams{TenantID: q.TenantID, FromTs: q.FromTs, ToTs: q.ToTs, EventClass: q.EventClass, EventType: q.EventType, Severity: q.Severity, LedgerID: q.LedgerID, ActorID: q.ActorID})
 }
-func listAudit(ctx context.Context, s AdminObservabilityStore, q obsQuery) ([]db.ListAuditEventsRow, error) {
-	return s.ListAuditEvents(ctx, db.ListAuditEventsParams{TenantID: q.TenantID, FromTs: q.FromTs, ToTs: q.ToTs, EventClass: q.EventClass, EventType: q.EventType, Severity: q.Severity, LedgerID: q.LedgerID, ActorID: q.ActorID, HasCursor: q.HasCursor, CursorCreatedAt: q.CursorCreatedAt, CursorID: q.CursorID, PageLimit: q.FetchLimit})
+func listAudit(ctx context.Context, s AdminObservabilityStore, q obsQuery) ([]dbbilling.ListAuditEventsRow, error) {
+	return s.ListAuditEvents(ctx, dbbilling.ListAuditEventsParams{TenantID: q.TenantID, FromTs: q.FromTs, ToTs: q.ToTs, EventClass: q.EventClass, EventType: q.EventType, Severity: q.Severity, LedgerID: q.LedgerID, ActorID: q.ActorID, HasCursor: q.HasCursor, CursorCreatedAt: q.CursorCreatedAt, CursorID: q.CursorID, PageLimit: q.FetchLimit})
 }

@@ -7,24 +7,24 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/jackc/pgx/v5"
 )
 
 // stubStickyRepo 实现 stickyBindingReader + (可选) stickyBindingWriter 测试用。
 type stubStickyRepo struct {
-	get    func(ctx context.Context, arg db.GetStickyBindingParams) (int64, error)
-	upsert func(ctx context.Context, arg db.UpsertStickyBindingParams) error
+	get    func(ctx context.Context, arg dbbilling.GetStickyBindingParams) (int64, error)
+	upsert func(ctx context.Context, arg dbbilling.UpsertStickyBindingParams) error
 }
 
-func (s *stubStickyRepo) GetStickyBinding(ctx context.Context, arg db.GetStickyBindingParams) (int64, error) {
+func (s *stubStickyRepo) GetStickyBinding(ctx context.Context, arg dbbilling.GetStickyBindingParams) (int64, error) {
 	if s.get != nil {
 		return s.get(ctx, arg)
 	}
 	return 0, pgx.ErrNoRows
 }
 
-func (s *stubStickyRepo) UpsertStickyBinding(ctx context.Context, arg db.UpsertStickyBindingParams) error {
+func (s *stubStickyRepo) UpsertStickyBinding(ctx context.Context, arg dbbilling.UpsertStickyBindingParams) error {
 	if s.upsert != nil {
 		return s.upsert(ctx, arg)
 	}
@@ -33,7 +33,7 @@ func (s *stubStickyRepo) UpsertStickyBinding(ctx context.Context, arg db.UpsertS
 
 func TestDBStickyStore_HappyHit(t *testing.T) {
 	repo := &stubStickyRepo{
-		get: func(ctx context.Context, arg db.GetStickyBindingParams) (int64, error) {
+		get: func(ctx context.Context, arg dbbilling.GetStickyBindingParams) (int64, error) {
 			if arg.TenantID != 1 || arg.SessionHash != "h" || arg.Model != "claude-3" {
 				t.Errorf("意外参数: %+v", arg)
 			}
@@ -51,7 +51,7 @@ func TestDBStickyStore_HappyHit(t *testing.T) {
 
 func TestDBStickyStore_MissReturnsNoError(t *testing.T) {
 	repo := &stubStickyRepo{
-		get: func(ctx context.Context, arg db.GetStickyBindingParams) (int64, error) {
+		get: func(ctx context.Context, arg dbbilling.GetStickyBindingParams) (int64, error) {
 			return 0, pgx.ErrNoRows
 		},
 	}
@@ -67,7 +67,7 @@ func TestDBStickyStore_MissReturnsNoError(t *testing.T) {
 func TestDBStickyStore_EmptySessionHashSkips(t *testing.T) {
 	called := false
 	repo := &stubStickyRepo{
-		get: func(ctx context.Context, arg db.GetStickyBindingParams) (int64, error) {
+		get: func(ctx context.Context, arg dbbilling.GetStickyBindingParams) (int64, error) {
 			called = true
 			return 99, nil
 		},
@@ -87,7 +87,7 @@ func TestDBStickyStore_EmptySessionHashSkips(t *testing.T) {
 func TestDBStickyStore_MissingTenantOrModelSkips(t *testing.T) {
 	called := false
 	repo := &stubStickyRepo{
-		get: func(ctx context.Context, arg db.GetStickyBindingParams) (int64, error) {
+		get: func(ctx context.Context, arg dbbilling.GetStickyBindingParams) (int64, error) {
 			called = true
 			return 1, nil
 		},
@@ -111,7 +111,7 @@ func TestDBStickyStore_MissingTenantOrModelSkips(t *testing.T) {
 func TestDBStickyStore_PassesThroughOtherErrors(t *testing.T) {
 	wantErr := errors.New("db transient")
 	repo := &stubStickyRepo{
-		get: func(ctx context.Context, arg db.GetStickyBindingParams) (int64, error) {
+		get: func(ctx context.Context, arg dbbilling.GetStickyBindingParams) (int64, error) {
 			return 0, wantErr
 		},
 	}
@@ -125,10 +125,10 @@ func TestDBStickyStore_PassesThroughOtherErrors(t *testing.T) {
 }
 
 func TestDBStickyStore_UpsertHappy(t *testing.T) {
-	var captured db.UpsertStickyBindingParams
+	var captured dbbilling.UpsertStickyBindingParams
 	called := false
 	repo := &stubStickyRepo{
-		upsert: func(ctx context.Context, arg db.UpsertStickyBindingParams) error {
+		upsert: func(ctx context.Context, arg dbbilling.UpsertStickyBindingParams) error {
 			captured = arg
 			called = true
 			return nil
@@ -156,7 +156,7 @@ func TestDBStickyStore_UpsertHappy(t *testing.T) {
 func TestDBStickyStore_UpsertSkipsDegenerate(t *testing.T) {
 	called := false
 	repo := &stubStickyRepo{
-		upsert: func(ctx context.Context, arg db.UpsertStickyBindingParams) error {
+		upsert: func(ctx context.Context, arg dbbilling.UpsertStickyBindingParams) error {
 			called = true
 			return nil
 		},
@@ -191,9 +191,9 @@ func TestDBStickyStore_UpsertReadOnlyMode(t *testing.T) {
 }
 
 func TestDBStickyStore_UpsertCustomTTL(t *testing.T) {
-	var captured db.UpsertStickyBindingParams
+	var captured dbbilling.UpsertStickyBindingParams
 	repo := &stubStickyRepo{
-		upsert: func(ctx context.Context, arg db.UpsertStickyBindingParams) error {
+		upsert: func(ctx context.Context, arg dbbilling.UpsertStickyBindingParams) error {
 			captured = arg
 			return nil
 		},

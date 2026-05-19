@@ -13,25 +13,25 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
 type adminPoolsStoreStub struct {
-	insert    *db.InsertPoolParams
-	get       *db.GetPoolParams
-	list      *db.ListPoolsParams
-	update    *db.UpdatePoolParams
+	insert    *dbbilling.InsertPoolParams
+	get       *dbbilling.GetPoolParams
+	list      *dbbilling.ListPoolsParams
+	update    *dbbilling.UpdatePoolParams
 	insertErr error
 	getErr    error
 	updateErr error
-	pool      db.PoolGroup
-	items     []db.PoolGroup
+	pool      dbbilling.PoolGroup
+	items     []dbbilling.PoolGroup
 }
 
-func (s *adminPoolsStoreStub) InsertPool(_ context.Context, arg db.InsertPoolParams) (db.PoolGroup, error) {
+func (s *adminPoolsStoreStub) InsertPool(_ context.Context, arg dbbilling.InsertPoolParams) (dbbilling.PoolGroup, error) {
 	s.insert = &arg
 	if s.insertErr != nil {
-		return db.PoolGroup{}, s.insertErr
+		return dbbilling.PoolGroup{}, s.insertErr
 	}
 	pool := poolOrDefault(s.pool, arg.TenantID, arg.Name)
 	pool.TopKDefault = arg.TopKDefault
@@ -41,26 +41,26 @@ func (s *adminPoolsStoreStub) InsertPool(_ context.Context, arg db.InsertPoolPar
 	return pool, nil
 }
 
-func (s *adminPoolsStoreStub) GetPool(_ context.Context, arg db.GetPoolParams) (db.PoolGroup, error) {
+func (s *adminPoolsStoreStub) GetPool(_ context.Context, arg dbbilling.GetPoolParams) (dbbilling.PoolGroup, error) {
 	s.get = &arg
 	if s.getErr != nil {
-		return db.PoolGroup{}, s.getErr
+		return dbbilling.PoolGroup{}, s.getErr
 	}
 	return poolOrDefault(s.pool, arg.TenantID, "primary"), nil
 }
 
-func (s *adminPoolsStoreStub) ListPools(_ context.Context, arg db.ListPoolsParams) ([]db.PoolGroup, error) {
+func (s *adminPoolsStoreStub) ListPools(_ context.Context, arg dbbilling.ListPoolsParams) ([]dbbilling.PoolGroup, error) {
 	s.list = &arg
 	if s.items != nil {
 		return s.items, nil
 	}
-	return []db.PoolGroup{{ID: 7, TenantID: arg.TenantID, Name: "primary", Enabled: true}}, nil
+	return []dbbilling.PoolGroup{{ID: 7, TenantID: arg.TenantID, Name: "primary", Enabled: true}}, nil
 }
 
-func (s *adminPoolsStoreStub) UpdatePool(_ context.Context, arg db.UpdatePoolParams) (db.PoolGroup, error) {
+func (s *adminPoolsStoreStub) UpdatePool(_ context.Context, arg dbbilling.UpdatePoolParams) (dbbilling.PoolGroup, error) {
 	s.update = &arg
 	if s.updateErr != nil {
-		return db.PoolGroup{}, s.updateErr
+		return dbbilling.PoolGroup{}, s.updateErr
 	}
 	pool := poolOrDefault(s.pool, arg.TenantID, "primary")
 	if arg.Name != nil {
@@ -130,7 +130,7 @@ func TestAT_POOL_001_001_CreateFieldsPersistAndReadBack(t *testing.T) {
 	if getResp.Code != http.StatusOK {
 		t.Fatalf("get status=%d body=%s", getResp.Code, getResp.Body.String())
 	}
-	var got db.PoolGroup
+	var got dbbilling.PoolGroup
 	if err := json.Unmarshal(getResp.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode get response: %v body=%s", err, getResp.Body.String())
 	}
@@ -229,11 +229,11 @@ func invokeAdminPools(t *testing.T, store *adminPoolsStoreStub, auth AdminPoolsA
 	return rec
 }
 
-func poolOrDefault(pool db.PoolGroup, tenantID int64, name string) db.PoolGroup {
+func poolOrDefault(pool dbbilling.PoolGroup, tenantID int64, name string) dbbilling.PoolGroup {
 	if pool.ID != 0 {
 		return pool
 	}
-	return db.PoolGroup{
+	return dbbilling.PoolGroup{
 		ID:                77,
 		TenantID:          tenantID,
 		Name:              name,

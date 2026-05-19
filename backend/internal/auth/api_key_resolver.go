@@ -32,7 +32,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
 )
 
 // Identity is the resolved inbound auth context produced by Resolve.
@@ -67,7 +67,7 @@ const MaxBcryptFanout = 5
 var ErrUnauthorized = errors.New("auth: unauthorized")
 
 // ErrAuthMisconfigured signals the resolver was constructed without a
-// valid db.Queries handle. The handler maps this to HTTP 503 (D9).
+// valid dbauth.Queries handle. The handler maps this to HTTP 503 (D9).
 var ErrAuthMisconfigured = errors.New("auth: resolver not configured")
 
 // ErrAuthBackend signals a transient datastore failure during auth
@@ -80,12 +80,12 @@ var ErrAuthBackend = errors.New("auth: backend datastore error")
 // APIKeyResolver authenticates inbound requests against the api_keys
 // table. Construct via NewAPIKeyResolver.
 type APIKeyResolver struct {
-	q *db.Queries
+	q *dbauth.Queries
 }
 
 // NewAPIKeyResolver wraps a sqlc.Queries handle. Pool/connection
 // lifecycle is the caller's responsibility.
-func NewAPIKeyResolver(q *db.Queries) *APIKeyResolver {
+func NewAPIKeyResolver(q *dbauth.Queries) *APIKeyResolver {
 	return &APIKeyResolver{q: q}
 }
 

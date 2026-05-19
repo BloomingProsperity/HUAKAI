@@ -16,7 +16,7 @@ func (d *deps) AdminObservabilityAuth() gatewayhttp.AdminObservabilityAuth {
 }
 
 func (d *deps) AdminObservabilityStore() gatewayhttp.AdminObservabilityStore {
-	return d.queries
+	return d.billingQueries
 }
 
 func (d *deps) AdminDLQAuth() gatewayhttp.AdminDLQAuth {
@@ -123,28 +123,28 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Auth:    d.adminAuth,
 			Issuer:  d.adminIssuer,
 			Revoker: d.adminRevoker,
-			Queries: d.queries,
+			Queries: d.adminQueries,
 		})
 	})
 
 	mountProviderAccountAdminRoutes := func(r chi.Router) {
 		gatewayhttp.MountAdminPoolAccountRoutes(r, gatewayhttp.AdminPoolAccountDeps{
 			Auth:          d.adminAuth,
-			Store:         d.queries,
+			Store:         d.adminQueries,
 			Credentials:   d.credentialStore,
 			ChannelHealth: d.channelHealth,
 		})
 		gatewayhttp.MountAdminCredentialRoutes(r, gatewayhttp.AdminCredentialDeps{
 			Auth:        d.adminAuth,
 			Credentials: d.credentialStore,
-			AuditStore:  d.queries,
+			AuditStore:  d.adminQueries,
 		})
 		gatewayhttp.MountAdminCredentialAcquisitionRoutes(r, gatewayhttp.AdminCredentialAcquisitionDeps{
 			Auth:            d.adminAuth,
 			Sessions:        d.credentialAcqStore,
 			Credentials:     d.credentialStore,
 			CredentialAudit: d.credentialStore,
-			AuditStore:      d.queries,
+			AuditStore:      d.adminQueries,
 		})
 		gatewayhttp.MountChannelHealthAdminRoutes(r, gatewayhttp.ChannelHealthAdminDeps{
 			Auth:       d.adminAuth,
@@ -167,13 +167,13 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Sessions:        d.credentialAcqStore,
 			Credentials:     d.credentialStore,
 			CredentialAudit: d.credentialStore,
-			AuditStore:      d.queries,
+			AuditStore:      d.adminQueries,
 		})
 	})
 	r.Route("/admin/v1/pools", func(r chi.Router) {
 		r.Mount("/", gatewayhttp.NewAdminPoolsHandler(gatewayhttp.AdminPoolsDeps{
 			Auth:  d.adminAuth,
-			Store: d.queries,
+			Store: d.billingQueries,
 		}))
 	})
 	r.Route("/v1/admin/vouchers", func(r chi.Router) {

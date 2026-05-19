@@ -12,12 +12,12 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
 func identityRow[T any](r T) any { return r }
 
-func mapAuditRow(r db.ListAuditEventsRow) any {
+func mapAuditRow(r dbbilling.ListAuditEventsRow) any {
 	payload := json.RawMessage(r.Payload)
 	if len(payload) == 0 {
 		payload = json.RawMessage(`{}`)

@@ -13,7 +13,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
 type adminPoolAuthStub struct {
@@ -27,16 +27,16 @@ func (s adminPoolAuthStub) Resolve(context.Context, *http.Request) (admin.AdminI
 
 type adminPoolStoreStub struct {
 	insertID   int64
-	insert     *db.InsertProviderAccountParams
-	listArg    *db.ListAdminProviderAccountsParams
-	list       []db.AdminProviderAccountRow
-	getArg     *db.GetAdminProviderAccountParams
-	get        *db.AdminProviderAccountRow
-	updateFull *db.UpdateAdminProviderAccountParams
-	update     *db.UpdateProviderAccountEnabledParams
-	clear      *db.ClearProviderAccountRateLimitParams
-	delete     *db.SoftDeleteProviderAccountParams
-	audits     []db.InsertAdminAuditEventParams
+	insert     *admindb.InsertProviderAccountParams
+	listArg    *admindb.ListAdminProviderAccountsParams
+	list       []admindb.AdminProviderAccountRow
+	getArg     *admindb.GetAdminProviderAccountParams
+	get        *admindb.AdminProviderAccountRow
+	updateFull *admindb.UpdateAdminProviderAccountParams
+	update     *admindb.UpdateProviderAccountEnabledParams
+	clear      *admindb.ClearProviderAccountRateLimitParams
+	delete     *admindb.SoftDeleteProviderAccountParams
+	audits     []admindb.InsertAdminAuditEventParams
 }
 
 type adminPoolCredentialWriterStub struct {
@@ -66,7 +66,7 @@ func (s *adminPoolCredentialWriterStub) Create(_ context.Context, in credentials
 	}, nil
 }
 
-func (s *adminPoolStoreStub) InsertProviderAccount(_ context.Context, arg db.InsertProviderAccountParams) (int64, error) {
+func (s *adminPoolStoreStub) InsertProviderAccount(_ context.Context, arg admindb.InsertProviderAccountParams) (int64, error) {
 	s.insert = &arg
 	if s.insertID == 0 {
 		return 101, nil
@@ -74,12 +74,12 @@ func (s *adminPoolStoreStub) InsertProviderAccount(_ context.Context, arg db.Ins
 	return s.insertID, nil
 }
 
-func (s *adminPoolStoreStub) ListAdminProviderAccounts(_ context.Context, arg db.ListAdminProviderAccountsParams) ([]db.AdminProviderAccountRow, error) {
+func (s *adminPoolStoreStub) ListAdminProviderAccounts(_ context.Context, arg admindb.ListAdminProviderAccountsParams) ([]admindb.AdminProviderAccountRow, error) {
 	s.listArg = &arg
 	return s.list, nil
 }
 
-func (s *adminPoolStoreStub) GetAdminProviderAccount(_ context.Context, arg db.GetAdminProviderAccountParams) (db.AdminProviderAccountRow, error) {
+func (s *adminPoolStoreStub) GetAdminProviderAccount(_ context.Context, arg admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error) {
 	s.getArg = &arg
 	if s.get != nil {
 		return *s.get, nil
@@ -97,7 +97,7 @@ func (s *adminPoolStoreStub) GetAdminProviderAccount(_ context.Context, arg db.G
 	return adminProviderRow(id, arg.TenantID), nil
 }
 
-func (s *adminPoolStoreStub) UpdateAdminProviderAccount(_ context.Context, arg db.UpdateAdminProviderAccountParams) (db.AdminProviderAccountRow, error) {
+func (s *adminPoolStoreStub) UpdateAdminProviderAccount(_ context.Context, arg admindb.UpdateAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error) {
 	s.updateFull = &arg
 	row := adminProviderRow(arg.ID, arg.TenantID)
 	if arg.Enabled != nil {
@@ -130,24 +130,24 @@ func (s *adminPoolStoreStub) UpdateAdminProviderAccount(_ context.Context, arg d
 	return row, nil
 }
 
-func (s *adminPoolStoreStub) UpdateProviderAccountEnabled(_ context.Context, arg db.UpdateProviderAccountEnabledParams) error {
+func (s *adminPoolStoreStub) UpdateProviderAccountEnabled(_ context.Context, arg admindb.UpdateProviderAccountEnabledParams) error {
 	s.update = &arg
 	return nil
 }
 
-func (s *adminPoolStoreStub) ClearProviderAccountRateLimit(_ context.Context, arg db.ClearProviderAccountRateLimitParams) (db.AdminProviderAccountRow, error) {
+func (s *adminPoolStoreStub) ClearProviderAccountRateLimit(_ context.Context, arg admindb.ClearProviderAccountRateLimitParams) (admindb.AdminProviderAccountRow, error) {
 	s.clear = &arg
 	return adminProviderRow(arg.ID, arg.TenantID), nil
 }
 
-func (s *adminPoolStoreStub) SoftDeleteProviderAccount(_ context.Context, arg db.SoftDeleteProviderAccountParams) error {
+func (s *adminPoolStoreStub) SoftDeleteProviderAccount(_ context.Context, arg admindb.SoftDeleteProviderAccountParams) error {
 	s.delete = &arg
 	return nil
 }
 
-func (s *adminPoolStoreStub) InsertAdminAuditEvent(_ context.Context, arg db.InsertAdminAuditEventParams) (db.InsertAdminAuditEventRow, error) {
+func (s *adminPoolStoreStub) InsertAdminAuditEvent(_ context.Context, arg admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error) {
 	s.audits = append(s.audits, arg)
-	return db.InsertAdminAuditEventRow{ID: int64(len(s.audits))}, nil
+	return admindb.InsertAdminAuditEventRow{ID: int64(len(s.audits))}, nil
 }
 
 func TestAdminPoolAccounts_CreateHappyPathInsertsAccount(t *testing.T) {
@@ -313,7 +313,7 @@ func TestAdminPoolAccounts_DeleteSoftDeletesAndAudits(t *testing.T) {
 }
 
 func TestAdminPoolAccounts_ListProviderAccountsPaginated(t *testing.T) {
-	store := &adminPoolStoreStub{list: []db.AdminProviderAccountRow{
+	store := &adminPoolStoreStub{list: []admindb.AdminProviderAccountRow{
 		adminProviderRow(77, 7),
 		adminProviderRow(78, 7),
 	}}
@@ -432,8 +432,8 @@ func invokeAdminPoolWithDeps(t *testing.T, deps AdminPoolAccountDeps, method, ta
 	return rec
 }
 
-func adminProviderRow(id, tenantID int64) db.AdminProviderAccountRow {
-	return db.AdminProviderAccountRow{
+func adminProviderRow(id, tenantID int64) admindb.AdminProviderAccountRow {
+	return admindb.AdminProviderAccountRow{
 		ID: id, TenantID: tenantID, ProviderID: 8, ChannelID: 9, Name: "acct",
 		AccountType: "api_key", Enabled: true, HealthState: "operational", CredentialState: "valid",
 		CapConcurrency: 4, Priority: 100, TokenVersion: 1, OAuthEndpointHealth: "operational",
@@ -441,7 +441,7 @@ func adminProviderRow(id, tenantID int64) db.AdminProviderAccountRow {
 	}
 }
 
-func adminProviderRowFromInsert(id int64, in db.InsertProviderAccountParams) db.AdminProviderAccountRow {
+func adminProviderRowFromInsert(id int64, in admindb.InsertProviderAccountParams) admindb.AdminProviderAccountRow {
 	row := adminProviderRow(id, in.TenantID)
 	row.ProviderID = in.ProviderID
 	row.ChannelID = in.ChannelID

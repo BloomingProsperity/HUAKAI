@@ -36,7 +36,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbregistry "github.com/BloomingProsperity/HUAKAI/internal/db/registry"
 )
 
 // PostgresRegistry resolves aliases against the model_registry_* tables.
@@ -78,7 +78,7 @@ func (r *PostgresRegistry) ResolveModel(ctx context.Context, publicAlias string,
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	q := db.New(tx)
+	q := dbregistry.New(tx)
 
 	aliasRow, err := r.lookupAlias(ctx, q, tenantID, aliasLower)
 	if err != nil {
@@ -88,7 +88,7 @@ func (r *PostgresRegistry) ResolveModel(ctx context.Context, publicAlias string,
 		return Resolved{}, ErrModelDisabled
 	}
 
-	modelRow, err := q.GetModelByID(ctx, db.GetModelByIDParams{
+	modelRow, err := q.GetModelByID(ctx, dbregistry.GetModelByIDParams{
 		ID:       aliasRow.modelID,
 		TenantID: tenantID,
 	})
@@ -108,7 +108,7 @@ func (r *PostgresRegistry) ResolveModel(ctx context.Context, publicAlias string,
 		return Resolved{}, ErrModelDisabled
 	}
 
-	caps, err := q.ListModelCapabilities(ctx, db.ListModelCapabilitiesParams{
+	caps, err := q.ListModelCapabilities(ctx, dbregistry.ListModelCapabilitiesParams{
 		TenantID: tenantID,
 		ModelID:  modelRow.ID,
 	})
@@ -116,7 +116,7 @@ func (r *PostgresRegistry) ResolveModel(ctx context.Context, publicAlias string,
 		return Resolved{}, fmt.Errorf("%w: list capabilities: %v", ErrRegistryBackend, err)
 	}
 
-	bindings, err := q.ListModelPoolBindings(ctx, db.ListModelPoolBindingsParams{
+	bindings, err := q.ListModelPoolBindings(ctx, dbregistry.ListModelPoolBindingsParams{
 		TenantID: tenantID,
 		ModelID:  modelRow.ID,
 	})
@@ -195,8 +195,8 @@ type resolvedAliasRow struct {
 // (explicit-deny invariant: tenant-disabled blocks global fallback).
 // All reads use the caller-supplied Queries (which is bound to the
 // outer REPEATABLE READ tx for snapshot consistency).
-func (r *PostgresRegistry) lookupAlias(ctx context.Context, q *db.Queries, tenantID int64, aliasLower string) (resolvedAliasRow, error) {
-	tenantRow, err := q.LookupTenantAlias(ctx, db.LookupTenantAliasParams{
+func (r *PostgresRegistry) lookupAlias(ctx context.Context, q *dbregistry.Queries, tenantID int64, aliasLower string) (resolvedAliasRow, error) {
+	tenantRow, err := q.LookupTenantAlias(ctx, dbregistry.LookupTenantAliasParams{
 		TenantID:   tenantID,
 		AliasLower: aliasLower,
 	})

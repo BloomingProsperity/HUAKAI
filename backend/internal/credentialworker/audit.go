@@ -8,10 +8,11 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
-func (s *Scheduler) recordAudit(ctx context.Context, account db.ListAccountsForRefreshRow, outcome auth.Outcome, scope string, cause error) error {
+func (s *Scheduler) recordAudit(ctx context.Context, account dbbilling.ListAccountsForRefreshRow, outcome auth.Outcome, scope string, cause error) error {
 	now := s.now().UTC()
 	requestID := fmt.Sprintf("cred-refresh-%d-%d-%d-%s", account.ID, now.UnixNano(), s.seq.Add(1), outcome)
 	entry := &auth.RefreshAuditEntry{
@@ -37,14 +38,14 @@ func (s *Scheduler) recordAudit(ctx context.Context, account db.ListAccountsForR
 }
 
 type dbAuditWriter struct {
-	queries *db.Queries
+	queries *dbauth.Queries
 }
 
 func (w dbAuditWriter) WriteRefreshAudit(ctx context.Context, entry *auth.RefreshAuditEntry) error {
 	if w.queries == nil || entry == nil {
 		return nil
 	}
-	return w.queries.InsertOAuthRefreshAuditEvent(ctx, db.InsertOAuthRefreshAuditEventParams{
+	return w.queries.InsertOAuthRefreshAuditEvent(ctx, dbauth.InsertOAuthRefreshAuditEventParams{
 		TenantID:                 entry.TenantID,
 		ProviderAccountID:        entry.ProviderAccountID,
 		Outcome:                  string(entry.Outcome),

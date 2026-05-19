@@ -28,7 +28,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 )
 
@@ -45,7 +45,7 @@ import (
 //     SegmentTable + AgingWorker + 注册 cache feedback observer
 func buildSelector(
 	ctx context.Context,
-	q *db.Queries,
+	q *dbbilling.Queries,
 	pgPool *pgxpool.Pool,
 	selectorCfg *config.PoolSelectorConfig,
 	healthService *channelhealth.Service,

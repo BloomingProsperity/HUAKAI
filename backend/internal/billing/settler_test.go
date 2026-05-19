@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/shopspring/decimal"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
 func TestAT_AUDIT_001_060_RefundZeroReturnsSkippedCode(t *testing.T) {
@@ -18,7 +18,7 @@ func TestAT_AUDIT_001_060_RefundZeroReturnsSkippedCode(t *testing.T) {
 		refundSettlerRow{err: pgx.ErrNoRows},
 		refundSettlerRow{values: []any{"fp-zero", "committed", decimal.RequireFromString("0.02000000")}},
 	)
-	settler := &DefaultSettler{q: db.New(tx)}
+	settler := &DefaultSettler{q: dbbilling.New(tx)}
 
 	res, err := settler.RefundInTx(context.Background(), tx, RefundRequest{
 		TenantID:       1,
@@ -43,7 +43,7 @@ func TestAT_AUDIT_001_062_RefundActualCostOverflowRejected(t *testing.T) {
 		refundSettlerRow{err: pgx.ErrNoRows},
 		refundSettlerRow{values: []any{"fp-overflow", "committed", decimal.RequireFromString("9223372036854.775808")}},
 	)
-	settler := &DefaultSettler{q: db.New(tx)}
+	settler := &DefaultSettler{q: dbbilling.New(tx)}
 
 	_, err := settler.RefundInTx(context.Background(), tx, RefundRequest{
 		TenantID:       1,

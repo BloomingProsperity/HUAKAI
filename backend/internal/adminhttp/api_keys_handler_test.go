@@ -14,7 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
 func TestAT_ADMIN_001_IssueHandlerAuthRoleTenantValidationAndHappyPath(t *testing.T) {
@@ -111,7 +111,7 @@ func TestAT_ADMIN_001_ListHandlerAuthScopeValidationAndHappyPath(t *testing.T) {
 	t.Run("happy path returns tenant scoped items and audits read", func(t *testing.T) {
 		queries := &apiKeyQueriesStub{
 			exists: true,
-			rows: []db.AdminListAPIKeysForTenantRow{{
+			rows: []admindb.AdminListAPIKeysForTenantRow{{
 				ID:        101,
 				TenantID:  7,
 				UserID:    3,
@@ -281,12 +281,12 @@ func (s *apiKeyRevokerStub) Revoke(_ context.Context, req admin.RevokeRequest) (
 type apiKeyQueriesStub struct {
 	exists      bool
 	existsErr   error
-	rows        []db.AdminListAPIKeysForTenantRow
+	rows        []admindb.AdminListAPIKeysForTenantRow
 	listErr     error
 	auditErr    error
 	existsID    int64
-	listArg     db.AdminListAPIKeysForTenantParams
-	auditArg    db.InsertAdminAuditEventParams
+	listArg     admindb.AdminListAPIKeysForTenantParams
+	auditArg    admindb.InsertAdminAuditEventParams
 	existsCalls int
 	listCalls   int
 	auditCalls  int
@@ -301,7 +301,7 @@ func (s *apiKeyQueriesStub) AdminCheckTenantExists(_ context.Context, tenantID i
 	return s.exists, nil
 }
 
-func (s *apiKeyQueriesStub) AdminListAPIKeysForTenant(_ context.Context, arg db.AdminListAPIKeysForTenantParams) ([]db.AdminListAPIKeysForTenantRow, error) {
+func (s *apiKeyQueriesStub) AdminListAPIKeysForTenant(_ context.Context, arg admindb.AdminListAPIKeysForTenantParams) ([]admindb.AdminListAPIKeysForTenantRow, error) {
 	s.listCalls++
 	s.listArg = arg
 	if s.listErr != nil {
@@ -310,13 +310,13 @@ func (s *apiKeyQueriesStub) AdminListAPIKeysForTenant(_ context.Context, arg db.
 	return s.rows, nil
 }
 
-func (s *apiKeyQueriesStub) InsertAdminAuditEvent(_ context.Context, arg db.InsertAdminAuditEventParams) (db.InsertAdminAuditEventRow, error) {
+func (s *apiKeyQueriesStub) InsertAdminAuditEvent(_ context.Context, arg admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error) {
 	s.auditCalls++
 	s.auditArg = arg
 	if s.auditErr != nil {
-		return db.InsertAdminAuditEventRow{}, s.auditErr
+		return admindb.InsertAdminAuditEventRow{}, s.auditErr
 	}
-	return db.InsertAdminAuditEventRow{ID: int64(s.auditCalls)}, nil
+	return admindb.InsertAdminAuditEventRow{ID: int64(s.auditCalls)}, nil
 }
 
 func invokeAdminAPIKeys(t *testing.T, deps AdminAPIKeysDeps, method, target string, body any) *httptest.ResponseRecorder {

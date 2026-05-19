@@ -15,7 +15,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 )
@@ -35,7 +35,7 @@ var maxCostMicroUSDDecimal = decimal.NewFromInt(maxCostMicroUSDInt64)
 
 type DefaultSettler struct {
 	pool          *pgxpool.Pool
-	q             *db.Queries
+	q             *dbbilling.Queries
 	dlqStore      *dlq.Store
 	replicaTarget string
 }
@@ -59,7 +59,7 @@ func NewSettler(pool *pgxpool.Pool, opts ...SettlerOption) *DefaultSettler {
 	if pool == nil {
 		return &DefaultSettler{pool: nil}
 	}
-	s := &DefaultSettler{pool: pool, q: db.New(pool), dlqStore: dlq.NewStore(pool)}
+	s := &DefaultSettler{pool: pool, q: dbbilling.New(pool), dlqStore: dlq.NewStore(pool)}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -78,7 +78,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	qtx := s.q.WithTx(tx)
-	claim, err := qtx.GetClaimForSettle(ctx, db.GetClaimForSettleParams{
+	claim, err := qtx.GetClaimForSettle(ctx, dbbilling.GetClaimForSettleParams{
 		ID:               req.ClaimID,
 		TenantID:         req.TenantID,
 		AcquisitionToken: req.AcquisitionToken,
@@ -109,7 +109,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 		requestedAt = time.Now().UTC()
 	}
 
-	usageParams := db.InsertUsageRecordParams{
+	usageParams := dbbilling.InsertUsageRecordParams{
 		TenantID:               claim.TenantID,
 		ClaimID:                claim.ID,
 		APIKeyID:               coalesceInt64(req.APIKeyID, claim.APIKeyID),
@@ -150,7 +150,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 	endClass := normalizeEndClass(req.Draft.EndClass, req.Stream)
 	usageSource := normalizeUsageSource(req.Draft.UsageSource)
 	auditRequestID := strings.TrimSpace(req.AuditRequestID)
-	billingEventParams := db.InsertBillingEventParams{
+	billingEventParams := dbbilling.InsertBillingEventParams{
 		TenantID:               claim.TenantID,
 		ClaimID:                nullableInt64(claim.ID),
 		EventType:              "claim_committed",
@@ -178,7 +178,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 	// TODO: outbox emission deferred until Phase 4.5; CrossThreshold callback hook is in SettleRequest.OutboxEmitter func() bool - when true, an outbox row is inserted.
 	outboxEvents := 0
 	if req.OutboxEmitter != nil && req.OutboxEmitter() {
-		if _, err := qtx.InsertSchedulerOutboxRow(ctx, db.InsertSchedulerOutboxRowParams{
+		if _, err := qtx.InsertSchedulerOutboxRow(ctx, dbbilling.InsertSchedulerOutboxRowParams{
 			TenantID:          claim.TenantID,
 			EventType:         "account_quota_changed",
 			ProviderAccountID: &providerAccountID,
@@ -190,7 +190,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 	}
 
 	releaseReason := "settled_committed"
-	released, err := qtx.ReleaseSlotAndDecrementInFlight(ctx, db.ReleaseSlotAndDecrementInFlightParams{
+	released, err := qtx.ReleaseSlotAndDecrementInFlight(ctx, dbbilling.ReleaseSlotAndDecrementInFlightParams{
 		AcquisitionToken: req.AcquisitionToken,
 		ReleaseReason:    &releaseReason,
 	})
@@ -200,7 +200,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 	if released == 0 {
 		return nil, ErrSlotReleaseMissed
 	}
-	rows, err := qtx.UpdateClaimCommitted(ctx, db.UpdateClaimCommittedParams{
+	rows, err := qtx.UpdateClaimCommitted(ctx, dbbilling.UpdateClaimCommittedParams{
 		ID: claim.ID,
 		ActualCost: decimal.NullDecimal{
 			Decimal: actualCost,
@@ -256,7 +256,7 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 	}
 
 	qtx := s.q.WithTx(tx)
-	rows, err := qtx.UpdateClaimAbortedWithReason(ctx, db.UpdateClaimAbortedWithReasonParams{
+	rows, err := qtx.UpdateClaimAbortedWithReason(ctx, dbbilling.UpdateClaimAbortedWithReasonParams{
 		ID:            claimID,
 		TenantID:      tenantID,
 		AbortedReason: nullableString(reason),
@@ -271,7 +271,7 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 	abortUsageSource := string(gateway.UsageSourceInferred)
 	abortAttempt := Attempt{State: StreamStateFailed, StreamTerminatedReason: normalizeTerminatedReason(reason)}
 	auditRequestID = strings.TrimSpace(auditRequestID)
-	abortEventParams := db.InsertBillingEventParams{
+	abortEventParams := dbbilling.InsertBillingEventParams{
 		TenantID:               tenantID,
 		ClaimID:                nullableInt64(claimID),
 		EventType:              "claim_aborted",
@@ -301,7 +301,7 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 	if providerAccountID != nil && acquisitionToken.Valid {
 		var tokAbort uuid.UUID
 		copy(tokAbort[:], acquisitionToken.Bytes[:])
-		usageParams := db.InsertUsageRecordParams{
+		usageParams := dbbilling.InsertUsageRecordParams{
 			TenantID:               tenantID,
 			ClaimID:                claimID,
 			APIKeyID:               apiKeyID,
@@ -338,7 +338,7 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 		releaseReason := "settled_aborted"
 		var tokUUID uuid.UUID
 		copy(tokUUID[:], acquisitionToken.Bytes[:])
-		released, err := qtx.ReleaseSlotAndDecrementInFlight(ctx, db.ReleaseSlotAndDecrementInFlightParams{
+		released, err := qtx.ReleaseSlotAndDecrementInFlight(ctx, dbbilling.ReleaseSlotAndDecrementInFlightParams{
 			AcquisitionToken: tokUUID,
 			ReleaseReason:    &releaseReason,
 		})
@@ -457,7 +457,7 @@ FOR UPDATE`,
 	signedRefund := refundUSD.Neg()
 	refundEndClass := reason
 	refundUsageSource := "audit_mismatch"
-	refundEventParams := db.InsertBillingEventParams{
+	refundEventParams := dbbilling.InsertBillingEventParams{
 		TenantID:         req.TenantID,
 		ClaimID:          nullableInt64(req.ClaimID),
 		EventType:        "reconciliation_appended",
@@ -529,7 +529,7 @@ func (s *DefaultSettler) classifySettleNoRows(ctx context.Context, tx pgx.Tx, re
 	return ErrClaimNotReserving
 }
 
-func (s *DefaultSettler) insertUsageRecordOrDLQ(ctx context.Context, tx pgx.Tx, qtx *db.Queries, params db.InsertUsageRecordParams, failurePrefix string) error {
+func (s *DefaultSettler) insertUsageRecordOrDLQ(ctx context.Context, tx pgx.Tx, qtx *dbbilling.Queries, params dbbilling.InsertUsageRecordParams, failurePrefix string) error {
 	if _, err := tx.Exec(ctx, "SAVEPOINT huakai_usage_record_insert"); err != nil {
 		return fmt.Errorf("billing: create usage savepoint: %w", err)
 	}
@@ -574,7 +574,7 @@ func (s *DefaultSettler) insertUsageRecordOrDLQ(ctx context.Context, tx pgx.Tx, 
 	}
 }
 
-func (s *DefaultSettler) enqueueBillingEventReplica(ctx context.Context, tx pgx.Tx, row db.InsertBillingEventRow, params db.InsertBillingEventParams) error {
+func (s *DefaultSettler) enqueueBillingEventReplica(ctx context.Context, tx pgx.Tx, row dbbilling.InsertBillingEventRow, params dbbilling.InsertBillingEventParams) error {
 	if s.replicaTarget == "" {
 		return nil
 	}
@@ -620,7 +620,7 @@ func (s *DefaultSettler) enqueueBillingEventReplica(ctx context.Context, tx pgx.
 	return nil
 }
 
-func marshalUsageRecordPayload(params db.InsertUsageRecordParams) (json.RawMessage, error) {
+func marshalUsageRecordPayload(params dbbilling.InsertUsageRecordParams) (json.RawMessage, error) {
 	payload := dlq.UsageRecordPayload{
 		TenantID:               params.TenantID,
 		ClaimID:                params.ClaimID,
