@@ -61,8 +61,12 @@ func TestChatCompletionsL2CacheHitReturnsCachedWithoutUpstreamCall(t *testing.T)
 	if first.Body.String() != second.Body.String() {
 		t.Fatalf("cached body mismatch:\nfirst=%s\nsecond=%s", first.Body.String(), second.Body.String())
 	}
-	if len(settler.calls) != 1 {
-		t.Fatalf("settle calls=%d want 1; cache hit should not reserve/settle billing", len(settler.calls))
+	// codex chunk9 P1 fix: reserve 现在在 cache 之前, 走 ClaimGate 内部
+	// uq_claims_idempotency 校验防同 key 不同 payload 命中。 所以两次请求都会
+	// reserve 一次 settle/abort: 第一次 dispatch 后 commit, 第二次 cache 命中
+	// 后 abort (零成本)。 期望 2 个 settler call。
+	if len(settler.calls) != 2 {
+		t.Fatalf("settle calls=%d want 2; reserve runs before cache hit for idempotency check, then abort on hit", len(settler.calls))
 	}
 }
 
