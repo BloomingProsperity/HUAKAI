@@ -7,8 +7,9 @@ package pool
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
-	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,25 +21,25 @@ import (
 // account whose credential is valid. Validates F-POOL-001 §Phase B
 // CredentialGate ↔ F-AUTH-005 GetAccessToken contract.
 func TestATXFEAT_001_CredentialGateRejectsMalformedTokenAccount(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		// Return malformed (whitespace + too short) token to force ErrTokenMalformed.
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"access_token":  "not a token",
-			"refresh_token": "rt",
-			"expires_in":    3600,
-		})
-	}))
-	t.Cleanup(upstream.Close)
+	refreshClient := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		// 返回 malformed token, 触发 auth.ErrTokenMalformed, 但不在测试里监听本地端口。
+		body := `{"access_token":"not a token","refresh_token":"rt","expires_in":3600}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
 
 	authStore := newAuthMemStore()
 	authCache := newAuthMemCache()
 	authLock := newAuthMemLock()
 	authMarker := newAuthMemMarker()
 	authAudit := newAuthMemAudit()
-	provider := auth.NewAntigravityTokenProvider(authStore, authAudit, authCache, authLock, authMarker, upstream.Client(), nil)
+	provider := auth.NewAntigravityTokenProvider(authStore, authAudit, authCache, authLock, authMarker, refreshClient, nil)
 
 	expired := time.Now().Add(-1 * time.Minute)
-	authStore.put(authCredFor(t, 1, 100, "old-access-token-but-malformed-after-refresh", "rt", upstream.URL, expired))
+	authStore.put(authCredFor(t, 1, 100, "old-access-token-but-malformed-after-refresh", "rt", "https://auth.invalid/token", expired))
 	authStore.put(authCredFor(t, 1, 200, "valid-static-token-32chars-abcdef0123", "", "", time.Time{}))
 
 	src := &stubAccountSource{accounts: []*AccountSnapshot{
@@ -74,6 +75,12 @@ func TestATXFEAT_001_CredentialGateRejectsMalformedTokenAccount(t *testing.T) {
 	if v, ok := excl["credential"]; !ok || v.(float64) < 1 {
 		t.Errorf("expected credential gate failure recorded in routing reason; got %+v", excl)
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 // =====================================================================

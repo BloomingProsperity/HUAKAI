@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -40,10 +41,23 @@ func newRig(t *testing.T, upstreamHandler http.HandlerFunc) *rig {
 	lock := newMemLock()
 	marker := newMemMarker()
 	audit := newMemAudit()
-	upstream := httptest.NewServer(upstreamHandler)
+	upstream := newLoopbackHTTPServer(t, upstreamHandler)
 	t.Cleanup(upstream.Close)
 	provider := NewAntigravityTokenProvider(store, audit, cache, lock, marker, upstream.Client(), nil)
 	return &rig{provider: provider, store: store, cache: cache, lock: lock, marker: marker, audit: audit, upstream: upstream}
+}
+
+func newLoopbackHTTPServer(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("本地 loopback 监听不可用，跳过需要 httptest server 的 auth 测试: %v", err)
+	}
+	server := httptest.NewUnstartedServer(handler)
+	server.Listener = ln
+	server.Start()
+	return server
 }
 
 // addAccount inserts a Provider Account with the given credential body.
