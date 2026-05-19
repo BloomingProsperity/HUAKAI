@@ -153,12 +153,14 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 		}
 		if !exec.req.Stream {
 			handled, proceed := exec.serveL2CacheIfAvailable(w)
-			if !proceed {
+			if handled {
+				// codex chunk11 P1 fix: 先判 handled 再判 !proceed; cache 命中时
+				// serveL2CacheIfAvailable 返 (true, false), 之前先 !proceed 短路
+				// 让 Abort 永远不跑, claim 卡 reserving。 此处必须先 Abort 再 return。
+				_ = exec.d.Settler.Abort(exec.ctx, exec.ident.TenantID, exec.reserveRes.ClaimID, "served_from_l2_cache", exec.requestID)
 				return
 			}
-			if handled {
-				// cache 命中: claim 仍在 reserving, 不占 pool slot, 标 abort 收尾。
-				_ = exec.d.Settler.Abort(exec.ctx, exec.ident.TenantID, exec.reserveRes.ClaimID, "served_from_l2_cache", exec.requestID)
+			if !proceed {
 				return
 			}
 		}
