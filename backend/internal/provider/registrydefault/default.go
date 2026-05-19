@@ -2,10 +2,11 @@
 // provider.StaticRegistry。main 与 admin 启动时调 Build()。
 //
 // 边界（Owner 2026-05-06 directive）：
-//   仅注册"已实现"的 adapter。Anthropic OAuth 反转、ChatGPT 反转、
-//   Cursor / Copilot / Kiro / Windsurf / Antigravity 反转等尚未实现的
-//   protocol family 不在此处注册；运行期访问会得到 provider.
-//   ErrAdapterNotRegistered，由配置层 reject 阻止误用。
+//
+//	仅注册"已实现"的 adapter。Anthropic OAuth 反转、ChatGPT 反转、
+//	Cursor / Copilot / Kiro / Windsurf / Antigravity 反转等尚未实现的
+//	protocol family 不在此处注册；运行期访问会得到 provider.
+//	ErrAdapterNotRegistered，由配置层 reject 阻止误用。
 //
 // Protocol family 字符串约定（与 router.ResolvedModel.ProtocolFamily 对齐）：
 //   - openai_chat              OpenAI Chat Completions 兼容
@@ -84,11 +85,12 @@ func Build() *provider.StaticRegistry {
 	// OpenAI Chat Completions（v1/chat/completions）
 	r.MustRegister(ProtocolOpenAIChat, &openai.PassthroughAdapter{})
 
-	// 当前阶段 OpenAI Responses API 也走同一 PassthroughAdapter（路径
-	// 同为 v1/chat/completions 的 caller 行为；Responses API 的专属
-	// adapter 待后续 atomic 单独实现）。注册到独立 protocol family，
-	// 后续切换 adapter 不影响 router 配置。
-	r.MustRegister(ProtocolOpenAIResponses, &openai.PassthroughAdapter{})
+	// OpenAI Responses API 仅 endpoint 区分；body / SSE shape 由 HCSF
+	// translate 层处理。注册到独立 protocol family，后续切换 adapter 不
+	// 影响 router 配置。
+	r.MustRegister(ProtocolOpenAIResponses, &openai.PassthroughAdapter{
+		Endpoint: "https://api.openai.com/v1/responses",
+	})
 
 	// OpenAI Codex CLI / ChatGPT Plus session 反转。出站到 chatgpt.com
 	// 自有 backend，凭据形态为 session_token / upstream_passthrough（拒

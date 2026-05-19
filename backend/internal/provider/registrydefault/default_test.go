@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 )
 
 func TestBuild_AllProtocolFamiliesRegistered(t *testing.T) {
@@ -72,14 +73,14 @@ func TestBuild_AdaptersAreReachable(t *testing.T) {
 func TestBuild_PlatformIDsCorrect(t *testing.T) {
 	r := Build()
 	cases := map[string]string{
-		ProtocolOpenAIChat:        "openai",
-		ProtocolOpenAIResponses:   "openai",
-		ProtocolOpenAICodex:       "openai_codex",
-		ProtocolAnthropicMessages: "anthropic",
-		ProtocolGeminiMessages:    "gemini",
-		ProtocolOpenRouterChat:    "openrouter",
-		ProtocolBedrockInvoke:     "bedrock",
-		ProtocolGrokChat:          "grok",
+		ProtocolOpenAIChat:            "openai",
+		ProtocolOpenAIResponses:       "openai",
+		ProtocolOpenAICodex:           "openai_codex",
+		ProtocolAnthropicMessages:     "anthropic",
+		ProtocolGeminiMessages:        "gemini",
+		ProtocolOpenRouterChat:        "openrouter",
+		ProtocolBedrockInvoke:         "bedrock",
+		ProtocolGrokChat:              "grok",
 		ProtocolDeepSeekChat:          "deepseek",
 		ProtocolMistralChat:           "mistral",
 		ProtocolGroqCloudChat:         "groqcloud",
@@ -101,6 +102,21 @@ func TestBuild_PlatformIDsCorrect(t *testing.T) {
 		if got := a.Platform(); got != wantPlatform {
 			t.Errorf("%q → Platform=%q want %q", pf, got, wantPlatform)
 		}
+	}
+}
+
+func TestBuild_OpenAIResponsesEndpointIsResponsesAPI(t *testing.T) {
+	r := Build()
+	a, err := r.For(ProtocolOpenAIResponses)
+	if err != nil {
+		t.Fatalf("For(%q) err=%v", ProtocolOpenAIResponses, err)
+	}
+	passthrough, ok := a.(*openai.PassthroughAdapter)
+	if !ok {
+		t.Fatalf("adapter type=%T want *openai.PassthroughAdapter", a)
+	}
+	if passthrough.Endpoint != "https://api.openai.com/v1/responses" {
+		t.Fatalf("Responses endpoint=%q want https://api.openai.com/v1/responses", passthrough.Endpoint)
 	}
 }
 
