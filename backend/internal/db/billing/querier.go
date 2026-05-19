@@ -79,6 +79,14 @@ type Querier interface {
 	// (and no explicit ChannelID) can resolve to the candidate account set.
 	// cap_queue_sticky/fallback are returned so the selector can construct
 	// WaitPlan fallback when every eligible account is at concurrency cap.
+	//
+	// 2026-05-19 codex review P1 fix: 之前不过滤 model_allow_list /
+	// capability_flags, production gate AllowAll 全过, request 能 reserve
+	// 到明确不被该 account 允许的 model / 缺能力。两个 filter 直接在 SQL
+	// 层做 (Postgres array @> 子集 + cardinality empty bypass):
+	//   - model_allow_list 空 数组 → 无限制
+	//   - model_allow_list 非空 → 必须包含 requested_model
+	//   - capability_flags 必须包含 required_capabilities 全集 (空 req → 自动 true)
 	ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListEligibleAccountsByPoolGroupParams) ([]ListEligibleAccountsByPoolGroupRow, error)
 	ListOrphanedAcquisitions(ctx context.Context) ([]PoolSlotAcquisition, error)
 	ListPools(ctx context.Context, arg ListPoolsParams) ([]PoolGroup, error)
