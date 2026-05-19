@@ -54,6 +54,9 @@ type Credential struct {
 type AccountInfo struct {
 	// AccountID 池中 account 主键。
 	AccountID int64
+	// TenantID 是账号所属租户; CredentialVault.Resolve 与 dispatcher 后续都
+	// 用它做 DR-001 跨租户隔离校验。
+	TenantID int64
 	// Platform vendor 平台标识（如 "openai" / "gemini" / "antigravity"
 	// / "cursor" / "copilot" / "kiro" / "windsurf"）。
 	Platform string

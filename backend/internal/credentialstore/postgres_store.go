@@ -386,9 +386,14 @@ RETURNING vendor, auth_mode, credential_version`
 	return nil
 }
 
-func (s *Store) ResolveActive(ctx context.Context, providerAccountID int64) (CredentialRecord, error) {
+func (s *Store) ResolveActive(ctx context.Context, tenantID, providerAccountID int64) (CredentialRecord, error) {
 	if err := s.validateReady(); err != nil {
 		return CredentialRecord{}, err
+	}
+	// DR-001 防御: caller 必须显式传 tenantID; 即使 caller 误传他租户的
+	// providerAccountID, 这里也用 pa.tenant_id=$2 + ac.tenant_id=$2 双侧绑死。
+	if tenantID == 0 {
+		return CredentialRecord{}, fmt.Errorf("%w: tenantID required", ErrInvalidPayload)
 	}
 	const q = `
 SELECT ac.id, ac.tenant_id, ac.provider_account_id, ac.vendor, ac.auth_mode, ac.state,
@@ -402,6 +407,8 @@ SELECT ac.id, ac.tenant_id, ac.provider_account_id, ac.vendor, ac.auth_mode, ac.
 	  ON pa.id = ac.provider_account_id
 	 AND pa.tenant_id = ac.tenant_id
 	WHERE ac.provider_account_id = $1
+	  AND ac.tenant_id = $2
+	  AND pa.tenant_id = $2
 	  AND ac.deleted_at IS NULL
 	  AND pa.deleted_at IS NULL
   AND pa.enabled
@@ -411,7 +418,7 @@ SELECT ac.id, ac.tenant_id, ac.provider_account_id, ac.vendor, ac.auth_mode, ac.
   )
 ORDER BY CASE ac.state WHEN 'active' THEN 0 ELSE 1 END, ac.updated_at DESC
 LIMIT 1`
-	rec, err := s.scanRecord(ctx, q, providerAccountID)
+	rec, err := s.scanRecord(ctx, q, providerAccountID, tenantID)
 	if err != nil {
 		return CredentialRecord{}, err
 	}

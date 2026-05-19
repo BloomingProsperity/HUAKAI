@@ -206,7 +206,7 @@ func retryAfterSecondsForWaitPlan(plan *pool.WaitPlan) int {
 }
 
 func (ex *chatExecution) resolveCredential(w http.ResponseWriter) bool {
-	cred, accInfo, err := ex.d.CredentialVault.Resolve(ex.ctx, ex.acquiredAccountID)
+	cred, accInfo, err := ex.d.CredentialVault.Resolve(ex.ctx, ex.ident.TenantID, ex.acquiredAccountID)
 	if err != nil {
 		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "credential_resolve_error", ex.requestID)
 		status := http.StatusInternalServerError

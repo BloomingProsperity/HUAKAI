@@ -24,7 +24,7 @@ func TestStaticVaultSetAndResolve(t *testing.T) {
 		t.Fatalf("Set() error = %v", err)
 	}
 
-	gotCredential, gotAccount, err := v.Resolve(context.Background(), 11)
+	gotCredential, gotAccount, err := v.Resolve(context.Background(), 0, 11)
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -45,7 +45,7 @@ func TestStaticVaultSetAndResolve(t *testing.T) {
 func TestStaticVaultResolveNotFound(t *testing.T) {
 	v := NewStaticVault()
 
-	_, _, err := v.Resolve(context.Background(), 404)
+	_, _, err := v.Resolve(context.Background(), 0, 404)
 	if !errors.Is(err, ErrAccountNotFound) {
 		t.Fatalf("Resolve() error = %v, want ErrAccountNotFound", err)
 	}
@@ -54,7 +54,7 @@ func TestStaticVaultResolveNotFound(t *testing.T) {
 func TestStaticVaultNilReceiverResolveNotFound(t *testing.T) {
 	var v *StaticVault
 
-	_, _, err := v.Resolve(context.Background(), 1)
+	_, _, err := v.Resolve(context.Background(), 0, 1)
 	if !errors.Is(err, ErrAccountNotFound) {
 		t.Fatalf("Resolve() error = %v, want ErrAccountNotFound", err)
 	}
@@ -92,7 +92,7 @@ func TestStaticVaultSetOverwritesExistingEntry(t *testing.T) {
 		t.Fatalf("second Set() error = %v", err)
 	}
 
-	gotCredential, gotAccount, err := v.Resolve(context.Background(), 7)
+	gotCredential, gotAccount, err := v.Resolve(context.Background(), 0, 7)
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -157,7 +157,7 @@ func TestStaticVaultConcurrentSetAndResolve(t *testing.T) {
 				return
 			}
 
-			gotCredential, gotAccount, err := v.Resolve(context.Background(), accountID)
+			gotCredential, gotAccount, err := v.Resolve(context.Background(), 0, accountID)
 			if err != nil {
 				t.Errorf("Resolve(%d) error = %v", accountID, err)
 				return
