@@ -577,6 +577,7 @@ SELECT
     pa.priority,
     pa.last_dispatch_at,
     pa.model_allow_list,
+    pa.capability_flags,
     pa.cap_queue_sticky,
     pa.cap_queue_fallback
 FROM provider_accounts pa
@@ -587,12 +588,17 @@ WHERE pa.tenant_id = $1
   AND pa.enabled = true
   AND pa.deleted_at IS NULL
   AND pa.health_state IN ('operational', 'degraded')
+  AND (cardinality(pa.model_allow_list) = 0
+       OR pa.model_allow_list @> ARRAY[$3::text])
+  AND pa.capability_flags @> $4::text[]
 ORDER BY pa.priority, pa.last_dispatch_at NULLS FIRST
 `
 
 type ListEligibleAccountsByPoolGroupParams struct {
-	TenantID    int64 `db:"tenant_id" json:"tenant_id"`
-	PoolGroupID int64 `db:"pool_group_id" json:"pool_group_id"`
+	TenantID             int64    `db:"tenant_id" json:"tenant_id"`
+	PoolGroupID          int64    `db:"pool_group_id" json:"pool_group_id"`
+	RequestedModel       string   `db:"requested_model" json:"requested_model"`
+	RequiredCapabilities []string `db:"required_capabilities" json:"required_capabilities"`
 }
 
 type ListEligibleAccountsByPoolGroupRow struct {
@@ -605,6 +611,7 @@ type ListEligibleAccountsByPoolGroupRow struct {
 	Priority         int32              `db:"priority" json:"priority"`
 	LastDispatchAt   pgtype.Timestamptz `db:"last_dispatch_at" json:"last_dispatch_at"`
 	ModelAllowList   []string           `db:"model_allow_list" json:"model_allow_list"`
+	CapabilityFlags  []string           `db:"capability_flags" json:"capability_flags"`
 	CapQueueSticky   int32              `db:"cap_queue_sticky" json:"cap_queue_sticky"`
 	CapQueueFallback int32              `db:"cap_queue_fallback" json:"cap_queue_fallback"`
 }
@@ -614,8 +621,21 @@ type ListEligibleAccountsByPoolGroupRow struct {
 // (and no explicit ChannelID) can resolve to the candidate account set.
 // cap_queue_sticky/fallback are returned so the selector can construct
 // WaitPlan fallback when every eligible account is at concurrency cap.
+//
+// 2026-05-19 codex review P1 fix: 之前不过滤 model_allow_list /
+// capability_flags, production gate AllowAll 全过, request 能 reserve
+// 到明确不被该 account 允许的 model / 缺能力。两个 filter 直接在 SQL
+// 层做 (Postgres array @> 子集 + cardinality empty bypass):
+//   - model_allow_list 空 数组 → 无限制
+//   - model_allow_list 非空 → 必须包含 requested_model
+//   - capability_flags 必须包含 required_capabilities 全集 (空 req → 自动 true)
 func (q *Queries) ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListEligibleAccountsByPoolGroupParams) ([]ListEligibleAccountsByPoolGroupRow, error) {
-	rows, err := q.db.Query(ctx, listEligibleAccountsByPoolGroup, arg.TenantID, arg.PoolGroupID)
+	rows, err := q.db.Query(ctx, listEligibleAccountsByPoolGroup,
+		arg.TenantID,
+		arg.PoolGroupID,
+		arg.RequestedModel,
+		arg.RequiredCapabilities,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -633,6 +653,7 @@ func (q *Queries) ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListE
 			&i.Priority,
 			&i.LastDispatchAt,
 			&i.ModelAllowList,
+			&i.CapabilityFlags,
 			&i.CapQueueSticky,
 			&i.CapQueueFallback,
 		); err != nil {

@@ -34,9 +34,18 @@ func (s *DBAccountSource) ListAccounts(ctx context.Context, req SelectionRequest
 	if s == nil || s.q == nil {
 		return nil, fmt.Errorf("pool: DBAccountSource not configured")
 	}
+	// codex review 2026-05-19 P1: 必须把 req.RequestedModel + req.CapabilityFlags
+	// 透传到 SQL 端做 model_allow_list / capability_flags 过滤, 否则 production
+	// gate AllowAll 全过, 出现 "选到明确不支持该 model 的 account" 误派发。
+	required := req.CapabilityFlags
+	if required == nil {
+		required = []string{}
+	}
 	rows, err := s.q.ListEligibleAccountsByPoolGroup(ctx, dbbilling.ListEligibleAccountsByPoolGroupParams{
-		TenantID:    req.TenantID,
-		PoolGroupID: req.PoolGroupID,
+		TenantID:             req.TenantID,
+		PoolGroupID:          req.PoolGroupID,
+		RequestedModel:       req.RequestedModel,
+		RequiredCapabilities: required,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("pool: list eligible accounts: %w", err)
