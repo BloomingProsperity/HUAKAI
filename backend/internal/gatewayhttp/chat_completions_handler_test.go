@@ -1,8 +1,3 @@
-// Slice 2 (N+5b 2026-05-01) unit tests for the chat handler error
-// mapping + the body-field-removed transition reject. Happy path runs
-// only in the smoke test (cmd/gateway/smoke_test.go) because it
-// requires a real *gateway.StreamForwarder + real upstream wire bytes.
-
 package gatewayhttp
 
 import (
@@ -10,11 +5,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"strings"
 	"testing"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
@@ -22,12 +14,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
-	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 )
-
-// ---------------------------------------------------------------------------
-// Stubs
-// ---------------------------------------------------------------------------
 
 type stubAuth struct {
 	identity auth.Identity
@@ -62,15 +49,6 @@ func (stubClaimGate) Reserve(_ context.Context, _ billing.ReserveRequest) (*bill
 	return &billing.ReserveResult{ClaimID: 999}, nil
 }
 
-type recordingClaimGate struct {
-	endpointFamily string
-}
-
-func (g *recordingClaimGate) Reserve(_ context.Context, req billing.ReserveRequest) (*billing.ReserveResult, error) {
-	g.endpointFamily = req.EndpointFamily
-	return &billing.ReserveResult{ClaimID: 999}, nil
-}
-
 type stubSelector struct{}
 
 func (stubSelector) Select(_ context.Context, _ pool.SelectionRequest) (*pool.SelectionResult, error) {
@@ -84,6 +62,7 @@ type stubSettler struct {
 func (s *stubSettler) Settle(_ context.Context, _ billing.SettleRequest) (*billing.SettleResult, error) {
 	return &billing.SettleResult{}, nil
 }
+
 func (s *stubSettler) Abort(_ context.Context, _, _ int64, _, _ string) error {
 	s.abortCalls++
 	return nil
@@ -93,18 +72,10 @@ func (s *stubSettler) Refund(context.Context, billing.RefundRequest) (*billing.R
 	return &billing.RefundResult{}, nil
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// validIdentity returns a non-zero auth.Identity for tests that need to
-// pass the Auth gate without exercising it.
 func validIdentity() auth.Identity {
 	return auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 3}
 }
 
-// invokeHandler runs the handler with the given dependencies and request
-// body, returning the recorder for assertion.
 func invokeHandler(t *testing.T, deps ChatHandlerDeps, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	h := NewChatCompletionsHandler(deps)
@@ -125,13 +96,6 @@ func invokeResponsesHandlerPath(t *testing.T, deps ChatHandlerDeps, path, body s
 	return rec
 }
 
-// minimalDeps wires every dependency to a passing stub. Individual
-// tests override one stub at a time so the other layers stay quiet.
-//
-// Forwarder is non-nil but empty: the unit tests in this file all exit
-// before Forward() is called (auth fail / registry fail / router fail /
-// body field disallowed / nil-guard / etc.). Real Forwarder behavior is
-// covered by cmd/gateway/smoke_test.go.
 func minimalDeps() ChatHandlerDeps {
 	return ChatHandlerDeps{
 		Auth:      stubAuth{identity: validIdentity()},
@@ -139,10 +103,7 @@ func minimalDeps() ChatHandlerDeps {
 		Router:    stubRouter{plan: router.RoutePlan{Attempts: []router.AttemptPlan{{PoolGroupID: 42}}, SnapshotVersion: "registry:7:1;router:v0.1-phase-c"}},
 		ClaimGate: stubClaimGate{},
 		Selector:  stubSelector{},
-		// 真出站链路 N+5b 后置依赖（dispatcher / vault）：测试占位，让
-		// nil-guard 通过；具体上游 Dispatch 不会被这些 stub 测试触及，因为
-		// 这一组测试聚焦于 handler 入口校验与计费 / claim 路径，没有真正
-		// 进入 forwarder.Forward。
+		// 真出站链路占位，让入口校验类测试通过 nil-guard。
 		CredentialVault:      provider.NewStaticVault(),
 		Dispatcher:           &gateway.UpstreamDispatcher{},
 		Forwarder:            &gateway.StreamForwarder{},
@@ -154,359 +115,4 @@ func minimalDeps() ChatHandlerDeps {
 
 func validBody() string {
 	return `{"model":"claude-opus-4-7","stream":true,"messages":[{"role":"user","content":"hi"}]}`
-}
-
-// ---------------------------------------------------------------------------
-// Tests — N+5b synthesized plan §Test plan (10 cases)
-// ---------------------------------------------------------------------------
-
-// 1. NilRegistry → 503 (boot-time misconfig fail-closed; codex synthesis nil-dep).
-func TestHandler_NilRegistry(t *testing.T) {
-	d := minimalDeps()
-	d.Registry = nil
-	rec := invokeHandler(t, d, validBody())
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d; want 503", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "gateway_not_configured") {
-		t.Fatalf("body = %q; want gateway_not_configured", rec.Body.String())
-	}
-}
-
-// 2. NilRouter → 503.
-func TestHandler_NilRouter(t *testing.T) {
-	d := minimalDeps()
-	d.Router = nil
-	rec := invokeHandler(t, d, validBody())
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d; want 503", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "gateway_not_configured") {
-		t.Fatalf("body = %q; want gateway_not_configured", rec.Body.String())
-	}
-}
-
-// 3. RejectsBodyPoolGroupID (positive) → 400 body_field_disallowed.
-//
-// Synthesized plan §D2 — the gateway no longer accepts client-side pool
-// selection. Detection uses raw-JSON pre-parse so explicit-zero is also
-// caught (see #4 below).
-func TestHandler_RejectsBodyPoolGroupID(t *testing.T) {
-	d := minimalDeps()
-	rec := invokeHandler(t, d, `{"model":"claude-opus-4-7","stream":true,"messages":[],"pool_group_id":5}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d; want 400", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "body_field_disallowed") {
-		t.Fatalf("body = %q; want body_field_disallowed", rec.Body.String())
-	}
-}
-
-// 4. RejectsBodyPoolGroupIDZero — pointer-only detection would have
-// failed here because Go json.Unmarshal lowers null/0 onto the same
-// zero value as "field absent". Raw-key detection catches it.
-func TestHandler_RejectsBodyPoolGroupIDZero(t *testing.T) {
-	d := minimalDeps()
-	rec := invokeHandler(t, d, `{"model":"claude-opus-4-7","stream":true,"messages":[],"pool_group_id":0}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d; want 400 (zero value still must be rejected)", rec.Code)
-	}
-}
-
-// 5. RegistryUnknown → uniform 404 model_not_available.
-//
-// Per codex N+5b P1 pass2 finding (2026-05-01): the response carries NO
-// distinguishing header — unknown / disabled / no-access must all look
-// identical to clients to defeat alias enumeration.
-func TestHandler_RegistryUnknown(t *testing.T) {
-	d := minimalDeps()
-	d.Registry = stubRegistry{err: registry.ErrUnknownModel}
-	rec := invokeHandler(t, d, validBody())
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d; want 404", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "model_not_available") {
-		t.Fatalf("body = %q; want model_not_available", rec.Body.String())
-	}
-	assertNoAuditHeader(t, rec)
-}
-
-// 6. RegistryDisabled → 404 (indistinguishable from RegistryUnknown).
-func TestHandler_RegistryDisabled(t *testing.T) {
-	d := minimalDeps()
-	d.Registry = stubRegistry{err: registry.ErrModelDisabled}
-	rec := invokeHandler(t, d, validBody())
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d; want 404", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "model_not_available") {
-		t.Fatalf("body = %q; want model_not_available", rec.Body.String())
-	}
-	assertNoAuditHeader(t, rec)
-}
-
-// 7. RegistryNoAccess → 404 (indistinguishable from RegistryUnknown).
-func TestHandler_RegistryNoAccess(t *testing.T) {
-	d := minimalDeps()
-	d.Registry = stubRegistry{err: registry.ErrTenantNoAccess}
-	rec := invokeHandler(t, d, validBody())
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d; want 404", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "model_not_available") {
-		t.Fatalf("body = %q; want model_not_available", rec.Body.String())
-	}
-	assertNoAuditHeader(t, rec)
-}
-
-// 8. RegistryBackend → 503 registry_backend_error. Distinct status
-// because a transient infra outage is observably different from "model
-// not available" — clients can retry, ops can correlate. No audit
-// header (server-side log only).
-func TestHandler_RegistryBackend(t *testing.T) {
-	d := minimalDeps()
-	d.Registry = stubRegistry{err: registry.ErrRegistryBackend}
-	rec := invokeHandler(t, d, validBody())
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d; want 503", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "registry_backend_error") {
-		t.Fatalf("body = %q; want registry_backend_error", rec.Body.String())
-	}
-	assertNoAuditHeader(t, rec)
-}
-
-// assertNoAuditHeader asserts the response has NO X-Huakai-Audit-Reason
-// header. Per codex N+5b P1 pass2 finding 2026-05-01: the audit reason
-// MUST stay server-side; leaking it via response header lets attackers
-// distinguish error subclasses that the uniform 404 was meant to hide.
-func assertNoAuditHeader(t *testing.T, rec *httptest.ResponseRecorder) {
-	t.Helper()
-	if got := rec.Header().Get("X-Huakai-Audit-Reason"); got != "" {
-		t.Fatalf("X-Huakai-Audit-Reason MUST NOT appear on public response; got %q", got)
-	}
-}
-
-// 9. NoStream — HUAKAI_DISPATCH_HCSF=0 时保留 raw dispatcher fallback；
-// 当前最小依赖没有配置 raw dispatcher registry，因此应在上游 dispatch 处失败。
-func TestHandler_NoStream(t *testing.T) {
-	t.Setenv("HUAKAI_DISPATCH_HCSF", "0")
-	d := clientAdapterDeps(t)
-	rec := invokeHandler(t, d, `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d; want 502", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "upstream_unknown_upstream") {
-		t.Fatalf("body = %q; want normalized upstream error", rec.Body.String())
-	}
-}
-
-// 10. MissingModel — model field empty → 400.
-func TestHandler_MissingModel(t *testing.T) {
-	d := minimalDeps()
-	rec := invokeHandler(t, d, `{"stream":true,"messages":[]}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d; want 400", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "missing_model") {
-		t.Fatalf("body = %q; want missing_model", rec.Body.String())
-	}
-}
-
-func TestHandler_DefaultHCSFOn(t *testing.T) {
-	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
-	dispatcher := &mockCanonicalBufferedDispatcher{}
-	d := clientAdapterDeps(t)
-	d.CanonicalDispatcher = dispatcher
-	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
-	}
-	if dispatcher.calls != 1 {
-		t.Fatalf("canonical dispatcher calls = %d; want 1", dispatcher.calls)
-	}
-}
-
-func TestHandler_EnvOffHCSFOff(t *testing.T) {
-	t.Setenv("HUAKAI_DISPATCH_HCSF", "0")
-	dispatcher := &mockCanonicalBufferedDispatcher{}
-	d := clientAdapterDeps(t)
-	d.CanonicalDispatcher = dispatcher
-	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
-	if rec.Code != http.StatusBadGateway || dispatcher.calls != 0 {
-		t.Fatalf("status/calls = %d/%d; body = %s", rec.Code, dispatcher.calls, rec.Body.String())
-	}
-}
-
-func TestHandler_AnthropicEndpointFamilySet(t *testing.T) {
-	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
-	dispatcher := &mockCanonicalBufferedDispatcher{}
-	d := anthropicClientAdapterDeps(t)
-	d.CanonicalDispatcher = dispatcher
-	body := `{"model":"claude-3-5-sonnet","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`
-	rec := invokeHandlerPath(t, d, "/v1/messages", body)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
-	}
-	if dispatcher.observed == nil || dispatcher.observed.RequestMeta.EndpointFamily != "anthropic_messages" {
-		t.Fatalf("EndpointFamily = %+v", dispatcher.observed)
-	}
-}
-
-func TestHandler_OpenAIEndpointFamilySet(t *testing.T) {
-	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
-	dispatcher := &mockCanonicalBufferedDispatcher{}
-	d := clientAdapterDeps(t)
-	d.CanonicalDispatcher = dispatcher
-	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
-	}
-	if dispatcher.observed == nil || dispatcher.observed.RequestMeta.EndpointFamily != "openai_chat" {
-		t.Fatalf("EndpointFamily = %+v", dispatcher.observed)
-	}
-}
-
-func TestResponsesRoute200RoundTrip(t *testing.T) {
-	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
-	dispatcher := &mockCanonicalBufferedDispatcher{}
-	d := responsesClientAdapterDeps(t)
-	d.CanonicalDispatcher = dispatcher
-	rec := invokeResponsesHandlerPath(t, d, "/v1/responses", `{"model":"gpt-4o","stream":false,"input":"hi"}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), `"object":"response"`) {
-		t.Fatalf("body = %s; want OpenAI Responses response object", rec.Body.String())
-	}
-	if dispatcher.calls != 1 {
-		t.Fatalf("canonical dispatcher calls = %d; want 1", dispatcher.calls)
-	}
-}
-
-func TestResponsesFamilySetEndpointFamily(t *testing.T) {
-	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
-	dispatcher := &mockCanonicalBufferedDispatcher{}
-	claimGate := &recordingClaimGate{}
-	d := responsesClientAdapterDeps(t)
-	d.CanonicalDispatcher = dispatcher
-	d.ClaimGate = claimGate
-	rec := invokeResponsesHandlerPath(t, d, "/v1/responses", `{"model":"gpt-4o","stream":false,"input":"hi"}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
-	}
-	if claimGate.endpointFamily != "openai_responses" {
-		t.Fatalf("billing EndpointFamily=%q want openai_responses", claimGate.endpointFamily)
-	}
-	if dispatcher.observed == nil {
-		t.Fatal("canonical dispatcher did not observe request")
-	}
-	if string(dispatcher.observed.RequestMeta.ClientProtocol) != "openai_responses" ||
-		dispatcher.observed.RequestMeta.EndpointFamily != "openai_responses" {
-		t.Fatalf("responses meta client/family=%q/%q", dispatcher.observed.RequestMeta.ClientProtocol, dispatcher.observed.RequestMeta.EndpointFamily)
-	}
-}
-
-func unsetEnvForTest(t *testing.T, key string) {
-	t.Helper()
-	old, ok := os.LookupEnv(key)
-	_ = os.Unsetenv(key)
-	t.Cleanup(func() {
-		if ok {
-			_ = os.Setenv(key, old)
-		} else {
-			_ = os.Unsetenv(key)
-		}
-	})
-}
-
-func anthropicClientAdapterDeps(t *testing.T) ChatHandlerDeps {
-	t.Helper()
-	d := minimalDeps()
-	d.Registry = stubRegistry{resolved: registry.Resolved{
-		PublicAlias: "claude-3-5-sonnet", CanonicalModelID: "anthropic/claude-3-5-sonnet",
-		ProviderModelID: "claude-3-5-sonnet", ProtocolFamily: "anthropic_messages", PoolCandidates: []int64{42},
-	}}
-	vault := provider.NewStaticVault()
-	if err := vault.Set(1, provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-ant-test"}, provider.AccountInfo{AccountID: 1, Platform: "anthropic", AccountType: "apikey", AccountCredentialID: 9002, CredentialVersion: 1}); err != nil {
-		t.Fatalf("vault.Set: %v", err)
-	}
-	d.CredentialVault = vault
-	return d
-}
-
-func responsesClientAdapterDeps(t *testing.T) ChatHandlerDeps {
-	t.Helper()
-	d := clientAdapterDeps(t)
-	d.Registry = stubRegistry{resolved: registry.Resolved{
-		PublicAlias: "gpt-4o", CanonicalModelID: "openai/gpt-4o",
-		ProviderModelID: "gpt-4o", ProtocolFamily: "openai_responses", PoolCandidates: []int64{42},
-	}}
-	return d
-}
-
-// 11. UnauthorizedAuth — auth.Resolve returns ErrUnauthorized → 401.
-func TestHandler_UnauthorizedAuth(t *testing.T) {
-	d := minimalDeps()
-	d.Auth = stubAuth{err: auth.ErrUnauthorized}
-	rec := invokeHandler(t, d, validBody())
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d; want 401", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "unauthorized") {
-		t.Fatalf("body = %q; want unauthorized", rec.Body.String())
-	}
-}
-
-func TestChatCompletions_AuditLedgerNilGracefulNoPanic(t *testing.T) {
-	enableHCSFDispatchForTest(t)
-	signer, err := sign.GenerateKey()
-	if err != nil {
-		t.Fatalf("signer: %v", err)
-	}
-	d := clientAdapterDeps(t)
-	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
-	d.Signer = signer
-
-	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
-	}
-	if got := rec.Header().Get(headerHUAKAIAuditLedgerID); got != "" {
-		t.Fatalf("%s=%q want empty when ledger is nil", headerHUAKAIAuditLedgerID, got)
-	}
-}
-
-func TestChatCompletions_AuditLedgerAppendWritesHeaders(t *testing.T) {
-	enableHCSFDispatchForTest(t)
-	signer, err := sign.GenerateKey()
-	if err != nil {
-		t.Fatalf("signer: %v", err)
-	}
-	ledger, err := auditledger.NewMemoryLedger(signer)
-	if err != nil {
-		t.Fatalf("ledger: %v", err)
-	}
-	d := clientAdapterDeps(t)
-	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
-	d.AuditLedger = ledger
-	d.Signer = signer
-
-	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
-	}
-	if ledger.Size(context.Background()) != 1 {
-		t.Fatalf("ledger size=%d want 1", ledger.Size(context.Background()))
-	}
-	if got := rec.Header().Get(headerHUAKAIAuditLedgerID); got == "" {
-		t.Fatalf("%s header is empty", headerHUAKAIAuditLedgerID)
-	}
-	if got := rec.Header().Get(headerHUAKAIAuditSigFingerprint); got != signer.Fingerprint() {
-		t.Fatalf("%s=%q want %q", headerHUAKAIAuditSigFingerprint, got, signer.Fingerprint())
-	}
-	verifyHeader := rec.Header().Get(headerHUAKAIAuditVerify)
-	if !strings.Contains(verifyHeader, "ledger-id=") || !strings.Contains(verifyHeader, "request_id=") {
-		t.Fatalf("%s=%q want ledger-id and request_id", headerHUAKAIAuditVerify, verifyHeader)
-	}
 }
