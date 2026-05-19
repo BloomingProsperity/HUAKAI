@@ -106,22 +106,27 @@ ORDER BY capability;
 -- tenant-local even for global models). Slice 2 emits all candidates;
 -- Router selects index 0 only at L0 (AttemptBudget=1).
 SELECT
-    id,
-    pool_group_id,
-    priority,
-    weight,
-    selection_mode,
-    provider_model_id_override,
-    rpm_limit,
-    tpm_limit,
-    max_parallel_requests,
-    fallback_class,
-    reason
-FROM model_pool_bindings
-WHERE tenant_id = sqlc.arg(tenant_id)::bigint
-  AND model_id = sqlc.arg(model_id)::bigint
-  AND deleted_at IS NULL
-  AND enabled = true
-  AND (effective_from IS NULL OR effective_from <= now())
-  AND (effective_until IS NULL OR effective_until > now())
-ORDER BY priority ASC, id ASC;
+    mpb.id,
+    mpb.pool_group_id,
+    mpb.priority,
+    mpb.weight,
+    mpb.selection_mode,
+    mpb.provider_model_id_override,
+    mpb.rpm_limit,
+    mpb.tpm_limit,
+    mpb.max_parallel_requests,
+    mpb.fallback_class,
+    mpb.reason
+FROM model_pool_bindings mpb
+INNER JOIN pool_groups pg
+    ON pg.id = mpb.pool_group_id
+   AND pg.tenant_id = mpb.tenant_id
+   AND pg.enabled = true
+   AND pg.deleted_at IS NULL
+WHERE mpb.tenant_id = sqlc.arg(tenant_id)::bigint
+  AND mpb.model_id = sqlc.arg(model_id)::bigint
+  AND mpb.deleted_at IS NULL
+  AND mpb.enabled = true
+  AND (mpb.effective_from IS NULL OR mpb.effective_from <= now())
+  AND (mpb.effective_until IS NULL OR mpb.effective_until > now())
+ORDER BY mpb.priority ASC, mpb.id ASC;

@@ -581,7 +581,10 @@ SELECT
     pa.cap_queue_sticky,
     pa.cap_queue_fallback
 FROM provider_accounts pa
-INNER JOIN channels c ON c.id = pa.channel_id
+INNER JOIN channels c
+    ON c.id = pa.channel_id
+   AND c.enabled = true
+   AND c.deleted_at IS NULL
 WHERE pa.tenant_id = $1
   AND c.pool_group_id = $2
   AND c.tenant_id = $1

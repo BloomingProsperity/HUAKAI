@@ -350,3 +350,53 @@ func TestDBAccountSource_ListByPoolGroup(t *testing.T) {
 		t.Fatalf("expected LoadRate in (0,1) for in_flight=1/cap=4; got %v", got[secondAccountID].LoadRate)
 	}
 }
+
+func TestDBAccountSource_ListByPoolGroupSkipsDisabledOrDeletedChannels(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pgPool := openIntegrationPool(t, ctx)
+	seed := seedAdapterGraph(t, ctx, pgPool, "src-channel-lifecycle")
+
+	suffix := uuid.NewString()
+	for _, tc := range []struct {
+		name       string
+		channelSQL string
+	}{
+		{
+			name:       "disabled",
+			channelSQL: `INSERT INTO channels (tenant_id, pool_group_id, name, enabled) VALUES ($1, $2, $3, false) RETURNING id`,
+		},
+		{
+			name:       "deleted",
+			channelSQL: `INSERT INTO channels (tenant_id, pool_group_id, name, deleted_at) VALUES ($1, $2, $3, NOW()) RETURNING id`,
+		},
+	} {
+		var channelID int64
+		if err := pgPool.QueryRow(ctx, tc.channelSQL,
+			seed.tenantID, seed.poolGroupID, "ch-"+tc.name+"-"+suffix,
+		).Scan(&channelID); err != nil {
+			t.Fatalf("seed %s channel: %v", tc.name, err)
+		}
+		if _, err := pgPool.Exec(ctx,
+			`INSERT INTO provider_accounts (
+				tenant_id, provider_id, channel_id, name, account_type,
+				cap_concurrency, in_flight_count, priority
+			) VALUES ($1, $2, $3, $4, 'api_key', 4, 0, 1)`,
+			seed.tenantID, seed.providerID, channelID, "acct-"+tc.name+"-"+suffix,
+		); err != nil {
+			t.Fatalf("seed %s account: %v", tc.name, err)
+		}
+	}
+
+	src := NewDBAccountSource(dbbilling.New(pgPool))
+	accounts, err := src.ListAccounts(ctx, SelectionRequest{
+		TenantID:    seed.tenantID,
+		PoolGroupID: seed.poolGroupID,
+	})
+	if err != nil {
+		t.Fatalf("ListAccounts: %v", err)
+	}
+	if len(accounts) != 1 || accounts[0].ID != seed.providerAccountID {
+		t.Fatalf("accounts=%+v; want only account on enabled, live channel %d", accounts, seed.providerAccountID)
+	}
+}

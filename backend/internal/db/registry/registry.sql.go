@@ -162,25 +162,30 @@ func (q *Queries) ListModelCapabilities(ctx context.Context, arg ListModelCapabi
 
 const listModelPoolBindings = `-- name: ListModelPoolBindings :many
 SELECT
-    id,
-    pool_group_id,
-    priority,
-    weight,
-    selection_mode,
-    provider_model_id_override,
-    rpm_limit,
-    tpm_limit,
-    max_parallel_requests,
-    fallback_class,
-    reason
-FROM model_pool_bindings
-WHERE tenant_id = $1::bigint
-  AND model_id = $2::bigint
-  AND deleted_at IS NULL
-  AND enabled = true
-  AND (effective_from IS NULL OR effective_from <= now())
-  AND (effective_until IS NULL OR effective_until > now())
-ORDER BY priority ASC, id ASC
+    mpb.id,
+    mpb.pool_group_id,
+    mpb.priority,
+    mpb.weight,
+    mpb.selection_mode,
+    mpb.provider_model_id_override,
+    mpb.rpm_limit,
+    mpb.tpm_limit,
+    mpb.max_parallel_requests,
+    mpb.fallback_class,
+    mpb.reason
+FROM model_pool_bindings mpb
+INNER JOIN pool_groups pg
+    ON pg.id = mpb.pool_group_id
+   AND pg.tenant_id = mpb.tenant_id
+   AND pg.enabled = true
+   AND pg.deleted_at IS NULL
+WHERE mpb.tenant_id = $1::bigint
+  AND mpb.model_id = $2::bigint
+  AND mpb.deleted_at IS NULL
+  AND mpb.enabled = true
+  AND (mpb.effective_from IS NULL OR mpb.effective_from <= now())
+  AND (mpb.effective_until IS NULL OR mpb.effective_until > now())
+ORDER BY mpb.priority ASC, mpb.id ASC
 `
 
 type ListModelPoolBindingsParams struct {
