@@ -59,17 +59,25 @@ func newGatewayServer(listen string, handler http.Handler) *http.Server {
 }
 
 func serveGateway(ctx context.Context, srv *http.Server, rt *gatewayRuntime, cancel context.CancelFunc, logger *zap.Logger) error {
+	serveErrCh := make(chan error, 1)
 	go func() {
 		logger.Info("listening", zap.String("addr", srv.Addr))
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server error", zap.Error(err))
+			serveErrCh <- err
 			cancel()
 		}
 	}()
 
 	<-ctx.Done()
 	logger.Info("shutting down")
-	return shutdownGateway(srv, rt)
+	shutdownErr := shutdownGateway(srv, rt)
+	select {
+	case serveErr := <-serveErrCh:
+		return errors.Join(serveErr, shutdownErr)
+	default:
+		return shutdownErr
+	}
 }
 
 func shutdownGateway(srv *http.Server, rt *gatewayRuntime) error {
