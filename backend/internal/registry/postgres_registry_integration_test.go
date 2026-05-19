@@ -602,6 +602,41 @@ func TestPostgresRegistry_MultipleBindingsOrdered(t *testing.T) {
 	}
 }
 
+func TestPostgresRegistry_SkipsDisabledOrDeletedPoolGroups(t *testing.T) {
+	ctx := context.Background()
+	pool := openIntegrationPool(t, ctx)
+	f := newFixture(t, ctx, pool)
+
+	var disabledPG, deletedPG, activePG int64
+	if err := pool.QueryRow(ctx, `INSERT INTO pool_groups (tenant_id, name, enabled) VALUES ($1, $2, false) RETURNING id`,
+		f.tenantID, "pg-disabled-"+f.suffix).Scan(&disabledPG); err != nil {
+		t.Fatalf("disabled pool group: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO pool_groups (tenant_id, name, deleted_at) VALUES ($1, $2, NOW()) RETURNING id`,
+		f.tenantID, "pg-deleted-"+f.suffix).Scan(&deletedPG); err != nil {
+		t.Fatalf("deleted pool group: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO pool_groups (tenant_id, name) VALUES ($1, $2) RETURNING id`,
+		f.tenantID, "pg-active-"+f.suffix).Scan(&activePG); err != nil {
+		t.Fatalf("active pool group: %v", err)
+	}
+
+	mid := f.seedModel(modelOpts{})
+	f.seedAlias(aliasOpts{modelID: mid, publicAliasNormalized: "pool-lifecycle"})
+	f.seedBinding(bindingOpts{modelID: mid, poolGroupID: disabledPG, priority: 10})
+	f.seedBinding(bindingOpts{modelID: mid, poolGroupID: deletedPG, priority: 20})
+	f.seedBinding(bindingOpts{modelID: mid, poolGroupID: activePG, priority: 30})
+
+	r := NewPostgresRegistry(pool, nil)
+	got, err := r.ResolveModel(ctx, "pool-lifecycle", f.tenantID)
+	if err != nil {
+		t.Fatalf("ResolveModel: %v", err)
+	}
+	if len(got.PoolCandidates) != 1 || got.PoolCandidates[0] != activePG {
+		t.Fatalf("PoolCandidates=%v; want only active pool group %d", got.PoolCandidates, activePG)
+	}
+}
+
 // -----------------------------------------------------------------------------
 // Test 10 — CaseInsensitive
 // Alias seeded as "Claude-3-5-Sonnet" (display) / normalized lower.
