@@ -41,12 +41,10 @@ pub fn build_boring_connector(
             .map_err(BoringMimicryError::from_boring)?;
     }
 
-    let groups = openssl_curve_names_from_codes(&layout.supported_groups)?;
-    if !groups.is_empty() {
-        builder
-            .set_curves_list(&groups)
-            .map_err(BoringMimicryError::from_boring)?;
-    }
+    assert_client_hello_profile_supported_groups(
+        &profile.tls.supported_groups,
+        &layout.supported_groups,
+    )?;
     builder
         .set_client_hello_profile(
             &layout.cipher_suites,
@@ -128,6 +126,13 @@ pub enum BoringMimicryError {
     UnknownSignatureAlgorithm(u16),
     #[error("unknown TLS version code: 0x{0:04x}")]
     UnknownTlsVersion(u16),
+    #[error(
+        "client hello profile supported_groups mismatch: expected {expected:?}, actual {actual:?}"
+    )]
+    ClientHelloProfileGroupMismatch {
+        expected: Vec<u16>,
+        actual: Vec<u16>,
+    },
     #[error("ALPN protocol is empty")]
     EmptyAlpnProtocol,
     #[error("ALPN protocol too long: {0} bytes")]
@@ -269,11 +274,29 @@ fn is_tls13_cipher(code: u16) -> bool {
 }
 
 fn tls13_cipher_order_from_codes(codes: &[u16]) -> Vec<u16> {
-    codes.iter().copied().filter(|code| is_tls13_cipher(*code)).collect()
+    codes
+        .iter()
+        .copied()
+        .filter(|code| is_tls13_cipher(*code))
+        .collect()
 }
 
 fn is_signaling_cipher_suite_value(code: u16) -> bool {
     code == 0x00ff
+}
+
+fn assert_client_hello_profile_supported_groups(
+    expected: &[u16],
+    actual: &[u16],
+) -> Result<(), BoringMimicryError> {
+    if expected == actual {
+        return Ok(());
+    }
+
+    Err(BoringMimicryError::ClientHelloProfileGroupMismatch {
+        expected: expected.to_vec(),
+        actual: actual.to_vec(),
+    })
 }
 
 fn cipher_name(code: u16) -> Option<&'static str> {
@@ -349,8 +372,8 @@ fn group_name(code: u16) -> Option<&'static str> {
 }
 
 fn is_boring_curve_list_gap(code: u16) -> bool {
-    // Boring 5.1 当前公开 set_curves_list 在本验证环境拒绝 X448/FFDHE
-    // token；先跳过以暴露真实 wire 差异，避免 connector 构造阶段 panic。
+    // 仅保留给 legacy set_curves_list 转换测试；主路径已经由
+    // set_client_hello_profile 直接写 raw supported_groups。
     matches!(code, 0x001e | 0x0100..=0x0104)
 }
 
@@ -438,5 +461,50 @@ mod tests {
             openssl_sigalg_names_from_codes(&[0x0403, 0x0804, 0x081a, 0x0905]).unwrap(),
             "ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256"
         );
+    }
+
+    #[test]
+    fn at_fp_001_008_supported_groups_profile_path_keeps_exact_order() {
+        use crate::mimicry::profile::{BuiltinProfile, load_builtin_profile};
+
+        let mut profile = load_builtin_profile(BuiltinProfile::AnthropicClaudeCode).unwrap();
+
+        profile.tls.supported_groups = vec![0x001d, 0x0017];
+        let first = ClientHelloLayout::from_profile(&profile, None);
+        assert_client_hello_profile_supported_groups(
+            &profile.tls.supported_groups,
+            &first.supported_groups,
+        )
+        .unwrap();
+
+        profile.tls.supported_groups.clear();
+        let without_groups = ClientHelloLayout::from_profile(&profile, None);
+        assert_client_hello_profile_supported_groups(
+            &profile.tls.supported_groups,
+            &without_groups.supported_groups,
+        )
+        .unwrap();
+
+        profile.tls.supported_groups = vec![0x0018];
+        let second = ClientHelloLayout::from_profile(&profile, None);
+        assert_client_hello_profile_supported_groups(
+            &profile.tls.supported_groups,
+            &second.supported_groups,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn at_fp_001_008_supported_groups_profile_path_rejects_reorder() {
+        let error = assert_client_hello_profile_supported_groups(
+            &[0x11ec, 0x001d, 0x0017],
+            &[0x001d, 0x11ec, 0x0017],
+        )
+        .expect_err("supported_groups 重排必须被拦截");
+
+        assert!(matches!(
+            error,
+            BoringMimicryError::ClientHelloProfileGroupMismatch { .. }
+        ));
     }
 }
