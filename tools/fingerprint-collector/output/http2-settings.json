@@ -1,4 +1,0 @@
-{
-  "available": false,
-  "limitation_note": "HTTP/2 SETTINGS 帧在 TLS 记录层内部加密，无法通过被动 pcap 捕获。如需捕获 HTTP/2 SETTINGS，建议使用以下方案之一：(1) 由操作员自行配置 SSLKEYLOGFILE 环境变量后用 Wireshark 解密；(2) 在本机运行带 TLS 终止的透明代理（需操作员完全控制）。v1 不提供自动化支持；此字段为空是预期行为，不影响 JA3/JA4 指纹可用性。"
-}
