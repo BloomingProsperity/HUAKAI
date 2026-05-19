@@ -169,7 +169,7 @@ func ObserveByAccount(cacheCreation, cacheRead int64, accountID int64) {
 type CacheObservation struct {
 	TenantID      int64 // M5b: 必填; 0 时退化只走全局 + per-account counter, observer 静默跳过段
 	AccountID     int64
-	PrefixHash    string // proto.UpstreamState.PrefixHash 透传, 可能为空
+	PrefixHash    string // anthropic.UpstreamState.PrefixHash 透传, 可能为空
 	CacheCreation int64
 	CacheRead     int64
 }

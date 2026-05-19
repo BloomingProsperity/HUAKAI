@@ -1,15 +1,16 @@
-package proto
+package gemini
 
 import (
 	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"strings"
 	"testing"
 )
 
-var _ UpstreamAdapter = (*GeminiAdapter)(nil)
+var _ proto.UpstreamAdapter = (*Adapter)(nil)
 
 func TestGeminiAdapterHappyPathThreeChunks(t *testing.T) {
 	const fixture = `
@@ -48,7 +49,7 @@ data: {"candidates":[{"content":{"parts":[{"text":""}],"role":"model"},"index":0
 		t.Fatalf("accumulated content mismatch: %q", state.AccumulatedContent)
 	}
 	usageEvent := events[5]
-	if usageEvent.StopReason != CanonicalStopEndTurn {
+	if usageEvent.StopReason != proto.CanonicalStopEndTurn {
 		t.Fatalf("STOP should map to end_turn, got %q", usageEvent.StopReason)
 	}
 	if usageEvent.Usage == nil || usageEvent.Usage.InputTokens != 7 || usageEvent.Usage.OutputTokens != 13 || usageEvent.Usage.TotalTokens != 20 {
@@ -60,8 +61,8 @@ data: {"candidates":[{"content":{"parts":[{"text":""}],"role":"model"},"index":0
 }
 
 func TestGeminiAdapterFunctionCallPartToToolUseBlock(t *testing.T) {
-	adapter := &GeminiAdapter{}
-	state := &GeminiUpstreamState{}
+	adapter := &Adapter{}
+	state := &UpstreamState{}
 	payload := []byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"search","args":{"q":"x"}}}],"role":"model"},"index":0,"finishReason":"STOP"}],"modelVersion":"gemini-2.5-pro"}`)
 
 	out, losses, err := adapter.ProviderEventToCanonicalEvents(context.Background(), payload, state)
@@ -72,7 +73,7 @@ func TestGeminiAdapterFunctionCallPartToToolUseBlock(t *testing.T) {
 		t.Fatalf("functionCall should not emit losses: %+v", losses)
 	}
 	events := geminiAnyToCanonicalEvents(t, out)
-	var toolStart *CanonicalEvent
+	var toolStart *proto.CanonicalEvent
 	for i := range events {
 		if events[i].Type == "content_block_start" && events[i].ContentBlock != nil && events[i].ContentBlock.Type == "tool_use" {
 			toolStart = &events[i]
@@ -94,16 +95,16 @@ func TestGeminiAdapterFunctionCallPartToToolUseBlock(t *testing.T) {
 func TestGeminiAdapterFinishReasonMappings(t *testing.T) {
 	cases := []struct {
 		reason string
-		want   CanonicalStopReason
+		want   proto.CanonicalStopReason
 	}{
-		{reason: "STOP", want: CanonicalStopEndTurn},
-		{reason: "MAX_TOKENS", want: CanonicalStopMaxTokens},
-		{reason: "SAFETY", want: GeminiStopSafety},
+		{reason: "STOP", want: proto.CanonicalStopEndTurn},
+		{reason: "MAX_TOKENS", want: proto.CanonicalStopMaxTokens},
+		{reason: "SAFETY", want: StopSafety},
 	}
 	for _, tc := range cases {
 		t.Run(tc.reason, func(t *testing.T) {
-			adapter := &GeminiAdapter{}
-			state := &GeminiUpstreamState{}
+			adapter := &Adapter{}
+			state := &UpstreamState{}
 			payload := []byte(fmt.Sprintf(`{"candidates":[{"content":{"parts":[]},"index":0,"finishReason":%q}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":4,"totalTokenCount":7}}`, tc.reason))
 			out, losses, err := adapter.ProviderEventToCanonicalEvents(context.Background(), payload, state)
 			if err != nil {
@@ -113,7 +114,7 @@ func TestGeminiAdapterFinishReasonMappings(t *testing.T) {
 				t.Fatalf("known finishReason should not emit losses: %+v", losses)
 			}
 			events := geminiAnyToCanonicalEvents(t, out)
-			var got CanonicalStopReason
+			var got proto.CanonicalStopReason
 			for _, ev := range events {
 				if ev.Type == "message_delta" {
 					got = ev.StopReason
@@ -136,7 +137,7 @@ data: {"candidates":[{"content":
 	if len(losses) != 1 {
 		t.Fatalf("malformed JSON should emit one loss entry, got %+v", losses)
 	}
-	if losses[0].Feature != string(FeatureTextStreaming) {
+	if losses[0].Feature != string(proto.FeatureTextStreaming) {
 		t.Fatalf("malformed JSON loss feature mismatch: %+v", losses[0])
 	}
 	if got := strings.Join(geminiEventTypes(events), ","); got != "message_start,content_block_start,content_block_delta,content_block_stop,message_stop" {
@@ -145,8 +146,8 @@ data: {"candidates":[{"content":
 }
 
 func TestGeminiAdapterEmptyCandidatesSkipped(t *testing.T) {
-	adapter := &GeminiAdapter{}
-	state := &GeminiUpstreamState{}
+	adapter := &Adapter{}
+	state := &UpstreamState{}
 	out, losses, err := adapter.ProviderEventToCanonicalEvents(context.Background(), []byte(`{"modelVersion":"gemini-2.5-pro","usageMetadata":{"promptTokenCount":5,"cachedContentTokenCount":2,"totalTokenCount":5}}`), state)
 	if err != nil {
 		t.Fatalf("ProviderEventToCanonicalEvents: %v", err)
@@ -163,8 +164,8 @@ func TestGeminiAdapterEmptyCandidatesSkipped(t *testing.T) {
 }
 
 func TestGeminiAdapterMultiPartTextAndFunctionCall(t *testing.T) {
-	adapter := &GeminiAdapter{}
-	state := &GeminiUpstreamState{}
+	adapter := &Adapter{}
+	state := &UpstreamState{}
 	payload := []byte(`{"candidates":[{"content":{"parts":[{"text":"check "},{"functionCall":{"id":"func_deadbeef","name":"lookup","args":{"id":42}}}],"role":"model"},"index":0,"finishReason":"STOP"}]}`)
 
 	out, losses, err := adapter.ProviderEventToCanonicalEvents(context.Background(), payload, state)
@@ -188,8 +189,8 @@ func TestGeminiAdapterMultiPartTextAndFunctionCall(t *testing.T) {
 }
 
 func TestGeminiAdapterUsageCumulativeTracking(t *testing.T) {
-	adapter := &GeminiAdapter{}
-	state := &GeminiUpstreamState{}
+	adapter := &Adapter{}
+	state := &UpstreamState{}
 	chunks := []struct {
 		payload string
 		input   int
@@ -212,12 +213,12 @@ func TestGeminiAdapterUsageCumulativeTracking(t *testing.T) {
 }
 
 func TestGeminiAdapterStreamEndSentinelFinalizes(t *testing.T) {
-	adapter := &GeminiAdapter{}
-	state := &GeminiUpstreamState{}
+	adapter := &Adapter{}
+	state := &UpstreamState{}
 	if _, _, err := adapter.ProviderEventToCanonicalEvents(context.Background(), []byte(`{"candidates":[{"content":{"parts":[{"text":"open"}]},"index":0}]}`), state); err != nil {
 		t.Fatalf("ProviderEventToCanonicalEvents: %v", err)
 	}
-	out, losses, err := adapter.ProviderEventToCanonicalEvents(context.Background(), GeminiStreamEnd{}, state)
+	out, losses, err := adapter.ProviderEventToCanonicalEvents(context.Background(), StreamEnd{}, state)
 	if err != nil {
 		t.Fatalf("sentinel finalize: %v", err)
 	}
@@ -233,12 +234,12 @@ func TestGeminiAdapterStreamEndSentinelFinalizes(t *testing.T) {
 	}
 }
 
-func runGeminiGoldenSSE(t *testing.T, fixture string) ([]CanonicalEvent, []ProtocolLossEntry, *GeminiUpstreamState) {
+func runGeminiGoldenSSE(t *testing.T, fixture string) ([]proto.CanonicalEvent, []proto.ProtocolLossEntry, *UpstreamState) {
 	t.Helper()
-	adapter := &GeminiAdapter{}
-	state := &GeminiUpstreamState{}
-	var events []CanonicalEvent
-	var losses []ProtocolLossEntry
+	adapter := &Adapter{}
+	state := &UpstreamState{}
+	var events []proto.CanonicalEvent
+	var losses []proto.ProtocolLossEntry
 	for _, payload := range scanGeminiGoldenData(t, fixture) {
 		out, eventLosses, err := adapter.ProviderEventToCanonicalEvents(context.Background(), payload, state)
 		if err != nil {
@@ -295,11 +296,11 @@ func scanGeminiGoldenData(t *testing.T, fixture string) [][]byte {
 	return events
 }
 
-func geminiAnyToCanonicalEvents(t *testing.T, in []any) []CanonicalEvent {
+func geminiAnyToCanonicalEvents(t *testing.T, in []any) []proto.CanonicalEvent {
 	t.Helper()
-	out := make([]CanonicalEvent, 0, len(in))
+	out := make([]proto.CanonicalEvent, 0, len(in))
 	for _, item := range in {
-		ev, ok := item.(CanonicalEvent)
+		ev, ok := item.(proto.CanonicalEvent)
 		if !ok {
 			t.Fatalf("unexpected event type %T", item)
 		}
@@ -308,7 +309,7 @@ func geminiAnyToCanonicalEvents(t *testing.T, in []any) []CanonicalEvent {
 	return out
 }
 
-func geminiEventTypes(events []CanonicalEvent) []string {
+func geminiEventTypes(events []proto.CanonicalEvent) []string {
 	out := make([]string, 0, len(events))
 	for _, ev := range events {
 		out = append(out, ev.Type)
@@ -317,8 +318,8 @@ func geminiEventTypes(events []CanonicalEvent) []string {
 }
 
 func TestGeminiAdapterFunctionCallInputIsValidJSON(t *testing.T) {
-	adapter := &GeminiAdapter{}
-	state := &GeminiUpstreamState{}
+	adapter := &Adapter{}
+	state := &UpstreamState{}
 	out, _, err := adapter.ProviderEventToCanonicalEvents(context.Background(), []byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{"id":42}}}]},"index":0}]}`), state)
 	if err != nil {
 		t.Fatalf("ProviderEventToCanonicalEvents: %v", err)

@@ -1,14 +1,17 @@
-// anthropic_sse_passthrough_test.go — U7-D 测试：Anthropic adapter 接入
+// proto/anthropic/passthrough_test.go — U7-D 测试：anthropic.Adapter 接入
 // PassthroughEnvelope。verify envelope-level unknown 字段（如 Anthropic 加
 // 的 cache_creation_input_tokens / service_tier / system_fingerprint 等）
-// 透传到 CanonicalEvent.Passthrough。Bedrock-on-Anthropic（A4 BedrockEvent
-// StreamAdapter delegate）自动受益。
-package proto
+// 透传到 proto.CanonicalEvent.Passthrough。Bedrock-on-Anthropic（A4
+// bedrock.EventStreamAdapter delegate）自动受益。
+package anthropic_test
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto/bedrock"
 	"strings"
 	"testing"
 )
@@ -17,8 +20,8 @@ import (
 // 事件顶层 unknown 字段进 Passthrough（如 vendor 加 service_tier）。
 func TestAnthropic_MessageStart_PassthroughCarriesUnknownFields(t *testing.T) {
 	raw := []byte(`{"type":"message_start","message":{"id":"msg_x","model":"claude-3-7-sonnet"},"service_tier":"standard","custom_field":42}`)
-	adapter := &AnthropicAdapter{}
-	state := &UpstreamState{}
+	adapter := &anthropic.Adapter{}
+	state := &anthropic.UpstreamState{}
 	events, _, err := adapter.ProviderEventToCanonicalEvents(context.Background(), raw, state)
 	if err != nil {
 		t.Fatalf("err=%v", err)
@@ -26,7 +29,7 @@ func TestAnthropic_MessageStart_PassthroughCarriesUnknownFields(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("events=%d want 1", len(events))
 	}
-	ce := events[0].(CanonicalEvent)
+	ce := events[0].(proto.CanonicalEvent)
 	if ce.Passthrough == nil {
 		t.Fatal("Passthrough 不应 nil")
 	}
@@ -43,14 +46,14 @@ func TestAnthropic_MessageStart_PassthroughCarriesUnknownFields(t *testing.T) {
 // TestAnthropic_NoUnknown_PassthroughIsNil 既有路径不破。
 func TestAnthropic_NoUnknown_PassthroughIsNil(t *testing.T) {
 	raw := []byte(`{"type":"message_start","message":{"id":"y","model":"m"}}`)
-	adapter := &AnthropicAdapter{}
-	state := &UpstreamState{}
+	adapter := &anthropic.Adapter{}
+	state := &anthropic.UpstreamState{}
 	events, _, err := adapter.ProviderEventToCanonicalEvents(context.Background(), raw, state)
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
 	for i, e := range events {
-		if ce := e.(CanonicalEvent); ce.Passthrough != nil {
+		if ce := e.(proto.CanonicalEvent); ce.Passthrough != nil {
 			t.Errorf("event[%d].Passthrough 应为 nil，得 %+v", i, ce.Passthrough)
 		}
 	}
@@ -59,10 +62,10 @@ func TestAnthropic_NoUnknown_PassthroughIsNil(t *testing.T) {
 // TestAnthropic_NestedUnknownAtEnvelopeLevel 嵌套 unknown 保结构。
 func TestAnthropic_NestedUnknownAtEnvelopeLevel(t *testing.T) {
 	raw := []byte(`{"type":"message_start","message":{"id":"x"},"vendor_metadata":{"region":"us-west-2","tier":{"level":"premium"}}}`)
-	adapter := &AnthropicAdapter{}
-	state := &UpstreamState{}
+	adapter := &anthropic.Adapter{}
+	state := &anthropic.UpstreamState{}
 	events, _, _ := adapter.ProviderEventToCanonicalEvents(context.Background(), raw, state)
-	ce := events[0].(CanonicalEvent)
+	ce := events[0].(proto.CanonicalEvent)
 	if ce.Passthrough == nil {
 		t.Fatal("Passthrough 不应 nil")
 	}
@@ -80,18 +83,18 @@ func TestAnthropic_NestedUnknownAtEnvelopeLevel(t *testing.T) {
 }
 
 // TestBedrockOnAnthropic_PassthroughInheritsFromAnthropic Bedrock-on-Anthropic
-// adapter（A4）通过 delegate AnthropicAdapter，自动获得 passthrough 能力。
+// adapter（A4）通过 delegate anthropic.Adapter，自动获得 passthrough 能力。
 func TestBedrockOnAnthropic_PassthroughInheritsFromAnthropic(t *testing.T) {
 	// 模拟 Bedrock chunk 的 inner JSON（A3 scanner base64-decode 后的形态）
 	innerJSON := []byte(`{"type":"message_start","message":{"id":"msg_bedrock","model":"claude-3-7-sonnet"},"bedrock_specific_field":"new_value"}`)
 
-	adapter := NewBedrockEventStreamAdapter()
-	state := &UpstreamState{}
+	adapter := bedrock.NewEventStreamAdapter()
+	state := &anthropic.UpstreamState{}
 	events, _, err := adapter.ProviderEventToCanonicalEvents(context.Background(), innerJSON, state)
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
-	ce := events[0].(CanonicalEvent)
+	ce := events[0].(proto.CanonicalEvent)
 	if ce.Passthrough == nil {
 		t.Fatal("Bedrock delegate 应继承 passthrough 能力")
 	}
@@ -101,13 +104,13 @@ func TestBedrockOnAnthropic_PassthroughInheritsFromAnthropic(t *testing.T) {
 }
 
 // TestAnthropic_MergeIntoClientOutput end-to-end：上游 unknown → adapter →
-// CanonicalEvent → MergeExtrasInto → 客户端最终看到 vendor 字段。
+// proto.CanonicalEvent → proto.MergeExtrasInto → 客户端最终看到 vendor 字段。
 func TestAnthropic_MergeIntoClientOutput(t *testing.T) {
 	raw := []byte(`{"type":"message_start","message":{"id":"x","model":"claude-3-7"},"upstream_extra":"new_capability_v2"}`)
-	adapter := &AnthropicAdapter{}
-	state := &UpstreamState{}
+	adapter := &anthropic.Adapter{}
+	state := &anthropic.UpstreamState{}
 	events, _, _ := adapter.ProviderEventToCanonicalEvents(context.Background(), raw, state)
-	ce := events[0].(CanonicalEvent)
+	ce := events[0].(proto.CanonicalEvent)
 
 	// 模拟 ClientAdapter 的 typed marshal
 	clientTyped := map[string]any{
@@ -115,7 +118,7 @@ func TestAnthropic_MergeIntoClientOutput(t *testing.T) {
 		"message": map[string]any{"id": ce.MessageID, "model": ce.Model},
 	}
 	clientJSON, _ := json.Marshal(clientTyped)
-	merged, err := MergeExtrasInto(clientJSON, ce.Passthrough)
+	merged, err := proto.MergeExtrasInto(clientJSON, ce.Passthrough)
 	if err != nil {
 		t.Fatalf("merge err=%v", err)
 	}
@@ -132,13 +135,13 @@ func TestAnthropic_MergeIntoClientOutput(t *testing.T) {
 func TestAnthropic_MultiEventStream_OnlyFirstEventCarriesPassthrough(t *testing.T) {
 	// content_block_delta 单事件 + envelope-level unknown
 	raw := []byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"},"envelope_extra":"x"}`)
-	adapter := &AnthropicAdapter{}
-	state := &UpstreamState{}
+	adapter := &anthropic.Adapter{}
+	state := &anthropic.UpstreamState{}
 	events, _, _ := adapter.ProviderEventToCanonicalEvents(context.Background(), raw, state)
 	if len(events) != 1 {
 		t.Fatalf("events=%d", len(events))
 	}
-	ce := events[0].(CanonicalEvent)
+	ce := events[0].(proto.CanonicalEvent)
 	if ce.Passthrough == nil || ce.Passthrough.Extra["envelope_extra"] == nil {
 		t.Errorf("第一条 event 应含 envelope_extra：%+v", ce.Passthrough)
 	}

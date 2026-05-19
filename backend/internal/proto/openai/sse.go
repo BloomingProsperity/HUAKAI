@@ -1,4 +1,4 @@
-package proto
+package openai
 
 import (
 	"bytes"
@@ -10,19 +10,20 @@ import (
 	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
 
-// OpenAIAdapter 将 OpenAI Chat Completions SSE 转换为 HCSF 事件。
-type OpenAIAdapter struct{}
+// Adapter 将 OpenAI Chat Completions SSE 转换为 proto.HCSF 事件。
+type Adapter struct{}
 
-// OpenAISSEEvent 是上游 SSE 扫描器可传入的最小事件形状。
-type OpenAISSEEvent struct {
+// SSEEvent 是上游 SSE 扫描器可传入的最小事件形状。
+type SSEEvent struct {
 	Type string `json:"type,omitempty"`
 	Data []byte `json:"data"`
 }
 
-// OpenAIUpstreamState 累计 OpenAI 流式 chunk 的跨事件状态。
-type OpenAIUpstreamState struct {
+// UpstreamState 累计 OpenAI 流式 chunk 的跨事件状态。
+type UpstreamState struct {
 	MessageID           string
 	Model               string
 	MessageStarted      bool
@@ -32,12 +33,12 @@ type OpenAIUpstreamState struct {
 	TextBlockIndex      int
 	NextBlockIndex      int
 	AccumulatedContent  string
-	AccumulatedUsage    CanonicalUsage
+	AccumulatedUsage    proto.CanonicalUsage
 	DeliveredChunkCount int64
 	UsageEmitted        bool
-	LastStopReason      CanonicalStopReason
+	LastStopReason      proto.CanonicalStopReason
 	RawFinishReason     string
-	ToolCalls           map[int]*OpenAIToolCallState
+	ToolCalls           map[int]*ToolCallState
 	// AccountID（Track P）: forwarder 注入. cachemetrics.ObserveByAccount 用。
 	AccountID int64
 	// PrefixHash（PASR-lite A4）: forwarder 注入 ForwardRequest.SessionHash;
@@ -47,8 +48,8 @@ type OpenAIUpstreamState struct {
 	TenantID int64
 }
 
-// OpenAIToolCallState 累计同一个 tool_call.index 的增量内容。
-type OpenAIToolCallState struct {
+// ToolCallState 累计同一个 tool_call.index 的增量内容。
+type ToolCallState struct {
 	Index       int
 	BlockIndex  int
 	ID          string
@@ -99,7 +100,7 @@ type openAIUsage struct {
 	TotalTokens      int `json:"total_tokens,omitempty"`
 	// OpenAI prompt caching: usage.prompt_tokens_details.cached_tokens
 	// 表示该请求命中缓存的 prompt token 数。OpenAI 没有"创建缓存"的概念
-	// （implicit caching），只暴露读命中。映射到 CanonicalUsage.CacheReadInputTokens。
+	// （implicit caching），只暴露读命中。映射到 proto.CanonicalUsage.CacheReadInputTokens。
 	// (sonnet F4 MEDIUM 修复: 缺失 OpenAI cache 观测)
 	PromptTokensDetails *openAIPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
 }
@@ -140,19 +141,19 @@ type openAIResponseFunction struct {
 	Arguments string `json:"arguments,omitempty"`
 }
 
-func (a *OpenAIAdapter) CanonicalToProviderRequest(ctx context.Context, canonical *HCSF) ([]byte, []ProtocolLossEntry, error) {
+func (a *Adapter) CanonicalToProviderRequest(ctx context.Context, canonical *proto.HCSF) ([]byte, []proto.ProtocolLossEntry, error) {
 	_ = ctx
 	_ = canonical
-	return nil, nil, ErrNotImplemented
+	return nil, nil, proto.ErrNotImplemented
 }
 
-func (a *OpenAIAdapter) ProviderResponseToCanonical(ctx context.Context, raw []byte) (*HCSF, []ProtocolLossEntry, error) {
+func (a *Adapter) ProviderResponseToCanonical(ctx context.Context, raw []byte) (*proto.HCSF, []proto.ProtocolLossEntry, error) {
 	_ = ctx
 	resp, losses, err := openAIResponseToCanonicalResponse(raw)
 	if err != nil {
 		return nil, losses, err
 	}
-	// P-0c-C D-FailLoud: 之前返回 `&HCSF{}` 零值会让 caller 误以为成功——
+	// P-0c-C D-FailLoud: 之前返回 `&proto.HCSF{}` 零值会让 caller 误以为成功——
 	// envelope.Version 空字符串穿过 alias sunset 后没有任何下游能识别这是
 	// 半构造态。改为返回带 Version + BufferedResponse 的最小合法 envelope。
 	//
@@ -165,18 +166,18 @@ func (a *OpenAIAdapter) ProviderResponseToCanonical(ctx context.Context, raw []b
 	// 调用方建议：先 ValidateEnvelopeVersionGuard 守边界，需要完整 INV
 	// 校验时（debug build / fixture 入口）走 ValidateEnvelopeDebug。
 	bufferedResp := resp
-	env := &HCSF{
-		Version:          HCSFVersion,
+	env := &proto.HCSF{
+		Version:          proto.HCSFVersion,
 		BufferedResponse: &bufferedResp,
 	}
 	return env, losses, nil
 }
 
-func (a *OpenAIAdapter) ProviderEventToCanonicalEvents(ctx context.Context, providerEvt any, state any) ([]any, []ProtocolLossEntry, error) {
+func (a *Adapter) ProviderEventToCanonicalEvents(ctx context.Context, providerEvt any, state any) ([]any, []proto.ProtocolLossEntry, error) {
 	_ = ctx
-	st, ok := state.(*OpenAIUpstreamState)
+	st, ok := state.(*UpstreamState)
 	if !ok {
-		return nil, nil, fmt.Errorf("proto: expected *OpenAIUpstreamState")
+		return nil, nil, fmt.Errorf("proto: expected *UpstreamState")
 	}
 	data, err := coerceOpenAISSEData(providerEvt)
 	if err != nil {
@@ -190,11 +191,11 @@ func (a *OpenAIAdapter) ProviderEventToCanonicalEvents(ctx context.Context, prov
 	return out, losses, nil
 }
 
-func (a *OpenAIAdapter) FinalizeUpstreamStream(ctx context.Context, state any) ([]any, error) {
+func (a *Adapter) FinalizeUpstreamStream(ctx context.Context, state any) ([]any, error) {
 	_ = ctx
-	st, ok := state.(*OpenAIUpstreamState)
+	st, ok := state.(*UpstreamState)
 	if !ok {
-		return nil, fmt.Errorf("proto: expected *OpenAIUpstreamState")
+		return nil, fmt.Errorf("proto: expected *UpstreamState")
 	}
 	events, _ := finalizeOpenAIState(st, false)
 	out := make([]any, len(events))
@@ -204,7 +205,7 @@ func (a *OpenAIAdapter) FinalizeUpstreamStream(ctx context.Context, state any) (
 	return out, nil
 }
 
-func (a *OpenAIAdapter) providerDataToCanonicalEvents(data []byte, state *OpenAIUpstreamState) ([]CanonicalEvent, []ProtocolLossEntry) {
+func (a *Adapter) providerDataToCanonicalEvents(data []byte, state *UpstreamState) ([]proto.CanonicalEvent, []proto.ProtocolLossEntry) {
 	payload := strings.TrimSpace(string(data))
 	if payload == "" {
 		return nil, nil
@@ -213,22 +214,22 @@ func (a *OpenAIAdapter) providerDataToCanonicalEvents(data []byte, state *OpenAI
 		return finalizeOpenAIState(state, true)
 	}
 
-	// U7-C：用 UnmarshalWithExtras 同时拿 known 字段 + 上游 unknown 字段
+	// U7-C：用 proto.UnmarshalWithExtras 同时拿 known 字段 + 上游 unknown 字段
 	// （system_fingerprint / service_tier / logprobs / prompt_filter_results 等）。
 	// 同一个上游 chunk 可能拆成多条 canonical event；extras 必须附到每条
 	// event，避免只有第一条携带而后续可序列化事件丢字段。
 	var chunk openAIChatCompletionChunk
-	var env PassthroughEnvelope
-	if err := UnmarshalWithExtras([]byte(payload), &chunk, &env); err != nil {
-		loss := newLossEntry(FeatureTextStreaming, DirectionUpstreamToCanonical, VerdictLossy, "malformed OpenAI SSE JSON chunk skipped")
-		return nil, []ProtocolLossEntry{loss}
+	var env proto.PassthroughEnvelope
+	if err := proto.UnmarshalWithExtras([]byte(payload), &chunk, &env); err != nil {
+		loss := proto.NewLossEntry(proto.FeatureTextStreaming, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "malformed OpenAI SSE JSON chunk skipped")
+		return nil, []proto.ProtocolLossEntry{loss}
 	}
 	events, losses := openAIChunkToCanonicalEvents(chunk, state)
-	events = attachPassthroughToEvents(events, env)
+	events = attachPassthrough(events, env)
 	return events, losses
 }
 
-func openAIChunkToCanonicalEvents(chunk openAIChatCompletionChunk, state *OpenAIUpstreamState) ([]CanonicalEvent, []ProtocolLossEntry) {
+func openAIChunkToCanonicalEvents(chunk openAIChatCompletionChunk, state *UpstreamState) ([]proto.CanonicalEvent, []proto.ProtocolLossEntry) {
 	ensureOpenAIState(state)
 	if chunk.ID != "" {
 		state.MessageID = chunk.ID
@@ -237,8 +238,8 @@ func openAIChunkToCanonicalEvents(chunk openAIChatCompletionChunk, state *OpenAI
 		state.Model = chunk.Model
 	}
 
-	var events []CanonicalEvent
-	var losses []ProtocolLossEntry
+	var events []proto.CanonicalEvent
+	var losses []proto.ProtocolLossEntry
 	usageUpdated := updateOpenAIUsage(state, chunk.Usage)
 
 	if len(chunk.Choices) == 0 {
@@ -255,10 +256,10 @@ func openAIChunkToCanonicalEvents(chunk openAIChatCompletionChunk, state *OpenAI
 			events = append(events, ensureOpenAITextBlock(state)...)
 			state.AccumulatedContent += *choice.Delta.Content
 			state.DeliveredChunkCount++
-			events = append(events, CanonicalEvent{
+			events = append(events, proto.CanonicalEvent{
 				Type:  "content_block_delta",
 				Index: state.TextBlockIndex,
-				Delta: &CanonicalContentDelta{Type: "text_delta", Text: *choice.Delta.Content},
+				Delta: &proto.CanonicalContentDelta{Type: "text_delta", Text: *choice.Delta.Content},
 			})
 		}
 
@@ -272,13 +273,13 @@ func openAIChunkToCanonicalEvents(chunk openAIChatCompletionChunk, state *OpenAI
 			state.RawFinishReason = *choice.FinishReason
 			state.LastStopReason = mapOpenAIStopReason(*choice.FinishReason)
 			events = appendOpenAIBlockStops(events, state)
-			usage := (*CanonicalUsage)(nil)
+			usage := (*proto.CanonicalUsage)(nil)
 			if usageUpdated && usageHasValue(state.AccumulatedUsage) {
 				value := state.AccumulatedUsage
 				usage = &value
 				state.UsageEmitted = true
 			}
-			events = append(events, CanonicalEvent{
+			events = append(events, proto.CanonicalEvent{
 				Type:       "message_delta",
 				Usage:      usage,
 				StopReason: state.LastStopReason,
@@ -294,25 +295,25 @@ func openAIChunkToCanonicalEvents(chunk openAIChatCompletionChunk, state *OpenAI
 	return events, losses
 }
 
-func ensureOpenAIState(state *OpenAIUpstreamState) {
+func ensureOpenAIState(state *UpstreamState) {
 	if state.ToolCalls == nil {
-		state.ToolCalls = map[int]*OpenAIToolCallState{}
+		state.ToolCalls = map[int]*ToolCallState{}
 	}
 }
 
-func ensureOpenAIMessageStart(state *OpenAIUpstreamState) []CanonicalEvent {
+func ensureOpenAIMessageStart(state *UpstreamState) []proto.CanonicalEvent {
 	if state.MessageStarted {
 		return nil
 	}
 	state.MessageStarted = true
-	return []CanonicalEvent{{
+	return []proto.CanonicalEvent{{
 		Type:      "message_start",
 		MessageID: state.MessageID,
 		Model:     state.Model,
 	}}
 }
 
-func ensureOpenAITextBlock(state *OpenAIUpstreamState) []CanonicalEvent {
+func ensureOpenAITextBlock(state *UpstreamState) []proto.CanonicalEvent {
 	if state.TextBlockStarted {
 		state.TextBlockOpen = true
 		return nil
@@ -321,17 +322,17 @@ func ensureOpenAITextBlock(state *OpenAIUpstreamState) []CanonicalEvent {
 	state.NextBlockIndex++
 	state.TextBlockStarted = true
 	state.TextBlockOpen = true
-	block := CanonicalContentBlock{Type: "text"}
-	return []CanonicalEvent{{
+	block := proto.CanonicalContentBlock{Type: "text"}
+	return []proto.CanonicalEvent{{
 		Type:         "content_block_start",
 		Index:        state.TextBlockIndex,
 		ContentBlock: &block,
 	}}
 }
 
-func openAIToolCallDeltaEvents(calls []openAIStreamToolCall, state *OpenAIUpstreamState) ([]CanonicalEvent, []ProtocolLossEntry) {
-	var events []CanonicalEvent
-	var losses []ProtocolLossEntry
+func openAIToolCallDeltaEvents(calls []openAIStreamToolCall, state *UpstreamState) ([]proto.CanonicalEvent, []proto.ProtocolLossEntry) {
+	var events []proto.CanonicalEvent
+	var losses []proto.ProtocolLossEntry
 	for _, delta := range calls {
 		call := ensureOpenAIToolCallState(delta.Index, state)
 		if delta.ID != "" {
@@ -349,8 +350,8 @@ func openAIToolCallDeltaEvents(calls []openAIStreamToolCall, state *OpenAIUpstre
 		if !call.Started {
 			call.Started = true
 			call.Open = true
-			block := CanonicalContentBlock{Type: "tool_use", CallID: call.CanonicalID, Name: call.Name}
-			events = append(events, CanonicalEvent{
+			block := proto.CanonicalContentBlock{Type: "tool_use", CallID: call.CanonicalID, Name: call.Name}
+			events = append(events, proto.CanonicalEvent{
 				Type:         "content_block_start",
 				Index:        call.BlockIndex,
 				ContentBlock: &block,
@@ -359,10 +360,10 @@ func openAIToolCallDeltaEvents(calls []openAIStreamToolCall, state *OpenAIUpstre
 		if delta.Function.Arguments != nil && *delta.Function.Arguments != "" {
 			call.Arguments += *delta.Function.Arguments
 			state.DeliveredChunkCount++
-			events = append(events, CanonicalEvent{
+			events = append(events, proto.CanonicalEvent{
 				Type:  "content_block_delta",
 				Index: call.BlockIndex,
-				Delta: &CanonicalContentDelta{
+				Delta: &proto.CanonicalContentDelta{
 					Type:        "tool_input_delta",
 					PartialJSON: json.RawMessage(strconv.Quote(*delta.Function.Arguments)),
 				},
@@ -372,20 +373,20 @@ func openAIToolCallDeltaEvents(calls []openAIStreamToolCall, state *OpenAIUpstre
 	return events, losses
 }
 
-func ensureOpenAIToolCallState(index int, state *OpenAIUpstreamState) *OpenAIToolCallState {
+func ensureOpenAIToolCallState(index int, state *UpstreamState) *ToolCallState {
 	ensureOpenAIState(state)
 	if call, ok := state.ToolCalls[index]; ok {
 		return call
 	}
-	call := &OpenAIToolCallState{Index: index, BlockIndex: state.NextBlockIndex}
+	call := &ToolCallState{Index: index, BlockIndex: state.NextBlockIndex}
 	state.NextBlockIndex++
 	state.ToolCalls[index] = call
 	return call
 }
 
-func appendOpenAIBlockStops(events []CanonicalEvent, state *OpenAIUpstreamState) []CanonicalEvent {
+func appendOpenAIBlockStops(events []proto.CanonicalEvent, state *UpstreamState) []proto.CanonicalEvent {
 	if state.TextBlockOpen {
-		events = append(events, CanonicalEvent{Type: "content_block_stop", Index: state.TextBlockIndex})
+		events = append(events, proto.CanonicalEvent{Type: "content_block_stop", Index: state.TextBlockIndex})
 		state.TextBlockOpen = false
 	}
 	if len(state.ToolCalls) == 0 {
@@ -399,23 +400,23 @@ func appendOpenAIBlockStops(events []CanonicalEvent, state *OpenAIUpstreamState)
 	for _, idx := range indexes {
 		call := state.ToolCalls[idx]
 		if call.Open {
-			events = append(events, CanonicalEvent{Type: "content_block_stop", Index: call.BlockIndex})
+			events = append(events, proto.CanonicalEvent{Type: "content_block_stop", Index: call.BlockIndex})
 			call.Open = false
 		}
 	}
 	return events
 }
 
-func finalizeOpenAIState(state *OpenAIUpstreamState, fromDone bool) ([]CanonicalEvent, []ProtocolLossEntry) {
+func finalizeOpenAIState(state *UpstreamState, fromDone bool) ([]proto.CanonicalEvent, []proto.ProtocolLossEntry) {
 	ensureOpenAIState(state)
 	if state.Terminated {
 		if fromDone {
-			loss := newLossEntry(FeatureTextStreaming, DirectionUpstreamToCanonical, VerdictLossy, "duplicate OpenAI [DONE] marker skipped")
-			return nil, []ProtocolLossEntry{loss}
+			loss := proto.NewLossEntry(proto.FeatureTextStreaming, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "duplicate OpenAI [DONE] marker skipped")
+			return nil, []proto.ProtocolLossEntry{loss}
 		}
 		return nil, nil
 	}
-	var events []CanonicalEvent
+	var events []proto.CanonicalEvent
 	events = appendOpenAIBlockStops(events, state)
 	if usageHasValue(state.AccumulatedUsage) && !state.UsageEmitted {
 		events = append(events, openAIUsageDeltaEvent(state))
@@ -426,16 +427,16 @@ func finalizeOpenAIState(state *OpenAIUpstreamState, fromDone bool) ([]Canonical
 	// 有 read 概念(无 creation), 所以传 0 给 creation. Observe 内置 0/0
 	// short-circuit。WithPrefix 变体让 PASR observer 也收 read 命中事件。
 	cachemetrics.ObserveByAccountWithPrefix(0, int64(state.AccumulatedUsage.CacheReadInputTokens), state.TenantID, state.AccountID, state.PrefixHash)
-	events = append(events, CanonicalEvent{Type: "message_stop"})
+	events = append(events, proto.CanonicalEvent{Type: "message_stop"})
 	return events, nil
 }
 
-func openAIUsageDeltaEvent(state *OpenAIUpstreamState) CanonicalEvent {
+func openAIUsageDeltaEvent(state *UpstreamState) proto.CanonicalEvent {
 	usage := state.AccumulatedUsage
-	return CanonicalEvent{Type: "message_delta", Usage: &usage, StopReason: state.LastStopReason}
+	return proto.CanonicalEvent{Type: "message_delta", Usage: &usage, StopReason: state.LastStopReason}
 }
 
-func updateOpenAIUsage(state *OpenAIUpstreamState, usage *openAIUsage) bool {
+func updateOpenAIUsage(state *UpstreamState, usage *openAIUsage) bool {
 	if usage == nil {
 		return false
 	}
@@ -443,8 +444,8 @@ func updateOpenAIUsage(state *OpenAIUpstreamState, usage *openAIUsage) bool {
 	return true
 }
 
-func (u openAIUsage) canonical() CanonicalUsage {
-	out := CanonicalUsage{
+func (u openAIUsage) canonical() proto.CanonicalUsage {
+	out := proto.CanonicalUsage{
 		InputTokens:  u.PromptTokens,
 		OutputTokens: u.CompletionTokens,
 		TotalTokens:  u.TotalTokens,
@@ -459,47 +460,47 @@ func (u openAIUsage) canonical() CanonicalUsage {
 	return out
 }
 
-func usageHasValue(usage CanonicalUsage) bool {
+func usageHasValue(usage proto.CanonicalUsage) bool {
 	return usage.InputTokens != 0 || usage.OutputTokens != 0 || usage.TotalTokens != 0
 }
 
-func canonicalOpenAICallID(upstreamID string) (string, []ProtocolLossEntry) {
+func canonicalOpenAICallID(upstreamID string) (string, []proto.ProtocolLossEntry) {
 	if upstreamID == "" {
 		return "", nil
 	}
-	callID, err := ToCanonicalCallID(upstreamID, UpstreamProtocolOpenAI)
+	callID, err := proto.ToCanonicalCallID(upstreamID, proto.UpstreamProtocolOpenAI)
 	if err != nil {
-		loss := newLossEntry(FeatureToolUse, DirectionUpstreamToCanonical, VerdictLossy, "malformed OpenAI tool call identifier")
-		return "", []ProtocolLossEntry{loss}
+		loss := proto.NewLossEntry(proto.FeatureToolUse, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "malformed OpenAI tool call identifier")
+		return "", []proto.ProtocolLossEntry{loss}
 	}
 	return callID, nil
 }
 
-func mapOpenAIStopReason(reason string) CanonicalStopReason {
+func mapOpenAIStopReason(reason string) proto.CanonicalStopReason {
 	switch reason {
 	case "", "stop":
-		return CanonicalStopEndTurn
+		return proto.CanonicalStopEndTurn
 	case "length":
-		return CanonicalStopMaxTokens
+		return proto.CanonicalStopMaxTokens
 	case "tool_calls", "function_call":
-		return CanonicalStopToolUse
+		return proto.CanonicalStopToolUse
 	case "content_filter":
-		return CanonicalStopRefusal
+		return proto.CanonicalStopRefusal
 	default:
-		return CanonicalStopUnknown
+		return proto.CanonicalStopUnknown
 	}
 }
 
-func openAIStopLoss(reason string) []ProtocolLossEntry {
-	if reason == "" || mapOpenAIStopReason(reason) != CanonicalStopUnknown {
+func openAIStopLoss(reason string) []proto.ProtocolLossEntry {
+	if reason == "" || mapOpenAIStopReason(reason) != proto.CanonicalStopUnknown {
 		return nil
 	}
-	return []ProtocolLossEntry{newLossEntry(FeatureMaxTokensFinishReason, DirectionUpstreamToCanonical, VerdictLossy, "unknown OpenAI finish_reason mapped to canonical unknown")}
+	return []proto.ProtocolLossEntry{proto.NewLossEntry(proto.FeatureMaxTokensFinishReason, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "unknown OpenAI finish_reason mapped to canonical unknown")}
 }
 
 func coerceOpenAISSEData(v any) ([]byte, error) {
 	switch evt := v.(type) {
-	case OpenAISSEEvent:
+	case SSEEvent:
 		return bytes.TrimSpace(evt.Data), nil
 	case json.RawMessage:
 		return extractOpenAISSEData(evt), nil
@@ -508,7 +509,7 @@ func coerceOpenAISSEData(v any) ([]byte, error) {
 	case string:
 		return extractOpenAISSEData([]byte(evt)), nil
 	default:
-		return nil, fmt.Errorf("proto: expected OpenAISSEEvent, []byte, or string")
+		return nil, fmt.Errorf("proto: expected SSEEvent, []byte, or string")
 	}
 }
 
@@ -541,16 +542,16 @@ func extractOpenAISSEData(raw []byte) []byte {
 	return trimmed
 }
 
-func openAIResponseToCanonicalResponse(raw []byte) (CanonicalResponse, []ProtocolLossEntry, error) {
-	// U7-C：non-streaming 响应路径也走 UnmarshalWithExtras，把顶层 unknown
-	// 字段塞进 CanonicalResponse.Passthrough（system_fingerprint /
+func openAIResponseToCanonicalResponse(raw []byte) (proto.CanonicalResponse, []proto.ProtocolLossEntry, error) {
+	// U7-C：non-streaming 响应路径也走 proto.UnmarshalWithExtras，把顶层 unknown
+	// 字段塞进 proto.CanonicalResponse.Passthrough（system_fingerprint /
 	// service_tier 等同样会出现在 chat.completion 响应顶层）。
 	var resp openAIChatCompletionResponse
-	var env PassthroughEnvelope
-	if err := UnmarshalWithExtras(raw, &resp, &env); err != nil {
-		return CanonicalResponse{}, nil, err
+	var env proto.PassthroughEnvelope
+	if err := proto.UnmarshalWithExtras(raw, &resp, &env); err != nil {
+		return proto.CanonicalResponse{}, nil, err
 	}
-	out := CanonicalResponse{ID: resp.ID, Model: resp.Model}
+	out := proto.CanonicalResponse{ID: resp.ID, Model: resp.Model}
 	if len(env.Extra) > 0 {
 		out.Passthrough = &env
 	}
@@ -567,7 +568,7 @@ func openAIResponseToCanonicalResponse(raw []byte) (CanonicalResponse, []Protoco
 	if text, textLosses := openAIResponseText(choice.Message.Content); text != "" || len(textLosses) > 0 {
 		losses = append(losses, textLosses...)
 		if text != "" {
-			out.Content = append(out.Content, CanonicalContentBlock{Type: "text", Text: text})
+			out.Content = append(out.Content, proto.CanonicalContentBlock{Type: "text", Text: text})
 		}
 	}
 	for _, tool := range choice.Message.ToolCalls {
@@ -576,9 +577,9 @@ func openAIResponseToCanonicalResponse(raw []byte) (CanonicalResponse, []Protoco
 		input := json.RawMessage(tool.Function.Arguments)
 		if !json.Valid(input) {
 			input = json.RawMessage(strconv.Quote(tool.Function.Arguments))
-			losses = append(losses, newLossEntry(FeatureToolUse, DirectionUpstreamToCanonical, VerdictLossy, "OpenAI tool arguments were not valid JSON"))
+			losses = append(losses, proto.NewLossEntry(proto.FeatureToolUse, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "OpenAI tool arguments were not valid JSON"))
 		}
-		out.Content = append(out.Content, CanonicalContentBlock{
+		out.Content = append(out.Content, proto.CanonicalContentBlock{
 			Type:   "tool_use",
 			CallID: callID,
 			Name:   tool.Function.Name,
@@ -588,7 +589,7 @@ func openAIResponseToCanonicalResponse(raw []byte) (CanonicalResponse, []Protoco
 	return out, losses, nil
 }
 
-func openAIResponseText(raw json.RawMessage) (string, []ProtocolLossEntry) {
+func openAIResponseText(raw json.RawMessage) (string, []proto.ProtocolLossEntry) {
 	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return "", nil
 	}
@@ -602,11 +603,11 @@ func openAIResponseText(raw json.RawMessage) (string, []ProtocolLossEntry) {
 		Refusal string `json:"refusal,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &parts); err != nil {
-		loss := newLossEntry(FeatureTextStreaming, DirectionUpstreamToCanonical, VerdictLossy, "OpenAI response content shape skipped")
-		return "", []ProtocolLossEntry{loss}
+		loss := proto.NewLossEntry(proto.FeatureTextStreaming, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "OpenAI response content shape skipped")
+		return "", []proto.ProtocolLossEntry{loss}
 	}
 	var b strings.Builder
-	var losses []ProtocolLossEntry
+	var losses []proto.ProtocolLossEntry
 	for _, part := range parts {
 		switch part.Type {
 		case "text":
@@ -614,10 +615,10 @@ func openAIResponseText(raw json.RawMessage) (string, []ProtocolLossEntry) {
 		case "refusal":
 			b.WriteString(part.Refusal)
 		default:
-			losses = append(losses, newLossEntry(FeatureTextStreaming, DirectionUpstreamToCanonical, VerdictLossy, "unknown OpenAI response content part skipped"))
+			losses = append(losses, proto.NewLossEntry(proto.FeatureTextStreaming, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "unknown OpenAI response content part skipped"))
 		}
 	}
 	return b.String(), losses
 }
 
-var _ UpstreamAdapter = (*OpenAIAdapter)(nil)
+var _ proto.UpstreamAdapter = (*Adapter)(nil)

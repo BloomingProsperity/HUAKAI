@@ -2,10 +2,10 @@
 // 链路 → forwarder pipeline → 客户端透传或 canonical event 翻译。
 //
 // 链路覆盖：
-//   1. 合成 AWS Binary EventStream byte stream（含 prelude + headers + payload + CRC）
-//   2. 走 BedrockEventStreamScanner（A3）切帧 + 解 chunk envelope
-//   3. 走 BedrockEventStreamAdapter（A4）转 CanonicalEvent
-//   4. 走 StreamForwarder.Forward 写入 http.ResponseWriter
+//  1. 合成 AWS Binary EventStream byte stream（含 prelude + headers + payload + CRC）
+//  2. 走 BedrockEventStreamScanner（A3）切帧 + 解 chunk envelope
+//  3. 走 bedrock.EventStreamAdapter（A4）转 CanonicalEvent
+//  4. 走 StreamForwarder.Forward 写入 http.ResponseWriter
 //
 // 不依赖 AWS 网络，不引新依赖；与 bedrock_stream_scanner_test.go 共用
 // encodeBedrockFrame helper（同 package）。

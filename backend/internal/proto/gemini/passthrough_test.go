@@ -1,9 +1,10 @@
-package proto
+package gemini
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"strings"
 	"testing"
 
@@ -13,8 +14,8 @@ import (
 func TestGemini_StreamingChunk_PassthroughRoundTripPreservesUnknownFields(t *testing.T) {
 	chunk := `data: {"candidates":[{"content":{"parts":[{"text":"hi"}],"role":"model"},"index":0}],"modelVersion":"gemini-2.5-pro","responseId":"resp-gemini","modelFleet":"preview","vendorMetadata":{"region":"us-central1","trace":"abc"}}`
 
-	adapter := &GeminiAdapter{}
-	state := &GeminiUpstreamState{}
+	adapter := &Adapter{}
+	state := &UpstreamState{}
 	out, losses, err := adapter.ProviderEventToCanonicalEvents(context.Background(), []byte(chunk), state)
 	if err != nil {
 		t.Fatalf("ProviderEventToCanonicalEvents: %v", err)
@@ -27,7 +28,7 @@ func TestGemini_StreamingChunk_PassthroughRoundTripPreservesUnknownFields(t *tes
 		t.Fatalf("events=%d want message_start/content_block_start/content_block_delta", len(events))
 	}
 
-	var delta *CanonicalEvent
+	var delta *proto.CanonicalEvent
 	for i := range events {
 		if events[i].Passthrough == nil {
 			t.Fatalf("event[%d] %s missing passthrough", i, events[i].Type)
@@ -51,9 +52,9 @@ func TestGemini_StreamingChunk_PassthroughRoundTripPreservesUnknownFields(t *tes
 		},
 	}
 	clientJSON, _ := json.Marshal(clientTyped)
-	merged, err := MergeExtrasInto(clientJSON, delta.Passthrough)
+	merged, err := proto.MergeExtrasInto(clientJSON, delta.Passthrough)
 	if err != nil {
-		t.Fatalf("MergeExtrasInto: %v", err)
+		t.Fatalf("proto.MergeExtrasInto: %v", err)
 	}
 	if !strings.Contains(string(merged), "modelFleet") || !strings.Contains(string(merged), "vendorMetadata") {
 		t.Fatalf("merged should keep Gemini extras: %s", merged)
@@ -64,8 +65,8 @@ func TestGeminiFinalizeObservesCacheMetrics(t *testing.T) {
 	const accountID int64 = 260518991
 	beforeCreation, beforeRead, beforeRequests := cachemetrics.SnapshotByAccount(accountID)
 
-	adapter := &GeminiAdapter{}
-	state := &GeminiUpstreamState{
+	adapter := &Adapter{}
+	state := &UpstreamState{
 		AccountID:  accountID,
 		TenantID:   518,
 		PrefixHash: "gemini-cache-prefix",

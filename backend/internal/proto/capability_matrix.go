@@ -165,6 +165,10 @@ func detectFeaturesInRequest(req CanonicalRequest) []FeatureName {
 	return out
 }
 
-func newLossEntry(feature FeatureName, dir Direction, verdict Verdict, note string) ProtocolLossEntry {
+func NewLossEntry(feature FeatureName, dir Direction, verdict Verdict, note string) ProtocolLossEntry {
 	return ProtocolLossEntry{Feature: string(feature), Direction: string(dir), Verdict: verdict, Note: note}
+}
+
+func newLossEntry(feature FeatureName, dir Direction, verdict Verdict, note string) ProtocolLossEntry {
+	return NewLossEntry(feature, dir, verdict, note)
 }

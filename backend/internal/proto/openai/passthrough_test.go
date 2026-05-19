@@ -1,14 +1,15 @@
-// openai_sse_passthrough_test.go — U7-C 测试：OpenAI adapter 接入
+// proto/openai/passthrough_test.go — U7-C 测试：openai.Adapter 接入
 // PassthroughEnvelope 后，上游 chunk / response 中 HUAKAI typed struct 未
 // 声明的字段（system_fingerprint / service_tier / logprobs /
-// prompt_filter_results 等）透传到 CanonicalEvent.Passthrough /
+// prompt_filter_results 等）透传到 proto.CanonicalEvent.Passthrough /
 // CanonicalResponse.Passthrough。
-package proto
+package openai
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"strings"
 	"testing"
 )
@@ -19,8 +20,8 @@ import (
 func TestOpenAI_StreamingChunk_PassthroughCarriesUnknownFields(t *testing.T) {
 	chunk := `data: {"id":"chatcmpl-x","object":"chat.completion.chunk","model":"gpt-4o-2024-11-20","system_fingerprint":"fp_b04fe7ce4f","service_tier":"scale","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"}}]}`
 
-	adapter := &OpenAIAdapter{}
-	state := &OpenAIUpstreamState{}
+	adapter := &Adapter{}
+	state := &UpstreamState{}
 	events, _, err := adapter.ProviderEventToCanonicalEvents(context.Background(), []byte(chunk), state)
 	if err != nil {
 		t.Fatalf("err=%v", err)
@@ -30,7 +31,7 @@ func TestOpenAI_StreamingChunk_PassthroughCarriesUnknownFields(t *testing.T) {
 	}
 
 	// 第一条 event 应携带 Passthrough
-	first, ok := events[0].(CanonicalEvent)
+	first, ok := events[0].(proto.CanonicalEvent)
 	if !ok {
 		t.Fatalf("events[0] 类型 %T", events[0])
 	}
@@ -51,8 +52,8 @@ func TestOpenAI_StreamingChunk_PassthroughCarriesUnknownFields(t *testing.T) {
 func TestOpenAI_StreamingChunk_PassthroughCopiedToEveryEmittedEvent(t *testing.T) {
 	chunk := `data: {"id":"chatcmpl-multi","object":"chat.completion.chunk","model":"gpt-4o","system_fingerprint":"fp_multi","service_tier":"scale","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"}}]}`
 
-	adapter := &OpenAIAdapter{}
-	state := &OpenAIUpstreamState{}
+	adapter := &Adapter{}
+	state := &UpstreamState{}
 	events, _, err := adapter.ProviderEventToCanonicalEvents(context.Background(), []byte(chunk), state)
 	if err != nil {
 		t.Fatalf("err=%v", err)
@@ -63,7 +64,7 @@ func TestOpenAI_StreamingChunk_PassthroughCopiedToEveryEmittedEvent(t *testing.T
 
 	var sawDelta bool
 	for i, e := range events {
-		ce := e.(CanonicalEvent)
+		ce := e.(proto.CanonicalEvent)
 		if ce.Passthrough == nil {
 			t.Fatalf("event[%d] %s Passthrough nil", i, ce.Type)
 		}
@@ -84,14 +85,14 @@ func TestOpenAI_StreamingChunk_PassthroughCopiedToEveryEmittedEvent(t *testing.T
 func TestOpenAI_StreamingChunk_NoUnknownFields_PassthroughIsNil(t *testing.T) {
 	chunk := `data: {"id":"x","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"hi"}}]}`
 
-	adapter := &OpenAIAdapter{}
-	state := &OpenAIUpstreamState{}
+	adapter := &Adapter{}
+	state := &UpstreamState{}
 	events, _, err := adapter.ProviderEventToCanonicalEvents(context.Background(), []byte(chunk), state)
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
 	for i, e := range events {
-		ce := e.(CanonicalEvent)
+		ce := e.(proto.CanonicalEvent)
 		if ce.Passthrough != nil {
 			t.Errorf("event[%d].Passthrough 应为 nil，得 %+v", i, ce.Passthrough)
 		}
@@ -103,13 +104,13 @@ func TestOpenAI_StreamingChunk_NoUnknownFields_PassthroughIsNil(t *testing.T) {
 func TestOpenAI_NestedUnknown_PreservesStructure(t *testing.T) {
 	chunk := `data: {"id":"x","model":"gpt-4o","prompt_filter_results":[{"index":0,"content_filter_results":{"hate":{"filtered":false}}}],"choices":[{"index":0,"delta":{"content":"a"}}]}`
 
-	adapter := &OpenAIAdapter{}
-	state := &OpenAIUpstreamState{}
+	adapter := &Adapter{}
+	state := &UpstreamState{}
 	events, _, err := adapter.ProviderEventToCanonicalEvents(context.Background(), []byte(chunk), state)
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
-	first := events[0].(CanonicalEvent)
+	first := events[0].(proto.CanonicalEvent)
 	if first.Passthrough == nil {
 		t.Fatal("Passthrough 不应 nil")
 	}
@@ -129,14 +130,14 @@ func TestOpenAI_NestedUnknown_PreservesStructure(t *testing.T) {
 
 // TestOpenAI_DoneMarker_NoPassthrough [DONE] 标记不应触发 Passthrough。
 func TestOpenAI_DoneMarker_NoPassthrough(t *testing.T) {
-	adapter := &OpenAIAdapter{}
-	state := &OpenAIUpstreamState{MessageStarted: true} // 模拟流中
+	adapter := &Adapter{}
+	state := &UpstreamState{MessageStarted: true} // 模拟流中
 	events, _, err := adapter.ProviderEventToCanonicalEvents(context.Background(), []byte("data: [DONE]"), state)
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
 	for _, e := range events {
-		ce := e.(CanonicalEvent)
+		ce := e.(proto.CanonicalEvent)
 		if ce.Passthrough != nil {
 			t.Errorf("[DONE] 路径不应有 Passthrough，得 %+v", ce.Passthrough)
 		}
@@ -173,15 +174,15 @@ func TestOpenAI_BufferedResponse_PassthroughCaptured(t *testing.T) {
 }
 
 // TestOpenAI_MergeIntoClientOutput 端到端 round-trip 模拟：上游 chunk
-// → adapter → CanonicalEvent → ClientAdapter（这里手工模拟）调
-// MergeExtrasInto → 客户端最终看到 vendor 字段。
+// → adapter → proto.CanonicalEvent → ClientAdapter（这里手工模拟）调
+// proto.MergeExtrasInto → 客户端最终看到 vendor 字段。
 func TestOpenAI_MergeIntoClientOutput(t *testing.T) {
 	chunk := `{"id":"x","model":"gpt-4o","system_fingerprint":"fp_abc","choices":[{"index":0,"delta":{"content":"hi"}}]}`
 
-	adapter := &OpenAIAdapter{}
-	state := &OpenAIUpstreamState{}
+	adapter := &Adapter{}
+	state := &UpstreamState{}
 	events, _, _ := adapter.ProviderEventToCanonicalEvents(context.Background(), []byte(chunk), state)
-	first := events[0].(CanonicalEvent)
+	first := events[0].(proto.CanonicalEvent)
 
 	// 模拟 ClientAdapter 把 first 序列化为 OpenAI chat.completion.chunk 形态
 	// （这里手工 marshal 一个最小 typed shape；正式 ClientAdapter 在 U7 后续接入）
@@ -194,7 +195,7 @@ func TestOpenAI_MergeIntoClientOutput(t *testing.T) {
 		},
 	}
 	clientJSON, _ := json.Marshal(clientTyped)
-	merged, err := MergeExtrasInto(clientJSON, first.Passthrough)
+	merged, err := proto.MergeExtrasInto(clientJSON, first.Passthrough)
 	if err != nil {
 		t.Fatalf("merge err=%v", err)
 	}

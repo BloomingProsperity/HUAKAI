@@ -4,7 +4,7 @@
 // replace this with the real upstream client.
 //
 // SSE event shape mirrors backend/internal/gateway/forwarder_test.go so
-// proto.AnthropicAdapter accepts the bytes and produces a non-zero
+// anthropic.Adapter accepts the bytes and produces a non-zero
 // UsageRecordDraft (TokensInput / TokensOutput populated).
 
 package gatewayhttp
@@ -18,7 +18,7 @@ import (
 // MockAnthropicUpstreamBytes returns a 4-event Anthropic SSE stream:
 // message_start → content_block_delta → message_delta (usage) → message_stop.
 // Caller passes inputTokens / outputTokens; the emitter encodes them onto
-// the message_delta usage field, which the AnthropicAdapter extracts into
+// the message_delta usage field, which anthropic.Adapter extracts into
 // the UsageRecordDraft.
 func MockAnthropicUpstreamBytes(messageID, model string, inputTokens, outputTokens int) []byte {
 	var b bytes.Buffer

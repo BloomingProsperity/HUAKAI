@@ -17,8 +17,8 @@ const (
 //
 // v0.4 在保留 v0.3 旧字段（feature/direction/verdict/note）的同时，新增 v0.4 字段
 // （field/vendor/severity/reason/suggestion + capability/node_id/native_path/code/details）。
-// 这样旧 adapter（capability_matrix / anthropic_sse / openai_sse / gemini_sse）继续编译，
-// 新代码可优先填 Reason 与 Severity。
+// 这样旧 adapter（capability_matrix / vendor stream adapters）继续编译，新代码可优先填
+// Reason 与 Severity。
 //
 // 任何 capability 在任何 provider projection 上有 lossy 表现 → 必须 emit 一条
 // ProtocolLossEntry；不可作为 silent drop（INV-7）。

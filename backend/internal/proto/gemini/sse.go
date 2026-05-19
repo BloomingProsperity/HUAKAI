@@ -1,4 +1,4 @@
-package proto
+package gemini
 
 import (
 	"bytes"
@@ -10,26 +10,27 @@ import (
 	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
 
-// GeminiStopSafety 是 HCSF 当前枚举未显式声明的 Gemini 安全停止哨兵值。
-const GeminiStopSafety CanonicalStopReason = "safety"
+// StopSafety 是 proto.HCSF 当前枚举未显式声明的 Gemini 安全停止哨兵值。
+const StopSafety proto.CanonicalStopReason = "safety"
 
-// GeminiAdapter 将 Gemini streamGenerateContent SSE 转换为 HCSF 事件。
-type GeminiAdapter struct{}
+// Adapter 将 Gemini streamGenerateContent SSE 转换为 proto.HCSF 事件。
+type Adapter struct{}
 
-// GeminiSSEEvent 是 SSE 扫描器可传入的最小事件形态。
-type GeminiSSEEvent struct {
+// SSEEvent 是 SSE 扫描器可传入的最小事件形态。
+type SSEEvent struct {
 	Type string `json:"type,omitempty"`
 	Data []byte `json:"data,omitempty"`
 	Done bool   `json:"done,omitempty"`
 }
 
-// GeminiStreamEnd 是调用方用于表示 Gemini SSE 连接自然关闭的哨兵。
-type GeminiStreamEnd struct{}
+// StreamEnd 是调用方用于表示 Gemini SSE 连接自然关闭的哨兵。
+type StreamEnd struct{}
 
-// GeminiUpstreamState 累积 Gemini 流式响应的跨 chunk 状态。
-type GeminiUpstreamState struct {
+// UpstreamState 累积 Gemini 流式响应的跨 chunk 状态。
+type UpstreamState struct {
 	MessageID             string
 	Model                 string
 	MessageStarted        bool
@@ -39,11 +40,11 @@ type GeminiUpstreamState struct {
 	NextBlockIndex        int
 	GeneratedToolCallSeq  int
 	AccumulatedContent    string
-	AccumulatedUsage      CanonicalUsage
+	AccumulatedUsage      proto.CanonicalUsage
 	DeliveredChunkCount   int64
 	CachedContentTokens   int
 	UsageEmitted          bool
-	LastStopReason        CanonicalStopReason
+	LastStopReason        proto.CanonicalStopReason
 	RawFinishReason       string
 	SkippedExtraCandidate bool
 	// AccountID（Track P）: forwarder 注入. cachemetrics.ObserveByAccount 用。
@@ -96,35 +97,35 @@ type geminiUsageMetadata struct {
 	CachedContentTokenCount int `json:"cachedContentTokenCount,omitempty"`
 }
 
-func (a *GeminiAdapter) CanonicalToProviderRequest(ctx context.Context, canonical *HCSF) ([]byte, []ProtocolLossEntry, error) {
+func (a *Adapter) CanonicalToProviderRequest(ctx context.Context, canonical *proto.HCSF) ([]byte, []proto.ProtocolLossEntry, error) {
 	_ = ctx
 	_ = canonical
-	return nil, nil, ErrNotImplemented
+	return nil, nil, proto.ErrNotImplemented
 }
 
-func (a *GeminiAdapter) ProviderResponseToCanonical(ctx context.Context, raw []byte) (*HCSF, []ProtocolLossEntry, error) {
+func (a *Adapter) ProviderResponseToCanonical(ctx context.Context, raw []byte) (*proto.HCSF, []proto.ProtocolLossEntry, error) {
 	_ = ctx
 	resp, losses, err := geminiResponseToCanonicalResponse(raw)
 	if err != nil {
 		return nil, losses, err
 	}
-	// P-0c-C D-FailLoud: 见 openai_sse.go 同名注释。返回带 Version +
+	// P-0c-C D-FailLoud: 见 proto/openai/sse.go 同名注释。返回带 Version +
 	// BufferedResponse 的最小 envelope，避免零值穿过边界。
 	// envelope 仅适用 ValidateEnvelopeVersionGuard，不保证通过完整
 	// ValidateEnvelope（RequestMeta 由 forwarder 层注入）。
 	bufferedResp := resp
-	env := &HCSF{
-		Version:          HCSFVersion,
+	env := &proto.HCSF{
+		Version:          proto.HCSFVersion,
 		BufferedResponse: &bufferedResp,
 	}
 	return env, losses, nil
 }
 
-func (a *GeminiAdapter) ProviderEventToCanonicalEvents(ctx context.Context, providerEvt any, state any) ([]any, []ProtocolLossEntry, error) {
+func (a *Adapter) ProviderEventToCanonicalEvents(ctx context.Context, providerEvt any, state any) ([]any, []proto.ProtocolLossEntry, error) {
 	_ = ctx
-	st, ok := state.(*GeminiUpstreamState)
+	st, ok := state.(*UpstreamState)
 	if !ok {
-		return nil, nil, fmt.Errorf("proto: expected *GeminiUpstreamState")
+		return nil, nil, fmt.Errorf("proto: expected *UpstreamState")
 	}
 	data, streamEnd, err := coerceGeminiSSEData(providerEvt)
 	if err != nil {
@@ -144,27 +145,27 @@ func (a *GeminiAdapter) ProviderEventToCanonicalEvents(ctx context.Context, prov
 	}
 
 	var chunk geminiGenerateContentResponse
-	var env PassthroughEnvelope
-	if err := UnmarshalWithExtras([]byte(payload), &chunk, &env); err != nil {
-		loss := newLossEntry(FeatureTextStreaming, DirectionUpstreamToCanonical, VerdictLossy, "malformed Gemini SSE JSON chunk skipped")
-		return nil, []ProtocolLossEntry{loss}, nil
+	var env proto.PassthroughEnvelope
+	if err := proto.UnmarshalWithExtras([]byte(payload), &chunk, &env); err != nil {
+		loss := proto.NewLossEntry(proto.FeatureTextStreaming, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "malformed Gemini SSE JSON chunk skipped")
+		return nil, []proto.ProtocolLossEntry{loss}, nil
 	}
 	events, losses := geminiChunkToCanonicalEvents(chunk, st)
-	events = attachPassthroughToEvents(events, env)
+	events = attachPassthrough(events, env)
 	return geminiEventsToAny(events), losses, nil
 }
 
-func (a *GeminiAdapter) FinalizeUpstreamStream(ctx context.Context, state any) ([]any, error) {
+func (a *Adapter) FinalizeUpstreamStream(ctx context.Context, state any) ([]any, error) {
 	_ = ctx
-	st, ok := state.(*GeminiUpstreamState)
+	st, ok := state.(*UpstreamState)
 	if !ok {
-		return nil, fmt.Errorf("proto: expected *GeminiUpstreamState")
+		return nil, fmt.Errorf("proto: expected *UpstreamState")
 	}
 	events, _ := finalizeGeminiState(st, false)
 	return geminiEventsToAny(events), nil
 }
 
-func geminiChunkToCanonicalEvents(chunk geminiGenerateContentResponse, state *GeminiUpstreamState) ([]CanonicalEvent, []ProtocolLossEntry) {
+func geminiChunkToCanonicalEvents(chunk geminiGenerateContentResponse, state *UpstreamState) ([]proto.CanonicalEvent, []proto.ProtocolLossEntry) {
 	ensureGeminiState(state)
 	if chunk.ResponseID != "" {
 		state.MessageID = chunk.ResponseID
@@ -178,12 +179,12 @@ func geminiChunkToCanonicalEvents(chunk geminiGenerateContentResponse, state *Ge
 		return nil, nil
 	}
 
-	var events []CanonicalEvent
-	var losses []ProtocolLossEntry
+	var events []proto.CanonicalEvent
+	var losses []proto.ProtocolLossEntry
 	for _, candidate := range chunk.Candidates {
 		if candidate.Index != 0 {
 			state.SkippedExtraCandidate = true
-			losses = append(losses, newLossEntry(FeatureTextStreaming, DirectionUpstreamToCanonical, VerdictLossy, "non-primary Gemini candidate skipped"))
+			losses = append(losses, proto.NewLossEntry(proto.FeatureTextStreaming, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "non-primary Gemini candidate skipped"))
 			continue
 		}
 
@@ -198,13 +199,13 @@ func geminiChunkToCanonicalEvents(chunk geminiGenerateContentResponse, state *Ge
 			state.RawFinishReason = candidate.FinishReason
 			state.LastStopReason = mapGeminiStopReason(candidate.FinishReason)
 			events = appendGeminiOpenBlockStops(events, state)
-			usage := (*CanonicalUsage)(nil)
-			if usageHasValue(state.AccumulatedUsage) {
+			usage := (*proto.CanonicalUsage)(nil)
+			if proto.UsageHasValue(state.AccumulatedUsage) {
 				value := state.AccumulatedUsage
 				usage = &value
 				state.UsageEmitted = true
 			}
-			events = append(events, CanonicalEvent{
+			events = append(events, proto.CanonicalEvent{
 				Type:       "message_delta",
 				Usage:      usage,
 				StopReason: state.LastStopReason,
@@ -215,9 +216,9 @@ func geminiChunkToCanonicalEvents(chunk geminiGenerateContentResponse, state *Ge
 	return events, losses
 }
 
-func geminiPartToCanonicalEvents(part geminiPart, state *GeminiUpstreamState) ([]CanonicalEvent, []ProtocolLossEntry) {
-	var events []CanonicalEvent
-	var losses []ProtocolLossEntry
+func geminiPartToCanonicalEvents(part geminiPart, state *UpstreamState) ([]proto.CanonicalEvent, []proto.ProtocolLossEntry) {
+	var events []proto.CanonicalEvent
+	var losses []proto.ProtocolLossEntry
 
 	if part.FunctionCall != nil {
 		events = appendGeminiOpenBlockStops(events, state)
@@ -226,21 +227,21 @@ func geminiPartToCanonicalEvents(part geminiPart, state *GeminiUpstreamState) ([
 		state.NextBlockIndex++
 		callID, idLosses := geminiCanonicalCallID(part.FunctionCall.ID, state)
 		losses = append(losses, idLosses...)
-		block := CanonicalContentBlock{
+		block := proto.CanonicalContentBlock{
 			Type:   "tool_use",
 			CallID: callID,
 			Name:   part.FunctionCall.Name,
 			Input:  normalizeGeminiFunctionArgs(part.FunctionCall.Args),
 		}
 		events = append(events,
-			CanonicalEvent{Type: "content_block_start", Index: index, ContentBlock: &block},
-			CanonicalEvent{Type: "content_block_stop", Index: index},
+			proto.CanonicalEvent{Type: "content_block_start", Index: index, ContentBlock: &block},
+			proto.CanonicalEvent{Type: "content_block_stop", Index: index},
 		)
 		return events, losses
 	}
 
 	if len(bytes.TrimSpace(part.InlineData)) > 0 {
-		losses = append(losses, newLossEntry(FeatureImageOutput, DirectionUpstreamToCanonical, VerdictLossy, "Gemini inlineData output part skipped"))
+		losses = append(losses, proto.NewLossEntry(proto.FeatureImageOutput, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "Gemini inlineData output part skipped"))
 	}
 
 	if part.Text == nil || *part.Text == "" {
@@ -249,91 +250,91 @@ func geminiPartToCanonicalEvents(part geminiPart, state *GeminiUpstreamState) ([
 
 	events = append(events, ensureGeminiTextBlock(state)...)
 	if part.Thought {
-		events = append(events, CanonicalEvent{
+		events = append(events, proto.CanonicalEvent{
 			Type:  "content_block_delta",
 			Index: state.TextBlockIndex,
-			Delta: &CanonicalContentDelta{Type: "reasoning_delta", ReasoningText: *part.Text},
+			Delta: &proto.CanonicalContentDelta{Type: "reasoning_delta", ReasoningText: *part.Text},
 		})
 		return events, losses
 	}
 
 	state.AccumulatedContent += *part.Text
 	state.DeliveredChunkCount++
-	events = append(events, CanonicalEvent{
+	events = append(events, proto.CanonicalEvent{
 		Type:  "content_block_delta",
 		Index: state.TextBlockIndex,
-		Delta: &CanonicalContentDelta{Type: "text_delta", Text: *part.Text},
+		Delta: &proto.CanonicalContentDelta{Type: "text_delta", Text: *part.Text},
 	})
 	return events, losses
 }
 
-func ensureGeminiState(state *GeminiUpstreamState) {
+func ensureGeminiState(state *UpstreamState) {
 	if state.NextBlockIndex < 0 {
 		state.NextBlockIndex = 0
 	}
 }
 
-func ensureGeminiMessageStart(state *GeminiUpstreamState) []CanonicalEvent {
+func ensureGeminiMessageStart(state *UpstreamState) []proto.CanonicalEvent {
 	if state.MessageStarted {
 		return nil
 	}
 	state.MessageStarted = true
-	return []CanonicalEvent{{
+	return []proto.CanonicalEvent{{
 		Type:      "message_start",
 		MessageID: state.MessageID,
 		Model:     state.Model,
 	}}
 }
 
-func ensureGeminiTextBlock(state *GeminiUpstreamState) []CanonicalEvent {
+func ensureGeminiTextBlock(state *UpstreamState) []proto.CanonicalEvent {
 	if state.TextBlockOpen {
 		return nil
 	}
 	state.TextBlockIndex = state.NextBlockIndex
 	state.NextBlockIndex++
 	state.TextBlockOpen = true
-	block := CanonicalContentBlock{Type: "text"}
-	return []CanonicalEvent{{
+	block := proto.CanonicalContentBlock{Type: "text"}
+	return []proto.CanonicalEvent{{
 		Type:         "content_block_start",
 		Index:        state.TextBlockIndex,
 		ContentBlock: &block,
 	}}
 }
 
-func appendGeminiOpenBlockStops(events []CanonicalEvent, state *GeminiUpstreamState) []CanonicalEvent {
+func appendGeminiOpenBlockStops(events []proto.CanonicalEvent, state *UpstreamState) []proto.CanonicalEvent {
 	if state.TextBlockOpen {
-		events = append(events, CanonicalEvent{Type: "content_block_stop", Index: state.TextBlockIndex})
+		events = append(events, proto.CanonicalEvent{Type: "content_block_stop", Index: state.TextBlockIndex})
 		state.TextBlockOpen = false
 	}
 	return events
 }
 
-func finalizeGeminiState(state *GeminiUpstreamState, fromSentinel bool) ([]CanonicalEvent, []ProtocolLossEntry) {
+func finalizeGeminiState(state *UpstreamState, fromSentinel bool) ([]proto.CanonicalEvent, []proto.ProtocolLossEntry) {
 	ensureGeminiState(state)
 	if state.Terminated {
 		if fromSentinel {
-			loss := newLossEntry(FeatureTextStreaming, DirectionUpstreamToCanonical, VerdictLossy, "duplicate Gemini stream terminator skipped")
-			return nil, []ProtocolLossEntry{loss}
+			loss := proto.NewLossEntry(proto.FeatureTextStreaming, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "duplicate Gemini stream terminator skipped")
+			return nil, []proto.ProtocolLossEntry{loss}
 		}
 		return nil, nil
 	}
 
-	var events []CanonicalEvent
+	var events []proto.CanonicalEvent
 	events = appendGeminiOpenBlockStops(events, state)
-	if usageHasValue(state.AccumulatedUsage) && !state.UsageEmitted {
+	if proto.UsageHasValue(state.AccumulatedUsage) && !state.UsageEmitted {
 		usage := state.AccumulatedUsage
-		events = append(events, CanonicalEvent{Type: "message_delta", Usage: &usage, StopReason: state.LastStopReason})
+		events = append(events, proto.CanonicalEvent{Type: "message_delta", Usage: &usage, StopReason: state.LastStopReason})
 		state.UsageEmitted = true
 	}
 	state.Terminated = true
 	// Gemini usageMetadata.cachedContentTokenCount 表示本请求从缓存读取的
 	// prompt token。Gemini 没有 creation token 概念，creation 传 0。
 	cachemetrics.ObserveByAccountWithPrefix(0, int64(state.CachedContentTokens), state.TenantID, state.AccountID, state.PrefixHash)
-	events = append(events, CanonicalEvent{Type: "message_stop"})
+	events = append(events, proto.CanonicalEvent{Type: "message_stop"})
 	return events, nil
 }
 
-func updateGeminiUsage(state *GeminiUpstreamState, usage *geminiUsageMetadata) bool {
+func updateGeminiUsage(state *UpstreamState, usage *geminiUsageMetadata) bool {
 	if usage == nil {
 		return false
 	}
@@ -342,8 +343,8 @@ func updateGeminiUsage(state *GeminiUpstreamState, usage *geminiUsageMetadata) b
 	return true
 }
 
-func (u geminiUsageMetadata) canonical() CanonicalUsage {
-	out := CanonicalUsage{
+func (u geminiUsageMetadata) canonical() proto.CanonicalUsage {
+	out := proto.CanonicalUsage{
 		InputTokens:          u.PromptTokenCount,
 		OutputTokens:         u.CandidatesTokenCount,
 		TotalTokens:          u.TotalTokenCount,
@@ -355,32 +356,32 @@ func (u geminiUsageMetadata) canonical() CanonicalUsage {
 	return out
 }
 
-func mapGeminiStopReason(reason string) CanonicalStopReason {
+func mapGeminiStopReason(reason string) proto.CanonicalStopReason {
 	switch reason {
 	case "STOP":
-		return CanonicalStopEndTurn
+		return proto.CanonicalStopEndTurn
 	case "MAX_TOKENS":
-		return CanonicalStopMaxTokens
+		return proto.CanonicalStopMaxTokens
 	case "SAFETY":
-		return GeminiStopSafety
+		return StopSafety
 	default:
-		return CanonicalStopUnknown
+		return proto.CanonicalStopUnknown
 	}
 }
 
-func geminiStopLoss(reason string) []ProtocolLossEntry {
+func geminiStopLoss(reason string) []proto.ProtocolLossEntry {
 	if reason == "" || reason == "STOP" || reason == "MAX_TOKENS" || reason == "SAFETY" {
 		return nil
 	}
-	return []ProtocolLossEntry{newLossEntry(FeatureMaxTokensFinishReason, DirectionUpstreamToCanonical, VerdictLossy, "unknown Gemini finishReason mapped to canonical unknown")}
+	return []proto.ProtocolLossEntry{proto.NewLossEntry(proto.FeatureMaxTokensFinishReason, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "unknown Gemini finishReason mapped to canonical unknown")}
 }
 
-func geminiCanonicalCallID(upstreamID string, state *GeminiUpstreamState) (string, []ProtocolLossEntry) {
+func geminiCanonicalCallID(upstreamID string, state *UpstreamState) (string, []proto.ProtocolLossEntry) {
 	if upstreamID != "" {
-		callID, err := ToCanonicalCallID(upstreamID, UpstreamProtocolGemini)
+		callID, err := proto.ToCanonicalCallID(upstreamID, proto.UpstreamProtocolGemini)
 		if err != nil {
-			loss := newLossEntry(FeatureToolUse, DirectionUpstreamToCanonical, VerdictLossy, "malformed Gemini functionCall identifier")
-			return "", []ProtocolLossEntry{loss}
+			loss := proto.NewLossEntry(proto.FeatureToolUse, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "malformed Gemini functionCall identifier")
+			return "", []proto.ProtocolLossEntry{loss}
 		}
 		return callID, nil
 	}
@@ -403,11 +404,11 @@ func coerceGeminiSSEData(v any) ([]byte, bool, error) {
 		return nil, true, nil
 	}
 	switch evt := v.(type) {
-	case GeminiStreamEnd:
+	case StreamEnd:
 		return nil, true, nil
-	case *GeminiStreamEnd:
+	case *StreamEnd:
 		return nil, true, nil
-	case GeminiSSEEvent:
+	case SSEEvent:
 		if evt.Done || evt.Type == "end" {
 			return nil, true, nil
 		}
@@ -424,7 +425,7 @@ func coerceGeminiSSEData(v any) ([]byte, bool, error) {
 		}
 		return nil, false, evt
 	default:
-		return nil, false, fmt.Errorf("proto: expected GeminiSSEEvent, []byte, string, or stream sentinel")
+		return nil, false, fmt.Errorf("proto: expected SSEEvent, []byte, string, or stream sentinel")
 	}
 }
 
@@ -457,7 +458,7 @@ func extractGeminiSSEData(raw []byte) []byte {
 	return trimmed
 }
 
-func geminiEventsToAny(events []CanonicalEvent) []any {
+func geminiEventsToAny(events []proto.CanonicalEvent) []any {
 	out := make([]any, len(events))
 	for i := range events {
 		out[i] = events[i]
@@ -465,19 +466,19 @@ func geminiEventsToAny(events []CanonicalEvent) []any {
 	return out
 }
 
-func geminiResponseToCanonicalResponse(raw []byte) (CanonicalResponse, []ProtocolLossEntry, error) {
+func geminiResponseToCanonicalResponse(raw []byte) (proto.CanonicalResponse, []proto.ProtocolLossEntry, error) {
 	var resp geminiGenerateContentResponse
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return CanonicalResponse{}, nil, err
+		return proto.CanonicalResponse{}, nil, err
 	}
-	state := &GeminiUpstreamState{MessageID: resp.ResponseID, Model: resp.ModelVersion}
+	state := &UpstreamState{MessageID: resp.ResponseID, Model: resp.ModelVersion}
 	updateGeminiUsage(state, resp.UsageMetadata)
-	out := CanonicalResponse{ID: resp.ResponseID, Model: resp.ModelVersion, Usage: state.AccumulatedUsage}
+	out := proto.CanonicalResponse{ID: resp.ResponseID, Model: resp.ModelVersion, Usage: state.AccumulatedUsage}
 	if len(resp.Candidates) == 0 {
 		return out, nil, nil
 	}
 
-	var losses []ProtocolLossEntry
+	var losses []proto.ProtocolLossEntry
 	candidate := resp.Candidates[0]
 	out.StopReason = mapGeminiStopReason(candidate.FinishReason)
 	losses = append(losses, geminiStopLoss(candidate.FinishReason)...)
@@ -485,7 +486,7 @@ func geminiResponseToCanonicalResponse(raw []byte) (CanonicalResponse, []Protoco
 		if part.FunctionCall != nil {
 			callID, idLosses := geminiCanonicalCallID(part.FunctionCall.ID, state)
 			losses = append(losses, idLosses...)
-			out.Content = append(out.Content, CanonicalContentBlock{
+			out.Content = append(out.Content, proto.CanonicalContentBlock{
 				Type:   "tool_use",
 				CallID: callID,
 				Name:   part.FunctionCall.Name,
@@ -495,16 +496,16 @@ func geminiResponseToCanonicalResponse(raw []byte) (CanonicalResponse, []Protoco
 		}
 		if part.Text != nil && *part.Text != "" {
 			if part.Thought {
-				out.Content = append(out.Content, CanonicalContentBlock{Type: "reasoning_summary", ReasoningSummary: *part.Text})
+				out.Content = append(out.Content, proto.CanonicalContentBlock{Type: "reasoning_summary", ReasoningSummary: *part.Text})
 			} else {
-				out.Content = append(out.Content, CanonicalContentBlock{Type: "text", Text: *part.Text})
+				out.Content = append(out.Content, proto.CanonicalContentBlock{Type: "text", Text: *part.Text})
 			}
 		}
 		if len(bytes.TrimSpace(part.InlineData)) > 0 {
-			losses = append(losses, newLossEntry(FeatureImageOutput, DirectionUpstreamToCanonical, VerdictLossy, "Gemini inlineData output part skipped"))
+			losses = append(losses, proto.NewLossEntry(proto.FeatureImageOutput, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "Gemini inlineData output part skipped"))
 		}
 	}
 	return out, losses, nil
 }
 
-var _ UpstreamAdapter = (*GeminiAdapter)(nil)
+var _ proto.UpstreamAdapter = (*Adapter)(nil)

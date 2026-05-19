@@ -133,10 +133,9 @@ func (rt *redirectRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 // proto.CanonicalEvent，所以 canonicalUsage / canonicalTerminal 会静默忽略，
 // 但原始 SSE bytes 会经由 clientChunks → rawSSE(fallback) 路径写给客户端。
 //
-// 注意：由于 forwarder.newUpstreamState 对所有协议族统一返回 *proto.UpstreamState，
-// 而 proto.OpenAIAdapter 要求 *proto.OpenAIUpstreamState，直接使用内置
-// BuildDefaultProtocolAdapterRegistry() 会导致类型断言失败。
-// 本 adapter 规避此问题：它接受任意 state，不做类型断言，仅透传 SSE bytes。
+// 注意：本测试只验证 raw SSE 能穿过完整 HTTP pipeline，不验证 openai.Adapter
+// 的 canonical 事件形态。这里用任意 state 都可接受的 stub，避免把 smoke test
+// 绑定到 vendor adapter 的字段级断言。
 type rawPassthroughUpstreamAdapter struct{}
 
 func (a *rawPassthroughUpstreamAdapter) CanonicalToProviderRequest(_ context.Context, _ *proto.HCSF) ([]byte, []proto.ProtocolLossEntry, error) {
@@ -272,9 +271,8 @@ func TestDispatch_FullPipeline_OpenAIChat(t *testing.T) {
 
 	// --- 4. 构建真实 StreamForwarder ---
 	// ProtocolAdapters：注入单协议 stub，使用 rawPassthroughUpstreamAdapter
-	// 绕过 forwarder.newUpstreamState 返回 *proto.UpstreamState 但
-	// proto.OpenAIAdapter 要求 *proto.OpenAIUpstreamState 的类型断言冲突。
-	// rawPassthroughUpstreamAdapter 不做类型断言，把原始 SSE bytes 透传给客户端。
+	// 保持本 smoke test 只断言 raw SSE 透传，不耦合 openai.Adapter 的
+	// canonical event 细节。
 	protoReg := &singleFamilyAdapterRegistry{
 		family:  "openai_chat",
 		adapter: &rawPassthroughUpstreamAdapter{},
