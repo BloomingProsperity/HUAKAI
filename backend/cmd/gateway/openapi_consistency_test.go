@@ -11,7 +11,10 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -80,12 +83,8 @@ func TestOpenAPI_ImplementationConsistency(t *testing.T) {
 			len(residualSpecOnly), residualSpecOnly)
 	}
 
-	// impl-only 是硬失败，避免实现已暴露但契约假绿。唯一例外是
-	// /v1/receipts/* 的 chi wildcard 兼容 slash request_id；OpenAPI 已用
-	// /v1/receipts/{request_id} 和 /v1/receipts/{request_id}/verify 表达。
-	knownImplOnly := map[string]struct{}{
-		"/v1/receipts": {},
-	}
+	// impl-only 是硬失败，避免实现已暴露但契约假绿。
+	knownImplOnly := map[string]struct{}{}
 	residualImplOnly := make([]string, 0, len(rep.ImplOnly))
 	for _, p := range rep.ImplOnly {
 		if _, ok := knownImplOnly[p]; !ok {
@@ -95,6 +94,43 @@ func TestOpenAPI_ImplementationConsistency(t *testing.T) {
 	if len(residualImplOnly) > 0 {
 		t.Errorf("main.go 已注册但 OpenAPI 未声明的 %d 条 path（白名单后剩余）：%v",
 			len(residualImplOnly), residualImplOnly)
+	}
+}
+
+func TestAT_GATEWAY_route_uncovered_404(t *testing.T) {
+	r := buildTestRouter(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/receipts/foo/bar", nil)
+
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s want 404", rec.Code, rec.Body.String())
+	}
+	// 旧 wildcard 会把未声明子路径交给 receipt verify；这里必须完全不进 handler。
+	if strings.Contains(rec.Body.String(), "receipt_verify_route_not_found") {
+		t.Fatalf("unexpected receipt verify handler response: %s", rec.Body.String())
+	}
+}
+
+func TestAT_GATEWAY_001_001_ReceiptRequestIDWithSlashRoutes(t *testing.T) {
+	r := buildTestRouter(t)
+	cases := []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/v1/receipts/host/random-000001"},
+		{method: http.MethodPost, path: "/v1/receipts/host/random-000001/verify"},
+	}
+	for _, tc := range cases {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+
+		r.ServeHTTP(rec, req)
+
+		if rec.Code == http.StatusNotFound {
+			t.Fatalf("%s %s status=%d body=%s want route hit", tc.method, tc.path, rec.Code, rec.Body.String())
+		}
 	}
 }
 

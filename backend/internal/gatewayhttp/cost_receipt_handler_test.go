@@ -292,6 +292,30 @@ func TestAT_AUDIT_001_020_VerifyV1Legacy(t *testing.T) {
 	}
 }
 
+func TestAT_AUDIT_001_063_UnsupportedSchemaVersionReturnsGracefulVerdict(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	payload := mustUserReceipt(t, signedGatewayReceipt(t, signer, 7, "req-schema-unsupported"))
+	payload.SchemaVersion = "audit.receipt.v999"
+
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Signer: signer, Now: fixedReceiptNow}), http.MethodPost, "/v1/receipts/req-schema-unsupported/verify", payload, receiptSession(7))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	var got receiptVerifyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Valid || got.KeyStatus != "unknown" || got.Verdict != "schema_unsupported" || got.Reason != "schema_unsupported" {
+		t.Fatalf("unsupported schema verify response=%+v", got)
+	}
+	if len(got.SupportedVersions) != 2 || got.SupportedVersions[0] != audit.ReceiptSchemaVersionV1 || got.SupportedVersions[1] != audit.ReceiptSchemaVersion {
+		t.Fatalf("supported versions=%+v", got.SupportedVersions)
+	}
+	if strings.Contains(rec.Body.String(), "invalid_receipt") {
+		t.Fatalf("unsupported schema must not be reported as invalid_receipt: %s", rec.Body.String())
+	}
+}
+
 func TestAT_AUDIT_001_024_VerifyMismatchEnqueuesRefund(t *testing.T) {
 	signer := mustReceiptSigner(t)
 	submitted := signedGatewayReceipt(t, signer, 7, "req-mismatch-refund")

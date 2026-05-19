@@ -913,8 +913,16 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		RequestClass:         d.cfg.RequestClass,
 	}))
 
-	gatewayhttp.MountAuditVerifyRoutes(r, gatewayhttp.AuditVerifyStaticDeps{Ledger: d.auditLedger, Registry: d.auditPubkeyRegistry})
-	gatewayhttp.MountAuditPubkeyRoutes(r, gatewayhttp.AuditPubkeyDeps{Signer: d.auditSigner, Registry: d.auditPubkeyRegistry})
+	auditVerifyDeps := gatewayhttp.AuditVerifyStaticDeps{Ledger: d.auditLedger, Registry: d.auditPubkeyRegistry}
+	auditPubkeyDeps := gatewayhttp.AuditPubkeyDeps{Signer: d.auditSigner, Registry: d.auditPubkeyRegistry}
+	r.Route("/v1/audit", func(r chi.Router) {
+		r.Get("/pubkey", gatewayhttp.NewAuditPubkeyHandler(auditPubkeyDeps))
+		r.Get("/pubkeys", gatewayhttp.NewAuditPubkeysHandler(auditPubkeyDeps))
+		r.Get("/pubkey/{fingerprint_hex}", gatewayhttp.NewAuditPubkeyByFingerprintHandler(auditPubkeyDeps))
+		r.Get("/verify", gatewayhttp.NewAuditVerifyHandler(auditVerifyDeps))
+		r.Post("/verify", gatewayhttp.NewAuditVerifyHandler(auditVerifyDeps))
+		r.Get("/merkle-tree.json", gatewayhttp.NewAuditMerkleTreeHandler(auditVerifyDeps))
+	})
 
 	receiptDeps := gatewayhttp.CostReceiptHandlerDeps{
 		Receipts:        d.receiptStore,
@@ -926,9 +934,11 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	}
 	r.Route("/v1/receipts", func(r chi.Router) {
 		r.With(auth.SessionMiddleware(d.userSessions)).Get("/{request_id}", gatewayhttp.NewCostReceiptGetHandler(receiptDeps))
+		r.Post("/{request_id}", http.NotFound)
 		r.With(auth.SessionMiddleware(d.userSessions)).Post("/{request_id}/verify", gatewayhttp.NewCostReceiptVerifyHandler(receiptDeps))
-		r.With(auth.SessionMiddleware(d.userSessions)).Get("/*", gatewayhttp.NewCostReceiptGetHandler(receiptDeps))
-		r.With(auth.SessionMiddleware(d.userSessions)).Post("/*", gatewayhttp.NewCostReceiptVerifyHandler(receiptDeps))
+		r.With(auth.SessionMiddleware(d.userSessions)).Get("/{request_id_host}/{request_id_tail}", gatewayhttp.NewCostReceiptGetHandler(receiptDeps))
+		r.Post("/{request_id_host}/{request_id_tail}", http.NotFound)
+		r.With(auth.SessionMiddleware(d.userSessions)).Post("/{request_id_host}/{request_id_tail}/verify", gatewayhttp.NewCostReceiptVerifyHandler(receiptDeps))
 	})
 	r.Get("/v1/pricing/rate-table", gatewayhttp.NewPricingRateTableHandler(receiptDeps))
 	r.Get("/v1/pricing/snapshots", gatewayhttp.NewPricingSnapshotsHandler(receiptDeps))
