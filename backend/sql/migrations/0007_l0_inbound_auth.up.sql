@@ -1,6 +1,6 @@
 -- Phase L0 minimum (N+4a): table-backed inbound auth.
 -- Replaces the SmokeAuthResolver env-injected single bearer pattern.
--- Per docs/plans/2026-04-30-n4-l0-minimum.md (synthesized) D1-D10.
+-- Per docs/process/plans/2026-04-30-n4-l0-minimum.md (synthesized) D1-D10.
 --
 -- Out of scope here (deferred to N+4b): adding FKs from
 -- billing_ledger_claims / usage_records / pool_slot_acquisitions back to

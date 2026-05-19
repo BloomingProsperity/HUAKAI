@@ -14,7 +14,7 @@
 
 ### 1.2 产品模式
 
-两个独立的商业版本，共用一套代码库（[DR-002 Product Editions](../decisions/DR-002-product-editions.md)）：
+两个独立的商业版本，共用一套代码库（[DR-002 Product Editions](../process/decisions/DR-002-product-editions.md)）：
 
 | 版本 | 用户 | 收入模式 | 界面需求 |
 |------|------|---------|---------|
@@ -149,7 +149,7 @@ interface ErrorResponse {
 
 ### 3.1 主要表结构（schema fragments）
 
-所有表均携带 `tenant_id` 用于多租户隔离（[DR-001 Multi-Tenancy](../decisions/DR-001-multi-tenancy.md)）；金额字段统一 `numeric(20,8)`（精度至 satoshis）；敏感凭证加密存储（[DR-006 Database](../decisions/DR-006-database.md)）。
+所有表均携带 `tenant_id` 用于多租户隔离（[DR-001 Multi-Tenancy](../process/decisions/DR-001-multi-tenancy.md)）；金额字段统一 `numeric(20,8)`（精度至 satoshis）；敏感凭证加密存储（[DR-006 Database](../process/decisions/DR-006-database.md)）。
 
 #### tenants（租户）
 ```sql
@@ -707,9 +707,9 @@ HUAKAI Admin
    └─ KMS & Secrets        (密钥管理)
 ```
 
-### 7.4 技术栈建议（遵循 [DR-004](../decisions/DR-004-frontend-framework.md)）
+### 7.4 技术栈建议（遵循 [DR-004](../process/decisions/DR-004-frontend-framework.md)）
 
-- **Framework**: Next.js 14+ App Router（已选定；[DR-004](../decisions/DR-004-frontend-framework.md)）
+- **Framework**: Next.js 14+ App Router（已选定；[DR-004](../process/decisions/DR-004-frontend-framework.md)）
 - **Language**: TypeScript strict mode（[frontend/tsconfig.json](../frontend/tsconfig.json)）
 - **Styling**: 原生 CSS 或 CSS modules（no Tailwind / Styled Components；keep it minimal）
 - **HTTP Client**: fetch API（no axios / tanstack query；可选 SWR 用于轮询，但 [observability/page.tsx](../frontend/app/observability/page.tsx) 已用原生 setInterval）

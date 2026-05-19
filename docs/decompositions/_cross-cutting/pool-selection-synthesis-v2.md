@@ -4,7 +4,7 @@
 | --- | --- |
 | Status | Released-Inputs (2026-04-28). The implementer-facing Released spec is at [docs/specs/pool-routing.md](../../specs/pool-routing.md) Status=Released. This file is retained as the source-traceable backing artifact for spec; implementer lane MUST read the Released spec, NOT this file. |
 | Feature ID | F-POOL-001 |
-| Lane mode | Option C (account-pool routing carve-out per [DR-000](../../decisions/DR-000-clean-room-methodology.md)) |
+| Lane mode | Option C (account-pool routing carve-out per [DR-000](../../process/decisions/DR-000-clean-room-methodology.md)) |
 | Author | Claude (PM-Orchestrator), synthesizing source-verified passes |
 | Date | 2026-04-28 |
 | Sources | Sub2API ([E-LIC-001](../../07_REFERENCE_EVIDENCE_LEDGER.md), LGPL-3.0, commit `b0a2252ed19c3720e6adafde6083e64fbac2efa9`); one-api ([E-LIC-004](../../07_REFERENCE_EVIDENCE_LEDGER.md), MIT, commit `8df4a2670b98266bd287c698243fff327d9748cf`); LiteLLM (E-LIC-005, MIT — pinned via Codex litellm cross-verify); plus [pool-selection-claude-v2.md](pool-selection-claude-v2.md), [pool-fallback-source-verified.md](../litellm/pool-fallback-source-verified.md), [quota-billing-source-verified.md](../one-api/quota-billing-source-verified.md), [observability-source-verified.md](../sub2api/observability-source-verified.md) |

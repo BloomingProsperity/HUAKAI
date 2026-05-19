@@ -1,6 +1,6 @@
 # Provider Account Pool Selection — Synthesis & Final Action Plan
 
-> ⚠️ **SUPERSEDED — DO NOT USE** (2026-04-28). Codex reviewer REJECTED this synthesis (per `docs/reviews/2026-04-28-codex-reviewer-cycle1-cycle2-cl011.md` §4 verdict matrix). Use [pool-selection-synthesis-v2.md](pool-selection-synthesis-v2.md) regenerated from source-verified inputs. Q1..Q4 PM decisions remain valid in v2.
+> ⚠️ **SUPERSEDED — DO NOT USE** (2026-04-28). Codex reviewer REJECTED this synthesis (per `docs/process/reviews/2026-04-28-codex-reviewer-cycle1-cycle2-cl011.md` §4 verdict matrix). Use [pool-selection-synthesis-v2.md](pool-selection-synthesis-v2.md) regenerated from source-verified inputs. Q1..Q4 PM decisions remain valid in v2.
 
 | Field | Value |
 | --- | --- |

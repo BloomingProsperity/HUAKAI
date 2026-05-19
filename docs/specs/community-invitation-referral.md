@@ -420,7 +420,7 @@ Local reference repos were already present under `/home/codex/refs`. Network acc
 
 | Region read | Contribution |
 |---|---|
-| `docs/plans/2026-05-17-f-comm-001-invitation-referral-spec-codex.md` | Round 1 plan, scope, success criteria, clean-room constraints. |
+| `docs/process/plans/2026-05-17-f-comm-001-invitation-referral-spec-codex.md` | Round 1 plan, scope, success criteria, clean-room constraints. |
 | `CLAUDE.md` §11-§12 | Clean-room and source-must-read rules. |
 | `docs/specs/_TEMPLATE.md` | Spec metadata and acceptance-test structure. |
 | `docs/specs/voucher-system.md` | F-BILL-002 boundary and voucher linkage. |
@@ -448,7 +448,7 @@ Local reference repos were already present under `/home/codex/refs`. Network acc
 中文摘要: F-COMM-001 邀请/推荐 spec 已落档。真实观察来自 Sub2API 注册/邀请码/返利、New API 注册赠额/额度流转、All API Hub tier/兑换相邻行为；合理推断 5 项；open question 4 项。功能无缩水：邀请码、推荐奖励、tier、反作弊、audit/receipt 均保留。clean-room 风险按 paraphrase + file:line 控制；安全风险主要在后续 schema/auth/billing/audit 实施，需 Owner 再确认。
 
 Source files read:
-- docs/plans/2026-05-17-f-comm-001-invitation-referral-spec-codex.md
+- docs/process/plans/2026-05-17-f-comm-001-invitation-referral-spec-codex.md
 - CLAUDE.md
 - docs/specs/_TEMPLATE.md
 - docs/specs/voucher-system.md

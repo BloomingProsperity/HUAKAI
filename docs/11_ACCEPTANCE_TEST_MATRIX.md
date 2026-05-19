@@ -30,7 +30,7 @@ First Codex-authored batch (2026-04-28). Each row covers normal path, failure pa
 
 Codex flagged four items while drafting the L1 directions above:
 
-1. **AT-GW-004 sits closest to the Option C carve-out.** Retry / fallback paths intersect provider health, account-pool routing, and provider failover — all carve-out areas in [DR-000](decisions/DR-000-clean-room-methodology.md). Phase 2 must lock the local fields (fallback reason, retry-attempt count, account-health snapshot) before any test code is written, and the spec for these fields must use Option C lane discipline.
+1. **AT-GW-004 sits closest to the Option C carve-out.** Retry / fallback paths intersect provider health, account-pool routing, and provider failover — all carve-out areas in [DR-000](process/decisions/DR-000-clean-room-methodology.md). Phase 2 must lock the local fields (fallback reason, retry-attempt count, account-health snapshot) before any test code is written, and the spec for these fields must use Option C lane discipline.
 2. **AT-GW-002, AT-KEY-001, AT-TIMEOUT-001 require Phase 2 schema lock first.** All three depend on Usage Record, Quota, and Billing Ledger field commitments that have not been made yet. Acceptance test code for these can only be written after Phase 2.
 3. **Glossary cleanup needed.** The original AT-AUTH-001 wording ("OAuth provider") collides with this project's `Provider` term ([18_GLOSSARY.md](18_GLOSSARY.md), upstream LLM service operator). The row above has been corrected to use "OAuth identity source". Apply the same convention everywhere downstream.
 4. **Capability anchors missing in [02_CAPABILITY_CONTRACT.md](02_CAPABILITY_CONTRACT.md).** Three capabilities are implied by L1 MVP rows but not anchored explicitly: auth-provider abstraction (F-AUTH-001), operator-supplied SESSION_SECRET as a deployment requirement (F-AUTH-002), and first-run bootstrap credential rotation (F-SEC-002). These should be added to docs/02 in the next governance pass.
@@ -58,7 +58,7 @@ Codex flagged four items while drafting the L1 directions above:
 
 ## F-CH-002 Channel Health Auto-Disable — Round 3 Spec Wave
 
-Source: `docs/specs/channel-health-auto-disable.md`, `docs/decompositions/_cross-cutting/channel-health.md`, and `docs/plans/2026-05-16-f-ch-002-channel-health-codex.md`. These are acceptance outlines only; this docs wave does not implement backend code, schema, OpenAPI, or admin UI.
+Source: `docs/specs/channel-health-auto-disable.md`, `docs/decompositions/_cross-cutting/channel-health.md`, and `docs/process/plans/2026-05-16-f-ch-002-channel-health-codex.md`. These are acceptance outlines only; this docs wave does not implement backend code, schema, OpenAPI, or admin UI.
 
 | Test ID | Scenario | Capability | Preconditions | Steps | Expected Result | Risk Covered | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -78,7 +78,7 @@ Source: `docs/specs/channel-health-auto-disable.md`, `docs/decompositions/_cross
 
 ## F-CRED-001 Credential Acquisition — Phase A
 
-Source: `docs/specs/credential-acquisition.md`, `docs/plans/2026-05-15-f-cred-001-acquisition-codex.md`, and `docs/plans/2026-05-15-f-cred-001-synthesis-codex.md`. These are acceptance outlines; Phase A Go tests are mock-only scaffolds.
+Source: `docs/specs/credential-acquisition.md`, `docs/process/plans/2026-05-15-f-cred-001-acquisition-codex.md`, and `docs/process/plans/2026-05-15-f-cred-001-synthesis-codex.md`. These are acceptance outlines; Phase A Go tests are mock-only scaffolds.
 
 | Test ID | Scenario | Capability | Preconditions | Steps | Expected Result | Risk Covered | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -145,7 +145,7 @@ Source: `docs/specs/session-management.md` and `docs/decompositions/_cross-cutti
 
 ## AT-MIMICRY-001 Anthropic TLS Mimicry — Rust Wave R-1
 
-Source: `docs/plans/2026-05-17-rust-core-closure-roadmap-plan-claude.md` Wave R-1 and `tools/fingerprint-collector/templates/anthropic-claude-code.json`. This test targets the feature-gated Rust OpenSSL adapter only; no real `anthropic.com` network call is required in CI.
+Source: `docs/process/plans/2026-05-17-rust-core-closure-roadmap-plan-claude.md` Wave R-1 and `tools/fingerprint-collector/templates/anthropic-claude-code.json`. This test targets the feature-gated Rust OpenSSL adapter only; no real `anthropic.com` network call is required in CI.
 
 | Test ID | Scenario | Capability | Preconditions | Steps | Expected Result | Risk Covered | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |

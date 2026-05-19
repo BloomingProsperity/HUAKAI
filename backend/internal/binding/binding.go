@@ -2,7 +2,7 @@
 //
 // **当前阶段（U1-A）只做 interface + noop stub**——production routing 完全
 // 不感知 binding。U1-B/U1-C 启用 binding-aware routing 之前必须先有 Owner 批
-// 准的 schema migration（参 docs/plans/2026-05-08-upgrade1-u1a-prereview-codex.md
+// 准的 schema migration（参 docs/process/plans/2026-05-08-upgrade1-u1a-prereview-codex.md
 // 推荐 0013_*.up.sql 加 api_key_bindings 表）。
 //
 // 设计参考: backend/internal/registry/cache.go 的 Cache interface + noop stub

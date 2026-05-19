@@ -11,7 +11,7 @@
 //   - 决策来源 enum (path / route_config / identity / default)
 //   - 置信度 + 冲突标记 (用于 metrics + audit)
 //
-// 选择优先级（参 docs/plans/2026-05-08-upgrade6-u6d-synthesis.md 综合 codex
+// 选择优先级（参 docs/process/plans/2026-05-08-upgrade6-u6d-synthesis.md 综合 codex
 // lane 的"path/route 优先"决策）：
 //   1. explicit path: /v1/chat/completions → OpenAIChat 等显式路径强 contract
 //   2. route_config: 显式路由配置中已声明的 ClientProtocol

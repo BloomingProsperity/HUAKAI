@@ -5,9 +5,9 @@
 | Status | Specifier-lane draft (Claude pass v2, source-verified) |
 | Author | Claude (PM-Orchestrator), specifier lane |
 | Date | 2026-04-28 |
-| Lane | Specifier — Option C strict spec input per [DR-000](../../decisions/DR-000-clean-room-methodology.md) carve-out for F-POOL-001 |
+| Lane | Specifier — Option C strict spec input per [DR-000](../../process/decisions/DR-000-clean-room-methodology.md) carve-out for F-POOL-001 |
 | Feature | [F-POOL-001](../../03_FEATURE_PARITY_MATRIX.md) (L1 MVP) |
-| Supersedes | [pool-selection-claude.md](pool-selection-claude.md) (v1) — withdrawn per [2026-04-28-source-truth-corrections.md](../../reviews/2026-04-28-source-truth-corrections.md). v1 was paraphrased from prior prose decompositions; this v2 is read directly from source. |
+| Supersedes | [pool-selection-claude.md](pool-selection-claude.md) (v1) — withdrawn per [2026-04-28-source-truth-corrections.md](../../process/reviews/2026-04-28-source-truth-corrections.md). v1 was paraphrased from prior prose decompositions; this v2 is read directly from source. |
 | Sub2API verified | commit `b0a2252ed19c3720e6adafde6083e64fbac2efa9`, local clone at `c:/HUAKAI/repo/.omc/reference-src/sub2api/` (gitignored) |
 
 ## 1. Why F-POOL-001 Is Money-Grade
@@ -256,4 +256,4 @@ These I have not yet confirmed and should be verified before reviewer-lane sign-
   - one-api: `relay/controller/text.go`, `relay/channeltype/select.go` (browsed; details summarized §3).
 - Behavior described in HUAKAI vocabulary; no upstream function name appears in implementer-lane facing files (this file IS specifier-lane, so function names are cited for traceability per CL-002 specifier-lane exception).
 - This pass was authored AFTER reading source directly. Codex's parallel pass (`pool-selection-codex.md`) was authored before; mutual review against this v2 follows.
-- v1 (`pool-selection-claude.md`) is **withdrawn**; see `docs/reviews/2026-04-28-source-truth-corrections.md` for the catalogue of v1 hallucinations.
+- v1 (`pool-selection-claude.md`) is **withdrawn**; see `docs/process/reviews/2026-04-28-source-truth-corrections.md` for the catalogue of v1 hallucinations.

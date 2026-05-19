@@ -148,8 +148,8 @@ detection_evidence (本表 §5 JSONB column) 严禁含: raw cookie / raw upstrea
 
 ## 12. Source files read (Claude lane)
 
-- commit `cf4fed4` docs/plans/2026-05-16-antigravity-anti-detection-roadmap-claude.md (D5 anchor)
-- commit `e51e37c` docs/plans/2026-05-16-all-vendor-subscription-anti-detection-roadmap-claude.md (7 层防护栈 L6)
+- commit `cf4fed4` docs/process/plans/2026-05-16-antigravity-anti-detection-roadmap-claude.md (D5 anchor)
+- commit `e51e37c` docs/process/plans/2026-05-16-all-vendor-subscription-anti-detection-roadmap-claude.md (7 层防护栈 L6)
 - commit `06f0ff2` docs/specs/device-fingerprint-binding.md (L3) + docs/specs/channel-health-auto-disable.md (F-CH-002 联动) + docs/research/2026-05-16-anti-detection-project-deep-verify-sonnet.md (finch / nodriver / CLIProxyAPI 参考)
 - commit `e1ba802` tools/upstream-policy-monitor/ (POL-1)
 - memory: `feedback_anti_detection_specs_claude_writes`, `feedback_stability_means_stronger`, `feedback_huakai_better_than_sub2api`, `project_core_trust_chain_differentiator`

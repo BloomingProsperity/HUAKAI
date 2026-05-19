@@ -138,14 +138,14 @@ Create the implementation skeleton only after Phase 2 locks the MVP.
 
 ### Deliverables
 
-- Go module skeleton (per [DR-003](decisions/DR-003-technology-stack.md)) with one HTTP framework picked and locked.
+- Go module skeleton (per [DR-003](process/decisions/DR-003-technology-stack.md)) with one HTTP framework picked and locked.
 - TypeScript frontend skeleton with types **generated** from the backend's OpenAPI artifact (codegen tool selected here or in a follow-up DR).
 - Test framework: `go test` with `-race` enabled by default; vitest or equivalent for the frontend.
 - Provider-neutral streaming abstraction stub (must exist before any provider integration begins, per DR-003 Constraint 3).
 - Basic lint or type checks: `go vet`, `staticcheck`, `golangci-lint` for Go; `tsc --noEmit` for TS.
 - Configuration examples without real secrets.
 - Minimal CI or local check plan that runs lint + tests on every commit.
-- **Naming-discipline guardrails** (per [DR-003](decisions/DR-003-technology-stack.md) Constraint 8): `golangci-lint.yml` and ESLint configs include lint rules enforcing glossary-aligned naming (e.g. forbidden synonyms list), no-duplicate-logic linters where available, and import-cycle / dead-code detection on by default. CI rejects PRs that introduce naming drift or redundant logic.
+- **Naming-discipline guardrails** (per [DR-003](process/decisions/DR-003-technology-stack.md) Constraint 8): `golangci-lint.yml` and ESLint configs include lint rules enforcing glossary-aligned naming (e.g. forbidden synonyms list), no-duplicate-logic linters where available, and import-cycle / dead-code detection on by default. CI rejects PRs that introduce naming drift or redundant logic.
 - DR-005 (Go HTTP framework) and DR-006 (database) decided BEFORE skeleton is committed.
 
 ### Risk Rule
@@ -287,7 +287,7 @@ Move from MVP to production usable.
 
 ### Goal
 
-Close remaining reference parity gaps; deliver the Provider Catalog Breadth that is HUAKAI's commercial differentiator per [DR-007](decisions/DR-007-product-positioning-and-breadth.md); improve beyond references.
+Close remaining reference parity gaps; deliver the Provider Catalog Breadth that is HUAKAI's commercial differentiator per [DR-007](process/decisions/DR-007-product-positioning-and-breadth.md); improve beyond references.
 
 ### Provider Catalog Breadth Exit Criterion (per DR-007)
 
@@ -331,7 +331,7 @@ By the end of Phase 9, HUAKAI's supported Provider catalog must **materially exc
 
 ### Goal
 
-Activate the SaaS Edition after Personal Edition (Phase 1-9) has validated user feedback. See [DR-002](decisions/DR-002-product-editions.md).
+Activate the SaaS Edition after Personal Edition (Phase 1-9) has validated user feedback. See [DR-002](process/decisions/DR-002-product-editions.md).
 
 ### Trigger
 

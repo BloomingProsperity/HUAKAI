@@ -5,7 +5,7 @@
 - 评审范围：read-only 验真。审 Round 2 review 列出的 4 件残留（1 P0-3 残留 + 1 P0-6 残留 + 1 MED-A + 1 LOW-B）是否在 Round 3 真改到位、无回归、无新引 issue。
 - 输入文档：
   - Round 2 review：`docs/research/2026-05-12-gemini-p1-round2-review-sonnet.md`
-  - Round 3 任务清单：`docs/plans/2026-05-12-gemini-p1-round3-prompt.md`
+  - Round 3 任务清单：`docs/process/plans/2026-05-12-gemini-p1-round3-prompt.md`
 - 背景：Round 3 由 Claude 手工 patch（Gemini CLI 与本地代理冲突 dispatch 失败），机械翻译/路径调整/CSS 移位/几何符号添加，无创意设计成分。
 - 独立性：未读 codex Round 3 lane，verdict 由本 lane 单独得出。
 
@@ -121,7 +121,7 @@
   - `frontend/app/dashboard/dashboard.module.css` (243 LoC)
   - `frontend/lib/dashboard-mock.ts` (125 LoC)
   - `docs/research/2026-05-12-gemini-p1-round2-review-sonnet.md`
-  - `docs/plans/2026-05-12-gemini-p1-round3-prompt.md`
+  - `docs/process/plans/2026-05-12-gemini-p1-round3-prompt.md`
 - 工具：`Read` × 10、`Bash grep` × 6、零 file write 除本报告
 - 跨 lane 状态：codex Round 3 lane 独立进行；本 verdict 不依赖 codex 结论
 - 总 LoC：716（round 2 = 690，+26 来自 4 个 fix；CSS +10，page +3，mock +10 STATUS_SHAPES + 注释；全部合规增量）

@@ -4,7 +4,7 @@
 | --- | --- |
 | Status | Action Plan (synthesized from source-verified inputs) |
 | Feature ID | F-RATE-001 |
-| Lane mode | Option C (rate-limit + cooldown intersects Provider Account health and billing reconciliation per [DR-000](../../decisions/DR-000-clean-room-methodology.md)) |
+| Lane mode | Option C (rate-limit + cooldown intersects Provider Account health and billing reconciliation per [DR-000](../../process/decisions/DR-000-clean-room-methodology.md)) |
 | Author | Claude (PM-Orchestrator) |
 | Date | 2026-04-28 |
 | Sources | Sub2API ([E-LIC-001](../../07_REFERENCE_EVIDENCE_LEDGER.md), LGPL-3.0, commit `b0a2252...`); LiteLLM ([E-LIC-005](../../07_REFERENCE_EVIDENCE_LEDGER.md), MIT, behavioral cross-reference only) |

@@ -1,5 +1,5 @@
 -- Slice 2 (N+4b2) admin_tokens queries.
--- Per docs/plans/2026-05-01-n4b-admin-keys.md §Scope A.
+-- Per docs/process/plans/2026-05-01-n4b-admin-keys.md §Scope A.
 -- Per CMB-1: this file is consumed only by internal/admin and never by
 -- internal/auth (the inbound customer resolver). Per CMB-5: queries
 -- never SELECT key_hash for any purpose other than bcrypt comparison

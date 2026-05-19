@@ -170,7 +170,7 @@ outbound HTTP request 由 R-3 R-E Rust 数据面发出. 集成点:
 
 ## 8. 跟其它项目对比 (HUAKAI 升级 + clean-room 引证据)
 
-| 维度 | Antigravity-Manager ([github.com/lbjlaq/Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager), fetch 2026-05-16, license: 暂未 verify 见 sonnet survey [docs/plans/2026-05-16-github-anti-detection-survey-sonnet.md](../plans/2026-05-16-github-anti-detection-survey-sonnet.md)) | camoufox ([github.com/daijro/camoufox](https://github.com/daijro/camoufox), fetch 2026-05-16, license: **MPL-2.0** 不可 vendor) | rebrowser-patches ([github.com/rebrowser/rebrowser-patches](https://github.com/rebrowser/rebrowser-patches), fetch 2026-05-16, **无 license 文件 + 12 个月 stale** 不可 vendor 仅参考) | HUAKAI L3 |
+| 维度 | Antigravity-Manager ([github.com/lbjlaq/Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager), fetch 2026-05-16, license: 暂未 verify 见 sonnet survey [docs/process/plans/2026-05-16-github-anti-detection-survey-sonnet.md](../process/plans/2026-05-16-github-anti-detection-survey-sonnet.md)) | camoufox ([github.com/daijro/camoufox](https://github.com/daijro/camoufox), fetch 2026-05-16, license: **MPL-2.0** 不可 vendor) | rebrowser-patches ([github.com/rebrowser/rebrowser-patches](https://github.com/rebrowser/rebrowser-patches), fetch 2026-05-16, **无 license 文件 + 12 个月 stale** 不可 vendor 仅参考) | HUAKAI L3 |
 |---|---|---|---|---|
 | 实施位置 | 桌面客户端 Tauri (用户跑 modified app) | Firefox fork (用户跑 C++ patched browser) | Puppeteer/Playwright runtime patch | **网关侧 (HUAKAI 服务器), 用户用 standard tool** |
 | 注入维度 | 设备指纹绑定 + 切换 (维度 1-12 full set, browser layer) | C++ 注入维度 1-12 full (navigator/Canvas/WebGL/Audio metrics) | CDP Runtime.Enable patch + utility world 隐藏 (反 anti-bot 检测维度 4-12) | HTTP header layer 维度 **1-3 + 部分 8** (Sec-Ch-UA-Platform); JS-runtime 维度 4-12 不真注入 (HUAKAI HTTP-only path), 留 L6 主动对抗 phase |
@@ -219,9 +219,9 @@ outbound HTTP request 由 R-3 R-E Rust 数据面发出. 集成点:
 
 ## 12. Source files read (Claude lane)
 
-- commit `cf4fed4` docs/plans/2026-05-16-antigravity-anti-detection-roadmap-claude.md (D5 anchor)
-- commit `e51e37c` docs/plans/2026-05-16-all-vendor-subscription-anti-detection-roadmap-claude.md (7 层防护栈 L3)
-- commit `e51e37c` docs/plans/2026-05-16-github-anti-detection-survey-sonnet.md (camoufox / Antigravity-Manager / rebrowser-patches 设备指纹参考)
+- commit `cf4fed4` docs/process/plans/2026-05-16-antigravity-anti-detection-roadmap-claude.md (D5 anchor)
+- commit `e51e37c` docs/process/plans/2026-05-16-all-vendor-subscription-anti-detection-roadmap-claude.md (7 层防护栈 L3)
+- commit `e51e37c` docs/process/plans/2026-05-16-github-anti-detection-survey-sonnet.md (camoufox / Antigravity-Manager / rebrowser-patches 设备指纹参考)
 - commit `96bb888` exploratory/rust-core-gateway/merged/crates/core_gateway/src/route_client.rs (R-3 R-E Rust 数据面 base)
 - memory: `feedback_anti_detection_specs_claude_writes`, `project_r3_rust_sidecar`, `feedback_stability_means_stronger`, `feedback_huakai_better_than_sub2api`, `project_core_trust_chain_differentiator`
 

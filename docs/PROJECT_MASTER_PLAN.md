@@ -1,6 +1,6 @@
 # HUAKAI 项目总规划 / Project Master Plan
 
-> 这是 **Owner 总览文档**——把散在 25+ 份治理文件里的关键信息汇总到一处。**正式规则仍以分散的英文权威文件为准**（如 docs/01..24, docs/decisions/DR-*）。本文档每次重大决策后由 Claude PM 刷新。最近实现同步：**2026-05-01**。
+> 这是 **Owner 总览文档**——把散在 25+ 份治理文件里的关键信息汇总到一处。**正式规则仍以分散的英文权威文件为准**（如 docs/01..24, docs/process/decisions/DR-*）。本文档每次重大决策后由 Claude PM 刷新。最近实现同步：**2026-05-01**。
 >
 > **Current implementation sync:** 项目已不是“Phase 3+ 未启动”。当前代码处于 **Phase C / N+5b**：`/v1/chat/completions` 已串起 inbound API key auth、Model Registry、Router.Plan、ClaimGate、Resource Pool selector、stream forwarder、Tx2 Settler 与 Obs Reader。仍未完成的是 admin UI、支付/充值、真实 pricing、真实 upstream provider、multi-attempt executor。
 
@@ -13,7 +13,7 @@
 - **差异化**：上游接入广度（一api/Sub2API 的弱项就是接入太少）
 - **质量底线**："必须真实"——所有核心算法要源码级深拆 + 互审 + 严格 spec 才能进实现
 
-来源：[01 Owner-Stated Goal](01_PROJECT_BRIEF.md) + [DR-007 商业定位](decisions/DR-007-product-positioning-and-breadth.md)
+来源：[01 Owner-Stated Goal](01_PROJECT_BRIEF.md) + [DR-007 商业定位](process/decisions/DR-007-product-positioning-and-breadth.md)
 
 ## 二、商业模式（两条平行赚钱路）
 
@@ -22,7 +22,7 @@
 | **模式 1：自部署 + 卖 API** | Personal Edition | 中转站运营方（您自己） | 终端开发者 / 用户 | Token 用量 / 订阅 | Phase 6+ 商业化（您自己开张） |
 | **模式 2：卖 SaaS** | SaaS Edition | SaaS 提供方（您） | 想做模式 1 的运营方 | SaaS 订阅 / 抽成 | Phase 10+ 启动（模式 1 跑顺再做） |
 
-**同一份代码库**通过 Edition 配置开关切换两种形态。来源：[DR-002](decisions/DR-002-product-editions.md)。
+**同一份代码库**通过 Edition 配置开关切换两种形态。来源：[DR-002](process/decisions/DR-002-product-editions.md)。
 
 ## 三、项目流程（您问的"调研→研究→规划→落实→检测"）
 
@@ -106,11 +106,11 @@ Admin / Frontend:          ░░░░░░░░░░░░░░░░░�
 
 | 决策 | 选择 | 来源 |
 |---|---|---|
-| 后端语言 | **Go**（stdlib net/http + chi） | [DR-003](decisions/DR-003-technology-stack.md) + [DR-005](decisions/DR-005-go-http-framework.md) |
-| 前端 | **TypeScript + React + Vite + TanStack** + Tailwind | [DR-003](decisions/DR-003-technology-stack.md) + [DR-004](decisions/DR-004-frontend-framework.md) |
-| 数据库 | **PostgreSQL + sqlc + Docker Compose** | [DR-006](decisions/DR-006-database.md) |
-| 多租户 | **tenant-aware schema 从第一天起** | [DR-001](decisions/DR-001-multi-tenancy.md) |
-| Clean-room | **Option B 双车道 + Option C carve-out**（账号池路由 / 计费对账 / Provider 健康） | [DR-000](decisions/DR-000-clean-room-methodology.md) |
+| 后端语言 | **Go**（stdlib net/http + chi） | [DR-003](process/decisions/DR-003-technology-stack.md) + [DR-005](process/decisions/DR-005-go-http-framework.md) |
+| 前端 | **TypeScript + React + Vite + TanStack** + Tailwind | [DR-003](process/decisions/DR-003-technology-stack.md) + [DR-004](process/decisions/DR-004-frontend-framework.md) |
+| 数据库 | **PostgreSQL + sqlc + Docker Compose** | [DR-006](process/decisions/DR-006-database.md) |
+| 多租户 | **tenant-aware schema 从第一天起** | [DR-001](process/decisions/DR-001-multi-tenancy.md) |
+| Clean-room | **Option B 双车道 + Option C carve-out**（账号池路由 / 计费对账 / Provider 健康） | [DR-000](process/decisions/DR-000-clean-room-methodology.md) |
 
 ## 六、参考项目矩阵 + 拆解状态
 
@@ -168,7 +168,7 @@ Admin / Frontend:          ░░░░░░░░░░░░░░░░░�
 
 ## 十、当前**最优先**的 Mandated Next Dives
 
-按 [DR-007 + DR-002 §Owner Refinement](decisions/DR-007-product-positioning-and-breadth.md) 排序：
+按 [DR-007 + DR-002 §Owner Refinement](process/decisions/DR-007-product-positioning-and-breadth.md) 排序：
 
 ### 立即（Phase 1.2 → Phase 1.3 → Phase 2 转换前）
 
@@ -233,7 +233,7 @@ Admin / Frontend:          ░░░░░░░░░░░░░░░░░�
 
 > **Owner Decision: A — 严格走，慢但真。**
 
-正式锁定为 [DR-008 Methodology Choice — Strict Authenticity Over Speed](decisions/DR-008-methodology-choice-strict-authenticity.md)。
+正式锁定为 [DR-008 Methodology Choice — Strict Authenticity Over Speed](process/decisions/DR-008-methodology-choice-strict-authenticity.md)。
 
 后果：
 - **每一个 L1/L2 功能**必须走完整 `prose decomposition → 互审 → 综合 → reviewer-lane CL-001..010 → Released`

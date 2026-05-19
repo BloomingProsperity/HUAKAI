@@ -1,4 +1,4 @@
-This directory holds the Phase 2 schema lock for HUAKAI per [16_PHASED_DELIVERY_PLAN.md](../16_PHASED_DELIVERY_PLAN.md) §Phase 2 + [DR-006](../decisions/DR-006-database-orm-strategy.md).
+This directory holds the Phase 2 schema lock for HUAKAI per [16_PHASED_DELIVERY_PLAN.md](../16_PHASED_DELIVERY_PLAN.md) §Phase 2 + [DR-006](../process/decisions/DR-006-database-orm-strategy.md).
 
 # Phase 2 Schema Lock
 
@@ -13,7 +13,7 @@ When all L1 features are Released, fragments unify into the canonical migration 
 ## Discipline
 
 1. Schema lock is a **field-level commitment**. Once locked, fields can only be ADDED via new migrations, not modified or removed without a new DR.
-2. Every primary table carries non-null `tenant_id` per [DR-001](../decisions/DR-001-multi-tenancy.md).
+2. Every primary table carries non-null `tenant_id` per [DR-001](../process/decisions/DR-001-multi-tenancy.md).
 3. Money fields use `numeric(20, 8)` end-to-end per [F-OBS-001 synthesis](../decompositions/_cross-cutting/observability-synthesis.md) §H4. No float, no double-precision.
 4. Acquisition tokens use `uuid` per [F-POOL-001 spec](../specs/pool-routing.md) §6.13.
 5. Idempotency keys use `text` (hashed values).

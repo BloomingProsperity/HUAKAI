@@ -166,7 +166,7 @@ type AdminInsertAPIKeyRow struct {
 }
 
 // Slice 2 (N+4b2) admin-side api_keys queries.
-// Per docs/plans/2026-05-01-n4b-admin-keys.md §Scope A.
+// Per docs/process/plans/2026-05-01-n4b-admin-keys.md §Scope A.
 // These queries are issued by internal/admin (operator-facing) and are
 // distinct from internal/auth's customer-facing LookupAPIKeysByPrefix:
 // admin tooling MUST NOT use the prefix-only lookup that the customer

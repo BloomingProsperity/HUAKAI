@@ -45,4 +45,4 @@ frontend/
 
 ## 关联计划
 
-见 `docs/plans/2026-05-08-vertical-closure-synthesis.md` §3 "前端 wedge 最小集"。
+见 `docs/process/plans/2026-05-08-vertical-closure-synthesis.md` §3 "前端 wedge 最小集"。

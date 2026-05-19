@@ -306,7 +306,7 @@ Concrete risks if we proceed with current Codex / Claude backlog as-is:
    This is the smallest migration that anchors the spine without breaking N+5b chat handler.
 6. **Insert minimal admin endpoints**: `POST /admin/v1/api-keys/{id}/bindings` and `GET /admin/v1/api-keys/{id}/bindings` so binding becomes operationally visible. Defer issue/revoke flow refactor; defer state-transition admin actions.
 7. **Defer to Slice 5/6**: F-ACCAPI-CRED-INJECT-001, F-ACCAPI-ERR-CLASSIFY-001, F-ACCAPI-CAP-SNAP-001, F-ACCAPI-TRACE-001. They land WITH real-upstream Slice 5 because they need provider HTTP traffic to be meaningful.
-8. **Codex parallel plan (CLAUDE.md #10)**: before step 5 lands, both Claude and Codex draft `docs/plans/2026-05-NN-accapi-spine-{claude|codex}.md` independently, then cross-discuss. This audit document is Claude's pre-plan input. Do not execute step 5 until that round happens.
+8. **Codex parallel plan (CLAUDE.md #10)**: before step 5 lands, both Claude and Codex draft `docs/process/plans/2026-05-NN-accapi-spine-{claude|codex}.md` independently, then cross-discuss. This audit document is Claude's pre-plan input. Do not execute step 5 until that round happens.
 
 ### Track 2 — Spine-independent P0 safety (can ship in parallel)
 

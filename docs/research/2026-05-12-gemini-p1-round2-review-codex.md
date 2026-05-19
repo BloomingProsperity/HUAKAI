@@ -12,7 +12,7 @@
 - `frontend/app/dashboard/components/{AlertBar,MetricBlock,MiniTrend,ProviderTable,StatusBar}.tsx`
 - `frontend/app/dashboard/dashboard.module.css`
 - `frontend/lib/dashboard-mock.ts`
-- `docs/plans/2026-05-12-gemini-p1-round2-prompt.md`
+- `docs/process/plans/2026-05-12-gemini-p1-round2-prompt.md`
 - `docs/research/2026-05-12-gemini-p1-review-codex.md`
 - `docs/research/2026-05-12-frontend-brief-market-sonnet.md`
 - `docs/research/2026-05-12-frontend-brief-market-codex.md`

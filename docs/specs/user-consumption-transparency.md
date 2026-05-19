@@ -298,7 +298,7 @@ cost_payload JSONB redaction: F-PRIV-001 `Redactor.SanitizePayload` 强制. 严�
 - docs/specs/voucher-system.md (F-BILL-002 cross-ref)
 - backend/sql/migrations/0013_trust_chain_audit_ledger.up.sql (audit_ledger_entries anchor)
 - backend/sql/migrations/0023_voucher_system.up.sql (voucher cross-ref)
-- docs/plans/2026-05-16-f-audit-001-spec-claude.md (Claude lane parallel-draft)
+- docs/process/plans/2026-05-16-f-audit-001-spec-claude.md (Claude lane parallel-draft)
 - /tmp/codex-f-audit-001-spec-codex-draft.md (Codex lane parallel-draft, 1.4MB)
 - memory: `project_core_trust_chain_differentiator`
 

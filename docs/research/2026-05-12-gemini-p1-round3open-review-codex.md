@@ -20,7 +20,7 @@
 - `frontend/lib/dashboard-mock.ts`
 - `frontend/lib/api/huakai.ts`
 - `docs/research/2026-05-12-gemini-p1-round2-review-codex.md`
-- `docs/plans/2026-05-12-gemini-p1-open-brief.md`
+- `docs/process/plans/2026-05-12-gemini-p1-open-brief.md`
 - `docs/research/2026-05-12-frontend-brief-market-codex.md`
 
 未读取：
@@ -45,8 +45,8 @@
 |---|---|---|---|---|
 | P0-3 | `page.tsx` 11 处英文 JSX outline 注释未清；Round 2 Codex 记录在 `docs/research/2026-05-12-gemini-p1-round2-review-codex.md:48`、`:149-169` | Owner K grep exit 1，无命中；当前 JSX 注释为中文起始：`page.tsx:51`, `:54`, `:57`, `:60`, `:63` | CLOSED-WEAK | 按本轮 K 扫描合格；注释里仍有英文括注，如 `(Status Bar)`，不按硬违规处理 |
 | P0-6 | fallback banner inline style；Round 2 Codex 记录在 `docs/research/2026-05-12-gemini-p1-round2-review-codex.md:51`, `:171-181` | `page.tsx:39-42` 使用 `styles.fallbackBanner`；`dashboard.module.css:249-256` 定义样式；Owner I grep exit 1 | CLOSED | inline style 已从 dashboard page/components 清掉 |
-| MED-A | server component fetch 写死 `http://localhost:8080`；Open brief 列为已知 finding：`docs/plans/2026-05-12-gemini-p1-open-brief.md:61` | `page.tsx:20-21` 调 `getApiUrl(...)`；`frontend/lib/api/huakai.ts:10` 使用 `process.env.HUAKAI_GATEWAY_URL || 'http://localhost:8080'`；J grep 只命中 env fallback | CLOSED | env 默认 localhost 按 Owner J 规则不算违规；未发现硬编码 fetch |
-| LOW-B | 状态 dot 单一颜色信号，色盲不友好；Open brief 列为已知 finding：`docs/plans/2026-05-12-gemini-p1-open-brief.md:62` | `StatusIndicator.tsx:12-18` 用 `●/▲/■/◆` + 文本 label + 状态色；`ProviderTable.tsx:31-32` 使用该组件 | CLOSED | 供应商表格状态不再只依赖颜色；几何字符属于 U+25xx，Owner 明确允许 |
+| MED-A | server component fetch 写死 `http://localhost:8080`；Open brief 列为已知 finding：`docs/process/plans/2026-05-12-gemini-p1-open-brief.md:61` | `page.tsx:20-21` 调 `getApiUrl(...)`；`frontend/lib/api/huakai.ts:10` 使用 `process.env.HUAKAI_GATEWAY_URL || 'http://localhost:8080'`；J grep 只命中 env fallback | CLOSED | env 默认 localhost 按 Owner J 规则不算违规；未发现硬编码 fetch |
+| LOW-B | 状态 dot 单一颜色信号，色盲不友好；Open brief 列为已知 finding：`docs/process/plans/2026-05-12-gemini-p1-open-brief.md:62` | `StatusIndicator.tsx:12-18` 用 `●/▲/■/◆` + 文本 label + 状态色；`ProviderTable.tsx:31-32` 使用该组件 | CLOSED | 供应商表格状态不再只依赖颜色；几何字符属于 U+25xx，Owner 明确允许 |
 
 ## 3. 合规扫描结果 A-K
 

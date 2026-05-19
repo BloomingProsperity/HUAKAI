@@ -61,7 +61,7 @@ const (
 // Feature flag (lane 一致项 #4)：Enabled=false（默认）时整个管线 no-op，
 // 全部 6 step 标记 Skipped。这是产线安全默认 — 仅当 caller 在配置/policy
 // 层确认"该 provider 该 binding 应当走强伪装"才显式置 true。详见
-// docs/plans/2026-05-06-r3-transport-mimicry-synthesis.md §5。
+// docs/process/plans/2026-05-06-r3-transport-mimicry-synthesis.md §5。
 type MimicryPlan struct {
 	// Enabled 是 R7 强伪装层的 feature flag。零值 false 时整个 ApplyMimicryPlan
 	// 直接返回 body 拷贝 + 6 step 全标记 Skipped + Reason="feature_disabled"。

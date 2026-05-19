@@ -1,6 +1,6 @@
 // Package main is the HUAKAI gateway entry point.
 //
-// Phase C wiring per docs/plans/2026-04-30-phase-c-gateway-wiring.md.
+// Phase C wiring per docs/process/plans/2026-04-30-phase-c-gateway-wiring.md.
 //
 // Released specs governing this binary:
 //   - docs/specs/pool-routing.md (F-POOL-001)

@@ -2,7 +2,7 @@ This file is agent-facing and authoritative.
 
 # Spec-Leakage Review Checklist
 
-Per [DR-000](../decisions/DR-000-clean-room-methodology.md), every spec produced by the specifier lane MUST pass this checklist before it is released to the implementer lane. The reviewer must be a different agent session from the specifier.
+Per [DR-000](../process/decisions/DR-000-clean-room-methodology.md), every spec produced by the specifier lane MUST pass this checklist before it is released to the implementer lane. The reviewer must be a different agent session from the specifier.
 
 ## Reviewer Workflow
 
@@ -58,7 +58,7 @@ Sources may appear in the `Sources` field. They must NOT appear in `Normal Path`
 
 ### CL-011 — Every behavior claim has a source citation (added 2026-04-28)
 
-Added 2026-04-28 after a real leak in F-POOL-001 / F-GW-002 cycles 1-2 where Claude's specifier passes were paraphrased from prior prose decompositions instead of source-verified, producing 18 hallucinated claims. See [docs/reviews/2026-04-28-source-truth-corrections.md](../reviews/2026-04-28-source-truth-corrections.md) for the catalogue.
+Added 2026-04-28 after a real leak in F-POOL-001 / F-GW-002 cycles 1-2 where Claude's specifier passes were paraphrased from prior prose decompositions instead of source-verified, producing 18 hallucinated claims. See [docs/process/reviews/2026-04-28-source-truth-corrections.md](../process/reviews/2026-04-28-source-truth-corrections.md) for the catalogue.
 
 The rule:
 

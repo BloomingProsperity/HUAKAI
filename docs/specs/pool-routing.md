@@ -9,7 +9,7 @@
 | Reviewer | Codex final reviewer-lane, 2026-04-28 (APPROVE-WITH-FIXES; 10 fixes applied this revision) |
 | Review date | 2026-04-28 |
 | Released date | 2026-04-28 |
-| Lane mode | Option C (strict carve-out per [DR-000](../decisions/DR-000-clean-room-methodology.md)) |
+| Lane mode | Option C (strict carve-out per [DR-000](../process/decisions/DR-000-clean-room-methodology.md)) |
 | Supersedes | — |
 | Superseded by | — |
 

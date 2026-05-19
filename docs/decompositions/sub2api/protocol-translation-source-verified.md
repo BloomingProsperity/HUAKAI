@@ -8,7 +8,7 @@
 | Lane | Specifier — Option B (or Option C if elevated; protocol translation is L1 but not on the carve-out list per DR-000) |
 | Feature | [F-PROTO-001](../../03_FEATURE_PARITY_MATRIX.md) — multi-protocol gateway (OpenAI Chat Completions / OpenAI Responses / Anthropic Messages, with Anthropic upstream) |
 | Reference | Sub2API at commit `b0a2252ed19c3720e6adafde6083e64fbac2efa9`, package `backend/internal/pkg/apicompat/` |
-| Supersedes | [`protocol-translation.md`](protocol-translation.md) (paraphrased prior pass, may have drift like F-POOL-001 / F-GW-002 v1 had — see [source-truth-corrections.md](../../reviews/2026-04-28-source-truth-corrections.md)) |
+| Supersedes | [`protocol-translation.md`](protocol-translation.md) (paraphrased prior pass, may have drift like F-POOL-001 / F-GW-002 v1 had — see [source-truth-corrections.md](../../process/reviews/2026-04-28-source-truth-corrections.md)) |
 | Source files read | `apicompat/anthropic_to_responses_response.go` (lines 1–449), `apicompat/responses_to_chatcompletions.go` (lines 130–230, function listing 1–490), `apicompat/anthropic_to_responses.go` (function listing), `apicompat/chatcompletions_to_responses.go` (function listing), `apicompat/responses_to_anthropic_request.go` (function listing) |
 
 ## 1. The Canonical Intermediate Format

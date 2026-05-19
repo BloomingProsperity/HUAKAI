@@ -173,7 +173,7 @@ func (g *DefaultClaimGate) Reserve(ctx context.Context, req ReserveRequest) (*Re
 
 // ComputeIdempotencyFingerprint hashes the 9 PERSISTED fields per spec §Tx1
 // step 1. The IdempotencyKeyClientHeader in ReserveRequest is intentionally
-// EXCLUDED from this hash — see docs/plans/2026-04-29-integration-sprint-plan.md
+// EXCLUDED from this hash — see docs/process/plans/2026-04-29-integration-sprint-plan.md
 // (Codex review of Phase A flagged earlier draft that included it).
 //
 // PoolingGroupID is also EXCLUDED as of N+5b (codex pass-3 P2 finding

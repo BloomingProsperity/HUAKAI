@@ -10,7 +10,7 @@
 | Specifier date | 2026-05-16 |
 | Reviewer session | Pending |
 | Reviewer date | Pending |
-| Source files read | HUAKAI docs/plans/specs only; no reference-project source read in this lane |
+| Source files read | HUAKAI docs/process/plans/specs only; no reference-project source read in this lane |
 | Observed regions | 10 HUAKAI-owned artifacts |
 | Inferences | 5 HUAKAI-fit boundary inferences |
 | Open questions | 5 implementation questions carried by specs |
@@ -160,7 +160,7 @@ HUAKAI-fit inference: none of these tests can be satisfied by F-AUTH-005/F-CRED-
 
 Pending independent reviewer.
 
-Source files read: docs/RULES.md; docs/plans/2026-05-16-user-auth-session-spec-codex.md; docs/plans/2026-05-16-f-cred-001-ocaw-answers-claude.md; docs/plans/2026-05-15-f-cred-001-synthesis-codex.md; docs/specs/user-authentication.md; docs/specs/session-management.md; docs/specs/credential-acquisition.md; docs/specs/upstream-credential-management.md; docs/03_FEATURE_PARITY_MATRIX.md; docs/11_ACCEPTANCE_TEST_MATRIX.md
+Source files read: docs/RULES.md; docs/process/plans/2026-05-16-user-auth-session-spec-codex.md; docs/process/plans/2026-05-16-f-cred-001-ocaw-answers-claude.md; docs/process/plans/2026-05-15-f-cred-001-synthesis-codex.md; docs/specs/user-authentication.md; docs/specs/session-management.md; docs/specs/credential-acquisition.md; docs/specs/upstream-credential-management.md; docs/03_FEATURE_PARITY_MATRIX.md; docs/11_ACCEPTANCE_TEST_MATRIX.md
 Lane: implementer
 Agent: Codex GPT-5
 UTC timestamp: 2026-05-16T06:18:06Z

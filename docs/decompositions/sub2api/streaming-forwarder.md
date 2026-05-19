@@ -14,7 +14,7 @@
 
 ## 1. WHY
 
-In a relay-station product, streaming is the customer experience: token-by-token output is what users feel. The forwarder is also where the gateway either correctly bills or silently leaks money. A naive design that just pipes upstream bytes to the client breaks on three fronts: (a) the client cannot be billed for tokens that are never observed, (b) the client may disconnect mid-stream and the upstream keeps emitting tokens that the operator pays for, (c) different upstream protocols (OpenAI SSE, Anthropic SSE, Gemini chunked-JSON) carry usage data in different envelopes. Sub2API's design pressure is "preserve billing across every weather pattern in streaming" — exactly HUAKAI's pressure given the relay-station identity ([01 §Product Identity](../../01_PROJECT_BRIEF.md), [DR-002](../../decisions/DR-002-product-editions.md)).
+In a relay-station product, streaming is the customer experience: token-by-token output is what users feel. The forwarder is also where the gateway either correctly bills or silently leaks money. A naive design that just pipes upstream bytes to the client breaks on three fronts: (a) the client cannot be billed for tokens that are never observed, (b) the client may disconnect mid-stream and the upstream keeps emitting tokens that the operator pays for, (c) different upstream protocols (OpenAI SSE, Anthropic SSE, Gemini chunked-JSON) carry usage data in different envelopes. Sub2API's design pressure is "preserve billing across every weather pattern in streaming" — exactly HUAKAI's pressure given the relay-station identity ([01 §Product Identity](../../01_PROJECT_BRIEF.md), [DR-002](../../process/decisions/DR-002-product-editions.md)).
 
 ## 2. WHAT
 

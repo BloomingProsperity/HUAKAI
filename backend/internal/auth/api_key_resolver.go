@@ -1,7 +1,7 @@
 // Phase L0 minimum (N+4a): table-backed inbound auth resolver.
 // Replaces the SmokeAuthResolver path used during Phase C v0.1.
 //
-// Pipeline per docs/plans/2026-04-30-n4-l0-minimum.md (synthesized):
+// Pipeline per docs/process/plans/2026-04-30-n4-l0-minimum.md (synthesized):
 //
 //	parse Bearer header → derive 16-char key_prefix → LookupAPIKeysByPrefix
 //	(<= 5 candidates) → bcrypt.CompareHashAndPassword on each → check

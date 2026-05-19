@@ -18,7 +18,7 @@ P0-3 / P0-6，并重跑 Owner 指定 A-K 合规扫描。
 - `frontend/app/dashboard/dashboard.module.css`
 - `frontend/lib/dashboard-mock.ts`
 - `docs/research/2026-05-12-gemini-p1-round2-review-codex.md`
-- `docs/plans/2026-05-12-gemini-p1-round3-prompt.md`
+- `docs/process/plans/2026-05-12-gemini-p1-round3-prompt.md`
 - `docs/templates/codex-reviewer.md`
 
 未读取 sonnet round 3 lane。未修改 `frontend/`。
@@ -77,7 +77,7 @@ P0-6 代码证据：
 - `frontend/app/dashboard/page.tsx:22` fetch `${backendUrl}/admin/v1/provider-accounts?limit=5`。
 - `frontend/app/dashboard/page.tsx:23` fetch `${backendUrl}/debug/vars`。
 
-注意：`docs/plans/2026-05-12-gemini-p1-round3-prompt.md` 曾要求相对路径走
+注意：`docs/process/plans/2026-05-12-gemini-p1-round3-prompt.md` 曾要求相对路径走
 Next rewrites；本轮 Owner 指令改为验 `BACKEND_INTERNAL_URL` 包装后的绝对
 URL。此处按最新 Owner 指令验收，不作为新违规。
 

@@ -22,7 +22,7 @@ Define the expected API surface at a product-contract level without copying refe
 - Quota and rate limits (including per-User × per-Account concurrency caps).
 - Usage records (with Pooling Group, chosen Account, and routing reason fields).
 - Billing records (pool-aware reconciliation).
-- Edition / run-mode introspection endpoint (read-only; surfaces which Edition this deployment runs as, per [DR-002](decisions/DR-002-product-editions.md)).
+- Edition / run-mode introspection endpoint (read-only; surfaces which Edition this deployment runs as, per [DR-002](process/decisions/DR-002-product-editions.md)).
 - Admin audit logs.
 - Health and observability.
 - Feature flags.
@@ -36,7 +36,7 @@ Define the expected API surface at a product-contract level without copying refe
 - Error responses must be actionable and must not leak secrets.
 - Request IDs must support operational investigation.
 - Compatibility APIs must preserve documented behavior across streaming and non-streaming flows.
-- **OpenAPI / JSON Schema is the contract source of truth** ([DR-003](decisions/DR-003-technology-stack.md)). The Go backend defines the contract via OpenAPI artifact; the TypeScript frontend's request/response types are generated from that artifact via codegen. Hand-written shared types between backend and frontend are not allowed.
+- **OpenAPI / JSON Schema is the contract source of truth** ([DR-003](process/decisions/DR-003-technology-stack.md)). The Go backend defines the contract via OpenAPI artifact; the TypeScript frontend's request/response types are generated from that artifact via codegen. Hand-written shared types between backend and frontend are not allowed.
 
 ## Clean-Room Rule
 

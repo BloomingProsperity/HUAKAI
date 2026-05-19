@@ -88,7 +88,7 @@ ssh gcp-codex
 - 右上角点 **CLAUDE CODE** 标签 → 新对话
 - 新会话第一句给上下文：
   ```
-  读 docs/plans/2026-05-07-bedrock-eventstream-claude.md +
+  读 docs/process/plans/2026-05-07-bedrock-eventstream-claude.md +
   ~/.claude/projects/-home-codex-HUAKAI/memory/MEMORY.md，
   按 HUAKAI 项目正在做的事接着干。
   ```
@@ -187,7 +187,7 @@ curl -s https://api.ipify.org  # 应是 UK IP
 psql $HUAKAI_DATABASE_URL -c '\dt' | tail -3  # DB 通
 
 # Bedrock 等下一步任务
-# 上次离开点：见 docs/plans/2026-05-07-bedrock-eventstream-claude.md
+# 上次离开点：见 docs/process/plans/2026-05-07-bedrock-eventstream-claude.md
 # Owner 待回 R1 / R2 / R4 决策
 ```
 
@@ -205,6 +205,6 @@ psql $HUAKAI_DATABASE_URL -c '\dt' | tail -3  # DB 通
 ## 八、相关文档索引
 
 - 项目 brief：`docs/00_PM_OPERATING_SYSTEM.md`
-- 上次工作进展：`docs/plans/2026-05-07-bedrock-eventstream-{claude,codex}.md`（Bedrock #2 决策点 R1/R2/R4 等 Owner 回）
+- 上次工作进展：`docs/process/plans/2026-05-07-bedrock-eventstream-{claude,codex}.md`（Bedrock #2 决策点 R1/R2/R4 等 Owner 回）
 - Memory（持久反馈/规则）：`~/.claude/projects/-home-codex-HUAKAI/memory/MEMORY.md`
 - CLAUDE.md（agent 行为规约）：项目根 `CLAUDE.md`

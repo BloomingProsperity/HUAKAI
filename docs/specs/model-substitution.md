@@ -17,8 +17,8 @@
 
 > Reference material consulted by specifier-lane only. Implementer lane MUST NOT open these.
 
-- docs/plans/2026-05-02-huakai-algo-upgrade-synthesis.md — §6 Q3 决议 + §6.5 客户响应头 + A29 伪代码（internal plan, no external license)
-- docs/decisions/DR-009-algorithm-upgrade-policy.md — 决议 #3 Model substitution = C 显式 opt-in + 头部标注；响应头清单
+- docs/process/plans/2026-05-02-huakai-algo-upgrade-synthesis.md — §6 Q3 决议 + §6.5 客户响应头 + A29 伪代码（internal plan, no external license)
+- docs/process/decisions/DR-009-algorithm-upgrade-policy.md — 决议 #3 Model substitution = C 显式 opt-in + 头部标注；响应头清单
 
 ## Capability
 

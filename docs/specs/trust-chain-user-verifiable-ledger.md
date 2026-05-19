@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |---|---|
 | Feature ID | F-TRUST-001 trust chain user-verifiable ledger (Phase 6 commercial foundation, HUAKAI 核心差异化 1 + 3 + 4) |
-| Lane | Claude PM-Orchestrator synthesis (Claude draft 在 `docs/plans/2026-05-16-f-trust-001-spec-claude.md` + Codex draft 在 `/tmp/codex-f-trust-001-spec-codex-draft.md`, 本 spec 是 PM 合并版) |
+| Lane | Claude PM-Orchestrator synthesis (Claude draft 在 `docs/process/plans/2026-05-16-f-trust-001-spec-claude.md` + Codex draft 在 `/tmp/codex-f-trust-001-spec-codex-draft.md`, 本 spec 是 PM 合并版) |
 | Base | commit 0013 audit_ledger_entries schema (已落) + memory `project_core_trust_chain_differentiator` 6 大差异化卖点 |
 | Phase | TRUST-1 (A 已完成 schema + writer; B/C/D/E 待 codex 派, 10-15 天) |
 | Memory ref | [[project_core_trust_chain_differentiator]] [[feedback_huakai_better_than_sub2api]] [[feedback_stability_means_stronger]] |
@@ -256,7 +256,7 @@ CREATE TRIGGER ledger_append_only_delete BEFORE DELETE ON audit_ledger_entries
 - commit 07e575e docs/specs/outbound-ip-pool.md §6 (cross-chain F-NET reference)
 - commit 06f0ff2 docs/specs/device-fingerprint-binding.md (F-FP-001 reference)
 - commit 06f0ff2 docs/specs/channel-health-auto-disable.md (F-CH-002 reference)
-- docs/plans/2026-05-16-f-trust-001-spec-claude.md (Claude lane parallel-draft, 16KB)
+- docs/process/plans/2026-05-16-f-trust-001-spec-claude.md (Claude lane parallel-draft, 16KB)
 - /tmp/codex-f-trust-001-spec-codex-draft.md (Codex lane parallel-draft, 30KB)
 - memory: `project_core_trust_chain_differentiator` (HUAKAI 6 大差异化)
 - 不读任何上游项目源码 (clean-room 保持)

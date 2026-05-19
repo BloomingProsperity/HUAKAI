@@ -1,5 +1,5 @@
 -- Slice 2 (N+5a) Model Registry queries.
--- Per docs/plans/2026-04-30-n5-model-registry.md.
+-- Per docs/process/plans/2026-04-30-n5-model-registry.md.
 -- Per CMB-7: SELECT-only at request time. Snapshot version increments
 -- happen via a future Phase E admin writer outside this package.
 -- Per CMB-1: NEVER select credentials; this package never joins

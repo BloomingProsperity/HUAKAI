@@ -1,14 +1,14 @@
 # Streaming Forwarder + Usage Accounting — Claude's Independent Pass
 
 > ⚠️ **WITHDRAWN — SUPERSEDED BY [streaming-forwarder-claude-v2.md](streaming-forwarder-claude-v2.md)** (2026-04-28).
-> This v1 file was paraphrased from prior prose decompositions, NOT from direct source reading. Multiple claims are hallucinated: 1 MiB scanner buffer (real default is 500 MiB), bounded post-disconnect drain budget (no drain exists in source), eight-axis timeout policy (only one timeout config knob exists), usage source taxonomy (real merge is last-non-zero-wins), Idempotent-Stream-Replay header (doesn't exist), AMBIGUOUS_USAGE no-charge gate (doesn't exist). See [docs/reviews/2026-04-28-source-truth-corrections.md](../../reviews/2026-04-28-source-truth-corrections.md) for full catalogue. Read v2 for the source-verified version.
+> This v1 file was paraphrased from prior prose decompositions, NOT from direct source reading. Multiple claims are hallucinated: 1 MiB scanner buffer (real default is 500 MiB), bounded post-disconnect drain budget (no drain exists in source), eight-axis timeout policy (only one timeout config knob exists), usage source taxonomy (real merge is last-non-zero-wins), Idempotent-Stream-Replay header (doesn't exist), AMBIGUOUS_USAGE no-charge gate (doesn't exist). See [docs/process/reviews/2026-04-28-source-truth-corrections.md](../../process/reviews/2026-04-28-source-truth-corrections.md) for full catalogue. Read v2 for the source-verified version.
 
 | Field | Value |
 | --- | --- |
 | Status | **WITHDRAWN** (2026-04-28) — see banner above |
 | Author | Claude (PM-Orchestrator), specifier lane |
 | Date | 2026-04-28 |
-| Lane | Specifier — Option C strict spec input per [DR-000](../../decisions/DR-000-clean-room-methodology.md) carve-out for F-GW-002 |
+| Lane | Specifier — Option C strict spec input per [DR-000](../../process/decisions/DR-000-clean-room-methodology.md) carve-out for F-GW-002 |
 | Feature | [F-GW-002](../../03_FEATURE_PARITY_MATRIX.md) (L1 MVP) — protocol-aware streaming forwarder + inline usage extraction + Usage Record finalization inside Tx2 |
 | Mutual review | This file is authored independently of Codex's parallel specifier pass per Owner directive 2026-04-28. Codex's parallel pass lives at [streaming-forwarder-codex.md](streaming-forwarder-codex.md). Synthesis follows after both are complete. |
 | Becomes | After mutual review + reviewer-lane CL-001..010 sign-off, the synthesized version moves to `docs/specs/streaming-forwarder.md` Status=Released. |

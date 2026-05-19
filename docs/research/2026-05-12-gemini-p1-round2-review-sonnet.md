@@ -5,7 +5,7 @@
 - 评审范围：仅 read-only 验真。审 round 1 共 11 个 finding（6 P0 + 8 P1，部分合并）是否真改到位 + 无回归。
 - 对照文档：
   - Round 1 review：`docs/research/2026-05-12-gemini-p1-review-sonnet.md`
-  - Round 2 prompt：`docs/plans/2026-05-12-gemini-p1-round2-prompt.md`
+  - Round 2 prompt：`docs/process/plans/2026-05-12-gemini-p1-round2-prompt.md`
 - 平行 reviewer：codex lane（独立 compliance verify，预期 cross-discuss）
 - 严格遵守：read-only，未修改任何前端文件。
 
@@ -166,7 +166,7 @@
   - `frontend/app/dashboard/dashboard.module.css` (233 LoC)
   - `frontend/lib/dashboard-mock.ts` (115 LoC)
   - `frontend/next.config.mjs` (rewrites 上下文确认)
-  - `docs/plans/2026-05-12-gemini-p1-round2-prompt.md`（spec）
+  - `docs/process/plans/2026-05-12-gemini-p1-round2-prompt.md`（spec）
   - `docs/research/2026-05-12-gemini-p1-review-sonnet.md`（round 1 自审）
 - 未读 / 不在范围：`frontend/app/page.tsx`（ChatPage，无关）；codex round 1/2 review（独立 lane，避免污染）；backend endpoints 实现
 - 工具：`Read` × 11，`Bash grep` × 7，零 file write 除本报告

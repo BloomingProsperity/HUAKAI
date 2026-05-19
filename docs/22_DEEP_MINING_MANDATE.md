@@ -54,7 +54,7 @@ A feature row in [03_FEATURE_PARITY_MATRIX.md](03_FEATURE_PARITY_MATRIX.md) is *
 - [ ] The corresponding `E-X-DEEP-NNN` row(s) carry source-code-verified attribution (verified URL of the source file read, in [07_REFERENCE_EVIDENCE_LEDGER.md](07_REFERENCE_EVIDENCE_LEDGER.md)).
 - [ ] **One prose-form decomposition file exists at `docs/decompositions/<reference>/<feature-slug>.md`** (Owner Sharpening 2026-04-28). The file is ~600–1500 words and answers all seven fields (WHY / WHAT / INPUTS / FAILURES HANDLED / FAILURES NOT HANDLED / KEEP-IMPROVE-AVOID / ATTRIBUTION).
 - [ ] At least one HUAKAI `KEEP / IMPROVE / AVOID` directive in [07 §Algorithmic Insights](07_REFERENCE_EVIDENCE_LEDGER.md) addresses this feature.
-- [ ] If the feature is in the [Option C carve-out list](decisions/DR-000-clean-room-methodology.md) (billing reconciliation, pool-aware routing, provider failover/account-health), an Option C strict spec exists in [specs/](specs/) for it AND that spec passed CL-001..010 review.
+- [ ] If the feature is in the [Option C carve-out list](process/decisions/DR-000-clean-room-methodology.md) (billing reconciliation, pool-aware routing, provider failover/account-health), an Option C strict spec exists in [specs/](specs/) for it AND that spec passed CL-001..010 review.
 - [ ] No upstream function name, schema column name, file path, or distinctive identifier appears anywhere in the deep-evidence rows, decomposition files, or downstream specs.
 
 ## Phase Exit Gate

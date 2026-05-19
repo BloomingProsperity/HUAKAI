@@ -9,7 +9,7 @@
 | Specifier date | 2026-05-16 |
 | Reviewer session | Pending |
 | Reviewer date | Pending |
-| Source files read | HUAKAI docs/plans/reviews only; no reference-project source read in this lane |
+| Source files read | HUAKAI docs/process/plans/reviews only; no reference-project source read in this lane |
 | Observed regions | 9 HUAKAI-owned or prior-review artifacts |
 | Inferences | 6 HUAKAI-fit inferences, marked below |
 | Open questions | 0 for Phase A; Phase B has Owner confirmation points |
@@ -137,7 +137,7 @@ Clean-room checklist:
 
 Pending independent reviewer.
 
-Source files read: docs/specs/credential-acquisition.md; docs/decompositions/_cross-cutting/credential-acquisition.md; docs/03_FEATURE_PARITY_MATRIX.md; docs/11_ACCEPTANCE_TEST_MATRIX.md; docs/plans/2026-05-16-f-cred-001-phase-a-codex.md; docs/plans/2026-05-15-f-cred-001-acquisition-codex.md; docs/plans/2026-05-15-f-cred-001-acquisition-claude.md; backend/internal/credentialacq/finalizer_test.go; .agents/skills/acceptance-test-writer/SKILL.md
+Source files read: docs/specs/credential-acquisition.md; docs/decompositions/_cross-cutting/credential-acquisition.md; docs/03_FEATURE_PARITY_MATRIX.md; docs/11_ACCEPTANCE_TEST_MATRIX.md; docs/process/plans/2026-05-16-f-cred-001-phase-a-codex.md; docs/process/plans/2026-05-15-f-cred-001-acquisition-codex.md; docs/process/plans/2026-05-15-f-cred-001-acquisition-claude.md; backend/internal/credentialacq/finalizer_test.go; .agents/skills/acceptance-test-writer/SKILL.md
 Lane: implementer
 Agent: Codex GPT-5
 UTC timestamp: 2026-05-16T05:47:06Z
