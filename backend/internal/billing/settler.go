@@ -472,11 +472,14 @@ FOR UPDATE`,
 	// 本次请求, 总额不得超 originalMicros。 codex chunk3 P1#3 防多 refund 不
 	// 同 audit_request_id 各自单独 cap 到 original 导致总额超退。
 	var alreadyRefundedMicros int64
+	// 累计 refund 上限: billing_events 用 actual_cost_signed (numeric USD, 退款
+	// 时为负); 把负值取反 × 1_000_000 转 micros 求和 (codex chunk9 P1 column
+	// 名修正)。
 	if err := tx.QueryRow(ctx, `
-SELECT COALESCE(SUM(-amount_micro_usd), 0)::bigint
+SELECT COALESCE(SUM(ROUND(-actual_cost_signed * 1000000)), 0)::bigint
 FROM billing_events
 WHERE tenant_id = $1 AND claim_id = $2 AND end_class = 'reconciliation_appended'
-  AND amount_micro_usd < 0`,
+  AND actual_cost_signed < 0`,
 		req.TenantID, req.ClaimID,
 	).Scan(&alreadyRefundedMicros); err != nil {
 		return nil, fmt.Errorf("billing: sum prior reconciliation refunds: %w", err)
