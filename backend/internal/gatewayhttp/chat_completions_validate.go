@@ -14,9 +14,12 @@ import (
 )
 
 type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
+	Model               string        `json:"model"`
+	Messages            []chatMessage `json:"messages"`
+	Stream              bool          `json:"stream"`
+	MaxTokens           *int          `json:"max_tokens"`
+	MaxCompletionTokens *int          `json:"max_completion_tokens"`
+	MaxOutputTokens     *int          `json:"max_output_tokens"`
 }
 
 type chatMessage struct {

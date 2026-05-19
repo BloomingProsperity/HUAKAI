@@ -251,6 +251,7 @@ func TestDispatch_FullPipeline_BedrockOnAnthropic(t *testing.T) {
 		Dispatcher:           dispatcher,
 		Forwarder:            forwarder,
 		Settler:              settler,
+		RateTables:           testRateTables("smoke-v1"),
 		BillingPolicyVersion: "smoke-v1",
 		RequestClass:         "default",
 	}
@@ -391,6 +392,7 @@ func TestDispatch_FullPipeline_BedrockOnAnthropic_UpstreamFailure(t *testing.T) 
 		Dispatcher:           dispatcher,
 		Forwarder:            forwarder,
 		Settler:              settler,
+		RateTables:           testRateTables("smoke-v1"),
 		BillingPolicyVersion: "smoke-v1",
 		RequestClass:         "default",
 	}
