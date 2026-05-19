@@ -2,13 +2,16 @@ package auditledger
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
@@ -89,16 +92,42 @@ obj = {
 }
 print(json.dumps(obj, separators=(",", ":")), end="")
 `
-	if _, lookErr := exec.LookPath("python3"); lookErr != nil {
-		t.Skip("python3 不可用，跳过跨语言可复现验证")
-	}
-	out, err := exec.Command("python3", "-c", script).Output()
+	python := python3ForTest(t)
+	out, err := exec.Command(python, "-c", script).Output()
 	if err != nil {
 		t.Fatalf("python canonical reproduction failed: %v", err)
 	}
 	if !bytes.Equal(goPayload, out) {
 		t.Fatalf("Go/Python canonical payload mismatch:\nGo: %s\nPy: %s", goPayload, out)
 	}
+}
+
+func python3ForTest(t *testing.T) string {
+	t.Helper()
+
+	var attempts []string
+	for _, name := range []string{"python3", "python"} {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			attempts = append(attempts, fmt.Sprintf("%s lookpath: %v", name, err))
+			continue
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		out, runErr := exec.CommandContext(ctx, path, "-c", "import sys; print(sys.version_info[0])").CombinedOutput()
+		cancel()
+		trimmed := strings.TrimSpace(string(out))
+		if runErr == nil && trimmed == "3" {
+			return path
+		}
+		if ctx.Err() == context.DeadlineExceeded {
+			attempts = append(attempts, fmt.Sprintf("%s timed out", name))
+			continue
+		}
+		attempts = append(attempts, fmt.Sprintf("%s unusable: %v output=%q", name, runErr, trimmed))
+	}
+	t.Skipf("python3/python 不可用或不是 Python 3，跳过跨语言可复现验证: %s", strings.Join(attempts, "; "))
+	return ""
 }
 
 func TestEntryHashUsesCanonicalPayload(t *testing.T) {

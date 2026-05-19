@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -39,7 +40,7 @@ func TestRunCLI_WrongPubKeyFails(t *testing.T) {
 	defer gateway.Close()
 	wrong, _ := sign.GenerateKey()
 	pubkey := base64.StdEncoding.EncodeToString(wrong.PublicKey())
-	pubkeyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	pubkeyServer := newLoopbackHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, pubkey)
 	}))
 	defer pubkeyServer.Close()
@@ -104,5 +105,18 @@ func newVerifyGateway(t *testing.T) (*sign.Signer, *httptest.Server) {
 			signer.Fingerprint(), base64.StdEncoding.EncodeToString(signer.PublicKey()))
 		_, _ = fmt.Fprint(w, doc)
 	})
-	return signer, httptest.NewServer(mux)
+	return signer, newLoopbackHTTPServer(t, mux)
+}
+
+func newLoopbackHTTPServer(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("本地 loopback 监听不可用，跳过需要 httptest server 的 CLI 测试: %v", err)
+	}
+	server := httptest.NewUnstartedServer(handler)
+	server.Listener = ln
+	server.Start()
+	return server
 }
