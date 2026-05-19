@@ -3,10 +3,11 @@
 //
 // 边界（Owner 2026-05-06 directive）：
 //
-//	仅注册"已实现"的 adapter。Anthropic OAuth 反转、ChatGPT 反转、
-//	Cursor / Copilot / Kiro / Windsurf / Antigravity 反转等尚未实现的
-//	protocol family 不在此处注册；运行期访问会得到 provider.
-//	ErrAdapterNotRegistered，由配置层 reject 阻止误用。
+//	仅默认注册已验证 adapter。Anthropic OAuth 反转、ChatGPT 反转等尚未
+//	实现的 protocol family 不在此处注册；未验证的 session placeholder
+//	adapter 仅在 HUAKAI_ENABLE_PLACEHOLDER_SESSION_ADAPTERS=true 时 opt-in
+//	注册。运行期访问未注册 family 会得到 provider.ErrAdapterNotRegistered，
+//	由配置层 reject 阻止误用。
 //
 // Protocol family 字符串约定（与 router.ResolvedModel.ProtocolFamily 对齐）：
 //   - openai_chat              OpenAI Chat Completions 兼容
@@ -32,6 +33,8 @@
 package registrydefault
 
 import (
+	"os"
+
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/antigravity"
@@ -77,6 +80,8 @@ const (
 	ProtocolWindsurfSession       = "windsurf_session"
 )
 
+const placeholderSessionAdaptersEnv = "HUAKAI_ENABLE_PLACEHOLDER_SESSION_ADAPTERS"
+
 // Build 创建注册表并注册全部已实现 vendor adapter。失败时 panic — 启动
 // 期问题不应静默吞，必须 fail-loud。
 func Build() *provider.StaticRegistry {
@@ -119,14 +124,21 @@ func Build() *provider.StaticRegistry {
 	r.MustRegister(ProtocolPerplexityChat, &perplexity.PassthroughAdapter{})
 	r.MustRegister(ProtocolFireworksChat, &fireworks.PassthroughAdapter{})
 
-	// 6 家订阅 session 反转路径。每家凭据形态 = SessionToken / UpstreamPassthrough
-	// （拒 apikey）；endpoint 部分为占位 TODO，等 OCAW 抓包后替换。
-	r.MustRegister(ProtocolCursorSession, &cursor.CursorSessionAdapter{})
-	r.MustRegister(ProtocolCopilotSession, &copilot.CopilotSessionAdapter{})
-	r.MustRegister(ProtocolGeminiAdvancedSession, &gemini.GeminiAdvancedSessionAdapter{})
-	r.MustRegister(ProtocolAntigravitySession, &antigravity.AntigravitySessionAdapter{})
-	r.MustRegister(ProtocolKiroSession, &kiro.KiroSessionAdapter{})
-	r.MustRegister(ProtocolWindsurfSession, &windsurf.WindsurfSessionAdapter{})
+	// 6 家订阅 session 反转路径仍含未验证 placeholder endpoint。
+	// 默认不注册，避免把真实 session credential 发到未确认上游；实验环境
+	// 显式 opt-in 后才注册。
+	if placeholderSessionAdaptersEnabled() {
+		r.MustRegister(ProtocolCursorSession, &cursor.CursorSessionAdapter{})
+		r.MustRegister(ProtocolCopilotSession, &copilot.CopilotSessionAdapter{})
+		r.MustRegister(ProtocolGeminiAdvancedSession, &gemini.GeminiAdvancedSessionAdapter{})
+		r.MustRegister(ProtocolAntigravitySession, &antigravity.AntigravitySessionAdapter{})
+		r.MustRegister(ProtocolKiroSession, &kiro.KiroSessionAdapter{})
+		r.MustRegister(ProtocolWindsurfSession, &windsurf.WindsurfSessionAdapter{})
+	}
 
 	return r
+}
+
+func placeholderSessionAdaptersEnabled() bool {
+	return os.Getenv(placeholderSessionAdaptersEnv) == "true"
 }
