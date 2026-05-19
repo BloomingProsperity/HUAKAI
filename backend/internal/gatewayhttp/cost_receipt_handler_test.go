@@ -515,6 +515,18 @@ func TestAT_AUDIT_001_021_RequestIDWithSlash(t *testing.T) {
 	if !got.Valid {
 		t.Fatalf("slash request_id did not verify: %+v", got)
 	}
+
+	named := chi.NewRouter()
+	named.Get("/v1/receipts/{request_id_host}/{request_id_tail}", NewCostReceiptGetHandler(CostReceiptHandlerDeps{Receipts: store, Signer: signer, Now: fixedReceiptNow}))
+	named.Post("/v1/receipts/{request_id_host}/{request_id_tail}/verify", NewCostReceiptVerifyHandler(CostReceiptHandlerDeps{Receipts: store, Signer: signer, Now: fixedReceiptNow}))
+	namedGetRec := doReceiptRequest(t, named, http.MethodGet, "/v1/receipts/host/random-000001", nil, sessionauth.SessionIdentity{TenantID: 7, UserID: 42})
+	if namedGetRec.Code != http.StatusOK {
+		t.Fatalf("named get status=%d body=%s", namedGetRec.Code, namedGetRec.Body.String())
+	}
+	namedVerifyRec := doReceiptRequest(t, named, http.MethodPost, "/v1/receipts/host/random-000001/verify", payload, receiptSession(7))
+	if namedVerifyRec.Code != http.StatusOK {
+		t.Fatalf("named verify status=%d body=%s", namedVerifyRec.Code, namedVerifyRec.Body.String())
+	}
 }
 
 func TestAT_AUDIT_001_022_ChatCompletionWritesReceiptThenGet200(t *testing.T) {
