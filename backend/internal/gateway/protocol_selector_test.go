@@ -6,6 +6,10 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto/bedrock"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 )
 
 type stubUpstreamAdapter struct {
@@ -137,13 +141,13 @@ func TestBuildDefaultProtocolAdapterRegistry(t *testing.T) {
 		t.Fatal("BuildDefaultProtocolAdapterRegistry() = nil")
 	}
 
-	anthropic, err := r.For("anthropic_messages")
+	anthropicAdapterRaw, err := r.For("anthropic_messages")
 	if err != nil {
 		t.Fatalf("For(anthropic_messages) error = %v", err)
 	}
-	anthropicAdapter, ok := anthropic.(*proto.AnthropicAdapter)
+	anthropicAdapter, ok := anthropicAdapterRaw.(*anthropic.Adapter)
 	if !ok {
-		t.Fatalf("anthropic_messages adapter type = %T, want *proto.AnthropicAdapter", anthropic)
+		t.Fatalf("anthropic_messages adapter type = %T, want *anthropic.Adapter", anthropicAdapterRaw)
 	}
 	if anthropicAdapter.CarryForwardSignatureDelta {
 		t.Fatal("anthropic_messages CarryForwardSignatureDelta = true, want false")
@@ -153,10 +157,10 @@ func TestBuildDefaultProtocolAdapterRegistry(t *testing.T) {
 		"openai_chat", "openai_responses", "openai_codex",
 		// OpenRouter / Grok 也走 OpenAI 兼容 SSE
 		"openrouter_chat", "grok_chat",
-		// 6 家 OpenAI 兼容直通，均注册为 OpenAIAdapter
+		// 6 家 OpenAI 兼容直通，均注册为 openai.Adapter
 		"deepseek_chat", "mistral_chat", "groqcloud_chat",
 		"together_chat", "perplexity_chat", "fireworks_chat",
-		// session 反转占位 SSE 解析（实测前先复用 OpenAIAdapter）
+		// session 反转占位 SSE 解析（实测前先复用 openai.Adapter）
 		"copilot_session", "cursor_session",
 		"antigravity_session", "kiro_session", "windsurf_session",
 	} {
@@ -167,8 +171,8 @@ func TestBuildDefaultProtocolAdapterRegistry(t *testing.T) {
 		if got == nil {
 			t.Fatalf("For(%s) adapter = nil, want non-nil", family)
 		}
-		if _, ok := got.(*proto.OpenAIAdapter); !ok {
-			t.Fatalf("For(%s) adapter type = %T, want *proto.OpenAIAdapter", family, got)
+		if _, ok := got.(*openai.Adapter); !ok {
+			t.Fatalf("For(%s) adapter type = %T, want *openai.Adapter", family, got)
 		}
 	}
 
@@ -177,19 +181,19 @@ func TestBuildDefaultProtocolAdapterRegistry(t *testing.T) {
 		if err != nil {
 			t.Fatalf("For(%s) error = %v", family, err)
 		}
-		if _, ok := got.(*proto.GeminiAdapter); !ok {
-			t.Fatalf("For(%s) adapter type = %T, want *proto.GeminiAdapter", family, got)
+		if _, ok := got.(*gemini.Adapter); !ok {
+			t.Fatalf("For(%s) adapter type = %T, want *gemini.Adapter", family, got)
 		}
 	}
 
-	// bedrock_invoke 走专用 BedrockEventStreamAdapter（A4 atomic 接入；
+	// bedrock_invoke 走专用 bedrock.EventStreamAdapter（A4 atomic 接入；
 	// AWS Binary EventStream 与 SSE 不兼容，A2+A3 提供 binary scanner）。
 	bedrockAdapter, err := r.For("bedrock_invoke")
 	if err != nil {
 		t.Errorf("bedrock_invoke 应已注册（A5+A6 atomic），err=%v", err)
 	}
-	if _, ok := bedrockAdapter.(*proto.BedrockEventStreamAdapter); !ok {
-		t.Errorf("bedrock_invoke adapter 类型=%T 期望 *proto.BedrockEventStreamAdapter", bedrockAdapter)
+	if _, ok := bedrockAdapter.(*bedrock.EventStreamAdapter); !ok {
+		t.Errorf("bedrock_invoke adapter 类型=%T 期望 *bedrock.EventStreamAdapter", bedrockAdapter)
 	}
 }
 

@@ -9,7 +9,7 @@
 //	  → Dispatcher.Dispatch → bedrock.PassthroughAdapter.BuildRequest
 //	     (AutoTranslate Anthropic → Bedrock body + Track C cache_control 注入 + SigV4 sign)
 //	  → redirectRoundTripper → httptest.Server（模拟 AWS Bedrock invoke-with-response-stream）
-//	  → Forwarder.Forward (BedrockEventStreamScanner 解 binary frames + BedrockEventStreamAdapter
+//	  → Forwarder.Forward (BedrockEventStreamScanner 解 binary frames + bedrock.EventStreamAdapter
 //	     转 canonical → SSE 输出给客户端)
 //	  → Settler.Settle
 //

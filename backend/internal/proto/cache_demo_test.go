@@ -2,7 +2,8 @@
 // 打印 cachemetrics counter 变化。让 Owner 直接看到命中率管道通了。
 //
 // 跑法:
-//   cd backend && go test ./internal/proto/... -run TestDemo_CacheMetrics -v
+//
+//	cd backend && go test ./internal/proto/... -run TestDemo_CacheMetrics -v
 //
 // 不连任何真 vendor / 不需 API key, 纯 in-process 模拟。
 //
@@ -15,19 +16,19 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
-	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
 )
 
 // TestDemo_CacheMetrics 模拟两次请求（一 miss 一 hit）走完整 adapter,
 // 打印 expvar counter 变化。展示 production 起来后 /debug/vars 看到的形态。
 func TestDemo_CacheMetrics(t *testing.T) {
-	adapter := &proto.AnthropicAdapter{}
+	adapter := &anthropic.Adapter{}
 
 	// 取 baseline (其它 test 可能已增过, 用 delta 来比)
 	c0, r0, req0 := cachemetrics.Snapshot()
 
 	// === Request 1: cache miss (vendor 写入新 prefix 1500 tokens) ===
-	state1 := &proto.UpstreamState{}
+	state1 := &anthropic.UpstreamState{}
 	feedDemo(t, adapter, state1, []string{
 		`{"type":"message_start","message":{"id":"r1","model":"claude-3-5","usage":{"input_tokens":50,"cache_creation_input_tokens":1500,"cache_read_input_tokens":0}}}`,
 		`{"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
@@ -48,7 +49,7 @@ func TestDemo_CacheMetrics(t *testing.T) {
 	}
 
 	// === Request 2: cache hit (相同 prefix) ===
-	state2 := &proto.UpstreamState{}
+	state2 := &anthropic.UpstreamState{}
 	feedDemo(t, adapter, state2, []string{
 		`{"type":"message_start","message":{"id":"r2","model":"claude-3-5","usage":{"input_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":1500}}}`,
 		`{"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
@@ -83,7 +84,7 @@ func TestDemo_CacheMetrics(t *testing.T) {
 	fmt.Printf("会看到 vendor 真请求按上述形态累计.\n\n")
 }
 
-func feedDemo(t *testing.T, ad *proto.AnthropicAdapter, st *proto.UpstreamState, raws []string) {
+func feedDemo(t *testing.T, ad *anthropic.Adapter, st *anthropic.UpstreamState, raws []string) {
 	t.Helper()
 	for i, raw := range raws {
 		_, _, err := ad.ProviderEventToCanonicalEvents(context.Background(), []byte(raw), st)

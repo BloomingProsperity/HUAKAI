@@ -23,8 +23,9 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	protoanthropic "github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
-	"github.com/BloomingProsperity/HUAKAI/internal/provider/anthropic"
+	provideranthropic "github.com/BloomingProsperity/HUAKAI/internal/provider/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
@@ -223,12 +224,12 @@ func newTrustChainE2E(t *testing.T) *trustChainE2EEnv {
 	t.Cleanup(upstream.Close)
 
 	providerAdapters := provider.NewStaticRegistry()
-	providerAdapters.MustRegister("anthropic_messages", &anthropic.PassthroughAdapter{
+	providerAdapters.MustRegister("anthropic_messages", &provideranthropic.PassthroughAdapter{
 		Endpoint: upstream.URL + "/v1/messages",
 	})
 	protocolAdapters := gateway.NewStaticProtocolAdapterRegistry()
 	protocolAdapters.MustRegister("anthropic_messages", &trustE2EAnthropicAdapter{
-		base:      &proto.AnthropicAdapter{},
+		base:      &protoanthropic.Adapter{},
 		ledger:    ledger,
 		requestID: trustE2ERequestID,
 		endpoint:  upstream.URL + "/v1/messages",

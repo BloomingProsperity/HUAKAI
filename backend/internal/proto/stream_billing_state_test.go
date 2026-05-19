@@ -6,12 +6,13 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
-	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 )
 
 func TestAnthropicRSTAfterChunkProducesPartialBillingState(t *testing.T) {
-	adapter := &proto.AnthropicAdapter{}
-	state := &proto.UpstreamState{}
+	adapter := &anthropic.Adapter{}
+	state := &anthropic.UpstreamState{}
 
 	_, _, err := adapter.ProviderEventToCanonicalEvents(context.Background(), []byte(`{"type":"message_start","message":{"id":"msg_partial","model":"claude-test"}}`), state)
 	if err != nil {
@@ -38,8 +39,8 @@ func TestAnthropicRSTAfterChunkProducesPartialBillingState(t *testing.T) {
 }
 
 func TestOpenAIRSTAfterChunkProducesPartialBillingState(t *testing.T) {
-	adapter := &proto.OpenAIAdapter{}
-	state := &proto.OpenAIUpstreamState{}
+	adapter := &openai.Adapter{}
+	state := &openai.UpstreamState{}
 
 	_, _, err := adapter.ProviderEventToCanonicalEvents(context.Background(), []byte(`{"id":"chatcmpl_partial","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{"content":"visible"},"finish_reason":null}]}`), state)
 	if err != nil {

@@ -106,6 +106,10 @@ type CanonicalUsage struct {
 	CacheReadInputTokens int `json:"cache_read_input_tokens,omitempty"`
 }
 
+func UsageHasValue(usage CanonicalUsage) bool {
+	return usage.InputTokens != 0 || usage.OutputTokens != 0 || usage.TotalTokens != 0
+}
+
 // CanonicalStopReason is the HCSF stop reason enum from spec sections 1-3.
 type CanonicalStopReason string
 

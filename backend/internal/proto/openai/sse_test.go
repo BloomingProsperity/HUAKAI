@@ -1,16 +1,17 @@
-package proto
+package openai
 
 import (
 	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"strconv"
 	"strings"
 	"testing"
 )
 
-var _ UpstreamAdapter = (*OpenAIAdapter)(nil)
+var _ proto.UpstreamAdapter = (*Adapter)(nil)
 
 func TestOpenAIAdapterHappyPathGoldenSSE(t *testing.T) {
 	const fixture = `
@@ -51,7 +52,7 @@ data: [DONE]
 		t.Fatalf("accumulated content mismatch: %q", state.AccumulatedContent)
 	}
 	usageEvent := events[5]
-	if usageEvent.StopReason != CanonicalStopEndTurn {
+	if usageEvent.StopReason != proto.CanonicalStopEndTurn {
 		t.Fatalf("stop finish_reason should map to end_turn, got %q", usageEvent.StopReason)
 	}
 	if usageEvent.Usage == nil || usageEvent.Usage.InputTokens != 7 || usageEvent.Usage.OutputTokens != 13 || usageEvent.Usage.TotalTokens != 20 {
@@ -74,7 +75,7 @@ data: [DONE]
 	if len(losses) != 1 {
 		t.Fatalf("malformed JSON should emit one loss entry, got %+v", losses)
 	}
-	if losses[0].Feature != string(FeatureTextStreaming) {
+	if losses[0].Feature != string(proto.FeatureTextStreaming) {
 		t.Fatalf("malformed JSON loss feature mismatch: %+v", losses[0])
 	}
 	if got := openAIEventTypes(events); strings.Join(got, ",") != "message_start,content_block_start,content_block_delta,content_block_stop,message_stop" {
@@ -83,8 +84,8 @@ data: [DONE]
 }
 
 func TestOpenAIAdapterChunkWithoutChoicesSkipped(t *testing.T) {
-	adapter := &OpenAIAdapter{}
-	state := &OpenAIUpstreamState{}
+	adapter := &Adapter{}
+	state := &UpstreamState{}
 	out, losses, err := adapter.ProviderEventToCanonicalEvents(context.Background(), []byte(`{"id":"chatcmpl-x","object":"chat.completion.chunk","model":"gpt-4o"}`), state)
 	if err != nil {
 		t.Fatalf("ProviderEventToCanonicalEvents: %v", err)
@@ -138,7 +139,7 @@ data: [DONE]
 		case "content_block_stop":
 			stops++
 		case "message_delta":
-			if ev.StopReason == CanonicalStopToolUse {
+			if ev.StopReason == proto.CanonicalStopToolUse {
 				sawToolStop = true
 			}
 		}
@@ -151,16 +152,16 @@ data: [DONE]
 func TestOpenAIAdapterFinishReasonMappings(t *testing.T) {
 	cases := []struct {
 		reason string
-		want   CanonicalStopReason
+		want   proto.CanonicalStopReason
 	}{
-		{reason: "stop", want: CanonicalStopEndTurn},
-		{reason: "length", want: CanonicalStopMaxTokens},
-		{reason: "tool_calls", want: CanonicalStopToolUse},
+		{reason: "stop", want: proto.CanonicalStopEndTurn},
+		{reason: "length", want: proto.CanonicalStopMaxTokens},
+		{reason: "tool_calls", want: proto.CanonicalStopToolUse},
 	}
 	for _, tc := range cases {
 		t.Run(tc.reason, func(t *testing.T) {
-			adapter := &OpenAIAdapter{}
-			state := &OpenAIUpstreamState{}
+			adapter := &Adapter{}
+			state := &UpstreamState{}
 			payload := []byte(fmt.Sprintf(`{"id":"chatcmpl-%s","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":%q}]}`, tc.reason, tc.reason))
 			out, losses, err := adapter.ProviderEventToCanonicalEvents(context.Background(), payload, state)
 			if err != nil {
@@ -170,7 +171,7 @@ func TestOpenAIAdapterFinishReasonMappings(t *testing.T) {
 				t.Fatalf("known finish reason should not emit losses: %+v", losses)
 			}
 			events := anyToCanonicalEvents(t, out)
-			var got CanonicalStopReason
+			var got proto.CanonicalStopReason
 			for _, ev := range events {
 				if ev.Type == "message_delta" {
 					got = ev.StopReason
@@ -184,8 +185,8 @@ func TestOpenAIAdapterFinishReasonMappings(t *testing.T) {
 }
 
 func TestOpenAIAdapterEmptyStreamFinalize(t *testing.T) {
-	adapter := &OpenAIAdapter{}
-	state := &OpenAIUpstreamState{}
+	adapter := &Adapter{}
+	state := &UpstreamState{}
 	out, err := adapter.FinalizeUpstreamStream(context.Background(), state)
 	if err != nil {
 		t.Fatalf("FinalizeUpstreamStream: %v", err)
@@ -208,7 +209,7 @@ func TestOpenAIBufferedResponseHelperParsesUsageAndTools(t *testing.T) {
 	if len(losses) != 0 {
 		t.Fatalf("buffered helper should not emit losses: %+v", losses)
 	}
-	if resp.ID != "chatcmpl-full" || resp.Model != "gpt-4o" || resp.StopReason != CanonicalStopToolUse {
+	if resp.ID != "chatcmpl-full" || resp.Model != "gpt-4o" || resp.StopReason != proto.CanonicalStopToolUse {
 		t.Fatalf("buffered metadata mismatch: %+v", resp)
 	}
 	if resp.Usage.InputTokens != 3 || resp.Usage.OutputTokens != 5 || resp.Usage.TotalTokens != 8 {
@@ -222,12 +223,12 @@ func TestOpenAIBufferedResponseHelperParsesUsageAndTools(t *testing.T) {
 	}
 }
 
-func runOpenAIGoldenSSE(t *testing.T, fixture string) ([]CanonicalEvent, []ProtocolLossEntry, *OpenAIUpstreamState) {
+func runOpenAIGoldenSSE(t *testing.T, fixture string) ([]proto.CanonicalEvent, []proto.ProtocolLossEntry, *UpstreamState) {
 	t.Helper()
-	adapter := &OpenAIAdapter{}
-	state := &OpenAIUpstreamState{}
-	var events []CanonicalEvent
-	var losses []ProtocolLossEntry
+	adapter := &Adapter{}
+	state := &UpstreamState{}
+	var events []proto.CanonicalEvent
+	var losses []proto.ProtocolLossEntry
 	for _, payload := range scanOpenAIGoldenData(t, fixture) {
 		out, eventLosses, err := adapter.ProviderEventToCanonicalEvents(context.Background(), payload, state)
 		if err != nil {
@@ -284,11 +285,11 @@ func scanOpenAIGoldenData(t *testing.T, fixture string) [][]byte {
 	return events
 }
 
-func anyToCanonicalEvents(t *testing.T, in []any) []CanonicalEvent {
+func anyToCanonicalEvents(t *testing.T, in []any) []proto.CanonicalEvent {
 	t.Helper()
-	out := make([]CanonicalEvent, 0, len(in))
+	out := make([]proto.CanonicalEvent, 0, len(in))
 	for _, item := range in {
-		ev, ok := item.(CanonicalEvent)
+		ev, ok := item.(proto.CanonicalEvent)
 		if !ok {
 			t.Fatalf("unexpected event type %T", item)
 		}
@@ -297,7 +298,7 @@ func anyToCanonicalEvents(t *testing.T, in []any) []CanonicalEvent {
 	return out
 }
 
-func openAIEventTypes(events []CanonicalEvent) []string {
+func openAIEventTypes(events []proto.CanonicalEvent) []string {
 	out := make([]string, 0, len(events))
 	for _, ev := range events {
 		out = append(out, ev.Type)

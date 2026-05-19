@@ -13,6 +13,9 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -33,7 +36,7 @@ type StreamingHopChainBuilder func(req ForwardRequest, providerEndpoint string, 
 //     无需再动 forwarder 主流程。
 //
 // 历史变更说明（wire-up 重构）：
-//   - 新增 ProtocolAdapters 字段，替代原先硬编码的 proto.AnthropicAdapter。
+//   - 新增 ProtocolAdapters 字段，替代原先硬编码的 anthropic.Adapter。
 //   - 删除原 UpstreamAdapter 字段（由 ProtocolAdapters + ForwardRequest.ProtocolFamily 动态解析）。
 //   - Forward 入口校验 ProtocolFamily 非空、ProtocolAdapters 非 nil。
 type StreamForwarder struct {
@@ -413,8 +416,8 @@ func (f *StreamForwarder) finishDraft(d UsageRecordDraft, acc UsageAccumulator, 
 
 // newUpstreamState 构造上游协议状态对象。
 //
-// 修复 (sonnet F3 HIGH): 之前一律返回 *proto.UpstreamState — 但 OpenAIAdapter
-// 与 GeminiAdapter 在 ProviderEventToCanonicalEvents 内 type-assert 到
+// 修复 (sonnet F3 HIGH): 之前一律返回 *anthropic.UpstreamState — 但 openai.Adapter
+// 与 gemini.Adapter 在 ProviderEventToCanonicalEvents 内 type-assert 到
 // 各自的 state 类型, OpenAI/Gemini 流过来 type assertion 失败直接报错。
 // 当前按 ProtocolAdapters 注册的 adapter 实际类型选 state 类型.
 //
@@ -429,15 +432,15 @@ func (f *StreamForwarder) newUpstreamState(req ForwardRequest) any {
 	if f.ProtocolAdapters != nil {
 		if adapter, err := f.ProtocolAdapters.For(req.ProtocolFamily); err == nil {
 			switch adapter.(type) {
-			case *proto.OpenAIAdapter:
-				return &proto.OpenAIUpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}
-			case *proto.GeminiAdapter:
-				return &proto.GeminiUpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}
+			case *openai.Adapter:
+				return &openai.UpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}
+			case *gemini.Adapter:
+				return &gemini.UpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}
 			}
 		}
 	}
 	// fallthrough: Anthropic / Bedrock-on-Anthropic / 其它都用 UpstreamState
-	return &proto.UpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}
+	return &anthropic.UpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}
 }
 
 // newClientState 按 client adapter 的具体协议创建 per-stream 状态。

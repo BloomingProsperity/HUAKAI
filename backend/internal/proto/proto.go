@@ -14,8 +14,8 @@ import "context"
 // 调用方改用 HCSFEnvelope 直接命名。Day 8 sunset 标记保留于此。
 //
 // 兼容性：现有 ClientAdapter / UpstreamAdapter 接口签名 *HCSF 等价 *HCSFEnvelope。
-// P-0c-C 已修复历史 `&HCSF{}` 零值穿透问题（openai_sse.go / gemini_sse.go），现统一返回
-// 至少 Version + BufferedResponse 的最小 envelope；adapter 边界处用
+// P-0c-C 已修复历史 `&HCSF{}` 零值穿透问题（proto/openai/sse.go /
+// proto/gemini/sse.go），现统一返回至少 Version + BufferedResponse 的最小 envelope；adapter 边界处用
 // ValidateEnvelopeVersionGuard 做轻量守门，debug build 用 ValidateEnvelopeDebug
 // 触发完整 INV-3..INV-13 校验。
 type HCSF = HCSFEnvelope

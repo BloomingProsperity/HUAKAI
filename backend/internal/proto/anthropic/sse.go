@@ -1,17 +1,13 @@
-package proto
+package anthropic
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
-
-var ErrUnknownEventType = errors.New("proto: unknown upstream event type")
-
-var ErrNotImplemented = errors.New("proto: not implemented")
 
 // UpstreamState tracks Anthropic SSE translation state from spec section 3 Phase C.
 //
@@ -29,7 +25,7 @@ type UpstreamState struct {
 	CurrentBlockIndex   int
 	BlocksInProgress    map[int]bool
 	Terminated          bool
-	AccumulatedUsage    CanonicalUsage
+	AccumulatedUsage    proto.CanonicalUsage
 	DeliveredChunkCount int64
 	AccountID           int64
 	PrefixHash          string
@@ -39,8 +35,8 @@ type UpstreamState struct {
 	TenantID int64
 }
 
-// AnthropicAdapter translates Anthropic SSE events through HCSF per spec section 3 Phase C.
-type AnthropicAdapter struct {
+// Adapter translates Anthropic SSE events through proto.HCSF per spec section 3 Phase C.
+type Adapter struct {
 	CarryForwardSignatureDelta bool
 }
 
@@ -55,13 +51,13 @@ type anthropicEnvelope struct {
 	Index        int                     `json:"index,omitempty"`
 	ContentBlock anthropicBlockPayload   `json:"content_block,omitempty"`
 	Delta        anthropicDeltaPayload   `json:"delta,omitempty"`
-	Usage        CanonicalUsage          `json:"usage,omitempty"`
+	Usage        proto.CanonicalUsage    `json:"usage,omitempty"`
 }
 
 type anthropicMessagePayload struct {
-	ID    string         `json:"id,omitempty"`
-	Model string         `json:"model,omitempty"`
-	Usage CanonicalUsage `json:"usage,omitempty"`
+	ID    string               `json:"id,omitempty"`
+	Model string               `json:"model,omitempty"`
+	Usage proto.CanonicalUsage `json:"usage,omitempty"`
 }
 
 type anthropicBlockPayload struct {
@@ -73,23 +69,23 @@ type anthropicBlockPayload struct {
 }
 
 type anthropicDeltaPayload struct {
-	Type        string          `json:"type"`
-	Text        string          `json:"text,omitempty"`
-	PartialJSON json.RawMessage `json:"partial_json,omitempty"`
-	Signature   string          `json:"signature,omitempty"`
-	StopReason  string          `json:"stop_reason,omitempty"`
-	Usage       CanonicalUsage  `json:"usage,omitempty"`
+	Type        string               `json:"type"`
+	Text        string               `json:"text,omitempty"`
+	PartialJSON json.RawMessage      `json:"partial_json,omitempty"`
+	Signature   string               `json:"signature,omitempty"`
+	StopReason  string               `json:"stop_reason,omitempty"`
+	Usage       proto.CanonicalUsage `json:"usage,omitempty"`
 }
 
-func (s *AnthropicAdapter) CanonicalToProviderRequest(ctx context.Context, canonical *HCSF) ([]byte, []ProtocolLossEntry, error) {
-	return nil, nil, ErrNotImplemented
+func (s *Adapter) CanonicalToProviderRequest(ctx context.Context, canonical *proto.HCSF) ([]byte, []proto.ProtocolLossEntry, error) {
+	return nil, nil, proto.ErrNotImplemented
 }
 
-func (s *AnthropicAdapter) ProviderResponseToCanonical(ctx context.Context, raw []byte) (*HCSF, []ProtocolLossEntry, error) {
-	return nil, nil, ErrNotImplemented
+func (s *Adapter) ProviderResponseToCanonical(ctx context.Context, raw []byte) (*proto.HCSF, []proto.ProtocolLossEntry, error) {
+	return nil, nil, proto.ErrNotImplemented
 }
 
-func (s *AnthropicAdapter) ProviderEventToCanonicalEvents(ctx context.Context, providerEvt any, state any) ([]any, []ProtocolLossEntry, error) {
+func (s *Adapter) ProviderEventToCanonicalEvents(ctx context.Context, providerEvt any, state any) ([]any, []proto.ProtocolLossEntry, error) {
 	_ = ctx
 	st, ok := state.(*UpstreamState)
 	if !ok {
@@ -107,18 +103,18 @@ func (s *AnthropicAdapter) ProviderEventToCanonicalEvents(ctx context.Context, p
 	return out, losses, err
 }
 
-func (s *AnthropicAdapter) providerEventToCanonicalEvents(evt anthropicEvent, state *UpstreamState) ([]CanonicalEvent, []ProtocolLossEntry, error) {
+func (s *Adapter) providerEventToCanonicalEvents(evt anthropicEvent, state *UpstreamState) ([]proto.CanonicalEvent, []proto.ProtocolLossEntry, error) {
 	if state.BlocksInProgress == nil {
 		state.BlocksInProgress = map[int]bool{}
 	}
 	var env anthropicEnvelope
-	// U7-D：用 UnmarshalWithExtras 同时拿 known + 上游 unknown（envelope 级
+	// U7-D：用 proto.UnmarshalWithExtras 同时拿 known + 上游 unknown（envelope 级
 	// 字段：vendor 在 message_start / message_delta 等顶层加新字段时透传）。
 	// 内层 message.usage / delta / content_block 的 unknown 暂不抓——若需扩，
 	// 在对应嵌套 typed struct 各加一层 envelope（U7 后续）。
-	var passthrough PassthroughEnvelope
+	var passthrough proto.PassthroughEnvelope
 	if len(evt.Raw) > 0 {
-		if err := UnmarshalWithExtras(evt.Raw, &env, &passthrough); err != nil {
+		if err := proto.UnmarshalWithExtras(evt.Raw, &env, &passthrough); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -126,25 +122,23 @@ func (s *AnthropicAdapter) providerEventToCanonicalEvents(evt anthropicEvent, st
 	if switchErr != nil {
 		return events, losses, switchErr
 	}
-	if len(passthrough.Extra) > 0 && len(events) > 0 {
-		events[0].Passthrough = &passthrough
-	}
+	events = attachPassthroughToFirstEvent(events, passthrough)
 	return events, losses, nil
 }
 
 // providerEventSwitch 是原 switch 主体，提取出来便于上层在 unmarshal 后
 // 附加 Passthrough。逻辑与之前等价——纯重构。
-func (s *AnthropicAdapter) providerEventSwitch(evt anthropicEvent, env anthropicEnvelope, state *UpstreamState) ([]CanonicalEvent, []ProtocolLossEntry, error) {
+func (s *Adapter) providerEventSwitch(evt anthropicEvent, env anthropicEnvelope, state *UpstreamState) ([]proto.CanonicalEvent, []proto.ProtocolLossEntry, error) {
 	switch evt.Type {
 	case "message_start":
 		state.MessageID = env.Message.ID
 		state.AccumulatedUsage = env.Message.Usage
-		return []CanonicalEvent{{Type: "message_start", MessageID: env.Message.ID, Model: env.Message.Model, Usage: &env.Message.Usage}}, nil, nil
+		return []proto.CanonicalEvent{{Type: "message_start", MessageID: env.Message.ID, Model: env.Message.Model, Usage: &env.Message.Usage}}, nil, nil
 	case "content_block_start":
 		state.CurrentBlockIndex = env.Index
 		state.BlocksInProgress[env.Index] = true
 		block, losses := canonicalBlock(env.ContentBlock)
-		return []CanonicalEvent{{Type: "content_block_start", Index: env.Index, ContentBlock: &block}}, losses, nil
+		return []proto.CanonicalEvent{{Type: "content_block_start", Index: env.Index, ContentBlock: &block}}, losses, nil
 	case "content_block_delta":
 		if anthropicDeltaDelivered(env.Delta) {
 			state.DeliveredChunkCount++
@@ -153,18 +147,18 @@ func (s *AnthropicAdapter) providerEventSwitch(evt anthropicEvent, env anthropic
 		if delta == nil {
 			return nil, losses, nil
 		}
-		return []CanonicalEvent{{Type: "content_block_delta", Index: env.Index, Delta: delta}}, losses, nil
+		return []proto.CanonicalEvent{{Type: "content_block_delta", Index: env.Index, Delta: delta}}, losses, nil
 	case "content_block_stop":
 		delete(state.BlocksInProgress, env.Index)
-		return []CanonicalEvent{{Type: "content_block_stop", Index: env.Index}}, nil, nil
+		return []proto.CanonicalEvent{{Type: "content_block_stop", Index: env.Index}}, nil, nil
 	case "message_delta":
 		state.AccumulatedUsage = mergeUsage(state.AccumulatedUsage, env.Usage, env.Delta.Usage)
 		stop := mapStopReason(env.Delta.StopReason)
-		return []CanonicalEvent{{Type: "message_delta", Usage: &state.AccumulatedUsage, StopReason: stop}}, stopLoss(env.Delta.StopReason), nil
+		return []proto.CanonicalEvent{{Type: "message_delta", Usage: &state.AccumulatedUsage, StopReason: stop}}, stopLoss(env.Delta.StopReason), nil
 	case "message_stop":
 		if state.Terminated {
-			loss := newLossEntry(FeatureTextStreaming, DirectionUpstreamToCanonical, VerdictLossy, "duplicate terminal event skipped")
-			return nil, []ProtocolLossEntry{loss}, nil
+			loss := proto.NewLossEntry(proto.FeatureTextStreaming, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "duplicate terminal event skipped")
+			return nil, []proto.ProtocolLossEntry{loss}, nil
 		}
 		state.Terminated = true
 		// 观测 vendor cache token 命中率（Track D + PASR-lite A4）。
@@ -178,10 +172,10 @@ func (s *AnthropicAdapter) providerEventSwitch(evt anthropicEvent, env anthropic
 			state.AccountID,
 			state.PrefixHash,
 		)
-		return []CanonicalEvent{{Type: "message_stop"}}, nil, nil
+		return []proto.CanonicalEvent{{Type: "message_stop"}}, nil, nil
 	default:
-		loss := newLossEntry(FeatureTextStreaming, DirectionUpstreamToCanonical, VerdictLossy, "unknown upstream event type skipped")
-		return nil, []ProtocolLossEntry{loss}, fmt.Errorf("%w: %s", ErrUnknownEventType, evt.Type)
+		loss := proto.NewLossEntry(proto.FeatureTextStreaming, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "unknown upstream event type skipped")
+		return nil, []proto.ProtocolLossEntry{loss}, fmt.Errorf("%w: %s", proto.ErrUnknownEventType, evt.Type)
 	}
 }
 
@@ -194,7 +188,7 @@ func anthropicDeltaDelivered(delta anthropicDeltaPayload) bool {
 	}
 }
 
-func (s *AnthropicAdapter) FinalizeUpstreamStream(ctx context.Context, state any) ([]any, error) {
+func (s *Adapter) FinalizeUpstreamStream(ctx context.Context, state any) ([]any, error) {
 	_ = ctx
 	st, ok := state.(*UpstreamState)
 	if !ok {
@@ -214,10 +208,10 @@ func (s *AnthropicAdapter) FinalizeUpstreamStream(ctx context.Context, state any
 	)
 	var out []any
 	for idx := range st.BlocksInProgress {
-		out = append(out, CanonicalEvent{Type: "content_block_stop", Index: idx})
+		out = append(out, proto.CanonicalEvent{Type: "content_block_stop", Index: idx})
 	}
 	st.Terminated = true
-	out = append(out, CanonicalEvent{Type: "message_stop"})
+	out = append(out, proto.CanonicalEvent{Type: "message_stop"})
 	return out, nil
 }
 
@@ -236,44 +230,44 @@ func coerceAnthropicEvent(v any) (anthropicEvent, error) {
 	}
 }
 
-func canonicalBlock(b anthropicBlockPayload) (CanonicalContentBlock, []ProtocolLossEntry) {
+func canonicalBlock(b anthropicBlockPayload) (proto.CanonicalContentBlock, []proto.ProtocolLossEntry) {
 	switch b.Type {
 	case "text":
-		return CanonicalContentBlock{Type: "text", Text: b.Text}, nil
+		return proto.CanonicalContentBlock{Type: "text", Text: b.Text}, nil
 	case "tool_use":
-		callID, err := ToCanonicalCallID(b.ID, UpstreamProtocolAnthropic)
+		callID, err := proto.ToCanonicalCallID(b.ID, proto.UpstreamProtocolAnthropic)
 		if err != nil {
-			loss := newLossEntry(FeatureToolUse, DirectionUpstreamToCanonical, VerdictLossy, "malformed tool call identifier")
-			return CanonicalContentBlock{Type: "tool_use", Name: b.Name, Input: b.Input}, []ProtocolLossEntry{loss}
+			loss := proto.NewLossEntry(proto.FeatureToolUse, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "malformed tool call identifier")
+			return proto.CanonicalContentBlock{Type: "tool_use", Name: b.Name, Input: b.Input}, []proto.ProtocolLossEntry{loss}
 		}
-		return CanonicalContentBlock{Type: "tool_use", CallID: callID, Name: b.Name, Input: b.Input}, nil
+		return proto.CanonicalContentBlock{Type: "tool_use", CallID: callID, Name: b.Name, Input: b.Input}, nil
 	default:
-		loss := newLossEntry(FeatureTextStreaming, DirectionUpstreamToCanonical, VerdictLossy, "unknown content block type skipped")
-		return CanonicalContentBlock{Type: "unknown"}, []ProtocolLossEntry{loss}
+		loss := proto.NewLossEntry(proto.FeatureTextStreaming, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "unknown content block type skipped")
+		return proto.CanonicalContentBlock{Type: "unknown"}, []proto.ProtocolLossEntry{loss}
 	}
 }
 
-func (s *AnthropicAdapter) canonicalDelta(d anthropicDeltaPayload) (*CanonicalContentDelta, []ProtocolLossEntry) {
+func (s *Adapter) canonicalDelta(d anthropicDeltaPayload) (*proto.CanonicalContentDelta, []proto.ProtocolLossEntry) {
 	switch d.Type {
 	case "text_delta":
-		return &CanonicalContentDelta{Type: "text_delta", Text: d.Text}, nil
+		return &proto.CanonicalContentDelta{Type: "text_delta", Text: d.Text}, nil
 	case "input_json_delta":
-		return &CanonicalContentDelta{Type: "tool_input_delta", PartialJSON: d.PartialJSON}, nil
+		return &proto.CanonicalContentDelta{Type: "tool_input_delta", PartialJSON: d.PartialJSON}, nil
 	case "thinking_delta":
-		return &CanonicalContentDelta{Type: "reasoning_delta", ReasoningText: d.Text}, nil
+		return &proto.CanonicalContentDelta{Type: "reasoning_delta", ReasoningText: d.Text}, nil
 	case "signature_delta":
-		loss := newLossEntry(FeatureSignatureDelta, DirectionUpstreamToCanonical, VerdictLossy, "signature delta skipped by policy")
+		loss := proto.NewLossEntry(proto.FeatureSignatureDelta, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "signature delta skipped by policy")
 		if !s.CarryForwardSignatureDelta {
-			return nil, []ProtocolLossEntry{loss}
+			return nil, []proto.ProtocolLossEntry{loss}
 		}
-		return &CanonicalContentDelta{Type: "signature_delta", Signature: d.Signature}, nil
+		return &proto.CanonicalContentDelta{Type: "signature_delta", Signature: d.Signature}, nil
 	default:
-		loss := newLossEntry(FeatureTextStreaming, DirectionUpstreamToCanonical, VerdictLossy, "unknown content delta type skipped")
-		return nil, []ProtocolLossEntry{loss}
+		loss := proto.NewLossEntry(proto.FeatureTextStreaming, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "unknown content delta type skipped")
+		return nil, []proto.ProtocolLossEntry{loss}
 	}
 }
 
-func mergeUsage(base, a, b CanonicalUsage) CanonicalUsage {
+func mergeUsage(base, a, b proto.CanonicalUsage) proto.CanonicalUsage {
 	if a.InputTokens != 0 || a.OutputTokens != 0 || a.TotalTokens != 0 ||
 		a.CacheCreationInputTokens != 0 || a.CacheReadInputTokens != 0 {
 		base = a
@@ -299,28 +293,28 @@ func mergeUsage(base, a, b CanonicalUsage) CanonicalUsage {
 	return base
 }
 
-func mapStopReason(reason string) CanonicalStopReason {
+func mapStopReason(reason string) proto.CanonicalStopReason {
 	switch reason {
 	case "", "end_turn":
-		return CanonicalStopEndTurn
+		return proto.CanonicalStopEndTurn
 	case "max_tokens":
-		return CanonicalStopMaxTokens
+		return proto.CanonicalStopMaxTokens
 	case "stop_sequence":
-		return CanonicalStopSequence
+		return proto.CanonicalStopSequence
 	case "tool_use":
-		return CanonicalStopToolUse
+		return proto.CanonicalStopToolUse
 	case "refusal":
-		return CanonicalStopRefusal
+		return proto.CanonicalStopRefusal
 	default:
-		return CanonicalStopUnknown
+		return proto.CanonicalStopUnknown
 	}
 }
 
-func stopLoss(reason string) []ProtocolLossEntry {
-	if reason == "" || mapStopReason(reason) != CanonicalStopUnknown {
+func stopLoss(reason string) []proto.ProtocolLossEntry {
+	if reason == "" || mapStopReason(reason) != proto.CanonicalStopUnknown {
 		return nil
 	}
-	return []ProtocolLossEntry{newLossEntry(FeatureMaxTokensFinishReason, DirectionUpstreamToCanonical, VerdictLossy, "unknown stop reason mapped to canonical unknown")}
+	return []proto.ProtocolLossEntry{proto.NewLossEntry(proto.FeatureMaxTokensFinishReason, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "unknown stop reason mapped to canonical unknown")}
 }
 
-var _ UpstreamAdapter = (*AnthropicAdapter)(nil)
+var _ proto.UpstreamAdapter = (*Adapter)(nil)

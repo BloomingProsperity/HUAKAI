@@ -129,7 +129,7 @@ func MergeExtrasInto(typedJSON []byte, env *PassthroughEnvelope) ([]byte, error)
 // attachPassthroughToEvents 把同一个上游 JSON chunk 的 unknown 字段复制到
 // 该 chunk 产生的每条 canonical event。复制 map/value，避免下游修改一条
 // event 时影响同 chunk 的其它 event。
-func attachPassthroughToEvents(events []CanonicalEvent, env PassthroughEnvelope) []CanonicalEvent {
+func AttachPassthroughToEvents(events []CanonicalEvent, env PassthroughEnvelope) []CanonicalEvent {
 	if len(events) == 0 || len(env.Extra) == 0 {
 		return events
 	}
@@ -137,6 +137,10 @@ func attachPassthroughToEvents(events []CanonicalEvent, env PassthroughEnvelope)
 		events[i].Passthrough = clonePassthroughEnvelope(&env)
 	}
 	return events
+}
+
+func attachPassthroughToEvents(events []CanonicalEvent, env PassthroughEnvelope) []CanonicalEvent {
+	return AttachPassthroughToEvents(events, env)
 }
 
 func clonePassthroughEnvelope(env *PassthroughEnvelope) *PassthroughEnvelope {

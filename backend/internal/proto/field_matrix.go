@@ -177,7 +177,7 @@ func DefaultFieldMatrix() FieldMatrix {
 				"usage":         preserved("typed struct: anthropicEnvelope.Usage"),
 				// transformed: stop_reason 翻译为 CanonicalStopReason
 				// 实际是 Lossy——mapStopReason 有 default→CanonicalStopUnknown 分支
-				// 触发 stopLoss VerdictLossy（参 anthropic_sse.go:243-247）。
+				// 触发 stopLoss VerdictLossy（参 proto/anthropic/sse.go）。
 				// vendor 加新 stop_reason 值会落到 unknown，是 lossy 的本质。
 				"stop_reason": transformed(FieldTransformLossy,
 					"Anthropic stop_reason 多对一映射；未知值落到 CanonicalStopUnknown"),
@@ -195,7 +195,7 @@ func DefaultFieldMatrix() FieldMatrix {
 				"delta":         preserved("typed struct: anthropicEnvelope.Delta (via Bedrock delegate)"),
 				"usage":         preserved("typed struct: anthropicEnvelope.Usage (via Bedrock delegate)"),
 				"stop_reason": transformed(FieldTransformLossy,
-					"Bedrock-on-Anthropic 复用 AnthropicAdapter stop_reason 映射 (Lossy 同 Anthropic)"),
+					"Bedrock-on-Anthropic 复用 anthropic.Adapter stop_reason 映射 (Lossy 同 Anthropic)"),
 				"cache_creation_input_tokens": preserved("passthrough envelope via Bedrock delegate"),
 				"cache_read_input_tokens":     preserved("passthrough envelope via Bedrock delegate"),
 			},
