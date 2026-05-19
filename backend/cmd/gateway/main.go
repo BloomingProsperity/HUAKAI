@@ -92,34 +92,35 @@ func main() {
 
 // deps is the live dependency tree handlers receive after run() boots.
 type deps struct {
-	cfg                *config.Config
-	queries            *db.Queries
-	selector           pool.Selector // M6: 接口化, 由 buildSelector 按 PoolSelectorConfig 装配 default 或 dispatcher
-	channelHealth      *channelhealth.Service
-	claimGate          billing.ClaimGate
-	settler            billing.Settler
-	forwarder          *gateway.StreamForwarder
-	credentialVault    provider.CredentialVault
-	credentialStore    *credentialstore.Store
-	credentialKeys     credentialstore.KeyProvider
-	credentialAcqStore *credentialacq.PostgresSessionStore
-	emailSettings      *mailinfra.PostgresSettingsStore
-	authEmailSender    gatewayhttp.AuthEmailSender
-	userAuth           *userauth.Service
-	userSessions       *usersession.Service
-	voucherService     *voucher.Service
-	invitationService  *communityinvitation.Service
-	dispatcher         *gateway.UpstreamDispatcher
-	responseCache      l2cache.Store
-	dlqService         *legacydlq.Service
-	completionBus      *eventbus.Bus
-	inboundAuth        *auth.APIKeyResolver
-	auditLedger        auditledger.Ledger
-	auditSigner        *sign.Signer
-	receiptStore       *auditreceipt.PGXReceiptStorage
-	receiptFormatter   *auditreceipt.ReceiptFormatter
-	refundQueue        *auditreceipt.MismatchRefundQueue
-	rateTableSource    billing.RateTableSource
+	cfg                 *config.Config
+	queries             *db.Queries
+	selector            pool.Selector // M6: 接口化, 由 buildSelector 按 PoolSelectorConfig 装配 default 或 dispatcher
+	channelHealth       *channelhealth.Service
+	claimGate           billing.ClaimGate
+	settler             billing.Settler
+	forwarder           *gateway.StreamForwarder
+	credentialVault     provider.CredentialVault
+	credentialStore     *credentialstore.Store
+	credentialKeys      credentialstore.KeyProvider
+	credentialAcqStore  *credentialacq.PostgresSessionStore
+	emailSettings       *mailinfra.PostgresSettingsStore
+	authEmailSender     gatewayhttp.AuthEmailSender
+	userAuth            *userauth.Service
+	userSessions        *usersession.Service
+	voucherService      *voucher.Service
+	invitationService   *communityinvitation.Service
+	dispatcher          *gateway.UpstreamDispatcher
+	responseCache       l2cache.Store
+	dlqService          *legacydlq.Service
+	completionBus       *eventbus.Bus
+	inboundAuth         *auth.APIKeyResolver
+	auditLedger         auditledger.Ledger
+	auditSigner         *sign.Signer
+	auditPubkeyRegistry auditledger.PubkeyRegistry
+	receiptStore        *auditreceipt.PGXReceiptStorage
+	receiptFormatter    *auditreceipt.ReceiptFormatter
+	refundQueue         *auditreceipt.MismatchRefundQueue
+	rateTableSource     billing.RateTableSource
 	// Slice 2 (N+5a): real Registry resolver.
 	modelRegistry *registry.PostgresRegistry
 	// Slice 2 (N+5b 2026-05-01): Router consumes Registry's PoolCandidates
@@ -293,6 +294,13 @@ func run(logger *zap.Logger) error {
 	if err != nil {
 		return fmt.Errorf("load audit ledger signer: %w", err)
 	}
+	auditPubkeyRegistry, err := auditledger.NewPGXPubkeyRegistry(pgPool)
+	if err != nil {
+		return fmt.Errorf("build audit pubkey registry: %w", err)
+	}
+	if err := auditledger.EnsureSignerPubkey(ctx, auditPubkeyRegistry, auditSigner, time.Now().UTC()); err != nil {
+		return fmt.Errorf("register audit signer pubkey: %w", err)
+	}
 	auditLedger, err := buildAuditLedger(ctx, pgPool, auditSigner, logger)
 	if err != nil {
 		return fmt.Errorf("build audit ledger: %w", err)
@@ -434,13 +442,14 @@ func run(logger *zap.Logger) error {
 		// Replaces the SmokeAuthResolver env-injected single bearer pattern.
 		// Rollback path is git revert; no SmokeAuthResolver is wired into the
 		// default build.
-		inboundAuth:      auth.NewAPIKeyResolver(q),
-		auditLedger:      auditLedger,
-		auditSigner:      auditSigner,
-		receiptStore:     receiptStore,
-		receiptFormatter: receiptFormatter,
-		refundQueue:      refundQueue,
-		rateTableSource:  rateTableSource,
+		inboundAuth:         auth.NewAPIKeyResolver(q),
+		auditLedger:         auditLedger,
+		auditSigner:         auditSigner,
+		auditPubkeyRegistry: auditPubkeyRegistry,
+		receiptStore:        receiptStore,
+		receiptFormatter:    receiptFormatter,
+		refundQueue:         refundQueue,
+		rateTableSource:     rateTableSource,
 		// Slice 2 (N+5a) registry resolver. cache=nil → noopCache (D2: no
 		// L0 cache; LRU lands in Slice 5 keyed on registry_version).
 		// Takes pgxpool.Pool because Resolve runs all reads inside a
@@ -904,8 +913,8 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		RequestClass:         d.cfg.RequestClass,
 	}))
 
-	gatewayhttp.MountAuditVerifyRoutes(r, gatewayhttp.AuditVerifyStaticDeps{Ledger: d.auditLedger})
-	r.Get("/v1/audit/pubkey", gatewayhttp.NewAuditPubkeyHandler(gatewayhttp.AuditPubkeyDeps{Signer: d.auditSigner}))
+	gatewayhttp.MountAuditVerifyRoutes(r, gatewayhttp.AuditVerifyStaticDeps{Ledger: d.auditLedger, Registry: d.auditPubkeyRegistry})
+	gatewayhttp.MountAuditPubkeyRoutes(r, gatewayhttp.AuditPubkeyDeps{Signer: d.auditSigner, Registry: d.auditPubkeyRegistry})
 
 	receiptDeps := gatewayhttp.CostReceiptHandlerDeps{
 		Receipts:        d.receiptStore,
@@ -913,6 +922,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		MismatchRefunds: d.refundQueue,
 		RateTables:      d.rateTableSource,
 		Signer:          d.auditSigner,
+		PubkeyRegistry:  d.auditPubkeyRegistry,
 	}
 	r.Route("/v1/receipts", func(r chi.Router) {
 		r.With(auth.SessionMiddleware(d.userSessions)).Get("/{request_id}", gatewayhttp.NewCostReceiptGetHandler(receiptDeps))
