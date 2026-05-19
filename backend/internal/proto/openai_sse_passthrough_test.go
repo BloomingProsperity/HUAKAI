@@ -48,6 +48,37 @@ func TestOpenAI_StreamingChunk_PassthroughCarriesUnknownFields(t *testing.T) {
 	}
 }
 
+func TestOpenAI_StreamingChunk_PassthroughCopiedToEveryEmittedEvent(t *testing.T) {
+	chunk := `data: {"id":"chatcmpl-multi","object":"chat.completion.chunk","model":"gpt-4o","system_fingerprint":"fp_multi","service_tier":"scale","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"}}]}`
+
+	adapter := &OpenAIAdapter{}
+	state := &OpenAIUpstreamState{}
+	events, _, err := adapter.ProviderEventToCanonicalEvents(context.Background(), []byte(chunk), state)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if len(events) < 3 {
+		t.Fatalf("events=%d want message_start/content_block_start/content_block_delta", len(events))
+	}
+
+	var sawDelta bool
+	for i, e := range events {
+		ce := e.(CanonicalEvent)
+		if ce.Passthrough == nil {
+			t.Fatalf("event[%d] %s Passthrough nil", i, ce.Type)
+		}
+		if !bytes.Equal(ce.Passthrough.Extra["system_fingerprint"], json.RawMessage(`"fp_multi"`)) {
+			t.Fatalf("event[%d] system_fingerprint=%s", i, ce.Passthrough.Extra["system_fingerprint"])
+		}
+		if ce.Type == "content_block_delta" {
+			sawDelta = true
+		}
+	}
+	if !sawDelta {
+		t.Fatal("content_block_delta event missing")
+	}
+}
+
 // TestOpenAI_StreamingChunk_NoUnknownFields_PassthroughIsNil 既有路径不破：
 // 没有 unknown 字段的 chunk 不应产生 Passthrough（保留 nil）。
 func TestOpenAI_StreamingChunk_NoUnknownFields_PassthroughIsNil(t *testing.T) {

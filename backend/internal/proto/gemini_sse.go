@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
 )
 
 // GeminiStopSafety 是 HCSF 当前枚举未显式声明的 Gemini 安全停止哨兵值。
@@ -49,10 +51,9 @@ type GeminiUpstreamState struct {
 	// 已 carry-over, 但终态触发点 future)。
 	AccountID int64
 	// PrefixHash（PASR-lite A4）: forwarder 注入 ForwardRequest.SessionHash;
-	// 当 Gemini 终态触发点接入后, 通过 ObserveByAccountWithPrefix 让 PASR
-	// observer 收反馈。当前字段保留, observation 暂未走 PASR 路径。
+	// finalize 时通过 ObserveByAccountWithPrefix 让 PASR observer 收反馈。
 	PrefixHash string
-	// M5b: TenantID 透传; Gemini 终态触发点接入后用于 observer 跨租户隔离。
+	// M5b: TenantID 透传; observer 用 (TenantID, PrefixHash) 防跨租户混选。
 	TenantID int64
 }
 
@@ -143,11 +144,13 @@ func (a *GeminiAdapter) ProviderEventToCanonicalEvents(ctx context.Context, prov
 	}
 
 	var chunk geminiGenerateContentResponse
-	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+	var env PassthroughEnvelope
+	if err := UnmarshalWithExtras([]byte(payload), &chunk, &env); err != nil {
 		loss := newLossEntry(FeatureTextStreaming, DirectionUpstreamToCanonical, VerdictLossy, "malformed Gemini SSE JSON chunk skipped")
 		return nil, []ProtocolLossEntry{loss}, nil
 	}
 	events, losses := geminiChunkToCanonicalEvents(chunk, st)
+	events = attachPassthroughToEvents(events, env)
 	return geminiEventsToAny(events), losses, nil
 }
 
@@ -323,6 +326,9 @@ func finalizeGeminiState(state *GeminiUpstreamState, fromSentinel bool) ([]Canon
 		state.UsageEmitted = true
 	}
 	state.Terminated = true
+	// Gemini usageMetadata.cachedContentTokenCount 表示本请求从缓存读取的
+	// prompt token。Gemini 没有 creation token 概念，creation 传 0。
+	cachemetrics.ObserveByAccountWithPrefix(0, int64(state.CachedContentTokens), state.TenantID, state.AccountID, state.PrefixHash)
 	events = append(events, CanonicalEvent{Type: "message_stop"})
 	return events, nil
 }
@@ -338,9 +344,10 @@ func updateGeminiUsage(state *GeminiUpstreamState, usage *geminiUsageMetadata) b
 
 func (u geminiUsageMetadata) canonical() CanonicalUsage {
 	out := CanonicalUsage{
-		InputTokens:  u.PromptTokenCount,
-		OutputTokens: u.CandidatesTokenCount,
-		TotalTokens:  u.TotalTokenCount,
+		InputTokens:          u.PromptTokenCount,
+		OutputTokens:         u.CandidatesTokenCount,
+		TotalTokens:          u.TotalTokenCount,
+		CacheReadInputTokens: u.CachedContentTokenCount,
 	}
 	if out.TotalTokens == 0 {
 		out.TotalTokens = out.InputTokens + out.OutputTokens

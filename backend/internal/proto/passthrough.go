@@ -11,19 +11,19 @@
 //
 // 使用模式（adapter 端）：
 //
-//   var env proto.PassthroughEnvelope
-//   var typed openAIChatCompletionChunk
-//   if err := proto.UnmarshalWithExtras(raw, &typed, &env); err != nil {
-//       return ...
-//   }
-//   // typed 装 known fields；env.Extra 装未识别字段（map[string]RawMessage）
-//   canonicalEvt.Passthrough = &env  // 由 ClientAdapter 在响应序列化时合并
+//	var env proto.PassthroughEnvelope
+//	var typed openAIChatCompletionChunk
+//	if err := proto.UnmarshalWithExtras(raw, &typed, &env); err != nil {
+//	    return ...
+//	}
+//	// typed 装 known fields；env.Extra 装未识别字段（map[string]RawMessage）
+//	canonicalEvt.Passthrough = &env  // 由 ClientAdapter 在响应序列化时合并
 //
 // 使用模式（client adapter 端）：
 //
-//   typedJSON, _ := json.Marshal(clientChunk)
-//   merged, _ := proto.MergeExtrasInto(typedJSON, evt.Passthrough)
-//   // merged 含 typed fields + 上游未识别字段；同名键 typed 优先
+//	typedJSON, _ := json.Marshal(clientChunk)
+//	merged, _ := proto.MergeExtrasInto(typedJSON, evt.Passthrough)
+//	// merged 含 typed fields + 上游未识别字段；同名键 typed 优先
 package proto
 
 import (
@@ -124,6 +124,32 @@ func MergeExtrasInto(typedJSON []byte, env *PassthroughEnvelope) ([]byte, error)
 	}
 
 	return marshalMap(typedMap, env.Extra)
+}
+
+// attachPassthroughToEvents 把同一个上游 JSON chunk 的 unknown 字段复制到
+// 该 chunk 产生的每条 canonical event。复制 map/value，避免下游修改一条
+// event 时影响同 chunk 的其它 event。
+func attachPassthroughToEvents(events []CanonicalEvent, env PassthroughEnvelope) []CanonicalEvent {
+	if len(events) == 0 || len(env.Extra) == 0 {
+		return events
+	}
+	for i := range events {
+		events[i].Passthrough = clonePassthroughEnvelope(&env)
+	}
+	return events
+}
+
+func clonePassthroughEnvelope(env *PassthroughEnvelope) *PassthroughEnvelope {
+	if env == nil || len(env.Extra) == 0 {
+		return nil
+	}
+	extra := make(map[string]json.RawMessage, len(env.Extra))
+	for k, v := range env.Extra {
+		raw := make([]byte, len(v))
+		copy(raw, v)
+		extra[k] = json.RawMessage(raw)
+	}
+	return &PassthroughEnvelope{Extra: extra}
 }
 
 // marshalMap 合并 typedMap + extras（typed 优先），按稳定 key 顺序输出。
