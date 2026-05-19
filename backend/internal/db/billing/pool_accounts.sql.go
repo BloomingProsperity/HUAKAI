@@ -591,6 +591,12 @@ WHERE pa.tenant_id = $1
   AND (cardinality(pa.model_allow_list) = 0
        OR pa.model_allow_list @> ARRAY[$3::text])
   AND pa.capability_flags @> $4::text[]
+  -- codex review v3 P2#3 fix: production selector 不接 AuthCredentialGate
+  -- (无 TokenProvider 注入), 改 SQL 层直接过滤 credential_state.
+  -- 跟 binding.AuthCredentialGate spec 一致: 只放 {valid, refreshing_with_grace}.
+  -- 'refreshing' (无 grace) 当短暂状态走线上后被 cooldown 接住; 'refresh_failed'
+  -- + 'revoked' 直接跳过, 防 selector 选到已死账号 → 401 后再 cooldown 浪费一轮。
+  AND pa.credential_state IN ('valid', 'refreshing_with_grace')
 ORDER BY pa.priority, pa.last_dispatch_at NULLS FIRST
 `
 
