@@ -100,7 +100,7 @@ var ErrUnknownMode = errors.New("transport: unknown mode")
 var allowedModesByProvider = map[ProviderCode]map[TransportMode]bool{
 	ProviderAnthropic: {
 		TransportModeStandard:          true,
-		TransportModeMimicryClaudeCode: true, // mode 常量保留，但 caller 不应启用（反转暂停）
+		TransportModeMimicryClaudeCode: true, // Owner 2026-05-14 全 8 mode 解封 (R-3)
 		TransportModeDiagnosticsOnly:   true,
 	},
 	ProviderOpenAI: {

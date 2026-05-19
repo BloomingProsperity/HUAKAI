@@ -6,8 +6,10 @@ package transport
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"sync"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
@@ -88,7 +90,11 @@ func (f *Factory) For(provider ProviderCode, mode TransportMode) (http.RoundTrip
 		if f.mimicry != nil {
 			return f.mimicry, nil
 		}
-		return f.mimicryRoundTripper(mode, f.mimicryTemplate(mode)), nil
+		tmpl, err := f.mimicryTemplate(mode)
+		if err != nil {
+			return nil, err
+		}
+		return f.mimicryRoundTripper(mode, tmpl), nil
 	case TransportModeDiagnosticsOnly:
 		if f.diagnostics != nil {
 			return f.diagnostics, nil
@@ -120,19 +126,36 @@ func (f *Factory) mimicryRoundTripper(mode TransportMode, tmpl *mimicry.ClientHe
 	return rt
 }
 
-func (f *Factory) mimicryTemplate(mode TransportMode) *mimicry.ClientHelloTemplate {
-	if f.templateRegistry != nil {
-		tmpl, ok := f.templateRegistry.Lookup(mimicry.TransportMode(mode))
-		if ok && !tmpl.IsStub() {
-			return tmpl
+// mimicryTemplate 返回 mode 对应的 per-mode 指纹模板; 缺失或 stub 时返
+// (nil, err) 让 caller fail-closed, 不回退到 Anthropic Phase A 默认模板。
+// 否则 kiro / chatgpt / gemini_advanced 等模式会用 Anthropic JA3 出站,
+// 反检测目标完全失效 (codex chunk5 P1)。
+//
+// HUAKAI_TRANSPORT_PHASE_A_FALLBACK=true 仅留给 explicit opt-in 测试/调试,
+// 生产默认 fail-closed; 没注入 templateRegistry 也算配置缺失, reject。
+func (f *Factory) mimicryTemplate(mode TransportMode) (*mimicry.ClientHelloTemplate, error) {
+	phaseAOptIn := os.Getenv("HUAKAI_TRANSPORT_PHASE_A_FALLBACK") == "true"
+	if f.templateRegistry == nil {
+		slog.Warn("transport mimicry template registry missing", "mode", mode, "reason_class", "registry_missing")
+		if phaseAOptIn {
+			return mimicry.PhaseADefaultTemplate(), nil
 		}
-		if ok {
-			slog.Warn("transport mimicry template stub", "mode", mode, "reason_class", "template_stub")
-		} else {
-			slog.Warn("transport mimicry template missing", "mode", mode, "reason_class", "template_missing")
-		}
+		return nil, fmt.Errorf("transport: mimicry template registry not configured for mode=%s", mode)
 	}
-	// Phase A：8 个 mimicry mode 先共享 Anthropic 样本模板，Phase B
-	// 改为 templates/<mode-name>.json 的 per-mode 指纹。
-	return mimicry.PhaseADefaultTemplate()
+	tmpl, ok := f.templateRegistry.Lookup(mimicry.TransportMode(mode))
+	if !ok {
+		slog.Warn("transport mimicry template missing", "mode", mode, "reason_class", "template_missing")
+		if phaseAOptIn {
+			return mimicry.PhaseADefaultTemplate(), nil
+		}
+		return nil, fmt.Errorf("transport: mimicry template missing for mode=%s", mode)
+	}
+	if tmpl.IsStub() {
+		slog.Warn("transport mimicry template stub", "mode", mode, "reason_class", "template_stub")
+		if phaseAOptIn {
+			return mimicry.PhaseADefaultTemplate(), nil
+		}
+		return nil, fmt.Errorf("transport: mimicry template stub for mode=%s (not production-ready)", mode)
+	}
+	return tmpl, nil
 }

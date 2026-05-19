@@ -23,7 +23,19 @@ func TestFactory_For_StandardDefault(t *testing.T) {
 	}
 }
 
+// codex chunk5 P1 verify: 默认 mimicry template 缺失 → fail-closed error,
+// 不回退 Anthropic Phase A 默认模板。
+func TestFactory_For_MimicryWithoutRegistry_FailClosedByDefault(t *testing.T) {
+	f := NewFactory()
+	_, err := f.For(ProviderOpenAI, TransportModeMimicryChatGPT)
+	if err == nil {
+		t.Fatal("template registry 未注入应 fail-closed, 不应回退 Phase A")
+	}
+}
+
 func TestFactory_For_MimicryWithoutRegistryUsesPhaseADefault(t *testing.T) {
+	// codex chunk5 P1 fix: Phase A fallback 现在默认 fail-closed, 需 opt-in env
+	t.Setenv("HUAKAI_TRANSPORT_PHASE_A_FALLBACK", "true")
 	f := NewFactory()
 	rt, err := f.For(ProviderAnthropic, TransportModeMimicryClaudeCode)
 	if err != nil {
@@ -45,6 +57,7 @@ func TestFactory_For_MimicryWithoutRegistryUsesPhaseADefault(t *testing.T) {
 }
 
 func TestFactory_For_MimicryStubUsesPhaseADefault(t *testing.T) {
+	t.Setenv("HUAKAI_TRANSPORT_PHASE_A_FALLBACK", "true")
 	registry := mimicry.NewTemplateRegistry()
 	stub := &mimicry.ClientHelloTemplate{
 		ModeName:    "openai_codex_cli",
@@ -64,6 +77,7 @@ func TestFactory_For_MimicryStubUsesPhaseADefault(t *testing.T) {
 }
 
 func TestFactory_For_MimicryUsesUtlsClientHello(t *testing.T) {
+	t.Setenv("HUAKAI_TRANSPORT_PHASE_A_FALLBACK", "true")
 	helloCh := make(chan []byte, 1)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
