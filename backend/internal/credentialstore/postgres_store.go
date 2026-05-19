@@ -157,6 +157,9 @@ func (s *Store) Create(ctx context.Context, in CreateCredentialInput) (Credentia
 	if err := handler.ValidatePayload(payload); err != nil {
 		return CredentialMetadata{}, err
 	}
+	if err := s.ensureProviderAccountTenant(ctx, in.TenantID, in.ProviderAccountID); err != nil {
+		return CredentialMetadata{}, err
+	}
 	prepared, err := s.prepareEnvelope(ctx, in.TenantID, in.ProviderAccountID, in.Vendor, in.AuthMode, 1, payload, handler)
 	if err != nil {
 		return CredentialMetadata{}, err
@@ -207,6 +210,9 @@ func (s *Store) Rotate(ctx context.Context, in RotateCredentialInput) (Credentia
 	}
 	current, err := s.getRecord(ctx, in.TenantID, in.ProviderAccountID, in.CredentialID, false)
 	if err != nil {
+		return CredentialMetadata{}, err
+	}
+	if err := s.ensureProviderAccountTenant(ctx, current.TenantID, current.ProviderAccountID); err != nil {
 		return CredentialMetadata{}, err
 	}
 	handler, err := s.registry.MustLookup(current.Vendor, current.AuthMode)
@@ -316,9 +322,12 @@ func (s *Store) SetState(ctx context.Context, tenantID, providerAccountID, crede
 	if !allowedState(state) {
 		return fmt.Errorf("%w: state %q", ErrInvalidPayload, state)
 	}
+	if err := s.ensureProviderAccountTenant(ctx, tenantID, providerAccountID); err != nil {
+		return err
+	}
 	const q = `
-UPDATE account_credentials
-SET state = $1,
+	UPDATE account_credentials
+	SET state = $1,
     updated_at = NOW(),
     last_modified_by_actor = NULLIF($2, '')
 WHERE id = $3
@@ -347,9 +356,12 @@ func (s *Store) Delete(ctx context.Context, tenantID, providerAccountID, credent
 	if err := s.validateReady(); err != nil {
 		return err
 	}
+	if err := s.ensureProviderAccountTenant(ctx, tenantID, providerAccountID); err != nil {
+		return err
+	}
 	const q = `
-UPDATE account_credentials
-SET deleted_at = COALESCE(deleted_at, NOW()),
+	UPDATE account_credentials
+	SET deleted_at = COALESCE(deleted_at, NOW()),
     state = 'revoked',
     updated_at = NOW(),
     last_modified_by_actor = NULLIF($1, '')
@@ -385,11 +397,13 @@ SELECT ac.id, ac.tenant_id, ac.provider_account_id, ac.vendor, ac.auth_mode, ac.
        ac.access_expires_at, ac.refresh_expires_at, ac.refresh_before_at, ac.grace_until,
        ac.last_refresh_at, ac.last_refresh_outcome, ac.failure_class, ac.failure_count,
        ac.next_attempt_at, ac.created_at, ac.updated_at, ac.deleted_at
-FROM account_credentials ac
-JOIN provider_accounts pa ON pa.id = ac.provider_account_id
-WHERE ac.provider_account_id = $1
-  AND ac.deleted_at IS NULL
-  AND pa.deleted_at IS NULL
+	FROM account_credentials ac
+	JOIN provider_accounts pa
+	  ON pa.id = ac.provider_account_id
+	 AND pa.tenant_id = ac.tenant_id
+	WHERE ac.provider_account_id = $1
+	  AND ac.deleted_at IS NULL
+	  AND pa.deleted_at IS NULL
   AND pa.enabled
   AND (
       ac.state = 'active'
@@ -426,12 +440,16 @@ SELECT ac.id, ac.tenant_id, ac.provider_account_id, ac.vendor, ac.auth_mode, ac.
        ac.access_expires_at, ac.refresh_expires_at, ac.refresh_before_at, ac.grace_until,
        ac.last_refresh_at, ac.last_refresh_outcome, ac.failure_class, ac.failure_count,
        ac.next_attempt_at, ac.created_at, ac.updated_at, ac.deleted_at
-FROM account_credentials ac
-WHERE ac.provider_account_id = $1
-  AND ac.deleted_at IS NULL
-  AND ac.state IN ('active', 'refreshing_with_grace', 'temp_unschedulable')
-  AND ac.refresh_before_at IS NOT NULL
-ORDER BY ac.refresh_before_at ASC, ac.updated_at ASC
+	FROM account_credentials ac
+	JOIN provider_accounts pa
+	  ON pa.id = ac.provider_account_id
+	 AND pa.tenant_id = ac.tenant_id
+	WHERE ac.provider_account_id = $1
+	  AND ac.deleted_at IS NULL
+	  AND pa.deleted_at IS NULL
+	  AND ac.state IN ('active', 'refreshing_with_grace', 'temp_unschedulable')
+	  AND ac.refresh_before_at IS NOT NULL
+	ORDER BY ac.refresh_before_at ASC, ac.updated_at ASC
 LIMIT 1`
 	rec, err := s.scanRecord(ctx, q, providerAccountID)
 	if err != nil {
@@ -458,6 +476,9 @@ func (s *Store) SaveRefreshSuccess(ctx context.Context, rec CredentialRecord, pa
 		return err
 	}
 	if err := handler.ValidatePayload(payload); err != nil {
+		return err
+	}
+	if err := s.ensureProviderAccountTenant(ctx, rec.TenantID, rec.ProviderAccountID); err != nil {
 		return err
 	}
 	version := rec.CredentialVersion + 1
@@ -515,6 +536,9 @@ WHERE id = $12
 
 func (s *Store) SaveRefreshFailure(ctx context.Context, rec CredentialRecord, failureClass string, nextAttemptAt time.Time) error {
 	if err := s.validateReady(); err != nil {
+		return err
+	}
+	if err := s.ensureProviderAccountTenant(ctx, rec.TenantID, rec.ProviderAccountID); err != nil {
 		return err
 	}
 	state := StateTempUnschedulable
@@ -593,17 +617,21 @@ func (s *Store) scanRecord(ctx context.Context, query string, args ...any) (Cred
 
 func (s *Store) getRecord(ctx context.Context, tenantID, providerAccountID, credentialID int64, decrypt bool) (CredentialRecord, error) {
 	const q = `
-SELECT id, tenant_id, provider_account_id, vendor, auth_mode, state,
-       credential_version, encrypted_payload, encryption_scheme, key_id,
-       nonce, aad_hash, payload_fingerprint, refresh_token_fingerprint,
-       access_expires_at, refresh_expires_at, refresh_before_at, grace_until,
-       last_refresh_at, last_refresh_outcome, failure_class, failure_count,
-       next_attempt_at, created_at, updated_at, deleted_at
-FROM account_credentials
-WHERE id = $1
-  AND tenant_id = $2
-  AND provider_account_id = $3
-  AND deleted_at IS NULL`
+	SELECT ac.id, ac.tenant_id, ac.provider_account_id, ac.vendor, ac.auth_mode, ac.state,
+	       ac.credential_version, ac.encrypted_payload, ac.encryption_scheme, ac.key_id,
+	       ac.nonce, ac.aad_hash, ac.payload_fingerprint, ac.refresh_token_fingerprint,
+	       ac.access_expires_at, ac.refresh_expires_at, ac.refresh_before_at, ac.grace_until,
+	       ac.last_refresh_at, ac.last_refresh_outcome, ac.failure_class, ac.failure_count,
+	       ac.next_attempt_at, ac.created_at, ac.updated_at, ac.deleted_at
+	FROM account_credentials ac
+	JOIN provider_accounts pa
+	  ON pa.id = ac.provider_account_id
+	 AND pa.tenant_id = ac.tenant_id
+	WHERE ac.id = $1
+	  AND ac.tenant_id = $2
+	  AND ac.provider_account_id = $3
+	  AND ac.deleted_at IS NULL
+	  AND pa.deleted_at IS NULL`
 	rec, err := s.scanRecord(ctx, q, credentialID, tenantID, providerAccountID)
 	if err != nil {
 		return CredentialRecord{}, err
@@ -616,6 +644,23 @@ WHERE id = $1
 		rec.PlaintextPayload = payload
 	}
 	return rec, nil
+}
+
+func (s *Store) ensureProviderAccountTenant(ctx context.Context, tenantID, providerAccountID int64) error {
+	const q = `
+	SELECT id
+	FROM provider_accounts
+	WHERE id = $1
+	  AND tenant_id = $2
+	  AND deleted_at IS NULL`
+	var id int64
+	if err := s.db.QueryRow(ctx, q, providerAccountID, tenantID).Scan(&id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrCredentialNotFound
+		}
+		return err
+	}
+	return nil
 }
 
 type preparedEnvelope struct {
