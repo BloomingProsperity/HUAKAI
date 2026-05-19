@@ -81,47 +81,57 @@ func serveGateway(ctx context.Context, srv *http.Server, rt *gatewayRuntime, can
 }
 
 func shutdownGateway(srv *http.Server, rt *gatewayRuntime) error {
-	credentialStopCtx, credentialStopCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer credentialStopCancel()
+	// codex chunk6 P1 fix: shutdown 顺序之前先停 scheduler / completionBus /
+	// DLQ / outbox 再 srv.Shutdown, 但 in-flight HTTP handler 仍引用这些 deps
+	// (Settler 写账, CompletionBus 派 event, Outbox 投 DLQ); deps 已停 →
+	// handler 出错 / 静默丢消息。正确顺序: 先 srv.Shutdown 等 in-flight handler
+	// drain 完, 再依次停 dep workers, 最后 close DB pool (defer rt.close)。
+	httpShutdownCtx, httpShutdownCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer httpShutdownCancel()
+	httpShutdownErr := srv.Shutdown(httpShutdownCtx)
 
+	// in-flight 已 drain, 现在停 worker 依次按 budget 独立计时, 不串行共享
+	// 单一 5s ctx 让前面 worker 抢走后面 worker 的 drain 预算。
 	var credentialStopErr error
 	if rt.credentialScheduler != nil {
-		credentialStopErr = rt.credentialScheduler.Stop(credentialStopCtx)
+		schedCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		credentialStopErr = rt.credentialScheduler.Stop(schedCtx)
+		cancel()
 	}
 	var eventBusStopErr error
 	if rt.deps != nil && rt.deps.completionBus != nil {
-		eventBusStopErr = rt.deps.completionBus.Stop(credentialStopCtx)
+		busCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		eventBusStopErr = rt.deps.completionBus.Stop(busCtx)
+		cancel()
 	}
 	var dlqStopErr error
 	if rt.obsDLQEnabled && rt.dlqWorker != nil {
-		dlqStopErr = rt.dlqWorker.Stop(credentialStopCtx)
+		dlqCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		dlqStopErr = rt.dlqWorker.Stop(dlqCtx)
+		cancel()
 	}
-
-	outboxStopCtx, outboxStopCancel := context.WithTimeout(context.Background(), rt.outboxRuntime.DrainTimeout)
-	defer outboxStopCancel()
 	var outboxStopErr error
 	if rt.outboxWorker != nil {
-		outboxStopErr = rt.outboxWorker.Stop(outboxStopCtx)
+		outboxCtx, cancel := context.WithTimeout(context.Background(), rt.outboxRuntime.DrainTimeout)
+		outboxStopErr = rt.outboxWorker.Stop(outboxCtx)
+		cancel()
 	}
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer shutdownCancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return err
+	// 合并错误一并返回, 不让前面 step 的失败遮盖后面 step。
+	return errors.Join(
+		wrapIfErr("shutdown HTTP server", httpShutdownErr),
+		wrapIfErr("stop credential refresh scheduler", credentialStopErr),
+		wrapIfErr("stop completion eventbus", eventBusStopErr),
+		wrapIfErr("stop observability DLQ worker", dlqStopErr),
+		wrapIfErr("stop async outbox worker", outboxStopErr),
+	)
+}
+
+func wrapIfErr(prefix string, err error) error {
+	if err == nil {
+		return nil
 	}
-	if credentialStopErr != nil {
-		return fmt.Errorf("stop credential refresh scheduler: %w", credentialStopErr)
-	}
-	if eventBusStopErr != nil {
-		return fmt.Errorf("stop completion eventbus: %w", eventBusStopErr)
-	}
-	if dlqStopErr != nil {
-		return fmt.Errorf("stop observability DLQ worker: %w", dlqStopErr)
-	}
-	if outboxStopErr != nil {
-		return fmt.Errorf("stop async outbox worker: %w", outboxStopErr)
-	}
-	return nil
+	return fmt.Errorf("%s: %w", prefix, err)
 }
 
 func loadRuntimeOptions(logger *zap.Logger) (*runtimeOptions, error) {
