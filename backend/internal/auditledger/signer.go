@@ -136,6 +136,13 @@ func (s *LocalEd25519Signer) Fingerprint() string {
 	return s.active.Fingerprint
 }
 
+func (s *LocalEd25519Signer) PublicKey() ed25519.PublicKey {
+	if s == nil {
+		return nil
+	}
+	return append(ed25519.PublicKey(nil), s.active.PublicKey...)
+}
+
 func (s *LocalEd25519Signer) Verify(_ context.Context, payload []byte, sig []byte, fp string) (bool, error) {
 	if s == nil {
 		return false, ErrSignerNil

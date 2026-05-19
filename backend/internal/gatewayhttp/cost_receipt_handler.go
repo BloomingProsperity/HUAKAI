@@ -47,6 +47,7 @@ type CostReceiptHandlerDeps struct {
 	MismatchRefunds MismatchRefundEnqueuer
 	RateTables      billing.RateTableSource
 	Signer          CostReceiptSigner
+	PubkeyRegistry  auditledger.PubkeyRegistry
 	Now             func() time.Time
 }
 
@@ -78,6 +79,7 @@ type UserReceiptCost struct {
 type receiptVerifyResponse struct {
 	Valid           bool     `json:"valid"`
 	KeyStatus       string   `json:"key_status"`
+	Reason          string   `json:"reason,omitempty"`
 	AgeSeconds      int64    `json:"age_seconds"`
 	ReceiptSequence int32    `json:"receipt_sequence"`
 	Verdict         string   `json:"verdict,omitempty"`
@@ -129,8 +131,8 @@ func NewCostReceiptGetHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 
 func NewCostReceiptVerifyHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if d.Signer == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "receipt signer dependency unset")
+		if d.Signer == nil && d.PubkeyRegistry == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "receipt verify dependency unset")
 			return
 		}
 		ident, ok := sessionauth.SessionFromContext(r.Context())
@@ -174,12 +176,32 @@ func NewCostReceiptVerifyHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "invalid_signature", "signature must be base64")
 			return
 		}
-		keyStatus := "active"
+		keyStatus := "unknown"
+		reason := ""
 		valid := false
-		if strings.TrimSpace(req.PubkeyFingerprint) != d.Signer.Fingerprint() {
-			keyStatus = "unknown"
+		if d.PubkeyRegistry != nil {
+			verification, err := auditledger.VerifySignatureWithRegistry(r.Context(), d.PubkeyRegistry, canonical, sig, []byte(strings.TrimSpace(req.PubkeyFingerprint)))
+			if errors.Is(err, auditledger.ErrInvalidPubkeyFingerprint) {
+				verification = auditledger.SignatureVerification{Valid: false, KeyStatus: "unknown", Reason: "unknown_signer"}
+				err = nil
+			}
+			if err != nil {
+				writeJSONError(w, http.StatusServiceUnavailable, "receipt_pubkey_registry_error", err.Error())
+				return
+			}
+			keyStatus = verification.KeyStatus
+			reason = verification.Reason
+			valid = canonicalHashMatches && verification.Valid
+			if verification.Valid && !canonicalHashMatches {
+				reason = "canonical_hash_mismatch"
+			}
+		} else if strings.TrimSpace(req.PubkeyFingerprint) != d.Signer.Fingerprint() {
+			reason = "unknown_signer"
 		} else if canonicalHashMatches && sign.Verify(d.Signer.PublicKey(), canonical, sig) == nil {
+			keyStatus = "active"
 			valid = true
+		} else {
+			keyStatus = "active"
 		}
 		verifyVerdict := ""
 		var mismatch audit.MismatchVerdict
@@ -220,6 +242,7 @@ func NewCostReceiptVerifyHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 		writeAuditJSON(w, http.StatusOK, receiptVerifyResponse{
 			Valid:           valid,
 			KeyStatus:       keyStatus,
+			Reason:          reason,
 			AgeSeconds:      receiptAgeSeconds(req.OccurredAt, d.now()),
 			ReceiptSequence: req.ReceiptSequence,
 			Verdict:         verifyVerdict,

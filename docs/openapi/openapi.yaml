@@ -353,6 +353,43 @@ paths:
               schema: { $ref: '#/components/schemas/AuditPubkeyResponse' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/audit/pubkey/{fingerprint_hex}:
+    get:
+      tags: [audit]
+      summary: Fetch an audit signing public key by fingerprint
+      operationId: getAuditPubkeyByFingerprint
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
+      security: []
+      parameters:
+        - in: path
+          name: fingerprint_hex
+          required: true
+          schema: { type: string, minLength: 16, maxLength: 16, pattern: '^[0-9a-fA-F]{16}$' }
+      responses:
+        '200':
+          description: Historical or current public key material for receipt and ledger verification.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditPubkeyResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/audit/pubkeys:
+    get:
+      tags: [audit]
+      summary: List current and historical audit signing public keys
+      operationId: listAuditPubkeys
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
+      security: []
+      responses:
+        '200':
+          description: Current and historical public key material for receipt and ledger verification.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditPubkeysResponse' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   # ==========================================================================
   # Platform user auth/session endpoints
   # ==========================================================================
@@ -2373,6 +2410,19 @@ components:
         fingerprint: { type: string }
         pubkey_fingerprint: { type: string }
         public_key_base64: { type: string }
+        key_status: { type: string, enum: [active, rotated, unknown] }
+        effective_from: { type: string, format: date-time }
+        effective_to: { type: string, format: date-time }
+
+    AuditPubkeysResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items: { $ref: '#/components/schemas/AuditPubkeyResponse' }
 
     ErrorResponse:
       type: object

@@ -2,11 +2,13 @@ package gatewayhttp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
@@ -26,10 +28,14 @@ type AuditVerifyDeps interface {
 }
 
 type AuditVerifyStaticDeps struct {
-	Ledger auditVerifyLedger
+	Ledger   auditVerifyLedger
+	Registry auditledger.PubkeyRegistry
 }
 
 func (d AuditVerifyStaticDeps) AuditLedger() auditVerifyLedger { return d.Ledger }
+func (d AuditVerifyStaticDeps) AuditPubkeyRegistry() auditledger.PubkeyRegistry {
+	return d.Registry
+}
 
 type AuditVerifyRouter interface {
 	Get(pattern string, h http.HandlerFunc)
@@ -60,6 +66,9 @@ type AuditChainProofJSON struct {
 	MerkleRoot        string `json:"merkle_root"`
 	Signature         string `json:"signature"`
 	PubkeyFingerprint string `json:"pubkey_fingerprint"`
+	SignatureValid    *bool  `json:"signature_valid,omitempty"`
+	KeyStatus         string `json:"key_status,omitempty"`
+	Reason            string `json:"reason,omitempty"`
 }
 
 type AuditMerkleTreeResponse struct {
@@ -96,7 +105,7 @@ func NewAuditVerifyHandler(d AuditVerifyDeps) http.HandlerFunc {
 			writeAuditJSONError(w, http.StatusNotFound, "audit_entry_not_found", "request_id not found")
 			return
 		}
-		writeAuditJSON(w, http.StatusOK, auditVerifyResponse(entry))
+		writeAuditJSON(w, http.StatusOK, auditVerifyResponseWithRegistry(r.Context(), entry, auditPubkeyRegistryFromDeps(d)))
 	}
 }
 
@@ -131,6 +140,38 @@ func auditLedgerFromDeps(d AuditVerifyDeps) (auditVerifyLedger, bool) {
 	return ledger, ledger != nil
 }
 
+func auditPubkeyRegistryFromDeps(d AuditVerifyDeps) auditledger.PubkeyRegistry {
+	if d == nil {
+		return nil
+	}
+	provider, ok := d.(interface {
+		AuditPubkeyRegistry() auditledger.PubkeyRegistry
+	})
+	if !ok {
+		return nil
+	}
+	return provider.AuditPubkeyRegistry()
+}
+
+func auditVerifyResponseWithRegistry(ctx context.Context, entry auditledger.LedgerEntry, registry auditledger.PubkeyRegistry) AuditVerifyResponse {
+	resp := auditVerifyResponse(entry)
+	if registry == nil {
+		return resp
+	}
+	verification, err := verifyAuditLedgerEntrySignature(ctx, registry, entry)
+	if err != nil {
+		valid := false
+		resp.ChainProof.SignatureValid = &valid
+		resp.ChainProof.KeyStatus = "unknown"
+		resp.ChainProof.Reason = "signature_verify_error"
+		return resp
+	}
+	resp.ChainProof.SignatureValid = &verification.Valid
+	resp.ChainProof.KeyStatus = verification.KeyStatus
+	resp.ChainProof.Reason = verification.Reason
+	return resp
+}
+
 func auditVerifyResponse(entry auditledger.LedgerEntry) AuditVerifyResponse {
 	scopeRef := entry.TenantScopeRef
 	if scopeRef == "" {
@@ -153,6 +194,47 @@ func auditVerifyResponse(entry auditledger.LedgerEntry) AuditVerifyResponse {
 			PubkeyFingerprint: entry.PubkeyFingerprint,
 		},
 	}
+}
+
+func verifyAuditLedgerEntrySignature(ctx context.Context, registry auditledger.PubkeyRegistry, entry auditledger.LedgerEntry) (auditledger.SignatureVerification, error) {
+	entryHash, err := auditledger.EntryHash(&entry)
+	if err != nil {
+		return auditledger.SignatureVerification{}, err
+	}
+	sig, err := base64.StdEncoding.DecodeString(entry.Signature)
+	if err != nil {
+		return auditledger.SignatureVerification{Valid: false, KeyStatus: "unknown", Reason: "invalid_signature"}, nil
+	}
+	verification, err := auditledger.VerifySignatureWithRegistry(ctx, registry, entryHash[:], sig, []byte(entry.PubkeyFingerprint))
+	if err != nil || !verification.Valid {
+		return verification, err
+	}
+	key, err := auditledger.LookupPubkey(ctx, registry, []byte(entry.PubkeyFingerprint))
+	if err != nil {
+		return auditledger.SignatureVerification{}, err
+	}
+	entryTime, err := time.Parse(time.RFC3339Nano, entry.Timestamp)
+	if err != nil {
+		return auditledger.SignatureVerification{Valid: false, KeyStatus: verification.KeyStatus, Reason: "invalid_entry_timestamp"}, nil
+	}
+	if signatureOutsideKeyWindow(entryTime, key) {
+		return auditledger.SignatureVerification{Valid: false, KeyStatus: key.Status(), Reason: "signature_outside_key_window"}, nil
+	}
+	return verification, nil
+}
+
+func signatureOutsideKeyWindow(ts time.Time, key *auditledger.Pubkey) bool {
+	if key == nil {
+		return true
+	}
+	ts = ts.UTC()
+	if !key.EffectiveFrom.IsZero() && ts.Before(key.EffectiveFrom.UTC()) {
+		return true
+	}
+	if key.EffectiveTo != nil && ts.After(key.EffectiveTo.UTC()) {
+		return true
+	}
+	return false
 }
 
 func rootHex(root [32]byte) string {
