@@ -34,6 +34,7 @@ type ChatHandlerDeps struct {
 	Registry             registry.Registry
 	Router               router.Router
 	ClaimGate            billing.ClaimGate
+	RateTables           billing.RateTableSource
 	Selector             pool.Selector
 	CredentialVault      provider.CredentialVault
 	Dispatcher           *gateway.UpstreamDispatcher

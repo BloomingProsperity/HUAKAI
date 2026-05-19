@@ -3,6 +3,7 @@ package gatewayhttp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -108,9 +109,17 @@ func minimalDeps() ChatHandlerDeps {
 		Dispatcher:           &gateway.UpstreamDispatcher{},
 		Forwarder:            &gateway.StreamForwarder{},
 		Settler:              &stubSettler{},
+		RateTables:           testRateTables("test-policy"),
 		BillingPolicyVersion: "test-policy",
 		RequestClass:         "default",
 	}
+}
+
+func testRateTables(version string) *rateTableSourceStub {
+	return &rateTableSourceStub{table: billing.RateTable{
+		Version:     version,
+		PricingData: json.RawMessage(`{"models":{"default":{"input_micro_usd":1,"output_micro_usd":1,"cache_creation_micro_usd":1,"cache_read_micro_usd":1}}}`),
+	}}
 }
 
 func validBody() string {

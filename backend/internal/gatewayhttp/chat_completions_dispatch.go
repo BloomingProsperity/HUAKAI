@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
@@ -103,6 +102,11 @@ func (ex *chatExecution) reserveClaim(w http.ResponseWriter) bool {
 		ex.logicalRequestID = uuid.NewString()
 	}
 	ex.payloadHash = normalizedPayloadHash(ex.body)
+	predictedCost, err := ex.predictedCompletionCost()
+	if err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "pricing_unavailable", err.Error())
+		return false
+	}
 
 	reserveRes, err := ex.d.ClaimGate.Reserve(ex.ctx, billing.ReserveRequest{
 		TenantID:                   ex.ident.TenantID,
@@ -115,7 +119,7 @@ func (ex *chatExecution) reserveClaim(w http.ResponseWriter) bool {
 		PoolingGroupID:             ex.attempt.PoolGroupID,
 		BillingPolicyVersion:       ex.d.BillingPolicyVersion,
 		RequestClass:               ex.d.RequestClass,
-		PredictedCost:              decimal.NewFromFloat(0.01),
+		PredictedCost:              predictedCost,
 		IdempotencyKeyClientHeader: ex.idempotencyHeader,
 	})
 	if errors.Is(err, billing.ErrFingerprintConflict) || (reserveRes != nil && reserveRes.FingerprintConflict) {

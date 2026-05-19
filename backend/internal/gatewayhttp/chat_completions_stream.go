@@ -179,7 +179,8 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	} else if ex.healthKeyOK {
 		recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalSuccess, dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, nil)
 	}
-	if _, err := settleCompletion(ex.ctx, ex.d, ex.streamingCompletionEvent(draft, streamAttempt)); err != nil {
+	event := ex.streamingCompletionEvent(draft, streamAttempt)
+	if _, err := settleCompletion(ex.ctx, ex.d, event); err != nil {
 		w.Header().Set("X-Huakai-Settle-Error", err.Error())
 	}
 }
@@ -375,7 +376,12 @@ func (a canonicalEventPointerClientAdapter) FinalizeClientStream(ctx context.Con
 }
 
 func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft, streamAttempt billing.Attempt) eventbus.RequestCompletionEvent {
-	actualCost := decimal.NewFromFloat(0.01)
+	actualCost, err := ex.actualCompletionCost(usageFromDraft(draft))
+	if err != nil {
+		draft.PendingReconciliation = true
+		actualCost = decimal.Zero
+	}
+	draft.ActualCost = actualCost
 	return eventbus.RequestCompletionEvent{
 		ID:              ex.requestID,
 		TenantID:        ex.ident.TenantID,

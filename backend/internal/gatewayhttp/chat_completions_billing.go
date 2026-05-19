@@ -41,7 +41,12 @@ func (ex *chatExecution) handleNonStreamingResponse(w http.ResponseWriter) {
 		return
 	}
 	cacheEnvelope, cacheEnvelopeOK := encodeL2CacheEnvelope(bufferedEnv)
-	actualCost := decimal.NewFromFloat(0.01)
+	actualCost, err := ex.actualCompletionCost(usageFromBufferedEnvelope(bufferedEnv))
+	if err != nil {
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pricing_unavailable", ex.requestID)
+		writeJSONError(w, http.StatusServiceUnavailable, "pricing_unavailable", err.Error())
+		return
+	}
 	settleReq := ex.nonStreamingSettleRequest(bufferedEnv, actualCost, ex.selRes.RoutingReasonJSON)
 	if _, err := settleCompletion(ex.ctx, ex.d, eventbus.RequestCompletionEvent{
 		ID:                        ex.requestID,

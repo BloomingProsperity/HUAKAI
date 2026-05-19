@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -762,6 +763,7 @@ func (s *receiptStoreStub) AppendReceipt(_ context.Context, receipt *audit.CostR
 }
 
 type rateTableSourceStub struct {
+	mu             sync.Mutex
 	table          billing.RateTable
 	snapshots      []billing.RateTableSnapshot
 	seenVersion    string
@@ -770,6 +772,8 @@ type rateTableSourceStub struct {
 }
 
 func (s *rateTableSourceStub) GetRateTable(_ context.Context, version string) (billing.RateTable, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.seenVersion = version
 	if s.err != nil {
 		return billing.RateTable{}, s.err
@@ -781,6 +785,8 @@ func (s *rateTableSourceStub) GetRateTable(_ context.Context, version string) (b
 }
 
 func (s *rateTableSourceStub) GetRateTableSnapshot(_ context.Context, snapshotID int64) (billing.RateTable, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.seenSnapshotID = snapshotID
 	if s.err != nil {
 		return billing.RateTable{}, s.err
@@ -792,6 +798,8 @@ func (s *rateTableSourceStub) GetRateTableSnapshot(_ context.Context, snapshotID
 }
 
 func (s *rateTableSourceStub) ListRateTableSnapshots(context.Context) ([]billing.RateTableSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.err != nil && !errors.Is(s.err, billing.ErrRateTableNotFound) {
 		return nil, s.err
 	}
