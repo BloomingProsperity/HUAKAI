@@ -216,6 +216,18 @@ type refundReceiptLatestReader interface {
 	GetReceipt(context.Context, string, int64) (*CostReceipt, error)
 }
 
+type refundReceiptIdempotencyReader interface {
+	GetByRefundIdempotency(context.Context, string, int64, string) (*CostReceipt, error)
+}
+
+type refundReceiptMaxSequenceReader interface {
+	MaxReceiptSequence(context.Context, string, int64) (int32, error)
+}
+
+type refundReceiptMaxSequenceReaderInTx interface {
+	MaxReceiptSequenceInTx(context.Context, pgx.Tx, string, int64) (int32, error)
+}
+
 type MismatchRefundWorker struct {
 	pending     RefundPendingStore
 	settler     billing.Settler
@@ -309,6 +321,12 @@ func (w *MismatchRefundWorker) Apply(ctx context.Context, payload MismatchRefund
 		return err
 	}
 	if rec.Status == "completed" {
+		return nil
+	}
+	if completed, err := w.completeExistingRefundReceipt(ctx, payload); err != nil {
+		_ = w.pending.MarkFailed(ctx, payload.ClaimID)
+		return err
+	} else if completed {
 		return nil
 	}
 	if w.txBeginner != nil {
@@ -472,15 +490,24 @@ func (w *MismatchRefundWorker) signRefundedReceipt(ctx context.Context, payload 
 	if w == nil || w.formatter == nil {
 		return nil
 	}
+	if _, err := w.existingRefundReceiptByIdempotency(ctx, payload); err == nil {
+		return nil
+	} else if !errors.Is(err, ErrReceiptNotFound) && !errors.Is(err, ErrReceiptStorageRequired) {
+		return fmt.Errorf("audit: lookup existing refunded receipt: %w", err)
+	}
 	receipt, err := w.formatter.DeriveReceipt(ctx, payload.RequestID)
 	if err != nil {
 		return fmt.Errorf("audit: derive refunded receipt: %w", err)
 	}
 	receipt.ClaimID = payload.ClaimID
-	receipt.ReceiptSequence = 1
+	sequence, err := w.nextRefundReceiptSequence(ctx, payload, receipt)
+	if err != nil {
+		return err
+	}
+	receipt.ReceiptSequence = sequence
 	receipt.ValidationState = ReceiptValidationStateMismatchRefunded
 	receipt.Verdict = ReceiptVerdictMismatchRefundPending
-	receipt.AdjustmentRefs = refs
+	receipt.AdjustmentRefs = refundReceiptAdjustmentRefs(payload, refs)
 	signed, err := w.formatter.SignReceipt(ctx, receipt)
 	if err != nil {
 		return fmt.Errorf("audit: sign refunded receipt: %w", err)
@@ -488,7 +515,7 @@ func (w *MismatchRefundWorker) signRefundedReceipt(ctx context.Context, payload 
 	if w.receiptSink != nil {
 		if err := w.receiptSink.AppendRefundReceipt(ctx, signed); err != nil {
 			if isRefundReceiptDuplicate(err) {
-				if _, getErr := w.existingRefundReceipt(ctx, payload); getErr != nil {
+				if _, getErr := w.existingRefundReceiptByIdempotency(ctx, payload); getErr != nil {
 					return fmt.Errorf("audit: lookup duplicate refunded receipt: %w", getErr)
 				}
 				return nil
@@ -503,21 +530,30 @@ func (w *MismatchRefundWorker) signRefundedReceiptInTx(ctx context.Context, tx p
 	if w == nil || w.formatter == nil {
 		return nil
 	}
+	if _, err := w.existingRefundReceiptByIdempotency(ctx, payload); err == nil {
+		return nil
+	} else if !errors.Is(err, ErrReceiptNotFound) && !errors.Is(err, ErrReceiptStorageRequired) {
+		return fmt.Errorf("audit: lookup existing refunded receipt: %w", err)
+	}
 	receipt, err := w.formatter.DeriveReceipt(ctx, payload.RequestID)
 	if err != nil {
 		return fmt.Errorf("audit: derive refunded receipt: %w", err)
 	}
 	receipt.ClaimID = payload.ClaimID
-	receipt.ReceiptSequence = 1
+	sequence, err := w.nextRefundReceiptSequenceInTx(ctx, tx, sink, payload, receipt)
+	if err != nil {
+		return err
+	}
+	receipt.ReceiptSequence = sequence
 	receipt.ValidationState = ReceiptValidationStateMismatchRefunded
 	receipt.Verdict = ReceiptVerdictMismatchRefundPending
-	receipt.AdjustmentRefs = refs
+	receipt.AdjustmentRefs = refundReceiptAdjustmentRefs(payload, refs)
 	signed, err := w.formatter.SignReceipt(ctx, receipt)
 	if err != nil {
 		return fmt.Errorf("audit: sign refunded receipt: %w", err)
 	}
 	if sink != nil {
-		if _, err := w.existingRefundReceipt(ctx, payload); err == nil {
+		if _, err := w.existingRefundReceiptByIdempotency(ctx, payload); err == nil {
 			return nil
 		} else if !errors.Is(err, ErrReceiptNotFound) && !errors.Is(err, ErrReceiptStorageRequired) {
 			return fmt.Errorf("audit: lookup duplicate refunded receipt: %w", err)
@@ -529,26 +565,140 @@ func (w *MismatchRefundWorker) signRefundedReceiptInTx(ctx context.Context, tx p
 	return nil
 }
 
-func (w *MismatchRefundWorker) existingRefundReceipt(ctx context.Context, payload MismatchRefundPayload) (*CostReceipt, error) {
+func (w *MismatchRefundWorker) completeExistingRefundReceipt(ctx context.Context, payload MismatchRefundPayload) (bool, error) {
+	if w == nil || w.pending == nil {
+		return false, nil
+	}
+	if _, err := w.existingRefundReceiptByIdempotency(ctx, payload); err == nil {
+		if markErr := w.pending.MarkCompleted(ctx, payload.ClaimID, w.now()); markErr != nil {
+			return false, markErr
+		}
+		return true, nil
+	} else {
+		if !errors.Is(err, ErrReceiptNotFound) && !errors.Is(err, ErrReceiptStorageRequired) {
+			return false, fmt.Errorf("audit: lookup existing refunded receipt: %w", err)
+		}
+	}
+	return false, nil
+}
+
+func (w *MismatchRefundWorker) nextRefundReceiptSequence(ctx context.Context, payload MismatchRefundPayload, receipt *CostReceipt) (int32, error) {
+	base := receiptBaseSequence(receipt)
+	if w == nil || w.receiptSink == nil {
+		return base, nil
+	}
+	if reader, ok := w.receiptSink.(refundReceiptMaxSequenceReader); ok {
+		return nextReceiptSequenceFromMax(ctx, reader, payload, base)
+	}
+	if reader, ok := w.receiptSink.(refundReceiptLatestReader); ok {
+		return nextReceiptSequenceFromLatest(ctx, reader, payload, base)
+	}
+	return base, nil
+}
+
+func (w *MismatchRefundWorker) nextRefundReceiptSequenceInTx(ctx context.Context, tx pgx.Tx, sink refundReceiptSinkInTx, payload MismatchRefundPayload, receipt *CostReceipt) (int32, error) {
+	base := receiptBaseSequence(receipt)
+	if sink == nil {
+		return base, nil
+	}
+	if reader, ok := sink.(refundReceiptMaxSequenceReaderInTx); ok {
+		maxSequence, err := reader.MaxReceiptSequenceInTx(ctx, tx, payload.RequestID, payload.TenantID)
+		if err != nil {
+			return 0, fmt.Errorf("audit: lookup max refunded receipt sequence: %w", err)
+		}
+		return nextSequenceAfterMax(maxSequence, base)
+	}
+	if reader, ok := sink.(refundReceiptMaxSequenceReader); ok {
+		return nextReceiptSequenceFromMax(ctx, reader, payload, base)
+	}
+	if reader, ok := sink.(refundReceiptLatestReader); ok {
+		return nextReceiptSequenceFromLatest(ctx, reader, payload, base)
+	}
+	return base, nil
+}
+
+func receiptBaseSequence(receipt *CostReceipt) int32 {
+	if receipt == nil || receipt.ReceiptSequence < 0 {
+		return 1
+	}
+	if receipt.ReceiptSequence >= maxReceiptSequence {
+		return maxReceiptSequence
+	}
+	return receipt.ReceiptSequence + 1
+}
+
+func nextReceiptSequenceFromMax(ctx context.Context, reader refundReceiptMaxSequenceReader, payload MismatchRefundPayload, base int32) (int32, error) {
+	maxSequence, err := reader.MaxReceiptSequence(ctx, payload.RequestID, payload.TenantID)
+	if err != nil {
+		return 0, fmt.Errorf("audit: lookup max refunded receipt sequence: %w", err)
+	}
+	return nextSequenceAfterMax(maxSequence, base)
+}
+
+func nextReceiptSequenceFromLatest(ctx context.Context, reader refundReceiptLatestReader, payload MismatchRefundPayload, base int32) (int32, error) {
+	latest, err := reader.GetReceipt(ctx, payload.RequestID, payload.TenantID)
+	if errors.Is(err, ErrReceiptNotFound) {
+		return base, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("audit: lookup latest refunded receipt sequence: %w", err)
+	}
+	if latest == nil {
+		return base, nil
+	}
+	return nextSequenceAfterMax(latest.ReceiptSequence, base)
+}
+
+const maxReceiptSequence int32 = 1<<31 - 1
+
+func nextSequenceAfterMax(maxSequence, base int32) (int32, error) {
+	if maxSequence < base {
+		return base, nil
+	}
+	if maxSequence >= maxReceiptSequence {
+		return 0, fmt.Errorf("%w: receipt_sequence overflow", ErrReceiptInvalidDerivedData)
+	}
+	return maxSequence + 1, nil
+}
+
+func (w *MismatchRefundWorker) existingRefundReceipt(ctx context.Context, payload MismatchRefundPayload, sequence int32) (*CostReceipt, error) {
 	if w == nil || w.receiptSink == nil {
 		return nil, ErrReceiptStorageRequired
 	}
-	const refundedSequence int32 = 1
 	if reader, ok := w.receiptSink.(refundReceiptSequenceReader); ok {
-		receipt, err := reader.GetReceiptBySequence(ctx, payload.RequestID, payload.TenantID, refundedSequence)
+		receipt, err := reader.GetReceiptBySequence(ctx, payload.RequestID, payload.TenantID, sequence)
 		if err != nil {
 			return nil, err
 		}
-		return validateExistingRefundReceipt(receipt, payload, refundedSequence)
+		return validateExistingRefundReceipt(receipt, payload, sequence)
 	}
 	if reader, ok := w.receiptSink.(refundReceiptLatestReader); ok {
 		receipt, err := reader.GetReceipt(ctx, payload.RequestID, payload.TenantID)
 		if err != nil {
 			return nil, err
 		}
-		return validateExistingRefundReceipt(receipt, payload, refundedSequence)
+		if receipt == nil || receipt.ReceiptSequence != sequence {
+			return nil, ErrReceiptNotFound
+		}
+		return validateExistingRefundReceipt(receipt, payload, sequence)
 	}
 	return nil, ErrReceiptStorageRequired
+}
+
+func (w *MismatchRefundWorker) existingRefundReceiptByIdempotency(ctx context.Context, payload MismatchRefundPayload) (*CostReceipt, error) {
+	if w == nil || w.receiptSink == nil {
+		return nil, ErrReceiptStorageRequired
+	}
+	reader, ok := w.receiptSink.(refundReceiptIdempotencyReader)
+	if !ok {
+		return nil, ErrReceiptStorageRequired
+	}
+	key := refundReceiptIdempotencyKey(payload)
+	receipt, err := reader.GetByRefundIdempotency(ctx, payload.RequestID, payload.TenantID, key)
+	if err != nil {
+		return nil, err
+	}
+	return validateExistingRefundReceiptByIdempotency(receipt, payload, key)
 }
 
 func validateExistingRefundReceipt(receipt *CostReceipt, payload MismatchRefundPayload, sequence int32) (*CostReceipt, error) {
@@ -564,6 +714,53 @@ func validateExistingRefundReceipt(receipt *CostReceipt, payload MismatchRefundP
 		return nil, fmt.Errorf("%w: refunded receipt state mismatch", ErrReceiptInvalidDerivedData)
 	}
 	return receipt, nil
+}
+
+func validateExistingRefundReceiptByIdempotency(receipt *CostReceipt, payload MismatchRefundPayload, key string) (*CostReceipt, error) {
+	if receipt == nil {
+		return nil, ErrReceiptNotFound
+	}
+	if strings.TrimSpace(receipt.RequestID) != strings.TrimSpace(payload.RequestID) ||
+		receipt.TenantID != payload.TenantID {
+		return nil, fmt.Errorf("%w: refunded receipt idempotency mismatch", ErrReceiptInvalidDerivedData)
+	}
+	if NormalizeReceiptValidationState(receipt.ValidationState) != ReceiptValidationStateMismatchRefunded {
+		return nil, fmt.Errorf("%w: refunded receipt state mismatch", ErrReceiptInvalidDerivedData)
+	}
+	if !adjustmentRefsContain(receipt.AdjustmentRefs, key) {
+		return nil, fmt.Errorf("%w: refunded receipt idempotency ref mismatch", ErrReceiptInvalidDerivedData)
+	}
+	return receipt, nil
+}
+
+func refundReceiptAdjustmentRefs(payload MismatchRefundPayload, refs []string) []string {
+	out := make([]string, 0, len(refs)+1)
+	key := refundReceiptIdempotencyKey(payload)
+	if key != "" {
+		out = append(out, key)
+	}
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if ref == "" || adjustmentRefsContain(out, ref) {
+			continue
+		}
+		out = append(out, ref)
+	}
+	return out
+}
+
+func refundReceiptIdempotencyKey(payload MismatchRefundPayload) string {
+	return "refund_idempotency_key:" + mismatchRefundIdempotencyKey(payload.ClaimID)
+}
+
+func adjustmentRefsContain(refs []string, want string) bool {
+	want = strings.TrimSpace(want)
+	for _, ref := range refs {
+		if strings.TrimSpace(ref) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func refundLedgerRef(requestID string, entry auditledger.LedgerEntry) string {

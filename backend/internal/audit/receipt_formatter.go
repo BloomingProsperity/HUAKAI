@@ -33,6 +33,7 @@ const (
 	ReceiptValidationStateMismatchRefunded   = "mismatch_refunded"
 	ReceiptValidationStateNotBillable        = "not_billable"
 	ReceiptValidationStateReceiptUnavailable = "receipt_unavailable"
+	ReceiptValidationStateUnknown            = "unknown"
 
 	ReceiptVerdictMatch                 = "match"
 	ReceiptVerdictSubstitutionRefund    = "substitution_refund"
@@ -50,7 +51,12 @@ var (
 	ErrReceiptInputsNotFound     = errors.New("audit: receipt inputs not found")
 	ErrReceiptUnavailable        = errors.New("audit: receipt billed but usage pending DLQ")
 	ErrReceiptInvalidDerivedData = errors.New("audit: invalid receipt derived data")
+	ErrCostOverflow              = errors.New("audit: cost overflow")
 )
+
+const maxCostMicroUSDInt64 int64 = 1<<63 - 1
+
+var maxCostMicroUSDDecimal = decimal.NewFromInt(maxCostMicroUSDInt64)
 
 // CostReceipt 是用户侧可验证消费凭证的内部结构。
 type CostReceipt struct {
@@ -628,6 +634,8 @@ func normalizedAdjustmentRefs(refs []string) []string {
 
 func NormalizeReceiptValidationState(state string) string {
 	switch strings.TrimSpace(state) {
+	case "", ReceiptValidationStateValid:
+		return ReceiptValidationStateValid
 	case ReceiptValidationStateProvisional:
 		return ReceiptValidationStateProvisional
 	case ReceiptValidationStateMismatchPending:
@@ -638,13 +646,17 @@ func NormalizeReceiptValidationState(state string) string {
 		return ReceiptValidationStateNotBillable
 	case ReceiptValidationStateReceiptUnavailable:
 		return ReceiptValidationStateReceiptUnavailable
+	case ReceiptValidationStateUnknown:
+		return ReceiptValidationStateUnknown
 	default:
-		return ReceiptValidationStateValid
+		return ReceiptValidationStateUnknown
 	}
 }
 
 func NormalizeReceiptVerdict(verdict string) string {
 	switch strings.TrimSpace(verdict) {
+	case "", ReceiptVerdictMatch:
+		return ReceiptVerdictMatch
 	case ReceiptVerdictSubstitutionRefund:
 		return ReceiptVerdictSubstitutionRefund
 	case ReceiptVerdictMismatchRefundPending:
@@ -652,7 +664,7 @@ func NormalizeReceiptVerdict(verdict string) string {
 	case ReceiptVerdictUnknown:
 		return ReceiptVerdictUnknown
 	default:
-		return ReceiptVerdictMatch
+		return ReceiptVerdictUnknown
 	}
 }
 
@@ -746,7 +758,11 @@ func usdDecimalStringToMicros(value string) (int64, error) {
 	if d.IsNegative() {
 		return 0, fmt.Errorf("%w: cost must be non-negative", ErrReceiptInvalidDerivedData)
 	}
-	return d.Mul(decimal.NewFromInt(1_000_000)).Round(0).IntPart(), nil
+	micros := d.Mul(decimal.NewFromInt(1_000_000)).Round(0)
+	if micros.GreaterThan(maxCostMicroUSDDecimal) {
+		return 0, ErrCostOverflow
+	}
+	return micros.IntPart(), nil
 }
 
 var (

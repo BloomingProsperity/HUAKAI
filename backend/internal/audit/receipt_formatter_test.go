@@ -187,6 +187,25 @@ func TestAT_AUDIT_001_031_DuplicateSameReceiptSequenceRejected(t *testing.T) {
 	}
 }
 
+func TestAT_AUDIT_001_validation_state_unknown_persisted(t *testing.T) {
+	ctx := context.Background()
+	db := newMemoryReceiptDB()
+	store := &ReceiptStorage{exec: db}
+	receipt := receiptForStorageTest("req-at-unknown-state", 88, 0)
+	receipt.ValidationState = ReceiptValidationStateUnknown
+
+	if err := store.AppendReceipt(ctx, receipt); err != nil {
+		t.Fatalf("AppendReceipt unknown validation_state: %v", err)
+	}
+	got, err := store.GetReceipt(ctx, receipt.RequestID, receipt.TenantID)
+	if err != nil {
+		t.Fatalf("GetReceipt unknown validation_state: %v", err)
+	}
+	if got.ValidationState != ReceiptValidationStateUnknown {
+		t.Fatalf("validation_state=%q want %q", got.ValidationState, ReceiptValidationStateUnknown)
+	}
+}
+
 func TestAT_AUDIT_001_004_DeriveReceiptCrossesAuditBilling(t *testing.T) {
 	ctx := context.Background()
 	requestID := "host/random-000004"
@@ -259,6 +278,27 @@ func TestAT_AUDIT_001_005_RateTableSnapshotIDFromRegistryFormat(t *testing.T) {
 	}
 	if got := rateTableSnapshotID("pricing:v3", 77); got != 3 {
 		t.Fatalf("legacy pricing snapshot id=%d want 3", got)
+	}
+}
+
+func TestAT_AUDIT_001_062_USDDecimalCostOverflowRejected(t *testing.T) {
+	if _, err := usdDecimalStringToMicros("9223372036854.775808"); !errors.Is(err, ErrCostOverflow) {
+		t.Fatalf("usdDecimalStringToMicros overflow error=%v want %v", err, ErrCostOverflow)
+	}
+}
+
+func TestNormalizeReceiptUnknownValuesStayUnknown(t *testing.T) {
+	if got := NormalizeReceiptValidationState("future_state"); got != ReceiptValidationStateUnknown {
+		t.Fatalf("validation state=%q want %q", got, ReceiptValidationStateUnknown)
+	}
+	if got := NormalizeReceiptVerdict("future_verdict"); got != ReceiptVerdictUnknown {
+		t.Fatalf("verdict=%q want %q", got, ReceiptVerdictUnknown)
+	}
+	if got := NormalizeReceiptValidationState(""); got != ReceiptValidationStateValid {
+		t.Fatalf("empty validation state=%q want %q", got, ReceiptValidationStateValid)
+	}
+	if got := NormalizeReceiptVerdict(""); got != ReceiptVerdictMatch {
+		t.Fatalf("empty verdict=%q want %q", got, ReceiptVerdictMatch)
 	}
 }
 
@@ -556,9 +596,51 @@ func (db *memoryReceiptDB) QueryRowContext(_ context.Context, query string, args
 	tenantID, _ := args[1].(int64)
 	db.mu.Lock()
 	defer db.mu.Unlock()
+	if strings.Contains(query, "MAX(receipt_sequence)") {
+		var maxSequence int32
+		for key := range db.receipts {
+			if key.requestID == requestID && key.tenantID == tenantID && key.sequence > maxSequence {
+				maxSequence = key.sequence
+			}
+		}
+		return receiptMaxSequenceRow{maxSequence: maxSequence}
+	}
+	if len(args) >= 3 && strings.Contains(query, "receipt_sequence = $3") {
+		sequence, _ := args[2].(int32)
+		if receipt := db.receipts[memoryReceiptKey{tenantID: tenantID, requestID: requestID, sequence: sequence}]; receipt != nil {
+			return receiptTestRow{receipt: cloneReceipt(receipt)}
+		}
+		return receiptTestRow{err: sql.ErrNoRows}
+	}
+	if len(args) >= 3 && strings.Contains(query, "validation_state = $3") {
+		state, _ := args[2].(string)
+		return latestMemoryReceiptRow(db.receipts, requestID, tenantID, func(receipt *CostReceipt) bool {
+			return NormalizeReceiptValidationState(receipt.ValidationState) == state
+		})
+	}
+	if len(args) >= 3 && strings.Contains(query, "adjustment_refs @> $3::jsonb") {
+		needle, _ := args[2].(string)
+		var refs []string
+		_ = json.Unmarshal([]byte(needle), &refs)
+		return latestMemoryReceiptRow(db.receipts, requestID, tenantID, func(receipt *CostReceipt) bool {
+			for _, ref := range refs {
+				if !adjustmentRefsContain(receipt.AdjustmentRefs, ref) {
+					return false
+				}
+			}
+			return true
+		})
+	}
+	return latestMemoryReceiptRow(db.receipts, requestID, tenantID, nil)
+}
+
+func latestMemoryReceiptRow(receipts map[memoryReceiptKey]*CostReceipt, requestID string, tenantID int64, match func(*CostReceipt) bool) receiptRow {
 	var latest *CostReceipt
-	for key, receipt := range db.receipts {
+	for key, receipt := range receipts {
 		if key.requestID != requestID || key.tenantID != tenantID {
+			continue
+		}
+		if match != nil && !match(receipt) {
 			continue
 		}
 		if latest == nil || receipt.ReceiptSequence > latest.ReceiptSequence {
@@ -591,6 +673,22 @@ type memoryReceiptKey struct {
 type receiptTestRow struct {
 	receipt *CostReceipt
 	err     error
+}
+
+type receiptMaxSequenceRow struct {
+	maxSequence int32
+}
+
+func (r receiptMaxSequenceRow) Scan(dest ...any) error {
+	if len(dest) != 1 {
+		return errors.New("memory receipt max row: destination count mismatch")
+	}
+	d, ok := dest[0].(*int32)
+	if !ok {
+		return errors.New("memory receipt max row: int32 destination required")
+	}
+	*d = r.maxSequence
+	return nil
 }
 
 func (r receiptTestRow) Scan(dest ...any) error {

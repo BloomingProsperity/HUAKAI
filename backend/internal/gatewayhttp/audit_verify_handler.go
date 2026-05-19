@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -107,7 +108,8 @@ func NewAuditVerifyHandler(d AuditVerifyDeps) http.HandlerFunc {
 			return
 		}
 		if err != nil {
-			writeAuditJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())
+			slog.ErrorContext(r.Context(), "audit verify ledger lookup failed", "request_id", req.RequestID, "error", err)
+			writeAuditJSONError(w, http.StatusInternalServerError, "audit_ledger_error", "audit ledger temporarily unavailable")
 			return
 		}
 		if scope := req.TenantScopeRef; scope != "" && scope != auditledger.TenantScopeRef(entry.TenantID) {
@@ -179,7 +181,8 @@ func NewAuditMerkleTreeHandler(d AuditVerifyDeps) http.HandlerFunc {
 		}
 		root, err := ledger.LatestMerkleRoot(r.Context())
 		if err != nil {
-			writeAuditJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())
+			slog.ErrorContext(r.Context(), "audit merkle root lookup failed", "error", err)
+			writeAuditJSONError(w, http.StatusInternalServerError, "audit_ledger_error", "audit ledger temporarily unavailable")
 			return
 		}
 		writeAuditJSON(w, http.StatusOK, AuditMerkleTreeResponse{
