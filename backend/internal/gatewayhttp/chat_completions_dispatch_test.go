@@ -63,13 +63,18 @@ func TestHandler_AnthropicEndpointFamilySet(t *testing.T) {
 	dispatcher := &mockCanonicalBufferedDispatcher{}
 	d := anthropicClientAdapterDeps(t)
 	d.CanonicalDispatcher = dispatcher
+	// codex review P1 2026-05-19: Anthropic 非流式 buffered 翻译器未实现,
+	// handler 现 fail-fast 拒 (501)。本 test 验 reject 触发, 不静默扣上游额度。
 	body := `{"model":"claude-3-5-sonnet","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`
 	rec := invokeHandlerPath(t, d, "/v1/messages", body)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d; want 501; body = %s", rec.Code, rec.Body.String())
 	}
-	if dispatcher.observed == nil || dispatcher.observed.RequestMeta.EndpointFamily != "anthropic_messages" {
-		t.Fatalf("EndpointFamily = %+v", dispatcher.observed)
+	if !strings.Contains(rec.Body.String(), "buffered_anthropic_not_supported") {
+		t.Fatalf("expected buffered_anthropic_not_supported error code; got %s", rec.Body.String())
+	}
+	if dispatcher.observed != nil {
+		t.Fatalf("dispatcher should NOT be called when reject fires; observed = %+v", dispatcher.observed)
 	}
 }
 
