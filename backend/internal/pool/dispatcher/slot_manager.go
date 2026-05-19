@@ -63,6 +63,13 @@ func (m *DBSlotManager) Acquire(ctx context.Context, account *AccountSnapshot, r
 	if account == nil {
 		return nil, errors.New("pool: nil account snapshot")
 	}
+	// DR-001 跨表 tenant 一致性: 防 selector 在 req.TenantID 写 claim, 而
+	// slot acquire 走 account.TenantID, 两边租户不一致会让 slot row 算到
+	// 错租户名下, 后续 ReleaseSlotAndDecrement 跟 settlement 找不到对应。
+	if req.TenantID != 0 && account.TenantID != req.TenantID {
+		return nil, fmt.Errorf("pool: account tenant=%d ≠ request tenant=%d (cross-tenant slot acquire refused)",
+			account.TenantID, req.TenantID)
+	}
 
 	tx, err := m.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {

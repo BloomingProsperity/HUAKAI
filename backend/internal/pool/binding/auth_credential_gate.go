@@ -17,8 +17,13 @@ type AuthCredentialGate struct {
 }
 
 func (g AuthCredentialGate) Allow(ctx context.Context, account *AccountSnapshot, _ SelectionRequest) (bool, GateFailureReason, error) {
-	if g.Provider == nil || account == nil {
-		return true, "", nil
+	// fail-closed: 没注入 Provider (启动 wire 漏 / 测试遗漏) 不能允许账号, 否则
+	// credential gate 形同虚设。account == nil 是 caller bug, 同 reject。
+	if g.Provider == nil {
+		return false, GateFailureCredential, errors.New("auth credential gate: Provider not configured")
+	}
+	if account == nil {
+		return false, GateFailureCredential, errors.New("auth credential gate: nil account snapshot")
 	}
 	if _, err := g.Provider.GetAccessToken(ctx, account.TenantID, account.ID); err != nil {
 		if errors.Is(err, auth.ErrTokenMalformed) || errors.Is(err, auth.ErrAccountUnavailable) {
