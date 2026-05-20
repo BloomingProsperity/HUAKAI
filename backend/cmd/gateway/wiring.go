@@ -46,6 +46,7 @@ type deps struct {
 	cfg                 *Config
 	adminQueries        *admindb.Queries
 	billingQueries      *dbbilling.Queries
+	billingPolicyStore  billing.PolicyStore
 	selector            pool.Selector
 	channelHealth       *channelhealth.Service
 	claimGate           billing.ClaimGate
@@ -79,6 +80,7 @@ type deps struct {
 	adminAuth           *admin.AdminResolver
 	adminIssuer         *admin.KeyIssuer
 	adminRevoker        *admin.KeyRevoker
+	billingAuditUpdater gatewayhttp.AdminBillingSettingsAuditUpdater
 }
 
 type refundReceiptAppender interface {
@@ -192,6 +194,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		cfg:                cfg,
 		adminQueries:       adminQueries,
 		billingQueries:     billingQueries,
+		billingPolicyStore: billing.NewPolicyStore(pgPool),
 		selector:           selector,
 		channelHealth:      channelHealthService,
 		claimGate:          billing.NewClaimGate(pgPool),
@@ -229,6 +232,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		adminAuth:           admin.NewAdminResolver(adminQueries),
 		adminIssuer:         admin.NewKeyIssuer(pgPool),
 		adminRevoker:        admin.NewKeyRevoker(pgPool),
+		billingAuditUpdater: gatewayhttp.NewAdminBillingSettingsAuditUpdater(pgPool),
 	}
 	if err := admin.MaybeBootstrap(ctx, pgPool, logger); err != nil {
 		return nil, fmt.Errorf("admin bootstrap: %w", err)
