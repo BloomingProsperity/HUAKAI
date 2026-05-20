@@ -124,9 +124,7 @@ func transformed(kind FieldTransformKind, reason string) FieldMatrixEntry {
 //   - 加新字段时：登记的目的是文档化 + 运维可查，不是限制透传
 func DefaultFieldMatrix() FieldMatrix {
 	return FieldMatrix{
-		// =====================================================================
 		// OpenAI 客户端 × OpenAI 上游
-		// =====================================================================
 		ClientProtocolOpenAIChat: {
 			UpstreamProtocolOpenAI: {
 				// HUAKAI typed struct 已声明（U7-C openAIChatCompletionChunk +
@@ -163,9 +161,7 @@ func DefaultFieldMatrix() FieldMatrix {
 				"usage":   preserved("typed struct: openAIChatCompletionResponse.Usage"),
 			},
 		},
-		// =====================================================================
 		// Anthropic 客户端 × Anthropic 上游
-		// =====================================================================
 		ClientProtocolAnthropicMessages: {
 			UpstreamProtocolAnthropic: {
 				// HUAKAI typed struct（U7-D anthropicEnvelope）
