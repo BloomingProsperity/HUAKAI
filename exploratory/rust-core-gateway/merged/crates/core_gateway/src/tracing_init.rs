@@ -10,9 +10,17 @@
 
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::runtime::Tokio;
+use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{filter::EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{config::StartupConfig, error::GatewayError};
+
+/// tracing 生命周期 guard。
+/// 调用方必须持有到进程退出, 否则非阻塞日志 worker 会提前停止。
+pub struct TracingGuards {
+    pub log: WorkerGuard,
+    pub otlp: Option<opentelemetry_sdk::trace::TracerProvider>,
+}
 
 /// 安装全局 tracing subscriber 并可选地构建 OTLP TracerProvider
 ///
@@ -22,12 +30,11 @@ use crate::{config::StartupConfig, error::GatewayError};
 ///   (M-rust-1 构建但不挂到 subscriber; M-rust-2 接入 span exporter)
 /// - OTLP 构建失败时优雅退化, 不 panic
 ///
-/// 返回 OTLP TracerProvider guard; 调用者持有到进程退出以确保 flush
-pub fn install(
-    config: &StartupConfig,
-) -> Result<Option<opentelemetry_sdk::trace::TracerProvider>, GatewayError> {
+/// 返回日志 worker 与 OTLP TracerProvider guard; 调用者持有到进程退出以确保 flush
+pub fn install(config: &StartupConfig) -> Result<TracingGuards, GatewayError> {
     let filter = EnvFilter::try_new(config.log_level.to_string())
         .map_err(|err| GatewayError::Config(format!("invalid tracing filter: {err}")))?;
+    let (log_writer, log_guard) = tracing_appender::non_blocking(std::io::stdout());
 
     // 两条分支各自独立注册, 避免跨分支类型统一问题
     if config.json_logs {
@@ -38,7 +45,8 @@ pub fn install(
                     .json()
                     .flatten_event(true)
                     .with_target(true)
-                    .with_thread_ids(true),
+                    .with_thread_ids(true)
+                    .with_writer(log_writer),
             )
             .try_init()
             .map_err(|err| GatewayError::Internal(err.to_string()))?;
@@ -50,7 +58,8 @@ pub fn install(
                 fmt::layer()
                     .compact()
                     .with_target(true)
-                    .with_thread_ids(true),
+                    .with_thread_ids(true)
+                    .with_writer(log_writer),
             )
             .try_init()
             .map_err(|err| GatewayError::Internal(err.to_string()))?;
@@ -86,7 +95,10 @@ pub fn install(
         }
     };
 
-    Ok(provider)
+    Ok(TracingGuards {
+        log: log_guard,
+        otlp: provider,
+    })
 }
 
 /// 构建 OTLP gRPC batch exporter provider
@@ -132,7 +144,10 @@ mod tests {
         let cfg = make_config(true);
         let result = install(&cfg);
         match result {
-            Ok(_) => {}
+            Ok(guards) => {
+                assert!(guards.otlp.is_none());
+                let _keep_log_guard_alive = &guards.log;
+            }
             Err(GatewayError::Internal(_)) => {}
             Err(e) => panic!("不应出现非 Internal 错误: {e}"),
         }
@@ -143,7 +158,10 @@ mod tests {
         let cfg = make_config(false);
         let result = install(&cfg);
         match result {
-            Ok(_) => {}
+            Ok(guards) => {
+                assert!(guards.otlp.is_none());
+                let _keep_log_guard_alive = &guards.log;
+            }
             Err(GatewayError::Internal(_)) => {}
             Err(e) => panic!("不应出现非 Internal 错误: {e}"),
         }
