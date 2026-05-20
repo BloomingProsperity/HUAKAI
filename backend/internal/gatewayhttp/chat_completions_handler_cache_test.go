@@ -151,3 +151,57 @@ func TestChatCompletionsL2CacheStreamSkipsLookup(t *testing.T) {
 		t.Fatal("stream request must not hit L2 cache")
 	}
 }
+
+// idempotentHitClaimGate 模拟同 idempotency-key 重试: Reserve 返回 IdempotencyHit。
+type idempotentHitClaimGate struct{}
+
+func (idempotentHitClaimGate) Reserve(context.Context, billing.ReserveRequest) (*billing.ReserveResult, error) {
+	return &billing.ReserveResult{ClaimID: 777, IdempotencyHit: true}, nil
+}
+
+// AT-4: 带 Idempotency-Key 的缓存命中重试 → 走 L2 重放返 200, 头标 replay。
+func TestChatCompletionsIdempotentHitReplaysFromL2(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	store := l2cache.NewMemoryStore(1<<20, time.Minute)
+	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
+
+	firstDeps := clientAdapterDeps(t)
+	firstDeps.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	firstDeps.ResponseCache = store
+	first := invokeHandlerPath(t, firstDeps, "/v1/chat/completions", body)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+	}
+
+	secondDeps := clientAdapterDeps(t)
+	secondDeps.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	secondDeps.ResponseCache = store
+	secondDeps.ClaimGate = idempotentHitClaimGate{}
+	second := invokeHandlerPath(t, secondDeps, "/v1/chat/completions", body)
+	if second.Code != http.StatusOK {
+		t.Fatalf("idempotent-hit retry status=%d want 200 (L2 replay); body=%s", second.Code, second.Body.String())
+	}
+	if got := second.Header().Get("X-HUAKAI-Cache-L2"); got != "replay" {
+		t.Fatalf("cache header=%q want replay", got)
+	}
+	if first.Body.String() != second.Body.String() {
+		t.Fatalf("replay body mismatch:\nfirst=%s\nsecond=%s", first.Body.String(), second.Body.String())
+	}
+}
+
+// AT-5: 幂等命中但响应不在 L2 (未缓存/被逐出) → 回 409 replay_without_cache。
+func TestChatCompletionsIdempotentHitMissReturns409(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.ResponseCache = l2cache.NewMemoryStore(1<<20, time.Minute) // 空 cache
+	d.ClaimGate = idempotentHitClaimGate{}
+	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", body)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status=%d want 409 (idempotent hit, response not cached); body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "replay_without_cache") {
+		t.Fatalf("body=%q want replay_without_cache", rec.Body.String())
+	}
+}
