@@ -13,6 +13,35 @@
 | Blast radius | **钱路表 `usage_records` schema 迁移**——高风险。影响 receipt / 退款 / admin 用量 / obs / DLQ replay。sqlc 重生使 `InsertUsageRecord` 的 provider 参数变指针,波及全部插入点(编译器可捕获)。 |
 | Decision points | (D1) schema 可空——已 Owner 确认走 B;(D2) P2-1 现做还是延 Phase E——**现做**(sub2api 已有完整幂等重放,延后即已知弱于 sub2api);(D3) down 迁移在已有 cache-hit 行后是 fail-fast 还是有损——选 fail-fast。 |
 
+## 清洁室合规(CLAUDE.md #11 / #12)
+
+下方"平行交叉记录"与"sub2api 实证"引用的非 HUAKAI 参考项目, 证据来自一次
+**specifier lane** 子代理调研(agent ae9abc56c889ab680, 2026-05-20 UTC):
+只读源码产出行为摘要, 未逐字复制函数名 / 结构体字段 / 注释 / 代码块, 全部
+转述。 各项目 `repo@sha` 与代表性 file:line 证据:
+
+- **LiteLLM** `litellm@b5d3a5fc`(pushed 2026-05-08): 缓存命中仍写 $0 spend
+  记录 —— `litellm/cost_calculator.py:1747-1748`、
+  `litellm/litellm_core_utils/litellm_logging.py:1486-1487`; `cache_hit`
+  布尔标记 —— `litellm_logging.py:5549`。
+- **Portkey Gateway** `portkey-gateway@351692fd`(pushed 2026-03-25, MIT):
+  缓存命中走同一 log 路径 + 状态枚举 —— `src/handlers/handlerUtils.ts:382-403`、
+  `src/middlewares/cache/index.ts:6-7`。
+- **Helicone** `helicone@3f4bd44b`(pushed 2026-05-01, Apache-2.0): 缓存命中
+  取消 escrow 预留、仍写日志行 ——
+  `worker/src/lib/HeliconeProxyRequest/ProxyForwarder.ts:686-721`、
+  `worker/src/lib/dbLogger/DBLoggable.ts:913-916`。
+- **LLMGateway** `llmgateway@a94e92d8`(pushed 2026-05-13): 缓存命中按原价
+  全额计费 + 布尔列 —— `apps/gateway/src/chat/chat.ts:3887-3979`、
+  `packages/db/migrations/1747760252_gorgeous_morlocks.sql:61`。
+- **sub2api** `sub2api@dbc8ae65`(pushed 2026-05-08, copyleft —— 仅行为摘要、
+  不 vendoring): 无网关响应缓存; 独立幂等表存响应体 ——
+  `backend/internal/repository/idempotency_repo.go:21,57,180`; 事后单次计费 ——
+  `backend/internal/repository/usage_billing_repo.go:22,108`。
+
+所有 SHA 均在引用日(2026-05-20)前 90 天内。 调研只读上述参考项目源码 +
+HUAKAI 内部代码, 未修改任何参考项目文件。
+
 ## 平行交叉记录(CLAUDE.md #10)
 
 | | Claude 初稿 | codex 独立草案(bbv2h5c5r) | 参考平台调研 | sub2api 实证 |
