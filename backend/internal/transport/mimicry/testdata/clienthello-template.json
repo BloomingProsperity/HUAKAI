@@ -1,0 +1,193 @@
+{
+  "schema_version": "1.0",
+  "capture_time": "2026-05-06T10:37:23Z",
+  "sample_count": 5,
+  "legacy_version": 771,
+  "legacy_version_hex": "0x0303",
+  "random_len": 32,
+  "legacy_session_id_len": 32,
+  "cipher_suites": [
+    {
+      "value": 4865,
+      "value_hex": "0x1301"
+    },
+    {
+      "value": 4866,
+      "value_hex": "0x1302"
+    },
+    {
+      "value": 4867,
+      "value_hex": "0x1303"
+    },
+    {
+      "value": 49195,
+      "value_hex": "0xc02b"
+    },
+    {
+      "value": 49199,
+      "value_hex": "0xc02f"
+    },
+    {
+      "value": 49196,
+      "value_hex": "0xc02c"
+    },
+    {
+      "value": 49200,
+      "value_hex": "0xc030"
+    },
+    {
+      "value": 52393,
+      "value_hex": "0xcca9"
+    },
+    {
+      "value": 52392,
+      "value_hex": "0xcca8"
+    },
+    {
+      "value": 49161,
+      "value_hex": "0xc009"
+    },
+    {
+      "value": 49171,
+      "value_hex": "0xc013"
+    },
+    {
+      "value": 49162,
+      "value_hex": "0xc00a"
+    },
+    {
+      "value": 49172,
+      "value_hex": "0xc014"
+    },
+    {
+      "value": 156,
+      "value_hex": "0x009c"
+    },
+    {
+      "value": 157,
+      "value_hex": "0x009d"
+    },
+    {
+      "value": 47,
+      "value_hex": "0x002f"
+    },
+    {
+      "value": 53,
+      "value_hex": "0x0035"
+    }
+  ],
+  "compression_methods": "AA==",
+  "extensions": [
+    {
+      "type": 0,
+      "type_hex": "0x0000",
+      "type_name": "server_name",
+      "data_len": 22
+    },
+    {
+      "type": 65037,
+      "type_hex": "0xfe0d",
+      "type_name": "encrypted_client_hello",
+      "data_len": 186
+    },
+    {
+      "type": 23,
+      "type_hex": "0x0017",
+      "type_name": "extended_master_secret",
+      "data_len": 0
+    },
+    {
+      "type": 65281,
+      "type_hex": "0xff01",
+      "data_len": 1
+    },
+    {
+      "type": 10,
+      "type_hex": "0x000a",
+      "type_name": "supported_groups",
+      "data_len": 8
+    },
+    {
+      "type": 11,
+      "type_hex": "0x000b",
+      "type_name": "ec_point_formats",
+      "data_len": 2
+    },
+    {
+      "type": 35,
+      "type_hex": "0x0023",
+      "type_name": "session_ticket",
+      "data_len": 0
+    },
+    {
+      "type": 16,
+      "type_hex": "0x0010",
+      "type_name": "application_layer_protocol_negotiation",
+      "data_len": 11
+    },
+    {
+      "type": 5,
+      "type_hex": "0x0005",
+      "type_name": "status_request",
+      "data_len": 5
+    },
+    {
+      "type": 13,
+      "type_hex": "0x000d",
+      "type_name": "signature_algorithms",
+      "data_len": 20
+    },
+    {
+      "type": 18,
+      "type_hex": "0x0012",
+      "type_name": "signed_certificate_timestamp",
+      "data_len": 0
+    },
+    {
+      "type": 51,
+      "type_hex": "0x0033",
+      "type_name": "key_share",
+      "data_len": 38
+    },
+    {
+      "type": 45,
+      "type_hex": "0x002d",
+      "type_name": "psk_key_exchange_modes",
+      "data_len": 2
+    },
+    {
+      "type": 43,
+      "type_hex": "0x002b",
+      "type_name": "supported_versions",
+      "data_len": 5
+    },
+    {
+      "type": 21,
+      "type_hex": "0x0015",
+      "type_name": "padding",
+      "data_len": 41
+    }
+  ],
+  "sni": "\u003credacted\u003e",
+  "alpn_protocols": [
+    "http/1.1"
+  ],
+  "supported_groups": [
+    29,
+    23,
+    24
+  ],
+  "ec_point_formats": "AA==",
+  "supported_versions": [
+    772,
+    771
+  ],
+  "ja3": {
+    "input_string": "772,4865-4866-4867-49195-49199-49196-49200-52393-52392-49161-49171-49162-49172-156-157-47-53,0-65037-23-65281-10-11-35-16-5-13-18-51-45-43,29-23-24,0",
+    "hash": "de88744b20558d50f03a5f0ea176ee98"
+  },
+  "ja4": {
+    "raw": "t13d1715_ht_ca21dff6868a_bd55c1d574e4",
+    "hash": "t13d1715_ht_ca21dff6868a_bd55c1d574e4"
+  }
+}

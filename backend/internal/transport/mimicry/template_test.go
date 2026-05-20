@@ -11,7 +11,7 @@ import (
 
 const collectorFixture = "../../../../tools/fingerprint-collector/templates/anthropic-claude-code.json"
 const mergedTemplateFixture = "../../../../tools/fingerprint-collector/templates/anthropic-claude-code.json"
-const legacyCollectorFixture = "../../../../tools/fingerprint-collector/output/clienthello-template.json"
+const legacyCollectorFixture = "testdata/clienthello-template.json"
 const codexTemplateFixture = "../../../../tools/fingerprint-collector/templates/codex-cli.json"
 const kiroTemplateFixture = "../../../../tools/fingerprint-collector/templates/kiro-cli.json"
 const geminiTemplateFixture = "../../../../tools/fingerprint-collector/templates/gemini-advanced.json"
