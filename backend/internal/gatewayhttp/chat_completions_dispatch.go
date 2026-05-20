@@ -174,6 +174,16 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter) bool {
 		writeJSONError(w, http.StatusServiceUnavailable, "no_capacity", err.Error())
 		return false
 	}
+	if errors.Is(err, pool.ErrClaimRace) {
+		// codex chunk13 P2: claim 被并发路径抢占移出 reserving — 这是预期内
+		// 竞态, 不是 internal error。 返 409 + Retry-After 让 client 幂等重试。
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "claim_race", ex.requestID); abortErr != nil {
+			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+		}
+		w.Header().Set("Retry-After", "1")
+		writeJSONError(w, http.StatusConflict, "claim_race", err.Error())
+		return false
+	}
 	if err != nil {
 		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pool_select_error", ex.requestID)
 		writeJSONError(w, http.StatusInternalServerError, "pool_select_error", err.Error())
