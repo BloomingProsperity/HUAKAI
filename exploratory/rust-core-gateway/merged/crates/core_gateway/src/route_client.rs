@@ -6,10 +6,7 @@ use std::{
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
-    sync::{
-        Arc,
-        atomic::{AtomicU32, AtomicU64, Ordering},
-    },
+    sync::Arc,
     task::{Context, Poll},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -27,6 +24,7 @@ use tonic::{
 use tracing::{debug, warn};
 
 use crate::{
+    circuit_breaker::{CircuitBreaker, CircuitPermit},
     error::GatewayError,
     redaction::redact_untrusted_text,
     route_proto::v1::{
@@ -195,8 +193,7 @@ pub struct RouteClient {
 struct RouteClientInner {
     client: RouteServiceClient<Channel>,
     options: RouteClientOptions,
-    consecutive_failures: AtomicU32,
-    circuit_open_until_ms: AtomicU64,
+    circuit_breaker: CircuitBreaker,
 }
 
 impl RouteClient {
@@ -251,9 +248,12 @@ impl RouteClient {
         Self {
             inner: Arc::new(RouteClientInner {
                 client,
+                circuit_breaker: CircuitBreaker::new(
+                    options.circuit_breaker_failure_threshold,
+                    options.circuit_breaker_cooldown,
+                    options.rpc_timeout,
+                ),
                 options,
-                consecutive_failures: AtomicU32::new(0),
-                circuit_open_until_ms: AtomicU64::new(0),
             }),
         }
     }
@@ -263,19 +263,15 @@ impl RouteClient {
     }
 
     pub fn consecutive_failures(&self) -> u32 {
-        self.inner.consecutive_failures.load(Ordering::Relaxed)
+        self.inner.circuit_breaker.consecutive_failures()
     }
 
     pub fn circuit_is_open(&self) -> bool {
-        self.circuit_open_until_ms() > now_unix_ms()
+        self.inner.circuit_breaker.is_rejecting(now_unix_ms())
     }
 
     pub async fn query_route(&self, query: RouteQueryRequest) -> Result<RoutePlan, GatewayError> {
-        if self.circuit_is_open() {
-            return Err(GatewayError::ControlPlane(
-                "route circuit breaker open".to_owned(),
-            ));
-        }
+        let permit = self.acquire_route_permit()?;
 
         let max_attempt = self.inner.options.retry_attempts;
         let mut last_error = None;
@@ -283,15 +279,20 @@ impl RouteClient {
         for attempt in 0..=max_attempt {
             match self.route_query_once(query.clone()).await {
                 Ok(plan) => {
-                    self.record_success();
+                    self.record_route_success(permit);
                     return Ok(plan);
                 }
                 Err(err) => {
                     let retryable = err.retryable;
                     let gateway_error = err.error;
-                    self.record_failure();
 
-                    if retryable && attempt < max_attempt && !self.circuit_is_open() {
+                    // 重试必须经熔断器门控: may_retry 仅在 permit 仍属当前代次的
+                    // Closed 阶段时放行。否则(熔断器已被他人打开 / 本 permit 是探测)
+                    // 直接结算, 避免陈旧请求绕过单探测门控持续打降级的 control plane。
+                    if retryable
+                        && attempt < max_attempt
+                        && self.inner.circuit_breaker.may_retry(permit)
+                    {
                         let delay = retry_delay(self.inner.options.retry_backoff, attempt);
                         debug!(attempt, ?delay, "route query retry");
                         time::sleep(delay).await;
@@ -299,11 +300,18 @@ impl RouteClient {
                         continue;
                     }
 
+                    if retryable {
+                        self.record_route_failure(permit);
+                    } else {
+                        // 非重试契约错误说明 control plane 有响应, 不作为可用性失败计入熔断。
+                        self.record_route_success(permit);
+                    }
                     return Err(gateway_error);
                 }
             }
         }
 
+        self.record_route_failure(permit);
         Err(last_error.unwrap_or_else(|| {
             GatewayError::ControlPlane("route query failed without status".to_owned())
         }))
@@ -331,7 +339,6 @@ impl RouteClient {
         .map_err(|_| GatewayError::ControlPlane("attempt report deadline exceeded".to_owned()))?
         .map_err(status_to_gateway_error)?;
 
-        self.record_success();
         Ok(response.into_inner())
     }
 
@@ -348,7 +355,6 @@ impl RouteClient {
             .map_err(|_| GatewayError::ControlPlane("health check deadline exceeded".to_owned()))?
             .map_err(status_to_gateway_error)?;
 
-        self.record_success();
         Ok(response.into_inner())
     }
 
@@ -365,7 +371,6 @@ impl RouteClient {
             .map_err(|_| GatewayError::ControlPlane("heartbeat deadline exceeded".to_owned()))?
             .map_err(status_to_gateway_error)?;
 
-        self.record_success();
         Ok(response.into_inner())
     }
 
@@ -388,32 +393,30 @@ impl RouteClient {
         Ok(response.into_inner())
     }
 
-    fn record_success(&self) {
-        self.inner.consecutive_failures.store(0, Ordering::Relaxed);
-        self.inner.circuit_open_until_ms.store(0, Ordering::Release);
+    fn acquire_route_permit(&self) -> Result<CircuitPermit, GatewayError> {
+        self.inner
+            .circuit_breaker
+            .try_acquire(now_unix_ms())
+            .map_err(|_| GatewayError::ControlPlane("route circuit breaker open".to_owned()))
     }
 
-    fn record_failure(&self) {
-        let failures = self
+    fn record_route_success(&self, permit: CircuitPermit) {
+        self.inner.circuit_breaker.record_success(permit);
+    }
+
+    fn record_route_failure(&self, permit: CircuitPermit) {
+        if let Some(opened) = self
             .inner
-            .consecutive_failures
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-
-        let threshold = self.inner.options.circuit_breaker_failure_threshold.max(1);
-        if failures >= threshold {
-            let open_until = now_unix_ms().saturating_add(duration_millis_u64(
-                self.inner.options.circuit_breaker_cooldown,
-            ));
-            self.inner
-                .circuit_open_until_ms
-                .store(open_until, Ordering::Release);
-            warn!(failures, "route circuit breaker opened");
+            .circuit_breaker
+            .record_retryable_failure(permit, now_unix_ms())
+        {
+            warn!(
+                failures = opened.failures,
+                open_until_ms = opened.open_until_ms,
+                probe_failure = opened.probe_failure,
+                "route circuit breaker opened"
+            );
         }
-    }
-
-    fn circuit_open_until_ms(&self) -> u64 {
-        self.inner.circuit_open_until_ms.load(Ordering::Acquire)
     }
 }
 
@@ -716,19 +719,21 @@ fn status_to_gateway_error(status: tonic::Status) -> GatewayError {
 }
 
 fn retryable_status(code: Code) -> bool {
+    // Cancelled 多为慢 control plane 触发的超时形态(tonic 可能以 Cancelled 而非
+    // DeadlineExceeded 上报), 属可用性失败, 必须可重试并计入熔断, 不能当契约错误。
     matches!(
         code,
-        Code::Unavailable | Code::DeadlineExceeded | Code::ResourceExhausted | Code::Unknown
+        Code::Unavailable
+            | Code::DeadlineExceeded
+            | Code::Cancelled
+            | Code::ResourceExhausted
+            | Code::Unknown
     )
 }
 
 fn retry_delay(base: Duration, attempt: usize) -> Duration {
     let multiplier = attempt.saturating_add(1).min(8) as u32;
     base.saturating_mul(multiplier)
-}
-
-fn duration_millis_u64(duration: Duration) -> u64 {
-    duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 fn now_unix_ms() -> u64 {
@@ -906,12 +911,9 @@ mod tests {
         assert!(err.to_string().contains("uds, http, mtls"));
     }
 
-    // ── circuit breaker 单元测试 (源自 claude-m3 lane) ───────────────────────
     // RouteClient::new 内部的 tonic channel 需要 Tokio 运行时, 故用 #[tokio::test]
-
-    /// circuit breaker 开路前: 连续失败计数低于阈值时应允许请求
     #[tokio::test]
-    async fn circuit_breaker_allows_below_failure_threshold() {
+    async fn route_client_starts_with_closed_circuit_breaker() {
         let opts = RouteClientOptions {
             circuit_breaker_failure_threshold: 3,
             circuit_breaker_cooldown: Duration::from_secs(60),
@@ -921,81 +923,6 @@ mod tests {
 
         // 初始: 无失败, 熔断器关闭
         assert!(!client.circuit_is_open(), "初始状态熔断器应关闭");
-        assert_eq!(client.consecutive_failures(), 0);
-    }
-
-    /// record_failure 累积后应触发熔断器打开
-    #[tokio::test]
-    async fn circuit_breaker_opens_after_threshold_failures() {
-        let opts = RouteClientOptions {
-            circuit_breaker_failure_threshold: 2,
-            circuit_breaker_cooldown: Duration::from_secs(60),
-            rpc_timeout: Duration::from_millis(1),
-            retry_attempts: 0,
-            ..RouteClientOptions::default()
-        };
-        let client = RouteClient::new("http://127.0.0.1:1".parse().unwrap(), opts).unwrap();
-
-        // 手动累积失败并触发 circuit open
-        client
-            .inner
-            .consecutive_failures
-            .fetch_add(1, Ordering::Relaxed);
-        client
-            .inner
-            .consecutive_failures
-            .fetch_add(1, Ordering::Relaxed);
-        let threshold = client
-            .inner
-            .options
-            .circuit_breaker_failure_threshold
-            .max(1);
-        let failures = client.inner.consecutive_failures.load(Ordering::Relaxed);
-        if failures >= threshold {
-            let open_until = now_unix_ms().saturating_add(duration_millis_u64(
-                client.inner.options.circuit_breaker_cooldown,
-            ));
-            client
-                .inner
-                .circuit_open_until_ms
-                .store(open_until, Ordering::Release);
-        }
-
-        assert!(client.circuit_is_open(), "达到阈值后熔断器应打开");
-    }
-
-    /// record_success 应重置 consecutive_failures 并关闭熔断器
-    #[tokio::test]
-    async fn circuit_breaker_resets_on_success() {
-        let opts = RouteClientOptions {
-            circuit_breaker_failure_threshold: 2,
-            circuit_breaker_cooldown: Duration::from_secs(60),
-            ..RouteClientOptions::default()
-        };
-        let client = RouteClient::new("http://127.0.0.1:1".parse().unwrap(), opts).unwrap();
-
-        // 先打开熔断器
-        client
-            .inner
-            .consecutive_failures
-            .store(5, Ordering::Relaxed);
-        client
-            .inner
-            .circuit_open_until_ms
-            .store(u64::MAX, Ordering::Release);
-        assert!(client.circuit_is_open());
-
-        // 模拟成功重置
-        client
-            .inner
-            .consecutive_failures
-            .store(0, Ordering::Relaxed);
-        client
-            .inner
-            .circuit_open_until_ms
-            .store(0, Ordering::Release);
-
-        assert!(!client.circuit_is_open(), "重置后熔断器应关闭");
         assert_eq!(client.consecutive_failures(), 0);
     }
 

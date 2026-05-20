@@ -423,6 +423,180 @@ async fn route_client_opens_circuit_after_control_plane_failure() {
     assert!(err.to_string().contains("circuit breaker open"));
 }
 
+#[tokio::test]
+async fn route_client_half_open_allows_one_probe_and_closes_on_success() {
+    let control_plane = MockControlPlane::spawn_with_config(
+        MockControlPlaneConfig::new(mock_route_plan("http://127.0.0.1:9"))
+            .with_route_failures_before_success(1)
+            .with_route_response_delay(Duration::from_millis(120)),
+    )
+    .await;
+    let mut options = client_options();
+    options.circuit_breaker_failure_threshold = 1;
+    options.circuit_breaker_cooldown = Duration::from_millis(40);
+    options.rpc_timeout = Duration::from_millis(500);
+    let client = route_client(&control_plane.endpoint(), options);
+
+    client
+        .query_route(route_query())
+        .await
+        .expect_err("第一次失败应打开熔断器");
+    assert!(client.circuit_is_open());
+    assert_eq!(control_plane.route_queries_seen(), 1);
+
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    let results =
+        futures_util::future::join_all((0..4).map(|_| client.query_route(route_query()))).await;
+    let successes = results.iter().filter(|result| result.is_ok()).count();
+    let fast_rejects = results
+        .iter()
+        .filter(|result| match result {
+            Ok(_) => false,
+            Err(err) => err.to_string().contains("circuit breaker open"),
+        })
+        .count();
+
+    assert_eq!(successes, 1, "半开期只能有一个探测成功");
+    assert_eq!(fast_rejects, 3, "探测在飞时其它并发请求应快速失败");
+    assert_eq!(control_plane.route_queries_seen(), 2);
+    assert!(!client.circuit_is_open(), "探测成功后应闭合");
+
+    client
+        .query_route(route_query())
+        .await
+        .expect("闭合后后续请求应恢复");
+    assert_eq!(control_plane.route_queries_seen(), 3);
+}
+
+#[tokio::test]
+async fn route_client_half_open_probe_failure_reopens() {
+    let control_plane = MockControlPlane::spawn_with_config(
+        MockControlPlaneConfig::new(mock_route_plan("http://127.0.0.1:9"))
+            .with_route_failures_before_success(2),
+    )
+    .await;
+    let mut options = client_options();
+    options.circuit_breaker_failure_threshold = 1;
+    options.circuit_breaker_cooldown = Duration::from_millis(40);
+    let client = route_client(&control_plane.endpoint(), options);
+
+    client
+        .query_route(route_query())
+        .await
+        .expect_err("第一次失败应打开熔断器");
+    tokio::time::sleep(Duration::from_millis(60)).await;
+
+    client
+        .query_route(route_query())
+        .await
+        .expect_err("半开探测失败应返回错误");
+    assert!(client.circuit_is_open(), "探测失败后应重新打开");
+    assert_eq!(control_plane.route_queries_seen(), 2);
+
+    let err = client
+        .query_route(route_query())
+        .await
+        .expect_err("重开冷却期内应快速失败");
+    assert!(err.to_string().contains("circuit breaker open"));
+    assert_eq!(control_plane.route_queries_seen(), 2);
+}
+
+#[tokio::test]
+async fn route_client_retry_attempts_count_as_one_breaker_failure() {
+    let control_plane = MockControlPlane::spawn_with_config(
+        MockControlPlaneConfig::new(mock_route_plan("http://127.0.0.1:9"))
+            .with_behavior(MockControlPlaneBehavior::Unavailable),
+    )
+    .await;
+    let mut options = client_options();
+    options.retry_attempts = 2;
+    options.circuit_breaker_failure_threshold = 2;
+    let client = route_client(&control_plane.endpoint(), options);
+
+    client
+        .query_route(route_query())
+        .await
+        .expect_err("一次逻辑 route query 最终应失败");
+
+    assert_eq!(control_plane.route_queries_seen(), 3);
+    assert_eq!(
+        client.consecutive_failures(),
+        1,
+        "一次逻辑 query_route 失败只能计一次熔断失败"
+    );
+    assert!(!client.circuit_is_open());
+}
+
+#[tokio::test]
+async fn route_client_non_retryable_errors_do_not_count_breaker_failures() {
+    let control_plane = MockControlPlane::spawn_with_config(
+        MockControlPlaneConfig::new(mock_route_plan("http://127.0.0.1:9"))
+            .with_behavior(MockControlPlaneBehavior::InvalidArgument),
+    )
+    .await;
+    let mut options = client_options();
+    options.circuit_breaker_failure_threshold = 1;
+    let client = route_client(&control_plane.endpoint(), options);
+
+    let err = client
+        .query_route(route_query())
+        .await
+        .expect_err("非重试契约错误应向调用方返回");
+
+    assert!(err.to_string().contains("InvalidArgument"));
+    assert_eq!(control_plane.route_queries_seen(), 1);
+    assert_eq!(client.consecutive_failures(), 0);
+    assert!(!client.circuit_is_open());
+}
+
+#[tokio::test]
+async fn heartbeat_and_health_check_success_do_not_close_route_breaker() {
+    let control_plane = MockControlPlane::spawn_with_config(
+        MockControlPlaneConfig::new(mock_route_plan("http://127.0.0.1:9"))
+            .with_route_failures_before_success(1),
+    )
+    .await;
+    let mut options = client_options();
+    options.circuit_breaker_failure_threshold = 1;
+    options.circuit_breaker_cooldown = Duration::from_secs(60);
+    let client = route_client(&control_plane.endpoint(), options);
+
+    client
+        .query_route(route_query())
+        .await
+        .expect_err("第一次失败应打开熔断器");
+    assert!(client.circuit_is_open());
+
+    client
+        .heartbeat(HeartbeatRequest {
+            node_id: "node-test-breaker".to_owned(),
+            build_sha: "test-build".to_owned(),
+            schema_version: ROUTE_SCHEMA_VERSION.to_owned(),
+            ..Default::default()
+        })
+        .await
+        .expect("heartbeat 成功不应影响 route 熔断器");
+    client
+        .health_check(HealthCheckRequest {
+            request_id: "health-breaker".to_owned(),
+            caller: "rust-core-gateway-test".to_owned(),
+            schema_version: ROUTE_SCHEMA_VERSION.to_owned(),
+        })
+        .await
+        .expect("health_check 成功不应影响 route 熔断器");
+
+    assert!(
+        client.circuit_is_open(),
+        "heartbeat/health 成功不得闭合 route 熔断器"
+    );
+    let err = client
+        .query_route(route_query())
+        .await
+        .expect_err("冷却期内仍应快速失败");
+    assert!(err.to_string().contains("circuit breaker open"));
+    assert_eq!(control_plane.route_queries_seen(), 1);
+}
+
 // ── 源自 claude-m3 lane 的 5 个 e2e 场景 (gRPC 等价版) ───────────────────────
 
 /// e2e-1: control plane Unavailable 时 query_route 应返回错误
