@@ -142,8 +142,14 @@ func (ex *chatExecution) reserveClaim(w http.ResponseWriter) bool {
 		return false
 	}
 	if reserveRes.IdempotencyHit {
+		// 同 idempotency-key 的重试 (fingerprint 已校验一致 → body 同 → L2 key
+		// 同): 若响应仍在 L2 cache 直接重放缓存体返 200; 否则回 409 (完整的
+		// 无-cache 持久重放属 Phase E)。
+		if ex.serveL2ReplayForIdempotentHit(w) {
+			return false
+		}
 		writeJSONError(w, http.StatusConflict, "replay_without_cache",
-			"idempotent request hit but replay cache is Phase E scope")
+			"idempotent request hit and response is no longer cached; retry the request")
 		return false
 	}
 	ex.reserveRes = reserveRes
