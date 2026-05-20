@@ -62,9 +62,20 @@ func NewUsageRecordHandler(pool *pgxpool.Pool) Handler {
 		if err := json.Unmarshal(rec.Payload, &p); err != nil {
 			return fmt.Errorf("dlq: decode usage payload: %w", err)
 		}
-		tok, err := uuid.Parse(p.AcquisitionToken)
-		if err != nil {
-			return fmt.Errorf("dlq: parse acquisition token: %w", err)
+		// 缓存命中 usage 记录无 acquisition_token (settlement_source=
+		// response_cache_l2), payload 里为空串 → 作 NULL 重放。
+		var tok any
+		if p.AcquisitionToken != "" {
+			parsed, parseErr := uuid.Parse(p.AcquisitionToken)
+			if parseErr != nil {
+				return fmt.Errorf("dlq: parse acquisition token: %w", parseErr)
+			}
+			tok = parsed
+		}
+		settlementSource := p.SettlementSource
+		if settlementSource == "" {
+			// 旧 DLQ payload 无此字段; migration 0043 前 usage 行全部上游路径。
+			settlementSource = "provider_upstream"
 		}
 		requestedAt, err := parseTime(p.RequestedAt)
 		if err != nil {
@@ -83,7 +94,7 @@ INSERT INTO usage_records (
 	stream_state, delivered_token_count, stream_terminated_reason,
 	drain_outcome, routing_reason, protocol_loss,
 	requested_at, upstream_request_at, first_byte_at, first_event_at, last_event_at,
-	requested_model, upstream_model, stream, snapshot_version
+	requested_model, upstream_model, stream, snapshot_version, settlement_source
 )
 SELECT
 	$1, $2, $3, $4, $5,
@@ -97,7 +108,7 @@ SELECT
 	$25, $26, $27,
 	$28, $29, $30,
 	$31, $32, $33, $34, $35,
-	$36, $37, $38, $39
+	$36, $37, $38, $39, $40
 WHERE NOT EXISTS (
 	SELECT 1 FROM usage_records WHERE tenant_id = $1 AND claim_id = $2
 )`,
@@ -113,7 +124,7 @@ WHERE NOT EXISTS (
 			p.DrainOutcome, jsonDefault(p.RoutingReason, `{}`), jsonDefault(p.ProtocolLoss, `[]`),
 			requestedAt, parseOptionalTime(p.UpstreamRequestAt), parseOptionalTime(p.FirstByteAt),
 			parseOptionalTime(p.FirstEventAt), parseOptionalTime(p.LastEventAt),
-			p.RequestedModel, p.UpstreamModel, p.Stream, p.SnapshotVersion,
+			p.RequestedModel, p.UpstreamModel, p.Stream, p.SnapshotVersion, settlementSource,
 		)
 		if err != nil {
 			return fmt.Errorf("dlq: replay usage record: %w", err)
