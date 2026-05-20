@@ -9,7 +9,8 @@ SELECT
     ur.end_class, ur.usage_source, ur.pending_reconciliation,
     ur.stream_state, ur.delivered_token_count, ur.stream_terminated_reason,
     ur.requested_at, ur.settled_at AS created_at, ur.requested_model,
-    ur.upstream_model, ur.stream, p.code AS provider, blc.pooling_group_id AS pool_id
+    ur.upstream_model, ur.stream, ur.settlement_source,
+    p.code AS provider, blc.pooling_group_id AS pool_id
 FROM usage_records ur
 JOIN billing_ledger_claims blc ON blc.id = ur.claim_id AND blc.tenant_id = ur.tenant_id
 LEFT JOIN provider_accounts pa ON pa.id = ur.provider_account_id AND pa.tenant_id = ur.tenant_id
