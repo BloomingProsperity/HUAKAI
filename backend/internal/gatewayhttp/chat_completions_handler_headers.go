@@ -169,12 +169,13 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 			writeJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())
 			return true
 		}
-		// codex chunk12 P2 fix: reserve 行必须在写 200 body 之前 terminal 结清,
-		// 否则 client 已收成功响应, abort 失败 / 进程退出会让 claim 永卡
-		// reserving, 同 idempotency-key 后续请求 claim-race。 这里先 Abort 再写体。
+		// cache 命中是成功请求 (返 200 缓存体), claim 必须以 committed (零成本)
+		// 终结而非 aborted — 否则审计把成功请求记成中止, 且同 idempotency-key
+		// 后续重试被当成 aborted 前驱。 终结必须在写 200 body 之前完成, 否则
+		// 进程退出会让 claim 永卡 reserving。
 		if in.ReserveResult != nil {
-			if abortErr := d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "served_from_l2_cache", in.RequestID); abortErr != nil {
-				writeJSONError(w, http.StatusInternalServerError, "cache_settle_error", abortErr.Error())
+			if commitErr := d.Settler.CommitCacheHit(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, in.RequestID); commitErr != nil {
+				writeJSONError(w, http.StatusInternalServerError, "cache_settle_error", commitErr.Error())
 				return true
 			}
 		}

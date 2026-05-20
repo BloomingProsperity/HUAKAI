@@ -94,6 +94,10 @@ func (s *smokeSettler) Abort(_ context.Context, _, _ int64, _, _ string) error {
 	return nil
 }
 
+func (s *smokeSettler) CommitCacheHit(_ context.Context, _, _ int64, _ string) error {
+	return nil
+}
+
 func (s *smokeSettler) Refund(context.Context, billing.RefundRequest) (*billing.RefundResult, error) {
 	return &billing.RefundResult{}, nil
 }

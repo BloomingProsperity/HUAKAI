@@ -31,6 +31,10 @@ func (s *concurrentSettler) Abort(context.Context, int64, int64, string, string)
 	return nil
 }
 
+func (s *concurrentSettler) CommitCacheHit(context.Context, int64, int64, string) error {
+	return nil
+}
+
 func (s *concurrentSettler) Refund(context.Context, billing.RefundRequest) (*billing.RefundResult, error) {
 	return &billing.RefundResult{}, nil
 }

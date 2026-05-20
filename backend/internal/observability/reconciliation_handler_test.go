@@ -29,6 +29,10 @@ func (s *fakeSettler) Abort(context.Context, int64, int64, string, string) error
 	return nil
 }
 
+func (s *fakeSettler) CommitCacheHit(context.Context, int64, int64, string) error {
+	return nil
+}
+
 func (s *fakeSettler) Refund(context.Context, billing.RefundRequest) (*billing.RefundResult, error) {
 	return &billing.RefundResult{}, nil
 }

@@ -104,6 +104,10 @@ func (s *recordingBillingSettler) Abort(context.Context, int64, int64, string, s
 	return nil
 }
 
+func (s *recordingBillingSettler) CommitCacheHit(context.Context, int64, int64, string) error {
+	return nil
+}
+
 func (s *recordingBillingSettler) Refund(context.Context, billing.RefundRequest) (*billing.RefundResult, error) {
 	return &billing.RefundResult{}, nil
 }

@@ -345,6 +345,10 @@ func (s *recordingRefundSettler) Abort(context.Context, int64, int64, string, st
 	return nil
 }
 
+func (s *recordingRefundSettler) CommitCacheHit(context.Context, int64, int64, string) error {
+	return nil
+}
+
 func (s *recordingRefundSettler) Refund(_ context.Context, req billing.RefundRequest) (*billing.RefundResult, error) {
 	s.refundCalls++
 	s.lastRefund = req

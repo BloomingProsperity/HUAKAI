@@ -14,7 +14,8 @@ import (
 )
 
 type recordingSettler struct {
-	calls []billing.SettleRequest
+	calls           []billing.SettleRequest
+	cacheHitCommits []int64
 }
 
 func (s *recordingSettler) Settle(_ context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {
@@ -23,6 +24,11 @@ func (s *recordingSettler) Settle(_ context.Context, req billing.SettleRequest) 
 }
 
 func (s *recordingSettler) Abort(context.Context, int64, int64, string, string) error {
+	return nil
+}
+
+func (s *recordingSettler) CommitCacheHit(_ context.Context, _ int64, claimID int64, _ string) error {
+	s.cacheHitCommits = append(s.cacheHitCommits, claimID)
 	return nil
 }
 
@@ -61,10 +67,13 @@ func TestChatCompletionsL2CacheHitReturnsCachedWithoutUpstreamCall(t *testing.T)
 	if first.Body.String() != second.Body.String() {
 		t.Fatalf("cached body mismatch:\nfirst=%s\nsecond=%s", first.Body.String(), second.Body.String())
 	}
-	// codex chunk10 fix: cache 命中走 Settler.Abort 不走 Settle (recordingSettler.
-	// Abort 不计 calls 数), 所以这里只看到 1 个 Settle (首次 commit)。
+	// cache 命中走 Settler.CommitCacheHit (零成本 committed), 不走 Settle 也
+	// 不走 Abort: 首次 miss 记 1 个 Settle, 第二次 hit 记 1 个 CommitCacheHit。
 	if len(settler.calls) != 1 {
-		t.Fatalf("settle calls=%d want 1; cache hit 走 Abort 不走 Settle", len(settler.calls))
+		t.Fatalf("settle calls=%d want 1 (仅首次 commit)", len(settler.calls))
+	}
+	if len(settler.cacheHitCommits) != 1 {
+		t.Fatalf("cache-hit commit calls=%d want 1 (命中走 CommitCacheHit 零成本结清)", len(settler.cacheHitCommits))
 	}
 }
 

@@ -37,6 +37,13 @@ type Settler interface {
 	// abort via stale claim id.
 	Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string) error
 
+	// CommitCacheHit 把尚未 acquire pool account 的 reserving claim 以零成本
+	// committed 终结 — 用于 L2 response cache 命中: 请求已成功返回缓存响应体,
+	// 计费 0, 但不能记成 aborted (否则审计把成功请求记成中止, 且同
+	// idempotency-key 后续重试被当成 aborted 前驱)。 无 acquisition_token /
+	// pool slot / provider account, 故不释放 slot 也不写 usage_record。
+	CommitCacheHit(ctx context.Context, tenantID, claimID int64, auditRequestID string) error
+
 	// Refund 给已提交 claim 追加幂等负向 reconciliation event；
 	// 原 claim / usage 行保持不可变。
 	Refund(ctx context.Context, req RefundRequest) (*RefundResult, error)
