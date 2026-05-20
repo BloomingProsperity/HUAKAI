@@ -31,7 +31,7 @@ func (s *concurrentSettler) Abort(context.Context, int64, int64, string, string)
 	return nil
 }
 
-func (s *concurrentSettler) CommitCacheHit(context.Context, int64, int64, string) error {
+func (s *concurrentSettler) CommitCacheHit(context.Context, billing.SettleRequest) error {
 	return nil
 }
 

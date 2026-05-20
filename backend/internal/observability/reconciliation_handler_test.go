@@ -29,7 +29,7 @@ func (s *fakeSettler) Abort(context.Context, int64, int64, string, string) error
 	return nil
 }
 
-func (s *fakeSettler) CommitCacheHit(context.Context, int64, int64, string) error {
+func (s *fakeSettler) CommitCacheHit(context.Context, billing.SettleRequest) error {
 	return nil
 }
 

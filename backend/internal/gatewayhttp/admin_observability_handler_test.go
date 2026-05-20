@@ -162,7 +162,8 @@ func assertStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
 }
 
 func usageRow(id int64) dbbilling.ListUsageRecordsRow {
-	return dbbilling.ListUsageRecordsRow{ID: id, TenantID: 7, ClaimID: 20 + id, APIKeyID: 30, UserID: 40, ProviderAccountID: 50, AttemptSeq: 1, ActualCost: decimal.RequireFromString("0.01000000"), EndClass: "non_streaming", UsageSource: "reported", CreatedAt: ts(id)}
+	providerAccountID := int64(50)
+	return dbbilling.ListUsageRecordsRow{ID: id, TenantID: 7, ClaimID: 20 + id, APIKeyID: 30, UserID: 40, ProviderAccountID: &providerAccountID, AttemptSeq: 1, ActualCost: decimal.RequireFromString("0.01000000"), EndClass: "non_streaming", UsageSource: "reported", CreatedAt: ts(id)}
 }
 func claimRow(id int64) dbbilling.ListBillingClaimsRow {
 	return dbbilling.ListBillingClaimsRow{ID: id, TenantID: 7, IdempotencyKey: "idem", APIKeyID: 1, UserID: 2, LogicalRequestID: "lr", EndpointFamily: "chat", RequestedModel: "m", AttemptSeq: 1, PredictedCost: decimal.RequireFromString("0.01000000"), CurrencyCode: "USD", Status: "committed", CreatedAt: ts(id)}

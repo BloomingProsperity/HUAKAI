@@ -39,10 +39,11 @@ type Settler interface {
 
 	// CommitCacheHit 把尚未 acquire pool account 的 reserving claim 以零成本
 	// committed 终结 — 用于 L2 response cache 命中: 请求已成功返回缓存响应体,
-	// 计费 0, 但不能记成 aborted (否则审计把成功请求记成中止, 且同
-	// idempotency-key 后续重试被当成 aborted 前驱)。 无 acquisition_token /
-	// pool slot / provider account, 故不释放 slot 也不写 usage_record。
-	CommitCacheHit(ctx context.Context, tenantID, claimID int64, auditRequestID string) error
+	// 计费 0, 不能记成 aborted (否则审计把成功请求记成中止)。 无 acquisition_token
+	// / pool slot / provider account, 故不释放 slot; 但写一条
+	// settlement_source=response_cache_l2 的 provider-less usage_records 行,
+	// 使 receipt / 用量视图与正常请求一致。 req 复用 SettleRequest。
+	CommitCacheHit(ctx context.Context, req SettleRequest) error
 
 	// Refund 给已提交 claim 追加幂等负向 reconciliation event；
 	// 原 claim / usage 行保持不可变。

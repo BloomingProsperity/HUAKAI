@@ -388,14 +388,17 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 }
 
 // CommitCacheHit 见 Settler 接口注释。 用于 L2 cache 命中且 claim 已 reserve
-// 但尚未 acquire pool account 的场景 (handler 侧 in.AccountID == 0): 请求成功
-// 返回缓存响应体, 计费 0, claim 必须以 committed 终结而非 aborted。
+// 但尚未 acquire pool account 的场景: 请求成功返回缓存响应体, 计费 0, claim
+// 必须以 committed 终结而非 aborted。
 //
 // 与 Settle 区别: 无 acquisition_token、无 pool slot、无 provider account
-// → 不调 ReleaseSlotAndDecrementInFlight, 也不写 usage_record (该表
-// provider_account_id 列 NOT NULL, 与 Abort 的 pre-acquire 分支同语义)。
-// 审计完整性由 billing_event claim_committed 零成本行承担。
-func (s *DefaultSettler) CommitCacheHit(ctx context.Context, tenantID, claimID int64, auditRequestID string) error {
+// → 不调 ReleaseSlotAndDecrementInFlight。 但仍写一条 usage_records 行
+// (settlement_source=response_cache_l2, provider_account_id / acquisition_token
+// 为 NULL — migration 0043 起 schema 受约束可空), 使 receipt / admin 用量 /
+// obs / 退款 等下游与正常请求一致地消费缓存命中事实。req 复用 SettleRequest,
+// 仅 TenantID/ClaimID/AuditRequestID/Draft/RequestedModel/UpstreamModel/
+// Fingerprint/SnapshotVersion/RequestedAt 字段被用到。
+func (s *DefaultSettler) CommitCacheHit(ctx context.Context, req SettleRequest) error {
 	if s == nil || s.pool == nil {
 		return ErrPoolNotConfigured
 	}
@@ -406,12 +409,14 @@ func (s *DefaultSettler) CommitCacheHit(ctx context.Context, tenantID, claimID i
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var fingerprint, status string
+	var fingerprint, status, claimRequestedModel string
+	var apiKeyID, userID int64
+	var attemptSeq int32
 	if err := tx.QueryRow(ctx,
-		`SELECT request_fingerprint, status
+		`SELECT request_fingerprint, status, api_key_id, user_id, attempt_seq, requested_model
 		 FROM billing_ledger_claims WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
-		claimID, tenantID,
-	).Scan(&fingerprint, &status); err != nil {
+		req.ClaimID, req.TenantID,
+	).Scan(&fingerprint, &status, &apiKeyID, &userID, &attemptSeq, &claimRequestedModel); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrClaimNotReserving
 		}
@@ -423,9 +428,9 @@ func (s *DefaultSettler) CommitCacheHit(ctx context.Context, tenantID, claimID i
 
 	qtx := s.q.WithTx(tx)
 	rows, err := qtx.UpdateClaimCommitted(ctx, dbbilling.UpdateClaimCommittedParams{
-		ID:         claimID,
+		ID:         req.ClaimID,
 		ActualCost: decimal.NullDecimal{Decimal: decimal.Zero, Valid: true},
-		TenantID:   tenantID,
+		TenantID:   req.TenantID,
 	})
 	if err != nil {
 		return fmt.Errorf("billing: update claim committed (cache hit): %w", err)
@@ -434,23 +439,25 @@ func (s *DefaultSettler) CommitCacheHit(ctx context.Context, tenantID, claimID i
 		return ErrClaimNotReserving
 	}
 
-	// 非流式成功结清: end_class non_streaming, stream_state partial (与
-	// AccountID!=0 的 cache-hit Settle 路径经 nonStreamingUsageDraft +
-	// AttemptFromGatewayDraft(stream=false) 得到的状态保持一致), cost 0。
-	endClass := normalizeEndClass("", false)
-	usageSource := normalizeUsageSource("")
-	auditRequestID = strings.TrimSpace(auditRequestID)
+	// 非流式成功结清: stream_state partial (与 AccountID!=0 的 cache-hit Settle
+	// 路径经 nonStreamingUsageDraft + AttemptFromGatewayDraft(stream=false)
+	// 得到的状态一致), cost 0。
+	endClass := normalizeEndClass(req.Draft.EndClass, false)
+	usageSource := normalizeUsageSource(req.Draft.UsageSource)
+	attempt := AttemptFromGatewayDraft(false, req.Draft)
+	auditRequestID := strings.TrimSpace(req.AuditRequestID)
+	eventFingerprint := coalesceString(req.Fingerprint, fingerprint)
 	eventParams := dbbilling.InsertBillingEventParams{
-		TenantID:            tenantID,
-		ClaimID:             nullableInt64(claimID),
+		TenantID:            req.TenantID,
+		ClaimID:             nullableInt64(req.ClaimID),
 		EventType:           "claim_committed",
 		ActualCost:          decimal.Zero,
 		ActualCostSigned:    decimal.Zero,
 		EndClass:            &endClass,
 		UsageSource:         &usageSource,
-		StreamState:         StreamStatePartial.DBValue(),
-		DeliveredTokenCount: 0,
-		Fingerprint:         fingerprint,
+		StreamState:         attempt.State.DBValue(),
+		DeliveredTokenCount: attempt.DeliveredTokenCount,
+		Fingerprint:         eventFingerprint,
 		AuditRequestID:      nullableString(auditRequestID),
 	}
 	event, err := qtx.InsertBillingEvent(ctx, eventParams)
@@ -458,6 +465,50 @@ func (s *DefaultSettler) CommitCacheHit(ctx context.Context, tenantID, claimID i
 		return fmt.Errorf("billing: insert cache-hit billing event: %w", err)
 	}
 	if err := s.enqueueBillingEventReplica(ctx, tx, event, eventParams); err != nil {
+		return err
+	}
+
+	// provider-less usage_records 行: 无上游账号 / acquisition_token,
+	// settlement_source=response_cache_l2 (migration 0043 CHECK 允许)。
+	requestedAt := req.RequestedAt
+	if requestedAt.IsZero() {
+		requestedAt = time.Now().UTC()
+	}
+	usageParams := dbbilling.InsertUsageRecordParams{
+		TenantID:               req.TenantID,
+		ClaimID:                req.ClaimID,
+		APIKeyID:               apiKeyID,
+		UserID:                 userID,
+		ProviderAccountID:      nil,
+		AcquisitionToken:       pgtype.UUID{},
+		SettlementSource:       SettlementSourceResponseCacheL2,
+		AttemptSeq:             attemptSeq,
+		TokensInput:            int32(req.Draft.TokensInput),
+		TokensOutput:           int32(outputTokensForAttempt(req.Draft, attempt)),
+		CacheCreationTokens:    int32(req.Draft.CacheCreationTokens),
+		CacheReadTokens:        int32(req.Draft.CacheReadTokens),
+		ActualCost:             decimal.Zero,
+		InputCost:              decimal.Zero,
+		OutputCost:             decimal.Zero,
+		CacheCreationCost:      decimal.Zero,
+		CacheReadCost:          decimal.Zero,
+		ImageOutputCost:        decimal.Zero,
+		EndClass:               endClass,
+		UsageSource:            usageSource,
+		ConfidenceScore:        numericFromFloat(req.Draft.ConfidenceScore),
+		PendingReconciliation:  false,
+		StreamState:            attempt.State.DBValue(),
+		DeliveredTokenCount:    attempt.DeliveredTokenCount,
+		StreamTerminatedReason: nullableString(attempt.StreamTerminatedReason),
+		RoutingReason:          jsonOrEmptyObject(req.Draft.RoutingReason),
+		ProtocolLoss:           []byte("[]"),
+		RequestedAt:            pgTimestamp(requestedAt),
+		RequestedModel:         coalesceString(req.RequestedModel, claimRequestedModel),
+		UpstreamModel:          nullableString(req.UpstreamModel),
+		Stream:                 false,
+		SnapshotVersion:        nullableString(req.SnapshotVersion),
+	}
+	if err := s.insertUsageRecordOrDLQ(ctx, tx, qtx, usageParams, "cache_hit_usage_record_insert_failed"); err != nil {
 		return err
 	}
 
