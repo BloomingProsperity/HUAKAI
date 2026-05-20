@@ -67,6 +67,8 @@ func (ex *chatExecution) handleNonStreamingResponse(w http.ResponseWriter) {
 		writeJSONError(w, http.StatusInternalServerError, "settle_error", err.Error())
 		return
 	}
+	// 持久幂等重放: 存原始响应供同 Idempotency-Key 重试路由无关地重放。
+	ex.recordIdempotencyReplay(ex.reserveRes.ClaimID, http.StatusOK, clientBody)
 	if ex.d.ResponseCache != nil && ex.cacheKey != "" && cacheEnvelopeOK {
 		ex.d.ResponseCache.Set(ex.ctx, cacheEntry(ex, clientBody, cacheEnvelope))
 		syncL2SizeMetrics(ex.d.ResponseCache)

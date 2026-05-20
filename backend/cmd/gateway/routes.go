@@ -102,6 +102,7 @@ func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 		Forwarder:            d.forwarder,
 		ResponseCache:        d.responseCache,
 		Settler:              d.settler,
+		ReplayStore:          d.replayStore,
 		CompletionBus:        d.completionBus,
 		AuditLedger:          d.auditLedger,
 		Signer:               d.auditSigner,

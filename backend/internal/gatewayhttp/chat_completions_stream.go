@@ -60,35 +60,6 @@ func (ex *chatExecution) serveL2CacheIfAvailable(w http.ResponseWriter) (bool, b
 	return false, true
 }
 
-// serveL2ReplayForIdempotentHit 处理幂等命中 (同 idempotency-key 已有 committed
-// claim) 的重试: 若该请求的响应仍在 L2 cache, 直接重放缓存体返 200 并返 true;
-// 否则返 false 让 caller 回 409。 重放不新建 claim、不结算、不写 usage ——
-// 原请求已记账。 完整的"无 cache 也能重放"持久 replay store 属 Phase E。
-func (ex *chatExecution) serveL2ReplayForIdempotentHit(w http.ResponseWriter) bool {
-	if ex.d.ResponseCache == nil || ex.req.Stream {
-		return false
-	}
-	key, _, err := l2cache.BuildKey(l2cache.KeyInput{
-		TenantID: ex.ident.TenantID,
-		Vendor:   ex.cacheVendor,
-		Model:    ex.upstreamModelID,
-		Body:     ex.body,
-	})
-	if err != nil {
-		return false
-	}
-	cached, ok := ex.d.ResponseCache.Get(ex.ctx, key)
-	if !ok {
-		return false
-	}
-	cachemetrics.ObserveL2Hit(ex.cacheVendor, ex.upstreamModelID)
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-HUAKAI-Cache-L2", "replay")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(cached.Body)
-	return true
-}
-
 func (ex *chatExecution) cacheHitInput(entry l2cache.Entry) l2CacheHitInput {
 	return l2CacheHitInput{
 		Entry:             entry,
