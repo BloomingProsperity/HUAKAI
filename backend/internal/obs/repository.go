@@ -149,7 +149,6 @@ func (r *PgxReader) ListUsage(ctx context.Context, tenantID int64, page Page) ([
 			ClaimID:               row.ClaimID,
 			APIKeyID:              row.APIKeyID,
 			UserID:                row.UserID,
-			ProviderAccountID:     row.ProviderAccountID,
 			AttemptSeq:            row.AttemptSeq,
 			TokensInput:           row.TokensInput,
 			TokensOutput:          row.TokensOutput,
@@ -163,6 +162,11 @@ func (r *PgxReader) ListUsage(ctx context.Context, tenantID int64, page Page) ([
 			DeliveredTokenCount:   row.DeliveredTokenCount,
 			RequestedModel:        row.RequestedModel,
 			Stream:                row.Stream,
+		}
+		// provider_account_id migration 0043 起可空 (L2 缓存命中行无上游账号);
+		// 沿用本仓 obs 既有约定 0 表示 null。
+		if row.ProviderAccountID != nil {
+			u.ProviderAccountID = *row.ProviderAccountID
 		}
 		if row.StreamTerminatedReason != nil {
 			u.StreamTerminatedReason = *row.StreamTerminatedReason

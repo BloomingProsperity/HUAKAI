@@ -191,7 +191,7 @@ INSERT INTO usage_records (
     stream_state, delivered_token_count, stream_terminated_reason,
     drain_outcome, routing_reason, protocol_loss,
     requested_at, upstream_request_at, first_byte_at, first_event_at, last_event_at,
-    requested_model, upstream_model, stream, snapshot_version
+    requested_model, upstream_model, stream, snapshot_version, settlement_source
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7,
@@ -204,7 +204,7 @@ INSERT INTO usage_records (
     $25, $26, $27,
     $28, $29, $30,
     $31, $32, $33, $34, $35,
-    $36, $37, $38, $39
+    $36, $37, $38, $39, $40
 )
 RETURNING id
 `
@@ -214,7 +214,7 @@ type InsertUsageRecordParams struct {
 	ClaimID                int64              `db:"claim_id" json:"claim_id"`
 	APIKeyID               int64              `db:"api_key_id" json:"api_key_id"`
 	UserID                 int64              `db:"user_id" json:"user_id"`
-	ProviderAccountID      int64              `db:"provider_account_id" json:"provider_account_id"`
+	ProviderAccountID      *int64             `db:"provider_account_id" json:"provider_account_id"`
 	AcquisitionToken       pgtype.UUID        `db:"acquisition_token" json:"acquisition_token"`
 	AttemptSeq             int32              `db:"attempt_seq" json:"attempt_seq"`
 	TokensInput            int32              `db:"tokens_input" json:"tokens_input"`
@@ -249,6 +249,7 @@ type InsertUsageRecordParams struct {
 	UpstreamModel          *string            `db:"upstream_model" json:"upstream_model"`
 	Stream                 bool               `db:"stream" json:"stream"`
 	SnapshotVersion        *string            `db:"snapshot_version" json:"snapshot_version"`
+	SettlementSource       string             `db:"settlement_source" json:"settlement_source"`
 }
 
 // Spec §Tx2 step 12: write Usage Record into the same Tx as everything else.
@@ -295,6 +296,7 @@ func (q *Queries) InsertUsageRecord(ctx context.Context, arg InsertUsageRecordPa
 		arg.UpstreamModel,
 		arg.Stream,
 		arg.SnapshotVersion,
+		arg.SettlementSource,
 	)
 	var id int64
 	err := row.Scan(&id)

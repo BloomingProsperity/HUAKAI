@@ -31,6 +31,14 @@ const maxCostMicroUSDInt64 int64 = 1<<63 - 1
 
 const RefundSkippedAmountZeroRef = "refund_skipped_amount_zero"
 
+// settlement_source 判别值 (migration 0043): provider_upstream = 正常上游路径
+// (provider_account_id / acquisition_token 必非空); response_cache_l2 = L2
+// 缓存命中路径 (两者必为空, 无上游账号)。
+const (
+	SettlementSourceProviderUpstream = "provider_upstream"
+	SettlementSourceResponseCacheL2  = "response_cache_l2"
+)
+
 var maxCostMicroUSDDecimal = decimal.NewFromInt(maxCostMicroUSDInt64)
 
 type DefaultSettler struct {
@@ -134,7 +142,8 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 		ClaimID:                claim.ID,
 		APIKeyID:               claim.APIKeyID,
 		UserID:                 claim.UserID,
-		ProviderAccountID:      providerAccountID,
+		ProviderAccountID:      &providerAccountID,
+		SettlementSource:       SettlementSourceProviderUpstream,
 		AcquisitionToken:       pgUUID(req.AcquisitionToken),
 		AttemptSeq:             claim.AttemptSeq,
 		TokensInput:            int32(req.Draft.TokensInput),
@@ -327,7 +336,8 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 			ClaimID:                claimID,
 			APIKeyID:               apiKeyID,
 			UserID:                 userID,
-			ProviderAccountID:      *providerAccountID,
+			ProviderAccountID:      providerAccountID,
+			SettlementSource:       SettlementSourceProviderUpstream,
 			AcquisitionToken:       pgUUID(tokAbort),
 			AttemptSeq:             attemptSeq,
 			ActualCost:             decimal.Zero,
@@ -752,6 +762,7 @@ func marshalUsageRecordPayload(params dbbilling.InsertUsageRecordParams) (json.R
 		APIKeyID:               params.APIKeyID,
 		UserID:                 params.UserID,
 		ProviderAccountID:      params.ProviderAccountID,
+		SettlementSource:       params.SettlementSource,
 		AcquisitionToken:       pgUUIDString(params.AcquisitionToken),
 		AttemptSeq:             params.AttemptSeq,
 		TokensInput:            params.TokensInput,
