@@ -14,18 +14,15 @@ BEGIN;
 
 CREATE TABLE IF NOT EXISTS idempotency_replay_records (
     tenant_id       bigint      NOT NULL REFERENCES tenants(id),
-    claim_id        bigint      NOT NULL,
+    claim_id        bigint      NOT NULL REFERENCES billing_ledger_claims(id),
     response_status integer     NOT NULL,
     content_type    text        NOT NULL DEFAULT 'application/json',
     response_body   bytea       NOT NULL,
     created_at      timestamptz NOT NULL DEFAULT now(),
     expires_at      timestamptz NOT NULL,
-    PRIMARY KEY (tenant_id, claim_id),
-    -- 复合 FK (tenant_id, claim_id) → billing_ledger_claims(tenant_id, id):
-    -- DB 层强制同租户绑定, 防跨租户误绑 (codex review v17 P1)。 父表的
-    -- uq_billing_ledger_claims_tenant_id_id 唯一索引 (migration 0009) 作 FK 目标。
-    FOREIGN KEY (tenant_id, claim_id) REFERENCES billing_ledger_claims (tenant_id, id)
+    PRIMARY KEY (tenant_id, claim_id)
 );
+-- 注: claim_id 的 FK 在 0045 升级为复合 (tenant_id, claim_id) — 见该迁移。
 
 -- 过期清理扫描用 (按 expires_at 批量 DELETE)。
 CREATE INDEX IF NOT EXISTS idx_idempotency_replay_expires
