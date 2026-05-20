@@ -377,6 +377,86 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 	return nil
 }
 
+// CommitCacheHit 见 Settler 接口注释。 用于 L2 cache 命中且 claim 已 reserve
+// 但尚未 acquire pool account 的场景 (handler 侧 in.AccountID == 0): 请求成功
+// 返回缓存响应体, 计费 0, claim 必须以 committed 终结而非 aborted。
+//
+// 与 Settle 区别: 无 acquisition_token、无 pool slot、无 provider account
+// → 不调 ReleaseSlotAndDecrementInFlight, 也不写 usage_record (该表
+// provider_account_id 列 NOT NULL, 与 Abort 的 pre-acquire 分支同语义)。
+// 审计完整性由 billing_event claim_committed 零成本行承担。
+func (s *DefaultSettler) CommitCacheHit(ctx context.Context, tenantID, claimID int64, auditRequestID string) error {
+	if s == nil || s.pool == nil {
+		return ErrPoolNotConfigured
+	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return fmt.Errorf("billing: begin cache-hit commit Tx2: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var fingerprint, status string
+	if err := tx.QueryRow(ctx,
+		`SELECT request_fingerprint, status
+		 FROM billing_ledger_claims WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
+		claimID, tenantID,
+	).Scan(&fingerprint, &status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrClaimNotReserving
+		}
+		return fmt.Errorf("billing: get claim for cache-hit commit: %w", err)
+	}
+	if status != "reserving" {
+		return ErrClaimNotReserving
+	}
+
+	qtx := s.q.WithTx(tx)
+	rows, err := qtx.UpdateClaimCommitted(ctx, dbbilling.UpdateClaimCommittedParams{
+		ID:         claimID,
+		ActualCost: decimal.NullDecimal{Decimal: decimal.Zero, Valid: true},
+		TenantID:   tenantID,
+	})
+	if err != nil {
+		return fmt.Errorf("billing: update claim committed (cache hit): %w", err)
+	}
+	if rows == 0 {
+		return ErrClaimNotReserving
+	}
+
+	// 非流式成功结清: end_class non_streaming, stream_state partial (与
+	// AccountID!=0 的 cache-hit Settle 路径经 nonStreamingUsageDraft +
+	// AttemptFromGatewayDraft(stream=false) 得到的状态保持一致), cost 0。
+	endClass := normalizeEndClass("", false)
+	usageSource := normalizeUsageSource("")
+	auditRequestID = strings.TrimSpace(auditRequestID)
+	eventParams := dbbilling.InsertBillingEventParams{
+		TenantID:            tenantID,
+		ClaimID:             nullableInt64(claimID),
+		EventType:           "claim_committed",
+		ActualCost:          decimal.Zero,
+		ActualCostSigned:    decimal.Zero,
+		EndClass:            &endClass,
+		UsageSource:         &usageSource,
+		StreamState:         StreamStatePartial.DBValue(),
+		DeliveredTokenCount: 0,
+		Fingerprint:         fingerprint,
+		AuditRequestID:      nullableString(auditRequestID),
+	}
+	event, err := qtx.InsertBillingEvent(ctx, eventParams)
+	if err != nil {
+		return fmt.Errorf("billing: insert cache-hit billing event: %w", err)
+	}
+	if err := s.enqueueBillingEventReplica(ctx, tx, event, eventParams); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("billing: commit cache-hit Tx2: %w", err)
+	}
+	return nil
+}
+
 func (s *DefaultSettler) Refund(ctx context.Context, req RefundRequest) (*RefundResult, error) {
 	if s == nil || s.pool == nil {
 		return nil, ErrPoolNotConfigured

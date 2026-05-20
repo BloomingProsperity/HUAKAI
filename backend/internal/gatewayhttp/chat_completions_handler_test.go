@@ -73,6 +73,10 @@ func (s *stubSettler) Abort(_ context.Context, _ int64, claimID int64, reason, _
 	return nil
 }
 
+func (s *stubSettler) CommitCacheHit(_ context.Context, _, _ int64, _ string) error {
+	return nil
+}
+
 func (s *stubSettler) Refund(context.Context, billing.RefundRequest) (*billing.RefundResult, error) {
 	return &billing.RefundResult{}, nil
 }
