@@ -84,6 +84,37 @@ type CredentialMetadata struct {
 	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
+const (
+	DefaultRenewStatusLimit = int32(100)
+	MaxRenewStatusLimit     = int32(500)
+)
+
+type ListRenewStatusParams struct {
+	TenantID        *int64
+	CursorUpdatedAt time.Time
+	CursorID        int64
+	Limit           int32
+}
+
+type RenewStatusMetadata struct {
+	CredentialID       int64      `json:"id"`
+	TenantID           int64      `json:"tenant_id"`
+	TenantName         string     `json:"tenant_name"`
+	AccountID          int64      `json:"account_id"`
+	AccountName        string     `json:"account_name"`
+	Vendor             string     `json:"vendor"`
+	AuthMode           string     `json:"auth_mode"`
+	State              string     `json:"state"`
+	CredentialVersion  int32      `json:"credential_version"`
+	AccessExpiresAt    *time.Time `json:"access_expires_at"`
+	RefreshBeforeAt    *time.Time `json:"refresh_before_at"`
+	LastRefreshAt      *time.Time `json:"last_refresh_at"`
+	LastRefreshOutcome *string    `json:"last_refresh_outcome"`
+	FailureClass       *string    `json:"failure_class"`
+	FailureCount       int32      `json:"failure_count"`
+	UpdatedAt          time.Time  `json:"-"`
+}
+
 type Store struct {
 	db       db.DBTX
 	cipher   *Cipher
@@ -307,6 +338,56 @@ ORDER BY updated_at DESC, id DESC`
 		if err := rows.Scan(&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State, &rec.Version,
 			&rec.AccessExpiresAt, &rec.RefreshBeforeAt, &rec.LastRefreshAt, &rec.LastRefreshOutcome,
 			&rec.FailureClass, &rec.FailureCount, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, rec.metadata())
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListRenewStatus(ctx context.Context, params ListRenewStatusParams) ([]RenewStatusMetadata, error) {
+	if err := s.validateReady(); err != nil {
+		return nil, err
+	}
+	limit := normalizeRenewStatusLimit(params.Limit)
+	const q = `
+SELECT ac.id, ac.tenant_id, t.name, ac.provider_account_id, pa.name,
+       ac.vendor, ac.auth_mode, ac.state, ac.credential_version,
+       ac.access_expires_at, ac.refresh_before_at, ac.last_refresh_at,
+       ac.last_refresh_outcome, ac.failure_class, ac.failure_count,
+       ac.updated_at
+FROM account_credentials ac
+INNER JOIN provider_accounts pa
+  ON pa.id = ac.provider_account_id
+ AND pa.tenant_id = ac.tenant_id
+ AND pa.deleted_at IS NULL
+INNER JOIN tenants t
+  ON t.id = ac.tenant_id
+ AND t.deleted_at IS NULL
+WHERE ac.deleted_at IS NULL
+  AND ($1::bigint IS NULL OR ac.tenant_id = $1::bigint)
+  AND ($2::timestamptz IS NULL OR (ac.updated_at, ac.id) < ($2::timestamptz, $3::bigint))
+ORDER BY ac.updated_at DESC, ac.id DESC
+LIMIT $4`
+	var cursorUpdatedAt any
+	if params.CursorID > 0 {
+		cursorUpdatedAt = params.CursorUpdatedAt
+	}
+	rows, err := s.db.Query(ctx, q, params.TenantID, cursorUpdatedAt, params.CursorID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]RenewStatusMetadata, 0, int(limit))
+	for rows.Next() {
+		var rec renewStatusRow
+		if err := rows.Scan(
+			&rec.CredentialID, &rec.TenantID, &rec.TenantName, &rec.AccountID, &rec.AccountName,
+			&rec.Vendor, &rec.AuthMode, &rec.State, &rec.CredentialVersion,
+			&rec.AccessExpiresAt, &rec.RefreshBeforeAt, &rec.LastRefreshAt,
+			&rec.LastRefreshOutcome, &rec.FailureClass, &rec.FailureCount,
+			&rec.UpdatedAt,
+		); err != nil {
 			return nil, err
 		}
 		out = append(out, rec.metadata())
@@ -817,6 +898,46 @@ func optionalTime(t pgtype.Timestamptz) *time.Time {
 	}
 	out := t.Time.UTC()
 	return &out
+}
+
+type renewStatusRow struct {
+	CredentialID       int64
+	TenantID           int64
+	TenantName         string
+	AccountID          int64
+	AccountName        string
+	Vendor             string
+	AuthMode           string
+	State              string
+	CredentialVersion  int32
+	AccessExpiresAt    pgtype.Timestamptz
+	RefreshBeforeAt    pgtype.Timestamptz
+	LastRefreshAt      pgtype.Timestamptz
+	LastRefreshOutcome *string
+	FailureClass       *string
+	FailureCount       int32
+	UpdatedAt          pgtype.Timestamptz
+}
+
+func (r renewStatusRow) metadata() RenewStatusMetadata {
+	return RenewStatusMetadata{
+		CredentialID: r.CredentialID, TenantID: r.TenantID, TenantName: r.TenantName,
+		AccountID: r.AccountID, AccountName: r.AccountName,
+		Vendor: r.Vendor, AuthMode: r.AuthMode, State: r.State, CredentialVersion: r.CredentialVersion,
+		AccessExpiresAt: optionalTime(r.AccessExpiresAt), RefreshBeforeAt: optionalTime(r.RefreshBeforeAt),
+		LastRefreshAt: optionalTime(r.LastRefreshAt), LastRefreshOutcome: r.LastRefreshOutcome,
+		FailureClass: r.FailureClass, FailureCount: r.FailureCount, UpdatedAt: pgTime(r.UpdatedAt),
+	}
+}
+
+func normalizeRenewStatusLimit(limit int32) int32 {
+	if limit <= 0 {
+		return DefaultRenewStatusLimit
+	}
+	if limit > MaxRenewStatusLimit+1 {
+		return MaxRenewStatusLimit + 1
+	}
+	return limit
 }
 
 type AuditEvent struct {

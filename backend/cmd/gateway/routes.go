@@ -165,6 +165,11 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	r.Route("/v1/admin/pool-accounts", mountProviderAccountAdminRoutes)
 
 	r.Route("/admin/v1/credentials", func(r chi.Router) {
+		gatewayhttp.MountAdminCredentialRenewStatusRoutes(r, gatewayhttp.AdminCredentialDeps{
+			Auth:        d.adminAuth,
+			Credentials: d.credentialStore,
+			AuditStore:  d.adminQueries,
+		})
 		gatewayhttp.MountAdminCredentialAcquisitionHelperRoutes(r, gatewayhttp.AdminCredentialAcquisitionDeps{
 			Auth:            d.adminAuth,
 			Sessions:        d.credentialAcqStore,
