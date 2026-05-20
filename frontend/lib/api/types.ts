@@ -304,17 +304,39 @@ export interface APIError {
   };
 }
 
-// ---- Mock: Renew status（后端尚无此端点，全 mock） ----
+// ---- Auth Credential Renew status ----
 
-export type RenewStatus = 'idle' | 'renewing' | 'failed';
+export type AuthCredentialRenewState =
+  | 'active'
+  | 'refreshing'
+  | 'refreshing_with_grace'
+  | 'expired'
+  | 'temp_unschedulable'
+  | 'needs_rotation'
+  | 'revoked'
+  | 'operator_attention';
 
 export interface AuthCredentialRenewStatus {
+  id: number;
+  tenant_id: number;
+  tenant_name: string;
   account_id: number;
   account_name: string;
-  last_renew_at: string | null;
-  next_renew_at: string | null;
-  renew_status: RenewStatus;
-  error_msg: string | null;
+  vendor: string;
+  auth_mode: string;
+  state: AuthCredentialRenewState;
+  credential_version: number;
+  access_expires_at?: string | null;
+  refresh_before_at?: string | null;
+  last_refresh_at?: string | null;
+  last_refresh_outcome?: string | null;
+  failure_class?: string | null;
+  failure_count: number;
+}
+
+export interface AuthCredentialRenewStatusList {
+  items: AuthCredentialRenewStatus[];
+  next_cursor: string | null;
 }
 
 // ---- Mock: Mimicry profile（后端尚无此端点，全 mock） ----
