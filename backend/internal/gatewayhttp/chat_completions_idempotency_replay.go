@@ -2,24 +2,45 @@ package gatewayhttp
 
 import (
 	"context"
+	"mime"
 	"net/http"
+	"strings"
 )
 
 // maxIdempotencyReplayBodyBytes 是持久重放记录存储的响应体上限; 超限的响应不
 // 存重放 (后续同 key 重试回退 409 而非重放), 防大响应撑爆重放表。
 const maxIdempotencyReplayBodyBytes = 1 << 20 // 1 MiB
 
+const (
+	idempotencyReplayContentTypeJSON = "application/json"
+	idempotencyReplayContentTypeSSE  = "text/event-stream"
+)
+
 // recordIdempotencyReplay best-effort 存一条幂等重放记录: 仅当请求带
 // Idempotency-Key 且 ReplayStore 已配置。 写失败不影响已成功的响应 —— 仅意味
 // 后续同 key 重试回退 409 而非重放。
 func (ex *chatExecution) recordIdempotencyReplay(claimID int64, status int, body []byte) {
+	ex.recordIdempotencyReplayWithContentType(claimID, status, idempotencyReplayContentTypeJSON, body)
+}
+
+// recordStreamingIdempotencyReplay 存流式 SSE 的原始客户端字节。
+func (ex *chatExecution) recordStreamingIdempotencyReplay(claimID int64, status int, body []byte) {
+	ex.recordIdempotencyReplayWithContentType(claimID, status, idempotencyReplayContentTypeSSE, body)
+}
+
+// recordIdempotencyReplayWithContentType 是 JSON / SSE 共用的 best-effort
+// 持久重放写入入口。
+func (ex *chatExecution) recordIdempotencyReplayWithContentType(claimID int64, status int, contentType string, body []byte) {
 	if ex.idempotencyHeader == "" || ex.d.ReplayStore == nil || claimID == 0 {
 		return
 	}
 	if len(body) > maxIdempotencyReplayBodyBytes {
 		return
 	}
-	_ = ex.d.ReplayStore.Record(ex.ctx, ex.ident.TenantID, claimID, status, "application/json", body, 0)
+	if contentType == "" {
+		contentType = idempotencyReplayContentTypeJSON
+	}
+	_ = ex.d.ReplayStore.Record(ex.ctx, ex.ident.TenantID, claimID, status, contentType, body, 0)
 }
 
 // recordCacheHitReplay 是 serveL2CacheHit 用的 best-effort 重放记录写入 ——
@@ -32,7 +53,7 @@ func recordCacheHitReplay(ctx context.Context, d ChatHandlerDeps, in l2CacheHitI
 		return
 	}
 	_ = d.ReplayStore.Record(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID,
-		http.StatusOK, "application/json", in.Entry.Body, 0)
+		http.StatusOK, idempotencyReplayContentTypeJSON, in.Entry.Body, 0)
 }
 
 // serveIdempotentReplay 处理同 Idempotency-Key 的重试 (ClaimGate 返
@@ -54,16 +75,34 @@ func (ex *chatExecution) serveIdempotentReplay(w http.ResponseWriter, claimID in
 	}
 	contentType := rec.ContentType
 	if contentType == "" {
-		contentType = "application/json"
+		contentType = idempotencyReplayContentTypeJSON
 	}
 	status := rec.ResponseStatus
 	if status == 0 {
 		status = http.StatusOK
 	}
+	isSSE := isIdempotencyReplayEventStream(contentType)
 	w.Header().Set("Content-Type", contentType)
+	if isSSE {
+		w.Header().Set("Cache-Control", "no-cache")
+	}
 	// X-HUAKAI-Idempotency-Hit 是 openapi.yaml 公布的契约头 (codex review v17 P2)。
 	w.Header().Set("X-HUAKAI-Idempotency-Hit", "true")
 	w.WriteHeader(status)
 	_, _ = w.Write(rec.ResponseBody)
+	if isSSE {
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}
 	return true
+}
+
+func isIdempotencyReplayEventStream(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err == nil {
+		return strings.EqualFold(mediaType, idempotencyReplayContentTypeSSE)
+	}
+	base, _, _ := strings.Cut(contentType, ";")
+	return strings.EqualFold(strings.TrimSpace(base), idempotencyReplayContentTypeSSE)
 }

@@ -190,6 +190,16 @@ func TestChatCompletionsIdempotentHitReplaysFromStore(t *testing.T) {
 	if first.Code != http.StatusOK {
 		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
 	}
+	stored, ok, err := replayStore.Lookup(context.Background(), validIdentity().TenantID, 777)
+	if err != nil {
+		t.Fatalf("lookup replay: %v", err)
+	}
+	if !ok {
+		t.Fatal("first response did not record JSON replay")
+	}
+	if stored.ContentType != idempotencyReplayContentTypeJSON {
+		t.Fatalf("stored ContentType=%q want %q", stored.ContentType, idempotencyReplayContentTypeJSON)
+	}
 
 	secondDeps := clientAdapterDeps(t)
 	secondDeps.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
@@ -201,6 +211,9 @@ func TestChatCompletionsIdempotentHitReplaysFromStore(t *testing.T) {
 	}
 	if got := second.Header().Get("X-HUAKAI-Idempotency-Hit"); got != "true" {
 		t.Fatalf("replay header X-HUAKAI-Idempotency-Hit=%q want true", got)
+	}
+	if got := second.Header().Get("Content-Type"); !strings.HasPrefix(got, idempotencyReplayContentTypeJSON) {
+		t.Fatalf("replay Content-Type=%q want %s", got, idempotencyReplayContentTypeJSON)
 	}
 	if first.Body.String() != second.Body.String() {
 		t.Fatalf("replay body mismatch:\nfirst=%s\nsecond=%s", first.Body.String(), second.Body.String())

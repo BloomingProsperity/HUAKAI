@@ -166,7 +166,13 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	streamForwarder.LedgerCallback = func(entryID, sigFingerprint string) {
 		WriteHuakaiLedgerHeaders(w.Header(), ex.requestID, entryID, sigFingerprint)
 	}
-	draft, fwdErr := streamForwarder.Forward(ex.ctx, dispatchRes.UpstreamReader, w, ex.forwardReq)
+	forwardWriter := w
+	var replayCapture *streamingIdempotencyReplayCaptureWriter
+	if ex.shouldCaptureStreamingIdempotencyReplay() {
+		replayCapture = newStreamingIdempotencyReplayCaptureWriter(w, maxIdempotencyReplayBodyBytes)
+		forwardWriter = replayCapture
+	}
+	draft, fwdErr := streamForwarder.Forward(ex.ctx, dispatchRes.UpstreamReader, forwardWriter, ex.forwardReq)
 	streamAttempt := billing.AttemptFromGatewayDraft(true, draft)
 	writeStreamBillingHeaders(w.Header(), streamAttempt)
 	if fwdErr != nil {
@@ -182,8 +188,17 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 		recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalSuccess, dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, nil)
 	}
 	event := ex.streamingCompletionEvent(draft, streamAttempt)
+	// 记录条件必须是 claim commit 条件的超集。claim 一旦 commit, 后续同 key
+	// 必走 IdempotencyHit; 此时必须有重放记录, 否则会回 409。一个未以干净
+	// [DONE] 收尾、但已向客户端交付可计费内容的流, 只要转发无错, 同样可能
+	// commit claim, 所以也必须写记录。门控只看转发成功(fwdErr==nil)、
+	// 结算成功(本 else 分支)和未超大小上限; 不看 EndClass, 也不看是否计费。
+	// 偏宽松记录是安全方向: 即使 claim 最终未 commit, 多出的记录只是 TTL
+	// janitor 清掉的无害死记录; 漏记录才会造成 409。
 	if _, err := settleCompletion(ex.ctx, ex.d, event); err != nil {
 		w.Header().Set("X-Huakai-Settle-Error", err.Error())
+	} else if fwdErr == nil && replayCapture != nil && !replayCapture.overLimit() {
+		ex.recordStreamingIdempotencyReplay(ex.reserveRes.ClaimID, replayCapture.statusCode(), replayCapture.body())
 	}
 }
 
