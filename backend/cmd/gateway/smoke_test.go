@@ -34,7 +34,7 @@ const (
 	// Phase L0 minimum: smoke uses real api_keys row
 	// instead of env-injected single bearer. The bearer prefix must match
 	// auth.APIKeyResolver's namespace check (`hk_live_` or `hk_test_`).
-	smokeBearerPrefix  = "hk_test_"
+	smokeBearerPrefix = "hk_test_"
 	// Renamed to dodge cached SAC reputation block on the prior
 	// hash chain. If SAC blocks this name too, rotate the suffix again.
 	smokeBinaryName    = "gateway-smoke-l0.exe"
