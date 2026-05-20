@@ -43,6 +43,7 @@ sql:
     queries:
       - sql/queries/billing_claims.sql
       - sql/queries/billing_settle.sql
+      - sql/queries/idempotency_replay.sql
       - sql/queries/observability.sql
       - sql/queries/obs_queries.sql
       - sql/queries/pool_accounts.sql
