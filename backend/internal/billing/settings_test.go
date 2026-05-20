@@ -220,8 +220,11 @@ func TestPolicyResolver_ExpiredCacheServesStaleOnRefreshFailure(t *testing.T) {
 	if !ok {
 		t.Fatal("want stale entry retained during bounded grace window")
 	}
-	if !cachedAfter.expiresAt.Equal(cachedBefore.expiresAt) {
-		t.Fatalf("expiresAt=%s want unchanged %s", cachedAfter.expiresAt, cachedBefore.expiresAt)
+	if want := now.Add(policyResolverRefreshRetryInterval); !cachedAfter.expiresAt.Equal(want) {
+		t.Fatalf("expiresAt=%s want retry throttle deadline %s", cachedAfter.expiresAt, want)
+	}
+	if !cachedAfter.staleDeadline.Equal(cachedBefore.staleDeadline) {
+		t.Fatalf("staleDeadline=%s want unchanged %s", cachedAfter.staleDeadline, cachedBefore.staleDeadline)
 	}
 	if calls := store.getCallsForTenant(651); calls != 2 {
 		t.Fatalf("tenant 651 get calls=%d want 2", calls)

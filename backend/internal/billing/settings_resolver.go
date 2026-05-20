@@ -10,6 +10,7 @@ import (
 
 const (
 	defaultPolicyResolverTTL           = 45 * time.Second
+	policyResolverRefreshRetryInterval = 5 * time.Second
 	policyResolverStaleGraceMultiplier = 10
 	policyResolverMaxStaleGrace        = 10 * time.Minute
 )
@@ -34,8 +35,9 @@ type PolicyResolver struct {
 }
 
 type policyCacheEntry struct {
-	policy    StreamInputOnlyInterruptedPolicy
-	expiresAt time.Time
+	policy        StreamInputOnlyInterruptedPolicy
+	expiresAt     time.Time
+	staleDeadline time.Time
 }
 
 // NewPolicyResolver 构造策略解析器。ttl <= 0 时使用 45 秒默认值。
@@ -70,8 +72,13 @@ func (r *PolicyResolver) ResolveStreamInputOnlyInterruptedPolicy(ctx context.Con
 	generation := r.captureGeneration(tenantID)
 	row, ok, err := r.store.Get(ctx, tenantID, StreamInputOnlyInterruptedPolicyKey)
 	if err != nil {
-		if hasEntry && now.Before(entry.expiresAt.Add(r.staleGrace())) {
-			r.warnServedStale(ctx, tenantID, err, entry.expiresAt)
+		if hasEntry && now.Before(entry.staleDeadline) {
+			r.cacheSetIfGeneration(tenantID, policyCacheEntry{
+				policy:        entry.policy,
+				expiresAt:     now.Add(policyResolverRefreshRetryInterval),
+				staleDeadline: entry.staleDeadline,
+			}, generation)
+			r.warnServedStale(ctx, tenantID, err, entry.expiresAt, entry.staleDeadline)
 			return entry.policy
 		}
 		if hasEntry {
@@ -94,7 +101,12 @@ func (r *PolicyResolver) ResolveStreamInputOnlyInterruptedPolicy(ctx context.Con
 			policy = parsed
 		}
 	}
-	r.cacheSetIfGeneration(tenantID, policy, now.Add(r.ttl), generation)
+	expiresAt := now.Add(r.ttl)
+	r.cacheSetIfGeneration(tenantID, policyCacheEntry{
+		policy:        policy,
+		expiresAt:     expiresAt,
+		staleDeadline: expiresAt.Add(r.staleGrace()),
+	}, generation)
 	return policy
 }
 
@@ -140,7 +152,7 @@ func (r *PolicyResolver) captureGeneration(tenantID int64) uint64 {
 	return r.gen[tenantID]
 }
 
-func (r *PolicyResolver) cacheSetIfGeneration(tenantID int64, policy StreamInputOnlyInterruptedPolicy, expiresAt time.Time, generation uint64) {
+func (r *PolicyResolver) cacheSetIfGeneration(tenantID int64, entry policyCacheEntry, generation uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	currentGeneration := uint64(0)
@@ -153,7 +165,7 @@ func (r *PolicyResolver) cacheSetIfGeneration(tenantID int64, policy StreamInput
 	if r.cache == nil {
 		r.cache = make(map[int64]policyCacheEntry)
 	}
-	r.cache[tenantID] = policyCacheEntry{policy: policy, expiresAt: expiresAt}
+	r.cache[tenantID] = entry
 }
 
 func (r *PolicyResolver) cacheDeleteIfUnchanged(tenantID int64, entry policyCacheEntry, generation uint64) {
@@ -167,7 +179,10 @@ func (r *PolicyResolver) cacheDeleteIfUnchanged(tenantID int64, entry policyCach
 		return
 	}
 	current, ok := r.cache[tenantID]
-	if !ok || current.policy != entry.policy || !current.expiresAt.Equal(entry.expiresAt) {
+	if !ok ||
+		current.policy != entry.policy ||
+		!current.expiresAt.Equal(entry.expiresAt) ||
+		!current.staleDeadline.Equal(entry.staleDeadline) {
 		return
 	}
 	delete(r.cache, tenantID)
@@ -205,13 +220,13 @@ func (r *PolicyResolver) warnFallback(ctx context.Context, tenantID int64, reaso
 	slog.WarnContext(ctx, "billing settings resolver fell back to default policy", attrs...)
 }
 
-func (r *PolicyResolver) warnServedStale(ctx context.Context, tenantID int64, err error, expiresAt time.Time) {
+func (r *PolicyResolver) warnServedStale(ctx context.Context, tenantID int64, err error, expiresAt time.Time, staleDeadline time.Time) {
 	billingSettingsMetrics.Add("resolver_db_read_fail_total", 1)
 	billingSettingsMetrics.Add("resolver_stale_on_refresh_failure_total", 1)
 	slog.WarnContext(ctx, "billing settings resolver served stale policy after refresh failure",
 		"tenant_id", tenantID,
 		"setting_key", StreamInputOnlyInterruptedPolicyKey,
 		"expires_at", expiresAt,
-		"stale_grace", r.staleGrace(),
+		"stale_deadline", staleDeadline,
 		"error", err)
 }
