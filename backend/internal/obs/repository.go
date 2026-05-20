@@ -47,7 +47,7 @@ var ErrNotFound = errors.New("obs: not found")
 
 // UsageRow is one row from usage_records, with the credential and
 // secret-bearing columns deliberately absent. Timestamps are surfaced
-// for chronological audit ordering (codex pass2 P2 fix).
+// for chronological audit ordering.
 type UsageRow struct {
 	ID                     int64
 	TenantID               int64

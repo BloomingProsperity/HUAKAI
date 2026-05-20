@@ -265,7 +265,7 @@ func TestApplyMimicryPlan_Step6EmptyTools(t *testing.T) {
 }
 
 // TestApplyMimicryPlan_Step6SkipWhenTailHasCacheControl tools[-1] 已带
-// cache_control 时 step 6 拒写避免覆盖（codex P1 守卫一）。
+// cache_control 时 step 6 拒写避免覆盖。
 func TestApplyMimicryPlan_Step6SkipWhenTailHasCacheControl(t *testing.T) {
 	body := `{"tools":[
 		{"name":"a"},
@@ -289,7 +289,7 @@ func TestApplyMimicryPlan_Step6SkipWhenTailHasCacheControl(t *testing.T) {
 }
 
 // TestApplyMimicryPlan_Step6SkipWhenAtCap body 已有 4 个 cache_control 时
-// step 6 拒写避免越过 CacheControlMaxAllowed=4 上限（codex P1 守卫二）。
+// step 6 拒写避免越过 CacheControlMaxAllowed=4 上限。
 func TestApplyMimicryPlan_Step6SkipWhenAtCap(t *testing.T) {
 	// 构造正好 4 个 cache_control 的 body：4 个 system 块各一个。
 	// 注意：InspectCacheControl 要求 messages 字段必须存在，否则返回 error

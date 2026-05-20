@@ -12,7 +12,7 @@ import (
 // (不是所有失败都塌成 502 + status=0)。
 //
 // 跟流式路径的 stream forwarder 一致: 流式直接把 resp.StatusCode 写到 w,
-// buffered 之前丢失这层信息, 这是 codex review P1 2026-05-19 修。
+// buffered 路径此前会丢失这层信息。
 type UpstreamHTTPError struct {
 	StatusCode int
 	Body       []byte

@@ -118,7 +118,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 		return nil, fmt.Errorf("billing: settle req.UserID=%d ≠ claim=%d (claim=%d)",
 			req.UserID, claim.UserID, req.ClaimID)
 	}
-	// codex chunk10 P1 fix: 之前 AttemptSeq 不一致 → reject 会卡 re-reserve 后
+	// AttemptSeq 不一致时直接 reject 会卡 re-reserve 后
 	// 的 settle (ReReserveAbortedClaim 把 claim.AttemptSeq 加 1, caller 仍传
 	// req.AttemptSeq=1 hardcoded → reject + slot 泄漏)。 AttemptSeq 仅顺序计数,
 	// 不是跨租户防御列; 改用 claim.AttemptSeq 作为权威值, 不再硬 mismatch reject。
@@ -134,7 +134,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 		requestedAt = time.Now().UTC()
 	}
 
-	// codex chunk12 P2: claim 行经 Tx2 锁定, 其 APIKeyID / UserID / AttemptSeq
+	// claim 行经 Tx2 锁定, 其 APIKeyID / UserID / AttemptSeq
 	// 是权威值。 req 可能带 stale 值 (e.g. re-reserve 后 caller 仍传 AttemptSeq=1),
 	// 之前 coalesce 偏好 req → usage_record 写错 attempt 序号。 直接用 claim 列。
 	usageParams := dbbilling.InsertUsageRecordParams{
@@ -614,12 +614,11 @@ FOR UPDATE`,
 		return nil, err
 	}
 	// 累计 refund 上限: 已发的 reconciliation_appended negative events 之和加
-	// 本次请求, 总额不得超 originalMicros。 codex chunk3 P1#3 防多 refund 不
+	// 本次请求, 总额不得超 originalMicros。这样避免多 refund 不
 	// 同 audit_request_id 各自单独 cap 到 original 导致总额超退。
 	var alreadyRefundedMicros int64
 	// 累计 refund 上限: billing_events 用 actual_cost_signed (numeric USD, 退款
-	// 时为负); 把负值取反 × 1_000_000 转 micros 求和 (codex chunk9 P1 column
-	// 名修正)。
+	// 时为负); 把负值取反 × 1_000_000 转 micros 求和。
 	if err := tx.QueryRow(ctx, `
 SELECT COALESCE(SUM(ROUND(-actual_cost_signed * 1000000)), 0)::bigint
 FROM billing_events

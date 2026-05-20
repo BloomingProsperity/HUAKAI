@@ -129,7 +129,7 @@ func (f *Factory) mimicryRoundTripper(mode TransportMode, tmpl *mimicry.ClientHe
 // mimicryTemplate 返回 mode 对应的 per-mode 指纹模板; 缺失或 stub 时返
 // (nil, err) 让 caller fail-closed, 不回退到 Anthropic Phase A 默认模板。
 // 否则 kiro / chatgpt / gemini_advanced 等模式会用 Anthropic JA3 出站,
-// 反检测目标完全失效 (codex chunk5 P1)。
+// 反检测目标完全失效。
 //
 // HUAKAI_TRANSPORT_PHASE_A_FALLBACK=true 仅留给 explicit opt-in 测试/调试,
 // 生产默认 fail-closed; 没注入 templateRegistry 也算配置缺失, reject。

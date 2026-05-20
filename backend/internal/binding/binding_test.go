@@ -1,7 +1,6 @@
 // binding_test.go — U1-A 测试：interface + noop 行为契约。
 //
-// 不连数据库；不需 schema migration；schema-free e2e-lite per
-// codex prereview §"Schema-Free E2E/Test Strategy"。
+// 不连数据库；不需 schema migration；schema-free e2e-lite。
 package binding
 
 import (

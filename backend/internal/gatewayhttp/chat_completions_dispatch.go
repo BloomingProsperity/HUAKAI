@@ -181,7 +181,7 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter) bool {
 		return false
 	}
 	if errors.Is(err, pool.ErrClaimRace) {
-		// codex chunk13 P2: claim 被并发路径抢占移出 reserving — 这是预期内
+		// claim 被并发路径抢占移出 reserving — 这是预期内
 		// 竞态, 不是 internal error。 返 409 + Retry-After 让 client 幂等重试。
 		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "claim_race", ex.requestID, 0); abortErr != nil {
 			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
@@ -304,8 +304,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_dispatch_error", ex.requestID, 0)
 
 		// 把上游真实 status / header / body 透传到 client + health classification,
-		// 保留 401/429 retry 语义 + cooldown / rate-limit 信号 (codex review P1
-		// 2026-05-19; 之前总是 502 + status=0 跟流式路径行为分叉).
+		// 保留 401/429 retry 语义 + cooldown / rate-limit 信号。
 		var upstreamErr *gateway.UpstreamHTTPError
 		clientStatus := http.StatusBadGateway
 		healthStatus := 0

@@ -5,7 +5,7 @@
 //   1. Normalize alias.
 //   2. Open a REPEATABLE READ + read-only TX so all reads observe one
 //      consistent snapshot — avoids stamping a SnapshotVersion that
-//      doesn't describe the rows used (codex N+5a P2 finding 2026-04-30).
+//      doesn't describe the rows used.
 //   3. Look up tenant-scoped alias row.
 //   4. If row exists with status='active', proceed to model lookup.
 //   5. If row exists with status='disabled' -> ErrModelDisabled (D3
@@ -14,14 +14,13 @@
 //      inherit_global_catalog=true, look up scope='global' alias.
 //   7. Otherwise ErrUnknownModel.
 //   8. Resolve canonical model row scoped to (tenant_id OR global) —
-//      defends against alias-misconfigured-to-foreign-tenant model
-//      (codex N+5a P3 finding 2026-04-30).
+//      defends against alias-misconfigured-to-foreign-tenant model.
 //   9. Concurrently load capabilities + bindings + snapshot version
 //      INSIDE the same TX.
 //  10. If bindings list empty -> ErrTenantNoAccess.
 //  11. Build Resolved and commit (read-only commit is harmless).
 //
-// Removed in this revision (codex N+5a P1 finding 2026-04-30): the
+// Removed in this revision: the
 // `scope` column on `model_pool_bindings`. Bindings are ALWAYS tenant-
 // scoped because pool_groups are tenant-owned; a "global binding" was
 // a conceptual mistake that leaked pool ids across tenants.
@@ -68,7 +67,7 @@ func (r *PostgresRegistry) ResolveModel(ctx context.Context, publicAlias string,
 
 	// REPEATABLE READ + read-only: all reads see a single point-in-time
 	// snapshot of the registry, so the version we stamp truly describes
-	// the rows used to build Resolved (codex N+5a P2 fix).
+	// the rows used to build Resolved.
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{
 		IsoLevel:   pgx.RepeatableRead,
 		AccessMode: pgx.ReadOnly,

@@ -98,7 +98,7 @@ type SettleRequest struct {
 	AuditRequestID      string
 	OutboxEmitter       func() bool
 	// SnapshotVersion is the registry+router stamp produced by
-	// router.Plan as of N+5b (format "registry:<tid>:<v>;router:<rv>").
+	// router.Plan (format "registry:<tid>:<v>;router:<rv>").
 	// Written into usage_records.snapshot_version so audit replay can
 	// reconstruct the routing config that built this plan.
 	SnapshotVersion string

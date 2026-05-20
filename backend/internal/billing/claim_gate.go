@@ -174,11 +174,9 @@ func (g *DefaultClaimGate) Reserve(ctx context.Context, req ReserveRequest) (*Re
 
 // ComputeIdempotencyFingerprint hashes the 9 PERSISTED fields per spec §Tx1
 // step 1. The IdempotencyKeyClientHeader in ReserveRequest is intentionally
-// EXCLUDED from this hash — see docs/process/plans/2026-04-29-integration-sprint-plan.md
-// (Codex review of Phase A flagged earlier draft that included it).
+// EXCLUDED from this hash — see docs/process/plans/2026-04-29-integration-sprint-plan.md.
 //
-// PoolingGroupID is also EXCLUDED as of N+5b (codex pass-3 P2 finding
-// 2026-05-01): the pool group is now derived by Registry/Router from
+// PoolingGroupID is also EXCLUDED: the pool group is now derived by Registry/Router from
 // mutable admin state, not from the client request. If an admin reroutes
 // a model→pool binding mid-flight, a legitimate retry with the same
 // Idempotency-Key would otherwise hash to a new fingerprint and surface

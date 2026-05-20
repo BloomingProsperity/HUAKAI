@@ -59,7 +59,7 @@ func seedAdapterGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suf
 	).Scan(&seed.tenantID); err != nil {
 		t.Fatalf("seed tenant: %v", err)
 	}
-	// Slice 2 (N+4b1 2026-05-01): real users + api_keys rows replace the
+	// Slice 2: real users + api_keys rows replace the
 	// previous synthetic-id pattern. Migration 0009 added composite FKs
 	// from billing_ledger_claims/usage_records/billing_ledger_archive
 	// (tenant_id, api_key_id) -> api_keys, so claim seeds must reference
@@ -82,7 +82,7 @@ func seedAdapterGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suf
 
 	t.Cleanup(func() {
 		ctx := context.Background()
-		// FK chain post-N+4b1: pool_slot_acquisitions -> claims;
+		// FK chain after migration 0009: pool_slot_acquisitions -> claims;
 		//                      claims/usage/archive -> api_keys/users;
 		//                      api_keys -> users.
 		_, _ = pool.Exec(ctx, `DELETE FROM usage_records WHERE tenant_id=$1`, seed.tenantID)

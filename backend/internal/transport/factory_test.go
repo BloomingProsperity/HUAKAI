@@ -23,7 +23,7 @@ func TestFactory_For_StandardDefault(t *testing.T) {
 	}
 }
 
-// codex chunk5 P1 verify: 默认 mimicry template 缺失 → fail-closed error,
+// 默认 mimicry template 缺失 → fail-closed error,
 // 不回退 Anthropic Phase A 默认模板。
 func TestFactory_For_MimicryWithoutRegistry_FailClosedByDefault(t *testing.T) {
 	f := NewFactory()
@@ -34,7 +34,7 @@ func TestFactory_For_MimicryWithoutRegistry_FailClosedByDefault(t *testing.T) {
 }
 
 func TestFactory_For_MimicryWithoutRegistryUsesPhaseADefault(t *testing.T) {
-	// codex chunk5 P1 fix: Phase A fallback 现在默认 fail-closed, 需 opt-in env
+	// Phase A fallback 现在默认 fail-closed, 需 opt-in env
 	t.Setenv("HUAKAI_TRANSPORT_PHASE_A_FALLBACK", "true")
 	f := NewFactory()
 	rt, err := f.For(ProviderAnthropic, TransportModeMimicryClaudeCode)

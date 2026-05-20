@@ -1,6 +1,6 @@
 //go:build integration_pg
 
-// Slice 2 (N+4b1) regression tests for the FK constraints added by
+// Slice 2 regression tests for the FK constraints added by
 // migration 0009. Each test exercises ONE invariant of the new
 // composite-FK shape and asserts the database rejects the bad write at
 // the SQL layer (not just at app-layer validation).
@@ -126,7 +126,7 @@ func TestN4b1_RestrictsDeleteOfReferencedAPIKey(t *testing.T) {
 // seedProviderGraph seeds a tenant-scoped provider_account graph for tests
 // that need to insert pool_slot_acquisitions rows. Cleanup is registered
 // in FK-correct order so the seedTenant cleanup that runs AFTER us can
-// drop the parent tenant successfully (codex N+4b1 pass-1 P2 fix).
+// drop the parent tenant successfully.
 func seedProviderGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID int64, suffix string) (providerID, channelID, accountID int64) {
 	t.Helper()
 	short := suffix
@@ -204,7 +204,7 @@ func TestN4b1_BlocksOrphanClaimOnPoolSlotAcquisition(t *testing.T) {
 // TestN4b1_BlocksCrossTenantClaimOnUsageRecord asserts that the composite
 // (tenant_id, claim_id) FK on usage_records (replacing the single-column
 // claim_id FK from migration 0002) rejects tenant B writing a usage row
-// pointing at tenant A's claim. Codex N+4b1 pass-2 P1: same defense as
+// pointing at tenant A's claim. Same defense as
 // pool_slot_acquisitions, broader scope.
 func TestN4b1_BlocksCrossTenantClaimOnUsageRecord(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -256,7 +256,7 @@ func TestN4b1_BlocksCrossTenantClaimOnUsageRecord(t *testing.T) {
 
 // TestN4b1_BlocksCrossTenantClaimOnPoolSlotAcquisition asserts that the
 // composite (tenant_id, claim_id) FK rejects tenant B binding a slot to
-// tenant A's claim. Codex N+4b1 pass-1 P1: single-column FK would have
+// tenant A's claim. A single-column FK would have
 // allowed this footgun.
 func TestN4b1_BlocksCrossTenantClaimOnPoolSlotAcquisition(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

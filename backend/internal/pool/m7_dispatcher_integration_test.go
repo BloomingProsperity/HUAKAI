@@ -230,7 +230,7 @@ func TestM7_ActualMode_SegmentTableLearns(t *testing.T) {
 }
 
 func TestM5c_SegmentKey_RawVsHashMode_NoCollision(t *testing.T) {
-	// M5c: codex retro M5b 抓的 MED-1 — 同 tenant 内某个 16B 短 prefix 理论上
+	// M5c: 同 tenant 内某个 16B 短 prefix 理论上
 	// 可与长 prefix 的 sha256 截断结果偶然相同 (collision space 2^128, 实际 ≈0
 	// 但 design smell)。 1-byte mode tag (0x01 raw / 0x02 hash) 区分两路径。
 	tbl := NewSegmentTable(SegmentTableConfig{})

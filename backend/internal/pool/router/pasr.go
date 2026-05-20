@@ -4,7 +4,7 @@
 //  1. req.SessionHash 作为 prefix key (上游已 hash, 复用 Track B prompt_hash)
 //  2. SegmentTable.LookupOrCreate(prefix, ring) → 取或建 K=3 段
 //  3. 段成员中过滤健康+不超载的 candidates
-//  4. 段全 unhealthy → HRW 全 ring 排序接力 (codex synthesis D5)
+//  4. 段全 unhealthy → HRW 全 ring 排序接力 (synthesis D5)
 //  5. candidates 内: 优先 HasCache bit 已 set 的成员 (synthesis D2)
 //  6. tie-break: LoadRate 最低 (synthesis 同质算法延伸)
 //  7. ClaimGate.WriteAcquisition 写出 acquisition_token
@@ -60,7 +60,7 @@ type PASRSelector struct {
 	// Phase A3 用 ringProvider 间接获取以支持 hot-swap。
 	ringProvider func() *AccountRing
 
-	// segments in-memory 段表 (codex synthesis D4 主权威)。
+	// segments in-memory 段表 (synthesis D4 主权威)。
 	segments *SegmentTable
 
 	// loadCap 段成员被剔出 candidates 的 LoadRate 上限。 0.95 默认。
@@ -220,7 +220,7 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 		})
 	}
 
-	// 4. 段全 unhealthy → HRW 全 ring 接力 (codex D5)
+	// 4. 段全 unhealthy → HRW 全 ring 接力 (D5)
 	if len(candidates) == 0 {
 		return p.scheduleHRWFullRing(ctx, req, ring, snapshots, seg.Members, failures)
 	}

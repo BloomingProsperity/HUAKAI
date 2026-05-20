@@ -97,7 +97,7 @@ func TestClassify_R013_RateLimitedWithRetryAfter(t *testing.T) {
 	}
 }
 
-// Retry-After HTTP-date format (RFC 7231) - Codex side strength preserved.
+// Retry-After HTTP-date format (RFC 7231).
 func TestRetryAfter_HttpDateFormat(t *testing.T) {
 	future := time.Now().Add(2 * time.Minute).UTC().Format(http.TimeFormat)
 	h := http.Header{"Retry-After": []string{future}}

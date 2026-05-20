@@ -31,11 +31,11 @@ import (
 )
 
 const (
-	// Phase L0 minimum (N+4a, 2026-04-30): smoke uses real api_keys row
+	// Phase L0 minimum: smoke uses real api_keys row
 	// instead of env-injected single bearer. The bearer prefix must match
 	// auth.APIKeyResolver's namespace check (`hk_live_` or `hk_test_`).
 	smokeBearerPrefix  = "hk_test_"
-	// Renamed in N+4a to dodge cached SAC reputation block on the prior
+	// Renamed to dodge cached SAC reputation block on the prior
 	// hash chain. If SAC blocks this name too, rotate the suffix again.
 	smokeBinaryName    = "gateway-smoke-l0.exe"
 	smokeBootRetries   = 30
@@ -67,7 +67,7 @@ func TestPhaseC_Smoke_ChatCompletions(t *testing.T) {
 
 	waitForGateway(t, addr)
 
-	// POST request. Slice 2 (N+5b 2026-05-01): the gateway no longer
+	// POST request. Slice 2: the gateway no longer
 	// accepts pool_group_id in the body — Registry resolves the pool
 	// from the model alias seeded in seedSmokeGraph below.
 	body := `{"model":"gpt-4.1-mini","messages":[{"role":"user","content":"hi"}],"stream":true}`
@@ -116,11 +116,11 @@ type smokeSeed struct {
 	poolGroupID       int64
 	channelID         int64
 	providerAccountID int64
-	// Slice 2 (N+5b 2026-05-01): Registry rows that resolve the request
+	// Slice 2: Registry rows that resolve the request
 	// body's `model` alias into the seeded pool group.
 	modelID int64
 	aliasID int64
-	// Phase L0 minimum (N+4a): plaintext bearer generated at seed time;
+	// Phase L0 minimum: plaintext bearer generated at seed time;
 	// matched against the bcrypt hash stored in api_keys.key_hash.
 	bearer string
 }
@@ -137,7 +137,7 @@ func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *sm
 		t.Fatalf("seed tenant: %v", err)
 	}
 
-	// Phase L0 minimum (N+4a): real users + api_keys rows replace synthetic
+	// Phase L0 minimum: real users + api_keys rows replace synthetic
 	// (apiKeyID = tenantID*100+1) IDs. The plaintext bearer is held only
 	// in this test for the POST request; the DB stores the bcrypt hash.
 	if err := pgPool.QueryRow(ctx,
@@ -165,7 +165,7 @@ func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *sm
 
 	t.Cleanup(func() {
 		c := context.Background()
-		// Cleanup order respects FKs. Slice 2 (N+5b) prepends registry
+		// Cleanup order respects FKs. Slice 2 prepends registry
 		// rows BEFORE pool_groups (model_pool_bindings has a composite FK
 		// (tenant_id, pool_group_id) → pool_groups). model_aliases and
 		// model_registry_capabilities reference models(id), so models
@@ -218,7 +218,7 @@ func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *sm
 		t.Fatalf("seed provider account: %v", err)
 	}
 
-	// Slice 2 (N+5b 2026-05-01): seed Registry rows so the smoke alias
+	// Slice 2: seed Registry rows so the smoke alias
 	// resolves to the seeded pool group end-to-end. Mirrors the rows the
 	// admin endpoint (Phase E) will write.
 	if err := pgPool.QueryRow(ctx,
@@ -263,8 +263,8 @@ func buildGateway(t *testing.T) string {
 	// Build into the module root so ./gateway-smoke.exe is findable from
 	// any cwd where the binary subprocess starts. The build is robust
 	// against both `go test ./cmd/gateway` (cwd=cmd/gateway) and
-	// `go test -c + manual ./smoke.test.exe` (cwd=$pwd) — Codex pass1+2
-	// caught both wrong-cwd scenarios.
+	// `go test -c + manual ./smoke.test.exe` (cwd=$pwd), covering both
+	// wrong-cwd scenarios.
 	binPath := moduleRoot + "/" + smokeBinaryName
 	// Inject a per-run timestamp via ldflags so each smoke build produces
 	// a unique binary hash. Smart App Control (Win11) caches block decisions
@@ -332,7 +332,7 @@ func startGateway(t *testing.T, _ context.Context, binPath, dsn, addr string, se
 	cmd.Env = append(os.Environ(),
 		"HUAKAI_DATABASE_URL="+dsn,
 		"HUAKAI_ADDR="+addr,
-		// Phase L0 minimum (N+4a): SMOKE env vars no longer set; auth
+		// Phase L0 minimum: SMOKE env vars no longer set; auth
 		// resolves via api_keys table seeded by seedSmokeGraph above.
 	)
 	stderr, _ := cmd.StderrPipe()
@@ -441,7 +441,7 @@ func checkPGState(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed 
 		t.Fatalf("PG check 5: expected 1 released_success slot; got %d", slotCount)
 	}
 
-	// PG check 6 (N+5b 2026-05-01): the success-path usage row must carry
+	// PG check 6: the success-path usage row must carry
 	// the registry+router snapshot stamp from migration 0008. Format
 	// "registry:<tenant_id>:<v>;router:<router_policy_v>".
 	var snapshot *string

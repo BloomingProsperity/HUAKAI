@@ -1,5 +1,5 @@
 // Package registry resolves a public model alias and tenant id into a
-// router.ResolvedModel — Slice 2 of the HUAKAI N+5 plan.
+// router.ResolvedModel — Slice 2 of the HUAKAI model registry plan.
 //
 // Pipeline per docs/process/plans/2026-04-30-n5-model-registry.md:
 //

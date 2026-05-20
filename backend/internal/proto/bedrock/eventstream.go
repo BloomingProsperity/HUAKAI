@@ -42,7 +42,7 @@ import (
 // 为什么不缓存 inner *anthropic.Adapter：registry-shared 的 adapter 实例
 // 会被多 goroutine 并发调用（每个请求一个 stream），lazy init `s.inner = ...`
 // 会触发 data race。anthropic.Adapter 自身仅持有 immutable bool，per-call
-// 构造无开销。（参考 codex lane plan §Decision Points #1 与 §Failure Modes）
+// 构造无开销，也避免跨请求共享状态。
 //
 // 未来扩展点：
 //   - Bedrock-on-Llama: 内层 JSON 形态不同，需自实现解析

@@ -25,9 +25,6 @@
 //   - 6 步 in-process 全 audit，每步独立 reason
 //   - 任一原子失败时记录部分结果再返回 error（便于 admin 定位）
 //   - plan 中每个步骤都可单独 nil/false 关闭，做单步测试
-//
-// 单 lane 实现（Owner 2026-05-06 directive：本轮先整完，最后让 codex
-// renew）。
 package gateway
 
 import (
@@ -302,7 +299,7 @@ func stripSystemCacheControl(body []byte) ([]byte, bool, string, error) {
 // applyToolsTailCacheBreakpoint 在 body.tools[-1] 上挂 ephemeral cache_control。
 // ttl 为空时 cache_control = {"type":"ephemeral"}；非空时 = {"type":"ephemeral","ttl":ttl}。
 //
-// 守卫两条不变量（codex P1 finding 2026-05-06）：
+// 守卫两条不变量：
 //   - 当前 body 已有 4 个 cache_control 时拒写（CacheControlMaxAllowed）
 //   - tools[-1] 已带 cache_control 时拒写，避免覆盖客户原 TTL
 func applyToolsTailCacheBreakpoint(body []byte, ttl string) ([]byte, bool, string, error) {

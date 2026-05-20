@@ -55,7 +55,7 @@ func TestAT_OBS_004_AtomicFiveEffect(t *testing.T) {
 		t.Fatalf("expected one usage_record with claim_id=%d; got %d", seed.claimID, usageCount)
 	}
 
-	// Slice 2 (N+5b 2026-05-01): the success-path usage row carries the
+	// The success-path usage row carries the
 	// router+registry stamp from migration 0008's snapshot_version column.
 	var snapshot *string
 	if err := pool.QueryRow(ctx,

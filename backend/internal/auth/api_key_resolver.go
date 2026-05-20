@@ -1,4 +1,4 @@
-// Phase L0 minimum (N+4a): table-backed inbound auth resolver.
+// Phase L0 minimum: table-backed inbound auth resolver.
 // Replaces the SmokeAuthResolver path used during Phase C v0.1.
 //
 // Pipeline per docs/process/plans/2026-04-30-n4-l0-minimum.md (synthesized):
@@ -13,8 +13,8 @@
 //     Pool/Adapter/Ledger.
 //   - CMB-5: Plaintext bearer is never logged. Errors return only the
 //     key_prefix (never the suffix or full token) for debugging.
-//   - CMB-7: This package writes nothing in N+4a. last_used_at update
-//     is intentionally omitted; scheduled for N+4b.
+//   - CMB-7: This package writes nothing. last_used_at update
+//     is intentionally omitted; scheduled for a later slice.
 //
 // All authentication failures map to a single ErrUnauthorized return
 // (D10 in synthesized plan) so the handler can map to HTTP 401 without
@@ -62,7 +62,7 @@ const MaxBcryptFanout = 5
 // key expired, user disabled. The handler maps this to HTTP 401.
 //
 // Discriminating credential failure modes externally would leak account
-// enumeration signal (codex synthesized plan D10). Operators see the
+// enumeration signal (D10 in synthesized plan). Operators see the
 // distinction in audit logs only.
 var ErrUnauthorized = errors.New("auth: unauthorized")
 
@@ -74,7 +74,7 @@ var ErrAuthMisconfigured = errors.New("auth: resolver not configured")
 // lookup (PG connection broken, context cancelled mid-query, missing
 // table). The handler maps this to HTTP 503 — NOT 401 — so legitimate
 // clients are not told their valid credentials are invalid during an
-// infrastructure outage. Codex N+4a P1 finding 2026-04-30.
+// infrastructure outage.
 var ErrAuthBackend = errors.New("auth: backend datastore error")
 
 // APIKeyResolver authenticates inbound requests against the api_keys
@@ -111,7 +111,7 @@ func (r *APIKeyResolver) Resolve(ctx context.Context, req *http.Request) (Identi
 
 	rows, err := r.q.LookupAPIKeysByPrefix(ctx, prefix)
 	if err != nil {
-		// Codex N+4a pass1 P1: do not collapse infra failures to credential
+		// Do not collapse infra failures to credential
 		// failure. Handler maps ErrAuthBackend to 503.
 		return Identity{}, fmt.Errorf("%w: lookup: %v", ErrAuthBackend, err)
 	}
@@ -123,7 +123,7 @@ func (r *APIKeyResolver) Resolve(ctx context.Context, req *http.Request) (Identi
 		if row.ExpiresAt.Valid && !row.ExpiresAt.Time.After(now) {
 			continue
 		}
-		// Codex N+4a pass1 P1 + pass3 P1: tenant + user status checked
+		// Tenant + user status checked
 		// per-row via INNER JOIN (deleted_at IS NULL filters parents at
 		// SQL layer; status is enforced here). One DB roundtrip total.
 		if row.UserStatus != "active" {

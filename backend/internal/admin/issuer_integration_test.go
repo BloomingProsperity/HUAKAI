@@ -1,6 +1,6 @@
 //go:build integration_pg
 
-// Slice 2 (N+4b2) integration tests for the admin issuance pipeline.
+// Slice 2 integration tests for the admin issuance pipeline.
 // Validates the full flow:
 //   1. Bootstrap admin token from env var → first AdminIdentity exists
 //   2. Issuer.Issue(...) writes api_keys row + admin_audit_events row
@@ -159,8 +159,8 @@ func TestAdminIssue_HappyPath(t *testing.T) {
 	}
 
 	// Issued plaintext must authenticate via the CUSTOMER resolver — the
-	// whole point of N+4b2 is that admin-issued keys behave identically
-	// to hand-SQL'd ones from N+4a's perspective.
+	// whole point is that admin-issued keys behave identically to
+	// hand-SQL'd ones from the customer resolver's perspective.
 	custResolver := auth.NewAPIKeyResolver(dbauth.New(pool))
 	custReq := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	custReq.Header.Set("Authorization", "Bearer "+result.Plaintext)

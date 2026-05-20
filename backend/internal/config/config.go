@@ -30,7 +30,7 @@ var ErrMissingRequired = errors.New("config: missing required env var")
 
 // Load reads env vars into a Config. Required vars: HUAKAI_DATABASE_URL.
 //
-// 2026-04-30 N+4a: removed Smoke* fields — replaced by api_keys-table-
+// Removed Smoke* fields — replaced by api_keys-table-
 // backed inbound auth (auth.APIKeyResolver). Rolling back to env-injected
 // auth requires a code revert (no build-tag escape hatch).
 func Load() (*Config, error) {

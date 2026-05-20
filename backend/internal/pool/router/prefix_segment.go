@@ -4,7 +4,7 @@
 // HRW ring 上的 K=3 段 + 段内每个成员是否见过 vendor cache 的 bitmap +
 // 老化锚（最近一次 cache_read 时间）。
 //
-// SegmentTable 是 in-memory 主权威 segment 表（per codex synthesis D4 拓扑
+// SegmentTable 是 in-memory 主权威 segment 表（per synthesis D4 拓扑
 // 创新）：hot path 完全脱离 DB，PG 持久化在 A6 atomic 加，运行时只读
 // in-memory。
 //
@@ -42,7 +42,7 @@ const DefaultSegmentMaxAge = 5 * time.Minute
 // 时间 (1h, 与 Anthropic extended cache TTL 对齐)。
 const DefaultExtendedCacheTTL = 1 * time.Hour
 
-// DefaultSegmentTableCap 默认段表上限 (synthesis D8: codex 100k)。
+// DefaultSegmentTableCap 默认段表上限 (synthesis D8: 100k)。
 const DefaultSegmentTableCap = 100_000
 
 // PrefixSegment 是 PASR-lite 调度器的运行时段元数据。

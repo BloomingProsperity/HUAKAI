@@ -46,7 +46,7 @@ var ErrAdminNotFound = errors.New("admin: target not found")
 // ErrAdminBackend wraps any datastore failure during admin work. The
 // handler maps this to 503 — NOT 401 — so legitimate operators are not
 // told their valid creds are invalid during an infra outage.
-// Mirrors auth.ErrAuthBackend (codex N+4a P1 finding).
+// Mirrors auth.ErrAuthBackend.
 var ErrAdminBackend = errors.New("admin: backend datastore error")
 
 // Role enum mirrored from the admin_tokens.role CHECK constraint.

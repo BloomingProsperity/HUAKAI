@@ -1,6 +1,6 @@
 //go:build integration_pg
 
-// Slice 2 (N+5a) integration tests for PostgresRegistry against real
+// Slice 2 integration tests for PostgresRegistry against real
 // PostgreSQL. Validates the 14 cases enumerated in
 // docs/process/plans/2026-04-30-n5-model-registry.md §"Test Plan":
 //
@@ -102,7 +102,7 @@ func newFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *registry
 
 func (f *registryFixture) cleanup() {
 	c := context.Background()
-	// Tenant-scoped rows: bindings always tenant-scoped (codex N+5a P1).
+	// Tenant-scoped rows: bindings always tenant-scoped.
 	_, _ = f.pool.Exec(c, `DELETE FROM model_pool_bindings WHERE tenant_id = $1`, f.tenantID)
 	// Capabilities/aliases/models: tenant-scoped + opt-in scope='global'
 	// rows seeded by tests that exercise inheritance (test #5/#6/#7).
@@ -222,7 +222,7 @@ func (f *registryFixture) seedAlias(o aliasOpts) int64 {
 }
 
 type bindingOpts struct {
-	// Bindings are ALWAYS tenant-scoped (codex N+5a P1 2026-04-30).
+	// Bindings are ALWAYS tenant-scoped.
 	// modelID may point at a global-scope model — that is the inheritance
 	// path: tenant T sets up its own binding to a globally-shared model.
 	modelID               int64
@@ -457,7 +457,7 @@ func TestPostgresRegistry_TenantDisabledBlocksGlobal(t *testing.T) {
 	})
 	// Tenant-scoped binding to the global model — present so that IF the
 	// explicit-deny invariant were broken, fallback would actually succeed
-	// (sharpening the assertion). Bindings are tenant-scoped per N+5a P1.
+	// (sharpening the assertion). Bindings are tenant-scoped.
 	f.seedBinding(bindingOpts{
 		modelID: globalMid, poolGroupID: f.poolGroupID, priority: 100,
 	})

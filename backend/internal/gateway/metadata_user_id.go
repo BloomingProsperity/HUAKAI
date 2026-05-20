@@ -16,9 +16,6 @@
 //   - 纯函数：入参 bytes + plan → 出参 bytes + 审计信息
 //   - 无法解析时回退到 plan.FallbackUserID（直接整体替换为给定字符串）
 //   - 解析与格式化拆为公开 helper，可在测试 / 其它路径单独使用
-//
-// 单 lane 实现（Owner 2026-05-06 directive：本轮先整完，最后让 codex
-// renew；不再做 per-commit codex review 与 code-parallel）。
 package gateway
 
 import (

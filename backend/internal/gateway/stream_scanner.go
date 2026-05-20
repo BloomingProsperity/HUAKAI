@@ -17,7 +17,7 @@
 //   - 不改 SSEEvent 结构（保留 Type/Data/ObservedAt 三字段；下游 forwarder
 //     代码不动）
 //   - 不动 ScanSSEEvents 实现（只是被 SSEStreamScanner 调用）
-//   - 不引入新的 wire 元数据字段（codex plan 的 StreamWireProtocol 留到
+//   - 不引入新的 wire 元数据字段（StreamWireProtocol 留到
 //     未来 observability 需要时再加）
 package gateway
 

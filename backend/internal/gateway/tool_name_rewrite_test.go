@@ -313,7 +313,7 @@ func TestRewriteToolNames_Idempotent(t *testing.T) {
 	}
 }
 
-// TestRewriteToolNames_ChainedMappingIdempotent 验证 codex P2 finding 守卫：
+// TestRewriteToolNames_ChainedMappingIdempotent 验证链式 mapping 幂等守卫：
 // 当 mapping 含链式情形（如 a→b、b→c）时，第一次过将 a 改成 b，第二次过
 // 不应再把 b 改成 c。守卫做法是把所有 target 视为"终态"，已在 target
 // 集合中的名称跳过改写。

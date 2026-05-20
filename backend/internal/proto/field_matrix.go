@@ -11,9 +11,9 @@
 // FieldPreservedDefault，**不**是 FieldUnsupported。这是 HUAKAI 区别于
 // sub2api / new-api 的关键 — 后者 hardcode 已知字段，新字段必须改代码。
 //
-// 设计综合（claude lane + codex lane plan）：
-//   - codex lane 建议：每条 entry 带 reason + 区分 lossy/lossless transform
-//   - claude lane 建议：用嵌套 map 简化 key 路径
+// 设计综合：
+//   - 每条 entry 带 reason + 区分 lossy/lossless transform
+//   - 用嵌套 map 简化 key 路径
 //   - 综合：FieldMatrixEntry 携带 metadata (Verdict + TransformKind + Reason)；
 //     用嵌套 map 存；提供 Lookup（返回完整 entry）+ LookupVerdict（短路返回 verdict）
 package proto

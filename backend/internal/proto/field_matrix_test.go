@@ -1,6 +1,6 @@
 // field_matrix_test.go — U7-E 测试：字段级 verdict matrix。
 //
-// 综合 codex lane plan §Test Matrix + claude lane plan：
+// 覆盖矩阵：
 //   - registered preserved/transformed/dropped 各覆盖
 //   - unregistered → FieldPreservedDefault（核心契约）
 //   - cross pair boundary：相同 fieldName 在不同 (client,upstream) 不串线
@@ -101,8 +101,8 @@ func TestFieldMatrix_LookupVerdict_ShortcutEquivalentToLookup(t *testing.T) {
 	}
 }
 
-// TestFieldMatrix_UnregisteredClientUpstreamPair codex plan §"Cross Pair
-// Boundaries"：未登记 (client, upstream) 对应返回 FieldPreservedDefault，
+// TestFieldMatrix_UnregisteredClientUpstreamPair 验证未登记 (client, upstream)
+// 对应返回 FieldPreservedDefault，
 // 不应"借"另一对的 verdict。两个方向都测——sonnet debugger 提出的
 // "client/upstream order matters" 守界。
 func TestFieldMatrix_UnregisteredClientUpstreamPair(t *testing.T) {
@@ -186,8 +186,8 @@ func TestFieldMatrix_RegisteredEntriesCoverAllClientsThatHaveAdapters(t *testing
 	}
 }
 
-// TestFieldMatrix_TransformedEntriesAlwaysHaveTransformKind codex plan
-// §Decision Points "transformed 必带 lossy/lossless"——本测试守约。
+// TestFieldMatrix_TransformedEntriesAlwaysHaveTransformKind 验证 transformed
+// entry 必带 lossy/lossless 标注。
 func TestFieldMatrix_TransformedEntriesAlwaysHaveTransformKind(t *testing.T) {
 	m := DefaultFieldMatrix()
 	for client, byUpstream := range m {

@@ -75,12 +75,12 @@ type AccountInfo struct {
 //   - cred.Type == UpstreamPassthrough 且 cred.Extra["base_url"] 非空 → 用
 //     account 自带的第三方代理地址 (provider_accounts.upstream_static.base_url)
 //
-// base_url 路径处理 (codex chunk9 P2 修正):
+// base_url 路径处理:
 //   - base_url 只含 scheme + host (e.g. "https://proxy.com" 或 "https://proxy.com/") →
 //     用 adapter default 的 path 拼接, 结果 "https://proxy.com/v1/chat/completions"
 //   - base_url 自带 path (e.g. "https://proxy.com/api/v1/chat") → 信任用户原样返回
 //
-// codex chunk4 P1 防: 第三方 upstream_passthrough 凭据 token 误发到官方
+// 防第三方 upstream_passthrough 凭据 token 误发到官方
 // vendor endpoint (e.g. 客户配置自托管 proxy 但请求仍发 api.openai.com)。
 func EndpointForCredential(adapterDefault string, cred Credential) string {
 	if cred.Type != CredentialTypeUpstreamPassthrough {
@@ -120,10 +120,10 @@ func EndpointForCredential(adapterDefault string, cred Credential) string {
 		combined.Path = basePath + adapterSuffix
 	default:
 		// base path 末段不是版本号 (e.g. /api/v1/chat 自定义完整路径) → 信任
-		// 用户配置, 原样用 (codex chunk13 P2: 不再硬拼后缀)。
+		// 用户配置, 原样用, 不再硬拼后缀。
 		combined.Path = basePath
 	}
-	// codex chunk13 P2: base_url 自带 query (proxy routing token / Azure
+	// base_url 自带 query (proxy routing token / Azure
 	// api-version 等) 必须保留; 仅 base 无 query 时才用 adapter default query。
 	if combined.RawQuery == "" {
 		combined.RawQuery = defaultURL.RawQuery
@@ -156,7 +156,7 @@ func isAPIVersionPath(path string) bool {
 // 部分。"/v1/chat/completions" 与 "/api/v1/chat/completions" 都返回
 // "/chat/completions"。 取**首个**版本段而非最后一个 — 否则 gemini
 // "/v1beta/models/{model}:..." 里若 model 名形如 "v2-pro" 会被误判成版本段
-// (codex review P3)。 找不到版本段, 或版本段已是末段时, 原样返回整个 path。
+// 找不到版本段, 或版本段已是末段时, 原样返回整个 path。
 func apiEndpointSuffix(path string) string {
 	segs := strings.Split(strings.Trim(path, "/"), "/")
 	for i, seg := range segs {

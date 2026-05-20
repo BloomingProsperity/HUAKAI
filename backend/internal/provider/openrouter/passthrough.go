@@ -36,6 +36,7 @@ func (a *PassthroughAdapter) AcceptableCredentialTypes() []provider.CredentialTy
 // OpenRouter 推荐 caller 注入 HTTP-Referer 和 X-Title 用于排行榜归属：
 //   - Credential.Extra["http_referer"] → HTTP-Referer
 //   - Credential.Extra["x_title"]      → X-Title
+//
 // 这两个 header 完全可选；不影响功能。
 func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.BuildInput) (*http.Request, error) {
 	if !a.acceptsCredential(in.Credential.Type) {
@@ -50,7 +51,7 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		endpoint = defaultChatCompletionsEndpoint
 	}
 
-		// upstream_passthrough 凭据自带 base_url 优先用之 (codex chunk4 P1)
+	// upstream_passthrough 凭据自带 base_url 优先用之。
 	endpoint = provider.EndpointForCredential(endpoint, in.Credential)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(in.InboundBody))
