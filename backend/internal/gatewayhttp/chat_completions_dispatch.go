@@ -23,16 +23,17 @@ import (
 
 func newChatExecution(d ChatHandlerDeps, r *http.Request, ident auth.Identity, validated chatValidatedRequest, startedAt time.Time) *chatExecution {
 	return &chatExecution{
-		d:              d,
-		r:              r,
-		ctx:            r.Context(),
-		startedAt:      startedAt,
-		ident:          ident,
-		body:           validated.Body,
-		req:            validated.Request,
-		clientProtocol: validated.ClientProtocol,
-		clientAdapter:  validated.ClientAdapter,
-		requestID:      validated.RequestID,
+		d:                                d,
+		r:                                r,
+		ctx:                              r.Context(),
+		startedAt:                        startedAt,
+		ident:                            ident,
+		body:                             validated.Body,
+		req:                              validated.Request,
+		clientProtocol:                   validated.ClientProtocol,
+		clientAdapter:                    validated.ClientAdapter,
+		requestID:                        validated.RequestID,
+		streamInputOnlyInterruptedPolicy: d.BillingPolicyResolver.ResolveStreamInputOnlyInterruptedPolicy(r.Context(), ident.TenantID),
 	}
 }
 
@@ -172,7 +173,7 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter) bool {
 		Vendor:          pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily),
 	})
 	if errors.Is(err, pool.ErrNoEligibleAccount) || errors.Is(err, pool.ErrNoSlotAvailable) || errors.Is(err, pool.ErrAllChannelsDegraded) {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pool_no_capacity", ex.requestID); abortErr != nil {
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pool_no_capacity", ex.requestID, 0); abortErr != nil {
 			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
 		}
 		w.Header().Set("Retry-After", "5")
@@ -182,7 +183,7 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter) bool {
 	if errors.Is(err, pool.ErrClaimRace) {
 		// codex chunk13 P2: claim 被并发路径抢占移出 reserving — 这是预期内
 		// 竞态, 不是 internal error。 返 409 + Retry-After 让 client 幂等重试。
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "claim_race", ex.requestID); abortErr != nil {
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "claim_race", ex.requestID, 0); abortErr != nil {
 			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
 		}
 		w.Header().Set("Retry-After", "1")
@@ -190,12 +191,12 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter) bool {
 		return false
 	}
 	if err != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pool_select_error", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pool_select_error", ex.requestID, 0)
 		writeJSONError(w, http.StatusInternalServerError, "pool_select_error", err.Error())
 		return false
 	}
 	if selRes != nil && selRes.WaitPlan != nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "queue_wait", ex.requestID); abortErr != nil {
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "queue_wait", ex.requestID, 0); abortErr != nil {
 			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
 		}
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfterSecondsForWaitPlan(selRes.WaitPlan)))
@@ -203,7 +204,7 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter) bool {
 		return false
 	}
 	if selRes == nil || selRes.AccountID == 0 {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pool_select_no_account", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pool_select_no_account", ex.requestID, 0)
 		writeJSONError(w, http.StatusServiceUnavailable, "no_capacity", "pool returned no account")
 		return false
 	}
@@ -223,7 +224,7 @@ func retryAfterSecondsForWaitPlan(plan *pool.WaitPlan) int {
 func (ex *chatExecution) resolveCredential(w http.ResponseWriter) bool {
 	cred, accInfo, err := ex.d.CredentialVault.Resolve(ex.ctx, ex.ident.TenantID, ex.acquiredAccountID)
 	if err != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "credential_resolve_error", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "credential_resolve_error", ex.requestID, 0)
 		status := http.StatusInternalServerError
 		if errors.Is(err, provider.ErrAccountNotFound) {
 			status = http.StatusServiceUnavailable
@@ -269,12 +270,12 @@ func (ex *chatExecution) dispatchBufferedEnvelope(w http.ResponseWriter) (*proto
 func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCtx context.Context, startedAt time.Time) (*proto.HCSF, bool) {
 	canonicalReq, _, err := ex.clientAdapter.RequestToCanonical(seedCtx, ex.body)
 	if err != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID, 0)
 		writeJSONError(w, http.StatusBadRequest, "invalid_request_body", err.Error())
 		return nil, false
 	}
 	if canonicalReq == nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID, 0)
 		writeJSONError(w, http.StatusBadRequest, "invalid_request_body", "client adapter returned nil canonical envelope")
 		return nil, false
 	}
@@ -286,7 +287,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 
 	dispatcher := hcsfDispatcher(ex.d)
 	if dispatcher == nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "non_streaming_not_yet_wired", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "non_streaming_not_yet_wired", ex.requestID, 0)
 		writeJSONError(w, http.StatusServiceUnavailable, "non_streaming_not_yet_wired",
 			fmt.Sprintf("dispatcher lacks HCSF dispatch support for client_protocol=%q protocol_family=%q", ex.clientProtocol, ex.resolved.ProtocolFamily))
 		return nil, false
@@ -300,7 +301,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 	})
 	bufferedEnv, err := dispatcher.DispatchHCSF(dispatchCtx, canonicalReq)
 	if err != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_dispatch_error", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_dispatch_error", ex.requestID, 0)
 
 		// 把上游真实 status / header / body 透传到 client + health classification,
 		// 保留 401/429 retry 语义 + cooldown / rate-limit 信号 (codex review P1
@@ -331,7 +332,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 
 func (ex *chatExecution) finalizeBufferedEnvelope(w http.ResponseWriter, env *proto.HCSF, statusCode int, startedAt time.Time) (*proto.HCSF, bool) {
 	if env == nil || env.BufferedResponse == nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_empty_response", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_empty_response", ex.requestID, 0)
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, statusCode, time.Since(startedAt), ex.requestID, nil)
 		}

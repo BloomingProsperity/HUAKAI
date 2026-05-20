@@ -251,7 +251,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 	return &SettleResult{NewUserBalance: decimal.Zero, OutboxEventsEnqueued: outboxEvents}, nil
 }
 
-func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string) error {
+func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string, observedInputTokens int64) error {
 	if s == nil || s.pool == nil {
 		return ErrPoolNotConfigured
 	}
@@ -340,6 +340,7 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 			SettlementSource:       SettlementSourceProviderUpstream,
 			AcquisitionToken:       pgUUID(tokAbort),
 			AttemptSeq:             attemptSeq,
+			TokensInput:            int32(observedInputTokens),
 			ActualCost:             decimal.Zero,
 			InputCost:              decimal.Zero,
 			OutputCost:             decimal.Zero,

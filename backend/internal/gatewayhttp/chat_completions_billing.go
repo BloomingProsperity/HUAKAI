@@ -28,7 +28,7 @@ func (ex *chatExecution) handleNonStreamingResponse(w http.ResponseWriter) {
 	}
 	ledgerEntry, err := submitAuditLedgerEntry(ex.ctx, ex.d, bufferedEnv, ex.ident.TenantID, ex.requestID)
 	if err != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "audit_ledger_error", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "audit_ledger_error", ex.requestID, 0)
 		writeJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())
 		return
 	}
@@ -36,14 +36,14 @@ func (ex *chatExecution) handleNonStreamingResponse(w http.ResponseWriter) {
 	seedCtx := proto.ContextWithRequestMetaSeed(ex.ctx, seed)
 	clientBody, _, err := ex.clientAdapter.CanonicalToClientResponse(seedCtx, bufferedEnv)
 	if err != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "canonical_response_error", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "canonical_response_error", ex.requestID, 0)
 		writeJSONError(w, http.StatusBadGateway, "canonical_response_error", err.Error())
 		return
 	}
 	cacheEnvelope, cacheEnvelopeOK := encodeL2CacheEnvelope(bufferedEnv)
 	actualCost, err := ex.actualCompletionCost(usageFromBufferedEnvelope(bufferedEnv))
 	if err != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pricing_unavailable", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pricing_unavailable", ex.requestID, 0)
 		writeJSONError(w, http.StatusServiceUnavailable, "pricing_unavailable", err.Error())
 		return
 	}

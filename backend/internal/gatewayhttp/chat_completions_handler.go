@@ -30,25 +30,26 @@ type authResolver interface {
 }
 
 type ChatHandlerDeps struct {
-	Auth                 authResolver
-	Registry             registry.Registry
-	Router               router.Router
-	ClaimGate            billing.ClaimGate
-	RateTables           billing.RateTableSource
-	Selector             pool.Selector
-	CredentialVault      provider.CredentialVault
-	Dispatcher           *gateway.UpstreamDispatcher
-	CanonicalDispatcher  HCSFDispatcher
-	Forwarder            *gateway.StreamForwarder
-	ResponseCache        l2cache.Store
-	Settler              billing.Settler
-	ReplayStore          billing.ReplayStore
-	CompletionBus        *eventbus.Bus
-	AuditLedger          auditledger.Ledger
-	Signer               *sign.Signer
-	ChannelHealth        channelHealthRecorder
-	BillingPolicyVersion string
-	RequestClass         string
+	Auth                  authResolver
+	Registry              registry.Registry
+	Router                router.Router
+	ClaimGate             billing.ClaimGate
+	RateTables            billing.RateTableSource
+	Selector              pool.Selector
+	CredentialVault       provider.CredentialVault
+	Dispatcher            *gateway.UpstreamDispatcher
+	CanonicalDispatcher   HCSFDispatcher
+	Forwarder             *gateway.StreamForwarder
+	ResponseCache         l2cache.Store
+	Settler               billing.Settler
+	ReplayStore           billing.ReplayStore
+	BillingPolicyResolver *billing.PolicyResolver
+	CompletionBus         *eventbus.Bus
+	AuditLedger           auditledger.Ledger
+	Signer                *sign.Signer
+	ChannelHealth         channelHealthRecorder
+	BillingPolicyVersion  string
+	RequestClass          string
 
 	// EndpointFamily 标记 billing 字段；空字符串退化为 "chat"。
 	// /v1/chat/completions: "chat"
@@ -91,11 +92,12 @@ type chatExecution struct {
 	attempt  router.AttemptPlan
 	routeID  string
 
-	idempotencyHeader string
-	logicalRequestID  string
-	payloadHash       string
-	promptHash        string
-	reserveRes        *billing.ReserveResult
+	idempotencyHeader                string
+	logicalRequestID                 string
+	payloadHash                      string
+	promptHash                       string
+	reserveRes                       *billing.ReserveResult
+	streamInputOnlyInterruptedPolicy billing.StreamInputOnlyInterruptedPolicy
 
 	selRes            *pool.SelectionResult
 	acquiredAccountID int64
@@ -181,7 +183,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			if exec.resolved.ProtocolFamily == "anthropic_messages" {
 				if exec.reserveRes != nil {
 					_ = exec.d.Settler.Abort(exec.ctx, exec.ident.TenantID, exec.reserveRes.ClaimID,
-						"buffered_anthropic_not_supported", exec.requestID)
+						"buffered_anthropic_not_supported", exec.requestID, 0)
 				}
 				writeJSONError(w, http.StatusNotImplemented, "buffered_anthropic_not_supported",
 					"Anthropic /v1/messages 非流式 (stream:false) 暂未实现; 请设 stream:true 走流式路径")
@@ -234,7 +236,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 		Credential:      ex.cred,
 	})
 	if err != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_dispatch_error", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_dispatch_error", ex.requestID, 0)
 		classification, _ := gateway.Classify(0, nil, []byte(err.Error()), ex.accInfo.Platform)
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromDispatchError(err, classification), 0, time.Since(startedAt), ex.requestID, nil)
@@ -243,7 +245,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 		return nil, false
 	}
 	if dispatchRes == nil || dispatchRes.UpstreamReader == nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_empty_response", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_empty_response", ex.requestID, 0)
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, 0, time.Since(startedAt), ex.requestID, nil)
 		}
@@ -253,7 +255,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 	defer closeDispatchResult(dispatchRes)
 	raw, readErr := io.ReadAll(io.LimitReader(dispatchRes.UpstreamReader, 1<<20))
 	if readErr != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_read_error", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_read_error", ex.requestID, 0)
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, nil)
 		}
@@ -266,7 +268,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 		if classifyErr == nil && classification.Class != "" {
 			abortReason = "upstream_" + string(classification.Class)
 		}
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, abortReason, ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, abortReason, ex.requestID, 0)
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromClassification(dispatchRes.StatusCode, classification), dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()))
 		}
@@ -275,13 +277,13 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 	}
 	upstreamAdapter, err := protocolAdapterForBuffered(ex.d.Forwarder, ex.resolved.ProtocolFamily)
 	if err != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_adapter_error", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_adapter_error", ex.requestID, 0)
 		writeJSONError(w, http.StatusBadGateway, "upstream_adapter_error", err.Error())
 		return nil, false
 	}
 	bufferedEnv, _, err := upstreamAdapter.ProviderResponseToCanonical(seedCtx, raw)
 	if err != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "canonical_response_error", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "canonical_response_error", ex.requestID, 0)
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, nil)
 		}

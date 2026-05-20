@@ -32,10 +32,10 @@ type Settler interface {
 	// over Sub2API which detaches Usage Record write.
 	Settle(ctx context.Context, req SettleRequest) (*SettleResult, error)
 
-	// Abort aborts the claim with usage_values=0 (terminal upstream failure
-	// or AMBIGUOUS_USAGE end class). Tenant-scoped to prevent cross-tenant
-	// abort via stale claim id.
-	Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string) error
+	// Abort aborts the claim with zero cost. observedInputTokens is optional
+	// audit-only input usage for input-only interrupted streams; all costs stay
+	// zero. Tenant-scoped to prevent cross-tenant abort via stale claim id.
+	Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string, observedInputTokens int64) error
 
 	// CommitCacheHit 把尚未 acquire pool account 的 reserving claim 以零成本
 	// committed 终结 — 用于 L2 response cache 命中: 请求已成功返回缓存响应体,

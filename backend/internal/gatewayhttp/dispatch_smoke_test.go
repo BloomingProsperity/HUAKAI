@@ -90,7 +90,7 @@ func (s *smokeSettler) Settle(_ context.Context, req billing.SettleRequest) (*bi
 	return &billing.SettleResult{}, nil
 }
 
-func (s *smokeSettler) Abort(_ context.Context, _, _ int64, _, _ string) error {
+func (s *smokeSettler) Abort(_ context.Context, _, _ int64, _, _ string, _ int64) error {
 	atomic.AddInt64(&s.abortCalls, 1)
 	return nil
 }

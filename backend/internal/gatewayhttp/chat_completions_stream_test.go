@@ -336,6 +336,87 @@ func TestStreamingIdempotencyReplayAbortsZeroChargeGracefulStream(t *testing.T) 
 	}
 }
 
+func TestStreamingCaseCDefaultNoBillAbortsWithZeroObservedInput(t *testing.T) {
+	settler := &recordingSettler{}
+	deps := inputOnlyInterruptedStreamDeps(t, 77801, 17, billing.NewPolicyResolver(&streamPolicyStore{}, time.Minute))
+	deps.Settler = settler
+
+	rec := invokeHandler(t, deps, openAIStreamingRequestBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if len(settler.calls) != 0 {
+		t.Fatalf("settle calls=%d want 0 for case C no_bill", len(settler.calls))
+	}
+	if len(settler.aborts) != 1 {
+		t.Fatalf("abort calls=%d want 1 for case C no_bill", len(settler.aborts))
+	}
+	if got := settler.aborts[0].reason; got != "upstream_5xx" {
+		t.Fatalf("abort reason=%q want upstream_5xx", got)
+	}
+	if got := settler.aborts[0].observedInputTokens; got != 0 {
+		t.Fatalf("observed input tokens=%d want 0 for default no_bill", got)
+	}
+}
+
+func TestStreamingCaseCNoBillRecordAbortsWithObservedInput(t *testing.T) {
+	settler := &recordingSettler{}
+	deps := inputOnlyInterruptedStreamDeps(t, 77802, 23, streamPolicyResolver(billing.StreamInputOnlyInterruptedPolicyNoBillRecord))
+	deps.Settler = settler
+
+	rec := invokeHandler(t, deps, openAIStreamingRequestBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if len(settler.calls) != 0 {
+		t.Fatalf("settle calls=%d want 0 for case C no_bill_record", len(settler.calls))
+	}
+	if len(settler.aborts) != 1 {
+		t.Fatalf("abort calls=%d want 1 for case C no_bill_record", len(settler.aborts))
+	}
+	if got := settler.aborts[0].observedInputTokens; got != 23 {
+		t.Fatalf("observed input tokens=%d want 23 for no_bill_record", got)
+	}
+}
+
+func TestStreamingNoBillRecordTrueZeroDeliveryKeepsZeroObservedInput(t *testing.T) {
+	settler := &recordingSettler{}
+	deps := streamingReplayDeps(t, 77803, false, zeroTokenOpenAIStreamingFixture(), nil)
+	deps.BillingPolicyResolver = streamPolicyResolver(billing.StreamInputOnlyInterruptedPolicyNoBillRecord)
+	deps.Settler = settler
+
+	rec := invokeHandler(t, deps, openAIStreamingRequestBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if len(settler.calls) != 0 {
+		t.Fatalf("settle calls=%d want 0 for true zero-delivery stream", len(settler.calls))
+	}
+	if len(settler.aborts) != 1 {
+		t.Fatalf("abort calls=%d want 1 for true zero-delivery stream", len(settler.aborts))
+	}
+	if got := settler.aborts[0].observedInputTokens; got != 0 {
+		t.Fatalf("observed input tokens=%d want 0 for true zero-delivery stream", got)
+	}
+}
+
+func TestStreamingCaseCNilResolverDefaultsNoBill(t *testing.T) {
+	settler := &recordingSettler{}
+	deps := inputOnlyInterruptedStreamDeps(t, 77804, 31, nil)
+	deps.Settler = settler
+
+	rec := invokeHandler(t, deps, openAIStreamingRequestBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if len(settler.aborts) != 1 {
+		t.Fatalf("abort calls=%d want 1 for nil resolver case C", len(settler.aborts))
+	}
+	if got := settler.aborts[0].observedInputTokens; got != 0 {
+		t.Fatalf("observed input tokens=%d want 0 for nil resolver", got)
+	}
+}
+
 func TestStreamingIdempotencyReplayRecordsEOFNoTerminalWhenForwardAndSettleSucceed(t *testing.T) {
 	replayStore := billing.NewMemoryReplayStore()
 	body := openAIStreamingRequestBody()
@@ -699,8 +780,79 @@ func streamingReplayDeps(t *testing.T, claimID int64, hit bool, responseBody str
 	return deps
 }
 
+func inputOnlyInterruptedStreamDeps(t *testing.T, claimID int64, inputTokens int, resolver *billing.PolicyResolver) ChatHandlerDeps {
+	t.Helper()
+	deps := streamingReplayDeps(t, claimID, false, "", nil)
+	deps.BillingPolicyResolver = resolver
+	scanners := gateway.NewStaticStreamScannerRegistry()
+	scanners.MustRegister("openai_chat", scannerThenError{
+		event: inputOnlyOpenAIUsageEvent(inputTokens),
+		err:   io.ErrUnexpectedEOF,
+	})
+	deps.Forwarder.Scanners = scanners
+	return deps
+}
+
+func streamPolicyResolver(policy billing.StreamInputOnlyInterruptedPolicy) *billing.PolicyResolver {
+	return billing.NewPolicyResolver(&streamPolicyStore{
+		ok:     true,
+		policy: policy,
+	}, time.Minute)
+}
+
+type streamPolicyStore struct {
+	ok     bool
+	policy billing.StreamInputOnlyInterruptedPolicy
+}
+
+func (s *streamPolicyStore) Get(_ context.Context, tenantID int64, key string) (billing.StoredBillingSetting, bool, error) {
+	if !s.ok || key != billing.StreamInputOnlyInterruptedPolicyKey {
+		return billing.StoredBillingSetting{}, false, nil
+	}
+	return billing.StoredBillingSetting{
+		ID:        1,
+		TenantID:  tenantID,
+		Key:       key,
+		Value:     s.policy.String(),
+		UpdatedAt: time.Now().UTC(),
+		UpdatedBy: "test",
+	}, true, nil
+}
+
+func (s *streamPolicyStore) UpsertStreamInputOnlyInterruptedPolicy(_ context.Context, tenantID int64, policy billing.StreamInputOnlyInterruptedPolicy, updatedBy string) (billing.StoredBillingSetting, error) {
+	s.ok = true
+	s.policy = policy
+	return billing.StoredBillingSetting{
+		ID:        1,
+		TenantID:  tenantID,
+		Key:       billing.StreamInputOnlyInterruptedPolicyKey,
+		Value:     policy.String(),
+		UpdatedAt: time.Now().UTC(),
+		UpdatedBy: updatedBy,
+	}, nil
+}
+
+func (s *streamPolicyStore) List(_ context.Context, tenantID int64) ([]billing.StoredBillingSetting, error) {
+	if !s.ok {
+		return nil, nil
+	}
+	return []billing.StoredBillingSetting{{
+		ID:        1,
+		TenantID:  tenantID,
+		Key:       billing.StreamInputOnlyInterruptedPolicyKey,
+		Value:     s.policy.String(),
+		UpdatedAt: time.Now().UTC(),
+		UpdatedBy: "test",
+	}}, nil
+}
+
 func openAIStreamingRequestBody() string {
 	return `{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+}
+
+func inputOnlyOpenAIUsageEvent(inputTokens int) gateway.SSEEvent {
+	tokens := strconv.Itoa(inputTokens)
+	return gateway.SSEEvent{Data: []byte(`{"id":"chatcmpl-case-c","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}],"usage":{"prompt_tokens":` + tokens + `,"completion_tokens":0,"total_tokens":` + tokens + `}}`)}
 }
 
 func openAIStreamingFixture() string {

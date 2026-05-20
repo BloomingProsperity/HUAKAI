@@ -164,7 +164,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 	if in.ReserveResult == nil || in.AccountID == 0 {
 		if err != nil {
 			if in.ReserveResult != nil {
-				_ = d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error", in.RequestID)
+				_ = d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error", in.RequestID, 0)
 			}
 			writeJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())
 			return true
@@ -201,7 +201,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		return true
 	}
 	if err != nil {
-		_ = d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error", in.RequestID)
+		_ = d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error", in.RequestID, 0)
 		writeJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())
 		return true
 	}

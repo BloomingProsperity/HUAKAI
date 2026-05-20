@@ -22,10 +22,11 @@ type recordingSettler struct {
 }
 
 type recordedAbort struct {
-	tenantID       int64
-	claimID        int64
-	reason         string
-	auditRequestID string
+	tenantID            int64
+	claimID             int64
+	reason              string
+	auditRequestID      string
+	observedInputTokens int64
 }
 
 func (s *recordingSettler) Settle(_ context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {
@@ -33,12 +34,13 @@ func (s *recordingSettler) Settle(_ context.Context, req billing.SettleRequest) 
 	return &billing.SettleResult{}, nil
 }
 
-func (s *recordingSettler) Abort(_ context.Context, tenantID, claimID int64, reason, auditRequestID string) error {
+func (s *recordingSettler) Abort(_ context.Context, tenantID, claimID int64, reason, auditRequestID string, observedInputTokens int64) error {
 	s.aborts = append(s.aborts, recordedAbort{
-		tenantID:       tenantID,
-		claimID:        claimID,
-		reason:         reason,
-		auditRequestID: auditRequestID,
+		tenantID:            tenantID,
+		claimID:             claimID,
+		reason:              reason,
+		auditRequestID:      auditRequestID,
+		observedInputTokens: observedInputTokens,
 	})
 	return nil
 }
