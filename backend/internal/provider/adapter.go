@@ -154,19 +154,21 @@ func isAPIVersionPath(path string) bool {
 
 // apiEndpointSuffix 返回 adapter default path 中 API 版本段之后的 endpoint
 // 部分。"/v1/chat/completions" 与 "/api/v1/chat/completions" 都返回
-// "/chat/completions"。 找不到版本段, 或版本段已是末段时, 原样返回整个 path。
+// "/chat/completions"。 取**首个**版本段而非最后一个 — 否则 gemini
+// "/v1beta/models/{model}:..." 里若 model 名形如 "v2-pro" 会被误判成版本段
+// (codex review P3)。 找不到版本段, 或版本段已是末段时, 原样返回整个 path。
 func apiEndpointSuffix(path string) string {
 	segs := strings.Split(strings.Trim(path, "/"), "/")
-	lastVer := -1
 	for i, seg := range segs {
-		if isAPIVersionSegment(seg) {
-			lastVer = i
+		if !isAPIVersionSegment(seg) {
+			continue
 		}
+		if i >= len(segs)-1 {
+			return path
+		}
+		return "/" + strings.Join(segs[i+1:], "/")
 	}
-	if lastVer < 0 || lastVer >= len(segs)-1 {
-		return path
-	}
-	return "/" + strings.Join(segs[lastVer+1:], "/")
+	return path
 }
 
 // BuildInput 是 BuildRequest 的入参。

@@ -54,6 +54,13 @@ func TestEndpointForCredential(t *testing.T) {
 			want:           "https://proxy.example/openai/v1/chat/completions",
 		},
 		{
+			// 回归 P3: gemini path, model 名形如 v2-pro 不被误判成版本段。
+			name:           "gemini 多段 root + model 名含 v 数字",
+			adapterDefault: "https://generativelanguage.googleapis.com/v1beta/models/v2-pro:generateContent",
+			cred:           passthroughCred("https://proxy.example/v1beta"),
+			want:           "https://proxy.example/v1beta/models/v2-pro:generateContent",
+		},
+		{
 			name:           "base_url 已含完整 adapter path 原样信任",
 			adapterDefault: "https://openrouter.ai/api/v1/chat/completions",
 			cred:           passthroughCred("https://proxy.example/api/v1/chat/completions"),
@@ -98,6 +105,7 @@ func TestAPIEndpointSuffix(t *testing.T) {
 		{"/api/v1/chat/completions", "/chat/completions"},
 		{"/openai/v1/chat/completions", "/chat/completions"},
 		{"/v1beta/models/x:generateContent", "/models/x:generateContent"},
+		{"/v1beta/models/v2-pro:generateContent", "/models/v2-pro:generateContent"}, // P3: model 名含 v 数字不被误判
 		{"/chat/completions", "/chat/completions"}, // 无版本段原样返回
 		{"/v1", "/v1"},                             // 版本段已是末段原样返回
 	}
