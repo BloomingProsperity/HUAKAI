@@ -14,7 +14,6 @@ import type {
 // chat 端点走 auth.APIKeyResolver, 显式拒绝 hk_admin_ token (CMB-1 隔离),
 // 必须用 hk_live_* / hk_test_* 客户 API key。localStorage key 跟 admin 分离,
 // 避免 landing-page 引导用户把 admin token 塞进 chat 调用导致 401
-// (codex review P2 2026-05-19)。
 function getCustomerAPIKey(): string {
   if (typeof window === 'undefined') return '';
   return localStorage.getItem('huakai_api_key') ?? '';

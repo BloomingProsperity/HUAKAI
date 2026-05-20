@@ -1,6 +1,3 @@
-// SSE 解析 helper — 自实现，不依赖第三方库
-// 使用 fetch + ReadableStream + TextDecoder 逐行消费 SSE 流
-
 export interface SseEvent {
   // SSE event type（来自 "event: xxx" 行，缺省为 "message"）
   type: string;
@@ -8,7 +5,6 @@ export interface SseEvent {
   data: string;
 }
 
-// 回调类型
 export type SseCallback = (event: SseEvent) => void;
 export type SseDoneCallback = () => void;
 export type SseErrorCallback = (err: Error) => void;
@@ -45,7 +41,6 @@ export async function parseSSEStream(
 
   function flushMessage() {
     if (pendingData === '') return;
-    // [DONE] 标记：OpenAI 流式结束符
     if (pendingData === '[DONE]') {
       fireDone();
       pendingData = '';

@@ -114,14 +114,14 @@ export default function AccountsPage() {
     }
   }
 
-  function startEdit(acc: ProviderAccount) {
-    setEditId(acc.id);
+  function startEdit(account: ProviderAccount) {
+    setEditId(account.id);
     setEditForm({
-      enabled: acc.enabled,
-      priority: acc.priority,
-      cap_concurrency: acc.cap_concurrency,
-      pool_mode: acc.pool_mode,
-      temp_unschedulable_enabled: acc.temp_unschedulable_enabled,
+      enabled: account.enabled,
+      priority: account.priority,
+      cap_concurrency: account.cap_concurrency,
+      pool_mode: account.pool_mode,
+      temp_unschedulable_enabled: account.temp_unschedulable_enabled,
     });
     setSaveError('');
   }
@@ -239,32 +239,32 @@ export default function AccountsPage() {
               {loading ? '加载中…' : '（无账号）'}
             </td></tr>
           )}
-          {accounts.map((acc) => (
+          {accounts.map((account) => (
             // 用具名 Fragment 承载 key，避免裸 <> 无法附 key 的 React 警告
-            <React.Fragment key={acc.id}>
+            <React.Fragment key={account.id}>
               <tr>
-                <td style={{ fontFamily: 'monospace' }}>{acc.id}</td>
-                <td>{acc.name}</td>
-                <td style={{ color: '#8b949e' }}>{acc.account_type}</td>
+                <td style={{ fontFamily: 'monospace' }}>{account.id}</td>
+                <td>{account.name}</td>
+                <td style={{ color: '#8b949e' }}>{account.account_type}</td>
                 <td>
-                  <span style={{ color: HEALTH_COLOR[acc.health_state] ?? '#c9d1d9' }}>
-                    ● {acc.health_state}
+                  <span style={{ color: HEALTH_COLOR[account.health_state] ?? '#c9d1d9' }}>
+                    ● {account.health_state}
                   </span>
                 </td>
-                <td style={{ color: '#8b949e' }}>{acc.credential_state}</td>
-                <td>{acc.in_flight_count} / {acc.cap_concurrency}</td>
-                <td>{acc.in_flight_count}</td>
-                <td>{acc.priority}</td>
-                <td style={{ color: acc.enabled ? '#3fb950' : '#f85149' }}>
-                  {acc.enabled ? 'YES' : 'NO'}
+                <td style={{ color: '#8b949e' }}>{account.credential_state}</td>
+                <td>{account.in_flight_count} / {account.cap_concurrency}</td>
+                <td>{account.in_flight_count}</td>
+                <td>{account.priority}</td>
+                <td style={{ color: account.enabled ? '#3fb950' : '#f85149' }}>
+                  {account.enabled ? 'YES' : 'NO'}
                 </td>
                 <td>
                   <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
-                    <button onClick={() => startEdit(acc)} style={{ background: '#21262d', fontSize: '0.75rem', padding: '0.25rem 0.6rem' }}>
+                    <button onClick={() => startEdit(account)} style={{ background: '#21262d', fontSize: '0.75rem', padding: '0.25rem 0.6rem' }}>
                       编辑
                     </button>
-                    {acc.rate_limit_reset_at && (
-                      <button onClick={() => handleClearRL(acc.id)}
+                    {account.rate_limit_reset_at && (
+                      <button onClick={() => handleClearRL(account.id)}
                         style={{ background: '#6e40c9', fontSize: '0.75rem', padding: '0.25rem 0.6rem' }}>
                         清 RL
                       </button>
@@ -273,7 +273,7 @@ export default function AccountsPage() {
                 </td>
               </tr>
               {/* 行内编辑面板 */}
-              {editId === acc.id && (
+              {editId === account.id && (
                 <tr>
                   <td colSpan={10}>
                     <div style={{ background: '#0d1117', border: '1px solid #30363d', borderRadius: 4, padding: '0.75rem', display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
@@ -306,7 +306,7 @@ export default function AccountsPage() {
                         </select>
                       </div>
                       <div style={{ display: 'flex', gap: '0.5rem' }}>
-                        <button onClick={() => handleSave(acc.id)} disabled={saving}>{saving ? '保存中…' : '保存'}</button>
+                        <button onClick={() => handleSave(account.id)} disabled={saving}>{saving ? '保存中…' : '保存'}</button>
                         <button onClick={() => setEditId(null)} style={{ background: '#21262d' }}>取消</button>
                       </div>
                     </div>

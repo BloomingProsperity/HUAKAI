@@ -37,7 +37,7 @@ const Header = (_props: HeaderProps) => {
 
       try {
         // /debug/vars 走 adminGate, 必须带 admin bearer 否则 401。
-        // 之前没带 token, 即使后端正常也永远显示 offline (codex review P2 2026-05-19)。
+        // 之前没带 token, 即使后端正常也永远显示 offline。
         const adminToken =
           typeof window !== 'undefined'
             ? window.localStorage.getItem('huakai_admin_token') ?? ''
