@@ -2,7 +2,7 @@
 // 只服务本机测试, 不承载生产逻辑, 也不连接真实 Go/PG。
 //
 // M-rust-3 merge: 新增 MockControlPlaneBehavior 枚举 + drain_mode 支持
-// 支持 Normal / Unavailable / SlowResponse 三种行为, 以及运行时切换 drain_mode
+// 支持 Normal / Unavailable / InvalidArgument / SlowResponse 行为, 以及运行时切换 drain_mode
 
 use std::{
     collections::HashMap,
@@ -34,6 +34,8 @@ pub enum MockControlPlaneBehavior {
     Normal,
     /// 始终返回 gRPC Unavailable 状态
     Unavailable,
+    /// 始终返回非重试契约错误
+    InvalidArgument,
     /// 延迟响应 (模拟慢 control plane)
     SlowResponse { delay: Duration },
 }
@@ -53,6 +55,10 @@ pub struct MockControlPlaneConfig {
     pub attempt_response: AttemptReportResponse,
     /// 行为控制; 默认 Normal
     pub behavior: MockControlPlaneBehavior,
+    /// route_query 前 N 次返回 Unavailable, 用于熔断器恢复测试
+    pub route_failures_before_success: usize,
+    /// route_query 响应前延迟, 用于半开探测并发测试
+    pub route_response_delay: Duration,
     /// attempt_report 前 N 次返回 Unavailable, 用于 reporter retry 测试
     pub attempt_failures_before_success: usize,
     /// attempt_report 响应前延迟, 用于队列满测试
@@ -66,6 +72,8 @@ struct MockState {
     heartbeat_response: HeartbeatResponse,
     attempt_response: AttemptReportResponse,
     behavior: MockControlPlaneBehavior,
+    route_failures_remaining: AtomicUsize,
+    route_response_delay: Duration,
     attempt_failures_remaining: AtomicUsize,
     attempt_report_delay: Duration,
     attempt_ack_by_idempotency_key: Mutex<HashMap<String, AttemptReportResponse>>,
@@ -100,6 +108,8 @@ impl MockControlPlane {
             heartbeat_response: config.heartbeat_response,
             attempt_response: config.attempt_response,
             behavior: config.behavior,
+            route_failures_remaining: AtomicUsize::new(config.route_failures_before_success),
+            route_response_delay: config.route_response_delay,
             attempt_failures_remaining: AtomicUsize::new(config.attempt_failures_before_success),
             attempt_report_delay: config.attempt_report_delay,
             attempt_ack_by_idempotency_key: Mutex::new(HashMap::new()),
@@ -207,6 +217,8 @@ impl MockControlPlaneConfig {
                 advisory: String::new(),
             },
             behavior: MockControlPlaneBehavior::Normal,
+            route_failures_before_success: 0,
+            route_response_delay: Duration::ZERO,
             attempt_failures_before_success: 0,
             attempt_report_delay: Duration::ZERO,
         }
@@ -215,6 +227,16 @@ impl MockControlPlaneConfig {
     /// 使用指定行为覆盖默认 Normal
     pub fn with_behavior(mut self, behavior: MockControlPlaneBehavior) -> Self {
         self.behavior = behavior;
+        self
+    }
+
+    pub fn with_route_failures_before_success(mut self, failures: usize) -> Self {
+        self.route_failures_before_success = failures;
+        self
+    }
+
+    pub fn with_route_response_delay(mut self, delay: Duration) -> Self {
+        self.route_response_delay = delay;
         self
     }
 
@@ -243,14 +265,33 @@ impl RouteService for MockRouteService {
                 self.state.route_queries_seen.fetch_add(1, Ordering::SeqCst);
                 return Err(Status::unavailable("mock control plane unavailable"));
             }
+            MockControlPlaneBehavior::InvalidArgument => {
+                self.state.route_queries_seen.fetch_add(1, Ordering::SeqCst);
+                return Err(Status::invalid_argument("mock invalid route query"));
+            }
             MockControlPlaneBehavior::SlowResponse { delay } => {
                 tokio::time::sleep(*delay).await;
             }
             MockControlPlaneBehavior::Normal => {}
         }
 
+        if !self.state.route_response_delay.is_zero() {
+            tokio::time::sleep(self.state.route_response_delay).await;
+        }
+
         let query = request.into_inner();
         self.state.route_queries_seen.fetch_add(1, Ordering::SeqCst);
+
+        if self
+            .state
+            .route_failures_remaining
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(Status::unavailable("mock route query unavailable"));
+        }
 
         // 根据 request_protocol 决定 vendor (与 claude-m3 lane 对齐)
         let mut plan = self.state.route_plan.clone();

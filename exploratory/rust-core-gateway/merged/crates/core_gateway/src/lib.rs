@@ -3,6 +3,7 @@
 
 pub mod account_planner;
 pub mod attempt_reporter;
+mod circuit_breaker;
 pub mod config;
 pub mod error;
 pub mod heartbeat;
