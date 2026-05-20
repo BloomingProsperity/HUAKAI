@@ -5,6 +5,7 @@ pub mod account_planner;
 pub mod attempt_reporter;
 mod circuit_breaker;
 pub mod config;
+mod drain;
 pub mod error;
 pub mod heartbeat;
 pub mod listener;
@@ -21,7 +22,14 @@ pub mod tracing_init;
 
 use std::{sync::Arc, time::Duration};
 
-use axum::{Router, extract::State, http::header, response::IntoResponse, routing::get};
+use axum::{
+    Router,
+    extract::State,
+    http::{StatusCode, header},
+    middleware,
+    response::IntoResponse,
+    routing::get,
+};
 use bytes::Bytes;
 use tokio::net::TcpListener;
 use tower_http::limit::RequestBodyLimitLayer;
@@ -158,11 +166,17 @@ pub fn build_router(config: StartupConfig) -> Result<Router, GatewayError> {
     let state = GatewayState::new(config)?;
     let max_body_bytes = state.max_body_bytes();
 
+    // drain_guard 必须是业务路由的最外层: 排空时连超大 body 的请求也应直接拿到 503,
+    // 而不是先被 RequestBodyLimitLayer 拦成 413。因此 body 上限移到 drain_guard 之内,
+    // 只作用于业务路由 —— /healthz、/metrics 是无 body 的 GET, 不需要 body 上限。
+    let business_router = listener::build_router()
+        .layer(RequestBodyLimitLayer::new(max_body_bytes))
+        .layer(middleware::from_fn(drain::drain_guard));
+
     Ok(Router::new()
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics_handler))
-        .merge(listener::build_router())
-        .layer(RequestBodyLimitLayer::new(max_body_bytes))
+        .merge(business_router)
         .with_state(state))
 }
 
@@ -189,18 +203,28 @@ pub async fn run(config: StartupConfig) -> Result<(), GatewayError> {
     Ok(())
 }
 
-/// GET /healthz — 返回 {"status":"ok"}
+/// GET /healthz — 排空时返回 503, 供 LB 停止派发新流量。
 async fn healthz(State(state): State<GatewayState>) -> impl IntoResponse {
+    let draining = heartbeat::is_drain_mode();
+    let health_status = if draining { "draining" } else { "ok" };
     debug!(
         listen_addr = %state.listen_addr(),
-        health_status = "ok",
+        health_status,
         "healthz"
     );
 
-    (
-        [(header::CONTENT_TYPE, "application/json")],
-        Bytes::from_static(br#"{"status":"ok"}"#),
-    )
+    let status = if draining {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    };
+    let body = if draining {
+        Bytes::from_static(br#"{"status":"draining"}"#)
+    } else {
+        Bytes::from_static(br#"{"status":"ok"}"#)
+    };
+
+    (status, [(header::CONTENT_TYPE, "application/json")], body)
 }
 
 /// GET /metrics — 返回 Prometheus 文本格式指标 (scrape endpoint)
