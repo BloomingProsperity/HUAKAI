@@ -115,13 +115,37 @@ func EndpointForCredential(adapterDefault string, cred Credential) string {
 	case strings.HasSuffix(basePath, defaultPath) || strings.HasSuffix(basePath, adapterSuffix):
 		// base 已含完整 adapter path / endpoint suffix → 信任原值
 		combined.Path = basePath
-	default:
-		// base path 带版本前缀 (e.g. /v1 或 /api/v1) → 只拼 endpoint suffix,
-		// 不重复版本段, 避免 /api/v1/v1/chat/completions。
+	case isAPIVersionPath(basePath):
+		// base path 末段是 API 版本号 (e.g. /v1 或 /api/v1) → 只拼 endpoint
+		// suffix, 不重复版本段, 避免 /api/v1/v1/chat/completions。
 		combined.Path = basePath + adapterSuffix
+	default:
+		// base path 末段不是版本号 (e.g. /api/v1/chat 自定义完整路径) → 信任
+		// 用户配置, 原样用 (codex chunk13 P2: 不再硬拼后缀)。
+		combined.Path = basePath
 	}
-	combined.RawQuery = defaultURL.RawQuery
+	// codex chunk13 P2: base_url 自带 query (proxy routing token / Azure
+	// api-version 等) 必须保留; 仅 base 无 query 时才用 adapter default query。
+	if combined.RawQuery == "" {
+		combined.RawQuery = defaultURL.RawQuery
+	}
 	return combined.String()
+}
+
+// isAPIVersionPath 判断 path 末段是否是 API 版本号 (v1 / v2 / v1beta 等)。
+// 末段是版本号 → base_url 是 API root 应拼 endpoint suffix; 否则视为用户
+// 自定义完整路径, 原样信任。
+func isAPIVersionPath(path string) bool {
+	idx := strings.LastIndex(path, "/")
+	last := path
+	if idx >= 0 {
+		last = path[idx+1:]
+	}
+	if len(last) < 2 || last[0] != 'v' {
+		return false
+	}
+	// v 后至少一个数字 (允许 v1 / v2 / v1beta / v1alpha 等)
+	return last[1] >= '0' && last[1] <= '9'
 }
 
 // BuildInput 是 BuildRequest 的入参。
