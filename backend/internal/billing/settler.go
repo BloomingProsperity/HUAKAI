@@ -833,25 +833,11 @@ func coalesceString(v, fallback string) string {
 	return fallback
 }
 
-func coalesceInt64(v, fallback int64) int64 {
-	if v != 0 {
-		return v
-	}
-	return fallback
-}
-
 func int64Value(v *int64) int64 {
 	if v == nil {
 		return 0
 	}
 	return *v
-}
-
-func coalesceInt32(v, fallback int32) int32 {
-	if v != 0 {
-		return v
-	}
-	return fallback
 }
 
 func outputTokensForAttempt(draft gateway.UsageRecordDraft, attempt Attempt) int64 {
