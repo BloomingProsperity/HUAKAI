@@ -3,6 +3,7 @@ package gatewayhttp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"iter"
 	"net/http"
@@ -213,11 +214,22 @@ func TestStreamingIdempotencyReplayRecordsSSEAndReplays(t *testing.T) {
 	replayStore := billing.NewMemoryReplayStore()
 	body := openAIStreamingRequestBody()
 	claimID := int64(77701)
+	settler := &recordingSettler{}
 
 	firstDeps := streamingReplayDeps(t, claimID, false, openAIStreamingFixture(), replayStore)
+	firstDeps.Settler = settler
 	first := invokeWithIdempotencyKey(t, firstDeps, body, "stream-idem-main")
 	if first.Code != http.StatusOK {
 		t.Fatalf("first status=%d want 200; body=%s", first.Code, first.Body.String())
+	}
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1", len(settler.calls))
+	}
+	if settler.calls[0].StreamAttempt == nil || !settler.calls[0].StreamAttempt.State.Chargeable() {
+		t.Fatalf("graceful stream must commit a chargeable attempt; StreamAttempt=%#v", settler.calls[0].StreamAttempt)
+	}
+	if len(settler.aborts) != 0 {
+		t.Fatalf("abort calls=%d want 0", len(settler.aborts))
 	}
 	if got := first.Header().Get("Content-Type"); !strings.HasPrefix(got, idempotencyReplayContentTypeSSE) {
 		t.Fatalf("first Content-Type=%q want %s", got, idempotencyReplayContentTypeSSE)
@@ -256,7 +268,7 @@ func TestStreamingIdempotencyReplayRecordsSSEAndReplays(t *testing.T) {
 	}
 }
 
-func TestStreamingIdempotencyReplayRecordsZeroChargeGracefulStream(t *testing.T) {
+func TestStreamingIdempotencyReplayAbortsZeroChargeGracefulStream(t *testing.T) {
 	replayStore := billing.NewMemoryReplayStore()
 	body := openAIStreamingRequestBody()
 	claimID := int64(77706)
@@ -268,40 +280,59 @@ func TestStreamingIdempotencyReplayRecordsZeroChargeGracefulStream(t *testing.T)
 	if first.Code != http.StatusOK {
 		t.Fatalf("first status=%d want 200; body=%s", first.Code, first.Body.String())
 	}
-	if len(settler.calls) != 1 {
-		t.Fatalf("settle calls=%d want 1", len(settler.calls))
+	if len(settler.calls) != 0 {
+		t.Fatalf("settle calls=%d want 0 for zero-delivery stream", len(settler.calls))
 	}
-	if settler.calls[0].StreamAttempt == nil {
-		t.Fatal("stream settle request missing StreamAttempt")
+	if len(settler.aborts) != 1 {
+		t.Fatalf("abort calls=%d want 1 for zero-delivery stream", len(settler.aborts))
 	}
-	if settler.calls[0].StreamAttempt.State.Chargeable() {
-		t.Fatalf("stream state=%s must be zero-charge/non-chargeable", settler.calls[0].StreamAttempt.State)
+	if got := settler.aborts[0].claimID; got != claimID {
+		t.Fatalf("abort claimID=%d want %d", got, claimID)
 	}
-	stored, ok, err := replayStore.Lookup(context.Background(), validIdentity().TenantID, claimID)
+	if got := settler.aborts[0].reason; got != "stream_no_billable_delivery" {
+		t.Fatalf("abort reason=%q want stream_no_billable_delivery", got)
+	}
+	if _, ok, err := replayStore.Lookup(context.Background(), validIdentity().TenantID, claimID); err != nil {
+		t.Fatalf("lookup replay: %v", err)
+	} else if ok {
+		t.Fatal("zero-delivery stream must not record idempotency replay")
+	}
+
+	retryClaimID := claimID + 1
+	retrySettler := &recordingSettler{}
+	secondDeps := streamingReplayDeps(t, retryClaimID, false, openAIStreamingFixture(), replayStore)
+	secondDeps.Settler = retrySettler
+	second := invokeWithIdempotencyKey(t, secondDeps, body, "stream-idem-zero-charge")
+	if second.Code != http.StatusOK {
+		t.Fatalf("retry status=%d want 200; body=%s", second.Code, second.Body.String())
+	}
+	if got := second.Header().Get("X-HUAKAI-Idempotency-Hit"); got != "" {
+		t.Fatalf("retry idempotency-hit header=%q want empty after aborted first claim", got)
+	}
+	if !strings.Contains(second.Body.String(), "pong") {
+		t.Fatalf("retry should dispatch upstream and return fresh stream; body=%s", second.Body.String())
+	}
+	if len(retrySettler.calls) != 1 {
+		t.Fatalf("retry settle calls=%d want 1", len(retrySettler.calls))
+	}
+	if retrySettler.calls[0].ClaimID != retryClaimID {
+		t.Fatalf("retry settle claimID=%d want %d", retrySettler.calls[0].ClaimID, retryClaimID)
+	}
+	stored, ok, err := replayStore.Lookup(context.Background(), validIdentity().TenantID, retryClaimID)
 	if err != nil {
 		t.Fatalf("lookup replay: %v", err)
 	}
 	if !ok {
-		t.Fatal("zero-charge graceful stream must still record replay after successful settlement")
+		t.Fatal("retry chargeable stream must record replay after successful settlement")
 	}
 	if stored.ContentType != idempotencyReplayContentTypeSSE {
 		t.Fatalf("stored ContentType=%q want %q", stored.ContentType, idempotencyReplayContentTypeSSE)
 	}
-	if string(stored.ResponseBody) != first.Body.String() {
-		t.Fatalf("stored body mismatch:\nstored=%s\nfirst=%s", string(stored.ResponseBody), first.Body.String())
+	if string(stored.ResponseBody) != second.Body.String() {
+		t.Fatalf("stored retry body mismatch:\nstored=%s\nretry=%s", string(stored.ResponseBody), second.Body.String())
 	}
-
-	secondDeps := streamingReplayDeps(t, claimID, true, "data: should-not-dispatch\n\n", replayStore)
-	secondDeps.Dispatcher = &gateway.UpstreamDispatcher{}
-	second := invokeWithIdempotencyKey(t, secondDeps, body, "stream-idem-zero-charge")
-	if second.Code != http.StatusOK {
-		t.Fatalf("replay status=%d want 200; body=%s", second.Code, second.Body.String())
-	}
-	if got := second.Header().Get("X-HUAKAI-Idempotency-Hit"); got != "true" {
-		t.Fatalf("replay hit header=%q want true", got)
-	}
-	if first.Body.String() != second.Body.String() {
-		t.Fatalf("replay body mismatch:\nfirst=%s\nsecond=%s", first.Body.String(), second.Body.String())
+	if first.Body.String() == second.Body.String() {
+		t.Fatalf("fixture sanity: zero-delivery first body should differ from fresh chargeable retry\nfirst=%s\nsecond=%s", first.Body.String(), second.Body.String())
 	}
 }
 
@@ -332,6 +363,9 @@ func TestStreamingIdempotencyReplayRecordsEOFNoTerminalWhenForwardAndSettleSucce
 	}
 	if settler.calls[0].StreamAttempt == nil || !settler.calls[0].StreamAttempt.State.Chargeable() {
 		t.Fatalf("fixture must deliver a chargeable partial stream; StreamAttempt=%#v", settler.calls[0].StreamAttempt)
+	}
+	if len(settler.aborts) != 0 {
+		t.Fatalf("abort calls=%d want 0", len(settler.aborts))
 	}
 	stored, ok, err := replayStore.Lookup(context.Background(), validIdentity().TenantID, claimID)
 	if err != nil {
@@ -392,8 +426,10 @@ func TestStreamingIdempotencyReplaySkipsOverLimit(t *testing.T) {
 func TestStreamingIdempotencyReplayRecordsForwardErrorPartialStream(t *testing.T) {
 	replayStore := billing.NewMemoryReplayStore()
 	claimID := int64(77703)
+	settler := &recordingSettler{}
 
 	deps := streamingReplayDeps(t, claimID, false, "", replayStore)
+	deps.Settler = settler
 	scanners := gateway.NewStaticStreamScannerRegistry()
 	scanners.MustRegister("openai_chat", scannerThenError{
 		event: partialOpenAIStreamingEventBeforeReadError(),
@@ -406,6 +442,15 @@ func TestStreamingIdempotencyReplayRecordsForwardErrorPartialStream(t *testing.T
 	}
 	if got := rec.Header().Get("X-Huakai-Forward-Error"); got == "" {
 		t.Fatalf("X-Huakai-Forward-Error header empty; fixture must trigger fwdErr != nil, body=%s", rec.Body.String())
+	}
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1 for partial delivery with forward error", len(settler.calls))
+	}
+	if settler.calls[0].StreamAttempt == nil || !settler.calls[0].StreamAttempt.State.Chargeable() {
+		t.Fatalf("partial delivery with forward error must commit a chargeable attempt; StreamAttempt=%#v", settler.calls[0].StreamAttempt)
+	}
+	if len(settler.aborts) != 0 {
+		t.Fatalf("abort calls=%d want 0", len(settler.aborts))
 	}
 	stored, ok, err := replayStore.Lookup(context.Background(), validIdentity().TenantID, claimID)
 	if err != nil {
@@ -425,11 +470,74 @@ func TestStreamingIdempotencyReplayRecordsForwardErrorPartialStream(t *testing.T
 	}
 }
 
-func TestStreamingIdempotencyReplayRecordsZeroByteForwardError(t *testing.T) {
+func TestStreamingIdempotencyReplaySettlesAmbiguousUsageWithDeliveredContent(t *testing.T) {
 	replayStore := billing.NewMemoryReplayStore()
-	claimID := int64(77709)
+	claimID := int64(77710)
+	settler := &recordingSettler{}
 
 	deps := streamingReplayDeps(t, claimID, false, "", replayStore)
+	deps.Settler = settler
+	scanners := gateway.NewStaticStreamScannerRegistry()
+	scanners.MustRegister("openai_chat", scannerThenError{
+		event: partialOpenAIStreamingEventBeforeReadError(),
+		err:   errors.New("unknown stream termination"),
+	})
+	deps.Forwarder.Scanners = scanners
+
+	rec := invokeWithIdempotencyKey(t, deps, openAIStreamingRequestBody(), "stream-idem-ambiguous-delivered")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Huakai-Forward-Error"); got == "" {
+		t.Fatalf("X-Huakai-Forward-Error header empty; fixture must trigger fwdErr != nil, body=%s", rec.Body.String())
+	}
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1 for delivered ambiguous usage stream", len(settler.calls))
+	}
+	if len(settler.aborts) != 0 {
+		t.Fatalf("abort calls=%d want 0 for delivered ambiguous usage stream", len(settler.aborts))
+	}
+	draft := settler.calls[0].Draft
+	if draft.EndClass != gateway.AmbiguousUsage {
+		t.Fatalf("EndClass=%q want %q", draft.EndClass, gateway.AmbiguousUsage)
+	}
+	if draft.DeliveredTokenCount <= 0 {
+		t.Fatalf("DeliveredTokenCount=%d want >0 for delivered ambiguous usage stream", draft.DeliveredTokenCount)
+	}
+	if settler.calls[0].StreamAttempt == nil {
+		t.Fatal("StreamAttempt missing")
+	}
+	if settler.calls[0].StreamAttempt.State.Chargeable() {
+		t.Fatalf("ambiguous usage attempt must stay non-chargeable; StreamAttempt=%#v", settler.calls[0].StreamAttempt)
+	}
+	if settler.calls[0].StreamAttempt.DeliveredTokenCount <= 0 {
+		t.Fatalf("StreamAttempt DeliveredTokenCount=%d want >0", settler.calls[0].StreamAttempt.DeliveredTokenCount)
+	}
+	stored, ok, err := replayStore.Lookup(context.Background(), validIdentity().TenantID, claimID)
+	if err != nil {
+		t.Fatalf("lookup replay: %v", err)
+	}
+	if !ok {
+		t.Fatal("delivered ambiguous usage stream must record replay after settlement")
+	}
+	if stored.ContentType != idempotencyReplayContentTypeSSE {
+		t.Fatalf("stored ContentType=%q want %q", stored.ContentType, idempotencyReplayContentTypeSSE)
+	}
+	if string(stored.ResponseBody) != rec.Body.String() {
+		t.Fatalf("stored body mismatch:\nstored=%s\nclient=%s", string(stored.ResponseBody), rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "partial") || strings.Contains(rec.Body.String(), "data: [DONE]") {
+		t.Fatalf("fixture must deliver only partial SSE bytes; body=%s", rec.Body.String())
+	}
+}
+
+func TestStreamingIdempotencyReplayAbortsZeroByteForwardError(t *testing.T) {
+	replayStore := billing.NewMemoryReplayStore()
+	claimID := int64(77709)
+	settler := &recordingSettler{}
+
+	deps := streamingReplayDeps(t, claimID, false, "", replayStore)
+	deps.Settler = settler
 	scanners := gateway.NewStaticStreamScannerRegistry()
 	scanners.MustRegister("openai_chat", scannerImmediateError{err: io.ErrUnexpectedEOF})
 	deps.Forwarder.Scanners = scanners
@@ -444,33 +552,48 @@ func TestStreamingIdempotencyReplayRecordsZeroByteForwardError(t *testing.T) {
 	if got := first.Header().Get("X-Huakai-Forward-Error"); got == "" {
 		t.Fatalf("X-Huakai-Forward-Error header empty; fixture must fail before first byte")
 	}
-	stored, ok, err := replayStore.Lookup(context.Background(), validIdentity().TenantID, claimID)
-	if err != nil {
+	if len(settler.calls) != 0 {
+		t.Fatalf("settle calls=%d want 0 for zero-byte forward error", len(settler.calls))
+	}
+	if len(settler.aborts) != 1 {
+		t.Fatalf("abort calls=%d want 1 for zero-byte forward error", len(settler.aborts))
+	}
+	if got := settler.aborts[0].claimID; got != claimID {
+		t.Fatalf("abort claimID=%d want %d", got, claimID)
+	}
+	if got := settler.aborts[0].reason; got != "upstream_5xx" {
+		t.Fatalf("abort reason=%q want upstream_5xx", got)
+	}
+	if _, ok, err := replayStore.Lookup(context.Background(), validIdentity().TenantID, claimID); err != nil {
 		t.Fatalf("lookup replay: %v", err)
-	}
-	if !ok {
-		t.Fatal("zero-byte forward error must still record replay after successful settlement")
-	}
-	if stored.ResponseStatus != http.StatusOK {
-		t.Fatalf("stored status=%d want 200", stored.ResponseStatus)
-	}
-	if stored.ContentType != idempotencyReplayContentTypeSSE {
-		t.Fatalf("stored ContentType=%q want %q", stored.ContentType, idempotencyReplayContentTypeSSE)
-	}
-	if len(stored.ResponseBody) != 0 {
-		t.Fatalf("stored body len=%d want 0; body=%s", len(stored.ResponseBody), string(stored.ResponseBody))
+	} else if ok {
+		t.Fatal("zero-byte forward error must not record idempotency replay")
 	}
 
-	secondDeps := streamingReplayDeps(t, claimID, true, openAIStreamingFixture(), replayStore)
+	retryClaimID := claimID + 1
+	retrySettler := &recordingSettler{}
+	secondDeps := streamingReplayDeps(t, retryClaimID, false, openAIStreamingFixture(), replayStore)
+	secondDeps.Settler = retrySettler
 	second := invokeWithIdempotencyKey(t, secondDeps, openAIStreamingRequestBody(), "stream-idem-zero-byte-forward-error")
 	if second.Code != http.StatusOK {
-		t.Fatalf("replay status=%d want 200; body=%s", second.Code, second.Body.String())
+		t.Fatalf("retry status=%d want 200; body=%s", second.Code, second.Body.String())
 	}
-	if got := second.Header().Get("X-HUAKAI-Idempotency-Hit"); got != "true" {
-		t.Fatalf("replay hit header=%q want true", got)
+	if got := second.Header().Get("X-HUAKAI-Idempotency-Hit"); got != "" {
+		t.Fatalf("retry idempotency-hit header=%q want empty after aborted first claim", got)
 	}
-	if second.Body.Len() != 0 {
-		t.Fatalf("replay body len=%d want 0; body=%s", second.Body.Len(), second.Body.String())
+	if !strings.Contains(second.Body.String(), "pong") {
+		t.Fatalf("retry should dispatch upstream and return fresh stream; body=%s", second.Body.String())
+	}
+	if len(retrySettler.calls) != 1 {
+		t.Fatalf("retry settle calls=%d want 1", len(retrySettler.calls))
+	}
+	if retrySettler.calls[0].ClaimID != retryClaimID {
+		t.Fatalf("retry settle claimID=%d want %d", retrySettler.calls[0].ClaimID, retryClaimID)
+	}
+	if _, ok, err := replayStore.Lookup(context.Background(), validIdentity().TenantID, retryClaimID); err != nil {
+		t.Fatalf("lookup retry replay: %v", err)
+	} else if !ok {
+		t.Fatal("retry chargeable stream must record replay after successful settlement")
 	}
 }
 

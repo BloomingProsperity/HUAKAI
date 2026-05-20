@@ -187,19 +187,29 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	} else if ex.healthKeyOK {
 		recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalSuccess, dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, nil)
 	}
-	event := ex.streamingCompletionEvent(draft, streamAttempt)
 	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ex.ctx), 30*time.Second)
 	defer cancel()
-	// 记录条件必须是 claim commit 条件的超集。DefaultSettler.Settle 是纯
-	// commit 路径; handler 走过 Forward 后不再 Abort, 所以 settleCompletion
-	// 成功(本 else 分支)就表示 claim 已 commit 或已入队必将 commit。
-	// fwdErr 不参与门控: 上游读错或客户端断连前已交付的部分流同样 commit
-	// claim, 漏写 replay 会让同 key 重试撞 409。当前可接受的跳过条件只有
-	// 一个: body 超 1 MiB; 空 body 的已 commit 流也必须记录。
-	if _, err := settleCompletion(settleCtx, ex.d, event); err != nil {
-		w.Header().Set("X-Huakai-Settle-Error", err.Error())
-	} else if replayCapture != nil && !replayCapture.overLimit() {
-		ex.recordStreamingIdempotencyReplay(ex.reserveRes.ClaimID, replayCapture.statusCode(), replayCapture.body())
+	// settle 条件三选一: 可计费 / 已向客户端交付内容 / 用量歧义需 audit 对账。
+	// 仅"上游真零交付"(非计费 且 零交付 且 非 AmbiguousUsage) 才 abort —— 对齐
+	// Owner 2026-05-20 计费策略,且避免 abort 已交付内容的流导致重试重复交付。
+	settle := streamAttempt.State.Chargeable() ||
+		streamAttempt.DeliveredTokenCount > 0 ||
+		draft.EndClass == gateway.AmbiguousUsage
+	if settle {
+		event := ex.streamingCompletionEvent(draft, streamAttempt)
+		if _, err := settleCompletion(settleCtx, ex.d, event); err != nil {
+			w.Header().Set("X-Huakai-Settle-Error", err.Error())
+		} else if replayCapture != nil && !replayCapture.overLimit() {
+			ex.recordStreamingIdempotencyReplay(ex.reserveRes.ClaimID, replayCapture.statusCode(), replayCapture.body())
+		}
+	} else {
+		reason := streamAttempt.StreamTerminatedReason
+		if reason == "" {
+			reason = "stream_no_billable_delivery"
+		}
+		if abortErr := ex.d.Settler.Abort(settleCtx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID); abortErr != nil {
+			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+		}
 	}
 }
 

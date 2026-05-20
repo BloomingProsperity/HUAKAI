@@ -8,7 +8,7 @@
 //	  → CredentialVault.Resolve(42) → {api_key=sk-fake}
 //	  → Dispatcher.Dispatch → openai.PassthroughAdapter.BuildRequest
 //	  → redirectRoundTripper → httptest.Server（模拟 OpenAI 上游）
-//	  → Forwarder.Forward（透传 SSE） → 200 + SSE body
+//	  → Forwarder.Forward（解析 OpenAI SSE usage/content，写回 SSE body）
 //	  → Settler.Settle
 //
 // Lane: claude-executor | Agent: claude-executor (Sonnet 4.6) | UTC: 2026-05-06
@@ -29,7 +29,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
-	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
@@ -82,10 +81,12 @@ func (smokeSelector) Select(_ context.Context, _ pool.SelectionRequest) (*pool.S
 type smokeSettler struct {
 	settleCalls int64
 	abortCalls  int64
+	settleReq   billing.SettleRequest
 }
 
-func (s *smokeSettler) Settle(_ context.Context, _ billing.SettleRequest) (*billing.SettleResult, error) {
+func (s *smokeSettler) Settle(_ context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {
 	atomic.AddInt64(&s.settleCalls, 1)
+	s.settleReq = req
 	return &billing.SettleResult{}, nil
 }
 
@@ -124,71 +125,6 @@ func (rt *redirectRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 	clone.RequestURI = ""
 	return http.DefaultTransport.RoundTrip(clone)
 }
-
-// ---------------------------------------------------------------------------
-// rawPassthroughAdapter — 对 SSE 事件做最小处理：直接把原始 event data
-// 作为 "data: <bytes>\n\n" 帧写回客户端，不做任何 HCSF 转换。
-// 适用于冒烟测试：只需验证 SSE 数据到达客户端，不验证 canonical 事件形态。
-// ---------------------------------------------------------------------------
-
-// rawPassthroughUpstreamAdapter 实现 proto.UpstreamAdapter。
-// 它接受任意 state 类型，把上游原始 SSE bytes 原样返回为单个 canonical 事件（[]any{[]byte}）。
-// forwarder 在 handleEventWithAdapter 中调用此方法；返回的 []any 元素不是
-// proto.CanonicalEvent，所以 canonicalUsage / canonicalTerminal 会静默忽略，
-// 但原始 SSE bytes 会经由 clientChunks → rawSSE(fallback) 路径写给客户端。
-//
-// 注意：本测试只验证 raw SSE 能穿过完整 HTTP pipeline，不验证 openai.Adapter
-// 的 canonical 事件形态。这里用任意 state 都可接受的 stub，避免把 smoke test
-// 绑定到 vendor adapter 的字段级断言。
-type rawPassthroughUpstreamAdapter struct{}
-
-func (a *rawPassthroughUpstreamAdapter) CanonicalToProviderRequest(_ context.Context, _ *proto.HCSF) ([]byte, []proto.ProtocolLossEntry, error) {
-	return nil, nil, proto.ErrNotImplemented
-}
-
-func (a *rawPassthroughUpstreamAdapter) ProviderResponseToCanonical(_ context.Context, _ []byte) (*proto.HCSF, []proto.ProtocolLossEntry, error) {
-	return nil, nil, proto.ErrNotImplemented
-}
-
-// ProviderEventToCanonicalEvents 接受 state（任意类型，无断言）；
-// 直接把 SSE event data 原样返回，forwarder 的 clientChunks() 会走 rawSSE(fallback) 路径，
-// 把原始 event 写给客户端。
-func (a *rawPassthroughUpstreamAdapter) ProviderEventToCanonicalEvents(_ context.Context, _ any, _ any) ([]any, []proto.ProtocolLossEntry, error) {
-	// 返回空切片：forwarder 不会写任何 canonical 帧，但 rawSSE(fallback) 路径
-	// 在 clientChunks 中会用 fallback SSEEvent 直接写。
-	// 实际上 handleEventWithAdapter 的写路径是：
-	//   canonicalEvents → 若空则 loop 体不写 → 但 wrote=false → 不更新 firstEmitted
-	// 这意味着若始终返回空，客户端拿不到任何数据。
-	// 因此改为：返回一个哨兵值，让 clientChunks 走 rawSSE(fallback) 路径。
-	// 但 clientChunks 只在 f.ClientAdapter==nil 时才 rawSSE(fallback)，
-	// 且它用的是 canonical 元素，不是 evt 本身。
-	//
-	// 实际透传路径：f.ClientAdapter == nil 时，clientChunks 返回 rawSSE(fallback)，
-	// 其中 fallback 就是当前 SSEEvent（含原始 data bytes）。
-	// 所以这里只需返回至少一个元素（哪怕是 nil），触发 clientChunks 调用。
-	return []any{nil}, nil, nil
-}
-
-func (a *rawPassthroughUpstreamAdapter) FinalizeUpstreamStream(_ context.Context, _ any) ([]any, error) {
-	return nil, nil
-}
-
-// singleFamilyAdapterRegistry 将一个 proto.UpstreamAdapter 绑定到指定 family。
-type singleFamilyAdapterRegistry struct {
-	family  string
-	adapter proto.UpstreamAdapter
-}
-
-func (r *singleFamilyAdapterRegistry) For(family string) (proto.UpstreamAdapter, error) {
-	if family == r.family {
-		return r.adapter, nil
-	}
-	return nil, fmt.Errorf("%w: %s", gateway.ErrUnknownProtocolFamily, family)
-}
-
-// ---------------------------------------------------------------------------
-// 主冒烟测试
-// ---------------------------------------------------------------------------
 
 // TestDispatch_FullPipeline_OpenAIChat 验证从 inbound POST 到 SSE 响应的完整链路。
 func TestDispatch_FullPipeline_OpenAIChat(t *testing.T) {
@@ -274,14 +210,10 @@ func TestDispatch_FullPipeline_OpenAIChat(t *testing.T) {
 	}
 
 	// --- 4. 构建真实 StreamForwarder ---
-	// ProtocolAdapters：注入单协议 stub，使用 rawPassthroughUpstreamAdapter
-	// 保持本 smoke test 只断言 raw SSE 透传，不耦合 openai.Adapter 的
-	// canonical event 细节。
-	protoReg := &singleFamilyAdapterRegistry{
-		family:  "openai_chat",
-		adapter: &rawPassthroughUpstreamAdapter{},
-	}
-
+	// ProtocolAdapters：使用默认 registry，让 openai_chat 走真实 stream adapter。
+	// 该 adapter 会从 mock 的 OpenAI SSE usage/content 填充 draft token 信号；
+	// ClientAdapter 仍为空，因此响应侧保持 raw SSE fallback 的冒烟级断言。
+	protoReg := gateway.BuildDefaultProtocolAdapterRegistry()
 	forwarder := &gateway.StreamForwarder{
 		ProtocolAdapters: protoReg,
 		// A1 atomic：Forward 现要求 Scanners 非 nil。注入默认注册表
@@ -301,7 +233,7 @@ func TestDispatch_FullPipeline_OpenAIChat(t *testing.T) {
 		}},
 		Registry: smokeRegistry{resolved: registry.Resolved{
 			// ProtocolFamily 决定 dispatcher 选 openai.PassthroughAdapter
-			// 以及 forwarder 选 rawPassthroughUpstreamAdapter。
+			// 以及 forwarder 选默认 openai stream adapter。
 			ProtocolFamily:   "openai_chat",
 			CanonicalModelID: "gpt-4o",
 			ProviderModelID:  "gpt-4o",
@@ -371,6 +303,20 @@ func TestDispatch_FullPipeline_OpenAIChat(t *testing.T) {
 	// 断言 8：Settler.Abort 未被调用。
 	if ac := atomic.LoadInt64(&settler.abortCalls); ac != 0 {
 		t.Fatalf("断言8失败：Settler.Abort 调用次数 = %d；期望 0", ac)
+	}
+
+	// 断言 9：mock usage/content 已进入 draft，流式尝试处于可结算状态。
+	if got := settler.settleReq.Draft.TokensInput; got != 10 {
+		t.Fatalf("断言9失败：draft.TokensInput = %d；期望 10", got)
+	}
+	if got := settler.settleReq.Draft.TokensOutput; got != 2 {
+		t.Fatalf("断言9失败：draft.TokensOutput = %d；期望 2", got)
+	}
+	if got := settler.settleReq.Draft.DeliveredTokenCount; got != 2 {
+		t.Fatalf("断言9失败：draft.DeliveredTokenCount = %d；期望 2", got)
+	}
+	if attempt := settler.settleReq.StreamAttempt; attempt == nil || !attempt.State.Chargeable() {
+		t.Fatalf("断言9失败：StreamAttempt = %#v；期望 chargeable", attempt)
 	}
 }
 

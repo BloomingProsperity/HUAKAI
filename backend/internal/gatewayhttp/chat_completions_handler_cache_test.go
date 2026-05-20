@@ -17,7 +17,15 @@ import (
 
 type recordingSettler struct {
 	calls           []billing.SettleRequest
+	aborts          []recordedAbort
 	cacheHitCommits []int64
+}
+
+type recordedAbort struct {
+	tenantID       int64
+	claimID        int64
+	reason         string
+	auditRequestID string
 }
 
 func (s *recordingSettler) Settle(_ context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {
@@ -25,7 +33,13 @@ func (s *recordingSettler) Settle(_ context.Context, req billing.SettleRequest) 
 	return &billing.SettleResult{}, nil
 }
 
-func (s *recordingSettler) Abort(context.Context, int64, int64, string, string) error {
+func (s *recordingSettler) Abort(_ context.Context, tenantID, claimID int64, reason, auditRequestID string) error {
+	s.aborts = append(s.aborts, recordedAbort{
+		tenantID:       tenantID,
+		claimID:        claimID,
+		reason:         reason,
+		auditRequestID: auditRequestID,
+	})
 	return nil
 }
 
