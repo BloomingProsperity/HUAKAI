@@ -5,6 +5,7 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // maxIdempotencyReplayBodyBytes 是持久重放记录存储的响应体上限; 超限的响应不
@@ -14,6 +15,7 @@ const maxIdempotencyReplayBodyBytes = 1 << 20 // 1 MiB
 const (
 	idempotencyReplayContentTypeJSON = "application/json"
 	idempotencyReplayContentTypeSSE  = "text/event-stream"
+	idempotencyReplayRecordTimeout   = 5 * time.Second
 )
 
 // recordIdempotencyReplay best-effort 存一条幂等重放记录: 仅当请求带
@@ -40,7 +42,11 @@ func (ex *chatExecution) recordIdempotencyReplayWithContentType(claimID int64, s
 	if contentType == "" {
 		contentType = idempotencyReplayContentTypeJSON
 	}
-	_ = ex.d.ReplayStore.Record(ex.ctx, ex.ident.TenantID, claimID, status, contentType, body, 0)
+	// replay 写入发生在响应已形成之后, 不能被客户端读完断连取消; 仅保留短
+	// 超时避免异常存储写入拖住 handler。
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ex.ctx), idempotencyReplayRecordTimeout)
+	defer cancel()
+	_ = ex.d.ReplayStore.Record(recordCtx, ex.ident.TenantID, claimID, status, contentType, body, 0)
 }
 
 // recordCacheHitReplay 是 serveL2CacheHit 用的 best-effort 重放记录写入 ——

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"iter"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -388,20 +389,136 @@ func TestStreamingIdempotencyReplaySkipsOverLimit(t *testing.T) {
 	}
 }
 
-func TestStreamingIdempotencyReplaySkipsForwardError(t *testing.T) {
+func TestStreamingIdempotencyReplayRecordsForwardErrorPartialStream(t *testing.T) {
 	replayStore := billing.NewMemoryReplayStore()
 	claimID := int64(77703)
 
 	deps := streamingReplayDeps(t, claimID, false, "", replayStore)
-	deps.Dispatcher.HTTPClient = &erroringStreamingDoer{responsePrefix: partialOpenAIStreamingFixtureBeforeReadError()}
+	scanners := gateway.NewStaticStreamScannerRegistry()
+	scanners.MustRegister("openai_chat", scannerThenError{
+		event: partialOpenAIStreamingEventBeforeReadError(),
+		err:   io.ErrUnexpectedEOF,
+	})
+	deps.Forwarder.Scanners = scanners
 	rec := invokeWithIdempotencyKey(t, deps, openAIStreamingRequestBody(), "stream-idem-forward-error")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
 	if got := rec.Header().Get("X-Huakai-Forward-Error"); got == "" {
 		t.Fatalf("X-Huakai-Forward-Error header empty; fixture must trigger fwdErr != nil, body=%s", rec.Body.String())
 	}
-	if _, ok, err := replayStore.Lookup(context.Background(), validIdentity().TenantID, claimID); err != nil {
+	stored, ok, err := replayStore.Lookup(context.Background(), validIdentity().TenantID, claimID)
+	if err != nil {
 		t.Fatalf("lookup replay: %v", err)
-	} else if ok {
-		t.Fatal("forward error stream response must not be recorded for replay")
+	}
+	if !ok {
+		t.Fatal("forward-error partial stream must be recorded after successful settlement")
+	}
+	if stored.ContentType != idempotencyReplayContentTypeSSE {
+		t.Fatalf("stored ContentType=%q want %q", stored.ContentType, idempotencyReplayContentTypeSSE)
+	}
+	if string(stored.ResponseBody) != rec.Body.String() {
+		t.Fatalf("stored body mismatch:\nstored=%s\nclient=%s", string(stored.ResponseBody), rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "partial") || strings.Contains(rec.Body.String(), "data: [DONE]") {
+		t.Fatalf("fixture must deliver only partial SSE bytes; body=%s", rec.Body.String())
+	}
+}
+
+func TestStreamingIdempotencyReplayRecordsZeroByteForwardError(t *testing.T) {
+	replayStore := billing.NewMemoryReplayStore()
+	claimID := int64(77709)
+
+	deps := streamingReplayDeps(t, claimID, false, "", replayStore)
+	scanners := gateway.NewStaticStreamScannerRegistry()
+	scanners.MustRegister("openai_chat", scannerImmediateError{err: io.ErrUnexpectedEOF})
+	deps.Forwarder.Scanners = scanners
+
+	first := invokeWithIdempotencyKey(t, deps, openAIStreamingRequestBody(), "stream-idem-zero-byte-forward-error")
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status=%d want 200; body=%s", first.Code, first.Body.String())
+	}
+	if first.Body.Len() != 0 {
+		t.Fatalf("first body len=%d want 0; body=%s", first.Body.Len(), first.Body.String())
+	}
+	if got := first.Header().Get("X-Huakai-Forward-Error"); got == "" {
+		t.Fatalf("X-Huakai-Forward-Error header empty; fixture must fail before first byte")
+	}
+	stored, ok, err := replayStore.Lookup(context.Background(), validIdentity().TenantID, claimID)
+	if err != nil {
+		t.Fatalf("lookup replay: %v", err)
+	}
+	if !ok {
+		t.Fatal("zero-byte forward error must still record replay after successful settlement")
+	}
+	if stored.ResponseStatus != http.StatusOK {
+		t.Fatalf("stored status=%d want 200", stored.ResponseStatus)
+	}
+	if stored.ContentType != idempotencyReplayContentTypeSSE {
+		t.Fatalf("stored ContentType=%q want %q", stored.ContentType, idempotencyReplayContentTypeSSE)
+	}
+	if len(stored.ResponseBody) != 0 {
+		t.Fatalf("stored body len=%d want 0; body=%s", len(stored.ResponseBody), string(stored.ResponseBody))
+	}
+
+	secondDeps := streamingReplayDeps(t, claimID, true, openAIStreamingFixture(), replayStore)
+	second := invokeWithIdempotencyKey(t, secondDeps, openAIStreamingRequestBody(), "stream-idem-zero-byte-forward-error")
+	if second.Code != http.StatusOK {
+		t.Fatalf("replay status=%d want 200; body=%s", second.Code, second.Body.String())
+	}
+	if got := second.Header().Get("X-HUAKAI-Idempotency-Hit"); got != "true" {
+		t.Fatalf("replay hit header=%q want true", got)
+	}
+	if second.Body.Len() != 0 {
+		t.Fatalf("replay body len=%d want 0; body=%s", second.Body.Len(), second.Body.String())
+	}
+}
+
+func TestStreamingIdempotencyReplayRecordsAfterClientCancelPostFlush(t *testing.T) {
+	replayStore := &ctxSensitiveReplayStore{inner: billing.NewMemoryReplayStore()}
+	body := openAIStreamingRequestBody()
+	claimID := int64(77708)
+
+	deps := streamingReplayDeps(t, claimID, false, openAIStreamingFixture(), replayStore)
+	settler := &ctxSensitiveSettler{}
+	deps.Settler = settler
+	h := NewChatCompletionsHandler(deps)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "stream-idem-cancel-after-flush")
+	rec := &cancelOnDoneFlushRecorder{
+		ResponseRecorder: httptest.NewRecorder(),
+		cancel:           cancel,
+	}
+
+	h(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if !rec.canceled {
+		t.Fatal("fixture did not cancel request context after final SSE flush")
+	}
+	if got := rec.Header().Get("X-Huakai-Settle-Error"); got != "" {
+		t.Fatalf("settle error=%q; settle context must outlive client cancellation", got)
+	}
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1", len(settler.calls))
+	}
+	stored, ok, err := replayStore.Lookup(context.Background(), validIdentity().TenantID, claimID)
+	if err != nil {
+		t.Fatalf("lookup replay: %v", err)
+	}
+	if !ok {
+		t.Fatal("replay must be recorded even when client cancels after flushed SSE body")
+	}
+	if stored.ContentType != idempotencyReplayContentTypeSSE {
+		t.Fatalf("stored ContentType=%q want %q", stored.ContentType, idempotencyReplayContentTypeSSE)
+	}
+	if string(stored.ResponseBody) != rec.Body.String() {
+		t.Fatalf("stored body mismatch:\nstored=%s\nclient=%s", string(stored.ResponseBody), rec.Body.String())
 	}
 }
 
@@ -500,6 +617,12 @@ func partialOpenAIStreamingFixtureBeforeReadError() string {
 	}, "\n")
 }
 
+func partialOpenAIStreamingEventBeforeReadError() gateway.SSEEvent {
+	return gateway.SSEEvent{
+		Data: []byte(`{"id":"chatcmpl-error","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"partial"},"finish_reason":null}]}`),
+	}
+}
+
 func oversizedOpenAIStreamingFixture(minBytes int) string {
 	var b strings.Builder
 	b.WriteString(`data: {"id":"chatcmpl-big","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}` + "\n\n")
@@ -516,3 +639,77 @@ func oversizedOpenAIStreamingFixture(minBytes int) string {
 
 var _ gateway.HTTPDoer = (*recordingStreamingDoer)(nil)
 var _ gateway.HTTPDoer = (*erroringStreamingDoer)(nil)
+
+type scannerThenError struct {
+	event gateway.SSEEvent
+	err   error
+}
+
+func (s scannerThenError) Scan(context.Context, io.Reader, int) iter.Seq2[gateway.SSEEvent, error] {
+	return func(yield func(gateway.SSEEvent, error) bool) {
+		if !yield(s.event, nil) {
+			return
+		}
+		yield(gateway.SSEEvent{}, s.err)
+	}
+}
+
+type scannerImmediateError struct {
+	err error
+}
+
+func (s scannerImmediateError) Scan(context.Context, io.Reader, int) iter.Seq2[gateway.SSEEvent, error] {
+	return func(yield func(gateway.SSEEvent, error) bool) {
+		err := s.err
+		if err == nil {
+			err = io.ErrUnexpectedEOF
+		}
+		yield(gateway.SSEEvent{}, err)
+	}
+}
+
+type cancelOnDoneFlushRecorder struct {
+	*httptest.ResponseRecorder
+	cancel   context.CancelFunc
+	canceled bool
+}
+
+func (w *cancelOnDoneFlushRecorder) Flush() {
+	w.ResponseRecorder.Flush()
+	if !w.canceled && strings.Contains(w.Body.String(), "data: [DONE]") {
+		w.canceled = true
+		w.cancel()
+	}
+}
+
+type ctxSensitiveReplayStore struct {
+	inner *billing.MemoryReplayStore
+}
+
+func (s *ctxSensitiveReplayStore) Record(ctx context.Context, tenantID, claimID int64, status int, contentType string, body []byte, ttl time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.inner.Record(ctx, tenantID, claimID, status, contentType, body, ttl)
+}
+
+func (s *ctxSensitiveReplayStore) Lookup(ctx context.Context, tenantID, claimID int64) (*billing.ReplayRecord, bool, error) {
+	return s.inner.Lookup(ctx, tenantID, claimID)
+}
+
+func (s *ctxSensitiveReplayStore) DeleteExpired(ctx context.Context) (int64, error) {
+	return s.inner.DeleteExpired(ctx)
+}
+
+var _ billing.ReplayStore = (*ctxSensitiveReplayStore)(nil)
+
+type ctxSensitiveSettler struct {
+	recordingSettler
+}
+
+func (s *ctxSensitiveSettler) Settle(ctx context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.recordingSettler.Settle(ctx, req)
+}
