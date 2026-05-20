@@ -73,7 +73,7 @@ func (r *PolicyResolver) ResolveStreamInputOnlyInterruptedPolicy(ctx context.Con
 	row, ok, err := r.store.Get(ctx, tenantID, StreamInputOnlyInterruptedPolicyKey)
 	if err != nil {
 		if hasEntry && now.Before(entry.staleDeadline) {
-			r.cacheSetIfGeneration(tenantID, policyCacheEntry{
+			r.cacheSetIfUnchanged(tenantID, entry, policyCacheEntry{
 				policy:        entry.policy,
 				expiresAt:     now.Add(policyResolverRefreshRetryInterval),
 				staleDeadline: entry.staleDeadline,
@@ -166,6 +166,26 @@ func (r *PolicyResolver) cacheSetIfGeneration(tenantID int64, entry policyCacheE
 		r.cache = make(map[int64]policyCacheEntry)
 	}
 	r.cache[tenantID] = entry
+}
+
+func (r *PolicyResolver) cacheSetIfUnchanged(tenantID int64, expected policyCacheEntry, next policyCacheEntry, generation uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	currentGeneration := uint64(0)
+	if r.gen != nil {
+		currentGeneration = r.gen[tenantID]
+	}
+	if currentGeneration != generation {
+		return
+	}
+	current, ok := r.cache[tenantID]
+	if !ok ||
+		current.policy != expected.policy ||
+		!current.expiresAt.Equal(expected.expiresAt) ||
+		!current.staleDeadline.Equal(expected.staleDeadline) {
+		return
+	}
+	r.cache[tenantID] = next
 }
 
 func (r *PolicyResolver) cacheDeleteIfUnchanged(tenantID int64, entry policyCacheEntry, generation uint64) {

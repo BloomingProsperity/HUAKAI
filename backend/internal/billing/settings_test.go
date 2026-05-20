@@ -231,6 +231,49 @@ func TestPolicyResolver_ExpiredCacheServesStaleOnRefreshFailure(t *testing.T) {
 	}
 }
 
+func TestPolicyResolver_RefreshFailureDoesNotOverwriteConcurrentRefresh(t *testing.T) {
+	now := time.Date(2026, 5, 20, 13, 30, 0, 0, time.UTC)
+	store := newFakePolicyStore()
+	store.set(653, StreamInputOnlyInterruptedPolicyNoBillRecord)
+	resolver := NewPolicyResolver(store, 10*time.Millisecond)
+	resolver.now = func() time.Time { return now }
+
+	first := resolver.ResolveStreamInputOnlyInterruptedPolicy(context.Background(), 653)
+	if first != StreamInputOnlyInterruptedPolicyNoBillRecord {
+		t.Fatalf("initial policy=%q want %q", first, StreamInputOnlyInterruptedPolicyNoBillRecord)
+	}
+
+	store.err = errors.New("database unavailable")
+	now = now.Add(11 * time.Millisecond)
+	store.onGet = func(tenantID int64, key string) {
+		if tenantID != 653 || key != StreamInputOnlyInterruptedPolicyKey {
+			return
+		}
+		expiresAt := now.Add(time.Minute)
+		resolver.cacheSetIfGeneration(653, policyCacheEntry{
+			policy:        StreamInputOnlyInterruptedPolicyNoBill,
+			expiresAt:     expiresAt,
+			staleDeadline: expiresAt.Add(time.Minute),
+		}, resolver.captureGeneration(653))
+	}
+
+	second := resolver.ResolveStreamInputOnlyInterruptedPolicy(context.Background(), 653)
+	if second != StreamInputOnlyInterruptedPolicyNoBillRecord {
+		t.Fatalf("stale policy=%q want in-flight stale response %q", second, StreamInputOnlyInterruptedPolicyNoBillRecord)
+	}
+	cachedAfter, ok := resolver.cacheGet(653)
+	if !ok {
+		t.Fatal("want concurrent refresh entry to remain cached")
+	}
+	if cachedAfter.policy != StreamInputOnlyInterruptedPolicyNoBill {
+		t.Fatalf("cached policy=%q want concurrent refreshed %q", cachedAfter.policy, StreamInputOnlyInterruptedPolicyNoBill)
+	}
+	third := resolver.ResolveStreamInputOnlyInterruptedPolicy(context.Background(), 653)
+	if third != StreamInputOnlyInterruptedPolicyNoBill {
+		t.Fatalf("post-race cached policy=%q want concurrent refreshed %q", third, StreamInputOnlyInterruptedPolicyNoBill)
+	}
+}
+
 func TestPolicyResolver_ExpiredCacheBeyondStaleGraceFallsBack(t *testing.T) {
 	now := time.Date(2026, 5, 20, 14, 0, 0, 0, time.UTC)
 	store := newFakePolicyStore()
