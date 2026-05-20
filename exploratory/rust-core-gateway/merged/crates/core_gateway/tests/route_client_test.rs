@@ -9,13 +9,14 @@ use std::{net::SocketAddr, time::Duration};
 
 use axum::{
     body::{self, Body},
-    http::{Request, StatusCode},
+    http::{Request, StatusCode, header},
 };
 use bytes::Bytes;
 use common::mock_upstream::{MockBehavior, MockUpstream};
 use core_gateway::{
     build_router,
     config::StartupConfig,
+    heartbeat::set_drain_mode,
     mock_control_plane::{
         MockControlPlane, MockControlPlaneBehavior, MockControlPlaneConfig, mock_route_plan,
     },
@@ -101,6 +102,32 @@ fn route_client(endpoint: &str, options: RouteClientOptions) -> RouteClient {
     .expect("route client 应可构建")
 }
 
+// 进程级 DRAIN_MODE 是全局可变状态; cargo test 默认在同一进程内并发跑测试,
+// 因此所有改动 drain_mode 的测试必须经此互斥串行化, 否则 drain=true 测试会与
+// drain=false 测试交叉、产生间歇性 503/200 错配。
+struct DrainModeReset {
+    _serial: std::sync::MutexGuard<'static, ()>,
+}
+
+impl DrainModeReset {
+    fn set(drain: bool) -> Self {
+        static DRAIN_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        // 即便上一个持锁测试 panic 毒化了锁也恢复使用 —— 测试隔离不依赖锁内数据。
+        let serial = DRAIN_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        set_drain_mode(drain);
+        Self { _serial: serial }
+    }
+}
+
+impl Drop for DrainModeReset {
+    fn drop(&mut self) {
+        // 先复位 drain_mode 再释放互斥锁, 保证下一个测试看到 drain=false。
+        set_drain_mode(false);
+    }
+}
+
 async fn unused_http_endpoint() -> (String, SocketAddr) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -108,6 +135,100 @@ async fn unused_http_endpoint() -> (String, SocketAddr) {
     let addr = listener.local_addr().expect("临时端口地址应存在");
     drop(listener);
     (format!("http://{addr}"), addr)
+}
+
+#[tokio::test]
+async fn drain_false_business_request_reaches_handler() {
+    let _drain_guard = DrainModeReset::set(false);
+    let upstream = MockUpstream::spawn(MockBehavior::EchoBody).await;
+    let control_plane = MockControlPlane::spawn(mock_route_plan(upstream.endpoint())).await;
+    let config = test_config(control_plane.endpoint(), 4 * 1024 * 1024, 150, 0, 0);
+    let payload = Bytes::from_static(br#"{"model":"claude-mock","messages":[]}"#);
+
+    let response = build_router(config)
+        .expect("build_router")
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(payload.clone()))
+                .expect("request 构建应成功"),
+        )
+        .await
+        .expect("listener 应响应");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(control_plane.route_queries_seen(), 1);
+    assert_eq!(upstream.requests_seen(), 1);
+}
+
+#[tokio::test]
+async fn drain_true_business_request_returns_503_connection_close() {
+    let _drain_guard = DrainModeReset::set(true);
+    let upstream = MockUpstream::spawn(MockBehavior::EchoBody).await;
+    let control_plane = MockControlPlane::spawn(mock_route_plan(upstream.endpoint())).await;
+    let config = test_config(control_plane.endpoint(), 4 * 1024 * 1024, 150, 0, 0);
+
+    let response = build_router(config)
+        .expect("build_router")
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(Bytes::from_static(
+                    br#"{"model":"claude-mock","messages":[]}"#,
+                )))
+                .expect("request 构建应成功"),
+        )
+        .await
+        .expect("listener 应响应");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers().get(header::CONNECTION).unwrap(), "close");
+    assert_eq!(control_plane.route_queries_seen(), 0);
+    assert_eq!(upstream.requests_seen(), 0);
+}
+
+#[tokio::test]
+async fn drain_true_healthz_draining_but_metrics_stays_available() {
+    let _drain_guard = DrainModeReset::set(true);
+    let config = test_config(
+        "http://127.0.0.1:48080".to_owned(),
+        4 * 1024 * 1024,
+        150,
+        0,
+        0,
+    );
+    let router = build_router(config).expect("build_router");
+
+    let health = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/healthz")
+                .body(Body::empty())
+                .expect("healthz request 构建应成功"),
+        )
+        .await
+        .expect("healthz 应响应");
+    assert_eq!(health.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let health_body = body::to_bytes(health.into_body(), 1024)
+        .await
+        .expect("healthz body 应可读取");
+    assert_eq!(&health_body[..], br#"{"status":"draining"}"#);
+
+    let metrics = router
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .expect("metrics request 构建应成功"),
+        )
+        .await
+        .expect("metrics 应响应");
+    assert_eq!(metrics.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -228,6 +349,8 @@ async fn attempt_report_returns_ack() {
 
 #[tokio::test]
 async fn listener_uses_route_plan_endpoint_to_forward_messages() {
+    // 与 drain 测试共享互斥: 并发的 drain=true 测试会令本测试错收 503。
+    let _drain_guard = DrainModeReset::set(false);
     let upstream = MockUpstream::spawn(MockBehavior::EchoBody).await;
     let control_plane = MockControlPlane::spawn(mock_route_plan(upstream.endpoint())).await;
     let config = test_config(control_plane.endpoint(), 4 * 1024 * 1024, 150, 0, 0);
@@ -273,6 +396,8 @@ async fn listener_uses_route_plan_endpoint_to_forward_messages() {
 
 #[tokio::test]
 async fn listener_fails_closed_when_control_plane_is_down() {
+    // 与 drain 测试共享互斥: 并发的 drain=true 测试会令本测试错收 503。
+    let _drain_guard = DrainModeReset::set(false);
     let (endpoint, _addr) = unused_http_endpoint().await;
     let config = test_config(endpoint, 4 * 1024 * 1024, 50, 0, 0);
     let payload = Bytes::from_static(br#"{"fallback":true}"#);
@@ -307,6 +432,8 @@ async fn listener_fails_closed_when_control_plane_is_down() {
 
 #[tokio::test]
 async fn listener_fail_closed_does_not_echo_sensitive_body() {
+    // 与 drain 测试共享互斥: 并发的 drain=true 测试会令本测试错收 503。
+    let _drain_guard = DrainModeReset::set(false);
     let (endpoint, _addr) = unused_http_endpoint().await;
     let config = test_config(endpoint, 4 * 1024 * 1024, 50, 0, 0);
     let payload = Bytes::from_static(
@@ -380,6 +507,8 @@ async fn route_cache_ttl_enabled_still_queries_control_plane_each_time() {
 
 #[tokio::test]
 async fn route_plan_body_limit_prevents_upstream_call() {
+    // 与 drain 测试共享互斥: 并发的 drain=true 测试会令本测试错收 503。
+    let _drain_guard = DrainModeReset::set(false);
     let upstream = MockUpstream::spawn(MockBehavior::EchoBody).await;
     let mut plan = mock_route_plan(upstream.endpoint());
     plan.max_body_bytes = 8;
