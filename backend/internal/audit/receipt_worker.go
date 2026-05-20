@@ -123,7 +123,23 @@ func (s *ReceiptHookSettler) CommitCacheHit(ctx context.Context, tenantID, claim
 	if s == nil || s.inner == nil {
 		return billing.ErrPoolNotConfigured
 	}
-	return s.inner.CommitCacheHit(ctx, tenantID, claimID, auditRequestID)
+	if err := s.inner.CommitCacheHit(ctx, tenantID, claimID, auditRequestID); err != nil {
+		return err
+	}
+	// codex chunk14 P2: L2 cache 命中走 CommitCacheHit 而非 Settle, 之前
+	// 漏跑 receipt hook → 成功的缓存响应不生成 user_cost_receipts。 这里补
+	// AppendSettledReceipt (它只用 AuditRequestID 从 DB derive receipt)。
+	if s.hook != nil {
+		req := billing.SettleRequest{
+			TenantID:       tenantID,
+			ClaimID:        claimID,
+			AuditRequestID: auditRequestID,
+		}
+		if hookErr := s.hook.AppendSettledReceipt(ctx, req); hookErr != nil {
+			s.hook.report(ctx, auditRequestID, hookErr)
+		}
+	}
+	return nil
 }
 
 func (s *ReceiptHookSettler) Refund(ctx context.Context, req billing.RefundRequest) (*billing.RefundResult, error) {
