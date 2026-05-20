@@ -15,7 +15,8 @@ type UsageRecordPayload struct {
 	ClaimID                int64           `json:"claim_id"`
 	APIKeyID               int64           `json:"api_key_id"`
 	UserID                 int64           `json:"user_id"`
-	ProviderAccountID      int64           `json:"provider_account_id"`
+	ProviderAccountID      *int64          `json:"provider_account_id,omitempty"`
+	SettlementSource       string          `json:"settlement_source"`
 	AcquisitionToken       string          `json:"acquisition_token"`
 	AttemptSeq             int32           `json:"attempt_seq"`
 	TokensInput            int32           `json:"tokens_input"`

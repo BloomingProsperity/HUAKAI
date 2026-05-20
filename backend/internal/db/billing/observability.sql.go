@@ -466,7 +466,7 @@ type ListUsageRecordsRow struct {
 	ClaimID                int64              `db:"claim_id" json:"claim_id"`
 	APIKeyID               int64              `db:"api_key_id" json:"api_key_id"`
 	UserID                 int64              `db:"user_id" json:"user_id"`
-	ProviderAccountID      int64              `db:"provider_account_id" json:"provider_account_id"`
+	ProviderAccountID      *int64             `db:"provider_account_id" json:"provider_account_id"`
 	AttemptSeq             int32              `db:"attempt_seq" json:"attempt_seq"`
 	TokensInput            int32              `db:"tokens_input" json:"tokens_input"`
 	TokensOutput           int32              `db:"tokens_output" json:"tokens_output"`
