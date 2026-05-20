@@ -42,6 +42,7 @@ type ChatHandlerDeps struct {
 	Forwarder            *gateway.StreamForwarder
 	ResponseCache        l2cache.Store
 	Settler              billing.Settler
+	ReplayStore          billing.ReplayStore
 	CompletionBus        *eventbus.Bus
 	AuditLedger          auditledger.Ledger
 	Signer               *sign.Signer

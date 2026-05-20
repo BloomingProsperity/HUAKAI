@@ -195,6 +195,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-HUAKAI-Cache-L2", "hit")
 		WriteHuakaiHeaders(w.Header(), in.RequestedModel, cachedEnv, ledgerEntry)
+		recordCacheHitReplay(ctx, d, in)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(in.Entry.Body)
 		return true
@@ -243,6 +244,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-HUAKAI-Cache-L2", "hit")
 	WriteHuakaiHeaders(w.Header(), in.RequestedModel, cachedEnv, ledgerEntry)
+	recordCacheHitReplay(ctx, d, in)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(in.Entry.Body)
 	return true

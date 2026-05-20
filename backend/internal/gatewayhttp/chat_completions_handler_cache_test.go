@@ -1,8 +1,10 @@
 package gatewayhttp
 
 import (
+	"bytes"
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -152,54 +154,70 @@ func TestChatCompletionsL2CacheStreamSkipsLookup(t *testing.T) {
 	}
 }
 
-// idempotentHitClaimGate 模拟同 idempotency-key 重试: Reserve 返回 IdempotencyHit。
-type idempotentHitClaimGate struct{}
-
-func (idempotentHitClaimGate) Reserve(context.Context, billing.ReserveRequest) (*billing.ReserveResult, error) {
-	return &billing.ReserveResult{ClaimID: 777, IdempotencyHit: true}, nil
+// replayClaimGate 模拟 ClaimGate: Reserve 返回固定 ClaimID; hit=true 时额外置
+// IdempotencyHit (模拟同 idempotency-key 重试)。
+type replayClaimGate struct {
+	claimID int64
+	hit     bool
 }
 
-// AT-4: 带 Idempotency-Key 的缓存命中重试 → 走 L2 重放返 200, 头标 replay。
-func TestChatCompletionsIdempotentHitReplaysFromL2(t *testing.T) {
+func (g replayClaimGate) Reserve(context.Context, billing.ReserveRequest) (*billing.ReserveResult, error) {
+	return &billing.ReserveResult{ClaimID: g.claimID, IdempotencyHit: g.hit}, nil
+}
+
+func invokeWithIdempotencyKey(t *testing.T, deps ChatHandlerDeps, body, idemKey string) *httptest.ResponseRecorder {
+	t.Helper()
+	h := NewChatCompletionsHandler(deps)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", idemKey)
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	return rec
+}
+
+// AT-4: 带 Idempotency-Key 的重试 → 从持久重放表取回原始响应重放返 200。
+func TestChatCompletionsIdempotentHitReplaysFromStore(t *testing.T) {
 	enableHCSFDispatchForTest(t)
-	store := l2cache.NewMemoryStore(1<<20, time.Minute)
+	replayStore := billing.NewMemoryReplayStore()
 	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
 
 	firstDeps := clientAdapterDeps(t)
 	firstDeps.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
-	firstDeps.ResponseCache = store
-	first := invokeHandlerPath(t, firstDeps, "/v1/chat/completions", body)
+	firstDeps.ClaimGate = replayClaimGate{claimID: 777}
+	firstDeps.ReplayStore = replayStore
+	first := invokeWithIdempotencyKey(t, firstDeps, body, "idem-key-1")
 	if first.Code != http.StatusOK {
 		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
 	}
 
 	secondDeps := clientAdapterDeps(t)
 	secondDeps.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
-	secondDeps.ResponseCache = store
-	secondDeps.ClaimGate = idempotentHitClaimGate{}
-	second := invokeHandlerPath(t, secondDeps, "/v1/chat/completions", body)
+	secondDeps.ClaimGate = replayClaimGate{claimID: 777, hit: true}
+	secondDeps.ReplayStore = replayStore
+	second := invokeWithIdempotencyKey(t, secondDeps, body, "idem-key-1")
 	if second.Code != http.StatusOK {
-		t.Fatalf("idempotent-hit retry status=%d want 200 (L2 replay); body=%s", second.Code, second.Body.String())
+		t.Fatalf("idempotent retry status=%d want 200 (store replay); body=%s", second.Code, second.Body.String())
 	}
-	if got := second.Header().Get("X-HUAKAI-Cache-L2"); got != "replay" {
-		t.Fatalf("cache header=%q want replay", got)
+	if got := second.Header().Get("X-HUAKAI-Idempotent-Replay"); got != "hit" {
+		t.Fatalf("replay header=%q want hit", got)
 	}
 	if first.Body.String() != second.Body.String() {
 		t.Fatalf("replay body mismatch:\nfirst=%s\nsecond=%s", first.Body.String(), second.Body.String())
 	}
 }
 
-// AT-5: 幂等命中但响应不在 L2 (未缓存/被逐出) → 回 409 replay_without_cache。
+// AT-5: 幂等命中但持久重放表无记录 → 回 409 replay_without_cache。
 func TestChatCompletionsIdempotentHitMissReturns409(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	d := clientAdapterDeps(t)
 	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
-	d.ResponseCache = l2cache.NewMemoryStore(1<<20, time.Minute) // 空 cache
-	d.ClaimGate = idempotentHitClaimGate{}
+	d.ClaimGate = replayClaimGate{claimID: 888, hit: true}
+	d.ReplayStore = billing.NewMemoryReplayStore() // 空
 	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
-	rec := invokeHandlerPath(t, d, "/v1/chat/completions", body)
+	rec := invokeWithIdempotencyKey(t, d, body, "idem-key-miss")
 	if rec.Code != http.StatusConflict {
-		t.Fatalf("status=%d want 409 (idempotent hit, response not cached); body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("status=%d want 409 (idempotent hit, no stored response); body=%s", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), "replay_without_cache") {
 		t.Fatalf("body=%q want replay_without_cache", rec.Body.String())

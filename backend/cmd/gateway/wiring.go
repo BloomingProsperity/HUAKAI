@@ -50,6 +50,7 @@ type deps struct {
 	channelHealth       *channelhealth.Service
 	claimGate           billing.ClaimGate
 	settler             billing.Settler
+	replayStore         billing.ReplayStore
 	forwarder           *gateway.StreamForwarder
 	credentialVault     provider.CredentialVault
 	credentialStore     *credentialstore.Store
@@ -189,6 +190,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		channelHealth:      channelHealthService,
 		claimGate:          billing.NewClaimGate(pgPool),
 		settler:            settler,
+		replayStore:        billing.NewReplayStore(pgPool),
 		forwarder:          buildStreamForwarder(auditLedger, auditSigner),
 		credentialVault:    provider.NewPostgresCredentialVaultWithStore(pgPool, credentialStore),
 		credentialStore:    credentialStore,
