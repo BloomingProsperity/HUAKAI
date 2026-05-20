@@ -170,6 +170,175 @@ func TestAdminCredentialsHandlersInvalidRequest(t *testing.T) {
 	}
 }
 
+func TestAdminCredentialRenewStatusPlatformAdminAllTenants(t *testing.T) {
+	store := &adminCredentialStoreStub{
+		renewRows: []credentialstore.RenewStatusMetadata{
+			adminCredentialRenewRow(301, 7, "tenant-a", 77, "acct-a"),
+			adminCredentialRenewRow(302, 8, "tenant-b", 88, "acct-b"),
+		},
+	}
+	audit := &adminPoolStoreStub{}
+	rec := invokeAdminCredentialRenewStatus(t, AdminCredentialDeps{
+		Auth: adminPoolAdmin(), Credentials: store, AuditStore: audit,
+	}, "/admin/v1/credentials/renew-status")
+	assertStatus(t, rec, http.StatusOK)
+	if store.renewCalls != 1 || store.renewParams.TenantID != nil {
+		t.Fatalf("renew scope mismatch: calls=%d params=%+v", store.renewCalls, store.renewParams)
+	}
+	var body struct {
+		Items      []credentialstore.RenewStatusMetadata `json:"items"`
+		NextCursor *string                               `json:"next_cursor"`
+	}
+	decodeAdminCredentialBody(t, rec, &body)
+	if len(body.Items) != 2 || body.Items[0].CredentialID != 301 || body.Items[1].CredentialID != 302 ||
+		body.Items[0].TenantName != "tenant-a" || body.Items[1].TenantName != "tenant-b" {
+		t.Fatalf("renew body mismatch: %+v", body)
+	}
+	if len(audit.audits) != 1 || audit.audits[0].Action != "list_account_credentials" ||
+		audit.audits[0].TargetType != "account_credential" || audit.audits[0].TargetID != nil ||
+		audit.audits[0].TenantID != nil {
+		t.Fatalf("renew audit mismatch: %+v", audit.audits)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(audit.audits[0].Payload, &payload); err != nil {
+		t.Fatalf("decode audit payload: %v", err)
+	}
+	if payload["scope"] != "all" || payload["count"].(float64) != 2 {
+		t.Fatalf("renew audit payload mismatch: %+v", payload)
+	}
+}
+
+func TestAdminCredentialRenewStatusPlatformAdminQueryTenantFiltersAndAudits(t *testing.T) {
+	store := &adminCredentialStoreStub{
+		renewRows: []credentialstore.RenewStatusMetadata{
+			adminCredentialRenewRow(301, 7, "tenant-a", 77, "acct-a"),
+			adminCredentialRenewRow(302, 8, "tenant-b", 88, "acct-b"),
+		},
+	}
+	audit := &adminPoolStoreStub{}
+	rec := invokeAdminCredentialRenewStatus(t, AdminCredentialDeps{
+		Auth: adminPoolAdmin(), Credentials: store, AuditStore: audit,
+	}, "/admin/v1/credentials/renew-status?tenant_id=8")
+	assertStatus(t, rec, http.StatusOK)
+	if store.renewCalls != 1 || store.renewParams.TenantID == nil || *store.renewParams.TenantID != 8 {
+		t.Fatalf("renew tenant query scope mismatch: calls=%d params=%+v", store.renewCalls, store.renewParams)
+	}
+	var body struct {
+		Items []credentialstore.RenewStatusMetadata `json:"items"`
+	}
+	decodeAdminCredentialBody(t, rec, &body)
+	if len(body.Items) != 1 || body.Items[0].TenantID != 8 {
+		t.Fatalf("platform admin tenant query must filter rows: %+v", body.Items)
+	}
+	if len(audit.audits) != 1 || audit.audits[0].TenantID == nil || *audit.audits[0].TenantID != 8 {
+		t.Fatalf("tenant scoped audit mismatch: %+v", audit.audits)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(audit.audits[0].Payload, &payload); err != nil {
+		t.Fatalf("decode audit payload: %v", err)
+	}
+	if payload["scope"].(float64) != 8 || payload["count"].(float64) != 1 {
+		t.Fatalf("renew audit payload mismatch: %+v", payload)
+	}
+}
+
+func TestAdminCredentialRenewStatusTenantOperatorSeesOnlyScope(t *testing.T) {
+	store := &adminCredentialStoreStub{
+		renewRows: []credentialstore.RenewStatusMetadata{
+			adminCredentialRenewRow(301, 7, "tenant-a", 77, "acct-a"),
+			adminCredentialRenewRow(302, 8, "tenant-b", 88, "acct-b"),
+		},
+	}
+	audit := &adminPoolStoreStub{}
+	rec := invokeAdminCredentialRenewStatus(t, AdminCredentialDeps{
+		Auth: providerAccountAdmin(), Credentials: store, AuditStore: audit,
+	}, "/admin/v1/credentials/renew-status")
+	assertStatus(t, rec, http.StatusOK)
+	if store.renewParams.TenantID == nil || *store.renewParams.TenantID != 7 {
+		t.Fatalf("renew tenant scope mismatch: %+v", store.renewParams)
+	}
+	var body struct {
+		Items []credentialstore.RenewStatusMetadata `json:"items"`
+	}
+	decodeAdminCredentialBody(t, rec, &body)
+	if len(body.Items) != 1 || body.Items[0].TenantID != 7 {
+		t.Fatalf("tenant operator must see only own tenant rows: %+v", body.Items)
+	}
+	for _, item := range body.Items {
+		if item.TenantID == 8 {
+			t.Fatalf("tenant operator saw another tenant row: %+v", body.Items)
+		}
+	}
+	if len(audit.audits) != 1 || audit.audits[0].TenantID == nil || *audit.audits[0].TenantID != 7 {
+		t.Fatalf("tenant scoped audit mismatch: %+v", audit.audits)
+	}
+}
+
+func TestAdminCredentialRenewStatusForbiddenRoles(t *testing.T) {
+	store := &adminCredentialStoreStub{}
+	audit := &adminPoolStoreStub{}
+	rec := invokeAdminCredentialRenewStatus(t, AdminCredentialDeps{
+		Auth:        adminPoolAuthStub{ident: admin.AdminIdentity{TokenID: 12, Role: "viewer"}},
+		Credentials: store, AuditStore: audit,
+	}, "/admin/v1/credentials/renew-status")
+	assertStatus(t, rec, http.StatusForbidden)
+	assertAdminCredentialStoreUntouched(t, store, audit)
+}
+
+func TestAdminCredentialRenewStatusTenantOperatorCrossTenantQueryForbidden(t *testing.T) {
+	store := &adminCredentialStoreStub{}
+	audit := &adminPoolStoreStub{}
+	rec := invokeAdminCredentialRenewStatus(t, AdminCredentialDeps{
+		Auth: providerAccountAdmin(), Credentials: store, AuditStore: audit,
+	}, "/admin/v1/credentials/renew-status?tenant_id=8")
+	assertStatus(t, rec, http.StatusForbidden)
+	assertAdminCredentialStoreUntouched(t, store, audit)
+}
+
+func TestAdminCredentialRenewStatusInvalidTenantQuery(t *testing.T) {
+	store := &adminCredentialStoreStub{}
+	audit := &adminPoolStoreStub{}
+	rec := invokeAdminCredentialRenewStatus(t, AdminCredentialDeps{
+		Auth: adminPoolAdmin(), Credentials: store, AuditStore: audit,
+	}, "/admin/v1/credentials/renew-status?tenant_id=0")
+	assertStatus(t, rec, http.StatusBadRequest)
+	assertAdminCredentialStoreUntouched(t, store, audit)
+}
+
+func TestAdminCredentialRenewStatusCursorPagination(t *testing.T) {
+	first := adminCredentialRenewRow(303, 7, "tenant-a", 77, "acct-a")
+	second := adminCredentialRenewRow(302, 7, "tenant-a", 78, "acct-b")
+	third := adminCredentialRenewRow(301, 7, "tenant-a", 79, "acct-c")
+	second.UpdatedAt = first.UpdatedAt.Add(-time.Minute)
+	third.UpdatedAt = second.UpdatedAt.Add(-time.Minute)
+
+	store := &adminCredentialStoreStub{renewRows: []credentialstore.RenewStatusMetadata{first, second, third}}
+	rec := invokeAdminCredentialRenewStatus(t, AdminCredentialDeps{
+		Auth: providerAccountAdmin(), Credentials: store, AuditStore: &adminPoolStoreStub{},
+	}, "/admin/v1/credentials/renew-status?limit=2")
+	assertStatus(t, rec, http.StatusOK)
+	if store.renewParams.Limit != 3 {
+		t.Fatalf("handler must request one extra row for pagination, got limit=%d", store.renewParams.Limit)
+	}
+	var body struct {
+		Items      []credentialstore.RenewStatusMetadata `json:"items"`
+		NextCursor *string                               `json:"next_cursor"`
+	}
+	decodeAdminCredentialBody(t, rec, &body)
+	if len(body.Items) != 2 || body.NextCursor == nil {
+		t.Fatalf("pagination first page mismatch: %+v", body)
+	}
+
+	nextStore := &adminCredentialStoreStub{}
+	rec = invokeAdminCredentialRenewStatus(t, AdminCredentialDeps{
+		Auth: providerAccountAdmin(), Credentials: nextStore, AuditStore: &adminPoolStoreStub{},
+	}, "/admin/v1/credentials/renew-status?limit=2&cursor="+*body.NextCursor)
+	assertStatus(t, rec, http.StatusOK)
+	if nextStore.renewParams.CursorID != second.CredentialID || !nextStore.renewParams.CursorUpdatedAt.Equal(second.UpdatedAt) {
+		t.Fatalf("cursor params mismatch: %+v want updated_at=%s id=%d", nextStore.renewParams, second.UpdatedAt.Format(time.RFC3339), second.CredentialID)
+	}
+}
+
 type adminCredentialRouteCase struct {
 	name   string
 	method string
@@ -188,7 +357,8 @@ func adminCredentialHandlerCases() []adminCredentialRouteCase {
 }
 
 type adminCredentialStoreStub struct {
-	listRows []credentialstore.CredentialMetadata
+	listRows  []credentialstore.CredentialMetadata
+	renewRows []credentialstore.RenewStatusMetadata
 
 	createInput *credentialstore.CreateCredentialInput
 	rotateInput *credentialstore.RotateCredentialInput
@@ -196,6 +366,8 @@ type adminCredentialStoreStub struct {
 	listTenantID  int64
 	listAccountID int64
 	listCalls     int
+	renewParams   credentialstore.ListRenewStatusParams
+	renewCalls    int
 
 	setStateCalled  bool
 	setTenantID     int64
@@ -232,6 +404,21 @@ func (s *adminCredentialStoreStub) ListByAccount(_ context.Context, tenantID, ac
 	return s.listRows, nil
 }
 
+func (s *adminCredentialStoreStub) ListRenewStatus(_ context.Context, params credentialstore.ListRenewStatusParams) ([]credentialstore.RenewStatusMetadata, error) {
+	s.renewCalls++
+	s.renewParams = params
+	if params.TenantID == nil {
+		return s.renewRows, nil
+	}
+	out := make([]credentialstore.RenewStatusMetadata, 0, len(s.renewRows))
+	for _, row := range s.renewRows {
+		if row.TenantID == *params.TenantID {
+			out = append(out, row)
+		}
+	}
+	return out, nil
+}
+
 func (s *adminCredentialStoreStub) SetState(_ context.Context, tenantID, accountID, credentialID int64, state, actorID string) error {
 	s.setStateCalled = true
 	s.setTenantID = tenantID
@@ -263,6 +450,18 @@ func invokeAdminCredentials(t *testing.T, deps AdminCredentialDeps, method, targ
 	return rec
 }
 
+func invokeAdminCredentialRenewStatus(t *testing.T, deps AdminCredentialDeps, target string) *httptest.ResponseRecorder {
+	t.Helper()
+	r := chi.NewRouter()
+	r.Route("/admin/v1/credentials", func(r chi.Router) {
+		MountAdminCredentialRenewStatusRoutes(r, deps)
+	})
+	req := httptest.NewRequest(http.MethodGet, target, strings.NewReader(""))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	return rec
+}
+
 func decodeAdminCredentialBody(t *testing.T, rec *httptest.ResponseRecorder, dst any) {
 	t.Helper()
 	if err := json.Unmarshal(rec.Body.Bytes(), dst); err != nil {
@@ -273,7 +472,7 @@ func decodeAdminCredentialBody(t *testing.T, rec *httptest.ResponseRecorder, dst
 func assertAdminCredentialStoreUntouched(t *testing.T, store *adminCredentialStoreStub, audit *adminPoolStoreStub) {
 	t.Helper()
 	if store.createInput != nil || store.rotateInput != nil || store.listCalls != 0 ||
-		store.setStateCalled || store.deleteCalled || len(audit.audits) != 0 {
+		store.renewCalls != 0 || store.setStateCalled || store.deleteCalled || len(audit.audits) != 0 {
 		t.Fatalf("request touched store: store=%+v audits=%+v", store, audit.audits)
 	}
 }
@@ -285,5 +484,16 @@ func adminCredentialMeta(id, tenantID, accountID int64, vendor, authMode string,
 		Vendor: credentialstore.Normalize(vendor), AuthMode: credentialstore.Normalize(authMode),
 		State: credentialstore.StateActive, Version: version,
 		CreatedAt: now, UpdatedAt: now,
+	}
+}
+
+func adminCredentialRenewRow(id, tenantID int64, tenantName string, accountID int64, accountName string) credentialstore.RenewStatusMetadata {
+	now := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	return credentialstore.RenewStatusMetadata{
+		CredentialID: id, TenantID: tenantID, TenantName: tenantName,
+		AccountID: accountID, AccountName: accountName,
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeAPIKey,
+		State: credentialstore.StateActive, CredentialVersion: 1,
+		FailureCount: 0, UpdatedAt: now,
 	}
 }

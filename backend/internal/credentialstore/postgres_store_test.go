@@ -3,11 +3,14 @@ package credentialstore
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 func TestResolveActiveRejectsCrossTenantCredentialJoin(t *testing.T) {
@@ -54,6 +57,76 @@ func TestCreateRejectsProviderAccountTenantMismatchBeforeInsert(t *testing.T) {
 	}
 }
 
+func TestListRenewStatusPlaintextFreeTenantCursorQuery(t *testing.T) {
+	tenantID := int64(7)
+	cursorUpdatedAt := time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC)
+	rowUpdatedAt := time.Date(2026, 5, 20, 9, 30, 0, 0, time.UTC)
+	db := &credentialStoreDBStub{
+		query: func(_ context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+			for _, forbidden := range []string{
+				"encrypted_payload",
+				"nonce",
+				"aad_hash",
+				"key_id",
+				"refresh_token_fingerprint",
+				"payload_fingerprint",
+				"provider_accounts.credentials",
+				"pa.credentials",
+			} {
+				if strings.Contains(sql, forbidden) {
+					t.Fatalf("ListRenewStatus SQL selected plaintext or fingerprint column %q:\n%s", forbidden, sql)
+				}
+			}
+			for _, required := range []string{
+				"INNER JOIN provider_accounts pa",
+				"INNER JOIN tenants t",
+				"WHERE ac.deleted_at IS NULL",
+				"($1::bigint IS NULL OR ac.tenant_id = $1::bigint)",
+				"($2::timestamptz IS NULL OR (ac.updated_at, ac.id) < ($2::timestamptz, $3::bigint))",
+				"ORDER BY ac.updated_at DESC, ac.id DESC",
+			} {
+				if !strings.Contains(sql, required) {
+					t.Fatalf("ListRenewStatus SQL missing %q:\n%s", required, sql)
+				}
+			}
+			if len(args) != 4 {
+				t.Fatalf("ListRenewStatus args len=%d want 4", len(args))
+			}
+			gotTenant, ok := args[0].(*int64)
+			if !ok || gotTenant == nil || *gotTenant != tenantID {
+				t.Fatalf("tenant arg=%#v want pointer to %d", args[0], tenantID)
+			}
+			if got, ok := args[1].(time.Time); !ok || !got.Equal(cursorUpdatedAt) {
+				t.Fatalf("cursor updated_at arg=%#v want %s", args[1], cursorUpdatedAt.Format(time.RFC3339))
+			}
+			if got, ok := args[2].(int64); !ok || got != 201 {
+				t.Fatalf("cursor id arg=%#v want 201", args[2])
+			}
+			if got, ok := args[3].(int32); !ok || got != 2 {
+				t.Fatalf("limit arg=%#v want 2", args[3])
+			}
+			return &credentialStoreRowsStub{rows: []renewStatusRow{{
+				CredentialID: 301, TenantID: tenantID, TenantName: "tenant-a",
+				AccountID: 77, AccountName: "acct-a", Vendor: VendorOpenAI, AuthMode: AuthModeAPIKey,
+				State: StateActive, CredentialVersion: 3, FailureCount: 0,
+				UpdatedAt: pgtype.Timestamptz{Time: rowUpdatedAt, Valid: true},
+			}}}, nil
+		},
+	}
+	store := NewStore(db, mustTestKeyProvider(t), DefaultHandlerRegistry())
+
+	rows, err := store.ListRenewStatus(context.Background(), ListRenewStatusParams{
+		TenantID: &tenantID, CursorUpdatedAt: cursorUpdatedAt, CursorID: 201, Limit: 2,
+	})
+	if err != nil {
+		t.Fatalf("ListRenewStatus err=%v", err)
+	}
+	if len(rows) != 1 || rows[0].TenantID != tenantID || rows[0].TenantName != "tenant-a" ||
+		rows[0].AccountID != 77 || rows[0].CredentialID != 301 || !rows[0].UpdatedAt.Equal(rowUpdatedAt) {
+		t.Fatalf("ListRenewStatus rows mismatch: %+v", rows)
+	}
+}
+
 func mustTestKeyProvider(t *testing.T) KeyProvider {
 	t.Helper()
 	provider, err := NewStaticKeyProvider("test-key", []byte("0123456789abcdef0123456789abcdef"))
@@ -65,14 +138,18 @@ func mustTestKeyProvider(t *testing.T) KeyProvider {
 
 type credentialStoreDBStub struct {
 	queryRow func(context.Context, string, ...interface{}) pgx.Row
+	query    func(context.Context, string, ...interface{}) (pgx.Rows, error)
 }
 
 func (s *credentialStoreDBStub) Exec(context.Context, string, ...interface{}) (pgconn.CommandTag, error) {
 	return pgconn.CommandTag{}, errors.New("unexpected Exec")
 }
 
-func (s *credentialStoreDBStub) Query(context.Context, string, ...interface{}) (pgx.Rows, error) {
-	return nil, errors.New("unexpected Query")
+func (s *credentialStoreDBStub) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	if s.query == nil {
+		return nil, errors.New("unexpected Query")
+	}
+	return s.query(ctx, sql, args...)
 }
 
 func (s *credentialStoreDBStub) QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row {
@@ -90,5 +167,65 @@ func (r credentialStoreRowStub) Scan(...interface{}) error {
 	if r.err != nil {
 		return r.err
 	}
+	return nil
+}
+
+type credentialStoreRowsStub struct {
+	rows []renewStatusRow
+	idx  int
+	err  error
+}
+
+func (r *credentialStoreRowsStub) Close() {}
+
+func (r *credentialStoreRowsStub) Err() error {
+	return r.err
+}
+
+func (r *credentialStoreRowsStub) CommandTag() pgconn.CommandTag {
+	return pgconn.CommandTag{}
+}
+
+func (r *credentialStoreRowsStub) FieldDescriptions() []pgconn.FieldDescription {
+	return nil
+}
+
+func (r *credentialStoreRowsStub) Next() bool {
+	if r.idx >= len(r.rows) {
+		return false
+	}
+	r.idx++
+	return true
+}
+
+func (r *credentialStoreRowsStub) Scan(dest ...any) error {
+	if r.idx == 0 || r.idx > len(r.rows) {
+		return errors.New("Scan without current row")
+	}
+	row := r.rows[r.idx-1]
+	values := []any{
+		row.CredentialID, row.TenantID, row.TenantName, row.AccountID, row.AccountName,
+		row.Vendor, row.AuthMode, row.State, row.CredentialVersion,
+		row.AccessExpiresAt, row.RefreshBeforeAt, row.LastRefreshAt,
+		row.LastRefreshOutcome, row.FailureClass, row.FailureCount, row.UpdatedAt,
+	}
+	if len(dest) != len(values) {
+		return errors.New("scan destination count mismatch")
+	}
+	for i := range dest {
+		reflect.ValueOf(dest[i]).Elem().Set(reflect.ValueOf(values[i]))
+	}
+	return nil
+}
+
+func (r *credentialStoreRowsStub) Values() ([]any, error) {
+	return nil, errors.New("unexpected Values")
+}
+
+func (r *credentialStoreRowsStub) RawValues() [][]byte {
+	return nil
+}
+
+func (r *credentialStoreRowsStub) Conn() *pgx.Conn {
 	return nil
 }

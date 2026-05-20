@@ -1699,6 +1699,39 @@ paths:
         '201': { $ref: '#/components/responses/CredentialAcquisitionHelperCreated' }
         '400': { $ref: '#/components/responses/BadRequest' }
 
+  /admin/v1/credentials/renew-status:
+    get:
+      tags: [admin-accounts]
+      summary: List cross-tenant credential renew status
+      operationId: listCredentialRenewStatus
+      x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int32, minimum: 1, maximum: 500, default: 100 }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+          description: Opaque cursor for ORDER BY updated_at DESC, id DESC pagination.
+        - name: tenant_id
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 1 }
+          description: Optional scoped tenant assertion; tenant_operator cannot request another tenant.
+      responses:
+        '200':
+          description: Credential renew metadata only; encrypted payload and fingerprints are never returned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountCredentialRenewStatusListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/credentials/cli-import:
     post:
       tags: [admin-credential-acquisition]
@@ -3671,6 +3704,51 @@ components:
         credentials:
           type: array
           items: { $ref: '#/components/schemas/AccountCredentialMetadata' }
+
+    AccountCredentialRenewStatus:
+      x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - tenant_name
+        - account_id
+        - account_name
+        - vendor
+        - auth_mode
+        - state
+        - credential_version
+        - failure_count
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        tenant_id: { type: integer, format: int64 }
+        tenant_name: { type: string }
+        account_id: { type: integer, format: int64 }
+        account_name: { type: string }
+        vendor: { type: string }
+        auth_mode: { type: string }
+        state: { type: string }
+        credential_version: { type: integer, format: int32, minimum: 1 }
+        access_expires_at: { type: string, format: date-time, nullable: true }
+        refresh_before_at: { type: string, format: date-time, nullable: true }
+        last_refresh_at: { type: string, format: date-time, nullable: true }
+        last_refresh_outcome: { type: string, nullable: true }
+        failure_class: { type: string, nullable: true }
+        failure_count: { type: integer, format: int32, minimum: 0 }
+
+    AccountCredentialRenewStatusListResponse:
+      x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AccountCredentialRenewStatus' }
+        next_cursor:
+          type: string
+          nullable: true
 
     AccountCredentialWriteRequest:
       x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
