@@ -20,9 +20,10 @@ func TestListEligibleAccountsByPoolGroupSQLFiltersChannelLifecycle(t *testing.T)
 
 func TestBillingSettingsSQLTenantScoped(t *testing.T) {
 	for name, sqlText := range map[string]string{
-		"get":    getBillingSetting,
-		"list":   listBillingSettingsByTenant,
-		"upsert": upsertBillingSetting,
+		"get":        getBillingSetting,
+		"get_update": getBillingSettingForUpdate,
+		"list":       listBillingSettingsByTenant,
+		"upsert":     upsertBillingSetting,
 	} {
 		sql := strings.Join(strings.Fields(sqlText), " ")
 		if !strings.Contains(sql, "tenant_id") {
@@ -31,6 +32,13 @@ func TestBillingSettingsSQLTenantScoped(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(strings.Fields(getBillingSetting), " "), "WHERE tenant_id = $1 AND setting_key = $2") {
 		t.Fatalf("GetBillingSetting must read by tenant_id and setting_key: %s", getBillingSetting)
+	}
+	if !strings.Contains(strings.Join(strings.Fields(getBillingSettingForUpdate), " "), "WHERE tenant_id = $1 AND setting_key = $2 FOR UPDATE") {
+		t.Fatalf("GetBillingSettingForUpdate must lock by tenant_id and setting_key: %s", getBillingSettingForUpdate)
+	}
+	lockSQL := strings.Join(strings.Fields(acquireBillingSettingLock), " ")
+	if !strings.Contains(lockSQL, "pg_advisory_xact_lock(hashtextextended($1::text, $2::bigint))") {
+		t.Fatalf("AcquireBillingSettingLock must use stable tenant/key advisory lock: %s", acquireBillingSettingLock)
 	}
 	if !strings.Contains(strings.Join(strings.Fields(upsertBillingSetting), " "), "ON CONFLICT (tenant_id, setting_key)") {
 		t.Fatalf("UpsertBillingSetting must conflict on tenant_id and setting_key: %s", upsertBillingSetting)

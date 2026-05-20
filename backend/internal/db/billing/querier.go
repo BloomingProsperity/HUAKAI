@@ -12,6 +12,9 @@ type Querier interface {
 	// Tx2 abort path: terminal upstream failure or AMBIGUOUS_USAGE end class.
 	// codex chunk7 P1#4: tenant_id 必须显式预先 caller 提供, 防全局 id 跨租户误改。
 	AbortClaim(ctx context.Context, arg AbortClaimParams) (int64, error)
+	// 首次写入时目标行还不存在, FOR UPDATE 无法锁住空行; 先拿事务级顾问锁
+	// 按租户和设置键串行化同一设置的读改写, 提交或回滚后自动释放。
+	AcquireBillingSettingLock(ctx context.Context, arg AcquireBillingSettingLockParams) error
 	CountAuditEvents(ctx context.Context, arg CountAuditEventsParams) (int64, error)
 	CountBillingClaims(ctx context.Context, arg CountBillingClaimsParams) (int64, error)
 	// Operator overview: how many claims are in each status for one tenant.
@@ -26,6 +29,8 @@ type Querier interface {
 	// Case C 计费策略租户级设置的增删改查。表见 migration 0046。
 	// 按租户和设置键读取单个计费设置。
 	GetBillingSetting(ctx context.Context, arg GetBillingSettingParams) (BillingSetting, error)
+	// 事务内按租户和设置键读取并锁住现有计费设置。
+	GetBillingSettingForUpdate(ctx context.Context, arg GetBillingSettingForUpdateParams) (BillingSetting, error)
 	// Single claim lookup, tenant-scoped (refuse cross-tenant reads).
 	GetClaimByID(ctx context.Context, arg GetClaimByIDParams) (GetClaimByIDRow, error)
 	// F-OBS-001 Tx1/Tx2 billing ledger claim queries.

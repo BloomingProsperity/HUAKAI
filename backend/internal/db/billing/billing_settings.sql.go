@@ -9,6 +9,22 @@ import (
 	"context"
 )
 
+const acquireBillingSettingLock = `-- name: AcquireBillingSettingLock :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::text, $2::bigint))
+`
+
+type AcquireBillingSettingLockParams struct {
+	SettingKey string `db:"setting_key" json:"setting_key"`
+	TenantID   int64  `db:"tenant_id" json:"tenant_id"`
+}
+
+// 首次写入时目标行还不存在, FOR UPDATE 无法锁住空行; 先拿事务级顾问锁
+// 按租户和设置键串行化同一设置的读改写, 提交或回滚后自动释放。
+func (q *Queries) AcquireBillingSettingLock(ctx context.Context, arg AcquireBillingSettingLockParams) error {
+	_, err := q.db.Exec(ctx, acquireBillingSettingLock, arg.SettingKey, arg.TenantID)
+	return err
+}
+
 const getBillingSetting = `-- name: GetBillingSetting :one
 
 SELECT id, tenant_id, setting_key, setting_value, updated_at, updated_by
@@ -25,6 +41,33 @@ type GetBillingSettingParams struct {
 // 按租户和设置键读取单个计费设置。
 func (q *Queries) GetBillingSetting(ctx context.Context, arg GetBillingSettingParams) (BillingSetting, error) {
 	row := q.db.QueryRow(ctx, getBillingSetting, arg.TenantID, arg.SettingKey)
+	var i BillingSetting
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.SettingKey,
+		&i.SettingValue,
+		&i.UpdatedAt,
+		&i.UpdatedBy,
+	)
+	return i, err
+}
+
+const getBillingSettingForUpdate = `-- name: GetBillingSettingForUpdate :one
+SELECT id, tenant_id, setting_key, setting_value, updated_at, updated_by
+FROM billing_settings
+WHERE tenant_id = $1 AND setting_key = $2
+FOR UPDATE
+`
+
+type GetBillingSettingForUpdateParams struct {
+	TenantID   int64  `db:"tenant_id" json:"tenant_id"`
+	SettingKey string `db:"setting_key" json:"setting_key"`
+}
+
+// 事务内按租户和设置键读取并锁住现有计费设置。
+func (q *Queries) GetBillingSettingForUpdate(ctx context.Context, arg GetBillingSettingForUpdateParams) (BillingSetting, error) {
+	row := q.db.QueryRow(ctx, getBillingSettingForUpdate, arg.TenantID, arg.SettingKey)
 	var i BillingSetting
 	err := row.Scan(
 		&i.ID,
