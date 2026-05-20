@@ -188,16 +188,17 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 		recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalSuccess, dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, nil)
 	}
 	event := ex.streamingCompletionEvent(draft, streamAttempt)
-	// 记录条件必须是 claim commit 条件的超集。claim 一旦 commit, 后续同 key
-	// 必走 IdempotencyHit; 此时必须有重放记录, 否则会回 409。一个未以干净
-	// [DONE] 收尾、但已向客户端交付可计费内容的流, 只要转发无错, 同样可能
-	// commit claim, 所以也必须写记录。门控只看转发成功(fwdErr==nil)、
-	// 结算成功(本 else 分支)和未超大小上限; 不看 EndClass, 也不看是否计费。
-	// 偏宽松记录是安全方向: 即使 claim 最终未 commit, 多出的记录只是 TTL
-	// janitor 清掉的无害死记录; 漏记录才会造成 409。
-	if _, err := settleCompletion(ex.ctx, ex.d, event); err != nil {
+	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ex.ctx), 30*time.Second)
+	defer cancel()
+	// 记录条件必须是 claim commit 条件的超集。DefaultSettler.Settle 是纯
+	// commit 路径; handler 走过 Forward 后不再 Abort, 所以 settleCompletion
+	// 成功(本 else 分支)就表示 claim 已 commit 或已入队必将 commit。
+	// fwdErr 不参与门控: 上游读错或客户端断连前已交付的部分流同样 commit
+	// claim, 漏写 replay 会让同 key 重试撞 409。当前可接受的跳过条件只有
+	// 一个: body 超 1 MiB; 空 body 的已 commit 流也必须记录。
+	if _, err := settleCompletion(settleCtx, ex.d, event); err != nil {
 		w.Header().Set("X-Huakai-Settle-Error", err.Error())
-	} else if fwdErr == nil && replayCapture != nil && !replayCapture.overLimit() {
+	} else if replayCapture != nil && !replayCapture.overLimit() {
 		ex.recordStreamingIdempotencyReplay(ex.reserveRes.ClaimID, replayCapture.statusCode(), replayCapture.body())
 	}
 }
