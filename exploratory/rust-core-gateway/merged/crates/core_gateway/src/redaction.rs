@@ -28,7 +28,7 @@ pub fn is_sensitive_header(name: &str) -> bool {
 }
 
 /// 对 header value 脱敏: 敏感 header 返回 `[REDACTED]`, 否则返回原值。
-/// 返回 &'static str 或借用 value 的 str — 为避免生命周期复杂性, 统一返回 String。
+/// 返回借用的字符串切片: 敏感 header 返回静态占位符, 否则借用原 value。
 pub fn redact_header_value<'a>(name: &str, value: &'a str) -> &'a str {
     if is_sensitive_header(name) {
         "[REDACTED]"

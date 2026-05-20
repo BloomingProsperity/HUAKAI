@@ -57,7 +57,7 @@ pub struct StartupConfig {
     pub control_plane_timeout_ms: u64,
     /// route query 失败后的额外重试次数, 默认 1
     pub control_plane_retry_attempts: usize,
-    /// route plan 本地短 TTL cache 上限; 已废弃且当前不生效
+    /// route plan 本地短 TTL cache 的 TTL 上限/开关配置, 传入规划器和 route client
     pub route_cache_ttl_ms: u64,
     /// circuit breaker 连续失败阈值
     pub control_plane_circuit_breaker_failures: u32,
