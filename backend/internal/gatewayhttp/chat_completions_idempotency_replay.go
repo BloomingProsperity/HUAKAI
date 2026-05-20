@@ -43,7 +43,13 @@ func (ex *chatExecution) serveIdempotentReplay(w http.ResponseWriter, claimID in
 		return false
 	}
 	rec, ok, err := ex.d.ReplayStore.Lookup(ex.ctx, ex.ident.TenantID, claimID)
-	if err != nil || !ok || rec == nil {
+	if err != nil {
+		// codex review v17 P2: 存储故障 (PG 不可用等) 不能伪装成 409 客户端
+		// 冲突 — 返 503 让客户端正确退避重试。
+		writeJSONError(w, http.StatusServiceUnavailable, "replay_lookup_failed", err.Error())
+		return true
+	}
+	if !ok || rec == nil {
 		return false
 	}
 	contentType := rec.ContentType
@@ -55,7 +61,8 @@ func (ex *chatExecution) serveIdempotentReplay(w http.ResponseWriter, claimID in
 		status = http.StatusOK
 	}
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("X-HUAKAI-Idempotent-Replay", "hit")
+	// X-HUAKAI-Idempotency-Hit 是 openapi.yaml 公布的契约头 (codex review v17 P2)。
+	w.Header().Set("X-HUAKAI-Idempotency-Hit", "true")
 	w.WriteHeader(status)
 	_, _ = w.Write(rec.ResponseBody)
 	return true

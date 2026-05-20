@@ -27,6 +27,7 @@ type gatewayRuntime struct {
 	deps                *deps
 	pgPool              *pgxpool.Pool
 	selectorCleanup     func()
+	replayJanitorStop   func()
 	closeReplica        func()
 	credentialScheduler *credentialworker.Scheduler
 	dlqWorker           *legacydlq.Worker
@@ -44,6 +45,9 @@ func (rt *gatewayRuntime) close() {
 	}
 	if rt.selectorCleanup != nil {
 		rt.selectorCleanup()
+	}
+	if rt.replayJanitorStop != nil {
+		rt.replayJanitorStop()
 	}
 	if rt.pgPool != nil {
 		rt.pgPool.Close()
