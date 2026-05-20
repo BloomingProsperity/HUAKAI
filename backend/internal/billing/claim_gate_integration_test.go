@@ -33,7 +33,7 @@ func dsn(t *testing.T) string {
 }
 
 // seedTenant inserts a fresh tenant + real users + api_keys row + registers
-// cleanup. Returns IDs. Slice 2 (N+4b1 2026-05-01) replaced the previous
+// cleanup. Returns IDs. Migration 0009 replaced the previous
 // synthetic-id pattern (apiKeyID = tenantID*100 + 1) with a real seed
 // because migration 0009 added composite FKs from billing_ledger_claims
 // (tenant_id, api_key_id) -> api_keys (tenant_id, id) and from

@@ -1,13 +1,15 @@
 // 包 gemini — Google Gemini API 的出站请求适配器。
 //
 // 边界声明（Owner 2026-05-06 directive）：
-//   本文件实现 Gemini API key 直通（用 operator 持有的 generativelanguage
-//   API key），不是 Gemini Advanced 个人订阅反转。Gemini Advanced 反转
-//   形态（OAuth session 重包装）走单独 OAuthSessionAdapter，待做。
+//
+//	本文件实现 Gemini API key 直通（用 operator 持有的 generativelanguage
+//	API key），不是 Gemini Advanced 个人订阅反转。Gemini Advanced 反转
+//	形态（OAuth session 重包装）走单独 OAuthSessionAdapter，待做。
 //
 // Gemini API key 模式有两种鉴权位置：
 //   - query: ?key=API_KEY  （新 generative API 默认）
 //   - header: x-goog-api-key: API_KEY  （Cloud / Vertex 兼容）
+//
 // 本 adapter 默认走 header；Credential.Extra["auth_in_query"]="true" 时
 // 改走 query。
 package gemini
@@ -68,12 +70,12 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 	}
 
 	defaultEndpoint := a.endpointFor(in.Credential.Extra["stream"] == "true")
-	// codex chunk11 P2: 先替换 {model} 占位再走 EndpointForCredential。 否则
+	// 先替换 {model} 占位再走 EndpointForCredential。 否则
 	// EndpointForCredential 内的 url.Parse 把 "{" "}" 转 "%7B" "%7D",
 	// 后续 strings.ReplaceAll 找不到 "{model}" 子串, model 占位永远换不掉。
-	// codex chunk4 P2: model ID 用 path escape 防 URL 保留字符断 routing。
+	// model ID 用 path escape 防 URL 保留字符断 routing。
 	substituted := strings.ReplaceAll(defaultEndpoint, "{model}", url.PathEscape(in.UpstreamModelID))
-	// upstream_passthrough 凭据自带 base_url 优先用之 (codex chunk4 P1)
+	// upstream_passthrough 凭据自带 base_url 优先用之。
 	endpoint := provider.EndpointForCredential(substituted, in.Credential)
 
 	// API key 在 query 还是 header
@@ -82,7 +84,7 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		if strings.Contains(endpoint, "?") {
 			sep = "&"
 		}
-		// codex chunk4 P2: API key 用 query escape 防 reserved 字符破坏 query
+		// API key 用 query escape 防 reserved 字符破坏 query
 		endpoint = endpoint + sep + "key=" + url.QueryEscape(in.Credential.Value)
 	}
 

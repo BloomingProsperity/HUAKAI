@@ -1,6 +1,6 @@
 // KeyRevoker handles api_keys revocation for the admin endpoint. Soft
 // revoke only — billing tables FK back to api_keys with ON DELETE
-// RESTRICT (per N+4b1 migration 0009), so hard delete is structurally
+// RESTRICT (per migration 0009), so hard delete is structurally
 // impossible while audit history exists. Per CLAUDE.md, that's the
 // intended invariant.
 
@@ -53,7 +53,7 @@ func (r *KeyRevoker) Revoke(ctx context.Context, req RevokeRequest) (RevokeResul
 		return RevokeResult{}, fmt.Errorf("%w: api_key_id and tenant_id required", ErrAdminBadRequest)
 	}
 	if err := req.Caller.CanIssueForTenant(req.TenantID); err != nil {
-		// Codex N+4b2 pass-7 P2: denied revoke attempts must hit the
+		// denied revoke attempts must hit the
 		// audit trail. Best-effort write; the caller still gets the
 		// 403 even if audit insertion fails.
 		_ = r.auditDeny(ctx, req, "rbac_violation")
@@ -74,7 +74,7 @@ func (r *KeyRevoker) Revoke(ctx context.Context, req RevokeRequest) (RevokeResul
 			}
 			return fmt.Errorf("%w: get api_key: %v", ErrAdminBackend, err)
 		}
-		// Codex pass-6 P2: only an already-revoked row is the idempotent
+		// only an already-revoked row is the idempotent
 		// path. disabled/expired rows still get flipped to revoked so
 		// operators can't be tricked into thinking a disabled key is
 		// safely retired when it's actually still revocable.
@@ -128,7 +128,7 @@ func (r *KeyRevoker) Revoke(ctx context.Context, req RevokeRequest) (RevokeResul
 }
 
 // auditDeny writes a denied 'revoke_api_key' audit row outside any TX.
-// Codex pass-7 P2: invoked from RBAC-rejection paths so denied
+// Invoked from RBAC-rejection paths so denied
 // revoke attempts still appear in incident review.
 func (r *KeyRevoker) auditDeny(ctx context.Context, req RevokeRequest, reason string) error {
 	q := admindb.New(r.pool)
@@ -142,7 +142,7 @@ func (r *KeyRevoker) auditDeny(ctx context.Context, req RevokeRequest, reason st
 	if actorRole == "" {
 		actorRole = RoleTenantOperator
 	}
-	// Codex N+4b2 pass-10 P2: deny-audit MUST NOT write under the
+	// deny-audit MUST NOT write under the
 	// attacker-supplied tenant_id, otherwise a tenant_operator probing
 	// other tenants pollutes their audit trails. Use NULL tenant scope;
 	// attempted tenant_id stays in the payload jsonb for forensic review.

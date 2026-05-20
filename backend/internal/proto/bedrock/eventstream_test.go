@@ -222,7 +222,7 @@ func TestBedrockAdapter_ZeroValueStructStillWorks(t *testing.T) {
 
 // TestBedrockAdapter_ConcurrentRegistrySharing 验证多 goroutine 共享一个
 // adapter 实例（registry 形态）+ 各自独立 anthropic.UpstreamState 时无 data race。
-// codex lane plan §Failure Modes #3 + §Testing Matrix #10.
+// 覆盖 registry 共享并发路径，防止每请求 state 串扰。
 func TestBedrockAdapter_ConcurrentRegistrySharing(t *testing.T) {
 	ad := NewEventStreamAdapter() // shared
 	const n = 64

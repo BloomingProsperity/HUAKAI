@@ -109,7 +109,7 @@ func (ex *chatExecution) nonStreamingSettleRequest(env *proto.HCSF, actualCost d
 // 旧实现只 hash (model, messages), 客户端可以用同 Idempotency-Key 但带不同
 // input / system / tools / temperature / max_tokens 等字段重放, hash 不变
 // 就被当成 replay 命中 cached claim, 出现 "同 key 不同 payload 静默复用同条
-// claim → 跟实际上游响应/成本错配" 风险 (codex review P2 2026-05-19).
+// claim → 跟实际上游响应/成本错配" 风险。
 //
 // 新实现 hash 原始 body 字节: 任何字段变更 (含 OpenAI /v1/responses 的 input,
 // Anthropic 的 system, function calling 的 tools, 采样参数 temperature /

@@ -69,7 +69,7 @@ func seedReaderGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *rea
 	).Scan(&s.otherTenantID); err != nil {
 		t.Fatalf("seed other tenant: %v", err)
 	}
-	// Slice 2 (N+4b1 2026-05-01): real users + api_keys rows replace the
+	// Slice 2: real users + api_keys rows replace the
 	// previous synthetic-id pattern (`s.apiKeyID = s.tenantID*100 + 1`).
 	// Migration 0009 added composite FKs from billing_ledger_claims +
 	// usage_records (tenant_id, api_key_id|user_id) -> api_keys|users.
@@ -92,7 +92,7 @@ func seedReaderGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *rea
 	t.Cleanup(func() {
 		c := context.Background()
 		for _, tid := range []int64{s.tenantID, s.otherTenantID} {
-			// FK chain post-N+4b1: claims/usage/archive -> api_keys -> users -> tenants.
+			// FK chain after migration 0009: claims/usage/archive -> api_keys -> users -> tenants.
 			_, _ = pool.Exec(c, `DELETE FROM usage_records WHERE tenant_id=$1`, tid)
 			_, _ = pool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1`, tid)
 			_, _ = pool.Exec(c, `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, tid)

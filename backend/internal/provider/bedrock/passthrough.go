@@ -96,7 +96,7 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		return nil, errors.New("bedrock passthrough: Extra[\"aws_region\"] 不能为空")
 	}
 
-	// AutoTranslate 是否对当前请求生效（codex BLOCKING B1 修复）：
+	// AutoTranslate 是否对当前请求生效：
 	//   - upstream_passthrough 模式: caller 已签 SigV4 over original body，
 	//     adapter 改 body 会让 SigV4 hash 失配 → 必须保持 raw passthrough
 	//   - 非 Anthropic Messages 形态 body: bedrock_invoke 同时承载 Cohere /
@@ -135,7 +135,7 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 	// body 翻译成 Bedrock 形，并允许翻译结果决定 stream 标志（caller 仍可
 	// 通过 Extra["stream"] 显式覆盖）。in.UpstreamModelID 始终优先（管理员
 	// model alias 配置权威）。autoTranslate 已经把 credential type + body
-	// shape 两道闸门考虑进去（codex BLOCKING B1 修复）。
+	// shape 两道闸门考虑进去。
 	body := in.InboundBody
 	stream := in.Credential.Extra["stream"] == "true"
 	if autoTranslate {

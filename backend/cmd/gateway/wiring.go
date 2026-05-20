@@ -185,7 +185,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		return nil, err
 	}
 
-	// 持久幂等重放存储 + 过期清理 janitor (codex review v17 P2: 防表无界增长)。
+	// 持久幂等重放存储 + 过期清理 janitor, 防表无界增长。
 	replayStore := billing.NewReplayStore(pgPool)
 	replayJanitor := billing.NewReplayJanitor(replayStore, 0)
 	replayJanitor.Start(ctx)

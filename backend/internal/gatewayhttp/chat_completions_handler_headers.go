@@ -158,7 +158,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 	cachedEnv.Accounting.HopChain = gateway.BuildHopChain(forwardReq, "", in.RequestStartedAt, time.Now())
 	appendTrustChainWarning(cachedEnv, "response_cache_l2_hit", "served from HUAKAI L2 response cache")
 	ledgerEntry, err := submitAuditLedgerEntry(ctx, d, cachedEnv, in.Ident.TenantID, in.RequestID)
-	// codex chunk10 P1 fix: in.AccountID == 0 表示 cache 检查在 acquire 之前,
+	// in.AccountID == 0 表示 cache 检查在 acquire 之前,
 	// reserve 完成但还没拿到 pool slot / acquisition_token, 不能走 settleCompletion
 	// (它 lookup claim by acquisition_token 找不到行返 500)。
 	if in.ReserveResult == nil || in.AccountID == 0 {

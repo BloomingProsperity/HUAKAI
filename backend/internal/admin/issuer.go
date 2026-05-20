@@ -76,7 +76,7 @@ type KeyIssuer struct {
 }
 
 // NewKeyIssuer wraps a pgxpool. Defaults: bcrypt cost 10 (consistent
-// with N+4a customer keys), 30 issues/hour per actor (D4).
+// with customer keys), 30 issues/hour per actor (D4).
 func NewKeyIssuer(pool *pgxpool.Pool) *KeyIssuer {
 	return &KeyIssuer{
 		pool:                pool,
@@ -106,7 +106,7 @@ func (i *KeyIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult, e
 		return IssueResult{}, err
 	}
 
-	// Codex pass-5 P2: validate target tenant + user are active and not
+	// validate target tenant + user are active and not
 	// soft-deleted BEFORE we mint a bearer. Otherwise an invalid target
 	// surfaces as either a 503 (FK violation wrapped as ErrAdminBackend)
 	// or — worse — a perfectly-issued key that the customer resolver
@@ -130,7 +130,7 @@ func (i *KeyIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult, e
 		}
 	}
 
-	// Codex pass-6 P2: cheap pre-flight rate-limit check BEFORE bcrypt so
+	// cheap pre-flight rate-limit check BEFORE bcrypt so
 	// an over-quota actor can't burn cost-10 hash CPU per spam request.
 	// The authoritative atomic check still runs inside the TX with the
 	// per-actor advisory lock — this preflight is best-effort.
@@ -161,7 +161,7 @@ func (i *KeyIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult, e
 	}
 
 	// TX: lock-per-actor + rate-limit + insert api_keys + audit row
-	// atomically. Codex pass-4 P1: the count and insert must be inside
+	// atomically. The count and insert must be inside
 	// the same TX behind a per-actor advisory lock, otherwise concurrent
 	// requests race past the 30/hour cap. The advisory lock auto-releases
 	// at TX end.
@@ -192,7 +192,7 @@ func (i *KeyIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult, e
 			ExpiresAt: pgTimestampPtr(req.ExpiresAt),
 		})
 		if err != nil {
-			// Codex pass-9 P2: AdminInsertAPIKey is now conditional on
+			// AdminInsertAPIKey is now conditional on
 			// tenant + user being active at the moment of write. NoRows
 			// = target raced to disabled/deleted between preflight and
 			// commit; surface as bad-request, not backend.
@@ -270,7 +270,7 @@ func (i *KeyIssuer) audit(ctx context.Context, req IssueRequest, outcome, reason
 	if actorRole == "" {
 		actorRole = RoleTenantOperator
 	}
-	// Codex pass-9 P2: deny-audit ALWAYS sets tenant_id=NULL because the
+	// deny-audit ALWAYS sets tenant_id=NULL because the
 	// caller may have targeted a tenant that does not exist; the FK on
 	// admin_audit_events.tenant_id would otherwise reject the row and we
 	// would silently lose the deny event. The attempted tenant_id stays

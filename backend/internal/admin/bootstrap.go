@@ -1,6 +1,6 @@
 // Bootstrap-admin token loader.
 //
-// Problem: N+4b2 ships a real /admin/v1/api-keys endpoint, but issuing
+// Problem: /admin/v1/api-keys is a real endpoint, but issuing
 // the FIRST admin token requires authenticating as an admin first —
 // chicken-and-egg. Solution: read HUAKAI_ADMIN_BOOTSTRAP_TOKEN at boot;
 // if set AND admin_tokens is empty, INSERT a single platform_admin row
@@ -43,7 +43,7 @@ const BootstrapEnv = "HUAKAI_ADMIN_BOOTSTRAP_TOKEN"
 // Returns nil for "no-op" (env unset or table non-empty); error only on
 // datastore / bcrypt failures (which should fail boot).
 //
-// Codex N+4b2 pass-7 P2: count + insert run inside a TX with a constant
+// count + insert run inside a TX with a constant
 // advisory lock so two gateway instances starting against an empty DB
 // can't both observe count=0 and double-insert. Lock is released
 // automatically on commit/rollback.
@@ -73,7 +73,7 @@ func MaybeBootstrap(ctx context.Context, pool *pgxpool.Pool, logger *zap.Logger)
 		return fmt.Errorf("%w: count admin_tokens: %v", ErrAdminBackend, err)
 	}
 	if count > 0 {
-		// Codex pass-5 P1 + pass-8 P1: count INCLUDES disabled/revoked
+		// count INCLUDES disabled/revoked
 		// rows so bootstrap stays one-shot. Skip ALL further work — no
 		// validation, no bcrypt, no slice — so a stale env value (which
 		// could be too long for bcrypt or shorter than PrefixLen) cannot

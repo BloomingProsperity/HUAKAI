@@ -1,11 +1,12 @@
 // 包 anthropic — Anthropic 平台的出站请求适配器。
 //
 // 边界声明（Owner 2026-05-06 directive）：
-//   本文件仅实现 Anthropic 官方 **API key 直通**（用 operator 合法持有
-//   的 sk-ant-api03-... 开发者 key 转发到 api.anthropic.com）。这是公开
-//   API 路径，不是 sub2api 那种"Pro/Max OAuth 反转"形态。
-//   Pro/Max 反转 (R3 transport mimicry / R7 应用层伪装 / claude_token_provider
-//   等价物) 已 paused — 见 docs/process/plans/2026-05-06-r3-transport-mimicry-claude.md。
+//
+//	本文件仅实现 Anthropic 官方 **API key 直通**（用 operator 合法持有
+//	的 sk-ant-api03-... 开发者 key 转发到 api.anthropic.com）。这是公开
+//	API 路径，不是 sub2api 那种"Pro/Max OAuth 反转"形态。
+//	Pro/Max 反转 (R3 transport mimicry / R7 应用层伪装 / claude_token_provider
+//	等价物) 已 paused — 见 docs/process/plans/2026-05-06-r3-transport-mimicry-claude.md。
 package anthropic
 
 import (
@@ -61,7 +62,7 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		endpoint = defaultMessagesEndpoint
 	}
 
-		// upstream_passthrough 凭据自带 base_url 优先用之 (codex chunk4 P1)
+	// upstream_passthrough 凭据自带 base_url 优先用之。
 	endpoint = provider.EndpointForCredential(endpoint, in.Credential)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(in.InboundBody))

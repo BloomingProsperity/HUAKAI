@@ -118,7 +118,7 @@ func AttemptFromGatewayDraft(stream bool, draft gateway.UsageRecordDraft) Attemp
 	}
 
 	state := StreamStatePartial
-	// AMBIGUOUS_USAGE 不论 stream / 非 stream 都不能正向收费 (codex chunk3 P1):
+	// AMBIGUOUS_USAGE 不论 stream / 非 stream 都不能正向收费:
 	// 进入 reconciliation, 真实 cost 由 audit_mismatch_refund_pending 流程补算。
 	if draft.EndClass == gateway.AmbiguousUsage {
 		state = StreamStateFailed

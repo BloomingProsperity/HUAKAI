@@ -1,4 +1,4 @@
-// Bearer token generation for admin issuance. Mirrors the N+4a customer
+// Bearer token generation for admin issuance. Mirrors the customer
 // resolver's prefix length (16) so reviewers don't learn a new constant.
 //
 // Format: <namespace>_<24-char-base32>

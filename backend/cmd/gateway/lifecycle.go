@@ -85,7 +85,7 @@ func serveGateway(ctx context.Context, srv *http.Server, rt *gatewayRuntime, can
 }
 
 func shutdownGateway(srv *http.Server, rt *gatewayRuntime) error {
-	// codex chunk6 P1 fix: shutdown 顺序之前先停 scheduler / completionBus /
+	// shutdown 顺序之前先停 scheduler / completionBus /
 	// DLQ / outbox 再 srv.Shutdown, 但 in-flight HTTP handler 仍引用这些 deps
 	// (Settler 写账, CompletionBus 派 event, Outbox 投 DLQ); deps 已停 →
 	// handler 出错 / 静默丢消息。正确顺序: 先 srv.Shutdown 等 in-flight handler

@@ -13,9 +13,6 @@
 // 耦合；每次改名输出一行审计 (path, from, to) 便于 admin 查询；幂等（目标
 // 名已等于期望值时不重写、不产生审计行）；未知字段经 json.RawMessage
 // round-trip 完整保留。
-//
-// Code-parallel 双 lane 合成（CLAUDE.md #10 + 2026-05-04 directive）：取 Codex
-// 紧凑结构 + Claude 的 detectToolUsePresence 精确区分 + 全中文注释。
 package gateway
 
 import (
@@ -274,7 +271,7 @@ func rewriteToolChoice(root rawObject, mapping ToolNameMapping, terminals map[st
 // 并追加审计行。返回 true 表示发生改名。
 //
 // terminals 是 mapping 所有 value 集合 — 用于判断"当前名是否已是某条规则的
-// 目标"。codex P2 finding 2026-05-06：当 mapping 含链式情形（如 a→b、b→c）
+// 目标"。当 mapping 含链式情形（如 a→b、b→c）
 // 时，重试一次会把 a 改成 b，再跑一次又把 b 改成 c，违反幂等承诺。守卫做法：
 // 若 from 已经是任意 mapping 的 target（即 from ∈ terminals），视为终态，跳过。
 // 这样无论链多长，过一次后再跑都不变。

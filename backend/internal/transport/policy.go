@@ -78,7 +78,7 @@ const (
 	TransportModeMimicryWindsurf TransportMode = "mimicry_windsurf"
 
 	// TransportModeDiagnosticsOnly 仅做出站连通性诊断（不发真请求体）。
-	// Codex lane plan 提议的 Safe Equivalent 路径，未来 R3 实施时回退用。
+	// Safe Equivalent 路径，未来 R3 实施时回退用。
 	TransportModeDiagnosticsOnly TransportMode = "diagnostics_only"
 )
 

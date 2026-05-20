@@ -1,6 +1,6 @@
 //go:build integration_pg
 
-// Phase L0 minimum (N+4a) integration tests for APIKeyResolver against
+// Phase L0 minimum integration tests for APIKeyResolver against
 // real PostgreSQL. Validates:
 //   - happy path (matching bearer → Identity)
 //   - wrong bearer → ErrUnauthorized (401)
@@ -298,7 +298,7 @@ func TestAPIKeyResolver_NilQueriesReturnsMisconfigured(t *testing.T) {
 	}
 }
 
-// Codex N+4a P1: a disabled user with an active API key must NOT
+// A disabled user with an active API key must NOT
 // authenticate. The resolver looks up users.status after bcrypt match.
 func TestAPIKeyResolver_DisabledUserRejected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -320,7 +320,7 @@ func TestAPIKeyResolver_DisabledUserRejected(t *testing.T) {
 	}
 }
 
-// Codex N+4a pass3 P1: a disabled tenant must NOT authenticate even if
+// A disabled tenant must NOT authenticate even if
 // their user + API key are both active.
 func TestAPIKeyResolver_DisabledTenantRejected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -341,7 +341,7 @@ func TestAPIKeyResolver_DisabledTenantRejected(t *testing.T) {
 	}
 }
 
-// Codex N+4a pass3 P1: a soft-deleted tenant must NOT authenticate.
+// A soft-deleted tenant must NOT authenticate.
 // Note: api_keys row would normally be cascade-handled in a real
 // admin flow; this test sets deleted_at=NOW() on tenants directly.
 func TestAPIKeyResolver_SoftDeletedTenantRejected(t *testing.T) {
@@ -363,7 +363,7 @@ func TestAPIKeyResolver_SoftDeletedTenantRejected(t *testing.T) {
 	}
 }
 
-// Codex N+4a P1: a soft-deleted user must NOT authenticate even if
+// A soft-deleted user must NOT authenticate even if
 // their API key remains active.
 func TestAPIKeyResolver_SoftDeletedUserRejected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

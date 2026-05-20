@@ -146,7 +146,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 		if !exec.prepareRoute(w) {
 			return
 		}
-		// codex chunk9 P1: 先 reserve (ClaimGate.Reserve 内部走
+		// 先 reserve (ClaimGate.Reserve 内部走
 		// uq_claims_idempotency 唯一约束做 idempotency-key + payload fingerprint
 		// 校验), 再查 cache。 否则 client reuse 同 idempotency-key 但 payload 变
 		// 时, cache 命中绕过 fingerprint conflict 检查。 reserve 不占 pool slot
@@ -156,7 +156,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 		}
 		if !exec.req.Stream {
 			// cache 命中时 serveL2CacheHit 内部已在写 200 body 之前 Settler.Abort
-			// 收尾 reserve 行 (codex chunk12 P2)。 这里只需 return。
+			// 收尾 reserve 行。这里只需 return。
 			handled, proceed := exec.serveL2CacheIfAvailable(w)
 			if handled || !proceed {
 				return
@@ -169,7 +169,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			return
 		}
 		if !exec.req.Stream {
-			// codex review P1 2026-05-19: anthropic_messages adapter
+			// anthropic_messages adapter
 			// ProviderResponseToCanonical 仍是 ErrNotImplemented stub, 走非流式
 			// 会先扣上游账号, 解析时 502 — 客户端拿 502 但额度已花。
 			// buffered 翻译器实现前 fail-fast 拒 (501 Not Implemented), 让客户端
@@ -178,7 +178,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			// 注意: 这步走到时已经 prepareClaimAndAccount + resolveCredential 完,
 			// 即 ClaimGate.Reserve 已记 claim, pool slot 已 acquire。reject 不 abort
 			// 会让 claim 永远停在 reserving + slot 留 acquired, 反复打反复占, 把 pool
-			// 容量打空 (codex review P1 2026-05-19 catch)。所以必须先 Settler.Abort
+			// 容量打空。所以必须先 Settler.Abort
 			// 再 writeJSONError 退出。
 			if exec.resolved.ProtocolFamily == "anthropic_messages" {
 				if exec.reserveRes != nil {

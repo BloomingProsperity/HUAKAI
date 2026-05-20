@@ -205,10 +205,10 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 				Payload: req.Credentials, ActorID: actorID,
 			})
 			if err != nil {
-				// codex review v3 P2 fix: 之前 Credentials.Create 失败时, 上面 InsertProviderAccount
+				// Credentials.Create 失败时, 上面 InsertProviderAccount
 				// 已经写了一个 enabled=req.Enabled + credentials='{}' 的 account 行, 一旦 credential
 				// 创建失败 (加密 / DB IO 等), account 留在池里没可用凭据, 后续 selector 选到它会
-                // 401 / 退回; cleanup: 软删该 account 防 orphan 进 pool。
+				// 401 / 退回; cleanup: 软删该 account 防 orphan 进 pool。
 				_ = d.Store.SoftDeleteProviderAccount(r.Context(), admindb.SoftDeleteProviderAccountParams{
 					ActorID: &actorID, ID: id, TenantID: tenantID,
 				})

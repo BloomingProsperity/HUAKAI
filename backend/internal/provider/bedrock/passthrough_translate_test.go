@@ -131,7 +131,7 @@ func TestAutoTranslate_ExtraStreamOverridesTranslator(t *testing.T) {
 	// 注意: extra=true 也应该覆盖；此测试只测 false 路径
 }
 
-// codex BLOCKING B1 行为变更后：AutoTranslate=true 但 body 非 Anthropic 形态
+// AutoTranslate=true 但 body 非 Anthropic 形态
 // （包括非 JSON 垃圾数据）→ 不报错，body 原样发送，让 Bedrock server-side 拒收。
 // 这与"AutoTranslate 仅对 Anthropic Messages 形态生效"语义一致。
 func TestAutoTranslate_InvalidBody_PassThrough(t *testing.T) {
@@ -217,7 +217,7 @@ func TestAutoTranslate_NonStreamBody_RoutesToInvoke(t *testing.T) {
 	}
 }
 
-// codex BLOCKING B1 回归: AutoTranslate=true 但 credential 是
+// AutoTranslate=true 但 credential 是
 // upstream_passthrough（caller 已签名）时不能改 body — 否则 SigV4 hash 失配。
 func TestAutoTranslate_SkipsForUpstreamPassthrough(t *testing.T) {
 	a := newTestAdapter()
@@ -245,7 +245,7 @@ func TestAutoTranslate_SkipsForUpstreamPassthrough(t *testing.T) {
 	}
 }
 
-// codex BLOCKING B1 回归: AutoTranslate=true 但 body 不是 Anthropic Messages
+// AutoTranslate=true 但 body 不是 Anthropic Messages
 // 形态（如 Cohere / Llama / Titan）时不能盲翻译 — 否则会注入无关 anthropic_version
 // 字段，可能破坏目标 vendor 的解析。
 func TestAutoTranslate_SkipsForNonAnthropicShape(t *testing.T) {

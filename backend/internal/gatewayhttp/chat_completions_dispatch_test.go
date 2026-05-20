@@ -64,7 +64,7 @@ func TestHandler_AnthropicEndpointFamilySet(t *testing.T) {
 	dispatcher := &mockCanonicalBufferedDispatcher{}
 	d := anthropicClientAdapterDeps(t)
 	d.CanonicalDispatcher = dispatcher
-	// codex review P1 2026-05-19: Anthropic 非流式 buffered 翻译器未实现,
+	// Anthropic 非流式 buffered 翻译器未实现,
 	// handler 现 fail-fast 拒 (501)。本 test 验 reject 触发, 不静默扣上游额度。
 	body := `{"model":"claude-3-5-sonnet","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`
 	rec := invokeHandlerPath(t, d, "/v1/messages", body)

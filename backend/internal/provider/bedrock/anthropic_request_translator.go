@@ -2,15 +2,16 @@
 // Messages API body 翻译成 AWS Bedrock invoke body.
 //
 // 调用链:
-//   Anthropic CLI / Claude Code  ─→  HUAKAI /v1/messages handler
-//   ─→  TranslateAnthropicAPIToBedrock(body)
-//   ─→  PassthroughAdapter (sigv4 sign)
-//   ─→  AWS Bedrock invoke-with-response-stream
-//   ─→  binary EventStream
-//   ─→  BedrockEventStreamScanner (gateway A3)
-//   ─→  BedrockEventStreamAdapter (proto A4)
-//   ─→  forwarder (SSE 输出)
-//   ─→  Anthropic CLI（透传 Anthropic 事件，无需 client 端再翻译）
+//
+//	Anthropic CLI / Claude Code  ─→  HUAKAI /v1/messages handler
+//	─→  TranslateAnthropicAPIToBedrock(body)
+//	─→  PassthroughAdapter (sigv4 sign)
+//	─→  AWS Bedrock invoke-with-response-stream
+//	─→  binary EventStream
+//	─→  BedrockEventStreamScanner (gateway A3)
+//	─→  BedrockEventStreamAdapter (proto A4)
+//	─→  forwarder (SSE 输出)
+//	─→  Anthropic CLI（透传 Anthropic 事件，无需 client 端再翻译）
 //
 // 这是 OpenAI client → Bedrock 闭环的"低成本预演"——Anthropic CLI 已经
 // 期望 Anthropic Messages 形态，所以返回端不用 ClientAdapter 翻译。
@@ -19,13 +20,13 @@
 // 翻译规则（参 https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages.html
 // 公开 schema, 不读 aws-sdk-go 源）:
 //
-//   Anthropic API 原 body (示例):
-//     {"model":"claude-3-5-sonnet-20241022", "messages":[...],
-//      "max_tokens":1024, "stream":true, "system":"...", ...}
+//	Anthropic API 原 body (示例):
+//	  {"model":"claude-3-5-sonnet-20241022", "messages":[...],
+//	   "max_tokens":1024, "stream":true, "system":"...", ...}
 //
-//   Bedrock invoke body (目标):
-//     {"anthropic_version":"bedrock-2023-05-31", "messages":[...],
-//      "max_tokens":1024, "system":"...", ...}
+//	Bedrock invoke body (目标):
+//	  {"anthropic_version":"bedrock-2023-05-31", "messages":[...],
+//	   "max_tokens":1024, "system":"...", ...}
 //
 // 关键差异:
 //   - **strip "model"**: Bedrock URL 中已含 model_id，body 不能再有
@@ -51,7 +52,7 @@ const AnthropicVersionBedrock = "bedrock-2023-05-31"
 // IsAnthropicMessagesShape 判断 body 是否看起来像 Anthropic Messages API
 // 形态。判据：顶层 JSON object 含 "messages" 字段（array 形）。
 //
-// 用途（codex BLOCKING B1 修复）：bedrock_invoke 协议族同时承载
+// 用途：bedrock_invoke 协议族同时承载
 // Anthropic / Cohere / Llama / Mistral / Titan 等多家 vendor，AutoTranslate
 // 不能盲目对所有 body 跑。Cohere/Llama/Titan body 形态分别用 prompt /
 // inputText / message 等字段，没有 messages array — 这个 helper 让 caller

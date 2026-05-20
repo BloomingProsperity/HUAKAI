@@ -1,5 +1,5 @@
 // Package adminhttp wires the operator-facing admin endpoints under
-// /admin/v1/. Slice 2 (N+4b2) ships the api_keys issuance + list +
+// /admin/v1/. This slice ships the api_keys issuance + list +
 // revoke surface; later slices add /admin/v1/users, /admin/v1/pools, etc.
 //
 // Per CLAUDE.md + docs/specs/_invariants/cross-module-boundaries.md:
@@ -138,7 +138,7 @@ func newIssueHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 					"expires_at must be RFC3339")
 				return
 			}
-			// Codex N+4b2 pass-4 P2: reject already-expired requests.
+			// Reject already-expired requests.
 			// Otherwise the issuer mints a key + plaintext bearer that
 			// the customer resolver immediately refuses.
 			if !t.After(time.Now()) {
@@ -236,7 +236,7 @@ func newListHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 			return
 		}
 
-		// Codex N+4b2 pass-8 P2: validate tenant exists BEFORE the list
+		// Validate tenant exists BEFORE the list
 		// query + audit insert. Otherwise an unknown tenant_id slides
 		// through the list (empty result) and then trips the
 		// admin_audit_events.tenant_id FK, surfacing as 503 instead of
@@ -253,7 +253,7 @@ func newListHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 			return
 		}
 
-		// Codex pass-9 P3: malformed pagination must be rejected, not
+		// Malformed pagination must be rejected, not
 		// silently coerced to defaults. Otherwise client paging bugs look
 		// like successful first-page reads.
 		limit := int32(50)
@@ -288,7 +288,7 @@ func newListHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 			return
 		}
 
-		// Codex N+4b2 pass-4 P2: audit successful admin reads. Payload is
+		// Audit successful admin reads. Payload is
 		// scoped (tenant + counts + page) — never per-row plaintext or
 		// prefix data.
 		actorRole := ident.Role
@@ -307,7 +307,7 @@ func newListHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 		if reqIDPtr != "" {
 			reqIDArg = &reqIDPtr
 		}
-		// Codex pass-5 P2: audit row is part of the contract for admin
+		// Audit row is part of the contract for admin
 		// reads. If we can't write it, fail closed (503) so the operator
 		// re-tries against a healthy audit pipe rather than silently
 		// dropping the trail.
@@ -395,7 +395,7 @@ func newRevokeHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 			return
 		}
 
-		// Codex pass-6 P2: surface MaxBytesReader truncation so an
+		// Surface MaxBytesReader truncation so an
 		// oversized body whose first bytes happen to parse as valid JSON
 		// can't slip through. Mirrors the issue handler.
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
@@ -463,7 +463,7 @@ func writeAdminError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "admin_forbidden",
 			"caller cannot act on this tenant scope")
 	case errors.Is(err, admin.ErrAdminRateLimited):
-		// Codex N+4b2 pass-7 P2: shared RateLimited response in
+		// Shared RateLimited response in
 		// docs/openapi/openapi.yaml requires Retry-After. The 30/hour
 		// window slides per actor; advise the conservative 60s so a
 		// well-behaved client backs off without thrashing.

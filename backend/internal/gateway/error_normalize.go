@@ -1,11 +1,6 @@
 // Package gateway provider error normalization (A13 ERROR_RULES rule table).
 // Spec: docs/specs/rate-limiting.md A13 / DR-009 1 Q1.
 //
-// This file is the synthesis of two parallel-draft implementations
-// (Claude lane + Codex lane) per CLAUDE.md #10 + 2026-05-04 directive
-// expanding parallel-draft to all code. Synthesis notes:
-// docs/process/plans/2026-05-04-r6-codeparallel-synthesis.md.
-//
 // Hard floor (DR-009 6.6): the FSM must never auto-reach `disabled`
 // on an `ambiguous` signal alone. Enforced structurally: `ambiguous`
 // rules can only emit RetryActionCountedDisable / Cooldown / WarnOnly,

@@ -53,9 +53,8 @@ func NewDBSlotManager(pool *pgxpool.Pool) *DBSlotManager {
 // return SQLSTATE 40001 (serialization_failure) under concurrent
 // IncrementInFlightCount on the same provider_account. Phase C smoke runs
 // single-request so will not hit this; production hot path will. Current
-// behavior surfaces 40001 as a fatal slot error → request fails. Codex
-// pass2 P2 finding 2026-04-30; deferred to Phase E along with the rest of
-// the production contention story.
+// behavior surfaces 40001 as a fatal slot error → request fails. Deferred
+// to Phase E along with the rest of the production contention story.
 func (m *DBSlotManager) Acquire(ctx context.Context, account *AccountSnapshot, req SelectionRequest) (*AcquireResult, error) {
 	if m == nil || m.pool == nil {
 		return nil, ErrSlotManagerUnavailable

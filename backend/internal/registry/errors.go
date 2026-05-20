@@ -1,6 +1,6 @@
 // Package registry: error classes (D4 + D6 mapping).
 //
-// HTTP mapping (handled in chat handler N+5b):
+// HTTP mapping (handled in chat handler):
 //
 //	ErrUnknownModel     -> 404 model_not_available
 //	ErrModelDisabled    -> 404 model_not_available  (uniform per D4 anti-enum)
@@ -34,5 +34,5 @@ var ErrTenantNoAccess = errors.New("registry: model has no eligible pool binding
 // ErrRegistryBackend wraps any datastore failure during resolve. The
 // handler maps this to HTTP 503 — NOT 404 — so legitimate clients are
 // not told their valid alias does not exist during an infra outage.
-// Mirrors auth.ErrAuthBackend (codex N+4a P1 finding 2026-04-30).
+// Mirrors auth.ErrAuthBackend.
 var ErrRegistryBackend = errors.New("registry: backend datastore error")
