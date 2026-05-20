@@ -73,7 +73,7 @@ func (s *stubSettler) Abort(_ context.Context, _ int64, claimID int64, reason, _
 	return nil
 }
 
-func (s *stubSettler) CommitCacheHit(_ context.Context, _, _ int64, _ string) error {
+func (s *stubSettler) CommitCacheHit(_ context.Context, _ billing.SettleRequest) error {
 	return nil
 }
 

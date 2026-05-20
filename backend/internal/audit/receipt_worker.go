@@ -119,24 +119,19 @@ func (s *ReceiptHookSettler) Abort(ctx context.Context, tenantID, claimID int64,
 	return s.inner.Abort(ctx, tenantID, claimID, reason, auditRequestID)
 }
 
-func (s *ReceiptHookSettler) CommitCacheHit(ctx context.Context, tenantID, claimID int64, auditRequestID string) error {
+func (s *ReceiptHookSettler) CommitCacheHit(ctx context.Context, req billing.SettleRequest) error {
 	if s == nil || s.inner == nil {
 		return billing.ErrPoolNotConfigured
 	}
-	if err := s.inner.CommitCacheHit(ctx, tenantID, claimID, auditRequestID); err != nil {
+	if err := s.inner.CommitCacheHit(ctx, req); err != nil {
 		return err
 	}
-	// codex chunk14 P2: L2 cache 命中走 CommitCacheHit 而非 Settle, 之前
-	// 漏跑 receipt hook → 成功的缓存响应不生成 user_cost_receipts。 这里补
-	// AppendSettledReceipt (它只用 AuditRequestID 从 DB derive receipt)。
+	// L2 cache 命中走 CommitCacheHit 而非 Settle; CommitCacheHit 现在写了
+	// provider-less usage_records 行, receipt 源能 join 到 → 补跑 receipt hook
+	// 生成 user_cost_receipts, 与正常结算一致。
 	if s.hook != nil {
-		req := billing.SettleRequest{
-			TenantID:       tenantID,
-			ClaimID:        claimID,
-			AuditRequestID: auditRequestID,
-		}
 		if hookErr := s.hook.AppendSettledReceipt(ctx, req); hookErr != nil {
-			s.hook.report(ctx, auditRequestID, hookErr)
+			s.hook.report(ctx, req.AuditRequestID, hookErr)
 		}
 	}
 	return nil

@@ -345,7 +345,7 @@ func (s *recordingRefundSettler) Abort(context.Context, int64, int64, string, st
 	return nil
 }
 
-func (s *recordingRefundSettler) CommitCacheHit(context.Context, int64, int64, string) error {
+func (s *recordingRefundSettler) CommitCacheHit(context.Context, billing.SettleRequest) error {
 	return nil
 }
 

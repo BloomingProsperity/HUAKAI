@@ -174,7 +174,7 @@ func (s *refundVisibleSettler) Abort(context.Context, int64, int64, string, stri
 	return nil
 }
 
-func (s *refundVisibleSettler) CommitCacheHit(context.Context, int64, int64, string) error {
+func (s *refundVisibleSettler) CommitCacheHit(context.Context, billing.SettleRequest) error {
 	return nil
 }
 

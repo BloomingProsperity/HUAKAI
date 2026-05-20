@@ -104,7 +104,7 @@ func (s *recordingBillingSettler) Abort(context.Context, int64, int64, string, s
 	return nil
 }
 
-func (s *recordingBillingSettler) CommitCacheHit(context.Context, int64, int64, string) error {
+func (s *recordingBillingSettler) CommitCacheHit(context.Context, billing.SettleRequest) error {
 	return nil
 }
 

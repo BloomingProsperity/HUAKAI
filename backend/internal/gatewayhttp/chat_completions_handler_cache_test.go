@@ -27,8 +27,8 @@ func (s *recordingSettler) Abort(context.Context, int64, int64, string, string) 
 	return nil
 }
 
-func (s *recordingSettler) CommitCacheHit(_ context.Context, _ int64, claimID int64, _ string) error {
-	s.cacheHitCommits = append(s.cacheHitCommits, claimID)
+func (s *recordingSettler) CommitCacheHit(_ context.Context, req billing.SettleRequest) error {
+	s.cacheHitCommits = append(s.cacheHitCommits, req.ClaimID)
 	return nil
 }
 

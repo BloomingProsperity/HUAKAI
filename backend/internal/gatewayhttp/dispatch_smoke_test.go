@@ -94,7 +94,7 @@ func (s *smokeSettler) Abort(_ context.Context, _, _ int64, _, _ string) error {
 	return nil
 }
 
-func (s *smokeSettler) CommitCacheHit(_ context.Context, _, _ int64, _ string) error {
+func (s *smokeSettler) CommitCacheHit(_ context.Context, _ billing.SettleRequest) error {
 	return nil
 }
 

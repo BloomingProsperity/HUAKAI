@@ -170,11 +170,24 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 			return true
 		}
 		// cache 命中是成功请求 (返 200 缓存体), claim 必须以 committed (零成本)
-		// 终结而非 aborted — 否则审计把成功请求记成中止, 且同 idempotency-key
-		// 后续重试被当成 aborted 前驱。 终结必须在写 200 body 之前完成, 否则
-		// 进程退出会让 claim 永卡 reserving。
+		// 终结而非 aborted — 否则审计把成功请求记成中止。 CommitCacheHit 同时写
+		// 一条 provider-less usage_records 行, 使 receipt / 用量视图可见。 终结
+		// 必须在写 200 body 之前完成, 否则进程退出会让 claim 永卡 reserving。
 		if in.ReserveResult != nil {
-			if commitErr := d.Settler.CommitCacheHit(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, in.RequestID); commitErr != nil {
+			cacheHitReq := billing.SettleRequest{
+				ClaimID:         in.ReserveResult.ClaimID,
+				TenantID:        in.Ident.TenantID,
+				AuditRequestID:  in.RequestID,
+				RequestedModel:  in.RequestedModel,
+				UpstreamModel:   in.UpstreamModelID,
+				Provider:        in.Provider,
+				Stream:          false,
+				RequestedAt:     in.RequestStartedAt,
+				Fingerprint:     in.PayloadHash,
+				Draft:           nonStreamingUsageDraft(cachedEnv, decimal.Zero, routingReasonWithCacheHit(routingReason, true, in.Entry.Key)),
+				SnapshotVersion: in.PlanSnapshot,
+			}
+			if commitErr := d.Settler.CommitCacheHit(ctx, cacheHitReq); commitErr != nil {
 				writeJSONError(w, http.StatusInternalServerError, "cache_settle_error", commitErr.Error())
 				return true
 			}
