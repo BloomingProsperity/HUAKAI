@@ -1897,6 +1897,57 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/BillingLedgerClaimList' }
 
+  /admin/v1/billing/settings:
+    get:
+      tags: [admin-billing]
+      summary: Read tenant billing policy settings
+      operationId: getAdminBillingSettings
+      x-huakai-spec-source:
+        - docs/specs/observability-billing.md
+        - docs/process/decisions/DR-001-multi-tenancy.md
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - name: tenant_id
+          in: query
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Current persisted tenant setting or safe default fallback.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminBillingSettingsResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [admin-billing]
+      summary: Update tenant billing policy settings
+      operationId: updateAdminBillingSettings
+      x-huakai-spec-source:
+        - docs/specs/observability-billing.md
+        - docs/process/decisions/DR-001-multi-tenancy.md
+      x-huakai-required-role: tenant_operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminBillingSettingsUpdate' }
+      responses:
+        '200':
+          description: Setting updated and admin audit event recorded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminBillingSettingsResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/audit-events:
     get:
       tags: [admin-audit]
@@ -3972,6 +4023,58 @@ components:
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/BillingLedgerClaim' } }
         page: { $ref: '#/components/schemas/PageMeta' }
+
+    AdminBillingSettingsResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/specs/observability-billing.md
+        - docs/process/decisions/DR-001-multi-tenancy.md
+      required:
+        - tenant_id
+        - key
+        - value
+        - source
+        - allowed_values
+        - roadmap_values
+        - updated_at
+        - updated_by
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        key:
+          type: string
+          enum: [stream_input_only_interrupted_policy]
+        value:
+          type: string
+          enum: [no_bill, no_bill_record]
+        source:
+          type: string
+          enum: [tenant, default]
+        allowed_values:
+          type: array
+          items: { type: string, enum: [no_bill, no_bill_record] }
+        roadmap_values:
+          type: array
+          items: { type: string, enum: [bill_input] }
+        updated_at: { type: [string, 'null'], format: date-time }
+        updated_by: { type: [string, 'null'] }
+
+    AdminBillingSettingsUpdate:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/specs/observability-billing.md
+        - docs/process/decisions/DR-001-multi-tenancy.md
+      required: [tenant_id, stream_input_only_interrupted_policy, reason]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        stream_input_only_interrupted_policy:
+          type: string
+          enum: [no_bill, no_bill_record, bill_input]
+          description: bill_input is reserved as roadmap and returns billing_policy_value_roadmap.
+        reason:
+          type: string
+          minLength: 1
 
     AuditEvent:
       type: object

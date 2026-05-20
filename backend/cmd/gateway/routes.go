@@ -178,6 +178,14 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Store: d.billingQueries,
 		}))
 	})
+	r.Route("/admin/v1/billing", func(r chi.Router) {
+		gatewayhttp.MountAdminBillingSettingsRoutes(r, gatewayhttp.AdminBillingSettingsDeps{
+			Auth:          d.adminAuth,
+			Store:         d.billingPolicyStore,
+			TenantChecker: d.adminQueries,
+			AuditUpdater:  d.billingAuditUpdater,
+		})
+	})
 	r.Route("/v1/admin/vouchers", func(r chi.Router) {
 		gatewayhttp.MountVoucherAdminRoutes(r, gatewayhttp.VoucherAdminDeps{
 			Auth:    d.adminAuth,
