@@ -100,13 +100,12 @@ func EndpointForCredential(adapterDefault string, cred Credential) string {
 	}
 	defaultPath := defaultURL.Path
 	basePath := strings.TrimRight(baseURL.Path, "/")
-	// adapterSuffix = adapter default path 去掉首段版本前缀 (e.g. "/v1") 后的
-	// 剩余 endpoint 部分。"/v1/chat/completions" → "/chat/completions"。
-	// codex chunk12 P2: base_url 已带版本前缀时只拼 suffix, 不重复 /v1。
-	adapterSuffix := defaultPath
-	if trimmed := strings.TrimPrefix(defaultPath, "/"); strings.Contains(trimmed, "/") {
-		adapterSuffix = defaultPath[strings.Index(trimmed, "/")+1:]
-	}
+	// adapterSuffix = adapter default path 中 API 版本段之后的 endpoint 部分,
+	// "/v1/chat/completions" 与 "/api/v1/chat/completions" 都得 "/chat/completions"。
+	// 之前只剥首段, 但 OpenRouter "/api/v1/chat/completions" 与 Groq
+	// "/openai/v1/chat/completions" 的版本段是第二段, 只剥首段会留下
+	// "/v1/chat/completions", 拼到 base "/api/v1" 即 "/api/v1/v1/chat/completions"。
+	adapterSuffix := apiEndpointSuffix(defaultPath)
 	combined := *baseURL
 	switch {
 	case basePath == "" || basePath == "/":
@@ -132,20 +131,42 @@ func EndpointForCredential(adapterDefault string, cred Credential) string {
 	return combined.String()
 }
 
-// isAPIVersionPath 判断 path 末段是否是 API 版本号 (v1 / v2 / v1beta 等)。
-// 末段是版本号 → base_url 是 API root 应拼 endpoint suffix; 否则视为用户
-// 自定义完整路径, 原样信任。
+// isAPIVersionSegment 判断单个 path 段是否是 API 版本号: 以 'v' 开头, 紧跟
+// 至少一个数字 (允许 v1 / v2 / v1beta / v1alpha 等)。
+func isAPIVersionSegment(seg string) bool {
+	if len(seg) < 2 || seg[0] != 'v' {
+		return false
+	}
+	return seg[1] >= '0' && seg[1] <= '9'
+}
+
+// isAPIVersionPath 判断 path 末段是否是 API 版本号。 末段是版本号 →
+// base_url 是 API root 应拼 endpoint suffix; 否则视为用户自定义完整路径,
+// 原样信任。
 func isAPIVersionPath(path string) bool {
 	idx := strings.LastIndex(path, "/")
 	last := path
 	if idx >= 0 {
 		last = path[idx+1:]
 	}
-	if len(last) < 2 || last[0] != 'v' {
-		return false
+	return isAPIVersionSegment(last)
+}
+
+// apiEndpointSuffix 返回 adapter default path 中 API 版本段之后的 endpoint
+// 部分。"/v1/chat/completions" 与 "/api/v1/chat/completions" 都返回
+// "/chat/completions"。 找不到版本段, 或版本段已是末段时, 原样返回整个 path。
+func apiEndpointSuffix(path string) string {
+	segs := strings.Split(strings.Trim(path, "/"), "/")
+	lastVer := -1
+	for i, seg := range segs {
+		if isAPIVersionSegment(seg) {
+			lastVer = i
+		}
 	}
-	// v 后至少一个数字 (允许 v1 / v2 / v1beta / v1alpha 等)
-	return last[1] >= '0' && last[1] <= '9'
+	if lastVer < 0 || lastVer >= len(segs)-1 {
+		return path
+	}
+	return "/" + strings.Join(segs[lastVer+1:], "/")
 }
 
 // BuildInput 是 BuildRequest 的入参。
