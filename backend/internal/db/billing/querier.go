@@ -23,6 +23,9 @@ type Querier interface {
 	DeleteExpiredStickyBindings(ctx context.Context) error
 	DeletePool(ctx context.Context, arg DeletePoolParams) (PoolGroup, error)
 	GetAccountForRevalidation(ctx context.Context, arg GetAccountForRevalidationParams) (GetAccountForRevalidationRow, error)
+	// Case C 计费策略租户级设置的增删改查。表见 migration 0046。
+	// 按租户和设置键读取单个计费设置。
+	GetBillingSetting(ctx context.Context, arg GetBillingSettingParams) (BillingSetting, error)
 	// Single claim lookup, tenant-scoped (refuse cross-tenant reads).
 	GetClaimByID(ctx context.Context, arg GetClaimByIDParams) (GetClaimByIDRow, error)
 	// F-OBS-001 Tx1/Tx2 billing ledger claim queries.
@@ -83,6 +86,8 @@ type Querier interface {
 	// Audit-grade event stream for one tenant. event_type filter optional;
 	// pass empty string to disable filter.
 	ListBillingEventsByTenant(ctx context.Context, arg ListBillingEventsByTenantParams) ([]ListBillingEventsByTenantRow, error)
+	// 列出一个租户的全部计费设置。
+	ListBillingSettingsByTenant(ctx context.Context, tenantID int64) ([]BillingSetting, error)
 	ListEligibleAccounts(ctx context.Context, arg ListEligibleAccountsParams) ([]ListEligibleAccountsRow, error)
 	// Phase C.2: pool-group-keyed eligibility lookup for the gateway selector.
 	// Joins channels → provider_accounts so a SelectionRequest with PoolGroupID
@@ -134,6 +139,8 @@ type Querier interface {
 	// codex chunk7 P1#4: tenant_id 显式 caller 提供, 防全局 id 跨租户误 commit。
 	UpdateClaimCommitted(ctx context.Context, arg UpdateClaimCommittedParams) (int64, error)
 	UpdatePool(ctx context.Context, arg UpdatePoolParams) (PoolGroup, error)
+	// 写入或更新单个计费设置; updated_at 总是以数据库时间刷新。
+	UpsertBillingSetting(ctx context.Context, arg UpsertBillingSettingParams) (BillingSetting, error)
 	UpsertStickyBinding(ctx context.Context, arg UpsertStickyBindingParams) error
 	// Pattern B placeholder writeback per F-POOL-001 §6 + F-OBS-001 §Tx1 step 6.
 	// Pool acquire returns; we set provider_account_id + acquisition_token onto
