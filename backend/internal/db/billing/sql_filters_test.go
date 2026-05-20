@@ -17,3 +17,22 @@ func TestListEligibleAccountsByPoolGroupSQLFiltersChannelLifecycle(t *testing.T)
 		}
 	}
 }
+
+func TestBillingSettingsSQLTenantScoped(t *testing.T) {
+	for name, sqlText := range map[string]string{
+		"get":    getBillingSetting,
+		"list":   listBillingSettingsByTenant,
+		"upsert": upsertBillingSetting,
+	} {
+		sql := strings.Join(strings.Fields(sqlText), " ")
+		if !strings.Contains(sql, "tenant_id") {
+			t.Fatalf("%s billing setting SQL must include tenant scope: %s", name, sql)
+		}
+	}
+	if !strings.Contains(strings.Join(strings.Fields(getBillingSetting), " "), "WHERE tenant_id = $1 AND setting_key = $2") {
+		t.Fatalf("GetBillingSetting must read by tenant_id and setting_key: %s", getBillingSetting)
+	}
+	if !strings.Contains(strings.Join(strings.Fields(upsertBillingSetting), " "), "ON CONFLICT (tenant_id, setting_key)") {
+		t.Fatalf("UpsertBillingSetting must conflict on tenant_id and setting_key: %s", upsertBillingSetting)
+	}
+}

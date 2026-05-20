@@ -42,6 +42,7 @@ sql:
     schema: sql/migrations
     queries:
       - sql/queries/billing_claims.sql
+      - sql/queries/billing_settings.sql
       - sql/queries/billing_settle.sql
       - sql/queries/idempotency_replay.sql
       - sql/queries/observability.sql

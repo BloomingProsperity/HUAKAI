@@ -9,6 +9,16 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// Case C 计费策略的租户级设置表, 保存每个租户可配置的计费行为。
+type BillingSetting struct {
+	ID           int64              `db:"id" json:"id"`
+	TenantID     int64              `db:"tenant_id" json:"tenant_id"`
+	SettingKey   string             `db:"setting_key" json:"setting_key"`
+	SettingValue string             `db:"setting_value" json:"setting_value"`
+	UpdatedAt    pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	UpdatedBy    string             `db:"updated_by" json:"updated_by"`
+}
+
 // F-POOL-001 §1: logical capacity grouping; routing policy + Q1..Q4 owner decisions live here.
 type PoolGroup struct {
 	ID                          int64              `db:"id" json:"id"`
