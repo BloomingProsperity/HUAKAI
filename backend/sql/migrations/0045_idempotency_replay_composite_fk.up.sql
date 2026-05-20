@@ -13,8 +13,14 @@
 
 BEGIN;
 
+-- 兼容两种已应用 0044 变体 (codex review v19): 原始单列 FK 自动命名
+-- ..._claim_id_fkey; 曾短暂存在的表级复合 FK 被 Postgres 自动命名
+-- ..._tenant_id_claim_id_fkey。 两者都 DROP IF EXISTS 再加规范命名的复合 FK,
+-- 避免升级库残留重复约束、所有升级路径最终 schema 一致。
 ALTER TABLE idempotency_replay_records
     DROP CONSTRAINT IF EXISTS idempotency_replay_records_claim_id_fkey;
+ALTER TABLE idempotency_replay_records
+    DROP CONSTRAINT IF EXISTS idempotency_replay_records_tenant_id_claim_id_fkey;
 ALTER TABLE idempotency_replay_records
     ADD CONSTRAINT idempotency_replay_records_claim_id_fkey
     FOREIGN KEY (tenant_id, claim_id) REFERENCES billing_ledger_claims (tenant_id, id);
