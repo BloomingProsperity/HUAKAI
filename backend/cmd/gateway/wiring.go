@@ -182,6 +182,12 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		return nil, err
 	}
 
+	// 持久幂等重放存储 + 过期清理 janitor (codex review v17 P2: 防表无界增长)。
+	replayStore := billing.NewReplayStore(pgPool)
+	replayJanitor := billing.NewReplayJanitor(replayStore, 0)
+	replayJanitor.Start(ctx)
+	rt.replayJanitorStop = replayJanitor.Stop
+
 	d := &deps{
 		cfg:                cfg,
 		adminQueries:       adminQueries,
@@ -190,7 +196,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		channelHealth:      channelHealthService,
 		claimGate:          billing.NewClaimGate(pgPool),
 		settler:            settler,
-		replayStore:        billing.NewReplayStore(pgPool),
+		replayStore:        replayStore,
 		forwarder:          buildStreamForwarder(auditLedger, auditSigner),
 		credentialVault:    provider.NewPostgresCredentialVaultWithStore(pgPool, credentialStore),
 		credentialStore:    credentialStore,
