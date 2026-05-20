@@ -2,17 +2,19 @@
 // 串成完整管线，按 caller 配置启停每一步，输出每步审计 + 最终 body。
 //
 // Spec：docs/specs/upstream-credential-management.md §Phase C 第 27 步：
-//   "Apply 6-step body transform: system rewrite + system cache_control
-//    strip + cache_control breakpoints injection + tool name obfuscation
-//    + metadata user_id injection + tools[-1] cache breakpoint."
+//
+//	"Apply 6-step body transform: system rewrite + system cache_control
+//	 strip + cache_control breakpoints injection + tool name obfuscation
+//	 + metadata user_id injection + tools[-1] cache breakpoint."
 //
 // 步骤映射：
-//   step 1: system rewrite                    →  RewriteSystem            (R7.3)
-//   step 2: system cache_control strip        →  内嵌 stripSystemCacheControl
-//   step 3: cache_control breakpoints inject  →  ApplyBreakpoints[WithTTLOrdering] (R7.2)
-//   step 4: tool name obfuscation             →  RewriteToolNames         (R7.4)
-//   step 5: metadata user_id injection        →  RewriteMetadataUserID    (R7.5)
-//   step 6: tools[-1] cache breakpoint        →  内嵌 applyToolsTailCacheBreakpoint
+//
+//	step 1: system rewrite                    →  RewriteSystem            (R7.3)
+//	step 2: system cache_control strip        →  内嵌 stripSystemCacheControl
+//	step 3: cache_control breakpoints inject  →  ApplyBreakpoints[WithTTLOrdering] (R7.2)
+//	step 4: tool name obfuscation             →  RewriteToolNames         (R7.4)
+//	step 5: metadata user_id injection        →  RewriteMetadataUserID    (R7.5)
+//	step 6: tools[-1] cache breakpoint        →  内嵌 applyToolsTailCacheBreakpoint
 //
 // step 2 与 step 6 是 composer-内置的小辅助，未单独开 atomic：
 //   - step 2 仅遍历 system 数组并在每个块上删除 cache_control 字段；

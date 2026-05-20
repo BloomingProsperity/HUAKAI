@@ -42,16 +42,16 @@ type Registry interface {
 type Resolved struct {
 	// Identity (mapped into router.ResolvedModel.PublicAlias /
 	// InternalModelID / ProviderModelID).
-	PublicAlias        string
-	CanonicalModelID   string
-	ProviderModelID    string
+	PublicAlias      string
+	CanonicalModelID string
+	ProviderModelID  string
 
 	// Capabilities + protocol — plain metadata fed into router.
-	ContextWindow      int
-	Capabilities       []string
-	PricingClass       string
-	ProtocolFamily     string
-	RequestTimeoutMS   int
+	ContextWindow    int
+	Capabilities     []string
+	PricingClass     string
+	ProtocolFamily   string
+	RequestTimeoutMS int
 
 	// Routing — pool candidates ordered by binding priority then id.
 	// Slice 5 will plumb selection_mode + weight; L0 always honors
@@ -69,14 +69,14 @@ type Resolved struct {
 // fields for downstream Phase E rate gate / Slice 5 weighted executor.
 // At L0 the chat handler reads only PoolGroupID (via Resolved.PoolCandidates).
 type BindingMetadata struct {
-	BindingID                  int64
-	PoolGroupID                int64
-	Priority                   int32
-	Weight                     int32
-	SelectionMode              string  // 'strict_priority' | 'priority_weighted'
-	ProviderModelIDOverride    *string // nullable; one-api ModelMapping analogue
-	RPMLimit                   *int32  // LiteLLM proxy/_types KeyRequestBase.rpm_limit analogue
-	TPMLimit                   *int32
-	MaxParallelRequests        *int32  // LiteLLM GenerateRequestBase.max_parallel_requests analogue
-	FallbackClass              string  // 'normal'|'context_window'|'safety'|'quota'|'manual'
+	BindingID               int64
+	PoolGroupID             int64
+	Priority                int32
+	Weight                  int32
+	SelectionMode           string  // 'strict_priority' | 'priority_weighted'
+	ProviderModelIDOverride *string // nullable; one-api ModelMapping analogue
+	RPMLimit                *int32  // LiteLLM proxy/_types KeyRequestBase.rpm_limit analogue
+	TPMLimit                *int32
+	MaxParallelRequests     *int32 // LiteLLM GenerateRequestBase.max_parallel_requests analogue
+	FallbackClass           string // 'normal'|'context_window'|'safety'|'quota'|'manual'
 }

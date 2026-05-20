@@ -8,9 +8,11 @@
 //
 // D8 additions (2026-05-06 vendor-drift-audit.md):
 // Anthropic now documents 3 new typed error classes:
-//   402 → billing_error   (R-021, catch-all after keyword-specific R-007)
-//   504 → timeout_error   (R-022, upstream gateway timeout)
-//   413 → request_too_large (R-023, client error, no retry)
+//
+//	402 → billing_error   (R-021, catch-all after keyword-specific R-007)
+//	504 → timeout_error   (R-022, upstream gateway timeout)
+//	413 → request_too_large (R-023, client error, no retry)
+//
 // Source: platform.claude.com/docs/en/api/errors (fetched 2026-05-06).
 package gateway
 
@@ -42,8 +44,8 @@ const (
 	// D8 additions — Anthropic new typed error classes (2026-05-06).
 	// ErrorClassUpstreamTimeout distinguishes upstream-self gateway timeout (504)
 	// from local network timeout (R-019 ErrorClassNetworkTimeout, status=0).
-	ErrorClassUpstreamTimeout  ErrorClass = "upstream_timeout"
-	ErrorClassRequestTooLarge  ErrorClass = "request_too_large"
+	ErrorClassUpstreamTimeout ErrorClass = "upstream_timeout"
+	ErrorClassRequestTooLarge ErrorClass = "request_too_large"
 )
 
 // Confidence is a coarse signal-quality indicator carried in the Classification.

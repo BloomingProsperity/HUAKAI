@@ -3,10 +3,11 @@
 // 27 步 step 4 of 6。
 //
 // 纯 JSON 变换，不做 IO/网络/凭据接触。覆盖工具名出现的三个位置：
-//   1. 顶层 tools[].name —— 工具声明列表
-//   2. messages[].content[] 中 type=="tool_use" 块的 name 字段
-//   3. 顶层 tool_choice.name —— 仅当 tool_choice.type=="tool" 时（强制
-//      调用某工具的场景；name 必须与 tools[] 中声明的名一致，否则上游报错）
+//  1. 顶层 tools[].name —— 工具声明列表
+//  2. messages[].content[] 中 type=="tool_use" 块的 name 字段
+//  3. 顶层 tool_choice.name —— 仅当 tool_choice.type=="tool" 时（强制
+//     调用某工具的场景；name 必须与 tools[] 中声明的名一致，否则上游报错）
+//
 // type=="tool_result" 块只含 tool_use_id，无 name 字段，不触碰。
 //
 // HUAKAI 相对 sub2api 的差异：映射由调用方传入而非硬编码；纯函数无 service
