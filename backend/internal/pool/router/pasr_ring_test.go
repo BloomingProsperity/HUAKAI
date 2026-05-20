@@ -12,6 +12,7 @@ package router
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -194,7 +195,8 @@ func TestM5_PASRSelector_RingSeed_AffectsHRWOrder(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		req := SelectionRequest{
 			TenantID: 1, ClaimID: int64(i + 1), RequestedModel: "m",
-			SessionHash: time.Now().Format(time.RFC3339Nano), // 每次新 prefix 防段 cache
+			// 不用实时时钟, 避免系统时钟粒度导致 prefix 重复而让本测试 flaky。
+			SessionHash: fmt.Sprintf("ring-seed-prefix-%02d", i), // 每次新 prefix 防段 cache
 		}
 		r1, err1 := sel1.Select(context.Background(), req)
 		r2, err2 := sel2.Select(context.Background(), req)
