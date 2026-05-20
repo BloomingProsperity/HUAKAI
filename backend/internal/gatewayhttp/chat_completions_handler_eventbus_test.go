@@ -27,7 +27,7 @@ func (s *concurrentSettler) Settle(_ context.Context, _ billing.SettleRequest) (
 	return &billing.SettleResult{}, nil
 }
 
-func (s *concurrentSettler) Abort(context.Context, int64, int64, string, string) error {
+func (s *concurrentSettler) Abort(context.Context, int64, int64, string, string, int64) error {
 	return nil
 }
 

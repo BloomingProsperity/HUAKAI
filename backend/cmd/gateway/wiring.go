@@ -43,44 +43,45 @@ import (
 
 // deps is the live dependency tree handlers receive after run() boots.
 type deps struct {
-	cfg                 *Config
-	adminQueries        *admindb.Queries
-	billingQueries      *dbbilling.Queries
-	billingPolicyStore  billing.PolicyStore
-	selector            pool.Selector
-	channelHealth       *channelhealth.Service
-	claimGate           billing.ClaimGate
-	settler             billing.Settler
-	replayStore         billing.ReplayStore
-	forwarder           *gateway.StreamForwarder
-	credentialVault     provider.CredentialVault
-	credentialStore     *credentialstore.Store
-	credentialKeys      credentialstore.KeyProvider
-	credentialAcqStore  *credentialacq.PostgresSessionStore
-	emailSettings       *mailinfra.PostgresSettingsStore
-	authEmailSender     gatewayhttp.AuthEmailSender
-	userAuth            *userauth.Service
-	userSessions        *usersession.Service
-	voucherService      *voucher.Service
-	invitationService   *communityinvitation.Service
-	dispatcher          *gateway.UpstreamDispatcher
-	responseCache       l2cache.Store
-	dlqService          *legacydlq.Service
-	completionBus       *eventbus.Bus
-	inboundAuth         *auth.APIKeyResolver
-	auditLedger         auditledger.Ledger
-	auditSigner         *sign.Signer
-	auditPubkeyRegistry auditledger.PubkeyRegistry
-	receiptStore        *auditreceipt.PGXReceiptStorage
-	receiptFormatter    *auditreceipt.ReceiptFormatter
-	refundQueue         *auditreceipt.MismatchRefundQueue
-	rateTableSource     billing.RateTableSource
-	modelRegistry       *registry.PostgresRegistry
-	routePlanner        *router.DefaultRouter
-	adminAuth           *admin.AdminResolver
-	adminIssuer         *admin.KeyIssuer
-	adminRevoker        *admin.KeyRevoker
-	billingAuditUpdater gatewayhttp.AdminBillingSettingsAuditUpdater
+	cfg                   *Config
+	adminQueries          *admindb.Queries
+	billingQueries        *dbbilling.Queries
+	billingPolicyStore    billing.PolicyStore
+	billingPolicyResolver *billing.PolicyResolver
+	selector              pool.Selector
+	channelHealth         *channelhealth.Service
+	claimGate             billing.ClaimGate
+	settler               billing.Settler
+	replayStore           billing.ReplayStore
+	forwarder             *gateway.StreamForwarder
+	credentialVault       provider.CredentialVault
+	credentialStore       *credentialstore.Store
+	credentialKeys        credentialstore.KeyProvider
+	credentialAcqStore    *credentialacq.PostgresSessionStore
+	emailSettings         *mailinfra.PostgresSettingsStore
+	authEmailSender       gatewayhttp.AuthEmailSender
+	userAuth              *userauth.Service
+	userSessions          *usersession.Service
+	voucherService        *voucher.Service
+	invitationService     *communityinvitation.Service
+	dispatcher            *gateway.UpstreamDispatcher
+	responseCache         l2cache.Store
+	dlqService            *legacydlq.Service
+	completionBus         *eventbus.Bus
+	inboundAuth           *auth.APIKeyResolver
+	auditLedger           auditledger.Ledger
+	auditSigner           *sign.Signer
+	auditPubkeyRegistry   auditledger.PubkeyRegistry
+	receiptStore          *auditreceipt.PGXReceiptStorage
+	receiptFormatter      *auditreceipt.ReceiptFormatter
+	refundQueue           *auditreceipt.MismatchRefundQueue
+	rateTableSource       billing.RateTableSource
+	modelRegistry         *registry.PostgresRegistry
+	routePlanner          *router.DefaultRouter
+	adminAuth             *admin.AdminResolver
+	adminIssuer           *admin.KeyIssuer
+	adminRevoker          *admin.KeyRevoker
+	billingAuditUpdater   gatewayhttp.AdminBillingSettingsAuditUpdater
 }
 
 type refundReceiptAppender interface {
@@ -191,29 +192,30 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	rt.replayJanitorStop = replayJanitor.Stop
 
 	d := &deps{
-		cfg:                cfg,
-		adminQueries:       adminQueries,
-		billingQueries:     billingQueries,
-		billingPolicyStore: billing.NewPolicyStore(pgPool),
-		selector:           selector,
-		channelHealth:      channelHealthService,
-		claimGate:          billing.NewClaimGate(pgPool),
-		settler:            settler,
-		replayStore:        replayStore,
-		forwarder:          buildStreamForwarder(auditLedger, auditSigner),
-		credentialVault:    provider.NewPostgresCredentialVaultWithStore(pgPool, credentialStore),
-		credentialStore:    credentialStore,
-		credentialKeys:     credentialKeys,
-		credentialAcqStore: credentialAcqStore,
-		emailSettings:      emailSettingsStore,
-		authEmailSender:    authEmailSender,
-		userAuth:           userAuthService,
-		userSessions:       userSessionService,
-		voucherService:     voucher.NewService(voucher.NewPostgresStore(pgPool)),
-		invitationService:  communityinvitation.NewService(communityinvitation.NewPostgresStore(pgPool)),
-		responseCache:      opts.responseCache,
-		dlqService:         dlqService,
-		completionBus:      completionBus,
+		cfg:                   cfg,
+		adminQueries:          adminQueries,
+		billingQueries:        billingQueries,
+		billingPolicyStore:    billing.NewPolicyStore(pgPool),
+		billingPolicyResolver: billing.NewPolicyResolver(billing.NewPolicyStore(pgPool), 0),
+		selector:              selector,
+		channelHealth:         channelHealthService,
+		claimGate:             billing.NewClaimGate(pgPool),
+		settler:               settler,
+		replayStore:           replayStore,
+		forwarder:             buildStreamForwarder(auditLedger, auditSigner),
+		credentialVault:       provider.NewPostgresCredentialVaultWithStore(pgPool, credentialStore),
+		credentialStore:       credentialStore,
+		credentialKeys:        credentialKeys,
+		credentialAcqStore:    credentialAcqStore,
+		emailSettings:         emailSettingsStore,
+		authEmailSender:       authEmailSender,
+		userAuth:              userAuthService,
+		userSessions:          userSessionService,
+		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool)),
+		invitationService:     communityinvitation.NewService(communityinvitation.NewPostgresStore(pgPool)),
+		responseCache:         opts.responseCache,
+		dlqService:            dlqService,
+		completionBus:         completionBus,
 		dispatcher: &gateway.UpstreamDispatcher{
 			Adapters:         registrydefault.Build(),
 			TransportFactory: transport.NewFactory(mimicryRegistry),

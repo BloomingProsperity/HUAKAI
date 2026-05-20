@@ -25,7 +25,7 @@ func (s *fakeSettler) Settle(_ context.Context, req billing.SettleRequest) (*bil
 	return &billing.SettleResult{}, nil
 }
 
-func (s *fakeSettler) Abort(context.Context, int64, int64, string, string) error {
+func (s *fakeSettler) Abort(context.Context, int64, int64, string, string, int64) error {
 	return nil
 }
 

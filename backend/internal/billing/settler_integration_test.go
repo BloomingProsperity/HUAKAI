@@ -22,7 +22,7 @@ func TestSettler_NilPool_ReturnsTypedError(t *testing.T) {
 	if !errors.Is(err, ErrPoolNotConfigured) {
 		t.Fatalf("expected ErrPoolNotConfigured from Settle; got %v", err)
 	}
-	if err := settler.Abort(context.Background(), 1, 1, "test abort", "req-abort-nil-pool"); !errors.Is(err, ErrPoolNotConfigured) {
+	if err := settler.Abort(context.Background(), 1, 1, "test abort", "req-abort-nil-pool", 0); !errors.Is(err, ErrPoolNotConfigured) {
 		t.Fatalf("expected ErrPoolNotConfigured from Abort; got %v", err)
 	}
 }
@@ -114,7 +114,7 @@ func TestSettler_AbortPath(t *testing.T) {
 	seed := seedSettlerGraph(t, ctx, pool, "settle-abort")
 	settler := NewSettler(pool)
 
-	if err := settler.Abort(ctx, seed.tenantID, seed.claimID, "test abort", "req-settle-abort"); err != nil {
+	if err := settler.Abort(ctx, seed.tenantID, seed.claimID, "test abort", "req-settle-abort", 0); err != nil {
 		t.Fatalf("Abort: %v", err)
 	}
 
@@ -162,6 +162,17 @@ func TestSettler_AbortPath(t *testing.T) {
 	if usageCount != 1 {
 		t.Fatalf("abort path must write one zero-cost usage_record per T2-INV-42; got %d", usageCount)
 	}
+	var abortTokensInput int32
+	var abortActualCost decimal.Decimal
+	if err := pool.QueryRow(ctx,
+		`SELECT tokens_input, actual_cost FROM usage_records WHERE claim_id=$1`,
+		seed.claimID,
+	).Scan(&abortTokensInput, &abortActualCost); err != nil {
+		t.Fatalf("read abort usage_record: %v", err)
+	}
+	if abortTokensInput != 0 || !abortActualCost.Equal(decimal.Zero) {
+		t.Fatalf("default abort usage_record tokens_input=%d actual_cost=%s; want 0/0", abortTokensInput, abortActualCost)
+	}
 
 	var inFlight int
 	if err := pool.QueryRow(ctx, `SELECT in_flight_count FROM provider_accounts WHERE id=$1`, seed.providerAccountID).Scan(&inFlight); err != nil {
@@ -169,6 +180,34 @@ func TestSettler_AbortPath(t *testing.T) {
 	}
 	if inFlight != 1 {
 		t.Fatalf("abort path must release slot + decrement in_flight_count from 2 to 1 per T2-INV-27 (slot acquired before abort); got %d", inFlight)
+	}
+}
+
+func TestSettler_AbortRecordsObservedInputTokensAtZeroCost(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	seed := seedSettlerGraph(t, ctx, pool, "settle-abort-observed-input")
+	settler := NewSettler(pool)
+
+	if err := settler.Abort(ctx, seed.tenantID, seed.claimID, "input_only_interrupted", "req-settle-abort-input", 37); err != nil {
+		t.Fatalf("Abort: %v", err)
+	}
+
+	var tokensInput int32
+	var actualCost decimal.Decimal
+	var inputCost decimal.Decimal
+	if err := pool.QueryRow(ctx,
+		`SELECT tokens_input, actual_cost, input_cost FROM usage_records WHERE claim_id=$1`,
+		seed.claimID,
+	).Scan(&tokensInput, &actualCost, &inputCost); err != nil {
+		t.Fatalf("read abort usage_record: %v", err)
+	}
+	if tokensInput != 37 {
+		t.Fatalf("abort usage_record tokens_input=%d want 37", tokensInput)
+	}
+	if !actualCost.Equal(decimal.Zero) || !inputCost.Equal(decimal.Zero) {
+		t.Fatalf("abort costs actual=%s input=%s want zero", actualCost, inputCost)
 	}
 }
 
@@ -180,7 +219,7 @@ func TestSettler_AbortCrossTenantRejected(t *testing.T) {
 	settler := NewSettler(pool)
 
 	wrongTenant := seed.tenantID + 99999
-	if err := settler.Abort(ctx, wrongTenant, seed.claimID, "cross-tenant", "req-settle-abort-xtenant"); !errors.Is(err, ErrClaimNotReserving) {
+	if err := settler.Abort(ctx, wrongTenant, seed.claimID, "cross-tenant", "req-settle-abort-xtenant", 0); !errors.Is(err, ErrClaimNotReserving) {
 		t.Fatalf("cross-tenant abort must be rejected with ErrClaimNotReserving; got %v", err)
 	}
 

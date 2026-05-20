@@ -100,7 +100,7 @@ func (s *recordingBillingSettler) Settle(_ context.Context, req billing.SettleRe
 	return &billing.SettleResult{}, nil
 }
 
-func (s *recordingBillingSettler) Abort(context.Context, int64, int64, string, string) error {
+func (s *recordingBillingSettler) Abort(context.Context, int64, int64, string, string, int64) error {
 	return nil
 }
 

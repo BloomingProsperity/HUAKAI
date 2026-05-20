@@ -341,7 +341,7 @@ func (s *recordingRefundSettler) Settle(context.Context, billing.SettleRequest) 
 	return &billing.SettleResult{}, nil
 }
 
-func (s *recordingRefundSettler) Abort(context.Context, int64, int64, string, string) error {
+func (s *recordingRefundSettler) Abort(context.Context, int64, int64, string, string, int64) error {
 	return nil
 }
 

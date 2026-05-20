@@ -43,7 +43,7 @@ func (ex *chatExecution) serveL2CacheIfAvailable(w http.ResponseWriter) (bool, b
 	})
 	if err != nil {
 		if ex.reserveRes != nil {
-			_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "cache_key_error", ex.requestID)
+			_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "cache_key_error", ex.requestID, 0)
 		}
 		writeJSONError(w, http.StatusBadRequest, "cache_key_error", err.Error())
 		return false, false
@@ -103,7 +103,7 @@ func (ex *chatExecution) handleStreamingResponse(w http.ResponseWriter) {
 		Credential:      ex.cred,
 	})
 	if err != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_dispatch_error", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_dispatch_error", ex.requestID, 0)
 		classification, _ := gateway.Classify(0, nil, []byte(err.Error()), ex.accInfo.Platform)
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromDispatchError(err, classification), 0, time.Since(upstreamAttemptStartedAt), ex.requestID, nil)
@@ -112,7 +112,7 @@ func (ex *chatExecution) handleStreamingResponse(w http.ResponseWriter) {
 		return
 	}
 	if dispatchRes == nil || dispatchRes.UpstreamReader == nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_empty_response", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_empty_response", ex.requestID, 0)
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, 0, time.Since(upstreamAttemptStartedAt), ex.requestID, nil)
 		}
@@ -137,7 +137,7 @@ func (ex *chatExecution) writeStreamingUpstreamError(w http.ResponseWriter, disp
 	if classifyErr == nil && classification.Class != "" {
 		abortReason = "upstream_" + string(classification.Class)
 	}
-	_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, abortReason, ex.requestID)
+	_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, abortReason, ex.requestID, 0)
 	if ex.healthKeyOK {
 		recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromClassification(dispatchRes.StatusCode, classification), dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()))
 	}
@@ -207,10 +207,21 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 		if reason == "" {
 			reason = "stream_no_billable_delivery"
 		}
-		if abortErr := ex.d.Settler.Abort(settleCtx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID); abortErr != nil {
+		observedInputTokens := ex.abortObservedInputTokens(draft)
+		if abortErr := ex.d.Settler.Abort(settleCtx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens); abortErr != nil {
 			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
 		}
 	}
+}
+
+func (ex *chatExecution) abortObservedInputTokens(draft gateway.UsageRecordDraft) int64 {
+	if draft.TokensInput <= 0 {
+		return 0
+	}
+	if ex.streamInputOnlyInterruptedPolicy != billing.StreamInputOnlyInterruptedPolicyNoBillRecord {
+		return 0
+	}
+	return int64(draft.TokensInput)
 }
 
 func (ex *chatExecution) needsStreamingHCSFTranslation() bool {
@@ -234,7 +245,7 @@ func (ex *chatExecution) needsStreamingHCSFTranslation() bool {
 func (ex *chatExecution) translatedStreamingInboundBody(w http.ResponseWriter) ([]byte, proto.ClientAdapter, bool) {
 	clientAdapter, err := ex.streamingClientAdapter()
 	if err != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "streaming_adapter_unregistered", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "streaming_adapter_unregistered", ex.requestID, 0)
 		writeJSONError(w, http.StatusServiceUnavailable, "streaming_adapter_unregistered", err.Error())
 		return nil, nil, false
 	}
@@ -242,12 +253,12 @@ func (ex *chatExecution) translatedStreamingInboundBody(w http.ResponseWriter) (
 	seedCtx := proto.ContextWithRequestMetaSeed(ex.ctx, seed)
 	canonicalReq, _, err := clientAdapter.RequestToCanonical(seedCtx, ex.body)
 	if err != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID, 0)
 		writeJSONError(w, http.StatusBadRequest, "invalid_request_body", err.Error())
 		return nil, nil, false
 	}
 	if canonicalReq == nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID, 0)
 		writeJSONError(w, http.StatusBadRequest, "invalid_request_body", "client adapter returned nil canonical envelope")
 		return nil, nil, false
 	}
@@ -259,7 +270,7 @@ func (ex *chatExecution) translatedStreamingInboundBody(w http.ResponseWriter) (
 
 	body, err := streamingProviderRequestBody(canonicalReq, ex.resolved.ProtocolFamily)
 	if err != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "streaming_translation_not_supported", ex.requestID)
+		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "streaming_translation_not_supported", ex.requestID, 0)
 		writeJSONError(w, http.StatusNotImplemented, "streaming_translation_not_supported", err.Error())
 		return nil, nil, false
 	}

@@ -112,11 +112,11 @@ func (s *ReceiptHookSettler) Settle(ctx context.Context, req billing.SettleReque
 	return res, nil
 }
 
-func (s *ReceiptHookSettler) Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string) error {
+func (s *ReceiptHookSettler) Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string, observedInputTokens int64) error {
 	if s == nil || s.inner == nil {
 		return billing.ErrPoolNotConfigured
 	}
-	return s.inner.Abort(ctx, tenantID, claimID, reason, auditRequestID)
+	return s.inner.Abort(ctx, tenantID, claimID, reason, auditRequestID, observedInputTokens)
 }
 
 func (s *ReceiptHookSettler) CommitCacheHit(ctx context.Context, req billing.SettleRequest) error {
