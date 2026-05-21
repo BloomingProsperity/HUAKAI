@@ -91,7 +91,9 @@ func signalFromClassification(statusCode int, c gateway.Classification) channelh
 	case gateway.ErrorClassNetworkTimeout, gateway.ErrorClassUpstreamTimeout:
 		return channelhealth.SignalTimeout
 	case gateway.ErrorClassTokenRevoked, gateway.ErrorClassOAuthInvalidGrant:
-		return channelhealth.SignalTokenRevoked
+		// Phase 1 综合稿 override-1: 401 触发一次 auth failover/refresh intent，
+		// 但不把令牌问题写成账号健康降级信号。
+		return ""
 	case gateway.ErrorClassKYCRequired, gateway.ErrorClassOrgDisabled,
 		gateway.ErrorClassWorkspaceDeactivated, gateway.ErrorClassCreditExhausted:
 		return channelhealth.SignalAccountSuspended

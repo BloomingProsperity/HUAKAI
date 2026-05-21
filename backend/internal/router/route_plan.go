@@ -41,15 +41,10 @@ type ResolvedModel struct {
 	SnapshotVersion string
 }
 
-// PoolCandidateMeta 表示一个候选 pool 的 binding 级元数据。PR1 只消费
-// ProviderModelID；其他字段先随计划透传，排序仍以 PoolCandidates 的
-// registry 顺序为准。
+// PoolCandidateMeta 表示 Router 当前实际消费的候选 pool binding 元数据。
+// 排序仍以 PoolCandidates 的 registry 顺序为准；ranking 需要更多字段时再扩展。
 type PoolCandidateMeta struct {
 	PoolGroupID     int64
-	Priority        int32
-	Weight          int32
-	SelectionMode   string
-	FallbackClass   string
 	ProviderModelID string
 }
 
