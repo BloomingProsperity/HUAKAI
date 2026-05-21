@@ -183,10 +183,10 @@ fn content_length_exceeds_u64(headers: &HeaderMap, max_body_bytes: u64) -> bool 
 }
 
 fn json_error_response(status: StatusCode, request_id: &RequestId, code: &str) -> Response<Body> {
-    let payload = Bytes::from(format!(
-        r#"{{"error":"{code}","request_id":"{}"}}"#,
-        request_id.as_str()
-    ));
+    // 用序列化器构造, request_id 来自客户端 header, 直接内插会被 " / \ 注入或破坏 JSON
+    let payload = Bytes::from(
+        serde_json::json!({ "error": code, "request_id": request_id.as_str() }).to_string(),
+    );
     let mut response = Response::new(Body::from(payload));
     *response.status_mut() = status;
     response
