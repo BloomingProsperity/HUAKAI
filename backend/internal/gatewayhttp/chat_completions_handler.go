@@ -184,6 +184,10 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 				failedAccounts[outcome.AccountID] = struct{}{}
 			}
 			if outcome.Failure != nil {
+				if shouldContinueAfterAbortedAttemptFailure(outcome.Failure, i+1 >= budget) {
+					exec.prepareNextAttemptAfterAbort()
+					continue
+				}
 				writeAttemptFailure(w, outcome.Failure)
 				return
 			}

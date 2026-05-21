@@ -145,12 +145,7 @@ func (ex *chatExecution) prepareClaimAndAccount(w http.ResponseWriter, in attemp
 }
 
 func (ex *chatExecution) reserveClaim(w http.ResponseWriter) bool {
-	ex.idempotencyHeader = ex.r.Header.Get("Idempotency-Key")
-	ex.logicalRequestID = ex.idempotencyHeader
-	if ex.logicalRequestID == "" {
-		ex.logicalRequestID = uuid.NewString()
-	}
-	ex.payloadHash = normalizedPayloadHash(ex.body)
+	ex.ensureIdempotencyState()
 	predictedCost, err := ex.predictedCompletionCost()
 	if err != nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "pricing_unavailable", err.Error())
@@ -192,6 +187,25 @@ func (ex *chatExecution) reserveClaim(w http.ResponseWriter) bool {
 	}
 	ex.reserveRes = reserveRes
 	return true
+}
+
+func (ex *chatExecution) ensureIdempotencyState() {
+	if ex == nil || ex.r == nil {
+		return
+	}
+	header := ex.r.Header.Get("Idempotency-Key")
+	if ex.idempotencyHeader == "" {
+		ex.idempotencyHeader = header
+	}
+	if ex.logicalRequestID == "" {
+		ex.logicalRequestID = header
+		if ex.logicalRequestID == "" {
+			ex.logicalRequestID = uuid.NewString()
+		}
+	}
+	if ex.payloadHash == "" {
+		ex.payloadHash = normalizedPayloadHash(ex.body)
+	}
 }
 
 func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInput) bool {

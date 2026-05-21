@@ -10,10 +10,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	poolbinding "github.com/BloomingProsperity/HUAKAI/internal/pool/binding"
+	pooldispatcher "github.com/BloomingProsperity/HUAKAI/internal/pool/dispatcher"
 )
 
 func TestSettler_NilPool_ReturnsTypedError(t *testing.T) {
@@ -209,6 +214,154 @@ func TestSettler_AbortRecordsObservedInputTokensAtZeroCost(t *testing.T) {
 	if !actualCost.Equal(decimal.Zero) || !inputCost.Equal(decimal.Zero) {
 		t.Fatalf("abort costs actual=%s input=%s want zero", actualCost, inputCost)
 	}
+}
+
+func TestPR4_AbortReReserveCrossPoolFinalSettleOnce(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pg := openPool(t, ctx)
+	graph := seedRetryAtomicityGraph(t, ctx, pg, "pr4-final")
+	gate := NewClaimGate(pg)
+	settler := NewSettler(pg)
+	slotManager := pooldispatcher.NewDBSlotManager(pg)
+	claimWriter := poolbinding.NewDBClaimGate(dbbilling.New(pg))
+
+	req := baseRequest(graph.tenantID, graph.apiKeyID, graph.userID)
+	req.LogicalRequestID = "logical-" + uuid.NewString()
+	req.NormalizedPayloadHash = "payload-" + uuid.NewString()
+	req.PoolingGroupID = graph.firstPoolID
+	req.PredictedCost = decimal.RequireFromString("0.01000000")
+
+	first, err := gate.Reserve(ctx, req)
+	if err != nil {
+		t.Fatalf("first Reserve: %v", err)
+	}
+	firstAcq, err := slotManager.Acquire(ctx, &pool.AccountSnapshot{
+		ID:       graph.firstAccountID,
+		TenantID: graph.tenantID,
+	}, pool.SelectionRequest{
+		TenantID:       graph.tenantID,
+		UserID:         graph.userID,
+		APIKeyID:       graph.apiKeyID,
+		PoolGroupID:    graph.firstPoolID,
+		ClaimID:        first.ClaimID,
+		AttemptSeq:     1,
+		RequestedModel: req.RequestedModel,
+		EndpointFamily: req.EndpointFamily,
+	})
+	if err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	if err := claimWriter.WriteAcquisition(ctx, graph.tenantID, first.ClaimID, graph.firstAccountID, firstAcq.AcquisitionToken); err != nil {
+		t.Fatalf("first write acquisition: %v", err)
+	}
+	if err := settler.Abort(ctx, graph.tenantID, first.ClaimID, "upstream_5xx", "req-pr4-attempt-1", 0); err != nil {
+		t.Fatalf("first abort: %v", err)
+	}
+	assertAccountInFlight(t, ctx, pg, graph.firstAccountID, 0)
+	assertAbortEvidence(t, ctx, pg, first.ClaimID, 1, 1)
+
+	req.PoolingGroupID = graph.secondPoolID
+	req.PredictedCost = decimal.RequireFromString("0.02000000")
+	second, err := gate.Reserve(ctx, req)
+	if err != nil {
+		t.Fatalf("second Reserve re-reserve: %v", err)
+	}
+	if second.ClaimID != first.ClaimID {
+		t.Fatalf("re-reserve claim id=%d want same %d", second.ClaimID, first.ClaimID)
+	}
+	assertClaimReReservedClean(t, ctx, pg, first.ClaimID, graph.secondPoolID, 2)
+
+	secondAcq, err := slotManager.Acquire(ctx, &pool.AccountSnapshot{
+		ID:       graph.secondAccountID,
+		TenantID: graph.tenantID,
+	}, pool.SelectionRequest{
+		TenantID:       graph.tenantID,
+		UserID:         graph.userID,
+		APIKeyID:       graph.apiKeyID,
+		PoolGroupID:    graph.secondPoolID,
+		ClaimID:        second.ClaimID,
+		AttemptSeq:     2,
+		RequestedModel: req.RequestedModel,
+		EndpointFamily: req.EndpointFamily,
+	})
+	if err != nil {
+		t.Fatalf("second acquire: %v", err)
+	}
+	if err := claimWriter.WriteAcquisition(ctx, graph.tenantID, second.ClaimID, graph.secondAccountID, secondAcq.AcquisitionToken); err != nil {
+		t.Fatalf("second write acquisition: %v", err)
+	}
+	settleReq := retryAtomicitySettleRequest(graph, second.ClaimID, graph.secondAccountID, secondAcq.AcquisitionToken, 2, decimal.RequireFromString("0.03000000"))
+	if _, err := settler.Settle(ctx, settleReq); err != nil {
+		t.Fatalf("final Settle: %v", err)
+	}
+	assertAccountInFlight(t, ctx, pg, graph.secondAccountID, 0)
+	assertPositiveCommittedUsageOnce(t, ctx, pg, second.ClaimID)
+	assertFinalClaimPool(t, ctx, pg, second.ClaimID, graph.secondPoolID)
+
+	replay, err := gate.Reserve(ctx, req)
+	if err != nil {
+		t.Fatalf("idempotent replay Reserve: %v", err)
+	}
+	if !replay.IdempotencyHit || replay.ClaimID != first.ClaimID {
+		t.Fatalf("idempotent replay result=%+v want hit on claim %d", replay, first.ClaimID)
+	}
+}
+
+func TestPR4_ReReserveClearsStaleAcquisitionBeforePreAcquireAbort(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pg := openPool(t, ctx)
+	graph := seedRetryAtomicityGraph(t, ctx, pg, "pr4-clear")
+	gate := NewClaimGate(pg)
+	settler := NewSettler(pg)
+	slotManager := pooldispatcher.NewDBSlotManager(pg)
+	claimWriter := poolbinding.NewDBClaimGate(dbbilling.New(pg))
+
+	req := baseRequest(graph.tenantID, graph.apiKeyID, graph.userID)
+	req.LogicalRequestID = "logical-" + uuid.NewString()
+	req.NormalizedPayloadHash = "payload-" + uuid.NewString()
+	req.PoolingGroupID = graph.firstPoolID
+
+	first, err := gate.Reserve(ctx, req)
+	if err != nil {
+		t.Fatalf("first Reserve: %v", err)
+	}
+	firstAcq, err := slotManager.Acquire(ctx, &pool.AccountSnapshot{
+		ID:       graph.firstAccountID,
+		TenantID: graph.tenantID,
+	}, pool.SelectionRequest{
+		TenantID:       graph.tenantID,
+		UserID:         graph.userID,
+		APIKeyID:       graph.apiKeyID,
+		PoolGroupID:    graph.firstPoolID,
+		ClaimID:        first.ClaimID,
+		AttemptSeq:     1,
+		RequestedModel: req.RequestedModel,
+		EndpointFamily: req.EndpointFamily,
+	})
+	if err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	if err := claimWriter.WriteAcquisition(ctx, graph.tenantID, first.ClaimID, graph.firstAccountID, firstAcq.AcquisitionToken); err != nil {
+		t.Fatalf("first write acquisition: %v", err)
+	}
+	if err := settler.Abort(ctx, graph.tenantID, first.ClaimID, "upstream_5xx", "req-pr4-clear-attempt-1", 0); err != nil {
+		t.Fatalf("first abort: %v", err)
+	}
+	assertAccountInFlight(t, ctx, pg, graph.firstAccountID, 0)
+
+	req.PoolingGroupID = graph.secondPoolID
+	second, err := gate.Reserve(ctx, req)
+	if err != nil {
+		t.Fatalf("second Reserve re-reserve: %v", err)
+	}
+	assertClaimReReservedClean(t, ctx, pg, second.ClaimID, graph.secondPoolID, 2)
+	if err := settler.Abort(ctx, graph.tenantID, second.ClaimID, "pre_acquire_retry_exhausted", "req-pr4-clear-attempt-2", 0); err != nil {
+		t.Fatalf("pre-acquire abort after re-reserve must not release stale token: %v", err)
+	}
+	assertAccountInFlight(t, ctx, pg, graph.firstAccountID, 0)
+	assertAbortEvidence(t, ctx, pg, second.ClaimID, 2, 1)
 }
 
 func TestSettler_AbortCrossTenantRejected(t *testing.T) {
@@ -436,6 +589,232 @@ type settlerSeed struct {
 	claimID           int64
 	acquisitionToken  uuid.UUID
 	fingerprint       string
+}
+
+type retryAtomicityGraph struct {
+	tenantID        int64
+	apiKeyID        int64
+	userID          int64
+	providerID      int64
+	firstPoolID     int64
+	secondPoolID    int64
+	firstChannelID  int64
+	secondChannelID int64
+	firstAccountID  int64
+	secondAccountID int64
+	fingerprint     string
+}
+
+func seedRetryAtomicityGraph(t *testing.T, ctx context.Context, pg *pgxpool.Pool, suffix string) retryAtomicityGraph {
+	t.Helper()
+	unique := fmt.Sprintf("%s-%s", suffix, uuid.NewString())
+	tenantID, apiKeyID, userID := seedTenant(t, ctx, pg, unique)
+	graph := retryAtomicityGraph{
+		tenantID:    tenantID,
+		apiKeyID:    apiKeyID,
+		userID:      userID,
+		fingerprint: "fingerprint-" + unique,
+	}
+	t.Cleanup(func() {
+		_, _ = pg.Exec(context.Background(), `DELETE FROM usage_record_dlq WHERE tenant_id=$1`, tenantID)
+		_, _ = pg.Exec(context.Background(), `DELETE FROM usage_records WHERE tenant_id=$1`, tenantID)
+		_, _ = pg.Exec(context.Background(), `DELETE FROM billing_events WHERE tenant_id=$1`, tenantID)
+		_, _ = pg.Exec(context.Background(), `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, tenantID)
+		_, _ = pg.Exec(context.Background(), `DELETE FROM billing_ledger_claims WHERE tenant_id=$1`, tenantID)
+		_, _ = pg.Exec(context.Background(), `DELETE FROM provider_accounts WHERE tenant_id=$1`, tenantID)
+		_, _ = pg.Exec(context.Background(), `DELETE FROM channels WHERE tenant_id=$1`, tenantID)
+		_, _ = pg.Exec(context.Background(), `DELETE FROM pool_groups WHERE tenant_id=$1`, tenantID)
+		_, _ = pg.Exec(context.Background(), `DELETE FROM providers WHERE tenant_id=$1`, tenantID)
+	})
+
+	if err := pg.QueryRow(ctx,
+		`INSERT INTO providers (tenant_id, code, display_name, upstream_protocol)
+		 VALUES ($1, $2, $3, 'openai_chat') RETURNING id`,
+		tenantID, "provider-"+unique, "Provider "+unique,
+	).Scan(&graph.providerID); err != nil {
+		t.Fatalf("seed provider: %v", err)
+	}
+	graph.firstPoolID = seedPoolGroup(t, ctx, pg, tenantID, "pool-a-"+unique)
+	graph.secondPoolID = seedPoolGroup(t, ctx, pg, tenantID, "pool-b-"+unique)
+	graph.firstChannelID = seedChannel(t, ctx, pg, tenantID, graph.firstPoolID, "channel-a-"+unique)
+	graph.secondChannelID = seedChannel(t, ctx, pg, tenantID, graph.secondPoolID, "channel-b-"+unique)
+	graph.firstAccountID = seedProviderAccount(t, ctx, pg, tenantID, graph.providerID, graph.firstChannelID, "account-a-"+unique)
+	graph.secondAccountID = seedProviderAccount(t, ctx, pg, tenantID, graph.providerID, graph.secondChannelID, "account-b-"+unique)
+	return graph
+}
+
+func seedPoolGroup(t *testing.T, ctx context.Context, pg *pgxpool.Pool, tenantID int64, name string) int64 {
+	t.Helper()
+	var id int64
+	if err := pg.QueryRow(ctx,
+		`INSERT INTO pool_groups (tenant_id, name) VALUES ($1, $2) RETURNING id`,
+		tenantID, name,
+	).Scan(&id); err != nil {
+		t.Fatalf("seed pool group: %v", err)
+	}
+	return id
+}
+
+func seedChannel(t *testing.T, ctx context.Context, pg *pgxpool.Pool, tenantID, poolGroupID int64, name string) int64 {
+	t.Helper()
+	var id int64
+	if err := pg.QueryRow(ctx,
+		`INSERT INTO channels (tenant_id, pool_group_id, name) VALUES ($1, $2, $3) RETURNING id`,
+		tenantID, poolGroupID, name,
+	).Scan(&id); err != nil {
+		t.Fatalf("seed channel: %v", err)
+	}
+	return id
+}
+
+func seedProviderAccount(t *testing.T, ctx context.Context, pg *pgxpool.Pool, tenantID, providerID, channelID int64, name string) int64 {
+	t.Helper()
+	var id int64
+	if err := pg.QueryRow(ctx,
+		`INSERT INTO provider_accounts (tenant_id, provider_id, channel_id, name, account_type, cap_concurrency, in_flight_count)
+		 VALUES ($1, $2, $3, $4, 'api_key', 4, 0) RETURNING id`,
+		tenantID, providerID, channelID, name,
+	).Scan(&id); err != nil {
+		t.Fatalf("seed provider account: %v", err)
+	}
+	return id
+}
+
+func retryAtomicitySettleRequest(graph retryAtomicityGraph, claimID, accountID int64, token uuid.UUID, attemptSeq int32, actualCost decimal.Decimal) SettleRequest {
+	return SettleRequest{
+		ClaimID:           claimID,
+		AccountID:         accountID,
+		AcquisitionToken:  token,
+		ActualCost:        actualCost,
+		TenantID:          graph.tenantID,
+		APIKeyID:          graph.apiKeyID,
+		UserID:            graph.userID,
+		ProviderAccountID: accountID,
+		AttemptSeq:        attemptSeq,
+		RequestedModel:    "claude-3-5-sonnet",
+		RequestedAt:       time.Now().UTC(),
+		UpstreamModel:     "claude-3-5-sonnet",
+		Stream:            false,
+		Fingerprint:       graph.fingerprint,
+		SnapshotVersion:   "registry:pr4;router:retry-atomicity",
+		Draft: gateway.UsageRecordDraft{
+			TokensInput:           11,
+			TokensOutput:          22,
+			ActualCost:            actualCost,
+			RoutingReason:         []byte(`{"route":"pr4_retry_atomicity"}`),
+			EndClass:              gateway.StreamEndClass("non_streaming"),
+			UsageSource:           gateway.UsageSourceReported,
+			PendingReconciliation: false,
+		},
+	}
+}
+
+func assertAccountInFlight(t *testing.T, ctx context.Context, pg *pgxpool.Pool, accountID int64, want int) {
+	t.Helper()
+	var got int
+	if err := pg.QueryRow(ctx, `SELECT in_flight_count FROM provider_accounts WHERE id=$1`, accountID).Scan(&got); err != nil {
+		t.Fatalf("read account in_flight_count: %v", err)
+	}
+	if got != want {
+		t.Fatalf("account %d in_flight_count=%d want %d", accountID, got, want)
+	}
+}
+
+func assertAbortEvidence(t *testing.T, ctx context.Context, pg *pgxpool.Pool, claimID int64, wantEvents, wantZeroUsage int) {
+	t.Helper()
+	var events int
+	if err := pg.QueryRow(ctx,
+		`SELECT count(*) FROM billing_events WHERE claim_id=$1 AND event_type='claim_aborted' AND actual_cost=0`,
+		claimID,
+	).Scan(&events); err != nil {
+		t.Fatalf("count abort events: %v", err)
+	}
+	if events != wantEvents {
+		t.Fatalf("abort events=%d want %d", events, wantEvents)
+	}
+	var zeroUsage int
+	if err := pg.QueryRow(ctx,
+		`SELECT count(*) FROM usage_records WHERE claim_id=$1 AND actual_cost=0`,
+		claimID,
+	).Scan(&zeroUsage); err != nil {
+		t.Fatalf("count zero usage records: %v", err)
+	}
+	if zeroUsage != wantZeroUsage {
+		t.Fatalf("zero-cost usage records=%d want %d", zeroUsage, wantZeroUsage)
+	}
+}
+
+func assertClaimReReservedClean(t *testing.T, ctx context.Context, pg *pgxpool.Pool, claimID, wantPoolID int64, wantAttemptSeq int32) {
+	t.Helper()
+	var status string
+	var gotPoolID *int64
+	var providerAccountID *int64
+	var acquisitionToken pgtype.UUID
+	var attemptSeq int32
+	if err := pg.QueryRow(ctx,
+		`SELECT status, pooling_group_id, provider_account_id, acquisition_token, attempt_seq
+		 FROM billing_ledger_claims WHERE id=$1`,
+		claimID,
+	).Scan(&status, &gotPoolID, &providerAccountID, &acquisitionToken, &attemptSeq); err != nil {
+		t.Fatalf("read re-reserved claim: %v", err)
+	}
+	if status != "reserving" {
+		t.Fatalf("claim status=%q want reserving", status)
+	}
+	if gotPoolID == nil || *gotPoolID != wantPoolID {
+		t.Fatalf("claim pooling_group_id=%v want %d", gotPoolID, wantPoolID)
+	}
+	if providerAccountID != nil {
+		t.Fatalf("re-reserved claim kept stale provider_account_id=%d", *providerAccountID)
+	}
+	if acquisitionToken.Valid {
+		t.Fatalf("re-reserved claim kept stale acquisition_token=%x", acquisitionToken.Bytes)
+	}
+	if attemptSeq != wantAttemptSeq {
+		t.Fatalf("claim attempt_seq=%d want %d", attemptSeq, wantAttemptSeq)
+	}
+}
+
+func assertPositiveCommittedUsageOnce(t *testing.T, ctx context.Context, pg *pgxpool.Pool, claimID int64) {
+	t.Helper()
+	var positiveUsage int
+	if err := pg.QueryRow(ctx,
+		`SELECT count(*) FROM usage_records WHERE claim_id=$1 AND actual_cost > 0`,
+		claimID,
+	).Scan(&positiveUsage); err != nil {
+		t.Fatalf("count positive usage records: %v", err)
+	}
+	if positiveUsage != 1 {
+		t.Fatalf("positive committed usage records=%d want 1", positiveUsage)
+	}
+	var commitEvents int
+	if err := pg.QueryRow(ctx,
+		`SELECT count(*) FROM billing_events WHERE claim_id=$1 AND event_type='claim_committed' AND actual_cost > 0`,
+		claimID,
+	).Scan(&commitEvents); err != nil {
+		t.Fatalf("count commit events: %v", err)
+	}
+	if commitEvents != 1 {
+		t.Fatalf("positive claim_committed events=%d want 1", commitEvents)
+	}
+}
+
+func assertFinalClaimPool(t *testing.T, ctx context.Context, pg *pgxpool.Pool, claimID, wantPoolID int64) {
+	t.Helper()
+	var status string
+	var poolID *int64
+	if err := pg.QueryRow(ctx,
+		`SELECT status, pooling_group_id FROM billing_ledger_claims WHERE id=$1`,
+		claimID,
+	).Scan(&status, &poolID); err != nil {
+		t.Fatalf("read final claim pool: %v", err)
+	}
+	if status != "committed" {
+		t.Fatalf("final claim status=%q want committed", status)
+	}
+	if poolID == nil || *poolID != wantPoolID {
+		t.Fatalf("final claim pooling_group_id=%v want %d", poolID, wantPoolID)
+	}
 }
 
 func seedSettlerGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suffix string) settlerSeed {
