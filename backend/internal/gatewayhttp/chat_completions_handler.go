@@ -232,6 +232,22 @@ func protocolAdapterForBuffered(f *gateway.StreamForwarder, protocolFamily strin
 	return adapters.For(protocolFamily)
 }
 
+const maxRawBufferedUpstreamBodyBytes = 1 << 20
+
+var errRawBufferedUpstreamBodyTooLarge = errors.New("gatewayhttp: upstream buffered response exceeds 1MiB limit")
+
+func readRawBufferedUpstreamBody(r io.Reader) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(r, maxRawBufferedUpstreamBodyBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxRawBufferedUpstreamBodyBytes {
+		// 超限时保留截断 body，供 caller 对非 2xx 上游响应继续做错误分类。
+		return raw[:maxRawBufferedUpstreamBodyBytes], errRawBufferedUpstreamBodyTooLarge
+	}
+	return raw, nil
+}
+
 func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.RequestMetaSeed, seedCtx context.Context, startedAt time.Time) (*proto.HCSF, *classifiedAttemptFailure, bool) {
 	dispatchRes, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
 		ProtocolFamily:  ex.resolved.ProtocolFamily,
@@ -265,15 +281,20 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 		return nil, degradeFailureIfAbortFailed(failure, abortErr), false
 	}
 	defer closeDispatchResult(dispatchRes)
-	raw, readErr := io.ReadAll(io.LimitReader(dispatchRes.UpstreamReader, 1<<20))
-	if readErr != nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_read_error", ex.requestID, 0); abortErr != nil {
+	raw, readErr := readRawBufferedUpstreamBody(dispatchRes.UpstreamReader)
+	oversizedNon2xx := errors.Is(readErr, errRawBufferedUpstreamBodyTooLarge) && (dispatchRes.StatusCode < 200 || dispatchRes.StatusCode >= 300)
+	if readErr != nil && !oversizedNon2xx {
+		code := "upstream_read_error"
+		if errors.Is(readErr, errRawBufferedUpstreamBodyTooLarge) {
+			code = "upstream_response_too_large"
+		}
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, code, ex.requestID, 0); abortErr != nil {
 			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
 		}
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, nil)
 		}
-		writeJSONError(w, http.StatusBadGateway, "upstream_read_error", readErr.Error())
+		writeJSONError(w, http.StatusBadGateway, code, readErr.Error())
 		return nil, nil, false
 	}
 	if dispatchRes.StatusCode < 200 || dispatchRes.StatusCode >= 300 {
