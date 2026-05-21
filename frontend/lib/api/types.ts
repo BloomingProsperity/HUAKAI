@@ -314,7 +314,9 @@ export type AuthCredentialRenewState =
   | 'temp_unschedulable'
   | 'needs_rotation'
   | 'revoked'
-  | 'operator_attention';
+  | 'operator_attention'
+  // OpenAPI declares this field as string, so the UI must tolerate future backend states.
+  | (string & {});
 
 export interface AuthCredentialRenewStatus {
   id: number;

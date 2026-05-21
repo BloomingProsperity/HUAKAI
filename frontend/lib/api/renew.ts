@@ -5,7 +5,7 @@ const RENEW_STATUS_PATH = '/admin/v1/credentials/renew-status';
 
 export class RenewCredentialsForbiddenError extends Error {
   constructor() {
-    super('此面板需要平台管理员权限：当前 token 无权读取 provider account credentials（HTTP 403）。请切换为 platform_admin token 后刷新。');
+    super('This panel requires an admin token with credential renew status access (HTTP 403). Switch to a platform_admin token, or a tenant_operator token scoped to the requested tenant, then refresh.');
     this.name = 'RenewCredentialsForbiddenError';
   }
 }
@@ -17,11 +17,13 @@ function isForbiddenError(err: unknown): boolean {
 export async function listRenewStatus(opts?: {
   limit?: number;
   cursor?: string;
+  tenantId?: number;
 }): Promise<AuthCredentialRenewStatusList> {
   try {
     return await apiGet<AuthCredentialRenewStatusList>(RENEW_STATUS_PATH, {
       limit: opts?.limit,
       cursor: opts?.cursor,
+      tenant_id: opts?.tenantId,
     });
   } catch (err: unknown) {
     if (isForbiddenError(err)) {
