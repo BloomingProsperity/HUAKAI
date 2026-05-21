@@ -177,7 +177,39 @@ func TestAT_PROTO_002_05_SyntheticTerminalOnEOF(t *testing.T) {
 }
 
 func TestAT_PROTO_002_06_EmptyUpstreamContent(t *testing.T) {
-	t.Skip("Buffered ProviderResponseToCanonical Phase 4.5; spec §3 Phase A buffered path not yet implemented.")
+	adapter := &anthropic.Adapter{}
+	env, losses, err := adapter.ProviderResponseToCanonical(context.Background(), []byte(`{
+		"id":"msg_empty",
+		"type":"message",
+		"role":"assistant",
+		"model":"claude-3-5-sonnet",
+		"content":[],
+		"stop_reason":"end_turn",
+		"usage":{"input_tokens":3,"output_tokens":0}
+	}`))
+	if err != nil {
+		t.Fatalf("ProviderResponseToCanonical: %v", err)
+	}
+	if env == nil || env.BufferedResponse == nil {
+		t.Fatal("expected buffered_response envelope")
+	}
+	if len(env.BufferedResponse.Content) != 0 {
+		t.Fatalf("content len=%d want 0", len(env.BufferedResponse.Content))
+	}
+	if env.BufferedResponse.ID != "msg_empty" || env.BufferedResponse.Model != "claude-3-5-sonnet" {
+		t.Fatalf("metadata not preserved: %+v", env.BufferedResponse)
+	}
+	if env.BufferedResponse.Usage.InputTokens != 3 || env.BufferedResponse.StopReason != proto.CanonicalStopEndTurn {
+		t.Fatalf("usage/stop lost on empty content: %+v", env.BufferedResponse)
+	}
+	if len(losses) == 0 {
+		t.Fatal("empty content must emit a non-silent loss entry")
+	}
+	for _, loss := range losses {
+		if loss.IsSilentDrop() {
+			t.Fatalf("silent loss entry: %+v", loss)
+		}
+	}
 }
 
 func TestAT_PROTO_002_07_MaxTokensFinishReason(t *testing.T) {
@@ -225,11 +257,659 @@ func TestAT_PROTO_002_09_UnknownStopReason(t *testing.T) {
 }
 
 func TestAT_PROTO_002_10_BufferedInterleaving(t *testing.T) {
-	t.Skip("Buffered ProviderResponseToCanonical Phase 4.5; spec §3 Phase A buffered path not yet implemented.")
+	adapter := &anthropic.Adapter{}
+	env, losses, err := adapter.ProviderResponseToCanonical(context.Background(), []byte(`{
+		"id":"msg_mix",
+		"type":"message",
+		"role":"assistant",
+		"model":"claude-3-5-sonnet",
+		"content":[
+			{"type":"text","text":"checking"},
+			{"type":"tool_use","id":"toolu_abc123","name":"lookup","input":{"q":"x"}}
+		],
+		"stop_reason":"tool_use",
+		"usage":{"input_tokens":7,"output_tokens":5}
+	}`))
+	if err != nil {
+		t.Fatalf("ProviderResponseToCanonical: %v", err)
+	}
+	if len(losses) != 0 {
+		t.Fatalf("unexpected losses: %+v", losses)
+	}
+	resp := env.BufferedResponse
+	if resp == nil {
+		t.Fatal("expected buffered_response")
+	}
+	if resp.StopReason != proto.CanonicalStopToolUse {
+		t.Fatalf("stop_reason=%q want tool_use", resp.StopReason)
+	}
+	if len(resp.Content) != 2 {
+		t.Fatalf("content len=%d want 2: %+v", len(resp.Content), resp.Content)
+	}
+	if resp.Content[0].Type != "text" || resp.Content[0].Text != "checking" {
+		t.Fatalf("text block mismatch: %+v", resp.Content[0])
+	}
+	tool := resp.Content[1]
+	if tool.Type != "tool_use" || tool.CallID != "call_abc123" || tool.Name != "lookup" {
+		t.Fatalf("tool block mismatch: %+v", tool)
+	}
+	if string(tool.Input) != `{"q":"x"}` {
+		t.Fatalf("tool input=%s want object", tool.Input)
+	}
 }
 
 func TestAT_PROTO_002_11_StreamBufferedUsageEquivalence(t *testing.T) {
-	t.Skip("Buffered path Phase 4.5; equivalence requires both stream+buffered translators.")
+	adapter := &anthropic.Adapter{}
+	env, losses, err := adapter.ProviderResponseToCanonical(context.Background(), []byte(`{
+		"id":"msg_cache",
+		"type":"message",
+		"role":"assistant",
+		"model":"claude-3-5-sonnet",
+		"content":[{"type":"text","text":"ok"}],
+		"stop_reason":"stop_sequence",
+		"stop_sequence":"\n\nHuman:",
+		"usage":{
+			"input_tokens":11,
+			"output_tokens":4,
+			"cache_read_input_tokens":6,
+			"cache_creation_input_tokens":9,
+			"cache_creation":{
+				"ephemeral_5m_input_tokens":2,
+				"ephemeral_1h_input_tokens":7
+			}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("ProviderResponseToCanonical: %v", err)
+	}
+	if len(losses) != 0 {
+		t.Fatalf("unexpected losses: %+v", losses)
+	}
+	resp := env.BufferedResponse
+	if resp.Usage.InputTokens != 11 || resp.Usage.OutputTokens != 4 ||
+		resp.Usage.CacheReadInputTokens != 6 || resp.Usage.CacheCreationInputTokens != 9 {
+		t.Fatalf("usage mismatch: %+v", resp.Usage)
+	}
+	if resp.StopReason != proto.CanonicalStopSequence {
+		t.Fatalf("stop_reason=%q want stop_sequence", resp.StopReason)
+	}
+	respJSON, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	var respMap map[string]any
+	if err := json.Unmarshal(respJSON, &respMap); err != nil {
+		t.Fatalf("unmarshal response map: %v", err)
+	}
+	if respMap["stop_sequence"] != "\n\nHuman:" {
+		t.Fatalf("stop_sequence not preserved in canonical JSON: %s", respJSON)
+	}
+	usageJSON, err := json.Marshal(resp.Usage)
+	if err != nil {
+		t.Fatalf("marshal usage: %v", err)
+	}
+	var usageMap map[string]any
+	if err := json.Unmarshal(usageJSON, &usageMap); err != nil {
+		t.Fatalf("unmarshal usage map: %v", err)
+	}
+	if usageMap["cache_creation_input_tokens_5m"] != float64(2) ||
+		usageMap["cache_creation_input_tokens_1h"] != float64(7) {
+		t.Fatalf("cache TTL usage not preserved: %s", usageJSON)
+	}
+
+	clientBody, clientLosses, err := (&proto.AnthropicMessagesClient{}).CanonicalToClientResponse(context.Background(), env)
+	if err != nil {
+		t.Fatalf("CanonicalToClientResponse: %v", err)
+	}
+	if len(clientLosses) != 0 {
+		t.Fatalf("unexpected client losses: %+v", clientLosses)
+	}
+	var clientResp map[string]any
+	if err := json.Unmarshal(clientBody, &clientResp); err != nil {
+		t.Fatalf("unmarshal client response: %v", err)
+	}
+	clientUsage, ok := clientResp["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("client usage missing or wrong type: %s", clientBody)
+	}
+	if clientUsage["cache_creation_input_tokens"] != float64(9) ||
+		clientUsage["cache_read_input_tokens"] != float64(6) {
+		t.Fatalf("client aggregate cache usage mismatch: %+v", clientUsage)
+	}
+	cacheCreation, ok := clientUsage["cache_creation"].(map[string]any)
+	if !ok {
+		t.Fatalf("client cache_creation breakdown missing: %s", clientBody)
+	}
+	if cacheCreation["ephemeral_5m_input_tokens"] != float64(2) ||
+		cacheCreation["ephemeral_1h_input_tokens"] != float64(7) {
+		t.Fatalf("client cache_creation breakdown mismatch: %+v", cacheCreation)
+	}
+}
+
+func TestAT_PROTO_002_11_ClientResponseOmitsCacheCreationBreakdownWhenAbsent(t *testing.T) {
+	adapter := &anthropic.Adapter{}
+	env, losses, err := adapter.ProviderResponseToCanonical(context.Background(), []byte(`{
+		"id":"msg_cache_aggregate",
+		"type":"message",
+		"role":"assistant",
+		"model":"claude-3-5-sonnet",
+		"content":[{"type":"text","text":"ok"}],
+		"stop_reason":"end_turn",
+		"usage":{
+			"input_tokens":11,
+			"output_tokens":4,
+			"cache_read_input_tokens":6,
+			"cache_creation_input_tokens":9
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("ProviderResponseToCanonical: %v", err)
+	}
+	if len(losses) != 0 {
+		t.Fatalf("unexpected losses: %+v", losses)
+	}
+
+	clientBody, clientLosses, err := (&proto.AnthropicMessagesClient{}).CanonicalToClientResponse(context.Background(), env)
+	if err != nil {
+		t.Fatalf("CanonicalToClientResponse: %v", err)
+	}
+	if len(clientLosses) != 0 {
+		t.Fatalf("unexpected client losses: %+v", clientLosses)
+	}
+	var clientResp map[string]any
+	if err := json.Unmarshal(clientBody, &clientResp); err != nil {
+		t.Fatalf("unmarshal client response: %v", err)
+	}
+	clientUsage, ok := clientResp["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("client usage missing or wrong type: %s", clientBody)
+	}
+	if clientUsage["cache_creation_input_tokens"] != float64(9) ||
+		clientUsage["cache_read_input_tokens"] != float64(6) {
+		t.Fatalf("client aggregate cache usage mismatch: %+v", clientUsage)
+	}
+	if _, ok := clientUsage["cache_creation"]; ok {
+		t.Fatalf("client cache_creation breakdown should be omitted when absent: %s", clientBody)
+	}
+}
+
+func TestAnthropicProviderResponseToCanonical_BufferedTextOnly(t *testing.T) {
+	adapter := &anthropic.Adapter{}
+	env, losses, err := adapter.ProviderResponseToCanonical(context.Background(), []byte(`{
+		"id":"msg_text",
+		"type":"message",
+		"role":"assistant",
+		"model":"claude-3-5-haiku",
+		"content":[{"type":"text","text":"hello"}],
+		"stop_reason":"end_turn",
+		"usage":{"input_tokens":5,"output_tokens":2}
+	}`))
+	if err != nil {
+		t.Fatalf("ProviderResponseToCanonical: %v", err)
+	}
+	if len(losses) != 0 {
+		t.Fatalf("unexpected losses: %+v", losses)
+	}
+	if env == nil || env.Version != proto.HCSFVersion || env.BufferedResponse == nil {
+		t.Fatalf("envelope = %+v", env)
+	}
+	resp := env.BufferedResponse
+	if resp.ID != "msg_text" || resp.Model != "claude-3-5-haiku" {
+		t.Fatalf("metadata mismatch: %+v", resp)
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Type != "text" || resp.Content[0].Text != "hello" {
+		t.Fatalf("content mismatch: %+v", resp.Content)
+	}
+	if len(resp.Content[0].Raw) != 0 {
+		t.Fatalf("plain text block should not carry raw passthrough: %s", resp.Content[0].Raw)
+	}
+	if resp.Usage.InputTokens != 5 || resp.Usage.OutputTokens != 2 || resp.Usage.TotalTokens != 7 {
+		t.Fatalf("usage mismatch: %+v", resp.Usage)
+	}
+	if env.Accounting.Usage != resp.Usage {
+		t.Fatalf("accounting usage=%+v want %+v", env.Accounting.Usage, resp.Usage)
+	}
+
+	clientBody, clientLosses, err := (&proto.AnthropicMessagesClient{}).CanonicalToClientResponse(context.Background(), env)
+	if err != nil {
+		t.Fatalf("CanonicalToClientResponse: %v", err)
+	}
+	if len(clientLosses) != 0 {
+		t.Fatalf("unexpected client losses: %+v", clientLosses)
+	}
+	var clientResp map[string]any
+	if err := json.Unmarshal(clientBody, &clientResp); err != nil {
+		t.Fatalf("unmarshal client response: %v", err)
+	}
+	clientContent := clientResp["content"].([]any)
+	clientText := clientContent[0].(map[string]any)
+	if clientText["type"] != "text" || clientText["text"] != "hello" || len(clientText) != 2 {
+		t.Fatalf("plain text client block should stay type+text only, got %+v", clientText)
+	}
+}
+
+func TestAnthropicBufferedTopLevelPassthroughRoundTripToClientResponse(t *testing.T) {
+	adapter := &anthropic.Adapter{}
+	env, losses, err := adapter.ProviderResponseToCanonical(context.Background(), []byte(`{
+		"id":"msg_vendor_top",
+		"type":"message",
+		"role":"assistant",
+		"model":"claude-3-5-haiku",
+		"content":[{"type":"text","text":"ok"}],
+		"stop_reason":"end_turn",
+		"usage":{"input_tokens":5,"output_tokens":2},
+		"service_tier":"standard",
+		"vendor_trace":{"region":"iad1","attempt":2}
+	}`))
+	if err != nil {
+		t.Fatalf("ProviderResponseToCanonical: %v", err)
+	}
+	if len(losses) != 0 {
+		t.Fatalf("unexpected losses: %+v", losses)
+	}
+	resp := env.BufferedResponse
+	if resp == nil || resp.Passthrough == nil {
+		t.Fatal("buffered top-level vendor fields must be captured in Passthrough")
+	}
+	for _, key := range []string{"service_tier", "vendor_trace"} {
+		if _, ok := resp.Passthrough.Extra[key]; !ok {
+			t.Fatalf("Passthrough.Extra missing %q: %+v", key, resp.Passthrough)
+		}
+	}
+
+	clientBody, clientLosses, err := (&proto.AnthropicMessagesClient{}).CanonicalToClientResponse(context.Background(), env)
+	if err != nil {
+		t.Fatalf("CanonicalToClientResponse: %v", err)
+	}
+	if len(clientLosses) != 0 {
+		t.Fatalf("unexpected client losses: %+v", clientLosses)
+	}
+	var clientResp map[string]any
+	if err := json.Unmarshal(clientBody, &clientResp); err != nil {
+		t.Fatalf("unmarshal client response: %v", err)
+	}
+	if clientResp["service_tier"] != "standard" {
+		t.Fatalf("client response lost service_tier: %s", clientBody)
+	}
+	trace, ok := clientResp["vendor_trace"].(map[string]any)
+	if !ok || trace["region"] != "iad1" || trace["attempt"] != float64(2) {
+		t.Fatalf("client response lost vendor_trace: %s", clientBody)
+	}
+}
+
+func TestAnthropicBufferedTopLevelPassthroughAbsentKeepsClientShape(t *testing.T) {
+	adapter := &anthropic.Adapter{}
+	env, losses, err := adapter.ProviderResponseToCanonical(context.Background(), []byte(`{
+		"id":"msg_no_vendor_top",
+		"type":"message",
+		"role":"assistant",
+		"model":"claude-3-5-haiku",
+		"content":[{"type":"text","text":"ok"}],
+		"stop_reason":"end_turn",
+		"usage":{"input_tokens":5,"output_tokens":2}
+	}`))
+	if err != nil {
+		t.Fatalf("ProviderResponseToCanonical: %v", err)
+	}
+	if len(losses) != 0 {
+		t.Fatalf("unexpected losses: %+v", losses)
+	}
+	if env.BufferedResponse == nil || env.BufferedResponse.Passthrough != nil {
+		t.Fatalf("response without vendor extras should keep nil Passthrough, got %+v", env.BufferedResponse)
+	}
+
+	clientBody, clientLosses, err := (&proto.AnthropicMessagesClient{}).CanonicalToClientResponse(context.Background(), env)
+	if err != nil {
+		t.Fatalf("CanonicalToClientResponse: %v", err)
+	}
+	if len(clientLosses) != 0 {
+		t.Fatalf("unexpected client losses: %+v", clientLosses)
+	}
+	var clientResp map[string]any
+	if err := json.Unmarshal(clientBody, &clientResp); err != nil {
+		t.Fatalf("unmarshal client response: %v", err)
+	}
+	wantKeys := map[string]bool{
+		"id": true, "type": true, "role": true, "content": true,
+		"model": true, "stop_reason": true, "stop_sequence": true, "usage": true,
+	}
+	if len(clientResp) != len(wantKeys) {
+		t.Fatalf("client response top-level shape changed: %s", clientBody)
+	}
+	for key := range clientResp {
+		if !wantKeys[key] {
+			t.Fatalf("unexpected top-level key %q in client response: %s", key, clientBody)
+		}
+	}
+	if _, ok := clientResp["service_tier"]; ok {
+		t.Fatalf("response without vendor extras should not gain service_tier: %s", clientBody)
+	}
+}
+
+func TestAnthropicBufferedTopLevelPassthroughTypedFieldsWinOnConflict(t *testing.T) {
+	adapter := &anthropic.Adapter{}
+	env, losses, err := adapter.ProviderResponseToCanonical(context.Background(), []byte(`{
+		"id":"msg_typed_wins",
+		"type":"message",
+		"role":"assistant",
+		"model":"claude-3-5-haiku",
+		"content":[{"type":"text","text":"ok"}],
+		"stop_reason":"end_turn",
+		"usage":{"input_tokens":5,"output_tokens":2},
+		"service_tier":"standard"
+	}`))
+	if err != nil {
+		t.Fatalf("ProviderResponseToCanonical: %v", err)
+	}
+	if len(losses) != 0 {
+		t.Fatalf("unexpected losses: %+v", losses)
+	}
+	if env.BufferedResponse == nil || env.BufferedResponse.Passthrough == nil {
+		t.Fatal("buffered response should carry service_tier passthrough")
+	}
+	env.BufferedResponse.Passthrough.Extra["model"] = json.RawMessage(`"vendor_model_should_not_win"`)
+	env.BufferedResponse.Passthrough.Extra["id"] = json.RawMessage(`"vendor_id_should_not_win"`)
+
+	clientBody, clientLosses, err := (&proto.AnthropicMessagesClient{}).CanonicalToClientResponse(context.Background(), env)
+	if err != nil {
+		t.Fatalf("CanonicalToClientResponse: %v", err)
+	}
+	if len(clientLosses) != 0 {
+		t.Fatalf("unexpected client losses: %+v", clientLosses)
+	}
+	var clientResp map[string]any
+	if err := json.Unmarshal(clientBody, &clientResp); err != nil {
+		t.Fatalf("unmarshal client response: %v", err)
+	}
+	if clientResp["service_tier"] != "standard" {
+		t.Fatalf("non-conflicting vendor field should still be merged: %s", clientBody)
+	}
+	if clientResp["model"] != "claude-3-5-haiku" {
+		t.Fatalf("typed model must win over passthrough conflict: %s", clientBody)
+	}
+	if clientResp["id"] != "msg_typed_wins" {
+		t.Fatalf("typed id must win over passthrough conflict: %s", clientBody)
+	}
+}
+
+func TestAnthropicProviderResponseToCanonical_BufferedTextExtraFieldsPreservedAsRaw(t *testing.T) {
+	adapter := &anthropic.Adapter{}
+	env, losses, err := adapter.ProviderResponseToCanonical(context.Background(), []byte(`{
+		"id":"msg_text_citations",
+		"type":"message",
+		"role":"assistant",
+		"model":"claude-3-5-haiku",
+		"content":[{
+			"type":"text",
+			"text":"answer",
+			"citations":[{"type":"char_location","start_char_index":0,"end_char_index":6}],
+			"beta_meta":{"trace":"kept"}
+		}],
+		"stop_reason":"end_turn",
+		"usage":{"input_tokens":5,"output_tokens":2}
+	}`))
+	if err != nil {
+		t.Fatalf("ProviderResponseToCanonical: %v", err)
+	}
+	if len(losses) != 1 {
+		t.Fatalf("expected one preservation loss, got %+v", losses)
+	}
+	if losses[0].Feature != string(proto.FeatureTextStreaming) || losses[0].IsSilentDrop() || !strings.Contains(losses[0].Note, "raw") {
+		t.Fatalf("loss should explain raw preservation for text extras, got %+v", losses[0])
+	}
+	if env == nil || env.BufferedResponse == nil || len(env.BufferedResponse.Content) != 1 {
+		t.Fatalf("envelope content mismatch: %+v", env)
+	}
+	textBlock := env.BufferedResponse.Content[0]
+	if textBlock.Type != "text" || textBlock.Text != "answer" {
+		t.Fatalf("canonical text mismatch: %+v", textBlock)
+	}
+	if len(textBlock.Raw) == 0 {
+		t.Fatalf("text block with extra fields must keep raw JSON")
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(textBlock.Raw, &raw); err != nil {
+		t.Fatalf("unmarshal raw text block: %v", err)
+	}
+	if len(raw["citations"]) == 0 || len(raw["beta_meta"]) == 0 {
+		t.Fatalf("raw text extras not preserved: %s", textBlock.Raw)
+	}
+}
+
+func TestAnthropicBufferedTextExtraFieldsRoundTripToClientResponse(t *testing.T) {
+	adapter := &anthropic.Adapter{}
+	env, _, err := adapter.ProviderResponseToCanonical(context.Background(), []byte(`{
+		"id":"msg_text_citations",
+		"type":"message",
+		"role":"assistant",
+		"model":"claude-3-5-haiku",
+		"content":[{
+			"type":"text",
+			"text":"answer",
+			"citations":[{"type":"char_location","start_char_index":0,"end_char_index":6}],
+			"beta_meta":{"trace":"kept"}
+		}],
+		"stop_reason":"end_turn",
+		"usage":{"input_tokens":5,"output_tokens":2}
+	}`))
+	if err != nil {
+		t.Fatalf("ProviderResponseToCanonical: %v", err)
+	}
+	clientBody, clientLosses, err := (&proto.AnthropicMessagesClient{}).CanonicalToClientResponse(context.Background(), env)
+	if err != nil {
+		t.Fatalf("CanonicalToClientResponse: %v", err)
+	}
+	if len(clientLosses) != 0 {
+		t.Fatalf("unexpected client losses: %+v", clientLosses)
+	}
+	var clientResp map[string]any
+	if err := json.Unmarshal(clientBody, &clientResp); err != nil {
+		t.Fatalf("unmarshal client response: %v", err)
+	}
+	clientContent := clientResp["content"].([]any)
+	clientText := clientContent[0].(map[string]any)
+	if clientText["type"] != "text" || clientText["text"] != "answer" {
+		t.Fatalf("client text block mismatch: %+v", clientText)
+	}
+	if _, ok := clientText["citations"]; !ok {
+		t.Fatalf("client text block lost citations: %s", clientBody)
+	}
+	beta, ok := clientText["beta_meta"].(map[string]any)
+	if !ok || beta["trace"] != "kept" {
+		t.Fatalf("client text block lost beta metadata: %s", clientBody)
+	}
+}
+
+func TestAnthropicBufferedUnknownBlockRoundTripToClientResponse(t *testing.T) {
+	adapter := &anthropic.Adapter{}
+	env, losses, err := adapter.ProviderResponseToCanonical(context.Background(), []byte(`{
+		"id":"msg_future_block",
+		"type":"message",
+		"role":"assistant",
+		"model":"claude-3-5-haiku",
+		"content":[{
+			"type":"future_result",
+			"payload":{"answer":42},
+			"beta_meta":{"trace":"kept"}
+		}],
+		"stop_reason":"end_turn",
+		"usage":{"input_tokens":5,"output_tokens":2}
+	}`))
+	if err != nil {
+		t.Fatalf("ProviderResponseToCanonical: %v", err)
+	}
+	if len(losses) != 1 || losses[0].IsSilentDrop() || !strings.Contains(losses[0].Note, "raw") {
+		t.Fatalf("unknown block should emit one non-silent raw-preservation loss, got %+v", losses)
+	}
+	if env == nil || env.BufferedResponse == nil || len(env.BufferedResponse.Content) != 1 {
+		t.Fatalf("envelope content mismatch: %+v", env)
+	}
+	futureBlock := env.BufferedResponse.Content[0]
+	if futureBlock.Type != "future_result" || len(futureBlock.Raw) == 0 {
+		t.Fatalf("canonical unknown block should keep type and raw JSON, got %+v", futureBlock)
+	}
+
+	clientBody, clientLosses, err := (&proto.AnthropicMessagesClient{}).CanonicalToClientResponse(context.Background(), env)
+	if err != nil {
+		t.Fatalf("CanonicalToClientResponse: %v", err)
+	}
+	if len(clientLosses) != 0 {
+		t.Fatalf("raw-preserved unknown block should not emit client-side drop loss, got %+v", clientLosses)
+	}
+	var clientResp map[string]any
+	if err := json.Unmarshal(clientBody, &clientResp); err != nil {
+		t.Fatalf("unmarshal client response: %v", err)
+	}
+	clientContent := clientResp["content"].([]any)
+	if len(clientContent) != 1 {
+		t.Fatalf("client content should include unknown block, got len=%d body=%s", len(clientContent), clientBody)
+	}
+	clientBlock := clientContent[0].(map[string]any)
+	if clientBlock["type"] != "future_result" {
+		t.Fatalf("client unknown block type mismatch: %+v", clientBlock)
+	}
+	payload, ok := clientBlock["payload"].(map[string]any)
+	if !ok || payload["answer"].(float64) != 42 {
+		t.Fatalf("client unknown block lost payload: %s", clientBody)
+	}
+	beta, ok := clientBlock["beta_meta"].(map[string]any)
+	if !ok || beta["trace"] != "kept" {
+		t.Fatalf("client unknown block lost beta metadata: %s", clientBody)
+	}
+}
+
+func TestAnthropicProviderResponseToCanonical_ToolOnlyFallbacks(t *testing.T) {
+	adapter := &anthropic.Adapter{}
+	env, losses, err := adapter.ProviderResponseToCanonical(context.Background(), []byte(`{
+		"id":"msg_tool",
+		"type":"message",
+		"role":"assistant",
+		"model":"claude-3-5-sonnet",
+		"content":[{"type":"tool_use","name":"lookup","input":["not","object"]}],
+		"stop_reason":"tool_use",
+		"usage":{"input_tokens":8,"output_tokens":3}
+	}`))
+	if err != nil {
+		t.Fatalf("ProviderResponseToCanonical: %v", err)
+	}
+	if len(losses) < 2 {
+		t.Fatalf("missing tool id and non-object input must both emit losses, got %+v", losses)
+	}
+	for _, loss := range losses {
+		if loss.IsSilentDrop() {
+			t.Fatalf("silent loss entry: %+v", loss)
+		}
+	}
+	resp := env.BufferedResponse
+	if len(resp.Content) != 1 {
+		t.Fatalf("content len=%d want 1", len(resp.Content))
+	}
+	tool := resp.Content[0]
+	if tool.Type != "tool_use" || tool.Name != "lookup" || !strings.HasPrefix(tool.CallID, "call_") {
+		t.Fatalf("tool block mismatch: %+v", tool)
+	}
+	if string(tool.Input) != `{}` {
+		t.Fatalf("non-object tool input must normalize to empty object, got %s", tool.Input)
+	}
+}
+
+func TestAnthropicProviderResponseToCanonical_ThinkingAndRedactedPreserved(t *testing.T) {
+	adapter := &anthropic.Adapter{}
+	env, losses, err := adapter.ProviderResponseToCanonical(context.Background(), []byte(`{
+		"id":"msg_thinking",
+		"type":"message",
+		"role":"assistant",
+		"model":"claude-3-7-sonnet",
+		"content":[
+			{"type":"thinking","thinking":"internal trace","signature":"sig_abc"},
+			{"type":"redacted_thinking","data":"opaque-redacted"}
+		],
+		"stop_reason":"end_turn",
+		"usage":{"input_tokens":10,"output_tokens":6}
+	}`))
+	if err != nil {
+		t.Fatalf("ProviderResponseToCanonical: %v", err)
+	}
+	if len(losses) != 0 {
+		t.Fatalf("preserved thinking blocks should not emit loss, got %+v", losses)
+	}
+	resp := env.BufferedResponse
+	if len(resp.Content) != 2 {
+		t.Fatalf("content len=%d want 2: %+v", len(resp.Content), resp.Content)
+	}
+	body, err := json.Marshal(resp.Content)
+	if err != nil {
+		t.Fatalf("marshal content: %v", err)
+	}
+	var blocks []map[string]any
+	if err := json.Unmarshal(body, &blocks); err != nil {
+		t.Fatalf("unmarshal content map: %v", err)
+	}
+	if blocks[0]["type"] != "thinking" || blocks[0]["thinking"] != "internal trace" || blocks[0]["signature"] != "sig_abc" {
+		t.Fatalf("thinking block not preserved: %s", body)
+	}
+	if blocks[1]["type"] != "redacted_thinking" || blocks[1]["data"] != "opaque-redacted" {
+		t.Fatalf("redacted_thinking block not preserved: %s", body)
+	}
+}
+
+func TestAnthropicProviderResponseToCanonical_BadBodiesReturnErrors(t *testing.T) {
+	adapter := &anthropic.Adapter{}
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "empty body", raw: "", want: "empty"},
+		{name: "bad json", raw: "{not-json", want: "json"},
+		{name: "wrong top level type", raw: `{"id":"x","type":"not_message","content":[],"usage":{"input_tokens":1,"output_tokens":1}}`, want: "message"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env, _, err := adapter.ProviderResponseToCanonical(context.Background(), []byte(tc.raw))
+			if err == nil {
+				t.Fatalf("expected error, got env=%+v", env)
+			}
+			if !strings.Contains(strings.ToLower(err.Error()), tc.want) {
+				t.Fatalf("error=%v want substring %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestAnthropicProviderResponseToCanonical_MissingUsageAndUnknownBlocksEmitLoss(t *testing.T) {
+	adapter := &anthropic.Adapter{}
+	env, losses, err := adapter.ProviderResponseToCanonical(context.Background(), []byte(`{
+		"id":"msg_loss",
+		"type":"message",
+		"role":"assistant",
+		"model":"claude-3-5-sonnet",
+		"content":[{},{"type":"future_block","payload":{"x":1}}],
+		"stop_reason":"mystery_stop"
+	}`))
+	if err != nil {
+		t.Fatalf("ProviderResponseToCanonical: %v", err)
+	}
+	if env == nil || env.BufferedResponse == nil {
+		t.Fatal("expected buffered_response despite lossy optional fields")
+	}
+	if len(env.BufferedResponse.Content) != 2 {
+		t.Fatalf("lossy blocks must not be silently dropped: %+v", env.BufferedResponse.Content)
+	}
+	if env.BufferedResponse.Content[0].Type != "empty" || env.BufferedResponse.Content[1].Type != "future_block" {
+		t.Fatalf("unexpected lossy block policy: %+v", env.BufferedResponse.Content)
+	}
+	if env.BufferedResponse.StopReason != proto.CanonicalStopUnknown {
+		t.Fatalf("stop_reason=%q want unknown", env.BufferedResponse.StopReason)
+	}
+	if len(losses) < 3 {
+		t.Fatalf("usage missing, empty block, unknown block, and unknown stop should emit losses: %+v", losses)
+	}
+	for _, loss := range losses {
+		if loss.IsSilentDrop() {
+			t.Fatalf("silent loss entry: %+v", loss)
+		}
+	}
 }
 
 func TestAT_PROTO_002_13_LengthFinishReasonPreserved(t *testing.T) {
