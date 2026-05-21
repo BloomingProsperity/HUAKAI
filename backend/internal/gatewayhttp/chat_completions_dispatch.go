@@ -55,6 +55,7 @@ func (ex *chatExecution) prepareRoute(w http.ResponseWriter) bool {
 		return false
 	}
 	ex.resolved = resolved
+	resolvedModel := routerResolvedModelFromRegistry(resolved)
 
 	plan, err := ex.d.Router.Plan(ex.ctx, router.PlanInput{
 		Context: router.RequestContext{
@@ -63,17 +64,7 @@ func (ex *chatExecution) prepareRoute(w http.ResponseWriter) bool {
 			APIKeyID:  ex.ident.APIKeyID,
 			RequestID: ex.requestID,
 		},
-		Model: router.ResolvedModel{
-			PublicAlias:     resolved.PublicAlias,
-			InternalModelID: resolved.CanonicalModelID,
-			ProviderModelID: resolved.ProviderModelID,
-			ContextWindow:   resolved.ContextWindow,
-			Capabilities:    resolved.Capabilities,
-			PricingClass:    resolved.PricingClass,
-			ProtocolFamily:  resolved.ProtocolFamily,
-			PoolCandidates:  resolved.PoolCandidates,
-			SnapshotVersion: resolved.SnapshotVersion,
-		},
+		Model:    resolvedModel,
 		Features: router.RequestFeatures{Stream: ex.req.Stream},
 	})
 	if err != nil {
@@ -85,18 +76,69 @@ func (ex *chatExecution) prepareRoute(w http.ResponseWriter) bool {
 		return false
 	}
 	ex.plan = plan
-	ex.attempt = plan.Attempts[0]
-	ex.routeID = plan.SnapshotVersion
-	if ex.attempt.Reason != "" {
-		ex.routeID = fmt.Sprintf("%s:%s", ex.routeID, ex.attempt.Reason)
-	}
-	ex.upstreamModelID = ex.resolved.ProviderModelID
-	if ex.upstreamModelID == "" {
-		ex.upstreamModelID = ex.req.Model
-	}
+	ex.activateRouteAttempt(plan.Attempts[0])
 	ex.cacheVendor = pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily)
 	ex.promptHash = cache_routing.ComputePromptHash(ex.body)
 	return true
+}
+
+func routerResolvedModelFromRegistry(resolved registry.Resolved) router.ResolvedModel {
+	return router.ResolvedModel{
+		PublicAlias:     resolved.PublicAlias,
+		InternalModelID: resolved.CanonicalModelID,
+		ProviderModelID: resolved.ProviderModelID,
+		ContextWindow:   resolved.ContextWindow,
+		Capabilities:    resolved.Capabilities,
+		PricingClass:    resolved.PricingClass,
+		ProtocolFamily:  resolved.ProtocolFamily,
+		PoolCandidates:  resolved.PoolCandidates,
+		PoolMetadata:    routerPoolMetadataFromRegistry(resolved),
+		SnapshotVersion: resolved.SnapshotVersion,
+	}
+}
+
+func routerPoolMetadataFromRegistry(resolved registry.Resolved) []router.PoolCandidateMeta {
+	if len(resolved.BindingMetadata) == 0 {
+		return nil
+	}
+	defaultProviderModelID := resolved.DefaultProviderModelID
+	if defaultProviderModelID == "" {
+		defaultProviderModelID = resolved.ProviderModelID
+	}
+	out := make([]router.PoolCandidateMeta, 0, len(resolved.BindingMetadata))
+	for _, binding := range resolved.BindingMetadata {
+		if binding.PoolGroupID == 0 {
+			continue
+		}
+		providerModelID := defaultProviderModelID
+		if binding.ProviderModelIDOverride != nil && *binding.ProviderModelIDOverride != "" {
+			providerModelID = *binding.ProviderModelIDOverride
+		}
+		out = append(out, router.PoolCandidateMeta{
+			PoolGroupID:     binding.PoolGroupID,
+			Priority:        binding.Priority,
+			Weight:          binding.Weight,
+			SelectionMode:   binding.SelectionMode,
+			FallbackClass:   binding.FallbackClass,
+			ProviderModelID: providerModelID,
+		})
+	}
+	return out
+}
+
+func (ex *chatExecution) activateRouteAttempt(attempt router.AttemptPlan) {
+	ex.attempt = attempt
+	ex.routeID = ex.plan.SnapshotVersion
+	if attempt.Reason != "" {
+		ex.routeID = fmt.Sprintf("%s:%s", ex.routeID, attempt.Reason)
+	}
+	ex.upstreamModelID = attempt.UpstreamModelID
+	if ex.upstreamModelID == "" {
+		ex.upstreamModelID = ex.resolved.ProviderModelID
+	}
+	if ex.upstreamModelID == "" {
+		ex.upstreamModelID = ex.req.Model
+	}
 }
 
 func (ex *chatExecution) prepareClaimAndAccount(w http.ResponseWriter) bool {

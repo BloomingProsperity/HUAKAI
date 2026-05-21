@@ -34,17 +34,16 @@ type Registry interface {
 // Resolved is the registry-specific view of a resolved alias. The chat
 // handler converts it into router.ResolvedModel + binding metadata.
 //
-// Why a separate type: ResolvedModel in router/route_plan.go is the
-// router-input contract and intentionally does NOT carry binding-level
-// metadata (rpm_limit, fallback_class, ...). Those live here so they
-// can be threaded into Phase E rate gate without expanding the router
-// surface area.
+// 为什么保留独立类型：router.ResolvedModel 是 router 输入契约，只携带
+// planner-safe 的 binding 元数据。Rate/quota 字段留在 registry 层，
+// 供 Phase E gate 消费，避免扩大 router 职责面。
 type Resolved struct {
 	// Identity (mapped into router.ResolvedModel.PublicAlias /
 	// InternalModelID / ProviderModelID).
-	PublicAlias      string
-	CanonicalModelID string
-	ProviderModelID  string
+	PublicAlias            string
+	CanonicalModelID       string
+	DefaultProviderModelID string
+	ProviderModelID        string
 
 	// Capabilities + protocol — plain metadata fed into router.
 	ContextWindow    int
@@ -53,9 +52,8 @@ type Resolved struct {
 	ProtocolFamily   string
 	RequestTimeoutMS int
 
-	// Routing — pool candidates ordered by binding priority then id.
-	// Slice 5 will plumb selection_mode + weight; L0 always honors
-	// PoolCandidates[0] only (AttemptBudget=1 documented limitation).
+	// Routing — pool candidates 按 binding priority then id 排序。
+	// Router PR1 扩展 multi-attempt plan 时保留该顺序。
 	PoolCandidates  []int64
 	BindingMetadata []BindingMetadata
 
@@ -65,9 +63,8 @@ type Resolved struct {
 	SnapshotVersion string
 }
 
-// BindingMetadata mirrors one model_pool_bindings row's reference-derived
-// fields for downstream Phase E rate gate / Slice 5 weighted executor.
-// At L0 the chat handler reads only PoolGroupID (via Resolved.PoolCandidates).
+// BindingMetadata 映射一行 model_pool_bindings，供 downstream router
+// planning 与 Phase E rate gate 使用。
 type BindingMetadata struct {
 	BindingID               int64
 	PoolGroupID             int64
