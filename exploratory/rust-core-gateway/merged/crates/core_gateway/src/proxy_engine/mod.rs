@@ -47,6 +47,7 @@ use relay::{StreamTapConfig, report_terminal, upstream_response_to_client};
 const STREAM_CHANNEL_DEPTH: usize = 16;
 const BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_UPSTREAM_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+const LOCAL_MAX_STREAM_FRAME_BYTES: usize = DEFAULT_MAX_FRAME_BYTES;
 const DEFAULT_CONTENT_TYPE: &str = "application/json";
 const ANTHROPIC_VERSION: &str = "anthropic-version";
 const ANTHROPIC_BETA: &str = "anthropic-beta";
@@ -339,7 +340,15 @@ fn route_stream_frame_limit(max_stream_frame_bytes: u64) -> usize {
     if max_stream_frame_bytes == 0 {
         DEFAULT_MAX_FRAME_BYTES
     } else {
-        usize::try_from(max_stream_frame_bytes).unwrap_or(DEFAULT_MAX_FRAME_BYTES)
+        if max_stream_frame_bytes > LOCAL_MAX_STREAM_FRAME_BYTES as u64 {
+            warn!(
+                local_max_stream_frame_bytes = LOCAL_MAX_STREAM_FRAME_BYTES,
+                "route stream frame limit clamped to local hard cap"
+            );
+        }
+        usize::try_from(max_stream_frame_bytes)
+            .unwrap_or(LOCAL_MAX_STREAM_FRAME_BYTES)
+            .min(LOCAL_MAX_STREAM_FRAME_BYTES)
     }
 }
 
@@ -357,4 +366,35 @@ fn is_sse_response(headers: &HeaderMap) -> bool {
 
 fn default_content_type() -> HeaderValue {
     HeaderValue::from_static(DEFAULT_CONTENT_TYPE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn route_stream_frame_limit_uses_default_for_zero() {
+        assert_eq!(route_stream_frame_limit(0), DEFAULT_MAX_FRAME_BYTES);
+    }
+
+    #[test]
+    fn route_stream_frame_limit_preserves_smaller_route_value() {
+        assert_eq!(route_stream_frame_limit(1024), 1024);
+    }
+
+    #[test]
+    fn route_stream_frame_limit_clamps_u64_max_to_local_cap() {
+        assert_eq!(
+            route_stream_frame_limit(u64::MAX),
+            LOCAL_MAX_STREAM_FRAME_BYTES
+        );
+    }
+
+    #[test]
+    fn route_stream_frame_limit_clamps_above_local_cap() {
+        assert_eq!(
+            route_stream_frame_limit(LOCAL_MAX_STREAM_FRAME_BYTES as u64 + 1),
+            LOCAL_MAX_STREAM_FRAME_BYTES
+        );
+    }
 }
