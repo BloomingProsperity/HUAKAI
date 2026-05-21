@@ -195,8 +195,11 @@ SET status = 'reserving',
     attempt_seq = attempt_seq + 1,
     lease_expires_at = $2,
     predicted_cost = $3,
+    pooling_group_id = $4,
+    provider_account_id = NULL,
+    acquisition_token = NULL,
     reserved_at = NOW()
-WHERE id = $1 AND status = 'aborted' AND tenant_id = $4
+WHERE id = $1 AND status = 'aborted' AND tenant_id = $5
 RETURNING id, attempt_seq
 `
 
@@ -204,6 +207,7 @@ type ReReserveAbortedClaimParams struct {
 	ID             int64              `db:"id" json:"id"`
 	LeaseExpiresAt pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
 	PredictedCost  decimal.Decimal    `db:"predicted_cost" json:"predicted_cost"`
+	PoolingGroupID *int64             `db:"pooling_group_id" json:"pooling_group_id"`
 	TenantID       int64              `db:"tenant_id" json:"tenant_id"`
 }
 
@@ -222,6 +226,7 @@ func (q *Queries) ReReserveAbortedClaim(ctx context.Context, arg ReReserveAborte
 		arg.ID,
 		arg.LeaseExpiresAt,
 		arg.PredictedCost,
+		arg.PoolingGroupID,
 		arg.TenantID,
 	)
 	var i ReReserveAbortedClaimRow

@@ -67,6 +67,9 @@ SET status = 'reserving',
     attempt_seq = attempt_seq + 1,
     lease_expires_at = $2,
     predicted_cost = $3,
+    pooling_group_id = $4,
+    provider_account_id = NULL,
+    acquisition_token = NULL,
     reserved_at = NOW()
-WHERE id = $1 AND status = 'aborted' AND tenant_id = $4
+WHERE id = $1 AND status = 'aborted' AND tenant_id = $5
 RETURNING id, attempt_seq;

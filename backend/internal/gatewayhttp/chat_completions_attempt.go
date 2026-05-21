@@ -7,8 +7,10 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
 
@@ -96,6 +98,28 @@ func (ex *chatExecution) baseAttemptOutcome() attemptOutcome {
 		AcquisitionToken: ex.acquisitionToken,
 		Selection:        ex.selRes,
 	}
+}
+
+func shouldContinueAfterAbortedAttemptFailure(failure *classifiedAttemptFailure, finalAttempt bool) bool {
+	return failure != nil &&
+		!failure.DeliveredToClient &&
+		!finalAttempt &&
+		failure.Decision.RetryableBeforeDelivery
+}
+
+func (ex *chatExecution) prepareNextAttemptAfterAbort() {
+	if ex == nil {
+		return
+	}
+	ex.reserveRes = nil
+	ex.selRes = nil
+	ex.acquiredAccountID = 0
+	ex.acquisitionToken = uuid.Nil
+	ex.cred = provider.Credential{}
+	ex.accInfo = provider.AccountInfo{}
+	ex.forwardReq = gateway.ForwardRequest{}
+	ex.healthKey = channelhealth.ChannelKey{}
+	ex.healthKeyOK = false
 }
 
 // markAttemptOutcomeDelivered 把 outcome 标记为「已终结、handler 不再进下一 attempt」。

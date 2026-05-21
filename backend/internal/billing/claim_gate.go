@@ -108,6 +108,7 @@ func (g *DefaultClaimGate) Reserve(ctx context.Context, req ReserveRequest) (*Re
 				ID:             existing.ID,
 				LeaseExpiresAt: pgtype.Timestamptz{Time: leaseExpiresAt, Valid: true},
 				PredictedCost:  req.PredictedCost,
+				PoolingGroupID: nullableInt64(req.PoolingGroupID),
 				TenantID:       req.TenantID,
 			})
 			if err != nil {
