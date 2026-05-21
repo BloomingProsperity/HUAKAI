@@ -38,6 +38,7 @@ use crate::{
         AttemptTerminalReporter, now_unix_ms_i64,
     },
     request_id::RequestId,
+    resource_limits::InFlightPermitSlot,
     stream_pipeline::{StreamProtocol, sse::DEFAULT_MAX_FRAME_BYTES},
 };
 
@@ -69,6 +70,7 @@ pin_project! {
         receiver: mpsc::Receiver<BodyChunk>,
         abort_handle: Option<AbortHandle>,
         terminal_reporter: Option<AttemptTerminalReporter>,
+        in_flight_guard: Option<crate::resource_limits::InFlightRequestGuard>,
     }
 
     // pin_project 要求通过 #[pinned_drop] 声明 Drop, 不能同时有独立的 impl Drop
@@ -87,6 +89,7 @@ pin_project! {
             if let Some(handle) = this.abort_handle.take().filter(|h| !h.is_finished()) {
                 handle.abort();
             }
+            let _ = this.in_flight_guard.take();
         }
     }
 }
@@ -96,7 +99,11 @@ impl Stream for ReceiverByteStream {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.project();
-        this.receiver.poll_recv(cx)
+        let poll = this.receiver.poll_recv(cx);
+        if matches!(poll, Poll::Ready(None)) {
+            let _ = this.in_flight_guard.take();
+        }
+        poll
     }
 }
 
@@ -217,7 +224,7 @@ impl ProxyEngine {
         upstream_response_timeout: Duration,
         terminal_reporter: Option<AttemptTerminalReporter>,
     ) -> Result<Response<Body>, ProxyError> {
-        let (parts, body) = request.into_parts();
+        let (mut parts, body) = request.into_parts();
         let uri = build_upstream_uri(upstream, parts.uri.path_and_query())?;
 
         let mut upstream_request = Request::builder()
@@ -256,6 +263,10 @@ impl ProxyEngine {
         let report_enabled = terminal_reporter.is_some();
         let stream_tap =
             planned.and_then(|planned| self.stream_tap_config(planned, request_id, report_enabled));
+        let in_flight_guard = parts
+            .extensions
+            .remove::<InFlightPermitSlot>()
+            .and_then(|slot| slot.take());
         Ok(upstream_response_to_client(
             response,
             request_id,
@@ -263,6 +274,7 @@ impl ProxyEngine {
             terminal_reporter,
             terminal_status,
             terminal_http_status,
+            in_flight_guard,
         ))
     }
 

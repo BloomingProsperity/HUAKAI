@@ -3,15 +3,21 @@
 
 mod common;
 
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    net::SocketAddr,
+    sync::{Mutex, MutexGuard},
+    time::Duration,
+};
 
 use axum::{
     body::{self, Body},
-    http::{Request, StatusCode},
+    http::{Request, StatusCode, header},
 };
 use bytes::Bytes;
 use common::mock_upstream::{MockBehavior, MockUpstream};
-use core_gateway::{build_router, config::StartupConfig, request_id::REQUEST_ID_HEADER};
+use core_gateway::{
+    build_router, config::StartupConfig, heartbeat::set_drain_mode, request_id::REQUEST_ID_HEADER,
+};
 use futures_util::StreamExt;
 use tokio::{
     io::AsyncWriteExt,
@@ -20,7 +26,37 @@ use tokio::{
 };
 use tower::ServiceExt;
 
+static DRAIN_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+struct DrainModeReset {
+    _guard: MutexGuard<'static, ()>,
+}
+
+impl DrainModeReset {
+    fn set(drain: bool) -> Self {
+        let guard = DRAIN_TEST_LOCK.lock().expect("drain test lock poisoned");
+        set_drain_mode(drain);
+        Self { _guard: guard }
+    }
+}
+
+impl Drop for DrainModeReset {
+    fn drop(&mut self) {
+        set_drain_mode(false);
+    }
+}
+
 fn test_config(max_body_bytes: usize, mock_upstream_endpoint: Option<String>) -> StartupConfig {
+    test_config_with_resource_limits(max_body_bytes, mock_upstream_endpoint, 0, 0, 1)
+}
+
+fn test_config_with_resource_limits(
+    max_body_bytes: usize,
+    mock_upstream_endpoint: Option<String>,
+    max_in_flight_requests: usize,
+    max_connections: usize,
+    overload_retry_after_secs: u64,
+) -> StartupConfig {
     let mut env = vec![
         ("HUAKAI_LISTEN_ADDR".to_owned(), "127.0.0.1:0".to_owned()),
         (
@@ -34,6 +70,18 @@ fn test_config(max_body_bytes: usize, mock_upstream_endpoint: Option<String>) ->
         (
             "HUAKAI_MAX_BODY_BYTES".to_owned(),
             max_body_bytes.to_string(),
+        ),
+        (
+            "HUAKAI_MAX_IN_FLIGHT_REQUESTS".to_owned(),
+            max_in_flight_requests.to_string(),
+        ),
+        (
+            "HUAKAI_MAX_CONNECTIONS".to_owned(),
+            max_connections.to_string(),
+        ),
+        (
+            "HUAKAI_OVERLOAD_RETRY_AFTER_SECS".to_owned(),
+            overload_retry_after_secs.to_string(),
         ),
     ];
 
@@ -58,6 +106,7 @@ async fn spawn_listener(config: StartupConfig) -> (SocketAddr, JoinHandle<()>) {
 
 #[tokio::test]
 async fn normal_messages_request_echoes_body_through_mock_upstream() {
+    let _drain_guard = DrainModeReset::set(false); // 持 drain 测试互斥锁
     let mock = MockUpstream::spawn(MockBehavior::EchoBody).await;
     let config = test_config(4 * 1024 * 1024, Some(mock.endpoint()));
     let payload = Bytes::from_static(br#"{"model":"claude-test","messages":[]}"#);
@@ -84,7 +133,136 @@ async fn normal_messages_request_echoes_body_through_mock_upstream() {
 }
 
 #[tokio::test]
+async fn overload_limit_one_rejects_second_concurrent_business_request() {
+    let _drain_guard = DrainModeReset::set(false); // 持 drain 测试互斥锁
+    let mock = MockUpstream::spawn(MockBehavior::Sse {
+        chunks: vec![
+            Bytes::from_static(b"data: hold\n\n"),
+            Bytes::from_static(b"data: [DONE]\n\n"),
+        ],
+        delay: Duration::from_secs(5),
+    })
+    .await;
+    let config = test_config_with_resource_limits(4 * 1024 * 1024, Some(mock.endpoint()), 1, 0, 7);
+    let (addr, task) = spawn_listener(config).await;
+    let client = reqwest::Client::new();
+
+    let first = client
+        .post(format!("http://{addr}/v1/chat/completions"))
+        .header("content-type", "application/json")
+        .body("{}")
+        .send()
+        .await
+        .expect("首个流式请求应建立");
+    assert_eq!(first.status().as_u16(), 200);
+
+    let second = client
+        .post(format!("http://{addr}/v1/chat/completions"))
+        .header("content-type", "application/json")
+        .header(REQUEST_ID_HEADER, "overload-second")
+        .body("{}")
+        .send()
+        .await
+        .expect("过载请求应快速得到响应");
+
+    assert_eq!(second.status().as_u16(), 503);
+    assert_eq!(second.headers().get(header::RETRY_AFTER).unwrap(), "7");
+    let body = second.text().await.expect("overload body 应可读");
+    assert!(body.contains(r#""error":"overloaded""#), "body={body}");
+    assert!(
+        body.contains(r#""request_id":"overload-second""#),
+        "body={body}"
+    );
+    assert_eq!(mock.requests_seen(), 1, "第二个请求不应进入上游");
+
+    drop(first);
+    task.abort();
+}
+
+#[tokio::test]
+async fn healthz_and_metrics_bypass_overload_limit() {
+    let _drain_guard = DrainModeReset::set(false); // 持 drain 测试互斥锁
+    let mock = MockUpstream::spawn(MockBehavior::Sse {
+        chunks: vec![Bytes::from_static(b"data: hold\n\n")],
+        delay: Duration::from_secs(5),
+    })
+    .await;
+    let config = test_config_with_resource_limits(4 * 1024 * 1024, Some(mock.endpoint()), 1, 0, 1);
+    let (addr, task) = spawn_listener(config).await;
+    let client = reqwest::Client::new();
+
+    let first = client
+        .post(format!("http://{addr}/v1/messages"))
+        .header("content-type", "application/json")
+        .body("{}")
+        .send()
+        .await
+        .expect("首个请求应占用唯一 in-flight permit");
+    assert_eq!(first.status().as_u16(), 200);
+
+    let health = client
+        .get(format!("http://{addr}/healthz"))
+        .send()
+        .await
+        .expect("healthz 不应被 overload 限制");
+    assert_eq!(health.status().as_u16(), 200);
+
+    let metrics = client
+        .get(format!("http://{addr}/metrics"))
+        .send()
+        .await
+        .expect("metrics 不应被 overload 限制");
+    assert_eq!(metrics.status().as_u16(), 200);
+    let metrics_body = metrics.text().await.expect("metrics body 应可读");
+    assert!(metrics_body.contains("huakai_inflight_requests"));
+    assert!(metrics_body.contains("huakai_inflight_limit"));
+
+    drop(first);
+    task.abort();
+}
+
+#[tokio::test]
+async fn drain_guard_runs_before_overload_and_does_not_hold_permit() {
+    let _drain_guard = DrainModeReset::set(true);
+    let mock = MockUpstream::spawn(MockBehavior::EchoBody).await;
+    let config = test_config_with_resource_limits(4 * 1024 * 1024, Some(mock.endpoint()), 1, 0, 1);
+    let router = build_router(config).expect("build_router");
+
+    let drain_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(Bytes::from_static(b"{}")))
+                .expect("drain request 构建应成功"),
+        )
+        .await
+        .expect("drain response 应返回");
+    assert_eq!(drain_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    set_drain_mode(false);
+    let accepted = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(Bytes::from_static(b"{}")))
+                .expect("accepted request 构建应成功"),
+        )
+        .await
+        .expect("drain 后业务请求应可进入");
+
+    assert_eq!(accepted.status(), StatusCode::OK);
+    assert_eq!(mock.requests_seen(), 1);
+    drop(drain_response);
+}
+
+#[tokio::test]
 async fn oversized_body_returns_413_payload_too_large() {
+    let _drain_guard = DrainModeReset::set(false); // 持 drain 测试互斥锁
     let mock = MockUpstream::spawn(MockBehavior::EchoBody).await;
     let config = test_config(8, Some(mock.endpoint()));
     let payload = Bytes::from_static(b"0123456789abcdef");
@@ -109,6 +287,7 @@ async fn oversized_body_returns_413_payload_too_large() {
 
 #[tokio::test]
 async fn client_cancel_mid_upload_stops_upstream_read_and_keeps_listener_alive() {
+    let _drain_guard = DrainModeReset::set(false); // 持 drain 测试互斥锁
     let mock = MockUpstream::spawn(MockBehavior::CountOnly {
         per_frame_delay: Duration::from_millis(5),
     })
@@ -157,6 +336,7 @@ async fn client_cancel_mid_upload_stops_upstream_read_and_keeps_listener_alive()
 
 #[tokio::test]
 async fn slow_client_reading_stream_does_not_deadlock_backpressure_path() {
+    let _drain_guard = DrainModeReset::set(false); // 持 drain 测试互斥锁
     let chunks: Vec<Bytes> = (0..64).map(|_| Bytes::from(vec![b'a'; 1024])).collect();
     let expected_len: usize = chunks.iter().map(Bytes::len).sum();
     let mock = MockUpstream::spawn(MockBehavior::Sse {
@@ -194,6 +374,7 @@ async fn slow_client_reading_stream_does_not_deadlock_backpressure_path() {
 
 #[tokio::test]
 async fn streaming_sse_chunks_are_passed_through_incrementally() {
+    let _drain_guard = DrainModeReset::set(false); // 持 drain 测试互斥锁
     let mock = MockUpstream::spawn(MockBehavior::Sse {
         chunks: vec![
             Bytes::from_static(b"data: one\n\n"),
@@ -233,6 +414,7 @@ async fn streaming_sse_chunks_are_passed_through_incrementally() {
 
 #[tokio::test]
 async fn request_id_is_propagated_to_upstream_and_response() {
+    let _drain_guard = DrainModeReset::set(false); // 持 drain 测试互斥锁
     let mock = MockUpstream::spawn(MockBehavior::EchoBody).await;
     let config = test_config(4 * 1024 * 1024, Some(mock.endpoint()));
 
@@ -263,6 +445,7 @@ async fn request_id_is_propagated_to_upstream_and_response() {
 
 #[tokio::test]
 async fn mock_upstream_json_error_and_slow_modes_flow_through_listener() {
+    let _drain_guard = DrainModeReset::set(false); // 持 drain 测试互斥锁
     let json_mock = MockUpstream::spawn(MockBehavior::Json {
         status: StatusCode::CREATED,
         body: Bytes::from_static(br#"{"ok":true}"#),

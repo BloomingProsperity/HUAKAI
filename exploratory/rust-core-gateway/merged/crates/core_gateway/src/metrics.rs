@@ -43,6 +43,8 @@ static UPSTREAM_ERROR_TOTAL: OnceLock<IntCounterVec> = OnceLock::new();
 static ACTIVE_CONNECTIONS: OnceLock<IntGauge> = OnceLock::new();
 static QUEUE_DEPTH: OnceLock<IntGauge> = OnceLock::new();
 static OPEN_UPSTREAM_CONNECTIONS: OnceLock<IntGauge> = OnceLock::new();
+static INFLIGHT_REQUESTS: OnceLock<IntGauge> = OnceLock::new();
+static INFLIGHT_LIMIT: OnceLock<IntGauge> = OnceLock::new();
 
 // ─── 公共访问器 ───────────────────────────────────────────────────────────────
 
@@ -89,6 +91,28 @@ pub fn queue_depth() -> &'static IntGauge {
 /// 当前打开的上游连接数
 pub fn open_upstream_connections() -> &'static IntGauge {
     OPEN_UPSTREAM_CONNECTIONS.get().expect("metrics 未初始化")
+}
+
+/// 当前业务 in-flight 请求数
+pub fn inflight_requests() -> &'static IntGauge {
+    INFLIGHT_REQUESTS.get().expect("metrics 未初始化")
+}
+
+/// 当前业务 in-flight 请求上限; 0 表示未启用卸载
+pub fn inflight_limit() -> &'static IntGauge {
+    INFLIGHT_LIMIT.get().expect("metrics 未初始化")
+}
+
+/// 设置当前业务 in-flight 请求数
+pub fn set_inflight_requests(value: i64) {
+    let _ = registry();
+    inflight_requests().set(value);
+}
+
+/// 设置当前业务 in-flight 请求上限
+pub fn set_inflight_limit(value: i64) {
+    let _ = registry();
+    inflight_limit().set(value);
 }
 
 // ─── 文本格式序列化 (Prometheus scrape) ──────────────────────────────────────
@@ -174,6 +198,21 @@ fn register_all(r: &Registry) {
     .expect("gauge 创建应成功");
     r.register(Box::new(g.clone())).expect("注册应成功");
     let _ = OPEN_UPSTREAM_CONNECTIONS.set(g);
+
+    // P4 in-flight requests
+    let g = IntGauge::new("huakai_inflight_requests", "当前业务 in-flight 请求数")
+        .expect("gauge 创建应成功");
+    r.register(Box::new(g.clone())).expect("注册应成功");
+    let _ = INFLIGHT_REQUESTS.set(g);
+
+    // P4 in-flight limit
+    let g = IntGauge::new(
+        "huakai_inflight_limit",
+        "业务 in-flight 请求上限; 0 表示未启用卸载",
+    )
+    .expect("gauge 创建应成功");
+    r.register(Box::new(g.clone())).expect("注册应成功");
+    let _ = INFLIGHT_LIMIT.set(g);
 }
 
 // ─── 单元测试 ─────────────────────────────────────────────────────────────────
@@ -198,6 +237,21 @@ mod tests {
         assert!(
             output.contains("huakai_rust_"),
             "Prometheus 输出应含 huakai_rust_ 前缀, 实际:\n{output}"
+        );
+    }
+
+    #[test]
+    fn encode_metrics_contains_p4_inflight_gauges() {
+        let _ = registry();
+        let output = encode_metrics();
+
+        assert!(
+            output.contains("huakai_inflight_requests"),
+            "P4 当前在途请求 gauge 必须始终导出, 实际:\n{output}"
+        );
+        assert!(
+            output.contains("huakai_inflight_limit"),
+            "P4 在途请求上限 gauge 必须始终导出, 实际:\n{output}"
         );
     }
 
@@ -229,9 +283,13 @@ mod tests {
         active_connections().dec();
         queue_depth().inc();
         open_upstream_connections().set(10);
+        inflight_requests().set(2);
+        inflight_limit().set(8);
         let output = encode_metrics();
         assert!(output.contains("huakai_rust_active_connections"));
         assert!(output.contains("huakai_rust_queue_depth"));
         assert!(output.contains("huakai_rust_open_upstream_connections"));
+        assert!(output.contains("huakai_inflight_requests"));
+        assert!(output.contains("huakai_inflight_limit"));
     }
 }

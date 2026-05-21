@@ -15,6 +15,7 @@ pub mod mock_control_plane;
 pub mod proxy_engine;
 pub mod redaction;
 pub mod request_id;
+mod resource_limits;
 pub mod route_client;
 pub mod route_proto;
 pub mod stream_pipeline;
@@ -43,6 +44,7 @@ use crate::{
     config::StartupConfig,
     error::GatewayError,
     proxy_engine::{GatewayHttpClient, ProxyEngine, build_http_client},
+    resource_limits::ResourceLimits,
     route_client::{RouteClient, RouteClientOptions},
 };
 
@@ -54,6 +56,7 @@ pub struct GatewayState {
     account_planner: AccountPlanner,
     proxy_engine: ProxyEngine,
     attempt_reporter: AttemptReporter,
+    resource_limits: Arc<ResourceLimits>,
 }
 
 impl std::fmt::Debug for GatewayState {
@@ -73,12 +76,14 @@ impl GatewayState {
         let attempt_reporter = AttemptReporter::spawn(route_client);
         let proxy_engine =
             ProxyEngine::new_with_attempt_reporter(http_client, attempt_reporter.clone());
+        let resource_limits = Arc::new(ResourceLimits::new(&config));
         // Arc 包装只读配置快照, 启动后不再变更
         Ok(Self {
             config: Arc::new(config),
             account_planner,
             proxy_engine,
             attempt_reporter,
+            resource_limits,
         })
     }
 
@@ -117,6 +122,10 @@ impl GatewayState {
 
     pub fn attempt_reporter(&self) -> &AttemptReporter {
         &self.attempt_reporter
+    }
+
+    pub fn resource_limits(&self) -> &Arc<ResourceLimits> {
+        &self.resource_limits
     }
 }
 
@@ -167,6 +176,10 @@ pub fn build_router(config: StartupConfig) -> Result<Router, GatewayError> {
     // 只作用于业务路由 —— /healthz、/metrics 是无 body 的 GET, 不需要 body 上限。
     let business_router = listener::build_router()
         .layer(RequestBodyLimitLayer::new(max_body_bytes))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            resource_limits::overload_guard,
+        ))
         .layer(middleware::from_fn(drain::drain_guard));
 
     Ok(Router::new()
@@ -181,6 +194,7 @@ pub fn build_router(config: StartupConfig) -> Result<Router, GatewayError> {
 pub async fn run(config: StartupConfig) -> Result<(), GatewayError> {
     let listener = TcpListener::bind(config.listen_addr).await?;
     let local_addr = listener.local_addr()?;
+    let max_connections = config.max_connections;
 
     // 启动心跳 worker (5s 定时向 control plane 发送心跳, 读取 drain_mode)
     let route_client = route_client_from_transport_baseline(&config)?;
@@ -194,7 +208,15 @@ pub async fn run(config: StartupConfig) -> Result<(), GatewayError> {
         "listener started"
     );
 
-    axum::serve(listener, router).await?;
+    if max_connections > 0 {
+        axum::serve(
+            resource_limits::LimitedListener::new(listener, max_connections),
+            router,
+        )
+        .await?;
+    } else {
+        axum::serve(listener, router).await?;
+    }
 
     Ok(())
 }
