@@ -63,6 +63,12 @@ pub struct StartupConfig {
     pub control_plane_circuit_breaker_failures: u32,
     /// circuit breaker 打开后的冷却时间
     pub control_plane_circuit_breaker_cooldown_ms: u64,
+    /// 进程级 in-flight 请求上限; 0 表示关闭卸载, 仅保留观测计数
+    pub max_in_flight_requests: usize,
+    /// 进程级已接受连接上限; 0 表示关闭连接级限制
+    pub max_connections: usize,
+    /// 过载 503 的 Retry-After 秒数
+    pub overload_retry_after_secs: u64,
 }
 
 /// envy 解析用的原始字符串结构体 (不对外暴露)
@@ -104,6 +110,12 @@ struct RawStartupConfig {
     control_plane_circuit_breaker_failures: u32,
     #[serde(default = "default_control_plane_circuit_breaker_cooldown_ms")]
     control_plane_circuit_breaker_cooldown_ms: u64,
+    #[serde(default)]
+    max_in_flight_requests: usize,
+    #[serde(default)]
+    max_connections: usize,
+    #[serde(default = "default_overload_retry_after_secs")]
+    overload_retry_after_secs: u64,
 }
 
 impl StartupConfig {
@@ -270,6 +282,9 @@ impl StartupConfig {
             control_plane_circuit_breaker_failures: raw.control_plane_circuit_breaker_failures,
             control_plane_circuit_breaker_cooldown_ms: raw
                 .control_plane_circuit_breaker_cooldown_ms,
+            max_in_flight_requests: raw.max_in_flight_requests,
+            max_connections: raw.max_connections,
+            overload_retry_after_secs: raw.overload_retry_after_secs,
         };
         config.validate()?;
         Ok(config)
@@ -360,6 +375,10 @@ fn default_control_plane_circuit_breaker_cooldown_ms() -> u64 {
     1_000
 }
 
+fn default_overload_retry_after_secs() -> u64 {
+    1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,6 +390,9 @@ mod tests {
             ("HUAKAI_LOG_LEVEL", "debug"),
             ("HUAKAI_JSON_LOGS", "true"),
             ("HUAKAI_WORKER_THREADS", "2"),
+            ("HUAKAI_MAX_IN_FLIGHT_REQUESTS", "0"),
+            ("HUAKAI_MAX_CONNECTIONS", "0"),
+            ("HUAKAI_OVERLOAD_RETRY_AFTER_SECS", "1"),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v.to_owned()))
@@ -390,6 +412,9 @@ mod tests {
         assert!(cfg.json_logs);
         assert!(cfg.otlp_endpoint.is_none());
         assert!(cfg.mock_upstream_endpoint.is_none());
+        assert_eq!(cfg.max_in_flight_requests, 0);
+        assert_eq!(cfg.max_connections, 0);
+        assert_eq!(cfg.overload_retry_after_secs, 1);
         assert_eq!(
             cfg.transport_baseline,
             TransportBaseline::Uds(PathBuf::from(DEFAULT_UDS_SOCKET_PATH))
@@ -428,6 +453,40 @@ mod tests {
         env.push(("HUAKAI_MAX_BODY_BYTES".to_owned(), "0".to_owned()));
         let result = StartupConfig::from_env_iter(env);
         assert!(result.is_err(), "max_body_bytes=0 应解析失败");
+    }
+
+    #[test]
+    fn config_accepts_zero_resource_limits_as_disabled() {
+        let cfg = StartupConfig::from_env_iter(valid_env()).expect("valid config");
+
+        assert_eq!(cfg.max_in_flight_requests, 0);
+        assert_eq!(cfg.max_connections, 0);
+        assert!(cfg.validate().is_ok(), "资源上限 0 表示关闭卸载, 应被接受");
+    }
+
+    #[test]
+    fn config_parses_resource_limit_overrides() {
+        let mut env = valid_env();
+        env.retain(|(k, _)| {
+            !matches!(
+                k.as_str(),
+                "HUAKAI_MAX_IN_FLIGHT_REQUESTS"
+                    | "HUAKAI_MAX_CONNECTIONS"
+                    | "HUAKAI_OVERLOAD_RETRY_AFTER_SECS"
+            )
+        });
+        env.push(("HUAKAI_MAX_IN_FLIGHT_REQUESTS".to_owned(), "17".to_owned()));
+        env.push(("HUAKAI_MAX_CONNECTIONS".to_owned(), "29".to_owned()));
+        env.push((
+            "HUAKAI_OVERLOAD_RETRY_AFTER_SECS".to_owned(),
+            "3".to_owned(),
+        ));
+
+        let cfg = StartupConfig::from_env_iter(env).expect("resource limit config 应解析成功");
+
+        assert_eq!(cfg.max_in_flight_requests, 17);
+        assert_eq!(cfg.max_connections, 29);
+        assert_eq!(cfg.overload_retry_after_secs, 3);
     }
 
     #[test]

@@ -14,6 +14,7 @@ use tracing::{debug, warn};
 use crate::{
     attempt_reporter::{AttemptReportStats, AttemptStatus, AttemptTerminalReporter},
     request_id::RequestId,
+    resource_limits::InFlightRequestGuard,
     stream_pipeline::{StreamEvent, StreamPipeline, StreamProtocol},
 };
 
@@ -50,6 +51,7 @@ pub(super) fn upstream_response_to_client(
     terminal_reporter: Option<AttemptTerminalReporter>,
     terminal_status: AttemptStatus,
     terminal_http_status: Option<u16>,
+    in_flight_guard: Option<InFlightRequestGuard>,
 ) -> Response<Body> {
     let (mut parts, body) = response.into_parts();
     remove_hop_by_hop_response_headers(&mut parts.headers);
@@ -58,6 +60,11 @@ pub(super) fn upstream_response_to_client(
         parts.headers.insert(CONTENT_TYPE, default_content_type());
     }
     let stream_tap = stream_tap.filter(|_| is_sse_response(&parts.headers));
+    let terminal = RelayTerminal {
+        reporter: terminal_reporter,
+        status: terminal_status,
+        http_status: terminal_http_status,
+    };
     Response::from_parts(
         parts,
         relay_body(
@@ -65,11 +72,16 @@ pub(super) fn upstream_response_to_client(
             request_id.clone(),
             "upstream_response",
             stream_tap,
-            terminal_reporter,
-            terminal_status,
-            terminal_http_status,
+            terminal,
+            in_flight_guard,
         ),
     )
+}
+
+struct RelayTerminal {
+    reporter: Option<AttemptTerminalReporter>,
+    status: AttemptStatus,
+    http_status: Option<u16>,
 }
 
 fn relay_body<B>(
@@ -77,16 +89,15 @@ fn relay_body<B>(
     request_id: RequestId,
     direction: &'static str,
     stream_tap: Option<StreamTapConfig>,
-    terminal_reporter: Option<AttemptTerminalReporter>,
-    terminal_status: AttemptStatus,
-    terminal_http_status: Option<u16>,
+    terminal: RelayTerminal,
+    in_flight_guard: Option<InFlightRequestGuard>,
 ) -> Body
 where
     B: http_body::Body<Data = Bytes> + Send + Unpin + 'static,
     B::Error: fmt::Display + Send + Sync + 'static,
 {
     let (sender, receiver) = mpsc::channel::<BodyChunk>(STREAM_CHANNEL_DEPTH);
-    let drop_reporter = terminal_reporter.clone();
+    let drop_reporter = terminal.reporter.clone();
 
     let task = task::spawn(async move {
         let mut stream_pipeline = stream_tap
@@ -95,7 +106,7 @@ where
         let mut stats = AttemptReportStats::default();
         let mut stream_seen_done = false;
         let stream_requires_done =
-            stream_pipeline.is_some() && terminal_status == AttemptStatus::Success;
+            stream_pipeline.is_some() && terminal.status == AttemptStatus::Success;
 
         loop {
             let frame = tokio::select! {
@@ -103,9 +114,9 @@ where
                 () = time::sleep(BODY_IDLE_TIMEOUT) => {
                     let err = io::Error::new(io::ErrorKind::TimedOut, "body stream idle timeout");
                     report_terminal(
-                        terminal_reporter.as_ref(),
+                        terminal.reporter.as_ref(),
                         AttemptStatus::Timeout,
-                        terminal_http_status,
+                        terminal.http_status,
                         &stats,
                         Some("timeout"),
                         Some("body stream idle timeout"),
@@ -131,17 +142,17 @@ where
                             handle_stream_events(
                                 tap,
                                 pipeline.push_bytes(&data),
-                                terminal_reporter.as_ref(),
-                                terminal_http_status,
+                                terminal.reporter.as_ref(),
+                                terminal.http_status,
                                 &mut stats,
                                 &mut stream_seen_done,
                             );
                         }
                         if sender.send(Ok(data)).await.is_err() {
                             report_terminal(
-                                terminal_reporter.as_ref(),
+                                terminal.reporter.as_ref(),
                                 AttemptStatus::ClientCancel,
-                                terminal_http_status,
+                                terminal.http_status,
                                 &stats,
                                 Some("client_cancel"),
                                 Some("client disconnected while relaying upstream response"),
@@ -157,9 +168,9 @@ where
                 Some(Err(err)) => {
                     let msg = format!("body stream error: {err}");
                     report_terminal(
-                        terminal_reporter.as_ref(),
+                        terminal.reporter.as_ref(),
                         AttemptStatus::NetworkError,
-                        terminal_http_status,
+                        terminal.http_status,
                         &stats,
                         Some("network_error"),
                         Some(&msg),
@@ -180,26 +191,26 @@ where
                         handle_stream_events(
                             tap,
                             pipeline.finish(),
-                            terminal_reporter.as_ref(),
-                            terminal_http_status,
+                            terminal.reporter.as_ref(),
+                            terminal.http_status,
                             &mut stats,
                             &mut stream_seen_done,
                         );
                     }
                     if stream_requires_done && !stream_seen_done {
                         report_terminal(
-                            terminal_reporter.as_ref(),
+                            terminal.reporter.as_ref(),
                             AttemptStatus::ProtocolError,
-                            terminal_http_status,
+                            terminal.http_status,
                             &stats,
                             Some("protocol_error"),
                             Some("stream ended without DONE/message_stop"),
                         );
                     } else {
                         report_terminal(
-                            terminal_reporter.as_ref(),
-                            terminal_status,
-                            terminal_http_status,
+                            terminal.reporter.as_ref(),
+                            terminal.status,
+                            terminal.http_status,
                             &stats,
                             None,
                             None,
@@ -217,6 +228,7 @@ where
         receiver,
         abort_handle: Some(abort_handle),
         terminal_reporter: drop_reporter,
+        in_flight_guard,
     })
 }
 
