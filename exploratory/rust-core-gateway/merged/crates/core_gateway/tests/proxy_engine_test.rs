@@ -37,6 +37,14 @@ fn client_options() -> RouteClientOptions {
 }
 
 fn test_config(control_plane_endpoint: String, route_cache_ttl_ms: u64) -> StartupConfig {
+    test_config_with_upstream_body_idle(control_plane_endpoint, route_cache_ttl_ms, 300_000)
+}
+
+fn test_config_with_upstream_body_idle(
+    control_plane_endpoint: String,
+    route_cache_ttl_ms: u64,
+    upstream_body_idle_timeout_ms: u64,
+) -> StartupConfig {
     StartupConfig::from_env_iter(vec![
         ("HUAKAI_LISTEN_ADDR".to_owned(), "127.0.0.1:0".to_owned()),
         (
@@ -62,6 +70,22 @@ fn test_config(control_plane_endpoint: String, route_cache_ttl_ms: u64) -> Start
         (
             "HUAKAI_ROUTE_CACHE_TTL_MS".to_owned(),
             route_cache_ttl_ms.to_string(),
+        ),
+        (
+            "HUAKAI_UPSTREAM_BODY_IDLE_TIMEOUT_MS".to_owned(),
+            upstream_body_idle_timeout_ms.to_string(),
+        ),
+        (
+            "HUAKAI_DOWNSTREAM_WRITE_IDLE_TIMEOUT_MS".to_owned(),
+            "60_000".replace('_', ""),
+        ),
+        (
+            "HUAKAI_REQUEST_BODY_IDLE_TIMEOUT_MS".to_owned(),
+            "30_000".replace('_', ""),
+        ),
+        (
+            "HUAKAI_SERVER_HEADER_READ_TIMEOUT_MS".to_owned(),
+            "30_000".replace('_', ""),
         ),
     ])
     .expect("proxy engine 测试配置应可解析")
@@ -676,6 +700,98 @@ async fn client_cancel_mid_stream_aborts_upstream_response_relay() {
         upstream.chunks_sent()
     );
     task.abort();
+}
+
+#[tokio::test]
+async fn upstream_body_idle_timeout_allows_long_reasoning_gap_when_configured() {
+    let chunks = vec![
+        Bytes::from_static(b"data: thinking\n\n"),
+        Bytes::from_static(b"data: final\n\n"),
+        Bytes::from_static(b"data: [DONE]\n\n"),
+    ];
+    let expected = chunks
+        .iter()
+        .flat_map(|chunk| chunk.iter().copied())
+        .collect::<Vec<_>>();
+    let upstream = MockUpstream::spawn(MockBehavior::Sse {
+        chunks,
+        delay: Duration::from_millis(90),
+    })
+    .await;
+    let control_plane = MockControlPlane::spawn(vendor_plan(
+        upstream.endpoint(),
+        "openai",
+        "upstream-secret-long-reasoning",
+        1_000,
+    ))
+    .await;
+
+    let response = build_router(test_config_with_upstream_body_idle(
+        control_plane.endpoint(),
+        0,
+        300,
+    ))
+    .expect("build_router")
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("accept", "text/event-stream")
+            .body(Body::from(Bytes::from_static(br#"{"stream":true}"#)))
+            .expect("request 构建应成功"),
+    )
+    .await
+    .expect("listener 应响应");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body::to_bytes(response.into_body(), 4096)
+        .await
+        .expect("配置更长 upstream body idle 后应允许慢 reasoning 帧");
+    assert_eq!(body.as_ref(), expected.as_slice());
+}
+
+#[tokio::test]
+async fn upstream_body_idle_timeout_errors_when_gap_exceeds_config() {
+    let upstream = MockUpstream::spawn(MockBehavior::Sse {
+        chunks: vec![
+            Bytes::from_static(b"data: first\n\n"),
+            Bytes::from_static(b"data: too-late\n\n"),
+        ],
+        delay: Duration::from_millis(120),
+    })
+    .await;
+    let control_plane = MockControlPlane::spawn(vendor_plan(
+        upstream.endpoint(),
+        "openai",
+        "upstream-secret-idle-timeout",
+        1_000,
+    ))
+    .await;
+
+    let response = build_router(test_config_with_upstream_body_idle(
+        control_plane.endpoint(),
+        0,
+        40,
+    ))
+    .expect("build_router")
+    .oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("accept", "text/event-stream")
+            .body(Body::from(Bytes::from_static(br#"{"stream":true}"#)))
+            .expect("request 构建应成功"),
+    )
+    .await
+    .expect("listener 应响应");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body::to_bytes(response.into_body(), 4096).await;
+    let err = body.expect_err("超过 upstream body idle 配置后响应 body 应 fail closed");
+    assert!(
+        err.to_string().contains("body stream idle timeout"),
+        "err={err}"
+    );
 }
 
 #[tokio::test]

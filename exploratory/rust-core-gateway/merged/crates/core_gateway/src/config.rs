@@ -69,6 +69,14 @@ pub struct StartupConfig {
     pub max_connections: usize,
     /// 过载 503 的 Retry-After 秒数
     pub overload_retry_after_secs: u64,
+    /// 上游响应 body 两帧之间的 idle 超时; 0 表示关闭
+    pub upstream_body_idle_timeout_ms: u64,
+    /// 下游客户端写入 idle 超时; 0 表示关闭
+    pub downstream_write_idle_timeout_ms: u64,
+    /// 入站请求 body 两帧之间的 idle 超时; 0 表示关闭
+    pub request_body_idle_timeout_ms: u64,
+    /// HTTP/1 header 读取超时; 0 表示关闭
+    pub server_header_read_timeout_ms: u64,
 }
 
 /// envy 解析用的原始字符串结构体 (不对外暴露)
@@ -116,6 +124,14 @@ struct RawStartupConfig {
     max_connections: usize,
     #[serde(default = "default_overload_retry_after_secs")]
     overload_retry_after_secs: u64,
+    #[serde(default = "default_upstream_body_idle_timeout_ms")]
+    upstream_body_idle_timeout_ms: u64,
+    #[serde(default = "default_downstream_write_idle_timeout_ms")]
+    downstream_write_idle_timeout_ms: u64,
+    #[serde(default = "default_request_body_idle_timeout_ms")]
+    request_body_idle_timeout_ms: u64,
+    #[serde(default = "default_server_header_read_timeout_ms")]
+    server_header_read_timeout_ms: u64,
 }
 
 impl StartupConfig {
@@ -285,6 +301,10 @@ impl StartupConfig {
             max_in_flight_requests: raw.max_in_flight_requests,
             max_connections: raw.max_connections,
             overload_retry_after_secs: raw.overload_retry_after_secs,
+            upstream_body_idle_timeout_ms: raw.upstream_body_idle_timeout_ms,
+            downstream_write_idle_timeout_ms: raw.downstream_write_idle_timeout_ms,
+            request_body_idle_timeout_ms: raw.request_body_idle_timeout_ms,
+            server_header_read_timeout_ms: raw.server_header_read_timeout_ms,
         };
         config.validate()?;
         Ok(config)
@@ -379,6 +399,22 @@ fn default_overload_retry_after_secs() -> u64 {
     1
 }
 
+fn default_upstream_body_idle_timeout_ms() -> u64 {
+    300_000
+}
+
+fn default_downstream_write_idle_timeout_ms() -> u64 {
+    60_000
+}
+
+fn default_request_body_idle_timeout_ms() -> u64 {
+    30_000
+}
+
+fn default_server_header_read_timeout_ms() -> u64 {
+    30_000
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,6 +429,10 @@ mod tests {
             ("HUAKAI_MAX_IN_FLIGHT_REQUESTS", "0"),
             ("HUAKAI_MAX_CONNECTIONS", "0"),
             ("HUAKAI_OVERLOAD_RETRY_AFTER_SECS", "1"),
+            ("HUAKAI_UPSTREAM_BODY_IDLE_TIMEOUT_MS", "300000"),
+            ("HUAKAI_DOWNSTREAM_WRITE_IDLE_TIMEOUT_MS", "60000"),
+            ("HUAKAI_REQUEST_BODY_IDLE_TIMEOUT_MS", "30000"),
+            ("HUAKAI_SERVER_HEADER_READ_TIMEOUT_MS", "30000"),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v.to_owned()))
@@ -415,6 +455,10 @@ mod tests {
         assert_eq!(cfg.max_in_flight_requests, 0);
         assert_eq!(cfg.max_connections, 0);
         assert_eq!(cfg.overload_retry_after_secs, 1);
+        assert_eq!(cfg.upstream_body_idle_timeout_ms, 300_000);
+        assert_eq!(cfg.downstream_write_idle_timeout_ms, 60_000);
+        assert_eq!(cfg.request_body_idle_timeout_ms, 30_000);
+        assert_eq!(cfg.server_header_read_timeout_ms, 30_000);
         assert_eq!(
             cfg.transport_baseline,
             TransportBaseline::Uds(PathBuf::from(DEFAULT_UDS_SOCKET_PATH))
@@ -487,6 +531,102 @@ mod tests {
         assert_eq!(cfg.max_in_flight_requests, 17);
         assert_eq!(cfg.max_connections, 29);
         assert_eq!(cfg.overload_retry_after_secs, 3);
+    }
+
+    #[test]
+    fn config_parses_timeout_overrides() {
+        let mut env = valid_env();
+        env.retain(|(k, _)| {
+            !matches!(
+                k.as_str(),
+                "HUAKAI_UPSTREAM_BODY_IDLE_TIMEOUT_MS"
+                    | "HUAKAI_DOWNSTREAM_WRITE_IDLE_TIMEOUT_MS"
+                    | "HUAKAI_REQUEST_BODY_IDLE_TIMEOUT_MS"
+                    | "HUAKAI_SERVER_HEADER_READ_TIMEOUT_MS"
+            )
+        });
+        env.push((
+            "HUAKAI_UPSTREAM_BODY_IDLE_TIMEOUT_MS".to_owned(),
+            "301".to_owned(),
+        ));
+        env.push((
+            "HUAKAI_DOWNSTREAM_WRITE_IDLE_TIMEOUT_MS".to_owned(),
+            "302".to_owned(),
+        ));
+        env.push((
+            "HUAKAI_REQUEST_BODY_IDLE_TIMEOUT_MS".to_owned(),
+            "303".to_owned(),
+        ));
+        env.push((
+            "HUAKAI_SERVER_HEADER_READ_TIMEOUT_MS".to_owned(),
+            "304".to_owned(),
+        ));
+
+        let cfg = StartupConfig::from_env_iter(env).expect("timeout config 应解析成功");
+
+        assert_eq!(cfg.upstream_body_idle_timeout_ms, 301);
+        assert_eq!(cfg.downstream_write_idle_timeout_ms, 302);
+        assert_eq!(cfg.request_body_idle_timeout_ms, 303);
+        assert_eq!(cfg.server_header_read_timeout_ms, 304);
+    }
+
+    #[test]
+    fn config_accepts_zero_timeouts_as_disabled() {
+        let mut env = valid_env();
+        env.retain(|(k, _)| {
+            !matches!(
+                k.as_str(),
+                "HUAKAI_UPSTREAM_BODY_IDLE_TIMEOUT_MS"
+                    | "HUAKAI_DOWNSTREAM_WRITE_IDLE_TIMEOUT_MS"
+                    | "HUAKAI_REQUEST_BODY_IDLE_TIMEOUT_MS"
+                    | "HUAKAI_SERVER_HEADER_READ_TIMEOUT_MS"
+            )
+        });
+        env.push((
+            "HUAKAI_UPSTREAM_BODY_IDLE_TIMEOUT_MS".to_owned(),
+            "0".to_owned(),
+        ));
+        env.push((
+            "HUAKAI_DOWNSTREAM_WRITE_IDLE_TIMEOUT_MS".to_owned(),
+            "0".to_owned(),
+        ));
+        env.push((
+            "HUAKAI_REQUEST_BODY_IDLE_TIMEOUT_MS".to_owned(),
+            "0".to_owned(),
+        ));
+        env.push((
+            "HUAKAI_SERVER_HEADER_READ_TIMEOUT_MS".to_owned(),
+            "0".to_owned(),
+        ));
+
+        let cfg = StartupConfig::from_env_iter(env).expect("0 timeout 应表示关闭并被接受");
+
+        assert_eq!(cfg.upstream_body_idle_timeout_ms, 0);
+        assert_eq!(cfg.downstream_write_idle_timeout_ms, 0);
+        assert_eq!(cfg.request_body_idle_timeout_ms, 0);
+        assert_eq!(cfg.server_header_read_timeout_ms, 0);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn config_uses_timeout_defaults_when_env_omits_timeout_keys() {
+        let mut env = valid_env();
+        env.retain(|(k, _)| {
+            !matches!(
+                k.as_str(),
+                "HUAKAI_UPSTREAM_BODY_IDLE_TIMEOUT_MS"
+                    | "HUAKAI_DOWNSTREAM_WRITE_IDLE_TIMEOUT_MS"
+                    | "HUAKAI_REQUEST_BODY_IDLE_TIMEOUT_MS"
+                    | "HUAKAI_SERVER_HEADER_READ_TIMEOUT_MS"
+            )
+        });
+
+        let cfg = StartupConfig::from_env_iter(env).expect("timeout 默认值应解析成功");
+
+        assert_eq!(cfg.upstream_body_idle_timeout_ms, 300_000);
+        assert_eq!(cfg.downstream_write_idle_timeout_ms, 60_000);
+        assert_eq!(cfg.request_body_idle_timeout_ms, 30_000);
+        assert_eq!(cfg.server_header_read_timeout_ms, 30_000);
     }
 
     #[test]

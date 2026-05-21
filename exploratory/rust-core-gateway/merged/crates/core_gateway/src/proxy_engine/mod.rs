@@ -37,16 +37,16 @@ use crate::{
         AttemptReportContext, AttemptReportStats, AttemptReporter, AttemptStatus,
         AttemptTerminalReporter, now_unix_ms_i64,
     },
+    config::StartupConfig,
     request_id::RequestId,
     resource_limits::InFlightPermitSlot,
     stream_pipeline::{StreamProtocol, sse::DEFAULT_MAX_FRAME_BYTES},
 };
 
 use headers::{build_upstream_uri, normalize_upstream_headers};
-use relay::{StreamTapConfig, report_terminal, upstream_response_to_client};
+use relay::{RelayTerminal, StreamTapConfig, report_terminal, upstream_response_to_client};
 
 const STREAM_CHANNEL_DEPTH: usize = 16;
-const BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_UPSTREAM_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 const LOCAL_MAX_STREAM_FRAME_BYTES: usize = DEFAULT_MAX_FRAME_BYTES;
 const DEFAULT_CONTENT_TYPE: &str = "application/json";
@@ -58,11 +58,42 @@ const GEMINI_API_CLIENT: &str = "x-goog-api-client";
 
 type BodyChunk = Result<Bytes, io::Error>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProxyTimeouts {
+    pub upstream_body_idle_timeout: Option<Duration>,
+    pub downstream_write_idle_timeout: Option<Duration>,
+}
+
+impl ProxyTimeouts {
+    pub fn from_config(config: &StartupConfig) -> Self {
+        Self {
+            upstream_body_idle_timeout: duration_from_millis(config.upstream_body_idle_timeout_ms),
+            downstream_write_idle_timeout: duration_from_millis(
+                config.downstream_write_idle_timeout_ms,
+            ),
+        }
+    }
+}
+
+impl Default for ProxyTimeouts {
+    fn default() -> Self {
+        Self {
+            upstream_body_idle_timeout: Some(Duration::from_millis(300_000)),
+            downstream_write_idle_timeout: Some(Duration::from_millis(60_000)),
+        }
+    }
+}
+
+fn duration_from_millis(value: u64) -> Option<Duration> {
+    (value > 0).then(|| Duration::from_millis(value))
+}
+
 #[derive(Clone)]
 pub struct ProxyEngine {
     client: GatewayHttpClient,
     stream_observation_sender: Option<mpsc::Sender<StreamObservation>>,
     attempt_reporter: Option<AttemptReporter>,
+    timeouts: ProxyTimeouts,
 }
 
 pin_project! {
@@ -113,6 +144,16 @@ impl ProxyEngine {
             client,
             stream_observation_sender: None,
             attempt_reporter: None,
+            timeouts: ProxyTimeouts::default(),
+        }
+    }
+
+    pub fn new_with_timeouts(client: GatewayHttpClient, timeouts: ProxyTimeouts) -> Self {
+        Self {
+            client,
+            stream_observation_sender: None,
+            attempt_reporter: None,
+            timeouts,
         }
     }
 
@@ -124,6 +165,20 @@ impl ProxyEngine {
             client,
             stream_observation_sender: None,
             attempt_reporter: Some(attempt_reporter),
+            timeouts: ProxyTimeouts::default(),
+        }
+    }
+
+    pub fn new_with_attempt_reporter_and_timeouts(
+        client: GatewayHttpClient,
+        attempt_reporter: AttemptReporter,
+        timeouts: ProxyTimeouts,
+    ) -> Self {
+        Self {
+            client,
+            stream_observation_sender: None,
+            attempt_reporter: Some(attempt_reporter),
+            timeouts,
         }
     }
 
@@ -135,6 +190,7 @@ impl ProxyEngine {
             client,
             stream_observation_sender: Some(stream_observation_sender),
             attempt_reporter: None,
+            timeouts: ProxyTimeouts::default(),
         }
     }
 
@@ -147,6 +203,7 @@ impl ProxyEngine {
             client,
             stream_observation_sender: Some(stream_observation_sender),
             attempt_reporter: Some(attempt_reporter),
+            timeouts: ProxyTimeouts::default(),
         }
     }
 
@@ -271,10 +328,9 @@ impl ProxyEngine {
             response,
             request_id,
             stream_tap,
-            terminal_reporter,
-            terminal_status,
-            terminal_http_status,
+            RelayTerminal::new(terminal_reporter, terminal_status, terminal_http_status),
             in_flight_guard,
+            self.timeouts,
         ))
     }
 

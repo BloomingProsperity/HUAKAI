@@ -3,6 +3,7 @@
 
 pub mod account_planner;
 pub mod attempt_reporter;
+mod body_timeout;
 mod circuit_breaker;
 pub mod config;
 mod drain;
@@ -18,6 +19,7 @@ pub mod request_id;
 mod resource_limits;
 pub mod route_client;
 pub mod route_proto;
+pub mod server_runtime;
 pub mod stream_pipeline;
 pub mod tracing_init;
 
@@ -43,7 +45,7 @@ use crate::{
     attempt_reporter::AttemptReporter,
     config::StartupConfig,
     error::GatewayError,
-    proxy_engine::{GatewayHttpClient, ProxyEngine, build_http_client},
+    proxy_engine::{GatewayHttpClient, ProxyEngine, ProxyTimeouts, build_http_client},
     resource_limits::ResourceLimits,
     route_client::{RouteClient, RouteClientOptions},
 };
@@ -74,8 +76,12 @@ impl GatewayState {
         let route_client = route_client_from_transport_baseline(&config)?;
         let account_planner = AccountPlanner::new(route_client.clone());
         let attempt_reporter = AttemptReporter::spawn(route_client);
-        let proxy_engine =
-            ProxyEngine::new_with_attempt_reporter(http_client, attempt_reporter.clone());
+        let proxy_timeouts = ProxyTimeouts::from_config(&config);
+        let proxy_engine = ProxyEngine::new_with_attempt_reporter_and_timeouts(
+            http_client,
+            attempt_reporter.clone(),
+            proxy_timeouts,
+        );
         let resource_limits = Arc::new(ResourceLimits::new(&config));
         // Arc 包装只读配置快照, 启动后不再变更
         Ok(Self {
@@ -127,6 +133,14 @@ impl GatewayState {
     pub fn resource_limits(&self) -> &Arc<ResourceLimits> {
         &self.resource_limits
     }
+
+    pub(crate) fn request_body_idle_timeout(&self) -> Option<Duration> {
+        duration_from_millis(self.config.request_body_idle_timeout_ms)
+    }
+}
+
+fn duration_from_millis(value: u64) -> Option<Duration> {
+    (value > 0).then(|| Duration::from_millis(value))
 }
 
 fn log_route_plan_cache_disabled(route_cache_ttl_ms: u64) {
@@ -178,9 +192,14 @@ pub fn build_router(config: StartupConfig) -> Result<Router, GatewayError> {
         .layer(RequestBodyLimitLayer::new(max_body_bytes))
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            resource_limits::overload_guard,
+            body_timeout::request_body_idle_timeout_guard,
         ))
-        .layer(middleware::from_fn(drain::drain_guard));
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            resource_limits::overload_guard,
+        ));
+
+    let business_router = business_router.layer(middleware::from_fn(drain::drain_guard));
 
     Ok(Router::new()
         .route("/healthz", get(healthz))
@@ -189,12 +208,71 @@ pub fn build_router(config: StartupConfig) -> Result<Router, GatewayError> {
         .with_state(state))
 }
 
+async fn wait_for_ctrl_c_signal(signal_name: &'static str) {
+    match tokio::signal::ctrl_c().await {
+        Ok(()) => {
+            info!(
+                signal = signal_name,
+                "shutdown signal received; starting graceful shutdown"
+            );
+        }
+        Err(err) => {
+            warn!(
+                error = %err,
+                signal = signal_name,
+                "failed to wait for shutdown signal; starting graceful shutdown"
+            );
+        }
+    }
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut sigterm =
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(sigterm) => sigterm,
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        "failed to install SIGTERM handler; waiting for Ctrl-C only"
+                    );
+                    wait_for_ctrl_c_signal("SIGINT").await;
+                    return;
+                }
+            };
+
+        tokio::select! {
+            received = sigterm.recv() => {
+                if received.is_some() {
+                    info!(
+                        signal = "SIGTERM",
+                        "shutdown signal received; starting graceful shutdown"
+                    );
+                } else {
+                    warn!(
+                        signal = "SIGTERM",
+                        "shutdown signal listener closed; starting graceful shutdown"
+                    );
+                }
+            }
+            _ = wait_for_ctrl_c_signal("SIGINT") => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        wait_for_ctrl_c_signal("CTRL_C").await;
+    }
+}
+
 /// 异步主运行函数 — 在 Tokio runtime 内执行
 /// 创建 TCP 监听器 -> 构建路由 -> 启动心跳 worker -> 启动 axum server
 pub async fn run(config: StartupConfig) -> Result<(), GatewayError> {
     let listener = TcpListener::bind(config.listen_addr).await?;
     let local_addr = listener.local_addr()?;
     let max_connections = config.max_connections;
+    let server_timeouts = server_runtime::ServerTimeouts::from_config(&config);
 
     // 启动心跳 worker (5s 定时向 control plane 发送心跳, 读取 drain_mode)
     let route_client = route_client_from_transport_baseline(&config)?;
@@ -209,13 +287,16 @@ pub async fn run(config: StartupConfig) -> Result<(), GatewayError> {
     );
 
     if max_connections > 0 {
-        axum::serve(
+        server_runtime::serve_with_shutdown(
             resource_limits::LimitedListener::new(listener, max_connections),
             router,
+            server_timeouts,
+            shutdown_signal(),
         )
         .await?;
     } else {
-        axum::serve(listener, router).await?;
+        server_runtime::serve_with_shutdown(listener, router, server_timeouts, shutdown_signal())
+            .await?;
     }
 
     Ok(())
@@ -255,4 +336,22 @@ async fn metrics_handler() -> impl IntoResponse {
         )],
         body,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::future::Future;
+
+    fn assert_send_static<F>(_: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+    }
+
+    #[test]
+    fn shutdown_signal_can_drive_server_shutdown() {
+        assert_send_static(shutdown_signal());
+    }
 }

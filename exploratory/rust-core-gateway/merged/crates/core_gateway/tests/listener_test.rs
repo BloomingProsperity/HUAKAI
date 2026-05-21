@@ -16,12 +16,17 @@ use axum::{
 use bytes::Bytes;
 use common::mock_upstream::{MockBehavior, MockUpstream};
 use core_gateway::{
-    build_router, config::StartupConfig, heartbeat::set_drain_mode, request_id::REQUEST_ID_HEADER,
+    build_router,
+    config::StartupConfig,
+    heartbeat::set_drain_mode,
+    request_id::REQUEST_ID_HEADER,
+    server_runtime::{self, ServerTimeouts},
 };
 use futures_util::StreamExt;
 use tokio::{
-    io::AsyncWriteExt,
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
+    sync::oneshot,
     task::JoinHandle,
 };
 use tower::ServiceExt;
@@ -47,7 +52,14 @@ impl Drop for DrainModeReset {
 }
 
 fn test_config(max_body_bytes: usize, mock_upstream_endpoint: Option<String>) -> StartupConfig {
-    test_config_with_resource_limits(max_body_bytes, mock_upstream_endpoint, 0, 0, 1)
+    test_config_with_resource_limits_and_timeouts(
+        max_body_bytes,
+        mock_upstream_endpoint,
+        0,
+        0,
+        1,
+        TestTimeouts::default(),
+    )
 }
 
 fn test_config_with_resource_limits(
@@ -56,6 +68,43 @@ fn test_config_with_resource_limits(
     max_in_flight_requests: usize,
     max_connections: usize,
     overload_retry_after_secs: u64,
+) -> StartupConfig {
+    test_config_with_resource_limits_and_timeouts(
+        max_body_bytes,
+        mock_upstream_endpoint,
+        max_in_flight_requests,
+        max_connections,
+        overload_retry_after_secs,
+        TestTimeouts::default(),
+    )
+}
+
+#[derive(Clone, Copy)]
+struct TestTimeouts {
+    upstream_body_idle_timeout_ms: u64,
+    downstream_write_idle_timeout_ms: u64,
+    request_body_idle_timeout_ms: u64,
+    server_header_read_timeout_ms: u64,
+}
+
+impl Default for TestTimeouts {
+    fn default() -> Self {
+        Self {
+            upstream_body_idle_timeout_ms: 300_000,
+            downstream_write_idle_timeout_ms: 60_000,
+            request_body_idle_timeout_ms: 30_000,
+            server_header_read_timeout_ms: 30_000,
+        }
+    }
+}
+
+fn test_config_with_resource_limits_and_timeouts(
+    max_body_bytes: usize,
+    mock_upstream_endpoint: Option<String>,
+    max_in_flight_requests: usize,
+    max_connections: usize,
+    overload_retry_after_secs: u64,
+    timeouts: TestTimeouts,
 ) -> StartupConfig {
     let mut env = vec![
         ("HUAKAI_LISTEN_ADDR".to_owned(), "127.0.0.1:0".to_owned()),
@@ -82,6 +131,22 @@ fn test_config_with_resource_limits(
         (
             "HUAKAI_OVERLOAD_RETRY_AFTER_SECS".to_owned(),
             overload_retry_after_secs.to_string(),
+        ),
+        (
+            "HUAKAI_UPSTREAM_BODY_IDLE_TIMEOUT_MS".to_owned(),
+            timeouts.upstream_body_idle_timeout_ms.to_string(),
+        ),
+        (
+            "HUAKAI_DOWNSTREAM_WRITE_IDLE_TIMEOUT_MS".to_owned(),
+            timeouts.downstream_write_idle_timeout_ms.to_string(),
+        ),
+        (
+            "HUAKAI_REQUEST_BODY_IDLE_TIMEOUT_MS".to_owned(),
+            timeouts.request_body_idle_timeout_ms.to_string(),
+        ),
+        (
+            "HUAKAI_SERVER_HEADER_READ_TIMEOUT_MS".to_owned(),
+            timeouts.server_header_read_timeout_ms.to_string(),
         ),
     ];
 
@@ -497,4 +562,111 @@ async fn mock_upstream_json_error_and_slow_modes_flow_through_listener() {
         .expect("listener 应响应");
     assert_eq!(slow_response.status(), StatusCode::OK);
     assert!(started.elapsed() >= Duration::from_millis(30));
+}
+
+#[tokio::test]
+async fn request_body_idle_timeout_fails_closed_and_listener_stays_healthy() {
+    let _drain_guard = DrainModeReset::set(false); // 持 drain 测试互斥锁
+    let mock = MockUpstream::spawn(MockBehavior::CountOnly {
+        per_frame_delay: Duration::ZERO,
+    })
+    .await;
+    let config = test_config_with_resource_limits_and_timeouts(
+        2 * 1024 * 1024,
+        Some(mock.endpoint()),
+        0,
+        0,
+        1,
+        TestTimeouts {
+            request_body_idle_timeout_ms: 80,
+            ..TestTimeouts::default()
+        },
+    );
+    let (addr, task) = spawn_listener(config).await;
+
+    let declared_len = 4096usize;
+    let mut stream = TcpStream::connect(addr).await.expect("tcp connect 应成功");
+    let headers = format!(
+        "POST /v1/messages HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {declared_len}\r\n\r\n"
+    );
+    stream
+        .write_all(headers.as_bytes())
+        .await
+        .expect("headers 写入应成功");
+    stream
+        .write_all(b"{")
+        .await
+        .expect("首个 body byte 写入应成功");
+    tokio::time::sleep(Duration::from_millis(180)).await;
+
+    let mut response = vec![0; 512];
+    let read = tokio::time::timeout(Duration::from_secs(1), stream.read(&mut response))
+        .await
+        .expect("request body idle 后连接应关闭或返回错误")
+        .expect("读取 response 不应产生 IO 错误");
+    let response_text = String::from_utf8_lossy(&response[..read]);
+    assert!(
+        read == 0 || response_text.starts_with("HTTP/1.1 502"),
+        "body idle 应 fail closed, read={read}, response={response_text}"
+    );
+    assert!(
+        mock.bytes_seen() < declared_len,
+        "body idle 后不应继续向上游读取完整 body"
+    );
+
+    let health = reqwest::get(format!("http://{addr}/healthz"))
+        .await
+        .expect("body idle 后 healthz 仍应可访问");
+    assert_eq!(health.status().as_u16(), 200);
+    task.abort();
+}
+
+#[tokio::test]
+async fn server_header_read_timeout_closes_slow_header_connection() {
+    let _drain_guard = DrainModeReset::set(false); // 持 drain 测试互斥锁
+    let config = test_config_with_resource_limits_and_timeouts(
+        4 * 1024 * 1024,
+        None,
+        0,
+        0,
+        1,
+        TestTimeouts {
+            server_header_read_timeout_ms: 80,
+            ..TestTimeouts::default()
+        },
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener bind 应成功");
+    let addr = listener.local_addr().expect("listener addr 应存在");
+    let app = build_router(config.clone()).expect("build_router");
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let task = tokio::spawn(async move {
+        let _ = server_runtime::serve_with_shutdown(
+            listener,
+            app,
+            ServerTimeouts::from_config(&config),
+            async move {
+                let _ = shutdown_rx.await;
+            },
+        )
+        .await;
+    });
+
+    let mut stream = TcpStream::connect(addr).await.expect("tcp connect 应成功");
+    stream
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: ")
+        .await
+        .expect("partial header 写入应成功");
+    tokio::time::sleep(Duration::from_millis(180)).await;
+
+    let mut buf = [0u8; 16];
+    let read = tokio::time::timeout(Duration::from_secs(1), stream.read(&mut buf))
+        .await
+        .expect("header read timeout 后连接应关闭")
+        .expect("读取连接关闭不应 IO error");
+    assert_eq!(read, 0, "header read timeout 后 server 应关闭连接");
+
+    let _ = shutdown_tx.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(1), task).await;
 }

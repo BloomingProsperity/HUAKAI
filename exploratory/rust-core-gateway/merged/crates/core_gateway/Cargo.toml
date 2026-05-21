@@ -37,7 +37,7 @@ hyper = { version = "1", features = ["client", "http1", "http2"] }
 # R-E+1 切到 rquest + BoringSSL (整合 rquest sidecar) 后真删本 dep.
 # 不是 dispatch fallback (R-E-A 已 burn-the-boats); 仅 proxy_engine/http_client.rs 出站 TLS 兜底.
 hyper-rustls = { version = "0.27.9", default-features = false, features = ["http1", "http2", "ring", "tls12", "webpki-roots"] }
-hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "tokio"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "server-auto", "server-graceful", "service", "tokio"] }
 memchr = "2.8"
 # OpenSSL TLS mimicry backend skeleton, 仅由 mimicry-openssl feature 启用。
 openssl = { version = "0.10.79", optional = true }
@@ -46,7 +46,7 @@ prost = "0.13.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-boring = { workspace = true, optional = true }
 tokio-openssl = { version = "0.6", optional = true }
 tokio-stream = { version = "0.1", features = ["net"] }
