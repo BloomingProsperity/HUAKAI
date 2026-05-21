@@ -1,7 +1,9 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 
@@ -77,12 +79,59 @@ type anthropicDeltaPayload struct {
 	Usage       proto.CanonicalUsage `json:"usage,omitempty"`
 }
 
+type anthropicBufferedResponse struct {
+	ID           string                     `json:"id"`
+	Type         string                     `json:"type"`
+	Role         string                     `json:"role"`
+	Model        string                     `json:"model"`
+	Content      []json.RawMessage          `json:"content"`
+	StopReason   string                     `json:"stop_reason"`
+	StopSequence *string                    `json:"stop_sequence"`
+	Usage        *anthropicBufferedUsage    `json:"usage"`
+	Passthrough  *proto.PassthroughEnvelope `json:"-"`
+}
+
+type anthropicBufferedUsage struct {
+	InputTokens              int                              `json:"input_tokens"`
+	OutputTokens             int                              `json:"output_tokens"`
+	CacheReadInputTokens     int                              `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int                              `json:"cache_creation_input_tokens"`
+	CacheCreation            *anthropicCacheCreationBreakdown `json:"cache_creation,omitempty"`
+}
+
+type anthropicCacheCreationBreakdown struct {
+	Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+}
+
+type anthropicBufferedContentBlock struct {
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
+	Signature string          `json:"signature,omitempty"`
+	Data      json.RawMessage `json:"data,omitempty"`
+}
+
 func (s *Adapter) CanonicalToProviderRequest(ctx context.Context, canonical *proto.HCSF) ([]byte, []proto.ProtocolLossEntry, error) {
 	return nil, nil, proto.ErrNotImplemented
 }
 
 func (s *Adapter) ProviderResponseToCanonical(ctx context.Context, raw []byte) (*proto.HCSF, []proto.ProtocolLossEntry, error) {
-	return nil, nil, proto.ErrNotImplemented
+	_ = ctx
+	resp, losses, err := anthropicResponseToCanonicalResponse(raw)
+	if err != nil {
+		return nil, losses, err
+	}
+	env := proto.NewEmptyEnvelope()
+	env.BufferedResponse = &resp
+	env.Accounting.Usage = resp.Usage
+	if len(losses) > 0 {
+		env.CapabilityGraph.ProtocolLoss = append(env.CapabilityGraph.ProtocolLoss, losses...)
+	}
+	return env, losses, nil
 }
 
 func (s *Adapter) ProviderEventToCanonicalEvents(ctx context.Context, providerEvt any, state any) ([]any, []proto.ProtocolLossEntry, error) {
@@ -247,6 +296,188 @@ func canonicalBlock(b anthropicBlockPayload) (proto.CanonicalContentBlock, []pro
 	}
 }
 
+func anthropicResponseToCanonicalResponse(raw []byte) (proto.CanonicalResponse, []proto.ProtocolLossEntry, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return proto.CanonicalResponse{}, nil, fmt.Errorf("proto: anthropic_messages buffered response empty body")
+	}
+	var resp anthropicBufferedResponse
+	var passthrough proto.PassthroughEnvelope
+	if err := proto.UnmarshalWithExtras(raw, &resp, &passthrough); err != nil {
+		return proto.CanonicalResponse{}, nil, fmt.Errorf("proto: anthropic_messages buffered response json: %w", err)
+	}
+	if resp.Type != "message" {
+		return proto.CanonicalResponse{}, nil, fmt.Errorf("proto: anthropic_messages buffered response type %q is not message", resp.Type)
+	}
+
+	out := proto.CanonicalResponse{
+		ID:         resp.ID,
+		Model:      resp.Model,
+		StopReason: mapStopReason(resp.StopReason),
+	}
+	if resp.StopSequence != nil {
+		out.StopSequence = *resp.StopSequence
+	}
+	if len(passthrough.Extra) > 0 {
+		out.Passthrough = &passthrough
+	}
+
+	var losses []proto.ProtocolLossEntry
+	losses = append(losses, stopLoss(resp.StopReason)...)
+	if resp.Usage == nil {
+		losses = append(losses, anthropicResponseLoss(proto.FeatureCacheBreakpoints, "Anthropic buffered response missing usage; billing metadata preserved as zero-value usage"))
+	} else {
+		out.Usage = resp.Usage.canonical()
+	}
+	if out.Usage.TotalTokens == 0 {
+		out.Usage.TotalTokens = out.Usage.InputTokens + out.Usage.OutputTokens
+	}
+
+	if len(resp.Content) == 0 {
+		losses = append(losses, anthropicResponseLoss(proto.FeatureTextStreaming, "Anthropic buffered response content array is empty; metadata and usage preserved"))
+	}
+	for i, rawBlock := range resp.Content {
+		block, blockLosses := anthropicBufferedBlockToCanonical(i, rawBlock)
+		losses = append(losses, blockLosses...)
+		out.Content = append(out.Content, block)
+	}
+	return out, losses, nil
+}
+
+func (u anthropicBufferedUsage) canonical() proto.CanonicalUsage {
+	// Anthropic input_tokens 按官方契约直接复制：它是上游报告的 input token
+	// 口径；cache_read/cache_creation 是并列维度，HUAKAI 不在 adapter 内自行扣减
+	// cached tokens，避免跨 vendor 二次计算。
+	out := proto.CanonicalUsage{
+		InputTokens:              u.InputTokens,
+		OutputTokens:             u.OutputTokens,
+		CacheReadInputTokens:     u.CacheReadInputTokens,
+		CacheCreationInputTokens: u.CacheCreationInputTokens,
+	}
+	if u.CacheCreation != nil {
+		out.CacheCreationInputTokens5m = u.CacheCreation.Ephemeral5mInputTokens
+		out.CacheCreationInputTokens1h = u.CacheCreation.Ephemeral1hInputTokens
+		if out.CacheCreationInputTokens == 0 {
+			out.CacheCreationInputTokens = out.CacheCreationInputTokens5m + out.CacheCreationInputTokens1h
+		}
+	}
+	out.TotalTokens = out.InputTokens + out.OutputTokens
+	return out
+}
+
+func anthropicBufferedBlockToCanonical(index int, raw json.RawMessage) (proto.CanonicalContentBlock, []proto.ProtocolLossEntry) {
+	rawCopy := append(json.RawMessage(nil), bytes.TrimSpace(raw)...)
+	if len(rawCopy) == 0 || bytes.Equal(rawCopy, []byte("null")) {
+		return proto.CanonicalContentBlock{Type: "empty", Raw: rawCopy}, []proto.ProtocolLossEntry{
+			anthropicResponseLoss(proto.FeatureTextStreaming, "Anthropic buffered response content block is empty"),
+		}
+	}
+	var block anthropicBufferedContentBlock
+	if err := json.Unmarshal(rawCopy, &block); err != nil {
+		return proto.CanonicalContentBlock{Type: "unknown", Raw: rawCopy}, []proto.ProtocolLossEntry{
+			anthropicResponseLoss(proto.FeatureTextStreaming, "Anthropic buffered response content block JSON shape could not be decoded"),
+		}
+	}
+	switch block.Type {
+	case "":
+		return proto.CanonicalContentBlock{Type: "empty", Raw: rawCopy}, []proto.ProtocolLossEntry{
+			anthropicResponseLoss(proto.FeatureTextStreaming, "Anthropic buffered response content block missing type"),
+		}
+	case "text":
+		out := proto.CanonicalContentBlock{Type: "text", Text: block.Text}
+		if anthropicBufferedTextBlockHasExtraFields(rawCopy) {
+			out.Raw = rawCopy
+			return out, []proto.ProtocolLossEntry{
+				anthropicResponseLoss(proto.FeatureTextStreaming, "Anthropic buffered text block has extra fields; preserved original text block as raw canonical content"),
+			}
+		}
+		return out, nil
+	case "tool_use":
+		return anthropicBufferedToolUseBlock(index, block)
+	case "thinking":
+		return proto.CanonicalContentBlock{
+			Type:      "thinking",
+			Thinking:  block.Thinking,
+			Signature: block.Signature,
+			Raw:       rawCopy,
+		}, nil
+	case "redacted_thinking":
+		return proto.CanonicalContentBlock{
+			Type: "redacted_thinking",
+			Data: append(json.RawMessage(nil), block.Data...),
+			Raw:  rawCopy,
+		}, nil
+	default:
+		return proto.CanonicalContentBlock{Type: block.Type, Raw: rawCopy}, []proto.ProtocolLossEntry{
+			anthropicResponseLoss(proto.FeatureTextStreaming, "unknown Anthropic buffered response content block preserved as raw canonical block"),
+		}
+	}
+}
+
+func anthropicBufferedTextBlockHasExtraFields(raw json.RawMessage) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return false
+	}
+	for key := range fields {
+		if key != "type" && key != "text" {
+			return true
+		}
+	}
+	return false
+}
+
+func anthropicBufferedToolUseBlock(index int, block anthropicBufferedContentBlock) (proto.CanonicalContentBlock, []proto.ProtocolLossEntry) {
+	var losses []proto.ProtocolLossEntry
+	callID := ""
+	if block.ID == "" {
+		losses = append(losses, anthropicResponseLoss(proto.FeatureToolUse, "Anthropic tool_use block missing id; generated fallback canonical call_id"))
+		callID = fallbackAnthropicCallID(index, block)
+	} else {
+		var err error
+		callID, err = proto.ToCanonicalCallID(block.ID, proto.UpstreamProtocolAnthropic)
+		if err != nil {
+			losses = append(losses, anthropicResponseLoss(proto.FeatureToolUse, "Anthropic tool_use block id malformed; generated fallback canonical call_id"))
+			callID = fallbackAnthropicCallID(index, block)
+		}
+	}
+	if block.Name == "" {
+		losses = append(losses, anthropicResponseLoss(proto.FeatureToolUse, "Anthropic tool_use block missing name"))
+	}
+	input, inputLosses := normalizeAnthropicToolInput(block.Input)
+	losses = append(losses, inputLosses...)
+	return proto.CanonicalContentBlock{
+		Type:   "tool_use",
+		CallID: callID,
+		Name:   block.Name,
+		Input:  input,
+	}, losses
+}
+
+func normalizeAnthropicToolInput(raw json.RawMessage) (json.RawMessage, []proto.ProtocolLossEntry) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || !json.Valid(trimmed) {
+		return json.RawMessage("{}"), []proto.ProtocolLossEntry{
+			anthropicResponseLoss(proto.FeatureToolUse, "Anthropic tool_use input missing or invalid JSON; normalized to empty object"),
+		}
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &obj); err != nil || obj == nil {
+		return json.RawMessage("{}"), []proto.ProtocolLossEntry{
+			anthropicResponseLoss(proto.FeatureToolUse, "Anthropic tool_use input is not a JSON object; normalized to empty object"),
+		}
+	}
+	return append(json.RawMessage(nil), trimmed...), nil
+}
+
+func fallbackAnthropicCallID(index int, block anthropicBufferedContentBlock) string {
+	sum := sha1.Sum([]byte(fmt.Sprintf("%d|%s|%s|%s", index, block.ID, block.Name, string(block.Input))))
+	return fmt.Sprintf("call_%x", sum[:8])
+}
+
+func anthropicResponseLoss(feature proto.FeatureName, note string) proto.ProtocolLossEntry {
+	return proto.NewLossEntry(feature, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, note)
+}
+
 func (s *Adapter) canonicalDelta(d anthropicDeltaPayload) (*proto.CanonicalContentDelta, []proto.ProtocolLossEntry) {
 	switch d.Type {
 	case "text_delta":
@@ -269,7 +500,8 @@ func (s *Adapter) canonicalDelta(d anthropicDeltaPayload) (*proto.CanonicalConte
 
 func mergeUsage(base, a, b proto.CanonicalUsage) proto.CanonicalUsage {
 	if a.InputTokens != 0 || a.OutputTokens != 0 || a.TotalTokens != 0 ||
-		a.CacheCreationInputTokens != 0 || a.CacheReadInputTokens != 0 {
+		a.CacheCreationInputTokens != 0 || a.CacheReadInputTokens != 0 ||
+		a.CacheCreationInputTokens5m != 0 || a.CacheCreationInputTokens1h != 0 {
 		base = a
 	}
 	if b.InputTokens != 0 {
@@ -286,6 +518,12 @@ func mergeUsage(base, a, b proto.CanonicalUsage) proto.CanonicalUsage {
 	}
 	if b.CacheReadInputTokens != 0 {
 		base.CacheReadInputTokens = b.CacheReadInputTokens
+	}
+	if b.CacheCreationInputTokens5m != 0 {
+		base.CacheCreationInputTokens5m = b.CacheCreationInputTokens5m
+	}
+	if b.CacheCreationInputTokens1h != 0 {
+		base.CacheCreationInputTokens1h = b.CacheCreationInputTokens1h
 	}
 	if base.TotalTokens == 0 {
 		base.TotalTokens = base.InputTokens + base.OutputTokens

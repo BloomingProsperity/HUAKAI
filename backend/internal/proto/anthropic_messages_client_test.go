@@ -387,6 +387,41 @@ func TestAnthropicMessagesClient_D2_HappyPathText(t *testing.T) {
 	}
 }
 
+func TestAnthropicMessagesClient_D2_TextRawBlockPassthrough(t *testing.T) {
+	adapter := &AnthropicMessagesClient{}
+	env := makeAnthropicBufferedEnvelope(
+		[]CanonicalContentBlock{{
+			Type: "text",
+			Text: "answer",
+			Raw:  json.RawMessage(`{"type":"text","text":"answer","citations":[{"type":"char_location","start_char_index":0,"end_char_index":6}],"beta_meta":{"trace":"kept"}}`),
+		}},
+		CanonicalStopEndTurn,
+	)
+	body, losses, err := adapter.CanonicalToClientResponse(context.Background(), env)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(losses) != 0 {
+		t.Fatalf("unexpected losses: %+v", losses)
+	}
+	var out map[string]any
+	if err := jsonUnmarshal(body, &out); err != nil {
+		t.Fatalf("parse output: %v", err)
+	}
+	cnt := out["content"].([]any)
+	first := cnt[0].(map[string]any)
+	if first["type"] != "text" || first["text"] != "answer" {
+		t.Fatalf("content[0]: %+v", first)
+	}
+	if _, ok := first["citations"]; !ok {
+		t.Fatalf("text raw passthrough lost citations: %s", body)
+	}
+	beta, ok := first["beta_meta"].(map[string]any)
+	if !ok || beta["trace"] != "kept" {
+		t.Fatalf("text raw passthrough lost beta_meta: %s", body)
+	}
+}
+
 func TestAnthropicMessagesClient_D2_ToolUseBlock(t *testing.T) {
 	adapter := &AnthropicMessagesClient{}
 	env := makeAnthropicBufferedEnvelope(

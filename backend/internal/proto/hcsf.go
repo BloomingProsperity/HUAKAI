@@ -41,14 +41,22 @@ type CanonicalMessage struct {
 
 // CanonicalContentBlock is the HCSF tagged content union from spec sections 1-3.
 type CanonicalContentBlock struct {
-	Type             string          `json:"type"`
-	Text             string          `json:"text,omitempty"`
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
+	// Thinking 保存 Anthropic buffered thinking block 的可见思考文本。
+	Thinking string `json:"thinking,omitempty"`
+	// Signature 保存 Anthropic thinking signature；只在协议允许路径透传。
+	Signature string `json:"signature,omitempty"`
+	// Data 保存 redacted_thinking 等上游定义的 opaque payload，保持 raw JSON。
+	Data             json.RawMessage `json:"data,omitempty"`
 	CallID           string          `json:"call_id,omitempty"`
 	Name             string          `json:"name,omitempty"`
 	Input            json.RawMessage `json:"input,omitempty"`
 	ToolResult       json.RawMessage `json:"tool_result,omitempty"`
 	Image            json.RawMessage `json:"image,omitempty"`
 	ReasoningSummary string          `json:"reasoning_summary,omitempty"`
+	// Raw 保存 unknown/empty content block 的原始 JSON，避免 silent drop。
+	Raw json.RawMessage `json:"raw,omitempty"`
 }
 
 // CanonicalEvent is the HCSF streaming event union from spec sections 1-3.
@@ -88,6 +96,8 @@ type CanonicalResponse struct {
 	Content    []CanonicalContentBlock `json:"content,omitempty"`
 	Usage      CanonicalUsage          `json:"usage,omitempty"`
 	StopReason CanonicalStopReason     `json:"stop_reason"`
+	// StopSequence 保存 Anthropic stop_sequence 终止串；跨协议投影可选择降级。
+	StopSequence string `json:"stop_sequence,omitempty"`
 
 	Passthrough *PassthroughEnvelope `json:"-"`
 }
@@ -104,10 +114,16 @@ type CanonicalUsage struct {
 	// CacheReadInputTokens: vendor 从已有缓存读出的 prompt token 数（命中）。
 	// 命中率指标分子。
 	CacheReadInputTokens int `json:"cache_read_input_tokens,omitempty"`
+	// CacheCreationInputTokens5m/1h 保存 Anthropic cache_creation TTL 细分。
+	// 它们是 CacheCreationInputTokens 的分项，不参与 TotalTokens 计算。
+	CacheCreationInputTokens5m int `json:"cache_creation_input_tokens_5m,omitempty"`
+	CacheCreationInputTokens1h int `json:"cache_creation_input_tokens_1h,omitempty"`
 }
 
 func UsageHasValue(usage CanonicalUsage) bool {
-	return usage.InputTokens != 0 || usage.OutputTokens != 0 || usage.TotalTokens != 0
+	return usage.InputTokens != 0 || usage.OutputTokens != 0 || usage.TotalTokens != 0 ||
+		usage.CacheCreationInputTokens != 0 || usage.CacheReadInputTokens != 0 ||
+		usage.CacheCreationInputTokens5m != 0 || usage.CacheCreationInputTokens1h != 0
 }
 
 // CanonicalStopReason is the HCSF stop reason enum from spec sections 1-3.
