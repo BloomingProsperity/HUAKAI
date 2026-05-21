@@ -14,13 +14,13 @@ type RequestContext struct {
 // registry.ResolveModel. Populated entirely by the Registry as of N+5b;
 // the legacy PlanInput.ExplicitPoolGroupID escape hatch is gone.
 type ResolvedModel struct {
-	PublicAlias        string   // what the client asked for, e.g. "claude-3-5-sonnet"
-	InternalModelID    string   // canonical id, e.g. "anthropic/claude-3.5-sonnet-20241022"
-	ProviderModelID    string   // upstream provider's id (may differ per provider)
-	ContextWindow      int      // max tokens
-	Capabilities       []string // "stream" / "tools" / "vision" / "json"
-	PricingClass       string   // free-form tag for Phase E pricing-table lookup; not a number
-	ProtocolFamily     string   // "openai_chat" / "anthropic_messages" / etc.
+	PublicAlias     string   // what the client asked for, e.g. "claude-3-5-sonnet"
+	InternalModelID string   // canonical id, e.g. "anthropic/claude-3.5-sonnet-20241022"
+	ProviderModelID string   // upstream provider's id (may differ per provider)
+	ContextWindow   int      // max tokens
+	Capabilities    []string // "stream" / "tools" / "vision" / "json"
+	PricingClass    string   // free-form tag for Phase E pricing-table lookup; not a number
+	ProtocolFamily  string   // "openai_chat" / "anthropic_messages" / etc.
 
 	// PoolCandidates is the ordered list of pool_group_id values the
 	// Registry resolved for this (alias, tenant) pair, sorted by binding
@@ -29,12 +29,28 @@ type ResolvedModel struct {
 	// ExplicitPoolGroupID escape hatch is gone.
 	PoolCandidates []int64
 
+	// PoolMetadata 按 PoolGroupID 对齐可选 binding 元数据。为空时
+	// Router 必须只按 PoolCandidates 顺序规划。
+	PoolMetadata []PoolCandidateMeta
+
 	// SnapshotVersion is the Registry-portion stamp produced by
 	// registry.ResolveModel: "registry:<tenant_id>:<version>". The Router
 	// concatenates its own policy version when writing
 	// RoutePlan.SnapshotVersion. Audit replay reads this back from
 	// usage_records.snapshot_version (added in migration 0008).
 	SnapshotVersion string
+}
+
+// PoolCandidateMeta 表示一个候选 pool 的 binding 级元数据。PR1 只消费
+// ProviderModelID；其他字段先随计划透传，排序仍以 PoolCandidates 的
+// registry 顺序为准。
+type PoolCandidateMeta struct {
+	PoolGroupID     int64
+	Priority        int32
+	Weight          int32
+	SelectionMode   string
+	FallbackClass   string
+	ProviderModelID string
 }
 
 // RequestFeatures expresses what the request actually wants done. Used by
@@ -99,4 +115,8 @@ type AttemptPlan struct {
 	// (e.g. "primary", "fallback_after_5xx", "cheaper_alt"). Recorded
 	// in audit; not enforced.
 	Reason string
+
+	// UpstreamModelID 是本次 pool binding 对应的真实上游 model id。
+	// 同一 public alias 跨 pool failover 时可能不同。
+	UpstreamModelID string
 }

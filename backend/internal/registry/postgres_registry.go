@@ -141,17 +141,18 @@ func (r *PostgresRegistry) ResolveModel(ctx context.Context, publicAlias string,
 	}
 
 	out := Resolved{
-		PublicAlias:      aliasRow.publicAliasDisplay,
-		CanonicalModelID: modelRow.CanonicalID,
-		ProviderModelID:  modelRow.DefaultProviderModelID,
-		ContextWindow:    int(modelRow.DefaultContextWindow),
-		PricingClass:     modelRow.PricingClass,
-		ProtocolFamily:   modelRow.ProtocolFamily,
-		RequestTimeoutMS: int(modelRow.DefaultRequestTimeoutMs),
-		Capabilities:     make([]string, 0, len(caps)),
-		PoolCandidates:   make([]int64, 0, len(bindings)),
-		BindingMetadata:  make([]BindingMetadata, 0, len(bindings)),
-		SnapshotVersion:  fmt.Sprintf("registry:%d:%d", tenantID, version),
+		PublicAlias:            aliasRow.publicAliasDisplay,
+		CanonicalModelID:       modelRow.CanonicalID,
+		DefaultProviderModelID: modelRow.DefaultProviderModelID,
+		ProviderModelID:        modelRow.DefaultProviderModelID,
+		ContextWindow:          int(modelRow.DefaultContextWindow),
+		PricingClass:           modelRow.PricingClass,
+		ProtocolFamily:         modelRow.ProtocolFamily,
+		RequestTimeoutMS:       int(modelRow.DefaultRequestTimeoutMs),
+		Capabilities:           make([]string, 0, len(caps)),
+		PoolCandidates:         make([]int64, 0, len(bindings)),
+		BindingMetadata:        make([]BindingMetadata, 0, len(bindings)),
+		SnapshotVersion:        fmt.Sprintf("registry:%d:%d", tenantID, version),
 	}
 	for _, c := range caps {
 		out.Capabilities = append(out.Capabilities, c.Capability)

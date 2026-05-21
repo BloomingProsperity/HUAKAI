@@ -4,10 +4,8 @@ import (
 	"context"
 )
 
-// DefaultRouter is the L0 minimum implementation. It produces a single-
-// attempt plan from ResolvedModel.PoolCandidates[0]. Slice 5 replaces it
-// with a real planner that enumerates fallback candidates and emits
-// multi-attempt plans against an Executor loop.
+// DefaultRouter 生成 Phase 1 保守路由计划：保留 registry 候选顺序，
+// 将 attempt 上限压到 3，并把账号选择与健康 gate 留给 executor/pool 层。
 type DefaultRouter struct {
 	// SnapshotVersion identifies the Router policy at planning time;
 	// concatenated onto the Registry stamp in plan.SnapshotVersion so
@@ -15,23 +13,31 @@ type DefaultRouter struct {
 	SnapshotVersion string
 }
 
-// NewDefaultRouter returns a Router whose Plan output for any input is a
-// 1-attempt plan against ResolvedModel.PoolCandidates[0]. The Registry
-// (N+5a) is responsible for ordering and filtering the candidate list;
-// Router only takes the head.
+// NewDefaultRouter 返回标准保守 planner。Registry 负责排序/过滤候选，
+// Router 只把该顺序扩展成有界 attempt 序列。
 func NewDefaultRouter() *DefaultRouter {
 	return &DefaultRouter{SnapshotVersion: "v0.1-phase-c"}
 }
 
-// Plan implements Router. The minimum logic:
-//
-//  1. Validate the request has a non-empty RequestID, TenantID, and
-//     ResolvedModel.ProtocolFamily.
-//  2. Read PoolCandidates[0]; if absent return no_eligible_pool.
-//  3. Concatenate Registry's snapshot with Router's policy version onto
-//     RoutePlan.SnapshotVersion.
-//  4. Emit a 1-attempt plan with that pool group + capabilities derived
-//     from Features.
+const (
+	retryableEndClassUpstreamError5xx  = "upstream_error_5xx"
+	retryableEndClassUpstreamRateLimit = "upstream_rate_limit"
+	retryableEndClassFirstTokenTimeout = "first_token_timeout"
+	retryableEndClassInterEventTimeout = "inter_event_timeout"
+)
+
+// retryablePreDeliveryEndClasses 只列出现有 F-GW-002 end_class 中能表达
+// 交付前换号/换池的失败类。inter_event_timeout 纳入这里，是因为 gateway
+// 当前把 network_timeout / upstream_timeout 映射到该 end_class；executor
+// 仍必须用 delivery tracker 禁止已交付后的重试。
+var retryablePreDeliveryEndClasses = []string{
+	retryableEndClassUpstreamError5xx,
+	retryableEndClassUpstreamRateLimit,
+	retryableEndClassFirstTokenTimeout,
+	retryableEndClassInterEventTimeout,
+}
+
+// Plan 实现 Router。
 func (r *DefaultRouter) Plan(_ context.Context, req PlanInput) (RoutePlan, error) {
 	if req.Context.RequestID == "" {
 		return RoutePlan{}, &PlanError{
@@ -52,38 +58,76 @@ func (r *DefaultRouter) Plan(_ context.Context, req PlanInput) (RoutePlan, error
 		}
 	}
 
-	poolGroupID := requestPoolGroupID(req)
-	if poolGroupID == 0 {
+	if len(req.Model.PoolCandidates) == 0 {
 		return RoutePlan{}, &PlanError{
 			Code:    "no_eligible_pool",
 			Message: "ResolvedModel.PoolCandidates is empty; Registry should have surfaced ErrTenantNoAccess upstream",
 		}
 	}
 
+	budget := attemptBudgetForPools(len(req.Model.PoolCandidates))
+	caps := requiredCapabilities(req.Features)
+	metaByPool := poolMetadataByGroup(req.Model.PoolMetadata)
+	seenPools := make(map[int64]struct{}, len(req.Model.PoolCandidates))
+	attempts := make([]AttemptPlan, 0, budget)
+	for i := 0; i < budget; i++ {
+		poolGroupID := req.Model.PoolCandidates[i%len(req.Model.PoolCandidates)]
+		reason := "cross_pool_fallback"
+		if i == 0 {
+			reason = "primary"
+		} else if _, seen := seenPools[poolGroupID]; seen {
+			reason = "same_pool_account_failover"
+		}
+		attempts = append(attempts, AttemptPlan{
+			Index:                i,
+			PoolGroupID:          poolGroupID,
+			RequiredCapabilities: copyStrings(caps),
+			MaxConcurrencyHint:   0,
+			Reason:               reason,
+			UpstreamModelID:      upstreamModelIDForPool(req.Model, metaByPool, poolGroupID),
+		})
+		seenPools[poolGroupID] = struct{}{}
+	}
+
 	return RoutePlan{
-		Attempts: []AttemptPlan{
-			{
-				Index:                0,
-				PoolGroupID:          poolGroupID,
-				RequiredCapabilities: requiredCapabilities(req.Features),
-				MaxConcurrencyHint:   0,
-				Reason:               "primary",
-			},
-		},
-		AttemptBudget:       1,
-		RetryableEndClasses: nil,
+		Attempts:            attempts,
+		AttemptBudget:       budget,
+		RetryableEndClasses: copyStrings(retryablePreDeliveryEndClasses),
 		SnapshotVersion:     stampSnapshot(req.Model.SnapshotVersion, r.SnapshotVersion),
 	}, nil
 }
 
-// requestPoolGroupID resolves the pool group for one Plan input. After
-// N+5b the only carrier is Registry-resolved PoolCandidates[0]; the old
-// ExplicitPoolGroupID escape hatch is removed.
-func requestPoolGroupID(req PlanInput) int64 {
-	if len(req.Model.PoolCandidates) > 0 {
-		return req.Model.PoolCandidates[0]
+func attemptBudgetForPools(poolCount int) int {
+	if poolCount <= 0 {
+		return 0
 	}
-	return 0
+	if poolCount == 1 {
+		return 2
+	}
+	return 3
+}
+
+func poolMetadataByGroup(metadata []PoolCandidateMeta) map[int64]PoolCandidateMeta {
+	if len(metadata) == 0 {
+		return nil
+	}
+	out := make(map[int64]PoolCandidateMeta, len(metadata))
+	for _, meta := range metadata {
+		if meta.PoolGroupID == 0 {
+			continue
+		}
+		if _, exists := out[meta.PoolGroupID]; !exists {
+			out[meta.PoolGroupID] = meta
+		}
+	}
+	return out
+}
+
+func upstreamModelIDForPool(model ResolvedModel, metadata map[int64]PoolCandidateMeta, poolGroupID int64) string {
+	if meta, ok := metadata[poolGroupID]; ok && meta.ProviderModelID != "" {
+		return meta.ProviderModelID
+	}
+	return model.ProviderModelID
 }
 
 // stampSnapshot concatenates the Registry stamp (e.g. "registry:42:7")
@@ -115,6 +159,15 @@ func requiredCapabilities(f RequestFeatures) []string {
 		caps = append(caps, "json")
 	}
 	return caps
+}
+
+func copyStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
 }
 
 // Compile-time assertion that DefaultRouter implements Router.

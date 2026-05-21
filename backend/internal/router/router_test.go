@@ -68,9 +68,9 @@ func TestRouter_Plan_RequiresPoolCandidates(t *testing.T) {
 	}
 }
 
-// TestRouter_Plan_UsesPrimaryCandidate verifies the Router takes the head
-// of PoolCandidates as the single attempt at L0 (AttemptBudget=1).
-func TestRouter_Plan_UsesPrimaryCandidate(t *testing.T) {
+// TestRouter_Plan_UsesRankedCandidates 验证 Router 保留 registry 排序，
+// 并输出有界 multi-attempt plan。
+func TestRouter_Plan_UsesRankedCandidates(t *testing.T) {
 	r := NewDefaultRouter()
 	plan, err := r.Plan(context.Background(), PlanInput{
 		Context:  RequestContext{RequestID: "r-pri", TenantID: 5, APIKeyID: 6, UserID: 7},
@@ -80,26 +80,149 @@ func TestRouter_Plan_UsesPrimaryCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
-	if len(plan.Attempts) != 1 {
-		t.Fatalf("expected 1 attempt; got %d", len(plan.Attempts))
+	if len(plan.Attempts) != 3 {
+		t.Fatalf("expected 3 attempts; got %d", len(plan.Attempts))
 	}
-	if plan.Attempts[0].PoolGroupID != 99 {
-		t.Fatalf("expected PoolGroupID=99 (head of candidates); got %d", plan.Attempts[0].PoolGroupID)
-	}
-	if plan.Attempts[0].Reason != "primary" {
-		t.Fatalf("expected Reason=primary; got %q", plan.Attempts[0].Reason)
+	assertAttempts(t, plan, []wantAttempt{
+		{index: 0, poolGroupID: 99, reason: "primary"},
+		{index: 1, poolGroupID: 100, reason: "cross_pool_fallback"},
+		{index: 2, poolGroupID: 101, reason: "cross_pool_fallback"},
+	})
+	if plan.AttemptBudget != 3 {
+		t.Fatalf("expected AttemptBudget=3; got %d", plan.AttemptBudget)
 	}
 	want := map[string]bool{"stream": true, "tools": true}
-	if len(plan.Attempts[0].RequiredCapabilities) != len(want) {
-		t.Fatalf("RequiredCapabilities mismatch; got %v want %v", plan.Attempts[0].RequiredCapabilities, want)
-	}
-	for _, c := range plan.Attempts[0].RequiredCapabilities {
-		if !want[c] {
-			t.Fatalf("unexpected capability %q in plan; want only stream+tools", c)
+	for i, attempt := range plan.Attempts {
+		if len(attempt.RequiredCapabilities) != len(want) {
+			t.Fatalf("attempt %d RequiredCapabilities mismatch; got %v want %v", i, attempt.RequiredCapabilities, want)
+		}
+		for _, c := range attempt.RequiredCapabilities {
+			if !want[c] {
+				t.Fatalf("attempt %d unexpected capability %q in plan; want only stream+tools", i, c)
+			}
 		}
 	}
-	if plan.AttemptBudget != 1 {
-		t.Fatalf("expected AttemptBudget=1; got %d", plan.AttemptBudget)
+}
+
+func TestRouter_Plan_MetadataAbsentFallsBackToPoolCandidateOrder(t *testing.T) {
+	r := NewDefaultRouter()
+	plan, err := r.Plan(context.Background(), PlanInput{
+		Context: RequestContext{RequestID: "r-meta-missing", TenantID: 5},
+		Model: ResolvedModel{
+			ProtocolFamily:  "openai_chat",
+			ProviderModelID: "default-upstream",
+			PoolCandidates:  []int64{201, 202},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	assertAttempts(t, plan, []wantAttempt{
+		{index: 0, poolGroupID: 201, reason: "primary", upstreamModelID: "default-upstream"},
+		{index: 1, poolGroupID: 202, reason: "cross_pool_fallback", upstreamModelID: "default-upstream"},
+		{index: 2, poolGroupID: 201, reason: "same_pool_account_failover", upstreamModelID: "default-upstream"},
+	})
+	if plan.AttemptBudget != 3 {
+		t.Fatalf("AttemptBudget=%d want 3", plan.AttemptBudget)
+	}
+}
+
+func TestRouter_Plan_SinglePoolAddsSamePoolFailover(t *testing.T) {
+	r := NewDefaultRouter()
+	plan, err := r.Plan(context.Background(), PlanInput{
+		Context: RequestContext{RequestID: "r-single", TenantID: 5},
+		Model:   ResolvedModel{ProtocolFamily: "openai_chat", PoolCandidates: []int64{301}},
+	})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	assertAttempts(t, plan, []wantAttempt{
+		{index: 0, poolGroupID: 301, reason: "primary"},
+		{index: 1, poolGroupID: 301, reason: "same_pool_account_failover"},
+	})
+	if plan.AttemptBudget != 2 {
+		t.Fatalf("AttemptBudget=%d want 2", plan.AttemptBudget)
+	}
+}
+
+func TestRouter_Plan_TruncatesBudgetAtThree(t *testing.T) {
+	r := NewDefaultRouter()
+	plan, err := r.Plan(context.Background(), PlanInput{
+		Context: RequestContext{RequestID: "r-budget", TenantID: 5},
+		Model:   ResolvedModel{ProtocolFamily: "openai_chat", PoolCandidates: []int64{401, 402, 403, 404}},
+	})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	assertAttempts(t, plan, []wantAttempt{
+		{index: 0, poolGroupID: 401, reason: "primary"},
+		{index: 1, poolGroupID: 402, reason: "cross_pool_fallback"},
+		{index: 2, poolGroupID: 403, reason: "cross_pool_fallback"},
+	})
+	if plan.AttemptBudget != 3 {
+		t.Fatalf("AttemptBudget=%d want 3", plan.AttemptBudget)
+	}
+}
+
+func TestRouter_Plan_CarriesPerPoolUpstreamModelOverride(t *testing.T) {
+	r := NewDefaultRouter()
+	plan, err := r.Plan(context.Background(), PlanInput{
+		Context: RequestContext{RequestID: "r-model-override", TenantID: 5},
+		Model: ResolvedModel{
+			ProtocolFamily:  "openai_chat",
+			ProviderModelID: "default-model",
+			PoolCandidates:  []int64{501, 502},
+			PoolMetadata: []PoolCandidateMeta{
+				{PoolGroupID: 501, ProviderModelID: "pool-a-model"},
+				{PoolGroupID: 502, ProviderModelID: "pool-b-model"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	assertAttempts(t, plan, []wantAttempt{
+		{index: 0, poolGroupID: 501, reason: "primary", upstreamModelID: "pool-a-model"},
+		{index: 1, poolGroupID: 502, reason: "cross_pool_fallback", upstreamModelID: "pool-b-model"},
+		{index: 2, poolGroupID: 501, reason: "same_pool_account_failover", upstreamModelID: "pool-a-model"},
+	})
+}
+
+func TestRouter_Plan_RetryableEndClassesMatchPreDeliveryFailures(t *testing.T) {
+	r := NewDefaultRouter()
+	plan, err := r.Plan(context.Background(), PlanInput{
+		Context: RequestContext{RequestID: "r-retryable-classes", TenantID: 5},
+		Model:   ResolvedModel{ProtocolFamily: "openai_chat", PoolCandidates: []int64{601, 602}},
+	})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan.RetryableEndClasses == nil {
+		t.Fatal("RetryableEndClasses must be non-nil for a multi-attempt plan")
+	}
+
+	retryable := make(map[string]bool, len(plan.RetryableEndClasses))
+	for _, endClass := range plan.RetryableEndClasses {
+		retryable[endClass] = true
+	}
+	for _, want := range []string{
+		"upstream_error_5xx",
+		"upstream_rate_limit",
+		"first_token_timeout",
+		"inter_event_timeout",
+	} {
+		if !retryable[want] {
+			t.Fatalf("RetryableEndClasses missing %q; got %v", want, plan.RetryableEndClasses)
+		}
+	}
+	for _, forbidden := range []string{
+		"upstream_auth_failure",
+		"upstream_error_4xx",
+		"response_event_too_large",
+	} {
+		if retryable[forbidden] {
+			t.Fatalf("RetryableEndClasses must not include %q; got %v", forbidden, plan.RetryableEndClasses)
+		}
 	}
 }
 
@@ -146,5 +269,29 @@ func TestRouter_Plan_StampsFallbackOnEmptyRegistryStamp(t *testing.T) {
 	}
 	if !strings.HasPrefix(plan.SnapshotVersion, "registry:unknown;") {
 		t.Fatalf("SnapshotVersion %q should fall back to registry:unknown prefix", plan.SnapshotVersion)
+	}
+}
+
+type wantAttempt struct {
+	index           int
+	poolGroupID     int64
+	reason          string
+	upstreamModelID string
+}
+
+func assertAttempts(t *testing.T, plan RoutePlan, want []wantAttempt) {
+	t.Helper()
+	if len(plan.Attempts) != len(want) {
+		t.Fatalf("attempt len=%d want %d", len(plan.Attempts), len(want))
+	}
+	for i, w := range want {
+		got := plan.Attempts[i]
+		if got.Index != w.index || got.PoolGroupID != w.poolGroupID || got.Reason != w.reason {
+			t.Fatalf("attempt[%d]=Index:%d PoolGroupID:%d Reason:%q; want Index:%d PoolGroupID:%d Reason:%q",
+				i, got.Index, got.PoolGroupID, got.Reason, w.index, w.poolGroupID, w.reason)
+		}
+		if got.UpstreamModelID != w.upstreamModelID {
+			t.Fatalf("attempt[%d].UpstreamModelID=%q want %q", i, got.UpstreamModelID, w.upstreamModelID)
+		}
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
+	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
 
 type recordingClaimGate struct {
@@ -152,6 +153,47 @@ func TestHandler_WaitPlanReturnsQueueWait(t *testing.T) {
 	if settler.abortCalls != 1 || settler.lastAbortClaimID != 999 || settler.lastAbortReason != "queue_wait" {
 		t.Fatalf("abort calls/id/reason=%d/%d/%q; want 1/999/queue_wait",
 			settler.abortCalls, settler.lastAbortClaimID, settler.lastAbortReason)
+	}
+}
+
+func TestRouterResolvedModelFromRegistryMapsPerPoolModelOverrides(t *testing.T) {
+	poolAOverride := "pool-a-upstream"
+	poolBOverride := "pool-b-upstream"
+	resolved := registry.Resolved{
+		PublicAlias:            "gpt-4o",
+		CanonicalModelID:       "openai/gpt-4o",
+		DefaultProviderModelID: "default-upstream",
+		ProviderModelID:        "pool-a-upstream",
+		ContextWindow:          128000,
+		Capabilities:           []string{"stream"},
+		PricingClass:           "standard",
+		ProtocolFamily:         "openai_chat",
+		PoolCandidates:         []int64{701, 702, 703},
+		BindingMetadata: []registry.BindingMetadata{
+			{BindingID: 1, PoolGroupID: 701, Priority: 10, Weight: 5, SelectionMode: "strict_priority", FallbackClass: "normal", ProviderModelIDOverride: &poolAOverride},
+			{BindingID: 2, PoolGroupID: 702, Priority: 20, Weight: 3, SelectionMode: "strict_priority", FallbackClass: "quota", ProviderModelIDOverride: &poolBOverride},
+			{BindingID: 3, PoolGroupID: 703, Priority: 30, Weight: 1, SelectionMode: "strict_priority", FallbackClass: "manual"},
+		},
+		SnapshotVersion: "registry:7:3",
+	}
+
+	got := routerResolvedModelFromRegistry(resolved)
+
+	if got.ProviderModelID != "pool-a-upstream" {
+		t.Fatalf("ProviderModelID=%q want primary override", got.ProviderModelID)
+	}
+	if len(got.PoolMetadata) != 3 {
+		t.Fatalf("PoolMetadata len=%d want 3", len(got.PoolMetadata))
+	}
+	want := []router.PoolCandidateMeta{
+		{PoolGroupID: 701, ProviderModelID: "pool-a-upstream", Priority: 10, Weight: 5, SelectionMode: "strict_priority", FallbackClass: "normal"},
+		{PoolGroupID: 702, ProviderModelID: "pool-b-upstream", Priority: 20, Weight: 3, SelectionMode: "strict_priority", FallbackClass: "quota"},
+		{PoolGroupID: 703, ProviderModelID: "default-upstream", Priority: 30, Weight: 1, SelectionMode: "strict_priority", FallbackClass: "manual"},
+	}
+	for i := range want {
+		if got.PoolMetadata[i] != want[i] {
+			t.Fatalf("PoolMetadata[%d]=%+v want %+v", i, got.PoolMetadata[i], want[i])
+		}
 	}
 }
 
