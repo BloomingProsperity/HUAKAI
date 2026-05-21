@@ -45,6 +45,7 @@ out/
 target/
 .cargo-targets/
 cargo-targets/
+huakai-rust-target/
 .cache/
 .gocache/
 bin/
