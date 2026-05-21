@@ -116,7 +116,20 @@ fn anthropic_error_event_maps_to_upstream_error() {
 }
 
 #[test]
-fn anthropic_bad_json_reports_protocol_error_and_continues() {
+fn anthropic_non_usage_bad_json_is_forwarded_without_protocol_error() {
+    let events = collect(
+        StreamProtocol::Anthropic,
+        &[b"event: content_delta\ndata: {bad-json}\n\n"],
+    );
+
+    assert_eq!(
+        events,
+        vec![StreamEvent::Data(Bytes::from_static(b"{bad-json}"))]
+    );
+}
+
+#[test]
+fn anthropic_usage_bad_json_reports_protocol_error_and_continues() {
     let events = collect(
         StreamProtocol::Anthropic,
         &[b"event: message_delta\ndata: {\"usage\":\n\n\
@@ -199,10 +212,20 @@ fn openai_done_frame_does_not_emit_data() {
 }
 
 #[test]
-fn openai_bad_json_reports_protocol_error_without_stopping_next_frame() {
+fn openai_non_usage_bad_json_is_forwarded_without_protocol_error() {
+    let events = collect(StreamProtocol::OpenAi, &[b"data: {bad-json}\n\n"]);
+
+    assert_eq!(
+        events,
+        vec![StreamEvent::Data(Bytes::from_static(b"{bad-json}"))]
+    );
+}
+
+#[test]
+fn openai_usage_bad_json_reports_protocol_error_without_stopping_next_frame() {
     let events = collect(
         StreamProtocol::OpenAi,
-        &[b"data: {bad-json}\n\ndata: {\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n"],
+        &[b"data: {\"usage\":\n\ndata: {\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n"],
     );
 
     assert!(

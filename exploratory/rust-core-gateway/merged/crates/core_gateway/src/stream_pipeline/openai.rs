@@ -1,4 +1,5 @@
-use serde_json::Value;
+use memchr::memmem;
+use serde::Deserialize;
 
 use crate::stream_pipeline::{
     StreamEvent, UsageDelta,
@@ -60,30 +61,50 @@ impl OpenAiStreamParser {
 }
 
 pub fn extract_usage_from_json_bytes(data: &[u8]) -> Result<Option<UsageDelta>, serde_json::Error> {
-    let value = serde_json::from_slice::<Value>(data)?;
-    Ok(openai_usage(&value))
+    if memmem::find(data, b"usage").is_none() {
+        return Ok(None);
+    }
+
+    let envelope = serde_json::from_slice::<OpenAiUsageEnvelope>(data)?;
+    Ok(envelope.usage.and_then(OpenAiUsageFields::into_delta))
 }
 
-fn openai_usage(value: &Value) -> Option<UsageDelta> {
-    let usage_value = value.get("usage")?;
-    let input_tokens = u64_field(usage_value, "prompt_tokens")
-        .saturating_add(u64_field(usage_value, "input_tokens"));
-    let output_tokens = u64_field(usage_value, "completion_tokens")
-        .saturating_add(u64_field(usage_value, "output_tokens"));
-    let total_tokens =
-        u64_field(usage_value, "total_tokens").max(input_tokens.saturating_add(output_tokens));
-
-    let usage = UsageDelta {
-        input_tokens,
-        output_tokens,
-        total_tokens,
-    };
-
-    (!usage.is_empty()).then_some(usage)
+#[derive(Debug, Deserialize)]
+struct OpenAiUsageEnvelope {
+    #[serde(default)]
+    usage: Option<OpenAiUsageFields>,
 }
 
-fn u64_field(value: &Value, key: &str) -> u64 {
-    value.get(key).and_then(Value::as_u64).unwrap_or(0)
+#[derive(Debug, Deserialize)]
+struct OpenAiUsageFields {
+    #[serde(default)]
+    prompt_tokens: u64,
+    #[serde(default)]
+    input_tokens: u64,
+    #[serde(default)]
+    completion_tokens: u64,
+    #[serde(default)]
+    output_tokens: u64,
+    #[serde(default)]
+    total_tokens: u64,
+}
+
+impl OpenAiUsageFields {
+    fn into_delta(self) -> Option<UsageDelta> {
+        let input_tokens = self.prompt_tokens.saturating_add(self.input_tokens);
+        let output_tokens = self.completion_tokens.saturating_add(self.output_tokens);
+        let total_tokens = self
+            .total_tokens
+            .max(input_tokens.saturating_add(output_tokens));
+
+        let usage = UsageDelta {
+            input_tokens,
+            output_tokens,
+            total_tokens,
+        };
+
+        (!usage.is_empty()).then_some(usage)
+    }
 }
 
 fn trim_ascii(bytes: &[u8]) -> &[u8] {
