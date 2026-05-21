@@ -23,8 +23,9 @@ const REDACTED_SECRET_PATTERN: &str = "[REDACTED_SECRET]";
 /// 判断 header 名称是否需要脱敏 (O(n), n=8 常数极小, 优于 HashSet 构造开销)
 #[inline]
 pub fn is_sensitive_header(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    SENSITIVE_HEADERS.iter().any(|&s| s == lower)
+    SENSITIVE_HEADERS
+        .iter()
+        .any(|sensitive| name.eq_ignore_ascii_case(sensitive))
 }
 
 /// 对 header value 脱敏: 敏感 header 返回 `[REDACTED]`, 否则返回原值。
@@ -239,6 +240,14 @@ mod tests {
         assert!(!is_sensitive_header("accept"));
         assert!(!is_sensitive_header("x-request-id"));
         assert!(!is_sensitive_header("user-agent"));
+    }
+
+    #[test]
+    fn long_non_sensitive_header_name_is_not_sensitive() {
+        let header_name =
+            "x-huakai-long-non-sensitive-routing-diagnostic-header-name-for-observability";
+
+        assert!(!is_sensitive_header(header_name));
     }
 
     #[test]
