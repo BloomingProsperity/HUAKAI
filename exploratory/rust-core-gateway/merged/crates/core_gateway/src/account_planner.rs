@@ -4,7 +4,7 @@
 use std::{
     fmt,
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use bytes::Bytes;
@@ -175,7 +175,7 @@ impl fmt::Debug for PlannedAttempt {
 }
 
 impl AccountPlanner {
-    pub fn new(route_client: RouteClient, _cache_ttl: Duration) -> Self {
+    pub fn new(route_client: RouteClient) -> Self {
         Self {
             inner: Arc::new(AccountPlannerInner { route_client }),
         }

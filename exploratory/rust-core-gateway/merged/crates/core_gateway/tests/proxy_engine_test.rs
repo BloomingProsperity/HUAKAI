@@ -31,7 +31,6 @@ fn client_options() -> RouteClientOptions {
         rpc_timeout: Duration::from_millis(150),
         retry_attempts: 0,
         retry_backoff: Duration::from_millis(5),
-        route_cache_ttl: Duration::ZERO,
         circuit_breaker_failure_threshold: 2,
         circuit_breaker_cooldown: Duration::from_millis(250),
     }
@@ -125,7 +124,7 @@ async fn drain_observations(
 }
 
 #[tokio::test]
-async fn account_planner_extracts_fields_and_ignores_short_ttl_cache() {
+async fn account_planner_extracts_fields_and_intentionally_does_not_cache_route_plan() {
     let upstream = MockUpstream::spawn(MockBehavior::EchoBody).await;
     let mut plan = vendor_plan(
         upstream.endpoint(),
@@ -135,10 +134,7 @@ async fn account_planner_extracts_fields_and_ignores_short_ttl_cache() {
     );
     plan.route_ttl_ms = 1_000;
     let control_plane = MockControlPlane::spawn(plan).await;
-    let planner = AccountPlanner::new(
-        route_client(&control_plane.endpoint()),
-        Duration::from_millis(1_000),
-    );
+    let planner = AccountPlanner::new(route_client(&control_plane.endpoint()));
 
     let mut headers = HeaderMap::new();
     headers.insert("x-tenant-id", HeaderValue::from_static("tenant-cache"));
@@ -157,7 +153,7 @@ async fn account_planner_extracts_fields_and_ignores_short_ttl_cache() {
     let second = planner
         .plan(&headers, GatewayProtocol::AnthropicMessages, &request_id)
         .await
-        .expect("第二次 plan 应命中 planner cache");
+        .expect("第二次 plan 应继续查询 control plane");
 
     assert_eq!(first.account_id, "account-mock-1");
     assert_eq!(
@@ -449,7 +445,7 @@ async fn proxy_stream_tap_extracts_openai_usage_without_changing_body() {
         30_000,
     ))
     .await;
-    let planner = AccountPlanner::new(route_client(&control_plane.endpoint()), Duration::ZERO);
+    let planner = AccountPlanner::new(route_client(&control_plane.endpoint()));
     let request_id = RequestId::from_candidate(Some("tap-openai-rid"));
     let request = Request::builder()
         .method("POST")
@@ -520,7 +516,7 @@ async fn proxy_stream_tap_respects_client_cancel_mid_stream() {
         30_000,
     ))
     .await;
-    let planner = AccountPlanner::new(route_client(&control_plane.endpoint()), Duration::ZERO);
+    let planner = AccountPlanner::new(route_client(&control_plane.endpoint()));
     let request_id = RequestId::from_candidate(Some("tap-cancel-rid"));
     let request = Request::builder()
         .method("POST")

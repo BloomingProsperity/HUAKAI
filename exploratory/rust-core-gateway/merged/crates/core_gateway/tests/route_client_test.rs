@@ -35,7 +35,6 @@ fn client_options() -> RouteClientOptions {
         rpc_timeout: Duration::from_millis(150),
         retry_attempts: 0,
         retry_backoff: Duration::from_millis(5),
-        route_cache_ttl: Duration::ZERO,
         circuit_breaker_failure_threshold: 2,
         circuit_breaker_cooldown: Duration::from_millis(250),
     }
@@ -466,7 +465,7 @@ async fn listener_fail_closed_does_not_echo_sensitive_body() {
 }
 
 #[tokio::test]
-async fn route_cache_default_disabled_queries_control_plane_each_time() {
+async fn route_plan_is_intentionally_not_cached_queries_control_plane_each_time() {
     let mut plan = mock_route_plan("http://127.0.0.1:9");
     plan.route_ttl_ms = 1_000;
     let control_plane = MockControlPlane::spawn(plan).await;
@@ -485,13 +484,11 @@ async fn route_cache_default_disabled_queries_control_plane_each_time() {
 }
 
 #[tokio::test]
-async fn route_cache_ttl_enabled_still_queries_control_plane_each_time() {
+async fn route_plan_ttl_from_control_plane_still_queries_each_time() {
     let mut plan = mock_route_plan("http://127.0.0.1:9");
     plan.route_ttl_ms = 1_000;
     let control_plane = MockControlPlane::spawn(plan).await;
-    let mut options = client_options();
-    options.route_cache_ttl = Duration::from_millis(1_000);
-    let client = route_client(&control_plane.endpoint(), options);
+    let client = route_client(&control_plane.endpoint(), client_options());
 
     client
         .query_route(route_query())

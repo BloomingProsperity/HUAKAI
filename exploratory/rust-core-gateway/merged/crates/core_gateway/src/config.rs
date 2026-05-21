@@ -57,7 +57,7 @@ pub struct StartupConfig {
     pub control_plane_timeout_ms: u64,
     /// route query 失败后的额外重试次数, 默认 1
     pub control_plane_retry_attempts: usize,
-    /// route plan 本地短 TTL cache 的 TTL 上限/开关配置, 传入规划器和 route client
+    /// 兼容旧配置: 路由计划有意不做本地缓存, 因其携带 per-attempt 租约凭据
     pub route_cache_ttl_ms: u64,
     /// circuit breaker 连续失败阈值
     pub control_plane_circuit_breaker_failures: u32,
@@ -525,8 +525,7 @@ mod tests {
         ));
         env.push(("HUAKAI_TRANSPORT_BASELINE".to_owned(), "http".to_owned()));
 
-        let cfg =
-            StartupConfig::from_env_iter(env).expect("::1 endpoint 应允许 HTTP baseline");
+        let cfg = StartupConfig::from_env_iter(env).expect("::1 endpoint 应允许 HTTP baseline");
         assert_eq!(cfg.transport_baseline, TransportBaseline::Http);
     }
 
