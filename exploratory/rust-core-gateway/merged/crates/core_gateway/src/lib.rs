@@ -69,10 +69,7 @@ impl GatewayState {
         log_route_plan_cache_disabled(config.route_cache_ttl_ms);
         let http_client: GatewayHttpClient = build_http_client();
         let route_client = route_client_from_transport_baseline(&config)?;
-        let account_planner = AccountPlanner::new(
-            route_client.clone(),
-            Duration::from_millis(config.route_cache_ttl_ms),
-        );
+        let account_planner = AccountPlanner::new(route_client.clone());
         let attempt_reporter = AttemptReporter::spawn(route_client);
         let proxy_engine =
             ProxyEngine::new_with_attempt_reporter(http_client, attempt_reporter.clone());
@@ -142,7 +139,6 @@ fn route_client_options(config: &StartupConfig) -> RouteClientOptions {
         rpc_timeout: Duration::from_millis(config.control_plane_timeout_ms),
         retry_attempts: config.control_plane_retry_attempts,
         retry_backoff: Duration::from_millis(10),
-        route_cache_ttl: Duration::from_millis(config.route_cache_ttl_ms),
         circuit_breaker_failure_threshold: config.control_plane_circuit_breaker_failures,
         circuit_breaker_cooldown: Duration::from_millis(
             config.control_plane_circuit_breaker_cooldown_ms,

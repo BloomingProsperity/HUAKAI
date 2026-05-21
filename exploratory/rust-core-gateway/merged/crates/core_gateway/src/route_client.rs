@@ -167,7 +167,6 @@ pub struct RouteClientOptions {
     pub rpc_timeout: Duration,
     pub retry_attempts: usize,
     pub retry_backoff: Duration,
-    pub route_cache_ttl: Duration,
     pub circuit_breaker_failure_threshold: u32,
     pub circuit_breaker_cooldown: Duration,
 }
@@ -178,7 +177,6 @@ impl Default for RouteClientOptions {
             rpc_timeout: Duration::from_millis(200),
             retry_attempts: 1,
             retry_backoff: Duration::from_millis(10),
-            route_cache_ttl: Duration::ZERO,
             circuit_breaker_failure_threshold: 5,
             circuit_breaker_cooldown: Duration::from_secs(1),
         }
