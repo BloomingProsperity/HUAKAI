@@ -651,11 +651,11 @@ func TestStreamingIdempotencyReplayAbortsZeroByteForwardError(t *testing.T) {
 	deps.Forwarder.Scanners = scanners
 
 	first := invokeWithIdempotencyKey(t, deps, openAIStreamingRequestBody(), "stream-idem-zero-byte-forward-error")
-	if first.Code != http.StatusOK {
-		t.Fatalf("first status=%d want 200; body=%s", first.Code, first.Body.String())
+	if first.Code != http.StatusBadGateway {
+		t.Fatalf("first status=%d want 502; body=%s", first.Code, first.Body.String())
 	}
-	if first.Body.Len() != 0 {
-		t.Fatalf("first body len=%d want 0; body=%s", first.Body.Len(), first.Body.String())
+	if !strings.Contains(first.Body.String(), "stream_forward_error") {
+		t.Fatalf("first body=%s want stream_forward_error", first.Body.String())
 	}
 	if got := first.Header().Get("X-Huakai-Forward-Error"); got == "" {
 		t.Fatalf("X-Huakai-Forward-Error header empty; fixture must fail before first byte")

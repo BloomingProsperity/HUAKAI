@@ -3,6 +3,7 @@ package gatewayhttp
 import (
 	"fmt"
 	"net/http"
+	"os"
 
 	"github.com/google/uuid"
 
@@ -13,8 +14,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
-
-const pr3EffectiveAttemptBudget = 1
 
 type attemptInput struct {
 	Plan             router.AttemptPlan
@@ -56,7 +55,9 @@ type classifiedAttemptFailure struct {
 	// override-1: 401 的 upstream_auth_failure 不在
 	// RoutePlan.RetryableEndClasses 中，executor 必须同时检查
 	// Decision.CountsAgainstAuthFailoverBudget。
-	Decision gateway.AttemptRetryDecision
+	Decision          gateway.AttemptRetryDecision
+	EndClass          gateway.StreamEndClass
+	RetryAfterSeconds int
 
 	DeliveredToClient bool
 	AbortReason       string
@@ -71,16 +72,99 @@ func classifiedFailureFromDecision(code, message string, classification gateway.
 		Classification: classification,
 		TransportClass: decision.TransportClass,
 		Decision:       decision,
+		EndClass:       endClassFromAttemptFailure(classification, decision),
 		AbortReason:    decision.AbortReason,
 		Cause:          cause,
 	}
 }
 
-func effectiveAttemptBudgetForPR3(plan router.RoutePlan) int {
+func retryableLocalAttemptFailure(status int, code, message, abortReason string, endClass gateway.StreamEndClass, cause error) *classifiedAttemptFailure {
+	failure := classifiedFailureFromDecision(code, message, gateway.Classification{}, gateway.AttemptRetryDecision{
+		RetryableBeforeDelivery: true,
+		SwitchAccount:           true,
+		SwitchPool:              true,
+		ClientStatus:            status,
+		AbortReason:             abortReason,
+	}, cause)
+	failure.EndClass = endClass
+	return failure
+}
+
+func terminalLocalAttemptFailure(status int, code, message, abortReason string, cause error) *classifiedAttemptFailure {
+	return classifiedFailureFromDecision(code, message, gateway.Classification{}, gateway.AttemptRetryDecision{
+		ClientStatus: status,
+		AbortReason:  abortReason,
+	}, cause)
+}
+
+func degradeFailureIfAbortFailed(failure *classifiedAttemptFailure, abortErr error) *classifiedAttemptFailure {
+	if failure == nil || abortErr == nil {
+		return failure
+	}
+	failure.Decision.RetryableBeforeDelivery = false
+	failure.Decision.CountsAgainstAuthFailoverBudget = false
+	failure.Decision.SwitchAccount = false
+	failure.Decision.SwitchPool = false
+	reason := failure.AbortReason
+	if reason == "" {
+		reason = failure.Decision.AbortReason
+	}
+	if reason == "" {
+		reason = "attempt_abort"
+	}
+	// Abort 失败时 claim 可能仍停在 reserving，禁止同一幂等键继续 retry。
+	failure.AbortReason = fmt.Sprintf("%s;abort_failed=%s", reason, abortErr.Error())
+	failure.Decision.AbortReason = failure.AbortReason
+	return failure
+}
+
+func endClassFromAttemptFailure(classification gateway.Classification, decision gateway.AttemptRetryDecision) gateway.StreamEndClass {
+	var draft gateway.UsageRecordDraft
+	gateway.ApplyClassificationToDraft(&draft, classification)
+	if draft.EndClass != "" && draft.EndClass != gateway.UnknownTermination {
+		return draft.EndClass
+	}
+	switch decision.TransportClass {
+	case gateway.TransportErrorConnectTimeout,
+		gateway.TransportErrorNetworkTimeout,
+		gateway.TransportErrorUpstreamHeaderTimeout,
+		gateway.TransportErrorUpstreamBodyIdleTimeout:
+		return gateway.InterEventTimeout
+	case gateway.TransportErrorTLSHandshakeFailed:
+		return gateway.UpstreamError5xx
+	}
+	switch decision.AbortReason {
+	case "upstream_5xx", "upstream_overloaded", "pool_no_capacity",
+		"pool_select_error", "pool_select_no_account", "credential_resolve_error",
+		"upstream_dispatch_error", "upstream_empty_response":
+		return gateway.UpstreamError5xx
+	case "upstream_rate_limited", "queue_wait":
+		return gateway.UpstreamRateLimit
+	case "upstream_timeout", "transport_connect_timeout", "transport_network_timeout",
+		"transport_upstream_header_timeout", "transport_upstream_body_idle_timeout":
+		return gateway.InterEventTimeout
+	}
+	return gateway.UnknownTermination
+}
+
+func effectiveAttemptBudget(plan router.RoutePlan) int {
 	if len(plan.Attempts) == 0 {
 		return 0
 	}
-	return pr3EffectiveAttemptBudget
+	if os.Getenv("HUAKAI_ATTEMPT_RETRY_ENABLED") == "0" {
+		return 1
+	}
+	budget := plan.AttemptBudget
+	if budget <= 0 {
+		budget = len(plan.Attempts)
+	}
+	if budget > len(plan.Attempts) {
+		budget = len(plan.Attempts)
+	}
+	if budget < 1 {
+		return 1
+	}
+	return budget
 }
 
 func (ex *chatExecution) activeAttemptSeq() int {
@@ -100,11 +184,55 @@ func (ex *chatExecution) baseAttemptOutcome() attemptOutcome {
 	}
 }
 
-func shouldContinueAfterAbortedAttemptFailure(failure *classifiedAttemptFailure, finalAttempt bool) bool {
-	return failure != nil &&
-		!failure.DeliveredToClient &&
-		!finalAttempt &&
-		failure.Decision.RetryableBeforeDelivery
+func shouldRetryAttemptFailure(failure *classifiedAttemptFailure, plan router.RoutePlan, replayableBody bool, finalAttempt bool, authFailoverUsed bool) (bool, bool) {
+	if failure == nil || failure.DeliveredToClient || finalAttempt || !replayableBody {
+		return false, false
+	}
+	normalRetry := failure.Decision.RetryableBeforeDelivery && retryableEndClassAllowed(plan.RetryableEndClasses, failure.EndClass)
+	authRetry := failure.Decision.CountsAgainstAuthFailoverBudget && !authFailoverUsed
+	if authRetry {
+		return true, true
+	}
+	if normalRetry {
+		return true, false
+	}
+	return false, false
+}
+
+var retryableAttemptScopedResponseHeaders = [...]string{
+	"Trailer",
+	"Cache-Control",
+	"Connection",
+	"X-HUAKAI-Cache-L2",
+	headerHUAKAIAuditLedgerID,
+	headerHUAKAIAuditVerify,
+	headerHUAKAIAuditSigFingerprint,
+	headerHUAKAIStreamState,
+	headerHUAKAIDeliveredTokens,
+	"X-Huakai-Forward-Error",
+	"X-Huakai-Settle-Error",
+	"X-Huakai-Abort-Failed",
+}
+
+func clearRetryableAttemptFailureHeaders(w http.ResponseWriter) {
+	if w == nil {
+		return
+	}
+	for _, header := range retryableAttemptScopedResponseHeaders {
+		w.Header().Del(header)
+	}
+}
+
+func retryableEndClassAllowed(allowed []string, endClass gateway.StreamEndClass) bool {
+	if endClass == "" {
+		return false
+	}
+	for _, allowedClass := range allowed {
+		if allowedClass == string(endClass) {
+			return true
+		}
+	}
+	return false
 }
 
 func (ex *chatExecution) prepareNextAttemptAfterAbort() {
@@ -122,11 +250,9 @@ func (ex *chatExecution) prepareNextAttemptAfterAbort() {
 	ex.healthKeyOK = false
 }
 
-// markAttemptOutcomeDelivered 把 outcome 标记为「已终结、handler 不再进下一 attempt」。
-// PR3 权宜:交付前失败(选号 / 凭据 / dispatch 失败)也经此函数 —— 因为 PR3
-// budget=1、retry 关闭,「写完错误响应即终止」与重构前行为逐字节一致。
-// PR5 打开 retry 时:交付前的可重试失败必须改为返回带 Decision 的
-// classifiedAttemptFailure,不能再无差别 markDelivered,否则 retry 进不来。
+// markAttemptOutcomeDelivered 只用于已经写入客户端响应或明确不可进入
+// retry/failover 的本地终止路径。交付前的可重试失败必须返回
+// classifiedAttemptFailure，由 handler loop 根据双通道 retry gate 决策。
 func markAttemptOutcomeDelivered(out attemptOutcome) attemptOutcome {
 	out.DeliveryStarted = true
 	if out.Failure == nil {
@@ -141,12 +267,18 @@ func (ex *chatExecution) runAttempt(w http.ResponseWriter, in attemptInput) atte
 	ex.currentAttemptSeq = in.AttemptSeq
 
 	out := ex.baseAttemptOutcome()
-	if !ex.prepareClaimAndAccount(w, in) {
+	if ok, failure := ex.prepareClaimAndAccount(w, in); !ok {
+		out = ex.baseAttemptOutcome()
+		if failure != nil {
+			out.Failure = failure
+			return out
+		}
 		return markAttemptOutcomeDelivered(out)
 	}
-	if !ex.resolveCredential(w) {
+	if failure := ex.resolveCredential(); failure != nil {
 		out = ex.baseAttemptOutcome()
-		return markAttemptOutcomeDelivered(out)
+		out.Failure = failure
+		return out
 	}
 
 	if !ex.req.Stream {
@@ -154,8 +286,10 @@ func (ex *chatExecution) runAttempt(w http.ResponseWriter, in attemptInput) atte
 		// 原有 abort + 501 行为，只是移动到单 attempt 执行体内。
 		if ex.resolved.ProtocolFamily == "anthropic_messages" {
 			if ex.reserveRes != nil {
-				_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID,
-					"buffered_anthropic_not_supported", ex.requestID, 0)
+				if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID,
+					"buffered_anthropic_not_supported", ex.requestID, 0); abortErr != nil {
+					w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+				}
 			}
 			writeJSONError(w, http.StatusNotImplemented, "buffered_anthropic_not_supported",
 				"Anthropic /v1/messages 非流式 (stream:false) 暂未实现; 请设 stream:true 走流式路径")
@@ -207,6 +341,8 @@ func writeAttemptFailure(w http.ResponseWriter, failure *classifiedAttemptFailur
 	}
 	if failure.Classification.RetryAfterMs > 0 {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", (failure.Classification.RetryAfterMs+999)/1000))
+	} else if failure.RetryAfterSeconds > 0 {
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", failure.RetryAfterSeconds))
 	}
 	writeJSONError(w, status, code, message)
 }

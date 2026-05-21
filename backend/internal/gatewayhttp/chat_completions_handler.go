@@ -164,7 +164,8 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			}
 		}
 		failedAccounts := make(map[int64]struct{})
-		budget := effectiveAttemptBudgetForPR3(exec.plan)
+		authFailoverUsed := false
+		budget := effectiveAttemptBudget(exec.plan)
 		for i := 0; i < budget; i++ {
 			outcome := exec.runAttempt(w, attemptInput{
 				Plan:             exec.plan.Attempts[i],
@@ -184,7 +185,12 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 				failedAccounts[outcome.AccountID] = struct{}{}
 			}
 			if outcome.Failure != nil {
-				if shouldContinueAfterAbortedAttemptFailure(outcome.Failure, i+1 >= budget) {
+				retry, consumeAuthBudget := shouldRetryAttemptFailure(outcome.Failure, exec.plan, true, i+1 >= budget, authFailoverUsed)
+				if retry {
+					if consumeAuthBudget {
+						authFailoverUsed = true
+					}
+					clearRetryableAttemptFailureHeaders(w)
 					exec.prepareNextAttemptAfterAbort()
 					continue
 				}
@@ -226,7 +232,7 @@ func protocolAdapterForBuffered(f *gateway.StreamForwarder, protocolFamily strin
 	return adapters.For(protocolFamily)
 }
 
-func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.RequestMetaSeed, seedCtx context.Context, startedAt time.Time) (*proto.HCSF, bool) {
+func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.RequestMetaSeed, seedCtx context.Context, startedAt time.Time) (*proto.HCSF, *classifiedAttemptFailure, bool) {
 	dispatchRes, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
 		ProtocolFamily:  ex.resolved.ProtocolFamily,
 		UpstreamModelID: ex.upstreamModelID,
@@ -235,59 +241,72 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 		Credential:      ex.cred,
 	})
 	if err != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_dispatch_error", ex.requestID, 0)
 		classification, _ := gateway.Classify(0, nil, []byte(err.Error()), ex.accInfo.Platform)
+		decision := gateway.ClassifyAttemptDispatchError(err)
+		if !decision.RetryableBeforeDelivery && decision.TransportClass == gateway.TransportErrorLocalDispatch {
+			decision.ClientStatus = http.StatusBadGateway
+		}
+		if decision.AbortReason == "" {
+			decision.AbortReason = "upstream_dispatch_error"
+		}
+		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, decision.AbortReason, ex.requestID, 0)
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromDispatchError(err, classification), 0, time.Since(startedAt), ex.requestID, nil)
 		}
-		writeNormalizedUpstreamError(w, http.StatusBadGateway, "upstream_dispatch_error", classification)
-		return nil, false
+		failure := classifiedFailureFromDecision("", err.Error(), classification, decision, err)
+		return nil, degradeFailureIfAbortFailed(failure, abortErr), false
 	}
 	if dispatchRes == nil || dispatchRes.UpstreamReader == nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_empty_response", ex.requestID, 0)
+		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_empty_response", ex.requestID, 0)
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, 0, time.Since(startedAt), ex.requestID, nil)
 		}
-		writeJSONError(w, http.StatusBadGateway, "upstream_empty_response", "upstream returned no response body")
-		return nil, false
+		failure := retryableLocalAttemptFailure(http.StatusBadGateway, "upstream_empty_response", "upstream returned no response body", "upstream_empty_response", gateway.UpstreamError5xx, nil)
+		return nil, degradeFailureIfAbortFailed(failure, abortErr), false
 	}
 	defer closeDispatchResult(dispatchRes)
 	raw, readErr := io.ReadAll(io.LimitReader(dispatchRes.UpstreamReader, 1<<20))
 	if readErr != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_read_error", ex.requestID, 0)
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_read_error", ex.requestID, 0); abortErr != nil {
+			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+		}
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, nil)
 		}
 		writeJSONError(w, http.StatusBadGateway, "upstream_read_error", readErr.Error())
-		return nil, false
+		return nil, nil, false
 	}
 	if dispatchRes.StatusCode < 200 || dispatchRes.StatusCode >= 300 {
-		classification, classifyErr := gateway.Classify(dispatchRes.StatusCode, dispatchRes.Headers, raw, ex.accInfo.Platform)
-		abortReason := "upstream_error"
-		if classifyErr == nil && classification.Class != "" {
-			abortReason = "upstream_" + string(classification.Class)
+		decision, classification, classifyErr := gateway.ClassifyAttemptHTTPError(dispatchRes.StatusCode, dispatchRes.Headers, raw, ex.accInfo.Platform)
+		if classifyErr != nil {
+			classification, _ = gateway.Classify(dispatchRes.StatusCode, dispatchRes.Headers, raw, ex.accInfo.Platform)
+			decision = gateway.AttemptRetryDecision{ClientStatus: clientStatusForUpstreamError(dispatchRes.StatusCode, classification.Class), AbortReason: "upstream_error"}
 		}
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, abortReason, ex.requestID, 0)
+		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, decision.AbortReason, ex.requestID, 0)
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromClassification(dispatchRes.StatusCode, classification), dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()))
 		}
-		writeNormalizedUpstreamError(w, clientStatusForUpstreamError(dispatchRes.StatusCode, classification.Class), "upstream_error", classification)
-		return nil, false
+		failure := classifiedFailureFromDecision("", "upstream request failed", classification, decision, nil)
+		return nil, degradeFailureIfAbortFailed(failure, abortErr), false
 	}
 	upstreamAdapter, err := protocolAdapterForBuffered(ex.d.Forwarder, ex.resolved.ProtocolFamily)
 	if err != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_adapter_error", ex.requestID, 0)
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_adapter_error", ex.requestID, 0); abortErr != nil {
+			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+		}
 		writeJSONError(w, http.StatusBadGateway, "upstream_adapter_error", err.Error())
-		return nil, false
+		return nil, nil, false
 	}
 	bufferedEnv, _, err := upstreamAdapter.ProviderResponseToCanonical(seedCtx, raw)
 	if err != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "canonical_response_error", ex.requestID, 0)
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "canonical_response_error", ex.requestID, 0); abortErr != nil {
+			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+		}
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, nil)
 		}
 		writeJSONError(w, http.StatusBadGateway, "canonical_response_error", err.Error())
-		return nil, false
+		return nil, nil, false
 	}
 	if bufferedEnv != nil {
 		_ = seed.ApplyToRequestMeta(&bufferedEnv.RequestMeta)

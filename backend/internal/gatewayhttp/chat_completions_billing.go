@@ -30,13 +30,20 @@ func (ex *chatExecution) handleNonStreamingResponse(w http.ResponseWriter) {
 
 func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attemptOutcome {
 	outcome := ex.baseAttemptOutcome()
-	bufferedEnv, ok := ex.dispatchBufferedEnvelope(w)
+	bufferedEnv, failure, ok := ex.dispatchBufferedEnvelope(w)
 	if !ok {
+		if failure != nil {
+			outcome = ex.baseAttemptOutcome()
+			outcome.Failure = failure
+			return outcome
+		}
 		return markAttemptOutcomeDelivered(outcome)
 	}
 	ledgerEntry, err := submitAuditLedgerEntry(ex.ctx, ex.d, bufferedEnv, ex.ident.TenantID, ex.requestID)
 	if err != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "audit_ledger_error", ex.requestID, 0)
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "audit_ledger_error", ex.requestID, 0); abortErr != nil {
+			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+		}
 		writeJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())
 		return markAttemptOutcomeDelivered(outcome)
 	}
@@ -44,14 +51,18 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 	seedCtx := proto.ContextWithRequestMetaSeed(ex.ctx, seed)
 	clientBody, _, err := ex.clientAdapter.CanonicalToClientResponse(seedCtx, bufferedEnv)
 	if err != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "canonical_response_error", ex.requestID, 0)
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "canonical_response_error", ex.requestID, 0); abortErr != nil {
+			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+		}
 		writeJSONError(w, http.StatusBadGateway, "canonical_response_error", err.Error())
 		return markAttemptOutcomeDelivered(outcome)
 	}
 	cacheEnvelope, cacheEnvelopeOK := encodeL2CacheEnvelope(bufferedEnv)
 	actualCost, err := ex.actualCompletionCost(usageFromBufferedEnvelope(bufferedEnv))
 	if err != nil {
-		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pricing_unavailable", ex.requestID, 0)
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pricing_unavailable", ex.requestID, 0); abortErr != nil {
+			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+		}
 		writeJSONError(w, http.StatusServiceUnavailable, "pricing_unavailable", err.Error())
 		return markAttemptOutcomeDelivered(outcome)
 	}
@@ -78,8 +89,12 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 	// 持久幂等重放: 存原始响应供同 Idempotency-Key 重试路由无关地重放。
 	ex.recordIdempotencyReplay(ex.reserveRes.ClaimID, http.StatusOK, clientBody)
 	if ex.d.ResponseCache != nil && ex.cacheKey != "" && cacheEnvelopeOK {
-		ex.d.ResponseCache.Set(ex.ctx, cacheEntry(ex, clientBody, cacheEnvelope))
-		syncL2SizeMetrics(ex.d.ResponseCache)
+		// retry/failover 可能跨 upstream model 成功；cache 写入必须使用
+		// 实际成功 attempt 的 model，避免把 fallback 响应写进 primary key。
+		if cacheKey, err := ex.l2CacheKeyForModel(ex.upstreamModelID); err == nil {
+			ex.d.ResponseCache.Set(ex.ctx, cacheEntry(ex, cacheKey, clientBody, cacheEnvelope))
+			syncL2SizeMetrics(ex.d.ResponseCache)
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if ex.d.ResponseCache != nil && ex.cacheKey != "" {
