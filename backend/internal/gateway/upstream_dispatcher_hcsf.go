@@ -127,7 +127,7 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: 取 upstream adapter 失败 (protocol=%q): %w", family, err)
 	}
-	responseEnv, _, err := upstreamAdapter.ProviderResponseToCanonical(ctx, raw)
+	responseEnv, respLosses, err := upstreamAdapter.ProviderResponseToCanonical(ctx, raw)
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: ProviderResponseToCanonical 失败: %w", err)
 	}
@@ -141,6 +141,11 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 	}
 	out.BufferedResponse = responseEnv.BufferedResponse
 	out.Accounting.Usage = responseEnv.BufferedResponse.Usage
+	if len(respLosses) > 0 {
+		// 响应侧 adapter 可能记录 usage 缺失、未知 block、tool id 兜底等协议损耗；
+		// 生产 envelope 必须累加这些 loss，不能覆盖请求侧已存在的 loss。
+		out.CapabilityGraph.ProtocolLoss = append(out.CapabilityGraph.ProtocolLoss, respLosses...)
+	}
 	fillUpstreamReported(out)
 	return out, nil
 }

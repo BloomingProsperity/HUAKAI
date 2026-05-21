@@ -15,6 +15,15 @@ import (
 
 const openAIHCSFResponse = `{"id":"chatcmpl-hcsf","object":"chat.completion","model":"gpt-4o-upstream","choices":[{"index":0,"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}`
 
+const anthropicLossyHCSFResponse = `{
+	"id":"msg_loss",
+	"type":"message",
+	"role":"assistant",
+	"model":"claude-3-5-sonnet",
+	"content":[{},{"type":"future_block","payload":{"x":1}}],
+	"stop_reason":"mystery_stop"
+}`
+
 func testHCSFEnvelope() *proto.HCSF {
 	env := proto.NewEmptyEnvelope()
 	env.RequestMeta.ProtocolFamily = "openai_chat"
@@ -40,6 +49,15 @@ func testHCSFEnvelope() *proto.HCSF {
 
 func hcsfCtx() context.Context {
 	return gatewayHCSFCtx(context.Background())
+}
+
+func anthropicHCSFCtx() context.Context {
+	return ContextWithHCSFDispatchInput(context.Background(), HCSFDispatchInput{
+		ProtocolFamily:  "anthropic_messages",
+		UpstreamModelID: "claude-3-5-sonnet",
+		Account:         provider.AccountInfo{AccountID: 9, Platform: "anthropic", AccountType: "apikey"},
+		Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-ant-test"},
+	})
 }
 
 func gatewayHCSFCtx(ctx context.Context) context.Context {
@@ -117,6 +135,55 @@ func TestDispatchHCSFUnregisteredUpstreamAdapterFailsLoud(t *testing.T) {
 	if !errors.Is(err, ErrUnknownProtocolFamily) {
 		t.Fatalf("err=%v want ErrUnknownProtocolFamily", err)
 	}
+}
+
+func TestDispatchHCSFAppendsResponseProtocolLoss(t *testing.T) {
+	env := testHCSFEnvelope()
+	env.RequestMeta.ProtocolFamily = "anthropic_messages"
+	env.RequestMeta.EndpointFamily = "anthropic_messages"
+	env.RequestMeta.Model = "claude-3-5-sonnet"
+	env.RequestMeta.UpstreamModel = "claude-3-5-sonnet"
+	env.RequestMeta.Provider = "anthropic"
+	env.Accounting.ModelChain = &proto.ModelChain{Requested: "claude-3-5-sonnet", RouteDecided: "claude-3-5-sonnet"}
+	env.CapabilityGraph.ProtocolLoss = []proto.ProtocolLossEntry{{
+		Severity: proto.ProtocolLossWarning,
+		Code:     "request_side_loss",
+		Reason:   "request-side loss must stay on cloned envelope",
+	}}
+
+	d := newDispatcherForTest(&stubAdapter{platform: "anthropic"}, &stubDoer{respStatus: 200, respBody: anthropicLossyHCSFResponse})
+	got, err := d.DispatchHCSF(anthropicHCSFCtx(), env)
+	if err != nil {
+		t.Fatalf("DispatchHCSF: %v", err)
+	}
+	losses := got.CapabilityGraph.ProtocolLoss
+	if !hasProtocolLossCode(losses, "request_side_loss") {
+		t.Fatalf("request-side loss was not preserved: %+v", losses)
+	}
+	if !hasProtocolLossNote(losses, "missing usage") {
+		t.Fatalf("response-side adapter loss was not appended: %+v", losses)
+	}
+	if len(losses) < 2 {
+		t.Fatalf("losses=%+v want request and response losses", losses)
+	}
+}
+
+func hasProtocolLossCode(losses []proto.ProtocolLossEntry, code string) bool {
+	for _, loss := range losses {
+		if loss.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+func hasProtocolLossNote(losses []proto.ProtocolLossEntry, needle string) bool {
+	for _, loss := range losses {
+		if strings.Contains(loss.Note, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 type envelopeBuilderStub struct {

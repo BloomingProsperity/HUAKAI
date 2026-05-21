@@ -63,6 +63,23 @@ func rawJSONString(raw json.RawMessage) string {
 	return string(raw)
 }
 
+func isAnthropicRequestThinkingControl(n proto.CapabilityNode) bool {
+	return n.Source != nil && n.Source.RequestField == "thinking"
+}
+
+func anthropicRequestThinkingControl(env *proto.HCSF, n proto.CapabilityNode) (map[string]any, bool) {
+	if n.Thinking == nil {
+		addMarshalLoss(env, "anthropic_messages", n, "thinking request control node missing payload", "missing_thinking_payload")
+		return nil, false
+	}
+	if n.Thinking.BudgetTokens <= 0 {
+		addMarshalLoss(env, "anthropic_messages", n, "thinking request control missing budget_tokens", "missing_thinking_budget_tokens")
+		return nil, false
+	}
+	// RequestToCanonical 只为顶层 thinking.type=enabled 建此节点。
+	return map[string]any{"type": "enabled", "budget_tokens": n.Thinking.BudgetTokens}, true
+}
+
 func marshalAnthropicMessages(env *proto.HCSF) ([]byte, error) {
 	body := map[string]any{"model": hcsfModel(env), "messages": []any{}, "stream": false}
 	cache := cacheTargets(env)
@@ -118,6 +135,12 @@ func marshalAnthropicMessages(env *proto.HCSF) ([]byte, error) {
 				appendMsg("user", withCache(block, n.ID, cache, applied))
 			}
 		case proto.CapabilityThinking:
+			if isAnthropicRequestThinkingControl(n) {
+				if thinking, ok := anthropicRequestThinkingControl(env, n); ok {
+					body["thinking"] = thinking
+				}
+				continue
+			}
 			for _, b := range thinkingBlocks(n.Thinking) {
 				appendMsg("assistant", withCache(map[string]any{"type": "thinking", "thinking": b.Text}, n.ID, cache, applied))
 			}

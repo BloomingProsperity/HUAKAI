@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -28,6 +29,26 @@ func graphEnv(nodes ...proto.CapabilityNode) *proto.HCSF {
 	return env
 }
 
+func anthropicRequestEnv(t *testing.T, raw string) *proto.HCSF {
+	t.Helper()
+	adapter := &proto.AnthropicMessagesClient{}
+	ctx := proto.ContextWithRequestMetaSeed(context.Background(), proto.RequestMetaSeed{
+		RequestID:      "req_gateway_marshal",
+		ClientProtocol: proto.ClientProtocolAnthropicMessages,
+		ProtocolFamily: "anthropic",
+		IngressPath:    "/v1/messages",
+		EvidenceLabel:  proto.EvidenceMock,
+	})
+	env, losses, err := adapter.RequestToCanonical(ctx, []byte(raw))
+	if err != nil {
+		t.Fatalf("RequestToCanonical: %v", err)
+	}
+	if len(losses) != 0 {
+		t.Fatalf("unexpected RequestToCanonical losses: %+v", losses)
+	}
+	return env
+}
+
 func textNode(id, role, text string) proto.CapabilityNode {
 	return proto.CapabilityNode{ID: id, Kind: proto.CapabilityText, StreamReady: proto.StreamReadyYes, Text: &proto.TextNode{Role: role, Block: proto.CanonicalContentBlock{Type: "text", Text: text}}}
 }
@@ -46,6 +67,13 @@ func imageNode() proto.CapabilityNode {
 
 func thinkingNode() proto.CapabilityNode {
 	return proto.CapabilityNode{ID: "n_thinking_1", Kind: proto.CapabilityThinking, StreamReady: proto.StreamReadyPartial, Thinking: &proto.ThinkingNode{Redaction: proto.RedactionPublic, Blocks: []proto.CanonicalContentBlock{{Type: "text", Text: "visible thought"}}}}
+}
+
+func assistantThinkingNode() proto.CapabilityNode {
+	mi, bi := 1, 0
+	node := thinkingNode()
+	node.Source = &proto.NodeSourceRef{MessageIndex: &mi, BlockIndex: &bi}
+	return node
 }
 
 func cacheNode(ref string) proto.CapabilityNode {
@@ -162,6 +190,52 @@ func TestMarshalThinkingFamilyBehavior(t *testing.T) {
 	responses := marshalBody(t, graphEnv(thinkingNode()), "openai_responses")
 	if responseInput0(responses)["type"] != "reasoning" {
 		t.Fatalf("responses thinking = %+v", responses)
+	}
+}
+
+func TestMarshalAnthropicMessagesPreservesTopLevelThinkingControl(t *testing.T) {
+	env := anthropicRequestEnv(t, `{
+		"model":"claude-3-5-sonnet-20241022",
+		"max_tokens":4096,
+		"thinking":{"type":"enabled","budget_tokens":2048},
+		"messages":[{"role":"user","content":"hi"}]
+	}`)
+	body := marshalBody(t, env, "anthropic_messages")
+	thinking, ok := body["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing top-level thinking control: %+v", body)
+	}
+	if thinking["type"] != "enabled" || thinking["budget_tokens"].(float64) != 2048 {
+		t.Fatalf("thinking control mismatch: %+v", thinking)
+	}
+	if len(body["messages"].([]any)) != 1 || content0(msg0(body))["text"] != "hi" {
+		t.Fatalf("message projection changed while preserving thinking: %+v", body)
+	}
+}
+
+func TestMarshalAnthropicMessagesOmitsThinkingWhenRequestHasNone(t *testing.T) {
+	env := anthropicRequestEnv(t, `{
+		"model":"claude-3-5-sonnet-20241022",
+		"max_tokens":4096,
+		"messages":[{"role":"user","content":"hi"}]
+	}`)
+	body := marshalBody(t, env, "anthropic_messages")
+	if _, ok := body["thinking"]; ok {
+		t.Fatalf("unexpected top-level thinking control: %+v", body)
+	}
+	if len(body["messages"].([]any)) != 1 || content0(msg0(body))["text"] != "hi" {
+		t.Fatalf("message projection changed without thinking: %+v", body)
+	}
+}
+
+func TestMarshalAnthropicMessagesAssistantThinkingRemainsContentBlock(t *testing.T) {
+	body := marshalBody(t, graphEnv(assistantThinkingNode()), "anthropic_messages")
+	if _, ok := body["thinking"]; ok {
+		t.Fatalf("assistant thinking content block must not become top-level thinking: %+v", body)
+	}
+	block := content0(msg0(body))
+	if block["type"] != "thinking" || block["thinking"] != "visible thought" {
+		t.Fatalf("assistant thinking block mismatch: %+v", body)
 	}
 }
 
