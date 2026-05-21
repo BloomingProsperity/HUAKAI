@@ -22,15 +22,23 @@ import (
 )
 
 func (ex *chatExecution) handleNonStreamingResponse(w http.ResponseWriter) {
+	outcome := ex.executeNonStreamingAttempt(w)
+	if outcome.Success != nil {
+		writeAttemptSuccess(w, outcome)
+	}
+}
+
+func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attemptOutcome {
+	outcome := ex.baseAttemptOutcome()
 	bufferedEnv, ok := ex.dispatchBufferedEnvelope(w)
 	if !ok {
-		return
+		return markAttemptOutcomeDelivered(outcome)
 	}
 	ledgerEntry, err := submitAuditLedgerEntry(ex.ctx, ex.d, bufferedEnv, ex.ident.TenantID, ex.requestID)
 	if err != nil {
 		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "audit_ledger_error", ex.requestID, 0)
 		writeJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())
-		return
+		return markAttemptOutcomeDelivered(outcome)
 	}
 	seed := requestMetaSeed(ex.r, ex.ident, ex.clientProtocol, ex.resolved.ProtocolFamily, ex.routeID, ex.requestID, ex.acquiredAccountID, ex.acquisitionToken)
 	seedCtx := proto.ContextWithRequestMetaSeed(ex.ctx, seed)
@@ -38,14 +46,14 @@ func (ex *chatExecution) handleNonStreamingResponse(w http.ResponseWriter) {
 	if err != nil {
 		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "canonical_response_error", ex.requestID, 0)
 		writeJSONError(w, http.StatusBadGateway, "canonical_response_error", err.Error())
-		return
+		return markAttemptOutcomeDelivered(outcome)
 	}
 	cacheEnvelope, cacheEnvelopeOK := encodeL2CacheEnvelope(bufferedEnv)
 	actualCost, err := ex.actualCompletionCost(usageFromBufferedEnvelope(bufferedEnv))
 	if err != nil {
 		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pricing_unavailable", ex.requestID, 0)
 		writeJSONError(w, http.StatusServiceUnavailable, "pricing_unavailable", err.Error())
-		return
+		return markAttemptOutcomeDelivered(outcome)
 	}
 	settleReq := ex.nonStreamingSettleRequest(bufferedEnv, actualCost, ex.selRes.RoutingReasonJSON)
 	if _, err := settleCompletion(ex.ctx, ex.d, eventbus.RequestCompletionEvent{
@@ -65,7 +73,7 @@ func (ex *chatExecution) handleNonStreamingResponse(w http.ResponseWriter) {
 		SettleRequest:             settleReq,
 	}); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "settle_error", err.Error())
-		return
+		return markAttemptOutcomeDelivered(outcome)
 	}
 	// 持久幂等重放: 存原始响应供同 Idempotency-Key 重试路由无关地重放。
 	ex.recordIdempotencyReplay(ex.reserveRes.ClaimID, http.StatusOK, clientBody)
@@ -78,8 +86,12 @@ func (ex *chatExecution) handleNonStreamingResponse(w http.ResponseWriter) {
 		w.Header().Set("X-HUAKAI-Cache-L2", "miss")
 	}
 	WriteHuakaiHeaders(w.Header(), ex.req.Model, bufferedEnv, ledgerEntry)
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(clientBody)
+	outcome = ex.baseAttemptOutcome()
+	outcome.Success = &attemptSuccess{
+		StatusCode: http.StatusOK,
+		Body:       clientBody,
+	}
+	return outcome
 }
 
 func (ex *chatExecution) nonStreamingSettleRequest(env *proto.HCSF, actualCost decimal.Decimal, routingReason []byte) billing.SettleRequest {
@@ -91,7 +103,7 @@ func (ex *chatExecution) nonStreamingSettleRequest(env *proto.HCSF, actualCost d
 		APIKeyID:          ex.ident.APIKeyID,
 		UserID:            ex.ident.UserID,
 		ProviderAccountID: ex.acquiredAccountID,
-		AttemptSeq:        1,
+		AttemptSeq:        int32(ex.activeAttemptSeq()),
 		RequestedModel:    ex.req.Model,
 		UpstreamModel:     ex.upstreamModelID,
 		Provider:          ex.cacheVendor,

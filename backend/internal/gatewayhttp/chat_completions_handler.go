@@ -87,10 +87,11 @@ type chatExecution struct {
 	clientAdapter  proto.ClientAdapter
 	requestID      string
 
-	resolved registry.Resolved
-	plan     router.RoutePlan
-	attempt  router.AttemptPlan
-	routeID  string
+	resolved          registry.Resolved
+	plan              router.RoutePlan
+	attempt           router.AttemptPlan
+	routeID           string
+	currentAttemptSeq int
 
 	idempotencyHeader                string
 	logicalRequestID                 string
@@ -162,37 +163,31 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 				return
 			}
 		}
-		if !exec.prepareClaimAndAccount(w) {
-			return
-		}
-		if !exec.resolveCredential(w) {
-			return
-		}
-		if !exec.req.Stream {
-			// anthropic_messages adapter
-			// ProviderResponseToCanonical 仍是 ErrNotImplemented stub, 走非流式
-			// 会先扣上游账号, 解析时 502 — 客户端拿 502 但额度已花。
-			// buffered 翻译器实现前 fail-fast 拒 (501 Not Implemented), 让客户端
-			// 改 stream:true 或选 OpenAI 协议路径。
-			//
-			// 注意: 这步走到时已经 prepareClaimAndAccount + resolveCredential 完,
-			// 即 ClaimGate.Reserve 已记 claim, pool slot 已 acquire。reject 不 abort
-			// 会让 claim 永远停在 reserving + slot 留 acquired, 反复打反复占, 把 pool
-			// 容量打空。所以必须先 Settler.Abort
-			// 再 writeJSONError 退出。
-			if exec.resolved.ProtocolFamily == "anthropic_messages" {
-				if exec.reserveRes != nil {
-					_ = exec.d.Settler.Abort(exec.ctx, exec.ident.TenantID, exec.reserveRes.ClaimID,
-						"buffered_anthropic_not_supported", exec.requestID, 0)
-				}
-				writeJSONError(w, http.StatusNotImplemented, "buffered_anthropic_not_supported",
-					"Anthropic /v1/messages 非流式 (stream:false) 暂未实现; 请设 stream:true 走流式路径")
+		failedAccounts := make(map[int64]struct{})
+		budget := effectiveAttemptBudgetForPR3(exec.plan)
+		for i := 0; i < budget; i++ {
+			outcome := exec.runAttempt(w, attemptInput{
+				Plan:             exec.plan.Attempts[i],
+				AttemptSeq:       i + 1,
+				ExcludedAccounts: failedAccounts,
+				ReplayableBody:   true,
+				FinalAttempt:     i+1 >= budget,
+			})
+			if outcome.Success != nil {
+				writeAttemptSuccess(w, outcome)
 				return
 			}
-			exec.handleNonStreamingResponse(w)
-			return
+			if outcome.DeliveryStarted || (outcome.Failure != nil && outcome.Failure.DeliveredToClient) {
+				return
+			}
+			if outcome.AccountID != 0 && outcome.Failure != nil && outcome.Failure.Decision.SwitchAccount {
+				failedAccounts[outcome.AccountID] = struct{}{}
+			}
+			if outcome.Failure != nil {
+				writeAttemptFailure(w, outcome.Failure)
+				return
+			}
 		}
-		exec.handleStreamingResponse(w)
 	}
 }
 

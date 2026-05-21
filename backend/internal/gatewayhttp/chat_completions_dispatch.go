@@ -137,11 +137,11 @@ func (ex *chatExecution) activateRouteAttempt(attempt router.AttemptPlan) {
 	}
 }
 
-func (ex *chatExecution) prepareClaimAndAccount(w http.ResponseWriter) bool {
+func (ex *chatExecution) prepareClaimAndAccount(w http.ResponseWriter, in attemptInput) bool {
 	if ex.reserveRes == nil && !ex.reserveClaim(w) {
 		return false
 	}
-	return ex.selectPoolAccount(w)
+	return ex.selectPoolAccount(w, in)
 }
 
 func (ex *chatExecution) reserveClaim(w http.ResponseWriter) bool {
@@ -194,21 +194,30 @@ func (ex *chatExecution) reserveClaim(w http.ResponseWriter) bool {
 	return true
 }
 
-func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter) bool {
+func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInput) bool {
 	// 同一 prompt prefix 固定到同一账号，提高 vendor prompt cache 命中率。
 	ex.promptHash = cache_routing.ComputePromptHash(ex.body)
+	attemptSeq := in.AttemptSeq
+	if attemptSeq <= 0 {
+		attemptSeq = ex.activeAttemptSeq()
+	}
+	excludedAccounts := in.ExcludedAccounts
+	if excludedAccounts == nil {
+		excludedAccounts = map[int64]struct{}{}
+	}
 	selRes, err := ex.d.Selector.Select(ex.ctx, pool.SelectionRequest{
-		TenantID:        ex.ident.TenantID,
-		UserID:          ex.ident.UserID,
-		APIKeyID:        ex.ident.APIKeyID,
-		PoolGroupID:     ex.attempt.PoolGroupID,
-		RequestedModel:  ex.req.Model,
-		EndpointFamily:  ex.d.effectiveEndpointFamily(),
-		ClaimID:         ex.reserveRes.ClaimID,
-		AttemptSeq:      1,
-		CapabilityFlags: ex.attempt.RequiredCapabilities,
-		SessionHash:     ex.promptHash,
-		Vendor:          pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily),
+		TenantID:         ex.ident.TenantID,
+		UserID:           ex.ident.UserID,
+		APIKeyID:         ex.ident.APIKeyID,
+		PoolGroupID:      ex.attempt.PoolGroupID,
+		RequestedModel:   ex.req.Model,
+		EndpointFamily:   ex.d.effectiveEndpointFamily(),
+		ClaimID:          ex.reserveRes.ClaimID,
+		AttemptSeq:       attemptSeq,
+		ExcludedAccounts: excludedAccounts,
+		CapabilityFlags:  ex.attempt.RequiredCapabilities,
+		SessionHash:      ex.promptHash,
+		Vendor:           pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily),
 	})
 	if errors.Is(err, pool.ErrNoEligibleAccount) || errors.Is(err, pool.ErrNoSlotAvailable) || errors.Is(err, pool.ErrAllChannelsDegraded) {
 		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pool_no_capacity", ex.requestID, 0); abortErr != nil {
