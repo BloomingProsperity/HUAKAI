@@ -13,6 +13,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
 
 type recordingSettler struct {
@@ -148,6 +149,56 @@ func TestChatCompletionsL2CacheTenantIsolation(t *testing.T) {
 	}
 	if dispatcher.calls != 2 {
 		t.Fatalf("dispatcher calls=%d want 2 for tenant-isolated miss", dispatcher.calls)
+	}
+}
+
+func TestChatCompletionsFallbackSuccessDoesNotPoisonPrimaryModelCacheKey(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	store := l2cache.NewMemoryStore(1<<20, time.Minute)
+	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
+
+	firstDispatcher := &pr5CanonicalSequenceDispatcher{
+		steps: []pr5CanonicalStep{
+			{status: http.StatusInternalServerError, body: `{"error":"primary failed"}`},
+			{successText: "fallback model response"},
+		},
+	}
+	firstDeps := pr5NonStreamDeps(t, newPR5Selector(t, 1201, 1202), &pr5ClaimGate{claimID: 88201}, &recordingSettler{}, firstDispatcher)
+	firstDeps.ResponseCache = store
+	firstDeps.Router = stubRouter{plan: pr5RoutePlan(
+		router.AttemptPlan{Index: 0, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "primary"},
+		router.AttemptPlan{Index: 1, PoolGroupID: 42, UpstreamModelID: "gpt-4o-mini", Reason: "model_fallback"},
+	)}
+
+	first := invokeHandlerPath(t, firstDeps, "/v1/chat/completions", body)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status=%d body=%s; want fallback success", first.Code, first.Body.String())
+	}
+	if firstDispatcher.calls != 2 {
+		t.Fatalf("first dispatcher calls=%d want 2", firstDispatcher.calls)
+	}
+
+	secondDispatcher := &pr5CanonicalSequenceDispatcher{
+		steps: []pr5CanonicalStep{{successText: "fresh primary response"}},
+	}
+	secondDeps := pr5NonStreamDeps(t, newPR5Selector(t, 1203), &pr5ClaimGate{claimID: 88202}, &recordingSettler{}, secondDispatcher)
+	secondDeps.ResponseCache = store
+	secondDeps.Router = stubRouter{plan: pr5RoutePlan(
+		router.AttemptPlan{Index: 0, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "primary"},
+	)}
+
+	second := invokeHandlerPath(t, secondDeps, "/v1/chat/completions", body)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status=%d body=%s; want fresh primary success", second.Code, second.Body.String())
+	}
+	if got := second.Header().Get("X-HUAKAI-Cache-L2"); got != "miss" {
+		t.Fatalf("second cache header=%q want miss; fallback response must not be stored under primary model key", got)
+	}
+	if secondDispatcher.calls != 1 {
+		t.Fatalf("second dispatcher calls=%d want 1; primary model cache key must not be poisoned", secondDispatcher.calls)
+	}
+	if strings.Contains(second.Body.String(), "fallback model response") {
+		t.Fatalf("second body reused fallback response under primary key: %s", second.Body.String())
 	}
 }
 

@@ -165,7 +165,9 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 	if in.ReserveResult == nil || in.AccountID == 0 {
 		if err != nil {
 			if in.ReserveResult != nil {
-				_ = d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error", in.RequestID, 0)
+				if abortErr := d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error", in.RequestID, 0); abortErr != nil {
+					w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+				}
 			}
 			writeJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())
 			return true
@@ -202,7 +204,9 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		return true
 	}
 	if err != nil {
-		_ = d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error", in.RequestID, 0)
+		if abortErr := d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error", in.RequestID, 0); abortErr != nil {
+			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+		}
 		writeJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())
 		return true
 	}
@@ -255,9 +259,9 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 	return true
 }
 
-func cacheEntry(ex *chatExecution, clientBody, cacheEnvelope []byte) l2cache.Entry {
+func cacheEntry(ex *chatExecution, cacheKey string, clientBody, cacheEnvelope []byte) l2cache.Entry {
 	return l2cache.Entry{
-		Key:      ex.cacheKey,
+		Key:      cacheKey,
 		TenantID: ex.ident.TenantID,
 		Vendor:   ex.cacheVendor,
 		Model:    ex.upstreamModelID,

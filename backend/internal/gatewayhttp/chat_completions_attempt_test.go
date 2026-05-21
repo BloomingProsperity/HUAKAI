@@ -11,25 +11,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 )
 
-func TestPR4ShouldContinueAfterAbortedAttemptFailure(t *testing.T) {
-	failure := &classifiedAttemptFailure{
-		Decision: gateway.AttemptRetryDecision{
-			RetryableBeforeDelivery: true,
-			AbortReason:             "upstream_5xx",
-		},
-	}
-	if !shouldContinueAfterAbortedAttemptFailure(failure, false) {
-		t.Fatal("retryable pre-delivery failure on non-final attempt should continue")
-	}
-	if shouldContinueAfterAbortedAttemptFailure(failure, true) {
-		t.Fatal("final attempt failure must be returned to client")
-	}
-	failure.Decision.RetryableBeforeDelivery = false
-	if shouldContinueAfterAbortedAttemptFailure(failure, false) {
-		t.Fatal("non-retryable failure must be returned to client")
-	}
-}
-
 func TestPR4RetryKeepsGeneratedLogicalRequestIDStable(t *testing.T) {
 	ex := &chatExecution{
 		r:    httptest.NewRequest("POST", "/v1/chat/completions", nil),
@@ -46,6 +27,15 @@ func TestPR4RetryKeepsGeneratedLogicalRequestIDStable(t *testing.T) {
 
 	if ex.logicalRequestID != first {
 		t.Fatalf("logical request id changed across attempts: first=%s second=%s", first, ex.logicalRequestID)
+	}
+}
+
+func TestPR5EndClassFallsThroughUnknownClassificationToTransportClass(t *testing.T) {
+	got := endClassFromAttemptFailure(gateway.Classification{}, gateway.AttemptRetryDecision{
+		TransportClass: gateway.TransportErrorConnectTimeout,
+	})
+	if got != gateway.InterEventTimeout {
+		t.Fatalf("EndClass=%q want %q for connect timeout", got, gateway.InterEventTimeout)
 	}
 }
 

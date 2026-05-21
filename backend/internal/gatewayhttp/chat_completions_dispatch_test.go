@@ -156,7 +156,7 @@ func TestHandler_WaitPlanReturnsQueueWait(t *testing.T) {
 	}
 }
 
-func TestHandler_AttemptLoopSkeletonPassesAttemptSeqAndEmptyExclusions(t *testing.T) {
+func TestHandler_AttemptLoopPassesAttemptSeqAndEmptyExclusionsOnFirstSuccess(t *testing.T) {
 	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
 	dispatcher := &mockCanonicalBufferedDispatcher{}
 	selector := &recordingSelectionRequestSelector{}
@@ -177,7 +177,7 @@ func TestHandler_AttemptLoopSkeletonPassesAttemptSeqAndEmptyExclusions(t *testin
 		t.Fatalf("status=%d body=%s; want 200", rec.Code, rec.Body.String())
 	}
 	if selector.calls != 1 {
-		t.Fatalf("selector calls=%d want 1 because PR3 clamps effective budget to 1", selector.calls)
+		t.Fatalf("selector calls=%d want 1 because first attempt succeeds", selector.calls)
 	}
 	req := selector.requests[0]
 	if req.PoolGroupID != 42 {

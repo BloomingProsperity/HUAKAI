@@ -195,8 +195,8 @@ func TestChatCompletions_ChannelHealthSignalOnHCSFTimeout(t *testing.T) {
 	d.ChannelHealth = health
 
 	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d; want 502; body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d; want 503; body = %s", rec.Code, rec.Body.String())
 	}
 	if len(health.signals) != 1 || health.signals[0].Class != channelhealth.SignalTimeout {
 		t.Fatalf("signals=%+v want one timeout signal", health.signals)
