@@ -65,9 +65,7 @@ pub fn resolve_profile_mimicry_backend(
         ProfileVendor::Anthropic
         | ProfileVendor::OpenAi
         | ProfileVendor::Kiro
-        | ProfileVendor::Gemini => {
-            return resolve_vendor_mimicry_backend(template, available_features);
-        }
+        | ProfileVendor::Gemini => resolve_vendor_mimicry_backend(template, available_features),
     }
 }
 

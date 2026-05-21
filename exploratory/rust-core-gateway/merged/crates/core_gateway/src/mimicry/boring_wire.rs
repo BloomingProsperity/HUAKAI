@@ -71,7 +71,14 @@ async fn test_vendor_byte_level(builtin: BuiltinProfile, sni_hostname: &str) {
 
     let observed_ja3 = ja3_from_fields(&fields, &profile);
     if observed_ja3 != profile.tls.ja3_hash {
-        print_wire_diagnostic(builtin.template_name(), &expected_ext, &observed_ext, &fields, &profile, &observed_ja3);
+        print_wire_diagnostic(
+            builtin.template_name(),
+            &expected_ext,
+            &observed_ext,
+            &fields,
+            &profile,
+            &observed_ja3,
+        );
     }
     assert_profile_extension_order(
         &observed_ext,
@@ -178,8 +185,11 @@ fn print_wire_diagnostic(
     eprintln!("ja3 observed={}", ja3_string_from_fields(fields));
     eprintln!("ja3 expected={}", profile.tls.ja3);
     eprintln!("position | expected (profile) | observed (wire) | diff");
-    let format =
-        |value: Option<u16>| value.map(|value| value.to_string()).unwrap_or("-".to_owned());
+    let format = |value: Option<u16>| {
+        value
+            .map(|value| value.to_string())
+            .unwrap_or("-".to_owned())
+    };
     let max_len = expected_ext.len().max(observed_ext.len());
     for index in 0..max_len {
         let expected = expected_ext.get(index).copied();
