@@ -38,10 +38,10 @@ const PANELS = [
   {
     href: '/renew',
     num: '5',
-    title: '看 Renew 状态',
-    desc: 'Auth credential renew 状态列表 + Trigger Renew 按钮',
-    endpoints: ['GET /admin/v1/auth-credentials/{id}/renew-status（预留）', 'POST /admin/v1/auth-credentials/{id}/renew（预留）'],
-    mock: true,
+    title: 'Renew Status',
+    desc: 'Auth credential renew status list',
+    endpoints: ['GET /admin/v1/credentials/renew-status'],
+    mock: false,
   },
   {
     href: '/mimicry',
