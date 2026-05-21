@@ -33,7 +33,6 @@ fn client_options() -> RouteClientOptions {
         rpc_timeout: Duration::from_millis(150),
         retry_attempts: 0,
         retry_backoff: Duration::from_millis(5),
-        route_cache_ttl: Duration::ZERO,
         circuit_breaker_failure_threshold: 3,
         circuit_breaker_cooldown: Duration::from_millis(250),
     }
@@ -404,7 +403,8 @@ async fn openai_done_stream_reports_success_with_usage() {
 #[tokio::test]
 async fn stream_protocol_error_reports_protocol_error_attempt() {
     let upstream = MockUpstream::spawn(MockBehavior::Sse {
-        chunks: vec![Bytes::from_static(b"data: {bad-json}\n\n")],
+        // D1: 畸形帧须含 "usage" 子串, 才会被 memchr 预探针放行进入 JSON 解析路径并报 protocol error
+        chunks: vec![Bytes::from_static(b"data: {\"usage\": }\n\n")],
         delay: Duration::ZERO,
     })
     .await;

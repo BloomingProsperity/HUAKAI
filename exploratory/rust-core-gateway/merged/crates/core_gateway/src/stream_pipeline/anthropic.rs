@@ -1,4 +1,5 @@
-use serde_json::Value;
+use memchr::memmem;
+use serde::Deserialize;
 
 use crate::stream_pipeline::{
     CacheDelta, StreamEvent, UsageDelta,
@@ -66,12 +67,12 @@ impl AnthropicStreamParser {
 }
 
 fn extract_json_metrics(data: &[u8], events: &mut Vec<StreamEvent>) {
-    if data.is_empty() {
+    if data.is_empty() || memmem::find(data, b"usage").is_none() {
         return;
     }
 
-    let value = match serde_json::from_slice::<Value>(data) {
-        Ok(value) => value,
+    let envelope = match serde_json::from_slice::<AnthropicMetricsEnvelope>(data) {
+        Ok(envelope) => envelope,
         Err(err) => {
             events.push(StreamEvent::ProtocolError(format!(
                 "anthropic SSE JSON parse failed: {err}"
@@ -80,12 +81,12 @@ fn extract_json_metrics(data: &[u8], events: &mut Vec<StreamEvent>) {
         }
     };
 
-    if let Some(usage) = anthropic_usage(&value)
+    if let Some(usage) = anthropic_usage(&envelope)
         && !usage.is_empty()
     {
         events.push(StreamEvent::Usage(usage));
     }
-    if let Some(cache) = anthropic_cache(&value)
+    if let Some(cache) = anthropic_cache(&envelope)
         && !cache.is_empty()
     {
         events.push(StreamEvent::CacheMetric(cache));
@@ -93,22 +94,60 @@ fn extract_json_metrics(data: &[u8], events: &mut Vec<StreamEvent>) {
 }
 
 fn parse_error_message(data: &[u8]) -> Option<String> {
-    let value = serde_json::from_slice::<Value>(data).ok()?;
-    value
-        .get("error")
-        .and_then(|error| error.get("message"))
-        .and_then(Value::as_str)
-        .or_else(|| value.get("message").and_then(Value::as_str))
-        .map(ToOwned::to_owned)
+    let envelope = serde_json::from_slice::<AnthropicErrorEnvelope>(data).ok()?;
+    envelope
+        .error
+        .and_then(|error| error.message)
+        .or(envelope.message)
 }
 
-fn anthropic_usage(value: &Value) -> Option<UsageDelta> {
+#[derive(Debug, Deserialize)]
+struct AnthropicMetricsEnvelope {
+    #[serde(default)]
+    usage: Option<AnthropicUsageFields>,
+    #[serde(default)]
+    message: Option<AnthropicMessageFields>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+struct AnthropicMessageFields {
+    #[serde(default)]
+    usage: Option<AnthropicUsageFields>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+struct AnthropicUsageFields {
+    #[serde(default)]
+    input_tokens: u64,
+    #[serde(default)]
+    output_tokens: u64,
+    #[serde(default)]
+    total_tokens: u64,
+    #[serde(default)]
+    cache_creation_input_tokens: u64,
+    #[serde(default)]
+    cache_read_input_tokens: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicErrorEnvelope {
+    #[serde(default)]
+    error: Option<AnthropicErrorFields>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicErrorFields {
+    #[serde(default)]
+    message: Option<String>,
+}
+
+fn anthropic_usage(envelope: &AnthropicMetricsEnvelope) -> Option<UsageDelta> {
     let mut usage = UsageDelta::default();
-    merge_usage_object(value.get("usage"), &mut usage);
+    merge_usage_object(envelope.usage, &mut usage);
     merge_usage_object(
-        value
-            .get("message")
-            .and_then(|message| message.get("usage")),
+        envelope.message.and_then(|message| message.usage),
         &mut usage,
     );
 
@@ -119,48 +158,36 @@ fn anthropic_usage(value: &Value) -> Option<UsageDelta> {
     (!usage.is_empty()).then_some(usage)
 }
 
-fn anthropic_cache(value: &Value) -> Option<CacheDelta> {
+fn anthropic_cache(envelope: &AnthropicMetricsEnvelope) -> Option<CacheDelta> {
     let mut cache = CacheDelta::default();
-    merge_cache_object(value.get("usage"), &mut cache);
+    merge_cache_object(envelope.usage, &mut cache);
     merge_cache_object(
-        value
-            .get("message")
-            .and_then(|message| message.get("usage")),
+        envelope.message.and_then(|message| message.usage),
         &mut cache,
     );
 
     (!cache.is_empty()).then_some(cache)
 }
 
-fn merge_usage_object(value: Option<&Value>, usage: &mut UsageDelta) {
-    let Some(value) = value else {
+fn merge_usage_object(fields: Option<AnthropicUsageFields>, usage: &mut UsageDelta) {
+    let Some(fields) = fields else {
         return;
     };
 
-    usage.input_tokens = usage
-        .input_tokens
-        .saturating_add(u64_field(value, "input_tokens"));
-    usage.output_tokens = usage
-        .output_tokens
-        .saturating_add(u64_field(value, "output_tokens"));
-    usage.total_tokens = usage
-        .total_tokens
-        .saturating_add(u64_field(value, "total_tokens"));
+    usage.input_tokens = usage.input_tokens.saturating_add(fields.input_tokens);
+    usage.output_tokens = usage.output_tokens.saturating_add(fields.output_tokens);
+    usage.total_tokens = usage.total_tokens.saturating_add(fields.total_tokens);
 }
 
-fn merge_cache_object(value: Option<&Value>, cache: &mut CacheDelta) {
-    let Some(value) = value else {
+fn merge_cache_object(fields: Option<AnthropicUsageFields>, cache: &mut CacheDelta) {
+    let Some(fields) = fields else {
         return;
     };
 
     cache.cache_creation_input_tokens = cache
         .cache_creation_input_tokens
-        .saturating_add(u64_field(value, "cache_creation_input_tokens"));
+        .saturating_add(fields.cache_creation_input_tokens);
     cache.cache_read_input_tokens = cache
         .cache_read_input_tokens
-        .saturating_add(u64_field(value, "cache_read_input_tokens"));
-}
-
-fn u64_field(value: &Value, key: &str) -> u64 {
-    value.get(key).and_then(Value::as_u64).unwrap_or(0)
+        .saturating_add(fields.cache_read_input_tokens);
 }
