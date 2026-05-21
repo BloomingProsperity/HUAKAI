@@ -116,10 +116,6 @@ func routerPoolMetadataFromRegistry(resolved registry.Resolved) []router.PoolCan
 		}
 		out = append(out, router.PoolCandidateMeta{
 			PoolGroupID:     binding.PoolGroupID,
-			Priority:        binding.Priority,
-			Weight:          binding.Weight,
-			SelectionMode:   binding.SelectionMode,
-			FallbackClass:   binding.FallbackClass,
 			ProviderModelID: providerModelID,
 		})
 	}

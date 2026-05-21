@@ -186,9 +186,9 @@ func TestRouterResolvedModelFromRegistryMapsPerPoolModelOverrides(t *testing.T) 
 		t.Fatalf("PoolMetadata len=%d want 3", len(got.PoolMetadata))
 	}
 	want := []router.PoolCandidateMeta{
-		{PoolGroupID: 701, ProviderModelID: "pool-a-upstream", Priority: 10, Weight: 5, SelectionMode: "strict_priority", FallbackClass: "normal"},
-		{PoolGroupID: 702, ProviderModelID: "pool-b-upstream", Priority: 20, Weight: 3, SelectionMode: "strict_priority", FallbackClass: "quota"},
-		{PoolGroupID: 703, ProviderModelID: "default-upstream", Priority: 30, Weight: 1, SelectionMode: "strict_priority", FallbackClass: "manual"},
+		{PoolGroupID: 701, ProviderModelID: "pool-a-upstream"},
+		{PoolGroupID: 702, ProviderModelID: "pool-b-upstream"},
+		{PoolGroupID: 703, ProviderModelID: "default-upstream"},
 	}
 	for i := range want {
 		if got.PoolMetadata[i] != want[i] {
