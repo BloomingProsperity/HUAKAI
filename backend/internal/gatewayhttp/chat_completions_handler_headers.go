@@ -122,6 +122,7 @@ type l2CacheHitInput struct {
 	SelectionResult   *pool.SelectionResult
 	PlanSnapshot      string
 	PayloadHash       string
+	AttemptSeq        int
 }
 
 func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request, d ChatHandlerDeps, in l2CacheHitInput) bool {
@@ -206,6 +207,10 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		return true
 	}
 	actualCost := decimal.Zero
+	attemptSeq := in.AttemptSeq
+	if attemptSeq <= 0 {
+		attemptSeq = 1
+	}
 	settleReq := billing.SettleRequest{
 		ClaimID:           in.ReserveResult.ClaimID,
 		AccountID:         in.AccountID,
@@ -214,7 +219,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		APIKeyID:          in.Ident.APIKeyID,
 		UserID:            in.Ident.UserID,
 		ProviderAccountID: in.AccountID,
-		AttemptSeq:        1,
+		AttemptSeq:        int32(attemptSeq),
 		RequestedModel:    in.RequestedModel,
 		UpstreamModel:     in.UpstreamModelID,
 		Provider:          in.Provider,

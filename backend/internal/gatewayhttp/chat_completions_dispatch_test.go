@@ -156,6 +156,44 @@ func TestHandler_WaitPlanReturnsQueueWait(t *testing.T) {
 	}
 }
 
+func TestHandler_AttemptLoopSkeletonPassesAttemptSeqAndEmptyExclusions(t *testing.T) {
+	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	selector := &recordingSelectionRequestSelector{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = dispatcher
+	d.Selector = selector
+	d.Router = stubRouter{plan: router.RoutePlan{
+		Attempts: []router.AttemptPlan{
+			{Index: 0, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "primary"},
+			{Index: 1, PoolGroupID: 43, UpstreamModelID: "gpt-4o-backup", Reason: "cross_pool_fallback"},
+		},
+		AttemptBudget:   2,
+		SnapshotVersion: "registry:7:1;router:multi",
+	}}
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s; want 200", rec.Code, rec.Body.String())
+	}
+	if selector.calls != 1 {
+		t.Fatalf("selector calls=%d want 1 because PR3 clamps effective budget to 1", selector.calls)
+	}
+	req := selector.requests[0]
+	if req.PoolGroupID != 42 {
+		t.Fatalf("PoolGroupID=%d want first planned pool 42", req.PoolGroupID)
+	}
+	if req.AttemptSeq != 1 {
+		t.Fatalf("AttemptSeq=%d want 1", req.AttemptSeq)
+	}
+	if req.ExcludedAccounts == nil {
+		t.Fatal("ExcludedAccounts must be a non-nil empty map in PR3")
+	}
+	if len(req.ExcludedAccounts) != 0 {
+		t.Fatalf("ExcludedAccounts=%v want empty map in PR3", req.ExcludedAccounts)
+	}
+}
+
 func TestRouterResolvedModelFromRegistryMapsPerPoolModelOverrides(t *testing.T) {
 	poolAOverride := "pool-a-upstream"
 	poolBOverride := "pool-b-upstream"
@@ -206,6 +244,17 @@ func (waitPlanSelector) Select(context.Context, pool.SelectionRequest) (*pool.Se
 		TimeoutMS:      2500,
 		MaxWaiting:     8,
 	}}, nil
+}
+
+type recordingSelectionRequestSelector struct {
+	calls    int
+	requests []pool.SelectionRequest
+}
+
+func (s *recordingSelectionRequestSelector) Select(_ context.Context, req pool.SelectionRequest) (*pool.SelectionResult, error) {
+	s.calls++
+	s.requests = append(s.requests, req)
+	return &pool.SelectionResult{AccountID: 1}, nil
 }
 
 func unsetEnvForTest(t *testing.T, key string) {

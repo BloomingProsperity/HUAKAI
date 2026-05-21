@@ -81,10 +81,16 @@ func (ex *chatExecution) cacheHitInput(entry l2cache.Entry) l2CacheHitInput {
 		SelectionResult:   ex.selRes,
 		PlanSnapshot:      ex.plan.SnapshotVersion,
 		PayloadHash:       ex.payloadHash,
+		AttemptSeq:        ex.activeAttemptSeq(),
 	}
 }
 
 func (ex *chatExecution) handleStreamingResponse(w http.ResponseWriter) {
+	_ = ex.executeStreamingAttempt(w)
+}
+
+func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptOutcome {
+	outcome := ex.baseAttemptOutcome()
 	upstreamAttemptStartedAt := time.Now()
 	inboundBody := ex.body
 	var clientAdapter proto.ClientAdapter
@@ -92,7 +98,7 @@ func (ex *chatExecution) handleStreamingResponse(w http.ResponseWriter) {
 		var ok bool
 		inboundBody, clientAdapter, ok = ex.translatedStreamingInboundBody(w)
 		if !ok {
-			return
+			return markAttemptOutcomeDelivered(outcome)
 		}
 	}
 	dispatchRes, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
@@ -109,7 +115,7 @@ func (ex *chatExecution) handleStreamingResponse(w http.ResponseWriter) {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromDispatchError(err, classification), 0, time.Since(upstreamAttemptStartedAt), ex.requestID, nil)
 		}
 		writeNormalizedUpstreamError(w, http.StatusBadGateway, "upstream_dispatch_error", classification)
-		return
+		return markAttemptOutcomeDelivered(outcome)
 	}
 	if dispatchRes == nil || dispatchRes.UpstreamReader == nil {
 		_ = ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_empty_response", ex.requestID, 0)
@@ -117,14 +123,18 @@ func (ex *chatExecution) handleStreamingResponse(w http.ResponseWriter) {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, 0, time.Since(upstreamAttemptStartedAt), ex.requestID, nil)
 		}
 		writeJSONError(w, http.StatusBadGateway, "upstream_empty_response", "upstream returned no response body")
-		return
+		return markAttemptOutcomeDelivered(outcome)
 	}
 	defer closeDispatchResult(dispatchRes)
 	if dispatchRes.StatusCode < 200 || dispatchRes.StatusCode >= 300 {
 		ex.writeStreamingUpstreamError(w, dispatchRes, upstreamAttemptStartedAt)
-		return
+		return markAttemptOutcomeDelivered(outcome)
 	}
-	ex.forwardSSEAndSettle(w, dispatchRes, upstreamAttemptStartedAt, clientAdapter)
+	deliveryStarted := ex.forwardSSEAndSettle(w, dispatchRes, upstreamAttemptStartedAt, clientAdapter)
+	outcome = ex.baseAttemptOutcome()
+	outcome.DeliveryStarted = deliveryStarted
+	outcome.Success = &attemptSuccess{StatusCode: http.StatusOK, Streamed: true}
+	return outcome
 }
 
 func (ex *chatExecution) writeStreamingUpstreamError(w http.ResponseWriter, dispatchRes *gateway.DispatchResult, startedAt time.Time) {
@@ -144,7 +154,7 @@ func (ex *chatExecution) writeStreamingUpstreamError(w http.ResponseWriter, disp
 	writeNormalizedUpstreamError(w, clientStatusForUpstreamError(dispatchRes.StatusCode, classification.Class), "upstream_error", classification)
 }
 
-func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes *gateway.DispatchResult, startedAt time.Time, clientAdapter proto.ClientAdapter) {
+func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes *gateway.DispatchResult, startedAt time.Time, clientAdapter proto.ClientAdapter) bool {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -166,10 +176,11 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	streamForwarder.LedgerCallback = func(entryID, sigFingerprint string) {
 		WriteHuakaiLedgerHeaders(w.Header(), ex.requestID, entryID, sigFingerprint)
 	}
-	forwardWriter := w
+	tracker := newDeliveryTracker(w)
+	forwardWriter := http.ResponseWriter(tracker)
 	var replayCapture *streamingIdempotencyReplayCaptureWriter
 	if ex.shouldCaptureStreamingIdempotencyReplay() {
-		replayCapture = newStreamingIdempotencyReplayCaptureWriter(w, maxIdempotencyReplayBodyBytes)
+		replayCapture = newStreamingIdempotencyReplayCaptureWriter(tracker, maxIdempotencyReplayBodyBytes)
 		forwardWriter = replayCapture
 	}
 	draft, fwdErr := streamForwarder.Forward(ex.ctx, dispatchRes.UpstreamReader, forwardWriter, ex.forwardReq)
@@ -212,6 +223,7 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
 		}
 	}
+	return tracker.started()
 }
 
 func (ex *chatExecution) abortObservedInputTokens(draft gateway.UsageRecordDraft) int64 {
@@ -441,7 +453,7 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 			APIKeyID:          ex.ident.APIKeyID,
 			UserID:            ex.ident.UserID,
 			ProviderAccountID: ex.acquiredAccountID,
-			AttemptSeq:        1,
+			AttemptSeq:        int32(ex.activeAttemptSeq()),
 			RequestedModel:    ex.req.Model,
 			UpstreamModel:     ex.upstreamModelID,
 			Provider:          ex.cacheVendor,

@@ -25,6 +25,33 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
+func TestDeliveryTrackerMarksStartedOnWriteAndWriteHeader(t *testing.T) {
+	rec := httptest.NewRecorder()
+	tracker := newDeliveryTracker(rec)
+	if tracker.started() {
+		t.Fatal("new tracker must start as not delivered")
+	}
+	if _, err := tracker.Write([]byte("data: hello\n\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if !tracker.started() {
+		t.Fatal("Write must mark delivery started")
+	}
+	if tracker.statusCode() != http.StatusOK {
+		t.Fatalf("status=%d want 200 after implicit WriteHeader", tracker.statusCode())
+	}
+
+	rec = httptest.NewRecorder()
+	tracker = newDeliveryTracker(rec)
+	tracker.WriteHeader(http.StatusAccepted)
+	if !tracker.started() {
+		t.Fatal("WriteHeader must mark delivery started")
+	}
+	if tracker.statusCode() != http.StatusAccepted {
+		t.Fatalf("status=%d want 202", tracker.statusCode())
+	}
+}
+
 func TestHandleStreamingResponse_CrossProtocolTranslatesRequestAndResponse(t *testing.T) {
 	upstream := &recordingStreamingDoer{responseBody: anthropicStreamingFixture()}
 	adapterReg := provider.NewStaticRegistry()
