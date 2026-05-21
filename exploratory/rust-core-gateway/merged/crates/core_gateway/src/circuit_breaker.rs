@@ -28,8 +28,9 @@ pub(crate) enum CircuitPermit {
 impl CircuitPermit {
     fn generation(self) -> u64 {
         match self {
-            CircuitPermit::Closed { generation }
-            | CircuitPermit::HalfOpenProbe { generation } => generation,
+            CircuitPermit::Closed { generation } | CircuitPermit::HalfOpenProbe { generation } => {
+                generation
+            }
         }
     }
 }
@@ -192,7 +193,12 @@ impl CircuitBreaker {
     }
 
     // 打开熔断器并自增代次。调用方已持锁。
-    fn open(&self, state: &mut CircuitState, now_ms: u64, probe_failure: bool) -> CircuitOpenSnapshot {
+    fn open(
+        &self,
+        state: &mut CircuitState,
+        now_ms: u64,
+        probe_failure: bool,
+    ) -> CircuitOpenSnapshot {
         let open_until_ms = now_ms.saturating_add(self.cooldown_ms);
         state.phase = Phase::Open;
         state.open_until_ms = open_until_ms;

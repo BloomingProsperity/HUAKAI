@@ -125,10 +125,8 @@ impl SseParser {
             b"data" => {
                 fields.data_lines.push(decode_value(value));
             }
-            b"id" => {
-                if !value.contains(&b'\0') {
-                    fields.id = Some(decode_value(value));
-                }
+            b"id" if !value.contains(&b'\0') => {
+                fields.id = Some(decode_value(value));
             }
             b"retry" => {
                 if let Some(retry_ms) = parse_retry_ms(value) {
