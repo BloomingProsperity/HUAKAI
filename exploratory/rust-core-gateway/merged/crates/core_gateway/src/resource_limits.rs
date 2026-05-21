@@ -179,8 +179,7 @@ pub(crate) fn wrap_response_body(
 fn overloaded_response(request_id: &RequestId, retry_after_secs: u64) -> Response<Body> {
     // 用序列化器构造, request_id 来自客户端 header, 直接内插会被 " / \ 注入或破坏 JSON
     let payload = Bytes::from(
-        serde_json::json!({ "error": "overloaded", "request_id": request_id.as_str() })
-            .to_string(),
+        serde_json::json!({ "error": "overloaded", "request_id": request_id.as_str() }).to_string(),
     );
     let mut response = Response::new(Body::from(payload));
     *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
@@ -349,6 +348,22 @@ mod tests {
             (
                 "HUAKAI_OVERLOAD_RETRY_AFTER_SECS".to_owned(),
                 "1".to_owned(),
+            ),
+            (
+                "HUAKAI_UPSTREAM_BODY_IDLE_TIMEOUT_MS".to_owned(),
+                "300000".to_owned(),
+            ),
+            (
+                "HUAKAI_DOWNSTREAM_WRITE_IDLE_TIMEOUT_MS".to_owned(),
+                "60000".to_owned(),
+            ),
+            (
+                "HUAKAI_REQUEST_BODY_IDLE_TIMEOUT_MS".to_owned(),
+                "30000".to_owned(),
+            ),
+            (
+                "HUAKAI_SERVER_HEADER_READ_TIMEOUT_MS".to_owned(),
+                "30000".to_owned(),
             ),
         ])
         .expect("resource limit test config 应解析成功")

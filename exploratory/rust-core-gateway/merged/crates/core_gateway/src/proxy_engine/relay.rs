@@ -1,4 +1,4 @@
-use std::{fmt, io};
+use std::{fmt, io, time::Duration};
 
 use axum::body::Body;
 use bytes::Bytes;
@@ -6,7 +6,10 @@ use http::{Response, header::CONTENT_TYPE};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use tokio::{
-    sync::{mpsc, mpsc::error::TrySendError},
+    sync::{
+        mpsc,
+        mpsc::{Sender, error::TrySendError},
+    },
     task, time,
 };
 use tracing::{debug, warn};
@@ -19,7 +22,7 @@ use crate::{
 };
 
 use super::{
-    BODY_IDLE_TIMEOUT, BodyChunk, ReceiverByteStream, STREAM_CHANNEL_DEPTH, default_content_type,
+    BodyChunk, ProxyTimeouts, ReceiverByteStream, STREAM_CHANNEL_DEPTH, default_content_type,
     headers::{remove_hop_by_hop_response_headers, set_request_id},
     is_sse_response,
 };
@@ -48,10 +51,9 @@ pub(super) fn upstream_response_to_client(
     response: Response<Incoming>,
     request_id: &RequestId,
     stream_tap: Option<StreamTapConfig>,
-    terminal_reporter: Option<AttemptTerminalReporter>,
-    terminal_status: AttemptStatus,
-    terminal_http_status: Option<u16>,
+    terminal: RelayTerminal,
     in_flight_guard: Option<InFlightRequestGuard>,
+    timeouts: ProxyTimeouts,
 ) -> Response<Body> {
     let (mut parts, body) = response.into_parts();
     remove_hop_by_hop_response_headers(&mut parts.headers);
@@ -60,11 +62,6 @@ pub(super) fn upstream_response_to_client(
         parts.headers.insert(CONTENT_TYPE, default_content_type());
     }
     let stream_tap = stream_tap.filter(|_| is_sse_response(&parts.headers));
-    let terminal = RelayTerminal {
-        reporter: terminal_reporter,
-        status: terminal_status,
-        http_status: terminal_http_status,
-    };
     Response::from_parts(
         parts,
         relay_body(
@@ -74,14 +71,29 @@ pub(super) fn upstream_response_to_client(
             stream_tap,
             terminal,
             in_flight_guard,
+            timeouts,
         ),
     )
 }
 
-struct RelayTerminal {
+pub(super) struct RelayTerminal {
     reporter: Option<AttemptTerminalReporter>,
     status: AttemptStatus,
     http_status: Option<u16>,
+}
+
+impl RelayTerminal {
+    pub(super) fn new(
+        reporter: Option<AttemptTerminalReporter>,
+        status: AttemptStatus,
+        http_status: Option<u16>,
+    ) -> Self {
+        Self {
+            reporter,
+            status,
+            http_status,
+        }
+    }
 }
 
 fn relay_body<B>(
@@ -91,6 +103,7 @@ fn relay_body<B>(
     stream_tap: Option<StreamTapConfig>,
     terminal: RelayTerminal,
     in_flight_guard: Option<InFlightRequestGuard>,
+    timeouts: ProxyTimeouts,
 ) -> Body
 where
     B: http_body::Body<Data = Bytes> + Send + Unpin + 'static,
@@ -109,9 +122,12 @@ where
             stream_pipeline.is_some() && terminal.status == AttemptStatus::Success;
 
         loop {
-            let frame = tokio::select! {
-                frame = body.frame() => frame,
-                () = time::sleep(BODY_IDLE_TIMEOUT) => {
+            let frame =
+                read_body_frame_with_idle_timeout(&mut body, timeouts.upstream_body_idle_timeout)
+                    .await;
+            let frame = match frame {
+                Ok(frame) => frame,
+                Err(BodyIdleElapsed) => {
                     let err = io::Error::new(io::ErrorKind::TimedOut, "body stream idle timeout");
                     report_terminal(
                         terminal.reporter.as_ref(),
@@ -125,7 +141,9 @@ where
                         stream_tap.as_ref(),
                         StreamEvent::UpstreamError("body stream idle timeout".to_owned()),
                     );
-                    let _ = sender.send(Err(err)).await;
+                    let _ =
+                        send_downstream(&sender, Err(err), timeouts.downstream_write_idle_timeout)
+                            .await;
                     warn!(request_id = %request_id, direction, "body stream idle timeout");
                     break;
                 }
@@ -148,17 +166,42 @@ where
                                 &mut stream_seen_done,
                             );
                         }
-                        if sender.send(Ok(data)).await.is_err() {
-                            report_terminal(
-                                terminal.reporter.as_ref(),
-                                AttemptStatus::ClientCancel,
-                                terminal.http_status,
-                                &stats,
-                                Some("client_cancel"),
-                                Some("client disconnected while relaying upstream response"),
-                            );
-                            debug!(request_id = %request_id, direction, "client disconnected, abort relay");
-                            break;
+                        match send_downstream(
+                            &sender,
+                            Ok(data),
+                            timeouts.downstream_write_idle_timeout,
+                        )
+                        .await
+                        {
+                            DownstreamSend::Sent => {}
+                            DownstreamSend::Closed => {
+                                report_terminal(
+                                    terminal.reporter.as_ref(),
+                                    AttemptStatus::ClientCancel,
+                                    terminal.http_status,
+                                    &stats,
+                                    Some("client_cancel"),
+                                    Some("client disconnected while relaying upstream response"),
+                                );
+                                debug!(request_id = %request_id, direction, "client disconnected, abort relay");
+                                break;
+                            }
+                            DownstreamSend::TimedOut => {
+                                report_terminal(
+                                    terminal.reporter.as_ref(),
+                                    AttemptStatus::ClientCancel,
+                                    terminal.http_status,
+                                    &stats,
+                                    Some("client_slow_or_disconnected"),
+                                    Some("client stopped reading relayed upstream response"),
+                                );
+                                warn!(
+                                    request_id = %request_id,
+                                    direction,
+                                    "downstream write idle timeout"
+                                );
+                                break;
+                            }
                         }
                     }
                     Err(_) => {
@@ -179,9 +222,12 @@ where
                         stream_tap.as_ref(),
                         StreamEvent::UpstreamError(msg.clone()),
                     );
-                    let _ = sender
-                        .send(Err(io::Error::new(io::ErrorKind::BrokenPipe, msg)))
-                        .await;
+                    let _ = send_downstream(
+                        &sender,
+                        Err(io::Error::new(io::ErrorKind::BrokenPipe, msg)),
+                        timeouts.downstream_write_idle_timeout,
+                    )
+                    .await;
                     break;
                 }
                 None => {
@@ -230,6 +276,50 @@ where
         terminal_reporter: drop_reporter,
         in_flight_guard,
     })
+}
+
+struct BodyIdleElapsed;
+
+async fn read_body_frame_with_idle_timeout<B>(
+    body: &mut B,
+    idle_timeout: Option<Duration>,
+) -> Result<Option<Result<http_body::Frame<Bytes>, B::Error>>, BodyIdleElapsed>
+where
+    B: http_body::Body<Data = Bytes> + Unpin,
+{
+    let Some(idle_timeout) = idle_timeout else {
+        return Ok(body.frame().await);
+    };
+
+    tokio::select! {
+        frame = body.frame() => Ok(frame),
+        () = time::sleep(idle_timeout) => Err(BodyIdleElapsed),
+    }
+}
+
+enum DownstreamSend {
+    Sent,
+    Closed,
+    TimedOut,
+}
+
+async fn send_downstream(
+    sender: &Sender<BodyChunk>,
+    chunk: BodyChunk,
+    write_idle_timeout: Option<Duration>,
+) -> DownstreamSend {
+    let Some(write_idle_timeout) = write_idle_timeout else {
+        return match sender.send(chunk).await {
+            Ok(()) => DownstreamSend::Sent,
+            Err(_) => DownstreamSend::Closed,
+        };
+    };
+
+    match time::timeout(write_idle_timeout, sender.send(chunk)).await {
+        Ok(Ok(())) => DownstreamSend::Sent,
+        Ok(Err(_)) => DownstreamSend::Closed,
+        Err(_) => DownstreamSend::TimedOut,
+    }
 }
 
 fn handle_stream_events(
@@ -326,5 +416,146 @@ fn emit_stream_observation(tap: Option<&StreamTapConfig>, event: StreamEvent) {
             );
         }
         Err(TrySendError::Closed(_)) => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+
+    use axum::body;
+    use futures_util::stream;
+    use http_body_util::BodyExt;
+
+    use super::*;
+    use crate::{proxy_engine::ProxyTimeouts, request_id::RequestId};
+
+    fn test_terminal() -> RelayTerminal {
+        RelayTerminal {
+            reporter: None,
+            status: AttemptStatus::Success,
+            http_status: Some(200),
+        }
+    }
+
+    fn test_timeouts(upstream_idle_ms: u64, downstream_write_idle_ms: u64) -> ProxyTimeouts {
+        ProxyTimeouts {
+            upstream_body_idle_timeout: Some(Duration::from_millis(upstream_idle_ms)),
+            downstream_write_idle_timeout: Some(Duration::from_millis(downstream_write_idle_ms)),
+        }
+    }
+
+    #[tokio::test]
+    async fn relay_body_uses_configured_upstream_body_idle_timeout() {
+        let source = stream::unfold(0usize, |idx| async move {
+            match idx {
+                0 => Some((Ok::<Bytes, io::Error>(Bytes::from_static(b"first")), 1)),
+                1 => {
+                    tokio::time::sleep(Duration::from_millis(80)).await;
+                    Some((Ok(Bytes::from_static(b"second")), 2))
+                }
+                _ => None,
+            }
+        });
+        let mut relayed = relay_body(
+            Body::from_stream(source),
+            RequestId::from_candidate(Some("relay-idle-red")),
+            "test",
+            None,
+            test_terminal(),
+            None,
+            test_timeouts(20, 500),
+        );
+
+        let first = relayed
+            .frame()
+            .await
+            .expect("首帧应存在")
+            .expect("首帧应成功")
+            .into_data()
+            .expect("首帧应为 data");
+        assert_eq!(first, Bytes::from_static(b"first"));
+
+        let second = tokio::time::timeout(Duration::from_millis(200), relayed.frame())
+            .await
+            .expect("超时错误帧应及时返回")
+            .expect("应返回一个错误帧");
+        let err = second.expect_err("超过 upstream idle 后应返回 body error");
+        assert!(
+            err.to_string().contains("body stream idle timeout"),
+            "err={err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_body_allows_longer_configured_upstream_idle_gap() {
+        let source = stream::unfold(0usize, |idx| async move {
+            match idx {
+                0 => Some((Ok::<Bytes, io::Error>(Bytes::from_static(b"first")), 1)),
+                1 => {
+                    tokio::time::sleep(Duration::from_millis(40)).await;
+                    Some((Ok(Bytes::from_static(b"second")), 2))
+                }
+                _ => None,
+            }
+        });
+        let relayed = relay_body(
+            Body::from_stream(source),
+            RequestId::from_candidate(Some("relay-idle-green")),
+            "test",
+            None,
+            test_terminal(),
+            None,
+            test_timeouts(200, 500),
+        );
+
+        let body = body::to_bytes(relayed, 64)
+            .await
+            .expect("较长 upstream idle 配置应允许慢帧");
+        assert_eq!(body, Bytes::from_static(b"firstsecond"));
+    }
+
+    #[tokio::test]
+    async fn relay_body_stops_when_downstream_write_idle_timeout_elapses() {
+        let produced = Arc::new(AtomicUsize::new(0));
+        let produced_for_stream = produced.clone();
+        let source = stream::unfold(0usize, move |idx| {
+            let produced = produced_for_stream.clone();
+            async move {
+                if idx >= 128 {
+                    return None;
+                }
+                produced.fetch_add(1, Ordering::SeqCst);
+                Some((
+                    Ok::<Bytes, io::Error>(Bytes::from(vec![b'x'; 1024])),
+                    idx + 1,
+                ))
+            }
+        });
+        let relayed = relay_body(
+            Body::from_stream(source),
+            RequestId::from_candidate(Some("relay-downstream-stall")),
+            "test",
+            None,
+            test_terminal(),
+            None,
+            test_timeouts(1_000, 30),
+        );
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let produced_after_timeout = produced.load(Ordering::SeqCst);
+        drop(relayed);
+
+        assert!(
+            produced_after_timeout < 128,
+            "下游不读时 relay 应在 write idle 超时后停止继续拉上游, produced={produced_after_timeout}"
+        );
     }
 }
