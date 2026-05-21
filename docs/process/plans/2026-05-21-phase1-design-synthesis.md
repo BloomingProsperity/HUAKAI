@@ -39,6 +39,7 @@
 - 401 仍带 `RefreshIntent = RefreshOAuthHotPath`,为 Phase 2 洞④ 留接口。
 - 403 → 维持 codex 稿:不 failover(平台策略/账号封禁,换号无用)。
 - 实现:handler retry loop 维护 `authFailoverUsed bool`;401 失败时若已 used → terminal。
+- executor 双通道重试门(codex review PR2 F1):401 的 `upstream_auth_failure` **故意不在** `RoutePlan.RetryableEndClasses` 白名单 —— 401 不走普通 retry budget。executor 判定重试 = 「end class ∈ `RetryableEndClasses`」(普通通道)**OR**「`decision.CountsAgainstAuthFailoverBudget` 且 `authFailoverUsed==false`」(auth 独立通道)。PR3/PR5 的 executor 必须同时实现两条,只看 `RetryableEndClasses` 会漏掉 401。
 - 覆盖范围:本 override 覆盖 codex 稿中**所有** 401 条目 —— §8.2 taxonomy 表 401 行、§12.1 测试「non-stream 401 → no second attempt」、§13 风险表 401/403 行、§15 确认点 4。凡 codex 稿写「401 不可重试 / 无 second attempt」处一律以本 override 为准:401 = 换一次号(codex review P2)。
 
 **补充-2 — 保留 Claude 稿 §0 框架判断**
