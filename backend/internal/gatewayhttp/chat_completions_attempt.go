@@ -282,20 +282,6 @@ func (ex *chatExecution) runAttempt(w http.ResponseWriter, in attemptInput) atte
 	}
 
 	if !ex.req.Stream {
-		// Anthropic buffered translator still fails closed before dispatch. 保持
-		// 原有 abort + 501 行为，只是移动到单 attempt 执行体内。
-		if ex.resolved.ProtocolFamily == "anthropic_messages" {
-			if ex.reserveRes != nil {
-				if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID,
-					"buffered_anthropic_not_supported", ex.requestID, 0); abortErr != nil {
-					w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
-				}
-			}
-			writeJSONError(w, http.StatusNotImplemented, "buffered_anthropic_not_supported",
-				"Anthropic /v1/messages 非流式 (stream:false) 暂未实现; 请设 stream:true 走流式路径")
-			out = ex.baseAttemptOutcome()
-			return markAttemptOutcomeDelivered(out)
-		}
 		return ex.executeNonStreamingAttempt(w)
 	}
 	return ex.executeStreamingAttempt(w)

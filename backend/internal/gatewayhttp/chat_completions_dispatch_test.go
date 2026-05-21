@@ -2,16 +2,22 @@ package gatewayhttp
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	protoanthropic "github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	provideranthropic "github.com/BloomingProsperity/HUAKAI/internal/provider/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
 type recordingClaimGate struct {
@@ -65,19 +71,137 @@ func TestHandler_AnthropicEndpointFamilySet(t *testing.T) {
 	dispatcher := &mockCanonicalBufferedDispatcher{}
 	d := anthropicClientAdapterDeps(t)
 	d.CanonicalDispatcher = dispatcher
-	// Anthropic 非流式 buffered 翻译器未实现,
-	// handler 现 fail-fast 拒 (501)。本 test 验 reject 触发, 不静默扣上游额度。
 	body := `{"model":"claude-3-5-sonnet","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`
 	rec := invokeHandlerPath(t, d, "/v1/messages", body)
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d; want 501; body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "buffered_anthropic_not_supported") {
-		t.Fatalf("expected buffered_anthropic_not_supported error code; got %s", rec.Body.String())
+	if dispatcher.observed == nil || dispatcher.observed.RequestMeta.EndpointFamily != "anthropic_messages" {
+		t.Fatalf("EndpointFamily = %+v", dispatcher.observed)
 	}
-	if dispatcher.observed != nil {
-		t.Fatalf("dispatcher should NOT be called when reject fires; observed = %+v", dispatcher.observed)
+}
+
+func TestHandler_AnthropicMessagesRawBufferedNoLonger501(t *testing.T) {
+	t.Setenv("HUAKAI_DISPATCH_HCSF", "0")
+	doer := &anthropicBufferedDoer{body: `{
+			"id":"msg_raw_handler",
+			"type":"message",
+			"role":"assistant",
+			"model":"claude-3-5-sonnet",
+			"content":[{"type":"text","text":"hello from raw anthropic"}],
+			"stop_reason":"end_turn",
+			"usage":{"input_tokens":4,"output_tokens":5}
+		}`}
+
+	d := anthropicClientAdapterDeps(t)
+	adapters := provider.NewStaticRegistry()
+	adapters.MustRegister("anthropic_messages", &provideranthropic.PassthroughAdapter{})
+	d.Dispatcher = &gateway.UpstreamDispatcher{
+		Adapters:         adapters,
+		TransportFactory: transport.NewFactory(),
+		HTTPClient:       doer,
 	}
+	d.Forwarder = &gateway.StreamForwarder{ProtocolAdapters: gateway.BuildDefaultProtocolAdapterRegistry()}
+
+	body := `{"model":"claude-3-5-sonnet","stream":false,"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`
+	rec := invokeHandlerPath(t, d, "/v1/messages", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "buffered_anthropic_not_supported") {
+		t.Fatalf("handler still returned old 501 marker: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "hello from raw anthropic") {
+		t.Fatalf("body=%s want translated Anthropic response", rec.Body.String())
+	}
+	if doer.requestPath != "/v1/messages" {
+		t.Fatalf("upstream path=%q want /v1/messages", doer.requestPath)
+	}
+}
+
+func TestHandler_RawBufferedBodyOverLimitIsTypedError(t *testing.T) {
+	t.Setenv("HUAKAI_DISPATCH_HCSF", "0")
+	doer := &anthropicBufferedDoer{
+		body: `{"id":"msg_big","type":"message","role":"assistant","model":"claude-3-5-sonnet","content":[{"type":"text","text":"` +
+			strings.Repeat("x", 1<<20) +
+			`"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
+	}
+
+	d := anthropicClientAdapterDeps(t)
+	adapters := provider.NewStaticRegistry()
+	adapters.MustRegister("anthropic_messages", &provideranthropic.PassthroughAdapter{})
+	d.Dispatcher = &gateway.UpstreamDispatcher{
+		Adapters:         adapters,
+		TransportFactory: transport.NewFactory(),
+		HTTPClient:       doer,
+	}
+	d.Forwarder = &gateway.StreamForwarder{ProtocolAdapters: gateway.BuildDefaultProtocolAdapterRegistry()}
+
+	rec := invokeHandlerPath(t, d, "/v1/messages", `{"model":"claude-3-5-sonnet","stream":false,"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d want 502; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "upstream_response_too_large") {
+		t.Fatalf("body=%s want typed upstream_response_too_large error", rec.Body.String())
+	}
+}
+
+func TestReadRawBufferedUpstreamBodyTooLargeReturnsTruncatedBody(t *testing.T) {
+	raw, err := readRawBufferedUpstreamBody(strings.NewReader(strings.Repeat("x", maxRawBufferedUpstreamBodyBytes+1)))
+	if !errors.Is(err, errRawBufferedUpstreamBodyTooLarge) {
+		t.Fatalf("err=%v want errRawBufferedUpstreamBodyTooLarge", err)
+	}
+	if len(raw) != maxRawBufferedUpstreamBodyBytes {
+		t.Fatalf("len(raw)=%d want %d", len(raw), maxRawBufferedUpstreamBodyBytes)
+	}
+}
+
+func TestHandler_RawBufferedNon2xxBodyOverLimitUsesClassification(t *testing.T) {
+	t.Setenv("HUAKAI_DISPATCH_HCSF", "0")
+	doer := &anthropicBufferedDoer{
+		status: http.StatusTooManyRequests,
+		body:   strings.Repeat("x", maxRawBufferedUpstreamBodyBytes+1),
+	}
+
+	d := anthropicClientAdapterDeps(t)
+	adapters := provider.NewStaticRegistry()
+	adapters.MustRegister("anthropic_messages", &provideranthropic.PassthroughAdapter{})
+	d.Dispatcher = &gateway.UpstreamDispatcher{
+		Adapters:         adapters,
+		TransportFactory: transport.NewFactory(),
+		HTTPClient:       doer,
+	}
+	d.Forwarder = &gateway.StreamForwarder{ProtocolAdapters: gateway.BuildDefaultProtocolAdapterRegistry()}
+
+	rec := invokeHandlerPath(t, d, "/v1/messages", `{"model":"claude-3-5-sonnet","stream":false,"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d want 503 classified rate-limit response; body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "upstream_response_too_large") {
+		t.Fatalf("body=%s must not use terminal too-large error for non-2xx upstream response", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "upstream_rate_limited") {
+		t.Fatalf("body=%s want rate-limit classification", rec.Body.String())
+	}
+}
+
+type anthropicBufferedDoer struct {
+	body        string
+	status      int
+	requestPath string
+}
+
+func (d *anthropicBufferedDoer) Do(req *http.Request) (*http.Response, error) {
+	d.requestPath = req.URL.Path
+	status := d.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	return &http.Response{
+		StatusCode: status,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(d.body)),
+	}, nil
 }
 
 func TestHandler_OpenAIEndpointFamilySet(t *testing.T) {
@@ -285,6 +409,12 @@ func anthropicClientAdapterDeps(t *testing.T) ChatHandlerDeps {
 		t.Fatalf("vault.Set: %v", err)
 	}
 	d.CredentialVault = vault
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	protoReg := gateway.NewStaticProtocolAdapterRegistry()
+	protoReg.MustRegister("anthropic_messages", &protoanthropic.Adapter{})
+	d.Forwarder = &gateway.StreamForwarder{
+		ProtocolAdapters: protoReg,
+	}
 	return d
 }
 
