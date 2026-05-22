@@ -243,7 +243,7 @@ func dlqPayload(event RequestCompletionEvent, h Handler, err error) json.RawMess
 		"payload_hash":   event.PayloadHash,
 		"raw_body_hash":  event.RawBodyHash,
 		"redacted_ref":   event.RedactedBodyRef,
-		"failure_reason": errString(err),
+		"failure_reason": classifyHandlerFailure(err),
 		"created_at":     event.CreatedAt.UTC().Format(time.RFC3339Nano),
 	}
 	raw, marshalErr := json.Marshal(payload)
@@ -253,9 +253,18 @@ func dlqPayload(event RequestCompletionEvent, h Handler, err error) json.RawMess
 	return raw
 }
 
-func errString(err error) string {
+func classifyHandlerFailure(err error) string {
 	if err == nil {
 		return ""
 	}
-	return err.Error()
+	switch {
+	case errors.Is(err, ErrHandlerTimeout), errors.Is(err, context.DeadlineExceeded):
+		return "handler_timeout"
+	case errors.Is(err, context.Canceled):
+		return "handler_canceled"
+	case errors.Is(err, ErrInvalidEvent):
+		return "handler_invalid_event"
+	default:
+		return "handler_error"
+	}
 }
