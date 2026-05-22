@@ -291,8 +291,14 @@ warning(可观测信号,不阻断)。`error` **只**在根本无法构造安全 
    **handler 必须把 `Append` 的 error 原样返回**(DLQ 框架 `ProcessClaim` 见
    error 会 `MarkFailed` 并按 `retry.go` 退避重试);**严禁吞错后标 delivered**。
    - **duplicate request_id**:重放时若 `request_id` 已有持久化账本条目
-     (并发或上轮已补),worker 先 lookup;命中 → 直接判 delivered,不重复
-     Append(避免 commit-unknown 后无限重试)。
+     (并发或上轮已补),worker 先 `GetByRequestID` lookup;命中 → 直接判
+     delivered,不重复 Append(避免 commit-unknown 后无限重试)。
+     **rev12:「命中」= `GetByRequestID` 返回 `nil` 或 `ErrLedgerEntryCorrupt`**
+     —— 损坏行也是「该 request 已有持久化行」,重复 Append 会造重复条目;
+     损坏本身是 verify 路径的问题(B-15),不归重放 worker 修。
+     `ErrLedgerEntryNotFound` → 继续 Append;`Append` 若返回
+     `ErrDuplicateRequestID`(竞态)→ 同样判 delivered;其它 `Append` error
+     → 原样返回让框架重试。
 
 #### 6.0.c DLQ event envelope(rev2 新增 —— codex must-fix 3)
 
@@ -524,7 +530,7 @@ W4 全部改 HUAKAI 内部代码(`backend/`),不读参照项目源码 —— 无
 约束。W4 整波闭合后才做收尾对照。
 
 ---
-作者:Claude。日期:2026-05-22(rev11)。源波计划已 parallel-draft + 交叉评审;
+作者:Claude。日期:2026-05-22(rev12)。源波计划已 parallel-draft + 交叉评审;
 本 spec 经 codex 评审 rev0→rev1→rev2(must-fix 7→3→0,rev2
 **APPROVE-WITH-CHANGES**)+ rev3 折入 3 条非阻断小修 + rev4 修 P2(signer 轮换
 下 Deferred 不钉死 fingerprint)+ rev5 切片归属精修 + rev6 修 P2(B-13 字段级
@@ -532,5 +538,6 @@ W4 全部改 HUAKAI 内部代码(`backend/`),不读参照项目源码 —— 无
 `PrepareEntry` 的 `TenantID==0` 精度(0 是合法「无租户」语义,不作 error)+
 rev9 修 P2(`PreparedEntry` 字段 sealed,杜绝外部绕过脱敏)+ rev10 精修
 (sealed 仍提供导出只读投影 `AsLedgerEntry()`,seal 防构造不防读)+ rev11 修
-P2(`AsLedgerEntry()` 投影须深拷贝,否则别名仍可绕过 seal)。
+P2(`AsLedgerEntry()` 投影须深拷贝,否则别名仍可绕过 seal)+ rev12 精修
+DLQ 重放 worker 的 duplicate-request_id 边界(损坏行也算命中)。
 Owner 已定 fail-closed 决策(§4)并已确认 schema 迁移 `0050`(§6.0.b)。
