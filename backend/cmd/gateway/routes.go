@@ -106,6 +106,7 @@ func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 		BillingPolicyResolver: d.billingPolicyResolver,
 		CompletionBus:         d.completionBus,
 		AuditLedger:           d.auditLedger,
+		AuditLedgerDLQ:        d.dlqService,
 		Signer:                d.auditSigner,
 		ChannelHealth:         d.channelHealth,
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,

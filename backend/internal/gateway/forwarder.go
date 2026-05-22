@@ -65,13 +65,14 @@ type StreamForwarder struct {
 
 	// AuditLedger / Signer 是 T12 streaming trust-chain ledger 的可选依赖。
 	// 两者任一缺失时 graceful skip，并通过 LedgerWarning 记录一次 loss。
-	AuditLedger auditledger.Ledger
-	Signer      *sign.Signer
+	AuditLedger    auditledger.Ledger
+	AuditLedgerDLQ auditledger.DLQEnqueuer
+	Signer         *sign.Signer
 
 	// HopChainBuilder 默认走 BuildHopChain；LedgerCallback 在 ledger entry
 	// 生成后、首个 SSE chunk 写出前触发，供 HTTP handler 写 X-HUAKAI-* 头。
 	HopChainBuilder StreamingHopChainBuilder
-	LedgerCallback  func(entryID, sigFingerprint string)
+	LedgerCallback  func(auditledger.AuditLedgerResult)
 	LedgerWarning   func(code, reason string)
 }
 
@@ -641,8 +642,7 @@ func (f *StreamForwarder) emitStreamingLedger(ctx context.Context, req ForwardRe
 		f.warnLedgerLoss("audit_ledger_not_configured", "streaming trust-chain ledger skipped because audit ledger is nil")
 		return
 	}
-	switch f.AuditLedger.(type) {
-	case auditledger.NoopLedger, *auditledger.NoopLedger:
+	if auditledger.IsNoopLedger(f.AuditLedger) {
 		f.warnLedgerLoss("audit_ledger_noop", "streaming trust-chain ledger skipped because audit ledger is noop")
 		return
 	}
@@ -671,11 +671,23 @@ func (f *StreamForwarder) emitStreamingLedger(ctx context.Context, req ForwardRe
 	}
 	appended, err := f.AuditLedger.Append(ctx, prepared)
 	if err != nil {
+		if errors.Is(err, auditledger.ErrDuplicateRequestID) {
+			f.warnLedgerLoss("audit_ledger_duplicate_request_id", err.Error())
+			return
+		}
 		f.warnLedgerLoss("audit_ledger_append_failed", err.Error())
+		dlqRef, dlqErr := auditledger.EnqueuePreparedEntryToDLQ(ctx, f.AuditLedgerDLQ, prepared, err)
+		if dlqErr != nil {
+			f.warnLedgerLoss("audit_ledger_dlq_enqueue_failed", dlqErr.Error())
+			return
+		}
+		if f.LedgerCallback != nil {
+			f.LedgerCallback(auditledger.DeferredLedgerResult(dlqRef))
+		}
 		return
 	}
 	if f.LedgerCallback != nil {
-		f.LedgerCallback(appended.LedgerID, appended.PubkeyFingerprint)
+		f.LedgerCallback(auditledger.PersistedLedgerResult(appended))
 	}
 }
 

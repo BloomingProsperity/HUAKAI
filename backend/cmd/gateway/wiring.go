@@ -202,7 +202,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		claimGate:             billing.NewClaimGate(pgPool),
 		settler:               settler,
 		replayStore:           replayStore,
-		forwarder:             buildStreamForwarder(auditLedger, auditSigner),
+		forwarder:             buildStreamForwarder(auditLedger, auditSigner, dlqService),
 		credentialVault:       provider.NewPostgresCredentialVaultWithStore(pgPool, credentialStore),
 		credentialStore:       credentialStore,
 		credentialKeys:        credentialKeys,
