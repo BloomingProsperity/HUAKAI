@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"iter"
 	"strings"
@@ -77,7 +78,11 @@ func ScanSSEEvents(ctx context.Context, r io.Reader, bufferCap int) iter.Seq2[SS
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			yield(SSEEvent{}, ErrScannerOverflow)
+			if errors.Is(err, bufio.ErrTooLong) {
+				yield(SSEEvent{}, ErrScannerOverflow)
+			} else {
+				yield(SSEEvent{}, err)
+			}
 			return
 		}
 		emit()

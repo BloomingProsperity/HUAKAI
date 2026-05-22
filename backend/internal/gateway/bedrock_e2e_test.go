@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"log/slog"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -89,9 +90,17 @@ func TestBedrockE2E_TruncatedFrame_PropagatesAsScanError(t *testing.T) {
 }
 
 // TestBedrockE2E_ExceptionFrame_TerminatesWithError Bedrock exception 帧应
-// 触发 ErrBedrockException 并通过 forwarder 报错。
+// 触发 ErrBedrockException；客户端只看到 canonical error，raw payload 进日志。
 func TestBedrockE2E_ExceptionFrame_TerminatesWithError(t *testing.T) {
-	exception := encodeBedrockExceptionFrame(t, "ModelStreamErrorException", `{"message":"upstream rate limited"}`)
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(prev)
+	})
+
+	const marker = "SENSITIVE_BEDROCK_MARKER"
+	exception := encodeBedrockExceptionFrame(t, "ModelStreamErrorException", `{"message":"`+marker+` upstream rate limited"}`)
 	recorder := httptest.NewRecorder()
 	forwarder := newForwarder()
 
@@ -105,10 +114,16 @@ func TestBedrockE2E_ExceptionFrame_TerminatesWithError(t *testing.T) {
 		t.Errorf("err=%v want ErrBedrockException", err)
 	}
 	// scanner 在 yield ErrBedrockException **之前**先 emit 一条 error SSEEvent，
-	// forwarder.handleEventWithAdapter 透传到 ResponseRecorder。
+	// forwarder.handleEventWithAdapter 必须脱敏后再写入 ResponseRecorder。
 	body := recorder.Body.String()
-	if !strings.Contains(body, "rate limited") {
-		t.Errorf("exception payload 应被 emit 到 body，得 %q", body)
+	if strings.Contains(body, marker) {
+		t.Errorf("exception payload leaked to client body: %q", body)
+	}
+	if !strings.Contains(body, `"code":"upstream_error"`) {
+		t.Errorf("sanitized exception frame missing upstream_error code: %q", body)
+	}
+	if gotLog := logs.String(); !strings.Contains(gotLog, marker) {
+		t.Errorf("raw exception payload missing from internal log: %s", gotLog)
 	}
 }
 
