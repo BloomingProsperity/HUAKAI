@@ -114,6 +114,11 @@ func NewAuditVerifyHandler(d AuditVerifyDeps) http.HandlerFunc {
 			writeAuditJSONError(w, http.StatusNotFound, "audit_entry_not_found", "request_id not found")
 			return
 		}
+		if errors.Is(err, auditledger.ErrLedgerEntryCorrupt) {
+			slog.ErrorContext(r.Context(), "audit verify ledger entry corrupt", "request_id", req.RequestID, "error", err)
+			writeAuditJSONError(w, http.StatusInternalServerError, "ledger_corrupt", "audit ledger entry corrupt")
+			return
+		}
 		if err != nil {
 			slog.ErrorContext(r.Context(), "audit verify ledger lookup failed", "request_id", req.RequestID, "error", err)
 			writeAuditJSONError(w, http.StatusInternalServerError, "audit_ledger_error", "audit ledger temporarily unavailable")
