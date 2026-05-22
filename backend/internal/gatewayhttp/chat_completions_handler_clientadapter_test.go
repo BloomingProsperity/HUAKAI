@@ -234,8 +234,11 @@ func TestChatCompletionsClientAdapter_NonStreamingInvalidRequestBody(t *testing.
 	if !strings.Contains(rec.Body.String(), "invalid_request_body") {
 		t.Fatalf("body = %q; want invalid_request_body", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "messages[0].content") {
-		t.Fatalf("body = %q; want concrete adapter diagnostic", rec.Body.String())
+	if strings.Contains(rec.Body.String(), "messages[0].content") {
+		t.Fatalf("body = %q; must not expose concrete adapter diagnostic", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "request body is invalid") {
+		t.Fatalf("body = %q; want fixed invalid_request_body message", rec.Body.String())
 	}
 	if dispatcher.calls != 0 {
 		t.Fatalf("canonical dispatcher calls = %d; want 0", dispatcher.calls)

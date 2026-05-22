@@ -1,11 +1,13 @@
 package gatewayhttp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"iter"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -548,8 +550,8 @@ func TestStreamingIdempotencyReplayRecordsForwardErrorPartialStream(t *testing.T
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Header().Get("X-Huakai-Forward-Error"); got == "" {
-		t.Fatalf("X-Huakai-Forward-Error header empty; fixture must trigger fwdErr != nil, body=%s", rec.Body.String())
+	if got := rec.Header().Get("X-Huakai-Forward-Error"); got != "" {
+		t.Fatalf("X-Huakai-Forward-Error=%q want empty post-Forward dead header", got)
 	}
 	if len(settler.calls) != 1 {
 		t.Fatalf("settle calls=%d want 1 for partial delivery with forward error", len(settler.calls))
@@ -596,8 +598,8 @@ func TestStreamingIdempotencyReplaySettlesAmbiguousUsageWithDeliveredContent(t *
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Header().Get("X-Huakai-Forward-Error"); got == "" {
-		t.Fatalf("X-Huakai-Forward-Error header empty; fixture must trigger fwdErr != nil, body=%s", rec.Body.String())
+	if got := rec.Header().Get("X-Huakai-Forward-Error"); got != "" {
+		t.Fatalf("X-Huakai-Forward-Error=%q want empty post-Forward dead header", got)
 	}
 	if len(settler.calls) != 1 {
 		t.Fatalf("settle calls=%d want 1 for delivered ambiguous usage stream", len(settler.calls))
@@ -639,6 +641,61 @@ func TestStreamingIdempotencyReplaySettlesAmbiguousUsageWithDeliveredContent(t *
 	}
 }
 
+func TestStreamingForwardSettleAndAbortErrorsAreLoggedNotHeaders(t *testing.T) {
+	t.Run("forward error after delivery", func(t *testing.T) {
+		const marker = "SENSITIVE_STREAM_FORWARD_MARKER"
+		logs := captureSlogForTest(t)
+		deps := streamingReplayDeps(t, 77901, false, "", nil)
+		scanners := gateway.NewStaticStreamScannerRegistry()
+		scanners.MustRegister("openai_chat", scannerThenError{
+			event: partialOpenAIStreamingEventBeforeReadError(),
+			err:   errors.New(marker),
+		})
+		deps.Forwarder.Scanners = scanners
+
+		rec := invokeHandler(t, deps, openAIStreamingRequestBody())
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("X-Huakai-Forward-Error"); got != "" {
+			t.Fatalf("X-Huakai-Forward-Error=%q want empty", got)
+		}
+		assertLogContains(t, logs, "forward_failed", marker)
+	})
+
+	t.Run("settle error after delivery", func(t *testing.T) {
+		const marker = "SENSITIVE_STREAM_SETTLE_MARKER"
+		logs := captureSlogForTest(t)
+		deps := streamingReplayDeps(t, 77902, false, openAIStreamingFixture(), nil)
+		deps.Settler = &failingSettleSettler{err: errors.New(marker)}
+
+		rec := invokeHandler(t, deps, openAIStreamingRequestBody())
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("X-Huakai-Settle-Error"); got != "" {
+			t.Fatalf("X-Huakai-Settle-Error=%q want empty", got)
+		}
+		assertLogContains(t, logs, "settle_failed", marker)
+	})
+
+	t.Run("abort error after delivery", func(t *testing.T) {
+		const marker = "SENSITIVE_STREAM_ABORT_MARKER"
+		logs := captureSlogForTest(t)
+		deps := streamingReplayDeps(t, 77903, false, zeroTokenOpenAIStreamingFixture(), nil)
+		deps.Settler = &failingAbortSettler{err: errors.New(marker)}
+
+		rec := invokeHandler(t, deps, openAIStreamingRequestBody())
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("X-Huakai-Abort-Failed"); got != "" {
+			t.Fatalf("X-Huakai-Abort-Failed=%q want empty post-Forward dead header", got)
+		}
+		assertLogContains(t, logs, "abort_failed", marker)
+	})
+}
+
 func TestStreamingIdempotencyReplayAbortsZeroByteForwardError(t *testing.T) {
 	replayStore := billing.NewMemoryReplayStore()
 	claimID := int64(77709)
@@ -657,8 +714,8 @@ func TestStreamingIdempotencyReplayAbortsZeroByteForwardError(t *testing.T) {
 	if !strings.Contains(first.Body.String(), "stream_forward_error") {
 		t.Fatalf("first body=%s want stream_forward_error", first.Body.String())
 	}
-	if got := first.Header().Get("X-Huakai-Forward-Error"); got == "" {
-		t.Fatalf("X-Huakai-Forward-Error header empty; fixture must fail before first byte")
+	if got := first.Header().Get("X-Huakai-Forward-Error"); got != "" {
+		t.Fatalf("X-Huakai-Forward-Error=%q want empty post-Forward dead header", got)
 	}
 	if len(settler.calls) != 0 {
 		t.Fatalf("settle calls=%d want 0 for zero-byte forward error", len(settler.calls))
@@ -1014,4 +1071,35 @@ func (s *ctxSensitiveSettler) Settle(ctx context.Context, req billing.SettleRequ
 		return nil, err
 	}
 	return s.recordingSettler.Settle(ctx, req)
+}
+
+type failingSettleSettler struct {
+	recordingSettler
+	err error
+}
+
+func (s *failingSettleSettler) Settle(ctx context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {
+	_, _ = s.recordingSettler.Settle(ctx, req)
+	return nil, s.err
+}
+
+func captureSlogForTest(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(prev)
+	})
+	return &buf
+}
+
+func assertLogContains(t *testing.T, logs *bytes.Buffer, wants ...string) {
+	t.Helper()
+	got := logs.String()
+	for _, want := range wants {
+		if !strings.Contains(got, want) {
+			t.Fatalf("log output=%s missing %q", got, want)
+		}
+	}
 }

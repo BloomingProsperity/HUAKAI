@@ -9,14 +9,37 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+)
+
+const (
+	headerHuakaiAbortFailed  = "X-Huakai-Abort-Failed"
+	headerHuakaiForwardError = "X-Huakai-Forward-Error"
+	headerHuakaiSettleError  = "X-Huakai-Settle-Error"
 )
 
 func writeJSONError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = fmt.Fprintf(w, `{"error":{"code":%q,"message":%q}}`, code, message)
+}
+
+func writeLoggedJSONError(ctx context.Context, requestID string, w http.ResponseWriter, status int, code string, err error) {
+	logInternalError(ctx, requestID, code, err)
+	writeJSONError(w, status, code, clienterr.MessageFor(code))
+}
+
+func logInternalError(ctx context.Context, requestID, code string, err error) {
+	clienterr.LogInternal(ctx, requestID, code, err)
+}
+
+func setAbortFailedHeader(w http.ResponseWriter, ctx context.Context, requestID string, err error) {
+	logInternalError(ctx, requestID, clienterr.CodeAbortFailed, err)
+	if w != nil {
+		w.Header().Set(headerHuakaiAbortFailed, clienterr.CodeAbortFailed)
+	}
 }
 
 func writeNormalizedUpstreamError(w http.ResponseWriter, status int, fallbackCode string, c gateway.Classification) {

@@ -1,7 +1,10 @@
 package gatewayhttp
 
 import (
+	"context"
+	"errors"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -66,4 +69,22 @@ func TestPR4PrepareNextAttemptAfterAbortClearsReservationAndAcquisition(t *testi
 	if ex.healthKeyOK {
 		t.Fatal("healthKeyOK should be cleared for the next attempt")
 	}
+}
+
+func TestDegradeFailureIfAbortFailedUsesSafeAbortReasonAndLogsRawError(t *testing.T) {
+	const marker = "SENSITIVE_ABORT_REASON_MARKER"
+	logs := captureSlogForTest(t)
+	failure := terminalLocalAttemptFailure(409, "claim_race", "claim could not be completed", "claim_race", errors.New("claim race"))
+
+	got := degradeFailureIfAbortFailed(context.Background(), "req-abort-safe", failure, errors.New(marker))
+	if got == nil {
+		t.Fatal("degradeFailureIfAbortFailed returned nil")
+	}
+	if strings.Contains(got.AbortReason, marker) || strings.Contains(got.Decision.AbortReason, marker) {
+		t.Fatalf("abort reason leaked marker: failure=%+v", got)
+	}
+	if got.AbortReason != "claim_race;abort_failed=1" || got.Decision.AbortReason != got.AbortReason {
+		t.Fatalf("abort reason=%q decision=%q want safe abort_failed marker", got.AbortReason, got.Decision.AbortReason)
+	}
+	assertLogContains(t, logs, "req-abort-safe", "abort_failed", marker)
 }

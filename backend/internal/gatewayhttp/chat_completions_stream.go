@@ -17,6 +17,7 @@ import (
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
@@ -39,10 +40,10 @@ func (ex *chatExecution) serveL2CacheIfAvailable(w http.ResponseWriter) (bool, b
 	if err != nil {
 		if ex.reserveRes != nil {
 			if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "cache_key_error", ex.requestID, 0); abortErr != nil {
-				w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+				setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 			}
 		}
-		writeJSONError(w, http.StatusBadRequest, "cache_key_error", err.Error())
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadRequest, clienterr.CodeCacheKeyError, err)
 		return false, false
 	}
 	if cached, ok := ex.d.ResponseCache.Get(ex.ctx, ex.cacheKey); ok {
@@ -126,7 +127,7 @@ func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptO
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromDispatchError(err, classification), 0, time.Since(upstreamAttemptStartedAt), ex.requestID, nil)
 		}
-		outcome.Failure = degradeFailureIfAbortFailed(classifiedFailureFromDecision("upstream_dispatch_error", err.Error(), classification, decision, err), abortErr)
+		outcome.Failure = degradeFailureIfAbortFailed(ex.ctx, ex.requestID, classifiedFailureFromDecision(clienterr.CodeUpstreamDispatchError, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError), classification, decision, err), abortErr)
 		return outcome
 	}
 	if dispatchRes == nil || dispatchRes.UpstreamReader == nil {
@@ -134,8 +135,8 @@ func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptO
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, 0, time.Since(upstreamAttemptStartedAt), ex.requestID, nil)
 		}
-		failure := retryableLocalAttemptFailure(http.StatusBadGateway, "upstream_empty_response", "upstream returned no response body", "upstream_empty_response", gateway.UpstreamError5xx, nil)
-		outcome.Failure = degradeFailureIfAbortFailed(failure, abortErr)
+		failure := retryableLocalAttemptFailure(http.StatusBadGateway, clienterr.CodeUpstreamEmptyResponse, clienterr.MessageFor(clienterr.CodeUpstreamEmptyResponse), "upstream_empty_response", gateway.UpstreamError5xx, nil)
+		outcome.Failure = degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 		return outcome
 	}
 	defer closeDispatchResult(dispatchRes)
@@ -172,8 +173,8 @@ func (ex *chatExecution) classifyStreamingUpstreamFailure(dispatchRes *gateway.D
 	if ex.healthKeyOK {
 		recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromClassification(dispatchRes.StatusCode, classification), dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()))
 	}
-	failure := classifiedFailureFromDecision("", "upstream request failed", classification, decision, nil)
-	return degradeFailureIfAbortFailed(failure, abortErr)
+	failure := classifiedFailureFromDecision("", clienterr.MessageFor(clienterr.CodeUpstreamDispatchError), classification, decision, nil)
+	return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 }
 
 func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes *gateway.DispatchResult, startedAt time.Time, clientAdapter proto.ClientAdapter) (bool, *classifiedAttemptFailure) {
@@ -209,7 +210,7 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	streamAttempt := billing.AttemptFromGatewayDraft(true, draft)
 	writeStreamBillingHeaders(w.Header(), streamAttempt)
 	if fwdErr != nil {
-		w.Header().Set("X-Huakai-Forward-Error", fwdErr.Error())
+		logInternalError(ex.ctx, ex.requestID, clienterr.CodeForwardFailed, fwdErr)
 		if ex.healthKeyOK {
 			class := channelhealth.SignalChannelError
 			if errors.Is(fwdErr, context.DeadlineExceeded) || os.IsTimeout(fwdErr) {
@@ -232,7 +233,7 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	if settle {
 		event := ex.streamingCompletionEvent(draft, streamAttempt)
 		if _, err := settleCompletion(settleCtx, ex.d, event); err != nil {
-			w.Header().Set("X-Huakai-Settle-Error", err.Error())
+			logInternalError(settleCtx, ex.requestID, clienterr.CodeSettleFailed, err)
 		} else if replayCapture != nil && !replayCapture.overLimit() {
 			ex.recordStreamingIdempotencyReplay(ex.reserveRes.ClaimID, replayCapture.statusCode(), replayCapture.body())
 		}
@@ -244,7 +245,7 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 		observedInputTokens := ex.abortObservedInputTokens(draft)
 		streamAbortErr = ex.d.Settler.Abort(settleCtx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens)
 		if streamAbortErr != nil {
-			w.Header().Set("X-Huakai-Abort-Failed", streamAbortErr.Error())
+			logInternalError(settleCtx, ex.requestID, clienterr.CodeAbortFailed, streamAbortErr)
 		}
 	}
 	deliveryStarted := tracker.started()
@@ -257,9 +258,9 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 		if draft.EndClass == gateway.UpstreamError5xx {
 			status = http.StatusBadGateway
 		}
-		failure := retryableLocalAttemptFailure(status, "stream_forward_error", "upstream stream failed before delivery", reason, draft.EndClass, fwdErr)
+		failure := retryableLocalAttemptFailure(status, clienterr.CodeStreamForwardError, clienterr.MessageFor(clienterr.CodeStreamForwardError), reason, draft.EndClass, fwdErr)
 		failure.EndClass = draft.EndClass
-		return false, degradeFailureIfAbortFailed(failure, streamAbortErr)
+		return false, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, streamAbortErr)
 	}
 	return deliveryStarted, nil
 }
@@ -303,9 +304,9 @@ func (ex *chatExecution) translatedStreamingInboundBody(w http.ResponseWriter) (
 	clientAdapter, err := ex.streamingClientAdapter()
 	if err != nil {
 		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "streaming_adapter_unregistered", ex.requestID, 0); abortErr != nil {
-			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
-		writeJSONError(w, http.StatusServiceUnavailable, "streaming_adapter_unregistered", err.Error())
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusServiceUnavailable, clienterr.CodeStreamingAdapterUnregistered, err)
 		return nil, nil, false
 	}
 	seed := requestMetaSeed(ex.r, ex.ident, ex.clientProtocol, ex.resolved.ProtocolFamily, ex.routeID, ex.requestID, ex.acquiredAccountID, ex.acquisitionToken)
@@ -313,16 +314,16 @@ func (ex *chatExecution) translatedStreamingInboundBody(w http.ResponseWriter) (
 	canonicalReq, _, err := clientAdapter.RequestToCanonical(seedCtx, ex.body)
 	if err != nil {
 		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID, 0); abortErr != nil {
-			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
-		writeJSONError(w, http.StatusBadRequest, "invalid_request_body", err.Error())
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadRequest, clienterr.CodeInvalidRequestBody, err)
 		return nil, nil, false
 	}
 	if canonicalReq == nil {
 		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID, 0); abortErr != nil {
-			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
-		writeJSONError(w, http.StatusBadRequest, "invalid_request_body", "client adapter returned nil canonical envelope")
+		writeJSONError(w, http.StatusBadRequest, clienterr.CodeInvalidRequestBody, clienterr.MessageFor(clienterr.CodeInvalidRequestBody))
 		return nil, nil, false
 	}
 	enrichCanonicalRequestMeta(canonicalReq, ex.upstreamModelID, ex.accInfo.Platform, ex.idempotencyHeader, ex.promptHash)
@@ -334,9 +335,9 @@ func (ex *chatExecution) translatedStreamingInboundBody(w http.ResponseWriter) (
 	body, err := streamingProviderRequestBody(canonicalReq, ex.resolved.ProtocolFamily)
 	if err != nil {
 		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "streaming_translation_not_supported", ex.requestID, 0); abortErr != nil {
-			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
-		writeJSONError(w, http.StatusNotImplemented, "streaming_translation_not_supported", err.Error())
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusNotImplemented, clienterr.CodeStreamingTranslationUnsupported, err)
 		return nil, nil, false
 	}
 	return body, canonicalEventPointerClientAdapter{inner: clientAdapter}, true

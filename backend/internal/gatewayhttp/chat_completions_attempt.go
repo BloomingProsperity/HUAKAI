@@ -1,6 +1,7 @@
 package gatewayhttp
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -97,10 +99,11 @@ func terminalLocalAttemptFailure(status int, code, message, abortReason string, 
 	}, cause)
 }
 
-func degradeFailureIfAbortFailed(failure *classifiedAttemptFailure, abortErr error) *classifiedAttemptFailure {
+func degradeFailureIfAbortFailed(ctx context.Context, requestID string, failure *classifiedAttemptFailure, abortErr error) *classifiedAttemptFailure {
 	if failure == nil || abortErr == nil {
 		return failure
 	}
+	logInternalError(ctx, requestID, clienterr.CodeAbortFailed, abortErr)
 	failure.Decision.RetryableBeforeDelivery = false
 	failure.Decision.CountsAgainstAuthFailoverBudget = false
 	failure.Decision.SwitchAccount = false
@@ -113,7 +116,7 @@ func degradeFailureIfAbortFailed(failure *classifiedAttemptFailure, abortErr err
 		reason = "attempt_abort"
 	}
 	// Abort 失败时 claim 可能仍停在 reserving，禁止同一幂等键继续 retry。
-	failure.AbortReason = fmt.Sprintf("%s;abort_failed=%s", reason, abortErr.Error())
+	failure.AbortReason = reason + ";abort_failed=1"
 	failure.Decision.AbortReason = failure.AbortReason
 	return failure
 }
@@ -209,9 +212,9 @@ var retryableAttemptScopedResponseHeaders = [...]string{
 	headerHUAKAIAuditSigFingerprint,
 	headerHUAKAIStreamState,
 	headerHUAKAIDeliveredTokens,
-	"X-Huakai-Forward-Error",
-	"X-Huakai-Settle-Error",
-	"X-Huakai-Abort-Failed",
+	headerHuakaiForwardError,
+	headerHuakaiSettleError,
+	headerHuakaiAbortFailed,
 }
 
 func clearRetryableAttemptFailureHeaders(w http.ResponseWriter) {
@@ -319,11 +322,11 @@ func writeAttemptFailure(w http.ResponseWriter, failure *classifiedAttemptFailur
 		code = "upstream_" + string(failure.Classification.Class)
 	}
 	if code == "" {
-		code = "attempt_failed"
+		code = clienterr.CodeAttemptFailed
 	}
 	message := failure.ClientMessage
 	if message == "" {
-		message = "upstream request failed"
+		message = clienterr.MessageFor(code)
 	}
 	if failure.Classification.RetryAfterMs > 0 {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", (failure.Classification.RetryAfterMs+999)/1000))
