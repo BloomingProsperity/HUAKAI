@@ -239,9 +239,14 @@ entry,**不**是防读 —— 读一个已脱敏的 `PreparedEntry` 无安全风
 返回的投影必须对 `HopChain` / `ModelChain` 做**深拷贝**(新 slice + 逐元素
 深拷 `Detail`/`FeatureRefs`、新 `ModelChain` 指针)—— 仅 struct 值拷贝会让投影
 的 slice/指针与 `PreparedEntry` 内部别名,调用方改投影即改内部,`Append` 不再
-脱敏会把改动签进账本,seal 仍被绕过。W4a-2 的 DLQ 要序列化它 → 由 `auditledger` 包提供自定义 `MarshalJSON` /
-`UnmarshalJSON`(`UnmarshalJSON` 重建出的 entry 其 JSON 源本就来自已脱敏的
-`PreparedEntry`,安全)。
+脱敏会把改动签进账本,seal 仍被绕过。W4a-2 的 DLQ 要序列化它:`auditledger`
+包提供公开的 `MarshalJSON`(marshal 是只读投影,安全)+ 一个**包内不公开的
+解码函数** `decodePreparedEntryJSON`。**rev13:不提供公开 `UnmarshalJSON`**
+—— 公开 `UnmarshalJSON` 会让外部包 `json.Unmarshal(任意 JSON, &pe)` 构造出
+未脱敏的 `PreparedEntry`,重开 W4a-1 封死的 seal 漏洞;不提供公开
+`UnmarshalJSON` 时,外部对 `PreparedEntry` 做 `json.Unmarshal` 因字段不可导出
+只会得到空值,非旁路。DLQ 重放 worker 在 `auditledger` 包内,用包内
+`decodePreparedEntryJSON` 解码即可。
 
 `Append` 改为接收 `PreparedEntry`(不再内部脱敏)。调用方流程统一为:
 `prepared, err := PrepareEntry(...)` → `Append(prepared)`。
@@ -285,14 +290,30 @@ warning(可观测信号,不阻断)。`error` **只**在根本无法构造安全 
    (`internal/dlq/types.go`,非冻结包)。
 3. `LaneForKind` / `ReplicaStatusForKind`(在 `internal/dlq/types.go:97` 一带
    —— rev2 修正:不在 `service.go`)为新 kind 补映射:lane = HIGH。
-4. **重放 worker**:`cmd/gateway/lifecycle.go:248-257` `buildDLQRuntime()` 注册
-   `audit_ledger_entry` 重放 handler —— 取出 `PreparedEntry`,调
+4. **重放 worker**:`cmd/gateway/lifecycle.go` `buildDLQRuntime()` 注册
+   `audit_ledger_entry` 重放 handler —— 从 claim payload 解码,调
    `auditledger.Append` 重做写入(root/签名由 `Append` 在重放时刻按当时链头算)。
    **handler 必须把 `Append` 的 error 原样返回**(DLQ 框架 `ProcessClaim` 见
    error 会 `MarkFailed` 并按 `retry.go` 退避重试);**严禁吞错后标 delivered**。
+   - **rev14:重放路径必须重跑脱敏(codex per-commit 复审 P1)**:DLQ payload
+     是 `usage_record_dlq` 表里的**持久化数据**,不是「活的 sealed 值」。worker
+     **不得**把解码出的 payload 直接当 `PreparedEntry` 喂 `Append`(`Append`
+     已不再脱敏)。正确流程:解码 payload → 一个**原始 `LedgerEntry`** →
+     `PrepareEntry(ctx, le)` **重跑脱敏** → `Append`。理由:坏入队路径 / 手工
+     改的 DB 行可能带原始 prompt/密钥;重跑 `PrepareEntry` 对已脱敏的好数据
+     幂等(redactor 无可剥则原样、sentinel 仍 sentinel),对坏数据兜底脱敏。
+     即:DLQ 解码出口是 `LedgerEntry` 不是 `PreparedEntry`,seal 仍只由
+     `PrepareEntry` 一个入口产出。
    - **duplicate request_id**:重放时若 `request_id` 已有持久化账本条目
      (并发或上轮已补),worker 先 `GetByRequestID` lookup;命中 → 直接判
      delivered,不重复 Append(避免 commit-unknown 后无限重试)。
+   - **rev14:`Append` 重复键契约统一(codex per-commit 复审 P2)**:worker 靠
+     `ErrDuplicateRequestID` 判竞态,但 `PostgresLedger`/`AppendInTransaction`
+     当前把 request_id 唯一冲突包成通用 pg insert error。修复:
+     `AppendInTransaction` 须把 PG `23505 unique_violation`(request_id 唯一
+     约束)翻译成 `ErrDuplicateRequestID`,使 `Ledger.Append` 契约在
+     Memory / Postgres 两实现一致 —— worker 的 `errors.Is(ErrDuplicateRequestID)`
+     竞态分支才在生产环境真正生效。
      **rev12:「命中」= `GetByRequestID` 返回 `nil` 或 `ErrLedgerEntryCorrupt`**
      —— 损坏行也是「该 request 已有持久化行」,重复 Append 会造重复条目;
      损坏本身是 verify 路径的问题(B-15),不归重放 worker 修。
@@ -530,7 +551,7 @@ W4 全部改 HUAKAI 内部代码(`backend/`),不读参照项目源码 —— 无
 约束。W4 整波闭合后才做收尾对照。
 
 ---
-作者:Claude。日期:2026-05-22(rev12)。源波计划已 parallel-draft + 交叉评审;
+作者:Claude。日期:2026-05-22(rev14)。源波计划已 parallel-draft + 交叉评审;
 本 spec 经 codex 评审 rev0→rev1→rev2(must-fix 7→3→0,rev2
 **APPROVE-WITH-CHANGES**)+ rev3 折入 3 条非阻断小修 + rev4 修 P2(signer 轮换
 下 Deferred 不钉死 fingerprint)+ rev5 切片归属精修 + rev6 修 P2(B-13 字段级
@@ -539,5 +560,9 @@ W4 全部改 HUAKAI 内部代码(`backend/`),不读参照项目源码 —— 无
 rev9 修 P2(`PreparedEntry` 字段 sealed,杜绝外部绕过脱敏)+ rev10 精修
 (sealed 仍提供导出只读投影 `AsLedgerEntry()`,seal 防构造不防读)+ rev11 修
 P2(`AsLedgerEntry()` 投影须深拷贝,否则别名仍可绕过 seal)+ rev12 精修
-DLQ 重放 worker 的 duplicate-request_id 边界(损坏行也算命中)。
+DLQ 重放 worker 的 duplicate-request_id 边界(损坏行也算命中)+ rev13 改
+`PreparedEntry` 不提供公开 `UnmarshalJSON`(否则外部 json.Unmarshal 重开
+seal),DLQ 解码改包内函数 + rev14 修 P1(DLQ 重放路径解码后须重跑
+`PrepareEntry` 脱敏)+ P2(`AppendInTransaction` 把 PG 23505 翻译成
+`ErrDuplicateRequestID` 统一契约)。
 Owner 已定 fail-closed 决策(§4)并已确认 schema 迁移 `0050`(§6.0.b)。
