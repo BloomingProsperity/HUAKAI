@@ -4,6 +4,11 @@
 > 覆盖 8 个发现:GW-02 / GW-04 / GW-05 / GW-06 / GW-09(Zone A)、
 > C-12 / C-18(Zone C #12 #18)、B-11(Zone B #11)。
 > 本 spec 前置一次写全(含已知难点),目标 ≤2 轮 review 收敛。
+>
+> **rev1(2026-05-22)**:经 codex 交叉评审(APPROVE-WITH-CHANGES)后已补:
+> 漏掉的 call site(handler_headers / validate / idempotency_replay)、helper
+> 路径规则、GW-02 分类不回归测试、C-12 三类分类矩阵、B-11 `ErrHandlerTimeout`
+> 覆盖 + `-race`、C-18 全 `rawSSE` 路径覆盖、错误目录表格化。
 
 ## 1. 背景与核心风险
 
@@ -42,10 +47,13 @@ W3a 落三件事:
   文案绝不含动态内部细节(无表名、无 err 串、无上游 body)。
 - 提供 `messageForPublicCode(code string) string`:已知 code 返回固定文案,
   未知 code 返回通用兜底(`"request failed"`)。
-- code 集合由 codex 按实际 call site 归纳(下方 4.2 列了 call site)。
+- code 集合由 codex 按实际 call site 归纳(call site 清单见 §4 GW-04/GW-05)。
   现有 ad-hoc code(`registry_unknown_error` / `router_plan_error` /
   `cache_key_error` 等)**保留不改名**(客户端可能已依赖),只把它们登记进
   目录、配固定文案。**新增不删除、不改名**。
+- **目录必须以表格形式落在 `public_error.go` 顶部注释或同目录文档**:
+  每行 `code | HTTP status | 固定文案 | 覆盖测试名`。这张表是「漏登检查表」
+  —— 实现完成后逐行核对,确保每个 call site 的 code 都在表里、都有测试。
 
 ### 3.2 内部错误日志 sink(新 helper)
 
@@ -65,6 +73,17 @@ W3a 落三件事:
 2. 紧接着调 `logInternalError(ctx, requestID, code, err)` 把 raw error 落日志;
 3. `classifiedAttemptFailure` 路径:raw error 放进已有的 `Cause error` 字段
    (`chat_completions_attempt.go:64`),`ClientMessage` 只放固定文案。
+4. **helper 路径同样适用(codex 评审补)**:
+   - `retryableLocalAttemptFailure` / `terminalLocalAttemptFailure`
+     (`chat_completions_attempt.go:81/93`)的 `message` 形参,所有调用方
+     必须传固定 public 文案,**绝不传 `err.Error()`**;raw error 经 `cause` 形参
+     进 `Cause` 字段。
+   - `degradeFailureIfAbortFailed`(`chat_completions_attempt.go:100-119`)当前
+     `attempt.go:116` 把 raw `abortErr.Error()` 拼进 `AbortReason`
+     (`AbortReason` 会进 header / 日志,属公开面)。改为只写 safe 短 code
+     (如 `;abort_failed=1`),raw `abortErr` 经 `logInternalError` 落日志。
+   - `classifiedFailureFromDecision` 经由 `dispatch.go:241/251/257` 等 helper
+     间接把 `err.Error()` 放进 `ClientMessage` 的路径,一并按本规则改。
 
 ## 4. W3a 逐发现 spec
 
@@ -81,15 +100,30 @@ W3a 落三件事:
   2. `dispatch.go:406` / `handler.go:272` 两处:传给
      `classifiedFailureFromDecision` 的 message 改固定文案(按 class 选,如
      `"upstream request failed"`),raw `UpstreamHTTPError` 进 `Cause`。
-- 风险测试:构造 `UpstreamHTTPError{StatusCode:400, Body:[]byte("SENSITIVE_UPSTREAM_MARKER")}`,
-  走 buffered + HCSF 两路,断言客户端响应 body **不含** `SENSITIVE_UPSTREAM_MARKER`。
+  3. **保持分类入口顺序(codex 评审补)**:HCSF 分支
+     `chat_completions_dispatch.go:378-382`、raw buffered 分支
+     `chat_completions_handler.go:300-310` 都直接读 `.Body` 做分类。
+     `errors.As(err, **UpstreamHTTPError)` 分支必须**仍排在** generic
+     `err.Error()` 字符串分类分支之前 —— 去掉 `Error()` body 后,任何依赖
+     `Error()` 文本里上游 body 关键字的分类都会失效,必须确认分类只读 `.Body`。
+- 风险测试(两类,都要):
+  1. **不泄露**:构造 `UpstreamHTTPError{StatusCode:400, Body:[]byte("SENSITIVE_UPSTREAM_MARKER")}`,
+     走 buffered + HCSF 两路,断言客户端响应 body **不含** `SENSITIVE_UPSTREAM_MARKER`。
+  2. **分类不回归**:body 含 `invalid_grant` / rate-limit 关键字时,断言
+     仍得到正确的 retry / auth-failover / channel-health 决策 —— 证明分类
+     由 `.Body` 字段驱动,不依赖 `Error()` 字符串。
 
 ### GW-04 — err.Error() 直写客户端 JSON(S1)
 
 - 证据(逐行):`chat_completions_dispatch.go:54,71,154,178,336,343,357`;
   `chat_completions_billing.go:47,57,66,86`;`chat_completions_handler.go:297,318,329`;
-  `chat_completions_stream.go:45,307,317,338`。
+  `chat_completions_stream.go:45,307,317,338`;
+  **(codex 评审补)** `chat_completions_handler_headers.go:175,197,213,253`(JSON body)、
+  `chat_completions_validate.go:51,80`、`chat_completions_idempotency_replay.go:76`。
 - 修复:每处按 §3.3 规则改写。codex 须逐行访问、登记 code 进目录、配固定文案。
+  注意 `validate.go:51` 的 `invalid_json` 是客户端自己请求体的解析错误 ——
+  仍按从严原则:固定文案(如 `"request body is not valid JSON"`)+ 落日志,
+  不回显 parser 原文。
 - **已知难点**:个别 call site 的 err 本身可能已是安全固定串(如纯校验错误)。
   判定从严 —— **拿不准一律当不安全**(固定文案 + 落日志)。宁可多记一条日志,
   不可漏脱敏一处。
@@ -99,7 +133,8 @@ W3a 落三件事:
 ### GW-05 — err.Error() 直写 HTTP header(S1)
 
 - 证据:`X-Huakai-Abort-Failed`(`dispatch.go:249,334,341,355`;`billing.go:45`;
-  `handler.go:292,316,324`;`stream.go:305,315,322,336`)、
+  `handler.go:292,316,324`;`stream.go:305,315,322,336`;
+  **(codex 评审补)** `handler_headers.go:172,211`)、
   `X-Huakai-Forward-Error`(`stream.go:211`)、`X-Huakai-Settle-Error`(`stream.go:234`)
   全塞 `*.Error()`。
 - 修复:header value 改为**稳定短 code**(如 `abort_failed`、`forward_failed`、
@@ -148,8 +183,14 @@ W3a 落三件事:
 - **已知难点**:脱敏错误帧的 wire 形态要让客户端能解析。用最小 SSE:
   `event: error\ndata: {"error":{"code":"upstream_error","message":"upstream returned an error"}}\n\n`。
   不要尝试套 adapter(注释已说明 error 帧喂 adapter 会 JSON 解析失败)。
+- **覆盖完整性(codex 评审补)**:`handleEventWithAdapter` 内对 error 类型帧
+  必须**没有任何** `rawSSE(evt)` 直接写客户端的残留路径 —— 改完后全函数搜
+  `rawSSE`,确认 error-payload 不经任何 raw 输出。`adapter == nil` 分支
+  (`forwarder.go:257-262`)若也可能透传 error 帧,同样要先判 `evt.Type=="error"`
+  走脱敏分支。
 - 风险测试:scanner 产出 `SSEEvent{Type:"error", Data: 含 "SENSITIVE_BEDROCK_MARKER"}`,
   断言客户端 SSE 输出**不含** marker、含固定 code;断言 raw 进了日志。
+  `adapter == nil` 与 `adapter != nil` 两种情况都要测。
 
 ### C-12 — SSE scanner 把所有读错误归类成 overflow(S2)
 
@@ -177,9 +218,14 @@ W3a 落三件事:
 - **已知难点**:`StreamEndClass` 没有专门的"网络错误"枚举值。不新增枚举值
   (会牵动 usage/health 一连串 switch);复用 `UpstreamError5xx` 表达"上游侧
   断了"。若 codex 发现更贴切的既有值可用,但须在 review 说明。
-- 风险测试:`ScanSSEEvents` 喂一个在中途返回非 `ErrTooLong` IO error 的 reader,
-  断言产出的 err **不是** `ErrScannerOverflow`;`classifyScanError(该 err)`
-  断言返回的 class **不是** `ResponseEventTooLarge`。
+- 风险测试 —— **三类分类矩阵(codex 评审补),逐类断言**:
+  1. 真实单 event 超限(scanner 自己 size guard 或 `bufio.ErrTooLong`)
+     → err 是 `ErrScannerOverflow`,`classifyScanError` → `ResponseEventTooLarge`。
+  2. `context.Canceled`(ctx 取消)→ `classifyScanError` → `OrchestratorCancel`。
+  3. 普通 reader IO error(非 `ErrTooLong`,模拟 TCP reset)→ err **不是**
+     `ErrScannerOverflow`,`classifyScanError` 返回的 class **不是**
+     `ResponseEventTooLarge`(按 spec 映射到上游/网络类)。
+  三类必须分别得到**不同**的 class —— 这是 C-12 的核心:分类不能塌成一种。
 
 ### B-11 — eventbus raw handler error 进 state/DLQ + DLQ 失败被吞(S2)
 
@@ -192,10 +238,14 @@ W3a 落三件事:
   运维既无可重放 DLQ、也不知道 DLQ 丢了。
 - 修复:
   1. 新增 handler error 分类器 `classifyHandlerFailure(err error) string` —— 把
-     handler error 收敛成小枚举 sanitized code:`handler_timeout`(`context.DeadlineExceeded`)、
+     handler error 收敛成小枚举 sanitized code:`handler_timeout`、
      `handler_canceled`(`context.Canceled`)、`handler_invalid_event`(`ErrInvalidEvent`)、
      `handler_error`(兜底)。setState 的 `Error`、DLQ `FailureReason`、
      `dlqPayload` 的 `failure_reason` 全改存这个 sanitized code。
+     **(codex 评审补)** `handler_timeout` 的判定**必须覆盖 `ErrHandlerTimeout`**
+     —— eventbus 真实超时错误是 `runner.go:156` 用 `ErrHandlerTimeout`
+     (`types.go:50`)wrap 的,不是裸 `context.DeadlineExceeded`;分类器用
+     `errors.Is(err, ErrHandlerTimeout)`(并可同时收 `context.DeadlineExceeded`)。
   2. raw error:经受控内部日志(`slog`,ERROR 级,带 `event_id`/`handler_id`)
      落地 —— 不进 state、不进 DLQ 表。
   3. `bus.go:256` 的 DLQ Enqueue:接住 error。失败时:
@@ -212,7 +262,9 @@ W3a 落三件事:
       DLQ FailureReason、dlqPayload.failure_reason 三处都只有 sanitized code、
       不含 marker;
   (b) 注入一个 Enqueue 必失败的 fake DLQ → 断言 `DLQPersistFailures()` 增加、
-      对应 state.Error == `dlq_persist_failed`。
+      对应 state.Error == `dlq_persist_failed`。此测试**必须带 `-race`**
+      —— `atomic.Int64` 计数与 `setState`(走 `b.mu` mutex)是 DLQ 失败时的
+      二次状态更新,需证明与并发 handler 无竞态。
 
 ## 6. 已知难点清单(汇总,review 不必再"发现")
 
@@ -223,6 +275,10 @@ W3a 落三件事:
 5. C-18 脱敏错误帧不套 adapter(error 帧喂 adapter 会 JSON 解析失败)。
 6. B-11 eventbus 无 metrics —— 只做"可见"(日志+计数器+state 标记),记 RR-W3-002。
 7. 现有 ad-hoc client error code 一律保留不改名(客户端可能已依赖),只登记+配文案。
+8. (codex 评审补)eventbus 真实超时错误是 `ErrHandlerTimeout` 不是裸
+   `context.DeadlineExceeded` —— 分类器用 `errors.Is`。
+9. (codex 评审补)`UpstreamHTTPError` 分类必须由 `.Body` 字段驱动;`errors.As`
+   分支排在 generic `err.Error()` 分类之前;GW-02 必须有"分类不回归"测试。
 
 ## 7. 验收标准
 
@@ -231,8 +287,12 @@ W3a / W3b 各自:
 - 改动包 + 受影响包 `go test ... -race -count=1` exit 0;最后跑一次全量
   `go test ./...` exit 0。
 - 每个发现的"风险测试"全部新增并通过(见各节)。
-- 全仓 grep 自检:`writeJSONError(` 与 `classifiedFailureFromDecision(` 的
-  message 实参不再出现 `.Error()`;`w.Header().Set("X-Huakai-*", *.Error())` 清零。
+- 全仓 grep 自检(codex 评审补,范围扩到所有 `chat_completions*.go`):
+  - `writeJSONError(` 的 message 实参不再出现 `.Error()`;
+  - `classifiedFailureFromDecision(` / `retryableLocalAttemptFailure(` /
+    `terminalLocalAttemptFailure(` 的 message 实参不再出现 `.Error()`;
+  - `ClientMessage` / `AbortReason` 赋值不再拼 `.Error()`;
+  - `w.Header().Set("X-Huakai-*", *.Error())` 清零。
 - codex per-commit review(`codex exec review --uncommitted`)无 S0/S1 真实缺陷。
 
 ## 8. 提交方式
