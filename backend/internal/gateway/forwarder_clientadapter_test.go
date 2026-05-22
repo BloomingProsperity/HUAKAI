@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -116,6 +117,16 @@ func TestForwarderNilClientAdapterFallbackRawPassthrough(t *testing.T) {
 	}
 }
 
+func TestHandleEventWithAdapterSanitizesProtocolErrorWhenAdapterNil(t *testing.T) {
+	assertProtocolErrorSanitized(t, nil)
+}
+
+func TestHandleEventWithAdapterSanitizesProtocolErrorBeforeAdapter(t *testing.T) {
+	assertProtocolErrorSanitized(t, &forwarderClientAdapterUpstreamStub{
+		err: errors.New("adapter must not receive protocol error"),
+	})
+}
+
 // forwarderClientAdapterUpstreamStub 只负责把 scanner 事件映射成测试指定的 canonical events。
 type forwarderClientAdapterUpstreamStub struct {
 	events []any
@@ -171,4 +182,58 @@ func (a *recordingForwarderClientAdapter) FinalizeClientStream(_ context.Context
 	a.finalizeCalls++
 	a.finalizeState = state
 	return a.finalChunks, nil
+}
+
+func assertProtocolErrorSanitized(t *testing.T, adapter proto.UpstreamAdapter) {
+	t.Helper()
+
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(prev)
+	})
+
+	const marker = "SENSITIVE_BEDROCK_MARKER"
+	f := newForwarder()
+	rec := httptest.NewRecorder()
+	terminalSeen, wrote, delivered, err := f.handleEventWithAdapter(
+		context.Background(),
+		adapter,
+		SSEEvent{Type: "error", Data: []byte(`{"message":"` + marker + `"}`)},
+		rec,
+		nil,
+		nil,
+		&UsageAccumulator{},
+		ForwardRequest{RequestID: "req-c18"},
+	)
+	if err != nil {
+		t.Fatalf("handleEventWithAdapter returned err=%v", err)
+	}
+	if terminalSeen {
+		t.Fatalf("protocol error frame should not masquerade as terminal model event")
+	}
+	if !wrote {
+		t.Fatalf("sanitized error frame was not written")
+	}
+	if delivered != 0 {
+		t.Fatalf("protocol error frame delivered chunks=%d want 0", delivered)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, marker) {
+		t.Fatalf("client SSE leaked raw protocol error payload: %q", body)
+	}
+	if !strings.Contains(body, `"code":"upstream_error"`) {
+		t.Fatalf("client SSE missing fixed upstream_error code: %q", body)
+	}
+	if strings.Count(body, "event: error") != 1 {
+		t.Fatalf("client SSE should contain exactly one canonical error event, got %q", body)
+	}
+	gotLog := logs.String()
+	if !strings.Contains(gotLog, marker) {
+		t.Fatalf("internal log did not retain raw protocol error payload: %s", gotLog)
+	}
+	if !strings.Contains(gotLog, "req-c18") || !strings.Contains(gotLog, "upstream_error") {
+		t.Fatalf("internal log missing request/code context: %s", gotLog)
+	}
 }

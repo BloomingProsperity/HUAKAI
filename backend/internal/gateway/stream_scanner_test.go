@@ -5,6 +5,8 @@ package gateway
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
 	"strings"
 	"testing"
 )
@@ -160,4 +162,76 @@ func TestSSEStreamScanner_DelegatesToScanSSEEvents(t *testing.T) {
 			t.Errorf("[%d] Data wrapped=%q direct=%q", i, wrapped[i].Data, direct[i].Data)
 		}
 	}
+}
+
+func TestScanSSEEventsClassifiesOverflowCancelAndNetworkReadErrorsDistinctly(t *testing.T) {
+	overflowErr := lastScanError(ScanSSEEvents(context.Background(), strings.NewReader("data: "+strings.Repeat("X", 64)+"\n\n"), 16))
+	if !errors.Is(overflowErr, ErrScannerOverflow) {
+		t.Fatalf("oversize event err=%v want ErrScannerOverflow", overflowErr)
+	}
+	overflowClass, _ := classifyScanError(overflowErr)
+	if overflowClass != ResponseEventTooLarge {
+		t.Fatalf("overflow class=%q want %q", overflowClass, ResponseEventTooLarge)
+	}
+
+	cancelClass, _ := classifyScanError(context.Canceled)
+	if cancelClass != OrchestratorCancel {
+		t.Fatalf("context.Canceled class=%q want %q", cancelClass, OrchestratorCancel)
+	}
+
+	resetErr := &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset by peer")}
+	scanErr := lastScanError(ScanSSEEvents(context.Background(), &failingSSEReader{
+		chunk: []byte("data: ok\n\n"),
+		err:   resetErr,
+	}, 0))
+	if scanErr == nil {
+		t.Fatalf("network reader error was not propagated")
+	}
+	if errors.Is(scanErr, ErrScannerOverflow) {
+		t.Fatalf("network reader error collapsed into overflow: %v", scanErr)
+	}
+	networkClass, _ := classifyScanError(scanErr)
+	if networkClass != UpstreamError5xx {
+		t.Fatalf("network reader class=%q want %q", networkClass, UpstreamError5xx)
+	}
+	if networkClass == ResponseEventTooLarge {
+		t.Fatalf("network reader error must not classify as response_event_too_large")
+	}
+
+	classes := map[StreamEndClass]bool{
+		overflowClass: true,
+		cancelClass:   true,
+		networkClass:  true,
+	}
+	if len(classes) != 3 {
+		t.Fatalf("overflow/cancel/network classes must stay distinct; got overflow=%q cancel=%q network=%q", overflowClass, cancelClass, networkClass)
+	}
+}
+
+type failingSSEReader struct {
+	chunk []byte
+	err   error
+	sent  bool
+}
+
+func (r *failingSSEReader) Read(p []byte) (int, error) {
+	if !r.sent {
+		r.sent = true
+		return copy(p, r.chunk), nil
+	}
+	if r.err == nil {
+		return 0, io.EOF
+	}
+	return 0, r.err
+}
+
+func lastScanError(seq func(yield func(SSEEvent, error) bool)) error {
+	var last error
+	seq(func(_ SSEEvent, err error) bool {
+		if err != nil {
+			last = err
+		}
+		return true
+	})
+	return last
 }

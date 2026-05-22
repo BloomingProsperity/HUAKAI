@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
+	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
@@ -77,6 +79,11 @@ type StreamForwarder struct {
 // ErrNilStreamScannerRegistry 表示 StreamForwarder.Scanners 未注入。
 // 与 ErrNilProtocolAdapterRegistry 同形态：fail-loud，禁止静默 fallback。
 var ErrNilStreamScannerRegistry = errors.New("gateway: StreamForwarder.Scanners 未注入")
+
+const (
+	streamProtocolErrorCode    = "upstream_error"
+	streamProtocolErrorMessage = "upstream returned an error"
+)
 
 // Forward 执行 F-GW-002 Phase A 扫描、Phase B 处理、Phase C 分类、
 // Phase C-bis drain，并返回 Phase D draft。
@@ -239,8 +246,8 @@ func (f *StreamForwarder) BufferedResponse(ctx context.Context, canonical *proto
 // 旁路 adapter 的特殊事件类型：
 //   - evt.Type == "error" — protocol-level error 帧（如 Bedrock exception
 //     scanner 在 yield ErrBedrockException 前 emit 的 error SSEEvent）。
-//     这些 payload 不是 model 事件，喂给 adapter 会触发 JSON 解析失败。
-//     做法：直接 raw passthrough 给客户端，让客户端看到原始错误体。
+//     这些 payload 不是 model 事件，喂给 adapter 会触发 JSON 解析失败；
+//     客户端只接收 canonical public error，raw payload 进内部日志。
 func (f *StreamForwarder) handleEventWithAdapter(
 	ctx context.Context,
 	adapter proto.UpstreamAdapter,
@@ -253,23 +260,20 @@ func (f *StreamForwarder) handleEventWithAdapter(
 ) (bool, bool, int64, error) {
 	terminalSeen := evt.Type == "message_stop" || string(evt.Data) == "[DONE]"
 
+	if evt.Type == "error" {
+		clienterr.LogInternal(ctx, req.RequestID, streamProtocolErrorCode, fmt.Errorf("upstream stream error event: %s", evt.Data))
+		if err := writeAndFlush(w, canonicalStreamErrorSSE()); err != nil {
+			return terminalSeen, false, 0, ErrClientDisconnect
+		}
+		return terminalSeen, true, 0, nil
+	}
+
 	// adapter 为 nil 时透传原始 SSE（保留既有 nil-adapter 行为）
 	if adapter == nil {
 		if err := writeAndFlush(w, rawSSE(evt)); err != nil {
 			return terminalSeen, false, 0, ErrClientDisconnect
 		}
 		return terminalSeen, true, 1, nil
-	}
-
-	// protocol-level error 帧旁路 adapter，直接 raw passthrough。
-	// 例如 Bedrock binary stream 的 :message-type=exception 帧由
-	// BedrockEventStreamScanner 翻为 SSEEvent{Type:"error", Data:<exception payload>}。
-	// 这些 payload 是 protocol 错误体（非 model 事件），不应被 adapter 解析。
-	if evt.Type == "error" {
-		if err := writeAndFlush(w, rawSSE(evt)); err != nil {
-			return terminalSeen, false, 0, ErrClientDisconnect
-		}
-		return terminalSeen, true, 0, nil
 	}
 
 	canonicalEvents, _, err := adapter.ProviderEventToCanonicalEvents(ctx, evt.Data, upstreamState)
@@ -501,9 +505,22 @@ func classifyScanError(err error) (StreamEndClass, error) {
 		return UpstreamError5xx, err
 	case errors.Is(err, context.Canceled):
 		return OrchestratorCancel, err
+	case isNetworkReadError(err):
+		return UpstreamError5xx, err
 	default:
 		return UnknownTermination, err
 	}
+}
+
+func isNetworkReadError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
 }
 
 func canonicalDeliveredChunks(v any) int64 {
@@ -562,6 +579,13 @@ func rawSSE(evt SSEEvent) []byte {
 		return []byte(fmt.Sprintf("data: %s\n\n", evt.Data))
 	}
 	return []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", evt.Type, evt.Data))
+}
+
+func canonicalStreamErrorSSE() []byte {
+	return []byte(`event: error
+data: {"error":{"code":"` + streamProtocolErrorCode + `","message":"` + streamProtocolErrorMessage + `"}}
+
+`)
 }
 
 func writeAndFlush(w http.ResponseWriter, b []byte) error {
