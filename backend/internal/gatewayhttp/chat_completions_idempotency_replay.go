@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 )
 
 // maxIdempotencyReplayBodyBytes 是持久重放记录存储的响应体上限; 超限的响应不
@@ -73,7 +75,7 @@ func (ex *chatExecution) serveIdempotentReplay(w http.ResponseWriter, claimID in
 	if err != nil {
 		// 存储故障 (PG 不可用等) 不能伪装成 409 客户端
 		// 冲突 — 返 503 让客户端正确退避重试。
-		writeJSONError(w, http.StatusServiceUnavailable, "replay_lookup_failed", err.Error())
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusServiceUnavailable, clienterr.CodeReplayLookupFailed, err)
 		return true
 	}
 	if !ok || rec == nil {

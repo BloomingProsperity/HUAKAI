@@ -13,6 +13,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/cache_routing"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
@@ -51,7 +52,7 @@ func (ex *chatExecution) prepareRoute(w http.ResponseWriter) bool {
 		return false
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "registry_unknown_error", err.Error())
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, clienterr.CodeRegistryUnknownError, err)
 		return false
 	}
 	ex.resolved = resolved
@@ -68,7 +69,7 @@ func (ex *chatExecution) prepareRoute(w http.ResponseWriter) bool {
 		Features: router.RequestFeatures{Stream: ex.req.Stream},
 	})
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "router_plan_error", err.Error())
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, clienterr.CodeRouterPlanError, err)
 		return false
 	}
 	if len(plan.Attempts) == 0 {
@@ -151,7 +152,7 @@ func (ex *chatExecution) reserveClaim(w http.ResponseWriter) bool {
 	ex.ensureIdempotencyState()
 	predictedCost, err := ex.predictedCompletionCost()
 	if err != nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "pricing_unavailable", err.Error())
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, err)
 		return false
 	}
 
@@ -175,7 +176,7 @@ func (ex *chatExecution) reserveClaim(w http.ResponseWriter) bool {
 		return false
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "reserve_error", err.Error())
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, clienterr.CodeReserveError, err)
 		return false
 	}
 	if reserveRes.IdempotencyHit {
@@ -238,35 +239,35 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 	})
 	if errors.Is(err, pool.ErrNoEligibleAccount) || errors.Is(err, pool.ErrNoSlotAvailable) || errors.Is(err, pool.ErrAllChannelsDegraded) {
 		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pool_no_capacity", ex.requestID, 0)
-		failure := retryableLocalAttemptFailure(http.StatusServiceUnavailable, "no_capacity", err.Error(), "pool_no_capacity", gateway.UpstreamError5xx, err)
+		failure := retryableLocalAttemptFailure(http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity), "pool_no_capacity", gateway.UpstreamError5xx, err)
 		failure.RetryAfterSeconds = 5
-		return degradeFailureIfAbortFailed(failure, abortErr)
+		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 	}
 	if errors.Is(err, pool.ErrClaimRace) {
 		// claim 被并发路径抢占移出 reserving — 这是预期内
 		// 竞态, 不是 internal error。 返 409 + Retry-After 让 client 幂等重试。
 		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "claim_race", ex.requestID, 0); abortErr != nil && w != nil {
-			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
-		failure := terminalLocalAttemptFailure(http.StatusConflict, "claim_race", err.Error(), "claim_race", err)
+		failure := terminalLocalAttemptFailure(http.StatusConflict, clienterr.CodeClaimRace, clienterr.MessageFor(clienterr.CodeClaimRace), "claim_race", err)
 		failure.RetryAfterSeconds = 1
 		return failure
 	}
 	if err != nil {
 		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pool_select_error", ex.requestID, 0)
-		failure := retryableLocalAttemptFailure(http.StatusInternalServerError, "pool_select_error", err.Error(), "pool_select_error", gateway.UpstreamError5xx, err)
-		return degradeFailureIfAbortFailed(failure, abortErr)
+		failure := retryableLocalAttemptFailure(http.StatusInternalServerError, clienterr.CodePoolSelectError, clienterr.MessageFor(clienterr.CodePoolSelectError), "pool_select_error", gateway.UpstreamError5xx, err)
+		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 	}
 	if selRes != nil && selRes.WaitPlan != nil {
 		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "queue_wait", ex.requestID, 0)
-		failure := retryableLocalAttemptFailure(http.StatusTooManyRequests, "queue_wait", "pool returned wait plan; retry later", "queue_wait", gateway.UpstreamRateLimit, nil)
+		failure := retryableLocalAttemptFailure(http.StatusTooManyRequests, clienterr.CodeQueueWait, clienterr.MessageFor(clienterr.CodeQueueWait), "queue_wait", gateway.UpstreamRateLimit, nil)
 		failure.RetryAfterSeconds = retryAfterSecondsForWaitPlan(selRes.WaitPlan)
-		return degradeFailureIfAbortFailed(failure, abortErr)
+		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 	}
 	if selRes == nil || selRes.AccountID == 0 {
 		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pool_select_no_account", ex.requestID, 0)
-		failure := retryableLocalAttemptFailure(http.StatusServiceUnavailable, "no_capacity", "pool returned no account", "pool_select_no_account", gateway.UpstreamError5xx, nil)
-		return degradeFailureIfAbortFailed(failure, abortErr)
+		failure := retryableLocalAttemptFailure(http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity), "pool_select_no_account", gateway.UpstreamError5xx, nil)
+		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 	}
 	ex.selRes = selRes
 	ex.acquiredAccountID = selRes.AccountID
@@ -289,8 +290,8 @@ func (ex *chatExecution) resolveCredential() *classifiedAttemptFailure {
 		if errors.Is(err, provider.ErrAccountNotFound) {
 			status = http.StatusServiceUnavailable
 		}
-		failure := retryableLocalAttemptFailure(status, "credential_resolve_error", "upstream credential unavailable", "credential_resolve_error", gateway.UpstreamError5xx, err)
-		return degradeFailureIfAbortFailed(failure, abortErr)
+		failure := retryableLocalAttemptFailure(status, clienterr.CodeCredentialResolveError, clienterr.MessageFor(clienterr.CodeCredentialResolveError), "credential_resolve_error", gateway.UpstreamError5xx, err)
+		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 	}
 	if accInfo.AccountID == 0 {
 		accInfo.AccountID = ex.acquiredAccountID
@@ -331,16 +332,16 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 	canonicalReq, _, err := ex.clientAdapter.RequestToCanonical(seedCtx, ex.body)
 	if err != nil {
 		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID, 0); abortErr != nil {
-			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
-		writeJSONError(w, http.StatusBadRequest, "invalid_request_body", err.Error())
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadRequest, clienterr.CodeInvalidRequestBody, err)
 		return nil, nil, false
 	}
 	if canonicalReq == nil {
 		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID, 0); abortErr != nil {
-			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
-		writeJSONError(w, http.StatusBadRequest, "invalid_request_body", "client adapter returned nil canonical envelope")
+		writeJSONError(w, http.StatusBadRequest, clienterr.CodeInvalidRequestBody, clienterr.MessageFor(clienterr.CodeInvalidRequestBody))
 		return nil, nil, false
 	}
 	enrichCanonicalRequestMeta(canonicalReq, ex.upstreamModelID, ex.accInfo.Platform, ex.idempotencyHeader, ex.promptHash)
@@ -352,10 +353,10 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 	dispatcher := hcsfDispatcher(ex.d)
 	if dispatcher == nil {
 		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "non_streaming_not_yet_wired", ex.requestID, 0); abortErr != nil {
-			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
-		writeJSONError(w, http.StatusServiceUnavailable, "non_streaming_not_yet_wired",
-			fmt.Sprintf("dispatcher lacks HCSF dispatch support for client_protocol=%q protocol_family=%q", ex.clientProtocol, ex.resolved.ProtocolFamily))
+		err := fmt.Errorf("dispatcher lacks HCSF dispatch support for client_protocol=%q protocol_family=%q", ex.clientProtocol, ex.resolved.ProtocolFamily)
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusServiceUnavailable, clienterr.CodeNonStreamingNotYetWired, err)
 		return nil, nil, false
 	}
 	dispatchCtx := gateway.ContextWithHCSFDispatchInput(seedCtx, gateway.HCSFDispatchInput{
@@ -367,8 +368,8 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 	})
 	bufferedEnv, err := dispatcher.DispatchHCSF(dispatchCtx, canonicalReq)
 	if err != nil {
-		// 把上游真实 status / header / body 透传到 client + health classification,
-		// 保留 401/429 retry 语义 + cooldown / rate-limit 信号。
+		// 上游真实 status / header / body 只用于 retry 与 health classification;
+		// client 只拿脱敏后的 code/message。
 		var upstreamErr *gateway.UpstreamHTTPError
 		clientStatus := http.StatusBadGateway
 		healthStatus := 0
@@ -403,8 +404,8 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		if upstreamErr != nil {
 			code = ""
 		}
-		failure := classifiedFailureFromDecision(code, err.Error(), classification, decision, err)
-		return nil, degradeFailureIfAbortFailed(failure, abortErr), false
+		failure := classifiedFailureFromDecision(code, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError), classification, decision, err)
+		return nil, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr), false
 	}
 	return ex.finalizeBufferedEnvelope(w, bufferedEnv, 0, startedAt)
 }
@@ -415,8 +416,8 @@ func (ex *chatExecution) finalizeBufferedEnvelope(w http.ResponseWriter, env *pr
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, statusCode, time.Since(startedAt), ex.requestID, nil)
 		}
-		failure := retryableLocalAttemptFailure(http.StatusBadGateway, "upstream_empty_response", "dispatcher returned no buffered HCSF response", "upstream_empty_response", gateway.UpstreamError5xx, nil)
-		return nil, degradeFailureIfAbortFailed(failure, abortErr), false
+		failure := retryableLocalAttemptFailure(http.StatusBadGateway, clienterr.CodeUpstreamEmptyResponse, clienterr.MessageFor(clienterr.CodeUpstreamEmptyResponse), "upstream_empty_response", gateway.UpstreamError5xx, nil)
+		return nil, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr), false
 	}
 	setAccountingModelRequested(env, ex.req.Model)
 	setAccountingModelRouteDecided(env, ex.forwardReq.Model)

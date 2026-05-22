@@ -16,6 +16,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
@@ -42,9 +43,9 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 	ledgerEntry, err := submitAuditLedgerEntry(ex.ctx, ex.d, bufferedEnv, ex.ident.TenantID, ex.requestID)
 	if err != nil {
 		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "audit_ledger_error", ex.requestID, 0); abortErr != nil {
-			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
-		writeJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, clienterr.CodeAuditLedgerError, err)
 		return markAttemptOutcomeDelivered(outcome)
 	}
 	seed := requestMetaSeed(ex.r, ex.ident, ex.clientProtocol, ex.resolved.ProtocolFamily, ex.routeID, ex.requestID, ex.acquiredAccountID, ex.acquisitionToken)
@@ -52,18 +53,18 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 	clientBody, _, err := ex.clientAdapter.CanonicalToClientResponse(seedCtx, bufferedEnv)
 	if err != nil {
 		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "canonical_response_error", ex.requestID, 0); abortErr != nil {
-			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
-		writeJSONError(w, http.StatusBadGateway, "canonical_response_error", err.Error())
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadGateway, clienterr.CodeCanonicalResponseError, err)
 		return markAttemptOutcomeDelivered(outcome)
 	}
 	cacheEnvelope, cacheEnvelopeOK := encodeL2CacheEnvelope(bufferedEnv)
 	actualCost, err := ex.actualCompletionCost(usageFromBufferedEnvelope(bufferedEnv))
 	if err != nil {
 		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pricing_unavailable", ex.requestID, 0); abortErr != nil {
-			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
-		writeJSONError(w, http.StatusServiceUnavailable, "pricing_unavailable", err.Error())
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, err)
 		return markAttemptOutcomeDelivered(outcome)
 	}
 	settleReq := ex.nonStreamingSettleRequest(bufferedEnv, actualCost, ex.selRes.RoutingReasonJSON)
@@ -83,7 +84,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		AuditSignatureFingerprint: ledgerFingerprint(ledgerEntry),
 		SettleRequest:             settleReq,
 	}); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "settle_error", err.Error())
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, clienterr.CodeSettleError, err)
 		return markAttemptOutcomeDelivered(outcome)
 	}
 	// 持久幂等重放: 存原始响应供同 Idempotency-Key 重试路由无关地重放。

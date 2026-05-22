@@ -55,6 +55,31 @@ func TestHandler_DefaultHCSFOn(t *testing.T) {
 	}
 }
 
+func TestHandler_HCSFUpstreamHTTPErrorDoesNotLeakBody(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	const marker = "SENSITIVE_UPSTREAM_MARKER"
+	dispatcher := &mockCanonicalBufferedDispatcher{
+		err: &gateway.UpstreamHTTPError{
+			StatusCode: http.StatusUnauthorized,
+			Body:       []byte(`{"error":"invalid_grant","detail":"` + marker + `"}`),
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+		},
+	}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = dispatcher
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d want 401; body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), marker) {
+		t.Fatalf("response leaked upstream marker: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "upstream_oauth_invalid_grant") {
+		t.Fatalf("body=%s want oauth invalid grant classification code", rec.Body.String())
+	}
+}
+
 func TestHandler_EnvOffHCSFOff(t *testing.T) {
 	t.Setenv("HUAKAI_DISPATCH_HCSF", "0")
 	dispatcher := &mockCanonicalBufferedDispatcher{}
@@ -158,9 +183,10 @@ func TestReadRawBufferedUpstreamBodyTooLargeReturnsTruncatedBody(t *testing.T) {
 
 func TestHandler_RawBufferedNon2xxBodyOverLimitUsesClassification(t *testing.T) {
 	t.Setenv("HUAKAI_DISPATCH_HCSF", "0")
+	const marker = "SENSITIVE_TRUNCATED_UPSTREAM_MARKER"
 	doer := &anthropicBufferedDoer{
 		status: http.StatusTooManyRequests,
-		body:   strings.Repeat("x", maxRawBufferedUpstreamBodyBytes+1),
+		body:   marker + strings.Repeat("x", maxRawBufferedUpstreamBodyBytes+1),
 	}
 
 	d := anthropicClientAdapterDeps(t)
@@ -182,6 +208,9 @@ func TestHandler_RawBufferedNon2xxBodyOverLimitUsesClassification(t *testing.T) 
 	}
 	if !strings.Contains(rec.Body.String(), "upstream_rate_limited") {
 		t.Fatalf("body=%s want rate-limit classification", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), marker) {
+		t.Fatalf("body=%s must not leak truncated upstream marker", rec.Body.String())
 	}
 }
 

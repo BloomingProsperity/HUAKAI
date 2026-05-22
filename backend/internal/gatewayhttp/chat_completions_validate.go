@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
 
@@ -38,7 +39,7 @@ type chatValidatedRequest struct {
 }
 
 func validateChatCompletionsRequest(w http.ResponseWriter, r *http.Request, ctx context.Context) (chatValidatedRequest, bool) {
-	body, ok := readChatRequestBody(w, r)
+	body, ok := readChatRequestBody(w, r, ctx)
 	if !ok {
 		return chatValidatedRequest{}, false
 	}
@@ -48,7 +49,7 @@ func validateChatCompletionsRequest(w http.ResponseWriter, r *http.Request, ctx 
 
 	var req chatRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		writeLoggedJSONError(ctx, middleware.GetReqID(ctx), w, http.StatusBadRequest, clienterr.CodeInvalidJSON, err)
 		return chatValidatedRequest{}, false
 	}
 	clientProtocol, clientAdapter, ok := validateClientProtocol(w, r, req)
@@ -72,12 +73,12 @@ func validateChatCompletionsRequest(w http.ResponseWriter, r *http.Request, ctx 
 	}, true
 }
 
-func readChatRequestBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+func readChatRequestBody(w http.ResponseWriter, r *http.Request, ctx context.Context) ([]byte, bool) {
 	// 保留客户端原始 body，后续 dispatcher 直接交给 provider adapter。
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "body_read_error", err.Error())
+		writeLoggedJSONError(ctx, middleware.GetReqID(ctx), w, http.StatusBadRequest, clienterr.CodeBodyReadError, err)
 		return nil, false
 	}
 	return body, true

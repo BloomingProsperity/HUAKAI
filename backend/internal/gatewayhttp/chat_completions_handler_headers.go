@@ -14,6 +14,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
+	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
@@ -169,10 +170,10 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		if err != nil {
 			if in.ReserveResult != nil {
 				if abortErr := d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error", in.RequestID, 0); abortErr != nil {
-					w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+					setAbortFailedHeader(w, ctx, in.RequestID, abortErr)
 				}
 			}
-			writeJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())
+			writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, clienterr.CodeAuditLedgerError, err)
 			return true
 		}
 		// cache 命中是成功请求 (返 200 缓存体), claim 必须以 committed (零成本)
@@ -194,7 +195,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 				SnapshotVersion: in.PlanSnapshot,
 			}
 			if commitErr := d.Settler.CommitCacheHit(ctx, cacheHitReq); commitErr != nil {
-				writeJSONError(w, http.StatusInternalServerError, "cache_settle_error", commitErr.Error())
+				writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, clienterr.CodeCacheSettleError, commitErr)
 				return true
 			}
 		}
@@ -208,9 +209,9 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 	}
 	if err != nil {
 		if abortErr := d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error", in.RequestID, 0); abortErr != nil {
-			w.Header().Set("X-Huakai-Abort-Failed", abortErr.Error())
+			setAbortFailedHeader(w, ctx, in.RequestID, abortErr)
 		}
-		writeJSONError(w, http.StatusInternalServerError, "audit_ledger_error", err.Error())
+		writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, clienterr.CodeAuditLedgerError, err)
 		return true
 	}
 	actualCost := decimal.Zero
@@ -250,7 +251,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		AuditSignatureFingerprint: ledgerFingerprint(ledgerEntry),
 		SettleRequest:             settleReq,
 	}); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "settle_error", err.Error())
+		writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, clienterr.CodeSettleError, err)
 		return true
 	}
 	w.Header().Set("Content-Type", "application/json")

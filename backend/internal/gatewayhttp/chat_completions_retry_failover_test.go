@@ -326,8 +326,9 @@ func TestPR5RawBufferedDispatchTimeoutAbortReasonMatchesRetryDecision(t *testing
 	}
 }
 
-func TestPR5ClaimRaceAbortFailureSurfacesHeader(t *testing.T) {
-	settler := &failingAbortSettler{err: errors.New("abort unavailable")}
+func TestPR5ClaimRaceAbortFailureSurfacesSafeHeader(t *testing.T) {
+	const marker = "SENSITIVE_ABORT_MARKER"
+	settler := &failingAbortSettler{err: errors.New("abort unavailable: " + marker)}
 	deps := clientAdapterDeps(t)
 	deps.Selector = claimRaceSelector{}
 	deps.Settler = settler
@@ -339,8 +340,10 @@ func TestPR5ClaimRaceAbortFailureSurfacesHeader(t *testing.T) {
 	if got := rec.Header().Get("Retry-After"); got != "1" {
 		t.Fatalf("Retry-After=%q want 1", got)
 	}
-	if got := rec.Header().Get("X-Huakai-Abort-Failed"); !strings.Contains(got, "abort unavailable") {
-		t.Fatalf("X-Huakai-Abort-Failed=%q want abort failure detail", got)
+	if got := rec.Header().Get("X-Huakai-Abort-Failed"); got != "abort_failed" {
+		t.Fatalf("X-Huakai-Abort-Failed=%q want abort_failed", got)
+	} else if strings.Contains(got, marker) {
+		t.Fatalf("X-Huakai-Abort-Failed leaked marker: %q", got)
 	}
 	if len(settler.aborts) != 1 || settler.aborts[0].reason != "claim_race" {
 		t.Fatalf("aborts=%+v want one claim_race abort", settler.aborts)
