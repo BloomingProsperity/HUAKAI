@@ -2,9 +2,15 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
+)
+
+var (
+	ErrStormControllerUnavailable = errors.New("auth: storm controller unavailable")
+	ErrStormScopeNotImplemented   = errors.New("auth: storm scope not implemented")
 )
 
 // StormController enforces refresh storm budgets. This slice implements
@@ -21,7 +27,7 @@ func NewStormController(queries *dbauth.Queries) *StormController {
 // function is idempotent and intentionally best-effort.
 func (c *StormController) Acquire(ctx context.Context, tenantID, accountID int64) (func(), Outcome, error) {
 	if c == nil || c.queries == nil {
-		panic("TODO: wire sqlc queries before using account storm controller")
+		return nil, OutcomeStormBudgetExhausted, ErrStormControllerUnavailable
 	}
 
 	budget, err := c.queries.GetOrCreateAccountStormBudget(ctx, dbauth.GetOrCreateAccountStormBudgetParams{
@@ -51,9 +57,9 @@ func (c *StormController) Acquire(ctx context.Context, tenantID, accountID int64
 }
 
 func (c *StormController) AcquireProviderEndpoint(ctx context.Context, tenantID int64, providerCode, endpointFingerprint string) (func(), Outcome, error) {
-	panic("TODO: provider-endpoint storm scope deferred")
+	return nil, OutcomeStormBudgetExhausted, ErrStormScopeNotImplemented
 }
 
 func (c *StormController) AcquireGlobal(ctx context.Context, tenantID int64) (func(), Outcome, error) {
-	panic("TODO: global storm scope deferred")
+	return nil, OutcomeStormBudgetExhausted, ErrStormScopeNotImplemented
 }

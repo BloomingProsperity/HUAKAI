@@ -242,6 +242,10 @@ func (l *ledgerSpy) GetByRequestID(context.Context, string) (auditledger.LedgerE
 	return auditledger.LedgerEntry{}, auditledger.ErrLedgerEntryNotFound
 }
 
+func (l *ledgerSpy) GetByRequestIDAndTenantScope(context.Context, string, string) (auditledger.LedgerEntry, error) {
+	return auditledger.LedgerEntry{}, auditledger.ErrLedgerEntryNotFound
+}
+
 func (l *ledgerSpy) LatestMerkleRoot(context.Context) ([32]byte, error) {
 	return auditledger.ZeroRoot, nil
 }

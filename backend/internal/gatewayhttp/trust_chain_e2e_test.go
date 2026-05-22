@@ -118,6 +118,13 @@ func TestE2E_X_HUAKAI_响应头存在并指向真ledger(t *testing.T) {
 	if !strings.Contains(verifyHeader, "ledger-id="+url.QueryEscape(ledgerID)) {
 		t.Fatalf("%s=%q does not point at ledger-id %q", headerHUAKAIVerify, verifyHeader, ledgerID)
 	}
+	verifyURL, err := url.Parse(verifyHeader)
+	if err != nil {
+		t.Fatalf("%s=%q parse error: %v", headerHUAKAIVerify, verifyHeader, err)
+	}
+	if got, want := verifyURL.Query().Get("tenant_scope_ref"), auditledger.TenantScopeRef(trustE2ETenantID); got != want {
+		t.Fatalf("%s tenant_scope_ref=%q want %q", headerHUAKAIVerify, got, want)
+	}
 }
 
 func TestE2E_verify_endpoint_往返(t *testing.T) {
@@ -127,7 +134,7 @@ func TestE2E_verify_endpoint_往返(t *testing.T) {
 	defer resp.Body.Close()
 	ledgerID := resp.Header.Get(headerHUAKAILedger)
 	var got trustE2EVerifyResponse
-	env.getJSON(t, "/v1/audit/verify?ledger-id="+url.QueryEscape(ledgerID), &got)
+	env.getJSON(t, resp.Header.Get(headerHUAKAIVerify), &got)
 
 	if got.LedgerEntry.LedgerID != ledgerID {
 		t.Fatalf("verify ledger_id=%q want %q", got.LedgerEntry.LedgerID, ledgerID)
@@ -157,7 +164,7 @@ func TestE2E_篡改后_签名验证失败(t *testing.T) {
 	}
 
 	var got trustE2EVerifyResponse
-	env.getJSON(t, "/v1/audit/verify?ledger-id="+url.QueryEscape(ledgerID), &got)
+	env.getJSON(t, resp.Header.Get(headerHUAKAIVerify), &got)
 	if got.SignatureValid {
 		t.Fatalf("signature_valid=true after tamper; response=%+v", got)
 	}
@@ -364,6 +371,21 @@ func (l *trustE2ELedger) GetByRequestID(ctx context.Context, requestID string) (
 	return cloneLedgerEntry(entry), nil
 }
 
+func (l *trustE2ELedger) GetByRequestIDAndTenantScope(ctx context.Context, requestID, tenantScopeRef string) (auditledger.LedgerEntry, error) {
+	entry, err := l.GetByRequestID(ctx, requestID)
+	if err != nil {
+		return auditledger.LedgerEntry{}, err
+	}
+	entryScope := entry.TenantScopeRef
+	if entryScope == "" {
+		entryScope = auditledger.TenantScopeRef(entry.TenantID)
+	}
+	if entryScope == "" || entryScope != tenantScopeRef {
+		return auditledger.LedgerEntry{}, auditledger.ErrLedgerEntryNotFound
+	}
+	return entry, nil
+}
+
 func (l *trustE2ELedger) GetByLedgerID(ledgerID string) (auditledger.LedgerEntry, error) {
 	l.mu.RLock()
 	requestID, ok := l.byID[ledgerID]
@@ -554,7 +576,13 @@ func trustE2EHeaderMiddleware(ledger *trustE2ELedger, next http.HandlerFunc) htt
 				if entry, err := ledger.GetByRequestID(r.Context(), requestID); err == nil {
 					rec.Header().Set(headerHUAKAILedger, entry.LedgerID)
 					rec.Header().Set(headerHUAKAISigFP, entry.PubkeyFingerprint)
-					rec.Header().Set(headerHUAKAIVerify, "/v1/audit/verify?ledger-id="+url.QueryEscape(entry.LedgerID))
+					query := url.Values{}
+					query.Set("ledger-id", entry.LedgerID)
+					query.Set("request_id", entry.RequestID)
+					if scopeRef := auditledger.TenantScopeRef(entry.TenantID); scopeRef != "" {
+						query.Set("tenant_scope_ref", scopeRef)
+					}
+					rec.Header().Set(headerHUAKAIVerify, "/v1/audit/verify?"+query.Encode())
 				}
 			}
 		}

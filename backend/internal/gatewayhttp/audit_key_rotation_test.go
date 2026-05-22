@@ -42,7 +42,7 @@ func TestAT_AUDIT_001_050_LedgerVerifyHistoricalKeyAfterRotation(t *testing.T) {
 		t.Fatalf("rotate signer: %v", err)
 	}
 
-	rec := invokeAuditVerifyWithDeps(AuditVerifyStaticDeps{Ledger: &auditVerifyLedgerStub{entry: entry}, Registry: registry}, "/v1/audit/verify?request_id=req-historical-key")
+	rec := invokeAuditVerifyWithDeps(AuditVerifyStaticDeps{Ledger: &auditVerifyLedgerStub{entry: entry}, Registry: registry}, "/v1/audit/verify?request_id=req-historical-key&tenant_scope_ref="+auditledger.TenantScopeRef(7))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -67,7 +67,7 @@ func TestAT_AUDIT_001_051_LedgerVerifyUnknownFingerprint(t *testing.T) {
 	rec := invokeAuditVerifyWithDeps(AuditVerifyStaticDeps{
 		Ledger:   &auditVerifyLedgerStub{entry: entry},
 		Registry: auditledger.NewMemoryPubkeyRegistry(),
-	}, "/v1/audit/verify?request_id=req-unknown-signer")
+	}, "/v1/audit/verify?request_id=req-unknown-signer&tenant_scope_ref="+auditledger.TenantScopeRef(7))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -200,7 +200,7 @@ func TestAT_AUDIT_001_054_LedgerVerifyRejectsSignatureOutsideKeyWindow(t *testin
 		t.Fatalf("append: %v", err)
 	}
 
-	rec := invokeAuditVerifyWithDeps(AuditVerifyStaticDeps{Ledger: &auditVerifyLedgerStub{entry: entry}, Registry: registry}, "/v1/audit/verify?request_id=req-outside-key-window")
+	rec := invokeAuditVerifyWithDeps(AuditVerifyStaticDeps{Ledger: &auditVerifyLedgerStub{entry: entry}, Registry: registry}, "/v1/audit/verify?request_id=req-outside-key-window&tenant_scope_ref="+auditledger.TenantScopeRef(7))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -264,6 +264,16 @@ type auditVerifyLedgerStub struct {
 
 func (s *auditVerifyLedgerStub) GetByRequestID(_ context.Context, requestID string) (auditledger.LedgerEntry, error) {
 	if s.entry.RequestID != requestID {
+		return auditledger.LedgerEntry{}, auditledger.ErrLedgerEntryNotFound
+	}
+	return s.entry, nil
+}
+
+func (s *auditVerifyLedgerStub) GetByRequestIDAndTenantScope(_ context.Context, requestID, tenantScopeRef string) (auditledger.LedgerEntry, error) {
+	if s.entry.RequestID != requestID {
+		return auditledger.LedgerEntry{}, auditledger.ErrLedgerEntryNotFound
+	}
+	if tenantScopeRef != auditledger.TenantScopeRef(s.entry.TenantID) {
 		return auditledger.LedgerEntry{}, auditledger.ErrLedgerEntryNotFound
 	}
 	return s.entry, nil

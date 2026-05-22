@@ -3,7 +3,7 @@ package gatewayhttp
 import (
 	"context"
 	"net/http"
-	"strings"
+	"net/url"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
@@ -58,7 +58,19 @@ func TestChatCompletions_AuditLedgerAppendWritesHeaders(t *testing.T) {
 		t.Fatalf("%s=%q want %q", headerHUAKAIAuditSigFingerprint, got, signer.Fingerprint())
 	}
 	verifyHeader := rec.Header().Get(headerHUAKAIAuditVerify)
-	if !strings.Contains(verifyHeader, "ledger-id=") || !strings.Contains(verifyHeader, "request_id=") {
+	verifyURL, err := url.Parse(verifyHeader)
+	if err != nil {
+		t.Fatalf("%s=%q parse error: %v", headerHUAKAIAuditVerify, verifyHeader, err)
+	}
+	query := verifyURL.Query()
+	if query.Get("ledger-id") == "" || query.Get("request_id") == "" {
 		t.Fatalf("%s=%q want ledger-id and request_id", headerHUAKAIAuditVerify, verifyHeader)
+	}
+	if got, want := query.Get("tenant_scope_ref"), auditledger.TenantScopeRef(7); got != want {
+		t.Fatalf("%s tenant_scope_ref=%q want %q in %q", headerHUAKAIAuditVerify, got, want, verifyHeader)
+	}
+	verifyRec := invokeAuditVerify(t, ledger, verifyHeader)
+	if verifyRec.Code != http.StatusOK {
+		t.Fatalf("advertised verify link status=%d body=%s link=%q", verifyRec.Code, verifyRec.Body.String(), verifyHeader)
 	}
 }

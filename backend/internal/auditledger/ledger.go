@@ -20,6 +20,10 @@ type Ledger interface {
 	// not found 返回 ErrLedgerEntryNotFound。
 	GetByRequestID(ctx context.Context, requestID string) (LedgerEntry, error)
 
+	// GetByRequestIDAndTenantScope 通过 request_id + tenant_scope_ref 取出
+	// 对应 entry；公开 verify API 必须使用这个租户范围化查询。
+	GetByRequestIDAndTenantScope(ctx context.Context, requestID, tenantScopeRef string) (LedgerEntry, error)
+
 	// LatestMerkleRoot 返回当前链尾 Merkle root；空 ledger 返回 ZeroRoot。
 	LatestMerkleRoot(ctx context.Context) ([32]byte, error)
 
@@ -48,6 +52,11 @@ func (NoopLedger) Append(ctx context.Context, entry LedgerEntry) (LedgerEntry, e
 
 // GetByRequestID 永远返回 not found。
 func (NoopLedger) GetByRequestID(ctx context.Context, requestID string) (LedgerEntry, error) {
+	return LedgerEntry{}, ErrLedgerEntryNotFound
+}
+
+// GetByRequestIDAndTenantScope 永远返回 not found。
+func (NoopLedger) GetByRequestIDAndTenantScope(ctx context.Context, requestID, tenantScopeRef string) (LedgerEntry, error) {
 	return LedgerEntry{}, ErrLedgerEntryNotFound
 }
 
@@ -176,6 +185,32 @@ func (m *MemoryLedger) GetByRequestID(ctx context.Context, requestID string) (Le
 		return LedgerEntry{}, ErrLedgerEntryNotFound
 	}
 	return m.chain[idx], nil
+}
+
+// GetByRequestIDAndTenantScope 通过 request_id + tenant_scope_ref 取出 entry。
+func (m *MemoryLedger) GetByRequestIDAndTenantScope(ctx context.Context, requestID, tenantScopeRef string) (LedgerEntry, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	idx, ok := m.byReq[requestID]
+	if !ok {
+		return LedgerEntry{}, ErrLedgerEntryNotFound
+	}
+	entry := m.chain[idx]
+	if !tenantScopeMatches(entry, tenantScopeRef) {
+		return LedgerEntry{}, ErrLedgerEntryNotFound
+	}
+	return entry, nil
+}
+
+func tenantScopeMatches(entry LedgerEntry, tenantScopeRef string) bool {
+	if tenantScopeRef == "" {
+		return false
+	}
+	entryScope := entry.TenantScopeRef
+	if entryScope == "" {
+		entryScope = TenantScopeRef(entry.TenantID)
+	}
+	return entryScope == tenantScopeRef
 }
 
 // LatestMerkleRoot 返回当前链尾的 Merkle root。

@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
@@ -18,6 +19,7 @@ import (
 
 type auditVerifyLedger interface {
 	GetByRequestID(context.Context, string) (auditledger.LedgerEntry, error)
+	GetByRequestIDAndTenantScope(context.Context, string, string) (auditledger.LedgerEntry, error)
 	LatestMerkleRoot(context.Context) ([32]byte, error)
 	Size(context.Context) int
 }
@@ -102,7 +104,12 @@ func NewAuditVerifyHandler(d AuditVerifyDeps) http.HandlerFunc {
 			writeAuditJSONError(w, http.StatusBadRequest, "missing_request_id", "request_id required")
 			return
 		}
-		entry, err := ledger.GetByRequestID(r.Context(), req.RequestID)
+		tenantScopeRef := strings.TrimSpace(req.TenantScopeRef)
+		if tenantScopeRef == "" {
+			writeAuditJSONError(w, http.StatusBadRequest, "missing_tenant_scope_ref", "tenant_scope_ref required")
+			return
+		}
+		entry, err := ledger.GetByRequestIDAndTenantScope(r.Context(), req.RequestID, tenantScopeRef)
 		if errors.Is(err, auditledger.ErrLedgerEntryNotFound) {
 			writeAuditJSONError(w, http.StatusNotFound, "audit_entry_not_found", "request_id not found")
 			return
@@ -112,12 +119,20 @@ func NewAuditVerifyHandler(d AuditVerifyDeps) http.HandlerFunc {
 			writeAuditJSONError(w, http.StatusInternalServerError, "audit_ledger_error", "audit ledger temporarily unavailable")
 			return
 		}
-		if scope := req.TenantScopeRef; scope != "" && scope != auditledger.TenantScopeRef(entry.TenantID) {
+		if !auditEntryMatchesTenantScope(entry, tenantScopeRef) {
 			writeAuditJSONError(w, http.StatusNotFound, "audit_entry_not_found", "request_id not found")
 			return
 		}
 		writeAuditJSON(w, http.StatusOK, auditVerifyResponseWithRegistry(r.Context(), entry, auditPubkeyRegistryFromDeps(d)))
 	}
+}
+
+func auditEntryMatchesTenantScope(entry auditledger.LedgerEntry, tenantScopeRef string) bool {
+	entryScope := entry.TenantScopeRef
+	if entryScope == "" {
+		entryScope = auditledger.TenantScopeRef(entry.TenantID)
+	}
+	return entryScope != "" && entryScope == tenantScopeRef
 }
 
 func auditVerifyRequestFromHTTP(w http.ResponseWriter, r *http.Request) (AuditVerifyRequest, bool) {

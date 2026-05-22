@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -26,6 +28,7 @@ const (
 	antigravityRequestTimeout = 8 * time.Second
 	antigravityLockWait       = 750 * time.Millisecond
 	antigravityTempUnsched    = 5 * time.Minute
+	oauthErrorBodyMaxBytes    = 512
 	antigravityLockScope      = "account"
 	staticAccountType         = "upstream_static"
 	oauthAccountType          = "oauth"
@@ -36,6 +39,28 @@ var (
 	ErrRefreshUnavailable   = errors.New("token refresh unavailable")
 	ErrRefreshLockContended = errors.New("refresh already in progress")
 	ErrAccountUnavailable   = errors.New("provider account unavailable")
+	ErrOAuthEndpointBlocked = errors.New("oauth_endpoint_blocked")
+	lookupOAuthIPAddrs      = func(ctx context.Context, host string) ([]net.IPAddr, error) {
+		return net.DefaultResolver.LookupIPAddr(ctx, host)
+	}
+	oauthSpecialUseDenyPrefixes = []netip.Prefix{
+		netip.MustParsePrefix("0.0.0.0/8"),
+		netip.MustParsePrefix("192.0.0.0/24"),
+		netip.MustParsePrefix("192.0.2.0/24"),
+		netip.MustParsePrefix("192.88.99.0/24"),
+		netip.MustParsePrefix("198.18.0.0/15"),
+		netip.MustParsePrefix("198.51.100.0/24"),
+		netip.MustParsePrefix("203.0.113.0/24"),
+		netip.MustParsePrefix("240.0.0.0/4"),
+		netip.MustParsePrefix("2001::/23"),
+		netip.MustParsePrefix("2001:db8::/32"),
+		netip.MustParsePrefix("2002::/16"),
+		netip.MustParsePrefix("3fff::/20"),
+		netip.MustParsePrefix("5f00::/16"),
+		netip.MustParsePrefix("64:ff9b::/96"),
+		netip.MustParsePrefix("64:ff9b:1::/48"),
+		netip.MustParsePrefix("100::/64"),
+	}
 )
 
 type TokenCache interface {
@@ -97,9 +122,6 @@ type AntigravityTokenProvider struct {
 }
 
 func NewAntigravityTokenProvider(store AccountCredentialStore, audit AuditWriter, cache TokenCache, lock RefreshLock, marker AccountStateMarker, client *http.Client, logger *zap.Logger) *AntigravityTokenProvider {
-	if client == nil {
-		client = http.DefaultClient
-	}
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -109,7 +131,7 @@ func NewAntigravityTokenProvider(store AccountCredentialStore, audit AuditWriter
 		cache:     cache,
 		lock:      lock,
 		marker:    marker,
-		client:    client,
+		client:    newSSRFProtectedOAuthClient(client),
 		logger:    logger,
 		now:       time.Now,
 		sanitizer: OAuthErrorSanitizer{},
@@ -268,6 +290,10 @@ func (p *AntigravityTokenProvider) refresh(ctx context.Context, cred antigravity
 	if strings.TrimSpace(cred.OAuthEndpoint) == "" || strings.TrimSpace(cred.RefreshToken) == "" {
 		return antigravityTokenResponse{}, ErrRefreshUnavailable
 	}
+	endpoint, err := validateOAuthEndpoint(cred.OAuthEndpoint)
+	if err != nil {
+		return antigravityTokenResponse{}, err
+	}
 	form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {cred.RefreshToken}}
 	if strings.TrimSpace(cred.ClientID) != "" {
 		form.Set("client_id", cred.ClientID)
@@ -275,13 +301,16 @@ func (p *AntigravityTokenProvider) refresh(ctx context.Context, cred antigravity
 	if strings.TrimSpace(cred.ClientSecret) != "" {
 		form.Set("client_secret", cred.ClientSecret)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cred.OAuthEndpoint, strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return antigravityTokenResponse{}, p.sanitizer.SanitizeError(err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := p.client.Do(req)
 	if err != nil {
+		if errors.Is(err, ErrOAuthEndpointBlocked) {
+			return antigravityTokenResponse{}, ErrOAuthEndpointBlocked
+		}
 		return antigravityTokenResponse{}, p.sanitizer.SanitizeError(err)
 	}
 	defer resp.Body.Close()
@@ -290,7 +319,7 @@ func (p *AntigravityTokenProvider) refresh(ctx context.Context, cred antigravity
 		return antigravityTokenResponse{}, p.sanitizer.SanitizeError(readErr)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return antigravityTokenResponse{}, p.sanitizer.SanitizeError(fmt.Errorf("oauth refresh status %d: %s", resp.StatusCode, string(body)))
+		return antigravityTokenResponse{}, p.sanitizer.SanitizeError(classifiedOAuthRefreshError(resp.StatusCode, body, p.sanitizer))
 	}
 	var wire struct {
 		AccessToken  string          `json:"access_token"`
@@ -306,6 +335,167 @@ func (p *AntigravityTokenProvider) refresh(ctx context.Context, cred antigravity
 		return antigravityTokenResponse{}, p.sanitizer.SanitizeError(err)
 	}
 	return antigravityTokenResponse{AccessToken: wire.AccessToken, RefreshToken: wire.RefreshToken, ExpiresAt: expiresAt}, nil
+}
+
+func validateOAuthEndpoint(raw string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return "", ErrOAuthEndpointBlocked
+	}
+	return u.String(), nil
+}
+
+func classifiedOAuthRefreshError(statusCode int, body []byte, sanitizer OAuthErrorSanitizer) error {
+	snippet := strings.TrimSpace(string(body))
+	truncated := false
+	if len(snippet) > oauthErrorBodyMaxBytes {
+		snippet = snippet[:oauthErrorBodyMaxBytes]
+		truncated = true
+	}
+	if snippet == "" {
+		return fmt.Errorf("oauth_refresh_upstream_error status=%d body_class=empty", statusCode)
+	}
+	snippet = sanitizer.Sanitize(snippet)
+	return fmt.Errorf("oauth_refresh_upstream_error status=%d body_class=non_2xx body_redacted=%q truncated=%t", statusCode, snippet, truncated)
+}
+
+func newSSRFProtectedOAuthClient(base *http.Client) *http.Client {
+	if base == nil {
+		base = http.DefaultClient
+	}
+	clone := *base
+	transport := &http.Transport{}
+	if defaultTransport, ok := http.DefaultTransport.(*http.Transport); ok && defaultTransport != nil {
+		transport = defaultTransport.Clone()
+	}
+	if existing, ok := base.Transport.(*http.Transport); ok && existing != nil {
+		transport = existing.Clone()
+	} else if base.Transport != nil {
+		// OAuth SSRF 防护必须安装到 *http.Transport.DialContext 才能在拨号层校验目标 IP。
+		// 非 *http.Transport 的自定义 RoundTripper 在这里有意不继承，避免绕过拨号级防护。
+	}
+	dial := transport.DialContext
+	if dial == nil {
+		dial = (&net.Dialer{}).DialContext
+	}
+	// OAuth refresh 携带 client_secret/refresh_token，必须直连真实 token endpoint；
+	// 禁用代理避免只校验到代理 IP 后把密钥通过 CONNECT 转发到租户可控内网地址。
+	transport.Proxy = nil
+	transport.DialContext = ssrfGuardedDialContext(dial)
+	transport.DialTLSContext = nil
+	transport.DialTLS = nil
+	clone.Transport = transport
+	clone.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &clone
+}
+
+func ssrfGuardedDialContext(base func(context.Context, string, string) (net.Conn, error)) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		dialAddresses, err := resolvePublicOAuthDialAddresses(ctx, address)
+		if err != nil {
+			return nil, err
+		}
+		var lastDialErr error
+		for _, dialAddress := range dialAddresses {
+			conn, err := base(ctx, network, dialAddress)
+			if err != nil {
+				lastDialErr = err
+				continue
+			}
+			if !isPublicRemoteAddr(conn.RemoteAddr()) {
+				_ = conn.Close()
+				return nil, ErrOAuthEndpointBlocked
+			}
+			return conn, nil
+		}
+		if lastDialErr != nil {
+			return nil, lastDialErr
+		}
+		return nil, ErrOAuthEndpointBlocked
+	}
+}
+
+func resolvePublicOAuthDialAddresses(ctx context.Context, address string) ([]string, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, ErrOAuthEndpointBlocked
+	}
+	resolved, err := lookupOAuthIPAddrs(ctx, host)
+	if err != nil || len(resolved) == 0 {
+		return nil, ErrOAuthEndpointBlocked
+	}
+	dialAddresses := make([]string, 0, len(resolved))
+	for _, candidate := range resolved {
+		if !isPublicOAuthIP(candidate.IP) {
+			return nil, ErrOAuthEndpointBlocked
+		}
+		dialAddresses = append(dialAddresses, net.JoinHostPort(candidate.IP.String(), port))
+	}
+	if len(dialAddresses) == 0 {
+		return nil, ErrOAuthEndpointBlocked
+	}
+	return dialAddresses, nil
+}
+
+func isPublicRemoteAddr(addr net.Addr) bool {
+	var ip net.IP
+	switch a := addr.(type) {
+	case *net.TCPAddr:
+		ip = a.IP
+	case *net.UDPAddr:
+		ip = a.IP
+	default:
+		return false
+	}
+	return isPublicOAuthIP(ip)
+}
+
+func isPublicOAuthIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	ip = ip.To16()
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsPrivate() || ip.IsUnspecified() || ip.IsMulticast() || !ip.IsGlobalUnicast() {
+		return false
+	}
+	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1]&0xc0 == 0x40 {
+		return false
+	}
+	if isOAuthSpecialUseIP(ip) {
+		return false
+	}
+	return true
+}
+
+func isOAuthSpecialUseIP(ip net.IP) bool {
+	addr, ok := oauthNetIPAddr(ip)
+	if !ok {
+		return false
+	}
+	for _, prefix := range oauthSpecialUseDenyPrefixes {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+func oauthNetIPAddr(ip net.IP) (netip.Addr, bool) {
+	// IPv4-mapped IPv6 地址按 IPv4 归类，确保映射到特殊用途 IPv4 时仍被拒绝。
+	if v4 := ip.To4(); v4 != nil {
+		return netip.AddrFromSlice(v4)
+	}
+	v6 := ip.To16()
+	if v6 == nil {
+		return netip.Addr{}, false
+	}
+	return netip.AddrFromSlice(v6)
 }
 
 func (p *AntigravityTokenProvider) responseExpiry(raw json.RawMessage, explicit string) (time.Time, error) {

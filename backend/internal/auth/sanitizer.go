@@ -13,7 +13,9 @@ var (
 	jwtTokenPattern    = regexp.MustCompile(`\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`)
 	openAIOrgPattern   = regexp.MustCompile(`\borg_[A-Za-z0-9_-]{4,}\b`)
 	anthropicPattern   = regexp.MustCompile(`\bant-[A-Za-z0-9_-]{8,}\b`)
-	labeledSecret      = regexp.MustCompile(`(?i)\b(?:bearer|access_token|refresh_token|id_token|token)\s*[:=]\s*["']?[^"'\s,;]+`)
+	jsonSecretPattern  = regexp.MustCompile(`(?i)("(?:bearer|access_token|refresh_token|id_token|token|client_secret|client_assertion|password|secret|authorization)"\s*:\s*)(?:"(?:[^"\\]|\\.)*"|[^,\s}]+)`)
+	authLabelPattern   = regexp.MustCompile(`(?i)\b(authorization\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^,;\r\n]+)`)
+	labeledSecret      = regexp.MustCompile(`(?i)\b((?:bearer|access_token|refresh_token|id_token|token|client_secret|client_assertion|password|secret)\s*[:=]\s*)("[^"]*"|'[^']*'|[^&"'\s,;}]+)`)
 )
 
 type OAuthErrorSanitizer struct{}
@@ -27,7 +29,9 @@ func (OAuthErrorSanitizer) Sanitize(message string) string {
 	msg = jwtTokenPattern.ReplaceAllString(msg, redactedToken)
 	msg = openAIOrgPattern.ReplaceAllString(msg, redactedToken)
 	msg = anthropicPattern.ReplaceAllString(msg, redactedToken)
-	msg = labeledSecret.ReplaceAllString(msg, redactedToken)
+	msg = jsonSecretPattern.ReplaceAllString(msg, `${1}"`+redactedToken+`"`)
+	msg = authLabelPattern.ReplaceAllString(msg, `${1}`+redactedToken)
+	msg = labeledSecret.ReplaceAllString(msg, `${1}`+redactedToken)
 	return msg
 }
 
