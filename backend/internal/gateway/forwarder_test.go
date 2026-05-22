@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
+	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/shopspring/decimal"
@@ -526,9 +527,12 @@ func TestStreamingLedgerCallbackBeforeFirstChunk(t *testing.T) {
 	f := newForwarder()
 	f.AuditLedger = ledger
 	f.Signer = signer
-	f.LedgerCallback = func(entryID, sigFingerprint string) {
-		writer.Header().Set("X-Test-Ledger-ID", entryID)
-		writer.Header().Set("X-Test-Sig-Fingerprint", sigFingerprint)
+	f.LedgerCallback = func(result auditledger.AuditLedgerResult) {
+		if result.State != auditledger.LedgerResultStatePersisted {
+			t.Fatalf("LedgerCallback state=%v want Persisted", result.State)
+		}
+		writer.Header().Set("X-Test-Ledger-ID", result.LedgerID)
+		writer.Header().Set("X-Test-Sig-Fingerprint", result.Fingerprint)
 	}
 	upstream := sseBytes(messageStart("msg-order"), textDelta(0, "first"), messageStop())
 	if _, err := f.Forward(ctx, bytes.NewReader(upstream), writer, req); err != nil {
@@ -554,7 +558,7 @@ func TestStreamingNilLedgerGracefulSkip(t *testing.T) {
 	callbackCalled := false
 	f := newForwarder()
 	f.Signer = signer
-	f.LedgerCallback = func(_, _ string) { callbackCalled = true }
+	f.LedgerCallback = func(auditledger.AuditLedgerResult) { callbackCalled = true }
 	f.LedgerWarning = func(code, _ string) { warnings = append(warnings, code) }
 
 	upstream := sseBytes(messageStart("msg-nil-ledger"), textDelta(0, "ok"), messageStop())
@@ -566,6 +570,52 @@ func TestStreamingNilLedgerGracefulSkip(t *testing.T) {
 	}
 	if len(warnings) != 1 || warnings[0] != "audit_ledger_not_configured" {
 		t.Fatalf("warnings=%v want [audit_ledger_not_configured]", warnings)
+	}
+}
+
+func TestStreamingLedgerAppendFailureEnqueuesDLQAndCallbacksDeferred(t *testing.T) {
+	// Risk killed: C-14 Append failure must not be warning-only; it must enqueue
+	// the prepared intent and give the caller a Deferred result. Mutation
+	// self-check: deleting the DLQ enqueue leaves events empty and callback
+	// state unset, so this test fails while the stream itself can still finish.
+	ctx := context.Background()
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	req := anthropicForwardRequest(7, 42)
+	req.RequestID = "req-stream-ledger-dlq"
+	dlqSink := &recordingStreamAuditLedgerDLQ{id: 727}
+	var callback auditledger.AuditLedgerResult
+	var warnings []string
+
+	f := newForwarder()
+	f.AuditLedger = &failingStreamAppendLedger{appendErr: errors.New("ledger unavailable")}
+	f.AuditLedgerDLQ = dlqSink
+	f.Signer = signer
+	f.LedgerCallback = func(result auditledger.AuditLedgerResult) { callback = result }
+	f.LedgerWarning = func(code, _ string) { warnings = append(warnings, code) }
+	rec := httptest.NewRecorder()
+	upstream := sseBytes(messageStart("msg-dlq"), textDelta(0, "first"), messageStop())
+
+	if _, err := f.Forward(ctx, bytes.NewReader(upstream), rec, req); err != nil {
+		t.Fatalf("Forward: %v", err)
+	}
+	if rec.Body.Len() == 0 {
+		t.Fatal("stream body is empty; fixture must prove request still completed")
+	}
+	if len(dlqSink.events) != 1 {
+		t.Fatalf("DLQ events=%d want 1", len(dlqSink.events))
+	}
+	event := dlqSink.events[0]
+	if event.EventKind != dlq.EventKindAuditLedgerEntry || event.IdempotencyKey != "audit_ledger:req-stream-ledger-dlq" {
+		t.Fatalf("DLQ envelope mismatch: %+v", event)
+	}
+	if callback.State != auditledger.LedgerResultStateDeferred || callback.DLQRef != "audit_ledger_dlq:727" || callback.Fingerprint != "" {
+		t.Fatalf("callback result=%+v want Deferred DLQRef without fingerprint", callback)
+	}
+	if len(warnings) == 0 || warnings[0] != "audit_ledger_append_failed" {
+		t.Fatalf("warnings=%v want append failure signal", warnings)
 	}
 }
 
@@ -765,6 +815,42 @@ func (w *firstChunkHeaderWriter) Write(p []byte) (int, error) {
 }
 
 func (w *firstChunkHeaderWriter) Flush() {}
+
+type failingStreamAppendLedger struct {
+	appendErr error
+}
+
+func (l *failingStreamAppendLedger) Append(context.Context, auditledger.PreparedEntry) (auditledger.LedgerEntry, error) {
+	return auditledger.LedgerEntry{}, l.appendErr
+}
+
+func (l *failingStreamAppendLedger) GetByRequestID(context.Context, string) (auditledger.LedgerEntry, error) {
+	return auditledger.LedgerEntry{}, auditledger.ErrLedgerEntryNotFound
+}
+
+func (l *failingStreamAppendLedger) GetByRequestIDAndTenantScope(context.Context, string, string) (auditledger.LedgerEntry, error) {
+	return auditledger.LedgerEntry{}, auditledger.ErrLedgerEntryNotFound
+}
+
+func (l *failingStreamAppendLedger) LatestMerkleRoot(context.Context) ([32]byte, error) {
+	return auditledger.ZeroRoot, nil
+}
+
+func (l *failingStreamAppendLedger) Size(context.Context) int { return 0 }
+
+type recordingStreamAuditLedgerDLQ struct {
+	id     int64
+	events []dlq.Event
+	err    error
+}
+
+func (q *recordingStreamAuditLedgerDLQ) Enqueue(_ context.Context, event dlq.Event) (int64, error) {
+	q.events = append(q.events, event)
+	if q.err != nil {
+		return 0, q.err
+	}
+	return q.id, nil
+}
 
 // errorThrowingAdapter 满足 proto.UpstreamAdapter；在配置的事件类型上抛出非断连错误，
 // 强制产生 UNKNOWN_TERMINATION 终态。

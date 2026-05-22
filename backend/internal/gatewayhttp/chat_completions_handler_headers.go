@@ -52,12 +52,12 @@ func setHUAKAIModelHeaders(h http.Header, requested string, env *proto.HCSF) {
 	}
 }
 
-func WriteHuakaiHeaders(h http.Header, requested string, env *proto.HCSF, entry *auditledger.LedgerEntry) {
+func WriteHuakaiHeaders(h http.Header, requested string, env *proto.HCSF, result auditledger.AuditLedgerResult, requestID string, tenantID int64) {
 	setHUAKAIModelHeaders(h, requested, env)
-	if h == nil || entry == nil {
+	if h == nil || result.State != auditledger.LedgerResultStatePersisted {
 		return
 	}
-	WriteHuakaiLedgerHeaders(h, entry.RequestID, entry.LedgerID, entry.PubkeyFingerprint, entry.TenantID)
+	WriteHuakaiLedgerHeaders(h, requestID, result.LedgerID, result.Fingerprint, tenantID)
 }
 
 func WriteHuakaiLedgerHeaders(h http.Header, requestID, ledgerID, sigFingerprint string, tenantID int64) {
@@ -162,7 +162,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 	}
 	cachedEnv.Accounting.HopChain = gateway.BuildHopChain(forwardReq, "", in.RequestStartedAt, time.Now())
 	appendTrustChainWarning(cachedEnv, "response_cache_l2_hit", "served from HUAKAI L2 response cache")
-	ledgerEntry, err := submitAuditLedgerEntry(ctx, d, cachedEnv, in.Ident.TenantID, in.RequestID)
+	ledgerResult, err := submitAuditLedgerEntry(ctx, d, cachedEnv, in.Ident.TenantID, in.RequestID)
 	// in.AccountID == 0 表示 cache 检查在 acquire 之前,
 	// reserve 完成但还没拿到 pool slot / acquisition_token, 不能走 settleCompletion
 	// (它 lookup claim by acquisition_token 找不到行返 500)。
@@ -201,7 +201,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-HUAKAI-Cache-L2", "hit")
-		WriteHuakaiHeaders(w.Header(), in.RequestedModel, cachedEnv, ledgerEntry)
+		WriteHuakaiHeaders(w.Header(), in.RequestedModel, cachedEnv, ledgerResult, in.RequestID, in.Ident.TenantID)
 		recordCacheHitReplay(ctx, d, in)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(in.Entry.Body)
@@ -247,8 +247,8 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		RequestedModel:            in.RequestedModel,
 		UpstreamModel:             in.UpstreamModelID,
 		PayloadHash:               in.PayloadHash,
-		AuditLedgerID:             ledgerID(ledgerEntry),
-		AuditSignatureFingerprint: ledgerFingerprint(ledgerEntry),
+		AuditLedgerID:             ledgerID(ledgerResult),
+		AuditSignatureFingerprint: ledgerFingerprint(ledgerResult),
 		SettleRequest:             settleReq,
 	}); err != nil {
 		writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, clienterr.CodeSettleError, err)
@@ -256,7 +256,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-HUAKAI-Cache-L2", "hit")
-	WriteHuakaiHeaders(w.Header(), in.RequestedModel, cachedEnv, ledgerEntry)
+	WriteHuakaiHeaders(w.Header(), in.RequestedModel, cachedEnv, ledgerResult, in.RequestID, in.Ident.TenantID)
 	recordCacheHitReplay(ctx, d, in)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(in.Entry.Body)

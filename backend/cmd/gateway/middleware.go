@@ -90,7 +90,7 @@ func notImplemented(label string) http.HandlerFunc {
 	}
 }
 
-func buildStreamForwarder(auditLedger auditledger.Ledger, auditSigner *sign.Signer) *gateway.StreamForwarder {
+func buildStreamForwarder(auditLedger auditledger.Ledger, auditSigner *sign.Signer, auditLedgerDLQ auditledger.DLQEnqueuer) *gateway.StreamForwarder {
 	return &gateway.StreamForwarder{
 		ProtocolAdapters: gateway.BuildDefaultProtocolAdapterRegistry(),
 		Scanners:         gateway.BuildDefaultStreamScannerRegistry(),
@@ -102,6 +102,7 @@ func buildStreamForwarder(auditLedger auditledger.Ledger, auditSigner *sign.Sign
 		},
 		ScannerBufferCap: 1 << 20,
 		AuditLedger:      auditLedger,
+		AuditLedgerDLQ:   auditLedgerDLQ,
 		Signer:           auditSigner,
 	}
 }

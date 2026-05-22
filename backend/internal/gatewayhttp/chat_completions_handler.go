@@ -47,6 +47,7 @@ type ChatHandlerDeps struct {
 	BillingPolicyResolver *billing.PolicyResolver
 	CompletionBus         *eventbus.Bus
 	AuditLedger           auditledger.Ledger
+	AuditLedgerDLQ        auditledger.DLQEnqueuer
 	Signer                *sign.Signer
 	ChannelHealth         channelHealthRecorder
 	BillingPolicyVersion  string

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
@@ -24,6 +25,7 @@ import (
 	provideropenai "github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
@@ -294,6 +296,76 @@ func TestStreamingIdempotencyReplayRecordsSSEAndReplays(t *testing.T) {
 	}
 	if first.Body.String() != second.Body.String() {
 		t.Fatalf("replay body mismatch:\nfirst=%s\nsecond=%s", first.Body.String(), second.Body.String())
+	}
+}
+
+func TestStreamingLedgerAppendAndDLQFailureProductionDoesNotSettle(t *testing.T) {
+	// Risk killed: streaming Append+DLQ double failure must not become a
+	// chargeable 200 with no audit row. Mutation self-check: removing the
+	// post-Forward ledger-result settle gate records a settle for this fixture.
+	t.Setenv("HUAKAI_RELEASE_MODE", "production")
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	settler := &recordingSettler{}
+	dlqSink := &recordingGatewayAuditLedgerDLQ{id: 0, err: errors.New("dlq unavailable")}
+	deps := streamingReplayDeps(t, 77708, false, openAIStreamingFixture(), nil)
+	deps.AuditLedger = &failingAppendLedger{appendErr: errors.New("ledger unavailable")}
+	deps.AuditLedgerDLQ = dlqSink
+	deps.Signer = signer
+	deps.Settler = settler
+
+	rec := invokeHandler(t, deps, openAIStreamingRequestBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want stream response already delivered; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "pong") {
+		t.Fatalf("stream body=%s want delivered fixture content", rec.Body.String())
+	}
+	if len(settler.calls) != 0 {
+		t.Fatalf("settle calls=%d want 0 when streaming ledger has no durable result", len(settler.calls))
+	}
+	if len(settler.aborts) != 1 || settler.aborts[0].reason != "audit_ledger_error" {
+		t.Fatalf("aborts=%+v want one audit_ledger_error abort", settler.aborts)
+	}
+	if len(dlqSink.events) != 1 {
+		t.Fatalf("DLQ events=%d want 1 attempted enqueue", len(dlqSink.events))
+	}
+}
+
+func TestStreamingLedgerDuplicateRequestIDProductionDoesNotSettleOrDLQ(t *testing.T) {
+	// Risk killed: duplicate request_id is never recoverable by DLQ replay.
+	// Mutation self-check: removing the duplicate special-case enqueues DLQ,
+	// sends a Deferred callback, and the handler settles this chargeable stream.
+	t.Setenv("HUAKAI_RELEASE_MODE", "production")
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	settler := &recordingSettler{}
+	dlqSink := &recordingGatewayAuditLedgerDLQ{id: 315}
+	deps := streamingReplayDeps(t, 77709, false, openAIStreamingFixture(), nil)
+	deps.AuditLedger = &failingAppendLedger{appendErr: auditledger.ErrDuplicateRequestID}
+	deps.AuditLedgerDLQ = dlqSink
+	deps.Signer = signer
+	deps.Settler = settler
+
+	rec := invokeHandler(t, deps, openAIStreamingRequestBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want stream response already delivered; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "pong") {
+		t.Fatalf("stream body=%s want delivered fixture content", rec.Body.String())
+	}
+	if len(settler.calls) != 0 {
+		t.Fatalf("settle calls=%d want 0 for duplicate request_id", len(settler.calls))
+	}
+	if len(settler.aborts) != 1 || settler.aborts[0].reason != "audit_ledger_error" {
+		t.Fatalf("aborts=%+v want one audit_ledger_error abort", settler.aborts)
+	}
+	if len(dlqSink.events) != 0 {
+		t.Fatalf("DLQ events=%d want 0 for duplicate request_id", len(dlqSink.events))
 	}
 }
 

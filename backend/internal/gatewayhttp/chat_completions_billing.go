@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,7 +41,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		}
 		return markAttemptOutcomeDelivered(outcome)
 	}
-	ledgerEntry, err := submitAuditLedgerEntry(ex.ctx, ex.d, bufferedEnv, ex.ident.TenantID, ex.requestID)
+	ledgerResult, err := submitAuditLedgerEntry(ex.ctx, ex.d, bufferedEnv, ex.ident.TenantID, ex.requestID)
 	if err != nil {
 		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "audit_ledger_error", ex.requestID, 0); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
@@ -79,8 +81,8 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		PayloadHash:               ex.payloadHash,
 		RawBodyHash:               bodyHash(ex.body),
 		RedactedBodyRef:           redactedBodyRef(ex.body),
-		AuditLedgerID:             ledgerID(ledgerEntry),
-		AuditSignatureFingerprint: ledgerFingerprint(ledgerEntry),
+		AuditLedgerID:             ledgerID(ledgerResult),
+		AuditSignatureFingerprint: ledgerFingerprint(ledgerResult),
 		SettleRequest:             settleReq,
 	}); err != nil {
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, clienterr.CodeSettleError, err)
@@ -100,7 +102,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 	if ex.d.ResponseCache != nil && ex.cacheKey != "" {
 		w.Header().Set("X-HUAKAI-Cache-L2", "miss")
 	}
-	WriteHuakaiHeaders(w.Header(), ex.req.Model, bufferedEnv, ledgerEntry)
+	WriteHuakaiHeaders(w.Header(), ex.req.Model, bufferedEnv, ledgerResult, ex.requestID, ex.ident.TenantID)
 	outcome = ex.baseAttemptOutcome()
 	outcome.Success = &attemptSuccess{
 		StatusCode: http.StatusOK,
@@ -185,18 +187,18 @@ func redactedBodyRef(body []byte) string {
 	return "sha256:" + bodyHash(body)
 }
 
-func ledgerID(entry *auditledger.LedgerEntry) string {
-	if entry == nil {
+func ledgerID(result auditledger.AuditLedgerResult) string {
+	if result.State != auditledger.LedgerResultStatePersisted {
 		return ""
 	}
-	return entry.LedgerID
+	return result.LedgerID
 }
 
-func ledgerFingerprint(entry *auditledger.LedgerEntry) string {
-	if entry == nil {
+func ledgerFingerprint(result auditledger.AuditLedgerResult) string {
+	if result.State != auditledger.LedgerResultStatePersisted {
 		return ""
 	}
-	return entry.PubkeyFingerprint
+	return result.Fingerprint
 }
 
 func requestMetaSeed(r *http.Request, ident auth.Identity, clientProtocol proto.ClientProtocol, protocolFamily, routeID, requestID string, accountID int64, acquisitionToken uuid.UUID) proto.RequestMetaSeed {
@@ -233,17 +235,31 @@ func enrichCanonicalRequestMeta(env *proto.HCSF, upstreamModelID, providerName, 
 	}
 }
 
-func submitAuditLedgerEntry(ctx context.Context, d ChatHandlerDeps, env *proto.HCSF, tenantID int64, requestID string) (*auditledger.LedgerEntry, error) {
+func submitAuditLedgerEntry(ctx context.Context, d ChatHandlerDeps, env *proto.HCSF, tenantID int64, requestID string) (auditledger.AuditLedgerResult, error) {
+	production := auditLedgerProductionMode()
 	if env == nil {
-		return nil, nil
+		return auditledger.DisabledLedgerResult(), nil
 	}
 	if d.AuditLedger == nil {
 		appendTrustChainWarning(env, "audit_ledger_not_configured", "audit ledger dependency unset; trust-chain ledger entry skipped")
-		return nil, nil
+		if production {
+			return auditledger.AuditLedgerResult{}, fmt.Errorf("audit ledger dependency unset in production")
+		}
+		return auditledger.DisabledLedgerResult(), nil
+	}
+	if auditledger.IsNoopLedger(d.AuditLedger) {
+		appendTrustChainWarning(env, "audit_ledger_noop", "audit ledger dependency is noop; trust-chain ledger entry skipped")
+		if production {
+			return auditledger.AuditLedgerResult{}, fmt.Errorf("audit ledger noop in production")
+		}
+		return auditledger.DisabledLedgerResult(), nil
 	}
 	if d.Signer == nil {
 		appendTrustChainWarning(env, "audit_signer_not_configured", "audit signer dependency unset; trust-chain ledger entry skipped")
-		return nil, nil
+		if production {
+			return auditledger.AuditLedgerResult{}, fmt.Errorf("audit signer dependency unset in production")
+		}
+		return auditledger.DisabledLedgerResult(), nil
 	}
 	if requestID == "" {
 		requestID = env.RequestMeta.RequestID
@@ -257,16 +273,38 @@ func submitAuditLedgerEntry(ctx context.Context, d ChatHandlerDeps, env *proto.H
 	}
 	prepared, err := auditledger.PrepareEntry(ctx, entry)
 	if err != nil {
-		return nil, fmt.Errorf("audit ledger prepare: %w", err)
+		return auditledger.AuditLedgerResult{}, fmt.Errorf("audit ledger prepare: %w", err)
 	}
 	appended, err := d.AuditLedger.Append(ctx, prepared)
 	if err != nil {
-		return nil, fmt.Errorf("audit ledger append: %w", err)
+		if errors.Is(err, auditledger.ErrDuplicateRequestID) {
+			return auditledger.AuditLedgerResult{}, err
+		}
+		appendTrustChainWarning(env, "audit_ledger_append_failed", err.Error())
+		dlqRef, dlqErr := auditledger.EnqueuePreparedEntryToDLQ(ctx, d.AuditLedgerDLQ, prepared, err)
+		if dlqErr != nil {
+			appendTrustChainWarning(env, "audit_ledger_dlq_enqueue_failed", dlqErr.Error())
+			return auditledger.AuditLedgerResult{}, fmt.Errorf("audit ledger append: %w; audit ledger dlq enqueue: %v", err, dlqErr)
+		}
+		appendTrustChainWarning(env, "audit_ledger_deferred", "audit ledger append failed; sanitized append intent queued in DLQ")
+		result := auditledger.DeferredLedgerResult(dlqRef)
+		if err := result.Validate(production); err != nil {
+			return auditledger.AuditLedgerResult{}, err
+		}
+		return result, nil
 	}
 	env.Accounting.LedgerID = appended.LedgerID
 	env.Accounting.Signature = appended.Signature
 	env.Accounting.PubkeyFingerprint = appended.PubkeyFingerprint
-	return &appended, nil
+	result := auditledger.PersistedLedgerResult(appended)
+	if err := result.Validate(production); err != nil {
+		return auditledger.AuditLedgerResult{}, err
+	}
+	return result, nil
+}
+
+func auditLedgerProductionMode() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("HUAKAI_RELEASE_MODE")), "production")
 }
 
 func appendTrustChainWarning(env *proto.HCSF, code, reason string) {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
@@ -190,14 +191,21 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	if streamForwarder.AuditLedger == nil {
 		streamForwarder.AuditLedger = ex.d.AuditLedger
 	}
+	if streamForwarder.AuditLedgerDLQ == nil {
+		streamForwarder.AuditLedgerDLQ = ex.d.AuditLedgerDLQ
+	}
 	if streamForwarder.Signer == nil {
 		streamForwarder.Signer = ex.d.Signer
 	}
 	if clientAdapter != nil {
 		streamForwarder.ClientAdapter = clientAdapter
 	}
-	streamForwarder.LedgerCallback = func(entryID, sigFingerprint string) {
-		WriteHuakaiLedgerHeaders(w.Header(), ex.requestID, entryID, sigFingerprint, ex.ident.TenantID)
+	var ledgerResult auditledger.AuditLedgerResult
+	streamForwarder.LedgerCallback = func(result auditledger.AuditLedgerResult) {
+		ledgerResult = result
+		if result.State == auditledger.LedgerResultStatePersisted {
+			WriteHuakaiLedgerHeaders(w.Header(), ex.requestID, result.LedgerID, result.Fingerprint, ex.ident.TenantID)
+		}
 	}
 	tracker := newDeliveryTracker(w)
 	forwardWriter := http.ResponseWriter(tracker)
@@ -229,8 +237,9 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	settle := streamAttempt.State.Chargeable() ||
 		streamAttempt.DeliveredTokenCount > 0 ||
 		draft.EndClass == gateway.AmbiguousUsage
+	ledgerFailClosed := auditLedgerProductionMode() && !streamingAuditLedgerResultAllowsSettle(ledgerResult)
 	var streamAbortErr error
-	if settle {
+	if settle && !ledgerFailClosed {
 		event := ex.streamingCompletionEvent(draft, streamAttempt)
 		if _, err := settleCompletion(settleCtx, ex.d, event); err != nil {
 			logInternalError(settleCtx, ex.requestID, clienterr.CodeSettleFailed, err)
@@ -239,7 +248,9 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 		}
 	} else {
 		reason := streamAttempt.StreamTerminatedReason
-		if reason == "" {
+		if ledgerFailClosed {
+			reason = "audit_ledger_error"
+		} else if reason == "" {
 			reason = "stream_no_billable_delivery"
 		}
 		observedInputTokens := ex.abortObservedInputTokens(draft)
@@ -263,6 +274,10 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 		return false, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, streamAbortErr)
 	}
 	return deliveryStarted, nil
+}
+
+func streamingAuditLedgerResultAllowsSettle(result auditledger.AuditLedgerResult) bool {
+	return result.Validate(true) == nil
 }
 
 func failureUsageDraft(failure *classifiedAttemptFailure) gateway.UsageRecordDraft {
