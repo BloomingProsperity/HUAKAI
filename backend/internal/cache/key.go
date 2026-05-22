@@ -11,7 +11,7 @@ import (
 	"strconv"
 )
 
-const keyVersion = "l2:v1"
+const keyVersion = "l2:v2"
 
 var ignoredTopLevelFields = map[string]struct{}{
 	"metadata":  {},
@@ -21,10 +21,11 @@ var ignoredTopLevelFields = map[string]struct{}{
 
 // KeyInput 是 L2 exact response cache 的物理 key 输入。
 type KeyInput struct {
-	TenantID int64
-	Vendor   string
-	Model    string
-	Body     []byte
+	TenantID       int64
+	Vendor         string
+	Model          string
+	EndpointFamily string
+	Body           []byte
 }
 
 // BuildKey 计算包含 tenant 隔离边界的稳定物理 key。
@@ -41,6 +42,8 @@ func BuildKey(in KeyInput) (string, []byte, error) {
 	preimage.WriteString(in.Vendor)
 	preimage.WriteByte(0)
 	preimage.WriteString(in.Model)
+	preimage.WriteByte(0)
+	preimage.WriteString(in.EndpointFamily)
 	preimage.WriteByte(0)
 	preimage.Write(canonical)
 	sum := sha256.Sum256(preimage.Bytes())
