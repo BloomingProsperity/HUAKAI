@@ -9,6 +9,9 @@
 > 漏掉的 call site(handler_headers / validate / idempotency_replay)、helper
 > 路径规则、GW-02 分类不回归测试、C-12 三类分类矩阵、B-11 `ErrHandlerTimeout`
 > 覆盖 + `-race`、C-18 全 `rawSSE` 路径覆盖、错误目录表格化。
+>
+> **rev2(2026-05-22)**:Owner 指出结构规则被违反 —— 错误模型改放独立新包
+> `internal/clienterr`,不再塞进已过重的 `gatewayhttp`。见 §3 与 §8。
 
 ## 1. 背景与核心风险
 
@@ -39,28 +42,32 @@ W3a 闭合后才开 W3b。两切片合计 ~2 天。
 把 public(`ClientStatus`/`ClientCode`/`ClientMessage`)与 internal(`Cause error`)
 分开 —— 架构已就位,bug 是 call site 把 `err.Error()` 灌进了 `ClientMessage`。
 
-W3a 落三件事:
+W3a 落三件事。**rev2 决策(2026-05-22)**:错误模型放进**独立新包
+`internal/clienterr`**,**不**塞进已经过重的 `gatewayhttp`(68 文件)。
+理由:遵守结构规则 [[feedback_rust_clear_structure]]「按职责分 module」;
+新包同样零接线(只是被 import,不动 `ChatHandlerDeps` / `cmd/gateway`),
+原 spec 写「放 gatewayhttp 省 blast radius」是站不住的借口。这个包也是
+gatewayhttp 后续大拆的第一块干净边界,并可被 W3b 的 `gateway` 包复用。
 
-### 3.1 错误文案目录(新文件 `internal/gatewayhttp/public_error.go`)
+### 3.1 错误文案目录(新包 `internal/clienterr`,文件 `catalog.go`)
 
 - 定义一组**稳定 code 常量** + 每个 code 配一句**固定中性文案**。
   文案绝不含动态内部细节(无表名、无 err 串、无上游 body)。
-- 提供 `messageForPublicCode(code string) string`:已知 code 返回固定文案,
-  未知 code 返回通用兜底(`"request failed"`)。
+- 提供导出函数 `clienterr.MessageFor(code string) string`:已知 code 返回
+  固定文案,未知 code 返回通用兜底(`"request failed"`)。
 - code 集合由 codex 按实际 call site 归纳(call site 清单见 §4 GW-04/GW-05)。
   现有 ad-hoc code(`registry_unknown_error` / `router_plan_error` /
   `cache_key_error` 等)**保留不改名**(客户端可能已依赖),只把它们登记进
   目录、配固定文案。**新增不删除、不改名**。
-- **目录必须以表格形式落在 `public_error.go` 顶部注释或同目录文档**:
+- **目录必须以表格形式落在 `internal/clienterr/catalog.go` 顶部注释**:
   每行 `code | HTTP status | 固定文案 | 覆盖测试名`。这张表是「漏登检查表」
   —— 实现完成后逐行核对,确保每个 call site 的 code 都在表里、都有测试。
 
-### 3.2 内部错误日志 sink(新 helper)
+### 3.2 内部错误日志 sink(`internal/clienterr`,文件 `log.go`)
 
-- 新 package 级 helper `logInternalError(ctx, requestID, code string, err error)`,
+- 导出 helper `clienterr.LogInternal(ctx, requestID, code string, err error)`,
   用 `log/slog`(与 `auth_handler.go`/`audit_verify_handler.go` 已有 slog 用法
-  一致),走 `slog.Default()`。不改 `ChatHandlerDeps`、不动 `cmd/gateway` 接线
-  —— 零接线 blast radius。
+  一致),走 `slog.Default()`。不改 `ChatHandlerDeps`、不动 `cmd/gateway` 接线。
 - 字段:`request_id` / `public_code` / 完整 `err`。这是 raw error 的唯一去处。
 - **已知难点**:`slog.Default()` 默认写 stderr,与本进程 zap 主管道不统一。
   W3 不做 zap 整合(超范围)。记路线图 RR-W3-001(可选:slog→zap 桥接)。
@@ -69,7 +76,7 @@ W3a 落三件事:
 
 每一处当前 `writeJSONError(w, status, code, err.Error())` 或
 `classifiedFailureFromDecision(code, err.Error(), …)`:
-1. message 改成 `messageForPublicCode(code)`(固定文案),**绝不传 `err.Error()`**;
+1. message 改成 `clienterr.MessageFor(code)`(固定文案),**绝不传 `err.Error()`**;
 2. 紧接着调 `logInternalError(ctx, requestID, code, err)` 把 raw error 落日志;
 3. `classifiedAttemptFailure` 路径:raw error 放进已有的 `Cause error` 字段
    (`chat_completions_attempt.go:64`),`ClientMessage` 只放固定文案。
@@ -81,7 +88,7 @@ W3a 落三件事:
    - `degradeFailureIfAbortFailed`(`chat_completions_attempt.go:100-119`)当前
      `attempt.go:116` 把 raw `abortErr.Error()` 拼进 `AbortReason`
      (`AbortReason` 会进 header / 日志,属公开面)。改为只写 safe 短 code
-     (如 `;abort_failed=1`),raw `abortErr` 经 `logInternalError` 落日志。
+     (如 `;abort_failed=1`),raw `abortErr` 经 `clienterr.LogInternal` 落日志。
    - `classifiedFailureFromDecision` 经由 `dispatch.go:241/251/257` 等 helper
      间接把 `err.Error()` 放进 `ClientMessage` 的路径,一并按本规则改。
 
@@ -138,7 +145,7 @@ W3a 落三件事:
   `X-Huakai-Forward-Error`(`stream.go:211`)、`X-Huakai-Settle-Error`(`stream.go:234`)
   全塞 `*.Error()`。
 - 修复:header value 改为**稳定短 code**(如 `abort_failed`、`forward_failed`、
-  `settle_failed`,可带 `;reason=<safe-enum>`),raw error 经 `logInternalError` 落日志。
+  `settle_failed`,可带 `;reason=<safe-enum>`),raw error 经 `clienterr.LogInternal` 落日志。
   header 永不含 `err.Error()`。
 - 风险测试:注入含 marker 的 abort/forward/settle err,断言响应 header 值
   只是 code、不含 marker。
@@ -153,7 +160,7 @@ W3a 落三件事:
   trailer;多数 HTTP 库需显式 trailer 处理),pre-declare trailer 是"假承诺";
   这三个 header 在流式路径本来就是死信道。诚实的修法 = 删死信道、落日志。
 - 修复:`stream.go` 中 `Forward` 之后的这三处 `w.Header().Set(...)` 删除,
-  改 `logInternalError`。**非流式路径**的同名 header(在 WriteHeader 之前 Set)
+  改 `clienterr.LogInternal`。**非流式路径**的同名 header(在 WriteHeader 之前 Set)
   不动 —— 那是 GW-05 范畴(值改安全 code 即可)。
 - 风险测试:流式 forward/settle 出错 → 断言 raw error 进了服务端日志、
   且 `Forward` 之后没有再 `Set` 任何 header(可用 ResponseRecorder 在首字节后
@@ -175,7 +182,7 @@ W3a 落三件事:
   `evt.Type == "error"` 旁路 adapter,直接 `writeAndFlush(w, rawSSE(evt))`。
   注释点名 Bedrock exception payload 走这条 —— 含 provider 内部诊断/账号 hint。
 - 修复:`evt.Type == "error"` 分支改为:
-  1. raw `evt.Data` 经 `logInternalError`(或 gateway 包内等价 slog)落日志;
+  1. raw `evt.Data` 经 `clienterr.LogInternal`(`gateway` 包 import `clienterr`)落日志;
   2. 向客户端写一个**脱敏后的 canonical SSE 错误帧** —— 固定 code(如
      `upstream_error`)+ 固定 message,不含 raw payload;
   3. 返回值维持原语义(`terminalSeen, true, 0, nil`),让后续
@@ -298,9 +305,12 @@ W3a / W3b 各自:
 ## 8. 提交方式
 
 按"一 commit 一模块":
-- W3a:`gatewayhttp` 一个 commit(`upstream_http_error.go` 属 `gateway` 包但与
-  GW-02 强耦合,可同 commit,提交信息说明)。标题
-  `gatewayhttp 公开错误面脱敏`。
+- W3a 两个 commit:
+  1. **新包 `clienterr`** —— `catalog.go` + `log.go` + 包内测试。标题
+     `clienterr 公开错误文案目录与内部日志 sink`。
+  2. **`gatewayhttp`** —— 所有 call site 改写 + import `clienterr`;
+     `upstream_http_error.go` 属 `gateway` 包但与 GW-02 强耦合,可并入此
+     commit,提交信息说明。标题 `gatewayhttp 公开错误面脱敏`。
 - W3b:`gateway` 一个 commit(`forwarder.go`+`event_scanner.go`,标题
   `gateway 流式错误帧与扫描分类脱敏`)、`eventbus` 一个 commit(标题
   `eventbus DLQ 失败可见与错误脱敏`)。
