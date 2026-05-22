@@ -311,18 +311,19 @@ warning(可观测信号,不阻断)。`error` **只**在根本无法构造安全 
      审计证据。修复:worker 解码后、`PrepareEntry`/`Append` **之前**校验
      `rec.TenantID == 解码出的 entry.TenantID`;不等 → 返回 error(不猜、不
      静默,进 DLQ MarkFailed → operator review)。
-   - **rev16:信封是身份字段的唯一权威,payload 不可信(codex per-commit
-     复审 P2 + 同族主动收口)**。DLQ payload 是持久化数据,凡**信封里也有的
-     身份字段**都不能信 payload:
-     · **`tenant_scope_ref`**:`canonical.go` `canonicalPayload` 把
-       `tenant_scope_ref` 写进**签名哈希**(`entry.TenantScopeRef` 非空则直接
-       用,空则派生 `TenantScopeRef(tenant_id)`)。但 `audit_ledger_entries`
-       **没有 `tenant_scope_ref` 列** —— verify 时 `scanLedgerEntry` 扫不出
-       该列、`TenantScopeRef==""` → canonical 派生。若坏 payload 带一个非空
-       错 scope,`Append` 用错值签名、verify 用派生对值重算 → **签名永久验不过**
-       (或签出别租户 scope 的伪证据)。修复:worker 在校验通过后**强制
-       `entry.TenantScopeRef = ""`**,让 canonical 从已校验的 `tenant_id`
-       派生 —— 与所有正常(非 DLQ)append 行为一致。
+   - **rev16:重放前校验 `tenant_scope_ref` 一致(codex per-commit 复审
+     P2)**:`canonical.go` `canonicalPayload` 把 `tenant_scope_ref` 写进
+     **签名哈希**(`entry.TenantScopeRef` 非空则直接用,空则派生
+     `TenantScopeRef(tenant_id)`)。但 `audit_ledger_entries` **没有
+     `tenant_scope_ref` 列** —— verify 时 `scanLedgerEntry` 扫不出该列、
+     `TenantScopeRef==""` → canonical 派生。若坏 payload 带一个非空错
+     scope,`Append` 用错值签名、verify 用派生对值重算 → **签名永久验不过**
+     (或签出别租户 scope 的伪证据)。修复:worker 解码后、`PrepareEntry` /
+     `Append` **之前**校验:若 `entry.TenantScopeRef != "" &&
+     entry.TenantScopeRef != TenantScopeRef(entry.TenantID)` → 返回 error(不猜、
+     不静默,进 DLQ MarkFailed → operator review)。空 `tenant_scope_ref`
+     合法;校验通过后仍清空 `entry.TenantScopeRef`,让 canonical 从已校验的
+     `tenant_id` 派生 —— 与所有正常(非 DLQ)append 行为一致。
      · **`request_id`**:DLQ 信封 `IdempotencyKey` 按 §6.0.c 是
        `"audit_ledger:" + requestID`,是 request_id 的权威来源。坏 payload 的
        `request_id` 会让 `GetByRequestID` 查错请求 → 真实请求的账本条目被漏写
@@ -594,6 +595,7 @@ seal),DLQ 解码改包内函数 + rev14 修 P1(DLQ 重放路径解码后须重�
 `PrepareEntry` 脱敏)+ P2(`AppendInTransaction` 把 PG 23505 翻译成
 `ErrDuplicateRequestID` 统一契约)+ rev15 修 P2(DLQ 重放前校验
 `rec.TenantID` 与 payload 租户一致,防跨租户审计证据)+ rev16 修 P2
-(`tenant_scope_ref` 强制从 tenant_id 派生防签名验不过、`request_id` 校验
-信封 `IdempotencyKey`;身份字段以信封为准)。
+(`tenant_scope_ref` 重放前校验一致,非空不一致进 operator review;`request_id`
+校验信封 `IdempotencyKey`;身份字段以信封为准)+ P2(openapi DLQ event_kind
+enum 补 `audit_ledger_entry` / `audit_mismatch_refund`)。
 Owner 已定 fail-closed 决策(§4)并已确认 schema 迁移 `0050`(§6.0.b)。
