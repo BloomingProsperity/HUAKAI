@@ -1055,6 +1055,11 @@ paths:
       x-huakai-spec-source: [docs/specs/pool-routing.md]
       x-huakai-required-role: tenant_operator
       parameters:
+        - name: tenant_id
+          in: query
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
         - $ref: '#/components/parameters/PageCursor'
         - $ref: '#/components/parameters/PageLimit'
       responses:
@@ -1063,6 +1068,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PoolGroupList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     post:
@@ -1071,6 +1077,12 @@ paths:
       operationId: createPoolGroup
       x-huakai-spec-source: [docs/specs/pool-routing.md]
       x-huakai-required-role: tenant_operator
+      parameters:
+        - name: tenant_id
+          in: query
+          required: false
+          description: Optional explicit tenant scope; if request body also provides tenant_id, both values must match.
+          schema: { type: integer, format: int64, minimum: 1 }
       requestBody:
         required: true
         content:
@@ -1095,12 +1107,21 @@ paths:
       operationId: getPoolGroup
       x-huakai-spec-source: [docs/specs/pool-routing.md]
       x-huakai-required-role: tenant_operator
+      parameters:
+        - name: tenant_id
+          in: query
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
       responses:
         '200':
           description: Pool Group detail.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PoolGroup' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
     patch:
       tags: [admin-pools]
@@ -1112,6 +1133,12 @@ paths:
         allow_tenant_operator_force flag.
       x-huakai-spec-source: [docs/specs/pool-routing.md]
       x-huakai-required-role: tenant_operator
+      parameters:
+        - name: tenant_id
+          in: query
+          required: false
+          description: Optional explicit tenant scope; if request body also provides tenant_id, both values must match.
+          schema: { type: integer, format: int64, minimum: 1 }
       requestBody:
         required: true
         content:
@@ -1124,6 +1151,8 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PoolGroup' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   # ==========================================================================
@@ -3324,6 +3353,11 @@ components:
       additionalProperties: false
       required: [name]
       properties:
+        tenant_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Explicit tenant scope for platform_admin; tenant_operator body value must match its token scope.
         name: { type: string, minLength: 1 }
         routing_policy_version: { type: string, default: '1.0' }
         top_k_default: { type: integer, minimum: 1, maximum: 10, default: 1 }
@@ -3340,6 +3374,11 @@ components:
       type: object
       additionalProperties: false
       properties:
+        tenant_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Explicit tenant scope for platform_admin; if query tenant_id is also present, the values must match.
         routing_policy_version: { type: string }
         top_k_default: { type: integer, minimum: 1, maximum: 10 }
         capability_default:

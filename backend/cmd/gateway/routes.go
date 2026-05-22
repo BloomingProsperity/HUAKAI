@@ -181,7 +181,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	r.Route("/admin/v1/pools", func(r chi.Router) {
 		r.Mount("/", gatewayhttp.NewAdminPoolsHandler(gatewayhttp.AdminPoolsDeps{
 			Auth:  d.adminAuth,
-			Store: d.billingQueries,
+			Store: gatewayhttp.NewAdminPoolsStoreAdapter(d.billingQueries, d.adminQueries),
 		}))
 	})
 	r.Route("/admin/v1/billing", func(r chi.Router) {
