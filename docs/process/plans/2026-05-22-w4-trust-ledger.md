@@ -16,6 +16,20 @@
 > 矛盾;(2) 新增 `PrepareEntry` 预备步,脱敏从 `Append` 内部抽出,DLQ intent
 > 有确定来源;(3) DLQ envelope 字段定死 + 「Append 失败且 DLQ 也失败」fail-closed
 > 地板。另:line-ref 修正、DLQRef 用独立 trailer。
+>
+> **rev3(2026-05-22)**:codex 复审 rev2 = APPROVE-WITH-CHANGES,可进入实现。
+> 本版折入 3 条非阻断小修:(1) `PrepareEntry` error 语义写明 —— 脱敏失败但
+> 哨兵替换成功仍返回 `(PreparedEntry, nil)`,只有无法构造安全 prepared intent
+> 才返 error;(2) §9 grep 清单加 `AppendInTransaction`/`AppendInTx` 低层事务
+> 调用面;(3) `audit_ledger_entry` 的 DLQ `ReplicaStatus` 定为 `ReplicaStatusNone`
+> (它是主写意图,非副本)。另:`DLQRef` 格式定为 `audit_ledger_dlq:<id>`。
+>
+> **rev4(2026-05-22)**:codex per-commit 复审 rev3 报一条 P2 —— signer 轮换下
+> Deferred 条目不能预先钉死 fingerprint。本版修:`PreparedEntry` **不带**
+> fingerprint;fingerprint 由 `Append` 在签名那一刻按 active signer 注入(DLQ
+> 重放同理);`Deferred` 三态 `Fingerprint==""`;completion 事件不为 Deferred
+> 宣告 `AuditSignatureFingerprint`;「有效账本引用」校验对 DLQRef 分支不查
+> fingerprint。
 
 ## 1. 背景与核心风险
 
@@ -41,9 +55,13 @@
   → 算 `nextLedgerID` → 读链头 root → 算本条 root → 签名 → 写。失败时调用方
   根本拿不到「最终条目」。
 - 因此 **DLQ 必须存「待写意图」(append intent),由 worker 重放完整 `Append`**。
-- 签名公钥 fingerprint(`Signer.Fingerprint()`)是**启动期就已知**的(它标识
-  哪把 key),与某条条目的 Merkle 位置无关 —— 所以 completion 事件即使在
-  「账本待补」状态也能携带正确的 `AuditSignatureFingerprint`。
+- 签名公钥 fingerprint(`Signer.Fingerprint()`)标识哪把 key,但 signer **会
+  轮换**(`LoadPublicKeysFromEnv` 支持 rotated key)。一条 entry 的 fingerprint
+  只有在 `Append` **真正签名那一刻**才确定 —— 持久化(`Persisted`)条目用
+  append 时刻的 active signer,DLQ 重放(`Deferred`→持久化)用重放时刻的
+  active signer。**推论(rev4 修正)**:`Deferred` 条目在持久化前**没有
+  fingerprint**;completion 事件对 `Deferred` 只携带 `AuditLedgerDLQRef`
+  作待补凭证,**不**宣告 `AuditSignatureFingerprint`(详见 §6.1 / §7)。
 
 ## 3. 切分(小切片闭合纪律)—— rev1 重排顺序
 
@@ -138,7 +156,11 @@ Owner 2026-05-22 已定。展开:
 PrepareEntry(ctx, rawEntry) (PreparedEntry, error)
 // 内部:sanitizeLedgerEntry → 若脱敏失败按 B-13 换哨兵 → 产出 PreparedEntry。
 // PreparedEntry 持有已脱敏的 HopChain/ModelChain/TenantScopeRef + RequestID +
-// TenantID + SignerFingerprint + CreatedAt。不含 LedgerID/root/signature。
+// TenantID + CreatedAt。不含 LedgerID/root/signature/SignerFingerprint。
+// rev4:PreparedEntry **不含 SignerFingerprint** —— 签名公钥 fingerprint 由
+// `Append` 在真正签名那一刻按 active signer 注入(进 EntryHash 的 canonical
+// 形式之前;详见 auditledger/canonical.go),DLQ 重放时同理用重放时刻的
+// active signer。理由见下方「rev4:为何 PreparedEntry 不带 fingerprint」。
 ```
 `Append` 改为接收 `PreparedEntry`(不再内部脱敏)。调用方流程统一为:
 `prepared, err := PrepareEntry(...)` → `Append(prepared)`。
@@ -147,12 +169,34 @@ DLQ worker 重放时直接 `Append(prepared)`,不重复脱敏。
 → 这条让 §6.0.c 的「DLQ intent 从哪来」有确定答案,也保证 DLQ 里**绝不**
 出现未脱敏链路数据。
 
+**rev4:为何 `PreparedEntry` 不带 fingerprint(codex per-commit 复审 P2)**:
+签名器可以**轮换**(`LoadPublicKeysFromEnv` 支持 rotated key)。若一条 entry
+在请求时刻 `Append` 失败、进 DLQ,worker **在轮换之后**才重放,则该 entry 会
+被**重放时刻的 active signer**(可能是新 key)签名。若 `PreparedEntry` 在请求
+时刻就钉死一个 fingerprint,重放后持久化行的真实 fingerprint 会与之不符 ——
+要么签名对不上、要么逼迫保留旧 signer 才能重放。结论:fingerprint 只能在
+`Append` 真正签名那一刻确定,`PrepareEntry` 不碰它。`Deferred` 条目在持久化前
+**没有 fingerprint**,completion 事件也**不**为 `Deferred` 条目宣告
+`AuditSignatureFingerprint`(见 §6.1 / §7)。
+
+**`PrepareEntry` 的 `error` 语义(rev3 —— codex 复审非阻断小修 1)**:脱敏
+失败本身**不是** error —— B-13 要求脱敏失败时换哨兵继续(§5 B-13),只要哨兵
+替换成功,`PrepareEntry` 返回 `(PreparedEntry, nil)` 并另记一条 redaction-loss
+warning(可观测信号,不阻断)。`error` **只**在根本无法构造安全 prepared intent
+时返回 —— 结构性前置缺失,如 `rawEntry` 为 nil、缺 `RequestID` / `TenantID`。
+这种 error 由调用方按 §6.0.c production fail-closed 处理(连安全 intent 都
+没有,无从投 DLQ,不得 settle)。
+
 #### 6.0.b DLQ kind 与基建
 
-1. **schema 迁移(需 Owner 确认)**:新增 migration 扩展 DLQ `event_kind` 的
-   CHECK 约束,增加允许值 `audit_ledger_entry`。这是**唯一一条 schema 变更**,
-   additive、低 blast(对照既有 `backend/sql/migrations/0032_audit_mismatch_refund_pending`
-   同形态)。迁移 SQL 草案随 spec surface Owner,确认后才落。
+1. **schema 迁移(需 Owner 确认)**:新增 migration
+   `0050_dlq_audit_ledger_entry_kind`(下一个空号,现有最高 0049)扩展
+   `usage_record_dlq.event_kind` 的 CHECK 约束,增加允许值 `audit_ledger_entry`。
+   这是**唯一一条 schema 变更**,additive、低 blast(对照既有
+   `backend/sql/migrations/0032_audit_mismatch_refund_pending` 同形态 ——
+   drop+re-add CHECK)。down 迁移须带 0032 同款守卫:若已有
+   `event_kind='audit_ledger_entry'` 的行则 `RAISE EXCEPTION` 拒回滚,
+   避免静默丢账本待补意图。迁移 SQL 草案随 spec surface Owner,确认后才落。
 2. `dlq.EventKindAuditLedgerEntry EventKind = "audit_ledger_entry"`
    (`internal/dlq/types.go`,非冻结包)。
 3. `LaneForKind` / `ReplicaStatusForKind`(在 `internal/dlq/types.go:97` 一带
@@ -172,8 +216,16 @@ DLQ 事件字段(`dlq.Event`,`store` 要求 `TenantID>0`、`IdempotencyKey!=""`�
 JSON 合法):
 - `EventKind` = `audit_ledger_entry`;`TenantID` = entry tenant;
 - `IdempotencyKey` = `"audit_ledger:" + requestID`(同请求重试不重复入队);
-- `SourceTable` = `"audit_ledger"`;`ReplicaStatus` 走新 kind 的默认 pending;
-- `Payload` = `PreparedEntry` 的 JSON。
+- `SourceTable` = `"audit_ledger"`;
+- `ReplicaStatus` = `ReplicaStatusNone`(rev3 —— codex 复审非阻断小修 3:
+  `audit_ledger_entry` 是**主写意图**,不是某张已写表的副本;现有
+  `MarkDelivered` / `MarkFailed` 只对 `billing_event_replica` /
+  `audit_event_replica` 更新 `replica_status`,若给本 kind 设 `pending`,
+  重放成功后主 `status` 会变 `delivered` 而 `replica_status` 永远停在
+  `pending`,造成后台误判 —— 故定为 `none`);
+- `Payload` = `PreparedEntry` 的 JSON;
+- `DLQRef` 格式 = `"audit_ledger_dlq:" + <dlq event id>`(rev3 —— 与既有
+  `*_dlq:<id>` 形态一致,避免 trailer/event/log 里出现裸数字)。
 
 **DLQ enqueue 失败 = fail-closed(rev2 新增,decision B 的兜底)**:
 Owner 决策 B 是「Append 失败 → 进 DLQ + 放行」,前提是 DLQ 收得下。若
@@ -194,13 +246,13 @@ AuditLedgerResult {
   State       LedgerResultState
   LedgerID    string  // 仅 State==Persisted 非空
   DLQRef      string  // 仅 State==Deferred 非空
-  Fingerprint string  // Persisted/Deferred 非空;Disabled 空
+  Fingerprint string  // 仅 State==Persisted 非空(rev4:Deferred 未签名)
 }
 ```
 三态不变式(按 State 分,不再有矛盾):
 - `Persisted`(Append 成功):`LedgerID!="" && DLQRef=="" && Fingerprint!=""`。
 - `Deferred`(Append 失败、intent 已入 DLQ):`DLQRef!="" && LedgerID=="" &&
-  Fingerprint!=""`。
+  Fingerprint==""`(rev4:Deferred 条目尚未签名,无 fingerprint —— 见 §2)。
 - `Disabled`(dev/test 无 ledger/signer):三者皆空。**`Disabled` 只在非
   production 模式合法**;production 模式由启动检查(§4)保证不会产生 `Disabled`。
 
@@ -213,8 +265,9 @@ AuditLedgerResult {
   `AuditLedgerResult`。
 - buffered 与 streaming 两路的 completion 事件构造(`streamingCompletionEvent()`
   等)按 `AuditLedgerResult.State` 写事件的账本引用字段(见 §7 W4c):
-  `Persisted`→写 `AuditLedgerID`;`Deferred`→写 `AuditLedgerDLQRef`;
-  `Disabled`→两者皆空(W4c 校验只在 production 拒)。
+  `Persisted`→写 `AuditLedgerID` + `AuditSignatureFingerprint`;
+  `Deferred`→写 `AuditLedgerDLQRef`,`AuditSignatureFingerprint` **留空**
+  (rev4:未签名);`Disabled`→三者皆空(W4c 校验只在 production 拒)。
 
 ### GW-07 — buffered 路径账本静默跳过(S1)
 
@@ -229,8 +282,8 @@ AuditLedgerResult {
   3. 正常流程:`prepared := PrepareEntry(rawEntry)`(§6.0.a)→ `Append(prepared)`。
      - 成功 → `AuditLedgerResult{State: Persisted, LedgerID, Fingerprint}`。
      - `Append` 失败 → 把 `prepared` 投 DLQ(§6.0.c)→ 成功入队 →
-       `AuditLedgerResult{State: Deferred, DLQRef, Fingerprint}`,记一条
-       `audit_ledger_deferred` 协议损耗,请求继续。
+       `AuditLedgerResult{State: Deferred, DLQRef}`(rev4:Deferred 无
+       fingerprint),记一条 `audit_ledger_deferred` 协议损耗,请求继续。
      - `Append` 失败**且 DLQ enqueue 也失败** → production 返回 `error`,
        调用方**不得 settle**(§6.0.c fail-closed 地板)。
 - 风险测试(判别性):
@@ -287,10 +340,12 @@ AuditLedgerResult {
   - `gatewayhttp/chat_completions_handler_headers.go:183-199` 缓存命中走
     `CommitCacheHit()` 直接写 money,也不经事件总线。
 - 统一定义「**有效账本引用**」:money-path 必须满足以下**任一**:
-  - `AuditLedgerID != ""`(账本已持久化),或
-  - `AuditLedgerDLQRef != ""`(账本 intent 已在 DLQ 待补)。
-  且 `AuditSignatureFingerprint != ""`(两种情况下都已知,见 §2)。
-  两个引用皆空 + production 模式 → 拒绝。dev/test 模式放行(无信任链需求)。
+  - `AuditLedgerID != "" && AuditSignatureFingerprint != ""`(账本已持久化
+    且已签名),或
+  - `AuditLedgerDLQRef != ""`(账本 intent 已在 DLQ 待补 —— rev4:此分支
+    **不**要求 `AuditSignatureFingerprint`,Deferred 条目要等重放才签名,
+    见 §2;DLQRef 本身即「平台已持久承诺补签」的凭证)。
+  两个分支都不满足 + production 模式 → 拒绝。dev/test 模式放行(无信任链需求)。
 - 修复:
   1. **新增事件字段** `RequestCompletionEvent.AuditLedgerDLQRef string`
      (`eventbus/types.go`)。
@@ -337,6 +392,11 @@ AuditLedgerResult {
    additive,需 Owner 确认,SQL 草案随 spec surface。
 9. 新文件只能进非冻结包(`auditledger` / `cmd/gateway` / `eventbus` / `dlq`
    可加;`gateway` / `gatewayhttp` / `proto` 冻结,只改既有文件)。
+10. signer 轮换 × `Deferred` 条目(rev4):`Deferred` 条目的 fingerprint 在
+    请求时刻**未定**,由 DLQ 重放时刻的 active signer 决定 —— `PreparedEntry`
+    不带 fingerprint;completion 事件不为 `Deferred` 宣告
+    `AuditSignatureFingerprint`;「有效账本引用」校验对 DLQRef 分支不查
+    fingerprint(§2 / §6.0.a / §6.1 / §7)。
 
 ## 9. 会被新语义打破、需同步修改的旧测试(rev1 新增)
 
@@ -344,9 +404,13 @@ AuditLedgerResult {
   —— C-13 把账本从首字节移到终态,此测试语义反转,须改写为
   「callback 在流终态触发」。
 - 任何断言 `X-HUAKAI-Ledger-ID` 为普通 header 的流式测试 → 改断言 trailer。
-- 实现者须全仓 grep `submitAuditLedgerEntry` / `LedgerCallback` / `Append`
-  调用点,返回类型从 `*LedgerEntry,error` 改 `(AuditLedgerResult, error)`、
-  `Append` 改收 `PreparedEntry` 后逐处适配。
+- 实现者须全仓 grep `submitAuditLedgerEntry` / `LedgerCallback` / `Append` /
+  `AppendInTransaction` / `AppendInTx` 调用点(rev3 —— codex 复审非阻断小修 2:
+  低层事务接口也有直接调用面,不只 `.Append(...)`,如
+  `channelhealth/store_postgres.go:302`、`audit/refund_worker.go:474`,
+  实现者须确认这些是否触达 auditledger 写入面并同步适配),返回类型从
+  `*LedgerEntry,error` 改 `(AuditLedgerResult, error)`、`Append` 改收
+  `PreparedEntry` 后逐处适配。
 
 ## 10. 验收标准
 
@@ -376,6 +440,8 @@ W4 全部改 HUAKAI 内部代码(`backend/`),不读参照项目源码 —— 无
 约束。W4 整波闭合后才做收尾对照。
 
 ---
-作者:Claude。日期:2026-05-22(rev2)。源波计划已 parallel-draft + 交叉评审;
-本 spec 经 codex 两轮评审(rev0→rev1→rev2),must-fix 7→3→0 收敛。Owner 已定
-fail-closed 决策(§4);唯一 schema 迁移(§6.0.b)待 Owner 确认 SQL。
+作者:Claude。日期:2026-05-22(rev4)。源波计划已 parallel-draft + 交叉评审;
+本 spec 经 codex 评审 rev0→rev1→rev2(must-fix 7→3→0,rev2
+**APPROVE-WITH-CHANGES**)+ rev3 折入 3 条非阻断小修 + rev4 修 codex per-commit
+复审报的 P2(signer 轮换下 Deferred 条目不钉死 fingerprint)。Owner 已定
+fail-closed 决策(§4)并已确认 schema 迁移 `0050`(§6.0.b)。
