@@ -34,6 +34,12 @@ type Ledger interface {
 // ErrLedgerEntryNotFound get 不到时返回。
 var ErrLedgerEntryNotFound = errors.New("auditledger: ledger entry not found")
 
+// ErrLedgerEntryCorrupt 表示持久化 ledger 行存在结构损坏。
+var ErrLedgerEntryCorrupt = errors.New("auditledger: ledger entry corrupt")
+
+// ErrLedgerSanitizeUnusable 表示 redactor 产不出可写入 ledger 的脱敏 payload。
+var ErrLedgerSanitizeUnusable = errors.New("auditledger: sanitized ledger payload unusable")
+
 // ErrSignerNil Append 时 signer 未设。
 var ErrSignerNil = errors.New("auditledger: signer not set")
 
@@ -94,7 +100,11 @@ func NewMemoryLedger(signer any) (*MemoryLedger, error) {
 func (m *MemoryLedger) Append(ctx context.Context, entry LedgerEntry) (LedgerEntry, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	entry, _ = sanitizeLedgerEntry(ctx, entry)
+	if sanitized, err := sanitizeLedgerEntry(ctx, entry); errors.Is(err, ErrLedgerSanitizeUnusable) {
+		entry = ledgerEntryWithRedactionDroppedSentinel(entry)
+	} else {
+		entry = sanitized
+	}
 
 	if entry.Timestamp == "" {
 		entry.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
