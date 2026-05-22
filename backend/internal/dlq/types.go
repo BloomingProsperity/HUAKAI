@@ -15,6 +15,7 @@ const (
 	EventKindBillingEventReplica EventKind = "billing_event_replica"
 	EventKindAuditEventReplica   EventKind = "audit_event_replica"
 	EventKindAuditMismatchRefund EventKind = "audit_mismatch_refund"
+	EventKindAuditLedgerEntry    EventKind = "audit_ledger_entry"
 	EventKindAccountHealth       EventKind = "account_health"
 	EventKindMetrics             EventKind = "metrics"
 )
@@ -96,7 +97,7 @@ type Record struct {
 
 func LaneForKind(kind EventKind) Lane {
 	switch kind {
-	case EventKindBillingEventReplica, EventKindAuditEventReplica, EventKindAuditMismatchRefund, EventKindUsageRecord:
+	case EventKindBillingEventReplica, EventKindAuditEventReplica, EventKindAuditMismatchRefund, EventKindUsageRecord, EventKindAuditLedgerEntry:
 		return LaneHigh
 	case EventKindAccountHealth:
 		return LaneMed
@@ -111,6 +112,8 @@ func ReplicaStatusForKind(kind EventKind) string {
 	switch kind {
 	case EventKindBillingEventReplica, EventKindAuditEventReplica:
 		return ReplicaStatusPending
+	case EventKindAuditLedgerEntry:
+		return ReplicaStatusNone
 	default:
 		return ReplicaStatusNone
 	}

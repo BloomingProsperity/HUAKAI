@@ -51,10 +51,24 @@ func TestLaneForKind(t *testing.T) {
 	if LaneForKind(EventKindBillingEventReplica) != LaneHigh || LaneForKind(EventKindAuditEventReplica) != LaneHigh {
 		t.Fatalf("billing/audit replica events must use HIGH lane")
 	}
+	if LaneForKind(EventKindAuditLedgerEntry) != LaneHigh {
+		t.Fatalf("audit ledger entry intent must use HIGH lane")
+	}
 	if LaneForKind(EventKindAccountHealth) != LaneMed {
 		t.Fatalf("account health must use MED lane")
 	}
 	if LaneForKind(EventKindMetrics) != LaneLow {
 		t.Fatalf("metrics must use LOW lane")
+	}
+}
+
+func TestReplicaStatusForKindAuditLedgerEntryNone(t *testing.T) {
+	// Risk killed: audit_ledger_entry is a primary write intent, not a replica.
+	// If it starts as pending, MarkDelivered/MarkFailed will not clear it and
+	// operators see a misleading stuck replica state.
+	// Mutation self-check: returning ReplicaStatusPending for this kind makes
+	// this assertion fail.
+	if got := ReplicaStatusForKind(EventKindAuditLedgerEntry); got != ReplicaStatusNone {
+		t.Fatalf("audit ledger entry replica status=%q want %q", got, ReplicaStatusNone)
 	}
 }
