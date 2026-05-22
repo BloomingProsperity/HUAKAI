@@ -360,14 +360,16 @@ warning(可观测信号,不阻断)。`error` **只**在根本无法构造安全 
      行,同样校验其 `TenantID == rec.TenantID`:本租户 → delivered;别租户
      → 返回 error(跨租户 request_id 撞车);其它 `Append` error → 原样返回
      让框架重试。
-   - **rev17:拒绝不完整 DLQ payload(codex per-commit 复审 P2)**:
-     `decodeLedgerEntryFromDLQPayload` 对**合法 JSON 但缺必填 append-intent
-     字段**的 payload 不能返回零值放行 —— 否则 `Append` 会用 `time.Now()`
-     补时间戳、签一条**空 hop chain** 的条目,与原始待写意图不符却被标
-     delivered(审计证据被篡改)。解码函数返回前必须校验:`RequestID`、
-     `CreatedAt` 非空,`HopChain` 非空(`ModelChain` 可空 —— 流式
-     `emitStreamingLedger` 本就只建 HopChain);缺失 → 返回 error,worker
-     当解码失败处理(进 operator review)。
+   - **rev18:DLQ 解码**不**做完整性校验(撤销 rev17 P2 —— codex per-commit
+     再审报 P1)**:rev17 曾要求 `decodeLedgerEntryFromDLQPayload` 拒绝缺
+     `created_at`/`hop_chain` 的 payload。**撤销**:空 `Timestamp` / 空
+     `HopChain` 是**合法 entry 形态** —— `Append` 容忍空 Timestamp(写入时补)、
+     `canonicalPayload` 把 nil `HopChain` 规范成 `[]`;且 `credentialworker`
+     等既有调用方本就 prepare **不带 HopChain** 的审计条目。解码器无法区分
+     「合法的空」与「损坏丢内容但仍是合法 JSON」,强行拒绝会把这些**可正常
+     重放**的 DLQ 行永久卡在重试。故 `decodeLedgerEntryFromDLQPayload` 只在
+     **JSON 本身解析失败**时返回 error;`RequestID` 为空由下游 `PrepareEntry`
+     与 `IdempotencyKey` 校验兜住。
 
 #### 6.0.c DLQ event envelope(rev2 新增 —— codex must-fix 3)
 
@@ -599,7 +601,7 @@ W4 全部改 HUAKAI 内部代码(`backend/`),不读参照项目源码 —— 无
 约束。W4 整波闭合后才做收尾对照。
 
 ---
-作者:Claude。日期:2026-05-22(rev17)。源波计划已 parallel-draft + 交叉评审;
+作者:Claude。日期:2026-05-22(rev18)。源波计划已 parallel-draft + 交叉评审;
 本 spec 经 codex 评审 rev0→rev1→rev2(must-fix 7→3→0,rev2
 **APPROVE-WITH-CHANGES**)+ rev3 折入 3 条非阻断小修 + rev4 修 P2(signer 轮换
 下 Deferred 不钉死 fingerprint)+ rev5 切片归属精修 + rev6 修 P2(B-13 字段级
@@ -618,6 +620,6 @@ seal),DLQ 解码改包内函数 + rev14 修 P1(DLQ 重放路径解码后须重�
 校验信封 `IdempotencyKey`;身份字段以信封为准)+ P2(openapi DLQ event_kind
 enum 补 `audit_ledger_entry` / `audit_mismatch_refund`)+ rev17 修 P1(重放遇
 duplicate request_id 须校验已存在行归属本租户,防跨租户 request_id 撞车导致
-本租户审计证据漏写)+ P2(`decodeLedgerEntryFromDLQPayload` 拒绝缺
-`created_at`/`hop_chain` 的不完整 payload)。
+本租户审计证据漏写)+ rev18 撤销 rev17 P2(空 Timestamp/HopChain 是合法
+形态,credentialworker 等本就不带 HopChain;解码只在 JSON 解析失败时报错)。
 Owner 已定 fail-closed 决策(§4)并已确认 schema 迁移 `0050`(§6.0.b)。
