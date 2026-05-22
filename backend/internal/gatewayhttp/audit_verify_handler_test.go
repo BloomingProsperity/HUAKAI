@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -148,6 +149,31 @@ func TestAT_AUDIT_001_064_AuditVerifyInternalErrorDoesNotLeak(t *testing.T) {
 	}
 	if !strings.Contains(body, "audit ledger temporarily unavailable") {
 		t.Fatalf("audit verify safe message missing: %s", body)
+	}
+}
+
+func TestAuditVerifyHandler_LedgerCorruptReturnsStableAuditCode(t *testing.T) {
+	// Risk killed: a structurally corrupt persisted audit row must be visible as
+	// ledger_corrupt, not hidden as a transient lookup failure.
+	ledger := &failingAuditVerifyLedger{err: fmt.Errorf("scan audit ledger row: %w", auditledger.ErrLedgerEntryCorrupt)}
+	rec := invokeAuditVerifyWithDeps(AuditVerifyStaticDeps{Ledger: ledger}, "/v1/audit/verify?request_id=req_corrupt&tenant_scope_ref="+auditledger.TenantScopeRef(7))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d want 500 body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Error.Code != "ledger_corrupt" {
+		t.Fatalf("error code=%q want ledger_corrupt body=%s", got.Error.Code, rec.Body.String())
+	}
+	if strings.Contains(got.Error.Message, "scan audit ledger row") {
+		t.Fatalf("corrupt response leaked internal scan details: %s", rec.Body.String())
 	}
 }
 
