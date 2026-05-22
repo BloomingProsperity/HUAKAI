@@ -208,7 +208,7 @@ func refundAtomicLedgerAndFormatter(t *testing.T, ctx context.Context, pool *pgx
 	if err != nil {
 		t.Fatalf("NewPostgresLedger: %v", err)
 	}
-	if _, err := ledger.Append(ctx, auditledger.LedgerEntry{
+	if _, err := ledger.Append(ctx, mustPrepareAuditLedgerEntry(t, ctx, auditledger.LedgerEntry{
 		RequestID: seed.requestID,
 		TenantID:  seed.tenantID,
 		ModelChain: &proto.ModelChain{
@@ -217,7 +217,7 @@ func refundAtomicLedgerAndFormatter(t *testing.T, ctx context.Context, pool *pgx
 			UpstreamReported: "gpt-4o",
 			Verdict:          "mismatch",
 		},
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("append source ledger: %v", err)
 	}
 	formatter, err := NewReceiptFormatter(ledger, nil, &refundAtomicReceiptSource{inputs: ReceiptInputs{

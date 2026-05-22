@@ -92,7 +92,7 @@ func TestPostgresLedger_AppendAndGet(t *testing.T) {
 			{Hop: proto.HopIngress, Timestamp: "2026-05-13T10:00:00Z"},
 		},
 	}
-	out, err := l.Append(ctx, entry)
+	out, err := l.Append(ctx, mustPrepareForAppend(t, ctx, entry))
 	if err != nil {
 		t.Fatalf("Append: %v", err)
 	}
@@ -149,11 +149,11 @@ func TestAT_SECURITY_W1_B14_PostgresLedgerTenantScopedLookup(t *testing.T) {
 	l, _ := NewPostgresLedger(pool, signer)
 	ctx := context.Background()
 
-	entryA, err := l.Append(ctx, LedgerEntry{RequestID: "req_pg_scope_a_" + suffix, TenantID: tenantA})
+	entryA, err := l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "req_pg_scope_a_" + suffix, TenantID: tenantA}))
 	if err != nil {
 		t.Fatalf("append tenant A: %v", err)
 	}
-	if _, err := l.Append(ctx, LedgerEntry{RequestID: "req_pg_scope_b_" + suffix, TenantID: tenantB}); err != nil {
+	if _, err := l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "req_pg_scope_b_" + suffix, TenantID: tenantB})); err != nil {
 		t.Fatalf("append tenant B: %v", err)
 	}
 	got, err := l.GetByRequestIDAndTenantScope(ctx, entryA.RequestID, TenantScopeRef(tenantA))
@@ -195,7 +195,7 @@ func TestPostgresLedger_ChainContinuity(t *testing.T) {
 		entry := LedgerEntry{
 			RequestID: fmt.Sprintf("req_pg_%d", i),
 		}
-		out, err := l.Append(ctx, entry)
+		out, err := l.Append(ctx, mustPrepareForAppend(t, ctx, entry))
 		if err != nil {
 			t.Fatalf("Append #%d: %v", i, err)
 		}
@@ -227,10 +227,10 @@ func TestPostgresLedger_RejectMissingFields(t *testing.T) {
 	l, _ := NewPostgresLedger(pool, signer)
 	ctx := context.Background()
 
-	if _, err := l.Append(ctx, LedgerEntry{LedgerID: "x"}); err == nil {
+	if _, err := l.Append(ctx, PreparedEntry{}); err == nil {
 		t.Error("missing RequestID must reject")
 	}
-	if out, err := l.Append(ctx, LedgerEntry{RequestID: "x"}); err != nil || out.LedgerID == "" {
+	if out, err := l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "x"})); err != nil || out.LedgerID == "" {
 		t.Errorf("missing LedgerID must auto-generate, out=%+v err=%v", out, err)
 	}
 }
@@ -252,7 +252,7 @@ func TestPostgresLedger_AppendOnlyTriggerRejectsUpdateDelete(t *testing.T) {
 	l, _ := NewPostgresLedger(pool, signer)
 	ctx := context.Background()
 
-	out, err := l.Append(ctx, LedgerEntry{RequestID: "req_append_only"})
+	out, err := l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "req_append_only"}))
 	if err != nil {
 		t.Fatalf("Append: %v", err)
 	}
@@ -287,12 +287,12 @@ func TestPostgresLedger_UniqueRequestIDConstraint(t *testing.T) {
 	ctx := context.Background()
 
 	entry := LedgerEntry{LedgerID: "lid_a", RequestID: "req_dup"}
-	if _, err := l.Append(ctx, entry); err != nil {
+	if _, err := l.Append(ctx, mustPrepareForAppend(t, ctx, entry)); err != nil {
 		t.Fatalf("first Append: %v", err)
 	}
 	// 第二次同 request_id 应 fail（PG UNIQUE 约束触发）。
 	entry2 := LedgerEntry{LedgerID: "lid_b", RequestID: "req_dup"}
-	if _, err := l.Append(ctx, entry2); err == nil {
+	if _, err := l.Append(ctx, mustPrepareForAppend(t, ctx, entry2)); err == nil {
 		t.Error("duplicate request_id must fail UNIQUE constraint")
 	}
 }

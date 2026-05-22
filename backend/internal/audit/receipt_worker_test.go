@@ -19,7 +19,7 @@ func TestReceiptHookSettlerAppendsAfterSuccessfulSettle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ledger: %v", err)
 	}
-	if _, err := ledger.Append(ctx, auditledger.LedgerEntry{
+	if _, err := ledger.Append(ctx, mustPrepareAuditLedgerEntry(t, ctx, auditledger.LedgerEntry{
 		RequestID: requestID,
 		TenantID:  7,
 		ModelChain: &proto.ModelChain{
@@ -28,7 +28,7 @@ func TestReceiptHookSettlerAppendsAfterSuccessfulSettle(t *testing.T) {
 			UpstreamReported: "gpt-4o",
 			Verdict:          "match",
 		},
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("append ledger: %v", err)
 	}
 	formatter, err := NewReceiptFormatter(ledger, nil, &staticReceiptSource{inputs: ReceiptInputs{
@@ -62,14 +62,14 @@ func TestReceiptHookSettlerBestEffortDoesNotBlockSettle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ledger: %v", err)
 	}
-	if _, err := ledger.Append(ctx, auditledger.LedgerEntry{
+	if _, err := ledger.Append(ctx, mustPrepareAuditLedgerEntry(t, ctx, auditledger.LedgerEntry{
 		RequestID: requestID,
 		TenantID:  7,
 		ModelChain: &proto.ModelChain{
 			Requested: "gpt-4o",
 			Verdict:   "match",
 		},
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("append ledger: %v", err)
 	}
 	formatter, err := NewReceiptFormatter(ledger, nil, &staticReceiptSource{err: ErrReceiptInputsNotFound}, signer)

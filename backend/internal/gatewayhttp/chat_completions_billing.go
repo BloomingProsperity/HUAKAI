@@ -3,7 +3,6 @@ package gatewayhttp
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -250,20 +249,17 @@ func submitAuditLedgerEntry(ctx context.Context, d ChatHandlerDeps, env *proto.H
 		requestID = env.RequestMeta.RequestID
 	}
 	entry := auditledger.LedgerEntry{
-		LedgerID:          uuid.NewString(),
-		Timestamp:         time.Now().UTC().Format(time.RFC3339Nano),
-		RequestID:         requestID,
-		TenantID:          tenantID,
-		HopChain:          cloneHopChain(env.Accounting.HopChain),
-		ModelChain:        cloneModelChain(env.Accounting.ModelChain),
-		PubkeyFingerprint: d.Signer.Fingerprint(),
+		Timestamp:  time.Now().UTC().Format(time.RFC3339Nano),
+		RequestID:  requestID,
+		TenantID:   tenantID,
+		HopChain:   cloneHopChain(env.Accounting.HopChain),
+		ModelChain: cloneModelChain(env.Accounting.ModelChain),
 	}
-	hash, err := auditledger.EntryHash(&entry)
+	prepared, err := auditledger.PrepareEntry(ctx, entry)
 	if err != nil {
-		return nil, fmt.Errorf("audit ledger entry hash: %w", err)
+		return nil, fmt.Errorf("audit ledger prepare: %w", err)
 	}
-	entry.Signature = base64.StdEncoding.EncodeToString(d.Signer.Sign(hash[:]))
-	appended, err := d.AuditLedger.Append(ctx, entry)
+	appended, err := d.AuditLedger.Append(ctx, prepared)
 	if err != nil {
 		return nil, fmt.Errorf("audit ledger append: %w", err)
 	}

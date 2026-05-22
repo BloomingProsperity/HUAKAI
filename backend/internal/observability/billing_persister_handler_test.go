@@ -24,7 +24,7 @@ func TestBillingPersisterReceiptHookAppendsAfterAsyncSettle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ledger: %v", err)
 	}
-	if _, err := ledger.Append(ctx, auditledger.LedgerEntry{
+	prepared, err := auditledger.PrepareEntry(ctx, auditledger.LedgerEntry{
 		RequestID: requestID,
 		TenantID:  7,
 		ModelChain: &proto.ModelChain{
@@ -33,7 +33,11 @@ func TestBillingPersisterReceiptHookAppendsAfterAsyncSettle(t *testing.T) {
 			UpstreamReported: "gpt-4o",
 			Verdict:          "match",
 		},
-	}); err != nil {
+	})
+	if err != nil {
+		t.Fatalf("prepare ledger: %v", err)
+	}
+	if _, err := ledger.Append(ctx, prepared); err != nil {
 		t.Fatalf("append ledger: %v", err)
 	}
 	formatter, err := audit.NewReceiptFormatter(ledger, nil, &staticReceiptInputSource{inputs: audit.ReceiptInputs{

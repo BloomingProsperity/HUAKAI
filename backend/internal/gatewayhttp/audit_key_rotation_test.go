@@ -29,12 +29,12 @@ func TestAT_AUDIT_001_050_LedgerVerifyHistoricalKeyAfterRotation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ledger: %v", err)
 	}
-	entry, err := ledger.Append(ctx, auditledger.LedgerEntry{
+	entry, err := ledger.Append(ctx, mustPrepareGatewayHTTPLedgerEntry(t, ctx, auditledger.LedgerEntry{
 		Timestamp: effectiveFrom.Add(30 * time.Minute).Format(time.RFC3339Nano),
 		RequestID: "req-historical-key",
 		TenantID:  7,
 		HopChain:  []proto.HopAttestation{{Hop: proto.HopIngress, Timestamp: effectiveFrom.Format(time.RFC3339Nano)}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -191,11 +191,11 @@ func TestAT_AUDIT_001_054_LedgerVerifyRejectsSignatureOutsideKeyWindow(t *testin
 	if err != nil {
 		t.Fatalf("ledger: %v", err)
 	}
-	entry, err := ledger.Append(ctx, auditledger.LedgerEntry{
+	entry, err := ledger.Append(ctx, mustPrepareGatewayHTTPLedgerEntry(t, ctx, auditledger.LedgerEntry{
 		Timestamp: rotatedAt.Add(time.Minute).Format(time.RFC3339Nano),
 		RequestID: "req-outside-key-window",
 		TenantID:  7,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}

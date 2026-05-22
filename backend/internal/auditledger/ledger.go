@@ -14,7 +14,7 @@ type Ledger interface {
 	// Append 把 entry 写入 ledger 末尾；自动计算 PrevMerkleRoot / MerkleRoot /
 	// Signature / PubkeyFingerprint（调用方提交时这 4 个字段可留空）。
 	// 返回写入后的 LedgerEntry（含 4 个补齐字段）。
-	Append(ctx context.Context, entry LedgerEntry) (LedgerEntry, error)
+	Append(ctx context.Context, entry PreparedEntry) (LedgerEntry, error)
 
 	// GetByRequestID 通过 request_id 取出对应的 ledger entry；
 	// not found 返回 ErrLedgerEntryNotFound。
@@ -51,9 +51,9 @@ var ErrDuplicateRequestID = errors.New("auditledger: duplicate request_id")
 // PostgresLedger。
 type NoopLedger struct{}
 
-// Append 不存任何东西，返回原 entry 不动。
-func (NoopLedger) Append(ctx context.Context, entry LedgerEntry) (LedgerEntry, error) {
-	return entry, nil
+// Append 不存任何东西，返回 prepared entry 对应的 ledger 形态。
+func (NoopLedger) Append(ctx context.Context, entry PreparedEntry) (LedgerEntry, error) {
+	return entry.AsLedgerEntry(), nil
 }
 
 // GetByRequestID 永远返回 not found。
@@ -97,15 +97,11 @@ func NewMemoryLedger(signer any) (*MemoryLedger, error) {
 
 // Append 把 entry 写入末尾，自动补 PrevMerkleRoot / MerkleRoot / Signature /
 // PubkeyFingerprint / Timestamp（如果空）。
-func (m *MemoryLedger) Append(ctx context.Context, entry LedgerEntry) (LedgerEntry, error) {
+func (m *MemoryLedger) Append(ctx context.Context, prepared PreparedEntry) (LedgerEntry, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if sanitized, err := sanitizeLedgerEntry(ctx, entry); errors.Is(err, ErrLedgerSanitizeUnusable) {
-		entry = ledgerEntryWithRedactionDroppedSentinel(entry)
-	} else {
-		entry = sanitized
-	}
 
+	entry := prepared.AsLedgerEntry()
 	if entry.Timestamp == "" {
 		entry.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
 	}

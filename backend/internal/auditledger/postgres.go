@@ -40,10 +40,11 @@ func NewPostgresLedger(pool *pgxpool.Pool, signer any) (*PostgresLedger, error) 
 	return &PostgresLedger{pool: pool, signer: normalized, tenantLocks: make(map[int64]*sync.Mutex)}, nil
 }
 
-// Append 把 entry 写入 audit_ledger_entries；自动补 Timestamp / PrevMerkleRoot /
+// Append 把 prepared entry 写入 audit_ledger_entries；自动补 Timestamp / PrevMerkleRoot /
 // MerkleRoot / Signature / PubkeyFingerprint。
 // 用 advisory lock 串行化所有写者，保证 Merkle 链不断。
-func (l *PostgresLedger) Append(ctx context.Context, entry LedgerEntry) (LedgerEntry, error) {
+func (l *PostgresLedger) Append(ctx context.Context, prepared PreparedEntry) (LedgerEntry, error) {
+	entry := prepared.AsLedgerEntry()
 	if entry.RequestID == "" {
 		return LedgerEntry{}, errors.New("auditledger: RequestID required for Postgres Append")
 	}
@@ -60,7 +61,7 @@ func (l *PostgresLedger) Append(ctx context.Context, entry LedgerEntry) (LedgerE
 	}
 	defer tx.Rollback(ctx)
 
-	entry, err = AppendInTransaction(ctx, tx, l.signer, entry)
+	entry, err = AppendInTransaction(ctx, tx, l.signer, preparedEntryFromLedgerEntry(entry))
 	if err != nil {
 		return LedgerEntry{}, err
 	}
@@ -71,10 +72,11 @@ func (l *PostgresLedger) Append(ctx context.Context, entry LedgerEntry) (LedgerE
 	return entry, nil
 }
 
-func (l *PostgresLedger) AppendInTx(ctx context.Context, tx pgx.Tx, entry LedgerEntry) (LedgerEntry, error) {
+func (l *PostgresLedger) AppendInTx(ctx context.Context, tx pgx.Tx, prepared PreparedEntry) (LedgerEntry, error) {
 	if l == nil || tx == nil {
 		return LedgerEntry{}, errors.New("auditledger: tx required for Postgres AppendInTx")
 	}
+	entry := prepared.AsLedgerEntry()
 	if entry.RequestID == "" {
 		return LedgerEntry{}, errors.New("auditledger: RequestID required for Postgres Append")
 	}
@@ -85,7 +87,7 @@ func (l *PostgresLedger) AppendInTx(ctx context.Context, tx pgx.Tx, entry Ledger
 	unlock := l.lockTenantWriter(entry.TenantID)
 	defer unlock()
 
-	return AppendInTransaction(ctx, tx, l.signer, entry)
+	return AppendInTransaction(ctx, tx, l.signer, preparedEntryFromLedgerEntry(entry))
 }
 
 func (l *PostgresLedger) lockTenantWriter(tenantID int64) func() {
@@ -105,16 +107,12 @@ func (l *PostgresLedger) lockTenantWriter(tenantID int64) func() {
 
 // AppendInTransaction appends an audit ledger entry using the caller-owned
 // database transaction. The caller is responsible for commit/rollback.
-func AppendInTransaction(ctx context.Context, q DBTX, signer any, entry LedgerEntry) (LedgerEntry, error) {
+func AppendInTransaction(ctx context.Context, q DBTX, signer any, prepared PreparedEntry) (LedgerEntry, error) {
 	normalized, err := normalizeSigner(signer)
 	if err != nil {
 		return LedgerEntry{}, err
 	}
-	if sanitized, err := sanitizeLedgerEntry(ctx, entry); errors.Is(err, ErrLedgerSanitizeUnusable) {
-		entry = ledgerEntryWithRedactionDroppedSentinel(entry)
-	} else {
-		entry = sanitized
-	}
+	entry := prepared.AsLedgerEntry()
 	if entry.RequestID == "" {
 		return LedgerEntry{}, errors.New("auditledger: RequestID required for Postgres Append")
 	}

@@ -4,7 +4,6 @@ package gateway
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -660,20 +659,17 @@ func (f *StreamForwarder) emitStreamingLedger(ctx context.Context, req ForwardRe
 		builder = BuildHopChain
 	}
 	entry := auditledger.LedgerEntry{
-		LedgerID:          uuid.NewString(),
-		Timestamp:         time.Now().UTC().Format(time.RFC3339Nano),
-		RequestID:         requestID,
-		TenantID:          req.TenantID,
-		HopChain:          builder(req, providerEndpoint, startedAt, completedAt),
-		PubkeyFingerprint: f.Signer.Fingerprint(),
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		RequestID: requestID,
+		TenantID:  req.TenantID,
+		HopChain:  builder(req, providerEndpoint, startedAt, completedAt),
 	}
-	hash, err := auditledger.EntryHash(&entry)
+	prepared, err := auditledger.PrepareEntry(ctx, entry)
 	if err != nil {
-		f.warnLedgerLoss("audit_ledger_entry_hash_failed", err.Error())
+		f.warnLedgerLoss("audit_ledger_prepare_failed", err.Error())
 		return
 	}
-	entry.Signature = base64.StdEncoding.EncodeToString(f.Signer.Sign(hash[:]))
-	appended, err := f.AuditLedger.Append(ctx, entry)
+	appended, err := f.AuditLedger.Append(ctx, prepared)
 	if err != nil {
 		f.warnLedgerLoss("audit_ledger_append_failed", err.Error())
 		return
