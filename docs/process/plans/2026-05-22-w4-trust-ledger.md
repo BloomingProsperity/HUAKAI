@@ -304,6 +304,13 @@ warning(可观测信号,不阻断)。`error` **只**在根本无法构造安全 
      幂等(redactor 无可剥则原样、sentinel 仍 sentinel),对坏数据兜底脱敏。
      即:DLQ 解码出口是 `LedgerEntry` 不是 `PreparedEntry`,seal 仍只由
      `PrepareEntry` 一个入口产出。
+   - **rev15:重放前校验租户一致(codex per-commit 复审 P2)**:DLQ `Record`
+     自带 `TenantID`(信封字段,enqueue 时按 §6.0.c 设);payload JSON 里也
+     嵌了 `tenant_id`。正常两者相等。坏入队 / 手工修的 DB 行可能不等 ——
+     worker 若信 payload,会把账本条目记到**另一个租户**名下,造成跨租户
+     审计证据。修复:worker 解码后、`PrepareEntry`/`Append` **之前**校验
+     `rec.TenantID == 解码出的 entry.TenantID`;不等 → 返回 error(不猜、不
+     静默,进 DLQ MarkFailed → operator review)。
    - **duplicate request_id**:重放时若 `request_id` 已有持久化账本条目
      (并发或上轮已补),worker 先 `GetByRequestID` lookup;命中 → 直接判
      delivered,不重复 Append(避免 commit-unknown 后无限重试)。
@@ -551,7 +558,7 @@ W4 全部改 HUAKAI 内部代码(`backend/`),不读参照项目源码 —— 无
 约束。W4 整波闭合后才做收尾对照。
 
 ---
-作者:Claude。日期:2026-05-22(rev14)。源波计划已 parallel-draft + 交叉评审;
+作者:Claude。日期:2026-05-22(rev15)。源波计划已 parallel-draft + 交叉评审;
 本 spec 经 codex 评审 rev0→rev1→rev2(must-fix 7→3→0,rev2
 **APPROVE-WITH-CHANGES**)+ rev3 折入 3 条非阻断小修 + rev4 修 P2(signer 轮换
 下 Deferred 不钉死 fingerprint)+ rev5 切片归属精修 + rev6 修 P2(B-13 字段级
@@ -564,5 +571,6 @@ DLQ 重放 worker 的 duplicate-request_id 边界(损坏行也算命中)+ rev13 
 `PreparedEntry` 不提供公开 `UnmarshalJSON`(否则外部 json.Unmarshal 重开
 seal),DLQ 解码改包内函数 + rev14 修 P1(DLQ 重放路径解码后须重跑
 `PrepareEntry` 脱敏)+ P2(`AppendInTransaction` 把 PG 23505 翻译成
-`ErrDuplicateRequestID` 统一契约)。
+`ErrDuplicateRequestID` 统一契约)+ rev15 修 P2(DLQ 重放前校验
+`rec.TenantID` 与 payload 租户一致,防跨租户审计证据)。
 Owner 已定 fail-closed 决策(§4)并已确认 schema 迁移 `0050`(§6.0.b)。
