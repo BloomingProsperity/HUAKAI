@@ -417,6 +417,10 @@ func (l *duplicateRefundLedger) GetByRequestID(_ context.Context, requestID stri
 	return l.entry, nil
 }
 
+func (l *duplicateRefundLedger) GetByRequestIDAndTenantScope(_ context.Context, requestID, tenantScopeRef string) (auditledger.LedgerEntry, error) {
+	return l.GetByRequestID(context.Background(), requestID)
+}
+
 func (l *duplicateRefundLedger) LatestMerkleRoot(context.Context) ([32]byte, error) {
 	return auditledger.ZeroRoot, nil
 }

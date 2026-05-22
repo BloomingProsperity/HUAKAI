@@ -224,6 +224,24 @@ func (l *PostgresLedger) GetByRequestID(ctx context.Context, requestID string) (
 	return scanLedgerEntry(row)
 }
 
+// GetByRequestIDAndTenantScope 通过 request_id + tenant_scope_ref 查 ledger
+// entry。request_id 唯一，先取单行再在 Go 里比对公开 tenant scope，避免扫描
+// tenants 表，也不受 tenant 软删影响历史验签。
+func (l *PostgresLedger) GetByRequestIDAndTenantScope(ctx context.Context, requestID, tenantScopeRef string) (LedgerEntry, error) {
+	tenantScopeRef = strings.TrimSpace(tenantScopeRef)
+	if tenantScopeRef == "" {
+		return LedgerEntry{}, ErrLedgerEntryNotFound
+	}
+	entry, err := l.GetByRequestID(ctx, requestID)
+	if err != nil {
+		return LedgerEntry{}, err
+	}
+	if !tenantScopeMatches(entry, tenantScopeRef) {
+		return LedgerEntry{}, ErrLedgerEntryNotFound
+	}
+	return entry, nil
+}
+
 // LatestMerkleRoot 返回最新链尾 root；空 ledger 返回 ZeroRoot。
 func (l *PostgresLedger) LatestMerkleRoot(ctx context.Context) ([32]byte, error) {
 	prevBytes, err := readLatestMerkleRootAny(ctx, l.pool)

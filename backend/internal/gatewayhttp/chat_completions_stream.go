@@ -195,7 +195,7 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 		streamForwarder.ClientAdapter = clientAdapter
 	}
 	streamForwarder.LedgerCallback = func(entryID, sigFingerprint string) {
-		WriteHuakaiLedgerHeaders(w.Header(), ex.requestID, entryID, sigFingerprint)
+		WriteHuakaiLedgerHeaders(w.Header(), ex.requestID, entryID, sigFingerprint, ex.ident.TenantID)
 	}
 	tracker := newDeliveryTracker(w)
 	forwardWriter := http.ResponseWriter(tracker)

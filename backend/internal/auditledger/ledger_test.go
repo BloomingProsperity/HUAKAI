@@ -117,6 +117,35 @@ func TestMemoryLedger_GetByRequestID(t *testing.T) {
 	}
 }
 
+func TestAT_SECURITY_W1_B14_MemoryLedgerTenantScopedLookup(t *testing.T) {
+	// Risk killed: a request_id lookup must include tenant scope so a caller
+	// cannot read another tenant's ledger entry by guessing request_id.
+	signer, _ := sign.GenerateKey()
+	l, _ := NewMemoryLedger(signer)
+	ctx := context.Background()
+
+	entry, err := l.Append(ctx, LedgerEntry{RequestID: "req_scope_a", TenantID: 7})
+	if err != nil {
+		t.Fatalf("append A: %v", err)
+	}
+	if _, err := l.Append(ctx, LedgerEntry{RequestID: "req_scope_b", TenantID: 8}); err != nil {
+		t.Fatalf("append B: %v", err)
+	}
+	got, err := l.GetByRequestIDAndTenantScope(ctx, "req_scope_a", TenantScopeRef(7))
+	if err != nil {
+		t.Fatalf("scoped lookup A: %v", err)
+	}
+	if got.LedgerID != entry.LedgerID {
+		t.Fatalf("got ledger %q want %q", got.LedgerID, entry.LedgerID)
+	}
+	if _, err := l.GetByRequestIDAndTenantScope(ctx, "req_scope_a", TenantScopeRef(8)); !errors.Is(err, ErrLedgerEntryNotFound) {
+		t.Fatalf("wrong tenant scope must not read A, got %v", err)
+	}
+	if _, err := l.GetByRequestIDAndTenantScope(ctx, "req_scope_a", ""); !errors.Is(err, ErrLedgerEntryNotFound) {
+		t.Fatalf("empty tenant scope must not read A, got %v", err)
+	}
+}
+
 func TestMemoryLedger_SnapshotIsDeepCopy(t *testing.T) {
 	signer, _ := sign.GenerateKey()
 	l, _ := NewMemoryLedger(signer)

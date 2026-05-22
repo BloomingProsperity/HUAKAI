@@ -26,7 +26,7 @@ func TestAuditVerifyHandler_HappyPath(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 
-	rec := invokeAuditVerify(t, ledger, "/v1/audit/verify?request_id=req_1")
+	rec := invokeAuditVerify(t, ledger, "/v1/audit/verify?request_id=req_1&tenant_scope_ref="+auditledger.TenantScopeRef(7))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -62,8 +62,30 @@ func TestATPRIV001009AuditVerifyTenantScopeRefMismatchReturns404(t *testing.T) {
 	}
 }
 
+func TestAT_SECURITY_W1_B14_AuditVerifyRequiresTenantScopeRef(t *testing.T) {
+	// Risk killed: a public verify request with only request_id must not read a
+	// different tenant's signed ledger entry.
+	ledger := newAuditVerifyTestLedger(t)
+	_, err := ledger.Append(context.Background(), auditledger.LedgerEntry{
+		LedgerID:  "lid_scope_required",
+		RequestID: "req_scope_required",
+		TenantID:  7,
+		HopChain:  []proto.HopAttestation{{Hop: proto.HopIngress, Timestamp: "2026-05-13T10:00:00Z"}},
+	})
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	rec := invokeAuditVerify(t, ledger, "/v1/audit/verify?request_id=req_scope_required")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400 body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "lid_scope_required") {
+		t.Fatalf("missing tenant_scope_ref response leaked ledger entry: %s", rec.Body.String())
+	}
+}
+
 func TestAuditVerifyHandler_NotFound(t *testing.T) {
-	rec := invokeAuditVerify(t, newAuditVerifyTestLedger(t), "/v1/audit/verify?request_id=missing")
+	rec := invokeAuditVerify(t, newAuditVerifyTestLedger(t), "/v1/audit/verify?request_id=missing&tenant_scope_ref="+auditledger.TenantScopeRef(7))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status=%d want 404 body=%s", rec.Code, rec.Body.String())
 	}
@@ -116,7 +138,7 @@ func TestAuditVerifyHandler_PostBodyRejectsOversizedTrailingData(t *testing.T) {
 
 func TestAT_AUDIT_001_064_AuditVerifyInternalErrorDoesNotLeak(t *testing.T) {
 	ledger := &failingAuditVerifyLedger{err: errors.New("pq: relation internal_schema.audit_ledger_entries missing at /srv/huakai/backend/internal/audit/store.go:41")}
-	rec := invokeAuditVerifyWithDeps(AuditVerifyStaticDeps{Ledger: ledger}, "/v1/audit/verify?request_id=req_leak")
+	rec := invokeAuditVerifyWithDeps(AuditVerifyStaticDeps{Ledger: ledger}, "/v1/audit/verify?request_id=req_leak&tenant_scope_ref="+auditledger.TenantScopeRef(7))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status=%d want 500 body=%s", rec.Code, rec.Body.String())
 	}
@@ -193,6 +215,10 @@ type failingAuditVerifyLedger struct {
 }
 
 func (l *failingAuditVerifyLedger) GetByRequestID(context.Context, string) (auditledger.LedgerEntry, error) {
+	return auditledger.LedgerEntry{}, l.err
+}
+
+func (l *failingAuditVerifyLedger) GetByRequestIDAndTenantScope(context.Context, string, string) (auditledger.LedgerEntry, error) {
 	return auditledger.LedgerEntry{}, l.err
 }
 

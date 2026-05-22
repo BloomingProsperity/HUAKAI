@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
@@ -53,6 +54,23 @@ func truncateLedger(t *testing.T, pool *pgxpool.Pool) {
 	if _, err := pool.Exec(context.Background(), "TRUNCATE audit_ledger_entries RESTART IDENTITY"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
+}
+
+func seedLedgerTenant(t *testing.T, pool *pgxpool.Pool, name string) int64 {
+	t.Helper()
+	var tenantID int64
+	if err := pool.QueryRow(context.Background(),
+		`INSERT INTO tenants (name) VALUES ($1) RETURNING id`,
+		name,
+	).Scan(&tenantID); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		_, _ = pool.Exec(ctx, `DELETE FROM audit_ledger_entries WHERE tenant_id=$1`, tenantID)
+		_, _ = pool.Exec(ctx, `DELETE FROM tenants WHERE id=$1`, tenantID)
+	})
+	return tenantID
 }
 
 func TestPostgresLedger_AppendAndGet(t *testing.T) {
@@ -114,6 +132,52 @@ func TestPostgresLedger_GetNotFound(t *testing.T) {
 	_, err := l.GetByRequestID(context.Background(), "missing_req")
 	if !errors.Is(err, ErrLedgerEntryNotFound) {
 		t.Errorf("expected ErrLedgerEntryNotFound, got %v", err)
+	}
+}
+
+func TestAT_SECURITY_W1_B14_PostgresLedgerTenantScopedLookup(t *testing.T) {
+	// Risk killed: the database lookup must constrain request_id by tenant scope
+	// so a known request_id cannot disclose another tenant's ledger row.
+	pool := openTestPool(t)
+	defer pool.Close()
+	truncateLedger(t, pool)
+
+	suffix := uuid.NewString()
+	tenantA := seedLedgerTenant(t, pool, "ledger-scope-a-"+suffix)
+	tenantB := seedLedgerTenant(t, pool, "ledger-scope-b-"+suffix)
+	signer, _ := sign.GenerateKey()
+	l, _ := NewPostgresLedger(pool, signer)
+	ctx := context.Background()
+
+	entryA, err := l.Append(ctx, LedgerEntry{RequestID: "req_pg_scope_a_" + suffix, TenantID: tenantA})
+	if err != nil {
+		t.Fatalf("append tenant A: %v", err)
+	}
+	if _, err := l.Append(ctx, LedgerEntry{RequestID: "req_pg_scope_b_" + suffix, TenantID: tenantB}); err != nil {
+		t.Fatalf("append tenant B: %v", err)
+	}
+	got, err := l.GetByRequestIDAndTenantScope(ctx, entryA.RequestID, TenantScopeRef(tenantA))
+	if err != nil {
+		t.Fatalf("tenant A scoped lookup: %v", err)
+	}
+	if got.LedgerID != entryA.LedgerID || got.TenantID != tenantA {
+		t.Fatalf("got wrong row: %+v want ledger=%s tenant=%d", got, entryA.LedgerID, tenantA)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE tenants SET deleted_at=NOW() WHERE id=$1`, tenantA); err != nil {
+		t.Fatalf("soft delete tenant A: %v", err)
+	}
+	gotAfterDelete, err := l.GetByRequestIDAndTenantScope(ctx, entryA.RequestID, TenantScopeRef(tenantA))
+	if err != nil {
+		t.Fatalf("soft-deleted tenant historical scoped lookup: %v", err)
+	}
+	if gotAfterDelete.LedgerID != entryA.LedgerID || gotAfterDelete.TenantID != tenantA {
+		t.Fatalf("soft-deleted tenant lookup got wrong row: %+v want ledger=%s tenant=%d", gotAfterDelete, entryA.LedgerID, tenantA)
+	}
+	if _, err := l.GetByRequestIDAndTenantScope(ctx, entryA.RequestID, TenantScopeRef(tenantB)); !errors.Is(err, ErrLedgerEntryNotFound) {
+		t.Fatalf("tenant B scope must not read tenant A row, got %v", err)
+	}
+	if _, err := l.GetByRequestIDAndTenantScope(ctx, entryA.RequestID, ""); !errors.Is(err, ErrLedgerEntryNotFound) {
+		t.Fatalf("empty tenant scope must not read tenant A row, got %v", err)
 	}
 }
 

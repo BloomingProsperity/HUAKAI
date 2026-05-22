@@ -406,7 +406,7 @@ paths:
           schema: { type: string, minLength: 1, maxLength: 256 }
         - in: query
           name: tenant_scope_ref
-          required: false
+          required: true
           schema: { type: string, minLength: 1, maxLength: 128 }
       responses:
         '200':
@@ -2944,14 +2944,14 @@ components:
       type: object
       additionalProperties: false
       x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
-      required: [request_id]
+      required: [request_id, tenant_scope_ref]
       properties:
         request_id: { type: string, minLength: 1, maxLength: 256 }
         tenant_scope_ref:
           type: string
           minLength: 1
           maxLength: 128
-          description: Optional public tenant scope guard; mismatch returns 404 without confirming row existence.
+          description: Required public tenant scope; absent returns 400, mismatched returns 404 without confirming row existence.
 
     AuditVerifyResponse:
       type: object

@@ -56,10 +56,10 @@ func WriteHuakaiHeaders(h http.Header, requested string, env *proto.HCSF, entry 
 	if h == nil || entry == nil {
 		return
 	}
-	WriteHuakaiLedgerHeaders(h, entry.RequestID, entry.LedgerID, entry.PubkeyFingerprint)
+	WriteHuakaiLedgerHeaders(h, entry.RequestID, entry.LedgerID, entry.PubkeyFingerprint, entry.TenantID)
 }
 
-func WriteHuakaiLedgerHeaders(h http.Header, requestID, ledgerID, sigFingerprint string) {
+func WriteHuakaiLedgerHeaders(h http.Header, requestID, ledgerID, sigFingerprint string, tenantID int64) {
 	if h == nil {
 		return
 	}
@@ -74,6 +74,9 @@ func WriteHuakaiLedgerHeaders(h http.Header, requestID, ledgerID, sigFingerprint
 		query.Set("request_id", requestID)
 		if ledgerID != "" {
 			query.Set("ledger-id", ledgerID)
+		}
+		if scopeRef := auditledger.TenantScopeRef(tenantID); scopeRef != "" {
+			query.Set("tenant_scope_ref", scopeRef)
 		}
 		h.Set(headerHUAKAIAuditVerify, "/v1/audit/verify?"+query.Encode())
 	}

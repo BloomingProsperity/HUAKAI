@@ -28,20 +28,21 @@ func runCLI(args []string, out io.Writer, client *http.Client) int {
 	fs.SetOutput(io.Discard)
 	pubkeyURL := fs.String("pubkey-url", "", "public ed25519 key URL")
 	requestID := fs.String("request-id", "", "HUAKAI request_id")
+	tenantScopeRef := fs.String("tenant-scope-ref", "", "HUAKAI tenant_scope_ref from X-HUAKAI-Verify")
 	gatewayURL := fs.String("gateway-url", "", "HUAKAI gateway base URL")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintf(out, "❌ audit verification failed: %v\n", err)
 		return 2
 	}
-	if *pubkeyURL == "" || *requestID == "" || *gatewayURL == "" {
-		fmt.Fprintln(out, "❌ audit verification failed: --pubkey-url, --request-id, and --gateway-url are required")
+	if *pubkeyURL == "" || *requestID == "" || *tenantScopeRef == "" || *gatewayURL == "" {
+		fmt.Fprintln(out, "❌ audit verification failed: --pubkey-url, --request-id, --tenant-scope-ref, and --gateway-url are required")
 		return 2
 	}
 	if client == nil {
 		client = http.DefaultClient
 	}
 
-	verify, tree, err := fetchAudit(client, *gatewayURL, *requestID)
+	verify, tree, err := fetchAudit(client, *gatewayURL, *requestID, *tenantScopeRef)
 	if err != nil {
 		fmt.Fprintf(out, "❌ audit verification failed: %v\n", err)
 		return 1
@@ -53,6 +54,10 @@ func runCLI(args []string, out io.Writer, client *http.Client) int {
 	}
 	entry, err := verifyEntryProof(verify, pub)
 	if err != nil {
+		fmt.Fprintf(out, "❌ audit verification failed: %v\n", err)
+		return 1
+	}
+	if err := verifyRequestedEntry(entry, *requestID, *tenantScopeRef); err != nil {
 		fmt.Fprintf(out, "❌ audit verification failed: %v\n", err)
 		return 1
 	}
@@ -70,9 +75,12 @@ func runCLI(args []string, out io.Writer, client *http.Client) int {
 	return 0
 }
 
-func fetchAudit(client *http.Client, gatewayURL, requestID string) (gatewayhttp.AuditVerifyResponse, gatewayhttp.AuditMerkleTreeResponse, error) {
+func fetchAudit(client *http.Client, gatewayURL, requestID, tenantScopeRef string) (gatewayhttp.AuditVerifyResponse, gatewayhttp.AuditMerkleTreeResponse, error) {
 	var verify gatewayhttp.AuditVerifyResponse
-	verifyURL := strings.TrimRight(gatewayURL, "/") + "/v1/audit/verify?request_id=" + url.QueryEscape(requestID)
+	verifyQuery := url.Values{}
+	verifyQuery.Set("request_id", requestID)
+	verifyQuery.Set("tenant_scope_ref", tenantScopeRef)
+	verifyURL := strings.TrimRight(gatewayURL, "/") + "/v1/audit/verify?" + verifyQuery.Encode()
 	if err := fetchJSON(client, verifyURL, &verify); err != nil {
 		return verify, gatewayhttp.AuditMerkleTreeResponse{}, err
 	}
@@ -110,6 +118,16 @@ func verifyEntryProof(resp gatewayhttp.AuditVerifyResponse, pub ed25519.PublicKe
 		return auditledger.LedgerEntry{}, errors.New("merkle root does not match prev_merkle_root + entry_hash")
 	}
 	return entry, nil
+}
+
+func verifyRequestedEntry(entry auditledger.LedgerEntry, requestID, tenantScopeRef string) error {
+	if entry.RequestID != requestID {
+		return fmt.Errorf("response request_id mismatch: got %q want %q", entry.RequestID, requestID)
+	}
+	if entry.TenantScopeRef != tenantScopeRef {
+		return fmt.Errorf("response tenant_scope_ref mismatch: got %q want %q", entry.TenantScopeRef, tenantScopeRef)
+	}
+	return nil
 }
 
 func ledgerEntryFromResponse(resp gatewayhttp.AuditVerifyResponse) (auditledger.LedgerEntry, error) {
