@@ -2,6 +2,7 @@ package gatewayhttp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,15 +11,16 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
 const (
-	defaultAdminPoolsTenantID         = int64(1)
 	defaultAdminPoolsLimit            = int32(50)
 	maxAdminPoolsLimit                = int32(200)
 	maxAdminPoolNameRunes             = 64
@@ -31,16 +33,54 @@ type AdminPoolsAuth interface {
 	Resolve(context.Context, *http.Request) (admin.AdminIdentity, error)
 }
 
-type AdminPoolsStore interface {
+type AdminPoolsDataStore interface {
 	InsertPool(context.Context, dbbilling.InsertPoolParams) (dbbilling.PoolGroup, error)
 	GetPool(context.Context, dbbilling.GetPoolParams) (dbbilling.PoolGroup, error)
 	ListPools(context.Context, dbbilling.ListPoolsParams) ([]dbbilling.PoolGroup, error)
 	UpdatePool(context.Context, dbbilling.UpdatePoolParams) (dbbilling.PoolGroup, error)
 }
 
+type AdminPoolsAuditStore interface {
+	InsertAdminAuditEvent(context.Context, admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error)
+}
+
+type AdminPoolsStore interface {
+	AdminPoolsDataStore
+	AdminPoolsAuditStore
+}
+
 type AdminPoolsDeps struct {
 	Auth  AdminPoolsAuth
 	Store AdminPoolsStore
+}
+
+type adminPoolsStoreAdapter struct {
+	data  AdminPoolsDataStore
+	audit AdminPoolsAuditStore
+}
+
+func NewAdminPoolsStoreAdapter(data AdminPoolsDataStore, audit AdminPoolsAuditStore) AdminPoolsStore {
+	return adminPoolsStoreAdapter{data: data, audit: audit}
+}
+
+func (s adminPoolsStoreAdapter) InsertPool(ctx context.Context, arg dbbilling.InsertPoolParams) (dbbilling.PoolGroup, error) {
+	return s.data.InsertPool(ctx, arg)
+}
+
+func (s adminPoolsStoreAdapter) GetPool(ctx context.Context, arg dbbilling.GetPoolParams) (dbbilling.PoolGroup, error) {
+	return s.data.GetPool(ctx, arg)
+}
+
+func (s adminPoolsStoreAdapter) ListPools(ctx context.Context, arg dbbilling.ListPoolsParams) ([]dbbilling.PoolGroup, error) {
+	return s.data.ListPools(ctx, arg)
+}
+
+func (s adminPoolsStoreAdapter) UpdatePool(ctx context.Context, arg dbbilling.UpdatePoolParams) (dbbilling.PoolGroup, error) {
+	return s.data.UpdatePool(ctx, arg)
+}
+
+func (s adminPoolsStoreAdapter) InsertAdminAuditEvent(ctx context.Context, arg admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error) {
+	return s.audit.InsertAdminAuditEvent(ctx, arg)
 }
 
 func NewAdminPoolsHandler(d AdminPoolsDeps) http.Handler {
@@ -53,6 +93,7 @@ func NewAdminPoolsHandler(d AdminPoolsDeps) http.Handler {
 }
 
 type adminPoolCreateRequest struct {
+	TenantID          *int64  `json:"tenant_id,omitempty"`
 	Name              string  `json:"name"`
 	TopKDefault       *int32  `json:"top_k_default,omitempty"`
 	CapabilityDefault *string `json:"capability_default,omitempty"`
@@ -62,6 +103,7 @@ type adminPoolCreateRequest struct {
 }
 
 type adminPoolUpdateRequest struct {
+	TenantID          *int64  `json:"tenant_id,omitempty"`
 	Name              *string `json:"name,omitempty"`
 	TopKDefault       *int32  `json:"top_k_default,omitempty"`
 	CapabilityDefault *string `json:"capability_default,omitempty"`
@@ -73,7 +115,11 @@ type adminPoolUpdateRequest struct {
 
 func newListPoolsHandler(d AdminPoolsDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, ok := resolveAdminPoolOperator(w, r, d)
+		ident, ok := resolveAdminPoolOperator(w, r, d)
+		if !ok {
+			return
+		}
+		tenantID, ok := resolveAdminPoolTenant(w, r, ident, nil, false)
 		if !ok {
 			return
 		}
@@ -81,7 +127,7 @@ func newListPoolsHandler(d AdminPoolsDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		items, err := d.Store.ListPools(r.Context(), dbbilling.ListPoolsParams{TenantID: defaultAdminPoolsTenantID, LimitCount: limit})
+		items, err := d.Store.ListPools(r.Context(), dbbilling.ListPoolsParams{TenantID: tenantID, LimitCount: limit})
 		if err != nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "pool_list_failed", err.Error())
 			return
@@ -92,12 +138,16 @@ func newListPoolsHandler(d AdminPoolsDeps) http.HandlerFunc {
 
 func newCreatePoolHandler(d AdminPoolsDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, ok := resolveAdminPoolOperator(w, r, d)
+		ident, ok := resolveAdminPoolOperator(w, r, d)
 		if !ok {
 			return
 		}
 		var req adminPoolCreateRequest
 		if !decodeAdminPoolJSON(w, r, &req) {
+			return
+		}
+		tenantID, ok := resolveAdminPoolTenant(w, r, ident, req.TenantID, true)
+		if !ok {
 			return
 		}
 		req.Name = strings.TrimSpace(req.Name)
@@ -110,7 +160,7 @@ func newCreatePoolHandler(d AdminPoolsDeps) http.HandlerFunc {
 			return
 		}
 		pool, err := d.Store.InsertPool(r.Context(), dbbilling.InsertPoolParams{
-			TenantID:          defaultAdminPoolsTenantID,
+			TenantID:          tenantID,
 			Name:              req.Name,
 			TopKDefault:       topK,
 			CapabilityDefault: capability,
@@ -120,13 +170,25 @@ func newCreatePoolHandler(d AdminPoolsDeps) http.HandlerFunc {
 			writeAdminPoolMutationError(w, err, "pool_create_failed")
 			return
 		}
+		if err := writeAdminPoolAudit(r.Context(), r, d.Store, ident, tenantID, "create_pool_group", pool.ID, map[string]any{
+			"tenant_id": tenantID,
+			"pool_id":   pool.ID,
+			"name":      pool.Name,
+		}); err != nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "audit_write_failed", err.Error())
+			return
+		}
 		writeAuditJSON(w, http.StatusCreated, pool)
 	}
 }
 
 func newGetPoolHandler(d AdminPoolsDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, ok := resolveAdminPoolOperator(w, r, d)
+		ident, ok := resolveAdminPoolOperator(w, r, d)
+		if !ok {
+			return
+		}
+		tenantID, ok := resolveAdminPoolTenant(w, r, ident, nil, false)
 		if !ok {
 			return
 		}
@@ -134,7 +196,7 @@ func newGetPoolHandler(d AdminPoolsDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		pool, err := d.Store.GetPool(r.Context(), dbbilling.GetPoolParams{TenantID: defaultAdminPoolsTenantID, ID: id})
+		pool, err := d.Store.GetPool(r.Context(), dbbilling.GetPoolParams{TenantID: tenantID, ID: id})
 		if err != nil {
 			writeAdminPoolReadError(w, err, "pool_get_failed")
 			return
@@ -145,7 +207,7 @@ func newGetPoolHandler(d AdminPoolsDeps) http.HandlerFunc {
 
 func newUpdatePoolHandler(d AdminPoolsDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, ok := resolveAdminPoolOperator(w, r, d)
+		ident, ok := resolveAdminPoolOperator(w, r, d)
 		if !ok {
 			return
 		}
@@ -155,6 +217,10 @@ func newUpdatePoolHandler(d AdminPoolsDeps) http.HandlerFunc {
 		}
 		var req adminPoolUpdateRequest
 		if !decodeAdminPoolJSON(w, r, &req) {
+			return
+		}
+		tenantID, ok := resolveAdminPoolTenant(w, r, ident, req.TenantID, true)
+		if !ok {
 			return
 		}
 		if req.Name != nil {
@@ -189,11 +255,19 @@ func newUpdatePoolHandler(d AdminPoolsDeps) http.HandlerFunc {
 			CapabilityDefault: req.CapabilityDefault,
 			AllowLastResort:   req.AllowLastResort,
 			Enabled:           req.Enabled,
-			TenantID:          defaultAdminPoolsTenantID,
+			TenantID:          tenantID,
 			ID:                id,
 		})
 		if err != nil {
 			writeAdminPoolMutationError(w, err, "pool_update_failed")
+			return
+		}
+		if err := writeAdminPoolAudit(r.Context(), r, d.Store, ident, tenantID, "update_pool_group", pool.ID, map[string]any{
+			"tenant_id": tenantID,
+			"pool_id":   pool.ID,
+			"updated":   true,
+		}); err != nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "audit_write_failed", err.Error())
 			return
 		}
 		writeAuditJSON(w, http.StatusOK, pool)
@@ -214,11 +288,57 @@ func resolveAdminPoolOperator(w http.ResponseWriter, r *http.Request, d AdminPoo
 		}
 		return admin.AdminIdentity{}, false
 	}
-	if ident.Role != admin.RolePlatformAdmin {
-		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "platform_admin role required")
+	switch ident.Role {
+	case admin.RoleTenantOperator:
+		if ident.ScopeTenantID <= 0 {
+			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant_operator scope_tenant_id required")
+			return admin.AdminIdentity{}, false
+		}
+	case admin.RolePlatformAdmin:
+	default:
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
 		return admin.AdminIdentity{}, false
 	}
 	return ident, true
+}
+
+func resolveAdminPoolTenant(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity, bodyTenantID *int64, allowBodyTenant bool) (int64, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	var tenantID int64
+	switch {
+	case raw != "":
+		parsed, ok := parseRequiredPositiveInt64(w, raw, "tenant_id_invalid", "tenant_id must be positive when provided")
+		if !ok {
+			return 0, false
+		}
+		tenantID = parsed
+	case allowBodyTenant && bodyTenantID != nil:
+		if *bodyTenantID <= 0 {
+			writeJSONError(w, http.StatusBadRequest, "tenant_id_invalid", "tenant_id must be positive when provided")
+			return 0, false
+		}
+		tenantID = *bodyTenantID
+	case ident.Role == admin.RoleTenantOperator:
+		tenantID = ident.ScopeTenantID
+	default:
+		writeJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id must be provided explicitly")
+		return 0, false
+	}
+	if !adminCanAccessTenant(ident, tenantID) {
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot act on this tenant scope")
+		return 0, false
+	}
+	if bodyTenantID != nil {
+		if *bodyTenantID <= 0 {
+			writeJSONError(w, http.StatusBadRequest, "tenant_id_invalid", "tenant_id must be positive when provided")
+			return 0, false
+		}
+		if *bodyTenantID != tenantID {
+			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant_id does not match admin scope")
+			return 0, false
+		}
+	}
+	return tenantID, true
 }
 
 func parseAdminPoolsLimit(w http.ResponseWriter, r *http.Request) (int32, bool) {
@@ -308,4 +428,19 @@ func writeAdminPoolMutationError(w http.ResponseWriter, err error, code string) 
 		return
 	}
 	writeAdminPoolReadError(w, err, code)
+}
+
+func writeAdminPoolAudit(ctx context.Context, r *http.Request, store AdminPoolsStore, ident admin.AdminIdentity, tenantID int64, action string, poolID int64, payload map[string]any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	actorID := fmt.Sprintf("%d", ident.TokenID)
+	requestID := middleware.GetReqID(r.Context())
+	_, err = store.InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
+		TenantID: &tenantID, ActorID: actorID, ActorRole: ident.Role,
+		Action: action, TargetType: "pool_group", TargetID: &poolID,
+		RequestID: &requestID, Payload: body,
+	})
+	return err
 }
