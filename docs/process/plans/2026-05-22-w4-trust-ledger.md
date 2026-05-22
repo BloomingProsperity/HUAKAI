@@ -231,8 +231,15 @@ PrepareEntry(ctx, rawEntry) (PreparedEntry, error)
 作为 distinct type 的全部意义是「已脱敏」的编译期保证。若字段可导出,外部包
 能 `auditledger.PreparedEntry{HopChain: 原始敏感数据}` 直接构造,而 `Append`
 已不再脱敏 → 隐私边界被绕过。故 `PreparedEntry` 字段**全部不可导出**,只能由
-同包的 `PrepareEntry` 产出;外部包只能把它当不透明 token 传给 `Append`。
-W4a-2 的 DLQ 要序列化它 → 由 `auditledger` 包提供自定义 `MarshalJSON` /
+同包的 `PrepareEntry` 产出。**rev10 精修**:seal 防的是外部**构造**未脱敏
+entry,**不**是防读 —— 读一个已脱敏的 `PreparedEntry` 无安全风险。故
+`PreparedEntry` 另提供一个**导出的只读投影方法** `AsLedgerEntry()`,供外部
+测试 spy / 其它读取方使用;拿到投影也无法反向构造 `PreparedEntry`(构造仍只能
+经 `PrepareEntry` 脱敏),故只读投影不破坏 seal。**rev11 修正**:`AsLedgerEntry()`
+返回的投影必须对 `HopChain` / `ModelChain` 做**深拷贝**(新 slice + 逐元素
+深拷 `Detail`/`FeatureRefs`、新 `ModelChain` 指针)—— 仅 struct 值拷贝会让投影
+的 slice/指针与 `PreparedEntry` 内部别名,调用方改投影即改内部,`Append` 不再
+脱敏会把改动签进账本,seal 仍被绕过。W4a-2 的 DLQ 要序列化它 → 由 `auditledger` 包提供自定义 `MarshalJSON` /
 `UnmarshalJSON`(`UnmarshalJSON` 重建出的 entry 其 JSON 源本就来自已脱敏的
 `PreparedEntry`,安全)。
 
@@ -517,11 +524,13 @@ W4 全部改 HUAKAI 内部代码(`backend/`),不读参照项目源码 —— 无
 约束。W4 整波闭合后才做收尾对照。
 
 ---
-作者:Claude。日期:2026-05-22(rev9)。源波计划已 parallel-draft + 交叉评审;
+作者:Claude。日期:2026-05-22(rev11)。源波计划已 parallel-draft + 交叉评审;
 本 spec 经 codex 评审 rev0→rev1→rev2(must-fix 7→3→0,rev2
 **APPROVE-WITH-CHANGES**)+ rev3 折入 3 条非阻断小修 + rev4 修 P2(signer 轮换
 下 Deferred 不钉死 fingerprint)+ rev5 切片归属精修 + rev6 修 P2(B-13 字段级
 脱敏不误触哨兵)+ rev7 修 P2(B-15 损坏行跨租户存在性泄露)+ rev8 修
 `PrepareEntry` 的 `TenantID==0` 精度(0 是合法「无租户」语义,不作 error)+
-rev9 修 P2(`PreparedEntry` 字段 sealed,杜绝外部绕过脱敏)。
+rev9 修 P2(`PreparedEntry` 字段 sealed,杜绝外部绕过脱敏)+ rev10 精修
+(sealed 仍提供导出只读投影 `AsLedgerEntry()`,seal 防构造不防读)+ rev11 修
+P2(`AsLedgerEntry()` 投影须深拷贝,否则别名仍可绕过 seal)。
 Owner 已定 fail-closed 决策(§4)并已确认 schema 迁移 `0050`(§6.0.b)。
