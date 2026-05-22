@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
@@ -382,6 +383,135 @@ func TestPrepareEntry_MissingRequestIDReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("missing RequestID must return error")
 	}
+}
+
+func TestAuditLedgerResultValidateEnforcesStateInvariants(t *testing.T) {
+	// Risk killed: W4a-3 callers must not represent Deferred entries as signed
+	// ledger rows or allow production Disabled results. Mutation self-check:
+	// relaxing any per-state field check below makes the matching invalid case
+	// pass and this table test fail.
+	tests := []struct {
+		name       string
+		result     AuditLedgerResult
+		production bool
+		wantErr    bool
+	}{
+		{
+			name: "persisted valid",
+			result: AuditLedgerResult{
+				State:       LedgerResultStatePersisted,
+				LedgerID:    "ldg_t7_1",
+				Fingerprint: "fp-live",
+			},
+		},
+		{
+			name: "persisted requires fingerprint",
+			result: AuditLedgerResult{
+				State:    LedgerResultStatePersisted,
+				LedgerID: "ldg_t7_1",
+			},
+			wantErr: true,
+		},
+		{
+			name: "deferred valid",
+			result: AuditLedgerResult{
+				State:  LedgerResultStateDeferred,
+				DLQRef: "audit_ledger_dlq:42",
+			},
+		},
+		{
+			name: "deferred rejects fingerprint",
+			result: AuditLedgerResult{
+				State:       LedgerResultStateDeferred,
+				DLQRef:      "audit_ledger_dlq:42",
+				Fingerprint: "fp-must-not-exist",
+			},
+			wantErr: true,
+		},
+		{
+			name:   "disabled valid outside production",
+			result: AuditLedgerResult{State: LedgerResultStateDisabled},
+		},
+		{
+			name:       "disabled rejects production",
+			result:     AuditLedgerResult{State: LedgerResultStateDisabled},
+			production: true,
+			wantErr:    true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.result.Validate(tt.production)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Validate() error=%v wantErr=%v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestEnqueuePreparedEntryToDLQBuildsAuditLedgerEnvelope(t *testing.T) {
+	// Risk killed: Append failure must enqueue the exact sanitized append intent
+	// with the W4a-3 envelope. Mutation self-check: changing EventKind,
+	// IdempotencyKey, ReplicaStatus, SourceTable, or DLQRef format makes this
+	// test fail before any request can silently settle without a durable intent.
+	ctx := context.Background()
+	prepared := mustPrepareForAppend(t, ctx, LedgerEntry{
+		RequestID: "req-dlq-producer",
+		TenantID:  77,
+		HopChain:  []proto.HopAttestation{{HopKind: "provider_response"}},
+	})
+	enqueuer := &recordingAuditLedgerDLQEnqueuer{id: 91}
+
+	ref, err := EnqueuePreparedEntryToDLQ(ctx, enqueuer, prepared, errors.New("append broke"))
+	if err != nil {
+		t.Fatalf("EnqueuePreparedEntryToDLQ: %v", err)
+	}
+	if ref != "audit_ledger_dlq:91" {
+		t.Fatalf("DLQRef=%q want audit_ledger_dlq:91", ref)
+	}
+	if len(enqueuer.events) != 1 {
+		t.Fatalf("events=%d want 1", len(enqueuer.events))
+	}
+	event := enqueuer.events[0]
+	if event.EventKind != dlq.EventKindAuditLedgerEntry {
+		t.Fatalf("EventKind=%q want %q", event.EventKind, dlq.EventKindAuditLedgerEntry)
+	}
+	if event.TenantID != 77 {
+		t.Fatalf("TenantID=%d want 77", event.TenantID)
+	}
+	if event.IdempotencyKey != "audit_ledger:req-dlq-producer" {
+		t.Fatalf("IdempotencyKey=%q", event.IdempotencyKey)
+	}
+	if event.SourceTable != "audit_ledger" {
+		t.Fatalf("SourceTable=%q want audit_ledger", event.SourceTable)
+	}
+	if event.ReplicaStatus != dlq.ReplicaStatusNone {
+		t.Fatalf("ReplicaStatus=%q want %q", event.ReplicaStatus, dlq.ReplicaStatusNone)
+	}
+	if !json.Valid(event.Payload) {
+		t.Fatalf("Payload is not valid JSON: %s", event.Payload)
+	}
+	decoded, err := decodeLedgerEntryFromDLQPayload(event.Payload)
+	if err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if decoded.RequestID != "req-dlq-producer" || decoded.TenantID != 77 || len(decoded.HopChain) != 1 {
+		t.Fatalf("decoded payload mismatch: %+v", decoded)
+	}
+}
+
+type recordingAuditLedgerDLQEnqueuer struct {
+	id     int64
+	events []dlq.Event
+	err    error
+}
+
+func (e *recordingAuditLedgerDLQEnqueuer) Enqueue(_ context.Context, event dlq.Event) (int64, error) {
+	e.events = append(e.events, event)
+	if e.err != nil {
+		return 0, e.err
+	}
+	return e.id, nil
 }
 
 func TestMemoryLedger_RedactionFailureWritesSignedSentinel(t *testing.T) {
