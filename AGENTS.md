@@ -522,3 +522,47 @@ In those cases, run `codex exec --full-auto --sandbox read-only -C <repo> -` wit
 ### Renew / version sync
 
 If `codex exec review` syntax errors with "unexpected argument" or "cannot be used with [PROMPT]", the Codex CLI was updated. Check `codex exec review --help`; the canonical option list as of this writing is: `--uncommitted`, `--commit <SHA>`, `--base <BRANCH>`, `--full-auto`, `--ignore-rules`, `--ephemeral`, `--json`. Update this section if the CLI changes.
+
+## Package & File Structure Discipline (added 2026-05-22 Owner directive)
+
+> Owner: "主要是怎么杜绝?你给我们的规则写进 codex 必读的文件里"
+> 触发:`internal/gatewayhttp` 长成 68 文件 / 2 万行的 god-package —— 管理 /
+> 用户 / 计费 / 网关 handler 全挤一包,且在 2026-05-15 结构规则之后仍在增长。
+> 这是**硬规则,不是软纪律**("规则非纪律"),codex 与 Claude 同等适用。
+
+代码**按职责组织**。此规则同时管 Go 包、Go 文件、Rust module —— 不只是 Rust、
+不只是文件。
+
+### The rule
+
+1. **一个包 = 一个内聚职责。** 新增功能域(新 handler 家族、新子系统)时,
+   **禁止**默认把它丢进已有的大包。建一个职责清晰的新包。
+2. **一个文件 = 一个内聚职责。** 不把无关的东西堆进一个文件。非测试代码
+   超过约 500 行的源文件是拆分信号。
+3. **包体量预算(拆分触发线)。** 一个 Go 包超过 **约 20 个非测试源文件
+   或约 5000 行非测试代码**,必须要么按职责拆分,要么(若拆分被推迟)
+   **冻结、不再加新文件**。
+
+### Frozen packages(截至 2026-05-22 已超预算)
+
+下列包已超预算。其按职责拆分已由 Owner(2026-05-22)推迟到 12 波审计补救
+之后。**在那次拆分之前:禁止给这些包新增任何文件。**
+
+- `backend/internal/gatewayhttp` —— 32 源文件 / 约 9.3k 行
+- `backend/internal/gateway` —— 26 源文件 / 约 6.5k 行
+- `backend/internal/proto` —— 55 源文件 / 约 7.2k 行
+
+为修 bug 而改冻结包里的**既有文件**是允许的。新增**功能**则必须落新包
+(例:W3 错误模型 → `internal/clienterr`,而非 `gatewayhttp/public_error.go`)。
+
+### Enforcement(这才是"杜绝")
+
+- 任何**计划 / spec** 若要新建文件,必须逐个写明目标包,并确认它不是冻结包。
+- **codex per-commit review**(`codex exec review --uncommitted`)必须把以下情况
+  标为 **HIGH 结构违规、阻断提交**:
+  - 给冻结包新增了文件;
+  - 任何 commit 把一个非冻结包推过体量预算;
+  - 把无关职责塞进同一个包或文件。
+- **切片交叉评审**(本文件 Cross-Review Protocol)在切片收尾做同样检查。
+- 被派发的 codex / Claude 任务,若其 spec 会给冻结包加文件,必须拒绝并改写
+  (改成新包)。
