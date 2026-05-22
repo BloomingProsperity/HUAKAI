@@ -47,6 +47,12 @@
 > request_id 存在。本版 §5 B-15 补:损坏只在归属校验通过后才暴露 ——
 > `scanLedgerEntry` 遇 corrupt 仍回带可靠 `TenantID` 的 entry,
 > `GetByRequestIDAndTenantScope` 先查租户再决定 500 / 404。
+>
+> **rev8 / rev9(2026-05-22)**:rev8 修 `PrepareEntry` 的 `TenantID==0` 精度
+> (`0` 是合法「无租户」语义,系统级审计本就无租户)。rev9 应 codex per-commit
+> 复审 W4a-1 —— `PreparedEntry` 字段改为**不可导出(sealed)**,只能由
+> `PrepareEntry` 产出,杜绝外部包直接构造未脱敏 entry 绕过隐私边界
+> (`Append` 已不再脱敏);W4a-2 的 DLQ 序列化因此改用自定义 JSON marshal。
 
 ## 1. 背景与核心风险
 
@@ -221,6 +227,15 @@ PrepareEntry(ctx, rawEntry) (PreparedEntry, error)
 // 形式之前;详见 auditledger/canonical.go),DLQ 重放时同理用重放时刻的
 // active signer。理由见下方「rev4:为何 PreparedEntry 不带 fingerprint」。
 ```
+**rev9:`PreparedEntry` 必须 sealed(codex per-commit 复审 P2)**:`PreparedEntry`
+作为 distinct type 的全部意义是「已脱敏」的编译期保证。若字段可导出,外部包
+能 `auditledger.PreparedEntry{HopChain: 原始敏感数据}` 直接构造,而 `Append`
+已不再脱敏 → 隐私边界被绕过。故 `PreparedEntry` 字段**全部不可导出**,只能由
+同包的 `PrepareEntry` 产出;外部包只能把它当不透明 token 传给 `Append`。
+W4a-2 的 DLQ 要序列化它 → 由 `auditledger` 包提供自定义 `MarshalJSON` /
+`UnmarshalJSON`(`UnmarshalJSON` 重建出的 entry 其 JSON 源本就来自已脱敏的
+`PreparedEntry`,安全)。
+
 `Append` 改为接收 `PreparedEntry`(不再内部脱敏)。调用方流程统一为:
 `prepared, err := PrepareEntry(...)` → `Append(prepared)`。
 `Append` 失败 → DLQ 投递的 intent **就是这个 `prepared`**(同一对象,已脱敏)。
@@ -238,13 +253,16 @@ DLQ worker 重放时直接 `Append(prepared)`,不重复脱敏。
 **没有 fingerprint**,completion 事件也**不**为 `Deferred` 条目宣告
 `AuditSignatureFingerprint`(见 §6.1 / §7)。
 
-**`PrepareEntry` 的 `error` 语义(rev3 —— codex 复审非阻断小修 1)**:脱敏
+**`PrepareEntry` 的 `error` 语义(rev3;rev8 修 `TenantID` 精度)**:脱敏
 失败本身**不是** error —— B-13 要求脱敏失败时换哨兵继续(§5 B-13),只要哨兵
 替换成功,`PrepareEntry` 返回 `(PreparedEntry, nil)` 并另记一条 redaction-loss
 warning(可观测信号,不阻断)。`error` **只**在根本无法构造安全 prepared intent
-时返回 —— 结构性前置缺失,如 `rawEntry` 为 nil、缺 `RequestID` / `TenantID`。
-这种 error 由调用方按 §6.0.c production fail-closed 处理(连安全 intent 都
-没有,无从投 DLQ,不得 settle)。
+时返回 —— 结构性前置缺失,即 `RequestID` 为空(请求审计条目必须有 request id)。
+**rev8 修正**:`TenantID == 0` **不是** error —— `0` 是既有合法语义「无租户
+上下文」(系统级审计:凭据刷新、通道健康等本就无租户);money-path 审计条目
+永远有真实 `TenantID > 0`,故 `TenantID==0` 不威胁信任链。`PrepareEntry`
+对 `int64` 的 `TenantID` 不设零值校验。`RequestID` 为空这种 error 由调用方按
+§6.0.c production fail-closed 处理(连安全 intent 都没有,无从投 DLQ,不得 settle)。
 
 #### 6.0.b DLQ kind 与基建
 
@@ -499,9 +517,11 @@ W4 全部改 HUAKAI 内部代码(`backend/`),不读参照项目源码 —— 无
 约束。W4 整波闭合后才做收尾对照。
 
 ---
-作者:Claude。日期:2026-05-22(rev7)。源波计划已 parallel-draft + 交叉评审;
+作者:Claude。日期:2026-05-22(rev9)。源波计划已 parallel-draft + 交叉评审;
 本 spec 经 codex 评审 rev0→rev1→rev2(must-fix 7→3→0,rev2
 **APPROVE-WITH-CHANGES**)+ rev3 折入 3 条非阻断小修 + rev4 修 P2(signer 轮换
 下 Deferred 不钉死 fingerprint)+ rev5 切片归属精修 + rev6 修 P2(B-13 字段级
-脱敏不误触哨兵)+ rev7 修 P2(B-15 损坏行跨租户存在性泄露)。Owner 已定
-fail-closed 决策(§4)并已确认 schema 迁移 `0050`(§6.0.b)。
+脱敏不误触哨兵)+ rev7 修 P2(B-15 损坏行跨租户存在性泄露)+ rev8 修
+`PrepareEntry` 的 `TenantID==0` 精度(0 是合法「无租户」语义,不作 error)+
+rev9 修 P2(`PreparedEntry` 字段 sealed,杜绝外部绕过脱敏)。
+Owner 已定 fail-closed 决策(§4)并已确认 schema 迁移 `0050`(§6.0.b)。
