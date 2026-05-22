@@ -34,6 +34,12 @@
 > **rev5(2026-05-22)**:切片归属精修 —— §6.0.a 的 `PrepareEntry` 抽取归 W4a
 > (与 §3、§11 一致);W4b 只就地修 B-13/B-15、并把哨兵构造写成 `auditledger`
 > 内可复用 helper 供 W4a 抽取时复用,W4b **不改 `Append` 签名**。无设计变更。
+>
+> **rev6(2026-05-22)**:codex per-commit 复审 W4b 实现报一条 P2 —— B-13 把
+> `sanitizeLedgerEntry` 返回的**任何 err** 都当脱敏失败写哨兵,但 redactor 做
+> 字段级脱敏成功时也会返回 `ErrUnsafePayload`(且 entry 已是已脱敏态)。本版
+> §5 B-13 精修:只有 redactor **产不出可用脱敏 payload**(`len(raw)==0` /
+> 脱敏 bytes unmarshal 坏)才是真失败 → 哨兵;字段级脱敏 → 照写已脱敏 entry。
 
 ## 1. 背景与核心风险
 
@@ -104,21 +110,40 @@ Owner 2026-05-22 已定。展开:
   `len(raw)==0` 时返回**原始 entry** + err;`auditledger/postgres.go:113`
   `entry, _ = sanitizeLedgerEntry(...)` 丢弃 err;Memory append 在
   `auditledger/ledger.go:97` 同样 `entry, _ = sanitizeLedgerEntry(...)`。
-- 修复:**脱敏失败 → 写「脱敏丢弃哨兵」,绝不写原始链路数据**。
-  - `postgres.go` / `ledger.go` 不得再 `_ =` 丢弃 sanitize err。
-  - sanitize 返回 err 时,调用方把 entry 的 `HopChain` 换成**单条哨兵
-    `HopAttestation`**(一个可识别的、内容为「redaction_dropped」的合成 hop),
-    `ModelChain` 置 `nil`,`TenantScopeRef` 置空。哨兵在 `hop_chain` jsonb 列内
-    (已有列,**无 schema 变更**),且 `hop_chain` 进 `EntryHash` 的 canonical
-    形式 → **哨兵被签名覆盖**,不可伪造;读回也能识别。
+- 修复:**脱敏产不出可用 payload → 写「脱敏丢弃哨兵」;字段级脱敏成功 →
+  照常写已脱敏 entry**。
+  - **rev6 关键澄清(codex per-commit 复审 P2)**:`sanitizeLedgerEntry` 返回
+    err **不等于**脱敏失败。`privacy` default redactor 剥掉违禁字段后会返回
+    「**已脱敏的 bytes** + `privacy.ErrUnsafePayload`」—— 这是脱敏**成功**
+    (redactor 正常工作),`sanitizeLedgerEntry` 已把已脱敏内容套进 entry。
+    只有 redactor **产不出任何可用脱敏 payload** 才是真失败:`len(raw)==0`、
+    或脱敏 bytes `json.Unmarshal` 坏 —— 这两种 `sanitizeLedgerEntry` 返回的是
+    **原始未脱敏 entry**。把「任何 err → 哨兵」会让每次正常字段脱敏都丢掉
+    整条审计链路,违背 F-AUDIT 透明卖点。
+  - `sanitizeLedgerEntry` 在上述两个「真失败」分支返回一个**可识别 sentinel
+    error**(如 `ErrLedgerSanitizeUnusable`,wrap 原因);字段级脱敏 / 干净两
+    种情况返回 `ErrUnsafePayload` / nil,**不**是该 sentinel。
+  - `postgres.go` / `ledger.go` 不得再 `_ =` 丢弃 sanitize err。改为:
+    `errors.Is(err, ErrLedgerSanitizeUnusable)` → 写哨兵;否则(含
+    `ErrUnsafePayload`)→ 用 `sanitizeLedgerEntry` 返回的**已脱敏 entry**。
+  - 写哨兵:把 entry 的 `HopChain` 换成**单条哨兵 `HopAttestation`**(可识别、
+    内容「redaction_dropped」的合成 hop),`ModelChain` 置 `nil`,
+    `TenantScopeRef` 置空。哨兵在 `hop_chain` jsonb 列内(已有列,**无 schema
+    变更**),进 `EntryHash` 的 canonical 形式 → **哨兵被签名覆盖**,不可伪造;
+    读回也能识别。
   - **顺序硬要求**:哨兵替换必须发生在 `EntryHash` **之前**,签名才覆盖它。
-  - **已知难点**:`proto.HopAttestation` 须能表达该哨兵(用某个既有字段放
-    可识别 sentinel 值)。codex 实现时确认 `HopAttestation` 形状能承载;若
-    确实无法不加列表达,停下来标记 → 需 Owner 确认 schema(预期不需要)。
-- 风险测试(判别性 + mutation 自检):注入一个对特定 payload 必失败的 fake
-  redactor,entry 的 HopChain 含敏感 marker → 断言写进账本的 entry:HopChain
-  是哨兵、不含 marker、ModelChain 为 nil、TenantScopeRef 空、条目仍有有效
-  签名且签名覆盖哨兵。mutation:恢复 `entry, _ =` → 账本含 marker → 变红。
+  - **已知难点**:`proto.HopAttestation` 须能表达该哨兵 —— W4b 已实证可承载
+    (`SchemaVersion`/`HopKind`/`Actor`/`DecisionRef` 组合,无 schema 变更)。
+- 风险测试(判别性 + mutation 自检,**两条路径都要测**):
+  1. **真失败**:注入一个对特定敏感 payload 返回 `(nil, err)` 的 fake redactor,
+     entry 的 HopChain 含敏感 marker → 断言写进账本的 entry:HopChain 是哨兵、
+     不含 marker、ModelChain 为 nil、TenantScopeRef 空、条目仍有有效签名且
+     签名覆盖哨兵。mutation:恢复 `entry, _ =` → 账本含 marker → 变红。
+  2. **字段级脱敏(rev6 新增)**:注入一个返回「已剥违禁字段的 bytes +
+     `privacy.ErrUnsafePayload`」的 fake redactor → 断言写进账本的 entry 是
+     **已脱敏的真链路**(HopKind **不是** `redaction_dropped`、违禁字段已剥、
+     其余 hop 结构保留)。mutation:把调用方改回「`err != nil` 一律哨兵」→
+     此条变红(证明字段级脱敏不误触哨兵、不丢审计证据)。
 
 ### B-15 — 读取吞掉 JSON / Merkle 结构错误(S2)
 
@@ -447,8 +472,9 @@ W4 全部改 HUAKAI 内部代码(`backend/`),不读参照项目源码 —— 无
 约束。W4 整波闭合后才做收尾对照。
 
 ---
-作者:Claude。日期:2026-05-22(rev4)。源波计划已 parallel-draft + 交叉评审;
+作者:Claude。日期:2026-05-22(rev6)。源波计划已 parallel-draft + 交叉评审;
 本 spec 经 codex 评审 rev0→rev1→rev2(must-fix 7→3→0,rev2
-**APPROVE-WITH-CHANGES**)+ rev3 折入 3 条非阻断小修 + rev4 修 codex per-commit
-复审报的 P2(signer 轮换下 Deferred 条目不钉死 fingerprint)。Owner 已定
-fail-closed 决策(§4)并已确认 schema 迁移 `0050`(§6.0.b)。
+**APPROVE-WITH-CHANGES**)+ rev3 折入 3 条非阻断小修 + rev4 修 P2(signer 轮换
+下 Deferred 不钉死 fingerprint)+ rev5 切片归属精修 + rev6 修 P2(B-13 字段级
+脱敏不误触哨兵)。Owner 已定 fail-closed 决策(§4)并已确认 schema 迁移
+`0050`(§6.0.b)。
