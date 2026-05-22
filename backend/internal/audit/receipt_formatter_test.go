@@ -16,6 +16,15 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
 
+func mustPrepareAuditLedgerEntry(t testing.TB, ctx context.Context, entry auditledger.LedgerEntry) auditledger.PreparedEntry {
+	t.Helper()
+	prepared, err := auditledger.PrepareEntry(ctx, entry)
+	if err != nil {
+		t.Fatalf("PrepareEntry: %v", err)
+	}
+	return prepared
+}
+
 func TestAT_AUDIT_001_001_DeriveReceiptFromLedger(t *testing.T) {
 	ctx := context.Background()
 	requestID := "host/random-000001"
@@ -25,7 +34,7 @@ func TestAT_AUDIT_001_001_DeriveReceiptFromLedger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ledger: %v", err)
 	}
-	_, err = ledger.Append(ctx, auditledger.LedgerEntry{
+	_, err = ledger.Append(ctx, mustPrepareAuditLedgerEntry(t, ctx, auditledger.LedgerEntry{
 		RequestID: requestID,
 		TenantID:  42,
 		ModelChain: &proto.ModelChain{
@@ -34,7 +43,7 @@ func TestAT_AUDIT_001_001_DeriveReceiptFromLedger(t *testing.T) {
 			UpstreamReported: "gpt-4.1-mini",
 			Verdict:          "match",
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("append ledger: %v", err)
 	}
@@ -215,7 +224,7 @@ func TestAT_AUDIT_001_004_DeriveReceiptCrossesAuditBilling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ledger: %v", err)
 	}
-	if _, err := ledger.Append(ctx, auditledger.LedgerEntry{
+	if _, err := ledger.Append(ctx, mustPrepareAuditLedgerEntry(t, ctx, auditledger.LedgerEntry{
 		RequestID: requestID,
 		TenantID:  42,
 		ModelChain: &proto.ModelChain{
@@ -224,7 +233,7 @@ func TestAT_AUDIT_001_004_DeriveReceiptCrossesAuditBilling(t *testing.T) {
 			UpstreamReported: "gpt-4.1-mini",
 			Verdict:          "match",
 		},
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("append ledger: %v", err)
 	}
 
@@ -311,14 +320,14 @@ func TestAT_AUDIT_001_006_AbortReceiptZeroCost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ledger: %v", err)
 	}
-	if _, err := ledger.Append(ctx, auditledger.LedgerEntry{
+	if _, err := ledger.Append(ctx, mustPrepareAuditLedgerEntry(t, ctx, auditledger.LedgerEntry{
 		RequestID: requestID,
 		TenantID:  42,
 		ModelChain: &proto.ModelChain{
 			Requested: "gpt-4.1-mini",
 			Verdict:   "match",
 		},
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("append ledger: %v", err)
 	}
 	query := &scriptedReceiptQueryer{row: scriptedReceiptRow{values: []any{
@@ -360,14 +369,14 @@ func TestAT_AUDIT_001_007_UsageInDLQReturnsUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ledger: %v", err)
 	}
-	if _, err := ledger.Append(ctx, auditledger.LedgerEntry{
+	if _, err := ledger.Append(ctx, mustPrepareAuditLedgerEntry(t, ctx, auditledger.LedgerEntry{
 		RequestID: requestID,
 		TenantID:  42,
 		ModelChain: &proto.ModelChain{
 			Requested: "gpt-4.1-mini",
 			Verdict:   "match",
 		},
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("append ledger: %v", err)
 	}
 	query := &scriptedReceiptQueryer{row: scriptedReceiptRow{values: []any{
@@ -406,14 +415,14 @@ func TestAT_AUDIT_001_008_RateSnapshotIDFromRegistryFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ledger: %v", err)
 	}
-	if _, err := ledger.Append(ctx, auditledger.LedgerEntry{
+	if _, err := ledger.Append(ctx, mustPrepareAuditLedgerEntry(t, ctx, auditledger.LedgerEntry{
 		RequestID: requestID,
 		TenantID:  42,
 		ModelChain: &proto.ModelChain{
 			Requested: "gpt-4.1-mini",
 			Verdict:   "match",
 		},
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("append ledger: %v", err)
 	}
 	query := &scriptedReceiptQueryer{row: scriptedReceiptRow{values: []any{
@@ -468,7 +477,7 @@ func TestAT_AUDIT_001_009_NonUUIDRequestIDWorks(t *testing.T) {
 	store := &ReceiptStorage{exec: db}
 
 	for _, requestID := range []string{"req-at-001", "host/abc-000001"} {
-		if _, err := ledger.Append(ctx, auditledger.LedgerEntry{
+		if _, err := ledger.Append(ctx, mustPrepareAuditLedgerEntry(t, ctx, auditledger.LedgerEntry{
 			RequestID: requestID,
 			TenantID:  42,
 			ModelChain: &proto.ModelChain{
@@ -477,7 +486,7 @@ func TestAT_AUDIT_001_009_NonUUIDRequestIDWorks(t *testing.T) {
 				UpstreamReported: "gpt-4.1-mini",
 				Verdict:          "match",
 			},
-		}); err != nil {
+		})); err != nil {
 			t.Fatalf("append ledger %s: %v", requestID, err)
 		}
 		receipt, err := formatter.DeriveReceipt(ctx, requestID)

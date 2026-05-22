@@ -299,7 +299,11 @@ INSERT INTO channel_health_audit_events (
 	if err != nil {
 		return fmt.Errorf("channelhealth: build trust ledger entry: %w", err)
 	}
-	if _, err := auditledger.AppendInTransaction(ctx, s.db, s.signer, entry); err != nil {
+	prepared, err := auditledger.PrepareEntry(ctx, entry)
+	if err != nil {
+		return fmt.Errorf("channelhealth: prepare trust ledger: %w", err)
+	}
+	if _, err := auditledger.AppendInTransaction(ctx, s.db, s.signer, prepared); err != nil {
 		return fmt.Errorf("channelhealth: append trust ledger: %w", err)
 	}
 	return nil

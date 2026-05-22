@@ -15,14 +15,24 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 )
 
+func mustPrepareGatewayHTTPLedgerEntry(t testing.TB, ctx context.Context, entry auditledger.LedgerEntry) auditledger.PreparedEntry {
+	t.Helper()
+	prepared, err := auditledger.PrepareEntry(ctx, entry)
+	if err != nil {
+		t.Fatalf("PrepareEntry: %v", err)
+	}
+	return prepared
+}
+
 func TestAuditVerifyHandler_HappyPath(t *testing.T) {
 	ledger := newAuditVerifyTestLedger(t)
-	entry, err := ledger.Append(context.Background(), auditledger.LedgerEntry{
+	ctx := context.Background()
+	entry, err := ledger.Append(ctx, mustPrepareGatewayHTTPLedgerEntry(t, ctx, auditledger.LedgerEntry{
 		LedgerID:  "lid_1",
 		RequestID: "req_1",
 		TenantID:  7,
 		HopChain:  []proto.HopAttestation{{Hop: proto.HopIngress, Timestamp: "2026-05-13T10:00:00Z"}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -48,12 +58,13 @@ func TestAuditVerifyHandler_HappyPath(t *testing.T) {
 
 func TestATPRIV001009AuditVerifyTenantScopeRefMismatchReturns404(t *testing.T) {
 	ledger := newAuditVerifyTestLedger(t)
-	_, err := ledger.Append(context.Background(), auditledger.LedgerEntry{
+	ctx := context.Background()
+	_, err := ledger.Append(ctx, mustPrepareGatewayHTTPLedgerEntry(t, ctx, auditledger.LedgerEntry{
 		LedgerID:  "lid_scope",
 		RequestID: "req_scope",
 		TenantID:  7,
 		HopChain:  []proto.HopAttestation{{Hop: proto.HopIngress, Timestamp: "2026-05-13T10:00:00Z"}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -67,12 +78,13 @@ func TestAT_SECURITY_W1_B14_AuditVerifyRequiresTenantScopeRef(t *testing.T) {
 	// Risk killed: a public verify request with only request_id must not read a
 	// different tenant's signed ledger entry.
 	ledger := newAuditVerifyTestLedger(t)
-	_, err := ledger.Append(context.Background(), auditledger.LedgerEntry{
+	ctx := context.Background()
+	_, err := ledger.Append(ctx, mustPrepareGatewayHTTPLedgerEntry(t, ctx, auditledger.LedgerEntry{
 		LedgerID:  "lid_scope_required",
 		RequestID: "req_scope_required",
 		TenantID:  7,
 		HopChain:  []proto.HopAttestation{{Hop: proto.HopIngress, Timestamp: "2026-05-13T10:00:00Z"}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -101,12 +113,13 @@ func TestAuditVerifyHandler_MissingRequestID(t *testing.T) {
 
 func TestAuditVerifyHandler_PostBody(t *testing.T) {
 	ledger := newAuditVerifyTestLedger(t)
-	entry, err := ledger.Append(context.Background(), auditledger.LedgerEntry{
+	ctx := context.Background()
+	entry, err := ledger.Append(ctx, mustPrepareGatewayHTTPLedgerEntry(t, ctx, auditledger.LedgerEntry{
 		LedgerID:  "lid_post",
 		RequestID: "req_post",
 		TenantID:  7,
 		HopChain:  []proto.HopAttestation{{Hop: proto.HopIngress, Timestamp: "2026-05-13T10:00:00Z"}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -194,8 +207,9 @@ func TestAuditMerkleTreeHandler_Empty(t *testing.T) {
 
 func TestAuditMerkleTreeHandler_WithEntries(t *testing.T) {
 	ledger := newAuditVerifyTestLedger(t)
-	_, _ = ledger.Append(context.Background(), auditledger.LedgerEntry{LedgerID: "1", RequestID: "r1"})
-	latest, _ := ledger.Append(context.Background(), auditledger.LedgerEntry{LedgerID: "2", RequestID: "r2"})
+	ctx := context.Background()
+	_, _ = ledger.Append(ctx, mustPrepareGatewayHTTPLedgerEntry(t, ctx, auditledger.LedgerEntry{LedgerID: "1", RequestID: "r1"}))
+	latest, _ := ledger.Append(ctx, mustPrepareGatewayHTTPLedgerEntry(t, ctx, auditledger.LedgerEntry{LedgerID: "2", RequestID: "r2"}))
 
 	rec := invokeAuditMerkle(t, ledger)
 	if rec.Code != http.StatusOK {

@@ -22,7 +22,7 @@ func TestNoopLedger_AllNoop(t *testing.T) {
 	l := NoopLedger{}
 	ctx := context.Background()
 	in := LedgerEntry{RequestID: "req_001"}
-	out, err := l.Append(ctx, in)
+	out, err := l.Append(ctx, mustPrepareForAppend(t, ctx, in))
 	if err != nil {
 		t.Errorf("Append err: %v", err)
 	}
@@ -39,6 +39,15 @@ func TestNoopLedger_AllNoop(t *testing.T) {
 	if l.Size(ctx) != 0 {
 		t.Errorf("Noop Size must be 0")
 	}
+}
+
+func mustPrepareForAppend(t testing.TB, ctx context.Context, entry LedgerEntry) PreparedEntry {
+	t.Helper()
+	prepared, err := PrepareEntry(ctx, entry)
+	if err != nil {
+		t.Fatalf("PrepareEntry: %v", err)
+	}
+	return prepared
 }
 
 func TestNewMemoryLedger_NilSignerRejected(t *testing.T) {
@@ -58,7 +67,7 @@ func TestMemoryLedger_AppendComputesFields(t *testing.T) {
 		TenantID:  42,
 		HopChain:  []proto.HopAttestation{{Hop: proto.HopIngress, Timestamp: "2026-05-13T10:00:00Z"}},
 	}
-	out, err := l.Append(ctx, entry)
+	out, err := l.Append(ctx, mustPrepareForAppend(t, ctx, entry))
 	if err != nil {
 		t.Fatalf("Append: %v", err)
 	}
@@ -89,8 +98,8 @@ func TestMemoryLedger_ChainContinuity(t *testing.T) {
 	l, _ := NewMemoryLedger(signer)
 	ctx := context.Background()
 
-	e1, _ := l.Append(ctx, LedgerEntry{LedgerID: "1", RequestID: "r1"})
-	e2, _ := l.Append(ctx, LedgerEntry{LedgerID: "2", RequestID: "r2"})
+	e1, _ := l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{LedgerID: "1", RequestID: "r1"}))
+	e2, _ := l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{LedgerID: "2", RequestID: "r2"}))
 
 	if e2.PrevMerkleRoot != e1.MerkleRoot {
 		t.Errorf("e2.PrevMerkleRoot != e1.MerkleRoot")
@@ -109,15 +118,15 @@ func TestMemoryLedger_GetByRequestID(t *testing.T) {
 	l, _ := NewMemoryLedger(signer)
 	ctx := context.Background()
 
-	_, _ = l.Append(ctx, LedgerEntry{LedgerID: "1", RequestID: "rA"})
-	_, _ = l.Append(ctx, LedgerEntry{LedgerID: "2", RequestID: "rB"})
+	_, _ = l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{LedgerID: "1", RequestID: "rA"}))
+	_, _ = l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{LedgerID: "2", RequestID: "rB"}))
 
 	got, err := l.GetByRequestID(ctx, "rB")
 	if err != nil {
 		t.Fatalf("Get rB: %v", err)
 	}
-	if got.LedgerID != "2" {
-		t.Errorf("got LedgerID=%q want 2", got.LedgerID)
+	if got.RequestID != "rB" {
+		t.Errorf("got RequestID=%q want rB", got.RequestID)
 	}
 
 	if _, err := l.GetByRequestID(ctx, "missing"); !errors.Is(err, ErrLedgerEntryNotFound) {
@@ -132,11 +141,11 @@ func TestAT_SECURITY_W1_B14_MemoryLedgerTenantScopedLookup(t *testing.T) {
 	l, _ := NewMemoryLedger(signer)
 	ctx := context.Background()
 
-	entry, err := l.Append(ctx, LedgerEntry{RequestID: "req_scope_a", TenantID: 7})
+	entry, err := l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "req_scope_a", TenantID: 7}))
 	if err != nil {
 		t.Fatalf("append A: %v", err)
 	}
-	if _, err := l.Append(ctx, LedgerEntry{RequestID: "req_scope_b", TenantID: 8}); err != nil {
+	if _, err := l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "req_scope_b", TenantID: 8})); err != nil {
 		t.Fatalf("append B: %v", err)
 	}
 	got, err := l.GetByRequestIDAndTenantScope(ctx, "req_scope_a", TenantScopeRef(7))
@@ -159,9 +168,9 @@ func TestMemoryLedger_SnapshotIsDeepCopy(t *testing.T) {
 	l, _ := NewMemoryLedger(signer)
 	ctx := context.Background()
 
-	_, _ = l.Append(ctx, LedgerEntry{LedgerID: "1", RequestID: "r1"})
+	entry, _ := l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{LedgerID: "1", RequestID: "r1"}))
 	snap1 := l.Snapshot()
-	_, _ = l.Append(ctx, LedgerEntry{LedgerID: "2", RequestID: "r2"})
+	_, _ = l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{LedgerID: "2", RequestID: "r2"}))
 	snap2 := l.Snapshot()
 
 	if len(snap1) != 1 || len(snap2) != 2 {
@@ -170,7 +179,7 @@ func TestMemoryLedger_SnapshotIsDeepCopy(t *testing.T) {
 	// 篡改 snap1 不应影响内部 chain。
 	snap1[0].LedgerID = "polluted"
 	got, _ := l.GetByRequestID(ctx, "r1")
-	if got.LedgerID != "1" {
+	if got.LedgerID != entry.LedgerID {
 		t.Error("snapshot mutation polluted internal chain")
 	}
 }
@@ -181,7 +190,7 @@ func TestMemoryLedger_VerifyChainHappyPath(t *testing.T) {
 	ctx := context.Background()
 
 	for i := 0; i < 5; i++ {
-		_, _ = l.Append(ctx, LedgerEntry{LedgerID: itoa(i), RequestID: "r" + itoa(i)})
+		_, _ = l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{LedgerID: itoa(i), RequestID: "r" + itoa(i)}))
 	}
 	snap := l.Snapshot()
 	if err := VerifyChain(snap); err != nil {
@@ -194,7 +203,7 @@ func TestMemoryLedger_VerifySignaturesIndependently(t *testing.T) {
 	l, _ := NewMemoryLedger(signer)
 	ctx := context.Background()
 
-	entry, _ := l.Append(ctx, LedgerEntry{LedgerID: "1", RequestID: "r1"})
+	entry, _ := l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{LedgerID: "1", RequestID: "r1"}))
 
 	// 模拟 user 用公开 pubkey 独立 verify entry signature
 	sig, err := base64.StdEncoding.DecodeString(entry.Signature)
@@ -204,6 +213,174 @@ func TestMemoryLedger_VerifySignaturesIndependently(t *testing.T) {
 	eh, _ := EntryHash(&entry)
 	if err := sign.Verify(signer.PublicKey(), eh[:], sig); err != nil {
 		t.Errorf("independent verify failed: %v", err)
+	}
+}
+
+func TestPrepareEntry_FieldLevelRedactionReturnsSanitizedPreparedEntry(t *testing.T) {
+	// Risk killed: PrepareEntry must keep the sanitized payload when a redactor
+	// reports field-level loss, not silently pass raw sensitive fields to Append.
+	// Mutation self-check: bypass sanitizeLedgerEntry and this test fails because
+	// forbidden_marker remains in HopChain.Detail.
+	const marker = "w4a-prepare-field-marker-sk-never-persist"
+	previousRedactor := ledgerRedactor
+	ledgerRedactor = func() ledgerPayloadRedactor {
+		return fieldLevelLedgerPayloadRedactor{blockedField: "forbidden_marker"}
+	}
+	defer func() { ledgerRedactor = previousRedactor }()
+
+	prepared, err := PrepareEntry(context.Background(), LedgerEntry{
+		LedgerID:       "raw-ledger-id-must-not-survive",
+		Timestamp:      "2026-05-22T10:00:00Z",
+		RequestID:      "req_prepare_field_level",
+		TenantID:       7,
+		TenantScopeRef: TenantScopeRef(7),
+		HopChain: []proto.HopAttestation{{
+			Hop:       proto.HopProvider,
+			HopKind:   "provider",
+			Provider:  "openai",
+			Endpoint:  "https://api.openai.example/v1/chat/completions",
+			Timestamp: "2026-05-22T10:00:00Z",
+			Detail:    json.RawMessage(`{"safe_metric":"kept","forbidden_marker":"` + marker + `"}`),
+		}},
+		ModelChain: &proto.ModelChain{
+			Requested:        "gpt-4o",
+			RouteDecided:     "gpt-4o",
+			UpstreamReported: "gpt-4o",
+		},
+		PubkeyFingerprint: "raw-fingerprint-must-not-survive",
+		Signature:         "raw-signature-must-not-survive",
+	})
+	if err != nil {
+		t.Fatalf("PrepareEntry: %v", err)
+	}
+	if prepared.requestID != "req_prepare_field_level" || prepared.tenantID != 7 || prepared.createdAt != "2026-05-22T10:00:00Z" {
+		t.Fatalf("prepared scalar fields mismatch: %+v", prepared)
+	}
+	if prepared.tenantScopeRef != TenantScopeRef(7) {
+		t.Fatalf("tenant scope ref not retained after field redaction: %q", prepared.tenantScopeRef)
+	}
+	assertFieldLevelRedactedProviderHop(t, prepared.hopChain, marker)
+	assertFieldLevelRedactedModelChain(t, prepared.modelChain)
+}
+
+func TestPrepareEntry_RedactionFailureReturnsSentinelPreparedEntry(t *testing.T) {
+	// Risk killed: if redaction is unusable, PrepareEntry must produce a safe
+	// redaction_dropped intent with nil error so callers can still append it.
+	// Mutation self-check: returning the raw entry on ErrLedgerSanitizeUnusable
+	// makes this test fail because the sensitive marker remains in HopChain.
+	const marker = "w4a-prepare-failure-marker-sk-never-persist"
+	previousRedactor := ledgerRedactor
+	ledgerRedactor = func() ledgerPayloadRedactor {
+		return failingLedgerPayloadRedactor{marker: marker}
+	}
+	defer func() { ledgerRedactor = previousRedactor }()
+
+	prepared, err := PrepareEntry(context.Background(), LedgerEntry{
+		Timestamp:      "2026-05-22T10:00:00Z",
+		RequestID:      "req_prepare_redaction_failure",
+		TenantID:       7,
+		TenantScopeRef: TenantScopeRef(7),
+		HopChain: []proto.HopAttestation{{
+			Hop:       proto.HopProvider,
+			Timestamp: "2026-05-22T10:00:00Z",
+			Detail:    json.RawMessage(`{"prompt":"` + marker + `"}`),
+		}},
+		ModelChain: &proto.ModelChain{
+			Requested:        "gpt-4o",
+			RouteDecided:     "gpt-4o",
+			UpstreamReported: "gpt-4o",
+		},
+	})
+	if err != nil {
+		t.Fatalf("PrepareEntry returned error for sentinel fallback: %v", err)
+	}
+	if prepared.requestID != "req_prepare_redaction_failure" || prepared.tenantID != 7 || prepared.createdAt != "2026-05-22T10:00:00Z" {
+		t.Fatalf("prepared scalar fields mismatch: %+v", prepared)
+	}
+	if len(prepared.hopChain) != 1 || prepared.hopChain[0].HopKind != redactionDroppedSentinel || prepared.hopChain[0].DecisionRef != redactionDroppedSentinel {
+		t.Fatalf("hop chain must be redaction_dropped sentinel, got %+v", prepared.hopChain)
+	}
+	if prepared.modelChain != nil {
+		t.Fatalf("model_chain must be dropped on redaction failure, got %+v", prepared.modelChain)
+	}
+	if prepared.tenantScopeRef != "" {
+		t.Fatalf("tenant_scope_ref must be dropped on redaction failure, got %q", prepared.tenantScopeRef)
+	}
+}
+
+func TestPreparedEntry_AsLedgerEntryReturnsDeepCopy(t *testing.T) {
+	// Risk killed: mutating a read projection must not poison the sealed
+	// PreparedEntry that Append trusts without re-sanitizing.
+	const detailMarker = "w4a_projection_alias_marker"
+	const featureMarker = "F-POLLUTED"
+	const pollutedModel = "polluted-model"
+
+	prepared, err := PrepareEntry(context.Background(), LedgerEntry{
+		RequestID:      "req_projection_deep_copy",
+		TenantID:       7,
+		TenantScopeRef: TenantScopeRef(7),
+		HopChain: []proto.HopAttestation{{
+			Hop:         proto.HopProvider,
+			HopKind:     "provider",
+			FeatureRefs: []string{"F-ORIGINAL"},
+			Timestamp:   "2026-05-22T10:00:00Z",
+			Detail:      json.RawMessage(`{"safe_metric":"original","padding":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
+		}},
+		ModelChain: &proto.ModelChain{
+			Requested:        "gpt-4o",
+			RouteDecided:     "gpt-4o",
+			UpstreamReported: "gpt-4o",
+			Verdict:          "match",
+		},
+	})
+	if err != nil {
+		t.Fatalf("PrepareEntry: %v", err)
+	}
+
+	le1 := prepared.AsLedgerEntry()
+	if len(le1.HopChain) != 1 || len(le1.HopChain[0].Detail) < len(detailMarker) || len(le1.HopChain[0].FeatureRefs) != 1 {
+		t.Fatalf("fixture did not produce mutable projection: %+v", le1.HopChain)
+	}
+	copy(le1.HopChain[0].Detail, []byte(detailMarker))
+	le1.HopChain[0].FeatureRefs[0] = featureMarker
+	le1.HopChain[0].HopKind = "polluted-hop"
+	if le1.ModelChain == nil {
+		t.Fatal("fixture did not produce model_chain projection")
+	}
+	le1.ModelChain.Requested = pollutedModel
+
+	le2 := prepared.AsLedgerEntry()
+	if len(le2.HopChain) != 1 {
+		t.Fatalf("second projection hop_chain len=%d want 1", len(le2.HopChain))
+	}
+	if bytes.Contains(le2.HopChain[0].Detail, []byte(detailMarker)) {
+		t.Fatalf("second projection detail was polluted through aliasing: %s", le2.HopChain[0].Detail)
+	}
+	if len(le2.HopChain[0].FeatureRefs) != 1 || le2.HopChain[0].FeatureRefs[0] == featureMarker {
+		t.Fatalf("second projection feature_refs was polluted through aliasing: %+v", le2.HopChain[0].FeatureRefs)
+	}
+	if le2.HopChain[0].HopKind != "provider" {
+		t.Fatalf("second projection hop struct was polluted through aliasing: %+v", le2.HopChain[0])
+	}
+	if le2.ModelChain == nil || le2.ModelChain.Requested == pollutedModel {
+		t.Fatalf("second projection model_chain was polluted through aliasing: %+v", le2.ModelChain)
+	}
+}
+
+func TestPrepareEntry_MissingRequestIDReturnsError(t *testing.T) {
+	// Risk killed: callers must not get a PreparedEntry that Append cannot tie
+	// to a stable request_id; without this guard future DLQ intents are unsafe.
+	// Mutation self-check: deleting the RequestID precondition makes this test
+	// fail because PrepareEntry returns nil error.
+	_, err := PrepareEntry(context.Background(), LedgerEntry{
+		TenantID: 7,
+		HopChain: []proto.HopAttestation{{
+			Hop:       proto.HopIngress,
+			Timestamp: "2026-05-22T10:00:00Z",
+		}},
+	})
+	if err == nil {
+		t.Fatal("missing RequestID must return error")
 	}
 }
 
@@ -221,7 +398,7 @@ func TestMemoryLedger_RedactionFailureWritesSignedSentinel(t *testing.T) {
 	l, _ := NewMemoryLedger(signer)
 	ctx := context.Background()
 
-	out, err := l.Append(ctx, LedgerEntry{
+	prepared := mustPrepareForAppend(t, ctx, LedgerEntry{
 		RequestID:      "req_redaction_failure",
 		TenantID:       7,
 		TenantScopeRef: TenantScopeRef(7),
@@ -236,6 +413,7 @@ func TestMemoryLedger_RedactionFailureWritesSignedSentinel(t *testing.T) {
 			UpstreamReported: "gpt-4o",
 		},
 	})
+	out, err := l.Append(ctx, prepared)
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -254,7 +432,8 @@ func TestAppendInTransaction_RedactionFailureWritesSignedSentinel(t *testing.T) 
 
 	signer, _ := sign.GenerateKey()
 	db := &appendTxTestDB{}
-	out, err := AppendInTransaction(context.Background(), db, signer, LedgerEntry{
+	ctx := context.Background()
+	prepared := mustPrepareForAppend(t, ctx, LedgerEntry{
 		RequestID:      "req_pg_redaction_failure",
 		TenantID:       7,
 		TenantScopeRef: TenantScopeRef(7),
@@ -269,6 +448,7 @@ func TestAppendInTransaction_RedactionFailureWritesSignedSentinel(t *testing.T) 
 			UpstreamReported: "gpt-4o",
 		},
 	})
+	out, err := AppendInTransaction(ctx, db, signer, prepared)
 	if err != nil {
 		t.Fatalf("AppendInTransaction: %v", err)
 	}
@@ -301,7 +481,8 @@ func TestAppendInTransaction_FieldLevelRedactionPreservesSanitizedHopChain(t *te
 
 	signer, _ := sign.GenerateKey()
 	db := &appendTxTestDB{}
-	out, err := AppendInTransaction(context.Background(), db, signer, LedgerEntry{
+	ctx := context.Background()
+	prepared := mustPrepareForAppend(t, ctx, LedgerEntry{
 		RequestID:      "req_pg_field_level_redaction",
 		TenantID:       7,
 		TenantScopeRef: TenantScopeRef(7),
@@ -319,6 +500,7 @@ func TestAppendInTransaction_FieldLevelRedactionPreservesSanitizedHopChain(t *te
 			UpstreamReported: "gpt-4o",
 		},
 	})
+	out, err := AppendInTransaction(ctx, db, signer, prepared)
 	if err != nil {
 		t.Fatalf("AppendInTransaction: %v", err)
 	}
@@ -542,17 +724,51 @@ type fieldLevelLedgerPayloadRedactor struct {
 	blockedField string
 }
 
+func TestFieldLevelLedgerPayloadRedactorDoesNotMutateInput(t *testing.T) {
+	// Risk killed: this fixture must prove PrepareEntry used the sanitized
+	// return bytes. If the fixture mutates its input, a bad PrepareEntry that
+	// ignores those bytes can still pass because rawEntry was already cleaned.
+	const marker = "w4a-fixture-mutation-marker-sk-never-persist"
+	payload := redactedLedgerPayload{
+		TenantScopeRef: TenantScopeRef(7),
+		HopChain: []proto.HopAttestation{{
+			Hop:       proto.HopProvider,
+			HopKind:   "provider",
+			Provider:  "openai",
+			Timestamp: "2026-05-22T10:00:00Z",
+			Detail:    json.RawMessage(`{"safe_metric":"kept","forbidden_marker":"` + marker + `"}`),
+		}},
+		ModelChain: &proto.ModelChain{
+			Requested:        "gpt-4o",
+			RouteDecided:     "gpt-4o",
+			UpstreamReported: "gpt-4o",
+		},
+	}
+
+	raw, err := (fieldLevelLedgerPayloadRedactor{blockedField: "forbidden_marker"}).SanitizePayload(context.Background(), payload)
+	if !errors.Is(err, privacy.ErrUnsafePayload) {
+		t.Fatalf("redactor error=%v want ErrUnsafePayload", err)
+	}
+	if !bytes.Contains(payload.HopChain[0].Detail, []byte(marker)) {
+		t.Fatalf("fixture mutated input hop detail: %s", payload.HopChain[0].Detail)
+	}
+	if bytes.Contains(raw, []byte(marker)) || bytes.Contains(raw, []byte("forbidden_marker")) {
+		t.Fatalf("sanitized payload still contains stripped marker: %s", raw)
+	}
+}
+
 func (r fieldLevelLedgerPayloadRedactor) SanitizePayload(_ context.Context, payload any) ([]byte, error) {
 	ledgerPayload, ok := payload.(redactedLedgerPayload)
 	if !ok {
 		return nil, fmt.Errorf("unexpected payload type %T", payload)
 	}
-	for i := range ledgerPayload.HopChain {
-		if len(ledgerPayload.HopChain[i].Detail) == 0 {
+	sanitizedPayload := cloneRedactedLedgerPayload(ledgerPayload)
+	for i := range sanitizedPayload.HopChain {
+		if len(sanitizedPayload.HopChain[i].Detail) == 0 {
 			continue
 		}
 		var detail map[string]any
-		if err := json.Unmarshal(ledgerPayload.HopChain[i].Detail, &detail); err != nil {
+		if err := json.Unmarshal(sanitizedPayload.HopChain[i].Detail, &detail); err != nil {
 			return nil, err
 		}
 		delete(detail, r.blockedField)
@@ -560,13 +776,32 @@ func (r fieldLevelLedgerPayloadRedactor) SanitizePayload(_ context.Context, payl
 		if err != nil {
 			return nil, err
 		}
-		ledgerPayload.HopChain[i].Detail = rawDetail
+		sanitizedPayload.HopChain[i].Detail = rawDetail
 	}
-	raw, err := json.Marshal(ledgerPayload)
+	raw, err := json.Marshal(sanitizedPayload)
 	if err != nil {
 		return nil, err
 	}
 	return raw, privacy.ErrUnsafePayload
+}
+
+func cloneRedactedLedgerPayload(in redactedLedgerPayload) redactedLedgerPayload {
+	out := redactedLedgerPayload{
+		TenantScopeRef: in.TenantScopeRef,
+	}
+	if in.HopChain != nil {
+		out.HopChain = make([]proto.HopAttestation, len(in.HopChain))
+		copy(out.HopChain, in.HopChain)
+		for i := range out.HopChain {
+			out.HopChain[i].Detail = append(json.RawMessage(nil), in.HopChain[i].Detail...)
+			out.HopChain[i].FeatureRefs = append([]string(nil), in.HopChain[i].FeatureRefs...)
+		}
+	}
+	if in.ModelChain != nil {
+		modelChain := *in.ModelChain
+		out.ModelChain = &modelChain
+	}
+	return out
 }
 
 type scanLedgerEntryTestRow struct {

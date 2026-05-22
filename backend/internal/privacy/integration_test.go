@@ -33,7 +33,7 @@ func TestATPRIV001IntegrationSentinelInjectionAcrossSinks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ledger: %v", err)
 	}
-	entry, err := ledger.Append(ctx, auditledger.LedgerEntry{
+	prepared, err := auditledger.PrepareEntry(ctx, auditledger.LedgerEntry{
 		RequestID: "req_priv_integration",
 		TenantID:  17,
 		HopChain: []proto.HopAttestation{{
@@ -46,6 +46,10 @@ func TestATPRIV001IntegrationSentinelInjectionAcrossSinks(t *testing.T) {
 		}},
 		ModelChain: &proto.ModelChain{Requested: "claude", RouteDecided: "claude", UpstreamReported: "claude", Verdict: "match"},
 	})
+	if err != nil {
+		t.Fatalf("ledger prepare: %v", err)
+	}
+	entry, err := ledger.Append(ctx, prepared)
 	if err != nil {
 		t.Fatalf("ledger append: %v", err)
 	}

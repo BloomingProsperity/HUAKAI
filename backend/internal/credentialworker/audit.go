@@ -28,12 +28,18 @@ func (s *Scheduler) recordAudit(ctx context.Context, account dbbilling.ListAccou
 		entry.ErrorMessageRedacted = auth.SanitizeOAuthMessage(cause.Error())
 	}
 	auditErr := s.auditWriter.WriteRefreshAudit(ctx, entry)
-	_, ledgerErr := s.AuditLedger.Append(ctx, auditledger.LedgerEntry{
+	prepared, prepareErr := auditledger.PrepareEntry(ctx, auditledger.LedgerEntry{
 		LedgerID:  fmt.Sprintf("ledger-%s", requestID),
 		Timestamp: now.Format(time.RFC3339Nano),
 		RequestID: requestID,
 		TenantID:  account.TenantID,
 	})
+	var ledgerErr error
+	if prepareErr != nil {
+		ledgerErr = prepareErr
+	} else {
+		_, ledgerErr = s.AuditLedger.Append(ctx, prepared)
+	}
 	return errors.Join(auditErr, ledgerErr)
 }
 

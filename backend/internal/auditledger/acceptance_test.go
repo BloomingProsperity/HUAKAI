@@ -49,11 +49,11 @@ func TestATTrust001001MemoryLedgerOneRowRequestUniqueTenant(t *testing.T) {
 		t.Fatalf("NewMemoryLedger: %v", err)
 	}
 	ctx := context.Background()
-	entry, err := ledger.Append(ctx, LedgerEntry{
+	entry, err := ledger.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{
 		RequestID: "req-at-001",
 		TenantID:  123,
 		HopChain:  fullTrustHopChain("req-at-001"),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Append: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestATTrust001001MemoryLedgerOneRowRequestUniqueTenant(t *testing.T) {
 	if got.RequestID != "req-at-001" || got.TenantID != 123 || entry.TenantID != 123 {
 		t.Fatalf("request/tenant mismatch: got %+v entry %+v", got, entry)
 	}
-	if _, err := ledger.Append(ctx, LedgerEntry{RequestID: "req-at-001", TenantID: 123}); err != ErrDuplicateRequestID {
+	if _, err := ledger.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "req-at-001", TenantID: 123})); err != ErrDuplicateRequestID {
 		t.Fatalf("duplicate request_id: got %v want %v", err, ErrDuplicateRequestID)
 	}
 }
@@ -122,11 +122,11 @@ func TestATTrust001004ChainContinuity100Entries(t *testing.T) {
 	ctx := context.Background()
 	var prev [32]byte
 	for i := 0; i < 100; i++ {
-		out, err := ledger.Append(ctx, LedgerEntry{
+		out, err := ledger.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{
 			RequestID: "req-at-004-" + itoa(i),
 			TenantID:  123,
 			HopChain:  fullTrustHopChain("req-at-004-" + itoa(i)),
-		})
+		}))
 		if err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
@@ -159,11 +159,11 @@ func TestATTrust001005EntrySignatureVerifyAndTamper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMemoryLedger: %v", err)
 	}
-	entry, err := ledger.Append(ctx, LedgerEntry{
+	entry, err := ledger.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{
 		RequestID: "req-at-005",
 		TenantID:  123,
 		HopChain:  fullTrustHopChain("req-at-005"),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Append: %v", err)
 	}

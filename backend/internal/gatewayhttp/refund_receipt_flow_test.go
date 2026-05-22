@@ -27,7 +27,7 @@ func TestAT_AUDIT_001_025_RefundWorkerReceiptVisibleThroughGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ledger: %v", err)
 	}
-	if _, err := ledger.Append(ctx, auditledger.LedgerEntry{
+	if _, err := ledger.Append(ctx, mustPrepareGatewayHTTPLedgerEntry(t, ctx, auditledger.LedgerEntry{
 		RequestID: requestID,
 		TenantID:  tenantID,
 		ModelChain: &proto.ModelChain{
@@ -36,7 +36,7 @@ func TestAT_AUDIT_001_025_RefundWorkerReceiptVisibleThroughGet(t *testing.T) {
 			UpstreamReported: "gpt-4o",
 			Verdict:          "mismatch",
 		},
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("append ledger: %v", err)
 	}
 	source := &refundVisibleReceiptSource{inputs: audit.ReceiptInputs{
