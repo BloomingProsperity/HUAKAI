@@ -40,6 +40,13 @@
 > 字段级脱敏成功时也会返回 `ErrUnsafePayload`(且 entry 已是已脱敏态)。本版
 > §5 B-13 精修:只有 redactor **产不出可用脱敏 payload**(`len(raw)==0` /
 > 脱敏 bytes unmarshal 坏)才是真失败 → 哨兵;字段级脱敏 → 照写已脱敏 entry。
+>
+> **rev7(2026-05-22)**:codex per-commit 复审 B-13 修复版又报一条 P2 —— B-15
+> 让 `scanLedgerEntry` 遇损坏即报错后,公开 verify 端点对**别租户**的损坏行
+> 会在 tenant 归属校验前抛 `ledger_corrupt`/500,从「500 vs 404」差别泄露他人
+> request_id 存在。本版 §5 B-15 补:损坏只在归属校验通过后才暴露 ——
+> `scanLedgerEntry` 遇 corrupt 仍回带可靠 `TenantID` 的 entry,
+> `GetByRequestIDAndTenantScope` 先查租户再决定 500 / 404。
 
 ## 1. 背景与核心风险
 
@@ -159,16 +166,36 @@ Owner 2026-05-22 已定。展开:
   - `scanLedgerEntry`:`hop_chain` / `model_chain` 的 `json.Unmarshal` 返回 error
     → 整个 scan 返回新 sentinel error `ErrLedgerEntryCorrupt`。
   - `prev_merkle_root` 或 `merkle_root` 长度 != 32 → 返回 `ErrLedgerEntryCorrupt`。
+  - **scanLedgerEntry 遇 corrupt 仍回带 `TenantID` 的 entry(rev7)**:`tenant_id`
+    是 bigint 列,在 `hop_chain`/`model_chain`/root 损坏点**之前**就由 `row.Scan`
+    扫出。corrupt 分支不再返回空 `LedgerEntry{}`,而是返回一个**只带可靠扫出的
+    标量字段(`TenantID` 等)、不带半解析 JSON 内容**的 entry —— 供下游做归属
+    校验。
   - verify handler(`gatewayhttp/audit_verify_handler.go`)把 `ErrLedgerEntryCorrupt`
     映射为 HTTP 500 + 稳定 audit JSON code `ledger_corrupt`,经该 handler 自己的
     `writeAuditJSONError()`(**不进 clienterr 目录** —— verify handler 用独立的
     audit JSON 错误体),并打 ERROR 日志。
+  - **跨租户泄露防护(rev7 —— codex per-commit 复审 P2)**:公开 verify 端点的
+    `GetByRequestIDAndTenantScope` 是「按 request_id 取行 → 比对 tenant scope」。
+    scan 改成遇损坏即报错后,若被探测的 request_id 属于**别的租户**且那行恰好
+    损坏,corrupt error 会在 tenant 比对**之前**逃出 → 返回 500 `ledger_corrupt`
+    而非 404,从「500 vs 404」差别泄露他人 request_id 存在。修复:
+    `GetByRequestIDAndTenantScope` 在 `GetByRequestID` 返回 `ErrLedgerEntryCorrupt`
+    时,**先**用 corrupt entry 携带的 `TenantID` 跑 `tenantScopeMatches`:不属于
+    调用方 → 返回 `ErrLedgerEntryNotFound`(404,不泄露);属于调用方 → 才放行
+    `ErrLedgerEntryCorrupt`(500,owner 能看到自己条目损坏)。即「损坏只在归属
+    校验通过后才暴露」。
 - 风险测试(判别性):
   1. `hop_chain` 是坏 JSON 的行 → `scanLedgerEntry` 返回 `ErrLedgerEntryCorrupt`,
      不是 HopChain 为空的「正常」entry。
   2. `merkle_root` 长度 16 的行 → 返回 `ErrLedgerEntryCorrupt`。
   3. 正常 32 字节 root 的行 → 不报 corrupt。
-  mutation:恢复 `_ =` 吞错误 → 测试 1/2 变红。
+  4. **跨租户损坏行(rev7)**:一行损坏、其 `tenant_id` 属租户 A;以租户 B 的
+     `tenant_scope_ref` 调 `GetByRequestIDAndTenantScope` → 得
+     `ErrLedgerEntryNotFound`(不是 corrupt);以租户 A 自己的 scope 调 → 得
+     `ErrLedgerEntryCorrupt`。
+  mutation:测试 1/2 —— 恢复 `_ =` 吞错误 → 变红;测试 4 —— 把「corrupt 时先
+  查 tenant」改回「corrupt 直接抛」→ 跨租户那条变红。
 
 ## 6. W4a 逐发现 spec
 
@@ -472,9 +499,9 @@ W4 全部改 HUAKAI 内部代码(`backend/`),不读参照项目源码 —— 无
 约束。W4 整波闭合后才做收尾对照。
 
 ---
-作者:Claude。日期:2026-05-22(rev6)。源波计划已 parallel-draft + 交叉评审;
+作者:Claude。日期:2026-05-22(rev7)。源波计划已 parallel-draft + 交叉评审;
 本 spec 经 codex 评审 rev0→rev1→rev2(must-fix 7→3→0,rev2
 **APPROVE-WITH-CHANGES**)+ rev3 折入 3 条非阻断小修 + rev4 修 P2(signer 轮换
 下 Deferred 不钉死 fingerprint)+ rev5 切片归属精修 + rev6 修 P2(B-13 字段级
-脱敏不误触哨兵)。Owner 已定 fail-closed 决策(§4)并已确认 schema 迁移
-`0050`(§6.0.b)。
+脱敏不误触哨兵)+ rev7 修 P2(B-15 损坏行跨租户存在性泄露)。Owner 已定
+fail-closed 决策(§4)并已确认 schema 迁移 `0050`(§6.0.b)。
