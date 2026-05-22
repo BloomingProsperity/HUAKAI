@@ -520,6 +520,30 @@ func TestAppendInTransaction_FieldLevelRedactionPreservesSanitizedHopChain(t *te
 	}
 }
 
+func TestAppendInTransactionRequestIDUniqueViolationReturnsDuplicateRequestID(t *testing.T) {
+	// Risk killed: DLQ replay treats ErrDuplicateRequestID as the successful
+	// concurrent-worker race. Postgres must expose the same contract as
+	// MemoryLedger when the request_id unique constraint fires.
+	// Mutation self-check: remove the 23505 request_id constraint translation
+	// and this test fails because errors.Is no longer matches
+	// ErrDuplicateRequestID.
+	signer, _ := sign.GenerateKey()
+	db := &appendTxTestDB{
+		insertErr: &pgconn.PgError{
+			Code:           "23505",
+			ConstraintName: "audit_ledger_entries_request_id_key",
+		},
+	}
+
+	_, err := AppendInTransaction(context.Background(), db, signer, mustPrepareForAppend(t, context.Background(), LedgerEntry{
+		RequestID: "req_pg_duplicate_contract",
+		TenantID:  7,
+	}))
+	if !errors.Is(err, ErrDuplicateRequestID) {
+		t.Fatalf("AppendInTransaction error=%v want ErrDuplicateRequestID", err)
+	}
+}
+
 func assertFieldLevelRedactedProviderHop(t *testing.T, hops []proto.HopAttestation, marker string) {
 	t.Helper()
 	if len(hops) != 1 {
@@ -865,6 +889,7 @@ func bytesToRoot(raw []byte) [32]byte {
 type appendTxTestDB struct {
 	insertHopJSON   []byte
 	insertModelJSON []byte
+	insertErr       error
 }
 
 func (db *appendTxTestDB) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
@@ -872,6 +897,9 @@ func (db *appendTxTestDB) Exec(_ context.Context, sql string, args ...any) (pgco
 		db.insertHopJSON = append([]byte(nil), args[4].([]byte)...)
 		if modelJSON, ok := args[5].([]byte); ok {
 			db.insertModelJSON = append([]byte(nil), modelJSON...)
+		}
+		if db.insertErr != nil {
+			return pgconn.CommandTag{}, db.insertErr
 		}
 	}
 	return pgconn.NewCommandTag("OK"), nil

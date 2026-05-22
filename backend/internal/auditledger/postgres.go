@@ -208,9 +208,19 @@ func AppendInTransaction(ctx context.Context, q DBTX, signer any, prepared Prepa
 		entry.Signature,
 	)
 	if err != nil {
+		if isAuditLedgerRequestIDUniqueViolation(err) {
+			return LedgerEntry{}, ErrDuplicateRequestID
+		}
 		return LedgerEntry{}, fmt.Errorf("auditledger: insert: %w", err)
 	}
 	return entry, nil
+}
+
+func isAuditLedgerRequestIDUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) &&
+		pgErr.Code == "23505" &&
+		pgErr.ConstraintName == auditLedgerEntriesRequestIDUniqueConstraint
 }
 
 // GetByRequestID 通过 request_id 查 ledger entry。
@@ -302,6 +312,8 @@ type DBTX interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
+
+const auditLedgerEntriesRequestIDUniqueConstraint = "audit_ledger_entries_request_id_key"
 
 func readLatestMerkleRoot(ctx context.Context, q pgxQuerier, tenantID int64) ([]byte, error) {
 	var prev []byte
