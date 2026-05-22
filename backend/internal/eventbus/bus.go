@@ -3,8 +3,10 @@ package eventbus
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
@@ -22,6 +24,8 @@ type Bus struct {
 	states   map[StateKey]StateSnapshot
 	closed   bool
 	now      func() time.Time
+
+	dlqPersistFailures atomic.Int64
 }
 
 func New(cfg Config, opts ...Option) *Bus {
@@ -183,6 +187,13 @@ func (b *Bus) State(eventID string, handlerID HandlerID) (StateSnapshot, bool) {
 	return s, ok
 }
 
+func (b *Bus) DLQPersistFailures() int64 {
+	if b == nil {
+		return 0
+	}
+	return b.dlqPersistFailures.Load()
+}
+
 func (b *Bus) snapshotHandlers() []*handlerRunner {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -193,6 +204,10 @@ func (b *Bus) snapshotHandlers() []*handlerRunner {
 }
 
 func (b *Bus) setState(event RequestCompletionEvent, handlerID HandlerID, state HandlerState, err error) {
+	b.setStateErrorCode(event, handlerID, state, classifyHandlerFailure(err))
+}
+
+func (b *Bus) setStateErrorCode(event RequestCompletionEvent, handlerID HandlerID, state HandlerState, errorCode string) {
 	if b == nil {
 		return
 	}
@@ -202,7 +217,7 @@ func (b *Bus) setState(event RequestCompletionEvent, handlerID HandlerID, state 
 		EventID:   event.ID,
 		HandlerID: handlerID,
 		State:     state,
-		Error:     errString(err),
+		Error:     errorCode,
 		UpdatedAt: b.now(),
 	}
 }
@@ -237,7 +252,12 @@ func (b *Bus) bufferSize(tier Tier) int {
 }
 
 func (b *Bus) writeDLQ(event RequestCompletionEvent, h Handler, handlerErr error) {
-	if b == nil || b.dlq == nil || handlerErr == nil {
+	if b == nil || handlerErr == nil {
+		return
+	}
+	failureReason := classifyHandlerFailure(handlerErr)
+	b.logHandlerFailure(event, h, failureReason, handlerErr)
+	if b.dlq == nil {
 		return
 	}
 	kind := h.DLQKind()
@@ -253,17 +273,36 @@ func (b *Bus) writeDLQ(event RequestCompletionEvent, h Handler, handlerErr error
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, _ = b.dlq.Enqueue(ctx, dlq.Event{
+	_, err := b.dlq.Enqueue(ctx, dlq.Event{
 		TenantID:       event.TenantID,
 		ClaimID:        event.ClaimID,
 		EventKind:      kind,
 		Lane:           lane,
 		Payload:        dlqPayload(event, h, handlerErr),
-		FailureReason:  handlerErr.Error(),
+		FailureReason:  failureReason,
 		IdempotencyKey: fmt.Sprintf("async_processor:%s:%s", event.ID, h.ID()),
 		SourceTable:    "async_processor_events",
 		SourceID:       event.ClaimID,
 	})
+	if err != nil {
+		b.dlqPersistFailures.Add(1)
+		slog.Default().LogAttrs(ctx, slog.LevelError, "eventbus dlq persist failed",
+			slog.String("event_id", event.ID),
+			slog.String("handler_id", string(h.ID())),
+			slog.String("failure_reason", failureReason),
+			slog.Any("err", err),
+		)
+		b.setStateErrorCode(event, h.ID(), HandlerStateFailed, "dlq_persist_failed")
+	}
+}
+
+func (b *Bus) logHandlerFailure(event RequestCompletionEvent, h Handler, failureReason string, err error) {
+	slog.Default().LogAttrs(context.Background(), slog.LevelError, "eventbus handler failed",
+		slog.String("event_id", event.ID),
+		slog.String("handler_id", string(h.ID())),
+		slog.String("failure_reason", failureReason),
+		slog.Any("err", err),
+	)
 }
 
 func dlqKindForHandler(id HandlerID) dlq.EventKind {

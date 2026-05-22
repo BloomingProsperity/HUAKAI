@@ -1,8 +1,12 @@
 package eventbus_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -27,6 +31,26 @@ func (s *dlqSinkStub) count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.events)
+}
+
+func (s *dlqSinkStub) last() (dlq.Event, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.events) == 0 {
+		return dlq.Event{}, false
+	}
+	return s.events[len(s.events)-1], true
+}
+
+type failingDLQSink struct {
+	err error
+}
+
+func (s failingDLQSink) Enqueue(context.Context, dlq.Event) (int64, error) {
+	if s.err != nil {
+		return 0, s.err
+	}
+	return 0, errors.New("dlq persist failed")
 }
 
 func TestBusMultiHandlerDispatchCriticalPrefixAndAsyncSuffix(t *testing.T) {
@@ -179,6 +203,146 @@ func TestBusHandlerFailureIsolationAndDLQ(t *testing.T) {
 	}
 }
 
+func TestBusHandlerFailureSanitizesStateDLQAndPayload(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(prev)
+	})
+
+	sink := &dlqSinkStub{}
+	bus := eventbus.New(eventbus.Config{HighWorkers: 1, HighBuffer: 1, HandlerTimeout: time.Second}, eventbus.WithDLQ(sink))
+	defer func() { _ = bus.Stop(context.Background()) }()
+
+	const marker = "SENSITIVE_SQL_MARKER"
+	mustRegister(t, bus, eventbus.HandlerFunc{
+		HandlerID:      eventbus.HandlerBillingPersister,
+		HandlerTier:    eventbus.TierHigh,
+		HandlerOrder:   10,
+		IsCritical:     true,
+		HandlerTimeout: time.Second,
+		HandlerDLQKind: dlq.EventKindUsageRecord,
+		Fn: func(context.Context, eventbus.RequestCompletionEvent) error {
+			return errors.New("pq: relation usage_records leaked " + marker)
+		},
+	})
+
+	err := bus.Emit(context.Background(), testEvent("evt-sensitive-handler"))
+	if !errors.Is(err, eventbus.ErrCriticalHandler) {
+		t.Fatalf("Emit err=%v want ErrCriticalHandler wrapper", err)
+	}
+
+	state, ok := bus.State("evt-sensitive-handler", eventbus.HandlerBillingPersister)
+	if !ok {
+		t.Fatal("handler state missing")
+	}
+	if state.Error != "handler_error" {
+		t.Fatalf("state.Error=%q want sanitized handler_error", state.Error)
+	}
+	if strings.Contains(state.Error, marker) {
+		t.Fatalf("state.Error leaked marker: %q", state.Error)
+	}
+
+	dlqEvent, ok := sink.last()
+	if !ok {
+		t.Fatal("DLQ event missing")
+	}
+	if dlqEvent.FailureReason != "handler_error" {
+		t.Fatalf("DLQ FailureReason=%q want sanitized handler_error", dlqEvent.FailureReason)
+	}
+	if strings.Contains(dlqEvent.FailureReason, marker) {
+		t.Fatalf("DLQ FailureReason leaked marker: %q", dlqEvent.FailureReason)
+	}
+	payloadReason := payloadFailureReason(t, dlqEvent.Payload)
+	if payloadReason != "handler_error" {
+		t.Fatalf("DLQ payload failure_reason=%q want sanitized handler_error", payloadReason)
+	}
+	if strings.Contains(payloadReason, marker) {
+		t.Fatalf("DLQ payload leaked marker: %q", payloadReason)
+	}
+	if gotLog := logs.String(); !strings.Contains(gotLog, marker) {
+		t.Fatalf("raw handler error did not reach controlled log: %s", gotLog)
+	}
+}
+
+func TestBusHandlerTimeoutUsesErrHandlerTimeoutSanitizedCode(t *testing.T) {
+	sink := &dlqSinkStub{}
+	bus := eventbus.New(eventbus.Config{HighWorkers: 1, HighBuffer: 1, HandlerTimeout: 10 * time.Millisecond}, eventbus.WithDLQ(sink))
+	defer func() { _ = bus.Stop(context.Background()) }()
+
+	mustRegister(t, bus, eventbus.HandlerFunc{
+		HandlerID:      eventbus.HandlerBillingPersister,
+		HandlerTier:    eventbus.TierHigh,
+		HandlerOrder:   10,
+		IsCritical:     true,
+		HandlerTimeout: 10 * time.Millisecond,
+		HandlerDLQKind: dlq.EventKindUsageRecord,
+		Fn: func(context.Context, eventbus.RequestCompletionEvent) error {
+			time.Sleep(50 * time.Millisecond)
+			return nil
+		},
+	})
+
+	err := bus.Emit(context.Background(), testEvent("evt-timeout-code"))
+	if !errors.Is(err, eventbus.ErrHandlerTimeout) {
+		t.Fatalf("Emit err=%v want ErrHandlerTimeout", err)
+	}
+	state, ok := bus.State("evt-timeout-code", eventbus.HandlerBillingPersister)
+	if !ok {
+		t.Fatal("timeout state missing")
+	}
+	if state.Error != "handler_timeout" {
+		t.Fatalf("state.Error=%q want handler_timeout", state.Error)
+	}
+	dlqEvent, ok := sink.last()
+	if !ok {
+		t.Fatal("timeout DLQ event missing")
+	}
+	if dlqEvent.FailureReason != "handler_timeout" {
+		t.Fatalf("DLQ FailureReason=%q want handler_timeout", dlqEvent.FailureReason)
+	}
+	if got := payloadFailureReason(t, dlqEvent.Payload); got != "handler_timeout" {
+		t.Fatalf("DLQ payload failure_reason=%q want handler_timeout", got)
+	}
+}
+
+func TestBusDLQPersistFailureVisibleInCounterAndState(t *testing.T) {
+	bus := eventbus.New(
+		eventbus.Config{HighWorkers: 1, HighBuffer: 1, HandlerTimeout: time.Second},
+		eventbus.WithDLQ(failingDLQSink{err: errors.New("dlq store unavailable")}),
+	)
+	defer func() { _ = bus.Stop(context.Background()) }()
+
+	mustRegister(t, bus, eventbus.HandlerFunc{
+		HandlerID:      eventbus.HandlerBillingPersister,
+		HandlerTier:    eventbus.TierHigh,
+		HandlerOrder:   10,
+		IsCritical:     true,
+		HandlerTimeout: time.Second,
+		HandlerDLQKind: dlq.EventKindUsageRecord,
+		Fn: func(context.Context, eventbus.RequestCompletionEvent) error {
+			return errors.New("handler failed before DLQ")
+		},
+	})
+
+	before := bus.DLQPersistFailures()
+	err := bus.Emit(context.Background(), testEvent("evt-dlq-persist-failure"))
+	if !errors.Is(err, eventbus.ErrCriticalHandler) {
+		t.Fatalf("Emit err=%v want ErrCriticalHandler wrapper", err)
+	}
+	if got := bus.DLQPersistFailures(); got != before+1 {
+		t.Fatalf("DLQPersistFailures=%d want %d", got, before+1)
+	}
+	state, ok := bus.State("evt-dlq-persist-failure", eventbus.HandlerBillingPersister)
+	if !ok {
+		t.Fatal("handler state missing")
+	}
+	if state.Error != "dlq_persist_failed" {
+		t.Fatalf("state.Error=%q want dlq_persist_failed", state.Error)
+	}
+}
+
 func TestBusHotPathLatencyIgnoresSlowLowPriorityHandler(t *testing.T) {
 	drops := 0
 	bus := eventbus.New(eventbus.Config{
@@ -249,6 +413,16 @@ func waitState(t *testing.T, bus *eventbus.Bus, eventID string, handlerID eventb
 		t.Fatalf("state %s/%s=%s want %s err=%s", eventID, handlerID, s.State, state, s.Error)
 	}
 	t.Fatalf("state %s/%s missing want %s", eventID, handlerID, state)
+}
+
+func payloadFailureReason(t *testing.T, raw json.RawMessage) string {
+	t.Helper()
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("DLQ payload JSON: %v\n%s", err, raw)
+	}
+	reason, _ := payload["failure_reason"].(string)
+	return reason
 }
 
 func testEvent(id string) eventbus.RequestCompletionEvent {
