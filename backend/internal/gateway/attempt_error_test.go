@@ -168,6 +168,67 @@ func TestClassifyAttemptHTTPError_TaxonomyTable(t *testing.T) {
 	}
 }
 
+func TestClassifyAttemptHTTPErrorReadsBodyForIronCladSignals(t *testing.T) {
+	t.Parallel()
+
+	// GW-02 回归守卫:UpstreamHTTPError.Error() 去掉 body 摘要后,分类必须仍由
+	// body 字段(而非 status 单独)驱动 iron-clad 信号检测。
+	// 每条用例都自证:带 iron-clad 关键字 body 得到的 class,必须与「相同
+	// status + 空 body」基线不同 —— 否则该 fixture 无法证明 body 被读取。
+	// (class→decision 的映射由 TestClassifyAttemptHTTPError 表测试覆盖。)
+	tests := []struct {
+		name      string
+		status    int
+		body      []byte
+		provider  string
+		wantClass ErrorClass
+	}{
+		{
+			// 裸 401 → oauth_invalid_grant(R-009);带 token_revoked 关键字
+			// → token_revoked(R-004,priority 10 压过 R-009)。body 翻转 class。
+			name:      "401 token_revoked body overrides status-only invalid_grant",
+			status:    http.StatusUnauthorized,
+			body:      []byte(`{"error":"token_revoked","detail":"SENSITIVE_UPSTREAM_MARKER"}`),
+			provider:  "openai",
+			wantClass: ErrorClassTokenRevoked,
+		},
+		{
+			// 裸 400 不会归为 org_disabled;带 org_disabled 关键字
+			// → org_disabled(R-003)。body 翻转 class。
+			name:      "400 org_disabled body overrides status-only baseline",
+			status:    http.StatusBadRequest,
+			body:      []byte(`{"error":"org_disabled","detail":"SENSITIVE_UPSTREAM_MARKER"}`),
+			provider:  "openai",
+			wantClass: ErrorClassOrgDisabled,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, withBody, err := ClassifyAttemptHTTPError(tt.status, nil, tt.body, tt.provider)
+			if err != nil {
+				t.Fatalf("ClassifyAttemptHTTPError(with body): %v", err)
+			}
+			if withBody.Class != tt.wantClass {
+				t.Fatalf("with body: class=%q want %q", withBody.Class, tt.wantClass)
+			}
+
+			_, statusOnly, err := ClassifyAttemptHTTPError(tt.status, nil, nil, tt.provider)
+			if err != nil {
+				t.Fatalf("ClassifyAttemptHTTPError(status only): %v", err)
+			}
+			// 关键断言:body 必须改变分类结果。若两者相等,说明该 fixture
+			// 无法证明 body 被读取 —— 这正是 codex P3 评审指出的弱测试形态。
+			if withBody.Class == statusOnly.Class {
+				t.Fatalf("body did not change classification: with-body and status-only both produced %q; fixture cannot prove body-driven classification", withBody.Class)
+			}
+		})
+	}
+}
+
 func TestClassifyAttemptDispatchError_TransportTaxonomy(t *testing.T) {
 	t.Parallel()
 

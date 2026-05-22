@@ -121,10 +121,21 @@ func TestDispatchHCSFFillsModelChainUpstreamReported(t *testing.T) {
 }
 
 func TestDispatchHCSFUpstream5xxReturnsError(t *testing.T) {
-	d := newDispatcherForTest(&stubAdapter{platform: "openai"}, &stubDoer{respStatus: 503, respBody: `{"error":"busy"}`})
+	const marker = "SENSITIVE_UPSTREAM_MARKER"
+	d := newDispatcherForTest(&stubAdapter{platform: "openai"}, &stubDoer{respStatus: 503, respBody: `{"error":"` + marker + `"}`})
 	_, err := d.DispatchHCSF(hcsfCtx(), testHCSFEnvelope())
 	if err == nil || !strings.Contains(err.Error(), "上游状态码 503") {
 		t.Fatalf("err=%v want upstream 503", err)
+	}
+	if strings.Contains(err.Error(), marker) {
+		t.Fatalf("UpstreamHTTPError.Error leaked body marker: %v", err)
+	}
+	var upstreamErr *UpstreamHTTPError
+	if !errors.As(err, &upstreamErr) {
+		t.Fatalf("err=%T want UpstreamHTTPError", err)
+	}
+	if !strings.Contains(string(upstreamErr.Body), marker) {
+		t.Fatalf("UpstreamHTTPError.Body=%q want marker retained for classification", upstreamErr.Body)
 	}
 }
 
