@@ -71,7 +71,10 @@ func TestAuditLedgerDLQHandlerCorruptExistingRequestDoesNotAppendAgain(t *testin
 	// evidence separately.
 	// Mutation self-check: treat ErrLedgerEntryCorrupt like not-found and this
 	// test fails because Append is called.
-	spy := &ledgerSpy{getErr: ErrLedgerEntryCorrupt}
+	spy := &ledgerSpy{
+		getEntry: preparedDLQFixture(t, "req_dlq_corrupt").AsLedgerEntry(),
+		getErr:   ErrLedgerEntryCorrupt,
+	}
 
 	err := NewDLQHandler(spy)(context.Background(), dlqRecordForPrepared(t, preparedDLQFixture(t, "req_dlq_corrupt")))
 	if err != nil {
@@ -105,20 +108,76 @@ func TestAuditLedgerDLQHandlerAppendFailureReturnsOriginalError(t *testing.T) {
 
 func TestAuditLedgerDLQHandlerDuplicateRaceDelivered(t *testing.T) {
 	// Risk killed: a concurrent worker may insert the same request_id after the
-	// not-found lookup; ErrDuplicateRequestID is the success race, not a retry.
-	// Mutation self-check: remove the duplicate branch and this test fails with
-	// ErrDuplicateRequestID.
+	// not-found lookup; ErrDuplicateRequestID is delivered only after the
+	// existing row is proven to belong to the DLQ record tenant.
+	// Mutation self-check: remove the post-duplicate lookup and this test fails
+	// because the spy records one GetByRequestID call instead of two.
+	requestID := "req_dlq_duplicate_race"
 	spy := &ledgerSpy{
-		getErr:    ErrLedgerEntryNotFound,
+		getResults: []ledgerSpyGetResult{
+			{err: ErrLedgerEntryNotFound},
+			{entry: preparedDLQFixture(t, requestID).AsLedgerEntry()},
+		},
 		appendErr: ErrDuplicateRequestID,
 	}
 
-	err := NewDLQHandler(spy)(context.Background(), dlqRecordForPrepared(t, preparedDLQFixture(t, "req_dlq_duplicate_race")))
+	err := NewDLQHandler(spy)(context.Background(), dlqRecordForPrepared(t, preparedDLQFixture(t, requestID)))
 	if err != nil {
 		t.Fatalf("duplicate race must deliver nil error, got %v", err)
 	}
 	if spy.appendCalls != 1 {
 		t.Fatalf("append calls=%d want 1", spy.appendCalls)
+	}
+	if spy.getCalls != 2 {
+		t.Fatalf("duplicate race must verify owner after ErrDuplicateRequestID, get calls=%d want 2", spy.getCalls)
+	}
+}
+
+func TestAuditLedgerDLQHandlerRejectsCrossTenantExistingRequestID(t *testing.T) {
+	// Risk killed: request_id is globally unique and may come from a client
+	// header; an existing row for another tenant must not let this tenant's DLQ
+	// row be marked delivered without its own audit evidence.
+	// Mutation self-check: remove the existing-row tenant ownership check and
+	// this test fails because the handler returns nil.
+	const requestID = "req_dlq_cross_tenant_existing"
+	spy := &ledgerSpy{
+		getEntry: preparedDLQFixtureForTenant(t, requestID, 101).AsLedgerEntry(),
+		getErr:   nil,
+	}
+
+	err := NewDLQHandler(spy)(context.Background(), dlqRecordForPrepared(t, preparedDLQFixtureForTenant(t, requestID, 202)))
+	if err == nil || !strings.Contains(err.Error(), "duplicate request_id tenant mismatch") {
+		t.Fatalf("handler error=%v want duplicate request_id tenant mismatch", err)
+	}
+	if spy.appendCalls != 0 {
+		t.Fatalf("cross-tenant existing request must not append, append calls=%d", spy.appendCalls)
+	}
+}
+
+func TestAuditLedgerDLQHandlerRejectsCrossTenantDuplicateRace(t *testing.T) {
+	// Risk killed: if Append loses a duplicate request_id race, the worker must
+	// re-read the winning row and reject it when that row belongs to another
+	// tenant instead of falsely delivering this DLQ record.
+	// Mutation self-check: return nil directly on ErrDuplicateRequestID and this
+	// test fails because no ownership error is returned.
+	const requestID = "req_dlq_cross_tenant_race"
+	spy := &ledgerSpy{
+		getResults: []ledgerSpyGetResult{
+			{err: ErrLedgerEntryNotFound},
+			{entry: preparedDLQFixtureForTenant(t, requestID, 101).AsLedgerEntry()},
+		},
+		appendErr: ErrDuplicateRequestID,
+	}
+
+	err := NewDLQHandler(spy)(context.Background(), dlqRecordForPrepared(t, preparedDLQFixtureForTenant(t, requestID, 202)))
+	if err == nil || !strings.Contains(err.Error(), "duplicate request_id tenant mismatch") {
+		t.Fatalf("handler error=%v want duplicate request_id tenant mismatch", err)
+	}
+	if spy.appendCalls != 1 {
+		t.Fatalf("append calls=%d want 1", spy.appendCalls)
+	}
+	if spy.getCalls != 2 {
+		t.Fatalf("duplicate race must perform second lookup, get calls=%d want 2", spy.getCalls)
 	}
 }
 
@@ -241,6 +300,48 @@ func TestAuditLedgerDLQHandlerRejectsMismatchedTenantScopeRefWithoutAppend(t *te
 	}
 }
 
+func TestAuditLedgerDLQHandlerAllowsMatchingTenantScopeRefAndClearsBeforeSigning(t *testing.T) {
+	// Risk killed: a valid non-empty tenant_scope_ref from an older DLQ payload
+	// must be accepted only when it matches the verified tenant, then cleared so
+	// canonical signing derives the same value DB scan/verify derives later.
+	// Mutation self-check: reject all non-empty tenant_scope_ref values and this
+	// test fails before the replayed ledger row exists.
+	ctx := context.Background()
+	signer, _ := sign.GenerateKey()
+	ledger, err := NewMemoryLedger(signer)
+	if err != nil {
+		t.Fatalf("NewMemoryLedger: %v", err)
+	}
+	requestID := "req_dlq_matching_scope"
+	prepared := preparedDLQFixture(t, requestID)
+
+	err = NewDLQHandler(ledger)(ctx, dlqRecordForPrepared(t, prepared))
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	got, err := ledger.GetByRequestID(ctx, requestID)
+	if err != nil {
+		t.Fatalf("GetByRequestID after replay: %v", err)
+	}
+	if got.TenantScopeRef != "" {
+		t.Fatalf("matching tenant_scope_ref must be cleared before append, got %q", got.TenantScopeRef)
+	}
+	scanned := got
+	scanned.TenantScopeRef = ""
+	hash, err := EntryHash(&scanned)
+	if err != nil {
+		t.Fatalf("EntryHash scanned replay: %v", err)
+	}
+	sig, err := base64.StdEncoding.DecodeString(got.Signature)
+	if err != nil {
+		t.Fatalf("DecodeString signature: %v", err)
+	}
+	if err := sign.Verify(signer.PublicKey(), hash[:], sig); err != nil {
+		t.Fatalf("signature must verify after matching tenant_scope_ref is cleared: %v", err)
+	}
+}
+
 func TestAuditLedgerDLQHandlerAllowsEmptyTenantScopeRefAndDerivesBeforeSigning(t *testing.T) {
 	// Risk killed: empty tenant_scope_ref is a valid DLQ payload shape; replay
 	// must derive the canonical scope from the already-verified tenant_id and
@@ -295,6 +396,51 @@ func TestAuditLedgerDLQHandlerAllowsEmptyTenantScopeRefAndDerivesBeforeSigning(t
 	}
 	if err := sign.Verify(signer.PublicKey(), hash[:], sig); err != nil {
 		t.Fatalf("signature must verify after scan drops tenant_scope_ref: %v", err)
+	}
+}
+
+func TestAuditLedgerDLQHandlerReplaysCredentialWorkerPayloadWithoutHopChain(t *testing.T) {
+	// Risk killed: credentialworker audit entries legitimately prepare no
+	// HopChain. DLQ replay must not strand those rows at decode time; it must
+	// re-run PrepareEntry, Append the entry, and return delivered.
+	// Mutation self-check: restore the old empty-hop_chain decode guard and this
+	// test fails because handler returns a decode error before the ledger row is
+	// written.
+	ctx := context.Background()
+	signer, _ := sign.GenerateKey()
+	ledger, err := NewMemoryLedger(signer)
+	if err != nil {
+		t.Fatalf("NewMemoryLedger: %v", err)
+	}
+	raw := []byte(`{"request_id":"req_dlq_credentialworker_no_hop_chain","tenant_id":77,"created_at":"2026-05-22T13:30:00Z","tenant_scope_ref":"` + TenantScopeRef(77) + `"}`)
+
+	err = NewDLQHandler(ledger)(ctx, dlq.Record{
+		ID:             9006,
+		TenantID:       77,
+		EventKind:      dlq.EventKindAuditLedgerEntry,
+		Lane:           dlq.LaneHigh,
+		Payload:        raw,
+		IdempotencyKey: "audit_ledger:req_dlq_credentialworker_no_hop_chain",
+	})
+	if err != nil {
+		t.Fatalf("handler should replay credentialworker-shaped payload: %v", err)
+	}
+
+	got, err := ledger.GetByRequestID(ctx, "req_dlq_credentialworker_no_hop_chain")
+	if err != nil {
+		t.Fatalf("GetByRequestID after credentialworker replay: %v", err)
+	}
+	if got.RequestID != "req_dlq_credentialworker_no_hop_chain" || got.TenantID != 77 {
+		t.Fatalf("replayed credentialworker ledger entry mismatch: %+v", got)
+	}
+	if got.Timestamp != "2026-05-22T13:30:00Z" {
+		t.Fatalf("credentialworker timestamp=%q want created_at", got.Timestamp)
+	}
+	if len(got.HopChain) != 0 {
+		t.Fatalf("credentialworker replay must preserve empty hop_chain, got %+v", got.HopChain)
+	}
+	if got.ModelChain != nil {
+		t.Fatalf("credentialworker replay must preserve nil model_chain, got %+v", got.ModelChain)
 	}
 }
 
@@ -368,11 +514,16 @@ func TestAuditLedgerDLQHandlerTenantMismatchReturnsErrorWithoutAppend(t *testing
 
 func preparedDLQFixture(t testing.TB, requestID string) PreparedEntry {
 	t.Helper()
+	return preparedDLQFixtureForTenant(t, requestID, 77)
+}
+
+func preparedDLQFixtureForTenant(t testing.TB, requestID string, tenantID int64) PreparedEntry {
+	t.Helper()
 	return mustPrepareForAppend(t, context.Background(), LedgerEntry{
 		Timestamp:      "2026-05-22T13:00:00Z",
 		RequestID:      requestID,
-		TenantID:       77,
-		TenantScopeRef: TenantScopeRef(77),
+		TenantID:       tenantID,
+		TenantScopeRef: TenantScopeRef(tenantID),
 		HopChain: []proto.HopAttestation{{
 			Hop:         proto.HopProvider,
 			HopKind:     "provider",
@@ -412,9 +563,16 @@ func dlqRecordForPreparedWithKey(t testing.TB, prepared PreparedEntry, idempoten
 	}
 }
 
+type ledgerSpyGetResult struct {
+	entry LedgerEntry
+	err   error
+}
+
 type ledgerSpy struct {
 	getEntry       LedgerEntry
 	getErr         error
+	getResults     []ledgerSpyGetResult
+	getCalls       int
 	appendErr      error
 	appendCalls    int
 	appendTenantID int64
@@ -427,6 +585,16 @@ func (s *ledgerSpy) Append(_ context.Context, entry PreparedEntry) (LedgerEntry,
 }
 
 func (s *ledgerSpy) GetByRequestID(context.Context, string) (LedgerEntry, error) {
+	if len(s.getResults) > 0 {
+		idx := s.getCalls
+		s.getCalls++
+		if idx >= len(s.getResults) {
+			idx = len(s.getResults) - 1
+		}
+		result := s.getResults[idx]
+		return result.entry, result.err
+	}
+	s.getCalls++
 	return s.getEntry, s.getErr
 }
 

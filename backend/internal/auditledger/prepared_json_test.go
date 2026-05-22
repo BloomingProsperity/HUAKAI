@@ -134,6 +134,119 @@ func TestPreparedEntryExternalJSONUnmarshalCannotBypassSeal(t *testing.T) {
 	}
 }
 
+func TestDecodeLedgerEntryFromDLQPayloadAllowsMissingOptionalAppendFields(t *testing.T) {
+	// Risk killed: valid JSON DLQ payloads from existing callers may omit
+	// created_at or hop_chain. Decode must not strand those rows before the
+	// worker can re-run PrepareEntry and Append's normal timestamp handling.
+	// Mutation self-check: restore the old required-field guards for request_id,
+	// created_at, or hop_chain and the matching subtest fails with a decode
+	// error instead of returning the empty LedgerEntry field.
+	tests := []struct {
+		name string
+		raw  string
+		want LedgerEntry
+	}{
+		{
+			name: "missing_request_id",
+			raw:  `{"tenant_id":77,"created_at":"2026-05-22T13:40:00Z","tenant_scope_ref":"tenant:fixture","hop_chain":[{"hop":"provider","hop_kind":"provider","hop_index":1,"decision_ref":"decision-required-fields","ts":"2026-05-22T13:40:00Z","provider":"openai","detail":{"status":200}}]}`,
+			want: LedgerEntry{
+				TenantID:       77,
+				Timestamp:      "2026-05-22T13:40:00Z",
+				TenantScopeRef: "tenant:fixture",
+				HopChain: []proto.HopAttestation{{
+					Hop:         proto.HopProvider,
+					HopKind:     "provider",
+					HopIndex:    1,
+					DecisionRef: "decision-required-fields",
+					Timestamp:   "2026-05-22T13:40:00Z",
+					Provider:    "openai",
+					Detail:      json.RawMessage(`{"status":200}`),
+				}},
+			},
+		},
+		{
+			name: "missing_created_at",
+			raw:  `{"request_id":"req_decode_missing_created_at","tenant_id":77,"tenant_scope_ref":"tenant:fixture","hop_chain":[{"hop":"provider","hop_kind":"provider","hop_index":1,"decision_ref":"decision-required-fields","ts":"2026-05-22T13:40:00Z","provider":"openai","detail":{"status":200}}]}`,
+			want: LedgerEntry{
+				RequestID:      "req_decode_missing_created_at",
+				TenantID:       77,
+				TenantScopeRef: "tenant:fixture",
+				HopChain: []proto.HopAttestation{{
+					Hop:         proto.HopProvider,
+					HopKind:     "provider",
+					HopIndex:    1,
+					DecisionRef: "decision-required-fields",
+					Timestamp:   "2026-05-22T13:40:00Z",
+					Provider:    "openai",
+					Detail:      json.RawMessage(`{"status":200}`),
+				}},
+			},
+		},
+		{
+			name: "missing_hop_chain",
+			raw:  `{"request_id":"req_decode_missing_hop_chain","tenant_id":77,"created_at":"2026-05-22T13:40:00Z","tenant_scope_ref":"tenant:fixture","model_chain":{"requested":"gpt-4o","route_decided":"gpt-4o","upstream_reported":"gpt-4o","verdict":"match"}}`,
+			want: LedgerEntry{
+				RequestID:      "req_decode_missing_hop_chain",
+				TenantID:       77,
+				Timestamp:      "2026-05-22T13:40:00Z",
+				TenantScopeRef: "tenant:fixture",
+				ModelChain: &proto.ModelChain{
+					Requested:        "gpt-4o",
+					RouteDecided:     "gpt-4o",
+					UpstreamReported: "gpt-4o",
+					Verdict:          "match",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decoded, err := decodeLedgerEntryFromDLQPayload([]byte(tt.raw))
+			if err != nil {
+				t.Fatalf("decode valid DLQ payload with omitted fields: %v", err)
+			}
+			if !reflect.DeepEqual(decoded, tt.want) {
+				t.Fatalf("decoded LedgerEntry mismatch:\n got: %#v\nwant: %#v", decoded, tt.want)
+			}
+		})
+	}
+}
+
+func TestDecodeLedgerEntryFromDLQPayloadAllowsMissingModelChain(t *testing.T) {
+	// Risk killed: streaming ledger emitters may produce HopChain-only intents;
+	// the required-field validation must not accidentally make model_chain
+	// mandatory and strand valid streaming DLQ rows.
+	// Mutation self-check: require model_chain during decode and this test fails
+	// with a decode error.
+	raw, err := json.Marshal(preparedEntryJSON{
+		RequestID:      "req_decode_streaming_without_model_chain",
+		TenantID:       77,
+		CreatedAt:      "2026-05-22T13:45:00Z",
+		TenantScopeRef: TenantScopeRef(77),
+		HopChain: []proto.HopAttestation{{
+			Hop:         proto.HopProvider,
+			HopKind:     "provider",
+			HopIndex:    1,
+			DecisionRef: "decision-streaming",
+			Timestamp:   "2026-05-22T13:45:00Z",
+			Provider:    "openai",
+			Detail:      json.RawMessage(`{"stream":true}`),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Marshal streaming payload: %v", err)
+	}
+
+	decoded, err := decodeLedgerEntryFromDLQPayload(raw)
+	if err != nil {
+		t.Fatalf("decode streaming payload without model_chain: %v", err)
+	}
+	if decoded.ModelChain != nil {
+		t.Fatalf("model_chain should remain nil for streaming payload, got %+v", decoded.ModelChain)
+	}
+}
+
 func jsonKeyPresent(t testing.TB, raw []byte, key string) bool {
 	t.Helper()
 	var fields map[string]json.RawMessage
