@@ -59,10 +59,11 @@ func (ex *chatExecution) serveL2CacheIfAvailable(w http.ResponseWriter) (bool, b
 
 func (ex *chatExecution) l2CacheKeyForModel(model string) (string, error) {
 	key, _, err := l2cache.BuildKey(l2cache.KeyInput{
-		TenantID: ex.ident.TenantID,
-		Vendor:   ex.cacheVendor,
-		Model:    model,
-		Body:     ex.body,
+		TenantID:       ex.ident.TenantID,
+		Vendor:         ex.cacheVendor,
+		Model:          model,
+		EndpointFamily: ex.d.effectiveEndpointFamily(),
+		Body:           ex.body,
 	})
 	return key, err
 }

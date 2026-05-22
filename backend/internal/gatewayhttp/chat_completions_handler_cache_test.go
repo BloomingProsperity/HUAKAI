@@ -152,6 +152,45 @@ func TestChatCompletionsL2CacheTenantIsolation(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsL2CacheEndpointFamilyIsolation(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	store := l2cache.NewMemoryStore(1<<20, time.Minute)
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = dispatcher
+	d.ResponseCache = store
+	d.Settler = &recordingSettler{}
+
+	body := `{"model":"gpt-4o","stream":false,"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`
+	first := invokeHandlerPath(t, d, "/v1/chat/completions", body)
+	if first.Code != http.StatusOK {
+		t.Fatalf("chat status=%d body=%s", first.Code, first.Body.String())
+	}
+	if got := first.Header().Get("X-HUAKAI-Cache-L2"); got != "miss" {
+		t.Fatalf("chat cache header=%q want miss", got)
+	}
+	if !strings.Contains(first.Body.String(), `"object":"chat.completion"`) {
+		t.Fatalf("chat body=%s want OpenAI chat response shape", first.Body.String())
+	}
+
+	second := invokeMessagesHandler(t, d, body)
+	if second.Code != http.StatusOK {
+		t.Fatalf("messages status=%d body=%s", second.Code, second.Body.String())
+	}
+	if got := second.Header().Get("X-HUAKAI-Cache-L2"); got != "miss" {
+		t.Fatalf("messages cache header=%q want miss across endpoint family", got)
+	}
+	if strings.Contains(second.Body.String(), `"object":"chat.completion"`) {
+		t.Fatalf("messages endpoint received OpenAI chat cached body: %s", second.Body.String())
+	}
+	if !strings.Contains(second.Body.String(), `"type":"message"`) {
+		t.Fatalf("messages body=%s want Anthropic message response shape", second.Body.String())
+	}
+	if dispatcher.calls != 2 {
+		t.Fatalf("dispatcher calls=%d want 2 because endpoint families must not share L2 body", dispatcher.calls)
+	}
+}
+
 func TestChatCompletionsFallbackSuccessDoesNotPoisonPrimaryModelCacheKey(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	store := l2cache.NewMemoryStore(1<<20, time.Minute)
@@ -238,6 +277,16 @@ func invokeWithIdempotencyKey(t *testing.T, deps ChatHandlerDeps, body, idemKey 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", idemKey)
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	return rec
+}
+
+func invokeMessagesHandler(t *testing.T, deps ChatHandlerDeps, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	h := NewMessagesHandler(deps)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h(rec, req)
 	return rec
