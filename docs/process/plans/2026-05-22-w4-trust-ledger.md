@@ -30,6 +30,10 @@
 > 重放同理);`Deferred` 三态 `Fingerprint==""`;completion 事件不为 Deferred
 > 宣告 `AuditSignatureFingerprint`;「有效账本引用」校验对 DLQRef 分支不查
 > fingerprint。
+>
+> **rev5(2026-05-22)**:切片归属精修 —— §6.0.a 的 `PrepareEntry` 抽取归 W4a
+> (与 §3、§11 一致);W4b 只就地修 B-13/B-15、并把哨兵构造写成 `auditledger`
+> 内可复用 helper 供 W4a 抽取时复用,W4b **不改 `Append` 签名**。无设计变更。
 
 ## 1. 背景与核心风险
 
@@ -151,7 +155,10 @@ Owner 2026-05-22 已定。展开:
 `ledger.go:97`);调用方构造的是**原始** entry,`Append` 失败只拿到 error,
 **拿不到已脱敏的形态**,DLQ intent 无从产生。
 
-**修复**:W4b 把脱敏 + B-13 哨兵逻辑抽成显式 `auditledger.PrepareEntry`:
+**修复(rev5:此抽取归 W4a)**:把脱敏 + B-13 哨兵逻辑抽成显式
+`auditledger.PrepareEntry` —— **W4b** 先就地修 B-13(§5)并把哨兵构造写成
+`auditledger` 内可复用 helper;**W4a** 再据此抽出 `PrepareEntry` 并改 `Append`
+签名 + 适配调用方:
 ```
 PrepareEntry(ctx, rawEntry) (PreparedEntry, error)
 // 内部:sanitizeLedgerEntry → 若脱敏失败按 B-13 换哨兵 → 产出 PreparedEntry。
