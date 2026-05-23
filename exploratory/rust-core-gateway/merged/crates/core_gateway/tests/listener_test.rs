@@ -16,9 +16,10 @@ use axum::{
 use bytes::Bytes;
 use common::mock_upstream::{MockBehavior, MockUpstream};
 use core_gateway::{
-    build_router,
+    GatewayState, build_router,
     config::StartupConfig,
     heartbeat::set_drain_mode,
+    listener as core_listener,
     request_id::REQUEST_ID_HEADER,
     server_runtime::{self, ServerTimeouts},
 };
@@ -152,6 +153,8 @@ fn test_config_with_resource_limits_and_timeouts(
 
     if let Some(endpoint) = mock_upstream_endpoint {
         env.push(("HUAKAI_MOCK_UPSTREAM_ENDPOINT".to_owned(), endpoint));
+        // W11-D2: mock 上游要求 dev/test 模式 (production 守门会 fail-fast)
+        env.push(("HUAKAI_RUNTIME_MODE".to_owned(), "development".to_owned()));
     }
 
     StartupConfig::from_env_iter(env).expect("listener 测试配置应可解析")
@@ -195,6 +198,48 @@ async fn normal_messages_request_echoes_body_through_mock_upstream() {
         .expect("响应 body 应可读取");
     assert_eq!(body, payload);
     assert_eq!(mock.bytes_seen(), payload.len());
+}
+
+/// W11-D2 B2: mock 上游分支必须显式 emit 一个 attempt event，让控制面/审计能
+/// 看出此次流量是演练 (route_plan_id="mock-upstream-drill" + attempt_id 前缀
+/// "attempt-mock-")，账本不再为 mock drill 留空洞。
+///
+/// 判别性 + mutation：调用前后取 `enqueued_count()` 必须严格 +1；删 listener.rs
+/// 里 reporter.report 调用 → 此测试断言失败。
+#[tokio::test]
+async fn mock_upstream_emits_explicit_mock_attempt_event() {
+    let _drain_guard = DrainModeReset::set(false); // 持 drain 测试互斥锁
+    let mock = MockUpstream::spawn(MockBehavior::EchoBody).await;
+    let config = test_config(4 * 1024 * 1024, Some(mock.endpoint()));
+
+    // 直接构造 GatewayState 以便测试可读 attempt_reporter 的 enqueued_count。
+    // 跳过 build_router 顶层中间件 (drain/overload/body_limit) 不影响 mock 分支记账。
+    let state = GatewayState::new(config).expect("state 构建应成功");
+    let baseline = state.attempt_reporter().enqueued_count();
+
+    let router = core_listener::build_router().with_state(state.clone());
+    let payload = Bytes::from_static(br#"{"model":"claude-test","messages":[]}"#);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(payload))
+                .expect("request 构建应成功"),
+        )
+        .await
+        .expect("listener 应响应");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let after = state.attempt_reporter().enqueued_count();
+    assert_eq!(
+        after,
+        baseline + 1,
+        "mock 上游路径必须发恰好 1 个 attempt event 让审计可见 (baseline={baseline}, after={after})"
+    );
 }
 
 #[tokio::test]

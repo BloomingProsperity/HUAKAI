@@ -180,6 +180,26 @@ impl AttemptReportContext {
         }
     }
 
+    /// W11-D2 B2: mock 上游分支专用合成 context。
+    /// `attempt_id` 以 `attempt-mock-` 起头 + `route_plan_id = "mock-upstream-drill"`，
+    /// 让控制面 / 审计后台能立即把演练流量与真实流量区分开，避免账本对账空洞。
+    pub fn synthetic_mock_attempt(request_id: &RequestId) -> Self {
+        let attempt_id = format!("attempt-mock-{}", Uuid::now_v7());
+        let acquisition_token = Bytes::new();
+        let idempotency_key =
+            build_idempotency_key(request_id.as_str(), &attempt_id, &acquisition_token);
+
+        Self {
+            request_id: request_id.as_str().to_owned(),
+            route_plan_id: "mock-upstream-drill".to_owned(),
+            attempt_id,
+            acquisition_token,
+            idempotency_key,
+            started_at_ms: now_unix_ms_i64(),
+            bytes_in: 0,
+        }
+    }
+
     pub fn terminal_report(
         &self,
         status: AttemptStatus,
@@ -323,6 +343,37 @@ mod tests {
 
     use super::super::metrics::{AttemptCacheMetrics, AttemptTokenMetrics};
     use super::*;
+    use crate::request_id::RequestId;
+
+    /// W11-D2 B2 + P2 codex review 2026-05-23: synthetic_mock_attempt 必须使用
+    /// 显著区别于 from_planned / synthetic_control_plane_error 的标记字段,
+    /// 让控制面 / 审计后台能按 attempt_id 前缀和 route_plan_id 立即识别演练流量。
+    /// mutation: 改 attempt_id 前缀去掉 "mock-" / 把 route_plan_id 改回 String::new() → 此测试红。
+    #[test]
+    fn synthetic_mock_attempt_uses_distinctive_marker_fields() {
+        let request_id = RequestId::generate();
+
+        let context = AttemptReportContext::synthetic_mock_attempt(&request_id);
+
+        assert!(
+            context.attempt_id.starts_with("attempt-mock-"),
+            "synthetic_mock_attempt 必须以 attempt-mock- 前缀让审计区分演练流量, 实际: {}",
+            context.attempt_id
+        );
+        assert_eq!(
+            context.route_plan_id, "mock-upstream-drill",
+            "synthetic_mock_attempt 必须使用 mock-upstream-drill 标记 route_plan_id, 实际: {}",
+            context.route_plan_id
+        );
+        assert_eq!(
+            context.bytes_in, 0,
+            "synthetic context 不携带请求 body 字节"
+        );
+        assert!(
+            context.acquisition_token.is_empty(),
+            "synthetic 演练 attempt 不携带真实凭据 token"
+        );
+    }
 
     #[test]
     fn status_strings_match_attempt_report_contract() {

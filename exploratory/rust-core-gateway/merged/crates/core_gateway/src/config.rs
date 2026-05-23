@@ -20,6 +20,36 @@ pub const ENV_PREFIX: &str = "HUAKAI_";
 /// 默认请求体上限: 4 MiB
 pub const DEFAULT_MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
+/// W11-D2: 运行时模式 — 控制生产/非生产的安全行为差异。
+/// 生产模式下 mock upstream 必须 fail-fast 拒绝（防止账务/计费旁路）。
+/// 默认值: Production (启动时若 HUAKAI_RUNTIME_MODE 未设, 视为最严格的生产模式)。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeMode {
+    /// 生产: 拒绝任何危险开关 (如 mock upstream)。
+    Production,
+    /// 开发: 允许 mock upstream 等本地开发便利, 启动时显著告警。
+    Development,
+    /// 测试: 与 Development 类似, 用于 CI / 单元测试。
+    Test,
+}
+
+impl RuntimeMode {
+    fn parse(value: &str) -> Result<Self, GatewayError> {
+        match value.to_ascii_lowercase().as_str() {
+            "production" | "prod" => Ok(Self::Production),
+            "development" | "dev" => Ok(Self::Development),
+            "test" => Ok(Self::Test),
+            other => Err(GatewayError::Config(format!(
+                "invalid HUAKAI_RUNTIME_MODE {other:?}; expected one of: production, development, test"
+            ))),
+        }
+    }
+
+    pub fn is_production(self) -> bool {
+        matches!(self, Self::Production)
+    }
+}
+
 /// 网关顶层配置结构体 (强类型, 启动后不可变)
 /// 所有字段均通过环境变量注入, 前缀 `HUAKAI_`
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -52,7 +82,11 @@ pub struct StartupConfig {
     /// 单请求 body 上限, 默认 4 MiB
     pub max_body_bytes: usize,
     /// M-rust-2 测试用 mock upstream; 未配置时 listener 本地 echo
+    /// W11-D2: 仅 runtime_mode = Development/Test 下可设, Production 模式下 startup fail-fast
     pub mock_upstream_endpoint: Option<Uri>,
+    /// W11-D2: 运行时模式 (生产/开发/测试), 默认 Production
+    /// 生产模式下严禁 mock_upstream_endpoint 设置 (validate() 强制)
+    pub runtime_mode: RuntimeMode,
     /// control plane 单次 RPC deadline, 默认 200ms
     pub control_plane_timeout_ms: u64,
     /// route query 失败后的额外重试次数, 默认 1
@@ -108,6 +142,9 @@ struct RawStartupConfig {
     max_body_bytes: usize,
     #[serde(default)]
     mock_upstream_endpoint: Option<String>,
+    /// W11-D2: 运行时模式 (production/development/test), 默认 production
+    #[serde(default = "default_runtime_mode")]
+    runtime_mode: String,
     #[serde(default = "default_control_plane_timeout_ms")]
     control_plane_timeout_ms: u64,
     #[serde(default = "default_control_plane_retry_attempts")]
@@ -181,6 +218,17 @@ impl StartupConfig {
         }
         if matches!(self.transport_baseline, TransportBaseline::Mtls { .. }) {
             self.route_transport_config()?;
+        }
+        // W11-D2: 生产模式严禁 mock upstream — 防止账务/计费旁路 + attempt 上报丢失。
+        // mutation marker: 删除本块 → production_mode_rejects_mock_upstream 测试变绿 (应红)。
+        if self.runtime_mode.is_production() && self.mock_upstream_endpoint.is_some() {
+            return Err(GatewayError::Config(
+                "HUAKAI_MOCK_UPSTREAM_ENDPOINT must not be set when HUAKAI_RUNTIME_MODE=production \
+                 (W11-D2 fail-fast: production startup with mock upstream would bypass account planning, \
+                 attempt reporting, and billing). Use HUAKAI_RUNTIME_MODE=development or test to enable \
+                 mock upstream for local development/testing only."
+                    .to_owned(),
+            ));
         }
         Ok(())
     }
@@ -277,6 +325,9 @@ impl StartupConfig {
             .map(|s| parse_endpoint("HUAKAI_MOCK_UPSTREAM_ENDPOINT", s))
             .transpose()?;
 
+        // W11-D2: 解析运行时模式 (默认 production, 严格防误启用)
+        let runtime_mode = RuntimeMode::parse(&raw.runtime_mode)?;
+
         let config = Self {
             listen_addr,
             control_plane_endpoint,
@@ -292,6 +343,7 @@ impl StartupConfig {
             worker_threads: raw.worker_threads,
             max_body_bytes: raw.max_body_bytes,
             mock_upstream_endpoint,
+            runtime_mode,
             control_plane_timeout_ms: raw.control_plane_timeout_ms,
             control_plane_retry_attempts: raw.control_plane_retry_attempts,
             route_cache_ttl_ms: raw.route_cache_ttl_ms,
@@ -377,6 +429,12 @@ fn default_worker_threads() -> usize {
 
 fn default_max_body_bytes() -> usize {
     DEFAULT_MAX_BODY_BYTES
+}
+
+/// W11-D2: 默认运行时模式 = production (最严格, 拒绝 mock upstream 等危险开关)。
+/// 若 HUAKAI_RUNTIME_MODE 未显式设置, 视为生产, 防止误启用本地开发便利到生产环境。
+fn default_runtime_mode() -> String {
+    "production".to_owned()
 }
 
 fn default_control_plane_timeout_ms() -> u64 {
@@ -631,17 +689,87 @@ mod tests {
 
     #[test]
     fn config_with_mock_upstream_endpoint_parses_correctly() {
+        // W11-D2: mock upstream 仅 development/test 模式可用; production 模式见
+        // production_mode_rejects_mock_upstream 反向测试
         let mut env = valid_env();
         env.push((
             "HUAKAI_MOCK_UPSTREAM_ENDPOINT".to_owned(),
             "http://127.0.0.1:48100".to_owned(),
         ));
+        env.push(("HUAKAI_RUNTIME_MODE".to_owned(), "development".to_owned()));
         let cfg = StartupConfig::from_env_iter(env)
-            .expect("带 mock_upstream_endpoint 的 config 应解析成功");
+            .expect("带 mock_upstream_endpoint 的 config 应解析成功 (dev mode)");
         assert_eq!(
             cfg.mock_upstream_endpoint.unwrap().to_string(),
             "http://127.0.0.1:48100/"
         );
+        assert_eq!(cfg.runtime_mode, RuntimeMode::Development);
+    }
+
+    // ============== W11-D2: runtime_mode 守门测试组 ==============
+
+    #[test]
+    fn production_mode_rejects_mock_upstream() {
+        // W11-D2 主判别性测试: 生产模式 + mock 上游 = fail-fast 拒绝启动。
+        // mutation marker: 若删除 validate() 中的 production+mock 守门, 本测试变绿 (应红)。
+        let mut env = valid_env();
+        env.push((
+            "HUAKAI_MOCK_UPSTREAM_ENDPOINT".to_owned(),
+            "http://127.0.0.1:48100".to_owned(),
+        ));
+        // 不显式设 HUAKAI_RUNTIME_MODE → 默认 production (见 default_runtime_mode_is_production)
+        let result = StartupConfig::from_env_iter(env);
+        assert!(
+            result.is_err(),
+            "生产模式 + mock 上游 应 fail-fast (W11-D2)"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("HUAKAI_MOCK_UPSTREAM_ENDPOINT") && err_msg.contains("production"),
+            "错误消息应明确提及 mock var 名 + production 模式, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn default_runtime_mode_is_production() {
+        // W11-D2 关键不变量: HUAKAI_RUNTIME_MODE 未设时默认为 production (最严格,
+        // 不是宽松模式)。本测试与 production_mode_rejects_mock_upstream 共同证明
+        // "未设环境变量 + 误设 mock upstream → fail-fast" 是默认安全姿态。
+        let cfg = StartupConfig::from_env_iter(valid_env()).expect("默认 env 应解析成功");
+        assert_eq!(cfg.runtime_mode, RuntimeMode::Production);
+    }
+
+    #[test]
+    fn runtime_mode_rejects_invalid_value() {
+        // 未知值应 fail-fast 而非静默回退到某个模式 (防止 typo 误启用宽松配置)
+        let mut env = valid_env();
+        env.push(("HUAKAI_RUNTIME_MODE".to_owned(), "staging".to_owned()));
+        let result = StartupConfig::from_env_iter(env);
+        assert!(result.is_err(), "未知 runtime_mode 应 fail-fast");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("HUAKAI_RUNTIME_MODE"),
+            "错误消息应提及 runtime_mode 字段: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn runtime_mode_accepts_short_aliases() {
+        // 接受 prod/dev 简写 (case-insensitive)
+        let mut env = valid_env();
+        env.push(("HUAKAI_RUNTIME_MODE".to_owned(), "PROD".to_owned()));
+        let cfg = StartupConfig::from_env_iter(env).expect("PROD 别名应解析为 Production");
+        assert_eq!(cfg.runtime_mode, RuntimeMode::Production);
+
+        let mut env = valid_env();
+        env.push(("HUAKAI_RUNTIME_MODE".to_owned(), "dev".to_owned()));
+        env.push((
+            "HUAKAI_MOCK_UPSTREAM_ENDPOINT".to_owned(),
+            "http://127.0.0.1:48100".to_owned(),
+        ));
+        let cfg = StartupConfig::from_env_iter(env)
+            .expect("dev 别名 + mock 上游应解析成功");
+        assert_eq!(cfg.runtime_mode, RuntimeMode::Development);
     }
 
     #[test]

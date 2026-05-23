@@ -35,6 +35,8 @@ async fn spawn_server(
             "HUAKAI_MOCK_UPSTREAM_ENDPOINT".to_owned(),
             mock_upstream_endpoint,
         ),
+        // W11-D2: mock 上游要求 dev/test 模式 (production 守门会 fail-fast)
+        ("HUAKAI_RUNTIME_MODE".to_owned(), "development".to_owned()),
         ("HUAKAI_LOG_LEVEL".to_owned(), "warn".to_owned()),
         ("HUAKAI_JSON_LOGS".to_owned(), "false".to_owned()),
         ("HUAKAI_WORKER_THREADS".to_owned(), "4".to_owned()),

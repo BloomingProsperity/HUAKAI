@@ -70,13 +70,50 @@ async fn handle_gateway_request(
         }
 
         if let Some(upstream) = state.mock_upstream_endpoint() {
+            // W11-D2 B2: dev/test mock 上游必须发显式 mock attempt event 让审计可见。
+            // mutation marker: 删除下面 reporter.report 两次调用 →
+            // mock_upstream_emits_explicit_mock_attempt_event 测试变绿 (应红)。
+            let context = AttemptReportContext::synthetic_mock_attempt(&request_id);
+            let reporter = state.attempt_reporter().terminal_reporter(context);
             return match state
                 .proxy_engine()
                 .forward_endpoint(request, upstream, request_id.clone())
                 .await
             {
-                Ok(response) => response,
-                Err(err) => proxy_error_response(err, &request_id),
+                Ok(response) => {
+                    let http_status = response.status();
+                    // P2 codex review 2026-05-23: 分类 mock upstream 返回码,
+                    // 4xx/5xx 不能与 2xx 同标 Success, 否则审计与客户端可见结果分歧。
+                    let attempt_status = if http_status.is_server_error() {
+                        AttemptStatus::Upstream5xx
+                    } else if http_status.is_client_error() {
+                        AttemptStatus::Upstream4xx
+                    } else {
+                        AttemptStatus::Success
+                    };
+                    let _ = reporter.report(
+                        attempt_status,
+                        Some(http_status.as_u16()),
+                        AttemptReportStats::default(),
+                        Some("mock_upstream_drill"),
+                        None,
+                    );
+                    response
+                }
+                Err(err) => {
+                    let err_redacted =
+                        redact_untrusted_text(&err.to_string(), LISTENER_ERROR_LIMIT);
+                    // P2 codex review 2026-05-23: 保留 proxy 错误的 HTTP status,
+                    // 避免审计上的 mock attempt http_status 字段恒为 0。
+                    let _ = reporter.report(
+                        AttemptStatus::InternalError,
+                        Some(err.status_code().as_u16()),
+                        AttemptReportStats::default(),
+                        Some("mock_upstream_error"),
+                        Some(&err_redacted),
+                    );
+                    proxy_error_response(err, &request_id)
+                }
             };
         }
 
