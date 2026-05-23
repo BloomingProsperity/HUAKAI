@@ -19,6 +19,7 @@ import (
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
+	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
@@ -52,6 +53,13 @@ func buildAuthEmailSender(_ *Config, store mailinfra.SettingsStore, keys credent
 
 func releaseModeProduction() bool {
 	return strings.EqualFold(strings.TrimSpace(os.Getenv("HUAKAI_RELEASE_MODE")), "production")
+}
+
+func releaseMode() eventbus.ReleaseMode {
+	if releaseModeProduction() {
+		return eventbus.ReleaseModeProduction
+	}
+	return eventbus.ReleaseModeDev
 }
 
 func loadCredentialKeyProvider() (credentialstore.KeyProvider, error) {

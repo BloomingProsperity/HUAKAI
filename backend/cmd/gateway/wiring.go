@@ -68,6 +68,7 @@ type deps struct {
 	responseCache         l2cache.Store
 	dlqService            *legacydlq.Service
 	completionBus         *eventbus.Bus
+	auditRefPolicy        *eventbus.AuditRefPolicy
 	inboundAuth           *auth.APIKeyResolver
 	auditLedger           auditledger.Ledger
 	auditSigner           *sign.Signer
@@ -141,6 +142,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		return nil, err
 	}
 	rt.outboxRuntime = opts.outboxRuntime
+	auditRefPolicy := buildAuditRefPolicy(opts.eventBus)
 
 	credentialKeys, err := loadCredentialKeyProvider()
 	if err != nil {
@@ -179,7 +181,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	rt.closeReplica = closeReplica
 	outboxWorker := buildOutboxWorker(outboxStore, opts.outboxRuntime, emailSettingsStore, credentialKeys, channelHealthStore)
 	settler, receiptStore, receiptFormatter, refundQueue, rateTableSource, completionBus, err := buildSettlementServices(
-		ctx, pgPool, auditSigner, auditLedger, dlqStore, dlqService, replicaTarget, opts.eventBus, logger,
+		ctx, pgPool, auditSigner, auditLedger, dlqStore, dlqService, replicaTarget, opts.eventBus, auditRefPolicy, logger,
 	)
 	if err != nil {
 		return nil, err
@@ -216,6 +218,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		responseCache:         opts.responseCache,
 		dlqService:            dlqService,
 		completionBus:         completionBus,
+		auditRefPolicy:        auditRefPolicy,
 		dispatcher: &gateway.UpstreamDispatcher{
 			Adapters:         registrydefault.Build(),
 			TransportFactory: transport.NewFactory(mimicryRegistry),
@@ -263,4 +266,15 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	rt.obsDLQEnabled = opts.obsDLQ.Enabled
 	ready = true
 	return rt, nil
+}
+
+func buildAuditRefPolicy(cfg *runtimeconfig.EventBusConfig) *eventbus.AuditRefPolicy {
+	allowMissing := false
+	if cfg != nil {
+		allowMissing = cfg.AllowMissingMoneyRef
+	}
+	return &eventbus.AuditRefPolicy{
+		ReleaseMode:          releaseMode(),
+		AllowMissingMoneyRef: allowMissing,
+	}
 }

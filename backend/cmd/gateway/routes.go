@@ -105,6 +105,7 @@ func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 		ReplayStore:           d.replayStore,
 		BillingPolicyResolver: d.billingPolicyResolver,
 		CompletionBus:         d.completionBus,
+		AuditRefPolicy:        d.auditRefPolicy,
 		AuditLedger:           d.auditLedger,
 		AuditLedgerDLQ:        d.dlqService,
 		Signer:                d.auditSigner,

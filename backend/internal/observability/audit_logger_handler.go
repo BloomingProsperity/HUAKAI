@@ -3,9 +3,11 @@ package observability
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
+	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 )
@@ -13,15 +15,20 @@ import (
 var ErrAuditRefMissing = errors.New("observability: audit ledger reference missing")
 
 type AuditLoggerHandler struct {
-	timeout      time.Duration
-	requireRef   bool
-	observations *AuditObservationStore
+	timeout        time.Duration
+	requireRef     bool
+	auditRefPolicy *eventbus.AuditRefPolicy
+	observations   *AuditObservationStore
 }
 
 type AuditLoggerOption func(*AuditLoggerHandler)
 
 func WithRequiredAuditRef() AuditLoggerOption {
 	return func(h *AuditLoggerHandler) { h.requireRef = true }
+}
+
+func WithAuditRefPolicy(policy *eventbus.AuditRefPolicy) AuditLoggerOption {
+	return func(h *AuditLoggerHandler) { h.auditRefPolicy = policy }
 }
 
 func WithAuditObservationStore(store *AuditObservationStore) AuditLoggerOption {
@@ -66,8 +73,19 @@ func (h *AuditLoggerHandler) Handle(ctx context.Context, event eventbus.RequestC
 		return ctx.Err()
 	default:
 	}
-	if h != nil && h.requireRef && event.AuditLedgerID == "" {
-		return ErrAuditRefMissing
+	if h != nil && h.requireRef && event.AuditLedgerID == "" && event.AuditLedgerDLQRef == "" {
+		if h.auditRefPolicy != nil && h.auditRefPolicy.AllowMissingMoneyRef {
+			// 逃生开关只消除 audit logger 的二次拒绝，必须保留 ERROR 可见性。
+			slog.Default().LogAttrs(ctx, slog.LevelError, "audit logger missing money audit ref allowed by escape flag",
+				slog.String("request_id", event.RequestID),
+				slog.Int64("tenant_id", event.TenantID),
+				slog.String("route_id", auditLoggerRouteID(event)),
+				slog.String("env_var", runtimeconfig.EnvTrustLedgerAllowMissingMoneyRef),
+				slog.String("source", "audit_logger_escape_bypass"),
+			)
+		} else {
+			return ErrAuditRefMissing
+		}
 	}
 	if h != nil && h.observations != nil {
 		h.observations.Append(AuditObservation{
@@ -81,6 +99,13 @@ func (h *AuditLoggerHandler) Handle(ctx context.Context, event eventbus.RequestC
 		})
 	}
 	return nil
+}
+
+func auditLoggerRouteID(event eventbus.RequestCompletionEvent) string {
+	if event.Metadata == nil {
+		return ""
+	}
+	return event.Metadata["route_id"]
 }
 
 type AuditObservation struct {
