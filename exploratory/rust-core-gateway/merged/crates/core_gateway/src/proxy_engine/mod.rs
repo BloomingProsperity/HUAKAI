@@ -466,7 +466,7 @@ fn route_stream_frame_limit(max_stream_frame_bytes: u64) -> usize {
     }
 }
 
-fn is_sse_response(headers: &HeaderMap) -> bool {
+pub(super) fn is_sse_response(headers: &HeaderMap) -> bool {
     headers
         .get(http::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
@@ -475,6 +475,19 @@ fn is_sse_response(headers: &HeaderMap) -> bool {
             content_type
                 .trim()
                 .eq_ignore_ascii_case("text/event-stream")
+        })
+}
+
+/// W12-B D-5: 非 SSE 但 JSON 响应触发 body 缓冲 + usage 解析。
+/// 支持 application/json 和 application/json; charset=utf-8 等。
+pub(super) fn is_json_response(headers: &HeaderMap) -> bool {
+    headers
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|content_type| {
+            let ct = content_type.trim().to_ascii_lowercase();
+            ct == "application/json" || ct.ends_with("+json")
         })
 }
 

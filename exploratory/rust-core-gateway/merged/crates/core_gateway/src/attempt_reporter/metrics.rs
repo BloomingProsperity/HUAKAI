@@ -24,6 +24,25 @@ impl AttemptTokenMetrics {
             self.source = "stream_pipeline".to_owned();
         }
     }
+
+    /// W12-B D-5: 非流式 2xx body 解析出真实 usage → source="response_body" 标识。
+    pub fn from_response_body(delta: &UsageDelta) -> Self {
+        Self {
+            input_tokens: delta.input_tokens,
+            output_tokens: delta.output_tokens,
+            total_tokens: delta.total_tokens,
+            source: "response_body".to_owned(),
+        }
+    }
+
+    /// W12-B D-5: 非流式 2xx body 解析失败 / usage 字段缺失 → source="pending_reconciliation"
+    /// 区别于 "missing" (从未检查) 与 "response_body" (有真实值)。
+    pub fn pending_reconciliation() -> Self {
+        Self {
+            source: "pending_reconciliation".to_owned(),
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

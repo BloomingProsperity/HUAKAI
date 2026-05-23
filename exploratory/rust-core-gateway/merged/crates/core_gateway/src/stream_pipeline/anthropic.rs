@@ -101,6 +101,15 @@ fn parse_error_message(data: &[u8]) -> Option<String> {
         .or(envelope.message)
 }
 
+/// W12-B D-5: Anthropic 非流式 2xx body usage 解析。
+/// Anthropic Messages API 响应顶层有 `usage: {input_tokens, output_tokens, ...}`,
+/// 也可能嵌在 `message.usage` 内 — 复用现有 anthropic_usage 合并逻辑。
+/// 返回 Err on JSON parse 错; Ok(None) on 合法 JSON 但无 usage 字段。
+pub fn extract_usage_from_json_bytes(data: &[u8]) -> Result<Option<UsageDelta>, serde_json::Error> {
+    let envelope = serde_json::from_slice::<AnthropicMetricsEnvelope>(data)?;
+    Ok(anthropic_usage(&envelope))
+}
+
 #[derive(Debug, Deserialize)]
 struct AnthropicMetricsEnvelope {
     #[serde(default)]

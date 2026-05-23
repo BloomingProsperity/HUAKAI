@@ -24,8 +24,12 @@ use crate::{
 use super::{
     BodyChunk, ProxyTimeouts, ReceiverByteStream, STREAM_CHANNEL_DEPTH, default_content_type,
     headers::{remove_hop_by_hop_response_headers, set_request_id},
-    is_sse_response,
+    is_json_response, is_sse_response,
 };
+
+/// W12-B D-5: 非流式 2xx body 缓冲 cap, 防恶意巨大 body 占内存。
+/// 1 MiB 覆盖正常 chat completion 响应 (实测 ~10-50 KiB), 超出 → 标记 unparsable。
+const NON_STREAM_USAGE_PARSE_CAP: usize = 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamObservation {
@@ -61,7 +65,20 @@ pub(super) fn upstream_response_to_client(
     if !parts.headers.contains_key(CONTENT_TYPE) {
         parts.headers.insert(CONTENT_TYPE, default_content_type());
     }
-    let stream_tap = stream_tap.filter(|_| is_sse_response(&parts.headers));
+    let is_sse = is_sse_response(&parts.headers);
+    let is_json = is_json_response(&parts.headers);
+    let is_2xx_success = terminal.status == AttemptStatus::Success
+        && terminal
+            .http_status
+            .map(|s| (200..300).contains(&s))
+            .unwrap_or(false);
+    // W12-B D-5: 非 SSE + JSON + 2xx Success 时, 拉出 protocol 准备做 body 缓冲 + usage 解析。
+    // 保留与 stream_tap 同源的 protocol, 这样 SSE 路径与非 SSE 路径共用 vendor → protocol 映射。
+    let non_stream_protocol = stream_tap
+        .as_ref()
+        .filter(|_| !is_sse && is_json && is_2xx_success)
+        .map(|tap| tap.protocol);
+    let stream_tap = stream_tap.filter(|_| is_sse);
     Response::from_parts(
         parts,
         relay_body(
@@ -69,6 +86,7 @@ pub(super) fn upstream_response_to_client(
             request_id.clone(),
             "upstream_response",
             stream_tap,
+            non_stream_protocol,
             terminal,
             in_flight_guard,
             timeouts,
@@ -96,11 +114,15 @@ impl RelayTerminal {
     }
 }
 
+// W12-B D-5: 8 个参数 — 内聚的 relay 状态; 拆成 builder struct 不显著降低耦合, 显式
+// allow 比 boxing 更易读。
+#[allow(clippy::too_many_arguments)]
 fn relay_body<B>(
     mut body: B,
     request_id: RequestId,
     direction: &'static str,
     stream_tap: Option<StreamTapConfig>,
+    non_stream_protocol: Option<StreamProtocol>,
     terminal: RelayTerminal,
     in_flight_guard: Option<InFlightRequestGuard>,
     timeouts: ProxyTimeouts,
@@ -120,6 +142,11 @@ where
         let mut stream_seen_done = false;
         let stream_requires_done =
             stream_pipeline.is_some() && terminal.status == AttemptStatus::Success;
+        // W12-B D-5: 非流式 + JSON + 2xx 路径上累积 body 字节, body 完成后解析 usage。
+        // exceeded 一旦置 true (累计超 cap), 终态报 pending_reconciliation 不再继续 buffer。
+        let mut non_stream_buffer: Option<Vec<u8>> =
+            non_stream_protocol.map(|_| Vec::with_capacity(8 * 1024));
+        let mut non_stream_buffer_exceeded = false;
 
         loop {
             let frame =
@@ -165,6 +192,15 @@ where
                                 &mut stats,
                                 &mut stream_seen_done,
                             );
+                        }
+                        // W12-B D-5: 非流式路径累积 body 至 cap; 超出标记 exceeded 停止累积。
+                        if let Some(buf) = non_stream_buffer.as_mut() {
+                            if buf.len().saturating_add(data.len()) > NON_STREAM_USAGE_PARSE_CAP {
+                                non_stream_buffer_exceeded = true;
+                                non_stream_buffer = None;
+                            } else {
+                                buf.extend_from_slice(&data);
+                            }
                         }
                         match send_downstream(
                             &sender,
@@ -242,6 +278,16 @@ where
                             &mut stats,
                             &mut stream_seen_done,
                         );
+                    }
+                    // W12-B D-5: 非流式 body 完成 → 尝试解析 usage 并写权威 source。
+                    // mutation: 删本块 → 非流式 attempt 的 tokens_used 永远 missing 而非
+                    // response_body / pending_reconciliation, 控制面对账失去 reconciliation 信号。
+                    if let Some(protocol) = non_stream_protocol {
+                        if non_stream_buffer_exceeded {
+                            stats.record_response_body_usage_unparsable();
+                        } else if let Some(buf) = non_stream_buffer.as_ref() {
+                            parse_non_stream_usage(protocol, buf, &mut stats);
+                        }
                     }
                     if stream_requires_done && !stream_seen_done {
                         report_terminal(
@@ -389,6 +435,133 @@ pub(super) fn report_terminal(
     }
 }
 
+/// W12-B D-5: 非流式 2xx body 解析 usage; 解析失败 / 不完整 → pending_reconciliation,
+/// 让控制面对账时知道"已检查过 body, 仅 vendor 字段不可读 / 不全"区别于"从未检查"。
+/// mutation: 把成功分支改成 record_response_body_usage_unparsable →
+/// non_stream_openai_usage_parses_response_body_source 测试断言红 (source != "response_body")。
+fn parse_non_stream_usage(
+    protocol: StreamProtocol,
+    body: &[u8],
+    stats: &mut AttemptReportStats,
+) {
+    let parsed = match protocol {
+        StreamProtocol::OpenAi => {
+            crate::stream_pipeline::openai::extract_usage_from_json_bytes(body)
+        }
+        StreamProtocol::Anthropic => {
+            crate::stream_pipeline::anthropic::extract_usage_from_json_bytes(body)
+        }
+    };
+
+    match parsed {
+        Ok(Some(delta)) if is_complete_usage(&delta) => stats.record_response_body_usage(&delta),
+        // P2 codex 2026-05-24: 不完整 usage (input/output 任一为 0) 不能当 authoritative,
+        // 会让控制面把不全数据当真账务。降级 pending_reconciliation 让对账兜底。
+        Ok(_) | Err(_) => stats.record_response_body_usage_unparsable(),
+    }
+}
+
+/// W12-B D-5 + P2 codex: 一份 usage delta 只有 input+output 同时 > 0 才算 authoritative,
+/// 否则按 pending_reconciliation 处理 (vendor 返了部分字段 / 缺关键字段)。
+fn is_complete_usage(delta: &crate::stream_pipeline::UsageDelta) -> bool {
+    delta.input_tokens > 0 && delta.output_tokens > 0
+}
+
+#[cfg(test)]
+mod d5_parse_tests {
+    use super::*;
+
+    /// W12-B D-5 判别: OpenAI 非流式 200 body 含 usage → source="response_body" + 真实计数。
+    /// mutation: 删 parse_non_stream_usage OpenAI 分支或改 record_response_body_usage_unparsable →
+    /// source 不再是 "response_body", 断言红。
+    #[test]
+    fn parse_non_stream_usage_openai_writes_response_body_source_with_real_tokens() {
+        let body = br#"{"id":"x","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150}}"#;
+        let mut stats = AttemptReportStats::default();
+
+        parse_non_stream_usage(StreamProtocol::OpenAi, body, &mut stats);
+
+        let tokens = stats.tokens_used.expect("应有 tokens_used");
+        assert_eq!(tokens.source, "response_body", "OpenAI 解析成功必须 source=response_body");
+        assert_eq!(tokens.input_tokens, 100);
+        assert_eq!(tokens.output_tokens, 50);
+        assert_eq!(tokens.total_tokens, 150);
+    }
+
+    /// W12-B D-5 判别: malformed JSON → pending_reconciliation (区别于 missing)。
+    /// mutation: 把失败分支改回不调用 record_response_body_usage_unparsable → tokens_used.is_none()
+    /// → unwrap panic → 测试红。
+    #[test]
+    fn parse_non_stream_usage_malformed_json_writes_pending_reconciliation() {
+        let body = b"not a valid json {";
+        let mut stats = AttemptReportStats::default();
+
+        parse_non_stream_usage(StreamProtocol::OpenAi, body, &mut stats);
+
+        let tokens = stats.tokens_used.expect("应有 tokens_used 即使解析失败");
+        assert_eq!(
+            tokens.source, "pending_reconciliation",
+            "malformed body 必须 source=pending_reconciliation 区别 missing"
+        );
+        // pending_reconciliation 不携带真实 token, 控制面不能误用为账务依据
+        assert_eq!(tokens.input_tokens, 0);
+        assert_eq!(tokens.output_tokens, 0);
+        assert_eq!(tokens.total_tokens, 0);
+    }
+
+    /// W12-B D-5: usage 字段缺失但 JSON 合法 → 也归 pending_reconciliation
+    /// (源已检查过 body, 仅 vendor 没返 usage)。
+    #[test]
+    fn parse_non_stream_usage_json_without_usage_field_writes_pending_reconciliation() {
+        let body = br#"{"id":"x","choices":[]}"#;
+        let mut stats = AttemptReportStats::default();
+
+        parse_non_stream_usage(StreamProtocol::OpenAi, body, &mut stats);
+
+        let tokens = stats.tokens_used.expect("应有 tokens_used");
+        assert_eq!(tokens.source, "pending_reconciliation");
+    }
+
+    /// W12-B D-5: Anthropic 非流式 body 解析 usage 成功 → response_body + 真实计数。
+    /// mutation: 把 Anthropic 分支改 record_response_body_usage_unparsable → 此测试断言红。
+    #[test]
+    fn parse_non_stream_usage_anthropic_writes_response_body_source_with_real_tokens() {
+        let body = br#"{"id":"x","type":"message","usage":{"input_tokens":12,"output_tokens":34}}"#;
+        let mut stats = AttemptReportStats::default();
+
+        parse_non_stream_usage(StreamProtocol::Anthropic, body, &mut stats);
+
+        let tokens = stats.tokens_used.expect("应有 tokens_used");
+        assert_eq!(tokens.source, "response_body");
+        assert_eq!(tokens.input_tokens, 12);
+        assert_eq!(tokens.output_tokens, 34);
+        // Anthropic 不提供 total → input + output 推导
+        assert_eq!(tokens.total_tokens, 46);
+    }
+
+    /// P2 codex 2026-05-24: 不完整 usage (input/output 任一为 0) 不能标 authoritative
+    /// 否则控制面把不全数据当真账务。降 pending_reconciliation。
+    /// mutation: 删 is_complete_usage filter → tokens.source 变成 "response_body" 红。
+    #[test]
+    fn parse_non_stream_usage_incomplete_openai_falls_to_pending_reconciliation() {
+        // 仅 total_tokens, 缺 prompt/completion → 不完整, 不能当真值
+        let body = br#"{"usage":{"total_tokens":150}}"#;
+        let mut stats = AttemptReportStats::default();
+
+        parse_non_stream_usage(StreamProtocol::OpenAi, body, &mut stats);
+
+        let tokens = stats.tokens_used.expect("应有 tokens_used");
+        assert_eq!(
+            tokens.source, "pending_reconciliation",
+            "input/output 任一为 0 必须按不完整处理, 实际: source={}",
+            tokens.source
+        );
+        // 不完整数据不能携带 token 值, 控制面对账无法误用
+        assert_eq!(tokens.input_tokens, 0);
+        assert_eq!(tokens.output_tokens, 0);
+    }
+}
+
 fn emit_stream_observation(tap: Option<&StreamTapConfig>, event: StreamEvent) {
     let Some(tap) = tap else {
         return;
@@ -469,6 +642,7 @@ mod tests {
             RequestId::from_candidate(Some("relay-idle-red")),
             "test",
             None,
+            None,
             test_terminal(),
             None,
             test_timeouts(20, 500),
@@ -511,6 +685,7 @@ mod tests {
             RequestId::from_candidate(Some("relay-idle-green")),
             "test",
             None,
+            None,
             test_terminal(),
             None,
             test_timeouts(200, 500),
@@ -543,6 +718,7 @@ mod tests {
             Body::from_stream(source),
             RequestId::from_candidate(Some("relay-downstream-stall")),
             "test",
+            None,
             None,
             test_terminal(),
             None,

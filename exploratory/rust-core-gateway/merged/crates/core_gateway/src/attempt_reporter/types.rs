@@ -111,6 +111,18 @@ impl AttemptReportStats {
             StreamEvent::Done | StreamEvent::ProtocolError(_) | StreamEvent::UpstreamError(_) => {}
         }
     }
+
+    /// W12-B D-5: 非流式 2xx body 解析出 usage → 写权威 source="response_body"。
+    /// 调用方负责保证只在 stream_tap=None + 2xx + JSON 路径调用。
+    pub fn record_response_body_usage(&mut self, delta: &crate::stream_pipeline::UsageDelta) {
+        self.tokens_used = Some(AttemptTokenMetrics::from_response_body(delta));
+    }
+
+    /// W12-B D-5: 非流式 2xx body 检查过但 usage 字段不可解析 → pending_reconciliation,
+    /// 区别于 "missing" (从未尝试), 让控制面对账时知道这条 attempt 已检查过 body。
+    pub fn record_response_body_usage_unparsable(&mut self) {
+        self.tokens_used = Some(AttemptTokenMetrics::pending_reconciliation());
+    }
 }
 
 #[derive(Clone, Eq, PartialEq)]
