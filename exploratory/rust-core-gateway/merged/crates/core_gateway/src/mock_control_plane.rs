@@ -185,6 +185,26 @@ impl MockControlPlane {
     pub fn set_drain_mode(&self, drain: bool) {
         self.state.drain_mode.store(drain, Ordering::SeqCst);
     }
+
+    /// W12-A D-4 Slice 2 AC-3 测试钩子: 控制面已 ack 的去重 idempotency_key 数。
+    /// `attempt_reports_seen()` 是 total RPC 次数 (重复 replay 算 N 次);
+    /// `unique_attempt_keys_acked_count` 是真正落账的不同 key 数。
+    /// AC-3 断言: 同 key replay 2 次时 seen=2 但 unique_acked=1 (控制面去重生效)。
+    pub async fn unique_attempt_keys_acked_count(&self) -> usize {
+        self.state
+            .attempt_ack_by_idempotency_key
+            .lock()
+            .await
+            .len()
+    }
+
+    /// W12-A D-4 Slice 2 AC-5 测试钩子: 运行时切 attempt_failures_remaining,
+    /// 模拟控制面"长期 Unavailable -> 恢复"场景, 不需重启 mock。
+    pub fn set_attempt_failures_remaining(&self, n: usize) {
+        self.state
+            .attempt_failures_remaining
+            .store(n, Ordering::SeqCst);
+    }
 }
 
 impl Drop for MockControlPlane {

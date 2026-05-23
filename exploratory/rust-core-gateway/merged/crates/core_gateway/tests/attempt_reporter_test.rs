@@ -3,7 +3,7 @@
 
 mod common;
 
-use std::{net::SocketAddr, time::Duration};
+use std::{env, net::SocketAddr, path::PathBuf, time::Duration};
 
 use axum::{
     body::{self, Body},
@@ -14,7 +14,7 @@ use common::mock_upstream::{MockBehavior, MockUpstream};
 use core_gateway::{
     attempt_reporter::{
         AttemptReportContext, AttemptReportStats, AttemptReporter, AttemptReporterOptions,
-        AttemptStatus, ReportEnqueueResult, now_unix_ms_i64,
+        AttemptSpool, AttemptSpoolOptions, AttemptStatus, ReportEnqueueResult, now_unix_ms_i64,
     },
     build_router,
     config::StartupConfig,
@@ -24,6 +24,7 @@ use core_gateway::{
     route_client::{RouteClient, RouteClientOptions},
     route_proto::v1::{AttemptReportRequest, RoutePlan, UpstreamAuthMaterial},
 };
+use uuid::Uuid;
 use futures_util::StreamExt;
 use tokio::{net::TcpListener, task::JoinHandle};
 use tower::ServiceExt;
@@ -527,6 +528,7 @@ async fn reporter_queue_full_drops_without_blocking_main_path() {
             queue_capacity: 1,
             retry_attempts: 0,
             retry_backoff: Duration::from_millis(1),
+            ..Default::default()
         },
     );
 
@@ -558,6 +560,7 @@ async fn reporter_retries_transient_failure_then_acks() {
             queue_capacity: 8,
             retry_attempts: 2,
             retry_backoff: Duration::from_millis(5),
+            ..Default::default()
         },
     );
 
@@ -573,4 +576,273 @@ async fn reporter_retries_transient_failure_then_acks() {
     assert_eq!(report.request_id, "retry-rid");
     assert!(reporter.retry_count() >= 1);
     wait_for_reporter_ack(&reporter, 1).await;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// W12-A D-4 Slice 2 集成测试: replay worker + ack + idempotency 去重
+// ──────────────────────────────────────────────────────────────────────────────
+
+fn unique_spool_dir(label: &str) -> PathBuf {
+    let mut p = env::temp_dir();
+    p.push(format!("huakai-d4-test-{label}-{}", Uuid::now_v7().simple()));
+    p
+}
+
+fn enabled_spool_options(dir: PathBuf) -> AttemptSpoolOptions {
+    AttemptSpoolOptions {
+        enabled: true,
+        dir,
+        max_bytes: 64 * 1024,
+        high_watermark_bytes: 48 * 1024,
+        max_record_bytes: 4 * 1024,
+        replay_interval: Duration::from_millis(50),
+        replay_batch_size: 32,
+        fsync_on_write: false, // 测试避免 disk fsync 抖动
+    }
+}
+
+async fn wait_for_pending_drained(reporter: &AttemptReporter) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if reporter.spool_pending_count() == 0 {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "等待 spool pending 排空超时, 实际={}",
+            reporter.spool_pending_count()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// W12-A D-4 Slice 2 AC-2 崩溃恢复: 报告已写 spool 但 reporter 没机会 ack ->
+/// "进程重启" (新建 reporter 指向同 dir) -> replay worker 必须扫到 pending 并投递成功 ack 删 file。
+///
+/// fixture: 先用 standalone AttemptSpool::persist 模拟 "已落盘未 ack" 状态 (旧 reporter Drop),
+/// 然后 spawn 新 reporter, 等 mock 控制面收到 RPC + reporter.spool_pending_count==0。
+///
+/// mutation: replay_worker_loop 启动期不 drain (删 drain_pending 首调用) -> pending 永远不被处理,
+/// CP 0 RPC -> wait_for_attempt_count(1) 超时 panic 红。
+#[tokio::test]
+async fn replay_worker_recovers_spooled_report_after_restart() {
+    let dir = unique_spool_dir("ac2-recover");
+    let cp = MockControlPlane::spawn(mock_route_plan("http://127.0.0.1:9")).await;
+
+    // 阶段 1: 模拟 "崩溃前" - 直接用 spool 写 pending, 不通过 reporter
+    {
+        let spool = AttemptSpool::open(enabled_spool_options(dir.clone()))
+            .expect("open spool")
+            .expect("enabled");
+        let report = make_report("ac2-rid", "attempt-ac2-1", AttemptStatus::Success);
+        let res = spool.reserve().expect("reserve");
+        spool.persist(&report, res).expect("persist");
+        assert_eq!(spool.pending_count(), 1, "fixture: 1 pending 文件已落盘");
+        // spool 实例 Drop, pending 文件继续存在磁盘
+    }
+
+    // 阶段 2: "重启" - 新 reporter 指向同 dir
+    let reporter = AttemptReporter::spawn_with_options(
+        route_client(&cp.endpoint()),
+        AttemptReporterOptions {
+            queue_capacity: 8,
+            retry_attempts: 0,
+            retry_backoff: Duration::from_millis(1),
+            spool: enabled_spool_options(dir.clone()),
+        },
+    );
+
+    // replay worker 启动期 drain 必须扫到那条 pending
+    wait_for_attempt_count(&cp, 1).await;
+    let report = wait_for_report(&cp, "success").await;
+    assert_eq!(report.request_id, "ac2-rid", "AC-2: replay 投递的 request_id 必须一致");
+
+    // 等 replay ack 删 pending 文件
+    wait_for_pending_drained(&reporter).await;
+    assert_eq!(reporter.spool_pending_count(), 0, "AC-2: ack 后 pending=0");
+    assert!(
+        reporter.replayed_count() >= 1,
+        "AC-2: replayed_count 必须 >=1 (实际 {})",
+        reporter.replayed_count()
+    );
+    assert_eq!(
+        cp.unique_attempt_keys_acked_count().await,
+        1,
+        "AC-2: mock CP 应收到 1 个 unique key"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// W12-A D-4 Slice 2 AC-3 重放幂等 (Codex P2-3 fix 2026-05-24): 真正走 replay 路径,
+/// 模拟 "report 投递成功后被重复重放" (ack-delete-failed 等价场景) -> 控制面按
+/// idempotency_key 去重 -> 单一效应。
+///
+/// fixture phase 1: standalone spool 写 K=1 (绕 reporter, 模拟旧实例的 pending)
+///        phase 2: 新 reporter 启动 -> replay drain sends K=1 -> CP seen=1, unique=1, pending 0
+///        phase 3: standalone spool 再写 K=1 (文件重现, 模拟 "live 已 ack 但 delete 失败" 场景)
+///        phase 4: 等 reporter 下次 replay tick -> 再次 send K=1 -> CP seen=2 (dedup 后 unique 仍 1)
+///
+/// mutation: mock CP 删 attempt_ack_by_idempotency_key map -> unique=2 -> 红。
+/// mutation: replay_worker_loop 不周期触发 (删 loop) -> phase 4 永不发生 -> 等 cp.seen>=2 超时红。
+/// mutation: replay drain 不 ack 删 pending -> pending 永留 -> phase 4 重复无限多次 (本测试只断>=2, 仍能识别 unique 应 ==1)。
+#[tokio::test]
+async fn replay_keeps_same_idempotency_key_and_control_plane_dedups_duplicate() {
+    let dir = unique_spool_dir("ac3-dedup-replay");
+    let cp = MockControlPlane::spawn(mock_route_plan("http://127.0.0.1:9")).await;
+
+    // PHASE 1: 用 standalone spool 直接写 K=1, 绕开 reporter
+    let report_for_seed = make_report("ac3-rid", "attempt-ac3-1", AttemptStatus::Success);
+    let seed_key = report_for_seed.idempotency_key.clone();
+    {
+        let standalone = AttemptSpool::open(enabled_spool_options(dir.clone()))
+            .expect("standalone open")
+            .expect("enabled");
+        let res = standalone.reserve().expect("reserve");
+        standalone
+            .persist(&report_for_seed, res)
+            .expect("standalone persist 1");
+    }
+
+    // PHASE 2: spawn reporter, startup drain 必须扫到该 pending 并送出
+    let reporter = AttemptReporter::spawn_with_options(
+        route_client(&cp.endpoint()),
+        AttemptReporterOptions {
+            queue_capacity: 8,
+            retry_attempts: 0,
+            retry_backoff: Duration::from_millis(1),
+            spool: enabled_spool_options(dir.clone()), // replay_interval=50ms
+        },
+    );
+
+    wait_for_attempt_count(&cp, 1).await;
+    // 等 replay 真把 pending file 删 (用 disk 真相而不是 reporter.spool_pending_count)
+    for _ in 0..100 {
+        if !dir.join("pending").join(format!("{seed_key}.pb")).exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        !dir.join("pending").join(format!("{seed_key}.pb")).exists(),
+        "AC-3 phase 2: replay 必须 ack 并删 pending file (disk truth)"
+    );
+    assert_eq!(
+        cp.unique_attempt_keys_acked_count().await,
+        1,
+        "AC-3 phase 2: CP unique=1"
+    );
+
+    // PHASE 3: standalone 再 persist 同 K=1 (file 在 disk 上重现, 模拟 "ack 后 delete 失败" 等价场景)
+    {
+        let standalone = AttemptSpool::open(enabled_spool_options(dir.clone()))
+            .expect("standalone open 2")
+            .expect("enabled");
+        let res = standalone.reserve().expect("reserve 2");
+        let outcome = standalone
+            .persist(&report_for_seed, res)
+            .expect("standalone persist 2");
+        // 此时 was_duplicate=false (前面 reporter 已删 file), 是真新写
+        assert!(
+            !outcome.was_duplicate,
+            "phase 3: 前面 reporter 已 ack 删 file, 重新 persist 不应是 duplicate"
+        );
+    }
+
+    // PHASE 4: 等 reporter 下次 replay tick (50ms 间隔) 再次 drain 这条同 key 重发。
+    // 关键: 等 reporter.replayed_count >= 2 (而非 cp.seen=2), 因为 cp.seen 在 RPC 进入时 ++,
+    // 但 replayed_count 在 RPC 响应返回 + drain ack 后才 ++ (race-free 检查点)。
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if reporter.replayed_count() >= 2 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "AC-3 phase 4: 等 replayed_count>=2 超时, 实际 replayed={}, cp.seen={}, unique={}",
+            reporter.replayed_count(),
+            cp.attempt_reports_seen(),
+            cp.unique_attempt_keys_acked_count().await
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // 关键 AC-3 断言: total RPC=2 但 unique=1 (CP idempotency_key dedup 生效)
+    let unique = cp.unique_attempt_keys_acked_count().await;
+    let seen = cp.attempt_reports_seen();
+    assert_eq!(
+        unique, 1,
+        "AC-3 去重生效: 同 idempotency_key 在控制面 dedup, 实际 unique={unique}, seen={seen}"
+    );
+    assert!(
+        seen >= 2,
+        "AC-3 replay 必须真发了 ≥2 次 (phase 2 + phase 4), 实际 seen={seen}"
+    );
+    assert!(
+        reporter.replayed_count() >= 2,
+        "AC-3 reporter.replayed_count 必须 >=2 (两次 replay 各 ++ 一次), 实际 {}",
+        reporter.replayed_count()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// W12-A D-4 Slice 2: live worker retry 耗尽后 spool 必须保留 pending 文件 (不删 !!),
+/// 因为 replay 会在下次 tick 重发。这是 spool=Some 时 worker 的"不丢"语义关键。
+///
+/// fixture: mock CP Unavailable + retry_attempts=0 -> 单次失败立返 -> pending 必须仍在。
+/// mutation: 旧代码若在 worker 失败时也 spool.ack() 删 pending -> pending=0 + replay 永不补救 -> 测试红。
+#[tokio::test]
+async fn retry_exhaustion_leaves_pending_spool_record_for_replay() {
+    let dir = unique_spool_dir("retry-exhaust");
+    // 注意: MockControlPlaneBehavior::Unavailable 只影响 route_query, 不影响 attempt_report。
+    // attempt_report 用 attempt_failures_before_success counter 控制失败。usize::MAX = 永久失败。
+    let cp = MockControlPlane::spawn_with_config(
+        MockControlPlaneConfig::new(mock_route_plan("http://127.0.0.1:9"))
+            .with_attempt_failures_before_success(usize::MAX),
+    )
+    .await;
+    let reporter = AttemptReporter::spawn_with_options(
+        route_client(&cp.endpoint()),
+        AttemptReporterOptions {
+            queue_capacity: 4,
+            retry_attempts: 0, // 1 次失败立返
+            retry_backoff: Duration::from_millis(1),
+            spool: AttemptSpoolOptions {
+                // 故意把 replay_interval 设大, 让 startup drain 跑 1 次, 后续 tick 在 polling 区内不再触发
+                replay_interval: Duration::from_secs(60),
+                ..enabled_spool_options(dir.clone())
+            },
+        },
+    );
+
+    let result = reporter.report(make_report(
+        "retry-exhaust-rid",
+        "attempt-retry-exhaust-1",
+        AttemptStatus::Success,
+    ));
+    assert_eq!(result, ReportEnqueueResult::Enqueued);
+
+    // 等 live worker + startup replay 各 attempt 一次 (CP Unavailable 必失败), spool 必须保留
+    wait_for_attempt_count(&cp, 1).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    assert!(
+        reporter.spool_pending_count() >= 1,
+        "AC: retry 耗尽时 spool 必须保留 pending 让 replay 重发, 实际 pending={}",
+        reporter.spool_pending_count()
+    );
+    assert!(
+        reporter.spool_delivery_failed_count() >= 1,
+        "AC: delivery_failed 必须 ++, 实际 {}",
+        reporter.spool_delivery_failed_count()
+    );
+    // baseline 路径 failed_reports++ 在 spool=Some 时不 ++ (账务不丢)
+    assert_eq!(
+        reporter.failed_count(),
+        0,
+        "spool=Some 时 failed_reports 必须 0 (账务由 spool 接管 - 真正没丢)"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

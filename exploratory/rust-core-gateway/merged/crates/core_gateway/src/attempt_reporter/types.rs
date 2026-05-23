@@ -19,9 +19,20 @@ use super::{
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReportEnqueueResult {
+    /// Baseline (spool disabled) try_send 成功; 或 spool enabled + queue notification 成功。
     Enqueued,
+    /// W12-A D-4 Slice 2: spool 持久化成功但 live channel 满 (replay worker 兜底处理, 不算丢失)。
+    Spooled,
+    /// Baseline (spool disabled) channel 满 → 报告真丢失。
     DroppedFull,
+    /// Channel 关闭 → 报告真丢失。
     DroppedClosed,
+    /// W12-A D-4 Slice 2: spool reserve() Err WatermarkExceeded / LastWriteFailed;
+    /// Slice 3 forward_planned 看到此结果 → 返 503 (AC-4-pre)。
+    SpoolBackpressure,
+    /// W12-A D-4 Slice 2: spool persist 物理失败 (IO / 编码) → 走 try_send 兜底, 详细错日志已记。
+    /// Slice 3 post-commit 路径会用 `spool_drop_billable` counter 标识不可逆账务损失。
+    SpoolWriteFailed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

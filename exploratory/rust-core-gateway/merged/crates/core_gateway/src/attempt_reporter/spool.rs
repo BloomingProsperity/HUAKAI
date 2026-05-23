@@ -407,12 +407,20 @@ impl AttemptSpool {
         };
         let len = metadata.len();
         fs::remove_file(&path)?;
-        self.inner
+        // 用 checked_sub 防 underflow: 多 reporter 共享 dir 场景下 standalone 写 + 不同 reporter
+        // 的 in-memory counter 可能不同步, 删文件成功时若 counter 已 0 直接 no-op (truth=disk)。
+        let _ = self
+            .inner
             .pending_count
-            .fetch_sub(1, Ordering::Relaxed);
-        self.inner
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+                cur.checked_sub(1)
+            });
+        let _ = self
+            .inner
             .pending_bytes
-            .fetch_sub(len, Ordering::Relaxed);
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+                cur.checked_sub(len)
+            });
         Ok(())
     }
 
@@ -450,6 +458,47 @@ impl AttemptSpool {
 
     pub fn reserved_bytes(&self) -> u64 {
         self.inner.reserved_bytes.load(Ordering::Relaxed)
+    }
+
+    pub fn last_write_failed(&self) -> bool {
+        self.inner.last_write_failed.load(Ordering::Relaxed)
+    }
+
+    /// W12-A D-4 Slice 2 (Codex P2-2 catch-22 break): 写一个 0-byte 临时文件 + 立即删除,
+    /// 测试 spool 目录是否真磁盘可写。成功 -> 清 last_write_failed latch -> reserve() 可恢复;
+    /// 失败 -> latch 保持。
+    ///
+    /// 为何需要: 原设计只在 persist() 成功路径清 latch。但 latch=true 时 reserve() 拒所有,
+    /// persist() 永不被调用 -> latch 永不清 -> 必须重启才能恢复。本探针在 replay tick 周期触发,
+    /// 让 transient 磁盘错可在不重启情况下恢复。
+    pub fn probe_write_health(&self) -> Result<(), SpoolError> {
+        let probe_path = self
+            .inner
+            .tmp_dir
+            .join(format!("health-{}.probe", Uuid::now_v7()));
+        let result = (|| -> io::Result<()> {
+            let file = fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&probe_path)?;
+            drop(file);
+            fs::remove_file(&probe_path)
+        })();
+
+        match result {
+            Ok(()) => {
+                self.inner
+                    .last_write_failed
+                    .store(false, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(err) => {
+                self.inner
+                    .last_write_failed
+                    .store(true, Ordering::Relaxed);
+                Err(SpoolError::Io(err))
+            }
+        }
     }
 
     // NOTE: Slice 3 (AC-4-pre 集成测试) 会加 force_last_write_failed_for_test 测试钩子。
