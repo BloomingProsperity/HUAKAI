@@ -31,7 +31,24 @@ func (rs *PGXReceiptStorage) AppendReceipt(ctx context.Context, receipt *CostRec
 	if rs == nil || rs.pool == nil {
 		return ErrReceiptStorageRequired
 	}
-	return appendReceiptPGX(ctx, rs.pool, receipt)
+	tx, err := rs.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("audit: begin receipt append: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+	if err := appendReceiptPGX(ctx, tx, receipt); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("audit: commit receipt append: %w", err)
+	}
+	committed = true
+	return nil
 }
 
 func (rs *PGXReceiptStorage) AppendRefundReceipt(ctx context.Context, receipt *CostReceipt) error {
@@ -61,6 +78,10 @@ func appendReceiptPGX(ctx context.Context, execer pgxReceiptExecer, receipt *Cos
 		return ErrReceiptStorageRequired
 	}
 	if err := validateReceiptForStorage(receipt); err != nil {
+		return err
+	}
+	owner := receiptOwnerFromReceipt(receipt)
+	if err := validateReceiptOwner(owner); err != nil {
 		return err
 	}
 	adjustmentRefs, err := json.Marshal(normalizedAdjustmentRefs(receipt.AdjustmentRefs))
@@ -95,11 +116,67 @@ INSERT INTO user_cost_receipts (
 		}
 		return fmt.Errorf("audit: append receipt: %w", err)
 	}
+	if err := insertReceiptOwnerPGX(ctx, execer, receipt, owner); err != nil {
+		return err
+	}
 	return nil
 }
 
-// GetReceipt 按 tenant + request_id 读取已签名 snapshot。
-func (rs *PGXReceiptStorage) GetReceipt(ctx context.Context, requestID string, tenantID int64) (*CostReceipt, error) {
+func insertReceiptOwnerPGX(ctx context.Context, execer pgxReceiptExecer, receipt *CostReceipt, owner ReceiptOwner) error {
+	_, err := execer.Exec(ctx, `
+INSERT INTO user_cost_receipt_owners (
+    tenant_id, request_id, receipt_sequence, user_id, claim_id, owner_source
+) VALUES ($1, $2, $3, $4, $5, $6)`,
+		receipt.TenantID,
+		receipt.RequestID,
+		receipt.ReceiptSequence,
+		owner.UserID,
+		owner.ClaimID,
+		owner.OwnerSource,
+	)
+	if err != nil {
+		return fmt.Errorf("audit: append receipt owner: %w", err)
+	}
+	return nil
+}
+
+// GetReceiptForUser 按 tenant + request_id + user_id 读取已签名 snapshot。
+func (rs *PGXReceiptStorage) GetReceiptForUser(ctx context.Context, requestID string, tenantID, userID int64) (*CostReceipt, error) {
+	if rs == nil || rs.pool == nil {
+		return nil, ErrReceiptStorageRequired
+	}
+	if err := validateReceiptRequestID(requestID); err != nil {
+		return nil, err
+	}
+	if userID <= 0 {
+		return nil, ErrReceiptNotFound
+	}
+	row := rs.pool.QueryRow(ctx, `
+SELECT `+receiptSelectColumns+`
+FROM user_cost_receipts r
+INNER JOIN user_cost_receipt_owners o
+  ON o.tenant_id = r.tenant_id
+ AND o.request_id = r.request_id
+ AND o.receipt_sequence = r.receipt_sequence
+WHERE r.request_id = $1 AND r.tenant_id = $2 AND o.user_id = $3
+ORDER BY r.receipt_sequence DESC
+LIMIT 1`,
+		requestID,
+		tenantID,
+		userID,
+	)
+	receipt, err := scanReceiptRow(row, pgx.ErrNoRows)
+	if err != nil {
+		if errors.Is(err, ErrReceiptNotFound) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("audit: get receipt for user: %w", err)
+	}
+	return receipt, nil
+}
+
+// GetReceiptForAdmin 按 tenant + request_id 读取已签名 snapshot，不做 user owner 过滤。
+func (rs *PGXReceiptStorage) GetReceiptForAdmin(ctx context.Context, requestID string, tenantID int64) (*CostReceipt, error) {
 	if rs == nil || rs.pool == nil {
 		return nil, ErrReceiptStorageRequired
 	}
@@ -107,12 +184,14 @@ func (rs *PGXReceiptStorage) GetReceipt(ctx context.Context, requestID string, t
 		return nil, err
 	}
 	row := rs.pool.QueryRow(ctx, `
-SELECT request_id, tenant_id, model, input_tokens, output_tokens, cached_tokens,
-       cost_usd_micros, rate_table_snapshot_id, signer_fingerprint, signed_hash,
-       created_at, validation_state, verdict, adjustment_refs, receipt_sequence
-FROM user_cost_receipts
-WHERE request_id = $1 AND tenant_id = $2
-ORDER BY receipt_sequence DESC
+SELECT `+receiptSelectColumns+`
+FROM user_cost_receipts r
+LEFT JOIN user_cost_receipt_owners o
+  ON o.tenant_id = r.tenant_id
+ AND o.request_id = r.request_id
+ AND o.receipt_sequence = r.receipt_sequence
+WHERE r.request_id = $1 AND r.tenant_id = $2
+ORDER BY r.receipt_sequence DESC
 LIMIT 1`,
 		requestID,
 		tenantID,
@@ -122,9 +201,14 @@ LIMIT 1`,
 		if errors.Is(err, ErrReceiptNotFound) {
 			return nil, err
 		}
-		return nil, fmt.Errorf("audit: get receipt: %w", err)
+		return nil, fmt.Errorf("audit: get receipt for admin: %w", err)
 	}
 	return receipt, nil
+}
+
+// GetReceipt preserves the legacy admin-only storage semantics until callers split.
+func (rs *PGXReceiptStorage) GetReceipt(ctx context.Context, requestID string, tenantID int64) (*CostReceipt, error) {
+	return rs.GetReceiptForAdmin(ctx, requestID, tenantID)
 }
 
 // GetReceiptBySequence 按 tenant + request_id + receipt_sequence 读取指定 snapshot。
@@ -139,11 +223,13 @@ func (rs *PGXReceiptStorage) GetReceiptBySequence(ctx context.Context, requestID
 		return nil, fmt.Errorf("%w: receipt_sequence must be non-negative", ErrReceiptInvalidDerivedData)
 	}
 	row := rs.pool.QueryRow(ctx, `
-SELECT request_id, tenant_id, model, input_tokens, output_tokens, cached_tokens,
-       cost_usd_micros, rate_table_snapshot_id, signer_fingerprint, signed_hash,
-       created_at, validation_state, verdict, adjustment_refs, receipt_sequence
-FROM user_cost_receipts
-WHERE request_id = $1 AND tenant_id = $2 AND receipt_sequence = $3
+SELECT `+receiptSelectColumns+`
+FROM user_cost_receipts r
+LEFT JOIN user_cost_receipt_owners o
+  ON o.tenant_id = r.tenant_id
+ AND o.request_id = r.request_id
+ AND o.receipt_sequence = r.receipt_sequence
+WHERE r.request_id = $1 AND r.tenant_id = $2 AND r.receipt_sequence = $3
 LIMIT 1`,
 		requestID,
 		tenantID,
@@ -215,12 +301,14 @@ func getReceiptByRefundIdempotencyPGX(ctx context.Context, queryer pgxReceiptQue
 		return nil, fmt.Errorf("audit: marshal refund idempotency lookup: %w", err)
 	}
 	row := queryer.QueryRow(ctx, `
-SELECT request_id, tenant_id, model, input_tokens, output_tokens, cached_tokens,
-       cost_usd_micros, rate_table_snapshot_id, signer_fingerprint, signed_hash,
-       created_at, validation_state, verdict, adjustment_refs, receipt_sequence
-FROM user_cost_receipts
-WHERE request_id = $1 AND tenant_id = $2 AND adjustment_refs @> $3::jsonb
-ORDER BY receipt_sequence DESC
+SELECT `+receiptSelectColumns+`
+FROM user_cost_receipts r
+LEFT JOIN user_cost_receipt_owners o
+  ON o.tenant_id = r.tenant_id
+ AND o.request_id = r.request_id
+ AND o.receipt_sequence = r.receipt_sequence
+WHERE r.request_id = $1 AND r.tenant_id = $2 AND r.adjustment_refs @> $3::jsonb
+ORDER BY r.receipt_sequence DESC
 LIMIT 1`,
 		requestID,
 		tenantID,
@@ -244,12 +332,14 @@ func getRefundedReceiptPGX(ctx context.Context, queryer pgxReceiptQueryer, reque
 		return nil, err
 	}
 	row := queryer.QueryRow(ctx, `
-SELECT request_id, tenant_id, model, input_tokens, output_tokens, cached_tokens,
-       cost_usd_micros, rate_table_snapshot_id, signer_fingerprint, signed_hash,
-       created_at, validation_state, verdict, adjustment_refs, receipt_sequence
-FROM user_cost_receipts
-WHERE request_id = $1 AND tenant_id = $2 AND validation_state = $3
-ORDER BY receipt_sequence DESC
+SELECT `+receiptSelectColumns+`
+FROM user_cost_receipts r
+LEFT JOIN user_cost_receipt_owners o
+  ON o.tenant_id = r.tenant_id
+ AND o.request_id = r.request_id
+ AND o.receipt_sequence = r.receipt_sequence
+WHERE r.request_id = $1 AND r.tenant_id = $2 AND r.validation_state = $3
+ORDER BY r.receipt_sequence DESC
 LIMIT 1`,
 		requestID,
 		tenantID,
@@ -309,16 +399,19 @@ func (s *PGXReceiptSource) LookupReceiptInputs(ctx context.Context, requestID st
 		costUSD        string
 		snapshot       sql.NullString
 		claimID        int64
+		userID         int64
 		usageRecordID  sql.NullInt64
 		createdAt      sql.NullTime
 		modelNullable  sql.NullString
 		inputTokens    sql.NullInt64
 		outputTokens   sql.NullInt64
 		cacheReadToken sql.NullInt64
+		ownerSource    sql.NullString
 	)
 	err := s.pool.QueryRow(ctx, receiptInputsSQL, requestID, tenantID).Scan(
 		&inputs.TenantID,
 		&claimID,
+		&userID,
 		&modelNullable,
 		&inputTokens,
 		&outputTokens,
@@ -327,6 +420,7 @@ func (s *PGXReceiptSource) LookupReceiptInputs(ctx context.Context, requestID st
 		&snapshot,
 		&usageRecordID,
 		&createdAt,
+		&ownerSource,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -342,6 +436,8 @@ func (s *PGXReceiptSource) LookupReceiptInputs(ctx context.Context, requestID st
 		return ReceiptInputs{}, err
 	}
 	inputs.ClaimID = claimID
+	inputs.UserID = userID
+	inputs.OwnerSource = receiptOwnerSourceFromSettlementSource(ownerSource.String)
 	inputs.Model = modelNullable.String
 	inputs.InputTokens = inputTokens.Int64
 	inputs.OutputTokens = outputTokens.Int64

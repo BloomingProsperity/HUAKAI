@@ -43,6 +43,100 @@ func TestAT_AUDIT_001_009_GetReceiptHit(t *testing.T) {
 	if strings.Contains(rec.Body.String(), `"tenant_id"`) {
 		t.Fatalf("receipt response exposed raw tenant_id: %s", rec.Body.String())
 	}
+	if strings.Contains(rec.Body.String(), `"user_id"`) {
+		t.Fatalf("receipt response exposed raw user_id: %s", rec.Body.String())
+	}
+}
+
+func TestCostReceiptGetSameTenantCrossUserReturns404(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	receipt := signedGatewayReceipt(t, signer, 7, "req-cross-user-get")
+	receipt.UserID = 7002
+	store := newReceiptStoreStub(receipt)
+
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Receipts: store, Signer: signer}), http.MethodGet, "/v1/receipts/req-cross-user-get", nil, sessionauth.SessionIdentity{TenantID: 7, UserID: 7001})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d want 404 body=%s", rec.Code, rec.Body.String())
+	}
+	if store.seenUserID != 7001 {
+		t.Fatalf("GetReceiptForUser user_id=%d want 7001", store.seenUserID)
+	}
+}
+
+func TestCostReceiptVerifySameTenantCrossUserReturns404(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	receipt := signedGatewayReceipt(t, signer, 7, "req-cross-user-verify")
+	receipt.UserID = 7002
+	payload := mustUserReceipt(t, receipt)
+	store := newReceiptStoreStub(receipt)
+
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Receipts: store, Signer: signer, Now: fixedReceiptNow}), http.MethodPost, "/v1/receipts/req-cross-user-verify/verify", payload, sessionauth.SessionIdentity{TenantID: 7, UserID: 7001})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d want 404 body=%s", rec.Code, rec.Body.String())
+	}
+	if store.seenUserID != 7001 {
+		t.Fatalf("verify GetReceiptForUser user_id=%d want 7001", store.seenUserID)
+	}
+}
+
+func TestCostReceiptGetLegacyReceiptWithoutOwnerReturns404ForUser(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	receipt := signedGatewayReceipt(t, signer, 7, "req-legacy-user")
+	receipt.UserID = 0
+	receipt.ClaimID = 0
+	receipt.OwnerSource = ""
+	store := newReceiptStoreStub(receipt)
+
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Receipts: store, Signer: signer}), http.MethodGet, "/v1/receipts/req-legacy-user", nil, sessionauth.SessionIdentity{TenantID: 7, UserID: 42})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d want 404 body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCostReceiptVerifyDerivedCrossUserReturns404(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	submitted := signedGatewayReceipt(t, signer, 7, "req-verify-derived-cross-user")
+	submitted.UserID = 7002
+	payload := mustUserReceipt(t, submitted)
+	derived := *submitted
+	queue := &mismatchRefundQueueStub{}
+
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{
+		Signer:          signer,
+		Now:             fixedReceiptNow,
+		DerivedReceipts: &derivedReceiptStub{receipt: &derived},
+		MismatchRefunds: queue,
+	}), http.MethodPost, "/v1/receipts/req-verify-derived-cross-user/verify", payload, sessionauth.SessionIdentity{TenantID: 7, UserID: 7001})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d want 404 body=%s", rec.Code, rec.Body.String())
+	}
+	if queue.calls != 0 {
+		t.Fatalf("cross-user verify must not enqueue mismatch refund; calls=%d", queue.calls)
+	}
+}
+
+func TestCostReceiptVerifyCrossUserMismatchDoesNotEnqueueRefund(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	submitted := signedGatewayReceipt(t, signer, 7, "req-mismatch-cross-user")
+	submitted.UserID = 7002
+	payload := mustUserReceipt(t, submitted)
+	derived := *submitted
+	derived.ClaimID = 991
+	derived.CostUSDMicros = submitted.CostUSDMicros - 50
+	queue := &mismatchRefundQueueStub{}
+
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{
+		Signer:          signer,
+		Now:             fixedReceiptNow,
+		DerivedReceipts: &derivedReceiptStub{receipt: &derived},
+		MismatchRefunds: queue,
+	}), http.MethodPost, "/v1/receipts/req-mismatch-cross-user/verify", payload, sessionauth.SessionIdentity{TenantID: 7, UserID: 7001})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d want 404 body=%s", rec.Code, rec.Body.String())
+	}
+	if queue.calls != 0 {
+		t.Fatalf("cross-user mismatch must not enqueue refund; calls=%d", queue.calls)
+	}
 }
 
 func TestAT_AUDIT_001_010_CrossTenantReceiptReturns404(t *testing.T) {
@@ -539,6 +633,8 @@ func TestAT_AUDIT_001_022_ChatCompletionWritesReceiptThenGet200(t *testing.T) {
 	}
 	source := &flowReceiptSource{inputs: audit.ReceiptInputs{
 		TenantID:            7,
+		UserID:              7001,
+		ClaimID:             9001,
 		Model:               "gpt-4o",
 		InputTokens:         2,
 		OutputTokens:        3,
@@ -576,7 +672,12 @@ func TestAT_AUDIT_001_022_ChatCompletionWritesReceiptThenGet200(t *testing.T) {
 		t.Fatalf("receipt source args request=%q tenant=%d", source.seenRequestID, source.seenTenantID)
 	}
 
-	getRec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Receipts: store, Signer: signer}), http.MethodGet, "/v1/receipts/req-receipt-flow", nil, sessionauth.SessionIdentity{TenantID: 7, UserID: 3})
+	appended := store.receipts["req-receipt-flow"]
+	if appended == nil || appended.UserID != 7001 || appended.ClaimID != 9001 {
+		t.Fatalf("appended receipt owner mismatch: %+v", appended)
+	}
+
+	getRec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Receipts: store, Signer: signer}), http.MethodGet, "/v1/receipts/req-receipt-flow", nil, sessionauth.SessionIdentity{TenantID: 7, UserID: 7001})
 	if getRec.Code != http.StatusOK {
 		t.Fatalf("receipt status=%d body=%s", getRec.Code, getRec.Body.String())
 	}
@@ -638,6 +739,9 @@ func signedGatewayReceipt(t *testing.T, signer *sign.Signer, tenantID int64, req
 	receipt := &audit.CostReceipt{
 		RequestID:           requestID,
 		TenantID:            tenantID,
+		UserID:              42,
+		ClaimID:             9001,
+		OwnerSource:         audit.ReceiptOwnerSourceSettle,
 		Model:               "gpt-test",
 		InputTokens:         100,
 		OutputTokens:        25,
@@ -722,8 +826,9 @@ func receiptSession(tenantID int64) sessionauth.SessionIdentity {
 }
 
 type receiptStoreStub struct {
-	receipts map[string]*audit.CostReceipt
-	err      error
+	receipts   map[string]*audit.CostReceipt
+	err        error
+	seenUserID int64
 }
 
 func newReceiptStoreStub(receipts ...*audit.CostReceipt) *receiptStoreStub {
@@ -734,7 +839,19 @@ func newReceiptStoreStub(receipts ...*audit.CostReceipt) *receiptStoreStub {
 	return store
 }
 
-func (s *receiptStoreStub) GetReceipt(_ context.Context, requestID string, tenantID int64) (*audit.CostReceipt, error) {
+func (s *receiptStoreStub) GetReceiptForUser(_ context.Context, requestID string, tenantID, userID int64) (*audit.CostReceipt, error) {
+	s.seenUserID = userID
+	if s.err != nil {
+		return nil, s.err
+	}
+	receipt := s.receipts[requestID]
+	if receipt == nil || receipt.TenantID != tenantID || receipt.UserID <= 0 || receipt.UserID != userID {
+		return nil, audit.ErrReceiptNotFound
+	}
+	return receipt, nil
+}
+
+func (s *receiptStoreStub) GetReceiptForAdmin(_ context.Context, requestID string, tenantID int64) (*audit.CostReceipt, error) {
 	if s.err != nil {
 		return nil, s.err
 	}

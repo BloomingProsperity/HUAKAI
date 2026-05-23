@@ -62,7 +62,9 @@ var maxCostMicroUSDDecimal = decimal.NewFromInt(maxCostMicroUSDInt64)
 type CostReceipt struct {
 	RequestID           string
 	TenantID            int64
+	UserID              int64
 	ClaimID             int64
+	OwnerSource         string
 	ReceiptSequence     int32
 	Model               string
 	InputTokens         int64
@@ -81,7 +83,9 @@ type CostReceipt struct {
 // ReceiptInputs 是从 billing/usage/audit JOIN 派生出的最小输入集。
 type ReceiptInputs struct {
 	TenantID            int64
+	UserID              int64
 	ClaimID             int64
+	OwnerSource         string
 	Model               string
 	InputTokens         int64
 	OutputTokens        int64
@@ -279,7 +283,9 @@ func (rf *ReceiptFormatter) DeriveReceipt(ctx context.Context, requestID string)
 	return &CostReceipt{
 		RequestID:           requestID,
 		TenantID:            entry.TenantID,
+		UserID:              inputs.UserID,
 		ClaimID:             inputs.ClaimID,
+		OwnerSource:         receiptOwnerSourceFromInputs(inputs),
 		Model:               model,
 		InputTokens:         inputs.InputTokens,
 		OutputTokens:        inputs.OutputTokens,
@@ -426,17 +432,20 @@ func (s *SQLReceiptSource) LookupReceiptInputs(ctx context.Context, requestID st
 		costUSD        string
 		snapshot       sql.NullString
 		claimID        int64
+		userID         int64
 		usageRecordID  sql.NullInt64
 		createdAt      time.Time
 		modelNullable  sql.NullString
 		inputTokens    sql.NullInt64
 		outputTokens   sql.NullInt64
 		cacheReadToken sql.NullInt64
+		ownerSource    sql.NullString
 	)
 	row := query.QueryRowContext(ctx, receiptInputsSQL, requestID, tenantID)
 	if err := row.Scan(
 		&inputs.TenantID,
 		&claimID,
+		&userID,
 		&modelNullable,
 		&inputTokens,
 		&outputTokens,
@@ -445,6 +454,7 @@ func (s *SQLReceiptSource) LookupReceiptInputs(ctx context.Context, requestID st
 		&snapshot,
 		&usageRecordID,
 		&createdAt,
+		&ownerSource,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ReceiptInputs{}, ErrReceiptInputsNotFound
@@ -459,6 +469,8 @@ func (s *SQLReceiptSource) LookupReceiptInputs(ctx context.Context, requestID st
 		return ReceiptInputs{}, err
 	}
 	inputs.ClaimID = claimID
+	inputs.UserID = userID
+	inputs.OwnerSource = receiptOwnerSourceFromSettlementSource(ownerSource.String)
 	inputs.Model = modelNullable.String
 	inputs.InputTokens = inputTokens.Int64
 	inputs.OutputTokens = outputTokens.Int64
@@ -476,6 +488,7 @@ const receiptInputsSQL = `
 SELECT
     be.tenant_id,
     blc.id::bigint AS claim_id,
+    blc.user_id::bigint AS user_id,
     COALESCE(NULLIF(ur.upstream_model, ''), ur.requested_model, blc.requested_model) AS model,
     ur.tokens_input::bigint,
     ur.tokens_output::bigint,
@@ -483,7 +496,8 @@ SELECT
     be.actual_cost::text,
     ur.snapshot_version,
     ur.id::bigint,
-    COALESCE(be.occurred_at, ur.settled_at) AS created_at
+    COALESCE(be.occurred_at, ur.settled_at) AS created_at,
+    ur.settlement_source
 FROM audit_ledger_entries ale
 JOIN billing_events be
   ON be.tenant_id = ale.tenant_id
@@ -504,8 +518,12 @@ func validateReceiptInputs(inputs ReceiptInputs) error {
 	switch {
 	case inputs.TenantID <= 0:
 		return fmt.Errorf("%w: tenant_id must be positive", ErrReceiptInvalidDerivedData)
+	case inputs.UserID < 0:
+		return fmt.Errorf("%w: user_id must be non-negative", ErrReceiptInvalidDerivedData)
 	case inputs.ClaimID < 0:
 		return fmt.Errorf("%w: claim_id must be non-negative", ErrReceiptInvalidDerivedData)
+	case strings.TrimSpace(inputs.OwnerSource) != "" && !validReceiptOwnerSource(inputs.OwnerSource):
+		return fmt.Errorf("%w: owner_source unsupported", ErrReceiptInvalidDerivedData)
 	case inputs.InputTokens < 0:
 		return fmt.Errorf("%w: input_tokens must be non-negative", ErrReceiptInvalidDerivedData)
 	case inputs.OutputTokens < 0:
@@ -518,6 +536,23 @@ func validateReceiptInputs(inputs ReceiptInputs) error {
 		return fmt.Errorf("%w: rate_table_snapshot_id must be positive", ErrReceiptInvalidDerivedData)
 	}
 	return nil
+}
+
+func receiptOwnerSourceFromInputs(inputs ReceiptInputs) string {
+	source := strings.TrimSpace(inputs.OwnerSource)
+	if source == "" {
+		return ReceiptOwnerSourceSettle
+	}
+	return source
+}
+
+func receiptOwnerSourceFromSettlementSource(source string) string {
+	switch strings.TrimSpace(source) {
+	case billing.SettlementSourceResponseCacheL2:
+		return ReceiptOwnerSourceCacheHit
+	default:
+		return ReceiptOwnerSourceSettle
+	}
 }
 
 func validateReceiptForSigning(receipt *CostReceipt) error {

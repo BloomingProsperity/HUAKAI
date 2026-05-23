@@ -25,7 +25,8 @@ import (
 const verifyReceiptBodyMaxBytes = 10 * 1024
 
 type CostReceiptReader interface {
-	GetReceipt(ctx context.Context, requestID string, tenantID int64) (*audit.CostReceipt, error)
+	GetReceiptForUser(ctx context.Context, requestID string, tenantID, userID int64) (*audit.CostReceipt, error)
+	GetReceiptForAdmin(ctx context.Context, requestID string, tenantID int64) (*audit.CostReceipt, error)
 }
 
 type CostReceiptDeriver interface {
@@ -104,7 +105,11 @@ func NewCostReceiptGetHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		receipt, err := d.Receipts.GetReceipt(r.Context(), requestID, ident.TenantID)
+		if ident.UserID <= 0 {
+			writeJSONError(w, http.StatusNotFound, "receipt_not_found", "receipt not found")
+			return
+		}
+		receipt, err := d.Receipts.GetReceiptForUser(r.Context(), requestID, ident.TenantID, ident.UserID)
 		if errors.Is(err, audit.ErrReceiptNotFound) || errors.Is(err, audit.ErrReceiptInputsNotFound) {
 			writeJSONError(w, http.StatusNotFound, "receipt_not_found", "receipt not found")
 			return
@@ -117,7 +122,7 @@ func NewCostReceiptGetHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusServiceUnavailable, "receipt_read_failed", "receipt backend unavailable")
 			return
 		}
-		if receipt == nil || receipt.TenantID != ident.TenantID {
+		if !receiptBelongsToSession(receipt, ident) {
 			writeJSONError(w, http.StatusNotFound, "receipt_not_found", "receipt not found")
 			return
 		}
@@ -129,6 +134,8 @@ func NewCostReceiptGetHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 		writeAuditJSON(w, http.StatusOK, out)
 	}
 }
+
+// admin receipt handler 转 RR-W5-006 后续切片:需带 admin.OperatorAuth + scope 校验 + 挂路由。
 
 func NewCostReceiptVerifyHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -223,13 +230,36 @@ func NewCostReceiptVerifyHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusNotFound, "receipt_not_found", "receipt not found")
 			return
 		}
+		if valid && ident.UserID <= 0 {
+			writeJSONError(w, http.StatusNotFound, "receipt_not_found", "receipt not found")
+			return
+		}
+		if valid && d.Receipts != nil {
+			stored, err := d.Receipts.GetReceiptForUser(r.Context(), requestID, ident.TenantID, ident.UserID)
+			if errors.Is(err, audit.ErrReceiptNotFound) || errors.Is(err, audit.ErrReceiptInputsNotFound) {
+				writeJSONError(w, http.StatusNotFound, "receipt_not_found", "receipt not found")
+				return
+			}
+			if errors.Is(err, audit.ErrReceiptUnavailable) {
+				writeJSONError(w, http.StatusAccepted, "receipt_unavailable", "receipt is not final yet")
+				return
+			}
+			if err != nil {
+				writeJSONError(w, http.StatusServiceUnavailable, "receipt_read_failed", "receipt backend unavailable")
+				return
+			}
+			if !receiptBelongsToSession(stored, ident) {
+				writeJSONError(w, http.StatusNotFound, "receipt_not_found", "receipt not found")
+				return
+			}
+		}
 		if valid && d.DerivedReceipts != nil {
 			derived, err := d.DerivedReceipts.DeriveReceipt(r.Context(), requestID)
 			if err != nil || derived == nil {
 				verifyVerdict = audit.ReceiptVerdictUnknown
 			} else {
 				// 防止已签名的跨租户 receipt 借同一 request_id 触发退款队列。
-				if derived.TenantID != ident.TenantID || !userReceiptBelongsToTenant(req, derived.TenantID) {
+				if !receiptBelongsToSession(derived, ident) || !userReceiptBelongsToTenant(req, derived.TenantID) {
 					writeJSONError(w, http.StatusNotFound, "receipt_not_found", "receipt not found")
 					return
 				}
@@ -243,6 +273,10 @@ func NewCostReceiptVerifyHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 				if mismatch.State == audit.ReceiptValidationStateMismatchPending {
 					valid = false
 					if mismatch.RefundEligible() && d.MismatchRefunds != nil {
+						if !receiptBelongsToSession(derived, ident) {
+							writeJSONError(w, http.StatusNotFound, "receipt_not_found", "receipt not found")
+							return
+						}
 						refundEventID, err = d.MismatchRefunds.EnqueueMismatchRefund(r.Context(), derived, mismatch)
 						if err != nil {
 							writeJSONError(w, http.StatusServiceUnavailable, "refund_enqueue_failed", "mismatch refund could not be queued")
@@ -377,6 +411,10 @@ func validateReceiptPathRequestID(w http.ResponseWriter, requestID string) (stri
 		return "", false
 	}
 	return requestID, true
+}
+
+func receiptBelongsToSession(receipt *audit.CostReceipt, ident sessionauth.SessionIdentity) bool {
+	return receipt != nil && receipt.TenantID == ident.TenantID && receipt.UserID > 0 && receipt.UserID == ident.UserID
 }
 
 func userCostReceiptFromAudit(ctx context.Context, receipt *audit.CostReceipt) (UserCostReceipt, error) {
