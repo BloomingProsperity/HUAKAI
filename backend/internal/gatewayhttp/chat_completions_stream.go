@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -204,7 +205,7 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	var ledgerResult auditledger.AuditLedgerResult
 	streamForwarder.LedgerCallback = func(result auditledger.AuditLedgerResult) {
 		ledgerResult = result
-		writeStreamingLedgerTrailers(w.Header(), result)
+		writeStreamingLedgerTrailers(w.Header(), result, ex.requestID, ex.ident.TenantID)
 	}
 	tracker := newDeliveryTracker(w)
 	forwardWriter := http.ResponseWriter(tracker)
@@ -540,7 +541,7 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 			StreamAttempt:     &streamAttempt,
 			SnapshotVersion:   ex.plan.SnapshotVersion,
 		},
-		Metadata:                  routeMetadata(ex.routeID),
+		Metadata: routeMetadata(ex.routeID),
 	}
 }
 
@@ -552,6 +553,8 @@ func declareStreamBillingTrailers(h http.Header) {
 	h.Add("Trailer", headerHUAKAIDeliveredTokens)
 	h.Add("Trailer", headerHUAKAIAuditLedgerID)
 	h.Add("Trailer", headerHUAKAIAuditLedgerDLQRef)
+	h.Add("Trailer", headerHUAKAIAuditVerify)
+	h.Add("Trailer", headerHUAKAIAuditSigFingerprint)
 }
 
 func writeStreamBillingHeaders(h http.Header, attempt billing.Attempt) {
@@ -563,7 +566,7 @@ func writeStreamBillingHeaders(h http.Header, attempt billing.Attempt) {
 	h.Set(headerHUAKAIDeliveredTokens, strconv.FormatInt(attempt.DeliveredTokenCount, 10))
 }
 
-func writeStreamingLedgerTrailers(h http.Header, result auditledger.AuditLedgerResult) {
+func writeStreamingLedgerTrailers(h http.Header, result auditledger.AuditLedgerResult, requestID string, tenantID int64) {
 	if h == nil {
 		return
 	}
@@ -571,6 +574,18 @@ func writeStreamingLedgerTrailers(h http.Header, result auditledger.AuditLedgerR
 	case auditledger.LedgerResultStatePersisted:
 		if result.LedgerID != "" {
 			h.Set(headerHUAKAIAuditLedgerID, result.LedgerID)
+		}
+		if result.Fingerprint != "" {
+			h.Set(headerHUAKAIAuditSigFingerprint, result.Fingerprint)
+		}
+		if result.LedgerID != "" && requestID != "" {
+			query := url.Values{}
+			query.Set("request_id", requestID)
+			query.Set("ledger-id", result.LedgerID)
+			if scopeRef := auditledger.TenantScopeRef(tenantID); scopeRef != "" {
+				query.Set("tenant_scope_ref", scopeRef)
+			}
+			h.Set(headerHUAKAIAuditVerify, "/v1/audit/verify?"+query.Encode())
 		}
 	case auditledger.LedgerResultStateDeferred:
 		if result.DLQRef != "" {

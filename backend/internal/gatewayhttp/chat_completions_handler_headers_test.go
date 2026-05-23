@@ -83,10 +83,12 @@ func TestWriteStreamBillingHeaders(t *testing.T) {
 	}
 	gotTrailers := h.Values("Trailer")
 	wantTrailers := map[string]bool{
-		headerHUAKAIStreamState:     false,
-		headerHUAKAIDeliveredTokens: false,
-		headerHUAKAIAuditLedgerID:   false,
-		"X-HUAKAI-Ledger-DLQ-Ref":   false,
+		headerHUAKAIStreamState:         false,
+		headerHUAKAIDeliveredTokens:     false,
+		headerHUAKAIAuditLedgerID:       false,
+		"X-HUAKAI-Ledger-DLQ-Ref":       false,
+		headerHUAKAIAuditVerify:         false,
+		headerHUAKAIAuditSigFingerprint: false,
 	}
 	for _, got := range gotTrailers {
 		if _, ok := wantTrailers[got]; ok {

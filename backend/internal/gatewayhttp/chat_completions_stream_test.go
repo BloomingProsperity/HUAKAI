@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -372,6 +373,74 @@ func TestStreamingPersistedLedgerIDIsTrailerOnly(t *testing.T) {
 	}
 	if got := result.Trailer.Get("X-HUAKAI-Ledger-DLQ-Ref"); got != "" {
 		t.Fatalf("X-HUAKAI-Ledger-DLQ-Ref trailer=%q want empty for persisted ledger", got)
+	}
+}
+
+func TestStreamingLedgerCallback_PersistedSetsVerifyAndFingerprintTrailers(t *testing.T) {
+	// 删除 Persisted 分支的 Fingerprint 或 Verify 写入 -> 该测试 trailer 断言变红。
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	deps := streamingReplayDeps(t, 77713, false, openAIStreamingFixture(), nil)
+	deps.AuditLedger = fixedAppendLedger{
+		entry: auditledger.LedgerEntry{
+			LedgerID:          "ledger-stream-1",
+			PubkeyFingerprint: "fp-stream-1",
+			TenantID:          validIdentity().TenantID,
+		},
+	}
+	deps.Signer = signer
+
+	rec := invokeHandler(t, deps, openAIStreamingRequestBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	result := rec.Result()
+	if got := result.Trailer.Get(headerHUAKAIAuditLedgerID); got != "ledger-stream-1" {
+		t.Fatalf("%s trailer=%q want ledger-stream-1", headerHUAKAIAuditLedgerID, got)
+	}
+	if got := result.Trailer.Get(headerHUAKAIAuditSigFingerprint); got != "fp-stream-1" {
+		t.Fatalf("%s trailer=%q want fp-stream-1", headerHUAKAIAuditSigFingerprint, got)
+	}
+	verifyHeader := result.Trailer.Get(headerHUAKAIAuditVerify)
+	verifyURL, err := url.Parse(verifyHeader)
+	if err != nil {
+		t.Fatalf("%s trailer=%q parse error: %v", headerHUAKAIAuditVerify, verifyHeader, err)
+	}
+	if got := verifyURL.Path; got != "/v1/audit/verify" {
+		t.Fatalf("%s path=%q want /v1/audit/verify in %q", headerHUAKAIAuditVerify, got, verifyHeader)
+	}
+	query := verifyURL.Query()
+	if got := query.Get("request_id"); got == "" {
+		t.Fatalf("%s request_id is empty in %q", headerHUAKAIAuditVerify, verifyHeader)
+	}
+	if got := query.Get("ledger-id"); got != "ledger-stream-1" {
+		t.Fatalf("%s ledger-id=%q want ledger-stream-1 in %q", headerHUAKAIAuditVerify, got, verifyHeader)
+	}
+	if got, want := query.Get("tenant_scope_ref"), auditledger.TenantScopeRef(validIdentity().TenantID); got != want {
+		t.Fatalf("%s tenant_scope_ref=%q want %q in %q", headerHUAKAIAuditVerify, got, want, verifyHeader)
+	}
+
+	deferredRec := httptest.NewRecorder()
+	declareStreamBillingTrailers(deferredRec.Header())
+	deferredRec.WriteHeader(http.StatusOK)
+	if _, err := deferredRec.Write([]byte("data: pong\n\n")); err != nil {
+		t.Fatalf("write deferred fixture: %v", err)
+	}
+	writeStreamingLedgerTrailers(deferredRec.Header(), auditledger.AuditLedgerResult{
+		State:  auditledger.LedgerResultStateDeferred,
+		DLQRef: "dlq:1",
+	}, "req-deferred", validIdentity().TenantID)
+	deferredResult := deferredRec.Result()
+	if got := deferredResult.Trailer.Get(headerHUAKAIAuditLedgerDLQRef); got != "dlq:1" {
+		t.Fatalf("%s trailer=%q want dlq:1", headerHUAKAIAuditLedgerDLQRef, got)
+	}
+	if got := deferredResult.Trailer.Get(headerHUAKAIAuditVerify); got != "" {
+		t.Fatalf("%s trailer=%q want empty for Deferred ledger", headerHUAKAIAuditVerify, got)
+	}
+	if got := deferredResult.Trailer.Get(headerHUAKAIAuditSigFingerprint); got != "" {
+		t.Fatalf("%s trailer=%q want empty for Deferred ledger", headerHUAKAIAuditSigFingerprint, got)
 	}
 }
 
@@ -1214,6 +1283,30 @@ func (s *ctxSensitiveSettler) Settle(ctx context.Context, req billing.SettleRequ
 		return nil, err
 	}
 	return s.recordingSettler.Settle(ctx, req)
+}
+
+type fixedAppendLedger struct {
+	entry auditledger.LedgerEntry
+}
+
+func (l fixedAppendLedger) Append(context.Context, auditledger.PreparedEntry) (auditledger.LedgerEntry, error) {
+	return l.entry, nil
+}
+
+func (l fixedAppendLedger) GetByRequestID(context.Context, string) (auditledger.LedgerEntry, error) {
+	return auditledger.LedgerEntry{}, auditledger.ErrLedgerEntryNotFound
+}
+
+func (l fixedAppendLedger) GetByRequestIDAndTenantScope(context.Context, string, string) (auditledger.LedgerEntry, error) {
+	return auditledger.LedgerEntry{}, auditledger.ErrLedgerEntryNotFound
+}
+
+func (l fixedAppendLedger) LatestMerkleRoot(context.Context) ([32]byte, error) {
+	return auditledger.ZeroRoot, nil
+}
+
+func (l fixedAppendLedger) Size(context.Context) int {
+	return 1
 }
 
 type failingSettleSettler struct {
