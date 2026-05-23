@@ -20,23 +20,41 @@ type DBTX interface {
 }
 
 type PostgresStore struct {
-	db      DBTX
-	beginTx func(context.Context, pgx.TxOptions) (pgx.Tx, error)
-	signer  *sign.Signer
+	db                 DBTX
+	beginTx            func(context.Context, pgx.TxOptions) (pgx.Tx, error)
+	signer             *sign.Signer
+	productionRequired bool
+	inTransaction      bool
 }
 
-func NewPostgresStore(db DBTX) *PostgresStore {
+var ErrAuditSignerMissing = errors.New("channelhealth: audit signer missing")
+var ErrAuditTxMissing = errors.New("channelhealth: audit transaction unavailable in production")
+
+type PostgresStoreOption func(*PostgresStore)
+
+func WithProductionRequired() PostgresStoreOption {
+	return func(s *PostgresStore) {
+		s.productionRequired = true
+	}
+}
+
+func NewPostgresStore(db DBTX, opts ...PostgresStoreOption) *PostgresStore {
 	store := &PostgresStore{db: db}
 	if beginner, ok := db.(interface {
 		BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
 	}); ok {
 		store.beginTx = beginner.BeginTx
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(store)
+		}
+	}
 	return store
 }
 
-func NewPostgresStoreWithAuditSigner(db DBTX, signer *sign.Signer) *PostgresStore {
-	store := NewPostgresStore(db)
+func NewPostgresStoreWithAuditSigner(db DBTX, signer *sign.Signer, opts ...PostgresStoreOption) *PostgresStore {
+	store := NewPostgresStore(db, opts...)
 	store.signer = signer
 	return store
 }
@@ -56,7 +74,7 @@ func (s *PostgresStore) WithTx(ctx context.Context, fn func(Store) error) error 
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	txStore := &PostgresStore{db: tx, signer: s.signer}
+	txStore := &PostgresStore{db: tx, signer: s.signer, productionRequired: s.productionRequired, inTransaction: true}
 	if fn != nil {
 		if err := fn(txStore); err != nil {
 			return err
@@ -267,9 +285,31 @@ func (s *PostgresStore) AppendAudit(ctx context.Context, ev AuditEvent) error {
 	if s == nil || s.db == nil {
 		return errors.New("channelhealth: postgres store not configured")
 	}
+	if s.productionRequired && s.beginTx == nil && !s.inTransaction {
+		return ErrAuditTxMissing
+	}
+	if s.beginTx != nil {
+		tx, err := s.beginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		txStore := &PostgresStore{db: tx, signer: s.signer, productionRequired: s.productionRequired, inTransaction: true}
+		if err := txStore.appendAudit(ctx, ev); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	return s.appendAudit(ctx, ev)
+}
+
+func (s *PostgresStore) appendAudit(ctx context.Context, ev AuditEvent) error {
 	ev.Key.ChannelID = ev.Key.StableChannelID()
 	if ev.OccurredAt.IsZero() {
 		ev.OccurredAt = time.Now().UTC()
+	}
+	if s.signer == nil && s.productionRequired {
+		return ErrAuditSignerMissing
 	}
 	ev.Payload = sanitizePayloadMap(ctx, ev.Payload)
 	payload, err := json.Marshal(ev.Payload)
