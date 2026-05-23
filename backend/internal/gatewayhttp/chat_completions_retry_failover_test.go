@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
@@ -20,6 +21,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	provideropenai "github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
@@ -296,6 +298,69 @@ func TestPR5StreamDispatchTimeoutAbortReasonMatchesRetryDecision(t *testing.T) {
 	want := gateway.ClassifyAttemptDispatchError(dispatchErr).AbortReason
 	if got := settler.aborts[0].reason; got != want {
 		t.Fatalf("abort reason=%q want %q from dispatch retry decision", got, want)
+	}
+}
+
+func TestPR5StreamRetryClearsDeferredLedgerDLQTrailerBeforeSuccess(t *testing.T) {
+	// Risk killed: a Deferred ledger result from a pre-delivery failed attempt
+	// must not leak X-HUAKAI-Ledger-DLQ-Ref into the later successful streamed
+	// response. Mutation self-check: removing the DLQ trailer from retry
+	// cleanup leaves audit_ledger_dlq:729 in the final response trailer.
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	inner, err := auditledger.NewMemoryLedger(signer)
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	ledger := &firstAppendFailsThenPersistsLedger{
+		inner: inner,
+		err:   errors.New("ledger unavailable on first attempt"),
+	}
+	dlqSink := &recordingGatewayAuditLedgerDLQ{id: 729}
+	streamDoer := &pr5SequentialStreamingDoer{
+		steps: []pr5StreamStep{
+			{body: &delayedReadCloser{delay: 50 * time.Millisecond}},
+			{body: io.NopCloser(strings.NewReader(openAIStreamingFixture()))},
+		},
+	}
+	deps := streamingReplayDeps(t, 88010, false, "", nil)
+	deps.Dispatcher.HTTPClient = streamDoer
+	deps.Forwarder.Timeouts.FirstTokenTimeout = 5 * time.Millisecond
+	deps.Forwarder.Timeouts.InterEventTimeout = 200 * time.Millisecond
+	deps.AuditLedger = ledger
+	deps.AuditLedgerDLQ = dlqSink
+	deps.Signer = signer
+	deps.Router = stubRouter{plan: pr5RoutePlan(
+		router.AttemptPlan{Index: 0, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "primary"},
+		router.AttemptPlan{Index: 1, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "same_pool_account_failover"},
+	)}
+	deps.Selector = newPR5Selector(t, 901, 902)
+	deps.CredentialVault = pr5CredentialVault(t, 901, 902)
+
+	rec := invokeHandler(t, deps, openAIStreamingRequestBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s; want 200 after retry success", rec.Code, rec.Body.String())
+	}
+	if streamDoer.calls != 2 {
+		t.Fatalf("stream dispatch calls=%d want 2", streamDoer.calls)
+	}
+	if ledger.calls != 2 {
+		t.Fatalf("ledger append calls=%d want first Deferred then second Persisted", ledger.calls)
+	}
+	if len(dlqSink.events) != 1 {
+		t.Fatalf("DLQ events=%d want 1 from first attempt", len(dlqSink.events))
+	}
+	result := rec.Result()
+	if got := result.Trailer.Get(headerHUAKAIAuditLedgerDLQRef); got != "" {
+		t.Fatalf("%s trailer=%q want empty after retry success", headerHUAKAIAuditLedgerDLQRef, got)
+	}
+	if got := result.Header.Get(headerHUAKAIAuditLedgerDLQRef); got != "" {
+		t.Fatalf("%s ordinary header=%q want empty after retry success", headerHUAKAIAuditLedgerDLQRef, got)
+	}
+	if got := result.Trailer.Get(headerHUAKAIAuditLedgerID); got == "" {
+		t.Fatalf("%s trailer is empty; fixture must prove second attempt persisted", headerHUAKAIAuditLedgerID)
 	}
 }
 
@@ -612,6 +677,36 @@ func (d *pr5SequentialStreamingDoer) Do(req *http.Request) (*http.Response, erro
 		Header:     make(http.Header),
 		Body:       step.body,
 	}, nil
+}
+
+type firstAppendFailsThenPersistsLedger struct {
+	inner *auditledger.MemoryLedger
+	err   error
+	calls int
+}
+
+func (l *firstAppendFailsThenPersistsLedger) Append(ctx context.Context, entry auditledger.PreparedEntry) (auditledger.LedgerEntry, error) {
+	l.calls++
+	if l.calls == 1 {
+		return auditledger.LedgerEntry{}, l.err
+	}
+	return l.inner.Append(ctx, entry)
+}
+
+func (l *firstAppendFailsThenPersistsLedger) GetByRequestID(ctx context.Context, requestID string) (auditledger.LedgerEntry, error) {
+	return l.inner.GetByRequestID(ctx, requestID)
+}
+
+func (l *firstAppendFailsThenPersistsLedger) GetByRequestIDAndTenantScope(ctx context.Context, requestID, tenantScopeRef string) (auditledger.LedgerEntry, error) {
+	return l.inner.GetByRequestIDAndTenantScope(ctx, requestID, tenantScopeRef)
+}
+
+func (l *firstAppendFailsThenPersistsLedger) LatestMerkleRoot(ctx context.Context) ([32]byte, error) {
+	return l.inner.LatestMerkleRoot(ctx)
+}
+
+func (l *firstAppendFailsThenPersistsLedger) Size(ctx context.Context) int {
+	return l.inner.Size(ctx)
 }
 
 type delayedReadCloser struct {

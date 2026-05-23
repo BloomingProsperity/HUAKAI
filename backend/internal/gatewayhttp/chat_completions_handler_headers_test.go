@@ -81,7 +81,24 @@ func TestWriteStreamBillingHeaders(t *testing.T) {
 	if got := h.Get(headerHUAKAIDeliveredTokens); got != "7" {
 		t.Fatalf("%s=%q want 7", headerHUAKAIDeliveredTokens, got)
 	}
-	if got := h.Values("Trailer"); len(got) != 2 {
-		t.Fatalf("Trailer values=%v want stream-state and delivered-tokens", got)
+	gotTrailers := h.Values("Trailer")
+	wantTrailers := map[string]bool{
+		headerHUAKAIStreamState:     false,
+		headerHUAKAIDeliveredTokens: false,
+		headerHUAKAIAuditLedgerID:   false,
+		"X-HUAKAI-Ledger-DLQ-Ref":   false,
+	}
+	for _, got := range gotTrailers {
+		if _, ok := wantTrailers[got]; ok {
+			wantTrailers[got] = true
+		}
+	}
+	for trailer, seen := range wantTrailers {
+		if !seen {
+			t.Fatalf("Trailer values=%v missing %s", gotTrailers, trailer)
+		}
+	}
+	if len(gotTrailers) != len(wantTrailers) {
+		t.Fatalf("Trailer values=%v want exactly %d stream billing/ledger trailers", gotTrailers, len(wantTrailers))
 	}
 }

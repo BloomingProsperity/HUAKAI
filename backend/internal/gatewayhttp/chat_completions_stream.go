@@ -26,6 +26,7 @@ import (
 
 const (
 	headerHUAKAIAuditLedgerID       = "X-HUAKAI-Ledger-ID"
+	headerHUAKAIAuditLedgerDLQRef   = "X-HUAKAI-Ledger-DLQ-Ref"
 	headerHUAKAIAuditVerify         = "X-HUAKAI-Verify"
 	headerHUAKAIAuditSigFingerprint = "X-HUAKAI-Sig-Fingerprint"
 	headerHUAKAIStreamState         = "X-HUAKAI-Stream-State"
@@ -203,9 +204,7 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	var ledgerResult auditledger.AuditLedgerResult
 	streamForwarder.LedgerCallback = func(result auditledger.AuditLedgerResult) {
 		ledgerResult = result
-		if result.State == auditledger.LedgerResultStatePersisted {
-			WriteHuakaiLedgerHeaders(w.Header(), ex.requestID, result.LedgerID, result.Fingerprint, ex.ident.TenantID)
-		}
+		writeStreamingLedgerTrailers(w.Header(), result)
 	}
 	tracker := newDeliveryTracker(w)
 	forwardWriter := http.ResponseWriter(tracker)
@@ -216,7 +215,6 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	}
 	draft, fwdErr := streamForwarder.Forward(ex.ctx, dispatchRes.UpstreamReader, forwardWriter, ex.forwardReq)
 	streamAttempt := billing.AttemptFromGatewayDraft(true, draft)
-	writeStreamBillingHeaders(w.Header(), streamAttempt)
 	if fwdErr != nil {
 		logInternalError(ex.ctx, ex.requestID, clienterr.CodeForwardFailed, fwdErr)
 		if ex.healthKeyOK {
@@ -231,13 +229,19 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	}
 	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ex.ctx), 30*time.Second)
 	defer cancel()
+	ledgerFailClosed := auditLedgerProductionMode() && !streamingAuditLedgerResultAllowsSettle(ledgerResult)
+	if ledgerFailClosed {
+		streamAttempt.State = billing.StreamStateFailed
+		streamAttempt.StreamTerminatedReason = "audit_ledger_error"
+		streamAttempt = streamAttempt.Normalized()
+	}
+	writeStreamBillingHeaders(w.Header(), streamAttempt)
 	// settle 条件三选一: 可计费 / 已向客户端交付内容 / 用量歧义需 audit 对账。
 	// 仅"上游真零交付"(非计费 且 零交付 且 非 AmbiguousUsage) 才 abort —— 对齐
 	// Owner 2026-05-20 计费策略,且避免 abort 已交付内容的流导致重试重复交付。
 	settle := streamAttempt.State.Chargeable() ||
 		streamAttempt.DeliveredTokenCount > 0 ||
 		draft.EndClass == gateway.AmbiguousUsage
-	ledgerFailClosed := auditLedgerProductionMode() && !streamingAuditLedgerResultAllowsSettle(ledgerResult)
 	var streamAbortErr error
 	if settle && !ledgerFailClosed {
 		event := ex.streamingCompletionEvent(draft, streamAttempt)
@@ -542,6 +546,8 @@ func declareStreamBillingTrailers(h http.Header) {
 	}
 	h.Add("Trailer", headerHUAKAIStreamState)
 	h.Add("Trailer", headerHUAKAIDeliveredTokens)
+	h.Add("Trailer", headerHUAKAIAuditLedgerID)
+	h.Add("Trailer", headerHUAKAIAuditLedgerDLQRef)
 }
 
 func writeStreamBillingHeaders(h http.Header, attempt billing.Attempt) {
@@ -551,4 +557,20 @@ func writeStreamBillingHeaders(h http.Header, attempt billing.Attempt) {
 	attempt = attempt.Normalized()
 	h.Set(headerHUAKAIStreamState, attempt.State.String())
 	h.Set(headerHUAKAIDeliveredTokens, strconv.FormatInt(attempt.DeliveredTokenCount, 10))
+}
+
+func writeStreamingLedgerTrailers(h http.Header, result auditledger.AuditLedgerResult) {
+	if h == nil {
+		return
+	}
+	switch result.State {
+	case auditledger.LedgerResultStatePersisted:
+		if result.LedgerID != "" {
+			h.Set(headerHUAKAIAuditLedgerID, result.LedgerID)
+		}
+	case auditledger.LedgerResultStateDeferred:
+		if result.DLQRef != "" {
+			h.Set(headerHUAKAIAuditLedgerDLQRef, result.DLQRef)
+		}
+	}
 }
