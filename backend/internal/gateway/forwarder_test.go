@@ -73,6 +73,32 @@ func (rstAfterOneScanner) Scan(ctx context.Context, _ io.Reader, _ int) iter.Seq
 	}
 }
 
+type delayedTerminalScanner struct {
+	delay      time.Duration
+	terminalAt time.Time
+}
+
+func (s *delayedTerminalScanner) Scan(ctx context.Context, _ io.Reader, _ int) iter.Seq2[SSEEvent, error] {
+	return func(yield func(SSEEvent, error) bool) {
+		if !yield(sseEventFromTestEvent(messageStart("msg-delayed-terminal")), nil) {
+			return
+		}
+		if !yield(sseEventFromTestEvent(textDelta(0, "first")), nil) {
+			return
+		}
+		timer := time.NewTimer(s.delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			yield(SSEEvent{}, ctx.Err())
+			return
+		case <-timer.C:
+		}
+		s.terminalAt = time.Now()
+		yield(sseEventFromTestEvent(messageStop()), nil)
+	}
+}
+
 func messageStart(id string) sseEvt {
 	return sseEvt{typ: "message_start", payload: map[string]any{
 		"type":    "message_start",
@@ -98,6 +124,11 @@ func messageDeltaWithUsage(stopReason string, in, out int) sseEvt {
 
 func messageStop() sseEvt {
 	return sseEvt{typ: "message_stop", payload: map[string]any{"type": "message_stop"}}
+}
+
+func sseEventFromTestEvent(e sseEvt) SSEEvent {
+	raw, _ := json.Marshal(e.payload)
+	return SSEEvent{Type: e.typ, Data: raw}
 }
 
 // newForwarder 构造测试用 StreamForwarder。
@@ -510,7 +541,10 @@ func TestStreamingLedgerSubmitAfterForwardHasEntry(t *testing.T) {
 	}
 }
 
-func TestStreamingLedgerCallbackBeforeFirstChunk(t *testing.T) {
+func TestStreamingLedgerCallbackAtStreamTerminal(t *testing.T) {
+	// Risk killed: C-13 must not emit the streaming ledger at first byte.
+	// Mutation self-check: restoring Write/WriteHeader ledger emission makes
+	// firstWriteCallbackSeen true and fails this test.
 	ctx := context.Background()
 	signer, err := sign.GenerateKey()
 	if err != nil {
@@ -520,7 +554,9 @@ func TestStreamingLedgerCallbackBeforeFirstChunk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ledger: %v", err)
 	}
-	writer := &firstChunkHeaderWriter{header: http.Header{}}
+	callbackCalled := false
+	var callbackResult auditledger.AuditLedgerResult
+	writer := &firstChunkHeaderWriter{header: http.Header{}, callbackSeen: &callbackCalled}
 	req := anthropicForwardRequest(7, 42)
 	req.RequestID = "req-stream-header-order"
 
@@ -528,11 +564,8 @@ func TestStreamingLedgerCallbackBeforeFirstChunk(t *testing.T) {
 	f.AuditLedger = ledger
 	f.Signer = signer
 	f.LedgerCallback = func(result auditledger.AuditLedgerResult) {
-		if result.State != auditledger.LedgerResultStatePersisted {
-			t.Fatalf("LedgerCallback state=%v want Persisted", result.State)
-		}
-		writer.Header().Set("X-Test-Ledger-ID", result.LedgerID)
-		writer.Header().Set("X-Test-Sig-Fingerprint", result.Fingerprint)
+		callbackCalled = true
+		callbackResult = result
 	}
 	upstream := sseBytes(messageStart("msg-order"), textDelta(0, "first"), messageStop())
 	if _, err := f.Forward(ctx, bytes.NewReader(upstream), writer, req); err != nil {
@@ -541,11 +574,117 @@ func TestStreamingLedgerCallbackBeforeFirstChunk(t *testing.T) {
 	if writer.writes == 0 {
 		t.Fatal("writer saw no chunks")
 	}
-	if writer.firstWriteLedgerID == "" {
-		t.Fatalf("ledger callback ran after first chunk; first-write headers=%v", writer.firstWriteHeader)
+	if writer.firstWriteCallbackSeen {
+		t.Fatalf("ledger callback ran before first chunk; first-write headers=%v", writer.firstWriteHeader)
 	}
-	if writer.firstWriteSigFingerprint != signer.Fingerprint() {
-		t.Fatalf("first-write fingerprint=%q want %q", writer.firstWriteSigFingerprint, signer.Fingerprint())
+	if !callbackCalled {
+		t.Fatal("ledger callback did not run before Forward returned")
+	}
+	if callbackResult.State != auditledger.LedgerResultStatePersisted {
+		t.Fatalf("LedgerCallback state=%v want Persisted", callbackResult.State)
+	}
+	if callbackResult.LedgerID == "" {
+		t.Fatal("LedgerCallback LedgerID is empty")
+	}
+	if callbackResult.Fingerprint != signer.Fingerprint() {
+		t.Fatalf("callback fingerprint=%q want %q", callbackResult.Fingerprint, signer.Fingerprint())
+	}
+}
+
+func TestStreamingLedgerPersistsAfterClientContextCancel(t *testing.T) {
+	// Risk killed: a client disconnect after partial delivery must not cancel
+	// the terminal streaming ledger write. Mutation self-check: replacing the
+	// detached ledger context with the request ctx makes Append observe
+	// context.Canceled, leaves the callback non-Persisted, and this test fails.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	inner, err := auditledger.NewMemoryLedger(signer)
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	ledger := &contextRejectingStreamLedger{inner: inner}
+	req := anthropicForwardRequest(7, 42)
+	req.RequestID = "req-stream-client-cancel-ledger"
+	writer := &cancelOnFirstWriteWriter{cancel: cancel}
+	var callback auditledger.AuditLedgerResult
+
+	f := newForwarder()
+	f.AuditLedger = ledger
+	f.Signer = signer
+	f.LedgerCallback = func(result auditledger.AuditLedgerResult) { callback = result }
+	upstream := sseBytes(messageStart("msg-client-cancel"), textDelta(0, "partial"), messageStop())
+
+	_, err = f.Forward(ctx, bytes.NewReader(upstream), writer, req)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("Forward err=%v want nil or context.Canceled", err)
+	}
+	if writer.body.Len() == 0 {
+		t.Fatal("fixture delivered no client bytes before cancel")
+	}
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("request ctx err=%v want context.Canceled", ctx.Err())
+	}
+	if ledger.appendSawCanceled {
+		t.Fatal("ledger Append saw canceled request context; want detached bounded context")
+	}
+	if got := inner.Size(context.Background()); got != 1 {
+		t.Fatalf("ledger size=%d want 1 after client cancel", got)
+	}
+	if callback.State != auditledger.LedgerResultStatePersisted {
+		t.Fatalf("LedgerCallback state=%v want Persisted; result=%+v", callback.State, callback)
+	}
+	if callback.LedgerID == "" {
+		t.Fatal("LedgerCallback LedgerID is empty after client cancel")
+	}
+}
+
+func TestStreamingLedgerCompletionTimeUsesTerminalTime(t *testing.T) {
+	// Risk killed: C-13 must record true stream completion time, not first-byte
+	// time. Mutation self-check: moving ledger emission back to first write
+	// makes the response-hop timestamp too close to firstWriteAt and fails.
+	ctx := context.Background()
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	ledger, err := auditledger.NewMemoryLedger(signer)
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	scanners := NewStaticStreamScannerRegistry()
+	scanner := &delayedTerminalScanner{delay: 120 * time.Millisecond}
+	scanners.MustRegister("anthropic_messages", scanner)
+	writer := &firstChunkHeaderWriter{header: http.Header{}}
+	req := anthropicForwardRequest(7, 42)
+	req.RequestID = "req-stream-terminal-time"
+
+	f := newForwarder()
+	f.Scanners = scanners
+	f.AuditLedger = ledger
+	f.Signer = signer
+	if _, err := f.Forward(ctx, bytes.NewReader(nil), writer, req); err != nil {
+		t.Fatalf("Forward: %v", err)
+	}
+	if writer.firstWriteAt.IsZero() {
+		t.Fatal("fixture did not observe first client write")
+	}
+	if scanner.terminalAt.IsZero() {
+		t.Fatal("fixture did not observe delayed terminal event")
+	}
+	entry, err := ledger.GetByRequestID(ctx, req.RequestID)
+	if err != nil {
+		t.Fatalf("ledger entry by request_id: %v", err)
+	}
+	completedAt := responseHopTime(t, entry)
+	if delta := completedAt.Sub(writer.firstWriteAt); delta < 75*time.Millisecond {
+		t.Fatalf("completion timestamp too close to first byte: delta=%v want >=75ms", delta)
+	}
+	if delta := absDuration(completedAt.Sub(scanner.terminalAt)); delta > 150*time.Millisecond {
+		t.Fatalf("completion timestamp=%s terminalAt=%s delta=%v want <=150ms", completedAt.Format(time.RFC3339Nano), scanner.terminalAt.Format(time.RFC3339Nano), delta)
 	}
 }
 
@@ -784,6 +923,32 @@ func (d *disconnectingWriter) Write(p []byte) (int, error) {
 }
 func (d *disconnectingWriter) Flush() {}
 
+type cancelOnFirstWriteWriter struct {
+	body   bytes.Buffer
+	header http.Header
+	cancel context.CancelFunc
+	writes int
+}
+
+func (w *cancelOnFirstWriteWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = http.Header{}
+	}
+	return w.header
+}
+
+func (w *cancelOnFirstWriteWriter) WriteHeader(int) {}
+
+func (w *cancelOnFirstWriteWriter) Write(p []byte) (int, error) {
+	if w.writes == 0 && w.cancel != nil {
+		w.cancel()
+	}
+	w.writes++
+	return w.body.Write(p)
+}
+
+func (w *cancelOnFirstWriteWriter) Flush() {}
+
 // firstChunkHeaderWriter 记录第一次 body write 发生时 header 的状态，
 // 用于守住 T12：ledger callback 必须早于首个 SSE chunk。
 type firstChunkHeaderWriter struct {
@@ -793,6 +958,9 @@ type firstChunkHeaderWriter struct {
 	firstWriteHeader         http.Header
 	firstWriteLedgerID       string
 	firstWriteSigFingerprint string
+	firstWriteCallbackSeen   bool
+	firstWriteAt             time.Time
+	callbackSeen             *bool
 }
 
 func (w *firstChunkHeaderWriter) Header() http.Header {
@@ -806,15 +974,48 @@ func (w *firstChunkHeaderWriter) WriteHeader(int) {}
 
 func (w *firstChunkHeaderWriter) Write(p []byte) (int, error) {
 	if w.writes == 0 {
+		w.firstWriteAt = time.Now()
 		w.firstWriteHeader = w.Header().Clone()
 		w.firstWriteLedgerID = w.firstWriteHeader.Get("X-Test-Ledger-ID")
 		w.firstWriteSigFingerprint = w.firstWriteHeader.Get("X-Test-Sig-Fingerprint")
+		if w.callbackSeen != nil {
+			w.firstWriteCallbackSeen = *w.callbackSeen
+		}
 	}
 	w.writes++
 	return w.body.Write(p)
 }
 
 func (w *firstChunkHeaderWriter) Flush() {}
+
+type contextRejectingStreamLedger struct {
+	inner             *auditledger.MemoryLedger
+	appendSawCanceled bool
+}
+
+func (l *contextRejectingStreamLedger) Append(ctx context.Context, entry auditledger.PreparedEntry) (auditledger.LedgerEntry, error) {
+	if err := ctx.Err(); err != nil {
+		l.appendSawCanceled = true
+		return auditledger.LedgerEntry{}, err
+	}
+	return l.inner.Append(ctx, entry)
+}
+
+func (l *contextRejectingStreamLedger) GetByRequestID(ctx context.Context, requestID string) (auditledger.LedgerEntry, error) {
+	return l.inner.GetByRequestID(ctx, requestID)
+}
+
+func (l *contextRejectingStreamLedger) GetByRequestIDAndTenantScope(ctx context.Context, requestID, tenantScopeRef string) (auditledger.LedgerEntry, error) {
+	return l.inner.GetByRequestIDAndTenantScope(ctx, requestID, tenantScopeRef)
+}
+
+func (l *contextRejectingStreamLedger) LatestMerkleRoot(ctx context.Context) ([32]byte, error) {
+	return l.inner.LatestMerkleRoot(ctx)
+}
+
+func (l *contextRejectingStreamLedger) Size(ctx context.Context) int {
+	return l.inner.Size(ctx)
+}
 
 type failingStreamAppendLedger struct {
 	appendErr error
@@ -850,6 +1051,29 @@ func (q *recordingStreamAuditLedgerDLQ) Enqueue(_ context.Context, event dlq.Eve
 		return 0, q.err
 	}
 	return q.id, nil
+}
+
+func responseHopTime(t *testing.T, entry auditledger.LedgerEntry) time.Time {
+	t.Helper()
+	for _, hop := range entry.HopChain {
+		if hop.Hop != proto.HopResponse {
+			continue
+		}
+		ts, err := time.Parse(time.RFC3339Nano, hop.Timestamp)
+		if err != nil {
+			t.Fatalf("response hop timestamp parse: %v; hop=%+v", err, hop)
+		}
+		return ts
+	}
+	t.Fatalf("response hop missing from hop chain: %+v", entry.HopChain)
+	return time.Time{}
+}
+
+func absDuration(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
 }
 
 // errorThrowingAdapter 满足 proto.UpstreamAdapter；在配置的事件类型上抛出非断连错误，
