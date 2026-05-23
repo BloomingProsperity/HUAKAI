@@ -62,6 +62,16 @@ func releaseMode() eventbus.ReleaseMode {
 	return eventbus.ReleaseModeDev
 }
 
+func requireProductionChannelHealthSigner(signer *sign.Signer) error {
+	if !releaseModeProduction() {
+		return nil
+	}
+	if signer == nil {
+		return fmt.Errorf("production 模式要求 channelhealth audit signer：请设置 HUAKAI_AUDIT_PRIVATE_KEY_PATH")
+	}
+	return nil
+}
+
 func loadCredentialKeyProvider() (credentialstore.KeyProvider, error) {
 	keyID := strings.TrimSpace(os.Getenv("HUAKAI_CREDENTIAL_KEY_ID"))
 	if keyID == "" {

@@ -169,7 +169,14 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, err
 	}
-	channelHealthStore := channelhealth.NewPostgresStoreWithAuditSigner(pgPool, auditSigner)
+	if err := requireProductionChannelHealthSigner(auditSigner); err != nil {
+		return nil, err
+	}
+	channelHealthStoreOptions := []channelhealth.PostgresStoreOption{}
+	if releaseModeProduction() {
+		channelHealthStoreOptions = append(channelHealthStoreOptions, channelhealth.WithProductionRequired())
+	}
+	channelHealthStore := channelhealth.NewPostgresStoreWithAuditSigner(pgPool, auditSigner, channelHealthStoreOptions...)
 	channelHealthService := channelhealth.NewService(channelHealthStore, channelhealth.DefaultPolicy(), nil, channelhealth.WithAlertOutbox(outboxStore))
 	selector, selectorCleanup, err := buildSelector(ctx, billingQueries, pgPool, opts.selector, channelHealthService, logger)
 	if err != nil {
