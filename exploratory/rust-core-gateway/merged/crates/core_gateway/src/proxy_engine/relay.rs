@@ -133,6 +133,9 @@ where
 {
     let (sender, receiver) = mpsc::channel::<BodyChunk>(STREAM_CHANNEL_DEPTH);
     let drop_reporter = terminal.reporter.clone();
+    // Owner item 4 fix 2026-05-24: 上游分类快照透传给 ReceiverByteStream Drop, 防误报 ClientCancel。
+    let upstream_terminal_status_snapshot = terminal.status;
+    let upstream_terminal_http_status_snapshot = terminal.http_status;
 
     let task = task::spawn(async move {
         let mut stream_pipeline = stream_tap
@@ -321,6 +324,8 @@ where
         abort_handle: Some(abort_handle),
         terminal_reporter: drop_reporter,
         in_flight_guard,
+        upstream_terminal_status: upstream_terminal_status_snapshot,
+        upstream_terminal_http_status: upstream_terminal_http_status_snapshot,
     })
 }
 

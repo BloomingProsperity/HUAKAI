@@ -793,6 +793,64 @@ async fn replay_keeps_same_idempotency_key_and_control_plane_dedups_duplicate() 
 ///
 /// fixture: mock CP Unavailable + retry_attempts=0 -> 单次失败立返 -> pending 必须仍在。
 /// mutation: 旧代码若在 worker 失败时也 spool.ack() 删 pending -> pending=0 + replay 永不补救 -> 测试红。
+/// Owner item 4 fix 2026-05-24: upstream 返 5xx + body 流到一半 client drop -> 必须报 upstream_5xx,
+/// 不能误报 client_cancel (那样会把上游故障算成客户取消, 反账务)。
+///
+/// fixture: MockBehavior::Json{500, 1MB body} 让 upstream 响应足够大无法一次性传完, client 早 drop。
+/// build_router + reqwest 真实 HTTP 路径 = 走 forward_planned + upstream_response_to_client + ReceiverByteStream。
+///
+/// mutation: PinnedDrop 不读 upstream_terminal_status, 仍硬编 ClientCancel -> 测试断言 status="upstream_5xx" 红。
+#[tokio::test]
+async fn upstream_5xx_then_client_drop_mid_stream_reports_upstream_5xx_not_client_cancel() {
+    // 1MB body 确保 hyper 多 TCP 帧传输, client 有时间在 body 完成前 drop
+    let big_body = Bytes::from(vec![b'X'; 1024 * 1024]);
+    let upstream = MockUpstream::spawn(MockBehavior::Json {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        body: big_body,
+    })
+    .await;
+    let control_plane = MockControlPlane::spawn(vendor_plan(
+        upstream.endpoint(),
+        "anthropic",
+        "upstream-secret-5xx-drop",
+        30_000,
+    ))
+    .await;
+    let (addr, task) = spawn_listener(test_config(control_plane.endpoint())).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{addr}/v1/messages"))
+        .header("content-type", "application/json")
+        .body(r#"{"model":"claude-test"}"#)
+        .send()
+        .await
+        .expect("upstream 500 响应仍应有 HTTP 头");
+
+    // 客户端收到 500 头, 开始读 body 第一个 chunk, 然后立即 drop (模拟 client 异常断开)
+    assert_eq!(response.status().as_u16(), 500, "upstream 5xx 必须透传");
+    let mut stream = response.bytes_stream();
+    let _first = tokio::time::timeout(Duration::from_millis(500), stream.next())
+        .await
+        .expect("首 chunk 应到达")
+        .expect("应有首 chunk")
+        .expect("首 chunk 应成功");
+    drop(stream); // 关键: 在 body 完整收齐前 drop, 触发 ReceiverByteStream PinnedDrop
+
+    // 等 attempt report 落到 mock CP
+    let report = wait_for_report(&control_plane, "upstream_5xx").await;
+    assert_eq!(
+        report.status, "upstream_5xx",
+        "Owner item 4: mid-stream client drop 不能掩盖 upstream 5xx 分类 (实际 {})",
+        report.status
+    );
+    assert_eq!(
+        report.http_status, 500,
+        "http_status 必须保留 upstream 500"
+    );
+    assert!(!report.idempotency_key.is_empty());
+    task.abort();
+}
+
 /// W12-A D-4 Slice 3 AC-4-pre: spool 接近 watermark 时 would_accept 必须返 Err Backpressure,
 /// 让 proxy_engine forward_planned 转 503 在 mark_forwarding 之前拒绝, 请求未进上游 = 未产生计费。
 ///

@@ -100,12 +100,17 @@ pub struct ProxyEngine {
     timeouts: ProxyTimeouts,
 }
 
+// W11+ Owner item 4 fix 2026-05-24: ReceiverByteStream 新增 upstream_terminal_status +
+// upstream_terminal_http_status, Drop 时若上游已 4xx/5xx 不能误报 ClientCancel,
+// 否则把上游故障算成客户取消 = 反账务。pin_project_lite 不接受字段 doc, 注释挪到外面。
 pin_project! {
     struct ReceiverByteStream {
         receiver: mpsc::Receiver<BodyChunk>,
         abort_handle: Option<AbortHandle>,
         terminal_reporter: Option<AttemptTerminalReporter>,
         in_flight_guard: Option<crate::resource_limits::InFlightRequestGuard>,
+        upstream_terminal_status: AttemptStatus,
+        upstream_terminal_http_status: Option<u16>,
     }
 
     // pin_project 要求通过 #[pinned_drop] 声明 Drop, 不能同时有独立的 impl Drop
@@ -114,14 +119,28 @@ pin_project! {
             let this = this.project();
             if let Some(reporter) = this.terminal_reporter.take() {
                 // W12-A D-4 Slice 3 AC-4-post: post-commit (响应头已送出后) — HTTP 不可改, 失败 loud。
-                // NOTE: ClientCancel 分类对 upstream 5xx mid-stream drop 是错误的 (Owner item 4 follow-up);
-                // 这里只换 report 调用, 不改 status 分类逻辑。
+                // Owner item 4 fix 2026-05-24: 用上游分类状态决定 attempt status, 不再无脑 ClientCancel。
+                // - upstream 200 + client drop = ClientCancel (真客户取消)
+                // - upstream 4xx + client drop = Upstream4xx (上游错先发生, client drop 是后果)
+                // - upstream 5xx + client drop = Upstream5xx (同上, 反账务防呆)
+                let (status, error_class, error_msg) = match *this.upstream_terminal_status {
+                    AttemptStatus::Success => (
+                        AttemptStatus::ClientCancel,
+                        "client_cancel",
+                        "client response body dropped before terminal frame",
+                    ),
+                    upstream => (
+                        upstream,
+                        upstream.error_class(),
+                        "client dropped body mid-stream; upstream terminal classification preserved",
+                    ),
+                };
                 let _ = reporter.report_post_commit(
-                    AttemptStatus::ClientCancel,
-                    None,
+                    status,
+                    *this.upstream_terminal_http_status,
                     AttemptReportStats::default(),
-                    Some("client_cancel"),
-                    Some("client response body dropped before terminal frame"),
+                    Some(error_class),
+                    Some(error_msg),
                 );
             }
             if let Some(handle) = this.abort_handle.take().filter(|h| !h.is_finished()) {
