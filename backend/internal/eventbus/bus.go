@@ -90,7 +90,7 @@ func (b *Bus) Emit(ctx context.Context, event RequestCompletionEvent) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	event, err := event.normalized()
+	event, err := event.normalized(b.cfg.AuditRefPolicy)
 	if err != nil {
 		return err
 	}
