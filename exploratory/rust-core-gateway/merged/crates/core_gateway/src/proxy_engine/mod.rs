@@ -54,8 +54,8 @@ const LOCAL_MAX_STREAM_FRAME_BYTES: usize = DEFAULT_MAX_FRAME_BYTES;
 const DEFAULT_CONTENT_TYPE: &str = "application/json";
 const ANTHROPIC_VERSION: &str = "anthropic-version";
 const ANTHROPIC_BETA: &str = "anthropic-beta";
-const OPENAI_ORGANIZATION: &str = "openai-organization";
-const OPENAI_PROJECT: &str = "openai-project";
+// W11-D D-6: OPENAI_ORGANIZATION / OPENAI_PROJECT 客户端值已 strip (见 headers.rs);
+// 待 route_plan 注入合同上线后再加回作为 route-plan-owned 注入键。
 const GEMINI_API_CLIENT: &str = "x-goog-api-client";
 
 type BodyChunk = Result<Bytes, io::Error>;
