@@ -1,6 +1,7 @@
 use super::{
-    AvailableMimicryFeatures, BuiltinProfile, MimicryBackend, ProfileMatchPolicy, ProfileMode,
-    ProfileVendor, load_builtin_profile, resolve_profile_mimicry_backend,
+    AvailableMimicryFeatures, BackendResolverError, BuiltinProfile, MimicryBackend,
+    ProfileMatchPolicy, ProfileMode, ProfileVendor, load_builtin_profile,
+    resolve_profile_mimicry_backend,
 };
 
 #[test]
@@ -98,34 +99,106 @@ fn codex_cli_backend_resolver_blocked_when_no_backend() {
     assert_vendor_backend_blocked(BuiltinProfile::CodexCli);
 }
 
+// W11-E D-10 (2026-05-23): kiro 与 gemini 模板的 intent 分别是 UnsupportedTemplate
+// (rustls) 和 KnownGapBlocked (nodejs gap); resolver 必须先调 backend_intent() 再看 feature,
+// 不能让 mimicry-boring/openssl 旗子静默放行未验证模板。下面 6 个测试覆盖 3 个 feature 组合,
+// 验证 kiro/gemini 在任何 feature 组合下都被拒绝。
+// mutation: 把 backend_resolver::resolve_vendor_mimicry_backend 早 return Boring/Openssl
+// 恢复 → 这些断言变红 (resolver 错误地返回 Boring/Openssl)。
+
 #[test]
-fn kiro_backend_resolver_prefers_boring_when_available() {
-    assert_vendor_backend_prefers_boring(BuiltinProfile::KiroCli);
+fn kiro_backend_resolver_rejects_rustls_template_with_boring_feature() {
+    assert_vendor_template_unsupported_regardless_of_feature(
+        BuiltinProfile::KiroCli,
+        AvailableMimicryFeatures {
+            openssl: true,
+            boring: true,
+        },
+        "rustls",
+    );
 }
 
 #[test]
-fn kiro_backend_resolver_falls_back_to_openssl_when_boring_absent() {
-    assert_vendor_backend_falls_back_to_openssl(BuiltinProfile::KiroCli);
+fn kiro_backend_resolver_rejects_rustls_template_with_openssl_only() {
+    assert_vendor_template_unsupported_regardless_of_feature(
+        BuiltinProfile::KiroCli,
+        AvailableMimicryFeatures {
+            openssl: true,
+            boring: false,
+        },
+        "rustls",
+    );
 }
 
 #[test]
-fn kiro_backend_resolver_blocked_when_no_backend() {
-    assert_vendor_backend_blocked(BuiltinProfile::KiroCli);
+fn kiro_backend_resolver_rejects_rustls_template_when_no_feature() {
+    assert_vendor_template_unsupported_regardless_of_feature(
+        BuiltinProfile::KiroCli,
+        AvailableMimicryFeatures {
+            openssl: false,
+            boring: false,
+        },
+        "rustls",
+    );
 }
 
 #[test]
-fn gemini_advanced_backend_resolver_prefers_boring_when_available() {
-    assert_vendor_backend_prefers_boring(BuiltinProfile::GeminiAdvanced);
+fn gemini_backend_resolver_rejects_nodejs_template_with_boring_feature() {
+    assert_vendor_template_unsupported_regardless_of_feature(
+        BuiltinProfile::GeminiAdvanced,
+        AvailableMimicryFeatures {
+            openssl: true,
+            boring: true,
+        },
+        "nodejs",
+    );
 }
 
 #[test]
-fn gemini_advanced_backend_resolver_falls_back_to_openssl_when_boring_absent() {
-    assert_vendor_backend_falls_back_to_openssl(BuiltinProfile::GeminiAdvanced);
+fn gemini_backend_resolver_rejects_nodejs_template_with_openssl_only() {
+    assert_vendor_template_unsupported_regardless_of_feature(
+        BuiltinProfile::GeminiAdvanced,
+        AvailableMimicryFeatures {
+            openssl: true,
+            boring: false,
+        },
+        "nodejs",
+    );
 }
 
 #[test]
-fn gemini_advanced_backend_resolver_blocked_when_no_backend() {
-    assert_vendor_backend_blocked(BuiltinProfile::GeminiAdvanced);
+fn gemini_backend_resolver_rejects_nodejs_template_when_no_feature() {
+    assert_vendor_template_unsupported_regardless_of_feature(
+        BuiltinProfile::GeminiAdvanced,
+        AvailableMimicryFeatures {
+            openssl: false,
+            boring: false,
+        },
+        "nodejs",
+    );
+}
+
+fn assert_vendor_template_unsupported_regardless_of_feature(
+    builtin: BuiltinProfile,
+    available_features: AvailableMimicryFeatures,
+    reason_substring: &str,
+) {
+    let profile = load_builtin_profile(builtin).expect("builtin profile 应加载");
+
+    let err = resolve_profile_mimicry_backend(&profile, available_features)
+        .expect_err("D-10: 模板 intent 标 UnsupportedTemplate 时, feature 旗子不能覆盖");
+
+    match err {
+        BackendResolverError::UnsupportedTemplate { reason } => {
+            assert!(
+                reason.contains(reason_substring),
+                "拒绝 reason 必须指明模板 intent 失败原因 ({reason_substring}), 实际: {reason}"
+            );
+        }
+        other => panic!(
+            "expected UnsupportedTemplate err for {builtin:?}, got {other:?}"
+        ),
+    }
 }
 
 fn assert_vendor_backend_prefers_boring(builtin: BuiltinProfile) {

@@ -73,22 +73,57 @@ fn resolve_vendor_mimicry_backend(
     template: &FingerprintProfile,
     available_features: AvailableMimicryFeatures,
 ) -> Result<MimicryBackend, BackendResolverError> {
-    if available_features.boring {
-        return Ok(MimicryBackend::Boring);
-    }
+    // W11-E D-10: 必须先咨询 backend_intent(), 不让 mimicry-boring / mimicry-openssl
+    // feature 旗子绕过 KnownGap / UnsupportedTemplate 判定 — 否则攻击者只要让 binary
+    // 编进 boring feature, 就能让原本 fail-closed 的 profile (kiro rustls / gemini nodejs)
+    // 被静默放行进生产 dispatch, 完全失去模板验证保护。
+    //
+    // 修后语义:
+    //   1) intent 标 UnsupportedTemplate (rustls 等) → 直接 Err 给上层 BlockUnsupportedTemplate
+    //   2) intent 标 KnownGapBlocked → 保持 KnownGap, feature 无权覆盖
+    //   3) intent 给出可执行 backend (Openssl 或 codex 例外) → 才允许 feature 选优
+    //
+    // mutation marker: 把 backend_from_profile_intent 调用删除并恢复 `if available_features.boring
+    // return Ok(Boring)` early-return → mimicry_resolver_respects_known_gap_over_boring_feature
+    // 测试断言红。
+    let intent_backend = backend_from_profile_intent(template)?;
 
-    if available_features.openssl {
-        let backend = MimicryBackend::Openssl;
-        ensure_selected_backend_matches_template(&backend, template)?;
-        return Ok(backend);
+    match intent_backend {
+        // 模板被 backend_intent 标 known-gap → feature 编不编没用, 保持 fail-closed。
+        MimicryBackend::KnownGapBlocked { reason } => {
+            Ok(MimicryBackend::KnownGapBlocked { reason })
+        }
+        // 模板可由 OpenSSL adapter 执行; boring 是更严格的字节级 JA3 控制, 优先用 boring。
+        // 两条路径都要求对应 feature 已编进 binary, 否则保持 KnownGap (建议安装 feature 后再上)。
+        MimicryBackend::Openssl => {
+            if available_features.boring {
+                Ok(MimicryBackend::Boring)
+            } else if available_features.openssl {
+                ensure_selected_backend_matches_template(&MimicryBackend::Openssl, template)?;
+                Ok(MimicryBackend::Openssl)
+            } else {
+                Ok(MimicryBackend::KnownGapBlocked {
+                    reason: format!(
+                        "{} profile requires mimicry-boring for byte-level JA3 control or mimicry-openssl fallback",
+                        template.vendor.as_str()
+                    ),
+                })
+            }
+        }
+        // 预留 (当前 backend_intent 不返回 Boring; 留作未来 explicit boring-approved 模板)。
+        MimicryBackend::Boring => {
+            if available_features.boring {
+                Ok(MimicryBackend::Boring)
+            } else {
+                Ok(MimicryBackend::KnownGapBlocked {
+                    reason: format!(
+                        "{} profile requests boring intent but mimicry-boring feature is off",
+                        template.vendor.as_str()
+                    ),
+                })
+            }
+        }
     }
-
-    Ok(MimicryBackend::KnownGapBlocked {
-        reason: format!(
-            "{} profile requires mimicry-boring for byte-level JA3 control or mimicry-openssl fallback",
-            template.vendor.as_str()
-        ),
-    })
 }
 
 fn backend_from_profile_intent(
