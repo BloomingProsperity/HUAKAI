@@ -606,3 +606,42 @@ If `codex exec review` syntax errors with "unexpected argument" or "cannot be us
 - **spec 若规定一个测试,必须给出判别性的例子,而不只是测试意图。** 一条
   写「证明 X 驱动 Y」却没给「去掉 X 就改变 Y」的 fixture 的 spec,是不完整的
   spec —— 这正是 W3a 弱测试的根因(spec 例子用了非判别性的关键字)。
+
+## Reference-Project Comparison On Decisions (added 2026-05-23 Owner directive)
+
+Owner 2026-05-23 quote「需要我做决定的时候要带上借鉴项目功能模块得处理方法。写进规则」。镜像 `CLAUDE.md` #15 给 codex / reviewer lane。
+
+### 规则适用面
+
+- **Claude PM-orchestrator** surface 决策给 Owner(`AskUserQuestion` / plan §D / schema-gate / A/B/C 选项 / sequencing)时,必须每选项附 ≥1 个 `~/refs/<project>/<file>:<line>` 参考项目对照引证 + 1 句概括;若该参考项目无等价问题,需明指 cite("`<repo>@<sha>:<file>:<line>` shows X is single-tenant so concern doesn't apply") 不可空话。
+- **Codex 撰写 plan §D 时**:plan 文件本身就是 Owner 决策的输入,plan §D 表格必须按列含「参考项目对照」或专门 sub-section,引证同上。Claude 转写 surface 时 fill-in。
+- **Codex per-commit review + 切片交叉评审**:必须把以下情况标为 HIGH:
+  - Claude surface 决策给 Owner 时缺参考项目对照
+  - plan §D 表格无参考项目列(或显式 "no equivalent" 注脚)
+  - 引证形如 "sub2api/new-api 都 X" 无 `<repo>@<sha>:<file>:<line>` cite (违 #12 source-must-read + #15 双重违反)
+- **Gemini lane** 同 codex 写 plan 时遵守。
+
+### Why
+
+Owner 不能凭 Claude/Codex 内部 trade-off 拍板决策;参考项目横向对比 = Owner 视角必备。`AskUserQuestion` option 没 ref 对比 = Owner 视线封闭。
+
+### How
+
+- 每 `AskUserQuestion` option description 字段最后 1-2 句加"参考项目对照"
+- 每 synthesis plan §D 表加列 `参考项目对照`
+- 每 schema-gate proposal 加 prestudy §A 链接(prestudy 必含 4 ref 项目逐条 cite)
+
+### Anti-pattern
+
+- "A vs B" 只讲 HUAKAI 内部权衡,Owner 需问"sub2api 怎么做"
+- 写 ref 项目断言但无 file:line cite (违 #12 + #15 双违)
+- 把 "no equivalent" 写成空话不 cite
+
+### Codex reviewer enforcement
+
+`codex exec review --uncommitted` / 切片 cross-review 必须扫:
+- staged diff 内是否有 plan §D 表格无参考项目列
+- staged plan/synthesis 内是否有未 cite 的 ref-project behavior 断言
+- staged docs 决策点是否缺 prestudy 链接
+
+任一标 HIGH 阻 land。
