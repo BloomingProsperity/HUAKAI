@@ -52,12 +52,12 @@ func setHUAKAIModelHeaders(h http.Header, requested string, env *proto.HCSF) {
 	}
 }
 
-func WriteHuakaiHeaders(h http.Header, requested string, env *proto.HCSF, entry *auditledger.LedgerEntry) {
+func WriteHuakaiHeaders(h http.Header, requested string, env *proto.HCSF, result auditledger.AuditLedgerResult, requestID string, tenantID int64) {
 	setHUAKAIModelHeaders(h, requested, env)
-	if h == nil || entry == nil {
+	if h == nil || result.State != auditledger.LedgerResultStatePersisted {
 		return
 	}
-	WriteHuakaiLedgerHeaders(h, entry.RequestID, entry.LedgerID, entry.PubkeyFingerprint, entry.TenantID)
+	WriteHuakaiLedgerHeaders(h, requestID, result.LedgerID, result.Fingerprint, tenantID)
 }
 
 func WriteHuakaiLedgerHeaders(h http.Header, requestID, ledgerID, sigFingerprint string, tenantID int64) {
@@ -162,7 +162,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 	}
 	cachedEnv.Accounting.HopChain = gateway.BuildHopChain(forwardReq, "", in.RequestStartedAt, time.Now())
 	appendTrustChainWarning(cachedEnv, "response_cache_l2_hit", "served from HUAKAI L2 response cache")
-	ledgerEntry, err := submitAuditLedgerEntry(ctx, d, cachedEnv, in.Ident.TenantID, in.RequestID)
+	ledgerResult, err := submitAuditLedgerEntry(ctx, d, cachedEnv, in.Ident.TenantID, in.RequestID)
 	// in.AccountID == 0 表示 cache 检查在 acquire 之前,
 	// reserve 完成但还没拿到 pool slot / acquisition_token, 不能走 settleCompletion
 	// (它 lookup claim by acquisition_token 找不到行返 500)。
@@ -194,6 +194,30 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 				Draft:           nonStreamingUsageDraft(cachedEnv, decimal.Zero, routingReasonWithCacheHit(routingReason, true, in.Entry.Key)),
 				SnapshotVersion: in.PlanSnapshot,
 			}
+			auditEvent := eventbus.RequestCompletionEvent{
+				ID:                        in.RequestID,
+				TenantID:                  in.Ident.TenantID,
+				ClaimID:                   in.ReserveResult.ClaimID,
+				AccountID:                 in.AccountID,
+				RequestID:                 in.RequestID,
+				EndpointFamily:            d.effectiveEndpointFamily(),
+				RequestedModel:            in.RequestedModel,
+				UpstreamModel:             in.UpstreamModelID,
+				PayloadHash:               in.PayloadHash,
+				AuditLedgerID:             ledgerID(ledgerResult),
+				AuditLedgerDLQRef:         ledgerDLQRef(ledgerResult),
+				AuditSignatureFingerprint: ledgerFingerprint(ledgerResult),
+				SettleRequest:             cacheHitReq,
+				Metadata:                  routeMetadata(in.RouteID),
+			}
+			if err := validateMoneyPathAuditRefForSource(ctx, d, auditEvent, "cache_hit_commit"); err != nil {
+				rejectErr, abortErr := rejectMoneyPathCacheHitCommit(ctx, d, auditEvent, err)
+				if abortErr != nil {
+					setAbortFailedHeader(w, ctx, in.RequestID, abortErr)
+				}
+				writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, clienterr.CodeAuditRefMissing, rejectErr)
+				return true
+			}
 			if commitErr := d.Settler.CommitCacheHit(ctx, cacheHitReq); commitErr != nil {
 				writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, clienterr.CodeCacheSettleError, commitErr)
 				return true
@@ -201,7 +225,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-HUAKAI-Cache-L2", "hit")
-		WriteHuakaiHeaders(w.Header(), in.RequestedModel, cachedEnv, ledgerEntry)
+		WriteHuakaiHeaders(w.Header(), in.RequestedModel, cachedEnv, ledgerResult, in.RequestID, in.Ident.TenantID)
 		recordCacheHitReplay(ctx, d, in)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(in.Entry.Body)
@@ -247,16 +271,18 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		RequestedModel:            in.RequestedModel,
 		UpstreamModel:             in.UpstreamModelID,
 		PayloadHash:               in.PayloadHash,
-		AuditLedgerID:             ledgerID(ledgerEntry),
-		AuditSignatureFingerprint: ledgerFingerprint(ledgerEntry),
+		AuditLedgerID:             ledgerID(ledgerResult),
+		AuditLedgerDLQRef:         ledgerDLQRef(ledgerResult),
+		AuditSignatureFingerprint: ledgerFingerprint(ledgerResult),
 		SettleRequest:             settleReq,
+		Metadata:                  routeMetadata(in.RouteID),
 	}); err != nil {
-		writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, clienterr.CodeSettleError, err)
+		writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, settleErrorCode(err), err)
 		return true
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-HUAKAI-Cache-L2", "hit")
-	WriteHuakaiHeaders(w.Header(), in.RequestedModel, cachedEnv, ledgerEntry)
+	WriteHuakaiHeaders(w.Header(), in.RequestedModel, cachedEnv, ledgerResult, in.RequestID, in.Ident.TenantID)
 	recordCacheHitReplay(ctx, d, in)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(in.Entry.Body)

@@ -146,12 +146,17 @@ func newVerifyGateway(t *testing.T) (*sign.Signer, *httptest.Server) {
 	if err != nil {
 		t.Fatalf("ledger: %v", err)
 	}
-	_, err = ledger.Append(context.Background(), auditledger.LedgerEntry{
+	ctx := context.Background()
+	prepared, err := auditledger.PrepareEntry(ctx, auditledger.LedgerEntry{
 		LedgerID:  "lid_cli",
 		RequestID: "req_cli",
 		TenantID:  7,
 		HopChain:  []proto.HopAttestation{{Hop: proto.HopIngress, Timestamp: "2026-05-13T10:00:00Z"}},
 	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	_, err = ledger.Append(ctx, prepared)
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -178,12 +183,17 @@ func newSubstitutingVerifyClient(t *testing.T, entryReqID string, entryTenant in
 	if err != nil {
 		t.Fatalf("ledger: %v", err)
 	}
-	entry, err := ledger.Append(context.Background(), auditledger.LedgerEntry{
+	ctx := context.Background()
+	prepared, err := auditledger.PrepareEntry(ctx, auditledger.LedgerEntry{
 		LedgerID:  "lid_substitution",
 		RequestID: entryReqID,
 		TenantID:  entryTenant,
 		HopChain:  []proto.HopAttestation{{Hop: proto.HopIngress, Timestamp: "2026-05-13T10:00:00Z"}},
 	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	entry, err := ledger.Append(ctx, prepared)
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}

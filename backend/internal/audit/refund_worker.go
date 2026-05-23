@@ -202,7 +202,7 @@ type refundSettlerInTx interface {
 }
 
 type refundLedgerInTx interface {
-	AppendInTx(context.Context, pgx.Tx, auditledger.LedgerEntry) (auditledger.LedgerEntry, error)
+	AppendInTx(context.Context, pgx.Tx, auditledger.PreparedEntry) (auditledger.LedgerEntry, error)
 }
 
 type refundReceiptSinkInTx interface {
@@ -438,7 +438,7 @@ func (w *MismatchRefundWorker) appendRefundLedger(ctx context.Context, payload M
 		return "", nil
 	}
 	requestID := refundAuditRequestID(payload.RequestID, payload.ClaimID)
-	entry, err := w.ledger.Append(ctx, auditledger.LedgerEntry{
+	rawEntry := auditledger.LedgerEntry{
 		RequestID: requestID,
 		TenantID:  payload.TenantID,
 		ModelChain: &proto.ModelChain{
@@ -447,7 +447,12 @@ func (w *MismatchRefundWorker) appendRefundLedger(ctx context.Context, payload M
 			UpstreamReported: "audit_mismatch_refund",
 			Verdict:          "mismatch",
 		},
-	})
+	}
+	prepared, err := auditledger.PrepareEntry(ctx, rawEntry)
+	if err != nil {
+		return "", fmt.Errorf("audit: prepare refund ledger entry: %w", err)
+	}
+	entry, err := w.ledger.Append(ctx, prepared)
 	if isRefundLedgerDuplicate(err) {
 		existing, getErr := w.ledger.GetByRequestID(ctx, requestID)
 		if getErr != nil {
@@ -471,7 +476,7 @@ func (w *MismatchRefundWorker) appendRefundLedgerInTx(ctx context.Context, tx pg
 	} else if !errors.Is(err, auditledger.ErrLedgerEntryNotFound) {
 		return "", fmt.Errorf("audit: lookup existing refund ledger entry: %w", err)
 	}
-	entry, err := ledger.AppendInTx(ctx, tx, auditledger.LedgerEntry{
+	rawEntry := auditledger.LedgerEntry{
 		RequestID: requestID,
 		TenantID:  payload.TenantID,
 		ModelChain: &proto.ModelChain{
@@ -480,7 +485,12 @@ func (w *MismatchRefundWorker) appendRefundLedgerInTx(ctx context.Context, tx pg
 			UpstreamReported: "audit_mismatch_refund",
 			Verdict:          "mismatch",
 		},
-	})
+	}
+	prepared, err := auditledger.PrepareEntry(ctx, rawEntry)
+	if err != nil {
+		return "", fmt.Errorf("audit: prepare refund ledger entry: %w", err)
+	}
+	entry, err := ledger.AppendInTx(ctx, tx, prepared)
 	if err != nil {
 		return "", fmt.Errorf("audit: append refund ledger entry: %w", err)
 	}

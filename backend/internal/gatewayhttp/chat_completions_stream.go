@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
 
 	"github.com/shopspring/decimal"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
@@ -25,6 +27,7 @@ import (
 
 const (
 	headerHUAKAIAuditLedgerID       = "X-HUAKAI-Ledger-ID"
+	headerHUAKAIAuditLedgerDLQRef   = "X-HUAKAI-Ledger-DLQ-Ref"
 	headerHUAKAIAuditVerify         = "X-HUAKAI-Verify"
 	headerHUAKAIAuditSigFingerprint = "X-HUAKAI-Sig-Fingerprint"
 	headerHUAKAIStreamState         = "X-HUAKAI-Stream-State"
@@ -190,14 +193,19 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	if streamForwarder.AuditLedger == nil {
 		streamForwarder.AuditLedger = ex.d.AuditLedger
 	}
+	if streamForwarder.AuditLedgerDLQ == nil {
+		streamForwarder.AuditLedgerDLQ = ex.d.AuditLedgerDLQ
+	}
 	if streamForwarder.Signer == nil {
 		streamForwarder.Signer = ex.d.Signer
 	}
 	if clientAdapter != nil {
 		streamForwarder.ClientAdapter = clientAdapter
 	}
-	streamForwarder.LedgerCallback = func(entryID, sigFingerprint string) {
-		WriteHuakaiLedgerHeaders(w.Header(), ex.requestID, entryID, sigFingerprint, ex.ident.TenantID)
+	var ledgerResult auditledger.AuditLedgerResult
+	streamForwarder.LedgerCallback = func(result auditledger.AuditLedgerResult) {
+		ledgerResult = result
+		writeStreamingLedgerTrailers(w.Header(), result, ex.requestID, ex.ident.TenantID)
 	}
 	tracker := newDeliveryTracker(w)
 	forwardWriter := http.ResponseWriter(tracker)
@@ -208,7 +216,6 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	}
 	draft, fwdErr := streamForwarder.Forward(ex.ctx, dispatchRes.UpstreamReader, forwardWriter, ex.forwardReq)
 	streamAttempt := billing.AttemptFromGatewayDraft(true, draft)
-	writeStreamBillingHeaders(w.Header(), streamAttempt)
 	if fwdErr != nil {
 		logInternalError(ex.ctx, ex.requestID, clienterr.CodeForwardFailed, fwdErr)
 		if ex.healthKeyOK {
@@ -223,6 +230,13 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	}
 	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ex.ctx), 30*time.Second)
 	defer cancel()
+	ledgerFailClosed := auditLedgerProductionMode() && !streamingAuditLedgerResultAllowsSettle(ledgerResult)
+	if ledgerFailClosed {
+		streamAttempt.State = billing.StreamStateFailed
+		streamAttempt.StreamTerminatedReason = "audit_ledger_error"
+		streamAttempt = streamAttempt.Normalized()
+	}
+	writeStreamBillingHeaders(w.Header(), streamAttempt)
 	// settle 条件三选一: 可计费 / 已向客户端交付内容 / 用量歧义需 audit 对账。
 	// 仅"上游真零交付"(非计费 且 零交付 且 非 AmbiguousUsage) 才 abort —— 对齐
 	// Owner 2026-05-20 计费策略,且避免 abort 已交付内容的流导致重试重复交付。
@@ -230,8 +244,8 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 		streamAttempt.DeliveredTokenCount > 0 ||
 		draft.EndClass == gateway.AmbiguousUsage
 	var streamAbortErr error
-	if settle {
-		event := ex.streamingCompletionEvent(draft, streamAttempt)
+	if settle && !ledgerFailClosed {
+		event := ex.streamingCompletionEvent(draft, streamAttempt, ledgerResult)
 		if _, err := settleCompletion(settleCtx, ex.d, event); err != nil {
 			logInternalError(settleCtx, ex.requestID, clienterr.CodeSettleFailed, err)
 		} else if replayCapture != nil && !replayCapture.overLimit() {
@@ -239,7 +253,9 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 		}
 	} else {
 		reason := streamAttempt.StreamTerminatedReason
-		if reason == "" {
+		if ledgerFailClosed {
+			reason = "audit_ledger_error"
+		} else if reason == "" {
 			reason = "stream_no_billable_delivery"
 		}
 		observedInputTokens := ex.abortObservedInputTokens(draft)
@@ -263,6 +279,10 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 		return false, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, streamAbortErr)
 	}
 	return deliveryStarted, nil
+}
+
+func streamingAuditLedgerResultAllowsSettle(result auditledger.AuditLedgerResult) bool {
+	return result.Validate(true) == nil
 }
 
 func failureUsageDraft(failure *classifiedAttemptFailure) gateway.UsageRecordDraft {
@@ -480,7 +500,7 @@ func (a canonicalEventPointerClientAdapter) FinalizeClientStream(ctx context.Con
 	return a.inner.FinalizeClientStream(ctx, state)
 }
 
-func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft, streamAttempt billing.Attempt) eventbus.RequestCompletionEvent {
+func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft, streamAttempt billing.Attempt, ledgerResult auditledger.AuditLedgerResult) eventbus.RequestCompletionEvent {
 	actualCost, err := ex.actualCompletionCost(usageFromDraft(draft))
 	if err != nil {
 		draft.PendingReconciliation = true
@@ -488,17 +508,20 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 	}
 	draft.ActualCost = actualCost
 	return eventbus.RequestCompletionEvent{
-		ID:              ex.requestID,
-		TenantID:        ex.ident.TenantID,
-		ClaimID:         ex.reserveRes.ClaimID,
-		AccountID:       ex.acquiredAccountID,
-		RequestID:       ex.requestID,
-		EndpointFamily:  ex.d.effectiveEndpointFamily(),
-		RequestedModel:  ex.req.Model,
-		UpstreamModel:   ex.upstreamModelID,
-		PayloadHash:     ex.payloadHash,
-		RawBodyHash:     bodyHash(ex.body),
-		RedactedBodyRef: redactedBodyRef(ex.body),
+		ID:                        ex.requestID,
+		TenantID:                  ex.ident.TenantID,
+		ClaimID:                   ex.reserveRes.ClaimID,
+		AccountID:                 ex.acquiredAccountID,
+		RequestID:                 ex.requestID,
+		EndpointFamily:            ex.d.effectiveEndpointFamily(),
+		RequestedModel:            ex.req.Model,
+		UpstreamModel:             ex.upstreamModelID,
+		PayloadHash:               ex.payloadHash,
+		RawBodyHash:               bodyHash(ex.body),
+		RedactedBodyRef:           redactedBodyRef(ex.body),
+		AuditLedgerID:             ledgerID(ledgerResult),
+		AuditLedgerDLQRef:         ledgerDLQRef(ledgerResult),
+		AuditSignatureFingerprint: ledgerFingerprint(ledgerResult),
 		SettleRequest: billing.SettleRequest{
 			ClaimID:           ex.reserveRes.ClaimID,
 			AccountID:         ex.acquiredAccountID,
@@ -518,6 +541,7 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 			StreamAttempt:     &streamAttempt,
 			SnapshotVersion:   ex.plan.SnapshotVersion,
 		},
+		Metadata: routeMetadata(ex.routeID),
 	}
 }
 
@@ -527,6 +551,10 @@ func declareStreamBillingTrailers(h http.Header) {
 	}
 	h.Add("Trailer", headerHUAKAIStreamState)
 	h.Add("Trailer", headerHUAKAIDeliveredTokens)
+	h.Add("Trailer", headerHUAKAIAuditLedgerID)
+	h.Add("Trailer", headerHUAKAIAuditLedgerDLQRef)
+	h.Add("Trailer", headerHUAKAIAuditVerify)
+	h.Add("Trailer", headerHUAKAIAuditSigFingerprint)
 }
 
 func writeStreamBillingHeaders(h http.Header, attempt billing.Attempt) {
@@ -536,4 +564,32 @@ func writeStreamBillingHeaders(h http.Header, attempt billing.Attempt) {
 	attempt = attempt.Normalized()
 	h.Set(headerHUAKAIStreamState, attempt.State.String())
 	h.Set(headerHUAKAIDeliveredTokens, strconv.FormatInt(attempt.DeliveredTokenCount, 10))
+}
+
+func writeStreamingLedgerTrailers(h http.Header, result auditledger.AuditLedgerResult, requestID string, tenantID int64) {
+	if h == nil {
+		return
+	}
+	switch result.State {
+	case auditledger.LedgerResultStatePersisted:
+		if result.LedgerID != "" {
+			h.Set(headerHUAKAIAuditLedgerID, result.LedgerID)
+		}
+		if result.Fingerprint != "" {
+			h.Set(headerHUAKAIAuditSigFingerprint, result.Fingerprint)
+		}
+		if result.LedgerID != "" && requestID != "" {
+			query := url.Values{}
+			query.Set("request_id", requestID)
+			query.Set("ledger-id", result.LedgerID)
+			if scopeRef := auditledger.TenantScopeRef(tenantID); scopeRef != "" {
+				query.Set("tenant_scope_ref", scopeRef)
+			}
+			h.Set(headerHUAKAIAuditVerify, "/v1/audit/verify?"+query.Encode())
+		}
+	case auditledger.LedgerResultStateDeferred:
+		if result.DLQRef != "" {
+			h.Set(headerHUAKAIAuditLedgerDLQRef, result.DLQRef)
+		}
+	}
 }

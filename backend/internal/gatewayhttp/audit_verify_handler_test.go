@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,14 +15,24 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 )
 
+func mustPrepareGatewayHTTPLedgerEntry(t testing.TB, ctx context.Context, entry auditledger.LedgerEntry) auditledger.PreparedEntry {
+	t.Helper()
+	prepared, err := auditledger.PrepareEntry(ctx, entry)
+	if err != nil {
+		t.Fatalf("PrepareEntry: %v", err)
+	}
+	return prepared
+}
+
 func TestAuditVerifyHandler_HappyPath(t *testing.T) {
 	ledger := newAuditVerifyTestLedger(t)
-	entry, err := ledger.Append(context.Background(), auditledger.LedgerEntry{
+	ctx := context.Background()
+	entry, err := ledger.Append(ctx, mustPrepareGatewayHTTPLedgerEntry(t, ctx, auditledger.LedgerEntry{
 		LedgerID:  "lid_1",
 		RequestID: "req_1",
 		TenantID:  7,
 		HopChain:  []proto.HopAttestation{{Hop: proto.HopIngress, Timestamp: "2026-05-13T10:00:00Z"}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -47,12 +58,13 @@ func TestAuditVerifyHandler_HappyPath(t *testing.T) {
 
 func TestATPRIV001009AuditVerifyTenantScopeRefMismatchReturns404(t *testing.T) {
 	ledger := newAuditVerifyTestLedger(t)
-	_, err := ledger.Append(context.Background(), auditledger.LedgerEntry{
+	ctx := context.Background()
+	_, err := ledger.Append(ctx, mustPrepareGatewayHTTPLedgerEntry(t, ctx, auditledger.LedgerEntry{
 		LedgerID:  "lid_scope",
 		RequestID: "req_scope",
 		TenantID:  7,
 		HopChain:  []proto.HopAttestation{{Hop: proto.HopIngress, Timestamp: "2026-05-13T10:00:00Z"}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -66,12 +78,13 @@ func TestAT_SECURITY_W1_B14_AuditVerifyRequiresTenantScopeRef(t *testing.T) {
 	// Risk killed: a public verify request with only request_id must not read a
 	// different tenant's signed ledger entry.
 	ledger := newAuditVerifyTestLedger(t)
-	_, err := ledger.Append(context.Background(), auditledger.LedgerEntry{
+	ctx := context.Background()
+	_, err := ledger.Append(ctx, mustPrepareGatewayHTTPLedgerEntry(t, ctx, auditledger.LedgerEntry{
 		LedgerID:  "lid_scope_required",
 		RequestID: "req_scope_required",
 		TenantID:  7,
 		HopChain:  []proto.HopAttestation{{Hop: proto.HopIngress, Timestamp: "2026-05-13T10:00:00Z"}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -100,12 +113,13 @@ func TestAuditVerifyHandler_MissingRequestID(t *testing.T) {
 
 func TestAuditVerifyHandler_PostBody(t *testing.T) {
 	ledger := newAuditVerifyTestLedger(t)
-	entry, err := ledger.Append(context.Background(), auditledger.LedgerEntry{
+	ctx := context.Background()
+	entry, err := ledger.Append(ctx, mustPrepareGatewayHTTPLedgerEntry(t, ctx, auditledger.LedgerEntry{
 		LedgerID:  "lid_post",
 		RequestID: "req_post",
 		TenantID:  7,
 		HopChain:  []proto.HopAttestation{{Hop: proto.HopIngress, Timestamp: "2026-05-13T10:00:00Z"}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -151,6 +165,31 @@ func TestAT_AUDIT_001_064_AuditVerifyInternalErrorDoesNotLeak(t *testing.T) {
 	}
 }
 
+func TestAuditVerifyHandler_LedgerCorruptReturnsStableAuditCode(t *testing.T) {
+	// Risk killed: a structurally corrupt persisted audit row must be visible as
+	// ledger_corrupt, not hidden as a transient lookup failure.
+	ledger := &failingAuditVerifyLedger{err: fmt.Errorf("scan audit ledger row: %w", auditledger.ErrLedgerEntryCorrupt)}
+	rec := invokeAuditVerifyWithDeps(AuditVerifyStaticDeps{Ledger: ledger}, "/v1/audit/verify?request_id=req_corrupt&tenant_scope_ref="+auditledger.TenantScopeRef(7))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d want 500 body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Error.Code != "ledger_corrupt" {
+		t.Fatalf("error code=%q want ledger_corrupt body=%s", got.Error.Code, rec.Body.String())
+	}
+	if strings.Contains(got.Error.Message, "scan audit ledger row") {
+		t.Fatalf("corrupt response leaked internal scan details: %s", rec.Body.String())
+	}
+}
+
 func TestAuditMerkleTreeHandler_Empty(t *testing.T) {
 	ledger := newAuditVerifyTestLedger(t)
 	rec := invokeAuditMerkle(t, ledger)
@@ -168,8 +207,9 @@ func TestAuditMerkleTreeHandler_Empty(t *testing.T) {
 
 func TestAuditMerkleTreeHandler_WithEntries(t *testing.T) {
 	ledger := newAuditVerifyTestLedger(t)
-	_, _ = ledger.Append(context.Background(), auditledger.LedgerEntry{LedgerID: "1", RequestID: "r1"})
-	latest, _ := ledger.Append(context.Background(), auditledger.LedgerEntry{LedgerID: "2", RequestID: "r2"})
+	ctx := context.Background()
+	_, _ = ledger.Append(ctx, mustPrepareGatewayHTTPLedgerEntry(t, ctx, auditledger.LedgerEntry{LedgerID: "1", RequestID: "r1"}))
+	latest, _ := ledger.Append(ctx, mustPrepareGatewayHTTPLedgerEntry(t, ctx, auditledger.LedgerEntry{LedgerID: "2", RequestID: "r2"}))
 
 	rec := invokeAuditMerkle(t, ledger)
 	if rec.Code != http.StatusOK {

@@ -10,11 +10,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
@@ -24,6 +26,7 @@ import (
 	provideropenai "github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
@@ -294,6 +297,215 @@ func TestStreamingIdempotencyReplayRecordsSSEAndReplays(t *testing.T) {
 	}
 	if first.Body.String() != second.Body.String() {
 		t.Fatalf("replay body mismatch:\nfirst=%s\nsecond=%s", first.Body.String(), second.Body.String())
+	}
+}
+
+func TestStreamingLedgerAppendAndDLQFailureProductionDoesNotSettle(t *testing.T) {
+	// Risk killed: streaming Append+DLQ double failure must not become a
+	// chargeable 200 with no audit row. Mutation self-check: removing the
+	// post-Forward ledger-result settle gate records a settle for this fixture;
+	// removing trailer reconciliation leaves StreamState=partial instead of failed.
+	t.Setenv("HUAKAI_RELEASE_MODE", "production")
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	settler := &recordingSettler{}
+	dlqSink := &recordingGatewayAuditLedgerDLQ{id: 0, err: errors.New("dlq unavailable")}
+	deps := streamingReplayDeps(t, 77708, false, openAIStreamingFixture(), nil)
+	deps.AuditLedger = &failingAppendLedger{appendErr: errors.New("ledger unavailable")}
+	deps.AuditLedgerDLQ = dlqSink
+	deps.Signer = signer
+	deps.Settler = settler
+
+	rec := invokeHandler(t, deps, openAIStreamingRequestBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want stream response already delivered; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "pong") {
+		t.Fatalf("stream body=%s want delivered fixture content", rec.Body.String())
+	}
+	if len(settler.calls) != 0 {
+		t.Fatalf("settle calls=%d want 0 when streaming ledger has no durable result", len(settler.calls))
+	}
+	if len(settler.aborts) != 1 || settler.aborts[0].reason != "audit_ledger_error" {
+		t.Fatalf("aborts=%+v want one audit_ledger_error abort", settler.aborts)
+	}
+	if len(dlqSink.events) != 1 {
+		t.Fatalf("DLQ events=%d want 1 attempted enqueue", len(dlqSink.events))
+	}
+	result := rec.Result()
+	if got := result.Trailer.Get(headerHUAKAIStreamState); got != "failed" {
+		t.Fatalf("%s trailer=%q want failed for fail-closed ledger abort", headerHUAKAIStreamState, got)
+	}
+	if got := result.Trailer.Get(headerHUAKAIStreamState); got == "partial" {
+		t.Fatalf("%s trailer must not stay chargeable partial after fail-closed abort", headerHUAKAIStreamState)
+	}
+}
+
+func TestStreamingPersistedLedgerIDIsTrailerOnly(t *testing.T) {
+	// Risk killed: C-13 moves streaming ledger emission after body bytes, so
+	// LedgerID must be a declared trailer, not an ordinary header. Mutation
+	// self-check: writing the old ordinary header before first byte leaves
+	// Result().Header populated and Result().Trailer empty.
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	ledger, err := auditledger.NewMemoryLedger(signer)
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	deps := streamingReplayDeps(t, 77711, false, openAIStreamingFixture(), nil)
+	deps.AuditLedger = ledger
+	deps.Signer = signer
+
+	rec := invokeHandler(t, deps, openAIStreamingRequestBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	result := rec.Result()
+	if got := result.Header.Get(headerHUAKAIAuditLedgerID); got != "" {
+		t.Fatalf("%s ordinary header=%q want empty for streaming trailer", headerHUAKAIAuditLedgerID, got)
+	}
+	if got := result.Trailer.Get(headerHUAKAIAuditLedgerID); got == "" {
+		t.Fatalf("%s trailer is empty for persisted streaming ledger", headerHUAKAIAuditLedgerID)
+	}
+	if got := result.Trailer.Get("X-HUAKAI-Ledger-DLQ-Ref"); got != "" {
+		t.Fatalf("X-HUAKAI-Ledger-DLQ-Ref trailer=%q want empty for persisted ledger", got)
+	}
+}
+
+func TestStreamingLedgerCallback_PersistedSetsVerifyAndFingerprintTrailers(t *testing.T) {
+	// 删除 Persisted 分支的 Fingerprint 或 Verify 写入 -> 该测试 trailer 断言变红。
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	deps := streamingReplayDeps(t, 77713, false, openAIStreamingFixture(), nil)
+	deps.AuditLedger = fixedAppendLedger{
+		entry: auditledger.LedgerEntry{
+			LedgerID:          "ledger-stream-1",
+			PubkeyFingerprint: "fp-stream-1",
+			TenantID:          validIdentity().TenantID,
+		},
+	}
+	deps.Signer = signer
+
+	rec := invokeHandler(t, deps, openAIStreamingRequestBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	result := rec.Result()
+	if got := result.Trailer.Get(headerHUAKAIAuditLedgerID); got != "ledger-stream-1" {
+		t.Fatalf("%s trailer=%q want ledger-stream-1", headerHUAKAIAuditLedgerID, got)
+	}
+	if got := result.Trailer.Get(headerHUAKAIAuditSigFingerprint); got != "fp-stream-1" {
+		t.Fatalf("%s trailer=%q want fp-stream-1", headerHUAKAIAuditSigFingerprint, got)
+	}
+	verifyHeader := result.Trailer.Get(headerHUAKAIAuditVerify)
+	verifyURL, err := url.Parse(verifyHeader)
+	if err != nil {
+		t.Fatalf("%s trailer=%q parse error: %v", headerHUAKAIAuditVerify, verifyHeader, err)
+	}
+	if got := verifyURL.Path; got != "/v1/audit/verify" {
+		t.Fatalf("%s path=%q want /v1/audit/verify in %q", headerHUAKAIAuditVerify, got, verifyHeader)
+	}
+	query := verifyURL.Query()
+	if got := query.Get("request_id"); got == "" {
+		t.Fatalf("%s request_id is empty in %q", headerHUAKAIAuditVerify, verifyHeader)
+	}
+	if got := query.Get("ledger-id"); got != "ledger-stream-1" {
+		t.Fatalf("%s ledger-id=%q want ledger-stream-1 in %q", headerHUAKAIAuditVerify, got, verifyHeader)
+	}
+	if got, want := query.Get("tenant_scope_ref"), auditledger.TenantScopeRef(validIdentity().TenantID); got != want {
+		t.Fatalf("%s tenant_scope_ref=%q want %q in %q", headerHUAKAIAuditVerify, got, want, verifyHeader)
+	}
+
+	deferredRec := httptest.NewRecorder()
+	declareStreamBillingTrailers(deferredRec.Header())
+	deferredRec.WriteHeader(http.StatusOK)
+	if _, err := deferredRec.Write([]byte("data: pong\n\n")); err != nil {
+		t.Fatalf("write deferred fixture: %v", err)
+	}
+	writeStreamingLedgerTrailers(deferredRec.Header(), auditledger.AuditLedgerResult{
+		State:  auditledger.LedgerResultStateDeferred,
+		DLQRef: "dlq:1",
+	}, "req-deferred", validIdentity().TenantID)
+	deferredResult := deferredRec.Result()
+	if got := deferredResult.Trailer.Get(headerHUAKAIAuditLedgerDLQRef); got != "dlq:1" {
+		t.Fatalf("%s trailer=%q want dlq:1", headerHUAKAIAuditLedgerDLQRef, got)
+	}
+	if got := deferredResult.Trailer.Get(headerHUAKAIAuditVerify); got != "" {
+		t.Fatalf("%s trailer=%q want empty for Deferred ledger", headerHUAKAIAuditVerify, got)
+	}
+	if got := deferredResult.Trailer.Get(headerHUAKAIAuditSigFingerprint); got != "" {
+		t.Fatalf("%s trailer=%q want empty for Deferred ledger", headerHUAKAIAuditSigFingerprint, got)
+	}
+}
+
+func TestStreamingDeferredLedgerDLQRefIsTrailer(t *testing.T) {
+	// Risk killed: C-13 rev2 requires Deferred streaming results to expose
+	// DLQRef in its own trailer, never mixed into LedgerID. Mutation
+	// self-check: omitting the Deferred trailer writer leaves DLQRef empty.
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	dlqSink := &recordingGatewayAuditLedgerDLQ{id: 728}
+	deps := streamingReplayDeps(t, 77712, false, openAIStreamingFixture(), nil)
+	deps.AuditLedger = &failingAppendLedger{appendErr: errors.New("ledger unavailable")}
+	deps.AuditLedgerDLQ = dlqSink
+	deps.Signer = signer
+
+	rec := invokeHandler(t, deps, openAIStreamingRequestBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if len(dlqSink.events) != 1 {
+		t.Fatalf("DLQ events=%d want 1", len(dlqSink.events))
+	}
+	result := rec.Result()
+	if got := result.Trailer.Get(headerHUAKAIAuditLedgerID); got != "" {
+		t.Fatalf("%s trailer=%q want empty for Deferred ledger", headerHUAKAIAuditLedgerID, got)
+	}
+	if got := result.Trailer.Get("X-HUAKAI-Ledger-DLQ-Ref"); got != "audit_ledger_dlq:728" {
+		t.Fatalf("X-HUAKAI-Ledger-DLQ-Ref trailer=%q want audit_ledger_dlq:728", got)
+	}
+}
+
+func TestStreamingLedgerDuplicateRequestIDProductionDoesNotSettleOrDLQ(t *testing.T) {
+	// Risk killed: duplicate request_id is never recoverable by DLQ replay.
+	// Mutation self-check: removing the duplicate special-case enqueues DLQ,
+	// sends a Deferred callback, and the handler settles this chargeable stream.
+	t.Setenv("HUAKAI_RELEASE_MODE", "production")
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	settler := &recordingSettler{}
+	dlqSink := &recordingGatewayAuditLedgerDLQ{id: 315}
+	deps := streamingReplayDeps(t, 77709, false, openAIStreamingFixture(), nil)
+	deps.AuditLedger = &failingAppendLedger{appendErr: auditledger.ErrDuplicateRequestID}
+	deps.AuditLedgerDLQ = dlqSink
+	deps.Signer = signer
+	deps.Settler = settler
+
+	rec := invokeHandler(t, deps, openAIStreamingRequestBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want stream response already delivered; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "pong") {
+		t.Fatalf("stream body=%s want delivered fixture content", rec.Body.String())
+	}
+	if len(settler.calls) != 0 {
+		t.Fatalf("settle calls=%d want 0 for duplicate request_id", len(settler.calls))
+	}
+	if len(settler.aborts) != 1 || settler.aborts[0].reason != "audit_ledger_error" {
+		t.Fatalf("aborts=%+v want one audit_ledger_error abort", settler.aborts)
+	}
+	if len(dlqSink.events) != 0 {
+		t.Fatalf("DLQ events=%d want 0 for duplicate request_id", len(dlqSink.events))
 	}
 }
 
@@ -1071,6 +1283,30 @@ func (s *ctxSensitiveSettler) Settle(ctx context.Context, req billing.SettleRequ
 		return nil, err
 	}
 	return s.recordingSettler.Settle(ctx, req)
+}
+
+type fixedAppendLedger struct {
+	entry auditledger.LedgerEntry
+}
+
+func (l fixedAppendLedger) Append(context.Context, auditledger.PreparedEntry) (auditledger.LedgerEntry, error) {
+	return l.entry, nil
+}
+
+func (l fixedAppendLedger) GetByRequestID(context.Context, string) (auditledger.LedgerEntry, error) {
+	return auditledger.LedgerEntry{}, auditledger.ErrLedgerEntryNotFound
+}
+
+func (l fixedAppendLedger) GetByRequestIDAndTenantScope(context.Context, string, string) (auditledger.LedgerEntry, error) {
+	return auditledger.LedgerEntry{}, auditledger.ErrLedgerEntryNotFound
+}
+
+func (l fixedAppendLedger) LatestMerkleRoot(context.Context) ([32]byte, error) {
+	return auditledger.ZeroRoot, nil
+}
+
+func (l fixedAppendLedger) Size(context.Context) int {
+	return 1
 }
 
 type failingSettleSettler struct {

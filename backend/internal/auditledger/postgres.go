@@ -40,10 +40,11 @@ func NewPostgresLedger(pool *pgxpool.Pool, signer any) (*PostgresLedger, error) 
 	return &PostgresLedger{pool: pool, signer: normalized, tenantLocks: make(map[int64]*sync.Mutex)}, nil
 }
 
-// Append 把 entry 写入 audit_ledger_entries；自动补 Timestamp / PrevMerkleRoot /
+// Append 把 prepared entry 写入 audit_ledger_entries；自动补 Timestamp / PrevMerkleRoot /
 // MerkleRoot / Signature / PubkeyFingerprint。
 // 用 advisory lock 串行化所有写者，保证 Merkle 链不断。
-func (l *PostgresLedger) Append(ctx context.Context, entry LedgerEntry) (LedgerEntry, error) {
+func (l *PostgresLedger) Append(ctx context.Context, prepared PreparedEntry) (LedgerEntry, error) {
+	entry := prepared.AsLedgerEntry()
 	if entry.RequestID == "" {
 		return LedgerEntry{}, errors.New("auditledger: RequestID required for Postgres Append")
 	}
@@ -60,7 +61,7 @@ func (l *PostgresLedger) Append(ctx context.Context, entry LedgerEntry) (LedgerE
 	}
 	defer tx.Rollback(ctx)
 
-	entry, err = AppendInTransaction(ctx, tx, l.signer, entry)
+	entry, err = AppendInTransaction(ctx, tx, l.signer, preparedEntryFromLedgerEntry(entry))
 	if err != nil {
 		return LedgerEntry{}, err
 	}
@@ -71,10 +72,11 @@ func (l *PostgresLedger) Append(ctx context.Context, entry LedgerEntry) (LedgerE
 	return entry, nil
 }
 
-func (l *PostgresLedger) AppendInTx(ctx context.Context, tx pgx.Tx, entry LedgerEntry) (LedgerEntry, error) {
+func (l *PostgresLedger) AppendInTx(ctx context.Context, tx pgx.Tx, prepared PreparedEntry) (LedgerEntry, error) {
 	if l == nil || tx == nil {
 		return LedgerEntry{}, errors.New("auditledger: tx required for Postgres AppendInTx")
 	}
+	entry := prepared.AsLedgerEntry()
 	if entry.RequestID == "" {
 		return LedgerEntry{}, errors.New("auditledger: RequestID required for Postgres Append")
 	}
@@ -85,7 +87,7 @@ func (l *PostgresLedger) AppendInTx(ctx context.Context, tx pgx.Tx, entry Ledger
 	unlock := l.lockTenantWriter(entry.TenantID)
 	defer unlock()
 
-	return AppendInTransaction(ctx, tx, l.signer, entry)
+	return AppendInTransaction(ctx, tx, l.signer, preparedEntryFromLedgerEntry(entry))
 }
 
 func (l *PostgresLedger) lockTenantWriter(tenantID int64) func() {
@@ -105,12 +107,12 @@ func (l *PostgresLedger) lockTenantWriter(tenantID int64) func() {
 
 // AppendInTransaction appends an audit ledger entry using the caller-owned
 // database transaction. The caller is responsible for commit/rollback.
-func AppendInTransaction(ctx context.Context, q DBTX, signer any, entry LedgerEntry) (LedgerEntry, error) {
+func AppendInTransaction(ctx context.Context, q DBTX, signer any, prepared PreparedEntry) (LedgerEntry, error) {
 	normalized, err := normalizeSigner(signer)
 	if err != nil {
 		return LedgerEntry{}, err
 	}
-	entry, _ = sanitizeLedgerEntry(ctx, entry)
+	entry := prepared.AsLedgerEntry()
 	if entry.RequestID == "" {
 		return LedgerEntry{}, errors.New("auditledger: RequestID required for Postgres Append")
 	}
@@ -206,9 +208,19 @@ func AppendInTransaction(ctx context.Context, q DBTX, signer any, entry LedgerEn
 		entry.Signature,
 	)
 	if err != nil {
+		if isAuditLedgerRequestIDUniqueViolation(err) {
+			return LedgerEntry{}, ErrDuplicateRequestID
+		}
 		return LedgerEntry{}, fmt.Errorf("auditledger: insert: %w", err)
 	}
 	return entry, nil
+}
+
+func isAuditLedgerRequestIDUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) &&
+		pgErr.Code == "23505" &&
+		pgErr.ConstraintName == auditLedgerEntriesRequestIDUniqueConstraint
 }
 
 // GetByRequestID 通过 request_id 查 ledger entry。
@@ -228,12 +240,25 @@ func (l *PostgresLedger) GetByRequestID(ctx context.Context, requestID string) (
 // entry。request_id 唯一，先取单行再在 Go 里比对公开 tenant scope，避免扫描
 // tenants 表，也不受 tenant 软删影响历史验签。
 func (l *PostgresLedger) GetByRequestIDAndTenantScope(ctx context.Context, requestID, tenantScopeRef string) (LedgerEntry, error) {
+	return getByRequestIDAndTenantScope(ctx, requestID, tenantScopeRef, l.GetByRequestID)
+}
+
+func getByRequestIDAndTenantScope(
+	ctx context.Context,
+	requestID, tenantScopeRef string,
+	getByRequestID func(context.Context, string) (LedgerEntry, error),
+) (LedgerEntry, error) {
 	tenantScopeRef = strings.TrimSpace(tenantScopeRef)
 	if tenantScopeRef == "" {
 		return LedgerEntry{}, ErrLedgerEntryNotFound
 	}
-	entry, err := l.GetByRequestID(ctx, requestID)
+	entry, err := getByRequestID(ctx, requestID)
 	if err != nil {
+		if errors.Is(err, ErrLedgerEntryCorrupt) {
+			if !tenantScopeMatches(entry, tenantScopeRef) {
+				return LedgerEntry{}, ErrLedgerEntryNotFound
+			}
+		}
 		return LedgerEntry{}, err
 	}
 	if !tenantScopeMatches(entry, tenantScopeRef) {
@@ -287,6 +312,8 @@ type DBTX interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
+
+const auditLedgerEntriesRequestIDUniqueConstraint = "audit_ledger_entries_request_id_key"
 
 func readLatestMerkleRoot(ctx context.Context, q pgxQuerier, tenantID int64) ([]byte, error) {
 	var prev []byte
@@ -368,26 +395,40 @@ func scanLedgerEntry(row pgx.Row) (LedgerEntry, error) {
 		return LedgerEntry{}, err
 	}
 	out := LedgerEntry{
-		LedgerID:          ledgerID,
-		Timestamp:         occurredAt.UTC().Format(time.RFC3339Nano),
-		RequestID:         requestID,
-		PubkeyFingerprint: fp,
-		Signature:         sig,
+		LedgerID:  ledgerID,
+		Timestamp: occurredAt.UTC().Format(time.RFC3339Nano),
+		RequestID: requestID,
 	}
 	if tenantID != nil {
 		out.TenantID = *tenantID
 	}
+	corruptOut := out
+	out.PubkeyFingerprint = fp
+	out.Signature = sig
 	if len(hopJSON) > 0 {
-		_ = json.Unmarshal(hopJSON, &out.HopChain)
+		if err := json.Unmarshal(hopJSON, &out.HopChain); err != nil {
+			return corruptOut, corruptLedgerEntryError("hop_chain json", err)
+		}
 	}
 	if len(modelJSON) > 0 {
-		_ = json.Unmarshal(modelJSON, &out.ModelChain)
+		if err := json.Unmarshal(modelJSON, &out.ModelChain); err != nil {
+			return corruptOut, corruptLedgerEntryError("model_chain json", err)
+		}
 	}
-	if len(prevRoot) == 32 {
-		copy(out.PrevMerkleRoot[:], prevRoot)
+	if len(prevRoot) != 32 {
+		return corruptOut, corruptLedgerEntryError("prev_merkle_root length", nil)
 	}
-	if len(merkleRoot) == 32 {
-		copy(out.MerkleRoot[:], merkleRoot)
+	copy(out.PrevMerkleRoot[:], prevRoot)
+	if len(merkleRoot) != 32 {
+		return corruptOut, corruptLedgerEntryError("merkle_root length", nil)
 	}
+	copy(out.MerkleRoot[:], merkleRoot)
 	return out, nil
+}
+
+func corruptLedgerEntryError(field string, cause error) error {
+	if cause != nil {
+		return fmt.Errorf("%w: %s: %v", ErrLedgerEntryCorrupt, field, cause)
+	}
+	return fmt.Errorf("%w: %s", ErrLedgerEntryCorrupt, field)
 }

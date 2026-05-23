@@ -260,7 +260,7 @@ func refundWorkerFixture(t *testing.T, refundErr error) (*MismatchRefundWorker, 
 	if err != nil {
 		t.Fatalf("ledger: %v", err)
 	}
-	if _, err := ledger.Append(ctx, auditledger.LedgerEntry{
+	if _, err := ledger.Append(ctx, mustPrepareAuditLedgerEntry(t, ctx, auditledger.LedgerEntry{
 		RequestID: requestID,
 		TenantID:  9,
 		ModelChain: &proto.ModelChain{
@@ -269,7 +269,7 @@ func refundWorkerFixture(t *testing.T, refundErr error) (*MismatchRefundWorker, 
 			UpstreamReported: "gpt-4o",
 			Verdict:          "mismatch",
 		},
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("append ledger: %v", err)
 	}
 	formatter, err := NewReceiptFormatter(ledger, nil, &staticReceiptSource{inputs: ReceiptInputs{
@@ -401,7 +401,7 @@ type duplicateRefundLedger struct {
 	lookupCalls int
 }
 
-func (l *duplicateRefundLedger) Append(context.Context, auditledger.LedgerEntry) (auditledger.LedgerEntry, error) {
+func (l *duplicateRefundLedger) Append(context.Context, auditledger.PreparedEntry) (auditledger.LedgerEntry, error) {
 	l.appendCalls++
 	return auditledger.LedgerEntry{}, fmt.Errorf("auditledger: insert: %w", &pgconn.PgError{
 		Code:    "23505",

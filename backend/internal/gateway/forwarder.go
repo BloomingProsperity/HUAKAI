@@ -4,7 +4,6 @@ package gateway
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -66,13 +65,14 @@ type StreamForwarder struct {
 
 	// AuditLedger / Signer 是 T12 streaming trust-chain ledger 的可选依赖。
 	// 两者任一缺失时 graceful skip，并通过 LedgerWarning 记录一次 loss。
-	AuditLedger auditledger.Ledger
-	Signer      *sign.Signer
+	AuditLedger    auditledger.Ledger
+	AuditLedgerDLQ auditledger.DLQEnqueuer
+	Signer         *sign.Signer
 
 	// HopChainBuilder 默认走 BuildHopChain；LedgerCallback 在 ledger entry
 	// 生成后、首个 SSE chunk 写出前触发，供 HTTP handler 写 X-HUAKAI-* 头。
 	HopChainBuilder StreamingHopChainBuilder
-	LedgerCallback  func(entryID, sigFingerprint string)
+	LedgerCallback  func(auditledger.AuditLedgerResult)
 	LedgerWarning   func(code, reason string)
 }
 
@@ -622,12 +622,10 @@ func (w *streamingLedgerHeaderWriter) ensureLedger(completedAt time.Time) {
 }
 
 func (w *streamingLedgerHeaderWriter) WriteHeader(statusCode int) {
-	w.ensureLedger(time.Now())
 	w.ResponseWriter.WriteHeader(statusCode)
 }
 
 func (w *streamingLedgerHeaderWriter) Write(b []byte) (int, error) {
-	w.ensureLedger(time.Now())
 	return w.ResponseWriter.Write(b)
 }
 
@@ -642,8 +640,7 @@ func (f *StreamForwarder) emitStreamingLedger(ctx context.Context, req ForwardRe
 		f.warnLedgerLoss("audit_ledger_not_configured", "streaming trust-chain ledger skipped because audit ledger is nil")
 		return
 	}
-	switch f.AuditLedger.(type) {
-	case auditledger.NoopLedger, *auditledger.NoopLedger:
+	if auditledger.IsNoopLedger(f.AuditLedger) {
 		f.warnLedgerLoss("audit_ledger_noop", "streaming trust-chain ledger skipped because audit ledger is noop")
 		return
 	}
@@ -651,6 +648,8 @@ func (f *StreamForwarder) emitStreamingLedger(ctx context.Context, req ForwardRe
 		f.warnLedgerLoss("audit_signer_not_configured", "streaming trust-chain ledger skipped because signer is nil")
 		return
 	}
+	ledgerCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
 	requestID := req.RequestID
 	if requestID == "" {
 		requestID = uuid.NewString()
@@ -660,26 +659,35 @@ func (f *StreamForwarder) emitStreamingLedger(ctx context.Context, req ForwardRe
 		builder = BuildHopChain
 	}
 	entry := auditledger.LedgerEntry{
-		LedgerID:          uuid.NewString(),
-		Timestamp:         time.Now().UTC().Format(time.RFC3339Nano),
-		RequestID:         requestID,
-		TenantID:          req.TenantID,
-		HopChain:          builder(req, providerEndpoint, startedAt, completedAt),
-		PubkeyFingerprint: f.Signer.Fingerprint(),
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		RequestID: requestID,
+		TenantID:  req.TenantID,
+		HopChain:  builder(req, providerEndpoint, startedAt, completedAt),
 	}
-	hash, err := auditledger.EntryHash(&entry)
+	prepared, err := auditledger.PrepareEntry(ledgerCtx, entry)
 	if err != nil {
-		f.warnLedgerLoss("audit_ledger_entry_hash_failed", err.Error())
+		f.warnLedgerLoss("audit_ledger_prepare_failed", err.Error())
 		return
 	}
-	entry.Signature = base64.StdEncoding.EncodeToString(f.Signer.Sign(hash[:]))
-	appended, err := f.AuditLedger.Append(ctx, entry)
+	appended, err := f.AuditLedger.Append(ledgerCtx, prepared)
 	if err != nil {
+		if errors.Is(err, auditledger.ErrDuplicateRequestID) {
+			f.warnLedgerLoss("audit_ledger_duplicate_request_id", err.Error())
+			return
+		}
 		f.warnLedgerLoss("audit_ledger_append_failed", err.Error())
+		dlqRef, dlqErr := auditledger.EnqueuePreparedEntryToDLQ(ledgerCtx, f.AuditLedgerDLQ, prepared, err)
+		if dlqErr != nil {
+			f.warnLedgerLoss("audit_ledger_dlq_enqueue_failed", dlqErr.Error())
+			return
+		}
+		if f.LedgerCallback != nil {
+			f.LedgerCallback(auditledger.DeferredLedgerResult(dlqRef))
+		}
 		return
 	}
 	if f.LedgerCallback != nil {
-		f.LedgerCallback(appended.LedgerID, appended.PubkeyFingerprint)
+		f.LedgerCallback(auditledger.PersistedLedgerResult(appended))
 	}
 }
 

@@ -346,7 +346,7 @@ func newTrustE2ELedger(t *testing.T, signer *sign.Signer) *trustE2ELedger {
 	}
 }
 
-func (l *trustE2ELedger) Append(ctx context.Context, entry auditledger.LedgerEntry) (auditledger.LedgerEntry, error) {
+func (l *trustE2ELedger) Append(ctx context.Context, entry auditledger.PreparedEntry) (auditledger.LedgerEntry, error) {
 	appended, err := l.inner.Append(ctx, entry)
 	if err != nil {
 		return auditledger.LedgerEntry{}, err
@@ -517,7 +517,7 @@ func (a *trustE2EAnthropicAdapter) appendLedgerOnce(ctx context.Context) error {
 	if reported == "" {
 		reported = trustE2EModel
 	}
-	_, err := a.ledger.Append(ctx, auditledger.LedgerEntry{
+	prepared, err := auditledger.PrepareEntry(ctx, auditledger.LedgerEntry{
 		LedgerID:  trustE2ELedgerID,
 		RequestID: a.requestID,
 		TenantID:  trustE2ETenantID,
@@ -528,6 +528,10 @@ func (a *trustE2EAnthropicAdapter) appendLedgerOnce(ctx context.Context) error {
 			UpstreamReported: reported,
 		},
 	})
+	if err != nil {
+		return fmt.Errorf("prepare trust-chain ledger: %w", err)
+	}
+	_, err = a.ledger.Append(ctx, prepared)
 	if err != nil {
 		return fmt.Errorf("append trust-chain ledger: %w", err)
 	}

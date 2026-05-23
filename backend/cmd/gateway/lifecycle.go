@@ -237,7 +237,7 @@ func buildAuditServices(ctx context.Context, pgPool *pgxpool.Pool, logger *zap.L
 	return auditSigner, auditLedger, auditPubkeyRegistry, nil
 }
 
-func buildDLQRuntime(pgPool *pgxpool.Pool, cfg *runtimeconfig.ObsDLQConfig) (*legacydlq.Store, *legacydlq.Service, *legacydlq.Worker, string, func()) {
+func buildDLQRuntime(pgPool *pgxpool.Pool, cfg *runtimeconfig.ObsDLQConfig, auditLedger auditledger.Ledger) (*legacydlq.Store, *legacydlq.Service, *legacydlq.Worker, string, func()) {
 	dlqStore := legacydlq.NewStore(pgPool)
 	dlqService := legacydlq.NewService(dlqStore, legacydlq.WithPolicy(legacydlq.RetryPolicy{
 		BaseBackoff: cfg.BaseBackoff,
@@ -246,6 +246,7 @@ func buildDLQRuntime(pgPool *pgxpool.Pool, cfg *runtimeconfig.ObsDLQConfig) (*le
 		DLQAfter:    cfg.DLQAfter,
 	}))
 	dlqService.Register(legacydlq.EventKindUsageRecord, legacydlq.NewUsageRecordHandler(pgPool))
+	dlqService.Register(legacydlq.EventKindAuditLedgerEntry, auditledger.NewDLQHandler(auditLedger))
 	replicaTarget := ""
 	var closeReplica func()
 	if cfg.ReplicaDSN != "" {

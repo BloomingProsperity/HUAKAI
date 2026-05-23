@@ -69,6 +69,7 @@ type RequestCompletionEvent struct {
 	RawBodyHash               string
 	RedactedBodyRef           string
 	AuditLedgerID             string
+	AuditLedgerDLQRef         string
 	AuditSignatureFingerprint string
 	CreatedAt                 time.Time
 	SettleRequest             billing.SettleRequest
@@ -139,6 +140,7 @@ type Config struct {
 	LowBuffer            int
 	HandlerTimeout       time.Duration
 	ShutdownDrainTimeout time.Duration
+	AuditRefPolicy       *AuditRefPolicy
 }
 
 type DropNotice struct {
@@ -209,7 +211,7 @@ func NormalizeConfig(cfg Config) Config {
 	return cfg
 }
 
-func (e RequestCompletionEvent) normalized() (RequestCompletionEvent, error) {
+func (e RequestCompletionEvent) normalized(policy *AuditRefPolicy) (RequestCompletionEvent, error) {
 	if e.Kind == "" {
 		e.Kind = EventKindRequestCompletion
 	}
@@ -228,6 +230,11 @@ func (e RequestCompletionEvent) normalized() (RequestCompletionEvent, error) {
 	}
 	if e.CreatedAt.IsZero() {
 		e.CreatedAt = time.Now().UTC()
+	}
+	if e.Kind == EventKindRequestCompletion && policy != nil {
+		if err := ValidateMoneyPathAuditRef(&e, policy); err != nil {
+			return e, err
+		}
 	}
 	return e, nil
 }

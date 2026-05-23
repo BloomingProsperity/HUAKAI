@@ -233,9 +233,10 @@ type ledgerSpy struct {
 	entries []auditledger.LedgerEntry
 }
 
-func (l *ledgerSpy) Append(_ context.Context, e auditledger.LedgerEntry) (auditledger.LedgerEntry, error) {
-	l.entries = append(l.entries, e)
-	return e, nil
+func (l *ledgerSpy) Append(_ context.Context, e auditledger.PreparedEntry) (auditledger.LedgerEntry, error) {
+	entry := e.AsLedgerEntry()
+	l.entries = append(l.entries, entry)
+	return entry, nil
 }
 
 func (l *ledgerSpy) GetByRequestID(context.Context, string) (auditledger.LedgerEntry, error) {
