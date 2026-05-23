@@ -17,7 +17,43 @@ import (
 
 const RefreshWindow = 15 * time.Minute
 
-var ErrCredentialNotFound = errors.New("credentialstore: account credential not found")
+var (
+	ErrCredentialNotFound         = errors.New("credentialstore: account credential not found")
+	ErrCredentialAuditWriteFailed = errors.New("credentialstore: audit write failed")
+)
+
+type credentialAuditTxPhase string
+
+const (
+	credentialAuditTxPhaseBegin    credentialAuditTxPhase = "begin"
+	credentialAuditTxPhaseRead     credentialAuditTxPhase = "read"
+	credentialAuditTxPhaseMutation credentialAuditTxPhase = "mutation"
+	credentialAuditTxPhaseAudit    credentialAuditTxPhase = "audit"
+	credentialAuditTxPhaseCommit   credentialAuditTxPhase = "commit"
+)
+
+type credentialAuditTxPhaseError struct {
+	phase credentialAuditTxPhase
+	err   error
+}
+
+func (e credentialAuditTxPhaseError) Error() string {
+	if e.err == nil {
+		return string(e.phase)
+	}
+	return e.err.Error()
+}
+
+func (e credentialAuditTxPhaseError) Unwrap() error {
+	return e.err
+}
+
+func credentialAuditPhaseError(phase credentialAuditTxPhase, err error) error {
+	if err == nil {
+		return nil
+	}
+	return credentialAuditTxPhaseError{phase: phase, err: err}
+}
 
 type CreateCredentialInput struct {
 	TenantID          int64
@@ -156,13 +192,66 @@ func (s *Store) WithTransaction(ctx context.Context, fn func(*Store, db.DBTX) er
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	committed := false
+	defer func() {
+		if !committed {
+			// 回滚不能依赖请求 ctx, 避免 ctx 取消时事务留在连接上。
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tx.Rollback(rollbackCtx)
+		}
+	}()
 	if fn != nil {
 		if err := fn(s.WithDB(tx), tx); err != nil {
 			return err
 		}
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func (s *Store) withCredentialMutationAuditTx(ctx context.Context, fn func(*Store) error) error {
+	if s == nil || s.db == nil {
+		return errors.New("credentialstore: db is nil")
+	}
+	beginner, ok := s.db.(interface {
+		BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
+	})
+	if !ok {
+		if _, inTx := s.db.(pgx.Tx); !inTx {
+			return credentialAuditPhaseError(credentialAuditTxPhaseBegin, errors.New("credentialstore: db does not support transactions"))
+		}
+		if fn == nil {
+			return nil
+		}
+		return fn(s)
+	}
+	tx, err := beginner.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return credentialAuditPhaseError(credentialAuditTxPhaseBegin, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			// 敏感凭据变更必须与审计同成同败；失败路径使用独立 ctx 回滚。
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tx.Rollback(rollbackCtx)
+		}
+	}()
+	if fn != nil {
+		if err := fn(s.WithDB(tx)); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return credentialAuditPhaseError(credentialAuditTxPhaseCommit, err)
+	}
+	committed = true
+	return nil
 }
 
 func (s *Store) HandlerRegistry() *HandlerRegistry {
@@ -212,26 +301,34 @@ INSERT INTO account_credentials (
 RETURNING id, tenant_id, provider_account_id, vendor, auth_mode, state, credential_version,
           access_expires_at, refresh_before_at, last_refresh_at, last_refresh_outcome,
           failure_class, failure_count, created_at, updated_at`
-	var rec credentialMetadataRow
-	err = s.db.QueryRow(ctx, q,
-		in.TenantID, in.ProviderAccountID, in.Vendor, in.AuthMode,
-		prepared.env.Ciphertext, prepared.env.EncryptionScheme, prepared.env.KeyID, prepared.env.Nonce, prepared.env.AADHash,
-		prepared.payloadFingerprint, prepared.refreshFingerprint,
-		nullableTime(prepared.accessExpiresAt), nullableTime(prepared.refreshExpiresAt), nullableTime(prepared.refreshBeforeAt),
-		strings.TrimSpace(in.ActorID),
-	).Scan(&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State, &rec.Version,
-		&rec.AccessExpiresAt, &rec.RefreshBeforeAt, &rec.LastRefreshAt, &rec.LastRefreshOutcome,
-		&rec.FailureClass, &rec.FailureCount, &rec.CreatedAt, &rec.UpdatedAt)
+	var meta CredentialMetadata
+	err = s.withCredentialMutationAuditTx(ctx, func(txStore *Store) error {
+		var rec credentialMetadataRow
+		if err := txStore.db.QueryRow(ctx, q,
+			in.TenantID, in.ProviderAccountID, in.Vendor, in.AuthMode,
+			prepared.env.Ciphertext, prepared.env.EncryptionScheme, prepared.env.KeyID, prepared.env.Nonce, prepared.env.AADHash,
+			prepared.payloadFingerprint, prepared.refreshFingerprint,
+			nullableTime(prepared.accessExpiresAt), nullableTime(prepared.refreshExpiresAt), nullableTime(prepared.refreshBeforeAt),
+			strings.TrimSpace(in.ActorID),
+		).Scan(&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State, &rec.Version,
+			&rec.AccessExpiresAt, &rec.RefreshBeforeAt, &rec.LastRefreshAt, &rec.LastRefreshOutcome,
+			&rec.FailureClass, &rec.FailureCount, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
+		}
+		meta = rec.metadata()
+		if err := txStore.insertAuditEventStrict(ctx, AuditEvent{
+			TenantID: in.TenantID, ProviderAccountID: in.ProviderAccountID, CredentialID: meta.ID,
+			EventType: CredentialEventCreated, Vendor: in.Vendor, AuthMode: in.AuthMode,
+			CredentialVersion: meta.Version, ActorID: strings.TrimSpace(in.ActorID),
+			Payload: map[string]any{"credentials_present": true},
+		}); err != nil {
+			return credentialAuditPhaseError(credentialAuditTxPhaseAudit, err)
+		}
+		return nil
+	})
 	if err != nil {
 		return CredentialMetadata{}, err
 	}
-	meta := rec.metadata()
-	_ = s.InsertAuditEvent(ctx, AuditEvent{
-		TenantID: in.TenantID, ProviderAccountID: in.ProviderAccountID, CredentialID: meta.ID,
-		EventType: "credential_created", Vendor: in.Vendor, AuthMode: in.AuthMode,
-		CredentialVersion: meta.Version, ActorID: strings.TrimSpace(in.ActorID),
-		Payload: map[string]any{"credentials_present": true},
-	})
 	return meta, nil
 }
 
@@ -289,28 +386,36 @@ WHERE id = $12
 RETURNING id, tenant_id, provider_account_id, vendor, auth_mode, state, credential_version,
           access_expires_at, refresh_before_at, last_refresh_at, last_refresh_outcome,
           failure_class, failure_count, created_at, updated_at`
-	var rec credentialMetadataRow
-	err = s.db.QueryRow(ctx, q,
-		prepared.env.Ciphertext, prepared.env.EncryptionScheme, prepared.env.KeyID, prepared.env.Nonce, prepared.env.AADHash,
-		prepared.payloadFingerprint, prepared.refreshFingerprint,
-		nullableTime(prepared.accessExpiresAt), nullableTime(prepared.refreshExpiresAt), nullableTime(prepared.refreshBeforeAt),
-		strings.TrimSpace(in.ActorID), current.ID, current.TenantID, current.ProviderAccountID, current.CredentialVersion,
-	).Scan(&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State, &rec.Version,
-		&rec.AccessExpiresAt, &rec.RefreshBeforeAt, &rec.LastRefreshAt, &rec.LastRefreshOutcome,
-		&rec.FailureClass, &rec.FailureCount, &rec.CreatedAt, &rec.UpdatedAt)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return CredentialMetadata{}, ErrCredentialNotFound
+	var meta CredentialMetadata
+	err = s.withCredentialMutationAuditTx(ctx, func(txStore *Store) error {
+		var rec credentialMetadataRow
+		if err := txStore.db.QueryRow(ctx, q,
+			prepared.env.Ciphertext, prepared.env.EncryptionScheme, prepared.env.KeyID, prepared.env.Nonce, prepared.env.AADHash,
+			prepared.payloadFingerprint, prepared.refreshFingerprint,
+			nullableTime(prepared.accessExpiresAt), nullableTime(prepared.refreshExpiresAt), nullableTime(prepared.refreshBeforeAt),
+			strings.TrimSpace(in.ActorID), current.ID, current.TenantID, current.ProviderAccountID, current.CredentialVersion,
+		).Scan(&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State, &rec.Version,
+			&rec.AccessExpiresAt, &rec.RefreshBeforeAt, &rec.LastRefreshAt, &rec.LastRefreshOutcome,
+			&rec.FailureClass, &rec.FailureCount, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return credentialAuditPhaseError(credentialAuditTxPhaseMutation, ErrCredentialNotFound)
+			}
+			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
 		}
+		meta = rec.metadata()
+		if err := txStore.insertAuditEventStrict(ctx, AuditEvent{
+			TenantID: current.TenantID, ProviderAccountID: current.ProviderAccountID, CredentialID: current.ID,
+			EventType: CredentialEventRotated, Vendor: current.Vendor, AuthMode: current.AuthMode,
+			CredentialVersion: meta.Version, ActorID: strings.TrimSpace(in.ActorID),
+			Payload: map[string]any{"credentials_present": true},
+		}); err != nil {
+			return credentialAuditPhaseError(credentialAuditTxPhaseAudit, err)
+		}
+		return nil
+	})
+	if err != nil {
 		return CredentialMetadata{}, err
 	}
-	meta := rec.metadata()
-	_ = s.InsertAuditEvent(ctx, AuditEvent{
-		TenantID: current.TenantID, ProviderAccountID: current.ProviderAccountID, CredentialID: current.ID,
-		EventType: "credential_rotated", Vendor: current.Vendor, AuthMode: current.AuthMode,
-		CredentialVersion: meta.Version, ActorID: strings.TrimSpace(in.ActorID),
-		Payload: map[string]any{"credentials_present": true},
-	})
 	return meta, nil
 }
 
@@ -406,31 +511,50 @@ func (s *Store) SetState(ctx context.Context, tenantID, providerAccountID, crede
 	if err := s.ensureProviderAccountTenant(ctx, tenantID, providerAccountID); err != nil {
 		return err
 	}
+	const readQ = `
+	SELECT state
+	FROM account_credentials
+	WHERE id = $1
+	  AND tenant_id = $2
+	  AND provider_account_id = $3
+	  AND deleted_at IS NULL
+	FOR UPDATE`
 	const q = `
 	UPDATE account_credentials
 	SET state = $1,
-    updated_at = NOW(),
-    last_modified_by_actor = NULLIF($2, '')
-WHERE id = $3
-  AND tenant_id = $4
-  AND provider_account_id = $5
-  AND deleted_at IS NULL
-RETURNING vendor, auth_mode, credential_version`
-	var vendor, authMode string
-	var version int32
-	if err := s.db.QueryRow(ctx, q, state, strings.TrimSpace(actorID), credentialID, tenantID, providerAccountID).Scan(&vendor, &authMode, &version); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrCredentialNotFound
+	    updated_at = NOW(),
+	    last_modified_by_actor = NULLIF($2, '')
+	WHERE id = $3
+	  AND tenant_id = $4
+	  AND provider_account_id = $5
+	  AND deleted_at IS NULL
+	RETURNING vendor, auth_mode, credential_version`
+	return s.withCredentialMutationAuditTx(ctx, func(txStore *Store) error {
+		var oldState string
+		if err := txStore.db.QueryRow(ctx, readQ, credentialID, tenantID, providerAccountID).Scan(&oldState); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return credentialAuditPhaseError(credentialAuditTxPhaseRead, ErrCredentialNotFound)
+			}
+			return credentialAuditPhaseError(credentialAuditTxPhaseRead, err)
 		}
-		return err
-	}
-	_ = s.InsertAuditEvent(ctx, AuditEvent{
-		TenantID: tenantID, ProviderAccountID: providerAccountID, CredentialID: credentialID,
-		EventType: "credential_disabled", Vendor: vendor, AuthMode: authMode,
-		CredentialVersion: version, ActorID: strings.TrimSpace(actorID),
-		Payload: map[string]any{"state": state},
+		var vendor, authMode string
+		var version int32
+		if err := txStore.db.QueryRow(ctx, q, state, strings.TrimSpace(actorID), credentialID, tenantID, providerAccountID).Scan(&vendor, &authMode, &version); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return credentialAuditPhaseError(credentialAuditTxPhaseMutation, ErrCredentialNotFound)
+			}
+			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
+		}
+		if err := txStore.insertAuditEventStrict(ctx, AuditEvent{
+			TenantID: tenantID, ProviderAccountID: providerAccountID, CredentialID: credentialID,
+			EventType: actionForStateTransition(oldState, state), Vendor: vendor, AuthMode: authMode,
+			CredentialVersion: version, ActorID: strings.TrimSpace(actorID),
+			Payload: map[string]any{"old_state": oldState, "new_state": state, "actor_id": strings.TrimSpace(actorID)},
+		}); err != nil {
+			return credentialAuditPhaseError(credentialAuditTxPhaseAudit, err)
+		}
+		return nil
 	})
-	return nil
 }
 
 func (s *Store) Delete(ctx context.Context, tenantID, providerAccountID, credentialID int64, actorID string) error {
@@ -451,20 +575,24 @@ WHERE id = $2
   AND provider_account_id = $4
   AND deleted_at IS NULL
 RETURNING vendor, auth_mode, credential_version`
-	var vendor, authMode string
-	var version int32
-	if err := s.db.QueryRow(ctx, q, strings.TrimSpace(actorID), credentialID, tenantID, providerAccountID).Scan(&vendor, &authMode, &version); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrCredentialNotFound
+	return s.withCredentialMutationAuditTx(ctx, func(txStore *Store) error {
+		var vendor, authMode string
+		var version int32
+		if err := txStore.db.QueryRow(ctx, q, strings.TrimSpace(actorID), credentialID, tenantID, providerAccountID).Scan(&vendor, &authMode, &version); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return credentialAuditPhaseError(credentialAuditTxPhaseMutation, ErrCredentialNotFound)
+			}
+			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
 		}
-		return err
-	}
-	_ = s.InsertAuditEvent(ctx, AuditEvent{
-		TenantID: tenantID, ProviderAccountID: providerAccountID, CredentialID: credentialID,
-		EventType: "credential_deleted", Vendor: vendor, AuthMode: authMode,
-		CredentialVersion: version, ActorID: strings.TrimSpace(actorID),
+		if err := txStore.insertAuditEventStrict(ctx, AuditEvent{
+			TenantID: tenantID, ProviderAccountID: providerAccountID, CredentialID: credentialID,
+			EventType: CredentialEventDeleted, Vendor: vendor, AuthMode: authMode,
+			CredentialVersion: version, ActorID: strings.TrimSpace(actorID),
+		}); err != nil {
+			return credentialAuditPhaseError(credentialAuditTxPhaseAudit, err)
+		}
+		return nil
 	})
-	return nil
 }
 
 func (s *Store) ResolveActive(ctx context.Context, tenantID, providerAccountID int64) (CredentialRecord, error) {
@@ -602,24 +730,28 @@ WHERE id = $12
   AND tenant_id = $13
   AND provider_account_id = $14
   AND credential_version = $15`
-	tag, err := s.db.Exec(ctx, q,
-		prepared.env.Ciphertext, prepared.env.EncryptionScheme, prepared.env.KeyID, prepared.env.Nonce, prepared.env.AADHash,
-		prepared.payloadFingerprint, prepared.refreshFingerprint,
-		nullableTime(prepared.accessExpiresAt), nullableTime(prepared.refreshExpiresAt), nullableTime(prepared.refreshBeforeAt),
-		outcome, rec.ID, rec.TenantID, rec.ProviderAccountID, rec.CredentialVersion,
-	)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() != 1 {
-		return errors.New("credentialstore: refresh credential cas lost")
-	}
-	_ = s.InsertAuditEvent(ctx, AuditEvent{
-		TenantID: rec.TenantID, ProviderAccountID: rec.ProviderAccountID, CredentialID: rec.ID,
-		EventType: "credential_refresh_succeeded", Vendor: rec.Vendor, AuthMode: rec.AuthMode,
-		CredentialVersion: version, Payload: map[string]any{"outcome": outcome},
+	return s.withCredentialMutationAuditTx(ctx, func(txStore *Store) error {
+		tag, err := txStore.db.Exec(ctx, q,
+			prepared.env.Ciphertext, prepared.env.EncryptionScheme, prepared.env.KeyID, prepared.env.Nonce, prepared.env.AADHash,
+			prepared.payloadFingerprint, prepared.refreshFingerprint,
+			nullableTime(prepared.accessExpiresAt), nullableTime(prepared.refreshExpiresAt), nullableTime(prepared.refreshBeforeAt),
+			outcome, rec.ID, rec.TenantID, rec.ProviderAccountID, rec.CredentialVersion,
+		)
+		if err != nil {
+			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
+		}
+		if tag.RowsAffected() != 1 {
+			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, errors.New("credentialstore: refresh credential cas lost"))
+		}
+		if err := txStore.insertAuditEventStrict(ctx, AuditEvent{
+			TenantID: rec.TenantID, ProviderAccountID: rec.ProviderAccountID, CredentialID: rec.ID,
+			EventType: CredentialEventRefreshSucceeded, Vendor: rec.Vendor, AuthMode: rec.AuthMode,
+			CredentialVersion: version, Payload: map[string]any{"outcome": outcome},
+		}); err != nil {
+			return credentialAuditPhaseError(credentialAuditTxPhaseAudit, err)
+		}
+		return nil
 	})
-	return nil
 }
 
 func (s *Store) SaveRefreshFailure(ctx context.Context, rec CredentialRecord, failureClass string, nextAttemptAt time.Time) error {
@@ -649,15 +781,23 @@ WHERE id = $4
   AND tenant_id = $5
   AND provider_account_id = $6
   AND deleted_at IS NULL`
-	if _, err := s.db.Exec(ctx, q, state, failureClass, nullableTime(nextAttemptAt), rec.ID, rec.TenantID, rec.ProviderAccountID); err != nil {
-		return err
-	}
-	_ = s.InsertAuditEvent(ctx, AuditEvent{
-		TenantID: rec.TenantID, ProviderAccountID: rec.ProviderAccountID, CredentialID: rec.ID,
-		EventType: "credential_refresh_failed", Vendor: rec.Vendor, AuthMode: rec.AuthMode,
-		CredentialVersion: rec.CredentialVersion, Payload: map[string]any{"failure_class": failureClass, "state": state},
+	return s.withCredentialMutationAuditTx(ctx, func(txStore *Store) error {
+		tag, err := txStore.db.Exec(ctx, q, state, failureClass, nullableTime(nextAttemptAt), rec.ID, rec.TenantID, rec.ProviderAccountID)
+		if err != nil {
+			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
+		}
+		if tag.RowsAffected() != 1 {
+			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, ErrCredentialNotFound)
+		}
+		if err := txStore.insertAuditEventStrict(ctx, AuditEvent{
+			TenantID: rec.TenantID, ProviderAccountID: rec.ProviderAccountID, CredentialID: rec.ID,
+			EventType: CredentialEventRefreshFailed, Vendor: rec.Vendor, AuthMode: rec.AuthMode,
+			CredentialVersion: rec.CredentialVersion, Payload: map[string]any{"failure_class": failureClass, "state": state},
+		}); err != nil {
+			return credentialAuditPhaseError(credentialAuditTxPhaseAudit, err)
+		}
+		return nil
 	})
-	return nil
 }
 
 func (s *Store) decryptRecord(ctx context.Context, rec CredentialRecord) ([]byte, error) {
@@ -976,4 +1116,17 @@ INSERT INTO credential_audit_events (
 	_, err = s.db.Exec(ctx, q, e.TenantID, e.ProviderAccountID, e.CredentialID, e.EventType,
 		Normalize(e.Vendor), Normalize(e.AuthMode), e.CredentialVersion, strings.TrimSpace(e.ActorID), strings.TrimSpace(e.RequestID), rawPayload)
 	return err
+}
+
+func (s *Store) insertAuditEventStrict(ctx context.Context, e AuditEvent) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("%w: store db missing", ErrCredentialAuditWriteFailed)
+	}
+	if e.TenantID <= 0 || e.ProviderAccountID <= 0 || strings.TrimSpace(e.EventType) == "" {
+		return fmt.Errorf("%w: invalid event tenant=%d provider_account=%d event_type=%q", ErrCredentialAuditWriteFailed, e.TenantID, e.ProviderAccountID, e.EventType)
+	}
+	if err := s.InsertAuditEvent(ctx, e); err != nil {
+		return fmt.Errorf("%w: %v", ErrCredentialAuditWriteFailed, err)
+	}
+	return nil
 }
