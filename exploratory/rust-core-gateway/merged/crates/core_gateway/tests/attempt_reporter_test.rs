@@ -72,6 +72,9 @@ fn test_config(control_plane_endpoint: String) -> StartupConfig {
             "0".to_owned(),
         ),
         ("HUAKAI_ROUTE_CACHE_TTL_MS".to_owned(), "0".to_owned()),
+        // W11-C D-3: listener vendor_endpoint guard 在 production 拒 127.0.0.1 mock,
+        // 测试需 dev 模式才能继续用 loopback mock 上游。
+        ("HUAKAI_RUNTIME_MODE".to_owned(), "development".to_owned()),
     ])
     .expect("attempt reporter 测试配置应可解析")
 }

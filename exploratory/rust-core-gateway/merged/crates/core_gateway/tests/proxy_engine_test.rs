@@ -89,6 +89,9 @@ fn test_config_with_upstream_body_idle(
             "HUAKAI_SERVER_HEADER_READ_TIMEOUT_MS".to_owned(),
             "30_000".replace('_', ""),
         ),
+        // W11-C D-3: listener vendor_endpoint guard 在 production 拒 127.0.0.1 mock,
+        // 测试需 dev 模式才能继续用 loopback mock 上游。
+        ("HUAKAI_RUNTIME_MODE".to_owned(), "development".to_owned()),
     ])
     .expect("proxy engine 测试配置应可解析")
 }

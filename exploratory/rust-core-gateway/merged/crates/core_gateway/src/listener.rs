@@ -17,8 +17,8 @@ use tracing::{Instrument, info_span, warn};
 use crate::{
     GatewayState,
     account_planner::{BodyRouteSignal, GatewayProtocol, PlanningError},
-    attempt_reporter::{AttemptReportContext, AttemptReportStats, AttemptStatus},
-    proxy_engine::ProxyError,
+    attempt_reporter::{AttemptReportContext, AttemptReportStats, AttemptStatus, now_unix_ms_i64},
+    proxy_engine::{ProxyError, validate_vendor_endpoint},
     redaction::redact_untrusted_text,
     request_id::RequestId,
 };
@@ -194,6 +194,48 @@ async fn handle_gateway_request(
                 return json_error_response(StatusCode::BAD_GATEWAY, &request_id, "bad_route_plan");
             }
         };
+
+        // W11-C D-3: 控制面下发的 vendor endpoint 在 production 必须 https + 公网,
+        // 防控制面被攻陷把流量打到 internal/metadata/loopback 服务。dev/test 模式 warn 不阻断。
+        // mutation: 删本块 → control plane 返 http://attacker.internal 不再被拒 →
+        // (待集成测试上线后) production_listener_rejects_non_https_vendor_endpoint 红。
+        if let Err(err) =
+            validate_vendor_endpoint(&planned.vendor_endpoint, state.runtime_mode())
+        {
+            let err_redacted = redact_untrusted_text(&err.to_string(), LISTENER_ERROR_LIMIT);
+            // P2 codex 2026-05-23: 控制面下发的 endpoint 是 untrusted, log 前必须 redact,
+            // 防 attacker control plane 通过控制 endpoint 字段注入日志。
+            let endpoint_redacted = redact_untrusted_text(
+                &planned.vendor_endpoint.to_string(),
+                LISTENER_ERROR_LIMIT,
+            );
+            warn!(
+                error = %err_redacted,
+                vendor_endpoint = %endpoint_redacted,
+                "vendor endpoint rejected before forward",
+            );
+            // P1 codex 2026-05-23: 用 leased attempt context 上报终态, 而不是
+            // synthetic — 否则控制面侧 lease/account 出账不完整, 账本与 attempt_id 失联。
+            let context = AttemptReportContext::from_planned(
+                &request_id,
+                &planned,
+                body_bytes.len() as u64,
+                now_unix_ms_i64(),
+            );
+            let reporter = state.attempt_reporter().terminal_reporter(context);
+            let _ = reporter.report(
+                AttemptStatus::ControlPlaneError,
+                Some(StatusCode::BAD_GATEWAY.as_u16()),
+                AttemptReportStats::default(),
+                Some("bad_vendor_endpoint"),
+                Some(&err_redacted),
+            );
+            return json_error_response(
+                StatusCode::BAD_GATEWAY,
+                &request_id,
+                "bad_vendor_endpoint",
+            );
+        }
 
         // D-1a: body 已 buffer, 用实际字节数对 planned.route_plan.max_body_bytes 校验,
         // 比 content-length header 更准 (防 chunked / 缺 header 绕过)。

@@ -19,12 +19,14 @@ use tracing::warn;
 mod auth;
 #[cfg(feature = "mimicry-boring")]
 pub mod boring_tls_connector;
+pub mod endpoint_guard;
 mod error;
 mod headers;
 mod http_client;
 mod relay;
 pub mod sse_parser;
 
+pub use endpoint_guard::{EndpointGuardError, validate_vendor_endpoint};
 pub use error::ProxyError;
 #[cfg(feature = "mimicry-boring")]
 pub use http_client::build_http_client_with_profile;

@@ -87,6 +87,9 @@ fn test_config(
             "HUAKAI_ROUTE_CACHE_TTL_MS".to_owned(),
             route_cache_ttl_ms.to_string(),
         ),
+        // W11-C D-3: listener vendor_endpoint guard 在 production 拒 127.0.0.1 mock,
+        // 测试需 dev 模式才能继续用 loopback mock 上游。
+        ("HUAKAI_RUNTIME_MODE".to_owned(), "development".to_owned()),
     ])
     .expect("route client 测试配置应可解析")
 }

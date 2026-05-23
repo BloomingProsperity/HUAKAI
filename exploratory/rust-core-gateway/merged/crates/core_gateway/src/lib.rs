@@ -108,6 +108,11 @@ impl GatewayState {
         self.config.mock_upstream_endpoint.clone()
     }
 
+    /// W11-C D-3: 暴露 RuntimeMode 给 listener 决定是否对 vendor endpoint 做严格守门。
+    pub fn runtime_mode(&self) -> crate::config::RuntimeMode {
+        self.config.runtime_mode
+    }
+
     /// 共享 HTTP client, 供 listener 流式连接 mock upstream
     pub fn http_client(&self) -> &GatewayHttpClient {
         self.proxy_engine.http_client()
