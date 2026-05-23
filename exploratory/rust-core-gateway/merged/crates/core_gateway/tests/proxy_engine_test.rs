@@ -11,7 +11,9 @@ use axum::{
 use bytes::Bytes;
 use common::mock_upstream::{MockBehavior, MockUpstream};
 use core_gateway::{
-    account_planner::{AccountPlanner, AttemptLifecycle, AttemptState, AuthMode, GatewayProtocol},
+    account_planner::{
+        AccountPlanner, AttemptLifecycle, AttemptState, AuthMode, BodyRouteSignal, GatewayProtocol,
+    },
     build_router,
     config::StartupConfig,
     mock_control_plane::{MockControlPlane, mock_route_plan},
@@ -171,11 +173,21 @@ async fn account_planner_extracts_fields_and_intentionally_does_not_cache_route_
     let request_id = core_gateway::request_id::RequestId::from_candidate(Some("planner-rid-1"));
 
     let first = planner
-        .plan(&headers, GatewayProtocol::AnthropicMessages, &request_id)
+        .plan(
+            &headers,
+            GatewayProtocol::AnthropicMessages,
+            &request_id,
+            &BodyRouteSignal::default(),
+        )
         .await
         .expect("第一次 plan 应成功");
     let second = planner
-        .plan(&headers, GatewayProtocol::AnthropicMessages, &request_id)
+        .plan(
+            &headers,
+            GatewayProtocol::AnthropicMessages,
+            &request_id,
+            &BodyRouteSignal::default(),
+        )
         .await
         .expect("第二次 plan 应继续查询 control plane");
 
@@ -482,6 +494,7 @@ async fn proxy_stream_tap_extracts_openai_usage_without_changing_body() {
             request.headers(),
             GatewayProtocol::OpenAiChatCompletions,
             &request_id,
+            &BodyRouteSignal::default(),
         )
         .await
         .expect("route plan 应成功");
@@ -553,6 +566,7 @@ async fn proxy_stream_tap_respects_client_cancel_mid_stream() {
             request.headers(),
             GatewayProtocol::OpenAiChatCompletions,
             &request_id,
+            &BodyRouteSignal::default(),
         )
         .await
         .expect("route plan 应成功");

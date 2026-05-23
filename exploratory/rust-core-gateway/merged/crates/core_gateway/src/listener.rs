@@ -16,7 +16,7 @@ use tracing::{Instrument, info_span, warn};
 
 use crate::{
     GatewayState,
-    account_planner::{GatewayProtocol, PlanningError},
+    account_planner::{BodyRouteSignal, GatewayProtocol, PlanningError},
     attempt_reporter::{AttemptReportContext, AttemptReportStats, AttemptStatus},
     proxy_engine::ProxyError,
     redaction::redact_untrusted_text,
@@ -117,9 +117,49 @@ async fn handle_gateway_request(
             };
         }
 
+        // W11-A D-1a: bounded body buffer + routing signal 抽取必须先于 plan(),
+        // 让 model / stream 以 body 为权威, 防止 header 篡改路由。
+        // mutation: 删 BodyRouteSignal::from_json_body 调用并改回 BodyRouteSignal::default() →
+        // listener_mock_body_model_drives_route_query 集成测试在 control-plane 侧断言红 (TODO P0-2 后续 slice)。
+        let (parts, body) = request.into_parts();
+        let body_bytes = match axum::body::to_bytes(body, state.max_body_bytes()).await {
+            Ok(b) => b,
+            Err(err) => {
+                let err_redacted = redact_untrusted_text(&err.to_string(), LISTENER_ERROR_LIMIT);
+                // P2 codex 2026-05-23: 区分大小超限 vs 其他 IO 错误; 大小超限要 413 与上游
+                // content-length 早期 check 行为一致, 不能误归 400 / InternalError。
+                let limit_exceeded = err_redacted.contains("length limit")
+                    || err_redacted.contains("body length")
+                    || err_redacted.contains("limit exceeded");
+                if limit_exceeded {
+                    warn!(error = %err_redacted, "request body exceeded size limit");
+                    return json_error_response(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        &request_id,
+                        "payload_too_large",
+                    );
+                }
+                warn!(error = %err_redacted, "request body read failed before planning");
+                report_listener_planning_error(
+                    &state,
+                    &request_id,
+                    AttemptStatus::InternalError,
+                    StatusCode::BAD_REQUEST,
+                    "request_body_read_failed",
+                    &err_redacted,
+                );
+                return json_error_response(
+                    StatusCode::BAD_REQUEST,
+                    &request_id,
+                    "request_body_read_failed",
+                );
+            }
+        };
+        let body_signal = BodyRouteSignal::from_json_body(&body_bytes);
+
         let planned = match state
             .account_planner()
-            .plan(request.headers(), protocol, &request_id)
+            .plan(&parts.headers, protocol, &request_id, &body_signal)
             .await
         {
             Ok(planned) => planned,
@@ -155,8 +195,10 @@ async fn handle_gateway_request(
             }
         };
 
+        // D-1a: body 已 buffer, 用实际字节数对 planned.route_plan.max_body_bytes 校验,
+        // 比 content-length header 更准 (防 chunked / 缺 header 绕过)。
         if planned.route_plan.max_body_bytes > 0
-            && content_length_exceeds_u64(request.headers(), planned.route_plan.max_body_bytes)
+            && (body_bytes.len() as u64) > planned.route_plan.max_body_bytes
         {
             return json_error_response(
                 StatusCode::PAYLOAD_TOO_LARGE,
@@ -164,6 +206,8 @@ async fn handle_gateway_request(
                 "payload_too_large",
             );
         }
+
+        let request = Request::from_parts(parts, Body::from(body_bytes));
 
         match state
             .proxy_engine()
@@ -208,14 +252,6 @@ fn content_length_exceeds(headers: &HeaderMap, max_body_bytes: usize) -> bool {
         .get(CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<usize>().ok())
-        .is_some_and(|len| len > max_body_bytes)
-}
-
-fn content_length_exceeds_u64(headers: &HeaderMap, max_body_bytes: u64) -> bool {
-    headers
-        .get(CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
         .is_some_and(|len| len > max_body_bytes)
 }
 

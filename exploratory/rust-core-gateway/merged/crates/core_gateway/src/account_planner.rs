@@ -12,6 +12,8 @@ use http::{HeaderMap, Uri, header::ACCEPT};
 use thiserror::Error;
 use uuid::Uuid;
 
+use serde::Deserialize;
+
 use crate::{
     error::GatewayError,
     redaction::redact_acquisition_token,
@@ -39,6 +41,47 @@ struct AccountPlannerInner {
 pub enum GatewayProtocol {
     AnthropicMessages,
     OpenAiChatCompletions,
+}
+
+/// W11-A D-1a: 从客户端 bounded JSON 请求体抽出 routing signal,
+/// 让控制面以 body 为权威, 防 header 单独伪造模型/流式信号绕开计费/路由。
+///
+/// `model` 与 `stream` 来自 OpenAI Chat Completions / Anthropic Messages 通用契约;
+/// 其他字段一律忽略 (避免 Rust 端解析负担)。
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BodyRouteSignal {
+    pub model: Option<String>,
+    pub stream: Option<bool>,
+}
+
+/// P2 codex 2026-05-23: model 字符串若被客户端塞超大, 会原样进入控制面 RouteQueryRequest
+/// 导致 RPC payload 膨胀 + 日志 / 缓存 key 污染。OpenAI / Anthropic 实际模型名 <100 字符,
+/// 256 足够覆盖任何合理 vendor 命名 + 防注入超长值。
+const MAX_ROUTE_SIGNAL_MODEL_LEN: usize = 256;
+
+impl BodyRouteSignal {
+    /// 解析 body 字节; 任意 IO / JSON / 类型错误一律 swallow 返回 default (无信号),
+    /// 由调用方决定是否走 header / "unknown" fallback。
+    /// 调用方必须已对 body 长度做 bounded 限制 (max_body_bytes), 本函数不再二次检查。
+    /// model 字段额外 bounded MAX_ROUTE_SIGNAL_MODEL_LEN, 超长 / 空 → 视为缺失。
+    pub fn from_json_body(body: &[u8]) -> Self {
+        #[derive(Deserialize)]
+        struct RoutingPayload {
+            #[serde(default)]
+            model: Option<String>,
+            #[serde(default)]
+            stream: Option<bool>,
+        }
+
+        serde_json::from_slice::<RoutingPayload>(body)
+            .map(|p| Self {
+                model: p
+                    .model
+                    .filter(|m| !m.is_empty() && m.len() <= MAX_ROUTE_SIGNAL_MODEL_LEN),
+                stream: p.stream,
+            })
+            .unwrap_or_default()
+    }
 }
 
 impl GatewayProtocol {
@@ -190,8 +233,9 @@ impl AccountPlanner {
         headers: &HeaderMap,
         protocol: GatewayProtocol,
         request_id: &RequestId,
+        body_signal: &BodyRouteSignal,
     ) -> Result<PlannedAttempt, PlanningError> {
-        let query = build_route_query(headers, protocol, request_id);
+        let query = build_route_query(headers, protocol, request_id, body_signal);
         let plan = self.inner.route_client.query_route(query).await?;
 
         planned_attempt(plan)
@@ -202,20 +246,27 @@ pub fn build_route_query(
     headers: &HeaderMap,
     protocol: GatewayProtocol,
     request_id: &RequestId,
+    body_signal: &BodyRouteSignal,
 ) -> RouteQueryRequest {
     RouteQueryRequest {
         request_id: request_id.as_str().to_owned(),
         tenant_id: header_str(headers, TENANT_ID_HEADER)
             .unwrap_or("default-tenant")
             .to_owned(),
-        requested_model: header_str(headers, REQUESTED_MODEL_HEADER)
-            .unwrap_or("unknown")
-            .to_owned(),
+        // W11-A D-1a: body 是 model 的权威来源, header 仅在 body 未提供时 legacy fallback。
+        // mutation: 把下面这行改回 header_str(...) 优先 →
+        // build_route_query_body_model_wins_over_header 测试红 (应红)。
+        requested_model: body_signal
+            .model
+            .clone()
+            .or_else(|| header_str(headers, REQUESTED_MODEL_HEADER).map(str::to_owned))
+            .unwrap_or_else(|| "unknown".to_owned()),
         session_hash: header_str(headers, SESSION_HASH_HEADER)
             .unwrap_or(request_id.as_str())
             .to_owned(),
         request_protocol: protocol.as_str().to_owned(),
-        stream: wants_stream(headers),
+        // W11-A D-1a: body.stream 优先; 否则保留 wants_stream() (含 x-huakai-stream / Accept SSE)。
+        stream: body_signal.stream.unwrap_or_else(|| wants_stream(headers)),
         client_deadline_ms: DEFAULT_CLIENT_DEADLINE_MS,
         previous_attempts: Vec::new(),
         capability_hints: Vec::new(),
@@ -446,5 +497,143 @@ mod tests {
                 expires_at_unix_ms: 0,
             }),
         }
+    }
+
+    // ---------- W11-A D-1a tests ----------
+
+    /// 关键判别性: body 提供 model + stream → 必须覆盖同时存在的 header 值。
+    /// mutation: 改 build_route_query 回 header 优先 → assert_eq! requested_model 红。
+    #[test]
+    fn build_route_query_body_model_wins_over_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(REQUESTED_MODEL_HEADER, "cheap-header-model".parse().unwrap());
+        headers.insert(STREAM_HEADER, "false".parse().unwrap());
+
+        let body_signal = BodyRouteSignal {
+            model: Some("claude-real-from-body".to_owned()),
+            stream: Some(true),
+        };
+        let request_id = RequestId::generate();
+
+        let q = build_route_query(
+            &headers,
+            GatewayProtocol::AnthropicMessages,
+            &request_id,
+            &body_signal,
+        );
+
+        assert_eq!(
+            q.requested_model, "claude-real-from-body",
+            "body.model 必须比 x-huakai-model header 权威 (D-1a 防 header 篡改路由)"
+        );
+        assert!(
+            q.stream,
+            "body.stream=true 必须比 x-huakai-stream=false header 权威"
+        );
+    }
+
+    /// 无 body signal 时退回 header 是兼容路径; 不破坏既有客户端。
+    #[test]
+    fn build_route_query_falls_back_to_header_when_body_signal_missing() {
+        let mut headers = HeaderMap::new();
+        headers.insert(REQUESTED_MODEL_HEADER, "header-model".parse().unwrap());
+        headers.insert(STREAM_HEADER, "true".parse().unwrap());
+
+        let body_signal = BodyRouteSignal::default();
+        let q = build_route_query(
+            &headers,
+            GatewayProtocol::OpenAiChatCompletions,
+            &RequestId::generate(),
+            &body_signal,
+        );
+
+        assert_eq!(
+            q.requested_model, "header-model",
+            "无 body.model 时 header x-huakai-model 仍可 fallback"
+        );
+        assert!(
+            q.stream,
+            "无 body.stream 时 header x-huakai-stream=true 仍生效"
+        );
+    }
+
+    #[test]
+    fn build_route_query_unknown_when_no_model_anywhere() {
+        let headers = HeaderMap::new();
+        let body_signal = BodyRouteSignal::default();
+        let q = build_route_query(
+            &headers,
+            GatewayProtocol::AnthropicMessages,
+            &RequestId::generate(),
+            &body_signal,
+        );
+        assert_eq!(q.requested_model, "unknown");
+        assert!(!q.stream);
+    }
+
+    #[test]
+    fn body_route_signal_extracts_model_and_stream_from_json() {
+        let body = br#"{"model":"claude-3-5-sonnet","stream":true,"messages":[]}"#;
+        let signal = BodyRouteSignal::from_json_body(body);
+        assert_eq!(signal.model.as_deref(), Some("claude-3-5-sonnet"));
+        assert_eq!(signal.stream, Some(true));
+    }
+
+    #[test]
+    fn body_route_signal_default_when_body_is_invalid_json() {
+        let body = b"not a valid json {";
+        let signal = BodyRouteSignal::from_json_body(body);
+        assert!(
+            signal.model.is_none(),
+            "malformed body 不能让 model 被部分污染"
+        );
+        assert!(signal.stream.is_none());
+    }
+
+    #[test]
+    fn body_route_signal_default_when_routing_fields_missing() {
+        let body = br#"{"messages":[{"role":"user","content":"hi"}]}"#;
+        let signal = BodyRouteSignal::from_json_body(body);
+        assert!(signal.model.is_none());
+        assert!(signal.stream.is_none());
+    }
+
+    #[test]
+    fn body_route_signal_empty_model_string_treated_as_missing() {
+        let body = br#"{"model":"","stream":false}"#;
+        let signal = BodyRouteSignal::from_json_body(body);
+        assert!(
+            signal.model.is_none(),
+            "空字符串 model 不能让 build_route_query 返回 requested_model=\"\""
+        );
+        assert_eq!(signal.stream, Some(false));
+    }
+
+    /// P2 codex 2026-05-23: 防客户端塞超大 model 污染 control plane RouteQueryRequest。
+    /// mutation: 删 `m.len() <= MAX_ROUTE_SIGNAL_MODEL_LEN` filter → 此测试断言红。
+    /// 实测 MAX = 256, OpenAI / Anthropic 模型名实际 <100 字节足够。
+    #[test]
+    fn body_route_signal_drops_oversized_model_to_prevent_payload_pollution() {
+        let huge_model = "a".repeat(300); // > MAX_ROUTE_SIGNAL_MODEL_LEN (256)
+        let body = format!(r#"{{"model":"{huge_model}","stream":true}}"#);
+        let signal = BodyRouteSignal::from_json_body(body.as_bytes());
+        assert!(
+            signal.model.is_none(),
+            "超长 model (>256 字节) 必须被丢弃, 实际: {:?}",
+            signal.model.as_deref().map(str::len)
+        );
+        assert_eq!(signal.stream, Some(true), "其他字段不应受 model 超限影响");
+    }
+
+    #[test]
+    fn body_route_signal_accepts_model_at_boundary_length() {
+        let boundary_model = "a".repeat(256); // exactly MAX_ROUTE_SIGNAL_MODEL_LEN
+        let body = format!(r#"{{"model":"{boundary_model}"}}"#);
+        let signal = BodyRouteSignal::from_json_body(body.as_bytes());
+        assert_eq!(
+            signal.model.as_deref().map(str::len),
+            Some(256),
+            "刚好 256 字节 model 应通过 (边界 inclusive)"
+        );
     }
 }
