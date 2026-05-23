@@ -222,7 +222,9 @@ impl ProxyEngine {
         planned.attempt.mark_forwarding()?;
 
         let started_at_ms = now_unix_ms_i64();
-        let request_bytes_in = content_length_bytes(request.headers());
+        // W12-E D-9: 取真实 inbound body 字节, 不依赖 Content-Length header。
+        // 见 compute_request_bytes_in + 该函数 #[cfg(test)] 单元测试。
+        let request_bytes_in = compute_request_bytes_in(&request);
         let terminal_reporter = self.attempt_reporter.as_ref().map(|reporter| {
             reporter.terminal_reporter(AttemptReportContext::from_planned(
                 &request_id,
@@ -385,6 +387,48 @@ fn content_length_bytes(headers: &HeaderMap) -> u64 {
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or_default()
+}
+
+/// W12-E D-9: 推导 inbound 请求体真实字节数 — 先用 body.size_hint().exact()
+/// (buffered body 给出权威值), 否则 fallback Content-Length header。
+/// 防 chunked / H2 上传等无 Content-Length 场景把 bytes_in 计成 0。
+pub(super) fn compute_request_bytes_in(request: &Request<Body>) -> u64 {
+    use http_body::Body as _;
+    request
+        .body()
+        .size_hint()
+        .exact()
+        .unwrap_or_else(|| content_length_bytes(request.headers()))
+}
+
+#[cfg(test)]
+mod request_bytes_tests {
+    use super::*;
+
+    /// W12-E D-9 判别: body 50 字节 + header 假说 10 → 必须返回 50 (body 权威)。
+    /// mutation: 把 compute_request_bytes_in 改回 content_length_bytes(headers) → 红。
+    #[test]
+    fn compute_request_bytes_in_prefers_body_size_hint_over_content_length() {
+        let body = Body::from(Bytes::from(vec![0u8; 50]));
+        let request = Request::builder()
+            .header(CONTENT_LENGTH, "10")
+            .body(body)
+            .expect("test request 应可构建");
+        let count = compute_request_bytes_in(&request);
+        assert_eq!(
+            count, 50,
+            "buffered body 字节数必须权威, 不被 header 欺骗 (W12-E D-9), 实际: {count}"
+        );
+    }
+
+    #[test]
+    fn compute_request_bytes_in_handles_empty_body() {
+        let request = Request::builder()
+            .body(Body::empty())
+            .expect("test request 应可构建");
+        let count = compute_request_bytes_in(&request);
+        assert_eq!(count, 0, "空 body → 0");
+    }
 }
 
 fn report_proxy_error(terminal_reporter: Option<&AttemptTerminalReporter>, err: &ProxyError) {

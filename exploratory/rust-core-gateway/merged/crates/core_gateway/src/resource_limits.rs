@@ -276,10 +276,15 @@ where
             .await
             .expect("connection semaphore 不应被关闭");
         let (inner, addr) = self.inner.accept().await;
+        // W12-E O-2: 真实连接 accept 后才 inc gauge, semaphore 等待期间不计。
+        // mutation: 删本行 ActiveConnectionGuard::new() →
+        // active_connections_gauge_increments_on_accept_decrements_on_drop 测试断言红。
+        let active_guard = ActiveConnectionGuard::new();
         (
             TrackedIo {
                 inner,
                 _permit: permit,
+                _active_guard: active_guard,
             },
             addr,
         )
@@ -290,9 +295,30 @@ where
     }
 }
 
+/// W12-E O-2: 真实 listener 接受的 TCP 连接生命周期 → ACTIVE_CONNECTIONS gauge inc/dec。
+/// 通过 Drop 保证 inner IO 提前关闭 / panic 期间不漏 dec。
+struct ActiveConnectionGuard;
+
+impl ActiveConnectionGuard {
+    fn new() -> Self {
+        // P2 codex 2026-05-24: metrics 是 OnceLock 懒初始化, 单测/早期启动时未必先调
+        // metrics::registry(); 必须先触发 registry 否则 active_connections().expect 会 panic。
+        let _ = crate::metrics::registry();
+        crate::metrics::active_connections().inc();
+        Self
+    }
+}
+
+impl Drop for ActiveConnectionGuard {
+    fn drop(&mut self) {
+        crate::metrics::active_connections().dec();
+    }
+}
+
 pub struct TrackedIo<I> {
     inner: I,
     _permit: OwnedSemaphorePermit,
+    _active_guard: ActiveConnectionGuard,
 }
 
 impl<I> AsyncRead for TrackedIo<I>
@@ -341,6 +367,42 @@ mod tests {
     };
 
     use super::*;
+
+    /// P2 codex 2026-05-24: ACTIVE_CONNECTIONS 是全局 IntGauge, cargo test 并发跑测试会
+    /// 让 before/after 取值相互污染 (其他测试构造的 LimitedListener 也 inc/dec 同一 gauge)。
+    /// 必须互斥这一类 gauge-sensitive 测试。
+    static ACTIVE_CONN_GAUGE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// W12-E O-2: ActiveConnectionGuard 必须 new() 增 1, drop() 减 1。
+    /// mutation: 删 ActiveConnectionGuard::new() 中的 inc() / Drop 中的 dec() →
+    /// 此测试断言红 (gauge 不变 / 漂)。
+    #[test]
+    fn active_connection_guard_increments_on_new_decrements_on_drop() {
+        let _serial = ACTIVE_CONN_GAUGE_TEST_LOCK
+            .lock()
+            .expect("test lock 不应 poison");
+        // 确保 metrics 已初始化避免 get() panic; 与 ActiveConnectionGuard::new() 内部
+        // 同 idempotent registry() 调用对齐。
+        let _ = crate::metrics::registry();
+
+        let before = crate::metrics::active_connections().get();
+        {
+            let _g1 = ActiveConnectionGuard::new();
+            let _g2 = ActiveConnectionGuard::new();
+            assert_eq!(
+                crate::metrics::active_connections().get(),
+                before + 2,
+                "两次 new() 必须 inc 到 +2, 实际 {} (起点 {})",
+                crate::metrics::active_connections().get(),
+                before
+            );
+        }
+        assert_eq!(
+            crate::metrics::active_connections().get(),
+            before,
+            "两个 guard 都 drop 后必须 dec 回起点 {before}"
+        );
+    }
 
     fn test_config(max_in_flight_requests: usize) -> StartupConfig {
         StartupConfig::from_env_iter([

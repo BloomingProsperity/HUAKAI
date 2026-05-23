@@ -58,6 +58,11 @@ pub struct HeartbeatMetricsSource {
 pub fn build_heartbeat_request(metrics: &HeartbeatMetricsSource) -> HeartbeatRequest {
     let in_flight = metrics.resource_limits.current_in_flight().max(0) as u64;
     let queue_depth = metrics.attempt_reporter.queue_depth() as u64;
+    // W12-E O-2: 从 prometheus gauge 拉真实 upstream 连接数; LimitedListener / 未来
+    // proxy_engine UpstreamConnectionGuard 写值, heartbeat 读值。当前 lifecycle 已盖
+    // ACTIVE_CONNECTIONS (listener accept→drop), OPEN_UPSTREAM_CONNECTIONS 待
+    // proxy_engine upstream body 包装后再 inc/dec (后续小切片)。
+    let open_upstream_connections = crate::metrics::open_upstream_connections().get().max(0) as u64;
 
     HeartbeatRequest {
         node_id: "rust-core-gateway".to_owned(),
@@ -65,8 +70,7 @@ pub fn build_heartbeat_request(metrics: &HeartbeatMetricsSource) -> HeartbeatReq
         schema_version: crate::route_client::ROUTE_SCHEMA_VERSION.to_owned(),
         started_at: metrics.started_at_unix_ms,
         in_flight_requests: in_flight,
-        // W12-E D-9+O-2 follow-up: upstream connector lifecycle gauge 接线后填真值。
-        open_upstream_connections: 0,
+        open_upstream_connections,
         attempt_report_queue_depth: queue_depth,
         // P2 roadmap: 需直方图 + 1-min rate window 才能精确, 暂保留 0.0。
         p95_control_plane_rpc_ms: 0.0,
