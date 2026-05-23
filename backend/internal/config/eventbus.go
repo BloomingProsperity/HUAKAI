@@ -16,6 +16,8 @@ var (
 	ErrInvalidEventBusBuffer   = errors.New("config: invalid eventbus buffer size")
 )
 
+const EnvTrustLedgerAllowMissingMoneyRef = "HUAKAI_TRUST_LEDGER_ALLOW_MISSING_MONEY_REF"
+
 type EventBusConfig struct {
 	Enabled              bool
 	HighWorkers          int
@@ -26,6 +28,7 @@ type EventBusConfig struct {
 	LowBuffer            int
 	HandlerTimeout       time.Duration
 	ShutdownDrainTimeout time.Duration
+	AllowMissingMoneyRef bool
 }
 
 func LoadEventBus() (*EventBusConfig, error) {
@@ -41,11 +44,18 @@ func LoadEventBus() (*EventBusConfig, error) {
 		ShutdownDrainTimeout: 5 * time.Second,
 	}
 	if raw := strings.TrimSpace(os.Getenv("HUAKAI_EVENTBUS_ENABLED")); raw != "" {
-		enabled, err := parseEventBusBool(raw)
+		enabled, err := parseEventBusBool("HUAKAI_EVENTBUS_ENABLED", raw)
 		if err != nil {
 			return nil, err
 		}
 		cfg.Enabled = enabled
+	}
+	if raw := strings.TrimSpace(os.Getenv(EnvTrustLedgerAllowMissingMoneyRef)); raw != "" {
+		allowMissing, err := parseEventBusBool(EnvTrustLedgerAllowMissingMoneyRef, raw)
+		if err != nil {
+			return nil, err
+		}
+		cfg.AllowMissingMoneyRef = allowMissing
 	}
 	var err error
 	if cfg.HandlerTimeout, err = envEventBusDurationSeconds("HUAKAI_EVENTBUS_HANDLER_TIMEOUT_SECONDS", cfg.HandlerTimeout); err != nil {
@@ -75,14 +85,14 @@ func LoadEventBus() (*EventBusConfig, error) {
 	return cfg, nil
 }
 
-func parseEventBusBool(raw string) (bool, error) {
+func parseEventBusBool(name, raw string) (bool, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "1", "true", "t", "yes", "y", "on":
 		return true, nil
 	case "0", "false", "f", "no", "n", "off":
 		return false, nil
 	default:
-		return false, fmt.Errorf("%w: HUAKAI_EVENTBUS_ENABLED=%q", ErrInvalidEventBusBool, raw)
+		return false, fmt.Errorf("%w: %s=%q", ErrInvalidEventBusBool, name, raw)
 	}
 }
 

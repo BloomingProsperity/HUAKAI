@@ -12,17 +12,77 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
-	"crypto/x509"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest"
+	"go.uber.org/zap/zaptest/observer"
+
+	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
+	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 )
+
+// ---------------------------------------------------------------
+// Audit-ref policy wiring: 2 case
+// ---------------------------------------------------------------
+
+func TestWiring_AuditRefPolicySharedByBusConfigAndChatDeps(t *testing.T) {
+	policy := &eventbus.AuditRefPolicy{ReleaseMode: eventbus.ReleaseModeProduction}
+	busCfg := buildCompletionEventBusConfig(&runtimeconfig.EventBusConfig{Enabled: true}, policy)
+	d := &deps{
+		cfg:            &Config{BillingPolicyVersion: "1.0", RequestClass: "standard"},
+		auditRefPolicy: policy,
+	}
+	chatDeps := chatHandlerDeps(d)
+
+	if busCfg.AuditRefPolicy != policy {
+		t.Fatalf("bus AuditRefPolicy pointer=%p want shared %p", busCfg.AuditRefPolicy, policy)
+	}
+	if chatDeps.AuditRefPolicy != policy {
+		t.Fatalf("chat AuditRefPolicy pointer=%p want shared %p", chatDeps.AuditRefPolicy, policy)
+	}
+
+	// Mutation: 让 bus 与 ChatHandlerDeps 各自 new policy 时, 这里的共享变更会失效。
+	policy.AllowMissingMoneyRef = true
+	if !busCfg.AuditRefPolicy.AllowMissingMoneyRef || !chatDeps.AuditRefPolicy.AllowMissingMoneyRef {
+		t.Fatalf("policy mutation was not visible through both wiring surfaces")
+	}
+}
+
+func TestWiring_BuildCompletionEventBusWarnsWhenAuditRefEscapeFlagActive(t *testing.T) {
+	core, observed := observer.New(zapcore.WarnLevel)
+	logger := zap.New(core)
+	policy := &eventbus.AuditRefPolicy{
+		ReleaseMode:          eventbus.ReleaseModeProduction,
+		AllowMissingMoneyRef: true,
+	}
+
+	bus, err := buildCompletionEventBus(nil, nil, nil, policy, logger)
+	if err != nil {
+		t.Fatalf("buildCompletionEventBus: %v", err)
+	}
+	if bus != nil {
+		t.Fatalf("nil eventbus cfg should not build a bus")
+	}
+	logs := observed.FilterMessage("HUAKAI_TRUST_LEDGER_ALLOW_MISSING_MONEY_REF escape flag active").All()
+	if len(logs) != 1 {
+		t.Fatalf("warn logs=%d want 1; all=%v", len(logs), observed.All())
+	}
+	fields := logs[0].ContextMap()
+	if fields["env_var"] != runtimeconfig.EnvTrustLedgerAllowMissingMoneyRef {
+		t.Fatalf("env_var field=%v want %s", fields["env_var"], runtimeconfig.EnvTrustLedgerAllowMissingMoneyRef)
+	}
+	if fields["release_mode"] != string(eventbus.ReleaseModeProduction) {
+		t.Fatalf("release_mode field=%v want production", fields["release_mode"])
+	}
+}
 
 // ---------------------------------------------------------------
 // loadAuditSigner: 4 case

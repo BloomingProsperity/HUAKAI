@@ -121,7 +121,7 @@ func buildOutboxWorker(outboxStore obsoutbox.Outbox, outboxRuntime obsoutbox.Run
 	return outboxWorker
 }
 
-func buildSettlementServices(_ context.Context, pgPool *pgxpool.Pool, auditSigner *sign.Signer, auditLedger auditledger.Ledger, dlqStore *legacydlq.Store, dlqService *legacydlq.Service, replicaTarget string, eventBusCfg *runtimeconfig.EventBusConfig, logger *zap.Logger) (billing.Settler, *auditreceipt.PGXReceiptStorage, *auditreceipt.ReceiptFormatter, *auditreceipt.MismatchRefundQueue, billing.RateTableSource, *eventbus.Bus, error) {
+func buildSettlementServices(_ context.Context, pgPool *pgxpool.Pool, auditSigner *sign.Signer, auditLedger auditledger.Ledger, dlqStore *legacydlq.Store, dlqService *legacydlq.Service, replicaTarget string, eventBusCfg *runtimeconfig.EventBusConfig, auditRefPolicy *eventbus.AuditRefPolicy, logger *zap.Logger) (billing.Settler, *auditreceipt.PGXReceiptStorage, *auditreceipt.ReceiptFormatter, *auditreceipt.MismatchRefundQueue, billing.RateTableSource, *eventbus.Bus, error) {
 	receiptStore, err := auditreceipt.NewPGXReceiptStorage(pgPool)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("build receipt storage: %w", err)
@@ -157,28 +157,19 @@ func buildSettlementServices(_ context.Context, pgPool *pgxpool.Pool, auditSigne
 			)
 		}))
 	settler := auditreceipt.NewReceiptHookSettler(baseSettler, receiptHook)
-	completionBus, err := buildCompletionEventBus(eventBusCfg, settler, dlqService, logger)
+	completionBus, err := buildCompletionEventBus(eventBusCfg, settler, dlqService, auditRefPolicy, logger)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("build completion eventbus: %w", err)
 	}
 	return settler, receiptStore, receiptFormatter, refundQueue, billing.NewPGXRateTableSource(pgPool), completionBus, nil
 }
 
-func buildCompletionEventBus(cfg *runtimeconfig.EventBusConfig, settler billing.Settler, dlqService *legacydlq.Service, logger *zap.Logger) (*eventbus.Bus, error) {
+func buildCompletionEventBus(cfg *runtimeconfig.EventBusConfig, settler billing.Settler, dlqService *legacydlq.Service, auditRefPolicy *eventbus.AuditRefPolicy, logger *zap.Logger) (*eventbus.Bus, error) {
+	logAuditRefEscapeFlag(auditRefPolicy, logger)
 	if cfg == nil || !cfg.Enabled {
 		return nil, nil
 	}
-	bus := eventbus.New(eventbus.Config{
-		Enabled:              cfg.Enabled,
-		HighWorkers:          cfg.HighWorkers,
-		MediumWorkers:        cfg.MediumWorkers,
-		LowWorkers:           cfg.LowWorkers,
-		HighBuffer:           cfg.HighBuffer,
-		MediumBuffer:         cfg.MediumBuffer,
-		LowBuffer:            cfg.LowBuffer,
-		HandlerTimeout:       cfg.HandlerTimeout,
-		ShutdownDrainTimeout: cfg.ShutdownDrainTimeout,
-	}, eventbus.WithDLQ(dlqService), eventbus.WithDropHook(func(notice eventbus.DropNotice) {
+	bus := eventbus.New(buildCompletionEventBusConfig(cfg, auditRefPolicy), eventbus.WithDLQ(dlqService), eventbus.WithDropHook(func(notice eventbus.DropNotice) {
 		if logger != nil {
 			logger.Warn("async processor dropped oldest queued event",
 				zap.String("handler_id", string(notice.HandlerID)),
@@ -192,7 +183,9 @@ func buildCompletionEventBus(cfg *runtimeconfig.EventBusConfig, settler billing.
 	handlers := []eventbus.Handler{
 		observability.NewBillingPersisterHandler(settler, cfg.HandlerTimeout,
 			observability.WithBillingPersisterReconciler(reconciler)),
-		observability.NewAuditLoggerHandler(cfg.HandlerTimeout),
+		observability.NewAuditLoggerHandler(cfg.HandlerTimeout,
+			observability.WithRequiredAuditRef(),
+			observability.WithAuditRefPolicy(auditRefPolicy)),
 		observability.NewReconciliationHandler(cfg.HandlerTimeout, reconciler),
 		observability.NewAccountHealthProbeHandler(cfg.HandlerTimeout, nil),
 		observability.NewMetricsAggregatorHandler(cfg.HandlerTimeout),
@@ -203,6 +196,35 @@ func buildCompletionEventBus(cfg *runtimeconfig.EventBusConfig, settler billing.
 		}
 	}
 	return bus, nil
+}
+
+func buildCompletionEventBusConfig(cfg *runtimeconfig.EventBusConfig, auditRefPolicy *eventbus.AuditRefPolicy) eventbus.Config {
+	if cfg == nil {
+		return eventbus.Config{AuditRefPolicy: auditRefPolicy}
+	}
+	return eventbus.Config{
+		Enabled:              cfg.Enabled,
+		HighWorkers:          cfg.HighWorkers,
+		MediumWorkers:        cfg.MediumWorkers,
+		LowWorkers:           cfg.LowWorkers,
+		HighBuffer:           cfg.HighBuffer,
+		MediumBuffer:         cfg.MediumBuffer,
+		LowBuffer:            cfg.LowBuffer,
+		HandlerTimeout:       cfg.HandlerTimeout,
+		ShutdownDrainTimeout: cfg.ShutdownDrainTimeout,
+		AuditRefPolicy:       auditRefPolicy,
+	}
+}
+
+func logAuditRefEscapeFlag(policy *eventbus.AuditRefPolicy, logger *zap.Logger) {
+	if logger == nil || policy == nil || !policy.AllowMissingMoneyRef {
+		return
+	}
+	logger.Warn(runtimeconfig.EnvTrustLedgerAllowMissingMoneyRef+" escape flag active",
+		zap.String("env_var", runtimeconfig.EnvTrustLedgerAllowMissingMoneyRef),
+		zap.String("release_mode", string(policy.ReleaseMode)),
+		zap.Bool("allow_missing_money_ref", true),
+	)
 }
 
 func registerCredentialRefreshAdapters(registry *credentialworker.AdapterRegistry) error {
