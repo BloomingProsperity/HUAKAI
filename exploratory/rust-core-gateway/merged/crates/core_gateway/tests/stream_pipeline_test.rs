@@ -102,6 +102,65 @@ fn anthropic_content_delta_alias_is_treated_as_data() {
     ))));
 }
 
+/// Owner item 3 fix 2026-05-24: Anthropic 真实 SSE 合法事件 ping / content_block_start /
+/// content_block_stop 必须 Data 透传, 不产生 ProtocolError noise。
+///
+/// 旧 whitelist 缺这 3 个 -> 走 `other` 分支 -> 每条都触发 ProtocolError -> metric 噪声 + 误导审计。
+///
+/// mutation: 删 ping / content_block_start / content_block_stop 任一 -> ProtocolError 事件出现 ->
+/// 测试断言 0 ProtocolError 红 + Data 透传断言可能也红。
+#[test]
+fn anthropic_legitimate_lifecycle_events_pass_through_without_protocol_error() {
+    let events = collect(
+        StreamProtocol::Anthropic,
+        &[
+            b"event: ping\ndata: {\"type\":\"ping\"}\n\n\
+              event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+              event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        ],
+    );
+
+    // 关键断言: 这 3 个合法事件不应触发 ProtocolError
+    let protocol_errors: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, StreamEvent::ProtocolError(_)))
+        .collect();
+    assert!(
+        protocol_errors.is_empty(),
+        "Owner item 3: ping/content_block_start/content_block_stop 是 Anthropic 合法 SSE 事件, \
+         不应产生 ProtocolError。实际 {protocol_errors:?}"
+    );
+
+    // 三条 data 必须以 Data event 透传
+    let data_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let StreamEvent::Data(b) = e {
+                Some(b.as_ref())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        data_events.len(),
+        3,
+        "三条合法事件每条都应产生一个 Data event 透传到 client, 实际 {} (events={events:?})",
+        data_events.len()
+    );
+    assert!(data_events.iter().any(|d| d.starts_with(br#"{"type":"ping""#)));
+    assert!(
+        data_events
+            .iter()
+            .any(|d| d.starts_with(br#"{"type":"content_block_start""#))
+    );
+    assert!(
+        data_events
+            .iter()
+            .any(|d| d.starts_with(br#"{"type":"content_block_stop""#))
+    );
+}
+
 #[test]
 fn anthropic_error_event_maps_to_upstream_error() {
     let events = collect(

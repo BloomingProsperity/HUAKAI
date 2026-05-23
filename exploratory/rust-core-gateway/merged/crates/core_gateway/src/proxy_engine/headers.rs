@@ -94,10 +94,21 @@ pub(super) fn build_upstream_uri(
         .ok_or_else(|| ProxyError::BadUpstreamUri("upstream uri missing authority".to_owned()))?;
     let target_path = request_path.map(PathAndQuery::as_str).unwrap_or("/");
     let base_path = base.path().trim_end_matches('/');
+    // Owner item 2 fix 2026-05-24: 路径前缀重叠检测防 `/v1` + `/v1/messages` -> `/v1/v1/messages`。
+    // 当 vendor_endpoint 带版本 path 且客户端 URL 也带同版本 path 时, 旧逻辑直接 concat 双前缀。
+    // 检测条件: target_path == base_path 或 target_path 以 "base_path/" 开头, 则单独用 target_path。
+    let target_overlaps_base = !base_path.is_empty()
+        && base_path != "/"
+        && (target_path == base_path
+            || (target_path.len() > base_path.len()
+                && target_path.starts_with(base_path)
+                && target_path.as_bytes().get(base_path.len()) == Some(&b'/')));
     let path_and_query = if base_path.is_empty() || base_path == "/" {
         target_path.to_owned()
     } else if target_path == "/" {
         base_path.to_owned()
+    } else if target_overlaps_base {
+        target_path.to_owned()
     } else {
         format!("{base_path}{target_path}")
     };
@@ -177,5 +188,69 @@ mod tests {
         // strip 列表正确时: content-type 在, openai-organization 不在 → 期望区别。
         assert!(target.contains_key("content-type"));
         assert!(!target.contains_key("openai-organization"));
+    }
+
+    // ─── Owner item 2 fix 2026-05-24: build_upstream_uri path-prefix overlap 检测 ───
+
+    fn build_uri(base: &str, target: &str) -> String {
+        let base_uri: Uri = base.parse().expect("base uri parse");
+        let target_pq: http::uri::PathAndQuery = target.parse().expect("target path parse");
+        let result = build_upstream_uri(&base_uri, Some(&target_pq)).expect("build OK");
+        result.to_string()
+    }
+
+    /// Owner item 2: 旧实现 base=`https://api.anthropic.com/v1` + target=`/v1/messages` ->
+    /// 拼出 `/v1/v1/messages` 错 URI -> 上游 404 / 路由错乱。
+    /// 新检测: target 以 base_path/ 开头时单独用 target, 不双前缀。
+    ///
+    /// mutation: 删 target_overlaps_base 分支 -> 退化旧 concat -> 测试断言 /v1/messages 红 (变成 /v1/v1/messages)。
+    #[test]
+    fn build_upstream_uri_avoids_double_v1_prefix_when_target_overlaps_base() {
+        assert_eq!(
+            build_uri("https://api.anthropic.com/v1", "/v1/messages"),
+            "https://api.anthropic.com/v1/messages",
+            "base path /v1 + target /v1/messages 不应拼出 /v1/v1/messages"
+        );
+    }
+
+    /// Owner item 2: 兼容性—无重叠路径仍正常 concat (base 带 prefix /api, target 不同前缀 /v1)。
+    #[test]
+    fn build_upstream_uri_concats_when_target_does_not_overlap_base() {
+        assert_eq!(
+            build_uri("https://api.example.com/api", "/v1/messages"),
+            "https://api.example.com/api/v1/messages"
+        );
+    }
+
+    /// Owner item 2: 严格性—target=base_path 时不重复 (例如 client 探针请求 base path 本身)。
+    #[test]
+    fn build_upstream_uri_returns_base_path_when_target_exactly_equals() {
+        assert_eq!(
+            build_uri("https://api.openai.com/v1", "/v1"),
+            "https://api.openai.com/v1"
+        );
+    }
+
+    /// Owner item 2: 边界—target 是 base_path 的 string-prefix 但非 path-prefix (例如 /v1x)
+    /// 应当走 concat 不当作 overlap (那是不同 endpoint)。
+    /// 反例: 旧贪心 starts_with 会把 /v1x 当 /v1 overlap, 现要求 / 边界 -> 不 overlap -> concat。
+    ///
+    /// mutation: 检测放宽到 starts_with 而非"以 / 紧跟"-> /v1x 被当 overlap 单独用 -> 结果不带 base path -> 红。
+    #[test]
+    fn build_upstream_uri_does_not_treat_v1x_as_v1_overlap() {
+        // base /v1 + target /v1x -> /v1x 不是 /v1 的 path-sub, 该 concat -> /v1/v1x
+        assert_eq!(
+            build_uri("https://api.openai.com/v1", "/v1x"),
+            "https://api.openai.com/v1/v1x"
+        );
+    }
+
+    /// Owner item 2: base 无 path 时维持旧行为 (target 单独)。
+    #[test]
+    fn build_upstream_uri_uses_target_when_base_has_no_path() {
+        assert_eq!(
+            build_uri("https://api.openai.com", "/v1/messages"),
+            "https://api.openai.com/v1/messages"
+        );
     }
 }

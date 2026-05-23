@@ -41,9 +41,18 @@ impl AnthropicStreamParser {
                                 .unwrap_or_else(|| "anthropic upstream error".to_owned());
                             events.push(StreamEvent::UpstreamError(message));
                         }
+                        // Owner item 3 fix 2026-05-24: Anthropic 真实 SSE 事件集合 (docs/api/messages-streaming):
+                        // message_start / ping / content_block_start / content_block_delta /
+                        // content_block_stop / message_delta / message_stop / error。
+                        // 旧 whitelist 漏 ping / content_block_start / content_block_stop -> 全走 other ->
+                        // 误报 ProtocolError (功能不破, 但 metric 噪声 + 误导审计)。
+                        // content_delta 是 HUAKAI 内部 alias 保留 (回兼老 test)。
                         "message_start"
                         | "content_delta"
+                        | "content_block_start"
                         | "content_block_delta"
+                        | "content_block_stop"
+                        | "ping"
                         | "message_delta"
                         | "" => {
                             events.push(StreamEvent::Data(frame.data.clone()));
