@@ -244,7 +244,7 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 		draft.EndClass == gateway.AmbiguousUsage
 	var streamAbortErr error
 	if settle && !ledgerFailClosed {
-		event := ex.streamingCompletionEvent(draft, streamAttempt)
+		event := ex.streamingCompletionEvent(draft, streamAttempt, ledgerResult)
 		if _, err := settleCompletion(settleCtx, ex.d, event); err != nil {
 			logInternalError(settleCtx, ex.requestID, clienterr.CodeSettleFailed, err)
 		} else if replayCapture != nil && !replayCapture.overLimit() {
@@ -499,7 +499,7 @@ func (a canonicalEventPointerClientAdapter) FinalizeClientStream(ctx context.Con
 	return a.inner.FinalizeClientStream(ctx, state)
 }
 
-func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft, streamAttempt billing.Attempt) eventbus.RequestCompletionEvent {
+func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft, streamAttempt billing.Attempt, ledgerResult auditledger.AuditLedgerResult) eventbus.RequestCompletionEvent {
 	actualCost, err := ex.actualCompletionCost(usageFromDraft(draft))
 	if err != nil {
 		draft.PendingReconciliation = true
@@ -507,17 +507,20 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 	}
 	draft.ActualCost = actualCost
 	return eventbus.RequestCompletionEvent{
-		ID:              ex.requestID,
-		TenantID:        ex.ident.TenantID,
-		ClaimID:         ex.reserveRes.ClaimID,
-		AccountID:       ex.acquiredAccountID,
-		RequestID:       ex.requestID,
-		EndpointFamily:  ex.d.effectiveEndpointFamily(),
-		RequestedModel:  ex.req.Model,
-		UpstreamModel:   ex.upstreamModelID,
-		PayloadHash:     ex.payloadHash,
-		RawBodyHash:     bodyHash(ex.body),
-		RedactedBodyRef: redactedBodyRef(ex.body),
+		ID:                        ex.requestID,
+		TenantID:                  ex.ident.TenantID,
+		ClaimID:                   ex.reserveRes.ClaimID,
+		AccountID:                 ex.acquiredAccountID,
+		RequestID:                 ex.requestID,
+		EndpointFamily:            ex.d.effectiveEndpointFamily(),
+		RequestedModel:            ex.req.Model,
+		UpstreamModel:             ex.upstreamModelID,
+		PayloadHash:               ex.payloadHash,
+		RawBodyHash:               bodyHash(ex.body),
+		RedactedBodyRef:           redactedBodyRef(ex.body),
+		AuditLedgerID:             ledgerID(ledgerResult),
+		AuditLedgerDLQRef:         ledgerDLQRef(ledgerResult),
+		AuditSignatureFingerprint: ledgerFingerprint(ledgerResult),
 		SettleRequest: billing.SettleRequest{
 			ClaimID:           ex.reserveRes.ClaimID,
 			AccountID:         ex.acquiredAccountID,
@@ -537,6 +540,7 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 			StreamAttempt:     &streamAttempt,
 			SnapshotVersion:   ex.plan.SnapshotVersion,
 		},
+		Metadata:                  routeMetadata(ex.routeID),
 	}
 }
 
