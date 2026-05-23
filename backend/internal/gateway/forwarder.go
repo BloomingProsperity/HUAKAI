@@ -622,12 +622,10 @@ func (w *streamingLedgerHeaderWriter) ensureLedger(completedAt time.Time) {
 }
 
 func (w *streamingLedgerHeaderWriter) WriteHeader(statusCode int) {
-	w.ensureLedger(time.Now())
 	w.ResponseWriter.WriteHeader(statusCode)
 }
 
 func (w *streamingLedgerHeaderWriter) Write(b []byte) (int, error) {
-	w.ensureLedger(time.Now())
 	return w.ResponseWriter.Write(b)
 }
 
@@ -650,6 +648,8 @@ func (f *StreamForwarder) emitStreamingLedger(ctx context.Context, req ForwardRe
 		f.warnLedgerLoss("audit_signer_not_configured", "streaming trust-chain ledger skipped because signer is nil")
 		return
 	}
+	ledgerCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
 	requestID := req.RequestID
 	if requestID == "" {
 		requestID = uuid.NewString()
@@ -664,19 +664,19 @@ func (f *StreamForwarder) emitStreamingLedger(ctx context.Context, req ForwardRe
 		TenantID:  req.TenantID,
 		HopChain:  builder(req, providerEndpoint, startedAt, completedAt),
 	}
-	prepared, err := auditledger.PrepareEntry(ctx, entry)
+	prepared, err := auditledger.PrepareEntry(ledgerCtx, entry)
 	if err != nil {
 		f.warnLedgerLoss("audit_ledger_prepare_failed", err.Error())
 		return
 	}
-	appended, err := f.AuditLedger.Append(ctx, prepared)
+	appended, err := f.AuditLedger.Append(ledgerCtx, prepared)
 	if err != nil {
 		if errors.Is(err, auditledger.ErrDuplicateRequestID) {
 			f.warnLedgerLoss("audit_ledger_duplicate_request_id", err.Error())
 			return
 		}
 		f.warnLedgerLoss("audit_ledger_append_failed", err.Error())
-		dlqRef, dlqErr := auditledger.EnqueuePreparedEntryToDLQ(ctx, f.AuditLedgerDLQ, prepared, err)
+		dlqRef, dlqErr := auditledger.EnqueuePreparedEntryToDLQ(ledgerCtx, f.AuditLedgerDLQ, prepared, err)
 		if dlqErr != nil {
 			f.warnLedgerLoss("audit_ledger_dlq_enqueue_failed", dlqErr.Error())
 			return
