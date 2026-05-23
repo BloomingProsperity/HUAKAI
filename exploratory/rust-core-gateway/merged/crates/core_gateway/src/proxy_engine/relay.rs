@@ -425,7 +425,31 @@ pub(super) fn report_terminal(
     error_message_redacted: Option<&str>,
 ) {
     if let Some(reporter) = terminal_reporter {
-        let _ = reporter.report(
+        // W12-A D-4 Slice 3 AC-4-post: 流式 body 终态 = 响应头已送出 → HTTP 不可改, 失败 loud。
+        // 调用方: relay.rs 内 9 处全是 streaming body 完成路径 = post-commit;
+        // 注意 proxy_engine/mod.rs::report_proxy_error 路径 (forward_inner err 前 response 未送) 用 report_terminal_pre_commit。
+        let _ = reporter.report_post_commit(
+            status,
+            http_status,
+            stats.clone(),
+            error_class,
+            error_message_redacted,
+        );
+    }
+}
+
+/// W12-A D-4 Slice 3 (Codex P2-1 fix 2026-05-24): pre-commit 版本 - forward_inner 失败前
+/// response headers 未送, HTTP 仍可改 (caller 返 5xx/4xx) - 不能算 post-commit billable loss。
+pub(super) fn report_terminal_pre_commit(
+    terminal_reporter: Option<&AttemptTerminalReporter>,
+    status: AttemptStatus,
+    http_status: Option<u16>,
+    stats: &AttemptReportStats,
+    error_class: Option<&str>,
+    error_message_redacted: Option<&str>,
+) {
+    if let Some(reporter) = terminal_reporter {
+        let _ = reporter.report_pre_commit(
             status,
             http_status,
             stats.clone(),

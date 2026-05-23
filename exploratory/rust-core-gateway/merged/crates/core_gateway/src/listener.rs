@@ -91,7 +91,9 @@ async fn handle_gateway_request(
                     } else {
                         AttemptStatus::Success
                     };
-                    let _ = reporter.report(
+                    // W12-A D-4 Slice 3: mock 演练分支 = pre-commit (axum 尚未送出 response),
+                    // attempt 上报失败 warn 不阻塞 mock 测试。
+                    let _ = reporter.report_pre_commit(
                         attempt_status,
                         Some(http_status.as_u16()),
                         AttemptReportStats::default(),
@@ -105,7 +107,8 @@ async fn handle_gateway_request(
                         redact_untrusted_text(&err.to_string(), LISTENER_ERROR_LIMIT);
                     // P2 codex review 2026-05-23: 保留 proxy 错误的 HTTP status,
                     // 避免审计上的 mock attempt http_status 字段恒为 0。
-                    let _ = reporter.report(
+                    // W12-A D-4 Slice 3: mock 演练分支 proxy 错 = pre-commit。
+                    let _ = reporter.report_pre_commit(
                         AttemptStatus::InternalError,
                         Some(err.status_code().as_u16()),
                         AttemptReportStats::default(),
@@ -223,7 +226,8 @@ async fn handle_gateway_request(
                 now_unix_ms_i64(),
             );
             let reporter = state.attempt_reporter().terminal_reporter(context);
-            let _ = reporter.report(
+            // W12-A D-4 Slice 3: bad_vendor_endpoint = pre-commit (返 502, 未进上游)。
+            let _ = reporter.report_pre_commit(
                 AttemptStatus::ControlPlaneError,
                 Some(StatusCode::BAD_GATEWAY.as_u16()),
                 AttemptReportStats::default(),
@@ -242,6 +246,23 @@ async fn handle_gateway_request(
         if planned.route_plan.max_body_bytes > 0
             && (body_bytes.len() as u64) > planned.route_plan.max_body_bytes
         {
+            // W12-A D-4 Slice 3 (Owner item 1 fix 2026-05-24): 旧实现 413 路径漏报 attempt,
+            // billing 空洞 (上面 bad_vendor_endpoint 路径有 reporter.report, 413 路径没有)。
+            // 现补 attempt report (pre-commit, 因未进上游, 503 / 413 都未送 response body)。
+            let context = AttemptReportContext::from_planned(
+                &request_id,
+                &planned,
+                body_bytes.len() as u64,
+                now_unix_ms_i64(),
+            );
+            let reporter = state.attempt_reporter().terminal_reporter(context);
+            let _ = reporter.report_pre_commit(
+                AttemptStatus::ProtocolError,
+                Some(StatusCode::PAYLOAD_TOO_LARGE.as_u16()),
+                AttemptReportStats::default(),
+                Some("payload_too_large"),
+                Some("request body exceeded planned.route_plan.max_body_bytes"),
+            );
             return json_error_response(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 &request_id,
@@ -280,7 +301,8 @@ fn report_listener_planning_error(
 ) {
     let context = AttemptReportContext::synthetic_control_plane_error(request_id);
     let reporter = state.attempt_reporter().terminal_reporter(context);
-    let _ = reporter.report(
+    // W12-A D-4 Slice 3: planning_error 是 pre-commit (control_plane / route_plan / body 读失败前 4xx/5xx)。
+    let _ = reporter.report_pre_commit(
         status,
         Some(http_status.as_u16()),
         AttemptReportStats::default(),

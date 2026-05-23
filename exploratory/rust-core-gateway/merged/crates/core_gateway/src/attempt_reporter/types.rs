@@ -35,6 +35,20 @@ pub enum ReportEnqueueResult {
     SpoolWriteFailed,
 }
 
+impl ReportEnqueueResult {
+    /// W12-A D-4 Slice 3: 是否 "降级" (账务非完整成功) — Enqueued/Spooled 是 OK, 其他都需关注。
+    /// post-commit 路径用此判定是否触发 `spool_drop_billable` + loud log。
+    pub fn is_degraded(self) -> bool {
+        matches!(
+            self,
+            Self::DroppedFull
+                | Self::DroppedClosed
+                | Self::SpoolBackpressure
+                | Self::SpoolWriteFailed
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TerminalReportResult {
     Submitted(ReportEnqueueResult),

@@ -14,7 +14,8 @@ use common::mock_upstream::{MockBehavior, MockUpstream};
 use core_gateway::{
     attempt_reporter::{
         AttemptReportContext, AttemptReportStats, AttemptReporter, AttemptReporterOptions,
-        AttemptSpool, AttemptSpoolOptions, AttemptStatus, ReportEnqueueResult, now_unix_ms_i64,
+        AttemptSpool, AttemptSpoolOptions, AttemptStatus, ReportEnqueueResult,
+        TerminalReportResult, now_unix_ms_i64,
     },
     build_router,
     config::StartupConfig,
@@ -792,6 +793,165 @@ async fn replay_keeps_same_idempotency_key_and_control_plane_dedups_duplicate() 
 ///
 /// fixture: mock CP Unavailable + retry_attempts=0 -> 单次失败立返 -> pending 必须仍在。
 /// mutation: 旧代码若在 worker 失败时也 spool.ack() 删 pending -> pending=0 + replay 永不补救 -> 测试红。
+/// W12-A D-4 Slice 3 AC-4-pre: spool 接近 watermark 时 would_accept 必须返 Err Backpressure,
+/// 让 proxy_engine forward_planned 转 503 在 mark_forwarding 之前拒绝, 请求未进上游 = 未产生计费。
+///
+/// fixture: CP attempt_failures=MAX 防 live ack 删 pending → 几条 report 后 pending 累到 watermark。
+/// 用 standalone spool 直接 persist 而不通过 reporter, 避开 channel 容量影响, 直接控制 pending 字节。
+///
+/// mutation: would_accept 不 ++spool_backpressure_reports -> spool_backpressure_count==0 -> 红。
+/// mutation: would_accept 不检查 spool.reserve -> 返 Ok -> 第 2 个 assert 红。
+#[tokio::test]
+async fn would_accept_returns_err_when_spool_watermark_reached() {
+    let dir = unique_spool_dir("ac4-pre-watermark");
+    let cp = MockControlPlane::spawn(mock_route_plan("http://127.0.0.1:9")).await;
+
+    // 单条 AttemptReportRequest prost 大约 200-250 bytes (含 status / tokens / 32B token / 各字段)
+    // 设 max_record_bytes=512 兼容 + high_watermark=1500 让 10 条 ~2500 字节 pending 显著越线。
+    let opts = AttemptSpoolOptions {
+        enabled: true,
+        dir: dir.clone(),
+        max_bytes: 8192,
+        high_watermark_bytes: 1500,
+        max_record_bytes: 512,
+        replay_interval: Duration::from_secs(60),
+        replay_batch_size: 1,
+        fsync_on_write: false,
+    };
+    // 持续 reserve+persist 直到 standalone 自己越 watermark, 计数实际成功条数。
+    // 这避免 proto 编码大小变化导致 fixture 失效 (4-6 条之间, 取决于 prost 紧密度)。
+    let mut persist_count: usize = 0;
+    {
+        let standalone = AttemptSpool::open(opts.clone())
+            .expect("standalone")
+            .expect("enabled");
+        loop {
+            let report = make_report("ac4pre", &format!("attempt-{persist_count}"), AttemptStatus::Success);
+            match standalone.reserve() {
+                Ok(res) => {
+                    standalone.persist(&report, res).expect("persist OK");
+                    persist_count += 1;
+                    assert!(
+                        persist_count < 100,
+                        "fixture 设计错: 100 条仍未越 watermark, 调小 watermark"
+                    );
+                }
+                Err(_) => break, // standalone 越 watermark, fixture 完成
+            }
+        }
+        assert!(persist_count >= 1, "fixture: 至少 1 条 persist");
+        assert_eq!(standalone.pending_count(), persist_count);
+        assert!(standalone.pending_bytes() > 0);
+    }
+
+    // 现在用 reporter 共享同 dir; 启动期 open 扫到 pending 计数
+    let reporter = AttemptReporter::spawn_with_options(
+        route_client(&cp.endpoint()),
+        AttemptReporterOptions {
+            queue_capacity: 8,
+            retry_attempts: 0,
+            retry_backoff: Duration::from_millis(1),
+            spool: opts,
+        },
+    );
+
+    assert_eq!(
+        reporter.spool_pending_count(),
+        persist_count,
+        "reporter 启动 open 期 scan 应得 {persist_count} pending"
+    );
+    let reporter_pending_bytes = reporter.spool_pending_bytes();
+    assert!(reporter_pending_bytes > 0);
+
+    // standalone 已用 reserve fail 达到 watermark, 共享同 dir 的 reporter would_accept 必同样 Err。
+    let result = reporter.would_accept();
+    assert!(
+        result.is_err(),
+        "AC-4-pre: {persist_count} 条 persisted (pending={reporter_pending_bytes} bytes) + reserve 512 必须越 watermark 1500 = Err, 实际 {result:?}"
+    );
+
+    let backpressure_count = reporter.spool_backpressure_count();
+    assert!(
+        backpressure_count >= 1,
+        "AC-4-pre: would_accept 失败必须 ++ spool_backpressure_reports, 实际 {backpressure_count}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// W12-A D-4 Slice 3 AC-4-post: 响应头已送出 (terminal report 通过 post_commit 调用)
+/// 时 result 降级 -> spool_drop_billable++ + tracing::error! loud。
+/// HTTP 状态不可改, 这是账务真损失的唯一通知通道。
+///
+/// fixture: spool disabled (baseline) + queue_capacity=1 + 1 在飞报告占满 channel,
+/// 第 2 条 report_post_commit -> DroppedFull -> is_degraded -> spool_drop_billable++。
+///
+/// mutation: report_post_commit 不调 increment_spool_drop_billable -> count 不增 -> 红。
+/// mutation: is_degraded 漏 DroppedFull case -> 红 (本测试间接覆盖)。
+#[tokio::test]
+async fn report_post_commit_increments_spool_drop_billable_on_degraded_enqueue() {
+    let cp = MockControlPlane::spawn_with_config(
+        MockControlPlaneConfig::new(mock_route_plan("http://127.0.0.1:9"))
+            // CP 慢响应让 live worker 把 channel slot 占住一会儿
+            .with_attempt_report_delay(Duration::from_millis(300)),
+    )
+    .await;
+    let reporter = AttemptReporter::spawn_with_options(
+        route_client(&cp.endpoint()),
+        AttemptReporterOptions {
+            queue_capacity: 1, // 关键: 让第 2 个 report 走 DroppedFull 路径
+            retry_attempts: 0,
+            retry_backoff: Duration::from_millis(1),
+            // 关键: spool disabled, 让 report() 走 baseline (DroppedFull 真生效)
+            spool: AttemptSpoolOptions::default(),
+        },
+    );
+
+    let context = AttemptReportContext {
+        request_id: "ac4post-rid".to_owned(),
+        route_plan_id: "ac4post-route".to_owned(),
+        attempt_id: "attempt-ac4post-1".to_owned(),
+        acquisition_token: Bytes::from_static(b"ac4post-token"),
+        idempotency_key: "idem-v7-ac4post-1".to_owned(),
+        started_at_ms: now_unix_ms_i64(),
+        bytes_in: 0,
+    };
+    let terminal_reporter = reporter.terminal_reporter(context);
+
+    // 1st report 走 channel 入队 (capacity=1, 立即占 slot)
+    // 直接 report() 调用 (非 post_commit), 测试需要 channel 满
+    let r1 = reporter.report(make_report(
+        "filler",
+        "attempt-filler-1",
+        AttemptStatus::Success,
+    ));
+    assert_eq!(r1, ReportEnqueueResult::Enqueued, "1st 应 Enqueued");
+
+    // 立刻 (CP 还在 sleep 300ms) 再 try_send 一次, channel 必满
+    // 用 terminal_reporter.report_post_commit() 走 AC-4-post 路径
+    let result = terminal_reporter.report_post_commit(
+        AttemptStatus::Success,
+        Some(200),
+        AttemptReportStats::default(),
+        None,
+        None,
+    );
+
+    // 第 2 个 report (via terminal_reporter) channel 满 -> DroppedFull, is_degraded=true
+    match result {
+        TerminalReportResult::Submitted(ReportEnqueueResult::DroppedFull) => {
+            // 正确路径
+        }
+        other => panic!("期望 Submitted(DroppedFull), 实际 {other:?}"),
+    }
+
+    let billable_count = reporter.spool_drop_billable_count();
+    assert!(
+        billable_count >= 1,
+        "AC-4-post: degraded result 必须 ++ spool_drop_billable, 实际 {billable_count}"
+    );
+}
+
 #[tokio::test]
 async fn retry_exhaustion_leaves_pending_spool_record_for_replay() {
     let dir = unique_spool_dir("retry-exhaust");

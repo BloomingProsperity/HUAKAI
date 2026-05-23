@@ -94,6 +94,9 @@ struct AttemptReporterInner {
     spool_backpressure_reports: AtomicU64,
     /// replay worker 读 pending 时解码失败 (corrupt) 计数。
     spool_corrupt_reports: AtomicU64,
+    /// W12-A D-4 Slice 3 AC-4-post: post-commit (响应头已送出) 后 terminal report 不可投递的次数。
+    /// HTTP 状态不可改 (response 已 commit), 这是账务真损失的 loud counter。
+    spool_drop_billable_reports: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -145,6 +148,74 @@ impl AttemptTerminalReporter {
     pub fn context(&self) -> &AttemptReportContext {
         &self.context
     }
+
+    /// W12-A D-4 Slice 3 AC-4-post: 响应头已送出后的 terminal report。
+    /// HTTP 状态码不可改 (response 已 commit) — 仅 metric + loud structured log。
+    /// 用于: streaming body 完成时 relay 的 terminal report + PinnedDrop 的 ClientCancel report。
+    ///
+    /// Degraded 结果触发 `spool_drop_billable++` + tracing::error! 含 request_id + idempotency_key
+    /// + route_plan_id + tokens evidence, 让审计 / 计费侧能定位丢失账。
+    pub fn report_post_commit(
+        &self,
+        status: AttemptStatus,
+        http_status: Option<u16>,
+        stats: AttemptReportStats,
+        error_class: Option<&str>,
+        error_message_redacted: Option<&str>,
+    ) -> TerminalReportResult {
+        // Codex P2-2 fix 2026-05-24: 在 stats 被 move 给 self.report 前抓住 tokens/bytes,
+        // 让 post-commit loud log 含计费侧对账证据 (仅 ID 不够定位丢账具体金额)。
+        let tokens_total = stats
+            .tokens_used
+            .as_ref()
+            .map(|t| t.total_tokens)
+            .unwrap_or(0);
+        let bytes_in_stat = stats.bytes_in;
+        let bytes_out = stats.bytes_out;
+
+        let result = self.report(status, http_status, stats, error_class, error_message_redacted);
+        if let TerminalReportResult::Submitted(enqueue) = result
+            && enqueue.is_degraded()
+        {
+            self.reporter.increment_spool_drop_billable();
+            tracing::error!(
+                request_id = %self.context.request_id,
+                idempotency_key = %self.context.idempotency_key,
+                route_plan_id = %self.context.route_plan_id,
+                attempt_id = %self.context.attempt_id,
+                tokens_total,
+                bytes_in = bytes_in_stat,
+                bytes_out,
+                result = ?enqueue,
+                "W12-A D-4 AC-4-post: BILLABLE attempt report 不可恢复丢失 (HTTP 响应已提交不可改)"
+            );
+        }
+        result
+    }
+
+    /// W12-A D-4 Slice 3: 响应头未送出 (synthetic_mock / planning_error / bad_vendor / payload_too_large 路径),
+    /// 失败 warn 即可 — caller 已返 4xx/5xx HTTP, 不构成 silent loss。
+    pub fn report_pre_commit(
+        &self,
+        status: AttemptStatus,
+        http_status: Option<u16>,
+        stats: AttemptReportStats,
+        error_class: Option<&str>,
+        error_message_redacted: Option<&str>,
+    ) -> TerminalReportResult {
+        let result = self.report(status, http_status, stats, error_class, error_message_redacted);
+        if let TerminalReportResult::Submitted(enqueue) = result
+            && enqueue.is_degraded()
+        {
+            tracing::warn!(
+                request_id = %self.context.request_id,
+                idempotency_key = %self.context.idempotency_key,
+                result = ?enqueue,
+                "W12-A D-4 pre-commit attempt report degraded (caller 已返 4xx/5xx, 非 silent loss)"
+            );
+        }
+        result
+    }
 }
 
 impl AttemptReporter {
@@ -185,6 +256,7 @@ impl AttemptReporter {
             spool_write_failed_reports: AtomicU64::new(0),
             spool_backpressure_reports: AtomicU64::new(0),
             spool_corrupt_reports: AtomicU64::new(0),
+            spool_drop_billable_reports: AtomicU64::new(0),
         });
 
         tokio::spawn(worker_loop(
@@ -384,6 +456,11 @@ impl AttemptReporter {
         self.inner.spool_corrupt_reports.load(Ordering::Relaxed)
     }
 
+    /// W12-A D-4 Slice 3 AC-4-post 必检: 响应头已送出后报告 不可投递 = 真账务损失计数。
+    pub fn spool_drop_billable_count(&self) -> u64 {
+        self.inner.spool_drop_billable_reports.load(Ordering::Relaxed)
+    }
+
     pub fn spool_pending_count(&self) -> usize {
         self.inner
             .spool
@@ -398,6 +475,33 @@ impl AttemptReporter {
             .as_ref()
             .map(|s| s.pending_bytes())
             .unwrap_or(0)
+    }
+
+    /// W12-A D-4 Slice 3 AC-4-pre: forward_planned 转发前调, 检查 spool 是否仍可接受新报告。
+    /// spool=None (baseline): 永远 Ok (维持旧行为, 不引 503)。
+    /// spool=Some: 尝试 reserve, 立即 Drop 释放预算 = 纯 capacity probe;
+    /// Err 时 ++spool_backpressure_reports 计数 (AC-4-pre 测试断言用)。
+    pub fn would_accept(&self) -> Result<(), AttemptSpoolBackpressure> {
+        match &self.inner.spool {
+            Some(spool) => match spool.reserve() {
+                Ok(_reservation) => Ok(()), // Drop 自动还预算
+                Err(err) => {
+                    self.inner
+                        .spool_backpressure_reports
+                        .fetch_add(1, Ordering::Relaxed);
+                    Err(err)
+                }
+            },
+            None => Ok(()),
+        }
+    }
+
+    /// W12-A D-4 Slice 3: 内部 helper 给 AttemptTerminalReporter::report_post_commit 调,
+    /// 累 spool_drop_billable counter (post-commit 不可恢复账务损失计数)。
+    pub(crate) fn increment_spool_drop_billable(&self) {
+        self.inner
+            .spool_drop_billable_reports
+            .fetch_add(1, Ordering::Relaxed);
     }
 }
 

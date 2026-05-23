@@ -46,7 +46,9 @@ use crate::{
 };
 
 use headers::{build_upstream_uri, normalize_upstream_headers};
-use relay::{RelayTerminal, StreamTapConfig, report_terminal, upstream_response_to_client};
+use relay::{
+    RelayTerminal, StreamTapConfig, report_terminal_pre_commit, upstream_response_to_client,
+};
 
 const STREAM_CHANNEL_DEPTH: usize = 16;
 const DEFAULT_UPSTREAM_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -111,7 +113,10 @@ pin_project! {
         fn drop(this: Pin<&mut Self>) {
             let this = this.project();
             if let Some(reporter) = this.terminal_reporter.take() {
-                let _ = reporter.report(
+                // W12-A D-4 Slice 3 AC-4-post: post-commit (响应头已送出后) — HTTP 不可改, 失败 loud。
+                // NOTE: ClientCancel 分类对 upstream 5xx mid-stream drop 是错误的 (Owner item 4 follow-up);
+                // 这里只换 report 调用, 不改 status 分类逻辑。
+                let _ = reporter.report_post_commit(
                     AttemptStatus::ClientCancel,
                     None,
                     AttemptReportStats::default(),
@@ -219,6 +224,20 @@ impl ProxyEngine {
         mut planned: PlannedAttempt,
         request_id: RequestId,
     ) -> Result<Response<Body>, ProxyError> {
+        // W12-A D-4 Slice 3 AC-4-pre: spool 接近 watermark 或最近写失败 → 转发前 503,
+        // 请求未进上游 = 未产生计费事件 = HTTP 唯一可保护账务的点。
+        // 此 gate 在 mark_forwarding 前, 让 attempt lifecycle 不进 Forwarding 状态。
+        if let Some(reporter) = &self.attempt_reporter
+            && let Err(err) = reporter.would_accept()
+        {
+            tracing::warn!(
+                error = ?err,
+                request_id = %request_id,
+                "W12-A D-4 AC-4-pre: attempt spool 拒绝, forward_planned 返 503"
+            );
+            return Err(ProxyError::AttemptReportBackpressure);
+        }
+
         planned.attempt.mark_forwarding()?;
 
         let started_at_ms = now_unix_ms_i64();
@@ -439,8 +458,16 @@ fn report_proxy_error(terminal_reporter: Option<&AttemptTerminalReporter>, err: 
         | ProxyError::BadUpstreamRequest(_)
         | ProxyError::BadRoutePlan(_)
         | ProxyError::AttemptState(_) => (AttemptStatus::InternalError, "internal_error"),
+        // W12-A D-4 Slice 3 AC-4-pre: 实际上 AttemptReportBackpressure 从 forward_planned 早返,
+        // 不会走到 report_proxy_error (该路径在 terminal_reporter 创建前); 此 arm 仅为穷尽性。
+        ProxyError::AttemptReportBackpressure => (
+            AttemptStatus::ControlPlaneError,
+            "attempt_report_spool_unavailable",
+        ),
     };
-    report_terminal(
+    // W12-A D-4 Slice 3 (Codex P2-1 fix 2026-05-24): forward_inner 失败前响应未送 → pre-commit,
+    // 错走 report_terminal 会把 ProxyError 误计 spool_drop_billable + post-commit loud log。
+    report_terminal_pre_commit(
         terminal_reporter,
         status,
         Some(err.status_code().as_u16()),
