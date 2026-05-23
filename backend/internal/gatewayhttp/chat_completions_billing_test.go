@@ -5,10 +5,13 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
+	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
+	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 )
@@ -194,6 +197,123 @@ func TestChatCompletions_AuditLedgerDuplicateRequestIDAbortsWithoutDLQ(t *testin
 	}
 }
 
+func TestChatCompletions_DirectSettleNilBusRejectsMissingAuditRef(t *testing.T) {
+	// Mutation: 删除 CompletionBus==nil 分支 Settle 前的 validator 时，本用例会返回 200 且 settle calls 变成 1。
+	enableHCSFDispatchForTest(t)
+	settler := &recordingSettler{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.Settler = settler
+	d.CompletionBus = nil
+	d.AuditRefPolicy = productionAuditRefPolicyForGatewayTest(false)
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d want 500 body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), clienterr.CodeAuditRefMissing) {
+		t.Fatalf("body=%s want %s", rec.Body.String(), clienterr.CodeAuditRefMissing)
+	}
+	if len(settler.calls) != 0 {
+		t.Fatalf("settle calls=%d want 0", len(settler.calls))
+	}
+	if len(settler.aborts) != 1 || settler.aborts[0].reason != clienterr.CodeAuditRefMissing {
+		t.Fatalf("aborts=%+v want one %s abort", settler.aborts, clienterr.CodeAuditRefMissing)
+	}
+}
+
+func TestChatCompletions_DirectSettleNilBusAllowsDLQRef(t *testing.T) {
+	// Mutation: 删除 Deferred ledger result 到 AuditLedgerDLQRef 的映射时，本用例会被 production policy 拒绝且 settle calls 保持 0。
+	enableHCSFDispatchForTest(t)
+	settler := &recordingSettler{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.Settler = settler
+	d.CompletionBus = nil
+	d.AuditRefPolicy = productionAuditRefPolicyForGatewayTest(false)
+	enableDeferredAuditLedgerForGatewayTest(t, &d, 401)
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if len(settler.aborts) != 0 {
+		t.Fatalf("aborts=%+v want none", settler.aborts)
+	}
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1", len(settler.calls))
+	}
+}
+
+func TestChatCompletions_DirectSettleFallbackRejectsMissingAuditRef(t *testing.T) {
+	// Mutation: 只保护 CompletionBus==nil、漏掉 shouldDirectSettleFallback 分支时，本用例会 fallback settle 并让 settle calls 变成 1。
+	enableHCSFDispatchForTest(t)
+	settler := &recordingSettler{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.Settler = settler
+	d.CompletionBus = queueFullCompletionBusForGatewayTest(t)
+	d.AuditRefPolicy = productionAuditRefPolicyForGatewayTest(false)
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d want 500 body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), clienterr.CodeAuditRefMissing) {
+		t.Fatalf("body=%s want %s", rec.Body.String(), clienterr.CodeAuditRefMissing)
+	}
+	if len(settler.calls) != 0 {
+		t.Fatalf("settle calls=%d want 0", len(settler.calls))
+	}
+	if len(settler.aborts) != 1 || settler.aborts[0].reason != clienterr.CodeAuditRefMissing {
+		t.Fatalf("aborts=%+v want one %s abort", settler.aborts, clienterr.CodeAuditRefMissing)
+	}
+}
+
+func TestChatCompletions_DirectSettleFallbackAllowsDLQRef(t *testing.T) {
+	// Mutation: fallback 分支 Settle 前误把 DLQRef 分支也要求 fingerprint 时，本用例会返回 500 且 settle calls 保持 0。
+	enableHCSFDispatchForTest(t)
+	settler := &recordingSettler{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.Settler = settler
+	d.CompletionBus = queueFullCompletionBusForGatewayTest(t)
+	d.AuditRefPolicy = productionAuditRefPolicyForGatewayTest(false)
+	enableDeferredAuditLedgerForGatewayTest(t, &d, 402)
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if len(settler.aborts) != 0 {
+		t.Fatalf("aborts=%+v want none", settler.aborts)
+	}
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1", len(settler.calls))
+	}
+}
+
+func TestChatCompletions_DirectSettleEscapeFlagBypassesAndLogs(t *testing.T) {
+	// Mutation: 忽略 AllowMissingMoneyRef 时，本用例会返回 500；删除 bypass ERROR 日志时，日志断言会失败。
+	enableHCSFDispatchForTest(t)
+	logs := captureSlogForTest(t)
+	settler := &recordingSettler{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.Settler = settler
+	d.CompletionBus = nil
+	d.AuditRefPolicy = productionAuditRefPolicyForGatewayTest(true)
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1", len(settler.calls))
+	}
+	assertLogContains(t, logs, clienterr.CodeAuditRefMissing, "direct_settle", "escape_flag_active", "missing_ref_details")
+}
+
 type failingAppendLedger struct {
 	appendErr error
 }
@@ -228,4 +348,40 @@ func (q *recordingGatewayAuditLedgerDLQ) Enqueue(_ context.Context, event dlq.Ev
 		return 0, q.err
 	}
 	return q.id, nil
+}
+
+func productionAuditRefPolicyForGatewayTest(allowMissing bool) *eventbus.AuditRefPolicy {
+	return &eventbus.AuditRefPolicy{
+		ReleaseMode:          eventbus.ReleaseModeProduction,
+		AllowMissingMoneyRef: allowMissing,
+	}
+}
+
+func enableDeferredAuditLedgerForGatewayTest(t *testing.T, d *ChatHandlerDeps, dlqID int64) {
+	t.Helper()
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	d.AuditLedger = &failingAppendLedger{appendErr: errors.New("ledger unavailable")}
+	d.AuditLedgerDLQ = &recordingGatewayAuditLedgerDLQ{id: dlqID}
+	d.Signer = signer
+}
+
+func queueFullCompletionBusForGatewayTest(t *testing.T) *eventbus.Bus {
+	t.Helper()
+	bus := eventbus.New(eventbus.Config{})
+	mustRegisterEventHandler(t, bus, eventbus.HandlerFunc{
+		HandlerID:    eventbus.HandlerBillingPersister,
+		HandlerTier:  eventbus.TierHigh,
+		HandlerOrder: 10,
+		IsCritical:   true,
+		Fn: func(context.Context, eventbus.RequestCompletionEvent) error {
+			return eventbus.ErrQueueFull
+		},
+	})
+	t.Cleanup(func() {
+		_ = bus.Stop(context.Background())
+	})
+	return bus
 }

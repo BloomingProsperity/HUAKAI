@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -82,10 +83,12 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		RawBodyHash:               bodyHash(ex.body),
 		RedactedBodyRef:           redactedBodyRef(ex.body),
 		AuditLedgerID:             ledgerID(ledgerResult),
+		AuditLedgerDLQRef:         ledgerDLQRef(ledgerResult),
 		AuditSignatureFingerprint: ledgerFingerprint(ledgerResult),
 		SettleRequest:             settleReq,
+		Metadata:                  routeMetadata(ex.routeID),
 	}); err != nil {
-		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, clienterr.CodeSettleError, err)
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, settleErrorCode(err), err)
 		return markAttemptOutcomeDelivered(outcome)
 	}
 	// 持久幂等重放: 存原始响应供同 Idempotency-Key 重试路由无关地重放。
@@ -158,10 +161,16 @@ func settleCompletion(ctx context.Context, d ChatHandlerDeps, event eventbus.Req
 		event.SettleRequest.AuditRequestID = event.RequestID
 	}
 	if d.CompletionBus == nil {
+		if err := validateMoneyPathAuditRefForSource(ctx, d, event, "direct_settle"); err != nil {
+			return nil, rejectMoneyPathDirectSettle(ctx, d, event, err)
+		}
 		return d.Settler.Settle(ctx, event.SettleRequest)
 	}
 	if err := d.CompletionBus.Emit(ctx, event); err != nil {
 		if shouldDirectSettleFallback(err) {
+			if err := validateMoneyPathAuditRefForSource(ctx, d, event, "direct_settle"); err != nil {
+				return nil, rejectMoneyPathDirectSettle(ctx, d, event, err)
+			}
 			return d.Settler.Settle(ctx, event.SettleRequest)
 		}
 		return nil, err
@@ -173,6 +182,112 @@ func shouldDirectSettleFallback(err error) bool {
 	return errors.Is(err, eventbus.ErrNoHandlers) ||
 		errors.Is(err, eventbus.ErrBusClosed) ||
 		errors.Is(err, eventbus.ErrQueueFull)
+}
+
+func validateMoneyPathAuditRefForSource(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent, source string) error {
+	if err := eventbus.ValidateMoneyPathAuditRef(&event, d.AuditRefPolicy); err != nil {
+		return err
+	}
+	if missingMoneyPathAuditRef(event) && moneyPathAuditRefEscapeActive(d.AuditRefPolicy) {
+		logMoneyPathAuditRefError(ctx, event, eventbus.ErrAuditRefMissing, source, true)
+	}
+	return nil
+}
+
+func rejectMoneyPathDirectSettle(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent, validationErr error) error {
+	err, _ := rejectMoneyPathAuditRef(ctx, d, event, validationErr, "direct_settle")
+	return err
+}
+
+func rejectMoneyPathCacheHitCommit(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent, validationErr error) (error, error) {
+	return rejectMoneyPathAuditRef(ctx, d, event, validationErr, "cache_hit_commit")
+}
+
+func rejectMoneyPathAuditRef(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent, validationErr error, source string) (error, error) {
+	if validationErr == nil {
+		validationErr = eventbus.ErrAuditRefMissing
+	}
+	var abortErr error
+	if d.Settler != nil && event.ClaimID > 0 {
+		abortErr = d.Settler.Abort(ctx, event.TenantID, event.ClaimID, clienterr.CodeAuditRefMissing, event.RequestID, 0)
+	}
+	logMoneyPathAuditRefError(ctx, event, validationErr, source, false)
+	if abortErr != nil {
+		return fmt.Errorf("settle rejected: %w; abort %s: %v", validationErr, clienterr.CodeAuditRefMissing, abortErr), abortErr
+	}
+	return fmt.Errorf("settle rejected: %w", validationErr), nil
+}
+
+func logMoneyPathAuditRefError(ctx context.Context, event eventbus.RequestCompletionEvent, validationErr error, source string, escapeFlagActive bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestID := event.RequestID
+	if requestID == "" {
+		requestID = event.ID
+	}
+	if validationErr == nil {
+		validationErr = eventbus.ErrAuditRefMissing
+	}
+	slog.Default().LogAttrs(ctx, slog.LevelError, "money-path audit reference missing",
+		slog.String("request_id", requestID),
+		slog.Int64("tenant_id", event.TenantID),
+		slog.String("route_id", routeIDFromEvent(event)),
+		slog.Int64("claim_id", event.ClaimID),
+		slog.String("missing_ref_details", missingMoneyPathAuditRefDetails(event)),
+		slog.String("validation_err", validationErr.Error()),
+		slog.Bool("escape_flag_active", escapeFlagActive),
+		slog.String("source", source),
+		slog.String("public_code", clienterr.CodeAuditRefMissing),
+	)
+}
+
+func missingMoneyPathAuditRef(event eventbus.RequestCompletionEvent) bool {
+	return !(event.AuditLedgerDLQRef != "" || (event.AuditLedgerID != "" && event.AuditSignatureFingerprint != ""))
+}
+
+func missingMoneyPathAuditRefDetails(event eventbus.RequestCompletionEvent) string {
+	if !missingMoneyPathAuditRef(event) {
+		return ""
+	}
+	missing := make([]string, 0, 3)
+	if event.AuditLedgerID == "" {
+		missing = append(missing, "audit_ledger_id")
+	}
+	if event.AuditSignatureFingerprint == "" {
+		missing = append(missing, "audit_signature_fingerprint")
+	}
+	if event.AuditLedgerDLQRef == "" {
+		missing = append(missing, "audit_ledger_dlq_ref")
+	}
+	return strings.Join(missing, ",")
+}
+
+func moneyPathAuditRefEscapeActive(policy *eventbus.AuditRefPolicy) bool {
+	return policy != nil &&
+		policy.ReleaseMode == eventbus.ReleaseModeProduction &&
+		policy.AllowMissingMoneyRef
+}
+
+func routeIDFromEvent(event eventbus.RequestCompletionEvent) string {
+	if event.Metadata == nil {
+		return ""
+	}
+	return event.Metadata["route_id"]
+}
+
+func routeMetadata(routeID string) map[string]string {
+	if routeID == "" {
+		return nil
+	}
+	return map[string]string{"route_id": routeID}
+}
+
+func settleErrorCode(err error) string {
+	if errors.Is(err, eventbus.ErrAuditRefMissing) {
+		return clienterr.CodeAuditRefMissing
+	}
+	return clienterr.CodeSettleError
 }
 
 func bodyHash(body []byte) string {
@@ -199,6 +314,13 @@ func ledgerFingerprint(result auditledger.AuditLedgerResult) string {
 		return ""
 	}
 	return result.Fingerprint
+}
+
+func ledgerDLQRef(result auditledger.AuditLedgerResult) string {
+	if result.State != auditledger.LedgerResultStateDeferred {
+		return ""
+	}
+	return result.DLQRef
 }
 
 func requestMetaSeed(r *http.Request, ident auth.Identity, clientProtocol proto.ClientProtocol, protocolFamily, routeID, requestID string, accountID int64, acquisitionToken uuid.UUID) proto.RequestMetaSeed {

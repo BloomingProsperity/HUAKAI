@@ -22,6 +22,7 @@ package clienterr
 // canonical_response_error | 502 | upstream response could not be converted | TestMessageForKnownCodesAndFallback
 // cache_key_error | 400 | request cache key could not be built | TestMessageForKnownCodesAndFallback
 // audit_ledger_error | 500 | audit ledger failed | TestMessageForKnownCodesAndFallback
+// audit_ref_missing | 500 | Audit reference missing for money-path operation. | TestMessageForKnownCodesAndFallback
 // settle_error | 500 | request settlement failed | TestStreamingForwardSettleAndAbortErrorsAreLoggedNotHeaders
 // cache_settle_error | 500 | cache hit settlement failed | TestMessageForKnownCodesAndFallback
 // streaming_adapter_unregistered | 503 | streaming adapter is unavailable | TestMessageForKnownCodesAndFallback
@@ -54,6 +55,7 @@ const (
 	CodeCanonicalResponseError          = "canonical_response_error"
 	CodeCacheKeyError                   = "cache_key_error"
 	CodeAuditLedgerError                = "audit_ledger_error"
+	CodeAuditRefMissing                 = "audit_ref_missing"
 	CodeSettleError                     = "settle_error"
 	CodeCacheSettleError                = "cache_settle_error"
 	CodeStreamingAdapterUnregistered    = "streaming_adapter_unregistered"
@@ -88,6 +90,7 @@ var messages = map[string]string{
 	CodeCanonicalResponseError:          "upstream response could not be converted",
 	CodeCacheKeyError:                   "request cache key could not be built",
 	CodeAuditLedgerError:                "audit ledger failed",
+	CodeAuditRefMissing:                 "Audit reference missing for money-path operation.",
 	CodeSettleError:                     "request settlement failed",
 	CodeCacheSettleError:                "cache hit settlement failed",
 	CodeStreamingAdapterUnregistered:    "streaming adapter is unavailable",

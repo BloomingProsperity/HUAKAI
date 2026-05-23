@@ -12,6 +12,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
+	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
@@ -238,6 +239,74 @@ func TestChatCompletionsFallbackSuccessDoesNotPoisonPrimaryModelCacheKey(t *test
 	}
 	if strings.Contains(second.Body.String(), "fallback model response") {
 		t.Fatalf("second body reused fallback response under primary key: %s", second.Body.String())
+	}
+}
+
+func TestChatCompletionsL2CacheHitRejectsMissingAuditRefBeforeCommit(t *testing.T) {
+	// Mutation: 删除 CommitCacheHit 前的 validator 时，第二次 cache hit 会写 cache-hit commit，导致 commit calls 变成 1。
+	enableHCSFDispatchForTest(t)
+	store := l2cache.NewMemoryStore(1<<20, time.Minute)
+	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
+
+	firstDeps := clientAdapterDeps(t)
+	firstDeps.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	firstDeps.ResponseCache = store
+	first := invokeHandlerPath(t, firstDeps, "/v1/chat/completions", body)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+	}
+
+	settler := &recordingSettler{}
+	secondDeps := clientAdapterDeps(t)
+	secondDeps.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	secondDeps.ResponseCache = store
+	secondDeps.Settler = settler
+	secondDeps.AuditRefPolicy = productionAuditRefPolicyForGatewayTest(false)
+	second := invokeHandlerPath(t, secondDeps, "/v1/chat/completions", body)
+	if second.Code != http.StatusInternalServerError {
+		t.Fatalf("second status=%d want 500 body=%s", second.Code, second.Body.String())
+	}
+	if !strings.Contains(second.Body.String(), clienterr.CodeAuditRefMissing) {
+		t.Fatalf("second body=%s want %s", second.Body.String(), clienterr.CodeAuditRefMissing)
+	}
+	if len(settler.cacheHitCommits) != 0 {
+		t.Fatalf("cache-hit commits=%d want 0", len(settler.cacheHitCommits))
+	}
+	if len(settler.aborts) != 1 || settler.aborts[0].reason != clienterr.CodeAuditRefMissing {
+		t.Fatalf("aborts=%+v want one %s abort", settler.aborts, clienterr.CodeAuditRefMissing)
+	}
+}
+
+func TestChatCompletionsL2CacheHitAllowsDLQRefBeforeCommit(t *testing.T) {
+	// Mutation: 删除 Deferred ledger result 到 cache-hit audit event DLQRef 的映射时，第二次 cache hit 会被拒绝且 commit calls 保持 0。
+	enableHCSFDispatchForTest(t)
+	store := l2cache.NewMemoryStore(1<<20, time.Minute)
+	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
+
+	firstDeps := clientAdapterDeps(t)
+	firstDeps.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	firstDeps.ResponseCache = store
+	first := invokeHandlerPath(t, firstDeps, "/v1/chat/completions", body)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+	}
+
+	settler := &recordingSettler{}
+	secondDeps := clientAdapterDeps(t)
+	secondDeps.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	secondDeps.ResponseCache = store
+	secondDeps.Settler = settler
+	secondDeps.AuditRefPolicy = productionAuditRefPolicyForGatewayTest(false)
+	enableDeferredAuditLedgerForGatewayTest(t, &secondDeps, 403)
+	second := invokeHandlerPath(t, secondDeps, "/v1/chat/completions", body)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status=%d want 200 body=%s", second.Code, second.Body.String())
+	}
+	if len(settler.cacheHitCommits) != 1 {
+		t.Fatalf("cache-hit commits=%d want 1", len(settler.cacheHitCommits))
+	}
+	if len(settler.aborts) != 0 {
+		t.Fatalf("aborts=%+v want none", settler.aborts)
 	}
 }
 

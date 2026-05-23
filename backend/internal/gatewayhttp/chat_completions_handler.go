@@ -46,6 +46,7 @@ type ChatHandlerDeps struct {
 	ReplayStore           billing.ReplayStore
 	BillingPolicyResolver *billing.PolicyResolver
 	CompletionBus         *eventbus.Bus
+	AuditRefPolicy        *eventbus.AuditRefPolicy
 	AuditLedger           auditledger.Ledger
 	AuditLedgerDLQ        auditledger.DLQEnqueuer
 	Signer                *sign.Signer

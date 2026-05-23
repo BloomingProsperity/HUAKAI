@@ -194,6 +194,30 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 				Draft:           nonStreamingUsageDraft(cachedEnv, decimal.Zero, routingReasonWithCacheHit(routingReason, true, in.Entry.Key)),
 				SnapshotVersion: in.PlanSnapshot,
 			}
+			auditEvent := eventbus.RequestCompletionEvent{
+				ID:                        in.RequestID,
+				TenantID:                  in.Ident.TenantID,
+				ClaimID:                   in.ReserveResult.ClaimID,
+				AccountID:                 in.AccountID,
+				RequestID:                 in.RequestID,
+				EndpointFamily:            d.effectiveEndpointFamily(),
+				RequestedModel:            in.RequestedModel,
+				UpstreamModel:             in.UpstreamModelID,
+				PayloadHash:               in.PayloadHash,
+				AuditLedgerID:             ledgerID(ledgerResult),
+				AuditLedgerDLQRef:         ledgerDLQRef(ledgerResult),
+				AuditSignatureFingerprint: ledgerFingerprint(ledgerResult),
+				SettleRequest:             cacheHitReq,
+				Metadata:                  routeMetadata(in.RouteID),
+			}
+			if err := validateMoneyPathAuditRefForSource(ctx, d, auditEvent, "cache_hit_commit"); err != nil {
+				rejectErr, abortErr := rejectMoneyPathCacheHitCommit(ctx, d, auditEvent, err)
+				if abortErr != nil {
+					setAbortFailedHeader(w, ctx, in.RequestID, abortErr)
+				}
+				writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, clienterr.CodeAuditRefMissing, rejectErr)
+				return true
+			}
 			if commitErr := d.Settler.CommitCacheHit(ctx, cacheHitReq); commitErr != nil {
 				writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, clienterr.CodeCacheSettleError, commitErr)
 				return true
@@ -248,10 +272,12 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		UpstreamModel:             in.UpstreamModelID,
 		PayloadHash:               in.PayloadHash,
 		AuditLedgerID:             ledgerID(ledgerResult),
+		AuditLedgerDLQRef:         ledgerDLQRef(ledgerResult),
 		AuditSignatureFingerprint: ledgerFingerprint(ledgerResult),
 		SettleRequest:             settleReq,
+		Metadata:                  routeMetadata(in.RouteID),
 	}); err != nil {
-		writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, clienterr.CodeSettleError, err)
+		writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, settleErrorCode(err), err)
 		return true
 	}
 	w.Header().Set("Content-Type", "application/json")
