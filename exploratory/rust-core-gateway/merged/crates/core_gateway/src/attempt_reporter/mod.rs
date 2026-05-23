@@ -16,9 +16,14 @@ use crate::{error::GatewayError, redaction::redact_untrusted_text, route_client:
 
 mod idempotency;
 mod metrics;
+mod spool;
 mod types;
 
 pub use metrics::{AttemptCacheMetrics, AttemptTokenMetrics};
+pub use spool::{
+    AttemptSpool, AttemptSpoolBackpressure, AttemptSpoolOptions, AttemptSpoolReservation,
+    SpoolError, SpoolPersistOutcome,
+};
 pub use types::{
     AttemptReport, AttemptReportContext, AttemptReportStats, AttemptStatus, ReportEnqueueResult,
     TerminalReportResult,
