@@ -48,16 +48,26 @@
 -- backend/sql/migrations/0052_user_cost_receipt_owners.up.sql
 BEGIN;
 
+-- D-010 加固: billing_ledger_claims (tenant_id, id, user_id) superset UNIQUE
+-- 让 sidecar 能用 composite FK 强制 sidecar.user_id == claim.user_id。
+CREATE UNIQUE INDEX IF NOT EXISTS uq_billing_ledger_claims_tenant_id_id_user_id
+    ON billing_ledger_claims (tenant_id, id, user_id);
+
 CREATE TABLE IF NOT EXISTS user_cost_receipt_owners (
     tenant_id        BIGINT NOT NULL,
     request_id       TEXT NOT NULL,
-    receipt_sequence INTEGER NOT NULL,
+    receipt_sequence INTEGER NOT NULL CHECK (receipt_sequence >= 0),
     user_id          BIGINT NOT NULL,
-    claim_id         BIGINT,                  -- 新 receipt 写时拿 claim 一起填
-    owner_source     TEXT NOT NULL,           -- 'settle' / 'cache_hit' / 'backfill_join' (后续切片填)
+    claim_id         BIGINT NOT NULL,             -- D-010 收紧 NOT NULL
+    owner_source     TEXT NOT NULL CHECK (owner_source IN ('settle', 'cache_hit', 'backfill_join')),
     created_at       TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
     PRIMARY KEY (tenant_id, request_id, receipt_sequence),
-    FOREIGN KEY (tenant_id, user_id) REFERENCES users(tenant_id, id)
+    FOREIGN KEY (tenant_id, user_id) REFERENCES users(tenant_id, id) ON DELETE RESTRICT,
+    FOREIGN KEY (tenant_id, request_id, receipt_sequence)
+        REFERENCES user_cost_receipts(tenant_id, request_id, receipt_sequence) ON DELETE RESTRICT,
+    -- D-010 composite FK 强制 sidecar.user_id == claim.user_id。
+    FOREIGN KEY (tenant_id, claim_id, user_id)
+        REFERENCES billing_ledger_claims(tenant_id, id, user_id) ON DELETE RESTRICT
 );
 
 CREATE INDEX IF NOT EXISTS idx_user_cost_receipt_owners_user_lookup
@@ -175,6 +185,7 @@ T9/T10 sidecar backfill 测试 → 移到后续 sidecar 切片。
 | **D-007** Public receipt schema | **隐藏 user_id 不进 canonical** (synthesis 默认) | 向后兼容签名 |
 | **D-008** FK strictness | **立即 FK to users(tenant_id, id)** | Sidecar NOT NULL,FK 直接生效 |
 | **D-009** Rollout flag | **不需要 flag** | Sidecar 模式下老数据天然 fail-closed,直接上线 enforce |
+| **D-010** DB-enforce user-claim 一致性 (2026-05-23 C1 review 追加) | **同意加** billing_ledger_claims (tenant_id, id, user_id) superset UNIQUE + sidecar composite FK | 0009 (tenant_id, id) UNIQUE 零碰撞 superset;**HUAKAI DB-enforce 升级 = 信任链差异化**,详见 [prestudy §A 4 参考项目 token/log/usage owner 模式逐条](../research/2026-05-23-receipt-owner-isolation-prestudy.md#A-Reference-Observations);batch 进 C1 0052;closes RR-W5-004 |
 
 ## §7 时间估 + Ceremony
 
