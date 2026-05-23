@@ -214,7 +214,7 @@ type refundReceiptSequenceReader interface {
 }
 
 type refundReceiptLatestReader interface {
-	GetReceipt(context.Context, string, int64) (*CostReceipt, error)
+	GetReceiptForAdmin(context.Context, string, int64) (*CostReceipt, error)
 }
 
 type refundReceiptIdempotencyReader interface {
@@ -647,7 +647,7 @@ func nextReceiptSequenceFromMax(ctx context.Context, reader refundReceiptMaxSequ
 }
 
 func nextReceiptSequenceFromLatest(ctx context.Context, reader refundReceiptLatestReader, payload MismatchRefundPayload, base int32) (int32, error) {
-	latest, err := reader.GetReceipt(ctx, payload.RequestID, payload.TenantID)
+	latest, err := reader.GetReceiptForAdmin(ctx, payload.RequestID, payload.TenantID)
 	if errors.Is(err, ErrReceiptNotFound) {
 		return base, nil
 	}
@@ -684,7 +684,7 @@ func (w *MismatchRefundWorker) existingRefundReceipt(ctx context.Context, payloa
 		return validateExistingRefundReceipt(receipt, payload, sequence)
 	}
 	if reader, ok := w.receiptSink.(refundReceiptLatestReader); ok {
-		receipt, err := reader.GetReceipt(ctx, payload.RequestID, payload.TenantID)
+		receipt, err := reader.GetReceiptForAdmin(ctx, payload.RequestID, payload.TenantID)
 		if err != nil {
 			return nil, err
 		}

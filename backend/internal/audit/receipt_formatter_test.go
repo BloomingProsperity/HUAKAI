@@ -50,6 +50,8 @@ func TestAT_AUDIT_001_001_DeriveReceiptFromLedger(t *testing.T) {
 
 	source := &staticReceiptSource{inputs: ReceiptInputs{
 		TenantID:            42,
+		UserID:              7001,
+		ClaimID:             9001,
 		Model:               "gpt-4.1-mini",
 		InputTokens:         123,
 		OutputTokens:        45,
@@ -128,6 +130,9 @@ func TestAT_AUDIT_001_003_AppendReceiptUniqueConstraint(t *testing.T) {
 	receipt := &CostReceipt{
 		RequestID:           "req-at-001",
 		TenantID:            88,
+		UserID:              7001,
+		ClaimID:             9001,
+		OwnerSource:         ReceiptOwnerSourceSettle,
 		Model:               "gpt-4.1-mini",
 		InputTokens:         10,
 		OutputTokens:        5,
@@ -240,6 +245,7 @@ func TestAT_AUDIT_001_004_DeriveReceiptCrossesAuditBilling(t *testing.T) {
 	query := &scriptedReceiptQueryer{row: scriptedReceiptRow{values: []any{
 		int64(42),
 		int64(7004),
+		int64(8004),
 		sql.NullString{String: "gpt-4.1-mini", Valid: true},
 		sql.NullInt64{Int64: 100, Valid: true},
 		sql.NullInt64{Int64: 25, Valid: true},
@@ -248,6 +254,7 @@ func TestAT_AUDIT_001_004_DeriveReceiptCrossesAuditBilling(t *testing.T) {
 		sql.NullString{String: "registry:42:9;router:v1", Valid: true},
 		sql.NullInt64{Int64: 77, Valid: true},
 		createdAt,
+		sql.NullString{String: "provider_upstream", Valid: true},
 	}}}
 	source := &SQLReceiptSource{query: query}
 	formatter, err := NewReceiptFormatter(ledger, nil, source, signer)
@@ -260,6 +267,7 @@ func TestAT_AUDIT_001_004_DeriveReceiptCrossesAuditBilling(t *testing.T) {
 		t.Fatalf("DeriveReceipt: %v", err)
 	}
 	if receipt.TenantID != 42 || receipt.InputTokens != 100 || receipt.OutputTokens != 25 ||
+		receipt.UserID != 8004 || receipt.ClaimID != 7004 ||
 		receipt.CachedTokens != 5 || receipt.CostUSDMicros != 1234 ||
 		receipt.RateTableSnapshotID != 9 || !receipt.CreatedAt.Equal(createdAt) {
 		t.Fatalf("receipt mismatch: %+v", receipt)
@@ -333,6 +341,7 @@ func TestAT_AUDIT_001_006_AbortReceiptZeroCost(t *testing.T) {
 	query := &scriptedReceiptQueryer{row: scriptedReceiptRow{values: []any{
 		int64(42),
 		int64(7006),
+		int64(8006),
 		sql.NullString{String: "gpt-4.1-mini", Valid: true},
 		sql.NullInt64{Int64: 0, Valid: true},
 		sql.NullInt64{Int64: 0, Valid: true},
@@ -341,6 +350,7 @@ func TestAT_AUDIT_001_006_AbortReceiptZeroCost(t *testing.T) {
 		sql.NullString{String: "registry:42:9;router:v1", Valid: true},
 		sql.NullInt64{Int64: 106, Valid: true},
 		createdAt,
+		sql.NullString{String: "provider_upstream", Valid: true},
 	}}}
 	source := &SQLReceiptSource{query: query}
 	formatter, err := NewReceiptFormatter(ledger, nil, source, signer)
@@ -382,6 +392,7 @@ func TestAT_AUDIT_001_007_UsageInDLQReturnsUnavailable(t *testing.T) {
 	query := &scriptedReceiptQueryer{row: scriptedReceiptRow{values: []any{
 		int64(42),
 		int64(7007),
+		int64(8007),
 		sql.NullString{String: "gpt-4.1-mini", Valid: true},
 		sql.NullInt64{},
 		sql.NullInt64{},
@@ -390,6 +401,7 @@ func TestAT_AUDIT_001_007_UsageInDLQReturnsUnavailable(t *testing.T) {
 		sql.NullString{},
 		sql.NullInt64{},
 		time.Date(2026, 5, 17, 17, 20, 0, 0, time.UTC),
+		sql.NullString{},
 	}}}
 	source := &SQLReceiptSource{query: query}
 	formatter, err := NewReceiptFormatter(ledger, nil, source, signer)
@@ -428,6 +440,7 @@ func TestAT_AUDIT_001_008_RateSnapshotIDFromRegistryFormat(t *testing.T) {
 	query := &scriptedReceiptQueryer{row: scriptedReceiptRow{values: []any{
 		int64(42),
 		int64(7008),
+		int64(8008),
 		sql.NullString{String: "gpt-4.1-mini", Valid: true},
 		sql.NullInt64{Int64: 81, Valid: true},
 		sql.NullInt64{Int64: 13, Valid: true},
@@ -436,6 +449,7 @@ func TestAT_AUDIT_001_008_RateSnapshotIDFromRegistryFormat(t *testing.T) {
 		sql.NullString{String: "registry:42:12;router:v9", Valid: true},
 		sql.NullInt64{Int64: 888, Valid: true},
 		createdAt,
+		sql.NullString{String: "provider_upstream", Valid: true},
 	}}}
 	source := &SQLReceiptSource{query: query}
 	formatter, err := NewReceiptFormatter(ledger, nil, source, signer)
@@ -461,6 +475,8 @@ func TestAT_AUDIT_001_009_NonUUIDRequestIDWorks(t *testing.T) {
 	}
 	source := &staticReceiptSource{inputs: ReceiptInputs{
 		TenantID:            42,
+		UserID:              7001,
+		ClaimID:             9001,
 		Model:               "gpt-4.1-mini",
 		InputTokens:         81,
 		OutputTokens:        13,
@@ -572,7 +588,27 @@ func newMemoryReceiptDB() *memoryReceiptDB {
 	return &memoryReceiptDB{receipts: map[memoryReceiptKey]*CostReceipt{}}
 }
 
+func (db *memoryReceiptDB) BeginTx(context.Context, *sql.TxOptions) (receiptTx, error) {
+	return &memoryReceiptTx{parent: db, receipts: map[memoryReceiptKey]*CostReceipt{}}, nil
+}
+
 func (db *memoryReceiptDB) ExecContext(_ context.Context, query string, args ...any) (sql.Result, error) {
+	if strings.Contains(query, "INSERT INTO user_cost_receipt_owners") {
+		if len(args) < 6 {
+			return nil, errors.New("memory receipt db: owner insert args missing")
+		}
+		key := memoryReceiptKey{tenantID: args[0].(int64), requestID: args[1].(string), sequence: args[2].(int32)}
+		db.mu.Lock()
+		defer db.mu.Unlock()
+		receipt := db.receipts[key]
+		if receipt == nil {
+			return nil, sql.ErrNoRows
+		}
+		receipt.UserID = args[3].(int64)
+		receipt.ClaimID = args[4].(int64)
+		receipt.OwnerSource = args[5].(string)
+		return receiptTestResult(1), nil
+	}
 	if !strings.Contains(query, "INSERT INTO user_cost_receipts") {
 		return receiptTestResult(0), nil
 	}
@@ -595,6 +631,95 @@ func (db *memoryReceiptDB) ExecContext(_ context.Context, query string, args ...
 	}
 	db.receipts[key] = receipt
 	return receiptTestResult(1), nil
+}
+
+type memoryReceiptTx struct {
+	parent   *memoryReceiptDB
+	receipts map[memoryReceiptKey]*CostReceipt
+	rolled   bool
+}
+
+func (tx *memoryReceiptTx) ExecContext(_ context.Context, query string, args ...any) (sql.Result, error) {
+	if strings.Contains(query, "INSERT INTO user_cost_receipt_owners") {
+		if len(args) < 6 {
+			return nil, errors.New("memory receipt tx: owner insert args missing")
+		}
+		key := memoryReceiptKey{tenantID: args[0].(int64), requestID: args[1].(string), sequence: args[2].(int32)}
+		receipt := tx.receipts[key]
+		if receipt == nil {
+			tx.parent.mu.Lock()
+			if parentReceipt := tx.parent.receipts[key]; parentReceipt != nil {
+				receipt = cloneReceipt(parentReceipt)
+			}
+			tx.parent.mu.Unlock()
+		}
+		if receipt == nil {
+			return nil, sql.ErrNoRows
+		}
+		receipt.UserID = args[3].(int64)
+		receipt.ClaimID = args[4].(int64)
+		receipt.OwnerSource = args[5].(string)
+		tx.receipts[key] = receipt
+		return receiptTestResult(1), nil
+	}
+	if !strings.Contains(query, "INSERT INTO user_cost_receipts") {
+		return receiptTestResult(0), nil
+	}
+	if len(args) < 15 {
+		return nil, errors.New("memory receipt tx: insert args missing")
+	}
+	receipt, err := receiptFromInsertArgs(args)
+	if err != nil {
+		return nil, err
+	}
+	key := memoryReceiptKey{
+		tenantID:  receipt.TenantID,
+		requestID: receipt.RequestID,
+		sequence:  receipt.ReceiptSequence,
+	}
+	tx.parent.mu.Lock()
+	_, parentExists := tx.parent.receipts[key]
+	tx.parent.mu.Unlock()
+	if parentExists || tx.receipts[key] != nil {
+		return nil, ErrReceiptDuplicate
+	}
+	tx.receipts[key] = receipt
+	return receiptTestResult(1), nil
+}
+
+func (tx *memoryReceiptTx) QueryRowContext(_ context.Context, query string, args ...any) receiptRow {
+	tx.parent.mu.Lock()
+	receipts := map[memoryReceiptKey]*CostReceipt{}
+	for key, receipt := range tx.parent.receipts {
+		receipts[key] = receipt
+	}
+	tx.parent.mu.Unlock()
+	for key, receipt := range tx.receipts {
+		receipts[key] = receipt
+	}
+	if !strings.Contains(query, "FROM user_cost_receipts") || len(args) < 2 {
+		return receiptTestRow{err: sql.ErrNoRows}
+	}
+	requestID, _ := args[0].(string)
+	tenantID, _ := args[1].(int64)
+	return latestMemoryReceiptRow(receipts, requestID, tenantID, nil)
+}
+
+func (tx *memoryReceiptTx) Commit() error {
+	if tx.rolled {
+		return errors.New("memory receipt tx already rolled back")
+	}
+	tx.parent.mu.Lock()
+	defer tx.parent.mu.Unlock()
+	for key, receipt := range tx.receipts {
+		tx.parent.receipts[key] = receipt
+	}
+	return nil
+}
+
+func (tx *memoryReceiptTx) Rollback() error {
+	tx.rolled = true
+	return nil
 }
 
 func (db *memoryReceiptDB) QueryRowContext(_ context.Context, query string, args ...any) receiptRow {
@@ -707,7 +832,7 @@ func (r receiptTestRow) Scan(dest ...any) error {
 	if r.receipt == nil {
 		return sql.ErrNoRows
 	}
-	if len(dest) != 15 {
+	if len(dest) != 18 {
 		return errors.New("memory receipt row: destination count mismatch")
 	}
 	adjustments, err := json.Marshal(normalizedAdjustmentRefs(r.receipt.AdjustmentRefs))
@@ -717,6 +842,9 @@ func (r receiptTestRow) Scan(dest ...any) error {
 	values := []any{
 		r.receipt.RequestID,
 		r.receipt.TenantID,
+		r.receipt.UserID,
+		r.receipt.ClaimID,
+		r.receipt.OwnerSource,
 		r.receipt.Model,
 		r.receipt.InputTokens,
 		r.receipt.OutputTokens,
@@ -748,6 +876,9 @@ func receiptForStorageTest(requestID string, tenantID int64, sequence int32) *Co
 	return &CostReceipt{
 		RequestID:           requestID,
 		TenantID:            tenantID,
+		UserID:              7001,
+		ClaimID:             9001,
+		OwnerSource:         ReceiptOwnerSourceSettle,
 		ReceiptSequence:     sequence,
 		Model:               "gpt-4.1-mini",
 		InputTokens:         10,
@@ -920,6 +1051,8 @@ func testFormatter(t *testing.T, signer *auditledger.LocalEd25519Signer) *Receip
 	}
 	formatter, err := NewReceiptFormatter(ledger, nil, &staticReceiptSource{inputs: ReceiptInputs{
 		TenantID:            1,
+		UserID:              7001,
+		ClaimID:             9001,
 		InputTokens:         1,
 		OutputTokens:        1,
 		CostUSDMicros:       1,

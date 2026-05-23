@@ -42,6 +42,8 @@ func TestBillingPersisterReceiptHookAppendsAfterAsyncSettle(t *testing.T) {
 	}
 	formatter, err := audit.NewReceiptFormatter(ledger, nil, &staticReceiptInputSource{inputs: audit.ReceiptInputs{
 		TenantID:            7,
+		UserID:              7001,
+		ClaimID:             9001,
 		Model:               "gpt-4o",
 		InputTokens:         2,
 		OutputTokens:        3,

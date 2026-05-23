@@ -222,6 +222,7 @@ func refundAtomicLedgerAndFormatter(t *testing.T, ctx context.Context, pool *pgx
 	}
 	formatter, err := NewReceiptFormatter(ledger, nil, &refundAtomicReceiptSource{inputs: ReceiptInputs{
 		TenantID:            seed.tenantID,
+		UserID:              seed.userID,
 		ClaimID:             seed.claimID,
 		Model:               "gpt-4o",
 		InputTokens:         100,

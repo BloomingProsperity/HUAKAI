@@ -274,6 +274,7 @@ func refundWorkerFixture(t *testing.T, refundErr error) (*MismatchRefundWorker, 
 	}
 	formatter, err := NewReceiptFormatter(ledger, nil, &staticReceiptSource{inputs: ReceiptInputs{
 		TenantID:            9,
+		UserID:              7001,
 		ClaimID:             1001,
 		Model:               "gpt-4o",
 		InputTokens:         100,
@@ -306,7 +307,9 @@ func refundTestReceipt(requestID string, claimID, cost int64) *CostReceipt {
 	return &CostReceipt{
 		RequestID:           requestID,
 		TenantID:            9,
+		UserID:              7001,
 		ClaimID:             claimID,
+		OwnerSource:         ReceiptOwnerSourceSettle,
 		Model:               "gpt-4o",
 		InputTokens:         100,
 		OutputTokens:        20,

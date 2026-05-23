@@ -41,6 +41,7 @@ func TestAT_AUDIT_001_025_RefundWorkerReceiptVisibleThroughGet(t *testing.T) {
 	}
 	source := &refundVisibleReceiptSource{inputs: audit.ReceiptInputs{
 		TenantID:            tenantID,
+		UserID:              7001,
 		ClaimID:             claimID,
 		Model:               "gpt-4o",
 		InputTokens:         100,
@@ -75,7 +76,7 @@ func TestAT_AUDIT_001_025_RefundWorkerReceiptVisibleThroughGet(t *testing.T) {
 	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{
 		Receipts: store,
 		Signer:   signer,
-	}), http.MethodGet, "/v1/receipts/"+requestID, nil, sessionauth.SessionIdentity{TenantID: tenantID, UserID: 42})
+	}), http.MethodGet, "/v1/receipts/"+requestID, nil, sessionauth.SessionIdentity{TenantID: tenantID, UserID: 7001})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("receipt status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -133,7 +134,17 @@ func (s *refundVisibleReceiptStore) AppendRefundReceipt(_ context.Context, recei
 	return nil
 }
 
-func (s *refundVisibleReceiptStore) GetReceipt(_ context.Context, requestID string, tenantID int64) (*audit.CostReceipt, error) {
+func (s *refundVisibleReceiptStore) GetReceiptForUser(_ context.Context, requestID string, tenantID, userID int64) (*audit.CostReceipt, error) {
+	history := s.receipts[requestID]
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].TenantID == tenantID && history[i].UserID == userID {
+			return cloneRefundVisibleReceipt(history[i]), nil
+		}
+	}
+	return nil, audit.ErrReceiptNotFound
+}
+
+func (s *refundVisibleReceiptStore) GetReceiptForAdmin(_ context.Context, requestID string, tenantID int64) (*audit.CostReceipt, error) {
 	history := s.receipts[requestID]
 	for i := len(history) - 1; i >= 0; i-- {
 		if history[i].TenantID == tenantID {
