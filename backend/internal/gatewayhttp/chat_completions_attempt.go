@@ -208,6 +208,7 @@ var retryableAttemptScopedResponseHeaders = [...]string{
 	"Connection",
 	"X-HUAKAI-Cache-L2",
 	headerHUAKAIAuditLedgerID,
+	headerHUAKAIAuditLedgerDLQRef,
 	headerHUAKAIAuditVerify,
 	headerHUAKAIAuditSigFingerprint,
 	headerHUAKAIStreamState,
