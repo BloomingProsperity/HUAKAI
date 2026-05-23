@@ -64,6 +64,19 @@ impl ResourceLimits {
         self.max_in_flight_requests
     }
 
+    /// W12-C D-7: heartbeat 读真实 in-flight 计数, 不再硬编码 0。
+    /// mutation: 改成返回常量 0 → heartbeat_carries_real_in_flight_count 测试红。
+    pub fn current_in_flight(&self) -> i64 {
+        self.in_flight_requests.load(Ordering::Acquire)
+    }
+
+    /// W12-C D-7 测试辅助: 不实际占 permit, 只直接 store 计数, 让 build_heartbeat_request
+    /// 单元测试可注入任意非零值断言 mutation 判别性。仅 test 编译可见。
+    #[cfg(test)]
+    pub(crate) fn set_in_flight_for_test(&self, n: i64) {
+        self.in_flight_requests.store(n, Ordering::Release);
+    }
+
     pub fn max_connections(&self) -> usize {
         self.max_connections
     }

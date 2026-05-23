@@ -199,6 +199,7 @@ async fn heartbeat_drain_mode_toggle_via_mock_cp() {
 
 #[tokio::test]
 async fn heartbeat_worker_sends_to_mock_cp() {
+    use std::sync::Arc;
     let plan = mock_route_plan("http://127.0.0.1:1");
     let mock_cp = MockControlPlane::spawn(plan).await;
 
@@ -211,8 +212,25 @@ async fn heartbeat_worker_sends_to_mock_cp() {
     )
     .expect("route client 创建应成功");
 
+    // W12-C D-7: HeartbeatWorker::spawn 现要求 metrics source (resource_limits +
+    // attempt_reporter), 这里用 minimal fixture 即可, 本测试只验证 worker 发心跳, 不验内容。
+    let cfg = StartupConfig::from_env_iter(env_pairs()).expect("config 解析应成功");
+    let resource_limits = Arc::new(core_gateway::resource_limits::ResourceLimits::new(&cfg));
+    let attempt_reporter = core_gateway::attempt_reporter::AttemptReporter::spawn(
+        RouteClient::new(
+            mock_cp.endpoint().parse().unwrap(),
+            RouteClientOptions::default(),
+        )
+        .expect("reporter route_client"),
+    );
+    let metrics = core_gateway::heartbeat::HeartbeatMetricsSource {
+        resource_limits,
+        attempt_reporter,
+        started_at_unix_ms: 0,
+    };
+
     // 启动 heartbeat worker (5s 间隔, 但首次立即触发)
-    let worker = core_gateway::heartbeat::HeartbeatWorker::spawn(route_client);
+    let worker = core_gateway::heartbeat::HeartbeatWorker::spawn(route_client, metrics);
 
     // 等待至少一次心跳触发
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;

@@ -3,14 +3,20 @@
 // drain_mode=true 时拒绝新入连接(503), 已进行中的流继续完成。
 
 use std::{
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
 use tokio::{task::JoinHandle, time};
 use tracing::{debug, info, warn};
 
-use crate::{route_client::RouteClient, route_proto::v1::HeartbeatRequest};
+use crate::{
+    attempt_reporter::AttemptReporter, resource_limits::ResourceLimits,
+    route_client::RouteClient, route_proto::v1::HeartbeatRequest,
+};
 
 /// 心跳间隔
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
@@ -32,6 +38,42 @@ pub fn set_drain_mode(drain: bool) {
     DRAIN_MODE.store(drain, Ordering::Release);
 }
 
+// ─── W12-C D-7 heartbeat metrics 源 ────────────────────────────────────────
+
+/// W12-C D-7: heartbeat 报告的真实 gauge 源, 替换原硬编码 0。
+///
+/// 当前覆盖: in_flight_requests + attempt_report_queue_depth + started_at_unix_ms。
+/// `open_upstream_connections` 由 W12-E D-9+O-2 完成 upstream connector 生命周期接线后补;
+/// `p95_control_plane_rpc_ms` / `error_rate_1m` 是 P2 直方图项, 留 roadmap。
+#[derive(Clone)]
+pub struct HeartbeatMetricsSource {
+    pub resource_limits: Arc<ResourceLimits>,
+    pub attempt_reporter: AttemptReporter,
+    pub started_at_unix_ms: i64,
+}
+
+/// W12-C D-7: 构建一次性 HeartbeatRequest, 单元测试可直接验证字段。
+/// mutation marker: 把 in_flight / queue_depth / started_at 任一改回 0 →
+/// heartbeat_carries_real_* 测试断言红。
+pub fn build_heartbeat_request(metrics: &HeartbeatMetricsSource) -> HeartbeatRequest {
+    let in_flight = metrics.resource_limits.current_in_flight().max(0) as u64;
+    let queue_depth = metrics.attempt_reporter.queue_depth() as u64;
+
+    HeartbeatRequest {
+        node_id: "rust-core-gateway".to_owned(),
+        build_sha: env!("CARGO_PKG_VERSION").to_owned(),
+        schema_version: crate::route_client::ROUTE_SCHEMA_VERSION.to_owned(),
+        started_at: metrics.started_at_unix_ms,
+        in_flight_requests: in_flight,
+        // W12-E D-9+O-2 follow-up: upstream connector lifecycle gauge 接线后填真值。
+        open_upstream_connections: 0,
+        attempt_report_queue_depth: queue_depth,
+        // P2 roadmap: 需直方图 + 1-min rate window 才能精确, 暂保留 0.0。
+        p95_control_plane_rpc_ms: 0.0,
+        error_rate_1m: 0.0,
+    }
+}
+
 // ─── HeartbeatWorker ─────────────────────────────────────────────────────────
 
 /// 心跳 worker — 通过 tokio::spawn 运行, 返回 JoinHandle 供调用方 abort
@@ -41,8 +83,8 @@ pub struct HeartbeatWorker {
 
 impl HeartbeatWorker {
     /// 启动心跳任务。route_client 为 Clone 且 Send+Sync, 直接共享。
-    pub fn spawn(route_client: RouteClient) -> Self {
-        let task = tokio::spawn(heartbeat_loop(route_client));
+    pub fn spawn(route_client: RouteClient, metrics: HeartbeatMetricsSource) -> Self {
+        let task = tokio::spawn(heartbeat_loop(route_client, metrics));
         Self { task }
     }
 
@@ -60,27 +102,17 @@ impl Drop for HeartbeatWorker {
 
 // ─── 心跳主循环 ───────────────────────────────────────────────────────────────
 
-async fn heartbeat_loop(route_client: RouteClient) {
+async fn heartbeat_loop(route_client: RouteClient, metrics: HeartbeatMetricsSource) {
     let mut interval = time::interval(HEARTBEAT_INTERVAL);
     // 第一个 tick 立即触发 (tokio::interval 默认行为)
     loop {
         interval.tick().await;
-        send_heartbeat_once(&route_client).await;
+        send_heartbeat_once(&route_client, &metrics).await;
     }
 }
 
-async fn send_heartbeat_once(route_client: &RouteClient) {
-    let request = HeartbeatRequest {
-        node_id: "rust-core-gateway".to_owned(),
-        build_sha: env!("CARGO_PKG_VERSION").to_owned(),
-        schema_version: crate::route_client::ROUTE_SCHEMA_VERSION.to_owned(),
-        started_at: 0,
-        in_flight_requests: 0,
-        open_upstream_connections: 0,
-        attempt_report_queue_depth: 0,
-        p95_control_plane_rpc_ms: 0.0,
-        error_rate_1m: 0.0,
-    };
+async fn send_heartbeat_once(route_client: &RouteClient, metrics: &HeartbeatMetricsSource) {
+    let request = build_heartbeat_request(metrics);
 
     match route_client.heartbeat(request).await {
         Ok(resp) => {
@@ -108,6 +140,7 @@ async fn send_heartbeat_once(route_client: &RouteClient) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{config::StartupConfig, route_client::RouteClient};
 
     #[test]
     fn drain_mode_default_is_false() {
@@ -122,5 +155,111 @@ mod tests {
         assert!(is_drain_mode(), "设置后 drain_mode 应为 true");
         set_drain_mode(false);
         assert!(!is_drain_mode(), "清除后 drain_mode 应为 false");
+    }
+
+    fn fixture_config() -> StartupConfig {
+        StartupConfig::from_env_iter(vec![
+            ("HUAKAI_LISTEN_ADDR".to_owned(), "127.0.0.1:0".to_owned()),
+            (
+                "HUAKAI_CONTROL_PLANE_ENDPOINT".to_owned(),
+                "http://127.0.0.1:48080".to_owned(),
+            ),
+            ("HUAKAI_TRANSPORT_BASELINE".to_owned(), "http".to_owned()),
+            ("HUAKAI_LOG_LEVEL".to_owned(), "debug".to_owned()),
+            ("HUAKAI_JSON_LOGS".to_owned(), "false".to_owned()),
+            ("HUAKAI_WORKER_THREADS".to_owned(), "2".to_owned()),
+            ("HUAKAI_MAX_IN_FLIGHT_REQUESTS".to_owned(), "100".to_owned()),
+            (
+                "HUAKAI_RUNTIME_MODE".to_owned(),
+                "development".to_owned(),
+            ),
+        ])
+        .expect("heartbeat fixture config 应可解析")
+    }
+
+    fn fixture_attempt_reporter() -> AttemptReporter {
+        let route_client = RouteClient::new(
+            "http://127.0.0.1:48080"
+                .parse()
+                .expect("test endpoint 应可解析"),
+            crate::route_client::RouteClientOptions {
+                rpc_timeout: Duration::from_millis(50),
+                retry_attempts: 0,
+                retry_backoff: Duration::from_millis(5),
+                circuit_breaker_failure_threshold: 1,
+                circuit_breaker_cooldown: Duration::from_millis(100),
+            },
+        )
+        .expect("test route client 应可构建");
+        AttemptReporter::spawn(route_client)
+    }
+
+    /// W12-C D-7: heartbeat 必须报告真实 in-flight 计数, 不再硬编码 0。
+    /// mutation: 把 build_heartbeat_request 里 in_flight 改回 0 → 此测试断言红。
+    #[tokio::test]
+    async fn heartbeat_carries_real_in_flight_count() {
+        let config = fixture_config();
+        let resource_limits = Arc::new(ResourceLimits::new(&config));
+        resource_limits.set_in_flight_for_test(7);
+
+        let metrics = HeartbeatMetricsSource {
+            resource_limits,
+            attempt_reporter: fixture_attempt_reporter(),
+            started_at_unix_ms: 1234567890,
+        };
+
+        let request = build_heartbeat_request(&metrics);
+
+        assert_eq!(
+            request.in_flight_requests, 7,
+            "heartbeat 必须报告真实 in-flight 数 (W12-C D-7)"
+        );
+    }
+
+    /// W12-C D-7: heartbeat 必须报告真实 attempt_report_queue_depth, 不再硬编码 0。
+    /// 用 set_queue_depth_for_test 注入非零值 5, 让此测试对 "改回 0" 的 mutation 也红。
+    /// mutation: 把 build_heartbeat_request 里 queue_depth 改回硬编码 0 → 此断言红。
+    #[tokio::test]
+    async fn heartbeat_carries_real_attempt_report_queue_depth_when_nonzero() {
+        let config = fixture_config();
+        let resource_limits = Arc::new(ResourceLimits::new(&config));
+
+        let reporter = fixture_attempt_reporter();
+        // 注入非零 queue_depth 让断言不与"硬编码 0"巧合相等 (判别 codex P2 修)
+        reporter.set_queue_depth_for_test(5);
+
+        let metrics = HeartbeatMetricsSource {
+            resource_limits,
+            attempt_reporter: reporter,
+            started_at_unix_ms: 0,
+        };
+
+        let request = build_heartbeat_request(&metrics);
+
+        assert_eq!(
+            request.attempt_report_queue_depth, 5,
+            "queue_depth 必须从 AttemptReporter 拉真值 (注入 5), 实际: {}",
+            request.attempt_report_queue_depth
+        );
+    }
+
+    /// W12-C D-7: started_at 必须来自 process boot 时刻 (一次性 i64), 不再硬编码 0。
+    /// mutation: 把 build_heartbeat_request 里 started_at 改回 0 → 此测试断言红。
+    #[tokio::test]
+    async fn heartbeat_carries_started_at_unix_ms() {
+        let config = fixture_config();
+        let resource_limits = Arc::new(ResourceLimits::new(&config));
+        let metrics = HeartbeatMetricsSource {
+            resource_limits,
+            attempt_reporter: fixture_attempt_reporter(),
+            started_at_unix_ms: 1234567890,
+        };
+
+        let request = build_heartbeat_request(&metrics);
+
+        assert_eq!(
+            request.started_at, 1234567890,
+            "started_at 必须用 HeartbeatMetricsSource 注入的真值"
+        );
     }
 }

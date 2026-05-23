@@ -167,6 +167,14 @@ impl AttemptReporter {
         self.inner.queue_depth.load(Ordering::Relaxed)
     }
 
+    /// W12-C D-7 测试辅助: 直接 override gauge 让 heartbeat 测试可断言非零 queue_depth。
+    /// 不实际入队 (worker recv 会无视该值, 因为 fixture channel 仍空)。仅 test 可见。
+    /// mutation: 把 heartbeat 里 queue_depth 永远塞常量 → 此测试断言 ==5 红。
+    #[cfg(test)]
+    pub(crate) fn set_queue_depth_for_test(&self, n: usize) {
+        self.inner.queue_depth.store(n, Ordering::Relaxed);
+    }
+
     pub fn enqueued_count(&self) -> u64 {
         self.inner.enqueued_reports.load(Ordering::Relaxed)
     }

@@ -16,7 +16,7 @@ pub mod mock_control_plane;
 pub mod proxy_engine;
 pub mod redaction;
 pub mod request_id;
-mod resource_limits;
+pub mod resource_limits;
 pub mod route_client;
 pub mod route_proto;
 pub mod server_runtime;
@@ -182,12 +182,18 @@ fn route_client_from_transport_baseline(
     RouteClient::from_transport_config(&transport_config, route_client_options(config))
 }
 
-/// 构建 axum Router (供集成测试 oneshot 调用)
+/// 构建 axum Router (供集成测试 oneshot 调用 — 含 GatewayState 构造)。
 pub fn build_router(config: StartupConfig) -> Result<Router, GatewayError> {
+    let state = GatewayState::new(config)?;
+    Ok(build_router_from_state(state))
+}
+
+/// W12-C D-7: 拆出 state→router 阶段, 让 run() 能先构 state + 启 heartbeat (拉 state
+/// 内 gauge), 再 build router。集成测试也可外部构 state 以便注入测试 fixture。
+pub fn build_router_from_state(state: GatewayState) -> Router {
     // 触发 Prometheus 注册表初始化 (幂等)
     let _ = metrics::registry();
 
-    let state = GatewayState::new(config)?;
     let max_body_bytes = state.max_body_bytes();
 
     // drain_guard 必须是业务路由的最外层: 排空时连超大 body 的请求也应直接拿到 503,
@@ -206,11 +212,11 @@ pub fn build_router(config: StartupConfig) -> Result<Router, GatewayError> {
 
     let business_router = business_router.layer(middleware::from_fn(drain::drain_guard));
 
-    Ok(Router::new()
+    Router::new()
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics_handler))
         .merge(business_router)
-        .with_state(state))
+        .with_state(state)
 }
 
 async fn wait_for_ctrl_c_signal(signal_name: &'static str) {
@@ -279,11 +285,22 @@ pub async fn run(config: StartupConfig) -> Result<(), GatewayError> {
     let max_connections = config.max_connections;
     let server_timeouts = server_runtime::ServerTimeouts::from_config(&config);
 
-    // 启动心跳 worker (5s 定时向 control plane 发送心跳, 读取 drain_mode)
-    let route_client = route_client_from_transport_baseline(&config)?;
-    let _heartbeat_worker = heartbeat::HeartbeatWorker::spawn(route_client);
+    // W12-C D-7: 必须先 GatewayState::new 才能让 heartbeat 拉 state 里的真实 gauge,
+    // 之前 spawn(route_client) 后再 build_router 是导致 heartbeat 字段全硬编码 0 的根因。
+    let state = GatewayState::new(config)?;
 
-    let router = build_router(config)?;
+    // 启动心跳 worker (5s 定时向 control plane 发送心跳, 读取 drain_mode)
+    let heartbeat_metrics = heartbeat::HeartbeatMetricsSource {
+        resource_limits: state.resource_limits().clone(),
+        attempt_reporter: state.attempt_reporter().clone(),
+        started_at_unix_ms: attempt_reporter::now_unix_ms_i64(),
+    };
+    let _heartbeat_worker = heartbeat::HeartbeatWorker::spawn(
+        state.route_client().clone(),
+        heartbeat_metrics,
+    );
+
+    let router = build_router_from_state(state);
 
     info!(
         listen_addr = %local_addr,
