@@ -33,6 +33,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
@@ -193,6 +194,16 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, err
 	}
+
+	// P2/P3 post-delivery settle 恢复:把 settler 注入 settlementrecovery
+	// handler,注册到 dlqService 让 worker 拿到 post_delivery_settlement
+	// 行后重调 Settler.Settle。三证 proof 用 PG 直接查 claim/usage/billing_events。
+	settlementProof := settlementrecovery.NewPostgresCommittedProof(pgPool)
+	settlementHandler := &settlementrecovery.Handler{
+		Settler: settler,
+		Proof:   settlementProof,
+	}
+	dlqService.Register(legacydlq.EventKindPostDeliverySettlement, settlementHandler.Handle)
 
 	// 持久幂等重放存储 + 过期清理 janitor, 防表无界增长。
 	replayStore := billing.NewReplayStore(pgPool)
