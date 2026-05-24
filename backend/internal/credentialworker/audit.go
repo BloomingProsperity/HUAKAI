@@ -6,12 +6,25 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
+// ErrAuditWriterMissing 表示 production 缺审计 writer (queries nil) — 不再
+// silent return nil 让审计字段悄悄丢 (RR-W5-002 修复)。
+var ErrAuditWriterMissing = errors.New("credentialworker: audit writer queries unset; production must wire dbauth.Queries")
+
+// recordAudit:
+//   - 优先走同事务路径 (s.txPool + s.auditSigner + dbauth queries 全配齐 →
+//     pgx.BeginFunc + dbauth.New(tx).InsertOAuthRefreshAuditEvent +
+//     auditledger.AppendInTransaction);任一步失败 BeginFunc 自动 rollback,
+//     audit row 与 ledger 行同生死,RR-W5-002 D1/D4 fail-closed。
+//   - 缺一时回退老 2-step 路径 (auditWriter + AuditLedger.Append),仅留
+//     dev/test 用 — production wiring.go 必须 gate 全装 (RR-W5-002 步骤 3)。
 func (s *Scheduler) recordAudit(ctx context.Context, account dbbilling.ListAccountsForRefreshRow, outcome auth.Outcome, scope string, cause error) error {
 	now := s.now().UTC()
 	requestID := fmt.Sprintf("cred-refresh-%d-%d-%d-%s", account.ID, now.UnixNano(), s.seq.Add(1), outcome)
@@ -27,13 +40,32 @@ func (s *Scheduler) recordAudit(ctx context.Context, account dbbilling.ListAccou
 		entry.ErrorClass = fmt.Sprintf("%T", cause)
 		entry.ErrorMessageRedacted = auth.SanitizeOAuthMessage(cause.Error())
 	}
-	auditErr := s.auditWriter.WriteRefreshAudit(ctx, entry)
 	prepared, prepareErr := auditledger.PrepareEntry(ctx, auditledger.LedgerEntry{
 		LedgerID:  fmt.Sprintf("ledger-%s", requestID),
 		Timestamp: now.Format(time.RFC3339Nano),
 		RequestID: requestID,
 		TenantID:  account.TenantID,
 	})
+
+	// 同事务路径:txPool + auditSigner + auditQueries 全配齐才走。
+	if s.txPool != nil && s.auditSigner != nil && s.auditQueries != nil {
+		if prepareErr != nil {
+			return fmt.Errorf("credentialworker: prepare ledger entry: %w", prepareErr)
+		}
+		params := refreshAuditParams(entry)
+		return pgx.BeginFunc(ctx, s.txPool, func(tx pgx.Tx) error {
+			if err := dbauth.New(tx).InsertOAuthRefreshAuditEvent(ctx, params); err != nil {
+				return fmt.Errorf("audit insert: %w", err)
+			}
+			if _, err := auditledger.AppendInTransaction(ctx, tx, s.auditSigner, prepared); err != nil {
+				return fmt.Errorf("ledger append: %w", err)
+			}
+			return nil
+		})
+	}
+
+	// Legacy 2-step path (dev/test).production wiring 必须把 tx 三件套装上。
+	auditErr := s.auditWriter.WriteRefreshAudit(ctx, entry)
 	var ledgerErr error
 	if prepareErr != nil {
 		ledgerErr = prepareErr
@@ -43,15 +75,10 @@ func (s *Scheduler) recordAudit(ctx context.Context, account dbbilling.ListAccou
 	return errors.Join(auditErr, ledgerErr)
 }
 
-type dbAuditWriter struct {
-	queries *dbauth.Queries
-}
-
-func (w dbAuditWriter) WriteRefreshAudit(ctx context.Context, entry *auth.RefreshAuditEntry) error {
-	if w.queries == nil || entry == nil {
-		return nil
-	}
-	return w.queries.InsertOAuthRefreshAuditEvent(ctx, dbauth.InsertOAuthRefreshAuditEventParams{
+// refreshAuditParams 把 auth.RefreshAuditEntry 转 sqlc InsertOAuthRefreshAuditEventParams,
+// 同事务/legacy 路径共用。
+func refreshAuditParams(entry *auth.RefreshAuditEntry) dbauth.InsertOAuthRefreshAuditEventParams {
+	return dbauth.InsertOAuthRefreshAuditEventParams{
 		TenantID:                 entry.TenantID,
 		ProviderAccountID:        entry.ProviderAccountID,
 		Outcome:                  string(entry.Outcome),
@@ -65,7 +92,23 @@ func (w dbAuditWriter) WriteRefreshAudit(ctx context.Context, entry *auth.Refres
 		ErrorClass:               stringPtr(entry.ErrorClass),
 		ErrorMessageRedacted:     stringPtr(entry.ErrorMessageRedacted),
 		OccurredAt:               entry.OccurredAt,
-	})
+	}
+}
+
+type dbAuditWriter struct {
+	queries *dbauth.Queries
+}
+
+// WriteRefreshAudit:queries nil 不再 silent return nil — RR-W5-002 步骤 2,
+// production 误用 nil writer 时必须显式失败,防 audit fail-closed 静默丢字段。
+func (w dbAuditWriter) WriteRefreshAudit(ctx context.Context, entry *auth.RefreshAuditEntry) error {
+	if w.queries == nil {
+		return ErrAuditWriterMissing
+	}
+	if entry == nil {
+		return nil
+	}
+	return w.queries.InsertOAuthRefreshAuditEvent(ctx, refreshAuditParams(entry))
 }
 
 func stringPtr(v string) *string {
