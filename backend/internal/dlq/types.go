@@ -18,6 +18,12 @@ const (
 	EventKindAuditLedgerEntry    EventKind = "audit_ledger_entry"
 	EventKindAccountHealth       EventKind = "account_health"
 	EventKindMetrics             EventKind = "metrics"
+	// EventKindPostDeliverySettlement 用于"流式/非流式响应已交付给客户端
+	// 但 Tx2 settlement 未确认提交"的 durable recovery intent。
+	// worker 拿到后重调 public Settler.Settle 重放(走完整 idempotency 路径,
+	// 不重写底层 SQL),并用 claim/usage/billing_event 三证 proof 防重复扣费。
+	// 详见 docs/process/plans/2026-05-24-post-delivery-settle-recovery-synthesis.md。
+	EventKindPostDeliverySettlement EventKind = "post_delivery_settlement"
 )
 
 type Lane string
@@ -97,7 +103,7 @@ type Record struct {
 
 func LaneForKind(kind EventKind) Lane {
 	switch kind {
-	case EventKindBillingEventReplica, EventKindAuditEventReplica, EventKindAuditMismatchRefund, EventKindUsageRecord, EventKindAuditLedgerEntry:
+	case EventKindBillingEventReplica, EventKindAuditEventReplica, EventKindAuditMismatchRefund, EventKindUsageRecord, EventKindAuditLedgerEntry, EventKindPostDeliverySettlement:
 		return LaneHigh
 	case EventKindAccountHealth:
 		return LaneMed
