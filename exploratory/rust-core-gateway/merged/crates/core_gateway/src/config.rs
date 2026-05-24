@@ -339,21 +339,36 @@ impl StartupConfig {
         // 否则:
         // - watermark > max_bytes -> 绕过 quota 限制 (pending+reserved 越限仍 reserve 成功)
         // - watermark <= max_record -> 空 spool 上每个 reserve 都立刻 backpressure (Brick request)
-        // 仅当 explicit watermark != 0 时才校验 (0 = auto = max_bytes * 8/10 已天然合规)。
-        if self.spool_enabled && self.spool_high_watermark_bytes != 0 {
-            if self.spool_high_watermark_bytes > self.spool_max_bytes {
+        //
+        // 第三方 P2 finding 2026-05-24 (round 3): 旧实现只在 explicit watermark != 0 时校验,
+        // auto watermark (= max_bytes * 8/10) 没经过校验, 让 HUAKAI_SPOOL_MAX_BYTES=50000 +
+        // 默认 max_record=65536 这种配置静默通过 -> 实际 watermark=40000 <= max_record=65536 ->
+        // 空 spool reserve 永远失败 -> 所有 forward_planned 503 = 生产请求全卡死。
+        //
+        // 改: 用 attempt_spool_options() 同源公式算 effective watermark, 然后无差别校验
+        // (explicit 或 auto 都进同一守门)。
+        if self.spool_enabled {
+            let effective_watermark = if self.spool_high_watermark_bytes == 0 {
+                self.spool_max_bytes.saturating_mul(8) / 10
+            } else {
+                self.spool_high_watermark_bytes
+            };
+            if effective_watermark > self.spool_max_bytes {
                 return Err(GatewayError::Config(format!(
-                    "HUAKAI_SPOOL_HIGH_WATERMARK_BYTES ({}) > HUAKAI_SPOOL_MAX_BYTES ({}) — \
-                     watermark 越限会绕过 quota 限制, 让 spool 无限制增长。",
-                    self.spool_high_watermark_bytes, self.spool_max_bytes
+                    "effective spool watermark ({}) > HUAKAI_SPOOL_MAX_BYTES ({}) — \
+                     watermark 越限会绕过 quota 限制, 让 spool 无限制增长 (auto = max_bytes * 8/10 \
+                     正常 <= max_bytes; explicit 设错时检测)。",
+                    effective_watermark, self.spool_max_bytes
                 )));
             }
-            if self.spool_high_watermark_bytes <= self.spool_max_record_bytes {
+            if effective_watermark <= self.spool_max_record_bytes {
                 return Err(GatewayError::Config(format!(
-                    "HUAKAI_SPOOL_HIGH_WATERMARK_BYTES ({}) <= HUAKAI_SPOOL_MAX_RECORD_BYTES ({}) — \
+                    "effective spool watermark ({}) <= HUAKAI_SPOOL_MAX_RECORD_BYTES ({}) — \
                      空 spool 上每个 reserve 都会立刻越过 watermark = 永远 backpressure, \
-                     所有 forward_planned 请求都被砍 503。watermark 必须严格大于 max_record_bytes。",
-                    self.spool_high_watermark_bytes, self.spool_max_record_bytes
+                     所有 forward_planned 请求被砍 503。请增大 HUAKAI_SPOOL_MAX_BYTES \
+                     (auto watermark = max_bytes * 8/10 必须 > max_record) 或显式设 \
+                     HUAKAI_SPOOL_HIGH_WATERMARK_BYTES > max_record_bytes。",
+                    effective_watermark, self.spool_max_record_bytes
                 )));
             }
         }
@@ -1058,9 +1073,53 @@ mod tests {
             "spool watermark > max_bytes 应 fail-fast (绕过 quota)"
         );
         let err_msg = result.unwrap_err().to_string();
+        // round 3 重写错误消息为 "effective spool watermark" 让 auto+explicit 同享一个 path
         assert!(
-            err_msg.contains("HIGH_WATERMARK_BYTES") && err_msg.contains("MAX_BYTES"),
+            err_msg.contains("effective spool watermark") && err_msg.contains("HUAKAI_SPOOL_MAX_BYTES"),
             "错误消息应提及二者关系, 实际: {err_msg}"
+        );
+    }
+
+    /// 第三方 P2 finding 2026-05-24 (round 3): 旧守门只校验显式
+    /// HUAKAI_SPOOL_HIGH_WATERMARK_BYTES != 0, auto watermark (= max_bytes * 8/10)
+    /// 漏校验 -> HUAKAI_SPOOL_MAX_BYTES=50000 + 默认 max_record=65536 静默通过 ->
+    /// 实际 watermark=40000 <= 65536 -> 所有 reserve 失败 -> 生产请求全 503。
+    ///
+    /// 判别性 + mutation:
+    /// 1) HUAKAI_SPOOL_MAX_BYTES=50000 (auto watermark = 40000) + 默认 max_record=65536
+    /// 2) 不显式设 HIGH_WATERMARK_BYTES -> 走 auto
+    /// 3) validate 应 fail-fast (effective watermark 40000 <= max_record 65536)
+    ///
+    /// mutation:
+    /// - 把 effective_watermark 校验改回 "self.spool_high_watermark_bytes != 0 才校验"
+    ///   -> auto 配置溜过 -> 测试红 (复现 P2 finding: 生产 reserve 永久失败)。
+    /// - 改公式 max_bytes * 8/10 -> max_bytes 直接 -> watermark=50000 仍 <= 65536 -> 还是红 (好)
+    #[test]
+    fn auto_watermark_smaller_than_max_record_fails_fast() {
+        let mut env = valid_env();
+        env.retain(|(k, _)| {
+            k != "HUAKAI_SPOOL_MAX_BYTES"
+                && k != "HUAKAI_SPOOL_MAX_RECORD_BYTES"
+                && k != "HUAKAI_SPOOL_HIGH_WATERMARK_BYTES"
+        });
+        // 关键配错: max_bytes=50000 让 auto watermark = 40000 < default max_record (65536)
+        env.push(("HUAKAI_SPOOL_MAX_BYTES".to_owned(), "50000".to_owned()));
+        // max_record 不设, 走 default 65536
+        // watermark 不设 -> 走 auto = max_bytes * 0.8 = 40000
+
+        let result = StartupConfig::from_env_iter(env);
+        assert!(
+            result.is_err(),
+            "auto watermark <= max_record 应 fail-fast (mutation: 守门只看 explicit -> 通过 -> 红)"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("effective spool watermark"),
+            "错误消息应明确说 effective watermark, 实际: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("max_record"),
+            "错误消息应提示对照 max_record_bytes, 实际: {err_msg}"
         );
     }
 
@@ -1087,8 +1146,9 @@ mod tests {
             "spool watermark <= max_record_bytes 应 fail-fast (会 Brick 所有请求)"
         );
         let err_msg = result.unwrap_err().to_string();
+        // round 3 重写错误消息为 "effective spool watermark" + "max_record"
         assert!(
-            err_msg.contains("HIGH_WATERMARK_BYTES") && err_msg.contains("MAX_RECORD_BYTES"),
+            err_msg.contains("effective spool watermark") && err_msg.contains("max_record"),
             "错误消息应提及二者关系, 实际: {err_msg}"
         );
     }
