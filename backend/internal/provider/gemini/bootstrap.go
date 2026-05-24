@@ -94,10 +94,11 @@ func RefreshAdapterFromOAuthConfig(cfg credentialacq.OAuthClientConfig) (Refresh
 		return RefreshAdapter{}, err
 	}
 	return RefreshAdapter{
-		TokenURL:   strings.TrimSpace(cfg.TokenURL),
-		ClientID:   strings.TrimSpace(cfg.ClientID),
-		Scope:      scopeString(cfg),
-		HTTPClient: cfg.HTTPClient,
+		TokenURL:     strings.TrimSpace(cfg.TokenURL),
+		ClientID:     strings.TrimSpace(cfg.ClientID),
+		ClientSecret: strings.TrimSpace(cfg.ClientSecret),
+		Scope:        scopeString(cfg),
+		HTTPClient:   cfg.HTTPClient,
 	}, nil
 }
 

@@ -189,11 +189,12 @@ func (r *Refresher) now() time.Time {
 }
 
 type RefreshAdapter struct {
-	TokenURL   string
-	ClientID   string
-	Scope      string
-	HTTPClient *http.Client
-	Now        func() time.Time
+	TokenURL     string
+	ClientID     string
+	ClientSecret string
+	Scope        string
+	HTTPClient   *http.Client
+	Now          func() time.Time
 }
 
 func (a RefreshAdapter) RefreshForProvider(ctx context.Context, accountID int64, _ string, currentCredential []byte) ([]byte, time.Time, error) {
@@ -221,6 +222,9 @@ func (a RefreshAdapter) RefreshForProvider(ctx context.Context, accountID int64,
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 	form.Set("client_id", clientID)
+	if clientSecret := strings.TrimSpace(a.ClientSecret); clientSecret != "" {
+		form.Set("client_secret", clientSecret)
+	}
 	form.Set("scope", scope)
 	token, err := a.postRefresh(ctx, tokenURL, form)
 	if err != nil {
