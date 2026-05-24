@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
@@ -46,6 +47,7 @@ import (
 // deps is the live dependency tree handlers receive after run() boots.
 type deps struct {
 	cfg                   *Config
+	pgPool                *pgxpool.Pool
 	adminQueries          *admindb.Queries
 	billingQueries        *dbbilling.Queries
 	billingPolicyStore    billing.PolicyStore
@@ -232,6 +234,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		emailSettings:         emailSettingsStore,
 		authEmailSender:       authEmailSender,
 		userAuth:              userAuthService,
+		pgPool:                pgPool,
 		userSessions:          userSessionService,
 		userKeyService:        userkey.NewService(pgPool, nil),
 		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool)),
