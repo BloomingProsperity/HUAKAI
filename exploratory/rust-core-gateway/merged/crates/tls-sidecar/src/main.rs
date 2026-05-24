@@ -1,5 +1,6 @@
 mod boring_ctx;
 mod connect;
+mod h2_settings;
 mod ja4;
 mod profile;
 mod proto;

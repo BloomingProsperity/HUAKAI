@@ -2225,6 +2225,7 @@ name = "tls-sidecar"
 version = "0.1.0"
 dependencies = [
  "boring",
+ "h2",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

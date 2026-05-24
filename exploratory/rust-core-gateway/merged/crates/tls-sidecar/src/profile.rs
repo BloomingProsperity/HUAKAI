@@ -23,6 +23,9 @@ ja4_a = "t13d1714h1"
 ja4_b = "5b57614c22b0"
 ja4_c = "56fe1f68f78b"
 ja4_d = "ea8537015a9f"
+
+[profile.h2_settings]
+# No measured Anthropic CLI HTTP/2 SETTINGS values have been captured yet.
 "#;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,6 +49,8 @@ pub struct TlsProfile {
     pub ja4_b: Option<String>,
     pub ja4_c: Option<String>,
     pub ja4_d: Option<String>,
+    pub h2_settings: crate::h2_settings::H2SettingsMap,
+    pub h2_initial_connection_window_size: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -66,6 +71,7 @@ impl ProfileStore {
     pub fn from_toml(raw: &str) -> Result<Self, ProfileError> {
         let mut sections = Vec::new();
         let mut current: BTreeMap<String, String> = BTreeMap::new();
+        let mut active_prefix: Option<&'static str> = None;
         for line in raw.lines() {
             let line = strip_comment(line).trim();
             if line.is_empty() {
@@ -76,12 +82,24 @@ impl ProfileStore {
                     sections.push(current);
                     current = BTreeMap::new();
                 }
+                active_prefix = None;
                 continue;
+            }
+            if line == "[profile.h2_settings]" {
+                active_prefix = Some("h2_settings.");
+                continue;
+            }
+            if line.starts_with('[') {
+                return Err(ProfileError::Parse(format!("invalid TOML table: {line}")));
             }
             let (key, value) = line
                 .split_once('=')
                 .ok_or_else(|| ProfileError::Parse(format!("invalid TOML line: {line}")))?;
-            current.insert(key.trim().to_owned(), value.trim().to_owned());
+            let key = match active_prefix {
+                Some(prefix) => format!("{}{}", prefix, key.trim()),
+                None => key.trim().to_owned(),
+            };
+            current.insert(key, value.trim().to_owned());
         }
         if !current.is_empty() {
             sections.push(current);
@@ -141,6 +159,11 @@ fn parse_profile(mut section: BTreeMap<String, String>) -> Result<TlsProfile, Pr
         ja4_b: take_optional_string(&mut section, "ja4_b")?,
         ja4_c: take_optional_string(&mut section, "ja4_c")?,
         ja4_d: take_optional_string(&mut section, "ja4_d")?,
+        h2_initial_connection_window_size: take_optional_u32(
+            &mut section,
+            "h2_initial_connection_window_size",
+        )?,
+        h2_settings: take_h2_settings(&mut section)?,
     };
     if !section.is_empty() {
         return Err(ProfileError::Parse(format!(
@@ -223,6 +246,50 @@ fn take_u8_array(
         .collect()
 }
 
+fn take_optional_u32(
+    section: &mut BTreeMap<String, String>,
+    key: &str,
+) -> Result<Option<u32>, ProfileError> {
+    section
+        .remove(key)
+        .map(|item| {
+            item.parse::<u32>().map_err(|error| {
+                ProfileError::Parse(format!("invalid u32 for key {key}: {item}: {error}"))
+            })
+        })
+        .transpose()
+}
+
+fn take_h2_settings(
+    section: &mut BTreeMap<String, String>,
+) -> Result<crate::h2_settings::H2SettingsMap, ProfileError> {
+    let keys = section
+        .keys()
+        .filter(|key| key.starts_with("h2_settings."))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut settings = BTreeMap::new();
+    for key in keys {
+        let raw = section
+            .remove(&key)
+            .expect("key was collected from section");
+        let toml_key = key
+            .strip_prefix("h2_settings.")
+            .expect("key was filtered with h2_settings prefix");
+        let id = crate::h2_settings::setting_id_from_toml_key(toml_key)
+            .ok_or_else(|| ProfileError::Parse(format!("unknown h2_settings key {toml_key}")))?;
+        let value = raw.parse::<u32>().map_err(|error| {
+            ProfileError::Parse(format!("invalid u32 for key {key}: {raw}: {error}"))
+        })?;
+        if settings.insert(id, value).is_some() {
+            return Err(ProfileError::Parse(format!(
+                "duplicate h2_settings id {id}"
+            )));
+        }
+    }
+    Ok(settings)
+}
+
 fn parse_string(raw: &str) -> Result<String, ProfileError> {
     let raw = raw.trim();
     raw.strip_prefix('"')
@@ -261,6 +328,8 @@ mod tests {
         assert_eq!(profile.ja4_b.as_deref(), Some("5b57614c22b0"));
         assert_eq!(profile.ja4_c.as_deref(), Some("56fe1f68f78b"));
         assert_eq!(profile.ja4_d.as_deref(), Some("ea8537015a9f"));
+        assert!(profile.h2_settings.is_empty());
+        assert_eq!(profile.h2_initial_connection_window_size, None);
     }
 
     #[test]
@@ -289,5 +358,51 @@ mod tests {
         assert!(profile.ja4_b.is_none());
         assert!(profile.ja4_c.is_none());
         assert!(profile.ja4_d.is_none());
+    }
+
+    #[test]
+    fn h2_settings_block_parses_named_ids_and_connection_window() {
+        let raw = r#"
+[[profile]]
+id = "anthropic-cli-mimicry-v1"
+target_hosts = ["api.anthropic.com"]
+grease = false
+supported_versions = [772, 771]
+cipher_suites = [4865]
+extensions = [0, 16, 43]
+supported_groups = [29]
+ec_point_formats = [0]
+signature_algorithms = [1027]
+cipher_list = "ECDHE-ECDSA-AES128-GCM-SHA256"
+tls13_cipher_order = [4865]
+curves = "X25519"
+sigalgs = "ecdsa_secp256r1_sha256"
+alpn = ["h2"]
+expected_ja3 = "fixture"
+h2_initial_connection_window_size = 1114112
+
+[profile.h2_settings]
+HEADER_TABLE_SIZE = 65536
+ENABLE_PUSH = 0
+MAX_CONCURRENT_STREAMS = 1000
+INITIAL_WINDOW_SIZE = 131072
+MAX_FRAME_SIZE = 16384
+MAX_HEADER_LIST_SIZE = 262144
+"#;
+        let profiles = super::ProfileStore::from_toml(raw).unwrap();
+        let profile = profiles.get("anthropic-cli-mimicry-v1").unwrap();
+
+        assert_eq!(profile.h2_initial_connection_window_size, Some(1_114_112));
+        assert_eq!(
+            profile.h2_settings,
+            std::collections::BTreeMap::from([
+                (crate::h2_settings::HEADER_TABLE_SIZE, 65_536),
+                (crate::h2_settings::ENABLE_PUSH, 0),
+                (crate::h2_settings::MAX_CONCURRENT_STREAMS, 1000),
+                (crate::h2_settings::INITIAL_WINDOW_SIZE, 131_072),
+                (crate::h2_settings::MAX_FRAME_SIZE, 16_384),
+                (crate::h2_settings::MAX_HEADER_LIST_SIZE, 262_144),
+            ])
+        );
     }
 }
