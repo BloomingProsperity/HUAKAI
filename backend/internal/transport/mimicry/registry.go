@@ -224,6 +224,7 @@ type collectorOutput struct {
 	CollectedAt  string `json:"collected_at"`
 	CaptureTime  string `json:"capture_time"`
 	TargetHost   string `json:"target_host"`
+	TLSBackend   string `json:"tls_backend"`
 	CipherSuites []struct {
 		Value uint16 `json:"value"`
 	} `json:"cipher_suites"`
@@ -231,11 +232,15 @@ type collectorOutput struct {
 		Type                uint16   `json:"type"`
 		DataLen             int      `json:"data_len"`
 		SignatureAlgorithms []uint16 `json:"signature_algorithms"`
+		KeyShareGroups      []uint16 `json:"key_share_groups"`
+		PSKModes            []uint8  `json:"psk_modes"`
 	} `json:"extensions"`
 	ALPNProtocols     []string `json:"alpn_protocols"`
 	SupportedGroups   []uint16 `json:"supported_groups"`
 	ECPointFormats    []uint8  `json:"ec_point_formats"`
 	SupportedVersions []uint16 `json:"supported_versions"`
+	KeyShareGroups    []uint16 `json:"key_share_groups"`
+	PSKModes          []uint8  `json:"psk_modes"`
 	JA3               struct {
 		InputString string `json:"input_string"`
 	} `json:"ja3"`
@@ -280,4 +285,28 @@ func (r collectorOutput) signatureAlgorithms() []uint16 {
 		}
 	}
 	return nil
+}
+
+func (r collectorOutput) keyShareGroups() []uint16 {
+	if len(r.KeyShareGroups) > 0 {
+		return append([]uint16(nil), r.KeyShareGroups...)
+	}
+	for _, e := range r.Extensions {
+		if e.Type == 51 && len(e.KeyShareGroups) > 0 {
+			return append([]uint16(nil), e.KeyShareGroups...)
+		}
+	}
+	return []uint16{29}
+}
+
+func (r collectorOutput) pskModes() []uint8 {
+	if len(r.PSKModes) > 0 {
+		return append([]uint8(nil), r.PSKModes...)
+	}
+	for _, e := range r.Extensions {
+		if e.Type == 45 && len(e.PSKModes) > 0 {
+			return append([]uint8(nil), e.PSKModes...)
+		}
+	}
+	return []uint8{1}
 }

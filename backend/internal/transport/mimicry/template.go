@@ -86,6 +86,7 @@ func LoadFromCollectorOutput(path string, targetName ...string) (*ClientHelloTem
 		ModeName:            firstNonEmpty(firstNonEmpty(raw.ModeName, resolvedTargetName), "anthropic-claude-code"),
 		CollectedAt:         firstNonEmpty(raw.CollectedAt, raw.CaptureTime),
 		TargetHost:          firstNonEmpty(raw.TargetHost, "api.anthropic.com"),
+		TLSBackend:          raw.TLSBackend,
 		JA3:                 raw.JA3.InputString,
 		JA4:                 firstNonEmpty(raw.JA4.Hash, raw.JA4.Raw),
 		CipherSuites:        raw.cipherIDs(),
@@ -95,8 +96,8 @@ func LoadFromCollectorOutput(path string, targetName ...string) (*ClientHelloTem
 		SignatureAlgorithms: raw.signatureAlgorithms(),
 		ALPNProtocols:       raw.ALPNProtocols,
 		ECPointFormats:      raw.ECPointFormats,
-		KeyShareGroups:      []uint16{29},
-		PSKModes:            []uint8{1},
+		KeyShareGroups:      raw.keyShareGroups(),
+		PSKModes:            raw.pskModes(),
 		PaddingLen:          raw.paddingLen(),
 	}
 	if err := t.Validate(); err != nil {
@@ -163,30 +164,30 @@ func (t *ClientHelloTemplate) Validate() error {
 func (t *ClientHelloTemplate) IsStub() bool { return t != nil && t.JA3 == "" }
 
 // AnthropicCLIMimicryV1Template 是 Anthropic OAuth / Claude CLI 路径的
-// Go uTLS Phase 1 profile。字段来自 HUAKAI 已净化的 2026-05-06 capture，
-// profile id 与 sidecar 后续 profile.toml 约定保持一致。
+// Go uTLS Phase 1 profile。TLS 字段来自 HUAKAI 已净化的 2026-05-24
+// Node.js v22.22.2/OpenSSL 3.5.5 ClientHello capture，profile id 与
+// sidecar 后续 profile.toml 约定保持一致。
 func AnthropicCLIMimicryV1Template() *ClientHelloTemplate {
 	return &ClientHelloTemplate{
 		ModeName:            SidecarProfileAnthropicCLIMimicryV1,
-		CollectedAt:         "2026-05-06T10:37:23Z",
+		CollectedAt:         "2026-05-24T12:56:55Z",
 		TargetHost:          "api.anthropic.com",
-		TLSBackend:          "utls/phase1",
-		GREASE:              true,
+		TLSBackend:          "nodejs/openssl",
+		GREASE:              false,
 		ExtensionOrder:      "captured",
-		JA3:                 "772,4865-4866-4867-49195-49199-49196-49200-52393-52392-49161-49171-49162-49172-156-157-47-53,0-65037-23-65281-10-11-35-16-5-13-18-51-45-43,29-23-24,0",
-		JA4:                 "t13d1715_ht_ca21dff6868a_bd55c1d574e4",
-		CipherSuites:        []uint16{4865, 4866, 4867, 49195, 49199, 49196, 49200, 52393, 52392, 49161, 49171, 49162, 49172, 156, 157, 47, 53},
-		Extensions:          []uint16{0, 65037, 23, 65281, 10, 11, 35, 16, 5, 13, 18, 51, 45, 43, 21},
+		JA3:                 "772,4866-4867-4865-49199-49195-49200-49196-158-49191-103-49192-107-163-159-52393-52392-52394-49325-49311-49245-49249-49239-49235-162-49324-49310-49244-49248-49238-49234-49188-106-49187-64-49162-49172-57-56-49161-49171-51-50-157-49309-49233-156-49308-49232-61-60-53-47,65281-0-11-10-35-16-22-23-13-43-45-51,4588-29-23-30-24-25-256-257,0-1-2",
+		JA4:                 "t13d5212_ht_9b003dc3eba7_4e5c652b160e",
+		CipherSuites:        []uint16{4866, 4867, 4865, 49199, 49195, 49200, 49196, 158, 49191, 103, 49192, 107, 163, 159, 52393, 52392, 52394, 49325, 49311, 49245, 49249, 49239, 49235, 162, 49324, 49310, 49244, 49248, 49238, 49234, 49188, 106, 49187, 64, 49162, 49172, 57, 56, 49161, 49171, 51, 50, 157, 49309, 49233, 156, 49308, 49232, 61, 60, 53, 47},
+		Extensions:          []uint16{65281, 0, 11, 10, 35, 16, 22, 23, 13, 43, 45, 51},
 		SupportedVersions:   []uint16{772, 771},
-		EllipticCurves:      []uint16{29, 23, 24},
-		SignatureAlgorithms: anthropicSigAlgos(),
-		ALPNProtocols:       []string{"http/1.1"},
-		ECPointFormats:      []uint8{0},
-		KeyShareGroups:      []uint16{29},
+		EllipticCurves:      []uint16{4588, 29, 23, 30, 24, 25, 256, 257},
+		SignatureAlgorithms: []uint16{2309, 2310, 2308, 1027, 1283, 1539, 2055, 2056, 2074, 2075, 2076, 2057, 2058, 2059, 2052, 2053, 2054, 1025, 1281, 1537, 771, 769, 770, 1026, 1282, 1538},
+		ALPNProtocols:       []string{"h2", "http/1.1"},
+		ECPointFormats:      []uint8{0, 1, 2},
+		KeyShareGroups:      []uint16{4588, 29},
 		PSKModes:            []uint8{1},
-		PaddingLen:          41,
 		HTTPLayer: HTTPLayer{
-			Protocol:        "http1.1_utls_phase1",
+			Protocol:        "h2_or_http1.1_nodejs_openssl",
 			Endpoint:        "https://api.anthropic.com/v1/oauth/token",
 			UserAgent:       "claude-cli-compatible",
 			HeaderOrder:     []string{"Content-Type", "Accept", "Authorization"},
