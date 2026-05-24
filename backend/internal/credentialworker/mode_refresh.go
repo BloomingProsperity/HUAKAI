@@ -17,6 +17,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
+	providercopilot "github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
 )
 
 var ErrNoRefreshRequired = errors.New("credentialworker: no refresh required")
@@ -69,6 +70,7 @@ func DefaultModeAdapterRegistry() *ModeAdapterRegistry {
 	register(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist, legacyOAuthModeAdapter{providerName: "gemini", adapter: adapters.GeminiRefresh{AllowCrossClientFallback: true, SourceClientFamily: "code_assist", TierCacheTTL: 24 * time.Hour}})
 	register(credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne, legacyOAuthModeAdapter{providerName: "gemini", adapter: adapters.GeminiRefresh{AllowCrossClientFallback: true, SourceClientFamily: "google_one", TierCacheTTL: 24 * time.Hour}})
 	register(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity, legacyOAuthModeAdapter{providerName: "antigravity", adapter: adapters.AntigravityRefresh{Gemini: adapters.GeminiRefresh{AllowCrossClientFallback: true, SourceClientFamily: "antigravity", TierCacheTTL: 24 * time.Hour}}})
+	register(credentialstore.VendorCopilot, credentialstore.AuthModeCopilotOAuth, copilotOAuthModeAdapter{})
 	return r
 }
 
@@ -268,7 +270,7 @@ func (q *AccountCredentialRefreshQueries) ListAccountsForRefresh(ctx context.Con
 		return nil, errors.New("credentialworker: account credential refresh db missing")
 	}
 	const sql = `
-SELECT ac.provider_account_id, ac.tenant_id, pa.provider_id, ac.access_expires_at
+SELECT ac.provider_account_id, ac.tenant_id, pa.provider_id, ac.vendor, ac.access_expires_at
 FROM account_credentials ac
 JOIN provider_accounts pa ON pa.id = ac.provider_account_id
 WHERE ac.deleted_at IS NULL
@@ -288,7 +290,7 @@ LIMIT $2`
 	var out []dbbilling.ListAccountsForRefreshRow
 	for rows.Next() {
 		var row dbbilling.ListAccountsForRefreshRow
-		if err := rows.Scan(&row.ID, &row.TenantID, &row.ProviderID, &row.ExpiresAt); err != nil {
+		if err := rows.Scan(&row.ID, &row.TenantID, &row.ProviderID, &row.VendorName, &row.ExpiresAt); err != nil {
 			return nil, err
 		}
 		out = append(out, row)
@@ -312,6 +314,18 @@ func (a legacyOAuthModeAdapter) RefreshCredential(ctx context.Context, in ModeRe
 		return ModeRefreshResult{}, ErrProviderAdapterMissing
 	}
 	payload, expiresAt, err := a.adapter.RefreshForProvider(ctx, in.ProviderAccountID, a.providerName, in.Payload)
+	if err != nil {
+		return ModeRefreshResult{}, err
+	}
+	return ModeRefreshResult{Payload: payload, AccessExpiresAt: expiresAt, Outcome: "refresh_succeeded"}, nil
+}
+
+type copilotOAuthModeAdapter struct {
+	adapter providercopilot.CopilotRefreshAdapter
+}
+
+func (a copilotOAuthModeAdapter) RefreshCredential(ctx context.Context, in ModeRefreshInput) (ModeRefreshResult, error) {
+	payload, expiresAt, err := a.adapter.RefreshForProvider(ctx, in.ProviderAccountID, credentialstore.VendorCopilot, in.Payload)
 	if err != nil {
 		return ModeRefreshResult{}, err
 	}

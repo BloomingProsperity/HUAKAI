@@ -32,14 +32,15 @@ type Scheduler struct {
 	Refresher   Refresher
 	AuditLedger auditledger.Ledger
 
-	interval      time.Duration
-	warningWindow time.Duration
-	limit         int32
-	maxAttempts   int
-	backoff       func(attempt int) time.Duration
-	sleep         func(context.Context, time.Duration) error
-	now           func() time.Time
-	ticks         <-chan time.Time
+	interval         time.Duration
+	warningWindow    time.Duration
+	limit            int32
+	maxAttempts      int
+	backoff          func(attempt int) time.Duration
+	sleep            func(context.Context, time.Duration) error
+	now              func() time.Time
+	ticks            <-chan time.Time
+	vendorRefreshers map[string]Refresher
 
 	queryer     refreshQueries
 	acquirer    stormAcquirer
@@ -202,10 +203,11 @@ func (s *Scheduler) processAccount(ctx context.Context, account dbbilling.ListAc
 func (s *Scheduler) refreshWithBackoff(ctx context.Context, account dbbilling.ListAccountsForRefreshRow) error {
 	var last error
 	for attempt := 1; attempt <= s.maxAttempts; attempt++ {
-		if aware, ok := s.Refresher.(ProviderAwareRefresher); ok {
+		refresher := s.refresherForAccount(account)
+		if aware, ok := refresher.(ProviderAwareRefresher); ok {
 			last = aware.RefreshForProvider(ctx, account.ProviderID, account.ID)
 		} else {
-			last = s.Refresher.Refresh(ctx, account.ID)
+			last = refresher.Refresh(ctx, account.ID)
 		}
 		if last == nil || attempt == s.maxAttempts {
 			return last
@@ -215,6 +217,16 @@ func (s *Scheduler) refreshWithBackoff(ctx context.Context, account dbbilling.Li
 		}
 	}
 	return last
+}
+
+func (s *Scheduler) refresherForAccount(account dbbilling.ListAccountsForRefreshRow) Refresher {
+	vendor := normalizeProviderName(account.VendorName)
+	if vendor != "" && s.vendorRefreshers != nil {
+		if refresher := s.vendorRefreshers[vendor]; refresher != nil {
+			return refresher
+		}
+	}
+	return s.Refresher
 }
 
 func defaultBackoff(attempt int) time.Duration {

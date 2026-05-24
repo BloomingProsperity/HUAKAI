@@ -3,6 +3,8 @@ package credentialworker
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
 )
 
 func TestSchedulerTickTriggersRefresh(t *testing.T) {
@@ -97,6 +100,124 @@ func TestSchedulerRefreshSuccessWritesAudit(t *testing.T) {
 	}
 }
 
+func TestSchedulerVendorRefresherRoutesOnlyMatchingVendor(t *testing.T) {
+	// Regression killed: vendor-specific refreshers must dispatch by the
+	// scanned vendor name, not by "first registered refresher". Mutation
+	// self-check: routing the anthropic row to the copilot refresher leaves the
+	// default refresher without account 22 and this test turns red.
+	copilotRef := &refresherSpy{}
+	defaultRef := &refresherSpy{}
+	audit := &auditSpy{}
+	rows := []dbbilling.ListAccountsForRefreshRow{
+		testAccountWithVendor(21, "copilot"),
+		testAccountWithVendor(22, "anthropic"),
+	}
+	s := newTestScheduler(rows, &stormSpy{}, defaultRef,
+		WithVendorRefresher("copilot", copilotRef),
+		withAuditWriter(audit),
+		WithAuditLedger(&ledgerSpy{}),
+	)
+
+	if err := s.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if len(copilotRef.calls) != 1 || copilotRef.calls[0] != 21 {
+		t.Fatalf("copilot refresher calls=%v, want [21]", copilotRef.calls)
+	}
+	if len(defaultRef.calls) != 1 || defaultRef.calls[0] != 22 {
+		t.Fatalf("default refresher calls=%v, want fallback [22]", defaultRef.calls)
+	}
+	if len(audit.entries) != 2 {
+		t.Fatalf("audit entries=%d, want 2 success rows", len(audit.entries))
+	}
+	for _, entry := range audit.entries {
+		if entry.Outcome != auth.OutcomeRefreshSucceeded {
+			t.Fatalf("audit outcome for account %d=%q, want refresh_succeeded", entry.ProviderAccountID, entry.Outcome)
+		}
+	}
+}
+
+func TestSchedulerFallsBackToDefaultRefresherAndWritesAuditWhenVendorRefresherMissing(t *testing.T) {
+	// Regression killed: a vendor without a dedicated refresher must keep the
+	// legacy refresh path and still write the refresh audit row. Mutation
+	// self-check: sending this anthropic row to the registered copilot refresher
+	// returns crossVendorErr instead of the success audit evidence below.
+	crossVendorErr := errors.New("copilot refresher received non-copilot account")
+	copilotRef := &refresherSpy{errs: []error{crossVendorErr}}
+	defaultRef := &refresherSpy{}
+	audit := &auditSpy{}
+	ledger := &ledgerSpy{}
+	s := newTestScheduler([]dbbilling.ListAccountsForRefreshRow{testAccountWithVendor(23, "anthropic")}, &stormSpy{}, defaultRef,
+		WithVendorRefresher("copilot", copilotRef),
+		withAuditWriter(audit),
+		WithAuditLedger(ledger),
+	)
+
+	if err := s.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if len(copilotRef.calls) != 0 {
+		t.Fatalf("copilot refresher must not receive anthropic account: %v", copilotRef.calls)
+	}
+	if len(defaultRef.calls) != 1 || defaultRef.calls[0] != 23 {
+		t.Fatalf("default refresher calls=%v, want [23]", defaultRef.calls)
+	}
+	if len(audit.entries) != 1 {
+		t.Fatalf("audit entries=%d, want fallback success row", len(audit.entries))
+	}
+	entry := audit.entries[0]
+	if entry.ProviderAccountID != 23 || entry.Outcome != auth.OutcomeRefreshSucceeded {
+		t.Fatalf("audit entry=(account=%d outcome=%q), want account 23 refresh_succeeded", entry.ProviderAccountID, entry.Outcome)
+	}
+	if ledger.Size(context.Background()) != 1 {
+		t.Fatalf("ledger entries=%d, want 1", ledger.Size(context.Background()))
+	}
+}
+
+func TestSchedulerCopilotVendorRefresherRecordsAuthExpiredOn401(t *testing.T) {
+	// Regression killed: Scheduler vendor routing must actually execute
+	// CopilotRefresher, preserving its 401 -> auth_expired classification.
+	// Mutation self-check: falling back to the default refresher or swallowing
+	// the Copilot error leaves no auth_expired sidecar evidence.
+	store := &schedulerCopilotStore{raw: []byte(`{"github_access_token":"expired-github-token"}`)}
+	client := &http.Client{Transport: schedulerRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"message":"bad credentials"}`)),
+		}, nil
+	})}
+	audit := &auditSpy{}
+	refresher := &copilot.CopilotRefresher{
+		Store: store,
+		Adapter: copilot.CopilotRefreshAdapter{
+			TokenURL:   "https://api.github.test/copilot_internal/v2/token",
+			HTTPClient: client,
+			Now:        func() time.Time { return time.Date(2026, 5, 24, 9, 0, 0, 0, time.UTC) },
+		},
+	}
+	s := newTestScheduler([]dbbilling.ListAccountsForRefreshRow{testAccountWithVendor(24, "copilot")}, &stormSpy{}, &refresherSpy{},
+		WithMaxAttempts(1),
+		WithVendorRefresher("copilot", refresher),
+		withAuditWriter(audit),
+		WithAuditLedger(&ledgerSpy{}),
+	)
+
+	err := s.RunOnce(context.Background())
+	if !errors.Is(err, copilot.ErrCopilotAuthExpired) {
+		t.Fatalf("RunOnce err=%v, want ErrCopilotAuthExpired", err)
+	}
+	if store.failureAccountID != 24 || store.failureOutcome != "auth_expired" {
+		t.Fatalf("copilot failure hook=(account=%d outcome=%q), want account 24 auth_expired", store.failureAccountID, store.failureOutcome)
+	}
+	if len(store.saved) != 0 {
+		t.Fatalf("expired Copilot auth must not save credential: %s", string(store.saved))
+	}
+	if got := audit.lastOutcome(); got != auth.OutcomePermanentDisable {
+		t.Fatalf("scheduler audit outcome=%q, want permanent_disable", got)
+	}
+}
+
 func TestSchedulerRefreshFailureBackoffAndAudit(t *testing.T) {
 	fail := errors.New("access_token=sk-ABCDEFGH refresh failed")
 	ref := &refresherSpy{errs: []error{fail, fail, fail}}
@@ -148,6 +269,12 @@ func TestSchedulerStopGracefully(t *testing.T) {
 
 func testAccount(id int64) dbbilling.ListAccountsForRefreshRow {
 	return dbbilling.ListAccountsForRefreshRow{ID: id, TenantID: 7, ProviderID: 99}
+}
+
+func testAccountWithVendor(id int64, vendor string) dbbilling.ListAccountsForRefreshRow {
+	row := testAccount(id)
+	row.VendorName = vendor
+	return row
 }
 
 func newTestScheduler(rows []dbbilling.ListAccountsForRefreshRow, storm *stormSpy, ref *refresherSpy, opts ...Option) *Scheduler {
@@ -202,6 +329,34 @@ func (r *refresherSpy) Refresh(_ context.Context, accountID int64) error {
 		return r.errs[n-1]
 	}
 	return nil
+}
+
+type schedulerCopilotStore struct {
+	raw              []byte
+	saved            []byte
+	failureAccountID int64
+	failureOutcome   string
+}
+
+func (s *schedulerCopilotStore) LoadCopilotCredential(context.Context, int64) ([]byte, error) {
+	return append([]byte(nil), s.raw...), nil
+}
+
+func (s *schedulerCopilotStore) SaveCopilotCredential(_ context.Context, _ int64, credential []byte, _ time.Time) error {
+	s.saved = append([]byte(nil), credential...)
+	return nil
+}
+
+func (s *schedulerCopilotStore) RecordCopilotRefreshFailure(_ context.Context, accountID int64, outcome string, _ error) error {
+	s.failureAccountID = accountID
+	s.failureOutcome = outcome
+	return nil
+}
+
+type schedulerRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f schedulerRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }
 
 type auditSpy struct {

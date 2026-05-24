@@ -18,10 +18,11 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 )
 
-func TestDefaultModeAdapterRegistryCoversFifteenModes(t *testing.T) {
+func TestDefaultModeAdapterRegistryCoversCredentialStoreModes(t *testing.T) {
 	registry := DefaultModeAdapterRegistry()
-	if got := registry.Names(); len(got) != 15 {
-		t.Fatalf("mode adapter count=%d want 15: %v", len(got), got)
+	wantCount := len(credentialstore.DefaultHandlerRegistry().Names())
+	if got := registry.Names(); len(got) != wantCount {
+		t.Fatalf("mode adapter count=%d want %d: %v", len(got), wantCount, got)
 	}
 	for _, key := range credentialstore.DefaultHandlerRegistry().Names() {
 		vendor, mode := splitCredentialModeKey(key)
