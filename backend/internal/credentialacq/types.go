@@ -163,6 +163,7 @@ func DefaultModePlans() []ModePlan {
 		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeCodeAssist, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindOAuth}},
 		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeGoogleOne, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindOAuth}},
 		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeAntigravity, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindOAuth, FlowKindTokenExchange}, ManualFirst: true},
+		{Vendor: credentialstore.VendorCopilot, AuthMode: credentialstore.AuthModeCopilotOAuth, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindOAuth, FlowKindJSONImport}},
 	}
 }
 

@@ -87,6 +87,7 @@ func phaseAModePlans() []acqModePlan {
 		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeCodeAssist, Kind: flowKindOAuth, ClientIdentitySource: clientSourcePublicCLI},
 		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeGoogleOne, Kind: flowKindOAuth, ClientIdentitySource: clientSourcePublicCLI},
 		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeAntigravity, Kind: flowKindOAuth, ClientIdentitySource: clientSourcePublicCLI},
+		{Vendor: credentialstore.VendorCopilot, AuthMode: credentialstore.AuthModeCopilotOAuth, Kind: flowKindOAuth, ClientIdentitySource: clientSourcePublicCLI},
 	}
 }
 
@@ -132,11 +133,11 @@ func TestFlowStatusTransitionContract(t *testing.T) {
 	}
 }
 
-func TestModePlanCoversFifteenCredentialStoreModes(t *testing.T) {
+func TestModePlanCoversCredentialStoreModes(t *testing.T) {
 	registry := credentialstore.DefaultHandlerRegistry()
 	plans := phaseAModePlans()
-	if len(plans) != 15 {
-		t.Fatalf("mode plan count=%d want 15", len(plans))
+	if len(plans) != len(registry.Names()) {
+		t.Fatalf("mode plan count=%d want %d", len(plans), len(registry.Names()))
 	}
 	seen := map[string]bool{}
 	for _, plan := range plans {

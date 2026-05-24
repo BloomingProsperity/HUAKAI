@@ -18,6 +18,7 @@ func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
 		ProtocolOpenAIResponses,
 		ProtocolOpenAICodex,
 		ProtocolAnthropicMessages,
+		ProtocolAnthropicClaudeSession,
 		ProtocolGeminiMessages,
 		ProtocolOpenRouterChat,
 		ProtocolBedrockInvoke,
@@ -48,6 +49,7 @@ func TestBuild_AdaptersAreReachable(t *testing.T) {
 	for _, pf := range []string{
 		ProtocolOpenAIChat,
 		ProtocolAnthropicMessages,
+		ProtocolAnthropicClaudeSession,
 		ProtocolGeminiMessages,
 		ProtocolOpenRouterChat,
 		ProtocolBedrockInvoke,
@@ -71,20 +73,21 @@ func TestBuild_PlatformIDsCorrect(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "")
 	r := Build()
 	cases := map[string]string{
-		ProtocolOpenAIChat:        "openai",
-		ProtocolOpenAIResponses:   "openai",
-		ProtocolOpenAICodex:       "openai_codex",
-		ProtocolAnthropicMessages: "anthropic",
-		ProtocolGeminiMessages:    "gemini",
-		ProtocolOpenRouterChat:    "openrouter",
-		ProtocolBedrockInvoke:     "bedrock",
-		ProtocolGrokChat:          "grok",
-		ProtocolDeepSeekChat:      "deepseek",
-		ProtocolMistralChat:       "mistral",
-		ProtocolGroqCloudChat:     "groqcloud",
-		ProtocolTogetherChat:      "together",
-		ProtocolPerplexityChat:    "perplexity",
-		ProtocolFireworksChat:     "fireworks",
+		ProtocolOpenAIChat:             "openai",
+		ProtocolOpenAIResponses:        "openai",
+		ProtocolOpenAICodex:            "openai_codex",
+		ProtocolAnthropicMessages:      "anthropic",
+		ProtocolAnthropicClaudeSession: "anthropic_claude_session",
+		ProtocolGeminiMessages:         "gemini",
+		ProtocolOpenRouterChat:         "openrouter",
+		ProtocolBedrockInvoke:          "bedrock",
+		ProtocolGrokChat:               "grok",
+		ProtocolDeepSeekChat:           "deepseek",
+		ProtocolMistralChat:            "mistral",
+		ProtocolGroqCloudChat:          "groqcloud",
+		ProtocolTogetherChat:           "together",
+		ProtocolPerplexityChat:         "perplexity",
+		ProtocolFireworksChat:          "fireworks",
 	}
 	for pf, wantPlatform := range cases {
 		a, err := r.For(pf)

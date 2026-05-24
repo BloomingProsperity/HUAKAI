@@ -14,6 +14,7 @@ const (
 	VendorAnthropic = "anthropic"
 	VendorOpenAI    = "openai"
 	VendorGemini    = "gemini"
+	VendorCopilot   = "copilot"
 
 	AuthModeAPIKey          = "api_key"
 	AuthModeClaudeAIOAuth   = "claude_ai_oauth"
@@ -29,6 +30,7 @@ const (
 	AuthModeCodeAssist      = "code_assist"
 	AuthModeGoogleOne       = "google_one"
 	AuthModeAntigravity     = "antigravity"
+	AuthModeCopilotOAuth    = "copilot_oauth"
 
 	StateActive              = "active"
 	StateRefreshing          = "refreshing"
@@ -191,7 +193,9 @@ func (h handlerSpec) RuntimeMaterial(raw []byte) (RuntimeMaterial, error) {
 		"org_id", "project_id", "base_url", "auth_header", "anthropic_version",
 		"anthropic_beta", "openai_beta", "goog_user_project", "auth_in_query",
 		"aws_access_key_id", "aws_region", "aws_session_token", "client_email",
-		"token_uri", "scope", "tenant_id", "deployment",
+		"token_uri", "scope", "tenant_id", "deployment", "endpoint_api",
+		"copilot_endpoint_api", "auth_mode", "client_id_source",
+		"oauth_token_endpoint", "expires_at",
 	} {
 		if value := fieldString(fields, key); value != "" {
 			extra[key] = value
@@ -238,7 +242,7 @@ func (h handlerSpec) RuntimeMaterial(raw []byte) (RuntimeMaterial, error) {
 func defaultHandlers() []ModeHandler {
 	return []ModeHandler{
 		handlerSpec{vendor: VendorAnthropic, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
-		handlerSpec{vendor: VendorAnthropic, authMode: AuthModeClaudeAIOAuth, runtimeKind: RuntimeUpstreamPassthrough, anyOf: []string{"access_token", "refresh_token"}, refreshable: true, allowGrace: true},
+		handlerSpec{vendor: VendorAnthropic, authMode: AuthModeClaudeAIOAuth, runtimeKind: RuntimeOAuthAccessToken, anyOf: []string{"access_token", "refresh_token"}, refreshable: true, allowGrace: true},
 		handlerSpec{vendor: VendorAnthropic, authMode: AuthModeClaudeCode, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorAnthropic, authMode: AuthModeBedrock, runtimeKind: RuntimeAWSSigV4, required: []string{"aws_access_key_id", "aws_secret_access_key", "aws_region"}},
 		handlerSpec{vendor: VendorAnthropic, authMode: AuthModeVertexAnthropic, runtimeKind: RuntimeUpstreamPassthrough, anyOf: []string{"access_token", "metadata_token_endpoint", "client_email"}, refreshable: true, allowGrace: true},
@@ -252,6 +256,7 @@ func defaultHandlers() []ModeHandler {
 		handlerSpec{vendor: VendorGemini, authMode: AuthModeCodeAssist, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorGemini, authMode: AuthModeGoogleOne, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorGemini, authMode: AuthModeAntigravity, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
+		handlerSpec{vendor: VendorCopilot, authMode: AuthModeCopilotOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "github_access_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 	}
 }
 
