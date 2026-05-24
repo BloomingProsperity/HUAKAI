@@ -239,7 +239,26 @@ func (e RequestCompletionEvent) normalized(policy *AuditRefPolicy) (RequestCompl
 	return e, nil
 }
 
+// CustomDLQPayloadProvider 是可选 Handler 扩展接口。
+//
+// 当 handler 失败需要把 RequestCompletionEvent 转 DLQ 行时,默认 dlqPayload
+// 生成的是 generic event 元数据(handler_id / failure_reason 等),适合
+// observability 但不能给 worker 拿来重放业务逻辑。
+//
+// money-path handler(比如 BillingPersisterHandler)需要 DLQ 行带可重放
+// payload(settlementrecovery.Payload),实现本接口返自定义 bytes。返 err
+// 或 nil 时 dlqPayload 回退默认实现,保 observability 不丢。
+type CustomDLQPayloadProvider interface {
+	DLQPayload(event RequestCompletionEvent, handlerErr error) ([]byte, error)
+}
+
 func dlqPayload(event RequestCompletionEvent, h Handler, err error) json.RawMessage {
+	if provider, ok := h.(CustomDLQPayloadProvider); ok {
+		if raw, perr := provider.DLQPayload(event, err); perr == nil && len(raw) > 0 {
+			return json.RawMessage(raw)
+		}
+		// 失败 fall through 到 default,保 DLQ 行至少有 observability 元数据。
+	}
 	payload := map[string]any{
 		"event_id":       event.ID,
 		"event_kind":     event.Kind,
