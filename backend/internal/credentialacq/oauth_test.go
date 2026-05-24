@@ -218,6 +218,39 @@ func TestOAuthCallbackExchangeSuccessAndFailure(t *testing.T) {
 	}
 }
 
+func TestDefaultExchangerRegistryIncludesWindsurfOAuthSessionShape(t *testing.T) {
+	// Regression killed: Windsurf OAuth callback must not fall through to
+	// exchanger_missing, and its fake capture payload must contain session
+	// material. Mutation self-check: deleting the registry line or using an
+	// access/refresh-only shape makes one side of this test fail.
+	registry := DefaultExchangerRegistry()
+	if _, ok := registry.Lookup("windsurf/oauth"); !ok {
+		t.Fatal("windsurf/oauth exchanger missing")
+	}
+	session := Session{
+		TenantID:          1,
+		ProviderAccountID: 42,
+		Vendor:            "windsurf",
+		AuthMode:          "oauth",
+		ActorID:           "operator-1",
+	}
+	candidate, err := registry.Exchange(context.Background(), session, `{"session_token":"windsurf-session-token","refresh_token":"windsurf-refresh-token"}`)
+	if err != nil {
+		t.Fatalf("Exchange windsurf/oauth: %v", err)
+	}
+	if candidate.Vendor != "windsurf" || candidate.AuthMode != "oauth" || candidate.ProviderAccountID != 42 {
+		t.Fatalf("candidate target=%s/%s account=%d", candidate.Vendor, candidate.AuthMode, candidate.ProviderAccountID)
+	}
+	if !strings.Contains(string(candidate.Payload), "windsurf-session-token") {
+		t.Fatalf("candidate payload=%s, want session token material", string(candidate.Payload))
+	}
+
+	_, err = registry.Exchange(context.Background(), session, `{"access_token":"access-only","refresh_token":"refresh-only"}`)
+	if !errors.Is(err, ErrInvalidTokenShape) {
+		t.Fatalf("access/refresh-only Windsurf payload err=%v, want ErrInvalidTokenShape", err)
+	}
+}
+
 func successfulOAuthExchange(code string) (acqCandidate, error) {
 	if code == "" {
 		return acqCandidate{}, errors.New("missing code")

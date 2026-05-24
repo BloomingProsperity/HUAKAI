@@ -45,6 +45,7 @@ func DefaultExchangerRegistry() *ExchangerRegistry {
 	register("copilot/device_code", NewDeviceCodeExchanger())
 	register("kiro/sso", NewSSOExchanger())
 	register("cursor/oauth", NewPKCEFakeExchanger(TokenShapeSession))
+	register("windsurf/oauth", NewPKCEFakeExchanger(TokenShapeSession))
 	return r
 }
 

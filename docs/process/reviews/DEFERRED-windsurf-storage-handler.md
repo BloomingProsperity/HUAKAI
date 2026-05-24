@@ -1,0 +1,21 @@
+# DEFERRED — Windsurf credentialstore handler 缺失
+
+- **Severity**: S2 (operator-side workflow,未接通生产即 no-impact)
+- **来源 codex review**: 2026-05-24T16:08Z, S2 切片 (commit 648ceb5 后) Round 1 P2 finding
+- **Affected files**:
+  - `backend/internal/credentialacq/vendor_exchangers.go:48` Windsurf exchanger 注册行
+  - `backend/internal/credentialstore/DefaultHandlerRegistry()` 缺 windsurf+oauth case
+  - acquisition/session 与 account credential schema CHECK constraints 也不含 windsurf
+- **问题描述**:
+  - S2 切片注册 `windsurf/oauth` exchanger,默认 callback registry 通告该 flow 可用
+  - 但 credentialstore.DefaultHandlerRegistry() 不识别 windsurf+oauth → 真实 start/finalize/save 路径在 exchanger lookup 后 fail
+  - acquisition_flow_sessions / account_credentials schema CHECK 也不允许 windsurf vendor
+- **不 block 当前 commit 的原因**:
+  - Windsurf 实际生产路径还**没接通**(scheduler 也没注 Windsurf refresher,生产没有调用)
+  - 仅注册 exchanger 不会触发 fail,只在真有人开始 windsurf OAuth flow 才命中
+  - operator 拿到 Windsurf 真 OAuth endpoint 抓包前不会启用此 flow
+- **应在哪个切片修**:**Windsurf 真接通切片**(等 Owner 提供 windsurf OAuth endpoint 抓包后):
+  - 同期补 credentialstore.DefaultHandlerRegistry() windsurf+oauth handler
+  - migration 加 windsurf 入 vendor CHECK
+  - scheduler 注入 windsurf refresher
+- **Tracker**: 跟 Owner 真 windsurf OAuth 抓包切片合并
