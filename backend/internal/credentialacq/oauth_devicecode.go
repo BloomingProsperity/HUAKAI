@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
 const deviceCodeSlowDownStep = 5 * time.Second
@@ -26,6 +28,54 @@ func (deviceCodeExchanger) StartOAuthFlow(ctx context.Context, store *PostgresSe
 
 func (deviceCodeExchanger) ExchangeOAuthCode(context.Context, Session, string) (CredentialCandidate, error) {
 	return CredentialCandidate{}, errors.New("credentialacq: device-code flow does not use oauth callback exchange")
+}
+
+type openAICodexDeviceCodeExchanger struct{}
+
+func (openAICodexDeviceCodeExchanger) StartOAuthFlow(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig) (OAuthStartResult, error) {
+	if err := validateOpenAICodexOperatorDeviceCodeConfig(cfg); err != nil {
+		return OAuthStartResult{}, err
+	}
+	in.Vendor = credentialstore.VendorOpenAI
+	in.AuthMode = credentialstore.AuthModeCodexCLIOAuth
+	in.ClientIdentitySource = ClientSourceOperatorConfig
+	return startDeviceAuthorization(ctx, store, in, cfg, AuthTypeDeviceCode)
+}
+
+func (openAICodexDeviceCodeExchanger) ExchangeOAuthCode(context.Context, Session, string) (CredentialCandidate, error) {
+	return CredentialCandidate{}, errors.New("credentialacq: openai codex device-code flow does not use oauth callback exchange")
+}
+
+func validateOpenAICodexOperatorDeviceCodeConfig(cfg OAuthClientConfig) error {
+	var missing []string
+	if strings.TrimSpace(cfg.Source) != ClientSourceOperatorConfig {
+		missing = append(missing, "source=operator_config")
+	}
+	if strings.TrimSpace(cfg.AuthURL) == "" {
+		missing = append(missing, "device_authorization_url")
+	}
+	if strings.TrimSpace(cfg.TokenURL) == "" {
+		missing = append(missing, "token_url")
+	}
+	if strings.TrimSpace(cfg.ClientID) == "" {
+		missing = append(missing, "client_id")
+	}
+	if !hasOAuthScope(cfg.Scopes) {
+		missing = append(missing, "scope")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%w: openai codex operator device-code config missing %s", ErrFeatureDisabled, strings.Join(missing, ","))
+	}
+	return nil
+}
+
+func hasOAuthScope(scopes []string) bool {
+	for _, scope := range scopes {
+		if strings.TrimSpace(scope) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 type DeviceCodeOption func(*deviceCodeOptions)

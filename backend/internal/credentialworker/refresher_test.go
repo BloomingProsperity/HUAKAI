@@ -119,14 +119,41 @@ func TestCodexRefreshReusesOpenAIHTTPRoundTrip(t *testing.T) {
 		assertForm(t, r, map[string]string{
 			"grant_type":    "refresh_token",
 			"refresh_token": "rt-old",
-			"client_id":     "cid",
+			"client_id":     "operator-cid",
+			"scope":         "operator-scope",
 		})
 		return tokenJSONResponse("codex-new", "codex-rt"), nil
 	})}
 
-	adapter := adapters.NewCodexRefresh("http://mock.local/codex", "", "", client)
+	adapter := adapters.NewCodexRefresh("http://mock.local/codex", "operator-cid", "operator-scope", client)
 	newCredential, expiresAt, err := adapter.RefreshForProvider(context.Background(), 4, "codex", testCredential())
 	assertRefreshResult(t, newCredential, expiresAt, err, "codex-new", "codex-rt")
+}
+
+func TestCodexRefreshRejectsCredentialSuppliedOAuthConfig(t *testing.T) {
+	// Regression killed: the production credentialworker Codex adapter must
+	// fail closed when operator endpoint/client/scope are absent. Mutation
+	// self-check: falling back to credential oauth_token_endpoint calls the
+	// HTTP client and turns this test red.
+	called := false
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return tokenJSONResponse("unexpected", "unexpected-rt"), nil
+	})}
+
+	adapter := adapters.NewCodexRefresh("", "", "", client)
+	_, _, err := adapter.RefreshForProvider(context.Background(), 4, "codex", []byte(`{
+		"refresh_token":"rt-old",
+		"client_id":"credential-cid",
+		"scope":"credential-scope",
+		"oauth_token_endpoint":"http://evil.attacker.test/token"
+	}`))
+	if !errors.Is(err, adapters.ErrCodexOAuthConfigRequired) {
+		t.Fatalf("RefreshForProvider err=%v, want ErrCodexOAuthConfigRequired", err)
+	}
+	if called {
+		t.Fatal("credential-supplied Codex token endpoint was used")
+	}
 }
 
 func TestRegistryRefresherMockOnlyProviderReturnsErrMockOnly(t *testing.T) {

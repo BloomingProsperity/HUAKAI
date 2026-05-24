@@ -13,6 +13,15 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+func TestRefreshFailureStateOperatorConfigRequiresAttention(t *testing.T) {
+	if got := refreshFailureState("operator_config_required"); got != StateOperatorAttention {
+		t.Fatalf("state=%q, want %q", got, StateOperatorAttention)
+	}
+	if got := refreshFailureState("temporary"); got != StateTempUnschedulable {
+		t.Fatalf("temporary state=%q, want %q", got, StateTempUnschedulable)
+	}
+}
+
 func TestResolveActiveRejectsCrossTenantCredentialJoin(t *testing.T) {
 	db := &credentialStoreDBStub{
 		queryRow: func(_ context.Context, sql string, _ ...interface{}) pgx.Row {

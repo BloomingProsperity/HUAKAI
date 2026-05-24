@@ -449,6 +449,9 @@ func stringField(fields map[string]any, key string) string {
 }
 
 func classifyModeRefreshError(err error) string {
+	if errors.Is(err, adapters.ErrCodexOAuthConfigRequired) {
+		return "operator_config_required"
+	}
 	msg := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(msg, "invalid_grant"):

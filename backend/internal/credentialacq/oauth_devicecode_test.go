@@ -52,7 +52,7 @@ func TestDeviceCodePollHonorsSlowDown(t *testing.T) {
 		ActorID: "admin-1", ActorRole: "platform_admin",
 	}, OAuthClientConfig{
 		ClientID: "fake-client", AuthURL: "https://fake.copilot.local/device", TokenURL: "https://fake.copilot.local/token",
-		Source: ClientSourceOperatorConfig, HTTPClient: client,
+		Scopes: []string{"openid", "offline_access"}, Source: ClientSourceOperatorConfig, HTTPClient: client,
 	})
 	if err != nil {
 		t.Fatalf("StartOAuthFlow: %v", err)
@@ -174,6 +174,109 @@ func TestOAuthExchangerRegistryRejectsWrongVendorTokenShape(t *testing.T) {
 	_, err := wrong.Exchange(context.Background(), session, anthropicToken)
 	if !errors.Is(err, ErrInvalidTokenShape) {
 		t.Fatalf("err=%v want %v", err, ErrInvalidTokenShape)
+	}
+}
+
+func TestDefaultExchangerRegistryHasOpenAICodexDeviceCodeAliases(t *testing.T) {
+	// Regression killed: callers may address the OpenAI Codex device-code flow
+	// by provider-code alias. Mutation self-check: removing either alias makes
+	// this lookup fail while the legacy openai/codex_cli_oauth key still passes.
+	registry := DefaultExchangerRegistry()
+	for _, name := range []string{
+		"openai/codex_cli_oauth",
+		"openai_codex/device-code",
+		"openai_codex/device_code",
+	} {
+		if _, ok := registry.Lookup(name); !ok {
+			t.Fatalf("Lookup(%q) missing", name)
+		}
+	}
+}
+
+func TestOpenAICodexDeviceCodeStartRequiresOperatorConfig(t *testing.T) {
+	// Regression killed: the registered OpenAI Codex device-code exchanger
+	// must enforce operator_config before any HTTP call. Mutation self-check:
+	// delegating straight to the generic device-code exchanger calls this
+	// client and accepts public_cli_client.
+	called := false
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return jsonHTTPResponse(t, map[string]any{}), nil
+	})}
+	store := NewPostgresSessionStore(newTestSessionDB(time.Date(2026, 5, 24, 14, 0, 0, 0, time.UTC)))
+
+	_, err := StartOAuthFlow(context.Background(), store, StartInput{
+		TenantID: 1, ProviderAccountID: 5,
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,
+		ActorID: "admin-1", ActorRole: "platform_admin",
+	}, OAuthClientConfig{
+		AuthURL: "https://operator.openai.example.test/device", TokenURL: "https://operator.openai.example.test/token",
+		ClientID: "operator-client", Scopes: []string{"openid", "offline_access"},
+		Source: ClientSourcePublicCLI, HTTPClient: client,
+	})
+	if !errors.Is(err, ErrFeatureDisabled) {
+		t.Fatalf("StartOAuthFlow err=%v, want ErrFeatureDisabled", err)
+	}
+	if called {
+		t.Fatal("OpenAI Codex device-code start called HTTP before operator_config validation")
+	}
+}
+
+func TestOpenAICodexDeviceCodeAliasCanonicalizesCredentialMode(t *testing.T) {
+	// Regression killed: provider-code aliases must create and poll canonical
+	// credentialstore vendor/auth_mode so finalization can validate the result.
+	now := time.Date(2026, 5, 24, 14, 10, 0, 0, time.UTC)
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/device":
+			return jsonHTTPResponse(t, map[string]any{
+				"device_code":      "codex-dev-123",
+				"user_code":        "OPENAI-CODEX",
+				"verification_uri": "https://auth.openai.example.test/activate",
+				"expires_in":       900,
+				"interval":         5,
+			}), nil
+		case "/token":
+			return jsonHTTPResponse(t, map[string]any{
+				"access_token":  "codex-access",
+				"refresh_token": "codex-refresh",
+				"expires_in":    3600,
+			}), nil
+		default:
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(`{}`)), Header: http.Header{}}, nil
+		}
+	})}
+	store := NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now })
+
+	start, err := StartOAuthFlow(context.Background(), store, StartInput{
+		TenantID: 1, ProviderAccountID: 6,
+		Vendor: "openai_codex", AuthMode: "device_code",
+		ActorID: "admin-1", ActorRole: "platform_admin",
+	}, OAuthClientConfig{
+		AuthURL: "https://operator.openai.example.test/device", TokenURL: "https://operator.openai.example.test/token",
+		ClientID: "operator-client", Scopes: []string{"openid", "offline_access"},
+		Source: ClientSourceOperatorConfig, HTTPClient: client,
+	})
+	if err != nil {
+		t.Fatalf("StartOAuthFlow: %v", err)
+	}
+	if start.Session.Vendor != credentialstore.VendorOpenAI || start.Session.AuthMode != credentialstore.AuthModeCodexCLIOAuth {
+		t.Fatalf("session mode=%s/%s, want openai/codex_cli_oauth", start.Session.Vendor, start.Session.AuthMode)
+	}
+	if start.Session.ClientIdentitySource != ClientSourceOperatorConfig {
+		t.Fatalf("client source=%q, want operator_config", start.Session.ClientIdentitySource)
+	}
+	candidate, err := PollDeviceCodeToken(context.Background(), start.Session, OAuthClientConfig{
+		TokenURL: "https://operator.openai.example.test/token", ClientID: "operator-client",
+	}, WithDeviceCodeHTTPClient(client), WithDeviceCodeNow(func() time.Time { return now }), WithDeviceCodeSleeper(func(context.Context, time.Duration) error { return nil }))
+	if err != nil {
+		t.Fatalf("PollDeviceCodeToken: %v", err)
+	}
+	if candidate.Vendor != credentialstore.VendorOpenAI || candidate.AuthMode != credentialstore.AuthModeCodexCLIOAuth {
+		t.Fatalf("candidate mode=%s/%s, want openai/codex_cli_oauth", candidate.Vendor, candidate.AuthMode)
+	}
+	if err := NewFinalizer(nil, credentialstore.DefaultHandlerRegistry(), nil, nil).ValidateCandidate(candidate); err != nil {
+		t.Fatalf("ValidateCandidate: %v", err)
 	}
 }
 

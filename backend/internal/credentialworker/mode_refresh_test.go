@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"reflect"
@@ -15,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker/adapters"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 )
 
@@ -29,6 +31,53 @@ func TestDefaultModeAdapterRegistryCoversCredentialStoreModes(t *testing.T) {
 		if _, ok := registry.Lookup(vendor, mode); !ok {
 			t.Fatalf("missing mode refresh adapter %s", key)
 		}
+	}
+}
+
+func TestDefaultModeAdapterRegistryCodexFailsClosedWithoutOperatorConfig(t *testing.T) {
+	// Regression killed: the default scheduled Codex refresh path must not
+	// fall back to endpoint/client/scope embedded in credential JSON.
+	adapter, ok := DefaultModeAdapterRegistry().Lookup(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth)
+	if !ok {
+		t.Fatal("Codex CLI OAuth mode adapter missing")
+	}
+	_, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{
+		ProviderAccountID: 42,
+		Vendor:            credentialstore.VendorOpenAI,
+		AuthMode:          credentialstore.AuthModeCodexCLIOAuth,
+		Payload: []byte(`{
+			"refresh_token":"rt-old",
+			"client_id":"credential-cid",
+			"scope":"credential-scope",
+			"oauth_token_endpoint":"http://evil.attacker.test/token"
+		}`),
+	})
+	if !errors.Is(err, adapters.ErrCodexOAuthConfigRequired) {
+		t.Fatalf("RefreshCredential err=%v, want ErrCodexOAuthConfigRequired", err)
+	}
+}
+
+func TestModeRefreshCodexOperatorConfigFailureRecordsOperatorClass(t *testing.T) {
+	calls := []string{}
+	store := &recordingRefreshStore{
+		calls: &calls,
+		rec: credentialstore.CredentialRecord{
+			ID: 45, TenantID: 1, ProviderAccountID: 102,
+			Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,
+			CredentialVersion: 3, PlaintextPayload: []byte(`{"refresh_token":"rt-old"}`),
+		},
+	}
+	refresher := &AccountCredentialRefresher{store: store, registry: DefaultModeAdapterRegistry(), now: func() time.Time {
+		return time.Date(2026, 5, 24, 14, 20, 0, 0, time.UTC)
+	}}
+
+	err := refresher.Refresh(context.Background(), 102)
+	if !errors.Is(err, adapters.ErrCodexOAuthConfigRequired) {
+		t.Fatalf("Refresh err=%v, want ErrCodexOAuthConfigRequired", err)
+	}
+	want := []string{"probe", "tx_begin", "lock:45", "reread", "failure:45:operator_config_required"}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls=%v want %v", calls, want)
 	}
 }
 
@@ -208,7 +257,8 @@ func (tx *recordingRefreshTx) SaveRefreshSuccess(_ context.Context, rec credenti
 	return nil
 }
 
-func (tx *recordingRefreshTx) SaveRefreshFailure(context.Context, credentialstore.CredentialRecord, string, time.Time) error {
+func (tx *recordingRefreshTx) SaveRefreshFailure(_ context.Context, rec credentialstore.CredentialRecord, failureClass string, _ time.Time) error {
+	*tx.calls = append(*tx.calls, "failure:"+strconv.FormatInt(rec.ID, 10)+":"+failureClass)
 	return nil
 }
 

@@ -761,13 +761,7 @@ func (s *Store) SaveRefreshFailure(ctx context.Context, rec CredentialRecord, fa
 	if err := s.ensureProviderAccountTenant(ctx, rec.TenantID, rec.ProviderAccountID); err != nil {
 		return err
 	}
-	state := StateTempUnschedulable
-	if failureClass == "invalid_grant" || failureClass == "auth_expired" {
-		state = StateRevoked
-	}
-	if failureClass == "decrypt_failed" || failureClass == "payload_invalid" {
-		state = StateOperatorAttention
-	}
+	state := refreshFailureState(failureClass)
 	const q = `
 UPDATE account_credentials
 SET state = $1,
@@ -798,6 +792,17 @@ WHERE id = $4
 		}
 		return nil
 	})
+}
+
+func refreshFailureState(failureClass string) string {
+	switch failureClass {
+	case "invalid_grant", "auth_expired":
+		return StateRevoked
+	case "decrypt_failed", "payload_invalid", "operator_config_required":
+		return StateOperatorAttention
+	default:
+		return StateTempUnschedulable
+	}
 }
 
 func (s *Store) decryptRecord(ctx context.Context, rec CredentialRecord) ([]byte, error) {

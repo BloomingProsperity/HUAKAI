@@ -35,12 +35,15 @@ func DefaultExchangerRegistry() *ExchangerRegistry {
 	register := func(name string, exc Exchanger) {
 		_ = r.RegisterExchanger(name, exc)
 	}
+	openAICodexDeviceCode := openAICodexDeviceCodeExchanger{}
 	register(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth), NewPKCEFakeExchanger(TokenShapeAccessRefresh))
 	register(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist), NewPKCEFakeExchanger(TokenShapeAnySessionOrAccess))
 	register(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne), NewPKCEFakeExchanger(TokenShapeAnySessionOrAccess))
 	register(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity), NewPKCEFakeExchanger(TokenShapeAnySessionOrAccess))
 	register(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth), NewPKCEFakeExchanger(TokenShapeAnySessionOrAccess))
-	register(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth), NewDeviceCodeExchanger())
+	register(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth), openAICodexDeviceCode)
+	register("openai_codex/device-code", openAICodexDeviceCode)
+	register("openai_codex/device_code", openAICodexDeviceCode)
 	register(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeBedrock), NewSSOExchanger())
 	register("copilot/device_code", NewDeviceCodeExchanger())
 	register("kiro/sso", NewSSOExchanger())
