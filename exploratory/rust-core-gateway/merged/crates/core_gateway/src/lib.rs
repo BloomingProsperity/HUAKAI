@@ -5,6 +5,10 @@ pub mod account_planner;
 pub mod attempt_reporter;
 mod body_timeout;
 mod circuit_breaker;
+/// W11-A D-1b Phase 1 (P1-1, 2026-05-24): client credential extraction +
+/// Manual First static hash → tenant fallback。子模块 (Codex round 1 P1 finding
+/// 2026-05-24 fix: 用 directory module 而非 root files, 保 src/ root entry ≤ 20)。
+pub mod client_auth;
 pub mod config;
 mod drain;
 pub mod error;
@@ -43,6 +47,7 @@ use crate::metrics::encode_metrics;
 use crate::{
     account_planner::AccountPlanner,
     attempt_reporter::AttemptReporter,
+    client_auth::{ManualFirstConfig, ManualFirstResolver},
     config::StartupConfig,
     error::GatewayError,
     proxy_engine::{GatewayHttpClient, ProxyEngine, ProxyTimeouts, build_http_client},
@@ -59,6 +64,10 @@ pub struct GatewayState {
     proxy_engine: ProxyEngine,
     attempt_reporter: AttemptReporter,
     resource_limits: Arc<ResourceLimits>,
+    /// W11-A D-1b Phase 1: Manual First static tenant resolver (synthesis §6 step 7)。
+    /// `enabled=false` 时 resolver 永不命中 → listener 调 `resolve_tenant()` 总返回 None。
+    /// production 启动时 validate 已确认 enabled=false (synthesis §7-J 守门)。
+    manual_first_resolver: Arc<ManualFirstResolver>,
 }
 
 impl std::fmt::Debug for GatewayState {
@@ -75,6 +84,19 @@ impl GatewayState {
         let http_client: GatewayHttpClient = build_http_client();
         let route_client = route_client_from_transport_baseline(&config)?;
         let account_planner = AccountPlanner::new(route_client.clone());
+
+        // W11-A D-1b Phase 1 (synthesis §6 step 7, 2026-05-24):
+        // 构造 Manual First resolver — config.validate() 已守门 production 模式不可
+        // 启用本 flag。enabled=false 时 from_config 返回空 resolver 永不命中 (D-7 default)。
+        // enabled=true 启动期立即加载 keys_file (绝对路径), 任意 IO / schema 错误 fail-fast。
+        let manual_first_resolver = ManualFirstResolver::from_config(&ManualFirstConfig {
+            enabled: config.client_auth_manual_first_enabled,
+            keys_file: config.client_auth_manual_first_keys_file.clone(),
+        })
+        .map_err(|err| {
+            GatewayError::Config(format!("Manual First resolver init failed: {err}"))
+        })?;
+        let manual_first_resolver = Arc::new(manual_first_resolver);
         // W12-A D-4 第三方 P1 finding 2026-05-24: 把 spool 配置从 StartupConfig 接到 reporter,
         // 让 production 启动真正进入 durable-first 路径 (旧 spawn() 永远走 in-memory drop)。
         //
@@ -111,6 +133,7 @@ impl GatewayState {
             proxy_engine,
             attempt_reporter,
             resource_limits,
+            manual_first_resolver,
         })
     }
 
@@ -158,6 +181,19 @@ impl GatewayState {
 
     pub fn resource_limits(&self) -> &Arc<ResourceLimits> {
         &self.resource_limits
+    }
+
+    /// W11-A D-1b (synthesis §6 step 7): Manual First static tenant resolver。
+    /// listener 调 `resolver.resolve_tenant(&credential)` 获取 tenant 兜底。
+    pub fn manual_first_resolver(&self) -> &Arc<ManualFirstResolver> {
+        &self.manual_first_resolver
+    }
+
+    /// W11-A D-1b (synthesis D-11): 凭据缺失时是否 401 短路。
+    /// production 默认 true (强制凭据), dev/test 默认 false (允许 anonymous);
+    /// HUAKAI_CLIENT_AUTH_REQUIRE_CREDENTIAL 可显式覆盖。
+    pub fn require_client_credential(&self) -> bool {
+        self.config.client_auth_require_credential
     }
 
     pub(crate) fn request_body_idle_timeout(&self) -> Option<Duration> {

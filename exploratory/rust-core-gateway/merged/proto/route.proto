@@ -35,6 +35,13 @@ message RouteQueryRequest {
   uint64 client_deadline_ms = 7;
   repeated PreviousAttempt previous_attempts = 8;
   repeated CapabilityHint capability_hints = 9;
+  // W11-A D-1b Phase 1 (P-1, 2026-05-24): client credential opaque pass-through
+  // for the Go control plane to authenticate and derive tenant authoritatively.
+  // Canonical value: "bearer:<token>" or "x-api-key:<key>". Rust dataplane never
+  // derives identity from x-tenant-id header (A3 acceptance gate). In Phase 1 the
+  // Go control plane MAY ignore this field; Phase 2 will start consuming and
+  // cross-checking with tenant_id; Phase 3 removes Rust Manual First fallback.
+  string client_credential = 10;
 }
 
 message UpstreamAuthMaterial {

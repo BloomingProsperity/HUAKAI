@@ -2,9 +2,10 @@ use std::fmt;
 
 use crate::{
     redaction::{
-        redact_acquisition_token, redact_credential_handle, redact_upstream_auth_material,
+        redact_acquisition_token, redact_client_credential_for_debug, redact_credential_handle,
+        redact_upstream_auth_material,
     },
-    route_proto::v1::{AttemptReportRequest, RoutePlan, UpstreamAuthMaterial},
+    route_proto::v1::{AttemptReportRequest, RoutePlan, RouteQueryRequest, UpstreamAuthMaterial},
 };
 
 impl fmt::Debug for UpstreamAuthMaterial {
@@ -43,6 +44,34 @@ impl fmt::Debug for RoutePlan {
             .field("max_body_bytes", &self.max_body_bytes)
             .field("max_stream_frame_bytes", &self.max_stream_frame_bytes)
             .field("upstream_auth", &self.upstream_auth)
+            .finish()
+    }
+}
+
+/// W11-A D-1b Phase 1 A4 acceptance gate (2026-05-24): RouteQueryRequest 含 client_credential
+/// (raw secret), 必须手写 Debug 渲染为 fingerprint, 不能让 derive(Debug) 把 raw 字符串泄到
+/// log / tracing span / panic message。
+///
+/// build.rs 已用 `.skip_debug(".huakai.route.v1.RouteQueryRequest")` 阻 derive。
+///
+/// mutation: 删 build.rs skip_debug 或注释本 impl → cargo build 红 (Debug bound 缺) →
+/// 即守门生效不能静默退化。
+impl fmt::Debug for RouteQueryRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RouteQueryRequest")
+            .field("request_id", &self.request_id)
+            .field("tenant_id", &self.tenant_id)
+            .field("requested_model", &self.requested_model)
+            .field("session_hash", &self.session_hash)
+            .field("request_protocol", &self.request_protocol)
+            .field("stream", &self.stream)
+            .field("client_deadline_ms", &self.client_deadline_ms)
+            .field("previous_attempts", &self.previous_attempts)
+            .field("capability_hints", &self.capability_hints)
+            .field(
+                "client_credential",
+                &redact_client_credential_for_debug(&self.client_credential),
+            )
             .finish()
     }
 }

@@ -15,6 +15,7 @@ use uuid::Uuid;
 use serde::Deserialize;
 
 use crate::{
+    client_auth::RouteIdentity,
     error::GatewayError,
     redaction::redact_acquisition_token,
     request_id::RequestId,
@@ -23,7 +24,12 @@ use crate::{
 };
 
 const DEFAULT_CLIENT_DEADLINE_MS: u64 = 30_000;
-const TENANT_ID_HEADER: &str = "x-tenant-id";
+// W11-A D-1b Phase 1 A3 acceptance gate (synthesis §7-H, 2026-05-24):
+// `x-tenant-id` 在 Rust 数据面所有路径下**永不被信任** — tenant 一律由控制面
+// 派生 (Phase 2+) 或 Manual First 静态 hash 兜底 (Phase 1, identity.manual_first_tenant_id)。
+// 旧 TENANT_ID_HEADER 读取已删 — 任何在本文件或 listener 添加 `x-tenant-id` 读取
+// 的 PR 必被 reviewer 拒。mutation: 重新引入 const + header_str(headers, "x-tenant-id")
+// 写入 tenant_id → x_tenant_id_header_never_trusted_in_d1b 测试红。
 const REQUESTED_MODEL_HEADER: &str = "x-huakai-model";
 const SESSION_HASH_HEADER: &str = "x-huakai-session-hash";
 const STREAM_HEADER: &str = "x-huakai-stream";
@@ -234,25 +240,42 @@ impl AccountPlanner {
         protocol: GatewayProtocol,
         request_id: &RequestId,
         body_signal: &BodyRouteSignal,
+        identity: &RouteIdentity,
     ) -> Result<PlannedAttempt, PlanningError> {
-        let query = build_route_query(headers, protocol, request_id, body_signal);
+        let query = build_route_query(headers, protocol, request_id, body_signal, identity);
         let plan = self.inner.route_client.query_route(query).await?;
 
         planned_attempt(plan)
     }
 }
 
+/// 构造发给 control plane 的 RouteQueryRequest。
+///
+/// **W11-A D-1b Phase 1 acceptance gates** (synthesis §3):
+/// - A3 `x-tenant-id` 永不被信任 — `tenant_id` 只有两个来源:
+///   (a) `identity.manual_first_tenant_id` (Manual First ON + 命中) → 写 Some(value);
+///   (b) 否则空字符串 `""` → 强制 Go control plane (Phase 2+) 派生 authoritative tenant。
+///   绝对不读 `x-tenant-id` header。
+/// - A4 raw credential 永不入 log — 直接写入 proto.client_credential (透传 control plane);
+///   `Debug` impl 在 redacting_debug.rs 渲染为 fingerprint, A4 守门。
+/// - A5 Manual First ON 双写 (新 client_credential + 旧 tenant_id) / OFF 强制 Go 派生
+///   (新 client_credential + 空 tenant_id)。
 pub fn build_route_query(
     headers: &HeaderMap,
     protocol: GatewayProtocol,
     request_id: &RequestId,
     body_signal: &BodyRouteSignal,
+    identity: &RouteIdentity,
 ) -> RouteQueryRequest {
     RouteQueryRequest {
         request_id: request_id.as_str().to_owned(),
-        tenant_id: header_str(headers, TENANT_ID_HEADER)
-            .unwrap_or("default-tenant")
-            .to_owned(),
+        // A3 mutation marker: 把下行改回 `header_str(headers, "x-tenant-id").unwrap_or("default-tenant").to_owned()`
+        // → x_tenant_id_header_never_trusted_in_d1b 测试红 (应红, 守门生效)。
+        // A5: Manual First ON + 命中 → 写已派 tenant; OFF / 未命中 → 空字符串强制 Go 派。
+        tenant_id: identity
+            .manual_first_tenant_id
+            .clone()
+            .unwrap_or_default(),
         // W11-A D-1a: body 是 model 的权威来源, header 仅在 body 未提供时 legacy fallback。
         // mutation: 把下面这行改回 header_str(...) 优先 →
         // build_route_query_body_model_wins_over_header 测试红 (应红)。
@@ -270,6 +293,10 @@ pub fn build_route_query(
         client_deadline_ms: DEFAULT_CLIENT_DEADLINE_MS,
         previous_attempts: Vec::new(),
         capability_hints: Vec::new(),
+        // A4 + A5: raw credential 透传 control plane; canonical "bearer:<token>" / "x-api-key:<key>"。
+        // None → 空字符串 (anonymous, dev/test 兼容); Some → 加 prefix 透传。
+        // mutation: 把下行改 `String::new()` → A5 测试红 (control plane 收不到 client_credential)。
+        client_credential: identity.client_credential_proto_value(),
     }
 }
 
@@ -499,7 +526,36 @@ mod tests {
         }
     }
 
-    // ---------- W11-A D-1a tests ----------
+    // ---------- W11-A D-1b test helpers ----------
+
+    use crate::client_auth::ClientCredential;
+    use http::{HeaderValue, header::AUTHORIZATION};
+
+    /// W11-A D-1b test fixture: 构造一个 Bearer credential 让 build_route_query 可调用。
+    /// 单元测试 default 用 anonymous tenant (Manual First OFF / 未命中); A5 测试显式 Some。
+    fn test_identity_bearer() -> RouteIdentity {
+        let mut h = HeaderMap::new();
+        h.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Bearer FAKE-d1a-test-bearer-do-not-log"),
+        );
+        let cred = ClientCredential::from_headers(&h).unwrap().unwrap();
+        RouteIdentity {
+            client_credential: Some(cred),
+            manual_first_tenant_id: None,
+        }
+    }
+
+    /// W11-A D-1b test fixture: anonymous identity (无 credential, dev 模式 listener
+    /// 在 require_credential=false + 缺 Authorization/x-api-key 时构造此变体)。
+    fn test_identity_anonymous() -> RouteIdentity {
+        RouteIdentity {
+            client_credential: None,
+            manual_first_tenant_id: None,
+        }
+    }
+
+    // ---------- W11-A D-1a tests (now also exercising RouteIdentity wiring) ----------
 
     /// 关键判别性: body 提供 model + stream → 必须覆盖同时存在的 header 值。
     /// mutation: 改 build_route_query 回 header 优先 → assert_eq! requested_model 红。
@@ -520,6 +576,7 @@ mod tests {
             GatewayProtocol::AnthropicMessages,
             &request_id,
             &body_signal,
+            &test_identity_bearer(),
         );
 
         assert_eq!(
@@ -545,6 +602,7 @@ mod tests {
             GatewayProtocol::OpenAiChatCompletions,
             &RequestId::generate(),
             &body_signal,
+            &test_identity_bearer(),
         );
 
         assert_eq!(
@@ -566,9 +624,159 @@ mod tests {
             GatewayProtocol::AnthropicMessages,
             &RequestId::generate(),
             &body_signal,
+            &test_identity_bearer(),
         );
         assert_eq!(q.requested_model, "unknown");
         assert!(!q.stream);
+    }
+
+    // ---------- W11-A D-1b A3 + A5 tests ----------
+
+    /// A3 acceptance gate: `x-tenant-id` 永不被信任。
+    ///
+    /// 请求带 `x-tenant-id: attacker-claimed-tenant` + 有效 Bearer 凭据 (Manual First OFF)
+    /// → 构造 RouteQueryRequest.tenant_id 必须为空 (强制 Go 派, A5 OFF), 永远不是
+    /// header 注入的 "attacker-claimed-tenant"。
+    ///
+    /// mutation: 删 const TENANT_ID_HEADER 上方注释 + 在 build_route_query tenant_id 改回
+    /// `header_str(headers, "x-tenant-id").unwrap_or(...).to_owned()` → 此测试红, 守门生效。
+    #[test]
+    fn x_tenant_id_header_never_trusted_in_d1b() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-tenant-id", "attacker-claimed-tenant".parse().unwrap());
+        let body_signal = BodyRouteSignal::default();
+
+        // Manual First OFF (manual_first_tenant_id = None) → A5 OFF 路径
+        let identity = test_identity_bearer();
+        let q = build_route_query(
+            &headers,
+            GatewayProtocol::AnthropicMessages,
+            &RequestId::generate(),
+            &body_signal,
+            &identity,
+        );
+
+        assert_ne!(
+            q.tenant_id, "attacker-claimed-tenant",
+            "A3 守门: x-tenant-id 永不可被信任成为权威 tenant; 实际 tenant_id = {:?}",
+            q.tenant_id
+        );
+        assert_eq!(
+            q.tenant_id, "",
+            "A5 Manual First OFF: tenant_id 必须为空字符串强制 Go control plane 派"
+        );
+    }
+
+    /// A5 ON: Manual First ON + 命中 → tenant_id 写已派值 + client_credential 双写。
+    /// mutation: 在 build_route_query 把 client_credential 改 String::new() → 此测试红。
+    #[test]
+    fn manual_first_on_dual_writes_new_and_old_field() {
+        let headers = HeaderMap::new();
+        let body_signal = BodyRouteSignal::default();
+        let mut identity = test_identity_bearer();
+        identity.manual_first_tenant_id = Some("tenant-from-static-map".to_owned());
+
+        let q = build_route_query(
+            &headers,
+            GatewayProtocol::AnthropicMessages,
+            &RequestId::generate(),
+            &body_signal,
+            &identity,
+        );
+
+        assert_eq!(
+            q.tenant_id, "tenant-from-static-map",
+            "A5 ON: Manual First 命中 tenant 必须进 tenant_id 字段"
+        );
+        assert!(
+            q.client_credential.starts_with("bearer:"),
+            "A5 dual-write: client_credential 必须 same time 写, 实际 = {:?}",
+            q.client_credential
+        );
+        assert!(
+            !q.client_credential.is_empty(),
+            "A5 dual-write: client_credential 不能为空"
+        );
+    }
+
+    /// A5 OFF: Manual First OFF / 未命中 → tenant_id 为空 + client_credential 仍写。
+    /// mutation: 在 build_route_query OFF 路径补 "default-tenant" → 此测试红。
+    #[test]
+    fn manual_first_off_writes_empty_tenant_to_force_control_plane_derivation() {
+        let headers = HeaderMap::new();
+        let body_signal = BodyRouteSignal::default();
+        let identity = test_identity_bearer(); // manual_first_tenant_id = None
+
+        let q = build_route_query(
+            &headers,
+            GatewayProtocol::AnthropicMessages,
+            &RequestId::generate(),
+            &body_signal,
+            &identity,
+        );
+
+        assert_eq!(
+            q.tenant_id, "",
+            "A5 OFF: 必须写空字符串以强制 Go control plane 派权威 tenant"
+        );
+        assert!(
+            q.client_credential.starts_with("bearer:"),
+            "A5 OFF: client_credential 仍必须写"
+        );
+    }
+
+    /// A1 边界 / A5 anonymous: client_credential=None → RouteQueryRequest.client_credential
+    /// 必须是空字符串 (Phase 1 anonymous, dev/test 兼容)。
+    /// mutation: 把 RouteIdentity::client_credential_proto_value() 改成 unwrap()
+    /// → 此测试 panic → 红 (anonymous 通路被破坏)。
+    #[test]
+    fn anonymous_identity_writes_empty_credential_field() {
+        let headers = HeaderMap::new();
+        let body_signal = BodyRouteSignal::default();
+        let identity = test_identity_anonymous();
+
+        let q = build_route_query(
+            &headers,
+            GatewayProtocol::AnthropicMessages,
+            &RequestId::generate(),
+            &body_signal,
+            &identity,
+        );
+
+        assert_eq!(
+            q.client_credential, "",
+            "anonymous 必须写空字符串 (Phase 1 兼容 dev/test 无凭据路径); 实际 = {:?}",
+            q.client_credential
+        );
+        assert_eq!(q.tenant_id, "", "anonymous 也走 Go 派 (manual_first None)");
+    }
+
+    /// A4 acceptance gate: 整个 RouteQueryRequest 的 Debug 渲染不能含 raw secret。
+    /// mutation: 删 redacting_debug.rs 中 RouteQueryRequest 手写 Debug impl + 改 build.rs
+    /// skip_debug → 退回 derive(Debug) 输出 raw client_credential 字符 → 此测试红。
+    #[test]
+    fn route_query_debug_does_not_leak_client_credential() {
+        let headers = HeaderMap::new();
+        let body_signal = BodyRouteSignal::default();
+        let identity = test_identity_bearer(); // FAKE-d1a-test-bearer-do-not-log
+
+        let q = build_route_query(
+            &headers,
+            GatewayProtocol::AnthropicMessages,
+            &RequestId::generate(),
+            &body_signal,
+            &identity,
+        );
+
+        let debug = format!("{:?}", q);
+        assert!(
+            !debug.contains("FAKE-d1a-test-bearer-do-not-log"),
+            "A4: Debug 渲染不能含 raw client credential; 实际 = {debug:?}"
+        );
+        assert!(
+            debug.contains("[CLIENT_CREDENTIAL_REDACTED"),
+            "A4: Debug 必须含 [CLIENT_CREDENTIAL_REDACTED 占位; 实际 = {debug:?}"
+        );
     }
 
     #[test]

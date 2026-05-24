@@ -45,6 +45,13 @@ pin-project-lite = "0.2"
 prost = "0.13.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# W11-A D-1b Phase 1 (D-10 Owner 2026-05-24 "全部默认" 已批):
+# SHA-256 fingerprint of client credential canonical value (A4 redaction).
+# RustCrypto org, MIT/Apache-2.0 dual, cargo-deny clean. Used by:
+#   - src/client_auth/credential.rs::fingerprint() — 4-byte prefix for log/debug.
+#   - src/client_auth/manual_first.rs::resolve_tenant() — full hash match against
+#     static key map (Phase 1 backstop, mock/staging only per §7-J).
+sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-boring = { workspace = true, optional = true }

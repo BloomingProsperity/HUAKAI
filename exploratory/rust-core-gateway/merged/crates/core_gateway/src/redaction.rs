@@ -63,6 +63,105 @@ pub fn redact_acquisition_token(_token: &[u8]) -> &'static str {
     "[ACQUISITION_TOKEN_REDACTED]"
 }
 
+/// W11-A D-1b Phase 1 A4 acceptance gate (2026-05-24): 脱敏 RouteQueryRequest.client_credential
+/// (proto canonical string "bearer:<token>" / "x-api-key:<key>")。
+///
+/// 返回形式:
+/// - `"[empty]"` — 空字段 (Manual First 静态表外或缺凭据 anonymous)。
+/// - `"[CLIENT_CREDENTIAL_REDACTED kind=<bearer|x-api-key|unknown> sha256=<8hex>]"` —
+///   kind label 让审计区分协议族 + SHA-256 前 4 字节 (8 hex chars) prefix 用于审计相关性
+///   (同凭据多次请求生成相同 fingerprint)。raw secret 永不入此函数返回值。
+///
+/// **Codex round 1 LOW finding 2026-05-24 fix**: 早期实现只输出 kind, 与 redacting_debug.rs
+/// 注释 "渲染为 fingerprint" 不符。本版本对完整 canonical 串 SHA-256 后取前 4 字节 hex,
+/// 与 `ClientCredential::fingerprint()` 同源 → 审计能用 fingerprint 串关联 raw secret 不入 log。
+///
+/// mutation: 改返回值含 raw `value` 字符 → A4 测试红 (observability_test +
+/// client_auth::credential::tests::debug_impl_never_leaks_raw_credential 双线守门);
+/// 改回不含 sha256 → route_query_debug_contains_credential_fingerprint 红 (新增 below)。
+pub fn redact_client_credential_for_debug(value: &str) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write;
+
+    if value.is_empty() {
+        return "[empty]".to_owned();
+    }
+    let kind = match value.split_once(':') {
+        Some((prefix, _rest)) if prefix == "bearer" || prefix == "x-api-key" => prefix,
+        _ => "unknown",
+    };
+    let digest = Sha256::digest(value.as_bytes());
+    let mut sha256_first_8 = String::with_capacity(8);
+    for b in digest.iter().take(4) {
+        let _ = write!(sha256_first_8, "{:02x}", b);
+    }
+    format!("[CLIENT_CREDENTIAL_REDACTED kind={kind} sha256={sha256_first_8}]")
+}
+
+/// W11-A D-1b A4 fingerprint 守门测试组 (codex round 1 LOW fix 2026-05-24)。
+/// 与文件末尾旧 `mod tests` 共存; 命名不冲突防 E0428 错。
+#[cfg(test)]
+mod redact_client_credential_tests {
+    use super::*;
+
+    /// A4 fingerprint 守门 (codex round 1 LOW fix): redact 输出必须含 sha256 prefix。
+    /// mutation: 删 SHA-256 计算 / 改回 `[CLIENT_CREDENTIAL_REDACTED kind=...]` → 红。
+    #[test]
+    fn redact_client_credential_for_debug_includes_kind_and_fingerprint() {
+        let out = redact_client_credential_for_debug("bearer:FAKE-redact-test-token");
+        assert!(out.contains("kind=bearer"), "应含 kind label: {out}");
+        assert!(out.contains("sha256="), "A4 fingerprint: 应含 sha256 prefix: {out}");
+        // sha256 段值长 8 hex chars (4 bytes)
+        let sha_segment = out
+            .split("sha256=")
+            .nth(1)
+            .and_then(|s| s.split(']').next())
+            .expect("redact 输出应含 sha256=<hex>] 段");
+        assert_eq!(
+            sha_segment.len(),
+            8,
+            "SHA-256 prefix 必须 8 hex chars (4 bytes), 实际: {sha_segment:?} ({})",
+            sha_segment.len()
+        );
+        assert!(
+            sha_segment.chars().all(|c| c.is_ascii_hexdigit()),
+            "sha256 prefix 必须全为 hex digit, 实际: {sha_segment:?}"
+        );
+        // raw token 永不出现
+        assert!(
+            !out.contains("FAKE-redact-test-token"),
+            "A4: raw token 不能入 redact 输出: {out}"
+        );
+    }
+
+    /// A4 deterministic: 同 canonical 多次 redact 同结果 (审计相关性)。
+    /// mutation: 把 SHA-256 换成 random / time-based → 红 (两次结果不等)。
+    #[test]
+    fn redact_client_credential_for_debug_is_deterministic() {
+        let v = "bearer:FAKE-deterministic-test";
+        assert_eq!(
+            redact_client_credential_for_debug(v),
+            redact_client_credential_for_debug(v),
+            "redact 必须 deterministic 让审计能关联同凭据"
+        );
+    }
+
+    /// A4: 空字符串 → `[empty]` 占位 (anonymous 通路, dev/test 默认)。
+    #[test]
+    fn redact_client_credential_for_debug_empty_value() {
+        assert_eq!(redact_client_credential_for_debug(""), "[empty]");
+    }
+
+    /// kind=unknown 处理: 非 bearer/x-api-key 前缀 → kind=unknown + 仍含 sha256。
+    /// mutation: 把 unknown 分支删 → 红 (panic on Option::unwrap)。
+    #[test]
+    fn redact_client_credential_for_debug_unknown_kind_still_fingerprints() {
+        let out = redact_client_credential_for_debug("garbage-no-prefix");
+        assert!(out.contains("kind=unknown"), "未知 kind 应标 unknown: {out}");
+        assert!(out.contains("sha256="), "未知 kind 仍应有 fingerprint: {out}");
+    }
+}
+
 /// 脱敏 upstream_auth.material (真实上游凭据按最高敏感级处理)
 #[inline]
 pub fn redact_upstream_auth_material(_material: &[u8]) -> &'static str {

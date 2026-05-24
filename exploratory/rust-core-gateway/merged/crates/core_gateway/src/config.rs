@@ -112,6 +112,20 @@ pub struct StartupConfig {
     /// HTTP/1 header 读取超时; 0 表示关闭
     pub server_header_read_timeout_ms: u64,
 
+    // ── W11-A D-1b Phase 1 client_auth (synthesis §3 D-7 + §6 step 6, 2026-05-24) ──
+    /// 凭据缺失时 listener 是否 401 短路 (Owner D-11 default: production=true, dev/test=false)。
+    /// raw `Option<bool>`: 显式 true/false 覆盖默认; 未设 = 按 runtime_mode 派生。
+    pub client_auth_require_credential: bool,
+    /// Manual First static hash → tenant 兜底 enable flag (Owner D-3 default OFF)。
+    /// validate(): production && enabled=true → fail-fast (synthesis §7-J: Manual First 仅
+    /// mock/staging/internal-smoke 用; 生产应靠 Go control plane 派权威 tenant)。
+    pub client_auth_manual_first_enabled: bool,
+    /// Manual First key file 绝对路径 (Owner D-8: enable 时强制绝对路径, validate 守门)。
+    /// 文件格式 JSON 顶层数组 (codex round 2 MED finding fix 2026-05-24:
+    /// 之前注释写 `entries: [...]` 嵌套但 parser 实际期顶层数组, 运维按注释写会启动 fail):
+    /// `[{"kind":"bearer"|"x-api-key","secret_sha256":"<64 hex>","tenant_id":"<id>","label":"<note>"}]`
+    pub client_auth_manual_first_keys_file: Option<PathBuf>,
+
     // ── W12-A D-4 attempt durable spool (生产必启, 第三方 P1 finding 2026-05-24) ──
     /// attempt durable spool 是否启用 (生产模式 validate 强制 = true)
     pub spool_enabled: bool,
@@ -185,6 +199,15 @@ struct RawStartupConfig {
     request_body_idle_timeout_ms: u64,
     #[serde(default = "default_server_header_read_timeout_ms")]
     server_header_read_timeout_ms: u64,
+
+    // ── W11-A D-1b Phase 1 client_auth raw (synthesis D-7 + D-11, 2026-05-24) ──
+    /// Option<bool> 让 from_raw 区分 "未设" vs 显式 false; 未设 → 按 runtime_mode 派生。
+    #[serde(default)]
+    client_auth_require_credential: Option<bool>,
+    #[serde(default)]
+    client_auth_manual_first_enabled: bool,
+    #[serde(default)]
+    client_auth_manual_first_keys_file: Option<String>,
 
     // ── W12-A D-4 spool 持久化 (第三方 P1 finding 2026-05-24) ──
     #[serde(default = "default_spool_enabled")]
@@ -386,6 +409,49 @@ impl StartupConfig {
                     .to_owned(),
             ));
         }
+
+        // W11-A D-1b Phase 1 client_auth 守门 (synthesis §7-J + §3 D-3/D-8, 2026-05-24):
+        //
+        // (1) production + manual_first_enabled → fail-fast。Owner §7-J: Manual First
+        //     是 mock/staging/internal-smoke 的兜底, 生产应靠 Go control plane 派权威
+        //     tenant, 否则 Phase 1 静态映射会成为生产长期路径 (技术债 + audit 缺漏)。
+        //
+        // mutation: 删本块 → production_mode_rejects_manual_first_enabled 测试变绿 (应红);
+        // production 启动后 ManualFirstResolver 加载静态文件, 误成生产权威 tenant 来源。
+        if self.runtime_mode.is_production() && self.client_auth_manual_first_enabled {
+            return Err(GatewayError::Config(
+                "HUAKAI_CLIENT_AUTH_MANUAL_FIRST_ENABLED=true 在 production 模式禁止 \
+                 (W11-A D-1b synthesis §7-J: Manual First 仅 mock/staging/internal-smoke 兜底; \
+                 production 应靠 Go control plane 派权威 tenant; 用 development/test 模式启用)。"
+                    .to_owned(),
+            ));
+        }
+
+        // (2) manual_first_enabled=true 必须配 keys_file (resolver 不能空载启动)。
+        // mutation: 删本块 → manual_first_enabled_without_keys_file_fails_fast 红。
+        if self.client_auth_manual_first_enabled
+            && self.client_auth_manual_first_keys_file.is_none()
+        {
+            return Err(GatewayError::Config(
+                "HUAKAI_CLIENT_AUTH_MANUAL_FIRST_KEYS_FILE 必须设当 \
+                 HUAKAI_CLIENT_AUTH_MANUAL_FIRST_ENABLED=true \
+                 (D-8: Manual First resolver 启动时即加载静态映射, 缺文件无法解析)。"
+                    .to_owned(),
+            ));
+        }
+
+        // (3) keys_file 设了 → 必须绝对路径 (Owner D-8: 防 CWD 漂移到错误 map)。
+        // mutation: 删 is_absolute() 守门 → manual_first_keys_file_relative_path_rejected 红。
+        if let Some(keys_file) = &self.client_auth_manual_first_keys_file {
+            if !keys_file.is_absolute() {
+                return Err(GatewayError::Config(format!(
+                    "HUAKAI_CLIENT_AUTH_MANUAL_FIRST_KEYS_FILE must be an absolute path (got {:?}) \
+                     — 相对路径在不同 CWD 启动会指向不同 map 文件, 让 tenant 解析飘忽不定。",
+                    keys_file
+                )));
+            }
+        }
+
         Ok(())
     }
 
@@ -506,6 +572,14 @@ impl StartupConfig {
         // W11-D2: 解析运行时模式 (默认 production, 严格防误启用)
         let runtime_mode = RuntimeMode::parse(&raw.runtime_mode)?;
 
+        // W11-A D-1b Phase 1 (synthesis D-11 default, 2026-05-24):
+        // require_credential 未设时按 runtime_mode 派生 — production = require (401 短路),
+        // dev/test = anonymous 允许 (兼容现有 listener 测试不带凭据)。
+        // 显式 Some(true|false) 总是覆盖派生默认。
+        let client_auth_require_credential = raw
+            .client_auth_require_credential
+            .unwrap_or(runtime_mode.is_production());
+
         let config = Self {
             listen_addr,
             control_plane_endpoint,
@@ -535,6 +609,11 @@ impl StartupConfig {
             downstream_write_idle_timeout_ms: raw.downstream_write_idle_timeout_ms,
             request_body_idle_timeout_ms: raw.request_body_idle_timeout_ms,
             server_header_read_timeout_ms: raw.server_header_read_timeout_ms,
+            client_auth_require_credential,
+            client_auth_manual_first_enabled: raw.client_auth_manual_first_enabled,
+            client_auth_manual_first_keys_file: raw
+                .client_auth_manual_first_keys_file
+                .map(PathBuf::from),
             spool_enabled: raw.spool_enabled,
             spool_dir: PathBuf::from(raw.spool_dir),
             spool_max_bytes: raw.spool_max_bytes,
@@ -1444,5 +1523,149 @@ mod tests {
     fn config_validate_passes_for_valid_config() {
         let cfg = StartupConfig::from_env_iter(valid_env()).expect("valid config");
         assert!(cfg.validate().is_ok());
+    }
+
+    // ─────── W11-A D-1b Phase 1 client_auth 守门测试 (synthesis §3 + §7-J, 2026-05-24) ───────
+
+    /// D-11 default: production 默认 require_credential=true (强制 401 on missing)。
+    /// mutation: 改 unwrap_or 默认为 false → 此测试红。
+    #[test]
+    fn production_mode_defaults_require_credential_to_true() {
+        let cfg = StartupConfig::from_env_iter(valid_env())
+            .expect("production default config 应解析");
+        assert!(
+            cfg.client_auth_require_credential,
+            "D-11: production 默认 require_credential=true (强制 A1 401)"
+        );
+    }
+
+    /// D-11 default: dev/test 默认 require_credential=false (允许 anonymous, 兼容已有 listener 测试)。
+    /// mutation: 改 unwrap_or 默认为 production-true 不分模式 → 此测试红 (dev 也强制 require)。
+    #[test]
+    fn development_mode_defaults_require_credential_to_false() {
+        let mut env: Vec<(String, String)> = valid_env();
+        env.push(("HUAKAI_RUNTIME_MODE".to_owned(), "development".to_owned()));
+        let cfg = StartupConfig::from_env_iter(env).expect("dev default config 应解析");
+        assert!(
+            !cfg.client_auth_require_credential,
+            "D-11: dev 默认 require_credential=false (anonymous 允许, 不破坏 listener 测试)"
+        );
+    }
+
+    /// D-11 explicit override: 显式 HUAKAI_CLIENT_AUTH_REQUIRE_CREDENTIAL=true 即便 dev 也强制。
+    /// mutation: 让 raw 值无视 → 此测试红。
+    #[test]
+    fn explicit_require_credential_overrides_runtime_default() {
+        let mut env: Vec<(String, String)> = valid_env();
+        env.push(("HUAKAI_RUNTIME_MODE".to_owned(), "development".to_owned()));
+        env.push((
+            "HUAKAI_CLIENT_AUTH_REQUIRE_CREDENTIAL".to_owned(),
+            "true".to_owned(),
+        ));
+        let cfg = StartupConfig::from_env_iter(env).expect("explicit override config 应解析");
+        assert!(
+            cfg.client_auth_require_credential,
+            "dev + 显式 require=true 必须 true (override 派生默认)"
+        );
+    }
+
+    /// §7-J + D-3: production + manual_first_enabled=true 必 fail-fast。
+    /// Owner: Manual First 仅 mock/staging/internal-smoke, 生产应靠 Go 派权威 tenant。
+    /// mutation: 删 validate() 中的 production+manual_first 守门 → 此测试红;
+    /// production 启动时 ManualFirstResolver 误成生产权威路径 → 长期技术债 + audit 缺漏。
+    #[test]
+    fn production_mode_rejects_manual_first_enabled() {
+        let mut env: Vec<(String, String)> = valid_env();
+        env.push((
+            "HUAKAI_CLIENT_AUTH_MANUAL_FIRST_ENABLED".to_owned(),
+            "true".to_owned(),
+        ));
+        env.push((
+            "HUAKAI_CLIENT_AUTH_MANUAL_FIRST_KEYS_FILE".to_owned(),
+            "/etc/huakai/manual-first.json".to_owned(),
+        ));
+        let result = StartupConfig::from_env_iter(env);
+        assert!(
+            result.is_err(),
+            "§7-J: production + manual_first_enabled=true 必 fail-fast"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("HUAKAI_CLIENT_AUTH_MANUAL_FIRST_ENABLED")
+                && err_msg.contains("production"),
+            "错误消息应同时含 manual_first key + production, 实际: {err_msg}"
+        );
+    }
+
+    /// D-8: enabled=true 必须配 keys_file (resolver 不能空载启动)。
+    /// mutation: 删 validate() 守门 → 此测试红 (启动通过 + resolver 启动期 panic)。
+    #[test]
+    fn manual_first_enabled_without_keys_file_fails_fast() {
+        let mut env: Vec<(String, String)> = valid_env();
+        env.push(("HUAKAI_RUNTIME_MODE".to_owned(), "development".to_owned()));
+        env.push((
+            "HUAKAI_CLIENT_AUTH_MANUAL_FIRST_ENABLED".to_owned(),
+            "true".to_owned(),
+        ));
+        // 不设 KEYS_FILE
+        let result = StartupConfig::from_env_iter(env);
+        assert!(
+            result.is_err(),
+            "D-8: manual_first_enabled=true + 无 keys_file 必 fail-fast"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("HUAKAI_CLIENT_AUTH_MANUAL_FIRST_KEYS_FILE"),
+            "错误消息应提及 keys_file 字段, 实际: {err_msg}"
+        );
+    }
+
+    /// D-8: keys_file 必须绝对路径 (防 CWD 漂移)。
+    /// mutation: 删 is_absolute() 守门 → 此测试红 (相对路径接受 → 启动后 CWD 改变 → tenant 漂忽)。
+    #[test]
+    fn manual_first_keys_file_relative_path_rejected() {
+        let mut env: Vec<(String, String)> = valid_env();
+        env.push(("HUAKAI_RUNTIME_MODE".to_owned(), "development".to_owned()));
+        env.push((
+            "HUAKAI_CLIENT_AUTH_MANUAL_FIRST_ENABLED".to_owned(),
+            "true".to_owned(),
+        ));
+        env.push((
+            "HUAKAI_CLIENT_AUTH_MANUAL_FIRST_KEYS_FILE".to_owned(),
+            "relative/path/manual-first.json".to_owned(),
+        ));
+        let result = StartupConfig::from_env_iter(env);
+        assert!(
+            result.is_err(),
+            "D-8: keys_file 相对路径必 fail-fast"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("absolute"),
+            "错误消息应提及 absolute, 实际: {err_msg}"
+        );
+    }
+
+    /// dev/test 模式 + manual_first_enabled=true + 绝对 keys_file = 允许 (Phase 1 staging 路径)。
+    /// mutation: 把守门改成所有模式拒 → 此测试红。
+    #[test]
+    fn development_mode_allows_manual_first_enabled_with_absolute_keys_file() {
+        let mut env: Vec<(String, String)> = valid_env();
+        env.push(("HUAKAI_RUNTIME_MODE".to_owned(), "development".to_owned()));
+        env.push((
+            "HUAKAI_CLIENT_AUTH_MANUAL_FIRST_ENABLED".to_owned(),
+            "true".to_owned(),
+        ));
+        env.push((
+            "HUAKAI_CLIENT_AUTH_MANUAL_FIRST_KEYS_FILE".to_owned(),
+            "/etc/huakai/manual-first-dev.json".to_owned(),
+        ));
+        let cfg = StartupConfig::from_env_iter(env)
+            .expect("dev + manual_first + 绝对路径应允许 (Phase 1 staging)");
+        assert!(cfg.client_auth_manual_first_enabled);
+        assert_eq!(
+            cfg.client_auth_manual_first_keys_file,
+            Some(PathBuf::from("/etc/huakai/manual-first-dev.json"))
+        );
     }
 }

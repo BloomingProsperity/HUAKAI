@@ -51,6 +51,10 @@ fn route_query() -> RouteQueryRequest {
         client_deadline_ms: 30_000,
         previous_attempts: Vec::new(),
         capability_hints: Vec::new(),
+        // W11-A D-1b Phase 1 (2026-05-24): RPC 机制测试不走 listener 凭据解析路径,
+        // 直接构造 RouteQueryRequest -> 空 client_credential 即可让 mock control plane
+        // 接收。生产路径由 listener 注入 canonical bearer:/x-api-key: 串。
+        client_credential: String::new(),
     }
 }
 
@@ -389,7 +393,17 @@ async fn listener_uses_route_plan_endpoint_to_forward_messages() {
         .await
         .expect("mock control plane 应看到 route query");
     assert_eq!(query.request_id, "client-route-1");
-    assert_eq!(query.tenant_id, "tenant-route");
+    // W11-A D-1b A3 acceptance gate (2026-05-24): `x-tenant-id` header 即便由客户端发送
+    // 也永远不被信任 — listener.rs::extract_route_identity 不读它, build_route_query 写
+    // 空字符串强制 Go control plane 派权威 tenant。Manual First 在 dev 测试默认 OFF。
+    //
+    // mutation: 在 build_route_query 改回 `header_str(headers, "x-tenant-id")` 读取 →
+    // 此断言变红 (query.tenant_id 变 "tenant-route") + account_planner::tests::
+    // x_tenant_id_header_never_trusted_in_d1b 也红 = 守门双线触发。
+    assert_eq!(
+        query.tenant_id, "",
+        "A3 守门: x-tenant-id 永不被信任; 即便客户端发了, tenant_id 必须空 (强制 Go 派)"
+    );
     assert_eq!(query.requested_model, "claude-mock");
     assert_eq!(query.session_hash, "session-route");
     assert_eq!(query.request_protocol, "anthropic_messages");
@@ -807,6 +821,8 @@ async fn route_query_openai_protocol_returns_openai_vendor() {
         client_deadline_ms: 10_000,
         previous_attempts: Vec::new(),
         capability_hints: Vec::new(),
+        // W11-A D-1b: 仅测试 OpenAI vendor 路由, 不涉及凭据解析。
+        client_credential: String::new(),
     };
 
     let plan = client
@@ -848,6 +864,393 @@ async fn route_query_times_out_on_slow_control_plane() {
     );
 }
 
+// ── W11-A D-1b Phase 1 A1 acceptance gate (synthesis §3, 2026-05-24) ────────────────
+
+/// A1: require_credential=true + 缺 Authorization/x-api-key → 401, route_query 未发送。
+///
+/// 守门设计 (synthesis §6 step 8): listener.rs::extract_route_identity 必须在 plan()
+/// **之前** 调用; 401 短路意味着 control plane 永远不知道这次请求存在。
+///
+/// **判别性 + mutation** (CLAUDE.md #14):
+/// 1) status 401: 否则 401 通路被破坏
+/// 2) body 含 `missing_client_credential` error code (synthesis D-9 JSON envelope)
+/// 3) control_plane.route_queries_seen() == 0 ←── 真正的 A1 守门
+///
+/// mutation 候选:
+/// - 把 listener.rs::extract_route_identity 调用挪到 `plan()` 之后 → route_queries_seen=1 → 红
+/// - 把 require_credential 默认改为强制 false → 401 不触发 → status 200/503 → 红
+/// - 把 401 JSON envelope code 改成别的字符串 → body 断言红
+#[tokio::test]
+async fn listener_a1_missing_credential_returns_401_without_route_query() {
+    let _drain_guard = DrainModeReset::set(false);
+    let upstream = MockUpstream::spawn(MockBehavior::EchoBody).await;
+    let control_plane = MockControlPlane::spawn(mock_route_plan(upstream.endpoint())).await;
+
+    // 关键: HUAKAI_CLIENT_AUTH_REQUIRE_CREDENTIAL=true 显式打开 A1 路径
+    // (dev 模式默认 false; 不显式置 true 此测试会落入 anonymous 路径 → 不 401)。
+    let config = StartupConfig::from_env_iter(vec![
+        ("HUAKAI_LISTEN_ADDR".to_owned(), "127.0.0.1:0".to_owned()),
+        (
+            "HUAKAI_CONTROL_PLANE_ENDPOINT".to_owned(),
+            control_plane.endpoint(),
+        ),
+        ("HUAKAI_TRANSPORT_BASELINE".to_owned(), "http".to_owned()),
+        ("HUAKAI_LOG_LEVEL".to_owned(), "debug".to_owned()),
+        ("HUAKAI_JSON_LOGS".to_owned(), "true".to_owned()),
+        ("HUAKAI_WORKER_THREADS".to_owned(), "2".to_owned()),
+        (
+            "HUAKAI_MAX_BODY_BYTES".to_owned(),
+            (4 * 1024 * 1024).to_string(),
+        ),
+        ("HUAKAI_CONTROL_PLANE_TIMEOUT_MS".to_owned(), "150".to_owned()),
+        ("HUAKAI_RUNTIME_MODE".to_owned(), "development".to_owned()),
+        (
+            "HUAKAI_CLIENT_AUTH_REQUIRE_CREDENTIAL".to_owned(),
+            "true".to_owned(),
+        ),
+    ])
+    .expect("A1 test config 应可解析");
+
+    let response = build_router(config)
+        .expect("build_router")
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(Bytes::from_static(
+                    br#"{"model":"claude-mock","messages":[]}"#,
+                )))
+                .expect("request 构建应成功"),
+        )
+        .await
+        .expect("listener 应响应");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "A1: 缺凭据 + require_credential=true 必须 401"
+    );
+
+    let body = body::to_bytes(response.into_body(), 1024)
+        .await
+        .expect("401 body 应可读取");
+    let body_text = std::str::from_utf8(&body).expect("401 body UTF-8");
+    // Codex round 2 HIGH finding fix 2026-05-24: synthesis D-9 lock spec 要求 401 body 是
+    // envelope `{"error":{"type":...,"message":...},"request_id":...}`, 与 Anthropic /
+    // OpenAI client 形式一致。`contains` 不足以守门 envelope 形状, 解析 JSON 严格断言:
+    // - body 必须解析成 object
+    // - `error.type` 必须等于 missing_client_credential (synthesis D-9 error.type 字段)
+    // mutation: 把 auth_error_response 改回 json_error_response 扁平形 → 此断言红
+    // (JSON 解析后 `error` 是字符串, `["error"]["type"]` is null)。
+    let envelope: serde_json::Value =
+        serde_json::from_str(body_text).expect("A1: 401 body 必须是合法 JSON envelope");
+    assert_eq!(
+        envelope["error"]["type"].as_str(),
+        Some("missing_client_credential"),
+        "A1 D-9: error.type 必须 missing_client_credential, 实际: {envelope}"
+    );
+    assert!(
+        envelope["error"]["message"].is_string(),
+        "A1 D-9: error.message 必须非空字符串, 实际: {envelope}"
+    );
+
+    // ←── A1 关键守门: 401 路径下 control plane 必须永不收到 route_query
+    assert_eq!(
+        control_plane.route_queries_seen(),
+        0,
+        "A1 acceptance gate: 401 短路必须在 route_query 之前; \
+         mutation 把 extract_route_identity 移到 plan() 后会让此断言红 (route_queries_seen=1)"
+    );
+    assert_eq!(upstream.requests_seen(), 0, "401 路径上游也不应被请求");
+}
+
+/// A1 (dev 模式 anonymous): require_credential=false (dev/test 默认) + 无凭据 →
+/// 不 401, route_query 正常发送, listener 正常代理。证明 anonymous 通路不被守门误伤。
+///
+/// mutation: 让 dev 模式也强制 require_credential=true 不带覆盖 → 此测试红 (200 变 401)。
+#[tokio::test]
+async fn listener_a1_anonymous_dev_mode_does_not_401_without_credential() {
+    let _drain_guard = DrainModeReset::set(false);
+    let upstream = MockUpstream::spawn(MockBehavior::EchoBody).await;
+    let control_plane = MockControlPlane::spawn(mock_route_plan(upstream.endpoint())).await;
+    // dev 模式默认 require_credential=false; 不显式 override (test_config 不设)
+    let config = test_config(control_plane.endpoint(), 4 * 1024 * 1024, 150, 0, 0);
+
+    let response = build_router(config)
+        .expect("build_router")
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(Bytes::from_static(
+                    br#"{"model":"claude-mock","messages":[]}"#,
+                )))
+                .expect("request 构建应成功"),
+        )
+        .await
+        .expect("listener 应响应");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "dev anonymous 路径不应被 A1 误伤为 401"
+    );
+    assert_eq!(
+        control_plane.route_queries_seen(),
+        1,
+        "anonymous 路径下 route_query 正常发送"
+    );
+}
+
+// ── W11-A D-1b A5 ON + HIGH fix integration gates (codex round 1, 2026-05-24) ───────
+
+/// 测试辅助: 把 (kind, raw_secret, tenant_id, label) 元组写成 Manual First keys JSON,
+/// 自动计算 SHA-256 of canonical "kind:secret", 返回绝对路径 (D-8 守门要求)。
+fn write_manual_first_keys_file(
+    entries: &[(&str, &str, &str, &str)],
+    file_name: &str,
+) -> std::path::PathBuf {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write;
+
+    let mut path = std::env::temp_dir();
+    path.push(format!("huakai-{}-{}.json", file_name, std::process::id()));
+
+    let mut json = String::from("[");
+    for (i, (kind, secret, tenant_id, label)) in entries.iter().enumerate() {
+        let canonical = format!("{kind}:{secret}");
+        let digest = Sha256::digest(canonical.as_bytes());
+        let mut hex = String::with_capacity(64);
+        for b in digest.iter() {
+            let _ = write!(hex, "{:02x}", b);
+        }
+        if i > 0 {
+            json.push(',');
+        }
+        let _ = write!(
+            json,
+            r#"{{"kind":"{kind}","secret_sha256":"{hex}","tenant_id":"{tenant_id}","label":"{label}"}}"#
+        );
+    }
+    json.push(']');
+    std::fs::write(&path, json).expect("写 Manual First keys 临时文件应成功");
+    path
+}
+
+fn manual_first_env(
+    control_plane_endpoint: String,
+    keys_file: &std::path::Path,
+) -> Vec<(String, String)> {
+    vec![
+        ("HUAKAI_LISTEN_ADDR".to_owned(), "127.0.0.1:0".to_owned()),
+        (
+            "HUAKAI_CONTROL_PLANE_ENDPOINT".to_owned(),
+            control_plane_endpoint,
+        ),
+        ("HUAKAI_TRANSPORT_BASELINE".to_owned(), "http".to_owned()),
+        ("HUAKAI_LOG_LEVEL".to_owned(), "debug".to_owned()),
+        ("HUAKAI_JSON_LOGS".to_owned(), "true".to_owned()),
+        ("HUAKAI_WORKER_THREADS".to_owned(), "2".to_owned()),
+        (
+            "HUAKAI_MAX_BODY_BYTES".to_owned(),
+            (4 * 1024 * 1024).to_string(),
+        ),
+        ("HUAKAI_CONTROL_PLANE_TIMEOUT_MS".to_owned(), "150".to_owned()),
+        ("HUAKAI_RUNTIME_MODE".to_owned(), "development".to_owned()),
+        (
+            "HUAKAI_CLIENT_AUTH_MANUAL_FIRST_ENABLED".to_owned(),
+            "true".to_owned(),
+        ),
+        (
+            "HUAKAI_CLIENT_AUTH_MANUAL_FIRST_KEYS_FILE".to_owned(),
+            keys_file.to_string_lossy().to_string(),
+        ),
+    ]
+}
+
+/// A5 ON acceptance gate end-to-end (codex round 1 MED finding 2026-05-24):
+/// Manual First 启用 + 客户端凭据 hash 命中静态 entry → control plane 收到的
+/// RouteQueryRequest 必须含:
+///   - `tenant_id == "<static tenant_id>"` (A5: Manual First 派权威 tenant)
+///   - `client_credential == "bearer:<token>"` (A5 dual-write: 透传 raw canonical 给控制面)
+///
+/// 之前只有 account_planner.rs 单元测试 `manual_first_on_dual_writes_new_and_old_field`
+/// 用合成 `RouteIdentity` 验证 build_route_query 输出 — codex 指出该路径不能守门 listener.rs::
+/// extract_route_identity 的 resolver 接线 (resolver 启动期未读 keys / kind 误匹 / hash 算法
+/// 漂移 都可能让单元测试绿但 e2e 红)。本 e2e 测试补这一段守门。
+///
+/// **判别性 + mutation** (CLAUDE.md #14):
+/// 1. status 200 — Manual First 命中应正常代理
+/// 2. control_plane.route_queries_seen() == 1 — listener 正常发 route_query
+/// 3. query.tenant_id == "tenant-a5-on-mapped" — 静态 entry 派的 tenant 被写入
+/// 4. query.client_credential == "bearer:<token>" — raw canonical 透传给控制面 (Phase 2 准备)
+///
+/// mutation 候选:
+/// - build_route_query 把 tenant_id 改 String::new() → 断言 3 红
+/// - build_route_query 把 client_credential 改 String::new() → 断言 4 红
+/// - listener.rs 不调 resolver.resolve_tenant 或始终返 None → 断言 3 红 (tenant 空)
+/// - manual_first.rs::ManualFirstKindWire.matches 改成永远 false → 断言 3 红 (kind mismatch)
+/// - manual_first.rs::resolve_tenant 改用错的 hash 算法 → 断言 3 红 (hash 不匹配)
+#[tokio::test]
+async fn listener_a5_manual_first_on_hit_writes_tenant_and_credential_to_route_query() {
+    let _drain_guard = DrainModeReset::set(false);
+    let upstream = MockUpstream::spawn(MockBehavior::EchoBody).await;
+    let control_plane = MockControlPlane::spawn(mock_route_plan(upstream.endpoint())).await;
+
+    let fake_bearer = "FAKE-a5-on-integration-test-bearer-do-not-log";
+    let keys_file = write_manual_first_keys_file(
+        &[("bearer", fake_bearer, "tenant-a5-on-mapped", "a5-on-test")],
+        "a5-on-hit-test",
+    );
+
+    let config = StartupConfig::from_env_iter(manual_first_env(
+        control_plane.endpoint(),
+        &keys_file,
+    ))
+    .expect("A5 ON test config 应可解析");
+
+    let response = build_router(config)
+        .expect("build_router")
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {fake_bearer}"))
+                .body(Body::from(Bytes::from_static(
+                    br#"{"model":"claude-mock","messages":[]}"#,
+                )))
+                .expect("request 构建应成功"),
+        )
+        .await
+        .expect("listener 应响应");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "Manual First 命中 + 合法上游应正常代理"
+    );
+    assert_eq!(
+        control_plane.route_queries_seen(),
+        1,
+        "命中后 route_query 必发 (与 miss 路径区分)"
+    );
+
+    let query = control_plane
+        .last_route_query()
+        .await
+        .expect("control plane 应记录 query");
+
+    assert_eq!(
+        query.tenant_id, "tenant-a5-on-mapped",
+        "A5 ON: tenant_id 必须等于静态 entry 派的 tenant; \
+         mutation 把 build_route_query tenant_id 改 String::new() → 此断言红"
+    );
+    assert_eq!(
+        query.client_credential,
+        format!("bearer:{fake_bearer}"),
+        "A5 dual-write: client_credential 必须含 canonical bearer:<token>; \
+         mutation 把 client_credential 改 String::new() → 此断言红"
+    );
+
+    let _ = std::fs::remove_file(&keys_file);
+}
+
+/// D-11 fail-closed acceptance gate (codex round 1 HIGH finding fix 2026-05-24):
+/// Manual First 启用 + 客户端凭据 hash **未命中** 静态 map → 401 before route_query。
+///
+/// 之前实现错误: extract_route_identity 在 resolver enabled + miss 时仍返回
+/// `Ok(RouteIdentity { client_credential: Some, manual_first_tenant_id: None })`,
+/// build_route_query 会写空 tenant_id + 透传 client_credential → 未知凭据继续走控制面 →
+/// 安全语义缩水。fix 后, listener.rs 检测 `resolver.enabled() && tenant.is_none()` → 401。
+///
+/// **判别性 + mutation**:
+/// 1. status 401 — 守门生效
+/// 2. body 含 `unknown_client_credential` error code — synthesis D-9 JSON envelope
+/// 3. control_plane.route_queries_seen() == 0 — A1 风格: route_query 不发
+/// 4. upstream.requests_seen() == 0 — 上游不应被请求
+///
+/// mutation: 删 listener.rs::extract_route_identity 中
+/// `if resolver.enabled() && tenant.is_none() { ... 401 ... }` 分支 → status 由 401 退回
+/// 200/502 + route_queries_seen 由 0 → 1。
+#[tokio::test]
+async fn listener_manual_first_on_unknown_credential_returns_401_without_route_query() {
+    let _drain_guard = DrainModeReset::set(false);
+    let upstream = MockUpstream::spawn(MockBehavior::EchoBody).await;
+    let control_plane = MockControlPlane::spawn(mock_route_plan(upstream.endpoint())).await;
+
+    // 写一个 keys file 含 SHA-256 一定不会匹配我们将发的 token 的 entry。
+    // 用一个 不同 的 fake_secret 计算 hash, 保证客户端发 unknown_secret 时 hash 必不命中。
+    let keys_file = write_manual_first_keys_file(
+        &[(
+            "bearer",
+            "FAKE-different-mapped-secret-not-sent-by-client",
+            "tenant-not-this-one",
+            "miss-test",
+        )],
+        "manual-first-miss-test",
+    );
+
+    let config = StartupConfig::from_env_iter(manual_first_env(
+        control_plane.endpoint(),
+        &keys_file,
+    ))
+    .expect("Manual First miss test config 应可解析");
+
+    let response = build_router(config)
+        .expect("build_router")
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                // 客户端发的 token != keys file 里的 token → SHA-256 不匹配 → resolver 返 None
+                .header(
+                    "authorization",
+                    "Bearer FAKE-unknown-client-token-not-in-keys-file",
+                )
+                .body(Body::from(Bytes::from_static(
+                    br#"{"model":"claude-mock","messages":[]}"#,
+                )))
+                .expect("request 构建应成功"),
+        )
+        .await
+        .expect("listener 应响应");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "D-11 fail-closed: Manual First miss 必须 401"
+    );
+    let body = body::to_bytes(response.into_body(), 1024)
+        .await
+        .expect("401 body 应可读取");
+    let body_text = std::str::from_utf8(&body).expect("401 body UTF-8");
+    // D-9 envelope strict 守门 (同 listener_a1_missing_credential 守门理由)
+    let envelope: serde_json::Value =
+        serde_json::from_str(body_text).expect("D-11: 401 body 必须是合法 JSON envelope");
+    assert_eq!(
+        envelope["error"]["type"].as_str(),
+        Some("unknown_client_credential"),
+        "D-11 D-9: error.type 必须 unknown_client_credential, 实际: {envelope}"
+    );
+
+    assert_eq!(
+        control_plane.route_queries_seen(),
+        0,
+        "D-11 fail-closed: miss 路径 route_query 永不发; mutation 删 listener 401 分支 → 红 (变 1)"
+    );
+    assert_eq!(
+        upstream.requests_seen(),
+        0,
+        "miss 路径上游也不应被请求"
+    );
+
+    let _ = std::fs::remove_file(&keys_file);
+}
+
 /// e2e-5: previous_attempts 字段正确透传给 mock control plane
 #[tokio::test]
 async fn route_query_with_previous_attempts_is_received_by_mock() {
@@ -874,6 +1277,8 @@ async fn route_query_with_previous_attempts_is_received_by_mock() {
             ..Default::default()
         }],
         capability_hints: Vec::new(),
+        // W11-A D-1b: 仅测试 previous_attempts 透传, 不涉及凭据解析。
+        client_credential: String::new(),
     };
 
     let plan = client

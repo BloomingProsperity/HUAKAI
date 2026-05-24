@@ -20,6 +20,7 @@ use crate::{
     GatewayState,
     account_planner::{BodyRouteSignal, GatewayProtocol, PlanningError},
     attempt_reporter::{AttemptReportContext, AttemptReportStats, AttemptStatus, now_unix_ms_i64},
+    client_auth::{ClientCredential, RouteIdentity},
     proxy_engine::{ProxyError, validate_vendor_endpoint},
     redaction::{SENSITIVE_REQUEST_CREDENTIAL_HEADERS, redact_untrusted_text},
     request_id::RequestId,
@@ -198,6 +199,18 @@ async fn handle_gateway_request(
             };
         }
 
+        // W11-A D-1b Phase 1 (synthesis §3 A1 + §6 step 8, 2026-05-24):
+        // 凭据解析必须 **早于 body 读取**, 让 401 short-circuit 不消耗 client body bandwidth +
+        // route_query 永不发送 (A1 acceptance gate)。
+        //
+        // mutation: 把 extract_route_identity 调用移到 plan() 之后 →
+        // listener_missing_credential_returns_401_without_route_query (tests/listener_test.rs)
+        // 在 control plane 侧 route_queries_seen 由 0 变 1 → 红。
+        let identity = match extract_route_identity(&state, request.headers(), &request_id) {
+            Ok(id) => id,
+            Err(resp) => return resp,
+        };
+
         // W11-A D-1a: bounded body buffer + routing signal 抽取必须先于 plan(),
         // 让 model / stream 以 body 为权威, 防止 header 篡改路由。
         // mutation: 删 BodyRouteSignal::from_json_body 调用并改回 BodyRouteSignal::default() →
@@ -240,7 +253,7 @@ async fn handle_gateway_request(
 
         let planned = match state
             .account_planner()
-            .plan(&parts.headers, protocol, &request_id, &body_signal)
+            .plan(&parts.headers, protocol, &request_id, &body_signal, &identity)
             .await
         {
             Ok(planned) => planned,
@@ -387,6 +400,123 @@ fn report_listener_planning_error(
         Some(error_class),
         Some(error_message_redacted),
     );
+}
+
+/// W11-A D-1b Phase 1 (synthesis §6 step 8, 2026-05-24): 解析客户端凭据 + 组装 RouteIdentity。
+///
+/// 返回:
+/// - `Ok(RouteIdentity { client_credential: Some(cred), manual_first_tenant_id: t })`
+///   — 凭据合法; tenant 来自 Manual First (ON + 命中) 或 None (强制 Go 派)。
+/// - `Ok(RouteIdentity { client_credential: None, manual_first_tenant_id: None })`
+///   — 无凭据 + `require_credential=false` (dev/test 兼容); plan() 仍走但 client_credential 空字符串。
+/// - `Err(401)` — 凭据缺失且 `require_credential=true` (A1), 或凭据格式错误 (D-12 ambiguous/encoding/empty/malformed)。
+///
+/// **A1 acceptance gate**: 401 路径下 route_query 永不发出 (即不调 plan())。
+/// **A4 acceptance gate**: warn log 只用 `error_code()` (枚举名), 不含 raw header value。
+fn extract_route_identity(
+    state: &GatewayState,
+    headers: &HeaderMap,
+    request_id: &RequestId,
+) -> Result<RouteIdentity, Response<Body>> {
+    match ClientCredential::from_headers(headers) {
+        Ok(Some(cred)) => {
+            let resolver = state.manual_first_resolver();
+            let tenant = resolver.resolve_tenant(&cred);
+            // W11-A D-1b D-11 fail-closed (codex round 1 HIGH finding 2026-05-24):
+            // Manual First ON + 凭据 hash 未命中静态 map → 401 before route_query。
+            // 之前实现 OK with empty tenant_id 会让未知凭据继续走 control plane =
+            // Phase 1 安全语义缩水 (synthesis §3 D-11 + §6 step 8 明确要求 fail-closed)。
+            //
+            // mutation: 删本块 → listener_a1_manual_first_on_unknown_credential_returns_401
+            // 红 (status 由 401 退回 200/502 + route_queries_seen 由 0 → 1)。
+            if resolver.enabled() && tenant.is_none() {
+                warn!(
+                    resolver_enabled = true,
+                    "credential present but Manual First resolver did not match; \
+                     rejecting with 401 (D-11 fail-closed, route query not sent)"
+                );
+                return Err(auth_error_response(
+                    request_id,
+                    "unknown_client_credential",
+                    "credential not recognized",
+                ));
+            }
+            Ok(RouteIdentity {
+                client_credential: Some(cred),
+                manual_first_tenant_id: tenant,
+            })
+        }
+        Ok(None) => {
+            if state.require_client_credential() {
+                // A1 acceptance gate: production 默认 require → 缺凭据 401, route_query 不发。
+                warn!(
+                    require_credential = true,
+                    "client credential missing; rejecting with 401 (route query not sent)"
+                );
+                Err(auth_error_response(
+                    request_id,
+                    "missing_client_credential",
+                    "request requires client credential",
+                ))
+            } else {
+                // dev/test 默认 require=false → 允许 anonymous; client_credential 透传空串。
+                Ok(RouteIdentity {
+                    client_credential: None,
+                    manual_first_tenant_id: None,
+                })
+            }
+        }
+        Err(err) => {
+            // A4: warn log 用 error_code() 枚举名, 不渲染 raw header value (raw 不入 log)。
+            warn!(
+                error_code = err.error_code(),
+                "client credential parse error; rejecting with 401"
+            );
+            Err(auth_error_response(
+                request_id,
+                err.error_code(),
+                "credential header rejected",
+            ))
+        }
+    }
+}
+
+/// W11-A D-1b D-9 (synthesis §4 line 138, 2026-05-24): 401 响应必须用 JSON envelope
+/// `{"error":{"type":"<code>","message":"<msg>"},"request_id":"<rid>"}` 形式 — 与
+/// Anthropic / OpenAI client 行为一致 (双稿一致, 已 lock 不上 §3 Owner 决策)。
+///
+/// 与 `json_error_response` (扁平 `{"error":"<code>","request_id":"<rid>"}`) 区别 —
+/// 后者保留给历史 503/413/502 路径, 避免一次性改全文件影响 50+ 测试。新增的 401 (A1 / D-11 /
+/// D-12) 走本助手, 满足 D-9 spec。
+///
+/// **Codex round 2 HIGH finding fix 2026-05-24**: synthesis D-9 lock spec 明确 envelope
+/// 嵌套对象 (`"error": {"type": ..., "message": ...}`), 实现使用扁平字符串与 spec 不符 →
+/// client 解析失败 + audit 标签错位。
+///
+/// mutation: 改回 `json_error_response` 扁平形 → `listener_*_401_*_envelope` 测试红
+/// (envelope.error.type 字段不存在 → JSON 解析报错)。
+fn auth_error_response(
+    request_id: &RequestId,
+    error_type: &str,
+    error_message: &str,
+) -> Response<Body> {
+    let payload = Bytes::from(
+        serde_json::json!({
+            "error": { "type": error_type, "message": error_message },
+            "request_id": request_id.as_str(),
+        })
+        .to_string(),
+    );
+    let mut response = Response::new(Body::from(payload));
+    *response.status_mut() = StatusCode::UNAUTHORIZED;
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static(DEFAULT_CONTENT_TYPE));
+    response.headers_mut().insert(
+        crate::request_id::REQUEST_ID_HEADER,
+        HeaderValue::from_str(request_id.as_str()).expect("request_id 已经过可见 ASCII 校验"),
+    );
+    response
 }
 
 fn content_length_exceeds(headers: &HeaderMap, max_body_bytes: usize) -> bool {

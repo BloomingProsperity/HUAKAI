@@ -15,6 +15,7 @@ use core_gateway::{
         AccountPlanner, AttemptLifecycle, AttemptState, AuthMode, BodyRouteSignal, GatewayProtocol,
     },
     build_router,
+    client_auth::RouteIdentity,
     config::StartupConfig,
     mock_control_plane::{MockControlPlane, mock_route_plan},
     proxy_engine::{ProxyEngine, StreamObservation, build_http_client},
@@ -23,6 +24,15 @@ use core_gateway::{
     route_proto::v1::{RoutePlan, UpstreamAuthMaterial},
     stream_pipeline::{StreamEvent, UsageDelta},
 };
+
+/// W11-A D-1b Phase 1 (2026-05-24): proxy_engine_test 内 planner.plan() 调用使用 anonymous
+/// RouteIdentity — 这些测试聚焦 proxy 路径而非凭据解析, 与 listener_a1_* 测试分离守门。
+fn anon_identity() -> RouteIdentity {
+    RouteIdentity {
+        client_credential: None,
+        manual_first_tenant_id: None,
+    }
+}
 use futures_util::StreamExt;
 use http_body_util::BodyExt;
 use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
@@ -181,6 +191,7 @@ async fn account_planner_extracts_fields_and_intentionally_does_not_cache_route_
             GatewayProtocol::AnthropicMessages,
             &request_id,
             &BodyRouteSignal::default(),
+            &anon_identity(),
         )
         .await
         .expect("第一次 plan 应成功");
@@ -190,6 +201,7 @@ async fn account_planner_extracts_fields_and_intentionally_does_not_cache_route_
             GatewayProtocol::AnthropicMessages,
             &request_id,
             &BodyRouteSignal::default(),
+            &anon_identity(),
         )
         .await
         .expect("第二次 plan 应继续查询 control plane");
@@ -498,6 +510,7 @@ async fn proxy_stream_tap_extracts_openai_usage_without_changing_body() {
             GatewayProtocol::OpenAiChatCompletions,
             &request_id,
             &BodyRouteSignal::default(),
+            &anon_identity(),
         )
         .await
         .expect("route plan 应成功");
@@ -570,6 +583,7 @@ async fn proxy_stream_tap_respects_client_cancel_mid_stream() {
             GatewayProtocol::OpenAiChatCompletions,
             &request_id,
             &BodyRouteSignal::default(),
+            &anon_identity(),
         )
         .await
         .expect("route plan 应成功");
