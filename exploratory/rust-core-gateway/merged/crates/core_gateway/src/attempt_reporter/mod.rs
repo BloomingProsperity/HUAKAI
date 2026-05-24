@@ -2,6 +2,8 @@
 // 职责: 非阻塞收集 attempt 终态, 异步上报 mock Go control plane, 失败时在内存队列内重试。
 
 use std::{
+    future::Future,
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -12,6 +14,9 @@ use std::{
 use tokio::{sync::mpsc, time};
 use tracing::{debug, warn};
 
+use crate::route_proto::v1::{
+    AttemptReportRequest as AttemptReportProto, AttemptReportResponse as AttemptReportAck,
+};
 use crate::{error::GatewayError, redaction::redact_untrusted_text, route_client::RouteClient};
 
 mod idempotency;
@@ -28,6 +33,21 @@ pub const DEFAULT_ATTEMPT_REPORT_QUEUE_CAPACITY: usize = 1024;
 const DEFAULT_RETRY_ATTEMPTS: usize = 3;
 const DEFAULT_RETRY_BACKOFF: Duration = Duration::from_millis(10);
 const REDACTED_ERROR_LIMIT: usize = 256;
+
+#[doc(hidden)]
+pub type AttemptReportClientFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<AttemptReportAck, GatewayError>> + Send + 'a>>;
+
+#[doc(hidden)]
+pub trait AttemptReportClient: Send + Sync {
+    fn report_attempt<'a>(&'a self, report: AttemptReportProto) -> AttemptReportClientFuture<'a>;
+}
+
+impl AttemptReportClient for RouteClient {
+    fn report_attempt<'a>(&'a self, report: AttemptReportProto) -> AttemptReportClientFuture<'a> {
+        Box::pin(async move { RouteClient::report_attempt(self, report).await })
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AttemptReporterOptions {
@@ -115,10 +135,18 @@ impl AttemptTerminalReporter {
 
 impl AttemptReporter {
     pub fn spawn(route_client: RouteClient) -> Self {
-        Self::spawn_with_options(route_client, AttemptReporterOptions::default())
+        Self::spawn_with_report_client(route_client, AttemptReporterOptions::default())
     }
 
     pub fn spawn_with_options(route_client: RouteClient, options: AttemptReporterOptions) -> Self {
+        Self::spawn_with_report_client(route_client, options)
+    }
+
+    #[doc(hidden)]
+    pub fn spawn_with_report_client<C>(report_client: C, options: AttemptReporterOptions) -> Self
+    where
+        C: AttemptReportClient + 'static,
+    {
         let capacity = options.queue_capacity.max(1);
         let (sender, receiver) = mpsc::channel(capacity);
         let inner = Arc::new(AttemptReporterInner {
@@ -132,7 +160,12 @@ impl AttemptReporter {
             dropped_closed_reports: AtomicU64::new(0),
         });
 
-        tokio::spawn(worker_loop(route_client, receiver, inner.clone(), options));
+        tokio::spawn(worker_loop(
+            Arc::new(report_client),
+            receiver,
+            inner.clone(),
+            options,
+        ));
 
         Self { inner }
     }
@@ -193,19 +226,19 @@ impl AttemptReporter {
 }
 
 async fn worker_loop(
-    route_client: RouteClient,
+    report_client: Arc<dyn AttemptReportClient>,
     mut receiver: mpsc::Receiver<AttemptReport>,
     inner: Arc<AttemptReporterInner>,
     options: AttemptReporterOptions,
 ) {
     while let Some(report) = receiver.recv().await {
         inner.queue_depth.fetch_sub(1, Ordering::Relaxed);
-        send_with_retry(&route_client, &inner, &options, report).await;
+        send_with_retry(report_client.as_ref(), &inner, &options, report).await;
     }
 }
 
 async fn send_with_retry(
-    route_client: &RouteClient,
+    report_client: &dyn AttemptReportClient,
     inner: &AttemptReporterInner,
     options: &AttemptReporterOptions,
     report: AttemptReport,
@@ -215,7 +248,7 @@ async fn send_with_retry(
     loop {
         let status = report.status.as_str();
         let idempotency_key = report.idempotency_key.as_str();
-        match route_client
+        match report_client
             .report_attempt(report.clone().into_proto())
             .await
         {
