@@ -83,7 +83,11 @@ impl GatewayState {
         log_route_plan_cache_disabled(config.route_cache_ttl_ms);
         let http_client: GatewayHttpClient = build_http_client();
         let route_client = route_client_from_transport_baseline(&config)?;
-        let account_planner = AccountPlanner::new(route_client.clone());
+        // W11-A D-1b Phase 2A.4 (2026-05-24): planner needs reconcile policy
+        // so the dual-write Manual First vs Go derived check knows whether to
+        // fail-closed (default D-14 a) or LogOnly-pass-through during staging.
+        let account_planner =
+            AccountPlanner::new(route_client.clone(), config.client_auth_reconcile_policy);
 
         // W11-A D-1b Phase 1 (synthesis §6 step 7, 2026-05-24):
         // 构造 Manual First resolver — config.validate() 已守门 production 模式不可

@@ -50,6 +50,45 @@ impl RuntimeMode {
     }
 }
 
+/// W11-A D-1b Phase 2A.4 (D-14 (a) Owner-approved, 2026-05-24): dual-write
+/// reconciliation policy for Manual First tenant vs Go control-plane derived
+/// tenant. Default = FailClosed (synthesis §4 决策 D-14 a).
+///
+/// **`FailClosed` 默认**: 二者都非空且不一致 → 401 + `tenant_id_mismatch`,
+/// 永不让流量带着错误归属落账. 这是 Owner 在 §12 决策矩阵已批的语义.
+///
+/// **`LogOnly` 临时**: 仅在 Phase 2A 首次上线 staging / canary 期允许 — counter
+/// 与 warn log 记录 mismatch 但继续放行 (信 Go 派权威). Phase 3 切到 FailClosed
+/// 后, 本枚举的 LogOnly 选项应同时移除以避免操作员误退路径.
+///
+/// **不变量**: 任何 mismatch (FailClosed 或 LogOnly) 都 inc 维度为 `kind+source` 的
+/// reconcile counter, 让 SLO 看板能算 "mismatch / total" 比率 (B-R2: 维度无
+/// tenant_id 防 cardinality 爆炸).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReconcilePolicy {
+    /// 双方都非空且不一致 → fail-closed (D-14 a, Owner default).
+    FailClosed,
+    /// 不一致仅 counter+warn 放行 (信 Go 派权威). Staging / canary 限定.
+    LogOnly,
+}
+
+impl ReconcilePolicy {
+    fn parse(value: &str) -> Result<Self, GatewayError> {
+        match value.to_ascii_lowercase().as_str() {
+            "fail-closed" | "fail_closed" | "failclosed" => Ok(Self::FailClosed),
+            "log-only" | "log_only" | "logonly" => Ok(Self::LogOnly),
+            other => Err(GatewayError::Config(format!(
+                "invalid HUAKAI_CLIENT_AUTH_RECONCILE_POLICY {other:?}; expected one of: fail-closed (default), log-only"
+            ))),
+        }
+    }
+
+    /// 是否 fail-closed (mismatch 必须 reject).
+    pub fn fails_closed_on_mismatch(self) -> bool {
+        matches!(self, Self::FailClosed)
+    }
+}
+
 /// 网关顶层配置结构体 (强类型, 启动后不可变)
 /// 所有字段均通过环境变量注入, 前缀 `HUAKAI_`
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -125,6 +164,10 @@ pub struct StartupConfig {
     /// 之前注释写 `entries: [...]` 嵌套但 parser 实际期顶层数组, 运维按注释写会启动 fail):
     /// `[{"kind":"bearer"|"x-api-key","secret_sha256":"<64 hex>","tenant_id":"<id>","label":"<note>"}]`
     pub client_auth_manual_first_keys_file: Option<PathBuf>,
+    /// W11-A D-1b Phase 2A.4 (D-14 (a) Owner-approved, 2026-05-24): dual-write
+    /// reconciliation policy. Default = FailClosed (mismatch 必 reject).
+    /// LogOnly 仅限 staging / canary 首期短暂启用.
+    pub client_auth_reconcile_policy: ReconcilePolicy,
 
     // ── W12-A D-4 attempt durable spool (生产必启, 第三方 P1 finding 2026-05-24) ──
     /// attempt durable spool 是否启用 (生产模式 validate 强制 = true)
@@ -208,6 +251,10 @@ struct RawStartupConfig {
     client_auth_manual_first_enabled: bool,
     #[serde(default)]
     client_auth_manual_first_keys_file: Option<String>,
+    /// W11-A D-1b Phase 2A.4 (D-14 (a), 2026-05-24): None → FailClosed (default).
+    /// Some("fail-closed" | "log-only").
+    #[serde(default)]
+    client_auth_reconcile_policy: Option<String>,
 
     // ── W12-A D-4 spool 持久化 (第三方 P1 finding 2026-05-24) ──
     #[serde(default = "default_spool_enabled")]
@@ -580,6 +627,14 @@ impl StartupConfig {
             .client_auth_require_credential
             .unwrap_or(runtime_mode.is_production());
 
+        // W11-A D-1b Phase 2A.4 (D-14 (a), 2026-05-24): default FailClosed; only
+        // Some(...) goes through ReconcilePolicy::parse so invalid values fail
+        // startup loudly rather than silently picking the wrong semantics.
+        let client_auth_reconcile_policy = match raw.client_auth_reconcile_policy.as_deref() {
+            None => ReconcilePolicy::FailClosed,
+            Some(v) => ReconcilePolicy::parse(v)?,
+        };
+
         let config = Self {
             listen_addr,
             control_plane_endpoint,
@@ -614,6 +669,7 @@ impl StartupConfig {
             client_auth_manual_first_keys_file: raw
                 .client_auth_manual_first_keys_file
                 .map(PathBuf::from),
+            client_auth_reconcile_policy,
             spool_enabled: raw.spool_enabled,
             spool_dir: PathBuf::from(raw.spool_dir),
             spool_max_bytes: raw.spool_max_bytes,

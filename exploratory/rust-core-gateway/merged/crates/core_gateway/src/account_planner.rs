@@ -15,13 +15,16 @@ use uuid::Uuid;
 use serde::Deserialize;
 
 use crate::{
-    client_auth::RouteIdentity,
+    client_auth::{ClientCredential, ClientCredentialKind, RouteIdentity},
+    config::ReconcilePolicy,
     error::GatewayError,
+    metrics::client_credential_tenant_reconcile_total,
     redaction::redact_acquisition_token,
     request_id::RequestId,
     route_client::RouteClient,
     route_proto::v1::{RoutePlan, RouteQueryRequest},
 };
+use tracing::warn;
 
 const DEFAULT_CLIENT_DEADLINE_MS: u64 = 30_000;
 // W11-A D-1b Phase 1 A3 acceptance gate (synthesis §7-H, 2026-05-24):
@@ -41,6 +44,11 @@ pub struct AccountPlanner {
 
 struct AccountPlannerInner {
     route_client: RouteClient,
+    /// W11-A D-1b Phase 2A.4 (D-14 (a) Owner-approved, 2026-05-24): how to
+    /// resolve disagreement between Manual First tenant (Phase 1 兜底) and
+    /// Go control plane derived tenant (Phase 2A authoritative). Default
+    /// FailClosed (synthesis §4 D-14 a); LogOnly only for staged rollout.
+    reconcile_policy: ReconcilePolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,6 +113,23 @@ pub enum PlanningError {
     ControlPlane(#[from] GatewayError),
     #[error("invalid route plan: {0}")]
     InvalidRoutePlan(String),
+    /// W11-A D-1b Phase 2A.4 (D-14 (a) FailClosed, 2026-05-24): Manual First
+    /// tenant disagrees with the Go control plane derived tenant. listener.rs
+    /// maps this to 401 + `tenant_id_mismatch` error envelope rather than the
+    /// 502 InvalidRoutePlan path — the disagreement is an identity-level event
+    /// (one of the two parties is wrong about who the client is), not a
+    /// malformed plan from a healthy control plane.
+    ///
+    /// PII discipline: kind / both tenant_id values are routing metadata
+    /// (not credential material), so embedding them in the message is safe.
+    /// The raw credential never appears here — credential is referenced by
+    /// fingerprint in tracing warn() at the call site.
+    #[error("tenant_id mismatch: kind={kind} manual_first={manual_first:?} go_derived={go_derived:?}")]
+    TenantIdMismatch {
+        kind: String,
+        manual_first: String,
+        go_derived: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -224,14 +249,27 @@ impl fmt::Debug for PlannedAttempt {
 }
 
 impl AccountPlanner {
-    pub fn new(route_client: RouteClient) -> Self {
+    /// Construct AccountPlanner with explicit reconciliation policy.
+    /// Production wiring (lib.rs) reads policy from StartupConfig.
+    /// Test code passes `ReconcilePolicy::FailClosed` to mirror prod default
+    /// unless the test specifically exercises the LogOnly arm.
+    pub fn new(route_client: RouteClient, reconcile_policy: ReconcilePolicy) -> Self {
         Self {
-            inner: Arc::new(AccountPlannerInner { route_client }),
+            inner: Arc::new(AccountPlannerInner {
+                route_client,
+                reconcile_policy,
+            }),
         }
     }
 
     pub fn route_client(&self) -> &RouteClient {
         &self.inner.route_client
+    }
+
+    /// W11-A D-1b Phase 2A.4: expose policy so tests + listener telemetry can
+    /// branch on it (e.g., warn-only counter label vs reject path).
+    pub fn reconcile_policy(&self) -> ReconcilePolicy {
+        self.inner.reconcile_policy
     }
 
     pub async fn plan(
@@ -245,8 +283,114 @@ impl AccountPlanner {
         let query = build_route_query(headers, protocol, request_id, body_signal, identity);
         let plan = self.inner.route_client.query_route(query).await?;
 
-        planned_attempt(plan)
+        let attempt = planned_attempt(plan)?;
+
+        // W11-A D-1b Phase 2A.4 (D-14 (a) FailClosed default, 2026-05-24):
+        // reconcile Manual First (Phase 1 兜底) against Go control plane
+        // derived tenant. counter inc 在 reconcile_identity 内 (含 match /
+        // mismatch / sole-Go / sole-Manual / none 五种 source label).
+        reconcile_identity(
+            &attempt.route_plan,
+            identity,
+            self.inner.reconcile_policy,
+        )?;
+
+        Ok(attempt)
     }
+}
+
+/// W11-A D-1b Phase 2A.4 reconciliation outcome — used as the `source` label
+/// dimension on `huakai_client_credential_tenant_reconcile_total`. Five values
+/// keep cardinality bounded (kind * source = 3 * 5 = 15 series).
+fn reconcile_source_label(manual_first: &str, go_derived: &str, matches: bool) -> &'static str {
+    match (manual_first.is_empty(), go_derived.is_empty(), matches) {
+        (true, true, _) => "none",                 // anonymous (dev/test require_credential=false)
+        (true, false, _) => "go_only",             // Phase 1 OFF + Phase 2 emits
+        (false, true, _) => "manual_only",         // Phase 2 mock 不 emit (legacy)
+        (false, false, true) => "both_match",      // 双写期 happy path
+        (false, false, false) => "both_mismatch", // 双写期 fail-closed trigger
+    }
+}
+
+/// Maps a [ClientCredentialKind] (or anonymous) into the `kind` label dimension.
+/// Stable string — changing values would break Prometheus dashboards.
+fn reconcile_kind_label(identity: &RouteIdentity) -> &'static str {
+    match identity.client_credential.as_ref().map(|c| c.kind()) {
+        Some(ClientCredentialKind::Bearer) => "bearer",
+        Some(ClientCredentialKind::XApiKey) => "x-api-key",
+        None => "none",
+    }
+}
+
+/// W11-A D-1b Phase 2A.4 (D-14 (a) FailClosed default): reconcile Manual First
+/// tenant against Go-derived tenant.
+///
+/// Outcomes:
+///   - both empty → Ok (anonymous mode, counter source=none)
+///   - manual only → Ok (Phase 2 mock period, counter source=manual_only)
+///   - Go only → Ok (Phase 1 OFF + Phase 2 ON, counter source=go_only, Go authoritative)
+///   - both, equal → Ok (counter source=both_match)
+///   - both, unequal:
+///       * policy=FailClosed (Owner default D-14 a) → Err(TenantIdMismatch), counter source=both_mismatch
+///       * policy=LogOnly (staging only) → counter source=both_mismatch + warn + Ok (信 Go)
+///
+/// Mutation: any of (deleting counter inc, swapping label values, dropping
+/// the FailClosed branch's Err, accepting empty derived as match) is caught
+/// by one of the 5 tests in mod tests::reconcile_*.
+fn reconcile_identity(
+    plan: &RoutePlan,
+    identity: &RouteIdentity,
+    policy: ReconcilePolicy,
+) -> Result<(), PlanningError> {
+    // Ensure metrics registry init before incrementing — mirrors the pattern
+    // metrics::set_inflight_requests uses; defensive against tests / early-
+    // startup paths that reach plan() before any other metric write.
+    let _ = crate::metrics::registry();
+
+    let manual_first = identity.manual_first_tenant_id.as_deref().unwrap_or("");
+    let go_derived = plan.derived_tenant_id.as_str();
+    let matches = manual_first == go_derived;
+    let source = reconcile_source_label(manual_first, go_derived, matches);
+    let kind = reconcile_kind_label(identity);
+
+    client_credential_tenant_reconcile_total()
+        .with_label_values(&[kind, source])
+        .inc();
+
+    if source != "both_mismatch" {
+        return Ok(());
+    }
+
+    // both non-empty + disagree: fail-closed by default, LogOnly only for staged rollout.
+    let cred_fingerprint = identity
+        .client_credential
+        .as_ref()
+        .map(|c| c.fingerprint().to_string())
+        .unwrap_or_else(|| "[no-cred]".to_owned());
+
+    warn!(
+        kind = kind,
+        manual_first = manual_first,
+        go_derived = go_derived,
+        cred_fingerprint = cred_fingerprint.as_str(),
+        policy = ?policy,
+        "tenant reconciliation mismatch (D-14 dual-write); \
+         FailClosed → reject, LogOnly → trust Go derived"
+    );
+
+    if policy.fails_closed_on_mismatch() {
+        return Err(PlanningError::TenantIdMismatch {
+            kind: kind.to_owned(),
+            manual_first: manual_first.to_owned(),
+            go_derived: go_derived.to_owned(),
+        });
+    }
+
+    // LogOnly path: counter already incremented, warn emitted, Go authoritative
+    // assumed (listener observability records the kept identity from
+    // identity.manual_first_tenant_id but plan.derived_tenant_id is what
+    // downstream attempt_report will carry — Phase 3 dual-write removal target).
+    Ok(())
 }
 
 /// 构造发给 control plane 的 RouteQueryRequest。
@@ -537,6 +681,191 @@ mod tests {
             attempt.route_plan.derived_tenant_id.is_empty(),
             "legacy mock 必须默认 derived_tenant_id 空, 保现存 Phase 1 测试零回归"
         );
+    }
+
+    // ─── W11-A D-1b Phase 2A.4 reconciliation 5 scenario tests (D-14 a + B-R1) ───
+    //
+    // 每个 test 都按 CLAUDE.md #14 写 mutation 注释:
+    //  - 把 reconcile_identity 中 source/policy 任一分支删掉或改逻辑必有 ≥ 1 test 红.
+    //  - source label 拼错 / counter 漏 inc → 各 source 测试断 metric 增量 红.
+    //
+    // 测试用 reconcile_identity 而非 planner.plan() (后者要 mock control plane RPC).
+
+    /// Helper: 构造 RouteIdentity 含/不含 Manual First tenant. 默认 kind=none.
+    fn make_identity_with_manual(tenant: Option<&str>) -> RouteIdentity {
+        RouteIdentity {
+            client_credential: None,
+            manual_first_tenant_id: tenant.map(str::to_owned),
+        }
+    }
+
+    /// Helper: 构造 RouteIdentity 含真实 ClientCredential — 用于 label 隔离
+    /// (TC-RC-2 / TC-RC-3 都 trigger both_mismatch source, 必须用不同 kind 避免
+    /// counter 竞态破坏 mutation 断言). bearer 走 TC-RC-2, x-api-key 走 TC-RC-3.
+    fn make_identity_with_kind(
+        kind: ClientCredentialKind,
+        secret_marker: &str,
+        manual_tenant: &str,
+    ) -> RouteIdentity {
+        use http::HeaderMap;
+        let mut headers = HeaderMap::new();
+        match kind {
+            ClientCredentialKind::Bearer => {
+                headers.insert(
+                    "authorization",
+                    format!("Bearer hk_test_RC_{}", secret_marker)
+                        .parse()
+                        .unwrap(),
+                );
+            }
+            ClientCredentialKind::XApiKey => {
+                headers.insert(
+                    "x-api-key",
+                    format!("hk_test_RC_{}", secret_marker).parse().unwrap(),
+                );
+            }
+        }
+        let cred = ClientCredential::from_headers(&headers)
+            .expect("from_headers should accept canonical helper input")
+            .expect("from_headers should return Some when header set");
+        RouteIdentity {
+            client_credential: Some(cred),
+            manual_first_tenant_id: Some(manual_tenant.to_owned()),
+        }
+    }
+
+    /// Helper: 构造 RoutePlan 含/不含 derived_tenant_id.
+    fn make_plan_with_derived(derived: &str) -> RoutePlan {
+        let mut plan = valid_route_plan_for_auth();
+        plan.derived_tenant_id = derived.to_owned();
+        plan
+    }
+
+    /// Helper: 抓 reconcile counter 当前值 (label = kind+source).
+    /// 先 ping registry 以确保 lazy init 完成 — 测试可能在 reconcile_identity
+    /// 之前先读 before-counter, registry 还没 init 就会 panic.
+    fn reconcile_counter(kind: &str, source: &str) -> u64 {
+        let _ = crate::metrics::registry();
+        crate::metrics::client_credential_tenant_reconcile_total()
+            .with_label_values(&[kind, source])
+            .get()
+    }
+
+    /// TC-RC-1: both_match — Manual First t1 + Go derived t1 → Ok + counter both_match.
+    /// MUTATION: 把 matches 判定改为 != → 红 (source 错为 both_mismatch).
+    #[test]
+    fn reconcile_identity_both_match_passes_and_increments_counter() {
+        let identity = make_identity_with_manual(Some("tenant-rc1"));
+        let plan = make_plan_with_derived("tenant-rc1");
+        let before = reconcile_counter("none", "both_match");
+
+        let result = reconcile_identity(&plan, &identity, ReconcilePolicy::FailClosed);
+
+        assert!(result.is_ok(), "match 必通过: {:?}", result);
+        let after = reconcile_counter("none", "both_match");
+        assert_eq!(
+            after,
+            before + 1,
+            "both_match counter 必须 +1 (mutation: 漏 inc 此处红)"
+        );
+    }
+
+    /// TC-RC-2: both_mismatch FailClosed — Manual First t1 + Go derived t2 →
+    /// Err TenantIdMismatch + counter both_mismatch. 用 bearer kind 隔离 TC-RC-3 的
+    /// LogOnly 测试 (后者用 x-api-key kind), 防 cargo test 并行下 (kind=bearer, source=both_mismatch)
+    /// counter 被两个测试同时 inc 破坏 assert_eq.
+    /// MUTATION: 把 fails_closed_on_mismatch 返 false (LogOnly-by-default) → 红.
+    #[test]
+    fn reconcile_identity_both_mismatch_failclosed_returns_err_and_increments_counter() {
+        let identity = make_identity_with_kind(
+            ClientCredentialKind::Bearer,
+            "RC2_FAILCLOSED_TOKEN_001",
+            "tenant-rc2-mf",
+        );
+        let plan = make_plan_with_derived("tenant-rc2-go");
+        let before = reconcile_counter("bearer", "both_mismatch");
+
+        let result = reconcile_identity(&plan, &identity, ReconcilePolicy::FailClosed);
+
+        match result {
+            Err(PlanningError::TenantIdMismatch {
+                kind,
+                manual_first,
+                go_derived,
+            }) => {
+                assert_eq!(kind, "bearer");
+                assert_eq!(manual_first, "tenant-rc2-mf");
+                assert_eq!(go_derived, "tenant-rc2-go");
+            }
+            other => panic!("FailClosed 必返 TenantIdMismatch, 实际 {:?}", other),
+        }
+        let after = reconcile_counter("bearer", "both_mismatch");
+        assert_eq!(after, before + 1, "both_mismatch counter 必须 +1");
+    }
+
+    /// TC-RC-3: both_mismatch LogOnly — Manual First t1 + Go derived t2 →
+    /// Ok (counter +1 but pass-through). 用 x-api-key kind 隔离 TC-RC-2 (bearer).
+    /// MUTATION: LogOnly 误 return Err → 红.
+    #[test]
+    fn reconcile_identity_both_mismatch_logonly_passes_with_counter_increment() {
+        let identity = make_identity_with_kind(
+            ClientCredentialKind::XApiKey,
+            "RC3_LOGONLY_TOKEN_001",
+            "tenant-rc3-mf",
+        );
+        let plan = make_plan_with_derived("tenant-rc3-go");
+        let before = reconcile_counter("x-api-key", "both_mismatch");
+
+        let result = reconcile_identity(&plan, &identity, ReconcilePolicy::LogOnly);
+
+        assert!(
+            result.is_ok(),
+            "LogOnly 必透过 (warn + 信 Go), 不阻断: {:?}",
+            result
+        );
+        let after = reconcile_counter("x-api-key", "both_mismatch");
+        assert_eq!(
+            after,
+            before + 1,
+            "both_mismatch counter 必 +1 (即使 LogOnly)"
+        );
+    }
+
+    /// TC-RC-4: manual_only — Manual First t1 + Go empty → Ok + counter manual_only.
+    /// MUTATION: source label 改为 both_match 当 Go 空 → 红 (拒识别 manual_only 维度).
+    #[test]
+    fn reconcile_identity_manual_only_passes_and_increments_counter() {
+        let identity = make_identity_with_manual(Some("tenant-rc4"));
+        let plan = make_plan_with_derived("");
+        let before = reconcile_counter("none", "manual_only");
+
+        let result = reconcile_identity(&plan, &identity, ReconcilePolicy::FailClosed);
+
+        assert!(result.is_ok(), "Go 未派, Manual First 兜底 必通过");
+        let after = reconcile_counter("none", "manual_only");
+        assert_eq!(after, before + 1);
+    }
+
+    /// TC-RC-5: go_only + none — Go derived t2 + Manual First None → Ok + counter go_only;
+    /// 二者全空 → Ok + counter none. 一个 test 覆盖两个 source label 以省 setup.
+    /// MUTATION: source label 算法把 (empty, non-empty) 当 manual_only → 红.
+    #[test]
+    fn reconcile_identity_go_only_and_none_paths() {
+        // go_only: Manual 无, Go t1
+        let identity_none = make_identity_with_manual(None);
+        let plan_go = make_plan_with_derived("tenant-rc5-go");
+        let before_go = reconcile_counter("none", "go_only");
+
+        let result = reconcile_identity(&plan_go, &identity_none, ReconcilePolicy::FailClosed);
+        assert!(result.is_ok(), "Go 派 + 无 Manual 必通过 (Go 权威)");
+        assert_eq!(reconcile_counter("none", "go_only"), before_go + 1);
+
+        // none: 二者都空 (anonymous, dev/test require_credential=false)
+        let plan_empty = make_plan_with_derived("");
+        let before_none = reconcile_counter("none", "none");
+        let result = reconcile_identity(&plan_empty, &identity_none, ReconcilePolicy::FailClosed);
+        assert!(result.is_ok(), "anonymous (二者空) 必通过");
+        assert_eq!(reconcile_counter("none", "none"), before_none + 1);
     }
 
     fn valid_route_plan_for_auth() -> RoutePlan {

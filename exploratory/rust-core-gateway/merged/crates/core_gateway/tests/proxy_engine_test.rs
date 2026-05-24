@@ -173,7 +173,10 @@ async fn account_planner_extracts_fields_and_intentionally_does_not_cache_route_
     );
     plan.route_ttl_ms = 1_000;
     let control_plane = MockControlPlane::spawn(plan).await;
-    let planner = AccountPlanner::new(route_client(&control_plane.endpoint()));
+    let planner = AccountPlanner::new(
+        route_client(&control_plane.endpoint()),
+        core_gateway::config::ReconcilePolicy::FailClosed,
+    );
 
     let mut headers = HeaderMap::new();
     headers.insert("x-tenant-id", HeaderValue::from_static("tenant-cache"));
@@ -496,7 +499,10 @@ async fn proxy_stream_tap_extracts_openai_usage_without_changing_body() {
         30_000,
     ))
     .await;
-    let planner = AccountPlanner::new(route_client(&control_plane.endpoint()));
+    let planner = AccountPlanner::new(
+        route_client(&control_plane.endpoint()),
+        core_gateway::config::ReconcilePolicy::FailClosed,
+    );
     let request_id = RequestId::from_candidate(Some("tap-openai-rid"));
     let request = Request::builder()
         .method("POST")
@@ -569,7 +575,10 @@ async fn proxy_stream_tap_respects_client_cancel_mid_stream() {
         30_000,
     ))
     .await;
-    let planner = AccountPlanner::new(route_client(&control_plane.endpoint()));
+    let planner = AccountPlanner::new(
+        route_client(&control_plane.endpoint()),
+        core_gateway::config::ReconcilePolicy::FailClosed,
+    );
     let request_id = RequestId::from_candidate(Some("tap-cancel-rid"));
     let request = Request::builder()
         .method("POST")

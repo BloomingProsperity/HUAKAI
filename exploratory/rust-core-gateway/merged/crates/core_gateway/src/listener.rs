@@ -287,6 +287,31 @@ async fn handle_gateway_request(
                 );
                 return json_error_response(StatusCode::BAD_GATEWAY, &request_id, "bad_route_plan");
             }
+            // W11-A D-1b Phase 2A.4 (D-14 (a) FailClosed, 2026-05-24): Manual
+            // First (Phase 1) disagrees with Go-derived (Phase 2) tenant.
+            // Identity-level disagreement → 401 + tenant_id_mismatch envelope
+            // (not 502 bad_route_plan — the plan itself is well-formed; one
+            // side simply got the identity wrong). counter已 inc 在 reconcile_identity.
+            //
+            // mutation: 把本 arm 删掉走 unreachable!() → 集成测试
+            // listener_tenant_id_mismatch_returns_401 红.
+            Err(err @ PlanningError::TenantIdMismatch { .. }) => {
+                let err_redacted = redact_untrusted_text(&err.to_string(), LISTENER_ERROR_LIMIT);
+                warn!(error = %err_redacted, "tenant_id mismatch (D-14 FailClosed)");
+                report_listener_planning_error(
+                    &state,
+                    &request_id,
+                    AttemptStatus::ControlPlaneError,
+                    StatusCode::UNAUTHORIZED,
+                    "tenant_id_mismatch",
+                    &err_redacted,
+                );
+                return auth_error_response(
+                    &request_id,
+                    "tenant_id_mismatch",
+                    "credential identity does not match plan tenant",
+                );
+            }
         };
 
         // W11-C D-3: 控制面下发的 vendor endpoint 在 production 必须 https + 公网,

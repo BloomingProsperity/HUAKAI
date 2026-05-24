@@ -46,6 +46,14 @@ static OPEN_UPSTREAM_CONNECTIONS: OnceLock<IntGauge> = OnceLock::new();
 static INFLIGHT_REQUESTS: OnceLock<IntGauge> = OnceLock::new();
 static INFLIGHT_LIMIT: OnceLock<IntGauge> = OnceLock::new();
 
+// W11-A D-1b Phase 2A.4 (D-15 Owner-approved, 2026-05-24): dual-write
+// reconciliation outcome counter. Dimensions kept tight per B-R2:
+//   kind   ∈ {bearer, x-api-key, none}        (credential kind, NOT raw token)
+//   source ∈ {both_match, both_mismatch, manual_only, go_only, none}
+// Total time-series at saturation: 3 * 5 = 15. NO tenant_id label
+// (cardinality would unbound — each new tenant doubles the series count).
+static CLIENT_CREDENTIAL_TENANT_RECONCILE_TOTAL: OnceLock<IntCounterVec> = OnceLock::new();
+
 // ─── 公共访问器 ───────────────────────────────────────────────────────────────
 
 /// RPC 端到端延迟 (ms)
@@ -113,6 +121,15 @@ pub fn set_inflight_requests(value: i64) {
 pub fn set_inflight_limit(value: i64) {
     let _ = registry();
     inflight_limit().set(value);
+}
+
+/// W11-A D-1b Phase 2A.4 (D-15 counter, 2026-05-24): dual-write reconciliation
+/// outcomes between Manual First and Go control plane derived identity.
+/// Labels: kind, source (per B-R2: no tenant_id label).
+pub fn client_credential_tenant_reconcile_total() -> &'static IntCounterVec {
+    CLIENT_CREDENTIAL_TENANT_RECONCILE_TOTAL
+        .get()
+        .expect("metrics 未初始化")
 }
 
 // ─── 文本格式序列化 (Prometheus scrape) ──────────────────────────────────────
@@ -213,6 +230,19 @@ fn register_all(r: &Registry) {
     .expect("gauge 创建应成功");
     r.register(Box::new(g.clone())).expect("注册应成功");
     let _ = INFLIGHT_LIMIT.set(g);
+
+    // W11-A D-1b Phase 2A.4 (D-15 + B-R2, 2026-05-24): tenant reconciliation
+    // counter — labels kind+source, NO tenant_id (cardinality防爆).
+    let cv = IntCounterVec::new(
+        Opts::new(
+            "huakai_client_credential_tenant_reconcile_total",
+            "Dual-write reconciliation outcomes between Manual First tenant and Go control plane derived tenant (W11-A D-1b Phase 2A.4)",
+        ),
+        &["kind", "source"],
+    )
+    .expect("counter_vec 创建应成功");
+    r.register(Box::new(cv.clone())).expect("注册应成功");
+    let _ = CLIENT_CREDENTIAL_TENANT_RECONCILE_TOTAL.set(cv);
 }
 
 // ─── 单元测试 ─────────────────────────────────────────────────────────────────
