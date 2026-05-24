@@ -466,6 +466,8 @@ mod tests {
                 header_name: "authorization".to_owned(),
                 expires_at_unix_ms: 0,
             }),
+            // W11-A D-1b Phase 2A.3 (D-13 (a)): empty mock-default; pre-Phase 2A.5 only.
+            derived_tenant_id: String::new(),
         };
 
         let planned = planned_attempt(plan).expect("测试 RoutePlan 应合法");
@@ -503,6 +505,40 @@ mod tests {
         assert!(matches!(err, PlanningError::InvalidRoutePlan(_)));
     }
 
+    /// W11-A D-1b Phase 2A.3 (D-13 (a), 2026-05-24): Go control plane 派的权威
+    /// tenant_id 必须原样透过 planned_attempt(), Phase 2A.4 双写对账 (account_planner
+    /// 调用方) 才能拿来与 Manual First 派的 legacy tenant 做比对。
+    ///
+    /// MUTATION CHECK: 若未来 refactor 把 route_plan 从 PlannedAttempt 拆掉只留
+    /// 子字段, derived_tenant_id 就不可达 → 此测试红 = 守门生效。
+    #[test]
+    fn planned_attempt_carries_derived_tenant_id_through_unchanged() {
+        let mut plan = valid_route_plan_for_auth();
+        plan.derived_tenant_id = "tenant-go-authoritative-phase2a3".to_owned();
+        let attempt = planned_attempt(plan).expect("planner 应接受合法 RoutePlan");
+        assert_eq!(
+            attempt.route_plan.derived_tenant_id, "tenant-go-authoritative-phase2a3",
+            "derived_tenant_id 必须原样透过, Phase 2A.4 双写对账才能读"
+        );
+    }
+
+    /// W11-A D-1b Phase 2A.3: legacy mock RoutePlan 默认 derived_tenant_id 空字符串,
+    /// 让 Phase 1 / 2A.3 阶段所有现存测试零行为变化; Phase 2A.4 reconciliation 用
+    /// IsEmpty 区分"Go 未派" vs "Go 派出空字符串"。
+    ///
+    /// MUTATION CHECK: 若 valid_route_plan_for_auth 默认改 derived 为非空字符串 →
+    /// Phase 1 守门测试 (build_route_query_writes_canonical_credential_value 等)
+    /// 行为意外变化 → 此测试红 = 守门生效。
+    #[test]
+    fn legacy_mock_route_plan_defaults_derived_tenant_id_to_empty() {
+        let plan = valid_route_plan_for_auth();
+        let attempt = planned_attempt(plan).expect("planner 应接受合法 RoutePlan");
+        assert!(
+            attempt.route_plan.derived_tenant_id.is_empty(),
+            "legacy mock 必须默认 derived_tenant_id 空, 保现存 Phase 1 测试零回归"
+        );
+    }
+
     fn valid_route_plan_for_auth() -> RoutePlan {
         RoutePlan {
             route_plan_id: "route-plan-auth-test".to_owned(),
@@ -523,6 +559,9 @@ mod tests {
                 header_name: String::new(),
                 expires_at_unix_ms: 0,
             }),
+            // W11-A D-1b Phase 2A.3: legacy auth-test fixture predates Phase 2A
+            // dual-write; reconciliation behavior is tested via dedicated 2A.4 e2e.
+            derived_tenant_id: String::new(),
         }
     }
 

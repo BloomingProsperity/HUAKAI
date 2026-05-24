@@ -65,6 +65,20 @@ message RoutePlan {
   uint64 max_body_bytes = 11;
   uint64 max_stream_frame_bytes = 12;
   UpstreamAuthMaterial upstream_auth = 13;
+  // W11-A D-1b Phase 2A.3 (D-13 (a), 2026-05-24): authoritative tenant_id
+  // derived by the Go control plane from RouteQueryRequest.client_credential
+  // (Phase 1 opaque pass-through). Rust data-plane dual-write reconciliation
+  // (Phase 2A.4) uses this to fail-closed on mismatch against any tenant the
+  // Manual First short-circuit may have asserted.
+  //
+  // Phase 2A mocks (mock_control_plane.rs default): empty string — the mock
+  // does NOT yet derive a tenant, so reconciliation policies must treat empty
+  // as "absent" rather than "derived to empty". Phase 2A.5 (Go gRPC server,
+  // gated on OD-1 approval) is the first emitter that populates this.
+  //
+  // Field number 14 reserved for a future Phase 2B claim contract carrier
+  // (per OD-2 deferred decision); do NOT reuse 14 outside that scope.
+  string derived_tenant_id = 15;
 }
 
 message TokensUsed {

@@ -413,7 +413,26 @@ pub fn mock_route_plan(vendor_endpoint: impl Into<String>) -> RoutePlan {
             header_name: String::new(),
             expires_at_unix_ms: 0,
         }),
+        // W11-A D-1b Phase 2A.3 (D-13 (a), 2026-05-24): default mock returns empty derived
+        // tenant — the mock does NOT yet derive identity. Phase 2A.5 (Go gRPC server) will
+        // emit non-empty values; Phase 2A.4 reconciliation tests use a dedicated helper
+        // (mock_route_plan_with_derived_tenant) to inject specific Go-side tenant strings.
+        derived_tenant_id: String::new(),
     }
+}
+
+/// W11-A D-1b Phase 2A.4 helper: construct a mock RoutePlan whose Go-side
+/// `derived_tenant_id` is populated. Used by reconciliation e2e tests to
+/// simulate the Go control plane having authoritatively derived a tenant
+/// (match / mismatch / sole-go / sole-manual scenarios). Phase 2A.3 ships
+/// this helper without consumers; Phase 2A.4 lights up the tests.
+pub fn mock_route_plan_with_derived_tenant(
+    vendor_endpoint: impl Into<String>,
+    derived_tenant_id: impl Into<String>,
+) -> RoutePlan {
+    let mut plan = mock_route_plan(vendor_endpoint);
+    plan.derived_tenant_id = derived_tenant_id.into();
+    plan
 }
 
 fn now_unix_ms_i64() -> i64 {

@@ -90,6 +90,9 @@ mod tests {
                 header_name: String::new(),
                 expires_at_unix_ms: 0,
             }),
+            // W11-A D-1b Phase 2A.3: this unit test pre-dates dual-write; leaves
+            // Go-derived tenant empty so behaviour matches the legacy auth path.
+            derived_tenant_id: String::new(),
         };
 
         PlannedAttempt {

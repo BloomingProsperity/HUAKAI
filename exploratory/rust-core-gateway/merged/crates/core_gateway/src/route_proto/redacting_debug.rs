@@ -44,6 +44,11 @@ impl fmt::Debug for RoutePlan {
             .field("max_body_bytes", &self.max_body_bytes)
             .field("max_stream_frame_bytes", &self.max_stream_frame_bytes)
             .field("upstream_auth", &self.upstream_auth)
+            // W11-A D-1b Phase 2A.3 (D-13 (a), 2026-05-24): Go-derived tenant_id
+            // is plain text routing metadata (not a credential) — expose unredacted
+            // so dual-write reconciliation telemetry shows what the Go control
+            // plane returned. Empty string when Phase 2A mocks don't emit it.
+            .field("derived_tenant_id", &self.derived_tenant_id)
             .finish()
     }
 }
@@ -134,6 +139,9 @@ mod tests {
                 header_name: "authorization".to_owned(),
                 expires_at_unix_ms: 0,
             }),
+            // W11-A D-1b Phase 2A.3: redaction-test fixture uses a fixed
+            // derived tenant so the Debug-renders-tenant assertion is mutation-resistant.
+            derived_tenant_id: "tenant-redact-debug-1".to_owned(),
         }
     }
 
@@ -150,6 +158,26 @@ mod tests {
         assert!(debug.contains("route-plan-redact-1"));
         assert!(debug.contains("account-redact-1"));
         assert!(debug.contains("anthropic"));
+    }
+
+    /// W11-A D-1b Phase 2A.3 (D-13 (a), 2026-05-24): derived_tenant_id 是路由元数据,
+    /// 不是凭据, 必须在 RoutePlan Debug 中以明文出现 — Phase 2A.4 对账 telemetry 与
+    /// 日志审计要看到 Go 控制面派的 tenant 是什么。
+    ///
+    /// MUTATION CHECK: 若 Debug impl 漏 `.field("derived_tenant_id", ...)` →
+    /// 此测试红 (字段名缺失); 若误把 derived_tenant_id 走 redaction 路径 →
+    /// 字符串不出现, 也红。两类 mutation 全捕获。
+    #[test]
+    fn route_plan_debug_renders_derived_tenant_id_plain_text() {
+        let debug = format!("{:?}", secret_route_plan());
+        assert!(
+            debug.contains("derived_tenant_id"),
+            "Debug 必须含字段名 derived_tenant_id (mutation: 漏 .field 调用 → 红): {debug}"
+        );
+        assert!(
+            debug.contains("tenant-redact-debug-1"),
+            "Debug 必须 plain-text 渲染 fixture 值 (mutation: 误 redact → 红): {debug}"
+        );
     }
 
     #[test]
