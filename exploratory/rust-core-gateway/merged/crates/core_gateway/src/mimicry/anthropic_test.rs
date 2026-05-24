@@ -151,13 +151,17 @@ fn assert_kiro_known_gap_regardless_of_feature(available_features: AvailableMimi
 
     match backend {
         MimicryBackend::KnownGapBlocked { reason } => {
+            // Reason corrected 2026-05-24 post-spec-dig: Kiro byte-level wire
+            // test PASSES (boring_wire.rs::kiro_*); KnownGap is cautious default
+            // until real-upstream capture verification (F-2.5). Either
+            // "real_upstream_capture" or "pending" must appear.
             assert!(
-                reason.contains("rustls"),
-                "Kiro KnownGap reason must cite rustls backend mismatch (got: {reason})"
+                reason.contains("real_upstream_capture") || reason.contains("pending"),
+                "Kiro KnownGap reason must cite real-upstream verification gap, not rustls (got: {reason})"
             );
         }
         other => panic!(
-            "Kiro must resolve to KnownGapBlocked (D-S3 permanent), got {other:?}"
+            "Kiro must resolve to KnownGapBlocked (D-S3 cautious default), got {other:?}"
         ),
     }
 }

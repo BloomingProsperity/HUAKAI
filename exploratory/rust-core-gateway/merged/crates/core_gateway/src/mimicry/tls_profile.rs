@@ -133,33 +133,43 @@ impl TlsFieldGap {
     }
 }
 
-/// W11-F F-2.2 (synthesis D-S3 Owner-approved, 2026-05-24): Kiro CLI profile
-/// runs the Rust rustls TLS stack natively. OpenSSL and BoringSSL cannot
-/// precisely replicate rustls's wire-byte output (different extension order,
-/// distinct GREASE behavior, internal randomization that's not exposed via
-/// public APIs).
+/// W11-F F-2.2 (synthesis D-S3 Owner-approved 2026-05-24, **reason corrected
+/// 2026-05-24 post-spec-dig**): Kiro CLI profile declares `tls_backend = rustls`.
 ///
-/// This is a **permanent** known-gap for the F-2 wave. Closing it would
-/// require either:
-///   - F-3 byte-level builder bypassing the TLS stack, OR
-///   - vendoring rustls into HUAKAI as a parallel TLS implementation,
-/// both of which are explicitly deferred to F-3 roadmap.
+/// **Correction**: An earlier version of this docstring claimed rustls
+/// wire bytes "cannot be precisely replicated by OpenSSL/BoringSSL adapters".
+/// That assertion was incorrect — `boring_wire.rs::kiro_boring_client_hello_byte_level_matches_profile`
+/// proves the HUAKAI BoringSSL builder DOES produce JA3-hash-matching
+/// ClientHello bytes for the Kiro profile in local-capture handshakes.
+/// HUAKAI's `client_hello_builder.rs::build_boring_connector` is template-
+/// driven and routes Kiro's cipher_suites + supported_groups (including
+/// X25519MLKEM768 group 4588) + extensions through `set_client_hello_profile`
+/// against the vendored boring 5.1 fork with PQ patch — no rustls vendor
+/// dependency required.
 ///
-/// Returning a non-empty gap list here triggers `match_policy()`
-/// to return `KnownGapBlocked`, which in turn drives
-/// `backend_intent()` to `BackendIntent::KnownGapBlocked` —
-/// dispatch then returns `BlockKnownGap` rather than the old
-/// `BlockUnsupportedTemplate` (which conflated rustls with newer template
-/// vendors). The change makes the reason field operator-actionable
-/// ("we know Kiro doesn't work, here's why") instead of a generic
-/// "unsupported template" that suggests a fixable mapping bug.
+/// **Why Kiro is still KnownGap**: real-upstream capture verification
+/// (synthesis §4 Canary policy + F-2.5) has not yet run against
+/// `q.us-east-1.amazonaws.com`. Local in-memory ClientHello capture proves
+/// the byte-level builder works in isolation, but production dispatch
+/// requires a real-upstream handshake confirming AWS CodeWhisperer accepts
+/// our mimicked ClientHello (no TLS alert, JA4 from server-side capture
+/// matches sample variants). Until F-2.5 lands real-upstream evidence,
+/// Kiro stays KnownGap as a cautious default — operator-explicit unblock
+/// after staging verification rather than presumption of correctness.
+///
+/// Returning a non-empty gap list here triggers `match_policy()` →
+/// `KnownGapBlocked` → `backend_intent()` → `BackendIntent::KnownGapBlocked`,
+/// keeping dispatch fail-closed. The gap "auto-clears" if `kiro_boring_client_hello_byte_level_matches_profile`
+/// is paired with real-upstream evidence (F-2.5 commit will likely return
+/// `Vec::new()` here).
 pub fn kiro_cli_known_gap_fields() -> Vec<TlsFieldGap> {
     vec![TlsFieldGap {
-        field: "tls_backend",
-        template_value: "rustls",
-        current_backend_value: "openssl/boringssl (rustls not vendored)",
-        reason: "rustls wire-byte output cannot be precisely replicated by OpenSSL/BoringSSL adapters; \
-                 closure deferred to F-3 (byte-level builder or vendor rustls) — Owner D-S3 (a) 2026-05-24",
+        field: "real_upstream_capture",
+        template_value: "AWS CodeWhisperer handshake byte-level confirmed",
+        current_backend_value: "local in-memory capture only (boring_wire test PASS)",
+        reason: "byte-level builder verified locally (boring_wire.rs::kiro_*); \
+                 real-upstream handshake verification against q.us-east-1.amazonaws.com \
+                 pending F-2.5 + ops staging — Owner D-S3 (a) cautious default 2026-05-24",
     }]
 }
 

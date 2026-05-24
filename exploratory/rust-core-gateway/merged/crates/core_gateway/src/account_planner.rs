@@ -24,8 +24,6 @@ use crate::{
     route_client::RouteClient,
     route_proto::v1::{RoutePlan, RouteQueryRequest},
 };
-#[cfg(test)]
-use crate::client_auth::ClientCredential;
 use tracing::warn;
 
 const DEFAULT_CLIENT_DEADLINE_MS: u64 = 30_000;
@@ -571,6 +569,7 @@ fn now_unix_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // ClientCredential import is at line 900 within test-helpers section (pre-existing).
 
     #[test]
     fn attempt_lifecycle_accepts_happy_path() {
