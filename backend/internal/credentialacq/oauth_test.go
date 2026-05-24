@@ -73,6 +73,55 @@ func TestOAuthCallbackRejectsStateMismatch(t *testing.T) {
 	}
 }
 
+func TestCompleteOAuthCallbackRejectsCrossFlowStateReplay(t *testing.T) {
+	now := time.Date(2026, 5, 24, 9, 0, 0, 0, time.UTC)
+	keys, err := credentialstore.NewStaticKeyProvider("test-v1", bytes.Repeat([]byte{9}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewPostgresSessionStoreWithKeys(newTestSessionDB(now), keys).WithNow(func() time.Time { return now })
+
+	victim, err := StartOAuthFlow(context.Background(), store, StartInput{
+		TenantID: 1, ProviderAccountID: 101,
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeChatGPTOAuth,
+		ActorID: "admin-1", ActorRole: "platform_admin",
+	}, OAuthClientConfig{
+		ClientID: "client-id", AuthURL: "https://auth.example.test/oauth", RedirectURI: "https://huakai.example.test/callback",
+	})
+	if err != nil {
+		t.Fatalf("start victim flow: %v", err)
+	}
+	attacker, err := StartOAuthFlow(context.Background(), store, StartInput{
+		TenantID: 1, ProviderAccountID: 202,
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeChatGPTOAuth,
+		ActorID: "admin-1", ActorRole: "platform_admin",
+	}, OAuthClientConfig{
+		ClientID: "client-id", AuthURL: "https://auth.example.test/oauth", RedirectURI: "https://huakai.example.test/callback",
+	})
+	if err != nil {
+		t.Fatalf("start attacker flow: %v", err)
+	}
+	if OAuthStateMatches(attacker.Session.StateHash, victim.State) {
+		t.Fatal("fixture is not discriminating: replayed state unexpectedly matches attacker flow")
+	}
+
+	exchangeCalled := false
+	_, session, err := CompleteOAuthCallback(context.Background(), store, attacker.Session.ID, victim.State, "attacker-code",
+		func(context.Context, Session, string) (CredentialCandidate, error) {
+			exchangeCalled = true
+			return CredentialCandidate{Payload: []byte(`{"session_token":"should-not-run"}`)}, nil
+		})
+	if !errors.Is(err, ErrStateMismatch) {
+		t.Fatalf("err=%v want %v", err, ErrStateMismatch)
+	}
+	if exchangeCalled {
+		t.Fatal("exchange ran for replayed state")
+	}
+	if session.Status != StatusFailed || session.ErrorClass != "state_mismatch" {
+		t.Fatalf("session status/class=%s/%s want failed/state_mismatch", session.Status, session.ErrorClass)
+	}
+}
+
 func TestStartOAuthFlowPKCEVerifierEncryptedAtRest(t *testing.T) {
 	now := time.Date(2026, 5, 16, 5, 0, 0, 0, time.UTC)
 	keys, err := credentialstore.NewStaticKeyProvider("test-v1", bytes.Repeat([]byte{7}, 32))

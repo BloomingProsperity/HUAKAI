@@ -152,6 +152,9 @@ func (s *PostgresSessionStore) Create(ctx context.Context, row Session) (Session
 	if row.Status == "" {
 		row.Status = StatusStarted
 	}
+	if row.AuthType == "" {
+		row.AuthType = AuthTypePKCE
+	}
 	if row.ExpiresAt.IsZero() {
 		row.ExpiresAt = s.now().UTC().Add(DefaultFlowTTL)
 	}
@@ -198,6 +201,30 @@ RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind
 		row.ClientIdentitySource, row.RedirectURI, scopes, redacted,
 		row.LongLivedRequested, row.IdempotencyKeyHash, row.ExpiresAt.UTC(),
 	))
+}
+
+func (s *PostgresSessionStore) SetAuthPayload(ctx context.Context, id string, authType AuthType, payload map[string]any) error {
+	if s == nil || s.db == nil {
+		return errors.New("credentialacq: session store not configured")
+	}
+	if authType == "" {
+		authType = AuthTypePKCE
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	const q = `
+UPDATE credential_acquisition_flow_sessions
+SET auth_type = $2::oauth_acquisition_auth_type,
+    device_code_payload = $3::jsonb,
+    updated_at = NOW()
+WHERE id = $1::uuid`
+	_, err = s.db.Exec(ctx, q, strings.TrimSpace(id), string(authType), raw)
+	return err
 }
 
 func (s *PostgresSessionStore) Get(ctx context.Context, id string) (Session, error) {

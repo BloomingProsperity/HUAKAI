@@ -1,0 +1,197 @@
+package credentialacq
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+)
+
+func TestDeviceCodePollHonorsSlowDown(t *testing.T) {
+	now := time.Date(2026, 5, 24, 9, 10, 0, 0, time.UTC)
+	var pollCount atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/device":
+			return jsonHTTPResponse(t, map[string]any{
+				"device_code":      "dev-123",
+				"user_code":        "ABCD-EFGH",
+				"verification_uri": "https://github.example.test/login/device",
+				"expires_in":       900,
+				"interval":         5,
+			}), nil
+		case "/token":
+			switch pollCount.Add(1) {
+			case 1:
+				return jsonHTTPResponse(t, map[string]any{"error": "authorization_pending"}), nil
+			case 2:
+				return jsonHTTPResponse(t, map[string]any{"error": "slow_down"}), nil
+			default:
+				return jsonHTTPResponse(t, map[string]any{
+					"access_token":  "gho-access",
+					"refresh_token": "gho-refresh",
+					"expires_in":    3600,
+				}), nil
+			}
+		default:
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(`{}`)), Header: http.Header{}}, nil
+		}
+	})}
+
+	store := NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now })
+	start, err := StartOAuthFlow(context.Background(), store, StartInput{
+		TenantID: 1, ProviderAccountID: 2,
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,
+		ActorID: "admin-1", ActorRole: "platform_admin",
+	}, OAuthClientConfig{
+		ClientID: "fake-client", AuthURL: "https://fake.copilot.local/device", TokenURL: "https://fake.copilot.local/token",
+		Source: ClientSourceOperatorConfig, HTTPClient: client,
+	})
+	if err != nil {
+		t.Fatalf("StartOAuthFlow: %v", err)
+	}
+	if start.AuthType != AuthTypeDeviceCode {
+		t.Fatalf("auth_type=%q want %q", start.AuthType, AuthTypeDeviceCode)
+	}
+	if start.UserCode != "ABCD-EFGH" || start.VerificationURI == "" {
+		t.Fatalf("device display fields user_code=%q verification_uri=%q", start.UserCode, start.VerificationURI)
+	}
+
+	var sleeps []time.Duration
+	candidate, err := PollDeviceCodeToken(context.Background(), start.Session, OAuthClientConfig{TokenURL: "https://fake.copilot.local/token", ClientID: "fake-client"},
+		WithDeviceCodeHTTPClient(client),
+		WithDeviceCodeNow(func() time.Time { return now }),
+		WithDeviceCodeSleeper(func(_ context.Context, d time.Duration) error {
+			sleeps = append(sleeps, d)
+			return nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("PollDeviceCodeToken: %v", err)
+	}
+	if len(sleeps) != 2 {
+		t.Fatalf("sleep count=%d want 2 (%v)", len(sleeps), sleeps)
+	}
+	if sleeps[0] != 5*time.Second || sleeps[1] != 10*time.Second {
+		t.Fatalf("poll intervals=%v want [5s 10s]", sleeps)
+	}
+	if !(sleeps[1] > sleeps[0]) {
+		t.Fatal("fixture is not discriminating: slow_down did not require a longer interval")
+	}
+	if candidate.Vendor != credentialstore.VendorOpenAI || candidate.AuthMode != credentialstore.AuthModeCodexCLIOAuth {
+		t.Fatalf("candidate target=%s/%s", candidate.Vendor, candidate.AuthMode)
+	}
+	if !json.Valid(candidate.Payload) {
+		t.Fatalf("candidate payload is not JSON: %s", string(candidate.Payload))
+	}
+}
+
+func TestSSOPollGivesUpAtExpiresInBoundary(t *testing.T) {
+	startTime := time.Date(2026, 5, 24, 9, 20, 0, 0, time.UTC)
+	now := startTime
+	expiresAt := startTime.Add(5 * time.Minute)
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/sso/start":
+			return jsonHTTPResponse(t, map[string]any{
+				"deviceCode":      "sso-dev-123",
+				"userCode":        "KIRO-CODE",
+				"verificationUri": "https://device.sso.example.test/",
+				"expiresIn":       300,
+				"interval":        5,
+			}), nil
+		case "/sso/token":
+			return jsonHTTPResponse(t, map[string]any{"error": "authorization_pending"}), nil
+		default:
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(`{}`)), Header: http.Header{}}, nil
+		}
+	})}
+
+	store := NewPostgresSessionStore(newTestSessionDB(startTime)).WithNow(func() time.Time { return now })
+	start, err := StartOAuthFlow(context.Background(), store, StartInput{
+		TenantID: 1, ProviderAccountID: 3,
+		Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeBedrock,
+		ActorID: "admin-1", ActorRole: "platform_admin",
+	}, OAuthClientConfig{
+		ClientID: "fake-sso-client", AuthURL: "https://fake.kiro.local/sso/start", TokenURL: "https://fake.kiro.local/sso/token",
+		Source: ClientSourceOperatorConfig, HTTPClient: client,
+	})
+	if err != nil {
+		t.Fatalf("StartOAuthFlow: %v", err)
+	}
+	if start.AuthType != AuthTypeSSO {
+		t.Fatalf("auth_type=%q want %q", start.AuthType, AuthTypeSSO)
+	}
+
+	totalSlept := time.Duration(0)
+	_, err = PollSSOToken(context.Background(), start.Session, OAuthClientConfig{TokenURL: "https://fake.kiro.local/sso/token", ClientID: "fake-sso-client"},
+		WithDeviceCodeHTTPClient(client),
+		WithDeviceCodeNow(func() time.Time { return now }),
+		WithDeviceCodeSleeper(func(_ context.Context, d time.Duration) error {
+			now = now.Add(d)
+			totalSlept += d
+			if now.After(expiresAt) {
+				return errors.New("poll continued after expires_in boundary")
+			}
+			return nil
+		}),
+	)
+	if !errors.Is(err, ErrFlowExpired) {
+		t.Fatalf("err=%v want %v", err, ErrFlowExpired)
+	}
+	if totalSlept != 5*time.Minute {
+		t.Fatalf("total sleep=%s want 5m", totalSlept)
+	}
+}
+
+func TestOAuthExchangerRegistryRejectsWrongVendorTokenShape(t *testing.T) {
+	session := Session{
+		TenantID: 1, ProviderAccountID: 4,
+		Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeAIOAuth,
+		ActorID: "admin-1",
+	}
+	anthropicToken := `{"access_token":"anthropic-access","refresh_token":"anthropic-refresh"}`
+
+	correct := NewExchangerRegistry()
+	if err := correct.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth), NewPKCEFakeExchanger(TokenShapeAccessRefresh)); err != nil {
+		t.Fatalf("register correct exchanger: %v", err)
+	}
+	if _, err := correct.Exchange(context.Background(), session, anthropicToken); err != nil {
+		t.Fatalf("correct exchanger rejected anthropic token: %v", err)
+	}
+
+	wrong := NewExchangerRegistry()
+	if err := wrong.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth), NewPKCEFakeExchanger(TokenShapeSession)); err != nil {
+		t.Fatalf("register wrong exchanger: %v", err)
+	}
+	_, err := wrong.Exchange(context.Background(), session, anthropicToken)
+	if !errors.Is(err, ErrInvalidTokenShape) {
+		t.Fatalf("err=%v want %v", err, ErrInvalidTokenShape)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func jsonHTTPResponse(t *testing.T, body map[string]any) *http.Response {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal JSON response: %v", err)
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(string(raw))),
+	}
+}
