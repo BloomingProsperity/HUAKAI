@@ -13,12 +13,16 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/BloomingProsperity/HUAKAI/internal/transport"
+	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 )
 
 type Exchanger struct {
-	Config     credentialacq.OAuthClientConfig
-	HTTPClient *http.Client
-	Now        func() time.Time
+	Config           credentialacq.OAuthClientConfig
+	HTTPClient       *http.Client
+	Now              func() time.Time
+	TransportFactory *transport.Factory
+	MimicryRegistry  *mimicry.TemplateRegistry
 }
 
 func init() {
@@ -137,7 +141,7 @@ func (e Exchanger) httpClient() *http.Client {
 	if e.Config.HTTPClient != nil {
 		return e.Config.HTTPClient
 	}
-	return http.DefaultClient
+	return mimicryHTTPClient(e.TransportFactory, e.MimicryRegistry, "token_exchange")
 }
 
 func (e Exchanger) now() time.Time {
@@ -151,6 +155,8 @@ type tokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 	IDToken      string `json:"id_token"`
+	TokenType    string `json:"token_type"`
+	Scope        string `json:"scope"`
 	ExpiresIn    int64  `json:"expires_in"`
 	ExpiresAt    string `json:"expires_at"`
 	Email        string `json:"email"`

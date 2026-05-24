@@ -51,6 +51,14 @@ func NewTemplateRegistry() *TemplateRegistry {
 	return &TemplateRegistry{templates: make(map[TransportMode]*ClientHelloTemplate)}
 }
 
+func NewDefaultTemplateRegistry() *TemplateRegistry {
+	r := NewTemplateRegistry()
+	if err := r.Register(ModeMimicryClaudeCode, AnthropicCLIMimicryV1Template()); err != nil {
+		panic(err)
+	}
+	return r
+}
+
 // Register 注册单个 mode 模板；重复注册会 fail-loud，避免目录里双写覆盖。
 func (r *TemplateRegistry) Register(mode TransportMode, tmpl *ClientHelloTemplate) error {
 	if r == nil {
@@ -158,7 +166,7 @@ func modeFromName(name string) (TransportMode, bool) {
 
 func modeFromKey(key string) (TransportMode, bool) {
 	switch strings.ToLower(key) {
-	case "anthropic-claude-code", "claude-code":
+	case "anthropic-cli-mimicry-v1", "anthropic-claude-code", "claude-code":
 		return ModeMimicryClaudeCode, true
 	case "chatgpt", "chatgpt-web", "codex-cli", "openai-codex", "openai-codex-cli":
 		return ModeMimicryChatGPT, true

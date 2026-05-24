@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 )
 
 func TestStartFlowBuildsAnthropicAuthorizeURL(t *testing.T) {
@@ -122,6 +125,45 @@ func TestCallbackUsesStoredPKCEVerifierForExchange(t *testing.T) {
 	}
 	if payload.Email != "owner@example.test" || payload.AuthMode != credentialstore.AuthModeClaudeAIOAuth {
 		t.Fatalf("payload metadata email/auth_mode=%q/%q", payload.Email, payload.AuthMode)
+	}
+}
+
+func TestDefaultTokenExchangeClientUsesAnthropicMimicryTransport(t *testing.T) {
+	client := (Exchanger{}).httpClient()
+	if client == nil || client.Transport == nil {
+		t.Fatal("default token exchange client must install a mimicry transport")
+	}
+	if client == http.DefaultClient || client.Transport == http.DefaultTransport {
+		t.Fatal("default token exchange client must not silently use stdlib http")
+	}
+	if got := fmt.Sprintf("%T", client.Transport); !strings.Contains(got, "mimicry.roundTripper") {
+		t.Fatalf("default token exchange transport = %s, want mimicry uTLS roundTripper", got)
+	}
+}
+
+func TestTokenExchangeMissingMimicryProfileWarnsBeforeAuditOnlyFallback(t *testing.T) {
+	var logs bytes.Buffer
+	oldDefault := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(oldDefault)
+
+	exchanger := Exchanger{MimicryRegistry: mimicry.NewTemplateRegistry()}
+	client := exchanger.httpClient()
+	if client == nil {
+		t.Fatal("audit-only fallback must still return a client")
+	}
+	if client == http.DefaultClient {
+		t.Fatal("fallback must be explicit, not a silent return of http.DefaultClient")
+	}
+	got := logs.String()
+	for _, want := range []string{
+		"anthropicoauth mimicry transport unavailable",
+		"reason_class=mimicry_transport_unavailable",
+		mimicry.SidecarProfileAnthropicCLIMimicryV1,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("log %q missing %q", got, want)
+		}
 	}
 }
 
