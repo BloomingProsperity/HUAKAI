@@ -28,7 +28,8 @@ WITH audit_union AS (
            COALESCE(upstream_request_id, ''), actor_id, occurred_at FROM rate_limit_audit_events
     UNION ALL
     SELECT id, tenant_id, 'oauth_refresh'::text, outcome,
-           CASE WHEN outcome IN ('storm_budget_exhausted','token_malformed','permanent_disable') THEN 'error'
+           CASE WHEN outcome IN ('storm_budget_exhausted','token_malformed','permanent_disable','auth_expired','risk_control_triggered','account_disabled') THEN 'error'
+                WHEN outcome = 'rate_limit_exceeded' THEN 'warning'
                 WHEN outcome IN ('db_version_conflict','invalid_grant_race_recovered','cas_lost') THEN 'warning' ELSE 'info' END,
            COALESCE(request_id, ''), NULL::text, occurred_at FROM oauth_refresh_audit_events
 )
@@ -192,7 +193,8 @@ WITH audit_union AS (
     FROM rate_limit_audit_events re
     UNION ALL
     SELECT oe.id, oe.tenant_id, 'oauth_refresh'::text, oe.outcome,
-           CASE WHEN oe.outcome IN ('storm_budget_exhausted','token_malformed','permanent_disable') THEN 'error'
+           CASE WHEN oe.outcome IN ('storm_budget_exhausted','token_malformed','permanent_disable','auth_expired','risk_control_triggered','account_disabled') THEN 'error'
+                WHEN oe.outcome = 'rate_limit_exceeded' THEN 'warning'
                 WHEN oe.outcome IN ('db_version_conflict','invalid_grant_race_recovered','cas_lost') THEN 'warning' ELSE 'info' END,
            COALESCE(oe.request_id, ''), 0::bigint, oe.provider_account_id, NULL::bigint, oe.request_id,
            NULL::text, NULL::text, NULL::text,

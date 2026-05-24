@@ -9,14 +9,23 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 )
 
 const defaultCopilotServiceTokenURL = "https://api.github.com/copilot_internal/v2/token"
 
 var ErrCopilotAuthExpired = errors.New("copilot refresh: github authorization expired")
+
+var (
+	copilotSessionTokenJSONPattern = regexp.MustCompile(`(?i)("session_token"\s*:\s*)(?:"(?:[^"\\]|\\.)*"|[^,\s}]+)`)
+	copilotGitHubTokenPattern      = regexp.MustCompile(`\b(gh[oprsu]_)[A-Za-z0-9_]+\b`)
+	copilotGitHubPATPattern        = regexp.MustCompile(`\b(github_pat_)[A-Za-z0-9_]+\b`)
+)
 
 type CopilotCredentialStore interface {
 	LoadCopilotCredential(ctx context.Context, accountID int64) ([]byte, error)
@@ -49,7 +58,12 @@ func (r *CopilotRefresher) Refresh(ctx context.Context, accountID int64) error {
 	newCredential, expiresAt, err := r.Adapter.RefreshForProvider(ctx, accountID, "copilot", current)
 	if err != nil {
 		if recorder, ok := r.Store.(CopilotFailureRecorder); ok {
-			return errors.Join(err, recorder.RecordCopilotRefreshFailure(ctx, accountID, copilotRefreshFailureOutcome(err), err))
+			outcome := auth.RefreshFailureAuditOutcome(
+				auth.ClassifyRefreshError(err, "copilot", copilotRefreshStatusCode(err)),
+				copilotRefreshFailureOutcome(err),
+			)
+			classifiedErr := auth.WithRefreshAuditOutcome(err, outcome)
+			return errors.Join(classifiedErr, recorder.RecordCopilotRefreshFailure(ctx, accountID, outcome, classifiedErr))
 		}
 		return err
 	}
@@ -119,13 +133,15 @@ func (r CopilotRefreshAdapter) fetchServiceToken(ctx context.Context, githubToke
 		return nil, err
 	}
 	defer resp.Body.Close()
+	errorBody := func() string {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return sanitizeCopilotRefreshErrorBody(string(raw))
+	}
 	if resp.StatusCode == http.StatusUnauthorized {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
-		return nil, ErrCopilotAuthExpired
+		return nil, &CopilotRefreshError{StatusCode: resp.StatusCode, Body: errorBody(), Retryable: false, Cause: ErrCopilotAuthExpired}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("service token endpoint returned status %d", resp.StatusCode)
+		return nil, &CopilotRefreshError{StatusCode: resp.StatusCode, Body: errorBody(), Retryable: resp.StatusCode >= http.StatusInternalServerError}
 	}
 	decoder := json.NewDecoder(io.LimitReader(resp.Body, 1<<20))
 	decoder.UseNumber()
@@ -134,6 +150,46 @@ func (r CopilotRefreshAdapter) fetchServiceToken(ctx context.Context, githubToke
 		return nil, fmt.Errorf("service token response invalid: %w", err)
 	}
 	return out, nil
+}
+
+func sanitizeCopilotRefreshErrorBody(body string) string {
+	msg := strings.TrimSpace(body)
+	if msg == "" {
+		return ""
+	}
+	msg = copilotSessionTokenJSONPattern.ReplaceAllString(msg, `${1}"<redacted>"`)
+	msg = copilotGitHubPATPattern.ReplaceAllString(msg, `${1}<redacted>`)
+	msg = copilotGitHubTokenPattern.ReplaceAllString(msg, `${1}<redacted>`)
+	return auth.SanitizeOAuthMessage(msg)
+}
+
+type CopilotRefreshError struct {
+	StatusCode int
+	Body       string
+	Retryable  bool
+	Cause      error
+}
+
+func (e *CopilotRefreshError) Error() string {
+	if e == nil {
+		return "copilot refresh: service token endpoint failed"
+	}
+	body := ""
+	if e.Body != "" {
+		body = fmt.Sprintf(" body=%q", e.Body)
+	}
+	return fmt.Sprintf("copilot refresh: service token endpoint returned status %d%s", e.StatusCode, body)
+}
+
+func (e *CopilotRefreshError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func (e *CopilotRefreshError) RetryableRefresh() bool {
+	return e != nil && e.Retryable
 }
 
 func (r CopilotRefreshAdapter) serviceTokenExpiry(service map[string]any) (time.Time, int64) {
@@ -218,6 +274,14 @@ func copilotRefreshFailureOutcome(err error) string {
 		return "auth_expired"
 	}
 	return "refresh_failed"
+}
+
+func copilotRefreshStatusCode(err error) int {
+	var refreshErr *CopilotRefreshError
+	if errors.As(err, &refreshErr) {
+		return refreshErr.StatusCode
+	}
+	return 0
 }
 
 func copilotChatEndpointFromAPIBase(apiBase string) string {

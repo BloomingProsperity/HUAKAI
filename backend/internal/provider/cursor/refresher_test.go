@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
@@ -58,8 +59,6 @@ func TestCursorRefreshAdapterSuccessMergesTokenAndPreservesConfig(t *testing.T) 
 		Now:        func() time.Time { return now },
 	}).RefreshForProvider(context.Background(), 42, "cursor", []byte(`{
 		"refresh_token":"cursor-refresh-old",
-		"oauth_token_endpoint":"https://cursor-oauth.example.test/token",
-		"client_id":"cursor-client",
 		"keep":"yes"
 	}`))
 	if err != nil {
@@ -78,6 +77,85 @@ func TestCursorRefreshAdapterSuccessMergesTokenAndPreservesConfig(t *testing.T) 
 	if got["refresh_token"] != "cursor-refresh-new" || got["keep"] != "yes" || got["client_id"] != "cursor-client" {
 		t.Fatalf("preserved/rotated fields=%v", got)
 	}
+}
+
+func TestCursorRefreshAdapterRejectsCredentialSuppliedOAuthConfig(t *testing.T) {
+	t.Run("token endpoint from credential is ignored", func(t *testing.T) {
+		// Regression killed: attacker-controlled credential JSON must not decide
+		// where the refresh token is POSTed. Mutation self-check: reading
+		// oauth_token_endpoint/token_endpoint from credential calls this HTTP
+		// client and turns the test red.
+		calledURL := ""
+		client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			calledURL = r.URL.String()
+			return cursorJSONResponse(http.StatusOK, `{"access_token":"unexpected","expires_in":60}`), nil
+		})}
+
+		_, _, err := (RefreshAdapter{
+			ClientID:   "cursor-client",
+			HTTPClient: client,
+		}).RefreshForProvider(context.Background(), 43, "cursor", []byte(`{
+			"refresh_token":"cursor-refresh-old",
+			"oauth_token_endpoint":"http://evil.attacker.com/token"
+		}`))
+		if !errors.Is(err, ErrCursorOAuthConfigRequired) {
+			t.Fatalf("RefreshForProvider err=%v, want ErrCursorOAuthConfigRequired", err)
+		}
+		if calledURL != "" {
+			t.Fatalf("credential-supplied token endpoint was used: %s", calledURL)
+		}
+	})
+
+	t.Run("client id from credential is ignored", func(t *testing.T) {
+		called := false
+		client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			called = true
+			return cursorJSONResponse(http.StatusOK, `{"access_token":"unexpected","expires_in":60}`), nil
+		})}
+
+		_, _, err := (RefreshAdapter{
+			TokenURL:   "https://cursor-oauth.example.test/token",
+			HTTPClient: client,
+		}).RefreshForProvider(context.Background(), 44, "cursor", []byte(`{
+			"refresh_token":"cursor-refresh-old",
+			"client_id":"attacker-client"
+		}`))
+		if !errors.Is(err, ErrCursorOAuthConfigRequired) {
+			t.Fatalf("RefreshForProvider err=%v, want ErrCursorOAuthConfigRequired", err)
+		}
+		if called {
+			t.Fatal("refresh called HTTP client despite missing operator client_id")
+		}
+	})
+
+	t.Run("scope from credential is ignored", func(t *testing.T) {
+		client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				return nil, err
+			}
+			form, err := url.ParseQuery(string(body))
+			if err != nil {
+				return nil, err
+			}
+			if got := form.Get("scope"); got != "" {
+				return nil, errors.New("credential scope was sent: " + got)
+			}
+			return cursorJSONResponse(http.StatusOK, `{"access_token":"cursor-access-new","expires_in":60}`), nil
+		})}
+
+		_, _, err := (RefreshAdapter{
+			TokenURL:   "https://cursor-oauth.example.test/token",
+			ClientID:   "cursor-client",
+			HTTPClient: client,
+		}).RefreshForProvider(context.Background(), 45, "cursor", []byte(`{
+			"refresh_token":"cursor-refresh-old",
+			"scope":"credential-controlled-scope"
+		}`))
+		if err != nil {
+			t.Fatalf("RefreshForProvider: %v", err)
+		}
+	})
 }
 
 func TestCursorRefreshAdapterClassifiesHTTPFailures(t *testing.T) {
@@ -138,7 +216,7 @@ func TestCursorRefresherRecordsFailureOutcomeInsideRefreshLock(t *testing.T) {
 		},
 	}
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return cursorJSONResponse(http.StatusTooManyRequests, `{"error":"slow_down"}`), nil
+		return cursorJSONResponse(http.StatusUnauthorized, `{"error":"bad_credentials"}`), nil
 	})}
 	refresher := &Refresher{
 		Store: store,
@@ -152,15 +230,18 @@ func TestCursorRefresherRecordsFailureOutcomeInsideRefreshLock(t *testing.T) {
 	}
 
 	err := refresher.Refresh(context.Background(), 42)
-	if err == nil {
-		t.Fatal("Refresh err=nil, want rate limit")
+	if !errors.Is(err, ErrCursorAuthExpired) {
+		t.Fatalf("Refresh err=%v, want ErrCursorAuthExpired", err)
 	}
-	wantCalls := []string{"probe", "tx_begin", "lock:71", "reread", "failure:71:rate_limit_exceeded"}
+	if got := auth.RefreshAuditOutcomeFromError(err); got != "auth_expired" {
+		t.Fatalf("refresh audit outcome=%q, want auth_expired", got)
+	}
+	wantCalls := []string{"probe", "tx_begin", "lock:71", "reread", "failure:71:auth_expired"}
 	if strings.Join(calls, "|") != strings.Join(wantCalls, "|") {
 		t.Fatalf("calls=%v, want %v", calls, wantCalls)
 	}
 	if store.saved {
-		t.Fatal("rate-limited refresh must not save success payload")
+		t.Fatal("failed refresh must not save success payload")
 	}
 }
 

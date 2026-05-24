@@ -279,3 +279,43 @@ func TestRecordAudit_TxCommit_HappyPath(t *testing.T) {
 		t.Fatalf("ledger row missing; want 1 got %d", ledgerCount)
 	}
 }
+
+func TestRecordAuditString_NewOutcomePersistsToPG(t *testing.T) {
+	// Regression killed: S2 refreshers pass classified outcomes as strings;
+	// the audit append helper must persist both legacy and new 4-class values.
+	// Mutation self-check: mapping unknown strings to permanent_disable makes
+	// the SELECT below miss the exact row.
+	ctx := context.Background()
+	pool := openCredentialWorkerTestPool(t, ctx)
+	suffix := uuid.NewString()
+	tenantID, paID := seedCredentialWorkerProviderAccount(t, ctx, pool, suffix)
+
+	signer := newTestSigner(t)
+	s := newSchedulerForAuditTx(t, pool, signer)
+	row := dbbilling.ListAccountsForRefreshRow{ID: paID, TenantID: tenantID}
+
+	for _, outcome := range []string{
+		"auth_expired",
+		"rate_limit_exceeded",
+		"risk_control_triggered",
+		"account_disabled",
+	} {
+		if err := s.recordAuditString(ctx, row, outcome, "account", errors.New("classified refresh failure")); err != nil {
+			t.Fatalf("recordAuditString(%q): %v", outcome, err)
+		}
+		var got string
+		if err := pool.QueryRow(ctx, `
+			SELECT outcome
+			FROM oauth_refresh_audit_events
+			WHERE tenant_id = $1 AND provider_account_id = $2 AND outcome = $3
+			ORDER BY occurred_at DESC, id DESC
+			LIMIT 1`,
+			tenantID, paID, outcome,
+		).Scan(&got); err != nil {
+			t.Fatalf("select persisted outcome %q: %v", outcome, err)
+		}
+		if got != outcome {
+			t.Fatalf("persisted outcome=%q, want %q", got, outcome)
+		}
+	}
+}

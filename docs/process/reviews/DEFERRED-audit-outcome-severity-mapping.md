@@ -30,3 +30,5 @@
   ```
   S2 实施时按真实 ops 需求确认每行映射。
 - **Tracker**: 跟 [[2026-05-24-auth-expired-schema-gate-synthesis]] S2 切片合并
+
+[CLOSED 2026-05-24 by S2 切片实施]

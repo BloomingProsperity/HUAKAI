@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
@@ -148,10 +149,11 @@ func (r *Refresher) refreshLockedRecord(ctx context.Context, txStore RefreshTxSt
 	}
 	payload, expiresAt, err := r.Adapter.RefreshForProvider(ctx, accountID, CursorVendor, rec.PlaintextPayload)
 	if err != nil {
-		if saveErr := txStore.SaveRefreshFailure(ctx, rec, classifyRefreshFailure(err), nextAttemptForRefreshError(err, r.now())); saveErr != nil {
+		failureClass := classifyRefreshFailure(err)
+		if saveErr := txStore.SaveRefreshFailure(ctx, rec, failureClass, nextAttemptForRefreshError(err, r.now())); saveErr != nil {
 			return nil, saveErr
 		}
-		return err, nil
+		return auth.WithRefreshAuditOutcome(err, failureClass), nil
 	}
 	if err := txStore.SaveRefreshSuccess(ctx, rec, payload, expiresAt, refreshSucceeded); err != nil {
 		return nil, err
@@ -183,11 +185,11 @@ func (a RefreshAdapter) RefreshForProvider(ctx context.Context, accountID int64,
 	if refreshToken == "" {
 		return nil, time.Time{}, fmt.Errorf("cursor refresh account %d: %w: refresh_token is empty", accountID, credentialstore.ErrInvalidPayload)
 	}
-	tokenURL := firstNonEmpty(a.TokenURL, credentialString(cred, "oauth_token_endpoint"), credentialString(cred, "token_endpoint"))
+	tokenURL := strings.TrimSpace(a.TokenURL)
 	if tokenURL == "" {
 		return nil, time.Time{}, fmt.Errorf("cursor refresh account %d: %w: token_url", accountID, ErrCursorOAuthConfigRequired)
 	}
-	clientID := firstNonEmpty(a.ClientID, credentialString(cred, "client_id"))
+	clientID := strings.TrimSpace(a.ClientID)
 	if clientID == "" {
 		return nil, time.Time{}, fmt.Errorf("cursor refresh account %d: %w: client_id", accountID, ErrCursorOAuthConfigRequired)
 	}
@@ -195,7 +197,7 @@ func (a RefreshAdapter) RefreshForProvider(ctx context.Context, accountID int64,
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 	form.Set("client_id", clientID)
-	if scope := firstNonEmpty(a.Scope, credentialString(cred, "scope")); scope != "" {
+	if scope := strings.TrimSpace(a.Scope); scope != "" {
 		form.Set("scope", scope)
 	}
 	token, err := a.postRefresh(ctx, tokenURL, form)

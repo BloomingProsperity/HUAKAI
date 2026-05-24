@@ -54,6 +54,35 @@ func TestRefresherInvalidGrantRecordsAuthExpiredInRefreshTransaction(t *testing.
 	}
 }
 
+func TestRefresherUnauthorizedStatusRecordsAuthExpiredViaOutcomeClassifier(t *testing.T) {
+	// Regression killed: Anthropic 401 must use the shared refresh outcome
+	// classifier, not only the legacy invalid_grant body parser. Mutation
+	// self-check: forcing the classifier bridge to return unknown records
+	// non_retryable and this test turns red.
+	now := time.Date(2026, 5, 24, 10, 32, 0, 0, time.UTC)
+	store := newMemoryRefreshStore()
+	client := &http.Client{Transport: refreshRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return refreshJSONResponse(http.StatusUnauthorized, map[string]any{"error": "unauthorized"}), nil
+	})}
+	refresher := &Refresher{
+		Store:      store,
+		Endpoint:   "https://console.anthropic.test/v1/oauth/token",
+		HTTPClient: client,
+		Now:        func() time.Time { return now },
+	}
+
+	err := refresher.Refresh(context.Background(), 101)
+	if !errors.Is(err, ErrAnthropicNonRetryable) {
+		t.Fatalf("Refresh err=%v, want ErrAnthropicNonRetryable", err)
+	}
+	if store.failureClass != "auth_expired" {
+		t.Fatalf("failureClass=%q, want auth_expired", store.failureClass)
+	}
+	if got := store.calls[len(store.calls)-2]; got != "audit:credential_refresh_failed:auth_expired" {
+		t.Fatalf("audit append call=%q, want auth_expired", got)
+	}
+}
+
 func TestRefresherRateLimitUsesRetryAfterAndDoesNotRepeatRequest(t *testing.T) {
 	now := time.Date(2026, 5, 24, 10, 35, 0, 0, time.UTC)
 	var attempts int32

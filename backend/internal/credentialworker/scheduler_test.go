@@ -9,10 +9,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/cursor"
 )
 
 func TestSchedulerTickTriggersRefresh(t *testing.T) {
@@ -213,8 +219,57 @@ func TestSchedulerCopilotVendorRefresherRecordsAuthExpiredOn401(t *testing.T) {
 	if len(store.saved) != 0 {
 		t.Fatalf("expired Copilot auth must not save credential: %s", string(store.saved))
 	}
-	if got := audit.lastOutcome(); got != auth.OutcomePermanentDisable {
-		t.Fatalf("scheduler audit outcome=%q, want permanent_disable", got)
+	if got := audit.lastOutcome(); got != auth.RefreshAuditOutcome("auth_expired") {
+		t.Fatalf("scheduler audit outcome=%q, want auth_expired", got)
+	}
+}
+
+func TestSchedulerCursorVendorRefresherRecordsAuthExpiredOn401(t *testing.T) {
+	// Regression killed: CursorRefresher must carry its 401 classification to
+	// scheduler audit. Mutation self-check: returning the bare Cursor error
+	// leaves no auth_expired sidecar, so scheduler writes permanent_disable.
+	store := &schedulerCursorStore{rec: credentialstore.CredentialRecord{
+		ID: 91, TenantID: 7, ProviderAccountID: 25,
+		Vendor: "cursor", AuthMode: "oauth", CredentialVersion: 2,
+		PlaintextPayload: []byte(`{"refresh_token":"expired-cursor-refresh"}`),
+	}}
+	client := &http.Client{Transport: schedulerRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":"bad_credentials"}`)),
+		}, nil
+	})}
+	audit := &auditSpy{}
+	refresher := &cursor.Refresher{
+		Store: store,
+		Adapter: cursor.RefreshAdapter{
+			TokenURL:   "https://cursor-oauth.example.test/token",
+			ClientID:   "cursor-client",
+			HTTPClient: client,
+			Now:        func() time.Time { return time.Date(2026, 5, 24, 10, 30, 0, 0, time.UTC) },
+		},
+		Now: func() time.Time { return time.Date(2026, 5, 24, 10, 30, 0, 0, time.UTC) },
+	}
+	s := newTestScheduler([]dbbilling.ListAccountsForRefreshRow{testAccountWithVendor(25, "cursor")}, &stormSpy{}, &refresherSpy{},
+		WithMaxAttempts(1),
+		WithVendorRefresher("cursor", refresher),
+		withAuditWriter(audit),
+		WithAuditLedger(&ledgerSpy{}),
+	)
+
+	err := s.RunOnce(context.Background())
+	if !errors.Is(err, cursor.ErrCursorAuthExpired) {
+		t.Fatalf("RunOnce err=%v, want ErrCursorAuthExpired", err)
+	}
+	if store.failureAccountID != 25 || store.failureOutcome != "auth_expired" {
+		t.Fatalf("cursor failure hook=(account=%d outcome=%q), want account 25 auth_expired", store.failureAccountID, store.failureOutcome)
+	}
+	if len(store.saved) != 0 {
+		t.Fatalf("expired Cursor auth must not save credential: %s", string(store.saved))
+	}
+	if got := audit.lastOutcome(); got != auth.RefreshAuditOutcome("auth_expired") {
+		t.Fatalf("scheduler audit outcome=%q, want auth_expired", got)
 	}
 }
 
@@ -384,6 +439,58 @@ func (s *schedulerCopilotStore) RecordCopilotRefreshFailure(_ context.Context, a
 	s.failureAccountID = accountID
 	s.failureOutcome = outcome
 	return nil
+}
+
+type schedulerCursorStore struct {
+	rec              credentialstore.CredentialRecord
+	saved            []byte
+	failureAccountID int64
+	failureOutcome   string
+}
+
+func (s *schedulerCursorStore) LoadForRefresh(context.Context, int64) (credentialstore.CredentialRecord, error) {
+	return cloneSchedulerCursorRecord(s.rec), nil
+}
+
+func (s *schedulerCursorStore) WithRefreshTransaction(_ context.Context, fn func(cursor.RefreshTxStore, db.DBTX) error) error {
+	tx := &schedulerCursorTx{store: s}
+	return fn(tx, tx)
+}
+
+type schedulerCursorTx struct {
+	store *schedulerCursorStore
+}
+
+func (tx *schedulerCursorTx) Exec(context.Context, string, ...interface{}) (pgconn.CommandTag, error) {
+	return pgconn.CommandTag{}, nil
+}
+
+func (tx *schedulerCursorTx) Query(context.Context, string, ...interface{}) (pgx.Rows, error) {
+	return nil, nil
+}
+
+func (tx *schedulerCursorTx) QueryRow(context.Context, string, ...interface{}) pgx.Row {
+	return nil
+}
+
+func (tx *schedulerCursorTx) LoadForRefresh(context.Context, int64) (credentialstore.CredentialRecord, error) {
+	return cloneSchedulerCursorRecord(tx.store.rec), nil
+}
+
+func (tx *schedulerCursorTx) SaveRefreshSuccess(_ context.Context, rec credentialstore.CredentialRecord, credential []byte, _ time.Time, _ string) error {
+	tx.store.saved = append([]byte(nil), credential...)
+	return nil
+}
+
+func (tx *schedulerCursorTx) SaveRefreshFailure(_ context.Context, rec credentialstore.CredentialRecord, failureClass string, _ time.Time) error {
+	tx.store.failureAccountID = rec.ProviderAccountID
+	tx.store.failureOutcome = failureClass
+	return nil
+}
+
+func cloneSchedulerCursorRecord(rec credentialstore.CredentialRecord) credentialstore.CredentialRecord {
+	rec.PlaintextPayload = append([]byte(nil), rec.PlaintextPayload...)
+	return rec
 }
 
 type schedulerRoundTripFunc func(*http.Request) (*http.Response, error)

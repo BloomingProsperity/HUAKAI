@@ -119,6 +119,154 @@ func TestCopilotRefresherRecordsAuthExpiredOn401(t *testing.T) {
 	}
 }
 
+func TestCopilotRefresherRedactsTokenMaterialFromRecordedFailure(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		leaked   []string
+		expected []string
+	}{
+		{
+			name:     "session token json field",
+			body:     `{"message":"bad credentials","session_token":"st_test_abc123"}`,
+			leaked:   []string{"st_test_abc123"},
+			expected: []string{`"session_token":"<redacted>"`},
+		},
+		{
+			name:     "github user token",
+			body:     `{"message":"bad credentials ghu_AAAAAAAA"}`,
+			leaked:   []string{"ghu_AAAAAAAA"},
+			expected: []string{"ghu_<redacted>"},
+		},
+		{
+			name:     "github app oauth token",
+			body:     `{"message":"bad credentials gho_BBBBBBBB"}`,
+			leaked:   []string{"gho_BBBBBBBB"},
+			expected: []string{"gho_<redacted>"},
+		},
+		{
+			name:     "github classic personal token",
+			body:     `{"message":"bad credentials ghp_CCCCCCCC"}`,
+			leaked:   []string{"ghp_CCCCCCCC"},
+			expected: []string{"ghp_<redacted>"},
+		},
+		{
+			name:     "github server token",
+			body:     `{"message":"bad credentials ghs_DDDDDDDD"}`,
+			leaked:   []string{"ghs_DDDDDDDD"},
+			expected: []string{"ghs_<redacted>"},
+		},
+		{
+			name:     "github refresh token",
+			body:     `{"message":"bad credentials ghr_EEEEEEEE"}`,
+			leaked:   []string{"ghr_EEEEEEEE"},
+			expected: []string{"ghr_<redacted>"},
+		},
+		{
+			name:     "github fine grained personal token",
+			body:     `{"message":"bad credentials github_pat_FFFFFFFF_12345678"}`,
+			leaked:   []string{"github_pat_FFFFFFFF_12345678"},
+			expected: []string{"github_pat_<redacted>"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &memoryCopilotRefreshStore{raw: []byte(`{"github_access_token":"expired-github-token"}`)}
+			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return copilotJSONResponse(http.StatusUnauthorized, tc.body), nil
+			})}
+			refresher := &CopilotRefresher{
+				Store: store,
+				Adapter: CopilotRefreshAdapter{
+					TokenURL:   "https://api.github.test/copilot_internal/v2/token",
+					HTTPClient: client,
+					Now:        func() time.Time { return time.Date(2026, 5, 24, 9, 7, 0, 0, time.UTC) },
+				},
+			}
+
+			err := refresher.Refresh(context.Background(), 47)
+			if err == nil {
+				t.Fatal("Refresh err=nil, want sanitized auth failure")
+			}
+			var refreshErr *CopilotRefreshError
+			if !errors.As(err, &refreshErr) {
+				t.Fatalf("Refresh err=%T, want CopilotRefreshError", err)
+			}
+			auditMessage := err.Error() + " " + store.failureCause
+			for _, leaked := range tc.leaked {
+				if strings.Contains(auditMessage, leaked) {
+					t.Fatalf("audit error leaked token material %q in %q", leaked, auditMessage)
+				}
+			}
+			for _, expected := range tc.expected {
+				if !strings.Contains(refreshErr.Body, expected) {
+					t.Fatalf("redacted body=%q, want sanitized marker %q", refreshErr.Body, expected)
+				}
+			}
+		})
+	}
+}
+
+func TestCopilotRefresherRecordsRateLimitOn429(t *testing.T) {
+	// Regression killed: 429 from the service-token endpoint must persist the
+	// shared rate-limit outcome. Mutation self-check: forcing the classifier
+	// bridge to unknown leaves refresh_failed and this test turns red.
+	store := &memoryCopilotRefreshStore{raw: []byte(`{"github_access_token":"rate-limited-github-token"}`)}
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return copilotJSONResponse(http.StatusTooManyRequests, `{"message":"too many requests"}`), nil
+	})}
+	refresher := &CopilotRefresher{
+		Store: store,
+		Adapter: CopilotRefreshAdapter{
+			TokenURL:   "https://api.github.test/copilot_internal/v2/token",
+			HTTPClient: client,
+			Now:        func() time.Time { return time.Date(2026, 5, 24, 9, 5, 0, 0, time.UTC) },
+		},
+	}
+
+	err := refresher.Refresh(context.Background(), 45)
+	if err == nil {
+		t.Fatal("Refresh err=nil, want rate-limit failure")
+	}
+	if store.failureOutcome != "rate_limit_exceeded" || store.failureAccountID != 45 {
+		t.Fatalf("failure hook=(account=%d outcome=%q), want rate_limit_exceeded for account 45", store.failureAccountID, store.failureOutcome)
+	}
+	if len(store.saved) != 0 {
+		t.Fatalf("rate-limited token must not save refreshed credential: %s", string(store.saved))
+	}
+}
+
+func TestCopilotRefresherRecordsRiskControlOn403RiskBody(t *testing.T) {
+	// Regression killed: 403 risk-control bodies must not be flattened into
+	// generic refresh_failed. Mutation self-check: dropping the safe response
+	// body from the classified error leaves outcome unknown and this test turns
+	// red.
+	store := &memoryCopilotRefreshStore{raw: []byte(`{"github_access_token":"risk-github-token"}`)}
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return copilotJSONResponse(http.StatusForbidden, `{"message":"risk control triggered"}`), nil
+	})}
+	refresher := &CopilotRefresher{
+		Store: store,
+		Adapter: CopilotRefreshAdapter{
+			TokenURL:   "https://api.github.test/copilot_internal/v2/token",
+			HTTPClient: client,
+			Now:        func() time.Time { return time.Date(2026, 5, 24, 9, 6, 0, 0, time.UTC) },
+		},
+	}
+
+	err := refresher.Refresh(context.Background(), 46)
+	if err == nil {
+		t.Fatal("Refresh err=nil, want risk-control failure")
+	}
+	if store.failureOutcome != "risk_control_triggered" || store.failureAccountID != 46 {
+		t.Fatalf("failure hook=(account=%d outcome=%q), want risk_control_triggered for account 46", store.failureAccountID, store.failureOutcome)
+	}
+	if len(store.saved) != 0 {
+		t.Fatalf("risk-control token must not save refreshed credential: %s", string(store.saved))
+	}
+}
+
 func TestCopilotSessionAdapterIntegrationIDRequiredByMockBackend(t *testing.T) {
 	// Regression killed: Copilot-Integration-Id is required by strict upstreams.
 	// Mutation self-check: removing the header makes the mock backend return 400.
@@ -156,6 +304,7 @@ type memoryCopilotRefreshStore struct {
 	savedExpiresAt   time.Time
 	failureAccountID int64
 	failureOutcome   string
+	failureCause     string
 }
 
 func (s *memoryCopilotRefreshStore) LoadCopilotCredential(_ context.Context, accountID int64) ([]byte, error) {
@@ -168,9 +317,12 @@ func (s *memoryCopilotRefreshStore) SaveCopilotCredential(_ context.Context, acc
 	return nil
 }
 
-func (s *memoryCopilotRefreshStore) RecordCopilotRefreshFailure(_ context.Context, accountID int64, outcome string, _ error) error {
+func (s *memoryCopilotRefreshStore) RecordCopilotRefreshFailure(_ context.Context, accountID int64, outcome string, cause error) error {
 	s.failureAccountID = accountID
 	s.failureOutcome = outcome
+	if cause != nil {
+		s.failureCause = cause.Error()
+	}
 	return nil
 }
 

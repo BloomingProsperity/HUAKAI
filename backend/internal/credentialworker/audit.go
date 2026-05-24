@@ -75,6 +75,10 @@ func (s *Scheduler) recordAudit(ctx context.Context, account dbbilling.ListAccou
 	return errors.Join(auditErr, ledgerErr)
 }
 
+func (s *Scheduler) recordAuditString(ctx context.Context, account dbbilling.ListAccountsForRefreshRow, outcome string, scope string, cause error) error {
+	return s.recordAudit(ctx, account, auth.RefreshAuditOutcome(outcome), scope, cause)
+}
+
 // refreshAuditParams 把 auth.RefreshAuditEntry 转 sqlc InsertOAuthRefreshAuditEventParams,
 // 同事务/legacy 路径共用。
 func refreshAuditParams(entry *auth.RefreshAuditEntry) dbauth.InsertOAuthRefreshAuditEventParams {
