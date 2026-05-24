@@ -134,6 +134,9 @@ mod tests {
             ("HUAKAI_LOG_LEVEL".to_owned(), "debug".to_owned()),
             ("HUAKAI_JSON_LOGS".to_owned(), json_logs.to_string()),
             ("HUAKAI_WORKER_THREADS".to_owned(), "1".to_owned()),
+            // W12-A D-4 第三方 P1 finding 2026-05-24: production validate 要求 spool
+            // 配置, dev 模式默认 disabled 不破坏现有 tracing init 单元测试。
+            ("HUAKAI_RUNTIME_MODE".to_owned(), "development".to_owned()),
         ])
         .expect("测试配置应可解析")
     }

@@ -440,6 +440,9 @@ mod tests {
                 "HUAKAI_SERVER_HEADER_READ_TIMEOUT_MS".to_owned(),
                 "30000".to_owned(),
             ),
+            // W12-A D-4 第三方 P1 finding 2026-05-24: production validate 要求 spool
+            // 配置, dev 模式默认 disabled 不破坏现有 resource limit 单元测试。
+            ("HUAKAI_RUNTIME_MODE".to_owned(), "development".to_owned()),
         ])
         .expect("resource limit test config 应解析成功")
     }

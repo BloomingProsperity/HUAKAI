@@ -153,9 +153,12 @@ fn test_config_with_resource_limits_and_timeouts(
 
     if let Some(endpoint) = mock_upstream_endpoint {
         env.push(("HUAKAI_MOCK_UPSTREAM_ENDPOINT".to_owned(), endpoint));
-        // W11-D2: mock 上游要求 dev/test 模式 (production 守门会 fail-fast)
-        env.push(("HUAKAI_RUNTIME_MODE".to_owned(), "development".to_owned()));
     }
+    // W11-D2 + W12-A D-4 第三方 P1 finding 2026-05-24: listener 集成测试一律
+    // dev 模式 — 既允许可选 mock 上游, 又免去强制 spool 配置 (production validate
+    // 要求 HUAKAI_SPOOL_ENABLED + DIR, dev/test 默认 disabled)。production-mode
+    // 行为由 config.rs 单元测试覆盖, 此处不重复。
+    env.push(("HUAKAI_RUNTIME_MODE".to_owned(), "development".to_owned()));
 
     StartupConfig::from_env_iter(env).expect("listener 测试配置应可解析")
 }
@@ -240,6 +243,89 @@ async fn mock_upstream_emits_explicit_mock_attempt_event() {
         baseline + 1,
         "mock 上游路径必须发恰好 1 个 attempt event 让审计可见 (baseline={baseline}, after={after})"
     );
+}
+
+/// W12-A D-4 第三方 P1 finding 2026-05-24: production 模式启动 + 显式 spool 配置时,
+/// GatewayState 必须真把 spool 接到 AttemptReporter — `has_durable_spool() == true`。
+///
+/// 判别性 + mutation 设计:
+/// 1) 跳过 mock_upstream_endpoint (production validate 拒绝), 显式提供 spool dir 通过校验。
+/// 2) `state.attempt_reporter().has_durable_spool()` 必须 == true (D-4 真接入)。
+///
+/// mutation:
+/// - 在 lib.rs::GatewayState::new 退回到 AttemptReporter::spawn(route_client) 不传 options ->
+///   reporter 内 spool 永远 None -> has_durable_spool() == false -> 红。
+/// - 把 attempt_spool_options() 的 enabled 字段固定写 false -> 同样红。
+#[tokio::test]
+async fn production_gateway_state_wires_durable_spool_into_attempt_reporter() {
+    let _drain_guard = DrainModeReset::set(false);
+
+    // 用 tempdir 防与其它测试争抢同一 spool 目录
+    let tmp_dir = std::env::temp_dir().join(format!(
+        "huakai-prod-spool-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+
+    let env: Vec<(String, String)> = vec![
+        ("HUAKAI_LISTEN_ADDR".to_owned(), "127.0.0.1:0".to_owned()),
+        (
+            "HUAKAI_CONTROL_PLANE_ENDPOINT".to_owned(),
+            "http://127.0.0.1:48080".to_owned(),
+        ),
+        ("HUAKAI_TRANSPORT_BASELINE".to_owned(), "http".to_owned()),
+        ("HUAKAI_LOG_LEVEL".to_owned(), "warn".to_owned()),
+        ("HUAKAI_JSON_LOGS".to_owned(), "true".to_owned()),
+        ("HUAKAI_WORKER_THREADS".to_owned(), "1".to_owned()),
+        ("HUAKAI_MAX_BODY_BYTES".to_owned(), "4194304".to_owned()),
+        ("HUAKAI_MAX_IN_FLIGHT_REQUESTS".to_owned(), "0".to_owned()),
+        ("HUAKAI_MAX_CONNECTIONS".to_owned(), "0".to_owned()),
+        ("HUAKAI_OVERLOAD_RETRY_AFTER_SECS".to_owned(), "1".to_owned()),
+        (
+            "HUAKAI_UPSTREAM_BODY_IDLE_TIMEOUT_MS".to_owned(),
+            "300000".to_owned(),
+        ),
+        (
+            "HUAKAI_DOWNSTREAM_WRITE_IDLE_TIMEOUT_MS".to_owned(),
+            "60000".to_owned(),
+        ),
+        (
+            "HUAKAI_REQUEST_BODY_IDLE_TIMEOUT_MS".to_owned(),
+            "30000".to_owned(),
+        ),
+        (
+            "HUAKAI_SERVER_HEADER_READ_TIMEOUT_MS".to_owned(),
+            "30000".to_owned(),
+        ),
+        // 关键: production 模式必须有 spool config
+        ("HUAKAI_RUNTIME_MODE".to_owned(), "production".to_owned()),
+        ("HUAKAI_SPOOL_ENABLED".to_owned(), "true".to_owned()),
+        (
+            "HUAKAI_SPOOL_DIR".to_owned(),
+            tmp_dir.to_string_lossy().into_owned(),
+        ),
+        // production validate 拒绝 fsync=false (Codex round 2 P2 fix), 必须 true
+        ("HUAKAI_SPOOL_FSYNC_ON_WRITE".to_owned(), "true".to_owned()),
+    ];
+
+    let config = StartupConfig::from_env_iter(env).expect("production spool 配置应解析成功");
+    assert!(
+        config.spool_enabled,
+        "config.spool_enabled 必须 true 才能让 GatewayState 接 spool"
+    );
+
+    let state = GatewayState::new(config).expect("production GatewayState 应可构建");
+    assert!(
+        state.attempt_reporter().has_durable_spool(),
+        "production GatewayState 启动后 attempt_reporter 必须 has_durable_spool=true \
+         (lib.rs::GatewayState::new 调 spawn_with_options 时把 spool 接进去); \
+         实际 false 说明 mutation 复现第三方 P1 finding (spool 形同虚设)"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
 /// P1-7 (W11 同源) 2026-05-24: mock 分支 forward 前必须主动 strip 客户端凭据头

@@ -19,6 +19,9 @@ fn env_pairs() -> Vec<(String, String)> {
         ("HUAKAI_LOG_LEVEL", "debug"),
         ("HUAKAI_JSON_LOGS", "true"),
         ("HUAKAI_WORKER_THREADS", "2"),
+        // W12-A D-4 第三方 P1 finding 2026-05-24: production validate 要求 spool
+        // 配置, dev 模式默认 disabled 不破坏现有 smoke 测试。
+        ("HUAKAI_RUNTIME_MODE", "development"),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v.to_owned()))

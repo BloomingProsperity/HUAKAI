@@ -111,6 +111,22 @@ pub struct StartupConfig {
     pub request_body_idle_timeout_ms: u64,
     /// HTTP/1 header 读取超时; 0 表示关闭
     pub server_header_read_timeout_ms: u64,
+
+    // ── W12-A D-4 attempt durable spool (生产必启, 第三方 P1 finding 2026-05-24) ──
+    /// attempt durable spool 是否启用 (生产模式 validate 强制 = true)
+    pub spool_enabled: bool,
+    /// spool 持久化目录 (生产模式 enabled=true 时 validate 强制非空 + 可创建)
+    pub spool_dir: PathBuf,
+    /// spool 总配额 (字节); pending+reserved 越线则 reserve() 返 503
+    pub spool_max_bytes: u64,
+    /// reserve() 触发 backpressure 的高水位字节 (默认 = max_bytes * 8/10)
+    pub spool_high_watermark_bytes: u64,
+    /// 单条 record 编码后最大字节数 (oversized record 直接 reject)
+    pub spool_max_record_bytes: u64,
+    /// replay worker 周期 (毫秒); 控制 spool ack 后的延迟
+    pub spool_replay_interval_ms: u64,
+    /// fsync 开关 (生产 = true 保账务; test 可关以加速)
+    pub spool_fsync_on_write: bool,
 }
 
 /// envy 解析用的原始字符串结构体 (不对外暴露)
@@ -169,6 +185,23 @@ struct RawStartupConfig {
     request_body_idle_timeout_ms: u64,
     #[serde(default = "default_server_header_read_timeout_ms")]
     server_header_read_timeout_ms: u64,
+
+    // ── W12-A D-4 spool 持久化 (第三方 P1 finding 2026-05-24) ──
+    #[serde(default = "default_spool_enabled")]
+    spool_enabled: bool,
+    #[serde(default)]
+    spool_dir: String,
+    #[serde(default = "default_spool_max_bytes")]
+    spool_max_bytes: u64,
+    /// 0 = 自动 = max_bytes * 8/10; 非 0 直接生效
+    #[serde(default)]
+    spool_high_watermark_bytes: u64,
+    #[serde(default = "default_spool_max_record_bytes")]
+    spool_max_record_bytes: u64,
+    #[serde(default = "default_spool_replay_interval_ms")]
+    spool_replay_interval_ms: u64,
+    #[serde(default = "default_spool_fsync_on_write")]
+    spool_fsync_on_write: bool,
 }
 
 impl StartupConfig {
@@ -230,7 +263,137 @@ impl StartupConfig {
                     .to_owned(),
             ));
         }
+
+        // W12-A D-4 第三方 P1 finding 2026-05-24: 生产必须启 durable spool;
+        // dev/test 仍允许 disabled (旧 in-memory drop 路径) 不破坏现有测试。
+        // mutation: 删除本块 → production_mode_without_spool_dir_fails_fast 测试变绿应红;
+        //           production 启动不带 HUAKAI_SPOOL_DIR 时 attempt durable code 默认 disabled
+        //           = 所有 D-4 替补/replay/backpressure 形同虚设 → 账务静默丢失。
+        if self.runtime_mode.is_production() && !self.spool_enabled {
+            return Err(GatewayError::Config(
+                "HUAKAI_SPOOL_ENABLED must be true when HUAKAI_RUNTIME_MODE=production \
+                 (W12-A D-4: production 必须 durable spool, 否则 attempt report drop 时账务静默丢失)。\
+                 同时必须设 HUAKAI_SPOOL_DIR=<absolute path 可写目录>。"
+                    .to_owned(),
+            ));
+        }
+        if self.spool_enabled && self.spool_dir.as_os_str().is_empty() {
+            return Err(GatewayError::Config(
+                "HUAKAI_SPOOL_DIR must be set when HUAKAI_SPOOL_ENABLED=true \
+                 (W12-A D-4: 不指定 dir 则 AttemptSpool::open 拒绝)。"
+                    .to_owned(),
+            ));
+        }
+        // Codex round 2 P2 fix 2026-05-24: production + 相对路径 -> 不同 CWD 重启会去到不同目录,
+        // 上次 spool 不会被 replay -> 账务静默丢失。production 强制绝对路径。
+        if self.runtime_mode.is_production()
+            && self.spool_enabled
+            && !self.spool_dir.is_absolute()
+        {
+            return Err(GatewayError::Config(format!(
+                "HUAKAI_SPOOL_DIR must be an absolute path in production (got {:?}) — \
+                 相对路径在不同 CWD 重启时会指向不同目录, 上次 spool 不被 replay -> 账务丢失。",
+                self.spool_dir
+            )));
+        }
+        if self.spool_enabled {
+            // 启动期主动创建 + 写探针, 把 "目录不可写" 从运行时 503 / replay 卡死提前到 fail-fast。
+            std::fs::create_dir_all(&self.spool_dir).map_err(|err| {
+                GatewayError::Config(format!(
+                    "HUAKAI_SPOOL_DIR {:?} not creatable: {err}",
+                    self.spool_dir
+                ))
+            })?;
+            // 简易写权限探针: 在 spool_dir 下写 + 删一个临时文件; 失败表示权限不足。
+            let probe = self
+                .spool_dir
+                .join(format!(".huakai-spool-startup-probe-{}", std::process::id()));
+            std::fs::write(&probe, b"").map_err(|err| {
+                GatewayError::Config(format!(
+                    "HUAKAI_SPOOL_DIR {:?} not writable: {err}",
+                    self.spool_dir
+                ))
+            })?;
+            let _ = std::fs::remove_file(&probe);
+        }
+        if self.spool_enabled && self.spool_max_bytes == 0 {
+            return Err(GatewayError::Config(
+                "HUAKAI_SPOOL_MAX_BYTES must be > 0 when spool enabled".to_owned(),
+            ));
+        }
+        if self.spool_enabled && self.spool_max_record_bytes == 0 {
+            return Err(GatewayError::Config(
+                "HUAKAI_SPOOL_MAX_RECORD_BYTES must be > 0 when spool enabled".to_owned(),
+            ));
+        }
+        // Codex round 1 P2 fix 2026-05-24: replay_interval=0 会让 tokio::time::interval panic,
+        // 把 replay worker 整个炸掉 (生产 = 静默丢失 D-4 保护)。validate 阶段提前拒绝。
+        if self.spool_enabled && self.spool_replay_interval_ms == 0 {
+            return Err(GatewayError::Config(
+                "HUAKAI_SPOOL_REPLAY_INTERVAL_MS must be > 0 when spool enabled \
+                 (tokio interval 0 会 panic 让 replay worker 整个炸掉)"
+                    .to_owned(),
+            ));
+        }
+        // Codex round 2 P2 fix 2026-05-24: watermark 必须满足 max_record < watermark <= max_bytes,
+        // 否则:
+        // - watermark > max_bytes -> 绕过 quota 限制 (pending+reserved 越限仍 reserve 成功)
+        // - watermark <= max_record -> 空 spool 上每个 reserve 都立刻 backpressure (Brick request)
+        // 仅当 explicit watermark != 0 时才校验 (0 = auto = max_bytes * 8/10 已天然合规)。
+        if self.spool_enabled && self.spool_high_watermark_bytes != 0 {
+            if self.spool_high_watermark_bytes > self.spool_max_bytes {
+                return Err(GatewayError::Config(format!(
+                    "HUAKAI_SPOOL_HIGH_WATERMARK_BYTES ({}) > HUAKAI_SPOOL_MAX_BYTES ({}) — \
+                     watermark 越限会绕过 quota 限制, 让 spool 无限制增长。",
+                    self.spool_high_watermark_bytes, self.spool_max_bytes
+                )));
+            }
+            if self.spool_high_watermark_bytes <= self.spool_max_record_bytes {
+                return Err(GatewayError::Config(format!(
+                    "HUAKAI_SPOOL_HIGH_WATERMARK_BYTES ({}) <= HUAKAI_SPOOL_MAX_RECORD_BYTES ({}) — \
+                     空 spool 上每个 reserve 都会立刻越过 watermark = 永远 backpressure, \
+                     所有 forward_planned 请求都被砍 503。watermark 必须严格大于 max_record_bytes。",
+                    self.spool_high_watermark_bytes, self.spool_max_record_bytes
+                )));
+            }
+        }
+        // Codex round 2 P2 fix 2026-05-24: production 禁止关 fsync — power-loss / crash 在
+        // response 已 commit 但内核未 flush rename 之间会丢 attempt 记录, 推翻 D-4 durable 保证。
+        // dev/test 允许关 fsync 加速 IO。
+        if self.runtime_mode.is_production()
+            && self.spool_enabled
+            && !self.spool_fsync_on_write
+        {
+            return Err(GatewayError::Config(
+                "HUAKAI_SPOOL_FSYNC_ON_WRITE=false 在 production 模式不允许 \
+                 (crash 在 commit response 后但 fsync 之前会丢账务记录, 推翻 D-4 durable 保证)。\
+                 dev/test 模式可关。"
+                    .to_owned(),
+            ));
+        }
         Ok(())
+    }
+
+    /// 构造 attempt durable spool 选项 — 由 lib.rs::GatewayState::new 调用接到 AttemptReporter。
+    ///
+    /// 高水位 0 表示 "自动 = max_bytes * 8/10" 与 AttemptSpoolOptions::default 同源,
+    /// 部署只需指定 HUAKAI_SPOOL_MAX_BYTES 即可获得合理 watermark。
+    pub fn attempt_spool_options(&self) -> crate::attempt_reporter::AttemptSpoolOptions {
+        let high_watermark_bytes = if self.spool_high_watermark_bytes == 0 {
+            self.spool_max_bytes.saturating_mul(8) / 10
+        } else {
+            self.spool_high_watermark_bytes
+        };
+        crate::attempt_reporter::AttemptSpoolOptions {
+            enabled: self.spool_enabled,
+            dir: self.spool_dir.clone(),
+            max_bytes: self.spool_max_bytes,
+            high_watermark_bytes,
+            max_record_bytes: self.spool_max_record_bytes,
+            replay_interval: std::time::Duration::from_millis(self.spool_replay_interval_ms),
+            replay_batch_size: 128,
+            fsync_on_write: self.spool_fsync_on_write,
+        }
     }
 
     pub fn route_transport_config(&self) -> Result<RouteClientTransportConfig, GatewayError> {
@@ -357,6 +520,13 @@ impl StartupConfig {
             downstream_write_idle_timeout_ms: raw.downstream_write_idle_timeout_ms,
             request_body_idle_timeout_ms: raw.request_body_idle_timeout_ms,
             server_header_read_timeout_ms: raw.server_header_read_timeout_ms,
+            spool_enabled: raw.spool_enabled,
+            spool_dir: PathBuf::from(raw.spool_dir),
+            spool_max_bytes: raw.spool_max_bytes,
+            spool_high_watermark_bytes: raw.spool_high_watermark_bytes,
+            spool_max_record_bytes: raw.spool_max_record_bytes,
+            spool_replay_interval_ms: raw.spool_replay_interval_ms,
+            spool_fsync_on_write: raw.spool_fsync_on_write,
         };
         config.validate()?;
         Ok(config)
@@ -473,28 +643,80 @@ fn default_server_header_read_timeout_ms() -> u64 {
     30_000
 }
 
+// W12-A D-4 spool 默认值 (与 AttemptSpoolOptions::default 同源, 第三方 P1 finding 2026-05-24)。
+// production 默认 enabled=true 强制运维显式提供 HUAKAI_SPOOL_DIR;
+// dev/test 默认 enabled=false 保留旧 in-memory drop 路径不破坏已有测试。
+fn default_spool_enabled() -> bool {
+    false
+}
+
+fn default_spool_max_bytes() -> u64 {
+    1024 * 1024 * 1024 // 1 GiB
+}
+
+fn default_spool_max_record_bytes() -> u64 {
+    64 * 1024 // 64 KiB
+}
+
+fn default_spool_replay_interval_ms() -> u64 {
+    250
+}
+
+fn default_spool_fsync_on_write() -> bool {
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// W12-A D-4 第三方 P1 finding 2026-05-24 后: production validate 要求 spool 启用 + dir,
+    /// 所以 valid_env() 默认带上 HUAKAI_SPOOL_ENABLED=true + 一个 tmp dir, 让大多数 config
+    /// 测试仍 round-trip 解析成功; 新增的 production_mode_without_spool_dir_fails_fast 测试
+    /// 显式删除这两个键以验证守门。
+    fn test_spool_dir() -> String {
+        let mut path = std::env::temp_dir();
+        path.push("huakai-config-test-spool");
+        path.to_string_lossy().into_owned()
+    }
+
     fn valid_env() -> Vec<(String, String)> {
-        [
-            ("HUAKAI_LISTEN_ADDR", "127.0.0.1:0"),
-            ("HUAKAI_CONTROL_PLANE_ENDPOINT", "http://127.0.0.1:48080"),
-            ("HUAKAI_LOG_LEVEL", "debug"),
-            ("HUAKAI_JSON_LOGS", "true"),
-            ("HUAKAI_WORKER_THREADS", "2"),
-            ("HUAKAI_MAX_IN_FLIGHT_REQUESTS", "0"),
-            ("HUAKAI_MAX_CONNECTIONS", "0"),
-            ("HUAKAI_OVERLOAD_RETRY_AFTER_SECS", "1"),
-            ("HUAKAI_UPSTREAM_BODY_IDLE_TIMEOUT_MS", "300000"),
-            ("HUAKAI_DOWNSTREAM_WRITE_IDLE_TIMEOUT_MS", "60000"),
-            ("HUAKAI_REQUEST_BODY_IDLE_TIMEOUT_MS", "30000"),
-            ("HUAKAI_SERVER_HEADER_READ_TIMEOUT_MS", "30000"),
+        let spool_dir = test_spool_dir();
+        vec![
+            ("HUAKAI_LISTEN_ADDR".to_owned(), "127.0.0.1:0".to_owned()),
+            (
+                "HUAKAI_CONTROL_PLANE_ENDPOINT".to_owned(),
+                "http://127.0.0.1:48080".to_owned(),
+            ),
+            ("HUAKAI_LOG_LEVEL".to_owned(), "debug".to_owned()),
+            ("HUAKAI_JSON_LOGS".to_owned(), "true".to_owned()),
+            ("HUAKAI_WORKER_THREADS".to_owned(), "2".to_owned()),
+            ("HUAKAI_MAX_IN_FLIGHT_REQUESTS".to_owned(), "0".to_owned()),
+            ("HUAKAI_MAX_CONNECTIONS".to_owned(), "0".to_owned()),
+            ("HUAKAI_OVERLOAD_RETRY_AFTER_SECS".to_owned(), "1".to_owned()),
+            (
+                "HUAKAI_UPSTREAM_BODY_IDLE_TIMEOUT_MS".to_owned(),
+                "300000".to_owned(),
+            ),
+            (
+                "HUAKAI_DOWNSTREAM_WRITE_IDLE_TIMEOUT_MS".to_owned(),
+                "60000".to_owned(),
+            ),
+            (
+                "HUAKAI_REQUEST_BODY_IDLE_TIMEOUT_MS".to_owned(),
+                "30000".to_owned(),
+            ),
+            (
+                "HUAKAI_SERVER_HEADER_READ_TIMEOUT_MS".to_owned(),
+                "30000".to_owned(),
+            ),
+            ("HUAKAI_SPOOL_ENABLED".to_owned(), "true".to_owned()),
+            ("HUAKAI_SPOOL_DIR".to_owned(), spool_dir),
+            // Codex round 2 P2 fix 2026-05-24: production 模式禁止 fsync=false。
+            // valid_env 默认 production, 故必须 fsync=true (probe 文件 fsync 极快, 不影响测试)。
+            // dev/test 路径可显式覆盖为 false (见 development_mode_allows_spool_fsync_off)。
+            ("HUAKAI_SPOOL_FSYNC_ON_WRITE".to_owned(), "true".to_owned()),
         ]
-        .into_iter()
-        .map(|(k, v)| (k.to_owned(), v.to_owned()))
-        .collect()
     }
 
     #[test]
@@ -737,6 +959,220 @@ mod tests {
         // "未设环境变量 + 误设 mock upstream → fail-fast" 是默认安全姿态。
         let cfg = StartupConfig::from_env_iter(valid_env()).expect("默认 env 应解析成功");
         assert_eq!(cfg.runtime_mode, RuntimeMode::Production);
+    }
+
+    /// W12-A D-4 第三方 P1 finding 2026-05-24: 生产模式启动若未显式开 durable spool
+    /// (HUAKAI_SPOOL_ENABLED + HUAKAI_SPOOL_DIR), 必须 fail-fast — 否则 attempt drop
+    /// 后账务静默丢失, D-4 的所有 replay/backpressure/persist 代码形同虚设。
+    ///
+    /// mutation: 删除 validate() 里 production+spool 守门 → 本测试变绿应红;
+    /// production 启动后 attempt_reporter 的 has_durable_spool() 仍 false → P1 finding 复现。
+    #[test]
+    fn production_mode_without_spool_dir_fails_fast() {
+        // valid_env 默认含 HUAKAI_SPOOL_ENABLED=true + dir; 反向去掉验证守门
+        let env_no_spool: Vec<(String, String)> = valid_env()
+            .into_iter()
+            .filter(|(k, _)| k != "HUAKAI_SPOOL_ENABLED" && k != "HUAKAI_SPOOL_DIR")
+            .collect();
+        let result = StartupConfig::from_env_iter(env_no_spool);
+        assert!(
+            result.is_err(),
+            "生产模式 + spool 未启用 应 fail-fast (W12-A D-4 第三方 P1 finding)"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("HUAKAI_SPOOL_ENABLED") || err_msg.contains("HUAKAI_SPOOL_DIR"),
+            "错误消息应明确提及 spool var, 实际: {err_msg}"
+        );
+    }
+
+    /// 派生: 生产 + spool_enabled=true 但 dir 为空也必须 fail-fast。
+    /// mutation: 删 "spool_dir.is_empty() -> Err" 分支 -> 测试红。
+    #[test]
+    fn production_mode_with_spool_enabled_but_empty_dir_fails_fast() {
+        let env_empty_dir: Vec<(String, String)> = valid_env()
+            .into_iter()
+            .filter(|(k, _)| k != "HUAKAI_SPOOL_DIR")
+            .collect();
+        // HUAKAI_SPOOL_ENABLED 仍是 true (来自 valid_env), HUAKAI_SPOOL_DIR 缺失
+        let result = StartupConfig::from_env_iter(env_empty_dir);
+        assert!(result.is_err(), "spool enabled + 空 dir 应 fail-fast");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("HUAKAI_SPOOL_DIR"),
+            "错误消息应提及 spool dir, 实际: {err_msg}"
+        );
+    }
+
+    /// 派生: dev/test 模式可以 spool disabled (兼容旧 in-memory drop 路径, 不破坏现有测试)。
+    /// mutation: 改 validate() 让 spool 也对 non-production 强制 -> 此测试红。
+    #[test]
+    fn development_mode_allows_spool_disabled() {
+        let mut env: Vec<(String, String)> = valid_env()
+            .into_iter()
+            .filter(|(k, _)| k != "HUAKAI_SPOOL_ENABLED" && k != "HUAKAI_SPOOL_DIR")
+            .collect();
+        env.push(("HUAKAI_RUNTIME_MODE".to_owned(), "development".to_owned()));
+        let cfg = StartupConfig::from_env_iter(env)
+            .expect("dev 模式 + spool disabled 应允许 (兼容旧路径)");
+        assert!(!cfg.spool_enabled);
+        assert!(cfg.spool_dir.as_os_str().is_empty());
+    }
+
+    /// Codex round 2 P2 fix 2026-05-24: production 必须用绝对路径作 spool_dir,
+    /// 否则重启时 CWD 漂移指向不同目录, 旧 spool 不被 replay -> 账务静默丢失。
+    /// mutation: 删 is_absolute() 守门 -> 测试红 (相对路径会被接受)。
+    #[test]
+    fn production_mode_rejects_relative_spool_dir() {
+        let mut env: Vec<(String, String)> = valid_env()
+            .into_iter()
+            .filter(|(k, _)| k != "HUAKAI_SPOOL_DIR")
+            .collect();
+        env.push(("HUAKAI_SPOOL_DIR".to_owned(), "relative/spool".to_owned()));
+        let result = StartupConfig::from_env_iter(env);
+        assert!(result.is_err(), "production + 相对路径 spool_dir 应 fail-fast");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("absolute"),
+            "错误消息应提及 absolute, 实际: {err_msg}"
+        );
+    }
+
+    /// Codex round 2 P2 fix 2026-05-24: spool watermark 超过 max_bytes 会绕过 quota,
+    /// 让 pending 无限制增长。validate 必须拒绝。
+    /// mutation: 删 watermark > max_bytes 守门 -> 测试红。
+    #[test]
+    fn spool_high_watermark_exceeding_max_bytes_fails_fast() {
+        let mut env = valid_env();
+        env.retain(|(k, _)| {
+            k != "HUAKAI_SPOOL_HIGH_WATERMARK_BYTES" && k != "HUAKAI_SPOOL_MAX_BYTES"
+        });
+        env.push(("HUAKAI_SPOOL_MAX_BYTES".to_owned(), "1000000".to_owned()));
+        env.push((
+            "HUAKAI_SPOOL_HIGH_WATERMARK_BYTES".to_owned(),
+            "2000000".to_owned(),
+        ));
+        let result = StartupConfig::from_env_iter(env);
+        assert!(
+            result.is_err(),
+            "spool watermark > max_bytes 应 fail-fast (绕过 quota)"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("HIGH_WATERMARK_BYTES") && err_msg.contains("MAX_BYTES"),
+            "错误消息应提及二者关系, 实际: {err_msg}"
+        );
+    }
+
+    /// Codex round 2 P2 fix 2026-05-24: spool watermark <= max_record_bytes 会让每个空 spool
+    /// reserve 立刻 backpressure (Brick 所有请求)。validate 必须拒绝。
+    /// mutation: 删 watermark <= max_record 守门 -> 测试红。
+    #[test]
+    fn spool_high_watermark_at_or_below_max_record_fails_fast() {
+        let mut env = valid_env();
+        env.retain(|(k, _)| {
+            k != "HUAKAI_SPOOL_HIGH_WATERMARK_BYTES" && k != "HUAKAI_SPOOL_MAX_RECORD_BYTES"
+        });
+        env.push((
+            "HUAKAI_SPOOL_MAX_RECORD_BYTES".to_owned(),
+            "65536".to_owned(),
+        ));
+        env.push((
+            "HUAKAI_SPOOL_HIGH_WATERMARK_BYTES".to_owned(),
+            "65536".to_owned(), // 等于 max_record -> 空 spool 也会立刻越线
+        ));
+        let result = StartupConfig::from_env_iter(env);
+        assert!(
+            result.is_err(),
+            "spool watermark <= max_record_bytes 应 fail-fast (会 Brick 所有请求)"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("HIGH_WATERMARK_BYTES") && err_msg.contains("MAX_RECORD_BYTES"),
+            "错误消息应提及二者关系, 实际: {err_msg}"
+        );
+    }
+
+    /// Codex round 2 P2 fix 2026-05-24: production 禁止 fsync=false (crash 丢 durable record)。
+    /// mutation: 删 production + fsync=false 守门 -> 测试红。
+    #[test]
+    fn production_mode_rejects_spool_fsync_off() {
+        let mut env = valid_env();
+        env.retain(|(k, _)| k != "HUAKAI_SPOOL_FSYNC_ON_WRITE");
+        env.push((
+            "HUAKAI_SPOOL_FSYNC_ON_WRITE".to_owned(),
+            "false".to_owned(),
+        ));
+        // runtime_mode 默认 production (来自 default_runtime_mode)
+        let result = StartupConfig::from_env_iter(env);
+        assert!(result.is_err(), "production + fsync=false 应 fail-fast");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("FSYNC") && err_msg.contains("production"),
+            "错误消息应提及 fsync + production, 实际: {err_msg}"
+        );
+    }
+
+    /// 派生: dev/test 模式允许 fsync=false 加速 IO。
+    /// mutation: 改 fsync 检查作用于所有模式 -> 测试红。
+    #[test]
+    fn development_mode_allows_spool_fsync_off() {
+        let mut env = valid_env();
+        env.retain(|(k, _)| k != "HUAKAI_SPOOL_FSYNC_ON_WRITE");
+        env.push((
+            "HUAKAI_SPOOL_FSYNC_ON_WRITE".to_owned(),
+            "false".to_owned(),
+        ));
+        env.push(("HUAKAI_RUNTIME_MODE".to_owned(), "development".to_owned()));
+        let cfg = StartupConfig::from_env_iter(env)
+            .expect("dev 模式 + fsync=false 应允许 (加速测试 IO)");
+        assert!(!cfg.spool_fsync_on_write);
+    }
+
+    /// Codex round 1 P2 fix 2026-05-24: spool_enabled + replay_interval=0
+    /// 会让 tokio::time::interval panic 整个 replay worker, validate 必须提前拒绝。
+    /// mutation: 删 validate() 里的 replay_interval=0 守门 -> 测试红。
+    #[test]
+    fn spool_enabled_with_zero_replay_interval_fails_fast() {
+        let mut env = valid_env();
+        env.push((
+            "HUAKAI_SPOOL_REPLAY_INTERVAL_MS".to_owned(),
+            "0".to_owned(),
+        ));
+        let result = StartupConfig::from_env_iter(env);
+        assert!(
+            result.is_err(),
+            "spool enabled + replay_interval=0 应 fail-fast (避免 tokio interval panic)"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("HUAKAI_SPOOL_REPLAY_INTERVAL_MS"),
+            "错误消息应提及 replay interval 字段, 实际: {err_msg}"
+        );
+    }
+
+    /// 派生: attempt_spool_options() 在 high_watermark=0 时自动 = max_bytes * 8/10
+    /// (与 AttemptSpoolOptions::default 同源)。
+    /// mutation: 改成 (max_bytes) 即 100% 或 (max_bytes / 2) 即 50% -> 算式断言红。
+    #[test]
+    fn attempt_spool_options_auto_high_watermark_is_80_percent_of_max_bytes() {
+        let mut env = valid_env();
+        env.retain(|(k, _)| {
+            k != "HUAKAI_SPOOL_HIGH_WATERMARK_BYTES" && k != "HUAKAI_SPOOL_MAX_BYTES"
+        });
+        env.push((
+            "HUAKAI_SPOOL_MAX_BYTES".to_owned(),
+            (1_000u64 * 1024 * 1024).to_string(), // 1000 MiB
+        ));
+        // 不显式设 high watermark -> auto
+        let cfg = StartupConfig::from_env_iter(env).expect("valid spool config");
+        let opts = cfg.attempt_spool_options();
+        assert_eq!(opts.max_bytes, 1_000 * 1024 * 1024);
+        assert_eq!(
+            opts.high_watermark_bytes,
+            (1_000u64 * 1024 * 1024) * 8 / 10,
+            "high_watermark_bytes=0 时应等于 max_bytes * 8/10"
+        );
     }
 
     #[test]

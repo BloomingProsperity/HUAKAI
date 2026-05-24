@@ -75,7 +75,28 @@ impl GatewayState {
         let http_client: GatewayHttpClient = build_http_client();
         let route_client = route_client_from_transport_baseline(&config)?;
         let account_planner = AccountPlanner::new(route_client.clone());
-        let attempt_reporter = AttemptReporter::spawn(route_client);
+        // W12-A D-4 第三方 P1 finding 2026-05-24: 把 spool 配置从 StartupConfig 接到 reporter,
+        // 让 production 启动真正进入 durable-first 路径 (旧 spawn() 永远走 in-memory drop)。
+        //
+        // Codex round 1 P1-A fix: 如果配置要求 spool_enabled=true 但 spawn_with_options
+        // 内部 AttemptSpool::open 仍失败 (例如 validate 通过后 dir 被 chmod / 突变成普通文件),
+        // 必须 fail-fast 而不是回到 in-memory drop 静默劣化 — 否则 production 启动绕过 D-4 保账务。
+        let spool_required = config.spool_enabled;
+        let reporter_options = crate::attempt_reporter::AttemptReporterOptions {
+            spool: config.attempt_spool_options(),
+            ..Default::default()
+        };
+        let attempt_reporter =
+            AttemptReporter::spawn_with_options(route_client, reporter_options);
+        if spool_required && !attempt_reporter.has_durable_spool() {
+            return Err(GatewayError::Config(
+                "AttemptSpool::open 失败但 HUAKAI_SPOOL_ENABLED=true \
+                 — production 配置要求 durable spool, 不允许静默回到 in-memory drop。\
+                 请检查 HUAKAI_SPOOL_DIR 在 startup 后是否仍可写, 或 dir/pending/tmp \
+                 子路径是否被占用为普通文件。"
+                    .to_owned(),
+            ));
+        }
         let proxy_timeouts = ProxyTimeouts::from_config(&config);
         let proxy_engine = ProxyEngine::new_with_attempt_reporter_and_timeouts(
             http_client,

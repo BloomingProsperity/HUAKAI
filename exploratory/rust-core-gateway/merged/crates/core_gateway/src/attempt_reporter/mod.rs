@@ -477,6 +477,13 @@ impl AttemptReporter {
             .unwrap_or(0)
     }
 
+    /// W12-A D-4 第三方 P1 finding 2026-05-24: 暴露 spool 是否真接入,
+    /// 让集成测试可断言 "GatewayState 启动后 spool 启用了"。production 启动 + spool
+    /// 配置缺失会在 StartupConfig::validate 阶段 fail-fast, 这里仅做 post-spawn 自检。
+    pub fn has_durable_spool(&self) -> bool {
+        self.inner.spool.is_some()
+    }
+
     /// W12-A D-4 Slice 3 AC-4-pre: forward_planned 转发前调, 检查 spool 是否仍可接受新报告。
     /// spool=None (baseline): 永远 Ok (维持旧行为, 不引 503)。
     /// spool=Some: 尝试 reserve, 立即 Drop 释放预算 = 纯 capacity probe;
