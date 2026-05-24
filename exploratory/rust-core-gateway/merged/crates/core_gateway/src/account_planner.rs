@@ -15,7 +15,7 @@ use uuid::Uuid;
 use serde::Deserialize;
 
 use crate::{
-    client_auth::{ClientCredential, ClientCredentialKind, RouteIdentity},
+    client_auth::{ClientCredentialKind, RouteIdentity},
     config::ReconcilePolicy,
     error::GatewayError,
     metrics::client_credential_tenant_reconcile_total,
@@ -24,6 +24,8 @@ use crate::{
     route_client::RouteClient,
     route_proto::v1::{RoutePlan, RouteQueryRequest},
 };
+#[cfg(test)]
+use crate::client_auth::ClientCredential;
 use tracing::warn;
 
 const DEFAULT_CLIENT_DEADLINE_MS: u64 = 30_000;
