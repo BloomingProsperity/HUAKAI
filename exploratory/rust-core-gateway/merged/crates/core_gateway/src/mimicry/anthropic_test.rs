@@ -9,21 +9,22 @@ fn anthropic_profile_loads_with_sampled_tls_fields() {
         .expect("Anthropic Claude Code profile 应加载");
 
     assert_eq!(profile.mode, ProfileMode::AnthropicClaudeCode);
-    assert_eq!(profile.mode_name, "anthropic-claude-code");
+    assert_eq!(profile.mode_name, "anthropic-cli-mimicry-v1");
     assert_eq!(profile.vendor, ProfileVendor::Anthropic);
     assert_eq!(profile.target_host, "api.anthropic.com");
-    assert_eq!(profile.sample_count, 5);
-    assert_eq!(profile.tls.ja3_hash, "de88744b20558d50f03a5f0ea176ee98");
-    assert_eq!(profile.tls.alpn_protocols, vec!["http/1.1".to_owned()]);
-    assert_eq!(profile.tls.ec_point_formats, vec![0]);
-    assert!(profile.tls.extensions.contains(&65037));
+    assert_eq!(profile.sample_count, 1);
+    assert_eq!(profile.tls.ja3_hash, "55ba290366f110228d176d92fe6f6180");
+    assert_eq!(
+        profile.tls.alpn_protocols,
+        vec!["h2".to_owned(), "http/1.1".to_owned()]
+    );
+    assert_eq!(profile.tls.ec_point_formats, vec![0, 1, 2]);
+    assert!(profile.tls.extensions.contains(&0));
+    assert!(profile.tls.extensions.contains(&22));
     assert!(!profile.h2_settings.available);
     assert!(!profile.h2_settings_frame.available);
     assert!(!profile.h2_pseudo_header_capture.available);
-    assert_eq!(
-        profile.match_policy(),
-        ProfileMatchPolicy::SampleSetRandomized
-    );
+    assert_eq!(profile.match_policy(), ProfileMatchPolicy::ExactStable);
 }
 
 #[test]

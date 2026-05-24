@@ -10,7 +10,7 @@
 - JA3 对上面的字符串做 MD5，输出 32 字符 lowercase hex。
 - GREASE 值按 RFC 8701 形态跳过: `0x0a0a`, `0x1a1a`, ... `0xfafa`。
 - HUAKAI profile 中 `tls.ja3` 是 collector 已采样的 canonical 五元组；`tls.extensions` 是 wire 侧完整列表。
-- Anthropic sample: `de88744b20558d50f03a5f0ea176ee98`。
+- Anthropic sample (2026-05-24 Node 22 / OpenSSL capture): `55ba290366f110228d176d92fe6f6180`。
 
 ## JA4
 
