@@ -5,6 +5,8 @@ use serde::Deserialize;
 pub enum TlsBackend {
     #[serde(rename = "native-tls/openssl")]
     NativeTlsOpenSsl,
+    #[serde(rename = "nodejs/openssl")]
+    NodeJsOpenSsl,
     #[serde(rename = "rustls")]
     Rustls,
     #[serde(rename = "nodejs")]
@@ -17,6 +19,7 @@ impl TlsBackend {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::NativeTlsOpenSsl => "native-tls/openssl",
+            Self::NodeJsOpenSsl => "nodejs/openssl",
             Self::Rustls => "rustls",
             Self::NodeJs => "nodejs",
             Self::UnknownBackend => "unknown-backend",

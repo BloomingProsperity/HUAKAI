@@ -21,7 +21,10 @@ fn mimicry_profile_loads_builtin_real_templates() {
             )
         });
 
-        assert_eq!(profile.mode_name, profile.mode.as_str());
+        assert_eq!(
+            ProfileMode::from_mode_name(&profile.mode_name),
+            Some(profile.mode)
+        );
         assert!(
             profile.sample_count > 0,
             "{} sample_count 必须来自真实样本",
@@ -131,9 +134,9 @@ fn mimicry_profile_vendor_and_mode_mapping_is_explicit() {
     assert_eq!(anthropic.vendor, ProfileVendor::Anthropic);
     assert_eq!(anthropic.vendor.as_str(), "anthropic");
     assert_eq!(anthropic.mode, ProfileMode::AnthropicClaudeCode);
-    assert_eq!(anthropic.tls.backend, TlsBackend::NativeTlsOpenSsl);
-    assert_eq!(anthropic.tls.extension_order, ExtensionOrder::Randomized);
-    assert_eq!(anthropic.tls.ja3_hash, "de88744b20558d50f03a5f0ea176ee98");
+    assert_eq!(anthropic.tls.backend, TlsBackend::NodeJsOpenSsl);
+    assert_eq!(anthropic.tls.extension_order, ExtensionOrder::Unknown);
+    assert_eq!(anthropic.tls.ja3_hash, "55ba290366f110228d176d92fe6f6180");
 }
 
 #[test]
@@ -164,8 +167,8 @@ fn mimicry_profile_match_policy_follows_template_evidence() {
         .expect("anthropic profile 应加载");
     assert_eq!(
         anthropic.match_policy(),
-        ProfileMatchPolicy::SampleSetRandomized,
-        "anthropic Claude Code 模板含多 JA4 样本，应使用样本集合策略"
+        ProfileMatchPolicy::ExactStable,
+        "anthropic Claude Code 模板来自单次 Node/OpenSSL 真抓包，应使用 exact stable 策略"
     );
 }
 
@@ -285,7 +288,7 @@ fn mimicry_backend_intent_accepts_stable_native_tls_openssl() {
 }
 
 #[test]
-fn mimicry_backend_intent_accepts_anthropic_openssl_profile() {
+fn mimicry_backend_intent_accepts_anthropic_nodejs_openssl_profile() {
     let anthropic = load_builtin_profile(BuiltinProfile::AnthropicClaudeCode)
         .expect("anthropic profile 应加载");
 

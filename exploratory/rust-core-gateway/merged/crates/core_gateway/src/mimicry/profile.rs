@@ -100,7 +100,9 @@ impl ProfileMode {
             "openai_codex_cli" => Some(Self::CodexCli),
             "kiro_cli" => Some(Self::KiroCli),
             "gemini_advanced" => Some(Self::GeminiAdvanced),
-            "anthropic-claude-code" | "anthropic_claude_code" => Some(Self::AnthropicClaudeCode),
+            "anthropic-claude-code" | "anthropic_claude_code" | "anthropic-cli-mimicry-v1" => {
+                Some(Self::AnthropicClaudeCode)
+            }
             _ => None,
         }
     }
@@ -190,7 +192,9 @@ impl FingerprintProfile {
         }
 
         match self.tls.backend {
-            TlsBackend::NativeTlsOpenSsl => BackendIntent::OpenSslAdapter,
+            TlsBackend::NativeTlsOpenSsl | TlsBackend::NodeJsOpenSsl => {
+                BackendIntent::OpenSslAdapter
+            }
             TlsBackend::Rustls => {
                 // D3 burn-the-boats: no fallback to hyper-rustls, fix mimicry path instead
                 BackendIntent::UnsupportedTemplate {
