@@ -31,6 +31,7 @@ import (
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	providercopilot "github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
@@ -290,6 +291,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		// 启用同事务路径 (RR-W5-002 步骤 1):audit insert + ledger append 同 tx。
 		credentialworker.WithTxPool(pgPool),
 		credentialworker.WithAuditLedgerSigner(auditSigner),
+		credentialworker.WithVendorRefresher("copilot", &providercopilot.CopilotRefresher{
+			Store: providercopilot.NewCredentialStoreAdapter(credentialStore),
+		}),
 	)
 	if err := credentialScheduler.Start(ctx); err != nil {
 		return nil, fmt.Errorf("start credential refresh scheduler: %w", err)
