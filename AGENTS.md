@@ -488,17 +488,62 @@ Effective immediately, **every commit must pass through a Codex review before la
 
 1. Make the change locally; run unit tests; ensure build is clean.
 2. **Stage** the change (`git add ...`) but DO NOT commit yet.
-3. Run: `codex exec review --uncommitted --full-auto`. Read findings.
-4. If findings exist:
-   - HIGH severity → fix before committing. Repeat step 3.
-   - MED severity → fix or document explicitly in commit message why deferred.
-   - LOW severity → may proceed; mention in commit message.
+3. Run: `codex exec review --uncommitted --full-auto --sandbox read-only`. Read findings.
+4. Normalize findings through "Review Spiral Control And Severity Gate" below:
+   - unresolved S0/S1 → fix before committing, then apply the round budget.
+   - S2/S3 → record and schedule follow-up; they do not block the current commit.
 5. Commit. Reference the review verdict in the commit body.
 6. (Optional but encouraged) Run `codex exec review --commit <SHA> --full-auto` post-commit for an independent retro-check; archive findings if non-trivial.
 
+### Review Spiral Control And Severity Gate
+
+Effective date: 2026-05-24T00:00:00Z. Rule sources: [[feedback_small_closed_increments]] (2026-05-22) requires small, closed increments; [[feedback_ceremony_tiered]] says ceremony is tiered by task difficulty; this subsection narrows only the per-commit review dimension of Rule #8. [[feedback_test_quality_discipline]] / `CLAUDE.md` #14 remains a hard constraint: weak, non-discriminating tests are never "polish".
+
+HUAKAI is a single-PM engineering project. Codex review is mandatory because it catches S0/S1 defects, feature shrinkage, clean-room/license risk, weak tests, package-structure violations, and money/security regressions. It is not a Google-scale multi-round ceremony, and the landing gate is severity-based rather than "zero findings".
+
+#### Severity normalization table
+
+Codex labels (`HIGH` / `MED` / `LOW` / `P2`) are review inputs, not the final gate. Claude/Codex must normalize every finding to HUAKAI severity with one-line rationale.
+
+| HUAKAI severity | Meaning | Examples | Blocks commit? |
+| --- | --- | --- | --- |
+| `S0` | Catastrophic or legally unsafe to land | secret exposure, auth/billing/quota/data-loss bug, clean-room/license contamination, destructive migration, failing required build/test on release path | Yes |
+| `S1` | Product correctness, trust, or rule violation that can break the current slice | feature shrinkage, money/security regression, non-discriminating test, frozen-package new file, schema-risk mistake, unhandled S0/S1 reviewer finding, uncertain severity | Yes |
+| `S2` | Real defect or compliance gap that should be fixed, but does not invalidate this closed increment | provenance-tail cleanup, non-release doc sync, TODO precision, minor schema-comment mismatch, local-tool cleanup after behavior is already guarded | No, record and schedule |
+| `S3` | Style, consistency, or nice-to-have cleanup | wording polish, formatting-only preference, redundant note, low-risk local comment cleanup | No, record if useful |
+
+Severity mapping beats tool wording. A Codex `MED` can be S1 if it affects money/security, clean-room/license, feature preservation, weak-test discipline, package structure, schema safety, or required build/test status. A Codex `HIGH` can be S2 only when concrete evidence shows it is compliance polish with no current-slice correctness or release risk. When classification is unclear, promote to S1 and fix.
+
+#### Round budget
+
+1. Stage only the intended diff, then run Round 1: `codex exec review --uncommitted --full-auto --sandbox read-only`.
+2. Normalize each finding to `S0`/`S1`/`S2`/`S3` with one-line rationale.
+3. If Round 1 has no unresolved S0/S1 and local required checks pass, the commit may land with S2/S3 recorded.
+4. Run Round 2 only when Round 1 found S0/S1, or when the fix materially changed behavior, security, schema, quota/billing/auth, clean-room/licensing posture, or test semantics.
+5. After Round 2, stop. Continue reviewing the same commit only if unresolved S0/S1 remains or Owner explicitly asks for another round.
+
+#### Deferred finding record format
+
+Record deferred S2/S3 in the commit body or `docs/process/reviews/DEFERRED-<topic>.md` using this format:
+
+```markdown
+Deferred review findings:
+- [S2|S3] <short title> — source: Codex review round <N> <finding id/label>; rationale: <why it does not block this commit>; follow-up: <next slice / issue / doc path>; Owner decision: <none | needed by date>
+```
+
+Deferred means scheduled, not dropped. If the same S2 appears again in the next related slice, either fix it there or promote it with rationale.
+
+#### Anti-spiral rule
+
+- Review should not discover the spec drip-by-drip. If review repeatedly reveals new requirements, stop expanding the current commit, close the no-S0/S1 slice, and write a complete next-slice spec.
+- Do not accumulate unrelated compliance polish, provenance cleanup, or style-only edits into a commit whose S0/S1 issues are already closed.
+- Never relabel real defects down to escape the round cap. Security exposure, auth/billing/quota/data loss, clean-room/license contamination, feature shrinkage, non-discriminating tests, frozen-package new files, schema-risk mistakes, and failing required checks remain S0/S1 unless evidence disproves the risk.
+- Post-commit review is a retro-check, not a same-commit loop. `codex exec review --commit <SHA> --full-auto` is optional; S0/S1 from retro-check requires an immediate fix commit or revert/hotfix, while S2/S3 is recorded for follow-up.
+- Complete vertical slices and release gates still use reviewer-lane `/cross-review`; this two-round cap only controls per-commit review iteration.
+
 ### CLI flag notes
 
-- `codex exec review` does NOT accept `--sandbox` / `-C` flags directly. Run from the repo root.
+- The canonical Owner command is `codex exec review --uncommitted --full-auto --sandbox read-only`. Run from the repo root; if the CLI rejects `--sandbox`, check `codex exec review --help`, record the CLI mismatch, and run the closest read-only/sandboxed equivalent available.
 - `--uncommitted` and `--commit <SHA>` are mutually exclusive with a positional `[PROMPT]`. To customize the review focus, write notes into `docs/process/reviews/PENDING-<descriptor>.md` first; Codex picks that up via the working tree.
 - Use `--full-auto` for sandboxed automatic execution (recommended for review of working-tree changes).
 
