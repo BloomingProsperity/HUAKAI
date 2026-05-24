@@ -1,0 +1,47 @@
+# HUAKAI .gitattributes — 防 Windows checkout autocrlf 把脚本污染成 CRLF。
+#
+# 背景 (2026-05-24 第三方 AI 反馈): tools/feature-matrix/verify.sh 在
+# Windows 用户机器上若 git autocrlf=true checkout, 文件实际持 \r\n 行尾;
+# WSL/Linux 直接 bash 跑会报 $'\r': command not found / pipefail\r 等错。
+#
+# 这里强制全仓 shell + bash + Python + proto + Markdown 文件按 LF 入磁盘 +
+# checkout, 跨平台一致, 容器/CI/Linux 永远拿到 LF。CRLF 仅保留给真正需要的
+# Windows-only 资产 (PowerShell .ps1 / .bat / .cmd)。
+#
+# 校验: 提交后 git ls-files --eol 应显示 these patterns 的 i/w/attr 列均为 lf。
+
+* text=auto eol=lf
+
+# 显式: 永远 LF (即便用户 autocrlf=true)
+*.sh            text eol=lf
+*.bash          text eol=lf
+*.py            text eol=lf
+*.proto         text eol=lf
+*.toml          text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.md            text eol=lf
+*.rs            text eol=lf
+*.go            text eol=lf
+*.js            text eol=lf
+*.ts            text eol=lf
+Dockerfile      text eol=lf
+Makefile        text eol=lf
+
+# Windows-only 资产: 保留 CRLF (cmd shell 默认期望)
+*.ps1           text eol=crlf
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+
+# 二进制 — 不做行尾转换
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.ico           binary
+*.pdf           binary
+*.zip           binary
+*.tar.gz        binary
+*.so            binary
+*.dll           binary
+*.exe           binary

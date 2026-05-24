@@ -223,7 +223,22 @@ mod tests {
         );
     }
 
-    #[cfg(not(feature = "mimicry-boring"))]
+    /// 2026-05-24 第三方 AI 反馈 fix: 原 cfg 仅 `not(feature = "mimicry-boring")` 太宽,
+    /// `--features mimicry-openssl` 也命中 (该 feature 下 boring 关闭但 openssl 开启),
+    /// Anthropic profile 的 OpenSslAdapter intent 在 `decide_dispatch` 返
+    /// `AllowOpenSsl` → `build_mimicry_action` 返 `UseOpenSslAdapter` 而非
+    /// `BlockKnownGap` → 原 `panic!("...不应构造 Boring HTTP client")` 触发 (虽然
+    /// 实际返回的不是 Boring client)。
+    ///
+    /// 该测试的语义本应是 "Boring + OpenSSL 两族 backend 都关掉时 Anthropic 必落
+    /// known-gap" — 收窄到两 feature 都 off 才编译, 与 verify.sh feature matrix 协调:
+    /// `default::` (两者都 off) 跑此测试; `--features mimicry-boring` 跑 above 的
+    /// boring 路径正测试; `--features mimicry-openssl` 走 OpenSslAdapter 路径不需要
+    /// 此对照。
+    ///
+    /// mutation: 把 cfg 改回单 `not(feature = "mimicry-boring")` →
+    /// `--features mimicry-openssl` feature-matrix 跑会 panic → CI 红。
+    #[cfg(all(not(feature = "mimicry-boring"), not(feature = "mimicry-openssl")))]
     #[test]
     fn boring_dispatch_action_is_not_available_without_boring_feature() {
         let profile = load_builtin_profile(BuiltinProfile::AnthropicClaudeCode)
