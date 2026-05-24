@@ -1,12 +1,14 @@
 // M-rust-5 listener glue
 // 职责: 接收 vendor API 请求, 规划 account route, 调用 proxy engine。
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use axum::{
     Router,
     body::Body,
     extract::State,
     http::{
-        HeaderMap, HeaderValue, Request, Response, StatusCode,
+        HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode,
         header::{CONTENT_LENGTH, CONTENT_TYPE},
     },
     routing::post,
@@ -19,12 +21,69 @@ use crate::{
     account_planner::{BodyRouteSignal, GatewayProtocol, PlanningError},
     attempt_reporter::{AttemptReportContext, AttemptReportStats, AttemptStatus, now_unix_ms_i64},
     proxy_engine::{ProxyError, validate_vendor_endpoint},
-    redaction::redact_untrusted_text,
+    redaction::{SENSITIVE_REQUEST_CREDENTIAL_HEADERS, redact_untrusted_text},
     request_id::RequestId,
 };
 
 const DEFAULT_CONTENT_TYPE: &str = "application/json";
 const LISTENER_ERROR_LIMIT: usize = 256;
+
+/// P1-7 (W11 同源) 2026-05-24: mock 上游分支主动剥除客户端凭据头计数器。
+///
+/// 背景:
+/// - 生产模式下 config validate() 拒绝 mock_upstream_endpoint, 因此本分支只在
+///   dev/test 触发, 但仍然要防客户端把真实 vendor 凭据 (Authorization / x-api-key /
+///   cookie) 误发到 HUAKAI mock 路径 -> mock 上游可能 log / 落盘 / 泄露。
+/// - 下游 proxy_engine/headers.rs `should_forward_request_header` 白名单已不在
+///   forward 时透传这些头 (defense in depth 第一层), 但 listener 层显式 strip +
+///   warn log + counter 让审计能看到"mock 分支有几次请求带了真实凭据被我们清掉",
+///   下游白名单漂移 (例如有人把 authorization 加回白名单) 时也能从指标上发现。
+///
+/// 计数语义: **按 header value 数累加** — 一个请求带 4 个凭据 key 且 cookie 出现 2
+/// 次时 +5。这样测试既能验证 "全部 key 都剥" 又能用 mutation (删任一 key 或把
+/// 计数改回按 key 累加) 触发严格失败。Codex round 1 fix: 旧实现按 key +1, 漏报
+/// 同名头多行场景, 已改为按 value 累加。
+static MOCK_CREDENTIAL_STRIP_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// 客户端凭据头名单 — 进入 mock 分支前必须 strip。
+///
+/// Codex round 2 fix 2026-05-24: 直接复用 redaction::SENSITIVE_REQUEST_CREDENTIAL_HEADERS,
+/// 自动包含 x-auth-token / x-access-token 等 redaction 已识别的 token 头, 避免两份
+/// 名单漂移 (审计 / log redaction 与 listener strip 必须同步)。
+/// 注: 不能用 `const &[HeaderName]` (HeaderName 内含 interior-mutable 字段, E0492);
+/// 用字符串名 + runtime HeaderName::from_static 等价。
+const MOCK_STRIPPABLE_CLIENT_CREDENTIAL_HEADER_NAMES: &[&str] =
+    SENSITIVE_REQUEST_CREDENTIAL_HEADERS;
+
+/// 累计被 mock 分支 strip 的客户端凭据头出现次数 (测试 + 审计可读)。
+pub fn mock_credential_strip_count() -> u64 {
+    MOCK_CREDENTIAL_STRIP_COUNT.load(Ordering::Relaxed)
+}
+
+/// P1-7 mutation: 删本 fn body 或不调用 -> mock_upstream_strips_*_with_counter
+/// 测试中 counter 不增 -> 断言红。也用于 dev/test 之外的回归保护。
+///
+/// Codex Round 1 P2 fix 2026-05-24: `HeaderMap::remove(&name)` 实际一次性移除
+/// 同名头的所有 value 并只返回第一个, 旧 while-let 循环只能 +1 而非按 value
+/// 数累加, 与 "按 header 出现次数累加" 的文档语义矛盾。改用 `get_all().iter().count()`
+/// 先数清楚再一次性 remove, 保证 cookie 多值 / Authorization 多值场景计数正确。
+fn strip_client_credentials_for_mock(headers: &mut HeaderMap) -> Vec<&'static str> {
+    let mut stripped: Vec<&'static str> = Vec::new();
+    for &name_str in MOCK_STRIPPABLE_CLIENT_CREDENTIAL_HEADER_NAMES {
+        // HeaderName::from_static 等价于 http crate AUTHORIZATION / COOKIE /
+        // PROXY_AUTHORIZATION 常量 (x-api-key 在 http crate 中无常量)。
+        let name = HeaderName::from_static(name_str);
+        // 先统计同名头 value 数量 (含重复行), 再一次性移除整个 key。
+        // 这样客户端发 `Cookie: a` + `Cookie: b` 两行时 counter 增 2 而非 1。
+        let value_count = headers.get_all(&name).iter().count();
+        if value_count > 0 {
+            headers.remove(&name);
+            MOCK_CREDENTIAL_STRIP_COUNT.fetch_add(value_count as u64, Ordering::Relaxed);
+            stripped.push(name_str);
+        }
+    }
+    stripped
+}
 
 /// 构建业务 endpoint router; `/healthz` 由 lib.rs 保留。
 pub fn build_router() -> Router<GatewayState> {
@@ -75,6 +134,25 @@ async fn handle_gateway_request(
             // mock_upstream_emits_explicit_mock_attempt_event 测试变绿 (应红)。
             let context = AttemptReportContext::synthetic_mock_attempt(&request_id);
             let reporter = state.attempt_reporter().terminal_reporter(context);
+
+            // P1-7 (W11 同源) 2026-05-24: mock 分支 forward 前显式 strip
+            // 客户端凭据头 (Authorization / x-api-key / cookie / proxy-authorization)。
+            // 下游 proxy_engine headers 白名单已天然不透传, 这里 listener 层多一道防御
+            // (defense in depth) 同时 emit warn log + counter, 让审计能看到此次 mock
+            // 流量曾带真实凭据被我们清掉, 也能及时发现下游白名单漂移。
+            //
+            // mutation: 删 strip_client_credentials_for_mock 调用 ->
+            // mock_upstream_strips_authorization_x_api_key_and_cookie_with_counter
+            // 测试中 counter 期望增量为 3 实际增 0 -> 红。
+            let (mut parts, body) = request.into_parts();
+            let stripped = strip_client_credentials_for_mock(&mut parts.headers);
+            if !stripped.is_empty() {
+                warn!(
+                    stripped_headers = ?stripped,
+                    "mock upstream branch stripped client credential headers before forward (W11/P1-7)",
+                );
+            }
+            let request = Request::from_parts(parts, body);
             return match state
                 .proxy_engine()
                 .forward_endpoint(request, upstream, request_id.clone())

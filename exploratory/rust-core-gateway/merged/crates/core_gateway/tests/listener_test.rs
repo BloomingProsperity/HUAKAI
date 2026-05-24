@@ -242,6 +242,69 @@ async fn mock_upstream_emits_explicit_mock_attempt_event() {
     );
 }
 
+/// P1-7 (W11 同源) 2026-05-24: mock 分支 forward 前必须主动 strip 客户端凭据头
+/// (Authorization / x-api-key / cookie / proxy-authorization / x-auth-token /
+/// x-access-token, 与 redaction::SENSITIVE_REQUEST_CREDENTIAL_HEADERS 同源),
+/// 防止 dev/test mock 上游 log / 落盘真实 vendor 凭据。
+///
+/// 判别性 + mutation 设计:
+/// 1) 客户端发全部 6 个 redaction 名单上的凭据头, 其中 cookie 故意发 2 行 →
+///    `mock_credential_strip_count()` 增量恰好 = **7** (5 个单值头 + cookie 两行)。
+/// 2) `mock.last_credential_headers()` 必须为空: 任一头被泄露则 vec 非空 → 红。
+///
+/// mutation:
+/// - 删 listener.rs strip_client_credentials_for_mock 调用 → counter 增 0 + mock 看到全部 → 红 (1+2)。
+/// - 缩 redaction::SENSITIVE_REQUEST_CREDENTIAL_HEADERS 任一项 → counter 增 ≤6 而非 7 → 红 (1)
+///   且 mock 看到被删的那条 → 红 (2)。
+/// - 把计数改回旧的 "+1 per header key" 而非 "+1 per value" → cookie 双行只计 1
+///   → counter 增 6 而非 7 → 红 (1)。
+/// - 把 authorization 加回 proxy_engine/headers.rs 白名单 → mock 看到 Authorization → 红 (2)。
+#[tokio::test]
+async fn mock_upstream_strips_authorization_x_api_key_and_cookie_with_counter() {
+    let _drain_guard = DrainModeReset::set(false); // 持 drain 测试互斥锁
+    let mock = MockUpstream::spawn(MockBehavior::EchoBody).await;
+    let config = test_config(4 * 1024 * 1024, Some(mock.endpoint()));
+
+    let baseline = core_listener::mock_credential_strip_count();
+
+    let response = build_router(config)
+        .expect("build_router")
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer real-vendor-key-must-not-leak")
+                .header("x-api-key", "sk-ant-leak-canary")
+                .header("cookie", "session=stolen-vendor-session")
+                // 同名头第二行覆盖 "按 value 数累加" 语义 (Codex round 1 P2 fix)
+                .header("cookie", "csrf=stolen-csrf-token")
+                .header("proxy-authorization", "Basic stolen-proxy-creds")
+                // x-auth-token / x-access-token: redaction 名单识别但旧 strip 名单漏 (round 2 fix)
+                .header("x-auth-token", "vendor-session-jwt")
+                .header("x-access-token", "stolen-oauth-access")
+                .body(Body::from(Bytes::from_static(br#"{"messages":[]}"#)))
+                .expect("request 构建应成功"),
+        )
+        .await
+        .expect("listener 应响应");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let after = core_listener::mock_credential_strip_count();
+    assert_eq!(
+        after,
+        baseline + 7,
+        "mock 分支必须按 value 累加 strip 所有 6 个凭据头 key (含 cookie 双行 = 7 个 value); \
+         baseline={baseline}, after={after}; 任一头漏掉或计数按 key 而非 value 都会红"
+    );
+    let leaked = mock.last_credential_headers().await;
+    assert!(
+        leaked.is_empty(),
+        "mock 上游不应看到任何客户端凭据头, 实际泄露 = {leaked:?}"
+    );
+}
+
 #[tokio::test]
 async fn overload_limit_one_rejects_second_concurrent_business_request() {
     let _drain_guard = DrainModeReset::set(false); // 持 drain 测试互斥锁

@@ -15,8 +15,8 @@ use axum::{
     body::Body,
     extract::State,
     http::{
-        HeaderMap, Response, StatusCode,
-        header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue},
+        HeaderMap, HeaderName, Response, StatusCode,
+        header::{AUTHORIZATION, CONTENT_TYPE, COOKIE, HeaderValue, PROXY_AUTHORIZATION},
     },
     routing::post,
 };
@@ -47,6 +47,10 @@ struct MockState {
     last_request_id: Mutex<Option<String>>,
     last_authorization: Mutex<Option<String>>,
     last_content_type: Mutex<Option<String>>,
+    // P1-7 Codex round 2 fix 2026-05-24: 捕获所有客户端凭据头以验证 listener
+    // strip 真把它们清掉了 (而不只是 counter ++ 但未真 remove)。每条以
+    // `name=value` 拼接进 vec, 测试可断言 vec 为空 = 真无凭据到达。
+    last_credential_headers: Mutex<Vec<(String, String)>>,
 }
 
 #[derive(Debug)]
@@ -67,6 +71,7 @@ impl MockUpstream {
             last_request_id: Mutex::new(None),
             last_authorization: Mutex::new(None),
             last_content_type: Mutex::new(None),
+            last_credential_headers: Mutex::new(Vec::new()),
         });
         let app = Router::new()
             .route("/v1/messages", post(handle_mock_request))
@@ -116,6 +121,14 @@ impl MockUpstream {
         self.state.last_authorization.lock().await.clone()
     }
 
+    /// P1-7 Codex round 2: 返回 mock 上游本次实际看到的所有客户端凭据头
+    /// `(name, value)` 序列。listener 真正 strip 时本 vec 必须为空。
+    /// 与 last_authorization 互补 (后者只覆盖 Authorization 单个 key)。
+    #[allow(dead_code)]
+    pub async fn last_credential_headers(&self) -> Vec<(String, String)> {
+        self.state.last_credential_headers.lock().await.clone()
+    }
+
     #[allow(dead_code)]
     pub async fn last_content_type(&self) -> Option<String> {
         self.state.last_content_type.lock().await.clone()
@@ -159,6 +172,28 @@ async fn handle_mock_request(
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .map(ToOwned::to_owned);
+    // P1-7 Codex round 2: 捕获所有客户端凭据 header (每 value 一条),
+    // 测试可断言"mock 没看到任何凭据"以补强 listener 真 strip 而非只 ++ counter。
+    // 名单与 redaction::SENSITIVE_REQUEST_CREDENTIAL_HEADERS 保持等价。
+    {
+        let mut creds = state.last_credential_headers.lock().await;
+        creds.clear();
+        let sensitive_names: [HeaderName; 6] = [
+            AUTHORIZATION,
+            HeaderName::from_static("x-api-key"),
+            COOKIE,
+            PROXY_AUTHORIZATION,
+            HeaderName::from_static("x-auth-token"),
+            HeaderName::from_static("x-access-token"),
+        ];
+        for name in sensitive_names.iter() {
+            for value in headers.get_all(name).iter() {
+                if let Ok(v) = value.to_str() {
+                    creds.push((name.as_str().to_owned(), v.to_owned()));
+                }
+            }
+        }
+    }
 
     match state.behavior.clone() {
         MockBehavior::EchoBody => echo_body(state, body, request_id).await,

@@ -18,6 +18,19 @@ const SENSITIVE_HEADERS: &[&str] = &[
     "x-auth-token",
     "x-access-token",
 ];
+
+/// P1-7 Codex round 2 fix 2026-05-24: 客户端请求中应剥除的凭据 header (request-side
+/// subset, 去掉 set-cookie 这个 response-only header)。listener.rs mock 分支与未来
+/// 其它 strip 路径 (W11-D2 vendor 透传策略变更) 必须从这里取, 避免与 redaction 名单
+/// 漂移。
+pub const SENSITIVE_REQUEST_CREDENTIAL_HEADERS: &[&str] = &[
+    "authorization",
+    "x-api-key",
+    "cookie",
+    "proxy-authorization",
+    "x-auth-token",
+    "x-access-token",
+];
 const REDACTED_SECRET_PATTERN: &str = "[REDACTED_SECRET]";
 
 /// 判断 header 名称是否需要脱敏 (O(n), n=8 常数极小, 优于 HashSet 构造开销)
