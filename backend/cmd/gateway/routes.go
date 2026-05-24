@@ -156,6 +156,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Credentials:     d.credentialStore,
 			CredentialAudit: d.credentialStore,
 			AuditStore:      d.adminQueries,
+			Exchangers:      d.credentialExchangers,
 		})
 		gatewayhttp.MountChannelHealthAdminRoutes(r, gatewayhttp.ChannelHealthAdminDeps{
 			Auth:       d.adminAuth,
@@ -184,6 +185,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Credentials:     d.credentialStore,
 			CredentialAudit: d.credentialStore,
 			AuditStore:      d.adminQueries,
+			Exchangers:      d.credentialExchangers,
 		})
 	})
 	r.Route("/admin/v1/pools", func(r chi.Router) {

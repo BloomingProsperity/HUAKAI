@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -114,7 +115,7 @@ func CompleteOAuthCallbackWithRegistry(ctx context.Context, store *PostgresSessi
 				exc, ok = registry.Lookup(session.Vendor)
 			}
 			if !ok {
-				return CredentialCandidate{}, errors.New("credentialacq: oauth exchanger missing")
+				return CredentialCandidate{}, fmt.Errorf("%w: %s", ErrOAuthExchangerMissing, exchangerKey(session.Vendor, session.AuthMode))
 			}
 			if storeAware, ok := exc.(StoreAwareExchanger); ok {
 				return storeAware.ExchangeOAuthCodeWithStore(ctx, store, session, state, code)
@@ -152,7 +153,7 @@ func CompleteOAuthCallback(ctx context.Context, store *PostgresSessionStore, flo
 		return CredentialCandidate{}, session, err
 	}
 	if exchange == nil {
-		return CredentialCandidate{}, callbackSession, errors.New("credentialacq: oauth exchanger missing")
+		return CredentialCandidate{}, callbackSession, ErrOAuthExchangerMissing
 	}
 	candidate, err := exchange(ctx, callbackSession, code)
 	if err != nil {

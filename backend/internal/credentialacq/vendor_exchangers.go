@@ -118,7 +118,7 @@ func (r *ExchangerRegistry) Exchange(ctx context.Context, session Session, code 
 		exc, ok = r.Lookup(session.Vendor)
 	}
 	if !ok {
-		return CredentialCandidate{}, errors.New("credentialacq: oauth exchanger missing")
+		return CredentialCandidate{}, fmt.Errorf("%w: %s", ErrOAuthExchangerMissing, exchangerKey(session.Vendor, session.AuthMode))
 	}
 	return exc.ExchangeOAuthCode(ctx, session, code)
 }
