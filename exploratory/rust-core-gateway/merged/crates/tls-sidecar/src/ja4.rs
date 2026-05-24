@@ -7,10 +7,9 @@ use thiserror::Error;
 use crate::profile::TlsProfile;
 
 const EXT_SNI: u16 = 0;
-const EXT_SIGNATURE_ALGORITHMS: u16 = 13;
 const EXT_ALPN: u16 = 16;
-const EXT_PADDING: u16 = 21;
 const EXT_SUPPORTED_VERSIONS: u16 = 43;
+const EMPTY_RENEGOTIATION_SCSV: u16 = 0x00ff;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ja4Fingerprint {
@@ -27,10 +26,9 @@ impl Ja4Fingerprint {
             protocol: Ja4Protocol::TlsOverTcp,
             tls_version: preferred_tls_version(&profile.supported_versions),
             has_domain_sni: profile_has_domain_sni(profile),
-            alpn: profile.alpn.first().cloned(),
+            alpn: profile.alpn.last().cloned(),
             cipher_suites: profile.cipher_suites.clone(),
             extensions: profile.extensions.clone(),
-            signature_algorithms: profile.signature_algorithms.clone(),
         })
         .expect("BoringSSL SHA-256 should be available for JA4")
     }
@@ -46,47 +44,39 @@ impl Ja4Fingerprint {
     }
 
     fn from_parts(parts: Ja4Parts) -> Result<Self, Ja4Error> {
-        let cipher_count = parts
+        let clean_ciphers = parts
             .cipher_suites
             .iter()
             .copied()
-            .filter(|value| !is_grease(*value))
-            .count();
+            .filter(|value| include_cipher(*value))
+            .collect::<Vec<_>>();
+        let cipher_count = clean_ciphers.len();
         let extension_count = parts
             .extensions
             .iter()
             .copied()
-            .filter(|value| include_extension_in_a_count(*value))
+            .filter(|value| !is_grease(*value))
             .count();
         let a = format!(
-            "{}{}{}{:02}{:02}{}",
+            "{}{}{}{:02}{:02}",
             parts.protocol.ja4_prefix(),
             tls_version_token(parts.tls_version),
             if parts.has_domain_sni { "d" } else { "i" },
             cipher_count,
-            extension_count,
-            alpn_token(parts.alpn.as_deref())
+            extension_count
         );
-        let b = hash12(&canonical_u16_list(
-            parts
-                .cipher_suites
-                .iter()
-                .copied()
-                .filter(|value| !is_grease(*value)),
-        ))?;
-        let c = hash12(&canonical_u16_list(
-            parts
-                .extensions
-                .iter()
-                .copied()
-                .filter(|value| include_extension_in_c_hash(*value)),
-        ))?;
-        let d = hash12(&canonical_u16_list(
-            parts
-                .signature_algorithms
-                .iter()
-                .copied()
-                .filter(|value| !is_grease(*value)),
+        let b = alpn_token(parts.alpn.as_deref());
+        let c = hash12(&canonical_u16_list(clean_ciphers.into_iter()))?;
+        let d = hash12(&format!(
+            "{}_{}",
+            canonical_u16_list(
+                parts
+                    .extensions
+                    .iter()
+                    .copied()
+                    .filter(|value| include_extension_in_d_hash(*value))
+            ),
+            b
         ))?;
         Ok(Self { a, b, c, d })
     }
@@ -133,7 +123,6 @@ struct Ja4Parts {
     alpn: Option<String>,
     cipher_suites: Vec<u16>,
     extensions: Vec<u16>,
-    signature_algorithms: Vec<u16>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -200,7 +189,6 @@ fn parse_tls_client_hello_record(raw: &[u8]) -> Result<Ja4Parts, Ja4Error> {
     let mut supported_versions = Vec::new();
     let mut has_domain_sni = false;
     let mut alpn = None;
-    let mut signature_algorithms = Vec::new();
     if reader.remaining() > 0 {
         let extensions_len = reader.read_u16()? as usize;
         let extensions_end = reader.position() + extensions_len;
@@ -211,10 +199,7 @@ fn parse_tls_client_hello_record(raw: &[u8]) -> Result<Ja4Parts, Ja4Error> {
             extensions.push(ext_type);
             match ext_type {
                 EXT_SNI => has_domain_sni = parse_sni_has_domain(data)?,
-                EXT_ALPN => alpn = parse_first_alpn(data)?,
-                EXT_SIGNATURE_ALGORITHMS => {
-                    signature_algorithms = parse_u16_vector(data, "invalid signature_algorithms")?;
-                }
+                EXT_ALPN => alpn = parse_last_alpn(data)?,
                 EXT_SUPPORTED_VERSIONS => {
                     supported_versions = parse_supported_versions(data)?;
                 }
@@ -233,7 +218,6 @@ fn parse_tls_client_hello_record(raw: &[u8]) -> Result<Ja4Parts, Ja4Error> {
         alpn,
         cipher_suites,
         extensions,
-        signature_algorithms,
     })
 }
 
@@ -255,40 +239,27 @@ fn parse_sni_has_domain(data: &[u8]) -> Result<bool, Ja4Error> {
     Ok(false)
 }
 
-fn parse_first_alpn(data: &[u8]) -> Result<Option<String>, Ja4Error> {
+fn parse_last_alpn(data: &[u8]) -> Result<Option<String>, Ja4Error> {
     let mut reader = WireReader::new(data);
     let list_len = reader.read_u16()? as usize;
     if reader.remaining() < list_len {
         return Err(Ja4Error::Parse("invalid ALPN list length"));
     }
     let list_end = reader.position() + list_len;
-    if reader.position() >= list_end {
-        return Ok(None);
+    let mut last = None;
+    while reader.position() < list_end {
+        let protocol_len = reader.read_u8()? as usize;
+        if protocol_len == 0 {
+            continue;
+        }
+        let protocol = reader.take(protocol_len)?;
+        last = Some(
+            std::str::from_utf8(protocol)
+                .map_err(|_| Ja4Error::Parse("ALPN is not UTF-8"))?
+                .to_owned(),
+        );
     }
-    let protocol_len = reader.read_u8()? as usize;
-    if protocol_len == 0 {
-        return Ok(None);
-    }
-    let protocol = reader.take(protocol_len)?;
-    Ok(Some(
-        std::str::from_utf8(protocol)
-            .map_err(|_| Ja4Error::Parse("ALPN is not UTF-8"))?
-            .to_owned(),
-    ))
-}
-
-fn parse_u16_vector(data: &[u8], error: &'static str) -> Result<Vec<u16>, Ja4Error> {
-    let mut reader = WireReader::new(data);
-    let len = reader.read_u16()? as usize;
-    if len % 2 != 0 || reader.remaining() < len {
-        return Err(Ja4Error::Parse(error));
-    }
-    let end = reader.position() + len;
-    let mut out = Vec::new();
-    while reader.position() < end {
-        out.push(reader.read_u16()?);
-    }
-    Ok(out)
+    Ok(last)
 }
 
 fn parse_supported_versions(data: &[u8]) -> Result<Vec<u16>, Ja4Error> {
@@ -340,9 +311,6 @@ fn tls_version_token(version: u16) -> String {
 
 fn alpn_token(alpn: Option<&str>) -> String {
     match alpn {
-        Some("h2") => "h2".to_owned(),
-        Some("h3") => "h3".to_owned(),
-        Some("http/1.1") => "h1".to_owned(),
         Some(value) => {
             let mut chars = value.chars();
             let first = chars.next().unwrap_or('0');
@@ -358,7 +326,7 @@ fn canonical_u16_list(values: impl Iterator<Item = u16>) -> String {
     values.sort_unstable();
     values
         .into_iter()
-        .map(|value| format!("{value:04x}"))
+        .map(|value| value.to_string())
         .collect::<Vec<_>>()
         .join(",")
 }
@@ -379,12 +347,12 @@ fn to_lower_hex(bytes: &[u8]) -> String {
     out
 }
 
-fn include_extension_in_a_count(value: u16) -> bool {
-    !is_grease(value) && value != EXT_PADDING
+fn include_cipher(value: u16) -> bool {
+    !is_grease(value) && value != EMPTY_RENEGOTIATION_SCSV
 }
 
-fn include_extension_in_c_hash(value: u16) -> bool {
-    !is_grease(value) && !matches!(value, EXT_SNI | EXT_ALPN | EXT_PADDING)
+fn include_extension_in_d_hash(value: u16) -> bool {
+    !is_grease(value) && !matches!(value, EXT_SNI | EXT_ALPN)
 }
 
 fn is_grease(value: u16) -> bool {
@@ -447,13 +415,13 @@ mod tests {
 
         let fingerprint = super::Ja4Fingerprint::from_profile(profile);
 
-        assert_eq!(fingerprint.a, "t13d1715h1");
-        assert_eq!(fingerprint.b, "5b57614c22b0");
-        assert_eq!(fingerprint.c, "9bdad0a0acbc");
-        assert_eq!(fingerprint.d, "ea8537015a9f");
+        assert_eq!(fingerprint.a, "t13d5212");
+        assert_eq!(fingerprint.b, "ht");
+        assert_eq!(fingerprint.c, "9b003dc3eba7");
+        assert_eq!(fingerprint.d, "4e5c652b160e");
         assert_eq!(
             fingerprint.full(),
-            "t13d1715h1_5b57614c22b0_9bdad0a0acbc_ea8537015a9f"
+            "t13d5212_ht_9b003dc3eba7_4e5c652b160e"
         );
         assert_ne!(fingerprint.b, "000000000000");
         assert_ne!(fingerprint.c, "111111111111");
@@ -480,15 +448,15 @@ mod tests {
         let anthropic_ja4 = super::Ja4Fingerprint::from_profile(anthropic);
         let chrome_ja4 = super::Ja4Fingerprint::from_profile(&chrome);
 
-        assert_eq!(anthropic_ja4.a, "t13d1715h1");
+        assert_eq!(anthropic_ja4.a, "t13d5212");
+        assert_eq!(chrome_ja4.b, anthropic_ja4.b);
         assert_ne!(chrome_ja4.a, anthropic_ja4.a);
-        assert_ne!(chrome_ja4.b, anthropic_ja4.b);
         assert_ne!(chrome_ja4.c, anthropic_ja4.c);
         assert_ne!(chrome_ja4.d, anthropic_ja4.d);
     }
 
     #[test]
-    fn expected_ja4_comparison_fails_when_signature_segment_is_omitted() {
+    fn expected_ja4_comparison_fails_when_extension_hash_segment_is_omitted() {
         let profiles =
             crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();
         let profile = profiles.get("anthropic-cli-mimicry-v1").unwrap();
@@ -499,7 +467,7 @@ mod tests {
 
         assert!(
             err.to_string().contains("ja4_d"),
-            "signature algorithm segment must be part of the profile comparison: {err}"
+            "extension hash segment must be part of the profile comparison: {err}"
         );
     }
 }
