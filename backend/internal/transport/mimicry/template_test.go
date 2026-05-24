@@ -21,10 +21,14 @@ func TestLoadFromCollectorOutput_AnthropicSample(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load collector fixture: %v", err)
 	}
-	if tmpl.JA4 == "" || len(tmpl.CipherSuites) != 17 {
+	want := AnthropicCLIMimicryV1Template()
+	if tmpl.JA4 != want.JA4 || len(tmpl.CipherSuites) != len(want.CipherSuites) {
 		t.Fatalf("collector fixture 未正确加载: %#v", tmpl)
 	}
-	if got, want := tmpl.SignatureAlgorithms, anthropicSigAlgos(); !reflect.DeepEqual(got, want) {
+	if !containsUint16(tmpl.Extensions, 0) {
+		t.Fatalf("collector fixture 缺少 SNI extension 0: %v", tmpl.Extensions)
+	}
+	if got, want := tmpl.SignatureAlgorithms, want.SignatureAlgorithms; !reflect.DeepEqual(got, want) {
 		t.Fatalf("sig algos = %v, want %v", got, want)
 	}
 }
@@ -34,8 +38,8 @@ func TestLoadFromCollectorOutput_PhaseAMergedTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load merged template: %v", err)
 	}
-	if tmpl.ModeName != "anthropic-claude-code" {
-		t.Fatalf("mode_name = %q, want anthropic-claude-code", tmpl.ModeName)
+	if tmpl.ModeName != SidecarProfileAnthropicCLIMimicryV1 {
+		t.Fatalf("mode_name = %q, want %q", tmpl.ModeName, SidecarProfileAnthropicCLIMimicryV1)
 	}
 }
 

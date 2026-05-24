@@ -1,0 +1,419 @@
+{
+  "schema_version": "1.0",
+  "mode_name": "anthropic-cli-mimicry-v1",
+  "capture_time": "2026-05-24T12:56:55Z",
+  "collected_at": "2026-05-24T12:56:55Z",
+  "sample_count": 1,
+  "target_host": "api.anthropic.com",
+  "capture_target_host": "127.0.0.1",
+  "tls_backend": "nodejs/openssl",
+  "legacy_version": 771,
+  "legacy_version_hex": "0x0303",
+  "random_len": 32,
+  "legacy_session_id_len": 32,
+  "cipher_suites": [
+    {
+      "value": 4866,
+      "value_hex": "0x1302"
+    },
+    {
+      "value": 4867,
+      "value_hex": "0x1303"
+    },
+    {
+      "value": 4865,
+      "value_hex": "0x1301"
+    },
+    {
+      "value": 49199,
+      "value_hex": "0xc02f"
+    },
+    {
+      "value": 49195,
+      "value_hex": "0xc02b"
+    },
+    {
+      "value": 49200,
+      "value_hex": "0xc030"
+    },
+    {
+      "value": 49196,
+      "value_hex": "0xc02c"
+    },
+    {
+      "value": 158,
+      "value_hex": "0x009e"
+    },
+    {
+      "value": 49191,
+      "value_hex": "0xc027"
+    },
+    {
+      "value": 103,
+      "value_hex": "0x0067"
+    },
+    {
+      "value": 49192,
+      "value_hex": "0xc028"
+    },
+    {
+      "value": 107,
+      "value_hex": "0x006b"
+    },
+    {
+      "value": 163,
+      "value_hex": "0x00a3"
+    },
+    {
+      "value": 159,
+      "value_hex": "0x009f"
+    },
+    {
+      "value": 52393,
+      "value_hex": "0xcca9"
+    },
+    {
+      "value": 52392,
+      "value_hex": "0xcca8"
+    },
+    {
+      "value": 52394,
+      "value_hex": "0xccaa"
+    },
+    {
+      "value": 49325,
+      "value_hex": "0xc0ad"
+    },
+    {
+      "value": 49311,
+      "value_hex": "0xc09f"
+    },
+    {
+      "value": 49245,
+      "value_hex": "0xc05d"
+    },
+    {
+      "value": 49249,
+      "value_hex": "0xc061"
+    },
+    {
+      "value": 49239,
+      "value_hex": "0xc057"
+    },
+    {
+      "value": 49235,
+      "value_hex": "0xc053"
+    },
+    {
+      "value": 162,
+      "value_hex": "0x00a2"
+    },
+    {
+      "value": 49324,
+      "value_hex": "0xc0ac"
+    },
+    {
+      "value": 49310,
+      "value_hex": "0xc09e"
+    },
+    {
+      "value": 49244,
+      "value_hex": "0xc05c"
+    },
+    {
+      "value": 49248,
+      "value_hex": "0xc060"
+    },
+    {
+      "value": 49238,
+      "value_hex": "0xc056"
+    },
+    {
+      "value": 49234,
+      "value_hex": "0xc052"
+    },
+    {
+      "value": 49188,
+      "value_hex": "0xc024"
+    },
+    {
+      "value": 106,
+      "value_hex": "0x006a"
+    },
+    {
+      "value": 49187,
+      "value_hex": "0xc023"
+    },
+    {
+      "value": 64,
+      "value_hex": "0x0040"
+    },
+    {
+      "value": 49162,
+      "value_hex": "0xc00a"
+    },
+    {
+      "value": 49172,
+      "value_hex": "0xc014"
+    },
+    {
+      "value": 57,
+      "value_hex": "0x0039"
+    },
+    {
+      "value": 56,
+      "value_hex": "0x0038"
+    },
+    {
+      "value": 49161,
+      "value_hex": "0xc009"
+    },
+    {
+      "value": 49171,
+      "value_hex": "0xc013"
+    },
+    {
+      "value": 51,
+      "value_hex": "0x0033"
+    },
+    {
+      "value": 50,
+      "value_hex": "0x0032"
+    },
+    {
+      "value": 157,
+      "value_hex": "0x009d"
+    },
+    {
+      "value": 49309,
+      "value_hex": "0xc09d"
+    },
+    {
+      "value": 49233,
+      "value_hex": "0xc051"
+    },
+    {
+      "value": 156,
+      "value_hex": "0x009c"
+    },
+    {
+      "value": 49308,
+      "value_hex": "0xc09c"
+    },
+    {
+      "value": 49232,
+      "value_hex": "0xc050"
+    },
+    {
+      "value": 61,
+      "value_hex": "0x003d"
+    },
+    {
+      "value": 60,
+      "value_hex": "0x003c"
+    },
+    {
+      "value": 53,
+      "value_hex": "0x0035"
+    },
+    {
+      "value": 47,
+      "value_hex": "0x002f"
+    }
+  ],
+  "compression_methods": "AA==",
+  "extensions": [
+    {
+      "type": 65281,
+      "type_hex": "0xff01",
+      "data_len": 1
+    },
+    {
+      "type": 0,
+      "type_hex": "0x0000",
+      "type_name": "server_name",
+      "data_len": 22
+    },
+    {
+      "type": 11,
+      "type_hex": "0x000b",
+      "type_name": "ec_point_formats",
+      "data_len": 4,
+      "ec_point_formats": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "type": 10,
+      "type_hex": "0x000a",
+      "type_name": "supported_groups",
+      "data_len": 18,
+      "supported_groups": [
+        4588,
+        29,
+        23,
+        30,
+        24,
+        25,
+        256,
+        257
+      ]
+    },
+    {
+      "type": 35,
+      "type_hex": "0x0023",
+      "type_name": "session_ticket",
+      "data_len": 0
+    },
+    {
+      "type": 16,
+      "type_hex": "0x0010",
+      "type_name": "application_layer_protocol_negotiation",
+      "data_len": 14,
+      "alpn_protocols": [
+        "h2",
+        "http/1.1"
+      ]
+    },
+    {
+      "type": 22,
+      "type_hex": "0x0016",
+      "data_len": 0
+    },
+    {
+      "type": 23,
+      "type_hex": "0x0017",
+      "type_name": "extended_master_secret",
+      "data_len": 0
+    },
+    {
+      "type": 13,
+      "type_hex": "0x000d",
+      "type_name": "signature_algorithms",
+      "data_len": 54,
+      "signature_algorithms": [
+        2309,
+        2310,
+        2308,
+        1027,
+        1283,
+        1539,
+        2055,
+        2056,
+        2074,
+        2075,
+        2076,
+        2057,
+        2058,
+        2059,
+        2052,
+        2053,
+        2054,
+        1025,
+        1281,
+        1537,
+        771,
+        769,
+        770,
+        1026,
+        1282,
+        1538
+      ]
+    },
+    {
+      "type": 43,
+      "type_hex": "0x002b",
+      "type_name": "supported_versions",
+      "data_len": 5,
+      "supported_versions": [
+        772,
+        771
+      ]
+    },
+    {
+      "type": 45,
+      "type_hex": "0x002d",
+      "type_name": "psk_key_exchange_modes",
+      "data_len": 2,
+      "psk_modes": [
+        1
+      ]
+    },
+    {
+      "type": 51,
+      "type_hex": "0x0033",
+      "type_name": "key_share",
+      "data_len": 1258,
+      "key_share_groups": [
+        4588,
+        29
+      ]
+    }
+  ],
+  "sni": "\u003credacted\u003e",
+  "alpn_protocols": [
+    "h2",
+    "http/1.1"
+  ],
+  "supported_groups": [
+    4588,
+    29,
+    23,
+    30,
+    24,
+    25,
+    256,
+    257
+  ],
+  "ec_point_formats": "AAEC",
+  "supported_versions": [
+    772,
+    771
+  ],
+  "key_share_groups": [
+    4588,
+    29
+  ],
+  "signature_algorithms": [
+    2309,
+    2310,
+    2308,
+    1027,
+    1283,
+    1539,
+    2055,
+    2056,
+    2074,
+    2075,
+    2076,
+    2057,
+    2058,
+    2059,
+    2052,
+    2053,
+    2054,
+    1025,
+    1281,
+    1537,
+    771,
+    769,
+    770,
+    1026,
+    1282,
+    1538
+  ],
+  "psk_modes": [
+    1
+  ],
+  "early_data_enabled": false,
+  "ja3": {
+    "input_string": "772,4866-4867-4865-49199-49195-49200-49196-158-49191-103-49192-107-163-159-52393-52392-52394-49325-49311-49245-49249-49239-49235-162-49324-49310-49244-49248-49238-49234-49188-106-49187-64-49162-49172-57-56-49161-49171-51-50-157-49309-49233-156-49308-49232-61-60-53-47,65281-0-11-10-35-16-22-23-13-43-45-51,4588-29-23-30-24-25-256-257,0-1-2",
+    "hash": "55ba290366f110228d176d92fe6f6180"
+  },
+  "ja4": {
+    "raw": "t13d5212_ht_9b003dc3eba7_4e5c652b160e",
+    "hash": "t13d5212_ht_9b003dc3eba7_4e5c652b160e"
+  }
+}
