@@ -3,6 +3,7 @@ package mimicry
 import (
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,6 +27,23 @@ const (
 // TemplateRegistry 保存每个 mimicry mode 对应的 ClientHello 模板。
 type TemplateRegistry struct {
 	templates map[TransportMode]*ClientHelloTemplate
+}
+
+func SidecarProfileForMode(mode TransportMode) (string, bool) {
+	switch mode {
+	case ModeMimicryClaudeCode:
+		return SidecarProfileAnthropicCLIMimicryV1, true
+	default:
+		return "", false
+	}
+}
+
+func NewSidecarRoundTripperForMode(socketPath string, mode TransportMode) (http.RoundTripper, error) {
+	profileID, ok := SidecarProfileForMode(mode)
+	if !ok {
+		return nil, fmt.Errorf("mimicry: no sidecar profile for mode %s", mode)
+	}
+	return NewSidecarRoundTripper(NewSidecarClient(socketPath), profileID), nil
 }
 
 // NewTemplateRegistry 返回空 registry。
