@@ -46,6 +46,7 @@ func DefaultExchangerRegistry() *ExchangerRegistry {
 	register("openai_codex/device-code", openAICodexDeviceCode)
 	register("openai_codex/device_code", openAICodexDeviceCode)
 	register(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeBedrock), NewSSOExchanger())
+	register("antigravity/oauth", NewPKCEFakeExchanger(TokenShapeAnySessionOrAccess))
 	register("copilot/device_code", NewDeviceCodeExchanger())
 	register("kiro/sso", NewSSOExchanger())
 	register("cursor/oauth", NewPKCEFakeExchanger(TokenShapeSession))

@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
@@ -92,6 +93,57 @@ func TestGeminiRefreshAdapterUsesOnlyOperatorOAuthConfig(t *testing.T) {
 	}
 	if got["scope"] != "server scope" || got["id_token"] != "gemini-id-token" {
 		t.Fatalf("token metadata=%v, want server scope and id token preserved", got)
+	}
+}
+
+func TestGeminiRefreshAdapterPostsOperatorClientSecretForConfidentialClient(t *testing.T) {
+	// Regression killed: confidential OAuth refresh must carry the operator
+	// client_secret from OAuthConfig through the adapter into the token form.
+	// Mutation self-check: dropping client_secret from RefreshAdapter or the
+	// POST form makes this test fail before the token response is accepted.
+	now := time.Date(2026, 5, 24, 14, 15, 0, 0, time.UTC)
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		form, err := url.ParseQuery(string(body))
+		if err != nil {
+			t.Fatalf("parse request form: %v", err)
+		}
+		assertGeminiQueryValue(t, form, "grant_type", "refresh_token")
+		assertGeminiQueryValue(t, form, "refresh_token", "gemini-refresh-old")
+		assertGeminiQueryValue(t, form, "client_id", "operator-client")
+		assertGeminiQueryValue(t, form, "client_secret", "operator-secret")
+		assertGeminiQueryValue(t, form, "scope", "operator scope")
+		return geminiJSONResponse(http.StatusOK, `{
+			"access_token":"gemini-access-new",
+			"expires_in":1200
+		}`), nil
+	})}
+
+	adapter, err := RefreshAdapterFromOAuthConfig(OAuthConfig(credentialacq.OAuthClientConfig{
+		AuthURL:      "https://operator.google.example.test/oauth/authorize",
+		TokenURL:     "https://operator.google.example.test/oauth/token",
+		ClientID:     "operator-client",
+		ClientSecret: "operator-secret",
+		RedirectURI:  "http://127.0.0.1:1455/auth/callback",
+		Scopes:       []string{"operator", "scope"},
+		HTTPClient:   client,
+	}))
+	if err != nil {
+		t.Fatalf("RefreshAdapterFromOAuthConfig: %v", err)
+	}
+	adapter.Now = func() time.Time { return now }
+
+	_, expiresAt, err := adapter.RefreshForProvider(context.Background(), 44, GeminiVendor, []byte(`{
+		"refresh_token":"gemini-refresh-old"
+	}`))
+	if err != nil {
+		t.Fatalf("RefreshForProvider: %v", err)
+	}
+	if want := now.Add(1200 * time.Second); !expiresAt.Equal(want) {
+		t.Fatalf("expiresAt=%s, want %s", expiresAt, want)
 	}
 }
 
