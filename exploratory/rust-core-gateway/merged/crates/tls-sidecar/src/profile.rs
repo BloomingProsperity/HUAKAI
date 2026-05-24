@@ -19,6 +19,10 @@ curves = "X25519:P-256:P-384"
 sigalgs = "ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256:ecdsa_secp384r1_sha384:rsa_pss_rsae_sha384:rsa_pkcs1_sha384:rsa_pss_rsae_sha512:rsa_pkcs1_sha512:rsa_pkcs1_sha1"
 alpn = ["http/1.1"]
 expected_ja3 = "772,4865-4866-4867-49195-49199-49196-49200-52393-52392-49161-49171-49162-49172-156-157-47-53,0-65037-23-65281-10-11-35-16-5-13-18-51-45-43,29-23-24,0"
+ja4_a = "t13d1714h1"
+ja4_b = "5b57614c22b0"
+ja4_c = "56fe1f68f78b"
+ja4_d = "ea8537015a9f"
 "#;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,6 +42,10 @@ pub struct TlsProfile {
     pub sigalgs: String,
     pub alpn: Vec<String>,
     pub expected_ja3: String,
+    pub ja4_a: Option<String>,
+    pub ja4_b: Option<String>,
+    pub ja4_c: Option<String>,
+    pub ja4_d: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -129,6 +137,10 @@ fn parse_profile(mut section: BTreeMap<String, String>) -> Result<TlsProfile, Pr
         sigalgs: take_string(&mut section, "sigalgs")?,
         alpn: take_string_array(&mut section, "alpn")?,
         expected_ja3: take_string(&mut section, "expected_ja3")?,
+        ja4_a: take_optional_string(&mut section, "ja4_a")?,
+        ja4_b: take_optional_string(&mut section, "ja4_b")?,
+        ja4_c: take_optional_string(&mut section, "ja4_c")?,
+        ja4_d: take_optional_string(&mut section, "ja4_d")?,
     };
     if !section.is_empty() {
         return Err(ProfileError::Parse(format!(
@@ -151,6 +163,16 @@ fn take_raw(section: &mut BTreeMap<String, String>, key: &str) -> Result<String,
 
 fn take_string(section: &mut BTreeMap<String, String>, key: &str) -> Result<String, ProfileError> {
     parse_string(&take_raw(section, key)?)
+}
+
+fn take_optional_string(
+    section: &mut BTreeMap<String, String>,
+    key: &str,
+) -> Result<Option<String>, ProfileError> {
+    section
+        .remove(key)
+        .map(|raw| parse_string(&raw))
+        .transpose()
 }
 
 fn take_bool(section: &mut BTreeMap<String, String>, key: &str) -> Result<bool, ProfileError> {
@@ -235,6 +257,10 @@ mod tests {
             "772,4865-4866-4867-49195-49199-49196-49200-52393-52392-49161-49171-49162-49172-156-157-47-53,0-65037-23-65281-10-11-35-16-5-13-18-51-45-43,29-23-24,0"
         );
         assert_eq!(profile.alpn, ["http/1.1"]);
+        assert_eq!(profile.ja4_a.as_deref(), Some("t13d1714h1"));
+        assert_eq!(profile.ja4_b.as_deref(), Some("5b57614c22b0"));
+        assert_eq!(profile.ja4_c.as_deref(), Some("56fe1f68f78b"));
+        assert_eq!(profile.ja4_d.as_deref(), Some("ea8537015a9f"));
     }
 
     #[test]
@@ -247,5 +273,21 @@ mod tests {
             err.to_string().contains("unknown profile"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn ja4_profile_fields_are_optional_for_toml_backwards_compatibility() {
+        let raw = super::BUILTIN_PROFILES_TOML
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("ja4_"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let profiles = super::ProfileStore::from_toml(&raw).unwrap();
+        let profile = profiles.get("anthropic-cli-mimicry-v1").unwrap();
+
+        assert!(profile.ja4_a.is_none());
+        assert!(profile.ja4_b.is_none());
+        assert!(profile.ja4_c.is_none());
+        assert!(profile.ja4_d.is_none());
     }
 }

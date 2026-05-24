@@ -48,6 +48,7 @@ async fn connect_upstream(
     port: u16,
     profile: &crate::profile::TlsProfile,
 ) -> Result<tokio_boring::SslStream<TcpStream>, ConnectError> {
+    boring_ctx::validate_expected_ja4_before_connect(profile, target_host).await?;
     let tcp = TcpStream::connect((target_host, port)).await?;
     let config = boring_ctx::connect_config(profile)?;
     tokio_boring::connect(config, target_host, tcp)
