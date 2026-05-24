@@ -214,13 +214,18 @@ WHERE tenant_id = sqlc.arg(tenant_id)
 
 -- name: ListAccountsForRefresh :many
 SELECT
-    id,
-    tenant_id,
-    provider_id,
-    expires_at
-FROM provider_accounts
-WHERE deleted_at IS NULL
-  AND enabled
-  AND (expires_at IS NULL OR expires_at < sqlc.arg(refresh_before))
-ORDER BY COALESCE(expires_at, NOW() + interval '1 year') ASC
+    pa.id,
+    pa.tenant_id,
+    pa.provider_id,
+    p.code AS vendor_name,
+    pa.expires_at
+FROM provider_accounts pa
+JOIN providers p
+  ON p.id = pa.provider_id
+ AND p.tenant_id = pa.tenant_id
+ AND p.deleted_at IS NULL
+WHERE pa.deleted_at IS NULL
+  AND pa.enabled
+  AND (pa.expires_at IS NULL OR pa.expires_at < sqlc.arg(refresh_before))
+ORDER BY COALESCE(pa.expires_at, NOW() + interval '1 year') ASC
 LIMIT sqlc.arg(limit_count);

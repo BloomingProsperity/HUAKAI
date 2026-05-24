@@ -17,6 +17,10 @@ type Exchanger interface {
 	ExchangeOAuthCode(context.Context, Session, string) (CredentialCandidate, error)
 }
 
+type StoreAwareExchanger interface {
+	ExchangeOAuthCodeWithStore(context.Context, *PostgresSessionStore, Session, string, string) (CredentialCandidate, error)
+}
+
 type ExchangerRegistry struct {
 	mu         sync.RWMutex
 	exchangers map[string]Exchanger
@@ -50,6 +54,10 @@ func RegisterExchanger(name string, exc Exchanger) error {
 	return defaultExchangers.RegisterExchanger(name, exc)
 }
 
+func RegisterOrReplaceExchanger(name string, exc Exchanger) error {
+	return defaultExchangers.RegisterOrReplaceExchanger(name, exc)
+}
+
 func (r *ExchangerRegistry) RegisterExchanger(name string, exc Exchanger) error {
 	if r == nil {
 		return errors.New("credentialacq: exchanger registry is nil")
@@ -73,6 +81,26 @@ func (r *ExchangerRegistry) RegisterExchanger(name string, exc Exchanger) error 
 	return nil
 }
 
+func (r *ExchangerRegistry) RegisterOrReplaceExchanger(name string, exc Exchanger) error {
+	if r == nil {
+		return errors.New("credentialacq: exchanger registry is nil")
+	}
+	if exc == nil {
+		return errors.New("credentialacq: exchanger is nil")
+	}
+	key := normalizeExchangerName(name)
+	if key == "" {
+		return errors.New("credentialacq: exchanger name is empty")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.exchangers == nil {
+		r.exchangers = map[string]Exchanger{}
+	}
+	r.exchangers[key] = exc
+	return nil
+}
+
 func (r *ExchangerRegistry) Lookup(name string) (Exchanger, bool) {
 	if r == nil {
 		return nil, false
@@ -86,6 +114,9 @@ func (r *ExchangerRegistry) Lookup(name string) (Exchanger, bool) {
 
 func (r *ExchangerRegistry) Exchange(ctx context.Context, session Session, code string) (CredentialCandidate, error) {
 	exc, ok := r.Lookup(exchangerKey(session.Vendor, session.AuthMode))
+	if !ok {
+		exc, ok = r.Lookup(session.Vendor)
+	}
 	if !ok {
 		return CredentialCandidate{}, errors.New("credentialacq: oauth exchanger missing")
 	}

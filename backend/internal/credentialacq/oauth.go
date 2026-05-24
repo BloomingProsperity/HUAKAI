@@ -111,7 +111,13 @@ func CompleteOAuthCallbackWithRegistry(ctx context.Context, store *PostgresSessi
 		func(ctx context.Context, session Session, code string) (CredentialCandidate, error) {
 			exc, ok := registry.Lookup(exchangerKey(session.Vendor, session.AuthMode))
 			if !ok {
+				exc, ok = registry.Lookup(session.Vendor)
+			}
+			if !ok {
 				return CredentialCandidate{}, errors.New("credentialacq: oauth exchanger missing")
+			}
+			if storeAware, ok := exc.(StoreAwareExchanger); ok {
+				return storeAware.ExchangeOAuthCodeWithStore(ctx, store, session, state, code)
 			}
 			return exc.ExchangeOAuthCode(ctx, session, code)
 		})

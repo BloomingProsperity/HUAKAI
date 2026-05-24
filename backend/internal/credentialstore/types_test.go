@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestDefaultHandlerRegistryCoversFifteenModes(t *testing.T) {
+func TestDefaultHandlerRegistryCoversRefreshableModes(t *testing.T) {
 	registry := DefaultHandlerRegistry()
 	want := []string{
 		"anthropic/api_key",
@@ -23,6 +23,7 @@ func TestDefaultHandlerRegistryCoversFifteenModes(t *testing.T) {
 		"gemini/code_assist",
 		"gemini/google_one",
 		"gemini/antigravity",
+		"copilot/copilot_oauth",
 	}
 	if got := registry.Names(); len(got) != len(want) {
 		t.Fatalf("handler count=%d want %d: %v", len(got), len(want), got)
@@ -59,9 +60,11 @@ func TestRuntimeMaterialMappings(t *testing.T) {
 		value  string
 	}{
 		{VendorAnthropic, AuthModeAPIKey, `{"api_key":"sk-ant"}`, RuntimeAPIKey, "sk-ant"},
+		{VendorAnthropic, AuthModeClaudeAIOAuth, `{"access_token":"anthropic-access","refresh_token":"anthropic-refresh","auth_mode":"claude_ai_oauth"}`, RuntimeOAuthAccessToken, "anthropic-access"},
 		{VendorAnthropic, AuthModeBedrock, `{"aws_access_key_id":"ak","aws_secret_access_key":"sec","aws_region":"us-east-1"}`, RuntimeAWSSigV4, "sec"},
 		{VendorOpenAI, AuthModeRefreshToken, `{"access_token":"tok","refresh_token":"rt"}`, RuntimeUpstreamPassthrough, "Bearer tok"},
 		{VendorGemini, AuthModeAntigravity, `{"session_token":"sess"}`, RuntimeSessionToken, "sess"},
+		{VendorCopilot, AuthModeCopilotOAuth, `{"github_access_token":"gh","session_token":"sess","endpoint_api":"https://copilot-proxy.test"}`, RuntimeSessionToken, "sess"},
 	}
 	for _, tc := range cases {
 		handler, err := registry.MustLookup(tc.vendor, tc.mode)

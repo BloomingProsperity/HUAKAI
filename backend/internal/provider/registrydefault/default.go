@@ -3,17 +3,17 @@
 //
 // 边界（Owner 2026-05-06 directive）：
 //
-//	仅默认注册已验证 adapter。Anthropic OAuth 反转、ChatGPT 反转等尚未
-//	实现的 protocol family 不在此处注册；未验证的 session placeholder
-//	adapter 仅在 HUAKAI_ENABLE_PLACEHOLDER_SESSION_ADAPTERS=true 时 opt-in
-//	注册。运行期访问未注册 family 会得到 provider.ErrAdapterNotRegistered，
-//	由配置层 reject 阻止误用。
+//	仅默认注册已验证 adapter。未验证的 session placeholder adapter 仅在
+//	HUAKAI_ENABLE_PLACEHOLDER_SESSION_ADAPTERS=true 时 opt-in 注册。运行期
+//	访问未注册 family 会得到 provider.ErrAdapterNotRegistered，由配置层
+//	reject 阻止误用。
 //
 // Protocol family 字符串约定（与 router.ResolvedModel.ProtocolFamily 对齐）：
 //   - openai_chat              OpenAI Chat Completions 兼容
 //   - openai_responses         OpenAI Responses API
 //   - openai_codex             OpenAI Codex CLI / ChatGPT Plus session 反转
 //   - anthropic_messages       Anthropic Messages
+//   - anthropic_claude_session Anthropic Pro/Max OAuth session 反转
 //   - gemini_messages          Google Gemini generativelanguage
 //   - openrouter_chat          OpenRouter（OpenAI 兼容）
 //   - bedrock_invoke           AWS Bedrock Runtime invoke
@@ -35,6 +35,7 @@ package registrydefault
 import (
 	"os"
 
+	_ "github.com/BloomingProsperity/HUAKAI/internal/anthropicoauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/antigravity"
@@ -57,20 +58,21 @@ import (
 
 // Protocol family 常量。供配置层与 router 共享。
 const (
-	ProtocolOpenAIChat        = "openai_chat"
-	ProtocolOpenAIResponses   = "openai_responses"
-	ProtocolOpenAICodex       = "openai_codex"
-	ProtocolAnthropicMessages = "anthropic_messages"
-	ProtocolGeminiMessages    = "gemini_messages"
-	ProtocolOpenRouterChat    = "openrouter_chat"
-	ProtocolBedrockInvoke     = "bedrock_invoke"
-	ProtocolGrokChat          = "grok_chat"
-	ProtocolDeepSeekChat      = "deepseek_chat"
-	ProtocolMistralChat       = "mistral_chat"
-	ProtocolGroqCloudChat     = "groqcloud_chat"
-	ProtocolTogetherChat      = "together_chat"
-	ProtocolPerplexityChat    = "perplexity_chat"
-	ProtocolFireworksChat     = "fireworks_chat"
+	ProtocolOpenAIChat             = "openai_chat"
+	ProtocolOpenAIResponses        = "openai_responses"
+	ProtocolOpenAICodex            = "openai_codex"
+	ProtocolAnthropicMessages      = "anthropic_messages"
+	ProtocolAnthropicClaudeSession = "anthropic_claude_session"
+	ProtocolGeminiMessages         = "gemini_messages"
+	ProtocolOpenRouterChat         = "openrouter_chat"
+	ProtocolBedrockInvoke          = "bedrock_invoke"
+	ProtocolGrokChat               = "grok_chat"
+	ProtocolDeepSeekChat           = "deepseek_chat"
+	ProtocolMistralChat            = "mistral_chat"
+	ProtocolGroqCloudChat          = "groqcloud_chat"
+	ProtocolTogetherChat           = "together_chat"
+	ProtocolPerplexityChat         = "perplexity_chat"
+	ProtocolFireworksChat          = "fireworks_chat"
 	// 6 家订阅 session 反转路径（OCAW 实施前为 scaffold + TODO header）
 	ProtocolCursorSession         = "cursor_session"
 	ProtocolCopilotSession        = "copilot_session"
@@ -104,6 +106,7 @@ func Build() *provider.StaticRegistry {
 	r.MustRegister(ProtocolOpenAICodex, &openai.CodexSessionAdapter{})
 
 	r.MustRegister(ProtocolAnthropicMessages, &anthropic.PassthroughAdapter{})
+	r.MustRegister(ProtocolAnthropicClaudeSession, &anthropic.OAuthSessionAdapter{})
 	r.MustRegister(ProtocolGeminiMessages, &gemini.PassthroughAdapter{})
 	r.MustRegister(ProtocolOpenRouterChat, &openrouter.PassthroughAdapter{})
 	// AutoTranslateAnthropicAPIBody=true 让 Anthropic CLI / Claude Code 直发的

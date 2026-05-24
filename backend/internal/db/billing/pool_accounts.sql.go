@@ -297,15 +297,20 @@ func (q *Queries) IncrementInFlightCount(ctx context.Context, arg IncrementInFli
 
 const listAccountsForRefresh = `-- name: ListAccountsForRefresh :many
 SELECT
-    id,
-    tenant_id,
-    provider_id,
-    expires_at
-FROM provider_accounts
-WHERE deleted_at IS NULL
-  AND enabled
-  AND (expires_at IS NULL OR expires_at < $1)
-ORDER BY COALESCE(expires_at, NOW() + interval '1 year') ASC
+    pa.id,
+    pa.tenant_id,
+    pa.provider_id,
+    p.code AS vendor_name,
+    pa.expires_at
+FROM provider_accounts pa
+JOIN providers p
+  ON p.id = pa.provider_id
+ AND p.tenant_id = pa.tenant_id
+ AND p.deleted_at IS NULL
+WHERE pa.deleted_at IS NULL
+  AND pa.enabled
+  AND (pa.expires_at IS NULL OR pa.expires_at < $1)
+ORDER BY COALESCE(pa.expires_at, NOW() + interval '1 year') ASC
 LIMIT $2
 `
 
@@ -318,6 +323,7 @@ type ListAccountsForRefreshRow struct {
 	ID         int64              `db:"id" json:"id"`
 	TenantID   int64              `db:"tenant_id" json:"tenant_id"`
 	ProviderID int64              `db:"provider_id" json:"provider_id"`
+	VendorName string             `db:"vendor_name" json:"vendor_name"`
 	ExpiresAt  pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
 }
 
@@ -334,6 +340,7 @@ func (q *Queries) ListAccountsForRefresh(ctx context.Context, arg ListAccountsFo
 			&i.ID,
 			&i.TenantID,
 			&i.ProviderID,
+			&i.VendorName,
 			&i.ExpiresAt,
 		); err != nil {
 			return nil, err
