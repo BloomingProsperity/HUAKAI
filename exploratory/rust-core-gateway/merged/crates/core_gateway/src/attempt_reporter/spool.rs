@@ -230,10 +230,20 @@ impl AttemptSpool {
                 continue;
             }
             let name = entry.file_name();
-            let is_pb = name.to_str().is_some_and(|s| s.ends_with(".pb"));
+            // 第三方 P2 finding 2026-05-24 (round 3): 旧实现仅按 `.pb` 后缀计入 quota,
+            // 不校验 stem 是否合法 idempotency key。`pending/with space.pb` / `.hidden.pb` /
+            // `pending/../escape.pb` 全部能通过后缀过滤被计入 pending_bytes/count, 但随后
+            // load_pending(stem) 会撞 validate_key 返 InvalidKey -> drain_pending warn+continue ->
+            // 永久占 watermark -> 503 backpressure。
+            //
+            // 新流程: 后缀必须 .pb + stem 必须 validate_key 通过, 否则同样进 quarantine。
+            let stem_valid = name
+                .to_str()
+                .and_then(|s| s.strip_suffix(".pb"))
+                .is_some_and(|stem| validate_key(stem).is_ok());
             let metadata = entry.metadata()?;
             let len = metadata.len();
-            if is_pb {
+            if stem_valid {
                 initial_count += 1;
                 initial_bytes = initial_bytes.saturating_add(len);
             } else {
@@ -503,6 +513,10 @@ impl AttemptSpool {
     }
 
     /// 列 `pending/` 下最多 `limit` 个 idempotency_key (去 `.pb` 后缀)。Slice 2 replay worker 用。
+    ///
+    /// 第三方 P2 finding 2026-05-24 (round 3): 必须用 validate_key 过滤, 跳过非法 key
+    /// (open() 启动期已 quarantine 过一遍, 此处是防御深度 — 进程运行时若有人手动
+    /// drop 非法名文件到 pending/, 也不会让 drain_pending 撞 InvalidKey 错并停留)。
     pub fn pending_snapshot(&self, limit: usize) -> Vec<String> {
         let read = match fs::read_dir(&self.inner.pending_dir) {
             Ok(r) => r,
@@ -521,6 +535,11 @@ impl AttemptSpool {
             let Some(stripped) = name_str.strip_suffix(".pb") else {
                 continue;
             };
+            // 非法 idempotency key (validate_key 拒) 直接 skip — open() 启动 quarantine
+            // 已处理一次, 此处兜底防止运行时被注入。
+            if validate_key(stripped).is_err() {
+                continue;
+            }
             keys.push(stripped.to_owned());
         }
         keys
@@ -1104,6 +1123,102 @@ mod tests {
         assert!(
             err_msg.contains("startup quarantine"),
             "错误消息应明确指出 startup quarantine 失败, 实际: {err_msg}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 第三方 P2 finding 2026-05-24 (round 3): 旧 open() 只按 .pb 后缀过滤,
+    /// 不校验 idempotency key 合法性。`with space.pb` / `.hidden.pb` / `..escape.pb`
+    /// 这种文件全部被计入 pending_bytes/count, 但随后 drain_pending 撞 validate_key
+    /// 拒 InvalidKey -> warn+continue -> 文件永久占 quota -> backpressure 503。
+    ///
+    /// 修法: open() 启动期同时校验 stem (后缀去掉 .pb 后) 是否过 validate_key,
+    /// 不过则按 startup-non-pb 路径 quarantine。
+    ///
+    /// 判别性 + mutation:
+    /// 1) 预播 1 个合法 .pb (idem-spool-test-XX.pb) + 1 个含空格的 .pb +
+    ///    1 个隐藏点开头的 .pb + 1 个非 .pb txt
+    /// 2) open() 后 pending_count == 1 (只有合法 stem)
+    /// 3) pending_bytes 不含非法 .pb 的字节
+    /// 4) quarantined_count == 3 (with space + .hidden + readme.txt 都被移)
+    ///
+    /// mutation:
+    /// - 删 stem_valid 校验 (回旧 is_pb 后缀过滤) -> pending_count == 3 (with space + .hidden 也被计) -> 红
+    /// - 把 quarantine 路径只针对非 .pb -> 非法 .pb 留 pending -> quarantined_count == 1 -> 红
+    #[test]
+    fn open_quarantines_pb_files_with_invalid_idempotency_keys() {
+        let dir = unique_test_dir("invalid-key-pb-quarantine");
+        let pending_dir = dir.join("pending");
+        fs::create_dir_all(&pending_dir).expect("mkdir pending");
+
+        // 合法 stem (validate_key 通过 — alphanumeric + - 即可)
+        let legit_path = pending_dir.join("idem-spool-test-legit-1234567890abcdef.pb");
+        fs::write(&legit_path, b"fake-prost-bytes").expect("write legit");
+        let legit_size = fs::metadata(&legit_path).unwrap().len();
+
+        // 非法 stem 1: 含空格 (validate_key 拒)
+        fs::write(pending_dir.join("with space.pb"), b"AAAAAAAAAA").expect("write with-space");
+        // 非法 stem 2: 隐藏点开头 (validate_key 拒)
+        fs::write(pending_dir.join(".hidden.pb"), b"BBBBBBBBBB").expect("write .hidden");
+        // 非 .pb (旧 quarantine 路径仍处理)
+        fs::write(pending_dir.join("readme.txt"), b"CCCCCCCCCC").expect("write readme");
+
+        let spool = AttemptSpool::open(test_options(dir.clone()))
+            .expect("open OK")
+            .expect("enabled");
+
+        assert_eq!(
+            spool.pending_count(),
+            1,
+            "pending_count 只算合法 stem; with space.pb 和 .hidden.pb 必须被 quarantine \
+             (mutation: 删 stem_valid 校验 -> 3, 红)"
+        );
+        assert_eq!(
+            spool.pending_bytes(),
+            legit_size,
+            "pending_bytes 不应含非法 stem .pb 的字节 (mutation: 删 stem_valid -> 含 with-space + .hidden)"
+        );
+        assert_eq!(
+            spool.quarantined_count(),
+            3,
+            "启动期应 quarantine 3 个: with space.pb + .hidden.pb + readme.txt; \
+             实际 {} (mutation: 非法 .pb 路径不 quarantine -> 1)",
+            spool.quarantined_count()
+        );
+
+        // 验证 pending_snapshot 也只返回合法 stem
+        let snapshot = spool.pending_snapshot(10);
+        assert_eq!(snapshot.len(), 1, "pending_snapshot 只返回合法 key");
+        assert_eq!(snapshot[0], "idem-spool-test-legit-1234567890abcdef");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 第三方 P2 finding 2026-05-24 (round 3, Codex P2 wiring fix): runtime-injection
+    /// 路径必须由 pending_snapshot 自己 filter — open() 已 quarantine 过启动期文件,
+    /// 但进程运行中若有人 (运维 / 工具 bug) drop 非法名 .pb 到 pending/, 仍要在
+    /// pending_snapshot 阶段 skip 让 drain_pending 不撞 InvalidKey 错。
+    ///
+    /// 判别性: 在 open() 之后注入非法 .pb, pending_snapshot 返回长度严格为 0。
+    /// mutation: 删 pending_snapshot 的 validate_key filter -> 返回 1 -> 红 (复现 P2 wiring 缺口)。
+    #[test]
+    fn pending_snapshot_filters_invalid_keys_injected_after_open() {
+        let dir = unique_test_dir("snapshot-runtime-inject");
+        let spool = AttemptSpool::open(test_options(dir.clone()))
+            .expect("open OK")
+            .expect("enabled");
+
+        // open() 后空 spool. 此时模拟外部注入非法名 .pb (绕过 startup quarantine)。
+        let pending_dir = dir.join("pending");
+        fs::write(pending_dir.join("with space.pb"), b"X").expect("inject with-space pb");
+        fs::write(pending_dir.join(".hidden.pb"), b"Y").expect("inject hidden pb");
+
+        let snapshot = spool.pending_snapshot(10);
+        assert_eq!(
+            snapshot.len(),
+            0,
+            "pending_snapshot 必须 filter 非法 key (mutation: 删 validate_key filter -> 返回 2)"
         );
 
         let _ = fs::remove_dir_all(&dir);

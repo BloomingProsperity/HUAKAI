@@ -654,6 +654,19 @@ async fn drain_pending(
                 }
                 continue;
             }
+            Err(SpoolError::InvalidKey(bad_key)) => {
+                // 第三方 P2 finding 2026-05-24 (round 3): pending_snapshot 已经在 snapshot
+                // 阶段 filter 非法 key, drain_pending 这里几乎不应触发; 但若 race / 旧实现
+                // 残留, 这里再 warn 一次让 audit 能看到。文件本身留在 pending/ 等 startup
+                // 期 quarantine 兜底 (运行时不调 quarantine_pending 因为它本身 validate_key 拒)。
+                inner.spool_corrupt_reports.fetch_add(1, Ordering::Relaxed);
+                warn!(
+                    invalid_key = %bad_key,
+                    "W12-A D-4: replay 读 pending 撞 InvalidKey (snapshot 已 filter, 此处为防御深度); \
+                     文件留 pending/ 等下次 startup quarantine 阶段处理"
+                );
+                continue;
+            }
             Err(err) => {
                 warn!(
                     error = %err,
