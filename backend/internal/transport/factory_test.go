@@ -18,8 +18,44 @@ func TestFactory_For_StandardDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if rt != http.DefaultTransport {
-		t.Fatalf("standard 未注入时应回落到 http.DefaultTransport")
+	// standard 未注入时不能直接复用 http.DefaultTransport：DefaultTransport
+	// 的 Proxy 默认走 ProxyFromEnvironment，会让 Docker HTTP_PROXY env 劫持
+	// 账号绑定代理的 IP 隔离设计（账号级代理只能由 dispatcher.applyProxy 决定）。
+	if rt == http.DefaultTransport {
+		t.Fatalf("standardRoundTripper 不应直接返回 http.DefaultTransport (会被 env proxy 劫持)")
+	}
+	tr, ok := rt.(*http.Transport)
+	if !ok {
+		t.Fatalf("standard fallback 应是 *http.Transport, got %T", rt)
+	}
+	if tr.Proxy != nil {
+		t.Fatalf("standard fallback Proxy 必须是 nil, 否则 env proxy 仍生效")
+	}
+}
+
+// TestFactory_StandardRoundTripperIgnoresEnvProxy 守 P1-A 修复：
+// 设 HTTP_PROXY env 后 standard fallback transport 仍必须 Proxy=nil。
+// Mutation：把 standardRoundTripper 改回直接 return http.DefaultTransport
+// 时本用例应红（DefaultTransport.Proxy = ProxyFromEnvironment != nil）。
+func TestFactory_StandardRoundTripperIgnoresEnvProxy(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://bad-proxy.invalid:9999")
+	t.Setenv("HTTPS_PROXY", "http://bad-proxy.invalid:9999")
+	t.Setenv("ALL_PROXY", "http://bad-proxy.invalid:9999")
+
+	f := NewFactory()
+	rt := f.standardRoundTripper()
+	tr, ok := rt.(*http.Transport)
+	if !ok {
+		t.Fatalf("standard fallback 应是 *http.Transport, got %T", rt)
+	}
+	if tr.Proxy != nil {
+		t.Fatalf("HTTP_PROXY env 存在时 standard fallback.Proxy 必须为 nil 才能保账号隔离, got %T", tr.Proxy)
+	}
+
+	// 同一 Factory 二次调用应单例化（connection pool 复用）。
+	rt2 := f.standardRoundTripper()
+	if rt != rt2 {
+		t.Fatalf("standard fallback transport 必须单例化，否则 connection pool 失效")
 	}
 }
 

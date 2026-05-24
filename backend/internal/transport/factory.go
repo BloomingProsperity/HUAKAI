@@ -19,12 +19,19 @@ import (
 // RoundTripper 还没实现（R3 / diagnostics 还在路径上）。
 var ErrTransportNotImplemented = errors.New("transport: round-tripper not yet implemented for this mode")
 
-// Factory 持有可选的非默认 RoundTripper 实例。零值即可使用，默认走
-// http.DefaultTransport。
+// Factory 持有可选的非默认 RoundTripper 实例。零值即可使用，默认 standard
+// 路径走 http.DefaultTransport 的 Clone 并显式 Proxy=nil（见
+// standardRoundTripper），以剥离 HTTP_PROXY/HTTPS_PROXY env 对账号绑定
+// 代理隔离的破坏。
 type Factory struct {
 	// standard 是 standard mode 用的 RoundTripper。nil 时回落到
-	// http.DefaultTransport。注入便于测试。
+	// fallback：http.DefaultTransport.Clone() 并把 Proxy 设为 nil，
+	// 任何代理只能通过 dispatcher.applyProxy 显式绑定生效。
 	standard http.RoundTripper
+	// standardOnce + standardCached 让 fallback transport 单例化，
+	// 保留 connection pool 复用（http.Transport 重复 new 会让池作废）。
+	standardOnce   sync.Once
+	standardCached http.RoundTripper
 	// mimicry 是测试或外部装配注入点。nil 时按 registry 查 per-mode 模板。
 	mimicry http.RoundTripper
 	// templateRegistry 保存 Phase B per-mode ClientHello 模板。
@@ -109,7 +116,30 @@ func (f *Factory) standardRoundTripper() http.RoundTripper {
 	if f.standard != nil {
 		return f.standard
 	}
-	return http.DefaultTransport
+	// 关键安全约束：http.DefaultTransport.Proxy 默认值是 ProxyFromEnvironment，
+	// 会读 HTTP_PROXY / HTTPS_PROXY / NO_PROXY env。Docker / 部署环境只要
+	// 这些变量存在，所有"未绑定代理"的账号会被全局代理截胡，破坏按账号
+	// 绑定 IP / 代理的隔离设计（dispatcher.applyProxy → ProxyResolver 才是
+	// HUAKAI 唯一允许的代理决策点）。
+	//
+	// 这里 clone 一份 DefaultTransport 并显式 Proxy=nil，让 standard 路径
+	// 默认直连；外部代理只能通过 dispatcher.applyProxy 显式 wrap 进来。
+	// 单例化（standardOnce）避免重复 new *http.Transport 让 connection
+	// pool 失效。
+	f.standardOnce.Do(func() {
+		base, ok := http.DefaultTransport.(*http.Transport)
+		if !ok {
+			// 保底：Go runtime 若被替换 DefaultTransport 为非 *http.Transport
+			// （极少见，比如 test 自打补丁），仍构造一个最小 *http.Transport
+			// 防止账号 IP 隔离被绕过。
+			f.standardCached = &http.Transport{Proxy: nil}
+			return
+		}
+		cloned := base.Clone()
+		cloned.Proxy = nil
+		f.standardCached = cloned
+	})
+	return f.standardCached
 }
 
 func (f *Factory) mimicryRoundTripper(mode TransportMode, tmpl *mimicry.ClientHelloTemplate) http.RoundTripper {
