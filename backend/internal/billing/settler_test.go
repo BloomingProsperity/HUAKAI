@@ -152,3 +152,43 @@ func (r refundSettlerRow) Scan(dest ...any) error {
 	}
 	return nil
 }
+
+// TestClampInt32Tokens_DiscriminatingFixtures 守 P2-A 修复:
+// usage_records 的 token 列是 PostgreSQL integer (int32 范围),Go int 在
+// 64 位平台是 int64。clampInt32Tokens 必须:
+//   - 输入 > MaxInt32  → 返 MaxInt32   (防 PostgreSQL "integer out of range")
+//   - 输入 < 0         → 返 0          (防负值污染审计)
+//   - 输入 == MaxInt32 → 返 MaxInt32   (边界保留)
+//   - 输入正常         → 返原值        (功能不退化)
+//
+// Mutation:
+//   - 把 helper 改回 `return int32(v)` 时 over/negative 用例必红
+//   - 把 over 分支改成 return 0 时 over 用例必红
+//   - 把 negative 分支改成 return v 时 negative 用例必红
+func TestClampInt32Tokens_DiscriminatingFixtures(t *testing.T) {
+	const maxInt32 = int64(^uint32(0) >> 1) // 2147483647
+	cases := []struct {
+		name string
+		in   int64
+		want int32
+	}{
+		{"normal_zero", 0, 0},
+		{"normal_small", 42, 42},
+		{"normal_million", 1_000_000, 1_000_000},
+		{"boundary_max_int32", maxInt32, int32(maxInt32)},
+		{"boundary_max_int32_plus_1", maxInt32 + 1, int32(maxInt32)},
+		{"overflow_3_billion", 3_000_000_000, int32(maxInt32)},
+		{"overflow_max_int64", int64(^uint64(0) >> 1), int32(maxInt32)},
+		{"negative_one", -1, 0},
+		{"negative_large", -1_000_000_000, 0},
+		{"negative_min_int64", -int64(^uint64(0)>>1) - 1, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := clampInt32Tokens(c.in)
+			if got != c.want {
+				t.Fatalf("clampInt32Tokens(%d) = %d, want %d", c.in, got, c.want)
+			}
+		})
+	}
+}
