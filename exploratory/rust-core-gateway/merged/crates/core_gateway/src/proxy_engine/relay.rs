@@ -214,25 +214,41 @@ where
                         {
                             DownstreamSend::Sent => {}
                             DownstreamSend::Closed => {
+                                // 第三方 P2 finding 2026-05-24: upstream 已经报 4xx/5xx 但 client
+                                // 在 relay 期间断开时, 旧实现硬报 ClientCancel 抢先盖掉 upstream
+                                // 终态 — Drop 后无法纠正 (relay 比 Drop 先报)。改: 保留 upstream
+                                // terminal status, 让 upstream 故障归 upstream 而非客户取消。
+                                let (status, class, msg) =
+                                    classify_downstream_failure_terminal(
+                                        terminal.status,
+                                        "client_cancel",
+                                        "client disconnected while relaying upstream response",
+                                    );
                                 report_terminal(
                                     terminal.reporter.as_ref(),
-                                    AttemptStatus::ClientCancel,
+                                    status,
                                     terminal.http_status,
                                     &stats,
-                                    Some("client_cancel"),
-                                    Some("client disconnected while relaying upstream response"),
+                                    Some(class),
+                                    Some(msg),
                                 );
                                 debug!(request_id = %request_id, direction, "client disconnected, abort relay");
                                 break;
                             }
                             DownstreamSend::TimedOut => {
+                                let (status, class, msg) =
+                                    classify_downstream_failure_terminal(
+                                        terminal.status,
+                                        "client_slow_or_disconnected",
+                                        "client stopped reading relayed upstream response",
+                                    );
                                 report_terminal(
                                     terminal.reporter.as_ref(),
-                                    AttemptStatus::ClientCancel,
+                                    status,
                                     terminal.http_status,
                                     &stats,
-                                    Some("client_slow_or_disconnected"),
-                                    Some("client stopped reading relayed upstream response"),
+                                    Some(class),
+                                    Some(msg),
                                 );
                                 warn!(
                                     request_id = %request_id,
@@ -418,6 +434,38 @@ fn handle_stream_events(
             StreamEvent::Data(_) | StreamEvent::Usage(_) | StreamEvent::CacheMetric(_) => {}
         }
         emit_stream_observation(Some(tap), event);
+    }
+}
+
+/// 第三方 P2 finding 2026-05-24: relay 期间下游 send 失败 / write idle 时, 必须
+/// 保留 upstream terminal 分类 — 不能用 ClientCancel 抢先覆盖 upstream 4xx/5xx 实情。
+///
+/// 旧实现 (mod.rs ReceiverByteStream::Drop 已修但只覆盖 Drop 路径): relay task
+/// 仍硬报 ClientCancel; relay 比 Drop 先 fire (它是 producer), 所以 upstream
+/// 5xx + client 断开场景 -> ClientCancel 抢先报 -> upstream 故障算客户责任 = 反账务。
+///
+/// 修复: upstream 是 Success 时才报 ClientCancel; 否则透传 upstream 分类 (Upstream4xx /
+/// Upstream5xx / Timeout / NetworkError ...) + 在 error_class/message 里标 + downstream
+/// 失败上下文, 让 audit 同时能看到 "上游真因 + 下游断开" 两份信息。
+///
+/// 返回: (terminal_status, error_class, error_message)
+fn classify_downstream_failure_terminal(
+    upstream_status: AttemptStatus,
+    downstream_class: &'static str,
+    downstream_msg: &'static str,
+) -> (AttemptStatus, &'static str, &'static str) {
+    if upstream_status == AttemptStatus::Success {
+        // upstream 一切正常, 下游真断开 — 客户责任
+        (AttemptStatus::ClientCancel, downstream_class, downstream_msg)
+    } else {
+        // upstream 已经报 4xx/5xx/Timeout/NetworkError — 保留 upstream 分类避免
+        // 反账务。class 用 upstream 的 "upstream_terminal_*" 让 audit 一眼能看出
+        // 是上游先坏 + 下游也断开 (两个事件叠加, 但归因仍是 upstream)。
+        (
+            upstream_status,
+            "upstream_terminal_then_client_cancel",
+            "upstream returned non-success and client disconnected during relay; preserving upstream classification",
+        )
     }
 }
 
@@ -724,6 +772,95 @@ mod tests {
             .await
             .expect("较长 upstream idle 配置应允许慢帧");
         assert_eq!(body, Bytes::from_static(b"firstsecond"));
+    }
+
+    /// 第三方 P2 finding 2026-05-24: classify_downstream_failure_terminal 必须保留
+    /// upstream 非 Success 终态; 只在 upstream 是 Success 时报 ClientCancel。
+    /// 否则 upstream 5xx + relay 期间 client drop 场景 -> ClientCancel 抢先盖 upstream 5xx
+    /// = 反账务 (upstream 故障算客户责任)。
+    ///
+    /// 判别性 + mutation:
+    /// 1) upstream=Success -> 返 ClientCancel + 原 downstream_class
+    /// 2) upstream=Upstream5xx -> 返 Upstream5xx + "upstream_terminal_then_client_cancel"
+    /// 3) upstream=Upstream4xx -> 返 Upstream4xx + "upstream_terminal_then_client_cancel"
+    /// 4) upstream=Timeout -> 返 Timeout (不归 ClientCancel)
+    /// 5) upstream=NetworkError -> 返 NetworkError
+    ///
+    /// mutation:
+    /// - 把 fn body 改回 `(AttemptStatus::ClientCancel, ...)` 无条件 -> 2/3/4/5 红。
+    /// - 删 upstream_status == Success 分支 -> 1 不再返 ClientCancel -> 红。
+    /// - 把 error_class 改回 "client_cancel" -> 2/3/4/5 error_class 检查红。
+    #[test]
+    fn classify_downstream_failure_terminal_preserves_upstream_non_success_status() {
+        // Case 1: upstream Success -> 正常 ClientCancel 路径
+        let (status, class, msg) = classify_downstream_failure_terminal(
+            AttemptStatus::Success,
+            "client_cancel",
+            "client disconnected while relaying upstream response",
+        );
+        assert_eq!(
+            status,
+            AttemptStatus::ClientCancel,
+            "upstream Success + 下游断开 = 真客户取消, 应报 ClientCancel"
+        );
+        assert_eq!(class, "client_cancel");
+        assert!(msg.contains("client disconnected"));
+
+        // Case 2: upstream Upstream5xx -> 保留 Upstream5xx
+        let (status, class, msg) = classify_downstream_failure_terminal(
+            AttemptStatus::Upstream5xx,
+            "client_cancel",
+            "ignored downstream msg",
+        );
+        assert_eq!(
+            status,
+            AttemptStatus::Upstream5xx,
+            "upstream 5xx + 下游断开 -> 必须保留 Upstream5xx 而非 ClientCancel (反账务防护)"
+        );
+        assert_eq!(
+            class, "upstream_terminal_then_client_cancel",
+            "error_class 应标 upstream-then-client 让 audit 一眼看出归因"
+        );
+        assert!(
+            msg.contains("preserving upstream classification"),
+            "msg 应解释为何保留 upstream 分类, 实际: {msg}"
+        );
+
+        // Case 3: upstream Upstream4xx -> 保留 Upstream4xx
+        let (status, _, _) = classify_downstream_failure_terminal(
+            AttemptStatus::Upstream4xx,
+            "client_slow_or_disconnected",
+            "ignored",
+        );
+        assert_eq!(
+            status,
+            AttemptStatus::Upstream4xx,
+            "upstream 4xx + 下游断开 -> 必须保留 Upstream4xx"
+        );
+
+        // Case 4: upstream Timeout -> 保留 Timeout
+        let (status, _, _) = classify_downstream_failure_terminal(
+            AttemptStatus::Timeout,
+            "client_cancel",
+            "ignored",
+        );
+        assert_eq!(
+            status,
+            AttemptStatus::Timeout,
+            "upstream Timeout + 下游断开 -> 必须保留 Timeout"
+        );
+
+        // Case 5: upstream NetworkError -> 保留 NetworkError
+        let (status, _, _) = classify_downstream_failure_terminal(
+            AttemptStatus::NetworkError,
+            "client_slow_or_disconnected",
+            "ignored",
+        );
+        assert_eq!(
+            status,
+            AttemptStatus::NetworkError,
+            "upstream NetworkError + 下游断开 -> 必须保留 NetworkError"
+        );
     }
 
     #[tokio::test]
