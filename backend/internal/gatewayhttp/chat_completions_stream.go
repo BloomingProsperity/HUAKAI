@@ -425,17 +425,30 @@ func injectStreamingRequestControls(raw []byte, env *proto.HCSF, family string) 
 		body["tools"] = streamingControlTools(family, c.Tools)
 	}
 	if c.ResponseFormat != nil {
-		rf := map[string]any{"type": c.ResponseFormat.Type}
-		if len(c.ResponseFormat.Schema) > 0 {
-			rf["schema"] = streamingRawJSONValue(c.ResponseFormat.Schema)
-		}
-		if c.ResponseFormat.Strict != nil {
-			rf["strict"] = *c.ResponseFormat.Strict
-		}
-		if family == "openai_responses" {
-			body["text"] = map[string]any{"format": rf}
-		} else if family == "openai_chat" {
-			body["response_format"] = rf
+		// D5 raw-passthrough:同非流式逻辑(hcsf_graph_marshal_helpers.go 的
+		// injectRequestControls)。Schema 存的是 inbound 原始 response_format /
+		// text 整体,流式 marshal 必须 1:1 还原,不能再包 {"type":"raw","schema":...}
+		// 让上游 4xx reject。
+		if c.ResponseFormat.Type == "raw" && len(c.ResponseFormat.Schema) > 0 {
+			switch family {
+			case "openai_responses":
+				body["text"] = streamingRawJSONValue(c.ResponseFormat.Schema)
+			case "openai_chat":
+				body["response_format"] = streamingRawJSONValue(c.ResponseFormat.Schema)
+			}
+		} else {
+			rf := map[string]any{"type": c.ResponseFormat.Type}
+			if len(c.ResponseFormat.Schema) > 0 {
+				rf["schema"] = streamingRawJSONValue(c.ResponseFormat.Schema)
+			}
+			if c.ResponseFormat.Strict != nil {
+				rf["strict"] = *c.ResponseFormat.Strict
+			}
+			if family == "openai_responses" {
+				body["text"] = map[string]any{"format": rf}
+			} else if family == "openai_chat" {
+				body["response_format"] = rf
+			}
 		}
 	}
 	return json.Marshal(body)

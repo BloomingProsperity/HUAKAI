@@ -1,5 +1,14 @@
 package gatewayhttp
 
+// TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIChat /
+// TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIResponses
+// 守 P2-B 修复在流式 marshal 路径(injectStreamingRequestControls)。同非流式
+// 测试逻辑:Type:"raw" 时 marshal 必须 1:1 还原 Schema 整体,不能再包
+// {"type":"raw","schema":...}。
+//
+// Mutation:改回 raw-wrap 逻辑时两 用例必红 — response_format.type 变 "raw"
+// 而非 inbound 'json_object',或 text.format 嵌套出多一层 schema 包壳。
+
 import (
 	"bytes"
 	"context"
@@ -1337,5 +1346,75 @@ func assertLogContains(t *testing.T, logs *bytes.Buffer, wants ...string) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("log output=%s missing %q", got, want)
 		}
+	}
+}
+
+// TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIChat
+// 守 P2-B 修复在流式 marshal 路径(injectStreamingRequestControls)。
+// 与非流式 hcsf_graph_marshal_test.go 中同名用例同源:Type:"raw" 时 marshal
+// 必须 1:1 还原 Schema 整体,不再包 {"type":"raw","schema":...}。
+//
+// Mutation:把流式 helper 改回原 wrap 逻辑时本用例必红 — body["response_format"]
+// 会变成 {"type":"raw","schema":{"type":"json_object"}},.type != "json_object"。
+func TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIChat(t *testing.T) {
+	raw := json.RawMessage(`{"type":"json_object"}`)
+	env := &proto.HCSF{
+		RequestControls: proto.RequestControls{
+			ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: raw},
+		},
+	}
+	out, err := injectStreamingRequestControls([]byte(`{}`), env, "openai_chat")
+	if err != nil {
+		t.Fatalf("injectStreamingRequestControls err=%v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, out)
+	}
+	rf, ok := body["response_format"].(map[string]any)
+	if !ok {
+		t.Fatalf("response_format must be JSON object, got %T: %v", body["response_format"], body["response_format"])
+	}
+	if rf["type"] != "json_object" {
+		t.Fatalf("streaming response_format.type = %v, want inbound 'json_object' (raw-wrap regression)", rf["type"])
+	}
+	if _, hasSchema := rf["schema"]; hasSchema {
+		t.Fatalf("streaming response_format 出现 'schema' key 是 raw-wrap regression: body=%+v", body)
+	}
+}
+
+// TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIResponses
+// 守 P2-B 修复在 Responses 流式 marshal 路径。
+//
+// Mutation:同上,改回原 wrap 时 body["text"] 会成
+// {"format":{"type":"raw","schema":...}} 而非 inbound 原 text 整体。
+func TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIResponses(t *testing.T) {
+	raw := json.RawMessage(`{"format":{"type":"json_schema","json_schema":{"name":"Person","schema":{"type":"object"}}}}`)
+	env := &proto.HCSF{
+		RequestControls: proto.RequestControls{
+			ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: raw},
+		},
+	}
+	out, err := injectStreamingRequestControls([]byte(`{}`), env, "openai_responses")
+	if err != nil {
+		t.Fatalf("injectStreamingRequestControls err=%v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, out)
+	}
+	text, ok := body["text"].(map[string]any)
+	if !ok {
+		t.Fatalf("text must be JSON object, got %T: %v", body["text"], body["text"])
+	}
+	format, ok := text["format"].(map[string]any)
+	if !ok {
+		t.Fatalf("text.format must be object, got %T: %v", text["format"], text["format"])
+	}
+	if format["type"] != "json_schema" {
+		t.Fatalf("streaming text.format.type = %v, want inbound 'json_schema' (raw-wrap regression)", format["type"])
+	}
+	if _, hasOuter := format["schema"]; hasOuter {
+		t.Fatalf("streaming text.format 出现包壳 'schema' 字段是 raw-wrap regression: body=%+v", body)
 	}
 }

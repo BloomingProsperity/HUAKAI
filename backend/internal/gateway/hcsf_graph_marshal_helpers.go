@@ -196,17 +196,31 @@ func injectRequestControls(raw []byte, env *proto.HCSF, family string) ([]byte, 
 		body["tools"] = renderControlTools(family, c.Tools)
 	}
 	if c.ResponseFormat != nil {
-		rf := map[string]any{"type": c.ResponseFormat.Type}
-		if len(c.ResponseFormat.Schema) > 0 {
-			rf["schema"] = rawJSONValue(c.ResponseFormat.Schema)
-		}
-		if c.ResponseFormat.Strict != nil {
-			rf["strict"] = *c.ResponseFormat.Strict
-		}
-		if family == "openai_responses" {
-			body["text"] = map[string]any{"format": rf}
-		} else if family == "openai_chat" {
-			body["response_format"] = rf
+		// D5 first slice raw-passthrough:Schema 字段存的是 inbound 原始
+		// response_format / text 整体,marshal 必须 1:1 还原上游契约,
+		// 不能再包一层 {"type":"raw","schema":...} — 上游 OpenAI 只接受
+		// response_format 为 {"type":"json_object"} / {"type":"json_schema",...}
+		// 或 Responses 的 text:{"format":{...}},包错壳会直接 4xx reject。
+		if c.ResponseFormat.Type == "raw" && len(c.ResponseFormat.Schema) > 0 {
+			switch family {
+			case "openai_responses":
+				body["text"] = rawJSONValue(c.ResponseFormat.Schema)
+			case "openai_chat":
+				body["response_format"] = rawJSONValue(c.ResponseFormat.Schema)
+			}
+		} else {
+			rf := map[string]any{"type": c.ResponseFormat.Type}
+			if len(c.ResponseFormat.Schema) > 0 {
+				rf["schema"] = rawJSONValue(c.ResponseFormat.Schema)
+			}
+			if c.ResponseFormat.Strict != nil {
+				rf["strict"] = *c.ResponseFormat.Strict
+			}
+			if family == "openai_responses" {
+				body["text"] = map[string]any{"format": rf}
+			} else if family == "openai_chat" {
+				body["response_format"] = rf
+			}
 		}
 	}
 	return json.Marshal(body)
