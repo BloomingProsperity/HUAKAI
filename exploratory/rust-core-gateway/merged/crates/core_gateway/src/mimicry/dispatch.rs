@@ -95,6 +95,48 @@ pub fn is_dispatch_allowed(decision: &DispatchDecision) -> bool {
     )
 }
 
+/// W11-F P1-3+P1-4 fix 2026-05-24: production canary error — mimicry profile
+/// 不能进入生产 dispatch 时使用此类型, 让 startup 路径 (build_gateway_connector,
+/// GatewayState::new) 能 fail-fast 而不是静默走 "已知有缺口" 的 profile。
+///
+/// 旧路径: build_gateway_connector(mimicry-boring) 直接 `BoringTlsConnector::new(profile)`
+/// 完全跳过 decide_dispatch, KnownGap / UnsupportedTemplate 标记的 profile 也会被
+/// 接入 production HTTP client = L1 (TLS preflight) + L2 (H2/HTTP profile) 守门
+/// 永远不被生产路径触发 = 守门形同虚设。
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MimicryProductionCanaryError {
+    #[error("mimicry profile blocked by known gap: {0}")]
+    KnownGap(String),
+    #[error("mimicry profile uses unsupported template: {0}")]
+    UnsupportedTemplate(String),
+}
+
+/// W11-F P1-3+P1-4 fix 2026-05-24: 在 production HTTP client 构造前必须调本函数。
+///
+/// AllowBoring / AllowOpenSsl -> Ok(()), 表示 profile 已通过 L1 backend resolver +
+/// L2 dispatch gate, 可安全进入生产 dispatch。
+/// BlockKnownGap / BlockUnsupportedTemplate -> Err, 调用方应 fail-fast (panic 或
+/// 上抛 GatewayError) 让运维知道 profile 必须修复后才能上 production。
+///
+/// 调用点 (W11-F P1-3+P1-4 wiring):
+/// - proxy_engine/http_client.rs::build_gateway_connector (mimicry-boring 分支)
+///   -> 通过则 BoringTlsConnector::new, 不通过 panic。
+/// - mimicry/dispatch.rs::build_mimicry_action -> 已通过 DispatchDecision 自然分流。
+/// - 未来 GatewayState::new 可在构造 HTTP client 前调本函数生成显式 startup-time error。
+pub fn verify_profile_dispatchable_for_production(
+    profile: &FingerprintProfile,
+) -> Result<(), MimicryProductionCanaryError> {
+    match decide_dispatch(profile) {
+        DispatchDecision::AllowBoring | DispatchDecision::AllowOpenSsl => Ok(()),
+        DispatchDecision::BlockKnownGap { reason } => {
+            Err(MimicryProductionCanaryError::KnownGap(reason))
+        }
+        DispatchDecision::BlockUnsupportedTemplate { reason } => {
+            Err(MimicryProductionCanaryError::UnsupportedTemplate(reason))
+        }
+    }
+}
+
 pub fn build_mimicry_action(profile: &FingerprintProfile) -> MimicryAction {
     match decide_dispatch(profile) {
         DispatchDecision::AllowBoring => build_boring_action(profile),
@@ -138,6 +180,47 @@ mod tests {
             }
             _ => panic!("mimicry-boring build 应构造 Boring HTTP client"),
         }
+    }
+
+    /// W11-F P1-3+P1-4 canary 单元判别: Anthropic Claude Code 内置 profile 必须
+    /// 通过 production dispatch canary (无论 mimicry-boring 是否开 — Anthropic 模板有
+    /// OpenSslAdapter intent, OpenSSL feature off 时落 KnownGap 但 boring feature off
+    /// 时仍走 KnownGap; 这里覆盖 boring feature 编进二进制的主路径)。
+    ///
+    /// 判别性 + mutation: 改 verify_profile_dispatchable_for_production 返 Err
+    /// 内置 profile 任意情况 -> 此测试红 (canary 错伤主路径)。
+    #[cfg(feature = "mimicry-boring")]
+    #[test]
+    fn production_canary_accepts_anthropic_builtin_profile() {
+        let profile = load_builtin_profile(BuiltinProfile::AnthropicClaudeCode)
+            .expect("Anthropic profile 应加载");
+        verify_profile_dispatchable_for_production(&profile)
+            .expect("Anthropic 内置 profile (boring feature 编入时) 必须通过 production canary");
+    }
+
+    /// W11-F P1-3+P1-4 canary 反向判别: kiro rustls 模板必须被 canary 拒 (UnsupportedTemplate
+    /// 或 KnownGap 任一 — backend_resolver 先撞 rustls + openssl-only 字段守门返
+    /// UnsupportedTemplate; 若改成纯 KnownGap 路径也仍合规)。
+    ///
+    /// 判别性 + mutation:
+    /// - mutation: 删 verify_profile_dispatchable_for_production 任一 Block 分支 -> Ok 返 ->
+    ///   测试 expect_err 红 (KnownGap / UnsupportedTemplate profile 被静默放行)。
+    /// - mutation: 改 backend_resolver KiroCli 走 OpenSSL -> Allow 返 -> 测试红 (上游
+    ///   contract 破坏立刻发现)。
+    #[test]
+    fn production_canary_rejects_blocked_kiro_profile() {
+        let profile =
+            load_builtin_profile(BuiltinProfile::KiroCli).expect("Kiro profile 应加载");
+        let err = verify_profile_dispatchable_for_production(&profile)
+            .expect_err("Kiro rustls 模板必须被 canary 拒, 不允许进 production");
+        assert!(
+            matches!(
+                err,
+                MimicryProductionCanaryError::KnownGap(_)
+                    | MimicryProductionCanaryError::UnsupportedTemplate(_)
+            ),
+            "canary 应返 KnownGap 或 UnsupportedTemplate (Block 分类等价), 实际: {err:?}"
+        );
     }
 
     #[cfg(not(feature = "mimicry-boring"))]
