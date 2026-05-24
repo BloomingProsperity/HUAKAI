@@ -23,6 +23,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 )
 
@@ -49,7 +50,12 @@ type ChatHandlerDeps struct {
 	AuditRefPolicy        *eventbus.AuditRefPolicy
 	AuditLedger           auditledger.Ledger
 	AuditLedgerDLQ        auditledger.DLQEnqueuer
-	Signer                *sign.Signer
+	// SettleRecoveryDLQ 是 post-delivery settle 失败(流式响应已发给客户端
+	// 但 Tx2 settlement 未确认提交)的 durable 兜底 enqueue;nil 时 stream
+	// path 失败只 log,money path 灰区无可补救。生产部署必须 wire 上
+	// dlq.Service(见 cmd/gateway/routes.go SettleRecoveryDLQ: d.dlqService)。
+	SettleRecoveryDLQ settlementrecovery.Enqueuer
+	Signer            *sign.Signer
 	ChannelHealth         channelHealthRecorder
 	BillingPolicyVersion  string
 	RequestClass          string
