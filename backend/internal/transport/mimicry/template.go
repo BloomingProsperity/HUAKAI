@@ -162,12 +162,17 @@ func (t *ClientHelloTemplate) Validate() error {
 
 func (t *ClientHelloTemplate) IsStub() bool { return t != nil && t.JA3 == "" }
 
-// PhaseADefaultTemplate 是 2026-05-06 Anthropic 样本的净化模板。
-func PhaseADefaultTemplate() *ClientHelloTemplate {
+// AnthropicCLIMimicryV1Template 是 Anthropic OAuth / Claude CLI 路径的
+// Go uTLS Phase 1 profile。字段来自 HUAKAI 已净化的 2026-05-06 capture，
+// profile id 与 sidecar 后续 profile.toml 约定保持一致。
+func AnthropicCLIMimicryV1Template() *ClientHelloTemplate {
 	return &ClientHelloTemplate{
-		ModeName:            "anthropic-claude-code",
+		ModeName:            SidecarProfileAnthropicCLIMimicryV1,
 		CollectedAt:         "2026-05-06T10:37:23Z",
 		TargetHost:          "api.anthropic.com",
+		TLSBackend:          "utls/phase1",
+		GREASE:              true,
+		ExtensionOrder:      "captured",
 		JA3:                 "772,4865-4866-4867-49195-49199-49196-49200-52393-52392-49161-49171-49162-49172-156-157-47-53,0-65037-23-65281-10-11-35-16-5-13-18-51-45-43,29-23-24,0",
 		JA4:                 "t13d1715_ht_ca21dff6868a_bd55c1d574e4",
 		CipherSuites:        []uint16{4865, 4866, 4867, 49195, 49199, 49196, 49200, 52393, 52392, 49161, 49171, 49162, 49172, 156, 157, 47, 53},
@@ -180,7 +185,33 @@ func PhaseADefaultTemplate() *ClientHelloTemplate {
 		KeyShareGroups:      []uint16{29},
 		PSKModes:            []uint8{1},
 		PaddingLen:          41,
+		HTTPLayer: HTTPLayer{
+			Protocol:        "http1.1_utls_phase1",
+			Endpoint:        "https://api.anthropic.com/v1/oauth/token",
+			UserAgent:       "claude-cli-compatible",
+			HeaderOrder:     []string{"Content-Type", "Accept", "Authorization"},
+			AuthMechanism:   "oauth_bearer",
+			RefreshEndpoint: "https://api.anthropic.com/v1/oauth/token",
+		},
+		AuthLayer: AuthLayer{
+			Mechanism:           "oauth_bearer",
+			AuthorizationHeader: "Authorization: Bearer <access_token>",
+			RefreshEndpoint:     "https://api.anthropic.com/v1/oauth/token",
+			TokenSource:         "HUAKAI encrypted account credential",
+		},
 	}
+}
+
+// PhaseADefaultTemplate 是 2026-05-06 Anthropic 样本的旧 Phase A 兼容名。
+func PhaseADefaultTemplate() *ClientHelloTemplate {
+	tmpl := AnthropicCLIMimicryV1Template()
+	tmpl.ModeName = "anthropic-claude-code"
+	tmpl.TLSBackend = ""
+	tmpl.GREASE = false
+	tmpl.ExtensionOrder = ""
+	tmpl.HTTPLayer = HTTPLayer{}
+	tmpl.AuthLayer = AuthLayer{}
+	return tmpl
 }
 
 func anthropicSigAlgos() []uint16 {

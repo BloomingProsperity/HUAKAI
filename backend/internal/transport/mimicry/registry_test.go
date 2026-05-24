@@ -25,6 +25,40 @@ func TestTemplateRegistry_RegisterLookupModes(t *testing.T) {
 	}
 }
 
+func TestDefaultTemplateRegistryIncludesAnthropicCLIMimicryV1(t *testing.T) {
+	registry := NewDefaultTemplateRegistry()
+	tmpl, ok := registry.Lookup(ModeMimicryClaudeCode)
+	if !ok {
+		t.Fatalf("default registry missing Anthropic CLI mimicry mode; modes=%v", registry.Modes())
+	}
+	if tmpl.ModeName != SidecarProfileAnthropicCLIMimicryV1 {
+		t.Fatalf("mode_name = %q, want %q", tmpl.ModeName, SidecarProfileAnthropicCLIMimicryV1)
+	}
+	if tmpl.TargetHost != "api.anthropic.com" {
+		t.Fatalf("target_host = %q, want api.anthropic.com", tmpl.TargetHost)
+	}
+	if tmpl.IsStub() {
+		t.Fatal("anthropic-cli-mimicry-v1 must be a real template, not a stub")
+	}
+	if tmpl.HTTPLayer.AuthMechanism != "oauth_bearer" {
+		t.Fatalf("auth mechanism = %q, want oauth_bearer", tmpl.HTTPLayer.AuthMechanism)
+	}
+}
+
+func TestAnthropicCLIMimicryProfileDiffersFromChatGPT(t *testing.T) {
+	anthropic := AnthropicCLIMimicryV1Template()
+	chatgpt, err := LoadFromCollectorOutput("../../../../tools/fingerprint-collector/templates/codex-cli.json")
+	if err != nil {
+		t.Fatalf("load chatgpt/codex template: %v", err)
+	}
+	if anthropic.JA3 == chatgpt.JA3 {
+		t.Fatalf("wrong-profile fixture is not discriminating: Anthropic and ChatGPT JA3 both %q", anthropic.JA3)
+	}
+	if reflect.DeepEqual(anthropic.CipherSuites, chatgpt.CipherSuites) {
+		t.Fatal("wrong-profile fixture is not discriminating: cipher suites are identical")
+	}
+}
+
 func TestTemplateRegistry_RegisterRejectsDuplicate(t *testing.T) {
 	registry := NewTemplateRegistry()
 	if err := registry.Register(ModeMimicryClaudeCode, PhaseADefaultTemplate()); err != nil {
