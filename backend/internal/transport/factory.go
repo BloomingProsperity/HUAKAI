@@ -5,12 +5,14 @@
 package transport
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 )
@@ -24,6 +26,9 @@ var ErrTransportNotImplemented = errors.New("transport: round-tripper not yet im
 // standardRoundTripper），以剥离 HTTP_PROXY/HTTPS_PROXY env 对账号绑定
 // 代理隔离的破坏。
 type Factory struct {
+	// SidecarSocketPath enables the Rust/BoringSSL TLS sidecar for mimicry
+	// modes. Empty keeps the existing Go uTLS path for backwards compatibility.
+	SidecarSocketPath string
 	// standard 是 standard mode 用的 RoundTripper。nil 时回落到
 	// fallback：http.DefaultTransport.Clone() 并把 Proxy 设为 nil，
 	// 任何代理只能通过 dispatcher.applyProxy 显式绑定生效。
@@ -38,9 +43,16 @@ type Factory struct {
 	templateRegistry *mimicry.TemplateRegistry
 	mimicryMu        sync.Mutex
 	mimicryByMode    map[TransportMode]http.RoundTripper
+	sidecarByMode    map[TransportMode]http.RoundTripper
+	// sidecarProbeTimeout bounds startup/request-time sidecar readiness checks.
+	// Zero uses defaultSidecarProbeTimeout.
+	sidecarProbeTimeout time.Duration
+	sidecarProbe        func(context.Context, string, mimicry.TransportMode) error
 	// diagnostics 是仅做连通性诊断的 RoundTripper。nil 表示尚未实施。
 	diagnostics http.RoundTripper
 }
+
+const defaultSidecarProbeTimeout = 5 * time.Second
 
 // NewFactory 构造一个新的 Factory。所有 RoundTripper 字段为 nil — 调用
 // SetXxx 注入实例。standard 在未注入时回落到 http.DefaultTransport。
@@ -52,6 +64,7 @@ func NewFactory(registries ...*mimicry.TemplateRegistry) *Factory {
 	return &Factory{
 		templateRegistry: registry,
 		mimicryByMode:    make(map[TransportMode]http.RoundTripper),
+		sidecarByMode:    make(map[TransportMode]http.RoundTripper),
 	}
 }
 
@@ -94,6 +107,9 @@ func (f *Factory) For(provider ProviderCode, mode TransportMode) (http.RoundTrip
 		TransportModeMimicryCopilot,
 		TransportModeMimicryKiro,
 		TransportModeMimicryWindsurf:
+		if f.SidecarSocketPath != "" {
+			return f.sidecarRoundTripper(mode)
+		}
 		if f.mimicry != nil {
 			return f.mimicry, nil
 		}
@@ -140,6 +156,42 @@ func (f *Factory) standardRoundTripper() http.RoundTripper {
 		f.standardCached = cloned
 	})
 	return f.standardCached
+}
+
+func (f *Factory) sidecarRoundTripper(mode TransportMode) (http.RoundTripper, error) {
+	f.mimicryMu.Lock()
+	defer f.mimicryMu.Unlock()
+	if f.sidecarByMode == nil {
+		f.sidecarByMode = make(map[TransportMode]http.RoundTripper)
+	}
+	if rt := f.sidecarByMode[mode]; rt != nil {
+		return rt, nil
+	}
+	timeout := f.sidecarProbeTimeout
+	if timeout <= 0 {
+		timeout = defaultSidecarProbeTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	probe := f.sidecarProbe
+	if probe == nil {
+		probe = mimicry.ProbeSidecarForMode
+	}
+	if err := probe(ctx, f.SidecarSocketPath, mimicry.TransportMode(mode)); err != nil {
+		slog.Warn("transport mimicry sidecar unavailable",
+			"mode", mode,
+			"socket_path", f.SidecarSocketPath,
+			"reason_class", "sidecar_unavailable",
+			"error", err,
+		)
+		return nil, fmt.Errorf("transport: sidecar unavailable for mode=%s socket=%s: %w", mode, f.SidecarSocketPath, err)
+	}
+	rt, err := mimicry.NewSidecarRoundTripperForMode(f.SidecarSocketPath, mimicry.TransportMode(mode))
+	if err != nil {
+		return nil, fmt.Errorf("transport: create sidecar round-tripper for mode=%s: %w", mode, err)
+	}
+	f.sidecarByMode[mode] = rt
+	return rt, nil
 }
 
 func (f *Factory) mimicryRoundTripper(mode TransportMode, tmpl *mimicry.ClientHelloTemplate) http.RoundTripper {

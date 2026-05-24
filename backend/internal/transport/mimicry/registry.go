@@ -1,6 +1,7 @@
 package mimicry
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -22,6 +23,8 @@ const (
 	ModeMimicryCopilot        TransportMode = "mimicry_copilot"
 	ModeMimicryKiro           TransportMode = "mimicry_kiro"
 	ModeMimicryWindsurf       TransportMode = "mimicry_windsurf"
+
+	sidecarProbeProfileID = "__huakai_probe__"
 )
 
 // TemplateRegistry 保存每个 mimicry mode 对应的 ClientHello 模板。
@@ -44,6 +47,36 @@ func NewSidecarRoundTripperForMode(socketPath string, mode TransportMode) (http.
 		return nil, fmt.Errorf("mimicry: no sidecar profile for mode %s", mode)
 	}
 	return NewSidecarRoundTripper(NewSidecarClient(socketPath), profileID), nil
+}
+
+func ProbeSidecarForMode(ctx context.Context, socketPath string, mode TransportMode) error {
+	if _, ok := SidecarProfileForMode(mode); !ok {
+		return fmt.Errorf("mimicry: no sidecar profile for mode %s", mode)
+	}
+	if socketPath == "" {
+		return fmt.Errorf("mimicry sidecar: empty socket path")
+	}
+	conn, err := sidecarDialContext(ctx, "unix", socketPath)
+	if err != nil {
+		return fmt.Errorf("mimicry sidecar: dial unix socket %s: %w", socketPath, err)
+	}
+	defer conn.Close()
+	if err := setDeadlineFromContext(conn, ctx); err != nil {
+		return err
+	}
+	req := sidecarControlRequest{
+		TargetHost: sidecarProbeProfileID,
+		Port:       1,
+		ProfileID:  sidecarProbeProfileID,
+	}
+	if err := writeSidecarFrame(conn, req); err != nil {
+		return fmt.Errorf("mimicry sidecar: write probe frame: %w", err)
+	}
+	var ack sidecarControlAck
+	if err := readSidecarFrame(conn, &ack); err != nil {
+		return fmt.Errorf("mimicry sidecar: read probe ack frame: %w", err)
+	}
+	return nil
 }
 
 // NewTemplateRegistry 返回空 registry。

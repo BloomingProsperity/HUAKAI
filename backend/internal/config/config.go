@@ -23,6 +23,10 @@ type Config struct {
 
 	// RequestClass tags the claim for downstream policy routing. Default "standard".
 	RequestClass string
+
+	// TransportSidecarSocket points mimicry transport modes at the local TLS
+	// sidecar Unix socket. Empty keeps the existing Go uTLS path.
+	TransportSidecarSocket string
 }
 
 // ErrMissingRequired indicates one or more required env vars were not set.
@@ -35,10 +39,11 @@ var ErrMissingRequired = errors.New("config: missing required env var")
 // auth requires a code revert (no build-tag escape hatch).
 func Load() (*Config, error) {
 	cfg := &Config{
-		DatabaseURL:          os.Getenv("HUAKAI_DATABASE_URL"),
-		Listen:               envDefault("HUAKAI_ADDR", ":8080"),
-		BillingPolicyVersion: envDefault("HUAKAI_BILLING_POLICY_VERSION", "1.0"),
-		RequestClass:         envDefault("HUAKAI_REQUEST_CLASS", "standard"),
+		DatabaseURL:            os.Getenv("HUAKAI_DATABASE_URL"),
+		Listen:                 envDefault("HUAKAI_ADDR", ":8080"),
+		BillingPolicyVersion:   envDefault("HUAKAI_BILLING_POLICY_VERSION", "1.0"),
+		RequestClass:           envDefault("HUAKAI_REQUEST_CLASS", "standard"),
+		TransportSidecarSocket: os.Getenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET"),
 	}
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("%w: HUAKAI_DATABASE_URL", ErrMissingRequired)
