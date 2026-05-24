@@ -191,7 +191,8 @@ INSERT INTO credential_acquisition_flow_sessions (
 )
 RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind, status,
           actor_id, actor_role, state_hash, nonce_hash, encrypted_pkce_verifier,
-          client_identity_source, redirect_uri, requested_scopes, redacted_context,
+          client_identity_source, auth_type, device_code_payload,
+          redirect_uri, requested_scopes, redacted_context,
           long_lived_requested, idempotency_key_hash, result_account_credential_id,
           error_class, error_message_redacted, expires_at, consumed_at, cancelled_at,
           created_at, updated_at`
@@ -234,7 +235,8 @@ func (s *PostgresSessionStore) Get(ctx context.Context, id string) (Session, err
 	const q = `
 SELECT id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind, status,
        actor_id, actor_role, state_hash, nonce_hash, encrypted_pkce_verifier,
-       client_identity_source, redirect_uri, requested_scopes, redacted_context,
+       client_identity_source, auth_type, device_code_payload,
+       redirect_uri, requested_scopes, redacted_context,
        long_lived_requested, idempotency_key_hash, result_account_credential_id,
        error_class, error_message_redacted, expires_at, consumed_at, cancelled_at,
        created_at, updated_at
@@ -263,7 +265,8 @@ SET status = $2,
 WHERE id = $1::uuid
 RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind, status,
           actor_id, actor_role, state_hash, nonce_hash, encrypted_pkce_verifier,
-          client_identity_source, redirect_uri, requested_scopes, redacted_context,
+          client_identity_source, auth_type, device_code_payload,
+          redirect_uri, requested_scopes, redacted_context,
           long_lived_requested, idempotency_key_hash, result_account_credential_id,
           error_class, error_message_redacted, expires_at, consumed_at, cancelled_at,
           created_at, updated_at`
@@ -287,7 +290,8 @@ WHERE id = $1::uuid
   AND status NOT IN ('finalized', 'cancelled', 'expired')
 RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind, status,
           actor_id, actor_role, state_hash, nonce_hash, encrypted_pkce_verifier,
-          client_identity_source, redirect_uri, requested_scopes, redacted_context,
+          client_identity_source, auth_type, device_code_payload,
+          redirect_uri, requested_scopes, redacted_context,
           long_lived_requested, idempotency_key_hash, result_account_credential_id,
           error_class, error_message_redacted, expires_at, consumed_at, cancelled_at,
           created_at, updated_at`
@@ -319,7 +323,8 @@ WHERE id = $1::uuid
   AND expires_at > NOW()
 RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind, status,
           actor_id, actor_role, state_hash, nonce_hash, encrypted_pkce_verifier,
-          client_identity_source, redirect_uri, requested_scopes, redacted_context,
+          client_identity_source, auth_type, device_code_payload,
+          redirect_uri, requested_scopes, redacted_context,
           long_lived_requested, idempotency_key_hash, result_account_credential_id,
           error_class, error_message_redacted, expires_at, consumed_at, cancelled_at,
           created_at, updated_at`
@@ -359,7 +364,8 @@ SET status = 'finalized',
 WHERE id = $1::uuid
 RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind, status,
           actor_id, actor_role, state_hash, nonce_hash, encrypted_pkce_verifier,
-          client_identity_source, redirect_uri, requested_scopes, redacted_context,
+          client_identity_source, auth_type, device_code_payload,
+          redirect_uri, requested_scopes, redacted_context,
           long_lived_requested, idempotency_key_hash, result_account_credential_id,
           error_class, error_message_redacted, expires_at, consumed_at, cancelled_at,
           created_at, updated_at`
@@ -376,19 +382,22 @@ func (s *PostgresSessionStore) MarkFailed(ctx context.Context, id, errorClass, r
 
 func scanSession(row pgx.Row) (Session, error) {
 	var out Session
-	var redirectURI, errorClass, errorMessage pgtype.Text
+	var authType, redirectURI, errorClass, errorMessage pgtype.Text
 	var resultCredential pgtype.Int8
 	var consumedAt, cancelledAt pgtype.Timestamptz
-	var requestedScopes, redactedContext []byte
+	var requestedScopes, redactedContext, deviceCodePayload []byte
 	if err := row.Scan(
 		&out.ID, &out.TenantID, &out.ProviderAccountID, &out.Vendor, &out.AuthMode, &out.Kind, &out.Status,
 		&out.ActorID, &out.ActorRole, &out.StateHash, &out.NonceHash, &out.EncryptedPKCEVerifier,
-		&out.ClientIdentitySource, &redirectURI, &requestedScopes, &redactedContext,
+		&out.ClientIdentitySource, &authType, &deviceCodePayload, &redirectURI, &requestedScopes, &redactedContext,
 		&out.LongLivedRequested, &out.IdempotencyKeyHash, &resultCredential,
 		&errorClass, &errorMessage, &out.ExpiresAt, &consumedAt, &cancelledAt,
 		&out.CreatedAt, &out.UpdatedAt,
 	); err != nil {
 		return Session{}, err
+	}
+	if authType.Valid {
+		out.AuthType = AuthType(authType.String)
 	}
 	if redirectURI.Valid {
 		out.RedirectURI = redirectURI.String
@@ -413,6 +422,9 @@ func scanSession(row pgx.Row) (Session, error) {
 	}
 	if len(redactedContext) > 0 {
 		_ = json.Unmarshal(redactedContext, &out.RedactedContext)
+	}
+	if len(deviceCodePayload) > 0 {
+		_ = json.Unmarshal(deviceCodePayload, &out.DeviceCodePayload)
 	}
 	if out.RedactedContext == nil {
 		out.RedactedContext = map[string]any{}

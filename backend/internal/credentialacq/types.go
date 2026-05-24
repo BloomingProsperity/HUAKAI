@@ -52,15 +52,16 @@ const (
 )
 
 var (
-	ErrFlowNotFound      = errors.New("credentialacq: flow not found")
-	ErrFlowExpired       = errors.New("credentialacq: flow expired")
-	ErrFlowReplay        = errors.New("credentialacq: flow replay")
-	ErrStateMismatch     = errors.New("credentialacq: oauth state mismatch")
-	ErrUnknownMode       = errors.New("credentialacq: unknown mode")
-	ErrInvalidImportBody = errors.New("credentialacq: invalid import body")
-	ErrFeatureDisabled   = errors.New("credentialacq: feature disabled")
-	ErrSecretInContext   = errors.New("credentialacq: redacted context contains secret-shaped material")
-	ErrInvalidTokenShape = errors.New("credentialacq: invalid token shape")
+	ErrFlowNotFound          = errors.New("credentialacq: flow not found")
+	ErrFlowExpired           = errors.New("credentialacq: flow expired")
+	ErrFlowReplay            = errors.New("credentialacq: flow replay")
+	ErrStateMismatch         = errors.New("credentialacq: oauth state mismatch")
+	ErrUnknownMode           = errors.New("credentialacq: unknown mode")
+	ErrInvalidImportBody     = errors.New("credentialacq: invalid import body")
+	ErrFeatureDisabled       = errors.New("credentialacq: feature disabled")
+	ErrSecretInContext       = errors.New("credentialacq: redacted context contains secret-shaped material")
+	ErrInvalidTokenShape     = errors.New("credentialacq: invalid token shape")
+	ErrOAuthExchangerMissing = errors.New("credentialacq: oauth exchanger missing")
 )
 
 type ModePlan struct {

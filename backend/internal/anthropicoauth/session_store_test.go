@@ -46,7 +46,7 @@ func (db *testSessionDB) QueryRow(_ context.Context, sql string, args ...interfa
 			Vendor: stringArg(args[3]), AuthMode: stringArg(args[4]), Kind: credentialacq.FlowKind(stringArg(args[5])), Status: credentialacq.FlowStatus(stringArg(args[6])),
 			ActorID: stringArg(args[7]), ActorRole: stringArg(args[8]),
 			StateHash: stringBytesArg(args[9]), NonceHash: stringBytesArg(args[10]), EncryptedPKCEVerifier: stringBytesArg(args[11]),
-			ClientIdentitySource: stringArg(args[12]), RedirectURI: stringArg(args[13]),
+			ClientIdentitySource: stringArg(args[12]), AuthType: credentialacq.AuthTypePKCE, DeviceCodePayload: map[string]any{}, RedirectURI: stringArg(args[13]),
 			LongLivedRequested: boolArg(args[16]), IdempotencyKeyHash: stringBytesArg(args[17]),
 			ExpiresAt: timeArg(args[18]), CreatedAt: db.now, UpdatedAt: db.now,
 		}
@@ -90,15 +90,16 @@ func (r testSessionRow) Scan(dest ...any) error {
 	if r.err != nil {
 		return r.err
 	}
-	if len(dest) != 26 {
+	if len(dest) != 28 {
 		return errors.New("test session row: unexpected scan arity")
 	}
 	requestedScopes, _ := json.Marshal(r.session.RequestedScopes)
 	redactedContext, _ := json.Marshal(r.session.RedactedContext)
+	deviceCodePayload, _ := json.Marshal(r.session.DeviceCodePayload)
 	values := []any{
 		r.session.ID, r.session.TenantID, r.session.ProviderAccountID, r.session.Vendor, r.session.AuthMode, r.session.Kind, r.session.Status,
 		r.session.ActorID, r.session.ActorRole, r.session.StateHash, r.session.NonceHash, r.session.EncryptedPKCEVerifier,
-		r.session.ClientIdentitySource, textValue(r.session.RedirectURI), requestedScopes, redactedContext,
+		r.session.ClientIdentitySource, textValue(string(r.session.AuthType)), deviceCodePayload, textValue(r.session.RedirectURI), requestedScopes, redactedContext,
 		r.session.LongLivedRequested, r.session.IdempotencyKeyHash, int8Value(r.session.ResultAccountCredentialID),
 		textValue(r.session.ErrorClass), textValue(r.session.ErrorMessageRedacted), r.session.ExpiresAt, timestamptzValue(r.session.ConsumedAt), timestamptzValue(r.session.CancelledAt),
 		r.session.CreatedAt, r.session.UpdatedAt,

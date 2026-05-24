@@ -762,7 +762,7 @@ func (s *Store) SaveRefreshFailure(ctx context.Context, rec CredentialRecord, fa
 		return err
 	}
 	state := StateTempUnschedulable
-	if failureClass == "invalid_grant" {
+	if failureClass == "invalid_grant" || failureClass == "auth_expired" {
 		state = StateRevoked
 	}
 	if failureClass == "decrypt_failed" || failureClass == "payload_invalid" {

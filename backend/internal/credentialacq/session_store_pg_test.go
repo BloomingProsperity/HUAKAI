@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -23,7 +25,27 @@ func newTestSessionDB(now time.Time) *testSessionDB {
 	return &testSessionDB{now: now, rows: map[string]Session{}}
 }
 
-func (db *testSessionDB) Exec(context.Context, string, ...interface{}) (pgconn.CommandTag, error) {
+func (db *testSessionDB) Exec(_ context.Context, sql string, args ...interface{}) (pgconn.CommandTag, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if db.rows == nil {
+		db.rows = map[string]Session{}
+	}
+	if len(args) >= 3 && strings.Contains(sql, "SET auth_type = $2::oauth_acquisition_auth_type") {
+		id := stringArg(args[0])
+		row, ok := db.rows[id]
+		if !ok {
+			return pgconn.CommandTag{}, nil
+		}
+		row.AuthType = AuthType(stringArg(args[1]))
+		if raw := bytesArg(args[2]); len(raw) > 0 {
+			_ = json.Unmarshal(raw, &row.DeviceCodePayload)
+		} else {
+			row.DeviceCodePayload = map[string]any{}
+		}
+		row.UpdatedAt = db.now
+		db.rows[id] = row
+	}
 	return pgconn.CommandTag{}, nil
 }
 
@@ -44,16 +66,16 @@ func (db *testSessionDB) QueryRow(_ context.Context, sql string, args ...interfa
 			Vendor: stringArg(args[3]), AuthMode: stringArg(args[4]), Kind: FlowKind(stringArg(args[5])), Status: FlowStatus(stringArg(args[6])),
 			ActorID: stringArg(args[7]), ActorRole: stringArg(args[8]),
 			StateHash: bytesArg(args[9]), NonceHash: bytesArg(args[10]), EncryptedPKCEVerifier: bytesArg(args[11]),
-			ClientIdentitySource: stringArg(args[12]), RedirectURI: stringArg(args[13]),
+			ClientIdentitySource: stringArg(args[12]), AuthType: AuthTypePKCE, RedirectURI: stringArg(args[13]),
 			LongLivedRequested: boolArg(args[16]), IdempotencyKeyHash: bytesArg(args[17]),
 			ExpiresAt: timeArg(args[18]), CreatedAt: db.now, UpdatedAt: db.now,
 		}
 		_ = json.Unmarshal(bytesArg(args[14]), &row.RequestedScopes)
 		_ = json.Unmarshal(bytesArg(args[15]), &row.RedactedContext)
 		db.rows[row.ID] = row
-		return testSessionRow{session: row}
+		return testSessionRow{session: row, sql: sql}
 	case strings.Contains(sql, "FROM credential_acquisition_flow_sessions") && strings.Contains(sql, "WHERE id = $1::uuid"):
-		return db.rowByID(stringArg(args[0]))
+		return db.rowByID(sql, stringArg(args[0]))
 	case strings.Contains(sql, "SET status = $2"):
 		id := stringArg(args[0])
 		row, ok := db.rows[id]
@@ -65,7 +87,7 @@ func (db *testSessionDB) QueryRow(_ context.Context, sql string, args ...interfa
 		row.ErrorMessageRedacted = stringArg(args[3])
 		row.UpdatedAt = db.now
 		db.rows[id] = row
-		return testSessionRow{session: row}
+		return testSessionRow{session: row, sql: sql}
 	case strings.Contains(sql, "SET status = 'cancelled'"):
 		id := stringArg(args[0])
 		row, ok := db.rows[id]
@@ -76,7 +98,7 @@ func (db *testSessionDB) QueryRow(_ context.Context, sql string, args ...interfa
 		row.CancelledAt = db.now
 		row.UpdatedAt = db.now
 		db.rows[id] = row
-		return testSessionRow{session: row}
+		return testSessionRow{session: row, sql: sql}
 	case strings.Contains(sql, "SET consumed_at = NOW()"):
 		id := stringArg(args[0])
 		row, ok := db.rows[id]
@@ -86,7 +108,7 @@ func (db *testSessionDB) QueryRow(_ context.Context, sql string, args ...interfa
 		row.ConsumedAt = db.now
 		row.UpdatedAt = db.now
 		db.rows[id] = row
-		return testSessionRow{session: row}
+		return testSessionRow{session: row, sql: sql}
 	case strings.Contains(sql, "SET status = 'finalized'"):
 		id := stringArg(args[0])
 		row, ok := db.rows[id]
@@ -102,22 +124,23 @@ func (db *testSessionDB) QueryRow(_ context.Context, sql string, args ...interfa
 		row.ErrorMessageRedacted = ""
 		row.UpdatedAt = db.now
 		db.rows[id] = row
-		return testSessionRow{session: row}
+		return testSessionRow{session: row, sql: sql}
 	default:
 		return testSessionRow{err: errors.New("test session db: unhandled query")}
 	}
 }
 
-func (db *testSessionDB) rowByID(id string) pgx.Row {
+func (db *testSessionDB) rowByID(sql, id string) pgx.Row {
 	row, ok := db.rows[id]
 	if !ok {
 		return testSessionRow{err: pgx.ErrNoRows}
 	}
-	return testSessionRow{session: row}
+	return testSessionRow{session: row, sql: sql}
 }
 
 type testSessionRow struct {
 	session Session
+	sql     string
 	err     error
 }
 
@@ -125,27 +148,167 @@ func (r testSessionRow) Scan(dest ...any) error {
 	if r.err != nil {
 		return r.err
 	}
-	return scanTestSession(dest, r.session)
+	return scanTestSession(dest, r.session, r.sql)
 }
 
-func scanTestSession(dest []any, row Session) error {
-	if len(dest) != 26 {
-		return errors.New("test session row: unexpected scan arity")
-	}
+func scanTestSession(dest []any, row Session, sql string) error {
+	includeAuthPayload := strings.Contains(sql, "auth_type") && strings.Contains(sql, "device_code_payload")
 	requestedScopes, _ := json.Marshal(row.RequestedScopes)
 	redactedContext, _ := json.Marshal(row.RedactedContext)
+	deviceCodePayload, _ := json.Marshal(row.DeviceCodePayload)
 	values := []any{
 		row.ID, row.TenantID, row.ProviderAccountID, row.Vendor, row.AuthMode, row.Kind, row.Status,
 		row.ActorID, row.ActorRole, row.StateHash, row.NonceHash, row.EncryptedPKCEVerifier,
-		row.ClientIdentitySource, textValue(row.RedirectURI), requestedScopes, redactedContext,
+		row.ClientIdentitySource,
+	}
+	if includeAuthPayload {
+		values = append(values, textValue(string(row.AuthType)), deviceCodePayload)
+	}
+	values = append(values,
+		textValue(row.RedirectURI), requestedScopes, redactedContext,
 		row.LongLivedRequested, row.IdempotencyKeyHash, int8Value(row.ResultAccountCredentialID),
 		textValue(row.ErrorClass), textValue(row.ErrorMessageRedacted), row.ExpiresAt, timestamptzValue(row.ConsumedAt), timestamptzValue(row.CancelledAt),
 		row.CreatedAt, row.UpdatedAt,
+	)
+	if len(dest) != len(values) {
+		return errors.New("test session row: unexpected scan arity")
 	}
 	for i := range dest {
 		assignScanValue(dest[i], values[i])
 	}
 	return nil
+}
+
+func TestPostgresSessionStoreSetAuthPayloadRoundTripReloadsAuthTypeAndDevicePayload(t *testing.T) {
+	now := time.Date(2026, 5, 24, 10, 45, 0, 0, time.UTC)
+	store := NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now })
+	created, err := store.Create(context.Background(), Session{
+		ID: "flow-device-roundtrip", TenantID: 10, ProviderAccountID: 20,
+		Vendor: "openai", AuthMode: "codex_cli_oauth", Kind: FlowKindOAuth, Status: StatusStarted,
+		ActorID: "admin-1", ActorRole: "platform_admin",
+		ClientIdentitySource: ClientSourcePublicCLI,
+		RequestedScopes:      []string{"openid", "profile"},
+		RedactedContext:      map[string]any{"path": "device_code"},
+		ExpiresAt:            now.Add(10 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	payload := map[string]any{
+		"auth_type":        string(AuthTypeDeviceCode),
+		"device_code":      "dev-from-db",
+		"user_code":        "USER-CODE",
+		"verification_uri": "https://device.example.test",
+		"expires_in":       900,
+		"interval":         5,
+		"issued_at":        now.Format(time.RFC3339Nano),
+		"token_url":        "https://device.example.test/token",
+		"client_id":        "client-from-payload",
+	}
+	if err := store.SetAuthPayload(context.Background(), created.ID, AuthTypeDeviceCode, payload); err != nil {
+		t.Fatalf("SetAuthPayload: %v", err)
+	}
+
+	reloaded, err := store.Get(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	assertAuthPayloadRoundTrip(t, reloaded, AuthTypeDeviceCode, payload)
+
+	waiting, err := store.UpdateStatus(context.Background(), created.ID, StatusWaitingForUser, "", "")
+	if err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+	assertAuthPayloadRoundTrip(t, waiting, AuthTypeDeviceCode, payload)
+
+	begin, err := store.BeginFinalize(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("BeginFinalize: %v", err)
+	}
+	assertAuthPayloadRoundTrip(t, begin, AuthTypeDeviceCode, payload)
+
+	finalized, err := store.MarkFinalized(context.Background(), created.ID, 1234)
+	if err != nil {
+		t.Fatalf("MarkFinalized: %v", err)
+	}
+	assertAuthPayloadRoundTrip(t, finalized, AuthTypeDeviceCode, payload)
+}
+
+func TestDeviceCodePollUsesReloadedSessionPayload(t *testing.T) {
+	now := time.Date(2026, 5, 24, 10, 50, 0, 0, time.UTC)
+	store := NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now })
+	created, err := store.Create(context.Background(), Session{
+		ID: "flow-device-poll", TenantID: 11, ProviderAccountID: 21,
+		Vendor: "openai", AuthMode: "codex_cli_oauth", Kind: FlowKindOAuth, Status: StatusWaitingForUser,
+		ActorID: "admin-2", ActorRole: "platform_admin",
+		ClientIdentitySource: ClientSourcePublicCLI,
+		RedactedContext:      map[string]any{},
+		ExpiresAt:            now.Add(10 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	payload := map[string]any{
+		"auth_type":   string(AuthTypeDeviceCode),
+		"device_code": "dev-poll-from-db",
+		"expires_in":  900,
+		"interval":    5,
+		"issued_at":   now.Format(time.RFC3339Nano),
+		"token_url":   "https://device.example.test/token",
+		"client_id":   "client-from-db-payload",
+	}
+	if err := store.SetAuthPayload(context.Background(), created.ID, AuthTypeDeviceCode, payload); err != nil {
+		t.Fatalf("SetAuthPayload: %v", err)
+	}
+	reloaded, err := store.Get(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	var seenDeviceCode, seenClientID string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			return nil, err
+		}
+		seenDeviceCode = stringField(body, "device_code")
+		seenClientID = stringField(body, "client_id")
+		return jsonHTTPResponse(t, map[string]any{"access_token": "access-from-poll"}), nil
+	})}
+	candidate, err := PollDeviceCodeToken(context.Background(), reloaded, OAuthClientConfig{},
+		WithDeviceCodeHTTPClient(client),
+		WithDeviceCodeNow(func() time.Time { return now }),
+		WithDeviceCodeSleeper(func(context.Context, time.Duration) error {
+			return errors.New("poll should not sleep after immediate success")
+		}),
+	)
+	if err != nil {
+		t.Fatalf("PollDeviceCodeToken with reloaded session: %v", err)
+	}
+	if seenDeviceCode != "dev-poll-from-db" || seenClientID != "client-from-db-payload" {
+		t.Fatalf("poll request device_code=%q client_id=%q", seenDeviceCode, seenClientID)
+	}
+	if candidate.TenantID != 11 || candidate.ProviderAccountID != 21 {
+		t.Fatalf("candidate target tenant/account=%d/%d", candidate.TenantID, candidate.ProviderAccountID)
+	}
+}
+
+func assertAuthPayloadRoundTrip(t *testing.T, session Session, wantAuthType AuthType, wantPayload map[string]any) {
+	t.Helper()
+	if session.AuthType != wantAuthType {
+		t.Fatalf("AuthType=%q want %q", session.AuthType, wantAuthType)
+	}
+	gotRaw, err := json.Marshal(session.DeviceCodePayload)
+	if err != nil {
+		t.Fatalf("marshal got payload: %v", err)
+	}
+	wantRaw, err := json.Marshal(wantPayload)
+	if err != nil {
+		t.Fatalf("marshal want payload: %v", err)
+	}
+	if string(gotRaw) != string(wantRaw) {
+		t.Fatalf("DeviceCodePayload=%s want %s", gotRaw, wantRaw)
+	}
 }
 
 func assignScanValue(dest any, value any) {
