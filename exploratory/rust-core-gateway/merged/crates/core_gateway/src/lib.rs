@@ -403,20 +403,60 @@ mod tests {
     /// 通路上的守门代码 (例如 mimicry-boring 的 production canary, mimicry-http2-fork
     /// 的 SETTINGS 顺序测试) 可能被静默破坏, 直到 feature 真上线时炸。
     ///
-    /// 本测试解析 verify.sh 文本, 强制每个必需的 feature 标识出现在 MATRIX 列表里。
+    /// Codex round 2 P2 fix 2026-05-24: 第一版用 file-wide contains 不判别, 注释 or
+    /// quick-mode override 都能让删 full MATRIX 测试仍绿。改为解析 verify.sh 找
+    /// `declare -a MATRIX=(` 到下一个 `)` 之间的非注释行作为 active full MATRIX,
+    /// 然后断言每个必需 entry 在该列表里 — quick mode 的二次 MATRIX 赋值不计。
+    ///
+    /// Codex round 3 P2 fix 2026-05-24: round 2 实现用 `line.contains(required)`,
+    /// 当 entry 被删并留作另一 active 行的尾随注释时 (例如:
+    /// `"default::"   # was: "mimicry-openssl:--features mimicry-openssl"`),
+    /// contains 仍命中 → 守门失效。改为: 每行先在第一个 `#` 处截断保留 "active code"
+    /// 部分, 再做匹配; HUAKAI MATRIX entry 值内不会出现 `#` 字面量, 此简单切分对
+    /// 当前 verify.sh 安全。
     ///
     /// 判别性 + mutation:
     /// 1) tools/feature-matrix/verify.sh 存在且可读
-    /// 2) 内容含 "default::" (默认 build)
-    /// 3) 内容含 "mimicry-boring" feature
-    /// 4) 内容含 "mimicry-openssl" feature
-    /// 5) 内容含 "mimicry-http2-fork" feature
+    /// 2) 含 `declare -a MATRIX=(` ... `)` block
+    /// 3) block 内 (剔除 # 开头注释行 + 每行 active code 即 # 前部分) 必含 4 个 quoted entry
     ///
     /// mutation:
-    /// - 删 verify.sh MATRIX 任一项 -> 对应 contains 断言红。
-    /// - 改 verify.sh 把 cargo test 改成 cargo build (失去 test 覆盖) -> 仍含 feature
-    ///   名但少 test 验证 (此测试不强制 cargo test 字串, 留给运维选择 build/test);
-    ///   实际守门由 CI yaml 决定调度。
+    /// - 删 full MATRIX block 任一 entry -> 对应 active code 不再含 -> 红。
+    /// - 把 entry 改成 commented line (`# "..." ...`) -> 解析跳过 -> active 少 1 -> 红。
+    /// - 把 entry 删掉但留作另一活行的尾随注释 -> active code 截断后不含 -> 红 (round 3 修)。
+    /// - quick-mode 赋值修改 (不影响 full MATRIX) -> active_entries 不变 -> 本测试不受影响 (正确, quick 是 PR smoke 用)。
+    /// Codex round 3 P2 helper (CLAUDE.md #14 shared-parser): 抽 active matrix code
+    /// 解析为独立 fn, 让 regression test (`feature_matrix_script_lists_all_required_*`)
+    /// 与 mutation test (`feature_matrix_parser_does_not_match_entry_left_only_*`)
+    /// **跑同一段代码**。否则 mutation test 用本地复制版本, 真 parser regress 时
+    /// mutation 测试反而仍绿 — 失去 discriminating power（Codex round 2 P2 finding
+    /// "Exercise the same parser in the mutation test"）。
+    ///
+    /// 解析 verify.sh 文本: 找 `declare -a MATRIX=(` 到下一个 `)` 之间的 block,
+    /// 过滤 # 开头注释行 + 空行, 每行在第一个 `#` 处截断保留 active code 部分。
+    fn extract_active_matrix_code(content: &str) -> Vec<String> {
+        let start_marker = "declare -a MATRIX=(";
+        let start = content
+            .find(start_marker)
+            .expect("MATRIX block 必须有 `declare -a MATRIX=(` 主声明");
+        let after_start = &content[start + start_marker.len()..];
+        let end = after_start
+            .find(')')
+            .expect("MATRIX block 必须以 `)` 闭合");
+        let block = &after_start[..end];
+
+        block
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(|line| {
+                line.split_once('#')
+                    .map(|(code, _)| code.trim_end().to_owned())
+                    .unwrap_or_else(|| line.to_owned())
+            })
+            .collect()
+    }
+
     #[test]
     fn feature_matrix_script_lists_all_required_feature_combinations() {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -429,23 +469,88 @@ mod tests {
             script_path.display()
         );
 
-        let content = std::fs::read_to_string(&script_path)
-            .expect("verify.sh 应可读");
+        let content = std::fs::read_to_string(&script_path).expect("verify.sh 应可读");
+        let active_code = extract_active_matrix_code(&content);
 
-        // 4 个必需 feature 组合 — mutation 删任一即红
-        let required_markers: &[&str] = &[
-            "default::",
-            "mimicry-boring",
-            "mimicry-openssl",
-            "mimicry-http2-fork",
+        let required_quoted_entries: &[&str] = &[
+            "\"default::\"",
+            "\"mimicry-boring:--features mimicry-boring\"",
+            "\"mimicry-openssl:--features mimicry-openssl\"",
+            "\"mimicry-http2-fork:--features mimicry-http2-fork\"",
         ];
 
-        for marker in required_markers {
+        for required in required_quoted_entries {
+            let present = active_code.iter().any(|code| code.contains(required));
             assert!(
-                content.contains(marker),
-                "P1-6: verify.sh 必须含 feature marker {marker:?} \
-                 — mutation 删该 cargo invocation -> CI 漏覆盖该 feature -> 守门代码可能被静默破坏"
+                present,
+                "P1-6: full MATRIX block 必须含 active (非注释 + 排除尾随注释) entry {required:?}; \
+                 实际 active code = {active_code:?} \
+                 — mutation 删该 cargo invocation 或注释掉 (含尾随注释化) 即让此断言红, \
+                 防止 CI 漏覆盖该 feature -> 守门代码被静默破坏"
             );
         }
+    }
+
+    /// Codex round 2 P2 finding 2026-05-24 自证 mutation test (改 shared-parser 版):
+    /// 模拟 maintainer 把某 entry 从 MATRIX 删掉但留作另一活行的 trailing # 注释。
+    /// 旧 round 1 实现 `line.contains(required)` 仍会假命中, round 2 用 active_code
+    /// (split at first `#`) 必须把注释段截掉 → 正确判定 entry 已删。
+    ///
+    /// **本测试跑 extract_active_matrix_code 同一 helper** (round 2 finding fix):
+    /// 删 helper 中 split_once('#') 逻辑 → 退回旧 raw-contains → 本断言 (b) 红 + 同时
+    /// regression test (上面) 在带尾随注释的 verify.sh 上也会假绿 — 二者用同一 parser
+    /// 保证一致 discriminating power。fixture 选 mimicry-openssl 是因为该 feature
+    /// 在 production canary 是 OpenSSL exact adapter 路径, 删它 = 一族 vendor 失守门。
+    #[test]
+    fn feature_matrix_parser_does_not_match_entry_left_only_as_trailing_comment() {
+        // 合成 verify.sh-style content: 删掉 mimicry-openssl entry, 留作 mimicry-boring
+        // 行的尾随 bash 注释。包成完整 `declare -a MATRIX=( ... )` 让 helper 可解析。
+        let synth_content = "\
+#!/usr/bin/env bash\n\
+declare -a MATRIX=(\n\
+  \"default::\"\n\
+  \"mimicry-boring:--features mimicry-boring\"   # was: \"mimicry-openssl:--features mimicry-openssl\"\n\
+  \"mimicry-http2-fork:--features mimicry-http2-fork\"\n\
+)\n";
+
+        let active_code = extract_active_matrix_code(synth_content);
+        let removed_marker = "\"mimicry-openssl:--features mimicry-openssl\"";
+
+        // (a) 老逻辑对照: 用 raw lines (不经 helper 的 split_once) 必须命中尾随注释 → 假命中。
+        // 这一步证 fixture 真带 trailing-comment 模式 (CLAUDE.md #14 fixture 必须 discriminating)。
+        let raw_lines: Vec<&str> = synth_content
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#') && *line != "declare -a MATRIX=(" && *line != ")")
+            .collect();
+        assert!(
+            raw_lines.iter().any(|line| line.contains(removed_marker)),
+            "fixture 错: 老 raw-contains 必须在 raw_lines 中假命中 \
+             (它在尾随注释里), 否则本测试不构成 discriminating mutation 对照; \
+             实际 raw_lines = {raw_lines:?}"
+        );
+
+        // (b) 新逻辑 (extract_active_matrix_code helper): 不命中 → 正确红。
+        // 删 helper 的 split_once('#') 逻辑 → 此断言变假命中 → 测试红 + 同步保护 regression test。
+        assert!(
+            !active_code.iter().any(|code| code.contains(removed_marker)),
+            "P1-6 round 2/3 守门 (shared parser): 删掉 entry 后留作另一活行尾随注释, \
+             extract_active_matrix_code 必须返回不含 removed_marker 的 active_code; \
+             实际 active_code = {active_code:?}; \
+             若此断言失败 = helper 中 split_once('#') 逻辑被破坏 = CI 被欺骗放过 \
+             已被 BASH 实际不执行的 feature 组合 -> 该 feature 通路守门代码可静默失守"
+        );
+
+        // 顺带断言 active_code 仍含未被删的 entries (确保 helper 没误杀)。
+        assert!(
+            active_code.iter().any(|code| code.contains("\"default::\"")),
+            "helper 不该误杀 default entry; active_code = {active_code:?}"
+        );
+        assert!(
+            active_code
+                .iter()
+                .any(|code| code.contains("\"mimicry-boring:--features mimicry-boring\"")),
+            "helper 不该误杀 mimicry-boring entry; active_code = {active_code:?}"
+        );
     }
 }
