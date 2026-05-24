@@ -2,10 +2,12 @@ package transport
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,6 +91,121 @@ func TestFactory_For_MimicryWithoutRegistryUsesPhaseADefault(t *testing.T) {
 	}
 	if rt != rt2 {
 		t.Fatal("默认 mimicry RoundTripper 应复用，避免每次请求新建连接池")
+	}
+}
+
+func TestFactory_For_MimicryEmptySidecarSocketKeepsUtlsCompatibility(t *testing.T) {
+	t.Setenv("HUAKAI_TRANSPORT_PHASE_A_FALLBACK", "true")
+	f := NewFactory()
+	f.SidecarSocketPath = ""
+
+	rt, err := f.For(ProviderAnthropic, TransportModeMimicryClaudeCode)
+	if err != nil {
+		t.Fatalf("empty sidecar socket should preserve uTLS compatibility path: %v", err)
+	}
+	if rt == nil {
+		t.Fatal("mimicry mode returned nil RoundTripper")
+	}
+	if _, ok := rt.(*http.Transport); ok {
+		t.Fatal("empty sidecar socket should use uTLS wrapper, not sidecar *http.Transport")
+	}
+}
+
+func TestFactory_For_MimicrySidecarMissingSocketFailsClosed(t *testing.T) {
+	t.Setenv("HUAKAI_TRANSPORT_PHASE_A_FALLBACK", "true")
+	missingSocket := "/tmp/huakai-missing-sidecar.sock"
+	f := NewFactory()
+	f.SidecarSocketPath = missingSocket
+	f.sidecarProbe = func(_ context.Context, socketPath string, mode mimicry.TransportMode) error {
+		if socketPath != missingSocket {
+			t.Fatalf("probe socketPath=%q want %q", socketPath, missingSocket)
+		}
+		if mode != mimicry.ModeMimicryClaudeCode {
+			t.Fatalf("probe mode=%q want %q", mode, mimicry.ModeMimicryClaudeCode)
+		}
+		return errors.New("mimicry sidecar: dial unix socket " + socketPath + ": missing sidecar socket")
+	}
+
+	rt, err := f.For(ProviderAnthropic, TransportModeMimicryClaudeCode)
+
+	if err == nil {
+		t.Fatalf("missing sidecar socket must fail closed instead of falling back to rt=%T", rt)
+	}
+	if !strings.Contains(err.Error(), "sidecar") || !strings.Contains(err.Error(), missingSocket) {
+		t.Fatalf("error should identify sidecar socket failure, got %v", err)
+	}
+}
+
+func TestFactory_For_MimicrySidecarSocketUsesSidecarRoundTripper(t *testing.T) {
+	socketPath := "/tmp/huakai-tls-sidecar.sock"
+	probeCalls := 0
+	probeSawDeadline := false
+	f := NewFactory()
+	f.SidecarSocketPath = socketPath
+	f.sidecarProbeTimeout = 500 * time.Millisecond
+	f.sidecarProbe = func(ctx context.Context, gotSocketPath string, mode mimicry.TransportMode) error {
+		probeCalls++
+		if gotSocketPath != socketPath {
+			t.Fatalf("probe socketPath=%q want %q", gotSocketPath, socketPath)
+		}
+		if mode != mimicry.ModeMimicryClaudeCode {
+			t.Fatalf("probe mode=%q want %q", mode, mimicry.ModeMimicryClaudeCode)
+		}
+		_, probeSawDeadline = ctx.Deadline()
+		return nil
+	}
+
+	rt, err := f.For(ProviderAnthropic, TransportModeMimicryClaudeCode)
+	if err != nil {
+		t.Fatalf("valid fake sidecar should produce sidecar RoundTripper: %v", err)
+	}
+	if _, ok := rt.(*http.Transport); !ok {
+		t.Fatalf("sidecar branch should return *http.Transport from NewSidecarRoundTripperForMode, got %T", rt)
+	}
+	if probeCalls != 1 {
+		t.Fatalf("probe calls=%d want 1", probeCalls)
+	}
+	if !probeSawDeadline {
+		t.Fatal("sidecar probe should receive a bounded context")
+	}
+
+	rt2, err := f.For(ProviderAnthropic, TransportModeMimicryClaudeCode)
+	if err != nil {
+		t.Fatalf("cached sidecar RoundTripper should not re-probe: %v", err)
+	}
+	if rt != rt2 {
+		t.Fatal("sidecar RoundTripper should be cached per mode")
+	}
+	if probeCalls != 1 {
+		t.Fatalf("cached sidecar RoundTripper should not re-probe; calls=%d", probeCalls)
+	}
+}
+
+func TestFactory_For_MimicrySidecarNoAckTimesOutFailClosed(t *testing.T) {
+	t.Setenv("HUAKAI_TRANSPORT_PHASE_A_FALLBACK", "true")
+	f := NewFactory()
+	f.SidecarSocketPath = "/tmp/huakai-nonresponsive-sidecar.sock"
+	f.sidecarProbeTimeout = 100 * time.Millisecond
+	f.sidecarProbe = func(ctx context.Context, _ string, _ mimicry.TransportMode) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(750 * time.Millisecond):
+			return errors.New("probe context did not time out")
+		}
+	}
+	started := time.Now()
+
+	rt, err := f.For(ProviderAnthropic, TransportModeMimicryClaudeCode)
+
+	if err == nil {
+		t.Fatalf("nonresponsive sidecar must fail closed instead of falling back to rt=%T", rt)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("sidecar probe should honor bounded timeout; elapsed=%s err=%v", elapsed, err)
+	}
+	if !strings.Contains(err.Error(), "sidecar") {
+		t.Fatalf("error should identify sidecar failure, got %v", err)
 	}
 }
 
