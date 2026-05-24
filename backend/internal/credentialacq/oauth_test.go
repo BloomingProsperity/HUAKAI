@@ -251,6 +251,34 @@ func TestDefaultExchangerRegistryIncludesWindsurfOAuthSessionShape(t *testing.T)
 	}
 }
 
+func TestDefaultExchangerRegistryIncludesGeminiOAuth(t *testing.T) {
+	// Regression killed: generic Gemini OAuth callback must not fall through
+	// to exchanger_missing. Mutation self-check: deleting the registry line
+	// makes lookup fail and callback completion cannot persist captured tokens.
+	registry := DefaultExchangerRegistry()
+	if _, ok := registry.Lookup("gemini/oauth"); !ok {
+		t.Fatal("gemini/oauth exchanger missing")
+	}
+	session := Session{
+		TenantID:          1,
+		ProviderAccountID: 42,
+		Vendor:            "gemini",
+		AuthMode:          "oauth",
+		ActorID:           "operator-1",
+	}
+	candidate, err := registry.Exchange(context.Background(), session, `{"session_token":"gemini-session-token","refresh_token":"gemini-refresh-token"}`)
+	if err != nil {
+		t.Fatalf("Exchange gemini/oauth: %v", err)
+	}
+	if candidate.Vendor != "gemini" || candidate.AuthMode != "oauth" || candidate.ProviderAccountID != 42 {
+		t.Fatalf("candidate target=%s/%s account=%d", candidate.Vendor, candidate.AuthMode, candidate.ProviderAccountID)
+	}
+	payload := string(candidate.Payload)
+	if !strings.Contains(payload, "gemini-session-token") || !strings.Contains(payload, "gemini-refresh-token") {
+		t.Fatalf("candidate payload=%s, want captured session and refresh token material", payload)
+	}
+}
+
 func successfulOAuthExchange(code string) (acqCandidate, error) {
 	if code == "" {
 		return acqCandidate{}, errors.New("missing code")
