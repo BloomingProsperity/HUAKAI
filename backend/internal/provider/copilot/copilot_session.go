@@ -23,9 +23,14 @@ import (
 // defaultCopilotEndpoint GitHub Copilot 聊天补全接口。
 const defaultCopilotEndpoint = "https://api.githubcopilot.com/chat/completions"
 
-// defaultCopilotUserAgent 模拟 VS Code + Copilot 插件的默认 UA。
-// caller 可通过 Extra["user_agent"] 覆盖。
-const defaultCopilotUserAgent = "GithubCopilot/1.185.0 vscode/1.89.0"
+const (
+	defaultCopilotUserAgent           = "GitHubCopilotChat/0.26.7"
+	defaultCopilotEditorVersion       = "vscode/1.95.0"
+	defaultCopilotEditorPluginVersion = "copilot-chat/0.26.7"
+	defaultCopilotAPIVersion          = "2025-04-01"
+	defaultCopilotIntegrationID       = "vscode-chat"
+	defaultCopilotIntent              = "conversation-panel"
+)
 
 // 编译期接口合规断言。
 var _ provider.Adapter = (*CopilotSessionAdapter)(nil)
@@ -88,9 +93,16 @@ func (a *CopilotSessionAdapter) BuildRequest(ctx context.Context, in provider.Bu
 	}
 
 	// 步骤 5：确定 endpoint
-	target := a.Endpoint
+	target := strings.TrimSpace(a.Endpoint)
 	if target == "" {
-		target = defaultCopilotEndpoint
+		target = copilotChatEndpointFromAPIBase(firstNonEmptyString(
+			in.Credential.Extra["endpoint_api"],
+			in.Credential.Extra["copilot_endpoint_api"],
+			in.Credential.Extra["base_url"],
+		))
+		if target == "" {
+			target = defaultCopilotEndpoint
+		}
 	}
 
 	// 步骤 6：构造请求
@@ -121,36 +133,40 @@ func (a *CopilotSessionAdapter) BuildRequest(ctx context.Context, in provider.Bu
 	// Editor-Version：声明编辑器版本，Copilot 后端据此路由不同功能集
 	editorVer := in.Credential.Extra["editor_version"]
 	if editorVer == "" {
-		editorVer = "vscode/1.89.0"
+		editorVer = defaultCopilotEditorVersion
 	}
 	req.Header.Set("Editor-Version", editorVer)
 
 	// Editor-Plugin-Version：Copilot 插件版本，影响功能标记判断
 	pluginVer := in.Credential.Extra["editor_plugin_version"]
 	if pluginVer == "" {
-		pluginVer = "copilot-chat/0.16.1"
+		pluginVer = defaultCopilotEditorPluginVersion
 	}
 	req.Header.Set("Editor-Plugin-Version", pluginVer)
 
 	// OpenAI-Intent：声明本次请求的业务用途（conversation-panel / inline-chat 等）
 	intent := in.Credential.Extra["openai_intent"]
 	if intent == "" {
-		intent = "conversation-panel"
+		intent = defaultCopilotIntent
 	}
 	req.Header.Set("OpenAI-Intent", intent)
 
 	// X-Github-Api-Version：Copilot API 版本锁定，格式 YYYY-MM-DD
 	apiVer := in.Credential.Extra["github_api_version"]
 	if apiVer == "" {
-		apiVer = "2023-07-07"
+		apiVer = defaultCopilotAPIVersion
 	}
 	req.Header.Set("X-Github-Api-Version", apiVer)
+
+	integrationID := in.Credential.Extra["copilot_integration_id"]
+	if integrationID == "" {
+		integrationID = defaultCopilotIntegrationID
+	}
+	req.Header.Set("Copilot-Integration-Id", integrationID)
 
 	// TODO(OCAW): 以下 header 需采集真实流量后补全
 	// - x-request-id：UUID v4 格式请求追踪 ID
 	// - x-vscode-machineidentifier：机器唯一标识，影响速率限制桶
-	// - x-copilot-integration-id：集成来源标识（如 "vscode-chat"）
-	// - Copilot-Integration-Id：部分版本使用此大小写变体
 
 	// cookie 透传（含 _octo / logged_in 等 GitHub 登录态 cookie）
 	if ck := in.Credential.Extra["cookie"]; ck != "" {
