@@ -33,7 +33,12 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	providercopilot "github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
+	providercursor "github.com/BloomingProsperity/HUAKAI/internal/provider/cursor"
+	providergemini "github.com/BloomingProsperity/HUAKAI/internal/provider/gemini"
+	providerkiro "github.com/BloomingProsperity/HUAKAI/internal/provider/kiro"
+	provideropenaicodex "github.com/BloomingProsperity/HUAKAI/internal/provider/openai_codex"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
+	providerwindsurf "github.com/BloomingProsperity/HUAKAI/internal/provider/windsurf"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
@@ -134,6 +139,76 @@ func buildTransportFactory(cfg *Config, mimicryRegistry *mimicry.TemplateRegistr
 		factory.SidecarSocketPath = cfg.TransportSidecarSocket
 	}
 	return factory
+}
+
+type vendorRefresherBinding struct {
+	name      string
+	refresher credentialworker.Refresher
+}
+
+func buildVendorRefresherBindings(configs runtimeconfig.VendorOAuthConfigs, store *credentialstore.Store) []vendorRefresherBinding {
+	configured := configs.Configured()
+	bindings := make([]vendorRefresherBinding, 0, 5)
+	if cfg, ok := configured[runtimeconfig.VendorOAuthCursor]; ok {
+		bindings = append(bindings, vendorRefresherBinding{
+			name: runtimeconfig.VendorOAuthCursor,
+			refresher: providercursor.NewRefresher(store, providercursor.WithRefreshAdapter(providercursor.RefreshAdapter{
+				TokenURL: cfg.TokenURL,
+				ClientID: cfg.ClientID,
+				Scope:    cfg.Scope,
+			})),
+		})
+	}
+	if cfg, ok := configured[runtimeconfig.VendorOAuthWindsurf]; ok {
+		bindings = append(bindings, vendorRefresherBinding{
+			name: runtimeconfig.VendorOAuthWindsurf,
+			refresher: providerwindsurf.NewRefresher(store, providerwindsurf.WithRefreshAdapter(providerwindsurf.RefreshAdapter{
+				TokenURL: cfg.TokenURL,
+				ClientID: cfg.ClientID,
+				Scope:    cfg.Scope,
+			})),
+		})
+	}
+	if cfg, ok := configured[runtimeconfig.VendorOAuthOpenAICodex]; ok {
+		bindings = append(bindings, vendorRefresherBinding{
+			name: runtimeconfig.VendorOAuthOpenAICodex,
+			refresher: provideropenaicodex.NewRefresher(store, provideropenaicodex.WithRefreshAdapter(provideropenaicodex.RefreshAdapter{
+				TokenURL: cfg.TokenURL,
+				ClientID: cfg.ClientID,
+				Scope:    cfg.Scope,
+			})),
+		})
+	}
+	if cfg, ok := configured[runtimeconfig.VendorOAuthKiro]; ok {
+		bindings = append(bindings, vendorRefresherBinding{
+			name: runtimeconfig.VendorOAuthKiro,
+			refresher: providerkiro.NewRefresher(store, providerkiro.WithRefreshAdapter(providerkiro.RefreshAdapter{
+				TokenURL:     cfg.TokenURL,
+				ClientID:     cfg.ClientID,
+				ClientSecret: cfg.ClientSecret,
+			})),
+		})
+	}
+	if cfg, ok := configured[runtimeconfig.VendorOAuthGemini]; ok {
+		bindings = append(bindings, vendorRefresherBinding{
+			name: runtimeconfig.VendorOAuthGemini,
+			refresher: providergemini.NewRefresher(store, providergemini.WithRefreshAdapter(providergemini.RefreshAdapter{
+				TokenURL:     cfg.TokenURL,
+				ClientID:     cfg.ClientID,
+				ClientSecret: cfg.ClientSecret,
+				Scope:        cfg.Scope,
+			})),
+		})
+	}
+	return bindings
+}
+
+func buildVendorRefresherOptions(bindings []vendorRefresherBinding) []credentialworker.Option {
+	opts := make([]credentialworker.Option, 0, len(bindings))
+	for _, binding := range bindings {
+		opts = append(opts, credentialworker.WithVendorRefresher(binding.name, binding.refresher))
+	}
+	return opts
 }
 
 func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimicry.TemplateRegistry, logger *zap.Logger) (*gatewayRuntime, error) {
@@ -296,11 +371,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		return nil, fmt.Errorf("credentialworker: production auditSigner unset (audit fail-closed gate)")
 	}
 	credentialRefresher := credentialworker.NewAccountCredentialRefresher(credentialStore, credentialworker.DefaultModeAdapterRegistry())
-	credentialScheduler := credentialworker.NewScheduler(
-		billingQueries,
-		auth.NewStormController(authQueries),
-		auditSigner,
-		credentialRefresher,
+	credentialSchedulerOptions := []credentialworker.Option{
 		credentialworker.WithAuditQueries(authQueries),
 		credentialworker.WithAuditLedger(auditLedger),
 		credentialworker.WithRefreshQueries(credentialworker.NewAccountCredentialRefreshQueries(pgPool)),
@@ -314,6 +385,17 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		credentialworker.WithVendorRefresher("copilot", &providercopilot.CopilotRefresher{
 			Store: providercopilot.NewCredentialStoreAdapter(credentialStore),
 		}),
+	}
+	credentialSchedulerOptions = append(
+		credentialSchedulerOptions,
+		buildVendorRefresherOptions(buildVendorRefresherBindings(cfg.VendorOAuth, credentialStore))...,
+	)
+	credentialScheduler := credentialworker.NewScheduler(
+		billingQueries,
+		auth.NewStormController(authQueries),
+		auditSigner,
+		credentialRefresher,
+		credentialSchedulerOptions...,
 	)
 	if err := credentialScheduler.Start(ctx); err != nil {
 		return nil, fmt.Errorf("start credential refresh scheduler: %w", err)

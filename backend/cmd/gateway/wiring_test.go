@@ -66,6 +66,88 @@ func TestWiring_BuildTransportFactoryInjectsSidecarSocket(t *testing.T) {
 	}
 }
 
+func TestWiring_BuildVendorRefreshersSkipsBlankTokenURL(t *testing.T) {
+	// Regression killed: operator config with blank TokenURL must not install
+	// a zero-value vendor refresher into Scheduler.vendorRefreshers. Mutation
+	// self-check: force-adding cursor despite empty token_url makes this test
+	// see cursor in the binding list and turn red.
+	bindings := buildVendorRefresherBindings(runtimeconfig.VendorOAuthConfigs{
+		runtimeconfig.VendorOAuthCursor: {
+			ClientID: "cursor-client",
+			Scope:    "cursor scope",
+		},
+		runtimeconfig.VendorOAuthWindsurf: {
+			TokenURL: "https://windsurf.example.test/token",
+			ClientID: "windsurf-client",
+			Scope:    "windsurf scope",
+		},
+	}, nil)
+
+	if hasVendorBinding(bindings, runtimeconfig.VendorOAuthCursor) {
+		t.Fatalf("cursor binding must be absent when token_url is blank: %+v", bindings)
+	}
+	if !hasVendorBinding(bindings, runtimeconfig.VendorOAuthWindsurf) {
+		t.Fatalf("windsurf binding missing from configured vendor list: %+v", bindings)
+	}
+}
+
+func TestWiring_BuildVendorRefreshersCoversFiveOperatorVendors(t *testing.T) {
+	cfgs := runtimeconfig.VendorOAuthConfigs{
+		runtimeconfig.VendorOAuthCursor: {
+			TokenURL: "https://cursor.example.test/token",
+			ClientID: "cursor-client",
+			Scope:    "cursor scope",
+		},
+		runtimeconfig.VendorOAuthWindsurf: {
+			TokenURL: "https://windsurf.example.test/token",
+			ClientID: "windsurf-client",
+			Scope:    "windsurf scope",
+		},
+		runtimeconfig.VendorOAuthOpenAICodex: {
+			TokenURL: "https://codex.example.test/token",
+			ClientID: "codex-client",
+			Scope:    "openid offline_access",
+		},
+		runtimeconfig.VendorOAuthKiro: {
+			TokenURL:     "https://kiro.example.test/token",
+			ClientID:     "kiro-client",
+			ClientSecret: "kiro-secret",
+			Scope:        "openid aws",
+		},
+		runtimeconfig.VendorOAuthGemini: {
+			TokenURL:     "https://gemini.example.test/token",
+			ClientID:     "gemini-client",
+			ClientSecret: "gemini-secret",
+			Scope:        "openid email",
+		},
+	}
+
+	bindings := buildVendorRefresherBindings(cfgs, nil)
+	for _, vendor := range []string{
+		runtimeconfig.VendorOAuthCursor,
+		runtimeconfig.VendorOAuthWindsurf,
+		runtimeconfig.VendorOAuthOpenAICodex,
+		runtimeconfig.VendorOAuthKiro,
+		runtimeconfig.VendorOAuthGemini,
+	} {
+		if !hasVendorBinding(bindings, vendor) {
+			t.Fatalf("vendor %q missing from bindings: %+v", vendor, bindings)
+		}
+	}
+	if got := len(bindings); got != 5 {
+		t.Fatalf("vendor binding count=%d, want 5", got)
+	}
+}
+
+func hasVendorBinding(bindings []vendorRefresherBinding, vendor string) bool {
+	for _, binding := range bindings {
+		if binding.name == vendor {
+			return true
+		}
+	}
+	return false
+}
+
 func TestWiring_BuildCompletionEventBusWarnsWhenAuditRefEscapeFlagActive(t *testing.T) {
 	core, observed := observer.New(zapcore.WarnLevel)
 	logger := zap.New(core)

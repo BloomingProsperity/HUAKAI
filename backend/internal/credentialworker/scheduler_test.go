@@ -143,6 +143,39 @@ func TestSchedulerVendorRefresherRoutesOnlyMatchingVendor(t *testing.T) {
 	}
 }
 
+func TestSchedulerWithVendorRefresherRoutesCursorByVendorName(t *testing.T) {
+	// Regression killed: cursor must route through the cursor-specific
+	// refresher registered by WithVendorRefresher("cursor", ...). Mutation
+	// self-check: changing the registration key or scheduler lookup to another
+	// vendor leaves cursorRef unused and this test turns red.
+	cursorRef := &refresherSpy{}
+	windsurfRef := &refresherSpy{errs: []error{errors.New("cursor routed to windsurf")}}
+	defaultRef := &refresherSpy{errs: []error{errors.New("cursor routed to default")}}
+	audit := &auditSpy{}
+	s := newTestScheduler([]dbbilling.ListAccountsForRefreshRow{testAccountWithVendor(26, "cursor")}, &stormSpy{}, defaultRef,
+		WithVendorRefresher("cursor", cursorRef),
+		WithVendorRefresher("windsurf", windsurfRef),
+		withAuditWriter(audit),
+		WithAuditLedger(&ledgerSpy{}),
+	)
+
+	if err := s.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if len(cursorRef.calls) != 1 || cursorRef.calls[0] != 26 {
+		t.Fatalf("cursor refresher calls=%v, want [26]", cursorRef.calls)
+	}
+	if len(windsurfRef.calls) != 0 {
+		t.Fatalf("windsurf refresher must not receive cursor account: %v", windsurfRef.calls)
+	}
+	if len(defaultRef.calls) != 0 {
+		t.Fatalf("default refresher must not receive configured cursor account: %v", defaultRef.calls)
+	}
+	if got := audit.lastOutcome(); got != auth.OutcomeRefreshSucceeded {
+		t.Fatalf("audit outcome=%q, want refresh_succeeded", got)
+	}
+}
+
 func TestSchedulerFallsBackToDefaultRefresherAndWritesAuditWhenVendorRefresherMissing(t *testing.T) {
 	// Regression killed: a vendor without a dedicated refresher must keep the
 	// legacy refresh path and still write the refresh audit row. Mutation
