@@ -59,6 +59,16 @@ func newGatewayServer(listen string, handler http.Handler) *http.Server {
 		Addr:              listen,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		// P1-B 防 slowloris-style body 慢速攻击:headers 发完后慢慢滴 body
+		// 会一直占住协程 + 连接,Go 默认无 ReadTimeout 拿不到 socket-level
+		// deadline (chi middleware.Timeout 只设 ctx.Done,不是 read deadline)。
+		// 60s 跟 chi Timeout 对齐,留余量给最大 1MiB body 在合理带宽下完成。
+		ReadTimeout: 60 * time.Second,
+		// 防 keep-alive 闲连接耗尽:Go 默认 IdleTimeout=0 = 等于 ReadTimeout,
+		// 显式拉到 90s 跟 nginx/proxy 上游一致避免被对方先关。
+		IdleTimeout: 90 * time.Second,
+		// 注意:故意不设 WriteTimeout — SSE 流可以长达 stream budget (数分钟以上),
+		// WriteTimeout 是连接级总写时长,会把合法长流响应砍断。
 	}
 }
 
