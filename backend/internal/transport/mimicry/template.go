@@ -203,16 +203,30 @@ func AnthropicCLIMimicryV1Template() *ClientHelloTemplate {
 	}
 }
 
-// PhaseADefaultTemplate 是 2026-05-06 Anthropic 样本的旧 Phase A 兼容名。
+// PhaseADefaultTemplate 是 2026-05-06 Anthropic 样本的旧 Phase A uTLS 兼容默认。
+// 与 AnthropicCLIMimicryV1Template (Node22 OpenSSL 真抓包) 独立 — 本模板含
+// ECH GREASE 扩展 65037 + GREASE=true,供 HUAKAI_TRANSPORT_PHASE_A_FALLBACK opt-in
+// 测试与 stub fail-loud fallback 使用,不参与新 anthropic-cli-mimicry-v1 抓包数据。
 func PhaseADefaultTemplate() *ClientHelloTemplate {
-	tmpl := AnthropicCLIMimicryV1Template()
-	tmpl.ModeName = "anthropic-claude-code"
-	tmpl.TLSBackend = ""
-	tmpl.GREASE = false
-	tmpl.ExtensionOrder = ""
-	tmpl.HTTPLayer = HTTPLayer{}
-	tmpl.AuthLayer = AuthLayer{}
-	return tmpl
+	return &ClientHelloTemplate{
+		ModeName:            "anthropic-claude-code",
+		CollectedAt:         "2026-05-06T10:37:23Z",
+		TargetHost:          "api.anthropic.com",
+		GREASE:              true,
+		ExtensionOrder:      "captured",
+		JA3:                 "772,4865-4866-4867-49195-49199-49196-49200-52393-52392-49161-49171-49162-49172-156-157-47-53,0-65037-23-65281-10-11-35-16-5-13-18-51-45-43,29-23-24,0",
+		JA4:                 "t13d1715_ht_ca21dff6868a_bd55c1d574e4",
+		CipherSuites:        []uint16{4865, 4866, 4867, 49195, 49199, 49196, 49200, 52393, 52392, 49161, 49171, 49162, 49172, 156, 157, 47, 53},
+		Extensions:          []uint16{0, 65037, 23, 65281, 10, 11, 35, 16, 5, 13, 18, 51, 45, 43, 21},
+		SupportedVersions:   []uint16{772, 771},
+		EllipticCurves:      []uint16{29, 23, 24},
+		SignatureAlgorithms: anthropicSigAlgos(),
+		ALPNProtocols:       []string{"http/1.1"},
+		ECPointFormats:      []uint8{0},
+		KeyShareGroups:      []uint16{29},
+		PSKModes:            []uint8{1},
+		PaddingLen:          41,
+	}
 }
 
 func anthropicSigAlgos() []uint16 {
