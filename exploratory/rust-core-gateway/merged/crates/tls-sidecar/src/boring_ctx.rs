@@ -1,5 +1,9 @@
 use boring::ssl::{ConnectConfiguration, SslConnector, SslMethod, SslVersion};
 use thiserror::Error;
+use tokio::{
+    io::{AsyncRead, AsyncReadExt},
+    time::{Duration, timeout},
+};
 
 use crate::profile::TlsProfile;
 
@@ -63,6 +67,42 @@ pub fn connect_config(profile: &TlsProfile) -> Result<ConnectConfiguration, Bori
     Ok(config)
 }
 
+pub async fn validate_expected_ja4_before_connect(
+    profile: &TlsProfile,
+    target_host: &str,
+) -> Result<(), BoringCtxError> {
+    if !crate::ja4::profile_has_expectation(profile) {
+        return Ok(());
+    }
+    let raw = capture_client_hello_record(profile, target_host).await?;
+    let actual = crate::ja4::Ja4Fingerprint::from_tls_client_hello_record(&raw)?;
+    crate::ja4::verify_profile_expectation(profile, &actual)?;
+    Ok(())
+}
+
+pub async fn capture_client_hello_record(
+    profile: &TlsProfile,
+    target_host: &str,
+) -> Result<Vec<u8>, BoringCtxError> {
+    let (client, server) = tokio::io::duplex(16 * 1024);
+    let capture = tokio::spawn(async move { read_first_tls_record(server).await });
+    let config = connect_config(profile)?;
+    let target_host = target_host.to_owned();
+    let handshake = tokio::spawn(async move {
+        let _ = timeout(
+            Duration::from_secs(1),
+            tokio_boring::connect(config, target_host.as_str(), client),
+        )
+        .await;
+    });
+    let raw = capture
+        .await
+        .map_err(|error| BoringCtxError::ClientHelloCapture(error.to_string()))?
+        .map_err(|error| BoringCtxError::ClientHelloCapture(error.to_string()))?;
+    let _ = handshake.await;
+    Ok(raw)
+}
+
 #[cfg(test)]
 pub fn ja3_from_profile(profile: &TlsProfile) -> String {
     [
@@ -92,6 +132,10 @@ pub enum BoringCtxError {
     EmptyAlpnProtocol,
     #[error("ALPN protocol too long: {0} bytes")]
     AlpnProtocolTooLong(usize),
+    #[error("ClientHello capture error: {0}")]
+    ClientHelloCapture(String),
+    #[error(transparent)]
+    Ja4(#[from] crate::ja4::Ja4Error),
 }
 
 impl From<boring::error::ErrorStack> for BoringCtxError {
@@ -151,6 +195,20 @@ fn serialize_alpn(protocols: &[String]) -> Result<Vec<u8>, BoringCtxError> {
         out.extend_from_slice(bytes);
     }
     Ok(out)
+}
+
+async fn read_first_tls_record<R>(mut stream: R) -> std::io::Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut header = [0u8; 5];
+    stream.read_exact(&mut header).await?;
+    let record_len = u16::from_be_bytes([header[3], header[4]]) as usize;
+    let mut body = vec![0u8; record_len];
+    stream.read_exact(&mut body).await?;
+    let mut raw = header.to_vec();
+    raw.extend_from_slice(&body);
+    Ok(raw)
 }
 
 #[cfg(test)]
@@ -219,6 +277,32 @@ mod tests {
         assert_eq!(good, profile.expected_ja3);
         assert_ne!(bad, profile.expected_ja3);
         assert_ne!(bad, good);
+    }
+
+    #[tokio::test]
+    async fn boring_wire_ja4_matches_profile_and_rejects_chrome_profile_fixture() {
+        let profiles =
+            crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();
+        let profile = profiles.get("anthropic-cli-mimicry-v1").unwrap();
+
+        let raw = super::capture_client_hello_record(profile, "api.anthropic.com")
+            .await
+            .unwrap();
+        let ja4 = crate::ja4::Ja4Fingerprint::from_tls_client_hello_record(&raw).unwrap();
+
+        crate::ja4::verify_profile_expectation(profile, &ja4).unwrap();
+
+        let mut chrome = profile.clone();
+        chrome.ja4_a = Some("t13d1516h2".to_owned());
+        chrome.ja4_b = Some("8daaf6152771".to_owned());
+        chrome.ja4_c = Some("02713d6af862".to_owned());
+        chrome.ja4_d = Some("111111111111".to_owned());
+
+        let err = crate::ja4::verify_profile_expectation(&chrome, &ja4).unwrap_err();
+        assert!(
+            err.to_string().contains("ja4_"),
+            "Chrome profile fixture must not validate Anthropic CLI wire JA4: {err}"
+        );
     }
 
     async fn capture_wire_ja3(profile: crate::profile::TlsProfile) -> String {
