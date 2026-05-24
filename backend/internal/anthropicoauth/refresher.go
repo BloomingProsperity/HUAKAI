@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
@@ -166,12 +167,15 @@ func (r *Refresher) refreshLockedRecord(ctx context.Context, txStore RefreshTxSt
 	}
 	result, err := r.refreshCredential(ctx, accountID, rec.PlaintextPayload)
 	if err != nil {
-		failureClass := classifyRefreshFailure(err)
+		failureClass := auth.RefreshFailureAuditOutcome(
+			auth.ClassifyRefreshError(err, "anthropic", refreshErrorStatusCode(err)),
+			classifyRefreshFailure(err),
+		)
 		nextAttempt := nextAttemptForRefreshError(err, r.now())
 		if saveErr := txStore.SaveRefreshFailure(ctx, rec, failureClass, nextAttempt); saveErr != nil {
 			return nil, saveErr
 		}
-		return err, nil
+		return auth.WithRefreshAuditOutcome(err, failureClass), nil
 	}
 	if err := txStore.SaveRefreshSuccess(ctx, rec, result.payload, result.expiresAt, "refresh_succeeded"); err != nil {
 		return nil, err
@@ -274,6 +278,7 @@ func (r *Refresher) postRefresh(ctx context.Context, body []byte) (tokenResponse
 
 func classifyHTTPRefreshError(status int, header http.Header, body []byte, now time.Time, maxRetryAfter time.Duration) error {
 	code := oauthErrorCode(body)
+	bodyRedacted := refreshErrorBody(body)
 	switch {
 	case status == http.StatusTooManyRequests:
 		return &RefreshError{
@@ -281,14 +286,15 @@ func classifyHTTPRefreshError(status int, header http.Header, body []byte, now t
 			StatusCode: status,
 			Retryable:  false,
 			RetryAfter: now.Add(parseRetryAfter(header, now, maxRetryAfter)),
+			Body:       bodyRedacted,
 			Cause:      ErrAnthropicRateLimited,
 		}
 	case code == "invalid_grant" && (status == http.StatusUnauthorized || status == http.StatusBadRequest):
-		return &RefreshError{Class: failureAuthExpired, StatusCode: status, Retryable: false, Cause: ErrAnthropicAuthExpired}
+		return &RefreshError{Class: failureAuthExpired, StatusCode: status, Retryable: false, Body: bodyRedacted, Cause: ErrAnthropicAuthExpired}
 	case status >= http.StatusBadRequest && status < http.StatusInternalServerError:
-		return &RefreshError{Class: failureNonRetryable, StatusCode: status, Retryable: false, Cause: ErrAnthropicNonRetryable}
+		return &RefreshError{Class: failureNonRetryable, StatusCode: status, Retryable: false, Body: bodyRedacted, Cause: ErrAnthropicNonRetryable}
 	default:
-		return &RefreshError{Class: failureTemporary, StatusCode: status, Retryable: true}
+		return &RefreshError{Class: failureTemporary, StatusCode: status, Retryable: true, Body: bodyRedacted}
 	}
 }
 
@@ -297,6 +303,7 @@ type RefreshError struct {
 	StatusCode int
 	Retryable  bool
 	RetryAfter time.Time
+	Body       string
 	Cause      error
 }
 
@@ -308,7 +315,11 @@ func (e *RefreshError) Error() string {
 	if e.StatusCode > 0 {
 		status = fmt.Sprintf(" status=%d", e.StatusCode)
 	}
-	return fmt.Sprintf("anthropicoauth: refresh failed class=%s%s", e.Class, status)
+	body := ""
+	if e.Body != "" {
+		body = fmt.Sprintf(" body=%q", e.Body)
+	}
+	return fmt.Sprintf("anthropicoauth: refresh failed class=%s%s%s", e.Class, status, body)
 }
 
 func (e *RefreshError) Unwrap() error {
@@ -343,6 +354,23 @@ func classifyRefreshFailure(err error) string {
 		return failurePayloadInvalid
 	}
 	return failureTemporary
+}
+
+func refreshErrorStatusCode(err error) int {
+	var refreshErr *RefreshError
+	if errors.As(err, &refreshErr) {
+		return refreshErr.StatusCode
+	}
+	return 0
+}
+
+func refreshErrorBody(body []byte) string {
+	const max = 512
+	text := strings.TrimSpace(string(body))
+	if len(text) > max {
+		text = text[:max]
+	}
+	return auth.SanitizeOAuthMessage(text)
 }
 
 func nextAttemptForRefreshError(err error, now time.Time) time.Time {

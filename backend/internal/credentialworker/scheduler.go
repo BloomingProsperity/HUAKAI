@@ -195,6 +195,9 @@ func (s *Scheduler) processAccount(ctx context.Context, account dbbilling.ListAc
 	}
 	defer release()
 	if err := s.refreshWithBackoff(ctx, account); err != nil {
+		if outcome := auth.RefreshAuditOutcomeFromError(err); outcome != "" {
+			return errors.Join(err, s.recordAuditString(ctx, account, outcome, "", err))
+		}
 		return errors.Join(err, s.recordAudit(ctx, account, auth.OutcomePermanentDisable, "", err))
 	}
 	return s.recordAudit(ctx, account, auth.OutcomeRefreshSucceeded, "", nil)
