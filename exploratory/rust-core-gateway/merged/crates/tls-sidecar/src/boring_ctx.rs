@@ -28,13 +28,13 @@ pub fn build_connector(profile: &TlsProfile) -> Result<SslConnector, BoringCtxEr
             .set_curves_list(&profile.curves)
             .map_err(BoringCtxError::from)?;
     }
-    builder
-        .set_client_hello_profile(
-            &profile.cipher_suites,
-            &profile.supported_groups,
-            &profile.ec_point_formats,
-        )
-        .map_err(BoringCtxError::from)?;
+    if !profile.client_hello_profile.is_empty() {
+        let ciphers = client_hello_profile_ciphers(profile);
+        let ec_points = client_hello_ec_points_as_u8(&profile.client_hello_profile.ec_points)?;
+        builder
+            .set_client_hello_profile(&ciphers, &profile.client_hello_profile.groups, &ec_points)
+            .map_err(BoringCtxError::from)?;
+    }
     let alpn = serialize_alpn(&profile.alpn)?;
     if !alpn.is_empty() {
         builder
@@ -52,9 +52,11 @@ pub fn build_connector(profile: &TlsProfile) -> Result<SslConnector, BoringCtxEr
     if profile.extensions.contains(&18) {
         builder.enable_signed_cert_timestamps();
     }
-    builder
-        .set_extension_order(&profile.extensions)
-        .map_err(BoringCtxError::from)?;
+    if !profile.extension_order.is_empty() {
+        builder
+            .set_extension_order(&profile.extension_order)
+            .map_err(BoringCtxError::from)?;
+    }
     Ok(builder.build())
 }
 
@@ -132,6 +134,8 @@ pub enum BoringCtxError {
     EmptyAlpnProtocol,
     #[error("ALPN protocol too long: {0} bytes")]
     AlpnProtocolTooLong(usize),
+    #[error("ClientHello profile ec_point format is too large for u8: {0}")]
+    EcPointFormatTooLarge(u16),
     #[error("ClientHello capture error: {0}")]
     ClientHelloCapture(String),
     #[error(transparent)]
@@ -195,6 +199,32 @@ fn serialize_alpn(protocols: &[String]) -> Result<Vec<u8>, BoringCtxError> {
         out.extend_from_slice(bytes);
     }
     Ok(out)
+}
+
+fn client_hello_ec_points_as_u8(values: &[u16]) -> Result<Vec<u8>, BoringCtxError> {
+    values
+        .iter()
+        .copied()
+        .map(|value| u8::try_from(value).map_err(|_| BoringCtxError::EcPointFormatTooLarge(value)))
+        .collect()
+}
+
+fn client_hello_profile_ciphers(profile: &TlsProfile) -> Vec<u16> {
+    if profile.client_hello_profile.ciphers.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for cipher in profile
+        .tls13_cipher_order
+        .iter()
+        .chain(profile.client_hello_profile.ciphers.iter())
+        .copied()
+    {
+        if !out.contains(&cipher) {
+            out.push(cipher);
+        }
+    }
+    out
 }
 
 async fn read_first_tls_record<R>(mut stream: R) -> std::io::Result<Vec<u8>>
@@ -265,6 +295,7 @@ mod tests {
         let good = capture_wire_ja3(profile.clone()).await;
         let mut damaged = profile.clone();
         damaged.cipher_suites.reverse();
+        damaged.client_hello_profile.ciphers.reverse();
         damaged.cipher_list = damaged
             .cipher_list
             .split(':')
@@ -277,6 +308,85 @@ mod tests {
         assert_eq!(good, profile.expected_ja3);
         assert_ne!(bad, profile.expected_ja3);
         assert_ne!(bad, good);
+    }
+
+    #[tokio::test]
+    async fn boring_extension_order_profile_controls_wire_order_and_type_22() {
+        let profile = anthropic_profile();
+
+        let good = capture_wire_client_hello(&profile).await;
+        let good_order = good.extensions_without_grease_or_padding();
+
+        assert_eq!(good_order, profile.extension_order);
+        assert!(
+            good_order.contains(&22),
+            "fixture must include strict-only encrypt_then_mac extension 22"
+        );
+
+        let mut damaged = profile.clone();
+        damaged.extension_order.retain(|value| *value != 22);
+        let damaged_wire = capture_wire_client_hello(&damaged).await;
+        let damaged_order = damaged_wire.extensions_without_grease_or_padding();
+
+        assert!(!damaged_order.contains(&22));
+        assert_ne!(damaged_order, good_order);
+    }
+
+    #[tokio::test]
+    async fn boring_tls13_cipher_order_profile_controls_wire_cipher_prefix() {
+        let profile = anthropic_profile();
+
+        let good = capture_wire_client_hello(&profile).await;
+        let tls13_len = profile.tls13_cipher_order.len();
+        assert_eq!(
+            &good.ciphers[..tls13_len],
+            profile.tls13_cipher_order.as_slice()
+        );
+
+        let mut damaged = profile.clone();
+        damaged.tls13_cipher_order.reverse();
+        let damaged_wire = capture_wire_client_hello(&damaged).await;
+
+        assert_eq!(
+            &damaged_wire.ciphers[..tls13_len],
+            damaged.tls13_cipher_order.as_slice()
+        );
+        assert_ne!(damaged_wire.ciphers, good.ciphers);
+    }
+
+    #[tokio::test]
+    async fn boring_client_hello_profile_controls_raw_ciphers_groups_and_ec_points() {
+        let profile = anthropic_profile();
+
+        let good = capture_wire_client_hello(&profile).await;
+        assert_eq!(good.ciphers, expected_profile_ciphers(&profile));
+        assert_eq!(good.supported_groups, profile.client_hello_profile.groups);
+        assert_eq!(
+            good.ec_point_formats,
+            u16_values_as_u8(&profile.client_hello_profile.ec_points)
+        );
+
+        let mut damaged = profile.clone();
+        damaged.client_hello_profile.ec_points.clear();
+        let damaged_wire = capture_wire_client_hello(&damaged).await;
+
+        assert_eq!(damaged_wire.ec_point_formats, [0]);
+        assert_ne!(damaged_wire.ec_point_formats, good.ec_point_formats);
+    }
+
+    #[tokio::test]
+    async fn empty_boring_setter_fields_keep_boring_default_extension_path() {
+        let mut profile = anthropic_profile();
+        let explicit_order = profile.extension_order.clone();
+        profile.extension_order.clear();
+        profile.tls13_cipher_order.clear();
+        profile.client_hello_profile = crate::profile::ClientHelloProfile::default();
+
+        let wire = capture_wire_client_hello(&profile).await;
+        let default_order = wire.extensions_without_grease_or_padding();
+
+        assert!(!default_order.contains(&22));
+        assert_ne!(default_order, explicit_order);
     }
 
     #[tokio::test]
@@ -318,6 +428,36 @@ mod tests {
         parse_wire_ja3(&raw).unwrap()
     }
 
+    async fn capture_wire_client_hello(profile: &crate::profile::TlsProfile) -> WireClientHello {
+        let raw = super::capture_client_hello_record(profile, "api.anthropic.com")
+            .await
+            .unwrap();
+        parse_wire_client_hello(&raw).unwrap()
+    }
+
+    fn anthropic_profile() -> crate::profile::TlsProfile {
+        let profiles =
+            crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();
+        profiles.get("anthropic-cli-mimicry-v1").unwrap().clone()
+    }
+
+    fn u16_values_as_u8(values: &[u16]) -> Vec<u8> {
+        values
+            .iter()
+            .copied()
+            .map(|value| u8::try_from(value).unwrap())
+            .collect()
+    }
+
+    fn expected_profile_ciphers(profile: &crate::profile::TlsProfile) -> Vec<u16> {
+        profile
+            .tls13_cipher_order
+            .iter()
+            .chain(profile.client_hello_profile.ciphers.iter())
+            .copied()
+            .collect()
+    }
+
     async fn read_first_tls_record(mut stream: DuplexStream) -> Vec<u8> {
         let mut header = [0u8; 5];
         if stream.read_exact(&mut header).await.is_err() {
@@ -334,6 +474,24 @@ mod tests {
     }
 
     fn parse_wire_ja3(raw: &[u8]) -> Result<String, &'static str> {
+        let hello = parse_wire_client_hello(raw)?;
+        let ja3_version = hello
+            .supported_versions
+            .iter()
+            .copied()
+            .find(|value| !super::is_grease(*value))
+            .unwrap_or(hello.legacy_version);
+        Ok([
+            ja3_version.to_string(),
+            super::join_u16(&hello.ciphers),
+            join_huakai_ja3_extensions(&hello.extensions),
+            super::join_u16(&hello.supported_groups),
+            super::join_u8(&hello.ec_point_formats),
+        ]
+        .join(","))
+    }
+
+    fn parse_wire_client_hello(raw: &[u8]) -> Result<WireClientHello, &'static str> {
         if raw.len() < 5 || raw[0] != 0x16 {
             return Err("not a TLS handshake record");
         }
@@ -386,18 +544,34 @@ mod tests {
                 }
             }
         }
-        let ja3_version = supported_versions
-            .into_iter()
-            .find(|value| !super::is_grease(*value))
-            .unwrap_or(legacy_version);
-        Ok([
-            ja3_version.to_string(),
-            super::join_u16(&ciphers),
-            join_huakai_ja3_extensions(&extensions),
-            super::join_u16(&groups),
-            super::join_u8(&ec_points),
-        ]
-        .join(","))
+        Ok(WireClientHello {
+            legacy_version,
+            ciphers,
+            extensions,
+            supported_groups: groups,
+            ec_point_formats: ec_points,
+            supported_versions,
+        })
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct WireClientHello {
+        legacy_version: u16,
+        ciphers: Vec<u16>,
+        extensions: Vec<u16>,
+        supported_groups: Vec<u16>,
+        ec_point_formats: Vec<u8>,
+        supported_versions: Vec<u16>,
+    }
+
+    impl WireClientHello {
+        fn extensions_without_grease_or_padding(&self) -> Vec<u16> {
+            self.extensions
+                .iter()
+                .copied()
+                .filter(|value| !super::is_grease(*value) && *value != 21)
+                .collect()
+        }
     }
 
     fn join_huakai_ja3_extensions(values: &[u16]) -> String {

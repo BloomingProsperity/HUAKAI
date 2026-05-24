@@ -447,13 +447,13 @@ mod tests {
 
         let fingerprint = super::Ja4Fingerprint::from_profile(profile);
 
-        assert_eq!(fingerprint.a, "t13d1714h1");
+        assert_eq!(fingerprint.a, "t13d1715h1");
         assert_eq!(fingerprint.b, "5b57614c22b0");
-        assert_eq!(fingerprint.c, "56fe1f68f78b");
+        assert_eq!(fingerprint.c, "9bdad0a0acbc");
         assert_eq!(fingerprint.d, "ea8537015a9f");
         assert_eq!(
             fingerprint.full(),
-            "t13d1714h1_5b57614c22b0_56fe1f68f78b_ea8537015a9f"
+            "t13d1715h1_5b57614c22b0_9bdad0a0acbc_ea8537015a9f"
         );
         assert_ne!(fingerprint.b, "000000000000");
         assert_ne!(fingerprint.c, "111111111111");
@@ -480,7 +480,7 @@ mod tests {
         let anthropic_ja4 = super::Ja4Fingerprint::from_profile(anthropic);
         let chrome_ja4 = super::Ja4Fingerprint::from_profile(&chrome);
 
-        assert_eq!(anthropic_ja4.a, "t13d1714h1");
+        assert_eq!(anthropic_ja4.a, "t13d1715h1");
         assert_ne!(chrome_ja4.a, anthropic_ja4.a);
         assert_ne!(chrome_ja4.b, anthropic_ja4.b);
         assert_ne!(chrome_ja4.c, anthropic_ja4.c);
