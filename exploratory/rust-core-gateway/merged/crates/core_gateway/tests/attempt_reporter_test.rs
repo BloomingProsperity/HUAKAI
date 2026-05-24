@@ -405,6 +405,65 @@ async fn openai_done_stream_reports_success_with_usage() {
     assert_eq!(tokens.source, "stream_pipeline");
 }
 
+/// P1-5 (mock fault knobs) 2026-05-24 + W12-B D-5: 非流式 2xx 响应若 vendor 返
+/// 非法 JSON, parse_non_stream_usage 必须降级到 source="pending_reconciliation",
+/// 让控制面对账时知道 "源已检查过 body 但 vendor 字段不可读" 区别于 "从未检查"。
+///
+/// 集成判别性: 用 MockBehavior::Json + 故意 malformed body 触发完整 listener +
+/// proxy_engine + relay 路径, 验证 attempt report 的 tokens_used.source 字符串。
+///
+/// mutation:
+/// - 删 parse_non_stream_usage 失败分支的 record_response_body_usage_unparsable -> tokens_used
+///   会落 missing 或为 None -> assert source == "pending_reconciliation" 红。
+/// - 把失败分支改回 record_response_body_usage(...) -> source = "response_body" -> 红。
+#[tokio::test]
+async fn non_stream_bad_json_body_reports_pending_reconciliation_source() {
+    // OpenAI 非流式 200 + 故意 malformed JSON (缺右大括号 + 非 ASCII junk)
+    let upstream = MockUpstream::spawn(MockBehavior::Json {
+        status: StatusCode::OK,
+        body: Bytes::from_static(b"{\"id\":\"chatcmpl-bad\",\"choices\":[\"missing close brace"),
+    })
+    .await;
+    let control_plane = MockControlPlane::spawn(vendor_plan(
+        upstream.endpoint(),
+        "openai",
+        "upstream-secret-bad-json",
+        30_000,
+    ))
+    .await;
+
+    let response = build_router(test_config(control_plane.endpoint()))
+        .expect("build_router")
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(Bytes::from_static(br#"{"messages":[]}"#)))
+                .expect("request 构建应成功"),
+        )
+        .await
+        .expect("listener 应响应");
+
+    assert_eq!(response.status(), StatusCode::OK, "upstream 返 200 必须透传");
+    // 把 body 完整读完让 relay non_stream_buffer 累完 + parse_non_stream_usage 跑
+    let _ = body::to_bytes(response.into_body(), 4096)
+        .await
+        .expect("响应 body 应可读取");
+
+    let report = wait_for_report(&control_plane, "success").await;
+    let tokens = report.tokens_used.expect("tokens_used 必须存在 (即使解析失败也应降级)");
+    assert_eq!(
+        tokens.source, "pending_reconciliation",
+        "malformed JSON body 必须降级 source=pending_reconciliation \
+         (mutation: 删 record_response_body_usage_unparsable -> tokens 缺失或 source 不对 -> 红)"
+    );
+    // 降级后不应携带任何 token 计数 (控制面对账不能误用为账务依据)
+    assert_eq!(tokens.input_tokens, 0);
+    assert_eq!(tokens.output_tokens, 0);
+    assert_eq!(tokens.total_tokens, 0);
+}
+
 #[tokio::test]
 async fn stream_protocol_error_reports_protocol_error_attempt() {
     let upstream = MockUpstream::spawn(MockBehavior::Sse {

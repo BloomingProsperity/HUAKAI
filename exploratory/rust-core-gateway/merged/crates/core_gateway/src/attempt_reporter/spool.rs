@@ -143,6 +143,19 @@ thread_local! {
         const { std::cell::Cell::new(false) };
 }
 
+// P1-5 (mock fault knobs) 2026-05-24: 给 persist 加 cfg(test) 注入点模拟 disk-full /
+// 任意 IO 失败。测试 set true -> persist 跳过真 IO 直接返 SpoolError::Io ->
+// last_write_failed=true latch 触发 -> 后续 reserve 返 LastWriteFailed Backpressure ->
+// 模拟生产 "disk 满 + 所有 spool 写入失败" 场景, 让 attempt_reporter
+// SpoolWriteFailed 路径可被确定性测试。
+//
+// production build cfg(test)=false 直接走真 IO, 0 开销。
+#[cfg(test)]
+thread_local! {
+    pub(super) static FORCE_SPOOL_PERSIST_FAIL: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
 #[cfg(test)]
 fn quarantine_rename_with_test_injection(src: &Path, dst: &Path) -> io::Result<()> {
     if FORCE_QUARANTINE_RENAME_FAIL.with(|c| c.get()) {
@@ -407,6 +420,15 @@ impl AttemptSpool {
 
         // write tmp -> optional fsync -> atomic rename -> Codex P1-2 fix: rename 后 dir fsync。
         let io_result: io::Result<()> = (|| {
+            // P1-5 (mock fault knobs) 2026-05-24: 测试可触发 disk-full / IO 失败
+            // 让 spool_write_failed 路径可被确定性测试。production cfg(test)=false 折叠。
+            #[cfg(test)]
+            if FORCE_SPOOL_PERSIST_FAIL.with(|c| c.get()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::StorageFull,
+                    "test-forced spool persist failure (FORCE_SPOOL_PERSIST_FAIL)",
+                ));
+            }
             let mut file = fs::OpenOptions::new()
                 .create_new(true)
                 .write(true)
@@ -1191,6 +1213,64 @@ mod tests {
         let snapshot = spool.pending_snapshot(10);
         assert_eq!(snapshot.len(), 1, "pending_snapshot 只返回合法 key");
         assert_eq!(snapshot[0], "idem-spool-test-legit-1234567890abcdef");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// P1-5 (mock fault knobs) 2026-05-24: 验证 FORCE_SPOOL_PERSIST_FAIL 注入点
+    /// 让 persist() 返 SpoolError::Io 模拟 disk-full + 触发 last_write_failed latch。
+    ///
+    /// 判别性 + mutation:
+    /// 1) 默认状态 reserve+persist 成功, pending_count=1
+    /// 2) 设 FORCE_SPOOL_PERSIST_FAIL=true 后 reserve+persist 返 Err(Io)
+    /// 3) last_write_failed=true 让后续 reserve() 直接返 LastWriteFailed Backpressure
+    /// 4) 清 flag + probe_write_health 清 latch -> reserve 恢复
+    ///
+    /// mutation:
+    /// - 删 io_result 闭包内 cfg(test) FORCE 注入分支 -> persist 走真 IO 必成功 ->
+    ///   case 2 红 (Err 期望但 Ok)。
+    /// - 删 last_write_failed.store(true, ...) -> case 3 红 (reserve 不返 Backpressure)。
+    #[test]
+    fn force_spool_persist_fail_triggers_io_err_and_last_write_failed_latch() {
+        let dir = unique_test_dir("force-persist-fail");
+        let spool = AttemptSpool::open(test_options(dir.clone()))
+            .expect("open OK")
+            .expect("enabled");
+
+        // case 1: 默认成功路径作 baseline
+        let report = sample_billable_report("baseline");
+        let reservation = spool.reserve().expect("初始 reserve OK");
+        spool.persist(&report, reservation).expect("baseline persist OK");
+        assert_eq!(spool.pending_count(), 1);
+        assert!(!spool.last_write_failed());
+
+        // case 2: 注入 disk-full
+        super::FORCE_SPOOL_PERSIST_FAIL.with(|c| c.set(true));
+        let report2 = sample_billable_report("disk-full-2");
+        let reservation2 = spool.reserve().expect("reserve 仍 OK (watermark 未到)");
+        let err = spool
+            .persist(&report2, reservation2)
+            .expect_err("FORCE_SPOOL_PERSIST_FAIL=true 必须让 persist 返 Err");
+        assert!(matches!(err, SpoolError::Io(_)));
+        super::FORCE_SPOOL_PERSIST_FAIL.with(|c| c.set(false));
+
+        // case 3: latch 已置, 后续 reserve 应直接 LastWriteFailed
+        match spool.reserve() {
+            Ok(_) => panic!(
+                "last_write_failed=true 后 reserve 必须返 LastWriteFailed (mutation: 删 \
+                 store(true) -> reserve 仍 Ok -> 此 panic)"
+            ),
+            Err(AttemptSpoolBackpressure::LastWriteFailed) => {}
+            Err(other) => {
+                panic!("reserve 应返 LastWriteFailed, 实际: {other:?}")
+            }
+        }
+
+        // case 4: probe 清 latch 让 spool 恢复 (probe 不需要 inject flag, fs::OpenOptions 直跑)
+        spool.probe_write_health().expect("probe OK");
+        spool
+            .reserve()
+            .expect("latch 清 + watermark 余量后 reserve 应恢复");
 
         let _ = fs::remove_dir_all(&dir);
     }
