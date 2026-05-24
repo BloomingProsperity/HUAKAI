@@ -1,5 +1,12 @@
 // M-rust-2 listener 集成测试
 // 覆盖: echo、body limit、client cancel、slow client、SSE pass-through、request_id 透传。
+//
+// **2026-05-24 HybridStream Option b 后已不再 cfg-gate**: 早期 commit 试图用
+// `#[cfg(not(feature = "mimicry-boring"))]` gate 全部 mock-upstream 测试 (避免 BoringTlsConnector
+// 按 https-only 拒 http://127.0.0.1 mock), 但那是 whack-a-mole 维护负担。本提交把
+// BoringTlsConnector 升级成 HybridStream (TLS for https, plain TCP for http), 这些
+// 测试在 mimicry-boring feature 下 也能正常跑, gate 已全部撤除, cfg_attr 临时
+// allow 也一并删。
 
 mod common;
 

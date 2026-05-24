@@ -1,34 +1,12 @@
-// Workaround: rustc 1.95.0 ICE 在 cfg-gated 测试 + 部分 import 变 unused 的情景下
-// 会从 early_lint_checks 崩溃 (query stack: early_lint_checks -> hir_crate)。
-// 当 mimicry-boring feature 编进二进制 + 下方 8 个 mock-upstream 集成测试被 cfg
-// 排除时, `axum::body::{self, Body}` 的 `self` 等 import 变成 unused 触发 lint,
-// 该 lint 的 emission path 命中 ICE 漏洞。最简 workaround = 在 mimicry-boring
-// feature 下临时 allow unused imports + dead code (其他 feature 仍正常审计)。
-// (后续 rustc 升级修复后可移除此 cfg_attr。)
-#![cfg_attr(
-    feature = "mimicry-boring",
-    allow(unused_imports, dead_code)
-)]
-
 // M-rust-8 attempt reporter 集成测试
 // 覆盖 every terminal path、幂等 key、非阻塞队列和 transient retry。
 //
-// **2026-05-24 第三方 AI 反馈 fix**: 本文件 8 个集成测试使用 `MockUpstream` 起本机
-// http://127.0.0.1 上游, 当 `--features mimicry-boring` 编进二进制时, proxy_engine
-// 出站 connector 类型替换为 `BoringTlsConnector`, 该 connector 按设计明确拒绝
-// 非 https 目标 (见 boring_tls_connector.rs:96 注释: "明确拒绝 HTTP 或缺失 scheme
-// 的目标，避免 feature 打开后静默走裸 TCP")。这些测试在 mimicry-boring feature
-// 下会 502, 与 feature 的语义对立 (mimicry-boring 表 production-style https-only)。
-//
-// 修复策略 (Option a, 低风险): 这 8 个 test 用 `#[cfg(not(feature = "mimicry-boring"))]`
-// gate, default + mimicry-openssl + mimicry-http2-fork 三个 feature 组合下仍跑;
-// mimicry-boring feature 下跳过, attempt_reporter 逻辑由 default build 同等覆盖
-// (proxy_engine -> reporter 路径不依赖 TLS 后端选型)。
-//
-// 后续 Owner 若需要 mimicry-boring 下也覆盖, 备选 Option b (架构修复, 待 Owner 批):
-// BoringTlsConnector 加 HybridStream enum 让 http URI 走裸 TCP, 但需 ~50-100 行
-// 新代码 + 新枚举 + Read/Write/Connection forwarding impl, 并需重新评估 production
-// 误配 http vendor endpoint 的风险面 (现 connector 静默拒绝是 fail-fast 安全姿态)。
+// **2026-05-24 HybridStream Option b 后已不再 cfg-gate**: commit 07a51bb 曾用
+// `#[cfg(not(feature = "mimicry-boring"))]` gate 8 个 mock-upstream 测试 + 加 cfg_attr
+// allow unused imports 防 rustc 1.95.0 ICE。本提交把 BoringTlsConnector 升级成
+// HybridStream (TLS for https, plain TCP for http), 这些测试在 mimicry-boring feature
+// 下也能正常跑, gate + cfg_attr 已全部撤除。production 仍由 W11-C D-3
+// `validate_vendor_endpoint` 在 config 层保 https-only, 本 connector 不再重复 enforce。
 
 mod common;
 
@@ -206,7 +184,6 @@ fn make_report(
     context.terminal_report(status, Some(200), AttemptReportStats::default(), None, None)
 }
 
-#[cfg(not(feature = "mimicry-boring"))]
 #[tokio::test]
 async fn listener_success_path_reports_one_success_attempt() {
     let upstream = MockUpstream::spawn(MockBehavior::EchoBody).await;
@@ -318,7 +295,6 @@ async fn listener_bad_route_plan_report_redacts_untrusted_control_plane_error() 
     assert!(report.error_message_redacted.contains("[REDACTED_SECRET]"));
 }
 
-#[cfg(not(feature = "mimicry-boring"))]
 #[tokio::test]
 async fn listener_upstream_5xx_reports_upstream_5xx_attempt() {
     let upstream = MockUpstream::spawn(MockBehavior::Error5xx).await;
@@ -353,7 +329,6 @@ async fn listener_upstream_5xx_reports_upstream_5xx_attempt() {
     assert!(report.retryable);
 }
 
-#[cfg(not(feature = "mimicry-boring"))]
 #[tokio::test]
 async fn listener_timeout_reports_timeout_attempt() {
     let upstream = MockUpstream::spawn(MockBehavior::SlowJson {
@@ -391,7 +366,6 @@ async fn listener_timeout_reports_timeout_attempt() {
     assert!(report.retryable);
 }
 
-#[cfg(not(feature = "mimicry-boring"))]
 #[tokio::test]
 async fn openai_done_stream_reports_success_with_usage() {
     let upstream = MockUpstream::spawn(MockBehavior::Sse {
@@ -449,7 +423,6 @@ async fn openai_done_stream_reports_success_with_usage() {
 /// - 删 parse_non_stream_usage 失败分支的 record_response_body_usage_unparsable -> tokens_used
 ///   会落 missing 或为 None -> assert source == "pending_reconciliation" 红。
 /// - 把失败分支改回 record_response_body_usage(...) -> source = "response_body" -> 红。
-#[cfg(not(feature = "mimicry-boring"))]
 #[tokio::test]
 async fn non_stream_bad_json_body_reports_pending_reconciliation_source() {
     // OpenAI 非流式 200 + 故意 malformed JSON (缺右大括号 + 非 ASCII junk)
@@ -498,7 +471,6 @@ async fn non_stream_bad_json_body_reports_pending_reconciliation_source() {
     assert_eq!(tokens.total_tokens, 0);
 }
 
-#[cfg(not(feature = "mimicry-boring"))]
 #[tokio::test]
 async fn stream_protocol_error_reports_protocol_error_attempt() {
     let upstream = MockUpstream::spawn(MockBehavior::Sse {
@@ -538,7 +510,6 @@ async fn stream_protocol_error_reports_protocol_error_attempt() {
     assert!(report.error_message_redacted.contains("JSON parse failed"));
 }
 
-#[cfg(not(feature = "mimicry-boring"))]
 #[tokio::test]
 async fn client_cancel_mid_stream_reports_client_cancel_attempt() {
     let chunks: Vec<Bytes> = (0..32)
@@ -895,7 +866,6 @@ async fn replay_keeps_same_idempotency_key_and_control_plane_dedups_duplicate() 
 /// build_router + reqwest 真实 HTTP 路径 = 走 forward_planned + upstream_response_to_client + ReceiverByteStream。
 ///
 /// mutation: PinnedDrop 不读 upstream_terminal_status, 仍硬编 ClientCancel -> 测试断言 status="upstream_5xx" 红。
-#[cfg(not(feature = "mimicry-boring"))]
 #[tokio::test]
 async fn upstream_5xx_then_client_drop_mid_stream_reports_upstream_5xx_not_client_cancel() {
     // 1MB body 确保 hyper 多 TCP 帧传输, client 有时间在 body 完成前 drop
