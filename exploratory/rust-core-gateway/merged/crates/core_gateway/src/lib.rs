@@ -397,4 +397,55 @@ mod tests {
     fn shutdown_signal_can_drive_server_shutdown() {
         assert_send_static(shutdown_signal());
     }
+
+    /// P1-6 (W12-F feature-matrix CI) 2026-05-24: feature-matrix verify.sh 必须
+    /// 列出全部 4 个必需 cargo invocation, 否则 CI 漏覆盖某个 feature -> 该 feature
+    /// 通路上的守门代码 (例如 mimicry-boring 的 production canary, mimicry-http2-fork
+    /// 的 SETTINGS 顺序测试) 可能被静默破坏, 直到 feature 真上线时炸。
+    ///
+    /// 本测试解析 verify.sh 文本, 强制每个必需的 feature 标识出现在 MATRIX 列表里。
+    ///
+    /// 判别性 + mutation:
+    /// 1) tools/feature-matrix/verify.sh 存在且可读
+    /// 2) 内容含 "default::" (默认 build)
+    /// 3) 内容含 "mimicry-boring" feature
+    /// 4) 内容含 "mimicry-openssl" feature
+    /// 5) 内容含 "mimicry-http2-fork" feature
+    ///
+    /// mutation:
+    /// - 删 verify.sh MATRIX 任一项 -> 对应 contains 断言红。
+    /// - 改 verify.sh 把 cargo test 改成 cargo build (失去 test 覆盖) -> 仍含 feature
+    ///   名但少 test 验证 (此测试不强制 cargo test 字串, 留给运维选择 build/test);
+    ///   实际守门由 CI yaml 决定调度。
+    #[test]
+    fn feature_matrix_script_lists_all_required_feature_combinations() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let script_path = std::path::PathBuf::from(manifest_dir)
+            .join("../../tools/feature-matrix/verify.sh");
+
+        assert!(
+            script_path.exists(),
+            "P1-6 feature-matrix verify.sh 必须存在 at {}",
+            script_path.display()
+        );
+
+        let content = std::fs::read_to_string(&script_path)
+            .expect("verify.sh 应可读");
+
+        // 4 个必需 feature 组合 — mutation 删任一即红
+        let required_markers: &[&str] = &[
+            "default::",
+            "mimicry-boring",
+            "mimicry-openssl",
+            "mimicry-http2-fork",
+        ];
+
+        for marker in required_markers {
+            assert!(
+                content.contains(marker),
+                "P1-6: verify.sh 必须含 feature marker {marker:?} \
+                 — mutation 删该 cargo invocation -> CI 漏覆盖该 feature -> 守门代码可能被静默破坏"
+            );
+        }
+    }
 }
