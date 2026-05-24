@@ -45,7 +45,7 @@ func TestAdminCredentialAcquisitionRoutesIntegration(t *testing.T) {
 		{name: "canonical status", method: http.MethodGet, path: "/v1/admin/pool-accounts/101/credential-acquisitions/" + pasteFlow.ID, want: http.StatusOK},
 		{
 			name: "canonical callback", method: http.MethodPost, path: "/v1/admin/pool-accounts/101/credential-acquisitions/" + oauthFlow.ID + "/callback",
-			body: `{"state":"` + oauthFlow.State + `","code":"auth-code","credentials":{"session_token":"session-value","refresh_token":"refresh-value"}}`, want: http.StatusOK,
+			body: `{"state":"` + oauthFlow.State + `","code":"auth-code"}`, want: http.StatusOK,
 		},
 		{name: "canonical cancel", method: http.MethodPost, path: "/v1/admin/pool-accounts/101/credential-acquisitions/" + cancelFlow.ID + "/cancel", body: `{}`, want: http.StatusOK},
 		{
@@ -75,7 +75,7 @@ func TestAdminCredentialAcquisitionRoutesIntegration(t *testing.T) {
 		{
 			name: "helper oauth callback error path", method: http.MethodGet,
 			path: "/admin/v1/credentials/oauth-callback?flow_id=" + helperCallbackFlow.ID + "&state=" + helperCallbackFlow.State + "&code=auth-code",
-			want: http.StatusBadRequest,
+			want: http.StatusOK,
 		},
 	}
 	for _, tc := range cases {
@@ -85,6 +85,87 @@ func TestAdminCredentialAcquisitionRoutesIntegration(t *testing.T) {
 				t.Fatalf("status=%d want %d body=%s", rec.Code, tc.want, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestAdminCredentialAcquisitionCanonicalCallbackUsesRegistryAndFinalizesCredential(t *testing.T) {
+	fx := newCredentialAcqHTTPFixture(t, adminPoolAdmin())
+	flow := fx.seedOAuthFlow(t, 101)
+
+	rec := fx.do(t, http.MethodPost, "/v1/admin/pool-accounts/101/credential-acquisitions/"+flow.ID+"/callback",
+		`{"state":"`+flow.State+`","code":"auth-code-without-credentials"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if got := fx.exchanger.callCount(); got != 1 {
+		t.Fatalf("exchanger calls=%d want 1", got)
+	}
+	created := fx.creator.inputsSnapshot()
+	if len(created) != 1 {
+		t.Fatalf("created credentials=%d want 1", len(created))
+	}
+	got := created[0]
+	if got.TenantID != 1 || got.ProviderAccountID != 101 {
+		t.Fatalf("created tenant/account=%d/%d want 1/101", got.TenantID, got.ProviderAccountID)
+	}
+	if got.Vendor != credentialstore.VendorOpenAI || got.AuthMode != credentialstore.AuthModeChatGPTOAuth {
+		t.Fatalf("created mode=%s/%s want openai/chatgpt_oauth", got.Vendor, got.AuthMode)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(got.Payload, &payload); err != nil {
+		t.Fatalf("created payload is not JSON: %v", err)
+	}
+	if payload["session_token"] != "registry-session" || payload["refresh_token"] != "registry-refresh" {
+		t.Fatalf("created payload came from wrong source: %s", string(got.Payload))
+	}
+	session, err := fx.store.Get(context.Background(), flow.ID)
+	if err != nil {
+		t.Fatalf("get finalized flow: %v", err)
+	}
+	if session.Status != credentialacq.StatusFinalized || session.ResultAccountCredentialID == 0 {
+		t.Fatalf("flow status=%s credential_id=%d want finalized with credential", session.Status, session.ResultAccountCredentialID)
+	}
+}
+
+func TestAdminCredentialAcquisitionCallbackMissingRegistryEntryReturns422AndAudits(t *testing.T) {
+	registry := credentialacq.NewExchangerRegistry()
+	openAI := &credentialAcqExchangerStub{}
+	if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth), openAI); err != nil {
+		t.Fatal(err)
+	}
+	fx := newCredentialAcqHTTPFixtureWithRegistry(t, adminPoolAdmin(), registry, openAI)
+	flow := fx.seedRawOAuthFlow(t, 101, "cursor", "oauth")
+
+	rec := fx.do(t, http.MethodPost, "/v1/admin/pool-accounts/101/credential-acquisitions/"+flow.ID+"/callback",
+		`{"state":"`+flow.State+`","code":"cursor-auth-code"}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d want 422 body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "not configured") {
+		t.Fatalf("missing registry path must not use legacy not-configured fallback: %s", rec.Body.String())
+	}
+	if got := openAI.callCount(); got != 0 {
+		t.Fatalf("openai exchanger calls=%d want 0 for cursor flow", got)
+	}
+	if created := fx.creator.inputsSnapshot(); len(created) != 0 {
+		t.Fatalf("created credentials=%d want 0 on missing exchanger", len(created))
+	}
+	events := fx.audit.eventsSnapshot()
+	if len(events) != 1 {
+		t.Fatalf("audit events=%d want 1", len(events))
+	}
+	if events[0].EventType != credentialacq.EventFailed {
+		t.Fatalf("event type=%s want %s", events[0].EventType, credentialacq.EventFailed)
+	}
+	if events[0].Payload["error_class"] != "callback_failed" {
+		t.Fatalf("event payload=%v want callback_failed", events[0].Payload)
+	}
+	session, err := fx.store.Get(context.Background(), flow.ID)
+	if err != nil {
+		t.Fatalf("get failed flow: %v", err)
+	}
+	if session.Status != credentialacq.StatusFailed || session.ErrorClass != "exchange_failed" {
+		t.Fatalf("flow status=%s error_class=%s want failed/exchange_failed", session.Status, session.ErrorClass)
 	}
 }
 
@@ -107,9 +188,12 @@ func TestAdminCredentialAcquisitionRejectsPathAccountMismatch(t *testing.T) {
 }
 
 type credentialAcqHTTPFixture struct {
-	handler http.Handler
-	store   *credentialacq.PostgresSessionStore
-	db      *credentialAcqSessionDB
+	handler   http.Handler
+	store     *credentialacq.PostgresSessionStore
+	db        *credentialAcqSessionDB
+	creator   *credentialAcqCreatorStub
+	audit     *credentialAcqAuditStub
+	exchanger *credentialAcqExchangerStub
 }
 
 type seededCredentialAcqFlow struct {
@@ -119,6 +203,18 @@ type seededCredentialAcqFlow struct {
 
 func newCredentialAcqHTTPFixture(t *testing.T, auth AdminCredentialAuth) *credentialAcqHTTPFixture {
 	t.Helper()
+	exchanger := &credentialAcqExchangerStub{
+		payload: []byte(`{"session_token":"registry-session","refresh_token":"registry-refresh"}`),
+	}
+	registry := credentialacq.NewExchangerRegistry()
+	if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth), exchanger); err != nil {
+		t.Fatal(err)
+	}
+	return newCredentialAcqHTTPFixtureWithRegistry(t, auth, registry, exchanger)
+}
+
+func newCredentialAcqHTTPFixtureWithRegistry(t *testing.T, auth AdminCredentialAuth, registry *credentialacq.ExchangerRegistry, exchanger *credentialAcqExchangerStub) *credentialAcqHTTPFixture {
+	t.Helper()
 	now := time.Date(2026, 5, 16, 5, 0, 0, 0, time.UTC)
 	keys, err := credentialstore.NewStaticKeyProvider("test-v1", bytes.Repeat([]byte{9}, 32))
 	if err != nil {
@@ -126,11 +222,14 @@ func newCredentialAcqHTTPFixture(t *testing.T, auth AdminCredentialAuth) *creden
 	}
 	db := newCredentialAcqSessionDB(now)
 	store := credentialacq.NewPostgresSessionStoreWithKeys(db, keys).WithNow(func() time.Time { return now })
+	creator := &credentialAcqCreatorStub{}
+	audit := &credentialAcqAuditStub{}
 	deps := AdminCredentialAcquisitionDeps{
 		Auth: auth, Sessions: store,
-		Credentials:     &credentialAcqCreatorStub{},
-		CredentialAudit: &credentialAcqAuditStub{},
+		Credentials:     creator,
+		CredentialAudit: audit,
 		AuditStore:      &adminPoolStoreStub{},
+		Exchangers:      registry,
 	}
 	r := chi.NewRouter()
 	r.Route("/v1/admin/pool-accounts", func(r chi.Router) {
@@ -139,7 +238,7 @@ func newCredentialAcqHTTPFixture(t *testing.T, auth AdminCredentialAuth) *creden
 	r.Route("/admin/v1/credentials", func(r chi.Router) {
 		MountAdminCredentialAcquisitionHelperRoutes(r, deps)
 	})
-	return &credentialAcqHTTPFixture{handler: r, store: store, db: db}
+	return &credentialAcqHTTPFixture{handler: r, store: store, db: db, creator: creator, audit: audit, exchanger: exchanger}
 }
 
 func (fx *credentialAcqHTTPFixture) do(t *testing.T, method, path, body string) *httptest.ResponseRecorder {
@@ -166,9 +265,14 @@ func (fx *credentialAcqHTTPFixture) seedPasteFlow(t *testing.T, providerAccountI
 
 func (fx *credentialAcqHTTPFixture) seedOAuthFlow(t *testing.T, providerAccountID int64) seededCredentialAcqFlow {
 	t.Helper()
+	return fx.seedOAuthFlowFor(t, providerAccountID, credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth)
+}
+
+func (fx *credentialAcqHTTPFixture) seedOAuthFlowFor(t *testing.T, providerAccountID int64, vendor, authMode string) seededCredentialAcqFlow {
+	t.Helper()
 	result, err := credentialacq.StartOAuthFlow(context.Background(), fx.store, credentialacq.StartInput{
 		TenantID: 1, ProviderAccountID: providerAccountID,
-		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeChatGPTOAuth,
+		Vendor: vendor, AuthMode: authMode,
 		ActorID: "11", ActorRole: "platform_admin",
 	}, credentialacq.OAuthClientConfig{
 		ClientID: "client-id", AuthURL: "https://auth.example.test/oauth", RedirectURI: "https://huakai.example.test/callback",
@@ -179,12 +283,40 @@ func (fx *credentialAcqHTTPFixture) seedOAuthFlow(t *testing.T, providerAccountI
 	return seededCredentialAcqFlow{ID: result.Session.ID, State: result.State}
 }
 
+func (fx *credentialAcqHTTPFixture) seedRawOAuthFlow(t *testing.T, providerAccountID int64, vendor, authMode string) seededCredentialAcqFlow {
+	t.Helper()
+	state := "cursor-state"
+	aad := credentialstore.AAD{TenantID: 1, ProviderAccountID: providerAccountID, Vendor: vendor, AuthMode: authMode}
+	ciphertext, metadata, _, err := fx.store.EncryptTransientPayload(context.Background(), []byte("pkce-verifier"), aad)
+	if err != nil {
+		t.Fatalf("encrypt pkce verifier: %v", err)
+	}
+	session, err := fx.store.Create(context.Background(), credentialacq.Session{
+		TenantID: 1, ProviderAccountID: providerAccountID,
+		Vendor: vendor, AuthMode: authMode, Kind: credentialacq.FlowKindOAuth, Status: credentialacq.StatusStarted,
+		ActorID: "11", ActorRole: "platform_admin",
+		StateHash: credentialacq.HashOAuthState(state), NonceHash: metadata, EncryptedPKCEVerifier: ciphertext,
+		ClientIdentitySource: credentialacq.ClientSourcePublicCLI,
+		RedirectURI:          "https://huakai.example.test/callback",
+		AuthType:             credentialacq.AuthTypePKCE,
+	})
+	if err != nil {
+		t.Fatalf("seed raw oauth flow: %v", err)
+	}
+	return seededCredentialAcqFlow{ID: session.ID, State: state}
+}
+
 type credentialAcqCreatorStub struct {
-	next int64
+	mu     sync.Mutex
+	next   int64
+	inputs []credentialstore.CreateCredentialInput
 }
 
 func (s *credentialAcqCreatorStub) Create(_ context.Context, in credentialstore.CreateCredentialInput) (credentialstore.CredentialMetadata, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.next++
+	s.inputs = append(s.inputs, in)
 	return credentialstore.CredentialMetadata{
 		ID: s.next, TenantID: in.TenantID, ProviderAccountID: in.ProviderAccountID,
 		Vendor: credentialstore.Normalize(in.Vendor), AuthMode: credentialstore.Normalize(in.AuthMode),
@@ -192,13 +324,75 @@ func (s *credentialAcqCreatorStub) Create(_ context.Context, in credentialstore.
 	}, nil
 }
 
+func (s *credentialAcqCreatorStub) inputsSnapshot() []credentialstore.CreateCredentialInput {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]credentialstore.CreateCredentialInput, len(s.inputs))
+	copy(out, s.inputs)
+	return out
+}
+
 type credentialAcqAuditStub struct {
+	mu     sync.Mutex
 	events []credentialstore.AuditEvent
 }
 
 func (s *credentialAcqAuditStub) InsertAuditEvent(_ context.Context, e credentialstore.AuditEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.events = append(s.events, e)
 	return nil
+}
+
+func (s *credentialAcqAuditStub) eventsSnapshot() []credentialstore.AuditEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]credentialstore.AuditEvent, len(s.events))
+	copy(out, s.events)
+	return out
+}
+
+type credentialAcqExchangerStub struct {
+	mu      sync.Mutex
+	calls   []credentialAcqExchangeCall
+	payload []byte
+	err     error
+}
+
+type credentialAcqExchangeCall struct {
+	FlowID string
+	Vendor string
+	Mode   string
+	Code   string
+}
+
+func (s *credentialAcqExchangerStub) StartOAuthFlow(context.Context, *credentialacq.PostgresSessionStore, credentialacq.StartInput, credentialacq.OAuthClientConfig) (credentialacq.OAuthStartResult, error) {
+	return credentialacq.OAuthStartResult{}, errors.New("test exchanger does not start flows")
+}
+
+func (s *credentialAcqExchangerStub) ExchangeOAuthCode(_ context.Context, session credentialacq.Session, code string) (credentialacq.CredentialCandidate, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, credentialAcqExchangeCall{
+		FlowID: session.ID, Vendor: session.Vendor, Mode: session.AuthMode, Code: code,
+	})
+	if s.err != nil {
+		return credentialacq.CredentialCandidate{}, s.err
+	}
+	payload := s.payload
+	if len(payload) == 0 {
+		payload = []byte(`{"session_token":"registry-session","refresh_token":"registry-refresh"}`)
+	}
+	return credentialacq.CredentialCandidate{
+		TenantID: session.TenantID, ProviderAccountID: session.ProviderAccountID,
+		Vendor: session.Vendor, AuthMode: session.AuthMode, Payload: payload, ActorID: session.ActorID,
+	}, nil
+}
+
+func (s *credentialAcqExchangerStub) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.calls)
 }
 
 type credentialAcqSessionDB struct {
@@ -229,7 +423,7 @@ func (db *credentialAcqSessionDB) QueryRow(_ context.Context, sql string, args .
 			Vendor: argString(args[3]), AuthMode: argString(args[4]), Kind: credentialacq.FlowKind(argString(args[5])), Status: credentialacq.FlowStatus(argString(args[6])),
 			ActorID: argString(args[7]), ActorRole: argString(args[8]),
 			StateHash: argBytes(args[9]), NonceHash: argBytes(args[10]), EncryptedPKCEVerifier: argBytes(args[11]),
-			ClientIdentitySource: argString(args[12]), RedirectURI: argString(args[13]),
+			ClientIdentitySource: argString(args[12]), AuthType: credentialacq.AuthTypePKCE, RedirectURI: argString(args[13]),
 			LongLivedRequested: argBool(args[16]), IdempotencyKeyHash: argBytes(args[17]),
 			ExpiresAt: argTime(args[18]), CreatedAt: db.now, UpdatedAt: db.now,
 		}
@@ -306,10 +500,14 @@ func (r credentialAcqRow) Scan(dest ...any) error {
 func scanCredentialAcqSession(dest []any, row credentialacq.Session) error {
 	scopes, _ := json.Marshal(row.RequestedScopes)
 	redacted, _ := json.Marshal(row.RedactedContext)
+	devicePayload, _ := json.Marshal(row.DeviceCodePayload)
+	if string(devicePayload) == "null" {
+		devicePayload = nil
+	}
 	values := []any{
 		row.ID, row.TenantID, row.ProviderAccountID, row.Vendor, row.AuthMode, row.Kind, row.Status,
 		row.ActorID, row.ActorRole, row.StateHash, row.NonceHash, row.EncryptedPKCEVerifier,
-		row.ClientIdentitySource, pgText(row.RedirectURI), scopes, redacted,
+		row.ClientIdentitySource, pgText(string(row.AuthType)), devicePayload, pgText(row.RedirectURI), scopes, redacted,
 		row.LongLivedRequested, row.IdempotencyKeyHash, pgInt8(row.ResultAccountCredentialID),
 		pgText(row.ErrorClass), pgText(row.ErrorMessageRedacted), row.ExpiresAt, pgTime(row.ConsumedAt), pgTime(row.CancelledAt),
 		row.CreatedAt, row.UpdatedAt,

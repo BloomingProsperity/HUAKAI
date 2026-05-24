@@ -25,6 +25,10 @@ type Exchanger struct {
 	MimicryRegistry  *mimicry.TemplateRegistry
 }
 
+func NewExchanger() Exchanger {
+	return Exchanger{}
+}
+
 func init() {
 	_ = RegisterDefault(Exchanger{})
 }

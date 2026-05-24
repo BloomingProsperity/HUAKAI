@@ -23,6 +23,7 @@ type AdminCredentialAcquisitionDeps struct {
 	Credentials              credentialacq.CredentialCreator
 	CredentialAudit          credentialacq.CredentialAuditWriter
 	AuditStore               AdminPoolAccountStore
+	Exchangers               *credentialacq.ExchangerRegistry
 	AllowLongLivedSetupToken bool
 }
 
@@ -145,24 +146,12 @@ func newCredentialAcqCallbackHandler(d AdminCredentialAcquisitionDeps) http.Hand
 		if !credentialAcqFlowMatchesPathAccount(w, r, existing) {
 			return
 		}
-		candidate, session, err := credentialacq.CompleteOAuthCallback(r.Context(), d.Sessions, flowID, req.State, req.Code,
-			func(_ context.Context, flow credentialacq.Session, _ string) (credentialacq.CredentialCandidate, error) {
-				if len(req.Credentials) == 0 {
-					return credentialacq.CredentialCandidate{}, errors.New("oauth exchange adapter not configured")
-				}
-				return credentialacq.CredentialCandidate{
-					TenantID: flow.TenantID, ProviderAccountID: flow.ProviderAccountID,
-					Vendor: flow.Vendor, AuthMode: flow.AuthMode, Payload: req.Credentials,
-					ActorID: fmt.Sprintf("%d", ident.TokenID),
-				}, nil
-			})
-		if err != nil {
-			_ = credentialacq.EmitLifecycleAudit(r.Context(), d.CredentialAudit, session, credentialacq.EventFailed, 0, fmt.Sprintf("%d", ident.TokenID), middleware.GetReqID(r.Context()), map[string]any{"error_class": "callback_failed"})
-			writeCredentialAcqError(w, err)
+		result, ok := completeCredentialAcqOAuthCallback(w, r, d, ident, flowID, req.State, req.Code)
+		if !ok {
 			return
 		}
-		_ = candidate
-		writeAuditJSON(w, http.StatusOK, map[string]any{"flow": session})
+		writeCredentialAcqAdminAudit(r, d, ident, result.Session, credentialacq.EventCompleted, "完成 OAuth credential acquisition")
+		writeAuditJSON(w, http.StatusOK, result)
 	}
 }
 
@@ -305,17 +294,31 @@ func newCredentialAcqOAuthCallbackHelperHandler(d AdminCredentialAcquisitionDeps
 		flowID := strings.TrimSpace(r.URL.Query().Get("flow_id"))
 		state := strings.TrimSpace(r.URL.Query().Get("state"))
 		code := strings.TrimSpace(r.URL.Query().Get("code"))
-		_, session, err := credentialacq.CompleteOAuthCallback(r.Context(), d.Sessions, flowID, state, code,
-			func(context.Context, credentialacq.Session, string) (credentialacq.CredentialCandidate, error) {
-				return credentialacq.CredentialCandidate{}, errors.New("oauth exchange adapter not configured")
-			})
-		if err != nil {
-			_ = credentialacq.EmitLifecycleAudit(r.Context(), d.CredentialAudit, session, credentialacq.EventFailed, 0, fmt.Sprintf("%d", ident.TokenID), middleware.GetReqID(r.Context()), map[string]any{"error_class": "callback_failed"})
-			writeCredentialAcqError(w, err)
+		result, ok := completeCredentialAcqOAuthCallback(w, r, d, ident, flowID, state, code)
+		if !ok {
 			return
 		}
-		writeAuditJSON(w, http.StatusOK, map[string]any{"flow": session})
+		writeCredentialAcqAdminAudit(r, d, ident, result.Session, credentialacq.EventCompleted, "完成 OAuth credential acquisition")
+		writeAuditJSON(w, http.StatusOK, result)
 	}
+}
+
+func completeCredentialAcqOAuthCallback(w http.ResponseWriter, r *http.Request, d AdminCredentialAcquisitionDeps, ident admin.AdminIdentity, flowID, state, code string) (credentialacq.FinalizeResult, bool) {
+	actorID := fmt.Sprintf("%d", ident.TokenID)
+	requestID := middleware.GetReqID(r.Context())
+	candidate, session, err := credentialacq.CompleteOAuthCallbackWithRegistry(r.Context(), d.Sessions, flowID, state, code, d.Exchangers)
+	if err != nil {
+		_ = credentialacq.EmitLifecycleAudit(r.Context(), d.CredentialAudit, session, credentialacq.EventFailed, 0, actorID, requestID, map[string]any{"error_class": "callback_failed"})
+		writeCredentialAcqError(w, err)
+		return credentialacq.FinalizeResult{Session: session}, false
+	}
+	finalizer := credentialacq.NewFinalizer(d.Sessions, credentialstore.DefaultHandlerRegistry(), d.Credentials, d.CredentialAudit)
+	result, err := finalizer.Finalize(r.Context(), flowID, candidate, actorID, requestID)
+	if err != nil {
+		writeCredentialAcqError(w, err)
+		return result, false
+	}
+	return result, true
 }
 
 func startCredentialAcqFlow(w http.ResponseWriter, r *http.Request, d AdminCredentialAcquisitionDeps, ident admin.AdminIdentity, req credentialAcqStartRequest) {
@@ -453,6 +456,8 @@ func writeCredentialAcqError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusForbidden, "credential_acquisition_feature_disabled", "credential acquisition feature disabled")
 	case errors.Is(err, credentialacq.ErrSecretInContext):
 		writeJSONError(w, http.StatusBadRequest, "redacted_context_secret", "redacted_context contains secret-shaped material")
+	case errors.Is(err, credentialacq.ErrOAuthExchangerMissing):
+		writeJSONError(w, http.StatusUnprocessableEntity, "oauth_exchanger_missing", "oauth exchanger missing for credential acquisition flow")
 	default:
 		writeJSONError(w, http.StatusBadRequest, "credential_acquisition_failed", err.Error())
 	}

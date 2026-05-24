@@ -64,6 +64,7 @@ type deps struct {
 	credentialStore       *credentialstore.Store
 	credentialKeys        credentialstore.KeyProvider
 	credentialAcqStore    *credentialacq.PostgresSessionStore
+	credentialExchangers  *credentialacq.ExchangerRegistry
 	emailSettings         *mailinfra.PostgresSettingsStore
 	authEmailSender       gatewayhttp.AuthEmailSender
 	userAuth              *userauth.Service
@@ -127,6 +128,14 @@ type runtimeOptions struct {
 	responseCache l2cache.Store
 }
 
+func buildTransportFactory(cfg *Config, mimicryRegistry *mimicry.TemplateRegistry) *transport.Factory {
+	factory := transport.NewFactory(mimicryRegistry)
+	if cfg != nil {
+		factory.SidecarSocketPath = cfg.TransportSidecarSocket
+	}
+	return factory
+}
+
 func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimicry.TemplateRegistry, logger *zap.Logger) (*gatewayRuntime, error) {
 	pgPool, err := db.Open(ctx, db.PoolConfig{DSN: cfg.DatabaseURL})
 	if err != nil {
@@ -157,6 +166,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	}
 	credentialStore := credentialstore.NewStore(pgPool, credentialKeys, credentialstore.DefaultHandlerRegistry())
 	credentialAcqStore := credentialacq.NewPostgresSessionStoreWithKeys(pgPool, credentialKeys)
+	credentialExchangers := credentialacq.DefaultExchangerRegistry()
+	if err := anthropicoauth.RegisterInto(credentialExchangers, anthropicoauth.NewExchanger()); err != nil {
+		return nil, fmt.Errorf("register anthropic oauth exchanger: %w", err)
+	}
 	emailSettingsStore := mailinfra.NewPostgresSettingsStore(pgPool)
 	if releaseModeProduction() {
 		if err := mailinfra.ValidateProductionReleaseGate(ctx, emailSettingsStore, credentialKeys); err != nil {
@@ -233,6 +246,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		credentialStore:       credentialStore,
 		credentialKeys:        credentialKeys,
 		credentialAcqStore:    credentialAcqStore,
+		credentialExchangers:  credentialExchangers,
 		emailSettings:         emailSettingsStore,
 		authEmailSender:       authEmailSender,
 		userAuth:              userAuthService,
@@ -247,7 +261,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		auditRefPolicy:        auditRefPolicy,
 		dispatcher: &gateway.UpstreamDispatcher{
 			Adapters:         registrydefault.Build(),
-			TransportFactory: transport.NewFactory(mimicryRegistry),
+			TransportFactory: buildTransportFactory(cfg, mimicryRegistry),
 			ProxyResolver:    provider.NewPostgresProxyResolver(pgPool),
 		},
 		inboundAuth:         auth.NewAPIKeyResolver(authQueries),

@@ -56,6 +56,16 @@ func TestWiring_AuditRefPolicySharedByBusConfigAndChatDeps(t *testing.T) {
 	}
 }
 
+func TestWiring_BuildTransportFactoryInjectsSidecarSocket(t *testing.T) {
+	cfg := &Config{TransportSidecarSocket: "/tmp/huakai-tls-sidecar.sock"}
+
+	factory := buildTransportFactory(cfg, nil)
+
+	if factory.SidecarSocketPath != cfg.TransportSidecarSocket {
+		t.Fatalf("SidecarSocketPath=%q want cfg.TransportSidecarSocket", factory.SidecarSocketPath)
+	}
+}
+
 func TestWiring_BuildCompletionEventBusWarnsWhenAuditRefEscapeFlagActive(t *testing.T) {
 	core, observed := observer.New(zapcore.WarnLevel)
 	logger := zap.New(core)
