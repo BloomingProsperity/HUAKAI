@@ -212,6 +212,9 @@ func (s *Scheduler) refreshWithBackoff(ctx context.Context, account dbbilling.Li
 		if last == nil || attempt == s.maxAttempts {
 			return last
 		}
+		if !refreshErrorRetryable(last) {
+			return last
+		}
 		if err := s.sleep(ctx, s.backoff(attempt)); err != nil {
 			return err
 		}
@@ -237,6 +240,21 @@ func defaultBackoff(attempt int) time.Duration {
 		attempt = 5
 	}
 	return time.Duration(1<<(attempt-1)) * time.Second
+}
+
+type refreshRetryClassifier interface {
+	RetryableRefresh() bool
+}
+
+func refreshErrorRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var classified refreshRetryClassifier
+	if errors.As(err, &classified) {
+		return classified.RetryableRefresh()
+	}
+	return true
 }
 
 func sleepContext(ctx context.Context, d time.Duration) error {

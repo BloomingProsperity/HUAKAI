@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/anthropicoauth"
 )
 
 const defaultAnthropicTokenEndpoint = "https://api.anthropic.com/v1/oauth/token"
@@ -63,5 +65,5 @@ func (r AnthropicRefresh) httpClient() *http.Client {
 	if r.HTTPClient != nil {
 		return r.HTTPClient
 	}
-	return http.DefaultClient
+	return anthropicoauth.DefaultHTTPClient()
 }
