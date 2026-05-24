@@ -30,6 +30,8 @@ pub use endpoint_guard::{EndpointGuardError, validate_vendor_endpoint};
 pub use error::ProxyError;
 #[cfg(feature = "mimicry-boring")]
 pub use http_client::build_http_client_with_profile;
+#[cfg(feature = "mimicry-boring")]
+pub use http_client::try_build_http_client_with_profile;
 pub use http_client::{GatewayHttpClient, GatewayHttpConnector, build_http_client};
 pub use relay::StreamObservation;
 

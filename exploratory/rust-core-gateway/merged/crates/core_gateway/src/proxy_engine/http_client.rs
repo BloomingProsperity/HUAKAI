@@ -14,7 +14,7 @@ use hyper_util::client::legacy::connect::HttpConnector;
 
 #[cfg(feature = "mimicry-boring")]
 use crate::mimicry::{
-    BuiltinProfile, FingerprintProfile, load_builtin_profile,
+    BuiltinProfile, FingerprintProfile, MimicryProductionCanaryError, load_builtin_profile,
     verify_profile_dispatchable_for_production,
 };
 
@@ -51,15 +51,45 @@ fn build_gateway_connector() -> GatewayHttpConnector {
     BoringTlsConnector::new(Arc::new(profile))
 }
 
+/// W11-F F-2.3 (synthesis Codex D-F2-1, 2026-05-24): fallible builder lets
+/// startup paths + tests branch on profile dispatchability without panicking.
+///
+/// Returns:
+///   - `Ok(client)` — profile passed the production dispatch canary gate
+///     (`verify_profile_dispatchable_for_production`) AND the L1 preflight
+///     classification (l1_preflight::preflight_status_from_intent) yields
+///     `NotRequired` or `Pending` (runtime preflight will fire at first
+///     connect via OpenSslAdapter or BoringSSL builder).
+///   - `Err(MimicryProductionCanaryError)` — profile is KnownGap or
+///     UnsupportedTemplate. Caller may surface as `GatewayError::Config`,
+///     log + skip, or fail the startup.
+///
+/// The non-fallible [`build_http_client_with_profile`] retains the
+/// fail-fast `.expect(...)` semantics so production main wiring keeps
+/// loud-failure behavior; the fallible variant exists for:
+///   - tests that exercise the gate path without panicking
+///   - future startup paths that prefer structured `Result` propagation
+///
+/// Mutation: removing the call to `verify_profile_dispatchable_for_production`
+/// here would let KnownGap profiles silently produce a working
+/// `GatewayHttpClient`; the per-profile tests in this module catch that.
+#[cfg(feature = "mimicry-boring")]
+pub fn try_build_http_client_with_profile(
+    profile: Arc<FingerprintProfile>,
+) -> Result<GatewayHttpClient, MimicryProductionCanaryError> {
+    // W11-F P1-3+P1-4 fix: 二次守门防漏 (caller may have bypassed dispatch).
+    verify_profile_dispatchable_for_production(&profile)?;
+    Ok(build_http_client_with_connector(BoringTlsConnector::new(profile)))
+}
+
 #[cfg(feature = "mimicry-boring")]
 pub fn build_http_client_with_profile(profile: Arc<FingerprintProfile>) -> GatewayHttpClient {
-    // W11-F P1-3+P1-4 fix: caller (mimicry::dispatch::build_mimicry_action) 已通过
-    // dispatch decision 才会调到这里, 但本函数 pub 暴露, 任何 caller 都可能传 KnownGap
-    // profile -> 二次守门防漏。
-    verify_profile_dispatchable_for_production(&profile).expect(
+    // Backward-compat wrapper. New code prefers `try_build_http_client_with_profile`
+    // so failures are typed Results, not panics. Main wiring keeps this for now
+    // to preserve loud startup failure semantics.
+    try_build_http_client_with_profile(profile).expect(
         "build_http_client_with_profile: profile 必须通过 production dispatch canary",
-    );
-    build_http_client_with_connector(BoringTlsConnector::new(profile))
+    )
 }
 
 pub fn build_http_client() -> GatewayHttpClient {
@@ -102,5 +132,69 @@ mod tests {
             std::any::type_name::<GatewayHttpConnector>().contains("BoringTlsConnector"),
             "mimicry-boring build 必须使用 HUAKAI BoringTLS connector"
         );
+    }
+
+    /// W11-F F-2.3 (Codex D-F2-1): fallible builder Ok path — Anthropic
+    /// builtin profile passes the canary gate AND yields a usable HTTP client.
+    ///
+    /// Mutation: removing the verify_profile_dispatchable_for_production call
+    /// from try_build_http_client_with_profile lets KnownGap profiles through;
+    /// the `try_build_http_client_with_profile_rejects_blocked_profile` test
+    /// below goes red on that mutation.
+    #[cfg(feature = "mimicry-boring")]
+    #[test]
+    fn try_build_http_client_with_profile_accepts_anthropic() {
+        let profile = load_builtin_profile(BuiltinProfile::AnthropicClaudeCode)
+            .expect("Anthropic profile should load");
+        let result = try_build_http_client_with_profile(Arc::new(profile));
+        assert!(
+            result.is_ok(),
+            "Anthropic baseline must build through try_ variant: {:?}",
+            result.err()
+        );
+    }
+
+    /// W11-F F-2.3 (Codex D-F2-1): fallible builder Err path — Kiro CLI
+    /// profile is KnownGap (per F-2.2 + 2026-05-24 reason correction), so the
+    /// try_ variant returns Err rather than panicking. The Err variant must
+    /// be `KnownGap` carrying the corrected reason ("real_upstream_capture"
+    /// or "pending"), not the obsolete "rustls cannot be replicated" wording.
+    ///
+    /// Mutation: removing the gate call OR returning Ok on KnownGap lets
+    /// the test go red on the `expect_err` AND the reason substring check.
+    #[cfg(feature = "mimicry-boring")]
+    #[test]
+    fn try_build_http_client_with_profile_rejects_blocked_kiro() {
+        let profile = load_builtin_profile(BuiltinProfile::KiroCli)
+            .expect("Kiro profile should load");
+        let err = try_build_http_client_with_profile(Arc::new(profile))
+            .expect_err("Kiro KnownGap must fail-closed through try_ variant");
+        match err {
+            MimicryProductionCanaryError::KnownGap(reason) => {
+                assert!(
+                    reason.contains("real_upstream_capture") || reason.contains("pending"),
+                    "Kiro KnownGap reason must cite real-upstream capture gap (got: {reason})"
+                );
+            }
+            other => panic!(
+                "Kiro should be KnownGap (post F-2.2 correction), got {other:?}"
+            ),
+        }
+    }
+
+    /// W11-F F-2.3 (Codex D-F2-1): the eager `build_http_client_with_profile`
+    /// must still panic on KnownGap so production main wiring keeps its
+    /// loud-failure semantics. The try_ variant is the only structured-Result
+    /// path.
+    ///
+    /// Mutation: changing the wrapper to swallow the Err and return a stub
+    /// client would let the panic disappear; this test goes red.
+    #[cfg(feature = "mimicry-boring")]
+    #[test]
+    #[should_panic(expected = "production dispatch canary")]
+    fn build_http_client_with_profile_panics_on_blocked_profile() {
+        let profile = load_builtin_profile(BuiltinProfile::KiroCli)
+            .expect("Kiro profile should load");
+        let _ = build_http_client_with_profile(Arc::new(profile));
     }
 }
