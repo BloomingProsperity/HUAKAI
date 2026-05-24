@@ -146,10 +146,10 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 		SettlementSource:       SettlementSourceProviderUpstream,
 		AcquisitionToken:       pgUUID(req.AcquisitionToken),
 		AttemptSeq:             claim.AttemptSeq,
-		TokensInput:            int32(req.Draft.TokensInput),
+		TokensInput:            clampInt32Tokens(int64(req.Draft.TokensInput)),
 		TokensOutput:           int32(outputTokensForAttempt(req.Draft, attempt)),
-		CacheCreationTokens:    int32(req.Draft.CacheCreationTokens),
-		CacheReadTokens:        int32(req.Draft.CacheReadTokens),
+		CacheCreationTokens:    clampInt32Tokens(int64(req.Draft.CacheCreationTokens)),
+		CacheReadTokens:        clampInt32Tokens(int64(req.Draft.CacheReadTokens)),
 		CacheCreation5mTokens:  0,
 		CacheCreation1hTokens:  0,
 		ImageOutputTokens:      0,
@@ -340,7 +340,7 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 			SettlementSource:       SettlementSourceProviderUpstream,
 			AcquisitionToken:       pgUUID(tokAbort),
 			AttemptSeq:             attemptSeq,
-			TokensInput:            int32(observedInputTokens),
+			TokensInput:            clampInt32Tokens(observedInputTokens),
 			ActualCost:             decimal.Zero,
 			InputCost:              decimal.Zero,
 			OutputCost:             decimal.Zero,
@@ -484,10 +484,10 @@ func (s *DefaultSettler) CommitCacheHit(ctx context.Context, req SettleRequest) 
 		AcquisitionToken:       pgtype.UUID{},
 		SettlementSource:       SettlementSourceResponseCacheL2,
 		AttemptSeq:             attemptSeq,
-		TokensInput:            int32(req.Draft.TokensInput),
+		TokensInput:            clampInt32Tokens(int64(req.Draft.TokensInput)),
 		TokensOutput:           int32(outputTokensForAttempt(req.Draft, attempt)),
-		CacheCreationTokens:    int32(req.Draft.CacheCreationTokens),
-		CacheReadTokens:        int32(req.Draft.CacheReadTokens),
+		CacheCreationTokens:    clampInt32Tokens(int64(req.Draft.CacheCreationTokens)),
+		CacheReadTokens:        clampInt32Tokens(int64(req.Draft.CacheReadTokens)),
 		ActualCost:             decimal.Zero,
 		InputCost:              decimal.Zero,
 		OutputCost:             decimal.Zero,
@@ -914,6 +914,28 @@ func outputTokensForAttempt(draft gateway.UsageRecordDraft, attempt Attempt) int
 		return int64(^uint32(0) >> 1)
 	}
 	return output
+}
+
+// clampInt32Tokens 把 token 桶压到 [0, MaxInt32]。
+//
+// 背景:usage_records 的 token 列在 0002 migration 是 PostgreSQL integer
+// (int32 范围),Go int 在 64 位平台是 int64,直接 cast 在异常上游报 > 2.1B
+// token 时会变负或被截断,后续 INSERT 报 "integer out of range" 让本次
+// settle 丢账;负值则写入无意义数据污染审计/对账。clamp 是务实折中:
+// 极端 outlier 被压到 MaxInt32 保账面一致,代价是失去原始精度 — 接受。
+//
+// outputTokensForAttempt 已经做同样 clamp;这个 helper 把 input / cache 桶
+// 也补上,关掉 settler 主路径 / Abort / L2 cache-hit 三条 settlement
+// path 共 7 处直接 int32 cast 漏洞。
+func clampInt32Tokens(v int64) int32 {
+	if v < 0 {
+		return 0
+	}
+	const maxInt32 = int64(^uint32(0) >> 1)
+	if v > maxInt32 {
+		return int32(maxInt32)
+	}
+	return int32(v)
 }
 
 func jsonOrEmptyObject(v []byte) []byte {
