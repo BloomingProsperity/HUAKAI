@@ -789,6 +789,106 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/api-keys:
+    post:
+      tags: [user-api-keys]
+      summary: 用户自助签发自己的 api_keys (明文一次返还)
+      operationId: createUserAPIKey
+      x-huakai-spec-source: [docs/process/plans/2026-05-23-go-vertical-closure-synthesis.md]
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserAPIKeyCreateRequest' }
+      responses:
+        '201':
+          description: 已签发 — plaintext 字段只此一次出现,后续 GET 永不返回明文。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserAPIKeyCreateResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    get:
+      tags: [user-api-keys]
+      summary: 列出当前用户自己的所有 api_keys (含已 revoked)
+      operationId: listUserAPIKeys
+      x-huakai-spec-source: [docs/process/plans/2026-05-23-go-vertical-closure-synthesis.md]
+      security:
+        - sessionBearerAuth: []
+      parameters:
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: 当前用户名下的 api_keys 元数据 (永不含明文 / hash)。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserAPIKeyListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/api-keys/{id}:
+    get:
+      tags: [user-api-keys]
+      summary: 取当前用户自己的一条 api_key 元数据
+      operationId: getUserAPIKey
+      x-huakai-spec-source: [docs/process/plans/2026-05-23-go-vertical-closure-synthesis.md]
+      security:
+        - sessionBearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: 单条 api_key 元数据 (永不含明文 / hash)。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserAPIKeyView' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: 不存在或不归当前用户 (响应不区分这两种,防 ID 枚举)。
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    delete:
+      tags: [user-api-keys]
+      summary: 撤销当前用户自己的一条 api_key (幂等)
+      operationId: revokeUserAPIKey
+      x-huakai-spec-source: [docs/process/plans/2026-05-23-go-vertical-closure-synthesis.md]
+      security:
+        - sessionBearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserAPIKeyRevokeRequest' }
+      responses:
+        '200':
+          description: 已撤销 (或 already_revoked=true 表示幂等命中)。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserAPIKeyRevokeResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: 不存在或不归当前用户 (响应不区分这两种,防 ID 枚举)。
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/users/me/vouchers/redeem:
     post:
       tags: [user-vouchers]
@@ -2657,6 +2757,93 @@ components:
         redemption: { $ref: '#/components/schemas/VoucherRedemption' }
         balance_cents: { type: integer, format: int64 }
         idempotent: { type: boolean }
+
+    # ---- User self-service api_keys schemas ----
+
+    UserAPIKeyCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 128
+          description: 用户给自己的 key 起的可识别名 (≤ 128 字符)。
+        environment:
+          type: string
+          enum: [live, test]
+          default: live
+          description: live 生产 key (hk_live_*),test 测试 key (hk_test_*)。admin 拒绝。
+        expires_at:
+          type: string
+          format: date-time
+          description: RFC3339;必须未来时刻;缺省永不过期。
+
+    UserAPIKeyCreateResponse:
+      type: object
+      additionalProperties: false
+      required: [api_key_id, plaintext, key_prefix, status, created_at, notice]
+      properties:
+        api_key_id: { type: integer, format: int64 }
+        plaintext:
+          type: string
+          description: |
+            **Bearer 明文,只此一次出现** — 客户端必须立即保存。
+            后续 GET /v1/api-keys 和 GET /v1/api-keys/{id} 永不返回此字段。
+        key_prefix:
+          type: string
+          description: 前缀 (hk_live_xxxxxxxx 或 hk_test_xxxxxxxx)。可公开;后续 List 视图可见。
+        status: { type: string, enum: [active] }
+        expires_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        notice:
+          type: string
+          description: 提示用户立即保存明文 (例如 "plaintext is shown only once; save it now ...")。
+
+    UserAPIKeyView:
+      type: object
+      additionalProperties: false
+      required: [api_key_id, name, key_prefix, status, created_at, updated_at]
+      properties:
+        api_key_id: { type: integer, format: int64 }
+        name: { type: string }
+        key_prefix: { type: string }
+        status: { type: string, enum: [active, revoked, disabled, expired] }
+        expires_at: { type: string, format: date-time, nullable: true }
+        last_used_at: { type: string, format: date-time, nullable: true }
+        revoked_at: { type: string, format: date-time, nullable: true }
+        revoked_reason: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    UserAPIKeyListResponse:
+      type: object
+      additionalProperties: false
+      required: [api_keys, count]
+      properties:
+        api_keys:
+          type: array
+          items: { $ref: '#/components/schemas/UserAPIKeyView' }
+        count: { type: integer }
+
+    UserAPIKeyRevokeRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+          maxLength: 256
+          description: 用户自填的撤销原因,审计留痕。
+
+    UserAPIKeyRevokeResponse:
+      type: object
+      additionalProperties: false
+      required: [api_key_id, already_revoked]
+      properties:
+        api_key_id: { type: integer, format: int64 }
+        already_revoked:
+          type: boolean
+          description: 幂等命中 (此 key 此前已 revoked) 时为 true。
 
     # ---- Gateway request/response schemas (permissive: additionalProperties: true) ----
 

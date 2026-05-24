@@ -38,6 +38,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
+	"github.com/BloomingProsperity/HUAKAI/internal/userkey"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
 )
@@ -63,6 +64,7 @@ type deps struct {
 	authEmailSender       gatewayhttp.AuthEmailSender
 	userAuth              *userauth.Service
 	userSessions          *usersession.Service
+	userKeyService        *userkey.Service
 	voucherService        *voucher.Service
 	invitationService     *communityinvitation.Service
 	dispatcher            *gateway.UpstreamDispatcher
@@ -231,6 +233,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		authEmailSender:       authEmailSender,
 		userAuth:              userAuthService,
 		userSessions:          userSessionService,
+		userKeyService:        userkey.NewService(pgPool, nil),
 		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool)),
 		invitationService:     communityinvitation.NewService(communityinvitation.NewPostgresStore(pgPool)),
 		responseCache:         opts.responseCache,
