@@ -35,6 +35,14 @@ const (
 	StatusFailed           FlowStatus = "failed"
 )
 
+type AuthType string
+
+const (
+	AuthTypePKCE       AuthType = "pkce"
+	AuthTypeDeviceCode AuthType = "device_code"
+	AuthTypeSSO        AuthType = "sso"
+)
+
 const (
 	ClientSourceNone                  = "none"
 	ClientSourcePublicCLI             = "public_cli_client"
@@ -52,6 +60,7 @@ var (
 	ErrInvalidImportBody = errors.New("credentialacq: invalid import body")
 	ErrFeatureDisabled   = errors.New("credentialacq: feature disabled")
 	ErrSecretInContext   = errors.New("credentialacq: redacted context contains secret-shaped material")
+	ErrInvalidTokenShape = errors.New("credentialacq: invalid token shape")
 )
 
 type ModePlan struct {
@@ -114,9 +123,11 @@ type Session struct {
 	NonceHash                 []byte         `json:"-"`
 	EncryptedPKCEVerifier     []byte         `json:"-"`
 	ClientIdentitySource      string         `json:"client_identity_source"`
+	AuthType                  AuthType       `json:"auth_type,omitempty"`
 	RedirectURI               string         `json:"redirect_uri,omitempty"`
 	RequestedScopes           []string       `json:"requested_scopes,omitempty"`
 	RedactedContext           map[string]any `json:"redacted_context"`
+	DeviceCodePayload         map[string]any `json:"-"`
 	LongLivedRequested        bool           `json:"long_lived_requested"`
 	IdempotencyKeyHash        []byte         `json:"-"`
 	ResultAccountCredentialID int64          `json:"result_account_credential_id,omitempty"`

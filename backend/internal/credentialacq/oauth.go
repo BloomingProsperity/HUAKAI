@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
+	"net/http"
 	"net/url"
 	"strings"
 
@@ -29,19 +30,33 @@ type OAuthClientConfig struct {
 	RedirectURI  string
 	Scopes       []string
 	Source       string
+	HTTPClient   *http.Client
 }
 
 type OAuthStartResult struct {
-	Session       Session `json:"flow"`
-	State         string  `json:"state"`
-	CodeVerifier  string  `json:"-"`
-	CodeChallenge string  `json:"code_challenge"`
-	AuthorizeURL  string  `json:"authorize_url,omitempty"`
+	Session                 Session  `json:"flow"`
+	AuthType                AuthType `json:"auth_type,omitempty"`
+	State                   string   `json:"state"`
+	CodeVerifier            string   `json:"-"`
+	CodeChallenge           string   `json:"code_challenge"`
+	AuthorizeURL            string   `json:"authorize_url,omitempty"`
+	UserCode                string   `json:"user_code,omitempty"`
+	VerificationURI         string   `json:"verification_uri,omitempty"`
+	VerificationURIComplete string   `json:"verification_uri_complete,omitempty"`
+	PollIntervalSeconds     int      `json:"poll_interval_seconds,omitempty"`
+	ExpiresInSeconds        int      `json:"expires_in_seconds,omitempty"`
 }
 
 type OAuthExchanger func(context.Context, Session, string) (CredentialCandidate, error)
 
 func StartOAuthFlow(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig) (OAuthStartResult, error) {
+	if exc, ok := defaultExchangers.Lookup(exchangerKey(in.Vendor, in.AuthMode)); ok {
+		return exc.StartOAuthFlow(ctx, store, in, cfg)
+	}
+	return startPKCEOAuthFlow(ctx, store, in, cfg)
+}
+
+func startPKCEOAuthFlow(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig) (OAuthStartResult, error) {
 	if store == nil {
 		return OAuthStartResult{}, errors.New("credentialacq: session store not configured")
 	}
@@ -81,10 +96,25 @@ func StartOAuthFlow(ctx context.Context, store *PostgresSessionStore, in StartIn
 	if err != nil {
 		return OAuthStartResult{}, err
 	}
+	session.AuthType = AuthTypePKCE
 	return OAuthStartResult{
-		Session: session, State: state, CodeVerifier: verifier, CodeChallenge: challenge,
+		Session: session, AuthType: AuthTypePKCE, State: state, CodeVerifier: verifier, CodeChallenge: challenge,
 		AuthorizeURL: BuildAuthorizeURL(cfg, state, challenge),
 	}, nil
+}
+
+func CompleteOAuthCallbackWithRegistry(ctx context.Context, store *PostgresSessionStore, flowID, state, code string, registry *ExchangerRegistry) (CredentialCandidate, Session, error) {
+	if registry == nil {
+		registry = defaultExchangers
+	}
+	return CompleteOAuthCallback(ctx, store, flowID, state, code,
+		func(ctx context.Context, session Session, code string) (CredentialCandidate, error) {
+			exc, ok := registry.Lookup(exchangerKey(session.Vendor, session.AuthMode))
+			if !ok {
+				return CredentialCandidate{}, errors.New("credentialacq: oauth exchanger missing")
+			}
+			return exc.ExchangeOAuthCode(ctx, session, code)
+		})
 }
 
 func CompleteOAuthCallback(ctx context.Context, store *PostgresSessionStore, flowID, state, code string, exchange OAuthExchanger) (CredentialCandidate, Session, error) {
