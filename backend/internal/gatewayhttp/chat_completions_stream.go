@@ -23,6 +23,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 )
 
 const (
@@ -246,7 +247,10 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	var streamAbortErr error
 	if settle && !ledgerFailClosed {
 		event := ex.streamingCompletionEvent(draft, streamAttempt, ledgerResult)
-		if _, err := settleCompletion(settleCtx, ex.d, event); err != nil {
+		// post-delivery:forwardSSEAndSettle 已经把内容写给客户端,settle
+		// 失败时通过 settleCompletionWithRecovery 把 RequestCompletionEvent
+		// 转 settlementrecovery DLQ 持久化,worker 后续重 settle 防钱账丢失。
+		if _, err := settleCompletionWithRecovery(settleCtx, ex.d, event, settlementrecovery.SourceStream); err != nil {
 			logInternalError(settleCtx, ex.requestID, clienterr.CodeSettleFailed, err)
 		} else if replayCapture != nil && !replayCapture.overLimit() {
 			ex.recordStreamingIdempotencyReplay(ex.reserveRes.ClaimID, replayCapture.statusCode(), replayCapture.body())

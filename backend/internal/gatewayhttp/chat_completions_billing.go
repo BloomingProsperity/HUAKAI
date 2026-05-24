@@ -22,6 +22,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 )
 
 func (ex *chatExecution) handleNonStreamingResponse(w http.ResponseWriter) {
@@ -154,6 +155,43 @@ func (ex *chatExecution) nonStreamingSettleRequest(env *proto.HCSF, actualCost d
 func normalizedPayloadHash(body []byte) string {
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])
+}
+
+// settleCompletionWithRecovery 包 settleCompletion,在 post-delivery 场景
+// (响应已发给客户端 + settle 失败)把 RequestCompletionEvent 转
+// settlementrecovery.Payload enqueue 进 usage_record_dlq,worker 后续重放
+// Settler.Settle。
+//
+// 调用约定:
+//   - source != "" 表示 "已交付内容 给客户端" — settle 失败必须 durable 兜底
+//   - source == "" 或 SettleRecoveryDLQ == nil — 跟原 settleCompletion 一致,
+//     失败只返 err,caller 自决(stream/billing pre-delivery path 返 5xx 给客户端)
+//
+// Enqueue 自己失败时 P0 log alert(Owner D-4 已批 — 不再 disk spool,只 alert),
+// 但不阻塞:流式响应已发给客户端不能反悔。
+//
+// settle err 始终原样传给 caller,跟 settleCompletion 行为一致。
+func settleCompletionWithRecovery(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent, source settlementrecovery.Source) (*billing.SettleResult, error) {
+	res, err := settleCompletion(ctx, d, event)
+	if err == nil {
+		return res, nil
+	}
+	if source == "" || d.SettleRecoveryDLQ == nil {
+		return res, err
+	}
+	payload := settlementrecovery.FromCompletionEvent(source, event)
+	if _, enqErr := settlementrecovery.EnqueuePayload(ctx, d.SettleRecoveryDLQ, payload, err.Error()); enqErr != nil {
+		// DLQ persist 自己失败 = money path 双环灰区 (Owner D-4: 只 alert,不 disk spool)。
+		slog.Default().LogAttrs(ctx, slog.LevelError, "settle_recovery_dlq_enqueue_failed",
+			slog.String("request_id", event.RequestID),
+			slog.String("source", string(source)),
+			slog.Int64("tenant_id", event.TenantID),
+			slog.Int64("claim_id", event.ClaimID),
+			slog.Any("settle_err", err),
+			slog.Any("enqueue_err", enqErr),
+		)
+	}
+	return res, err
 }
 
 func settleCompletion(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent) (*billing.SettleResult, error) {
