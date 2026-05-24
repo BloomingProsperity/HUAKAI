@@ -251,6 +251,39 @@ func TestSchedulerRefreshFailureBackoffAndAudit(t *testing.T) {
 	}
 }
 
+func TestSchedulerStopsBackoffLoopForNonRetryableRefreshError(t *testing.T) {
+	// Regression killed: vendor refreshers that have already classified a
+	// failure as terminal for the current tick must not be called again by the
+	// generic retry loop. Mutation self-check: removing RetryableRefresh()
+	// handling makes this test call the refresher three times.
+	ref := &refresherSpy{errs: []error{nonRetryableRefreshErr{}}}
+	audit := &auditSpy{}
+	var delays []time.Duration
+	s := newTestScheduler([]dbbilling.ListAccountsForRefreshRow{testAccount(15)}, &stormSpy{}, ref,
+		WithMaxAttempts(3),
+		WithBackoff(func(attempt int) time.Duration { return time.Duration(attempt) * time.Second }),
+		withSleep(func(_ context.Context, d time.Duration) error {
+			delays = append(delays, d)
+			return nil
+		}),
+		withAuditWriter(audit),
+		WithAuditLedger(&ledgerSpy{}),
+	)
+
+	if err := s.RunOnce(context.Background()); err == nil {
+		t.Fatal("RunOnce must return refresh error")
+	}
+	if len(ref.calls) != 1 {
+		t.Fatalf("refresh attempts=%d, want 1", len(ref.calls))
+	}
+	if len(delays) != 0 {
+		t.Fatalf("non-retryable refresh must not sleep/retry, delays=%v", delays)
+	}
+	if got := audit.lastOutcome(); got != auth.OutcomePermanentDisable {
+		t.Fatalf("audit outcome=%q, want permanent_disable", got)
+	}
+}
+
 func TestSchedulerStopGracefully(t *testing.T) {
 	ticks := make(chan time.Time)
 	s := newTestScheduler(nil, &stormSpy{}, &refresherSpy{}, WithTickChannel(ticks))
@@ -358,6 +391,12 @@ type schedulerRoundTripFunc func(*http.Request) (*http.Response, error)
 func (f schedulerRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
 }
+
+type nonRetryableRefreshErr struct{}
+
+func (nonRetryableRefreshErr) Error() string { return "rate_limit_exceeded" }
+
+func (nonRetryableRefreshErr) RetryableRefresh() bool { return false }
 
 type auditSpy struct {
 	entries []auth.RefreshAuditEntry

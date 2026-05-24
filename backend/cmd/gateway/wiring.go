@@ -8,6 +8,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/anthropicoauth"
 	auditreceipt "github.com/BloomingProsperity/HUAKAI/internal/audit"
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
@@ -280,17 +281,22 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if auditSigner == nil {
 		return nil, fmt.Errorf("credentialworker: production auditSigner unset (audit fail-closed gate)")
 	}
+	credentialRefresher := credentialworker.NewAccountCredentialRefresher(credentialStore, credentialworker.DefaultModeAdapterRegistry())
 	credentialScheduler := credentialworker.NewScheduler(
 		billingQueries,
 		auth.NewStormController(authQueries),
 		auditSigner,
-		credentialworker.NewAccountCredentialRefresher(credentialStore, credentialworker.DefaultModeAdapterRegistry()),
+		credentialRefresher,
 		credentialworker.WithAuditQueries(authQueries),
 		credentialworker.WithAuditLedger(auditLedger),
 		credentialworker.WithRefreshQueries(credentialworker.NewAccountCredentialRefreshQueries(pgPool)),
 		// 启用同事务路径 (RR-W5-002 步骤 1):audit insert + ledger append 同 tx。
 		credentialworker.WithTxPool(pgPool),
 		credentialworker.WithAuditLedgerSigner(auditSigner),
+		credentialworker.WithVendorRefresher("anthropic", anthropicoauth.NewRefresher(
+			credentialStore,
+			anthropicoauth.WithFallbackRefresher(credentialRefresher),
+		)),
 		credentialworker.WithVendorRefresher("copilot", &providercopilot.CopilotRefresher{
 			Store: providercopilot.NewCredentialStoreAdapter(credentialStore),
 		}),
