@@ -40,6 +40,7 @@ func DefaultExchangerRegistry() *ExchangerRegistry {
 	register(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist), NewPKCEFakeExchanger(TokenShapeAnySessionOrAccess))
 	register(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne), NewPKCEFakeExchanger(TokenShapeAnySessionOrAccess))
 	register(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity), NewPKCEFakeExchanger(TokenShapeAnySessionOrAccess))
+	register("gemini/oauth", NewPKCEFakeExchanger(TokenShapeAnySessionOrAccess))
 	register(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth), NewPKCEFakeExchanger(TokenShapeAnySessionOrAccess))
 	register(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth), openAICodexDeviceCode)
 	register("openai_codex/device-code", openAICodexDeviceCode)
