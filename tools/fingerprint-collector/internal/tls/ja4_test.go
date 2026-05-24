@@ -59,6 +59,33 @@ func TestJA4_Format(t *testing.T) {
 	}
 }
 
+func TestJA4_ALPNTokenUsesLastAdvertisedProtocol(t *testing.T) {
+	tests := []struct {
+		name string
+		alpn []string
+		want string
+	}{
+		{name: "empty", alpn: nil, want: "00"},
+		{name: "single h2", alpn: []string{"h2"}, want: "h2"},
+		{name: "h2 then http1", alpn: []string{"h2", "http/1.1"}, want: "ht"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ja4ALPNTokenFromHash(ComputeJA4(ja4ClientHelloWithALPN(tt.alpn)).Hash)
+			if got != tt.want {
+				t.Fatalf("JA4 ALPN token for %v = %q, want %q", tt.alpn, got, tt.want)
+			}
+		})
+	}
+
+	singleH2 := ComputeJA4(ja4ClientHelloWithALPN([]string{"h2"})).Hash
+	dualALPN := ComputeJA4(ja4ClientHelloWithALPN([]string{"h2", "http/1.1"})).Hash
+	if singleH2 == dualALPN {
+		t.Fatalf("fixture is not discriminating: single and dual ALPN both produced %q", dualALPN)
+	}
+}
+
 // TestJA4_SNIFlag 验证有无 SNI 时标志位正确。
 func TestJA4_SNIFlag(t *testing.T) {
 	// 有 SNI
@@ -168,4 +195,27 @@ func isHex(s string) bool {
 		}
 	}
 	return true
+}
+
+func ja4ClientHelloWithALPN(alpn []string) *ClientHello {
+	extensions := []ParsedExtension{
+		{Type: ExtServerName, SNIHostname: "api.anthropic.com"},
+		{Type: ExtSupportedVersions, SupportedVersions: []uint16{0x0304}},
+	}
+	if alpn != nil {
+		extensions = append(extensions, ParsedExtension{Type: ExtALPN, ALPNProtocols: alpn})
+	}
+	return &ClientHello{
+		LegacyVersion: 0x0303,
+		CipherSuites:  []uint16{0x1301},
+		Extensions:    extensions,
+	}
+}
+
+func ja4ALPNTokenFromHash(hash string) string {
+	parts := strings.Split(hash, "_")
+	if len(parts) != 4 {
+		return ""
+	}
+	return parts[1]
 }

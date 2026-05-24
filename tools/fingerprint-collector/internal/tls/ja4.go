@@ -11,7 +11,7 @@
 //   - cipher_count: 两位十进制，密码套件数（过滤 GREASE 后）
 //   - ext_count: 两位十进制，扩展数（过滤 GREASE 后）
 //   - cipher_hash: 排序后的密码套件列表取 SHA-256 的前 12 个十六进制字符
-//   - ext_hash: 排序后的扩展类型列表（去掉 SNI 和 ALPN）+ "_" + ALPN 首条目，
+//   - ext_hash: 排序后的扩展类型列表（去掉 SNI 和 ALPN）+ "_" + ALPN token，
 //     取 SHA-256 前 12 个十六进制字符
 package tls
 
@@ -68,16 +68,7 @@ func ComputeJA4(ch *ClientHello) JA4Result {
 		extCount = 99
 	}
 
-	// alpn: ALPN 列表第一条；无则使用 "00"
-	alpnFirst := "00"
-	for _, alpn := range ch.ALPNProtocols() {
-		if len(alpn) >= 2 {
-			alpnFirst = alpn[:2]
-		} else if len(alpn) == 1 {
-			alpnFirst = alpn + "0"
-		}
-		break
-	}
+	alpnFirst := ja4ALPNToken(ch.ALPNProtocols())
 
 	prefix := fmt.Sprintf("%s%s%s%02d%02d_%s",
 		protocol,
@@ -99,7 +90,7 @@ func ComputeJA4(ch *ClientHello) JA4Result {
 	cipherHash := sha256Truncate12(cipherStr)
 
 	// --- 第三部分：ext_hash ---
-	// 扩展类型排序（去掉 SNI 0x0000 和 ALPN 0x0010），再附加 "_" + ALPN 首条
+	// 扩展类型排序（去掉 SNI 0x0000 和 ALPN 0x0010），再附加 "_" + ALPN token
 	extForHash := make([]uint16, 0, len(filteredExtTypes))
 	for _, e := range filteredExtTypes {
 		if e != ExtServerName && e != ExtALPN {
@@ -110,13 +101,27 @@ func ComputeJA4(ch *ClientHello) JA4Result {
 		return extForHash[i] < extForHash[j]
 	})
 	extStr := uint16SliceToCommaSepHex(extForHash)
-	// 附加 "_" + ALPN 首条（规范要求将 ALPN 首条作为区分位附加在扩展列表后）
+	// 附加 "_" + ALPN token（HUAKAI 模板使用最后一个 advertised ALPN 的前 2 字符）
 	fullExtStr := extStr + "_" + alpnFirst
 	extHash := sha256Truncate12(fullExtStr)
 
 	// 最终格式：prefix_cipherHash_extHash
 	final := prefix + "_" + cipherHash + "_" + extHash
 	return JA4Result{Raw: final, Hash: final}
+}
+
+func ja4ALPNToken(alpns []string) string {
+	if len(alpns) == 0 {
+		return "00"
+	}
+	alpn := alpns[len(alpns)-1]
+	if len(alpn) >= 2 {
+		return alpn[:2]
+	}
+	if len(alpn) == 1 {
+		return alpn + "0"
+	}
+	return "00"
 }
 
 // ja4TLSVersion 返回 JA4 使用的两字符版本标识。
