@@ -8,9 +8,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
@@ -42,6 +44,12 @@ type Scheduler struct {
 	queryer     refreshQueries
 	acquirer    stormAcquirer
 	auditWriter auth.AuditWriter
+
+	// 同事务路径 (RR-W5-002):txPool + auditSigner + auditQueries 全配齐时
+	// recordAudit 走 BeginFunc;production wiring 必须 gate 三件套都装。
+	txPool       *pgxpool.Pool
+	auditSigner  any
+	auditQueries *dbauth.Queries
 
 	mu     sync.Mutex
 	cancel context.CancelFunc

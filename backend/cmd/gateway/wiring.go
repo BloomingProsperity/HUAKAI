@@ -266,6 +266,19 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err := admin.MaybeBootstrap(ctx, pgPool, logger); err != nil {
 		return nil, fmt.Errorf("admin bootstrap: %w", err)
 	}
+	// Production-required gate (RR-W5-002 步骤 3):credentialScheduler 必须装
+	// authQueries + auditLedger + pgPool + auditSigner,否则 audit/ledger 链
+	// 在 OAuth refresh 时静默失败,违 W5 D1/D4。Startup fail-fast 比 runtime
+	// fail-closed 更早抓出 wiring 错配。
+	if authQueries == nil {
+		return nil, fmt.Errorf("credentialworker: production authQueries unset (audit fail-closed gate)")
+	}
+	if auditLedger == nil {
+		return nil, fmt.Errorf("credentialworker: production auditLedger unset (audit fail-closed gate)")
+	}
+	if auditSigner == nil {
+		return nil, fmt.Errorf("credentialworker: production auditSigner unset (audit fail-closed gate)")
+	}
 	credentialScheduler := credentialworker.NewScheduler(
 		billingQueries,
 		auth.NewStormController(authQueries),
@@ -274,6 +287,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		credentialworker.WithAuditQueries(authQueries),
 		credentialworker.WithAuditLedger(auditLedger),
 		credentialworker.WithRefreshQueries(credentialworker.NewAccountCredentialRefreshQueries(pgPool)),
+		// 启用同事务路径 (RR-W5-002 步骤 1):audit insert + ledger append 同 tx。
+		credentialworker.WithTxPool(pgPool),
+		credentialworker.WithAuditLedgerSigner(auditSigner),
 	)
 	if err := credentialScheduler.Start(ctx); err != nil {
 		return nil, fmt.Errorf("start credential refresh scheduler: %w", err)
