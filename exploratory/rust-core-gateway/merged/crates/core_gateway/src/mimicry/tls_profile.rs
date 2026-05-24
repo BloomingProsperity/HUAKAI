@@ -133,6 +133,59 @@ impl TlsFieldGap {
     }
 }
 
+/// W11-F F-2.2 (synthesis D-S3 Owner-approved, 2026-05-24): Kiro CLI profile
+/// runs the Rust rustls TLS stack natively. OpenSSL and BoringSSL cannot
+/// precisely replicate rustls's wire-byte output (different extension order,
+/// distinct GREASE behavior, internal randomization that's not exposed via
+/// public APIs).
+///
+/// This is a **permanent** known-gap for the F-2 wave. Closing it would
+/// require either:
+///   - F-3 byte-level builder bypassing the TLS stack, OR
+///   - vendoring rustls into HUAKAI as a parallel TLS implementation,
+/// both of which are explicitly deferred to F-3 roadmap.
+///
+/// Returning a non-empty gap list here triggers `match_policy()`
+/// to return `KnownGapBlocked`, which in turn drives
+/// `backend_intent()` to `BackendIntent::KnownGapBlocked` —
+/// dispatch then returns `BlockKnownGap` rather than the old
+/// `BlockUnsupportedTemplate` (which conflated rustls with newer template
+/// vendors). The change makes the reason field operator-actionable
+/// ("we know Kiro doesn't work, here's why") instead of a generic
+/// "unsupported template" that suggests a fixable mapping bug.
+pub fn kiro_cli_known_gap_fields() -> Vec<TlsFieldGap> {
+    vec![TlsFieldGap {
+        field: "tls_backend",
+        template_value: "rustls",
+        current_backend_value: "openssl/boringssl (rustls not vendored)",
+        reason: "rustls wire-byte output cannot be precisely replicated by OpenSSL/BoringSSL adapters; \
+                 closure deferred to F-3 (byte-level builder or vendor rustls) — Owner D-S3 (a) 2026-05-24",
+    }]
+}
+
+/// W11-F F-2.2 (synthesis D-S4 Owner-approved, 2026-05-24): Gemini Advanced
+/// profile declares `tls_backend = nodejs`. Node.js's TLS stack is a thin
+/// wrapper over OpenSSL, so the wire-byte field set is compatible with
+/// HUAKAI's OpenSSL adapter at the field level. F-2.2 routes this profile
+/// to `BackendIntent::OpenSslAdapter` (via the new `TlsBackend::NodeJs` arm
+/// in `profile.rs::backend_intent`) and relies on the existing runtime
+/// preflight in `OpenSslMimicryAdapter::run_profile_preflight` to fail
+/// closed if the actual handshake bytes don't match (51 ciphers + 2
+/// variants + PQ group 4588 + ETM ext22).
+///
+/// Returning an EMPTY gap list here is deliberate: we don't want
+/// `match_policy()` to short-circuit Gemini to `KnownGapBlocked` at
+/// classification time. Pushing the gate to runtime preflight is the
+/// synthesis design — preflight catches per-handshake reality, not static
+/// template guesses.
+///
+/// If a future deep-spec-dig confirms a specific wire field that OpenSSL
+/// fundamentally cannot reproduce (e.g. Node.js-specific extension order),
+/// add it here and Gemini reclassifies to `KnownGapBlocked` automatically.
+pub fn gemini_advanced_known_gap_fields() -> Vec<TlsFieldGap> {
+    Vec::new()
+}
+
 pub fn codex_cli_known_gap_fields() -> Vec<TlsFieldGap> {
     vec![
         TlsFieldGap {

@@ -1,7 +1,6 @@
 use super::{
-    AvailableMimicryFeatures, BackendResolverError, BuiltinProfile, MimicryBackend,
-    ProfileMatchPolicy, ProfileMode, ProfileVendor, load_builtin_profile,
-    resolve_profile_mimicry_backend,
+    AvailableMimicryFeatures, BuiltinProfile, MimicryBackend, ProfileMatchPolicy, ProfileMode,
+    ProfileVendor, load_builtin_profile, resolve_profile_mimicry_backend,
 };
 
 #[test]
@@ -99,104 +98,136 @@ fn codex_cli_backend_resolver_blocked_when_no_backend() {
     assert_vendor_backend_blocked(BuiltinProfile::CodexCli);
 }
 
-// W11-E D-10 (2026-05-23): kiro 与 gemini 模板的 intent 分别是 UnsupportedTemplate
-// (rustls) 和 KnownGapBlocked (nodejs gap); resolver 必须先调 backend_intent() 再看 feature,
-// 不能让 mimicry-boring/openssl 旗子静默放行未验证模板。下面 6 个测试覆盖 3 个 feature 组合,
-// 验证 kiro/gemini 在任何 feature 组合下都被拒绝。
-// mutation: 把 backend_resolver::resolve_vendor_mimicry_backend 早 return Boring/Openssl
-// 恢复 → 这些断言变红 (resolver 错误地返回 Boring/Openssl)。
+// W11-F F-2.2 (synthesis D-S3/D-S4 Owner-approved 2026-05-24): kiro 与 gemini
+// 模板的 backend_intent 路径已重新分类:
+//   - KiroCli: kiro_cli_known_gap_fields 非空 → match_policy=KnownGapBlocked →
+//     backend_intent=KnownGapBlocked → resolver 返 Ok(KnownGapBlocked) 而非
+//     Err(UnsupportedTemplate). 永久 KnownGap (rustls wire 不可在 OpenSSL 精确复刻),
+//     等 F-3 (byte-level builder 或 vendor rustls). 任何 feature 组合都同结果.
+//   - GeminiAdvanced: known_gap 空 + tls_backend=nodejs → OpenSslAdapter intent.
+//     Resolver 据 feature 选 backend: 优先 boring (pre-existing 行为, F-2.3c 会加
+//     per-profile boring 验证), 退 openssl (preflight 把关 wire bytes), 都无 → KnownGap.
+//
+// Mutation: backend_resolver::resolve_vendor_mimicry_backend 改回早 return Boring/
+// Openssl 绕过 backend_intent → KnownGap reason 字符串缺失, 红.
+//
+// 历史: D-10 (2026-05-23) 老测试 assert 二者都 UnsupportedTemplate. F-2.2 (2026-05-24)
+// 修分类 — Kiro permanent KnownGap, Gemini push 到 runtime preflight. 见
+// docs/process/plans/2026-05-24-w11f-f2-fingerprint-l1-synthesis.md §5.4 + §6.
 
+/// Kiro 任何 feature 组合下都必须返 KnownGapBlocked, 永远不返 Allow*.
+/// Mutation: 把 kiro_cli_known_gap_fields() 返 empty Vec → 此测试红
+/// (Kiro 退化到 SampleSetRandomized → backend_intent rustls UnsupportedTemplate).
 #[test]
-fn kiro_backend_resolver_rejects_rustls_template_with_boring_feature() {
-    assert_vendor_template_unsupported_regardless_of_feature(
-        BuiltinProfile::KiroCli,
-        AvailableMimicryFeatures {
-            openssl: true,
-            boring: true,
-        },
-        "rustls",
-    );
+fn kiro_backend_resolver_returns_known_gap_with_boring_feature() {
+    assert_kiro_known_gap_regardless_of_feature(AvailableMimicryFeatures {
+        openssl: true,
+        boring: true,
+    });
 }
 
 #[test]
-fn kiro_backend_resolver_rejects_rustls_template_with_openssl_only() {
-    assert_vendor_template_unsupported_regardless_of_feature(
-        BuiltinProfile::KiroCli,
-        AvailableMimicryFeatures {
-            openssl: true,
-            boring: false,
-        },
-        "rustls",
-    );
+fn kiro_backend_resolver_returns_known_gap_with_openssl_only() {
+    assert_kiro_known_gap_regardless_of_feature(AvailableMimicryFeatures {
+        openssl: true,
+        boring: false,
+    });
 }
 
 #[test]
-fn kiro_backend_resolver_rejects_rustls_template_when_no_feature() {
-    assert_vendor_template_unsupported_regardless_of_feature(
-        BuiltinProfile::KiroCli,
-        AvailableMimicryFeatures {
-            openssl: false,
-            boring: false,
-        },
-        "rustls",
-    );
+fn kiro_backend_resolver_returns_known_gap_when_no_feature() {
+    assert_kiro_known_gap_regardless_of_feature(AvailableMimicryFeatures {
+        openssl: false,
+        boring: false,
+    });
 }
 
-#[test]
-fn gemini_backend_resolver_rejects_nodejs_template_with_boring_feature() {
-    assert_vendor_template_unsupported_regardless_of_feature(
-        BuiltinProfile::GeminiAdvanced,
-        AvailableMimicryFeatures {
-            openssl: true,
-            boring: true,
-        },
-        "nodejs",
-    );
-}
+fn assert_kiro_known_gap_regardless_of_feature(available_features: AvailableMimicryFeatures) {
+    let profile = load_builtin_profile(BuiltinProfile::KiroCli)
+        .expect("Kiro builtin profile should load");
 
-#[test]
-fn gemini_backend_resolver_rejects_nodejs_template_with_openssl_only() {
-    assert_vendor_template_unsupported_regardless_of_feature(
-        BuiltinProfile::GeminiAdvanced,
-        AvailableMimicryFeatures {
-            openssl: true,
-            boring: false,
-        },
-        "nodejs",
-    );
-}
+    let backend = resolve_profile_mimicry_backend(&profile, available_features)
+        .expect("F-2.2 D-S3: Kiro must resolve to KnownGapBlocked (not Err)");
 
-#[test]
-fn gemini_backend_resolver_rejects_nodejs_template_when_no_feature() {
-    assert_vendor_template_unsupported_regardless_of_feature(
-        BuiltinProfile::GeminiAdvanced,
-        AvailableMimicryFeatures {
-            openssl: false,
-            boring: false,
-        },
-        "nodejs",
-    );
-}
-
-fn assert_vendor_template_unsupported_regardless_of_feature(
-    builtin: BuiltinProfile,
-    available_features: AvailableMimicryFeatures,
-    reason_substring: &str,
-) {
-    let profile = load_builtin_profile(builtin).expect("builtin profile 应加载");
-
-    let err = resolve_profile_mimicry_backend(&profile, available_features)
-        .expect_err("D-10: 模板 intent 标 UnsupportedTemplate 时, feature 旗子不能覆盖");
-
-    match err {
-        BackendResolverError::UnsupportedTemplate { reason } => {
+    match backend {
+        MimicryBackend::KnownGapBlocked { reason } => {
             assert!(
-                reason.contains(reason_substring),
-                "拒绝 reason 必须指明模板 intent 失败原因 ({reason_substring}), 实际: {reason}"
+                reason.contains("rustls"),
+                "Kiro KnownGap reason must cite rustls backend mismatch (got: {reason})"
             );
         }
         other => panic!(
-            "expected UnsupportedTemplate err for {builtin:?}, got {other:?}"
+            "Kiro must resolve to KnownGapBlocked (D-S3 permanent), got {other:?}"
+        ),
+    }
+}
+
+/// Gemini boring+openssl: 偏好 boring (pre-existing behavior; F-2.3c will add
+/// per-profile boring byte-level verification to fail-closed if Gemini ja3 doesn't match).
+/// Mutation: 把 backend_intent NodeJs arm 改回 UnsupportedTemplate → 此测试红
+/// (resolver 返 Err 而非 Boring).
+#[test]
+fn gemini_backend_resolver_prefers_boring_with_both_features() {
+    let profile = load_builtin_profile(BuiltinProfile::GeminiAdvanced)
+        .expect("Gemini builtin profile should load");
+    let backend = resolve_profile_mimicry_backend(
+        &profile,
+        AvailableMimicryFeatures {
+            openssl: true,
+            boring: true,
+        },
+    )
+    .expect("F-2.2 D-S4: Gemini NodeJs → OpenSslAdapter intent → boring preference");
+    // Note: this prefers Boring per resolver pre-existing logic; F-2.3c adds
+    // per-profile byte-level Boring verification so this doesn't silently
+    // serve Gemini through Anthropic-only Boring builder.
+    assert_eq!(backend, MimicryBackend::Boring);
+}
+
+/// Gemini openssl only: ensure_selected_backend_matches_template runs since
+/// Gemini ec_point_formats=[0,1,2] (OpenSSL native) + ext22 ETM ✓ → Openssl OK.
+#[test]
+fn gemini_backend_resolver_falls_back_to_openssl_with_openssl_only() {
+    let profile = load_builtin_profile(BuiltinProfile::GeminiAdvanced)
+        .expect("Gemini builtin profile should load");
+    let backend = resolve_profile_mimicry_backend(
+        &profile,
+        AvailableMimicryFeatures {
+            openssl: true,
+            boring: false,
+        },
+    )
+    .expect(
+        "F-2.2 D-S4: Gemini NodeJs → OpenSslAdapter; openssl feature on → Openssl backend; \
+         OpenSSL native ec_point_formats + ETM ext22 match Gemini template",
+    );
+    assert_eq!(backend, MimicryBackend::Openssl);
+}
+
+/// Gemini no feature: backend_intent OpenSslAdapter but no adapter compiled →
+/// resolver returns KnownGapBlocked with adapter-missing reason.
+#[test]
+fn gemini_backend_resolver_returns_known_gap_when_no_feature() {
+    let profile = load_builtin_profile(BuiltinProfile::GeminiAdvanced)
+        .expect("Gemini builtin profile should load");
+    let backend = resolve_profile_mimicry_backend(
+        &profile,
+        AvailableMimicryFeatures {
+            openssl: false,
+            boring: false,
+        },
+    )
+    .expect("F-2.2 D-S4: Gemini with no mimicry feature must KnownGapBlocked (not Err)");
+    match backend {
+        MimicryBackend::KnownGapBlocked { reason } => {
+            assert!(reason.contains(profile.vendor.as_str()));
+            assert!(
+                reason.contains("mimicry-boring") || reason.contains("mimicry-openssl"),
+                "no-feature KnownGap reason must cite missing adapter (got: {reason})"
+            );
+        }
+        other => panic!(
+            "Gemini with no feature must be KnownGapBlocked, got {other:?}"
         ),
     }
 }

@@ -12,6 +12,7 @@ use super::{
     },
     tls_profile::{
         ExtensionOrder, TlsBackend, TlsFieldGap, TlsProfile, TlsVariant, codex_cli_known_gap_fields,
+        gemini_advanced_known_gap_fields, kiro_cli_known_gap_fields,
     },
 };
 
@@ -160,8 +161,21 @@ impl FingerprintProfile {
         Ok(profile)
     }
 
+    /// W11-F F-2.2 (synthesis Claude G-CLD-5, 2026-05-24): classification
+    /// now derives from `known_gap_fields()` rather than hard-coding
+    /// `CodexCli == KnownGapBlocked`. Any profile whose mode-specific gap
+    /// function returns non-empty is classified `KnownGapBlocked` —
+    /// currently CodexCli (4 fields) and KiroCli (1 field, permanent
+    /// rustls gap per D-S3). Anthropic and Gemini return empty and fall
+    /// through to the variant detection.
+    ///
+    /// Mutation: replacing `known_gap_fields().is_empty()` with a hard-coded
+    /// `mode == CodexCli` check regresses Kiro back to `SampleSetRandomized`
+    /// → `BackendIntent::UnsupportedTemplate (rustls)` → wrong dispatch
+    /// classification. `mimicry_dispatch_test.rs` per-profile assertions
+    /// catch this.
     pub fn match_policy(&self) -> ProfileMatchPolicy {
-        if self.mode == ProfileMode::CodexCli {
+        if !self.known_gap_fields().is_empty() {
             ProfileMatchPolicy::KnownGapBlocked
         } else if self.tls.has_sample_set_variants() {
             ProfileMatchPolicy::SampleSetRandomized
@@ -170,11 +184,15 @@ impl FingerprintProfile {
         }
     }
 
+    /// W11-F F-2.2: per-profile gap lookup. Each builtin mode owns its gap
+    /// list in `tls_profile.rs` — adding a new gap is one helper function,
+    /// not a switch-statement edit here.
     pub fn known_gap_fields(&self) -> Vec<TlsFieldGap> {
-        if self.match_policy() == ProfileMatchPolicy::KnownGapBlocked {
-            codex_cli_known_gap_fields()
-        } else {
-            Vec::new()
+        match self.mode {
+            ProfileMode::CodexCli => codex_cli_known_gap_fields(),
+            ProfileMode::KiroCli => kiro_cli_known_gap_fields(),
+            ProfileMode::GeminiAdvanced => gemini_advanced_known_gap_fields(),
+            ProfileMode::AnthropicClaudeCode => Vec::new(),
         }
     }
 
@@ -191,8 +209,27 @@ impl FingerprintProfile {
 
         match self.tls.backend {
             TlsBackend::NativeTlsOpenSsl => BackendIntent::OpenSslAdapter,
+            // W11-F F-2.2 (synthesis D-S4 Owner-approved, 2026-05-24): Node.js
+            // TLS stack is a thin wrapper over OpenSSL. The wire-byte field set
+            // declared by Gemini Advanced (51 ciphers, ETM ext22, PQ group 4588,
+            // 2 variants) is reachable via OpenSslMimicryAdapter; the OpenSSL
+            // adapter's `run_profile_preflight` decides at handshake time
+            // whether the actual bytes match. Routing this to OpenSslAdapter
+            // (rather than UnsupportedTemplate) is the synthesis design —
+            // push the gate to runtime, not static template classification.
+            //
+            // Mutation: reverting this arm to UnsupportedTemplate sends Gemini
+            // back to `DispatchDecision::BlockUnsupportedTemplate` instead of
+            // `AllowOpenSsl` + preflight gate; the per-profile dispatch test
+            // for Gemini catches this regression.
+            TlsBackend::NodeJs => BackendIntent::OpenSslAdapter,
             TlsBackend::Rustls => {
-                // D3 burn-the-boats: no fallback to hyper-rustls, fix mimicry path instead
+                // D3 burn-the-boats: no fallback to hyper-rustls, fix mimicry path instead.
+                // Kiro CLI declares tls_backend=rustls; per D-S3 (a) 2026-05-24, Kiro is
+                // reclassified to KnownGapBlocked via `kiro_cli_known_gap_fields()` which
+                // makes `match_policy()` return KnownGapBlocked BEFORE this match arm is
+                // reached. The UnsupportedTemplate path remains for any future
+                // not-yet-mapped rustls profile, not for the Kiro production case.
                 BackendIntent::UnsupportedTemplate {
                     reason: "tls_backend=rustls is observation-only after D3; production dispatch must use the mimicry path"
                         .to_owned(),

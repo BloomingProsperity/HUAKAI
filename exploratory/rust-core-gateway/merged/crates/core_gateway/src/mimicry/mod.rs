@@ -24,6 +24,12 @@ pub mod dispatch;
 pub mod http2_adapter;
 pub mod http_profile;
 pub mod ja3_wire;
+/// W11-F F-2.2 (synthesis §6 + Codex D-F2-1+5, 2026-05-24): central L1 TLS
+/// preflight types and static classification gate. Sits above
+/// `backend_resolver` and below `dispatch`; the typed status / error pair
+/// lets the dispatch layer branch on a single value rather than re-walk
+/// profile + intent + feature + runtime adapter for each call site.
+pub mod l1_preflight;
 #[cfg(feature = "mimicry-openssl")]
 pub mod openssl_adapter;
 pub mod profile;
@@ -47,6 +53,9 @@ pub use dispatch::{
     DispatchDecision, MimicryAction, MimicryProductionCanaryError, build_mimicry_action,
     decide_dispatch, decide_dispatch_with_features, is_dispatch_allowed,
     verify_profile_dispatchable_for_production,
+};
+pub use l1_preflight::{
+    L1TlsPreflightError, L1TlsPreflightStatus, is_dispatchable, preflight_status_from_intent,
 };
 pub use profile::{
     BuiltinProfile, FingerprintProfile, ProfileLoadError, ProfileMatchPolicy, ProfileMode,
