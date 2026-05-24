@@ -14,8 +14,9 @@ use hyper_util::client::legacy::connect::HttpConnector;
 
 #[cfg(feature = "mimicry-boring")]
 use crate::mimicry::{
-    BuiltinProfile, FingerprintProfile, MimicryProductionCanaryError, load_builtin_profile,
-    verify_profile_dispatchable_for_production,
+    BuiltinProfile, FingerprintProfile, L1TlsPreflightError, L1TlsPreflightStatus,
+    MimicryProductionCanaryError, is_dispatchable, load_builtin_profile,
+    preflight_status_from_intent, verify_profile_dispatchable_for_production,
 };
 
 #[cfg(feature = "mimicry-boring")]
@@ -79,7 +80,68 @@ pub fn try_build_http_client_with_profile(
 ) -> Result<GatewayHttpClient, MimicryProductionCanaryError> {
     // W11-F P1-3+P1-4 fix: 二次守门防漏 (caller may have bypassed dispatch).
     verify_profile_dispatchable_for_production(&profile)?;
+    // W11-F F-2.3+ (Codex review 2026-05-25): dispatch canary alone is not
+    // sufficient. `backend_from_profile_intent` has an L2-A8 special case that
+    // downgrades `BackendIntent::KnownGapBlocked` for CodexCli to
+    // `MimicryBackend::Openssl`, which `resolve_vendor_mimicry_backend` then
+    // upgrades to `MimicryBackend::Boring` whenever the mimicry-boring feature
+    // is on. With dispatch canary as the only gate, the Codex profile (4
+    // hard-coded TLS field gaps) silently receives a working Boring HTTP
+    // client. The L1 preflight typed gate from `mimicry::l1_preflight` is the
+    // second source of truth — it consults `backend_intent()` directly and
+    // also enforces the synthesis D-S2/D-S6 Pending semantic (any profile
+    // that needs runtime preflight must fail-closed until F-2.3a wires it).
+    //
+    // Mutation: removing this block lets Codex (Failed(KnownGap)) and Gemini
+    // (Pending) construct Boring HTTP clients unchecked; the two
+    // `try_build_http_client_with_profile_rejects_*` tests added in F-2.3+
+    // go red on that mutation.
+    let status = preflight_status_from_intent(&profile);
+    if !is_dispatchable(&status) {
+        return Err(map_l1_status_to_canary_error(status));
+    }
     Ok(build_http_client_with_connector(BoringTlsConnector::new(profile)))
+}
+
+/// W11-F F-2.3+ (Codex review 2026-05-25): convert a non-dispatchable
+/// [`L1TlsPreflightStatus`] into the existing production-canary error surface
+/// so callers don't need to learn a second error type. The mapping follows
+/// synthesis §6 — `Failed(KnownGap)` and the two runtime variants (RuntimeMismatch
+/// / AdapterMissing) surface as `KnownGap`; `Failed(BackendUnsupported)`
+/// surfaces as `UnsupportedTemplate`; `Pending` surfaces as `KnownGap` with a
+/// reason that names the missing runtime check (so F-2.3a wiring can grep
+/// for the literal).
+///
+/// Mutation: collapsing the Pending arm into `Passed`-equivalent (or returning
+/// Ok in `is_dispatchable` for Pending) would reintroduce the Gemini bypass;
+/// `try_build_http_client_with_profile_rejects_pending_gemini` goes red.
+#[cfg(feature = "mimicry-boring")]
+fn map_l1_status_to_canary_error(
+    status: L1TlsPreflightStatus,
+) -> MimicryProductionCanaryError {
+    match status {
+        L1TlsPreflightStatus::NotRequired | L1TlsPreflightStatus::Passed { .. } => {
+            // is_dispatchable filters these out before we ever reach this match.
+            unreachable!("dispatchable status should not reach map_l1_status_to_canary_error")
+        }
+        L1TlsPreflightStatus::Pending { profile_mode } => {
+            MimicryProductionCanaryError::KnownGap(format!(
+                "L1 preflight Pending for {profile_mode:?}: runtime wire-byte check not yet wired (F-2.3a)"
+            ))
+        }
+        L1TlsPreflightStatus::Failed(L1TlsPreflightError::KnownGap { reason, .. }) => {
+            MimicryProductionCanaryError::KnownGap(reason)
+        }
+        L1TlsPreflightStatus::Failed(L1TlsPreflightError::BackendUnsupported { reason, .. }) => {
+            MimicryProductionCanaryError::UnsupportedTemplate(reason)
+        }
+        L1TlsPreflightStatus::Failed(L1TlsPreflightError::RuntimeMismatch { reason, .. }) => {
+            MimicryProductionCanaryError::KnownGap(format!("L1 runtime mismatch: {reason}"))
+        }
+        L1TlsPreflightStatus::Failed(L1TlsPreflightError::AdapterMissing { reason, .. }) => {
+            MimicryProductionCanaryError::KnownGap(format!("L1 adapter missing: {reason}"))
+        }
+    }
 }
 
 #[cfg(feature = "mimicry-boring")]
@@ -196,5 +258,104 @@ mod tests {
         let profile = load_builtin_profile(BuiltinProfile::KiroCli)
             .expect("Kiro profile should load");
         let _ = build_http_client_with_profile(Arc::new(profile));
+    }
+
+    /// W11-F F-2.3+ (Codex review 2026-05-25): Codex profile MUST be rejected
+    /// at the Boring builder. The dispatch canary alone passes Codex because
+    /// `backend_from_profile_intent` has an L2-A8 special case that downgrades
+    /// `BackendIntent::KnownGapBlocked` for CodexCli → `MimicryBackend::Openssl`,
+    /// which `resolve_vendor_mimicry_backend` upgrades to `MimicryBackend::Boring`
+    /// whenever `mimicry-boring` is on. The L1 preflight typed gate inside
+    /// `try_build_http_client_with_profile` catches this and returns KnownGap
+    /// with a reason naming Codex's 4 hard-coded TLS gap fields.
+    ///
+    /// Discriminating mutation (per CLAUDE.md #14): the explicit
+    /// `verify_profile_dispatchable_for_production(&profile).expect(...)` below
+    /// proves the dispatch canary alone does NOT catch Codex. If the L1
+    /// preflight call is removed from `try_build_http_client_with_profile`,
+    /// the builder again returns Ok(client) — `expect_err` red.
+    /// If `is_dispatchable` is mutated to accept `Failed(_)`, the builder
+    /// returns Ok(client) — `expect_err` red.
+    /// If the resolver L2-A8 special case is eventually deleted, the first
+    /// `verify_profile_dispatchable_for_production.expect` flips to panic
+    /// instead of returning Ok — this test then signals that the bypass has
+    /// been closed at the resolver layer (defense-in-depth still holds).
+    #[cfg(feature = "mimicry-boring")]
+    #[test]
+    fn try_build_http_client_with_profile_rejects_blocked_codex() {
+        let profile = load_builtin_profile(BuiltinProfile::CodexCli)
+            .expect("Codex profile should load");
+
+        // Sanity baseline: dispatch canary alone does NOT reject Codex.
+        // This is the bypass the L1 preflight gate has to plug; if this Ok
+        // ever flips to Err, the resolver L2-A8 special case has been removed
+        // and the gate at the builder is now redundant for Codex
+        // (still kept for the typed-status invariant).
+        verify_profile_dispatchable_for_production(&profile).expect(
+            "dispatch canary passes Codex today (L2-A8 special case downgrades \
+             KnownGap → Openssl → Boring); the L1 preflight gate is what closes \
+             the bypass",
+        );
+
+        // Real assertion: L1 preflight at the builder fails the Codex profile.
+        let err = try_build_http_client_with_profile(Arc::new(profile))
+            .expect_err("Codex KnownGap must be rejected by the L1 preflight gate");
+        match err {
+            MimicryProductionCanaryError::KnownGap(reason) => {
+                assert!(
+                    reason.contains("cipher_suites")
+                        || reason.contains("extensions")
+                        || reason.contains("supported_groups")
+                        || reason.contains("signature_algorithms"),
+                    "Codex KnownGap reason must name at least one of the 4 \
+                     hard-coded gap fields (got: {reason})"
+                );
+            }
+            other => panic!("Codex should land in KnownGap, got {other:?}"),
+        }
+    }
+
+    /// W11-F F-2.3+ (Codex review 2026-05-25): Gemini profile MUST be rejected
+    /// at the Boring builder while the F-2.3a runtime preflight runner is
+    /// still unwired. `preflight_status_from_intent` returns `Pending` for
+    /// Gemini (per its `OpenSslAdapter` intent under `TlsBackend::NodeJs`).
+    /// `is_dispatchable` refuses Pending so the gate fails closed until the
+    /// runtime check is wired and can resolve Pending → Passed.
+    ///
+    /// Discriminating mutation (per CLAUDE.md #14):
+    /// - Removing the L1 preflight call from `try_build_http_client_with_profile`
+    ///   makes the builder return Ok(client) — `expect_err` red.
+    /// - Changing `is_dispatchable` to accept `Pending` makes the builder
+    ///   return Ok(client) — `expect_err` red.
+    /// - Removing the "Pending" / "GeminiAdvanced" substrings from the
+    ///   `map_l1_status_to_canary_error` Pending arm makes the substring
+    ///   assertions red (so future F-2.3a wiring can grep these literals).
+    /// The explicit `verify_profile_dispatchable_for_production(&profile).expect`
+    /// pins the fact that dispatch canary alone does NOT block Gemini.
+    #[cfg(feature = "mimicry-boring")]
+    #[test]
+    fn try_build_http_client_with_profile_rejects_pending_gemini() {
+        let profile = load_builtin_profile(BuiltinProfile::GeminiAdvanced)
+            .expect("Gemini profile should load");
+
+        // Sanity baseline: dispatch canary passes Gemini.
+        verify_profile_dispatchable_for_production(&profile).expect(
+            "dispatch canary passes Gemini today (Openssl intent → Boring under \
+             mimicry-boring feature); the L1 preflight Pending gate is what \
+             closes the bypass",
+        );
+
+        let err = try_build_http_client_with_profile(Arc::new(profile))
+            .expect_err("Gemini Pending must be rejected by the L1 preflight gate");
+        match err {
+            MimicryProductionCanaryError::KnownGap(reason) => {
+                assert!(
+                    reason.contains("Pending") && reason.contains("GeminiAdvanced"),
+                    "Gemini Pending error must name the unwired runtime preflight \
+                     AND the profile mode (got: {reason})"
+                );
+            }
+            other => panic!("Gemini Pending should land in KnownGap, got {other:?}"),
+        }
     }
 }
