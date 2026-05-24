@@ -133,14 +133,45 @@ pub struct SpoolPersistOutcome {
     pub was_duplicate: bool,
 }
 
+// Codex round 2 P2 fix 2026-05-24: 给 quarantine rename 加 cfg(test) 注入点。
+// production build 直接 fs::rename, 0 开销; test build 检查 thread_local 标志,
+// 允许测试确定性触发 EACCES 让 fail-fast 路径可被验证 (WSL root 模式 chmod 不挡,
+// env var 又被 workspace `unsafe_code = forbid` 禁)。
+#[cfg(test)]
+thread_local! {
+    pub(super) static FORCE_QUARANTINE_RENAME_FAIL: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn quarantine_rename_with_test_injection(src: &Path, dst: &Path) -> io::Result<()> {
+    if FORCE_QUARANTINE_RENAME_FAIL.with(|c| c.get()) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "test-forced rename failure (FORCE_QUARANTINE_RENAME_FAIL)",
+        ));
+    }
+    fs::rename(src, dst)
+}
+
+#[cfg(not(test))]
+fn quarantine_rename_with_test_injection(src: &Path, dst: &Path) -> io::Result<()> {
+    fs::rename(src, dst)
+}
+
 struct AttemptSpoolInner {
     options: AttemptSpoolOptions,
     pending_dir: PathBuf,
     tmp_dir: PathBuf,
+    /// W12-A D-4 第三方 P2 finding 2026-05-24: 损坏 / 非法文件移到此目录避免长期占用 quota,
+    /// 又保留磁盘文件供运维事后审计 (不静默删, 留证据)。
+    quarantine_dir: PathBuf,
     pending_count: AtomicUsize,
     pending_bytes: AtomicU64,
     reserved_bytes: AtomicU64,
     last_write_failed: AtomicBool,
+    /// W12-A D-4 第三方 P2 finding 2026-05-24: 启动 + replay 期累计 quarantine 文件数。
+    quarantined_count: AtomicU64,
 }
 
 /// W12-A D-4 attempt durable spool — file-per-record outbox。
@@ -181,20 +212,65 @@ impl AttemptSpool {
 
         let pending_dir = options.dir.join("pending");
         let tmp_dir = options.dir.join("tmp");
+        let quarantine_dir = options.dir.join("quarantine");
         fs::create_dir_all(&pending_dir)?;
         fs::create_dir_all(&tmp_dir)?;
+        fs::create_dir_all(&quarantine_dir)?;
 
-        // 启动扫: 把已存在 pending 文件计入 counters, 让 Slice 2 replay 能感知。
+        // 启动扫 (W12-A D-4 第三方 P2 finding 2026-05-24):
+        // 只把合法 `.pb` 文件计入 counters; pending_snapshot 也只列 `.pb`, 这两层语义必须对齐,
+        // 否则非 .pb 垃圾文件永远不会进 replay -> 永久占 quota -> watermark 卡死所有请求。
+        // 非 .pb 文件直接 (启动期一次性) 移到 quarantine_dir 留证据, 不静默删。
         let mut initial_count = 0usize;
         let mut initial_bytes = 0u64;
+        let mut initial_quarantined = 0u64;
         for entry in fs::read_dir(&pending_dir)? {
             let entry = entry?;
             if !entry.file_type()?.is_file() {
                 continue;
             }
-            let len = entry.metadata()?.len();
-            initial_count += 1;
-            initial_bytes = initial_bytes.saturating_add(len);
+            let name = entry.file_name();
+            let is_pb = name.to_str().is_some_and(|s| s.ends_with(".pb"));
+            let metadata = entry.metadata()?;
+            let len = metadata.len();
+            if is_pb {
+                initial_count += 1;
+                initial_bytes = initial_bytes.saturating_add(len);
+            } else {
+                // 移走防永久占 quota。命名带时间戳避免与同名重名碰撞。
+                let dest_name = format!(
+                    "startup-non-pb-{}-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos(),
+                    name.to_string_lossy()
+                );
+                let dest = quarantine_dir.join(dest_name);
+                // Codex round 1 P2 fix 2026-05-24: rename 失败必须 fail-fast 而非静默跳过,
+                // 否则文件留在 pending/ 但 pending_snapshot 也不列它 = 既不占 counter 也不
+                // 进 replay = disk 一直涨但 watermark/audit 看不见 (隐形 disk 泄漏)。
+                // 启动期 fail-fast 让运维清掉那一个文件比 production 跑着跑着 disk 满更安全。
+                //
+                // Codex round 2 P2 fix 2026-05-24: 用 cfg(test) 注入点让测试可确定性触发
+                // rename 失败 (WSL root 模式 chmod 不挡, env var 又被 unsafe_code 禁)。
+                // thread_local cell 既线程隔离 (每 test 独占), 又零 unsafe; production build
+                // cfg(test)=false 分支直接 fs::rename — 0 production 开销。
+                let rename_result = quarantine_rename_with_test_injection(&entry.path(), &dest);
+                rename_result.map_err(|err| {
+                    SpoolError::Io(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!(
+                            "startup quarantine of non-.pb file {:?} -> {:?} failed: {err}; \
+                             文件留在 pending/ 但 pending_snapshot 不列它 = 隐形 disk 泄漏, \
+                             fail-fast 让运维手动处理 (mv/rm) 后重启。",
+                            entry.path(),
+                            dest
+                        ),
+                    ))
+                })?;
+                initial_quarantined = initial_quarantined.saturating_add(1);
+            }
         }
 
         // 启动期 tmp/ 残留是上次崩溃中途产物, 清理掉。
@@ -209,10 +285,12 @@ impl AttemptSpool {
             options,
             pending_dir,
             tmp_dir,
+            quarantine_dir,
             pending_count: AtomicUsize::new(initial_count),
             pending_bytes: AtomicU64::new(initial_bytes),
             reserved_bytes: AtomicU64::new(0),
             last_write_failed: AtomicBool::new(false),
+            quarantined_count: AtomicU64::new(initial_quarantined),
         });
 
         Ok(Some(Self { inner }))
@@ -462,6 +540,66 @@ impl AttemptSpool {
 
     pub fn last_write_failed(&self) -> bool {
         self.inner.last_write_failed.load(Ordering::Relaxed)
+    }
+
+    /// W12-A D-4 第三方 P2 finding 2026-05-24: 累计 quarantine 文件数 (启动期 + replay 期合计)。
+    /// heartbeat / metrics 可暴露此值, 高位代表上游写了非法记录或磁盘出过 corrupt event。
+    pub fn quarantined_count(&self) -> u64 {
+        self.inner.quarantined_count.load(Ordering::Relaxed)
+    }
+
+    /// W12-A D-4 第三方 P2 finding 2026-05-24: 把 `pending/<key>.pb` 移到 quarantine 目录,
+    /// 同步扣减 pending_count / pending_bytes, 释放 watermark 配额。
+    ///
+    /// 调用方: replay worker 在 decode 失败时调用本方法替代 "warn 后 continue"。
+    /// 旧路径下损坏文件永远占 quota -> watermark 卡死所有请求 = backpressure 卡死生产。
+    ///
+    /// 设计:
+    /// - 物理 rename 到 quarantine/, 保留文件供运维事后审计 (不删, 留证据)。
+    /// - 命名带时间戳避免重复 key 多次 quarantine 冲突。
+    /// - 扣减 counter 用 checked_sub 防 underflow (多 reporter 共享 dir 时可能不同步)。
+    /// - rename 失败时仍然扣减 in-memory counter (磁盘文件保持 — 下次 startup 重扫会发现非 .pb
+    ///   再 quarantine, 不会重复计 quota 因为 startup 用 fs::read_dir 重新数)。等等不,
+    ///   rename 失败说明文件仍叫 `<key>.pb` 在 pending/, 下次 startup 仍会按 .pb 计入,
+    ///   所以 in-memory 扣减但 disk truth 不一致 = 危险。改: rename 失败时返回 Err, in-memory
+    ///   counter 不动, 让 caller 知道并下次再试。
+    pub fn quarantine_pending(&self, key: &str) -> Result<u64, SpoolError> {
+        validate_key(key)?;
+        let path = self.inner.pending_dir.join(format!("{key}.pb"));
+        let metadata = match fs::metadata(&path) {
+            Ok(m) => m,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                // 并发 ack 删了, 视为 noop
+                return Ok(0);
+            }
+            Err(err) => return Err(SpoolError::Io(err)),
+        };
+        let len = metadata.len();
+        let dest_name = format!(
+            "{key}-{}.pb",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let dest = self.inner.quarantine_dir.join(dest_name);
+        fs::rename(&path, &dest)?;
+        let _ = self
+            .inner
+            .pending_count
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+                cur.checked_sub(1)
+            });
+        let _ = self
+            .inner
+            .pending_bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+                cur.checked_sub(len)
+            });
+        self.inner
+            .quarantined_count
+            .fetch_add(1, Ordering::Relaxed);
+        Ok(len)
     }
 
     /// W12-A D-4 Slice 2 (Codex P2-2 catch-22 break): 写一个 0-byte 临时文件 + 立即删除,
@@ -828,6 +966,283 @@ mod tests {
             0,
             "duplicate persist 后 reserved_bytes 必须归零 (reservation 已 consume)"
         );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// W12-A D-4 第三方 P2 finding 2026-05-24: 启动时 pending/ 下非 .pb 文件
+    /// 必须不计 pending_bytes (防永久占 quota), 且移到 quarantine 留证据。
+    ///
+    /// 判别性 + mutation 设计 — 4 个独立断言, mutation 任一失败:
+    /// 1) pending_count == 1 (只算 .pb)
+    /// 2) pending_bytes == legit_pb 大小 (不含 garbage.txt)
+    /// 3) quarantined_count == 1 (启动期移走 1 个)
+    /// 4) quarantine/ 下有以 "startup-non-pb-" 前缀命名的文件
+    ///
+    /// mutation:
+    /// - 删 `is_pb` 过滤 -> pending_count == 2 / pending_bytes 含 .txt -> (1)+(2) 红
+    /// - 删 rename 到 quarantine -> quarantined_count == 0 / 文件还在 pending -> (3)+(4) 红
+    #[test]
+    fn open_only_counts_pb_files_and_quarantines_non_pb_garbage() {
+        let dir = unique_test_dir("non-pb-garbage");
+        // 预播 pending/ 含 1 个合法命名 .pb + 1 个非 .pb 垃圾文件
+        let pending_dir = dir.join("pending");
+        fs::create_dir_all(&pending_dir).expect("mkdir pending");
+        let legit_pb_path = pending_dir.join("idem-fake-1.pb");
+        fs::write(&legit_pb_path, b"fake-prost-bytes-not-decoded-here-just-counted")
+            .expect("write legit pb");
+        let legit_size = fs::metadata(&legit_pb_path).unwrap().len();
+        let garbage_path = pending_dir.join("readme.txt");
+        fs::write(&garbage_path, b"garbage that should not count toward quota")
+            .expect("write garbage");
+
+        let spool = AttemptSpool::open(test_options(dir.clone()))
+            .expect("open 应成功")
+            .expect("enabled");
+
+        assert_eq!(
+            spool.pending_count(),
+            1,
+            "pending_count 只算 .pb (mutation: 删 is_pb 过滤 -> 2)"
+        );
+        assert_eq!(
+            spool.pending_bytes(),
+            legit_size,
+            "pending_bytes 不应含非 .pb 文件大小 (mutation: 删过滤 -> 含 garbage.txt)"
+        );
+        assert_eq!(
+            spool.quarantined_count(),
+            1,
+            "启动期非 .pb 应移到 quarantine, 计数 +1 (mutation: 删 rename -> 0)"
+        );
+
+        // 验证垃圾文件真被移到 quarantine 目录
+        let quarantine_dir = dir.join("quarantine");
+        let quarantined: Vec<_> = fs::read_dir(&quarantine_dir)
+            .expect("quarantine 目录应存在")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            quarantined.iter().any(|n| n.starts_with("startup-non-pb-")),
+            "quarantine 应含 startup-non-pb-* 前缀的文件, 实际: {quarantined:?}"
+        );
+        assert!(
+            !garbage_path.exists(),
+            "原 pending/readme.txt 应已被移走 (mutation: 删 rename -> 仍在 pending)"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Codex round 1 P2 fix 2026-05-24: startup quarantine 阶段失败必须 fail-fast,
+    /// 否则非 .pb 文件留在 pending/ 但被 pending_snapshot 忽略 = 隐形 disk 泄漏。
+    ///
+    /// 本测试覆盖 **quarantine 目录无法创建** 路径 (open() 在 pending 扫描之前就拒)。
+    /// 单独的 open_fails_fast_when_startup_quarantine_rename_fails_unix 覆盖 **rename
+    /// 失败** 路径 (Codex round 2 P2 fix: 旧测试只覆盖 dir 创建失败, 不能 catch rename
+    /// 失败被静默忽略的 mutation)。
+    #[test]
+    fn open_fails_fast_when_startup_quarantine_dir_cannot_be_created() {
+        let dir = unique_test_dir("quarantine-dir-blocked");
+        let pending_dir = dir.join("pending");
+        fs::create_dir_all(&pending_dir).expect("mkdir pending");
+        // 在 dir 下放一个名为 "quarantine" 的普通文件让 create_dir_all 失败
+        fs::write(
+            dir.join("quarantine"),
+            "placeholder forcing mkdir quarantine failure".as_bytes(),
+        )
+        .expect("write quarantine placeholder");
+
+        let result = AttemptSpool::open(test_options(dir.clone()));
+        assert!(
+            result.is_err(),
+            "quarantine 目录无法创建时 open 应 fail-fast"
+        );
+
+        let _ = fs::remove_file(dir.join("quarantine"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Codex round 2 P2 fix 2026-05-24: 上一测试只覆盖 create_dir_all 失败路径,
+    /// 不能 catch 真正的 rename 失败被静默忽略 mutation (CLAUDE.md #14 真实判别性要求)。
+    /// 用 cfg(test)-gated env var (HUAKAI_TEST_FORCE_QUARANTINE_RENAME_FAIL) 注入点
+    /// 让测试可确定性触发 rename 失败 — chmod / FS perm 在 WSL root 模式下没法挡 root,
+    /// env var 注入跨平台稳定。
+    ///
+    /// 判别性 + mutation:
+    /// 1) pending/ 含 1 个非 .pb 文件 (open 必经 rename 分支)
+    /// 2) 设 HUAKAI_TEST_FORCE_QUARANTINE_RENAME_FAIL=1 让 cfg(test) 注入路径返回 EACCES
+    /// 3) open() 必须返回 Err (验证 fail-fast)
+    ///
+    /// mutation:
+    /// - 把 rename_result.map_err(...)? 改回旧 if rename.is_ok() 静默跳 -> open 返 Ok -> 红。
+    /// - 把 cfg(test) 注入点删 -> 此测试只跑真实 fs::rename 总是 OK -> 永远不触发失败路径 ->
+    ///   测试名称失实 (但代码仍可工作); 已在生产代码注释里固化注入点必要性。
+    ///
+    /// 安全: env var 仅在 cfg!(test) = true 时被读, production build 折叠为 false。
+    #[test]
+    fn open_fails_fast_when_startup_quarantine_rename_fails() {
+        let dir = unique_test_dir("quarantine-rename-fail");
+        let pending_dir = dir.join("pending");
+        fs::create_dir_all(&pending_dir).expect("mkdir pending");
+        fs::write(pending_dir.join("garbage.txt"), b"x").expect("write garbage");
+
+        // thread_local 标志 — 仅本测试线程可见, 不影响并发测试。
+        super::FORCE_QUARANTINE_RENAME_FAIL.with(|c| c.set(true));
+        let result = AttemptSpool::open(test_options(dir.clone()));
+        super::FORCE_QUARANTINE_RENAME_FAIL.with(|c| c.set(false));
+
+        let err = match result {
+            Ok(_) => panic!(
+                "quarantine rename 失败时 open 应 fail-fast (mutation: 旧 if rename.is_ok() \
+                 静默跳 -> Ok, 文件留 pending/ -> 复现 P2 finding 隐形 disk 泄漏)"
+            ),
+            Err(e) => e,
+        };
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("startup quarantine"),
+            "错误消息应明确指出 startup quarantine 失败, 实际: {err_msg}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// W12-A D-4 第三方 P2 finding 2026-05-24: quarantine_pending 必须移文件 +
+    /// 同步扣减 pending_count / pending_bytes / 增 quarantined_count, 否则坏文件
+    /// 永远占 watermark = backpressure 卡死。
+    ///
+    /// 判别性 + mutation 设计:
+    /// 1) persist 后 pending_count == 1, pending_bytes > 0
+    /// 2) quarantine_pending 返 Ok(bytes_freed) 且 == 持久化字节数
+    /// 3) 调用后 pending_count == 0 / pending_bytes == 0 / quarantined_count == 1
+    /// 4) pending/<key>.pb 文件消失, quarantine/<key>-<ts>.pb 出现
+    ///
+    /// mutation:
+    /// - 删 quarantine_pending 的 fetch_update pending_count -> count 仍是 1 -> (3) 红
+    /// - 删 fetch_update pending_bytes -> bytes != 0 -> (3) 红
+    /// - 删 fetch_add quarantined_count -> count == 0 -> (3) 红
+    /// - 删 fs::rename -> 文件还在 pending -> (4) 红
+    #[test]
+    fn quarantine_pending_moves_file_and_decrements_counters() {
+        let dir = unique_test_dir("quarantine-pending");
+        let spool = AttemptSpool::open(test_options(dir.clone()))
+            .expect("open OK")
+            .expect("enabled");
+
+        let report = sample_billable_report("q1");
+        let key = report.idempotency_key.clone();
+        let reservation = spool.reserve().expect("reserve OK");
+        let outcome = spool.persist(&report, reservation).expect("persist OK");
+
+        let persisted_bytes = outcome.bytes_written;
+        assert_eq!(spool.pending_count(), 1, "persist 后 count=1");
+        assert_eq!(
+            spool.pending_bytes(),
+            persisted_bytes,
+            "persist 后 pending_bytes == 写入字节数"
+        );
+        assert_eq!(spool.quarantined_count(), 0, "初始 quarantined_count=0");
+
+        let bytes_freed = spool
+            .quarantine_pending(&key)
+            .expect("quarantine_pending 应成功");
+        assert_eq!(
+            bytes_freed, persisted_bytes,
+            "quarantine 应返回正确释放字节数"
+        );
+
+        assert_eq!(spool.pending_count(), 0, "quarantine 后 pending_count=0 (mutation: 删 fetch_update -> 仍 1)");
+        assert_eq!(
+            spool.pending_bytes(),
+            0,
+            "quarantine 后 pending_bytes=0 (mutation: 删 fetch_update -> 仍非 0)"
+        );
+        assert_eq!(
+            spool.quarantined_count(),
+            1,
+            "quarantine 后计数 +1 (mutation: 删 fetch_add -> 仍 0)"
+        );
+
+        // pending/<key>.pb 消失, quarantine/ 含以 key 前缀命名的文件
+        assert!(
+            !dir.join("pending").join(format!("{key}.pb")).exists(),
+            "pending/{key}.pb 应被 rename 走 (mutation: 删 rename -> 仍在 pending)"
+        );
+        let quarantined: Vec<_> = fs::read_dir(dir.join("quarantine"))
+            .expect("quarantine 目录")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            quarantined.iter().any(|n| n.starts_with(&key)),
+            "quarantine 应含以 key 前缀命名的文件, 实际: {quarantined:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// W12-A D-4 第三方 P2 finding 2026-05-24: quarantine 之后 watermark 应释放,
+    /// 让先前卡 backpressure 的 reserve 重新成功 — 这是修复 "持续 503" 的关键不变量。
+    ///
+    /// 判别性 + mutation 设计:
+    /// 1) 用 test_options 的 watermark=2048 + max_record=512, persist 4 条接近水位
+    /// 2) 第 5 次 reserve 应 WatermarkExceeded (验证 watermark 真起作用)
+    /// 3) quarantine 一条后, reserve 应 Ok (watermark 让出)
+    ///
+    /// mutation:
+    /// - quarantine_pending 删 pending_bytes 扣减 -> watermark 不让出 -> (3) 红
+    /// - quarantine_pending 直接 NOOP (假实现) -> 既不让出 watermark 也不释放文件 -> (3) 红
+    #[test]
+    fn quarantine_pending_releases_watermark_for_subsequent_reserve() {
+        let dir = unique_test_dir("quarantine-watermark");
+        let spool = AttemptSpool::open(test_options(dir.clone()))
+            .expect("open OK")
+            .expect("enabled");
+
+        // 用一系列 reserve+persist 把 pending_bytes 推到接近 watermark
+        let mut persisted_keys: Vec<String> = Vec::new();
+        loop {
+            match spool.reserve() {
+                Ok(reservation) => {
+                    let report = sample_billable_report(&format!("w{}", persisted_keys.len()));
+                    let key = report.idempotency_key.clone();
+                    spool.persist(&report, reservation).expect("persist OK");
+                    persisted_keys.push(key);
+                    if persisted_keys.len() > 32 {
+                        panic!("意外: test_options watermark 太大, 超过 32 个仍未饱和");
+                    }
+                }
+                Err(_) => break, // watermark hit
+            }
+        }
+        assert!(
+            !persisted_keys.is_empty(),
+            "至少应 persist 1 条才能演示 quarantine 让出 watermark"
+        );
+
+        // 验证 watermark 真起作用
+        assert!(
+            matches!(
+                spool.reserve(),
+                Err(AttemptSpoolBackpressure::WatermarkExceeded { .. })
+            ),
+            "watermark 越线 reserve 应失败 (此前 persist 已饱和)"
+        );
+
+        // quarantine 第一个 key 释放 watermark
+        let first_key = persisted_keys[0].clone();
+        spool
+            .quarantine_pending(&first_key)
+            .expect("quarantine OK");
+
+        // 现在 reserve 应能成功 (watermark 让出至少 1 条 record 空间)
+        let reservation = spool.reserve().expect(
+            "quarantine 后 reserve 应成功 — mutation: quarantine 不扣 pending_bytes 时此处 \
+             仍 WatermarkExceeded -> 测试红 (复现 P2 finding: 持续 backpressure)",
+        );
+        drop(reservation); // Drop RAII 释放配额
 
         let _ = fs::remove_dir_all(&dir);
     }

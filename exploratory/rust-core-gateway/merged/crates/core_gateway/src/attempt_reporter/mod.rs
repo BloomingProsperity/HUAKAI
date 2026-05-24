@@ -484,6 +484,17 @@ impl AttemptReporter {
         self.inner.spool.is_some()
     }
 
+    /// W12-A D-4 第三方 P2 finding 2026-05-24: 暴露 spool quarantine 文件数,
+    /// 包括 startup 期 (非 .pb 垃圾) + replay 期 (decode 失败) 两类来源。
+    /// heartbeat / metrics 可上报此值预警 corrupt spike。
+    pub fn spool_quarantined_count(&self) -> u64 {
+        self.inner
+            .spool
+            .as_ref()
+            .map(|s| s.quarantined_count())
+            .unwrap_or(0)
+    }
+
     /// W12-A D-4 Slice 3 AC-4-pre: forward_planned 转发前调, 检查 spool 是否仍可接受新报告。
     /// spool=None (baseline): 永远 Ok (维持旧行为, 不引 503)。
     /// spool=Some: 尝试 reserve, 立即 Drop 释放预算 = 纯 capacity probe;
@@ -619,12 +630,28 @@ async fn drain_pending(
             Ok(p) => p,
             Err(SpoolError::KeyNotFound(_)) => continue, // 已被 live worker ack
             Err(SpoolError::Decode(err)) => {
+                // W12-A D-4 第三方 P2 finding 2026-05-24: decode 失败必须 quarantine
+                // 而非 warn+continue, 否则损坏文件永远占 pending_bytes -> watermark 卡死
+                // 所有请求 = backpressure 持续 503。quarantine 后扣减 counter 释放配额。
                 inner.spool_corrupt_reports.fetch_add(1, Ordering::Relaxed);
-                warn!(
-                    error = %err,
-                    idempotency_key = %key,
-                    "W12-A D-4: replay 遇 corrupt spool 文件, 跳过 (Slice 后续可移到 quarantine 目录)"
-                );
+                match spool.quarantine_pending(&key) {
+                    Ok(bytes_freed) => {
+                        warn!(
+                            error = %err,
+                            idempotency_key = %key,
+                            bytes_freed,
+                            "W12-A D-4: replay 遇 corrupt spool 文件, 已 quarantine 释放 watermark"
+                        );
+                    }
+                    Err(qerr) => {
+                        warn!(
+                            error = %err,
+                            quarantine_error = %qerr,
+                            idempotency_key = %key,
+                            "W12-A D-4: replay 遇 corrupt + quarantine 也失败, 下次 replay 重试"
+                        );
+                    }
+                }
                 continue;
             }
             Err(err) => {
