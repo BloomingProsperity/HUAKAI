@@ -192,3 +192,70 @@ func TestValidate_RejectsMissingTenantID(t *testing.T) {
 		t.Fatal("Validate must reject TenantID==0")
 	}
 }
+
+// TestPayload_FromCompletionEvent_NormalizesEmptyAuditRequestID
+//
+// Owner P2 finding (2026-05-24) 判别 fixture:event.RequestID 有值,但
+// SettleRequest.AuditRequestID 为空(stream 路径就是这样,见
+// chat_completions_stream.go:542 没填 AuditRequestID);settleCompletion
+// 在栈本地副本上补,recovery payload 取的是外层 event,会得到空 audit_request_id
+// → worker 重放写 NULL → audit/receipt 链断。
+//
+// Mutation 自检:删 FromCompletionEvent 里的 `if auditRequestID == "" { = event.RequestID }`
+// → payload.Settle.AuditRequestID 为空,本用例必 red。
+func TestPayload_FromCompletionEvent_NormalizesEmptyAuditRequestID(t *testing.T) {
+	event := fixtureCompletionEvent(t)
+	// 模拟 stream 路径:event.RequestID 有值,但 SettleRequest.AuditRequestID 空。
+	event.SettleRequest.AuditRequestID = ""
+	if event.RequestID == "" {
+		t.Fatalf("fixture event.RequestID must be non-empty for this test")
+	}
+
+	payload := FromCompletionEvent(SourceStream, event)
+
+	if payload.Settle.AuditRequestID != event.RequestID {
+		t.Fatalf("FromCompletionEvent MUST normalize empty SettleRequest.AuditRequestID to event.RequestID; "+
+			"got %q want %q (event.RequestID)", payload.Settle.AuditRequestID, event.RequestID)
+	}
+
+	// 端到端验:Encode + Decode 后 ToSettleRequest 出来的 SettleRequest 也带规范化值。
+	raw, err := payload.Encode()
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	decoded, err := Decode(raw)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	req := decoded.ToSettleRequest()
+	if req.AuditRequestID != event.RequestID {
+		t.Fatalf("round-trip ToSettleRequest.AuditRequestID drift: got %q want %q",
+			req.AuditRequestID, event.RequestID)
+	}
+}
+
+// TestPayload_FromCompletionEvent_PreservesExplicitAuditRequestID
+//
+// 守 defense-in-depth 规范化**不应**覆盖 caller 显式填的值。non-stream 路径
+// (chat_completions_handler_headers.go:264)/billing_persister_handler 都
+// 自己规范化过 SettleRequest.AuditRequestID,FromCompletionEvent 不应再二次覆盖。
+//
+// Mutation 自检:把 normalize 改成 `auditRequestID = event.RequestID` 无条件赋值
+// → 本用例必 red (preserve 失效)。
+func TestPayload_FromCompletionEvent_PreservesExplicitAuditRequestID(t *testing.T) {
+	event := fixtureCompletionEvent(t)
+	if event.SettleRequest.AuditRequestID == "" {
+		t.Fatalf("fixture SettleRequest.AuditRequestID must be non-empty for this test")
+	}
+	if event.RequestID == event.SettleRequest.AuditRequestID {
+		t.Fatalf("fixture must use different values to be discriminating")
+	}
+	explicit := event.SettleRequest.AuditRequestID
+
+	payload := FromCompletionEvent(SourceStream, event)
+
+	if payload.Settle.AuditRequestID != explicit {
+		t.Fatalf("FromCompletionEvent must preserve explicit SettleRequest.AuditRequestID; "+
+			"got %q want %q", payload.Settle.AuditRequestID, explicit)
+	}
+}

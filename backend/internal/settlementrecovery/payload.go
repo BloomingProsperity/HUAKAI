@@ -88,8 +88,18 @@ var (
 
 // FromCompletionEvent 把 eventbus.RequestCompletionEvent 转 Payload。
 // OutboxEmitter 字段被显式 strip(不持久化 func)。
+//
+// AuditRequestID 规范化兜底(Owner P2 finding 2026-05-24):上层 settleCompletion
+// / Handler.Handle 都是在**栈本地副本**上把 SettleRequest.AuditRequestID 补成
+// event.RequestID,recovery payload 构造时拿到的是外层未规范化的原始 event ——
+// 不在此处兜底,worker 重放写 NULL audit_request_id,断 audit/receipt 关联。
+// 单点兜底 = 守所有 caller(stream / eventbus billing handler / 未来新 source)。
 func FromCompletionEvent(src Source, event eventbus.RequestCompletionEvent) Payload {
 	req := event.SettleRequest
+	auditRequestID := req.AuditRequestID
+	if auditRequestID == "" {
+		auditRequestID = event.RequestID
+	}
 	return Payload{
 		Source:            src,
 		EventID:           event.ID,
@@ -115,7 +125,7 @@ func FromCompletionEvent(src Source, event eventbus.RequestCompletionEvent) Payl
 			Draft:               req.Draft,
 			StreamAttempt:       req.StreamAttempt,
 			Fingerprint:         req.Fingerprint,
-			AuditRequestID:      req.AuditRequestID,
+			AuditRequestID:      auditRequestID,
 			SnapshotVersion:     req.SnapshotVersion,
 		},
 	}
