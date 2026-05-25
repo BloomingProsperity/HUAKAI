@@ -194,25 +194,37 @@ boring_tls_connector 的 TLS 握手 + ALPN 检测, 仅在 ALPN=h2 后接管 H2 p
 
 合并 Claude + Codex 的 acceptance + Claude G-CX-1 / G-CX-2 补:
 
-1. `cargo test -p core_gateway --no-default-features` 全绿
-2. `cargo test -p core_gateway --features mimicry-http2-fork --lib` 含新真 loopback 测试
-3. `cargo test -p core_gateway --features mimicry-boring,mimicry-http2-fork --lib`
-   含 proxy_engine_http2_fork / mimicry_http2_preflight / mimicry_http2_wire
+1. `cargo test -p core_gateway --no-default-features` 全绿 (lib + integration + bin
+   + doc 默认全跑, 不加 `--lib` 过滤)
+2. `cargo test -p core_gateway --features mimicry-http2-fork` 全绿 — **不带 `--lib`**
+   (round 1 Codex P1 fix: `--lib` 过滤会跳过 `tests/` 下的 integration tests, F-1.b
+   的 loopback HTTP/2 真连接测试 + F-1.a 的 `mimicry_http2_fixture_test` 都在
+   integration suite. 必要时改成 `--lib --tests` 显式 enumerate 也行)
+3. `cargo test -p core_gateway --features mimicry-boring,mimicry-http2-fork` 全绿
+   (含 proxy_engine_http2_fork / mimicry_http2_preflight / mimicry_http2_wire /
+   mimicry_http2_fixture 等 integration suites — 同样**不带 `--lib`**)
 4. **For 每个 F-1 Released profile**: runtime fork 出 byte exact match 真上游 CLI
    fixture (SETTINGS id+value+order, pseudo-header order). 不许 "not-equal-to-bad" 弱断言.
-5. L2 preflight 在 combined-feature builder 接好: missing/wrong-value/wrong-order/
+5. **For 每个 F-1 Released profile**: `profile.alpn_protocols` MUST include `"h2"`
+   AND 真上游 capture 证据 (F-1.g) 必须显示 ALPN 协商落到 `h2` (round 1 Codex P1 fix:
+   `boring_tls_connector.rs:176-178/249-258` 从 ALPN selection 推 `negotiated_h2`;
+   如果 profile alpn_protocols 仅有 `http/1.1` (现 anthropic_claude_code.json:99-100
+   就是这样), HTTPS h2 握手必协商落 h1, fork client 必拒, **每个真 Anthropic 请求
+   都会 fail-closed** 即使 SETTINGS / pseudo-header byte-match. F-1.g capture 必须
+   同时刷新 alpn_protocols 字段 + h2 协商证据).
+6. L2 preflight 在 combined-feature builder 接好: missing/wrong-value/wrong-order/
    wrong-pseudo-order 都 structured fail-closed
-6. `build_mimicry_action` 映 L2 错误成 `Block*` 不 panic (F-2.3+ pattern)
-7. Release evidence doc 标每 profile 的状态: Released / Feature Flag / Safe Equivalent
+7. `build_mimicry_action` 映 L2 错误成 `Block*` 不 panic (F-2.3+ pattern)
+8. Release evidence doc 标每 profile 的状态: Released / Feature Flag / Safe Equivalent
    / Mandatory Roadmap. 不悄悄丢功能 (Feature Preservation Rule)
-8. **新增 G-CX-1**: `tools/feature-matrix/verify.sh` 加 `mimicry-boring,mimicry-http2-fork`
+9. **G-CX-1**: `tools/feature-matrix/verify.sh` 加 `mimicry-boring,mimicry-http2-fork`
    组合, 全绿
-9. **新增 G-CX-2**: hdrhistogram bench (复用 dev-dep): F-1.e + F-1.f 完后, p99
-   relay latency 增加 ≤ 5% (vs 基线). 超过即回滚 D3 选项 A
-10. CLAUDE.md #8 per-commit codex review: 每 sub-phase ≥1 轮闭环, P1 全清, P2 ≤2 轮
-11. CLAUDE.md #14 mutation: 至少 F-1.b + F-1.c + F-1.f 各跑一次 live mutation check
+10. **G-CX-2**: hdrhistogram bench (复用 dev-dep): F-1.e + F-1.f 完后, p99
+    relay latency 增加 ≤ 5% (vs 基线). 超过即回滚 D3 选项 A
+11. CLAUDE.md #8 per-commit codex review: 每 sub-phase ≥1 轮闭环, P1 全清, P2 ≤2 轮
+12. CLAUDE.md #14 mutation: 至少 F-1.b + F-1.c + F-1.f 各跑一次 live mutation check
     (像 F-2.3+ 那样实改+重跑)
-12. CLAUDE.md #11 attestation: 每 commit body 含 attestation 行, 无 0x676e67/http2 抄码
+13. CLAUDE.md #11 attestation: 每 commit body 含 attestation 行, 无 0x676e67/http2 抄码
 
 ### 4.4 risk register 合并 (8 项)
 
