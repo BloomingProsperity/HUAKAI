@@ -62,3 +62,30 @@ Each high or release-blocking risk must map to mitigation, test coverage, and re
 - Claude 平行视角：[docs/process/reviews/2026-05-15-high-risks-mitigation-claude.md](process/reviews/2026-05-15-high-risks-mitigation-claude.md)
 
 未删除、未降级任何 risk 行；只在表后追加 triage 记录。
+
+## 2026-05-25 Triage Notes (账号转 API 主线 8 vendor + auth_expired S1+S2+S3)
+
+今天工作累积识别 6 项新 risks（其中 2 项已修,4 项 DEFERRED）。
+
+- **R-SEC-003 (Vendor refresher SSRF / token exfil, S0, FIXED)**：Cursor + Windsurf refresher.go 从 credential JSON 读 `oauth_token_endpoint/token_endpoint/client_id/scope` → 攻击者改 credential → refresh token 发到攻击者 URL → token 外泄。Owner 直接发现。修复:endpoint/client/scope **仅** 从 admin operator config (a.TokenURL/a.ClientID/a.Scope) 读,credential JSON 仅 refresh_token 数据源。SSRF 防御 unit test (credential 注 evil URL + a.TokenURL 空 → fail-closed)。所有 8 vendor refresher (anthropic/copilot/cursor/windsurf/openai_codex/kiro/gemini/antigravity) 同模式 hardened。Last triage 2026-05-25 commit `cd8a5f4` (Cursor) + `707d556` (Windsurf) + 后续 5 vendor 同模式。
+
+- **R-AUDIT-001 (Admin UI severity mapping for 4 new outcomes, S2, FIXED)**：observability.sql severity case 漏 auth_expired/rate_limit_exceeded/risk_control_triggered/account_disabled → admin UI warning/error 过滤漏报。修复:severity case 新加 auth_expired/risk_control_triggered/account_disabled → error / rate_limit_exceeded → warning。Last triage 2026-05-25 commit `cd8a5f4`,DEFERRED-audit-outcome-severity-mapping.md [CLOSED]。
+
+- **R-SIDECAR-001 (boring sigalgs 10/26 IDs gap, S2, DEFERRED)**：tls-sidecar profile.rs anthropic_cli_mimicry_v1 sigalgs 字符串仅 10 项标准 sigalg 名,真抓包 wire 26 个数字 ID。boring `SSL_CTX_set_sigalgs_list` API 接受字符串 + 已知算法表校验,无 raw 16-bit setter。R-3-A-fix-6 调研 (docs/process/plans/2026-05-25-r3a-fix6-sigalgs-raw-api-investigation.md) 推荐方案 A: 0.5-1 day vendor C 加 `SSL_CTX_set_sigalgs_raw` 窄 setter + Rust wrapper + extension 13 wire parser。Phase 4 ECH / Phase 5 PQ wire proof **不阻塞**;**生产 sidecar exact-fidelity 接通前必修**。Last triage 2026-05-25 commit `b38a34c`。下一步:Owner 确认 raw setter 命名 + 是否进 Phase 5C 实施 slice。
+
+- **R-SIDECAR-002 (Phase 3 H2 ALPN raw tunnel 边界, S2, DEFERRED)**：tls-sidecar connect.rs raw tunnel TLS handshake 后即使 ALPN=h2 仍返 raw TLS。Go sidecar transport (HTTP/1.1 only, `ForceAttemptHTTP2:false`) 后续发 HTTP/1.1 request → 服务端按 H2 解 → 协议错乱。sidecar **未接通生产** (`Factory.SidecarSocketPath` 默认空),当前 no-impact。修复路径 3 选项 (Go-Rust 接通切片同期决): (A) raw tunnel ALPN=h2 时 fail / 转 H2 path / (B) Rust own 完整 H2 framing (重大重构) / (C) sidecar profile 强制 ALPN=http/1.1。Last triage 2026-05-25 commit `44bf875`,DEFERRED-sidecar-raw-tunnel-h2-alpn.md。
+
+- **R-VEND-001 (6 vendor operator-config OAuth endpoint 缺, S1, OPEN-PENDING-OWNER)**：cursor/windsurf/openai_codex/kiro/gemini/antigravity 6 vendor RefreshAdapter operator-config endpoint/client/scope 缺。Owner 真账号抓包后才能填入 `HUAKAI_<VENDOR>_OAUTH_{AUTH_URL,TOKEN_URL,CLIENT_ID,CLIENT_SECRET,SCOPE}` env。**当前 fail-closed**:TokenURL 空 → `WithVendorRefresher` 不注入 → vendor 自动 skip,不 crash。Owner-side action:per [[feedback_owner_local_verification]] Owner 本机抓 cursor/windsurf/codex CLI/kiro/gemini Advanced/antigravity OAuth flow。Last triage 2026-05-25 commit `e1af326`。
+
+- **R-TEST-002 (Sandbox TCP bind 限制 20+ tests #[ignore], S3, DEFERRED)**：core_gateway 多个集成测试 `TcpListener::bind("127.0.0.1:0")` 在 sandbox 报 `Operation not permitted`。attempt_reporter_test (commit `ecc9a5c`) 8 用例 `#[ignore]` + listener_test (commit `c58afcb`) 2 用例 `#[ignore]` + route_client_test spillover 3 用例。修复方式:in-memory mock + `#[ignore]` 双轨;in-memory 保留 mutation discriminating 断言,TCP 集成在 bind-allowed env 单独跑。CI 需 bind-allowed env 跑 `--ignored` profile 才完整覆盖。Last triage 2026-05-25。下一步:Owner / CI infra 提供 bind-allowed test runner 覆盖 ignored cases。
+
+新 DEFERRED 票汇总 (docs/process/reviews/):
+- DEFERRED-audit-outcome-severity-mapping.md [CLOSED 2026-05-24 by S2 commit cd8a5f4]
+- DEFERRED-windsurf-storage-handler.md (S2)
+- DEFERRED-windsurf-refresher-audit-outcome.md [CLOSED 2026-05-24 by S2/Cursor SSRF fix]
+- DEFERRED-sidecar-raw-tunnel-h2-alpn.md (S2)
+
+待 Owner 决策:
+- AE-D3 admin UI detailed cause (8 D 决策 §F docs/process/plans/2026-05-25-ae-d3-admin-ui-detailed-cause-synthesis.md, 推 Mixed D = B target + 可选 C 加速)
+- BS45-SD1..SD5 Phase 4-5 ECH+PQ (5 D 决策 §F docs/process/plans/2026-05-24-boringssl-phase-4-5-synthesis.md)
+- R-3-A-fix-6 命名 + 实施时机 (Phase 5C pre-production gate)
