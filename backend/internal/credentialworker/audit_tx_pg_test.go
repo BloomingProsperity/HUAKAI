@@ -319,3 +319,49 @@ func TestRecordAuditString_NewOutcomePersistsToPG(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordAudit_HealthStateTransitionRoundTripPG(t *testing.T) {
+	// Regression killed: audit outcomes must update provider_accounts health
+	// state in the same local DB path, not only append audit rows. Mutation
+	// self-check: deleting the health update leaves the SELECT below at the
+	// seeded/default state and this test turns red.
+	ctx := context.Background()
+	pool := openCredentialWorkerTestPool(t, ctx)
+	suffix := uuid.NewString()
+	tenantID, paID := seedCredentialWorkerProviderAccount(t, ctx, pool, suffix)
+
+	signer := newTestSigner(t)
+	s := newSchedulerForAuditTx(t, pool, signer)
+	row := dbbilling.ListAccountsForRefreshRow{ID: paID, TenantID: tenantID}
+
+	if err := s.recordAuditString(ctx, row, "auth_expired", "account", errors.New("expired refresh")); err != nil {
+		t.Fatalf("record auth_expired: %v", err)
+	}
+	wantUntil := s.now().UTC().Add(30 * time.Minute)
+	var state string
+	var until time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT health_state, health_state_until FROM provider_accounts WHERE id = $1`,
+		paID,
+	).Scan(&state, &until); err != nil {
+		t.Fatalf("select revoked state: %v", err)
+	}
+	if state != "revoked" || !until.Equal(wantUntil) {
+		t.Fatalf("after auth_expired health=(%q,%s), want revoked until %s", state, until, wantUntil)
+	}
+
+	if err := s.recordAudit(ctx, row, auth.OutcomeRefreshSucceeded, "account", nil); err != nil {
+		t.Fatalf("record refresh_succeeded: %v", err)
+	}
+	var resetState string
+	var resetUntil *time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT health_state, health_state_until FROM provider_accounts WHERE id = $1`,
+		paID,
+	).Scan(&resetState, &resetUntil); err != nil {
+		t.Fatalf("select healthy state: %v", err)
+	}
+	if resetState != "healthy" || resetUntil != nil {
+		t.Fatalf("after refresh_succeeded health=(%q,%v), want healthy NULL", resetState, resetUntil)
+	}
+}

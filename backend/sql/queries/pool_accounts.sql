@@ -1,4 +1,17 @@
 -- name: ListEligibleAccounts :many
+WITH normalized_health AS (
+    UPDATE provider_accounts pa
+    SET
+        health_state = 'healthy',
+        health_state_until = NULL,
+        updated_at = NOW()
+    WHERE pa.tenant_id = sqlc.arg(tenant_id)
+      AND pa.channel_id = sqlc.arg(channel_id)
+      AND pa.health_state IN ('throttled', 'revoked', 'cooldown')
+      AND pa.health_state_until IS NOT NULL
+      AND pa.health_state_until <= NOW()
+    RETURNING pa.id
+)
 SELECT
     id,
     tenant_id,
@@ -60,15 +73,40 @@ SELECT
     last_refresh_at,
     last_refresh_outcome,
     oauth_endpoint_health
-FROM provider_accounts
-WHERE tenant_id = sqlc.arg(tenant_id)
-  AND channel_id = sqlc.arg(channel_id)
-  AND enabled = true
-  AND deleted_at IS NULL
-  AND health_state IN ('operational', 'degraded')
+FROM provider_accounts pa
+WHERE pa.tenant_id = sqlc.arg(tenant_id)
+  AND pa.channel_id = sqlc.arg(channel_id)
+  AND pa.enabled = true
+  AND pa.deleted_at IS NULL
+  AND (
+      pa.health_state = 'healthy'
+      OR pa.id IN (SELECT id FROM normalized_health)
+  )
 ORDER BY priority, last_dispatch_at NULLS FIRST;
 
 -- name: ListEligibleAccountsByPoolGroup :many
+WITH target_channels AS (
+    SELECT c.id
+    FROM channels c
+    WHERE c.pool_group_id = sqlc.arg(pool_group_id)
+      AND c.tenant_id = sqlc.arg(tenant_id)
+      AND c.enabled = true
+      AND c.deleted_at IS NULL
+),
+normalized_health AS (
+    UPDATE provider_accounts pa
+    SET
+        health_state = 'healthy',
+        health_state_until = NULL,
+        updated_at = NOW()
+    FROM target_channels tc
+    WHERE pa.tenant_id = sqlc.arg(tenant_id)
+      AND pa.channel_id = tc.id
+      AND pa.health_state IN ('throttled', 'revoked', 'cooldown')
+      AND pa.health_state_until IS NOT NULL
+      AND pa.health_state_until <= NOW()
+    RETURNING pa.id
+)
 -- Phase C.2: pool-group-keyed eligibility lookup for the gateway selector.
 -- Joins channels → provider_accounts so a SelectionRequest with PoolGroupID
 -- (and no explicit ChannelID) can resolve to the candidate account set.
@@ -91,6 +129,8 @@ SELECT
     pa.in_flight_count,
     pa.priority,
     pa.last_dispatch_at,
+    pa.health_state,
+    pa.health_state_until,
     pa.model_allow_list,
     pa.capability_flags,
     pa.cap_queue_sticky,
@@ -105,7 +145,10 @@ WHERE pa.tenant_id = sqlc.arg(tenant_id)
   AND c.tenant_id = sqlc.arg(tenant_id)
   AND pa.enabled = true
   AND pa.deleted_at IS NULL
-  AND pa.health_state IN ('operational', 'degraded')
+  AND (
+      pa.health_state = 'healthy'
+      OR pa.id IN (SELECT id FROM normalized_health)
+  )
   AND (cardinality(pa.model_allow_list) = 0
        OR pa.model_allow_list @> ARRAY[sqlc.arg(requested_model)::text])
   AND pa.capability_flags @> sqlc.arg(required_capabilities)::text[]

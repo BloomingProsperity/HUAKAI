@@ -58,14 +58,16 @@ type WaitPlan struct {
 }
 
 type AccountSnapshot struct {
-	ID             int64
-	TenantID       int64
-	Priority       int
-	LoadRate       float64
-	LastUsedAt     time.Time
-	MaxConcurrency int
-	WaitTimeoutMS  int
-	MaxWaiting     int
+	ID               int64
+	TenantID         int64
+	Priority         int
+	LoadRate         float64
+	LastUsedAt       time.Time
+	MaxConcurrency   int
+	WaitTimeoutMS    int
+	MaxWaiting       int
+	HealthState      string
+	HealthStateUntil time.Time
 }
 
 type RoutingPolicy struct {

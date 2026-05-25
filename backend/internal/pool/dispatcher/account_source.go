@@ -65,9 +65,13 @@ func (s *DBAccountSource) ListAccounts(ctx context.Context, req SelectionRequest
 			// WaitTimeoutMS left at 0 — selector overrides with
 			// RoutingPolicy.FallbackTimeoutMS when the policy is set.
 			// Per-account timeout override is a Phase E refinement.
+			HealthState: r.HealthState,
 		}
 		if r.LastDispatchAt.Valid {
 			snap.LastUsedAt = r.LastDispatchAt.Time
+		}
+		if r.HealthStateUntil.Valid {
+			snap.HealthStateUntil = r.HealthStateUntil.Time
 		}
 		out = append(out, snap)
 	}

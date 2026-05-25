@@ -42,9 +42,11 @@ type Scheduler struct {
 	ticks            <-chan time.Time
 	vendorRefreshers map[string]Refresher
 
-	queryer     refreshQueries
-	acquirer    stormAcquirer
-	auditWriter auth.AuditWriter
+	queryer      refreshQueries
+	acquirer     stormAcquirer
+	auditWriter  auth.AuditWriter
+	healthPolicy ProviderAccountHealthPolicy
+	healthStore  providerAccountHealthStore
 
 	// 同事务路径 (RR-W5-002):txPool + auditSigner + auditQueries 全配齐时
 	// recordAudit 走 BeginFunc;production wiring 必须 gate 三件套都装。
@@ -76,6 +78,7 @@ func NewScheduler(queries *dbbilling.Queries, storm *auth.StormController, signe
 		sleep:           sleepContext,
 		now:             time.Now,
 		auditWriter:     auth.NoopAuditWriter{},
+		healthPolicy:    DefaultProviderAccountHealthPolicy(),
 	}
 	if queries != nil {
 		s.queryer = queries
