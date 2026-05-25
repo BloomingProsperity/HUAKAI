@@ -30,6 +30,11 @@ pub mod ja3_wire;
 /// lets the dispatch layer branch on a single value rather than re-walk
 /// profile + intent + feature + runtime adapter for each call site.
 pub mod l1_preflight;
+/// W11-F F-1.c (Owner-approved synthesis 2026-05-25): L2 HTTP/2 preflight
+/// typed gate, mirroring l1_preflight. Static classifier always available;
+/// runtime byte-check (`run_l2_preflight`) requires `mimicry-http2-fork`
+/// feature for the adapter.
+pub mod l2_preflight;
 #[cfg(feature = "mimicry-openssl")]
 pub mod openssl_adapter;
 pub mod profile;
@@ -56,6 +61,10 @@ pub use dispatch::{
 };
 pub use l1_preflight::{
     L1TlsPreflightError, L1TlsPreflightStatus, is_dispatchable, preflight_status_from_intent,
+};
+pub use l2_preflight::{
+    L2HttpPreflightError, L2HttpPreflightStatus, is_l2_dispatchable,
+    preflight_status_from_profile,
 };
 pub use profile::{
     BuiltinProfile, FingerprintProfile, ProfileLoadError, ProfileMatchPolicy, ProfileMode,
