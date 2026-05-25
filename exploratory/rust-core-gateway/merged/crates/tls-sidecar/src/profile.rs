@@ -37,8 +37,10 @@ groups = [4588, 29, 23, 30, 24, 25, 256, 257]
 ec_points = [0, 1, 2]
 
 [profile.h2_settings]
-# No measured Anthropic CLI HTTP/2 SETTINGS values have been captured yet.
-"#;
+# TODO(Phase 3 real capture): fill these six values from decrypted Anthropic CLI H2 wire data.
+# Allowed keys: HEADER_TABLE_SIZE / ENABLE_PUSH / MAX_CONCURRENT_STREAMS /
+# INITIAL_WINDOW_SIZE / MAX_FRAME_SIZE / MAX_HEADER_LIST_SIZE.
+    "#;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TlsProfile {
@@ -369,10 +371,10 @@ mod tests {
         assert_eq!(
             profile.client_hello_profile.ciphers,
             [
-                49199, 49195, 49200, 49196, 158, 49191, 103, 49192, 107, 163, 159, 52393,
-                52392, 52394, 49325, 49311, 49245, 49249, 49239, 49235, 162, 49324, 49310,
-                49244, 49248, 49238, 49234, 49188, 106, 49187, 64, 49162, 49172, 57, 56, 49161,
-                49171, 51, 50, 157, 49309, 49233, 156, 49308, 49232, 61, 60, 53, 47
+                49199, 49195, 49200, 49196, 158, 49191, 103, 49192, 107, 163, 159, 52393, 52392,
+                52394, 49325, 49311, 49245, 49249, 49239, 49235, 162, 49324, 49310, 49244, 49248,
+                49238, 49234, 49188, 106, 49187, 64, 49162, 49172, 57, 56, 49161, 49171, 51, 50,
+                157, 49309, 49233, 156, 49308, 49232, 61, 60, 53, 47
             ]
         );
         assert_eq!(

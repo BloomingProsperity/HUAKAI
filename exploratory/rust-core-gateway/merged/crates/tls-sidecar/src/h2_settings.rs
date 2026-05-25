@@ -21,6 +21,15 @@ pub const SETTINGS_ORDER: [u16; 6] = [
 
 pub type H2SettingsMap = BTreeMap<u16, u32>;
 
+#[cfg(test)]
+const FRAME_HEADER_LEN: usize = 9;
+#[cfg(test)]
+const SETTINGS_ENTRY_LEN: usize = 6;
+#[cfg(test)]
+const SETTINGS_FRAME_TYPE: u8 = 0x4;
+#[cfg(test)]
+const SETTINGS_ACK_FLAG: u8 = 0x1;
+
 pub fn setting_id_from_toml_key(key: &str) -> Option<u16> {
     let key = key.trim().trim_matches('"').trim_matches('\'');
     match key {
@@ -84,6 +93,77 @@ pub fn configured_client_builder(
     Ok(builder)
 }
 
+#[cfg(test)]
+pub fn serialize_settings_frame(settings: &H2SettingsMap) -> Result<Vec<u8>, H2SettingsError> {
+    reject_unknown_settings(settings)?;
+    let mut payload = Vec::new();
+    for id in SETTINGS_ORDER {
+        let Some(value) = settings.get(&id).copied() else {
+            continue;
+        };
+        validate_setting_value(id, value)?;
+        payload.extend_from_slice(&id.to_be_bytes());
+        payload.extend_from_slice(&value.to_be_bytes());
+    }
+
+    let payload_len = payload.len();
+    let mut frame = Vec::with_capacity(FRAME_HEADER_LEN + payload_len);
+    frame.push(((payload_len >> 16) & 0xff) as u8);
+    frame.push(((payload_len >> 8) & 0xff) as u8);
+    frame.push((payload_len & 0xff) as u8);
+    frame.push(SETTINGS_FRAME_TYPE);
+    frame.push(0);
+    frame.extend_from_slice(&0u32.to_be_bytes());
+    frame.extend_from_slice(&payload);
+    debug_assert!(parse_settings_frame(&frame).is_ok());
+    Ok(frame)
+}
+
+#[cfg(test)]
+pub fn parse_settings_frame(frame: &[u8]) -> Result<Vec<(u16, u32)>, H2SettingsError> {
+    if frame.len() < FRAME_HEADER_LEN {
+        return Err(H2SettingsError::FrameTooShort(frame.len()));
+    }
+    let declared_len = ((frame[0] as usize) << 16) | ((frame[1] as usize) << 8) | frame[2] as usize;
+    let actual_len = frame.len() - FRAME_HEADER_LEN;
+    if declared_len != actual_len {
+        return Err(H2SettingsError::InvalidFrameLength {
+            declared: declared_len,
+            actual: actual_len,
+        });
+    }
+    if frame[3] != SETTINGS_FRAME_TYPE {
+        return Err(H2SettingsError::InvalidFrameType(frame[3]));
+    }
+
+    let stream_id = u32::from_be_bytes([frame[5] & 0x7f, frame[6], frame[7], frame[8]]);
+    if stream_id != 0 {
+        return Err(H2SettingsError::InvalidFrameStreamId(stream_id));
+    }
+
+    let payload = &frame[FRAME_HEADER_LEN..];
+    if frame[4] & SETTINGS_ACK_FLAG == SETTINGS_ACK_FLAG {
+        if !payload.is_empty() {
+            return Err(H2SettingsError::SettingsAckWithPayload(payload.len()));
+        }
+        return Ok(Vec::new());
+    }
+    if payload.len() % SETTINGS_ENTRY_LEN != 0 {
+        return Err(H2SettingsError::InvalidSettingsPayloadLength(payload.len()));
+    }
+
+    let mut out = Vec::with_capacity(payload.len() / SETTINGS_ENTRY_LEN);
+    for chunk in payload.chunks_exact(SETTINGS_ENTRY_LEN) {
+        let id = u16::from_be_bytes([chunk[0], chunk[1]]);
+        let value = u32::from_be_bytes([chunk[2], chunk[3], chunk[4], chunk[5]]);
+        if SETTINGS_ORDER.contains(&id) {
+            validate_setting_value(id, value)?;
+        }
+        out.push((id, value));
+    }
+    Ok(out)
+}
+
 pub async fn client_handshake<T>(
     io: T,
     settings: &H2SettingsMap,
@@ -117,6 +197,24 @@ pub enum H2SettingsError {
     InvalidInitialWindowSize(u32),
     #[error("invalid H2 MAX_FRAME_SIZE value: {0}")]
     InvalidMaxFrameSize(u32),
+    #[cfg(test)]
+    #[error("HTTP/2 SETTINGS frame too short: {0} bytes")]
+    FrameTooShort(usize),
+    #[cfg(test)]
+    #[error("HTTP/2 SETTINGS frame declared length {declared} but actual length is {actual}")]
+    InvalidFrameLength { declared: usize, actual: usize },
+    #[cfg(test)]
+    #[error("expected HTTP/2 SETTINGS frame type 0x4, got 0x{0:02x}")]
+    InvalidFrameType(u8),
+    #[cfg(test)]
+    #[error("HTTP/2 SETTINGS frame must use stream 0, got stream {0}")]
+    InvalidFrameStreamId(u32),
+    #[cfg(test)]
+    #[error("HTTP/2 SETTINGS ACK frame must have empty payload, got {0} bytes")]
+    SettingsAckWithPayload(usize),
+    #[cfg(test)]
+    #[error("invalid HTTP/2 SETTINGS payload length: {0}")]
+    InvalidSettingsPayloadLength(usize),
 }
 
 const MAX_INITIAL_WINDOW_SIZE: u32 = (1 << 31) - 1;
@@ -130,6 +228,23 @@ fn reject_unknown_settings(settings: &H2SettingsMap) -> Result<(), H2SettingsErr
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn validate_setting_value(id: u16, value: u32) -> Result<(), H2SettingsError> {
+    match id {
+        ENABLE_PUSH => match value {
+            0 | 1 => Ok(()),
+            other => Err(H2SettingsError::InvalidEnablePush(other)),
+        },
+        INITIAL_WINDOW_SIZE if value > MAX_INITIAL_WINDOW_SIZE => {
+            Err(H2SettingsError::InvalidInitialWindowSize(value))
+        }
+        MAX_FRAME_SIZE if !(MIN_MAX_FRAME_SIZE..=MAX_MAX_FRAME_SIZE).contains(&value) => {
+            Err(H2SettingsError::InvalidMaxFrameSize(value))
+        }
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -183,6 +298,71 @@ mod tests {
 
         assert_ne!(damaged_ids, super::SETTINGS_ORDER);
         assert!(!damaged_ids.contains(&super::MAX_CONCURRENT_STREAMS));
+    }
+
+    #[test]
+    fn settings_frame_builder_emits_all_six_fields_as_wire_bytes() {
+        let frame = super::serialize_settings_frame(&all_settings_fixture()).unwrap();
+
+        assert_eq!(&frame[..9], &[0, 0, 36, FRAME_SETTINGS, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            &frame[9..],
+            &[
+                0, 1, 0, 1, 0, 0, // HEADER_TABLE_SIZE = 65536
+                0, 2, 0, 0, 0, 0, // ENABLE_PUSH = 0
+                0, 3, 0, 0, 3, 232, // MAX_CONCURRENT_STREAMS = 1000
+                0, 4, 0, 2, 0, 0, // INITIAL_WINDOW_SIZE = 131072
+                0, 5, 0, 0, 64, 0, // MAX_FRAME_SIZE = 16384
+                0, 6, 0, 4, 0, 0, // MAX_HEADER_LIST_SIZE = 262144
+            ]
+        );
+
+        let parsed = super::parse_settings_frame(&frame).unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                (super::HEADER_TABLE_SIZE, 65_536),
+                (super::ENABLE_PUSH, 0),
+                (super::MAX_CONCURRENT_STREAMS, 1000),
+                (super::INITIAL_WINDOW_SIZE, 131_072),
+                (super::MAX_FRAME_SIZE, 16_384),
+                (super::MAX_HEADER_LIST_SIZE, 262_144),
+            ]
+        );
+
+        let mut missing_initial_window = all_settings_fixture();
+        missing_initial_window.remove(&super::INITIAL_WINDOW_SIZE);
+        let damaged = super::parse_settings_frame(
+            &super::serialize_settings_frame(&missing_initial_window).unwrap(),
+        )
+        .unwrap();
+        assert_ne!(
+            damaged, parsed,
+            "omitting one field must change the wire fingerprint"
+        );
+    }
+
+    #[test]
+    fn settings_frame_parser_rejects_non_settings_or_malformed_wire() {
+        let mut wrong_type = super::serialize_settings_frame(&all_settings_fixture()).unwrap();
+        wrong_type[3] = 0x1;
+        assert!(
+            super::parse_settings_frame(&wrong_type)
+                .unwrap_err()
+                .to_string()
+                .contains("SETTINGS")
+        );
+
+        let mut wrong_length = super::serialize_settings_frame(&all_settings_fixture()).unwrap();
+        wrong_length[2] = 35;
+        wrong_length.pop();
+        assert!(
+            super::parse_settings_frame(&wrong_length)
+                .unwrap_err()
+                .to_string()
+                .contains("length"),
+            "declared length not divisible into 6-byte settings entries must fail"
+        );
     }
 
     #[tokio::test]
