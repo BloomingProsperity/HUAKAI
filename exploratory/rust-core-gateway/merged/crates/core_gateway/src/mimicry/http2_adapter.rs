@@ -136,7 +136,68 @@ impl HttpTwoMimicryAdapter {
         &self.pseudo_header_order
     }
 
+    /// W11-F F-1.b (Owner-approved synthesis 2026-05-25): drive a single H2
+    /// handshake + request send over caller-provided generic IO. The IO half
+    /// can be `tokio::io::DuplexStream` (in-memory test path; used by
+    /// [`Self::encode_request_exchange`]) OR `tokio::net::TcpStream` /
+    /// `tokio_boring::SslStream` (production wiring path; will be the F-1.e
+    /// `proxy_engine::http2_fork_client` call site).
+    ///
+    /// The fork's connection future is spawned as a tokio task and returned
+    /// as a `JoinHandle` so the caller can `.abort()` once the request has
+    /// finished flushing (or `.await` for full lifecycle). Aborting before
+    /// the caller has finished capturing peer-side bytes loses frames — see
+    /// the in-memory wrapper for the safe sequence.
+    ///
+    /// Mutation discriminator (CLAUDE.md #14): if this method ever stops
+    /// calling `send_request.send_request(...)`, no HEADERS frame ever
+    /// flushes onto `io` and any caller that relies on capturing HEADERS
+    /// (the loopback test added in F-1.b, the in-memory wrapper) times out.
+    pub async fn drive_request<T>(
+        &self,
+        io: T,
+        request: Request<()>,
+    ) -> Result<tokio::task::JoinHandle<Result<(), http2::Error>>, HttpTwoAdapterError>
+    where
+        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let (mut send_request, connection) = self.builder.handshake::<_, Bytes>(io).await?;
+        // Queue the request BEFORE spawning the connection task so the
+        // HEADERS frame is in the outbound buffer by the time the
+        // connection starts driving writes. Note: send_request after
+        // handshake() but before connection is polled is safe — SendRequest
+        // is just a handle into the connection's request queue.
+        let (response, body) = match send_request
+            .send_request(request, true)
+            .map_err(|error| HttpTwoAdapterError::EncodeFailed(error.to_string()))
+        {
+            Ok(pair) => pair,
+            Err(err) => return Err(err),
+        };
+        // Move `response` (ResponseFuture) and `body` (SendStream) INTO the
+        // spawned task so they stay alive for the full connection lifetime.
+        // If we instead returned them or dropped them here, the fork would
+        // RST_STREAM the request when the caller cannot keep them alive
+        // generically — surfaced empirically in F-1.b as Io(UnexpectedEof)
+        // on the loopback peer side during HEADERS capture.
+        let connection_task = tokio::spawn(async move {
+            let _kept_alive = (response, body);
+            connection.await
+        });
+        Ok(connection_task)
+    }
+
     /// 通过内存 duplex 捕获 fork 实际写出的 frame bytes。
+    ///
+    /// W11-F F-1.b: this method keeps its original sequential / interleaved
+    /// shape on purpose. The in-memory peer side writes its empty SETTINGS
+    /// reply BEFORE `send_request` is called; if we naively decompose this
+    /// into a spawned capture task + a `drive_request` call, the SendStream
+    /// returned from `send_request` is dropped before the capture task gets
+    /// to the HEADERS read, and the fork cancels the request — the in-memory
+    /// tests then fail with `Io(Kind(BrokenPipe))`. The F-1.b extraction
+    /// instead added a NEW [`Self::drive_request`] + [`capture_first_request_frames`]
+    /// pair for the TCP loopback path, and left this in-memory wrapper alone.
     pub async fn encode_request_exchange(
         &self,
         request: Request<()>,
@@ -199,6 +260,72 @@ impl HttpTwoMimicryAdapter {
             request_headers_frame,
         })
     }
+}
+
+/// W11-F F-1.b: peer-side (server-role) helper that reads + captures the
+/// first preface + SETTINGS + HEADERS sequence from a generic IO. Reused by
+/// both the in-memory [`HttpTwoMimicryAdapter::encode_request_exchange`]
+/// wrapper and the F-1.b loopback TCP test (which passes a real
+/// `tokio::net::TcpStream` from an accepted connection).
+///
+/// Also writes back the empty server SETTINGS frame
+/// (`EMPTY_SERVER_SETTINGS`) so the client-side fork connection can complete
+/// init; without that reply the client's `send_request` would not flush the
+/// HEADERS frame.
+///
+/// Mutation discriminator: if a future edit makes this function skip the
+/// HEADERS scan loop and return immediately after SETTINGS, every consumer
+/// (in-memory wrapper + loopback test) fails to receive the HEADERS bytes
+/// and asserts red on `request_headers_frame`.
+pub async fn capture_first_request_frames<T>(
+    mut io: T,
+) -> Result<HttpTwoEncodedExchange, HttpTwoAdapterError>
+where
+    T: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let mut client_preface = vec![0; H2_CLIENT_PREFACE.len()];
+    read_exact_capture(&mut io, &mut client_preface, "reading client preface").await?;
+    if client_preface.as_slice() != H2_CLIENT_PREFACE {
+        return Err(HttpTwoAdapterError::Protocol(
+            "client preface did not match HTTP/2 prior-knowledge preface".to_owned(),
+        ));
+    }
+
+    let initial_settings_frame =
+        read_frame(&mut io, "reading client initial SETTINGS").await?;
+    if frame_type(&initial_settings_frame) != Some(0x04) {
+        return Err(HttpTwoAdapterError::Protocol(
+            "first frame after preface was not SETTINGS".to_owned(),
+        ));
+    }
+
+    write_all_capture(
+        &mut io,
+        &EMPTY_SERVER_SETTINGS,
+        "writing peer empty SETTINGS",
+    )
+    .await?;
+
+    let mut request_headers_frame = None;
+    for _ in 0..8 {
+        let frame = read_frame(&mut io, "reading client request frames").await?;
+        if frame_type(&frame) == Some(0x01) {
+            request_headers_frame = Some(frame);
+            break;
+        }
+    }
+
+    let request_headers_frame = request_headers_frame.ok_or_else(|| {
+        HttpTwoAdapterError::Protocol(
+            "client did not emit HEADERS frame within capture window".to_owned(),
+        )
+    })?;
+
+    Ok(HttpTwoEncodedExchange {
+        client_preface,
+        initial_settings_frame,
+        request_headers_frame,
+    })
 }
 
 fn apply_settings(
