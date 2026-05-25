@@ -32,6 +32,38 @@ type HermesAuditEvent struct {
 	RequestID     *string            `db:"request_id" json:"request_id"`
 }
 
+type HermesConversation struct {
+	ID            int64              `db:"id" json:"id"`
+	TenantID      int64              `db:"tenant_id" json:"tenant_id"`
+	OwnerUserID   int64              `db:"owner_user_id" json:"owner_user_id"`
+	Title         *string            `db:"title" json:"title"`
+	CreatedAt     pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	LastMessageAt pgtype.Timestamptz `db:"last_message_at" json:"last_message_at"`
+	DeletedAt     pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
+}
+
+type HermesJwtKey struct {
+	Kid          string             `db:"kid" json:"kid"`
+	Alg          string             `db:"alg" json:"alg"`
+	PublicKeyPem string             `db:"public_key_pem" json:"public_key_pem"`
+	ValidFrom    pgtype.Timestamptz `db:"valid_from" json:"valid_from"`
+	ValidUntil   pgtype.Timestamptz `db:"valid_until" json:"valid_until"`
+	RevokedAt    pgtype.Timestamptz `db:"revoked_at" json:"revoked_at"`
+	CreatedAt    pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+type HermesMessage struct {
+	ID             int64              `db:"id" json:"id"`
+	TenantID       int64              `db:"tenant_id" json:"tenant_id"`
+	ConversationID int64              `db:"conversation_id" json:"conversation_id"`
+	Role           string             `db:"role" json:"role"`
+	Content        []byte             `db:"content" json:"content"`
+	TokenCount     *int32             `db:"token_count" json:"token_count"`
+	CompletedAt    pgtype.Timestamptz `db:"completed_at" json:"completed_at"`
+	CreatedAt      pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
 type HermesSetting struct {
 	TenantID  int64              `db:"tenant_id" json:"tenant_id"`
 	UserID    int64              `db:"user_id" json:"user_id"`

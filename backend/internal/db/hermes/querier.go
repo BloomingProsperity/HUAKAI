@@ -9,21 +9,35 @@ import (
 )
 
 type Querier interface {
+	AppendMessage(ctx context.Context, arg AppendMessageParams) (int64, error)
+	// Hermes Phase 1 Slice 2 schema gate queries.
+	// Scope: conversations, messages, and JWT public key registry.
+	CreateConversation(ctx context.Context, arg CreateConversationParams) (int64, error)
 	CreateProfile(ctx context.Context, arg CreateProfileParams) (HermesApiProfile, error)
 	DeleteProfile(ctx context.Context, arg DeleteProfileParams) (int64, error)
 	DisableHermes(ctx context.Context, arg DisableHermesParams) (HermesSetting, error)
 	EnableHermes(ctx context.Context, arg EnableHermesParams) (HermesSetting, error)
 	GetAPIKeyOwner(ctx context.Context, arg GetAPIKeyOwnerParams) (int64, error)
+	GetActiveJWTKeys(ctx context.Context) ([]HermesJwtKey, error)
 	GetAuditEventByCorrelation(ctx context.Context, arg GetAuditEventByCorrelationParams) ([]HermesAuditEvent, error)
+	GetConversation(ctx context.Context, arg GetConversationParams) (HermesConversation, error)
+	GetJWTKeyByKid(ctx context.Context, kid string) (HermesJwtKey, error)
 	GetProfile(ctx context.Context, arg GetProfileParams) (HermesApiProfile, error)
 	// Hermes Phase 1 Slice 1 schema gate queries.
 	// Scope: settings, API profiles, and append-only audit events only.
 	GetSettings(ctx context.Context, arg GetSettingsParams) (HermesSetting, error)
 	InsertAuditEvent(ctx context.Context, arg InsertAuditEventParams) (HermesAuditEvent, error)
+	InsertJWTKey(ctx context.Context, arg InsertJWTKeyParams) (HermesJwtKey, error)
 	ListAuditEventsByTenant(ctx context.Context, arg ListAuditEventsByTenantParams) ([]HermesAuditEvent, error)
+	ListConversationsByOwner(ctx context.Context, arg ListConversationsByOwnerParams) ([]HermesConversation, error)
+	ListMessagesByConversation(ctx context.Context, arg ListMessagesByConversationParams) ([]HermesMessage, error)
 	ListProfilesByOwner(ctx context.Context, arg ListProfilesByOwnerParams) ([]HermesApiProfile, error)
 	ListProfilesByTenant(ctx context.Context, tenantID int64) ([]HermesApiProfile, error)
 	ProfileInUse(ctx context.Context, arg ProfileInUseParams) (bool, error)
+	RevokeJWTKey(ctx context.Context, kid string) (int64, error)
+	SoftDeleteConversation(ctx context.Context, arg SoftDeleteConversationParams) (int64, error)
+	UpdateConversationLastMessageAt(ctx context.Context, arg UpdateConversationLastMessageAtParams) (int64, error)
+	UpdateMessageCompleted(ctx context.Context, arg UpdateMessageCompletedParams) (int64, error)
 	UpdateProfile(ctx context.Context, arg UpdateProfileParams) (HermesApiProfile, error)
 	UpsertSettings(ctx context.Context, arg UpsertSettingsParams) (HermesSetting, error)
 }
