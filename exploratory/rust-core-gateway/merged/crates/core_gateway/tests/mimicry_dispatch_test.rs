@@ -138,6 +138,21 @@ fn join_u8(values: &[u8]) -> String {
         .join("-")
 }
 
+fn assert_blocks_because_no_mimicry_backend(decision: &DispatchDecision, vendor: &str) {
+    match decision {
+        DispatchDecision::BlockKnownGap { reason } => {
+            assert!(
+                reason.contains(vendor)
+                    && reason.contains("mimicry-boring")
+                    && reason.contains("mimicry-openssl"),
+                "feature-off build 必须因无可用 mimicry backend 阻断 {vendor} dispatch，实际: {reason}"
+            );
+        }
+        decision => panic!("feature-off build 必须返回 KnownGapBlocked，实际: {decision:?}"),
+    }
+    assert!(!is_dispatch_allowed(decision));
+}
+
 #[cfg(feature = "mimicry-openssl")]
 #[test]
 fn dispatch_routes_codex_profile_to_openssl_when_adapter_is_compiled() {
@@ -156,18 +171,7 @@ fn dispatch_blocks_codex_profile_when_openssl_adapter_is_not_compiled() {
 
     let decision = decide_dispatch(&profile);
 
-    match &decision {
-        DispatchDecision::BlockUnsupportedTemplate { reason } => {
-            assert!(
-                reason.contains("mimicry-openssl"),
-                "feature-off build 必须阻断 Codex OpenSSL dispatch，实际: {reason}"
-            );
-        }
-        decision => {
-            panic!("feature-off Codex profile 必须被 dispatch gate 拒绝，实际: {decision:?}")
-        }
-    }
-    assert!(!is_dispatch_allowed(&decision));
+    assert_blocks_because_no_mimicry_backend(&decision, "openai");
 }
 
 #[test]
@@ -176,14 +180,18 @@ fn dispatch_blocks_kiro_rustls_profile_after_burn_the_boats() {
 
     let decision = decide_dispatch(&profile);
 
-    match &decision {
-        DispatchDecision::BlockUnsupportedTemplate { reason } => {
-            assert!(reason.contains("tls_backend=rustls"));
-            assert!(reason.contains("mimicry path"));
+    if cfg!(feature = "mimicry-openssl") {
+        match &decision {
+            DispatchDecision::BlockUnsupportedTemplate { reason } => {
+                assert!(reason.contains("tls_backend=rustls"));
+                assert!(reason.contains("mimicry path"));
+            }
+            decision => panic!("kiro rustls profile 必须被生产 dispatch 阻断，实际: {decision:?}"),
         }
-        decision => panic!("kiro rustls profile 必须被生产 dispatch 阻断，实际: {decision:?}"),
+        assert!(!is_dispatch_allowed(&decision));
+    } else {
+        assert_blocks_because_no_mimicry_backend(&decision, "kiro");
     }
-    assert!(!is_dispatch_allowed(&decision));
 }
 
 #[test]
@@ -193,16 +201,22 @@ fn dispatch_blocks_gemini_unsupported_template_profile() {
 
     let decision = decide_dispatch(&profile);
 
-    match &decision {
-        DispatchDecision::BlockUnsupportedTemplate { reason } => {
-            assert!(
-                reason.contains("nodejs"),
-                "gemini nodejs backend 必须留在 unsupported block，实际: {reason}"
-            );
+    if cfg!(feature = "mimicry-openssl") {
+        match &decision {
+            DispatchDecision::BlockUnsupportedTemplate { reason } => {
+                assert!(
+                    reason.contains("nodejs"),
+                    "gemini nodejs backend 必须留在 unsupported block，实际: {reason}"
+                );
+            }
+            decision => {
+                panic!("gemini builtin 必须被 UnsupportedTemplate 拒绝，实际: {decision:?}")
+            }
         }
-        decision => panic!("gemini builtin 必须被 UnsupportedTemplate 拒绝，实际: {decision:?}"),
+        assert!(!is_dispatch_allowed(&decision));
+    } else {
+        assert_blocks_because_no_mimicry_backend(&decision, "gemini");
     }
-    assert!(!is_dispatch_allowed(&decision));
 }
 
 #[cfg(feature = "mimicry-openssl")]
@@ -255,18 +269,7 @@ fn dispatch_blocks_stable_native_tls_openssl_profile_when_adapter_is_not_compile
 
     assert_eq!(profile.match_policy(), ProfileMatchPolicy::ExactStable);
     let decision = decide_dispatch(&profile);
-    match &decision {
-        DispatchDecision::BlockUnsupportedTemplate { reason } => {
-            assert!(
-                reason.contains("mimicry-openssl"),
-                "feature-off build 必须阻断 OpenSSL dispatch，实际: {reason}"
-            );
-        }
-        decision => panic!(
-            "feature-off build 的 OpenSSL profile 必须被 dispatch gate 拒绝，实际: {decision:?}"
-        ),
-    }
-    assert!(!is_dispatch_allowed(&decision));
+    assert_blocks_because_no_mimicry_backend(&decision, "kiro");
 }
 
 #[test]
@@ -283,11 +286,12 @@ fn dispatch_blocks_native_tls_openssl_profile_without_encrypt_then_mac() {
                     "OpenSSL dispatch 必须阻断无法禁用 extension 22 的 profile，实际: {reason}"
                 );
             } else {
-                assert!(
-                    reason.contains("mimicry-openssl"),
-                    "feature-off build 必须先阻断不可用 OpenSSL adapter，实际: {reason}"
-                );
+                panic!("feature-off build 应先因无可用 mimicry backend 阻断，实际: {reason}");
             }
+        }
+        DispatchDecision::BlockKnownGap { .. } if !cfg!(feature = "mimicry-openssl") => {
+            assert_blocks_because_no_mimicry_backend(&decision, "openai");
+            return;
         }
         decision => panic!(
             "OpenSSL 缺少 encrypt_then_mac 的 profile 必须被 dispatch gate 拒绝，实际: {decision:?}"
@@ -324,11 +328,12 @@ fn dispatch_blocks_native_tls_openssl_profile_with_non_native_ec_point_formats()
                     "OpenSSL dispatch 必须阻断 adapter 无法构造的 ec_point_formats，实际: {reason}"
                 );
             } else {
-                assert!(
-                    reason.contains("mimicry-openssl"),
-                    "feature-off build 必须先阻断不可用 OpenSSL adapter，实际: {reason}"
-                );
+                panic!("feature-off build 应先因无可用 mimicry backend 阻断，实际: {reason}");
             }
+        }
+        DispatchDecision::BlockKnownGap { .. } if !cfg!(feature = "mimicry-openssl") => {
+            assert_blocks_because_no_mimicry_backend(&decision, "kiro");
+            return;
         }
         decision => panic!(
             "OpenSSL [0] ec_point_formats profile 必须被 dispatch gate 拒绝，实际: {decision:?}"

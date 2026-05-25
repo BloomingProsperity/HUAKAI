@@ -11,8 +11,8 @@ use std::{net::SocketAddr, time::Duration};
 
 use thiserror::Error;
 use tokio::{
-    io::AsyncReadExt,
-    net::{TcpListener, TcpStream},
+    io::{AsyncRead, AsyncReadExt},
+    net::TcpListener,
     task::JoinHandle,
     time,
 };
@@ -103,6 +103,27 @@ pub async fn spawn_capture_once(
     Ok((local_addr, task))
 }
 
+pub async fn capture_from_async_read<R>(
+    stream: &mut R,
+) -> Result<CapturedClientHello, CaptureError>
+where
+    R: AsyncRead + Unpin + ?Sized,
+{
+    let mut header = [0u8; 5];
+    read_exact_timeout(stream, &mut header, "reading TLS record header").await?;
+
+    validate_tls_record_header(&header)?;
+
+    let body_len = u16::from_be_bytes([header[3], header[4]]) as usize;
+    if body_len == 0 {
+        return Err(CaptureError::Invalid("TLS record body length is zero"));
+    }
+    let mut body = vec![0u8; body_len];
+    read_exact_timeout(stream, &mut body, "reading TLS record body").await?;
+
+    parse_tls_record_body(&body)
+}
+
 async fn capture_from_listener(
     listener: TcpListener,
 ) -> Result<CapturedClientHello, CaptureError> {
@@ -114,9 +135,25 @@ async fn capture_from_listener(
             source,
         })?;
 
-    let mut header = [0u8; 5];
-    read_exact_timeout(&mut stream, &mut header, "reading TLS record header").await?;
+    capture_from_async_read(&mut stream).await
+}
 
+async fn read_exact_timeout<R>(
+    stream: &mut R,
+    buffer: &mut [u8],
+    context: &'static str,
+) -> Result<(), CaptureError>
+where
+    R: AsyncRead + Unpin + ?Sized,
+{
+    time::timeout(READ_TIMEOUT, stream.read_exact(buffer))
+        .await
+        .map_err(|_| CaptureError::Timeout(context))?
+        .map(|_| ())
+        .map_err(|source| CaptureError::Io { context, source })
+}
+
+fn validate_tls_record_header(header: &[u8; 5]) -> Result<(), CaptureError> {
     if header[0] != TLS_HANDSHAKE_RECORD {
         return Err(CaptureError::UnexpectedRecordType(header[0]));
     }
@@ -124,27 +161,7 @@ async fn capture_from_listener(
     if !(0x0301..=0x0304).contains(&record_version) {
         return Err(CaptureError::UnexpectedRecordVersion(record_version));
     }
-
-    let body_len = u16::from_be_bytes([header[3], header[4]]) as usize;
-    if body_len == 0 {
-        return Err(CaptureError::Invalid("TLS record body length is zero"));
-    }
-    let mut body = vec![0u8; body_len];
-    read_exact_timeout(&mut stream, &mut body, "reading TLS record body").await?;
-
-    parse_tls_record_body(&body)
-}
-
-async fn read_exact_timeout(
-    stream: &mut TcpStream,
-    buffer: &mut [u8],
-    context: &'static str,
-) -> Result<(), CaptureError> {
-    time::timeout(READ_TIMEOUT, stream.read_exact(buffer))
-        .await
-        .map_err(|_| CaptureError::Timeout(context))?
-        .map(|_| ())
-        .map_err(|source| CaptureError::Io { context, source })
+    Ok(())
 }
 
 fn parse_tls_record_body(record_body: &[u8]) -> Result<CapturedClientHello, CaptureError> {
