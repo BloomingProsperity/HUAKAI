@@ -6,7 +6,7 @@ use super::{
     resolve_profile_mimicry_backend,
 };
 #[cfg(feature = "mimicry-boring")]
-use crate::proxy_engine::{GatewayHttpClient, build_http_client_with_profile};
+use crate::proxy_engine::{GatewayHttpClient, try_build_http_client_with_profile};
 
 /// mimicry 生产 dispatch gate 的最终判定。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,8 +150,34 @@ pub fn build_mimicry_action(profile: &FingerprintProfile) -> MimicryAction {
 
 #[cfg(feature = "mimicry-boring")]
 fn build_boring_action(profile: &FingerprintProfile) -> MimicryAction {
-    let client = build_http_client_with_profile(Arc::new(profile.clone()));
-    MimicryAction::UseBoringClient(client)
+    // W11-F F-2.3+ round 2 (Codex round 1 P2, 2026-05-25):
+    // try_build_http_client_with_profile now has an L1 preflight gate that returns
+    // Err(KnownGap) / Err(UnsupportedTemplate) for Codex / Gemini even when the
+    // dispatch canary above said `AllowBoring` — because `backend_from_profile_intent`
+    // has an L2-A8 special case that downgrades Codex KnownGap → Openssl, which
+    // `resolve_vendor_mimicry_backend` then upgrades back to Boring whenever
+    // mimicry-boring is on.
+    //
+    // The earlier eager `build_http_client_with_profile(...)` would `.expect(...)`
+    // that Err and panic at production traffic — turning a typed fail-closed signal
+    // into a process abort (the whole gateway falls over instead of just blocking
+    // one request). Adopting the fallible try_ variant and mapping the error into
+    // the corresponding `MimicryAction::Block*` variant keeps the fail-closed
+    // semantic but recoverable at the request scope.
+    //
+    // Mutation: reverting to `build_http_client_with_profile(...).expect(...)`
+    // makes `boring_dispatch_action_returns_block_for_codex_known_gap` and
+    // `..._returns_block_for_gemini_pending` panic with "production dispatch
+    // canary" instead of returning the structured Block* — both tests red.
+    match try_build_http_client_with_profile(Arc::new(profile.clone())) {
+        Ok(client) => MimicryAction::UseBoringClient(client),
+        Err(MimicryProductionCanaryError::KnownGap(reason)) => {
+            MimicryAction::BlockKnownGap { reason }
+        }
+        Err(MimicryProductionCanaryError::UnsupportedTemplate(reason)) => {
+            MimicryAction::BlockUnsupportedTemplate { reason }
+        }
+    }
 }
 
 #[cfg(not(feature = "mimicry-boring"))]
@@ -254,6 +280,88 @@ mod tests {
                 );
             }
             _ => panic!("feature-off build 不应构造 Boring HTTP client"),
+        }
+    }
+
+    /// W11-F F-2.3+ round 2 (Codex round 1 P2, 2026-05-25): `build_mimicry_action`
+    /// for Codex MUST return `MimicryAction::BlockKnownGap` (structured fail-closed
+    /// signal) — NOT panic via the eager builder's `.expect(...)`. The previous
+    /// shape was: `decide_dispatch(codex) -> AllowBoring` (because of the L2-A8
+    /// resolver special case), then `build_boring_action -> build_http_client_with_profile
+    /// (eager .expect)` which panicked on the L1 preflight Err that round 1 added.
+    /// The fix in `build_boring_action` (this commit, round 2) adopts the fallible
+    /// `try_` variant and maps Err → MimicryAction::Block*.
+    ///
+    /// Discriminating mutation: reverting `build_boring_action` to the eager
+    /// `build_http_client_with_profile(...).expect(...)` flips this test from
+    /// "returns BlockKnownGap" to "panics with `production dispatch canary`"
+    /// — `match action { ... }` never even runs because the call panicked.
+    #[cfg(feature = "mimicry-boring")]
+    #[test]
+    fn boring_dispatch_action_returns_block_for_codex_known_gap() {
+        let profile =
+            load_builtin_profile(BuiltinProfile::CodexCli).expect("Codex profile 应加载");
+
+        let action = build_mimicry_action(&profile);
+
+        match action {
+            MimicryAction::BlockKnownGap { reason } => {
+                assert!(
+                    reason.contains("cipher_suites")
+                        || reason.contains("extensions")
+                        || reason.contains("supported_groups")
+                        || reason.contains("signature_algorithms"),
+                    "Codex BlockKnownGap reason must name at least one of the 4 \
+                     hard-coded gap fields (got: {reason})"
+                );
+            }
+            MimicryAction::UseBoringClient(_) => panic!(
+                "Codex must NOT get a Boring client — L1 preflight gate is the \
+                 fail-closed for KnownGap profiles"
+            ),
+            MimicryAction::UseOpenSslAdapter => panic!(
+                "Codex must NOT route through OpenSSL adapter via the Boring \
+                 action path — decide_dispatch returned AllowBoring not AllowOpenSsl"
+            ),
+            MimicryAction::BlockUnsupportedTemplate { reason } => panic!(
+                "Codex should land in BlockKnownGap, not BlockUnsupportedTemplate: {reason}"
+            ),
+        }
+    }
+
+    /// W11-F F-2.3+ round 2 (Codex round 1 P2, 2026-05-25): same as the Codex
+    /// test above but for Gemini (Pending status). `is_dispatchable` rejects
+    /// Pending so the typed L1 gate inside `try_build_http_client_with_profile`
+    /// returns Err — without the round-2 fix in `build_boring_action`, that Err
+    /// would panic via `.expect(...)`. With the fix, Gemini lands in
+    /// `MimicryAction::BlockKnownGap` with reason naming Pending + profile mode
+    /// so F-2.3a runtime preflight wiring can grep these literals.
+    #[cfg(feature = "mimicry-boring")]
+    #[test]
+    fn boring_dispatch_action_returns_block_for_gemini_pending() {
+        let profile = load_builtin_profile(BuiltinProfile::GeminiAdvanced)
+            .expect("Gemini profile 应加载");
+
+        let action = build_mimicry_action(&profile);
+
+        match action {
+            MimicryAction::BlockKnownGap { reason } => {
+                assert!(
+                    reason.contains("Pending") && reason.contains("GeminiAdvanced"),
+                    "Gemini BlockKnownGap reason must reference Pending + \
+                     GeminiAdvanced profile mode (got: {reason})"
+                );
+            }
+            MimicryAction::UseBoringClient(_) => panic!(
+                "Gemini must NOT get a Boring client — L1 preflight Pending must \
+                 fail-closed until F-2.3a runtime preflight wires"
+            ),
+            MimicryAction::UseOpenSslAdapter => panic!(
+                "Gemini went through Boring action path; expected BlockKnownGap"
+            ),
+            MimicryAction::BlockUnsupportedTemplate { reason } => panic!(
+                "Gemini should land in BlockKnownGap, not BlockUnsupportedTemplate: {reason}"
+            ),
         }
     }
 }
