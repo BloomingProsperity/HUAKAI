@@ -46,6 +46,7 @@ func (s *Scheduler) recordAudit(ctx context.Context, account dbbilling.ListAccou
 		RequestID: requestID,
 		TenantID:  account.TenantID,
 	})
+	healthChange, hasHealthChange := s.providerAccountHealthChange(account.ID, account.TenantID, outcome, now)
 
 	// 同事务路径:txPool + auditSigner + auditQueries 全配齐才走。
 	if s.txPool != nil && s.auditSigner != nil && s.auditQueries != nil {
@@ -53,7 +54,12 @@ func (s *Scheduler) recordAudit(ctx context.Context, account dbbilling.ListAccou
 			return fmt.Errorf("credentialworker: prepare ledger entry: %w", prepareErr)
 		}
 		params := refreshAuditParams(entry)
-		return pgx.BeginFunc(ctx, s.txPool, func(tx pgx.Tx) error {
+		err := pgx.BeginFunc(ctx, s.txPool, func(tx pgx.Tx) error {
+			if hasHealthChange {
+				if err := updateProviderAccountHealth(ctx, tx, healthChange); err != nil {
+					return err
+				}
+			}
 			if err := dbauth.New(tx).InsertOAuthRefreshAuditEvent(ctx, params); err != nil {
 				return fmt.Errorf("audit insert: %w", err)
 			}
@@ -62,9 +68,17 @@ func (s *Scheduler) recordAudit(ctx context.Context, account dbbilling.ListAccou
 			}
 			return nil
 		})
+		if err == nil && hasHealthChange {
+			s.maybeLogProviderAccountHealthAlert(ctx, healthChange, outcome)
+		}
+		return err
 	}
 
 	// Legacy 2-step path (dev/test).production wiring 必须把 tx 三件套装上。
+	var healthErr error
+	if hasHealthChange && s.healthStore != nil {
+		healthErr = s.healthStore.UpdateProviderAccountHealth(ctx, healthChange)
+	}
 	auditErr := s.auditWriter.WriteRefreshAudit(ctx, entry)
 	var ledgerErr error
 	if prepareErr != nil {
@@ -72,7 +86,11 @@ func (s *Scheduler) recordAudit(ctx context.Context, account dbbilling.ListAccou
 	} else {
 		_, ledgerErr = s.AuditLedger.Append(ctx, prepared)
 	}
-	return errors.Join(auditErr, ledgerErr)
+	err := errors.Join(healthErr, auditErr, ledgerErr)
+	if err == nil && hasHealthChange {
+		s.maybeLogProviderAccountHealthAlert(ctx, healthChange, outcome)
+	}
+	return err
 }
 
 func (s *Scheduler) recordAuditString(ctx context.Context, account dbbilling.ListAccountsForRefreshRow, outcome string, scope string, cause error) error {

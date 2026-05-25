@@ -354,6 +354,19 @@ func (q *Queries) ListAccountsForRefresh(ctx context.Context, arg ListAccountsFo
 }
 
 const listEligibleAccounts = `-- name: ListEligibleAccounts :many
+WITH normalized_health AS (
+    UPDATE provider_accounts pa
+    SET
+        health_state = 'healthy',
+        health_state_until = NULL,
+        updated_at = NOW()
+    WHERE pa.tenant_id = $1
+      AND pa.channel_id = $2
+      AND pa.health_state IN ('throttled', 'revoked', 'cooldown')
+      AND pa.health_state_until IS NOT NULL
+      AND pa.health_state_until <= NOW()
+    RETURNING pa.id
+)
 SELECT
     id,
     tenant_id,
@@ -415,12 +428,15 @@ SELECT
     last_refresh_at,
     last_refresh_outcome,
     oauth_endpoint_health
-FROM provider_accounts
-WHERE tenant_id = $1
-  AND channel_id = $2
-  AND enabled = true
-  AND deleted_at IS NULL
-  AND health_state IN ('operational', 'degraded')
+FROM provider_accounts pa
+WHERE pa.tenant_id = $1
+  AND pa.channel_id = $2
+  AND pa.enabled = true
+  AND pa.deleted_at IS NULL
+  AND (
+      pa.health_state = 'healthy'
+      OR pa.id IN (SELECT id FROM normalized_health)
+  )
 ORDER BY priority, last_dispatch_at NULLS FIRST
 `
 
@@ -574,6 +590,28 @@ func (q *Queries) ListEligibleAccounts(ctx context.Context, arg ListEligibleAcco
 }
 
 const listEligibleAccountsByPoolGroup = `-- name: ListEligibleAccountsByPoolGroup :many
+WITH target_channels AS (
+    SELECT c.id
+    FROM channels c
+    WHERE c.pool_group_id = $2
+      AND c.tenant_id = $1
+      AND c.enabled = true
+      AND c.deleted_at IS NULL
+),
+normalized_health AS (
+    UPDATE provider_accounts pa
+    SET
+        health_state = 'healthy',
+        health_state_until = NULL,
+        updated_at = NOW()
+    FROM target_channels tc
+    WHERE pa.tenant_id = $1
+      AND pa.channel_id = tc.id
+      AND pa.health_state IN ('throttled', 'revoked', 'cooldown')
+      AND pa.health_state_until IS NOT NULL
+      AND pa.health_state_until <= NOW()
+    RETURNING pa.id
+)
 SELECT
     pa.id,
     pa.tenant_id,
@@ -583,6 +621,8 @@ SELECT
     pa.in_flight_count,
     pa.priority,
     pa.last_dispatch_at,
+    pa.health_state,
+    pa.health_state_until,
     pa.model_allow_list,
     pa.capability_flags,
     pa.cap_queue_sticky,
@@ -597,7 +637,10 @@ WHERE pa.tenant_id = $1
   AND c.tenant_id = $1
   AND pa.enabled = true
   AND pa.deleted_at IS NULL
-  AND pa.health_state IN ('operational', 'degraded')
+  AND (
+      pa.health_state = 'healthy'
+      OR pa.id IN (SELECT id FROM normalized_health)
+  )
   AND (cardinality(pa.model_allow_list) = 0
        OR pa.model_allow_list @> ARRAY[$3::text])
   AND pa.capability_flags @> $4::text[]
@@ -626,6 +669,8 @@ type ListEligibleAccountsByPoolGroupRow struct {
 	InFlightCount    int32              `db:"in_flight_count" json:"in_flight_count"`
 	Priority         int32              `db:"priority" json:"priority"`
 	LastDispatchAt   pgtype.Timestamptz `db:"last_dispatch_at" json:"last_dispatch_at"`
+	HealthState      string             `db:"health_state" json:"health_state"`
+	HealthStateUntil pgtype.Timestamptz `db:"health_state_until" json:"health_state_until"`
 	ModelAllowList   []string           `db:"model_allow_list" json:"model_allow_list"`
 	CapabilityFlags  []string           `db:"capability_flags" json:"capability_flags"`
 	CapQueueSticky   int32              `db:"cap_queue_sticky" json:"cap_queue_sticky"`
@@ -668,6 +713,8 @@ func (q *Queries) ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListE
 			&i.InFlightCount,
 			&i.Priority,
 			&i.LastDispatchAt,
+			&i.HealthState,
+			&i.HealthStateUntil,
 			&i.ModelAllowList,
 			&i.CapabilityFlags,
 			&i.CapQueueSticky,

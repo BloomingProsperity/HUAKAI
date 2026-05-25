@@ -22,6 +22,7 @@ type DefaultSelector struct {
 	claims   ClaimGate
 	rand     *rand.Rand
 	randMu   sync.Mutex // 保护 rand: math/rand.Rand 非并发安全, gateway 多 goroutine 同时调 Shuffle 会 race
+	now      func() time.Time
 }
 
 func NewDefaultSelector(accounts AccountSource, opts ...SelectorOption) *DefaultSelector {
@@ -30,6 +31,7 @@ func NewDefaultSelector(accounts AccountSource, opts ...SelectorOption) *Default
 		gates:    DefaultGateChain(),
 		slots:    nilSlotManager{},
 		rand:     rand.New(rand.NewSource(time.Now().UnixNano())),
+		now:      time.Now,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -55,6 +57,18 @@ func WithSlotManager(v SlotManager) SelectorOption {
 
 func WithClaimGate(v ClaimGate) SelectorOption {
 	return func(s *DefaultSelector) { s.claims = v }
+}
+
+func WithNow(fn func() time.Time) SelectorOption {
+	return func(s *DefaultSelector) {
+		if fn == nil {
+			return
+		}
+		s.now = fn
+		if _, ok := s.gates.Health.(ProviderAccountHealthGate); ok {
+			s.gates.Health = ProviderAccountHealthGate{Now: fn}
+		}
+	}
 }
 
 func (s *DefaultSelector) Select(ctx context.Context, req SelectionRequest) (*SelectionResult, error) {

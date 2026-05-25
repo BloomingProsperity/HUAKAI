@@ -98,6 +98,12 @@ func WithAuditLedgerSigner(signer any) Option {
 	}
 }
 
+func WithProviderAccountHealthPolicy(policy ProviderAccountHealthPolicy) Option {
+	return func(s *Scheduler) {
+		s.healthPolicy = policy.normalized()
+	}
+}
+
 func withRefreshQueries(q refreshQueries) Option {
 	return func(s *Scheduler) { s.queryer = q }
 }
@@ -108,6 +114,10 @@ func withStormAcquirer(a stormAcquirer) Option {
 
 func withAuditWriter(w auth.AuditWriter) Option {
 	return func(s *Scheduler) { s.auditWriter = w }
+}
+
+func withProviderAccountHealthStore(store providerAccountHealthStore) Option {
+	return func(s *Scheduler) { s.healthStore = store }
 }
 
 func withSleep(fn func(context.Context, time.Duration) error) Option {

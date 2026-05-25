@@ -1,6 +1,9 @@
 package router
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type GateFailureReason string
 
@@ -65,7 +68,7 @@ func DefaultGateChain() GateChain {
 	g := AllowAllGate{}
 	return GateChain{
 		Tenant: g, Lifecycle: g, Channel: g, Model: g, Capability: g,
-		Credential: g, Health: g, GroupPolicy: g, Exclusion: exclusionGate{},
+		Credential: g, Health: ProviderAccountHealthGate{}, GroupPolicy: g, Exclusion: exclusionGate{},
 	}
 }
 
@@ -137,6 +140,56 @@ type AllowAllGate struct{}
 
 func (AllowAllGate) Allow(context.Context, *AccountSnapshot, SelectionRequest) (bool, GateFailureReason, error) {
 	return true, "", nil
+}
+
+type ProviderAccountHealthGate struct {
+	Now func() time.Time
+}
+
+func (g ProviderAccountHealthGate) Allow(_ context.Context, account *AccountSnapshot, _ SelectionRequest) (bool, GateFailureReason, error) {
+	if account == nil {
+		return false, GateFailureHealth, nil
+	}
+	if providerAccountHealthEligible(account.HealthState, account.HealthStateUntil, g.now()) {
+		return true, "", nil
+	}
+	return false, GateFailureHealth, nil
+}
+
+func (g ProviderAccountHealthGate) HealthStatus(_ context.Context, account *AccountSnapshot, _ SelectionRequest) (HealthStatus, error) {
+	if account == nil {
+		return HealthStatus{State: HealthStateDisabled}, nil
+	}
+	state := account.HealthState
+	if providerAccountHealthEligible(state, account.HealthStateUntil, g.now()) {
+		return HealthStatus{State: HealthStateActive}, nil
+	}
+	switch state {
+	case "throttled", "cooldown":
+		return HealthStatus{State: HealthStateCoolingDown}, nil
+	case "revoked":
+		return HealthStatus{State: HealthStateDisabled}, nil
+	default:
+		return HealthStatus{State: HealthStateDisabled}, nil
+	}
+}
+
+func (g ProviderAccountHealthGate) now() time.Time {
+	if g.Now != nil {
+		return g.Now()
+	}
+	return time.Now()
+}
+
+func providerAccountHealthEligible(state string, until time.Time, now time.Time) bool {
+	switch state {
+	case "", "healthy":
+		return true
+	case "throttled", "revoked", "cooldown":
+		return !until.IsZero() && !until.After(now)
+	default:
+		return false
+	}
 }
 
 type exclusionGate struct{}
