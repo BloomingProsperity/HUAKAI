@@ -116,10 +116,19 @@ fn fixture_exists_when_profile_marks_available() {
         // would silently pass while production runtime still drifts from the
         // template.
         //
-        // Cross-check #1: every SETTINGS id in profile.h2_settings_frame.values
-        // must have a matching value in the fixture's h2_settings_frame.values
-        // map (fixture may carry extra ids — superset semantics — but cannot
-        // disagree on any profile-declared id).
+        // Cross-check #1 (round 3 Codex P2 fix): iterate profile.raw_order
+        // instead of profile.values map. The adapter
+        // (`http2_adapter::new_with_profile`) rejects profiles where any
+        // raw_order id lacks a matching values entry ("order has no matching
+        // value"), but the load-time profile.rs validation only checks that
+        // values is non-empty. So a F-1.g fixture matching a partial
+        // values-map could pass an iterate-values loop while the adapter
+        // would still reject at runtime — leaving us with a "fixture matches
+        // template" claim that the production code can't actually use.
+        //
+        // Iterating raw_order requires (a) every raw_order id is in
+        // profile.values, (b) every raw_order id is in fixture.values, (c)
+        // values agree.
         let fixture_values = &fixture_settings_frame["values"];
         let fixture_values_map = fixture_values.as_object().unwrap_or_else(|| {
             panic!(
@@ -127,12 +136,20 @@ fn fixture_exists_when_profile_marks_available() {
                  (required by F-1.a schema)"
             )
         });
-        for (&profile_id, &profile_value) in profile.h2_settings_frame.values.iter() {
+        for &profile_id in &profile.h2_settings_frame.raw_order {
+            let profile_value = profile.h2_settings_frame.values.get(&profile_id).unwrap_or_else(|| {
+                panic!(
+                    "profile {builtin:?} raw_order lists SETTINGS id \
+                     {profile_id} but profile.values omits it; the adapter \
+                     will reject this profile with \"order has no matching \
+                     value\" at runtime. Fix the profile before promoting."
+                )
+            });
             let key = profile_id.to_string();
             let fixture_value = fixture_values_map.get(&key).unwrap_or_else(|| {
                 panic!(
-                    "profile {builtin:?} declares SETTINGS id {profile_id} \
-                     but fixture {path:?} omits it (superset rule violated)"
+                    "profile {builtin:?} raw_order id {profile_id} but \
+                     fixture {path:?} omits it (superset rule violated)"
                 )
             });
             let fixture_u32 = u32::try_from(
@@ -142,7 +159,7 @@ fn fixture_exists_when_profile_marks_available() {
             )
             .expect("u32 fits");
             assert_eq!(
-                fixture_u32, profile_value,
+                fixture_u32, *profile_value,
                 "profile/fixture value mismatch for SETTINGS id {profile_id} \
                  on {builtin:?}. Profile says {profile_value}, fixture says \
                  {fixture_u32}. Re-capture upstream and align both."
@@ -153,6 +170,26 @@ fn fixture_exists_when_profile_marks_available() {
         // profile's h2_pseudo_header_capture.order byte-for-byte. Pseudo-header
         // order is a fingerprintable wire detail — different orderings yield
         // different HPACK bytes.
+        //
+        // Round 3 Codex P2 fix: if pseudo-header capture is unavailable on
+        // the profile but settings_frame is available, the profile's order is
+        // a default empty vec, and a fixture with empty order would trivially
+        // pass the equality — letting an "F-1.g promoted" profile through
+        // without real pseudo-header evidence. Gate on
+        // h2_pseudo_header_capture.available + non-empty order before the
+        // equality assertion.
+        assert!(
+            profile.h2_pseudo_header_capture.available,
+            "profile {builtin:?} has h2_settings_frame.available=true but \
+             h2_pseudo_header_capture.available=false. The fork client needs \
+             both — flip pseudo-header capture or revert settings_frame \
+             availability."
+        );
+        assert!(
+            !profile.h2_pseudo_header_capture.order.is_empty(),
+            "profile {builtin:?} has h2_pseudo_header_capture.available=true \
+             but empty .order; impossible to enforce wire-order parity."
+        );
         let fixture_pseudo = &fixture["h2_pseudo_header_order"];
         let fixture_pseudo_order: Vec<String> = fixture_pseudo["order"]
             .as_array()
@@ -171,6 +208,11 @@ fn fixture_exists_when_profile_marks_available() {
                     .to_owned()
             })
             .collect();
+        assert!(
+            !fixture_pseudo_order.is_empty(),
+            "fixture {path:?} has empty h2_pseudo_header_order.order; \
+             impossible to byte-match real upstream HEADERS frame."
+        );
         assert_eq!(
             fixture_pseudo_order, profile.h2_pseudo_header_capture.order,
             "profile/fixture mismatch on pseudo-header order for {builtin:?}. \
@@ -197,6 +239,26 @@ fn fixture_exists_when_profile_marks_available() {
              must be \"h2\" for an H2 fingerprint fixture. If real upstream \
              negotiates h1, that profile is not F-1 Released eligible — \
              do NOT promote it."
+        );
+
+        // Cross-check #4 (round 3 Codex P2 fix): the fixture's captured ALPN
+        // is only half the story — the live BoringSSL handshake uses
+        // `profile.tls.alpn_protocols` to ADVERTISE supported protocols.
+        // If the profile advertises only `["http/1.1"]` (as anthropic_claude_code.json:99-100
+        // currently does), the real upstream MUST negotiate h1 regardless of
+        // what the fixture says was negotiated in capture, and the fork
+        // client at boring_tls_connector.rs:176-178/249-258 will fail-closed
+        // on every real Anthropic request. F-1.g promotion MUST refresh
+        // profile.tls.alpn_protocols to include "h2".
+        assert!(
+            profile.tls.alpn_protocols.iter().any(|p| p == "h2"),
+            "profile {builtin:?} has h2_settings_frame.available=true but \
+             profile.tls.alpn_protocols={:?} does not include \"h2\". The \
+             BoringSSL ALPN advertise list at runtime would not offer h2, so \
+             the fork client would never negotiate h2 with real upstream — \
+             every request fails-closed despite fixture evidence. F-1.g \
+             promotion MUST refresh alpn_protocols from real capture.",
+            profile.tls.alpn_protocols
         );
     }
 }
