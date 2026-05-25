@@ -1,0 +1,176 @@
+// Package hermeshttp 暴露 Hermes user-facing HTTP endpoints。
+package hermeshttp
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"strings"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+
+	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
+)
+
+type AuthResolver interface {
+	Resolve(context.Context, *http.Request) (sessionauth.Identity, error)
+}
+
+type authContextKey struct{}
+
+type handler struct {
+	svc    *hermes.Service
+	runner *hermes.RunnerClient
+}
+
+func NewRouter(svc *hermes.Service, runnerClient *hermes.RunnerClient) http.Handler {
+	h := handler{svc: svc, runner: runnerClient}
+	r := chi.NewRouter()
+	r.Get("/settings", h.getSettings)
+	r.Post("/settings/enable", h.enableSettings)
+	r.Post("/settings/disable", h.disableSettings)
+	r.Post("/api-profiles", h.createProfile)
+	r.Get("/api-profiles", h.listProfiles)
+	r.Get("/api-profiles/{id}", h.getProfile)
+	r.Delete("/api-profiles/{id}", h.deleteProfile)
+	r.Post("/chat", h.startChat)
+	r.Get("/conversations", h.listConversations)
+	r.Get("/conversations/{id}/messages", h.listConversationMessages)
+	return r
+}
+
+func APIKeyMiddleware(resolver AuthResolver) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if resolver == nil {
+				writeError(w, http.StatusServiceUnavailable, "hermes_auth_unavailable", "hermes auth resolver unset")
+				return
+			}
+			ident, err := resolver.Resolve(r.Context(), r)
+			if err != nil {
+				if errors.Is(err, sessionauth.ErrAuthBackend) || errors.Is(err, sessionauth.ErrAuthMisconfigured) {
+					writeError(w, http.StatusServiceUnavailable, "hermes_auth_backend_error", "hermes auth backend transient failure")
+					return
+				}
+				writeError(w, http.StatusUnauthorized, "hermes_unauthorized", "missing or invalid bearer token")
+				return
+			}
+			ctx := context.WithValue(r.Context(), authContextKey{}, ident)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+func (h handler) requireIdentity(w http.ResponseWriter, r *http.Request) (sessionauth.Identity, bool) {
+	if h.svc == nil {
+		writeError(w, http.StatusServiceUnavailable, "hermes_service_unavailable", "hermes service unset")
+		return sessionauth.Identity{}, false
+	}
+	ident, ok := r.Context().Value(authContextKey{}).(sessionauth.Identity)
+	if !ok || ident.TenantID <= 0 || ident.UserID <= 0 {
+		writeError(w, http.StatusUnauthorized, "hermes_unauthorized", "hermes api key bearer token is required")
+		return sessionauth.Identity{}, false
+	}
+	return ident, true
+}
+
+func (h handler) requireRunner(w http.ResponseWriter) bool {
+	if h.runner == nil {
+		writeError(w, http.StatusServiceUnavailable, "hermes_runner_unavailable", "hermes runner client unset")
+		return false
+	}
+	return true
+}
+
+func (h handler) audit(w http.ResponseWriter, r *http.Request, ident sessionauth.Identity, action string, args map[string]any, result string) bool {
+	err := h.svc.RecordAudit(r.Context(), ident.TenantID, ident.UserID, action, args, result, correlationID(r), requestID(r))
+	if err != nil {
+		writeHermesError(w, err)
+		return false
+	}
+	return true
+}
+
+func (h handler) auditFailureThenError(w http.ResponseWriter, r *http.Request, ident sessionauth.Identity, action string, args map[string]any, err error) {
+	if !h.audit(w, r, ident, action, args, hermes.AuditResultFailure) {
+		return
+	}
+	writeHermesError(w, err)
+}
+
+func auditFields(r *http.Request, ident sessionauth.Identity, action string, args map[string]any, result string) hermes.AuditFields {
+	return hermes.AuditFields{
+		TenantID: ident.TenantID, ActorUserID: ident.UserID, Action: action,
+		SanitizedArgs: args, Result: result,
+		CorrelationID: correlationID(r), RequestID: requestID(r),
+	}
+}
+
+func requestID(r *http.Request) string {
+	if id := middleware.GetReqID(r.Context()); id != "" {
+		return id
+	}
+	if id := r.Header.Get("X-Request-Id"); id != "" {
+		return id
+	}
+	return r.Header.Get("X-Request-ID")
+}
+
+func correlationID(r *http.Request) string {
+	if id := strings.TrimSpace(r.Header.Get("X-Correlation-ID")); id != "" {
+		return id
+	}
+	return requestID(r)
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+		return false
+	}
+	return true
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = fmt.Fprintf(w, `{"error":{"code":%q,"message":%q}}`, code, message)
+}
+
+func writeHermesError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, hermes.ErrInvalidInput):
+		writeError(w, http.StatusBadRequest, "hermes_invalid_input", "invalid hermes request")
+	case errors.Is(err, hermes.ErrProfileNotOwned):
+		writeError(w, http.StatusForbidden, "hermes_profile_not_owned", "hermes profile is not owned by current user")
+	case errors.Is(err, hermes.ErrProfileInUse):
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = fmt.Fprint(w, `{"error":"profile_in_use","detail":"profile is currently used by settings"}`)
+	case errors.Is(err, hermes.ErrForbidden):
+		writeError(w, http.StatusForbidden, "hermes_forbidden", "hermes resource is not allowed")
+	case errors.Is(err, hermes.ErrNotFound):
+		writeError(w, http.StatusNotFound, "hermes_not_found", "hermes resource not found")
+	case errors.Is(err, hermes.ErrMisconfigured):
+		writeError(w, http.StatusServiceUnavailable, "hermes_service_unavailable", "hermes service unavailable")
+	case errors.Is(err, hermes.ErrAuditRecordFailed):
+		log.Printf("hermes audit insert failed: %v", err)
+		writeError(w, http.StatusServiceUnavailable, "hermes_backend_error", "hermes backend transient failure")
+	default:
+		writeError(w, http.StatusServiceUnavailable, "hermes_backend_error", "hermes backend transient failure")
+	}
+}
