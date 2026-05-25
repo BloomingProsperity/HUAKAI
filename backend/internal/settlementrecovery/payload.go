@@ -1,0 +1,193 @@
+// 包 settlementrecovery 处理"流式 / 非流式响应已交付给客户端但 Tx2
+// settlement 未确认提交"的 durable recovery intent。
+//
+// 调用方在 settle 失败(或 eventbus billing handler 失败)时把
+// RequestCompletionEvent 转 Payload + Enqueue 到 usage_record_dlq 表,
+// event_kind='post_delivery_settlement'。DLQ worker 拿到后重调
+// public billing.Settler.Settle,并用三证 proof(claim committed +
+// usage_records + billing_events) 区分"已成功提交"和"未提交",防重复扣费。
+//
+// 决策上下文:docs/process/plans/2026-05-24-post-delivery-settle-recovery-synthesis.md
+package settlementrecovery
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
+	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+)
+
+// Source 标识 enqueue 入口,用于 observability + runbook 排查。
+type Source string
+
+const (
+	// SourceStream:chat_completions_stream.go forwardSSEAndSettle 后 settle 失败。
+	SourceStream Source = "stream"
+	// SourceDirectSettle:chat_completions_billing.go settleCompletion 非流式
+	// direct settle 失败(CompletionBus==nil 或 fallback)。
+	SourceDirectSettle Source = "non_stream_direct"
+	// SourceEventbusBillingHandler:observability/billing_persister_handler
+	// 在 eventbus 内处理失败,委托 DLQ 重放。
+	SourceEventbusBillingHandler Source = "eventbus_billing_handler"
+)
+
+// Payload 是 post_delivery_settlement DLQ 行的 JSON payload。
+//
+// 设计:不直接 JSON marshal billing.SettleRequest,因为
+// SettleRequest.OutboxEmitter 是 func() bool,不可序列化。Payload 镜像
+// SettleRequest 所有可持久字段,worker 重 settle 时重构 SettleRequest
+// 并把 OutboxEmitter 显式置 nil(不重发 cross-threshold scheduler outbox,
+// 防与原 attempt 内置 emit 重复 emit account_quota_changed 事件)。
+type Payload struct {
+	Source            Source                 `json:"source"`
+	Settle            settleRequestPersisted `json:"settle"`
+	EventID           string                 `json:"event_id,omitempty"`
+	RequestID         string                 `json:"request_id"`
+	AuditLedgerDLQRef string                 `json:"audit_ledger_dlq_ref,omitempty"`
+}
+
+// settleRequestPersisted 镜像 billing.SettleRequest,排除 OutboxEmitter func。
+// 字段顺序跟 billing.SettleRequest 对齐(billing.go:78-105),方便审计两边漏字段。
+type settleRequestPersisted struct {
+	ClaimID             int64                    `json:"claim_id"`
+	AccountID           int64                    `json:"account_id"`
+	AcquisitionToken    uuid.UUID                `json:"acquisition_token"`
+	UsageRecordPayload  json.RawMessage          `json:"usage_record_payload"`
+	BillingEventPayload json.RawMessage          `json:"billing_event_payload"`
+	ActualCost          decimal.Decimal          `json:"actual_cost"`
+	TenantID            int64                    `json:"tenant_id"`
+	APIKeyID            int64                    `json:"api_key_id"`
+	UserID              int64                    `json:"user_id"`
+	ProviderAccountID   int64                    `json:"provider_account_id"`
+	AttemptSeq          int32                    `json:"attempt_seq"`
+	RequestedModel      string                   `json:"requested_model"`
+	RequestedAt         time.Time                `json:"requested_at"`
+	UpstreamModel       string                   `json:"upstream_model"`
+	Provider            string                   `json:"provider"`
+	Stream              bool                     `json:"stream"`
+	Draft               gateway.UsageRecordDraft `json:"draft"`
+	StreamAttempt       *billing.Attempt         `json:"stream_attempt,omitempty"`
+	Fingerprint         string                   `json:"fingerprint"`
+	AuditRequestID      string                   `json:"audit_request_id"`
+	SnapshotVersion     string                   `json:"snapshot_version"`
+}
+
+// Validate 失败原因 — worker 用这些判断"该 quarantine 还是默默重试"。
+var (
+	ErrPayloadMissingClaimID  = errors.New("settlementrecovery: payload missing claim_id")
+	ErrPayloadMissingTenantID = errors.New("settlementrecovery: payload missing tenant_id")
+	ErrPayloadInvalidSource   = errors.New("settlementrecovery: payload invalid source")
+)
+
+// FromCompletionEvent 把 eventbus.RequestCompletionEvent 转 Payload。
+// OutboxEmitter 字段被显式 strip(不持久化 func)。
+//
+// AuditRequestID 规范化兜底(Owner P2 finding 2026-05-24):上层 settleCompletion
+// / Handler.Handle 都是在**栈本地副本**上把 SettleRequest.AuditRequestID 补成
+// event.RequestID,recovery payload 构造时拿到的是外层未规范化的原始 event ——
+// 不在此处兜底,worker 重放写 NULL audit_request_id,断 audit/receipt 关联。
+// 单点兜底 = 守所有 caller(stream / eventbus billing handler / 未来新 source)。
+func FromCompletionEvent(src Source, event eventbus.RequestCompletionEvent) Payload {
+	req := event.SettleRequest
+	auditRequestID := req.AuditRequestID
+	if auditRequestID == "" {
+		auditRequestID = event.RequestID
+	}
+	return Payload{
+		Source:            src,
+		EventID:           event.ID,
+		RequestID:         event.RequestID,
+		AuditLedgerDLQRef: event.AuditLedgerDLQRef,
+		Settle: settleRequestPersisted{
+			ClaimID:             req.ClaimID,
+			AccountID:           req.AccountID,
+			AcquisitionToken:    req.AcquisitionToken,
+			UsageRecordPayload:  json.RawMessage(req.UsageRecordPayload),
+			BillingEventPayload: json.RawMessage(req.BillingEventPayload),
+			ActualCost:          req.ActualCost,
+			TenantID:            req.TenantID,
+			APIKeyID:            req.APIKeyID,
+			UserID:              req.UserID,
+			ProviderAccountID:   req.ProviderAccountID,
+			AttemptSeq:          req.AttemptSeq,
+			RequestedModel:      req.RequestedModel,
+			RequestedAt:         req.RequestedAt,
+			UpstreamModel:       req.UpstreamModel,
+			Provider:            req.Provider,
+			Stream:              req.Stream,
+			Draft:               req.Draft,
+			StreamAttempt:       req.StreamAttempt,
+			Fingerprint:         req.Fingerprint,
+			AuditRequestID:      auditRequestID,
+			SnapshotVersion:     req.SnapshotVersion,
+		},
+	}
+}
+
+// Validate 在 enqueue 前 + worker decode 后两端调,确保 payload 不破坏 settle 必填条件。
+func (p Payload) Validate() error {
+	switch p.Source {
+	case SourceStream, SourceDirectSettle, SourceEventbusBillingHandler:
+	default:
+		return fmt.Errorf("%w: %q", ErrPayloadInvalidSource, p.Source)
+	}
+	if p.Settle.ClaimID == 0 {
+		return ErrPayloadMissingClaimID
+	}
+	if p.Settle.TenantID == 0 {
+		return ErrPayloadMissingTenantID
+	}
+	return nil
+}
+
+// ToSettleRequest 把 Payload 转 billing.SettleRequest,worker 拿去重调
+// Settler.Settle。OutboxEmitter 显式 nil — Settler.Settle 识别 nil 时
+// 不调用,防与原 attempt 已 emit 的 cross-threshold outbox 事件重复。
+func (p Payload) ToSettleRequest() billing.SettleRequest {
+	return billing.SettleRequest{
+		ClaimID:             p.Settle.ClaimID,
+		AccountID:           p.Settle.AccountID,
+		AcquisitionToken:    p.Settle.AcquisitionToken,
+		UsageRecordPayload:  []byte(p.Settle.UsageRecordPayload),
+		BillingEventPayload: []byte(p.Settle.BillingEventPayload),
+		ActualCost:          p.Settle.ActualCost,
+		TenantID:            p.Settle.TenantID,
+		APIKeyID:            p.Settle.APIKeyID,
+		UserID:              p.Settle.UserID,
+		ProviderAccountID:   p.Settle.ProviderAccountID,
+		AttemptSeq:          p.Settle.AttemptSeq,
+		RequestedModel:      p.Settle.RequestedModel,
+		RequestedAt:         p.Settle.RequestedAt,
+		UpstreamModel:       p.Settle.UpstreamModel,
+		Provider:            p.Settle.Provider,
+		Stream:              p.Settle.Stream,
+		Draft:               p.Settle.Draft,
+		StreamAttempt:       p.Settle.StreamAttempt,
+		Fingerprint:         p.Settle.Fingerprint,
+		AuditRequestID:      p.Settle.AuditRequestID,
+		// OutboxEmitter 不在 payload — worker 重 settle 时 nil,不重复 emit。
+		OutboxEmitter:   nil,
+		SnapshotVersion: p.Settle.SnapshotVersion,
+	}
+}
+
+// Encode 给 dlq.Event.Payload 用。
+func (p Payload) Encode() ([]byte, error) {
+	return json.Marshal(p)
+}
+
+// Decode 从 dlq.Event.Payload 还原 Payload。
+func Decode(raw []byte) (Payload, error) {
+	var p Payload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return Payload{}, fmt.Errorf("settlementrecovery: decode payload: %w", err)
+	}
+	return p, nil
+}

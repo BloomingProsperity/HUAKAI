@@ -1,0 +1,68 @@
+name: backend-ci
+
+on:
+  push:
+    branches:
+      - main
+      - 'claude/**'
+      - 'codex/**'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Go test + race + vet
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: huakai
+          POSTGRES_PASSWORD: huakai
+          POSTGRES_DB: huakai_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U huakai"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: true
+
+      - name: go vet
+        working-directory: backend
+        run: go vet ./...
+
+      - name: Install golang-migrate
+        run: |
+          curl -L https://github.com/golang-migrate/migrate/releases/download/v4.18.1/migrate.linux-amd64.tar.gz \
+            -o /tmp/migrate.tar.gz
+          tar -xzf /tmp/migrate.tar.gz -C /tmp
+          sudo mv /tmp/migrate /usr/local/bin/migrate
+
+      - name: Migration up + down + up round-trip
+        env:
+          MIGRATE_DSN: postgres://huakai:huakai@localhost:5432/huakai_test?sslmode=disable
+        run: |
+          migrate -path backend/sql/migrations -database "$MIGRATE_DSN" up
+          migrate -path backend/sql/migrations -database "$MIGRATE_DSN" down -all
+          migrate -path backend/sql/migrations -database "$MIGRATE_DSN" up
+
+      - name: go test -race -count=1
+        working-directory: backend
+        env:
+          HUAKAI_TEST_DATABASE_URL: postgres://huakai:huakai@localhost:5432/huakai_test?sslmode=disable
+        run: go test -race -count=1 -timeout 5m ./...
+
+# 注:首版 CI 只跑 test + race + migration round-trip。
+# golangci-lint 后续加(需先有 .golangci.yml 配置避免一次性 N 千警告)。

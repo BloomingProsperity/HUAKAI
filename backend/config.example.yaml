@@ -1,0 +1,91 @@
+# HUAKAI Gateway example configuration.
+# Current Phase C example configuration. Operator config schema remains
+# illustrative and may be refined by Phase E+ admin/config work.
+# See docs/specs/api-contract.md and docs/specs/*.md for the locked
+# behavior contracts.
+
+server:
+  addr: ":8080"
+  read_header_timeout_ms: 10000
+  shutdown_timeout_ms: 30000
+
+database:
+  # PostgreSQL connection string (DR-006).
+  url: "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable"
+  pool:
+    max_open_conns: 32
+    max_idle_conns: 8
+    conn_max_lifetime_ms: 1800000
+
+cache:
+  # Redis used for: token cache, sticky sessions, rate-limit hint, scheduler snapshot.
+  url: "redis://localhost:6379/0"
+
+tenancy:
+  # DR-001: MVP hard-codes a single default tenant.
+  default_tenant_id: 1
+
+billing:
+  policy_version: "1.0"
+  # F-OBS-001 H4: numeric(20,8) money type end-to-end.
+  currency_default: "USD"
+
+routes:
+  # Per-Route streaming policy (F-GW-002 §5.2). Operator may override per Route in DB.
+  default_scanner_buffer_max_bytes: 1048576    # 1 MiB
+  default_first_token_timeout_ms: 60000
+  default_inter_event_timeout_ms: 30000
+  default_total_stream_timeout_ms: 600000
+  default_drain_max_seconds: 30
+  default_drain_max_bytes: 1048576
+  default_drain_max_estimated_cost_usd: "0.10"
+
+oauth_refresh:
+  # F-AUTH-005 storm budget defaults.
+  global_concurrent_refreshes: 16
+  global_refreshes_per_minute: 240
+  default_request_path_timeout_ms: 8000
+  refresh_window_seconds: 900
+
+credential_encryption:
+  # F-AUTH-005 OCAW-31: Personal Edition v1 uses local AES-256-GCM key provider.
+  # Runtime env: HUAKAI_CREDENTIAL_KEY_B64 must decode to exactly 32 bytes.
+  mode: "local"
+  active_key_id: "local-v1"
+  env_key: "HUAKAI_CREDENTIAL_KEY_B64"
+
+user_sessions:
+  # F-SESSION-001: HMAC key for signed HUAKAI platform session tokens.
+  # Runtime env: HUAKAI_SESSION_SIGNING_KEY_B64 or HUAKAI_SESSION_SIGNING_KEY_HEX.
+  signing_key_env: "HUAKAI_SESSION_SIGNING_KEY_B64"
+
+user_oauth:
+  # F-AUTH-007: optional Google/GitHub OAuth identity-source bridge.
+  google_client_id_env: "HUAKAI_GOOGLE_OAUTH_CLIENT_ID"
+  google_client_secret_env: "HUAKAI_GOOGLE_OAUTH_CLIENT_SECRET"
+  github_client_id_env: "HUAKAI_GITHUB_OAUTH_CLIENT_ID"
+  github_client_secret_env: "HUAKAI_GITHUB_OAUTH_CLIENT_SECRET"
+
+logging:
+  # Token-leakage-safe logging discipline (F-AUTH-005 H5).
+  level: "info"
+  redact_credential_fragments: true
+
+observability:
+  # F-OBS-001 outbox lag alert threshold.
+  scheduler_outbox_lag_alert_seconds: 60
+  dlq:
+    # Runtime env equivalents:
+    # HUAKAI_OBS_DLQ_ENABLED=true
+    # HUAKAI_OBS_REPLICA_DSN=postgres://replica-writer:.../huakai_obs_replica
+    enabled: true
+    priority_lanes:
+      high_workers: 2   # Billing + audit
+      med_workers: 1    # Account health
+      low_workers: 1    # Metrics; drain-on-shutdown
+    retry:
+      base_backoff_seconds: 1
+      cap_backoff_seconds: 300
+      max_attempts: 10
+      operator_review_after_seconds: 900
+      lease_seconds: 30

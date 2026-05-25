@@ -1,0 +1,50 @@
+{
+  "version": "0.4",
+  "request_meta": {
+    "request_id": "req_fxt_mcp_001",
+    "client_protocol": "anthropic_messages",
+    "protocol_family": "anthropic",
+    "model": "claude-sonnet-4-5",
+    "ingress_path": "/v1/messages",
+    "native_passthrough": false
+  },
+  "request_controls": {},
+  "messages": [],
+  "capability_graph": {
+    "nodes": [
+      {
+        "id": "n_mcp_001",
+        "kind": "mcp_server",
+        "stream_ready": "partial",
+        "mcp_server": {
+          "server_label": "fixture-mcp",
+          "server_uri": "mcp://fixture.example/echo",
+          "allowed_operations": ["echo"],
+          "approval_required": false
+        }
+      }
+    ],
+    "edges": []
+  },
+  "provider_projection": {
+    "capability_results": [
+      {"capability": "mcp_server", "node_id": "n_mcp_001", "verdict": "preserved"}
+    ]
+  },
+  "stream_plan": {
+    "mode": "buffered",
+    "event_classes": [],
+    "flush_policy": "per_event",
+    "terminal_required": true,
+    "synthetic_terminal_allowed": true,
+    "fallback_boundary": "after_first_byte_blocked",
+    "mid_stream_fallback_policy": "none"
+  },
+  "accounting": {},
+  "policy": {
+    "data_retention": {"value": "unknown", "enforcement": "unknown", "audit_label": "unknown"},
+    "auth": "standard",
+    "audit": {"visibility": "visible", "label": "default"},
+    "redaction": "public"
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "version": "0.4",
+  "request_meta": {
+    "request_id": "req_fxt_edge_native_001",
+    "client_protocol": "openai_responses",
+    "protocol_family": "openai_responses",
+    "upstream_protocol": "openai",
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "ingress_path": "/v1/native/openai/responses",
+    "native_passthrough": true
+  },
+  "request_controls": {},
+  "messages": [
+    {"role": "user", "content": [{"type": "text", "text": "fixture: requires native passthrough"}]}
+  ],
+  "capability_graph": {
+    "nodes": [
+      {
+        "id": "n_edge_native_struct_001",
+        "kind": "structured_output",
+        "stream_ready": "yes",
+        "structured_output": {
+          "mode": "provider_native",
+          "strict": true,
+          "schema": null
+        }
+      }
+    ],
+    "edges": []
+  },
+  "provider_projection": {
+    "target_vendor": "openai",
+    "target_protocol": "openai",
+    "capability_results": [
+      {
+        "capability": "structured_output",
+        "node_id": "n_edge_native_struct_001",
+        "verdict": "native_required",
+        "native_path": "/v1/native/openai/responses",
+        "protocol_loss": [
+          {
+            "field": "structured_output.mode",
+            "vendor": "openai",
+            "severity": "info",
+            "reason": "provider_native structured output preserved by routing through native passthrough endpoint instead of canonical projection",
+            "suggestion": "use native passthrough at /v1/native/openai/responses",
+            "code": "native_required_for_provider_native",
+            "capability": "structured_output",
+            "native_path": "/v1/native/openai/responses"
+          }
+        ]
+      }
+    ],
+    "overall_verdict": "native_required"
+  },
+  "stream_plan": {
+    "mode": "buffered",
+    "event_classes": [],
+    "flush_policy": "per_event",
+    "terminal_required": true,
+    "synthetic_terminal_allowed": true,
+    "fallback_boundary": "after_first_byte_blocked",
+    "mid_stream_fallback_policy": "none"
+  },
+  "accounting": {},
+  "policy": {
+    "data_retention": {"value": "unknown", "enforcement": "unknown", "audit_label": "unknown"},
+    "auth": "standard",
+    "audit": {"visibility": "visible", "label": "native_passthrough"},
+    "redaction": "public"
+  }
+}

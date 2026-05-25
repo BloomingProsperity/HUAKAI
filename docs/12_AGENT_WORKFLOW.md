@@ -51,7 +51,7 @@ After Owner confirmation, agents should:
 
 ## Clean-Room Lanes
 
-Per [DR-000](decisions/DR-000-clean-room-methodology.md) (Decided 2026-04-28), HUAKAI uses two-lane separation (Option B) with Option C carve-outs. Full lane definitions and carve-out list are authoritative in [05_CLEAN_ROOM_POLICY.md §Methodology: Decided](05_CLEAN_ROOM_POLICY.md).
+Per [DR-000](process/decisions/DR-000-clean-room-methodology.md) (Decided 2026-04-28), HUAKAI uses two-lane separation (Option B) with Option C carve-outs. Full lane definitions and carve-out list are authoritative in [05_CLEAN_ROOM_POLICY.md §Methodology: Decided](05_CLEAN_ROOM_POLICY.md).
 
 | Lane | Reads | Produces | Typical agent role |
 | --- | --- | --- | --- |

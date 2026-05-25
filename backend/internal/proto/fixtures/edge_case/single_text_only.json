@@ -1,0 +1,47 @@
+{
+  "version": "0.4",
+  "request_meta": {
+    "request_id": "req_fxt_edge_singletext_001",
+    "client_protocol": "openai_chat",
+    "protocol_family": "openai_chat",
+    "model": "gpt-4o-mini",
+    "ingress_path": "/v1/chat/completions",
+    "native_passthrough": false
+  },
+  "request_controls": {},
+  "messages": [
+    {"role": "user", "content": [{"type": "text", "text": "fixture: single text only"}]}
+  ],
+  "capability_graph": {
+    "nodes": [
+      {
+        "id": "n_edge_singletext_001",
+        "kind": "text",
+        "stream_ready": "yes",
+        "text": {"role": "user", "block": {"type": "text", "text": "fixture: single text only"}}
+      }
+    ],
+    "edges": []
+  },
+  "provider_projection": {
+    "capability_results": [
+      {"capability": "text", "node_id": "n_edge_singletext_001", "verdict": "preserved"}
+    ]
+  },
+  "stream_plan": {
+    "mode": "buffered",
+    "event_classes": [],
+    "flush_policy": "per_event",
+    "terminal_required": true,
+    "synthetic_terminal_allowed": true,
+    "fallback_boundary": "after_first_byte_blocked",
+    "mid_stream_fallback_policy": "none"
+  },
+  "accounting": {},
+  "policy": {
+    "data_retention": {"value": "unknown", "enforcement": "unknown", "audit_label": "unknown"},
+    "auth": "standard",
+    "audit": {"visibility": "visible", "label": "default"},
+    "redaction": "public"
+  }
+}

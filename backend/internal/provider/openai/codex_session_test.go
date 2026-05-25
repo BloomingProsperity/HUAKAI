@@ -1,0 +1,322 @@
+// OpenAI Codex session 反转适配器 — 表格驱动测试。
+package openai
+
+import (
+	"context"
+	"io"
+	"strings"
+	"testing"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+)
+
+// ── 编译期接口合规性（文件独立，不依赖其它测试） ──────────────────────────────
+// var _ 已在 codex_session.go 中声明；测试文件此处仅做说明性注释，不重复声明。
+
+func TestCodexSessionAdapter_Platform(t *testing.T) {
+	a := &CodexSessionAdapter{}
+	if got := a.Platform(); got != "openai_codex" {
+		t.Errorf("Platform()=%q want openai_codex", got)
+	}
+}
+
+func TestCodexSessionAdapter_AcceptableCredentialTypes(t *testing.T) {
+	a := &CodexSessionAdapter{}
+	got := a.AcceptableCredentialTypes()
+	if len(got) != 2 {
+		t.Fatalf("AcceptableCredentialTypes 长度=%d want 2: %v", len(got), got)
+	}
+	want := map[provider.CredentialType]bool{
+		provider.CredentialTypeSessionToken:       true,
+		provider.CredentialTypeUpstreamPassthrough: true,
+	}
+	for _, ct := range got {
+		if !want[ct] {
+			t.Errorf("意外的凭据类型 %q", ct)
+		}
+	}
+	// apikey 不应在列表中
+	for _, ct := range got {
+		if ct == provider.CredentialTypeAPIKey {
+			t.Errorf("apikey 不应出现在 AcceptableCredentialTypes 中")
+		}
+	}
+}
+
+// ── BuildRequest happy path：session token → Authorization Bearer + endpoint ─
+
+func TestCodexSessionAdapter_BuildRequest_SessionToken(t *testing.T) {
+	a := &CodexSessionAdapter{}
+	in := provider.BuildInput{
+		UpstreamModelID: "gpt-4o",
+		InboundBody:     []byte(`{"conversation_id":"conv-123","parent_message_id":"msg-0","messages":[]}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeSessionToken,
+			Value: "sb-session-token-fake",
+			Extra: map[string]string{
+				"oai_device_id": "device-uuid-fake",
+			},
+		},
+		Account: provider.AccountInfo{AccountID: 1, Platform: "openai_codex", AccountType: "session"},
+	}
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 方法必须是 POST
+	if req.Method != "POST" {
+		t.Errorf("Method=%q want POST", req.Method)
+	}
+
+	// 默认 endpoint
+	if got := req.URL.String(); got != "https://chatgpt.com/backend-api/codex/completions" {
+		t.Errorf("URL=%q want 默认 codex endpoint", got)
+	}
+
+	// Authorization Bearer 注入
+	if got := req.Header.Get("Authorization"); got != "Bearer sb-session-token-fake" {
+		t.Errorf("Authorization=%q want Bearer sb-session-token-fake", got)
+	}
+
+	// OAI-Device-Id 注入
+	if got := req.Header.Get("OAI-Device-Id"); got != "device-uuid-fake" {
+		t.Errorf("OAI-Device-Id=%q want device-uuid-fake", got)
+	}
+
+	// OAI-Language 固定 en-US
+	if got := req.Header.Get("OAI-Language"); got != "en-US" {
+		t.Errorf("OAI-Language=%q want en-US", got)
+	}
+
+	// Content-Type
+	if got := req.Header.Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type=%q want application/json", got)
+	}
+
+	// Body 透传
+	body, _ := io.ReadAll(req.Body)
+	if !strings.Contains(string(body), `"conversation_id"`) {
+		t.Errorf("body 未透传: %s", body)
+	}
+}
+
+// ── BuildRequest 自定义 endpoint ────────────────────────────────────────────
+
+func TestCodexSessionAdapter_BuildRequest_CustomEndpoint(t *testing.T) {
+	a := &CodexSessionAdapter{Endpoint: "https://chatgpt.com/backend-api/codex/chat"}
+	in := provider.BuildInput{
+		UpstreamModelID: "gpt-4o",
+		InboundBody:     []byte(`{}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeSessionToken,
+			Value: "sb-tok",
+		},
+	}
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.URL.String(); got != "https://chatgpt.com/backend-api/codex/chat" {
+		t.Errorf("自定义 endpoint 未生效: URL=%q", got)
+	}
+}
+
+// ── BuildRequest UpstreamPassthrough：完整 Authorization header 透传 ──────
+
+func TestCodexSessionAdapter_BuildRequest_UpstreamPassthrough(t *testing.T) {
+	a := &CodexSessionAdapter{}
+	in := provider.BuildInput{
+		UpstreamModelID: "gpt-4o",
+		InboundBody:     []byte(`{}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeUpstreamPassthrough,
+			Value: "Bearer caller-pre-formatted-token",
+		},
+	}
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// upstream 模式下完整 Authorization 值保留
+	if got := req.Header.Get("Authorization"); got != "Bearer caller-pre-formatted-token" {
+		t.Errorf("upstream passthrough 应保留完整 Authorization 值: got=%q", got)
+	}
+}
+
+// ── BuildRequest UA / OAI-Device-Id / OAI-Language 注入 ─────────────────
+
+func TestCodexSessionAdapter_BuildRequest_Headers(t *testing.T) {
+	// caller 提供自定义 UA 与 Device-Id
+	a := &CodexSessionAdapter{}
+	in := provider.BuildInput{
+		UpstreamModelID: "gpt-4o",
+		InboundBody:     []byte(`{}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeSessionToken,
+			Value: "sb-tok",
+			Extra: map[string]string{
+				"user_agent":    "custom-codex-agent/2.0",
+				"oai_device_id": "my-device-id",
+			},
+		},
+	}
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Header.Get("User-Agent"); got != "custom-codex-agent/2.0" {
+		t.Errorf("User-Agent=%q want custom-codex-agent/2.0", got)
+	}
+	if got := req.Header.Get("OAI-Device-Id"); got != "my-device-id" {
+		t.Errorf("OAI-Device-Id=%q want my-device-id", got)
+	}
+	if got := req.Header.Get("OAI-Language"); got != "en-US" {
+		t.Errorf("OAI-Language=%q want en-US", got)
+	}
+}
+
+func TestCodexSessionAdapter_BuildRequest_DefaultUA(t *testing.T) {
+	// caller 未提供 user_agent，应用默认 Codex CLI 风格 UA
+	a := &CodexSessionAdapter{}
+	in := provider.BuildInput{
+		UpstreamModelID: "gpt-4o",
+		InboundBody:     []byte(`{}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeSessionToken,
+			Value: "sb-tok",
+		},
+	}
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Header.Get("User-Agent"); got == "" {
+		t.Errorf("未设置默认 User-Agent")
+	}
+	// 默认 UA 应包含 codex 标识
+	if !strings.Contains(req.Header.Get("User-Agent"), "codex") {
+		t.Errorf("默认 User-Agent 应含 codex 标识: got=%q", req.Header.Get("User-Agent"))
+	}
+}
+
+// ── BuildRequest 必填校验：空 session token ──────────────────────────────
+
+func TestCodexSessionAdapter_BuildRequest_RejectEmptySessionToken(t *testing.T) {
+	a := &CodexSessionAdapter{}
+	in := provider.BuildInput{
+		UpstreamModelID: "gpt-4o",
+		InboundBody:     []byte(`{}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeSessionToken,
+			Value: "", // 空 token
+		},
+	}
+	_, err := a.BuildRequest(context.Background(), in)
+	if err == nil {
+		t.Fatal("空 session token 应被 reject")
+	}
+	if !strings.Contains(err.Error(), "凭据 Value 为空") {
+		t.Errorf("error 文案不对: %v", err)
+	}
+}
+
+// ── BuildRequest 必填校验：空 UpstreamModelID ────────────────────────────
+
+func TestCodexSessionAdapter_BuildRequest_RejectEmptyUpstreamModelID(t *testing.T) {
+	a := &CodexSessionAdapter{}
+	in := provider.BuildInput{
+		UpstreamModelID: "", // 空 model slug
+		InboundBody:     []byte(`{}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeSessionToken,
+			Value: "sb-tok",
+		},
+	}
+	_, err := a.BuildRequest(context.Background(), in)
+	if err == nil {
+		t.Fatal("空 UpstreamModelID 应被 reject")
+	}
+	if !strings.Contains(err.Error(), "UpstreamModelID 为空") {
+		t.Errorf("error 文案不对: %v", err)
+	}
+}
+
+// ── BuildRequest 拒绝 apikey credential ──────────────────────────────────
+
+func TestCodexSessionAdapter_BuildRequest_RejectAPIKey(t *testing.T) {
+	a := &CodexSessionAdapter{}
+	in := provider.BuildInput{
+		UpstreamModelID: "gpt-4o",
+		InboundBody:     []byte(`{}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeAPIKey,
+			Value: "sk-fake-should-be-rejected",
+		},
+	}
+	_, err := a.BuildRequest(context.Background(), in)
+	if err == nil {
+		t.Fatal("apikey 凭据应被 reject")
+	}
+	// 错误信息应明确指向 PassthroughAdapter
+	if !strings.Contains(err.Error(), "PassthroughAdapter") {
+		t.Errorf("reject apikey error 应提示走 PassthroughAdapter: %v", err)
+	}
+}
+
+// ── BuildRequest 拒绝其它不支持凭据形态 ──────────────────────────────────
+
+func TestCodexSessionAdapter_BuildRequest_RejectOAuthToken(t *testing.T) {
+	a := &CodexSessionAdapter{}
+	in := provider.BuildInput{
+		UpstreamModelID: "gpt-4o",
+		InboundBody:     []byte(`{}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeOAuthAccessToken,
+			Value: "oauth-tok",
+		},
+	}
+	_, err := a.BuildRequest(context.Background(), in)
+	if err == nil {
+		t.Fatal("OAuth access token 应被 reject")
+	}
+	if !strings.Contains(err.Error(), "不支持的凭据形态") {
+		t.Errorf("error 文案不对: %v", err)
+	}
+}
+
+// ── Extra 扩展 header 透传（cookie / arkose_token 等） ───────────────────
+
+func TestCodexSessionAdapter_BuildRequest_ExtraHeaders(t *testing.T) {
+	a := &CodexSessionAdapter{}
+	in := provider.BuildInput{
+		UpstreamModelID: "gpt-4o",
+		InboundBody:     []byte(`{}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeSessionToken,
+			Value: "sb-tok",
+			Extra: map[string]string{
+				"cookie":          "__Secure-next-auth.session-token=abc",
+				"arkose_token":    "arkose-fake-token",
+				"chat_session_id": "chat-sess-123",
+				"oai_country":     "US",
+			},
+		},
+	}
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Header.Get("Cookie"); got != "__Secure-next-auth.session-token=abc" {
+		t.Errorf("Cookie=%q", got)
+	}
+	if got := req.Header.Get("OpenAI-Sentinel-Arkose-Token"); got != "arkose-fake-token" {
+		t.Errorf("OpenAI-Sentinel-Arkose-Token=%q", got)
+	}
+	if got := req.Header.Get("X-Chat-Session-Id"); got != "chat-sess-123" {
+		t.Errorf("X-Chat-Session-Id=%q", got)
+	}
+	if got := req.Header.Get("OAI-Country"); got != "US" {
+		t.Errorf("OAI-Country=%q", got)
+	}
+}

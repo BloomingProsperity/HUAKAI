@@ -1,0 +1,194 @@
+version: "2"
+sql:
+  - engine: postgresql
+    schema: sql/migrations
+    queries:
+      - sql/queries/admin_api_keys.sql
+      - sql/queries/admin_audit.sql
+      - sql/queries/admin_provider_account_mutations.sql
+      - sql/queries/admin_proxies.sql
+      - sql/queries/admin_tls_fingerprint_profiles.sql
+      - sql/queries/admin_tokens.sql
+    gen:
+      go:
+        package: admin
+        out: internal/db/admin
+        sql_package: pgx/v5
+        emit_json_tags: true
+        emit_db_tags: true
+        emit_pointers_for_null_types: true
+        emit_interface: true
+        omit_unused_structs: true
+        emit_methods_with_db_argument: false
+        emit_prepared_queries: false
+        rename:
+          tenant_id: TenantID
+          api_key_id: APIKeyID
+          provider_id: ProviderID
+          channel_id: ChannelID
+          pool_group_id: PoolGroupID
+          provider_account_id: ProviderAccountID
+          claim_id: ClaimID
+          acquisition_token: AcquisitionToken
+          dlq: DLQ
+          oauth_endpoint_health: OAuthEndpointHealth
+          openai_403_counter: OpenAI403Counter
+          tls_fingerprint_profile_id: TLSFingerprintProfileID
+          tls_supported_versions: TLSSupportedVersions
+          expected_ja3_hash: ExpectedJA3Hash
+          ja3: JA3
+          ja4: JA4
+  - engine: postgresql
+    schema: sql/migrations
+    queries:
+      - sql/queries/billing_claims.sql
+      - sql/queries/billing_settings.sql
+      - sql/queries/billing_settle.sql
+      - sql/queries/idempotency_replay.sql
+      - sql/queries/observability.sql
+      - sql/queries/obs_queries.sql
+      - sql/queries/pool_accounts.sql
+      - sql/queries/pool_audit.sql
+      - sql/queries/pool_slot_acquisitions.sql
+      - sql/queries/pool_sticky_bindings.sql
+      - sql/queries/pools.sql
+    gen:
+      go:
+        package: billing
+        out: internal/db/billing
+        sql_package: pgx/v5
+        emit_json_tags: true
+        emit_db_tags: true
+        emit_pointers_for_null_types: true
+        emit_interface: true
+        omit_unused_structs: true
+        emit_methods_with_db_argument: false
+        emit_prepared_queries: false
+        rename:
+          tenant_id: TenantID
+          api_key_id: APIKeyID
+          provider_id: ProviderID
+          channel_id: ChannelID
+          pool_group_id: PoolGroupID
+          provider_account_id: ProviderAccountID
+          claim_id: ClaimID
+          acquisition_token: AcquisitionToken
+          dlq: DLQ
+          oauth_endpoint_health: OAuthEndpointHealth
+          openai_403_counter: OpenAI403Counter
+  - engine: postgresql
+    schema: sql/migrations
+    queries:
+      - sql/queries/auth_audit.sql
+      - sql/queries/auth_credentials.sql
+      - sql/queries/auth_inbound.sql
+      - sql/queries/auth_storm.sql
+    gen:
+      go:
+        package: auth
+        out: internal/db/auth
+        sql_package: pgx/v5
+        emit_json_tags: true
+        emit_db_tags: true
+        emit_pointers_for_null_types: true
+        emit_interface: true
+        omit_unused_structs: true
+        emit_methods_with_db_argument: false
+        emit_prepared_queries: false
+        rename:
+          tenant_id: TenantID
+          api_key_id: APIKeyID
+          provider_id: ProviderID
+          channel_id: ChannelID
+          pool_group_id: PoolGroupID
+          provider_account_id: ProviderAccountID
+          claim_id: ClaimID
+          acquisition_token: AcquisitionToken
+          dlq: DLQ
+          oauth_endpoint_health: OAuthEndpointHealth
+          openai_403_counter: OpenAI403Counter
+  - engine: postgresql
+    schema: sql/migrations
+    queries:
+      - sql/queries/trust_chain_ledger.sql
+    gen:
+      go:
+        package: audit
+        out: internal/db/audit
+        sql_package: pgx/v5
+        emit_json_tags: true
+        emit_db_tags: true
+        emit_pointers_for_null_types: true
+        emit_interface: true
+        omit_unused_structs: true
+        emit_methods_with_db_argument: false
+        emit_prepared_queries: false
+        rename:
+          tenant_id: TenantID
+          api_key_id: APIKeyID
+          provider_id: ProviderID
+          channel_id: ChannelID
+          pool_group_id: PoolGroupID
+          provider_account_id: ProviderAccountID
+          claim_id: ClaimID
+          acquisition_token: AcquisitionToken
+          dlq: DLQ
+          oauth_endpoint_health: OAuthEndpointHealth
+          openai_403_counter: OpenAI403Counter
+  - engine: postgresql
+    schema: sql/migrations
+    queries:
+      - sql/queries/proto_capability.sql
+      - sql/queries/proto_policy.sql
+      - sql/queries/registry.sql
+    gen:
+      go:
+        package: registry
+        out: internal/db/registry
+        sql_package: pgx/v5
+        emit_json_tags: true
+        emit_db_tags: true
+        emit_pointers_for_null_types: true
+        emit_interface: true
+        omit_unused_structs: true
+        emit_methods_with_db_argument: false
+        emit_prepared_queries: false
+        rename:
+          tenant_id: TenantID
+          api_key_id: APIKeyID
+          provider_id: ProviderID
+          channel_id: ChannelID
+          pool_group_id: PoolGroupID
+          provider_account_id: ProviderAccountID
+          claim_id: ClaimID
+          acquisition_token: AcquisitionToken
+          dlq: DLQ
+          oauth_endpoint_health: OAuthEndpointHealth
+          openai_403_counter: OpenAI403Counter
+overrides:
+  go:
+    overrides:
+      - column: "billing_ledger_claims.predicted_cost"
+        go_type: "github.com/shopspring/decimal.Decimal"
+      - column: "billing_ledger_claims.actual_cost"
+        go_type: "github.com/shopspring/decimal.NullDecimal"
+      - column: "usage_records.actual_cost"
+        go_type: "github.com/shopspring/decimal.Decimal"
+      - column: "usage_records.input_cost"
+        go_type: "github.com/shopspring/decimal.Decimal"
+      - column: "usage_records.output_cost"
+        go_type: "github.com/shopspring/decimal.Decimal"
+      - column: "usage_records.cache_creation_cost"
+        go_type: "github.com/shopspring/decimal.Decimal"
+      - column: "usage_records.cache_read_cost"
+        go_type: "github.com/shopspring/decimal.Decimal"
+      - column: "usage_records.image_output_cost"
+        go_type: "github.com/shopspring/decimal.Decimal"
+      - column: "billing_events.actual_cost"
+        go_type: "github.com/shopspring/decimal.Decimal"
+      - column: "billing_events.actual_cost_signed"
+        go_type: "github.com/shopspring/decimal.Decimal"
+      - column: "pool_slot_acquisitions.acquisition_token"
+        go_type: "github.com/google/uuid.UUID"
+      - column: "billing_ledger_claims.acquisition_token"
+        go_type: "github.com/google/uuid.UUID"

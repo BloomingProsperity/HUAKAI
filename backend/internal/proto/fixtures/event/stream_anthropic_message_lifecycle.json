@@ -1,0 +1,59 @@
+{
+  "version": "0.4",
+  "request_meta": {
+    "request_id": "req_fxt_evt_anthropic_001",
+    "client_protocol": "anthropic_messages",
+    "protocol_family": "anthropic",
+    "model": "claude-sonnet-4-5",
+    "ingress_path": "/v1/messages",
+    "native_passthrough": false
+  },
+  "request_controls": {},
+  "messages": [
+    {"role": "user", "content": [{"type": "text", "text": "stream test"}]}
+  ],
+  "stream_events": [
+    {"type": "message_start", "message_id": "msg_fxt_evt_001", "model": "claude-sonnet-4-5"},
+    {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+    {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hello"}},
+    {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " world"}},
+    {"type": "content_block_stop", "index": 0},
+    {"type": "message_delta", "usage": {"output_tokens": 2}, "stop_reason": "end_turn"},
+    {"type": "message_stop"}
+  ],
+  "capability_graph": {
+    "nodes": [
+      {
+        "id": "n_evt_text_001",
+        "kind": "text",
+        "stream_ready": "yes",
+        "text": {"role": "assistant", "block": {"type": "text", "text": "hello world"}}
+      }
+    ],
+    "edges": []
+  },
+  "provider_projection": {
+    "target_vendor": "anthropic",
+    "target_protocol": "anthropic",
+    "capability_results": [
+      {"capability": "text", "node_id": "n_evt_text_001", "verdict": "preserved"}
+    ],
+    "overall_verdict": "preserved"
+  },
+  "stream_plan": {
+    "mode": "replay",
+    "event_classes": ["message_start", "content_block_start", "content_block_delta", "content_block_stop", "message_delta", "message_stop"],
+    "flush_policy": "per_event",
+    "terminal_required": true,
+    "synthetic_terminal_allowed": true,
+    "fallback_boundary": "after_first_byte_blocked",
+    "mid_stream_fallback_policy": "none"
+  },
+  "accounting": {"usage": {"input_tokens": 4, "output_tokens": 2, "total_tokens": 6}},
+  "policy": {
+    "data_retention": {"value": "unknown", "enforcement": "unknown", "audit_label": "unknown"},
+    "auth": "standard",
+    "audit": {"visibility": "visible", "label": "default"},
+    "redaction": "public"
+  }
+}

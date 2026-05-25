@@ -1,0 +1,7 @@
+
+# Test temp dir per AppLocker workaround
+.tmp/
+.gocache/
+
+# go build artifacts (cmd/<name> 在 backend cwd 跑 build 会产出同名 binary)
+/gateway

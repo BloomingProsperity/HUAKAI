@@ -1,0 +1,531 @@
+package gatewayhttp
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
+	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
+	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
+)
+
+func (ex *chatExecution) handleNonStreamingResponse(w http.ResponseWriter) {
+	outcome := ex.executeNonStreamingAttempt(w)
+	if outcome.Success != nil {
+		writeAttemptSuccess(w, outcome)
+	}
+}
+
+func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attemptOutcome {
+	outcome := ex.baseAttemptOutcome()
+	bufferedEnv, failure, ok := ex.dispatchBufferedEnvelope(w)
+	if !ok {
+		if failure != nil {
+			outcome = ex.baseAttemptOutcome()
+			outcome.Failure = failure
+			return outcome
+		}
+		return markAttemptOutcomeDelivered(outcome)
+	}
+	ledgerResult, err := submitAuditLedgerEntry(ex.ctx, ex.d, bufferedEnv, ex.ident.TenantID, ex.requestID)
+	if err != nil {
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "audit_ledger_error", ex.requestID, 0); abortErr != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
+		}
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, clienterr.CodeAuditLedgerError, err)
+		return markAttemptOutcomeDelivered(outcome)
+	}
+	seed := requestMetaSeed(ex.r, ex.ident, ex.clientProtocol, ex.resolved.ProtocolFamily, ex.routeID, ex.requestID, ex.acquiredAccountID, ex.acquisitionToken)
+	seedCtx := proto.ContextWithRequestMetaSeed(ex.ctx, seed)
+	clientBody, _, err := ex.clientAdapter.CanonicalToClientResponse(seedCtx, bufferedEnv)
+	if err != nil {
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "canonical_response_error", ex.requestID, 0); abortErr != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
+		}
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadGateway, clienterr.CodeCanonicalResponseError, err)
+		return markAttemptOutcomeDelivered(outcome)
+	}
+	cacheEnvelope, cacheEnvelopeOK := encodeL2CacheEnvelope(bufferedEnv)
+	actualCost, err := ex.actualCompletionCost(usageFromBufferedEnvelope(bufferedEnv))
+	if err != nil {
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pricing_unavailable", ex.requestID, 0); abortErr != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
+		}
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, err)
+		return markAttemptOutcomeDelivered(outcome)
+	}
+	settleReq := ex.nonStreamingSettleRequest(bufferedEnv, actualCost, ex.selRes.RoutingReasonJSON)
+	if _, err := settleCompletion(ex.ctx, ex.d, eventbus.RequestCompletionEvent{
+		ID:                        ex.requestID,
+		TenantID:                  ex.ident.TenantID,
+		ClaimID:                   ex.reserveRes.ClaimID,
+		AccountID:                 ex.acquiredAccountID,
+		RequestID:                 ex.requestID,
+		EndpointFamily:            ex.d.effectiveEndpointFamily(),
+		RequestedModel:            ex.req.Model,
+		UpstreamModel:             ex.upstreamModelID,
+		PayloadHash:               ex.payloadHash,
+		RawBodyHash:               bodyHash(ex.body),
+		RedactedBodyRef:           redactedBodyRef(ex.body),
+		AuditLedgerID:             ledgerID(ledgerResult),
+		AuditLedgerDLQRef:         ledgerDLQRef(ledgerResult),
+		AuditSignatureFingerprint: ledgerFingerprint(ledgerResult),
+		SettleRequest:             settleReq,
+		Metadata:                  routeMetadata(ex.routeID),
+	}); err != nil {
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, settleErrorCode(err), err)
+		return markAttemptOutcomeDelivered(outcome)
+	}
+	// 持久幂等重放: 存原始响应供同 Idempotency-Key 重试路由无关地重放。
+	ex.recordIdempotencyReplay(ex.reserveRes.ClaimID, http.StatusOK, clientBody)
+	if ex.d.ResponseCache != nil && ex.cacheKey != "" && cacheEnvelopeOK {
+		// retry/failover 可能跨 upstream model 成功；cache 写入必须使用
+		// 实际成功 attempt 的 model，避免把 fallback 响应写进 primary key。
+		if cacheKey, err := ex.l2CacheKeyForModel(ex.upstreamModelID); err == nil {
+			ex.d.ResponseCache.Set(ex.ctx, cacheEntry(ex, cacheKey, clientBody, cacheEnvelope))
+			syncL2SizeMetrics(ex.d.ResponseCache)
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if ex.d.ResponseCache != nil && ex.cacheKey != "" {
+		w.Header().Set("X-HUAKAI-Cache-L2", "miss")
+	}
+	WriteHuakaiHeaders(w.Header(), ex.req.Model, bufferedEnv, ledgerResult, ex.requestID, ex.ident.TenantID)
+	outcome = ex.baseAttemptOutcome()
+	outcome.Success = &attemptSuccess{
+		StatusCode: http.StatusOK,
+		Body:       clientBody,
+	}
+	return outcome
+}
+
+func (ex *chatExecution) nonStreamingSettleRequest(env *proto.HCSF, actualCost decimal.Decimal, routingReason []byte) billing.SettleRequest {
+	return billing.SettleRequest{
+		ClaimID:           ex.reserveRes.ClaimID,
+		AccountID:         ex.acquiredAccountID,
+		AcquisitionToken:  ex.acquisitionToken,
+		TenantID:          ex.ident.TenantID,
+		APIKeyID:          ex.ident.APIKeyID,
+		UserID:            ex.ident.UserID,
+		ProviderAccountID: ex.acquiredAccountID,
+		AttemptSeq:        int32(ex.activeAttemptSeq()),
+		RequestedModel:    ex.req.Model,
+		UpstreamModel:     ex.upstreamModelID,
+		Provider:          ex.cacheVendor,
+		Stream:            false,
+		ActualCost:        actualCost,
+		Fingerprint:       ex.payloadHash,
+		Draft:             nonStreamingUsageDraft(env, actualCost, routingReason),
+		SnapshotVersion:   ex.plan.SnapshotVersion,
+	}
+}
+
+// normalizedPayloadHash 对客户端原始请求体做 SHA256 摘要, 作为 idempotency
+// fingerprint。
+//
+// 旧实现只 hash (model, messages), 客户端可以用同 Idempotency-Key 但带不同
+// input / system / tools / temperature / max_tokens 等字段重放, hash 不变
+// 就被当成 replay 命中 cached claim, 出现 "同 key 不同 payload 静默复用同条
+// claim → 跟实际上游响应/成本错配" 风险。
+//
+// 新实现 hash 原始 body 字节: 任何字段变更 (含 OpenAI /v1/responses 的 input,
+// Anthropic 的 system, function calling 的 tools, 采样参数 temperature /
+// top_p / max_tokens 等) 都触发新 hash, ClaimGate fingerprint conflict 检测
+// 生效, 重放被拒绝。
+//
+// Note: 字节级 hash, 不做 JSON canonicalization。客户端 whitespace / key
+// order 不同视为不同请求 — idempotency replay detection 角度合理, 因为
+// 上游 upstream 实际看到的请求 body 字节才是判定 dup 的本质。
+func normalizedPayloadHash(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+// settleCompletionWithRecovery 包 settleCompletion,在 post-delivery 场景
+// (响应已发给客户端 + settle 失败)把 RequestCompletionEvent 转
+// settlementrecovery.Payload enqueue 进 usage_record_dlq,worker 后续重放
+// Settler.Settle。
+//
+// 调用约定:
+//   - source != "" 表示 "已交付内容 给客户端" — settle 失败必须 durable 兜底
+//   - source == "" 或 SettleRecoveryDLQ == nil — 跟原 settleCompletion 一致,
+//     失败只返 err,caller 自决(stream/billing pre-delivery path 返 5xx 给客户端)
+//
+// Enqueue 自己失败时 P0 log alert(Owner D-4 已批 — 不再 disk spool,只 alert),
+// 但不阻塞:流式响应已发给客户端不能反悔。
+//
+// settle err 始终原样传给 caller,跟 settleCompletion 行为一致。
+func settleCompletionWithRecovery(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent, source settlementrecovery.Source) (*billing.SettleResult, error) {
+	res, err := settleCompletion(ctx, d, event)
+	if err == nil {
+		return res, nil
+	}
+	if source == "" || d.SettleRecoveryDLQ == nil {
+		return res, err
+	}
+	payload := settlementrecovery.FromCompletionEvent(source, event)
+	if _, enqErr := settlementrecovery.EnqueuePayload(ctx, d.SettleRecoveryDLQ, payload, err.Error()); enqErr != nil {
+		// DLQ persist 自己失败 = money path 双环灰区 (Owner D-4: 只 alert,不 disk spool)。
+		slog.Default().LogAttrs(ctx, slog.LevelError, "settle_recovery_dlq_enqueue_failed",
+			slog.String("request_id", event.RequestID),
+			slog.String("source", string(source)),
+			slog.Int64("tenant_id", event.TenantID),
+			slog.Int64("claim_id", event.ClaimID),
+			slog.Any("settle_err", err),
+			slog.Any("enqueue_err", enqErr),
+		)
+	}
+	return res, err
+}
+
+func settleCompletion(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent) (*billing.SettleResult, error) {
+	if event.SettleRequest.AuditRequestID == "" {
+		event.SettleRequest.AuditRequestID = event.RequestID
+	}
+	if d.CompletionBus == nil {
+		if err := validateMoneyPathAuditRefForSource(ctx, d, event, "direct_settle"); err != nil {
+			return nil, rejectMoneyPathDirectSettle(ctx, d, event, err)
+		}
+		return d.Settler.Settle(ctx, event.SettleRequest)
+	}
+	if err := d.CompletionBus.Emit(ctx, event); err != nil {
+		if shouldDirectSettleFallback(err) {
+			if err := validateMoneyPathAuditRefForSource(ctx, d, event, "direct_settle"); err != nil {
+				return nil, rejectMoneyPathDirectSettle(ctx, d, event, err)
+			}
+			return d.Settler.Settle(ctx, event.SettleRequest)
+		}
+		return nil, err
+	}
+	return &billing.SettleResult{}, nil
+}
+
+func shouldDirectSettleFallback(err error) bool {
+	return errors.Is(err, eventbus.ErrNoHandlers) ||
+		errors.Is(err, eventbus.ErrBusClosed) ||
+		errors.Is(err, eventbus.ErrQueueFull)
+}
+
+func validateMoneyPathAuditRefForSource(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent, source string) error {
+	if err := eventbus.ValidateMoneyPathAuditRef(&event, d.AuditRefPolicy); err != nil {
+		return err
+	}
+	if missingMoneyPathAuditRef(event) && moneyPathAuditRefEscapeActive(d.AuditRefPolicy) {
+		logMoneyPathAuditRefError(ctx, event, eventbus.ErrAuditRefMissing, source, true)
+	}
+	return nil
+}
+
+func rejectMoneyPathDirectSettle(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent, validationErr error) error {
+	err, _ := rejectMoneyPathAuditRef(ctx, d, event, validationErr, "direct_settle")
+	return err
+}
+
+func rejectMoneyPathCacheHitCommit(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent, validationErr error) (error, error) {
+	return rejectMoneyPathAuditRef(ctx, d, event, validationErr, "cache_hit_commit")
+}
+
+func rejectMoneyPathAuditRef(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent, validationErr error, source string) (error, error) {
+	if validationErr == nil {
+		validationErr = eventbus.ErrAuditRefMissing
+	}
+	var abortErr error
+	if d.Settler != nil && event.ClaimID > 0 {
+		abortErr = d.Settler.Abort(ctx, event.TenantID, event.ClaimID, clienterr.CodeAuditRefMissing, event.RequestID, 0)
+	}
+	logMoneyPathAuditRefError(ctx, event, validationErr, source, false)
+	if abortErr != nil {
+		return fmt.Errorf("settle rejected: %w; abort %s: %v", validationErr, clienterr.CodeAuditRefMissing, abortErr), abortErr
+	}
+	return fmt.Errorf("settle rejected: %w", validationErr), nil
+}
+
+func logMoneyPathAuditRefError(ctx context.Context, event eventbus.RequestCompletionEvent, validationErr error, source string, escapeFlagActive bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestID := event.RequestID
+	if requestID == "" {
+		requestID = event.ID
+	}
+	if validationErr == nil {
+		validationErr = eventbus.ErrAuditRefMissing
+	}
+	slog.Default().LogAttrs(ctx, slog.LevelError, "money-path audit reference missing",
+		slog.String("request_id", requestID),
+		slog.Int64("tenant_id", event.TenantID),
+		slog.String("route_id", routeIDFromEvent(event)),
+		slog.Int64("claim_id", event.ClaimID),
+		slog.String("missing_ref_details", missingMoneyPathAuditRefDetails(event)),
+		slog.String("validation_err", validationErr.Error()),
+		slog.Bool("escape_flag_active", escapeFlagActive),
+		slog.String("source", source),
+		slog.String("public_code", clienterr.CodeAuditRefMissing),
+	)
+}
+
+func missingMoneyPathAuditRef(event eventbus.RequestCompletionEvent) bool {
+	return !(event.AuditLedgerDLQRef != "" || (event.AuditLedgerID != "" && event.AuditSignatureFingerprint != ""))
+}
+
+func missingMoneyPathAuditRefDetails(event eventbus.RequestCompletionEvent) string {
+	if !missingMoneyPathAuditRef(event) {
+		return ""
+	}
+	missing := make([]string, 0, 3)
+	if event.AuditLedgerID == "" {
+		missing = append(missing, "audit_ledger_id")
+	}
+	if event.AuditSignatureFingerprint == "" {
+		missing = append(missing, "audit_signature_fingerprint")
+	}
+	if event.AuditLedgerDLQRef == "" {
+		missing = append(missing, "audit_ledger_dlq_ref")
+	}
+	return strings.Join(missing, ",")
+}
+
+func moneyPathAuditRefEscapeActive(policy *eventbus.AuditRefPolicy) bool {
+	return policy != nil &&
+		policy.ReleaseMode == eventbus.ReleaseModeProduction &&
+		policy.AllowMissingMoneyRef
+}
+
+func routeIDFromEvent(event eventbus.RequestCompletionEvent) string {
+	if event.Metadata == nil {
+		return ""
+	}
+	return event.Metadata["route_id"]
+}
+
+func routeMetadata(routeID string) map[string]string {
+	if routeID == "" {
+		return nil
+	}
+	return map[string]string{"route_id": routeID}
+}
+
+func settleErrorCode(err error) string {
+	if errors.Is(err, eventbus.ErrAuditRefMissing) {
+		return clienterr.CodeAuditRefMissing
+	}
+	return clienterr.CodeSettleError
+}
+
+func bodyHash(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+func redactedBodyRef(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	return "sha256:" + bodyHash(body)
+}
+
+func ledgerID(result auditledger.AuditLedgerResult) string {
+	if result.State != auditledger.LedgerResultStatePersisted {
+		return ""
+	}
+	return result.LedgerID
+}
+
+func ledgerFingerprint(result auditledger.AuditLedgerResult) string {
+	if result.State != auditledger.LedgerResultStatePersisted {
+		return ""
+	}
+	return result.Fingerprint
+}
+
+func ledgerDLQRef(result auditledger.AuditLedgerResult) string {
+	if result.State != auditledger.LedgerResultStateDeferred {
+		return ""
+	}
+	return result.DLQRef
+}
+
+func requestMetaSeed(r *http.Request, ident auth.Identity, clientProtocol proto.ClientProtocol, protocolFamily, routeID, requestID string, accountID int64, acquisitionToken uuid.UUID) proto.RequestMetaSeed {
+	token := ""
+	if acquisitionToken != uuid.Nil {
+		token = acquisitionToken.String()
+	}
+	return proto.RequestMetaSeed{
+		RequestID:        requestID,
+		ClientProtocol:   clientProtocol,
+		ProtocolFamily:   protocolFamily,
+		IngressPath:      r.URL.Path,
+		TenantID:         ident.TenantID,
+		RouteID:          routeID,
+		AccountID:        accountID,
+		AcquisitionToken: token,
+		EvidenceLabel:    proto.EvidenceMock,
+	}
+}
+
+func enrichCanonicalRequestMeta(env *proto.HCSF, upstreamModelID, providerName, idempotencyKey, sessionHash string) {
+	if env == nil {
+		return
+	}
+	env.RequestMeta.UpstreamModel = upstreamModelID
+	env.RequestMeta.Provider = providerName
+	env.RequestMeta.IdempotencyKey = idempotencyKey
+	env.RequestMeta.SessionHash = sessionHash
+	if env.RequestMeta.EvidenceLabel == "" {
+		env.RequestMeta.EvidenceLabel = proto.EvidenceMock
+	}
+	if env.Accounting.EvidenceLabel == "" {
+		env.Accounting.EvidenceLabel = proto.EvidenceMock
+	}
+}
+
+func submitAuditLedgerEntry(ctx context.Context, d ChatHandlerDeps, env *proto.HCSF, tenantID int64, requestID string) (auditledger.AuditLedgerResult, error) {
+	production := auditLedgerProductionMode()
+	if env == nil {
+		return auditledger.DisabledLedgerResult(), nil
+	}
+	if d.AuditLedger == nil {
+		appendTrustChainWarning(env, "audit_ledger_not_configured", "audit ledger dependency unset; trust-chain ledger entry skipped")
+		if production {
+			return auditledger.AuditLedgerResult{}, fmt.Errorf("audit ledger dependency unset in production")
+		}
+		return auditledger.DisabledLedgerResult(), nil
+	}
+	if auditledger.IsNoopLedger(d.AuditLedger) {
+		appendTrustChainWarning(env, "audit_ledger_noop", "audit ledger dependency is noop; trust-chain ledger entry skipped")
+		if production {
+			return auditledger.AuditLedgerResult{}, fmt.Errorf("audit ledger noop in production")
+		}
+		return auditledger.DisabledLedgerResult(), nil
+	}
+	if d.Signer == nil {
+		appendTrustChainWarning(env, "audit_signer_not_configured", "audit signer dependency unset; trust-chain ledger entry skipped")
+		if production {
+			return auditledger.AuditLedgerResult{}, fmt.Errorf("audit signer dependency unset in production")
+		}
+		return auditledger.DisabledLedgerResult(), nil
+	}
+	if requestID == "" {
+		requestID = env.RequestMeta.RequestID
+	}
+	entry := auditledger.LedgerEntry{
+		Timestamp:  time.Now().UTC().Format(time.RFC3339Nano),
+		RequestID:  requestID,
+		TenantID:   tenantID,
+		HopChain:   cloneHopChain(env.Accounting.HopChain),
+		ModelChain: cloneModelChain(env.Accounting.ModelChain),
+	}
+	prepared, err := auditledger.PrepareEntry(ctx, entry)
+	if err != nil {
+		return auditledger.AuditLedgerResult{}, fmt.Errorf("audit ledger prepare: %w", err)
+	}
+	appended, err := d.AuditLedger.Append(ctx, prepared)
+	if err != nil {
+		if errors.Is(err, auditledger.ErrDuplicateRequestID) {
+			return auditledger.AuditLedgerResult{}, err
+		}
+		appendTrustChainWarning(env, "audit_ledger_append_failed", err.Error())
+		dlqRef, dlqErr := auditledger.EnqueuePreparedEntryToDLQ(ctx, d.AuditLedgerDLQ, prepared, err)
+		if dlqErr != nil {
+			appendTrustChainWarning(env, "audit_ledger_dlq_enqueue_failed", dlqErr.Error())
+			return auditledger.AuditLedgerResult{}, fmt.Errorf("audit ledger append: %w; audit ledger dlq enqueue: %v", err, dlqErr)
+		}
+		appendTrustChainWarning(env, "audit_ledger_deferred", "audit ledger append failed; sanitized append intent queued in DLQ")
+		result := auditledger.DeferredLedgerResult(dlqRef)
+		if err := result.Validate(production); err != nil {
+			return auditledger.AuditLedgerResult{}, err
+		}
+		return result, nil
+	}
+	env.Accounting.LedgerID = appended.LedgerID
+	env.Accounting.Signature = appended.Signature
+	env.Accounting.PubkeyFingerprint = appended.PubkeyFingerprint
+	result := auditledger.PersistedLedgerResult(appended)
+	if err := result.Validate(production); err != nil {
+		return auditledger.AuditLedgerResult{}, err
+	}
+	return result, nil
+}
+
+func auditLedgerProductionMode() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("HUAKAI_RELEASE_MODE")), "production")
+}
+
+func appendTrustChainWarning(env *proto.HCSF, code, reason string) {
+	if env == nil {
+		return
+	}
+	env.CapabilityGraph.ProtocolLoss = append(env.CapabilityGraph.ProtocolLoss, proto.ProtocolLossEntry{
+		Severity: proto.ProtocolLossWarning,
+		Code:     code,
+		Reason:   reason,
+	})
+}
+
+func fillAccountingModelUpstreamReported(env *proto.HCSF) {
+	if env == nil || env.BufferedResponse == nil || env.BufferedResponse.Model == "" {
+		return
+	}
+	mc := ensureAccountingModelChain(env)
+	if mc.UpstreamReported == "" {
+		mc.UpstreamReported = env.BufferedResponse.Model
+	}
+}
+
+func cloneHopChain(in []proto.HopAttestation) []proto.HopAttestation {
+	if in == nil {
+		return nil
+	}
+	out := make([]proto.HopAttestation, len(in))
+	copy(out, in)
+	return out
+}
+
+func cloneModelChain(in *proto.ModelChain) *proto.ModelChain {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
+
+func nonStreamingUsageDraft(env *proto.HCSF, actualCost decimal.Decimal, routingReason []byte) gateway.UsageRecordDraft {
+	usage := proto.CanonicalUsage{}
+	if env != nil {
+		usage = env.Accounting.Usage
+		if env.BufferedResponse != nil {
+			usage = env.BufferedResponse.Usage
+		}
+	}
+	confidence := 1.0
+	return gateway.UsageRecordDraft{
+		TokensInput:           usage.InputTokens,
+		TokensOutput:          usage.OutputTokens,
+		DeliveredTokenCount:   int64(usage.OutputTokens),
+		CacheCreationTokens:   usage.CacheCreationInputTokens,
+		CacheReadTokens:       usage.CacheReadInputTokens,
+		ActualCost:            actualCost,
+		RoutingReason:         routingReason,
+		EndClass:              gateway.StreamEndGraceful,
+		UsageSource:           gateway.UsageSourceReported,
+		ConfidenceScore:       &confidence,
+		DrainOutcome:          gateway.DrainNotDrained,
+		PendingReconciliation: false,
+	}
+}
