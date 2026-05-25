@@ -48,7 +48,12 @@ async fn connect_upstream(
     port: u16,
     profile: &crate::profile::TlsProfile,
 ) -> Result<tokio_boring::SslStream<TcpStream>, ConnectError> {
-    connect_tls_upstream(target_host, port, profile).await
+    let tls = connect_tls_upstream(target_host, port, profile).await?;
+    let selected_alpn = tls
+        .ssl()
+        .selected_alpn_protocol()
+        .map(|value| value.to_vec());
+    finish_raw_tunnel_connect(tls, selected_alpn.as_deref(), profile).await
 }
 
 async fn connect_tls_upstream(
@@ -62,6 +67,17 @@ async fn connect_tls_upstream(
     tokio_boring::connect(config, target_host, tcp)
         .await
         .map_err(|error| ConnectError::Handshake(error.to_string()))
+}
+
+async fn finish_raw_tunnel_connect<T>(
+    tls: T,
+    _selected_alpn: Option<&[u8]>,
+    _profile: &crate::profile::TlsProfile,
+) -> Result<T, ConnectError>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    Ok(tls)
 }
 
 #[allow(dead_code)]
@@ -120,6 +136,8 @@ pub enum ConnectError {
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::AsyncReadExt;
+
     #[tokio::test]
     async fn handle_connection_rejects_unknown_profile_before_upstream_connect() {
         let profiles =
@@ -160,6 +178,57 @@ mod tests {
         assert!(
             err.to_string().contains("ENABLE_PUSH"),
             "connect layer should surface profile H2 validation, got {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn raw_tunnel_does_not_write_h2_startup_when_alpn_selects_h2() {
+        let profiles =
+            crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();
+        let mut profile = profiles.get("anthropic-cli-mimicry-v1").unwrap().clone();
+        profile.h2_settings = std::collections::BTreeMap::from([
+            (crate::h2_settings::HEADER_TABLE_SIZE, 65_536),
+            (crate::h2_settings::ENABLE_PUSH, 0),
+            (crate::h2_settings::MAX_CONCURRENT_STREAMS, 1000),
+            (crate::h2_settings::INITIAL_WINDOW_SIZE, 131_072),
+            (crate::h2_settings::MAX_FRAME_SIZE, 16_384),
+            (crate::h2_settings::MAX_HEADER_LIST_SIZE, 262_144),
+        ]);
+        let (client, mut server) = tokio::io::duplex(1024);
+
+        let client = super::finish_raw_tunnel_connect(client, Some(b"h2"), &profile)
+            .await
+            .unwrap();
+        drop(client);
+        let mut wire = Vec::new();
+        server.read_to_end(&mut wire).await.unwrap();
+
+        assert!(
+            wire.is_empty(),
+            "raw tunnel must not emit H2 preface or SETTINGS bytes even when ALPN selects h2"
+        );
+    }
+
+    #[tokio::test]
+    async fn raw_tunnel_does_not_consume_profile_h2_settings() {
+        let profiles =
+            crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();
+        let mut profile = profiles.get("anthropic-cli-mimicry-v1").unwrap().clone();
+        profile
+            .h2_settings
+            .insert(crate::h2_settings::ENABLE_PUSH, 2);
+        let (client, mut server) = tokio::io::duplex(1024);
+
+        let client = super::finish_raw_tunnel_connect(client, Some(b"h2"), &profile)
+            .await
+            .unwrap();
+        drop(client);
+        let mut wire = Vec::new();
+        server.read_to_end(&mut wire).await.unwrap();
+
+        assert!(
+            wire.is_empty(),
+            "raw tunnel must not validate or serialize profile H2 SETTINGS"
         );
     }
 }
