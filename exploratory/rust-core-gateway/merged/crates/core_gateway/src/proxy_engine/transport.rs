@@ -37,9 +37,23 @@
 //!   pump never sees data).
 
 use axum::body::Body;
+use bytes::Bytes;
 use http::{Request, Response};
+use http_body_util::BodyExt;
+use http_body_util::combinators::BoxBody;
 
 use super::http_client::GatewayHttpClient;
+
+/// W11-F F-1.d.2: boxed error carrier so the boxed response body can be
+/// returned uniformly across transport variants without leaking each
+/// variant's concrete error type. `hyper_util::client::legacy::Error` is
+/// re-boxed at the variant boundary into this trait-object alias.
+pub type BoxBodyError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+/// W11-F F-1.d.2: erased response body type that downstream relay code
+/// consumes. Boxes the Hyper variant's `hyper::body::Incoming` here so
+/// future F-1.e fork-h2 variant can also fit this alias.
+pub type GatewayResponseBody = BoxBody<Bytes, BoxBodyError>;
 
 /// W11-F F-1.d.1: outbound HTTP transport abstraction. Today carries only
 /// the existing `hyper-util` client; F-1.e will add a `ForkH2` variant for
@@ -76,12 +90,25 @@ impl GatewayTransport {
     /// can wrap the entire request — the existing call site at
     /// `proxy_engine::mod::ProxyEngine::forward_endpoint` uses
     /// `time::timeout(upstream_response_timeout, self.transport.request(req))`.
+    ///
+    /// W11-F F-1.d.2: response body is BOXED into [`GatewayResponseBody`] at
+    /// the variant boundary. The Hyper variant maps `hyper::body::Incoming`
+    /// via `BodyExt::map_err` + `.boxed()` so downstream relay code sees a
+    /// uniform body type across variants. F-1.e fork-h2 variant will perform
+    /// the same boxing on `http2::client::RecvStream`.
     pub async fn request(
         &self,
         req: Request<Body>,
-    ) -> Result<Response<hyper::body::Incoming>, hyper_util::client::legacy::Error> {
+    ) -> Result<Response<GatewayResponseBody>, hyper_util::client::legacy::Error> {
         match self {
-            Self::Hyper(client) => client.request(req).await,
+            Self::Hyper(client) => {
+                let response = client.request(req).await?;
+                let (parts, body) = response.into_parts();
+                let boxed: GatewayResponseBody = body
+                    .map_err(|err| Box::new(err) as BoxBodyError)
+                    .boxed();
+                Ok(Response::from_parts(parts, boxed))
+            }
         }
     }
 }

@@ -4,7 +4,11 @@ use axum::body::Body;
 use bytes::Bytes;
 use http::{Response, header::CONTENT_TYPE};
 use http_body_util::BodyExt;
-use hyper::body::Incoming;
+// W11-F F-1.d.2: switched from `hyper::body::Incoming` to the transport's
+// boxed body alias so upstream_response_to_client accepts both Hyper and
+// (future) fork-h2 variants. relay_body<B> downstream is already generic
+// over Body trait so no signature change needed there.
+use super::transport::GatewayResponseBody;
 use tokio::{
     sync::{
         mpsc,
@@ -52,7 +56,7 @@ pub(super) struct StreamTapConfig {
 }
 
 pub(super) fn upstream_response_to_client(
-    response: Response<Incoming>,
+    response: Response<GatewayResponseBody>,
     request_id: &RequestId,
     stream_tap: Option<StreamTapConfig>,
     terminal: RelayTerminal,
