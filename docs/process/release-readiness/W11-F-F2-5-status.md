@@ -88,7 +88,7 @@ extension is absent, not "empty").
 
 | group | records | SNIs | cipher_suites | extension_types | raw_len | ALPN ext present | ALPN content |
 |---|---|---|---|---|---|---|---|
-| **E** | 8 | `cloudcode-pa.googleapis.com` | 52 | `(65281,0,11,10,35,22,23,13,43,45,51)` | 1604 | ❌ absent | n/a |
+| **E** | 10 | `cloudcode-pa.googleapis.com` (JSONL records #20-25, #27-30) | 52 | `(65281,0,11,10,35,22,23,13,43,45,51)` | 1604 | ❌ absent | n/a |
 | **F** | 2 | `oauth2.googleapis.com` | 52 | same as E (11 ext, no 16) | 1598 | ❌ absent | n/a |
 | **G** | 1 | `play.googleapis.com` | 52 | `(65281,0,11,10,35,16,22,23,13,43,45,51)` | 1611 | ✅ present | `['http/1.1']` (only) |
 
@@ -111,7 +111,7 @@ Template `tools/fingerprint-collector/templates/gemini-advanced.json`:
 | `cipher_suites` count | 52 | 52 | ✅ |
 | first 3 ciphers | `0x1302, 0x1303, 0x1301` | `0x1302, 0x1303, 0x1301` | ✅ |
 | `grease` | `false` | `false` | ✅ |
-| `tls_variants.auxiliary_no_alpn` shape (11 ext, no ALPN ext) | declared | groups E + F (10 of 13 records, includes the **primary** model API endpoint `cloudcode-pa.googleapis.com`) | ✅ confirmed by ALPN-absence decode |
+| `tls_variants.auxiliary_no_alpn` shape (11 ext, no ALPN ext) | declared | groups E + F = 12 of 13 records (group E: 10 `cloudcode-pa.googleapis.com` = the **primary** model API endpoint; group F: 2 `oauth2.googleapis.com`) | ✅ confirmed by ALPN-absence decode |
 | `tls_variants.model_api_ht_alpn` shape (12 ext, ALPN=`[h2,http/1.1]`) | declared | **NOT observed in this run** — no captured record has ALPN `h2,http/1.1` | ⚠️ unverified |
 | 3rd shape (12 ext, ALPN=`[http/1.1]` only) | **NOT declared** in template | group G (1 record, `play.googleapis.com`) | ❌ template missing this variant |
 
@@ -171,9 +171,12 @@ runtime preflight (D-S4 + D-S6).
 **F-2.5 evidence (nuanced per round 1 Codex P1)**:
 - For the **primary model-API target** (`cloudcode-pa.googleapis.com`), real
   Windows Node.js ClientHello matches the template's `auxiliary_no_alpn`
-  variant byte-shape (52 ciphers, 11 ext, ALPN ext absent). 8 of 13 records
-  validate this — the variant HUAKAI mimicry would replicate is empirically
-  correct for the primary path.
+  variant byte-shape (52 ciphers, 11 ext, ALPN ext absent). 10 of 13
+  Gemini records validate this (group E: 10 `cloudcode-pa.googleapis.com`
+  records). Group F (2 `oauth2.googleapis.com` records) also matches the
+  same `auxiliary_no_alpn` shape, bringing the total auxiliary_no_alpn-shape
+  evidence to 12 of 13 records — the variant HUAKAI mimicry would
+  replicate is empirically correct for the primary path.
 - The template's other declared variant `model_api_ht_alpn` (12 ext, ALPN
   `[h2,http/1.1]`) was **not exercised** in this run because the gemini
   invocation issued a single `-p` non-interactive prompt that did not
