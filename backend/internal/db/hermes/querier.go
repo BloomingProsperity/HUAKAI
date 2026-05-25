@@ -13,7 +13,9 @@ type Querier interface {
 	DeleteProfile(ctx context.Context, arg DeleteProfileParams) (int64, error)
 	DisableHermes(ctx context.Context, arg DisableHermesParams) (HermesSetting, error)
 	EnableHermes(ctx context.Context, arg EnableHermesParams) (HermesSetting, error)
+	GetAPIKeyOwner(ctx context.Context, arg GetAPIKeyOwnerParams) (int64, error)
 	GetAuditEventByCorrelation(ctx context.Context, arg GetAuditEventByCorrelationParams) ([]HermesAuditEvent, error)
+	GetProfile(ctx context.Context, arg GetProfileParams) (HermesApiProfile, error)
 	// Hermes Phase 1 Slice 1 schema gate queries.
 	// Scope: settings, API profiles, and append-only audit events only.
 	GetSettings(ctx context.Context, arg GetSettingsParams) (HermesSetting, error)
@@ -21,6 +23,7 @@ type Querier interface {
 	ListAuditEventsByTenant(ctx context.Context, arg ListAuditEventsByTenantParams) ([]HermesAuditEvent, error)
 	ListProfilesByOwner(ctx context.Context, arg ListProfilesByOwnerParams) ([]HermesApiProfile, error)
 	ListProfilesByTenant(ctx context.Context, tenantID int64) ([]HermesApiProfile, error)
+	ProfileInUse(ctx context.Context, arg ProfileInUseParams) (bool, error)
 	UpdateProfile(ctx context.Context, arg UpdateProfileParams) (HermesApiProfile, error)
 	UpsertSettings(ctx context.Context, arg UpsertSettingsParams) (HermesSetting, error)
 }

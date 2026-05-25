@@ -52,6 +52,19 @@ WHERE tenant_id = sqlc.arg(tenant_id)::bigint
   AND owner_user_id = sqlc.arg(owner_user_id)::bigint
 ORDER BY created_at DESC, id DESC;
 
+-- name: GetProfile :one
+SELECT id, tenant_id, owner_user_id, name, profile_kind, api_key_id, pool_group_id, created_at, updated_at
+FROM hermes_api_profiles
+WHERE id = sqlc.arg(id)::bigint
+  AND tenant_id = sqlc.arg(tenant_id)::bigint;
+
+-- name: GetAPIKeyOwner :one
+SELECT user_id
+FROM api_keys
+WHERE id = sqlc.arg(api_key_id)::bigint
+  AND tenant_id = sqlc.arg(tenant_id)::bigint
+  AND deleted_at IS NULL;
+
 -- name: CreateProfile :one
 INSERT INTO hermes_api_profiles (tenant_id, owner_user_id, name, profile_kind, api_key_id, pool_group_id)
 VALUES (
@@ -79,6 +92,15 @@ RETURNING id, tenant_id, owner_user_id, name, profile_kind, api_key_id, pool_gro
 DELETE FROM hermes_api_profiles
 WHERE id = sqlc.arg(id)::bigint
   AND tenant_id = sqlc.arg(tenant_id)::bigint;
+
+-- name: ProfileInUse :one
+SELECT EXISTS (
+    SELECT 1
+    FROM hermes_settings
+    WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+      AND profile_id = sqlc.arg(profile_id)::bigint
+    LIMIT 1
+)::boolean;
 
 -- name: InsertAuditEvent :one
 INSERT INTO hermes_audit_events (

@@ -47,6 +47,8 @@ security:
 tags:
   - name: gateway
     description: Client-facing relay endpoints. F-GW-002 + F-PROTO-002 + F-AUTH-005.
+  - name: hermes
+    description: Optional Hermes assistant settings, profile management, and runner proxy endpoints.
   - name: auth
     description: HUAKAI platform User authentication. F-AUTH-007.
   - name: sessions
@@ -219,6 +221,223 @@ paths:
         '402': { $ref: '#/components/responses/PaymentRequired' }
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/hermes/settings:
+    get:
+      tags: [hermes]
+      summary: Read Hermes settings for the authenticated user
+      operationId: getHermesSettings
+      description: Returns the caller's Hermes enablement state and selected API source.
+      responses:
+        '200':
+          description: Current Hermes settings for the bearer-authenticated user.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tenant_id: { type: integer, format: int64 }
+                  user_id: { type: integer, format: int64 }
+                  enabled: { type: boolean }
+                  api_source: { type: string }
+                  profile_id: { type: integer, format: int64, nullable: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/hermes/settings/enable:
+    post:
+      tags: [hermes]
+      summary: Enable Hermes for the authenticated user
+      operationId: enableHermesSettings
+      description: Enables Hermes with managed HUAKAI API access or a caller-owned dedicated profile.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                api_source: { type: string, enum: [managed_huakai_api, dedicated_group] }
+                profile_id: { type: integer, format: int64, nullable: true }
+      responses:
+        '200':
+          description: Hermes was enabled and the current settings are returned.
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/hermes/settings/disable:
+    post:
+      tags: [hermes]
+      summary: Disable Hermes for the authenticated user
+      operationId: disableHermesSettings
+      description: Disables new Hermes chats while preserving existing runner history for read endpoints.
+      responses:
+        '200':
+          description: Hermes was disabled and the current settings are returned.
+          content:
+            application/json:
+              schema: { type: object }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/hermes/chat:
+    post:
+      tags: [hermes]
+      summary: Start a Hermes chat through the runner
+      operationId: postHermesChat
+      description: Proxies the authenticated user's chat body to the configured Hermes runner and streams the runner response.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200':
+          description: Runner response. Streaming deployments return Server-Sent Events.
+          content:
+            text/event-stream:
+              schema: { $ref: '#/components/schemas/SSEFrame' }
+            application/json:
+              schema: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/hermes/conversations:
+    get:
+      tags: [hermes]
+      summary: List Hermes conversations from the runner
+      operationId: listHermesConversations
+      description: Proxies a tenant/user-scoped conversation list request to the Hermes runner.
+      responses:
+        '200':
+          description: Runner conversation list.
+          content:
+            application/json:
+              schema: { type: object }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/hermes/conversations/{id}/messages:
+    get:
+      tags: [hermes]
+      summary: List messages in a Hermes conversation
+      operationId: listHermesConversationMessages
+      description: Proxies a tenant/user-scoped conversation message request to the Hermes runner.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: Runner conversation messages.
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/hermes/api-profiles:
+    get:
+      tags: [hermes]
+      summary: List caller-owned Hermes API profiles
+      operationId: listHermesAPIProfiles
+      description: Lists API profiles the authenticated user may select for Hermes dedicated-group mode.
+      responses:
+        '200':
+          description: Profile list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  profiles:
+                    type: array
+                    items: { type: object }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [hermes]
+      summary: Create a Hermes API profile
+      operationId: createHermesAPIProfile
+      description: Creates a caller-owned profile for managed or dedicated Hermes API routing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, kind]
+              properties:
+                name: { type: string, minLength: 1 }
+                kind: { type: string, enum: [managed_huakai_api, dedicated_group] }
+                api_key_id: { type: integer, format: int64, nullable: true }
+                pool_group_id: { type: integer, format: int64, nullable: true }
+      responses:
+        '201':
+          description: Profile created.
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/hermes/api-profiles/{id}:
+    get:
+      tags: [hermes]
+      summary: Read one Hermes API profile
+      operationId: getHermesAPIProfile
+      description: Fetches a tenant-scoped API profile; callers only receive profiles they are allowed to use.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Profile metadata.
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    delete:
+      tags: [hermes]
+      summary: Delete one Hermes API profile
+      operationId: deleteHermesAPIProfile
+      description: Deletes a tenant-scoped profile after ownership and usage checks.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Profile deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/receipts/{request_id}:

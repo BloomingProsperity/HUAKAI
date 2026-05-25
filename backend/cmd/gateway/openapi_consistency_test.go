@@ -21,6 +21,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/openapicheck"
 )
 
@@ -30,6 +31,13 @@ func buildTestRouter(t *testing.T) chi.Router {
 	t.Helper()
 	r := chi.NewRouter()
 	logger := zap.NewNop()
+	hermesRunner, err := hermes.NewRunnerClient(hermes.RunnerConfig{
+		RunnerURL:    "http://runner.local",
+		SharedSecret: "test-secret",
+	})
+	if err != nil {
+		t.Fatalf("build Hermes test runner: %v", err)
+	}
 	// mountRoutes 在注册期会 deref d.cfg.BillingPolicyVersion / RequestClass，
 	// 因此 deps.cfg 必须非 nil；其它字段保持零值（handler 本身不会 invoke）。
 	d := &deps{
@@ -37,6 +45,8 @@ func buildTestRouter(t *testing.T) chi.Router {
 			BillingPolicyVersion: "test-1.0",
 			RequestClass:         "standard",
 		},
+		hermesService: hermes.NewService(nil),
+		hermesRunner:  hermesRunner,
 	}
 	mountRoutes(r, d, logger)
 	return r

@@ -9,6 +9,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermeshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkeyhttp"
 )
 
@@ -86,6 +87,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		r.Use(auth.SessionMiddleware(d.userSessions))
 		userkeyhttp.MountUserAPIKeyRoutes(r, userkeyhttp.Deps{Service: d.userKeyService})
 	})
+	if d.hermesService != nil && d.hermesRunner != nil {
+		r.With(hermeshttp.APIKeyMiddleware(d.inboundAuth)).
+			Mount("/v1/hermes", hermeshttp.NewRouter(d.hermesService, d.hermesRunner))
+	}
 	r.With(auth.SessionMiddleware(d.userSessions)).Post("/v1/invitations", gatewayhttp.NewInvitationCreateHandler(gatewayhttp.InvitationDeps{
 		Service: d.invitationService,
 	}))

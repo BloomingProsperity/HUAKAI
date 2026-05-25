@@ -24,11 +24,13 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
+	dbhermes "github.com/BloomingProsperity/HUAKAI/internal/db/hermes"
 	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -96,6 +98,8 @@ type deps struct {
 	adminIssuer           *admin.KeyIssuer
 	adminRevoker          *admin.KeyRevoker
 	billingAuditUpdater   gatewayhttp.AdminBillingSettingsAuditUpdater
+	hermesService         *hermes.Service
+	hermesRunner          *hermes.RunnerClient
 }
 
 type refundReceiptAppender interface {
@@ -227,6 +231,18 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	adminQueries := admindb.New(pgPool)
 	authQueries := dbauth.New(pgPool)
 	billingQueries := dbbilling.New(pgPool)
+	hermesRunner, err := hermes.NewRunnerClientFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("build hermes runner client: %w", err)
+	}
+	var hermesService *hermes.Service
+	if hermesRunner != nil {
+		hermesQueries := dbhermes.New(pgPool)
+		hermesService = hermes.NewServiceWithTx(hermesQueries, pgPool)
+		logger.Info("Hermes runner: configured")
+	} else {
+		logger.Info("Hermes runner: disabled (env missing)")
+	}
 	outboxStore := obsoutbox.NewPostgresOutbox(pgPool)
 	opts, err := loadRuntimeOptions(logger)
 	if err != nil {
@@ -353,6 +369,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		adminIssuer:         admin.NewKeyIssuer(pgPool),
 		adminRevoker:        admin.NewKeyRevoker(pgPool),
 		billingAuditUpdater: gatewayhttp.NewAdminBillingSettingsAuditUpdater(pgPool),
+		hermesService:       hermesService,
+		hermesRunner:        hermesRunner,
 	}
 	if err := admin.MaybeBootstrap(ctx, pgPool, logger); err != nil {
 		return nil, fmt.Errorf("admin bootstrap: %w", err)

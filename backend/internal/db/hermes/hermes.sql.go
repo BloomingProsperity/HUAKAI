@@ -134,6 +134,26 @@ func (q *Queries) EnableHermes(ctx context.Context, arg EnableHermesParams) (Her
 	return i, err
 }
 
+const getAPIKeyOwner = `-- name: GetAPIKeyOwner :one
+SELECT user_id
+FROM api_keys
+WHERE id = $1::bigint
+  AND tenant_id = $2::bigint
+  AND deleted_at IS NULL
+`
+
+type GetAPIKeyOwnerParams struct {
+	APIKeyID int64 `db:"api_key_id" json:"api_key_id"`
+	TenantID int64 `db:"tenant_id" json:"tenant_id"`
+}
+
+func (q *Queries) GetAPIKeyOwner(ctx context.Context, arg GetAPIKeyOwnerParams) (int64, error) {
+	row := q.db.QueryRow(ctx, getAPIKeyOwner, arg.APIKeyID, arg.TenantID)
+	var user_id int64
+	err := row.Scan(&user_id)
+	return user_id, err
+}
+
 const getAuditEventByCorrelation = `-- name: GetAuditEventByCorrelation :many
 SELECT id, ts, tenant_id, actor_user_id, action, sanitized_args, result, correlation_id, request_id
 FROM hermes_audit_events
@@ -175,6 +195,35 @@ func (q *Queries) GetAuditEventByCorrelation(ctx context.Context, arg GetAuditEv
 		return nil, err
 	}
 	return items, nil
+}
+
+const getProfile = `-- name: GetProfile :one
+SELECT id, tenant_id, owner_user_id, name, profile_kind, api_key_id, pool_group_id, created_at, updated_at
+FROM hermes_api_profiles
+WHERE id = $1::bigint
+  AND tenant_id = $2::bigint
+`
+
+type GetProfileParams struct {
+	ID       int64 `db:"id" json:"id"`
+	TenantID int64 `db:"tenant_id" json:"tenant_id"`
+}
+
+func (q *Queries) GetProfile(ctx context.Context, arg GetProfileParams) (HermesApiProfile, error) {
+	row := q.db.QueryRow(ctx, getProfile, arg.ID, arg.TenantID)
+	var i HermesApiProfile
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.OwnerUserID,
+		&i.Name,
+		&i.ProfileKind,
+		&i.APIKeyID,
+		&i.PoolGroupID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const getSettings = `-- name: GetSettings :one
@@ -384,6 +433,28 @@ func (q *Queries) ListProfilesByTenant(ctx context.Context, tenantID int64) ([]H
 		return nil, err
 	}
 	return items, nil
+}
+
+const profileInUse = `-- name: ProfileInUse :one
+SELECT EXISTS (
+    SELECT 1
+    FROM hermes_settings
+    WHERE tenant_id = $1::bigint
+      AND profile_id = $2::bigint
+    LIMIT 1
+)::boolean
+`
+
+type ProfileInUseParams struct {
+	TenantID  int64 `db:"tenant_id" json:"tenant_id"`
+	ProfileID int64 `db:"profile_id" json:"profile_id"`
+}
+
+func (q *Queries) ProfileInUse(ctx context.Context, arg ProfileInUseParams) (bool, error) {
+	row := q.db.QueryRow(ctx, profileInUse, arg.TenantID, arg.ProfileID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const updateProfile = `-- name: UpdateProfile :one
