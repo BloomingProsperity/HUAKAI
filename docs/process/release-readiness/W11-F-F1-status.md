@@ -79,17 +79,36 @@ without trivial pass.
 
 F-1 epic Released = ALL of:
 
-1. `cargo test -p core_gateway --no-default-features` green
-2. `cargo test -p core_gateway --features mimicry-http2-fork --lib` green (incl. new tests)
-3. `cargo test -p core_gateway --features mimicry-boring,mimicry-http2-fork --lib` green
+1. `cargo test -p core_gateway --no-default-features` green (lib + integration
+   + bin + doc 默认全跑, NO `--lib` filter)
+2. `cargo test -p core_gateway --features mimicry-http2-fork` green — **NO `--lib`
+   filter** (round 2 Codex P1 fix: `--lib` 过滤会跳过 `tests/` 下的 integration
+   suites — `mimicry_http2_fixture_test` 已在 tests/, F-1.b 的 loopback h2 server
+   测试 + F-1.c 的 preflight 测试也都将在 tests/. 同步 synthesis §4.3 #2/#3)
+3. `cargo test -p core_gateway --features mimicry-boring,mimicry-http2-fork` green
+   — **NO `--lib` filter**, 同上理由
 4. ≥1 profile has real-upstream H2 fixture under `tests/fixtures/http2_fingerprint/`
-5. L2 preflight gate (F-1.c, F-1.f) wired into combined-feature builder
-6. `build_mimicry_action` maps L2 errors to `Block*` actions, no panic
-7. `tools/feature-matrix/verify.sh` extended with `mimicry-boring,mimicry-http2-fork`
+   AND `mimicry_http2_fixture_test::fixture_exists_when_profile_marks_available`
+   runs non-vacuously (i.e., at least 1 profile has `h2_settings_frame.available=true`
+   AND backing fixture file with matching `raw_order` + `values` + pseudo-header
+   order)
+5. **For every F-1 Released profile**: `profile.alpn_protocols` MUST include
+   `"h2"` AND F-1.g real-upstream capture evidence MUST show ALPN was negotiated
+   to `h2` on the live HTTPS handshake (round 2 Codex P1 fix: the current
+   anthropic_claude_code.json:99-100 has alpn_protocols=`["http/1.1"]` only;
+   without h2 in the negotiable list, the BoringSSL ALPN selection at
+   `boring_tls_connector.rs:176-178/249-258` will pick h1 and the fork client
+   will reject the connection — every Anthropic real request fails-closed
+   regardless of how perfect the SETTINGS / pseudo-header bytes are. F-1.g
+   MUST refresh `alpn_protocols` from real capture AND record the negotiated
+   ALPN in the fixture's `tls_alpn_negotiated` field per the F-1.a schema)
+6. L2 preflight gate (F-1.c, F-1.f) wired into combined-feature builder
+7. `build_mimicry_action` maps L2 errors to `Block*` actions, no panic
+8. `tools/feature-matrix/verify.sh` extended with `mimicry-boring,mimicry-http2-fork`
    combination matrix, all green
-8. Perf gate: p99 relay latency increase ≤ 5% (vs baseline) after F-1.e + F-1.f
-9. Per-profile state declared in this doc: Released / Feature Flag / Safe
-   Equivalent / Mandatory Roadmap
+9. Perf gate: p99 relay latency increase ≤ 5% (vs baseline) after F-1.e + F-1.f
+10. Per-profile state declared in this doc: Released / Feature Flag / Safe
+    Equivalent / Mandatory Roadmap
 
 ## 6. Open follow-ups (from synthesis §4.5)
 

@@ -108,6 +108,96 @@ fn fixture_exists_when_profile_marks_available() {
              match the other.",
             profile.h2_settings_frame.raw_order, fixture_raw_order
         );
+
+        // F-1.a round 2 (Codex P2): enforce full README cross-check contract,
+        // not just raw_order. Without these the fixture could carry matching
+        // SETTINGS ids but wrong values, OR right SETTINGS but wrong pseudo-
+        // header order, OR wrong ALPN negotiation — and the F-1 Released gate
+        // would silently pass while production runtime still drifts from the
+        // template.
+        //
+        // Cross-check #1: every SETTINGS id in profile.h2_settings_frame.values
+        // must have a matching value in the fixture's h2_settings_frame.values
+        // map (fixture may carry extra ids — superset semantics — but cannot
+        // disagree on any profile-declared id).
+        let fixture_values = &fixture_settings_frame["values"];
+        let fixture_values_map = fixture_values.as_object().unwrap_or_else(|| {
+            panic!(
+                "fixture {path:?} missing h2_settings_frame.values object \
+                 (required by F-1.a schema)"
+            )
+        });
+        for (&profile_id, &profile_value) in profile.h2_settings_frame.values.iter() {
+            let key = profile_id.to_string();
+            let fixture_value = fixture_values_map.get(&key).unwrap_or_else(|| {
+                panic!(
+                    "profile {builtin:?} declares SETTINGS id {profile_id} \
+                     but fixture {path:?} omits it (superset rule violated)"
+                )
+            });
+            let fixture_u32 = u32::try_from(
+                fixture_value
+                    .as_u64()
+                    .unwrap_or_else(|| panic!("fixture value for id {profile_id} not u64")),
+            )
+            .expect("u32 fits");
+            assert_eq!(
+                fixture_u32, profile_value,
+                "profile/fixture value mismatch for SETTINGS id {profile_id} \
+                 on {builtin:?}. Profile says {profile_value}, fixture says \
+                 {fixture_u32}. Re-capture upstream and align both."
+            );
+        }
+
+        // Cross-check #2: fixture's h2_pseudo_header_order.order must match
+        // profile's h2_pseudo_header_capture.order byte-for-byte. Pseudo-header
+        // order is a fingerprintable wire detail — different orderings yield
+        // different HPACK bytes.
+        let fixture_pseudo = &fixture["h2_pseudo_header_order"];
+        let fixture_pseudo_order: Vec<String> = fixture_pseudo["order"]
+            .as_array()
+            .unwrap_or_else(|| {
+                panic!(
+                    "fixture {path:?} missing h2_pseudo_header_order.order \
+                     array (required by F-1.a schema)"
+                )
+            })
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .unwrap_or_else(|| {
+                        panic!("fixture pseudo-header name is not a string in {path:?}")
+                    })
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(
+            fixture_pseudo_order, profile.h2_pseudo_header_capture.order,
+            "profile/fixture mismatch on pseudo-header order for {builtin:?}. \
+             Profile says {:?}, fixture says {:?}. Re-capture upstream + align.",
+            profile.h2_pseudo_header_capture.order, fixture_pseudo_order
+        );
+
+        // Cross-check #3: fixture's tls_alpn_negotiated MUST be "h2". The
+        // synthesis §4.3 #5 acceptance criterion (round 1 Codex P1 fix)
+        // requires ALPN h2 evidence for every Released profile; the fixture
+        // is the canonical evidence carrier. A captured h1 negotiation has
+        // no business in an H2 fingerprint fixture.
+        let fixture_alpn = fixture["tls_alpn_negotiated"]
+            .as_str()
+            .unwrap_or_else(|| {
+                panic!(
+                    "fixture {path:?} missing tls_alpn_negotiated string \
+                     (required by F-1.a schema + synthesis §4.3 #5)"
+                )
+            });
+        assert_eq!(
+            fixture_alpn, "h2",
+            "fixture {path:?} records tls_alpn_negotiated={fixture_alpn:?}; \
+             must be \"h2\" for an H2 fingerprint fixture. If real upstream \
+             negotiates h1, that profile is not F-1 Released eligible — \
+             do NOT promote it."
+        );
     }
 }
 
