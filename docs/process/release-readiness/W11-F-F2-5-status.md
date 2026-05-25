@@ -81,16 +81,27 @@ collected on a non-Windows host.
 
 ## 5. Gemini CLI — captured fingerprints (13 records, Windows)
 
-| group | records | SNIs | cipher_suites count | extension_types | raw_len |
-|---|---|---|---|---|---|
-| **E** | 10 | `cloudcode-pa.googleapis.com` | 52 | `(65281,0,11,10,35,22,23,13,43,45,51)` | 1604 |
-| **F** | 2 | `oauth2.googleapis.com` | 52 | same as E | 1598 |
-| **G** | 1 | `play.googleapis.com` | 52 | `(65281,0,11,10,35,16,22,23,13,43,45,51)` | 1611 |
+ALPN content decoded from extension type 16 bytes (where present). The
+template's `model_api_ht_alpn` variant declares `['h2','http/1.1']`; the
+`auxiliary_no_alpn` variant declares **no ALPN extension at all** (the
+extension is absent, not "empty").
+
+| group | records | SNIs | cipher_suites | extension_types | raw_len | ALPN ext present | ALPN content |
+|---|---|---|---|---|---|---|---|
+| **E** | 8 | `cloudcode-pa.googleapis.com` | 52 | `(65281,0,11,10,35,22,23,13,43,45,51)` | 1604 | ❌ absent | n/a |
+| **F** | 2 | `oauth2.googleapis.com` | 52 | same as E (11 ext, no 16) | 1598 | ❌ absent | n/a |
+| **G** | 1 | `play.googleapis.com` | 52 | `(65281,0,11,10,35,16,22,23,13,43,45,51)` | 1611 | ✅ present | `['http/1.1']` (only) |
 
 All three groups are Node.js TLS 1.3 (raw ClientHello ~1600 bytes, ext 43 +
 51 + 45 present, 52 ciphers including TLS 1.3 trio 0x1302/0x1303/0x1301).
 
-## 6. Gemini CLI — template diff
+**ALPN decode method**: `extensions[16].data` parsed as `u16 list_len + (u8
+name_len + name_bytes)*`. Group-G data `000908687474702f312e31` decodes to
+`list_len=9, then 0x08 + "http/1.1"` → one protocol only. Confirmed by
+re-running the analysis script on record 26 of
+`captures/clienthello-1779707167.jsonl`.
+
+## 6. Gemini CLI — template diff (re-verified per round 1 Codex P1)
 
 Template `tools/fingerprint-collector/templates/gemini-advanced.json`:
 
@@ -99,17 +110,34 @@ Template `tools/fingerprint-collector/templates/gemini-advanced.json`:
 | `tls_backend` | `nodejs` | `nodejs` | ✅ |
 | `cipher_suites` count | 52 | 52 | ✅ |
 | first 3 ciphers | `0x1302, 0x1303, 0x1301` | `0x1302, 0x1303, 0x1301` | ✅ |
-| `extensions` count (main) | 12 | 12 (group G) / 11 (groups E,F) | ✅ via two variants |
-| `extensions` set (main) | `{65281,0,11,10,35,16,22,23,13,43,45,51}` | identical for group G | ✅ |
-| `alpn_protocols` | `['h2','http/1.1']` | empty for groups E/F, present for G | ✅ via `auxiliary_no_alpn` variant |
-| `tls_variants.model_api_ht_alpn` (12 exts, ALPN) | declared | group G matches | ✅ |
-| `tls_variants.auxiliary_no_alpn` (11 exts, no ALPN) | declared | groups E,F match | ✅ |
 | `grease` | `false` | `false` | ✅ |
+| `tls_variants.auxiliary_no_alpn` shape (11 ext, no ALPN ext) | declared | groups E + F (10 of 13 records, includes the **primary** model API endpoint `cloudcode-pa.googleapis.com`) | ✅ confirmed by ALPN-absence decode |
+| `tls_variants.model_api_ht_alpn` shape (12 ext, ALPN=`[h2,http/1.1]`) | declared | **NOT observed in this run** — no captured record has ALPN `h2,http/1.1` | ⚠️ unverified |
+| 3rd shape (12 ext, ALPN=`[http/1.1]` only) | **NOT declared** in template | group G (1 record, `play.googleapis.com`) | ❌ template missing this variant |
 
-**Verdict**: gemini template byte-shape matches captured Windows reality on
-both variants. Gemini's empty `known_gap_fields` list is empirically correct;
-F-2.3a runtime preflight wiring will be sufficient to gate against the
-template once it lands.
+**Corrected verdict** (replaces round-0 overstatement):
+
+- **Primary model-API target** (`cloudcode-pa.googleapis.com`) — captured shape
+  matches the template's `auxiliary_no_alpn` variant byte-for-byte
+  (52 ciphers, 11 ext, ALPN absent). This is the variant HUAKAI mimicry
+  would actually be replicating when calling the Gemini model API. **Match
+  confirmed for the primary path.**
+
+- **HTTP/2-ALPN variant** (`model_api_ht_alpn` in template, declares
+  `[h2, http/1.1]`) — **not observed** in this single-`-p`-prompt capture.
+  The gemini CLI request issued (`echo PROXY-OK | gemini --skip-trust -p
+  "..."`) hit `cloudcode-pa.googleapis.com` without negotiating HTTP/2,
+  so the template's `model_api_ht_alpn` variant is **empirically unverified
+  by this run**. A follow-up capture that exercises an HTTP/2-using gemini
+  operation would be needed to confirm.
+
+- **`play.googleapis.com` divergence** — emits an ALPN extension with only
+  `http/1.1`, which matches **neither** template variant. The template
+  currently has no 12-ext-ALPN-`http/1.1`-only variant. This endpoint is
+  ancillary (Google Cloud APIs, not the model API HUAKAI mimics) so the
+  divergence is acceptable for F-2.5 verdict purposes, but the template
+  should track that a 3rd variant exists in the wild (out of scope for
+  this commit; tracked in §8 follow-up).
 
 ## 7. Verdicts per profile
 
@@ -140,19 +168,39 @@ template once it lands.
 returns `Vec::new()` — no static gap; synthesis design pushes the gate to
 runtime preflight (D-S4 + D-S6).
 
-**F-2.5 evidence confirms this design choice**:
-- Template shape matches captured Windows reality (52 ciphers, both variants).
-- `match_policy()` returns `SampleSetRandomized` (not `KnownGapBlocked`).
+**F-2.5 evidence (nuanced per round 1 Codex P1)**:
+- For the **primary model-API target** (`cloudcode-pa.googleapis.com`), real
+  Windows Node.js ClientHello matches the template's `auxiliary_no_alpn`
+  variant byte-shape (52 ciphers, 11 ext, ALPN ext absent). 8 of 13 records
+  validate this — the variant HUAKAI mimicry would replicate is empirically
+  correct for the primary path.
+- The template's other declared variant `model_api_ht_alpn` (12 ext, ALPN
+  `[h2,http/1.1]`) was **not exercised** in this run because the gemini
+  invocation issued a single `-p` non-interactive prompt that did not
+  negotiate HTTP/2 with `cloudcode-pa.googleapis.com`. The variant remains
+  declared in the template; empirical confirmation against a real HTTP/2
+  Gemini operation is **deferred** to a separate F-2.5-Gemini-h2 capture
+  pass (out of scope for this commit).
+- One ancillary endpoint (`play.googleapis.com`, 1 record) emits an ALPN
+  with `http/1.1` only, matching neither declared template variant — a
+  3rd-variant case the template should track. Ancillary, not on HUAKAI's
+  mimic-target list.
+
+**Pipeline-level state** (unchanged by F-2.5):
+- `match_policy()` returns `SampleSetRandomized` (not `KnownGapBlocked`)
+  because `known_gap_fields()` is empty.
 - `backend_intent()` returns `OpenSslAdapter` via `TlsBackend::NodeJs` arm.
 - `preflight_status_from_intent()` returns `Pending` for Gemini.
 - `is_dispatchable(Pending) == false` → fail-closed at builder gate until
   F-2.3a wires the runtime preflight runner.
 
-**Recommendation**: keep `gemini_advanced_known_gap_fields() -> Vec::new()`.
-F-2.3a runtime preflight (separate sub-phase) should wire
-`OpenSslMimicryAdapter::run_profile_preflight` against the template; when
-it passes, `L1TlsPreflightStatus::Pending → Passed` and Gemini becomes
-dispatchable.
+**Recommendation**: keep `gemini_advanced_known_gap_fields() -> Vec::new()`
+(synthesis D-S4/D-S6 design empirically validated for the primary path).
+F-2.3a runtime preflight wiring (separate sub-phase) should target the
+`auxiliary_no_alpn` variant first since that is the only one with
+empirical evidence post-F-2.5; `model_api_ht_alpn` validation is a F-2.5
+follow-up capture, not a code change. **F-2.5 does NOT auto-clear Gemini's
+runtime preflight gate** — F-2.3a is still needed.
 
 ### 7.3 Kiro CLI — `BuiltinProfile::KiroCli`
 
@@ -198,16 +246,27 @@ in this run; not relevant to F-2.5 verdict.
    reproducible capture tool for any future operator running F-2.5-style
    captures.
 
-6. **Security hygiene**: mitmproxy CA cert was added to Windows USER Root
-   trust store for this capture. Removal command (operator runs when
-   F-2.5-Kiro is also done):
+6. **Security hygiene** (corrected per round 1 Codex P2): mitmproxy CA cert
+   was added to Windows USER Root trust store for this capture and **removed
+   immediately at the end of this session** via:
 
    ```powershell
    certutil -user -delstore "Root" "mitmproxy"
    ```
 
-   Keep the CA installed if more captures (F-2.5-Kiro / F-2.5 v2 with
-   different profile / future templates) are expected within the week.
+   **Do NOT leave the mitmproxy root trusted between sessions.** While
+   installed, any same-user-context process with access to the mitmproxy
+   private key (default `~/.mitmproxy/mitmproxy-ca.p12`) can transparently
+   intercept TLS for any CLI or browser running under that user. The cert
+   is cheap to reinstall (`certutil -user -addstore "Root" <cer>` takes
+   < 1 second) and the F-2.5-style capture is itself a one-shot operation,
+   so the right default is install→capture→uninstall per session. For
+   repeated captures use an isolated disposable profile / VM where trust
+   state does not leak into normal work.
+
+   Future F-2.5-Kiro / F-2.5-Gemini-h2 / template revision captures should
+   each install + uninstall the CA within their own session, NOT inherit
+   trust from this one.
 
 ## 9. Mutation-resistance note (CLAUDE.md #14)
 
