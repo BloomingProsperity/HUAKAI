@@ -13,8 +13,17 @@ desktop.ini
 
 # Local agent / CLI state (must never be committed)
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 .gemini/settings.local.json
 .codex/local/
+
+# Go test/build caches pinned by backend/scripts/run-go-test.* (Defender-
+# excluded paths used to dodge SAC/AppLocker blocks; see
+# docs/01_APPLOCKER_DEFENDER_RESOLUTION.md). Each can hit ~150 MB; never commit.
+backend/.tmp/
+backend/.gotmp/
+backend/.gocache/
+.gocache/
 
 # Secrets & env
 .env
@@ -23,6 +32,9 @@ desktop.ini
 *.pem
 *.key
 *.crt
+# 例外: Rust route-client mTLS 测试 placeholder 证书 (`-----BEGIN HUAKAI TEST … PLACEHOLDER-----`)
+# 不是真证书,只是 build_client_tls_config tests 需要文件存在
+!exploratory/rust-core-gateway/merged/crates/core_gateway/tests/fixtures/mtls/*.pem
 secrets/
 credentials.json
 
@@ -31,13 +43,40 @@ dist/
 build/
 out/
 target/
+.cargo-targets/
+cargo-targets/
+huakai-rust-target/
+.cache/
+.gocache/
+bin/
 *.exe
 *.bin
+*.test
 node_modules/
 vendor/
+!exploratory/rust-core-gateway/vendor/
+!exploratory/rust-core-gateway/vendor/boring/
+!exploratory/rust-core-gateway/vendor/boring/**
 .venv/
 __pycache__/
 *.pyc
+
+# Generated code (sqlc).
+# NOTE: We track sqlc-generated files at backend/internal/db/ so a fresh
+# clone compiles without requiring `make generate` (sqlc binary install
+# can be flaky behind some networks). Regenerate via `make generate`
+# whenever a sql/queries/*.sql file changes; commit the diff together
+# with the SQL change.
+
+# Operator config (never commit; only config.example.yaml is tracked)
+backend/config.yaml
+!backend/config.example.yaml
+
+# Frontend build artifacts (Phase 7+)
+frontend/node_modules/
+frontend/dist/
+frontend/.next/
+frontend/build/
 
 # Logs & runtime
 *.log
@@ -52,3 +91,15 @@ coverage/
 
 # OMC artifacts (ask / ccg outputs are session-local)
 .omc/
+
+# OMC dispatch scratch — codex prompt drafts (per CLAUDE.md #11 clean-room)
+docs/plans/.codex-prompt-*.md
+
+# Fingerprint collector output — operator-local 私有数据；按 README 承诺
+# "ships with no fingerprint templates"，公开仓库不应携带任何 captured
+# template / pcap / JA3 / JA4 / metadata。Operator 自行采集后放本地配置目录。
+tools/fingerprint-collector/output/
+tools/fingerprint-collector/fpc.exe
+tools/fingerprint-collector/fpc
+frontend/tsconfig.tsbuildinfo
+frontend/next-env.d.ts

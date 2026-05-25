@@ -1,0 +1,11 @@
+# 2026-05-06 openai-sse-codex-lane
+
+| Owner directive | "You are CODEX LANE for HUAKAI provider/openai_sse.go — UpstreamAdapter for OpenAI Chat Completions SSE format." |
+| Scope | In: independently draft `openai_sse.go`, `openai_sse_test.go`, and `NOTES.md` under `C:\tmp\parallel-openai-sse-codex`; parse OpenAI Chat Completions SSE chunks into existing HCSF event shapes; include golden fixture tests. Out: do not read Claude lane output; do not read Sub2API or other non-MIT reference source; do not change production auth, billing, quota, schema, deployment, or license files. |
+| Success criteria | Adapter satisfies `proto.UpstreamAdapter`; stream parser handles content deltas, tool-call deltas, usage chunks, finish reasons, `[DONE]`, malformed JSON, empty streams, and no-choice chunks; tests compile in an isolated temp package copied from repo proto files. |
+| Time estimate | 45-75 minutes wall clock; single Codex lane. |
+| Blast radius | Low: primary outputs are temp lane files. Repo mutation is limited to this planning document. Verification uses copied temp files. |
+| Failure modes | Misaligned HCSF event naming: mitigate by reading `anthropic_sse.go` first. Tool-call partial JSON mismatch: preserve arguments as raw partial bytes and test multi-call accumulation. Usage missing on empty choices: treat usage-only chunks as `message_delta`. Malformed JSON crash: emit `ProtocolLossEntry` and skip. |
+| Decision points | Owner confirmation would be needed before merging into backend production tree or changing shared HCSF structs. This lane only drafts files and does not require extra confirmation. |
+| Pre-execution checklist | Read `proto.go`, `hcsf.go`, `anthropic_sse.go`, `event_scanner.go`, `capability_matrix.go`, and `tool_call_id.go`; consult official OpenAI Chat Completions streaming docs; create temp output directory; write implementation and tests with Chinese comments only; run `gofmt`; compile tests in an isolated temp copy; record source coverage and clean-room tail in NOTES. |
+| Concrete execution order | 1. Model OpenAI chunk structs and state accumulator. 2. Implement request/response stubs or minimal conversions. 3. Map streaming chunks to canonical events. 4. Add golden SSE fixture parser in tests. 5. Verify compile and targeted tests. 6. Run clean-room checklist and finalize NOTES. |

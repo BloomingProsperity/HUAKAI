@@ -1,0 +1,49 @@
+{
+  "version": "0.4",
+  "request_meta": {
+    "request_id": "req_fxt_live_001",
+    "client_protocol": "openai_responses",
+    "protocol_family": "openai_responses",
+    "model": "gpt-4o-realtime-preview",
+    "ingress_path": "/v1/realtime",
+    "native_passthrough": false
+  },
+  "request_controls": {},
+  "messages": [],
+  "capability_graph": {
+    "nodes": [
+      {
+        "id": "n_live_001",
+        "kind": "live_session",
+        "stream_ready": "yes",
+        "live_session": {
+          "session_id": "sess_fxt_001",
+          "transport": "wss",
+          "modalities": ["text", "audio"]
+        }
+      }
+    ],
+    "edges": []
+  },
+  "provider_projection": {
+    "capability_results": [
+      {"capability": "live_session", "node_id": "n_live_001", "verdict": "preserved"}
+    ]
+  },
+  "stream_plan": {
+    "mode": "streaming",
+    "event_classes": ["session.created", "audio.delta"],
+    "flush_policy": "per_event",
+    "terminal_required": true,
+    "synthetic_terminal_allowed": true,
+    "fallback_boundary": "after_first_byte_blocked",
+    "mid_stream_fallback_policy": "none"
+  },
+  "accounting": {"live_usage": {"session_duration_ms": 12000, "input_audio_ms": 5000, "output_audio_ms": 7000}},
+  "policy": {
+    "data_retention": {"value": "unknown", "enforcement": "unknown", "audit_label": "unknown"},
+    "auth": "standard",
+    "audit": {"visibility": "visible", "label": "default"},
+    "redaction": "public"
+  }
+}

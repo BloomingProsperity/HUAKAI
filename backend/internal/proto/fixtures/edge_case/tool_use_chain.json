@@ -1,0 +1,117 @@
+{
+  "version": "0.4",
+  "request_meta": {
+    "request_id": "req_fxt_edge_toolchain_001",
+    "client_protocol": "anthropic_messages",
+    "protocol_family": "anthropic",
+    "model": "claude-sonnet-4-5",
+    "ingress_path": "/v1/messages",
+    "native_passthrough": false
+  },
+  "request_controls": {
+    "tools": [
+      {"name": "lookup", "description": "fixture lookup tool"}
+    ],
+    "parallel_tool_calls": true
+  },
+  "messages": [
+    {"role": "user", "content": [{"type": "text", "text": "fixture: tool chain"}]}
+  ],
+  "capability_graph": {
+    "nodes": [
+      {
+        "id": "n_edge_chain_tooluse_001",
+        "kind": "tool_use",
+        "stream_ready": "partial",
+        "tool_use": {
+          "tool_call_id": "tc_fxt_chain_a",
+          "name": "lookup",
+          "input": {"q": "alpha"},
+          "status": "complete"
+        }
+      },
+      {
+        "id": "n_edge_chain_toolresult_001",
+        "kind": "tool_result",
+        "stream_ready": "yes",
+        "tool_result": {
+          "tool_call_id": "tc_fxt_chain_a",
+          "content": [
+            {"type": "text", "text": "alpha=42"}
+          ],
+          "status": "complete",
+          "is_error": false
+        }
+      },
+      {
+        "id": "n_edge_chain_tooluse_002",
+        "kind": "tool_use",
+        "stream_ready": "partial",
+        "tool_use": {
+          "tool_call_id": "tc_fxt_chain_b",
+          "name": "lookup",
+          "input": {"q": "beta"},
+          "status": "complete"
+        }
+      },
+      {
+        "id": "n_edge_chain_toolresult_002",
+        "kind": "tool_result",
+        "stream_ready": "yes",
+        "tool_result": {
+          "tool_call_id": "tc_fxt_chain_b",
+          "content": [
+            {"type": "text", "text": "beta=7"}
+          ],
+          "status": "complete",
+          "is_error": false
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "e_edge_chain_req_a",
+        "type": "requires",
+        "from": "n_edge_chain_toolresult_001",
+        "to": "n_edge_chain_tooluse_001",
+        "required": true,
+        "reason": "tool_result must reference matching tool_use call id"
+      },
+      {
+        "id": "e_edge_chain_req_b",
+        "type": "requires",
+        "from": "n_edge_chain_toolresult_002",
+        "to": "n_edge_chain_tooluse_002",
+        "required": true,
+        "reason": "tool_result must reference matching tool_use call id"
+      }
+    ]
+  },
+  "provider_projection": {
+    "target_vendor": "anthropic",
+    "target_protocol": "anthropic",
+    "capability_results": [
+      {"capability": "tool_use", "node_id": "n_edge_chain_tooluse_001", "verdict": "preserved"},
+      {"capability": "tool_result", "node_id": "n_edge_chain_toolresult_001", "verdict": "preserved"},
+      {"capability": "tool_use", "node_id": "n_edge_chain_tooluse_002", "verdict": "preserved"},
+      {"capability": "tool_result", "node_id": "n_edge_chain_toolresult_002", "verdict": "preserved"}
+    ],
+    "overall_verdict": "preserved"
+  },
+  "stream_plan": {
+    "mode": "buffered",
+    "event_classes": [],
+    "flush_policy": "per_event",
+    "terminal_required": true,
+    "synthetic_terminal_allowed": true,
+    "fallback_boundary": "after_first_byte_blocked",
+    "mid_stream_fallback_policy": "none"
+  },
+  "accounting": {},
+  "policy": {
+    "data_retention": {"value": "unknown", "enforcement": "unknown", "audit_label": "unknown"},
+    "auth": "standard",
+    "audit": {"visibility": "visible", "label": "default"},
+    "redaction": "public"
+  }
+}

@@ -2,7 +2,7 @@ This file is agent-facing and authoritative.
 
 # Spec-Leakage Review Checklist
 
-Per [DR-000](../decisions/DR-000-clean-room-methodology.md), every spec produced by the specifier lane MUST pass this checklist before it is released to the implementer lane. The reviewer must be a different agent session from the specifier.
+Per [DR-000](../process/decisions/DR-000-clean-room-methodology.md), every spec produced by the specifier lane MUST pass this checklist before it is released to the implementer lane. The reviewer must be a different agent session from the specifier.
 
 ## Reviewer Workflow
 
@@ -14,9 +14,11 @@ Per [DR-000](../decisions/DR-000-clean-room-methodology.md), every spec produced
 
 ## Checks
 
-### CL-001 — No upstream function or method names
+### CL-001 — No upstream function, method, or configuration-constant names
 
-The spec must not contain function, method, or handler names verbatim from non-MIT references (e.g. `OpenAIController.handleChat`, `ratio_billing_calculate`). Use behavior verbs from this project's glossary instead.
+The spec must not contain function, method, handler, or **configuration-constant names with values** verbatim from non-MIT references (e.g. `OpenAIController.handleChat`, `ratio_billing_calculate`, or specific `CONFIG_FLAG=value` strings drawn from a non-MIT source). Use behavior verbs from this project's glossary instead.
+
+Sub-clause **CL-001a** (added 2026-04-28 after a real leak at E-S2A-005): a configuration constant's *name plus value pair* (e.g. `RUN_MODE=simple`) is a fingerprint of the upstream project even if either piece alone is generic. Specs and evidence rows must paraphrase as "an edition-mode flag", "a deployment-profile selector", etc.
 
 ### CL-002 — No upstream schema column names
 
@@ -54,9 +56,30 @@ If the specifier could not resolve a behavior from the references, it must appea
 
 Sources may appear in the `Sources` field. They must NOT appear in `Normal Path`, `Failure Path`, `Audit / Usage / Log Evidence`, or `Acceptance Test Direction`. The implementer lane reads only the latter sections, and a stray URL would invite the implementer to click through.
 
+### CL-011 — Every behavior claim has a source citation (added 2026-04-28)
+
+Added 2026-04-28 after a real leak in F-POOL-001 / F-GW-002 cycles 1-2 where Claude's specifier passes were paraphrased from prior prose decompositions instead of source-verified, producing 18 hallucinated claims. See [docs/process/reviews/2026-04-28-source-truth-corrections.md](../process/reviews/2026-04-28-source-truth-corrections.md) for the catalogue.
+
+The rule:
+
+- **Specifier-lane pass**: every claim about a reference's behavior MUST cite a specific source location — a relative path under `.omc/reference-src/<ref>/...` plus a line range or a function name with verifiable existence. "Behavior basis = existing prose decomposition" is NOT a source citation; the prose itself may be paraphrased.
+- **Acceptable citation forms**:
+  - File path + line range: `backend/internal/service/gateway_service.go:1376–1928`
+  - File path + function name (function must exist when grepped): `backend/internal/service/gateway_service.go::SelectAccountWithLoadAwareness`
+  - Verified commit hash pinned in the file's header for reproducibility against [docs/24 reference tracking policy](../24_REFERENCE_TRACKING_POLICY.md).
+- **Unverified claims must be marked**: if the specifier could not locate a behavior in source but believes it exists (e.g. heard from another agent), the claim must carry a `**TODO/UNVERIFIED**` tag and appear in `Open Questions` (CL-009 cross-link).
+- **HUAKAI design improvements (KEEP/IMPROVE/AVOID outputs) are exempt from CL-011**: when the spec proposes a behavior NOT in any reference, the claim must be labeled `(HUAKAI design — not in source)` so reviewer can't confuse design proposal with source extraction.
+- **Reviewer-lane responsibility**: spot-check at least 5 random claims by grepping the source file at the cited path. If any cited location does not contain the claimed behavior, CL-011 fails.
+
+CL-011 applies to all specifier-lane decomposition files under `docs/decompositions/` and all Option C strict specs under `docs/specs/`. It does NOT apply to synthesis files (which integrate two specifier passes) but the synthesis must inherit citations from the input passes.
+
+Sub-clause **CL-011a — Reference source must be locally cloned**: every reference cited in a specifier pass MUST be locally cloned under `.omc/reference-src/<ref>/` before the pass is authored. Web-fetch-only specifier passes are CL-011a fail. Clone command must be reproducible (specifier records `git clone --depth 1 <url> <dir>` in the pass's Provenance).
+
+Sub-clause **CL-011b — KEEP / IMPROVE / AVOID separation is mandatory**: every specifier pass that proposes HUAKAI changes must structure its output as three sections: KEEP (verified-in-source behaviors to inherit), IMPROVE (HUAKAI-design improvements clearly labeled "not in source"), AVOID (verified-in-source anti-patterns to NOT inherit). Mixing HUAKAI design into KEEP without the label is CL-011b fail.
+
 ## Reviewer Sign-Off
 
-When all 10 checks pass, append a sign-off block to the spec:
+When all 11 checks pass, append a sign-off block to the spec:
 
 ```markdown
 ## Review Sign-Off
@@ -65,7 +88,7 @@ When all 10 checks pass, append a sign-off block to the spec:
 | --- | --- |
 | Reviewer | <agent + session> |
 | Review date | YYYY-MM-DD |
-| Checks passed | CL-001 through CL-010 |
+| Checks passed | CL-001 through CL-011 |
 | Notes | <optional, e.g. "CL-005 had a borderline pseudocode block; rewritten to guarantee form."> |
 ```
 

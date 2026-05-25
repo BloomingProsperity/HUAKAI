@@ -1,0 +1,11 @@
+# 2026-05-15 L2-A2 TLS ClientHello Capture
+
+| Owner directive | "Lane: SPECIFIER + IMPLEMENTER for L2-A2 (test-only local TLS ClientHello capture helper)" |
+| Scope | In: `core_gateway/tests/common/tls_capture.rs`, `core_gateway/tests/common/mod.rs`, one `core_gateway/tests/mimicry_capture_test.rs` baseline test, this plan. Out: `src/`, `Cargo.toml`, non-MIT reference projects, production behavior. |
+| Success criteria | Local helper binds a TCP listener, captures one TLS ClientHello record, fail-fast parses requested fields, closes without completing TLS, and baseline test proves hyper-rustls emits non-empty cipher suite and extension lists. `cd exploratory/rust-core-gateway/merged && cargo test` passes. |
+| Time estimate | 45-75 minutes wall clock; one Codex implementation pass plus compile/test fixes. |
+| Blast radius | Test-only Rust files. Failure can break integration test compilation or introduce a flaky local listener test; production binary should be unaffected. |
+| Failure modes | Length-prefix parser silently truncates data; mitigate with checked slice helpers and explicit error variants. Listener race when using port 0; mitigate by binding in test first and passing the chosen address to `capture_once`. Client validates IP certificate before sending full HTTP request; acceptable because ClientHello must be sent first and the request is expected to fail. Missing dev dependency; do not add crates, surface if existing deps are insufficient. |
+| Decision points | Stop for Owner confirmation before touching `src/`, `Cargo.toml`, schema, auth, quota, billing, deployment, secrets, or `LICENSE`. No current decision point is expected. |
+| Pre-execution checklist | Confirm existing test module structure; confirm `build_http_client` is available from public crate API; implement byte-slice parser with explicit length checks; add logging via `eprintln!`; run targeted test; run full cargo test. |
+| Concrete execution order | 1. Read existing HTTP client/test usage. 2. Add `tls_capture` helper under `tests/common`. 3. Export helper from `tests/common/mod.rs`. 4. Add `mimicry_capture_test.rs`. 5. Run `cargo test -p core_gateway baseline_hyper_rustls_capture -- --nocapture` or equivalent from merged workspace. 6. Run full `cargo test`. 7. Report changed files, line counts, and test summary in Chinese. |

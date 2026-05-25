@@ -1,4 +1,4 @@
-This directory holds spec files produced by the **specifier lane** under the clean-room methodology decided in [DR-000](../decisions/DR-000-clean-room-methodology.md).
+This directory holds spec files produced by the **specifier lane** under the clean-room methodology decided in [DR-000](../process/decisions/DR-000-clean-room-methodology.md).
 
 # Specs
 

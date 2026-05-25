@@ -1,0 +1,86 @@
+{
+  "version": "0.4",
+  "request_meta": {
+    "request_id": "req_fxt_reg_portkey1579_001",
+    "client_protocol": "anthropic_messages",
+    "protocol_family": "anthropic",
+    "upstream_protocol": "anthropic",
+    "provider": "vertex-anthropic",
+    "model": "claude-sonnet-4-5",
+    "ingress_path": "/v1/messages",
+    "native_passthrough": false
+  },
+  "request_controls": {},
+  "messages": [
+    {"role": "user", "content": [{"type": "text", "text": "fixture: cross-platform cache_control normalization"}]}
+  ],
+  "capability_graph": {
+    "nodes": [
+      {
+        "id": "n_reg_cache_block_001",
+        "kind": "cache_control",
+        "stream_ready": "yes",
+        "cache_control": {
+          "scope": "block",
+          "breakpoint_refs": ["n_reg_block_text_001"],
+          "sanitize_system_metadata": true
+        }
+      },
+      {
+        "id": "n_reg_block_text_001",
+        "kind": "text",
+        "stream_ready": "yes",
+        "text": {"role": "user", "block": {"type": "text", "text": "fixture: cross-platform cache_control normalization"}}
+      }
+    ],
+    "edges": [
+      {
+        "id": "e_reg_cache_block_001",
+        "type": "provides",
+        "from": "n_reg_cache_block_001",
+        "to": "n_reg_block_text_001",
+        "required": true,
+        "reason": "cache_control block covers the user text"
+      }
+    ]
+  },
+  "provider_projection": {
+    "target_vendor": "vertex-anthropic",
+    "target_protocol": "anthropic",
+    "capability_results": [
+      {
+        "capability": "cache_control",
+        "node_id": "n_reg_cache_block_001",
+        "verdict": "lossy",
+        "protocol_loss": [
+          {
+            "field": "cache_control.scope",
+            "vendor": "vertex-anthropic",
+            "severity": "warning",
+            "reason": "vertex-anthropic strips cache_control on direct messages route; HUAKAI normalizes scope in canonical layer to keep cross-platform behavior aligned",
+            "code": "cache_control_stripped_by_vendor_route",
+            "capability": "cache_control"
+          }
+        ]
+      },
+      {"capability": "text", "node_id": "n_reg_block_text_001", "verdict": "preserved"}
+    ],
+    "overall_verdict": "lossy"
+  },
+  "stream_plan": {
+    "mode": "buffered",
+    "event_classes": [],
+    "flush_policy": "per_event",
+    "terminal_required": true,
+    "synthetic_terminal_allowed": true,
+    "fallback_boundary": "after_first_byte_blocked",
+    "mid_stream_fallback_policy": "none"
+  },
+  "accounting": {},
+  "policy": {
+    "data_retention": {"value": "unknown", "enforcement": "unknown", "audit_label": "unknown"},
+    "auth": "standard",
+    "audit": {"visibility": "visible", "label": "regression_fixture"},
+    "redaction": "public"
+  }
+}

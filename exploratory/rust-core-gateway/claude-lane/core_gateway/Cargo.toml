@@ -1,0 +1,52 @@
+[package]
+name = "core_gateway"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "core_gateway"
+path = "src/lib.rs"
+
+[[bin]]
+name = "core_gateway"
+path = "src/main.rs"
+
+[dependencies]
+# 异步运行时
+tokio = { version = "1", features = ["full"] }
+
+# HTTP 服务框架
+axum = { version = "0.8", features = ["http2"] }
+
+# 高性能字节缓冲 (D-rust-3: 全程用 Bytes 不用 Vec<u8>)
+bytes = "1"
+
+# 序列化 / ENV 配置解析
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+figment = { version = "0.10", features = ["env"] }
+
+# 错误类型
+thiserror = "2"
+
+# 请求 ID (UUIDv7)
+uuid = { version = "1", features = ["v7"] }
+
+# 追踪 / 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+
+# OpenTelemetry OTLP stub (M-rust-1 只初始化, 不真正导出)
+opentelemetry = { version = "0.27", features = ["trace"] }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic"] }
+opentelemetry-semantic-conventions = "0.27"
+tracing-opentelemetry = "0.28"
+
+# 时间戳
+time = { version = "0.3", features = ["std"] }
+
+[dev-dependencies]
+# 集成测试 HTTP 客户端 — 使用 rustls 避免 openssl-sys 依赖
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["full"] }

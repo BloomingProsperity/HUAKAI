@@ -13,6 +13,8 @@ Feature lock prevents silent product shrinkage during clean-room design, securit
 - Gateway provider management.
 - Account and credential hub.
 - Channel and routing controls.
+- **Provider Account pooling and relay-station workflows** (the product identity per [01_PROJECT_BRIEF.md](01_PROJECT_BRIEF.md): Pooling Groups, sticky session routing, per-User × per-Account concurrency, pool-aware billing reconciliation).
+- **Edition / run-mode plumbing** (Personal vs SaaS toggling per [DR-002](process/decisions/DR-002-product-editions.md)).
 - Protocol compatibility and conversion.
 - Model registry and model aliasing.
 - Quota, rate limits, usage, and billing.

@@ -98,14 +98,15 @@ Define the first buildable product slice.
 
 ### L1 MVP Modules
 
-- API key intake.
-- One or more manually configured provider accounts.
+- API key intake (platform-issued keys for end-users).
+- **Provider Account pooling**: one or more manually configured upstream Provider Accounts grouped into one logical pool that the platform routes against. This is the relay-station identity feature ([F-POOL-001](03_FEATURE_PARITY_MATRIX.md), [01_PROJECT_BRIEF.md §Product Identity](01_PROJECT_BRIEF.md)) and must be in L1, not deferred.
 - OpenAI-compatible request path for a small model set.
 - Basic provider forwarding.
-- Basic routing selection.
-- Basic usage log.
+- Basic routing selection (with pool-aware selection inside one Channel).
+- Basic usage log with token-level granularity (sets up F-POOL-001 fairness).
 - Basic request log.
 - Basic admin inspection surface or documented admin API.
+- Edition-flag plumbing ([F-MODE-001](03_FEATURE_PARITY_MATRIX.md)) so SaaS-only features can be turned off cleanly in Personal Edition deployments.
 
 ### Deferred But Preserved
 
@@ -137,12 +138,15 @@ Create the implementation skeleton only after Phase 2 locks the MVP.
 
 ### Deliverables
 
-- Chosen runtime and framework.
-- Project skeleton.
-- Test framework.
-- Basic lint or type checks if available.
+- Go module skeleton (per [DR-003](process/decisions/DR-003-technology-stack.md)) with one HTTP framework picked and locked.
+- TypeScript frontend skeleton with types **generated** from the backend's OpenAPI artifact (codegen tool selected here or in a follow-up DR).
+- Test framework: `go test` with `-race` enabled by default; vitest or equivalent for the frontend.
+- Provider-neutral streaming abstraction stub (must exist before any provider integration begins, per DR-003 Constraint 3).
+- Basic lint or type checks: `go vet`, `staticcheck`, `golangci-lint` for Go; `tsc --noEmit` for TS.
 - Configuration examples without real secrets.
-- Minimal CI or local check plan if applicable.
+- Minimal CI or local check plan that runs lint + tests on every commit.
+- **Naming-discipline guardrails** (per [DR-003](process/decisions/DR-003-technology-stack.md) Constraint 8): `golangci-lint.yml` and ESLint configs include lint rules enforcing glossary-aligned naming (e.g. forbidden synonyms list), no-duplicate-logic linters where available, and import-cycle / dead-code detection on by default. CI rejects PRs that introduce naming drift or redundant logic.
+- DR-005 (Go HTTP framework) and DR-006 (database) decided BEFORE skeleton is committed.
 
 ### Risk Rule
 
@@ -188,6 +192,7 @@ Make provider accounts manageable and routable.
 - Manual credential rotation path.
 - Basic route selection.
 - Disabled accounts are excluded from routing.
+- [F-COMPAT-001](03_FEATURE_PARITY_MATRIX.md) — Warm-up interception 凭据 flag（Personal Edition opt-in plugin；Q1 已裁决 2026-05-12 维持 Plugin opt-in）。
 
 ### Exit Criteria
 
@@ -208,12 +213,32 @@ Record usage reliably and add simple quota controls without pretending to have f
 - Basic token or request count estimate.
 - Simple quota check.
 - Billing ledger design notes for later phases.
+- [F-AUTH-006](03_FEATURE_PARITY_MATRIX.md) — OAuth 引导子系统（commercial blocker，配合 F-AUTH-005 续期形成完整 OAuth 套利路径；L0-1 in 02_HUAKAI_FUSION_ARCHITECTURE.md）。
+- [F-COMM-001](03_FEATURE_PARITY_MATRIX.md) — 邀请 / 推荐子系统（与 F-PAY-001 并列；Q2 已裁决 2026-05-12 升 Mandatory Roadmap，共账本 first-class schema）。
 
 ### Exit Criteria
 
 - Usage can be inspected by user, key, model, and provider account.
 - Quota failure path is tested.
 - Billing parity gaps are recorded as roadmap items.
+
+## Phase 4.5: Async Task Backbone (axis 5 扩展, 2026-05-09 Codex audit 修补)
+
+### Goal
+
+补齐 axis 5 异步任务实现（[02_HUAKAI_FUSION_ARCHITECTURE.md](02_HUAKAI_FUSION_ARCHITECTURE.md) §5 复杂度轴当前 0%）；同时补齐 F-OBS-001 失败流计费 4-state 语义。挂在 Phase 4 与 Phase 5 之间，作为先于 Account Hub 完整化、先于真实 upstream 接入的运行时基础。
+
+### Deliverables
+
+- [F-OBS-003](03_FEATURE_PARITY_MATRIX.md) — 4-state 失败流计费扩展（client_gone / upstream_timeout / output_token_zero / upstream_5xx），落在 F-OBS-001 Tx2 结算钩子内，不另开 spec。
+- [F-OBS-004](03_FEATURE_PARITY_MATRIX.md) — 14 段异步处理器链 + 每批 drain 边界（按角色命名，避免上游 identifier 抄袭）。
+- [F-OBS-005](03_FEATURE_PARITY_MATRIX.md) — DLQ + 15 min 超时降级 + 显式低优先级 lane + 主备队列非对称双写。
+
+### Exit Criteria
+
+- 四种失败终态在 Usage Record 上有显式 `terminal_class` 字段且各自路径有正常 / 退款 / 部分计费断言。
+- 14 段链每段有幂等键 + 每批 drain 边界单测。
+- DLQ 重投幂等闸 + 优先级 lane 不会让账单类事件被 starve；双写分歧有对账接口。
 
 ## Phase 7: Admin Lite
 
@@ -258,11 +283,15 @@ Move from MVP to production usable.
 - Normal path, failure path, and operator recovery path are tested for each core module.
 - High-risk release blockers are closed or explicitly blocked.
 
-## Phase 9: Advanced Parity And Better Than Reference
+## Phase 9: Advanced Parity, Provider Catalog Breadth, and Better Than Reference
 
 ### Goal
 
-Close remaining reference parity gaps and improve beyond references.
+Close remaining reference parity gaps; deliver the Provider Catalog Breadth that is HUAKAI's commercial differentiator per [DR-007](process/decisions/DR-007-product-positioning-and-breadth.md); improve beyond references.
+
+### Provider Catalog Breadth Exit Criterion (per DR-007)
+
+By the end of Phase 9, HUAKAI's supported Provider catalog must **materially exceed Sub2API's catalog** (target: 15+ unique upstream Providers with verified per-provider acceptance tests). This is a binding exit criterion for Phase 9, not a stretch goal.
 
 ### Deliverables
 
@@ -274,6 +303,8 @@ Close remaining reference parity gaps and improve beyond references.
 - Plugin boundaries.
 - Feature flags.
 - Better observability and investigation workflows.
+- [F-CRED-001](03_FEATURE_PARITY_MATRIX.md) — 凭据提供者 + 预轮换 + OIDC→cloud STS 子系统（Phase 9+ SaaS enterprise tier；与 F-AUTH-005 续期 / F-AUTH-006 引导职能边界明确分割）。
+- [F-PROTO-003](03_FEATURE_PARITY_MATRIX.md) — 服务侧压缩 native passthrough 路径 `/v1/native/openai/responses/compact`（已被 P-4 passthrough 覆盖；Q3 已裁决 2026-05-12 维持 Native passthrough，不升 first-class capability）。
 
 ### Exit Criteria
 
@@ -300,7 +331,7 @@ Close remaining reference parity gaps and improve beyond references.
 
 ### Goal
 
-Activate the SaaS Edition after Personal Edition (Phase 1-9) has validated user feedback. See [DR-002](decisions/DR-002-product-editions.md).
+Activate the SaaS Edition after Personal Edition (Phase 1-9) has validated user feedback. See [DR-002](process/decisions/DR-002-product-editions.md).
 
 ### Trigger
 

@@ -1,0 +1,79 @@
+[package]
+name = "core_gateway"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# R-E-A+1: explicit gate for tonic's Rustls client TLS support.
+tls = ["tonic/tls", "tonic/tls-roots"]
+# L2-A4: OpenSSL mimicry backend skeleton, 默认不编译进网关 binary。
+mimicry-openssl = ["dep:openssl", "dep:tokio-openssl"]
+# R-2-B: BoringSSL mimicry backend 预接线, 默认不编译进网关 binary。
+mimicry-boring = ["dep:boring", "dep:tokio-boring", "dep:tower"]
+# L2-A6: MIT http2 fork 仅用于 SETTINGS / pseudo-header 顺序表达。
+mimicry-http2-fork = ["dep:http2"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# 异步运行时
+axum = { version = "0.8", features = ["http1", "json", "tokio"] }
+boring = { workspace = true, optional = true }
+bytes = "1"
+dashmap = "6.1"
+# 环境变量解析 (带前缀, 强类型)
+envy = "0.4"
+futures-core = "0.3"
+http = "1"
+http2 = { git = "https://github.com/0x676e67/http2", rev = "a33b27e469434a99105f35670c9970f22112e892", optional = true, package = "http2", features = ["unstable"] }
+http-body = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1", "http2"] }
+# R-E-A 阶段性保留: HTTPS forward client 临时用 hyper-rustls 保 TLS (Owner OCAW 2026-05-16 D-TLS-1 后允许);
+# R-E+1 切到 rquest + BoringSSL (整合 rquest sidecar) 后真删本 dep.
+# 不是 dispatch fallback (R-E-A 已 burn-the-boats); 仅 proxy_engine/http_client.rs 出站 TLS 兜底.
+hyper-rustls = { version = "0.27.9", default-features = false, features = ["http1", "http2", "ring", "tls12", "webpki-roots"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "server-auto", "server-graceful", "service", "tokio"] }
+memchr = "2.8"
+# OpenSSL TLS mimicry backend skeleton, 仅由 mimicry-openssl feature 启用。
+openssl = { version = "0.10.79", optional = true }
+pin-project-lite = "0.2"
+prost = "0.13.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-boring = { workspace = true, optional = true }
+tokio-openssl = { version = "0.6", optional = true }
+tokio-stream = { version = "0.1", features = ["net"] }
+tonic = { version = "0.12.3", features = ["transport"] }
+tower = { version = "0.5", features = ["util"], optional = true }
+tower-http = { version = "0.6", features = ["limit"] }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+uuid = { version = "1", features = ["serde", "v7"] }
+
+# OpenTelemetry OTLP — M-rust-1 初始化 stub, 真实 exporter 留 M-rust-2 接线
+opentelemetry = { version = "0.27", features = ["trace"] }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic"] }
+
+# M-rust-9 observability — Prometheus 文本 scrape 指标；关闭默认 feature 避免拉入 protobuf 2.x RustSec advisory。
+prometheus = { version = "0.13", default-features = false }
+
+[build-dependencies]
+protoc-bin-vendored = "3.2"
+tonic-build = "0.12.3"
+
+[dev-dependencies]
+futures-util = "0.3"
+hdrhistogram = "7.5"
+serde_json = "1"
+tower = { version = "0.5", features = ["util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

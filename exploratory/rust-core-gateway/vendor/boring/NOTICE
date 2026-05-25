@@ -1,0 +1,30 @@
+HUAKAI vendors the Cloudflare boring Rust crates inside the MIT-licensed
+core_gateway exploratory workspace.
+
+Upstream source:
+- Repository: https://github.com/cloudflare/boring
+- Locked release package: boring-5.1.0 / boring-sys-5.1.0
+- VCS commit recorded by the crates.io package:
+  3acc9820eb7117f0b36078bf119c81c5ea337e6a
+- Local reference note: /home/codex/refs/boring was at
+  3921f35aa406c4cbff6efca9688f1fc9ead2508f and had no local tag refs; its
+  BoringSSL submodule directory was empty. To preserve the complete release
+  tree, this vendor copy uses the local crates.io cache for boring 5.1.0.
+
+Vendored material:
+- boring/      : Rust bindings for BoringSSL, licensed Apache-2.0.
+- boring-sys/  : low-level BoringSSL FFI crate, licensed MIT for the Rust crate
+  material. Its deps/boringssl subtree keeps the BoringSSL license file shipped
+  in the boring-sys 5.1.0 package.
+- LICENSE      : Apache-2.0 license text copied from upstream boring/LICENSE.
+
+Reason for this local vendor copy:
+HUAKAI needs byte-level ClientHello control for the R-2-B/R-3-A mimicry path.
+The upstream boring 5.1.0 API can build the TLS connector used by HUAKAI, but
+its default ClientHello extension ordering does not match the observed
+CodexCli, KiroCli, or GeminiAdvanced samples. The planned HUAKAI fork will add
+a narrow SslContextBuilder surface for caller-specified extension ordering.
+
+Modification ledger:
+See MODIFICATIONS.md. The first commit that adds this directory is a vendor
+import only; boring/ and boring-sys/ are not patched in R-3-A-fix-1.

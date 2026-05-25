@@ -1,0 +1,16 @@
+# 2026-05-18 F-AUDIT-1-C Mismatch Refund Worker Codex Plan
+
+| Owner directive | "任务 = F-AUDIT-1-C impl: mismatch verdict 自动退款 worker (Phase AUDIT-1 sub 3, 估时 3-4 天)" |
+| Scope | In: Go backend audit mismatch detector, audit refund DLQ event/handler, idempotency table migration 0032, receipt/verify linkage, focused tests. Out: frontend, Rust, vendor/boring, control plane, reference project source, new runtime dependencies, broad billing redesign. |
+| Success criteria | `backend/internal/audit` exposes deterministic mismatch verdicts; mismatch verify enqueues high-lane DLQ refund work; refund handler calls the billing refund boundary once per claim, records completion idempotently, signs a `mismatch_refunded` receipt state, and failures stay retryable through DLQ; requested Go build/test commands pass. |
+| Time estimate | Wall clock in this executor session: 2-4 hours depending on existing billing hook shape; original implementation estimate remains 3-4 days for production hardening. |
+| Blast radius | Backend audit package, gateway receipt verify handler, DLQ event kind validation, one additive migration. A broken change could reject receipt verification, enqueue duplicate refunds, or fail migration on environments with strict DLQ CHECK constraints. |
+| Failure modes | Duplicate refund on repeated enqueue: mitigate with `audit_refund_pending.claim_id PRIMARY KEY` plus in-process idempotency tests. Wrong refund amount: clamp positive delta to original derived cost. DLQ event rejected by CHECK: extend `usage_record_dlq_event_kind_check` in 0032. Receipt signature mismatch after state change: include state/verdict/adjustment refs in canonical payload before signing. Billing interface mismatch: use a narrow audit-local refund interface to avoid broad Settler churn. |
+| Decision points | Owner has already explicitly authorized migration 0032 in the task. Any need to alter auth core, quota enforcement, billing ledger schema beyond the additive pending table/check, or production secrets remains out of scope and would require fresh Owner confirmation. |
+| Pre-execution checklist | 1. Read HUAKAI spec §6 / D-AUDIT-2. 2. Read current receipt formatter/storage/worker. 3. Read billing settler public interface and refund-adjacent voucher path. 4. Read DLQ Store/Service/Retry event-kind behavior. 5. Confirm latest migration number 0031 and add 0032. 6. Implement detector and tests. 7. Implement refund worker/idempotency and tests. 8. Wire verify dependency and response. 9. Run requested build/tests. |
+| Concrete execution order | Add receipt state fields without mutating historical rows; add mismatch detector; add DLQ event construction and refund handler with repository abstraction; add migration; update gateway verify deps and response; add focused audit tests plus gateway verify enqueue test if needed; run gofmt/build/test. |
+
+Notes:
+
+- Clean-room: this lane must read HUAKAI files only. No reference reverse-proxy source is needed or allowed.
+- The existing `billing.Settler` interface has no `Refund` method, so this plan keeps refund as an audit-local narrow interface instead of expanding every existing settler stub unless the implementation proves a shared interface is already present elsewhere.

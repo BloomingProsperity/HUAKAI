@@ -16,7 +16,7 @@ Do **not** use round-table for routine work where one agent is the obvious owner
 
 ## Artifact
 
-A round-table decision is captured in a single file: `docs/decisions/DR-NNN-<slug>.md`, instantiated from [`docs/decisions/_TEMPLATE.md`](decisions/_TEMPLATE.md).
+A round-table decision is captured in a single file: `docs/process/decisions/DR-NNN-<slug>.md`, instantiated from [`docs/process/decisions/_TEMPLATE.md`](process/decisions/_TEMPLATE.md).
 
 `NNN` is a zero-padded sequence (`000`, `001`, …). IDs never reuse, even if a DR is superseded.
 
@@ -64,6 +64,22 @@ If an agent has nothing to add (e.g. the decision has no UI impact and Gemini ha
 
 Steps 3 + 4 can happen in either order or in parallel. There is no required sequence between Codex and Gemini once Claude's view is in.
 
+## Staleness Protocol
+
+A DR's `Context` section can go stale while it sits in `Discussion`. If new evidence, new decisions, or new mining batches change the basis on which agents and the Owner formed their views, the DR's recommendation may no longer match reality.
+
+**Rule:** when a DR has been in `Discussion` state for **more than 7 calendar days**, the Claude PM must:
+
+1. Re-read the DR file.
+2. Re-read all docs referenced in the DR's `Affected docs` field.
+3. Refresh any concrete numbers in the Context section (feature counts, evidence counts, reference counts) to current values.
+4. Append a `## Staleness Refresh` log entry recording the refresh date and what changed (or "no material change").
+5. Notify the Owner that the DR is ready for decision (or that a Conflicts re-synthesis is needed).
+
+A DR may not move to `Decided` if its Context has not been refreshed within the last 7 days.
+
+This rule was introduced 2026-04-28 after the Codex Phase 1 audit found that DR-003 was carrying stale numbers (35 features cited; actual 56) at the moment Owner approved it.
+
 ## Conflict Resolution Rules
 
 When agents disagree, [docs/12 Escalation](12_AGENT_WORKFLOW.md) and the project preservation rules apply, in priority order:
@@ -85,7 +101,7 @@ Cosmetic disagreements (wording, ordering) are not conflicts. Only material disa
 
 Every Decided DR must be propagated. Claude PM is responsible for:
 
-- Updating each affected doc to reference the DR (e.g. `Decided in [DR-001](decisions/DR-001-...md)`).
+- Updating each affected doc to reference the DR (e.g. `Decided in [DR-001](process/decisions/DR-001-...md)`).
 - Updating [10_RISK_REGISTER.md](10_RISK_REGISTER.md) if the decision changes a risk's mitigation.
 - Updating [03_FEATURE_PARITY_MATRIX.md](03_FEATURE_PARITY_MATRIX.md) if the decision changes a disposition.
 - Updating skills under [.agents/skills/](../.agents/skills/) if the decision changes a workflow.

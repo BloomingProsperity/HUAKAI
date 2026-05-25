@@ -1,0 +1,76 @@
+{
+  "version": "0.4",
+  "request_meta": {
+    "request_id": "req_fxt_resp_anthropic_tool_001",
+    "client_protocol": "anthropic_messages",
+    "protocol_family": "anthropic",
+    "model": "claude-sonnet-4-5",
+    "ingress_path": "/v1/messages",
+    "native_passthrough": false
+  },
+  "request_controls": {
+    "tools": [
+      {"name": "lookup_weather", "description": "fixture tool"}
+    ]
+  },
+  "messages": [
+    {"role": "user", "content": [{"type": "text", "text": "weather in osaka"}]}
+  ],
+  "buffered_response": {
+    "id": "msg_fxt_anthropic_001",
+    "model": "claude-sonnet-4-5",
+    "content": [
+      {"type": "text", "text": "calling tool"},
+      {"type": "tool_use", "call_id": "tc_fxt_b2c3d4e5", "name": "lookup_weather", "input": {"city": "Osaka"}}
+    ],
+    "usage": {"input_tokens": 12, "output_tokens": 18, "total_tokens": 30},
+    "stop_reason": "tool_use"
+  },
+  "capability_graph": {
+    "nodes": [
+      {
+        "id": "n_resp_text_001",
+        "kind": "text",
+        "stream_ready": "yes",
+        "text": {"role": "assistant", "block": {"type": "text", "text": "calling tool"}}
+      },
+      {
+        "id": "n_resp_tooluse_001",
+        "kind": "tool_use",
+        "stream_ready": "partial",
+        "tool_use": {
+          "tool_call_id": "tc_fxt_b2c3d4e5",
+          "name": "lookup_weather",
+          "input": {"city": "Osaka"},
+          "status": "complete"
+        }
+      }
+    ],
+    "edges": []
+  },
+  "provider_projection": {
+    "target_vendor": "anthropic",
+    "target_protocol": "anthropic",
+    "capability_results": [
+      {"capability": "text", "node_id": "n_resp_text_001", "verdict": "preserved"},
+      {"capability": "tool_use", "node_id": "n_resp_tooluse_001", "verdict": "preserved"}
+    ],
+    "overall_verdict": "preserved"
+  },
+  "stream_plan": {
+    "mode": "buffered",
+    "event_classes": [],
+    "flush_policy": "per_event",
+    "terminal_required": true,
+    "synthetic_terminal_allowed": true,
+    "fallback_boundary": "after_first_byte_blocked",
+    "mid_stream_fallback_policy": "none"
+  },
+  "accounting": {"usage": {"input_tokens": 12, "output_tokens": 18, "total_tokens": 30}},
+  "policy": {
+    "data_retention": {"value": "unknown", "enforcement": "unknown", "audit_label": "unknown"},
+    "auth": "standard",
+    "audit": {"visibility": "visible", "label": "default"},
+    "redaction": "public"
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "version": "0.4",
+  "request_meta": {
+    "request_id": "req_fxt_reg_litellm27468_001",
+    "client_protocol": "openai_chat",
+    "protocol_family": "openai_chat",
+    "upstream_protocol": "anthropic",
+    "provider": "anthropic",
+    "model": "gpt-4o-mini",
+    "upstream_model": "claude-sonnet-4-5",
+    "ingress_path": "/v1/chat/completions",
+    "native_passthrough": false
+  },
+  "request_controls": {
+    "tools": [
+      {"name": "create_event", "description": "fixture tool with required arguments"}
+    ]
+  },
+  "messages": [
+    {"role": "user", "content": [{"type": "text", "text": "fixture: openai-to-anthropic tool args round trip"}]}
+  ],
+  "capability_graph": {
+    "nodes": [
+      {
+        "id": "n_reg_tool_args_001",
+        "kind": "tool_use",
+        "stream_ready": "partial",
+        "tool_use": {
+          "tool_call_id": "tc_fxt_reg_27468",
+          "original_tool_call_id": "toolu_fxt_upstream_27468",
+          "name": "create_event",
+          "input": {"title": "fixture", "duration_minutes": 30},
+          "status": "complete"
+        },
+        "protocol_loss": [
+          {
+            "field": "tool_use.input",
+            "severity": "info",
+            "reason": "openai-to-anthropic mapper must encode arguments JSON exactly once; double-encoding regression repro guard",
+            "code": "tool_args_encode_once",
+            "capability": "tool_use"
+          }
+        ]
+      }
+    ],
+    "edges": []
+  },
+  "provider_projection": {
+    "target_vendor": "anthropic",
+    "target_protocol": "anthropic",
+    "capability_results": [
+      {"capability": "tool_use", "node_id": "n_reg_tool_args_001", "verdict": "preserved"}
+    ],
+    "overall_verdict": "preserved"
+  },
+  "stream_plan": {
+    "mode": "buffered",
+    "event_classes": [],
+    "flush_policy": "per_event",
+    "terminal_required": true,
+    "synthetic_terminal_allowed": true,
+    "fallback_boundary": "after_first_byte_blocked",
+    "mid_stream_fallback_policy": "none"
+  },
+  "accounting": {},
+  "policy": {
+    "data_retention": {"value": "unknown", "enforcement": "unknown", "audit_label": "unknown"},
+    "auth": "standard",
+    "audit": {"visibility": "visible", "label": "regression_fixture"},
+    "redaction": "public"
+  }
+}
