@@ -11,6 +11,68 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const appendMessage = `-- name: AppendMessage :one
+INSERT INTO hermes_messages (tenant_id, conversation_id, role, content, token_count, completed_at)
+VALUES (
+    $1::bigint,
+    $2::bigint,
+    $3::text,
+    $4::jsonb,
+    $5::integer,
+    $6::timestamptz
+)
+RETURNING id
+`
+
+type AppendMessageParams struct {
+	TenantID       int64              `db:"tenant_id" json:"tenant_id"`
+	ConversationID int64              `db:"conversation_id" json:"conversation_id"`
+	Role           string             `db:"role" json:"role"`
+	Content        []byte             `db:"content" json:"content"`
+	TokenCount     *int32             `db:"token_count" json:"token_count"`
+	CompletedAt    pgtype.Timestamptz `db:"completed_at" json:"completed_at"`
+}
+
+func (q *Queries) AppendMessage(ctx context.Context, arg AppendMessageParams) (int64, error) {
+	row := q.db.QueryRow(ctx, appendMessage,
+		arg.TenantID,
+		arg.ConversationID,
+		arg.Role,
+		arg.Content,
+		arg.TokenCount,
+		arg.CompletedAt,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const createConversation = `-- name: CreateConversation :one
+
+INSERT INTO hermes_conversations (tenant_id, owner_user_id, title)
+VALUES (
+    $1::bigint,
+    $2::bigint,
+    $3::text
+)
+RETURNING id
+`
+
+type CreateConversationParams struct {
+	TenantID    int64   `db:"tenant_id" json:"tenant_id"`
+	OwnerUserID int64   `db:"owner_user_id" json:"owner_user_id"`
+	Title       *string `db:"title" json:"title"`
+}
+
+// Hermes Phase 1 Slice 2 schema gate queries.
+// Scope: conversations, messages, and JWT public key registry.
+func (q *Queries) CreateConversation(ctx context.Context, arg CreateConversationParams) (int64, error) {
+	row := q.db.QueryRow(ctx, createConversation, arg.TenantID, arg.OwnerUserID, arg.Title)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const createProfile = `-- name: CreateProfile :one
 INSERT INTO hermes_api_profiles (tenant_id, owner_user_id, name, profile_kind, api_key_id, pool_group_id)
 VALUES (
@@ -154,6 +216,43 @@ func (q *Queries) GetAPIKeyOwner(ctx context.Context, arg GetAPIKeyOwnerParams) 
 	return user_id, err
 }
 
+const getActiveJWTKeys = `-- name: GetActiveJWTKeys :many
+SELECT kid, alg, public_key_pem, valid_from, valid_until, revoked_at, created_at
+FROM hermes_jwt_keys
+WHERE valid_from <= NOW()
+  AND (valid_until IS NULL OR valid_until > NOW())
+  AND revoked_at IS NULL
+ORDER BY valid_from DESC, kid ASC
+`
+
+func (q *Queries) GetActiveJWTKeys(ctx context.Context) ([]HermesJwtKey, error) {
+	rows, err := q.db.Query(ctx, getActiveJWTKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []HermesJwtKey
+	for rows.Next() {
+		var i HermesJwtKey
+		if err := rows.Scan(
+			&i.Kid,
+			&i.Alg,
+			&i.PublicKeyPem,
+			&i.ValidFrom,
+			&i.ValidUntil,
+			&i.RevokedAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getAuditEventByCorrelation = `-- name: GetAuditEventByCorrelation :many
 SELECT id, ts, tenant_id, actor_user_id, action, sanitized_args, result, correlation_id, request_id
 FROM hermes_audit_events
@@ -195,6 +294,55 @@ func (q *Queries) GetAuditEventByCorrelation(ctx context.Context, arg GetAuditEv
 		return nil, err
 	}
 	return items, nil
+}
+
+const getConversation = `-- name: GetConversation :one
+SELECT id, tenant_id, owner_user_id, title, created_at, updated_at, last_message_at, deleted_at
+FROM hermes_conversations
+WHERE id = $1::bigint
+  AND tenant_id = $2::bigint
+`
+
+type GetConversationParams struct {
+	ID       int64 `db:"id" json:"id"`
+	TenantID int64 `db:"tenant_id" json:"tenant_id"`
+}
+
+func (q *Queries) GetConversation(ctx context.Context, arg GetConversationParams) (HermesConversation, error) {
+	row := q.db.QueryRow(ctx, getConversation, arg.ID, arg.TenantID)
+	var i HermesConversation
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.OwnerUserID,
+		&i.Title,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LastMessageAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const getJWTKeyByKid = `-- name: GetJWTKeyByKid :one
+SELECT kid, alg, public_key_pem, valid_from, valid_until, revoked_at, created_at
+FROM hermes_jwt_keys
+WHERE kid = $1::text
+`
+
+func (q *Queries) GetJWTKeyByKid(ctx context.Context, kid string) (HermesJwtKey, error) {
+	row := q.db.QueryRow(ctx, getJWTKeyByKid, kid)
+	var i HermesJwtKey
+	err := row.Scan(
+		&i.Kid,
+		&i.Alg,
+		&i.PublicKeyPem,
+		&i.ValidFrom,
+		&i.ValidUntil,
+		&i.RevokedAt,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const getProfile = `-- name: GetProfile :one
@@ -310,6 +458,44 @@ func (q *Queries) InsertAuditEvent(ctx context.Context, arg InsertAuditEventPara
 	return i, err
 }
 
+const insertJWTKey = `-- name: InsertJWTKey :one
+INSERT INTO hermes_jwt_keys (kid, alg, public_key_pem, valid_until)
+VALUES (
+    $1::text,
+    $2::text,
+    $3::text,
+    $4::timestamptz
+)
+RETURNING kid, alg, public_key_pem, valid_from, valid_until, revoked_at, created_at
+`
+
+type InsertJWTKeyParams struct {
+	Kid          string             `db:"kid" json:"kid"`
+	Alg          string             `db:"alg" json:"alg"`
+	PublicKeyPem string             `db:"public_key_pem" json:"public_key_pem"`
+	ValidUntil   pgtype.Timestamptz `db:"valid_until" json:"valid_until"`
+}
+
+func (q *Queries) InsertJWTKey(ctx context.Context, arg InsertJWTKeyParams) (HermesJwtKey, error) {
+	row := q.db.QueryRow(ctx, insertJWTKey,
+		arg.Kid,
+		arg.Alg,
+		arg.PublicKeyPem,
+		arg.ValidUntil,
+	)
+	var i HermesJwtKey
+	err := row.Scan(
+		&i.Kid,
+		&i.Alg,
+		&i.PublicKeyPem,
+		&i.ValidFrom,
+		&i.ValidUntil,
+		&i.RevokedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const listAuditEventsByTenant = `-- name: ListAuditEventsByTenant :many
 SELECT id, ts, tenant_id, actor_user_id, action, sanitized_args, result, correlation_id, request_id
 FROM hermes_audit_events
@@ -344,6 +530,117 @@ func (q *Queries) ListAuditEventsByTenant(ctx context.Context, arg ListAuditEven
 			&i.Result,
 			&i.CorrelationID,
 			&i.RequestID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listConversationsByOwner = `-- name: ListConversationsByOwner :many
+SELECT id, tenant_id, owner_user_id, title, created_at, updated_at, last_message_at, deleted_at
+FROM hermes_conversations
+WHERE tenant_id = $1::bigint
+  AND owner_user_id = $2::bigint
+  AND deleted_at IS NULL
+ORDER BY last_message_at DESC NULLS LAST, updated_at DESC, id DESC
+LIMIT $4::integer
+OFFSET $3::integer
+`
+
+type ListConversationsByOwnerParams struct {
+	TenantID    int64 `db:"tenant_id" json:"tenant_id"`
+	OwnerUserID int64 `db:"owner_user_id" json:"owner_user_id"`
+	PageOffset  int32 `db:"page_offset" json:"page_offset"`
+	PageLimit   int32 `db:"page_limit" json:"page_limit"`
+}
+
+func (q *Queries) ListConversationsByOwner(ctx context.Context, arg ListConversationsByOwnerParams) ([]HermesConversation, error) {
+	rows, err := q.db.Query(ctx, listConversationsByOwner,
+		arg.TenantID,
+		arg.OwnerUserID,
+		arg.PageOffset,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []HermesConversation
+	for rows.Next() {
+		var i HermesConversation
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.OwnerUserID,
+			&i.Title,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.LastMessageAt,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMessagesByConversation = `-- name: ListMessagesByConversation :many
+SELECT m.id, m.tenant_id, m.conversation_id, m.role, m.content,
+       m.token_count, m.completed_at, m.created_at
+FROM hermes_messages m
+INNER JOIN hermes_conversations c
+    ON c.tenant_id = m.tenant_id
+    AND c.id = m.conversation_id
+    AND c.deleted_at IS NULL
+WHERE m.tenant_id = $1::bigint
+  AND m.conversation_id = $2::bigint
+  AND c.owner_user_id = $3::bigint
+ORDER BY m.created_at ASC, m.id ASC
+LIMIT $5::integer
+OFFSET $4::integer
+`
+
+type ListMessagesByConversationParams struct {
+	TenantID       int64 `db:"tenant_id" json:"tenant_id"`
+	ConversationID int64 `db:"conversation_id" json:"conversation_id"`
+	OwnerUserID    int64 `db:"owner_user_id" json:"owner_user_id"`
+	PageOffset     int32 `db:"page_offset" json:"page_offset"`
+	PageLimit      int32 `db:"page_limit" json:"page_limit"`
+}
+
+func (q *Queries) ListMessagesByConversation(ctx context.Context, arg ListMessagesByConversationParams) ([]HermesMessage, error) {
+	rows, err := q.db.Query(ctx, listMessagesByConversation,
+		arg.TenantID,
+		arg.ConversationID,
+		arg.OwnerUserID,
+		arg.PageOffset,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []HermesMessage
+	for rows.Next() {
+		var i HermesMessage
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.ConversationID,
+			&i.Role,
+			&i.Content,
+			&i.TokenCount,
+			&i.CompletedAt,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -455,6 +752,93 @@ func (q *Queries) ProfileInUse(ctx context.Context, arg ProfileInUseParams) (boo
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const revokeJWTKey = `-- name: RevokeJWTKey :execrows
+UPDATE hermes_jwt_keys
+SET revoked_at = NOW()
+WHERE kid = $1::text
+  AND revoked_at IS NULL
+RETURNING kid
+`
+
+func (q *Queries) RevokeJWTKey(ctx context.Context, kid string) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeJWTKey, kid)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const softDeleteConversation = `-- name: SoftDeleteConversation :execrows
+UPDATE hermes_conversations
+SET deleted_at = COALESCE(deleted_at, NOW()),
+    updated_at = NOW()
+WHERE id = $1::bigint
+  AND tenant_id = $2::bigint
+`
+
+type SoftDeleteConversationParams struct {
+	ID       int64 `db:"id" json:"id"`
+	TenantID int64 `db:"tenant_id" json:"tenant_id"`
+}
+
+func (q *Queries) SoftDeleteConversation(ctx context.Context, arg SoftDeleteConversationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, softDeleteConversation, arg.ID, arg.TenantID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateConversationLastMessageAt = `-- name: UpdateConversationLastMessageAt :execrows
+UPDATE hermes_conversations
+SET last_message_at = $1::timestamptz,
+    updated_at = NOW()
+WHERE id = $2::bigint
+  AND tenant_id = $3::bigint
+`
+
+type UpdateConversationLastMessageAtParams struct {
+	Ts       pgtype.Timestamptz `db:"ts" json:"ts"`
+	ID       int64              `db:"id" json:"id"`
+	TenantID int64              `db:"tenant_id" json:"tenant_id"`
+}
+
+func (q *Queries) UpdateConversationLastMessageAt(ctx context.Context, arg UpdateConversationLastMessageAtParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateConversationLastMessageAt, arg.Ts, arg.ID, arg.TenantID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateMessageCompleted = `-- name: UpdateMessageCompleted :execrows
+UPDATE hermes_messages
+SET token_count = $1::integer,
+    completed_at = $2::timestamptz
+WHERE id = $3::bigint
+  AND tenant_id = $4::bigint
+`
+
+type UpdateMessageCompletedParams struct {
+	TokenCount  *int32             `db:"token_count" json:"token_count"`
+	CompletedAt pgtype.Timestamptz `db:"completed_at" json:"completed_at"`
+	ID          int64              `db:"id" json:"id"`
+	TenantID    int64              `db:"tenant_id" json:"tenant_id"`
+}
+
+func (q *Queries) UpdateMessageCompleted(ctx context.Context, arg UpdateMessageCompletedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateMessageCompleted,
+		arg.TokenCount,
+		arg.CompletedAt,
+		arg.ID,
+		arg.TenantID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const updateProfile = `-- name: UpdateProfile :one
