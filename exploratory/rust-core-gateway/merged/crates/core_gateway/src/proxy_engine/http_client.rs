@@ -154,6 +154,100 @@ pub fn build_http_client_with_profile(profile: Arc<FingerprintProfile>) -> Gatew
     )
 }
 
+/// W11-F F-1.f (Owner-approved synthesis 2026-05-25): combined-feature builder
+/// that integrates L1 + L2 preflight typed gates into a single async entry
+/// point returning [`GatewayTransport`] (the enum F-1.d.1 added).
+///
+/// Sequencing:
+/// 1. Run L1 (sync) via [`try_build_http_client_with_profile`] — same gate as
+///    today's Boring-only path. L1 failure short-circuits with the same
+///    [`MimicryProductionCanaryError`] surface.
+/// 2. Under `mimicry-http2-fork` feature: run L2 preflight
+///    ([`crate::mimicry::l2_preflight::run_l2_preflight`]). L2 is async
+///    because the runtime check drives the fork adapter via
+///    in-memory `encode_request_exchange`.
+/// 3. L1 + L2 both pass → return `GatewayTransport::Hyper(client)`. F-1.e
+///    will later swap this leaf to `GatewayTransport::ForkH2(...)` when the
+///    h2 fork outbound client lands.
+///
+/// Without `mimicry-http2-fork`: L2 is skipped (no fork to gate); function
+/// returns `GatewayTransport::Hyper(client)` as soon as L1 passes.
+///
+/// Why async + returning GatewayTransport (not GatewayHttpClient)
+/// --------------------------------------------------------------
+/// L2 runtime preflight runs the adapter (async). Returning GatewayTransport
+/// future-proofs the API: F-1.e's `ForkH2` variant can be added without
+/// changing this signature again. Callers that need backward-compat with
+/// the existing sync, hyper-only flow keep using
+/// `try_build_http_client_with_profile` (sync, L1 only) — F-1.f does not
+/// remove that entry point.
+///
+/// Mutation discriminator (CLAUDE.md #14):
+/// - Remove the L2 call inside the `mimicry-http2-fork` feature block →
+///   profiles that L2 would have rejected (e.g., Anthropic without real H2
+///   capture today) pass `try_build_gateway_transport_with_profile` →
+///   the `try_build_gateway_transport_rejects_anthropic_without_h2_capture`
+///   test goes red.
+/// - Treat L2 `Pending` as dispatchable → Gemini-shaped synthetic profile
+///   silently passes → test red.
+/// - Skip L1 short-circuit and only check L2 → Kiro (L1 KnownGap) passes →
+///   `try_build_gateway_transport_propagates_l1_failure_for_kiro` red.
+#[cfg(feature = "mimicry-boring")]
+pub async fn try_build_gateway_transport_with_profile(
+    profile: Arc<FingerprintProfile>,
+) -> Result<super::transport::GatewayTransport, MimicryProductionCanaryError> {
+    // Layer 1: existing sync L1 preflight gate.
+    let hyper_client = try_build_http_client_with_profile(Arc::clone(&profile))?;
+
+    // Layer 2: L2 HTTP/2 preflight (only when the fork feature is enabled).
+    #[cfg(feature = "mimicry-http2-fork")]
+    {
+        use crate::mimicry::l2_preflight::{L2HttpPreflightStatus, run_l2_preflight};
+        let status = run_l2_preflight(&profile).await;
+        match status {
+            L2HttpPreflightStatus::NotRequired | L2HttpPreflightStatus::Passed { .. } => {
+                // L2 passed; F-1.e will swap this to ForkH2 variant.
+                // Pre-F-1.e: still return Hyper so the typed gate fires
+                // without depending on the fork outbound implementation.
+            }
+            L2HttpPreflightStatus::Pending { profile_mode } => {
+                return Err(MimicryProductionCanaryError::KnownGap(format!(
+                    "L2 HTTP/2 preflight Pending for {profile_mode:?}; runtime check did not resolve to Passed/Failed (synthesis §4.3 #6 fail-closed)",
+                )));
+            }
+            L2HttpPreflightStatus::Failed(err) => {
+                return Err(map_l2_error_to_canary(err));
+            }
+        }
+    }
+
+    Ok(super::transport::GatewayTransport::Hyper(hyper_client))
+}
+
+/// W11-F F-1.f: map an [`L2HttpPreflightError`] into the existing canary
+/// error surface so the combined-feature builder uses the same
+/// `MimicryProductionCanaryError` variants as L1. KnownGap / RuntimeMismatch
+/// / AdapterMissing surface as `KnownGap`; BackendUnsupported as
+/// `UnsupportedTemplate`.
+#[cfg(all(feature = "mimicry-boring", feature = "mimicry-http2-fork"))]
+fn map_l2_error_to_canary(
+    err: crate::mimicry::l2_preflight::L2HttpPreflightError,
+) -> MimicryProductionCanaryError {
+    use crate::mimicry::l2_preflight::L2HttpPreflightError as E;
+    match err {
+        E::KnownGap { reason, .. } => MimicryProductionCanaryError::KnownGap(reason),
+        E::BackendUnsupported { reason, .. } => {
+            MimicryProductionCanaryError::UnsupportedTemplate(reason)
+        }
+        E::RuntimeMismatch { reason, .. } => {
+            MimicryProductionCanaryError::KnownGap(format!("L2 runtime mismatch: {reason}"))
+        }
+        E::AdapterMissing { reason, .. } => {
+            MimicryProductionCanaryError::KnownGap(format!("L2 adapter missing: {reason}"))
+        }
+    }
+}
+
 pub fn build_http_client() -> GatewayHttpClient {
     build_http_client_with_connector(build_gateway_connector())
 }
@@ -356,6 +450,101 @@ mod tests {
                 );
             }
             other => panic!("Gemini Pending should land in KnownGap, got {other:?}"),
+        }
+    }
+
+    // ===== W11-F F-1.f tests =====
+
+    /// W11-F F-1.f: combined-feature builder propagates L1 failure. Kiro
+    /// profile is L1 KnownGap today (kiro_cli_known_gap_fields() non-empty).
+    /// `try_build_gateway_transport_with_profile` must surface that as
+    /// `Err(KnownGap)` without ever reaching the L2 gate.
+    ///
+    /// Mutation: skipping the `try_build_http_client_with_profile?` call and
+    /// only running L2 would let Kiro fall to L2; today Kiro lacks H2
+    /// capture too so L2 would also reject, but the error reason would lose
+    /// the L1 "real_upstream_capture" wording → test red on substring
+    /// check.
+    #[cfg(feature = "mimicry-boring")]
+    #[tokio::test]
+    async fn try_build_gateway_transport_propagates_l1_failure_for_kiro() {
+        let profile = load_builtin_profile(BuiltinProfile::KiroCli)
+            .expect("Kiro profile should load");
+        let err = try_build_gateway_transport_with_profile(Arc::new(profile))
+            .await
+            .expect_err("Kiro L1 KnownGap must propagate through F-1.f builder");
+        match err {
+            MimicryProductionCanaryError::KnownGap(reason) => {
+                assert!(
+                    reason.contains("real_upstream_capture") || reason.contains("pending"),
+                    "Kiro L1 reason must be propagated (got: {reason})"
+                );
+            }
+            other => panic!("Kiro should land in KnownGap, got {other:?}"),
+        }
+    }
+
+    /// W11-F F-1.f: combined-feature builder L2 gate fires when fork feature
+    /// is on. Anthropic profile passes L1 (NotRequired baseline) but FAILS
+    /// L2 today because `h2_settings_frame.available=false` (per F-1.a
+    /// status doc). Without the L2 call in the builder, this test would
+    /// return Ok — the discriminator catches a missing L2 gate.
+    ///
+    /// Mutation: deleting the `run_l2_preflight(...)` call lets Anthropic
+    /// pass the combined builder → this test goes red on `expect_err`.
+    #[cfg(all(feature = "mimicry-boring", feature = "mimicry-http2-fork"))]
+    #[tokio::test]
+    async fn try_build_gateway_transport_rejects_anthropic_without_h2_capture() {
+        let profile = load_builtin_profile(BuiltinProfile::AnthropicClaudeCode)
+            .expect("Anthropic profile should load");
+
+        // Sanity baseline: L1 alone passes Anthropic (the existing
+        // try_build_http_client_with_profile returns Ok for Anthropic).
+        // The L2 gate is what closes the bypass for combined-feature build.
+        let l1_only = try_build_http_client_with_profile(Arc::new(profile.clone()));
+        assert!(
+            l1_only.is_ok(),
+            "L1 alone passes Anthropic (baseline before F-1.f added the L2 gate)"
+        );
+
+        let err = try_build_gateway_transport_with_profile(Arc::new(profile))
+            .await
+            .expect_err(
+                "Anthropic must be rejected by L2 preflight today \
+                 (h2_settings_frame.available=false; F-1.g hasn't landed real H2 capture)",
+            );
+        match err {
+            MimicryProductionCanaryError::KnownGap(reason) => {
+                assert!(
+                    reason.contains("h2_settings_frame.available=false")
+                        || reason.contains("no real upstream H2 capture"),
+                    "L2 KnownGap reason must cite missing H2 capture (got: {reason})"
+                );
+            }
+            other => panic!("Anthropic should land in KnownGap from L2, got {other:?}"),
+        }
+    }
+
+    /// W11-F F-1.f: without `mimicry-http2-fork` feature, the L2 gate is
+    /// cfg'd out and `try_build_gateway_transport_with_profile` behaves
+    /// equivalent to `try_build_http_client_with_profile` + wrapping in
+    /// `GatewayTransport::Hyper`. Anthropic passes (L1 NotRequired) and
+    /// the transport is Hyper.
+    ///
+    /// Mutation: accidentally enabling the L2 path under the Boring-only
+    /// build (cfg gate broken) would make this test fail because Anthropic
+    /// L2 today is KnownGap.
+    #[cfg(all(feature = "mimicry-boring", not(feature = "mimicry-http2-fork")))]
+    #[tokio::test]
+    async fn try_build_gateway_transport_passes_anthropic_without_fork_feature() {
+        let profile = load_builtin_profile(BuiltinProfile::AnthropicClaudeCode)
+            .expect("Anthropic profile should load");
+        let transport = try_build_gateway_transport_with_profile(Arc::new(profile))
+            .await
+            .expect("Anthropic must pass without fork feature (L1-only path)");
+        // The variant must be Hyper (only one currently defined).
+        match transport {
+            super::super::transport::GatewayTransport::Hyper(_) => {}
         }
     }
 }

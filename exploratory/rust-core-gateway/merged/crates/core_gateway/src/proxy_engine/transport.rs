@@ -65,6 +65,19 @@ pub enum GatewayTransport {
     Hyper(GatewayHttpClient),
 }
 
+// W11-F F-1.f: Debug required by Result::expect_err in tests that hold a
+// `Result<GatewayTransport, _>`. Hand-rolled because GatewayHttpClient's
+// inner connector (BoringTlsConnector / hyper-rustls HttpsConnector) does
+// not always implement Debug uniformly across features, and we don't want
+// to leak client internals into log/panic output anyway.
+impl std::fmt::Debug for GatewayTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Hyper(_) => f.debug_tuple("GatewayTransport::Hyper").field(&"<client>").finish(),
+        }
+    }
+}
+
 impl GatewayTransport {
     /// Wrap a pre-built hyper-util client. Used by [`super::build_transport`]
     /// and by `ProxyEngine` constructors during the F-1.d.1 backward-compat
