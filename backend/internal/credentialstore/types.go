@@ -11,10 +11,12 @@ import (
 )
 
 const (
-	VendorAnthropic = "anthropic"
-	VendorOpenAI    = "openai"
-	VendorGemini    = "gemini"
-	VendorCopilot   = "copilot"
+	VendorAnthropic   = "anthropic"
+	VendorOpenAI      = "openai"
+	VendorGemini      = "gemini"
+	VendorCopilot     = "copilot"
+	VendorAntigravity = "antigravity"
+	VendorWindsurf    = "windsurf"
 
 	AuthModeAPIKey          = "api_key"
 	AuthModeClaudeAIOAuth   = "claude_ai_oauth"
@@ -31,6 +33,7 @@ const (
 	AuthModeGoogleOne       = "google_one"
 	AuthModeAntigravity     = "antigravity"
 	AuthModeCopilotOAuth    = "copilot_oauth"
+	AuthModeOAuth           = "oauth"
 
 	StateActive              = "active"
 	StateRefreshing          = "refreshing"
@@ -256,7 +259,10 @@ func defaultHandlers() []ModeHandler {
 		handlerSpec{vendor: VendorGemini, authMode: AuthModeCodeAssist, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorGemini, authMode: AuthModeGoogleOne, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorGemini, authMode: AuthModeAntigravity, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
+		handlerSpec{vendor: VendorGemini, authMode: AuthModeOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorCopilot, authMode: AuthModeCopilotOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "github_access_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
+		handlerSpec{vendor: VendorAntigravity, authMode: AuthModeOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
+		handlerSpec{vendor: VendorWindsurf, authMode: AuthModeOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 	}
 }
 

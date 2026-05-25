@@ -23,7 +23,10 @@ func TestDefaultHandlerRegistryCoversRefreshableModes(t *testing.T) {
 		"gemini/code_assist",
 		"gemini/google_one",
 		"gemini/antigravity",
+		"gemini/oauth",
 		"copilot/copilot_oauth",
+		"antigravity/oauth",
+		"windsurf/oauth",
 	}
 	if got := registry.Names(); len(got) != len(want) {
 		t.Fatalf("handler count=%d want %d: %v", len(got), len(want), got)
@@ -64,6 +67,8 @@ func TestRuntimeMaterialMappings(t *testing.T) {
 		{VendorAnthropic, AuthModeBedrock, `{"aws_access_key_id":"ak","aws_secret_access_key":"sec","aws_region":"us-east-1"}`, RuntimeAWSSigV4, "sec"},
 		{VendorOpenAI, AuthModeRefreshToken, `{"access_token":"tok","refresh_token":"rt"}`, RuntimeUpstreamPassthrough, "Bearer tok"},
 		{VendorGemini, AuthModeAntigravity, `{"session_token":"sess"}`, RuntimeSessionToken, "sess"},
+		{VendorAntigravity, AuthModeOAuth, `{"session_token":"ag-sess","refresh_token":"ag-refresh"}`, RuntimeSessionToken, "ag-sess"},
+		{VendorWindsurf, AuthModeOAuth, `{"session_token":"ws-sess"}`, RuntimeSessionToken, "ws-sess"},
 		{VendorCopilot, AuthModeCopilotOAuth, `{"github_access_token":"gh","session_token":"sess","endpoint_api":"https://copilot-proxy.test"}`, RuntimeSessionToken, "sess"},
 	}
 	for _, tc := range cases {

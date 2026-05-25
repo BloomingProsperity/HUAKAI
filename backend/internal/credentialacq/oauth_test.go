@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -276,6 +278,73 @@ func TestDefaultExchangerRegistryIncludesGeminiOAuth(t *testing.T) {
 	payload := string(candidate.Payload)
 	if !strings.Contains(payload, "gemini-session-token") || !strings.Contains(payload, "gemini-refresh-token") {
 		t.Fatalf("candidate payload=%s, want captured session and refresh token material", payload)
+	}
+}
+
+func TestWindsurfCodeiumAuthTokenCandidateValidatesAsCredential(t *testing.T) {
+	candidate, err := NewWindsurfCodeiumAuthTokenCandidate(1, 42, "owner", "codeium-token-from-windsurf")
+	if err != nil {
+		t.Fatalf("NewWindsurfCodeiumAuthTokenCandidate: %v", err)
+	}
+	if candidate.Vendor != "windsurf" || candidate.AuthMode != "oauth" || candidate.ProviderAccountID != 42 {
+		t.Fatalf("candidate target=%s/%s account=%d", candidate.Vendor, candidate.AuthMode, candidate.ProviderAccountID)
+	}
+	if err := NewFinalizer(nil, credentialstore.DefaultHandlerRegistry(), nil, nil).ValidateCandidate(candidate); err != nil {
+		t.Fatalf("ValidateCandidate: %v", err)
+	}
+	payload := string(candidate.Payload)
+	if !strings.Contains(payload, "codeium-token-from-windsurf") || !strings.Contains(payload, "session_token") {
+		t.Fatalf("payload=%s, want Windsurf session token material", payload)
+	}
+
+	_, err = NewWindsurfCodeiumAuthTokenCandidate(1, 42, "owner", " ")
+	if !errors.Is(err, ErrInvalidTokenShape) {
+		t.Fatalf("empty token err=%v want ErrInvalidTokenShape", err)
+	}
+}
+
+func TestAuthorizationCodeExchangeRejectsRefreshOnlyTokenResponse(t *testing.T) {
+	calls := 0
+	exchanger := authorizationCodeOAuthExchanger{
+		client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls++
+			switch calls {
+			case 1:
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"refresh_token":"rt-without-access"}`)),
+				}, nil
+			case 2:
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"access_token":"at-present","refresh_token":"rt-present"}`)),
+				}, nil
+			default:
+				t.Fatalf("unexpected token endpoint call %d", calls)
+				return nil, nil
+			}
+		})},
+	}
+	payload := storedPKCEPayload{
+		CodeVerifier: "verifier",
+		TokenURL:     "https://oauth.example.test/token",
+		ClientID:     "client-id",
+		RedirectURI:  "https://huakai.example.test/callback",
+	}
+
+	_, err := exchanger.exchangeAuthorizationCode(context.Background(), payload, "auth-code")
+	if !errors.Is(err, ErrInvalidTokenShape) {
+		t.Fatalf("refresh-only token err=%v want ErrInvalidTokenShape", err)
+	}
+
+	token, err := exchanger.exchangeAuthorizationCode(context.Background(), payload, "auth-code")
+	if err != nil {
+		t.Fatalf("access+refresh token err=%v", err)
+	}
+	if token.AccessToken != "at-present" || token.RefreshToken != "rt-present" {
+		t.Fatalf("token=%+v, want access and refresh material", token)
 	}
 }
 

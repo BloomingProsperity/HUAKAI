@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -277,6 +278,127 @@ func TestOpenAICodexDeviceCodeAliasCanonicalizesCredentialMode(t *testing.T) {
 	}
 	if err := NewFinalizer(nil, credentialstore.DefaultHandlerRegistry(), nil, nil).ValidateCandidate(candidate); err != nil {
 		t.Fatalf("ValidateCandidate: %v", err)
+	}
+}
+
+func TestOpenAICodexDeviceFlowPollsOpenAIDeviceAuthThenExchangesAuthorizationCode(t *testing.T) {
+	now := time.Date(2026, 5, 25, 8, 20, 0, 0, time.UTC)
+	pollCount := 0
+	var exchangeBody string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/api/accounts/deviceauth/usercode":
+			return jsonHTTPResponse(t, map[string]any{
+				"device_auth_id": "dev-auth-123",
+				"user_code":      "OPENAI-CODE",
+				"interval":       "1",
+			}), nil
+		case "/api/accounts/deviceauth/token":
+			pollCount++
+			if pollCount == 1 {
+				return &http.Response{
+					StatusCode: http.StatusForbidden,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"status":"pending"}`)),
+				}, nil
+			}
+			return jsonHTTPResponse(t, map[string]any{
+				"authorization_code": "oauth-code-from-device",
+				"code_verifier":      "verifier-from-device",
+				"code_challenge":     "challenge-from-device",
+			}), nil
+		case "/oauth/token":
+			raw, _ := io.ReadAll(r.Body)
+			exchangeBody = string(raw)
+			return jsonHTTPResponse(t, map[string]any{
+				"access_token":  "codex-access-from-exchange",
+				"refresh_token": "codex-refresh-from-exchange",
+				"expires_in":    3600,
+			}), nil
+		default:
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(`{}`)), Header: http.Header{}}, nil
+		}
+	})}
+	store := NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now })
+
+	start, err := StartOAuthFlow(context.Background(), store, StartInput{
+		TenantID: 1, ProviderAccountID: 7,
+		Vendor: "openai_codex", AuthMode: "device_code",
+		ActorID: "admin-1", ActorRole: "platform_admin",
+	}, OAuthClientConfig{
+		AuthURL: "https://auth.openai.test/api/accounts/deviceauth/usercode", TokenURL: "https://auth.openai.test/api/accounts/deviceauth/token",
+		ClientID: "operator-client", RedirectURI: "https://auth.openai.com/deviceauth/callback",
+		Scopes: []string{"openid", "email", "profile", "offline_access"},
+		Source: ClientSourceOperatorConfig, HTTPClient: client,
+	})
+	if err != nil {
+		t.Fatalf("StartOAuthFlow: %v", err)
+	}
+	if start.UserCode != "OPENAI-CODE" || start.VerificationURI == "" {
+		t.Fatalf("device display user_code=%q verification=%q", start.UserCode, start.VerificationURI)
+	}
+
+	candidate, err := PollDeviceCodeToken(context.Background(), start.Session, OAuthClientConfig{
+		TokenURL: "https://auth.openai.test/api/accounts/deviceauth/token",
+		ClientID: "operator-client", RedirectURI: "https://auth.openai.com/deviceauth/callback",
+	}, WithDeviceCodeHTTPClient(client), WithDeviceCodeNow(func() time.Time { return now }), WithDeviceCodeSleeper(func(context.Context, time.Duration) error { return nil }))
+	if err != nil {
+		t.Fatalf("PollDeviceCodeToken: %v", err)
+	}
+	if pollCount != 2 {
+		t.Fatalf("pollCount=%d want 2", pollCount)
+	}
+	form, err := url.ParseQuery(exchangeBody)
+	if err != nil {
+		t.Fatalf("ParseQuery exchangeBody=%q: %v", exchangeBody, err)
+	}
+	for key, want := range map[string]string{
+		"grant_type":    "authorization_code",
+		"client_id":     "operator-client",
+		"code":          "oauth-code-from-device",
+		"redirect_uri":  "https://auth.openai.com/deviceauth/callback",
+		"code_verifier": "verifier-from-device",
+	} {
+		if got := form.Get(key); got != want {
+			t.Fatalf("exchange form[%s]=%q want %q; form=%v", key, got, want, form)
+		}
+	}
+	if candidate.Vendor != credentialstore.VendorOpenAI || candidate.AuthMode != credentialstore.AuthModeCodexCLIOAuth {
+		t.Fatalf("candidate mode=%s/%s, want openai/codex_cli_oauth", candidate.Vendor, candidate.AuthMode)
+	}
+	if !strings.Contains(string(candidate.Payload), "codex-refresh-from-exchange") {
+		t.Fatalf("payload=%s, want exchanged refresh token", string(candidate.Payload))
+	}
+}
+
+func TestPostFormJSONRejectsOversizedResponse(t *testing.T) {
+	calls := 0
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		body := `{"access_token":"` + strings.Repeat("a", 100*1024) + `"}`
+		if calls == 1 {
+			body = `{"access_token":"` + strings.Repeat("b", 1100*1024) + `"}`
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	var tooLarge map[string]any
+	_, err := postFormJSON(context.Background(), client, "https://oauth.example.test/token", url.Values{"grant_type": {"authorization_code"}}, &tooLarge)
+	if !errors.Is(err, ErrResponseTooLarge) {
+		t.Fatalf("oversized form response err=%v want ErrResponseTooLarge", err)
+	}
+
+	var accepted map[string]any
+	_, err = postFormJSON(context.Background(), client, "https://oauth.example.test/token", url.Values{"grant_type": {"authorization_code"}}, &accepted)
+	if err != nil {
+		t.Fatalf("100KB form response err=%v", err)
+	}
+	if got := stringField(accepted, "access_token"); len(got) != 100*1024 {
+		t.Fatalf("accepted access token length=%d want %d", len(got), 100*1024)
 	}
 }
 
