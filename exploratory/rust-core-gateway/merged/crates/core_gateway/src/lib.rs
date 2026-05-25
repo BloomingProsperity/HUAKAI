@@ -71,7 +71,6 @@ impl std::fmt::Debug for GatewayState {
 
 impl GatewayState {
     pub fn new(config: StartupConfig) -> Result<Self, GatewayError> {
-        log_route_plan_cache_disabled(config.route_cache_ttl_ms);
         let http_client: GatewayHttpClient = build_http_client();
         let route_client = route_client_from_transport_baseline(&config)?;
         let account_planner = AccountPlanner::new(route_client.clone());
@@ -82,6 +81,27 @@ impl GatewayState {
             attempt_reporter.clone(),
             proxy_timeouts,
         );
+        Self::new_with_components(config, account_planner, attempt_reporter, proxy_engine)
+    }
+
+    #[doc(hidden)]
+    pub fn new_with_proxy_engine(
+        config: StartupConfig,
+        proxy_engine: ProxyEngine,
+    ) -> Result<Self, GatewayError> {
+        let route_client = route_client_from_transport_baseline(&config)?;
+        let account_planner = AccountPlanner::new(route_client.clone());
+        let attempt_reporter = AttemptReporter::spawn(route_client);
+        Self::new_with_components(config, account_planner, attempt_reporter, proxy_engine)
+    }
+
+    fn new_with_components(
+        config: StartupConfig,
+        account_planner: AccountPlanner,
+        attempt_reporter: AttemptReporter,
+        proxy_engine: ProxyEngine,
+    ) -> Result<Self, GatewayError> {
+        log_route_plan_cache_disabled(config.route_cache_ttl_ms);
         let resource_limits = Arc::new(ResourceLimits::new(&config));
         // Arc 包装只读配置快照, 启动后不再变更
         Ok(Self {
@@ -183,6 +203,21 @@ pub fn build_router(config: StartupConfig) -> Result<Router, GatewayError> {
     let _ = metrics::registry();
 
     let state = GatewayState::new(config)?;
+    build_router_from_state(state)
+}
+
+#[doc(hidden)]
+pub fn build_router_with_proxy_engine(
+    config: StartupConfig,
+    proxy_engine: ProxyEngine,
+) -> Result<Router, GatewayError> {
+    let _ = metrics::registry();
+
+    let state = GatewayState::new_with_proxy_engine(config, proxy_engine)?;
+    build_router_from_state(state)
+}
+
+fn build_router_from_state(state: GatewayState) -> Result<Router, GatewayError> {
     let max_body_bytes = state.max_body_bytes();
 
     // drain_guard 必须是业务路由的最外层: 排空时连超大 body 的请求也应直接拿到 503,

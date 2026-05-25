@@ -4,7 +4,6 @@ use axum::body::Body;
 use bytes::Bytes;
 use http::{Response, header::CONTENT_TYPE};
 use http_body_util::BodyExt;
-use hyper::body::Incoming;
 use tokio::{
     sync::{
         mpsc,
@@ -47,14 +46,18 @@ pub(super) struct StreamTapConfig {
     pub(super) max_frame_bytes: usize,
 }
 
-pub(super) fn upstream_response_to_client(
-    response: Response<Incoming>,
+pub(super) fn upstream_response_to_client<B>(
+    response: Response<B>,
     request_id: &RequestId,
     stream_tap: Option<StreamTapConfig>,
     terminal: RelayTerminal,
     in_flight_guard: Option<InFlightRequestGuard>,
     timeouts: ProxyTimeouts,
-) -> Response<Body> {
+) -> Response<Body>
+where
+    B: http_body::Body<Data = Bytes> + Send + Unpin + 'static,
+    B::Error: fmt::Display + Send + Sync + 'static,
+{
     let (mut parts, body) = response.into_parts();
     remove_hop_by_hop_response_headers(&mut parts.headers);
     set_request_id(&mut parts.headers, request_id);

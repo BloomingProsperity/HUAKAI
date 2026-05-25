@@ -2,8 +2,10 @@
 // 职责: 连接 vendor endpoint, 透传请求/响应 body, 并处理取消与 timeout。
 
 use std::{
+    future::Future,
     io,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
@@ -12,6 +14,7 @@ use axum::body::Body;
 use bytes::Bytes;
 use futures_core::Stream;
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Uri, header::CONTENT_LENGTH};
+use http_body_util::{BodyExt, combinators::UnsyncBoxBody};
 use pin_project_lite::pin_project;
 use tokio::{sync::mpsc, task::AbortHandle, time};
 use tracing::warn;
@@ -58,6 +61,36 @@ const GEMINI_API_CLIENT: &str = "x-goog-api-client";
 
 type BodyChunk = Result<Bytes, io::Error>;
 
+#[doc(hidden)]
+pub type GatewayHttpBoxError = Box<dyn std::error::Error + Send + Sync>;
+#[doc(hidden)]
+pub type GatewayHttpResponseBody = UnsyncBoxBody<Bytes, GatewayHttpBoxError>;
+#[doc(hidden)]
+pub type GatewayHttpRequestFuture<'a> = Pin<
+    Box<dyn Future<Output = Result<Response<GatewayHttpResponseBody>, ProxyError>> + Send + 'a>,
+>;
+
+#[doc(hidden)]
+pub trait GatewayHttpRequester: Send + Sync {
+    fn request<'a>(&'a self, request: Request<Body>) -> GatewayHttpRequestFuture<'a>;
+}
+
+impl GatewayHttpRequester for GatewayHttpClient {
+    fn request<'a>(&'a self, request: Request<Body>) -> GatewayHttpRequestFuture<'a> {
+        Box::pin(async move {
+            self.request(request)
+                .await
+                .map(|response| {
+                    response.map(|body| {
+                        body.map_err(|err| -> GatewayHttpBoxError { Box::new(err) })
+                            .boxed_unsync()
+                    })
+                })
+                .map_err(|err| ProxyError::Upstream(err.to_string()))
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProxyTimeouts {
     pub upstream_body_idle_timeout: Option<Duration>,
@@ -90,7 +123,8 @@ fn duration_from_millis(value: u64) -> Option<Duration> {
 
 #[derive(Clone)]
 pub struct ProxyEngine {
-    client: GatewayHttpClient,
+    client: Arc<dyn GatewayHttpRequester>,
+    http_client: GatewayHttpClient,
     stream_observation_sender: Option<mpsc::Sender<StreamObservation>>,
     attempt_reporter: Option<AttemptReporter>,
     timeouts: ProxyTimeouts,
@@ -141,7 +175,8 @@ impl Stream for ReceiverByteStream {
 impl ProxyEngine {
     pub fn new(client: GatewayHttpClient) -> Self {
         Self {
-            client,
+            client: Arc::new(client.clone()),
+            http_client: client,
             stream_observation_sender: None,
             attempt_reporter: None,
             timeouts: ProxyTimeouts::default(),
@@ -150,7 +185,8 @@ impl ProxyEngine {
 
     pub fn new_with_timeouts(client: GatewayHttpClient, timeouts: ProxyTimeouts) -> Self {
         Self {
-            client,
+            client: Arc::new(client.clone()),
+            http_client: client,
             stream_observation_sender: None,
             attempt_reporter: None,
             timeouts,
@@ -162,7 +198,8 @@ impl ProxyEngine {
         attempt_reporter: AttemptReporter,
     ) -> Self {
         Self {
-            client,
+            client: Arc::new(client.clone()),
+            http_client: client,
             stream_observation_sender: None,
             attempt_reporter: Some(attempt_reporter),
             timeouts: ProxyTimeouts::default(),
@@ -175,7 +212,8 @@ impl ProxyEngine {
         timeouts: ProxyTimeouts,
     ) -> Self {
         Self {
-            client,
+            client: Arc::new(client.clone()),
+            http_client: client,
             stream_observation_sender: None,
             attempt_reporter: Some(attempt_reporter),
             timeouts,
@@ -187,7 +225,8 @@ impl ProxyEngine {
         stream_observation_sender: mpsc::Sender<StreamObservation>,
     ) -> Self {
         Self {
-            client,
+            client: Arc::new(client.clone()),
+            http_client: client,
             stream_observation_sender: Some(stream_observation_sender),
             attempt_reporter: None,
             timeouts: ProxyTimeouts::default(),
@@ -200,15 +239,30 @@ impl ProxyEngine {
         attempt_reporter: AttemptReporter,
     ) -> Self {
         Self {
-            client,
+            client: Arc::new(client.clone()),
+            http_client: client,
             stream_observation_sender: Some(stream_observation_sender),
             attempt_reporter: Some(attempt_reporter),
             timeouts: ProxyTimeouts::default(),
         }
     }
 
+    #[doc(hidden)]
+    pub fn new_with_requester_and_timeouts<C>(client: C, timeouts: ProxyTimeouts) -> Self
+    where
+        C: GatewayHttpRequester + 'static,
+    {
+        Self {
+            client: Arc::new(client),
+            http_client: build_http_client(),
+            stream_observation_sender: None,
+            attempt_reporter: None,
+            timeouts,
+        }
+    }
+
     pub fn http_client(&self) -> &GatewayHttpClient {
-        &self.client
+        &self.http_client
     }
 
     pub async fn forward_planned(
@@ -307,7 +361,7 @@ impl ProxyEngine {
             Ok(Ok(response)) => response,
             Ok(Err(err)) => {
                 warn!(error = %err, "upstream request failed");
-                return Err(ProxyError::Upstream(err.to_string()));
+                return Err(err);
             }
             Err(_) => {
                 warn!("upstream response timeout");
