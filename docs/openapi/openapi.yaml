@@ -49,6 +49,8 @@ tags:
     description: Client-facing relay endpoints. F-GW-002 + F-PROTO-002 + F-AUTH-005.
   - name: hermes
     description: Optional Hermes assistant settings, profile management, and runner proxy endpoints.
+  - name: hermes-internal
+    description: Internal Hermes runner bootstrap, JWT refresh, and public-key sync endpoints.
   - name: auth
     description: HUAKAI platform User authentication. F-AUTH-007.
   - name: sessions
@@ -345,6 +347,91 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /internal/runner/bootstrap:
+    post:
+      tags: [hermes-internal]
+      summary: Issue an initial Hermes runner JWT
+      operationId: bootstrapHermesRunnerJWT
+      description: Internal transition endpoint. The caller is authenticated with the legacy Hermes HMAC proof and receives a short-lived EdDSA JWT.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [runner_id]
+              properties:
+                runner_id: { type: string, minLength: 1 }
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                actor_user_id: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Bootstrap JWT.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [token]
+                properties:
+                  token: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /internal/runner/refresh:
+    post:
+      tags: [hermes-internal]
+      summary: Refresh a Hermes runner JWT
+      operationId: refreshHermesRunnerJWT
+      description: Internal endpoint that verifies an existing Hermes JWT and returns a replacement before expiry.
+      security: []
+      responses:
+        '200':
+          description: Refreshed JWT.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [token]
+                properties:
+                  token: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /internal/keys:
+    get:
+      tags: [hermes-internal]
+      summary: List active Hermes JWT public keys
+      operationId: listHermesRunnerJWTKeys
+      description: Internal public-key sync endpoint for Hermes runner local verifier cache.
+      security: []
+      responses:
+        '200':
+          description: Active public keys.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [keys]
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [kid, alg, public_key_pem]
+                      properties:
+                        kid: { type: string }
+                        alg: { type: string, enum: [EdDSA] }
+                        public_key_pem: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/hermes/api-profiles:
