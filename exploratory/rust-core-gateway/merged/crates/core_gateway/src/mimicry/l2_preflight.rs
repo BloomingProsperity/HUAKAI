@@ -247,12 +247,18 @@ pub async fn run_l2_preflight(profile: &FingerprintProfile) -> L2HttpPreflightSt
         }
     };
 
+    // Round 1 Codex P2 fix: profile.http_layer.endpoint is already an
+    // absolute URI ("https://api.anthropic.com/v1/messages" for Anthropic,
+    // "https://chatgpt.com/backend-api/codex/responses" for Codex), so
+    // double-prefixing with `https://{target_host}` would produce malformed
+    // values like "https://chatgpt.comhttps://chatgpt.com/...". Use the
+    // endpoint as-is; `http::Uri` rejects malformed URIs at .body() build
+    // time so any future profile that breaks this invariant would surface
+    // here as an AdapterMissing error rather than silently capturing the
+    // wrong HEADERS.
     let request = match http::Request::builder()
         .method("POST")
-        .uri(format!(
-            "https://{}{}",
-            profile.target_host, profile.http_layer.endpoint
-        ))
+        .uri(profile.http_layer.endpoint.as_str())
         .version(http::Version::HTTP_2)
         .header("user-agent", profile.http_layer.user_agent.as_str())
         .body(())
@@ -276,9 +282,11 @@ pub async fn run_l2_preflight(profile: &FingerprintProfile) -> L2HttpPreflightSt
         }
     };
 
-    // Byte-level check #1: SETTINGS frame ids in wire order match
+    // Byte-level check #1a: SETTINGS frame ids in wire order match
     // profile.h2_settings_frame.raw_order.
-    let captured_settings_ids = parse_settings_ids(&exchange.initial_settings_frame);
+    let captured_settings_pairs = parse_settings_id_value_pairs(&exchange.initial_settings_frame);
+    let captured_settings_ids: Vec<u16> =
+        captured_settings_pairs.iter().map(|(id, _)| *id).collect();
     if captured_settings_ids != profile.h2_settings_frame.raw_order {
         return L2HttpPreflightStatus::Failed(L2HttpPreflightError::RuntimeMismatch {
             profile_mode: profile.mode,
@@ -287,6 +295,33 @@ pub async fn run_l2_preflight(profile: &FingerprintProfile) -> L2HttpPreflightSt
                 profile.h2_settings_frame.raw_order, captured_settings_ids
             ),
         });
+    }
+
+    // Byte-level check #1b (round 1 Codex P1 fix): SETTINGS frame VALUES
+    // must also match profile.h2_settings_frame.values. A profile with the
+    // same id order but a different value (e.g., INITIAL_WINDOW_SIZE 65535
+    // vs 16384) would otherwise pass id-only comparison while sending the
+    // wrong bytes on the wire — defeating the L2 byte-parity gate.
+    for (id, captured_value) in &captured_settings_pairs {
+        match profile.h2_settings_frame.values.get(id) {
+            Some(expected_value) if expected_value == captured_value => {}
+            Some(expected_value) => {
+                return L2HttpPreflightStatus::Failed(L2HttpPreflightError::RuntimeMismatch {
+                    profile_mode: profile.mode,
+                    reason: format!(
+                        "SETTINGS value mismatch for id {id}: profile says {expected_value}, adapter wire says {captured_value}"
+                    ),
+                });
+            }
+            None => {
+                return L2HttpPreflightStatus::Failed(L2HttpPreflightError::RuntimeMismatch {
+                    profile_mode: profile.mode,
+                    reason: format!(
+                        "adapter emitted SETTINGS id {id} that profile.h2_settings_frame.values does not declare"
+                    ),
+                });
+            }
+        }
     }
 
     // Byte-level check #2: HEADERS frame pseudo-header order matches
@@ -314,8 +349,11 @@ pub async fn run_l2_preflight(profile: &FingerprintProfile) -> L2HttpPreflightSt
 // module's runtime test will catch via separate parsers asserting same
 // bytes.
 
+/// Round 1 Codex P1 fix: replaced the id-only parser with id+value pair
+/// extraction. Each SETTINGS entry is 6 bytes: 2-byte id (u16 big-endian)
+/// + 4-byte value (u32 big-endian).
 #[cfg(feature = "mimicry-http2-fork")]
-fn parse_settings_ids(frame: &[u8]) -> Vec<u16> {
+fn parse_settings_id_value_pairs(frame: &[u8]) -> Vec<(u16, u32)> {
     if frame.len() < 9 {
         return Vec::new();
     }
@@ -326,7 +364,12 @@ fn parse_settings_ids(frame: &[u8]) -> Vec<u16> {
     let payload = &frame[9..9 + len];
     payload
         .chunks_exact(6)
-        .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+        .map(|chunk| {
+            (
+                u16::from_be_bytes([chunk[0], chunk[1]]),
+                u32::from_be_bytes([chunk[2], chunk[3], chunk[4], chunk[5]]),
+            )
+        })
         .collect()
 }
 
@@ -712,6 +755,68 @@ mod tests {
             }
             other => panic!(
                 "profile/adapter raw_order disagreement should produce Failed(RuntimeMismatch); got {other:?}"
+            ),
+        }
+    }
+
+    /// W11-F F-1.c round 1 Codex P1 fix discriminator: a profile where
+    /// `h2_settings_frame.values` declares a DIFFERENT value for an id than
+    /// the adapter actually emits on the wire must return
+    /// `Failed(RuntimeMismatch)`. Today's `run_l2_preflight` parses both id
+    /// AND value from the captured SETTINGS payload; an earlier version
+    /// only compared ids and would have falsely Passed this profile.
+    ///
+    /// Construction: set `h2_settings_frame.values` to one value-map and
+    /// `h2_settings_values` (the operational field the adapter passes to
+    /// `apply_settings`) to a DIFFERENT value-map. ids match in raw_order.
+    /// The adapter emits the operational values; preflight compares
+    /// against the capture-side values; they differ → RuntimeMismatch.
+    ///
+    /// Mutation: collapsing `run_l2_preflight` back to id-only comparison
+    /// would let this case pass `Passed`; this test then goes red.
+    #[cfg(feature = "mimicry-http2-fork")]
+    #[tokio::test]
+    async fn runtime_returns_mismatch_when_profile_settings_value_disagrees() {
+        let mut profile = load_builtin_profile(BuiltinProfile::CodexCli).expect("loads");
+        let raw_order = vec![4u16, 1, 6];
+        let expected_values = std::collections::BTreeMap::from([
+            (4u16, 65_535u32),
+            (1, 4_096),
+            (6, 262_144),
+        ]);
+        // Adapter operational values — different from expected.
+        let adapter_values = std::collections::BTreeMap::from([
+            (4u16, 16_384u32),
+            (1, 8_192),
+            (6, 524_288),
+        ]);
+        let pseudo_order = vec![":method".to_owned(), ":path".to_owned()];
+        profile.h2_settings_frame.available = true;
+        profile.h2_settings_frame.raw_order = raw_order.clone();
+        profile.h2_settings_frame.values = expected_values.clone();
+        profile.h2_pseudo_header_capture.available = true;
+        profile.h2_pseudo_header_capture.order = pseudo_order.clone();
+        profile.h2_settings_order = raw_order;
+        profile.h2_settings_values = adapter_values;
+        profile.h2_pseudo_header_order = pseudo_order;
+        profile.tls.alpn_protocols = vec!["h2".to_owned()];
+
+        let status = run_l2_preflight(&profile).await;
+        match status {
+            L2HttpPreflightStatus::Failed(L2HttpPreflightError::RuntimeMismatch {
+                profile_mode,
+                reason,
+            }) => {
+                assert_eq!(profile_mode, profile.mode);
+                assert!(
+                    reason.contains("SETTINGS value mismatch")
+                        || reason.contains("does not declare")
+                        || reason.contains("value mismatch"),
+                    "RuntimeMismatch reason should cite SETTINGS value divergence (got: {reason})"
+                );
+            }
+            other => panic!(
+                "profile/adapter SETTINGS-value disagreement should produce Failed(RuntimeMismatch); got {other:?}"
             ),
         }
     }
