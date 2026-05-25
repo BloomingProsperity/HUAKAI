@@ -1,0 +1,5 @@
+# Direct version pin only; full transitive hash lock deferred to Slice 2
+# production build path. See docs/process/reviews/DEFERRED-hermes-runner-hash-lock.md
+hermes-agent==0.14.0
+fastapi==0.136.3
+uvicorn==0.48.0

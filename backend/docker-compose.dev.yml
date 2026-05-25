@@ -30,6 +30,29 @@ services:
       timeout: 3s
       retries: 30
 
+  hermes-runner:
+    build:
+      context: ./deploy/hermes-runner
+    container_name: huakai-hermes-runner
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      HUAKAI_HERMES_SHARED_SECRET: ${HUAKAI_HERMES_SHARED_SECRET:-}
+      HUAKAI_HERMES_RUNNER_BIND: 0.0.0.0:8801
+    ports:
+      - "8801:8801"
+    volumes:
+      - huakai-hermes-data:/var/lib/huakai/hermes
+    networks:
+      - huakai-dev
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8801/healthz >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
 # Explicit network name avoids the `<project-name>_default` fragility
 # when COMPOSE_PROJECT_NAME / `-p` differs from the default 'backend'.
 networks:
@@ -38,3 +61,4 @@ networks:
 
 volumes:
   huakai-pgdata:
+  huakai-hermes-data:
