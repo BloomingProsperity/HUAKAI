@@ -25,6 +25,7 @@ mod headers;
 mod http_client;
 mod relay;
 pub mod sse_parser;
+mod transport;
 
 pub use endpoint_guard::{EndpointGuardError, validate_vendor_endpoint};
 pub use error::ProxyError;
@@ -34,6 +35,7 @@ pub use http_client::build_http_client_with_profile;
 pub use http_client::try_build_http_client_with_profile;
 pub use http_client::{GatewayHttpClient, GatewayHttpConnector, build_http_client};
 pub use relay::StreamObservation;
+pub use transport::GatewayTransport;
 
 use crate::{
     account_planner::PlannedAttempt,
@@ -96,7 +98,11 @@ fn duration_from_millis(value: u64) -> Option<Duration> {
 
 #[derive(Clone)]
 pub struct ProxyEngine {
-    client: GatewayHttpClient,
+    // W11-F F-1.d.1 (Owner-approved synthesis 2026-05-25): hyper-util client
+    // wrapped behind `GatewayTransport` so F-1.e can plug in a second
+    // transport variant for the MIT http2 fork outbound path without
+    // touching this struct or its call sites. See `proxy_engine/transport.rs`.
+    transport: GatewayTransport,
     stream_observation_sender: Option<mpsc::Sender<StreamObservation>>,
     attempt_reporter: Option<AttemptReporter>,
     timeouts: ProxyTimeouts,
@@ -169,7 +175,7 @@ impl Stream for ReceiverByteStream {
 impl ProxyEngine {
     pub fn new(client: GatewayHttpClient) -> Self {
         Self {
-            client,
+            transport: GatewayTransport::Hyper(client),
             stream_observation_sender: None,
             attempt_reporter: None,
             timeouts: ProxyTimeouts::default(),
@@ -178,7 +184,7 @@ impl ProxyEngine {
 
     pub fn new_with_timeouts(client: GatewayHttpClient, timeouts: ProxyTimeouts) -> Self {
         Self {
-            client,
+            transport: GatewayTransport::Hyper(client),
             stream_observation_sender: None,
             attempt_reporter: None,
             timeouts,
@@ -190,7 +196,7 @@ impl ProxyEngine {
         attempt_reporter: AttemptReporter,
     ) -> Self {
         Self {
-            client,
+            transport: GatewayTransport::Hyper(client),
             stream_observation_sender: None,
             attempt_reporter: Some(attempt_reporter),
             timeouts: ProxyTimeouts::default(),
@@ -203,7 +209,7 @@ impl ProxyEngine {
         timeouts: ProxyTimeouts,
     ) -> Self {
         Self {
-            client,
+            transport: GatewayTransport::Hyper(client),
             stream_observation_sender: None,
             attempt_reporter: Some(attempt_reporter),
             timeouts,
@@ -215,7 +221,7 @@ impl ProxyEngine {
         stream_observation_sender: mpsc::Sender<StreamObservation>,
     ) -> Self {
         Self {
-            client,
+            transport: GatewayTransport::Hyper(client),
             stream_observation_sender: Some(stream_observation_sender),
             attempt_reporter: None,
             timeouts: ProxyTimeouts::default(),
@@ -228,7 +234,7 @@ impl ProxyEngine {
         attempt_reporter: AttemptReporter,
     ) -> Self {
         Self {
-            client,
+            transport: GatewayTransport::Hyper(client),
             stream_observation_sender: Some(stream_observation_sender),
             attempt_reporter: Some(attempt_reporter),
             timeouts: ProxyTimeouts::default(),
@@ -236,7 +242,11 @@ impl ProxyEngine {
     }
 
     pub fn http_client(&self) -> &GatewayHttpClient {
-        &self.client
+        // W11-F F-1.d.1: routed through GatewayTransport::as_hyper which
+        // panics if a non-Hyper variant is ever set. Today only Hyper exists
+        // so this is a no-op pass-through; F-1.e (fork variant) will force
+        // this getter to be migrated or removed.
+        self.transport.as_hyper()
     }
 
     pub async fn forward_planned(
@@ -344,7 +354,7 @@ impl ProxyEngine {
 
         let response = match time::timeout(
             upstream_response_timeout,
-            self.client.request(upstream_request),
+            self.transport.request(upstream_request),
         )
         .await
         {
