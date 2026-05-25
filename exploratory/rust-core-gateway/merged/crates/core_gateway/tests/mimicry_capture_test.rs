@@ -2,10 +2,16 @@
 
 mod common;
 
+#[cfg(feature = "mimicry-openssl")]
 use std::{net::SocketAddr, time::Duration};
 
+#[cfg(not(feature = "mimicry-openssl"))]
+use common::tls_capture::{CaptureError, capture_from_async_read};
+#[cfg(feature = "mimicry-openssl")]
 use common::tls_capture::{CaptureError, spawn_capture_once};
-use tokio::{io::AsyncWriteExt, net::TcpStream};
+use tokio::io::AsyncWriteExt;
+#[cfg(feature = "mimicry-openssl")]
+use tokio::net::TcpStream;
 
 #[tokio::test]
 async fn malformed_tls_truncated_record_body_returns_io_error() {
@@ -138,6 +144,25 @@ async fn malformed_tls_non_client_hello_type_returns_unexpected_handshake_type()
     );
 }
 
+#[cfg(not(feature = "mimicry-openssl"))]
+async fn capture_malformed_tls_bytes(bytes: Vec<u8>) -> CaptureError {
+    let (mut client, mut capture_stream) = tokio::io::duplex(bytes.len().max(1));
+    client
+        .write_all(&bytes)
+        .await
+        .expect("malformed TLS bytes 应能写入 in-memory capture stream");
+    client
+        .shutdown()
+        .await
+        .expect("malformed TLS client 应能关闭 in-memory 写半边");
+
+    match capture_from_async_read(&mut capture_stream).await {
+        Ok(capture) => panic!("畸形 TLS bytes 不应解析成功，实际 capture: {capture:?}"),
+        Err(err) => err,
+    }
+}
+
+#[cfg(feature = "mimicry-openssl")]
 async fn capture_malformed_tls_bytes(bytes: Vec<u8>) -> CaptureError {
     let bind_addr: SocketAddr = "127.0.0.1:0"
         .parse()
