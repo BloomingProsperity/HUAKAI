@@ -3,6 +3,7 @@ package hermes
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"net/http"
@@ -34,9 +35,14 @@ var (
 
 // RunnerConfig 保存 gateway 调 runner 所需的最小配置。secret 只从 env 注入。
 type RunnerConfig struct {
-	RunnerURL    string
-	SharedSecret string
-	HTTPClient   *http.Client
+	RunnerURL      string
+	SharedSecret   string
+	JWTPrivateKey  ed25519.PrivateKey
+	JWTKID         string
+	JWTIssuer      string
+	JWTAudience    string
+	ClientAuthMode string
+	HTTPClient     *http.Client
 }
 
 // ProfileSpec 是创建 Hermes API profile 的 service 输入。

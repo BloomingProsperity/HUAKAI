@@ -7,9 +7,12 @@ from typing import Callable
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from jwt_verify import JWTVerificationError, load_public_key_cache_from_env
+
 
 SERVICE_VERSION = "0.14.0"
 SECRET_ENV = "HUAKAI_HERMES_SHARED_SECRET"
+AUTH_MODE_ENV = "HUAKAI_HERMES_AUTH_MODE"
 HEADER_SIGNATURE = "X-Hermes-Signature"
 HEADER_TIMESTAMP = "X-Hermes-Timestamp"
 HEADER_TENANT = "X-Hermes-Tenant"
@@ -17,6 +20,7 @@ HEADER_USER = "X-Hermes-User"
 FRESHNESS_SECONDS = 5 * 60
 
 app = FastAPI(title="HUAKAI Hermes Runner", version=SERVICE_VERSION)
+JWT_KEYS = load_public_key_cache_from_env()
 
 
 def _unauthorized() -> JSONResponse:
@@ -86,15 +90,44 @@ def _valid_signature(request: Request, body: bytes) -> bool:
     return hmac.compare_digest(signature, expected)
 
 
+def _auth_mode() -> str:
+    mode = os.environ.get(AUTH_MODE_ENV, "hmac").strip().lower()
+    if mode not in {"hmac", "jwt"}:
+        return "hmac"
+    return mode
+
+
+def _valid_jwt(request: Request) -> bool:
+    auth = request.headers.get("Authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return False
+    tenant = request.headers.get(HEADER_TENANT, "").strip()
+    user = request.headers.get(HEADER_USER, "").strip()
+    if not tenant or not user:
+        return False
+    try:
+        claims = JWT_KEYS.verify(auth[7:].strip())
+    except JWTVerificationError:
+        return False
+    if claims.get("sub") != f"{tenant}:{user}":
+        return False
+    request.state.jwt_claims = claims
+    return True
+
+
 @app.middleware("http")
-async def verify_hmac(request: Request, call_next):
+async def verify_auth(request: Request, call_next):
     # healthz 是容器和 compose healthcheck 使用的免签探针。
     if request.method == "GET" and request.url.path == "/healthz":
         return await call_next(request)
 
-    body = await request.body()
-    if not _valid_signature(request, body):
-        return _unauthorized()
+    if _auth_mode() == "jwt":
+        if not _valid_jwt(request):
+            return _unauthorized()
+    else:
+        body = await request.body()
+        if not _valid_signature(request, body):
+            return _unauthorized()
     return await call_next(request)
 
 

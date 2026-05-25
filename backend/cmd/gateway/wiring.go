@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
@@ -55,51 +57,54 @@ import (
 
 // deps is the live dependency tree handlers receive after run() boots.
 type deps struct {
-	cfg                   *Config
-	pgPool                *pgxpool.Pool
-	adminQueries          *admindb.Queries
-	billingQueries        *dbbilling.Queries
-	billingPolicyStore    billing.PolicyStore
-	billingPolicyResolver *billing.PolicyResolver
-	selector              pool.Selector
-	channelHealth         *channelhealth.Service
-	claimGate             billing.ClaimGate
-	settler               billing.Settler
-	replayStore           billing.ReplayStore
-	forwarder             *gateway.StreamForwarder
-	credentialVault       provider.CredentialVault
-	credentialStore       *credentialstore.Store
-	credentialKeys        credentialstore.KeyProvider
-	credentialAcqStore    *credentialacq.PostgresSessionStore
-	credentialExchangers  *credentialacq.ExchangerRegistry
-	emailSettings         *mailinfra.PostgresSettingsStore
-	authEmailSender       gatewayhttp.AuthEmailSender
-	userAuth              *userauth.Service
-	userSessions          *usersession.Service
-	userKeyService        *userkey.Service
-	voucherService        *voucher.Service
-	invitationService     *communityinvitation.Service
-	dispatcher            *gateway.UpstreamDispatcher
-	responseCache         l2cache.Store
-	dlqService            *legacydlq.Service
-	completionBus         *eventbus.Bus
-	auditRefPolicy        *eventbus.AuditRefPolicy
-	inboundAuth           *auth.APIKeyResolver
-	auditLedger           auditledger.Ledger
-	auditSigner           *sign.Signer
-	auditPubkeyRegistry   auditledger.PubkeyRegistry
-	receiptStore          *auditreceipt.PGXReceiptStorage
-	receiptFormatter      *auditreceipt.ReceiptFormatter
-	refundQueue           *auditreceipt.MismatchRefundQueue
-	rateTableSource       billing.RateTableSource
-	modelRegistry         *registry.PostgresRegistry
-	routePlanner          *router.DefaultRouter
-	adminAuth             *admin.AdminResolver
-	adminIssuer           *admin.KeyIssuer
-	adminRevoker          *admin.KeyRevoker
-	billingAuditUpdater   gatewayhttp.AdminBillingSettingsAuditUpdater
-	hermesService         *hermes.Service
-	hermesRunner          *hermes.RunnerClient
+	cfg                      *Config
+	pgPool                   *pgxpool.Pool
+	adminQueries             *admindb.Queries
+	billingQueries           *dbbilling.Queries
+	billingPolicyStore       billing.PolicyStore
+	billingPolicyResolver    *billing.PolicyResolver
+	selector                 pool.Selector
+	channelHealth            *channelhealth.Service
+	claimGate                billing.ClaimGate
+	settler                  billing.Settler
+	replayStore              billing.ReplayStore
+	forwarder                *gateway.StreamForwarder
+	credentialVault          provider.CredentialVault
+	credentialStore          *credentialstore.Store
+	credentialKeys           credentialstore.KeyProvider
+	credentialAcqStore       *credentialacq.PostgresSessionStore
+	credentialExchangers     *credentialacq.ExchangerRegistry
+	emailSettings            *mailinfra.PostgresSettingsStore
+	authEmailSender          gatewayhttp.AuthEmailSender
+	userAuth                 *userauth.Service
+	userSessions             *usersession.Service
+	userKeyService           *userkey.Service
+	voucherService           *voucher.Service
+	invitationService        *communityinvitation.Service
+	dispatcher               *gateway.UpstreamDispatcher
+	responseCache            l2cache.Store
+	dlqService               *legacydlq.Service
+	completionBus            *eventbus.Bus
+	auditRefPolicy           *eventbus.AuditRefPolicy
+	inboundAuth              *auth.APIKeyResolver
+	auditLedger              auditledger.Ledger
+	auditSigner              *sign.Signer
+	auditPubkeyRegistry      auditledger.PubkeyRegistry
+	receiptStore             *auditreceipt.PGXReceiptStorage
+	receiptFormatter         *auditreceipt.ReceiptFormatter
+	refundQueue              *auditreceipt.MismatchRefundQueue
+	rateTableSource          billing.RateTableSource
+	modelRegistry            *registry.PostgresRegistry
+	routePlanner             *router.DefaultRouter
+	adminAuth                *admin.AdminResolver
+	adminIssuer              *admin.KeyIssuer
+	adminRevoker             *admin.KeyRevoker
+	billingAuditUpdater      gatewayhttp.AdminBillingSettingsAuditUpdater
+	hermesService            *hermes.Service
+	hermesRunner             *hermes.RunnerClient
+	hermesKeyStore           *hermes.KeyStore
+	hermesBootstrapIssuer    *hermes.BootstrapIssuer
+	hermesRunnerSharedSecret []byte
 }
 
 type refundReceiptAppender interface {
@@ -231,13 +236,18 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	adminQueries := admindb.New(pgPool)
 	authQueries := dbauth.New(pgPool)
 	billingQueries := dbbilling.New(pgPool)
+	hermesQueries := dbhermes.New(pgPool)
+	hermesKeyStore := hermes.NewKeyStore(hermesQueries)
+	hermesBootstrapIssuer, err := hermes.NewBootstrapIssuerFromEnv(hermesKeyStore)
+	if err != nil {
+		return nil, fmt.Errorf("build hermes bootstrap issuer: %w", err)
+	}
 	hermesRunner, err := hermes.NewRunnerClientFromEnv()
 	if err != nil {
 		return nil, fmt.Errorf("build hermes runner client: %w", err)
 	}
 	var hermesService *hermes.Service
-	if hermesRunner != nil {
-		hermesQueries := dbhermes.New(pgPool)
+	if hermesRunner != nil || hermesBootstrapIssuer != nil {
 		hermesService = hermes.NewServiceWithTx(hermesQueries, pgPool)
 		logger.Info("Hermes runner: configured")
 	} else {
@@ -355,22 +365,25 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 			TransportFactory: buildTransportFactory(cfg, mimicryRegistry),
 			ProxyResolver:    provider.NewPostgresProxyResolver(pgPool),
 		},
-		inboundAuth:         auth.NewAPIKeyResolver(authQueries),
-		auditLedger:         auditLedger,
-		auditSigner:         auditSigner,
-		auditPubkeyRegistry: auditPubkeyRegistry,
-		receiptStore:        receiptStore,
-		receiptFormatter:    receiptFormatter,
-		refundQueue:         refundQueue,
-		rateTableSource:     rateTableSource,
-		modelRegistry:       registry.NewPostgresRegistry(pgPool, nil),
-		routePlanner:        router.NewDefaultRouter(),
-		adminAuth:           admin.NewAdminResolver(adminQueries),
-		adminIssuer:         admin.NewKeyIssuer(pgPool),
-		adminRevoker:        admin.NewKeyRevoker(pgPool),
-		billingAuditUpdater: gatewayhttp.NewAdminBillingSettingsAuditUpdater(pgPool),
-		hermesService:       hermesService,
-		hermesRunner:        hermesRunner,
+		inboundAuth:              auth.NewAPIKeyResolver(authQueries),
+		auditLedger:              auditLedger,
+		auditSigner:              auditSigner,
+		auditPubkeyRegistry:      auditPubkeyRegistry,
+		receiptStore:             receiptStore,
+		receiptFormatter:         receiptFormatter,
+		refundQueue:              refundQueue,
+		rateTableSource:          rateTableSource,
+		modelRegistry:            registry.NewPostgresRegistry(pgPool, nil),
+		routePlanner:             router.NewDefaultRouter(),
+		adminAuth:                admin.NewAdminResolver(adminQueries),
+		adminIssuer:              admin.NewKeyIssuer(pgPool),
+		adminRevoker:             admin.NewKeyRevoker(pgPool),
+		billingAuditUpdater:      gatewayhttp.NewAdminBillingSettingsAuditUpdater(pgPool),
+		hermesService:            hermesService,
+		hermesRunner:             hermesRunner,
+		hermesKeyStore:           hermesKeyStore,
+		hermesBootstrapIssuer:    hermesBootstrapIssuer,
+		hermesRunnerSharedSecret: []byte(strings.TrimSpace(os.Getenv(hermes.RunnerSharedSecretEnv))),
 	}
 	if err := admin.MaybeBootstrap(ctx, pgPool, logger); err != nil {
 		return nil, fmt.Errorf("admin bootstrap: %w", err)
