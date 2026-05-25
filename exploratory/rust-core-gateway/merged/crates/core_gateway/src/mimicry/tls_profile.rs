@@ -222,5 +222,20 @@ pub fn codex_cli_known_gap_fields() -> Vec<TlsFieldGap> {
             current_backend_value: "reproducible public subset only",
             reason: "完整 sigalg 列表当前无法通过公开 API 表达",
         },
+        // W11-F F-2.5 (2026-05-25 real-upstream capture, see
+        // docs/process/release-readiness/W11-F-F2-5-status.md §3-§4 + §7.1):
+        // 即使把上 4 field 的 backend-side 都修齐, codex profile 也无法在 Windows
+        // 上 byte-match 真实 codex CLI 的 ClientHello — 因为 `native-tls` Rust
+        // wrapper 在 Windows 上自动切到 schannel (TLS 1.2 only, 18 ciphers, 7 ext)
+        // 而 template 形状是 Linux 的 native-tls/openssl (TLS 1.3, 30 ciphers,
+        // 11 ext + 22/43/45/51 markers). 单 template 不可能同时 byte-match 这两
+        // 个平台输出. 此 gap 是 fingerprint 设计层的, 不是实现层的; 关掉它需要
+        // 平台拆分 template 或显式声明只 mimic 单一平台 (留 F-3 roadmap).
+        TlsFieldGap {
+            field: "platform_fingerprint_divergence",
+            template_value: "Linux native-tls/openssl: TLS 1.3, 30 ciphers, 11 extensions (incl. 22/43/45/51)",
+            current_backend_value: "Windows real codex CLI (F-2.5 capture): schannel, TLS 1.2 only, 18 ciphers, 7 extensions (no 22/43/45/51)",
+            reason: "native-tls 在不同 OS 上选不同底层 TLS 库 → 同一 template 无法跨平台 byte-match; 证据见 F-2.5 status doc §3-§4",
+        },
     ]
 }
