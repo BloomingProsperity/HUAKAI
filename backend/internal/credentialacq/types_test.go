@@ -87,7 +87,10 @@ func phaseAModePlans() []acqModePlan {
 		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeCodeAssist, Kind: flowKindOAuth, ClientIdentitySource: clientSourcePublicCLI},
 		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeGoogleOne, Kind: flowKindOAuth, ClientIdentitySource: clientSourcePublicCLI},
 		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeAntigravity, Kind: flowKindOAuth, ClientIdentitySource: clientSourcePublicCLI},
+		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeOAuth, Kind: flowKindOAuth, ClientIdentitySource: clientSourceOperatorConfig, ManualFirst: true},
 		{Vendor: credentialstore.VendorCopilot, AuthMode: credentialstore.AuthModeCopilotOAuth, Kind: flowKindOAuth, ClientIdentitySource: clientSourcePublicCLI},
+		{Vendor: credentialstore.VendorAntigravity, AuthMode: credentialstore.AuthModeOAuth, Kind: flowKindOAuth, ClientIdentitySource: clientSourceOperatorConfig, ManualFirst: true},
+		{Vendor: credentialstore.VendorWindsurf, AuthMode: credentialstore.AuthModeOAuth, Kind: flowKindTokenExchange, ClientIdentitySource: clientSourceOperatorConfig, ManualFirst: true},
 	}
 }
 

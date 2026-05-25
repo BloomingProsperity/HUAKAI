@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -15,6 +16,13 @@ import (
 )
 
 const deviceCodeSlowDownStep = 5 * time.Second
+const oauthFormResponseMaxBytes = 1 << 20
+
+const (
+	openAICodexDeviceVerificationURI = "https://auth.openai.com/codex/device"
+	openAICodexDeviceRedirectURI     = "https://auth.openai.com/deviceauth/callback"
+	openAICodexOAuthTokenURL         = "https://auth.openai.com/oauth/token"
+)
 
 type deviceCodeExchanger struct{}
 
@@ -39,7 +47,7 @@ func (openAICodexDeviceCodeExchanger) StartOAuthFlow(ctx context.Context, store 
 	in.Vendor = credentialstore.VendorOpenAI
 	in.AuthMode = credentialstore.AuthModeCodexCLIOAuth
 	in.ClientIdentitySource = ClientSourceOperatorConfig
-	return startDeviceAuthorization(ctx, store, in, cfg, AuthTypeDeviceCode)
+	return startOpenAICodexDeviceAuthorization(ctx, store, in, cfg)
 }
 
 func (openAICodexDeviceCodeExchanger) ExchangeOAuthCode(context.Context, Session, string) (CredentialCandidate, error) {
@@ -111,14 +119,21 @@ func WithDeviceCodeSleeper(sleep func(context.Context, time.Duration) error) Dev
 }
 
 func PollDeviceCodeToken(ctx context.Context, session Session, cfg OAuthClientConfig, opts ...DeviceCodeOption) (CredentialCandidate, error) {
+	if credentialstore.Normalize(session.Vendor) == credentialstore.VendorOpenAI &&
+		credentialstore.Normalize(session.AuthMode) == credentialstore.AuthModeCodexCLIOAuth &&
+		stringFromPayload(session.DeviceCodePayload, "device_auth_id") != "" {
+		return pollOpenAICodexDeviceAuthorizationToken(ctx, session, cfg, opts...)
+	}
 	return pollDeviceAuthorizationToken(ctx, session, cfg, AuthTypeDeviceCode, opts...)
 }
 
 type deviceAuthorizationStartResponse struct {
+	DeviceAuthID           string `json:"device_auth_id"`
 	DeviceCode             string `json:"device_code"`
 	DeviceCodeCamel        string `json:"deviceCode"`
 	UserCode               string `json:"user_code"`
 	UserCodeCamel          string `json:"userCode"`
+	UserCodeAlt            string `json:"usercode"`
 	VerificationURI        string `json:"verification_uri"`
 	VerificationURICamel   string `json:"verificationUri"`
 	VerificationURIAlt     string `json:"verification_url"`
@@ -126,7 +141,111 @@ type deviceAuthorizationStartResponse struct {
 	VerificationCompleteGo string `json:"verificationUriComplete"`
 	ExpiresIn              int    `json:"expires_in"`
 	ExpiresInCamel         int    `json:"expiresIn"`
-	Interval               int    `json:"interval"`
+	Interval               intish `json:"interval"`
+}
+
+type intish int
+
+func (i *intish) UnmarshalJSON(raw []byte) error {
+	var n int
+	if err := json.Unmarshal(raw, &n); err == nil {
+		*i = intish(n)
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return err
+	}
+	_, _ = fmt.Sscanf(strings.TrimSpace(s), "%d", &n)
+	*i = intish(n)
+	return nil
+}
+
+func startOpenAICodexDeviceAuthorization(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig) (OAuthStartResult, error) {
+	if store == nil {
+		return OAuthStartResult{}, errors.New("credentialacq: session store not configured")
+	}
+	client := http.DefaultClient
+	if cfg.HTTPClient != nil {
+		client = cfg.HTTPClient
+	}
+	var response deviceAuthorizationStartResponse
+	if err := postJSON(ctx, client, strings.TrimSpace(cfg.AuthURL), map[string]any{
+		"client_id": strings.TrimSpace(cfg.ClientID),
+	}, &response); err != nil {
+		return OAuthStartResult{}, err
+	}
+	payload, err := normalizeOpenAICodexDeviceStartResponse(response, cfg, store.now().UTC())
+	if err != nil {
+		return OAuthStartResult{}, err
+	}
+	in.Kind = FlowKindOAuth
+	if in.RedirectURI == "" {
+		in.RedirectURI = firstNonEmpty(cfg.RedirectURI, openAICodexDeviceRedirectURI)
+	}
+	if len(in.RequestedScopes) == 0 {
+		in.RequestedScopes = cfg.Scopes
+	}
+	in.RedactedContext = mergeRedactedContext(in.RedactedContext, map[string]any{
+		"auth_type":             string(AuthTypeDeviceCode),
+		"device_user_display":   payload["user_code"],
+		"verification_uri":      payload["verification_uri"],
+		"poll_interval_seconds": payload["interval"],
+		"expires_in_seconds":    payload["expires_in"],
+	})
+	session, err := store.CreateFromStart(ctx, in)
+	if err != nil {
+		return OAuthStartResult{}, err
+	}
+	waiting, err := store.UpdateStatus(ctx, session.ID, StatusWaitingForUser, "", "")
+	if err != nil {
+		return OAuthStartResult{}, err
+	}
+	waiting.AuthType = AuthTypeDeviceCode
+	waiting.DeviceCodePayload = payload
+	if err := store.SetAuthPayload(ctx, waiting.ID, AuthTypeDeviceCode, payload); err != nil {
+		return OAuthStartResult{}, err
+	}
+	return OAuthStartResult{
+		Session: waiting, AuthType: AuthTypeDeviceCode,
+		UserCode:                stringFromPayload(payload, "user_code"),
+		VerificationURI:         stringFromPayload(payload, "verification_uri"),
+		VerificationURIComplete: stringFromPayload(payload, "verification_uri_complete"),
+		PollIntervalSeconds:     intFromPayload(payload, "interval"),
+		ExpiresInSeconds:        intFromPayload(payload, "expires_in"),
+		AuthorizeURL:            firstNonEmpty(stringFromPayload(payload, "verification_uri_complete"), stringFromPayload(payload, "verification_uri")),
+	}, nil
+}
+
+func normalizeOpenAICodexDeviceStartResponse(resp deviceAuthorizationStartResponse, cfg OAuthClientConfig, issuedAt time.Time) (map[string]any, error) {
+	deviceAuthID := firstNonEmpty(resp.DeviceAuthID, resp.DeviceCode, resp.DeviceCodeCamel)
+	userCode := firstNonEmpty(resp.UserCode, resp.UserCodeCamel, resp.UserCodeAlt)
+	if strings.TrimSpace(deviceAuthID) == "" || strings.TrimSpace(userCode) == "" {
+		return nil, fmt.Errorf("%w: openai codex device start response missing required fields", ErrInvalidTokenShape)
+	}
+	expiresIn := firstPositive(resp.ExpiresIn, resp.ExpiresInCamel)
+	if expiresIn == 0 {
+		expiresIn = 900
+	}
+	interval := firstPositive(int(resp.Interval))
+	if interval == 0 {
+		interval = 5
+	}
+	deviceTokenURL := strings.TrimSpace(cfg.TokenURL)
+	return map[string]any{
+		"auth_type":                 string(AuthTypeDeviceCode),
+		"device_auth_id":            strings.TrimSpace(deviceAuthID),
+		"user_code":                 strings.TrimSpace(userCode),
+		"verification_uri":          openAICodexDeviceVerificationURI,
+		"verification_uri_complete": openAICodexDeviceVerificationURI,
+		"expires_in":                expiresIn,
+		"interval":                  interval,
+		"issued_at":                 issuedAt.Format(time.RFC3339Nano),
+		"token_url":                 deviceTokenURL,
+		"oauth_token_url":           resolveOpenAICodexOAuthTokenURL(deviceTokenURL),
+		"client_id":                 strings.TrimSpace(cfg.ClientID),
+		"redirect_uri":              strings.TrimSpace(firstNonEmpty(cfg.RedirectURI, openAICodexDeviceRedirectURI)),
+	}, nil
 }
 
 func startDeviceAuthorization(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig, authType AuthType) (OAuthStartResult, error) {
@@ -197,11 +316,11 @@ func startDeviceAuthorization(ctx context.Context, store *PostgresSessionStore, 
 
 func normalizeDeviceStartResponse(resp deviceAuthorizationStartResponse, tokenURL, clientID string, issuedAt time.Time, authType AuthType) (map[string]any, error) {
 	deviceCode := firstNonEmpty(resp.DeviceCode, resp.DeviceCodeCamel)
-	userCode := firstNonEmpty(resp.UserCode, resp.UserCodeCamel)
+	userCode := firstNonEmpty(resp.UserCode, resp.UserCodeCamel, resp.UserCodeAlt)
 	verificationURI := firstNonEmpty(resp.VerificationURI, resp.VerificationURICamel, resp.VerificationURIAlt)
 	verificationComplete := firstNonEmpty(resp.VerificationComplete, resp.VerificationCompleteGo)
 	expiresIn := firstPositive(resp.ExpiresIn, resp.ExpiresInCamel)
-	interval := firstPositive(resp.Interval)
+	interval := firstPositive(int(resp.Interval))
 	if interval == 0 {
 		interval = 5
 	}
@@ -291,6 +410,107 @@ func pollDeviceAuthorizationToken(ctx context.Context, session Session, cfg OAut
 	}
 }
 
+func pollOpenAICodexDeviceAuthorizationToken(ctx context.Context, session Session, cfg OAuthClientConfig, opts ...DeviceCodeOption) (CredentialCandidate, error) {
+	options := deviceCodeOptions{client: http.DefaultClient, now: time.Now, sleep: sleepDeviceContext}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&options)
+		}
+	}
+	payload := session.DeviceCodePayload
+	if payload == nil {
+		return CredentialCandidate{}, fmt.Errorf("%w: openai codex device payload missing", ErrInvalidTokenShape)
+	}
+	deviceAuthID := stringFromPayload(payload, "device_auth_id")
+	userCode := stringFromPayload(payload, "user_code")
+	deviceTokenURL := firstNonEmpty(cfg.TokenURL, stringFromPayload(payload, "token_url"))
+	clientID := firstNonEmpty(cfg.ClientID, stringFromPayload(payload, "client_id"))
+	if deviceAuthID == "" || userCode == "" || deviceTokenURL == "" || clientID == "" {
+		return CredentialCandidate{}, fmt.Errorf("%w: openai codex device poll fields missing", ErrInvalidTokenShape)
+	}
+	interval := time.Duration(firstPositive(intFromPayload(payload, "interval"), 5)) * time.Second
+	expiresAt := issuedAtFromPayload(payload, options.now()).Add(time.Duration(firstPositive(intFromPayload(payload, "expires_in"), 900)) * time.Second)
+	for {
+		if !options.now().Before(expiresAt) {
+			return CredentialCandidate{}, ErrFlowExpired
+		}
+		var response map[string]any
+		status, err := postJSONStatus(ctx, options.client, deviceTokenURL, map[string]any{
+			"device_auth_id": deviceAuthID,
+			"user_code":      userCode,
+		}, &response)
+		if err != nil {
+			return CredentialCandidate{}, err
+		}
+		pollErr := strings.TrimSpace(firstNonEmpty(stringField(response, "error"), stringField(response, "errorCode")))
+		switch pollErr {
+		case "authorization_pending", "authorizationPending":
+			if err := options.sleep(ctx, interval); err != nil {
+				return CredentialCandidate{}, err
+			}
+			continue
+		case "slow_down", "slowDown":
+			interval += deviceCodeSlowDownStep
+			if err := options.sleep(ctx, interval); err != nil {
+				return CredentialCandidate{}, err
+			}
+			continue
+		case "expired_token", "expiredToken":
+			return CredentialCandidate{}, ErrFlowExpired
+		}
+		if status >= http.StatusOK && status < http.StatusMultipleChoices {
+			if token := firstNonEmpty(stringField(response, "access_token"), stringField(response, "accessToken")); token != "" {
+				raw, err := normalizedTokenPayload(response, token)
+				if err != nil {
+					return CredentialCandidate{}, err
+				}
+				return CredentialCandidate{
+					TenantID: session.TenantID, ProviderAccountID: session.ProviderAccountID,
+					Vendor: session.Vendor, AuthMode: session.AuthMode, Payload: raw, ActorID: session.ActorID,
+				}, nil
+			}
+			authCode := stringField(response, "authorization_code")
+			verifier := stringField(response, "code_verifier")
+			if authCode == "" || verifier == "" {
+				return CredentialCandidate{}, fmt.Errorf("%w: openai codex device token response missing authorization exchange fields", ErrInvalidTokenShape)
+			}
+			raw, err := exchangeOpenAICodexAuthorizationCode(ctx, options.client, payload, cfg, authCode, verifier)
+			if err != nil {
+				return CredentialCandidate{}, err
+			}
+			return CredentialCandidate{
+				TenantID: session.TenantID, ProviderAccountID: session.ProviderAccountID,
+				Vendor: session.Vendor, AuthMode: session.AuthMode, Payload: raw, ActorID: session.ActorID,
+			}, nil
+		}
+		if status != http.StatusForbidden && status != http.StatusNotFound {
+			return CredentialCandidate{}, fmt.Errorf("credentialacq: openai codex device token poll returned status %d", status)
+		}
+		if err := options.sleep(ctx, interval); err != nil {
+			return CredentialCandidate{}, err
+		}
+	}
+}
+
+func exchangeOpenAICodexAuthorizationCode(ctx context.Context, client *http.Client, payload map[string]any, cfg OAuthClientConfig, authCode, verifier string) ([]byte, error) {
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("client_id", firstNonEmpty(cfg.ClientID, stringFromPayload(payload, "client_id")))
+	form.Set("code", strings.TrimSpace(authCode))
+	form.Set("redirect_uri", firstNonEmpty(cfg.RedirectURI, stringFromPayload(payload, "redirect_uri"), openAICodexDeviceRedirectURI))
+	form.Set("code_verifier", strings.TrimSpace(verifier))
+	exchangeURL := firstNonEmpty(stringFromPayload(payload, "oauth_token_url"), resolveOpenAICodexOAuthTokenURL(firstNonEmpty(cfg.TokenURL, stringFromPayload(payload, "token_url"))))
+	var response map[string]any
+	if _, err := postFormJSON(ctx, client, exchangeURL, form, &response); err != nil {
+		return nil, err
+	}
+	token := firstNonEmpty(stringField(response, "access_token"), stringField(response, "accessToken"))
+	if token == "" {
+		return nil, fmt.Errorf("%w: openai codex oauth exchange missing access token", ErrInvalidTokenShape)
+	}
+	return normalizedTokenPayload(response, token)
+}
+
 func postJSON(ctx context.Context, client *http.Client, url string, body map[string]any, out any) error {
 	status, err := postJSONStatus(ctx, client, url, body, out)
 	if err != nil {
@@ -321,6 +541,39 @@ func postJSONStatus(ctx context.Context, client *http.Client, url string, body m
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return resp.StatusCode, err
+	}
+	if len(respBody) > 0 && out != nil {
+		if err := json.Unmarshal(respBody, out); err != nil {
+			return resp.StatusCode, err
+		}
+	}
+	return resp.StatusCode, nil
+}
+
+func postFormJSON(ctx context.Context, client *http.Client, rawURL string, form url.Values, out any) (int, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, oauthFormResponseMaxBytes+1))
+	if err != nil {
+		return resp.StatusCode, err
+	}
+	if len(respBody) > oauthFormResponseMaxBytes {
+		return resp.StatusCode, ErrResponseTooLarge
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return resp.StatusCode, fmt.Errorf("credentialacq: endpoint returned status %d", resp.StatusCode)
 	}
 	if len(respBody) > 0 && out != nil {
 		if err := json.Unmarshal(respBody, out); err != nil {
@@ -410,4 +663,15 @@ func sleepDeviceContext(ctx context.Context, d time.Duration) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+func resolveOpenAICodexOAuthTokenURL(deviceTokenURL string) string {
+	u, err := url.Parse(strings.TrimSpace(deviceTokenURL))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return openAICodexOAuthTokenURL
+	}
+	u.Path = "/oauth/token"
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
 }

@@ -61,6 +61,7 @@ var (
 	ErrFeatureDisabled       = errors.New("credentialacq: feature disabled")
 	ErrSecretInContext       = errors.New("credentialacq: redacted context contains secret-shaped material")
 	ErrInvalidTokenShape     = errors.New("credentialacq: invalid token shape")
+	ErrResponseTooLarge      = errors.New("credentialacq: response too large")
 	ErrOAuthExchangerMissing = errors.New("credentialacq: oauth exchanger missing")
 )
 
@@ -164,7 +165,10 @@ func DefaultModePlans() []ModePlan {
 		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeCodeAssist, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindOAuth}},
 		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeGoogleOne, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindOAuth}},
 		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeAntigravity, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindOAuth, FlowKindTokenExchange}, ManualFirst: true},
+		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeOAuth, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourceOperatorConfig, AllowedHelpers: []FlowKind{FlowKindOAuth, FlowKindTokenExchange}, ManualFirst: true},
 		{Vendor: credentialstore.VendorCopilot, AuthMode: credentialstore.AuthModeCopilotOAuth, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindOAuth, FlowKindJSONImport}},
+		{Vendor: credentialstore.VendorAntigravity, AuthMode: credentialstore.AuthModeOAuth, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourceOperatorConfig, AllowedHelpers: []FlowKind{FlowKindOAuth, FlowKindTokenExchange}, ManualFirst: true},
+		{Vendor: credentialstore.VendorWindsurf, AuthMode: credentialstore.AuthModeOAuth, Kind: FlowKindTokenExchange, ClientIdentitySource: ClientSourceOperatorConfig, AllowedHelpers: []FlowKind{FlowKindTokenExchange, FlowKindPaste}, ManualFirst: true},
 	}
 }
 
