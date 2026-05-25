@@ -166,6 +166,33 @@ fn fixture_exists_when_profile_marks_available() {
             );
         }
 
+        // Round 4 Codex P2 fix: also iterate profile.values keys to make sure
+        // there are no entries that raw_order doesn't list. The adapter
+        // (http2_adapter.rs:97-105) explicitly rejects this case with
+        // "value has no matching order entry" — so without the inverse
+        // check, a profile with raw_order=[1], values={1,2} could satisfy
+        // the raw-order loop above while the runtime would never accept it.
+        // The README §"Cross-check tests" #3 ("fixture values MUST be
+        // superset of profile values") also implies values ⊆ fixture; this
+        // inverse loop enforces the profile-side of that.
+        for &values_id in profile.h2_settings_frame.values.keys() {
+            assert!(
+                profile.h2_settings_frame.raw_order.contains(&values_id),
+                "profile {builtin:?} has SETTINGS id {values_id} in \
+                 h2_settings_frame.values but not in raw_order; the adapter \
+                 will reject this profile with \"value has no matching order \
+                 entry\" at runtime. Either remove the extra value or add \
+                 the id to raw_order."
+            );
+            let key = values_id.to_string();
+            assert!(
+                fixture_values_map.contains_key(&key),
+                "profile {builtin:?} declares value for SETTINGS id \
+                 {values_id} but fixture {path:?} omits it (superset rule \
+                 violated for full profile.values key set)."
+            );
+        }
+
         // Cross-check #2: fixture's h2_pseudo_header_order.order must match
         // profile's h2_pseudo_header_capture.order byte-for-byte. Pseudo-header
         // order is a fingerprintable wire detail — different orderings yield
