@@ -32,6 +32,10 @@ func TestBridgeDoneEventTriggersPersist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareRequest: %v", err)
 	}
+	// Mutation check: if the happy path stops creating a conversation after validation, this fixture loses the gateway event.
+	if !store.createdConversation || len(store.conversations) != 1 {
+		t.Fatalf("created=%v conversations=%d want one conversation for valid new chat", store.createdConversation, len(store.conversations))
+	}
 	var runnerBody map[string]any
 	if err := json.Unmarshal(prepared.Body, &runnerBody); err != nil {
 		t.Fatalf("runner body json: %v", err)
@@ -39,8 +43,16 @@ func TestBridgeDoneEventTriggersPersist(t *testing.T) {
 	if runnerBody["conversation_id"] != float64(1001) || runnerBody["internal_base_url"] != testInternalBaseURL {
 		t.Fatalf("runner body conversation/base=%v/%v want 1001/%s", runnerBody["conversation_id"], runnerBody["internal_base_url"], testInternalBaseURL)
 	}
-	if token, _ := runnerBody["internal_token"].(string); token == "" {
+	token, _ := runnerBody["internal_token"].(string)
+	if token == "" {
 		t.Fatalf("internal_token missing from runner body: %+v", runnerBody)
+	}
+	claims, err := VerifyInternalToken(token, []byte(testInternalSecret), time.Unix(1700000000, 0).UTC())
+	if err != nil {
+		t.Fatalf("VerifyInternalToken: %v", err)
+	}
+	if claims.TenantID != 7 || claims.UserID != 42 || claims.RequestID != "req-done" {
+		t.Fatalf("internal token claims=%+v want tenant 7 user 42 request req-done", claims)
 	}
 
 	rec := httptest.NewRecorder()
@@ -278,6 +290,145 @@ func TestBridgeUsesTenantScopedConversationOwner(t *testing.T) {
 	}
 	if store.getConversationArg.TenantID != 7 || store.getConversationArg.ID != 501 {
 		t.Fatalf("GetConversation arg tenant/id=%d/%d want 7/501", store.getConversationArg.TenantID, store.getConversationArg.ID)
+	}
+}
+
+func TestBridgePrepareRequestConversationIDContract(t *testing.T) {
+	// Regression: conversation_id=0 is a valid new-chat sentinel; only negative ids are bad input.
+	cases := []struct {
+		name      string
+		body      string
+		wantID    int64
+		wantError bool
+	}{
+		{
+			name:   "explicit zero starts new chat",
+			body:   `{"conversation_id":0,"messages":[{"role":"user","content":"hi"}]}`,
+			wantID: 701,
+		},
+		{
+			name:   "omitted starts new chat",
+			body:   `{"messages":[{"role":"user","content":"hi"}]}`,
+			wantID: 702,
+		},
+		{
+			name:      "negative rejects",
+			body:      `{"conversation_id":-1,"messages":[{"role":"user","content":"hi"}]}`,
+			wantError: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newBridgeStore()
+			store.nextConversationID = tc.wantID
+			bridge := mustBridge(t, store)
+
+			prepared, err := bridge.PrepareRequest(context.Background(), Request{
+				TenantID: 7, UserID: 42, RequestID: "req-conversation-contract", Body: []byte(tc.body),
+			})
+			if tc.wantError {
+				if !errors.Is(err, hermes.ErrInvalidInput) {
+					t.Fatalf("PrepareRequest error=%v want ErrInvalidInput", err)
+				}
+				if store.createdConversation || len(store.conversations) != 0 {
+					t.Fatalf("created=%v conversations=%d want no row for negative conversation_id", store.createdConversation, len(store.conversations))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("PrepareRequest: %v", err)
+			}
+			if !prepared.CreatedConversation || prepared.ConversationID != tc.wantID {
+				t.Fatalf("created=%v conversation=%d want new conversation %d", prepared.CreatedConversation, prepared.ConversationID, tc.wantID)
+			}
+			if !store.createdConversation || len(store.conversations) != 1 {
+				t.Fatalf("created=%v conversations=%d want exactly one new row", store.createdConversation, len(store.conversations))
+			}
+			if _, ok := store.conversations[conversationKey{tenantID: 7, id: tc.wantID}]; !ok {
+				t.Fatalf("conversation row %d not created in tenant 7", tc.wantID)
+			}
+			var runnerBody map[string]any
+			if err := json.Unmarshal(prepared.Body, &runnerBody); err != nil {
+				t.Fatalf("runner body json: %v", err)
+			}
+			if runnerBody["conversation_id"] != float64(tc.wantID) {
+				t.Fatalf("runner conversation_id=%v want %d", runnerBody["conversation_id"], tc.wantID)
+			}
+
+			rec := httptest.NewRecorder()
+			err = bridge.Stream(context.Background(), rec, sseResponse(
+				"event: token\n"+
+					"data: {\"delta\":\"ok\"}\n\n"+
+					"event: done\n"+
+					"data: {\"finish_reason\":\"stop\",\"total_tokens\":2}\n\n",
+			), prepared)
+			if err != nil {
+				t.Fatalf("Stream: %v", err)
+			}
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d want 200", rec.Code)
+			}
+			if !strings.HasPrefix(rec.Body.String(), fmt.Sprintf("event: conversation\ndata: {\"id\":%d}\n\n", tc.wantID)) {
+				t.Fatalf("body=%q want gateway conversation event for new chat %d", rec.Body.String(), tc.wantID)
+			}
+			if len(store.appended) != 1 || store.appended[0].ConversationID != tc.wantID {
+				t.Fatalf("persisted=%+v want one assistant message on conversation %d", store.appended, tc.wantID)
+			}
+		})
+	}
+}
+
+func TestBridgePrepareRequestRejectsInvalidChatPayloadBeforeCreate(t *testing.T) {
+	// Regression guarded: invalid chat inputs must be rejected before CreateConversation, or user history gets polluted.
+	cases := []struct {
+		name      string
+		requestID string
+		body      string
+	}{
+		{
+			name:      "empty messages",
+			requestID: "req-empty-messages",
+			body:      `{"messages":[]}`,
+		},
+		{
+			name:      "negative conversation id",
+			requestID: "req-negative-conversation",
+			body:      `{"conversation_id":-1,"messages":[{"role":"user","content":"hi"}]}`,
+		},
+		{
+			name:      "pipe in request id",
+			requestID: "abc|def",
+			body:      `{"messages":[{"role":"user","content":"hi"}]}`,
+		},
+		{
+			name:      "missing role",
+			requestID: "req-missing-role",
+			body:      `{"messages":[{"content":"hi"}]}`,
+		},
+		{
+			name:      "blank content",
+			requestID: "req-blank-content",
+			body:      `{"messages":[{"role":"user","content":"   "}]}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newBridgeStore()
+			bridge := mustBridge(t, store)
+
+			_, err := bridge.PrepareRequest(context.Background(), Request{
+				TenantID: 7, UserID: 42, RequestID: tc.requestID, Body: []byte(tc.body),
+			})
+			if !errors.Is(err, hermes.ErrInvalidInput) {
+				t.Fatalf("PrepareRequest error=%v want ErrInvalidInput", err)
+			}
+			// Mutation check: move validation after CreateConversation or treat negative conversation_id as absent, and this row-count assertion fails.
+			if store.createdConversation || len(store.conversations) != 0 {
+				t.Fatalf("created=%v conversations=%d want no row for invalid payload", store.createdConversation, len(store.conversations))
+			}
+		})
 	}
 }
 
