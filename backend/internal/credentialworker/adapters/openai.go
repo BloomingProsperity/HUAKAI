@@ -171,9 +171,16 @@ func postTokenWithRetry(ctx context.Context, client *http.Client, endpoint, cont
 
 type tokenHTTPError struct {
 	status int
+	body   string
 }
 
 func (e tokenHTTPError) Error() string {
+	// ANT-3: 把上游响应体一并暴露,让上层 credentialworker.ClassifyRefreshError
+	// 通过子串匹配 (例如 invalid_grant) 正确分类为 auth_expired,而不是
+	// 仅看到 "status 401" 落到 temporary。Body 截到 1KB 防日志膨胀。
+	if e.body != "" {
+		return fmt.Sprintf("oauth token endpoint returned status %d: %s", e.status, e.body)
+	}
 	return fmt.Sprintf("oauth token endpoint returned status %d", e.status)
 }
 
@@ -190,8 +197,8 @@ func postTokenOnce(ctx context.Context, client *http.Client, endpoint, contentTy
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
-		return tokenResponse{}, tokenHTTPError{status: resp.StatusCode}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return tokenResponse{}, tokenHTTPError{status: resp.StatusCode, body: strings.TrimSpace(string(body))}
 	}
 	var out tokenResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
