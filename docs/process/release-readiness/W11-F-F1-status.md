@@ -602,9 +602,9 @@ carry a `_field_sources` block citing:
 | Profile | (a) artifact path | (b) CLI version | (c) timestamp | (d) capture method | Verdict |
 |---|---|---|---|---|---|
 | `anthropic-claude-code.json` | ⚠ `_field_sources` added by §12-anthropic-cc-fields slice (this commit): ALPN + h2_settings cite `captures/h2-server-1779775310.jsonl` (committed); TLS portion `/tmp/fingerprint-data/anthropic-tls/*` recorded as lost, pending full re-capture | ⚠ ALPN/h2 cites `claude --version 2.1.112` (real CC CLI); original TLS run's CLI version unrecoverable | ✅ `collected_at: 2026-05-06T10:37:23Z` for TLS; ALPN capture is 2026-05-26T06:01:50Z UTC | ⚠ ALPN/h2 method explicit (h2_capture_server.py + subprocess env override); TLS method lost with the artifact | **WEAK Gate 1** (partial — TLS portion can only escape lost-artifact status via full re-capture; ALPN/h2 portion meets Gate 1 fully). Flipped FAIL → WEAK by §12-anthropic-cc-fields (this commit), per §12.7 mutation rule, citing `captures/h2-server-1779775310.jsonl`. |
-| `codex-cli.json` | ⚠ `/tmp/fingerprint-data/codex-tls/clienthello-template.json + ja3-hashes.txt + ja4-hashes.txt + metadata.json` — **path is ephemeral**, not in repo, not re-resolvable | ⚠ implied via `user_agent: "codex_cli_rs/0.128.0 ..."` (SDK string, not capture-time CLI version assertion) | ✅ `collected_at: 2026-05-14T06:56:31Z` | ⚠ "source-analysis" cited for http_layer/auth_layer; TLS capture method implicit (likely `fingerprint-collector` Go tool, not stated) | **WEAK Gate 1** (provenance present but ephemeral path; promotion drift exists, see §12.3) |
-| `gemini-advanced.json` | ⚠ `/tmp/fingerprint-data/gemini-tls/*` + `gemini-http-capture.jsonl` + `gemini-model-request-detail.txt` — **paths ephemeral**, not in repo | ⚠ implied via `user_agent: "GeminiCLI/0.41.2/gemini-3.1-pro-preview ..."` | ✅ `collected_at: 2026-05-14T07:20:19Z` | ✅ explicit `mitmproxy 解密流量` for auth/http; ⚠ TLS method implicit | **WEAK Gate 1** (auth/http method explicit; TLS path ephemeral) |
-| `kiro-cli.json` | ⚠ `/tmp/fingerprint-data/kiro-tls/*` + `kiro-http-capture.jsonl` + `kiro-model-request-detail.txt` — **paths ephemeral** | ⚠ implied via `user_agent: "aws-sdk-rust/1.3.15 ... app/AmazonQ-For-CLI"` | ✅ `collected_at: 2026-05-14T06:57:12Z` | ✅ explicit `mitmproxy 解密流量` for auth/http; ⚠ TLS method implicit | **WEAK Gate 1** (same shape as gemini) |
+| `codex-cli.json` | ⚠ `/tmp/fingerprint-data/codex-tls/*` paths now explicitly marked SUPERSEDED in `_field_sources` by §12-method-tags slice (this commit); awaiting full re-capture per §13 | ✅ explicit "Driving client: codex_cli_rs/0.128.0" in `_field_sources.tls` (was previously only implied via user_agent) | ✅ `collected_at: 2026-05-14T06:56:31Z` | ✅ explicit "tools/fingerprint-collector/cmd (Go libpcap/npcap passive ClientHello tool)" for TLS; explicit "source-analysis docs/research/..." for http/auth layers | **WEAK Gate 1** (method tags now explicit + paths SUPERSEDED-tagged per §12-method-tags; artifacts still lost; promotion to PASS gated on §13 full re-capture). Plus pre-existing ja3 drift in `_pending-backfill/` per §12.3 §12.6 (Owner 2026-05-26: 重抓). |
+| `gemini-advanced.json` | ⚠ `/tmp/fingerprint-data/gemini-*` paths now SUPERSEDED-tagged in `_field_sources` by §12-method-tags slice (this commit) | ✅ explicit "Driving client: GeminiCLI/0.41.2/gemini-3.1-pro-preview (Node.js TLS stack)" in `_field_sources.tls` | ✅ `collected_at: 2026-05-14T07:20:19Z` | ✅ explicit "tools/fingerprint-collector/cmd" for TLS; explicit "mitmproxy@<lost>" for http/auth layers | **WEAK Gate 1** (method tags landed; awaits §13 for PASS) |
+| `kiro-cli.json` | ⚠ `/tmp/fingerprint-data/kiro-*` paths now SUPERSEDED-tagged by §12-method-tags slice (this commit) | ✅ explicit "Driving client: aws-sdk-rust/1.3.15 + AmazonQ-For-CLI" in `_field_sources.tls` | ✅ `collected_at: 2026-05-14T06:57:12Z` | ✅ explicit "tools/fingerprint-collector/cmd" for TLS; explicit "mitmproxy@<lost>" for http/auth layers | **WEAK Gate 1** (method tags landed; awaits §13 for PASS) |
 
 ### 12.3 Pre-existing issue surfaced by audit — pending backfill drift
 
@@ -673,13 +673,22 @@ also commit the artifact (or a sanitized derivative) under
    from the backfill. The next full re-capture run (per slice 4) will
    produce a fresh codex profile that supersedes both. Until then,
    §12.3 caveat stands: codex_cli mimicry dispatch is potentially stale.
-3. **§12-method-tags**: add explicit capture-method tags to codex /
-   gemini / kiro `_field_sources`. Owner decision 2026-05-26 (slice 4):
-   since all 3 will be re-captured anyway, this slice's scope simplifies
-   to "add `superseded by planned full re-capture` marker plus the
-   existing best-effort method description, no archaeology on lost TLS
-   tool versions". Still a separate slice for tight scope. Cosmetic but
-   required for Gate 1 (d).
+3. **§12-method-tags**: **LANDED THIS COMMIT.** All 3 production
+   profiles (codex / gemini / kiro) `_field_sources` blocks updated:
+   - Explicit TLS capture method now cited: `tools/fingerprint-collector/cmd`
+     (Go libpcap/npcap passive ClientHello tool) for all 3.
+   - Explicit http/auth-layer capture method: `mitmproxy@<version pinned
+     to capture-time install; lost with artifacts>` where applicable,
+     `source-analysis` where applicable (codex-cli http/auth fields are
+     source-derived, not wire-captured).
+   - Driving client (CLI/app version) now explicit in `_field_sources.tls`
+     rather than only implied via `user_agent`.
+   - `/tmp/fingerprint-data/...` paths each marked `SUPERSEDED by planned
+     full re-capture per W11-F-F1-status.md §12.6 slice 4` per Owner
+     2026-05-26 decision (全部重抓计划).
+   §12.2 verdicts retained as WEAK; promotion to PASS requires §13
+   full re-capture with artifacts committed under
+   `tools/fingerprint-collector/captures/<vendor>-<ts>.<ext>`.
 4. **§12-captures-relocation**: **Owner decision 2026-05-26: 全部重抓计划**
    — don't search for the old `/tmp/fingerprint-data/*` artifacts. Path
    strings in current `_field_sources` are to be marked `superseded by

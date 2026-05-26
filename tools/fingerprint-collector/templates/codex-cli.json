@@ -1,10 +1,10 @@
 {
   "_comment": "真实回填模板；JSON 不支持注释，字段来源见 _field_sources。",
   "_field_sources": {
-    "tls": "capture: /tmp/fingerprint-data/codex-tls/clienthello-template.json, ja3-hashes.txt, ja4-hashes.txt, metadata.json",
-    "http_layer": "source-analysis: docs/research/2026-05-14-codex-cli-request-signature-codex.md",
-    "auth_layer": "source-analysis: docs/research/2026-05-14-codex-cli-request-signature-codex.md",
-    "target_host": "source-analysis endpoint host; TLS capture target_host was no-sni.vercel-infra.com"
+    "tls": "capture: original 2026-05-14 run via tools/fingerprint-collector/cmd (Go libpcap/npcap passive ClientHello tool, ja3/ja4 derived from raw ClientHello bytes). Original artifact files: /tmp/fingerprint-data/codex-tls/{clienthello-template.json, ja3-hashes.txt, ja4-hashes.txt, metadata.json} — SUPERSEDED by planned full re-capture per W11-F-F1-status.md §12.6 slice 4 (Owner 2026-05-26: 全部重抓计划). Driving client: codex_cli_rs/0.128.0. See also _pending-backfill/openai_codex-real-20260519T055201Z.json for the Owner-flagged ja3 drift recapture (per §12.6 Owner decision 2026-05-26: 重抓; not promoted, awaits §13-full-recapture).",
+    "http_layer": "source-analysis: docs/research/2026-05-14-codex-cli-request-signature-codex.md (no wire capture; HTTP-layer fields derived from reading Codex CLI source code, not on-wire observation).",
+    "auth_layer": "source-analysis: docs/research/2026-05-14-codex-cli-request-signature-codex.md (same source as http_layer; auth pattern inferred from CLI source).",
+    "target_host": "source-analysis: endpoint host taken from CLI source; the passive TLS capture's filter target_host was actually no-sni.vercel-infra.com (Vercel edge with no SNI restriction)."
   },
   "mode_name": "openai_codex_cli",
   "collected_at": "2026-05-14T06:56:31Z",

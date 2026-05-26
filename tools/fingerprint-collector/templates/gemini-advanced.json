@@ -1,10 +1,10 @@
 {
   "_comment": "真实回填模板；Gemini CLI 数据来自 Owner 自己账号 mitmproxy 解密流量和被动 TLS 抓包，真实 token/project/user_prompt_id 已脱敏。",
   "_field_sources": {
-    "tls": "capture: /tmp/fingerprint-data/gemini-tls/clienthello-template.json, ja3-hashes.txt, ja4-hashes.txt, metadata.json",
-    "tls_variants": "capture: /tmp/fingerprint-data/gemini-tls/ja3-hashes.txt and ja4-hashes.txt; sample 4 is model-api ht ALPN variant, samples 1/2/3/5/6 are auxiliary 00 variant",
-    "http_layer": "capture: /tmp/fingerprint-data/gemini-http-capture.jsonl and /tmp/fingerprint-data/gemini-model-request-detail.txt",
-    "auth_layer": "capture: Owner 自己账号 mitmproxy 解密流量；真实 Google OAuth token 已脱敏"
+    "tls": "capture: original 2026-05-14 run via tools/fingerprint-collector/cmd (Go libpcap/npcap passive ClientHello tool). Original artifact files: /tmp/fingerprint-data/gemini-tls/{clienthello-template.json, ja3-hashes.txt, ja4-hashes.txt, metadata.json} — SUPERSEDED by planned full re-capture per W11-F-F1-status.md §12.6 slice 4 (Owner 2026-05-26: 全部重抓计划). Driving client: GeminiCLI/0.41.2/gemini-3.1-pro-preview (Node.js TLS stack).",
+    "tls_variants": "capture: same passive ClientHello run as tls above; multi-sample derivation. Sample 4 is the model-api ht-ALPN variant (advertises h2 + http/1.1); samples 1/2/3/5/6 are auxiliary-endpoint variants with no ALPN extension advertised. Original /tmp artifact paths SUPERSEDED per §12.6 slice 4.",
+    "http_layer": "capture: original 2026-05-14 mitmproxy decrypted traffic via Owner's account. Original artifact files: /tmp/fingerprint-data/gemini-http-capture.jsonl + /tmp/fingerprint-data/gemini-model-request-detail.txt — SUPERSEDED by planned full re-capture per §12.6 slice 4.",
+    "auth_layer": "capture: original 2026-05-14 Owner-account mitmproxy decrypted traffic (real Google OAuth token redacted at capture time). Tool: mitmproxy@<version pinned to capture-time install; lost with artifacts>. SUPERSEDED by planned full re-capture per §12.6 slice 4."
   },
   "mode_name": "gemini_advanced",
   "collected_at": "2026-05-14T07:20:19Z",

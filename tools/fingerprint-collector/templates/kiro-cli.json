@@ -1,9 +1,9 @@
 {
   "_comment": "真实回填模板；JSON 不支持注释，字段来源见 _field_sources。",
   "_field_sources": {
-    "tls": "capture: /tmp/fingerprint-data/kiro-tls/clienthello-template.json, ja3-hashes.txt, ja4-hashes.txt, metadata.json",
-    "http_layer": "capture: /tmp/fingerprint-data/kiro-http-capture.jsonl and /tmp/fingerprint-data/kiro-model-request-detail.txt",
-    "auth_layer": "capture: Owner 自己账号 mitmproxy 解密流量；真实 token 已脱敏"
+    "tls": "capture: original 2026-05-14 run via tools/fingerprint-collector/cmd (Go libpcap/npcap passive ClientHello tool). Original artifact files: /tmp/fingerprint-data/kiro-tls/{clienthello-template.json, ja3-hashes.txt, ja4-hashes.txt, metadata.json} — SUPERSEDED by planned full re-capture per W11-F-F1-status.md §12.6 slice 4 (Owner 2026-05-26: 全部重抓计划). Driving client: aws-sdk-rust/1.3.15 + AmazonQ-For-CLI.",
+    "http_layer": "capture: original 2026-05-14 mitmproxy decrypted traffic via Owner's account. Original artifact files: /tmp/fingerprint-data/kiro-http-capture.jsonl + /tmp/fingerprint-data/kiro-model-request-detail.txt — SUPERSEDED by planned full re-capture per §12.6 slice 4.",
+    "auth_layer": "capture: original 2026-05-14 Owner-account mitmproxy decrypted traffic (real Builder ID token redacted at capture time). Tool: mitmproxy@<version pinned to capture-time install; lost with artifacts>. SUPERSEDED by planned full re-capture per §12.6 slice 4."
   },
   "mode_name": "kiro_cli",
   "collected_at": "2026-05-14T06:57:12Z",
