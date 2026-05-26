@@ -38,12 +38,15 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      HUAKAI_HERMES_SHARED_SECRET: ${HUAKAI_HERMES_SHARED_SECRET:-}
+      HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH: /run/secrets/hermes/dev_jwt_public.pem
+      HUAKAI_HERMES_JWT_KID: ${HUAKAI_HERMES_JWT_KID:-dev-local}
+      HUAKAI_HERMES_INTERNAL_SHARED_SECRET: ${HUAKAI_HERMES_INTERNAL_SHARED_SECRET:-dev-internal-runner-secret-change-me}
       HUAKAI_HERMES_RUNNER_BIND: 0.0.0.0:8801
     ports:
       - "8801:8801"
     volumes:
       - huakai-hermes-data:/var/lib/huakai/hermes
+      - ./deploy/hermes-runner/dev-keys/dev_jwt_public.pem:/run/secrets/hermes/dev_jwt_public.pem:ro
     networks:
       - huakai-dev
     healthcheck:

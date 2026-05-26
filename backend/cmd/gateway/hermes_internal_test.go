@@ -27,7 +27,7 @@ import (
 )
 
 func TestInternalRunnerBootstrapRequiresHMACAndIssuesVerifiableJWT(t *testing.T) {
-	// 回归守护：bootstrap 必须先验证 transition HMAC caller proof，不能裸发 runner JWT。
+	// Regression: bootstrap must authenticate the internal caller before issuing a gateway-signed runner JWT.
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
@@ -48,10 +48,21 @@ func TestInternalRunnerBootstrapRequiresHMACAndIssuesVerifiableJWT(t *testing.T)
 	mountRoutes(r, d, zap.NewNop())
 
 	body := []byte(`{"runner_id":"runner-7","tenant_id":7,"actor_user_id":42}`)
-	unauthorized := httptest.NewRecorder()
-	r.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodPost, "/internal/runner/bootstrap", bytes.NewReader(body)))
-	if unauthorized.Code != http.StatusUnauthorized {
-		t.Fatalf("unsigned status=%d body=%s want 401", unauthorized.Code, unauthorized.Body.String())
+
+	unsigned := httptest.NewRequest(http.MethodPost, "/internal/runner/bootstrap", bytes.NewReader(body))
+	setRunnerIdentityHeaders(unsigned, "7", "42")
+	unsignedRec := httptest.NewRecorder()
+	r.ServeHTTP(unsignedRec, unsigned)
+	if unsignedRec.Code != http.StatusUnauthorized {
+		t.Fatalf("unsigned status=%d body=%s want 401", unsignedRec.Code, unsignedRec.Body.String())
+	}
+
+	wrong := httptest.NewRequest(http.MethodPost, "/internal/runner/bootstrap", bytes.NewReader(body))
+	signInternalRunnerRequest(wrong, body, "wrong-secret", time.Now().UTC(), "7", "42")
+	wrongRec := httptest.NewRecorder()
+	r.ServeHTTP(wrongRec, wrong)
+	if wrongRec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong HMAC status=%d body=%s want 401", wrongRec.Code, wrongRec.Body.String())
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/internal/runner/bootstrap", bytes.NewReader(body))
@@ -72,7 +83,7 @@ func TestInternalRunnerBootstrapRequiresHMACAndIssuesVerifiableJWT(t *testing.T)
 }
 
 func TestInternalRunnerBootstrapRequiresPositiveSignedAuditIdentity(t *testing.T) {
-	// 回归守护：不能用 body tenant/user 补洞；签名 header 身份缺失或为 0 时不得签发 JWT。
+	// Regression: body tenant/user must not backfill audit identity; missing or zero internal headers cannot issue JWT.
 	d, auditStore, _, _ := newHermesInternalTestDeps(t)
 	r := chi.NewRouter()
 	mountRoutes(r, d, zap.NewNop())
@@ -90,8 +101,7 @@ func TestInternalRunnerBootstrapRequiresPositiveSignedAuditIdentity(t *testing.T
 	}
 
 	missingTenant := httptest.NewRequest(http.MethodPost, "/internal/runner/bootstrap", bytes.NewReader(bodyWithIDs))
-	signInternalRunnerRequest(missingTenant, bodyWithIDs, "runner-secret", time.Now().UTC(), "7", "42")
-	missingTenant.Header.Del(hermes.HeaderTenant)
+	signInternalRunnerRequest(missingTenant, bodyWithIDs, "runner-secret", time.Now().UTC(), "", "42")
 	missingRec := httptest.NewRecorder()
 	r.ServeHTTP(missingRec, missingTenant)
 	if missingRec.Code != http.StatusUnauthorized {
@@ -119,7 +129,7 @@ func TestInternalRunnerBootstrapRequiresPositiveSignedAuditIdentity(t *testing.T
 }
 
 func TestInternalRunnerRefreshRequiresPositiveSignedAuditIdentity(t *testing.T) {
-	// 回归守护：refresh 的审计身份必须来自已签名 header，不能由可省略 body 字段决定是否审计。
+	// Regression: refresh audit identity must come from internal headers, not optional body fields.
 	d, auditStore, _, now := newHermesInternalTestDeps(t)
 	issuedAt := *now
 	token, err := d.hermesBootstrapIssuer.IssueBootstrapJWT(context.Background(), "runner-7")
@@ -131,6 +141,29 @@ func TestInternalRunnerRefreshRequiresPositiveSignedAuditIdentity(t *testing.T) 
 	mountRoutes(r, d, zap.NewNop())
 
 	bodyWithIDs := []byte(`{"token":"` + token + `","tenant_id":7,"actor_user_id":42}`)
+
+	unsigned := httptest.NewRequest(http.MethodPost, "/internal/runner/refresh", bytes.NewReader(bodyWithIDs))
+	setRunnerIdentityHeaders(unsigned, "7", "42")
+	unsignedRec := httptest.NewRecorder()
+	r.ServeHTTP(unsignedRec, unsigned)
+	if unsignedRec.Code != http.StatusUnauthorized {
+		t.Fatalf("unsigned refresh status=%d body=%s want 401", unsignedRec.Code, unsignedRec.Body.String())
+	}
+	if len(auditStore.auditArgs) != 0 {
+		t.Fatalf("audit rows after unsigned refresh=%d want 0", len(auditStore.auditArgs))
+	}
+
+	wrong := httptest.NewRequest(http.MethodPost, "/internal/runner/refresh", bytes.NewReader(bodyWithIDs))
+	signInternalRunnerRequest(wrong, bodyWithIDs, "wrong-secret", time.Now().UTC(), "7", "42")
+	wrongRec := httptest.NewRecorder()
+	r.ServeHTTP(wrongRec, wrong)
+	if wrongRec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong HMAC refresh status=%d body=%s want 401", wrongRec.Code, wrongRec.Body.String())
+	}
+	if len(auditStore.auditArgs) != 0 {
+		t.Fatalf("audit rows after wrong-HMAC refresh=%d want 0", len(auditStore.auditArgs))
+	}
+
 	zeroTenant := httptest.NewRequest(http.MethodPost, "/internal/runner/refresh", bytes.NewReader(bodyWithIDs))
 	signInternalRunnerRequest(zeroTenant, bodyWithIDs, "runner-secret", time.Now().UTC(), "0", "42")
 	zeroRec := httptest.NewRecorder()
@@ -143,8 +176,7 @@ func TestInternalRunnerRefreshRequiresPositiveSignedAuditIdentity(t *testing.T) 
 	}
 
 	missingTenant := httptest.NewRequest(http.MethodPost, "/internal/runner/refresh", bytes.NewReader(bodyWithIDs))
-	signInternalRunnerRequest(missingTenant, bodyWithIDs, "runner-secret", time.Now().UTC(), "7", "42")
-	missingTenant.Header.Del(hermes.HeaderTenant)
+	signInternalRunnerRequest(missingTenant, bodyWithIDs, "runner-secret", time.Now().UTC(), "", "42")
 	missingRec := httptest.NewRecorder()
 	r.ServeHTTP(missingRec, missingTenant)
 	if missingRec.Code != http.StatusUnauthorized {
@@ -171,9 +203,48 @@ func TestInternalRunnerRefreshRequiresPositiveSignedAuditIdentity(t *testing.T) 
 	}
 }
 
+func TestInternalRunnerKeysRequiresHMACProof(t *testing.T) {
+	// Regression: active JWT public keys must not be readable by callers that can only spoof internal headers.
+	d, _, _, _ := newHermesInternalTestDeps(t)
+	r := chi.NewRouter()
+	mountRoutes(r, d, zap.NewNop())
+
+	unsigned := httptest.NewRequest(http.MethodGet, "/internal/keys", nil)
+	setRunnerIdentityHeaders(unsigned, "7", "42")
+	unsignedRec := httptest.NewRecorder()
+	r.ServeHTTP(unsignedRec, unsigned)
+	if unsignedRec.Code != http.StatusUnauthorized {
+		t.Fatalf("unsigned keys status=%d body=%s want 401", unsignedRec.Code, unsignedRec.Body.String())
+	}
+
+	wrong := httptest.NewRequest(http.MethodGet, "/internal/keys", nil)
+	signInternalRunnerRequest(wrong, nil, "wrong-secret", time.Now().UTC(), "7", "42")
+	wrongRec := httptest.NewRecorder()
+	r.ServeHTTP(wrongRec, wrong)
+	if wrongRec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong HMAC keys status=%d body=%s want 401", wrongRec.Code, wrongRec.Body.String())
+	}
+
+	tampered := httptest.NewRequest(http.MethodGet, "/internal/keys", nil)
+	signInternalRunnerRequest(tampered, nil, "runner-secret", time.Now().UTC(), "7", "42")
+	tampered.Header.Set(hermes.HeaderTenant, "8")
+	tamperedRec := httptest.NewRecorder()
+	r.ServeHTTP(tamperedRec, tampered)
+	if tamperedRec.Code != http.StatusUnauthorized {
+		t.Fatalf("tampered tenant keys status=%d body=%s want 401", tamperedRec.Code, tamperedRec.Body.String())
+	}
+
+	valid := httptest.NewRequest(http.MethodGet, "/internal/keys", nil)
+	signInternalRunnerRequest(valid, nil, "runner-secret", time.Now().UTC(), "7", "42")
+	validRec := httptest.NewRecorder()
+	r.ServeHTTP(validRec, valid)
+	if validRec.Code != http.StatusOK {
+		t.Fatalf("valid HMAC keys status=%d body=%s want 200", validRec.Code, validRec.Body.String())
+	}
+}
+
 func TestBuildHermesChatBridgeRequiresDedicatedInternalTokenSecret(t *testing.T) {
 	// Regression: /chat must fail closed when the runner shared secret exists but the bridge token secret is absent.
-	t.Setenv(hermes.RunnerSharedSecretEnv, "runner-shared-secret")
 	t.Setenv(hermeschat.InternalTokenSecretEnv, "")
 
 	bridge, err := buildHermesChatBridge(hermes.NewService(&hermesAuditStoreSpy{}), nil)
@@ -213,6 +284,15 @@ func signInternalRunnerRequest(req *http.Request, body []byte, secret string, no
 	req.Header.Set(hermes.HeaderSignature, hex.EncodeToString(mac.Sum(nil)))
 }
 
+func setRunnerIdentityHeaders(req *http.Request, tenant, user string) {
+	if tenant != "" {
+		req.Header.Set(hermes.HeaderTenant, tenant)
+	}
+	if user != "" {
+		req.Header.Set(hermes.HeaderUser, user)
+	}
+}
+
 func extractJSONToken(t *testing.T, body string) string {
 	t.Helper()
 	const marker = `"token":"`
@@ -245,8 +325,9 @@ func newHermesInternalTestDeps(t *testing.T) (*deps, *hermesAuditStoreSpy, ed255
 			KeyStore:   keyStore,
 			Now:        func() time.Time { return now },
 		},
-		hermesRunnerSharedSecret: []byte("runner-secret"),
 		hermesService:            hermes.NewService(auditStore),
+		hermesKeyStore:           keyStore,
+		hermesRunnerSharedSecret: []byte("runner-secret"),
 	}
 	return d, auditStore, publicKey, &now
 }

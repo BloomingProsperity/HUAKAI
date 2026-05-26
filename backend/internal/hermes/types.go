@@ -35,16 +35,14 @@ var (
 	ErrRunnerFailure     = errors.New("hermes: runner request failed")
 )
 
-// RunnerConfig 保存 gateway 调 runner 所需的最小配置。secret 只从 env 注入。
+// RunnerConfig 保存 gateway 调 runner 所需的最小 JWT 配置。
 type RunnerConfig struct {
-	RunnerURL      string
-	SharedSecret   string
-	JWTPrivateKey  ed25519.PrivateKey
-	JWTKID         string
-	JWTIssuer      string
-	JWTAudience    string
-	ClientAuthMode string
-	HTTPClient     *http.Client
+	RunnerURL     string
+	JWTPrivateKey ed25519.PrivateKey
+	JWTKID        string
+	JWTIssuer     string
+	JWTAudience   string
+	HTTPClient    *http.Client
 }
 
 // ProfileSpec 是创建 Hermes API profile 的 service 输入。

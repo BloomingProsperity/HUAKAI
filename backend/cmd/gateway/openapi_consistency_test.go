@@ -11,6 +11,8 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -31,9 +33,14 @@ func buildTestRouter(t *testing.T) chi.Router {
 	t.Helper()
 	r := chi.NewRouter()
 	logger := zap.NewNop()
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("build Hermes test key: %v", err)
+	}
 	hermesRunner, err := hermes.NewRunnerClient(hermes.RunnerConfig{
-		RunnerURL:    "http://runner.local",
-		SharedSecret: "test-secret",
+		RunnerURL:     "http://runner.local",
+		JWTPrivateKey: privateKey,
+		JWTKID:        "kid-test",
 	})
 	if err != nil {
 		t.Fatalf("build Hermes test runner: %v", err)

@@ -1,3 +1,6 @@
+import asyncio
+import hashlib
+import hmac
 import os
 from pathlib import Path
 import subprocess
@@ -66,25 +69,44 @@ class MainAuthTests(unittest.TestCase):
         cross_user = _request(token, "7", "43")
         self.assertFalse(main._valid_jwt(cross_user))
 
-    def test_entrypoint_jwt_mode_fails_before_uvicorn_without_key_material(self):
+    def test_middleware_rejects_legacy_hmac_only_request(self):
+        old_secret = os.environ.get("HUAKAI_HERMES_SHARED_SECRET")
+        old_mode = os.environ.get("HUAKAI_HERMES_AUTH_MODE")
+        os.environ["HUAKAI_HERMES_SHARED_SECRET"] = "runner-secret"
+        os.environ["HUAKAI_HERMES_AUTH_MODE"] = "hmac"
+        try:
+            request = _legacy_hmac_request("runner-secret")
+
+            async def call_next(_request):
+                return "called-next"
+
+            response = asyncio.run(main.verify_auth(request, call_next))
+        finally:
+            _restore_env("HUAKAI_HERMES_SHARED_SECRET", old_secret)
+            _restore_env("HUAKAI_HERMES_AUTH_MODE", old_mode)
+
+        self.assertIsInstance(response, _FakeJSONResponse)
+        self.assertEqual(response.kwargs["status_code"], 401)
+
+    def test_entrypoint_fails_before_uvicorn_without_jwt_key_material_even_with_legacy_hmac_secret(self):
         with tempfile.TemporaryDirectory() as tempdir:
             fake_bin = Path(tempdir) / "bin"
             fake_bin.mkdir()
             _write_fake_uvicorn(fake_bin)
             env = _entrypoint_env(fake_bin)
-            env["HUAKAI_HERMES_AUTH_MODE"] = "jwt"
+            env["HUAKAI_HERMES_SHARED_SECRET"] = "runner-secret"
 
             result = _run_entrypoint(env)
 
         self.assertEqual(result.returncode, 1)
         self.assertIn(
-            "HUAKAI_HERMES_AUTH_MODE=jwt requires HUAKAI_HERMES_JWT_PUBLIC_KEYS_DIR "
-            "or both HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH and HUAKAI_HERMES_JWT_KID",
+            "HUAKAI_HERMES_JWT_PUBLIC_KEYS_DIR or both "
+            "HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH and HUAKAI_HERMES_JWT_KID",
             result.stderr,
         )
         self.assertNotIn("uvicorn-started", result.stdout)
 
-    def test_entrypoint_jwt_mode_accepts_single_public_key_path_and_kid(self):
+    def test_entrypoint_accepts_single_public_key_path_and_kid(self):
         with tempfile.TemporaryDirectory() as tempdir:
             temp = Path(tempdir)
             fake_bin = temp / "bin"
@@ -95,7 +117,6 @@ class MainAuthTests(unittest.TestCase):
             env = _entrypoint_env(fake_bin)
             env.update(
                 {
-                    "HUAKAI_HERMES_AUTH_MODE": "jwt",
                     "HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH": str(key_path),
                     "HUAKAI_HERMES_JWT_KID": "kid-a",
                 }
@@ -106,7 +127,7 @@ class MainAuthTests(unittest.TestCase):
         self.assertEqual(result.returncode, 42)
         self.assertIn("uvicorn-started main:app --host 0.0.0.0 --port 8801", result.stdout)
 
-    def test_entrypoint_jwt_mode_accepts_public_keys_directory(self):
+    def test_entrypoint_accepts_public_keys_directory(self):
         with tempfile.TemporaryDirectory() as tempdir:
             temp = Path(tempdir)
             fake_bin = temp / "bin"
@@ -118,7 +139,6 @@ class MainAuthTests(unittest.TestCase):
             env = _entrypoint_env(fake_bin)
             env.update(
                 {
-                    "HUAKAI_HERMES_AUTH_MODE": "jwt",
                     "HUAKAI_HERMES_JWT_PUBLIC_KEYS_DIR": str(keys_dir),
                 }
             )
@@ -138,6 +158,44 @@ def _request(token, tenant, user):
         },
         state=types.SimpleNamespace(),
     )
+
+
+def _legacy_hmac_request(secret):
+    payload_body = b'{"messages":[]}'
+    timestamp = str(int(time.time()))
+    path = "/chat"
+    tenant = "7"
+    user = "42"
+    canonical = "\n".join([timestamp, "POST", path, "", tenant, user]).encode("utf-8") + b"\n" + payload_body
+    signature = hmac.new(secret.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
+
+    class Request:
+        method = "POST"
+        headers = {
+            "X-Hermes-Signature": signature,
+            "X-Hermes-Timestamp": timestamp,
+            main.HEADER_TENANT: tenant,
+            main.HEADER_USER: user,
+        }
+        scope = {"query_string": b""}
+        state = types.SimpleNamespace()
+
+        class URL:
+            path = "/chat"
+
+        url = URL()
+
+        async def body(self):
+            return payload_body
+
+    return Request()
+
+
+def _restore_env(name, old_value):
+    if old_value is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = old_value
 
 
 def _entrypoint_env(fake_bin):

@@ -244,6 +244,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, fmt.Errorf("build hermes bootstrap issuer: %w", err)
 	}
+	hermesRunnerSharedSecret, err := loadHermesInternalSharedSecret()
+	if err != nil {
+		return nil, err
+	}
 	hermesRunner, err := hermes.NewRunnerClientFromEnv()
 	if err != nil {
 		return nil, fmt.Errorf("build hermes runner client: %w", err)
@@ -393,7 +397,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		hermesChatBridge:         hermesChatBridge,
 		hermesKeyStore:           hermesKeyStore,
 		hermesBootstrapIssuer:    hermesBootstrapIssuer,
-		hermesRunnerSharedSecret: []byte(strings.TrimSpace(os.Getenv(hermes.RunnerSharedSecretEnv))),
+		hermesRunnerSharedSecret: hermesRunnerSharedSecret,
 	}
 	if err := admin.MaybeBootstrap(ctx, pgPool, logger); err != nil {
 		return nil, fmt.Errorf("admin bootstrap: %w", err)
@@ -473,6 +477,14 @@ func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.
 		return nil, fmt.Errorf("build hermes chat bridge: %w", err)
 	}
 	return bridge, nil
+}
+
+func loadHermesInternalSharedSecret() ([]byte, error) {
+	secret := strings.TrimSpace(os.Getenv(hermes.RunnerInternalSharedSecretEnv))
+	if secret == "" {
+		return nil, fmt.Errorf("%w: %s is required for Hermes internal routes", hermes.ErrMisconfigured, hermes.RunnerInternalSharedSecretEnv)
+	}
+	return []byte(secret), nil
 }
 
 func buildAuditRefPolicy(cfg *runtimeconfig.EventBusConfig) *eventbus.AuditRefPolicy {
