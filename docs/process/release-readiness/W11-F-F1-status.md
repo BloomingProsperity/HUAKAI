@@ -430,3 +430,138 @@ the current profile set.
    in flight, the W11-F epic effectively reduces to "F-2 TLS mimicry +
    F-1 dormant h2 infrastructure". Recommend Owner / plan trio re-confirm
    the W11-F scope.
+
+## 11. W11-F F-1 dormancy gates (Owner-approved 2026-05-26 post codex consult)
+
+Source: parallel codex consult, prompt + reply preserved at
+`docs/process/plans/2026-05-26-w11f-f1-scope-decision-codex-consult.md`.
+Both Claude and Codex independently recommended option A (accept dormant);
+Codex's stricter version added 5 explicit dormancy gates. Owner approved
+all 5 on 2026-05-26 ("是的").
+
+These 5 gates **replace** F-1 epic Released criterion §5 #4 and define the
+discipline required to ever activate the h2 fork outbound code.
+
+### Gate 1 — Profile provenance is reproducible
+
+Every vendor profile JSON under `tools/fingerprint-collector/templates/`
+**must** carry a `_field_sources` block pointing to:
+
+- The real first-party capture artifact path (jsonl or pcap-derived
+  clienthello template).
+- The driving CLI / desktop app version (e.g. `claude --version 2.1.112`).
+- Capture timestamp (UTC).
+- Capture method (`h2_capture_server.py` + env-override subprocess /
+  passive npcap / mitmproxy + addon / etc.).
+
+A profile lacking any of those four pieces fails Gate 1. Codex per-commit
+review must flag HIGH and block any profile that lands without complete
+`_field_sources`.
+
+### Gate 2 — Tests assert exact per-profile ALPN behavior
+
+`crates/core_gateway/tests/mimicry_http2_fixture_test.rs` (and any peer
+test covering the L1 ALPN preflight) **must** assert each profile's exact
+ALPN observation, covering ALL three observed patterns:
+
+- `alpn_protocols: ["http/1.1"]` only (e.g. `anthropic-claude-code`)
+- `alpn_protocols: []` (no ALPN extension advertised) (e.g. `openai_codex_cli`, `kiro_cli`)
+- `alpn_protocols: ["h2", "http/1.1"]` advertised but server picks h1.1
+  (e.g. `gemini_advanced`)
+
+The test for each profile must FAIL if the profile's ALPN is silently
+changed without a new capture citation. Mutation discriminator: removing
+any per-profile assertion or replacing it with `assert!(alpn.is_some())`
+must turn the test red.
+
+### Gate 3 — h2 outbound is hard-unreachable without a captured h2 profile
+
+This is the structural gate codified in `AGENTS.md` §"Dormant h2 outbound
+infrastructure gate". The HUAKAI production code path **must not** reach
+`http2_adapter::drive_request<T>`, the h2 branch of
+`try_build_gateway_transport_with_profile`, or F-1.e implementations
+unless ALL of:
+
+- The active profile has `h2_settings.available=true`, AND
+- That profile's `h2_settings` fields trace via `_field_sources` to a real
+  first-party CLI capture (jsonl or fixture), AND
+- The capture's `alpn_negotiated` is `h2` (not `null`, not `http/1.1`).
+
+No profile currently meets these conditions. The dormant code therefore
+cannot execute on production traffic. Codex per-commit review must HIGH-
+block any wiring change that violates this.
+
+### Gate 4 — F-1.e classification: Mandatory Roadmap / Feature Flag
+
+F-1.e (HTTP/2 fork outbound client real connection) is **NOT** dropped.
+It moves to Mandatory Roadmap status, behind a Feature Flag that:
+
+- Defaults to OFF.
+- Is per-profile opt-in (cannot be globally enabled).
+- Cannot be opted in for a profile until Gate 1 + Gate 2 + Gate 3 are
+  satisfied for that profile.
+- Documentation accompanying the flag explicitly states:
+  "Activation requires real first-party h2 capture for the target profile;
+  implementation precedes capture is forbidden."
+
+### Gate 5 — Release notes explicit on h2 absence
+
+When W11-F F-1 (or any aggregate that includes it) ships, release notes
+must state:
+
+> No currently-deployed profile uses HTTP/2 on the wire for business
+> requests. The F-1 epic ships h2 outbound infrastructure as a dormant
+> capability, gated on real first-party capture per
+> `AGENTS.md` §"Dormant h2 outbound infrastructure gate". The earlier
+> F-1 Released criterion "≥1 profile h2 fixture non-vacuous" is
+> intentionally N/A for this release, not silently skipped.
+
+### Replacement of F-1 epic Released criterion §5 #4
+
+Section §5 #4 (`≥1 profile has real-upstream H2 fixture ... non-vacuously`)
+is **superseded** by the conjunction of Gates 1-5 above. The new criterion
+text is:
+
+> Every deployed profile satisfies Gate 1 (provenance) + Gate 2 (per-
+> profile ALPN assertion). The h2 fork outbound path satisfies Gate 3
+> (hard-unreachable without captured h2 profile). F-1.e is in Mandatory
+> Roadmap / Feature Flag state per Gate 4. Release notes match Gate 5
+> language.
+
+This is the actual criterion to test against for any future
+"W11-F F-1 Released" claim.
+
+### Acceptance evidence in THIS commit
+
+This commit lands the gates **as policy**, not yet as implementation.
+Specifically:
+
+- ✅ Gate 1 partially: anthropic-claude-code.json now has option (b)
+  capture in §10; other 3 profiles still need `_field_sources` audit /
+  update — recorded as follow-up below.
+- ✅ Gate 3 by construction: F-1.e was never implemented, so the
+  unreachability is trivially true today. Maintaining it requires the
+  AGENTS.md rule enforcement on future commits.
+- ✅ Gate 5 language drafted; release notes for next aggregate release
+  must adopt it verbatim or equivalent.
+- ⏸ Gate 2: per-profile ALPN assertion needs `mimicry_http2_fixture_test.rs`
+  patch (the existing fixture test only covers the `available=true` arm).
+  Tracked as follow-up; non-trivial test change, separate slice.
+- ⏸ Gate 4: F-1.e Feature Flag scaffold not yet added (no flag exists).
+  Tracked as follow-up; minimal — feature-flag manifest entry +
+  documentation, no runtime code.
+
+### Follow-up slices opened by this acceptance
+
+1. **§11-Gate2-slice**: extend `mimicry_http2_fixture_test.rs` to assert
+   per-profile ALPN for all 4 currently-deployed profiles, with mutation
+   discriminator per CLAUDE.md #14.
+2. **§11-Gate1-audit**: audit codex-cli.json / gemini-advanced.json /
+   kiro-cli.json `_field_sources` blocks. Where any of the 4 metadata
+   pieces (artifact path, CLI version, timestamp, method) is missing,
+   add it or mark "pending re-capture" with a tracked follow-up entry.
+3. **§11-Gate4-flag**: register F-1.e behind a feature flag (default OFF,
+   per-profile opt-in, gated on Gate 1+2+3 satisfaction for that profile).
+   Documentation lands with the flag.
+4. **§11-Gate5-release-template**: add Gate 5 language to the next
+   release-notes template change.

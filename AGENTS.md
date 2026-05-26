@@ -662,3 +662,48 @@ If `codex exec review` syntax errors with "unexpected argument" or "cannot be us
 - 反例参考: `docs/process/release-readiness/W11-F-F1g-h2-stack-divergence-finding.md`
   (undici vs httpx h2 stack 差异详表) — 用作以后任何"反正都是 h2 都差不多"
   论据的 counter-evidence。
+
+### Dormant h2 outbound infrastructure gate (added 2026-05-26 post codex consult)
+
+> Owner-approved 2026-05-26 after Claude+Codex parallel consult on W11-F F-1
+> scope (both recommended option A "accept dormant" + codex 5 dormancy gates).
+> 见 `docs/process/plans/2026-05-26-w11f-f1-scope-decision-codex-consult.md`
+> 和 `docs/process/release-readiness/W11-F-F1-status.md` §11.
+
+W11-F F-1.b 到 F-1.g 已 commit 的 HTTP/2 fork outbound 基础设施 (adapter
+true-IO 抽取, L2 preflight, ProxyEngine transport boundary, builder L1+L2
+集成, capture pipeline) 全部保留为 **dormant capability**。F-1.e (HTTP/2
+fork outbound client 真接线) 推迟到有 profile 真捕获显示其官方第一方
+client 用 h2 的时候再做。
+
+**Hard rule**: 任何 HUAKAI 生产代码路径都**不可达** h2 fork outbound
+infrastructure, 除非:
+
+- 该请求路由到的 profile 有 `h2_settings.available=true`, **且**
+- 该 profile 的 `h2_settings` 字段 (`raw_order`, `values`, `pseudo_header_order`)
+  全部 `_field_sources` 可追溯到该 vendor 第一方 CLI / 桌面 app 的真实捕获
+  (`captures/<vendor>-<ts>.jsonl` 或 `tests/fixtures/http2_fingerprint/<vendor>-h2.json`),
+  **且**
+- 捕获 jsonl 的 ALPN negotiated = `h2` (不是 `null`, 不是 `http/1.1`)。
+
+**Enforcement**: codex per-commit review + 切片交叉评审**必须**把以下情况
+标 HIGH 阻断:
+
+1. 任何 commit 把 h2 outbound 路径 (`http2_adapter::drive_request<T>`,
+   `try_build_gateway_transport_with_profile` 的 h2 分支, F-1.e 实现) 跟
+   主 ProxyEngine 接线但当前生效 profile 集合**都不满足上述三条**。
+2. 任何 commit 给某个 profile 翻 `h2_settings.available=true` 但
+   `_field_sources` 指不到第一方 CLI 真捕获 jsonl (`clients/` 下的合成
+   probe 不算; 借鉴项目的实现选择不算; SDK 源码读出来的推断不算)。
+3. 任何 commit 写 "feature flag h2 active" 但 flag 默认 ON。flag 必须默认
+   OFF, 显式 opt-in per profile, 文档明写"激活先决条件: 真第一方 h2 捕获"。
+
+**Activation rule (for F-1.e 未来如果做)**:
+
+- step 1: 取得该 vendor 官方第一方 CLI / 桌面 app 的真实 h2 捕获 (ALPN
+  negotiated=h2, SETTINGS frame 字节, pseudo-header order)。证据进 jsonl
+  + `_field_sources` 追溯。
+- step 2: 把 profile 的 `h2_settings.available` 翻 true + 加 fixture +
+  cross-check test 真跑非空。
+- step 3: 才开 F-1.e 实现 + 测试 + Feature Flag opt-in。
+- 反序违法 — "implementation first, capture later" 不允许。
