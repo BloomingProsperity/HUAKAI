@@ -244,16 +244,17 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, fmt.Errorf("build hermes bootstrap issuer: %w", err)
 	}
-	hermesRunnerSharedSecret, err := loadHermesInternalSharedSecret()
-	if err != nil {
-		return nil, err
-	}
 	hermesRunner, err := hermes.NewRunnerClientFromEnv()
 	if err != nil {
 		return nil, fmt.Errorf("build hermes runner client: %w", err)
 	}
+	var hermesRunnerSharedSecret []byte
 	var hermesService *hermes.Service
 	if hermesRunner != nil || hermesBootstrapIssuer != nil {
+		hermesRunnerSharedSecret, err = loadHermesInternalSharedSecret()
+		if err != nil {
+			return nil, err
+		}
 		hermesService = hermes.NewServiceWithTx(hermesQueries, pgPool)
 		logger.Info("Hermes runner: configured")
 	} else {

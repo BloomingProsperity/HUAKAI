@@ -729,6 +729,7 @@ SET encrypted_payload = $1,
 WHERE id = $12
   AND tenant_id = $13
   AND provider_account_id = $14
+  AND deleted_at IS NULL
   AND credential_version = $15`
 	return s.withCredentialMutationAuditTx(ctx, func(txStore *Store) error {
 		tag, err := txStore.db.Exec(ctx, q,
@@ -774,9 +775,10 @@ SET state = $1,
 WHERE id = $4
   AND tenant_id = $5
   AND provider_account_id = $6
-  AND deleted_at IS NULL`
+  AND deleted_at IS NULL
+  AND credential_version = $7`
 	return s.withCredentialMutationAuditTx(ctx, func(txStore *Store) error {
-		tag, err := txStore.db.Exec(ctx, q, state, failureClass, nullableTime(nextAttemptAt), rec.ID, rec.TenantID, rec.ProviderAccountID)
+		tag, err := txStore.db.Exec(ctx, q, state, failureClass, nullableTime(nextAttemptAt), rec.ID, rec.TenantID, rec.ProviderAccountID, rec.CredentialVersion)
 		if err != nil {
 			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
 		}
