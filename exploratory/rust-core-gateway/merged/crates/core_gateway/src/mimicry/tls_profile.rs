@@ -67,6 +67,18 @@ pub struct TlsProfile {
     pub psk_modes: Vec<u8>,
     pub padding_len: u16,
     pub early_data_enabled: bool,
+    /// §14b.1 Chrome impersonation: cert_compression (TLS ext 27, RFC 8879)
+    /// advertised algorithm IDs in capture order. Default empty (no ext 27).
+    /// Wiring to boring crate via `add_certificate_compression_algorithm`
+    /// is §14b.2 work. Gemini 0.42.0 populates this with [2] (brotli) per
+    /// the §13 cloudcode-pa capture.
+    pub cert_compression_algorithms: Vec<u16>,
+    /// §14b.1 Chrome impersonation: application_settings (ALPS, TLS ext
+    /// 17513). Protocol names HUAKAI should declare in ALPS payload.
+    /// Default empty (no ext 17513). Wiring to boring crate via
+    /// `SSL_add_application_settings` FFI is §14b.2 work. Gemini 0.42.0
+    /// populates this with ["h2"] per §13 capture.
+    pub alps_protocols: Vec<String>,
 }
 
 impl TlsProfile {

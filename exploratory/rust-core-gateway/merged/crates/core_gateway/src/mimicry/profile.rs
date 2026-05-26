@@ -298,6 +298,8 @@ impl TryFrom<RawFingerprintProfile> for FingerprintProfile {
             psk_modes: raw.psk_modes,
             padding_len: raw.padding_len,
             early_data_enabled: raw.early_data_enabled,
+            cert_compression_algorithms: raw.cert_compression_algorithms,
+            alps_protocols: raw.alps_protocols,
         };
 
         let profile = Self {
@@ -473,6 +475,20 @@ struct RawFingerprintProfile {
     field_sources: BTreeMap<String, String>,
     mode_name: String,
     collected_at: String,
+    // §13 audit-trail metadata fields (added 2026-05-26 by drift-tracking
+    // slices). Deserialized but NOT propagated to FingerprintProfile —
+    // JSON-side audit comments only. Required here so
+    // `deny_unknown_fields` accepts codex-cli.json / gemini-advanced.json
+    // after §13 added these fields. Anthropic + kiro profiles don't
+    // carry these; #[serde(default)] keeps them optional.
+    #[serde(default)]
+    previous_capture_collected_at: Option<String>,
+    #[serde(default, rename = "_open_questions")]
+    open_questions: Option<Vec<String>>,
+    #[serde(default, rename = "_key_share_groups_note")]
+    key_share_groups_note: Option<String>,
+    #[serde(default, rename = "_supported_versions_note")]
+    supported_versions_note: Option<String>,
     target_host: String,
     #[serde(default)]
     capture_target_host: Option<String>,
@@ -506,6 +522,14 @@ struct RawFingerprintProfile {
     psk_modes: Vec<u8>,
     padding_len: u16,
     early_data_enabled: bool,
+    // §14b.1 Chrome impersonation TLS features (data layer only this
+    // slice; wiring deferred to §14b.2 which adds boring FFI + builder
+    // integration). Default empty = no cert compression advertised + no
+    // ALPS extension. Gemini 0.42.0 populates per §13 cloudcode-pa capture.
+    #[serde(default)]
+    cert_compression_algorithms: Vec<u16>,
+    #[serde(default)]
+    alps_protocols: Vec<String>,
     h2_settings: Http2SettingsCapture,
     #[serde(default)]
     h2_settings_frame: Http2SettingsFrameProfile,

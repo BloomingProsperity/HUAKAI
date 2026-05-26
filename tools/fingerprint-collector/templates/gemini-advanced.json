@@ -143,6 +143,12 @@
     "h2",
     "http/1.1"
   ],
+  "cert_compression_algorithms": [
+    2
+  ],
+  "alps_protocols": [
+    "h2"
+  ],
   "ec_point_formats": [
     0
   ],
