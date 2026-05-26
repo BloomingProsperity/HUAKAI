@@ -66,7 +66,10 @@ phase-1 cursor 风险面比想象低。**
 - 改 `credentialacq/types.go`(`DefaultModePlans` 加 cursor)
 - 改 `credentialstore/types.go`(`DefaultVendorHandlers` + runtime material checksum/cookie/client-version 一等字段)
 - `credentialacq/vendor_exchangers.go` 准备接真 exchanger 位置(本 slice 不替换 fake,只 wiring)
-- **判别 test**:`TestCursorOAuthModeHiddenWhenOperatorConfigMissing` — 缺 `token_url` 或 `client_id` 时 mode plan 不可用
+- **判别 test**:`TestCursorOAuthConfigRequiresOperatorVerifiedEndpoints` (已存在
+  `provider/cursor/bootstrap_test.go`) 验证 `ValidateOAuthConfig` 在 token_url/client_id/
+  redirect_uri 任一缺失时返回 `ErrCursorOAuthConfigRequired`;这是 OAuth start-time fail-closed,
+  与 Gemini/Antigravity/Windsurf 同 pattern,不在 mode plan listing 层过滤。
 
 ### C2 — 真 OAuth exchange + refresher 闭环(1.5–2 天)
 - vendor_exchangers.go:52 fake → real `NewCursorOAuthExchanger`(authorization_code grant)
