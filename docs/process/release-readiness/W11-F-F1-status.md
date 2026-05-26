@@ -132,3 +132,103 @@ tests in `mimicry_http2_fixture_test.rs` are deleted or weakened, a future
 implementer could add `h2_settings_frame.available=true` to a profile without
 adding the corresponding fixture file — and nothing would fail. The tests in
 this commit prevent that.
+
+## 8. F-1.g progress — 2026-05-26 update (server-side capture pipeline)
+
+Related plan: `docs/process/plans/2026-05-26-f1g-server-side-capture.md`.
+
+### 8.1 Attempt-1 (DISCARDED)
+
+mitmproxy 12 addon at `tools/fingerprint-collector/capture_h2_settings.py`
+acting in proxy mode between python-httpx and api.anthropic.com.
+
+Failed on two axes:
+
+1. mitmproxy 12 does NOT expose original client SETTINGS frame bytes via any
+   addon API surface — every defensive introspection path
+   (`flow.client_conn.h2`, `_h2_conn`, `protocol`, `metadata.h2_settings`)
+   returned `None` or unavailable.
+2. Driving client was `python-httpx/0.28.1` (NOT Claude Code CLI), so the
+   captured header order was an httpx baseline, not Anthropic-SDK on-wire.
+
+The addon, its .pyc cache, and the resulting JSONL stub were **deleted** in
+the same commit that introduced attempt-2 (this commit). Owner ratified
+discarding via in-chat A+D pick on 2026-05-26.
+
+### 8.2 Attempt-2 (LANDED, this commit)
+
+Server-side capture: local Python h2 server
+(`tools/fingerprint-collector/h2_capture_server.py`) terminates TLS with a
+self-signed cert + ALPN=h2 on `127.0.0.1:18099`. Drives the conversation
+just far enough to record the client's SETTINGS frame raw bytes + HEADERS
+frame raw bytes BEFORE the `h2` library state machine re-orders them, then
+sends a trivial 200 response so the client closes cleanly.
+
+Client probe (`tools/fingerprint-collector/clients/undici_probe.mjs`) sends
+one POST through undici v7 with `allowH2: true` and `rejectUnauthorized: false`
+to drive the cert mismatch through.
+
+Parser unit tests (`tools/fingerprint-collector/tests/test_settings_parser.py`)
+cover: known-payload baseline, on-wire order preserved against canonical sort,
+single-byte mutation in value, single-byte mutation in id, invalid length
+raises, empty payload, known/unknown id annotation. All 8/8 pass.
+
+### 8.3 First evidence: undici v7 default h2 baseline
+
+File: `tools/fingerprint-collector/captures/h2-server-1779761396.jsonl`
+
+Real on-wire captured fields:
+
+| Field | Value |
+|-------|-------|
+| `tls_version` | `TLSv1.3` |
+| `tls_cipher` | `TLS_AES_256_GCM_SHA384` |
+| `alpn_negotiated` | `h2` |
+| `preface_matches` | `true` |
+| `client_settings_frame.payload_hex` | `000200000000000400040000` (raw bytes) |
+| `client_settings_frame.parameters_in_order` | `[{id:2/ENABLE_PUSH, value:0}, {id:4/INITIAL_WINDOW_SIZE, value:262144}]` |
+| `client_headers_frame.pseudo_header_order` | `[:authority, :method, :path, :scheme]` (alphabetical) |
+| `client_headers_frame.regular_header_order` | `[user-agent, content-type, accept, content-length]` |
+
+Notable discriminators:
+
+- undici v7 sends only **2** SETTINGS params (omits HEADER_TABLE_SIZE,
+  MAX_CONCURRENT_STREAMS, MAX_FRAME_SIZE, MAX_HEADER_LIST_SIZE → accepts h2
+  defaults).
+- Pseudo-header order is **alphabetical**, not the often-assumed
+  `:method, :scheme, :authority, :path`.
+
+### 8.4 What this commit does NOT do
+
+- **Does NOT** promote `templates/anthropic-claude-code.json`
+  `h2_settings.available` to `true`. The undici baseline is *likely* what
+  Claude Code CLI sends but this requires explicit confirmation before
+  upgrading the profile. Owner-gated decision.
+- **Does NOT** modify F-1.a fixture cross-check expectations (those still
+  pass trivially because all 4 profiles remain `available=false`).
+- **Does NOT** touch backend/ or any production code.
+
+### 8.5 Per-profile Released eligibility update vs §2
+
+No change. All 4 profiles remain `available=false`. Capture pipeline now
+exists; profile promotion is the next gated step.
+
+### 8.6 Next steps to close F-1.g
+
+1. **Confirm undici fingerprint == Claude Code CLI fingerprint.** Either:
+   - (a) Read `@anthropic-ai/sdk` transport setup to confirm it uses undici
+     defaults for h2 (no `Client(..., { allowH2: true, ...overrides })`), OR
+   - (b) Run real `claude` CLI through the local server via hosts override
+     + `NODE_EXTRA_CA_CERTS=tools/fingerprint-collector/tls_cert/server.crt`
+     and diff the captured SETTINGS against the undici baseline.
+2. **Promote the Anthropic profile**: update
+   `templates/anthropic-claude-code.json` `h2_settings` to
+   `{available: true, raw_order: [2, 4], values: {ENABLE_PUSH: 0, INITIAL_WINDOW_SIZE: 262144}}`
+   and add `h2_pseudo_header_order: {available: true, order: [":authority", ":method", ":path", ":scheme"]}`.
+3. **Update `crates/core_gateway/tests/fixtures/http2_fingerprint/anthropic-claude-code-h2.json`**
+   (NEW file) with matching content; cross-check tests in
+   `mimicry_http2_fixture_test.rs` will then become non-vacuous.
+4. **Repeat capture** with `claude` CLI / Codex CLI / Gemini Advanced
+   clients for the other 3 profiles (extend `clients/` with
+   probes for Python httpx, Go net/http for ecosystem coverage).
+5. Update §2 table once any profile flips to Released-eligible.

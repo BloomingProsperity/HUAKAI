@@ -1,0 +1,21 @@
+# HUAKAI fingerprint-collector — local-only artifacts (never commit)
+
+# Self-signed TLS material for the h2 capture server (h2_capture_server.py).
+# Root .gitignore already covers *.crt / *.key / *.pem, but pin the directory
+# too in case openssl emits other artifacts.
+tls_cert/
+
+# Python bytecode caches under any nested directory.
+__pycache__/
+
+# Node-side client probe dependencies (vendored via npm install in clients/).
+clients/node_modules/
+
+# Capture pcaps are NEVER committed (raw packet dumps may contain private
+# IP / MAC / SNI). Per README §"Output handling".
+output/raw-pcap-snippet.pcap
+captures/*.pcap
+
+# Captured JSONL records (clienthello-*.jsonl, h2-server-*.jsonl) are
+# intentionally committed as fingerprint evidence — they are sanitized
+# (localhost only, ephemeral ports, no API keys). Do NOT add them here.

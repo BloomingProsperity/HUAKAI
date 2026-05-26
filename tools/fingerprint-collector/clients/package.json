@@ -1,0 +1,13 @@
+{
+  "name": "huakai-fingerprint-clients",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local h2 client probes for HUAKAI fingerprint-collector server-side capture (W11-F F-1.g). Not shipped.",
+  "type": "module",
+  "scripts": {
+    "probe:undici": "node undici_probe.mjs"
+  },
+  "dependencies": {
+    "undici": "^7.0.0"
+  }
+}
