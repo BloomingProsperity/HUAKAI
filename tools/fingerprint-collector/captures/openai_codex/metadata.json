@@ -1,0 +1,11 @@
+{
+  "tool_version": "0.1.0",
+  "mode_name": "openai_codex",
+  "capture_start_time": "2026-05-26T11:36:06Z",
+  "capture_end_time": "2026-05-26T11:36:29Z",
+  "target_host": "chatgpt.com",
+  "sample_count": 5,
+  "mitm_detection_enabled": true,
+  "mitm_check_result": "ok",
+  "note": "此文件不含 IP/MAC/主机名信息（除非使用了 -include-operator-info）。提交前请确认不含敏感信息。"
+}

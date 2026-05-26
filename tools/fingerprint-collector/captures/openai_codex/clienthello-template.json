@@ -1,0 +1,160 @@
+{
+  "schema_version": "1.0",
+  "mode_name": "openai_codex",
+  "target_host": "chatgpt.com",
+  "capture_time": "2026-05-26T11:36:29Z",
+  "sample_count": 5,
+  "legacy_version": 771,
+  "legacy_version_hex": "0x0303",
+  "random_len": 32,
+  "legacy_session_id_len": 0,
+  "cipher_suites": [
+    {
+      "value": 49196,
+      "value_hex": "0xc02c"
+    },
+    {
+      "value": 49195,
+      "value_hex": "0xc02b"
+    },
+    {
+      "value": 49200,
+      "value_hex": "0xc030"
+    },
+    {
+      "value": 49199,
+      "value_hex": "0xc02f"
+    },
+    {
+      "value": 49188,
+      "value_hex": "0xc024"
+    },
+    {
+      "value": 49187,
+      "value_hex": "0xc023"
+    },
+    {
+      "value": 49192,
+      "value_hex": "0xc028"
+    },
+    {
+      "value": 49191,
+      "value_hex": "0xc027"
+    },
+    {
+      "value": 49162,
+      "value_hex": "0xc00a"
+    },
+    {
+      "value": 49161,
+      "value_hex": "0xc009"
+    },
+    {
+      "value": 49172,
+      "value_hex": "0xc014"
+    },
+    {
+      "value": 49171,
+      "value_hex": "0xc013"
+    },
+    {
+      "value": 157,
+      "value_hex": "0x009d"
+    },
+    {
+      "value": 156,
+      "value_hex": "0x009c"
+    },
+    {
+      "value": 61,
+      "value_hex": "0x003d"
+    },
+    {
+      "value": 60,
+      "value_hex": "0x003c"
+    },
+    {
+      "value": 53,
+      "value_hex": "0x0035"
+    },
+    {
+      "value": 47,
+      "value_hex": "0x002f"
+    }
+  ],
+  "compression_methods": "AA==",
+  "extensions": [
+    {
+      "type": 0,
+      "type_hex": "0x0000",
+      "type_name": "server_name",
+      "data_len": 16
+    },
+    {
+      "type": 10,
+      "type_hex": "0x000a",
+      "type_name": "supported_groups",
+      "data_len": 8
+    },
+    {
+      "type": 11,
+      "type_hex": "0x000b",
+      "type_name": "ec_point_formats",
+      "data_len": 2
+    },
+    {
+      "type": 13,
+      "type_hex": "0x000d",
+      "type_name": "signature_algorithms",
+      "data_len": 26,
+      "signature_algorithms": [
+        2052,
+        2053,
+        2054,
+        1025,
+        1281,
+        513,
+        1027,
+        1283,
+        515,
+        514,
+        1537,
+        1539
+      ]
+    },
+    {
+      "type": 35,
+      "type_hex": "0x0023",
+      "type_name": "session_ticket",
+      "data_len": 0
+    },
+    {
+      "type": 23,
+      "type_hex": "0x0017",
+      "type_name": "extended_master_secret",
+      "data_len": 0
+    },
+    {
+      "type": 65281,
+      "type_hex": "0xff01",
+      "data_len": 1
+    }
+  ],
+  "sni": "\u003credacted\u003e",
+  "alpn_protocols": null,
+  "supported_groups": [
+    29,
+    23,
+    24
+  ],
+  "ec_point_formats": "AA==",
+  "supported_versions": null,
+  "ja3": {
+    "input_string": "771,49196-49195-49200-49199-49188-49187-49192-49191-49162-49161-49172-49171-157-156-61-60-53-47,0-10-11-13-35-23-65281,29-23-24,0",
+    "hash": "6a5d235ee78c6aede6a61448b4e9ff1e"
+  },
+  "ja4": {
+    "raw": "t12d1807_00_23ddbbbb3d83_6603474bfe31",
+    "hash": "t12d1807_00_23ddbbbb3d83_6603474bfe31"
+  }
+}
