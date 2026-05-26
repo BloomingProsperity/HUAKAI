@@ -91,7 +91,6 @@ func phaseAModePlans() []acqModePlan {
 		{Vendor: credentialstore.VendorCopilot, AuthMode: credentialstore.AuthModeCopilotOAuth, Kind: flowKindOAuth, ClientIdentitySource: clientSourcePublicCLI},
 		{Vendor: credentialstore.VendorAntigravity, AuthMode: credentialstore.AuthModeOAuth, Kind: flowKindOAuth, ClientIdentitySource: clientSourceOperatorConfig, ManualFirst: true},
 		{Vendor: credentialstore.VendorWindsurf, AuthMode: credentialstore.AuthModeOAuth, Kind: flowKindTokenExchange, ClientIdentitySource: clientSourceOperatorConfig, ManualFirst: true},
-		{Vendor: credentialstore.VendorCursor, AuthMode: credentialstore.AuthModeOAuth, Kind: flowKindOAuth, ClientIdentitySource: clientSourceOperatorConfig, ManualFirst: true},
 	}
 }
 
@@ -137,27 +136,6 @@ func TestFlowStatusTransitionContract(t *testing.T) {
 	}
 }
 
-func TestDefaultModePlansIncludesCursorOAuth(t *testing.T) {
-	plan, ok := LookupModePlan(credentialstore.VendorCursor, credentialstore.AuthModeOAuth)
-	if !ok {
-		t.Fatalf("missing mode plan %s", credentialstore.ModeKey(credentialstore.VendorCursor, credentialstore.AuthModeOAuth))
-	}
-	if plan.Kind != FlowKindOAuth {
-		t.Fatalf("kind=%q want %q", plan.Kind, FlowKindOAuth)
-	}
-	if plan.ClientIdentitySource != ClientSourceOperatorConfig {
-		t.Fatalf("client identity source=%q want %q", plan.ClientIdentitySource, ClientSourceOperatorConfig)
-	}
-	if !plan.ManualFirst {
-		t.Fatal("cursor oauth mode plan must be manual-first")
-	}
-	if !containsFlowKind(plan.AllowedHelpers, FlowKindOAuth) ||
-		!containsFlowKind(plan.AllowedHelpers, FlowKindTokenExchange) ||
-		!containsFlowKind(plan.AllowedHelpers, FlowKindPaste) {
-		t.Fatalf("allowed helpers=%v want oauth, token_exchange, paste", plan.AllowedHelpers)
-	}
-}
-
 func TestModePlanCoversCredentialStoreModes(t *testing.T) {
 	registry := credentialstore.DefaultHandlerRegistry()
 	plans := phaseAModePlans()
@@ -183,13 +161,4 @@ func TestModePlanCoversCredentialStoreModes(t *testing.T) {
 			t.Fatalf("F-AUTH-005 registry mode %s missing from Phase A plan", key)
 		}
 	}
-}
-
-func containsFlowKind(values []FlowKind, want FlowKind) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
