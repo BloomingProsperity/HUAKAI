@@ -20,7 +20,11 @@ import (
 )
 
 const (
-	AnthropicRefreshTokenURL = "https://console.anthropic.com/v1/oauth/token"
+	// ANT-3 D-4=B: 收敛 legacy refresher 默认 endpoint 到 ANT-1 同款 approved
+	// built-in profile (api.anthropic.com),与 CLIProxyAPI 公开观察一致;
+	// console.anthropic.com 是历史遗留路径,不在 Anthropic 公开 Claude Code
+	// CLI OAuth flow 中。
+	AnthropicRefreshTokenURL = AnthropicTokenURL
 
 	defaultRefreshTimeout    = 10 * time.Second
 	defaultRetryAfter        = time.Minute
@@ -197,7 +201,10 @@ func (r *Refresher) refreshCredential(ctx context.Context, accountID int64, curr
 	if refreshToken == "" {
 		return refreshResult{}, fmt.Errorf("anthropicoauth refresh account %d: %w: refresh_token is empty", accountID, credentialstore.ErrInvalidPayload)
 	}
-	clientID := firstNonEmpty(r.ClientID, mapString(cred, "client_id"), AnthropicPublicCLIClientID)
+	// client_id 仅取 operator 配置 (r.ClientID) 或 built-in approved CLI;
+	// credential payload 中的 client_id 不再被信任 (ANT-3 D-4=B,
+	// 防 SSRF / auth token 泄露)。
+	clientID := firstNonEmpty(r.ClientID, AnthropicPublicCLIClientID)
 	body, err := json.Marshal(map[string]string{
 		"grant_type":    "refresh_token",
 		"refresh_token": refreshToken,

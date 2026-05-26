@@ -1,9 +1,14 @@
 package credentialworker
 
 import (
+	"context"
 	"errors"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker/adapters"
 )
 
 func TestClassifyRefreshErrorAnthropic401InvalidGrantAuthExpired(t *testing.T) {
@@ -59,4 +64,37 @@ func TestClassifyRefreshError5xxTransient(t *testing.T) {
 	if got := ClassifyRefreshError(errors.New("bad request"), "anthropic", http.StatusBadRequest); got != OutcomeUnknown {
 		t.Fatalf("400 control outcome=%q, want %q", got, OutcomeUnknown)
 	}
+}
+
+// ANT-3 集成断言: 真 adapters.AnthropicRefresh 401 → ClassifyRefreshError
+// 必返 OutcomeAuthExpired。锁 anthropic vendor 401 永远走 AuthExpired
+// 的 invariant — cursor C1 教训, adapter 层 unit test 自己 happy 不够,
+// 必须用上层 classifier wiring 真实路径验证。判别 mutation: 把 vendor
+// 从 internal/auth/audit.go isKnownRefreshVendor 列表删,该 test 立刻
+// 退到 OutcomeUnknown 变红 (anthropic 401 not auto-expired any more)。
+// 注: tokenHTTPError body 透传是 defense-in-depth (未来 vendor 不在
+// known list 时仍能通过 msg 含 invalid_grant 分类), 不是本 test 的
+// discriminating fixture。
+func TestClassifyRefreshErrorIntegratesAnthropicAdapter401InvalidGrant(t *testing.T) {
+	client := &http.Client{Transport: outcomeRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":"invalid_grant","error_description":"refresh token expired"}`)),
+		}, nil
+	})}
+	cred := []byte(`{"access_token":"old","refresh_token":"rt-old"}`)
+	_, _, err := adapters.AnthropicRefresh{HTTPClient: client}.RefreshForProvider(context.Background(), 1, "anthropic", cred)
+	if err == nil {
+		t.Fatal("expected refresh error on upstream 401")
+	}
+	if got := ClassifyRefreshError(err, "anthropic", http.StatusUnauthorized); got != OutcomeAuthExpired {
+		t.Fatalf("integrated outcome=%q, want %q; err=%v", got, OutcomeAuthExpired, err)
+	}
+}
+
+type outcomeRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f outcomeRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }

@@ -14,6 +14,13 @@ import (
 const defaultAnthropicTokenEndpoint = "https://api.anthropic.com/v1/oauth/token"
 
 // AnthropicRefresh 用 Anthropic OAuth refresh_token grant 刷新 Claude 账号。
+//
+// 信任链 (ANT-3, Owner 2026-05-26 D-4=B): 出站 token endpoint 与 OAuth
+// client_id 仅来自 operator-supplied 字段 (r.Endpoint, r.ClientID) 或 HUAKAI
+// 硬编 approved built-in profile (defaultAnthropicTokenEndpoint /
+// anthropicoauth.AnthropicPublicCLIClientID); 不接受任何来自 credential
+// payload 的 endpoint / client_id 覆盖, 防止凭据被篡改后把 refresh 流量
+// 导到攻击者 token endpoint (SSRF / auth token 泄露)。
 type AnthropicRefresh struct {
 	Endpoint                 string
 	ClientID                 string
@@ -42,7 +49,10 @@ func (r AnthropicRefresh) RefreshForProvider(ctx context.Context, accountID int6
 		"grant_type":    "refresh_token",
 		"refresh_token": refreshToken,
 	}
-	if clientID := firstNonEmpty(r.ClientID, credentialString(cred, "client_id")); clientID != "" {
+	// client_id 仅来自 operator 配置或 built-in approved CLI;不取 credential
+	// payload 字段 (ANT-3 D-4=B SSRF / auth-leak 防线)。
+	clientID := firstNonEmpty(r.ClientID, anthropicoauth.AnthropicPublicCLIClientID)
+	if clientID != "" {
 		body["client_id"] = clientID
 	}
 	payload, err := json.Marshal(body)
@@ -50,7 +60,10 @@ func (r AnthropicRefresh) RefreshForProvider(ctx context.Context, accountID int6
 		return nil, time.Time{}, fmt.Errorf("anthropic refresh account %d: marshal request: %w", accountID, err)
 	}
 
-	resp, err := postTokenWithRetry(ctx, r.httpClient(), firstNonEmpty(r.Endpoint, credentialString(cred, "oauth_token_endpoint"), defaultAnthropicTokenEndpoint), "application/json", bytes.NewReader(payload))
+	// token endpoint 同上, 仅 operator config / builtin;credential payload
+	// 中的 oauth_token_endpoint 一律忽略 (ANT-3 D-4=B)。
+	endpoint := firstNonEmpty(r.Endpoint, defaultAnthropicTokenEndpoint)
+	resp, err := postTokenWithRetry(ctx, r.httpClient(), endpoint, "application/json", bytes.NewReader(payload))
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("anthropic refresh account %d: %w", accountID, err)
 	}

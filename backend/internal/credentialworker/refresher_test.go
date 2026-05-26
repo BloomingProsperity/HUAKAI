@@ -89,13 +89,17 @@ func TestAnthropicRefreshHTTPRoundTrip(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode body: %v", err)
 		}
-		if body["grant_type"] != "refresh_token" || body["refresh_token"] != "rt-old" || body["client_id"] != "cid" {
+		// ANT-3 D-4=B: client_id 来自 operator 配置 (r.ClientID) 或 HUAKAI
+		// 硬编 anthropicoauth.AnthropicPublicCLIClientID,不再读 credential
+		// payload — 测试 fixture 期望从 cid (credential payload) 改为
+		// operator-injected "operator-cid",验证 SSRF guard 与正常 refresh 路径并存。
+		if body["grant_type"] != "refresh_token" || body["refresh_token"] != "rt-old" || body["client_id"] != "operator-cid" {
 			t.Fatalf("bad anthropic body: %#v", body)
 		}
 		return tokenJSONResponse("anthropic-new", "anthropic-rt"), nil
 	})}
 
-	newCredential, expiresAt, err := (adapters.AnthropicRefresh{Endpoint: "http://mock.local/anthropic", HTTPClient: client}).RefreshForProvider(context.Background(), 2, "anthropic", testCredential())
+	newCredential, expiresAt, err := (adapters.AnthropicRefresh{Endpoint: "http://mock.local/anthropic", ClientID: "operator-cid", HTTPClient: client}).RefreshForProvider(context.Background(), 2, "anthropic", testCredential())
 	assertRefreshResult(t, newCredential, expiresAt, err, "anthropic-new", "anthropic-rt")
 }
 

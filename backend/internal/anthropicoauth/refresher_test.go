@@ -126,7 +126,10 @@ func TestRefresherKeepsExistingRefreshTokenWhenResponseOmitsReplacement(t *testi
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if body["grant_type"] != "refresh_token" || body["refresh_token"] != "rt-old" || body["client_id"] != "cid-old" {
+		// ANT-3 D-4=B: client_id 锁定到 HUAKAI 硬编 builtin approved
+		// CLI client (默认 r.ClientID 为空时落到 AnthropicPublicCLIClientID),
+		// credential payload 中的 "cid-old" 不再被采用。
+		if body["grant_type"] != "refresh_token" || body["refresh_token"] != "rt-old" || body["client_id"] != AnthropicPublicCLIClientID {
 			t.Fatalf("bad refresh request body: %#v", body)
 		}
 		return refreshJSONResponse(http.StatusOK, map[string]any{
@@ -180,6 +183,46 @@ func TestRefresherAppliesClockSkewGraceToSlightlyPastExpiresAt(t *testing.T) {
 	want := now.Add(time.Minute)
 	if !store.savedExpires.Equal(want) {
 		t.Fatalf("savedExpires=%s want skew-adjusted %s", store.savedExpires, want)
+	}
+}
+
+// ANT-3: Owner 2026-05-26 D-4=B — refresh 仅信 operator-supplied 配置或硬编
+// built-in profile,不接受 credential payload 里被人为篡改的 client_id 覆盖。
+// 自检 mutation: 把 refresher.refreshCredential clientID 计算回退到
+// firstNonEmpty(r.ClientID, mapString(cred, "client_id"), AnthropicPublicCLIClientID),
+// 该 test 会读到 attacker client_id 而变红。
+func TestRefresherIgnoresCredentialPayloadClientID(t *testing.T) {
+	now := time.Date(2026, 5, 26, 13, 0, 0, 0, time.UTC)
+	store := newMemoryRefreshStore()
+	store.rec.PlaintextPayload = []byte(`{"access_token":"old","refresh_token":"rt-old","client_id":"attacker-cid"}`)
+	var capturedClientID string
+	client := &http.Client{Transport: refreshRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode token request body: %v", err)
+		}
+		capturedClientID = body["client_id"]
+		return refreshJSONResponse(http.StatusOK, map[string]any{
+			"access_token":  "new-access",
+			"refresh_token": "new-refresh",
+			"expires_in":    3600,
+		}), nil
+	})}
+	refresher := &Refresher{
+		Store:      store,
+		Endpoint:   "https://console.anthropic.test/v1/oauth/token",
+		HTTPClient: client,
+		Now:        func() time.Time { return now },
+	}
+
+	if err := refresher.Refresh(context.Background(), 101); err != nil {
+		t.Fatalf("Refresh err=%v", err)
+	}
+	if capturedClientID == "attacker-cid" {
+		t.Fatalf("token endpoint saw attacker client_id %q — credential payload SSRF guard 失效", capturedClientID)
+	}
+	if capturedClientID != AnthropicPublicCLIClientID {
+		t.Fatalf("client_id=%q want built-in approved %q", capturedClientID, AnthropicPublicCLIClientID)
 	}
 }
 
