@@ -613,7 +613,7 @@ carry a `_field_sources` block citing:
 
 | Profile | (a) artifact path | (b) CLI version | (c) timestamp | (d) capture method | Verdict |
 |---|---|---|---|---|---|
-| `anthropic-claude-code.json` | ⚠ `_field_sources` added by §12-anthropic-cc-fields slice (this commit): ALPN + h2_settings cite `captures/h2-server-1779775310.jsonl` (committed); TLS portion `/tmp/fingerprint-data/anthropic-tls/*` recorded as lost, pending full re-capture | ⚠ ALPN/h2 cites `claude --version 2.1.112` (real CC CLI); original TLS run's CLI version unrecoverable | ✅ `collected_at: 2026-05-06T10:37:23Z` for TLS; ALPN capture is 2026-05-26T06:01:50Z UTC | ⚠ ALPN/h2 method explicit (h2_capture_server.py + subprocess env override); TLS method lost with the artifact | **WEAK Gate 1** (partial — TLS portion can only escape lost-artifact status via full re-capture; ALPN/h2 portion meets Gate 1 fully). Flipped FAIL → WEAK by §12-anthropic-cc-fields (this commit), per §12.7 mutation rule, citing `captures/h2-server-1779775310.jsonl`. |
+| `anthropic-claude-code.json` | ✅ `captures/clienthello-1779786896.jsonl` (§13 fresh capture 2026-05-26 — mitmproxy 12 + addon; api.anthropic.com record at index [1]) cross-verifies TLS fields byte-for-byte; plus `captures/h2-server-1779775310.jsonl` (option (b) 2026-05-26 h2 ALPN-absence corroboration) | ✅ `claude --version 2.1.112` (Claude Code CLI binary at /c/Users/h/.local/bin/claude.exe) | ✅ `collected_at: 2026-05-06T10:37:23Z` (original passive run), §13 fresh capture: 2026-05-26T09:14:54Z UTC | ✅ §13 method: mitmproxy 12.2.3 + `capture_tls_clienthello.py` addon via HTTPS_PROXY env | **PASS Gate 1** — flipped WEAK → PASS by §13 full-recapture in this commit per §12.7 mutation rule. Citation: `captures/clienthello-1779786896.jsonl`. TLS field values (ja3/ciphers/extensions/alpn) confirmed identical to existing template byte-for-byte — no drift in 20 days. |
 | `codex-cli.json` | ⚠ `/tmp/fingerprint-data/codex-tls/*` paths now explicitly marked SUPERSEDED in `_field_sources` by §12-method-tags slice (this commit); awaiting full re-capture per §13 | ✅ explicit "Driving client: codex_cli_rs/0.128.0" in `_field_sources.tls` (was previously only implied via user_agent) | ✅ `collected_at: 2026-05-14T06:56:31Z` | ✅ explicit "tools/fingerprint-collector/cmd (Go libpcap/npcap passive ClientHello tool)" for TLS; explicit "source-analysis docs/research/..." for http/auth layers | **WEAK Gate 1** (method tags now explicit + paths SUPERSEDED-tagged per §12-method-tags; artifacts still lost; promotion to PASS gated on §13 full re-capture). Plus pre-existing ja3 drift in `_pending-backfill/` per §12.3 §12.6 (Owner 2026-05-26: 重抓). |
 | `gemini-advanced.json` | ⚠ `/tmp/fingerprint-data/gemini-*` paths now SUPERSEDED-tagged in `_field_sources` by §12-method-tags slice (this commit) | ✅ explicit "Driving client: GeminiCLI/0.41.2/gemini-3.1-pro-preview (Node.js TLS stack)" in `_field_sources.tls` | ✅ `collected_at: 2026-05-14T07:20:19Z` | ✅ explicit "tools/fingerprint-collector/cmd" for TLS; explicit "mitmproxy@<lost>" for http/auth layers | **WEAK Gate 1** (method tags landed; awaits §13 for PASS) |
 | `kiro-cli.json` | ⚠ `/tmp/fingerprint-data/kiro-*` paths now SUPERSEDED-tagged by §12-method-tags slice (this commit) | ✅ explicit "Driving client: aws-sdk-rust/1.3.15 + AmazonQ-For-CLI" in `_field_sources.tls` | ✅ `collected_at: 2026-05-14T06:57:12Z` | ✅ explicit "tools/fingerprint-collector/cmd" for TLS; explicit "mitmproxy@<lost>" for http/auth layers | **WEAK Gate 1** (method tags landed; awaits §13 for PASS) |
@@ -702,17 +702,8 @@ also commit the artifact (or a sanitized derivative) under
    full re-capture with artifacts committed under
    `tools/fingerprint-collector/captures/<vendor>-<ts>.<ext>`.
 4. **§12-captures-relocation**: **Owner decision 2026-05-26: 全部重抓计划**
-   — don't search for the old `/tmp/fingerprint-data/*` artifacts. Path
-   strings in current `_field_sources` are to be marked `superseded by
-   planned full re-capture` (handled inside slice 3 above). When the full
-   re-capture lands, profile JSONs get fresh `_field_sources` pointing to
-   newly-committed `tools/fingerprint-collector/captures/<vendor>-<ts>.<ext>`.
-   The re-capture itself is **§13-full-recapture** — plan landed
-   2026-05-26 at
-   [docs/process/plans/2026-05-26-w11f-section13-full-recapture-plan.md](../plans/2026-05-26-w11f-section13-full-recapture-plan.md).
-   Owner-driven (each vendor CLI runs through mitmproxy + addon); Claude
-   updates profile JSONs + flips §12.2 verdicts WEAK → PASS per
-   incoming jsonl.
+   — superseded by **§13 full-recapture** which is now **PARTIALLY
+   LANDED** (this commit). See §13 below for per-vendor status.
 
 ### 12.7 Mutation discriminator for this audit subsection
 
@@ -721,5 +712,43 @@ a re-audit + capture work, the §11 Gate 1 enforcement loses its anchor.
 The mutation discriminator: any commit that flips a verdict from FAIL /
 WEAK → PASS in this table must cite (a) the new capture artifact path
 that resolves the gap and (b) the slice (§12-anthropic-cc-fields /
-§12-method-tags / §12-captures-relocation) that landed it. Codex
-per-commit review must HIGH-block a verdict flip without those citations.
+§12-method-tags / §12-captures-relocation / §13-full-recapture) that
+landed it. Codex per-commit review must HIGH-block a verdict flip without
+those citations.
+
+## 13. §13 full re-capture — partial run 2026-05-26
+
+Per-vendor execution status (this commit lands captures + per-vendor
+findings; profile JSON updates for drifted vendors are separate slices).
+
+| Vendor | Capture run | Result | Verdict change | Next |
+|---|---|---|---|---|
+| **Anthropic** (claude.exe 2.1.112) | `captures/clienthello-1779786896.jsonl` | **CLEAN MATCH** — all TLS fields byte-for-byte identical to existing template; alpn_protocols=['http/1.1'] verified by mitmproxy addon directly (not inferred) | ✅ WEAK → **PASS** (this commit) | nothing — locked in |
+| **Codex CLI** (codex-cli 0.128.0) | `captures/clienthello-1779787015.jsonl` | **INVALID for profile use** — OAuth refresh token expired (`invalid_grant: Invalid refresh token`); 9 chatgpt.com ClientHellos captured all have `raw_len=167` + 18 ciphers + 7 extensions = OAuth-refresh shape, NOT model-API-call shape (which template's 30-cipher / 11-ext recorded) | ⏸ stays **WEAK** | Owner: `codex login` to refresh OAuth, then re-run capture step from §13 plan. New slice: **§13a-codex-recapture**. |
+| **Gemini Advanced** (gemini 0.42.0) | `captures/clienthello-1779787154.jsonl` | **REAL DRIFT detected** vs existing template (which was captured at 0.41.2 in 2026-05-14): model API ALPN `["h2","http/1.1"]` → `[]` (138 ClientHellos to cloudcode-pa.googleapis.com all empty ALPN). Extension list dropped ext-16 (ALPN extension itself, consistent with no-ALPN advertisement). Ciphers (52 entries) still match. Telemetry endpoint play.googleapis.com gained `["http/1.1"]` ALPN. The 0.41.2 → 0.42.0 Node.js TLS stack reconfigured ALPN handling. | ⏸ stays **WEAK** (drift detected; template needs update before PASS) | Update `gemini-advanced.json` `alpn_protocols=[]`, drop ext-16, recompute ja3 + ja3_hash from raw_hex, update tls_variants for 0.42.0 reality. New slice: **§13b-gemini-drift-fix**. |
+| **Kiro CLI** (kiro 0.12.184) | (none) | **NO CAPTURE** — `kiro <prompt>` invocation does not run model API; Kiro is an IDE (Code-OSS fork), not a CLI. No model API traffic generated. | ⏸ stays **WEAK** | Owner: open Kiro IDE interactively with mitmproxy proxy configured, invoke the AI chat panel to generate one model API call. New slice: **§13c-kiro-recapture**. |
+
+### 13.1 What this commit adds
+
+- 3 captures committed: `captures/clienthello-1779786896.jsonl` (Anthropic, 2 records inc. api.anthropic.com), `clienthello-1779787015.jsonl` (Codex, 15 records — only side-channel / OAuth-refresh material), `clienthello-1779787154.jsonl` (Gemini, 166 records inc. 138 cloudcode-pa hits showing drift)
+- `templates/anthropic-claude-code.json` `_field_sources` updated to cite §13 capture as the primary TLS provenance + drop the "/tmp lost; pending re-capture" stub.
+- §12.2 verdict table: anthropic flipped to **PASS** with full Gate 1 (a)(b)(c)(d) all ✅.
+
+### 13.2 Mutation discriminator for §13 partial-run state
+
+The 3 follow-up slices (§13a / §13b / §13c) must each cite their own
+fresh capture jsonl in commit messages when landing. Codex per-commit
+review must HIGH-block a Codex / Gemini / Kiro verdict flip to PASS
+without the corresponding new jsonl artifact path in the commit message.
+
+### 13.3 Cross-cutting finding — Gemini CLI 0.41.2 → 0.42.0 ALPN regression?
+
+Surfaced for Owner attention but not blocking: the 0.41.2 → 0.42.0 jump
+appears to have removed h2 ALPN advertisement from the model-API code
+path while ADDING `["http/1.1"]` ALPN to the play.googleapis.com
+telemetry path. Whether this is intentional Google upstream simplification
+(both endpoints now run h1.1 anyway) or an unintended HttpsAgent config
+change is unknown. The cipher list (52 entries) is identical, so the
+Node.js TLS stack itself didn't change — only the ALPN extension
+configuration. Recorded here in case a future fingerprint-evolution
+audit needs the breadcrumb.
