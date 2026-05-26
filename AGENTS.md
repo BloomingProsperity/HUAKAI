@@ -606,3 +606,59 @@ If `codex exec review` syntax errors with "unexpected argument" or "cannot be us
 - **spec 若规定一个测试,必须给出判别性的例子,而不只是测试意图。** 一条
   写「证明 X 驱动 Y」却没给「去掉 X 就改变 Y」的 fixture 的 spec,是不完整的
   spec —— 这正是 W3a 弱测试的根因(spec 例子用了非判别性的关键字)。
+
+## Per-Vendor Fingerprint Capture Discipline (added 2026-05-26 Owner directive)
+
+> Owner: "官方用啥我们就整啥！"
+> 触发: W11-F F-1.g attempt-2 把 undici-h2-allowH2 baseline 提为"first evidence"
+> 时,几乎踩坑去翻 anthropic-claude-code.json profile。后续 cross-validation
+> 显示 undici 跟 httpx 的 h2 SETTINGS 完全不同 (6 个参数全不一样,pseudo
+> 顺序不同),证明"任意 h2 库 baseline ≈ 官方 client"是错觉。
+
+每个 vendor profile (`tools/fingerprint-collector/templates/*.json`) 的字段
+**只能**来自该 vendor **第一方官方 client** (CLI / 桌面 app / 官方 SDK 实际
+跑出来的字节) 的真实捕获。**不允许**:
+
+1. 凭借鉴项目 (cliproxyapi / clewdr / sub2api / ...) 的实现选择反推 profile
+   字段。借鉴项目自己也只是猜或自己抓的,且可能为了 Cloudflare 反爬等独立
+   原因选了不同的 stack。
+2. 凭"另一个 h2 库 baseline" 推断 profile。**不同库 h2 SETTINGS 差异极大** —
+   undici 发 2 参数 (INITIAL_WINDOW_SIZE=262144), httpx 发 6 参数
+   (INITIAL_WINDOW_SIZE=65535) — 两者都基于 BoringSSL/OpenSSL 但 wire 字节
+   完全不同。**任何 h2 库的捕获只能代表该库本身**。
+3. 凭"官方 SDK 源码读了应该是 X"推断 profile。SDK 默认行为 ≠ 被识别为
+   该 vendor 的官方 CLI/桌面 app 行为 (例如 Anthropic Node/Python SDK 默认都
+   走 h1.1,但 Claude Code CLI 二进制是不是 h2 完全未知,需要实测)。
+
+### Capture method 要求
+
+- **第一方 CLI 真捕获**: 跑该 vendor 官方 CLI / 桌面 app,捕获工具放
+  `tools/fingerprint-collector/` 下,output 走 `captures/<vendor>-<ts>.jsonl`,
+  并在 profile JSON 的 `_field_sources` 字段写明 `capture: <relative-path>`
+  (参考 codex-cli.json/gemini-advanced.json/kiro-cli.json 现有写法)。
+- **若被动 pcap 抓不到** (如 h2 SETTINGS 需要 TLS 解密),使用本地 h2 终结
+  服务器 (`h2_capture_server.py`) + 真 CLI 通过 hosts override +
+  `NODE_EXTRA_CA_CERTS` 等机制驱动 CLI 命中本地服务器。**绝对不允许**
+  用合成探针 (`undici_probe.mjs`, `httpx_h2_probe.py`) 的数据填 profile 字段;
+  它们只能作为 reference baseline 留在 `captures/` 供对照。
+- profile JSON `_field_sources` 必须可追溯到捕获工具 + 时间戳 + 驱动 CLI 版本。
+
+### Enforcement
+
+- **codex per-commit review + 切片交叉评审必须**把以下情况标为 finding,
+  阻断合入:
+  - 任何 profile JSON 字段 (`alpn_protocols` / `h2_settings.*` / `cipher_suites` /
+    `extensions` / `sig_algos` / `header_order` / `user_agent` / 其它) 的改动,
+    其 commit message 或 `_field_sources` 引用不到该 vendor 第一方 CLI 真实
+    capture 的 jsonl/pcap/metadata 文件。
+  - 任何 commit message 用"借鉴项目 X 也是这样"或"另一个 h2 库 baseline 显示"
+    作为 profile 改动的 sole 论据。
+  - 任何 profile 字段引用了 `captures/` 下的合成探针 (probe) 输出而非真 CLI
+    输出 (合成探针文件名通常带 `-probe.*` 或目录 `clients/`)。
+- 真 CLI capture 受限于 vendor (新 API key、新 CLI 版本)。若 capture 暂不可
+  得,profile 字段保持上一次真捕获值 + `_field_sources` 注明 "pending re-capture"
+  + 在 `docs/process/release-readiness/W11-F-F1-status.md` 记录待办,**不要
+  改字段为推断值**。
+- 反例参考: `docs/process/release-readiness/W11-F-F1g-h2-stack-divergence-finding.md`
+  (undici vs httpx h2 stack 差异详表) — 用作以后任何"反正都是 h2 都差不多"
+  论据的 counter-evidence。

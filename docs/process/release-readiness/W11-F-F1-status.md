@@ -232,3 +232,87 @@ exists; profile promotion is the next gated step.
    clients for the other 3 profiles (extend `clients/` with
    probes for Python httpx, Go net/http for ecosystem coverage).
 5. Update §2 table once any profile flips to Released-eligible.
+
+## 9. F-1.g cross-validation finding — 2026-05-26 (h2 stack divergence)
+
+Related: [W11-F-F1g-h2-stack-divergence-finding.md](W11-F-F1g-h2-stack-divergence-finding.md).
+
+After dcee914 landed (undici v7 h2 baseline captured), Owner challenged
+whether the captured data was "really what F-1.g needs". Two follow-up
+investigations:
+
+### 9.1 Reading official SDK source (clean-room L0)
+
+- **`anthropics/anthropic-sdk-typescript@32ce8c0` (MIT, 2d fresh)**:
+  `src/internal/shims.ts:13-21` returns global `fetch` as-is;
+  `src/client.ts:530` uses it directly. No custom undici Dispatcher, no
+  `allowH2` set anywhere in `src/`. **Node SDK default = h1.1**.
+- **`anthropics/anthropic-sdk-python@5db69c6` (MIT, 2d fresh)**: grep over
+  `src/` for `http2=` / `HTTP2` / `allow_h2` returns zero matches. SDK uses
+  `httpx.Client` / `httpx.AsyncClient` with default config. **Python SDK
+  default = h1.1**.
+
+### 9.2 Cross-library h2 fingerprint capture (Owner direction "拓 Python SDK 作交叉验证")
+
+Drove `httpx_h2_probe.py` (httpx 0.28.1 + h2 4.3.0 with `http2=True`)
+through the local capture server. Result file:
+`tools/fingerprint-collector/captures/h2-server-1779774012.jsonl`.
+
+Side-by-side comparison with dcee914's undici baseline:
+
+| Field | undici (h2-server-1779761396.jsonl) | httpx (h2-server-1779774012.jsonl) |
+|---|---|---|
+| SETTINGS payload bytes | `000200000000000400040000` (12B) | `00010000100000020000000000040000ffff000500004000000300000064000600010000` (36B) |
+| SETTINGS param count | **2** | **6** (all standard params present) |
+| HEADER_TABLE_SIZE | (omitted) | 4096 |
+| ENABLE_PUSH | 0 | 0 |
+| INITIAL_WINDOW_SIZE | **262144** | **65535** |
+| MAX_FRAME_SIZE | (omitted) | 16384 |
+| MAX_CONCURRENT_STREAMS | (omitted) | 100 |
+| MAX_HEADER_LIST_SIZE | (omitted) | 65536 |
+| Pseudo-header order | `:authority, :method, :path, :scheme` (alphabetical) | `:method, :authority, :scheme, :path` (HTTP semantic) |
+| Auto-added regular headers | content-length | **accept-encoding `gzip, deflate, br, zstd`** + content-length |
+
+### 9.3 Conclusions
+
+- **Two independent h2 libraries on the same OS / same TLS stack produce
+  utterly different on-wire fingerprints.** Every SETTINGS param differs in
+  presence or value; pseudo-header order differs; httpx silently injects
+  `accept-encoding` that undici doesn't. There is NO "generic h2 baseline" —
+  every library has its own per-byte fingerprint.
+- **Anthropic Node SDK + Python SDK both default to h1.1** (per source). The
+  existing `templates/anthropic-claude-code.json` `alpn_protocols: ["http/1.1"]`
+  is **CONSISTENT** with what both official SDKs actually send.
+- **cliproxyapi's choice to use h2 + Chrome utls for api.anthropic.com**
+  (per `router-for-me/CLIProxyAPI@21fad9d:internal/runtime/executor/helps/utls_client.go:81-103,131-150`)
+  is for **Claude Code CLI binary** mimicry, NOT for SDK mimicry. cliproxyapi's
+  claim "match real Claude Code's TLS behavior" is undocumented (no capture
+  cited in their repo). It may be aspirational or based on the SEA-bundled
+  BoringSSL assumption.
+- **The undici-allowH2 capture committed in dcee914** is a synthetic
+  experimental baseline. It does NOT represent: (a) Anthropic Node SDK default
+  (SDK doesn't enable h2); (b) Claude Code CLI binary (CC's actual transport
+  unknown, opaque SEA exe); (c) any production Anthropic-bound client we've
+  confirmed. Re-labeled as `undici-h2-explicit-baseline`, NOT applied to any
+  profile.
+
+### 9.4 Effect on F-1.g closure
+
+| Step | Status after cross-val |
+|---|---|
+| Promote `anthropic-claude-code.json` `h2_settings.available` to `true` | **BLOCKED** — no evidence supports it. Both SDKs use h1.1; CC CLI binary unknown. Requires option (b) real capture from `claude` CLI through local server (needs Owner API key rotation). |
+| Change `anthropic-claude-code.json` `alpn_protocols` to `["h2", "http/1.1"]` | **DEFER** — current `["http/1.1"]` aligns with both SDK defaults. Re-evaluate after option (b) capture confirms whether CC binary advertises h2. |
+| dcee914 capture utility | **KEEP** — pipeline is valid. Capture re-labeled. JSONL kept under `captures/` as `undici-h2-explicit-baseline`. |
+| F-1.e (HTTP/2 fork outbound client integration) | **KEEP DEFERRED** — fork code itself is fine; the question of "which profile should outbound-h2 be applied to" is the gating decision, and we don't have an answer yet for Anthropic. |
+| Per-vendor capture discipline | **CODIFIED** — `AGENTS.md` new section "Per-Vendor Fingerprint Capture Discipline" makes the "official-CLI real-capture only" rule reviewable + enforceable. |
+
+### 9.5 Mutation discriminator for the new AGENTS.md rule
+
+If a future commit changes any field in `templates/<vendor>.json` and the
+commit message / `_field_sources` cannot point to a `captures/<vendor>-<ts>.jsonl`
+or `output/<vendor>/clienthello-template.json` file, codex per-commit review
+MUST flag HIGH and block. This is the discriminator: a commit that says
+"changed alpn to [\"h2\", \"http/1.1\"] because cliproxyapi does this" with
+no capture citation → must red. A commit that says "changed alpn per
+`captures/anthropic-cc-cli-1779800000.jsonl` capture from `claude --version
+2.1.112` on 2026-05-27" → green.
