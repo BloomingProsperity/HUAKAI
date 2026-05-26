@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	dbhermes "github.com/BloomingProsperity/HUAKAI/internal/db/hermes"
 	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
@@ -138,6 +139,51 @@ func TestBridgePersistFailureEmitsErrorAndSuppressesDone(t *testing.T) {
 	}
 	if !strings.Contains(got, "event: error") || !strings.Contains(got, "persist_failed") {
 		t.Fatalf("body=%q want persist_failed error event", got)
+	}
+}
+
+func TestBridgeDoesNotPersistDoneAfterConversationDelete(t *testing.T) {
+	// Regression: a stream that started before DELETE must not append a post-delete message or forward done.
+	store := newBridgeStore()
+	key := conversationKey{tenantID: 7, id: 66}
+	store.conversations[key] = dbhermes.HermesConversation{ID: 66, TenantID: 7, OwnerUserID: 42}
+	bridge := mustBridge(t, store)
+	prepared, err := bridge.PrepareRequest(context.Background(), Request{
+		TenantID: 7, UserID: 42, RequestID: "req-delete-race",
+		Body: []byte(`{"conversation_id":66,"messages":[{"role":"user","content":"hi"}]}`),
+	})
+	if err != nil {
+		t.Fatalf("PrepareRequest: %v", err)
+	}
+	commitsBeforeDelete := store.committedTxs
+	row := store.conversations[key]
+	row.DeletedAt = pgtype.Timestamptz{Time: time.Unix(1700000001, 0).UTC(), Valid: true}
+	store.conversations[key] = row
+
+	rec := httptest.NewRecorder()
+	err = bridge.Stream(context.Background(), rec, sseResponse(
+		"event: token\n"+
+			"data: {\"delta\":\"late\"}\n\n"+
+			"event: done\n"+
+			"data: {\"finish_reason\":\"stop\",\"total_tokens\":5}\n\n",
+	), prepared)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	got := rec.Body.String()
+	if strings.Contains(got, "event: done") {
+		t.Fatalf("body=%q must not forward done after conversation delete", got)
+	}
+	if !strings.Contains(got, "event: error") || !strings.Contains(got, "persist_failed") {
+		t.Fatalf("body=%q want persist_failed error event after delete", got)
+	}
+	// Mutation check: if AppendMessage or the SQL active-conversation guard is removed, this records a post-delete message.
+	if len(store.appended) != 0 || store.touchedConversationID != 0 || store.auditArg.Action != "" {
+		t.Fatalf("append/touch/audit=%d/%d/%q want no post-delete writes", len(store.appended), store.touchedConversationID, store.auditArg.Action)
+	}
+	if store.committedTxs != commitsBeforeDelete {
+		t.Fatalf("committed txs=%d before=%d want rollback after deleted conversation", store.committedTxs, commitsBeforeDelete)
 	}
 }
 
@@ -598,6 +644,10 @@ func (s *bridgeStore) AppendMessage(_ context.Context, arg dbhermes.AppendMessag
 	if s.appendErr != nil {
 		return 0, s.appendErr
 	}
+	row, ok := s.conversations[conversationKey{tenantID: arg.TenantID, id: arg.ConversationID}]
+	if !ok || row.DeletedAt.Valid {
+		return 0, pgx.ErrNoRows
+	}
 	s.appended = append(s.appended, arg)
 	return int64(len(s.appended)), nil
 }
@@ -623,11 +673,20 @@ func (s *bridgeStore) GetConversation(_ context.Context, arg dbhermes.GetConvers
 	return row, nil
 }
 
+func (s *bridgeStore) ListConversationsByOwner(context.Context, dbhermes.ListConversationsByOwnerParams) ([]dbhermes.HermesConversation, error) {
+	return nil, nil
+}
+
+func (s *bridgeStore) ListMessagesByConversation(context.Context, dbhermes.ListMessagesByConversationParams) ([]dbhermes.HermesMessage, error) {
+	return nil, nil
+}
+
 func (s *bridgeStore) UpdateConversationLastMessageAt(_ context.Context, arg dbhermes.UpdateConversationLastMessageAtParams) (int64, error) {
-	s.touchedConversationID = arg.ID
-	if _, ok := s.conversations[conversationKey{tenantID: arg.TenantID, id: arg.ID}]; !ok {
+	row, ok := s.conversations[conversationKey{tenantID: arg.TenantID, id: arg.ID}]
+	if !ok || row.DeletedAt.Valid {
 		return 0, nil
 	}
+	s.touchedConversationID = arg.ID
 	return 1, nil
 }
 
@@ -707,6 +766,10 @@ func (s *bridgeStore) ListProfilesByTenant(context.Context, int64) ([]dbhermes.H
 
 func (s *bridgeStore) ProfileInUse(context.Context, dbhermes.ProfileInUseParams) (bool, error) {
 	return false, nil
+}
+
+func (s *bridgeStore) SoftDeleteConversation(context.Context, dbhermes.SoftDeleteConversationParams) (int64, error) {
+	return 0, nil
 }
 
 func (s *bridgeStore) UpsertSettings(context.Context, dbhermes.UpsertSettingsParams) (dbhermes.HermesSetting, error) {

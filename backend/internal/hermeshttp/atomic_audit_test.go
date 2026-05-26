@@ -74,6 +74,67 @@ func TestProfileCreate_AtomicWithAudit(t *testing.T) {
 	}
 }
 
+func TestConversationDelete_AtomicWithAudit(t *testing.T) {
+	// Regression: conversation delete and hermes.conversation.delete audit must commit or roll back together.
+	recorder := &atomicSQLRecorder{conversationID: 901, conversationTenantID: 7, conversationOwnerUserID: 42}
+	tx := &atomicTx{recorder: recorder}
+	beginner := &atomicBeginner{tx: tx}
+	service := hermes.NewServiceWithTx(dbhermes.New(&atomicBaseDB{recorder: recorder}), beginner)
+	router := NewRouter(service, nil)
+	req := newAtomicHermesRequest(http.MethodDelete, "/conversations/901", ``)
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	// Mutation check: moving SoftDeleteConversation or InsertAuditEvent outside BeginTx increments baseQueries or loses tx counters.
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s want 204", resp.Code, resp.Body.String())
+	}
+	if recorder.txConversationReads != 1 || recorder.txConversationSoftDeletes != 1 || recorder.auditWrites != 1 {
+		t.Fatalf("tx reads=%d deletes=%d audits=%d want 1/1/1",
+			recorder.txConversationReads, recorder.txConversationSoftDeletes, recorder.auditWrites)
+	}
+	if beginner.beginCount != 1 || tx.commitCount != 1 || tx.rollbackCount != 0 {
+		t.Fatalf("tx outcome begin=%d commit=%d rollback=%d want begin=1 commit=1 rollback=0",
+			beginner.beginCount, tx.commitCount, tx.rollbackCount)
+	}
+	if recorder.auditAction != hermes.ActionConversationDelete {
+		t.Fatalf("audit action=%q want %q", recorder.auditAction, hermes.ActionConversationDelete)
+	}
+	if recorder.baseQueries != 0 {
+		t.Fatalf("base DB used outside transaction %d times", recorder.baseQueries)
+	}
+}
+
+func TestConversationDelete_SecondDeleteIsIdempotent(t *testing.T) {
+	// Regression: repeating DELETE on an owned conversation must not surface 410/404 to the client.
+	recorder := &atomicSQLRecorder{conversationID: 902, conversationTenantID: 7, conversationOwnerUserID: 42}
+	tx := &atomicTx{recorder: recorder}
+	beginner := &atomicBeginner{tx: tx}
+	service := hermes.NewServiceWithTx(dbhermes.New(&atomicBaseDB{recorder: recorder}), beginner)
+	router := NewRouter(service, nil)
+
+	firstReq := newAtomicHermesRequest(http.MethodDelete, "/conversations/902", ``)
+	firstResp := httptest.NewRecorder()
+	router.ServeHTTP(firstResp, firstReq)
+	if firstResp.Code != http.StatusNoContent {
+		t.Fatalf("first status=%d body=%s want 204", firstResp.Code, firstResp.Body.String())
+	}
+
+	secondReq := newAtomicHermesRequest(http.MethodDelete, "/conversations/902", ``)
+	secondResp := httptest.NewRecorder()
+	router.ServeHTTP(secondResp, secondReq)
+
+	// Mutation check: reusing GetConversation's ErrGone path for DELETE returns 410 and fails here.
+	if secondResp.Code != http.StatusNoContent {
+		t.Fatalf("second status=%d body=%s want 204 for idempotent delete", secondResp.Code, secondResp.Body.String())
+	}
+	if recorder.auditWrites != 2 || beginner.beginCount != 2 || tx.commitCount != 2 || recorder.txConversationSoftDeletes != 1 {
+		t.Fatalf("audit=%d begin=%d commit=%d softDeletes=%d want two audited commits and one physical soft delete",
+			recorder.auditWrites, beginner.beginCount, tx.commitCount, recorder.txConversationSoftDeletes)
+	}
+}
+
 func newAtomicHermesRequest(method, path, body string) *http.Request {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -87,10 +148,18 @@ func newAtomicHermesRequest(method, path, body string) *http.Request {
 type atomicSQLRecorder struct {
 	auditErr error
 
-	txSettingsWrites int
-	txProfileCreates int
-	auditWrites      int
-	baseQueries      int
+	txSettingsWrites          int
+	txProfileCreates          int
+	txConversationReads       int
+	txConversationSoftDeletes int
+	auditWrites               int
+	auditAction               string
+	baseQueries               int
+
+	conversationID          int64
+	conversationTenantID    int64
+	conversationOwnerUserID int64
+	conversationDeleted     bool
 }
 
 type atomicBaseDB struct {
@@ -158,7 +227,12 @@ func (tx *atomicTx) Prepare(context.Context, string, string) (*pgconn.StatementD
 	return nil, errors.New("prepare not used")
 }
 
-func (tx *atomicTx) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+func (tx *atomicTx) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
+	if strings.Contains(sql, "UPDATE hermes_conversations") {
+		tx.recorder.txConversationSoftDeletes++
+		tx.recorder.conversationDeleted = true
+		return pgconn.NewCommandTag("UPDATE 1"), nil
+	}
 	return pgconn.NewCommandTag("UPDATE 1"), nil
 }
 
@@ -194,8 +268,28 @@ func (tx *atomicTx) QueryRow(_ context.Context, sql string, args ...any) pgx.Row
 			*dest[8].(*pgtype.Timestamptz) = atomicPGTime()
 			return nil
 		}}
+	case strings.Contains(sql, "FROM hermes_conversations"):
+		tx.recorder.txConversationReads++
+		return atomicRow{scan: func(dest ...any) error {
+			*dest[0].(*int64) = tx.recorder.conversationID
+			*dest[1].(*int64) = tx.recorder.conversationTenantID
+			*dest[2].(*int64) = tx.recorder.conversationOwnerUserID
+			*dest[3].(**string) = nil
+			*dest[4].(*pgtype.Timestamptz) = atomicPGTime()
+			*dest[5].(*pgtype.Timestamptz) = atomicPGTime()
+			*dest[6].(*pgtype.Timestamptz) = pgtype.Timestamptz{}
+			if tx.recorder.conversationDeleted {
+				*dest[7].(*pgtype.Timestamptz) = atomicPGTime()
+			} else {
+				*dest[7].(*pgtype.Timestamptz) = pgtype.Timestamptz{}
+			}
+			return nil
+		}}
 	case strings.Contains(sql, "INSERT INTO hermes_audit_events"):
 		tx.recorder.auditWrites++
+		if len(args) > 3 {
+			tx.recorder.auditAction, _ = args[3].(string)
+		}
 		return atomicRow{scan: func(dest ...any) error {
 			if tx.recorder.auditErr != nil {
 				return tx.recorder.auditErr

@@ -331,6 +331,14 @@ func (s *hermesAuditStoreSpy) GetConversation(context.Context, dbhermes.GetConve
 	return dbhermes.HermesConversation{}, nil
 }
 
+func (s *hermesAuditStoreSpy) ListConversationsByOwner(context.Context, dbhermes.ListConversationsByOwnerParams) ([]dbhermes.HermesConversation, error) {
+	return nil, nil
+}
+
+func (s *hermesAuditStoreSpy) ListMessagesByConversation(context.Context, dbhermes.ListMessagesByConversationParams) ([]dbhermes.HermesMessage, error) {
+	return nil, nil
+}
+
 func (s *hermesAuditStoreSpy) GetProfile(context.Context, dbhermes.GetProfileParams) (dbhermes.HermesApiProfile, error) {
 	return dbhermes.HermesApiProfile{}, nil
 }
@@ -360,6 +368,10 @@ func (s *hermesAuditStoreSpy) ListProfilesByTenant(context.Context, int64) ([]db
 
 func (s *hermesAuditStoreSpy) ProfileInUse(context.Context, dbhermes.ProfileInUseParams) (bool, error) {
 	return false, nil
+}
+
+func (s *hermesAuditStoreSpy) SoftDeleteConversation(context.Context, dbhermes.SoftDeleteConversationParams) (int64, error) {
+	return 0, nil
 }
 
 func (s *hermesAuditStoreSpy) UpdateConversationLastMessageAt(context.Context, dbhermes.UpdateConversationLastMessageAtParams) (int64, error) {

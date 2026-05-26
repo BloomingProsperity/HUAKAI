@@ -539,6 +539,9 @@ func (b *Bridge) persistDone(ctx context.Context, prepared PreparedRequest, stat
 			Content: content, TokenCount: totalTokensFromDone(doneData), CompletedAt: completedAt,
 		})
 		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("%w: conversation is not active", hermes.ErrGone)
+			}
 			return fmt.Errorf("append hermes message: %w", err)
 		}
 		rows, err := store.UpdateConversationLastMessageAt(ctx, dbhermes.UpdateConversationLastMessageAtParams{
@@ -548,7 +551,7 @@ func (b *Bridge) persistDone(ctx context.Context, prepared PreparedRequest, stat
 			return fmt.Errorf("touch hermes conversation: %w", err)
 		}
 		if rows == 0 {
-			return hermes.ErrNotFound
+			return fmt.Errorf("%w: conversation is not active", hermes.ErrGone)
 		}
 		auditErr = b.recordMessageAudit(ctx, store, prepared, conversationID, now)
 		return nil
