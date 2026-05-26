@@ -151,8 +151,8 @@ phase-1 cursor 风险面比想象低。**
 | Slice | 工时 | 阻塞依赖 | 谁 |
 | --- | --- | --- | --- |
 | C0 | 0.5–1 天 + Owner 拍板 | 无 | Owner 主导 |
-| C1 | 1–1.5 天 | C0 done | codex 实施 + Claude review |
-| C2 | 1.5–2 天 | C0 + C1 done | codex + Claude review |
+| C1 | 1–1.5 天 | **无**(可与 C0 并行;C1 只接现有 HUAKAI adapter 进 store contract,extra 字段名 `cursor_checksum`/`cursor_client_version`/`cookie` 已在 cursor_session.go 用,不来自真流量) | codex 实施 + Claude review |
+| C2 | 1.5–2 天 | C0 done(`access_token == session_token` 假设需 verify)+ C1 done | codex + Claude review |
 | C3 | 2–3 天 | C2 + checksum 证据 | 看 D-3 |
 | C4 | 4–7 天 | D-4 拍板 | 看 D-4 |
 | C5 | 1 天 | C2(+ C3/C4 看选项) | codex |
