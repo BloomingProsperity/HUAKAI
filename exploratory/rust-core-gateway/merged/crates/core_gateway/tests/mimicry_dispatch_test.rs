@@ -184,9 +184,16 @@ fn dispatch_blocks_codex_profile_when_openssl_adapter_is_not_compiled() {
     assert!(!is_dispatch_allowed(&decision));
 }
 
-/// W11-E D-10 落地后, resolver 先调 backend_intent() → kiro 的 rustls 模板得到具体
-/// "tls_backend=rustls" + "mimicry path" 拒绝原因, 不再被 feature 旗子绕过成 Boring。
-/// mutation: 删 backend_resolver 的 intent-first check → 返回 Boring → !is_dispatch_allowed 红。
+/// W11-F F-2.2 D-S3 (Owner-approved 2026-05-24): kiro now routes through
+/// `kiro_cli_known_gap_fields()` returning the `real_upstream_capture` gap,
+/// so production dispatch returns `BlockKnownGap` (cautious default) until
+/// F-2.5 real-upstream verification lands. Previously the resolver returned
+/// `BlockUnsupportedTemplate { tls_backend=rustls }`. Test name kept for git
+/// history continuity; the new contract still keeps kiro out of production
+/// dispatch, just via the KnownGap path.
+///
+/// mutation: clear `kiro_cli_known_gap_fields()` without F-2.5 evidence →
+/// resolver falls back to a non-blocked path → `!is_dispatch_allowed` red.
 #[test]
 fn dispatch_blocks_kiro_rustls_profile_after_burn_the_boats() {
     let profile = load_builtin_profile(BuiltinProfile::KiroCli).expect("kiro profile 应加载");
@@ -194,23 +201,32 @@ fn dispatch_blocks_kiro_rustls_profile_after_burn_the_boats() {
     let decision = decide_dispatch(&profile);
 
     match &decision {
-        DispatchDecision::BlockUnsupportedTemplate { reason } => {
+        DispatchDecision::BlockKnownGap { reason } => {
             assert!(
-                reason.contains("tls_backend=rustls"),
-                "kiro rustls profile 必须指明 tls_backend=rustls 拒绝原因，实际: {reason}"
-            );
-            assert!(
-                reason.contains("mimicry path"),
-                "kiro rustls profile 必须指明走 mimicry path 修法，实际: {reason}"
+                reason.contains("real_upstream_capture"),
+                "kiro F-2.2 D-S3 KnownGap reason 必须来自 real_upstream_capture 缺失，\
+                 实际: {reason}"
             );
         }
-        decision => panic!("kiro rustls profile 必须被生产 dispatch 阻断为 UnsupportedTemplate，实际: {decision:?}"),
+        decision => panic!(
+            "kiro F-2.2 D-S3 必须被生产 dispatch 阻断为 BlockKnownGap (real-upstream pending)，\
+             实际: {decision:?}"
+        ),
     }
     assert!(!is_dispatch_allowed(&decision));
 }
 
-/// W11-E D-10 落地后, gemini 的 nodejs 模板得到具体 "tls_backend=nodejs" 拒绝原因。
-/// mutation: 删 backend_resolver 的 intent-first check → 返回 Boring → !is_dispatch_allowed 红。
+/// W11-F §14b.2 (2026-05-27): gemini's nodejs template used to be classified
+/// `BlockUnsupportedTemplate` because HUAKAI couldn't reproduce Chrome's
+/// cert_compression + ALPS wire bytes. §14b.2 wired both extensions and
+/// added the key_share fix; the resolver now allows gemini via boring
+/// (`AllowBoring`). Test name kept for git history continuity; the new
+/// contract locks the dispatchable outcome — a future regression that
+/// breaks §14b.2 turns this red.
+///
+/// mutation: revert §14b.2's `apply_application_settings` call in
+/// `client_hello_builder.rs::configure_boring_connection` → gemini wire
+/// JA3 mismatches → eventually production dispatch should re-classify.
 #[test]
 fn dispatch_blocks_gemini_unsupported_template_profile() {
     let profile =
@@ -219,15 +235,17 @@ fn dispatch_blocks_gemini_unsupported_template_profile() {
     let decision = decide_dispatch(&profile);
 
     match &decision {
-        DispatchDecision::BlockUnsupportedTemplate { reason } => {
-            assert!(
-                reason.contains("nodejs"),
-                "gemini nodejs backend 必须留在 unsupported block 并指明，实际: {reason}"
-            );
-        }
-        decision => panic!("gemini builtin 必须被 BlockUnsupportedTemplate 拒绝，实际: {decision:?}"),
+        DispatchDecision::AllowBoring => { /* expected post-§14b.2 */ }
+        DispatchDecision::AllowOpenSsl => { /* also acceptable */ }
+        decision => panic!(
+            "gemini §14b.2 解锁后必须被 dispatch 接受 (AllowBoring 或 AllowOpenSsl)，\
+             实际: {decision:?}"
+        ),
     }
-    assert!(!is_dispatch_allowed(&decision));
+    assert!(
+        is_dispatch_allowed(&decision),
+        "gemini §14b.2 必须 is_dispatch_allowed == true"
+    );
 }
 
 #[cfg(feature = "mimicry-openssl")]

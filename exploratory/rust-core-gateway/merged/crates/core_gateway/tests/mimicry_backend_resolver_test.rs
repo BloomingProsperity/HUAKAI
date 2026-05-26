@@ -19,19 +19,34 @@ fn resolves_codex_to_openssl() {
     assert_eq!(backend, MimicryBackend::Openssl);
 }
 
+/// W11-F F-2.2 synthesis D-S3 (Owner-approved 2026-05-24): kiro_cli now
+/// stays `KnownGapBlocked` until real-upstream capture verification against
+/// `q.us-east-1.amazonaws.com` lands (F-2.5). Earlier the resolver returned
+/// `Err(BackendResolverError::UnsupportedTemplate { tls_backend=rustls })`;
+/// the new contract returns `Ok(MimicryBackend::KnownGapBlocked { reason })`
+/// because real-upstream evidence outranks "template tls_backend is rustls"
+/// per synthesis §4. Locking the new contract here so a future commit that
+/// accidentally clears `kiro_cli_known_gap_fields()` before F-2.5 lands
+/// turns this test red.
 #[test]
 fn blocks_kiro_rustls_template_after_burn_the_boats() {
     let profile = load_builtin_profile(BuiltinProfile::KiroCli).expect("kiro profile 应加载");
 
-    let error = resolve_mimicry_backend("kiro", &profile, all_features())
-        .expect_err("kiro rustls template 不允许回退到生产 rustls dispatch");
+    let backend = resolve_mimicry_backend("kiro", &profile, all_features())
+        .expect("kiro 现在走 KnownGapBlocked (Ok)，不再是 UnsupportedTemplate (Err)");
 
-    match error {
-        BackendResolverError::UnsupportedTemplate { reason } => {
-            assert!(reason.contains("tls_backend=rustls"));
-            assert!(reason.contains("mimicry path"));
+    match backend {
+        MimicryBackend::KnownGapBlocked { reason } => {
+            assert!(
+                reason.contains("real_upstream_capture"),
+                "kiro F-2.2 D-S3 KnownGap reason 必须来自 real_upstream_capture 缺失，\
+                 实际: {reason}"
+            );
         }
-        error => panic!("应返回 UnsupportedTemplate，实际: {error:?}"),
+        other => panic!(
+            "kiro F-2.2 D-S3 现在应走 KnownGapBlocked (real-upstream capture pending)，\
+             实际: {other:?}"
+        ),
     }
 
     let diff = diff_capture_against_profile(&kiro_fixture_capture(), &profile);
@@ -91,12 +106,16 @@ fn all_features() -> AvailableMimicryFeatures {
 }
 
 fn kiro_fixture_capture() -> CapturedClientHello {
+    // W11-F F-2.2 D-S3: kiro's match_policy is now KnownGapBlocked (gap fields
+    // non-empty), so `compare_extension_ordered_subset` is used instead of the
+    // earlier `compare_extension_set`. The fixture's extension order must
+    // match the kiro template's extension order, not the reverse.
     CapturedClientHello {
         legacy_version: 772,
         cipher_suites: vec![
             52392, 49199, 49200, 52393, 49195, 49196, 4867, 4865, 4866, 255,
         ],
-        extensions: vec![13, 23, 35, 5, 11, 45, 0, 51, 43, 10],
+        extensions: vec![10, 43, 51, 0, 45, 11, 5, 35, 23, 13],
         supported_groups: vec![24, 23, 29, 4588],
         signature_algorithms: vec![1025, 1281, 1537, 2052, 2053, 2054, 2055, 1539, 1027, 1283],
         ec_point_formats: vec![0],

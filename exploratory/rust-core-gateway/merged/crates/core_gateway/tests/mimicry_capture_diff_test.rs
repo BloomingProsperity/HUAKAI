@@ -33,19 +33,27 @@ fn codex_known_gap_profile_is_blocked_but_diff_still_completes() {
     );
 }
 
+/// W11-F F-2.2 D-S3 (2026-05-24): kiro now stays `KnownGapBlocked` until
+/// F-2.5 real-upstream verification lands. The test originally exercised
+/// the `SampleSetRandomized` Subset/SetMatch semantics on the kiro
+/// builtin. Since kiro no longer hits that policy, the test was switched
+/// to anthropic (which IS SampleSetRandomized — see
+/// `mimicry_profile_match_policy_follows_template_evidence`). The
+/// `profile_blocked` assertion is removed because anthropic isn't a
+/// blocked template; the remaining Subset/SetMatch assertions still lock
+/// the SampleSetRandomized list-diff contract.
 #[test]
-fn kiro_sample_set_profile_reports_extension_subset_and_list_set_statuses() {
-    let profile = load_builtin_profile(BuiltinProfile::KiroCli).expect("kiro profile 应加载");
+fn anthropic_sample_set_profile_reports_extension_subset_and_list_set_statuses() {
+    let profile = load_builtin_profile(BuiltinProfile::AnthropicClaudeCode)
+        .expect("anthropic profile 应加载");
     assert_eq!(
         profile.match_policy(),
         ProfileMatchPolicy::SampleSetRandomized
     );
 
-    let matching_diff = diff_capture_against_profile(&fixture_capture(), &profile);
-    assert!(
-        matching_diff.profile_blocked,
-        "D3 后 kiro rustls profile 必须 blocked, 但字段 diff 仍应完整输出"
-    );
+    let baseline = anthropic_fixture_capture(&profile);
+
+    let matching_diff = diff_capture_against_profile(&baseline, &profile);
     assert!(
         matches!(
             &matching_diff.extensions,
@@ -64,7 +72,7 @@ fn kiro_sample_set_profile_reports_extension_subset_and_list_set_statuses() {
         "signature_algorithms 集合相同应为 SetMatch"
     );
 
-    let mut extension_extra = fixture_capture();
+    let mut extension_extra = baseline.clone();
     extension_extra.extensions.push(65000);
     let extension_extra_diff = diff_capture_against_profile(&extension_extra, &profile);
     match &extension_extra_diff.extensions {
@@ -78,14 +86,17 @@ fn kiro_sample_set_profile_reports_extension_subset_and_list_set_statuses() {
         "extension extras 只记录为 unexpected，不应让 SampleSetRandomized diff 失败"
     );
 
-    let mut mismatched = fixture_capture();
-    mismatched.supported_groups = vec![29, 23, 24, 65000];
+    let mut mismatched = baseline.clone();
+    let mut groups = profile.tls.supported_groups.clone();
+    groups.push(65000);
+    let removed = groups.remove(0);
+    mismatched.supported_groups = groups;
     let mismatch_diff = diff_capture_against_profile(&mismatched, &profile);
 
     match &mismatch_diff.supported_groups {
         ListFieldStatus::SetMismatch { extra, missing } => {
             assert_eq!(extra, &vec![65000]);
-            assert_eq!(missing, &vec![4588]);
+            assert_eq!(missing, &vec![removed]);
         }
         status => panic!("supported_groups 应输出 SetMismatch，实际: {status:?}"),
     }
@@ -274,12 +285,39 @@ fn capture_matching_profile(profile: &FingerprintProfile) -> CapturedClientHello
     captured
 }
 
+/// W11-F F-2.2 D-S3 follow-up: build a CapturedClientHello whose every
+/// field exactly matches the anthropic builtin profile, so the diff
+/// returns the "all-match" baseline statuses (Subset/SetMatch/Match).
+/// Used by `anthropic_sample_set_profile_reports_extension_subset_and_
+/// list_set_statuses` after that test switched away from kiro.
+fn anthropic_fixture_capture(profile: &FingerprintProfile) -> CapturedClientHello {
+    CapturedClientHello {
+        legacy_version: 772,
+        cipher_suites: profile.tls.cipher_suites.clone(),
+        extensions: profile.tls.extensions.clone(),
+        supported_groups: profile.tls.supported_groups.clone(),
+        signature_algorithms: profile.tls.signature_algorithms.clone(),
+        ec_point_formats: profile.tls.ec_point_formats.clone(),
+        alpn_protocols: profile.tls.alpn_protocols.clone(),
+    }
+}
+
 fn stable_kiro_profile() -> FingerprintProfile {
     let raw = stable_kiro_profile_json();
     FingerprintProfile::from_json(&raw.to_string()).expect("合成 stable kiro profile 应加载")
 }
 
 fn stable_kiro_profile_json() -> serde_json::Value {
+    // W11-F F-2.2 D-S3 (Owner-approved 2026-05-24): kiro's `mode = "kiro-cli"`
+    // routes through `kiro_cli_known_gap_fields()` which now returns the
+    // real_upstream_capture gap → match_policy always KnownGapBlocked,
+    // dominating any extension_order/tls_backend override. To exercise the
+    // ExactStable + UnsupportedTemplate paths from a synthesized fixture we
+    // re-key the mode to "anthropic-claude-code" (empty gap list) while
+    // keeping the rest of the kiro template values intact. The name
+    // `stable_kiro_profile_json` is preserved for git-history continuity but
+    // the synthesized profile is "kiro-shape + anthropic-mode" under the
+    // hood.
     let mut raw = serde_json::from_str::<serde_json::Value>(BuiltinProfile::KiroCli.raw_json())
         .expect("kiro raw JSON 应可解析");
     let ja3_hash = raw["ja3_hash"]
@@ -288,6 +326,7 @@ fn stable_kiro_profile_json() -> serde_json::Value {
         .to_owned();
     let ja4 = raw["ja4"].as_str().expect("ja4 应存在").to_owned();
 
+    raw["mode_name"] = serde_json::json!("anthropic-claude-code");
     raw["extension_order"] = serde_json::json!("stable");
     raw["tls_backend"] = serde_json::json!("native-tls/openssl");
     raw["ja3_hash_samples"] = serde_json::json!([ja3_hash]);
