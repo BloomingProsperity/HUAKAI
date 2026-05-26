@@ -5,44 +5,38 @@ error() {
   echo "error: $*" >&2
 }
 
-AUTH_MODE="$(printf '%s' "${HUAKAI_HERMES_AUTH_MODE:-hmac}" | tr '[:upper:]' '[:lower:]')"
-if [ "$AUTH_MODE" = "jwt" ]; then
-  JWT_KEY_READY=0
-  if [ -n "${HUAKAI_HERMES_JWT_PUBLIC_KEYS_DIR:-}" ]; then
-    if [ ! -d "$HUAKAI_HERMES_JWT_PUBLIC_KEYS_DIR" ]; then
-      error "HUAKAI_HERMES_JWT_PUBLIC_KEYS_DIR must be an existing directory"
-      exit 1
-    fi
-    for JWT_PUBLIC_KEY in "$HUAKAI_HERMES_JWT_PUBLIC_KEYS_DIR"/*.pem; do
-      if [ -f "$JWT_PUBLIC_KEY" ] && [ -r "$JWT_PUBLIC_KEY" ]; then
-        JWT_KEY_READY=1
-        break
-      fi
-    done
-    if [ "$JWT_KEY_READY" -ne 1 ]; then
-      error "HUAKAI_HERMES_JWT_PUBLIC_KEYS_DIR must contain at least one readable .pem file"
-      exit 1
-    fi
-  fi
-
-  if [ -n "${HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH:-}" ] || [ -n "${HUAKAI_HERMES_JWT_KID:-}" ]; then
-    if [ -z "${HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH:-}" ] || [ -z "${HUAKAI_HERMES_JWT_KID:-}" ]; then
-      error "HUAKAI_HERMES_AUTH_MODE=jwt requires both HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH and HUAKAI_HERMES_JWT_KID when either is set"
-      exit 1
-    fi
-    if [ ! -f "$HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH" ] || [ ! -r "$HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH" ]; then
-      error "HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH must be an existing readable file"
-      exit 1
-    fi
-    JWT_KEY_READY=1
-  fi
-
-  if [ "$JWT_KEY_READY" -ne 1 ]; then
-    error "HUAKAI_HERMES_AUTH_MODE=jwt requires HUAKAI_HERMES_JWT_PUBLIC_KEYS_DIR or both HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH and HUAKAI_HERMES_JWT_KID"
+JWT_KEY_READY=0
+if [ -n "${HUAKAI_HERMES_JWT_PUBLIC_KEYS_DIR:-}" ]; then
+  if [ ! -d "$HUAKAI_HERMES_JWT_PUBLIC_KEYS_DIR" ]; then
+    error "HUAKAI_HERMES_JWT_PUBLIC_KEYS_DIR must be an existing directory"
     exit 1
   fi
-elif [ -z "${HUAKAI_HERMES_SHARED_SECRET:-}" ]; then
-  error "HUAKAI_HERMES_SHARED_SECRET is required"
+  for JWT_PUBLIC_KEY in "$HUAKAI_HERMES_JWT_PUBLIC_KEYS_DIR"/*.pem; do
+    if [ -f "$JWT_PUBLIC_KEY" ] && [ -r "$JWT_PUBLIC_KEY" ]; then
+      JWT_KEY_READY=1
+      break
+    fi
+  done
+  if [ "$JWT_KEY_READY" -ne 1 ]; then
+    error "HUAKAI_HERMES_JWT_PUBLIC_KEYS_DIR must contain at least one readable .pem file"
+    exit 1
+  fi
+fi
+
+if [ -n "${HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH:-}" ] || [ -n "${HUAKAI_HERMES_JWT_KID:-}" ]; then
+  if [ -z "${HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH:-}" ] || [ -z "${HUAKAI_HERMES_JWT_KID:-}" ]; then
+    error "Hermes runner requires both HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH and HUAKAI_HERMES_JWT_KID when either is set"
+    exit 1
+  fi
+  if [ ! -f "$HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH" ] || [ ! -r "$HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH" ]; then
+    error "HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH must be an existing readable file"
+    exit 1
+  fi
+  JWT_KEY_READY=1
+fi
+
+if [ "$JWT_KEY_READY" -ne 1 ]; then
+  error "Hermes runner requires HUAKAI_HERMES_JWT_PUBLIC_KEYS_DIR or both HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH and HUAKAI_HERMES_JWT_KID"
   exit 1
 fi
 

@@ -3,6 +3,8 @@ package hermeshttp
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"log"
@@ -26,10 +28,15 @@ func TestStartChatRejectsDisabledHermesBeforeRunnerCall(t *testing.T) {
 			Header:     make(http.Header),
 		}, nil
 	})
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
 	runner, err := hermes.NewRunnerClient(hermes.RunnerConfig{
-		RunnerURL:    "http://runner.local",
-		SharedSecret: "secret",
-		HTTPClient:   &http.Client{Transport: transport},
+		RunnerURL:     "http://runner.local",
+		JWTPrivateKey: privateKey,
+		JWTKID:        "kid-test",
+		HTTPClient:    &http.Client{Transport: transport},
 	})
 	if err != nil {
 		t.Fatalf("NewRunnerClient: %v", err)

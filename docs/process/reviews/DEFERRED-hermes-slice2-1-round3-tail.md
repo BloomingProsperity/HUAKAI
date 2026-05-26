@@ -7,8 +7,15 @@
 ## Round Trail
 
 - Round 1 review: 3 S1 (Dockerfile copy / issuer-audience env / refresh lead window) → 已修
-- Round 2 review: 2 S1 (HMAC fallback in transition / audit identity required) → 已修
+- Round 2 review: 2 S1 (legacy HMAC fallback / audit identity required) → 已修
 - Round 3 review: 4 S2 → defer (本文件)
+
+## Slice 2.5 status update (2026-05-26)
+
+- [DEFERRED-1] **Closed in Slice 2.5**: runner entrypoint is JWT-only and no longer accepts `HUAKAI_HERMES_SHARED_SECRET` as startup auth material.
+- [DEFERRED-2] **Closed by policy in Slice 2.5**: partial JWT config now fails closed because HMAC fallback is removed; falling through to HMAC is no longer a valid target behavior.
+- [DEFERRED-3] **Closed in Slice 2.5**: JWT verifier rejects future `iat` even when `nbf` would otherwise allow the token.
+- [DEFERRED-4] **Still deferred**: refresh key rotation needs the future operator key-rotation/runbook path; changing it here would be a broader rotation feature.
 
 ## Findings 详情
 
@@ -17,24 +24,21 @@
 - **位置**: `backend/deploy/hermes-runner/entrypoint.sh` (require `HUAKAI_HERMES_SHARED_SECRET`)
 - **Codex**: P1
 - **HUAKAI Severity**: S2
-- **理由**: 当前 transition 期 default `HUAKAI_HERMES_AUTH_MODE=hmac`，HMAC secret 是必需的；将来 JWT-only 部署上线时 entrypoint.sh 需要放宽 require 检查到 `secret OR jwt-key-path`。当前不阻塞。
-- **建议归属**: Slice 2.5 (Hermes transition cleanup) — 同时清掉 HMAC 后兼容代码
+- **Slice 2.5 处理**: Closed. `entrypoint.sh` now requires `HUAKAI_HERMES_JWT_PUBLIC_KEYS_DIR` or `HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH` + `HUAKAI_HERMES_JWT_KID`; legacy HMAC startup is removed.
 
 ### [DEFERRED-2] JWT credential 校验在 mode resolver 之前 hard-fail
 
 - **位置**: `backend/internal/hermes/runner_client.go:86-92`
 - **Codex**: P2
 - **HUAKAI Severity**: S2
-- **理由**: 当前实现：JWT_PRIVATE_KEY_PATH 设置后 KID 必须同时设置，否则启动失败。这是 fail-fast on partial config (设计选择 — 防止 silent 漂移)。Codex 建议改为：partial JWT config 时 fall through 到 HMAC mode。两种 design 都可，当前选 fail-fast 更安全。
-- **建议归属**: 视 transition deployment 反馈再定 — 若 ops 实际遇到 partial config 后回退到 HMAC 的真实需求才放宽
+- **Slice 2.5 处理**: Closed by policy. JWT-only cleanup makes fail-closed partial JWT config mandatory; there is no HMAC fallback target to fall through to.
 
 ### [DEFERRED-3] JWT verifier 未校验 iat 与 now/nbf 一致
 
 - **位置**: `backend/internal/hermes/jwt.go:130-132` (validateClaimsAt — 只检查 `Exp-Iat ≤ DefaultJWTTTL`)
 - **Codex**: P2
 - **HUAKAI Severity**: S2
-- **理由**: Defense-in-depth。攻击场景需要攻击者已掌握 gateway signing private key (它直接 sign Iat=now)；攻击者拿到 key 后该 token TTL 限制已经无意义。当前 gateway-issued token 永远 Iat=Nbf=now，无问题。仅在第三方 issuer 加入后才相关。
-- **建议归属**: Slice 2.5 / 或 multi-issuer 引入时
+- **Slice 2.5 处理**: Closed. `validateClaimsAt` now rejects `iat > now`, with a regression test where `nbf <= now` but `iat` is future-dated.
 
 ### [DEFERRED-4] Refresh 在私钥旋转期保留旧 kid
 
@@ -51,5 +55,5 @@
 **当前 commit no-S0/S1 闭合**：Round 1+2 共 5 个 S1 全部已修 + GREEN tests。Round 3 4 个 S2 不阻塞 commit。
 
 下游处理：
-- Slice 2.5 (Hermes transition cleanup) 闭合 [DEFERRED-1] + [DEFERRED-3] + 视情况 [DEFERRED-2]
+- Slice 2.5 (Hermes cleanup) closed [DEFERRED-1], [DEFERRED-2], and [DEFERRED-3].
 - Admin key rotation 切片闭合 [DEFERRED-4]

@@ -178,7 +178,7 @@ func (d *deps) handleRunnerRefresh(w http.ResponseWriter, r *http.Request) {
 			_ = json.Unmarshal(body, &req)
 		}
 	}
-	if len(d.hermesRunnerSharedSecret) > 0 && !hermes.VerifyRunnerHMACRequest(r, body, d.hermesRunnerSharedSecret, time.Now().UTC()) {
+	if !hermes.VerifyRunnerHMACRequest(r, body, d.hermesRunnerSharedSecret, time.Now().UTC()) {
 		writeInternalError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -219,7 +219,7 @@ func (d *deps) handleRunnerKeys(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, http.StatusServiceUnavailable, "hermes_keys_unavailable")
 		return
 	}
-	if len(d.hermesRunnerSharedSecret) > 0 && !hermes.VerifyRunnerHMACRequest(r, nil, d.hermesRunnerSharedSecret, time.Now().UTC()) {
+	if !hermes.VerifyRunnerHMACRequest(r, nil, d.hermesRunnerSharedSecret, time.Now().UTC()) {
 		writeInternalError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}

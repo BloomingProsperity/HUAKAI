@@ -4,7 +4,7 @@
 | --- | --- |
 | Severity | S2 |
 | Source | codex Slice 1.2 Round 1 review |
-| Status | Owner-pending blocker, escalated to Slice 2.5 hard fix |
+| Status | Owner-local follow-up after Slice 2.5 sandbox check |
 
 Deferred review findings:
 - [S2] Hermes runner currently uses direct dependency pins without a complete transitive hash lock — source: codex Slice 1.2 Round 1 review; rationale: deploy hardening is required for the production path, but Slice 1.2 is a dev compose runner and direct pins keep the increment closed; follow-up: Slice 2 production Hermes build path must generate a full `pip-compile --generate-hashes` lock and restore `pip install --require-hashes`; Owner decision: none for this commit.
@@ -54,5 +54,13 @@ cd backend/deploy/hermes-runner && pip-compile --version
 
 Both commands were unavailable (`No module named piptools`, `pip-compile: command
 not found`). With network access restricted, generating trustworthy hashes is
-blocked in this lane. This is not closed; it is explicitly Owner-pending for
+blocked in this lane. This is not closed; it remains Owner-pending after
 Slice 2.5.
+
+## Slice 2.5 Sandbox Check
+
+Still open. The Slice 2.5 cleanup lane did not change
+`backend/deploy/hermes-runner/requirements.txt` or the Docker install path because
+this sandbox still lacks `pip-compile`/`piptools` and cannot fetch PyPI metadata.
+Owner should generate the transitive hash lock in a local networked environment
+before production runner release.

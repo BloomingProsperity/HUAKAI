@@ -94,6 +94,30 @@ func TestJWTVerifyRejectsWrongAudienceAndFutureNBF(t *testing.T) {
 	}
 }
 
+func TestJWTVerifyRejectsFutureIATEvenWhenNBFAllowsNow(t *testing.T) {
+	// Regression: a token with nbf<=now but iat in the future must not be accepted.
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	now := time.Now().UTC()
+	claims := Claims{
+		Iss: DefaultJWTIssuer,
+		Aud: DefaultJWTAudience,
+		Sub: "runner-7",
+		Iat: now.Add(10 * time.Minute).Unix(),
+		Nbf: now.Add(-time.Second).Unix(),
+		Exp: now.Add(15 * time.Minute).Unix(),
+	}
+	token, err := Sign(privateKey, "kid-a", claims)
+	if err != nil {
+		t.Fatalf("Sign future iat: %v", err)
+	}
+	if _, err := VerifyAt(publicKey, token, now); err == nil {
+		t.Fatalf("future iat token verified; want issued-at rejection")
+	}
+}
+
 func replaceJWTPart(t *testing.T, token string, index int, jsonPart string) string {
 	t.Helper()
 	parts := strings.Split(token, ".")

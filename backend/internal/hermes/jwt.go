@@ -118,6 +118,9 @@ func validateClaimsAt(claims Claims, now time.Time, expectedIssuer, expectedAudi
 		return fmt.Errorf("%w: jwt time claims required", ErrForbidden)
 	}
 	nowUnix := now.Unix()
+	if claims.Iat > nowUnix {
+		return fmt.Errorf("%w: jwt issued in the future", ErrForbidden)
+	}
 	if claims.Nbf > nowUnix {
 		return fmt.Errorf("%w: jwt not yet valid", ErrForbidden)
 	}

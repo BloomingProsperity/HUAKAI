@@ -421,8 +421,29 @@ paths:
       tags: [hermes-internal]
       summary: Issue an initial Hermes runner JWT
       operationId: bootstrapHermesRunnerJWT
-      description: Internal transition endpoint. The caller is authenticated with the legacy Hermes HMAC proof and receives a short-lived EdDSA JWT.
+      description: >-
+        Internal endpoint that issues a short-lived EdDSA JWT for a Hermes runner.
+        Requires HMAC proof: X-Hermes-Signature, X-Hermes-Timestamp, X-Hermes-Tenant,
+        X-Hermes-User computed over `<timestamp>\n<method>\n<path>\n<raw_query>\n<tenant>\n<user>\n`
+        + body, signed with HUAKAI_HERMES_INTERNAL_SHARED_SECRET HMAC-SHA256.
       security: []
+      parameters:
+        - name: X-Hermes-Signature
+          in: header
+          required: true
+          schema: { type: string }
+        - name: X-Hermes-Timestamp
+          in: header
+          required: true
+          schema: { type: string }
+        - name: X-Hermes-Tenant
+          in: header
+          required: true
+          schema: { type: string }
+        - name: X-Hermes-User
+          in: header
+          required: true
+          schema: { type: string }
       requestBody:
         required: true
         content:
@@ -455,8 +476,29 @@ paths:
       tags: [hermes-internal]
       summary: Refresh a Hermes runner JWT
       operationId: refreshHermesRunnerJWT
-      description: Internal endpoint that verifies an existing Hermes JWT and returns a replacement before expiry.
+      description: >-
+        Internal endpoint that verifies an existing Hermes JWT and returns a replacement before expiry.
+        Requires HMAC proof: X-Hermes-Signature, X-Hermes-Timestamp, X-Hermes-Tenant,
+        X-Hermes-User computed over `<timestamp>\n<method>\n<path>\n<raw_query>\n<tenant>\n<user>\n`
+        + body, signed with HUAKAI_HERMES_INTERNAL_SHARED_SECRET HMAC-SHA256.
       security: []
+      parameters:
+        - name: X-Hermes-Signature
+          in: header
+          required: true
+          schema: { type: string }
+        - name: X-Hermes-Timestamp
+          in: header
+          required: true
+          schema: { type: string }
+        - name: X-Hermes-Tenant
+          in: header
+          required: true
+          schema: { type: string }
+        - name: X-Hermes-User
+          in: header
+          required: true
+          schema: { type: string }
       responses:
         '200':
           description: Refreshed JWT.
@@ -476,8 +518,29 @@ paths:
       tags: [hermes-internal]
       summary: List active Hermes JWT public keys
       operationId: listHermesRunnerJWTKeys
-      description: Internal public-key sync endpoint for Hermes runner local verifier cache.
+      description: >-
+        Internal public-key sync endpoint for Hermes runner local verifier cache.
+        Requires HMAC proof: X-Hermes-Signature, X-Hermes-Timestamp, X-Hermes-Tenant,
+        X-Hermes-User computed over `<timestamp>\n<method>\n<path>\n<raw_query>\n<tenant>\n<user>\n`
+        + body, signed with HUAKAI_HERMES_INTERNAL_SHARED_SECRET HMAC-SHA256.
       security: []
+      parameters:
+        - name: X-Hermes-Signature
+          in: header
+          required: true
+          schema: { type: string }
+        - name: X-Hermes-Timestamp
+          in: header
+          required: true
+          schema: { type: string }
+        - name: X-Hermes-Tenant
+          in: header
+          required: true
+          schema: { type: string }
+        - name: X-Hermes-User
+          in: header
+          required: true
+          schema: { type: string }
       responses:
         '200':
           description: Active public keys.
