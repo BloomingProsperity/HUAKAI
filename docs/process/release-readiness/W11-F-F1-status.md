@@ -551,9 +551,17 @@ Specifically:
   AGENTS.md rule enforcement on future commits.
 - ✅ Gate 5 language drafted; release notes for next aggregate release
   must adopt it verbatim or equivalent.
-- ⏸ Gate 2: per-profile ALPN assertion needs `mimicry_http2_fixture_test.rs`
-  patch (the existing fixture test only covers the `available=true` arm).
-  Tracked as follow-up; non-trivial test change, separate slice.
+- ✅ Gate 2: per-profile ALPN assertion **landed** in slice §11-Gate2-slice
+  (this commit). New test `alpn_protocols_match_first_party_capture_per_profile`
+  in `tests/mimicry_http2_fixture_test.rs` uses a 2-variant `AlpnAssertion`
+  enum calibrated to actual capture strength:
+  - `Exact(&[])` for CodexCli + KiroCli (empty ALPN explicitly captured)
+  - `Exact(&["h2", "http/1.1"])` for GeminiAdvanced (both protocols
+    captured at TLS layer)
+  - `H2NotAdvertised` for AnthropicClaudeCode (option (b) only proves h2
+    absence; the profile's inherited `["http/1.1"]` is NOT verified
+    exactly; upgrade to `Exact` pending §12.6 slice 4 full re-capture).
+  Per-arm mutation discriminators per CLAUDE.md #14.
 - ⏸ Gate 4: F-1.e Feature Flag scaffold not yet added (no flag exists).
   Tracked as follow-up; minimal — feature-flag manifest entry +
   documentation, no runtime code.

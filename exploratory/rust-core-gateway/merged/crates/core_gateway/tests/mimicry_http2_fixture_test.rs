@@ -353,3 +353,137 @@ fn fixture_path_matches_documented_filename_table() {
         );
     }
 }
+
+/// W11-F F-1 §11 Gate 2 (Owner-approved 2026-05-26 post Codex consult on
+/// epic scope): every deployed profile MUST have its `tls.alpn_protocols`
+/// asserted against the OBSERVED first-party evidence, NOT against an
+/// inherited-from-lost-capture value. The assertion strength is calibrated
+/// to what the captures actually prove:
+///
+///   - `Exact` — captures gave a definitive list:
+///     - `CodexCli` → `[]` (no ALPN extension)
+///     - `KiroCli` → `[]` (no ALPN extension)
+///     - `GeminiAdvanced` → `["h2", "http/1.1"]` (both advertised; Google's
+///       cloudcode-pa server still picks h1.1 at HTTP layer)
+///
+///   - `H2NotAdvertised` — only weaker evidence available:
+///     - `AnthropicClaudeCode` → option (b) capture at
+///       captures/h2-server-1779775310.jsonl proves CC CLI did not
+///       advertise h2 (5×alpn_negotiated=null against h2-only server),
+///       but cannot distinguish `["http/1.1"]` from "no ALPN at all"
+///       (both yield the same null result). The exact value
+///       `["http/1.1"]` in the profile JSON is INHERITED from the lost
+///       2026-05-06 TLS capture and is NOT verified by option (b);
+///       upgrading this arm to `Exact` requires the full re-capture per
+///       W11-F-F1-status.md §12.6 slice 4.
+///
+/// Unlike `fixture_exists_when_profile_marks_available` (which is gated on
+/// `h2_settings_frame.available=true` and therefore vacuous today across all
+/// 4 profiles), this test fires **every run** with non-vacuous per-profile
+/// assertions. It's the discriminator that catches silent ALPN drift
+/// independent of h2 promotion state.
+///
+/// Mutation discipline (CLAUDE.md #14):
+///   - **Anthropic arm**: H2NotAdvertised. Adding `"h2"` to
+///     anthropic-claude-code.json `alpn_protocols` → red. Changing
+///     `["http/1.1"]` → `[]` does NOT fail this arm — and that is the
+///     correct behavior because option (b) cannot distinguish those two
+///     states. Promoting this arm to `Exact` will require a real
+///     ClientHello-parsing capture (see follow-ups in §10.7 + §12.6).
+///   - **Codex/Kiro arms**: `Exact(&[])`. Adding any element fails.
+///   - **Gemini arm**: `Exact(&["h2", "http/1.1"])`. Stripping `"h2"` or
+///     reordering fails.
+///
+/// Any commit that legitimately updates a profile's ALPN must update this
+/// test's expected case for that arm AND cite the new capture artifact in
+/// the commit message + `W11-F-F1-status.md` §12.2 verdict update.
+#[test]
+fn alpn_protocols_match_first_party_capture_per_profile() {
+    enum AlpnAssertion {
+        /// Captured exact ALPN list — assert byte-for-byte equality.
+        Exact(&'static [&'static str]),
+        /// Only h2-absence proven by capture; assert NO `"h2"` present
+        /// without locking the rest of the list.
+        H2NotAdvertised,
+    }
+
+    let cases: &[(BuiltinProfile, AlpnAssertion, &str)] = &[
+        (
+            BuiltinProfile::AnthropicClaudeCode,
+            AlpnAssertion::H2NotAdvertised,
+            "anthropic-claude-code: option (b) capture at \
+             tools/fingerprint-collector/captures/h2-server-1779775310.jsonl \
+             confirms h2 absence (5×alpn_negotiated=null against h2-only \
+             server). The profile JSON value of [\"http/1.1\"] is inherited \
+             from the lost 2026-05-06 TLS capture and is NOT independently \
+             verified by option (b). Upgrade to Exact pending the full \
+             re-capture per W11-F-F1-status.md §12.6 slice 4.",
+        ),
+        (
+            BuiltinProfile::CodexCli,
+            AlpnAssertion::Exact(&[]),
+            "openai_codex_cli: from 2026-05-14 passive collector run with \
+             driving client codex_cli_rs/0.128.0. Empty ALPN means client \
+             did not advertise application-layer protocol; HTTP version is \
+             negotiated at the application layer by reqwest default. See \
+             tools/fingerprint-collector/templates/codex-cli.json \
+             _field_sources.",
+        ),
+        (
+            BuiltinProfile::KiroCli,
+            AlpnAssertion::Exact(&[]),
+            "kiro_cli: from 2026-05-14 passive collector + Owner mitmproxy \
+             capture with driving client aws-sdk-rust/1.3.15 + AmazonQ-For-CLI. \
+             Empty ALPN means client did not include ALPN extension. See \
+             tools/fingerprint-collector/templates/kiro-cli.json \
+             _field_sources.",
+        ),
+        (
+            BuiltinProfile::GeminiAdvanced,
+            AlpnAssertion::Exact(&["h2", "http/1.1"]),
+            "gemini_advanced: from 2026-05-14 Owner mitmproxy decrypted \
+             traffic + passive TLS sniff. Advertises both protocols at TLS \
+             layer; Google's cloudcode-pa server picks http/1.1 per \
+             gemini-advanced.json http_layer.protocol. See _field_sources.",
+        ),
+    ];
+
+    for (builtin, assertion, provenance) in cases {
+        let profile = load_builtin_profile(*builtin).expect("builtin profile loads");
+        match assertion {
+            AlpnAssertion::Exact(expected_alpn) => {
+                let expected: Vec<String> =
+                    expected_alpn.iter().map(|s| (*s).to_string()).collect();
+                assert_eq!(
+                    profile.tls.alpn_protocols, expected,
+                    "profile {builtin:?} alpn_protocols drifted.\n\
+                     Expected (captured first-party value): {expected:?}\n\
+                     Profile JSON currently says:           {:?}\n\
+                     Provenance: {provenance}\n\
+                     If this assertion is failing, EITHER (a) revert the \
+                     profile JSON change and supply a capture artifact in \
+                     the next commit OR (b) update this test's expected \
+                     value for this arm AND cite the new capture artifact \
+                     in the commit message + W11-F-F1-status.md §12.2 verdict.",
+                    profile.tls.alpn_protocols
+                );
+            }
+            AlpnAssertion::H2NotAdvertised => {
+                assert!(
+                    !profile.tls.alpn_protocols.iter().any(|p| p == "h2"),
+                    "profile {builtin:?} alpn_protocols includes \"h2\" but \
+                     captured first-party evidence proves h2 is NOT \
+                     advertised.\n\
+                     Profile JSON currently says: {:?}\n\
+                     Provenance: {provenance}\n\
+                     Adding \"h2\" to a profile under H2NotAdvertised \
+                     constraint requires a new first-party capture that \
+                     OBSERVES h2 in the ClientHello (not inferred). Update \
+                     this arm to Exact(&[...]) only when such evidence \
+                     exists.",
+                    profile.tls.alpn_protocols
+                );
+            }
+        }
+    }
+}
