@@ -169,7 +169,6 @@ func DefaultModePlans() []ModePlan {
 		{Vendor: credentialstore.VendorCopilot, AuthMode: credentialstore.AuthModeCopilotOAuth, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindOAuth, FlowKindJSONImport}},
 		{Vendor: credentialstore.VendorAntigravity, AuthMode: credentialstore.AuthModeOAuth, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourceOperatorConfig, AllowedHelpers: []FlowKind{FlowKindOAuth, FlowKindTokenExchange}, ManualFirst: true},
 		{Vendor: credentialstore.VendorWindsurf, AuthMode: credentialstore.AuthModeOAuth, Kind: FlowKindTokenExchange, ClientIdentitySource: ClientSourceOperatorConfig, AllowedHelpers: []FlowKind{FlowKindTokenExchange, FlowKindPaste}, ManualFirst: true},
-		{Vendor: credentialstore.VendorCursor, AuthMode: credentialstore.AuthModeOAuth, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourceOperatorConfig, AllowedHelpers: []FlowKind{FlowKindOAuth, FlowKindTokenExchange, FlowKindPaste}, ManualFirst: true},
 	}
 }
 

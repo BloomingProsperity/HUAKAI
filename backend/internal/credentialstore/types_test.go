@@ -27,7 +27,6 @@ func TestDefaultHandlerRegistryCoversRefreshableModes(t *testing.T) {
 		"copilot/copilot_oauth",
 		"antigravity/oauth",
 		"windsurf/oauth",
-		"cursor/oauth",
 	}
 	if got := registry.Names(); len(got) != len(want) {
 		t.Fatalf("handler count=%d want %d: %v", len(got), len(want), got)
@@ -36,76 +35,6 @@ func TestDefaultHandlerRegistryCoversRefreshableModes(t *testing.T) {
 		vendor, mode := splitModeKey(key)
 		if _, ok := registry.Lookup(vendor, mode); !ok {
 			t.Fatalf("missing handler %s", key)
-		}
-	}
-}
-
-func TestDefaultVendorHandlersIncludesCursorOAuth(t *testing.T) {
-	registry := DefaultHandlerRegistry()
-	handler, ok := registry.Lookup(VendorCursor, AuthModeOAuth)
-	if !ok {
-		t.Fatalf("missing handler %s", ModeKey(VendorCursor, AuthModeOAuth))
-	}
-	spec, ok := handler.(handlerSpec)
-	if !ok {
-		t.Fatalf("handler type=%T, want handlerSpec", handler)
-	}
-	if spec.vendor != VendorCursor || spec.authMode != AuthModeOAuth {
-		t.Fatalf("handler identity=%s/%s, want %s/%s", spec.vendor, spec.authMode, VendorCursor, AuthModeOAuth)
-	}
-	if spec.runtimeKind != RuntimeSessionToken {
-		t.Fatalf("runtime kind=%q want %q", spec.runtimeKind, RuntimeSessionToken)
-	}
-	for _, field := range []string{"session_token", "access_token", "refresh_token"} {
-		if !containsString(spec.anyOf, field) {
-			t.Fatalf("cursor oauth anyOf=%v missing %q", spec.anyOf, field)
-		}
-	}
-	if !spec.sessionFirst {
-		t.Fatal("cursor oauth handler must prefer session_token over access_token")
-	}
-}
-
-func TestCursorOAuthHandlerRuntimeMaterialAcceptsSessionTokenFirst(t *testing.T) {
-	registry := DefaultHandlerRegistry()
-	handler, ok := registry.Lookup(VendorCursor, AuthModeOAuth)
-	if !ok {
-		t.Fatalf("missing handler %s", ModeKey(VendorCursor, AuthModeOAuth))
-	}
-
-	got, err := handler.RuntimeMaterial([]byte(`{"session_token":"S","access_token":"A"}`))
-	if err != nil {
-		t.Fatalf("RuntimeMaterial: %v", err)
-	}
-	if got.Kind != RuntimeSessionToken {
-		t.Fatalf("kind=%q want %q", got.Kind, RuntimeSessionToken)
-	}
-	if got.Value != "S" {
-		t.Fatalf("value=%q want session token", got.Value)
-	}
-}
-
-func TestCursorRuntimeMaterialSurfacesCursorExtras(t *testing.T) {
-	registry := DefaultHandlerRegistry()
-	handler, err := registry.MustLookup(VendorCursor, AuthModeOAuth)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	material, err := handler.RuntimeMaterial([]byte(`{"session_token":"S","cursor_checksum":"chk","cursor_client_version":"0.43.6","cookie":"WorkosX=Y","user_agent":"UA/1"}`))
-	if err != nil {
-		t.Fatalf("RuntimeMaterial: %v", err)
-	}
-
-	wantExtra := map[string]string{
-		"cursor_checksum":       "chk",
-		"cursor_client_version": "0.43.6",
-		"cookie":                "WorkosX=Y",
-		"user_agent":            "UA/1",
-	}
-	for key, want := range wantExtra {
-		if got := material.Extra[key]; got != want {
-			t.Fatalf("material.Extra[%q]=%q want %q (extra=%v)", key, got, want, material.Extra)
 		}
 	}
 }
@@ -155,15 +84,6 @@ func TestRuntimeMaterialMappings(t *testing.T) {
 			t.Fatalf("%s/%s got kind=%q value=%q want %q/%q", tc.vendor, tc.mode, got.Kind, got.Value, tc.kind, tc.value)
 		}
 	}
-}
-
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
 
 func splitModeKey(key string) (string, string) {

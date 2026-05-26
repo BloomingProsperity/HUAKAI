@@ -265,7 +265,6 @@ func defaultHandlers() []ModeHandler {
 		handlerSpec{vendor: VendorCopilot, authMode: AuthModeCopilotOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "github_access_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorAntigravity, authMode: AuthModeOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorWindsurf, authMode: AuthModeOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
-		handlerSpec{vendor: VendorCursor, authMode: AuthModeOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 	}
 }
 
