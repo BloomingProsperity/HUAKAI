@@ -165,6 +165,14 @@ func (t *storeTransactor) withTx(ctx context.Context, fn func(Store) error) erro
 	return nil
 }
 
+func (s *settingsStoreStub) AppendMessage(context.Context, dbhermes.AppendMessageParams) (int64, error) {
+	return 1, nil
+}
+
+func (s *settingsStoreStub) CreateConversation(context.Context, dbhermes.CreateConversationParams) (int64, error) {
+	return 1, nil
+}
+
 func (s *settingsStoreStub) CreateProfile(context.Context, dbhermes.CreateProfileParams) (dbhermes.HermesApiProfile, error) {
 	s.createCalled = true
 	return dbhermes.HermesApiProfile{
@@ -185,6 +193,10 @@ func (s *settingsStoreStub) DisableHermes(context.Context, dbhermes.DisableHerme
 
 func (s *settingsStoreStub) GetAPIKeyOwner(context.Context, dbhermes.GetAPIKeyOwnerParams) (int64, error) {
 	return 0, nil
+}
+
+func (s *settingsStoreStub) GetConversation(context.Context, dbhermes.GetConversationParams) (dbhermes.HermesConversation, error) {
+	return dbhermes.HermesConversation{}, nil
 }
 
 func (s *settingsStoreStub) GetProfile(context.Context, dbhermes.GetProfileParams) (dbhermes.HermesApiProfile, error) {
@@ -213,6 +225,10 @@ func (s *settingsStoreStub) ListProfilesByTenant(context.Context, int64) ([]dbhe
 
 func (s *settingsStoreStub) ProfileInUse(context.Context, dbhermes.ProfileInUseParams) (bool, error) {
 	return s.profileInUse, nil
+}
+
+func (s *settingsStoreStub) UpdateConversationLastMessageAt(context.Context, dbhermes.UpdateConversationLastMessageAtParams) (int64, error) {
+	return 1, nil
 }
 
 func (s *settingsStoreStub) UpsertSettings(context.Context, dbhermes.UpsertSettingsParams) (dbhermes.HermesSetting, error) {

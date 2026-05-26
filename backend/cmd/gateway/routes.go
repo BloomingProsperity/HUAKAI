@@ -95,7 +95,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	})
 	if d.hermesService != nil && d.hermesRunner != nil {
 		r.With(hermeshttp.APIKeyMiddleware(d.inboundAuth)).
-			Mount("/v1/hermes", hermeshttp.NewRouter(d.hermesService, d.hermesRunner))
+			Mount("/v1/hermes", hermeshttp.NewRouter(d.hermesService, d.hermesRunner, d.hermesChatBridge))
 	}
 	r.Post("/internal/runner/bootstrap", d.handleRunnerBootstrap)
 	r.Post("/internal/runner/refresh", d.handleRunnerRefresh)

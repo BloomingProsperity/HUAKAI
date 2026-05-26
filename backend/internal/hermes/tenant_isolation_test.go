@@ -76,6 +76,14 @@ func TestRecordAudit_TenantTagged(t *testing.T) {
 }
 
 type hermesStoreSpy struct {
+	appendCalled bool
+	appendArg    dbhermes.AppendMessageParams
+
+	conversationID     int64
+	conversationRow    dbhermes.HermesConversation
+	conversationErr    error
+	getConversationArg dbhermes.GetConversationParams
+
 	createCalled bool
 	createArg    dbhermes.CreateProfileParams
 	createErr    error
@@ -113,6 +121,19 @@ type hermesStoreSpy struct {
 	upsertCalled bool
 	upsertArg    dbhermes.UpsertSettingsParams
 	upsertErr    error
+}
+
+func (s *hermesStoreSpy) AppendMessage(_ context.Context, arg dbhermes.AppendMessageParams) (int64, error) {
+	s.appendCalled = true
+	s.appendArg = arg
+	return 1, nil
+}
+
+func (s *hermesStoreSpy) CreateConversation(_ context.Context, arg dbhermes.CreateConversationParams) (int64, error) {
+	if s.conversationID == 0 {
+		s.conversationID = 1
+	}
+	return s.conversationID, nil
 }
 
 func (s *hermesStoreSpy) CreateProfile(_ context.Context, arg dbhermes.CreateProfileParams) (dbhermes.HermesApiProfile, error) {
@@ -153,6 +174,17 @@ func (s *hermesStoreSpy) GetAPIKeyOwner(context.Context, dbhermes.GetAPIKeyOwner
 		return 0, s.getAPIKeyErr
 	}
 	return s.getAPIKeyOwner, nil
+}
+
+func (s *hermesStoreSpy) GetConversation(_ context.Context, arg dbhermes.GetConversationParams) (dbhermes.HermesConversation, error) {
+	s.getConversationArg = arg
+	if s.conversationErr != nil {
+		return dbhermes.HermesConversation{}, s.conversationErr
+	}
+	if s.conversationRow.ID != 0 {
+		return s.conversationRow, nil
+	}
+	return dbhermes.HermesConversation{ID: arg.ID, TenantID: arg.TenantID, OwnerUserID: 42}, nil
 }
 
 func (s *hermesStoreSpy) GetProfile(_ context.Context, arg dbhermes.GetProfileParams) (dbhermes.HermesApiProfile, error) {
@@ -215,6 +247,10 @@ func (s *hermesStoreSpy) ProfileInUse(_ context.Context, arg dbhermes.ProfileInU
 		return false, s.profileInUseErr
 	}
 	return s.profileInUse, nil
+}
+
+func (s *hermesStoreSpy) UpdateConversationLastMessageAt(context.Context, dbhermes.UpdateConversationLastMessageAtParams) (int64, error) {
+	return 1, nil
 }
 
 func (s *hermesStoreSpy) UpsertSettings(_ context.Context, arg dbhermes.UpsertSettingsParams) (dbhermes.HermesSetting, error) {

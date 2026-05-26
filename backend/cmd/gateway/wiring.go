@@ -33,6 +33,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -102,6 +103,7 @@ type deps struct {
 	billingAuditUpdater      gatewayhttp.AdminBillingSettingsAuditUpdater
 	hermesService            *hermes.Service
 	hermesRunner             *hermes.RunnerClient
+	hermesChatBridge         *hermeschat.Bridge
 	hermesKeyStore           *hermes.KeyStore
 	hermesBootstrapIssuer    *hermes.BootstrapIssuer
 	hermesRunnerSharedSecret []byte
@@ -324,6 +326,13 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		Proof:   settlementProof,
 	}
 	dlqService.Register(legacydlq.EventKindPostDeliverySettlement, settlementHandler.Handle)
+	var hermesChatBridge *hermeschat.Bridge
+	if hermesRunner != nil {
+		hermesChatBridge, err = buildHermesChatBridge(hermesService, dlqService)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	// 持久幂等重放存储 + 过期清理 janitor, 防表无界增长。
 	replayStore := billing.NewReplayStore(pgPool)
@@ -381,6 +390,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		billingAuditUpdater:      gatewayhttp.NewAdminBillingSettingsAuditUpdater(pgPool),
 		hermesService:            hermesService,
 		hermesRunner:             hermesRunner,
+		hermesChatBridge:         hermesChatBridge,
 		hermesKeyStore:           hermesKeyStore,
 		hermesBootstrapIssuer:    hermesBootstrapIssuer,
 		hermesRunnerSharedSecret: []byte(strings.TrimSpace(os.Getenv(hermes.RunnerSharedSecretEnv))),
@@ -443,6 +453,26 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	rt.obsDLQEnabled = opts.obsDLQ.Enabled
 	ready = true
 	return rt, nil
+}
+
+func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.Service) (*hermeschat.Bridge, error) {
+	if hermesService == nil {
+		return nil, nil
+	}
+	internalSecret := strings.TrimSpace(os.Getenv(hermeschat.InternalTokenSecretEnv))
+	if internalSecret == "" {
+		return nil, fmt.Errorf("%w: %s is required for Hermes chat bridge", hermes.ErrMisconfigured, hermeschat.InternalTokenSecretEnv)
+	}
+	bridge, err := hermeschat.NewBridge(
+		hermesService,
+		hermeschat.WithInternalTokenSecret([]byte(internalSecret)),
+		hermeschat.WithInternalBaseURL(envDefault(hermeschat.InternalBaseURLEnv, hermeschat.DefaultInternalBaseURL)),
+		hermeschat.WithAuditDLQ(dlqService),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("build hermes chat bridge: %w", err)
+	}
+	return bridge, nil
 }
 
 func buildAuditRefPolicy(cfg *runtimeconfig.EventBusConfig) *eventbus.AuditRefPolicy {
