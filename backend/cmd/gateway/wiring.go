@@ -275,9 +275,6 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	credentialStore := credentialstore.NewStore(pgPool, credentialKeys, credentialstore.DefaultHandlerRegistry())
 	credentialAcqStore := credentialacq.NewPostgresSessionStoreWithKeys(pgPool, credentialKeys)
 	credentialExchangers := credentialacq.DefaultExchangerRegistry()
-	if err := anthropicoauth.RegisterInto(credentialExchangers, anthropicoauth.NewExchanger()); err != nil {
-		return nil, fmt.Errorf("register anthropic oauth exchanger: %w", err)
-	}
 	emailSettingsStore := mailinfra.NewPostgresSettingsStore(pgPool)
 	if releaseModeProduction() {
 		if err := mailinfra.ValidateProductionReleaseGate(ctx, emailSettingsStore, credentialKeys); err != nil {

@@ -29,10 +29,6 @@ func NewExchanger() Exchanger {
 	return Exchanger{}
 }
 
-func init() {
-	_ = RegisterDefault(Exchanger{})
-}
-
 func RegisterDefault(exchanger Exchanger) error {
 	if err := credentialacq.RegisterOrReplaceExchanger(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth), exchanger); err != nil {
 		return err

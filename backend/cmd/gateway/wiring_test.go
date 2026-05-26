@@ -15,6 +15,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +27,8 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 )
 
@@ -63,6 +66,17 @@ func TestWiring_BuildTransportFactoryInjectsSidecarSocket(t *testing.T) {
 
 	if factory.SidecarSocketPath != cfg.TransportSidecarSocket {
 		t.Fatalf("SidecarSocketPath=%q want cfg.TransportSidecarSocket", factory.SidecarSocketPath)
+	}
+}
+
+func TestWiring_AnthropicClaudeAIOAuthKeepsCredentialAcqBuiltinProfile(t *testing.T) {
+	_, err := credentialacq.StartOAuthFlow(context.Background(), nil, credentialacq.StartInput{
+		TenantID: 1, ProviderAccountID: 101,
+		Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeAIOAuth,
+		ActorID: "owner", ActorRole: "platform_admin",
+	}, credentialacq.OAuthClientConfig{TokenURL: "http://attacker.test/token"})
+	if !errors.Is(err, credentialacq.ErrFeatureDisabled) {
+		t.Fatalf("err=%v want ErrFeatureDisabled from credentialacq built-in profile validation", err)
 	}
 }
 
