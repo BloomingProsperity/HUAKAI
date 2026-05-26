@@ -3911,6 +3911,30 @@ impl SslRef {
         }
     }
 
+    /// HUAKAI W11-F §14b.3: tell BoringSSL exactly which groups to compute
+    /// initial key_share entries for. Without this, boring picks
+    /// `supported_group_list[0]` by default (extensions.cc::ssl_setup_key_
+    /// shares line 2266), which fails when the profile lists a GREASE
+    /// value first (Chrome's Gemini-impersonate `supported_groups` starts
+    /// with GREASE 35466, and `SSLKeyShare::Create` returns nullptr for
+    /// GREASE → handshake silently aborts before any wire bytes are sent).
+    /// Wraps BoringSSL's `SSL_set1_client_key_shares` (ssl.h:2665), a stock
+    /// public API. Must be called per-SSL after the connector produces a
+    /// `ConnectConfiguration`. Caller MUST pass only real group IDs (no
+    /// GREASE) — the GREASE key share is emitted automatically when
+    /// `ctx.set_grease_enabled(true)` is set (extensions.cc line 2294).
+    #[corresponds(SSL_set1_client_key_shares)]
+    pub fn set_client_key_shares(&mut self, group_ids: &[u16]) -> Result<(), ErrorStack> {
+        unsafe {
+            cvt_0i(ffi::SSL_set1_client_key_shares(
+                self.as_ptr(),
+                group_ids.as_ptr(),
+                group_ids.len(),
+            ))
+            .map(|_| ())
+        }
+    }
+
     /// Sets the compliance policy on `SSL`.
     #[corresponds(SSL_set_compliance_policy)]
     pub fn set_compliance_policy(&mut self, policy: CompliancePolicy) -> Result<(), ErrorStack> {

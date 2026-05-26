@@ -26,24 +26,19 @@ async fn kiro_boring_client_hello_byte_level_matches_profile() {
     test_vendor_byte_level(BuiltinProfile::KiroCli, "q.us-east-1.amazonaws.com").await;
 }
 
-/// W11-F §14b.2 + §13 regression note (2026-05-26): the §13 Gemini CLI 0.42.0
-/// recapture replaced the prior 52-cipher Node-stock TLS template with the
-/// Chrome-impersonation shape (16 ciphers + GREASE + ext 27 cert_compression
-/// + ext 17513 ALPS + 192-byte padding). §14b.1 added the schema fields and
-/// §14b.2 wired cert_compression + ALPS into the boring builder (this commit),
-/// but the wire test still fails with "raw is empty" — boring/tokio-boring
-/// bails before emitting any ClientHello bytes. Bisect (2026-05-26) confirmed
-/// the failure is pre-existing: disabling both §14b.2 branches reproduces the
-/// same empty-raw panic. The remaining gap (likely boring's padding-to-512
-/// computation vs the profile's 192-byte padding requirement, see
-/// extensions.cc:4050 padding logic in vendored BoringSSL) is its own slice —
-/// tracked as §14b.3 "gemini wire 192-byte padding + ClientHello emit
-/// recovery". Other 3 vendors (anthropic / codex_cli / kiro) still PASS, so
-/// the boring infrastructure is sound — gemini is uniquely Chrome-shape
-/// strict. Mark this test `#[ignore]` until §14b.3 lands real fix; run with
-/// `cargo test -- --ignored` to see current diagnostic output.
+/// W11-F §14b.3 (resolved 2026-05-27): gemini Chrome impersonation now
+/// produces a ClientHello whose JA3 hash matches the §13-captured value
+/// 59686f806cae30344b525e99af5b655d. The root-cause fix was two-fold:
+/// (1) gemini's `supported_groups` starts with GREASE 35466; boring's
+/// default key_share picked supported_group_list[0] which was GREASE →
+/// `SSLKeyShare::Create` returned nullptr → handshake silently aborted
+/// before any wire bytes were emitted (was "raw is empty" panic). Fixed
+/// by calling the new `SslRef::set_client_key_shares` wrapper with the
+/// profile's real (non-GREASE) groups; (2) the secondary
+/// `assert_profile_extension_order` helper filtered padding from
+/// `expected` but only GREASE from `observed`, which broke equality for
+/// any profile with GREASE in `extensions`. Filter is now symmetric.
 #[tokio::test]
-#[ignore = "W11-F §14b.3 pending: gemini Chrome-impersonate ClientHello emit; pre-existing pre-§14b.2 (confirmed by bisect 2026-05-26)"]
 async fn gemini_advanced_boring_client_hello_byte_level_matches_profile() {
     test_vendor_byte_level(
         BuiltinProfile::GeminiAdvanced,
@@ -168,7 +163,18 @@ fn assert_profile_extension_order(
     expected_ja3: &str,
     profile_name: &str,
 ) {
-    if observed == expected {
+    // `observed` is already GREASE-filtered by test_vendor_byte_level. To
+    // compare apples-to-apples, also filter GREASE from `expected` —
+    // Chrome-impersonation profiles (Gemini 0.42.0) bake GREASE values
+    // into `extensions` for wire-order documentation but the on-wire
+    // GREASE positions are picked by boring at runtime per RFC 8701, so
+    // there's no JA3 sense in comparing them positionally here.
+    let expected_filtered: Vec<u16> = expected
+        .iter()
+        .copied()
+        .filter(|value| !crate::mimicry::ja3_wire::is_grease(*value))
+        .collect();
+    if observed == expected_filtered {
         return;
     }
 
@@ -176,7 +182,7 @@ fn assert_profile_extension_order(
     // padding(21)。boring 5.1 公开 API 没有 padding 强制 setter 或
     // custom extension 注入口，所以这里严格比较非 padding 顺序，并允许
     // boring 自动省略末尾 padding。ECH/OCSP/SCT 仍必须真实出现在 wire。
-    let expected_without_padding = expected
+    let expected_without_padding = expected_filtered
         .iter()
         .copied()
         .filter(|value| *value != 21)

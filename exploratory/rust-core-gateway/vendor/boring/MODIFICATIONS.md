@@ -222,3 +222,57 @@ source code copied. The wrapper bodies are HUAKAI-original (2 lines of
 boring is the same pattern repeated for ~50 other SslRef methods, which
 is necessarily structurally identical (`unsafe { ffi::* }` shims have a
 single sensible shape).
+
+## W11-F §14b.3: explicit ClientHello key_share groups (gemini fix)
+
+§14b.2 wired cert_compression + ALPS but the gemini wire test still
+failed with "raw is empty" because gemini's `supported_groups` starts
+with GREASE (35466) and BoringSSL's default key_share logic picks
+`supported_group_list[0]` for initial key share — `SSLKeyShare::Create
+(GREASE)` returns nullptr → handshake silently aborts before any wire
+bytes are emitted (see `ssl/extensions.cc::ssl_setup_key_shares`
+line 2266). Adding a Rust wrapper for the stock BoringSSL API
+`SSL_set1_client_key_shares` (ssl.h:2665) lets HUAKAI pass the real
+(non-GREASE) groups explicitly, while still letting the GREASE-enabled
+mode emit a fake GREASE key share automatically (extensions.cc:2294).
+
+### boring/src/ssl/mod.rs
+
+- `SslRef::set_client_key_shares(&mut self, group_ids: &[u16])
+  -> Result<(), ErrorStack>`: thin wrapper over
+  `ffi::SSL_set1_client_key_shares`. Same `unsafe { cvt_0i(...) }` shape
+  as the existing `add_application_settings` wrapper (added in §14b.2).
+  Documented requirement: pass only real groups, no GREASE.
+
+### boring-sys
+
+- No changes. Bindgen already picks up `SSL_set1_client_key_shares` from
+  the public header (`boring-sys/deps/boringssl/include/openssl/ssl.h:
+  2665`).
+
+### Apache-2.0 §4 attribution
+
+Modification: HUAKAI Claude executor lane (W11-F §14b.3), 2026-05-27 UTC.
+Adds 1 safe Rust wrapper around an existing public BoringSSL API. Wrapper
+body is HUAKAI-original (single `unsafe { ffi::* }` shim); no upstream
+Rust source code copied. No new runtime crate dependencies. HUAKAI fork
+stays local; no upstream merge expected.
+
+## W11-F §14c: real brotli decompression for cert chain
+
+§14b.2 shipped `StubBrotliCompressor` whose `decompress` returned
+`io::Error::other("not implemented")` — sufficient for offline wire
+tests but not for production handshakes against Gemini
+(`cloudcode-pa.googleapis.com`) where the server may actually compress
+its cert chain with brotli (the algorithm HUAKAI advertises in ext 27).
+§14c (Owner-approved 2026-05-26) renames `StubBrotliCompressor` →
+`BrotliCompressor` and replaces the default-Err `decompress` with a
+one-line call to `brotli::BrotliDecompress`. New optional crate
+dependency `brotli = "8.0"` (BSD-3-Clause / MIT, MIT-compatible per
+CLAUDE.md #11) gated under the `mimicry-boring` Cargo feature so the
+default-features build stays slim.
+
+No vendored boring changes here — purely in `core_gateway/src/mimicry/
+cert_compressor.rs` + `core_gateway/Cargo.toml`. Recorded in
+MODIFICATIONS.md only for the audit-trail continuity with §14b.2's
+stub-decompress note.

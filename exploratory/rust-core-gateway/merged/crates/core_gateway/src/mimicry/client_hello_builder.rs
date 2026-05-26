@@ -137,6 +137,19 @@ pub fn configure_boring_connection(
         apply_application_settings(&mut config, &profile.tls.alps_protocols)?;
     }
 
+    // §14b.3: when the profile lists GREASE in supported_groups (typical of
+    // Chrome impersonation — gemini's supported_groups[0]=35466), boring's
+    // default key_share selection picks supported_group_list[0] which is
+    // GREASE → `SSLKeyShare::Create` returns nullptr → handshake silently
+    // aborts before any wire bytes are emitted. Force key_share to use the
+    // first real (non-GREASE) group from the profile so handshake setup
+    // succeeds. The actual ext 10 wire bytes still include GREASE in the
+    // profile order; this only controls which groups boring computes
+    // initial key shares for. boring's GREASE-enabled mode emits a fake
+    // GREASE key share automatically (extensions.cc:2294), so the wire
+    // pattern still matches Chrome's [GREASE_kse, X25519_kse] shape.
+    apply_real_key_shares(&mut config, &profile.tls.key_share_groups)?;
+
     Ok(config)
 }
 
@@ -218,14 +231,14 @@ fn apply_cert_compression(
     builder: &mut SslConnectorBuilder,
     algorithm_ids: &[u16],
 ) -> Result<(), BoringMimicryError> {
-    use crate::mimicry::cert_compressor::StubBrotliCompressor;
+    use crate::mimicry::cert_compressor::BrotliCompressor;
 
     for id in algorithm_ids.iter().copied() {
         match id {
             // Brotli — IANA "TLS Certificate Compression Algorithm IDs", id 2.
             2 => {
                 builder
-                    .add_certificate_compression_algorithm(StubBrotliCompressor)
+                    .add_certificate_compression_algorithm(BrotliCompressor)
                     .map_err(BoringMimicryError::from_boring)?;
             }
             other => {
@@ -259,6 +272,33 @@ fn apply_application_settings(
             .add_application_settings(protocol.as_bytes(), &[])
             .map_err(BoringMimicryError::from_boring)?;
     }
+    Ok(())
+}
+
+/// §14b.3: filter GREASE from `key_share_groups` and hand the real groups
+/// to boring's `SSL_set1_client_key_shares`. If the resulting list is empty
+/// (profile didn't declare any key_share_groups, e.g., Anthropic / Codex /
+/// Kiro), no override is applied — boring's default key_share path is fine
+/// for those profiles because their `supported_groups[0]` is a real group
+/// (X25519MLKEM768 / X25519 / etc.). Only profiles with GREASE-first
+/// supported_groups (Chrome impersonation, currently Gemini) need this
+/// override to avoid boring's silent handshake abort.
+#[cfg(feature = "mimicry-boring")]
+fn apply_real_key_shares(
+    config: &mut ConnectConfiguration,
+    key_share_groups: &[u16],
+) -> Result<(), BoringMimicryError> {
+    let real_groups: Vec<u16> = key_share_groups
+        .iter()
+        .copied()
+        .filter(|group| !is_grease(*group))
+        .collect();
+    if real_groups.is_empty() {
+        return Ok(());
+    }
+    config
+        .set_client_key_shares(&real_groups)
+        .map_err(BoringMimicryError::from_boring)?;
     Ok(())
 }
 

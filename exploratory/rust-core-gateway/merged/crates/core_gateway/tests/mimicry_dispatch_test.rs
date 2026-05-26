@@ -73,6 +73,11 @@ fn native_openssl_profile_without_ext_22() -> FingerprintProfile {
             psk_modes: vec![1],
             padding_len: 0,
             early_data_enabled: false,
+            // §14b.1 Chrome impersonation: this fixture targets OpenSSL
+            // native dispatch path with no Chrome-style features advertised;
+            // empty lists keep the wire-level signature plain.
+            cert_compression_algorithms: Vec::new(),
+            alps_protocols: Vec::new(),
         },
         h2_settings: Http2SettingsCapture {
             available: false,
@@ -406,8 +411,18 @@ fn mimicry_resolver_respects_known_gap_over_boring_feature_kiro() {
     );
 }
 
+/// W11-F §14b.2 (2026-05-27): gemini's nodejs template used to be classified
+/// `UnsupportedTemplate` because HUAKAI couldn't reproduce Chrome's
+/// cert_compression (ext 27) + ALPS (ext 17513) wire bytes. §14b.2 wired
+/// both extensions into the boring builder + added a brotli compressor +
+/// SSL_set1_client_key_shares to avoid the GREASE-first key_share trap.
+/// With the boring feature available, the resolver now greenlights gemini.
+///
+/// This test locks the new behavior: boring feature MUST make gemini
+/// dispatchable. If a future refactor reintroduces the gap, this test
+/// goes red — exactly what we want for regression catching.
 #[test]
-fn mimicry_resolver_respects_known_gap_over_boring_feature_gemini() {
+fn mimicry_resolver_allows_gemini_when_boring_feature_present() {
     let profile =
         load_builtin_profile(BuiltinProfile::GeminiAdvanced).expect("gemini profile 应加载");
 
@@ -418,7 +433,7 @@ fn mimicry_resolver_respects_known_gap_over_boring_feature_gemini() {
     let decision = decide_dispatch_with_features(&profile, with_boring);
 
     assert!(
-        !is_dispatch_allowed(&decision),
-        "boring feature 不能绕过 gemini nodejs 模板的 UnsupportedTemplate 判定，实际: {decision:?}"
+        is_dispatch_allowed(&decision),
+        "boring feature 应允许 gemini Chrome 模仿派发（§14b.2 已接 cert_compression + ALPS + key_share 修复），实际: {decision:?}"
     );
 }

@@ -103,61 +103,82 @@ Stub is sufficient because:
   validating that the boring builder + ext 22 / ECH / OCSP / SCT / cert
   compression / ALPS infrastructure is sound for the simpler profiles.
 
-## §14b.3 — gemini wire-level ClientHello emit + 192-byte padding (OPEN)
+## §14b.3 — gemini wire-level ClientHello emit (RESOLVED 2026-05-27)
 
-Symptom: `tokio_boring::connect()` against an in-memory TCP listener writes
-**zero bytes** for the gemini Chrome-impersonation profile (other 3 vendors
-write the expected ClientHello). No error surfaced — just empty raw.
+Root cause investigation:
 
-Hypothesis space (next slice should investigate in order):
+1. Captured `tokio_boring::connect` error via diagnostic logs →
+   "TLS handshake failed unexpected EOF" with empty `ErrorStack`.
+2. Bisect (disable both §14b.2 branches in `client_hello_builder.rs`):
+   gemini wire test STILL fails with "raw is empty" → not a §14b.2
+   regression.
+3. Walked BoringSSL `ssl_setup_key_shares` (extensions.cc:2215). Found
+   line 2266: `default_key_shares.TryPushBack(supported_group_list[0])`.
+4. Profile's `supported_groups` starts with GREASE (35466).
+   `SSLKeyShare::Create(GREASE)` returns nullptr → handshake silently
+   aborts at line 2304 before any wire bytes are written.
 
-1. **BoringSSL's padding logic (extensions.cc:4050)** rounds ClientHello to
-   0x200 (512) bytes. Profile says `padding_len = 192`. If BoringSSL
-   computes a different padding length than the profile expects, the
-   `set_extension_order` path may reject the resulting layout because the
-   strict-order patch (HUAKAI R-3-A-fix-2-deeper) doesn't expect padding to
-   be re-computed. **Most likely root cause.**
-2. **GREASE position conflict**: profile has GREASE in cipher_suites
-   (10794), extensions (35466, 39578), supported_groups (35466),
-   supported_versions (23130). With `set_grease_enabled(true)`, boring may
-   double-inject GREASE values that conflict with profile-side ones.
-3. **Cipher list rejection**: profile's TLS 1.2 cipher mix is
-   Chrome-style (16 ciphers including specific CHACHA20 ordering). The
-   `openssl_cipher_names_from_codes` builder may emit a list boring's
-   `set_cipher_list` accepts but `set_client_hello_profile` rejects.
-4. **set_alpn_protos + ALPS interaction**: ALPS requires ALPN to be set.
-   ALPN is set at context level; ALPS is per-SSL. Maybe boring's internal
-   state requires ALPN protos to also be set at per-SSL level when ALPS is
-   used.
+Fix:
 
-Investigation method: instrument `build_boring_connector` and
-`configure_boring_connection` with `eprintln!` on each `Result` branch to
-identify the silent failure point. Then read BoringSSL's `tls_construct_
-client_hello` to confirm hypothesis.
+1. **Vendored boring**: added `SslRef::set_client_key_shares` thin
+   wrapper over BoringSSL's stock `SSL_set1_client_key_shares` (a
+   per-SSL API documented at ssl.h:2641-2667). Documented in
+   `vendor/boring/MODIFICATIONS.md` under §14b.3 with Apache-2.0 §4
+   attribution.
+2. **HUAKAI builder**: added `apply_real_key_shares` helper in
+   `client_hello_builder.rs::configure_boring_connection`. It filters
+   GREASE from `profile.tls.key_share_groups` and hands the real groups
+   to `set_client_key_shares`. boring's grease_enabled mode still emits
+   a fake GREASE key share automatically (extensions.cc:2294), so the
+   wire pattern matches Chrome's `[GREASE_kse, X25519_kse]` shape.
+3. **Test helper fix**: `assert_profile_extension_order` in
+   `boring_wire.rs` was filtering padding (21) from `expected` but
+   GREASE from `observed` — asymmetric and broke any profile with
+   GREASE in `extensions`. Made the filter symmetric (GREASE filtered
+   from both sides).
 
-Acceptance for §14b.3:
-- `cargo test mimicry::boring_wire::gemini_advanced -- --ignored` passes
-- ClientHello JA3 hash matches `59686f806cae30344b525e99af5b655d`
-- `#[ignore]` removed from the test
-- §14b status doc updated with resolution
+Result: gemini wire test now PASSES with JA3 hash matching the §13
+captured value `59686f806cae30344b525e99af5b655d`. `#[ignore]` removed.
 
-## §14c — production brotli decompression (OPEN)
+Hypothesis space documented earlier (BoringSSL padding-to-512 conflict)
+was wrong — padding wasn't the issue. The actual issue was upstream of
+even the extension writer: handshake setup aborted before any extension
+processing began.
 
-When HUAKAI actually opens a TLS handshake to `cloudcode-pa.googleapis.com`
-in production, the Gemini server may compress its certificate chain with
-brotli (the algorithm we advertise in ext 27). The §14b.2 stub returns
-`io::Error::other("not implemented")` on decompress, which will fail the
-handshake.
+## §14c — production brotli decompression (RESOLVED 2026-05-27)
 
-Resolution: add `brotli` crate runtime dep (BSD-3-Clause / MIT, MIT-
-compatible) and replace `StubBrotliCompressor::decompress` default with a
-real `brotli::BrotliDecompress` implementation. New runtime dep needs Owner
-explicit approval per CLAUDE.md Risk-Based Confirmation Rule (high-risk
-"new runtime dependencies").
+Owner approval received 2026-05-26 for `brotli` runtime crate dep.
 
-Acceptance for §14c:
-- Owner approves `brotli` crate dep
-- `StubBrotliCompressor` renamed to `BrotliCompressor` with real decompress
-- `cargo deny` license + advisory check still clean
-- Integration test against real `cloudcode-pa.googleapis.com` handshake
-  (requires Gemini OAuth credentials — env-gated)
+Resolution: renamed `StubBrotliCompressor` → `BrotliCompressor`, replaced
+the trait-default `decompress` with a one-line
+`brotli::BrotliDecompress` call. `brotli = "8.0"` added under the
+`mimicry-boring` feature in `core_gateway/Cargo.toml` (BSD-3-Clause /
+MIT licensed, MIT-compatible per CLAUDE.md #11). Default-features build
+stays slim (brotli only pulled in when `mimicry-boring` enabled).
+
+Real cloudcode-pa.googleapis.com handshake integration test still
+deferred (requires env-gated Gemini OAuth creds and an HTTP-2 chunk
+test that's out of scope for the offline byte-level acceptance test).
+Marked tracked in W11-F-section14b-status as future work; not blocking
+W11-F release.
+
+## §14b.4 — dispatch / resolver test alignment (RESOLVED 2026-05-27)
+
+When integration tests ran with `--locked --no-default-features`
+(per Owner's diagnostic Docker invocation), 4 tests in
+`tests/mimicry_profile_test.rs` + 1 in `tests/mimicry_dispatch_test.rs`
+failed against the new classifications introduced by W11-F F-2.2
+synthesis D-S3 (kiro KnownGapBlocked) + D-S4 (gemini OpenSslAdapter
+via boring) + §14b.2 wire support. The tests were locking the OLD
+classifications (kiro UnsupportedTemplate, gemini UnsupportedTemplate).
+
+Fix: updated 5 test assertions to lock the NEW behavior so future
+regressions get caught. Test names also renamed where the old name
+implied wrong behavior (e.g.,
+`mimicry_resolver_respects_known_gap_over_boring_feature_gemini` →
+`mimicry_resolver_allows_gemini_when_boring_feature_present`).
+
+Also fixed `mimicry_dispatch_test.rs:50` — manual `TlsProfile { ... }`
+construction was missing the §14b.1 `cert_compression_algorithms` and
+`alps_protocols` fields. Added with empty defaults (this fixture
+targets the OpenSSL native dispatch path, no Chrome features).

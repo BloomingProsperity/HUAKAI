@@ -12,7 +12,12 @@ tls = ["tonic/tls", "tonic/tls-roots"]
 # L2-A4: OpenSSL mimicry backend skeleton, 默认不编译进网关 binary。
 mimicry-openssl = ["dep:openssl", "dep:tokio-openssl"]
 # R-2-B: BoringSSL mimicry backend 预接线, 默认不编译进网关 binary。
-mimicry-boring = ["dep:boring", "dep:tokio-boring", "dep:tower"]
+# §14c (Owner-approved 2026-05-26): brotli pulled in only with mimicry-boring
+# so the default-features build stays slim. Real cert-chain decompression for
+# Chrome impersonation profiles (Gemini 0.42.0 ALPS handshake against
+# cloudcode-pa.googleapis.com may compress server cert with brotli per the
+# RFC 8879 algorithm we advertise in ext 27).
+mimicry-boring = ["dep:boring", "dep:tokio-boring", "dep:tower", "dep:brotli"]
 # L2-A6: MIT http2 fork 仅用于 SETTINGS / pseudo-header 顺序表达。
 mimicry-http2-fork = ["dep:http2"]
 
@@ -23,6 +28,12 @@ workspace = true
 # 异步运行时
 axum = { version = "0.8", features = ["http1", "json", "tokio"] }
 boring = { workspace = true, optional = true }
+# §14c: brotli decompression for Chrome impersonation cert-chain handling.
+# License BSD-3-Clause / MIT, MIT-compatible per CLAUDE.md #11 permitted-
+# license vendoring policy. Only pulled in under mimicry-boring feature so
+# the default-features build stays slim. Version pinned to 8.0 to match
+# vendored boring crate's dev-dependency for consistency.
+brotli = { version = "8.0", optional = true }
 bytes = "1"
 dashmap = "6.1"
 # 环境变量解析 (带前缀, 强类型)

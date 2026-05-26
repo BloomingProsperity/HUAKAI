@@ -145,11 +145,16 @@ fn mimicry_profile_match_policy_follows_template_evidence() {
         "codex profile 有已知 TLS 字段差异，不能作为 capture pass"
     );
 
+    // W11-F F-2.2 synthesis D-S3 (Owner-approved 2026-05-24): kiro_cli stays
+    // KnownGapBlocked until real-upstream capture verification against
+    // q.us-east-1.amazonaws.com lands (tracked by F-2.5). The KnownGap
+    // outcome dominates the randomized-extension-order signal because real
+    // gap evidence outranks "policy by template shape" — synthesis §4.
     let kiro = load_builtin_profile(BuiltinProfile::KiroCli).expect("kiro profile 应加载");
     assert_eq!(
         kiro.match_policy(),
-        ProfileMatchPolicy::SampleSetRandomized,
-        "kiro extension_order=randomized，应使用样本集合策略"
+        ProfileMatchPolicy::KnownGapBlocked,
+        "kiro F-2.2 D-S3 cautious default: real-upstream capture pending"
     );
 
     let gemini =
@@ -233,39 +238,92 @@ fn mimicry_backend_intent_blocks_codex_known_gap() {
     }
 }
 
+/// W11-F F-2.2 (D-S3, Owner-approved 2026-05-24, ratified 2026-05-23 codex
+/// consult): kiro's `tls_backend = rustls` declaration now routes through
+/// `kiro_cli_known_gap_fields()` which returns a non-empty
+/// `real_upstream_capture` gap (real-upstream handshake verification against
+/// q.us-east-1.amazonaws.com is pending F-2.5). The gap-list causes
+/// `backend_intent()` → `KnownGapBlocked` instead of the prior
+/// `UnsupportedTemplate { tls_backend=rustls, ... }` classification.
+/// This test now locks the new KnownGapBlocked outcome so a future commit
+/// that accidentally clears `kiro_cli_known_gap_fields()` (before
+/// real-upstream evidence lands) gets caught.
 #[test]
 fn mimicry_backend_intent_blocks_kiro_rustls_after_burn_the_boats() {
     let kiro = load_builtin_profile(BuiltinProfile::KiroCli).expect("kiro profile 应加载");
 
     match kiro.backend_intent() {
-        BackendIntent::UnsupportedTemplate { reason } => {
-            assert!(reason.contains("tls_backend=rustls"));
-            assert!(reason.contains("mimicry path"));
+        BackendIntent::KnownGapBlocked { reason } => {
+            assert!(
+                reason.contains("real_upstream_capture"),
+                "kiro F-2.2 D-S3 KnownGapBlocked reason 必须来自 real_upstream_capture 缺失，\
+                 实际: {reason}"
+            );
         }
-        intent => panic!("kiro rustls backend 必须停在 UnsupportedTemplate，实际: {intent:?}"),
+        intent => panic!(
+            "kiro F-2.2 D-S3 现在应停在 KnownGapBlocked（real-upstream capture pending），\
+             实际: {intent:?}"
+        ),
     }
 }
 
+/// W11-F §14b.2 (2026-05-27, this commit): gemini's nodejs template used
+/// to be classified `UnsupportedTemplate` because HUAKAI couldn't reproduce
+/// Chrome's cert_compression (ext 27) + ALPS (ext 17513) wire bytes —
+/// hence the original assertion name "rejects_gemini_unsupported_backend".
+/// §14b.2 wired both extensions into the boring builder (cert_compressor.rs
+/// + apply_application_settings + set_client_key_shares) so HUAKAI now
+/// emits a Chrome-shape ClientHello whose JA3 matches the §13 capture
+/// (boring_wire.rs test passes). With the Node.js → OpenSSL adapter
+/// compatibility documented in `gemini_advanced_known_gap_fields()`
+/// (synthesis D-S4 Owner-approved), the resolver now selects
+/// `OpenSslAdapter` for gemini. This test locks the new dispatchable
+/// outcome — a future regression that breaks §14b.2 will turn this red.
 #[test]
-fn mimicry_backend_intent_rejects_gemini_unsupported_backend() {
+fn mimicry_backend_intent_allows_gemini_via_openssl_adapter() {
     let gemini =
         load_builtin_profile(BuiltinProfile::GeminiAdvanced).expect("gemini profile 应加载");
 
+    assert_eq!(
+        gemini.backend_intent(),
+        BackendIntent::OpenSslAdapter,
+        "gemini Chrome 模仿应走 OpenSSL adapter（§14b.2 已通过 byte-level wire test）"
+    );
+
+    // Sanity-check: the unreachable arms below catch a future change that
+    // could silently downgrade gemini back to UnsupportedTemplate / KnownGap.
     match gemini.backend_intent() {
+        BackendIntent::OpenSslAdapter => { /* expected */ }
         BackendIntent::UnsupportedTemplate { reason } => {
-            assert!(
-                reason.contains("nodejs"),
-                "gemini 当前 nodejs TLS backend 不能静默 dispatch，实际: {reason}"
+            panic!(
+                "gemini 已通过 §14b.2 解锁不应再回到 UnsupportedTemplate；reason: {reason}"
             );
         }
-        intent => panic!("gemini unsupported backend 应停在 UnsupportedTemplate，实际: {intent:?}"),
+        BackendIntent::KnownGapBlocked { reason } => {
+            panic!(
+                "gemini §14b.2 不应再被 KnownGapBlocked（除非 D-S4 决策回退）；reason: {reason}"
+            );
+        }
+        intent => panic!(
+            "gemini §14b.2 应走 OpenSslAdapter；实际意外结果: {intent:?}"
+        ),
     }
 }
 
+/// Lock the resolver path for a synthesized profile with `tls_backend =
+/// "native-tls/openssl"` + `extension_order = "stable"` + single-sample
+/// JA3/JA4. It must land on `ExactStable` + `OpenSslAdapter`.
+///
+/// Built from Anthropic's raw JSON because kiro's `mode = "kiro_cli"`
+/// triggers `kiro_cli_known_gap_fields()` regardless of `tls_backend`
+/// override — that gap is mode-keyed (see profile.rs::known_gap_fields).
+/// Anthropic's mode returns an empty gap list, so the synthesized profile
+/// can actually reach `OpenSslAdapter`.
 #[test]
 fn mimicry_backend_intent_accepts_stable_native_tls_openssl() {
-    let mut raw = serde_json::from_str::<serde_json::Value>(BuiltinProfile::KiroCli.raw_json())
-        .expect("kiro raw JSON 应可解析");
+    let mut raw =
+        serde_json::from_str::<serde_json::Value>(BuiltinProfile::AnthropicClaudeCode.raw_json())
+            .expect("anthropic raw JSON 应可解析");
     let ja3_hash = raw["ja3_hash"]
         .as_str()
         .expect("ja3_hash 应存在")
