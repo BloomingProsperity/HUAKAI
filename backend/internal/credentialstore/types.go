@@ -17,6 +17,7 @@ const (
 	VendorCopilot     = "copilot"
 	VendorAntigravity = "antigravity"
 	VendorWindsurf    = "windsurf"
+	VendorCursor      = "cursor"
 
 	AuthModeAPIKey          = "api_key"
 	AuthModeClaudeAIOAuth   = "claude_ai_oauth"
@@ -199,6 +200,7 @@ func (h handlerSpec) RuntimeMaterial(raw []byte) (RuntimeMaterial, error) {
 		"token_uri", "scope", "tenant_id", "deployment", "endpoint_api",
 		"copilot_endpoint_api", "auth_mode", "client_id_source",
 		"oauth_token_endpoint", "expires_at",
+		"user_agent", "cursor_checksum", "cursor_client_version", "cookie",
 	} {
 		if value := fieldString(fields, key); value != "" {
 			extra[key] = value
@@ -263,6 +265,7 @@ func defaultHandlers() []ModeHandler {
 		handlerSpec{vendor: VendorCopilot, authMode: AuthModeCopilotOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "github_access_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorAntigravity, authMode: AuthModeOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorWindsurf, authMode: AuthModeOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
+		handlerSpec{vendor: VendorCursor, authMode: AuthModeOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 	}
 }
 

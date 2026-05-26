@@ -28,6 +28,39 @@ func TestCursorOAuthConfigRequiresOperatorVerifiedEndpoints(t *testing.T) {
 	}
 }
 
+func TestCursorOAuthConfigRejectsMissingEachOperatorField(t *testing.T) {
+	// Mutation guard (CLAUDE.md #14): if ValidateOAuthConfig stops checking any
+	// one of auth_url / token_url / client_id / redirect_uri, that subtest goes red.
+	fullValid := credentialacq.OAuthClientConfig{
+		AuthURL:     "https://cursor-oauth.example.test/authorize",
+		TokenURL:    "https://cursor-oauth.example.test/token",
+		ClientID:    "cursor-client-id",
+		RedirectURI: "http://127.0.0.1:1455/auth/callback",
+	}
+	if err := ValidateOAuthConfig(fullValid); err != nil {
+		t.Fatalf("baseline: full valid cfg should pass, got %v", err)
+	}
+	fields := []struct {
+		name   string
+		mutate func(c *credentialacq.OAuthClientConfig)
+	}{
+		{"auth_url", func(c *credentialacq.OAuthClientConfig) { c.AuthURL = "" }},
+		{"token_url", func(c *credentialacq.OAuthClientConfig) { c.TokenURL = "" }},
+		{"client_id", func(c *credentialacq.OAuthClientConfig) { c.ClientID = "" }},
+		{"redirect_uri", func(c *credentialacq.OAuthClientConfig) { c.RedirectURI = "" }},
+	}
+	for _, f := range fields {
+		f := f
+		t.Run(f.name, func(t *testing.T) {
+			cfg := fullValid
+			f.mutate(&cfg)
+			if err := ValidateOAuthConfig(cfg); !errors.Is(err, ErrCursorOAuthConfigRequired) {
+				t.Fatalf("missing %s: err=%v, want ErrCursorOAuthConfigRequired", f.name, err)
+			}
+		})
+	}
+}
+
 func TestCursorOAuthAuthorizeURLUsesConfiguredPKCES256(t *testing.T) {
 	// Regression killed: configured Cursor OAuth values must flow into the
 	// standard PKCE authorize URL without relying on unverified defaults.
