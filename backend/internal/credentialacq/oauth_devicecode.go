@@ -128,12 +128,12 @@ func PollDeviceCodeToken(ctx context.Context, session Session, cfg OAuthClientCo
 }
 
 type deviceAuthorizationStartResponse struct {
-	DeviceAuthID           string `json:"device_auth_id"`
+	DeviceAuthorizationID  string `json:"device_auth_id"`
 	DeviceCode             string `json:"device_code"`
 	DeviceCodeCamel        string `json:"deviceCode"`
 	UserCode               string `json:"user_code"`
 	UserCodeCamel          string `json:"userCode"`
-	UserCodeAlt            string `json:"usercode"`
+	UserCodeFallback       string `json:"usercode"`
 	VerificationURI        string `json:"verification_uri"`
 	VerificationURICamel   string `json:"verificationUri"`
 	VerificationURIAlt     string `json:"verification_url"`
@@ -218,8 +218,8 @@ func startOpenAICodexDeviceAuthorization(ctx context.Context, store *PostgresSes
 }
 
 func normalizeOpenAICodexDeviceStartResponse(resp deviceAuthorizationStartResponse, cfg OAuthClientConfig, issuedAt time.Time) (map[string]any, error) {
-	deviceAuthID := firstNonEmpty(resp.DeviceAuthID, resp.DeviceCode, resp.DeviceCodeCamel)
-	userCode := firstNonEmpty(resp.UserCode, resp.UserCodeCamel, resp.UserCodeAlt)
+	deviceAuthID := firstNonEmpty(resp.DeviceAuthorizationID, resp.DeviceCode, resp.DeviceCodeCamel)
+	userCode := firstNonEmpty(resp.UserCode, resp.UserCodeCamel, resp.UserCodeFallback)
 	if strings.TrimSpace(deviceAuthID) == "" || strings.TrimSpace(userCode) == "" {
 		return nil, fmt.Errorf("%w: openai codex device start response missing required fields", ErrInvalidTokenShape)
 	}
@@ -316,7 +316,7 @@ func startDeviceAuthorization(ctx context.Context, store *PostgresSessionStore, 
 
 func normalizeDeviceStartResponse(resp deviceAuthorizationStartResponse, tokenURL, clientID string, issuedAt time.Time, authType AuthType) (map[string]any, error) {
 	deviceCode := firstNonEmpty(resp.DeviceCode, resp.DeviceCodeCamel)
-	userCode := firstNonEmpty(resp.UserCode, resp.UserCodeCamel, resp.UserCodeAlt)
+	userCode := firstNonEmpty(resp.UserCode, resp.UserCodeCamel, resp.UserCodeFallback)
 	verificationURI := firstNonEmpty(resp.VerificationURI, resp.VerificationURICamel, resp.VerificationURIAlt)
 	verificationComplete := firstNonEmpty(resp.VerificationComplete, resp.VerificationCompleteGo)
 	expiresIn := firstPositive(resp.ExpiresIn, resp.ExpiresInCamel)
