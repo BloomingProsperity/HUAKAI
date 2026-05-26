@@ -1,0 +1,5 @@
+{"ts": 1779775355.2274837, "peer": "127.0.0.1:56305", "tls_version": "TLSv1.3", "tls_cipher": "TLS_AES_256_GCM_SHA384", "alpn_negotiated": null, "error": "ALPN negotiated 'None', expected 'h2'"}
+{"ts": 1779775355.6643076, "peer": "127.0.0.1:56310", "tls_version": "TLSv1.3", "tls_cipher": "TLS_AES_256_GCM_SHA384", "alpn_negotiated": null, "error": "ALPN negotiated 'None', expected 'h2'"}
+{"ts": 1779775355.7763426, "peer": "127.0.0.1:56311", "tls_version": "TLSv1.3", "tls_cipher": "TLS_AES_256_GCM_SHA384", "alpn_negotiated": null, "error": "ALPN negotiated 'None', expected 'h2'"}
+{"ts": 1779775356.3080375, "peer": "127.0.0.1:56312", "tls_version": "TLSv1.3", "tls_cipher": "TLS_AES_256_GCM_SHA384", "alpn_negotiated": null, "error": "ALPN negotiated 'None', expected 'h2'"}
+{"ts": 1779775356.4169865, "peer": "127.0.0.1:56313", "tls_version": "TLSv1.3", "tls_cipher": "TLS_AES_256_GCM_SHA384", "alpn_negotiated": null, "error": "ALPN negotiated 'None', expected 'h2'"}

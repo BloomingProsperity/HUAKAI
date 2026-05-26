@@ -144,9 +144,10 @@ perfectly mimic Node.js https defaults".
 
 ### C.1 Why these don't directly inform HUAKAI's profile
 
-- **cliproxyapi's comment claims "match real Claude Code's TLS behavior"**
-  but cites no capture. The implementation uses `tls.HelloChrome_Auto` —
-  a generic "look like Chrome browser" hello, not a CC-specific fingerprint.
+- **cliproxyapi's source comment frames the utls path as intended to mimic
+  Claude Code's TLS behavior** but cites no capture of CC to ground that
+  intent. The implementation uses `tls.HelloChrome_Auto` — a generic
+  Chrome browser hello profile, not a CC-derived fingerprint.
 - **clewdr's `Emulation::Chrome145`** is also generic Chrome emulation,
   not a CC-derived fingerprint.
 - Both projects may be using "Chrome utls + h2" because:

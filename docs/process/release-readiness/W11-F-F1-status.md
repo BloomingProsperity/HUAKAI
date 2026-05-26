@@ -285,10 +285,11 @@ Side-by-side comparison with dcee914's undici baseline:
   is **CONSISTENT** with what both official SDKs actually send.
 - **cliproxyapi's choice to use h2 + Chrome utls for api.anthropic.com**
   (per `router-for-me/CLIProxyAPI@21fad9d:internal/runtime/executor/helps/utls_client.go:81-103,131-150`)
-  is for **Claude Code CLI binary** mimicry, NOT for SDK mimicry. cliproxyapi's
-  claim "match real Claude Code's TLS behavior" is undocumented (no capture
-  cited in their repo). It may be aspirational or based on the SEA-bundled
-  BoringSSL assumption.
+  is framed in their source comment as Claude Code CLI binary mimicry, NOT
+  SDK mimicry. The intent is undocumented beyond that comment (no capture
+  cited in their repo to ground the claim). Whether the implementation
+  actually mirrors CC's wire bytes is unverified by them; the option (b)
+  capture (§10) shows their h2 choice does not match what CC actually sends.
 - **The undici-allowH2 capture committed in dcee914** is a synthetic
   experimental baseline. It does NOT represent: (a) Anthropic Node SDK default
   (SDK doesn't enable h2); (b) Claude Code CLI binary (CC's actual transport
@@ -316,3 +317,116 @@ MUST flag HIGH and block. This is the discriminator: a commit that says
 no capture citation → must red. A commit that says "changed alpn per
 `captures/anthropic-cc-cli-1779800000.jsonl` capture from `claude --version
 2.1.112` on 2026-05-27" → green.
+
+## 10. F-1.g closure — real Claude Code CLI capture (option b)
+
+Related capture: `tools/fingerprint-collector/captures/h2-server-1779775310.jsonl`.
+
+### 10.1 Method
+
+Drove real Claude Code CLI binary (`/c/Users/h/.local/bin/claude.exe`, v2.1.112)
+as a subprocess with env overrides, against `h2_capture_server.py` listening
+on `127.0.0.1:18099` with `ALPN=["h2"]` only:
+
+```bash
+ANTHROPIC_API_KEY="<FAKE_KEY_PLACEHOLDER>" \
+ANTHROPIC_BASE_URL="https://127.0.0.1:18099" \
+NODE_EXTRA_CA_CERTS=".../tools/fingerprint-collector/tls_cert/server.crt" \
+claude --bare -p "say hi once" --no-session-persistence \
+       --model claude-3-haiku-20240307
+```
+
+The parent CC session (Claude Code driving this Claude Agent) was unaffected
+— env vars scoped to the subprocess. A fake API key value was used because
+the local server returns 200 regardless of auth content (avoids re-exposing
+any real key in transcripts). Use any clearly non-real string.
+
+### 10.2 Result
+
+5 inbound TLS connections from CC subprocess, all 5 identical:
+
+| Field | Value |
+|---|---|
+| `tls_version` | TLSv1.3 |
+| `tls_cipher` | TLS_AES_256_GCM_SHA384 |
+| `alpn_negotiated` | **`null`** (no overlap with server's h2-only) |
+| `error` | "ALPN negotiated 'None', expected 'h2'" |
+
+CC retried 5 times before giving up (each retry is an independent TLS
+connection — TCP source port differs: 56305 → 56313). All 5 produced the
+same `alpn_negotiated: null` result.
+
+### 10.3 Verification that the server's h2 ALPN advertisement works
+
+Same server, same code path, on the same OS, the prior captures show:
+- undici probe → `alpn_negotiated: "h2"` ✓ (captures/h2-server-1779761396.jsonl)
+- httpx probe → `alpn_negotiated: "h2"` ✓ (captures/h2-server-1779774012.jsonl)
+
+So the server's `ssl.set_alpn_protocols(["h2"])` is functional. CC's
+`alpn_negotiated: null` is therefore caused by **CC not advertising `h2`
+in its ClientHello ALPN extension** — not by any server-side defect.
+
+### 10.4 Conclusions
+
+1. **`templates/anthropic-claude-code.json` `alpn_protocols: ["http/1.1"]`
+   is CONFIRMED CORRECT** from direct real-CC capture. Not stale. Not wrong.
+2. **`h2_settings.available: false`** in that profile is also correct: CC
+   never establishes an h2 connection, so there are no SETTINGS bytes to
+   record.
+3. **cliproxyapi's source-comment intent** (`router-for-me/CLIProxyAPI@21fad9d:internal/runtime/executor/helps/utls_client.go:153-154`
+   — the comment frames the utls + `http2.Transport` path as mimicking CC's
+   TLS behavior) is **contradicted by direct evidence**. cliproxyapi's choice
+   of h2 does not match what CC actually sends. The motivation for their
+   choice is not stated in their repo.
+4. The `dcee914` undici-with-allowH2 capture is NOT what CC sends. The
+   `c69a034` cross-validation finding (undici vs httpx divergence) reinforced
+   this; option (b) now closes the loop with direct evidence.
+
+### 10.5 Broader effect on F-1 epic
+
+Re-auditing all 4 currently-deployed profiles by their captured ALPN field:
+
+| Profile | `alpn_protocols` | Actual business-protocol |
+|---|---|---|
+| `anthropic-claude-code` | `["http/1.1"]` ← option (b) confirmed this section | h1.1 |
+| `openai_codex_cli` | `[]` (no ALPN advertised) | h2 OR h1.1 per reqwest default |
+| `gemini_advanced` | `["h2", "http/1.1"]` advertised | **h1.1** (Google picks h1.1 per `http_layer.protocol`) |
+| `kiro_cli` | `[]` (no ALPN advertised) | h1.1 |
+
+**NO currently-deployed profile actually USES h2 on the wire for business
+requests.** Either ALPN doesn't advertise h2, or the server picks h1.1
+despite h2 being available. Gemini is the closest case (h2 advertised,
+h1.1 picked) — could be promoted to h2 if Google's server agreed, but it
+doesn't.
+
+This means **F-1.e (HTTP/2 fork outbound client integration) does NOT mimic
+any current first-party client behavior on any of the 4 profiles**. The h2
+fork outbound code is correct infrastructure but solving a non-problem for
+the current profile set.
+
+### 10.6 Effect on the W11-F F-1 roadmap
+
+| Sub | Pre-option-(b) status | Post-option-(b) status |
+|---|---|---|
+| F-1.a (fixture contract) | landed | landed; cross-check trivially passes (no profile h2_settings.available=true) |
+| F-1.b (adapter true-IO) | landed | landed (dormant infrastructure) |
+| F-1.c (L2 preflight) | landed | landed (dormant infrastructure) |
+| F-1.d.1/d.2 (transport boundary + BoxBody) | landed | landed (still useful — transport-agnostic) |
+| F-1.e (h2 fork outbound) | OPEN (planned next) | **DEFERRED indefinitely** — no profile needs it. Re-evaluate when a profile gets `alpn=["h2"]` AND a real h2 capture matching it. |
+| F-1.f (combined builder + L1+L2 preflight) | landed | landed (still useful — L1 preflight applies regardless of h2 vs h1) |
+| F-1.g (capture pipeline + evidence) | landed | **CLOSED by option (b)** — no profile h2 promotion happened, none needed |
+| F-1 epic Released criteria #4 | "≥1 profile h2 fixture non-vacuous" | **N/A for current profiles** — re-scope criterion or accept all 4 profiles never qualify |
+
+### 10.7 Open follow-ups (NOT in this commit)
+
+1. **Extend `h2_capture_server.py` to optionally advertise `["h2", "http/1.1"]`
+   ALPN** so we can also capture CC's actual h1.1 wire bytes (header order,
+   user-agent, content negotiation). Would need an h1.1 read/respond path
+   too; out of current scope.
+2. **Decide F-1 epic Released criterion #4 status** — either re-scope to
+   "≥1 profile satisfies its real-capture-derived ALPN, regardless of h2/h1",
+   or accept the F-1 epic ships h2 infrastructure as dormant.
+3. **Roadmap audit**: with F-1.e indefinitely deferred and no profile h2
+   in flight, the W11-F epic effectively reduces to "F-2 TLS mimicry +
+   F-1 dormant h2 infrastructure". Recommend Owner / plan trio re-confirm
+   the W11-F scope.
