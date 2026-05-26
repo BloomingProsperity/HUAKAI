@@ -565,3 +565,111 @@ Specifically:
    Documentation lands with the flag.
 4. **§11-Gate5-release-template**: add Gate 5 language to the next
    release-notes template change.
+
+## 12. Gate 1 audit result (slice §11-Gate1-audit, landed 2026-05-26)
+
+Owner directive "一个一个来" — execute the §11 follow-up slices one at a
+time. This is slice #1 (audit only; no profile JSON changes — remediation
+tracked as separate slices below).
+
+### 12.1 Gate 1 requirements (recap)
+
+Every vendor profile under `tools/fingerprint-collector/templates/` must
+carry a `_field_sources` block citing:
+
+- (a) Artifact path (jsonl / pcap-derived clienthello template / equivalent)
+- (b) CLI / desktop app version
+- (c) Capture timestamp (UTC)
+- (d) Capture method (which tool + how driven)
+
+### 12.2 Per-profile audit
+
+| Profile | (a) artifact path | (b) CLI version | (c) timestamp | (d) capture method | Verdict |
+|---|---|---|---|---|---|
+| `anthropic-claude-code.json` | ❌ no `_field_sources` block at all | ❌ no CLI version cited anywhere | ✅ `collected_at: 2026-05-06T10:37:23Z` | ❌ no method cited | **FAIL Gate 1** (oldest profile, predates `_field_sources` convention) |
+| `codex-cli.json` | ⚠ `/tmp/fingerprint-data/codex-tls/clienthello-template.json + ja3-hashes.txt + ja4-hashes.txt + metadata.json` — **path is ephemeral**, not in repo, not re-resolvable | ⚠ implied via `user_agent: "codex_cli_rs/0.128.0 ..."` (SDK string, not capture-time CLI version assertion) | ✅ `collected_at: 2026-05-14T06:56:31Z` | ⚠ "source-analysis" cited for http_layer/auth_layer; TLS capture method implicit (likely `fingerprint-collector` Go tool, not stated) | **WEAK Gate 1** (provenance present but ephemeral path; promotion drift exists, see §12.3) |
+| `gemini-advanced.json` | ⚠ `/tmp/fingerprint-data/gemini-tls/*` + `gemini-http-capture.jsonl` + `gemini-model-request-detail.txt` — **paths ephemeral**, not in repo | ⚠ implied via `user_agent: "GeminiCLI/0.41.2/gemini-3.1-pro-preview ..."` | ✅ `collected_at: 2026-05-14T07:20:19Z` | ✅ explicit `mitmproxy 解密流量` for auth/http; ⚠ TLS method implicit | **WEAK Gate 1** (auth/http method explicit; TLS path ephemeral) |
+| `kiro-cli.json` | ⚠ `/tmp/fingerprint-data/kiro-tls/*` + `kiro-http-capture.jsonl` + `kiro-model-request-detail.txt` — **paths ephemeral** | ⚠ implied via `user_agent: "aws-sdk-rust/1.3.15 ... app/AmazonQ-For-CLI"` | ✅ `collected_at: 2026-05-14T06:57:12Z` | ✅ explicit `mitmproxy 解密流量` for auth/http; ⚠ TLS method implicit | **WEAK Gate 1** (same shape as gemini) |
+
+### 12.3 Pre-existing issue surfaced by audit — pending backfill drift
+
+`tools/fingerprint-collector/templates/_pending-backfill/openai_codex-real-20260519T055201Z.json`
+contains a 2026-05-19 Owner-authorized recapture for `openai_codex_cli`
+with **ja3 hash drift vs the production `codex-cli.json`**:
+
+- Production (`codex-cli.json` `collected_at: 2026-05-14`): `ja3_hash = "0e0088de64e0c3adf8e9d8c19c811eb3"`
+- Backfill (`_pending-backfill/...20260519T055201Z.json`): `ja3_hash = "27718d56688425cd36a401c66147c4ee"`
+
+The backfill's own `notes[]` array records: *"Root cause of drift:
+ClientHello.legacy_version field changed from 0x0304 (772) to 0x0303 (771);
+all other TLS fields identical"* and *"R-D fail-closed: HUAKAI codex_cli
+mimicry production dispatch should be paused until builtin promotion or
+rollback."*
+
+This backfill has been sitting in `_pending-backfill/` for 7 days without
+promotion or rollback decision. Out of scope for this slice (it predates
+the §11 gates) but **surfaced here for Owner attention**: any future
+runtime use of the codex_cli profile faces a stale-vs-recapture
+inconsistency.
+
+### 12.4 Pending-backfill `_field_sources` rigor (positive reference)
+
+For comparison, the pending-backfill artifact's `_field_sources` block
+is the most rigorous in the repo and matches Gate 1 (a)-(d) directly:
+
+- (a) artifact path: `/tmp/recapture-codex-20260519T053154Z/codex-real-raw.pcap`
+  (still ephemeral, but capture-method tool chain is explicit)
+- (b) CLI version: `Codex CLI 0.128.0` in `_comment`
+- (c) timestamp: `2026-05-19T05:52:01Z`
+- (d) capture method: `pcap + post-tshark handshake-only equivalent via dpkt + pyja3 + custom dpkt parser`
+
+Recommendation: future captures should adopt this `_field_sources` shape +
+also commit the artifact (or a sanitized derivative) under
+`tools/fingerprint-collector/captures/` so the path is no longer ephemeral.
+
+### 12.5 Decisions in scope for this slice
+
+- **NO profile JSON modified.** Pure audit. Production behavior unchanged.
+- **Gate 3 status reconfirmed**: with all 4 profiles WEAK or FAIL on Gate 1,
+  NONE qualifies to activate the h2 outbound fork. Dormant lock holds.
+- **Gate 4 status unaffected**: F-1.e Feature Flag still required to be
+  added in a separate slice (§11-Gate4-flag); Gate 1 weakness doesn't
+  change that.
+
+### 12.6 Remediation slices opened by this audit
+
+(Each is a separate small slice — Owner "一个一个来" cadence.)
+
+1. **§12-anthropic-cc-fields** (smallest): add a minimal `_field_sources`
+   block to `templates/anthropic-claude-code.json` citing (a) the
+   `tools/fingerprint-collector/captures/h2-server-1779775310.jsonl` real
+   CC CLI ALPN capture (the only piece of provenance currently committed
+   to the repo for this profile), (b) `claude --version 2.1.112`,
+   (c) capture timestamp from the jsonl, (d) capture method `h2_capture_server.py --max-connections 5 + claude --bare -p subprocess via ANTHROPIC_BASE_URL + NODE_EXTRA_CA_CERTS override`.
+   Note: the original 2026-05-06 TLS ClientHello capture has no surviving
+   artifact path — record that limitation explicitly.
+2. **§12-codex-drift-decision**: Owner-gated decision on the pending
+   backfill — promote `_pending-backfill/openai_codex-real-20260519T055201Z.json`
+   to `codex-cli.json` (accept ja3 drift as legitimate Codex CLI evolution)
+   OR rollback (treat backfill as anomalous, re-capture). Until decided,
+   §12.3 says codex_cli mimicry dispatch is potentially stale.
+3. **§12-method-tags**: add explicit capture-method tags
+   (e.g. `tools/fingerprint-collector/cmd@<git-sha>` for Go pcap tool,
+   `mitmproxy@<version>` for HTTP-layer capture) to `_field_sources` of
+   codex / gemini / kiro profiles. Cosmetic-but-required for Gate 1 (d).
+4. **§12-captures-relocation**: move ephemeral `/tmp/fingerprint-data/...`
+   capture artifacts (if Owner still has them locally on the capture
+   machine) to `tools/fingerprint-collector/captures/<vendor>-<ts>.<ext>`
+   so the artifact paths in `_field_sources` are no longer ephemeral.
+   If artifacts are gone, document the loss and treat as "pending
+   re-capture" per §11 Gate 1 enforcement note.
+
+### 12.7 Mutation discriminator for this audit subsection
+
+If this audit's verdicts (12.2 table) are later silently relaxed without
+a re-audit + capture work, the §11 Gate 1 enforcement loses its anchor.
+The mutation discriminator: any commit that flips a verdict from FAIL /
+WEAK → PASS in this table must cite (a) the new capture artifact path
+that resolves the gap and (b) the slice (§12-anthropic-cc-fields /
+§12-method-tags / §12-captures-relocation) that landed it. Codex
+per-commit review must HIGH-block a verdict flip without those citations.
