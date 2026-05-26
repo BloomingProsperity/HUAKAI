@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -22,6 +23,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
 	dbhermes "github.com/BloomingProsperity/HUAKAI/internal/db/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
 )
 
 func TestInternalRunnerBootstrapRequiresHMACAndIssuesVerifiableJWT(t *testing.T) {
@@ -169,6 +171,23 @@ func TestInternalRunnerRefreshRequiresPositiveSignedAuditIdentity(t *testing.T) 
 	}
 }
 
+func TestBuildHermesChatBridgeRequiresDedicatedInternalTokenSecret(t *testing.T) {
+	// Regression: /chat must fail closed when the runner shared secret exists but the bridge token secret is absent.
+	t.Setenv(hermes.RunnerSharedSecretEnv, "runner-shared-secret")
+	t.Setenv(hermeschat.InternalTokenSecretEnv, "")
+
+	bridge, err := buildHermesChatBridge(hermes.NewService(&hermesAuditStoreSpy{}), nil)
+	if !errors.Is(err, hermes.ErrMisconfigured) || bridge != nil {
+		t.Fatalf("bridge=%v err=%v want misconfigured nil bridge without %s", bridge, err, hermeschat.InternalTokenSecretEnv)
+	}
+
+	t.Setenv(hermeschat.InternalTokenSecretEnv, "dedicated-internal-token-secret")
+	bridge, err = buildHermesChatBridge(hermes.NewService(&hermesAuditStoreSpy{}), nil)
+	if err != nil || bridge == nil {
+		t.Fatalf("bridge=%v err=%v want bridge with explicit %s", bridge, err, hermeschat.InternalTokenSecretEnv)
+	}
+}
+
 func signInternalRunnerRequest(req *http.Request, body []byte, secret string, now time.Time, tenant, user string) {
 	timestamp := "1700000000"
 	if !now.IsZero() {
@@ -284,6 +303,14 @@ type hermesAuditStoreSpy struct {
 	auditArgs []dbhermes.InsertAuditEventParams
 }
 
+func (s *hermesAuditStoreSpy) AppendMessage(context.Context, dbhermes.AppendMessageParams) (int64, error) {
+	return 1, nil
+}
+
+func (s *hermesAuditStoreSpy) CreateConversation(context.Context, dbhermes.CreateConversationParams) (int64, error) {
+	return 1, nil
+}
+
 func (s *hermesAuditStoreSpy) CreateProfile(context.Context, dbhermes.CreateProfileParams) (dbhermes.HermesApiProfile, error) {
 	return dbhermes.HermesApiProfile{}, nil
 }
@@ -298,6 +325,10 @@ func (s *hermesAuditStoreSpy) DisableHermes(context.Context, dbhermes.DisableHer
 
 func (s *hermesAuditStoreSpy) GetAPIKeyOwner(context.Context, dbhermes.GetAPIKeyOwnerParams) (int64, error) {
 	return 0, nil
+}
+
+func (s *hermesAuditStoreSpy) GetConversation(context.Context, dbhermes.GetConversationParams) (dbhermes.HermesConversation, error) {
+	return dbhermes.HermesConversation{}, nil
 }
 
 func (s *hermesAuditStoreSpy) GetProfile(context.Context, dbhermes.GetProfileParams) (dbhermes.HermesApiProfile, error) {
@@ -329,6 +360,10 @@ func (s *hermesAuditStoreSpy) ListProfilesByTenant(context.Context, int64) ([]db
 
 func (s *hermesAuditStoreSpy) ProfileInUse(context.Context, dbhermes.ProfileInUseParams) (bool, error) {
 	return false, nil
+}
+
+func (s *hermesAuditStoreSpy) UpdateConversationLastMessageAt(context.Context, dbhermes.UpdateConversationLastMessageAtParams) (int64, error) {
+	return 1, nil
 }
 
 func (s *hermesAuditStoreSpy) UpsertSettings(context.Context, dbhermes.UpsertSettingsParams) (dbhermes.HermesSetting, error) {

@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
 )
 
 func (h handler) startChat(w http.ResponseWriter, r *http.Request) {
@@ -26,13 +28,25 @@ func (h handler) startChat(w http.ResponseWriter, r *http.Request) {
 	if !h.requireRunner(w) {
 		return
 	}
+	if !h.requireChatBridge(w) {
+		return
+	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
 	args := map[string]any{"content_length": len(body)}
 	if err != nil {
 		h.auditFailureThenError(w, r, ident, hermes.ActionChatStart, args, err)
 		return
 	}
-	resp, err := h.runner.Chat(r.Context(), ident.TenantID, ident.UserID, body)
+	prepared, err := h.chatBridge.PrepareRequest(r.Context(), hermeschat.Request{
+		TenantID: ident.TenantID, UserID: ident.UserID,
+		RequestID: requestID(r), CorrelationID: correlationID(r), Body: body,
+	})
+	if err != nil {
+		h.auditFailureThenError(w, r, ident, hermes.ActionChatStart, args, err)
+		return
+	}
+	args["conversation_id"] = prepared.ConversationID
+	resp, err := h.runner.Chat(r.Context(), ident.TenantID, ident.UserID, prepared.Body)
 	if err != nil {
 		h.auditFailureThenError(w, r, ident, hermes.ActionChatStart, args, err)
 		return
@@ -49,7 +63,9 @@ func (h handler) startChat(w http.ResponseWriter, r *http.Request) {
 		resp.Body.Close()
 		return
 	}
-	copyProxyResponse(w, resp)
+	if err := h.chatBridge.Stream(r.Context(), w, resp, prepared); err != nil {
+		log.Printf("hermes chat bridge stream failed: %v", err)
+	}
 }
 
 func writeHermesDisabled(w http.ResponseWriter) {

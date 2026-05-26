@@ -15,6 +15,7 @@ import (
 
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
 )
 
 type AuthResolver interface {
@@ -24,12 +25,17 @@ type AuthResolver interface {
 type authContextKey struct{}
 
 type handler struct {
-	svc    *hermes.Service
-	runner *hermes.RunnerClient
+	svc        *hermes.Service
+	runner     *hermes.RunnerClient
+	chatBridge *hermeschat.Bridge
 }
 
-func NewRouter(svc *hermes.Service, runnerClient *hermes.RunnerClient) http.Handler {
-	h := handler{svc: svc, runner: runnerClient}
+func NewRouter(svc *hermes.Service, runnerClient *hermes.RunnerClient, bridges ...*hermeschat.Bridge) http.Handler {
+	var bridge *hermeschat.Bridge
+	if len(bridges) > 0 {
+		bridge = bridges[0]
+	}
+	h := handler{svc: svc, runner: runnerClient, chatBridge: bridge}
 	r := chi.NewRouter()
 	r.Get("/settings", h.getSettings)
 	r.Post("/settings/enable", h.enableSettings)
@@ -82,6 +88,14 @@ func (h handler) requireIdentity(w http.ResponseWriter, r *http.Request) (sessio
 func (h handler) requireRunner(w http.ResponseWriter) bool {
 	if h.runner == nil {
 		writeError(w, http.StatusServiceUnavailable, "hermes_runner_unavailable", "hermes runner client unset")
+		return false
+	}
+	return true
+}
+
+func (h handler) requireChatBridge(w http.ResponseWriter) bool {
+	if h.chatBridge == nil {
+		writeError(w, http.StatusServiceUnavailable, "hermes_chat_bridge_unavailable", "hermes chat bridge unset")
 		return false
 	}
 	return true

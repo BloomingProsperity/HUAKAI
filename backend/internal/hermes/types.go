@@ -100,16 +100,20 @@ type AuditEvent struct {
 }
 
 type Store interface {
+	AppendMessage(ctx context.Context, arg dbhermes.AppendMessageParams) (int64, error)
+	CreateConversation(ctx context.Context, arg dbhermes.CreateConversationParams) (int64, error)
 	CreateProfile(ctx context.Context, arg dbhermes.CreateProfileParams) (dbhermes.HermesApiProfile, error)
 	DeleteProfile(ctx context.Context, arg dbhermes.DeleteProfileParams) (int64, error)
 	DisableHermes(ctx context.Context, arg dbhermes.DisableHermesParams) (dbhermes.HermesSetting, error)
 	GetAPIKeyOwner(ctx context.Context, arg dbhermes.GetAPIKeyOwnerParams) (int64, error)
+	GetConversation(ctx context.Context, arg dbhermes.GetConversationParams) (dbhermes.HermesConversation, error)
 	GetProfile(ctx context.Context, arg dbhermes.GetProfileParams) (dbhermes.HermesApiProfile, error)
 	GetSettings(ctx context.Context, arg dbhermes.GetSettingsParams) (dbhermes.HermesSetting, error)
 	InsertAuditEvent(ctx context.Context, arg dbhermes.InsertAuditEventParams) (dbhermes.HermesAuditEvent, error)
 	ListProfilesByOwner(ctx context.Context, arg dbhermes.ListProfilesByOwnerParams) ([]dbhermes.HermesApiProfile, error)
 	ListProfilesByTenant(ctx context.Context, tenantID int64) ([]dbhermes.HermesApiProfile, error)
 	ProfileInUse(ctx context.Context, arg dbhermes.ProfileInUseParams) (bool, error)
+	UpdateConversationLastMessageAt(ctx context.Context, arg dbhermes.UpdateConversationLastMessageAtParams) (int64, error)
 	UpsertSettings(ctx context.Context, arg dbhermes.UpsertSettingsParams) (dbhermes.HermesSetting, error)
 }
 
@@ -148,6 +152,10 @@ func (s *Service) withTx(ctx context.Context, fn func(Store) error) error {
 		return ErrMisconfigured
 	}
 	return s.tx.withTx(ctx, fn)
+}
+
+func (s *Service) RunHermesTx(ctx context.Context, fn func(Store) error) error {
+	return s.withTx(ctx, fn)
 }
 
 func (t sqlcTransactor) withTx(ctx context.Context, fn func(Store) error) error {

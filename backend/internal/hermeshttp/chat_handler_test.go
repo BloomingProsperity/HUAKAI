@@ -120,6 +120,14 @@ type chatStoreStub struct {
 	settings dbhermes.HermesSetting
 }
 
+func (s *chatStoreStub) AppendMessage(context.Context, dbhermes.AppendMessageParams) (int64, error) {
+	return 1, nil
+}
+
+func (s *chatStoreStub) CreateConversation(context.Context, dbhermes.CreateConversationParams) (int64, error) {
+	return 1, nil
+}
+
 func (s *chatStoreStub) CreateProfile(context.Context, dbhermes.CreateProfileParams) (dbhermes.HermesApiProfile, error) {
 	return dbhermes.HermesApiProfile{}, nil
 }
@@ -134,6 +142,10 @@ func (s *chatStoreStub) DisableHermes(context.Context, dbhermes.DisableHermesPar
 
 func (s *chatStoreStub) GetAPIKeyOwner(context.Context, dbhermes.GetAPIKeyOwnerParams) (int64, error) {
 	return 0, nil
+}
+
+func (s *chatStoreStub) GetConversation(context.Context, dbhermes.GetConversationParams) (dbhermes.HermesConversation, error) {
+	return dbhermes.HermesConversation{}, nil
 }
 
 func (s *chatStoreStub) GetProfile(context.Context, dbhermes.GetProfileParams) (dbhermes.HermesApiProfile, error) {
@@ -158,6 +170,10 @@ func (s *chatStoreStub) ListProfilesByTenant(context.Context, int64) ([]dbhermes
 
 func (s *chatStoreStub) ProfileInUse(context.Context, dbhermes.ProfileInUseParams) (bool, error) {
 	return false, nil
+}
+
+func (s *chatStoreStub) UpdateConversationLastMessageAt(context.Context, dbhermes.UpdateConversationLastMessageAtParams) (int64, error) {
+	return 1, nil
 }
 
 func (s *chatStoreStub) UpsertSettings(context.Context, dbhermes.UpsertSettingsParams) (dbhermes.HermesSetting, error) {
