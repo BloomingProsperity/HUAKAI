@@ -369,7 +369,14 @@ in its ClientHello ALPN extension** — not by any server-side defect.
 ### 10.4 Conclusions
 
 1. **`templates/anthropic-claude-code.json` `alpn_protocols: ["http/1.1"]`
-   is CONFIRMED CORRECT** from direct real-CC capture. Not stale. Not wrong.
+   is CONSISTENT with first-party reality** as far as option (b) can prove:
+   CC CLI does NOT advertise h2 in ALPN. The exact field value `["http/1.1"]`
+   is **inherited** from the lost 2026-05-06 TLS capture; option (b) alone
+   cannot distinguish `["http/1.1"]` from "no ALPN extension at all" (both
+   produce `alpn_negotiated=null` against an h2-only server). Direct
+   verification of the exact ALPN list pending full re-capture per §12.6
+   slice 4 with a ClientHello-parsing capture method that records OFFERED
+   ALPN values, not just NEGOTIATED result.
 2. **`h2_settings.available: false`** in that profile is also correct: CC
    never establishes an h2 connection, so there are no SETTINGS bytes to
    record.
@@ -388,7 +395,7 @@ Re-auditing all 4 currently-deployed profiles by their captured ALPN field:
 
 | Profile | `alpn_protocols` | Actual business-protocol |
 |---|---|---|
-| `anthropic-claude-code` | `["http/1.1"]` ← option (b) confirmed this section | h1.1 |
+| `anthropic-claude-code` | `["http/1.1"]` ← option (b) confirms h2 absence; exact ALPN list inherited from lost 2026-05-06 capture, awaits full re-capture | h1.1 |
 | `openai_codex_cli` | `[]` (no ALPN advertised) | h2 OR h1.1 per reqwest default |
 | `gemini_advanced` | `["h2", "http/1.1"]` advertised | **h1.1** (Google picks h1.1 per `http_layer.protocol`) |
 | `kiro_cli` | `[]` (no ALPN advertised) | h1.1 |
@@ -586,7 +593,7 @@ carry a `_field_sources` block citing:
 
 | Profile | (a) artifact path | (b) CLI version | (c) timestamp | (d) capture method | Verdict |
 |---|---|---|---|---|---|
-| `anthropic-claude-code.json` | ❌ no `_field_sources` block at all | ❌ no CLI version cited anywhere | ✅ `collected_at: 2026-05-06T10:37:23Z` | ❌ no method cited | **FAIL Gate 1** (oldest profile, predates `_field_sources` convention) |
+| `anthropic-claude-code.json` | ⚠ `_field_sources` added by §12-anthropic-cc-fields slice (this commit): ALPN + h2_settings cite `captures/h2-server-1779775310.jsonl` (committed); TLS portion `/tmp/fingerprint-data/anthropic-tls/*` recorded as lost, pending full re-capture | ⚠ ALPN/h2 cites `claude --version 2.1.112` (real CC CLI); original TLS run's CLI version unrecoverable | ✅ `collected_at: 2026-05-06T10:37:23Z` for TLS; ALPN capture is 2026-05-26T06:01:50Z UTC | ⚠ ALPN/h2 method explicit (h2_capture_server.py + subprocess env override); TLS method lost with the artifact | **WEAK Gate 1** (partial — TLS portion can only escape lost-artifact status via full re-capture; ALPN/h2 portion meets Gate 1 fully). Flipped FAIL → WEAK by §12-anthropic-cc-fields (this commit), per §12.7 mutation rule, citing `captures/h2-server-1779775310.jsonl`. |
 | `codex-cli.json` | ⚠ `/tmp/fingerprint-data/codex-tls/clienthello-template.json + ja3-hashes.txt + ja4-hashes.txt + metadata.json` — **path is ephemeral**, not in repo, not re-resolvable | ⚠ implied via `user_agent: "codex_cli_rs/0.128.0 ..."` (SDK string, not capture-time CLI version assertion) | ✅ `collected_at: 2026-05-14T06:56:31Z` | ⚠ "source-analysis" cited for http_layer/auth_layer; TLS capture method implicit (likely `fingerprint-collector` Go tool, not stated) | **WEAK Gate 1** (provenance present but ephemeral path; promotion drift exists, see §12.3) |
 | `gemini-advanced.json` | ⚠ `/tmp/fingerprint-data/gemini-tls/*` + `gemini-http-capture.jsonl` + `gemini-model-request-detail.txt` — **paths ephemeral**, not in repo | ⚠ implied via `user_agent: "GeminiCLI/0.41.2/gemini-3.1-pro-preview ..."` | ✅ `collected_at: 2026-05-14T07:20:19Z` | ✅ explicit `mitmproxy 解密流量` for auth/http; ⚠ TLS method implicit | **WEAK Gate 1** (auth/http method explicit; TLS path ephemeral) |
 | `kiro-cli.json` | ⚠ `/tmp/fingerprint-data/kiro-tls/*` + `kiro-http-capture.jsonl` + `kiro-model-request-detail.txt` — **paths ephemeral** | ⚠ implied via `user_agent: "aws-sdk-rust/1.3.15 ... app/AmazonQ-For-CLI"` | ✅ `collected_at: 2026-05-14T06:57:12Z` | ✅ explicit `mitmproxy 解密流量` for auth/http; ⚠ TLS method implicit | **WEAK Gate 1** (same shape as gemini) |
@@ -636,33 +643,44 @@ also commit the artifact (or a sanitized derivative) under
   added in a separate slice (§11-Gate4-flag); Gate 1 weakness doesn't
   change that.
 
-### 12.6 Remediation slices opened by this audit
+### 12.6 Remediation slices opened by this audit + Owner decisions 2026-05-26
 
 (Each is a separate small slice — Owner "一个一个来" cadence.)
 
-1. **§12-anthropic-cc-fields** (smallest): add a minimal `_field_sources`
-   block to `templates/anthropic-claude-code.json` citing (a) the
-   `tools/fingerprint-collector/captures/h2-server-1779775310.jsonl` real
-   CC CLI ALPN capture (the only piece of provenance currently committed
-   to the repo for this profile), (b) `claude --version 2.1.112`,
-   (c) capture timestamp from the jsonl, (d) capture method `h2_capture_server.py --max-connections 5 + claude --bare -p subprocess via ANTHROPIC_BASE_URL + NODE_EXTRA_CA_CERTS override`.
-   Note: the original 2026-05-06 TLS ClientHello capture has no surviving
-   artifact path — record that limitation explicitly.
-2. **§12-codex-drift-decision**: Owner-gated decision on the pending
-   backfill — promote `_pending-backfill/openai_codex-real-20260519T055201Z.json`
-   to `codex-cli.json` (accept ja3 drift as legitimate Codex CLI evolution)
-   OR rollback (treat backfill as anomalous, re-capture). Until decided,
-   §12.3 says codex_cli mimicry dispatch is potentially stale.
-3. **§12-method-tags**: add explicit capture-method tags
-   (e.g. `tools/fingerprint-collector/cmd@<git-sha>` for Go pcap tool,
-   `mitmproxy@<version>` for HTTP-layer capture) to `_field_sources` of
-   codex / gemini / kiro profiles. Cosmetic-but-required for Gate 1 (d).
-4. **§12-captures-relocation**: move ephemeral `/tmp/fingerprint-data/...`
-   capture artifacts (if Owner still has them locally on the capture
-   machine) to `tools/fingerprint-collector/captures/<vendor>-<ts>.<ext>`
-   so the artifact paths in `_field_sources` are no longer ephemeral.
-   If artifacts are gone, document the loss and treat as "pending
-   re-capture" per §11 Gate 1 enforcement note.
+1. **§12-anthropic-cc-fields** (smallest): **LANDED THIS COMMIT.**
+   `templates/anthropic-claude-code.json` now has `_comment` +
+   `_field_sources` block citing:
+   - ALPN + h2_settings: `tools/fingerprint-collector/captures/h2-server-1779775310.jsonl`
+     (real `claude --version 2.1.112` via env-override subprocess against
+     `h2_capture_server.py`, 5 connections all alpn_negotiated=null).
+   - TLS: original `/tmp/fingerprint-data/anthropic-tls/*` recorded as
+     lost; pending full re-capture per Owner 2026-05-26 decision (slice 4
+     below).
+   Verdict in §12.2 table flipped FAIL → WEAK per §12.7 rule.
+2. **§12-codex-drift-decision**: **Owner decision 2026-05-26: 重抓**
+   (re-capture, do not promote backfill, do not rollback). The
+   `_pending-backfill/openai_codex-real-20260519T055201Z.json` artifact
+   stays in `_pending-backfill/` as historical evidence (drift is real
+   per its own notes); the production `codex-cli.json` is NOT updated
+   from the backfill. The next full re-capture run (per slice 4) will
+   produce a fresh codex profile that supersedes both. Until then,
+   §12.3 caveat stands: codex_cli mimicry dispatch is potentially stale.
+3. **§12-method-tags**: add explicit capture-method tags to codex /
+   gemini / kiro `_field_sources`. Owner decision 2026-05-26 (slice 4):
+   since all 3 will be re-captured anyway, this slice's scope simplifies
+   to "add `superseded by planned full re-capture` marker plus the
+   existing best-effort method description, no archaeology on lost TLS
+   tool versions". Still a separate slice for tight scope. Cosmetic but
+   required for Gate 1 (d).
+4. **§12-captures-relocation**: **Owner decision 2026-05-26: 全部重抓计划**
+   — don't search for the old `/tmp/fingerprint-data/*` artifacts. Path
+   strings in current `_field_sources` are to be marked `superseded by
+   planned full re-capture` (handled inside slice 3 above). When the full
+   re-capture lands, profile JSONs get fresh `_field_sources` pointing to
+   newly-committed `tools/fingerprint-collector/captures/<vendor>-<ts>.<ext>`.
+   The re-capture itself is a NEW slice (not opened in this audit; tracked
+   as `§13-full-recapture` placeholder for later planning — needs Owner
+   API access for each vendor CLI).
 
 ### 12.7 Mutation discriminator for this audit subsection
 
