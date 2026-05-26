@@ -121,6 +121,17 @@ class JWTVerifyTests(unittest.TestCase):
 
         self.assertIn("jwt_verify.py", copy_sources)
 
+    def test_dockerfile_copies_chat_runtime_modules(self):
+        dockerfile = Path(__file__).with_name("Dockerfile").read_text(encoding="utf-8")
+        copy_sources = []
+        for line in dockerfile.splitlines():
+            parts = line.strip().split()
+            if parts and parts[0] == "COPY" and len(parts) >= 3:
+                copy_sources.extend(parts[1:-1])
+
+        self.assertIn("hermes_chat.py", copy_sources)
+        self.assertIn("sse_events.py", copy_sources)
+
     def _set_env(self, name, value):
         old = os.environ.get(name)
         os.environ[name] = value

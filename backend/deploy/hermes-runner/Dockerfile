@@ -20,7 +20,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY entrypoint.sh main.py jwt_verify.py ./
+COPY entrypoint.sh main.py jwt_verify.py hermes_chat.py sse_events.py ./
 RUN chmod +x /app/entrypoint.sh \
     && mkdir -p /var/lib/huakai/hermes \
     && chown -R hermes:hermes /app /var/lib/huakai/hermes

@@ -141,8 +141,10 @@ async def healthz():
 
 
 @app.post("/chat")
-async def chat():
-    raise HTTPException(status_code=501, detail="Not Implemented")
+async def chat(request: Request):
+    from hermes_chat import chat_response
+
+    return await chat_response(request, tenant_header=HEADER_TENANT, user_header=HEADER_USER)
 
 
 @app.get("/conversations")
