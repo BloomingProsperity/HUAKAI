@@ -567,9 +567,16 @@ Specifically:
     absence; the profile's inherited `["http/1.1"]` is NOT verified
     exactly; upgrade to `Exact` pending §12.6 slice 4 full re-capture).
   Per-arm mutation discriminators per CLAUDE.md #14.
-- ⏸ Gate 4: F-1.e Feature Flag scaffold not yet added (no flag exists).
-  Tracked as follow-up; minimal — feature-flag manifest entry +
-  documentation, no runtime code.
+- ✅ Gate 4: F-1.e Feature Flag **spec landed** in slice §11-Gate4-flag
+  (this commit). New file `docs/process/release-readiness/F-1e-feature-flag-spec.md`
+  specifies the `mimicry.h2_outbound_per_profile` runtime flag (HashMap,
+  default empty ≡ all OFF, per-profile only — global enable forbidden),
+  the Gates 1+2+3 prerequisite for any ON flip, and the codex per-commit
+  enforcement when F-1.e implementation eventually lands. F-1.e itself
+  remains NOT STARTED on the Mandatory Roadmap; the flag spec is the
+  contract any future F-1.e commit MUST satisfy. No runtime code added
+  in this slice (the Rust field gets registered as part of F-1.e
+  implementation, conforming to the spec).
 
 ### Follow-up slices opened by this acceptance
 

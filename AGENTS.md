@@ -707,3 +707,17 @@ infrastructure, 除非:
   cross-check test 真跑非空。
 - step 3: 才开 F-1.e 实现 + 测试 + Feature Flag opt-in。
 - 反序违法 — "implementation first, capture later" 不允许。
+
+**Feature Flag spec**: 详见
+`docs/process/release-readiness/F-1e-feature-flag-spec.md` (Owner-approved
+2026-05-26 §11 Gate 4)。要点:
+
+- Flag 名: `mimicry.h2_outbound_per_profile`,
+  `HashMap<ProfileName, bool>`, 默认空 map (= 全部 OFF)。
+- **Per-profile only**, 不能 global enable。任何 `mimicry.h2_outbound_global=bool`
+  字段都是 violation。
+- 任何 profile flip 到 `true` 前提: 该 profile 的 §11 Gates 1+2+3 都
+  PASS (provenance + ALPN assertion + 真 h2 capture)。
+- F-1.e 实现 commit 必须同时注册该 flag + 默认 OFF + 缺省时走 h1.1
+  dormant path + mutation 测试守 gate 逻辑。codex per-commit review HIGH
+  阻断任何违规。
