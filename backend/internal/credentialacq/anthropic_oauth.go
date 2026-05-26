@@ -1,0 +1,256 @@
+package credentialacq
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+)
+
+const (
+	claudeAIOAuthAuthURL          = "https://claude.ai/oauth/authorize"
+	claudeAIOAuthTokenURL         = "https://api.anthropic.com/v1/oauth/token"
+	claudeAIOAuthPublicClientID   = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+	claudeAIOAuthScope            = "org:create_api_key user:profile user:inference"
+	claudeAIOAuthLoopbackRedirect = "http://localhost:54545/callback"
+
+	claudeAIOAuthApprovedProfileSource = "approved_builtin_profile"
+)
+
+type claudeAIOAuthExchanger struct {
+	now func() time.Time
+}
+
+func newClaudeAIOAuthExchanger() claudeAIOAuthExchanger {
+	return claudeAIOAuthExchanger{}
+}
+
+func (e claudeAIOAuthExchanger) StartOAuthFlow(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig) (OAuthStartResult, error) {
+	cfg = builtinProfileConfig(cfg)
+	if err := validateBuiltinProfile(cfg); err != nil {
+		return OAuthStartResult{}, err
+	}
+	in.Vendor = credentialstore.VendorAnthropic
+	in.AuthMode = credentialstore.AuthModeClaudeAIOAuth
+	return startStoredPKCEOAuthFlow(ctx, store, in, cfg)
+}
+
+func (e claudeAIOAuthExchanger) ExchangeOAuthCode(context.Context, Session, string) (CredentialCandidate, error) {
+	return CredentialCandidate{}, fmt.Errorf("%w: anthropic claude_ai_oauth requires stored PKCE verifier", ErrOAuthExchangerMissing)
+}
+
+func (e claudeAIOAuthExchanger) ExchangeOAuthCodeWithStore(ctx context.Context, store *PostgresSessionStore, session Session, _ string, code string) (CredentialCandidate, error) {
+	if store == nil {
+		return CredentialCandidate{}, errors.New("credentialacq: session store not configured")
+	}
+	payload, err := decryptStoredPKCEPayload(ctx, store, session)
+	if err != nil {
+		return CredentialCandidate{}, err
+	}
+	cfg := builtinProfileConfig(OAuthClientConfig{
+		ClientID:    payload.ClientID,
+		TokenURL:    payload.TokenURL,
+		RedirectURI: payload.RedirectURI,
+		Scopes:      append([]string(nil), payload.Scopes...),
+		Source:      ClientSourcePublicCLI,
+	})
+	if err := validateBuiltinProfile(cfg); err != nil {
+		return CredentialCandidate{}, err
+	}
+	payload.ClientID = cfg.ClientID
+	payload.TokenURL = cfg.TokenURL
+	payload.RedirectURI = cfg.RedirectURI
+	payload.Scopes = append([]string(nil), cfg.Scopes...)
+
+	token, err := e.exchangeAuthorizationCodeJSON(ctx, payload, code)
+	if err != nil {
+		return CredentialCandidate{}, err
+	}
+	raw, err := e.claudeAIOAuthTokenPayload(token, payload)
+	if err != nil {
+		return CredentialCandidate{}, err
+	}
+	fields, _, err := parseFakeTokenPayload(string(raw))
+	if err != nil {
+		return CredentialCandidate{}, err
+	}
+	if err := validateTokenShape(fields, TokenShapeAccessRefresh); err != nil {
+		return CredentialCandidate{}, err
+	}
+	return CredentialCandidate{
+		TenantID: session.TenantID, ProviderAccountID: session.ProviderAccountID,
+		Vendor: session.Vendor, AuthMode: session.AuthMode, Payload: raw, ActorID: session.ActorID,
+		RedactedContext: map[string]any{"client_identity_source": claudeAIOAuthApprovedProfileSource},
+	}, nil
+}
+
+func builtinProfileConfig(override OAuthClientConfig) OAuthClientConfig {
+	cfg := OAuthClientConfig{
+		ClientID:    claudeAIOAuthPublicClientID,
+		AuthURL:     claudeAIOAuthAuthURL,
+		TokenURL:    claudeAIOAuthTokenURL,
+		RedirectURI: claudeAIOAuthLoopbackRedirect,
+		Scopes:      strings.Fields(claudeAIOAuthScope),
+		Source:      ClientSourcePublicCLI,
+	}
+	if strings.TrimSpace(override.ClientID) != "" {
+		cfg.ClientID = strings.TrimSpace(override.ClientID)
+	}
+	if strings.TrimSpace(override.ClientSecret) != "" {
+		cfg.ClientSecret = strings.TrimSpace(override.ClientSecret)
+	}
+	if strings.TrimSpace(override.AuthURL) != "" {
+		cfg.AuthURL = strings.TrimSpace(override.AuthURL)
+	}
+	if strings.TrimSpace(override.TokenURL) != "" {
+		cfg.TokenURL = strings.TrimSpace(override.TokenURL)
+	}
+	if strings.TrimSpace(override.RedirectURI) != "" {
+		cfg.RedirectURI = strings.TrimSpace(override.RedirectURI)
+	}
+	if len(override.Scopes) > 0 {
+		cfg.Scopes = append([]string(nil), override.Scopes...)
+	}
+	if strings.TrimSpace(override.Source) != "" {
+		cfg.Source = strings.TrimSpace(override.Source)
+	}
+	if override.HTTPClient != nil {
+		cfg.HTTPClient = override.HTTPClient
+	}
+	return cfg
+}
+
+func validateBuiltinProfile(cfg OAuthClientConfig) error {
+	var mismatches []string
+	if strings.TrimSpace(cfg.ClientID) != claudeAIOAuthPublicClientID {
+		mismatches = append(mismatches, "client_id")
+	}
+	if strings.TrimSpace(cfg.ClientSecret) != "" {
+		mismatches = append(mismatches, "client_secret")
+	}
+	if strings.TrimSpace(cfg.AuthURL) != claudeAIOAuthAuthURL {
+		mismatches = append(mismatches, "auth_url")
+	}
+	if strings.TrimSpace(cfg.TokenURL) != claudeAIOAuthTokenURL {
+		mismatches = append(mismatches, "token_url")
+	}
+	if strings.TrimSpace(cfg.RedirectURI) == "" {
+		mismatches = append(mismatches, "redirect_uri")
+	}
+	if strings.Join(trimmedFields(cfg.Scopes), " ") != claudeAIOAuthScope {
+		mismatches = append(mismatches, "scope")
+	}
+	if source := strings.TrimSpace(cfg.Source); source != "" && source != ClientSourcePublicCLI {
+		mismatches = append(mismatches, "source")
+	}
+	if len(mismatches) > 0 {
+		return fmt.Errorf("%w: anthropic claude_ai_oauth built-in profile mismatch: %s", ErrFeatureDisabled, strings.Join(mismatches, ","))
+	}
+	return nil
+}
+
+func (e claudeAIOAuthExchanger) exchangeAuthorizationCodeJSON(ctx context.Context, payload storedPKCEPayload, code string) (oauthTokenResponse, error) {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return oauthTokenResponse{}, fmt.Errorf("%w: authorization code is empty", ErrInvalidTokenShape)
+	}
+	body, err := json.Marshal(map[string]string{
+		"grant_type":    "authorization_code",
+		"code":          code,
+		"redirect_uri":  strings.TrimSpace(payload.RedirectURI),
+		"client_id":     claudeAIOAuthPublicClientID,
+		"code_verifier": strings.TrimSpace(payload.CodeVerifier),
+	})
+	if err != nil {
+		return oauthTokenResponse{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, claudeAIOAuthTokenURL, bytes.NewReader(body))
+	if err != nil {
+		return oauthTokenResponse{}, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return oauthTokenResponse{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return oauthTokenResponse{}, err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return oauthTokenResponse{}, fmt.Errorf("credentialacq: anthropic oauth token endpoint returned status %d: %s", resp.StatusCode, oauthErrorSummary(respBody))
+	}
+	var token oauthTokenResponse
+	if err := json.Unmarshal(respBody, &token); err != nil {
+		return oauthTokenResponse{}, err
+	}
+	if strings.TrimSpace(token.AccessToken) == "" {
+		return oauthTokenResponse{}, fmt.Errorf("%w: anthropic oauth token response missing access token", ErrInvalidTokenShape)
+	}
+	if strings.TrimSpace(token.RefreshToken) == "" {
+		return oauthTokenResponse{}, fmt.Errorf("%w: anthropic oauth token response missing refresh token", ErrInvalidTokenShape)
+	}
+	return token, nil
+}
+
+func (e claudeAIOAuthExchanger) claudeAIOAuthTokenPayload(token oauthTokenResponse, stored storedPKCEPayload) ([]byte, error) {
+	raw, err := tokenCandidatePayload(token, stored, e.nowTime())
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	out["client_identity_source"] = claudeAIOAuthApprovedProfileSource
+	out["client_id_source"] = claudeAIOAuthApprovedProfileSource
+	return json.Marshal(out)
+}
+
+func (e claudeAIOAuthExchanger) nowTime() time.Time {
+	if e.now != nil {
+		return e.now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+func trimmedFields(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func oauthErrorSummary(raw []byte) string {
+	var decoded struct {
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err == nil {
+		switch {
+		case decoded.Error != "" && decoded.ErrorDescription != "":
+			return decoded.Error + ": " + decoded.ErrorDescription
+		case decoded.Error != "":
+			return decoded.Error
+		case decoded.ErrorDescription != "":
+			return decoded.ErrorDescription
+		}
+	}
+	text := strings.TrimSpace(string(raw))
+	if text == "" {
+		return "empty response body"
+	}
+	return text
+}

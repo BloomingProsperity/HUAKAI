@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -169,6 +171,146 @@ func TestAdminCredentialAcquisitionCallbackMissingRegistryEntryReturns422AndAudi
 	}
 }
 
+func TestAdminClaudeAIOAuthStartFailsClosedWithBuiltinProfileMissing(t *testing.T) {
+	fx := newCredentialAcqHTTPFixtureWithDefaultExchangers(t, adminPoolAdmin())
+	tokenCalls := 0
+	restore := withAdminClaudeAIOAuthDefaultTransport(t, adminCredentialAcqRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		tokenCalls++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"access_token":"AT","refresh_token":"RT"}`)),
+		}, nil
+	}))
+	defer restore()
+
+	rec := fx.do(t, http.MethodPost, "/admin/v1/credentials/oauth-init",
+		`{"tenant_id":1,"provider_account_id":101,"vendor":"anthropic","auth_mode":"claude_ai_oauth","oauth_client":{"token_url":"http://attacker.test/token"}}`)
+	if rec.Code < 400 || rec.Code >= 500 {
+		t.Fatalf("status=%d want 4xx for admin real entry built-in profile rejection body=%s", rec.Code, rec.Body.String())
+	}
+	fx.db.mu.Lock()
+	flowCount := len(fx.db.rows)
+	fx.db.mu.Unlock()
+	if flowCount != 0 {
+		t.Fatalf("stored flows=%d want 0 for rejected admin real entry", flowCount)
+	}
+	if tokenCalls != 0 {
+		t.Fatalf("token endpoint calls=%d want 0 before any flow is created", tokenCalls)
+	}
+}
+
+func TestAdminClaudeAIOAuthFullFlowEncryptsAndSavesCredential(t *testing.T) {
+	fx := newCredentialAcqHTTPFixtureWithDefaultExchangers(t, adminPoolAdmin())
+	tokenCalls := 0
+	restore := withAdminClaudeAIOAuthDefaultTransport(t, adminCredentialAcqRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		tokenCalls++
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode token request JSON: %v", err)
+		}
+		if body["code"] != "admin-real-code" || body["code_verifier"] == "" {
+			t.Fatalf("token request body=%v want callback code and stored PKCE verifier", body)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"access_token":"AT-admin","refresh_token":"RT-admin","expires_in":3600,"token_type":"Bearer"}`)),
+		}, nil
+	}))
+	defer restore()
+
+	startRec := fx.do(t, http.MethodPost, "/admin/v1/credentials/oauth-init",
+		`{"tenant_id":1,"provider_account_id":101,"vendor":"anthropic","auth_mode":"claude_ai_oauth","redirect_uri":"https://huakai.example.test/admin/oauth/anthropic/callback"}`)
+	if startRec.Code != http.StatusCreated {
+		t.Fatalf("start status=%d want 201 body=%s", startRec.Code, startRec.Body.String())
+	}
+	flowID, state, authorizeURL := decodeAdminClaudeAIOAuthStart(t, startRec.Body.Bytes())
+	if authorizeURL == "" {
+		t.Fatalf("authorize_url empty for admin real entry start body=%s", startRec.Body.String())
+	}
+
+	callbackRec := fx.do(t, http.MethodGet, "/admin/v1/credentials/oauth-callback?flow_id="+url.QueryEscape(flowID)+"&state="+url.QueryEscape(state)+"&code=admin-real-code", "")
+	if callbackRec.Code != http.StatusOK {
+		t.Fatalf("callback status=%d want 200 body=%s", callbackRec.Code, callbackRec.Body.String())
+	}
+	if tokenCalls != 1 {
+		t.Fatalf("token endpoint calls=%d want 1", tokenCalls)
+	}
+	created := fx.creator.inputsSnapshot()
+	if len(created) != 1 {
+		t.Fatalf("created credentials=%d want 1", len(created))
+	}
+	got := created[0]
+	if got.Vendor != credentialstore.VendorAnthropic || got.AuthMode != credentialstore.AuthModeClaudeAIOAuth {
+		t.Fatalf("created mode=%s/%s want anthropic/claude_ai_oauth", got.Vendor, got.AuthMode)
+	}
+	handler, err := credentialstore.DefaultHandlerRegistry().MustLookup(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth)
+	if err != nil {
+		t.Fatalf("lookup handler: %v", err)
+	}
+	material, err := handler.RuntimeMaterial(got.Payload)
+	if err != nil {
+		t.Fatalf("RuntimeMaterial: %v payload=%s", err, string(got.Payload))
+	}
+	if material.Kind != credentialstore.RuntimeOAuthAccessToken || material.Value != "AT-admin" {
+		t.Fatalf("runtime material=%s/%q want oauth_access_token/AT-admin", material.Kind, material.Value)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(got.Payload, &payload); err != nil {
+		t.Fatalf("payload JSON: %v", err)
+	}
+	if payload["refresh_token"] != "RT-admin" || payload["client_identity_source"] != "approved_builtin_profile" {
+		t.Fatalf("payload=%v want refresh token and approved built-in profile marker", payload)
+	}
+}
+
+func TestAdminClaudeAIOAuthRejectsFakeJSONCallback(t *testing.T) {
+	fx := newCredentialAcqHTTPFixtureWithDefaultExchangers(t, adminPoolAdmin())
+	fakeCode := `{"access_token":"FAKE"}`
+	tokenCalls := 0
+	restore := withAdminClaudeAIOAuthDefaultTransport(t, adminCredentialAcqRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		tokenCalls++
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode token request JSON: %v", err)
+		}
+		if body["code"] != fakeCode {
+			t.Fatalf("token request code=%q want raw fake-shaped callback code", body["code"])
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"access_token":"AT-real","refresh_token":"RT-real","expires_in":3600}`)),
+		}, nil
+	}))
+	defer restore()
+
+	startRec := fx.do(t, http.MethodPost, "/admin/v1/credentials/oauth-init",
+		`{"tenant_id":1,"provider_account_id":101,"vendor":"anthropic","auth_mode":"claude_ai_oauth"}`)
+	if startRec.Code != http.StatusCreated {
+		t.Fatalf("start status=%d want 201 body=%s", startRec.Code, startRec.Body.String())
+	}
+	flowID, state, _ := decodeAdminClaudeAIOAuthStart(t, startRec.Body.Bytes())
+	callbackRec := fx.do(t, http.MethodGet, "/admin/v1/credentials/oauth-callback?flow_id="+url.QueryEscape(flowID)+"&state="+url.QueryEscape(state)+"&code="+url.QueryEscape(fakeCode), "")
+	if callbackRec.Code != http.StatusOK {
+		t.Fatalf("callback status=%d want 200 body=%s", callbackRec.Code, callbackRec.Body.String())
+	}
+	if tokenCalls != 1 {
+		t.Fatalf("token endpoint calls=%d want 1; fake JSON callback must not bypass exchange", tokenCalls)
+	}
+	created := fx.creator.inputsSnapshot()
+	if len(created) != 1 {
+		t.Fatalf("created credentials=%d want 1", len(created))
+	}
+	if strings.Contains(string(created[0].Payload), "FAKE") {
+		t.Fatalf("created payload accepted fake callback JSON: %s", string(created[0].Payload))
+	}
+	if !strings.Contains(string(created[0].Payload), "AT-real") {
+		t.Fatalf("created payload=%s want token endpoint response", string(created[0].Payload))
+	}
+}
+
 func TestAdminCredentialAcquisitionRequiresAdminAuth(t *testing.T) {
 	fx := newCredentialAcqHTTPFixture(t, adminPoolAuthStub{err: admin.ErrAdminUnauthorized})
 	rec := fx.do(t, http.MethodPost, "/v1/admin/pool-accounts/101/credential-acquisitions",
@@ -213,6 +355,11 @@ func newCredentialAcqHTTPFixture(t *testing.T, auth AdminCredentialAuth) *creden
 	return newCredentialAcqHTTPFixtureWithRegistry(t, auth, registry, exchanger)
 }
 
+func newCredentialAcqHTTPFixtureWithDefaultExchangers(t *testing.T, auth AdminCredentialAuth) *credentialAcqHTTPFixture {
+	t.Helper()
+	return newCredentialAcqHTTPFixtureWithRegistry(t, auth, credentialacq.DefaultExchangerRegistry(), nil)
+}
+
 func newCredentialAcqHTTPFixtureWithRegistry(t *testing.T, auth AdminCredentialAuth, registry *credentialacq.ExchangerRegistry, exchanger *credentialAcqExchangerStub) *credentialAcqHTTPFixture {
 	t.Helper()
 	now := time.Date(2026, 5, 16, 5, 0, 0, 0, time.UTC)
@@ -239,6 +386,35 @@ func newCredentialAcqHTTPFixtureWithRegistry(t *testing.T, auth AdminCredentialA
 		MountAdminCredentialAcquisitionHelperRoutes(r, deps)
 	})
 	return &credentialAcqHTTPFixture{handler: r, store: store, db: db, creator: creator, audit: audit, exchanger: exchanger}
+}
+
+func decodeAdminClaudeAIOAuthStart(t *testing.T, raw []byte) (string, string, string) {
+	t.Helper()
+	var body struct {
+		Flow         credentialacq.Session `json:"flow"`
+		State        string                `json:"state"`
+		AuthorizeURL string                `json:"authorize_url"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("decode start response: %v body=%s", err, string(raw))
+	}
+	if body.Flow.ID == "" || body.State == "" {
+		t.Fatalf("start response missing flow/state: %s", string(raw))
+	}
+	return body.Flow.ID, body.State, body.AuthorizeURL
+}
+
+func withAdminClaudeAIOAuthDefaultTransport(t *testing.T, rt http.RoundTripper) func() {
+	t.Helper()
+	old := http.DefaultTransport
+	http.DefaultTransport = rt
+	return func() { http.DefaultTransport = old }
+}
+
+type adminCredentialAcqRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f adminCredentialAcqRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }
 
 func (fx *credentialAcqHTTPFixture) do(t *testing.T, method, path, body string) *httptest.ResponseRecorder {

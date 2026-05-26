@@ -36,7 +36,7 @@ func DefaultExchangerRegistry() *ExchangerRegistry {
 		_ = r.RegisterExchanger(name, exc)
 	}
 	openAICodexDeviceCode := openAICodexDeviceCodeExchanger{}
-	register(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth), NewPKCEFakeExchanger(TokenShapeAccessRefresh))
+	register(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth), newClaudeAIOAuthExchanger())
 	register(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist), NewPKCEFakeExchanger(TokenShapeAnySessionOrAccess))
 	register(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne), NewPKCEFakeExchanger(TokenShapeAnySessionOrAccess))
 	register(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity), NewPKCEFakeExchanger(TokenShapeAnySessionOrAccess))
