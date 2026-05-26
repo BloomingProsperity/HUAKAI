@@ -13,34 +13,37 @@ import (
 
 const appendMessage = `-- name: AppendMessage :one
 INSERT INTO hermes_messages (tenant_id, conversation_id, role, content, token_count, completed_at)
-VALUES (
-    $1::bigint,
-    $2::bigint,
-    $3::text,
-    $4::jsonb,
-    $5::integer,
-    $6::timestamptz
-)
+SELECT
+    c.tenant_id,
+    c.id,
+    $1::text,
+    $2::jsonb,
+    $3::integer,
+    $4::timestamptz
+FROM hermes_conversations c
+WHERE c.id = $5::bigint
+  AND c.tenant_id = $6::bigint
+  AND c.deleted_at IS NULL
 RETURNING id
 `
 
 type AppendMessageParams struct {
-	TenantID       int64              `db:"tenant_id" json:"tenant_id"`
-	ConversationID int64              `db:"conversation_id" json:"conversation_id"`
 	Role           string             `db:"role" json:"role"`
 	Content        []byte             `db:"content" json:"content"`
 	TokenCount     *int32             `db:"token_count" json:"token_count"`
 	CompletedAt    pgtype.Timestamptz `db:"completed_at" json:"completed_at"`
+	ConversationID int64              `db:"conversation_id" json:"conversation_id"`
+	TenantID       int64              `db:"tenant_id" json:"tenant_id"`
 }
 
 func (q *Queries) AppendMessage(ctx context.Context, arg AppendMessageParams) (int64, error) {
 	row := q.db.QueryRow(ctx, appendMessage,
-		arg.TenantID,
-		arg.ConversationID,
 		arg.Role,
 		arg.Content,
 		arg.TokenCount,
 		arg.CompletedAt,
+		arg.ConversationID,
+		arg.TenantID,
 	)
 	var id int64
 	err := row.Scan(&id)
@@ -797,6 +800,7 @@ SET last_message_at = $1::timestamptz,
     updated_at = NOW()
 WHERE id = $2::bigint
   AND tenant_id = $3::bigint
+  AND deleted_at IS NULL
 `
 
 type UpdateConversationLastMessageAtParams struct {

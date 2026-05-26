@@ -315,16 +315,70 @@ paths:
   /v1/hermes/conversations:
     get:
       tags: [hermes]
-      summary: List Hermes conversations from the runner
+      summary: List Hermes conversations from PostgreSQL
       operationId: listHermesConversations
-      description: Proxies a tenant/user-scoped conversation list request to the Hermes runner.
+      description: Lists active tenant/user-scoped Hermes conversations from the gateway PostgreSQL store.
+      parameters:
+        - in: query
+          name: limit
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - in: query
+          name: offset
+          required: false
+          schema: { type: integer, minimum: 0, default: 0 }
       responses:
         '200':
-          description: Runner conversation list.
+          description: Gateway conversation list.
           content:
             application/json:
               schema: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/hermes/conversations/{id}:
+    get:
+      tags: [hermes]
+      summary: Get a Hermes conversation
+      operationId: getHermesConversation
+      description: Returns a tenant/user-owned Hermes conversation from the gateway PostgreSQL store.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Gateway conversation row.
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410':
+          description: Conversation was soft-deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    delete:
+      tags: [hermes]
+      summary: Soft-delete a Hermes conversation
+      operationId: deleteHermesConversation
+      description: Soft-deletes a tenant/user-owned Hermes conversation and records `hermes.conversation.delete` audit evidence in the same transaction. Repeated deletes are idempotent.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '204':
+          description: Conversation is deleted or was already deleted.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/hermes/conversations/{id}/messages:
@@ -332,21 +386,34 @@ paths:
       tags: [hermes]
       summary: List messages in a Hermes conversation
       operationId: listHermesConversationMessages
-      description: Proxies a tenant/user-scoped conversation message request to the Hermes runner.
+      description: Lists tenant/user-scoped conversation messages from the gateway PostgreSQL store.
       parameters:
         - in: path
           name: id
           required: true
-          schema: { type: string, minLength: 1 }
+          schema: { type: integer, minimum: 1 }
+        - in: query
+          name: limit
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - in: query
+          name: offset
+          required: false
+          schema: { type: integer, minimum: 0, default: 0 }
       responses:
         '200':
-          description: Runner conversation messages.
+          description: Gateway conversation messages.
           content:
             application/json:
               schema: { type: object }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '410':
+          description: Conversation was soft-deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /internal/runner/bootstrap:

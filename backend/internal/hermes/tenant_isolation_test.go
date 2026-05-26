@@ -84,6 +84,21 @@ type hermesStoreSpy struct {
 	conversationErr    error
 	getConversationArg dbhermes.GetConversationParams
 
+	listConversationsCalled bool
+	listConversationsArg    dbhermes.ListConversationsByOwnerParams
+	listConversationsRows   []dbhermes.HermesConversation
+	listConversationsErr    error
+
+	listMessagesCalled bool
+	listMessagesArg    dbhermes.ListMessagesByConversationParams
+	listMessagesRows   []dbhermes.HermesMessage
+	listMessagesErr    error
+
+	softDeleteCalled bool
+	softDeleteArg    dbhermes.SoftDeleteConversationParams
+	softDeleteRows   int64
+	softDeleteErr    error
+
 	createCalled bool
 	createArg    dbhermes.CreateProfileParams
 	createErr    error
@@ -187,6 +202,24 @@ func (s *hermesStoreSpy) GetConversation(_ context.Context, arg dbhermes.GetConv
 	return dbhermes.HermesConversation{ID: arg.ID, TenantID: arg.TenantID, OwnerUserID: 42}, nil
 }
 
+func (s *hermesStoreSpy) ListConversationsByOwner(_ context.Context, arg dbhermes.ListConversationsByOwnerParams) ([]dbhermes.HermesConversation, error) {
+	s.listConversationsCalled = true
+	s.listConversationsArg = arg
+	if s.listConversationsErr != nil {
+		return nil, s.listConversationsErr
+	}
+	return s.listConversationsRows, nil
+}
+
+func (s *hermesStoreSpy) ListMessagesByConversation(_ context.Context, arg dbhermes.ListMessagesByConversationParams) ([]dbhermes.HermesMessage, error) {
+	s.listMessagesCalled = true
+	s.listMessagesArg = arg
+	if s.listMessagesErr != nil {
+		return nil, s.listMessagesErr
+	}
+	return s.listMessagesRows, nil
+}
+
 func (s *hermesStoreSpy) GetProfile(_ context.Context, arg dbhermes.GetProfileParams) (dbhermes.HermesApiProfile, error) {
 	s.getProfileCalled = true
 	s.getProfileArg = arg
@@ -230,6 +263,15 @@ func (s *hermesStoreSpy) InsertAuditEvent(_ context.Context, arg dbhermes.Insert
 		Action: arg.Action, SanitizedArgs: arg.SanitizedArgs, Result: arg.Result,
 		CorrelationID: arg.CorrelationID, RequestID: arg.RequestID,
 	}, nil
+}
+
+func (s *hermesStoreSpy) SoftDeleteConversation(_ context.Context, arg dbhermes.SoftDeleteConversationParams) (int64, error) {
+	s.softDeleteCalled = true
+	s.softDeleteArg = arg
+	if s.softDeleteErr != nil {
+		return 0, s.softDeleteErr
+	}
+	return s.softDeleteRows, nil
 }
 
 func (s *hermesStoreSpy) ListProfilesByOwner(context.Context, dbhermes.ListProfilesByOwnerParams) ([]dbhermes.HermesApiProfile, error) {

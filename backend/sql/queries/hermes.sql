@@ -173,18 +173,22 @@ UPDATE hermes_conversations
 SET last_message_at = sqlc.arg(ts)::timestamptz,
     updated_at = NOW()
 WHERE id = sqlc.arg(id)::bigint
-  AND tenant_id = sqlc.arg(tenant_id)::bigint;
+  AND tenant_id = sqlc.arg(tenant_id)::bigint
+  AND deleted_at IS NULL;
 
 -- name: AppendMessage :one
 INSERT INTO hermes_messages (tenant_id, conversation_id, role, content, token_count, completed_at)
-VALUES (
-    sqlc.arg(tenant_id)::bigint,
-    sqlc.arg(conversation_id)::bigint,
+SELECT
+    c.tenant_id,
+    c.id,
     sqlc.arg(role)::text,
     sqlc.arg(content)::jsonb,
     sqlc.narg(token_count)::integer,
     sqlc.narg(completed_at)::timestamptz
-)
+FROM hermes_conversations c
+WHERE c.id = sqlc.arg(conversation_id)::bigint
+  AND c.tenant_id = sqlc.arg(tenant_id)::bigint
+  AND c.deleted_at IS NULL
 RETURNING id;
 
 -- name: ListMessagesByConversation :many

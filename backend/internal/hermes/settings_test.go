@@ -199,6 +199,14 @@ func (s *settingsStoreStub) GetConversation(context.Context, dbhermes.GetConvers
 	return dbhermes.HermesConversation{}, nil
 }
 
+func (s *settingsStoreStub) ListConversationsByOwner(context.Context, dbhermes.ListConversationsByOwnerParams) ([]dbhermes.HermesConversation, error) {
+	return nil, nil
+}
+
+func (s *settingsStoreStub) ListMessagesByConversation(context.Context, dbhermes.ListMessagesByConversationParams) ([]dbhermes.HermesMessage, error) {
+	return nil, nil
+}
+
 func (s *settingsStoreStub) GetProfile(context.Context, dbhermes.GetProfileParams) (dbhermes.HermesApiProfile, error) {
 	return s.profile, nil
 }
@@ -225,6 +233,10 @@ func (s *settingsStoreStub) ListProfilesByTenant(context.Context, int64) ([]dbhe
 
 func (s *settingsStoreStub) ProfileInUse(context.Context, dbhermes.ProfileInUseParams) (bool, error) {
 	return s.profileInUse, nil
+}
+
+func (s *settingsStoreStub) SoftDeleteConversation(context.Context, dbhermes.SoftDeleteConversationParams) (int64, error) {
+	return 0, nil
 }
 
 func (s *settingsStoreStub) UpdateConversationLastMessageAt(context.Context, dbhermes.UpdateConversationLastMessageAtParams) (int64, error) {

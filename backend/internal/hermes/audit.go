@@ -13,12 +13,13 @@ import (
 )
 
 const (
-	ActionEnable        = "hermes.enable"
-	ActionDisable       = "hermes.disable"
-	ActionProfileCreate = "hermes.profile.create"
-	ActionProfileRotate = "hermes.profile.rotate"
-	ActionChatStart     = "hermes.chat.start"
-	ActionMessageSend   = "hermes.message.send"
+	ActionEnable             = "hermes.enable"
+	ActionDisable            = "hermes.disable"
+	ActionProfileCreate      = "hermes.profile.create"
+	ActionProfileRotate      = "hermes.profile.rotate"
+	ActionChatStart          = "hermes.chat.start"
+	ActionMessageSend        = "hermes.message.send"
+	ActionConversationDelete = "hermes.conversation.delete"
 )
 
 func (s *Service) RecordAudit(ctx context.Context, tenantID, actorUserID int64, action string, sanitizedArgs map[string]any, result, correlationID, requestID string) error {
@@ -103,7 +104,7 @@ func sensitiveKey(key string) bool {
 
 func validAction(action string) bool {
 	switch action {
-	case ActionEnable, ActionDisable, ActionProfileCreate, ActionProfileRotate, ActionChatStart, ActionMessageSend:
+	case ActionEnable, ActionDisable, ActionProfileCreate, ActionProfileRotate, ActionChatStart, ActionMessageSend, ActionConversationDelete:
 		return true
 	default:
 		return false

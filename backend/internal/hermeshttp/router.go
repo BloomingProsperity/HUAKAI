@@ -46,6 +46,8 @@ func NewRouter(svc *hermes.Service, runnerClient *hermes.RunnerClient, bridges .
 	r.Delete("/api-profiles/{id}", h.deleteProfile)
 	r.Post("/chat", h.startChat)
 	r.Get("/conversations", h.listConversations)
+	r.Get("/conversations/{id}", h.getConversation)
+	r.Delete("/conversations/{id}", h.deleteConversation)
 	r.Get("/conversations/{id}/messages", h.listConversationMessages)
 	return r
 }
@@ -179,6 +181,8 @@ func writeHermesError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "hermes_forbidden", "hermes resource is not allowed")
 	case errors.Is(err, hermes.ErrNotFound):
 		writeError(w, http.StatusNotFound, "hermes_not_found", "hermes resource not found")
+	case errors.Is(err, hermes.ErrGone):
+		writeError(w, http.StatusGone, "hermes_gone", "hermes resource is no longer available")
 	case errors.Is(err, hermes.ErrMisconfigured):
 		writeError(w, http.StatusServiceUnavailable, "hermes_service_unavailable", "hermes service unavailable")
 	case errors.Is(err, hermes.ErrAuditRecordFailed):

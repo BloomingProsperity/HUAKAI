@@ -4,6 +4,7 @@ package hermes
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -25,6 +26,7 @@ const (
 var (
 	ErrInvalidInput      = errors.New("hermes: invalid input")
 	ErrNotFound          = errors.New("hermes: not found")
+	ErrGone              = errors.New("hermes: gone")
 	ErrForbidden         = errors.New("hermes: forbidden")
 	ErrMisconfigured     = errors.New("hermes: misconfigured")
 	ErrProfileNotOwned   = errors.New("hermes: profile not owned")
@@ -88,6 +90,28 @@ type Profile struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+type Conversation struct {
+	ID            int64      `json:"id"`
+	TenantID      int64      `json:"tenant_id"`
+	OwnerUserID   int64      `json:"owner_user_id"`
+	Title         *string    `json:"title,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	LastMessageAt *time.Time `json:"last_message_at,omitempty"`
+	DeletedAt     *time.Time `json:"deleted_at,omitempty"`
+}
+
+type Message struct {
+	ID             int64           `json:"id"`
+	TenantID       int64           `json:"tenant_id"`
+	ConversationID int64           `json:"conversation_id"`
+	Role           string          `json:"role"`
+	Content        json.RawMessage `json:"content"`
+	TokenCount     *int32          `json:"token_count,omitempty"`
+	CompletedAt    *time.Time      `json:"completed_at,omitempty"`
+	CreatedAt      time.Time       `json:"created_at"`
+}
+
 type AuditEvent struct {
 	ID            int64     `json:"id"`
 	TenantID      int64     `json:"tenant_id"`
@@ -110,9 +134,12 @@ type Store interface {
 	GetProfile(ctx context.Context, arg dbhermes.GetProfileParams) (dbhermes.HermesApiProfile, error)
 	GetSettings(ctx context.Context, arg dbhermes.GetSettingsParams) (dbhermes.HermesSetting, error)
 	InsertAuditEvent(ctx context.Context, arg dbhermes.InsertAuditEventParams) (dbhermes.HermesAuditEvent, error)
+	ListConversationsByOwner(ctx context.Context, arg dbhermes.ListConversationsByOwnerParams) ([]dbhermes.HermesConversation, error)
+	ListMessagesByConversation(ctx context.Context, arg dbhermes.ListMessagesByConversationParams) ([]dbhermes.HermesMessage, error)
 	ListProfilesByOwner(ctx context.Context, arg dbhermes.ListProfilesByOwnerParams) ([]dbhermes.HermesApiProfile, error)
 	ListProfilesByTenant(ctx context.Context, tenantID int64) ([]dbhermes.HermesApiProfile, error)
 	ProfileInUse(ctx context.Context, arg dbhermes.ProfileInUseParams) (bool, error)
+	SoftDeleteConversation(ctx context.Context, arg dbhermes.SoftDeleteConversationParams) (int64, error)
 	UpdateConversationLastMessageAt(ctx context.Context, arg dbhermes.UpdateConversationLastMessageAtParams) (int64, error)
 	UpsertSettings(ctx context.Context, arg dbhermes.UpsertSettingsParams) (dbhermes.HermesSetting, error)
 }
