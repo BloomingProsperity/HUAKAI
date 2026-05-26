@@ -1,3 +1,7 @@
+import os
+from pathlib import Path
+import subprocess
+import tempfile
 import time
 import types
 import unittest
@@ -62,6 +66,68 @@ class MainAuthTests(unittest.TestCase):
         cross_user = _request(token, "7", "43")
         self.assertFalse(main._valid_jwt(cross_user))
 
+    def test_entrypoint_jwt_mode_fails_before_uvicorn_without_key_material(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            fake_bin = Path(tempdir) / "bin"
+            fake_bin.mkdir()
+            _write_fake_uvicorn(fake_bin)
+            env = _entrypoint_env(fake_bin)
+            env["HUAKAI_HERMES_AUTH_MODE"] = "jwt"
+
+            result = _run_entrypoint(env)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "HUAKAI_HERMES_AUTH_MODE=jwt requires HUAKAI_HERMES_JWT_PUBLIC_KEYS_DIR "
+            "or both HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH and HUAKAI_HERMES_JWT_KID",
+            result.stderr,
+        )
+        self.assertNotIn("uvicorn-started", result.stdout)
+
+    def test_entrypoint_jwt_mode_accepts_single_public_key_path_and_kid(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            temp = Path(tempdir)
+            fake_bin = temp / "bin"
+            fake_bin.mkdir()
+            _write_fake_uvicorn(fake_bin)
+            key_path = temp / "runner.pem"
+            key_path.write_text("public-key", encoding="utf-8")
+            env = _entrypoint_env(fake_bin)
+            env.update(
+                {
+                    "HUAKAI_HERMES_AUTH_MODE": "jwt",
+                    "HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH": str(key_path),
+                    "HUAKAI_HERMES_JWT_KID": "kid-a",
+                }
+            )
+
+            result = _run_entrypoint(env)
+
+        self.assertEqual(result.returncode, 42)
+        self.assertIn("uvicorn-started main:app --host 0.0.0.0 --port 8801", result.stdout)
+
+    def test_entrypoint_jwt_mode_accepts_public_keys_directory(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            temp = Path(tempdir)
+            fake_bin = temp / "bin"
+            fake_bin.mkdir()
+            _write_fake_uvicorn(fake_bin)
+            keys_dir = temp / "keys"
+            keys_dir.mkdir()
+            (keys_dir / "kid-a.pem").write_text("public-key", encoding="utf-8")
+            env = _entrypoint_env(fake_bin)
+            env.update(
+                {
+                    "HUAKAI_HERMES_AUTH_MODE": "jwt",
+                    "HUAKAI_HERMES_JWT_PUBLIC_KEYS_DIR": str(keys_dir),
+                }
+            )
+
+            result = _run_entrypoint(env)
+
+        self.assertEqual(result.returncode, 42)
+        self.assertIn("uvicorn-started main:app --host 0.0.0.0 --port 8801", result.stdout)
+
 
 def _request(token, tenant, user):
     return types.SimpleNamespace(
@@ -72,6 +138,33 @@ def _request(token, tenant, user):
         },
         state=types.SimpleNamespace(),
     )
+
+
+def _entrypoint_env(fake_bin):
+    env = {
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+        "HUAKAI_HERMES_RUNNER_BIND": "0.0.0.0:8801",
+    }
+    return env
+
+
+def _run_entrypoint(env):
+    entrypoint = Path(__file__).with_name("entrypoint.sh")
+    return subprocess.run(
+        ["sh", str(entrypoint)],
+        cwd=entrypoint.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=3,
+        check=False,
+    )
+
+
+def _write_fake_uvicorn(fake_bin):
+    uvicorn = fake_bin / "uvicorn"
+    uvicorn.write_text("#!/usr/bin/env sh\necho \"uvicorn-started $*\"\nexit 42\n", encoding="utf-8")
+    uvicorn.chmod(0o755)
 
 
 if __name__ == "__main__":
