@@ -549,8 +549,13 @@ Specifically:
 - ✅ Gate 3 by construction: F-1.e was never implemented, so the
   unreachability is trivially true today. Maintaining it requires the
   AGENTS.md rule enforcement on future commits.
-- ✅ Gate 5 language drafted; release notes for next aggregate release
-  must adopt it verbatim or equivalent.
+- ✅ Gate 5 language **landed** in slice §11-Gate5-release-template (this
+  commit). New file `docs/process/release-readiness/release-notes-template.md`
+  contains the Gate 5 paragraph as a "Known reusable block: W11-F F-1
+  (no h2 outbound; dormant h2 infrastructure)" and a project-wide
+  release-notes skeleton. Release ceremonies that include W11-F F-1
+  commits MUST copy the block into their release notes (mutation
+  discriminator at the bottom of the template file enforces this).
 - ✅ Gate 2: per-profile ALPN assertion **landed** in slice §11-Gate2-slice
   (this commit). New test `alpn_protocols_match_first_party_capture_per_profile`
   in `tests/mimicry_http2_fixture_test.rs` uses a 2-variant `AlpnAssertion`
