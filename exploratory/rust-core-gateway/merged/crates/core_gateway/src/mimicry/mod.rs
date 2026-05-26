@@ -17,6 +17,13 @@ compile_error!(
 
 pub mod backend;
 pub mod backend_resolver;
+/// W11-F §14b.2: HUAKAI stub Certificate Compression (RFC 8879 / TLS ext 27)
+/// for Chrome impersonation profiles. Only compiled with `mimicry-boring`
+/// since the public `CertificateCompressor` trait comes from the vendored
+/// boring crate. Behind a separate module so the OpenSSL adapter path stays
+/// untouched.
+#[cfg(feature = "mimicry-boring")]
+pub mod cert_compressor;
 #[cfg(feature = "mimicry-boring")]
 pub mod client_hello_builder;
 pub mod dispatch;

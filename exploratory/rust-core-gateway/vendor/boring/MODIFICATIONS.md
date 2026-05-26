@@ -171,3 +171,54 @@ modification: HUAKAI codex executor lane (R-3-A-fix-4-deeper), 2026-05-18 UTC。
 `ssl_lib.cc`: staged commit、cipher 去重、EC 0/1/2 校验；`extensions.cc`: strict profile 已带 GREASE group 时跳过默认 GREASE；`ssl.h` / `ssl.errordata`: 本地 reason。
 modification: HUAKAI codex executor lane (R-3-A-fix-5-deeper), 2026-05-18 UTC。
 未新增非 boring 依赖，未修改 HUAKAI 主仓 LICENSE。
+
+## W11-F §14b.2: ALPS Rust wrappers (Chrome impersonation)
+
+§13 passive pcap (captured 2026-05-26) observed Gemini CLI 0.42.0 emitting
+Chrome-style TLS impersonation against cloudcode-pa.googleapis.com,
+including TLS extension 17513 (ALPS, application_settings — Chrome's legacy
+codepoint). BoringSSL already exports `SSL_add_application_settings` and
+`SSL_set_alps_use_new_codepoint` as stock public APIs (ssl.h:3386 + 3407),
+but the boring Rust crate 5.1.0 does not yet wrap them. This batch adds
+**Rust wrappers only**, no C-level patch needed — BoringSSL itself is
+unchanged.
+
+### boring/src/ssl/mod.rs
+
+- `SslRef::add_application_settings(&mut self, protocol: &[u8], settings: &[u8])
+  -> Result<(), ErrorStack>`: thin safe wrapper over
+  `ffi::SSL_add_application_settings`, returns `cvt_0i`-mapped Result.
+  Per-SSL API: must be called after `connector.configure()` produces a
+  `ConnectConfiguration` (which derefs to SslRef).
+- `SslRef::set_alps_use_new_codepoint(&mut self, use_new: bool)`: thin
+  wrapper over `ffi::SSL_set_alps_use_new_codepoint`. `false` selects the
+  legacy 17513 codepoint (Chrome's actual wire), `true` the standard 17613.
+
+Both wrappers follow the same pattern as the existing
+`set_enable_ech_grease` Rust wrapper (mod.rs:3865): zero-cost FFI shim
+inside a single `unsafe` block, error mapping via `cvt_0i` for the int
+return value, no behavior change beyond the function signature.
+
+### boring-sys
+
+- No changes. Bindgen already picks up `SSL_add_application_settings` and
+  `SSL_set_alps_use_new_codepoint` from the public header
+  (`boring-sys/deps/boringssl/include/openssl/ssl.h:3386` + `3407`) into
+  `OUT_DIR/bindings.rs` at build time.
+
+### Apache-2.0 §4 attribution
+
+Modification: HUAKAI Claude executor lane (W11-F §14b.2), 2026-05-26 UTC.
+Only adds 2 safe Rust wrappers around existing public BoringSSL APIs. No
+new C-level functionality, no behavior change in BoringSSL itself, no new
+runtime crate dependencies (HUAKAI's `StubBrotliCompressor` in
+`core_gateway/src/mimicry/cert_compressor.rs` implements the existing
+boring `CertificateCompressor` trait with stub I/O — no `brotli` crate
+needed). HUAKAI fork stays local; no upstream merge expected.
+
+Cite per CLAUDE.md #11: paraphrased mechanism only; no upstream Rust
+source code copied. The wrapper bodies are HUAKAI-original (2 lines of
+`unsafe { ffi::* }` per function); the only similar code in upstream
+boring is the same pattern repeated for ~50 other SslRef methods, which
+is necessarily structurally identical (`unsafe { ffi::* }` shims have a
+single sensible shape).

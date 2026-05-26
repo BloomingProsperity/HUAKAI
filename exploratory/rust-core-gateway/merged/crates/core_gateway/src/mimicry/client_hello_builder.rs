@@ -86,6 +86,20 @@ pub fn build_boring_connector(
         apply_signed_certificate_timestamp(&mut builder)?;
     }
 
+    // §14b.2: cert_compression (TLS ext 27) advertisement for Chrome
+    // impersonation profiles. Only acted on if profile actually lists
+    // ext 27 in `extensions` AND lists at least one algorithm ID in
+    // `cert_compression_algorithms`. Currently HUAKAI ships exactly one
+    // compressor stub (brotli, IANA id 2). If profile asks for a different
+    // ID (gzip=1, zstd=3) we surface UnsupportedCertCompressionAlgorithm
+    // so the call site can decide — silent drop would corrupt the wire
+    // fingerprint without warning.
+    if profile.tls.extensions.contains(&27)
+        && !profile.tls.cert_compression_algorithms.is_empty()
+    {
+        apply_cert_compression(&mut builder, &profile.tls.cert_compression_algorithms)?;
+    }
+
     // R-3-A-fix-4: vendored boring 已提供显式 extension order API。
     // set_permute_extensions(false) 只防随机重排；这里真正按 profile
     // 记录的 IANA extension type 顺序交给 TLS writer。
@@ -102,13 +116,25 @@ pub fn configure_boring_connection(
     connector: &SslConnector,
     profile: &MimicryProfile,
 ) -> Result<ConnectConfiguration, BoringMimicryError> {
-    let config = connector
+    let mut config = connector
         .configure()
         .map_err(BoringMimicryError::from_boring)?;
 
     // R-MIMICRY-003: ECH grease 只在 profile 真实记录 65037 时启用。
     if profile.tls.extensions.contains(&65037) {
         apply_ech_grease(&config)?;
+    }
+
+    // §14b.2: ALPS (application_settings, TLS ext 17513 in Chrome's legacy
+    // codepoint / 17613 in standard). Per-SSL because `SSL_add_application_
+    // settings` is on `SSL *`, not `SSL_CTX *`. Profile both lists ext
+    // 17513 AND non-empty alps_protocols guards this — same defensive
+    // shape as the cert-compression block in build_boring_connector.
+    // Chrome uses the legacy 17513 codepoint, so we force `use_new=false`.
+    if profile.tls.extensions.contains(&17513)
+        && !profile.tls.alps_protocols.is_empty()
+    {
+        apply_application_settings(&mut config, &profile.tls.alps_protocols)?;
     }
 
     Ok(config)
@@ -137,6 +163,13 @@ pub enum BoringMimicryError {
     EmptyAlpnProtocol,
     #[error("ALPN protocol too long: {0} bytes")]
     AlpnProtocolTooLong(usize),
+    /// §14b.2: profile asks HUAKAI to advertise a cert compression algorithm
+    /// HUAKAI doesn't have a compressor implementation for. Currently only
+    /// brotli (IANA id 2) is wired. Failing here surfaces the gap rather
+    /// than silently dropping the algorithm from the wire and corrupting
+    /// the JA3 hash.
+    #[error("unsupported cert compression algorithm: {0} (only brotli=2 wired in §14b.2)")]
+    UnsupportedCertCompressionAlgorithm(u16),
 }
 
 #[cfg(feature = "mimicry-boring")]
@@ -170,6 +203,62 @@ fn apply_signed_certificate_timestamp(
     // SCT request 使用 boring 5.1.0 公开 context-builder API。
     // docs.rs: https://docs.rs/boring/latest/boring/ssl/struct.SslConnectorBuilder.html
     builder.enable_signed_cert_timestamps();
+    Ok(())
+}
+
+/// §14b.2: register a HUAKAI cert-compression compressor for each algorithm
+/// the profile asks to advertise. boring's `add_certificate_compression_
+/// algorithm` does the actual TLS ext 27 wire advertisement — the
+/// `CertificateCompressor` impl supplies the IANA algorithm ID via its
+/// `ALGORITHM` const. Right now only brotli (2) is wired; other IDs surface
+/// `UnsupportedCertCompressionAlgorithm` so we never silently drop one and
+/// produce a JA3-mismatched wire.
+#[cfg(feature = "mimicry-boring")]
+fn apply_cert_compression(
+    builder: &mut SslConnectorBuilder,
+    algorithm_ids: &[u16],
+) -> Result<(), BoringMimicryError> {
+    use crate::mimicry::cert_compressor::StubBrotliCompressor;
+
+    for id in algorithm_ids.iter().copied() {
+        match id {
+            // Brotli — IANA "TLS Certificate Compression Algorithm IDs", id 2.
+            2 => {
+                builder
+                    .add_certificate_compression_algorithm(StubBrotliCompressor)
+                    .map_err(BoringMimicryError::from_boring)?;
+            }
+            other => {
+                return Err(BoringMimicryError::UnsupportedCertCompressionAlgorithm(other));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// §14b.2: register ALPS (application_settings, TLS ext 17513 / 17613) for
+/// each protocol name the profile asks to advertise. Per-SSL API in
+/// BoringSSL — wraps the Rust wrapper added in
+/// `vendor/boring/boring/src/ssl/mod.rs::SslRef::add_application_settings`
+/// (which calls BoringSSL's stock `SSL_add_application_settings`). Settings
+/// payload stays empty: ALPS payload is the application's own per-protocol
+/// settings, not part of TLS, and Chrome itself sends empty for h2 (per
+/// §13 capture observation against cloudcode-pa.googleapis.com).
+///
+/// Force `use_new=false` so the codepoint is the original 17513 (matches
+/// Chrome's wire-byte advertisement). Calling `set_alps_use_new_codepoint`
+/// once is sufficient — it's a per-SSL flag, not per-protocol.
+#[cfg(feature = "mimicry-boring")]
+fn apply_application_settings(
+    config: &mut ConnectConfiguration,
+    protocols: &[String],
+) -> Result<(), BoringMimicryError> {
+    config.set_alps_use_new_codepoint(false);
+    for protocol in protocols {
+        config
+            .add_application_settings(protocol.as_bytes(), &[])
+            .map_err(BoringMimicryError::from_boring)?;
+    }
     Ok(())
 }
 

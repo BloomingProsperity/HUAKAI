@@ -3870,6 +3870,47 @@ impl SslRef {
         }
     }
 
+    /// HUAKAI W11-F §14b.2: register an ALPS protocol + settings payload on
+    /// `SSL`. ALPS (Application-Layer Protocol Settings, TLS extension 17513
+    /// in Chrome's legacy codepoint / 17613 in the standard codepoint) lets
+    /// the client advertise per-ALPN-protocol settings during the handshake.
+    /// This is a per-connection API and must be called after the connector
+    /// produced a `ConnectConfiguration` (which derefs to `SslRef`). Wraps
+    /// BoringSSL's `SSL_add_application_settings` (ssl.h:3386), which is a
+    /// stock BoringSSL public API — this Rust wrapper is the only HUAKAI
+    /// addition. The codepoint variant (old/new) is controlled separately
+    /// via `set_alps_use_new_codepoint`.
+    #[corresponds(SSL_add_application_settings)]
+    pub fn add_application_settings(
+        &mut self,
+        protocol: &[u8],
+        settings: &[u8],
+    ) -> Result<(), ErrorStack> {
+        unsafe {
+            cvt_0i(ffi::SSL_add_application_settings(
+                self.as_ptr(),
+                protocol.as_ptr(),
+                protocol.len(),
+                settings.as_ptr(),
+                settings.len(),
+            ))
+            .map(|_| ())
+        }
+    }
+
+    /// HUAKAI W11-F §14b.2: choose between the original (17513) and the new
+    /// (17613) ALPS codepoint. Chrome currently uses 17513 (the original),
+    /// so HUAKAI's Gemini Chrome-impersonation profile sets this to `false`.
+    /// Wraps BoringSSL's `SSL_set_alps_use_new_codepoint` (ssl.h:3407).
+    #[corresponds(SSL_set_alps_use_new_codepoint)]
+    pub fn set_alps_use_new_codepoint(&mut self, use_new: bool) {
+        let use_new = if use_new { 1 } else { 0 };
+
+        unsafe {
+            ffi::SSL_set_alps_use_new_codepoint(self.as_ptr(), use_new);
+        }
+    }
+
     /// Sets the compliance policy on `SSL`.
     #[corresponds(SSL_set_compliance_policy)]
     pub fn set_compliance_policy(&mut self, policy: CompliancePolicy) -> Result<(), ErrorStack> {
