@@ -11,14 +11,14 @@
   "previous_capture_collected_at": "2026-05-14T07:20:19Z (Gemini CLI 0.41.2 model API shape; superseded by 0.42.0 Chrome-impersonation shape — see _comment)",
   "target_host": "cloudcode-pa.googleapis.com",
   "sample_count": 4,
-  "tls_backend": "observed_chrome_style_on_model_api_in_0_42_0",
-  "tls_backend_note": "OBSERVED: Gemini CLI 0.42.0 emits Chrome-style ClientHello with GREASE values + Chrome-specific extensions (compress_certificate=27, application_settings=17513, 192-byte padding) on the model API path. Auxiliary endpoints (oauth2, play.googleapis.com, etc.) emit Node-stock-TLS shape (no GREASE, classical cipher list, no Chrome-specific extensions). Underlying TLS implementation library identification is an open question — see _open_questions below; not promoted as profile data.",
+  "tls_backend": "nodejs",
+  "tls_backend_note": "OBSERVED 2026-05-26 §13: Gemini CLI 0.42.0 model-API ClientHello adopts Chrome-style shape (GREASE values + Chrome-specific extensions compress_certificate=27, application_settings=17513, 192-byte padding). Auxiliary endpoints (oauth2, play.googleapis.com, etc.) emit stock Node TLS (no GREASE, classical cipher list, no Chrome-specific extensions). Backend remains nodejs at the runtime level — the Chrome shape comes from a Node TLS-impersonation feature, not a different language stack. Underlying impersonation library identification is an open question, see _open_questions; not promoted as profile data.",
   "_open_questions": [
     "What Node TLS-impersonation library does Gemini CLI 0.42.0 use for the model API path? (Hypothesis space includes cycletls / hyper-tls-impersonate / custom Node bindings, but NOT verified by source-read of Gemini CLI 0.42.0. Not required for HUAKAI mimicry correctness — the observed wire bytes are sufficient. Tracked here as historical curiosity in case future fingerprint regression diagnosis benefits from knowing the exact library.)",
     "Will the auxiliary_no_alpn variant continue to be stable in future 0.43+ releases, or will it also adopt Chrome impersonation? Re-capture on next major Gemini CLI release to detect."
   ],
   "grease": true,
-  "extension_order": "stable_per_path",
+  "extension_order": "unknown",
   "ja3": "772,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
   "ja3_hash": "59686f806cae30344b525e99af5b655d",
   "ja3_hash_samples": [
@@ -37,29 +37,21 @@
   "tls_variants": [
     {
       "name": "model_api_h2_grease",
-      "usage": "Gemini CLI 0.42.0 model API connection (cloudcode-pa.googleapis.com). Chrome-style TLS impersonation with GREASE; ALPN advertises h2 + http/1.1. NEW vs 0.41.2 model_api_ht_alpn variant (the 52-cipher Node-stock shape — now obsolete).",
+      "usage": "Gemini CLI 0.42.0 model API connection (cloudcode-pa.googleapis.com). Chrome-style TLS impersonation with GREASE; ALPN advertises h2 + http/1.1. NEW vs 0.41.2 model_api_ht_alpn variant (the 52-cipher Node-stock shape — now obsolete). Top-level cipher_suites/extensions/supported_groups/supported_versions/padding_len fields are this variant's data; auxiliary_no_alpn variant differs as recorded below.",
       "sample_index": 1,
       "ja3": "772,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
       "ja3_hash": "59686f806cae30344b525e99af5b655d",
       "ja4": "t13d1516_h2_dea800f94266_0041c1594faa",
       "alpn_protocols": ["h2", "http/1.1"],
-      "cipher_suites_with_grease_in_capture_order": [10794, 4865, 4866, 4867, 49195, 49199, 49196, 49200, 52393, 52392, 49171, 49172, 156, 157, 47, 53],
-      "extensions_with_grease_in_capture_order": [35466, 0, 23, 65281, 10, 11, 35, 16, 5, 13, 18, 51, 45, 43, 27, 17513, 39578, 21],
-      "supported_groups_with_grease": [35466, 29, 23, 24],
-      "supported_versions_with_grease": [23130, 772, 771],
-      "padding_len": 192
+      "extensions": [35466, 0, 23, 65281, 10, 11, 35, 16, 5, 13, 18, 51, 45, 43, 27, 17513, 39578, 21]
     },
     {
       "name": "auxiliary_no_alpn",
-      "usage": "Auxiliary endpoint connections (oauth2/play.googleapis.com/tokeninfo/quota/etc.). Node stock TLS stack, no ALPN advertised. LARGELY STABLE vs 0.41.2 same-name variant (identical JA3 hash). Samples #3-4 add 1 extension making JA4 differ (t13d5212 vs t13d5211) but JA3 identical.",
+      "usage": "Auxiliary endpoint connections (oauth2/play.googleapis.com/tokeninfo/quota/etc.). Node stock TLS stack, no ALPN advertised. LARGELY STABLE vs 0.41.2 same-name variant (identical JA3 hash def5ca...). Samples #3-4 add 1 extension making JA4 differ (t13d5212 vs t13d5211); per-sample JA4 in captures/gemini_advanced/ja4-hashes.txt.",
       "sample_indices": [2, 3, 4],
       "ja3": "772,4866-4867-4865-49199-49195-49200-49196-158-49191-103-49192-107-163-159-52393-52392-52394-49325-49311-49245-49249-49239-49235-162-49324-49310-49244-49248-49238-49234-49188-106-49187-64-49162-49172-57-56-49161-49171-51-50-157-49309-49233-156-49308-49232-61-60-53-47,65281-0-11-10-35-22-23-13-43-45-51,4588-29-23-30-24-25-256-257,0-1-2",
       "ja3_hash": "def5ca499f59da2c07dafe0a40545011",
-      "ja4_samples": [
-        "t13d5211_00_9b003dc3eba7_ef824704554f",
-        "t13d5212_00_9b003dc3eba7_0f2904301f68",
-        "t13d5212_00_9b003dc3eba7_0f2904301f68"
-      ],
+      "ja4": "t13d5211_00_9b003dc3eba7_ef824704554f",
       "alpn_protocols": [],
       "extensions": [65281, 0, 11, 10, 35, 22, 23, 13, 43, 45, 51]
     }
@@ -152,8 +144,11 @@
   "ec_point_formats": [
     0
   ],
-  "key_share_groups": [],
-  "_key_share_groups_note": "ext 51 (key_share) data_len=43 bytes; raw key_share entries not extracted by §13 tool's structured output. Available in raw_hex of clienthello-template.json's extensions[] entry if needed. Most likely [29] (X25519) + maybe [35466 GREASE] given Chrome impersonation shape.",
+  "key_share_groups": [
+    35466,
+    29
+  ],
+  "_key_share_groups_note": "INFERRED from Chrome impersonation shape + §13 supported_groups [35466 GREASE, 29 X25519, 23 secp256r1, 24 secp384r1]. ext 51 (key_share) data_len=43 bytes; raw key_share entries not extracted by §13 tool's structured output. Available in raw_hex of captures/gemini_advanced/clienthello-template.json's extensions[] entry. Schema requires non-empty for TLS 1.3 profiles; [GREASE, X25519] = typical Chrome key_share advertisement matching the supported_groups prefix.",
   "psk_modes": [
     1
   ],
@@ -169,7 +164,6 @@
     "endpoint": "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
     "method": "POST",
     "user_agent": "GeminiCLI/0.42.0 (linux; x64; terminal) google-api-nodejs-client/<version>",
-    "user_agent_note": "Capture observed CLI v0.42.0 via gemini --version. Internal version constants (gemini-3-flash-preview model name) may differ; see runtime.",
     "header_order": [
       "Content-Type",
       "User-Agent",

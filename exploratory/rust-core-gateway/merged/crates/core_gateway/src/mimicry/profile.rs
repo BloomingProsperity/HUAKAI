@@ -360,8 +360,16 @@ impl FingerprintProfile {
             &self.tls.signature_algorithms,
         );
         push_non_empty(errors, "ec_point_formats", &self.tls.ec_point_formats);
-        push_non_empty(errors, "key_share_groups", &self.tls.key_share_groups);
-        push_non_empty(errors, "psk_modes", &self.tls.psk_modes);
+        // key_share (ext 51) and psk_key_exchange_modes (ext 45) are TLS 1.3-
+        // only extensions. Profiles for clients that only advertise TLS 1.2
+        // (e.g., codex_cli_rs 0.128.0 per §13 capture: legacy_version=0x0303
+        // + no supported_versions extension) legitimately have empty values
+        // here. Only require non-empty for profiles that advertise TLS 1.3.
+        let advertises_tls13 = self.tls.supported_versions.contains(&0x0304);
+        if advertises_tls13 {
+            push_non_empty(errors, "key_share_groups", &self.tls.key_share_groups);
+            push_non_empty(errors, "psk_modes", &self.tls.psk_modes);
+        }
 
         if self.tls.curves != self.tls.supported_groups {
             errors.push(ProfileValidationError::AliasMismatch {
