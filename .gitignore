@@ -102,5 +102,15 @@ docs/plans/.codex-prompt-*.md
 tools/fingerprint-collector/output/
 tools/fingerprint-collector/fpc.exe
 tools/fingerprint-collector/fpc
+
+# Cursor C0 真流量证据 — Owner 本机填写,严禁进库；
+# 只允许 docs/process/evidence/cursor-real-traffic-template.md (空模板) +
+# cursor-real-traffic-summary.md (Owner sanitized 后) 进库。
+docs/process/evidence/cursor-real-traffic-evidence.md
+docs/process/evidence/cursor-real-traffic-evidence-*.md
+docs/process/evidence/cursor-real-traffic-actual*.md
+docs/process/evidence/*-raw.*
+docs/process/evidence/*.pcap
+docs/process/evidence/*.har
 frontend/tsconfig.tsbuildinfo
 frontend/next-env.d.ts
