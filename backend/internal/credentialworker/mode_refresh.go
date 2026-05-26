@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	appconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker/adapters"
@@ -20,7 +21,15 @@ import (
 	providercopilot "github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
 )
 
-var ErrNoRefreshRequired = errors.New("credentialworker: no refresh required")
+var (
+	ErrNoRefreshRequired          = errors.New("credentialworker: no refresh required")
+	ErrOperatorOAuthConfigMissing = errors.New("credentialworker: operator OAuth config required")
+)
+
+const (
+	geminiOAuthTokenURLEnv = "HUAKAI_GEMINI_OAUTH_TOKEN_URL"
+	geminiOAuthClientIDEnv = "HUAKAI_GEMINI_OAUTH_CLIENT_ID"
+)
 
 type ModeRefreshInput struct {
 	CredentialID      int64
@@ -70,7 +79,32 @@ func DefaultModeAdapterRegistry() *ModeAdapterRegistry {
 	register(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist, legacyOAuthModeAdapter{providerName: "gemini", adapter: adapters.GeminiRefresh{AllowCrossClientFallback: true, SourceClientFamily: "code_assist", TierCacheTTL: 24 * time.Hour}})
 	register(credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne, legacyOAuthModeAdapter{providerName: "gemini", adapter: adapters.GeminiRefresh{AllowCrossClientFallback: true, SourceClientFamily: "google_one", TierCacheTTL: 24 * time.Hour}})
 	register(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity, legacyOAuthModeAdapter{providerName: "antigravity", adapter: adapters.AntigravityRefresh{Gemini: adapters.GeminiRefresh{AllowCrossClientFallback: true, SourceClientFamily: "antigravity", TierCacheTTL: 24 * time.Hour}}})
+	register(credentialstore.VendorGemini, credentialstore.AuthModeOAuth, operatorOAuthModeAdapter{
+		providerName: "gemini",
+		configVendor: appconfig.VendorOAuthGemini,
+		tokenURLName: geminiOAuthTokenURLEnv,
+		clientIDName: geminiOAuthClientIDEnv,
+		newAdapter: func(cfg operatorOAuthConfig) RefreshAdapter {
+			return adapters.GeminiRefresh{
+				Endpoint: cfg.TokenEndpoint, ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret,
+				HTTPClient: cfg.HTTPClient, TierCacheTTL: 24 * time.Hour,
+			}
+		},
+	})
 	register(credentialstore.VendorCopilot, credentialstore.AuthModeCopilotOAuth, copilotOAuthModeAdapter{})
+	register(credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth, operatorOAuthModeAdapter{
+		providerName: "antigravity",
+		configVendor: appconfig.VendorOAuthGemini,
+		tokenURLName: geminiOAuthTokenURLEnv,
+		clientIDName: geminiOAuthClientIDEnv,
+		newAdapter: func(cfg operatorOAuthConfig) RefreshAdapter {
+			return adapters.AntigravityRefresh{Gemini: adapters.GeminiRefresh{
+				Endpoint: cfg.TokenEndpoint, ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret,
+				HTTPClient: cfg.HTTPClient, TierCacheTTL: 24 * time.Hour,
+			}}
+		},
+	})
+	register(credentialstore.VendorWindsurf, credentialstore.AuthModeOAuth, windsurfManualModeAdapter{adapter: adapters.WindsurfManualTokenRefresh{}})
 	return r
 }
 
@@ -332,6 +366,126 @@ func (a copilotOAuthModeAdapter) RefreshCredential(ctx context.Context, in ModeR
 	return ModeRefreshResult{Payload: payload, AccessExpiresAt: expiresAt, Outcome: "refresh_succeeded"}, nil
 }
 
+type operatorOAuthConfig struct {
+	TokenEndpoint string
+	ClientID      string
+	ClientSecret  string
+	HTTPClient    *http.Client
+}
+
+type operatorOAuthModeAdapter struct {
+	providerName string
+	configVendor string
+	tokenURLName string
+	clientIDName string
+	client       *http.Client
+	loadConfig   func() (*appconfig.Config, error)
+	newAdapter   func(operatorOAuthConfig) RefreshAdapter
+}
+
+func (a operatorOAuthModeAdapter) RefreshCredential(ctx context.Context, in ModeRefreshInput) (ModeRefreshResult, error) {
+	cfg, err := a.loadOperatorConfig()
+	if err != nil {
+		return ModeRefreshResult{}, err
+	}
+	sanitizedPayload, err := sanitizeOperatorOAuthPayload(in.Payload)
+	if err != nil {
+		return ModeRefreshResult{}, err
+	}
+	if a.newAdapter == nil {
+		return ModeRefreshResult{}, ErrProviderAdapterMissing
+	}
+	adapter := a.newAdapter(cfg)
+	if adapter == nil {
+		return ModeRefreshResult{}, ErrProviderAdapterMissing
+	}
+	payload, expiresAt, err := adapter.RefreshForProvider(ctx, in.ProviderAccountID, a.providerName, sanitizedPayload)
+	if err != nil {
+		return ModeRefreshResult{}, err
+	}
+	payload, err = syncSessionTokenFromAccessToken(payload)
+	if err != nil {
+		return ModeRefreshResult{}, err
+	}
+	return ModeRefreshResult{Payload: payload, AccessExpiresAt: expiresAt, Outcome: "refresh_succeeded"}, nil
+}
+
+func syncSessionTokenFromAccessToken(raw []byte) ([]byte, error) {
+	fields, err := payloadMap(raw)
+	if err != nil {
+		return nil, err
+	}
+	accessToken := stringField(fields, "access_token")
+	if accessToken == "" {
+		return nil, errors.New("operator oauth refresh response missing access_token")
+	}
+	fields["session_token"] = accessToken
+	return json.Marshal(fields)
+}
+
+func (a operatorOAuthModeAdapter) loadOperatorConfig() (operatorOAuthConfig, error) {
+	loadConfig := a.loadConfig
+	if loadConfig == nil {
+		loadConfig = appconfig.Load
+	}
+	runtimeConfig, err := loadConfig()
+	if err != nil {
+		return operatorOAuthConfig{}, err
+	}
+	oauth := runtimeConfig.VendorOAuth[a.configVendor]
+	cfg := operatorOAuthConfig{
+		TokenEndpoint: strings.TrimSpace(oauth.TokenURL),
+		ClientID:      strings.TrimSpace(oauth.ClientID),
+		ClientSecret:  strings.TrimSpace(oauth.ClientSecret),
+		HTTPClient:    a.client,
+	}
+	var missing []string
+	if cfg.TokenEndpoint == "" {
+		missing = append(missing, a.tokenURLName)
+	}
+	if cfg.ClientID == "" {
+		missing = append(missing, a.clientIDName)
+	}
+	if len(missing) > 0 {
+		return operatorOAuthConfig{}, fmt.Errorf("%s oauth refresh: %w: missing %s", a.providerName, ErrOperatorOAuthConfigMissing, strings.Join(missing, ","))
+	}
+	return cfg, nil
+}
+
+func sanitizeOperatorOAuthPayload(raw []byte) ([]byte, error) {
+	fields, err := payloadMap(raw)
+	if err != nil {
+		return nil, err
+	}
+	for _, key := range []string{
+		"oauth_token_endpoint",
+		"oauth_token_url",
+		"token_endpoint",
+		"token_url",
+		"client_id",
+		"client_secret",
+		"scope",
+	} {
+		delete(fields, key)
+	}
+	return json.Marshal(fields)
+}
+
+type windsurfManualModeAdapter struct {
+	adapter adapters.WindsurfManualTokenRefresh
+}
+
+func (a windsurfManualModeAdapter) RefreshCredential(ctx context.Context, in ModeRefreshInput) (ModeRefreshResult, error) {
+	_, _, err := a.adapter.RefreshForProvider(ctx, in.ProviderAccountID, credentialstore.VendorWindsurf, in.Payload)
+	if errors.Is(err, adapters.ErrWindsurfManualTokenRefreshRequired) {
+		return ModeRefreshResult{}, ErrNoRefreshRequired
+	}
+	if err == nil {
+		return ModeRefreshResult{}, ErrNoRefreshRequired
+	}
+	return ModeRefreshResult{}, err
+}
+
 type mockTokenExchangeAdapter struct {
 	providerName string
 	client       *http.Client
@@ -449,8 +603,11 @@ func stringField(fields map[string]any, key string) string {
 }
 
 func classifyModeRefreshError(err error) string {
-	if errors.Is(err, adapters.ErrCodexOAuthConfigRequired) {
+	if errors.Is(err, adapters.ErrCodexOAuthConfigRequired) || errors.Is(err, ErrOperatorOAuthConfigMissing) {
 		return "operator_config_required"
+	}
+	if errors.Is(err, adapters.ErrInvalidCredentialMaterial) {
+		return "payload_invalid"
 	}
 	msg := strings.ToLower(err.Error())
 	switch {

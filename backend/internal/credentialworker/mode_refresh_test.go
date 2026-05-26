@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strconv"
 	"testing"
@@ -34,6 +35,74 @@ func TestDefaultModeAdapterRegistryCoversCredentialStoreModes(t *testing.T) {
 	}
 }
 
+func TestDefaultModeAdapterRegistryRoutesSlice26OAuthModes(t *testing.T) {
+	registry := DefaultModeAdapterRegistry()
+	cases := []struct {
+		vendor   string
+		authMode string
+		key      string
+		assert   func(*testing.T, ModeRefreshAdapter)
+	}{
+		{credentialstore.VendorGemini, credentialstore.AuthModeOAuth, "gemini/oauth", assertOperatorBoundOAuthModeAdapter},
+		{credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth, "antigravity/oauth", assertOperatorBoundOAuthModeAdapter},
+		{credentialstore.VendorWindsurf, credentialstore.AuthModeOAuth, "windsurf/oauth", assertWindsurfManualModeAdapter},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			adapter, ok := registry.Lookup(tc.vendor, tc.authMode)
+			if !ok || adapter == nil {
+				t.Fatalf("missing mode refresh adapter %s", tc.key)
+			}
+			tc.assert(t, adapter)
+		})
+	}
+}
+
+func TestModeRefreshWorkerFindsWindsurfOAuthAdapter(t *testing.T) {
+	// Regression killed: windsurf/oauth credentials could be stored, but the
+	// refresh worker's mode registry missed the executor and marked the account
+	// adapter_missing. Mutation self-check: deleting the windsurf/oauth default
+	// registration makes this test fail with failure:88:adapter_missing.
+	calls := []string{}
+	store := &recordingRefreshStore{
+		calls: &calls,
+		rec: credentialstore.CredentialRecord{
+			ID: 88, TenantID: 1, ProviderAccountID: 188,
+			Vendor: credentialstore.VendorWindsurf, AuthMode: credentialstore.AuthModeOAuth,
+			CredentialVersion: 4, PlaintextPayload: []byte(`{"session_token":"windsurf-session","token_source":"windsurf_show_auth_token"}`),
+		},
+	}
+	refresher := &AccountCredentialRefresher{store: store, registry: DefaultModeAdapterRegistry(), now: func() time.Time {
+		return time.Date(2026, 5, 26, 9, 0, 0, 0, time.UTC)
+	}}
+
+	err := refresher.Refresh(context.Background(), 188)
+	if err != nil {
+		t.Fatalf("Refresh returned %v, want no adapter_missing for windsurf/oauth", err)
+	}
+	want := []string{"probe", "tx_begin", "lock:88", "reread"}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls=%v want %v", calls, want)
+	}
+}
+
+func assertOperatorBoundOAuthModeAdapter(t *testing.T, adapter ModeRefreshAdapter) {
+	t.Helper()
+	if _, ok := adapter.(legacyOAuthModeAdapter); ok {
+		t.Fatalf("adapter type=%T must not be legacyOAuthModeAdapter", adapter)
+	}
+	if got := reflect.TypeOf(adapter).String(); got != "credentialworker.operatorOAuthModeAdapter" {
+		t.Fatalf("adapter type=%s, want credentialworker.operatorOAuthModeAdapter", got)
+	}
+}
+
+func assertWindsurfManualModeAdapter(t *testing.T, adapter ModeRefreshAdapter) {
+	t.Helper()
+	if got := reflect.TypeOf(adapter).String(); got != "credentialworker.windsurfManualModeAdapter" {
+		t.Fatalf("adapter type=%s, want credentialworker.windsurfManualModeAdapter", got)
+	}
+}
+
 func TestDefaultModeAdapterRegistryCodexFailsClosedWithoutOperatorConfig(t *testing.T) {
 	// Regression killed: the default scheduled Codex refresh path must not
 	// fall back to endpoint/client/scope embedded in credential JSON.
@@ -54,6 +123,148 @@ func TestDefaultModeAdapterRegistryCodexFailsClosedWithoutOperatorConfig(t *test
 	})
 	if !errors.Is(err, adapters.ErrCodexOAuthConfigRequired) {
 		t.Fatalf("RefreshCredential err=%v, want ErrCodexOAuthConfigRequired", err)
+	}
+}
+
+func TestDefaultModeAdapterRegistryGeminiAntigravityOAuthUsesExistingConfigAndRefreshesSessionToken(t *testing.T) {
+	// Regression killed: gemini/oauth and antigravity/oauth scheduled refresh
+	// must use existing HUAKAI_GEMINI_OAUTH_* operator config and must replace
+	// stale session_token with the freshly refreshed access_token. Mutation
+	// self-checks: reading only the newer HERMES-specific env names fails before
+	// the request; deleting session_token synchronization leaves old-session in
+	// the saved payload and makes this test red.
+	cases := []struct {
+		name     string
+		vendor   string
+		authMode string
+	}{
+		{
+			name:     "gemini",
+			vendor:   credentialstore.VendorGemini,
+			authMode: credentialstore.AuthModeOAuth,
+		},
+		{
+			name:     "antigravity",
+			vendor:   credentialstore.VendorAntigravity,
+			authMode: credentialstore.AuthModeOAuth,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			operatorEndpoint := "https://operator." + tc.name + ".example.test/oauth/token"
+			operatorClientID := "operator-" + tc.name + "-client"
+			wantAccessToken := "operator-" + tc.name + "-access"
+			wantRefreshToken := "operator-" + tc.name + "-refresh"
+			oldSessionToken := "old-" + tc.name + "-session"
+			t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+			t.Setenv("HUAKAI_GEMINI_OAUTH_TOKEN_URL", operatorEndpoint)
+			t.Setenv("HUAKAI_GEMINI_OAUTH_CLIENT_ID", operatorClientID)
+			t.Setenv("HUAKAI_GEMINI_OAUTH_CLIENT_SECRET", "")
+			previousClient := http.DefaultClient
+			t.Cleanup(func() { http.DefaultClient = previousClient })
+			var gotURL string
+			var gotForm url.Values
+			http.DefaultClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				gotURL = r.URL.String()
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read refresh body: %v", err)
+				}
+				gotForm, err = url.ParseQuery(string(body))
+				if err != nil {
+					t.Fatalf("parse refresh body %q: %v", string(body), err)
+				}
+				return jsonResponse(`{"access_token":"` + wantAccessToken + `","refresh_token":"` + wantRefreshToken + `","expires_in":1800,"token_type":"Bearer"}`), nil
+			})}
+
+			adapter, ok := DefaultModeAdapterRegistry().Lookup(tc.vendor, tc.authMode)
+			if !ok {
+				t.Fatalf("missing mode refresh adapter %s/%s", tc.vendor, tc.authMode)
+			}
+			result, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{
+				ProviderAccountID: 91,
+				Vendor:            tc.vendor,
+				AuthMode:          tc.authMode,
+				Payload: []byte(`{
+					"session_token":"` + oldSessionToken + `",
+					"access_token":"old-access-token",
+					"refresh_token":"refresh-from-credential",
+					"oauth_token_endpoint":"https://attacker.example.test/token",
+					"token_endpoint":"https://attacker.example.test/alt-token",
+					"client_id":"credential-client",
+					"client_secret":"credential-secret"
+				}`),
+			})
+			if err != nil {
+				t.Fatalf("RefreshCredential: %v", err)
+			}
+			if gotURL != operatorEndpoint {
+				t.Fatalf("refresh endpoint=%q want operator endpoint %q", gotURL, operatorEndpoint)
+			}
+			if gotForm.Get("client_id") != operatorClientID {
+				t.Fatalf("client_id=%q want operator client %q", gotForm.Get("client_id"), operatorClientID)
+			}
+			if got := gotForm.Get("client_secret"); got != "" {
+				t.Fatalf("client_secret=%q want empty when operator secret env is empty", got)
+			}
+			var payload map[string]string
+			if err := json.Unmarshal(result.Payload, &payload); err != nil {
+				t.Fatalf("result payload json: %v", err)
+			}
+			if got := payload["access_token"]; got != wantAccessToken {
+				t.Fatalf("access_token=%q want refreshed token %q; payload=%s", got, wantAccessToken, result.Payload)
+			}
+			if got := payload["session_token"]; got != wantAccessToken {
+				t.Fatalf("session_token=%q want refreshed access token %q; old token %q must not survive; payload=%s", got, wantAccessToken, oldSessionToken, result.Payload)
+			}
+			if got := payload["refresh_token"]; got != wantRefreshToken {
+				t.Fatalf("refresh_token=%q want rotated token %q; payload=%s", got, wantRefreshToken, result.Payload)
+			}
+		})
+	}
+}
+
+func TestWindsurfManualModeAdapterRejectsRefreshTokenOnlyCredential(t *testing.T) {
+	// Regression killed: a stored Windsurf OAuth payload with only refresh_token
+	// is unusable by the runtime session adapter, so scheduled refresh must
+	// fail closed instead of silently treating it as a manual no-op. Mutation
+	// self-check: deleting the session/access-token guard returns
+	// ErrNoRefreshRequired and makes this test red.
+	adapter, ok := DefaultModeAdapterRegistry().Lookup(credentialstore.VendorWindsurf, credentialstore.AuthModeOAuth)
+	if !ok {
+		t.Fatal("missing windsurf/oauth mode adapter")
+	}
+	_, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{
+		ProviderAccountID: 92,
+		Vendor:            credentialstore.VendorWindsurf,
+		AuthMode:          credentialstore.AuthModeOAuth,
+		Payload:           []byte(`{"refresh_token":"refresh-only"}`),
+	})
+	if err == nil {
+		t.Fatal("RefreshCredential err=nil, want invalid credential material")
+	}
+	if errors.Is(err, ErrNoRefreshRequired) {
+		t.Fatalf("RefreshCredential err=%v, want fail-closed invalid credential material", err)
+	}
+	if !errors.Is(err, adapters.ErrInvalidCredentialMaterial) {
+		t.Fatalf("RefreshCredential err=%v, want ErrInvalidCredentialMaterial", err)
+	}
+}
+
+func TestWindsurfManualModeAdapterPreservesSessionTokenManualNoop(t *testing.T) {
+	adapter, ok := DefaultModeAdapterRegistry().Lookup(credentialstore.VendorWindsurf, credentialstore.AuthModeOAuth)
+	if !ok {
+		t.Fatal("missing windsurf/oauth mode adapter")
+	}
+	_, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{
+		ProviderAccountID: 93,
+		Vendor:            credentialstore.VendorWindsurf,
+		AuthMode:          credentialstore.AuthModeOAuth,
+		Payload:           []byte(`{"session_token":"windsurf-session-token"}`),
+	})
+	if !errors.Is(err, ErrNoRefreshRequired) {
+		t.Fatalf("RefreshCredential err=%v, want ErrNoRefreshRequired for manual session token", err)
 	}
 }
 
