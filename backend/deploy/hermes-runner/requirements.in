@@ -1,0 +1,17 @@
+# Hermes runner direct dependency source-of-truth.
+#
+# 这是 pip-compile 的输入,只列直接依赖。完整哈希锁版本由
+# scripts/regen-hashlock.sh 通过 pip-compile --generate-hashes 生成,
+# 写入 requirements.txt。
+#
+# 改动流程:
+#   1. 仅在本文件追加/调整直接依赖
+#   2. 在 Owner 本机(可访问 PyPI)执行
+#        ./scripts/regen-hashlock.sh
+#   3. 提交 requirements.in + 重新生成的 requirements.txt
+#   4. Dockerfile 切回 `pip install --require-hashes`
+
+hermes-agent==0.14.0
+fastapi==0.136.3
+uvicorn==0.48.0
+sse-starlette==3.4.4
