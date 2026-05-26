@@ -707,9 +707,12 @@ also commit the artifact (or a sanitized derivative) under
    planned full re-capture` (handled inside slice 3 above). When the full
    re-capture lands, profile JSONs get fresh `_field_sources` pointing to
    newly-committed `tools/fingerprint-collector/captures/<vendor>-<ts>.<ext>`.
-   The re-capture itself is a NEW slice (not opened in this audit; tracked
-   as `§13-full-recapture` placeholder for later planning — needs Owner
-   API access for each vendor CLI).
+   The re-capture itself is **§13-full-recapture** — plan landed
+   2026-05-26 at
+   [docs/process/plans/2026-05-26-w11f-section13-full-recapture-plan.md](../plans/2026-05-26-w11f-section13-full-recapture-plan.md).
+   Owner-driven (each vendor CLI runs through mitmproxy + addon); Claude
+   updates profile JSONs + flips §12.2 verdicts WEAK → PASS per
+   incoming jsonl.
 
 ### 12.7 Mutation discriminator for this audit subsection
 
