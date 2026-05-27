@@ -114,6 +114,11 @@ func (e authorizationCodeOAuthExchanger) exchangeAuthorizationCode(ctx context.C
 	if client == nil {
 		client = http.DefaultClient
 	}
+	// P1 深层 SSRF / DNS-rebind 防御 DEFERRED 到 follow-up 切片:
+	// validateOperatorPKCEConfig 已封 caller 直接写 attacker URL (静态层);
+	// 深层 dial-time guard 复用 auth.NewSSRFProtectedOAuthClient 要求 OAuth
+	// 测试 fixture 用真公网 host 或 mock lookupOAuthIPAddrs, 改造跨多 vendor
+	// adapter 测试范围较广, 进 docs/process/reviews/DEFERRED-anthropic-claude-oauth-p1-deep-ssrf.md。
 	resp, err := client.Do(req)
 	if err != nil {
 		return oauthTokenResponse{}, err
