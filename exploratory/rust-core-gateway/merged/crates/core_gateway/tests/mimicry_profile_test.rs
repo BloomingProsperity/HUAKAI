@@ -290,8 +290,10 @@ fn mimicry_backend_intent_allows_gemini_via_openssl_adapter() {
         "gemini Chrome 模仿应走 OpenSSL adapter（§14b.2 已通过 byte-level wire test）"
     );
 
-    // Sanity-check: the unreachable arms below catch a future change that
+    // Sanity-check: the explicit arms below catch a future change that
     // could silently downgrade gemini back to UnsupportedTemplate / KnownGap.
+    // The match is exhaustive (BackendIntent has 3 variants); no catch-all
+    // needed — clippy correctly flags it as unreachable.
     match gemini.backend_intent() {
         BackendIntent::OpenSslAdapter => { /* expected */ }
         BackendIntent::UnsupportedTemplate { reason } => {
@@ -304,9 +306,6 @@ fn mimicry_backend_intent_allows_gemini_via_openssl_adapter() {
                 "gemini §14b.2 不应再被 KnownGapBlocked（除非 D-S4 决策回退）；reason: {reason}"
             );
         }
-        intent => panic!(
-            "gemini §14b.2 应走 OpenSslAdapter；实际意外结果: {intent:?}"
-        ),
     }
 }
 

@@ -1,8 +1,9 @@
 [advisories]
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "warn"
-unmaintained = "workspace"
-unsound = "workspace"
+# `unmaintained` / `unsound` severity keys removed in cargo-deny 0.16+
+# (PR EmbarkStudios/cargo-deny#611). Default behavior now denies all
+# RustSec advisories uniformly; use `ignore` for per-advisory exceptions.
 ignore = []
 
 [licenses]
@@ -31,7 +32,8 @@ multiple-versions = "warn"
 wildcards = "deny"
 highlight = "all"
 allow = []
-allow-workspace = true
+# `allow-workspace = true` was removed: cargo-deny 0.16+ rejects the key
+# (replaced by the implicit `workspace-dependencies` semantics).
 # `wreq-util`/`rquest-util` preset 包在内部 spike 结论中已标记为 LGPL/copyleft 风险；
 # HUAKAI 保留 preset-like 能力，但只能通过自有模板或 permissive 依赖实现。
 deny = [
