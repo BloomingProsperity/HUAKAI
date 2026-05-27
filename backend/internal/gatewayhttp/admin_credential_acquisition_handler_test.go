@@ -72,7 +72,7 @@ func TestAdminCredentialAcquisitionRoutesIntegration(t *testing.T) {
 		},
 		{
 			name: "helper oauth init", method: http.MethodPost, path: "/admin/v1/credentials/oauth-init",
-			body: `{"tenant_id":1,"provider_account_id":101,"vendor":"openai","auth_mode":"chatgpt_oauth","oauth_client":{"client_id":"client-id","auth_url":"https://auth.example.test/oauth","redirect_uri":"https://huakai.example.test/callback"}}`, want: http.StatusCreated,
+			body: `{"tenant_id":1,"provider_account_id":101,"vendor":"openai","auth_mode":"chatgpt_oauth","oauth_client":{"redirect_uri":"http://localhost:1455/auth/callback"}}`, want: http.StatusCreated,
 		},
 		{
 			name: "helper oauth callback error path", method: http.MethodGet,
@@ -363,6 +363,30 @@ func TestGeminiAdminStartFlowIgnoresClientSecretFromRequest(t *testing.T) {
 	}
 }
 
+func TestAdminChatGPTOAuthStartFlowIgnoresClientSecretFromRequest(t *testing.T) {
+	// 缺陷：ChatGPT OAuth 是 PKCE-only；admin request body 的 client_secret 若进入 StartOAuthFlow，
+	// 会被内置 profile 拒绝或诱导后续路径发送 confidential-client secret。
+	// 判别 mutation：只对 Gemini 清空 client_secret 时，本测试必须变红。
+	guard := &chatGPTAdminStartConfigGuardExchanger{}
+	registry := credentialacq.NewExchangerRegistry()
+	if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth), guard); err != nil {
+		t.Fatalf("RegisterExchanger: %v", err)
+	}
+	fx := newCredentialAcqHTTPFixtureWithRegistry(t, adminPoolAdmin(), registry, nil)
+
+	rec := fx.do(t, http.MethodPost, "/admin/v1/credentials/oauth-init",
+		`{"tenant_id":1,"provider_account_id":101,"vendor":"openai","auth_mode":"chatgpt_oauth","oauth_client":{"client_secret":"from-request","redirect_uri":"http://localhost:1455/auth/callback"}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("start status=%d want 201 body=%s", rec.Code, rec.Body.String())
+	}
+	if guard.clientSecret != "" {
+		t.Fatalf("ChatGPT start cfg ClientSecret=%q want empty; request body secret must be ignored", guard.clientSecret)
+	}
+	if guard.calls != 1 {
+		t.Fatalf("guard calls=%d want 1", guard.calls)
+	}
+}
+
 func TestAdminClaudeAIOAuthRejectsFakeJSONCallback(t *testing.T) {
 	fx := newCredentialAcqHTTPFixtureWithDefaultExchangers(t, adminPoolAdmin())
 	fakeCode := `{"access_token":"FAKE"}`
@@ -539,7 +563,7 @@ func (fx *credentialAcqHTTPFixture) seedPasteFlow(t *testing.T, providerAccountI
 
 func (fx *credentialAcqHTTPFixture) seedOAuthFlow(t *testing.T, providerAccountID int64) seededCredentialAcqFlow {
 	t.Helper()
-	return fx.seedOAuthFlowFor(t, providerAccountID, credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth)
+	return fx.seedRawOAuthFlow(t, providerAccountID, credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth)
 }
 
 func (fx *credentialAcqHTTPFixture) seedOAuthFlowFor(t *testing.T, providerAccountID int64, vendor, authMode string) seededCredentialAcqFlow {
@@ -659,6 +683,28 @@ func (s *geminiAdminStartConfigGuardExchanger) StartOAuthFlow(ctx context.Contex
 }
 
 func (s *geminiAdminStartConfigGuardExchanger) ExchangeOAuthCode(context.Context, credentialacq.Session, string) (credentialacq.CredentialCandidate, error) {
+	return credentialacq.CredentialCandidate{}, errors.New("not used")
+}
+
+type chatGPTAdminStartConfigGuardExchanger struct {
+	calls        int
+	clientSecret string
+}
+
+func (s *chatGPTAdminStartConfigGuardExchanger) StartOAuthFlow(ctx context.Context, store *credentialacq.PostgresSessionStore, in credentialacq.StartInput, cfg credentialacq.OAuthClientConfig) (credentialacq.OAuthStartResult, error) {
+	s.calls++
+	s.clientSecret = cfg.ClientSecret
+	if strings.TrimSpace(cfg.ClientSecret) != "" {
+		return credentialacq.OAuthStartResult{}, errors.New("chatgpt request client_secret reached StartOAuthFlow")
+	}
+	registry := credentialacq.NewExchangerRegistry()
+	if err := registry.RegisterExchanger(credentialstore.ModeKey(in.Vendor, in.AuthMode), credentialacq.NewPKCEFakeExchanger(credentialacq.TokenShapeAnySessionOrAccess)); err != nil {
+		return credentialacq.OAuthStartResult{}, err
+	}
+	return credentialacq.StartOAuthFlowWithRegistry(ctx, store, in, cfg, registry)
+}
+
+func (s *chatGPTAdminStartConfigGuardExchanger) ExchangeOAuthCode(context.Context, credentialacq.Session, string) (credentialacq.CredentialCandidate, error) {
 	return credentialacq.CredentialCandidate{}, errors.New("not used")
 }
 

@@ -12,11 +12,16 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 )
 
 const (
 	defaultOpenAITokenEndpoint = "https://auth.openai.com/oauth/token"
 	defaultRefreshTimeout      = 5 * time.Second
+
+	ChatGPTOAuthTokenEndpoint = "https://auth.openai.com/oauth/token"
+	ChatGPTOAuthClientID      = "app_EMoamEEZ73f0CkXaXp7hrann"
 )
 
 // OpenAIRefresh 用标准 refresh_token grant 刷新 OpenAI / ChatGPT 账号。
@@ -84,6 +89,55 @@ func applyOpenAIRefreshMetadata(raw []byte, privacyMutationEnabled bool) ([]byte
 		cred["privacy_action_outcome"] = "disabled"
 	}
 	return json.Marshal(cred)
+}
+
+// ChatGPTRefresh 用 OpenAI ChatGPT public CLI OAuth refresh_token grant 续期。
+// Endpoint / ClientID 默认钉死为内置 public profile；credential JSON 中的
+// oauth_token_endpoint / client_id / client_secret / scope 一律不参与出站请求。
+type ChatGPTRefresh struct {
+	Endpoint               string
+	ClientID               string
+	HTTPClient             *http.Client
+	PrivacyMutationEnabled bool
+}
+
+func (r ChatGPTRefresh) RefreshForProvider(ctx context.Context, accountID int64, providerName string, currentCredential []byte) ([]byte, time.Time, error) {
+	cred, err := parseCredential(currentCredential)
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("chatgpt refresh account %d: %w", accountID, err)
+	}
+	refreshToken := credentialString(cred, "refresh_token")
+	if refreshToken == "" {
+		return nil, time.Time{}, fmt.Errorf("chatgpt refresh account %d: refresh_token is empty", accountID)
+	}
+	endpoint := firstNonEmpty(r.Endpoint, ChatGPTOAuthTokenEndpoint)
+	clientID := firstNonEmpty(r.ClientID, ChatGPTOAuthClientID)
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refreshToken)
+	form.Set("client_id", clientID)
+	resp, err := postTokenWithRetry(ctx, r.httpClient(), endpoint, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("chatgpt refresh account %d: %w", accountID, err)
+	}
+	// ChatGPT acquisition 会把 access_token 双写到 session_token；refresh 也必须覆盖旧值。
+	cred["session_token"] = resp.AccessToken
+	newCredential, expiresAt, err := mergeTokenResponse(cred, resp)
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("chatgpt refresh account %d: %w", accountID, err)
+	}
+	newCredential, err = applyOpenAIRefreshMetadata(newCredential, r.PrivacyMutationEnabled)
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("chatgpt refresh account %d: %w", accountID, err)
+	}
+	return newCredential, expiresAt, nil
+}
+
+func (r ChatGPTRefresh) httpClient() *http.Client {
+	if r.HTTPClient != nil {
+		return r.HTTPClient
+	}
+	return auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
 }
 
 func ShouldRefreshOpenAIForRateLimit(raw []byte) bool {

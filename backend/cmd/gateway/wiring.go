@@ -288,6 +288,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err := installGeminiPublicCLIOAuthExchangers(credentialExchangers, auth.NewSSRFProtectedOAuthClient(http.DefaultClient), geminiOAuthClientSecret); err != nil {
 		return nil, fmt.Errorf("register gemini public CLI oauth exchangers: %w", err)
 	}
+	if err := installChatGPTOAuthExchanger(credentialExchangers, auth.NewSSRFProtectedOAuthClient(http.DefaultClient)); err != nil {
+		return nil, fmt.Errorf("register openai chatgpt_oauth exchanger: %w", err)
+	}
 	// ANT-4 fail-loud: wiring 启动时立即自检 install 真把 default registry
 	// 中的 nil-client exchanger 替换为带显式 HTTP client 的版本。删除 install
 	// 调用或 helper 实现退化时这里直接 return error, 进程拒启动 (生产 fingerprint
@@ -297,6 +300,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	}
 	if err := assertGeminiPublicCLIOAuthExchangersHaveHTTPClient(credentialExchangers); err != nil {
 		return nil, fmt.Errorf("gemini public CLI oauth wiring self-check: %w", err)
+	}
+	if err := assertChatGPTOAuthExchangerHasHTTPClient(credentialExchangers); err != nil {
+		return nil, fmt.Errorf("openai chatgpt_oauth wiring self-check: %w", err)
 	}
 	emailSettingsStore := mailinfra.NewPostgresSettingsStore(pgPool)
 	if releaseModeProduction() {
@@ -592,6 +598,40 @@ func assertGeminiPublicCLIOAuthExchangersHaveHTTPClient(registry *credentialacq.
 		if !credentialacq.IsGeminiPublicCLIOAuthExchangerWithExplicitClient(exc) {
 			return fmt.Errorf("gemini/%s exchanger has nil httpClient — install 未生效", mode)
 		}
+	}
+	return nil
+}
+
+// installChatGPTOAuthExchanger 把默认 registry 中 openai/chatgpt_oauth 条目
+// 替换为带显式 OAuth-grade HTTP client 的版本。ChatGPT OAuth 是 PKCE-only，
+// 不需要 client_secret；client 由调用方构造，生产 wiring 传 SSRF-protected
+// client，避免 callback token exchange silent 退化到默认 transport。
+func installChatGPTOAuthExchanger(registry *credentialacq.ExchangerRegistry, client *http.Client) error {
+	if registry == nil {
+		return fmt.Errorf("nil exchanger registry")
+	}
+	if client == nil {
+		return fmt.Errorf("nil http client (chatgpt OAuth transport missing)")
+	}
+	return registry.RegisterOrReplaceExchanger(
+		credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth),
+		credentialacq.NewChatGPTOAuthExchangerWithClient(client),
+	)
+}
+
+// assertChatGPTOAuthExchangerHasHTTPClient 在 wiring 完成 install 后立即自检
+// ChatGPT OAuth exchanger 已注入 HTTP client。删除 install 调用或 helper 退化
+// 时进程拒启动，防止 callback 交换链路 silent 退化。
+func assertChatGPTOAuthExchangerHasHTTPClient(registry *credentialacq.ExchangerRegistry) error {
+	if registry == nil {
+		return fmt.Errorf("nil exchanger registry")
+	}
+	exc, ok := registry.Lookup(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth))
+	if !ok {
+		return fmt.Errorf("openai/chatgpt_oauth exchanger missing from registry after install")
+	}
+	if !credentialacq.IsChatGPTOAuthExchangerWithExplicitClient(exc) {
+		return fmt.Errorf("openai/chatgpt_oauth exchanger has nil httpClient — install 未生效")
 	}
 	return nil
 }

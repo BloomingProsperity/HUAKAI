@@ -72,7 +72,7 @@ func DefaultModeAdapterRegistry() *ModeAdapterRegistry {
 	register(credentialstore.VendorAnthropic, credentialstore.AuthModeBedrock, staticModeAdapter{})
 	register(credentialstore.VendorAnthropic, credentialstore.AuthModeVertexAnthropic, metadataTokenAdapter{})
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeAPIKey, staticModeAdapter{})
-	register(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth, legacyOAuthModeAdapter{providerName: "openai", adapter: adapters.OpenAIRefresh{}})
+	register(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth, newOpenAIChatGPTBuiltinOAuthModeAdapter())
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth, legacyOAuthModeAdapter{providerName: "codex", adapter: adapters.CodexRefresh{OpenAI: adapters.OpenAIRefresh{}}})
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeAzure, mockTokenExchangeAdapter{providerName: "azure"})
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeRefreshToken, legacyOAuthModeAdapter{providerName: "openai", adapter: adapters.OpenAIRefresh{}})
@@ -358,6 +358,28 @@ func (a legacyOAuthModeAdapter) RefreshCredential(ctx context.Context, in ModeRe
 		return ModeRefreshResult{}, ErrProviderAdapterMissing
 	}
 	payload, expiresAt, err := a.adapter.RefreshForProvider(ctx, in.ProviderAccountID, a.providerName, in.Payload)
+	if err != nil {
+		return ModeRefreshResult{}, err
+	}
+	return ModeRefreshResult{Payload: payload, AccessExpiresAt: expiresAt, Outcome: "refresh_succeeded"}, nil
+}
+
+type openAIChatGPTBuiltinOAuthModeAdapter struct {
+	adapter adapters.ChatGPTRefresh
+}
+
+func newOpenAIChatGPTBuiltinOAuthModeAdapter() openAIChatGPTBuiltinOAuthModeAdapter {
+	return openAIChatGPTBuiltinOAuthModeAdapter{
+		adapter: adapters.ChatGPTRefresh{
+			Endpoint:   adapters.ChatGPTOAuthTokenEndpoint,
+			ClientID:   adapters.ChatGPTOAuthClientID,
+			HTTPClient: auth.NewSSRFProtectedOAuthClient(http.DefaultClient),
+		},
+	}
+}
+
+func (a openAIChatGPTBuiltinOAuthModeAdapter) RefreshCredential(ctx context.Context, in ModeRefreshInput) (ModeRefreshResult, error) {
+	payload, expiresAt, err := a.adapter.RefreshForProvider(ctx, in.ProviderAccountID, "openai", in.Payload)
 	if err != nil {
 		return ModeRefreshResult{}, err
 	}
