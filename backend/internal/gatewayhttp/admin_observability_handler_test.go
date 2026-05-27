@@ -14,6 +14,8 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/trust"
 )
 
 type obsAuthStub struct{ err error }
@@ -73,6 +75,50 @@ func TestAdminObsUsageSuccessWithFilters(t *testing.T) {
 	assertStatus(t, rec, http.StatusOK)
 	if store.usageArg.PageLimit != 51 || store.usageArg.Provider == nil || *store.usageArg.Provider != "anthropic" || store.usageArg.PoolID == nil || *store.usageArg.PoolID != 9 {
 		t.Fatalf("usage params mismatch: %+v", store.usageArg)
+	}
+}
+
+func TestAdminObsUsageTrustFieldsFromAuditLedger(t *testing.T) {
+	hopJSON, err := json.Marshal([]proto.HopAttestation{
+		{Hop: proto.HopProvider, Provider: "anthropic"},
+	})
+	if err != nil {
+		t.Fatalf("marshal hop chain: %v", err)
+	}
+	modelJSON, err := json.Marshal(&proto.ModelChain{
+		Requested:    "claude-opus-4",
+		RouteDecided: "claude-opus-4-20260514",
+	})
+	if err != nil {
+		t.Fatalf("marshal model chain: %v", err)
+	}
+	ledgerID := "ledger-trust-admin"
+	fp := "fp-trust-admin"
+	row := usageRow(1)
+	row.Provider = strPtr("openai")
+	row.RequestedModel = "claude-opus-4"
+	row.UpstreamModel = strPtr("wrong-usage-row-model")
+	row.RequestID = "req-trust-admin"
+	row.AuditLedgerID = &ledgerID
+	row.AuditPubkeyFingerprint = &fp
+	row.AuditHopChain = hopJSON
+	row.AuditModelChain = modelJSON
+	store := &obsStoreStub{usage: []dbbilling.ListUsageRecordsRow{row}}
+
+	rec := invokeObs(NewUsageHandler(obsDepsStub{auth: obsAuthStub{}, s: store}), "/admin/v1/usage?limit=20")
+	assertStatus(t, rec, http.StatusOK)
+	var body struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || len(body.Items) != 1 {
+		t.Fatalf("bad usage body=%s err=%v", rec.Body.String(), err)
+	}
+	item := body.Items[0]
+	if item["provider"] != "anthropic" || item["upstream_model"] != "claude-opus-4-20260514" || item["request_id"] != "req-trust-admin" {
+		t.Fatalf("trust metadata item=%v", item)
+	}
+	if item["trust_status"] != string(trust.StatusUnverified) {
+		t.Fatalf("trust_status=%v want %q", item["trust_status"], trust.StatusUnverified)
 	}
 }
 

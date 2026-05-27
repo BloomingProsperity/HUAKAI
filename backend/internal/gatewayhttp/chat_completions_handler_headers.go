@@ -19,6 +19,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/trust"
 )
 
 const (
@@ -57,6 +58,11 @@ func WriteHuakaiHeaders(h http.Header, requested string, env *proto.HCSF, result
 	if h == nil {
 		return
 	}
+	meta := trust.MetadataFromHCSF(env)
+	if meta.RequestID == "" {
+		meta.RequestID = requestID
+	}
+	trust.WriteResponseHeaders(h, meta, result)
 	switch result.State {
 	case auditledger.LedgerResultStatePersisted:
 		WriteHuakaiLedgerHeaders(h, requestID, result.LedgerID, result.Fingerprint, tenantID)

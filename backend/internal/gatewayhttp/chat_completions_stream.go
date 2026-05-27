@@ -24,6 +24,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
+	"github.com/BloomingProsperity/HUAKAI/internal/trust"
 )
 
 const (
@@ -188,6 +189,11 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	if ex.d.ResponseCache != nil {
 		w.Header().Set("X-HUAKAI-Cache-L2", "skip")
 	}
+	trust.WriteResponseHeaders(w.Header(), trust.ResponseMetadata{
+		Provider:  ex.forwardReq.Provider,
+		Model:     ex.forwardReq.Model,
+		RequestID: ex.requestID,
+	}, auditledger.DisabledLedgerResult())
 	declareStreamBillingTrailers(w.Header())
 	writeStreamBillingHeaders(w.Header(), billing.Attempt{State: billing.StreamStateInFlight})
 	streamForwarder := *ex.d.Forwarder

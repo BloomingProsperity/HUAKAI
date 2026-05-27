@@ -12,10 +12,84 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/trust"
 )
 
 func identityRow[T any](r T) any { return r }
+
+func mapUsageRow(r dbbilling.ListUsageRecordsRow) any {
+	provider := valueString(r.Provider)
+	upstreamModel := valueString(r.UpstreamModel)
+	requestID := strings.TrimSpace(r.RequestID)
+	trustStatus := string(trust.StatusMissing)
+	if entry, ok := usageAuditLedgerEntry(r); ok {
+		meta := trust.MetadataFromLedgerEntry(entry)
+		result := auditledger.PersistedLedgerResult(entry)
+		if meta.Provider != "" {
+			provider = meta.Provider
+		}
+		if meta.Model != "" {
+			upstreamModel = meta.Model
+		}
+		if meta.RequestID != "" {
+			requestID = meta.RequestID
+		}
+		trustStatus = string(trust.ResponseStatus(meta, result))
+	}
+	return map[string]any{
+		"id": r.ID, "tenant_id": r.TenantID, "claim_id": r.ClaimID,
+		"api_key_id": r.APIKeyID, "user_id": r.UserID,
+		"provider_account_id": r.ProviderAccountID, "provider": provider,
+		"attempt_seq": r.AttemptSeq, "tokens_input": r.TokensInput,
+		"tokens_output": r.TokensOutput, "cache_creation_tokens": r.CacheCreationTokens,
+		"cache_read_tokens": r.CacheReadTokens, "actual_cost": r.ActualCost,
+		"end_class": r.EndClass, "usage_source": r.UsageSource,
+		"pending_reconciliation": r.PendingReconciliation,
+		"stream_state":           r.StreamState, "delivered_token_count": r.DeliveredTokenCount,
+		"stream_terminated_reason": r.StreamTerminatedReason,
+		"requested_at":             r.RequestedAt, "created_at": r.CreatedAt,
+		"requested_model": r.RequestedModel, "upstream_model": upstreamModel,
+		"stream": r.Stream, "settlement_source": r.SettlementSource,
+		"pool_id": r.PoolID, "request_id": requestID, "trust_status": trustStatus,
+	}
+}
+
+func usageAuditLedgerEntry(r dbbilling.ListUsageRecordsRow) (auditledger.LedgerEntry, bool) {
+	hasLedger := r.AuditLedgerID != nil || r.AuditPubkeyFingerprint != nil || len(r.AuditHopChain) > 0 || len(r.AuditModelChain) > 0
+	if !hasLedger {
+		return auditledger.LedgerEntry{}, false
+	}
+	entry := auditledger.LedgerEntry{
+		RequestID: strings.TrimSpace(r.RequestID),
+		TenantID:  r.TenantID,
+	}
+	if r.AuditLedgerID != nil {
+		entry.LedgerID = strings.TrimSpace(*r.AuditLedgerID)
+	}
+	if r.AuditPubkeyFingerprint != nil {
+		entry.PubkeyFingerprint = strings.TrimSpace(*r.AuditPubkeyFingerprint)
+	}
+	if len(r.AuditHopChain) > 0 {
+		_ = json.Unmarshal(r.AuditHopChain, &entry.HopChain)
+	}
+	if len(r.AuditModelChain) > 0 {
+		var model proto.ModelChain
+		if err := json.Unmarshal(r.AuditModelChain, &model); err == nil {
+			entry.ModelChain = &model
+		}
+	}
+	return entry, true
+}
+
+func valueString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
+}
 
 func mapAuditRow(r dbbilling.ListAuditEventsRow) any {
 	payload := json.RawMessage(r.Payload)

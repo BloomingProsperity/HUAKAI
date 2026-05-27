@@ -10,11 +10,18 @@ SELECT
     ur.stream_state, ur.delivered_token_count, ur.stream_terminated_reason,
     ur.requested_at, ur.settled_at AS created_at, ur.requested_model,
     ur.upstream_model, ur.stream, ur.settlement_source,
-    p.code AS provider, blc.pooling_group_id AS pool_id
+    p.code AS provider, blc.pooling_group_id AS pool_id,
+    blc.logical_request_id AS request_id,
+    ale.ledger_id AS audit_ledger_id,
+    ale.pubkey_fingerprint AS audit_pubkey_fingerprint,
+    ale.hop_chain AS audit_hop_chain,
+    ale.model_chain AS audit_model_chain
 FROM usage_records ur
 JOIN billing_ledger_claims blc ON blc.id = ur.claim_id AND blc.tenant_id = ur.tenant_id
 LEFT JOIN provider_accounts pa ON pa.id = ur.provider_account_id AND pa.tenant_id = ur.tenant_id
 LEFT JOIN providers p ON p.id = pa.provider_id AND p.tenant_id = ur.tenant_id
+LEFT JOIN audit_ledger_entries ale ON ale.request_id = blc.logical_request_id
+    AND (ale.tenant_id IS NULL OR ale.tenant_id = ur.tenant_id)
 WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_id)::bigint)
   AND (sqlc.narg(from_ts)::timestamptz IS NULL OR ur.settled_at >= sqlc.narg(from_ts)::timestamptz)
   AND (sqlc.narg(to_ts)::timestamptz IS NULL OR ur.settled_at <= sqlc.narg(to_ts)::timestamptz)

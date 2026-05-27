@@ -1,6 +1,10 @@
 package auditledger
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+)
 
 type LedgerResultState int
 
@@ -24,17 +28,23 @@ func (s LedgerResultState) String() string {
 }
 
 type AuditLedgerResult struct {
-	State       LedgerResultState
-	LedgerID    string
-	DLQRef      string
-	Fingerprint string
+	State            LedgerResultState
+	LedgerID         string
+	DLQRef           string
+	Fingerprint      string
+	UpstreamProvider string `json:"upstream_provider"`
+	UpstreamModel    string `json:"upstream_model"`
+	RequestID        string `json:"request_id"`
 }
 
 func PersistedLedgerResult(entry LedgerEntry) AuditLedgerResult {
 	return AuditLedgerResult{
-		State:       LedgerResultStatePersisted,
-		LedgerID:    entry.LedgerID,
-		Fingerprint: entry.PubkeyFingerprint,
+		State:            LedgerResultStatePersisted,
+		LedgerID:         entry.LedgerID,
+		Fingerprint:      entry.PubkeyFingerprint,
+		RequestID:        entry.RequestID,
+		UpstreamProvider: persistedResultProvider(entry),
+		UpstreamModel:    persistedResultModel(entry),
 	}
 }
 
@@ -62,6 +72,9 @@ func (r AuditLedgerResult) Validate(production bool) error {
 			return fmt.Errorf("auditledger: persisted result must not include DLQRef")
 		}
 	case LedgerResultStateDeferred:
+		if r.UpstreamProvider != "" || r.UpstreamModel != "" || r.RequestID != "" {
+			return fmt.Errorf("auditledger: deferred result must not include upstream metadata")
+		}
 		if r.DLQRef == "" {
 			return fmt.Errorf("auditledger: deferred result requires DLQRef")
 		}
@@ -74,6 +87,9 @@ func (r AuditLedgerResult) Validate(production bool) error {
 	case LedgerResultStateDisabled:
 		if production {
 			return fmt.Errorf("auditledger: disabled result is not valid in production")
+		}
+		if r.UpstreamProvider != "" || r.UpstreamModel != "" || r.RequestID != "" {
+			return fmt.Errorf("auditledger: disabled result must not include upstream metadata")
 		}
 		if r.LedgerID != "" || r.DLQRef != "" || r.Fingerprint != "" {
 			return fmt.Errorf("auditledger: disabled result must not include ledger fields")
@@ -91,4 +107,23 @@ func IsNoopLedger(ledger Ledger) bool {
 	default:
 		return false
 	}
+}
+
+func persistedResultProvider(entry LedgerEntry) string {
+	for _, hop := range entry.HopChain {
+		if hop.Hop == proto.HopProvider {
+			return hop.Provider
+		}
+	}
+	return ""
+}
+
+func persistedResultModel(entry LedgerEntry) string {
+	if entry.ModelChain == nil {
+		return ""
+	}
+	if entry.ModelChain.RouteDecided != "" {
+		return entry.ModelChain.RouteDecided
+	}
+	return entry.ModelChain.Requested
 }

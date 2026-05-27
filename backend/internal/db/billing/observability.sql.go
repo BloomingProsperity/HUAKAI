@@ -428,11 +428,18 @@ SELECT
     ur.stream_state, ur.delivered_token_count, ur.stream_terminated_reason,
     ur.requested_at, ur.settled_at AS created_at, ur.requested_model,
     ur.upstream_model, ur.stream, ur.settlement_source,
-    p.code AS provider, blc.pooling_group_id AS pool_id
+    p.code AS provider, blc.pooling_group_id AS pool_id,
+    blc.logical_request_id AS request_id,
+    ale.ledger_id AS audit_ledger_id,
+    ale.pubkey_fingerprint AS audit_pubkey_fingerprint,
+    ale.hop_chain AS audit_hop_chain,
+    ale.model_chain AS audit_model_chain
 FROM usage_records ur
 JOIN billing_ledger_claims blc ON blc.id = ur.claim_id AND blc.tenant_id = ur.tenant_id
 LEFT JOIN provider_accounts pa ON pa.id = ur.provider_account_id AND pa.tenant_id = ur.tenant_id
 LEFT JOIN providers p ON p.id = pa.provider_id AND p.tenant_id = ur.tenant_id
+LEFT JOIN audit_ledger_entries ale ON ale.request_id = blc.logical_request_id
+    AND (ale.tenant_id IS NULL OR ale.tenant_id = ur.tenant_id)
 WHERE ($1::bigint IS NULL OR ur.tenant_id = $1::bigint)
   AND ($2::timestamptz IS NULL OR ur.settled_at >= $2::timestamptz)
   AND ($3::timestamptz IS NULL OR ur.settled_at <= $3::timestamptz)
@@ -490,6 +497,11 @@ type ListUsageRecordsRow struct {
 	SettlementSource       string             `db:"settlement_source" json:"settlement_source"`
 	Provider               *string            `db:"provider" json:"provider"`
 	PoolID                 *int64             `db:"pool_id" json:"pool_id"`
+	RequestID              string             `db:"request_id" json:"request_id"`
+	AuditLedgerID          *string            `db:"audit_ledger_id" json:"audit_ledger_id"`
+	AuditPubkeyFingerprint *string            `db:"audit_pubkey_fingerprint" json:"audit_pubkey_fingerprint"`
+	AuditHopChain          []byte             `db:"audit_hop_chain" json:"audit_hop_chain"`
+	AuditModelChain        []byte             `db:"audit_model_chain" json:"audit_model_chain"`
 }
 
 // F-OBS-001 admin read APIs. SELECT-only: no hot-path, quota, billing,
@@ -544,6 +556,11 @@ func (q *Queries) ListUsageRecords(ctx context.Context, arg ListUsageRecordsPara
 			&i.SettlementSource,
 			&i.Provider,
 			&i.PoolID,
+			&i.RequestID,
+			&i.AuditLedgerID,
+			&i.AuditPubkeyFingerprint,
+			&i.AuditHopChain,
+			&i.AuditModelChain,
 		); err != nil {
 			return nil, err
 		}
