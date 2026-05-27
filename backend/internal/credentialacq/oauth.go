@@ -51,7 +51,14 @@ type OAuthStartResult struct {
 type OAuthExchanger func(context.Context, Session, string) (CredentialCandidate, error)
 
 func StartOAuthFlow(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig) (OAuthStartResult, error) {
-	if exc, ok := defaultExchangers.Lookup(exchangerKey(in.Vendor, in.AuthMode)); ok {
+	return StartOAuthFlowWithRegistry(ctx, store, in, cfg, defaultExchangers)
+}
+
+func StartOAuthFlowWithRegistry(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig, registry *ExchangerRegistry) (OAuthStartResult, error) {
+	if registry == nil {
+		registry = defaultExchangers
+	}
+	if exc, ok := registry.Lookup(exchangerKey(in.Vendor, in.AuthMode)); ok {
 		return exc.StartOAuthFlow(ctx, store, in, cfg)
 	}
 	return startPKCEOAuthFlow(ctx, store, in, cfg)

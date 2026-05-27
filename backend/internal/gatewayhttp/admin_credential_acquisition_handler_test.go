@@ -265,6 +265,75 @@ func TestAdminClaudeAIOAuthFullFlowEncryptsAndSavesCredential(t *testing.T) {
 	}
 }
 
+func TestAdminGeminiCodeAssistFullFlowPassesOperatorClientSecret(t *testing.T) {
+	// 缺陷：admin oauth-init 若不接收并传递 client_secret，Gemini D-1=A 内置 profile 会在入口处永远不可用。
+	// 判别 mutation：删除 handler 到 OAuthClientConfig.ClientSecret 的赋值时，本测试必须变红。
+	tokenCalls := 0
+	client := &http.Client{Transport: adminCredentialAcqRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		tokenCalls++
+		if r.URL.String() != "https://oauth2.googleapis.com/token" {
+			t.Fatalf("token URL=%s want Google token endpoint", r.URL.String())
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm: %v", err)
+		}
+		if r.PostForm.Get("client_secret") != "operator-secret" || r.PostForm.Get("code_verifier") == "" {
+			t.Fatalf("token form=%v want operator secret and stored PKCE verifier", r.PostForm)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"access_token":"AT-gemini-admin","refresh_token":"RT-gemini-admin","expires_in":3600}`)),
+		}, nil
+	})}
+	registry := credentialacq.NewExchangerRegistry()
+	exchanger := credentialacq.NewGeminiPublicCLIOAuthExchangerWithClientAndAdminCallbackAllowlist(
+		credentialstore.AuthModeCodeAssist,
+		client,
+		[]string{"https://huakai.example/admin/v1/credentials/oauth-callback"},
+	)
+	if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist), exchanger); err != nil {
+		t.Fatalf("RegisterExchanger: %v", err)
+	}
+	fx := newCredentialAcqHTTPFixtureWithRegistry(t, adminPoolAdmin(), registry, nil)
+
+	startRec := fx.do(t, http.MethodPost, "/admin/v1/credentials/oauth-init",
+		`{"tenant_id":1,"provider_account_id":101,"vendor":"gemini","auth_mode":"code_assist","oauth_client":{"client_secret":"operator-secret","redirect_uri":"https://huakai.example/admin/v1/credentials/oauth-callback"}}`)
+	if startRec.Code != http.StatusCreated {
+		t.Fatalf("start status=%d want 201 body=%s", startRec.Code, startRec.Body.String())
+	}
+	flowID, state, authorizeURL := decodeAdminClaudeAIOAuthStart(t, startRec.Body.Bytes())
+	if authorizeURL == "" || !strings.Contains(authorizeURL, "accounts.google.com") {
+		t.Fatalf("authorize_url=%q want Google authorize URL", authorizeURL)
+	}
+
+	callbackRec := fx.do(t, http.MethodGet, "/admin/v1/credentials/oauth-callback?flow_id="+url.QueryEscape(flowID)+"&state="+url.QueryEscape(state)+"&code=admin-gemini-code", "")
+	if callbackRec.Code != http.StatusOK {
+		t.Fatalf("callback status=%d want 200 body=%s", callbackRec.Code, callbackRec.Body.String())
+	}
+	if tokenCalls != 1 {
+		t.Fatalf("token endpoint calls=%d want 1", tokenCalls)
+	}
+	created := fx.creator.inputsSnapshot()
+	if len(created) != 1 {
+		t.Fatalf("created credentials=%d want 1", len(created))
+	}
+	got := created[0]
+	if got.Vendor != credentialstore.VendorGemini || got.AuthMode != credentialstore.AuthModeCodeAssist {
+		t.Fatalf("created mode=%s/%s want gemini/code_assist", got.Vendor, got.AuthMode)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(got.Payload, &payload); err != nil {
+		t.Fatalf("payload JSON: %v", err)
+	}
+	if payload["access_token"] != "AT-gemini-admin" || payload["refresh_token"] != "RT-gemini-admin" {
+		t.Fatalf("payload=%v want exchanged Gemini token material", payload)
+	}
+	if strings.Contains(string(got.Payload), "operator-secret") {
+		t.Fatalf("payload leaked operator client secret: %s", got.Payload)
+	}
+}
+
 func TestAdminClaudeAIOAuthRejectsFakeJSONCallback(t *testing.T) {
 	fx := newCredentialAcqHTTPFixtureWithDefaultExchangers(t, adminPoolAdmin())
 	fakeCode := `{"access_token":"FAKE"}`
@@ -542,8 +611,8 @@ type credentialAcqExchangeCall struct {
 	Code   string
 }
 
-func (s *credentialAcqExchangerStub) StartOAuthFlow(context.Context, *credentialacq.PostgresSessionStore, credentialacq.StartInput, credentialacq.OAuthClientConfig) (credentialacq.OAuthStartResult, error) {
-	return credentialacq.OAuthStartResult{}, errors.New("test exchanger does not start flows")
+func (s *credentialAcqExchangerStub) StartOAuthFlow(ctx context.Context, store *credentialacq.PostgresSessionStore, in credentialacq.StartInput, cfg credentialacq.OAuthClientConfig) (credentialacq.OAuthStartResult, error) {
+	return credentialacq.StartOAuthFlowWithRegistry(ctx, store, in, cfg, credentialacq.NewExchangerRegistry())
 }
 
 func (s *credentialAcqExchangerStub) ExchangeOAuthCode(_ context.Context, session credentialacq.Session, code string) (credentialacq.CredentialCandidate, error) {

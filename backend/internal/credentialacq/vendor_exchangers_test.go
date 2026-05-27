@@ -116,7 +116,7 @@ func TestAntigravityOAuthCallbackPostsAuthorizationCodeToConfiguredTokenEndpoint
 	}
 }
 
-func TestGeminiOAuthCallbackPostsAuthorizationCodeToConfiguredTokenEndpoint(t *testing.T) {
+func TestGeminiOperatorOAuthCallbackPostsAuthorizationCodeToConfiguredTokenEndpoint(t *testing.T) {
 	now := time.Date(2026, 5, 25, 8, 10, 0, 0, time.UTC)
 	var gotForm url.Values
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
