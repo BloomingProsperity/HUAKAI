@@ -206,6 +206,45 @@ func TestWiring_InstallGeminiPublicCLIOAuthExchangersReplacesDefault(t *testing.
 	}
 }
 
+func TestWiring_InstallChatGPTOAuthExchangerReplacesDefault(t *testing.T) {
+	// 缺陷：ChatGPT OAuth callback 若 production wiring 没注入受控 HTTP client，
+	// 默认 exchanger 会 silent 退化，绕过启动期自检。
+	// 判别 mutation：注释掉 installChatGPTOAuthExchanger 调用或让 assert 总返回 nil 时，本测试必须变红。
+	registry := credentialacq.DefaultExchangerRegistry()
+	modeKey := credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth)
+	before, ok := registry.Lookup(modeKey)
+	if !ok {
+		t.Fatal("default registry 必须有 openai/chatgpt_oauth 起手 exchanger")
+	}
+	if credentialacq.IsChatGPTOAuthExchangerWithExplicitClient(before) {
+		t.Fatal("起手 default registry 不应装 explicit-client 版本, 否则 install mutation 无法被检出")
+	}
+
+	mockClient := &http.Client{Transport: wiringRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("unreachable in helper-only assertion")
+	})}
+	if err := installChatGPTOAuthExchanger(registry, mockClient); err != nil {
+		t.Fatalf("installChatGPTOAuthExchanger: %v", err)
+	}
+	after, ok := registry.Lookup(modeKey)
+	if !ok {
+		t.Fatal("install 后 registry Lookup miss")
+	}
+	if !credentialacq.IsChatGPTOAuthExchangerWithExplicitClient(after) {
+		t.Fatal("install 后 ChatGPT exchanger 仍报告 nil httpClient; helper 没真替换")
+	}
+
+	if err := assertChatGPTOAuthExchangerHasHTTPClient(credentialacq.DefaultExchangerRegistry()); err == nil {
+		t.Fatal("wiring 自检对未 install 的 ChatGPT registry 必须返 error")
+	}
+	if err := assertChatGPTOAuthExchangerHasHTTPClient(registry); err != nil {
+		t.Fatalf("wiring 自检对已 install 的 registry 必须返 nil, got %v", err)
+	}
+	if err := installChatGPTOAuthExchanger(credentialacq.DefaultExchangerRegistry(), nil); err == nil {
+		t.Fatal("install 必须拒 nil ChatGPT OAuth client")
+	}
+}
+
 func TestWiring_GeminiPublicCLIOAuthSecretEnvFailFast(t *testing.T) {
 	// 判别 mutation：把启动缺 secret 改成 lazy ignore 时，本测试必须变红。
 	t.Setenv("HUAKAI_GEMINI_OAUTH_CLIENT_SECRET", " ")

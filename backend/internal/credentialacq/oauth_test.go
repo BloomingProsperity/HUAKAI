@@ -85,7 +85,7 @@ func TestCompleteOAuthCallbackRejectsCrossFlowStateReplay(t *testing.T) {
 
 	victim, err := StartOAuthFlow(context.Background(), store, StartInput{
 		TenantID: 1, ProviderAccountID: 101,
-		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeChatGPTOAuth,
+		Vendor: credentialstore.VendorCopilot, AuthMode: credentialstore.AuthModeCopilotOAuth,
 		ActorID: "admin-1", ActorRole: "platform_admin",
 	}, OAuthClientConfig{
 		ClientID: "client-id", AuthURL: "https://auth.example.test/oauth", RedirectURI: "https://huakai.example.test/callback",
@@ -95,7 +95,7 @@ func TestCompleteOAuthCallbackRejectsCrossFlowStateReplay(t *testing.T) {
 	}
 	attacker, err := StartOAuthFlow(context.Background(), store, StartInput{
 		TenantID: 1, ProviderAccountID: 202,
-		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeChatGPTOAuth,
+		Vendor: credentialstore.VendorCopilot, AuthMode: credentialstore.AuthModeCopilotOAuth,
 		ActorID: "admin-1", ActorRole: "platform_admin",
 	}, OAuthClientConfig{
 		ClientID: "client-id", AuthURL: "https://auth.example.test/oauth", RedirectURI: "https://huakai.example.test/callback",
@@ -133,7 +133,7 @@ func TestStartOAuthFlowPKCEVerifierEncryptedAtRest(t *testing.T) {
 	store := NewPostgresSessionStoreWithKeys(newTestSessionDB(now), keys).WithNow(func() time.Time { return now })
 	result, err := StartOAuthFlow(context.Background(), store, StartInput{
 		TenantID: 1, ProviderAccountID: 2,
-		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeChatGPTOAuth,
+		Vendor: credentialstore.VendorCopilot, AuthMode: credentialstore.AuthModeCopilotOAuth,
 		ActorID: "admin-1", ActorRole: "platform_admin",
 	}, OAuthClientConfig{
 		ClientID: "client-id", AuthURL: "https://auth.example.test/oauth", RedirectURI: "https://huakai.example.test/callback",

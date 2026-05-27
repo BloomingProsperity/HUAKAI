@@ -358,7 +358,10 @@ func createOrStartCredentialAcqSession(ctx context.Context, d AdminCredentialAcq
 		clientSecret := oauthReq.ClientSecret
 		// Owner 2026-05-27：Gemini OAuth acquisition 的 client_secret
 		// 统一由生产 wiring 从 HUAKAI_GEMINI_OAUTH_CLIENT_SECRET 注入。
-		if credentialstore.Normalize(req.Vendor) == credentialstore.VendorGemini {
+		// ChatGPT OAuth 是 PKCE-only，同样忽略 request body 中的 client_secret。
+		vendor := credentialstore.Normalize(req.Vendor)
+		authMode := credentialstore.Normalize(req.AuthMode)
+		if vendor == credentialstore.VendorGemini || (vendor == credentialstore.VendorOpenAI && authMode == credentialstore.AuthModeChatGPTOAuth) {
 			clientSecret = ""
 		}
 		result, err := credentialacq.StartOAuthFlowWithRegistry(ctx, d.Sessions, start, credentialacq.OAuthClientConfig{
