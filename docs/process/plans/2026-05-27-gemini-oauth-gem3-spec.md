@@ -166,3 +166,38 @@ go test ./... -count=1
 - 现有 gemini refresh 测试调整后保持绿
 - 全包 regression 绿
 - mutation 自检列证据 in commit message
+
+## 6. GEM-1 实际现状摸底 (2026-05-27 89947e0 落地后 finalize)
+
+GEM-1 实际 export (gemini_oauth.go 89947e0):
+- `geminiPublicCLIClientID` (**lowercase 私有**) = `"681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"`
+- `geminiOAuthTokenURL` (**lowercase 私有**) = `"https://oauth2.googleapis.com/token"`
+- `NewGeminiPublicCLIOAuthExchangerWithClient` (exported, 但不暴露常量)
+
+GEM-3 选项:
+- **A** (推荐): GEM-3 实施时 export `GeminiPublicCLIClientID` + `DefaultGeminiTokenEndpoint` 在 credentialacq 包, 让 adapters 复用同一常量值 (避免 drift)
+- B: adapters 包内独立定义同样字符串 (易 drift, 不推荐)
+
+mode_refresh.go 现状 (line 79-81):
+```go
+register(VendorGemini, AuthModeCodeAssist, legacyOAuthModeAdapter{
+    providerName: "gemini",
+    adapter: adapters.GeminiRefresh{AllowCrossClientFallback: true, SourceClientFamily: "code_assist", TierCacheTTL: 24 * time.Hour},
+})
+```
+**没注入** Endpoint / ClientID / ClientSecret / HTTPClient — GeminiRefresh.RefreshForProvider 内部从 cred 读 (S1-D 攻击面)。
+
+GEM-3 wiring 改:
+- code_assist + google_one 改成新的 `builtinClientOAuthModeAdapter` (或直接扩 legacyOAuthModeAdapter 注入 builtin 字段) — codex 自行决定 pattern, 但必须满足:
+  - Endpoint 必须 = `adapters.DefaultGeminiTokenEndpoint` (新 export) 或 `credentialacq.DefaultGeminiTokenEndpoint`
+  - ClientID 必须 = `credentialacq.GeminiPublicCLIClientID` (GEM-3 升 export)
+  - ClientSecret 从 operator-config / env var 读 (类似 mode_refresh.go:82-93 operatorOAuthModeAdapter pattern; lazy load 防启动 race)
+  - HTTPClient 必须 = `auth.NewSSRFProtectedOAuthClient(http.DefaultClient)`
+- antigravity 暂跳 (Owner 决策)
+
+ClientSecret 来源 (codex 调研 + 决策):
+- 现有 `appconfig.VendorOAuthGemini` + `geminiOAuthClientIDEnv` / `geminiOAuthTokenURLEnv` 已有 env mapping
+- 新增 `geminiOAuthClientSecretEnv` env var (e.g. `HUAKAI_GEMINI_OAUTH_CLIENT_SECRET`) 或 appconfig 字段
+- 启动时缺 ClientSecret 配置 → wiring fail-loud (类似 GEM-1 assertGeminiPublicCLIOAuthExchangersHaveHTTPClient pattern)
+
+Per-commit codex review 强制: CLAUDE.md #8 2-round cap, S0/S1 阻塞。

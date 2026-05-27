@@ -158,6 +158,8 @@ type vendorRefresherBinding struct {
 	refresher credentialworker.Refresher
 }
 
+const geminiPublicCLIOAuthClientSecretEnv = "HUAKAI_GEMINI_OAUTH_CLIENT_SECRET"
+
 func buildVendorRefresherBindings(configs runtimeconfig.VendorOAuthConfigs, store *credentialstore.Store) []vendorRefresherBinding {
 	configured := configs.Configured()
 	bindings := make([]vendorRefresherBinding, 0, 5)
@@ -279,7 +281,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err := installAnthropicClaudeAIOAuthMimicryExchanger(credentialExchangers, anthropicoauth.DefaultHTTPClient()); err != nil {
 		return nil, fmt.Errorf("register anthropic claude_ai_oauth exchanger with mimicry: %w", err)
 	}
-	if err := installGeminiPublicCLIOAuthExchangers(credentialExchangers, auth.NewSSRFProtectedOAuthClient(http.DefaultClient)); err != nil {
+	geminiOAuthClientSecret, err := loadGeminiPublicCLIOAuthClientSecretFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	if err := installGeminiPublicCLIOAuthExchangers(credentialExchangers, auth.NewSSRFProtectedOAuthClient(http.DefaultClient), geminiOAuthClientSecret); err != nil {
 		return nil, fmt.Errorf("register gemini public CLI oauth exchangers: %w", err)
 	}
 	// ANT-4 fail-loud: wiring 启动时立即自检 install 真把 default registry
@@ -539,20 +545,31 @@ func assertAnthropicClaudeAIOAuthExchangerHasHTTPClient(registry *credentialacq.
 	return nil
 }
 
+func loadGeminiPublicCLIOAuthClientSecretFromEnv() (string, error) {
+	secret := strings.TrimSpace(os.Getenv(geminiPublicCLIOAuthClientSecretEnv))
+	if secret == "" {
+		return "", fmt.Errorf("%s is required for Gemini public CLI OAuth wiring", geminiPublicCLIOAuthClientSecretEnv)
+	}
+	return secret, nil
+}
+
 // installGeminiPublicCLIOAuthExchangers 把默认 registry 中 Gemini code_assist /
 // google_one 条目替换为带显式 OAuth-grade HTTP client 的版本。client 由调用方
-// 构造，生产 wiring 传 auth.NewSSRFProtectedOAuthClient，测试可传 mock client。
-func installGeminiPublicCLIOAuthExchangers(registry *credentialacq.ExchangerRegistry, client *http.Client) error {
+// 构造，生产 wiring 传 auth.NewSSRFProtectedOAuthClient，secret 必须来自 env。
+func installGeminiPublicCLIOAuthExchangers(registry *credentialacq.ExchangerRegistry, client *http.Client, clientSecret string) error {
 	if registry == nil {
 		return fmt.Errorf("nil exchanger registry")
 	}
 	if client == nil {
 		return fmt.Errorf("nil http client (gemini OAuth transport missing)")
 	}
+	if strings.TrimSpace(clientSecret) == "" {
+		return fmt.Errorf("%s is required for Gemini public CLI OAuth wiring", geminiPublicCLIOAuthClientSecretEnv)
+	}
 	for _, mode := range []string{credentialstore.AuthModeCodeAssist, credentialstore.AuthModeGoogleOne} {
 		if err := registry.RegisterOrReplaceExchanger(
 			credentialstore.ModeKey(credentialstore.VendorGemini, mode),
-			credentialacq.NewGeminiPublicCLIOAuthExchangerWithClient(mode, client),
+			credentialacq.NewGeminiPublicCLIOAuthExchangerWithClientAndSecret(mode, client, clientSecret),
 		); err != nil {
 			return err
 		}

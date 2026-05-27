@@ -114,7 +114,13 @@ func TestGeminiRefreshHTTPRoundTrip(t *testing.T) {
 		return tokenJSONResponse("gemini-new", "gemini-rt"), nil
 	})}
 
-	newCredential, expiresAt, err := (adapters.GeminiRefresh{Endpoint: "http://mock.local/gemini", HTTPClient: client}).RefreshForProvider(context.Background(), 3, "gemini", testCredential())
+	newCredential, expiresAt, err := (adapters.GeminiRefresh{
+		Endpoint:            "http://mock.local/gemini",
+		ClientID:            "cid",
+		ClientSecret:        "secret",
+		HTTPClient:          client,
+		RequireClientSecret: true,
+	}).RefreshForProvider(context.Background(), 3, "gemini", testCredential())
 	assertRefreshResult(t, newCredential, expiresAt, err, "gemini-new", "gemini-rt")
 }
 

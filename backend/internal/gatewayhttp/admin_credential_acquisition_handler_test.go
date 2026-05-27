@@ -265,9 +265,10 @@ func TestAdminClaudeAIOAuthFullFlowEncryptsAndSavesCredential(t *testing.T) {
 	}
 }
 
-func TestAdminGeminiCodeAssistFullFlowPassesOperatorClientSecret(t *testing.T) {
-	// 缺陷：admin oauth-init 若不接收并传递 client_secret，Gemini D-1=A 内置 profile 会在入口处永远不可用。
-	// 判别 mutation：删除 handler 到 OAuthClientConfig.ClientSecret 的赋值时，本测试必须变红。
+func TestAdminGeminiCodeAssistFullFlowUsesEnvClientSecret(t *testing.T) {
+	// 缺陷：Gemini D-1=A 内置 profile 若继续信任 request client_secret，会绕过
+	// Owner 2026-05-27 env-only 决策。判别 mutation：让 exchanger 或 handler
+	// 使用 request secret 时，本测试必须变红。
 	tokenCalls := 0
 	client := &http.Client{Transport: adminCredentialAcqRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		tokenCalls++
@@ -277,8 +278,11 @@ func TestAdminGeminiCodeAssistFullFlowPassesOperatorClientSecret(t *testing.T) {
 		if err := r.ParseForm(); err != nil {
 			t.Fatalf("ParseForm: %v", err)
 		}
-		if r.PostForm.Get("client_secret") != "operator-secret" || r.PostForm.Get("code_verifier") == "" {
-			t.Fatalf("token form=%v want operator secret and stored PKCE verifier", r.PostForm)
+		if r.PostForm.Get("client_secret") != "from-env" || r.PostForm.Get("code_verifier") == "" {
+			t.Fatalf("token form=%v want env secret and stored PKCE verifier", r.PostForm)
+		}
+		if r.PostForm.Get("client_secret") == "from-request" {
+			t.Fatalf("request client_secret leaked into token form: %v", r.PostForm)
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
@@ -287,9 +291,10 @@ func TestAdminGeminiCodeAssistFullFlowPassesOperatorClientSecret(t *testing.T) {
 		}, nil
 	})}
 	registry := credentialacq.NewExchangerRegistry()
-	exchanger := credentialacq.NewGeminiPublicCLIOAuthExchangerWithClientAndAdminCallbackAllowlist(
+	exchanger := credentialacq.NewGeminiPublicCLIOAuthExchangerWithClientSecretAndAdminCallbackAllowlist(
 		credentialstore.AuthModeCodeAssist,
 		client,
+		"from-env",
 		[]string{"https://huakai.example/admin/v1/credentials/oauth-callback"},
 	)
 	if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist), exchanger); err != nil {
@@ -298,7 +303,7 @@ func TestAdminGeminiCodeAssistFullFlowPassesOperatorClientSecret(t *testing.T) {
 	fx := newCredentialAcqHTTPFixtureWithRegistry(t, adminPoolAdmin(), registry, nil)
 
 	startRec := fx.do(t, http.MethodPost, "/admin/v1/credentials/oauth-init",
-		`{"tenant_id":1,"provider_account_id":101,"vendor":"gemini","auth_mode":"code_assist","oauth_client":{"client_secret":"operator-secret","redirect_uri":"https://huakai.example/admin/v1/credentials/oauth-callback"}}`)
+		`{"tenant_id":1,"provider_account_id":101,"vendor":"gemini","auth_mode":"code_assist","oauth_client":{"client_secret":"from-request","redirect_uri":"https://huakai.example/admin/v1/credentials/oauth-callback"}}`)
 	if startRec.Code != http.StatusCreated {
 		t.Fatalf("start status=%d want 201 body=%s", startRec.Code, startRec.Body.String())
 	}
@@ -329,8 +334,32 @@ func TestAdminGeminiCodeAssistFullFlowPassesOperatorClientSecret(t *testing.T) {
 	if payload["access_token"] != "AT-gemini-admin" || payload["refresh_token"] != "RT-gemini-admin" {
 		t.Fatalf("payload=%v want exchanged Gemini token material", payload)
 	}
-	if strings.Contains(string(got.Payload), "operator-secret") {
-		t.Fatalf("payload leaked operator client secret: %s", got.Payload)
+	if strings.Contains(string(got.Payload), "from-env") || strings.Contains(string(got.Payload), "from-request") {
+		t.Fatalf("payload leaked client secret: %s", got.Payload)
+	}
+}
+
+func TestGeminiAdminStartFlowIgnoresClientSecretFromRequest(t *testing.T) {
+	// 缺陷：admin API request body 的 client_secret 若继续传入 Gemini start config，
+	// 就绕过了 Owner 2026-05-27 env-only 决策。判别 mutation：恢复
+	// OAuthClientConfig.ClientSecret: oauthReq.ClientSecret 时，本测试必须变红。
+	guard := &geminiAdminStartConfigGuardExchanger{}
+	registry := credentialacq.NewExchangerRegistry()
+	if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist), guard); err != nil {
+		t.Fatalf("RegisterExchanger: %v", err)
+	}
+	fx := newCredentialAcqHTTPFixtureWithRegistry(t, adminPoolAdmin(), registry, nil)
+
+	rec := fx.do(t, http.MethodPost, "/admin/v1/credentials/oauth-init",
+		`{"tenant_id":1,"provider_account_id":101,"vendor":"gemini","auth_mode":"code_assist","oauth_client":{"client_id":"ignored-by-real-gemini","client_secret":"from-request","auth_url":"https://accounts.google.com/o/oauth2/v2/auth","token_url":"https://oauth2.googleapis.com/token","redirect_uri":"http://localhost:8085/oauth2callback","scopes":["https://www.googleapis.com/auth/cloud-platform"],"source":"approved_builtin_profile_gemini_public_cli"}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("start status=%d want 201 body=%s", rec.Code, rec.Body.String())
+	}
+	if guard.clientSecret != "" {
+		t.Fatalf("Gemini start cfg ClientSecret=%q want empty; request body secret must be ignored", guard.clientSecret)
+	}
+	if guard.calls != 1 {
+		t.Fatalf("guard calls=%d want 1", guard.calls)
 	}
 }
 
@@ -609,6 +638,28 @@ type credentialAcqExchangeCall struct {
 	Vendor string
 	Mode   string
 	Code   string
+}
+
+type geminiAdminStartConfigGuardExchanger struct {
+	calls        int
+	clientSecret string
+}
+
+func (s *geminiAdminStartConfigGuardExchanger) StartOAuthFlow(ctx context.Context, store *credentialacq.PostgresSessionStore, in credentialacq.StartInput, cfg credentialacq.OAuthClientConfig) (credentialacq.OAuthStartResult, error) {
+	s.calls++
+	s.clientSecret = cfg.ClientSecret
+	if strings.TrimSpace(cfg.ClientSecret) != "" {
+		return credentialacq.OAuthStartResult{}, errors.New("gemini request client_secret reached StartOAuthFlow")
+	}
+	registry := credentialacq.NewExchangerRegistry()
+	if err := registry.RegisterExchanger(credentialstore.ModeKey(in.Vendor, in.AuthMode), credentialacq.NewPKCEFakeExchanger(credentialacq.TokenShapeAnySessionOrAccess)); err != nil {
+		return credentialacq.OAuthStartResult{}, err
+	}
+	return credentialacq.StartOAuthFlowWithRegistry(ctx, store, in, cfg, registry)
+}
+
+func (s *geminiAdminStartConfigGuardExchanger) ExchangeOAuthCode(context.Context, credentialacq.Session, string) (credentialacq.CredentialCandidate, error) {
+	return credentialacq.CredentialCandidate{}, errors.New("not used")
 }
 
 func (s *credentialAcqExchangerStub) StartOAuthFlow(ctx context.Context, store *credentialacq.PostgresSessionStore, in credentialacq.StartInput, cfg credentialacq.OAuthClientConfig) (credentialacq.OAuthStartResult, error) {

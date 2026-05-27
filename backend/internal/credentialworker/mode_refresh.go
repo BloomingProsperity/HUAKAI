@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	appconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
@@ -27,8 +28,9 @@ var (
 )
 
 const (
-	geminiOAuthTokenURLEnv = "HUAKAI_GEMINI_OAUTH_TOKEN_URL"
-	geminiOAuthClientIDEnv = "HUAKAI_GEMINI_OAUTH_CLIENT_ID"
+	geminiOAuthTokenURLEnv     = "HUAKAI_GEMINI_OAUTH_TOKEN_URL"
+	geminiOAuthClientIDEnv     = "HUAKAI_GEMINI_OAUTH_CLIENT_ID"
+	geminiOAuthClientSecretEnv = "HUAKAI_GEMINI_OAUTH_CLIENT_SECRET"
 )
 
 type ModeRefreshInput struct {
@@ -76,9 +78,11 @@ func DefaultModeAdapterRegistry() *ModeAdapterRegistry {
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeRefreshToken, legacyOAuthModeAdapter{providerName: "openai", adapter: adapters.OpenAIRefresh{}})
 	register(credentialstore.VendorGemini, credentialstore.AuthModeAIStudioAPIKey, staticModeAdapter{})
 	register(credentialstore.VendorGemini, credentialstore.AuthModeVertexSA, metadataTokenAdapter{})
-	register(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist, legacyOAuthModeAdapter{providerName: "gemini", adapter: adapters.GeminiRefresh{AllowCrossClientFallback: true, SourceClientFamily: "code_assist", TierCacheTTL: 24 * time.Hour}})
-	register(credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne, legacyOAuthModeAdapter{providerName: "gemini", adapter: adapters.GeminiRefresh{AllowCrossClientFallback: true, SourceClientFamily: "google_one", TierCacheTTL: 24 * time.Hour}})
-	register(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity, legacyOAuthModeAdapter{providerName: "antigravity", adapter: adapters.AntigravityRefresh{Gemini: adapters.GeminiRefresh{AllowCrossClientFallback: true, SourceClientFamily: "antigravity", TierCacheTTL: 24 * time.Hour}}})
+	register(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist, newGeminiBuiltinClientOAuthModeAdapter("code_assist"))
+	register(credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne, newGeminiBuiltinClientOAuthModeAdapter("google_one"))
+	// Owner 2026-05-27：gemini/antigravity refresh 标 Mandatory Roadmap，
+	// 暂停并 fail-closed，直到 docs/process/decisions/DR-GEM-3-ANTIGRAVITY-PAUSED.md 的 OCAW 重新激活。
+	register(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity, geminiAntigravityPausedAdapter{})
 	register(credentialstore.VendorGemini, credentialstore.AuthModeOAuth, operatorOAuthModeAdapter{
 		providerName: "gemini",
 		configVendor: appconfig.VendorOAuthGemini,
@@ -338,6 +342,12 @@ func (staticModeAdapter) RefreshCredential(context.Context, ModeRefreshInput) (M
 	return ModeRefreshResult{}, ErrNoRefreshRequired
 }
 
+type geminiAntigravityPausedAdapter struct{}
+
+func (geminiAntigravityPausedAdapter) RefreshCredential(context.Context, ModeRefreshInput) (ModeRefreshResult, error) {
+	return ModeRefreshResult{}, fmt.Errorf("antigravity OAuth wiring pending Owner reactivation: %w", credentialacq.ErrFeatureDisabled)
+}
+
 type legacyOAuthModeAdapter struct {
 	providerName string
 	adapter      RefreshAdapter
@@ -352,6 +362,64 @@ func (a legacyOAuthModeAdapter) RefreshCredential(ctx context.Context, in ModeRe
 		return ModeRefreshResult{}, err
 	}
 	return ModeRefreshResult{Payload: payload, AccessExpiresAt: expiresAt, Outcome: "refresh_succeeded"}, nil
+}
+
+type builtinClientOAuthModeAdapter struct {
+	providerName     string
+	configVendor     string
+	clientSecretName string
+	adapter          adapters.GeminiRefresh
+	loadConfig       func() (*appconfig.Config, error)
+}
+
+func newGeminiBuiltinClientOAuthModeAdapter(sourceClientFamily string) builtinClientOAuthModeAdapter {
+	return builtinClientOAuthModeAdapter{
+		providerName:     "gemini",
+		configVendor:     appconfig.VendorOAuthGemini,
+		clientSecretName: geminiOAuthClientSecretEnv,
+		adapter: adapters.GeminiRefresh{
+			Endpoint:   credentialacq.DefaultGeminiTokenEndpoint,
+			ClientID:   credentialacq.GeminiPublicCLIClientID,
+			HTTPClient: auth.NewSSRFProtectedOAuthClient(http.DefaultClient),
+			// GEM-5 R-GEM-FALLBACK-001：Google desktop CLI family 当前共用同一公开
+			// ClientID，ClientID 切换式 cross-client fallback 必须显式关闭，等待
+			// scope / token shape 等 application-level fallback 方案落地。
+			AllowCrossClientFallback: false,
+			SourceClientFamily:       sourceClientFamily,
+			TierCacheTTL:             24 * time.Hour,
+			RequireClientSecret:      true,
+		},
+	}
+}
+
+func (a builtinClientOAuthModeAdapter) RefreshCredential(ctx context.Context, in ModeRefreshInput) (ModeRefreshResult, error) {
+	clientSecret, err := a.loadClientSecret()
+	if err != nil {
+		return ModeRefreshResult{}, err
+	}
+	adapter := a.adapter
+	adapter.ClientSecret = clientSecret
+	payload, expiresAt, err := adapter.RefreshForProvider(ctx, in.ProviderAccountID, a.providerName, in.Payload)
+	if err != nil {
+		return ModeRefreshResult{}, err
+	}
+	return ModeRefreshResult{Payload: payload, AccessExpiresAt: expiresAt, Outcome: "refresh_succeeded"}, nil
+}
+
+func (a builtinClientOAuthModeAdapter) loadClientSecret() (string, error) {
+	loadConfig := a.loadConfig
+	if loadConfig == nil {
+		loadConfig = appconfig.Load
+	}
+	runtimeConfig, err := loadConfig()
+	if err != nil {
+		return "", err
+	}
+	clientSecret := strings.TrimSpace(runtimeConfig.VendorOAuth[a.configVendor].ClientSecret)
+	if clientSecret == "" {
+		return "", fmt.Errorf("%s builtin oauth refresh: %w: missing %s: %w", a.providerName, credentialacq.ErrFeatureDisabled, a.clientSecretName, ErrOperatorOAuthConfigMissing)
+	}
+	return clientSecret, nil
 }
 
 type copilotOAuthModeAdapter struct {
@@ -603,7 +671,7 @@ func stringField(fields map[string]any, key string) string {
 }
 
 func classifyModeRefreshError(err error) string {
-	if errors.Is(err, adapters.ErrCodexOAuthConfigRequired) || errors.Is(err, ErrOperatorOAuthConfigMissing) {
+	if errors.Is(err, adapters.ErrCodexOAuthConfigRequired) || errors.Is(err, adapters.ErrGeminiOAuthConfigRequired) || errors.Is(err, ErrOperatorOAuthConfigMissing) {
 		return "operator_config_required"
 	}
 	if errors.Is(err, adapters.ErrInvalidCredentialMaterial) {

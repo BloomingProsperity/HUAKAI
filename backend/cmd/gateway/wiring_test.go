@@ -179,7 +179,7 @@ func TestWiring_InstallGeminiPublicCLIOAuthExchangersReplacesDefault(t *testing.
 	mockClient := &http.Client{Transport: wiringRoundTripFunc(func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("unreachable in helper-only assertion")
 	})}
-	if err := installGeminiPublicCLIOAuthExchangers(registry, mockClient); err != nil {
+	if err := installGeminiPublicCLIOAuthExchangers(registry, mockClient, "from-env"); err != nil {
 		t.Fatalf("installGeminiPublicCLIOAuthExchangers: %v", err)
 	}
 	for _, mode := range modes {
@@ -198,8 +198,28 @@ func TestWiring_InstallGeminiPublicCLIOAuthExchangersReplacesDefault(t *testing.
 	if err := assertGeminiPublicCLIOAuthExchangersHaveHTTPClient(registry); err != nil {
 		t.Fatalf("wiring 自检对已 install 的 Gemini registry 必须返 nil, got %v", err)
 	}
-	if err := installGeminiPublicCLIOAuthExchangers(credentialacq.DefaultExchangerRegistry(), nil); err == nil {
+	if err := installGeminiPublicCLIOAuthExchangers(credentialacq.DefaultExchangerRegistry(), nil, "from-env"); err == nil {
 		t.Fatal("install 必须拒 nil Gemini OAuth client")
+	}
+	if err := installGeminiPublicCLIOAuthExchangers(credentialacq.DefaultExchangerRegistry(), mockClient, " "); err == nil {
+		t.Fatal("install 必须拒空 HUAKAI_GEMINI_OAUTH_CLIENT_SECRET")
+	}
+}
+
+func TestWiring_GeminiPublicCLIOAuthSecretEnvFailFast(t *testing.T) {
+	// 判别 mutation：把启动缺 secret 改成 lazy ignore 时，本测试必须变红。
+	t.Setenv("HUAKAI_GEMINI_OAUTH_CLIENT_SECRET", " ")
+	if _, err := loadGeminiPublicCLIOAuthClientSecretFromEnv(); err == nil || !strings.Contains(err.Error(), "HUAKAI_GEMINI_OAUTH_CLIENT_SECRET") {
+		t.Fatalf("missing secret err=%v, want env var name", err)
+	}
+
+	t.Setenv("HUAKAI_GEMINI_OAUTH_CLIENT_SECRET", " from-env ")
+	got, err := loadGeminiPublicCLIOAuthClientSecretFromEnv()
+	if err != nil {
+		t.Fatalf("load secret: %v", err)
+	}
+	if got != "from-env" {
+		t.Fatalf("secret=%q want trimmed env value", got)
 	}
 }
 

@@ -3,14 +3,19 @@ package adapters
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 )
 
-const defaultGeminiTokenEndpoint = "https://oauth2.googleapis.com/token"
+const DefaultGeminiTokenEndpoint = credentialacq.DefaultGeminiTokenEndpoint
+
+var ErrGeminiOAuthConfigRequired = errors.New("gemini refresh: operator OAuth config required")
 
 // GeminiRefresh 用 Google OAuth refresh_token grant 刷新 Gemini 账号。
 type GeminiRefresh struct {
@@ -21,6 +26,7 @@ type GeminiRefresh struct {
 	AllowCrossClientFallback bool
 	SourceClientFamily       string
 	TierCacheTTL             time.Duration
+	RequireClientSecret      bool
 }
 
 type GeminiFallbackError struct {
@@ -56,23 +62,32 @@ func (r GeminiRefresh) RefreshForProvider(ctx context.Context, accountID int64, 
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
-	clientID := firstNonEmpty(r.ClientID, credentialString(cred, "client_id"))
+	// Gemini refresh 出站 client_id 只信 operator wiring 或 HUAKAI 内置公开
+	// CLI profile；credential payload 里的 client_id 不参与信任链。
+	clientID := firstNonEmpty(r.ClientID, credentialacq.GeminiPublicCLIClientID)
 	if clientID != "" {
 		form.Set("client_id", clientID)
 	}
-	if clientSecret := firstNonEmpty(r.ClientSecret, credentialString(cred, "client_secret")); clientSecret != "" {
+	clientSecret := strings.TrimSpace(r.ClientSecret)
+	if r.RequireClientSecret && clientSecret == "" {
+		return nil, time.Time{}, fmt.Errorf("gemini refresh account %d: %w", accountID, ErrGeminiOAuthConfigRequired)
+	}
+	if clientSecret != "" {
 		form.Set("client_secret", clientSecret)
 	}
 
-	resp, err := postTokenWithRetry(ctx, r.httpClient(), firstNonEmpty(r.Endpoint, credentialString(cred, "oauth_token_endpoint"), defaultGeminiTokenEndpoint), "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
+	// token endpoint 只来自 operator override 或 HUAKAI 内置值；credential
+	// payload 的 oauth_token_endpoint 一律忽略，避免 refresh_token/secret SSRF 外泄。
+	endpoint := firstNonEmpty(r.Endpoint, DefaultGeminiTokenEndpoint)
+	resp, err := postTokenWithRetry(ctx, r.httpClient(), endpoint, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
 	if err != nil && r.AllowCrossClientFallback {
 		fromClient, toClient := r.fallbackFamilies(cred, providerName)
-		if fallbackClientID := credentialString(cred, "fallback_client_id"); fallbackClientID != "" && fallbackClientID != clientID && ApprovedGeminiCrossClientFallback(fromClient, toClient) {
+		if fallbackClientID := approvedGeminiCrossClientID(toClient); fallbackClientID != "" && fallbackClientID != clientID && ApprovedGeminiCrossClientFallback(fromClient, toClient) {
 			form.Set("client_id", fallbackClientID)
 			cred["cross_client_fallback_attempted"] = true
 			cred["cross_client_fallback_from"] = fromClient
 			cred["cross_client_fallback_to"] = toClient
-			resp, err = postTokenWithRetry(ctx, r.httpClient(), firstNonEmpty(r.Endpoint, credentialString(cred, "oauth_token_endpoint"), defaultGeminiTokenEndpoint), "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
+			resp, err = postTokenWithRetry(ctx, r.httpClient(), endpoint, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
 			if err != nil {
 				return nil, time.Time{}, &GeminiFallbackError{FromClient: fromClient, ToClient: toClient, Err: fmt.Errorf("gemini refresh account %d: %w", accountID, err)}
 			}
@@ -120,6 +135,20 @@ func ApprovedGeminiCrossClientFallback(fromClient, toClient string) bool {
 		"ai_studio":   {"code_assist": false, "google_one": false},
 	}
 	return allowed[fromClient][toClient]
+}
+
+// approvedGeminiCrossClientID 返回 HUAKAI 自维护的 Google family -> built-in ClientID 映射。
+// 当前 Code Assist / Google One / AI Studio 共用同一个 Google 公开 desktop CLI
+// ClientID，真正的 cross-client fallback 不能靠切换 ClientID 实现；这里保留接口给
+// 未来 application-level fallback（例如切 scope 或 token shape）使用。
+func approvedGeminiCrossClientID(toClient string) string {
+	// fallback 不再读取 credential payload 里的 fallback_client_id。
+	switch normalizeGeminiClientFamily(toClient) {
+	case "code_assist", "google_one", "ai_studio":
+		return credentialacq.GeminiPublicCLIClientID
+	default:
+		return ""
+	}
 }
 
 func GeminiCrossClientFallbackMetadata(raw []byte) (fromClient, toClient string, attempted bool) {

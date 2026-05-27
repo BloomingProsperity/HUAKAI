@@ -355,8 +355,14 @@ func createOrStartCredentialAcqSession(ctx context.Context, d AdminCredentialAcq
 	}
 	if start.Kind == credentialacq.FlowKindOAuth {
 		oauthReq := req.OAuthClient
+		clientSecret := oauthReq.ClientSecret
+		// Owner 2026-05-27：Gemini OAuth acquisition 的 client_secret
+		// 统一由生产 wiring 从 HUAKAI_GEMINI_OAUTH_CLIENT_SECRET 注入。
+		if credentialstore.Normalize(req.Vendor) == credentialstore.VendorGemini {
+			clientSecret = ""
+		}
 		result, err := credentialacq.StartOAuthFlowWithRegistry(ctx, d.Sessions, start, credentialacq.OAuthClientConfig{
-			ClientID: oauthReq.ClientID, ClientSecret: oauthReq.ClientSecret, AuthURL: oauthReq.AuthURL, TokenURL: oauthReq.TokenURL,
+			ClientID: oauthReq.ClientID, ClientSecret: clientSecret, AuthURL: oauthReq.AuthURL, TokenURL: oauthReq.TokenURL,
 			RedirectURI: firstNonEmptyGateway(oauthReq.RedirectURI, req.RedirectURI), Scopes: oauthReq.Scopes, Source: oauthReq.Source,
 		}, d.Exchangers)
 		if err == nil {
