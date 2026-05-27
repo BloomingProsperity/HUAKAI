@@ -341,6 +341,20 @@ These are tracked tasks for the **third Phase 1 pass**.
 - Public API behavior.
 - Security advisory or bug report.
 
+## Behavior Evidence — ChatGPT OAuth 借鉴对照 (CHG-1..4 2026-05-27)
+
+CLAUDE.md #15 强制 Owner 决策前 ≥2 项参考项目对照。ChatGPT OAuth (openai/chatgpt_oauth) 切片 D-1..D-7 决策的 evidence rows。
+
+| Evidence ID | Reference | Source Type | Observed Behavior Or Scenario | Feature Candidate | Risk Notes | Clean-Room Notes | Date | Agent |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| E-CPA-CODEX-OAUTH-001 | CLIProxyAPI (E-LIC-009) | Source `internal/auth/codex/openai_auth.go:24-27` + `:72` | OpenAI Codex CLI OAuth: ClientID + AuthURL + TokenURL + RedirectURI (loopback port 1455) + Scope (含 offline_access). PKCE-only (无 ClientSecret). 在 authorize URL 加 3 个 OpenAI 特定 query params (强制重新登录 / 组织 ID 注入 / Codex 简化流标识). | ChatGPT OAuth 内置 builtin-profile pattern: ClientID + endpoint 全内置, PKCE-only. | CLIProxyAPI 还把 token_uri 持久化到 token 文件 (refresh path 读 cred token_uri = S1-D 攻击面). HUAKAI 反其道走 endpoint pin 不读 cred. | Behavior only; HUAKAI clean-room paraphrase pattern, 不抄函数名 / struct field / 注释 / 代码块结构. | 2026-05-27 | Claude (specifier) |
+| E-OPENAI-CODEX-OAUTH-001 | openai-codex (Apache-2.0, public source) | Source `codex-rs/login/src/auth/manager.rs:921` + `:93-95` | ChatGPT OAuth: 双源验证 ClientID 同值 (与 CLIProxyAPI 一致). REFRESH_TOKEN_URL + REVOKE_TOKEN_URL + DEFAULT_CHATGPT_BACKEND_BASE_URL 都常量 pin 不从 cred 读. Token response 含 3 个 ChatGPT 元数据字段 (用户 ID / 计划类型 / 账号 ID). | refresh endpoint pin (D-5=A 推荐) + ChatGPT metadata persist (D-3=A 推荐). | revoke endpoint 已存在但 HUAKAI 本切片不实施 (D-7=A Mandatory Roadmap). | Behavior only; HUAKAI 双源验证 + paraphrase. | 2026-05-27 | Claude (specifier) |
+
+CHG-1..4 三维升级 (CLAUDE.md #12) source-cited:
+- **架构升级**: PKCE-only (与 anthropic 同款, 不像 gemini 走 env var ClientSecret), 但加 D-1=C 双模式 admin allowlist + flow_id preserve through admin OAuth redirect (R2 verify 修); 启动 wiring fail-fast (`assertChatGPTOAuthExchangerHaveHTTPClient`)
+- **算法升级**: refresh endpoint 内置 pin 不读 cred (CLIProxyAPI 反例 `:180` 持久化 token_uri 到 token 文件; HUAKAI 不抄, ANT-3 R2 S2 scrub commit 57356e4 强制); refresh_token fail-closed (D-6=A); session_token sync after refresh (R1 修, credentialstore 优先看 session_token, 不同步会导致 refresh 报成功但仍用旧 token)
+- **生态升级**: ChatGPT metadata `RedactedContext` 只摘要 plan_type 不入 PII (用户 ID / 账号 ID 仅在加密 cred); revoke endpoint Mandatory Roadmap (R-CHG-REVOKE-001); admin OAuth flow_id 通过 query 保留, 不破真 provider redirect path
+
 ## Behavior Evidence — Gemini OAuth ClientSecret 借鉴对照 (GEM-3 2026-05-27)
 
 CLAUDE.md #15 强制 Owner 决策前 ≥2 项参考项目对照。GEM-3 ClientSecret 来源选项 (硬编 vs env var vs operator config) 的 evidence rows。

@@ -90,6 +90,29 @@ Each high or release-blocking risk must map to mitigation, test coverage, and re
 - BS45-SD1..SD5 Phase 4-5 ECH+PQ (5 D 决策 §F docs/process/plans/2026-05-24-boringssl-phase-4-5-synthesis.md)
 - R-3-A-fix-6 命名 + 实施时机 (Phase 5C pre-production gate)
 
+## 2026-05-27 Triage Notes (ChatGPT OAuth CHG-1..4 commit 7a34ae7)
+
+CHG-1..4 真接通 openai/chatgpt_oauth OAuth 流 (双源验证 ClientID `app_EMo...` from CLIProxyAPI@21fad9d8 + openai-codex Apache-2.0; PKCE-only 不需要 ClientSecret + redirect_uri 双模式 allowlist + 3 OpenAI 特定 query params + offline_access scope + ChatGPT metadata persist + endpoint pin 不读 cred + refresh_token fail-closed + session_token sync after refresh)。Owner 2026-05-27 决策 D-1=C/D-3=A/D-5=A/D-4=A; defaults D-2=A/D-6=A/D-7=A。
+
+新增 4 项 ChatGPT 相关 risks (2 deferred Mandatory Roadmap, 2 mitigated by current commit):
+
+- **R-CHG-MIMICRY-001 (ChatGPT codex_cli mimicry sidecar 未启用, S2 → Mandatory Roadmap, DEFERRED)**: D-4=A Owner 决策本轮只接 OAuth, 不启用 codex_cli mimicry profile + Rust runtime preflight。HUAKAI W11-F §14b codex_cli wire ja3 已 PASS ([[project_huakai_codex_mimicry_verified]]), 但 Rust 生产 dispatch builder 对 Pending fail-closed (Rust review d55fa24 S1-2 Gemini production builder 同款问题, 等 Rust 分支实现者修 F-2.3a runtime preflight)。**Status: Deferred 2026-05-27 commit 7a34ae7; 等 OCAW 或 Rust §14b runtime preflight 接通**。
+
+- **R-CHG-REVOKE-001 (ChatGPT OAuth revoke endpoint 未实施, S2 → Mandatory Roadmap, DEFERRED)**: openai-codex@HEAD:codex-rs/login/src/auth/manager.rs:95 声明 REVOKE_TOKEN_URL = "https://auth.openai.com/oauth/revoke" 用于显式 OAuth token revocation。HUAKAI 本切片 D-7=A 不实施 — credential lifecycle 当前覆盖 acquisition + refresh, 不覆盖 explicit revoke (账号删除走 admin DELETE endpoint, 但不 emit OAuth revoke 给 OpenAI)。**Status: Deferred 2026-05-27 commit 7a34ae7; 后续 credential lifecycle 切片 (revoke + key rotation) 时 close**。
+
+- **R-CHG-SESSION-TOKEN-SYNC-001 (ChatGPT refresh 后 session_token 同步, S1, MITIGATED by R1 fix)**: R1 codex review 抓出 chatgpt_oauth credential payload acquisition 时 access_token 同步写到 session_token (与 anthropic / gemini 一致 runtime material 解析), 但 ChatGPTRefresh 只更新 access_token 不更新 session_token。credentialstore 解 runtime material 时优先看 session_token → refresh 报成功但仍用旧过期 access_token = 真 prod bug。**Status: Mitigated 2026-05-27 commit 7a34ae7 (R1 fix); TestChatGPTRefreshSyncsSessionTokenFromAccessToken 守门 (mutation: 不写 session_token 同步 → 红)**。
+
+- **R-CHG-ADMIN-FLOW-ID-001 (Admin OAuth redirect flow_id 保留, S1, MITIGATED by R2 verify inline fix)**: R2 verify codex 抓出 admin HTTPS allowlist 启用后, authorize URL 把静态 admin callback 作 redirect_uri, OpenAI 完成 OAuth 后 redirect 只带 state+code, 不带 flow_id → mounted `/admin/v1/credentials/oauth-callback` 调 `d.Sessions.Get("")` 失败。修法: authorize URL builder 在 admin 模式时把 flow_id append 到 redirect_uri query, OpenAI redirect 后 mounted handler 从 query 读 flow_id 成功 lookup session (loopback 模式 user agent 直接 preserve query 不需要修)。**Status: Mitigated 2026-05-27 commit 7a34ae7 (R2 verify inline fix); TestChatGPTAuthorizeURLPreservesFlowIDInAdminMode 守门**。**注: gemini admin allowlist 同款路径默认空未启用, 未来 wiring 启用时同样需要 flow_id preserve — 记 R-GEM-FLOW-ID-001 follow-up**。
+
+借鉴项目对照 (CLAUDE.md #15, 详细 evidence rows in [docs/07 §Behavior Evidence — ChatGPT OAuth 借鉴对照](07_REFERENCE_EVIDENCE_LEDGER.md)):
+- CLIProxyAPI@21fad9d8:internal/auth/codex/openai_auth.go:24-27,72,180 = ClientID + endpoints + PKCE-only + token 文件持久化 token_uri 反例 (HUAKAI 不抄)
+- openai-codex@2026-05-12-HEAD:codex-rs/login/src/auth/manager.rs:921,93-95 = 双源验证 ClientID + endpoint pin + revoke endpoint + ChatGPT metadata 字段
+
+后续 (Mandatory Roadmap):
+- R-CHG-MIMICRY-001 解锁 = Rust §14b runtime preflight 接通 + OCAW codex_cli mimicry 启用
+- R-CHG-REVOKE-001 解锁 = credential lifecycle 切片 (revoke + rotation 同时做)
+- R-GEM-FLOW-ID-001 follow-up = gemini admin allowlist 启用时同步加 flow_id preserve (与 ChatGPT 同款修)
+
 ## 2026-05-27 Triage Notes (Gemini OAuth GEM-1+2+3 commit 89947e0 + 78a010a)
 
 GEM-1+2+3 真接通 gemini/code_assist + gemini/google_one 真实 OAuth 流 (PKCE + Google CLI 公开 ClientID + env var ClientSecret + redirect_uri 双模式 allowlist + offline_access/consent + 4 SSRF-D 攻击面闭合 + cred 永不持久化 secret)。Owner 2026-05-27 决策依据: D-1=A 内置 ClientID + env var ClientSecret, D-3=C redirect_uri 双模式 (loopback + HTTPS admin allowlist), D-4=A 三项 scope, D-5=A mimicry Mandatory Roadmap。
