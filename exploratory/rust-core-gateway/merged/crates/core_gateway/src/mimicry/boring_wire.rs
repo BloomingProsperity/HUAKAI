@@ -47,6 +47,113 @@ async fn gemini_advanced_boring_client_hello_byte_level_matches_profile() {
     .await;
 }
 
+/// W11-F §14b S1-3 (Codex review 2026-05-27): the sibling byte-level test
+/// only asserts JA3 hash + extension order + SNI. JA3 covers cipher suites,
+/// extension type IDs, supported_groups and ec_point_formats — but NOT the
+/// per-extension payloads for ext 27 (compress_certificate, RFC 8879) and
+/// ext 17513 (ALPS legacy / Chrome codepoint). A mutation that wires
+/// `apply_cert_compression` / `apply_application_settings` with the WRONG
+/// algorithm IDs or protocol names would still emit well-framed extensions
+/// in the correct positions, pass the JA3 check, and silently break
+/// Chrome impersonation on the wire.
+///
+/// This test reads the extracted `cert_compression_algorithms` /
+/// `alps_protocols` fields from the wire-captured ClientHello and asserts
+/// the exact payload values match the Gemini profile contract:
+/// - ext 27 → `[2]` (IANA brotli)
+/// - ext 17513 → `["h2"]` (single ALPN-style ALPS protocol)
+///
+/// Mutation discriminator: replace
+/// `apply_cert_compression(&mut builder, &profile.tls.cert_compression_algorithms)`
+/// with `apply_cert_compression(&mut builder, &[])` (or change `2 =>` arm
+/// in cert_compressor.rs to drop the compressor) → the wire ext 27 payload
+/// becomes empty → this test goes red, while the sibling JA3 test stays
+/// green (because ext 27 is still listed at the right position with a
+/// valid zero-length algorithm list, which doesn't change the JA3 string).
+/// Same for ALPS: replace `add_application_settings(b"h2", &[])` with
+/// `add_application_settings(b"", &[])` → alps_protocols becomes `[""]`
+/// or empty list → red. The JA3 hash alone cannot catch either of those
+/// regressions.
+#[tokio::test]
+async fn gemini_advanced_boring_client_hello_emits_chrome_payloads() {
+    let profile = load_builtin_profile(BuiltinProfile::GeminiAdvanced)
+        .expect("gemini profile 应加载");
+    let sni_hostname = "cloudcode-pa.googleapis.com";
+
+    let connector = build_boring_connector(&profile, Some(sni_hostname.to_owned()))
+        .expect("BoringSSL connector 构造成功");
+
+    let raw = match try_spawn_capture_listener().await {
+        Ok((addr, capture_handle)) => {
+            let tcp = tokio::net::TcpStream::connect(addr)
+                .await
+                .expect("测试 TCP 应能连到本地 capture listener");
+            drive_client_hello(&profile, &connector, sni_hostname, tcp).await;
+            capture_handle.await.expect("capture task 不应 panic")
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            let (stream, capture_handle) = spawn_capture_duplex();
+            drive_client_hello(&profile, &connector, sni_hostname, stream).await;
+            capture_handle.await.expect("capture task 不应 panic")
+        }
+        Err(error) => panic!("本地 capture listener 应能绑定: {error}"),
+    };
+    assert!(!raw.is_empty(), "gemini wire test 必须发出 ClientHello bytes");
+
+    let fields = parse_client_hello(&raw).expect("parse ClientHello PASS");
+
+    // Discriminating assertion #1: ext 27 (cert_compression) payload must
+    // list brotli (IANA id 2). Profile contract:
+    // `tools/fingerprint-collector/templates/gemini-advanced.json`
+    // → `cert_compression_algorithms: [2]`.
+    assert_eq!(
+        fields.cert_compression_algorithms, profile.tls.cert_compression_algorithms,
+        "wire ext 27 payload must match profile.cert_compression_algorithms; \
+         observed={:?} expected={:?}",
+        fields.cert_compression_algorithms, profile.tls.cert_compression_algorithms
+    );
+    assert_eq!(
+        fields.cert_compression_algorithms,
+        vec![2u16],
+        "Gemini Chrome impersonation must advertise exactly brotli (algo 2) \
+         in ext 27; observed={:?}",
+        fields.cert_compression_algorithms
+    );
+
+    // Discriminating assertion #2: ext 17513 (ALPS legacy / Chrome codepoint)
+    // payload must list exactly the profile-declared protocol names.
+    // Profile contract: `alps_protocols: ["h2"]`.
+    assert_eq!(
+        fields.alps_protocols, profile.tls.alps_protocols,
+        "wire ext 17513 payload must match profile.alps_protocols; \
+         observed={:?} expected={:?}",
+        fields.alps_protocols, profile.tls.alps_protocols
+    );
+    assert_eq!(
+        fields.alps_protocols,
+        vec!["h2".to_owned()],
+        "Gemini Chrome impersonation must advertise exactly h2 in ALPS \
+         (ext 17513); observed={:?}",
+        fields.alps_protocols
+    );
+
+    // Defense in depth: confirm the extension type IDs are present at all
+    // — if both lists somehow ended up non-empty without the extensions
+    // being emitted, the assertions above would still pass against the
+    // profile but the wire would be silently broken.
+    assert!(
+        fields.extensions.contains(&27),
+        "wire extensions must include ext 27 (cert_compression); observed={:?}",
+        fields.extensions
+    );
+    assert!(
+        fields.extensions.contains(&17513),
+        "wire extensions must include ext 17513 (ALPS legacy codepoint); \
+         observed={:?}",
+        fields.extensions
+    );
+}
+
 async fn test_vendor_byte_level(builtin: BuiltinProfile, sni_hostname: &str) {
     let profile = load_builtin_profile(builtin).expect("builtin profile 应加载");
 

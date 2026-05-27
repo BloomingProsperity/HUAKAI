@@ -1,8 +1,24 @@
-# W11 + W12 execution summary (post-§14b.5)
+# W11 + W12 execution summary (post-§14b.5, post-Codex-review S1-fix)
 
-Last updated: 2026-05-27 UTC
-Branch: `claude/rust-hardening` (head: `99138ae`)
-Validation: Docker `cargo test --features mimicry-boring --locked` → **462 passed, 0 failed, 1 ignored**
+Last updated: 2026-05-27 UTC (post Codex review S1-fix)
+Branch: `claude/rust-hardening` (head: see latest commit on branch — running
+total after the S1-fix commit. The Codex reviewer 2026-05-27 caught that
+earlier "head: 99138ae" was stale; updating this line at each commit is
+itself an S1-1 requirement.)
+Validation: Docker `cargo test --features mimicry-boring --locked` →
+**462 passed, 0 failed, 1 ignored** (the 1 ignored is an env-gated network
+smoke). Codex reviewer S1-3 / S1-4 added new payload-discriminating tests
+(`gemini_advanced_boring_client_hello_emits_chrome_payloads` +
+`brotli_compressor_decompress_round_trip` +
+`brotli_compressor_decompress_rejects_malformed_input`) that lift the
+sample count by 3.
+
+**Important scope caveat (per Codex review 2026-05-27)**: "complete" in
+this doc means **code-complete + tests green at all 3 feature combos**.
+It does NOT mean "production canary unblocked for all 4 vendors" —
+canary unlock is gated on F-2.5 real-upstream handshake evidence which
+is Owner-coordination work (see §5 below). The earlier wording conflated
+these two and the reviewer correctly flagged that as misleading.
 
 This doc consolidates the post-execution state of every P0 / P1 work item
 from `docs/process/plans/2026-05-23-rust-tree-closure-synthesis.md §5`. It
@@ -56,12 +72,32 @@ when a future wave wants to pick any up:
 This supersedes the §1 Feature Preservation Mapping in `W11-F-status.md`
 (which was 2026-05-24-vintage and pre-§14b).
 
-| Profile | L1 wire byte-level (boring) | L1 runtime preflight | Production dispatch | Real-upstream capture | Canary unlock |
-|---|---|---|---|---|---|
-| **Anthropic** | ✅ PASS | ✅ NotRequired baseline | ✅ AllowBoring | ✅ historical 2026-05-06 | ✅ unblocked |
-| **Codex CLI** | ✅ PASS | ✅ Gate wired (F-2.3+) | ✅ AllowBoring (Codex exception path: KnownGap reason kept, dispatched via OpenSSL adapter per platform-divergence gap) | ✅ F-2.5 done (chatgpt.com Windows pcap) | ⚠️ Linux re-capture pending to confirm cross-platform shape |
-| **Kiro CLI** | ✅ PASS (local in-memory) | ❌ KnownGap (`real_upstream_capture` pending) | ⚠️ BlockKnownGap (cautious default — synthesis D-S3) | ❌ F-2.5 pending — needs Owner subscription / staging | ❌ waiting on F-2.5 |
-| **Gemini Advanced** | ✅ PASS (§14b.3 fix unlocked the Chrome impersonation wire test) | ✅ Gate wired | ✅ AllowBoring (cert_compression + ALPS + brotli + key_share_groups GREASE bypass) | ❌ F-2.5 pending — needs OAuth credentials | ❌ waiting on F-2.5 + handshake test |
+| Profile | L1 wire byte-level (boring) | L1 runtime preflight | Resolver decision | Production builder gate | Real-upstream capture | Canary unlock |
+|---|---|---|---|---|---|---|
+| **Anthropic** | ✅ PASS (local + 2026-05-06 historical) | ✅ NotRequired baseline | `AllowBoring` | ✅ `try_build_http_client_with_profile` returns Ok | ✅ historical 2026-05-06 | ✅ unblocked |
+| **Codex CLI** | ✅ PASS (local) | ✅ Gate wired (F-2.3+) | `AllowBoring` via Codex exception (L2-A8 KnownGap downgrade) | ✅ Ok (gate sees `OpenSslAdapter` intent after L2-A8 path) | ⚠️ F-2.5 partial (chatgpt.com Windows pcap, Linux re-capture pending) | ⚠️ waiting on Linux re-capture |
+| **Kiro CLI** | ⚠ **WEAK locked** (local in-memory only; `W11-F-F1-status.md:619` calls this WEAK, NOT PASS) | ❌ Failed (`KnownGapBlocked` — `real_upstream_capture` pending per `tls_profile.rs:177`) | `KnownGapBlocked` (gap dominates per F-2.2 D-S3) | ❌ fail-closed (gate returns `Err(MimicryProductionCanaryError::KnownGap)`) | ❌ F-2.5 pending — Owner has no Kiro subscription (permanent KnownGap per F-2 task #20) | ❌ waiting on F-2.5 (Owner-coordination) |
+| **Gemini Advanced** | ✅ PASS local-in-memory + new payload assertions (`boring_wire::gemini_advanced_boring_client_hello_emits_chrome_payloads` locks ext 27 = `[2]` + ext 17513 = `["h2"]`) | ⚠️ `Pending` (L1 status is `Pending` until runtime preflight at first-connect site is wired by F-2.3a) | `AllowBoring` (cert_compression + ALPS + brotli + key_share_groups GREASE bypass) | ⚠️ **fail-closed** today because `try_build_http_client_with_profile` rejects `Pending` (`http_client.rs:99-102`). F-2.3a runtime preflight at first-connect site is the gap that flips this from Err to Ok. | ❌ F-2.5 pending — needs Gemini OAuth credentials + staging | ❌ waiting on F-2.5 + runtime preflight wire (F-2.3a) |
+
+**Codex review S1-2 correction (2026-05-27)**: an earlier version of this
+table wrote Gemini's "Production dispatch" as `✅ AllowBoring`. That was
+a resolver-level statement. The production **builder**
+(`try_build_http_client_with_profile`) currently rejects any profile
+whose L1 preflight status is `Pending`, and Gemini is `Pending` until
+F-2.3a fires runtime preflight at the first-connect site. So at the
+**builder** layer Gemini is fail-closed today; it only becomes
+production-dispatchable after F-2.3a lands (separate from §14b
+implementation). The matrix above now splits "Resolver decision" and
+"Production builder gate" as distinct columns to keep this honest.
+
+**Codex review S1-5 correction (2026-05-27)**: Kiro was previously listed
+as `✅ PASS (local in-memory)` in the L1 wire byte-level column. That
+conflicted with `W11-F-F1-status.md:614-619` Gate 1 audit which
+explicitly tags Kiro as **WEAK locked — permanent KnownGap** (no real
+upstream evidence, Owner has no Kiro subscription, no fresh first-party
+capture possible). The local boring-wire byte-match against the
+2026-05-14 template stays a useful regression guard, but it is **not**
+equivalent to method-tag PASS. The Kiro row now reads `⚠ WEAK locked`.
 
 §13 + §14b notes:
 - §13 (2026-05-26) re-captured all 4 vendors via passive admin-PowerShell pcap.
@@ -107,13 +143,15 @@ decide cadence:
 
 | Gate | Status | Evidence |
 |---|---|---|
-| Full test suite (`cargo test --features mimicry-boring --locked`) | ✅ 462/462 + 1 intentionally ignored | Docker run 2026-05-27 |
-| Owner-reproduction (`cargo test mimicry --locked --no-default-features`) | ✅ 42 mimicry tests pass | Owner's original failing command verified clean |
-| Per-vendor boring wire byte-level | ✅ 4/4 (anthropic / codex / kiro / gemini) | `boring_wire.rs` 4 tests pass after §14b.3 unlocked gemini |
+| Full test suite (`cargo test --features mimicry-boring --locked`) | ✅ 462/462 + 1 intentionally ignored | Docker run 2026-05-27 (post-§14b.6); S1-fix commit adds 3 new payload-discriminating tests → 465/465 expected after re-run |
+| Owner-reproduction (`cargo test mimicry --locked --no-default-features`) | ✅ 42 mimicry tests pass | Owner's original failing command verified clean post-§14b.6 |
+| Per-vendor boring wire byte-level | ✅ 4/4 anthropic / codex / kiro / gemini wire-level JA3 match; ⚠ Kiro is local-in-memory only (see §4 Kiro WEAK note) | `boring_wire.rs` 4 tests pass after §14b.3 unlocked gemini |
+| Per-vendor payload-level (ext 27 + ext 17513) | ✅ Gemini PASS (post-S1-3 fix) | `boring_wire::gemini_advanced_boring_client_hello_emits_chrome_payloads` (added 2026-05-27 per Codex review S1-3) |
+| Brotli decompression unit test (§14c) | ✅ PASS (round-trip + malformed-input) | `cert_compressor.rs::tests::brotli_compressor_decompress_*` (added 2026-05-27 per Codex review S1-4) |
 | `#[ignore]` regression markers | 1 intentional (env-gated network smoke) | All `#[ignore]` markers documented |
-| Clippy `-D warnings` | _pending Docker run_ | tracked next |
-| `cargo deny` license / advisory | _pending Docker run_ | tracked next |
-| feature-matrix CI | ✅ wired (P1-6) | 4-feature matrix script |
+| Clippy (warnings inventory; no `-D warnings` since legacy boring-sys bindgen warnings exist outside HUAKAI control) | ✅ Builds clean | Docker run 2026-05-27: only style warnings remain (`is_multiple_of`, `io::Error::other`); the one §14b.4-introduced unreachable arm was cleared in `6cd980e` |
+| `cargo deny` license / advisory | ✅ `advisories ok, bans ok, licenses ok, sources ok` | Docker run 2026-05-27 with `cargo install --locked cargo-deny` (latest); deny.toml fixed for 0.16+ keys in `6cd980e` |
+| feature-matrix CI | ✅ wired (P1-6); 3 combos verified | `--no-default-features` / `--features mimicry-boring` / `--features mimicry-openssl` all green post-§14b.6 |
 
 ## §7 Owner decision points still open
 

@@ -32,6 +32,24 @@ pub struct ClientHelloFields {
     pub ec_point_formats: Vec<u8>,
     pub supported_versions: Vec<u16>,
     pub sni_hostname: Option<String>,
+    /// W11-F §14b S1-3 (Codex review 2026-05-27): payload of TLS ext 27
+    /// (compress_certificate, RFC 8879). Parsed list of IANA algorithm
+    /// IDs the client advertises as accept-able for server cert
+    /// compression. Empty when ext 27 not present. Without this field
+    /// the byte-level wire test could only assert ext-presence — a
+    /// mutation that replaced the advertised algorithm list with an
+    /// empty list would still emit ext 27 with valid framing and pass
+    /// the JA3 hash check.
+    pub cert_compression_algorithms: Vec<u16>,
+    /// W11-F §14b S1-3 (Codex review 2026-05-27): payload of TLS ext
+    /// 17513 (ALPS legacy codepoint per RFC 9329 draft) and/or 17613
+    /// (new codepoint). Parsed list of ALPN-style protocol names the
+    /// client advertises ALPS settings for. Empty when neither ext is
+    /// present. Without this field the byte-level wire test could only
+    /// assert ext-presence — a mutation that replaced `b"h2"` with an
+    /// empty payload (or wrong protocol name) would still emit a
+    /// well-framed ext 17513 and pass the JA3 hash check.
+    pub alps_protocols: Vec<String>,
 }
 
 pub async fn spawn_capture_listener() -> (SocketAddr, CaptureHandle) {
@@ -102,6 +120,8 @@ pub fn parse_client_hello(raw: &[u8]) -> Result<ClientHelloFields, &'static str>
     let mut ec_point_formats = Vec::new();
     let mut supported_versions = Vec::new();
     let mut sni_hostname = None;
+    let mut cert_compression_algorithms = Vec::new();
+    let mut alps_protocols = Vec::new();
 
     if reader.remaining() == 0 {
         return Ok(ClientHelloFields {
@@ -113,6 +133,8 @@ pub fn parse_client_hello(raw: &[u8]) -> Result<ClientHelloFields, &'static str>
             ec_point_formats,
             supported_versions,
             sni_hostname,
+            cert_compression_algorithms,
+            alps_protocols,
         });
     }
 
@@ -132,7 +154,16 @@ pub fn parse_client_hello(raw: &[u8]) -> Result<ClientHelloFields, &'static str>
             0 => sni_hostname = parse_sni_hostname(extension_data).or(sni_hostname),
             10 => supported_groups = parse_supported_groups(extension_data)?,
             11 => ec_point_formats = parse_ec_point_formats(extension_data)?,
+            27 => cert_compression_algorithms = parse_cert_compression_algorithms(extension_data)?,
             43 => supported_versions = parse_supported_versions(extension_data)?,
+            // 17513 = ALPS legacy codepoint (Chrome), 17613 = standard codepoint.
+            // Both share the same wire format (proto_list u16-prefixed, each
+            // entry u8-prefixed bytes).
+            17513 | 17613 => {
+                let parsed = parse_alps_protocols(extension_data)?;
+                // If both old and new codepoint appear (unusual), merge.
+                alps_protocols.extend(parsed);
+            }
             _ => {}
         }
     }
@@ -156,6 +187,8 @@ pub fn parse_client_hello(raw: &[u8]) -> Result<ClientHelloFields, &'static str>
         ec_point_formats,
         supported_versions,
         sni_hostname,
+        cert_compression_algorithms,
+        alps_protocols,
     })
 }
 
@@ -246,6 +279,61 @@ fn parse_supported_versions(data: &[u8]) -> Result<Vec<u16>, &'static str> {
         versions.push(reader.read_u16()?);
     }
     Ok(versions)
+}
+
+/// W11-F §14b S1-3 (Codex review 2026-05-27): parse the body of TLS ext 27
+/// (compress_certificate, RFC 8879). Wire shape:
+///
+///   uint8  algorithms_list_len_in_bytes
+///   uint16 algorithm_id [ ]
+///
+/// Returns the algorithm IDs in the order they appeared on the wire.
+fn parse_cert_compression_algorithms(data: &[u8]) -> Result<Vec<u16>, &'static str> {
+    let mut reader = WireReader::new(data);
+    let list_len = reader.read_u8()? as usize;
+    if list_len % 2 != 0 || reader.remaining() < list_len {
+        return Err("invalid cert_compression algorithms length");
+    }
+    let list_end = reader.position() + list_len;
+    let mut algorithms = Vec::with_capacity(list_len / 2);
+    while reader.position() < list_end {
+        algorithms.push(reader.read_u16()?);
+    }
+    Ok(algorithms)
+}
+
+/// W11-F §14b S1-3 (Codex review 2026-05-27): parse the body of TLS ext
+/// 17513 (ALPS legacy / Chrome codepoint) or 17613 (standard codepoint).
+/// Wire shape (per BoringSSL ext_alps_add_clienthello in extensions.cc):
+///
+///   uint16 proto_list_len_in_bytes
+///   {
+///     uint8  proto_name_len
+///     opaque proto_name [proto_name_len]
+///   } [ ]
+///
+/// Returns the protocol names (utf-8 decoded) in capture order. ALPS only
+/// transports ALPN-style ASCII names ("h2", "http/1.1", etc.), so utf-8
+/// validation is sufficient; invalid utf-8 is rejected.
+fn parse_alps_protocols(data: &[u8]) -> Result<Vec<String>, &'static str> {
+    let mut reader = WireReader::new(data);
+    let list_len = reader.read_u16()? as usize;
+    if reader.remaining() < list_len {
+        return Err("invalid alps proto_list length");
+    }
+    let list_end = reader.position() + list_len;
+    let mut protocols = Vec::new();
+    while reader.position() < list_end {
+        let name_len = reader.read_u8()? as usize;
+        let name_bytes = reader.take(name_len)?;
+        let name = std::str::from_utf8(name_bytes)
+            .map_err(|_| "alps protocol name is not valid utf-8")?;
+        protocols.push(name.to_owned());
+    }
+    if reader.position() != list_end {
+        return Err("invalid alps proto_list internal layout");
+    }
+    Ok(protocols)
 }
 
 struct WireReader<'a> {

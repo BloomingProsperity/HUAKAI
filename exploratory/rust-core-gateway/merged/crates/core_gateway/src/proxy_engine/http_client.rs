@@ -52,18 +52,23 @@ fn build_gateway_connector() -> GatewayHttpConnector {
     BoringTlsConnector::new(Arc::new(profile))
 }
 
-/// W11-F F-2.3 (synthesis Codex D-F2-1, 2026-05-24): fallible builder lets
-/// startup paths + tests branch on profile dispatchability without panicking.
+/// W11-F F-2.3 (synthesis Codex D-F2-1, 2026-05-24) + S2 corrective doc-fix
+/// (Codex review 2026-05-27): fallible builder lets startup paths + tests
+/// branch on profile dispatchability without panicking.
 ///
 /// Returns:
-///   - `Ok(client)` — profile passed the production dispatch canary gate
-///     (`verify_profile_dispatchable_for_production`) AND the L1 preflight
-///     classification (l1_preflight::preflight_status_from_intent) yields
-///     `NotRequired` or `Pending` (runtime preflight will fire at first
-///     connect via OpenSslAdapter or BoringSSL builder).
-///   - `Err(MimicryProductionCanaryError)` — profile is KnownGap or
-///     UnsupportedTemplate. Caller may surface as `GatewayError::Config`,
-///     log + skip, or fail the startup.
+///   - `Ok(client)` — profile passed BOTH gates: the production dispatch
+///     canary (`verify_profile_dispatchable_for_production`) AND the L1
+///     preflight classification (`l1_preflight::is_dispatchable`) yields
+///     `NotRequired` (only). `Pending` is **fail-closed** (returns Err)
+///     until F-2.3a wires the runtime preflight at the first-connect
+///     site — see the body's second `if !is_dispatchable(&status)` check
+///     and the comment at line 95-98 ("Removing this block lets ...
+///     Gemini (Pending) construct Boring HTTP clients unchecked").
+///   - `Err(MimicryProductionCanaryError)` — profile is KnownGap,
+///     UnsupportedTemplate, or Pending-awaiting-runtime-preflight.
+///     Caller may surface as `GatewayError::Config`, log + skip, or
+///     fail the startup.
 ///
 /// The non-fallible [`build_http_client_with_profile`] retains the
 /// fail-fast `.expect(...)` semantics so production main wiring keeps

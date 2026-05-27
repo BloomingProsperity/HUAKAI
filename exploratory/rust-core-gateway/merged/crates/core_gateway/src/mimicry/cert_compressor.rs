@@ -71,3 +71,103 @@ impl CertificateCompressor for BrotliCompressor {
         brotli::BrotliDecompress(&mut std::io::Cursor::new(input), output)
     }
 }
+
+#[cfg(all(test, feature = "mimicry-boring"))]
+mod tests {
+    use super::*;
+    use boring::ssl::CertificateCompressor;
+
+    /// W11-F §14c S1-4 (Codex review 2026-05-27): mutation-resistant unit
+    /// test for `BrotliCompressor::decompress`. Verifies real brotli decode
+    /// works on a known cert-chain-shaped payload.
+    ///
+    /// The test is **discriminating**: replacing the decompress body with
+    /// `Ok(())` (silent no-op), or with `output.write_all(input)?; Ok(())`
+    /// (raw passthrough — what a placeholder/stub would do), turns this
+    /// test red because:
+    /// - `Ok(())` produces empty output → assertion `decompressed.len() ==
+    ///   plaintext.len()` fails.
+    /// - passthrough produces compressed bytes as "decompressed" → the
+    ///   payload mismatch assertion fails.
+    ///
+    /// Why a cert-chain-shaped payload (PEM-ish bytes with `0x30 0x82`
+    /// DER header) instead of a tiny `b"hello"`: brotli has a minimum
+    /// frame overhead and we want the test to exercise a payload size
+    /// that's a closer analog to what a TLS server actually sends for a
+    /// real cert chain (a few hundred bytes minimum). Using a contrived
+    /// large-ish plaintext also exercises the decoder's streaming behavior
+    /// rather than the trivial single-byte path.
+    #[test]
+    fn brotli_compressor_decompress_round_trip() {
+        use brotli::enc::backward_references::BrotliEncoderParams;
+        use std::io::Cursor;
+
+        // ~440 bytes of "cert-chain-shaped" content: DER SEQUENCE header,
+        // repeating subject DN bytes, varying so the encoder has real
+        // work to do. We use a deterministic synthetic payload, not a
+        // real cert, so the test is hermetic.
+        let plaintext: Vec<u8> = {
+            let mut v = Vec::with_capacity(440);
+            v.extend_from_slice(&[0x30, 0x82, 0x01, 0xb0]); // SEQUENCE, len=432
+            for i in 0..432u16 {
+                // alternating block to ensure brotli isn't trivially
+                // shrinking everything to constants.
+                v.push((i as u8) ^ 0xa5);
+            }
+            v
+        };
+
+        // Compress with the brotli crate's encoder (same crate the
+        // decompressor uses) so we know the round trip is closed.
+        let mut compressed = Vec::new();
+        let params = BrotliEncoderParams::default();
+        brotli::BrotliCompress(
+            &mut Cursor::new(&plaintext),
+            &mut compressed,
+            &params,
+        )
+        .expect("brotli encoder should compress a 440-byte synthetic payload");
+        assert!(
+            !compressed.is_empty(),
+            "brotli encoder produced no output for non-empty input"
+        );
+
+        // Decompress with HUAKAI's CertificateCompressor impl.
+        let mut decompressed = Vec::new();
+        let compressor = BrotliCompressor;
+        compressor
+            .decompress(&compressed, &mut decompressed)
+            .expect("BrotliCompressor::decompress should round-trip a brotli payload");
+
+        // Discriminating assertions (length + byte equality).
+        assert_eq!(
+            decompressed.len(),
+            plaintext.len(),
+            "decompressed length must match plaintext; stub `Ok(())` returns empty"
+        );
+        assert_eq!(
+            decompressed, plaintext,
+            "decompressed bytes must equal plaintext; passthrough stub returns compressed bytes"
+        );
+    }
+
+    /// W11-F §14c S1-4 (Codex review 2026-05-27): malformed brotli input
+    /// must NOT panic and must surface as an `io::Error` so the BoringSSL
+    /// handshake layer can fail the connection cleanly. This locks the
+    /// "no panic on malformed input" promise the decompress doc comment
+    /// makes — without this test, a future change that swapped
+    /// `brotli::BrotliDecompress` for something that panics on bad input
+    /// would slip through.
+    #[test]
+    fn brotli_compressor_decompress_rejects_malformed_input() {
+        let garbage = [0xff_u8; 32]; // not a valid brotli stream
+        let mut sink = Vec::new();
+        let compressor = BrotliCompressor;
+        let result = compressor.decompress(&garbage, &mut sink);
+        assert!(
+            result.is_err(),
+            "decompress must reject malformed input; got Ok with sink.len()={}",
+            sink.len()
+        );
+    }
+}

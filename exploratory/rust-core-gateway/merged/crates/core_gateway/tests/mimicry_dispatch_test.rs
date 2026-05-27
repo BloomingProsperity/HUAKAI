@@ -227,10 +227,15 @@ fn dispatch_blocks_kiro_rustls_profile_after_burn_the_boats() {
 /// **Feature-gated** to `any(mimicry-boring, mimicry-openssl)`: at least
 /// one backend must be compiled in for gemini to resolve to a dispatchable
 /// decision (boring → AllowBoring, openssl alone → AllowOpenSsl).
-/// Without either feature, the resolver returns `BlockKnownGap { reason:
-/// "requires mimicry-*" }` — that correct fail-closed behavior is already
-/// locked by `dispatch_blocks_stable_native_tls_openssl_profile_when_
-/// adapter_is_not_compiled` (which runs under `--no-default-features`).
+/// Without either feature, the resolver returns `KnownGapBlocked { reason:
+/// "requires mimicry-*" }`. That correct fail-closed behavior is already
+/// locked by `mimicry::anthropic_test::gemini_backend_resolver_returns_
+/// known_gap_when_no_feature` (lib test at `src/mimicry/anthropic_test.rs:213`)
+/// — corrected from an earlier docstring that cited
+/// `dispatch_blocks_stable_native_tls_openssl_profile_when_adapter_is_not_
+/// compiled`, which tests a synthesized kiro-shape OpenSSL profile, NOT
+/// gemini specifically. Codex review S3 2026-05-27 surfaced the citation
+/// drift.
 ///
 /// mutation: revert §14b.2's `apply_application_settings` call in
 /// `client_hello_builder.rs::configure_boring_connection` → gemini wire
