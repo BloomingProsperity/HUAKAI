@@ -170,6 +170,7 @@ export type EndClass =
   | 'non_streaming';
 
 export type UsageSource = 'reported' | 'normalized' | 'inferred' | 'partial' | 'ambiguous';
+export type TrustStatus = 'verified' | 'signed-only' | 'unverified' | 'missing' | 'mismatch';
 
 export interface ProtocolLossEntry {
   feature: string;
@@ -184,6 +185,7 @@ export interface UsageRecord {
   claim_id: number;
   api_key_id: number;
   provider_account_id: number;
+  provider?: string | null;
   attempt_seq?: number;
   tokens_input?: number;
   tokens_output?: number;
@@ -202,6 +204,8 @@ export interface UsageRecord {
   settled_at: string;
   requested_model?: string;
   upstream_model?: string | null;
+  request_id?: string;
+  trust_status?: TrustStatus | null;
   stream: boolean;
 }
 

@@ -391,10 +391,11 @@ func TestAuditLedgerResultValidateEnforcesStateInvariants(t *testing.T) {
 	// relaxing any per-state field check below makes the matching invalid case
 	// pass and this table test fail.
 	tests := []struct {
-		name       string
-		result     AuditLedgerResult
-		production bool
-		wantErr    bool
+		name            string
+		result          AuditLedgerResult
+		production      bool
+		wantErr         bool
+		wantErrContains string
 	}{
 		{
 			name: "persisted valid",
@@ -429,6 +430,36 @@ func TestAuditLedgerResultValidateEnforcesStateInvariants(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "deferred rejects upstream provider",
+			result: AuditLedgerResult{
+				State:            LedgerResultStateDeferred,
+				DLQRef:           "audit_ledger_dlq:42",
+				UpstreamProvider: "anthropic",
+			},
+			wantErr:         true,
+			wantErrContains: "upstream metadata",
+		},
+		{
+			name: "deferred rejects upstream model",
+			result: AuditLedgerResult{
+				State:         LedgerResultStateDeferred,
+				DLQRef:        "audit_ledger_dlq:42",
+				UpstreamModel: "claude-opus-4-20260514",
+			},
+			wantErr:         true,
+			wantErrContains: "upstream metadata",
+		},
+		{
+			name: "deferred rejects request id",
+			result: AuditLedgerResult{
+				State:     LedgerResultStateDeferred,
+				DLQRef:    "audit_ledger_dlq:42",
+				RequestID: "req_must_not_exist",
+			},
+			wantErr:         true,
+			wantErrContains: "upstream metadata",
+		},
+		{
 			name:   "disabled valid outside production",
 			result: AuditLedgerResult{State: LedgerResultStateDisabled},
 		},
@@ -438,12 +469,42 @@ func TestAuditLedgerResultValidateEnforcesStateInvariants(t *testing.T) {
 			production: true,
 			wantErr:    true,
 		},
+		{
+			name: "disabled rejects upstream provider",
+			result: AuditLedgerResult{
+				State:            LedgerResultStateDisabled,
+				UpstreamProvider: "anthropic",
+			},
+			wantErr:         true,
+			wantErrContains: "upstream metadata",
+		},
+		{
+			name: "disabled rejects upstream model",
+			result: AuditLedgerResult{
+				State:         LedgerResultStateDisabled,
+				UpstreamModel: "claude-opus-4-20260514",
+			},
+			wantErr:         true,
+			wantErrContains: "upstream metadata",
+		},
+		{
+			name: "disabled rejects request id",
+			result: AuditLedgerResult{
+				State:     LedgerResultStateDisabled,
+				RequestID: "req_must_not_exist",
+			},
+			wantErr:         true,
+			wantErrContains: "upstream metadata",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.result.Validate(tt.production)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Validate() error=%v wantErr=%v", err, tt.wantErr)
+			}
+			if tt.wantErrContains != "" && !strings.Contains(err.Error(), tt.wantErrContains) {
+				t.Fatalf("Validate() error=%v want substring %q", err, tt.wantErrContains)
 			}
 		})
 	}

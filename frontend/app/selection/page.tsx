@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, type CSSProperties } from 'react';
 import { getDebugVars, listUsageRecords, listBillingClaims } from '../../lib/api/observability';
 import { ApiError } from '../../lib/api/client';
 import type { UsageRecord, BillingLedgerClaim } from '../../lib/api/types';
+import { buildUsageTrustView, usageTrustHasMismatchWarning, type UsageTrustTone } from '../../lib/usage-trust';
 
 // 从 expvar 提取 per-clientid request count
 // clientid_request_count 是嵌套 map：{ "cursor": N, "claude_code": M, ... }
@@ -45,6 +46,27 @@ function extractSlotStats(data: Record<string, unknown>): SlotStats {
 }
 
 const POLL_MS = 3000;
+
+function trustBadgeStyle(tone: UsageTrustTone): CSSProperties {
+  const palette: Record<UsageTrustTone, CSSProperties> = {
+    green: { background: '#0f2d1b', borderColor: '#238636', color: '#7ee787' },
+    yellow: { background: '#332600', borderColor: '#9e6a03', color: '#f2cc60' },
+    gray: { background: '#21262d', borderColor: '#30363d', color: '#8b949e' },
+    red: { background: '#3b1115', borderColor: '#da3633', color: '#ff7b72' },
+  };
+  return {
+    display: 'inline-flex',
+    alignItems: 'center',
+    minHeight: 20,
+    border: '1px solid',
+    borderRadius: 4,
+    padding: '0 0.35rem',
+    fontSize: '0.65rem',
+    fontWeight: 700,
+    whiteSpace: 'nowrap',
+    ...palette[tone],
+  };
+}
 
 export default function SelectionPage() {
   // 客户端请求计数 + slot 状态（来自 /debug/vars）
@@ -246,11 +268,17 @@ export default function SelectionPage() {
               ? <div className="not-impl-msg" style={{ fontSize: '0.75rem' }}>后端尚未实现此端点 (501) — 等待 backend wire</div>
               : <div className="error-msg" style={{ fontSize: '0.75rem' }}>{usageError}</div>
           )}
+          {usageTrustHasMismatchWarning(usageRecords) && (
+            <div role="alert" style={{ marginBottom: '0.5rem', border: '1px solid #da3633', background: '#3b1115', color: '#ffb4ad', borderRadius: 4, padding: '0.45rem 0.55rem', fontSize: '0.72rem' }}>
+              信任状态不一致 - 请核查
+            </div>
+          )}
           <table className="obs-table" style={{ fontSize: '0.7rem' }}>
             <thead>
               <tr>
                 <th>id</th>
-                <th>model</th>
+                <th>provider/model</th>
+                <th>trust</th>
                 <th>in</th>
                 <th>out</th>
                 <th>cost</th>
@@ -259,23 +287,27 @@ export default function SelectionPage() {
             </thead>
             <tbody>
               {usageRecords.length === 0 ? (
-                <tr><td colSpan={6} style={{ color: '#484f58', textAlign: 'center' }}>
+                <tr><td colSpan={7} style={{ color: '#484f58', textAlign: 'center' }}>
                   {usageLoading ? '加载中…' : usageError ? '失败' : '（无数据）'}
                 </td></tr>
-              ) : usageRecords.map((r) => (
-                <tr key={r.id}>
-                  <td style={{ fontFamily: 'monospace' }}>{r.id}</td>
-                  <td style={{ color: '#8b949e', maxWidth: 70, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {r.requested_model ?? '—'}
-                  </td>
-                  <td>{r.tokens_input ?? 0}</td>
-                  <td>{r.tokens_output ?? 0}</td>
-                  <td style={{ fontFamily: 'monospace' }}>{r.actual_cost}</td>
-                  <td style={{ color: r.end_class === 'stream_end_graceful' ? '#3fb950' : '#d29922', fontSize: '0.65rem' }}>
-                    {r.end_class.replace('stream_end_', '').replace('upstream_', 'up_')}
-                  </td>
-                </tr>
-              ))}
+              ) : usageRecords.map((r) => {
+                const trustView = buildUsageTrustView(r);
+                return (
+                  <tr key={r.id}>
+                    <td style={{ fontFamily: 'monospace' }}>{r.id}</td>
+                    <td title={trustView.providerModelLabel} style={{ color: '#8b949e', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {trustView.providerModelLabel}
+                    </td>
+                    <td><span style={trustBadgeStyle(trustView.tone)}>{trustView.statusLabel}</span></td>
+                    <td>{r.tokens_input ?? 0}</td>
+                    <td>{r.tokens_output ?? 0}</td>
+                    <td style={{ fontFamily: 'monospace' }}>{r.actual_cost}</td>
+                    <td style={{ color: r.end_class === 'stream_end_graceful' ? '#3fb950' : '#d29922', fontSize: '0.65rem' }}>
+                      {r.end_class.replace('stream_end_', '').replace('upstream_', 'up_')}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

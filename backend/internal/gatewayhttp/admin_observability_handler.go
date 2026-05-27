@@ -56,7 +56,7 @@ type obsListResponse struct {
 }
 
 func NewUsageHandler(d AdminObservabilityDeps) http.HandlerFunc {
-	return newObsHandler(d, "usage", countUsage, listUsage, func(r dbbilling.ListUsageRecordsRow) (pgtype.Timestamptz, int64) { return r.CreatedAt, r.ID }, identityRow[dbbilling.ListUsageRecordsRow])
+	return newObsHandler(d, "usage", countUsage, listUsage, func(r dbbilling.ListUsageRecordsRow) (pgtype.Timestamptz, int64) { return r.CreatedAt, r.ID }, mapUsageRow)
 }
 
 func NewClaimsHandler(d AdminObservabilityDeps) http.HandlerFunc {

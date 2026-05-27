@@ -1,6 +1,7 @@
 package gatewayhttp
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
@@ -8,6 +9,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
+	"github.com/BloomingProsperity/HUAKAI/internal/sign"
+	"github.com/BloomingProsperity/HUAKAI/internal/trust"
 )
 
 func TestChatCompletionsClientAdapter_NonStreamingModelChainAndHeaders(t *testing.T) {
@@ -54,6 +57,125 @@ func TestChatCompletionsClientAdapter_NonStreamingModelChainAndHeaders(t *testin
 			t.Fatalf("hop[%d] detail must stay empty, got %s", i, hop.Detail)
 		}
 	}
+}
+
+// TestChatCompletionResponseHeaderIncludesUpstreamProvider
+//
+// 守 TRUST-A-2 wire contract：成功响应必须把实际 dispatch path 的 provider /
+// model / request_id 暴露为 X-Huakai-* header。Mutation 自检：删掉 trust
+// header 注入时，本测试的 provider/model/request_id 三个断言会一起 red。
+func TestChatCompletionResponseHeaderIncludesUpstreamProvider(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	d := clientAdapterDeps(t)
+	d.Registry = stubRegistry{resolved: registry.Resolved{
+		PublicAlias:      "claude-opus-4",
+		CanonicalModelID: "anthropic/claude-opus-4",
+		ProviderModelID:  "claude-opus-4",
+		ProtocolFamily:   "anthropic_messages",
+		PoolCandidates:   []int64{42},
+	}}
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"claude-opus-4","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get(trust.HeaderUpstreamProvider); got != "openai" {
+		t.Fatalf("%s=%q want openai from selected provider account", trust.HeaderUpstreamProvider, got)
+	}
+	if got := rec.Header().Get(trust.HeaderUpstreamModel); got != "claude-opus-4" {
+		t.Fatalf("%s=%q want claude-opus-4", trust.HeaderUpstreamModel, got)
+	}
+	if got := rec.Header().Get(trust.HeaderRequestID); got == "" {
+		t.Fatalf("%s is empty; request_id must be available for detached verify panel", trust.HeaderRequestID)
+	}
+}
+
+// TestChatCompletionResponseHeaderTrustStatusIsUnverifiedDefault
+//
+// 守 TRUST-A-1/A-2 默认状态：TRUST-B signer payload 尚未接通前，普通成功响应
+// 只能标 `unverified`，不能因为旧 audit ledger 头存在就假称 verified。
+// Mutation 自检：把默认状态改成 verified/signed-only，本测试会 red。
+func TestChatCompletionResponseHeaderTrustStatusIsUnverifiedDefault(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get(trust.HeaderStatus); got != string(trust.StatusUnverified) {
+		t.Fatalf("%s=%q want %q before TRUST-B signer wiring", trust.HeaderStatus, got, trust.StatusUnverified)
+	}
+}
+
+// TestChatCompletionResponseMismatchDetectedWhenAuditMismatchesHeader
+//
+// 守 TRUST-A-2 mismatch 分支：response header 仍展示 dispatch path，
+// 但 audit ledger append 返回的 provider 与 header 不一致时，trust status 必须
+// 强制降为 mismatch。Mutation 自检：删除 header-vs-ledger 比对时，本测试会看到
+// unverified 而不是 mismatch。
+func TestChatCompletionResponseMismatchDetectedWhenAuditMismatchesHeader(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	inner, err := auditledger.NewMemoryLedger(signer)
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.AuditLedger = &providerMismatchLedger{inner: inner, provider: "anthropic"}
+	d.Signer = signer
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get(trust.HeaderUpstreamProvider); got != "openai" {
+		t.Fatalf("%s=%q want dispatch provider openai even when ledger mismatches", trust.HeaderUpstreamProvider, got)
+	}
+	if got := rec.Header().Get(trust.HeaderStatus); got != string(trust.StatusMismatch) {
+		t.Fatalf("%s=%q want mismatch when ledger provider differs from response header", trust.HeaderStatus, got)
+	}
+}
+
+type providerMismatchLedger struct {
+	inner    auditledger.Ledger
+	provider string
+}
+
+func (l *providerMismatchLedger) Append(ctx context.Context, prepared auditledger.PreparedEntry) (auditledger.LedgerEntry, error) {
+	entry := prepared.AsLedgerEntry()
+	for i := range entry.HopChain {
+		if entry.HopChain[i].Hop == proto.HopProvider {
+			entry.HopChain[i].Provider = l.provider
+		}
+	}
+	rewritten, err := auditledger.PrepareEntry(ctx, entry)
+	if err != nil {
+		return auditledger.LedgerEntry{}, err
+	}
+	return l.inner.Append(ctx, rewritten)
+}
+
+func (l *providerMismatchLedger) GetByRequestID(ctx context.Context, requestID string) (auditledger.LedgerEntry, error) {
+	return l.inner.GetByRequestID(ctx, requestID)
+}
+
+func (l *providerMismatchLedger) GetByRequestIDAndTenantScope(ctx context.Context, requestID, tenantScopeRef string) (auditledger.LedgerEntry, error) {
+	return l.inner.GetByRequestIDAndTenantScope(ctx, requestID, tenantScopeRef)
+}
+
+func (l *providerMismatchLedger) LatestMerkleRoot(ctx context.Context) ([32]byte, error) {
+	return l.inner.LatestMerkleRoot(ctx)
+}
+
+func (l *providerMismatchLedger) Size(ctx context.Context) int {
+	return l.inner.Size(ctx)
 }
 
 func TestSetHUAKAIModelHeadersOmitsEmptyDelivered(t *testing.T) {
