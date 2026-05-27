@@ -92,23 +92,25 @@ func parsePasswordHash(encoded string) (PasswordPolicy, []byte, []byte, error) {
 		if err != nil {
 			return PasswordPolicy{}, nil, nil, ErrInvalidCredentials
 		}
-		// Owner 2026-05-27 抓出 P2: 之前 uint8(n) 直接 wrap, p=256 变 0 后被
-		// normalizePasswordPolicy 拉回 default, 攻击者可借此让 hash 校验静默
-		// 走默认 params 而非 hash header 声明值。同时 m / t 缺上限 → DoS 面。
-		// 上限取业界保守值: memory ≤ 1 GiB, iterations ≤ 100, parallelism ≤ 255。
+		// Owner 2026-05-27 抓 P2: parsePasswordHash 必须强制 hash header 里
+		// m/t/p 是显式合法值, 不允许靠 normalizePasswordPolicy 把 0 兜底成
+		// default — 否则攻击者写恶意 hash header `m=0,t=0,p=0` 仍能让校验
+		// 静默走默认 params 而非 hash 实际声明值, hash 不变量被破坏。
+		// 上限取业界保守: memory ≤ 1 GiB, iterations ≤ 100, parallelism ≤ 255。
+		// 下限: 必须 > 0, 不能靠 normalize 兜底。
 		switch k {
 		case "m":
-			if n > 1<<20 { // 1 GiB KiB
+			if n == 0 || n > 1<<20 { // 1 GiB KiB
 				return PasswordPolicy{}, nil, nil, ErrInvalidCredentials
 			}
 			policy.MemoryKiB = uint32(n)
 		case "t":
-			if n > 100 {
+			if n == 0 || n > 100 {
 				return PasswordPolicy{}, nil, nil, ErrInvalidCredentials
 			}
 			policy.Iterations = uint32(n)
 		case "p":
-			if n > 255 {
+			if n == 0 || n > 255 {
 				return PasswordPolicy{}, nil, nil, ErrInvalidCredentials
 			}
 			policy.Parallelism = uint8(n)

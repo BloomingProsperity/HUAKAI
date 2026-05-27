@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
@@ -310,6 +312,41 @@ func TestClaudeAIOAuthExchangerUsesInjectedHTTPClient(t *testing.T) {
 	}
 	if injectedHits != 1 {
 		t.Fatalf("injected client hits=%d want 1 (exchanger 没用注入 client)", injectedHits)
+	}
+}
+
+// Owner 2026-05-27 抓出 P1 真修 (不接受 DEFERRED 当尾巴):
+// validateOAuthEndpointURL 只做字面 URL 检查, DNS-rebind 攻击 (https://attacker.example
+// 但 DNS 解到 127.0.0.1) 静态层抓不住。深层 dial-time guard 通过
+// auth.NewSSRFProtectedOAuthClient 在 transport.DialContext 校验目标 IP,
+// 必拒内网 / metadata / loopback。判别 mutation: 撤回
+// `client = auth.NewSSRFProtectedOAuthClient(http.DefaultClient)` 改回
+// `client = http.DefaultClient`, 此 test 看到 DNS-rebind 实际 dial 命中
+// 127.0.0.1 (无连接) 而不是 oauth_endpoint_blocked, 立刻变红。
+func TestAuthorizationCodeExchangeDeepDNSRebindIsBlocked(t *testing.T) {
+	// caller 不注入 custom client → 走 auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
+	// 生产路径。
+	exchanger := authorizationCodeOAuthExchanger{}
+	restore := auth.SwapOAuthIPLookupForTesting(func(_ context.Context, host string) ([]net.IPAddr, error) {
+		// 模拟 attacker.example 域 DNS 解析返回 loopback (经典 DNS-rebind)。
+		_ = host
+		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+	})
+	defer restore()
+
+	payload := storedPKCEPayload{
+		CodeVerifier: "verifier",
+		TokenURL:     "https://attacker.example/token",
+		ClientID:     "cid",
+		RedirectURI:  "https://huakai.example.test/callback",
+	}
+	_, err := exchanger.exchangeAuthorizationCode(context.Background(), payload, "code")
+	if err == nil {
+		t.Fatal("DNS-rebind attack went through; deep SSRF guard 失效")
+	}
+	// auth.ErrOAuthEndpointBlocked sentinel 暴露在 err 链中。
+	if !errors.Is(err, auth.ErrOAuthEndpointBlocked) {
+		t.Fatalf("err=%v want auth.ErrOAuthEndpointBlocked", err)
 	}
 }
 

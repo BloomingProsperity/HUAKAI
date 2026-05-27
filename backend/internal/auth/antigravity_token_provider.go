@@ -359,6 +359,26 @@ func classifiedOAuthRefreshError(statusCode int, body []byte, sanitizer OAuthErr
 	return fmt.Errorf("oauth_refresh_upstream_error status=%d body_class=non_2xx body_redacted=%q truncated=%t", statusCode, snippet, truncated)
 }
 
+// NewSSRFProtectedOAuthClient 把 base client 包成带 SSRF / DNS-rebind
+// 防御的 OAuth-grade client: transport.Proxy=nil, DialContext 拨号层
+// 校验目标 IP 不是 loopback / private / link-local / metadata; CheckRedirect
+// 禁 3xx (防 attacker redirect 把 client_secret/code 渗到自家 endpoint)。
+// 供 credentialacq 等包出站 OAuth token endpoint 时复用 — Owner 2026-05-27
+// P1 follow-up, 关闭 DNS-rebind 攻击面 (静态层在 39c66a3 已落地)。
+func NewSSRFProtectedOAuthClient(base *http.Client) *http.Client {
+	return newSSRFProtectedOAuthClient(base)
+}
+
+// SwapOAuthIPLookupForTesting 给跨包测试替换 lookupOAuthIPAddrs, 返
+// restore closure 还原。生产代码不应调用; 测试 fixture 用 mock 返公网 IP
+// (例 8.8.8.8) 绕过真 DNS 解析 — fake .test/.example 域名不可解析,
+// 真 DNS lookup 会被 SSRF guard 拒。
+func SwapOAuthIPLookupForTesting(fn func(ctx context.Context, host string) ([]net.IPAddr, error)) func() {
+	original := lookupOAuthIPAddrs
+	lookupOAuthIPAddrs = fn
+	return func() { lookupOAuthIPAddrs = original }
+}
+
 func newSSRFProtectedOAuthClient(base *http.Client) *http.Client {
 	if base == nil {
 		base = http.DefaultClient
