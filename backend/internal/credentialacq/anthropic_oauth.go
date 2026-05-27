@@ -25,11 +25,33 @@ const (
 )
 
 type claudeAIOAuthExchanger struct {
-	now func() time.Time
+	now        func() time.Time
+	httpClient *http.Client
 }
 
 func newClaudeAIOAuthExchanger() claudeAIOAuthExchanger {
 	return claudeAIOAuthExchanger{}
+}
+
+// NewClaudeAIOAuthExchangerWithClient 返回带显式 HTTP client 的 exchanger,
+// 用于 wiring 时注入 anthropicoauth mimicry uTLS transport (HUAKAI 反封禁
+// 核心差异化 [[project_core_trust_chain_differentiator]] +
+// [[project_huakai_codex_mimicry_verified]])。client=nil 时退到
+// http.DefaultClient — 仅用于测试 / 静态分析路径, 不应进生产 wiring。
+func NewClaudeAIOAuthExchangerWithClient(client *http.Client) Exchanger {
+	return claudeAIOAuthExchanger{httpClient: client}
+}
+
+// IsClaudeAIOAuthExchangerWithExplicitClient 返 true 当且仅当传入 exchanger
+// 是 claudeAIOAuthExchanger 且已注入非 nil HTTP client。供 wiring fail-loud
+// 自检使用 — 生产启动时调用, 防止 install 调用被删 / helper 退化导致
+// mimicry transport 失效却 silent 通过。
+func IsClaudeAIOAuthExchangerWithExplicitClient(exc Exchanger) bool {
+	e, ok := exc.(claudeAIOAuthExchanger)
+	if !ok {
+		return false
+	}
+	return e.httpClient != nil
 }
 
 func (e claudeAIOAuthExchanger) StartOAuthFlow(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig) (OAuthStartResult, error) {
@@ -177,7 +199,7 @@ func (e claudeAIOAuthExchanger) exchangeAuthorizationCodeJSON(ctx context.Contex
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := e.client().Do(req)
 	if err != nil {
 		return oauthTokenResponse{}, err
 	}
@@ -214,6 +236,13 @@ func (e claudeAIOAuthExchanger) claudeAIOAuthTokenPayload(token oauthTokenRespon
 	out["client_identity_source"] = claudeAIOAuthApprovedProfileSource
 	out["client_id_source"] = claudeAIOAuthApprovedProfileSource
 	return json.Marshal(out)
+}
+
+func (e claudeAIOAuthExchanger) client() *http.Client {
+	if e.httpClient != nil {
+		return e.httpClient
+	}
+	return http.DefaultClient
 }
 
 func (e claudeAIOAuthExchanger) nowTime() time.Time {

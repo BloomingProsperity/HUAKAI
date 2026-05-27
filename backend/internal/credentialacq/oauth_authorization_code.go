@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -230,6 +231,17 @@ func validateOperatorPKCEConfig(vendor, authMode string, cfg OAuthClientConfig) 
 	if len(missing) > 0 {
 		return fmt.Errorf("%w: %s/%s operator OAuth config missing %s", ErrFeatureDisabled, vendor, authMode, strings.Join(missing, ","))
 	}
+	// P1 SSRF / auth-leak 静态闸门 (Owner 2026-05-26 抓出): 拒绝任何 scheme
+	// 非 https 或 host 命中私网 / loopback / link-local / metadata 的 OAuth
+	// endpoint。深层 DialContext-level 防御参考 internal/auth.newSSRFProtectedOAuthClient,
+	// 留下一切片接入;此处先封静态层。
+	for _, item := range []struct {
+		name, raw string
+	}{{"auth_url", cfg.AuthURL}, {"token_url", cfg.TokenURL}} {
+		if err := validateOAuthEndpointURL(item.raw); err != nil {
+			return fmt.Errorf("%w: %s/%s %s 拒绝 (%v)", ErrFeatureDisabled, vendor, authMode, item.name, err)
+		}
+	}
 	return nil
 }
 
@@ -276,6 +288,40 @@ func rawExpiresInSeconds(raw json.RawMessage) int {
 		return intFromPayload(map[string]any{"expires_in": asString}, "expires_in")
 	}
 	return 0
+}
+
+// validateOAuthEndpointURL 静态拒绝明显的 SSRF / auth-leak 目标:
+//   - scheme 必须 https (operator 配 OAuth endpoint 走明文 http 没有合法理由,
+//     攻击者可借此把 client_secret / code / verifier 明文渗出)
+//   - host 不能空 / 不能是 loopback / 不能是 private-net IP / link-local /
+//     metadata IP / 不可路由地址。深层 DialContext 防 DNS-rebind 留 follow-up;
+//     此处先封住"caller 直接写 attacker URL"这一层。
+func validateOAuthEndpointURL(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("invalid url: %v", err)
+	}
+	if parsed.Scheme != "https" {
+		return fmt.Errorf("scheme=%q must be https", parsed.Scheme)
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return fmt.Errorf("empty host")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			return fmt.Errorf("host=%s is non-routable / private", host)
+		}
+		if ip.String() == "169.254.169.254" { // GCP/AWS/Azure metadata
+			return fmt.Errorf("host=%s is metadata IP", host)
+		}
+	} else {
+		lower := strings.ToLower(host)
+		if lower == "localhost" || strings.HasSuffix(lower, ".localhost") || lower == "metadata.google.internal" || lower == "instance-data" {
+			return fmt.Errorf("host=%s is metadata / localhost name", host)
+		}
+	}
+	return nil
 }
 
 func (e authorizationCodeOAuthExchanger) nowTime() time.Time {
