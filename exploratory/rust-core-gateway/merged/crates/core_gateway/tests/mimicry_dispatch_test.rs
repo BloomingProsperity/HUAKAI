@@ -224,9 +224,18 @@ fn dispatch_blocks_kiro_rustls_profile_after_burn_the_boats() {
 /// contract locks the dispatchable outcome — a future regression that
 /// breaks §14b.2 turns this red.
 ///
+/// **Feature-gated** to `any(mimicry-boring, mimicry-openssl)`: at least
+/// one backend must be compiled in for gemini to resolve to a dispatchable
+/// decision (boring → AllowBoring, openssl alone → AllowOpenSsl).
+/// Without either feature, the resolver returns `BlockKnownGap { reason:
+/// "requires mimicry-*" }` — that correct fail-closed behavior is already
+/// locked by `dispatch_blocks_stable_native_tls_openssl_profile_when_
+/// adapter_is_not_compiled` (which runs under `--no-default-features`).
+///
 /// mutation: revert §14b.2's `apply_application_settings` call in
 /// `client_hello_builder.rs::configure_boring_connection` → gemini wire
 /// JA3 mismatches → eventually production dispatch should re-classify.
+#[cfg(any(feature = "mimicry-boring", feature = "mimicry-openssl"))]
 #[test]
 fn dispatch_blocks_gemini_unsupported_template_profile() {
     let profile =
@@ -286,6 +295,14 @@ fn dispatch_blocks_stable_native_tls_openssl_profile_when_adapter_is_not_compile
         .to_owned();
     let ja4 = raw["ja4"].as_str().expect("ja4 应存在").to_owned();
 
+    // W11-F F-2.2 D-S3 (2026-05-24): kiro_cli mode now routes through
+    // `kiro_cli_known_gap_fields()` which returns the `real_upstream_capture`
+    // gap → match_policy is forced to `KnownGapBlocked` regardless of
+    // extension_order/tls_backend overrides. To exercise the
+    // ExactStable + "feature-off blocks dispatch" path on a synthesized
+    // fixture, re-key the mode to "anthropic-claude-code" (empty gap list)
+    // while keeping the rest of the kiro template values intact.
+    raw["mode_name"] = serde_json::json!("anthropic-claude-code");
     raw["tls_backend"] = serde_json::json!("native-tls/openssl");
     raw["extension_order"] = serde_json::json!("stable");
     raw["ec_point_formats"] = serde_json::json!([0, 1, 2]);
@@ -366,6 +383,11 @@ fn dispatch_blocks_native_tls_openssl_profile_with_non_native_ec_point_formats()
         .to_owned();
     let ja4 = raw["ja4"].as_str().expect("ja4 应存在").to_owned();
 
+    // Re-key the mode to anthropic so kiro_cli_known_gap_fields() doesn't
+    // dominate match_policy — see the sibling
+    // `dispatch_blocks_stable_native_tls_openssl_profile_when_adapter_is_not_
+    // compiled` for the full rationale (F-2.2 D-S3).
+    raw["mode_name"] = serde_json::json!("anthropic-claude-code");
     raw["tls_backend"] = serde_json::json!("native-tls/openssl");
     raw["extension_order"] = serde_json::json!("stable");
     raw["ja3_hash_samples"] = serde_json::json!([ja3_hash]);
