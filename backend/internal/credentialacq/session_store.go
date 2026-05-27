@@ -137,8 +137,12 @@ func (s *PostgresSessionStore) CreateFromStart(ctx context.Context, in StartInpu
 	if expiresAt.IsZero() {
 		expiresAt = s.now().UTC().Add(DefaultFlowTTL)
 	}
+	flowID := strings.TrimSpace(in.ID)
+	if flowID == "" {
+		flowID = uuid.NewString()
+	}
 	row := Session{
-		ID: uuid.NewString(), TenantID: in.TenantID, ProviderAccountID: in.ProviderAccountID,
+		ID: flowID, TenantID: in.TenantID, ProviderAccountID: in.ProviderAccountID,
 		Vendor: in.Vendor, AuthMode: in.AuthMode, Kind: in.Kind, Status: StatusStarted,
 		ActorID: strings.TrimSpace(in.ActorID), ActorRole: strings.TrimSpace(in.ActorRole),
 		StateHash: in.StateHash, NonceHash: in.NonceHash, EncryptedPKCEVerifier: in.EncryptedPKCEVerifier,

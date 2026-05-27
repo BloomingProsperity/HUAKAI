@@ -76,6 +76,8 @@ type ModePlan struct {
 }
 
 type StartInput struct {
+	// ID 仅供需要在 authorize URL 里预置 flow_id 的 OAuth 启动路径使用；普通 caller 留空由 store 生成。
+	ID                    string
 	TenantID              int64
 	ProviderAccountID     int64
 	Vendor                string
