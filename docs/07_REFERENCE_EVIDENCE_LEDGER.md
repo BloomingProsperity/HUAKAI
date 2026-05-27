@@ -341,6 +341,21 @@ These are tracked tasks for the **third Phase 1 pass**.
 - Public API behavior.
 - Security advisory or bug report.
 
+## Behavior Evidence — Gemini OAuth ClientSecret 借鉴对照 (GEM-3 2026-05-27)
+
+CLAUDE.md #15 强制 Owner 决策前 ≥2 项参考项目对照。GEM-3 ClientSecret 来源选项 (硬编 vs env var vs operator config) 的 evidence rows。
+
+| Evidence ID | Reference | Source Type | Observed Behavior Or Scenario | Feature Candidate | Risk Notes | Clean-Room Notes | Date | Agent |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| E-CPA-GEMINI-OAUTH-001 | CLIProxyAPI (E-LIC-009) | Source `internal/auth/gemini/gemini_auth.go:32` | ClientID + ClientSecret 都硬编为 Google desktop CLI 公开值 (`ClientID = "681255809395-...apps.googleusercontent.com"`, `ClientSecret = "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"`). RFC 8252 §8.4 desktop CLI public secret 设计本意。 | Gemini OAuth wiring: builtin ClientID + builtin ClientSecret. | 硬编 ClientSecret 不灵活 — Google 改 secret 时需要 code release; 持久化到 token 文件 (gemini_auth.go:180) 让 secret 进入 storage 攻击面。 | Behavior only; HUAKAI 取 ClientID 内置但 ClientSecret 走 env var (架构升级). | 2026-05-27 | Claude (specifier) |
+| E-LITELLM-GEMINI-OAUTH-001 | LiteLLM (E-LIC-005) | Source `litellm/proxy/management_endpoints/ui_sso.py:2082-2084` | `google_client_secret = os.getenv("GOOGLE_CLIENT_SECRET", None); if google_client_secret is None: missing_vars.append("GOOGLE_CLIENT_SECRET")`. Env var 单一来源, 启动收集 missing 后日志报告。 | env var GOOGLE_CLIENT_SECRET + missing_vars fail-fast (LiteLLM 仅日志, 不阻启动). | 收集 missing 模式 — 服务仍启动, 缺 secret 时 OAuth 路径 fail; LiteLLM 还有 UI CRUD 解密 settings 作二来源 (ui_crud_endpoints/proxy_setting_endpoints.py:696-697) — 多来源 drift 风险。 | Behavior only; HUAKAI 升级 = `return err` 让 gateway 启动失败 (架构升级 strong fail-fast) + 单一来源消除 drift。 | 2026-05-27 | Claude (specifier) |
+| E-LLMG-GEMINI-OAUTH-001 | LLMGateway (license TBD, public TS source) | Source `apps/api/src/auth/config.ts:613` + `.env.example:92` | `clientSecret: process.env.GOOGLE_CLIENT_SECRET!` (TS bang assertion). docker-compose / helm 模板都注入 GOOGLE_CLIENT_SECRET env. `.env.example` 文档化运维 baseline。 | env var GOOGLE_CLIENT_SECRET + docker/helm 集成 + runtime crash if missing (TS `!` assertion). | Crash on missing 是更强 fail-fast, 与 HUAKAI 一致; 但 TS `!` 是运行时 throw 而非启动断言 — HUAKAI 启动 wiring 阶段断言更早抓配错。 | Behavior only; HUAKAI wiring 阶段 fail-fast 比 LLMGateway 运行时 fail 更早 (架构升级). | 2026-05-27 | Claude (specifier) |
+
+GEM-3 三维升级 (CLAUDE.md #12) source-cited:
+- **架构升级**: env var (LiteLLM/LLMGateway 同) + **启动 wiring `return err` fail-fast** (LiteLLM `missing_vars.append` 日志, LLMGateway 运行时 `!` throw; HUAKAI 启动断言更早)
+- **算法升级**: cred **永不持久化 ClientSecret** (CLIProxyAPI `gemini_auth.go:180 ifToken["client_secret"] = ClientSecret` 反例; HUAKAI ANT-3 R2 S2 scrub commit 57356e4 强制)
+- **生态升级**: antigravity refresh 临时 fail-closed + Mandatory Roadmap (LiteLLM/LLMGateway 不接 Google 衍生 vendor 无等价问题; HUAKAI 自创 graceful pause)
+
 ## Rules
 
 - Record behavior, not implementation.

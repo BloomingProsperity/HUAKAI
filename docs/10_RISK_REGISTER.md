@@ -89,3 +89,25 @@ Each high or release-blocking risk must map to mitigation, test coverage, and re
 - AE-D3 admin UI detailed cause (8 D 决策 §F docs/process/plans/2026-05-25-ae-d3-admin-ui-detailed-cause-synthesis.md, 推 Mixed D = B target + 可选 C 加速)
 - BS45-SD1..SD5 Phase 4-5 ECH+PQ (5 D 决策 §F docs/process/plans/2026-05-24-boringssl-phase-4-5-synthesis.md)
 - R-3-A-fix-6 命名 + 实施时机 (Phase 5C pre-production gate)
+
+## 2026-05-27 Triage Notes (Gemini OAuth GEM-1+2+3 commit 89947e0 + 78a010a)
+
+GEM-1+2+3 真接通 gemini/code_assist + gemini/google_one 真实 OAuth 流 (PKCE + Google CLI 公开 ClientID + env var ClientSecret + redirect_uri 双模式 allowlist + offline_access/consent + 4 SSRF-D 攻击面闭合 + cred 永不持久化 secret)。Owner 2026-05-27 决策依据: D-1=A 内置 ClientID + env var ClientSecret, D-3=C redirect_uri 双模式 (loopback + HTTPS admin allowlist), D-4=A 三项 scope, D-5=A mimicry Mandatory Roadmap。
+
+新增 3 项 Gemini 相关 risks (1 mitigated, 2 deferred Mandatory Roadmap):
+
+- **R-GEM-FALLBACK-001 (Gemini cross-client fallback explicit disabled, S2, MITIGATED via Owner D-2=A)**: GeminiRefresh.AllowCrossClientFallback 在 code_assist/google_one wiring 显式 = false。原因: Google desktop CLI 设计本意是单一 ClientID 跨 code_assist/google_one/ai_studio 三家 — fallback 不能靠切 ClientID 实现 (从 cred 读 fallback_client_id 是 S1-D 攻击面, Owner D-2=A 撤回 cred 取信)。HUAKAI 自维护 approvedGeminiCrossClientID family→ClientID mapping 现返同一公开 ClientID, primary 与 fallback 永远等值 → 守卫永远跳过 fallback。改成 explicit `AllowCrossClientFallback: false` + 注释说明 + 留 mapping 函数给未来 application-level fallback (例: 切 scope / 切 token shape) 用。**Status: Mitigated 2026-05-27 commit 78a010a; TestGeminiRefreshFallbackExplicitlyDisabledForGoogleCLI 守门**。
+
+- **R-GEM-MIMICRY-001 (Gemini Chrome/CLI mimicry sidecar 未做, S2 → Mandatory Roadmap, DEFERRED)**: D-5=A Owner 决策本轮只接 OAuth, 不做 Gemini CLI / Gemini Advanced / Code Assist 的 mimicry sidecar profile + 真 fingerprint capture。Rust 分支 W11-F §14b Chrome impersonation (4 vendor profile) **生产 dispatch 还未启用** (Rust review d55fa24 S1-2: Gemini production builder 对 Pending fail-closed, F-2.3a runtime preflight 未完成)。Antigravity 共用 Gemini 设备指纹 (gemini-advanced 模板不可直接当 Code Assist 用, R-GEM-MIMICRY-001 风险已在 GEM synthesis 拍出)。**Status: Deferred 2026-05-27, 等 OCAW 或 Rust W11-F §14b runtime preflight 接通后单独切片实施**。
+
+- **R-GEM-ANTIGRAVITY-PAUSED-001 (Gemini/antigravity refresh 临时 fail-closed, S1 → Mandatory Roadmap, DEFERRED)**: GEM-3 R2 verify 抓出 antigravity 共用 GeminiRefresh adapter 但 mode_refresh.go:81 没注入字段 — GeminiRefresh 内部 fallback 把 legacy antigravity credential silently posted to Google Gemini endpoint with public CLI client = **token leak 风险** + 现有 antigravity 用户 refresh 全坏。Owner 2026-05-27 决策 (R2 verify Option 1): gemini/antigravity 注册改为 geminiAntigravityPausedAdapter, refresh 直接返 `antigravity OAuth wiring pending Owner reactivation: %w ErrFeatureDisabled`, 不发 HTTP 请求 (mock 0 calls 守门)。现有 antigravity 用户在 OCAW 重启前不能 refresh 但也不会 token leak。**Status: Deferred 2026-05-27 commit 78a010a; TestGeminiAntigravityRefreshIsFailClosedUntilReactivation 守门; 后续 OCAW 切片重启 antigravity OAuth wiring 时 close**。
+
+借鉴项目对照 (CLAUDE.md #15, 详细 evidence rows 在 [docs/07_REFERENCE_EVIDENCE_LEDGER.md](07_REFERENCE_EVIDENCE_LEDGER.md) §"Behavior Evidence — Gemini OAuth ClientSecret 借鉴对照"):
+- CLIProxyAPI@21fad9d:internal/auth/gemini/gemini_auth.go:32+180 = ClientSecret 硬编 + 持久化 token 文件 (HUAKAI 不抄, 信任链 invariant)
+- litellm@HEAD:litellm/proxy/management_endpoints/ui_sso.py:2082-2084 = env var GOOGLE_CLIENT_SECRET + missing_vars fail-fast (HUAKAI Option 1 同源)
+- llmgateway@HEAD:apps/api/src/auth/config.ts:613 + .env.example:92 = env var only + docker/helm 集成 (HUAKAI Option 1 同源)
+
+OCAW 重启 Gemini 路径 (Owner 后续切片) 必须:
+1. 决定 antigravity 是否启用 (R-GEM-ANTIGRAVITY-PAUSED-001 解锁)
+2. 决定 mimicry sidecar 是否本切片做 (R-GEM-MIMICRY-001 解锁)
+3. 决定是否启用 HTTPS admin callback (GEM-1+2 默认 allowlist 空, 仅 loopback 接 — 后续 wiring 需要静态注入 admin URL allowlist)
