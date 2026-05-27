@@ -25,13 +25,23 @@ Codex 另标 2 个 S2/S3 全部 DEFERRED 此文档。
   - [backend/internal/credentialworker/adapters/gemini.go:59](../../../backend/internal/credentialworker/adapters/gemini.go#L59) — Gemini refresh adapter
 - 现状: 与本 commit 修复前的 anthropic.go 同病, 取信 credential payload 中的 `client_id` / `oauth_token_endpoint`。
 - 风险评估: 跟 anthropic SSRF 同等级 (S1) 但**不在 ANT-3 范围内**, 范围限定在 anthropic/claude_ai_oauth (Owner 5-26 决定主线只做 claude/gemini/codex 三家, gemini OAuth fake → 真 留 ANT-x 切片)。
-- 收口路径:
-  - 选项 A (推荐, [[feedback_per_slice_ref_recompare]]): gemini OAuth real-OAuth 切片 (类似 ANT-1+2+3 模板) 落地时连带修 SSRF。
-  - 选项 B: 单独开 SSRF-only 切片同时修 openai/gemini/codex 三家 adapter。
+
+#### 2026-05-27 二次评估 — 为何不能 quick fix
+
+尝试在本 session 收尾时 simple-revert (移除 cred fallback) 发现真实阻塞:
+- [mode_refresh.go:73](../../../backend/internal/credentialworker/mode_refresh.go#L73): `adapters.OpenAIRefresh{}` 生产 wiring 是**空配置** (Endpoint/ClientID 全空)。
+- [mode_refresh.go:79-80](../../../backend/internal/credentialworker/mode_refresh.go#L79): `GeminiRefresh{}` 也只设 SourceClientFamily/TierCacheTTL, 没设 Endpoint/ClientID/ClientSecret。
+- 生产**实际靠 credential payload 提供 client_id** (用户 OAuth 登录时浏览器 / CLI 写入 cred)。简单移除 cred fallback 会让所有现存账号 refresh 立断。
+- 真正闭合需类似 ANT-1 模板: 接入 ChatGPT mobile app public ClientID + Google CLI public ClientID 硬编 (清 anthropicoauth.AnthropicPublicCLIClientID 同款), 给 OpenAIRefresh / GeminiRefresh 加 builtin profile + fail-closed validation。
+
+- 收口路径 (修正):
+  - 选项 A (推荐): 等 **gemini OAuth real-OAuth 切片** 落地 (Owner 主线第 2 家) 时连带做, ChatGPT public ClientID 接入同步 OpenAI 那边。
+  - 选项 B: 独立 `S1-D-openai-gemini-builtin-profile` 切片, 先研究 ChatGPT mobile / Google CLI public ClientID 在 CLIProxyAPI / cliproxy 仓库的引用 (类似 anthropic 9d1c250a-... 的硬编值), 然后类 ANT-1 模板做 5 个文件改 (openai/gemini adapter 加 builtin profile, mode_refresh wiring 加 RegisterOrReplace, 加 4 个 mutation 自检 test)。
+
 - Adapter 状态 (codex review 抽样核实):
-  - [codex.go:30](../../../backend/internal/credentialworker/adapters/codex.go#L30): **OK** (已 fail-closed)
-  - [anthropic.go](../../../backend/internal/credentialworker/adapters/anthropic.go): **本 commit 已修**
-  - openai.go / gemini.go: **DEFERRED**
+  - [codex.go:30](../../../backend/internal/credentialworker/adapters/codex.go#L30): **OK** (已 fail-closed — endpoint/clientID/scope 必须 operator config)
+  - [anthropic.go](../../../backend/internal/credentialworker/adapters/anthropic.go): **commit c201cb4 已修**
+  - openai.go / gemini.go: **DEFERRED** (阻塞: 缺 public ClientID built-in profile, 需研究 + 切片实施)
 
 ### S2-DEFERRED: mergeTokenResponse 保留 hostile credential 字段
 
