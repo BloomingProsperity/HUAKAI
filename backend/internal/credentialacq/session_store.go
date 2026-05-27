@@ -115,8 +115,17 @@ func (s *PostgresSessionStore) CreateFromStart(ctx context.Context, in StartInpu
 	if in.Kind == "" {
 		in.Kind = plan.Kind
 	}
-	if NormalizeFlowKind(in.Kind) == "" {
+	in.Kind = NormalizeFlowKind(in.Kind)
+	if in.Kind == "" {
 		return Session{}, ErrInvalidImportBody
+	}
+	// P0 闸门 (Owner 2026-05-26 抓出): 不能让 caller 用任意 flow_kind 绕开
+	// ModePlan.AllowedHelpers。例如 chatgpt_oauth / code_assist / google_one
+	// 这种 OAuth-only mode 不应被 POST /admin/v1/credentials/paste 手工
+	// finalize 替代;CreateFromStart 是 trust 根, 所有调用者 (admin handler /
+	// future API caller) 都要被这层挡住。
+	if len(plan.AllowedHelpers) > 0 && !flowKindAllowed(plan.AllowedHelpers, in.Kind) {
+		return Session{}, fmt.Errorf("%w: %s/%s 不允许 flow_kind=%s; mode-plan 仅允许 %v", ErrFeatureDisabled, in.Vendor, in.AuthMode, in.Kind, plan.AllowedHelpers)
 	}
 	if in.ClientIdentitySource == "" {
 		in.ClientIdentitySource = plan.ClientIdentitySource

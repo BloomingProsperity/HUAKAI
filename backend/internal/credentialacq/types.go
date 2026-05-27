@@ -153,11 +153,11 @@ func DefaultModePlans() []ModePlan {
 		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeAPIKey, Kind: FlowKindPaste, ClientIdentitySource: ClientSourceNone, AllowedHelpers: []FlowKind{FlowKindPaste, FlowKindCSVImport, FlowKindJSONImport}},
 		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeAIOAuth, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindOAuth, FlowKindPaste}},
 		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeCode, Kind: FlowKindCLIImport, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindCLIImport, FlowKindJSONImport}},
-		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeBedrock, Kind: FlowKindPaste, ClientIdentitySource: ClientSourceNone, ManualFirst: true, AllowedHelpers: []FlowKind{FlowKindPaste, FlowKindCloudBootstrap}},
+		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeBedrock, Kind: FlowKindPaste, ClientIdentitySource: ClientSourceNone, ManualFirst: true, AllowedHelpers: []FlowKind{FlowKindPaste, FlowKindCloudBootstrap, FlowKindOAuth}},
 		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeVertexAnthropic, Kind: FlowKindJSONImport, ClientIdentitySource: ClientSourceOperatorConfig, AllowedHelpers: []FlowKind{FlowKindJSONImport, FlowKindCloudBootstrap}},
 		{Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeAPIKey, Kind: FlowKindPaste, ClientIdentitySource: ClientSourceNone, AllowedHelpers: []FlowKind{FlowKindPaste, FlowKindCSVImport, FlowKindJSONImport}},
 		{Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeChatGPTOAuth, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindOAuth}},
-		{Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth, Kind: FlowKindCLIImport, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindCLIImport, FlowKindJSONImport}},
+		{Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth, Kind: FlowKindCLIImport, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindCLIImport, FlowKindJSONImport, FlowKindOAuth}},
 		{Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeAzure, Kind: FlowKindPaste, ClientIdentitySource: ClientSourceOperatorConfig, ManualFirst: true, AllowedHelpers: []FlowKind{FlowKindPaste, FlowKindCloudBootstrap, FlowKindTokenExchange}},
 		{Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeRefreshToken, Kind: FlowKindTokenExchange, ClientIdentitySource: ClientSourcePerAccountOverride, AllowedHelpers: []FlowKind{FlowKindTokenExchange, FlowKindPaste}},
 		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeAIStudioAPIKey, Kind: FlowKindPaste, ClientIdentitySource: ClientSourceNone, AllowedHelpers: []FlowKind{FlowKindPaste, FlowKindCSVImport, FlowKindJSONImport}},
@@ -189,6 +189,20 @@ func NormalizeFlowKind(kind FlowKind) FlowKind {
 	default:
 		return ""
 	}
+}
+
+// flowKindAllowed 判 candidate 是否落在 ModePlan.AllowedHelpers 白名单内。
+// 用于 P0 闸门 — OAuth-only 模式 (chatgpt_oauth / code_assist / google_one
+// 等 AllowedHelpers 仅含 FlowKindOAuth) 必须拒绝 paste / cli-import / json-import
+// 之类的手工绕过路径。Owner 2026-05-26 抓出, 详见 session_store.go CreateFromStart。
+func flowKindAllowed(allowed []FlowKind, candidate FlowKind) bool {
+	candidate = NormalizeFlowKind(candidate)
+	for _, k := range allowed {
+		if NormalizeFlowKind(k) == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func NormalizeFlowStatus(status FlowStatus) FlowStatus {

@@ -16,6 +16,8 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
+	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +29,7 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
+	"github.com/BloomingProsperity/HUAKAI/internal/anthropicoauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
@@ -78,6 +81,89 @@ func TestWiring_AnthropicClaudeAIOAuthKeepsCredentialAcqBuiltinProfile(t *testin
 	if !errors.Is(err, credentialacq.ErrFeatureDisabled) {
 		t.Fatalf("err=%v want ErrFeatureDisabled from credentialacq built-in profile validation", err)
 	}
+}
+
+// ANT-4: 生产 wiring 必须真的调用 installAnthropicClaudeAIOAuthMimicryExchanger
+// 把 default registry 中 nil-client exchanger 替换成带显式 HTTP client 的版本。
+// 这个 test 走 helper 真实路径并注入 mock client, 锁住"如果 wiring.go 删
+// install 调用, 默认 registry 仍是 nil-client → mock 不被命中" 的回归。
+// 判别 mutation: 注释掉 wiring.go installAnthropicClaudeAIOAuthMimicryExchanger
+// 调用 后, 此 test 看到 default registry 走 nil httpClient → http.DefaultClient
+// → 不会命中 panic-DefaultTransport 但 mock client hits=0, 立即变红。
+// installAnthropicClaudeAIOAuthMimicryExchanger 是 ANT-4 wiring 的核心:
+// default registry 起手装 nil-client exchanger, install 必须真把它替换
+// 为带显式 client 的版本。否则生产仍跑 http.DefaultClient 退化 fingerprint。
+//
+// 判别 mutation: 在 wiring.go 注释掉 installAnthropicClaudeAIOAuthMimicryExchanger
+// 调用 — 此 test 看到 Lookup 返的 exchanger.httpClient 仍是 nil
+// (default registry 起手值), 立即变红。
+// 防御范围比 anthropicoauth.DefaultHTTPClient 自身 transport 类型断言
+// 更精准: codex R1 抓的就是"transport 类型测试通过, 但 wiring 不调用 install
+// 仍 PASS"的 false-negative。
+func TestWiring_InstallAnthropicClaudeAIOAuthMimicryExchangerReplacesDefault(t *testing.T) {
+	registry := credentialacq.DefaultExchangerRegistry()
+	modeKey := credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth)
+
+	// 起手 default registry 装的是 nil-client 版本。
+	before, ok := registry.Lookup(modeKey)
+	if !ok {
+		t.Fatal("default registry 必须有 anthropic/claude_ai_oauth 起手 exchanger")
+	}
+	if before == nil {
+		t.Fatal("起手 exchanger 不应是 nil")
+	}
+	if credentialacq.IsClaudeAIOAuthExchangerWithExplicitClient(before) {
+		t.Fatal("起手 default registry 不应装 explicit-client 版本, 否则 install mutation 无法被检出")
+	}
+
+	mockClient := &http.Client{Transport: wiringRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("unreachable in helper-only assertion")
+	})}
+	if err := installAnthropicClaudeAIOAuthMimicryExchanger(registry, mockClient); err != nil {
+		t.Fatalf("installAnthropicClaudeAIOAuthMimicryExchanger: %v", err)
+	}
+
+	after, ok := registry.Lookup(modeKey)
+	if !ok {
+		t.Fatal("install 后 registry Lookup miss")
+	}
+	if !credentialacq.IsClaudeAIOAuthExchangerWithExplicitClient(after) {
+		t.Fatal("install 后 exchanger 仍报告 nil httpClient; helper 没真替换")
+	}
+
+	// wiring 自检函数: 未 install 的 fresh registry 必报错, install 后返 nil。
+	// 这是 production-time fail-loud 防御 (codex R1 抓的 wiring 删 install
+	// 调用 unit test 抓不到), 调 buildGatewayRuntime 时执行。
+	freshRegistry := credentialacq.DefaultExchangerRegistry()
+	if err := assertAnthropicClaudeAIOAuthExchangerHasHTTPClient(freshRegistry); err == nil {
+		t.Fatal("wiring 自检对未 install 的 registry 必须返 error")
+	}
+	if err := assertAnthropicClaudeAIOAuthExchangerHasHTTPClient(registry); err != nil {
+		t.Fatalf("wiring 自检对已 install 的 registry 必须返 nil, got %v", err)
+	}
+
+	// 防回归: anthropicoauth.DefaultHTTPClient 自身仍必须返 mimicry uTLS
+	// transport (HUAKAI 反封禁核心), 否则 production wiring 即使调对 install
+	// 也会注入退化 transport。
+	def := anthropicoauth.DefaultHTTPClient()
+	if def == nil || def.Transport == nil {
+		t.Fatal("anthropicoauth.DefaultHTTPClient 必须为生产 wiring 提供非空 client + transport")
+	}
+	if got := fmt.Sprintf("%T", def.Transport); !strings.Contains(got, "mimicry") {
+		t.Fatalf("default transport=%s, want mimicry uTLS roundTripper", got)
+	}
+
+	// install 接 nil client 必拒, 防止 anthropicoauth.DefaultHTTPClient 退化
+	// 返 nil 时 wiring silently 装废柴 exchanger。
+	if err := installAnthropicClaudeAIOAuthMimicryExchanger(credentialacq.DefaultExchangerRegistry(), nil); err == nil {
+		t.Fatal("install 必须拒 nil client (防 silent 退化到 http.DefaultClient)")
+	}
+}
+
+type wiringRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f wiringRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }
 
 func TestWiring_BuildVendorRefreshersSkipsBlankTokenURL(t *testing.T) {

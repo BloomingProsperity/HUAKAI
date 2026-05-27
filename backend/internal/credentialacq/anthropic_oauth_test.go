@@ -259,6 +259,147 @@ func TestAdminClaudeAIOAuthDefaultRegistryRejectsFakeJSONCode(t *testing.T) {
 	}
 }
 
+// ANT-4 (mimicry transport 注入): NewClaudeAIOAuthExchangerWithClient
+// 接受 caller 注入的 *http.Client, exchangeAuthorizationCodeJSON 必须用它,
+// 不走全局 http.DefaultClient。生产 wiring 用它接 anthropicoauth.DefaultHTTPClient
+// (mimicry uTLS), test 可用它注入 mock 而不污染 http.DefaultTransport。
+// 判别 mutation: 把 e.client() 改回 http.DefaultClient → 注入 client 的
+// hits 计数停在 0, 该 test 立刻变红。
+func TestClaudeAIOAuthExchangerUsesInjectedHTTPClient(t *testing.T) {
+	now := time.Date(2026, 5, 26, 14, 0, 0, 0, time.UTC)
+	store, _ := newClaudeAIOAuthTestStore(t, now)
+	var injectedHits int
+	injected := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		injectedHits++
+		if r.URL.String() != claudeAIOAuthTokenURL {
+			t.Fatalf("token URL=%s want %s", r.URL.String(), claudeAIOAuthTokenURL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"access_token":"AT","refresh_token":"RT","expires_in":3600,"token_type":"Bearer"}`)),
+		}, nil
+	})}
+	exchanger := NewClaudeAIOAuthExchangerWithClient(injected).(claudeAIOAuthExchanger)
+	exchanger.now = func() time.Time { return now }
+
+	// 把 http.DefaultTransport 设为 panic-on-call trip; 若 exchanger 错走
+	// http.DefaultClient 而非 injected, 这条 transport 会被命中并 fail。
+	defer func(old http.RoundTripper) { http.DefaultTransport = old }(http.DefaultTransport)
+	http.DefaultTransport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("exchanger 错走 http.DefaultTransport, 注入的 client 未生效")
+		return nil, errors.New("unreachable")
+	})
+
+	start, err := exchanger.StartOAuthFlow(context.Background(), store, StartInput{
+		TenantID: 1, ProviderAccountID: 999,
+		Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeAIOAuth,
+		ActorID: "owner", ActorRole: "platform_admin",
+	}, OAuthClientConfig{RedirectURI: "https://huakai.example.test/admin/oauth/anthropic/callback"})
+	if err != nil {
+		t.Fatalf("StartOAuthFlow: %v", err)
+	}
+
+	registry := NewExchangerRegistry()
+	if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth), exchanger); err != nil {
+		t.Fatalf("RegisterExchanger: %v", err)
+	}
+	_, _, err = CompleteOAuthCallbackWithRegistry(context.Background(), store, start.Session.ID, start.State, "ant4-real-code", registry)
+	if err != nil {
+		t.Fatalf("CompleteOAuthCallbackWithRegistry: %v", err)
+	}
+	if injectedHits != 1 {
+		t.Fatalf("injected client hits=%d want 1 (exchanger 没用注入 client)", injectedHits)
+	}
+}
+
+// Owner 2026-05-26 抓出 P1 SSRF: operator-config 路径的 oauth endpoint URL
+// 校验只看非空,没 enforce scheme/host;caller 可写 http:// 或 127.0.0.1 或
+// metadata IP 让 client_secret/code/verifier 漏到攻击者地址。新加
+// validateOAuthEndpointURL 做静态闸门。
+// 判别 mutation: 删 validateOAuthEndpointURL 调用 → test 立刻接受 attacker URL 红。
+func TestOperatorOAuthConfigRejectsSSRFEndpoints(t *testing.T) {
+	cases := []struct {
+		name, authURL, tokenURL string
+	}{
+		{name: "http_scheme", authURL: "http://attacker.example/authorize", tokenURL: "https://attacker.example/token"},
+		{name: "loopback_host", authURL: "https://attacker.example/authorize", tokenURL: "https://127.0.0.1/token"},
+		{name: "private_net", authURL: "https://192.168.1.10/authorize", tokenURL: "https://api.example/token"},
+		{name: "localhost_name", authURL: "https://api.example/authorize", tokenURL: "https://localhost/token"},
+		{name: "metadata_ip", authURL: "https://api.example/authorize", tokenURL: "https://169.254.169.254/token"},
+		{name: "metadata_dns", authURL: "https://metadata.google.internal/authorize", tokenURL: "https://api.example/token"},
+		{name: "link_local", authURL: "https://api.example/authorize", tokenURL: "https://[fe80::1]/token"},
+		{name: "data_url", authURL: "data:text/plain,attacker", tokenURL: "https://api.example/token"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := OAuthClientConfig{
+				Source: ClientSourceOperatorConfig, ClientID: "cid",
+				AuthURL: tc.authURL, TokenURL: tc.tokenURL,
+				RedirectURI: "https://huakai.example.test/callback",
+				Scopes:      []string{"profile"},
+			}
+			err := validateOperatorPKCEConfig("gemini", "oauth", cfg)
+			if !errors.Is(err, ErrFeatureDisabled) {
+				t.Fatalf("err=%v want ErrFeatureDisabled for SSRF-suspicious endpoint", err)
+			}
+		})
+	}
+
+	// 反向控制: 合法 operator 配置 (https + 公网 host) 必须通过, 否则我们是过严。
+	ok := OAuthClientConfig{
+		Source: ClientSourceOperatorConfig, ClientID: "cid",
+		AuthURL: "https://accounts.google.com/o/oauth2/v2/auth", TokenURL: "https://oauth2.googleapis.com/token",
+		RedirectURI: "https://huakai.example.test/callback",
+		Scopes:      []string{"profile"},
+	}
+	if err := validateOperatorPKCEConfig("gemini", "oauth", ok); err != nil {
+		t.Fatalf("合法 operator OAuth 配置被错误拒绝: %v", err)
+	}
+}
+
+// Owner 2026-05-26 抓出 P0: OAuth-only 模式 (chatgpt_oauth / code_assist /
+// google_one) 可被 caller 传 flow_kind=paste 直接 finalize 绕过 OAuth。
+// CreateFromStart 必须 enforce ModePlan.AllowedHelpers 白名单。
+// 判别 mutation: 删 CreateFromStart 中的 flowKindAllowed 检查, 该 test
+// 立即变红 — chatgpt_oauth 接受 paste session 创建, 漏洞复现。
+func TestOAuthOnlyModeRejectsPasteSessionStart(t *testing.T) {
+	now := time.Date(2026, 5, 26, 15, 0, 0, 0, time.UTC)
+	store, _ := newClaudeAIOAuthTestStore(t, now)
+
+	cases := []struct {
+		name, vendor, authMode string
+		flowKind               FlowKind
+	}{
+		{name: "openai_chatgpt_oauth_paste", vendor: credentialstore.VendorOpenAI, authMode: credentialstore.AuthModeChatGPTOAuth, flowKind: FlowKindPaste},
+		{name: "openai_chatgpt_oauth_cli_import", vendor: credentialstore.VendorOpenAI, authMode: credentialstore.AuthModeChatGPTOAuth, flowKind: FlowKindCLIImport},
+		{name: "gemini_code_assist_paste", vendor: credentialstore.VendorGemini, authMode: credentialstore.AuthModeCodeAssist, flowKind: FlowKindPaste},
+		{name: "gemini_google_one_json_import", vendor: credentialstore.VendorGemini, authMode: credentialstore.AuthModeGoogleOne, flowKind: FlowKindJSONImport},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := store.CreateFromStart(context.Background(), StartInput{
+				TenantID: 1, ProviderAccountID: 777,
+				Vendor: tc.vendor, AuthMode: tc.authMode, Kind: tc.flowKind,
+				ActorID: "owner", ActorRole: "platform_admin",
+			})
+			if !errors.Is(err, ErrFeatureDisabled) {
+				t.Fatalf("err=%v want ErrFeatureDisabled; OAuth-only 模式不应接受 %s 绕过", err, tc.flowKind)
+			}
+		})
+	}
+
+	// 反向控制: 同样 vendor/auth_mode 但用合法 flow_kind=oauth 必须通过 (start 进入
+	// StatusStarted), 否则我们是过严而不是分辨真假。
+	if _, err := store.CreateFromStart(context.Background(), StartInput{
+		TenantID: 1, ProviderAccountID: 778,
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeChatGPTOAuth,
+		Kind: FlowKindOAuth, ActorID: "owner", ActorRole: "platform_admin",
+	}); err != nil {
+		t.Fatalf("合法 OAuth 路径被错误拒绝: %v", err)
+	}
+}
+
 func newClaudeAIOAuthTestStore(t *testing.T, now time.Time) (*PostgresSessionStore, *testSessionDB) {
 	t.Helper()
 	keys, err := credentialstore.NewStaticKeyProvider("test-v1", []byte(strings.Repeat("c", 32)))

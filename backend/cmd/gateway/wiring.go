@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 
@@ -275,6 +276,16 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	credentialStore := credentialstore.NewStore(pgPool, credentialKeys, credentialstore.DefaultHandlerRegistry())
 	credentialAcqStore := credentialacq.NewPostgresSessionStoreWithKeys(pgPool, credentialKeys)
 	credentialExchangers := credentialacq.DefaultExchangerRegistry()
+	if err := installAnthropicClaudeAIOAuthMimicryExchanger(credentialExchangers, anthropicoauth.DefaultHTTPClient()); err != nil {
+		return nil, fmt.Errorf("register anthropic claude_ai_oauth exchanger with mimicry: %w", err)
+	}
+	// ANT-4 fail-loud: wiring 启动时立即自检 install 真把 default registry
+	// 中的 nil-client exchanger 替换为带显式 HTTP client 的版本。删除 install
+	// 调用或 helper 实现退化时这里直接 return error, 进程拒启动 (生产 fingerprint
+	// 失效是 S0 级事故, 不能 silently 退化)。
+	if err := assertAnthropicClaudeAIOAuthExchangerHasHTTPClient(credentialExchangers); err != nil {
+		return nil, fmt.Errorf("anthropic claude_ai_oauth mimicry wiring self-check: %w", err)
+	}
 	emailSettingsStore := mailinfra.NewPostgresSettingsStore(pgPool)
 	if releaseModeProduction() {
 		if err := mailinfra.ValidateProductionReleaseGate(ctx, emailSettingsStore, credentialKeys); err != nil {
@@ -483,6 +494,43 @@ func loadHermesInternalSharedSecret() ([]byte, error) {
 		return nil, fmt.Errorf("%w: %s is required for Hermes internal routes", hermes.ErrMisconfigured, hermes.RunnerInternalSharedSecretEnv)
 	}
 	return []byte(secret), nil
+}
+
+// installAnthropicClaudeAIOAuthMimicryExchanger 把 default ExchangerRegistry
+// 中 anthropic/claude_ai_oauth 条目替换成带显式 HTTP client 的版本。生产
+// wiring 传 anthropicoauth.DefaultHTTPClient() 接 mimicry uTLS sidecar
+// (profile anthropic_cli_mimicry_v1); 测试可注入 mock client 验证替换
+// 真正生效 — 这是 ANT-4 的判别 fixture, 防止"忘调用该函数"的回归 (codex
+// R1 抓出 wiring 直接 inline 时 wiring_test 杀不掉 mutation 的问题)。
+func installAnthropicClaudeAIOAuthMimicryExchanger(registry *credentialacq.ExchangerRegistry, client *http.Client) error {
+	if registry == nil {
+		return fmt.Errorf("nil exchanger registry")
+	}
+	if client == nil {
+		return fmt.Errorf("nil http client (mimicry transport missing — 不允许 silently 退化到 http.DefaultClient)")
+	}
+	return registry.RegisterOrReplaceExchanger(
+		credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth),
+		credentialacq.NewClaudeAIOAuthExchangerWithClient(client),
+	)
+}
+
+// assertAnthropicClaudeAIOAuthExchangerHasHTTPClient 在 wiring 完成 install
+// 后立即自检 default registry 中 anthropic/claude_ai_oauth 真被替换成带显式
+// HTTP client 的版本。删除 install 调用或 helper 退化时进程拒启动 — 比单元
+// test 更稳, 因为 unit test 隔离调 helper, 看不到 wiring 是否真调用 helper。
+func assertAnthropicClaudeAIOAuthExchangerHasHTTPClient(registry *credentialacq.ExchangerRegistry) error {
+	if registry == nil {
+		return fmt.Errorf("nil exchanger registry")
+	}
+	exc, ok := registry.Lookup(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth))
+	if !ok {
+		return fmt.Errorf("anthropic/claude_ai_oauth exchanger missing from registry after install")
+	}
+	if !credentialacq.IsClaudeAIOAuthExchangerWithExplicitClient(exc) {
+		return fmt.Errorf("anthropic/claude_ai_oauth exchanger has nil httpClient — install 未生效, 生产将退化为 http.DefaultClient 失去 mimicry uTLS")
+	}
+	return nil
 }
 
 func buildAuditRefPolicy(cfg *runtimeconfig.EventBusConfig) *eventbus.AuditRefPolicy {
