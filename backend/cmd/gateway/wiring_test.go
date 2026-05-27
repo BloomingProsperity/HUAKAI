@@ -28,8 +28,8 @@ import (
 	"go.uber.org/zap/zaptest"
 	"go.uber.org/zap/zaptest/observer"
 
-	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/anthropicoauth"
+	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
@@ -157,6 +157,49 @@ func TestWiring_InstallAnthropicClaudeAIOAuthMimicryExchangerReplacesDefault(t *
 	// 返 nil 时 wiring silently 装废柴 exchanger。
 	if err := installAnthropicClaudeAIOAuthMimicryExchanger(credentialacq.DefaultExchangerRegistry(), nil); err == nil {
 		t.Fatal("install 必须拒 nil client (防 silent 退化到 http.DefaultClient)")
+	}
+}
+
+func TestWiring_InstallGeminiPublicCLIOAuthExchangersReplacesDefault(t *testing.T) {
+	// 缺陷：Gemini code_assist/google_one 若 production wiring 没注入受控 HTTP client，
+	// helper-level 单测仍可能通过，但启动链路会 silent 退化。
+	// 判别 mutation：注释掉 installGeminiPublicCLIOAuthExchangers 调用或让 assert 漏掉任一 mode 时，本测试必须变红。
+	registry := credentialacq.DefaultExchangerRegistry()
+	modes := []string{credentialstore.AuthModeCodeAssist, credentialstore.AuthModeGoogleOne}
+	for _, mode := range modes {
+		exc, ok := registry.Lookup(credentialstore.ModeKey(credentialstore.VendorGemini, mode))
+		if !ok {
+			t.Fatalf("default registry missing gemini/%s exchanger", mode)
+		}
+		if credentialacq.IsGeminiPublicCLIOAuthExchangerWithExplicitClient(exc) {
+			t.Fatalf("default registry gemini/%s should start without explicit client for mutation visibility", mode)
+		}
+	}
+
+	mockClient := &http.Client{Transport: wiringRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("unreachable in helper-only assertion")
+	})}
+	if err := installGeminiPublicCLIOAuthExchangers(registry, mockClient); err != nil {
+		t.Fatalf("installGeminiPublicCLIOAuthExchangers: %v", err)
+	}
+	for _, mode := range modes {
+		exc, ok := registry.Lookup(credentialstore.ModeKey(credentialstore.VendorGemini, mode))
+		if !ok {
+			t.Fatalf("installed registry missing gemini/%s exchanger", mode)
+		}
+		if !credentialacq.IsGeminiPublicCLIOAuthExchangerWithExplicitClient(exc) {
+			t.Fatalf("installed gemini/%s exchanger still has nil httpClient", mode)
+		}
+	}
+
+	if err := assertGeminiPublicCLIOAuthExchangersHaveHTTPClient(credentialacq.DefaultExchangerRegistry()); err == nil {
+		t.Fatal("wiring 自检对未 install 的 Gemini registry 必须返 error")
+	}
+	if err := assertGeminiPublicCLIOAuthExchangersHaveHTTPClient(registry); err != nil {
+		t.Fatalf("wiring 自检对已 install 的 Gemini registry 必须返 nil, got %v", err)
+	}
+	if err := installGeminiPublicCLIOAuthExchangers(credentialacq.DefaultExchangerRegistry(), nil); err == nil {
+		t.Fatal("install 必须拒 nil Gemini OAuth client")
 	}
 }
 

@@ -279,12 +279,18 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err := installAnthropicClaudeAIOAuthMimicryExchanger(credentialExchangers, anthropicoauth.DefaultHTTPClient()); err != nil {
 		return nil, fmt.Errorf("register anthropic claude_ai_oauth exchanger with mimicry: %w", err)
 	}
+	if err := installGeminiPublicCLIOAuthExchangers(credentialExchangers, auth.NewSSRFProtectedOAuthClient(http.DefaultClient)); err != nil {
+		return nil, fmt.Errorf("register gemini public CLI oauth exchangers: %w", err)
+	}
 	// ANT-4 fail-loud: wiring 启动时立即自检 install 真把 default registry
 	// 中的 nil-client exchanger 替换为带显式 HTTP client 的版本。删除 install
 	// 调用或 helper 实现退化时这里直接 return error, 进程拒启动 (生产 fingerprint
 	// 失效是 S0 级事故, 不能 silently 退化)。
 	if err := assertAnthropicClaudeAIOAuthExchangerHasHTTPClient(credentialExchangers); err != nil {
 		return nil, fmt.Errorf("anthropic claude_ai_oauth mimicry wiring self-check: %w", err)
+	}
+	if err := assertGeminiPublicCLIOAuthExchangersHaveHTTPClient(credentialExchangers); err != nil {
+		return nil, fmt.Errorf("gemini public CLI oauth wiring self-check: %w", err)
 	}
 	emailSettingsStore := mailinfra.NewPostgresSettingsStore(pgPool)
 	if releaseModeProduction() {
@@ -529,6 +535,46 @@ func assertAnthropicClaudeAIOAuthExchangerHasHTTPClient(registry *credentialacq.
 	}
 	if !credentialacq.IsClaudeAIOAuthExchangerWithExplicitClient(exc) {
 		return fmt.Errorf("anthropic/claude_ai_oauth exchanger has nil httpClient — install 未生效, 生产将退化为 http.DefaultClient 失去 mimicry uTLS")
+	}
+	return nil
+}
+
+// installGeminiPublicCLIOAuthExchangers 把默认 registry 中 Gemini code_assist /
+// google_one 条目替换为带显式 OAuth-grade HTTP client 的版本。client 由调用方
+// 构造，生产 wiring 传 auth.NewSSRFProtectedOAuthClient，测试可传 mock client。
+func installGeminiPublicCLIOAuthExchangers(registry *credentialacq.ExchangerRegistry, client *http.Client) error {
+	if registry == nil {
+		return fmt.Errorf("nil exchanger registry")
+	}
+	if client == nil {
+		return fmt.Errorf("nil http client (gemini OAuth transport missing)")
+	}
+	for _, mode := range []string{credentialstore.AuthModeCodeAssist, credentialstore.AuthModeGoogleOne} {
+		if err := registry.RegisterOrReplaceExchanger(
+			credentialstore.ModeKey(credentialstore.VendorGemini, mode),
+			credentialacq.NewGeminiPublicCLIOAuthExchangerWithClient(mode, client),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// assertGeminiPublicCLIOAuthExchangersHaveHTTPClient 在 wiring 完成 install 后
+// 立即自检 Gemini OAuth exchanger 已注入 HTTP client。删除 install 调用或漏
+// 任一 auth mode 时进程拒启动，防止 callback 交换链路 silent 退化。
+func assertGeminiPublicCLIOAuthExchangersHaveHTTPClient(registry *credentialacq.ExchangerRegistry) error {
+	if registry == nil {
+		return fmt.Errorf("nil exchanger registry")
+	}
+	for _, mode := range []string{credentialstore.AuthModeCodeAssist, credentialstore.AuthModeGoogleOne} {
+		exc, ok := registry.Lookup(credentialstore.ModeKey(credentialstore.VendorGemini, mode))
+		if !ok {
+			return fmt.Errorf("gemini/%s exchanger missing from registry after install", mode)
+		}
+		if !credentialacq.IsGeminiPublicCLIOAuthExchangerWithExplicitClient(exc) {
+			return fmt.Errorf("gemini/%s exchanger has nil httpClient — install 未生效", mode)
+		}
 	}
 	return nil
 }

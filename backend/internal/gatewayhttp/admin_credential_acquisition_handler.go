@@ -42,12 +42,13 @@ type credentialAcqStartRequest struct {
 }
 
 type oauthClientRequest struct {
-	ClientID    string   `json:"client_id,omitempty"`
-	AuthURL     string   `json:"auth_url,omitempty"`
-	TokenURL    string   `json:"token_url,omitempty"`
-	RedirectURI string   `json:"redirect_uri,omitempty"`
-	Scopes      []string `json:"scopes,omitempty"`
-	Source      string   `json:"source,omitempty"`
+	ClientID     string   `json:"client_id,omitempty"`
+	ClientSecret string   `json:"client_secret,omitempty"`
+	AuthURL      string   `json:"auth_url,omitempty"`
+	TokenURL     string   `json:"token_url,omitempty"`
+	RedirectURI  string   `json:"redirect_uri,omitempty"`
+	Scopes       []string `json:"scopes,omitempty"`
+	Source       string   `json:"source,omitempty"`
 }
 
 type credentialAcqCallbackRequest struct {
@@ -354,10 +355,10 @@ func createOrStartCredentialAcqSession(ctx context.Context, d AdminCredentialAcq
 	}
 	if start.Kind == credentialacq.FlowKindOAuth {
 		oauthReq := req.OAuthClient
-		result, err := credentialacq.StartOAuthFlow(ctx, d.Sessions, start, credentialacq.OAuthClientConfig{
-			ClientID: oauthReq.ClientID, AuthURL: oauthReq.AuthURL, TokenURL: oauthReq.TokenURL,
+		result, err := credentialacq.StartOAuthFlowWithRegistry(ctx, d.Sessions, start, credentialacq.OAuthClientConfig{
+			ClientID: oauthReq.ClientID, ClientSecret: oauthReq.ClientSecret, AuthURL: oauthReq.AuthURL, TokenURL: oauthReq.TokenURL,
 			RedirectURI: firstNonEmptyGateway(oauthReq.RedirectURI, req.RedirectURI), Scopes: oauthReq.Scopes, Source: oauthReq.Source,
-		})
+		}, d.Exchangers)
 		if err == nil {
 			_ = credentialacq.EmitLifecycleAudit(ctx, d.CredentialAudit, result.Session, credentialacq.EventStarted, 0, start.ActorID, "", nil)
 		}
