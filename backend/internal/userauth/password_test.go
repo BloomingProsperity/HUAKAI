@@ -28,6 +28,12 @@ func TestParsePasswordHashRejectsOutOfRangeParams(t *testing.T) {
 		{name: "parallelism_huge_p_65535", encoded: "$argon2id$v=19$m=65536,t=3,p=65535$" + validSalt + "$" + validKey, wantErr: true},
 		{name: "memory_dos_above_1gib", encoded: "$argon2id$v=19$m=1048577,t=3,p=1$" + validSalt + "$" + validKey, wantErr: true},
 		{name: "iteration_dos_above_100", encoded: "$argon2id$v=19$m=65536,t=101,p=1$" + validSalt + "$" + validKey, wantErr: true},
+		// Owner 2026-05-27 二次抓: 0 值原本被 normalizePasswordPolicy 兜底成
+		// default, 攻击者可写 m=0/t=0/p=0 让 hash 校验静默走 default。修复
+		// 把 0 视为非法。
+		{name: "memory_zero_must_reject", encoded: "$argon2id$v=19$m=0,t=3,p=1$" + validSalt + "$" + validKey, wantErr: true},
+		{name: "iteration_zero_must_reject", encoded: "$argon2id$v=19$m=65536,t=0,p=1$" + validSalt + "$" + validKey, wantErr: true},
+		{name: "parallelism_zero_must_reject", encoded: "$argon2id$v=19$m=65536,t=3,p=0$" + validSalt + "$" + validKey, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

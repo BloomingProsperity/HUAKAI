@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 )
 
 type authorizationCodeOAuthExchanger struct {
@@ -112,13 +114,16 @@ func (e authorizationCodeOAuthExchanger) exchangeAuthorizationCode(ctx context.C
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	client := e.client
 	if client == nil {
-		client = http.DefaultClient
+		// P1 深层 SSRF / DNS-rebind 防御 (Owner 2026-05-27 抓出 真修, 非
+		// DEFERRED 尾巴): 默认 (生产 wiring 未注入 custom client) 走
+		// SSRF-protected stdlib client — transport.Proxy=nil + DialContext
+		// 拨号校验目标 IP 非 loopback/private/link-local/metadata + CheckRedirect
+		// 禁 3xx, 关 DNS-rebind 攻击面 (静态层 commit 39c66a3 已落地)。
+		// caller 注入 custom client (test mock RoundTripper) 时, 走 caller
+		// 自带的 client; production wiring 应注入 SSRF-protected client (例 anthropicoauth.DefaultHTTPClient
+		// 的 mimicry uTLS 也实现了 OAuth-grade defense)。
+		client = auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
 	}
-	// P1 深层 SSRF / DNS-rebind 防御 DEFERRED 到 follow-up 切片:
-	// validateOperatorPKCEConfig 已封 caller 直接写 attacker URL (静态层);
-	// 深层 dial-time guard 复用 auth.NewSSRFProtectedOAuthClient 要求 OAuth
-	// 测试 fixture 用真公网 host 或 mock lookupOAuthIPAddrs, 改造跨多 vendor
-	// adapter 测试范围较广, 进 docs/process/reviews/DEFERRED-anthropic-claude-oauth-p1-deep-ssrf.md。
 	resp, err := client.Do(req)
 	if err != nil {
 		return oauthTokenResponse{}, err
