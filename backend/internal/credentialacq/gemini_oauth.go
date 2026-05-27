@@ -17,9 +17,11 @@ import (
 )
 
 const (
-	geminiPublicCLIClientID     = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
+	GeminiPublicCLIClientID     = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
+	DefaultGeminiTokenEndpoint  = "https://oauth2.googleapis.com/token"
+	geminiPublicCLIClientID     = GeminiPublicCLIClientID
 	geminiOAuthAuthURL          = "https://accounts.google.com/o/oauth2/v2/auth"
-	geminiOAuthTokenURL         = "https://oauth2.googleapis.com/token"
+	geminiOAuthTokenURL         = DefaultGeminiTokenEndpoint
 	geminiOAuthScope            = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile"
 	geminiOAuthLoopbackRedirect = "http://localhost:8085/oauth2callback"
 	geminiApprovedProfileSource = "approved_builtin_profile_gemini_public_cli"
@@ -31,6 +33,7 @@ type geminiPublicCLIOAuthExchanger struct {
 	now                         func() time.Time
 	httpClient                  *http.Client
 	authMode                    string
+	clientSecret                string
 	httpsAdminCallbackAllowlist []string
 }
 
@@ -39,9 +42,19 @@ func newGeminiPublicCLIOAuthExchanger(authMode string) geminiPublicCLIOAuthExcha
 }
 
 // NewGeminiPublicCLIOAuthExchangerWithClient 返回已注入 HTTP client 的 Gemini exchanger。
-// 生产 wiring 用它接入受控 OAuth transport；测试用它注入 mock client。
+// 兼容旧测试/调用点；未注入 env secret 时 StartOAuthFlow 会 fail-closed。
 func NewGeminiPublicCLIOAuthExchangerWithClient(authMode string, client *http.Client) Exchanger {
 	return geminiPublicCLIOAuthExchanger{authMode: strings.TrimSpace(authMode), httpClient: client}
+}
+
+// NewGeminiPublicCLIOAuthExchangerWithClientAndSecret 返回已注入 HTTP client
+// 和 operator env secret 的 Gemini exchanger。生产 wiring 只允许走该入口。
+func NewGeminiPublicCLIOAuthExchangerWithClientAndSecret(authMode string, client *http.Client, secret string) Exchanger {
+	return geminiPublicCLIOAuthExchanger{
+		authMode:     strings.TrimSpace(authMode),
+		httpClient:   client,
+		clientSecret: strings.TrimSpace(secret),
+	}
 }
 
 // NewGeminiPublicCLIOAuthExchangerWithClientAndAdminCallbackAllowlist 返回带
@@ -51,6 +64,17 @@ func NewGeminiPublicCLIOAuthExchangerWithClientAndAdminCallbackAllowlist(authMod
 	return geminiPublicCLIOAuthExchanger{
 		authMode:                    strings.TrimSpace(authMode),
 		httpClient:                  client,
+		httpsAdminCallbackAllowlist: cloneTrimmedStrings(allowlist),
+	}
+}
+
+// NewGeminiPublicCLIOAuthExchangerWithClientSecretAndAdminCallbackAllowlist
+// 返回同时注入 env secret 与静态 admin callback allowlist 的 Gemini exchanger。
+func NewGeminiPublicCLIOAuthExchangerWithClientSecretAndAdminCallbackAllowlist(authMode string, client *http.Client, secret string, allowlist []string) Exchanger {
+	return geminiPublicCLIOAuthExchanger{
+		authMode:                    strings.TrimSpace(authMode),
+		httpClient:                  client,
+		clientSecret:                strings.TrimSpace(secret),
 		httpsAdminCallbackAllowlist: cloneTrimmedStrings(allowlist),
 	}
 }
@@ -67,6 +91,9 @@ func IsGeminiPublicCLIOAuthExchangerWithExplicitClient(exc Exchanger) bool {
 
 func (e geminiPublicCLIOAuthExchanger) StartOAuthFlow(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig) (OAuthStartResult, error) {
 	cfg = geminiBuiltinProfileConfig(cfg)
+	// Owner 2026-05-27：Gemini public CLI client_secret 只来自生产 wiring
+	// 注入的 HUAKAI_GEMINI_OAUTH_CLIENT_SECRET，忽略 caller/request body。
+	cfg.ClientSecret = strings.TrimSpace(e.clientSecret)
 	if err := e.validateBuiltinProfile(cfg); err != nil {
 		return OAuthStartResult{}, err
 	}

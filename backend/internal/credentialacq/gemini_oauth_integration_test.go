@@ -34,7 +34,7 @@ func TestGeminiCodeAssistAdminCallbackEndToEnd(t *testing.T) {
 		}, nil
 	})}
 	adminCallbackAllowlist := []string{"https://huakai.example/admin/v1/credentials/oauth-callback"}
-	exchanger := NewGeminiPublicCLIOAuthExchangerWithClientAndAdminCallbackAllowlist(credentialstore.AuthModeCodeAssist, client, adminCallbackAllowlist).(geminiPublicCLIOAuthExchanger)
+	exchanger := NewGeminiPublicCLIOAuthExchangerWithClientSecretAndAdminCallbackAllowlist(credentialstore.AuthModeCodeAssist, client, "operator-secret", adminCallbackAllowlist).(geminiPublicCLIOAuthExchanger)
 	exchanger.now = func() time.Time { return now }
 	registry := NewExchangerRegistry()
 	if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist), exchanger); err != nil {
@@ -42,8 +42,7 @@ func TestGeminiCodeAssistAdminCallbackEndToEnd(t *testing.T) {
 	}
 
 	start, err := exchanger.StartOAuthFlow(context.Background(), store, geminiStartInput(credentialstore.AuthModeCodeAssist, 801), OAuthClientConfig{
-		ClientSecret: "operator-secret",
-		RedirectURI:  "https://huakai.example/admin/v1/credentials/oauth-callback",
+		RedirectURI: "https://huakai.example/admin/v1/credentials/oauth-callback",
 	})
 	if err != nil {
 		t.Fatalf("StartOAuthFlow: %v", err)

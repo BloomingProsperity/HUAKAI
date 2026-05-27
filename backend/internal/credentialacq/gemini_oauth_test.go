@@ -53,11 +53,9 @@ func TestGeminiBuiltinProfileRejectsOverriddenClientID(t *testing.T) {
 // 判别 mutation：删除 access_type=offline 或 prompt=consent 任何一个设置时，本测试必须变红。
 func TestGeminiStartOAuthFlowRequestsOfflineAccessAndConsent(t *testing.T) {
 	store, _ := newGeminiOAuthTestStore(t, time.Date(2026, 5, 27, 8, 20, 0, 0, time.UTC))
-	exchanger := newGeminiPublicCLIOAuthExchanger(credentialstore.AuthModeCodeAssist)
+	exchanger := NewGeminiPublicCLIOAuthExchangerWithClientAndSecret(credentialstore.AuthModeCodeAssist, nil, "operator-secret").(geminiPublicCLIOAuthExchanger)
 
-	start, err := exchanger.StartOAuthFlow(context.Background(), store, geminiStartInput(credentialstore.AuthModeCodeAssist, 704), OAuthClientConfig{
-		ClientSecret: "operator-secret",
-	})
+	start, err := exchanger.StartOAuthFlow(context.Background(), store, geminiStartInput(credentialstore.AuthModeCodeAssist, 704), OAuthClientConfig{})
 	if err != nil {
 		t.Fatalf("StartOAuthFlow: %v", err)
 	}
@@ -71,6 +69,38 @@ func TestGeminiStartOAuthFlowRequestsOfflineAccessAndConsent(t *testing.T) {
 	}
 	if got := q.Get("prompt"); got != "consent" {
 		t.Fatalf("prompt=%q want consent; authorize_url=%s", got, start.AuthorizeURL)
+	}
+}
+
+// 缺陷：Gemini public CLI client_secret 若来自 StartOAuthFlow caller config，
+// admin request body 可绕过 operator env secret。判别 mutation：把 cfg.ClientSecret
+// 写回 stored PKCE payload 时，本测试必须变红。
+func TestGeminiPublicCLIOAuthExchangerStoresInjectedClientSecret(t *testing.T) {
+	store, _ := newGeminiOAuthTestStore(t, time.Date(2026, 5, 27, 10, 10, 0, 0, time.UTC))
+	exchanger := NewGeminiPublicCLIOAuthExchangerWithClientAndSecret(
+		credentialstore.AuthModeCodeAssist,
+		&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			t.Fatal("token endpoint must not be called during OAuth start")
+			return nil, errors.New("unreachable")
+		})},
+		"from-env",
+	).(geminiPublicCLIOAuthExchanger)
+
+	start, err := exchanger.StartOAuthFlow(context.Background(), store, geminiStartInput(credentialstore.AuthModeCodeAssist, 706), OAuthClientConfig{
+		ClientSecret: "from-request",
+	})
+	if err != nil {
+		t.Fatalf("StartOAuthFlow: %v", err)
+	}
+	stored, err := decryptStoredPKCEPayload(context.Background(), store, start.Session)
+	if err != nil {
+		t.Fatalf("decrypt stored PKCE payload: %v", err)
+	}
+	if stored.ClientSecret != "from-env" {
+		t.Fatalf("stored ClientSecret=%q want env-injected secret", stored.ClientSecret)
+	}
+	if stored.ClientSecret == "from-request" {
+		t.Fatal("request client_secret leaked into stored PKCE payload")
 	}
 }
 
@@ -171,16 +201,14 @@ func TestGeminiOAuthCallbackPostsAuthorizationCodeToConfiguredTokenEndpoint(t *t
 			Body:       io.NopCloser(strings.NewReader(`{"access_token":"gem-access","refresh_token":"gem-refresh","scope":"profile email","expires_in":1800,"token_type":"Bearer"}`)),
 		}, nil
 	})}
-	exchanger := NewGeminiPublicCLIOAuthExchangerWithClient(credentialstore.AuthModeCodeAssist, client).(geminiPublicCLIOAuthExchanger)
+	exchanger := NewGeminiPublicCLIOAuthExchangerWithClientAndSecret(credentialstore.AuthModeCodeAssist, client, "operator-secret").(geminiPublicCLIOAuthExchanger)
 	exchanger.now = func() time.Time { return now }
 
 	registry := NewExchangerRegistry()
 	if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist), exchanger); err != nil {
 		t.Fatalf("RegisterExchanger: %v", err)
 	}
-	start, err := exchanger.StartOAuthFlow(context.Background(), store, geminiStartInput(credentialstore.AuthModeCodeAssist, 701), OAuthClientConfig{
-		ClientSecret: "operator-secret",
-	})
+	start, err := exchanger.StartOAuthFlow(context.Background(), store, geminiStartInput(credentialstore.AuthModeCodeAssist, 701), OAuthClientConfig{})
 	if err != nil {
 		t.Fatalf("StartOAuthFlow: %v", err)
 	}
@@ -215,11 +243,9 @@ func TestGeminiOAuthCallbackRequiresRefreshTokenInResponse(t *testing.T) {
 			Body:       io.NopCloser(strings.NewReader(`{"access_token":"AT-without-refresh","expires_in":3600,"token_type":"Bearer"}`)),
 		}, nil
 	})}
-	exchanger := NewGeminiPublicCLIOAuthExchangerWithClient(credentialstore.AuthModeCodeAssist, client).(geminiPublicCLIOAuthExchanger)
+	exchanger := NewGeminiPublicCLIOAuthExchangerWithClientAndSecret(credentialstore.AuthModeCodeAssist, client, "operator-secret").(geminiPublicCLIOAuthExchanger)
 	exchanger.now = func() time.Time { return now }
-	start, err := exchanger.StartOAuthFlow(context.Background(), store, geminiStartInput(credentialstore.AuthModeCodeAssist, 705), OAuthClientConfig{
-		ClientSecret: "operator-secret",
-	})
+	start, err := exchanger.StartOAuthFlow(context.Background(), store, geminiStartInput(credentialstore.AuthModeCodeAssist, 705), OAuthClientConfig{})
 	if err != nil {
 		t.Fatalf("StartOAuthFlow: %v", err)
 	}
@@ -245,15 +271,13 @@ func TestGeminiOAuthCallbackSetsClientIdentitySourceInRedactedContext(t *testing
 			Body:       io.NopCloser(strings.NewReader(`{"access_token":"AT","refresh_token":"RT","expires_in":3600}`)),
 		}, nil
 	})}
-	exchanger := NewGeminiPublicCLIOAuthExchangerWithClient(credentialstore.AuthModeGoogleOne, client).(geminiPublicCLIOAuthExchanger)
+	exchanger := NewGeminiPublicCLIOAuthExchangerWithClientAndSecret(credentialstore.AuthModeGoogleOne, client, "operator-secret").(geminiPublicCLIOAuthExchanger)
 	exchanger.now = func() time.Time { return now }
 	registry := NewExchangerRegistry()
 	if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne), exchanger); err != nil {
 		t.Fatalf("RegisterExchanger: %v", err)
 	}
-	start, err := exchanger.StartOAuthFlow(context.Background(), store, geminiStartInput(credentialstore.AuthModeGoogleOne, 702), OAuthClientConfig{
-		ClientSecret: "operator-secret",
-	})
+	start, err := exchanger.StartOAuthFlow(context.Background(), store, geminiStartInput(credentialstore.AuthModeGoogleOne, 702), OAuthClientConfig{})
 	if err != nil {
 		t.Fatalf("StartOAuthFlow: %v", err)
 	}
@@ -280,7 +304,7 @@ func TestIsGeminiPublicCLIOAuthExchangerWithExplicitClientDistinguishesInjectedC
 	if IsGeminiPublicCLIOAuthExchangerWithExplicitClient(newGeminiPublicCLIOAuthExchanger(credentialstore.AuthModeCodeAssist)) {
 		t.Fatal("zero-value exchanger reported explicit client")
 	}
-	if !IsGeminiPublicCLIOAuthExchangerWithExplicitClient(NewGeminiPublicCLIOAuthExchangerWithClient(credentialstore.AuthModeCodeAssist, &http.Client{})) {
+	if !IsGeminiPublicCLIOAuthExchangerWithExplicitClient(NewGeminiPublicCLIOAuthExchangerWithClientAndSecret(credentialstore.AuthModeCodeAssist, &http.Client{}, "operator-secret")) {
 		t.Fatal("injected client was not detected")
 	}
 	if IsGeminiPublicCLIOAuthExchangerWithExplicitClient(NewPKCEFakeExchanger(TokenShapeAnySessionOrAccess)) {
@@ -297,10 +321,8 @@ func TestExchangeOAuthCodeWithStoreRevalidatesBuiltinProfileAfterDecrypt(t *test
 		t.Fatal("token endpoint must not be called after stored payload tamper")
 		return nil, errors.New("unreachable")
 	})}
-	exchanger := NewGeminiPublicCLIOAuthExchangerWithClient(credentialstore.AuthModeCodeAssist, client).(geminiPublicCLIOAuthExchanger)
-	start, err := exchanger.StartOAuthFlow(context.Background(), store, geminiStartInput(credentialstore.AuthModeCodeAssist, 703), OAuthClientConfig{
-		ClientSecret: "operator-secret",
-	})
+	exchanger := NewGeminiPublicCLIOAuthExchangerWithClientAndSecret(credentialstore.AuthModeCodeAssist, client, "operator-secret").(geminiPublicCLIOAuthExchanger)
+	start, err := exchanger.StartOAuthFlow(context.Background(), store, geminiStartInput(credentialstore.AuthModeCodeAssist, 703), OAuthClientConfig{})
 	if err != nil {
 		t.Fatalf("StartOAuthFlow: %v", err)
 	}

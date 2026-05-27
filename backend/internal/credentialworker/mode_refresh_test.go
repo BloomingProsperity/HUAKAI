@@ -10,12 +10,14 @@ import (
 	"net/url"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker/adapters"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
@@ -123,6 +125,38 @@ func TestDefaultModeAdapterRegistryCodexFailsClosedWithoutOperatorConfig(t *test
 	})
 	if !errors.Is(err, adapters.ErrCodexOAuthConfigRequired) {
 		t.Fatalf("RefreshCredential err=%v, want ErrCodexOAuthConfigRequired", err)
+	}
+}
+
+func TestGeminiAntigravityRefreshIsFailClosedUntilReactivation(t *testing.T) {
+	// Owner 2026-05-27：gemini/antigravity refresh 暂停到 OCAW 重启前。
+	// 判别 mutation：把 registry 改回 legacy AntigravityRefresh 时会发生 HTTP 调用。
+	previousClient := http.DefaultClient
+	t.Cleanup(func() { http.DefaultClient = previousClient })
+	var calls int
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return jsonResponse(`{"access_token":"unexpected","refresh_token":"unexpected-rt","expires_in":1800}`), nil
+	})}
+
+	adapter, ok := DefaultModeAdapterRegistry().Lookup(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity)
+	if !ok {
+		t.Fatal("missing gemini/antigravity refresh adapter")
+	}
+	_, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{
+		ProviderAccountID: 94,
+		Vendor:            credentialstore.VendorGemini,
+		AuthMode:          credentialstore.AuthModeAntigravity,
+		Payload:           []byte(`{"access_token":"old","refresh_token":"rt-old","client_secret":"credential-secret"}`),
+	})
+	if !errors.Is(err, credentialacq.ErrFeatureDisabled) {
+		t.Fatalf("RefreshCredential err=%v, want credentialacq.ErrFeatureDisabled", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "antigravity OAuth wiring pending Owner reactivation") {
+		t.Fatalf("RefreshCredential err=%v, want Owner reactivation pause message", err)
+	}
+	if calls != 0 {
+		t.Fatalf("HTTP calls=%d want 0 while gemini/antigravity refresh is paused", calls)
 	}
 }
 
