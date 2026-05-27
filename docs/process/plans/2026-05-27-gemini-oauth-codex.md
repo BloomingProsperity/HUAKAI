@@ -107,6 +107,7 @@
 - **R-GEM-SSRF-001**：`credentialworker/adapters.GeminiRefresh` 仍可能把 credential payload 当 OAuth trust root；GEM-3 必须关闭，不能等到出站 adapter 后补。
 - **R-GEM-CLIENT-001**：Google public ClientID 或 companion secret 变动会导致真实授权失败；用 builtin profile validation + operator override release gate 缓解。
 - **R-GEM-REDIRECT-001**：Google OAuth registered redirect 可能不接受 HUAKAI admin callback；D-3 需决定 loopback/admin callback/双模式。
+- **R-GEM-FLOW-ID-001**：Gemini admin allowlist 启用后同样可能丢 `flow_id`；当前 `buildGeminiAuthorizeURL` 仍把静态 admin callback 交给 provider，Gemini admin tests 仍手动给 helper callback 拼 `flow_id`。下一切片应复用 ChatGPT 的 redirect_uri preserve 方案或改为 state 编码，不能宣称 admin HTTPS callback 已真闭环。
 - **R-GEM-SCOPE-001**：`cloud-platform` 权限宽，`userinfo` 对 account identity 有用；D-4 需在兼容与最小权限间取舍。
 - **R-GEM-MIMICRY-001**：当前只观察到 Gemini Advanced mimicry，不是 Code Assist/Gemini CLI profile；GEM-4 禁止错用。
 - **R-GEM-ANTIGRAVITY-001**：`mode_refresh.go:81` 的 antigravity 包装复用 Gemini refresh；GEM-3 helper 抽取时可能误改 paused path，必须用测试固定现状。
