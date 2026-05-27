@@ -238,6 +238,22 @@ func mergeTokenResponse(cred map[string]any, resp tokenResponse) ([]byte, time.T
 	if strings.TrimSpace(resp.Scope) != "" {
 		cred["scope"] = resp.Scope
 	}
+	// ANT-3 R2 S2 defense-in-depth (Owner codex review 抓出): 写回 store 前
+	// 主动 scrub hostile credential 字段, 防止 store 残留攻击面被未来代码
+	// 路径意外读取。本轮 refresh 出站 adapter (anthropic ANT-3 c201cb4 已修)
+	// 不再读这些, 但 cred 不清会让下次 refresh / future ingest path 仍可能
+	// 读到 plant 值。具体清单 = 信任链 invariant 涉及字段:
+	//   - oauth_token_endpoint (SSRF endpoint)
+	//   - client_secret (operator-config 才有, 不该入 cred)
+	//   - fallback_client_id (gemini cross-client SSRF 攻击面)
+	//   - setup_token / long_lived_setup_token (anthropic 长效升级面)
+	// client_id 不强 scrub — 部分 vendor 用作 audit metadata, 由各 adapter
+	// fail-closed 自己处理 (anthropic 已修, openai/gemini 是 S1-D 范围)。
+	delete(cred, "oauth_token_endpoint")
+	delete(cred, "client_secret")
+	delete(cred, "fallback_client_id")
+	delete(cred, "setup_token")
+	delete(cred, "long_lived_setup_token")
 	newCredential, err := json.Marshal(cred)
 	return newCredential, expiresAt, err
 }
