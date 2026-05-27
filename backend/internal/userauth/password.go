@@ -92,12 +92,25 @@ func parsePasswordHash(encoded string) (PasswordPolicy, []byte, []byte, error) {
 		if err != nil {
 			return PasswordPolicy{}, nil, nil, ErrInvalidCredentials
 		}
+		// Owner 2026-05-27 抓出 P2: 之前 uint8(n) 直接 wrap, p=256 变 0 后被
+		// normalizePasswordPolicy 拉回 default, 攻击者可借此让 hash 校验静默
+		// 走默认 params 而非 hash header 声明值。同时 m / t 缺上限 → DoS 面。
+		// 上限取业界保守值: memory ≤ 1 GiB, iterations ≤ 100, parallelism ≤ 255。
 		switch k {
 		case "m":
+			if n > 1<<20 { // 1 GiB KiB
+				return PasswordPolicy{}, nil, nil, ErrInvalidCredentials
+			}
 			policy.MemoryKiB = uint32(n)
 		case "t":
+			if n > 100 {
+				return PasswordPolicy{}, nil, nil, ErrInvalidCredentials
+			}
 			policy.Iterations = uint32(n)
 		case "p":
+			if n > 255 {
+				return PasswordPolicy{}, nil, nil, ErrInvalidCredentials
+			}
 			policy.Parallelism = uint8(n)
 		default:
 			return PasswordPolicy{}, nil, nil, ErrInvalidCredentials
