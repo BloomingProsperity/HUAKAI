@@ -82,6 +82,7 @@ func (ex *chatExecution) cacheHitInput(entry l2cache.Entry) l2CacheHitInput {
 		ProtocolFamily:    ex.resolved.ProtocolFamily,
 		RouteID:           ex.routeID,
 		RequestID:         ex.requestID,
+		ClientRequestID:   ex.clientRequestID,
 		AccountID:         ex.acquiredAccountID,
 		AcquisitionToken:  ex.acquisitionToken,
 		PoolID:            fmt.Sprintf("%d", ex.attempt.PoolGroupID),
@@ -564,7 +565,7 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 			StreamAttempt:     &streamAttempt,
 			SnapshotVersion:   ex.plan.SnapshotVersion,
 		},
-		Metadata: routeMetadata(ex.routeID),
+		Metadata: completionMetadata(ex.routeID, ex.clientRequestID),
 	}
 }
 

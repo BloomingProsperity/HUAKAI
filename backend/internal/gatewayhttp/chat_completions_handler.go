@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
@@ -54,11 +55,11 @@ type ChatHandlerDeps struct {
 	// 但 Tx2 settlement 未确认提交)的 durable 兜底 enqueue;nil 时 stream
 	// path 失败只 log,money path 灰区无可补救。生产部署必须 wire 上
 	// dlq.Service(见 cmd/gateway/routes.go SettleRecoveryDLQ: d.dlqService)。
-	SettleRecoveryDLQ settlementrecovery.Enqueuer
-	Signer            *sign.Signer
-	ChannelHealth         channelHealthRecorder
-	BillingPolicyVersion  string
-	RequestClass          string
+	SettleRecoveryDLQ    settlementrecovery.Enqueuer
+	Signer               *sign.Signer
+	ChannelHealth        channelHealthRecorder
+	BillingPolicyVersion string
+	RequestClass         string
 
 	// EndpointFamily 标记 billing 字段；空字符串退化为 "chat"。
 	// /v1/chat/completions: "chat"
@@ -89,12 +90,13 @@ type chatExecution struct {
 	ctx       context.Context
 	startedAt time.Time
 
-	ident          auth.Identity
-	body           []byte
-	req            chatRequest
-	clientProtocol proto.ClientProtocol
-	clientAdapter  proto.ClientAdapter
-	requestID      string
+	ident           auth.Identity
+	body            []byte
+	req             chatRequest
+	clientProtocol  proto.ClientProtocol
+	clientAdapter   proto.ClientAdapter
+	requestID       string
+	clientRequestID string
 
 	resolved          registry.Resolved
 	plan              router.RoutePlan
@@ -152,6 +154,9 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		ctx = context.WithValue(ctx, middleware.RequestIDKey, validated.RequestID)
+		r = r.WithContext(ctx)
+		w.Header().Set(middleware.RequestIDHeader, validated.RequestID)
 		exec := newChatExecution(d, r, ident, validated, requestStartedAt)
 		if !exec.prepareRoute(w) {
 			return

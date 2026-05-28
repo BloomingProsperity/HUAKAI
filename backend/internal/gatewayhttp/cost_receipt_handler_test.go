@@ -740,16 +740,20 @@ func TestAT_AUDIT_001_022_ChatCompletionWritesReceiptThenGet200(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("chat status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if source.seenRequestID != "req-receipt-flow" || source.seenTenantID != 7 {
+	canonicalRequestID := rec.Header().Get(middleware.RequestIDHeader)
+	if canonicalRequestID == "" || canonicalRequestID == "req-receipt-flow" {
+		t.Fatalf("%s=%q want server-generated canonical request id", middleware.RequestIDHeader, canonicalRequestID)
+	}
+	if source.seenRequestID != canonicalRequestID || source.seenTenantID != 7 {
 		t.Fatalf("receipt source args request=%q tenant=%d", source.seenRequestID, source.seenTenantID)
 	}
 
-	appended := store.receipts["req-receipt-flow"]
+	appended := store.receipts[canonicalRequestID]
 	if appended == nil || appended.UserID != 7001 || appended.ClaimID != 9001 {
 		t.Fatalf("appended receipt owner mismatch: %+v", appended)
 	}
 
-	getRec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Receipts: store, Signer: signer}), http.MethodGet, "/v1/receipts/req-receipt-flow", nil, sessionauth.SessionIdentity{TenantID: 7, UserID: 7001})
+	getRec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Receipts: store, Signer: signer}), http.MethodGet, "/v1/receipts/"+canonicalRequestID, nil, sessionauth.SessionIdentity{TenantID: 7, UserID: 7001})
 	if getRec.Code != http.StatusOK {
 		t.Fatalf("receipt status=%d body=%s", getRec.Code, getRec.Body.String())
 	}
@@ -757,7 +761,7 @@ func TestAT_AUDIT_001_022_ChatCompletionWritesReceiptThenGet200(t *testing.T) {
 	if err := json.Unmarshal(getRec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode receipt: %v", err)
 	}
-	if got.RequestID != "req-receipt-flow" || got.Signature == "" || got.CanonicalHash == "" || got.ValidationState != "valid" || got.Verdict != "match" {
+	if got.RequestID != canonicalRequestID || got.Signature == "" || got.CanonicalHash == "" || got.ValidationState != "valid" || got.Verdict != "match" {
 		t.Fatalf("receipt response mismatch: %+v", got)
 	}
 }

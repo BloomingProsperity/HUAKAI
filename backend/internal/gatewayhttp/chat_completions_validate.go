@@ -31,11 +31,12 @@ type chatMessage struct {
 }
 
 type chatValidatedRequest struct {
-	Body           []byte
-	Request        chatRequest
-	ClientProtocol proto.ClientProtocol
-	ClientAdapter  proto.ClientAdapter
-	RequestID      string
+	Body            []byte
+	Request         chatRequest
+	ClientProtocol  proto.ClientProtocol
+	ClientAdapter   proto.ClientAdapter
+	RequestID       string
+	ClientRequestID string
 }
 
 func validateChatCompletionsRequest(w http.ResponseWriter, r *http.Request, ctx context.Context) (chatValidatedRequest, bool) {
@@ -60,16 +61,15 @@ func validateChatCompletionsRequest(w http.ResponseWriter, r *http.Request, ctx 
 		writeJSONError(w, http.StatusBadRequest, "missing_model", "model field required")
 		return chatValidatedRequest{}, false
 	}
-	requestID := middleware.GetReqID(ctx)
-	if requestID == "" {
-		requestID = uuid.NewString()
-	}
+	requestID := uuid.NewString()
+	clientRequestID := r.Header.Get(middleware.RequestIDHeader)
 	return chatValidatedRequest{
-		Body:           body,
-		Request:        req,
-		ClientProtocol: clientProtocol,
-		ClientAdapter:  clientAdapter,
-		RequestID:      requestID,
+		Body:            body,
+		Request:         req,
+		ClientProtocol:  clientProtocol,
+		ClientAdapter:   clientAdapter,
+		RequestID:       requestID,
+		ClientRequestID: clientRequestID,
 	}, true
 }
 

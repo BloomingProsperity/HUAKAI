@@ -141,6 +141,7 @@ type l2CacheHitInput struct {
 	ProtocolFamily    string
 	RouteID           string
 	RequestID         string
+	ClientRequestID   string
 	AccountID         int64
 	AcquisitionToken  uuid.UUID
 	PoolID            string
@@ -236,7 +237,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 				AuditLedgerDLQRef:         ledgerDLQRef(ledgerResult),
 				AuditSignatureFingerprint: ledgerFingerprint(ledgerResult),
 				SettleRequest:             cacheHitReq,
-				Metadata:                  routeMetadata(in.RouteID),
+				Metadata:                  completionMetadata(in.RouteID, in.ClientRequestID),
 			}
 			if err := validateMoneyPathAuditRefForSource(ctx, d, auditEvent, "cache_hit_commit"); err != nil {
 				rejectErr, abortErr := rejectMoneyPathCacheHitCommit(ctx, d, auditEvent, err)
@@ -303,7 +304,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		AuditLedgerDLQRef:         ledgerDLQRef(ledgerResult),
 		AuditSignatureFingerprint: ledgerFingerprint(ledgerResult),
 		SettleRequest:             settleReq,
-		Metadata:                  routeMetadata(in.RouteID),
+		Metadata:                  completionMetadata(in.RouteID, in.ClientRequestID),
 	}); err != nil {
 		writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, settleErrorCode(err), err)
 		return true

@@ -34,6 +34,7 @@ func newChatExecution(d ChatHandlerDeps, r *http.Request, ident auth.Identity, v
 		clientProtocol:                   validated.ClientProtocol,
 		clientAdapter:                    validated.ClientAdapter,
 		requestID:                        validated.RequestID,
+		clientRequestID:                  validated.ClientRequestID,
 		streamInputOnlyInterruptedPolicy: d.BillingPolicyResolver.ResolveStreamInputOnlyInterruptedPolicy(r.Context(), ident.TenantID),
 	}
 }

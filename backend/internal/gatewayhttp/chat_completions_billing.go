@@ -88,7 +88,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		AuditLedgerDLQRef:         ledgerDLQRef(ledgerResult),
 		AuditSignatureFingerprint: ledgerFingerprint(ledgerResult),
 		SettleRequest:             settleReq,
-		Metadata:                  routeMetadata(ex.routeID),
+		Metadata:                  completionMetadata(ex.routeID, ex.clientRequestID),
 	}); err != nil {
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, settleErrorCode(err), err)
 		return markAttemptOutcomeDelivered(outcome)
@@ -322,6 +322,19 @@ func routeMetadata(routeID string) map[string]string {
 	return map[string]string{"route_id": routeID}
 }
 
+func completionMetadata(routeID, clientRequestID string) map[string]string {
+	metadata := routeMetadata(routeID)
+	clientRequestID = strings.TrimSpace(clientRequestID)
+	if clientRequestID == "" {
+		return metadata
+	}
+	if metadata == nil {
+		metadata = make(map[string]string, 1)
+	}
+	metadata["client_request_id"] = clientRequestID
+	return metadata
+}
+
 func settleErrorCode(err error) string {
 	if errors.Is(err, eventbus.ErrAuditRefMissing) {
 		return clienterr.CodeAuditRefMissing
@@ -451,7 +464,22 @@ func submitAuditLedgerEntry(ctx context.Context, d ChatHandlerDeps, env *proto.H
 	appended, err := d.AuditLedger.Append(ctx, prepared)
 	if err != nil {
 		if errors.Is(err, auditledger.ErrDuplicateRequestID) {
-			return auditledger.AuditLedgerResult{}, err
+			existing, lookupErr := d.AuditLedger.GetByRequestID(ctx, requestID)
+			if lookupErr != nil {
+				return auditledger.AuditLedgerResult{}, fmt.Errorf("audit ledger duplicate lookup: %w", lookupErr)
+			}
+			if existing.TenantID != tenantID {
+				return auditledger.AuditLedgerResult{}, fmt.Errorf("audit ledger duplicate tenant mismatch: request_id=%q tenant_id=%d existing_tenant_id=%d", requestID, tenantID, existing.TenantID)
+			}
+			env.Accounting.LedgerID = existing.LedgerID
+			env.Accounting.Signature = existing.Signature
+			env.Accounting.PubkeyFingerprint = existing.PubkeyFingerprint
+			result := auditledger.PersistedLedgerResult(existing)
+			if err := result.Validate(production); err != nil {
+				return auditledger.AuditLedgerResult{}, err
+			}
+			appendTrustChainWarning(env, "audit_ledger_duplicate_request_id", "audit ledger entry already exists; reused persisted audit reference")
+			return result, nil
 		}
 		appendTrustChainWarning(env, "audit_ledger_append_failed", err.Error())
 		dlqRef, dlqErr := auditledger.EnqueuePreparedEntryToDLQ(ctx, d.AuditLedgerDLQ, prepared, err)
