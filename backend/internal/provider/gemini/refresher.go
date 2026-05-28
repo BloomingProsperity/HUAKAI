@@ -302,7 +302,11 @@ func (a RefreshAdapter) httpClient() *http.Client {
 	if a.HTTPClient != nil {
 		return a.HTTPClient
 	}
-	return http.DefaultClient
+	// 未注入 HTTPClient 时不能 fallback 到裸 http.DefaultClient：vendor refresher
+	// 走的是 operator 配置的 token endpoint，裸 client 无拨号层 IP 校验，会被
+	// DNS-rebind / 内网地址骗到本机或元数据服务。与 builtin mode adapter 一致，
+	// 兜底也用 SSRF-protected client（禁 proxy + 拨号校验 IP + 禁 3xx 重定向）。
+	return auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
 }
 
 func (a RefreshAdapter) now() time.Time {

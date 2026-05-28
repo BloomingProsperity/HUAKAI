@@ -333,6 +333,33 @@ func (tx *recordingGeminiRefreshTx) SaveRefreshFailure(_ context.Context, rec cr
 	return nil
 }
 
+func TestGeminiRefreshAdapterFallbackHTTPClientIsSSRFProtected(t *testing.T) {
+	// 守 S1-003: vendor refresher 未注入 HTTPClient 时, httpClient() 兜底不能是裸
+	// http.DefaultClient —— 那样 operator token endpoint 出站缺拨号层 IP 校验, 会被
+	// DNS-rebind / 内网地址骗到本机或元数据服务。兜底必须是 SSRF-protected client,
+	// 与 builtin mode adapter 一致。
+	// Mutation 自检: 把 httpClient() 兜底改回 http.DefaultClient, CheckRedirect 变 nil
+	// 且 Transport 不是 *http.Transport, 本测试断言全红。
+	client := RefreshAdapter{}.httpClient()
+	if client == nil {
+		t.Fatal("httpClient() 返回 nil")
+	}
+	if client.CheckRedirect == nil {
+		t.Fatal("兜底 client 缺 CheckRedirect: SSRF client 必须禁 3xx 防 client_secret 经 redirect 外泄, 裸 http.DefaultClient 不设")
+	}
+	tr, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("兜底 client.Transport 不是 *http.Transport (裸 http.DefaultClient 的 Transport 为 nil): %T", client.Transport)
+	}
+	if tr.Proxy != nil {
+		t.Fatal("兜底 client transport.Proxy 必须为 nil: SSRF client 禁代理防 CONNECT 把密钥转发到内网")
+	}
+	injected := &http.Client{}
+	if got := (RefreshAdapter{HTTPClient: injected}).httpClient(); got != injected {
+		t.Fatal("注入的 HTTPClient 被兜底覆盖")
+	}
+}
+
 func geminiStrconvInt64(v any) string {
 	n, _ := v.(int64)
 	return strconv.FormatInt(n, 10)
