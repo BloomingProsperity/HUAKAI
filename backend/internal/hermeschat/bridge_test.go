@@ -187,55 +187,64 @@ func TestBridgeDoesNotPersistDoneAfterConversationDelete(t *testing.T) {
 	}
 }
 
-func TestBridgeAuditFailureWarnsDLQAndDoesNotBlockDone(t *testing.T) {
-	// Regression: audit failure is a W4 durable-recovery path, not a user-visible chat failure.
+func TestBridgePersistDone_AuditInsertFailureAbortsTransaction(t *testing.T) {
+	// Regression: message persistence and primary audit must be atomic; audit failure must roll back message write.
 	store := newBridgeStore()
 	store.conversations[conversationKey{tenantID: 7, id: 77}] = dbhermes.HermesConversation{ID: 77, TenantID: 7, OwnerUserID: 42}
 	store.auditErr = errors.New("audit insert failed")
-	store.abortTxOnAuditFailure = true
-	logger := &warnRecorder{}
-	dlq := &dlqRecorder{id: 313}
-	bridge := mustBridgeWithOptions(t, store, WithWarningLogger(logger), WithAuditDLQ(dlq))
-	prepared, err := bridge.PrepareRequest(context.Background(), Request{
-		TenantID: 7, UserID: 42, RequestID: "req-audit-fail",
-		Body: []byte(`{"conversation_id":77,"messages":[{"role":"user","content":"hi"}]}`),
-	})
-	if err != nil {
-		t.Fatalf("PrepareRequest: %v", err)
+	bridge := mustBridge(t, store)
+	var err error
+	prepared := PreparedRequest{
+		TenantID: 7, UserID: 42, ConversationID: 77, RequestID: "req-audit-fail",
+		CorrelationID: "corr-audit-fail",
+	}
+	err = bridge.persistDone(context.Background(), prepared, &streamState{
+		assistantText: strings.Builder{},
+	}, []byte(`{"total_tokens":2}`))
+	if err == nil {
+		t.Fatalf("persistDone should fail on audit insert error")
 	}
 
-	rec := httptest.NewRecorder()
-	err = bridge.Stream(context.Background(), rec, sseResponse(
-		"event: token\n"+
-			"data: {\"delta\":\"ok\"}\n\n"+
-			"event: done\n"+
-			"data: {\"finish_reason\":\"stop\",\"total_tokens\":2}\n\n",
-	), prepared)
+	// Mutation check: if RunHermesTx still ignores message-audit errors, commitCount becomes 1.
+	if len(store.appended) != 0 {
+		t.Fatalf("persisted messages=%d want 0", len(store.appended))
+	}
+	if store.commitCount != 0 {
+		t.Fatalf("commit count=%d want 0", store.commitCount)
+	}
+	if store.rollbackCount != 1 {
+		t.Fatalf("rollback count=%d want 1", store.rollbackCount)
+	}
+}
+
+func TestBridgePersistDone_AuditInsertSuccessCommitsTransaction(t *testing.T) {
+	// Regression: normal path persists message and audit in one transaction and commits once.
+	store := newBridgeStore()
+	store.conversations[conversationKey{tenantID: 7, id: 77}] = dbhermes.HermesConversation{ID: 77, TenantID: 7, OwnerUserID: 42}
+	bridge := mustBridge(t, store)
+	var err error
+	prepared := PreparedRequest{
+		TenantID: 7, UserID: 42, ConversationID: 77, RequestID: "req-audit-ok",
+		CorrelationID: "corr-audit-ok",
+	}
+	err = bridge.persistDone(context.Background(), prepared, &streamState{
+		assistantText: strings.Builder{},
+	}, []byte(`{"total_tokens":2}`))
 	if err != nil {
-		t.Fatalf("Stream: %v", err)
+		t.Fatalf("persistDone: %v", err)
 	}
 
-	if !strings.Contains(rec.Body.String(), "event: done") {
-		t.Fatalf("body=%q want done despite audit failure", rec.Body.String())
-	}
-	if store.committedTxs == 0 {
-		t.Fatalf("committed txs=%d want message transaction committed", store.committedTxs)
-	}
-	if store.auditSavepointRollbacks != 1 {
-		t.Fatalf("audit savepoint rollbacks=%d want 1 rollback after audit failure", store.auditSavepointRollbacks)
-	}
 	if len(store.appended) != 1 {
 		t.Fatalf("persisted messages=%d want 1", len(store.appended))
 	}
-	if len(logger.messages) != 1 || !strings.Contains(logger.messages[0], "hermes audit") {
-		t.Fatalf("warn logs=%v want one hermes audit warning", logger.messages)
+	if store.commitCount != 1 {
+		t.Fatalf("commit count=%d want 1", store.commitCount)
 	}
-	if len(dlq.events) != 1 {
-		t.Fatalf("dlq events=%d want 1", len(dlq.events))
+	if store.rollbackCount != 0 {
+		t.Fatalf("rollback count=%d want 0", store.rollbackCount)
 	}
-	ev := dlq.events[0]
-	if ev.EventKind != legacydlq.EventKindAuditEventReplica || ev.TenantID != 7 || ev.IdempotencyKey == "" {
-		t.Fatalf("dlq event=%+v want audit_event_replica tenant 7 with idempotency key", ev)
+	if store.auditWrites != 1 {
+		t.Fatalf("audit writes=%d want 1", store.auditWrites)
 	}
 }
 
@@ -608,16 +617,21 @@ type bridgeStore struct {
 	appendPanic bool
 	appended    []dbhermes.AppendMessageParams
 
+	stagedAppended        []dbhermes.AppendMessageParams
 	touchedConversationID int64
+	stagedTouchedID       int64
+	stagedTouched         bool
 	auditArg              dbhermes.InsertAuditEventParams
+	stagedAuditArg        dbhermes.InsertAuditEventParams
+	stagedAuditWrites     int
+	auditWrites           int
 	auditErr              error
 	auditPanic            bool
-	abortTxOnAuditFailure bool
 	txAborted             bool
+	inTransaction         bool
 	committedTxs          int
-
-	auditSavepointActive    bool
-	auditSavepointRollbacks int
+	commitCount           int
+	rollbackCount         int
 }
 
 func newBridgeStore() *bridgeStore {
@@ -625,15 +639,52 @@ func newBridgeStore() *bridgeStore {
 }
 
 func (s *bridgeStore) RunHermesTx(ctx context.Context, fn func(hermes.Store) error) error {
+	s.stagedAppended = nil
+	s.stagedTouched = false
+	s.stagedTouchedID = 0
+	s.stagedAuditWrites = 0
+	s.stagedAuditArg = dbhermes.InsertAuditEventParams{}
+	s.inTransaction = true
+	defer func() {
+		s.inTransaction = false
+	}()
+
 	s.txAborted = false
-	err := fn(s)
-	if err != nil {
+	if err := fn(s); err != nil {
+		s.rollbackCount++
+		s.stagedAppended = nil
+		s.stagedTouched = false
+		s.stagedTouchedID = 0
+		s.stagedAuditWrites = 0
+		s.stagedAuditArg = dbhermes.InsertAuditEventParams{}
 		return err
 	}
 	if s.txAborted {
+		s.rollbackCount++
+		s.stagedAppended = nil
+		s.stagedTouched = false
+		s.stagedTouchedID = 0
+		s.stagedAuditWrites = 0
+		s.stagedAuditArg = dbhermes.InsertAuditEventParams{}
 		return fmt.Errorf("commit hermes tx: current transaction is aborted")
 	}
+	if len(s.stagedAppended) > 0 {
+		s.appended = append(s.appended, s.stagedAppended...)
+	}
+	if s.stagedTouched {
+		s.touchedConversationID = s.stagedTouchedID
+	}
+	if s.stagedAuditWrites > 0 {
+		s.auditWrites += s.stagedAuditWrites
+		s.auditArg = s.stagedAuditArg
+	}
 	s.committedTxs++
+	s.commitCount++
+	s.stagedAppended = nil
+	s.stagedTouched = false
+	s.stagedTouchedID = 0
+	s.stagedAuditWrites = 0
+	s.stagedAuditArg = dbhermes.InsertAuditEventParams{}
 	return nil
 }
 
@@ -648,8 +699,12 @@ func (s *bridgeStore) AppendMessage(_ context.Context, arg dbhermes.AppendMessag
 	if !ok || row.DeletedAt.Valid {
 		return 0, pgx.ErrNoRows
 	}
-	s.appended = append(s.appended, arg)
-	return int64(len(s.appended)), nil
+	if !s.inTransaction {
+		s.appended = append(s.appended, arg)
+		return int64(len(s.appended)), nil
+	}
+	s.stagedAppended = append(s.stagedAppended, arg)
+	return int64(len(s.stagedAppended)), nil
 }
 
 func (s *bridgeStore) CreateConversation(_ context.Context, arg dbhermes.CreateConversationParams) (int64, error) {
@@ -686,23 +741,45 @@ func (s *bridgeStore) UpdateConversationLastMessageAt(_ context.Context, arg dbh
 	if !ok || row.DeletedAt.Valid {
 		return 0, nil
 	}
-	s.touchedConversationID = arg.ID
+	if !s.inTransaction {
+		s.touchedConversationID = arg.ID
+		return 1, nil
+	}
+	s.stagedTouched = true
+	s.stagedTouchedID = arg.ID
 	return 1, nil
 }
 
 func (s *bridgeStore) InsertAuditEvent(_ context.Context, arg dbhermes.InsertAuditEventParams) (dbhermes.HermesAuditEvent, error) {
-	if s.auditPanic {
-		if s.abortTxOnAuditFailure {
-			s.txAborted = true
+	if !s.inTransaction {
+		s.auditWrites++
+		s.auditArg = arg
+		if s.auditErr != nil {
+			if s.auditPanic {
+				panic("audit panic")
+			}
+			return dbhermes.HermesAuditEvent{}, s.auditErr
 		}
-		panic("audit panic")
+		if s.auditPanic {
+			panic("audit panic")
+		}
+		return dbhermes.HermesAuditEvent{
+			ID: 1, Ts: arg.Ts, TenantID: arg.TenantID, ActorUserID: arg.ActorUserID,
+			Action: arg.Action, SanitizedArgs: arg.SanitizedArgs, Result: arg.Result,
+			CorrelationID: arg.CorrelationID, RequestID: arg.RequestID,
+		}, nil
 	}
-	s.auditArg = arg
+
+	s.stagedAuditWrites++
+	s.stagedAuditArg = arg
 	if s.auditErr != nil {
-		if s.abortTxOnAuditFailure {
-			s.txAborted = true
+		if s.auditPanic {
+			panic("audit panic")
 		}
 		return dbhermes.HermesAuditEvent{}, s.auditErr
+	}
+	if s.auditPanic {
+		panic("audit panic")
 	}
 	return dbhermes.HermesAuditEvent{
 		ID: 1, Ts: arg.Ts, TenantID: arg.TenantID, ActorUserID: arg.ActorUserID,
@@ -712,24 +789,7 @@ func (s *bridgeStore) InsertAuditEvent(_ context.Context, arg dbhermes.InsertAud
 }
 
 func (s *bridgeStore) Exec(_ context.Context, sql string, _ ...interface{}) (pgconn.CommandTag, error) {
-	switch strings.ToUpper(strings.TrimSpace(sql)) {
-	case "SAVEPOINT HERMES_MESSAGE_AUDIT":
-		s.auditSavepointActive = true
-	case "ROLLBACK TO SAVEPOINT HERMES_MESSAGE_AUDIT":
-		if !s.auditSavepointActive {
-			return pgconn.CommandTag{}, fmt.Errorf("audit savepoint is not active")
-		}
-		s.txAborted = false
-		s.auditSavepointRollbacks++
-	case "RELEASE SAVEPOINT HERMES_MESSAGE_AUDIT":
-		if !s.auditSavepointActive {
-			return pgconn.CommandTag{}, fmt.Errorf("audit savepoint is not active")
-		}
-		s.auditSavepointActive = false
-	default:
-		return pgconn.CommandTag{}, fmt.Errorf("unexpected sql: %s", sql)
-	}
-	return pgconn.CommandTag{}, nil
+	return pgconn.CommandTag{}, fmt.Errorf("unexpected sql: %s", sql)
 }
 
 func (s *bridgeStore) CreateProfile(context.Context, dbhermes.CreateProfileParams) (dbhermes.HermesApiProfile, error) {

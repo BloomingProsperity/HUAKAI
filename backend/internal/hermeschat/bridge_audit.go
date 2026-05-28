@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	dbhermes "github.com/BloomingProsperity/HUAKAI/internal/db/hermes"
@@ -20,76 +19,34 @@ type auditDLQ interface {
 	Enqueue(context.Context, legacydlq.Event) (int64, error)
 }
 
-type savepointExecutor interface {
-	Exec(context.Context, string, ...interface{}) (pgconn.CommandTag, error)
-}
-
-const messageAuditSavepoint = "hermes_message_audit"
-
-func (b *Bridge) recordMessageAudit(ctx context.Context, store hermes.Store, prepared PreparedRequest, conversationID int64, now time.Time) error {
-	return withAuditSavepoint(ctx, store, func() error {
-		args := hermes.SanitizeArgs(map[string]any{
-			"conversation_id": conversationID,
-			"message_role":    "assistant",
-		})
-		raw, err := json.Marshal(args)
-		if err != nil {
-			return err
-		}
-		_, err = store.InsertAuditEvent(ctx, dbhermes.InsertAuditEventParams{
-			Ts:       pgtype.Timestamptz{Time: now.UTC(), Valid: true},
-			TenantID: prepared.TenantID, ActorUserID: prepared.UserID,
-			Action: hermes.ActionMessageSend, SanitizedArgs: raw, Result: hermes.AuditResultSuccess,
-			CorrelationID: stringPtr(prepared.CorrelationID), RequestID: stringPtr(prepared.RequestID),
-		})
-		if err != nil {
-			return fmt.Errorf("%w: %w", hermes.ErrAuditRecordFailed, err)
-		}
-		return nil
-	})
-}
-
-func withAuditSavepoint(ctx context.Context, store hermes.Store, fn func() error) (err error) {
-	exec, ok := store.(savepointExecutor)
-	if !ok {
-		return runAuditOperation(fn)
-	}
-	if _, err := exec.Exec(ctx, "SAVEPOINT "+messageAuditSavepoint); err != nil {
-		return fmt.Errorf("%w: create audit savepoint: %w", hermes.ErrAuditRecordFailed, err)
-	}
+func (b *Bridge) recordMessageAudit(ctx context.Context, store hermes.Store, prepared PreparedRequest, conversationID int64, now time.Time) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			if rollbackErr := rollbackAuditSavepoint(ctx, exec); rollbackErr != nil {
-				err = fmt.Errorf("hermes audit panic: %v; rollback audit savepoint: %w", recovered, rollbackErr)
-				return
-			}
 			err = fmt.Errorf("hermes audit panic: %v", recovered)
 		}
 	}()
-	if err := fn(); err != nil {
-		if rollbackErr := rollbackAuditSavepoint(ctx, exec); rollbackErr != nil {
-			return fmt.Errorf("%v; rollback audit savepoint: %w", err, rollbackErr)
-		}
+	args := hermes.SanitizeArgs(map[string]any{
+		"conversation_id": conversationID,
+		"message_role":    "assistant",
+	})
+	raw, err := json.Marshal(args)
+	if err != nil {
 		return err
 	}
-	if _, err := exec.Exec(ctx, "RELEASE SAVEPOINT "+messageAuditSavepoint); err != nil {
-		return fmt.Errorf("%w: release audit savepoint: %w", hermes.ErrAuditRecordFailed, err)
+	_, err = store.InsertAuditEvent(ctx, dbhermes.InsertAuditEventParams{
+		Ts:            pgtype.Timestamptz{Time: now.UTC(), Valid: true},
+		TenantID:      prepared.TenantID,
+		ActorUserID:   prepared.UserID,
+		Action:        hermes.ActionMessageSend,
+		SanitizedArgs: raw,
+		Result:        hermes.AuditResultSuccess,
+		CorrelationID: stringPtr(prepared.CorrelationID),
+		RequestID:     stringPtr(prepared.RequestID),
+	})
+	if err != nil {
+		return fmt.Errorf("%w: %w", hermes.ErrAuditRecordFailed, err)
 	}
 	return nil
-}
-
-func runAuditOperation(fn func() error) (err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("hermes audit panic: %v", recovered)
-		}
-	}()
-	return fn()
-}
-
-func rollbackAuditSavepoint(ctx context.Context, exec savepointExecutor) error {
-	_, err := exec.Exec(ctx, "ROLLBACK TO SAVEPOINT "+messageAuditSavepoint)
-	return err
 }
 
 func (b *Bridge) warnAuditFailure(ctx context.Context, prepared PreparedRequest, conversationID int64, auditErr error) {
