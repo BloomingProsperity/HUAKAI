@@ -7,6 +7,7 @@ import (
 )
 
 var ErrToolCallIDTranslationFail = errors.New("proto: tool call ID translation failed")
+const maxToolCallIDSuffixLength = 256
 
 func ToCanonicalCallID(upstreamID string, upstream UpstreamProtocol) (string, error) {
 	hex, err := stripCallPrefix(upstreamID, upstream)
@@ -21,8 +22,8 @@ func FromCanonicalCallID(canonicalID string, upstream UpstreamProtocol) (string,
 		return "", fmt.Errorf("%w: canonical id missing call_ prefix", ErrToolCallIDTranslationFail)
 	}
 	hex := strings.TrimPrefix(canonicalID, "call_")
-	if !isHexID(hex) {
-		return "", fmt.Errorf("%w: canonical id has malformed suffix", ErrToolCallIDTranslationFail)
+	if !isValidCallIDSuffix(hex) {
+		return "", fmt.Errorf("%w: canonical id has invalid suffix; expected 1-%d chars from [A-Za-z0-9_-]", ErrToolCallIDTranslationFail, maxToolCallIDSuffixLength)
 	}
 	switch upstream {
 	case UpstreamProtocolAnthropic:
@@ -58,20 +59,24 @@ func stripCallPrefix(id string, upstream UpstreamProtocol) (string, error) {
 		return "", fmt.Errorf("%w: id missing %s prefix", ErrToolCallIDTranslationFail, prefix)
 	}
 	hex := strings.TrimPrefix(id, prefix)
-	if !isHexID(hex) {
-		return "", fmt.Errorf("%w: id has malformed suffix", ErrToolCallIDTranslationFail)
+	if !isValidCallIDSuffix(hex) {
+		return "", fmt.Errorf("%w: id has invalid suffix; expected 1-%d chars from [A-Za-z0-9_-]", ErrToolCallIDTranslationFail, maxToolCallIDSuffixLength)
 	}
 	return hex, nil
 }
 
-func isHexID(s string) bool {
-	if s == "" {
+func isValidCallIDSuffix(s string) bool {
+	if s == "" || len(s) > 256 {
 		return false
 	}
-	for _, r := range s {
-		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
-			return false
+	for _, c := range []byte(s) {
+		if (c >= '0' && c <= '9') ||
+			(c >= 'a' && c <= 'z') ||
+			(c >= 'A' && c <= 'Z') ||
+			c == '_' || c == '-' {
+			continue
 		}
+		return false
 	}
 	return true
 }
