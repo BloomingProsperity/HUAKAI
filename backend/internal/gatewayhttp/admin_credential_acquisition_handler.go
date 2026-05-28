@@ -15,6 +15,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
 type AdminCredentialAcquisitionDeps struct {
@@ -147,11 +148,12 @@ func newCredentialAcqCallbackHandler(d AdminCredentialAcquisitionDeps) http.Hand
 		if !credentialAcqFlowMatchesPathAccount(w, r, existing) {
 			return
 		}
-		result, ok := completeCredentialAcqOAuthCallback(w, r, d, ident, flowID, req.State, req.Code)
+		actorID := fmt.Sprintf("%d", ident.TokenID)
+		result, ok := completeCredentialAcqOAuthCallback(w, r, d, actorID, ident.Role, flowID, req.State, req.Code)
 		if !ok {
 			return
 		}
-		writeCredentialAcqAdminAudit(r, d, ident, result.Session, credentialacq.EventCompleted, "完成 OAuth credential acquisition")
+		writeCredentialAcqAdminAudit(r, d, actorID, ident.Role, result.Session, credentialacq.EventCompleted, "完成 OAuth credential acquisition")
 		writeAuditJSON(w, http.StatusOK, result)
 	}
 }
@@ -178,7 +180,7 @@ func newCredentialAcqCancelHandler(d AdminCredentialAcquisitionDeps) http.Handle
 		}
 		actorID := fmt.Sprintf("%d", ident.TokenID)
 		_ = credentialacq.EmitLifecycleAudit(r.Context(), d.CredentialAudit, session, credentialacq.EventCancelled, 0, actorID, middleware.GetReqID(r.Context()), nil)
-		writeCredentialAcqAdminAudit(r, d, ident, session, credentialacq.EventCancelled, "取消 credential acquisition")
+		writeCredentialAcqAdminAudit(r, d, actorID, ident.Role, session, credentialacq.EventCancelled, "取消 credential acquisition")
 		writeAuditJSON(w, http.StatusOK, map[string]any{"flow": session})
 	}
 }
@@ -216,7 +218,7 @@ func newCredentialAcqFinalizeHandler(d AdminCredentialAcquisitionDeps) http.Hand
 			writeCredentialAcqError(w, err)
 			return
 		}
-		writeCredentialAcqAdminAudit(r, d, ident, result.Session, credentialacq.EventCompleted, firstReason(req.Reason, "完成 credential acquisition"))
+		writeCredentialAcqAdminAudit(r, d, actorID, ident.Role, result.Session, credentialacq.EventCompleted, firstReason(req.Reason, "完成 credential acquisition"))
 		writeAuditJSON(w, http.StatusOK, result)
 	}
 }
@@ -288,24 +290,32 @@ func newCredentialAcqOAuthInitHelperHandler(d AdminCredentialAcquisitionDeps) ht
 
 func newCredentialAcqOAuthCallbackHelperHandler(d AdminCredentialAcquisitionDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ident, ok := resolveCredentialAcqAdmin(w, r, d)
-		if !ok {
+		if d.Auth == nil || d.Sessions == nil || d.Credentials == nil || d.AuditStore == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "admin credential acquisition dependency unset")
 			return
 		}
 		flowID := strings.TrimSpace(r.URL.Query().Get("flow_id"))
 		state := strings.TrimSpace(r.URL.Query().Get("state"))
 		code := strings.TrimSpace(r.URL.Query().Get("code"))
-		result, ok := completeCredentialAcqOAuthCallback(w, r, d, ident, flowID, state, code)
+		if flowID == "" {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request", "flow_id is required")
+			return
+		}
+		session, err := d.Sessions.Get(r.Context(), flowID)
+		if err != nil {
+			writeCredentialAcqError(w, err)
+			return
+		}
+		result, ok := completeCredentialAcqOAuthCallback(w, r, d, session.ActorID, session.ActorRole, flowID, state, code)
 		if !ok {
 			return
 		}
-		writeCredentialAcqAdminAudit(r, d, ident, result.Session, credentialacq.EventCompleted, "完成 OAuth credential acquisition")
+		writeCredentialAcqAdminAudit(r, d, session.ActorID, session.ActorRole, result.Session, credentialacq.EventCompleted, "完成 OAuth credential acquisition")
 		writeAuditJSON(w, http.StatusOK, result)
 	}
 }
 
-func completeCredentialAcqOAuthCallback(w http.ResponseWriter, r *http.Request, d AdminCredentialAcquisitionDeps, ident admin.AdminIdentity, flowID, state, code string) (credentialacq.FinalizeResult, bool) {
-	actorID := fmt.Sprintf("%d", ident.TokenID)
+func completeCredentialAcqOAuthCallback(w http.ResponseWriter, r *http.Request, d AdminCredentialAcquisitionDeps, actorID, actorRole, flowID, state, code string) (credentialacq.FinalizeResult, bool) {
 	requestID := middleware.GetReqID(r.Context())
 	candidate, session, err := credentialacq.CompleteOAuthCallbackWithRegistry(r.Context(), d.Sessions, flowID, state, code, d.Exchangers)
 	if err != nil {
@@ -328,7 +338,7 @@ func startCredentialAcqFlow(w http.ResponseWriter, r *http.Request, d AdminCrede
 		writeCredentialAcqError(w, err)
 		return
 	}
-	writeCredentialAcqAdminAudit(r, d, ident, session, credentialacq.EventStarted, firstReason(req.Reason, "启动 credential acquisition"))
+	writeCredentialAcqAdminAudit(r, d, fmt.Sprintf("%d", ident.TokenID), ident.Role, session, credentialacq.EventStarted, firstReason(req.Reason, "启动 credential acquisition"))
 	resp := map[string]any{"flow": session}
 	if result.AuthorizeURL != "" {
 		resp["authorize_url"] = result.AuthorizeURL
@@ -428,12 +438,22 @@ func resolveCredentialAcqAdmin(w http.ResponseWriter, r *http.Request, d AdminCr
 	return ident, true
 }
 
-func writeCredentialAcqAdminAudit(r *http.Request, d AdminCredentialAcquisitionDeps, ident admin.AdminIdentity, session credentialacq.Session, action, reason string) {
+func writeCredentialAcqAdminAudit(r *http.Request, d AdminCredentialAcquisitionDeps, actorID, actorRole string, session credentialacq.Session, action, reason string) {
+	if d.AuditStore == nil {
+		return
+	}
 	payload, _ := json.Marshal(credentialacq.AuditSanitizePayload(map[string]any{
 		"tenant_id": session.TenantID, "flow_id": session.ID, "vendor": session.Vendor,
 		"auth_mode": session.AuthMode, "flow_kind": string(session.Kind), "status": string(session.Status),
 	}))
-	_ = writeProviderAccountAudit(r.Context(), r, d.AuditStore, ident, session.TenantID, action, session.ProviderAccountID, chineseReason(reason, reason), payload)
+	tenantID := session.TenantID
+	targetID := session.ProviderAccountID
+	reqID := middleware.GetReqID(r.Context())
+	_, _ = d.AuditStore.InsertAdminAuditEvent(r.Context(), admindb.InsertAdminAuditEventParams{
+		TenantID: &tenantID, ActorID: actorID, ActorRole: actorRole,
+		Action: action, TargetType: "provider_account", TargetID: &targetID,
+		RequestID: &reqID, Reason: chineseReason(reason, reason), Payload: payload,
+	})
 }
 
 func credentialAcqFlowMatchesPathAccount(w http.ResponseWriter, r *http.Request, session credentialacq.Session) bool {
