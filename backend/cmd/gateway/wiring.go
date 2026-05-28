@@ -158,7 +158,10 @@ type vendorRefresherBinding struct {
 	refresher credentialworker.Refresher
 }
 
-const geminiPublicCLIOAuthClientSecretEnv = "HUAKAI_GEMINI_OAUTH_CLIENT_SECRET"
+const (
+	geminiPublicCLIOAuthClientSecretEnv = "HUAKAI_GEMINI_OAUTH_CLIENT_SECRET"
+	adminOAuthCallbackAllowlistEnv      = "HUAKAI_ADMIN_OAUTH_CALLBACK_ALLOWLIST"
+)
 
 func buildVendorRefresherBindings(configs runtimeconfig.VendorOAuthConfigs, store *credentialstore.Store) []vendorRefresherBinding {
 	configured := configs.Configured()
@@ -285,10 +288,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, err
 	}
-	if err := installGeminiPublicCLIOAuthExchangers(credentialExchangers, auth.NewSSRFProtectedOAuthClient(http.DefaultClient), geminiOAuthClientSecret); err != nil {
+	adminOAuthCallbackAllowlist := loadAdminOAuthCallbackAllowlistFromEnv()
+	if err := installGeminiPublicCLIOAuthExchangers(credentialExchangers, auth.NewSSRFProtectedOAuthClient(http.DefaultClient), geminiOAuthClientSecret, adminOAuthCallbackAllowlist); err != nil {
 		return nil, fmt.Errorf("register gemini public CLI oauth exchangers: %w", err)
 	}
-	if err := installChatGPTOAuthExchanger(credentialExchangers, auth.NewSSRFProtectedOAuthClient(http.DefaultClient)); err != nil {
+	if err := installChatGPTOAuthExchanger(credentialExchangers, auth.NewSSRFProtectedOAuthClient(http.DefaultClient), adminOAuthCallbackAllowlist); err != nil {
 		return nil, fmt.Errorf("register openai chatgpt_oauth exchanger: %w", err)
 	}
 	// ANT-4 fail-loud: wiring 启动时立即自检 install 真把 default registry
@@ -559,10 +563,31 @@ func loadGeminiPublicCLIOAuthClientSecretFromEnv() (string, error) {
 	return secret, nil
 }
 
+func loadAdminOAuthCallbackAllowlistFromEnv() []string {
+	raw := os.Getenv(adminOAuthCallbackAllowlistEnv)
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	allowlist := make([]string, 0, len(parts))
+	for _, part := range parts {
+		item := strings.TrimSpace(part)
+		if item == "" {
+			continue
+		}
+		allowlist = append(allowlist, item)
+	}
+	if len(allowlist) == 0 {
+		return nil
+	}
+	return allowlist
+}
+
 // installGeminiPublicCLIOAuthExchangers 把默认 registry 中 Gemini code_assist /
 // google_one 条目替换为带显式 OAuth-grade HTTP client 的版本。client 由调用方
-// 构造，生产 wiring 传 auth.NewSSRFProtectedOAuthClient，secret 必须来自 env。
-func installGeminiPublicCLIOAuthExchangers(registry *credentialacq.ExchangerRegistry, client *http.Client, clientSecret string) error {
+// 构造，生产 wiring 传 auth.NewSSRFProtectedOAuthClient，secret 与 admin callback
+// allowlist 必须来自 operator env。
+func installGeminiPublicCLIOAuthExchangers(registry *credentialacq.ExchangerRegistry, client *http.Client, clientSecret string, allowlist []string) error {
 	if registry == nil {
 		return fmt.Errorf("nil exchanger registry")
 	}
@@ -575,7 +600,7 @@ func installGeminiPublicCLIOAuthExchangers(registry *credentialacq.ExchangerRegi
 	for _, mode := range []string{credentialstore.AuthModeCodeAssist, credentialstore.AuthModeGoogleOne} {
 		if err := registry.RegisterOrReplaceExchanger(
 			credentialstore.ModeKey(credentialstore.VendorGemini, mode),
-			credentialacq.NewGeminiPublicCLIOAuthExchangerWithClientAndSecret(mode, client, clientSecret),
+			credentialacq.NewGeminiPublicCLIOAuthExchangerWithClientSecretAndAdminCallbackAllowlist(mode, client, clientSecret, allowlist),
 		); err != nil {
 			return err
 		}
@@ -605,8 +630,9 @@ func assertGeminiPublicCLIOAuthExchangersHaveHTTPClient(registry *credentialacq.
 // installChatGPTOAuthExchanger 把默认 registry 中 openai/chatgpt_oauth 条目
 // 替换为带显式 OAuth-grade HTTP client 的版本。ChatGPT OAuth 是 PKCE-only，
 // 不需要 client_secret；client 由调用方构造，生产 wiring 传 SSRF-protected
-// client，避免 callback token exchange silent 退化到默认 transport。
-func installChatGPTOAuthExchanger(registry *credentialacq.ExchangerRegistry, client *http.Client) error {
+// client，admin callback allowlist 来自 operator env，避免 callback token exchange
+// silent 退化到默认 transport。
+func installChatGPTOAuthExchanger(registry *credentialacq.ExchangerRegistry, client *http.Client, allowlist []string) error {
 	if registry == nil {
 		return fmt.Errorf("nil exchanger registry")
 	}
@@ -615,7 +641,7 @@ func installChatGPTOAuthExchanger(registry *credentialacq.ExchangerRegistry, cli
 	}
 	return registry.RegisterOrReplaceExchanger(
 		credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth),
-		credentialacq.NewChatGPTOAuthExchangerWithClient(client),
+		credentialacq.NewChatGPTOAuthExchangerWithClientAndAdminCallbackAllowlist(client, allowlist),
 	)
 }
 
