@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -106,7 +107,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 	if ex.d.ResponseCache != nil && ex.cacheKey != "" {
 		w.Header().Set("X-HUAKAI-Cache-L2", "miss")
 	}
-	WriteHuakaiHeaders(w.Header(), ex.req.Model, bufferedEnv, ledgerResult, ex.requestID, ex.ident.TenantID)
+	WriteHuakaiHeaders(w.Header(), ex.req.Model, bufferedEnv, ledgerResult, ex.requestID, ex.ident.TenantID, ex.d.Signer)
 	outcome = ex.baseAttemptOutcome()
 	outcome.Success = &attemptSuccess{
 		StatusCode: http.StatusOK,
@@ -414,13 +415,6 @@ func submitAuditLedgerEntry(ctx context.Context, d ChatHandlerDeps, env *proto.H
 		}
 		return auditledger.DisabledLedgerResult(), nil
 	}
-	if d.Signer == nil {
-		appendTrustChainWarning(env, "audit_signer_not_configured", "audit signer dependency unset; trust-chain ledger entry skipped")
-		if production {
-			return auditledger.AuditLedgerResult{}, fmt.Errorf("audit signer dependency unset in production")
-		}
-		return auditledger.DisabledLedgerResult(), nil
-	}
 	if requestID == "" {
 		requestID = env.RequestMeta.RequestID
 	}
@@ -430,6 +424,25 @@ func submitAuditLedgerEntry(ctx context.Context, d ChatHandlerDeps, env *proto.H
 		TenantID:   tenantID,
 		HopChain:   cloneHopChain(env.Accounting.HopChain),
 		ModelChain: cloneModelChain(env.Accounting.ModelChain),
+	}
+	if d.Signer == nil {
+		appendTrustChainWarning(env, "audit_signer_not_configured", "audit signer dependency unset; trust-chain ledger entry skipped (fail-open D-8)")
+		mode := "dev"
+		if production {
+			mode = "production"
+		}
+		log.Printf("[trust-chain] WARN: signer unavailable in %s mode, fail-open with unverified status (request_id=%s)", mode, env.RequestMeta.RequestID)
+		prepared, prepareErr := auditledger.PrepareEntry(ctx, entry)
+		if prepareErr != nil {
+			return auditledger.DisabledLedgerResult(), nil
+		}
+		dlqRef, dlqErr := auditledger.EnqueuePreparedEntryToDLQ(ctx, d.AuditLedgerDLQ, prepared, fmt.Errorf("audit signer dependency unset"))
+		if dlqErr != nil {
+			appendTrustChainWarning(env, "audit_signer_dlq_enqueue_failed", dlqErr.Error())
+			return auditledger.DisabledLedgerResult(), nil
+		}
+		appendTrustChainWarning(env, "audit_signer_deferred", "audit signer unset; sanitized append intent queued in DLQ")
+		return auditledger.DeferredLedgerResult(dlqRef), nil
 	}
 	prepared, err := auditledger.PrepareEntry(ctx, entry)
 	if err != nil {

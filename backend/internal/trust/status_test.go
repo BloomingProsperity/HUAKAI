@@ -92,3 +92,31 @@ func TestMetadataFromLedgerEntryUsesProviderHopAndRouteModel(t *testing.T) {
 		t.Fatalf("MetadataFromLedgerEntry=%+v want provider/model/request_id from ledger", got)
 	}
 }
+
+// TestUpgradeStatusOnSignatureOnlyPromotesUnverified
+//
+// 守 TRUST-B-2 provisional inline 语义：签名只把已持久化且默认 unverified 的
+// 响应升到 signed-only；mismatch/missing 等风险状态不能被签名覆盖。
+// Mutation 自检：无条件返回 signed-only 会让 mismatch case red；忽略签名存在性
+// 会让 no-signature case red。
+func TestUpgradeStatusOnSignatureOnlyPromotesUnverified(t *testing.T) {
+	tests := []struct {
+		name       string
+		prev       Status
+		sigPresent bool
+		want       Status
+	}{
+		{name: "unverified with signature", prev: StatusUnverified, sigPresent: true, want: StatusSignedOnly},
+		{name: "unverified without signature", prev: StatusUnverified, sigPresent: false, want: StatusUnverified},
+		{name: "mismatch stays mismatch", prev: StatusMismatch, sigPresent: true, want: StatusMismatch},
+		{name: "missing stays missing", prev: StatusMissing, sigPresent: true, want: StatusMissing},
+		{name: "verified stays verified", prev: StatusVerified, sigPresent: true, want: StatusVerified},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := UpgradeStatusOnSignature(tt.prev, tt.sigPresent); got != tt.want {
+				t.Fatalf("UpgradeStatusOnSignature(%q,%v)=%q want %q", tt.prev, tt.sigPresent, got, tt.want)
+			}
+		})
+	}
+}

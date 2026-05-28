@@ -2,6 +2,8 @@ package gatewayhttp
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"net/http"
 	"testing"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/trust"
+	"github.com/BloomingProsperity/HUAKAI/internal/trustreceipt"
 )
 
 func TestChatCompletionsClientAdapter_NonStreamingModelChainAndHeaders(t *testing.T) {
@@ -107,6 +110,195 @@ func TestChatCompletionResponseHeaderTrustStatusIsUnverifiedDefault(t *testing.T
 	}
 	if got := rec.Header().Get(trust.HeaderStatus); got != string(trust.StatusUnverified) {
 		t.Fatalf("%s=%q want %q before TRUST-B signer wiring", trust.HeaderStatus, got, trust.StatusUnverified)
+	}
+}
+
+// TestChatCompletionResponseHeaderTrustSignedOnlyWhenSignerAvailable
+//
+// 守 TRUST-B-2 inline provisional signature：非流式 Persisted ledger result +
+// signer 可用时，response header 必须带 receipt 签名并把 TRUST-A 默认
+// unverified 升到 signed-only。Mutation 自检：删掉 SignReceipt 调用或不覆盖
+// status，本测试会看到空签名或 unverified。
+func TestChatCompletionResponseHeaderTrustSignedOnlyWhenSignerAvailable(t *testing.T) {
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	h := http.Header{}
+	result := signedHeaderPersistedResult("req-signed")
+	env := signedHeaderEnvelope("req-signed")
+
+	WriteHuakaiHeaders(h, "gpt-4o", env, result, "req-signed", 7001, signer)
+
+	if got := h.Get(trust.HeaderStatus); got != string(trust.StatusSignedOnly) {
+		t.Fatalf("%s=%q want signed-only", trust.HeaderStatus, got)
+	}
+	sigB64 := h.Get(trust.HeaderTrustSignature)
+	if sigB64 == "" {
+		t.Fatalf("%s is empty", trust.HeaderTrustSignature)
+	}
+	sigBytes, err := base64.StdEncoding.DecodeString(sigB64)
+	if err != nil {
+		t.Fatalf("%s is not base64: %v", trust.HeaderTrustSignature, err)
+	}
+	expected := trustreceipt.BuildProvisionalFromEnv(env, result, "req-signed", 0)
+	canonical, err := trustreceipt.Canonical(expected)
+	if err != nil {
+		t.Fatalf("canonical receipt: %v", err)
+	}
+	if !ed25519.Verify(signer.PublicKey(), canonical, sigBytes) {
+		t.Fatalf("%s does not verify against expected canonical receipt", trust.HeaderTrustSignature)
+	}
+	if got := h.Get(trust.HeaderTrustPubkeyFingerprint); got != signer.Fingerprint() {
+		t.Fatalf("%s=%q want %q", trust.HeaderTrustPubkeyFingerprint, got, signer.Fingerprint())
+	}
+	if got := h.Get(trust.HeaderTrustSchema); got != "trust.receipt.v1" {
+		t.Fatalf("%s=%q want trust.receipt.v1", trust.HeaderTrustSchema, got)
+	}
+}
+
+// TestChatCompletionResponseHeaderTrustStaysUnverifiedWhenSignerNil
+//
+// 守 D-8 本切片语义：signer 不可用时不伪造签名、不升级状态，保留 TRUST-A
+// unverified。Mutation 自检：nil signer 仍尝试签名会 panic；无条件 signed-only
+// 会让 status 断言 red。
+func TestChatCompletionResponseHeaderTrustStaysUnverifiedWhenSignerNil(t *testing.T) {
+	h := http.Header{}
+	result := signedHeaderPersistedResult("req-unsigned")
+
+	WriteHuakaiHeaders(h, "gpt-4o", signedHeaderEnvelope("req-unsigned"), result, "req-unsigned", 7001, nil)
+
+	if got := h.Get(trust.HeaderStatus); got != string(trust.StatusUnverified) {
+		t.Fatalf("%s=%q want unverified", trust.HeaderStatus, got)
+	}
+	if got := h.Get(trust.HeaderTrustSignature); got != "" {
+		t.Fatalf("%s=%q want empty without signer", trust.HeaderTrustSignature, got)
+	}
+	if got := h.Get(trust.HeaderTrustPubkeyFingerprint); got != "" {
+		t.Fatalf("%s=%q want empty without signer", trust.HeaderTrustPubkeyFingerprint, got)
+	}
+	if got := h.Get(trust.HeaderTrustSchema); got != "" {
+		t.Fatalf("%s=%q want empty without signer", trust.HeaderTrustSchema, got)
+	}
+}
+
+// TestChatCompletionResponseFailOpenWhenSignerNilInProduction
+//
+// 守 D-8=A signer 不可用时仍走 W4 deferred ledger 路径：返 200 OK +
+// status=unverified + DLQRef 非空。Mutation 自检：删 DLQ enqueue 会被
+// production audit-ref policy 拒成 500；删 audit_signer_deferred warning 会
+// 让 warning 断言 red。
+func TestChatCompletionResponseFailOpenWhenSignerNilInProduction(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	ledgerSigner, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("ledger signer: %v", err)
+	}
+	ledger, err := auditledger.NewMemoryLedger(ledgerSigner)
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	d := clientAdapterDeps(t)
+	d.Signer = nil
+	d.AuditLedger = ledger
+	d.AuditLedgerDLQ = &recordingGatewayAuditLedgerDLQ{id: 918}
+	d.AuditRefPolicy = productionAuditRefPolicyForGatewayTest(false)
+	dispatcher := &signerNilFailOpenDispatcher{}
+	d.CanonicalDispatcher = dispatcher
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 (D-8 fail-open) body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get(trust.HeaderStatus); got != string(trust.StatusUnverified) {
+		t.Fatalf("%s=%q want unverified (D-8 fail-open)", trust.HeaderStatus, got)
+	}
+	if got := rec.Header().Get(trust.HeaderTrustSignature); got != "" {
+		t.Fatalf("%s=%q want empty (no sig when signer nil)", trust.HeaderTrustSignature, got)
+	}
+	if got := rec.Header().Get(headerHUAKAIAuditLedgerDLQRef); got != "audit_ledger_dlq:918" {
+		t.Fatalf("%s=%q want audit_ledger_dlq:918", headerHUAKAIAuditLedgerDLQRef, got)
+	}
+	dlqSink := d.AuditLedgerDLQ.(*recordingGatewayAuditLedgerDLQ)
+	if len(dlqSink.events) != 1 {
+		t.Fatalf("audit ledger DLQ events=%d want 1", len(dlqSink.events))
+	}
+	if dispatcher.returned == nil {
+		t.Fatal("dispatcher returned envelope was not captured")
+	}
+	if !hasProtocolLossCode(dispatcher.returned.CapabilityGraph.ProtocolLoss, "audit_signer_deferred") {
+		t.Fatalf("ProtocolLoss codes=%v want audit_signer_deferred", protocolLossCodes(dispatcher.returned.CapabilityGraph.ProtocolLoss))
+	}
+}
+
+type signerNilFailOpenDispatcher struct {
+	returned *proto.HCSF
+}
+
+func (d *signerNilFailOpenDispatcher) DispatchHCSF(_ context.Context, requestEnvelope *proto.HCSF) (*proto.HCSF, error) {
+	env := proto.NewEmptyEnvelope()
+	env.RequestMeta = requestEnvelope.RequestMeta
+	env.BufferedResponse = &proto.CanonicalResponse{
+		ID:         "chatcmpl-signer-nil-fail-open",
+		Model:      requestEnvelope.RequestMeta.UpstreamModel,
+		Content:    []proto.CanonicalContentBlock{{Type: "text", Text: "hello from canonical"}},
+		Usage:      proto.CanonicalUsage{InputTokens: 2, OutputTokens: 3},
+		StopReason: proto.CanonicalStopEndTurn,
+	}
+	env.Accounting.Usage = env.BufferedResponse.Usage
+	env.Accounting.EvidenceLabel = proto.EvidenceMock
+	d.returned = env
+	return env, nil
+}
+
+func hasProtocolLossCode(losses []proto.ProtocolLossEntry, code string) bool {
+	for _, loss := range losses {
+		if loss.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+func protocolLossCodes(losses []proto.ProtocolLossEntry) []string {
+	codes := make([]string, 0, len(losses))
+	for _, loss := range losses {
+		codes = append(codes, loss.Code)
+	}
+	return codes
+}
+
+func signedHeaderEnvelope(requestID string) *proto.HCSF {
+	env := proto.NewEmptyEnvelope()
+	env.RequestMeta.RequestID = requestID
+	env.RequestMeta.TenantID = 7001
+	env.RequestMeta.Provider = "openai"
+	env.RequestMeta.Model = "gpt-4o"
+	env.RequestMeta.UpstreamModel = "gpt-4o"
+	env.Accounting.ModelChain = &proto.ModelChain{
+		Requested:        "gpt-4o",
+		RouteDecided:     "gpt-4o",
+		UpstreamReported: "gpt-4o",
+	}
+	env.BufferedResponse = &proto.CanonicalResponse{Model: "gpt-4o"}
+	env.Accounting.Usage = proto.CanonicalUsage{InputTokens: 13, OutputTokens: 21}
+	env.Accounting.HopChain = []proto.HopAttestation{{
+		Hop:       proto.HopProvider,
+		Provider:  "openai",
+		StartedAt: "2026-05-27T00:00:00Z",
+		Timestamp: "2026-05-27T00:00:00Z",
+	}}
+	return env
+}
+
+func signedHeaderPersistedResult(requestID string) auditledger.AuditLedgerResult {
+	return auditledger.AuditLedgerResult{
+		State:            auditledger.LedgerResultStatePersisted,
+		LedgerID:         "ledger-" + requestID,
+		Fingerprint:      "ledger-fp",
+		UpstreamProvider: "openai",
+		UpstreamModel:    "gpt-4o",
+		RequestID:        requestID,
 	}
 }
 
@@ -248,7 +440,7 @@ func TestWriteHuakaiHeaders_NonStreamingDeferredWritesDLQRef(t *testing.T) {
 		State:  auditledger.LedgerResultStateDeferred,
 		DLQRef: "audit_ledger_dlq:42",
 	}
-	WriteHuakaiHeaders(hA, "claude-3-5-sonnet", proto.NewEmptyEnvelope(), resultA, "req-abc", 7001)
+	WriteHuakaiHeaders(hA, "claude-3-5-sonnet", proto.NewEmptyEnvelope(), resultA, "req-abc", 7001, nil)
 	if got := hA.Get(headerHUAKAIAuditLedgerDLQRef); got != "audit_ledger_dlq:42" {
 		t.Fatalf("Deferred+DLQRef:%s=%q want 'audit_ledger_dlq:42'", headerHUAKAIAuditLedgerDLQRef, got)
 	}
@@ -268,7 +460,7 @@ func TestWriteHuakaiHeaders_NonStreamingDeferredWritesDLQRef(t *testing.T) {
 		State:  auditledger.LedgerResultStateDeferred,
 		DLQRef: "",
 	}
-	WriteHuakaiHeaders(hB, "claude-3-5-sonnet", proto.NewEmptyEnvelope(), resultB, "req-abc", 7001)
+	WriteHuakaiHeaders(hB, "claude-3-5-sonnet", proto.NewEmptyEnvelope(), resultB, "req-abc", 7001, nil)
 	if got := hB.Get(headerHUAKAIAuditLedgerDLQRef); got != "" {
 		t.Fatalf("Deferred+empty-DLQRef MUST NOT write DLQ header; got %s=%q", headerHUAKAIAuditLedgerDLQRef, got)
 	}
@@ -288,7 +480,7 @@ func TestWriteHuakaiHeaders_NonStreamingPersistedHeadersUnchanged(t *testing.T) 
 		Fingerprint: "fp-xyz",
 		DLQRef:      "should-not-appear", // 故意带,确认 Persisted 不漏写
 	}
-	WriteHuakaiHeaders(h, "claude-3-5-sonnet", proto.NewEmptyEnvelope(), result, "req-abc", 7001)
+	WriteHuakaiHeaders(h, "claude-3-5-sonnet", proto.NewEmptyEnvelope(), result, "req-abc", 7001, nil)
 	if got := h.Get(headerHUAKAIAuditLedgerID); got != "ledger-1" {
 		t.Fatalf("Persisted path must write ledger id; got %s=%q", headerHUAKAIAuditLedgerID, got)
 	}
