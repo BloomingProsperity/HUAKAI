@@ -29,7 +29,6 @@ func (b *Bridge) persistDone(ctx context.Context, prepared PreparedRequest, stat
 	}
 	now := b.now().UTC()
 	completedAt := pgtype.Timestamptz{Time: now, Valid: true}
-	var auditErr error
 	err = b.tx.RunHermesTx(ctx, func(store hermes.Store) error {
 		_, err := store.AppendMessage(ctx, dbhermes.AppendMessageParams{
 			TenantID: prepared.TenantID, ConversationID: conversationID, Role: "assistant",
@@ -50,14 +49,10 @@ func (b *Bridge) persistDone(ctx context.Context, prepared PreparedRequest, stat
 		if rows == 0 {
 			return fmt.Errorf("%w: conversation is not active", hermes.ErrGone)
 		}
-		auditErr = b.recordMessageAudit(ctx, store, prepared, conversationID, now)
-		return nil
+		return b.recordMessageAudit(ctx, store, prepared, conversationID, now)
 	})
 	if err != nil {
 		return err
-	}
-	if auditErr != nil {
-		b.warnAuditFailure(ctx, prepared, conversationID, auditErr)
 	}
 	return nil
 }
