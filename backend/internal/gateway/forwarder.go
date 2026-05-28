@@ -398,6 +398,13 @@ func (f *StreamForwarder) finishDraft(d UsageRecordDraft, acc UsageAccumulator, 
 	}
 	d.TokensInput = acc.Usage.InputTokens
 	d.TokensOutput = acc.Usage.OutputTokens
+	d.CacheCreationTokens = acc.Usage.CacheCreationInputTokens
+	if d.CacheCreationTokens == 0 {
+		d.CacheCreationTokens = acc.Usage.CacheCreationInputTokens5m + acc.Usage.CacheCreationInputTokens1h
+	}
+	d.CacheCreation5mTokens = acc.Usage.CacheCreationInputTokens5m
+	d.CacheCreation1hTokens = acc.Usage.CacheCreationInputTokens1h
+	d.CacheReadTokens = acc.Usage.CacheReadInputTokens
 	d.DeliveredTokenCount = acc.DeliveredTokenCount()
 	if d.UsageSource == UsageSourceAmbiguous && acc.Source != "" {
 		d.UsageSource = acc.Source
