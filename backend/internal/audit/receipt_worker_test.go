@@ -210,7 +210,7 @@ func TestAppendSettledReceiptSignsFinalReceiptWhenSignerAvailable(t *testing.T) 
 	if err != nil {
 		t.Fatalf("signed_hash must be base64 final signature: %v", err)
 	}
-	finalReceipt := trustreceipt.BuildFinalFromSettleEvent(settleReq, nil, trustreceipt.FinalReceiptFacts{
+	finalReceipt := trustreceipt.BuildFinalFromSettleEvent(billing.SettleRequest{}, nil, trustreceipt.FinalReceiptFacts{
 		RequestID:           requestID,
 		ReceiptSequence:     int(appender.receipt.ReceiptSequence),
 		TenantID:            appender.receipt.TenantID,
@@ -223,12 +223,33 @@ func TestAppendSettledReceiptSignsFinalReceiptWhenSignerAvailable(t *testing.T) 
 		RateTableSnapshotID: appender.receipt.RateTableSnapshotID,
 		ValidationState:     appender.receipt.ValidationState,
 	})
+	finalReceipt.RedactedMetadataAllowlist = finalTrustReceiptMetadataFromCostReceipt(appender.receipt)
 	canonical, err := trustreceipt.Canonical(finalReceipt)
 	if err != nil {
 		t.Fatalf("canonical final receipt: %v", err)
 	}
 	if !ed25519.Verify(trustSigner.PublicKey(), canonical, sig) {
 		t.Fatal("final signature does not verify against trust receipt canonical bytes")
+	}
+	enrichedReceipt := trustreceipt.BuildFinalFromSettleEvent(settleReq, nil, trustreceipt.FinalReceiptFacts{
+		RequestID:           requestID,
+		ReceiptSequence:     int(appender.receipt.ReceiptSequence),
+		TenantID:            appender.receipt.TenantID,
+		OccurredAt:          appender.receipt.CreatedAt,
+		Model:               appender.receipt.Model,
+		InputTokens:         appender.receipt.InputTokens,
+		OutputTokens:        appender.receipt.OutputTokens,
+		CachedTokens:        appender.receipt.CachedTokens,
+		CostUSDMicros:       appender.receipt.CostUSDMicros,
+		RateTableSnapshotID: appender.receipt.RateTableSnapshotID,
+		ValidationState:     appender.receipt.ValidationState,
+	})
+	enrichedCanonical, err := trustreceipt.Canonical(enrichedReceipt)
+	if err != nil {
+		t.Fatalf("canonical enriched receipt: %v", err)
+	}
+	if ed25519.Verify(trustSigner.PublicKey(), enrichedCanonical, sig) {
+		t.Fatal("final trust signature must not depend on settle-only fields unavailable to receipt verify")
 	}
 }
 

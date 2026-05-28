@@ -86,7 +86,8 @@ func (h *ReceiptHookHandler) attachFinalTrustSignature(ctx context.Context, req 
 	if receipt == nil {
 		return
 	}
-	finalReceipt := trustreceipt.BuildFinalFromSettleEvent(req, nil, finalReceiptFactsFromCostReceipt(receipt))
+	finalReceipt := trustreceipt.BuildFinalFromSettleEvent(billing.SettleRequest{}, nil, finalReceiptFactsFromCostReceipt(receipt))
+	finalReceipt.RedactedMetadataAllowlist = finalTrustReceiptMetadataFromCostReceipt(receipt)
 	sigB64, fingerprint, err := trustreceipt.SignReceipt(h.trustSigner, finalReceipt)
 	if err != nil {
 		receipt.SignerFingerprint = []byte{}
@@ -96,6 +97,39 @@ func (h *ReceiptHookHandler) attachFinalTrustSignature(ctx context.Context, req 
 	}
 	receipt.SignerFingerprint = []byte(fingerprint)
 	receipt.SignedHash = []byte(sigB64)
+}
+
+func finalTrustReceiptMetadataFromCostReceipt(receipt *CostReceipt) map[string]any {
+	if receipt == nil {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"adjustment_refs": strings.Join(normalizedAdjustmentRefs(receipt.AdjustmentRefs), "\n"),
+		"cost_usd_micros": receipt.CostUSDMicros,
+		"verdict":         NormalizeReceiptVerdict(receipt.Verdict),
+	}
+}
+
+func FinalTrustReceiptCanonical(receipt *CostReceipt) ([]byte, error) {
+	if receipt == nil {
+		return nil, ErrReceiptRequired
+	}
+	finalReceipt := trustreceipt.BuildFinalFromSettleEvent(billing.SettleRequest{}, nil, finalReceiptFactsFromCostReceipt(receipt))
+	finalReceipt.RedactedMetadataAllowlist = finalTrustReceiptMetadataFromCostReceipt(receipt)
+	return trustreceipt.Canonical(finalReceipt)
+}
+
+func FinalTrustReceiptDisplayID(receipt *CostReceipt) (string, error) {
+	if receipt == nil {
+		return "", ErrReceiptRequired
+	}
+	finalReceipt := trustreceipt.BuildFinalFromSettleEvent(billing.SettleRequest{}, nil, finalReceiptFactsFromCostReceipt(receipt))
+	finalReceipt.RedactedMetadataAllowlist = finalTrustReceiptMetadataFromCostReceipt(receipt)
+	hash, err := trustreceipt.CanonicalHash(finalReceipt)
+	if err != nil {
+		return "", err
+	}
+	return trustreceipt.DisplayReceiptID(hash), nil
 }
 
 func finalReceiptFactsFromCostReceipt(receipt *CostReceipt) trustreceipt.FinalReceiptFacts {

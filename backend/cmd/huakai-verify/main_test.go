@@ -10,14 +10,137 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
+	"github.com/BloomingProsperity/HUAKAI/internal/trustreceipt"
 )
+
+func TestRunCLI_DetachedTOFUFirstFetchCachesKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	signer, canonical, sigB64, receiptFile := detachedReceiptFixture(t)
+	fetches := 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/.well-known/huakai-pubkey.json" {
+			return testHTTPResponse(req, http.StatusNotFound, "not found"), nil
+		}
+		fetches++
+		return testHTTPResponse(req, http.StatusOK, jwkSetBody(signer, "active")), nil
+	})}
+
+	var out bytes.Buffer
+	code := runCLI([]string{
+		"--server=https://huakai-verify.test",
+		"--receipt-file=" + receiptFile,
+		"--signature=" + sigB64,
+		"--json",
+	}, &out, client)
+	if code != 0 {
+		t.Fatalf("code=%d output=%s", code, out.String())
+	}
+	if fetches != 1 {
+		t.Fatalf("well-known fetches=%d want 1", fetches)
+	}
+	if !strings.Contains(out.String(), `"status":"signed-only"`) || !strings.Contains(out.String(), `"signature_valid":true`) {
+		t.Fatalf("json output missing signed-only result: %s", out.String())
+	}
+	cachePath := filepath.Join(home, ".huakai", "known_keys", "huakai-verify.test.json")
+	cached, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatalf("cache not written at %s: %v", cachePath, err)
+	}
+	if !strings.Contains(string(cached), signer.Fingerprint()) || !strings.Contains(string(cached), base64.RawURLEncoding.EncodeToString(signer.PublicKey())) || len(canonical) == 0 {
+		t.Fatalf("cache missing key material: %s", cached)
+	}
+}
+
+func TestRunCLI_DetachedCacheHitDoesNotRefetch(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	signer, _, sigB64, receiptFile := detachedReceiptFixture(t)
+	cacheDir := filepath.Join(home, ".huakai", "known_keys")
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		t.Fatalf("mkdir cache: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, "huakai-verify.test.json"), []byte(jwkSetBody(signer, "active")), 0o600); err != nil {
+		t.Fatalf("write cache: %v", err)
+	}
+	fetches := 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		fetches++
+		return testHTTPResponse(req, http.StatusInternalServerError, "cache should avoid fetch"), nil
+	})}
+
+	var out bytes.Buffer
+	code := runCLI([]string{
+		"--server=https://huakai-verify.test",
+		"--receipt-file=" + receiptFile,
+		"--signature=" + sigB64,
+	}, &out, client)
+	if code != 0 {
+		t.Fatalf("code=%d output=%s", code, out.String())
+	}
+	if fetches != 0 {
+		t.Fatalf("cache hit performed fetches=%d", fetches)
+	}
+	if !strings.Contains(out.String(), "签名状态: signed-only") {
+		t.Fatalf("friendly output missing status: %s", out.String())
+	}
+}
+
+func TestRunCLI_DetachedFingerprintMismatchFails(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	signer, _, sigB64, receiptFile := detachedReceiptFixture(t)
+	wrong, _ := sign.GenerateKey()
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return testHTTPResponse(req, http.StatusOK, jwkSetBody(wrong, "active")), nil
+	})}
+
+	var out bytes.Buffer
+	code := runCLI([]string{
+		"--server=https://huakai-verify.test",
+		"--receipt-file=" + receiptFile,
+		"--signature=" + sigB64,
+		"--fingerprint=" + signer.Fingerprint(),
+	}, &out, client)
+	if code != 1 {
+		t.Fatalf("code=%d output=%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "fingerprint mismatch") {
+		t.Fatalf("mismatch output missing reason: %s", out.String())
+	}
+}
+
+func TestRunCLI_DetachedRevokedKeyFails(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	signer, _, sigB64, receiptFile := detachedReceiptFixture(t)
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return testHTTPResponse(req, http.StatusOK, jwkSetBody(signer, "revoked")), nil
+	})}
+
+	var out bytes.Buffer
+	code := runCLI([]string{
+		"--server=https://huakai-verify.test",
+		"--receipt-file=" + receiptFile,
+		"--signature=" + sigB64,
+	}, &out, client)
+	if code != 1 {
+		t.Fatalf("code=%d output=%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "key_revoked") || strings.Contains(out.String(), "signed-only") {
+		t.Fatalf("revoked output mismatch: %s", out.String())
+	}
+}
 
 func TestRunCLI_HappyPath(t *testing.T) {
 	signer, gateway := newVerifyGateway(t)
@@ -33,9 +156,67 @@ func TestRunCLI_HappyPath(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code=%d output=%s", code, out.String())
 	}
-	if !strings.Contains(out.String(), "✅") || !strings.Contains(out.String(), signer.Fingerprint()) {
-		t.Fatalf("success output missing checkmarks or fingerprint: %s", out.String())
+	if !strings.Contains(out.String(), "audit verification passed") || !strings.Contains(out.String(), signer.Fingerprint()) {
+		t.Fatalf("success output missing pass marker or fingerprint: %s", out.String())
 	}
+}
+
+func detachedReceiptFixture(t *testing.T) (*sign.Signer, []byte, string, string) {
+	t.Helper()
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	receipt := trustreceipt.TrustReceiptV1{
+		RequestID:       "req-cli-detached",
+		ReceiptSequence: 0,
+		TenantScopeRef:  "tenant:7",
+		OccurredAt:      mustParseTime(t, "2026-05-27T12:30:00Z"),
+		Provider:        "openai",
+		RequestedModel:  "gpt-4o",
+		RoutedModel:     "gpt-4o-mini",
+		UpstreamModel:   "gpt-4o-mini",
+		DeliveredModel:  "gpt-4o-mini",
+		CostCents:       12,
+		TokenCounts:     trustreceipt.TokenCounts{Input: 40, Output: 12, Cached: 3},
+		PriceSnapshot:   trustreceipt.PriceSnapshot{RateTableSnapshotID: 44, SnapshotVersion: "registry:7:44", CurrencyCode: "USD"},
+		ValidationState: "valid",
+		RedactedMetadataAllowlist: map[string]any{
+			"safe_label": "green",
+		},
+	}
+	canonical, err := trustreceipt.Canonical(receipt)
+	if err != nil {
+		t.Fatalf("canonical: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "receipt.canonical.json")
+	if err := os.WriteFile(path, canonical, 0o600); err != nil {
+		t.Fatalf("write receipt: %v", err)
+	}
+	return signer, canonical, base64.StdEncoding.EncodeToString(signer.Sign(canonical)), path
+}
+
+func jwkSetBody(signer *sign.Signer, status string) string {
+	revoked := "[]"
+	if status == "revoked" {
+		revoked = fmt.Sprintf(`[{"fingerprint":%q,"revoked_at":"2026-05-27T12:00:00Z","reason_class":"key_compromise"}]`, signer.Fingerprint())
+	}
+	return fmt.Sprintf(`{"schema_version":"huakai.pubkey.v1","keys":[{"kty":"OKP","crv":"Ed25519","kid":%q,"x":%q,"alg":"EdDSA","use":"sig","status":%q,"revoked_at":"2026-05-27T12:00:00Z","reason_class":"key_compromise"}],"current":%q,"revoked":%s}`,
+		signer.Fingerprint(),
+		base64.RawURLEncoding.EncodeToString(signer.PublicKey()),
+		status,
+		signer.Fingerprint(),
+		revoked,
+	)
+}
+
+func mustParseTime(t *testing.T, value string) time.Time {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		t.Fatalf("parse time: %v", err)
+	}
+	return parsed.UTC()
 }
 
 func TestRunCLI_VerifiesResponseMatchesRequestedEntry(t *testing.T) {
@@ -51,7 +232,7 @@ func TestRunCLI_VerifiesResponseMatchesRequestedEntry(t *testing.T) {
 			entryReqID:  "req_cli",
 			entryTenant: 7,
 			wantCode:    0,
-			wantOutput:  "✅",
+			wantOutput:  "audit verification passed",
 		},
 		{
 			name:        "request id mismatch fails",
@@ -112,7 +293,7 @@ func TestRunCLI_WrongPubKeyFails(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("code=%d output=%s", code, out.String())
 	}
-	if !strings.Contains(out.String(), "❌") || !strings.Contains(out.String(), "fingerprint mismatch") {
+	if !strings.Contains(out.String(), "audit verification failed") || !strings.Contains(out.String(), "fingerprint mismatch") {
 		t.Fatalf("failure output missing reason: %s", out.String())
 	}
 }
@@ -131,7 +312,7 @@ func TestRunCLI_NotFoundFails(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("code=%d output=%s", code, out.String())
 	}
-	if !strings.Contains(out.String(), "❌") || !strings.Contains(out.String(), "HTTP 404") {
+	if !strings.Contains(out.String(), "audit verification failed") || !strings.Contains(out.String(), "HTTP 404") {
 		t.Fatalf("not_found output missing HTTP status: %s", out.String())
 	}
 }
