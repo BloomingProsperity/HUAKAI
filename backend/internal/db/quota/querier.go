@@ -25,7 +25,9 @@ type Querier interface {
 	GetQuotaReservationByClaimForUpdate(ctx context.Context, arg GetQuotaReservationByClaimForUpdateParams) (GetQuotaReservationByClaimForUpdateRow, error)
 	// Reserve/settle 事务内锁住一个租户窗口。
 	GetQuotaWindowForUpdate(ctx context.Context, arg GetQuotaWindowForUpdateParams) (GetQuotaWindowForUpdateRow, error)
-	// Enforce 模式: reserved + settled + delta 不得超过调用方传入的策略上限。
+	// request_count 镜像辅助; Reserve 准入使用 IncrementQuotaWindowReserved 的 Model B 计数。
+	IncrementQuotaWindowRequestCount(ctx context.Context, arg IncrementQuotaWindowRequestCountParams) (IncrementQuotaWindowRequestCountRow, error)
+	// Cost enforce: reserved + settled + delta 不得超过调用方传入的策略上限。
 	IncrementQuotaWindowReserved(ctx context.Context, arg IncrementQuotaWindowReservedParams) (IncrementQuotaWindowReservedRow, error)
 	// 配额审计事件; deny/overage/reconcile 都只写 quota audit。
 	InsertQuotaAuditEvent(ctx context.Context, arg InsertQuotaAuditEventParams) (InsertQuotaAuditEventRow, error)
@@ -42,6 +44,8 @@ type Querier interface {
 	MarkQuotaReconciliationJobRunning(ctx context.Context, arg MarkQuotaReconciliationJobRunningParams) (int64, error)
 	// 独立 quota settle/release 失败时标记 reservation, 后台 job 幂等重试。
 	MarkQuotaReservationReconciliationNeeded(ctx context.Context, arg MarkQuotaReservationReconciliationNeededParams) (int64, error)
+	// released/expired claim 重试通过重新评估后, 复用原 reservation 行重建持有。
+	ReactivateQuotaReservation(ctx context.Context, arg ReactivateQuotaReservationParams) (ReactivateQuotaReservationRow, error)
 	// 按 reservation 幂等释放所有本地并发槽。
 	ReleaseQuotaConcurrencySlotsByReservation(ctx context.Context, arg ReleaseQuotaConcurrencySlotsByReservationParams) (int64, error)
 	// Abort/cache-hit/retry 放弃路径释放 reservation; 调用方同时释放并发槽。

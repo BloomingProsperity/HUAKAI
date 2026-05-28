@@ -162,6 +162,26 @@ func reservationFromInsert(row dbquota.InsertQuotaReservationRow) (Reservation, 
 	}, nil
 }
 
+func reservationFromReactivate(row dbquota.ReactivateQuotaReservationRow) (Reservation, error) {
+	scopes, err := parseScopes(row.TenantID, row.ScopeSnapshot)
+	if err != nil {
+		return Reservation{}, err
+	}
+	return Reservation{
+		TenantID:           row.TenantID,
+		ID:                 row.ID,
+		ClaimID:            row.ClaimID,
+		RequestFingerprint: row.RequestFingerprint,
+		Scopes:             scopes,
+		PredictedCost:      decimalFromPG(row.PredictedCost),
+		ReservedUnits:      decimalFromPG(row.ReservedUnits),
+		Status:             ReservationStatus(row.Status),
+		LeaseExpiresAt:     pgTime(row.LeaseExpiresAt),
+		CreatedAt:          pgTime(row.CreatedAt),
+		UpdatedAt:          pgTime(row.UpdatedAt),
+	}, nil
+}
+
 func windowCounterFromUpsert(row dbquota.UpsertQuotaWindowRow) WindowCounter {
 	return WindowCounter{
 		TenantID: row.TenantID,
@@ -199,6 +219,18 @@ func windowCounterFromGet(row dbquota.GetQuotaWindowForUpdateRow) WindowCounter 
 }
 
 func windowCounterFromReserve(row dbquota.IncrementQuotaWindowReservedRow) WindowCounter {
+	return WindowCounter{
+		TenantID:      row.TenantID,
+		ID:            row.ID,
+		ReservedValue: decimalFromPG(row.ReservedValue),
+		SettledValue:  decimalFromPG(row.SettledValue),
+		OverageValue:  decimalFromPG(row.OverageValue),
+		RequestCount:  row.RequestCount,
+		Version:       int(row.Version),
+	}
+}
+
+func windowCounterFromRequestCount(row dbquota.IncrementQuotaWindowRequestCountRow) WindowCounter {
 	return WindowCounter{
 		TenantID:      row.TenantID,
 		ID:            row.ID,

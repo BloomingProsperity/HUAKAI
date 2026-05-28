@@ -16,15 +16,23 @@ var ErrStoreNotConfigured = errors.New("quota: postgres store not configured")
 
 // PostgresStore 是 PG/sqlc 支持的 quota store 实现。
 type PostgresStore struct {
-	q quotaQueries
+	q       quotaQueries
+	beginTx func(context.Context, pgx.TxOptions) (pgx.Tx, error)
 }
 
-// NewPostgresStore 从 pgxpool.Pool、pgx.Tx 或兼容 DBTX 构造 quota store。
+// NewPostgresStore 从支持 BeginTx 的 PG 连接/连接池构造 quota store。
+// Service.Reserve 需要 store 自己开启事务; 已有 pgx.Tx 不作为组合事务入口。
 func NewPostgresStore(db dbquota.DBTX) *PostgresStore {
 	if db == nil {
 		return &PostgresStore{}
 	}
-	return &PostgresStore{q: dbquota.New(db)}
+	store := &PostgresStore{q: dbquota.New(db)}
+	if beginner, ok := db.(interface {
+		BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
+	}); ok {
+		store.beginTx = beginner.BeginTx
+	}
+	return store
 }
 
 // NewPGStore 保留短命名构造器, 方便 wiring 侧按 PGStore 接口注入。
@@ -37,6 +45,28 @@ func (s *PostgresStore) queries() (quotaQueries, error) {
 		return nil, ErrStoreNotConfigured
 	}
 	return s.q, nil
+}
+
+// WithTx 在单个 PG 事务内执行 quota 操作, 供 Reserve 保证 reservation/window/audit 原子性。
+// 它只支持构造参数本身能 BeginTx 的 store, 不尝试嵌套或接管外部 pgx.Tx。
+func (s *PostgresStore) WithTx(ctx context.Context, fn func(PGStore) error) error {
+	if s == nil || s.beginTx == nil {
+		return ErrReserveRequiresTransaction
+	}
+	tx, err := s.beginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return err
+	}
+	txStore := &PostgresStore{q: dbquota.New(tx)}
+	if err := fn(txStore); err != nil {
+		_ = tx.Rollback(ctx)
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		_ = tx.Rollback(ctx)
+		return err
+	}
+	return nil
 }
 
 func (s *PostgresStore) ListActivePolicies(ctx context.Context, filter PolicyFilter) ([]Policy, error) {
@@ -126,6 +156,27 @@ func (s *PostgresStore) IncrementWindowReserved(ctx context.Context, input Windo
 	return windowCounterFromReserve(row), nil
 }
 
+func (s *PostgresStore) IncrementWindowRequestCount(ctx context.Context, input WindowRequestCount) (WindowCounter, error) {
+	q, err := s.queries()
+	if err != nil {
+		return WindowCounter{}, err
+	}
+	limitValue, err := pgNumeric(input.LimitValue)
+	if err != nil {
+		return WindowCounter{}, err
+	}
+	row, err := q.IncrementQuotaWindowRequestCount(ctx, dbquota.IncrementQuotaWindowRequestCountParams{
+		RequestCountDelta: input.RequestCountDelta,
+		TenantID:          input.TenantID,
+		WindowID:          input.WindowID,
+		LimitValue:        limitValue,
+	})
+	if err != nil {
+		return WindowCounter{}, err
+	}
+	return windowCounterFromRequestCount(row), nil
+}
+
 func (s *PostgresStore) ApplyWindowSettlement(ctx context.Context, input WindowSettlement) (WindowCounter, error) {
 	q, err := s.queries()
 	if err != nil {
@@ -206,6 +257,44 @@ func (s *PostgresStore) InsertReservation(ctx context.Context, input Reservation
 		return Reservation{}, err
 	}
 	return reservationFromInsert(row)
+}
+
+func (s *PostgresStore) ReactivateReservation(ctx context.Context, input ReservationReactivate) (Reservation, error) {
+	q, err := s.queries()
+	if err != nil {
+		return Reservation{}, err
+	}
+	scopeSnapshot, err := marshalScopes(input.Scopes)
+	if err != nil {
+		return Reservation{}, err
+	}
+	policySnapshot := input.PolicySnapshot
+	if len(policySnapshot) == 0 {
+		policySnapshot = []byte("[]")
+	}
+	predictedCost, err := pgNumeric(input.PredictedCost)
+	if err != nil {
+		return Reservation{}, err
+	}
+	reservedUnits, err := pgNumeric(input.ReservedUnits)
+	if err != nil {
+		return Reservation{}, err
+	}
+	row, err := q.ReactivateQuotaReservation(ctx, dbquota.ReactivateQuotaReservationParams{
+		RequestFingerprint: input.RequestFingerprint,
+		ScopeSnapshot:      scopeSnapshot,
+		PolicySnapshot:     policySnapshot,
+		PredictedCost:      predictedCost,
+		ReservedUnits:      reservedUnits,
+		LeaseExpiresAt:     pgTimestamptz(input.LeaseExpiresAt),
+		TenantID:           input.TenantID,
+		ReservationID:      input.ReservationID,
+		ClaimID:            input.ClaimID,
+	})
+	if err != nil {
+		return Reservation{}, err
+	}
+	return reservationFromReactivate(row)
 }
 
 func (s *PostgresStore) SettleReservation(ctx context.Context, settlement Settlement) error {
