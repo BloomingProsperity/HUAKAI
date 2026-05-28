@@ -245,6 +245,52 @@ LIMIT 1`,
 	return receipt, nil
 }
 
+func (rs *PGXReceiptStorage) GetReceiptByDisplayID(ctx context.Context, displayID string, tenantID, userID int64) (*CostReceipt, error) {
+	if rs == nil || rs.pool == nil {
+		return nil, ErrReceiptStorageRequired
+	}
+	displayID = strings.TrimSpace(displayID)
+	if !strings.HasPrefix(displayID, "receipt_") {
+		return nil, ErrReceiptNotFound
+	}
+	if tenantID <= 0 || userID <= 0 {
+		return nil, ErrReceiptNotFound
+	}
+	rows, err := rs.pool.Query(ctx, `
+SELECT `+receiptSelectColumns+`
+FROM user_cost_receipts r
+INNER JOIN user_cost_receipt_owners o
+  ON o.tenant_id = r.tenant_id
+ AND o.request_id = r.request_id
+ AND o.receipt_sequence = r.receipt_sequence
+WHERE r.tenant_id = $1 AND o.user_id = $2
+ORDER BY r.created_at DESC, r.receipt_sequence DESC`,
+		tenantID,
+		userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("audit: query receipt by display id: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		receipt, err := scanReceiptRow(rows, pgx.ErrNoRows)
+		if err != nil {
+			return nil, fmt.Errorf("audit: scan receipt by display id: %w", err)
+		}
+		got, err := FinalTrustReceiptDisplayID(receipt)
+		if err != nil {
+			return nil, fmt.Errorf("audit: compute receipt display id: %w", err)
+		}
+		if got == displayID {
+			return receipt, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("audit: iterate receipt by display id: %w", err)
+	}
+	return nil, ErrReceiptNotFound
+}
+
 func (rs *PGXReceiptStorage) GetByRefundIdempotency(ctx context.Context, requestID string, tenantID int64, idempotencyKey string) (*CostReceipt, error) {
 	if rs == nil || rs.pool == nil {
 		return nil, ErrReceiptStorageRequired

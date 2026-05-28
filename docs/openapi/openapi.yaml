@@ -65,6 +65,8 @@ tags:
     description: Public historical pricing tables for client-side receipt validation. F-AUDIT-001 + F-BILL-001.
   - name: audit
     description: Public audit verification key material. F-TRUST-001 + F-AUDIT-001.
+  - name: trust
+    description: Public trust discovery and detached signature verification endpoints. F-TRUST-001 + F-AUDIT-001.
   - name: admin-vouchers
     description: Admin voucher creation, listing, batch creation, and revocation. F-BILL-002.
   - name: admin-email
@@ -775,6 +777,66 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /.well-known/huakai-pubkey.json:
+    get:
+      tags: [trust]
+      summary: Fetch HUAKAI public signing keys as a well-known JWK document
+      operationId: getWellKnownHuakaiPubkey
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
+      security: []
+      responses:
+        '200':
+          description: Active, rotated, and revoked signing keys for client-side receipt verification.
+          headers:
+            Cache-Control:
+              description: Public cache policy for anonymous key discovery.
+              schema:
+                type: string
+                examples:
+                  - public, max-age=300, stale-while-revalidate=86400
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WellKnownPubkeyDocument' }
+        '503':
+          description: Signing key registry or revocation overlay unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrustErrorResponse' }
+
+  /v1/trust/verify:
+    post:
+      tags: [trust]
+      summary: Verify a detached HUAKAI trust receipt signature
+      operationId: verifyTrustReceiptSignature
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TrustVerifyRequest' }
+      responses:
+        '200':
+          description: Signature verification verdict. Missing required fields and malformed payloads return a negative verdict with status=missing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrustVerifyResponse' }
+        '400':
+          description: Request body could not be read or decoded before verification.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrustErrorResponse' }
+        '413':
+          description: Request body exceeds the 10KB detached verification limit.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrustErrorResponse' }
+        '429':
+          description: Anonymous trust verification rate limit exceeded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrustErrorResponse' }
 
   /v1/audit/pubkey:
     get:
@@ -3472,7 +3534,19 @@ components:
       required: [valid, key_status, age_seconds, receipt_sequence]
       properties:
         valid: { type: boolean }
-        key_status: { type: string, enum: [active, unknown] }
+        key_status: { type: string, enum: [active, rotated, revoked, unknown] }
+        reason:
+          type: string
+          enum:
+            - schema_unsupported
+            - receipt_unsigned
+            - invalid_signature
+            - invalid_public_key
+            - unsupported_algorithm
+            - unknown_signer
+            - signature_mismatch
+            - key_revoked
+            - canonical_hash_mismatch
         age_seconds: { type: integer, format: int64, minimum: 0 }
         receipt_sequence:
           type: integer
@@ -3501,6 +3575,125 @@ components:
             enum: [cost_total_micro_usd, model, input_tokens, output_tokens, cached_tokens, rate_table_snapshot_id]
         delta_micro_usd: { type: integer, format: int64, minimum: 0 }
         refund_event_id: { type: integer, format: int64, minimum: 1 }
+
+    WellKnownPubkeyDocument:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
+      required: [schema_version, generated_at, next_rotation_after, keys, current, revoked]
+      properties:
+        schema_version: { type: string, enum: [huakai.pubkey.v1] }
+        generated_at: { type: string, format: date-time }
+        next_rotation_after: { type: string, format: date-time }
+        keys:
+          type: array
+          items: { $ref: '#/components/schemas/WellKnownPubkeyJWK' }
+        current:
+          type: string
+          description: Fingerprint of the active key selected for new signatures. Empty when no active key is available.
+        revoked:
+          type: array
+          items: { $ref: '#/components/schemas/WellKnownPubkeyRevocation' }
+
+    WellKnownPubkeyJWK:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
+      required: [kty, crv, kid, x, alg, use, status]
+      properties:
+        kty: { type: string, enum: [OKP] }
+        crv: { type: string, enum: [Ed25519] }
+        kid:
+          type: string
+          minLength: 16
+          maxLength: 16
+          pattern: '^[0-9a-f]{16}$'
+        x:
+          type: string
+          description: Ed25519 public key material encoded with unpadded base64url.
+        alg: { type: string, enum: [EdDSA] }
+        use: { type: string, enum: [sig] }
+        status: { type: string, enum: [active, rotated, revoked, unknown] }
+        effective_from: { type: string, format: date-time }
+        effective_to: { type: string, format: date-time }
+        revoked_at: { type: string, format: date-time }
+        reason_class: { type: string }
+
+    WellKnownPubkeyRevocation:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
+      required: [fingerprint]
+      properties:
+        fingerprint:
+          type: string
+          minLength: 16
+          maxLength: 16
+          pattern: '^[0-9a-f]{16}$'
+        revoked_at: { type: string, format: date-time }
+        reason_class: { type: string }
+
+    TrustVerifyRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
+      required: [payload, signature, pubkey_fingerprint]
+      properties:
+        payload:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: string
+              minLength: 1
+              contentEncoding: base64
+          description: Canonical trust receipt payload as either the receipt object or a base64-encoded canonical byte string.
+        signature:
+          type: string
+          minLength: 1
+          contentEncoding: base64
+        pubkey_fingerprint:
+          type: string
+          minLength: 16
+          maxLength: 16
+          pattern: '^[0-9a-fA-F]{16}$'
+
+    TrustVerifyResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
+      required: [valid, status, signature_valid, key_status, canonical_hash, schema_version]
+      properties:
+        valid: { type: boolean }
+        status: { type: string, enum: [signed-only, mismatch, missing, unverified] }
+        signature_valid: { type: boolean }
+        key_status: { type: string, enum: [active, rotated, revoked, unknown] }
+        reason:
+          type: string
+          enum:
+            - invalid_json
+            - required_field_missing
+            - payload_invalid
+            - unknown_signer
+            - invalid_signature
+            - invalid_public_key
+            - signature_mismatch
+            - key_revoked
+        fields_mismatch:
+          type: array
+          items: { type: string }
+        canonical_hash:
+          type: string
+          pattern: '^$|^[0-9a-f]{64}$'
+        schema_version: { type: string, enum: [trust.receipt.v1] }
+
+    TrustErrorResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md]
+      required: [error, message]
+      properties:
+        error: { type: string }
+        message: { type: string }
 
     RateTable:
       type: object

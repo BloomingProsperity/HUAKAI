@@ -3,6 +3,7 @@ package gatewayhttp
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -20,6 +21,8 @@ import (
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
+	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/trustreceipt"
 )
 
 const verifyReceiptBodyMaxBytes = 10 * 1024
@@ -49,6 +52,7 @@ type CostReceiptHandlerDeps struct {
 	RateTables      billing.RateTableSource
 	Signer          CostReceiptSigner
 	PubkeyRegistry  auditledger.PubkeyRegistry
+	Revocations     trusthttp.Revocations
 	Now             func() time.Time
 }
 
@@ -79,8 +83,12 @@ type UserReceiptCost struct {
 
 type receiptVerifyResponse struct {
 	Valid             bool     `json:"valid"`
+	Status            string   `json:"status,omitempty"`
+	SignatureValid    bool     `json:"signature_valid"`
 	KeyStatus         string   `json:"key_status"`
 	Reason            string   `json:"reason,omitempty"`
+	CanonicalHash     string   `json:"canonical_hash,omitempty"`
+	SchemaVersion     string   `json:"schema_version,omitempty"`
 	AgeSeconds        int64    `json:"age_seconds"`
 	ReceiptSequence   int32    `json:"receipt_sequence"`
 	Verdict           string   `json:"verdict,omitempty"`
@@ -139,7 +147,7 @@ func NewCostReceiptGetHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 
 func NewCostReceiptVerifyHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if d.Signer == nil && d.PubkeyRegistry == nil {
+		if d.Signer == nil && d.PubkeyRegistry == nil && d.Receipts == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "receipt verify dependency unset")
 			return
 		}
@@ -163,6 +171,10 @@ func NewCostReceiptVerifyHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "body_read_error", err.Error())
 			return
 		}
+		if len(strings.TrimSpace(string(raw))) == 0 {
+			verifyStoredCostReceiptByID(w, r, d, requestID, ident)
+			return
+		}
 		var req UserCostReceipt
 		if err := json.Unmarshal(raw, &req); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid_json", err.Error())
@@ -175,12 +187,14 @@ func NewCostReceiptVerifyHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 		if !receiptSchemaVersionSupported(receiptSchemaVersion(req)) {
 			writeAuditJSON(w, http.StatusOK, receiptVerifyResponse{
 				Valid:             false,
+				Status:            "missing",
 				KeyStatus:         "unknown",
 				Reason:            "schema_unsupported",
 				AgeSeconds:        receiptAgeSeconds(req.OccurredAt, d.now()),
 				ReceiptSequence:   req.ReceiptSequence,
 				Verdict:           "schema_unsupported",
 				SupportedVersions: supportedReceiptSchemaVersions(),
+				SchemaVersion:     "trust.receipt.v1",
 			})
 			return
 		}
@@ -189,7 +203,8 @@ func NewCostReceiptVerifyHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "invalid_receipt", "receipt canonical fields are invalid")
 			return
 		}
-		canonicalHex := hex.EncodeToString(canonical)
+		canonicalSum := sha256.Sum256(canonical)
+		canonicalHex := hex.EncodeToString(canonicalSum[:])
 		canonicalHashMatches := strings.EqualFold(strings.TrimSpace(req.CanonicalHash), canonicalHex)
 		sig, err := base64.StdEncoding.DecodeString(strings.TrimSpace(req.Signature))
 		if err != nil {
@@ -199,29 +214,25 @@ func NewCostReceiptVerifyHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 		keyStatus := "unknown"
 		reason := ""
 		valid := false
-		if d.PubkeyRegistry != nil {
-			verification, err := auditledger.VerifySignatureWithRegistry(r.Context(), d.PubkeyRegistry, canonical, sig, []byte(strings.TrimSpace(req.PubkeyFingerprint)))
-			if errors.Is(err, auditledger.ErrInvalidPubkeyFingerprint) {
-				verification = auditledger.SignatureVerification{Valid: false, KeyStatus: "unknown", Reason: "unknown_signer"}
-				err = nil
-			}
-			if err != nil {
-				writeJSONError(w, http.StatusServiceUnavailable, "receipt_pubkey_registry_error", err.Error())
-				return
-			}
-			keyStatus = verification.KeyStatus
-			reason = verification.Reason
-			valid = canonicalHashMatches && verification.Valid
-			if verification.Valid && !canonicalHashMatches {
-				reason = "canonical_hash_mismatch"
-			}
-		} else if strings.TrimSpace(req.PubkeyFingerprint) != d.Signer.Fingerprint() {
-			reason = "unknown_signer"
-		} else if canonicalHashMatches && sign.Verify(d.Signer.PublicKey(), canonical, sig) == nil {
-			keyStatus = "active"
-			valid = true
-		} else {
-			keyStatus = "active"
+		signatureValid := false
+		status := "mismatch"
+		verification, err := verifyReceiptTrustSignature(r.Context(), d, canonical, sig, strings.TrimSpace(req.PubkeyFingerprint))
+		if err != nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "receipt_pubkey_registry_error", err.Error())
+			return
+		}
+		keyStatus = verification.KeyStatus
+		reason = verification.Reason
+		signatureValid = verification.Valid
+		valid = canonicalHashMatches && verification.Valid && verification.Reason != "key_revoked"
+		if verification.Valid && verification.Reason == "key_revoked" {
+			status = "unverified"
+		}
+		if verification.Valid && !canonicalHashMatches {
+			reason = "canonical_hash_mismatch"
+		}
+		if valid {
+			status = "signed-only"
 		}
 		verifyVerdict := ""
 		var mismatch audit.MismatchVerdict
@@ -272,6 +283,7 @@ func NewCostReceiptVerifyHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 				verifyVerdict = mismatch.State
 				if mismatch.State == audit.ReceiptValidationStateMismatchPending {
 					valid = false
+					status = "mismatch"
 					if mismatch.RefundEligible() && d.MismatchRefunds != nil {
 						if !receiptBelongsToSession(derived, ident) {
 							writeJSONError(w, http.StatusNotFound, "receipt_not_found", "receipt not found")
@@ -288,8 +300,12 @@ func NewCostReceiptVerifyHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 		}
 		writeAuditJSON(w, http.StatusOK, receiptVerifyResponse{
 			Valid:           valid,
+			Status:          status,
+			SignatureValid:  signatureValid,
 			KeyStatus:       keyStatus,
 			Reason:          reason,
+			CanonicalHash:   canonicalHex,
+			SchemaVersion:   "trust.receipt.v1",
 			AgeSeconds:      receiptAgeSeconds(req.OccurredAt, d.now()),
 			ReceiptSequence: req.ReceiptSequence,
 			Verdict:         verifyVerdict,
@@ -298,6 +314,191 @@ func NewCostReceiptVerifyHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 			RefundEventID:   refundEventID,
 		})
 	}
+}
+
+type costReceiptSequenceReader interface {
+	GetReceiptBySequence(ctx context.Context, requestID string, tenantID int64, sequence int32) (*audit.CostReceipt, error)
+}
+
+type costReceiptDisplayReader interface {
+	GetReceiptByDisplayID(ctx context.Context, displayID string, tenantID, userID int64) (*audit.CostReceipt, error)
+}
+
+func verifyStoredCostReceiptByID(w http.ResponseWriter, r *http.Request, d CostReceiptHandlerDeps, pathID string, ident sessionauth.SessionIdentity) {
+	if d.Receipts == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "receipt storage dependency unset")
+		return
+	}
+	receipt, err := storedReceiptForVerify(r.Context(), d.Receipts, pathID, ident)
+	if errors.Is(err, audit.ErrReceiptNotFound) || errors.Is(err, audit.ErrReceiptInputsNotFound) {
+		writeJSONError(w, http.StatusNotFound, "receipt_not_found", "receipt not found")
+		return
+	}
+	if errors.Is(err, audit.ErrReceiptUnavailable) {
+		writeJSONError(w, http.StatusAccepted, "receipt_unavailable", "receipt is not final yet")
+		return
+	}
+	if err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "receipt_read_failed", "receipt backend unavailable")
+		return
+	}
+	if !receiptBelongsToSession(receipt, ident) {
+		writeJSONError(w, http.StatusNotFound, "receipt_not_found", "receipt not found")
+		return
+	}
+
+	canonical, err := canonicalBytesFromCostReceipt(receipt)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_receipt", "receipt canonical fields are invalid")
+		return
+	}
+	canonicalSum := sha256.Sum256(canonical)
+	canonicalHex := hex.EncodeToString(canonicalSum[:])
+	resp := receiptVerifyResponse{
+		Valid:           false,
+		Status:          "unverified",
+		SignatureValid:  false,
+		KeyStatus:       "unknown",
+		Reason:          "receipt_unsigned",
+		CanonicalHash:   canonicalHex,
+		SchemaVersion:   "trust.receipt.v1",
+		AgeSeconds:      receiptAgeSeconds(receipt.CreatedAt.UTC().Format(time.RFC3339Nano), d.now()),
+		ReceiptSequence: receipt.ReceiptSequence,
+	}
+	if len(receipt.SignedHash) == 0 || len(receipt.SignerFingerprint) == 0 {
+		writeAuditJSON(w, http.StatusOK, resp)
+		return
+	}
+	if d.Signer == nil && d.PubkeyRegistry == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "receipt verify key dependency unset")
+		return
+	}
+	sig, err := receiptSignatureBytes(receipt.SignedHash)
+	if err != nil {
+		resp.Status = "mismatch"
+		resp.KeyStatus = "unknown"
+		resp.Reason = "invalid_signature"
+		writeAuditJSON(w, http.StatusOK, resp)
+		return
+	}
+	verification, err := verifyReceiptTrustSignature(r.Context(), d, canonical, sig, string(receipt.SignerFingerprint))
+	if err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "receipt_pubkey_registry_error", err.Error())
+		return
+	}
+	resp.SignatureValid = verification.Valid
+	resp.KeyStatus = verification.KeyStatus
+	resp.Reason = verification.Reason
+	resp.Status = "mismatch"
+	if verification.Valid {
+		if verification.Reason == "key_revoked" {
+			resp.Status = "unverified"
+			resp.Reason = "key_revoked"
+		} else {
+			resp.Valid = true
+			resp.Status = "signed-only"
+			resp.Reason = ""
+		}
+	}
+	writeAuditJSON(w, http.StatusOK, resp)
+}
+
+func storedReceiptForVerify(ctx context.Context, reader CostReceiptReader, pathID string, ident sessionauth.SessionIdentity) (*audit.CostReceipt, error) {
+	if strings.HasPrefix(strings.TrimSpace(pathID), "receipt_") {
+		if dr, ok := reader.(costReceiptDisplayReader); ok {
+			return dr.GetReceiptByDisplayID(ctx, strings.TrimSpace(pathID), ident.TenantID, ident.UserID)
+		}
+		return nil, audit.ErrReceiptNotFound
+	}
+	requestID, sequence, hasSequence := receiptLookupParts(pathID)
+	if hasSequence {
+		if sr, ok := reader.(costReceiptSequenceReader); ok {
+			receipt, err := sr.GetReceiptBySequence(ctx, requestID, ident.TenantID, sequence)
+			if err != nil {
+				return nil, err
+			}
+			if receipt == nil || receipt.UserID != ident.UserID || receipt.UserID <= 0 {
+				return nil, audit.ErrReceiptNotFound
+			}
+			return receipt, nil
+		}
+	}
+	receipt, err := reader.GetReceiptForUser(ctx, requestID, ident.TenantID, ident.UserID)
+	if err != nil {
+		return nil, err
+	}
+	if hasSequence && receipt.ReceiptSequence != sequence {
+		return nil, audit.ErrReceiptNotFound
+	}
+	return receipt, nil
+}
+
+func receiptLookupParts(pathID string) (string, int32, bool) {
+	pathID = strings.TrimSpace(pathID)
+	idx := strings.LastIndex(pathID, ":")
+	if idx <= 0 || idx == len(pathID)-1 {
+		return pathID, 0, false
+	}
+	seq, err := strconv.ParseInt(pathID[idx+1:], 10, 32)
+	if err != nil || seq < 0 {
+		return pathID, 0, false
+	}
+	return pathID[:idx], int32(seq), true
+}
+
+func canonicalBytesFromCostReceipt(receipt *audit.CostReceipt) ([]byte, error) {
+	return audit.FinalTrustReceiptCanonical(receipt)
+}
+
+func receiptSignatureBytes(signature []byte) ([]byte, error) {
+	raw := []byte(strings.TrimSpace(string(signature)))
+	if decoded, err := base64.StdEncoding.DecodeString(string(raw)); err == nil && len(decoded) == ed25519.SignatureSize {
+		return decoded, nil
+	}
+	if len(raw) == ed25519.SignatureSize {
+		return append([]byte(nil), raw...), nil
+	}
+	return nil, errors.New("invalid ed25519 signature")
+}
+
+func verifyReceiptTrustSignature(ctx context.Context, d CostReceiptHandlerDeps, canonical []byte, sig []byte, fingerprint string) (auditledger.SignatureVerification, error) {
+	normalizedFingerprint := strings.TrimSpace(fingerprint)
+	if d.PubkeyRegistry != nil {
+		verification, err := auditledger.VerifySignatureWithRegistry(ctx, d.PubkeyRegistry, canonical, sig, []byte(normalizedFingerprint))
+		if errors.Is(err, auditledger.ErrInvalidPubkeyFingerprint) {
+			return auditledger.SignatureVerification{Valid: false, KeyStatus: "unknown", Reason: "unknown_signer"}, nil
+		}
+		if err != nil || !verification.Valid {
+			return verification, err
+		}
+		return applyReceiptRevocationOverlay(d, verification, normalizedFingerprint)
+	}
+	if d.Signer == nil || normalizedFingerprint != d.Signer.Fingerprint() {
+		return auditledger.SignatureVerification{Valid: false, KeyStatus: "unknown", Reason: "unknown_signer"}, nil
+	}
+	if sign.Verify(d.Signer.PublicKey(), canonical, sig) != nil {
+		return auditledger.SignatureVerification{Valid: false, KeyStatus: "active", Reason: "signature_mismatch"}, nil
+	}
+	return applyReceiptRevocationOverlay(d, auditledger.SignatureVerification{Valid: true, KeyStatus: "active"}, normalizedFingerprint)
+}
+
+func applyReceiptRevocationOverlay(d CostReceiptHandlerDeps, verification auditledger.SignatureVerification, fingerprint string) (auditledger.SignatureVerification, error) {
+	revocations, err := receiptRevocationsFromDeps(d.Revocations)
+	if err != nil {
+		return auditledger.SignatureVerification{}, err
+	}
+	if _, ok := revocations.Lookup(fingerprint); ok {
+		verification.KeyStatus = "revoked"
+		verification.Reason = "key_revoked"
+	}
+	return verification, nil
+}
+
+func receiptRevocationsFromDeps(revocations trusthttp.Revocations) (trusthttp.Revocations, error) {
+	if revocations != nil {
+		return revocations, nil
+	}
+	return trusthttp.LoadRevocationsFromEnv()
 }
 
 func NewPricingRateTableHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
@@ -438,11 +639,12 @@ func userCostReceiptFromAudit(ctx context.Context, receipt *audit.CostReceipt) (
 		Signature:         receiptSignatureString(receipt.SignedHash),
 		PubkeyFingerprint: string(receipt.SignerFingerprint),
 	}
-	canonical, err := audit.CanonicalReceiptHashForPayload(ctx, canonicalPayloadFromUserReceipt(out))
+	canonical, err := canonicalHashFromUserReceipt(ctx, out)
 	if err != nil {
 		return UserCostReceipt{}, err
 	}
-	out.CanonicalHash = hex.EncodeToString(canonical)
+	canonicalSum := sha256.Sum256(canonical)
+	out.CanonicalHash = hex.EncodeToString(canonicalSum[:])
 	return out, nil
 }
 
@@ -520,14 +722,63 @@ func canonicalPayloadV1FromUserReceipt(receipt UserCostReceipt) audit.ReceiptCan
 }
 
 func canonicalHashFromUserReceipt(ctx context.Context, receipt UserCostReceipt) ([]byte, error) {
+	_ = ctx
+	return canonicalBytesFromUserReceipt(receipt)
+}
+
+func canonicalBytesFromUserReceipt(receipt UserCostReceipt) ([]byte, error) {
 	switch receiptSchemaVersion(receipt) {
-	case audit.ReceiptSchemaVersionV1:
-		return audit.CanonicalReceiptHashForPayloadV1(ctx, canonicalPayloadV1FromUserReceipt(receipt))
-	case audit.ReceiptSchemaVersion:
-		return audit.CanonicalReceiptHashForPayload(ctx, canonicalPayloadFromUserReceipt(receipt))
+	case audit.ReceiptSchemaVersionV1, audit.ReceiptSchemaVersion:
+		return trustreceipt.Canonical(trustReceiptFromUserReceipt(receipt))
 	default:
 		return nil, audit.ErrReceiptInvalidDerivedData
 	}
+}
+
+func trustReceiptFromUserReceipt(receipt UserCostReceipt) trustreceipt.TrustReceiptV1 {
+	tenantScopeRef := strings.TrimSpace(receipt.TenantScopeRef)
+	if tenantScopeRef == "" && receipt.TenantID > 0 {
+		tenantScopeRef = auditledger.TenantScopeRef(receipt.TenantID)
+	}
+	model := strings.TrimSpace(receipt.Cost.Model)
+	return trustreceipt.TrustReceiptV1{
+		RequestID:       strings.TrimSpace(receipt.RequestID),
+		ReceiptSequence: int(receipt.ReceiptSequence),
+		TenantScopeRef:  tenantScopeRef,
+		OccurredAt:      userReceiptTime(receipt.OccurredAt),
+		Provider:        "",
+		RequestedModel:  model,
+		RoutedModel:     model,
+		UpstreamModel:   model,
+		DeliveredModel:  model,
+		CostCents:       costMicrosToCents(receipt.Cost.CostTotalMicroUSD),
+		TokenCounts: trustreceipt.TokenCounts{
+			Input:  receipt.Cost.InputTokens,
+			Output: receipt.Cost.OutputTokens,
+			Cached: receipt.Cost.CachedTokens,
+		},
+		PriceSnapshot: trustreceipt.PriceSnapshot{
+			RateTableSnapshotID: receipt.Cost.RateTableSnapshotID,
+			CurrencyCode:        "USD",
+		},
+		ValidationState:           audit.NormalizeReceiptValidationState(receipt.ValidationState),
+		RedactedMetadataAllowlist: trustReceiptMetadata(receipt.Cost.CostTotalMicroUSD, receipt.Verdict, receipt.AdjustmentRefs),
+	}
+}
+
+func trustReceiptMetadata(costMicros int64, verdict string, adjustmentRefs []string) map[string]any {
+	return map[string]any{
+		"adjustment_refs": strings.Join(canonicalAdjustmentRefs(adjustmentRefs), "\n"),
+		"cost_usd_micros": costMicros,
+		"verdict":         audit.NormalizeReceiptVerdict(verdict),
+	}
+}
+
+func costMicrosToCents(micros int64) int64 {
+	if micros <= 0 {
+		return 0
+	}
+	return (micros + 5_000) / 10_000
 }
 
 func receiptSchemaVersion(receipt UserCostReceipt) string {

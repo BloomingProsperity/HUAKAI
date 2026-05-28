@@ -3,6 +3,7 @@ package gatewayhttp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -22,6 +23,7 @@ import (
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
+	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
 )
 
 func TestAT_AUDIT_001_009_GetReceiptHit(t *testing.T) {
@@ -169,9 +171,10 @@ func TestAT_AUDIT_001_012_ReceiptUnavailableReturns202(t *testing.T) {
 func TestAT_AUDIT_001_013_DetachedVerifyPass(t *testing.T) {
 	signer := mustReceiptSigner(t)
 	receipt := signedGatewayReceipt(t, signer, 7, "req-verify")
-	payload := mustUserReceipt(t, receipt)
+	store := newReceiptStoreStub(receipt)
+	registry := auditledger.NewMemoryPubkeyRegistry(mustGatewayReceiptPubkey(t, signer))
 
-	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Signer: signer, Now: fixedReceiptNow}), http.MethodPost, "/v1/receipts/req-verify/verify", payload, receiptSession(7))
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Receipts: store, PubkeyRegistry: registry, Now: fixedReceiptNow}), http.MethodPost, "/v1/receipts/req-verify/verify", nil, receiptSession(7))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -179,8 +182,77 @@ func TestAT_AUDIT_001_013_DetachedVerifyPass(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !got.Valid || got.KeyStatus != "active" || got.AgeSeconds <= 0 {
+	if !got.Valid || got.Status != "signed-only" || !got.SignatureValid || got.KeyStatus != "active" || got.AgeSeconds <= 0 || got.SchemaVersion != "trust.receipt.v1" || got.CanonicalHash == "" {
 		t.Fatalf("verify response mismatch: %+v", got)
+	}
+}
+
+func TestCostReceiptVerifyUnsignedStoredReceiptReturnsUnverified(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	receipt := signedGatewayReceipt(t, signer, 7, "req-unsigned")
+	receipt.SignedHash = nil
+	receipt.SignerFingerprint = nil
+	store := newReceiptStoreStub(receipt)
+
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Receipts: store, Now: fixedReceiptNow}), http.MethodPost, "/v1/receipts/req-unsigned/verify", nil, receiptSession(7))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got receiptVerifyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Valid || got.Status != "unverified" || got.SignatureValid || got.Reason != "receipt_unsigned" {
+		t.Fatalf("unsigned receipt verify mismatch: %+v", got)
+	}
+}
+
+func TestReceiptVerifyMarksRevokedKeyAsUnverified(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	receipt := signedGatewayReceipt(t, signer, 7, "req-revoked-key")
+	store := newReceiptStoreStub(receipt)
+	registry := auditledger.NewMemoryPubkeyRegistry(mustGatewayReceiptPubkey(t, signer))
+
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{
+		Receipts:       store,
+		PubkeyRegistry: registry,
+		Revocations: trusthttp.Revocations{
+			signer.Fingerprint(): {Fingerprint: signer.Fingerprint(), RevokedAt: fixedReceiptNow(), ReasonClass: "key_compromise"},
+		},
+		Now: fixedReceiptNow,
+	}), http.MethodPost, "/v1/receipts/req-revoked-key/verify", nil, receiptSession(7))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got receiptVerifyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Valid || got.Status != "unverified" || !got.SignatureValid || got.KeyStatus != "revoked" || got.Reason != "key_revoked" {
+		t.Fatalf("revoked signed receipt verify mismatch: %+v", got)
+	}
+}
+
+func TestCostReceiptVerifyDisplayReceiptIDUsesStoredReceipt(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	receipt := signedGatewayReceipt(t, signer, 7, "req-display-id")
+	displayID, err := audit.FinalTrustReceiptDisplayID(receipt)
+	if err != nil {
+		t.Fatalf("display id: %v", err)
+	}
+	store := newReceiptStoreStub(receipt)
+	registry := auditledger.NewMemoryPubkeyRegistry(mustGatewayReceiptPubkey(t, signer))
+
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{Receipts: store, PubkeyRegistry: registry, Now: fixedReceiptNow}), http.MethodPost, "/v1/receipts/"+displayID+"/verify", nil, receiptSession(7))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got receiptVerifyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Status != "signed-only" || !got.SignatureValid || !got.Valid {
+		t.Fatalf("display receipt id did not verify stored receipt: %+v", got)
 	}
 }
 
@@ -733,6 +805,15 @@ func mustReceiptSigner(t *testing.T) *sign.Signer {
 	return signer
 }
 
+func mustGatewayReceiptPubkey(t *testing.T, signer *sign.Signer) *auditledger.Pubkey {
+	t.Helper()
+	key, err := auditledger.PubkeyFromSigner(signer, time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("pubkey from signer: %v", err)
+	}
+	return key
+}
+
 func signedGatewayReceipt(t *testing.T, signer *sign.Signer, tenantID int64, requestID string) *audit.CostReceipt {
 	t.Helper()
 	createdAt := time.Date(2026, 5, 18, 8, 0, 0, 0, time.UTC)
@@ -757,28 +838,12 @@ func signedGatewayReceipt(t *testing.T, signer *sign.Signer, tenantID int64, req
 
 func signGatewayReceipt(t *testing.T, signer *sign.Signer, receipt *audit.CostReceipt) {
 	t.Helper()
-	payload := audit.ReceiptCanonicalPayload{
-		SchemaVersion:       audit.ReceiptSchemaVersion,
-		RequestID:           receipt.RequestID,
-		ReceiptSequence:     receipt.ReceiptSequence,
-		TenantScopeRef:      auditledger.TenantScopeRef(receipt.TenantID),
-		Model:               receipt.Model,
-		InputTokens:         receipt.InputTokens,
-		OutputTokens:        receipt.OutputTokens,
-		CachedTokens:        receipt.CachedTokens,
-		CostTotalMicroUSD:   receipt.CostUSDMicros,
-		RateTableSnapshotID: receipt.RateTableSnapshotID,
-		CreatedAt:           receipt.CreatedAt.UTC().Format(time.RFC3339Nano),
-		ValidationState:     audit.NormalizeReceiptValidationState(receipt.ValidationState),
-		Verdict:             audit.NormalizeReceiptVerdict(receipt.Verdict),
-		AdjustmentRefs:      canonicalAdjustmentRefs(receipt.AdjustmentRefs),
-	}
-	canonical, err := audit.CanonicalReceiptHashForPayload(context.Background(), payload)
+	canonical, err := canonicalBytesFromCostReceipt(receipt)
 	if err != nil {
 		t.Fatalf("canonical: %v", err)
 	}
 	receipt.SignerFingerprint = []byte(signer.Fingerprint())
-	receipt.SignedHash = signer.Sign(canonical)
+	receipt.SignedHash = []byte(base64.StdEncoding.EncodeToString(signer.Sign(canonical)))
 }
 
 func mustUserReceipt(t *testing.T, receipt *audit.CostReceipt) UserCostReceipt {
@@ -808,11 +873,12 @@ func legacyV1UserReceipt(t *testing.T, signer *sign.Signer, tenantID int64, requ
 		},
 		PubkeyFingerprint: signer.Fingerprint(),
 	}
-	canonical, err := audit.CanonicalReceiptHashForPayloadV1(context.Background(), canonicalPayloadV1FromUserReceipt(out))
+	canonical, err := canonicalBytesFromUserReceipt(out)
 	if err != nil {
 		t.Fatalf("v1 canonical: %v", err)
 	}
-	out.CanonicalHash = hex.EncodeToString(canonical)
+	canonicalSum := sha256.Sum256(canonical)
+	out.CanonicalHash = hex.EncodeToString(canonicalSum[:])
 	out.Signature = base64.StdEncoding.EncodeToString(signer.Sign(canonical))
 	return out
 }
@@ -860,6 +926,36 @@ func (s *receiptStoreStub) GetReceiptForAdmin(_ context.Context, requestID strin
 		return nil, audit.ErrReceiptNotFound
 	}
 	return receipt, nil
+}
+
+func (s *receiptStoreStub) GetReceiptBySequence(_ context.Context, requestID string, tenantID int64, sequence int32) (*audit.CostReceipt, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	receipt := s.receipts[requestID]
+	if receipt == nil || receipt.TenantID != tenantID || receipt.ReceiptSequence != sequence {
+		return nil, audit.ErrReceiptNotFound
+	}
+	return receipt, nil
+}
+
+func (s *receiptStoreStub) GetReceiptByDisplayID(_ context.Context, displayID string, tenantID, userID int64) (*audit.CostReceipt, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	for _, receipt := range s.receipts {
+		if receipt == nil || receipt.TenantID != tenantID || receipt.UserID != userID || receipt.UserID <= 0 {
+			continue
+		}
+		got, err := audit.FinalTrustReceiptDisplayID(receipt)
+		if err != nil {
+			return nil, err
+		}
+		if got == displayID {
+			return receipt, nil
+		}
+	}
+	return nil, audit.ErrReceiptNotFound
 }
 
 func (s *receiptStoreStub) AppendReceipt(_ context.Context, receipt *audit.CostReceipt) error {
