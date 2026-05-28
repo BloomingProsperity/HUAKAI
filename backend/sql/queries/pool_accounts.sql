@@ -120,10 +120,13 @@ normalized_health AS (
 --   - model_allow_list 空 数组 → 无限制
 --   - model_allow_list 非空 → 必须包含 requested_model
 --   - capability_flags 必须包含 required_capabilities 全集 (空 req → 自动 true)
+--   - requested_protocol_family 为空 → legacy bypass
+--   - requested_protocol_family 非空 → 必须匹配 providers.upstream_protocol
 SELECT
     pa.id,
     pa.tenant_id,
     pa.provider_id,
+    p.upstream_protocol,
     pa.channel_id,
     pa.cap_concurrency,
     pa.in_flight_count,
@@ -140,6 +143,10 @@ INNER JOIN channels c
     ON c.id = pa.channel_id
    AND c.enabled = true
    AND c.deleted_at IS NULL
+INNER JOIN providers p
+    ON p.id = pa.provider_id
+   AND p.tenant_id = pa.tenant_id
+   AND p.deleted_at IS NULL
 WHERE pa.tenant_id = sqlc.arg(tenant_id)
   AND c.pool_group_id = sqlc.arg(pool_group_id)
   AND c.tenant_id = sqlc.arg(tenant_id)
@@ -151,6 +158,8 @@ WHERE pa.tenant_id = sqlc.arg(tenant_id)
   )
   AND (cardinality(pa.model_allow_list) = 0
        OR pa.model_allow_list @> ARRAY[sqlc.arg(requested_model)::text])
+  AND (sqlc.arg(requested_protocol_family)::text = ''
+       OR p.upstream_protocol = sqlc.arg(requested_protocol_family)::text)
   AND pa.capability_flags @> sqlc.arg(required_capabilities)::text[]
   -- codex review v3 P2#3 fix: production selector 不接 AuthCredentialGate
   -- (无 TokenProvider 注入), 改 SQL 层直接过滤 credential_state.

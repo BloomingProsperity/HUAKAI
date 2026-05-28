@@ -351,6 +351,56 @@ func TestDBAccountSource_ListByPoolGroup(t *testing.T) {
 	}
 }
 
+func TestDBAccountSource_ListByPoolGroupFiltersProtocolFamily(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pgPool := openIntegrationPool(t, ctx)
+	seed := seedAdapterGraph(t, ctx, pgPool, "src-family")
+
+	suffix := uuid.NewString()
+	var anthropicProviderID, anthropicChannelID, anthropicAccountID int64
+	if err := pgPool.QueryRow(ctx,
+		`INSERT INTO providers (tenant_id, code, display_name, upstream_protocol)
+		 VALUES ($1, $2, $3, 'anthropic_messages') RETURNING id`,
+		seed.tenantID, "anthropic-"+suffix, "Anthropic "+suffix,
+	).Scan(&anthropicProviderID); err != nil {
+		t.Fatalf("seed anthropic provider: %v", err)
+	}
+	if err := pgPool.QueryRow(ctx,
+		`INSERT INTO channels (tenant_id, pool_group_id, name) VALUES ($1, $2, $3) RETURNING id`,
+		seed.tenantID, seed.poolGroupID, "anthropic-ch-"+suffix,
+	).Scan(&anthropicChannelID); err != nil {
+		t.Fatalf("seed anthropic channel: %v", err)
+	}
+	if err := pgPool.QueryRow(ctx,
+		`INSERT INTO provider_accounts (
+			tenant_id, provider_id, channel_id, name, account_type,
+			cap_concurrency, in_flight_count, priority
+		) VALUES ($1, $2, $3, $4, 'api_key', 4, 0, 50) RETURNING id`,
+		seed.tenantID, anthropicProviderID, anthropicChannelID, "anthropic-acct-"+suffix,
+	).Scan(&anthropicAccountID); err != nil {
+		t.Fatalf("seed anthropic account: %v", err)
+	}
+
+	src := NewDBAccountSource(dbbilling.New(pgPool))
+	accounts, err := src.ListAccounts(ctx, SelectionRequest{
+		TenantID:       seed.tenantID,
+		PoolGroupID:    seed.poolGroupID,
+		RequestedModel: "claude-3-5-sonnet",
+		ProtocolFamily: "anthropic_messages",
+	})
+	if err != nil {
+		t.Fatalf("ListAccounts: %v", err)
+	}
+	// Mutation: dropping the upstream_protocol predicate returns both empty-allow-list accounts.
+	if len(accounts) != 1 || accounts[0].ID != anthropicAccountID {
+		t.Fatalf("accounts=%+v; want only anthropic protocol account %d", accounts, anthropicAccountID)
+	}
+	if accounts[0].ProtocolFamily != "anthropic_messages" {
+		t.Fatalf("ProtocolFamily=%q, want anthropic_messages", accounts[0].ProtocolFamily)
+	}
+}
+
 func TestDBAccountSource_ListByPoolGroupSkipsDisabledOrDeletedChannels(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

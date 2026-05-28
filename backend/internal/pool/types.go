@@ -22,6 +22,7 @@ const (
 	GateFailureTenantFilter        = router.GateFailureTenantFilter
 	GateFailureLifecycle           = router.GateFailureLifecycle
 	GateFailureChannel             = router.GateFailureChannel
+	GateFailureProtocolFamily      = router.GateFailureProtocolFamily
 	GateFailureModel               = router.GateFailureModel
 	GateFailureCapability          = router.GateFailureCapability
 	GateFailureCredential          = router.GateFailureCredential
@@ -37,6 +38,7 @@ type HealthStatusGate = router.HealthStatusGate
 type TenantGate = router.TenantGate
 type LifecycleGate = router.LifecycleGate
 type ChannelGate = router.ChannelGate
+type ProtocolFamilyGate = router.ProtocolFamilyGate
 type ModelSupportGate = router.ModelSupportGate
 type CapabilityGate = router.CapabilityGate
 type CredentialGate = router.CredentialGate

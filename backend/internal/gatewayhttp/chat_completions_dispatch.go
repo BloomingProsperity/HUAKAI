@@ -230,6 +230,7 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 		APIKeyID:         ex.ident.APIKeyID,
 		PoolGroupID:      ex.attempt.PoolGroupID,
 		RequestedModel:   ex.req.Model,
+		ProtocolFamily:   ex.resolved.ProtocolFamily,
 		EndpointFamily:   ex.d.effectiveEndpointFamily(),
 		ClaimID:          ex.reserveRes.ClaimID,
 		AttemptSeq:       attemptSeq,

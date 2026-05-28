@@ -23,11 +23,14 @@ type Selector interface {
 
 // SelectionRequest 承载 Phase A 候选意图输入。
 type SelectionRequest struct {
-	TenantID         int64
-	UserID           int64
-	APIKeyID         int64
-	PoolGroupID      int64
-	RequestedModel   string
+	TenantID       int64
+	UserID         int64
+	APIKeyID       int64
+	PoolGroupID    int64
+	RequestedModel string
+	// ProtocolFamily is the exact upstream protocol requested by registry
+	// resolution, matching providers.upstream_protocol.
+	ProtocolFamily   string
 	EndpointFamily   string
 	CapabilityFlags  []string
 	SessionHash      string
@@ -60,6 +63,7 @@ type WaitPlan struct {
 type AccountSnapshot struct {
 	ID               int64
 	TenantID         int64
+	ProtocolFamily   string
 	Priority         int
 	LoadRate         float64
 	LastUsedAt       time.Time
