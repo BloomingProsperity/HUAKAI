@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -29,6 +30,7 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/anthropicoauth"
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
@@ -179,7 +181,7 @@ func TestWiring_InstallGeminiPublicCLIOAuthExchangersReplacesDefault(t *testing.
 	mockClient := &http.Client{Transport: wiringRoundTripFunc(func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("unreachable in helper-only assertion")
 	})}
-	if err := installGeminiPublicCLIOAuthExchangers(registry, mockClient, "from-env"); err != nil {
+	if err := installGeminiPublicCLIOAuthExchangers(registry, mockClient, "from-env", nil); err != nil {
 		t.Fatalf("installGeminiPublicCLIOAuthExchangers: %v", err)
 	}
 	for _, mode := range modes {
@@ -198,10 +200,10 @@ func TestWiring_InstallGeminiPublicCLIOAuthExchangersReplacesDefault(t *testing.
 	if err := assertGeminiPublicCLIOAuthExchangersHaveHTTPClient(registry); err != nil {
 		t.Fatalf("wiring 自检对已 install 的 Gemini registry 必须返 nil, got %v", err)
 	}
-	if err := installGeminiPublicCLIOAuthExchangers(credentialacq.DefaultExchangerRegistry(), nil, "from-env"); err == nil {
+	if err := installGeminiPublicCLIOAuthExchangers(credentialacq.DefaultExchangerRegistry(), nil, "from-env", nil); err == nil {
 		t.Fatal("install 必须拒 nil Gemini OAuth client")
 	}
-	if err := installGeminiPublicCLIOAuthExchangers(credentialacq.DefaultExchangerRegistry(), mockClient, " "); err == nil {
+	if err := installGeminiPublicCLIOAuthExchangers(credentialacq.DefaultExchangerRegistry(), mockClient, " ", nil); err == nil {
 		t.Fatal("install 必须拒空 HUAKAI_GEMINI_OAUTH_CLIENT_SECRET")
 	}
 }
@@ -223,7 +225,7 @@ func TestWiring_InstallChatGPTOAuthExchangerReplacesDefault(t *testing.T) {
 	mockClient := &http.Client{Transport: wiringRoundTripFunc(func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("unreachable in helper-only assertion")
 	})}
-	if err := installChatGPTOAuthExchanger(registry, mockClient); err != nil {
+	if err := installChatGPTOAuthExchanger(registry, mockClient, nil); err != nil {
 		t.Fatalf("installChatGPTOAuthExchanger: %v", err)
 	}
 	after, ok := registry.Lookup(modeKey)
@@ -240,8 +242,105 @@ func TestWiring_InstallChatGPTOAuthExchangerReplacesDefault(t *testing.T) {
 	if err := assertChatGPTOAuthExchangerHasHTTPClient(registry); err != nil {
 		t.Fatalf("wiring 自检对已 install 的 registry 必须返 nil, got %v", err)
 	}
-	if err := installChatGPTOAuthExchanger(credentialacq.DefaultExchangerRegistry(), nil); err == nil {
+	if err := installChatGPTOAuthExchanger(credentialacq.DefaultExchangerRegistry(), nil, nil); err == nil {
 		t.Fatal("install 必须拒 nil ChatGPT OAuth client")
+	}
+}
+
+func TestLoadAdminOAuthCallbackAllowlistFromEnv(t *testing.T) {
+	// 缺陷：admin OAuth callback allowlist 若不 trim 或不滤空，operator 配置里常见的空格/双逗号会让生产远程 callback 被误拒。
+	// 判别 mutation：删除 TrimSpace 或保留空项时，本测试看到带空格元素或空字符串，必须变红。
+	t.Run("trimAndFilterEmptyItems", func(t *testing.T) {
+		t.Setenv(adminOAuthCallbackAllowlistEnv, " https://a/ , https://b/ ,, https://c/ ")
+		want := []string{"https://a/", "https://b/", "https://c/"}
+		if got := loadAdminOAuthCallbackAllowlistFromEnv(); !slices.Equal(got, want) {
+			t.Fatalf("allowlist=%q want %q", got, want)
+		}
+	})
+	t.Run("missingEnvReturnsEmpty", func(t *testing.T) {
+		old, had := os.LookupEnv(adminOAuthCallbackAllowlistEnv)
+		if err := os.Unsetenv(adminOAuthCallbackAllowlistEnv); err != nil {
+			t.Fatalf("unset env: %v", err)
+		}
+		t.Cleanup(func() {
+			if had {
+				_ = os.Setenv(adminOAuthCallbackAllowlistEnv, old)
+				return
+			}
+			_ = os.Unsetenv(adminOAuthCallbackAllowlistEnv)
+		})
+		if got := loadAdminOAuthCallbackAllowlistFromEnv(); len(got) != 0 {
+			t.Fatalf("missing env allowlist=%q want empty", got)
+		}
+	})
+	t.Run("blankEnvReturnsEmpty", func(t *testing.T) {
+		t.Setenv(adminOAuthCallbackAllowlistEnv, " ")
+		if got := loadAdminOAuthCallbackAllowlistFromEnv(); len(got) != 0 {
+			t.Fatalf("blank env allowlist=%q want empty", got)
+		}
+	})
+}
+
+func TestWiring_InstallGeminiThreadsAdminCallbackAllowlist(t *testing.T) {
+	// 缺陷：production wiring 若仍用非 allowlist Gemini 构造函数，admin HTTPS callback 会被 ErrFeatureDisabled 拒绝，远程 web OAuth 起不来。
+	// 判别 mutation：把 install 退回 NewGeminiPublicCLIOAuthExchangerWithClientAndSecret 时，该 HTTPS redirect 被拒为 ErrFeatureDisabled，本测试必须变红。
+	adminCallback := "https://huakai.example/admin/v1/credentials/oauth-callback"
+	registry := credentialacq.DefaultExchangerRegistry()
+	if err := installGeminiPublicCLIOAuthExchangers(
+		registry,
+		auth.NewSSRFProtectedOAuthClient(http.DefaultClient),
+		"operator-secret",
+		[]string{adminCallback},
+	); err != nil {
+		t.Fatalf("installGeminiPublicCLIOAuthExchangers: %v", err)
+	}
+	exc, ok := registry.Lookup(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist))
+	if !ok {
+		t.Fatal("installed registry missing gemini/code_assist exchanger")
+	}
+
+	_, err := exc.StartOAuthFlow(context.Background(), nil, credentialacq.StartInput{
+		TenantID: 1, ProviderAccountID: 202,
+		Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeCodeAssist,
+		ActorID: "owner", ActorRole: "platform_admin",
+		RedirectURI: adminCallback,
+	}, credentialacq.OAuthClientConfig{RedirectURI: adminCallback})
+	if err == nil {
+		t.Fatal("nil store should still stop StartOAuthFlow after redirect allowlist validation")
+	}
+	if errors.Is(err, credentialacq.ErrFeatureDisabled) {
+		t.Fatalf("err=%v; want allowlisted admin callback to pass redirect validation", err)
+	}
+}
+
+func TestWiring_InstallChatGPTThreadsAdminCallbackAllowlist(t *testing.T) {
+	// 缺陷：production wiring 若仍用非 allowlist ChatGPT 构造函数，admin HTTPS callback 会被 ErrFeatureDisabled 拒绝，远程 web OAuth 起不来。
+	// 判别 mutation：把 install 退回 NewChatGPTOAuthExchangerWithClient 时，该 HTTPS redirect 被拒为 ErrFeatureDisabled，本测试必须变红。
+	adminCallback := "https://huakai.example/admin/v1/credentials/oauth-callback"
+	registry := credentialacq.DefaultExchangerRegistry()
+	if err := installChatGPTOAuthExchanger(
+		registry,
+		auth.NewSSRFProtectedOAuthClient(http.DefaultClient),
+		[]string{adminCallback},
+	); err != nil {
+		t.Fatalf("installChatGPTOAuthExchanger: %v", err)
+	}
+	exc, ok := registry.Lookup(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth))
+	if !ok {
+		t.Fatal("installed registry missing openai/chatgpt_oauth exchanger")
+	}
+
+	_, err := exc.StartOAuthFlow(context.Background(), nil, credentialacq.StartInput{
+		TenantID: 1, ProviderAccountID: 203,
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeChatGPTOAuth,
+		ActorID: "owner", ActorRole: "platform_admin",
+		RedirectURI: adminCallback,
+	}, credentialacq.OAuthClientConfig{RedirectURI: adminCallback})
+	if err == nil {
+		t.Fatal("nil store should still stop StartOAuthFlow after redirect allowlist validation")
+	}
+	if errors.Is(err, credentialacq.ErrFeatureDisabled) {
+		t.Fatalf("err=%v; want allowlisted admin callback to pass redirect validation", err)
 	}
 }
 
