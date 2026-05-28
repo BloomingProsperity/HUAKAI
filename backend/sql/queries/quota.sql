@@ -101,7 +101,7 @@ WHERE tenant_id = sqlc.arg(tenant_id)::bigint
 FOR UPDATE;
 
 -- name: IncrementQuotaWindowReserved :one
--- Enforce 模式: reserved + settled + delta 不得超过调用方传入的策略上限。
+-- Cost enforce: reserved + settled + delta 不得超过调用方传入的策略上限。
 UPDATE quota_windows
 SET reserved_value = reserved_value + sqlc.arg(reserve_delta)::numeric(20,8),
     request_count = request_count + sqlc.arg(request_count_delta)::bigint,
@@ -110,6 +110,25 @@ SET reserved_value = reserved_value + sqlc.arg(reserve_delta)::numeric(20,8),
 WHERE tenant_id = sqlc.arg(tenant_id)::bigint
   AND id = sqlc.arg(window_id)::bigint
   AND reserved_value + settled_value + sqlc.arg(reserve_delta)::numeric(20,8)
+      <= sqlc.arg(limit_value)::numeric(20,8)
+RETURNING
+    tenant_id,
+    id,
+    reserved_value,
+    settled_value,
+    overage_value,
+    request_count,
+    version;
+
+-- name: IncrementQuotaWindowRequestCount :one
+-- request_count 镜像辅助; Reserve 准入使用 IncrementQuotaWindowReserved 的 Model B 计数。
+UPDATE quota_windows
+SET request_count = request_count + sqlc.arg(request_count_delta)::bigint,
+    version = version + 1,
+    updated_at = NOW()
+WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+  AND id = sqlc.arg(window_id)::bigint
+  AND request_count + sqlc.arg(request_count_delta)::bigint
       <= sqlc.arg(limit_value)::numeric(20,8)
 RETURNING
     tenant_id,
@@ -193,6 +212,38 @@ WHERE EXISTS (
     WHERE blc.tenant_id = sqlc.arg(tenant_id)::bigint
       AND blc.id = sqlc.arg(claim_id)::bigint
 )
+RETURNING
+    tenant_id,
+    id,
+    claim_id,
+    request_fingerprint,
+    scope_snapshot,
+    policy_snapshot,
+    predicted_cost,
+    reserved_units,
+    status,
+    lease_expires_at,
+    created_at,
+    updated_at;
+
+-- name: ReactivateQuotaReservation :one
+-- released/expired claim 重试通过重新评估后, 复用原 reservation 行重建持有。
+UPDATE quota_reservations
+SET status = 'reserved',
+    request_fingerprint = sqlc.arg(request_fingerprint)::text,
+    scope_snapshot = sqlc.arg(scope_snapshot)::jsonb,
+    policy_snapshot = sqlc.arg(policy_snapshot)::jsonb,
+    predicted_cost = sqlc.arg(predicted_cost)::numeric(20,8),
+    reserved_units = sqlc.arg(reserved_units)::numeric(20,8),
+    lease_expires_at = sqlc.arg(lease_expires_at)::timestamptz,
+    settled_at = NULL,
+    released_at = NULL,
+    release_reason = NULL,
+    updated_at = NOW()
+WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+  AND id = sqlc.arg(reservation_id)::bigint
+  AND claim_id = sqlc.arg(claim_id)::bigint
+  AND status IN ('released', 'expired')
 RETURNING
     tenant_id,
     id,

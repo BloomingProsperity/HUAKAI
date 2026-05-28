@@ -443,6 +443,63 @@ func (q *Queries) GetQuotaWindowForUpdate(ctx context.Context, arg GetQuotaWindo
 	return i, err
 }
 
+const incrementQuotaWindowRequestCount = `-- name: IncrementQuotaWindowRequestCount :one
+UPDATE quota_windows
+SET request_count = request_count + $1::bigint,
+    version = version + 1,
+    updated_at = NOW()
+WHERE tenant_id = $2::bigint
+  AND id = $3::bigint
+  AND request_count + $1::bigint
+      <= $4::numeric(20,8)
+RETURNING
+    tenant_id,
+    id,
+    reserved_value,
+    settled_value,
+    overage_value,
+    request_count,
+    version
+`
+
+type IncrementQuotaWindowRequestCountParams struct {
+	RequestCountDelta int64          `db:"request_count_delta" json:"request_count_delta"`
+	TenantID          int64          `db:"tenant_id" json:"tenant_id"`
+	WindowID          int64          `db:"window_id" json:"window_id"`
+	LimitValue        pgtype.Numeric `db:"limit_value" json:"limit_value"`
+}
+
+type IncrementQuotaWindowRequestCountRow struct {
+	TenantID      int64          `db:"tenant_id" json:"tenant_id"`
+	ID            int64          `db:"id" json:"id"`
+	ReservedValue pgtype.Numeric `db:"reserved_value" json:"reserved_value"`
+	SettledValue  pgtype.Numeric `db:"settled_value" json:"settled_value"`
+	OverageValue  pgtype.Numeric `db:"overage_value" json:"overage_value"`
+	RequestCount  int64          `db:"request_count" json:"request_count"`
+	Version       int32          `db:"version" json:"version"`
+}
+
+// request_count 镜像辅助; Reserve 准入使用 IncrementQuotaWindowReserved 的 Model B 计数。
+func (q *Queries) IncrementQuotaWindowRequestCount(ctx context.Context, arg IncrementQuotaWindowRequestCountParams) (IncrementQuotaWindowRequestCountRow, error) {
+	row := q.db.QueryRow(ctx, incrementQuotaWindowRequestCount,
+		arg.RequestCountDelta,
+		arg.TenantID,
+		arg.WindowID,
+		arg.LimitValue,
+	)
+	var i IncrementQuotaWindowRequestCountRow
+	err := row.Scan(
+		&i.TenantID,
+		&i.ID,
+		&i.ReservedValue,
+		&i.SettledValue,
+		&i.OverageValue,
+		&i.RequestCount,
+		&i.Version,
+	)
+	return i, err
+}
+
 const incrementQuotaWindowReserved = `-- name: IncrementQuotaWindowReserved :one
 UPDATE quota_windows
 SET reserved_value = reserved_value + $1::numeric(20,8),
@@ -481,7 +538,7 @@ type IncrementQuotaWindowReservedRow struct {
 	Version       int32          `db:"version" json:"version"`
 }
 
-// Enforce 模式: reserved + settled + delta 不得超过调用方传入的策略上限。
+// Cost enforce: reserved + settled + delta 不得超过调用方传入的策略上限。
 func (q *Queries) IncrementQuotaWindowReserved(ctx context.Context, arg IncrementQuotaWindowReservedParams) (IncrementQuotaWindowReservedRow, error) {
 	row := q.db.QueryRow(ctx, incrementQuotaWindowReserved,
 		arg.ReserveDelta,
@@ -918,6 +975,96 @@ func (q *Queries) MarkQuotaReservationReconciliationNeeded(ctx context.Context, 
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const reactivateQuotaReservation = `-- name: ReactivateQuotaReservation :one
+UPDATE quota_reservations
+SET status = 'reserved',
+    request_fingerprint = $1::text,
+    scope_snapshot = $2::jsonb,
+    policy_snapshot = $3::jsonb,
+    predicted_cost = $4::numeric(20,8),
+    reserved_units = $5::numeric(20,8),
+    lease_expires_at = $6::timestamptz,
+    settled_at = NULL,
+    released_at = NULL,
+    release_reason = NULL,
+    updated_at = NOW()
+WHERE tenant_id = $7::bigint
+  AND id = $8::bigint
+  AND claim_id = $9::bigint
+  AND status IN ('released', 'expired')
+RETURNING
+    tenant_id,
+    id,
+    claim_id,
+    request_fingerprint,
+    scope_snapshot,
+    policy_snapshot,
+    predicted_cost,
+    reserved_units,
+    status,
+    lease_expires_at,
+    created_at,
+    updated_at
+`
+
+type ReactivateQuotaReservationParams struct {
+	RequestFingerprint string             `db:"request_fingerprint" json:"request_fingerprint"`
+	ScopeSnapshot      []byte             `db:"scope_snapshot" json:"scope_snapshot"`
+	PolicySnapshot     []byte             `db:"policy_snapshot" json:"policy_snapshot"`
+	PredictedCost      pgtype.Numeric     `db:"predicted_cost" json:"predicted_cost"`
+	ReservedUnits      pgtype.Numeric     `db:"reserved_units" json:"reserved_units"`
+	LeaseExpiresAt     pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
+	TenantID           int64              `db:"tenant_id" json:"tenant_id"`
+	ReservationID      int64              `db:"reservation_id" json:"reservation_id"`
+	ClaimID            int64              `db:"claim_id" json:"claim_id"`
+}
+
+type ReactivateQuotaReservationRow struct {
+	TenantID           int64              `db:"tenant_id" json:"tenant_id"`
+	ID                 int64              `db:"id" json:"id"`
+	ClaimID            int64              `db:"claim_id" json:"claim_id"`
+	RequestFingerprint string             `db:"request_fingerprint" json:"request_fingerprint"`
+	ScopeSnapshot      []byte             `db:"scope_snapshot" json:"scope_snapshot"`
+	PolicySnapshot     []byte             `db:"policy_snapshot" json:"policy_snapshot"`
+	PredictedCost      pgtype.Numeric     `db:"predicted_cost" json:"predicted_cost"`
+	ReservedUnits      pgtype.Numeric     `db:"reserved_units" json:"reserved_units"`
+	Status             string             `db:"status" json:"status"`
+	LeaseExpiresAt     pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
+	CreatedAt          pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
+// released/expired claim 重试通过重新评估后, 复用原 reservation 行重建持有。
+func (q *Queries) ReactivateQuotaReservation(ctx context.Context, arg ReactivateQuotaReservationParams) (ReactivateQuotaReservationRow, error) {
+	row := q.db.QueryRow(ctx, reactivateQuotaReservation,
+		arg.RequestFingerprint,
+		arg.ScopeSnapshot,
+		arg.PolicySnapshot,
+		arg.PredictedCost,
+		arg.ReservedUnits,
+		arg.LeaseExpiresAt,
+		arg.TenantID,
+		arg.ReservationID,
+		arg.ClaimID,
+	)
+	var i ReactivateQuotaReservationRow
+	err := row.Scan(
+		&i.TenantID,
+		&i.ID,
+		&i.ClaimID,
+		&i.RequestFingerprint,
+		&i.ScopeSnapshot,
+		&i.PolicySnapshot,
+		&i.PredictedCost,
+		&i.ReservedUnits,
+		&i.Status,
+		&i.LeaseExpiresAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const releaseQuotaConcurrencySlotsByReservation = `-- name: ReleaseQuotaConcurrencySlotsByReservation :execrows

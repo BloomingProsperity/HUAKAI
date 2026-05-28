@@ -15,11 +15,13 @@ type PGStore interface {
 	ListActivePolicies(ctx context.Context, filter PolicyFilter) ([]Policy, error)
 	UpsertWindow(ctx context.Context, input WindowUpsert) (WindowCounter, error)
 	GetWindowForUpdate(ctx context.Context, tenantID int64, windowID int64) (WindowCounter, error)
+	IncrementWindowRequestCount(ctx context.Context, input WindowRequestCount) (WindowCounter, error)
 	IncrementWindowReserved(ctx context.Context, input WindowReserve) (WindowCounter, error)
 	ApplyWindowSettlement(ctx context.Context, input WindowSettlement) (WindowCounter, error)
 
 	GetReservationByClaimForUpdate(ctx context.Context, tenantID int64, claimID int64) (Reservation, error)
 	InsertReservation(ctx context.Context, input ReservationInsert) (Reservation, error)
+	ReactivateReservation(ctx context.Context, input ReservationReactivate) (Reservation, error)
 	SettleReservation(ctx context.Context, settlement Settlement) error
 	ReleaseReservation(ctx context.Context, input ReservationRelease) error
 	MarkReservationReconciliationNeeded(ctx context.Context, tenantID int64, reservationID int64, claimID int64) error
@@ -58,6 +60,13 @@ type WindowReserve struct {
 	LimitValue        decimal.Decimal
 }
 
+type WindowRequestCount struct {
+	TenantID          int64
+	WindowID          int64
+	RequestCountDelta int64
+	LimitValue        decimal.Decimal
+}
+
 type WindowSettlement struct {
 	TenantID             int64
 	WindowID             int64
@@ -68,6 +77,18 @@ type WindowSettlement struct {
 
 type ReservationInsert struct {
 	TenantID           int64
+	ClaimID            int64
+	RequestFingerprint string
+	Scopes             []Scope
+	PolicySnapshot     []byte
+	PredictedCost      decimal.Decimal
+	ReservedUnits      decimal.Decimal
+	LeaseExpiresAt     time.Time
+}
+
+type ReservationReactivate struct {
+	TenantID           int64
+	ReservationID      int64
 	ClaimID            int64
 	RequestFingerprint string
 	Scopes             []Scope
