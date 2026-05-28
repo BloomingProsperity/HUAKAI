@@ -108,8 +108,12 @@ func TestE2E_X_HUAKAI_响应头存在并指向真ledger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ledger id %q cannot be read back: %v", ledgerID, err)
 	}
-	if entry.RequestID != trustE2ERequestID {
-		t.Fatalf("entry.RequestID=%q want %q", entry.RequestID, trustE2ERequestID)
+	canonicalRequestID := resp.Header.Get(middleware.RequestIDHeader)
+	if canonicalRequestID == "" || canonicalRequestID == trustE2ERequestID {
+		t.Fatalf("%s=%q want server-generated canonical request id", middleware.RequestIDHeader, canonicalRequestID)
+	}
+	if entry.RequestID != canonicalRequestID {
+		t.Fatalf("entry.RequestID=%q want canonical response id %q", entry.RequestID, canonicalRequestID)
 	}
 	if got := resp.Header.Get(headerHUAKAISigFP); got != env.signer.Fingerprint() {
 		t.Fatalf("%s=%q want %q", headerHUAKAISigFP, got, env.signer.Fingerprint())
@@ -477,6 +481,11 @@ type trustE2EAnthropicAdapter struct {
 }
 
 func (a *trustE2EAnthropicAdapter) CanonicalToProviderRequest(ctx context.Context, env *proto.HCSF) ([]byte, []proto.ProtocolLossEntry, error) {
+	if env != nil && env.RequestMeta.RequestID != "" {
+		a.mu.Lock()
+		a.requestID = env.RequestMeta.RequestID
+		a.mu.Unlock()
+	}
 	return a.base.CanonicalToProviderRequest(ctx, env)
 }
 
@@ -485,6 +494,11 @@ func (a *trustE2EAnthropicAdapter) ProviderResponseToCanonical(ctx context.Conte
 }
 
 func (a *trustE2EAnthropicAdapter) ProviderEventToCanonicalEvents(ctx context.Context, providerEvt any, state any) ([]any, []proto.ProtocolLossEntry, error) {
+	if upstreamState, ok := state.(*protoanthropic.UpstreamState); ok && upstreamState.RequestID != "" {
+		a.mu.Lock()
+		a.requestID = upstreamState.RequestID
+		a.mu.Unlock()
+	}
 	eventType, model := inspectAnthropicEvent(providerEvt)
 	if model != "" {
 		a.mu.Lock()
@@ -512,6 +526,9 @@ func (a *trustE2EAnthropicAdapter) appendLedgerOnce(ctx context.Context) error {
 	defer a.mu.Unlock()
 	if a.appended {
 		return nil
+	}
+	if requestID := middleware.GetReqID(ctx); requestID != "" {
+		a.requestID = requestID
 	}
 	reported := a.upstreamReported
 	if reported == "" {
@@ -576,7 +593,11 @@ func trustE2EHeaderMiddleware(ledger *trustE2ELedger, next http.HandlerFunc) htt
 			rec.Code = http.StatusOK
 		}
 		if rec.Code >= 200 && rec.Code < 300 {
-			if requestID := middleware.GetReqID(r.Context()); requestID != "" {
+			requestID := rec.Header().Get(middleware.RequestIDHeader)
+			if requestID == "" {
+				requestID = middleware.GetReqID(r.Context())
+			}
+			if requestID != "" {
 				if entry, err := ledger.GetByRequestID(r.Context(), requestID); err == nil {
 					rec.Header().Set(headerHUAKAILedger, entry.LedgerID)
 					rec.Header().Set(headerHUAKAISigFP, entry.PubkeyFingerprint)

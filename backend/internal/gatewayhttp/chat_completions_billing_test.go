@@ -1,18 +1,21 @@
 package gatewayhttp
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
-	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 )
 
@@ -152,48 +155,89 @@ func TestChatCompletions_AuditLedgerAppendAndDLQFailureProductionDoesNotSettle(t
 	}
 }
 
-func TestChatCompletions_AuditLedgerDuplicateRequestIDAbortsWithoutDLQ(t *testing.T) {
-	// Risk killed: ErrDuplicateRequestID is a deterministic replay collision,
-	// not a transient append failure. Mutation self-check: treating it like a
-	// normal append error enqueues DLQ, returns Deferred, and records a settle.
+func TestChatCompletions_AuditLedgerDuplicateRequestIDStillSettlesDeliveredCharge(t *testing.T) {
+	// Mutation: keeping the old ErrDuplicateRequestID Abort+500 branch makes
+	// the second delivered request return 500 with only one non-zero settle.
 	t.Setenv("HUAKAI_RELEASE_MODE", "production")
 	enableHCSFDispatchForTest(t)
 	signer, err := sign.GenerateKey()
 	if err != nil {
 		t.Fatalf("signer: %v", err)
 	}
+	inner, err := auditledger.NewMemoryLedger(signer)
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	ledger := &secondAppendDuplicateLookupLedger{inner: inner}
+	settler := &recordingSettler{}
+	policy := productionAuditRefPolicyForGatewayTest(false)
+	var events []eventbus.RequestCompletionEvent
+	bus := eventbus.New(eventbus.Config{HighWorkers: 1, HighBuffer: 4, AuditRefPolicy: policy})
+	mustRegisterEventHandler(t, bus, eventbus.HandlerFunc{
+		HandlerID:    eventbus.HandlerBillingPersister,
+		HandlerTier:  eventbus.TierHigh,
+		HandlerOrder: 10,
+		IsCritical:   true,
+		Fn: func(ctx context.Context, event eventbus.RequestCompletionEvent) error {
+			events = append(events, event)
+			_, err := settler.Settle(ctx, event.SettleRequest)
+			return err
+		},
+	})
+	t.Cleanup(func() {
+		_ = bus.Stop(context.Background())
+	})
+
 	dlqSink := &recordingGatewayAuditLedgerDLQ{id: 314}
 	d := clientAdapterDeps(t)
 	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
-	d.AuditLedger = &failingAppendLedger{appendErr: auditledger.ErrDuplicateRequestID}
+	d.AuditLedger = ledger
 	d.AuditLedgerDLQ = dlqSink
 	d.Signer = signer
-
-	result, err := submitAuditLedgerEntry(context.Background(), d, proto.NewEmptyEnvelope(), validIdentity().TenantID, "req-buffered-duplicate")
-	if !errors.Is(err, auditledger.ErrDuplicateRequestID) {
-		t.Fatalf("submitAuditLedgerEntry error=%v want ErrDuplicateRequestID", err)
-	}
-	if result != (auditledger.AuditLedgerResult{}) {
-		t.Fatalf("submitAuditLedgerEntry result=%+v want zero value on duplicate", result)
-	}
-	if len(dlqSink.events) != 0 {
-		t.Fatalf("direct submit DLQ events=%d want 0", len(dlqSink.events))
-	}
-
-	settler := &recordingSettler{}
 	d.Settler = settler
-	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status=%d want 500 body=%s", rec.Code, rec.Body.String())
+	d.CompletionBus = bus
+	d.AuditRefPolicy = policy
+
+	first := invokeHandlerPathWithRequestID(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"first"}]}`, "dup-1")
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status=%d want 200 body=%s", first.Code, first.Body.String())
 	}
-	if len(settler.calls) != 0 {
-		t.Fatalf("settle calls=%d want 0", len(settler.calls))
+	second := invokeHandlerPathWithRequestID(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"second"}]}`, "dup-1")
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status=%d want 200 body=%s", second.Code, second.Body.String())
 	}
-	if len(settler.aborts) != 1 || settler.aborts[0].reason != "audit_ledger_error" {
-		t.Fatalf("aborts=%+v want one audit_ledger_error abort", settler.aborts)
+	if len(settler.calls) != 2 {
+		t.Fatalf("settle calls=%d want 2", len(settler.calls))
+	}
+	if len(settler.aborts) != 0 {
+		t.Fatalf("aborts=%+v want none", settler.aborts)
 	}
 	if len(dlqSink.events) != 0 {
 		t.Fatalf("handler DLQ events=%d want 0 for duplicate request_id", len(dlqSink.events))
+	}
+	firstCost := settler.calls[0].ActualCost
+	secondCost := settler.calls[1].ActualCost
+	if firstCost.IsZero() {
+		t.Fatalf("first settle ActualCost=%s want non-zero", firstCost)
+	}
+	if !secondCost.Equal(firstCost) {
+		t.Fatalf("second settle ActualCost=%s want same non-zero cost as first %s", secondCost, firstCost)
+	}
+	if len(events) != 2 {
+		t.Fatalf("completion events=%d want 2", len(events))
+	}
+	for i, event := range events {
+		if got := event.Metadata["client_request_id"]; got != "dup-1" {
+			t.Fatalf("event[%d] client_request_id metadata=%q want dup-1; metadata=%v", i, got, event.Metadata)
+		}
+	}
+	for name, rec := range map[string]*httptest.ResponseRecorder{"first": first, "second": second} {
+		if got := rec.Header().Get("X-Huakai-Request-Id"); got == "" || got == "dup-1" {
+			t.Fatalf("%s X-Huakai-Request-Id=%q want non-empty server id, not client header", name, got)
+		}
+		if got := rec.Header().Get(middleware.RequestIDHeader); got == "" || got == "dup-1" {
+			t.Fatalf("%s %s=%q want non-empty server id, not client header", name, middleware.RequestIDHeader, got)
+		}
 	}
 }
 
@@ -336,6 +380,38 @@ func (l *failingAppendLedger) LatestMerkleRoot(context.Context) ([32]byte, error
 
 func (l *failingAppendLedger) Size(context.Context) int { return 0 }
 
+type secondAppendDuplicateLookupLedger struct {
+	inner       *auditledger.MemoryLedger
+	appendCalls int
+}
+
+func (l *secondAppendDuplicateLookupLedger) Append(ctx context.Context, entry auditledger.PreparedEntry) (auditledger.LedgerEntry, error) {
+	l.appendCalls++
+	if l.appendCalls == 2 {
+		if _, err := l.inner.Append(ctx, entry); err != nil && !errors.Is(err, auditledger.ErrDuplicateRequestID) {
+			return auditledger.LedgerEntry{}, err
+		}
+		return auditledger.LedgerEntry{}, auditledger.ErrDuplicateRequestID
+	}
+	return l.inner.Append(ctx, entry)
+}
+
+func (l *secondAppendDuplicateLookupLedger) GetByRequestID(ctx context.Context, requestID string) (auditledger.LedgerEntry, error) {
+	return l.inner.GetByRequestID(ctx, requestID)
+}
+
+func (l *secondAppendDuplicateLookupLedger) GetByRequestIDAndTenantScope(ctx context.Context, requestID, tenantScopeRef string) (auditledger.LedgerEntry, error) {
+	return l.inner.GetByRequestIDAndTenantScope(ctx, requestID, tenantScopeRef)
+}
+
+func (l *secondAppendDuplicateLookupLedger) LatestMerkleRoot(ctx context.Context) ([32]byte, error) {
+	return l.inner.LatestMerkleRoot(ctx)
+}
+
+func (l *secondAppendDuplicateLookupLedger) Size(ctx context.Context) int {
+	return l.inner.Size(ctx)
+}
+
 type recordingGatewayAuditLedgerDLQ struct {
 	id     int64
 	events []dlq.Event
@@ -384,4 +460,15 @@ func queueFullCompletionBusForGatewayTest(t *testing.T) *eventbus.Bus {
 		_ = bus.Stop(context.Background())
 	})
 	return bus
+}
+
+func invokeHandlerPathWithRequestID(t *testing.T, deps ChatHandlerDeps, path, body, requestID string) *httptest.ResponseRecorder {
+	t.Helper()
+	h := middleware.RequestID(NewChatCompletionsHandler(deps))
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(middleware.RequestIDHeader, requestID)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
 }

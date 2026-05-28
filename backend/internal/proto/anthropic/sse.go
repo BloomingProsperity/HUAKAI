@@ -30,6 +30,7 @@ type UpstreamState struct {
 	AccumulatedUsage    proto.CanonicalUsage
 	DeliveredChunkCount int64
 	AccountID           int64
+	RequestID           string
 	PrefixHash          string
 	// M5b: TenantID 透传 — ObserveByAccountWithPrefix 必填; 0 时 observer
 	// 仍记 expvar counter 但跳过段表更新 (无 tenant 信息)。 forwarder.go

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5/middleware"
+
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
@@ -85,6 +87,46 @@ func TestReadChatRequestBodyErrorDoesNotLeakReaderError(t *testing.T) {
 	if !strings.Contains(body, "request body could not be read") {
 		t.Fatalf("body=%s want fixed body_read_error message", body)
 	}
+}
+
+func TestValidateChatCompletionsRequestServerRequestIDIgnoresClientHeader(t *testing.T) {
+	// Mutation: reverting canonical RequestID to middleware.GetReqID(ctx)
+	// makes both canonical IDs equal "dup-1" and this test fails.
+	first := validateChatRequestThroughRequestIDMiddleware(t, `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"first"}]}`, "dup-1")
+	second := validateChatRequestThroughRequestIDMiddleware(t, `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"second"}]}`, "dup-1")
+
+	if first.RequestID == "" || second.RequestID == "" {
+		t.Fatalf("canonical request ids must be populated: first=%q second=%q", first.RequestID, second.RequestID)
+	}
+	if first.RequestID == "dup-1" || second.RequestID == "dup-1" {
+		t.Fatalf("canonical request ids must be server-generated, got first=%q second=%q", first.RequestID, second.RequestID)
+	}
+	if first.RequestID == second.RequestID {
+		t.Fatalf("canonical request ids must differ for separate requests with same client header; both=%q", first.RequestID)
+	}
+	if first.ClientRequestID != "dup-1" {
+		t.Fatalf("first ClientRequestID=%q want dup-1", first.ClientRequestID)
+	}
+	if second.ClientRequestID != "dup-1" {
+		t.Fatalf("second ClientRequestID=%q want dup-1", second.ClientRequestID)
+	}
+}
+
+func validateChatRequestThroughRequestIDMiddleware(t *testing.T, body, clientRequestID string) chatValidatedRequest {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(middleware.RequestIDHeader, clientRequestID)
+	rec := httptest.NewRecorder()
+	var validated chatValidatedRequest
+	var ok bool
+	middleware.RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		validated, ok = validateChatCompletionsRequest(w, r, r.Context())
+	})).ServeHTTP(rec, req)
+	if !ok {
+		t.Fatalf("validateChatCompletionsRequest ok=false status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	return validated
 }
 
 type errReadCloser struct {

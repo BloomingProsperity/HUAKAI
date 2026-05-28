@@ -444,7 +444,7 @@ func (f *StreamForwarder) newUpstreamState(req ForwardRequest) any {
 		}
 	}
 	// fallthrough: Anthropic / Bedrock-on-Anthropic / 其它都用 UpstreamState
-	return &anthropic.UpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}
+	return &anthropic.UpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, RequestID: req.RequestID, PrefixHash: req.SessionHash}
 }
 
 // newClientState 按 client adapter 的具体协议创建 per-stream 状态。
