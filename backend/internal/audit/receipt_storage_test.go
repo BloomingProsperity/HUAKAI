@@ -140,6 +140,50 @@ func TestReceiptStorageAppendReceiptRejectsMissingUserID(t *testing.T) {
 	}
 }
 
+func TestReceiptStorageRejectsOneSidedSignatureMismatch(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name        string
+		requestID   string
+		mutate      func(*CostReceipt)
+		description string
+	}{
+		{
+			name:      "signed_hash_only",
+			requestID: "req-sidecar-signed-hash-only",
+			mutate: func(receipt *CostReceipt) {
+				receipt.SignerFingerprint = nil
+			},
+			description: "signed_hash present with empty signer_fingerprint",
+		},
+		{
+			name:      "signer_fingerprint_only",
+			requestID: "req-sidecar-signer-fingerprint-only",
+			mutate: func(receipt *CostReceipt) {
+				receipt.SignedHash = nil
+			},
+			description: "signer_fingerprint present with empty signed_hash",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newSidecarReceiptDB()
+			store := &ReceiptStorage{exec: db}
+			receipt := receiptForStorageTest(tc.requestID, 88, 0)
+			tc.mutate(receipt)
+
+			err := store.AppendReceipt(ctx, receipt)
+			if !errors.Is(err, ErrReceiptInvalidDerivedData) {
+				t.Fatalf("AppendReceipt with %s err=%v, want ErrReceiptInvalidDerivedData", tc.description, err)
+			}
+			if db.hasReceipt(receipt.TenantID, receipt.RequestID, receipt.ReceiptSequence) {
+				t.Fatalf("receipt row persisted with one-sided signature fields: %s", tc.description)
+			}
+		})
+	}
+}
+
 type sidecarReceiptDB struct {
 	mu              sync.Mutex
 	receipts        map[memoryReceiptKey]*CostReceipt

@@ -150,8 +150,9 @@ func buildSettlementServices(_ context.Context, pgPool *pgxpool.Pool, auditSigne
 	dlqService.Register(legacydlq.EventKindAuditMismatchRefund, refundWorker.Handler())
 	refundQueue := auditreceipt.NewMismatchRefundQueue(dlqService)
 	receiptHook := auditreceipt.NewReceiptHookHandler(receiptFormatter, receiptStore,
+		auditreceipt.WithReceiptHookTrustSigner(auditSigner),
 		auditreceipt.WithReceiptHookErrorHandler(func(_ context.Context, requestID string, err error) {
-			logger.Warn("cost receipt write failed after settle",
+			logger.Warn("cost receipt hook warning after settle",
 				zap.String("request_id", requestID),
 				zap.Error(err),
 			)

@@ -648,7 +648,7 @@ func TestAT_AUDIT_001_022_ChatCompletionWritesReceiptThenGet200(t *testing.T) {
 		t.Fatalf("formatter: %v", err)
 	}
 	store := newReceiptStoreStub()
-	hook := audit.NewReceiptHookHandler(formatter, store)
+	hook := audit.NewReceiptHookHandler(formatter, store, audit.WithReceiptHookTrustSigner(signer))
 
 	d := clientAdapterDeps(t)
 	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}

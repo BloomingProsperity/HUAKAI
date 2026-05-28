@@ -435,7 +435,7 @@ func userCostReceiptFromAudit(ctx context.Context, receipt *audit.CostReceipt) (
 		ValidationState:   audit.NormalizeReceiptValidationState(receipt.ValidationState),
 		Verdict:           audit.NormalizeReceiptVerdict(receipt.Verdict),
 		AdjustmentRefs:    canonicalAdjustmentRefs(receipt.AdjustmentRefs),
-		Signature:         base64.StdEncoding.EncodeToString(receipt.SignedHash),
+		Signature:         receiptSignatureString(receipt.SignedHash),
 		PubkeyFingerprint: string(receipt.SignerFingerprint),
 	}
 	canonical, err := audit.CanonicalReceiptHashForPayload(ctx, canonicalPayloadFromUserReceipt(out))
@@ -444,6 +444,16 @@ func userCostReceiptFromAudit(ctx context.Context, receipt *audit.CostReceipt) (
 	}
 	out.CanonicalHash = hex.EncodeToString(canonical)
 	return out, nil
+}
+
+func receiptSignatureString(signature []byte) string {
+	if len(signature) == 0 {
+		return ""
+	}
+	if decoded, err := base64.StdEncoding.DecodeString(string(signature)); err == nil && len(decoded) == ed25519.SignatureSize {
+		return string(signature)
+	}
+	return base64.StdEncoding.EncodeToString(signature)
 }
 
 func auditReceiptFromUserReceipt(receipt UserCostReceipt, tenantID int64) *audit.CostReceipt {

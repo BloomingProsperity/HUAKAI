@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/sign"
+	"github.com/BloomingProsperity/HUAKAI/internal/trustreceipt"
 )
 
 type ReceiptAppender interface {
@@ -24,9 +26,10 @@ type ReceiptHookOption func(*ReceiptHookHandler)
 
 // ReceiptHookHandler 在 Tx2 成功后从既有账务事实派生并写入 receipt snapshot。
 type ReceiptHookHandler struct {
-	formatter receiptFormatterService
-	storage   ReceiptAppender
-	onError   ReceiptHookErrorHandler
+	formatter   receiptFormatterService
+	storage     ReceiptAppender
+	trustSigner *sign.Signer
+	onError     ReceiptHookErrorHandler
 }
 
 func NewReceiptHookHandler(formatter receiptFormatterService, storage ReceiptAppender, opts ...ReceiptHookOption) *ReceiptHookHandler {
@@ -42,6 +45,12 @@ func NewReceiptHookHandler(formatter receiptFormatterService, storage ReceiptApp
 func WithReceiptHookErrorHandler(fn ReceiptHookErrorHandler) ReceiptHookOption {
 	return func(h *ReceiptHookHandler) {
 		h.onError = fn
+	}
+}
+
+func WithReceiptHookTrustSigner(signer *sign.Signer) ReceiptHookOption {
+	return func(h *ReceiptHookHandler) {
+		h.trustSigner = signer
 	}
 }
 
@@ -63,17 +72,49 @@ func (h *ReceiptHookHandler) AppendSettledReceipt(ctx context.Context, req billi
 	if err != nil {
 		return fmt.Errorf("audit: derive receipt after settle: %w", err)
 	}
-	signed, err := h.formatter.SignReceipt(ctx, receipt)
-	if err != nil {
-		return fmt.Errorf("audit: sign receipt after settle: %w", err)
-	}
-	if err := h.storage.AppendReceipt(ctx, signed); err != nil {
+	h.attachFinalTrustSignature(ctx, req, receipt)
+	if err := h.storage.AppendReceipt(ctx, receipt); err != nil {
 		if errors.Is(err, ErrReceiptDuplicate) {
 			return nil
 		}
 		return fmt.Errorf("audit: append receipt after settle: %w", err)
 	}
 	return nil
+}
+
+func (h *ReceiptHookHandler) attachFinalTrustSignature(ctx context.Context, req billing.SettleRequest, receipt *CostReceipt) {
+	if receipt == nil {
+		return
+	}
+	finalReceipt := trustreceipt.BuildFinalFromSettleEvent(req, nil, finalReceiptFactsFromCostReceipt(receipt))
+	sigB64, fingerprint, err := trustreceipt.SignReceipt(h.trustSigner, finalReceipt)
+	if err != nil {
+		receipt.SignerFingerprint = []byte{}
+		receipt.SignedHash = []byte{}
+		h.report(ctx, req.AuditRequestID, err)
+		return
+	}
+	receipt.SignerFingerprint = []byte(fingerprint)
+	receipt.SignedHash = []byte(sigB64)
+}
+
+func finalReceiptFactsFromCostReceipt(receipt *CostReceipt) trustreceipt.FinalReceiptFacts {
+	if receipt == nil {
+		return trustreceipt.FinalReceiptFacts{}
+	}
+	return trustreceipt.FinalReceiptFacts{
+		RequestID:           receipt.RequestID,
+		ReceiptSequence:     int(receipt.ReceiptSequence),
+		TenantID:            receipt.TenantID,
+		OccurredAt:          receipt.CreatedAt,
+		Model:               receipt.Model,
+		InputTokens:         receipt.InputTokens,
+		OutputTokens:        receipt.OutputTokens,
+		CachedTokens:        receipt.CachedTokens,
+		CostUSDMicros:       receipt.CostUSDMicros,
+		RateTableSnapshotID: receipt.RateTableSnapshotID,
+		ValidationState:     NormalizeReceiptValidationState(receipt.ValidationState),
+	}
 }
 
 func (h *ReceiptHookHandler) report(ctx context.Context, requestID string, err error) {
