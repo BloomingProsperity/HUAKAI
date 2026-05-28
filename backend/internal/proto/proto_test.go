@@ -10,38 +10,106 @@ import (
 
 // AT-PROTO-002-12: Tool-call ID round-trip bijection (extended; multi-upstream).
 func TestAT_PROTO_002_12_ToolCallIDBijection(t *testing.T) {
-	hex := "deadbeef1234"
-	cases := []struct {
+	type caseItem struct {
+		name     string
 		upstream UpstreamProtocol
 		raw      string
-	}{
-		{UpstreamProtocolAnthropic, "toolu_" + hex},
-		{UpstreamProtocolOpenAI, "call_" + hex},
-		{UpstreamProtocolGemini, "func_" + hex},
-		{UpstreamProtocolBedrock, "tool_" + hex},
 	}
+
+	// If we revert validation to hex-only, the real provider IDs below will fail, and this test turns red.
+	cases := []caseItem{
+		{
+			name:     "anthropic-real-id",
+			upstream: UpstreamProtocolAnthropic,
+			raw:      "toolu_011MDRpaZRMRRjtFkJizD6nS",
+		},
+		{
+			name:     "openai-real-id",
+			upstream: UpstreamProtocolOpenAI,
+			raw:      "call_1zsDThBu0VSK7KuY7eCcJBnq",
+		},
+		{
+			name:     "gemini-real-id",
+			upstream: UpstreamProtocolGemini,
+			raw:      "func_012ZTYKWD4VqrXGXyE7kEnAK",
+		},
+		{
+			name:     "bedrock-real-id",
+			upstream: UpstreamProtocolBedrock,
+			raw:      "tool_4SjsMeA6DUHwGKaE87ZojgOF",
+		},
+	}
+
+	// Non-hex letters must still round-trip (b/c real IDs include A-Z / a-z beyond f).
+	for _, tc := range []caseItem{
+		{
+			name:     "lowercase-g",
+			upstream: UpstreamProtocolOpenAI,
+			raw:      "call_id_with_g_1g2",
+		},
+		{
+			name:     "lowercase-z",
+			upstream: UpstreamProtocolAnthropic,
+			raw:      "toolu_id_with_z_7z1",
+		},
+		{
+			name:     "uppercase-Z",
+			upstream: UpstreamProtocolGemini,
+			raw:      "func_id_with_Z_ABCDZ",
+		},
+		{
+			name:     "uppercase-G",
+			upstream: UpstreamProtocolBedrock,
+			raw:      "tool_id_with_G_G4",
+		},
+	} {
+		cases = append(cases, tc)
+	}
+
 	for _, tc := range cases {
 		canonical, err := ToCanonicalCallID(tc.raw, tc.upstream)
 		if err != nil {
-			t.Fatalf("%s: ToCanonicalCallID(%q) err=%v", tc.upstream, tc.raw, err)
+			t.Fatalf("%s (%s): ToCanonicalCallID(%q) err=%v", tc.name, tc.upstream, tc.raw, err)
 		}
 		if !strings.HasPrefix(canonical, "call_") {
-			t.Fatalf("%s: canonical missing call_ prefix: %q", tc.upstream, canonical)
+			t.Fatalf("%s (%s): canonical missing call_ prefix: %q", tc.name, tc.upstream, canonical)
 		}
 		back, err := FromCanonicalCallID(canonical, tc.upstream)
 		if err != nil {
-			t.Fatalf("%s: FromCanonicalCallID err=%v", tc.upstream, err)
+			t.Fatalf("%s (%s): FromCanonicalCallID err=%v", tc.name, tc.upstream, err)
 		}
 		if back != tc.raw {
-			t.Fatalf("%s: round-trip mismatch: %q -> %q -> %q", tc.upstream, tc.raw, canonical, back)
+			t.Fatalf("%s (%s): round-trip mismatch: %q -> %q -> %q", tc.name, tc.upstream, tc.raw, canonical, back)
 		}
 	}
 
 	if _, err := ToCanonicalCallID("garbage_xyz", UpstreamProtocolAnthropic); !errors.Is(err, ErrToolCallIDTranslationFail) {
 		t.Fatalf("malformed prefix must produce ErrToolCallIDTranslationFail; got %v", err)
 	}
-	if _, err := ToCanonicalCallID("toolu_NOTHEX!", UpstreamProtocolAnthropic); !errors.Is(err, ErrToolCallIDTranslationFail) {
-		t.Fatalf("malformed hex must produce ErrToolCallIDTranslationFail; got %v", err)
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{
+			name: "empty suffix",
+			raw:  "toolu_",
+		},
+		{
+			name: "space in suffix",
+			raw:  "toolu_abc de",
+		},
+		{
+			name: "exclamation in suffix",
+			raw:  "toolu_abc!de",
+		},
+		{
+			name: "slash in suffix",
+			raw:  "toolu_abc/de",
+		},
+	} {
+		if _, err := ToCanonicalCallID(tc.raw, UpstreamProtocolAnthropic); !errors.Is(err, ErrToolCallIDTranslationFail) {
+			t.Fatalf("%s must produce ErrToolCallIDTranslationFail; got %v", tc.name, err)
+		}
 	}
 }
 
