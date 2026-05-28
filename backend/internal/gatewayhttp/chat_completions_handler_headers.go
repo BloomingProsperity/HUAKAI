@@ -198,7 +198,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 	if in.ReserveResult == nil || in.AccountID == 0 {
 		if err != nil {
 			if in.ReserveResult != nil {
-				if abortErr := d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error", in.RequestID, 0); abortErr != nil {
+				if abortErr := d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error", in.RequestID, 0, protocolLossJSONFromEnv(cachedEnv)); abortErr != nil {
 					setAbortFailedHeader(w, ctx, in.RequestID, abortErr)
 				}
 			}
@@ -218,6 +218,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 				UpstreamModel:   in.UpstreamModelID,
 				Provider:        in.Provider,
 				Stream:          false,
+				ProtocolLoss:    protocolLossJSONFromEnv(cachedEnv),
 				RequestedAt:     in.RequestStartedAt,
 				Fingerprint:     in.PayloadHash,
 				Draft:           nonStreamingUsageDraft(cachedEnv, decimal.Zero, routingReasonWithCacheHit(routingReason, true, in.Entry.Key)),
@@ -261,7 +262,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		return true
 	}
 	if err != nil {
-		if abortErr := d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error", in.RequestID, 0); abortErr != nil {
+		if abortErr := d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error", in.RequestID, 0, protocolLossJSONFromEnv(cachedEnv)); abortErr != nil {
 			setAbortFailedHeader(w, ctx, in.RequestID, abortErr)
 		}
 		writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, clienterr.CodeAuditLedgerError, err)
@@ -285,6 +286,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		UpstreamModel:     in.UpstreamModelID,
 		Provider:          in.Provider,
 		Stream:            false,
+		ProtocolLoss:      protocolLossJSONFromEnv(cachedEnv),
 		ActualCost:        actualCost,
 		Fingerprint:       in.PayloadHash,
 		Draft:             nonStreamingUsageDraft(cachedEnv, actualCost, routingReasonWithCacheHit(routingReason, true, in.Entry.Key)),

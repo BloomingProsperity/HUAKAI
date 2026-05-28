@@ -4,8 +4,10 @@ package billing
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -27,7 +29,7 @@ func TestSettler_NilPool_ReturnsTypedError(t *testing.T) {
 	if !errors.Is(err, ErrPoolNotConfigured) {
 		t.Fatalf("expected ErrPoolNotConfigured from Settle; got %v", err)
 	}
-	if err := settler.Abort(context.Background(), 1, 1, "test abort", "req-abort-nil-pool", 0); !errors.Is(err, ErrPoolNotConfigured) {
+	if err := settler.Abort(context.Background(), 1, 1, "test abort", "req-abort-nil-pool", 0, nil); !errors.Is(err, ErrPoolNotConfigured) {
 		t.Fatalf("expected ErrPoolNotConfigured from Abort; got %v", err)
 	}
 }
@@ -119,7 +121,7 @@ func TestSettler_AbortPath(t *testing.T) {
 	seed := seedSettlerGraph(t, ctx, pool, "settle-abort")
 	settler := NewSettler(pool)
 
-	if err := settler.Abort(ctx, seed.tenantID, seed.claimID, "test abort", "req-settle-abort", 0); err != nil {
+	if err := settler.Abort(ctx, seed.tenantID, seed.claimID, "test abort", "req-settle-abort", 0, nil); err != nil {
 		t.Fatalf("Abort: %v", err)
 	}
 
@@ -195,7 +197,7 @@ func TestSettler_AbortRecordsObservedInputTokensAtZeroCost(t *testing.T) {
 	seed := seedSettlerGraph(t, ctx, pool, "settle-abort-observed-input")
 	settler := NewSettler(pool)
 
-	if err := settler.Abort(ctx, seed.tenantID, seed.claimID, "input_only_interrupted", "req-settle-abort-input", 37); err != nil {
+	if err := settler.Abort(ctx, seed.tenantID, seed.claimID, "input_only_interrupted", "req-settle-abort-input", 37, nil); err != nil {
 		t.Fatalf("Abort: %v", err)
 	}
 
@@ -213,6 +215,82 @@ func TestSettler_AbortRecordsObservedInputTokensAtZeroCost(t *testing.T) {
 	}
 	if !actualCost.Equal(decimal.Zero) || !inputCost.Equal(decimal.Zero) {
 		t.Fatalf("abort costs actual=%s input=%s want zero", actualCost, inputCost)
+	}
+}
+
+func TestSettler_AbortWritesProtocolLossEvidence(t *testing.T) {
+	// Mutation: 若将 Abort 写入固定 [] 会导致本断言失败（期望与输入不一致）。
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	seed := seedSettlerGraph(t, ctx, pool, "settle-abort-protocol-loss")
+	set := NewSettler(pool)
+
+	want := json.RawMessage(`[{"feature":"tool_choice_downgrade","severity":"warning"}]`)
+	if err := set.Abort(ctx, seed.tenantID, seed.claimID, "protocol_loss_test", "req-settle-abort-protocol-loss", 0, want); err != nil {
+		t.Fatalf("Abort: %v", err)
+	}
+
+	var got []byte
+	if err := pool.QueryRow(ctx,
+		`SELECT protocol_loss FROM usage_records WHERE claim_id=$1 ORDER BY id DESC LIMIT 1`,
+		seed.claimID,
+	).Scan(&got); err != nil {
+		t.Fatalf("read protocol_loss: %v", err)
+	}
+	var gotNormalized any
+	var wantNormalized any
+	if err := json.Unmarshal(got, &gotNormalized); err != nil {
+		t.Fatalf("unmarshal persisted protocol_loss: %v", err)
+	}
+	if err := json.Unmarshal(want, &wantNormalized); err != nil {
+		t.Fatalf("unmarshal want protocol_loss: %v", err)
+	}
+	if !reflect.DeepEqual(gotNormalized, wantNormalized) {
+		t.Fatalf("protocol_loss persisted=%s want=%s", string(got), string(want))
+	}
+}
+
+func TestSettler_SettleWritesProtocolLossEvidence(t *testing.T) {
+	// Mutation: settler hardcoding []byte("[]") (the pre-fix S1-025 bug) instead
+	// of reading req.ProtocolLoss → Settle persists [] ≠ want → RED.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	seed := seedSettlerGraph(t, ctx, pool, "settle-protocol-loss")
+	set := NewSettler(pool)
+
+	if _, err := pool.Exec(ctx, `INSERT INTO user_balances (tenant_id, user_id, balance, held) VALUES ($1, $2, 10, 0) ON CONFLICT (tenant_id, user_id) DO NOTHING`, seed.tenantID, seed.userID); err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
+	if err := reserveAndCommitBalanceHold(ctx, t, pool, seed.tenantID, seed.userID, seed.claimID, decimal.RequireFromString("0.01000000")); err != nil {
+		t.Fatalf("reserve hold: %v", err)
+	}
+
+	want := json.RawMessage(`[{"feature":"tool_choice_downgrade","severity":"warning"}]`)
+	req := settleRequest(seed, decimal.NewFromFloat(0.03))
+	req.ProtocolLoss = want
+	if _, err := set.Settle(ctx, req); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+
+	var got []byte
+	if err := pool.QueryRow(ctx,
+		`SELECT protocol_loss FROM usage_records WHERE claim_id=$1 ORDER BY id DESC LIMIT 1`,
+		seed.claimID,
+	).Scan(&got); err != nil {
+		t.Fatalf("read protocol_loss: %v", err)
+	}
+	var gotNormalized any
+	var wantNormalized any
+	if err := json.Unmarshal(got, &gotNormalized); err != nil {
+		t.Fatalf("unmarshal persisted protocol_loss: %v", err)
+	}
+	if err := json.Unmarshal(want, &wantNormalized); err != nil {
+		t.Fatalf("unmarshal want protocol_loss: %v", err)
+	}
+	if !reflect.DeepEqual(gotNormalized, wantNormalized) {
+		t.Fatalf("protocol_loss persisted=%s want=%s", string(got), string(want))
 	}
 }
 
@@ -255,7 +333,7 @@ func TestPR4_AbortReReserveCrossPoolFinalSettleOnce(t *testing.T) {
 	if err := claimWriter.WriteAcquisition(ctx, graph.tenantID, first.ClaimID, graph.firstAccountID, firstAcq.AcquisitionToken); err != nil {
 		t.Fatalf("first write acquisition: %v", err)
 	}
-	if err := settler.Abort(ctx, graph.tenantID, first.ClaimID, "upstream_5xx", "req-pr4-attempt-1", 0); err != nil {
+	if err := settler.Abort(ctx, graph.tenantID, first.ClaimID, "upstream_5xx", "req-pr4-attempt-1", 0, nil); err != nil {
 		t.Fatalf("first abort: %v", err)
 	}
 	assertAccountInFlight(t, ctx, pg, graph.firstAccountID, 0)
@@ -346,7 +424,7 @@ func TestPR4_ReReserveClearsStaleAcquisitionBeforePreAcquireAbort(t *testing.T) 
 	if err := claimWriter.WriteAcquisition(ctx, graph.tenantID, first.ClaimID, graph.firstAccountID, firstAcq.AcquisitionToken); err != nil {
 		t.Fatalf("first write acquisition: %v", err)
 	}
-	if err := settler.Abort(ctx, graph.tenantID, first.ClaimID, "upstream_5xx", "req-pr4-clear-attempt-1", 0); err != nil {
+	if err := settler.Abort(ctx, graph.tenantID, first.ClaimID, "upstream_5xx", "req-pr4-clear-attempt-1", 0, nil); err != nil {
 		t.Fatalf("first abort: %v", err)
 	}
 	assertAccountInFlight(t, ctx, pg, graph.firstAccountID, 0)
@@ -357,7 +435,7 @@ func TestPR4_ReReserveClearsStaleAcquisitionBeforePreAcquireAbort(t *testing.T) 
 		t.Fatalf("second Reserve re-reserve: %v", err)
 	}
 	assertClaimReReservedClean(t, ctx, pg, second.ClaimID, graph.secondPoolID, 2)
-	if err := settler.Abort(ctx, graph.tenantID, second.ClaimID, "pre_acquire_retry_exhausted", "req-pr4-clear-attempt-2", 0); err != nil {
+	if err := settler.Abort(ctx, graph.tenantID, second.ClaimID, "pre_acquire_retry_exhausted", "req-pr4-clear-attempt-2", 0, nil); err != nil {
 		t.Fatalf("pre-acquire abort after re-reserve must not release stale token: %v", err)
 	}
 	assertAccountInFlight(t, ctx, pg, graph.firstAccountID, 0)
@@ -372,7 +450,7 @@ func TestSettler_AbortCrossTenantRejected(t *testing.T) {
 	settler := NewSettler(pool)
 
 	wrongTenant := seed.tenantID + 99999
-	if err := settler.Abort(ctx, wrongTenant, seed.claimID, "cross-tenant", "req-settle-abort-xtenant", 0); !errors.Is(err, ErrClaimNotReserving) {
+	if err := settler.Abort(ctx, wrongTenant, seed.claimID, "cross-tenant", "req-settle-abort-xtenant", 0, nil); !errors.Is(err, ErrClaimNotReserving) {
 		t.Fatalf("cross-tenant abort must be rejected with ErrClaimNotReserving; got %v", err)
 	}
 

@@ -2,6 +2,7 @@ package settlementrecovery
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -29,7 +30,7 @@ func (s *spySettler) Settle(_ context.Context, req billing.SettleRequest) (*bill
 	return &billing.SettleResult{}, nil
 }
 
-func (s *spySettler) Abort(_ context.Context, _, _ int64, _, _ string, _ int64) error {
+func (s *spySettler) Abort(_ context.Context, _, _ int64, _, _ string, _ int64, _ json.RawMessage) error {
 	return errors.New("Abort not used in tests")
 }
 
