@@ -35,36 +35,52 @@ FOR UPDATE;
 
 -- name: UpsertQuotaWindow :one
 -- 为 policy/window_start 建立或复用窗口行; 唯一键为 (tenant_id, policy_id, window_start)。
-INSERT INTO quota_windows (
-    tenant_id, policy_id, window_start, window_end
-)
-SELECT
-    sqlc.arg(tenant_id)::bigint,
-    sqlc.arg(policy_id)::bigint,
-    sqlc.arg(window_start)::timestamptz,
-    sqlc.arg(window_end)::timestamptz
-WHERE EXISTS (
-    SELECT 1
+WITH upserted AS (
+    INSERT INTO quota_windows (
+        tenant_id, policy_id, window_start, window_end
+    )
+    SELECT
+        qp.tenant_id,
+        qp.id,
+        sqlc.arg(window_start)::timestamptz,
+        sqlc.arg(window_end)::timestamptz
     FROM quota_policies qp
     WHERE qp.tenant_id = sqlc.arg(tenant_id)::bigint
       AND qp.id = sqlc.arg(policy_id)::bigint
+    ON CONFLICT ON CONSTRAINT uq_quota_windows_policy_start
+    DO UPDATE SET
+        window_end = EXCLUDED.window_end,
+        updated_at = NOW()
+    WHERE quota_windows.tenant_id = sqlc.arg(tenant_id)::bigint
+    RETURNING
+        tenant_id,
+        id,
+        policy_id,
+        window_start,
+        window_end,
+        reserved_value,
+        settled_value,
+        overage_value,
+        request_count,
+        version
 )
-ON CONFLICT ON CONSTRAINT uq_quota_windows_policy_start
-DO UPDATE SET
-    window_end = EXCLUDED.window_end,
-    updated_at = NOW()
-WHERE quota_windows.tenant_id = sqlc.arg(tenant_id)::bigint
-RETURNING
-    tenant_id,
-    id,
-    policy_id,
-    window_start,
-    window_end,
-    reserved_value,
-    settled_value,
-    overage_value,
-    request_count,
-    version;
+SELECT
+    upserted.tenant_id,
+    upserted.id,
+    upserted.policy_id,
+    upserted.window_start,
+    upserted.window_end,
+    upserted.reserved_value,
+    upserted.settled_value,
+    upserted.overage_value,
+    upserted.request_count,
+    upserted.version,
+    qp.window_kind,
+    qp.window_seconds
+FROM upserted
+JOIN quota_policies qp
+  ON qp.tenant_id = upserted.tenant_id
+ AND qp.id = upserted.policy_id;
 
 -- name: GetQuotaWindowForUpdate :one
 -- Reserve/settle 事务内锁住一个租户窗口。
@@ -181,9 +197,15 @@ RETURNING
     tenant_id,
     id,
     claim_id,
+    request_fingerprint,
+    scope_snapshot,
+    policy_snapshot,
+    predicted_cost,
+    reserved_units,
     status,
     lease_expires_at,
-    created_at;
+    created_at,
+    updated_at;
 
 -- name: SettleQuotaReservation :execrows
 -- Billing commit 后独立事务结算 quota; 失败由 reconciliation job 收敛。
@@ -224,13 +246,13 @@ WHERE tenant_id = sqlc.arg(tenant_id)::bigint
 -- name: AcquireQuotaConcurrencySlot :one
 -- 本地 scope 并发槽; DB 函数按 tenant/scope 锁行串行化 COUNT+UPSERT。
 SELECT
-    acquired_slot.tenant_id,
-    acquired_slot.id,
-    acquired_slot.reservation_id,
-    acquired_slot.scope_kind,
-    acquired_slot.scope_id,
-    acquired_slot.status,
-    acquired_slot.lease_expires_at
+    acquired_slot.tenant_id::bigint AS tenant_id,
+    acquired_slot.id::bigint AS id,
+    acquired_slot.reservation_id::bigint AS reservation_id,
+    acquired_slot.scope_kind::text AS scope_kind,
+    acquired_slot.scope_id::text AS scope_id,
+    acquired_slot.status::text AS status,
+    acquired_slot.lease_expires_at::timestamptz AS lease_expires_at
 FROM quota_acquire_concurrency_slot(
     sqlc.arg(tenant_id)::bigint,
     sqlc.arg(reservation_id)::bigint,
