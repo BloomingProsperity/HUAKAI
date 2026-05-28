@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -102,10 +103,14 @@ func normalizePayload(payload any) (any, error) {
 		if strings.TrimSpace(v) == "" {
 			return map[string]any{}, nil
 		}
-		if json.Valid([]byte(v)) {
-			return normalizeBytes([]byte(v))
+		value, err := normalizeBytes([]byte(v))
+		if err != nil {
+			if errors.Is(err, ErrUnsafePayload) {
+				return nil, err
+			}
+			return nil, ErrFreeformString
 		}
-		return nil, ErrFreeformString
+		return value, nil
 	case map[string]any:
 		return v, nil
 	case map[string]string:
@@ -126,13 +131,7 @@ func normalizeBytes(raw []byte) (any, error) {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return map[string]any{}, nil
 	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	var v any
-	if err := dec.Decode(&v); err != nil {
-		return nil, err
-	}
-	return v, nil
+	return StrictDecodeJSON(raw)
 }
 
 func (r *AllowlistRedactor) sanitizeValue(key string, value any) (any, bool) {
