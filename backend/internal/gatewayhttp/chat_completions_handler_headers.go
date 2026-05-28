@@ -19,7 +19,9 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/trust"
+	"github.com/BloomingProsperity/HUAKAI/internal/trustreceipt"
 )
 
 const (
@@ -53,7 +55,7 @@ func setHUAKAIModelHeaders(h http.Header, requested string, env *proto.HCSF) {
 	}
 }
 
-func WriteHuakaiHeaders(h http.Header, requested string, env *proto.HCSF, result auditledger.AuditLedgerResult, requestID string, tenantID int64) {
+func WriteHuakaiHeaders(h http.Header, requested string, env *proto.HCSF, result auditledger.AuditLedgerResult, requestID string, tenantID int64, signer *sign.Signer) {
 	setHUAKAIModelHeaders(h, requested, env)
 	if h == nil {
 		return
@@ -62,7 +64,17 @@ func WriteHuakaiHeaders(h http.Header, requested string, env *proto.HCSF, result
 	if meta.RequestID == "" {
 		meta.RequestID = requestID
 	}
-	trust.WriteResponseHeaders(h, meta, result)
+	status := trust.WriteResponseHeaders(h, meta, result)
+	if result.State == auditledger.LedgerResultStatePersisted && signer != nil {
+		receipt := trustreceipt.BuildProvisionalFromEnv(env, result, requestID, 0)
+		sigB64, fingerprint, err := trustreceipt.SignReceipt(signer, receipt)
+		if err == nil {
+			h.Set(trust.HeaderTrustSignature, sigB64)
+			h.Set(trust.HeaderTrustPubkeyFingerprint, fingerprint)
+			h.Set(trust.HeaderTrustSchema, "trust.receipt.v1")
+			h.Set(trust.HeaderStatus, string(trust.UpgradeStatusOnSignature(status, true)))
+		}
+	}
 	switch result.State {
 	case auditledger.LedgerResultStatePersisted:
 		WriteHuakaiLedgerHeaders(h, requestID, result.LedgerID, result.Fingerprint, tenantID)
@@ -241,7 +253,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-HUAKAI-Cache-L2", "hit")
-		WriteHuakaiHeaders(w.Header(), in.RequestedModel, cachedEnv, ledgerResult, in.RequestID, in.Ident.TenantID)
+		WriteHuakaiHeaders(w.Header(), in.RequestedModel, cachedEnv, ledgerResult, in.RequestID, in.Ident.TenantID, d.Signer)
 		recordCacheHitReplay(ctx, d, in)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(in.Entry.Body)
@@ -298,7 +310,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-HUAKAI-Cache-L2", "hit")
-	WriteHuakaiHeaders(w.Header(), in.RequestedModel, cachedEnv, ledgerResult, in.RequestID, in.Ident.TenantID)
+	WriteHuakaiHeaders(w.Header(), in.RequestedModel, cachedEnv, ledgerResult, in.RequestID, in.Ident.TenantID, d.Signer)
 	recordCacheHitReplay(ctx, d, in)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(in.Entry.Body)

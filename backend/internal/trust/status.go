@@ -8,10 +8,13 @@ import (
 )
 
 const (
-	HeaderUpstreamProvider = "X-Huakai-Upstream-Provider"
-	HeaderUpstreamModel    = "X-Huakai-Upstream-Model"
-	HeaderStatus           = "X-Huakai-Trust-Status"
-	HeaderRequestID        = "X-Huakai-Request-Id"
+	HeaderUpstreamProvider       = "X-Huakai-Upstream-Provider"
+	HeaderUpstreamModel          = "X-Huakai-Upstream-Model"
+	HeaderStatus                 = "X-Huakai-Trust-Status"
+	HeaderRequestID              = "X-Huakai-Request-Id"
+	HeaderTrustSignature         = "X-Huakai-Trust-Signature"
+	HeaderTrustPubkeyFingerprint = "X-Huakai-Trust-Pubkey-Fingerprint"
+	HeaderTrustSchema            = "X-Huakai-Trust-Schema"
 )
 
 type Status string
@@ -37,6 +40,13 @@ func IsValidStatus(raw string) bool {
 	default:
 		return false
 	}
+}
+
+func UpgradeStatusOnSignature(prev Status, sigPresent bool) Status {
+	if sigPresent && prev == StatusUnverified {
+		return StatusSignedOnly
+	}
+	return prev
 }
 
 func MetadataFromHCSF(env *proto.HCSF) ResponseMetadata {
