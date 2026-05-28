@@ -55,7 +55,7 @@ func TestBillingPersisterReceiptHookAppendsAfterAsyncSettle(t *testing.T) {
 		t.Fatalf("formatter: %v", err)
 	}
 	appender := &recordingReceiptAppender{}
-	settler := audit.NewReceiptHookSettler(&fakeSettler{}, audit.NewReceiptHookHandler(formatter, appender))
+	settler := audit.NewReceiptHookSettler(&fakeSettler{}, audit.NewReceiptHookHandler(formatter, appender, audit.WithReceiptHookTrustSigner(signer)))
 	handler := NewBillingPersisterHandler(settler, time.Second)
 
 	err = handler.Handle(ctx, eventbus.RequestCompletionEvent{

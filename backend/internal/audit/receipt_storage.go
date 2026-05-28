@@ -198,8 +198,8 @@ INSERT INTO user_cost_receipts (
 		receipt.CachedTokens,
 		receipt.CostUSDMicros,
 		receipt.RateTableSnapshotID,
-		append([]byte(nil), receipt.SignerFingerprint...),
-		append([]byte(nil), receipt.SignedHash...),
+		receiptBytea(receipt.SignerFingerprint),
+		receiptBytea(receipt.SignedHash),
 		receipt.CreatedAt.UTC(),
 		NormalizeReceiptValidationState(receipt.ValidationState),
 		NormalizeReceiptVerdict(receipt.Verdict),
@@ -466,13 +466,19 @@ func validateReceiptForStorage(receipt *CostReceipt) error {
 	if err := validateReceiptForSigning(receipt); err != nil {
 		return err
 	}
-	if len(receipt.SignerFingerprint) == 0 {
-		return fmt.Errorf("%w: signer_fingerprint missing", ErrReceiptInvalidDerivedData)
-	}
-	if len(receipt.SignedHash) == 0 {
-		return fmt.Errorf("%w: signed_hash missing", ErrReceiptInvalidDerivedData)
+	hasFingerprint := len(receipt.SignerFingerprint) > 0
+	hasSignature := len(receipt.SignedHash) > 0
+	if hasFingerprint != hasSignature {
+		return fmt.Errorf("%w: receipt signature fields must be both present or both empty", ErrReceiptInvalidDerivedData)
 	}
 	return nil
+}
+
+func receiptBytea(value []byte) []byte {
+	if len(value) == 0 {
+		return []byte{}
+	}
+	return append([]byte(nil), value...)
 }
 
 func receiptOwnerFromReceipt(receipt *CostReceipt) ReceiptOwner {
