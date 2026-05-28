@@ -181,7 +181,7 @@ func (s *refundVisibleSettler) Settle(context.Context, billing.SettleRequest) (*
 	return &billing.SettleResult{}, nil
 }
 
-func (s *refundVisibleSettler) Abort(context.Context, int64, int64, string, string, int64) error {
+func (s *refundVisibleSettler) Abort(context.Context, int64, int64, string, string, int64, json.RawMessage) error {
 	return nil
 }
 

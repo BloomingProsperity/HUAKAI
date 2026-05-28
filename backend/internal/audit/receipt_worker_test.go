@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -409,7 +410,7 @@ func (s *recordingBillingSettler) Settle(_ context.Context, req billing.SettleRe
 	return &billing.SettleResult{}, nil
 }
 
-func (s *recordingBillingSettler) Abort(context.Context, int64, int64, string, string, int64) error {
+func (s *recordingBillingSettler) Abort(context.Context, int64, int64, string, string, int64, json.RawMessage) error {
 	return nil
 }
 

@@ -27,7 +27,7 @@ func (s *postDeliveryFakeSettler) Settle(_ context.Context, _ billing.SettleRequ
 	return &billing.SettleResult{}, nil
 }
 
-func (s *postDeliveryFakeSettler) Abort(_ context.Context, _, _ int64, _, _ string, _ int64) error {
+func (s *postDeliveryFakeSettler) Abort(_ context.Context, _, _ int64, _, _ string, _ int64, _ json.RawMessage) error {
 	return errors.New("Abort not used")
 }
 func (s *postDeliveryFakeSettler) CommitCacheHit(_ context.Context, _ billing.SettleRequest) error {

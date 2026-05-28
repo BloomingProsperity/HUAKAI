@@ -9,6 +9,7 @@ package billing
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -38,7 +39,7 @@ type Settler interface {
 	// Abort aborts the claim with zero cost. observedInputTokens is optional
 	// audit-only input usage for input-only interrupted streams; all costs stay
 	// zero. Tenant-scoped to prevent cross-tenant abort via stale claim id.
-	Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string, observedInputTokens int64) error
+	Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string, observedInputTokens int64, protocolLoss json.RawMessage) error
 
 	// CommitCacheHit 把尚未 acquire pool account 的 reserving claim 以零成本
 	// committed 终结 — 用于 L2 response cache 命中: 请求已成功返回缓存响应体,
@@ -95,6 +96,7 @@ type SettleRequest struct {
 	UpstreamModel       string
 	Provider            string
 	Stream              bool
+	ProtocolLoss        json.RawMessage
 	Draft               gateway.UsageRecordDraft
 	StreamAttempt       *Attempt
 	Fingerprint         string

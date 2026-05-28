@@ -2,6 +2,7 @@ package gatewayhttp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -612,8 +613,8 @@ type failingAbortSettler struct {
 	err error
 }
 
-func (s *failingAbortSettler) Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string, observedInputTokens int64) error {
-	_ = s.recordingSettler.Abort(ctx, tenantID, claimID, reason, auditRequestID, observedInputTokens)
+func (s *failingAbortSettler) Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string, observedInputTokens int64, protocolLoss json.RawMessage) error {
+	_ = s.recordingSettler.Abort(ctx, tenantID, claimID, reason, auditRequestID, observedInputTokens, protocolLoss)
 	return s.err
 }
 
