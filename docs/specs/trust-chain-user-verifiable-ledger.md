@@ -1,270 +1,254 @@
 # Trust Chain User-Verifiable Ledger — F-TRUST-001 Spec
 
 | 字段 | 值 |
-|---|---|
-| Feature ID | F-TRUST-001 trust chain user-verifiable ledger (Phase 6 commercial foundation, HUAKAI 核心差异化 1 + 3 + 4) |
-| Lane | Claude PM-Orchestrator synthesis (Claude draft 在 `docs/process/plans/2026-05-16-f-trust-001-spec-claude.md` + Codex draft 在 `/tmp/codex-f-trust-001-spec-codex-draft.md`, 本 spec 是 PM 合并版) |
-| Base | commit 0013 audit_ledger_entries schema (已落) + memory `project_core_trust_chain_differentiator` 6 大差异化卖点 |
-| Phase | TRUST-1 (A 已完成 schema + writer; B/C/D/E 待 codex 派, 10-15 天) |
-| Memory ref | [[project_core_trust_chain_differentiator]] [[feedback_huakai_better_than_sub2api]] [[feedback_stability_means_stronger]] |
-| Scope | F-TRUST-001 用户可验证信任链 — 链路公开 + 模型校验 + 商家不能做假; 跟 F-PRIV-001 (无用户数据) + F-AUDIT-001 (消费透明) 共同形成 6 要求闭环 |
-| Out of scope | operator-facing internal audit (F-AUDIT-001 处理操作员行为) / 隐私脱敏标准化 (F-PRIV-001) / 反代敏感层 audit (各层自身表) / 计费 ledger (F-BILL-001) |
-| UTC | 2026-05-16T10:15:00Z (synthesis) |
+| --- | --- |
+| Feature ID | F-TRUST-001 trust chain user-verifiable ledger |
+| Current slice | TRUST-B-5 docs closeout for TRUST-A + TRUST-B |
+| Lane | implementer (docs only) |
+| UTC | 2026-05-28T02:39:40Z |
+| Implementation base | TRUST-A + TRUST-B commits 67659a6 -> 780f7d6, no backend/frontend edits in this slice |
+| Owner decisions | D-1..D-9 + D-B-* from 2026-05-27 brief are adopted here |
+| Observed regions | 37 source/test/doc regions listed in §14 |
+| Inferences | 5, explicitly marked |
+| Open questions | 2, listed in §13 |
 
-## 1. 问题陈述
+## 1. Problem
 
-所有现有 AI gateway (sub2api / new-api / litellm / portkey / helicone / one-api) 是 **operator 单方信任模型**: 用户必须信任 operator 没动手脚 (没掺水 / 没换模型 / 没用便宜模型充贵的 / 没用免费 tier 卖付费). **用户无法验证**.
+HUAKAI 的 trust chain 目标不是普通 observability, 而是让用户能独立判断 gateway 是否按承诺路由、计费、披露模型状态。TRUST-A+B 已把 Phase 1 收敛到一个可落地闭环:
 
-HUAKAI 核心差异化 6 要求 (memory `project_core_trust_chain_differentiator`):
-1. **链路公开** — 每 request 的 routing 路径用户可见
-2. **无用户数据日志** — gateway 不存 user prompt/completion text (F-PRIV-001 处理)
-3. **模型校验用户可见** — 用户验证实际用了什么模型 (跟 requested 不一致也透明)
-4. **商家不能做假** — operator 无法事后篡改 ledger
-5. **日志只系统报错** — 系统级 error log 跟 user data log 严格分离 (F-PRIV-001 处理)
-6. **用户消费透明** — 用户验证每 token 计费跟实际 upstream 一致 (F-AUDIT-001 处理)
+- response header 先给用户一个即时 trust status;
+- non-streaming response 可带 inline provisional signature;
+- settled cost receipt 追加 final detached signature;
+- public well-known JWK Set 发布签名公钥和 revocation overlay;
+- public verify endpoint 与 receipt verify endpoint 返回同一套 5 状态语义;
+- Merkle 字段先保持 nullable forward-compatible, Phase 2 再补完整 transparency log.
 
-F-TRUST-001 实施 **1 + 3 + 4**: 链路 + 模型校验 + cryptographic anti-tampering.
+## 2. Status Vocabulary
 
-## 2. 信任链结构
+所有入口只使用 5 个用户可见状态:
 
-audit_ledger_entries (schema 已落 commit 0013) 字段映射到用户验证用途:
+| Status | Meaning | Typical source |
+| --- | --- | --- |
+| `verified` | 签名有效, 且 HUAKAI 已有独立事实链可证明 observed facts 与 signed facts 一致。 | Phase 2 full Merkle / future stronger reconciliation path. |
+| `signed-only` | 签名有效, 但当前入口只证明 payload 未被篡改, 不证明所有 observed facts 已独立对账。 | TRUST-B-2 inline provisional; TRUST-B-3/B-4 detached receipt signature. |
+| `unverified` | 系统保留功能但无法给出可验证签名, 或 key 已被 CRL overlay 标记 revoked。 | signer nil, ledger append/sign deferred, revoked key. |
+| `missing` | 必要字段、header、payload、signature 或 pubkey 缺失。 | malformed client verify request. |
+| `mismatch` | 签名不匹配, 或签名有效但 wire/observed facts 与 signed facts 不一致。 | tamper, wrong key, observed/wire mismatch. |
 
-| 字段 | 现有约束 | 用户验证用途 |
-|---|---|---|
-| `ledger_id` | text NOT NULL UNIQUE | 用户 receipt 稳定编号 |
-| `occurred_at` | timestamptz NOT NULL | 时间一致性验证 + chain head 查询 |
-| `request_id` | text NOT NULL UNIQUE | 用户 client log 拿 ID 查 ledger; retry attempt 走 hop_chain 子项不另开 row |
-| `tenant_id` | bigint REFERENCES tenants(id) | DR-001 RLS; **公开 receipt 不直接暴露裸 tenant_id, 改用 `tenant_scope_ref`** (canonical entry 内字段, 防 cross-tenant DB 枚举) |
-| `hop_chain` | jsonb NOT NULL DEFAULT '[]' | 链路证明数组 — safe metadata + 决策 ref + 引用 id/hash, 严禁 raw user content / secret |
-| `model_chain` | jsonb | requested / route_decided / upstream_reported 3 段 + verdict (match / allowed_alias / mismatch / unknown) |
-| `prev_merkle_root` | bytea (32) | 前一条 root; 第一条用 32 zero bytes |
-| `merkle_root` | bytea (32) | 本条 root = sha256(prev_merkle_root \|\| canonical_entry_hash) |
-| `pubkey_fingerprint` | text (16 char) | 用户从 `/v1/.well-known/huakai-pubkey.json` match pubkey |
-| `signature` | text (base64 ed25519, ~88 char) | ed25519 sig over canonical entry hash; operator 无私钥写不出 valid sig |
+Priority rule: `mismatch` dominates `signed-only`. If `signature_valid=true` but observed/wire mismatch exists, public status MUST be `mismatch` (Owner D-B-mismatch-priority).
 
-**Canonical entry hash** 输入 (稳定 + 跨语言可复现, 排除 signature 自身):
-```
-schema_version: trust.ledger.v1
-ledger_id
-occurred_at
-request_id
-tenant_scope_ref
-hop_chain
-model_chain
-prev_merkle_root
-pubkey_fingerprint
-```
+## 3. Verification Entrances
 
-**Redaction guard** (严格):
-- 严禁: raw prompt / completion / tool input/output / cookie / Authorization header / API key / refresh token / provider credential bytes / proxy credential / raw upstream response/error body / 可逆 PII
-- 允许: request_id / ledger_id / tenant_scope_ref / model name / provider family / route policy version / account public fingerprint / token counts (cross-ref to F-AUDIT-001) / cost refs / redacted error class / status class / latency bucket / canonical payload hash
-- **opt-in only**: content binding hash (用户本地验证 prompt 没被改) — 默认 OFF, F-PRIV-001 单独 approve 才能 ON
+TRUST-A+B exposes three verification entrances.
 
-## 3. HopAttestation Schema (hop_chain JSON array)
+| Entrance | Route / surface | Auth | Purpose |
+| --- | --- | --- | --- |
+| Detached verify | `POST /v1/trust/verify` | public, no auth | Verify a submitted canonical `trust.receipt.v1` payload plus detached signature. Body cap: 10 KiB. Rate limit: 60/min per IP. |
+| Inline verify | response headers | no extra round trip | Client reads trust status and optional provisional signature directly from the gateway response. Streaming is not signed. |
+| Inline-by-receipt | `GET /v1/receipts/{request_id-or-receipt_id}/verify` and submitted receipt verify path | session / receipt owner scoped | Verify stored final detached receipt, reject cross-tenant/user probes, and map unsigned/revoked/tampered receipts to the same 5 states. |
 
-每个 hop:
-```json
-{
-  "schema_version": "trust.hop.v1",
-  "hop_index": 0,
-  "hop_kind": "ingress_auth" | "policy_match" | "pool_select" | "credential_select" | "upstream_dispatch" | "response_finalize" | "channel_health",
-  "actor": "gateway" | "executor" | "control_plane",
-  "started_at": "<rfc3339 utc>",
-  "ended_at": "<rfc3339 utc>",
-  "decision_ref": "<safe enum or hash>",
-  "feature_refs": ["F-POOL-001", "F-CH-002"],
-  "alt_event_id": "<optional: ref to per-layer audit table row, e.g. channel_health_audit_events.id>"
-}
-```
+`/.well-known/huakai-pubkey.json` is the public key-discovery route, not a fourth verify endpoint. It is still part of the verification ecosystem.
 
-`decision_ref` 严禁含 user prompt / response / token / cookie / credential bytes; 只允许:
-- enum 值 (e.g. `selected_account_fingerprint=<pubkey_fp_8byte>`, `channel_id=5678`)
-- 短 reason class (e.g. `lowest_latency`, `ramp_sample`, `failover_after_retry`)
-- redacted ref (`alt_event_id` 指向各层 audit table row, 但不 inline content)
+## 4. Response Header Contract
 
-典型 6 hop (1 normal request):
-1. `ingress_auth`: session middleware 认证 + tenant_id 解析
-2. `policy_match`: requested model → matched route policy
-3. `pool_select`: pool 选 account_id (含 PASR cache locality decision)
-4. `credential_select`: credential version
-5. `upstream_dispatch`: upstream URL + 实际收 status code
-6. `response_finalize`: normalize 后 model_chain 填充
+The trust header set is intentionally small and stable:
 
-含 retry / ramp 时 hop > 6, 全 hop 都进 hop_chain (一 request 一 ledger entry).
+| Header | Required | Meaning |
+| --- | --- | --- |
+| `X-Huakai-Trust-Status` | yes | One of `verified`, `signed-only`, `unverified`, `missing`, `mismatch`. |
+| `X-Huakai-Trust-Signature` | conditional | Base64 Ed25519 signature for non-streaming inline provisional receipts when signer is available. |
+| `X-Huakai-Trust-Pubkey-Fingerprint` | conditional | Fingerprint that selects the JWK in `.well-known`. |
+| `X-Huakai-Trust-Schema` | conditional | `trust.receipt.v1` for inline signed payload semantics. |
 
-`channel_health` hop 是 optional (F-CH-002 触发 signal 时加 1 hop), `alt_event_id` 指向 `channel_health_audit_events.id`.
+Supporting operational headers remain separate: `X-Huakai-Upstream-Provider`, `X-Huakai-Upstream-Model`, `X-Huakai-Request-Id`, and `X-HUAKAI-Ledger-DLQ-Ref`.
 
-## 4. Model Chain Validation
+Mismatch UX rule: response mismatch gets red badge + warning banner. The UI may display signature validity as detail, but the primary badge follows `X-Huakai-Trust-Status`.
 
-```json
-{
-  "schema_version": "trust.model.v1",
-  "requested": "claude-opus-4-7",
-  "route_decided": "claude-opus-4-7",
-  "upstream_reported": "claude-opus-4-7-20251001",
-  "verdict": "match" | "allowed_alias" | "mismatch" | "unknown"
-}
-```
+## 5. Canonical Receipt V1
 
-3 字段 + verdict 必填. Streaming-in-flight 时 model_chain 可暂 null, stream 关闭时必须 fill.
+Canonical schema is `trust.receipt.v1`. The canonical JSON writer MUST emit fields in this exact order:
 
-**Verdict 判定**:
-- `match`: requested == route_decided == upstream_reported semantic-equivalent (绿)
-- `allowed_alias`: route_decided 是 requested 在 policy 内的 allowed substitution (黄, 必须 client 收 `X-Huakai-Model-Substituted` header per F-MODEL-SUBSTITUTION-001)
-- `mismatch`: route_decided 跟 requested 语义不同 (红, **fail-closed** — request reject 或 transparent X-Huakai-Mismatch header 上报 user); admin dashboard 显示 mismatch ratio
-- `unknown`: streaming 中或 upstream 没报 model ID (灰, admin dashboard 显示 unknown ratio, > 阈值 alert)
+1. `schema_version`
+2. `receipt_id`
+3. `request_id`
+4. `receipt_sequence`
+5. `tenant_scope_ref`
+6. `occurred_at`
+7. `provider`
+8. `requested_model`
+9. `routed_model`
+10. `upstream_model`
+11. `delivered_model`
+12. `cost_cents`
+13. `token_counts` with `input`, `output`, `cached`
+14. `price_snapshot` with `rate_table_snapshot_id`, `snapshot_version`, `currency_code`
+15. `validation_state`
+16. `redacted_metadata_allowlist`
 
-## 5. User Verification API
+Canonical rules:
 
-**Endpoint 1 — `GET /v1/ledger/entries/{request_id}`** (tenant-scoped, session middleware F-SESSION-001):
-- Response: full row + verify hint (canonical_payload bytes)
-- 用户 client-side 用 ed25519 公钥 verify signature
+- RFC3339Nano UTC timestamps only.
+- JSON map keys sorted by UTF-8 byte order.
+- `redacted_metadata_allowlist` only allows string, bool, and int64-like integer values.
+- Non-ASCII is escaped in canonical bytes.
+- Money and token values are integer-only. No float money is accepted; final settlement metadata may use micro-USD integer units where the billing ledger requires finer precision.
+- Receipt identity is `request_id:seq` internally, with public display ID `receipt_<32hex>`.
+- Schema forward compatibility reserves Merkle/checkpoint fields as nullable; null means "not yet part of Phase 1 proof", not "feature dropped".
 
-**Endpoint 2 — `POST /v1/ledger/verify`** (detached verification, public if entry already known):
-- Body: `{canonical_payload, signature, pubkey_fingerprint}`
-- Response: `{valid: bool, key_status: 'active'|'rotated'|'revoked', timestamp_age_seconds}`
-- 用户带自己存的 receipt 离线验证 (不必跟 HUAKAI 实时 round-trip)
+## 6. Signature Timing
 
-**Endpoint 3 — `GET /v1/.well-known/huakai-pubkey.json`** (public, no auth):
-- Response: `{pubkeys: [{fingerprint, pubkey_base64, valid_from, valid_until, status}, ...]}`
-- 多 pubkey rotation 都列 (active + 30 天 grace period)
+HUAKAI uses a dual-rail signature model:
 
-**Endpoint 4 — `GET /v1/ledger/chain-head` + `/v1/ledger/verify/{request_id}/proof`** (tenant-scoped):
-- chain-head: `{last_ledger_id, last_merkle_root, occurred_at, total_entries}` (daily snapshot 验 chain 完整)
-- proof: Sparse Merkle inclusion proof `{entry, prev_merkle_root, sibling_hash_path[]}` (单 entry 在 chain 内验证, 无需下载整 chain)
+| Rail | Timing | Storage / surface | Status |
+| --- | --- | --- | --- |
+| Inline provisional | During non-streaming response finalization, before final cost settlement is durable. | Response headers. | `signed-only` when signer exists; `unverified` on signer/deferred failure. |
+| Final detached | After billing settlement, through `AppendSettledReceipt`. | `user_cost_receipts.signed_hash` plus `signer_fingerprint`. | `signed-only` unless a stronger observed-fact proof promotes it later. |
 
-## 6. Append-Only Enforcement
+Streaming responses are not signed inline. They keep trust headers/trailers as `unverified` or DLQ-referenced until a final detached receipt is produced.
 
-### DB trigger 强制 (新加 migration)
-```sql
-CREATE OR REPLACE FUNCTION enforce_ledger_append_only() RETURNS TRIGGER AS $$
-BEGIN
-  RAISE EXCEPTION 'audit_ledger_entries is append-only: %', TG_OP;
-END;
-$$ LANGUAGE plpgsql;
+## 7. Key Storage, Rotation, And Revocation
 
-CREATE TRIGGER ledger_append_only_update BEFORE UPDATE ON audit_ledger_entries
-  FOR EACH ROW EXECUTE FUNCTION enforce_ledger_append_only();
-CREATE TRIGGER ledger_append_only_delete BEFORE DELETE ON audit_ledger_entries
-  FOR EACH ROW EXECUTE FUNCTION enforce_ledger_append_only();
-```
+Private key storage:
 
-### Writer pattern
-- 单线程 `ledger_writer` goroutine (per tenant 一个, 防 chain 断裂)
-- ledger_id 通过 monotonic counter 保证连续 (不跳号)
-- 失败 → DLQ + retry; 永不 INSERT 跳 sequence
-- writer 用 PostgreSQL advisory lock 防双 writer 同 tenant race
-- canonical_entry_hash 计算 + ed25519 sign 全部 in-tx (commit 前必须 sig 完成)
+- Production signer key path is `HUAKAI_AUDIT_PRIVATE_KEY_PATH`.
+- Empty path is allowed only for dev/test ephemeral signer behavior.
+- The public distribution format is JWK Set-compatible JSON with HUAKAI extensions under `/.well-known/huakai-pubkey.json`.
 
-## 7. Cross-Chain Reference
+Rotation:
 
-各反代层 audit 表跟 F-TRUST ledger 关系:
+- Target rotation cadence is 90 days.
+- Registry keeps active, grace, and historical keys so old receipts remain verifiable by fingerprint.
+- A rotated key may remain accepted during the grace window; a revoked key MUST make verified receipts report `unverified` with a revocation reason.
 
-| 反代层 audit 表 | 是否进 0013 ledger | 关系 |
-|---|---|---|
-| `active_detection_events` (F-ADV-001) | 不进 | system-level, 不是 per-request. detection 触发 channel cooldown 影响某 request 时, 该 request hop_chain 含 `channel_switched_due_to_detection_class` decision_ref |
-| `device_fingerprint_bindings` (F-FP-001) | 不进 | per-account state. user request 用了某 fingerprint binding 时, hop_chain 含 `fingerprint_profile_id_pubkey_fp` ref (不暴露 fingerprint detail) |
-| `channel_health_audit_events` (F-CH-002) | 不进 | per-channel state. hop_chain 含 `alt_event_id` 指向本 audit row |
-| `pacing_session_traces` (F-PACE-001) | 不进 | per-session. hop_chain 含 `pacing_session_id` ref |
-| `outbound_ip_burn_events` (F-NET-001) | 不进 | per-IP. user-facing 不暴露 IP detail (operator-internal) |
-| `audit_ledger_entries` (本 F-TRUST-001) | 自身 | per-request user-facing, 1 row per user request |
-| `admin_audit_events` (F-AUDIT-001 计划) | 不进 | operator 行为 audit, 不是 user-verifiable |
-| `billing_events` (F-BILL-001) | 不进 | 计费 ledger. 每 billing_event 含 request_id, 用户 cross-reference 跟 0013 |
+CRL overlay:
 
-跨 chain reference: HopAttestation `alt_event_id` 字段 + 各 audit 表 `request_id` column (允许 user 用 request_id 单向 trace 到所有相关层 audit).
+- File overlay env: `HUAKAI_TRUST_REVOKED_KEYS_FILE`.
+- JSON overlay env: `HUAKAI_TRUST_REVOKED_KEYS_JSON`.
+- File overlay is capped at 1 MiB and fails closed on oversize or parse error.
+- Overlay format supports `fingerprint`, `revoked_at`, and `reason_class`; file env takes precedence over inline JSON env.
 
-## 8. Pubkey Rotation
+## 8. TOFU Client Anchor
 
-- 每 90 天 rotate ed25519 keypair (新 pubkey 立刻发布到 `/v1/.well-known/huakai-pubkey.json` + status=active; 老 pubkey status=rotated 仍 valid 30 天 grace; 30 天后 status=revoked 仍可 verify 历史 entry)
-- 老 entry 永久用当时 pubkey_fingerprint, verify 时按 fingerprint match pubkey list
-- 私钥存 HUAKAI KMS / KeyProvider (跟 F-AUTH-005 同基础设施); ed25519 sign 在 KMS API 内, 私钥永不出 KMS
-- key compromise 应急: 立刻 revoke (status=revoked), 该 key 期间所有 entry 标 `key_status=revoked`, admin alert + user transparency dashboard 显示
+`huakai-verify` uses TOFU for detached verification:
 
-## 9. 跟其它项目对比 (HUAKAI 强差异化)
+- first use fetches `/.well-known/huakai-pubkey.json` over HTTPS and caches the JWK Set under `~/.huakai/known_keys/<host>.json`;
+- cache hit does not refetch unless `--refresh` is requested;
+- caller may pin an expected fingerprint;
+- fingerprint mismatch fails;
+- revoked key fails even when the signature is cryptographically valid.
 
-| 项目类别 | trust chain 处理 | HUAKAI 升级 |
-|---|---|---|
-| operator-only audit gateway (sub2api / new-api / one-api 类) | audit log operator-only (admin 可改), 用户无 verify | HUAKAI Sigstore/Trillian 风格 append-only Merkle chain + ed25519 sig + user-verifiable API |
-| observability tracing (litellm / portkey / helicone) | OTel tracing 是 observability 不是信任链 (无 sig + 可改) | HUAKAI cryptographic guarantee + trust chain 跟 observability 分两套 (各有用途) |
-| 云厂自家 gateway (AWS Bedrock / Azure OpenAI / Vertex) | 上游 audit 不暴露 caller, caller 必须信任云厂 | HUAKAI 把 audit 暴露给 end user, user 可自己 verify operator + 上游 |
-| 公开公证 / Sigstore / Trillian | 用 Merkle chain + sig 做 cryptographic transparency log, 通用 | HUAKAI 把 Sigstore 思路应用到 AI gateway: per-request receipt + model verdict + cross-chain reference 是 HUAKAI 独有 |
+This is inspired by OpenSSH's user-known-hosts workflow, but HUAKAI keeps its own JSON cache format and does not copy OpenSSH file format or code.
 
-**HUAKAI F-TRUST-001 独有**:
-- 用户可验证 (ed25519 + Merkle + public pubkey + detached verify)
-- model_chain verdict 透明 (match / allowed_alias / mismatch / unknown 4 分类)
-- hop_chain 透明 (7 hop_kind 分类 + alt_event_id 跟反代各层 cross-ref)
-- append-only DB trigger 强制 + writer 单线程 + 私钥 KMS
-- tenant_scope_ref (receipt 不暴露裸 DB tenant_id 防枚举)
-- schema_version (trust.hop.v1 / trust.model.v1 / trust.ledger.v1, backward compat)
-- 90 天 pubkey rotation + 老 entry 永久可 verify
+## 9. Fail-Open Policy
 
-## 10. 实施 Phase (Phase TRUST-1, 5 sub-phase)
+Owner D-8 adopts fail-open for user responses:
 
-- **Phase TRUST-1-A** (commit 0013 已完成): migration `audit_ledger_entries` 表 + writer pipeline 骨架. Canonical contract + privacy allowlist 也算 1-A 范围 (写入策略已 enforce)
-- **Phase TRUST-1-B** (3-5 天 codex): trigger 强制 append-only + ed25519 sig integration (KMS API + canonical_payload 计算) + writer Merkle continuity 完整 + DB immutability test
-- **Phase TRUST-1-C** (3-5 天 codex): 4 user verification endpoint (entry / detached verify / pubkey / chain-head + proof) + session middleware 集成
-- **Phase TRUST-1-D** (2-3 天 codex): hop_chain HopAttestation 真填 (在 router / pool / credential / executor / forwarder / normalizer / channel-health 各 hop 注入) + model_chain verdict 真判
-- **Phase TRUST-1-E** (2-3 天 codex): pubkey rotation 自动化 + chain head daily checkpoint 公开 + admin transparency dashboard (model substitution ratio / chain verify status / pubkey rotation timeline) + release gate criteria
+- If signer is nil, key load fails, inline signing fails, or ledger append is deferred, the gateway still returns the primary response when business logic succeeded.
+- The trust status MUST be `unverified`.
+- HUAKAI MUST NOT fabricate a signature or promote status.
+- Where a DLQ reference exists, return `X-HUAKAI-Ledger-DLQ-Ref`.
+- W4 durable DLQ and operator logs own recovery: queue, monitor, alert, manual replay if automatic replay cannot close the gap.
 
-## 11. Owner 后续 OCAW
+This preserves availability without silently pretending to have a verified trust chain.
 
-- (D-TRUST-1) **ledger write 失败是否 fail-closed** — request reject 还是 fall-through 接受 ledger 缺?
-- (D-TRUST-2) pubkey 存储 backend — HUAKAI 自管 KMS / 集成云 KMS (AWS / GCP) / HSM?
-- (D-TRUST-3) chain 容量 — 1B entries 后是否切分 (per-tenant chain vs global chain vs 时间窗 partition)?
-- (D-TRUST-4) deep verify 频率 — daily snapshot / real-time / on-demand?
-- (D-TRUST-5) pubkey rotation 周期 — 90 天 (推) / 180 天 / 365 天?
-- (D-TRUST-6) **mismatch verdict 是否自动退款** — F-AUDIT-001 联动?
-- (D-TRUST-7) account public fingerprint 粒度 — pubkey_fp[:8] vs hash(account_id + tenant)? 影响 receipt 信息量 vs 隐私
-- (D-TRUST-8) opt-in content binding hash — Owner 是否启用 (用户 own prompt 可验, 但需 F-PRIV-001 单独 approve)?
+## 10. Storage Contract
 
-## 12. Acceptance test outline (AT-TRUST-001-001..010)
+TRUST-B reuses existing schema rather than adding a new table:
 
-- AT-TRUST-001-001: 每 gateway request 创建 1 row in audit_ledger_entries; request_id UNIQUE; tenant_id 一致
-- AT-TRUST-001-002: hop_chain JSON array 含完整 hop (ingress_auth → response_finalize), 每 hop 有 decision_ref + safe schema
-- AT-TRUST-001-003: model_chain 3 字段填 + verdict 4 分类 (match / allowed_alias / mismatch / unknown); mismatch 时 client 收 X-Huakai-Mismatch header
-- AT-TRUST-001-004: prev_merkle_root + merkle_root 32-byte; chain 连续 (entry N prev_merkle_root == entry N-1 merkle_root)
-- AT-TRUST-001-005: ed25519 signature 用 pubkey verify PASS; tamper any byte → verify FAIL
-- AT-TRUST-001-006: UPDATE audit_ledger_entries row → trigger 拒绝; DELETE → 拒绝
-- AT-TRUST-001-007: GET entry endpoint 返完整 row + 用户 client-side detached verify PASS
-- AT-TRUST-001-008: pubkey rotation — 老 pubkey rotated/revoked 仍可 verify 历史 entry; 新 entry 用新 pubkey
-- AT-TRUST-001-009: cross-tenant query — tenant A 查 tenant B request_id → 404 (RLS + tenant_scope_ref 不暴露裸 tenant_id)
-- AT-TRUST-001-010: hop_chain.decision_ref / model_chain 严禁含 raw prompt / completion / token / cookie / PII
+- `user_cost_receipts.signed_hash` stores the final detached signature bytes encoded for transport.
+- `user_cost_receipts.signer_fingerprint` selects the public key.
+- Storage rejects one-sided signature state: signature without fingerprint, or fingerprint without signature.
+- Stored receipt verification reconstructs canonical facts and verifies the detached signature rather than trusting submitted client payloads.
 
-## 13. 风险表
+Merkle/checkpoint proof remains Phase 2 Mandatory Roadmap. Phase 1 does not add a new trust table.
 
-| 风险 | Severity | 缓解 |
-|---|---|---|
-| ledger writer goroutine 阻塞致 request 慢 | MED | async outbox 模式 (跟 F-OBS-005 DLQ 共 runtime, 不阻塞 critical path); 失败 DLQ retry |
-| Merkle chain 断裂 (writer race) | HIGH | 单线程 writer + 顺序 INSERT + last-merkle-root advisory lock (per tenant) |
-| private key leak | HIGH | KMS / KeyProvider, 私钥永不出 KMS; ed25519 sign 在 KMS API; 立刻 rotate + 历史 entry 标 revoked |
-| chain growth (10M/月 → 1B/年) | MED | per-tenant chain partition (D-TRUST-3); cold archive 老 entry; deep verify 用 Merkle proof 不必下载全 chain |
-| user verification overhead (每 request 都 verify 太慢) | LOW | daily snapshot + deep verify on-demand + client SDK 提供 verify helper |
-| substitution 不透明 (HUAKAI bug 不填 model_chain) | HIGH | AT-TRUST-001-003 测试覆盖; admin dashboard NULL model_chain ratio alert |
-| append-only trigger 误 trigger | LOW | trigger 仅 UPDATE/DELETE, INSERT 不影响; admin 误 INSERT 顺序错 → ledger_id UNIQUE 触发 INSERT 失败 |
-| writer 写失败 fail-closed vs fall-through | MED | D-TRUST-1 OCAW; 默认推 fail-closed (保 trust chain 完整 > 单 request availability) |
-| receipt 字段泄漏 cross-tenant DB id 枚举 | MED | tenant_scope_ref 抽象 (不直接暴露裸 tenant_id) |
-| key 轮换期间签名版本不一致 | LOW | pubkey list 含 valid_from/valid_until + status; verify 端 match fingerprint |
-| 隐私字段误入 hop_chain | HIGH | redaction allowlist 强制 + AT-TRUST-001-010 验证; 实施前 codex review 必查 |
-| Too little hop detail 信任值低 | LOW | OCAW D-TRUST-7 决定 account fingerprint 粒度 |
+## 11. Reference Evidence And HUAKAI Upgrade Delta
 
-## 14. Source files read + 中文摘要
+Observed reference behaviors:
 
-### Source files read (synthesis lane)
-- commit 0013 backend/sql/migrations/0013_trust_chain_audit_ledger.up.sql (audit_ledger_entries 表锚定)
-- commit a122a16 docs/specs/active-anti-detection.md §6 (cross-chain F-ADV reference)
-- commit 07e575e docs/specs/request-pacing-mimicry.md §6 (cross-chain F-PACE reference)
-- commit 07e575e docs/specs/outbound-ip-pool.md §6 (cross-chain F-NET reference)
-- commit 06f0ff2 docs/specs/device-fingerprint-binding.md (F-FP-001 reference)
-- commit 06f0ff2 docs/specs/channel-health-auto-disable.md (F-CH-002 reference)
-- docs/process/plans/2026-05-16-f-trust-001-spec-claude.md (Claude lane parallel-draft, 16KB)
-- /tmp/codex-f-trust-001-spec-codex-draft.md (Codex lane parallel-draft, 30KB)
-- memory: `project_core_trust_chain_differentiator` (HUAKAI 6 大差异化)
-- 不读任何上游项目源码 (clean-room 保持)
+- Rekor verifies signed tree heads and consistency against prior local state: `sigstore/rekor@9bc540f214712dfa4b891cca828382855ada227a:cmd/rekor-cli/app/log_info.go:126`.
+- Tessera signs checkpoints, can use additional signers for rotation, and can send checkpoints to witnesses: `transparency-dev/tessera@db8e65f3001be44ef5118e62be4a129e60760af8:append_lifecycle.go:712`, `transparency-dev/tessera@db8e65f3001be44ef5118e62be4a129e60760af8:append_lifecycle.go:802`, `transparency-dev/tessera@db8e65f3001be44ef5118e62be4a129e60760af8:internal/witness/witness.go:113`.
+- Trillian exposes append-only Merkle log APIs and tile-based storage internals: `google/trillian@3d57cf1a97c81b1ad648ed44a61b9ee1018fba30:trillian_log_api.proto:28`, `google/trillian@3d57cf1a97c81b1ad648ed44a61b9ee1018fba30:storage/cache/log_tile.go:33`.
+- LiteLLM, Portkey, and Envoy AI Gateway source regions read show response metadata/transformation/proxying, not a HUAKAI-style signed response receipt: `BerriAI/litellm@79b45786719778117debd57e38b9262283431ce2:litellm/router.py:8951`, `Portkey-AI/gateway@d2ea41f4e17c65112b6289a939014bd6b1df62da:src/handlers/responseHandlers.ts:38`, `envoyproxy/ai-gateway@4d3eae8b35c4ccc41643d94bb5f69280846561b0:internal/mcpproxy/handlers.go:785`.
+- Sub2API, New API, All-API-Hub, and one-api were checked only through README/public docs in this lane because of license-clean-room constraints for Sub2API/New API/All-API-Hub; their public feature lists do not document HUAKAI-style signed response receipts: `Wei-Shaw/sub2api@91da815993732e6536be8c702168822e482cd850:README.md:35`, `QuantumNous/new-api@20d3e73734527cded251aff23202dfbf5a2584ca:README.md:182`, `qixing-jk/all-api-hub@7e4d0dfef0da3b2b150fb6bb50974f1e7be527ef:README.md:64`, `songquanpeng/one-api@8df4a2670b98266bd287c698243fff327d9748cf:README.md:69`.
 
-### Synthesis decisions (Claude + Codex diff)
-- 取 Codex: `schema_version` (trust.hop.v1 / trust.model.v1 / trust.ledger.v1, backward compat) + `tenant_scope_ref` (防 cross-tenant DB 枚举) + model_chain verdict 4 分类 (match/allowed_alias/mismatch/unknown) + 风险表 Severity 列 + Endpoint 2 detached verification (用户离线 verify)
-- 取 Claude: cross-chain 8 行表 + Phase TRUST-1-A 已完成标注 + AT 列表 + hop_kind 具体 enum (7 类)
-- 合并: hop_kind enum 用 Codex 7 类 (ingress_auth / policy_match / pool_select / credential_select / upstream_dispatch / response_finalize / channel_health) — 比 Claude 6 类多一项 `ingress_auth`; HopAttestation schema 加 `actor` 字段 (Codex); opt-in content binding hash 默认 OFF (Claude+Codex 一致)
+HUAKAI delta:
 
-### OWNER 中文摘要
-F-TRUST-001 用户可验证信任链 synthesis spec 落档 (Claude+Codex 平行 draft 合并). HUAKAI 6 大核心差异化 1+3+4 项 (链路公开 + 模型校验 + 商家不能做假). 复用 commit 0013 已落 audit_ledger_entries schema. 关键设计: ed25519 sig + append-only Merkle chain + DB trigger 强制 + 单线程 writer + KMS 私钥 + 90 天 pubkey rotation + 4 user verification endpoint + hop_chain 7 类 hop_kind + model_chain verdict 4 分类 + tenant_scope_ref 防枚举 + redaction allowlist 严. 实施 Phase TRUST-1-A 已完成 (schema + writer), TRUST-1-B/C/D/E 待 codex 派 (10-15 天). 跟所有现有 gateway (sub2api/new-api/litellm/portkey/helicone/云厂) 的根本差异 = 用户可 cryptographic verify, 不必信任 operator. Phase 6 商业基础. 8 Owner OCAW (write fail-closed / KMS backend / chain partition / verify 频率 / rotation 周期 / mismatch 自动退款 / fingerprint 粒度 / content binding hash 是否启). AT-TRUST-001-001..010. 风险表 12 项含 Severity (HIGH: Merkle 断裂 / private key leak / substitution 不透明 / 隐私字段误入). Synthesis 决策列在 §14.
+- 架构升级: 3 verification entrances + 5 status vocabulary + public `.well-known` JWK Set + session-scoped receipt verify.
+- 算法升级: HUAKAI canonical `trust.receipt.v1` fixed-order bytes + dual-rail signature timing + mismatch priority rule.
+- 生态升级: `huakai-verify` TOFU cache + CRL overlay + final detached receipt in cost transparency flow.
+
+These deltas are HUAKAI-owned design. They are inspired by transparency-log patterns, but they are not source-code translations from any reference project.
+
+## 12. Acceptance Coverage
+
+The detailed acceptance rows live in `docs/11_ACCEPTANCE_TEST_MATRIX.md`. TRUST-A+B must keep at least these guards:
+
+- header status wiring across all 5 values;
+- canonical determinism with mutation-kill tests;
+- inline provisional `signed-only`;
+- D-8 fail-open 200 + `unverified` + DLQ reference;
+- final detached receipt stored in `user_cost_receipts.signed_hash`;
+- storage rejection for one-sided signature mismatch;
+- well-known JWK Set + cache control;
+- `/v1/trust/verify` 5-state mapping;
+- receipt verify CRL overlay;
+- CLI TOFU cache and revoked-key rejection;
+- mismatch priority across inline and stored receipt paths.
+
+## 13. Open Questions
+
+1. OpenSSH source-code citation remains a documentation gap in this lane: no local `openssh-portable` checkout was available, so §8 records the TOFU analogy without a `<repo>@sha>` OpenSSH source citation. Owner can require a follow-up source-cited pass.
+2. Helicone AI Gateway exact source checkout (`Helicone/ai-gateway`) was not available locally; this spec does not use it as a load-bearing source citation. The reference ledger records this as a citation gap rather than fabricating evidence.
+
+## 14. Source Coverage Proof
+
+HUAKAI files read:
+
+- `backend/internal/trust/status.go`
+- `backend/internal/gatewayhttp/chat_completions_handler_headers.go`
+- `backend/internal/gatewayhttp/chat_completions_handler_headers_test.go`
+- `backend/internal/trustreceipt/canonical.go`
+- `backend/internal/trustreceipt/canonical_test.go`
+- `backend/internal/trusthttp/verify_handler.go`
+- `backend/internal/trusthttp/verify_handler_test.go`
+- `backend/internal/trusthttp/wellknown_handler.go`
+- `backend/internal/trusthttp/wellknown_handler_test.go`
+- `backend/internal/trusthttp/revocation.go`
+- `backend/internal/trusthttp/revocation_test.go`
+- `backend/cmd/gateway/routes.go`
+- `backend/cmd/gateway/wiring_test.go`
+- `backend/cmd/huakai-verify/main.go`
+- `backend/cmd/huakai-verify/main_test.go`
+- `backend/internal/audit/receipt_worker.go`
+- `backend/internal/audit/receipt_worker_test.go`
+- `backend/internal/audit/receipt_storage_test.go`
+- `backend/internal/gatewayhttp/cost_receipt_handler.go`
+- `backend/internal/gatewayhttp/cost_receipt_handler_test.go`
+- `backend/sql/migrations/0028_user_cost_receipts.up.sql`
+
+Reference files read:
+
+- `/home/codex/refs/rekor/cmd/rekor-cli/app/log_info.go`
+- `/home/codex/refs/rekor/pkg/signer/file.go`
+- `/home/codex/refs/tessera/append_lifecycle.go`
+- `/home/codex/refs/tessera/internal/witness/witness.go`
+- `/home/codex/refs/trillian/trillian_log_api.proto`
+- `/home/codex/refs/trillian/storage/cache/log_tile.go`
+- `/home/codex/refs/litellm/litellm/router.py`
+- `/home/codex/refs/portkey-gateway/src/handlers/responseHandlers.ts`
+- `/home/codex/refs/envoy-ai-gateway/internal/mcpproxy/handlers.go`
+- `/home/codex/refs/rust-openssl/openssl/src/x509/store.rs`
+- `/home/codex/refs/sub2api/README.md`
+- `/home/codex/refs/new-api/README.md`
+- `/home/codex/refs/all-api-hub/README.md`
+- `/home/codex/refs/one-api/README.md`
+
+Source files read: listed above.
+Lane: implementer (docs)
+Agent: GPT-5 Codex
+UTC timestamp: 2026-05-28T02:39:40Z
+
+### Owner 中文摘要
+
+本 spec 更新把 TRUST-A+B 的真实实现状态收敛成 5 状态 vocabulary、3 个验证入口、HUAKAI canonical `trust.receipt.v1`、双轨签名、`.well-known` JWK Set、TOFU、CRL overlay、fail-open+DLQ 和 Phase 2 Merkle forward-compat。真观察来自 HUAKAI 代码/测试、Rekor/Tessera/Trillian/LiteLLM/Portkey/Envoy/rust-openssl 以及受限 license 项目的 README；合理推断是 HUAKAI 三维升级对照与 README-only scoped negative；open questions 2 个，分别是 OpenSSH 源码 cite 和 Helicone AI Gateway 源码 checkout 缺口。
