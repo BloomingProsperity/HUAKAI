@@ -114,6 +114,100 @@ func TestAT_OBS_004_AtomicFiveEffect(t *testing.T) {
 	}
 }
 
+func TestSettler_SettlePersistsCacheTierTokensAndCosts(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	seed := seedSettlerGraph(t, ctx, pool, "settle-cache-tier-costs")
+	settler := NewSettler(pool)
+
+	req := settleRequest(seed, decimal.RequireFromString("0.24500000"))
+	req.Draft.CacheCreationTokens = 150
+	req.Draft.CacheCreation5mTokens = 100
+	req.Draft.CacheCreation1hTokens = 50
+	req.Draft.CacheReadTokens = 200
+	req.Draft.CacheCreationCost = decimal.RequireFromString("0.225")
+	req.Draft.CacheReadCost = decimal.RequireFromString("0.02")
+
+	if _, err := settler.Settle(ctx, req); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+
+	var got5m, got1h, gotRead int32
+	var gotCreationCost, gotReadCost decimal.Decimal
+	if err := pool.QueryRow(ctx,
+		`SELECT cache_creation_5m_tokens, cache_creation_1h_tokens, cache_read_tokens,
+		        cache_creation_cost, cache_read_cost
+		   FROM usage_records WHERE claim_id=$1`,
+		seed.claimID,
+	).Scan(&got5m, &got1h, &gotRead, &gotCreationCost, &gotReadCost); err != nil {
+		t.Fatalf("read cache-tier usage_record fields: %v", err)
+	}
+
+	// Mutation guard: reverting settler cache-tier fields to hardcoded zero makes
+	// each persisted value differ from these inputs, so this test goes red.
+	if got5m != 100 {
+		t.Fatalf("cache_creation_5m_tokens=%d want 100", got5m)
+	}
+	if got1h != 50 {
+		t.Fatalf("cache_creation_1h_tokens=%d want 50", got1h)
+	}
+	if gotRead != 200 {
+		t.Fatalf("cache_read_tokens=%d want 200", gotRead)
+	}
+	if !gotCreationCost.Equal(req.Draft.CacheCreationCost) {
+		t.Fatalf("cache_creation_cost=%s want %s", gotCreationCost, req.Draft.CacheCreationCost)
+	}
+	if !gotReadCost.Equal(req.Draft.CacheReadCost) {
+		t.Fatalf("cache_read_cost=%s want %s", gotReadCost, req.Draft.CacheReadCost)
+	}
+}
+
+func TestSettler_SettleZerosCacheBucketCostsForNonChargeableAttempt(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	seed := seedSettlerGraph(t, ctx, pool, "settle-cache-tier-nonchargeable")
+	settler := NewSettler(pool)
+
+	req := settleRequest(seed, decimal.RequireFromString("0.24500000"))
+	req.Stream = true
+	req.StreamAttempt = &Attempt{
+		State:                  StreamStateFailed,
+		StreamTerminatedReason: "upstream_5xx",
+	}
+	req.Draft.CacheCreationTokens = 150
+	req.Draft.CacheCreation5mTokens = 100
+	req.Draft.CacheCreation1hTokens = 50
+	req.Draft.CacheReadTokens = 200
+	req.Draft.CacheCreationCost = decimal.RequireFromString("0.225")
+	req.Draft.CacheReadCost = decimal.RequireFromString("0.02")
+
+	if _, err := settler.Settle(ctx, req); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+
+	var actualCost, gotCreationCost, gotReadCost decimal.Decimal
+	if err := pool.QueryRow(ctx,
+		`SELECT actual_cost, cache_creation_cost, cache_read_cost
+		   FROM usage_records WHERE claim_id=$1`,
+		seed.claimID,
+	).Scan(&actualCost, &gotCreationCost, &gotReadCost); err != nil {
+		t.Fatalf("read cache-tier cost fields: %v", err)
+	}
+
+	// MUTATION: if cache bucket costs are not gated by CostForAttempt, cache_creation_cost stays nonzero while actual_cost=0 -> RED.
+	if !actualCost.IsZero() {
+		t.Fatalf("actual_cost=%s want 0", actualCost)
+	}
+	if !gotCreationCost.IsZero() {
+		t.Fatalf("cache_creation_cost=%s want 0", gotCreationCost)
+	}
+	if !gotReadCost.IsZero() {
+		t.Fatalf("cache_read_cost=%s want 0", gotReadCost)
+	}
+}
+
 func TestSettler_AbortPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

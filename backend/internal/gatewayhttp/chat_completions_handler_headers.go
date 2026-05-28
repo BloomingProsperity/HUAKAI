@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
@@ -221,7 +220,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 				ProtocolLoss:    protocolLossJSONFromEnv(cachedEnv),
 				RequestedAt:     in.RequestStartedAt,
 				Fingerprint:     in.PayloadHash,
-				Draft:           nonStreamingUsageDraft(cachedEnv, decimal.Zero, routingReasonWithCacheHit(routingReason, true, in.Entry.Key)),
+				Draft:           nonStreamingUsageDraft(cachedEnv, completionCostBreakdown{}, routingReasonWithCacheHit(routingReason, true, in.Entry.Key)),
 				SnapshotVersion: in.PlanSnapshot,
 			}
 			auditEvent := eventbus.RequestCompletionEvent{
@@ -268,7 +267,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, clienterr.CodeAuditLedgerError, err)
 		return true
 	}
-	actualCost := decimal.Zero
+	actualCost := completionCostBreakdown{}
 	attemptSeq := in.AttemptSeq
 	if attemptSeq <= 0 {
 		attemptSeq = 1
@@ -287,7 +286,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		Provider:          in.Provider,
 		Stream:            false,
 		ProtocolLoss:      protocolLossJSONFromEnv(cachedEnv),
-		ActualCost:        actualCost,
+		ActualCost:        actualCost.Total,
 		Fingerprint:       in.PayloadHash,
 		Draft:             nonStreamingUsageDraft(cachedEnv, actualCost, routingReasonWithCacheHit(routingReason, true, in.Entry.Key)),
 		SnapshotVersion:   in.PlanSnapshot,
