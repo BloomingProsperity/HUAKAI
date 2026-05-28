@@ -35,6 +35,7 @@ func (NoopEstimator) Estimate(_ []proto.CanonicalContentBlock) int {
 
 func estimateBlock(block proto.CanonicalContentBlock) int {
 	total := estimateText(block.Text)
+	total += estimateText(block.Thinking)
 	total += estimateText(block.ReasoningSummary)
 	total += estimateText(block.Name)
 	total += estimateBytes(block.Input)
