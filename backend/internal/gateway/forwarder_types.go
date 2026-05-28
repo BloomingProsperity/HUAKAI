@@ -81,8 +81,12 @@ type UsageRecordDraft struct {
 	TokensOutput            int             `json:"tokens_output"`
 	DeliveredTokenCount     int64           `json:"delivered_token_count"`
 	CacheCreationTokens     int             `json:"cache_creation_tokens"`
+	CacheCreation5mTokens   int             `json:"cache_creation_5m_tokens"`
+	CacheCreation1hTokens   int             `json:"cache_creation_1h_tokens"`
 	CacheReadTokens         int             `json:"cache_read_tokens"`
 	ActualCost              decimal.Decimal `json:"actual_cost"`
+	CacheCreationCost       decimal.Decimal `json:"cache_creation_cost"`
+	CacheReadCost           decimal.Decimal `json:"cache_read_cost"`
 	RoutingReason           []byte          `json:"routing_reason"`
 	EndClass                StreamEndClass  `json:"end_class"`
 	StreamTerminatedReason  string          `json:"stream_terminated_reason"`
@@ -158,6 +162,18 @@ func (a *UsageAccumulator) Update(source UsageSource, usage proto.CanonicalUsage
 	if usage.TotalTokens != 0 {
 		a.Usage.TotalTokens = usage.TotalTokens
 	}
+	if usage.CacheCreationInputTokens != 0 {
+		a.Usage.CacheCreationInputTokens = usage.CacheCreationInputTokens
+	}
+	if usage.CacheCreationInputTokens5m != 0 {
+		a.Usage.CacheCreationInputTokens5m = usage.CacheCreationInputTokens5m
+	}
+	if usage.CacheCreationInputTokens1h != 0 {
+		a.Usage.CacheCreationInputTokens1h = usage.CacheCreationInputTokens1h
+	}
+	if usage.CacheReadInputTokens != 0 {
+		a.Usage.CacheReadInputTokens = usage.CacheReadInputTokens
+	}
 	if a.Usage.TotalTokens == 0 {
 		a.Usage.TotalTokens = a.Usage.InputTokens + a.Usage.OutputTokens
 	}
@@ -171,7 +187,9 @@ func (a *UsageAccumulator) Freeze() { a.TerminalLocked = true }
 
 // Empty 报告 F-GW-002 Phase D 是否没有可计费 usage 信号。
 func (a UsageAccumulator) Empty() bool {
-	return a.Usage.InputTokens == 0 && a.Usage.OutputTokens == 0 && a.Usage.TotalTokens == 0
+	return a.Usage.InputTokens == 0 && a.Usage.OutputTokens == 0 && a.Usage.TotalTokens == 0 &&
+		a.Usage.CacheCreationInputTokens == 0 && a.Usage.CacheCreationInputTokens5m == 0 &&
+		a.Usage.CacheCreationInputTokens1h == 0 && a.Usage.CacheReadInputTokens == 0
 }
 
 func (a UsageAccumulator) DeliveredTokenCount() int64 {

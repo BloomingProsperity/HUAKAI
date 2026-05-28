@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
@@ -118,7 +117,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 	return outcome
 }
 
-func (ex *chatExecution) nonStreamingSettleRequest(env *proto.HCSF, actualCost decimal.Decimal, routingReason []byte) billing.SettleRequest {
+func (ex *chatExecution) nonStreamingSettleRequest(env *proto.HCSF, actualCost completionCostBreakdown, routingReason []byte) billing.SettleRequest {
 	return billing.SettleRequest{
 		ClaimID:           ex.reserveRes.ClaimID,
 		AccountID:         ex.acquiredAccountID,
@@ -132,7 +131,7 @@ func (ex *chatExecution) nonStreamingSettleRequest(env *proto.HCSF, actualCost d
 		UpstreamModel:     ex.upstreamModelID,
 		Provider:          ex.cacheVendor,
 		Stream:            false,
-		ActualCost:        actualCost,
+		ActualCost:        actualCost.Total,
 		ProtocolLoss:      ex.protocolLoss,
 		Fingerprint:       ex.payloadHash,
 		Draft:             nonStreamingUsageDraft(env, actualCost, routingReason),
@@ -567,7 +566,7 @@ func cloneModelChain(in *proto.ModelChain) *proto.ModelChain {
 	return &out
 }
 
-func nonStreamingUsageDraft(env *proto.HCSF, actualCost decimal.Decimal, routingReason []byte) gateway.UsageRecordDraft {
+func nonStreamingUsageDraft(env *proto.HCSF, actualCost completionCostBreakdown, routingReason []byte) gateway.UsageRecordDraft {
 	usage := proto.CanonicalUsage{}
 	if env != nil {
 		usage = env.Accounting.Usage
@@ -575,14 +574,22 @@ func nonStreamingUsageDraft(env *proto.HCSF, actualCost decimal.Decimal, routing
 			usage = env.BufferedResponse.Usage
 		}
 	}
+	cacheCreationTokens := usage.CacheCreationInputTokens
+	if cacheCreationTokens == 0 {
+		cacheCreationTokens = usage.CacheCreationInputTokens5m + usage.CacheCreationInputTokens1h
+	}
 	confidence := 1.0
 	return gateway.UsageRecordDraft{
 		TokensInput:           usage.InputTokens,
 		TokensOutput:          usage.OutputTokens,
 		DeliveredTokenCount:   int64(usage.OutputTokens),
-		CacheCreationTokens:   usage.CacheCreationInputTokens,
+		CacheCreationTokens:   cacheCreationTokens,
+		CacheCreation5mTokens: usage.CacheCreationInputTokens5m,
+		CacheCreation1hTokens: usage.CacheCreationInputTokens1h,
 		CacheReadTokens:       usage.CacheReadInputTokens,
-		ActualCost:            actualCost,
+		ActualCost:            actualCost.Total,
+		CacheCreationCost:     actualCost.CacheCreationCost,
+		CacheReadCost:         actualCost.CacheReadCost,
 		RoutingReason:         routingReason,
 		EndClass:              gateway.StreamEndGraceful,
 		UsageSource:           gateway.UsageSourceReported,

@@ -52,3 +52,95 @@ func TestSettleCompletion_UsesRateTableActualCost(t *testing.T) {
 		t.Fatalf("Draft.ActualCost=%s want %s", settler.calls[0].Draft.ActualCost, want)
 	}
 }
+
+func TestCompletionRateVector_PricesCacheCreationTiersAndReadSeparately(t *testing.T) {
+	rates, err := parseRateVector(json.RawMessage(`{
+		"input_micro_usd":1000,
+		"output_micro_usd":2000,
+		"cache_creation_5m_micro_usd":1250,
+		"cache_creation_1h_micro_usd":2000,
+		"cache_read_micro_usd":100,
+		"model_multiplier":1
+	}`))
+	if err != nil {
+		t.Fatalf("parseRateVector: %v", err)
+	}
+
+	got, err := rates.price(completionUsageForCost{
+		CacheCreation5mTokens: 100,
+		CacheCreation1hTokens: 50,
+		CacheReadTokens:       200,
+	})
+	if err != nil {
+		t.Fatalf("price: %v", err)
+	}
+
+	// Mutation guard: if 5m and 1h writes are collapsed to one cache_creation rate,
+	// this exact 0.225 cache-creation assertion goes red.
+	assertDecimalEqual(t, "CacheCreationCost", got.CacheCreationCost, decimal.RequireFromString("0.225"))
+	assertDecimalEqual(t, "CacheReadCost", got.CacheReadCost, decimal.RequireFromString("0.02"))
+	assertDecimalEqual(t, "Total", got.Total, decimal.RequireFromString("0.245"))
+}
+
+func TestCompletionRateVector_CacheCreationSplitChangesCostForSameTokenTotal(t *testing.T) {
+	rates, err := parseRateVector(json.RawMessage(`{
+		"cache_creation_5m_micro_usd":1250,
+		"cache_creation_1h_micro_usd":2000
+	}`))
+	if err != nil {
+		t.Fatalf("parseRateVector: %v", err)
+	}
+
+	fiveMinuteOnly, err := rates.price(completionUsageForCost{CacheCreation5mTokens: 100})
+	if err != nil {
+		t.Fatalf("price 5m-only: %v", err)
+	}
+	oneHourOnly, err := rates.price(completionUsageForCost{CacheCreation1hTokens: 100})
+	if err != nil {
+		t.Fatalf("price 1h-only: %v", err)
+	}
+
+	// Mutation guard: with a merged cache_creation bucket, these equal-token cases
+	// would produce the same cache-creation cost and this test would fail.
+	if fiveMinuteOnly.CacheCreationCost.Equal(oneHourOnly.CacheCreationCost) {
+		t.Fatalf("same cache token total with different TTL split must price differently; 5m=%s 1h=%s",
+			fiveMinuteOnly.CacheCreationCost, oneHourOnly.CacheCreationCost)
+	}
+	assertDecimalEqual(t, "5m CacheCreationCost", fiveMinuteOnly.CacheCreationCost, decimal.RequireFromString("0.125"))
+	assertDecimalEqual(t, "1h CacheCreationCost", oneHourOnly.CacheCreationCost, decimal.RequireFromString("0.2"))
+}
+
+func TestCompletionRateVector_UsesAggregateCacheCreationFallback(t *testing.T) {
+	rates, err := parseRateVector(json.RawMessage(`{
+		"cache_creation_micro_usd":1500
+	}`))
+	if err != nil {
+		t.Fatalf("parseRateVector: %v", err)
+	}
+
+	aggregateOnly, err := rates.price(completionUsageForCost{CacheCreationTokens: 30})
+	if err != nil {
+		t.Fatalf("price aggregate-only: %v", err)
+	}
+	assertDecimalEqual(t, "aggregate CacheCreationCost", aggregateOnly.CacheCreationCost, decimal.RequireFromString("0.045"))
+	assertDecimalEqual(t, "aggregate Total", aggregateOnly.Total, decimal.RequireFromString("0.045"))
+
+	splitFallback, err := rates.price(completionUsageForCost{
+		CacheCreation5mTokens: 10,
+		CacheCreation1hTokens: 20,
+	})
+	if err != nil {
+		t.Fatalf("price split fallback: %v", err)
+	}
+	// Mutation guard: removing the aggregate fallback for split tokens makes this
+	// return a missing-rate error instead of the legacy cache_creation rate.
+	assertDecimalEqual(t, "split fallback CacheCreationCost", splitFallback.CacheCreationCost, decimal.RequireFromString("0.045"))
+	assertDecimalEqual(t, "split fallback Total", splitFallback.Total, decimal.RequireFromString("0.045"))
+}
+
+func assertDecimalEqual(t *testing.T, field string, got, want decimal.Decimal) {
+	t.Helper()
+	if !got.Equal(want) {
+		t.Fatalf("%s=%s want %s", field, got, want)
+	}
+}

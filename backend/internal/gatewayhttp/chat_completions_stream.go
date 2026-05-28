@@ -12,8 +12,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/shopspring/decimal"
-
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
@@ -529,9 +527,11 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 	actualCost, err := ex.actualCompletionCost(usageFromDraft(draft))
 	if err != nil {
 		draft.PendingReconciliation = true
-		actualCost = decimal.Zero
+		actualCost = completionCostBreakdown{}
 	}
-	draft.ActualCost = actualCost
+	draft.ActualCost = actualCost.Total
+	draft.CacheCreationCost = actualCost.CacheCreationCost
+	draft.CacheReadCost = actualCost.CacheReadCost
 	return eventbus.RequestCompletionEvent{
 		ID:                        ex.requestID,
 		TenantID:                  ex.ident.TenantID,
@@ -560,7 +560,7 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 			UpstreamModel:     ex.upstreamModelID,
 			Provider:          ex.cacheVendor,
 			Stream:            true,
-			ActualCost:        actualCost,
+			ActualCost:        actualCost.Total,
 			ProtocolLoss:      ex.protocolLoss,
 			Fingerprint:       ex.payloadHash,
 			Draft:             draft,

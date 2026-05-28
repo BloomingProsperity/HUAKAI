@@ -429,6 +429,55 @@ func TestAT_GW_002_15_TerminalFrameLocksAccumulator(t *testing.T) {
 	}
 }
 
+func TestUsageAccumulatorUpdatePropagatesCacheTokensToFinishDraft(t *testing.T) {
+	acc := UsageAccumulator{}
+	acc.Update(UsageSourceReported, proto.CanonicalUsage{
+		InputTokens:                10,
+		OutputTokens:               20,
+		CacheCreationInputTokens5m: 100,
+		CacheCreationInputTokens1h: 50,
+		CacheReadInputTokens:       200,
+	})
+
+	// MUTATION: if Update drops cache token fields, these assert 0 -> RED.
+	if acc.Usage.CacheCreationInputTokens5m != 100 {
+		t.Fatalf("expected cache_creation_input_tokens_5m=100; got %d", acc.Usage.CacheCreationInputTokens5m)
+	}
+	if acc.Usage.CacheCreationInputTokens1h != 50 {
+		t.Fatalf("expected cache_creation_input_tokens_1h=50; got %d", acc.Usage.CacheCreationInputTokens1h)
+	}
+	if acc.Usage.CacheReadInputTokens != 200 {
+		t.Fatalf("expected cache_read_input_tokens=200; got %d", acc.Usage.CacheReadInputTokens)
+	}
+
+	draft, err := (&StreamForwarder{}).finishDraft(UsageRecordDraft{}, acc, time.Now(), nil)
+	if err != nil {
+		t.Fatalf("finishDraft returned unexpected error: %v", err)
+	}
+	if draft.CacheCreation5mTokens != 100 {
+		t.Fatalf("expected draft cache_creation_5m_tokens=100; got %d", draft.CacheCreation5mTokens)
+	}
+	if draft.CacheCreation1hTokens != 50 {
+		t.Fatalf("expected draft cache_creation_1h_tokens=50; got %d", draft.CacheCreation1hTokens)
+	}
+	if draft.CacheReadTokens != 200 {
+		t.Fatalf("expected draft cache_read_tokens=200; got %d", draft.CacheReadTokens)
+	}
+	if draft.CacheCreationTokens != 150 {
+		t.Fatalf("expected draft cache_creation_tokens=150; got %d", draft.CacheCreationTokens)
+	}
+}
+
+func TestUsageAccumulatorEmptyTreatsCacheOnlyUsageAsNonEmpty(t *testing.T) {
+	acc := UsageAccumulator{}
+	acc.Update(UsageSourceReported, proto.CanonicalUsage{CacheReadInputTokens: 200})
+
+	// MUTATION: if Empty() ignores cache fields, this returns true -> RED.
+	if acc.Empty() {
+		t.Fatalf("expected cache-only usage to be non-empty")
+	}
+}
+
 // AT-GW-002-18: AMBIGUOUS_USAGE 无费用门控 — zero 累加器 + UNKNOWN_TERMINATION
 // → end_class=ambiguous_usage + ErrAmbiguousUsage。
 // 通过 stubSingleAdapterRegistry 注入会抛出错误的 adapter，强制 UNKNOWN_TERMINATION。
