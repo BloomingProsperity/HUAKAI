@@ -9,6 +9,9 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
 )
 
 func TestSettleCompletion_RateTableMiss_FailsClosed(t *testing.T) {
@@ -136,6 +139,101 @@ func TestCompletionRateVector_UsesAggregateCacheCreationFallback(t *testing.T) {
 	// return a missing-rate error instead of the legacy cache_creation rate.
 	assertDecimalEqual(t, "split fallback CacheCreationCost", splitFallback.CacheCreationCost, decimal.RequireFromString("0.045"))
 	assertDecimalEqual(t, "split fallback Total", splitFallback.Total, decimal.RequireFromString("0.045"))
+}
+
+func TestNonStreamingUsageDraft_OutputTokenCrossCheckAnnotatesAuditFields(t *testing.T) {
+	blocks := []proto.CanonicalContentBlock{{Type: "text", Text: "hello world"}}
+	estimated := tokencheck.HeuristicEstimator{}.Estimate(blocks)
+	if estimated <= 0 {
+		t.Fatalf("test fixture estimate=%d want positive", estimated)
+	}
+	shortBlocks := []proto.CanonicalContentBlock{{Type: "text", Text: "hello"}}
+	shortEstimated := tokencheck.HeuristicEstimator{}.Estimate(shortBlocks)
+	if shortEstimated <= 0 {
+		t.Fatalf("short test fixture estimate=%d want positive", shortEstimated)
+	}
+	billedCost := completionCostBreakdown{Total: decimal.RequireFromString("0.01")}
+
+	tests := []struct {
+		name                 string
+		content              []proto.CanonicalContentBlock
+		reportedOutputTokens int
+		actualCost           completionCostBreakdown
+		wantConfidence       float64
+		wantPendingReconcile bool
+	}{
+		{
+			name:                 "fail verdict marks low confidence and pending reconciliation",
+			content:              blocks,
+			reportedOutputTokens: 1000,
+			actualCost:           billedCost,
+			wantConfidence:       0.5,
+			wantPendingReconcile: true,
+		},
+		// Mutation guard: without the absolute-token floor, this short
+		// response would be Fail20 -> 0.5/true -> RED.
+		{
+			name:                 "short fail verdict below absolute floor keeps full confidence",
+			content:              shortBlocks,
+			reportedOutputTokens: shortEstimated + 2,
+			actualCost:           billedCost,
+			wantConfidence:       1.0,
+			wantPendingReconcile: false,
+		},
+		{
+			name:                 "ok verdict keeps full confidence",
+			content:              blocks,
+			reportedOutputTokens: estimated,
+			actualCost:           billedCost,
+			wantConfidence:       1.0,
+			wantPendingReconcile: false,
+		},
+		{
+			name:                 "unknown verdict keeps safe default confidence",
+			content:              nil,
+			reportedOutputTokens: 0,
+			wantConfidence:       1.0,
+			wantPendingReconcile: false,
+		},
+		// Mutation guard: without the zero-cost gate, this zero-cost draft
+		// would be Fail20 -> 0.5/true -> RED.
+		{
+			name:                 "zero cost fail verdict keeps full confidence",
+			content:              blocks,
+			reportedOutputTokens: 1000,
+			wantConfidence:       1.0,
+			wantPendingReconcile: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := proto.NewEmptyEnvelope()
+			env.BufferedResponse = &proto.CanonicalResponse{
+				Content: tt.content,
+				Usage:   proto.CanonicalUsage{OutputTokens: tt.reportedOutputTokens},
+			}
+
+			draft := nonStreamingUsageDraft(env, tt.actualCost, nil)
+			if draft.ConfidenceScore == nil {
+				t.Fatal("ConfidenceScore=nil want populated audit score")
+			}
+			// Mutation guard: if CrossCheck is not wired (confidence hardcoded 1.0,
+			// pending false), the FAIL case asserts 0.5/true -> RED.
+			if got := *draft.ConfidenceScore; got != tt.wantConfidence {
+				t.Fatalf("ConfidenceScore=%v want %v", got, tt.wantConfidence)
+			}
+			if draft.PendingReconciliation != tt.wantPendingReconcile {
+				t.Fatalf("PendingReconciliation=%v want %v", draft.PendingReconciliation, tt.wantPendingReconcile)
+			}
+			if draft.UsageSource != gateway.UsageSourceReported {
+				t.Fatalf("UsageSource=%q want unchanged %q", draft.UsageSource, gateway.UsageSourceReported)
+			}
+			if draft.TokensOutput != tt.reportedOutputTokens {
+				t.Fatalf("TokensOutput=%d want reported output tokens unchanged %d", draft.TokensOutput, tt.reportedOutputTokens)
+			}
+		})
+	}
 }
 
 func assertDecimalEqual(t *testing.T, field string, got, want decimal.Decimal) {
