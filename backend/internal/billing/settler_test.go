@@ -16,7 +16,7 @@ import (
 func TestAT_AUDIT_001_060_RefundZeroReturnsSkippedCode(t *testing.T) {
 	tx := newRefundSettlerTestTx(
 		refundSettlerRow{err: pgx.ErrNoRows},
-		refundSettlerRow{values: []any{"fp-zero", "committed", decimal.RequireFromString("0.02000000")}},
+		refundSettlerRow{values: []any{"fp-zero", "committed", decimal.RequireFromString("0.02000000"), int64(901)}},
 	)
 	settler := &DefaultSettler{q: dbbilling.New(tx)}
 
@@ -41,7 +41,7 @@ func TestAT_AUDIT_001_060_RefundZeroReturnsSkippedCode(t *testing.T) {
 func TestAT_AUDIT_001_062_RefundActualCostOverflowRejected(t *testing.T) {
 	tx := newRefundSettlerTestTx(
 		refundSettlerRow{err: pgx.ErrNoRows},
-		refundSettlerRow{values: []any{"fp-overflow", "committed", decimal.RequireFromString("9223372036854.775808")}},
+		refundSettlerRow{values: []any{"fp-overflow", "committed", decimal.RequireFromString("9223372036854.775808"), int64(901)}},
 	)
 	settler := &DefaultSettler{q: dbbilling.New(tx)}
 

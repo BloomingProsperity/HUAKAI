@@ -44,9 +44,10 @@ func dsn(t *testing.T) string {
 // to exist with the same (tenant_id, id) pair.
 func seedTenant(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suffix string) (tenantID, apiKeyID, userID int64) {
 	t.Helper()
+	tenantName := fmt.Sprintf("test-tenant-%s-%d", suffix, time.Now().UnixNano())
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO tenants (name) VALUES ($1) RETURNING id`,
-		"test-tenant-"+suffix,
+		tenantName,
 	).Scan(&tenantID); err != nil {
 		t.Fatalf("seed tenant: %v", err)
 	}
@@ -65,6 +66,12 @@ func seedTenant(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suffix st
 	).Scan(&apiKeyID); err != nil {
 		t.Fatalf("seed api_key: %v", err)
 	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO user_balances (tenant_id, user_id, balance, held) VALUES ($1, $2, 10, 0)`,
+		tenantID, userID,
+	); err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
 	t.Cleanup(func() {
 		c := context.Background()
 		// FK chain: claims/usage/archive -> api_keys -> users -> tenants.
@@ -74,6 +81,7 @@ func seedTenant(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suffix st
 		_, _ = pool.Exec(c, `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM billing_ledger_claims WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM billing_ledger_archive WHERE tenant_id=$1`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM user_balances WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM api_keys WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM users WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM tenants WHERE id=$1`, tenantID)

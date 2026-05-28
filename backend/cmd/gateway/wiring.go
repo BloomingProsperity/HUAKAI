@@ -374,6 +374,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	replayJanitor := billing.NewReplayJanitor(replayStore, 0)
 	replayJanitor.Start(ctx)
 	rt.replayJanitorStop = replayJanitor.Stop
+	leaseSweeper := billing.NewLeaseSweeper(pgPool, settler, 0)
+	leaseSweeper.Start(ctx)
+	rt.leaseSweepStop = leaseSweeper.Stop
 
 	d := &deps{
 		cfg:                   cfg,

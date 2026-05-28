@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/balancehold"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
@@ -114,6 +115,17 @@ func (g *DefaultClaimGate) Reserve(ctx context.Context, req ReserveRequest) (*Re
 			if err != nil {
 				return nil, fmt.Errorf("billing: re-reserve aborted claim: %w", err)
 			}
+			if _, err := balancehold.Reserve(ctx, tx, balancehold.ReserveParams{
+				TenantID: req.TenantID,
+				UserID:   req.UserID,
+				ClaimID:  row.ID,
+				Cost:     req.PredictedCost,
+			}); err != nil {
+				if errors.Is(err, balancehold.ErrInsufficientBalance) {
+					return nil, ErrInsufficientBalance
+				}
+				return nil, fmt.Errorf("billing: hold for re-reserve: %w", err)
+			}
 			if err := tx.Commit(ctx); err != nil {
 				return nil, fmt.Errorf("billing: commit re-reserve Tx1: %w", err)
 			}
@@ -165,6 +177,17 @@ func (g *DefaultClaimGate) Reserve(ctx context.Context, req ReserveRequest) (*Re
 			return nil, ErrClaimRace
 		}
 		return nil, fmt.Errorf("billing: insert claim: %w", err)
+	}
+	if _, err := balancehold.Reserve(ctx, tx, balancehold.ReserveParams{
+		TenantID: req.TenantID,
+		UserID:   req.UserID,
+		ClaimID:  inserted.ID,
+		Cost:     req.PredictedCost,
+	}); err != nil {
+		if errors.Is(err, balancehold.ErrInsufficientBalance) {
+			return nil, ErrInsufficientBalance
+		}
+		return nil, fmt.Errorf("billing: hold for new claim: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

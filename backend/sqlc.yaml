@@ -44,6 +44,7 @@ sql:
       - sql/queries/billing_claims.sql
       - sql/queries/billing_settings.sql
       - sql/queries/billing_settle.sql
+      - sql/queries/balance_holds.sql
       - sql/queries/idempotency_replay.sql
       - sql/queries/observability.sql
       - sql/queries/obs_queries.sql
@@ -213,6 +214,14 @@ overrides:
       - column: "billing_events.actual_cost"
         go_type: "github.com/shopspring/decimal.Decimal"
       - column: "billing_events.actual_cost_signed"
+        go_type: "github.com/shopspring/decimal.Decimal"
+      - column: "user_balances.balance"
+        go_type: "github.com/shopspring/decimal.Decimal"
+      - column: "user_balances.held"
+        go_type: "github.com/shopspring/decimal.Decimal"
+      - column: "balance_holds.amount"
+        go_type: "github.com/shopspring/decimal.Decimal"
+      - column: "balance_holds.captured"
         go_type: "github.com/shopspring/decimal.Decimal"
       - column: "pool_slot_acquisitions.acquisition_token"
         go_type: "github.com/google/uuid.UUID"
