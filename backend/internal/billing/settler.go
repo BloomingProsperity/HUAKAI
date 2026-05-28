@@ -169,7 +169,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 		StreamTerminatedReason: nullableString(attempt.StreamTerminatedReason),
 		DrainOutcome:           normalizeDrainOutcome(req.Draft.DrainOutcome),
 		RoutingReason:          jsonOrEmptyObject(req.Draft.RoutingReason),
-		ProtocolLoss:           []byte("[]"),
+		ProtocolLoss:           jsonOrEmptyArray(req.ProtocolLoss),
 		RequestedAt:            pgTimestamp(requestedAt),
 		RequestedModel:         coalesceString(req.RequestedModel, claim.RequestedModel),
 		UpstreamModel:          nullableString(req.UpstreamModel),
@@ -257,7 +257,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 	return &SettleResult{NewUserBalance: snap.Balance, OutboxEventsEnqueued: outboxEvents}, nil
 }
 
-func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string, observedInputTokens int64) error {
+func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string, observedInputTokens int64, protocolLoss json.RawMessage) error {
 	if s == nil || s.pool == nil {
 		return ErrPoolNotConfigured
 	}
@@ -363,7 +363,7 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 			DeliveredTokenCount:    0,
 			StreamTerminatedReason: nullableString(abortAttempt.StreamTerminatedReason),
 			RoutingReason:          []byte("{}"),
-			ProtocolLoss:           []byte("[]"),
+			ProtocolLoss:           jsonOrEmptyArray(protocolLoss),
 			RequestedAt:            pgTimestamp(time.Now().UTC()),
 			RequestedModel:         requestedModel,
 		}
@@ -514,7 +514,7 @@ func (s *DefaultSettler) CommitCacheHit(ctx context.Context, req SettleRequest) 
 		DeliveredTokenCount:    attempt.DeliveredTokenCount,
 		StreamTerminatedReason: nullableString(attempt.StreamTerminatedReason),
 		RoutingReason:          jsonOrEmptyObject(req.Draft.RoutingReason),
-		ProtocolLoss:           []byte("[]"),
+		ProtocolLoss:           jsonOrEmptyArray(req.ProtocolLoss),
 		RequestedAt:            pgTimestamp(requestedAt),
 		RequestedModel:         coalesceString(req.RequestedModel, claimRequestedModel),
 		UpstreamModel:          nullableString(req.UpstreamModel),

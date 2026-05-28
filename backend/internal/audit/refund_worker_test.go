@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -344,7 +345,7 @@ func (s *recordingRefundSettler) Settle(context.Context, billing.SettleRequest) 
 	return &billing.SettleResult{}, nil
 }
 
-func (s *recordingRefundSettler) Abort(context.Context, int64, int64, string, string, int64) error {
+func (s *recordingRefundSettler) Abort(context.Context, int64, int64, string, string, int64, json.RawMessage) error {
 	return nil
 }
 

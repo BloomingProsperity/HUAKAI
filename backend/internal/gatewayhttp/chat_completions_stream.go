@@ -44,7 +44,7 @@ func (ex *chatExecution) serveL2CacheIfAvailable(w http.ResponseWriter) (bool, b
 	ex.cacheKey, err = ex.l2CacheKeyForModel(ex.upstreamModelID)
 	if err != nil {
 		if ex.reserveRes != nil {
-			if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "cache_key_error", ex.requestID, 0); abortErr != nil {
+			if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "cache_key_error", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
 				setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 			}
 		}
@@ -129,7 +129,7 @@ func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptO
 		if decision.AbortReason == "" {
 			decision.AbortReason = "upstream_dispatch_error"
 		}
-		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, decision.AbortReason, ex.requestID, 0)
+		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, decision.AbortReason, ex.requestID, 0, ex.protocolLoss)
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromDispatchError(err, classification), 0, time.Since(upstreamAttemptStartedAt), ex.requestID, nil)
 		}
@@ -137,7 +137,7 @@ func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptO
 		return outcome
 	}
 	if dispatchRes == nil || dispatchRes.UpstreamReader == nil {
-		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_empty_response", ex.requestID, 0)
+		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_empty_response", ex.requestID, 0, ex.protocolLoss)
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, 0, time.Since(upstreamAttemptStartedAt), ex.requestID, nil)
 		}
@@ -175,7 +175,7 @@ func (ex *chatExecution) classifyStreamingUpstreamFailure(dispatchRes *gateway.D
 			AbortReason:  "upstream_error",
 		}
 	}
-	abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, decision.AbortReason, ex.requestID, 0)
+	abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, decision.AbortReason, ex.requestID, 0, ex.protocolLoss)
 	if ex.healthKeyOK {
 		recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromClassification(dispatchRes.StatusCode, classification), dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()))
 	}
@@ -270,7 +270,7 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 			reason = "stream_no_billable_delivery"
 		}
 		observedInputTokens := ex.abortObservedInputTokens(draft)
-		streamAbortErr = ex.d.Settler.Abort(settleCtx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens)
+		streamAbortErr = ex.d.Settler.Abort(settleCtx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens, ex.protocolLoss)
 		if streamAbortErr != nil {
 			logInternalError(settleCtx, ex.requestID, clienterr.CodeAbortFailed, streamAbortErr)
 		}
@@ -334,7 +334,7 @@ func (ex *chatExecution) needsStreamingHCSFTranslation() bool {
 func (ex *chatExecution) translatedStreamingInboundBody(w http.ResponseWriter) ([]byte, proto.ClientAdapter, bool) {
 	clientAdapter, err := ex.streamingClientAdapter()
 	if err != nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "streaming_adapter_unregistered", ex.requestID, 0); abortErr != nil {
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "streaming_adapter_unregistered", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusServiceUnavailable, clienterr.CodeStreamingAdapterUnregistered, err)
@@ -342,16 +342,17 @@ func (ex *chatExecution) translatedStreamingInboundBody(w http.ResponseWriter) (
 	}
 	seed := requestMetaSeed(ex.r, ex.ident, ex.clientProtocol, ex.resolved.ProtocolFamily, ex.routeID, ex.requestID, ex.acquiredAccountID, ex.acquisitionToken)
 	seedCtx := proto.ContextWithRequestMetaSeed(ex.ctx, seed)
-	canonicalReq, _, err := clientAdapter.RequestToCanonical(seedCtx, ex.body)
+	canonicalReq, protocolLosses, err := clientAdapter.RequestToCanonical(seedCtx, ex.body)
+	ex.protocolLoss = protocolLossJSONFromEntries(protocolLosses)
 	if err != nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID, 0); abortErr != nil {
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadRequest, clienterr.CodeInvalidRequestBody, err)
 		return nil, nil, false
 	}
 	if canonicalReq == nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID, 0); abortErr != nil {
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
 		writeJSONError(w, http.StatusBadRequest, clienterr.CodeInvalidRequestBody, clienterr.MessageFor(clienterr.CodeInvalidRequestBody))
@@ -365,7 +366,7 @@ func (ex *chatExecution) translatedStreamingInboundBody(w http.ResponseWriter) (
 
 	body, err := streamingProviderRequestBody(canonicalReq, ex.resolved.ProtocolFamily)
 	if err != nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "streaming_translation_not_supported", ex.requestID, 0); abortErr != nil {
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "streaming_translation_not_supported", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusNotImplemented, clienterr.CodeStreamingTranslationUnsupported, err)
@@ -560,6 +561,7 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 			Provider:          ex.cacheVendor,
 			Stream:            true,
 			ActualCost:        actualCost,
+			ProtocolLoss:      ex.protocolLoss,
 			Fingerprint:       ex.payloadHash,
 			Draft:             draft,
 			StreamAttempt:     &streamAttempt,

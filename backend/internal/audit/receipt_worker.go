@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -187,11 +188,11 @@ func (s *ReceiptHookSettler) Settle(ctx context.Context, req billing.SettleReque
 	return res, nil
 }
 
-func (s *ReceiptHookSettler) Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string, observedInputTokens int64) error {
+func (s *ReceiptHookSettler) Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string, observedInputTokens int64, protocolLoss json.RawMessage) error {
 	if s == nil || s.inner == nil {
 		return billing.ErrPoolNotConfigured
 	}
-	return s.inner.Abort(ctx, tenantID, claimID, reason, auditRequestID, observedInputTokens)
+	return s.inner.Abort(ctx, tenantID, claimID, reason, auditRequestID, observedInputTokens, protocolLoss)
 }
 
 func (s *ReceiptHookSettler) CommitCacheHit(ctx context.Context, req billing.SettleRequest) error {

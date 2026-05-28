@@ -112,7 +112,7 @@ func TestSettler_AbortReleasesHold(t *testing.T) {
 		t.Fatalf("reserve hold: %v", err)
 	}
 
-	if err := set.Abort(ctx, seed.tenantID, seed.claimID, "abort-hold", fmt.Sprintf("req-abort-hold-%d", seed.claimID), 0); err != nil {
+	if err := set.Abort(ctx, seed.tenantID, seed.claimID, "abort-hold", fmt.Sprintf("req-abort-hold-%d", seed.claimID), 0, nil); err != nil {
 		t.Fatalf("Abort: %v", err)
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -44,9 +45,10 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		}
 		return markAttemptOutcomeDelivered(outcome)
 	}
+	ex.protocolLoss = protocolLossJSONFromEnv(bufferedEnv)
 	ledgerResult, err := submitAuditLedgerEntry(ex.ctx, ex.d, bufferedEnv, ex.ident.TenantID, ex.requestID)
 	if err != nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "audit_ledger_error", ex.requestID, 0); abortErr != nil {
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "audit_ledger_error", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, clienterr.CodeAuditLedgerError, err)
@@ -56,7 +58,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 	seedCtx := proto.ContextWithRequestMetaSeed(ex.ctx, seed)
 	clientBody, _, err := ex.clientAdapter.CanonicalToClientResponse(seedCtx, bufferedEnv)
 	if err != nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "canonical_response_error", ex.requestID, 0); abortErr != nil {
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "canonical_response_error", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadGateway, clienterr.CodeCanonicalResponseError, err)
@@ -65,7 +67,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 	cacheEnvelope, cacheEnvelopeOK := encodeL2CacheEnvelope(bufferedEnv)
 	actualCost, err := ex.actualCompletionCost(usageFromBufferedEnvelope(bufferedEnv))
 	if err != nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pricing_unavailable", ex.requestID, 0); abortErr != nil {
+		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pricing_unavailable", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, err)
@@ -131,10 +133,29 @@ func (ex *chatExecution) nonStreamingSettleRequest(env *proto.HCSF, actualCost d
 		Provider:          ex.cacheVendor,
 		Stream:            false,
 		ActualCost:        actualCost,
+		ProtocolLoss:      ex.protocolLoss,
 		Fingerprint:       ex.payloadHash,
 		Draft:             nonStreamingUsageDraft(env, actualCost, routingReason),
 		SnapshotVersion:   ex.plan.SnapshotVersion,
 	}
+}
+
+func protocolLossJSONFromEnv(env *proto.HCSF) json.RawMessage {
+	if env == nil {
+		return nil
+	}
+	return protocolLossJSONFromEntries(env.CapabilityGraph.ProtocolLoss)
+}
+
+func protocolLossJSONFromEntries(entries []proto.ProtocolLossEntry) json.RawMessage {
+	if len(entries) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(entries)
+	if err != nil {
+		return nil
+	}
+	return raw
 }
 
 // normalizedPayloadHash 对客户端原始请求体做 SHA256 摘要, 作为 idempotency
@@ -248,7 +269,7 @@ func rejectMoneyPathAuditRef(ctx context.Context, d ChatHandlerDeps, event event
 	}
 	var abortErr error
 	if d.Settler != nil && event.ClaimID > 0 {
-		abortErr = d.Settler.Abort(ctx, event.TenantID, event.ClaimID, clienterr.CodeAuditRefMissing, event.RequestID, 0)
+		abortErr = d.Settler.Abort(ctx, event.TenantID, event.ClaimID, clienterr.CodeAuditRefMissing, event.RequestID, 0, nil)
 	}
 	logMoneyPathAuditRefError(ctx, event, validationErr, source, false)
 	if abortErr != nil {

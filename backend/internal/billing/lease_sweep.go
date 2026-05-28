@@ -85,7 +85,7 @@ func (s *LeaseSweeper) sweepOnce(ctx context.Context) (int, error) {
 	swept := 0
 	var errs []error
 	for _, claim := range claims {
-		err := s.settler.Abort(ctx, claim.TenantID, claim.ID, "lease_expired", fmt.Sprintf("audit-lease-%d", claim.ID), 0)
+		err := s.settler.Abort(ctx, claim.TenantID, claim.ID, "lease_expired", fmt.Sprintf("audit-lease-%d", claim.ID), 0, nil)
 		switch {
 		case err == nil:
 			swept++

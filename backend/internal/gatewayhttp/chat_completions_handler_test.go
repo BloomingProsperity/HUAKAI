@@ -66,7 +66,7 @@ func (s *stubSettler) Settle(_ context.Context, _ billing.SettleRequest) (*billi
 	return &billing.SettleResult{}, nil
 }
 
-func (s *stubSettler) Abort(_ context.Context, _ int64, claimID int64, reason, _ string, _ int64) error {
+func (s *stubSettler) Abort(_ context.Context, _ int64, claimID int64, reason, _ string, _ int64, _ json.RawMessage) error {
 	s.abortCalls++
 	s.lastAbortClaimID = claimID
 	s.lastAbortReason = reason
