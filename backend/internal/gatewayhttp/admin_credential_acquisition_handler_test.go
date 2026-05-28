@@ -129,6 +129,94 @@ func TestAdminCredentialAcquisitionCanonicalCallbackUsesRegistryAndFinalizesCred
 	}
 }
 
+// 缺陷：浏览器 OAuth 回跳没有 Bearer，helper callback 若继续解析 admin token 会永远 401。
+// 判别 mutation：恢复 callback handler 的 Bearer 闸时，本测试必须因 401 变红。
+func TestOAuthBrowserCallbackCompletesWithoutBearer(t *testing.T) {
+	fx := newCredentialAcqHTTPFixture(t, adminPoolAuthStub{err: admin.ErrAdminUnauthorized})
+	flow := fx.seedOAuthFlowWithActor(t, 101, "4242", admin.RolePlatformAdmin)
+
+	rec := fx.do(t, http.MethodGet, oauthBrowserCallbackPath(flow.ID, flow.State, "browser-auth-code"), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if got := fx.exchanger.callCount(); got != 1 {
+		t.Fatalf("exchanger calls=%d want 1", got)
+	}
+	created := fx.creator.inputsSnapshot()
+	if len(created) != 1 {
+		t.Fatalf("created credentials=%d want 1", len(created))
+	}
+	if created[0].ProviderAccountID != 101 || created[0].ActorID != "4242" {
+		t.Fatalf("created credential account/actor=%d/%q want 101/4242", created[0].ProviderAccountID, created[0].ActorID)
+	}
+}
+
+// 缺陷：browser callback 若绕过 CompleteOAuthCallback，就会跳过 state CSRF 校验。
+// 判别 mutation：把 handler 改成直接 finalize 时，错误 state 会返回 200，本测试必须变红。
+func TestOAuthBrowserCallbackRejectsStateMismatch(t *testing.T) {
+	fx := newCredentialAcqHTTPFixture(t, adminPoolAuthStub{err: admin.ErrAdminUnauthorized})
+	flow := fx.seedOAuthFlowWithActor(t, 101, "4242", admin.RolePlatformAdmin)
+
+	rec := fx.do(t, http.MethodGet, oauthBrowserCallbackPath(flow.ID, "wrong-state", "browser-auth-code"), "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400 body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "oauth_state_mismatch") {
+		t.Fatalf("body=%s want oauth_state_mismatch", rec.Body.String())
+	}
+	if created := fx.creator.inputsSnapshot(); len(created) != 0 {
+		t.Fatalf("created credentials=%d want 0 on state mismatch", len(created))
+	}
+}
+
+// 缺陷：browser callback 若不复用 consumed/finalized 闸，同一 code 回跳可重放创建凭据。
+// 判别 mutation：删除 CompleteOAuthCallback 的 consumed/finalized 闸时，第二次 GET 会触发第 2 次 exchange，callCount=2，本测试必须变红。
+func TestOAuthBrowserCallbackRejectsReplay(t *testing.T) {
+	fx := newCredentialAcqHTTPFixture(t, adminPoolAuthStub{err: admin.ErrAdminUnauthorized})
+	flow := fx.seedOAuthFlowWithActor(t, 101, "4242", admin.RolePlatformAdmin)
+	path := oauthBrowserCallbackPath(flow.ID, flow.State, "browser-auth-code")
+
+	first := fx.do(t, http.MethodGet, path, "")
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status=%d want 200 body=%s", first.Code, first.Body.String())
+	}
+	second := fx.do(t, http.MethodGet, path, "")
+	if second.Code != http.StatusConflict {
+		t.Fatalf("second status=%d want 409 body=%s", second.Code, second.Body.String())
+	}
+	if !strings.Contains(second.Body.String(), "credential_acquisition_replay") {
+		t.Fatalf("second body=%s want credential_acquisition_replay", second.Body.String())
+	}
+	if got := fx.exchanger.callCount(); got != 1 {
+		t.Fatalf("exchanger calls=%d want 1 (replay must be rejected before a second token exchange)", got)
+	}
+	if created := fx.creator.inputsSnapshot(); len(created) != 1 {
+		t.Fatalf("created credentials=%d want exactly 1 after replay", len(created))
+	}
+}
+
+// 缺陷：无 Bearer browser callback 的审计 actor 若取当前请求身份，会丢失发起 admin。
+// 判别 mutation：把 actor 改成空字符串或固定值时，admin audit actor 断言必须变红。
+func TestOAuthBrowserCallbackAuditsStartingAdmin(t *testing.T) {
+	fx := newCredentialAcqHTTPFixture(t, adminPoolAuthStub{err: admin.ErrAdminUnauthorized})
+	flow := fx.seedOAuthFlowWithActor(t, 101, "4242", admin.RolePlatformAdmin)
+
+	rec := fx.do(t, http.MethodGet, oauthBrowserCallbackPath(flow.ID, flow.State, "browser-auth-code"), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if len(fx.adminAudit.audits) != 1 {
+		t.Fatalf("admin audits=%d want 1", len(fx.adminAudit.audits))
+	}
+	audit := fx.adminAudit.audits[0]
+	if audit.ActorID != "4242" || audit.ActorRole != admin.RolePlatformAdmin {
+		t.Fatalf("admin audit actor=%q/%q want 4242/platform_admin", audit.ActorID, audit.ActorRole)
+	}
+	if audit.Action != credentialacq.EventCompleted {
+		t.Fatalf("admin audit action=%q want %q", audit.Action, credentialacq.EventCompleted)
+	}
+}
+
 func TestAdminCredentialAcquisitionCallbackMissingRegistryEntryReturns422AndAudits(t *testing.T) {
 	registry := credentialacq.NewExchangerRegistry()
 	openAI := &credentialAcqExchangerStub{}
@@ -452,12 +540,13 @@ func TestAdminCredentialAcquisitionRejectsPathAccountMismatch(t *testing.T) {
 }
 
 type credentialAcqHTTPFixture struct {
-	handler   http.Handler
-	store     *credentialacq.PostgresSessionStore
-	db        *credentialAcqSessionDB
-	creator   *credentialAcqCreatorStub
-	audit     *credentialAcqAuditStub
-	exchanger *credentialAcqExchangerStub
+	handler    http.Handler
+	store      *credentialacq.PostgresSessionStore
+	db         *credentialAcqSessionDB
+	creator    *credentialAcqCreatorStub
+	audit      *credentialAcqAuditStub
+	adminAudit *adminPoolStoreStub
+	exchanger  *credentialAcqExchangerStub
 }
 
 type seededCredentialAcqFlow struct {
@@ -493,11 +582,12 @@ func newCredentialAcqHTTPFixtureWithRegistry(t *testing.T, auth AdminCredentialA
 	store := credentialacq.NewPostgresSessionStoreWithKeys(db, keys).WithNow(func() time.Time { return now })
 	creator := &credentialAcqCreatorStub{}
 	audit := &credentialAcqAuditStub{}
+	adminAudit := &adminPoolStoreStub{}
 	deps := AdminCredentialAcquisitionDeps{
 		Auth: auth, Sessions: store,
 		Credentials:     creator,
 		CredentialAudit: audit,
-		AuditStore:      &adminPoolStoreStub{},
+		AuditStore:      adminAudit,
 		Exchangers:      registry,
 	}
 	r := chi.NewRouter()
@@ -507,7 +597,7 @@ func newCredentialAcqHTTPFixtureWithRegistry(t *testing.T, auth AdminCredentialA
 	r.Route("/admin/v1/credentials", func(r chi.Router) {
 		MountAdminCredentialAcquisitionHelperRoutes(r, deps)
 	})
-	return &credentialAcqHTTPFixture{handler: r, store: store, db: db, creator: creator, audit: audit, exchanger: exchanger}
+	return &credentialAcqHTTPFixture{handler: r, store: store, db: db, creator: creator, audit: audit, adminAudit: adminAudit, exchanger: exchanger}
 }
 
 func decodeAdminClaudeAIOAuthStart(t *testing.T, raw []byte) (string, string, string) {
@@ -566,6 +656,11 @@ func (fx *credentialAcqHTTPFixture) seedOAuthFlow(t *testing.T, providerAccountI
 	return fx.seedRawOAuthFlow(t, providerAccountID, credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth)
 }
 
+func (fx *credentialAcqHTTPFixture) seedOAuthFlowWithActor(t *testing.T, providerAccountID int64, actorID, actorRole string) seededCredentialAcqFlow {
+	t.Helper()
+	return fx.seedRawOAuthFlowWithActor(t, providerAccountID, credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth, actorID, actorRole)
+}
+
 func (fx *credentialAcqHTTPFixture) seedOAuthFlowFor(t *testing.T, providerAccountID int64, vendor, authMode string) seededCredentialAcqFlow {
 	t.Helper()
 	result, err := credentialacq.StartOAuthFlow(context.Background(), fx.store, credentialacq.StartInput{
@@ -583,6 +678,11 @@ func (fx *credentialAcqHTTPFixture) seedOAuthFlowFor(t *testing.T, providerAccou
 
 func (fx *credentialAcqHTTPFixture) seedRawOAuthFlow(t *testing.T, providerAccountID int64, vendor, authMode string) seededCredentialAcqFlow {
 	t.Helper()
+	return fx.seedRawOAuthFlowWithActor(t, providerAccountID, vendor, authMode, "11", admin.RolePlatformAdmin)
+}
+
+func (fx *credentialAcqHTTPFixture) seedRawOAuthFlowWithActor(t *testing.T, providerAccountID int64, vendor, authMode, actorID, actorRole string) seededCredentialAcqFlow {
+	t.Helper()
 	state := "cursor-state"
 	aad := credentialstore.AAD{TenantID: 1, ProviderAccountID: providerAccountID, Vendor: vendor, AuthMode: authMode}
 	ciphertext, metadata, _, err := fx.store.EncryptTransientPayload(context.Background(), []byte("pkce-verifier"), aad)
@@ -592,7 +692,7 @@ func (fx *credentialAcqHTTPFixture) seedRawOAuthFlow(t *testing.T, providerAccou
 	session, err := fx.store.Create(context.Background(), credentialacq.Session{
 		TenantID: 1, ProviderAccountID: providerAccountID,
 		Vendor: vendor, AuthMode: authMode, Kind: credentialacq.FlowKindOAuth, Status: credentialacq.StatusStarted,
-		ActorID: "11", ActorRole: "platform_admin",
+		ActorID: actorID, ActorRole: actorRole,
 		StateHash: credentialacq.HashOAuthState(state), NonceHash: metadata, EncryptedPKCEVerifier: ciphertext,
 		ClientIdentitySource: credentialacq.ClientSourcePublicCLI,
 		RedirectURI:          "https://huakai.example.test/callback",
@@ -602,6 +702,14 @@ func (fx *credentialAcqHTTPFixture) seedRawOAuthFlow(t *testing.T, providerAccou
 		t.Fatalf("seed raw oauth flow: %v", err)
 	}
 	return seededCredentialAcqFlow{ID: session.ID, State: state}
+}
+
+func oauthBrowserCallbackPath(flowID, state, code string) string {
+	v := url.Values{}
+	v.Set("flow_id", flowID)
+	v.Set("state", state)
+	v.Set("code", code)
+	return "/admin/v1/credentials/oauth-callback?" + v.Encode()
 }
 
 type credentialAcqCreatorStub struct {
