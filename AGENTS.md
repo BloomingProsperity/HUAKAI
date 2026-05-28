@@ -374,7 +374,7 @@ LANE: <specifier | reviewer>
 
 PRIOR LANES ON THIS ARTIFACT: <list (agent + lane + UTC) | "none">
 
-REFERENCE PROJECTS IN SCOPE: <list e.g. sub2api / one-api / portkey>
+REFERENCE PROJECTS IN SCOPE: <list e.g. sub2api / new-api / portkey>
 
 HARD PROHIBITIONS:
   - NEVER copy function names verbatim
@@ -441,7 +441,7 @@ CLAUDE.md #11 governs **how** to read reference source safely. CLAUDE.md #12 gov
 | Capability | "sub2api supports failover loop" | `Wei-Shaw/sub2api@<sha>:<file>:<line>` |
 | Mechanism | "Helicone gateway rate-limits by both cost and request count" | `Helicone/ai-gateway@<sha>:<file>:<line>` |
 | Differentiation | "HUAKAI's PASR is unlike LiteLLM's routing" | `BerriAI/litellm@<sha>:<file>:<line>` for the LiteLLM half |
-| Algorithm | "one-api selects accounts by least-conn weighted" | `songquanpeng/one-api@<sha>:<file>:<line>` |
+| Algorithm | "litellm selects accounts by least-conn weighted" | `BerriAI/litellm@<sha>:<file>:<line>` |
 | Parity verdict | "Project X has feature F" / "X lacks F" | `<owner>/<repo>@<sha>:<file>:<line>` showing presence/absence |
 | Comparative table | Any cell naming a reference project | one citation per non-trivial cell |
 
@@ -461,7 +461,7 @@ Currently relevant repo URLs (Owner-confirmed):
 - Sub2API: `https://github.com/Wei-Shaw/sub2api.git`
 - All-API-Hub: `https://github.com/qixing-jk/all-api-hub.git`
 - New-API: `https://github.com/QuantumNous/new-api.git` (formerly `Calcium-Ion/new-api` — repo transferred; old `Calcium-Ion/new-api@<sha>` citations still resolve via GitHub redirect)
-- One-API: `https://github.com/songquanpeng/one-api.git`
+- One-API: RETIRED 2026-05-28 (abandoned; superseded by New API) — historical evidence only, not for new mining
 - LiteLLM: `https://github.com/BerriAI/litellm.git`
 - Portkey gateway: `https://github.com/Portkey-AI/gateway.git`
 - Helicone: `https://github.com/Helicone/ai-gateway.git` (the project's "Helicone" reference is the GPL-3.0 Rust AI gateway — see E-LIC-007 / docs/06 — not the `Helicone/helicone` platform monorepo)

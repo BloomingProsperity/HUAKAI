@@ -103,7 +103,7 @@ After Owner confirmation, Claude should read relevant rules, understand the assi
     
     Differentiation table column convention: `feature | upstream A cite | upstream B cite | HUAKAI delta | dimension(s)`. Without the dimension column, the table can't survive Owner / Codex review.
     
-    **Permitted-license vendoring policy (added 2026-05-09 Owner quote "是的" agreeing to permit MIT/Apache-2.0 vendor)**: clean-room paraphrase is the **default** rule. But for **MIT / Apache-2.0** licensed reference projects (LiteLLM main / Portkey gateway / Helicone / envoy-ai-gateway / one-api / official vendor SDKs), HUAKAI MAY directly vendor specific files / packages into `backend/vendor/` or `pkg/external/` instead of paraphrasing — provided ALL of:
+    **Permitted-license vendoring policy (added 2026-05-09 Owner quote "是的" agreeing to permit MIT/Apache-2.0 vendor)**: clean-room paraphrase is the **default** rule. But for **MIT / Apache-2.0** licensed reference projects (LiteLLM main / Portkey gateway / Helicone / envoy-ai-gateway / official vendor SDKs), HUAKAI MAY directly vendor specific files / packages into `backend/vendor/` or `pkg/external/` instead of paraphrasing — provided ALL of:
     - Original LICENSE file is preserved in the vendored directory
     - NOTICE file is created or updated listing the source repo + commit SHA + brief description of what was borrowed
     - Vendored code lives in a clearly-isolated directory (`backend/vendor/<source>/` or `pkg/external/<source>/`), NOT mixed into HUAKAI's own modules

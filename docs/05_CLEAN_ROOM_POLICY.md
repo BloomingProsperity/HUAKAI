@@ -60,7 +60,7 @@ HUAKAI operates under **Option B (two-lane separation)** as the project default,
 ### Lane Definitions
 
 - **Specifier lane (dirty).** May read public reference material — docs, issues, public source code from non-MIT references. Produces only abstract specs in [`specs/`](specs/). Never writes implementation, schema, UI, or test code. Once an agent session has read non-MIT source, that session enters specifier-only contamination state for the rest of the session and must not be reused for implementer work; open a new session for the other lane.
-- **Implementer lane (clean).** Reads only this repository's own docs, specs from [`specs/`](specs/), and MIT-licensed anchor references (currently [songquanpeng/one-api](https://github.com/songquanpeng/one-api)). Produces all code, schema, UI, and tests. Never reads non-MIT reference source.
+- **Implementer lane (clean).** Reads only this repository's own docs, specs from [`specs/`](specs/), and MIT-licensed anchor references (currently LiteLLM and Portkey, both MIT; one-api retired 2026-05-28). Produces all code, schema, UI, and tests. Never reads non-MIT reference source.
 
 ### Option C Carve-out (Strict Mode)
 
