@@ -616,6 +616,7 @@ SELECT
     pa.id,
     pa.tenant_id,
     pa.provider_id,
+    p.upstream_protocol,
     pa.channel_id,
     pa.cap_concurrency,
     pa.in_flight_count,
@@ -632,6 +633,10 @@ INNER JOIN channels c
     ON c.id = pa.channel_id
    AND c.enabled = true
    AND c.deleted_at IS NULL
+INNER JOIN providers p
+    ON p.id = pa.provider_id
+   AND p.tenant_id = pa.tenant_id
+   AND p.deleted_at IS NULL
 WHERE pa.tenant_id = $1
   AND c.pool_group_id = $2
   AND c.tenant_id = $1
@@ -643,7 +648,9 @@ WHERE pa.tenant_id = $1
   )
   AND (cardinality(pa.model_allow_list) = 0
        OR pa.model_allow_list @> ARRAY[$3::text])
-  AND pa.capability_flags @> $4::text[]
+  AND ($4::text = ''
+       OR p.upstream_protocol = $4::text)
+  AND pa.capability_flags @> $5::text[]
   -- codex review v3 P2#3 fix: production selector 不接 AuthCredentialGate
   -- (无 TokenProvider 注入), 改 SQL 层直接过滤 credential_state.
   -- 跟 binding.AuthCredentialGate spec 一致: 只放 {valid, refreshing_with_grace}.
@@ -654,16 +661,18 @@ ORDER BY pa.priority, pa.last_dispatch_at NULLS FIRST
 `
 
 type ListEligibleAccountsByPoolGroupParams struct {
-	TenantID             int64    `db:"tenant_id" json:"tenant_id"`
-	PoolGroupID          int64    `db:"pool_group_id" json:"pool_group_id"`
-	RequestedModel       string   `db:"requested_model" json:"requested_model"`
-	RequiredCapabilities []string `db:"required_capabilities" json:"required_capabilities"`
+	TenantID                int64    `db:"tenant_id" json:"tenant_id"`
+	PoolGroupID             int64    `db:"pool_group_id" json:"pool_group_id"`
+	RequestedModel          string   `db:"requested_model" json:"requested_model"`
+	RequestedProtocolFamily string   `db:"requested_protocol_family" json:"requested_protocol_family"`
+	RequiredCapabilities    []string `db:"required_capabilities" json:"required_capabilities"`
 }
 
 type ListEligibleAccountsByPoolGroupRow struct {
 	ID               int64              `db:"id" json:"id"`
 	TenantID         int64              `db:"tenant_id" json:"tenant_id"`
 	ProviderID       int64              `db:"provider_id" json:"provider_id"`
+	UpstreamProtocol string             `db:"upstream_protocol" json:"upstream_protocol"`
 	ChannelID        int64              `db:"channel_id" json:"channel_id"`
 	CapConcurrency   int32              `db:"cap_concurrency" json:"cap_concurrency"`
 	InFlightCount    int32              `db:"in_flight_count" json:"in_flight_count"`
@@ -690,11 +699,14 @@ type ListEligibleAccountsByPoolGroupRow struct {
 //   - model_allow_list 空 数组 → 无限制
 //   - model_allow_list 非空 → 必须包含 requested_model
 //   - capability_flags 必须包含 required_capabilities 全集 (空 req → 自动 true)
+//   - requested_protocol_family 为空 → legacy bypass
+//   - requested_protocol_family 非空 → 必须匹配 providers.upstream_protocol
 func (q *Queries) ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListEligibleAccountsByPoolGroupParams) ([]ListEligibleAccountsByPoolGroupRow, error) {
 	rows, err := q.db.Query(ctx, listEligibleAccountsByPoolGroup,
 		arg.TenantID,
 		arg.PoolGroupID,
 		arg.RequestedModel,
+		arg.RequestedProtocolFamily,
 		arg.RequiredCapabilities,
 	)
 	if err != nil {
@@ -708,6 +720,7 @@ func (q *Queries) ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListE
 			&i.ID,
 			&i.TenantID,
 			&i.ProviderID,
+			&i.UpstreamProtocol,
 			&i.ChannelID,
 			&i.CapConcurrency,
 			&i.InFlightCount,

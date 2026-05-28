@@ -42,10 +42,11 @@ func (s *DBAccountSource) ListAccounts(ctx context.Context, req SelectionRequest
 		required = []string{}
 	}
 	rows, err := s.q.ListEligibleAccountsByPoolGroup(ctx, dbbilling.ListEligibleAccountsByPoolGroupParams{
-		TenantID:             req.TenantID,
-		PoolGroupID:          req.PoolGroupID,
-		RequestedModel:       req.RequestedModel,
-		RequiredCapabilities: required,
+		TenantID:                req.TenantID,
+		PoolGroupID:             req.PoolGroupID,
+		RequestedModel:          req.RequestedModel,
+		RequestedProtocolFamily: req.ProtocolFamily,
+		RequiredCapabilities:    required,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("pool: list eligible accounts: %w", err)
@@ -55,6 +56,7 @@ func (s *DBAccountSource) ListAccounts(ctx context.Context, req SelectionRequest
 		snap := &AccountSnapshot{
 			ID:             r.ID,
 			TenantID:       r.TenantID,
+			ProtocolFamily: r.UpstreamProtocol,
 			Priority:       int(r.Priority),
 			MaxConcurrency: int(r.CapConcurrency),
 			LoadRate:       loadRate(r.InFlightCount, r.CapConcurrency),

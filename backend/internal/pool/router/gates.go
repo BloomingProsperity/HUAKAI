@@ -11,6 +11,7 @@ const (
 	GateFailureTenantFilter        GateFailureReason = "tenant_filter"
 	GateFailureLifecycle           GateFailureReason = "lifecycle"
 	GateFailureChannel             GateFailureReason = "channel"
+	GateFailureProtocolFamily      GateFailureReason = "protocol_family"
 	GateFailureModel               GateFailureReason = "model"
 	GateFailureCapability          GateFailureReason = "capability"
 	GateFailureCredential          GateFailureReason = "credential"
@@ -45,6 +46,7 @@ type HealthStatusGate interface {
 type TenantGate interface{ Gate }
 type LifecycleGate interface{ Gate }
 type ChannelGate interface{ Gate }
+type ProtocolFamilyGate interface{ Gate }
 type ModelSupportGate interface{ Gate }
 type CapabilityGate interface{ Gate }
 type CredentialGate interface{ Gate }
@@ -56,6 +58,7 @@ type GateChain struct {
 	Tenant      TenantGate
 	Lifecycle   LifecycleGate
 	Channel     ChannelGate
+	Protocol    ProtocolFamilyGate
 	Model       ModelSupportGate
 	Capability  CapabilityGate
 	Credential  CredentialGate
@@ -67,7 +70,7 @@ type GateChain struct {
 func DefaultGateChain() GateChain {
 	g := AllowAllGate{}
 	return GateChain{
-		Tenant: g, Lifecycle: g, Channel: g, Model: g, Capability: g,
+		Tenant: g, Lifecycle: g, Channel: g, Protocol: protocolFamilyGate{}, Model: g, Capability: g,
 		Credential: g, Health: ProviderAccountHealthGate{}, GroupPolicy: g, Exclusion: exclusionGate{},
 	}
 }
@@ -93,6 +96,9 @@ func (c GateChain) ordered() []namedGate {
 	if c.Channel == nil {
 		c.Channel = d.Channel
 	}
+	if c.Protocol == nil {
+		c.Protocol = d.Protocol
+	}
 	if c.Model == nil {
 		c.Model = d.Model
 	}
@@ -115,6 +121,7 @@ func (c GateChain) ordered() []namedGate {
 		{c.Tenant, GateFailureTenantFilter},
 		{c.Lifecycle, GateFailureLifecycle},
 		{c.Channel, GateFailureChannel},
+		{c.Protocol, GateFailureProtocolFamily},
 		{c.Model, GateFailureModel},
 		{c.Capability, GateFailureCapability},
 		{c.Credential, GateFailureCredential},
@@ -139,6 +146,18 @@ func (g namedGate) reason(reason GateFailureReason) GateFailureReason {
 type AllowAllGate struct{}
 
 func (AllowAllGate) Allow(context.Context, *AccountSnapshot, SelectionRequest) (bool, GateFailureReason, error) {
+	return true, "", nil
+}
+
+type protocolFamilyGate struct{}
+
+func (protocolFamilyGate) Allow(_ context.Context, account *AccountSnapshot, req SelectionRequest) (bool, GateFailureReason, error) {
+	if req.ProtocolFamily == "" {
+		return true, "", nil
+	}
+	if account == nil || account.ProtocolFamily != req.ProtocolFamily {
+		return false, GateFailureProtocolFamily, nil
+	}
 	return true, "", nil
 }
 

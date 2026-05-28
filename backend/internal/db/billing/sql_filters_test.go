@@ -18,6 +18,21 @@ func TestListEligibleAccountsByPoolGroupSQLFiltersChannelLifecycle(t *testing.T)
 	}
 }
 
+func TestListEligibleAccountsByPoolGroupSQLFiltersProviderProtocolFamily(t *testing.T) {
+	sql := strings.Join(strings.Fields(listEligibleAccountsByPoolGroup), " ")
+	for _, want := range []string{
+		"INNER JOIN providers p ON p.id = pa.provider_id",
+		"p.tenant_id = pa.tenant_id",
+		"p.deleted_at IS NULL",
+		"p.upstream_protocol = $4",
+	} {
+		// Mutation: dropping the provider-family predicate lets both provider families through.
+		if !strings.Contains(sql, want) {
+			t.Fatalf("ListEligibleAccountsByPoolGroup SQL missing provider protocol filter %q in %q", want, sql)
+		}
+	}
+}
+
 func TestBillingSettingsSQLTenantScoped(t *testing.T) {
 	for name, sqlText := range map[string]string{
 		"get":        getBillingSetting,
