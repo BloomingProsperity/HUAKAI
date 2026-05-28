@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/protosse"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
@@ -129,7 +130,12 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 	}
 	responseEnv, respLosses, err := upstreamAdapter.ProviderResponseToCanonical(ctx, raw)
 	if err != nil {
-		return nil, fmt.Errorf("dispatcher: ProviderResponseToCanonical 失败: %w", err)
+		if reconstructedEnv, reconstructedLosses, ok := protosse.ReconstructBufferedFromSSE(upstreamAdapter, raw); ok && reconstructedEnv != nil {
+			responseEnv = reconstructedEnv
+			respLosses = reconstructedLosses
+		} else {
+			return nil, fmt.Errorf("dispatcher: ProviderResponseToCanonical 失败: %w", err)
+		}
 	}
 	if responseEnv == nil || responseEnv.BufferedResponse == nil {
 		return nil, errors.New("dispatcher: upstream adapter 未返回 buffered_response")

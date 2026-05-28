@@ -20,6 +20,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/protosse"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
@@ -54,11 +55,11 @@ type ChatHandlerDeps struct {
 	// 但 Tx2 settlement 未确认提交)的 durable 兜底 enqueue;nil 时 stream
 	// path 失败只 log,money path 灰区无可补救。生产部署必须 wire 上
 	// dlq.Service(见 cmd/gateway/routes.go SettleRecoveryDLQ: d.dlqService)。
-	SettleRecoveryDLQ settlementrecovery.Enqueuer
-	Signer            *sign.Signer
-	ChannelHealth         channelHealthRecorder
-	BillingPolicyVersion  string
-	RequestClass          string
+	SettleRecoveryDLQ    settlementrecovery.Enqueuer
+	Signer               *sign.Signer
+	ChannelHealth        channelHealthRecorder
+	BillingPolicyVersion string
+	RequestClass         string
 
 	// EndpointFamily 标记 billing 字段；空字符串退化为 "chat"。
 	// /v1/chat/completions: "chat"
@@ -329,14 +330,18 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 	}
 	bufferedEnv, _, err := upstreamAdapter.ProviderResponseToCanonical(seedCtx, raw)
 	if err != nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "canonical_response_error", ex.requestID, 0); abortErr != nil {
-			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
+		if reconstructedEnv, _, ok := protosse.ReconstructBufferedFromSSE(upstreamAdapter, raw); ok && reconstructedEnv != nil {
+			bufferedEnv = reconstructedEnv
+		} else {
+			if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "canonical_response_error", ex.requestID, 0); abortErr != nil {
+				setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
+			}
+			if ex.healthKeyOK {
+				recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, nil)
+			}
+			writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadGateway, clienterr.CodeCanonicalResponseError, err)
+			return nil, nil, false
 		}
-		if ex.healthKeyOK {
-			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, nil)
-		}
-		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadGateway, clienterr.CodeCanonicalResponseError, err)
-		return nil, nil, false
 	}
 	if bufferedEnv != nil {
 		_ = seed.ApplyToRequestMeta(&bufferedEnv.RequestMeta)
