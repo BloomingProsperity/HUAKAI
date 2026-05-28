@@ -176,6 +176,10 @@ func (ex *chatExecution) reserveClaim(w http.ResponseWriter) bool {
 			"same logical_request_id with different normalized payload")
 		return false
 	}
+	if errors.Is(err, billing.ErrInsufficientBalance) {
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusPaymentRequired, clienterr.CodeReserveError, err)
+		return false
+	}
 	if err != nil {
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, clienterr.CodeReserveError, err)
 		return false

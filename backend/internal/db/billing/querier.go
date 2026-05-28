@@ -15,6 +15,9 @@ type Querier interface {
 	// 首次写入时目标行还不存在, FOR UPDATE 无法锁住空行; 先拿事务级顾问锁
 	// 按租户和设置键串行化同一设置的读改写, 提交或回滚后自动释放。
 	AcquireBillingSettingLock(ctx context.Context, arg AcquireBillingSettingLockParams) error
+	ApplyBalanceHoldCapture(ctx context.Context, arg ApplyBalanceHoldCaptureParams) (ApplyBalanceHoldCaptureRow, error)
+	ApplyBalanceHoldRelease(ctx context.Context, arg ApplyBalanceHoldReleaseParams) (ApplyBalanceHoldReleaseRow, error)
+	CaptureBalanceHold(ctx context.Context, arg CaptureBalanceHoldParams) (int64, error)
 	CountAuditEvents(ctx context.Context, arg CountAuditEventsParams) (int64, error)
 	CountBillingClaims(ctx context.Context, arg CountBillingClaimsParams) (int64, error)
 	// Operator overview: how many claims are in each status for one tenant.
@@ -26,6 +29,7 @@ type Querier interface {
 	DeleteExpiredStickyBindings(ctx context.Context) error
 	DeletePool(ctx context.Context, arg DeletePoolParams) (PoolGroup, error)
 	GetAccountForRevalidation(ctx context.Context, arg GetAccountForRevalidationParams) (GetAccountForRevalidationRow, error)
+	GetBalanceHoldForUpdate(ctx context.Context, claimID int64) (GetBalanceHoldForUpdateRow, error)
 	// Case C 计费策略租户级设置的增删改查。表见 migration 0046。
 	// 按租户和设置键读取单个计费设置。
 	GetBillingSetting(ctx context.Context, arg GetBillingSettingParams) (BillingSetting, error)
@@ -59,6 +63,7 @@ type Querier interface {
 	GetModelRoutingForGroup(ctx context.Context, arg GetModelRoutingForGroupParams) ([]GetModelRoutingForGroupRow, error)
 	GetPool(ctx context.Context, arg GetPoolParams) (PoolGroup, error)
 	GetStickyBinding(ctx context.Context, arg GetStickyBindingParams) (int64, error)
+	GetUserBalance(ctx context.Context, arg GetUserBalanceParams) (GetUserBalanceRow, error)
 	IncrementInFlightCount(ctx context.Context, arg IncrementInFlightCountParams) (int64, error)
 	// Spec §Tx2 step 13: audit-grade event row in same Tx; survives Usage Record
 	// async failure (per F-OBS-001 H8). event_type per CHECK constraint.
@@ -107,6 +112,8 @@ type Querier interface {
 	//   - model_allow_list 空 数组 → 无限制
 	//   - model_allow_list 非空 → 必须包含 requested_model
 	//   - capability_flags 必须包含 required_capabilities 全集 (空 req → 自动 true)
+	//   - requested_protocol_family 为空 → legacy bypass
+	//   - requested_protocol_family 非空 → 必须匹配 providers.upstream_protocol
 	ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListEligibleAccountsByPoolGroupParams) ([]ListEligibleAccountsByPoolGroupRow, error)
 	ListOrphanedAcquisitions(ctx context.Context) ([]PoolSlotAcquisition, error)
 	ListPools(ctx context.Context, arg ListPoolsParams) ([]PoolGroup, error)
@@ -128,6 +135,7 @@ type Querier interface {
 	// would violate uq_claims_idempotency). attempt_seq increments so audits
 	// can count retries. Returns the row's id and bumped attempt_seq.
 	ReReserveAbortedClaim(ctx context.Context, arg ReReserveAbortedClaimParams) (ReReserveAbortedClaimRow, error)
+	ReleaseBalanceHold(ctx context.Context, claimID int64) (int64, error)
 	ReleaseSlotAcquisition(ctx context.Context, arg ReleaseSlotAcquisitionParams) error
 	// Spec §Tx2 step 14: TRULY IDEMPOTENT in_flight decrement (codex P1 review fix).
 	// Atomic CTE: flip pool_slot_acquisitions.status acquired -> released_success
@@ -136,6 +144,9 @@ type Querier interface {
 	// is no longer 'acquired'; the outer UPDATE no-ops; in_flight_count stays correct.
 	// $2 = release_reason text ('settled_committed' / 'settled_aborted' / etc.)
 	ReleaseSlotAndDecrementInFlight(ctx context.Context, arg ReleaseSlotAndDecrementInFlightParams) (int64, error)
+	// F-OBS-001 balance hold queries for durable atomic debit.
+	ReserveBalanceHold(ctx context.Context, arg ReserveBalanceHoldParams) (ReserveBalanceHoldRow, error)
+	SelectExpiredReservingClaims(ctx context.Context, batchSize int32) ([]SelectExpiredReservingClaimsRow, error)
 	// Abort path: claim status reserving → aborted; usage_record/billing_event
 	// still written (with zero cost) for audit completeness.
 	// Tenant-scoped to prevent cross-tenant abort via stale claim id.
@@ -144,9 +155,13 @@ type Querier interface {
 	// codex chunk7 P1#4: tenant_id 显式 caller 提供, 防全局 id 跨租户误 commit。
 	UpdateClaimCommitted(ctx context.Context, arg UpdateClaimCommittedParams) (int64, error)
 	UpdatePool(ctx context.Context, arg UpdatePoolParams) (PoolGroup, error)
+	UpsertBalanceHold(ctx context.Context, arg UpsertBalanceHoldParams) error
 	// 写入或更新单个计费设置; updated_at 总是以数据库时间刷新。
 	UpsertBillingSetting(ctx context.Context, arg UpsertBillingSettingParams) (BillingSetting, error)
 	UpsertStickyBinding(ctx context.Context, arg UpsertStickyBindingParams) error
+	// 区分 ReserveBalanceHold 返 0 行的两种情形:无余额行(未启用余额强制 → 放行,
+	// opt-in) vs 行在但 (balance-held)<cost(余额不足 → 402)。
+	UserBalanceExists(ctx context.Context, arg UserBalanceExistsParams) (bool, error)
 	// Pattern B placeholder writeback per F-POOL-001 §6 + F-OBS-001 §Tx1 step 6.
 	// Pool acquire returns; we set provider_account_id + acquisition_token onto
 	// the existing reserving claim row.

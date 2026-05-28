@@ -9,12 +9,15 @@ package billing
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
+
+var ErrInsufficientBalance = errors.New("billing: insufficient balance")
 
 // ClaimGate runs the Tx1 reservation transaction per spec §Tx1.
 type ClaimGate interface {
@@ -126,6 +129,11 @@ type RefundResult struct {
 	BillingEventID int64
 	AdjustmentRef  string
 	Idempotent     bool
+	// BalanceCredited 标识**本次调用**是否实际回补了 user_balances 余额行(per-call
+	// 语义,非"是否曾被回补")。opt-in 余额强制下未 provision 余额行的用户为 false
+	// (无行可补,合法 no-op);幂等重放(Idempotent=true)时也为 false——本次调用未再
+	// 回补(原始调用若回补过,效果已落),与 Idempotent 标志一致。
+	BalanceCredited bool
 }
 
 // TODO(phase-e): replace placeholder pricing with versioned pricing tables,

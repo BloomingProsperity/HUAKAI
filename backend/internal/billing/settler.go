@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/balancehold"
 	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
@@ -243,12 +244,17 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 	if rows == 0 {
 		return nil, ErrClaimNotReserving
 	}
+	snap, err := balancehold.Capture(ctx, tx, claim.ID, actualCost)
+	if err != nil {
+		return nil, fmt.Errorf("billing: capture hold: %w", err)
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("billing: commit Tx2: %w", err)
 	}
+
 	cachemetrics.ObserveStreamState(attempt.State.String(), req.Provider, coalesceString(req.UpstreamModel, req.RequestedModel))
-	return &SettleResult{NewUserBalance: decimal.Zero, OutboxEventsEnqueued: outboxEvents}, nil
+	return &SettleResult{NewUserBalance: snap.Balance, OutboxEventsEnqueued: outboxEvents}, nil
 }
 
 func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string, observedInputTokens int64) error {
@@ -296,6 +302,9 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 	}
 	if rows == 0 {
 		return ErrClaimNotReserving
+	}
+	if _, err := balancehold.Release(ctx, tx, claimID); err != nil {
+		return fmt.Errorf("billing: release hold: %w", err)
 	}
 	abortEndClass := "unknown_termination"
 	abortUsageSource := string(gateway.UsageSourceInferred)
@@ -438,6 +447,9 @@ func (s *DefaultSettler) CommitCacheHit(ctx context.Context, req SettleRequest) 
 	}
 	if rows == 0 {
 		return ErrClaimNotReserving
+	}
+	if _, err := balancehold.Capture(ctx, tx, req.ClaimID, decimal.Zero); err != nil {
+		return fmt.Errorf("billing: capture hold for cache hit: %w", err)
 	}
 
 	// 非流式成功结清: stream_state partial (与 AccountID!=0 的 cache-hit Settle
@@ -587,14 +599,15 @@ LIMIT 1`,
 		fingerprint string
 		status      string
 		actualCost  decimal.Decimal
+		userID      int64
 	)
 	if err := tx.QueryRow(ctx, `
-SELECT request_fingerprint, status, actual_cost
+SELECT request_fingerprint, status, actual_cost, user_id
 FROM billing_ledger_claims
 WHERE tenant_id = $1 AND id = $2
 FOR UPDATE`,
 		req.TenantID, req.ClaimID,
-	).Scan(&fingerprint, &status, &actualCost); err != nil {
+	).Scan(&fingerprint, &status, &actualCost, &userID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrClaimNotReserving
 		}
@@ -659,13 +672,30 @@ WHERE tenant_id = $1 AND claim_id = $2 AND event_type = 'reconciliation_appended
 	if err != nil {
 		return nil, fmt.Errorf("billing: insert refund event: %w", err)
 	}
+	// opt-in 余额强制(Owner 2026-05-28 选 A):仅对已 provision user_balances 行的
+	// 用户回补退款。RowsAffected()==0 = 该用户未纳入余额强制(无行)→ 退款
+	// reconciliation 事件已记、无余额行可补,是合法 no-op(非静默假成功:此处显式
+	// 承认 RowsAffected,回应 #8 P2)。已 provision 用户(1 行)正常回补。
+	creditTag, err := tx.Exec(ctx,
+		`UPDATE user_balances
+		 SET balance = balance + $1, version = version + 1
+		 WHERE tenant_id = $2 AND user_id = $3`,
+		refundUSD,
+		req.TenantID,
+		userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("billing: credit refund to user balance: %w", err)
+	}
+	refundBalanceCredited := creditTag.RowsAffected() > 0
 	if err := s.enqueueBillingEventReplica(ctx, tx, row, refundEventParams); err != nil {
 		return nil, err
 	}
 	return &RefundResult{
-		RefundMicroUSD: refundMicros,
-		BillingEventID: row.ID,
-		AdjustmentRef:  billingAdjustmentRef(row.ID),
+		RefundMicroUSD:  refundMicros,
+		BillingEventID:  row.ID,
+		AdjustmentRef:   billingAdjustmentRef(row.ID),
+		BalanceCredited: refundBalanceCredited,
 	}, nil
 }
 
