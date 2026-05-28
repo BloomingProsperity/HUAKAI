@@ -18,7 +18,10 @@ License verification dates and evidence IDs are recorded in [07_REFERENCE_EVIDEN
 
 | Reference | Repository | SPDX License | Role |
 | --- | --- | --- | --- |
-| one-api | github.com/songquanpeng/one-api | MIT | Anchor reference. New API was forked from one-api. Reading one-api source is license-compatible with this MIT project. one-api may be cited in the parity matrix without copyleft contamination concerns, subject to standard attribution and clean-room methodology choice. |
+| LiteLLM | github.com/BerriAI/litellm | MIT | Anchor reference (MIT-safe, actively maintained). Reading LiteLLM source is license-compatible with this MIT project; may be cited in the parity matrix without copyleft concerns, subject to standard attribution + clean-room methodology. |
+| Portkey gateway | github.com/Portkey-AI/gateway | MIT | Anchor reference (MIT-safe, actively maintained). License-compatible; citable in parity matrix subject to clean-room methodology. |
+
+> **one-api RETIRED as anchor/forward reference 2026-05-28** (abandoned, last commit 2025-02-21; superseded by New API). Historical one-api evidence in [07_REFERENCE_EVIDENCE_LEDGER.md](07_REFERENCE_EVIDENCE_LEDGER.md) remains valid provenance; do NOT use one-api as a NEW reference or clean-room anchor.
 
 ## Additional References
 
@@ -28,7 +31,7 @@ Agents may consider similar high-star, actively maintained open-source AI gatewa
 - Portkey-AI/gateway (TypeScript, MIT — verified E-LIC-006).
 - Helicone/ai-gateway (Rust, **GPL-3.0-or-later — verified E-LIC-007**, NOT Apache-2.0 as marketing pages sometimes claim).
 - Cloudflare AI Gateway (proprietary; public docs only).
-- songquanpeng/one-api (Go, MIT, anchor — see above).
+- songquanpeng/one-api (Go, MIT) — RETIRED 2026-05-28 (abandoned; superseded by New API). Historical evidence only.
 
 Each candidate must be added to this table with verified SPDX before being used as evidence.
 

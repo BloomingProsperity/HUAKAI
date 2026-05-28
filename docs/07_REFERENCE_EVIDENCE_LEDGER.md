@@ -24,6 +24,8 @@ Establishing the license tier of every primary reference is a prerequisite to an
 
 ## Behavior Evidence — one-api (MIT, E-LIC-004)
 
+> **RETIRED as a forward reference 2026-05-28** (abandoned, last upstream commit 2025-02-21; superseded by active fork New API). The evidence below remains valid HISTORICAL PROVENANCE for already-mined HUAKAI features; do NOT cite one-api for NEW reference comparisons or decisions.
+
 First batch from one-api public README (Phase 1 kickoff, 2026-04-28). Specifier lane: Claude. License-tier-safe: source is MIT, full read permitted.
 
 | Evidence ID | Reference | Source Type | Observed Behavior Or Scenario | Feature Candidate | Risk Notes | Clean-Room Notes | Date | Agent |

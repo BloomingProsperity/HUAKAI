@@ -12,18 +12,21 @@ This policy operationalizes that maintenance discipline as a binding rule: every
 
 ## Tracked References
 
-The same 8 references mined in Phase 1, with their tracking handles:
+The actively-maintained references tracked (one-api retired 2026-05-28 — see Reference Eligibility below):
 
 | Reference | License | GitHub repo | Release feed | Issue feed | Tracking owner |
 | --- | --- | --- | --- | --- | --- |
 | Sub2API | LGPL-3.0 | [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api) | `/releases.atom` | `/issues.atom` | Claude PM |
-| one-api | MIT | [songquanpeng/one-api](https://github.com/songquanpeng/one-api) | `/releases.atom` | `/issues.atom` | Claude PM |
 | New API | AGPL-3.0 | [QuantumNous/new-api](https://github.com/QuantumNous/new-api) | `/releases.atom` | `/issues.atom` | Claude PM |
 | LiteLLM | MIT | [BerriAI/litellm](https://github.com/BerriAI/litellm) | `/releases.atom` | `/issues.atom` | Claude PM |
 | Portkey | MIT | [Portkey-AI/gateway](https://github.com/Portkey-AI/gateway) | `/releases.atom` | `/issues.atom` | Claude PM |
 | Helicone | GPL-3.0 | [Helicone/ai-gateway](https://github.com/Helicone/ai-gateway) | `/releases.atom` | `/issues.atom` | Claude PM |
 | Envoy AI Gateway | Apache-2.0 | [envoyproxy/ai-gateway](https://github.com/envoyproxy/ai-gateway) | `/releases.atom` | `/issues.atom` | Claude PM |
 | All API Hub | AGPL-3.0 | [qixing-jk/all-api-hub](https://github.com/qixing-jk/all-api-hub) | `/releases.atom` | `/issues.atom` | Gemini (UI ops) |
+
+## Reference Eligibility (added 2026-05-28 Owner directive)
+
+Tracked references MUST be actively maintained. A reference that becomes abandoned or is superseded by an active fork is RETIRED from this list (its historical evidence is preserved in [07_REFERENCE_EVIDENCE_LEDGER.md](07_REFERENCE_EVIDENCE_LEDGER.md) as provenance, but it is no longer tracked, cited for new decisions, or used as a clean-room anchor). **Retired:** one-api (last upstream commit 2025-02-21, ~15 months stale; superseded by its active fork New API). Re-examine all references for maintenance status periodically; prune the abandoned ones.
 
 ## Cadence
 

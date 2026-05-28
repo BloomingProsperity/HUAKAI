@@ -30,6 +30,8 @@ This separation is intentional. If we forced Disposition to track Status (e.g. a
 
 ## Mined Features — Phase 1 First Batch (one-api)
 
+> Note: one-api was RETIRED as a forward reference 2026-05-28 (abandoned; superseded by New API). These already-mined features remain valid HUAKAI requirements; their provenance is historical. Do not cite one-api for new decisions.
+
 First mapping pass, 2026-04-28. Each row references one or more `E-OAI-*` evidence rows in [07_REFERENCE_EVIDENCE_LEDGER.md](07_REFERENCE_EVIDENCE_LEDGER.md). Capabilities map to [02_CAPABILITY_CONTRACT.md](02_CAPABILITY_CONTRACT.md). Test IDs are placeholders pending [11_ACCEPTANCE_TEST_MATRIX.md](11_ACCEPTANCE_TEST_MATRIX.md) population.
 
 | Feature ID | Reference | Evidence ID | User Outcome | Risk | Disposition | Local Capability | Test ID | Owner | Status |

@@ -56,7 +56,7 @@ Per [DR-000](process/decisions/DR-000-clean-room-methodology.md) (Decided 2026-0
 | Lane | Reads | Produces | Typical agent role |
 | --- | --- | --- | --- |
 | Specifier (dirty) | Public docs, issues, source from non-MIT references | Abstract specs in `docs/specs/` (no code) | Claude or Codex (per task assignment) |
-| Implementer (clean) | Project docs, specs from `docs/specs/`, MIT anchor reference (one-api) | All code, schema, UI, tests | Claude (architecture/lead), Gemini (UI), Codex (small patches/tests) |
+| Implementer (clean) | Project docs, specs from `docs/specs/`, MIT anchor references (LiteLLM / Portkey) | All code, schema, UI, tests | Claude (architecture/lead), Gemini (UI), Codex (small patches/tests) |
 
 Lane assignment is per-task, not per-agent. Agents may serve in either lane depending on the task, but never in both lanes within the same session. Once an agent session has been used for specifier work (i.e. has read non-MIT source), its conversation context is contamination-state — open a new session before doing implementer work.
 

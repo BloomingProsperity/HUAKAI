@@ -117,7 +117,7 @@ Admin / Frontend:          ░░░░░░░░░░░░░░░░░�
 | 项目 | License | 风险 | 角色 | 当前状态 |
 |---|---|---|---|---|
 | **Sub2API** | LGPL-3.0 | 🟠 | 身份范本 + 计费 claim gate 范式 | inventory + 3 prose decomposition |
-| **one-api** | MIT | 🟢 | 安全锚点 + 基础架构 | inventory（双方）+ 跨职能 quota prose |
+| **one-api** | MIT | 🟢 | RETIRED 2026-05-28（已废弃；被活跃 fork New API 取代；仅历史证据） | inventory（双方）+ 跨职能 quota prose |
 | New API | AGPL-3.0 | 🔴 | cache-aware 计费 + 协议翻译矩阵 | inventory（双方）;  ❌ 完整源码深拆 |
 | LiteLLM | MIT | 🟢 | retry/router/concurrency 范式 | inventory（双方）+ Codex deep |
 | Portkey | MIT | 🟢 | guardrail + 语义缓存 | inventory（双方）;  ❌ 完整源码深拆 |
