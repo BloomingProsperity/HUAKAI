@@ -593,6 +593,17 @@ func TestServiceReserve_ConcurrentDifferentClaimsRetrySerializableConflict(t *te
 		f.seedClaim("reserve-concurrent-different-a"),
 		f.seedClaim("reserve-concurrent-different-b"),
 	}
+	blocker, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		t.Fatalf("begin policy blocker tx: %v", err)
+	}
+	defer func() { _ = blocker.Rollback(context.Background()) }()
+	if _, err := blocker.Exec(ctx,
+		`SELECT 1 FROM quota_policies WHERE tenant_id=$1 AND id=$2 FOR UPDATE`,
+		f.tenantID, policyID,
+	); err != nil {
+		t.Fatalf("lock policy before concurrent reserve: %v", err)
+	}
 	reqs := [2]ReserveRequest{
 		{
 			TenantID:           f.tenantID,
@@ -628,6 +639,12 @@ func TestServiceReserve_ConcurrentDifferentClaimsRetrySerializableConflict(t *te
 		}()
 	}
 	close(start)
+	// 先用独立事务持有 policy row, 让两个 reserve 事务都在同一旧快照下排队;
+	// 释放后一个事务写入窗口, 另一个会在同窗口 upsert/update 上触发 40001。
+	time.Sleep(150 * time.Millisecond)
+	if err := blocker.Commit(ctx); err != nil {
+		t.Fatalf("release policy blocker tx: %v", err)
+	}
 	wg.Wait()
 
 	seenReservations := map[int64]bool{}
