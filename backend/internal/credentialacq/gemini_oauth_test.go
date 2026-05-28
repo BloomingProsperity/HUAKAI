@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/google/uuid"
 )
 
 // 缺陷：Gemini public CLI profile 若不强制 operator 填 client_secret，会退回不符合 D-1=A 的 PKCE-only。
@@ -159,6 +160,149 @@ func TestGeminiRedirectURIAcceptsHTTPSAdminCallbackFromAllowlist(t *testing.T) {
 	}
 	if err := validateGeminiRedirectURIWithHTTPSAdminAllowlist("https://attacker.test/admin/v1/credentials/oauth-callback", allowlist); !errors.Is(err, ErrFeatureDisabled) {
 		t.Fatalf("err=%v want ErrFeatureDisabled for non-allowlisted admin callback", err)
+	}
+}
+
+// 缺陷：admin HTTPS callback allowlist 若静默剥离 fragment，攻击者可把
+// #evil 形式的 redirect_uri 伪装成裸 allowlist 路径通过校验。
+// 判别 mutation：geminiAdminCallbackAllowlistKey 退回 parsed.Fragment = "" 时，本测试必须变红。
+func TestGeminiRedirectURIRejectsFragmentEvenWhenPathAllowlisted(t *testing.T) {
+	allowlist := []string{"https://huakai.example/admin/v1/credentials/oauth-callback"}
+	if err := validateGeminiRedirectURIWithHTTPSAdminAllowlist("https://huakai.example/admin/v1/credentials/oauth-callback", allowlist); err != nil {
+		t.Fatalf("bare allowlisted admin callback rejected: %v", err)
+	}
+	err := validateGeminiRedirectURIWithHTTPSAdminAllowlist("https://huakai.example/admin/v1/credentials/oauth-callback#evil", allowlist)
+	if !errors.Is(err, ErrFeatureDisabled) {
+		t.Fatalf("err=%v want ErrFeatureDisabled for fragment-bearing admin callback", err)
+	}
+}
+
+// 缺陷：url.Query 会吞掉畸形 query pair，导致 evil=%zz 被规范化成裸 allowlist key 通过。
+// 判别 mutation：geminiAdminCallbackAllowlistKey 退回 parsed.Query() 时，两个畸形 query 断言必须变红。
+func TestGeminiRedirectURIRejectsMalformedQueryEvenWhenPathAllowlisted(t *testing.T) {
+	const flowID = "11111111-1111-4111-8111-111111111111"
+	allowlist := []string{"https://huakai.example/admin/v1/credentials/oauth-callback"}
+
+	if err := validateGeminiRedirectURIWithHTTPSAdminAllowlist("https://huakai.example/admin/v1/credentials/oauth-callback", allowlist); err != nil {
+		t.Fatalf("bare allowlisted admin callback rejected: %v", err)
+	}
+	if err := validateGeminiRedirectURIWithHTTPSAdminAllowlist("https://huakai.example/admin/v1/credentials/oauth-callback?flow_id="+flowID, allowlist); err != nil {
+		t.Fatalf("single flow_id admin callback rejected: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{
+			name: "malformed_extra_query",
+			raw:  "https://huakai.example/admin/v1/credentials/oauth-callback?evil=%zz",
+		},
+		{
+			name: "flow_id_plus_malformed_extra_query",
+			raw:  "https://huakai.example/admin/v1/credentials/oauth-callback?flow_id=" + flowID + "&evil=%zz",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateGeminiRedirectURIWithHTTPSAdminAllowlist(tc.raw, allowlist)
+			if !errors.Is(err, ErrFeatureDisabled) {
+				t.Fatalf("err=%v want ErrFeatureDisabled for malformed admin callback query %q", err, tc.raw)
+			}
+		})
+	}
+}
+
+// 缺陷：admin HTTPS callback allowlist key 若容忍 URL userinfo，https://attacker@host 会伪装成同 host/path。
+// 判别 mutation：删除 parsed.User != nil 检查时，本测试必须变红。
+func TestGeminiRedirectURIRejectsUserInfoEvenWhenPathAllowlisted(t *testing.T) {
+	allowlist := []string{"https://huakai.example/admin/v1/credentials/oauth-callback"}
+	const raw = "https://attacker@huakai.example/admin/v1/credentials/oauth-callback"
+
+	err := validateGeminiRedirectURIWithHTTPSAdminAllowlist(raw, allowlist)
+	if !errors.Is(err, ErrFeatureDisabled) {
+		t.Fatalf("err=%v want ErrFeatureDisabled for userinfo-bearing admin callback", err)
+	}
+	if key, ok := geminiAdminCallbackAllowlistKey(raw); ok {
+		t.Fatalf("allowlist key accepted userinfo-bearing URL: key=%q", key)
+	}
+}
+
+// 缺陷：admin HTTPS callback 的 provider redirect 只会带 state/code；如果
+// authorize request 的 redirect_uri 没保留 flow_id，helper callback 不能查回 session。
+// 判别 mutation：buildGeminiAuthorizeURL 不调用 geminiRedirectURIWithFlowID 时，本测试必须变红。
+func TestGeminiHTTPSAdminRedirectPreservesFlowID(t *testing.T) {
+	const flowID = "11111111-1111-4111-8111-111111111111"
+	cfg := geminiBuiltinProfileConfig(OAuthClientConfig{
+		ClientSecret: "operator-secret",
+		RedirectURI:  "https://huakai.example/admin/v1/credentials/oauth-callback",
+	})
+
+	redirectURL := geminiAuthorizeRedirectURL(t, buildGeminiAuthorizeURL(cfg, "state", "challenge", flowID))
+	if got := redirectURL.EscapedPath(); got != geminiAdminCallbackPath {
+		t.Fatalf("redirect path=%q want %q", got, geminiAdminCallbackPath)
+	}
+	if got := redirectURL.Query().Get("flow_id"); got != flowID {
+		t.Fatalf("redirect_uri flow_id=%q want %q; redirect_uri=%s", got, flowID, redirectURL.String())
+	}
+}
+
+// 缺陷：loopback 本地模式不走 admin helper session 查询，若强行加 flow_id 会改变
+// Google public CLI loopback redirect_uri，破坏本地模式兼容。
+// 判别 mutation：geminiRedirectURIWithFlowID 对 http loopback 也加 flow_id 时，本测试必须变红。
+func TestGeminiLoopbackRedirectOmitsFlowID(t *testing.T) {
+	cfg := geminiBuiltinProfileConfig(OAuthClientConfig{
+		ClientSecret: "operator-secret",
+		RedirectURI:  geminiOAuthLoopbackRedirect,
+	})
+
+	redirectURL := geminiAuthorizeRedirectURL(t, buildGeminiAuthorizeURL(cfg, "state", "challenge", "22222222-2222-4222-8222-222222222222"))
+	if got := redirectURL.String(); got != geminiOAuthLoopbackRedirect {
+		t.Fatalf("loopback redirect_uri=%q want unchanged %q", got, geminiOAuthLoopbackRedirect)
+	}
+	if got := redirectURL.Query().Get("flow_id"); got != "" {
+		t.Fatalf("loopback redirect_uri flow_id=%q want empty; redirect_uri=%s", got, redirectURL.String())
+	}
+}
+
+// 缺陷：caller 不传 ID 时若等 store 生成 session ID，authorize redirect_uri 已经
+// 缺 flow_id，远程 admin callback 只能拿到 state/code 而无法定位 flow。
+// 判别 mutation：StartOAuthFlow 不预生成 flowID 或不写入 stored redirect_uri 时，本测试必须变红。
+func TestGeminiStartOAuthFlowGeneratesFlowIDWhenEmpty(t *testing.T) {
+	store, _ := newGeminiOAuthTestStore(t, time.Date(2026, 5, 28, 8, 0, 0, 0, time.UTC))
+	adminCallback := "https://huakai.example/admin/v1/credentials/oauth-callback"
+	exchanger := NewGeminiPublicCLIOAuthExchangerWithClientSecretAndAdminCallbackAllowlist(
+		credentialstore.AuthModeCodeAssist,
+		nil,
+		"operator-secret",
+		[]string{adminCallback},
+	).(geminiPublicCLIOAuthExchanger)
+
+	start, err := exchanger.StartOAuthFlow(context.Background(), store, geminiStartInput(credentialstore.AuthModeCodeAssist, 707), OAuthClientConfig{
+		RedirectURI: adminCallback,
+	})
+	if err != nil {
+		t.Fatalf("StartOAuthFlow: %v", err)
+	}
+	if _, err := uuid.Parse(start.Session.ID); err != nil {
+		t.Fatalf("session id=%q want generated uuid: %v", start.Session.ID, err)
+	}
+	redirectRaw := geminiAuthorizeRedirectURI(t, start.AuthorizeURL)
+	redirectURL, err := url.Parse(redirectRaw)
+	if err != nil {
+		t.Fatalf("redirect_uri parse: %v raw=%q", err, redirectRaw)
+	}
+	if got := redirectURL.Query().Get("flow_id"); got != start.Session.ID {
+		t.Fatalf("redirect_uri flow_id=%q want generated session id %q; redirect_uri=%s", got, start.Session.ID, redirectRaw)
+	}
+	if start.Session.RedirectURI != redirectRaw {
+		t.Fatalf("session redirect_uri=%q want authorize redirect_uri %q", start.Session.RedirectURI, redirectRaw)
+	}
+	stored, err := decryptStoredPKCEPayload(context.Background(), store, start.Session)
+	if err != nil {
+		t.Fatalf("decrypt stored PKCE payload: %v", err)
+	}
+	if stored.RedirectURI != redirectRaw {
+		t.Fatalf("stored redirect_uri=%q want authorize redirect_uri %q", stored.RedirectURI, redirectRaw)
 	}
 }
 
@@ -374,4 +518,27 @@ func geminiStartInput(authMode string, accountID int64) StartInput {
 		Vendor: credentialstore.VendorGemini, AuthMode: authMode,
 		ActorID: "owner", ActorRole: "platform_admin",
 	}
+}
+
+func geminiAuthorizeRedirectURI(t *testing.T, authorizeURL string) string {
+	t.Helper()
+	parsed, err := url.Parse(authorizeURL)
+	if err != nil {
+		t.Fatalf("authorize URL parse: %v url=%q", err, authorizeURL)
+	}
+	redirectRaw := parsed.Query().Get("redirect_uri")
+	if redirectRaw == "" {
+		t.Fatalf("authorize URL missing redirect_uri: %s", authorizeURL)
+	}
+	return redirectRaw
+}
+
+func geminiAuthorizeRedirectURL(t *testing.T, authorizeURL string) *url.URL {
+	t.Helper()
+	redirectRaw := geminiAuthorizeRedirectURI(t, authorizeURL)
+	redirectURL, err := url.Parse(redirectRaw)
+	if err != nil {
+		t.Fatalf("redirect_uri parse: %v raw=%q", err, redirectRaw)
+	}
+	return redirectURL
 }

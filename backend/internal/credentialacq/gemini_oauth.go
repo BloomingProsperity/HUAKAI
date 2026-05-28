@@ -14,6 +14,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/google/uuid"
 )
 
 const (
@@ -97,13 +98,20 @@ func (e geminiPublicCLIOAuthExchanger) StartOAuthFlow(ctx context.Context, store
 	if err := e.validateBuiltinProfile(cfg); err != nil {
 		return OAuthStartResult{}, err
 	}
+	flowID := strings.TrimSpace(in.ID)
+	if flowID == "" {
+		flowID = uuid.NewString()
+	}
+	cfg.RedirectURI = geminiRedirectURIWithFlowID(cfg.RedirectURI, flowID)
+	in.ID = flowID
+	in.RedirectURI = cfg.RedirectURI
 	in.Vendor = credentialstore.VendorGemini
 	in.AuthMode = e.mode()
 	start, err := startStoredPKCEOAuthFlow(ctx, store, in, cfg)
 	if err != nil {
 		return OAuthStartResult{}, err
 	}
-	start.AuthorizeURL = buildGeminiAuthorizeURL(cfg, start.State, start.CodeChallenge)
+	start.AuthorizeURL = buildGeminiAuthorizeURL(cfg, start.State, start.CodeChallenge, start.Session.ID)
 	return start, nil
 }
 
@@ -261,12 +269,48 @@ func validateGeminiRedirectURIWithHTTPSAdminAllowlist(raw string, allowlist []st
 }
 
 func geminiHTTPSAdminCallbackAllowed(raw string, allowlist []string) bool {
+	want, ok := geminiAdminCallbackAllowlistKey(raw)
+	if !ok {
+		return false
+	}
 	for _, allowed := range allowlist {
-		if strings.TrimSpace(allowed) == raw {
+		got, ok := geminiAdminCallbackAllowlistKey(allowed)
+		if ok && got == want {
 			return true
 		}
 	}
 	return false
+}
+
+func geminiAdminCallbackAllowlistKey(raw string) (string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", false
+	}
+	if parsed.Fragment != "" || parsed.RawFragment != "" {
+		return "", false
+	}
+	if parsed.User != nil {
+		return "", false
+	}
+	if parsed.Opaque != "" {
+		return "", false
+	}
+	q, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		return "", false
+	}
+	for key, values := range q {
+		if key != "flow_id" {
+			return "", false
+		}
+		if len(values) != 1 || strings.TrimSpace(values[0]) == "" {
+			return "", false
+		}
+	}
+	q.Del("flow_id")
+	parsed.RawQuery = q.Encode()
+	return parsed.String(), true
 }
 
 func cloneTrimmedStrings(in []string) []string {
@@ -282,7 +326,27 @@ func cloneTrimmedStrings(in []string) []string {
 	return out
 }
 
-func buildGeminiAuthorizeURL(cfg OAuthClientConfig, state, codeChallenge string) string {
+func geminiRedirectURIWithFlowID(raw, flowID string) string {
+	trimmed := strings.TrimSpace(raw)
+	flowID = strings.TrimSpace(flowID)
+	if trimmed == "" || flowID == "" {
+		return trimmed
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return trimmed
+	}
+	if parsed.Scheme != "https" || parsed.EscapedPath() != geminiAdminCallbackPath {
+		return trimmed
+	}
+	q := parsed.Query()
+	q.Set("flow_id", flowID)
+	parsed.RawQuery = q.Encode()
+	return parsed.String()
+}
+
+func buildGeminiAuthorizeURL(cfg OAuthClientConfig, state, codeChallenge, flowID string) string {
+	cfg.RedirectURI = geminiRedirectURIWithFlowID(cfg.RedirectURI, flowID)
 	raw := BuildAuthorizeURL(cfg, state, codeChallenge)
 	if raw == "" {
 		return ""
