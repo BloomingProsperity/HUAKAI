@@ -54,6 +54,15 @@ func TestHeuristicEstimatorLongText(t *testing.T) {
 	}
 }
 
+func TestHeuristicEstimatorThinkingText(t *testing.T) {
+	blocks := []proto.CanonicalContentBlock{{Thinking: "visible thinking text from Anthropic"}}
+	got := HeuristicEstimator{}.Estimate(blocks)
+	// Mutation guard: without estimating block.Thinking, a thinking-only block estimates 0 -> RED.
+	if got <= 0 {
+		t.Fatalf("thinking estimate %d, want positive", got)
+	}
+}
+
 func TestHeuristicEstimatorToolJSON(t *testing.T) {
 	blocks := []proto.CanonicalContentBlock{{
 		Type:  "tool_use",

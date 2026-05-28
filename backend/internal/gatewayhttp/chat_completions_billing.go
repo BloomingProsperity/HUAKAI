@@ -24,7 +24,11 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
+	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
 )
+
+// Above the heuristic estimator's own noise floor; sub-floor deltas are false-positive-dominated.
+const crossCheckMinAbsTokenDelta = 50
 
 func (ex *chatExecution) handleNonStreamingResponse(w http.ResponseWriter) {
 	outcome := ex.executeNonStreamingAttempt(w)
@@ -579,6 +583,25 @@ func nonStreamingUsageDraft(env *proto.HCSF, actualCost completionCostBreakdown,
 		cacheCreationTokens = usage.CacheCreationInputTokens5m + usage.CacheCreationInputTokens1h
 	}
 	confidence := 1.0
+	pendingReconciliation := false
+	estimatedOutputTokens := 0
+	if env != nil && env.BufferedResponse != nil {
+		estimatedOutputTokens = tokencheck.HeuristicEstimator{}.Estimate(env.BufferedResponse.Content)
+	}
+	verdict := tokencheck.CrossCheck(usage.OutputTokens, estimatedOutputTokens).Verdict
+	outputTokenDelta := usage.OutputTokens - estimatedOutputTokens
+	if outputTokenDelta < 0 {
+		outputTokenDelta = -outputTokenDelta
+	}
+	if actualCost.Total.IsPositive() && outputTokenDelta >= crossCheckMinAbsTokenDelta {
+		switch verdict {
+		case tokencheck.VerdictWarn5:
+			confidence = 0.8
+		case tokencheck.VerdictFail20:
+			confidence = 0.5
+			pendingReconciliation = true
+		}
+	}
 	return gateway.UsageRecordDraft{
 		TokensInput:           usage.InputTokens,
 		TokensOutput:          usage.OutputTokens,
@@ -595,6 +618,6 @@ func nonStreamingUsageDraft(env *proto.HCSF, actualCost completionCostBreakdown,
 		UsageSource:           gateway.UsageSourceReported,
 		ConfidenceScore:       &confidence,
 		DrainOutcome:          gateway.DrainNotDrained,
-		PendingReconciliation: false,
+		PendingReconciliation: pendingReconciliation,
 	}
 }
