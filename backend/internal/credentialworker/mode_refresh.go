@@ -205,7 +205,12 @@ func (r *AccountCredentialRefresher) refreshLockedRecord(ctx context.Context, tx
 	adapter, ok := r.registry.Lookup(rec.Vendor, rec.AuthMode)
 	if !ok {
 		err := fmt.Errorf("%w: vendor=%s auth_mode=%s account_id=%d", ErrProviderAdapterMissing, rec.Vendor, rec.AuthMode, accountID)
-		_ = txStore.SaveRefreshFailure(ctx, rec, "adapter_missing", r.now().Add(time.Minute))
+		// S2-099: 不得吞掉失败状态持久化错误。若 SaveRefreshFailure 写失败,凭据的 refresh-failure 状态
+		// (冷却/重试计数/失败原因)未落库,调度器会按陈旧状态反复重试或漏报;用 errors.Join 同时上抛
+		// adapter-missing 与持久化错误,与本包 anthropicoauth refresher 的处理对齐。
+		if saveErr := txStore.SaveRefreshFailure(ctx, rec, "adapter_missing", r.now().Add(time.Minute)); saveErr != nil {
+			return errors.Join(err, saveErr)
+		}
 		return err
 	}
 	result, err := adapter.RefreshCredential(ctx, ModeRefreshInput{
@@ -217,7 +222,10 @@ func (r *AccountCredentialRefresher) refreshLockedRecord(ctx context.Context, tx
 			return nil
 		}
 		emitGeminiFallbackAudit(ctx, txStore, rec, err, false)
-		_ = txStore.SaveRefreshFailure(ctx, rec, classifyModeRefreshError(err), r.now().Add(time.Minute))
+		// S2-099: 见上,刷新失败时的状态持久化错误必须上抛,不能静默吞掉。
+		if saveErr := txStore.SaveRefreshFailure(ctx, rec, classifyModeRefreshError(err), r.now().Add(time.Minute)); saveErr != nil {
+			return errors.Join(err, saveErr)
+		}
 		return err
 	}
 	outcome := result.Outcome
