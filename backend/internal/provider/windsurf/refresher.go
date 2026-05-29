@@ -267,7 +267,10 @@ func (a RefreshAdapter) httpClient() *http.Client {
 	if a.HTTPClient != nil {
 		return a.HTTPClient
 	}
-	return http.DefaultClient
+	// S2-054: 兜底不用裸 http.DefaultClient——vendor refresher 把 refresh token(kiro/gemini 还含 client
+	// secret)POST 到 operator 配置的 token endpoint,裸 client 无拨号层 IP 校验,会被 DNS-rebind/内网地址
+	// 骗到本机或元数据服务。与已修的 gemini adapter 一致,兜底改用 SSRF-protected client。
+	return auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
 }
 
 func (a RefreshAdapter) now() time.Time {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -292,4 +293,40 @@ func (tx *recordingKiroRefreshTx) SaveRefreshFailure(_ context.Context, rec cred
 func kiroStrconvInt64(v any) string {
 	n, _ := v.(int64)
 	return strconv.FormatInt(n, 10)
+}
+
+// TestKiroRefreshAdapterSSRFBlocksInternalEndpoint guards S2-054: when no HTTPClient is injected the
+// vendor refresher must fall back to the SSRF-protected client, so an operator/credential-configured
+// token endpoint that points at loopback/internal is refused at dial time — the refresh token AND
+// client secret must NOT be POSTed to the internal listener.
+//
+// Mutation check: restore `return http.DefaultClient` in httpClient(); DefaultClient dials the literal
+// 127.0.0.1 listener, the handler is hit (hit=true) and the secret leaks → this test goes red.
+func TestKiroRefreshAdapterSSRFBlocksInternalEndpoint(t *testing.T) {
+	hit := false
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hit = true
+		_, _ = w.Write([]byte(`{"accessToken":"leaked","expiresIn":3600}`))
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() { _ = srv.Close() }()
+
+	a := RefreshAdapter{
+		TokenURL:     "http://" + ln.Addr().String() + "/token", // literal loopback IP
+		ClientID:     "cid",
+		ClientSecret: "sec",
+		Now:          func() time.Time { return time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC) },
+	}
+	_, _, err = a.RefreshForProvider(context.Background(), 1, "", []byte(`{"refresh_token":"rt"}`))
+	if err == nil {
+		t.Fatal("refresh POST to a loopback token endpoint must be blocked by the SSRF client")
+	}
+	if hit {
+		t.Fatal("SSRF client must NOT connect to the internal listener — refresh token + client secret would have leaked")
+	}
 }
