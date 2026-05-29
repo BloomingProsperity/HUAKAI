@@ -409,6 +409,7 @@ func TestNonStreamingUsageDraft_OutputTokenCrossCheckAnnotatesAuditFields(t *tes
 		name                 string
 		content              []proto.CanonicalContentBlock
 		reportedOutputTokens int
+		reasoningTokens      int
 		actualCost           completionCostBreakdown
 		wantConfidence       float64
 		wantPendingReconcile bool
@@ -420,6 +421,19 @@ func TestNonStreamingUsageDraft_OutputTokenCrossCheckAnnotatesAuditFields(t *tes
 			actualCost:           billedCost,
 			wantConfidence:       0.5,
 			wantPendingReconcile: true,
+		},
+		// S2-163-fu 判别: o1/o3 隐藏 reasoning token 占 reported OutputTokens 大头。reported
+		// = 可见估算 + 1000 reasoning；扣除 reasoning 后 visible == estimated -> OK -> 满信心。
+		// Mutation: billing.go 去掉 `- usage.ReasoningTokens` 扣减 -> visible=reported -> delta=1000
+		// >= 50 -> Fail20 -> 0.5/true -> RED。
+		{
+			name:                 "hidden reasoning tokens excluded from cross-check keep full confidence",
+			content:              blocks,
+			reportedOutputTokens: estimated + 1000,
+			reasoningTokens:      1000,
+			actualCost:           billedCost,
+			wantConfidence:       1.0,
+			wantPendingReconcile: false,
 		},
 		// Mutation guard: without the absolute-token floor, this short
 		// response would be Fail20 -> 0.5/true -> RED.
@@ -462,7 +476,7 @@ func TestNonStreamingUsageDraft_OutputTokenCrossCheckAnnotatesAuditFields(t *tes
 			env := proto.NewEmptyEnvelope()
 			env.BufferedResponse = &proto.CanonicalResponse{
 				Content: tt.content,
-				Usage:   proto.CanonicalUsage{OutputTokens: tt.reportedOutputTokens},
+				Usage:   proto.CanonicalUsage{OutputTokens: tt.reportedOutputTokens, ReasoningTokens: tt.reasoningTokens},
 			}
 
 			draft := nonStreamingUsageDraft(env, tt.actualCost, nil)

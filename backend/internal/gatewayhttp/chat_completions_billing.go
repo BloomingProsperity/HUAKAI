@@ -618,8 +618,14 @@ func nonStreamingUsageDraft(env *proto.HCSF, actualCost completionCostBreakdown,
 	if env != nil && env.BufferedResponse != nil {
 		estimatedOutputTokens = tokencheck.HeuristicEstimator{}.Estimate(env.BufferedResponse.Content)
 	}
-	verdict := tokencheck.CrossCheck(usage.OutputTokens, estimatedOutputTokens).Verdict
-	outputTokenDelta := usage.OutputTokens - estimatedOutputTokens
+	// 隐藏推理 token（o1/o3）已计入 reported OutputTokens 但客户端不可见、估算器数不到，
+	// 交叉校验须先扣除再对比可见内容估算，否则推理重的合法响应被误判 usage 不一致（S2-163-fu）。
+	visibleOutputTokens := usage.OutputTokens - usage.ReasoningTokens
+	if visibleOutputTokens < 0 {
+		visibleOutputTokens = 0
+	}
+	verdict := tokencheck.CrossCheck(visibleOutputTokens, estimatedOutputTokens).Verdict
+	outputTokenDelta := visibleOutputTokens - estimatedOutputTokens
 	if outputTokenDelta < 0 {
 		outputTokenDelta = -outputTokenDelta
 	}
