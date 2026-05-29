@@ -33,6 +33,13 @@ func (NoopEstimator) Estimate(_ []proto.CanonicalContentBlock) int {
 	return 0
 }
 
+// EstimateStreamDelta 估算单个流式 delta 对**可见**输出 token 的贡献：可见文本 + 工具参数
+// 增量字节，**排除**隐藏 reasoning 增量（ReasoningText 已由 CanonicalUsage.ReasoningTokens 单列）。
+// 供流式 token 交叉校验逐事件增量累加，避免滞留整段响应内容（S2-163-fu）。
+func EstimateStreamDelta(visibleText string, toolPartialJSON []byte) int {
+	return estimateText(visibleText) + estimateBytes(toolPartialJSON)
+}
+
 func estimateBlock(block proto.CanonicalContentBlock) int {
 	total := estimateText(block.Text)
 	total += estimateText(block.Thinking)

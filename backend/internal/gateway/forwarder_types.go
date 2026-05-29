@@ -97,6 +97,16 @@ type UsageRecordDraft struct {
 	FirstTokenLatencyMillis int64           `json:"first_token_latency_ms"`
 	TotalDurationMillis     int64           `json:"total_duration_ms"`
 
+	// ReasoningTokens / EstimatedOutputTokens / EstimatedReasoningTokens 携带流式 token 交叉校验
+	// 所需信号到 gatewayhttp 层(settle 时与 reported OutputTokens 比对,审计-only,不参与计费):
+	// ReasoningTokens = 上游报告的隐藏 reasoning（已计入 TokensOutput,交叉校验须扣除）；
+	// EstimatedOutputTokens = forwarder 逐事件累加的可见输出启发式估算；
+	// EstimatedReasoningTokens = 逐事件累加的可见 reasoning 文本估算,仅用于判断 reasoning-folding
+	// 不可知时跳过交叉校验避免误报(S2-163-fu review R2),不参与计费(S2-163-fu)。
+	ReasoningTokens          int `json:"reasoning_tokens,omitempty"`
+	EstimatedOutputTokens    int `json:"estimated_output_tokens,omitempty"`
+	EstimatedReasoningTokens int `json:"estimated_reasoning_tokens,omitempty"`
+
 	// StreamProtocolLoss 累积流式逐事件的协议损失(provider→canonical 与
 	// canonical→client chunk 转换)。settler / SettleRequest 绝不可直接读它 ——
 	// 由 chat_completions_stream.go 的 streamingCompletionEvent 合并进
@@ -152,6 +162,14 @@ type UsageAccumulator struct {
 	Source              UsageSource          `json:"source"`
 	TerminalLocked      bool                 `json:"terminal_locked"`
 	DeliveredChunkCount int64                `json:"delivered_chunk_count"`
+	// EstimatedOutputTokens 逐事件增量累加的**可见**输出 token 启发式估算
+	// (tokencheck.EstimateStreamDelta,排除隐藏 reasoning)。finishDraft 拷入 draft,
+	// settle 时与 reported OutputTokens 交叉校验,仅作审计信号(S2-163-fu)。不滞留响应内容。
+	EstimatedOutputTokens int `json:"estimated_output_tokens,omitempty"`
+	// EstimatedReasoningTokens 逐事件累加的可见 reasoning 文本(Delta.ReasoningText)估算,
+	// 用于 settle 时判断 reasoning-folding 是否可知:reasoning 文本流出但 ReasoningTokens 缺失 →
+	// folding 不可知 → 跳过交叉校验避免误报(S2-163-fu review R2)。不滞留响应内容。
+	EstimatedReasoningTokens int `json:"estimated_reasoning_tokens,omitempty"`
 	// StreamProtocolLoss 累积逐事件协议损失,finishDraft 拷入 UsageRecordDraft。
 	StreamProtocolLoss []proto.ProtocolLossEntry `json:"stream_protocol_loss,omitempty"`
 }
@@ -167,6 +185,9 @@ func (a *UsageAccumulator) Update(source UsageSource, usage proto.CanonicalUsage
 	}
 	if usage.OutputTokens != 0 {
 		a.Usage.OutputTokens = usage.OutputTokens
+	}
+	if usage.ReasoningTokens != 0 {
+		a.Usage.ReasoningTokens = usage.ReasoningTokens
 	}
 	if usage.TotalTokens != 0 {
 		a.Usage.TotalTokens = usage.TotalTokens

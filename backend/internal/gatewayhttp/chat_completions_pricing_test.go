@@ -176,6 +176,125 @@ func TestStreamingCompletionEvent_AmbiguousUsagePreservedNotInferred(t *testing.
 	}
 }
 
+// TestStreamingCompletionEvent_OutputTokenCrossCheckAnnotatesAuditFields 守 S2-163-fu 流式交叉校验:
+// streamingCompletionEvent 在算出正成本后,用 forwarder 累加的可见输出估算(draft.EstimatedOutputTokens)
+// 与 reported OutputTokens(扣除隐藏 reasoning)比对,把 confidence_score/pending_reconciliation 标到
+// draft —— 审计-only,不改成本/usage_source。镜像非流。
+func TestStreamingCompletionEvent_OutputTokenCrossCheckAnnotatesAuditFields(t *testing.T) {
+	newEx := func(claimID int64) *chatExecution {
+		return &chatExecution{
+			ctx: context.Background(),
+			d: ChatHandlerDeps{
+				RateTables: &rateTableSourceStub{table: billing.RateTable{
+					Version:     "test-policy",
+					PricingData: json.RawMessage(`{"models":{"gpt-4o":{"input_micro_usd":1000,"output_micro_usd":2500}}}`),
+				}},
+				BillingPolicyVersion: "test-policy",
+			},
+			ident:             auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 13},
+			req:               chatRequest{Model: "gpt-4o", Stream: true},
+			requestID:         "req-stream-crosscheck",
+			reserveRes:        &billing.ReserveResult{ClaimID: claimID},
+			acquiredAccountID: 29,
+			upstreamModelID:   "gpt-4o",
+			cacheVendor:       "openai",
+			plan:              router.RoutePlan{SnapshotVersion: "registry:7:9;router:test"},
+		}
+	}
+
+	tests := []struct {
+		name                 string
+		tokensOutput         int
+		reasoningTokens      int
+		estimatedOutput      int
+		estimatedReasoning   int
+		wantConfidence       float64
+		wantPendingReconcile bool
+	}{
+		{
+			// reported 远大于可见估算 → Fail20。Mutation: 去掉 streamingCompletionEvent 的
+			// crossCheckAudit stamp → ConfidenceScore 保持 nil 起始的 1.0/false → RED。
+			name:                 "fail verdict marks low confidence and pending",
+			tokensOutput:         1000,
+			estimatedOutput:      100,
+			wantConfidence:       0.5,
+			wantPendingReconcile: true,
+		},
+		// S2-163-fu review R2: provider 把 thinking 以 ReasoningText 流出(estimatedReasoning>0)却
+		// 不单列 ReasoningTokens(Anthropic 扩展思考 / Gemini thought)。reported OutputTokens 是否含
+		// thinking 因 provider 而异、canonical 无 folding 信号 → 跳过交叉校验保持满置信、不 pending。
+		// Mutation: 去掉 crossCheckAudit 的 `reasoningTokens==0 && estimatedReasoning>0` 跳过 →
+		// visible=1000 vs estimated=100 → Fail20 → 0.5/true → RED。
+		{
+			name:                 "streamed reasoning without token count suppresses cross-check",
+			tokensOutput:         1000,
+			estimatedOutput:      100,
+			estimatedReasoning:   600,
+			wantConfidence:       1.0,
+			wantPendingReconcile: false,
+		},
+		{
+			// 隐藏 reasoning 占 reported 大头,扣除后可见==估算 → OK。Mutation: stamp 不传
+			// draft.ReasoningTokens(传 0)→ visible=1100 vs 100 → Fail20 → 0.5/true → RED。
+			name:                 "hidden reasoning excluded keeps full confidence",
+			tokensOutput:         1100,
+			reasoningTokens:      1000,
+			estimatedOutput:      100,
+			wantConfidence:       1.0,
+			wantPendingReconcile: false,
+		},
+		{
+			// 未捕获可估内容(estimated=0)→ CrossCheck 返回 Unknown → 不降级(避免假阳性)。
+			name:                 "no estimate keeps full confidence",
+			tokensOutput:         1000,
+			estimatedOutput:      0,
+			wantConfidence:       1.0,
+			wantPendingReconcile: false,
+		},
+		{
+			name:            "ok verdict keeps full confidence",
+			tokensOutput:    100,
+			estimatedOutput: 100,
+			wantConfidence:  1.0,
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ex := newEx(int64(700 + i))
+			draft := gateway.UsageRecordDraft{
+				TokensOutput:             tt.tokensOutput,
+				ReasoningTokens:          tt.reasoningTokens,
+				EstimatedOutputTokens:    tt.estimatedOutput,
+				EstimatedReasoningTokens: tt.estimatedReasoning,
+				DeliveredTokenCount:      int64(tt.tokensOutput),
+				UsageSource:              gateway.UsageSourceReported,
+			}
+			event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: int64(tt.tokensOutput)}, auditledger.AuditLedgerResult{})
+			got := event.SettleRequest.Draft
+			if got.ActualCost.IsZero() {
+				t.Fatalf("ActualCost=0 want positive (cross-check gate requires positive cost)")
+			}
+			if got.ConfidenceScore == nil {
+				t.Fatal("ConfidenceScore=nil want populated audit score")
+			}
+			if *got.ConfidenceScore != tt.wantConfidence {
+				t.Fatalf("ConfidenceScore=%v want %v", *got.ConfidenceScore, tt.wantConfidence)
+			}
+			if got.PendingReconciliation != tt.wantPendingReconcile {
+				t.Fatalf("PendingReconciliation=%v want %v", got.PendingReconciliation, tt.wantPendingReconcile)
+			}
+			// 计费/用量口径不变:cross-check 只动审计列。
+			if got.TokensOutput != tt.tokensOutput {
+				t.Fatalf("TokensOutput=%d want %d unchanged", got.TokensOutput, tt.tokensOutput)
+			}
+			if got.UsageSource != gateway.UsageSourceReported {
+				t.Fatalf("UsageSource=%q want unchanged %q", got.UsageSource, gateway.UsageSourceReported)
+			}
+		})
+	}
+}
+
 // TestStreamingCompletionEvent_MergesRequestAndStreamProtocolLoss 守 S1-025-fu item 4:
 // 流式 settle 必须合并请求翻译损失(ex.protocolLoss)与逐事件损失(draft.StreamProtocolLoss)。
 func TestStreamingCompletionEvent_MergesRequestAndStreamProtocolLoss(t *testing.T) {

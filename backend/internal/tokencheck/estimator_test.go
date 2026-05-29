@@ -74,3 +74,17 @@ func TestHeuristicEstimatorToolJSON(t *testing.T) {
 		t.Fatalf("tool json estimate %d too small", got)
 	}
 }
+
+// TestEstimateStreamDelta 守 S2-163-fu: 流式可见输出估算计入可见文本 + 工具参数增量字节。
+// 隐藏 reasoning 不经此函数(由调用方排除 ReasoningText),故此处只验 text + partialJSON 两路均计入。
+func TestEstimateStreamDelta(t *testing.T) {
+	textOnly := EstimateStreamDelta("hello world answer", nil)
+	if textOnly <= 0 {
+		t.Fatalf("text-only delta estimate=%d want positive", textOnly)
+	}
+	// MUTATION: EstimateStreamDelta 漏算 toolPartialJSON → withJSON == textOnly → RED。
+	withJSON := EstimateStreamDelta("hello world answer", []byte(`{"city":"hangzhou","unit":"celsius","extra":"padding-bytes"}`))
+	if withJSON <= textOnly {
+		t.Fatalf("delta with tool partial JSON=%d want > text-only %d (partial JSON must count)", withJSON, textOnly)
+	}
+}
