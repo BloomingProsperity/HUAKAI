@@ -67,6 +67,8 @@ func (m *MemoryStore) CreateOrder(_ context.Context, rec createOrderRecord) (Ord
 		ProviderOrderRef:   rec.ProviderOrderRef,
 		RequestFingerprint: rec.RequestFingerprint,
 		CreatedByAdminID:   rec.CreatedByAdminID,
+		OrderKind:          orderKindOrDefault(rec.OrderKind),
+		SubscriptionPlanID: rec.SubscriptionPlanID,
 		CreatedAt:          rec.Now,
 		UpdatedAt:          rec.Now,
 		ExpiresAt:          rec.ExpiresAt,
@@ -157,6 +159,10 @@ func (m *MemoryStore) CompleteFulfill(_ context.Context, rec fulfillRecord) (Ful
 	o := m.orders[rec.OrderID]
 	if o == nil || o.TenantID != rec.TenantID {
 		return FulfillResult{}, ErrOrderNotFound
+	}
+	if o.OrderKind == OrderKindSubscription {
+		// 订阅单履约依赖真订阅/配额表, 内存 store 不镜像 (见 P3b-4 计划 §5 D3); 真路径 PG-only。
+		return FulfillResult{}, ErrSubscriptionOrderRequiresPG
 	}
 	if o.Status == StatusCompleted {
 		c := m.credits[o.ID]

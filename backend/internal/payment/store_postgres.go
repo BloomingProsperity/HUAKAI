@@ -15,6 +15,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
 )
 
 // completeFulfill 的 SERIALIZABLE 事务瞬时冲突最大重试次数。
@@ -26,7 +28,8 @@ const orderSelectColumns = `
 	COALESCE(provider_order_ref, ''), COALESCE(request_fingerprint, ''),
 	created_by_admin_id, confirmed_by_admin_id, COALESCE(confirm_reason, ''),
 	COALESCE(failure_code, ''), COALESCE(failure_message, ''),
-	created_at, updated_at, expires_at, paid_at, recharging_at, completed_at, failed_at`
+	created_at, updated_at, expires_at, paid_at, recharging_at, completed_at, failed_at,
+	order_kind, subscription_plan_id`
 
 // PostgresStore 支付权威存储。
 type PostgresStore struct {
@@ -294,6 +297,17 @@ func (s *PostgresStore) completeFulfillOnce(ctx context.Context, rec fulfillReco
 		return FulfillResult{}, err
 	}
 	if order.Status == StatusCompleted {
+		// 幂等重放: 按 order_kind 回放。订阅单读效果账本(无 credit), 充值单读 credit。
+		if order.OrderKind == OrderKindSubscription {
+			grant, err := s.activateOrderSubscriptionTx(ctx, tx, order, rec)
+			if err != nil {
+				return FulfillResult{}, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return FulfillResult{}, fmt.Errorf("payment: commit idempotent subscription fulfill: %w", err)
+			}
+			return FulfillResult{Order: order, Subscription: grant, Idempotent: true}, nil
+		}
 		credit, err := getCreditByOrderTx(ctx, tx, rec.TenantID, order.ID)
 		if err != nil {
 			return FulfillResult{}, err
@@ -309,6 +323,43 @@ func (s *PostgresStore) completeFulfillOnce(ctx context.Context, rec fulfillReco
 	}
 	if order.Status != StatusRecharging {
 		return FulfillResult{}, ErrOrderNotFulfillable
+	}
+
+	// 订阅单 (零余额零 billing): 同事务激活订阅 + 写效果账本 + 标完成。
+	if order.OrderKind == OrderKindSubscription {
+		grant, err := s.activateOrderSubscriptionTx(ctx, tx, order, rec)
+		if err != nil {
+			return FulfillResult{}, err
+		}
+		row := tx.QueryRow(ctx, `
+UPDATE payment_orders SET status='completed', completed_at=$3, updated_at=$3
+WHERE tenant_id=$1 AND id=$2
+RETURNING`+orderSelectColumns, rec.TenantID, order.ID, rec.Now)
+		completed, err := scanOrder(row)
+		if err != nil {
+			return FulfillResult{}, fmt.Errorf("payment: complete subscription order update: %w", err)
+		}
+		if err := insertAuditTx(ctx, tx, auditInsert{
+			TenantID:  rec.TenantID,
+			OrderID:   completed.ID,
+			EventType: AuditCredited,
+			ActorKind: actorKindOrDefault(rec.ActorKind),
+			ActorID:   rec.ActorID,
+			RequestID: rec.RequestID,
+			Payload: map[string]any{
+				"order_kind":           OrderKindSubscription,
+				"subscription_plan_id": grant.PlanID,
+				"result_kind":          grant.ResultKind,
+				"user_subscription_id": grant.UserSubscriptionID,
+			},
+			Now: rec.Now,
+		}); err != nil {
+			return FulfillResult{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return FulfillResult{}, fmt.Errorf("payment: commit subscription fulfill phase2: %w", err)
+		}
+		return FulfillResult{Order: completed, Subscription: grant, Idempotent: false}, nil
 	}
 
 	var credit CreditRecord
@@ -371,6 +422,36 @@ RETURNING`+orderSelectColumns, rec.TenantID, order.ID, rec.Now)
 		return FulfillResult{}, fmt.Errorf("payment: commit fulfill phase2: %w", err)
 	}
 	return FulfillResult{Order: order, Credit: credit, BalanceCents: balance, Idempotent: false}, nil
+}
+
+// activateOrderSubscriptionTx 订阅单分支: 在订单完成事务内调订阅履约入口 (激活/续期 + 写效果账本, 幂等),
+// 回传授予摘要。零 payment_credits / 零 billing_events。subscription.ErrDowngradeNotAllowed 等错误向上传播 →
+// 整事务回滚 → 订单不进 completed (留 recharging 可人工/重试)。
+func (s *PostgresStore) activateOrderSubscriptionTx(ctx context.Context, tx pgx.Tx, order Order, rec fulfillRecord) (*SubscriptionGrant, error) {
+	if order.SubscriptionPlanID == nil {
+		// DB CHECK (payment_orders_subscription_kind_check) 已保证非空; 防御性二道闸。
+		return nil, ErrInvalidInput
+	}
+	res, err := subscription.FulfillOrderTx(ctx, tx, subscription.FulfillOrderInput{
+		TenantID:       rec.TenantID,
+		UserID:         order.UserID,
+		PlanID:         *order.SubscriptionPlanID,
+		PaymentOrderID: order.ID,
+		ActorKind:      actorKindOrDefault(rec.ActorKind),
+		ActorID:        rec.ActorID,
+		RequestID:      rec.RequestID,
+		Now:            rec.Now,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &SubscriptionGrant{
+		UserSubscriptionID:  res.Subscription.ID,
+		PlanID:              res.PlanID,
+		ResultKind:          res.ResultKind,
+		NewExpiresAt:        res.NewExpiresAt,
+		AppliedValidityDays: res.AppliedValidityDays,
+	}, nil
 }
 
 // ListOrdersByUser 列某用户订单 (按创建时间倒序)。
@@ -483,12 +564,13 @@ func insertOrderTx(ctx context.Context, tx pgx.Tx, rec createOrderRecord) (Order
 INSERT INTO payment_orders (
 	tenant_id, user_id, out_trade_no, amount_cents, currency_code, status,
 	provider_kind, provider_order_ref, request_fingerprint, created_by_admin_id,
-	created_at, updated_at, expires_at
-) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10, $10, $11)
+	created_at, updated_at, expires_at, order_kind, subscription_plan_id
+) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10, $10, $11, $12, $13)
 RETURNING`+orderSelectColumns,
 		rec.TenantID, rec.UserID, rec.OutTradeNo, rec.AmountCents, rec.CurrencyCode,
 		string(providerKindOrDefault(rec.ProviderKind)), nullableText(rec.ProviderOrderRef),
-		nullableText(rec.RequestFingerprint), nullableInt64(rec.CreatedByAdminID), rec.Now, rec.ExpiresAt)
+		nullableText(rec.RequestFingerprint), nullableInt64(rec.CreatedByAdminID), rec.Now, rec.ExpiresAt,
+		orderKindOrDefault(rec.OrderKind), rec.SubscriptionPlanID)
 	return scanOrder(row)
 }
 
@@ -556,7 +638,7 @@ type rowScanner interface {
 func scanOrder(row rowScanner) (Order, error) {
 	var o Order
 	var status, providerKind string
-	var createdBy, confirmedBy sql.NullInt64
+	var createdBy, confirmedBy, subPlanID sql.NullInt64
 	var expiresAt, paidAt, rechargingAt, completedAt, failedAt sql.NullTime
 	if err := row.Scan(
 		&o.ID, &o.TenantID, &o.UserID, &o.OutTradeNo, &o.AmountCents, &o.CurrencyCode, &status, &providerKind,
@@ -564,8 +646,12 @@ func scanOrder(row rowScanner) (Order, error) {
 		&createdBy, &confirmedBy, &o.ConfirmReason,
 		&o.FailureCode, &o.FailureMessage,
 		&o.CreatedAt, &o.UpdatedAt, &expiresAt, &paidAt, &rechargingAt, &completedAt, &failedAt,
+		&o.OrderKind, &subPlanID,
 	); err != nil {
 		return Order{}, err
+	}
+	if subPlanID.Valid {
+		o.SubscriptionPlanID = &subPlanID.Int64
 	}
 	o.Status = OrderStatus(status)
 	o.ProviderKind = ProviderKind(providerKind)
@@ -591,6 +677,14 @@ func reasonClassForProvider(kind ProviderKind) string {
 		return "test_provider_paid"
 	}
 	return "manual_confirmed"
+}
+
+// orderKindOrDefault: 空缺省充值 (向后兼容现存单)。
+func orderKindOrDefault(kind string) string {
+	if kind == "" {
+		return OrderKindTopup
+	}
+	return kind
 }
 
 func providerKindOrDefault(kind ProviderKind) ProviderKind {

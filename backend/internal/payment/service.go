@@ -85,6 +85,15 @@ func (s *Service) CreateOrder(ctx context.Context, in CreateOrderInput) (CreateO
 		return CreateOrderResult{}, err
 	}
 
+	// order_kind: 缺省充值; 订阅单必须带有效套餐指针。
+	orderKind := orderKindOrDefault(in.OrderKind)
+	if orderKind != OrderKindTopup && orderKind != OrderKindSubscription {
+		return CreateOrderResult{}, ErrInvalidInput
+	}
+	if orderKind == OrderKindSubscription && (in.SubscriptionPlanID == nil || *in.SubscriptionPlanID <= 0) {
+		return CreateOrderResult{}, ErrInvalidInput
+	}
+
 	now := s.now()
 	ttl := in.ExpiresIn
 	if ttl <= 0 {
@@ -101,17 +110,19 @@ func (s *Service) CreateOrder(ctx context.Context, in CreateOrderInput) (CreateO
 	}
 
 	order, replay, err := s.store.CreateOrder(ctx, createOrderRecord{
-		TenantID:         in.TenantID,
-		UserID:           in.UserID,
-		OutTradeNo:       outTradeNo,
-		AmountCents:      in.AmountCents,
-		CurrencyCode:     currency,
-		ProviderKind:     kind,
-		ProviderOrderRef: intent.OrderRef,
-		CreatedByAdminID: in.ActorAdminID,
-		RequestID:        in.RequestID,
-		ExpiresAt:        &expiresAt,
-		Now:              now,
+		TenantID:           in.TenantID,
+		UserID:             in.UserID,
+		OutTradeNo:         outTradeNo,
+		AmountCents:        in.AmountCents,
+		CurrencyCode:       currency,
+		ProviderKind:       kind,
+		ProviderOrderRef:   intent.OrderRef,
+		CreatedByAdminID:   in.ActorAdminID,
+		RequestID:          in.RequestID,
+		ExpiresAt:          &expiresAt,
+		OrderKind:          orderKind,
+		SubscriptionPlanID: in.SubscriptionPlanID,
+		Now:                now,
 	})
 	if err != nil {
 		return CreateOrderResult{}, err

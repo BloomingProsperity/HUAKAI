@@ -41,6 +41,8 @@ type createOrderRecord struct {
 	CreatedByAdminID   int64
 	RequestID          string
 	ExpiresAt          *time.Time
+	OrderKind          string // 缺省 topup
+	SubscriptionPlanID *int64 // 订阅单必填
 	Now                time.Time
 }
 
