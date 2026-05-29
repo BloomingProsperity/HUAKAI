@@ -135,9 +135,12 @@ func (f *StreamForwarder) emitFinalUpstreamEvents(
 		if f.ClientAdapter == nil {
 			continue
 		}
-		chunks, err := f.clientChunks(ctx, canonical, clientState, SSEEvent{})
+		chunks, clientLosses, err := f.clientChunks(ctx, canonical, clientState, SSEEvent{})
 		if err != nil {
 			return err
+		}
+		if len(clientLosses) > 0 {
+			acc.StreamProtocolLoss = append(acc.StreamProtocolLoss, clientLosses...)
 		}
 		for _, chunk := range chunks {
 			if len(chunk) == 0 {

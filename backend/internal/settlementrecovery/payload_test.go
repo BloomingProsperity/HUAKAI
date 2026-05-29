@@ -11,7 +11,35 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
+
+// lossCodes 解码 protocol_loss JSON 为 Code 列表(判别用,按 code 成员判定,
+// 避开 JSON 字节格式抖动)。
+func lossCodes(t *testing.T, raw json.RawMessage) []string {
+	t.Helper()
+	if len(raw) == 0 {
+		return nil
+	}
+	var entries []proto.ProtocolLossEntry
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		t.Fatalf("unmarshal protocol_loss: %v (raw=%s)", err, raw)
+	}
+	codes := make([]string, 0, len(entries))
+	for _, e := range entries {
+		codes = append(codes, e.Code)
+	}
+	return codes
+}
+
+func containsCode(codes []string, want string) bool {
+	for _, c := range codes {
+		if c == want {
+			return true
+		}
+	}
+	return false
+}
 
 // fixtureCompletionEvent 构造非空 RequestCompletionEvent,所有 SettleRequest
 // 字段都赋判别值,验 round-trip 不丢字段。
@@ -46,6 +74,7 @@ func fixtureCompletionEvent(t *testing.T) eventbus.RequestCompletionEvent {
 			Provider:            "anthropic",
 			Stream:              true,
 			Draft:               gateway.UsageRecordDraft{TokensInput: 100, TokensOutput: 200},
+			ProtocolLoss:        json.RawMessage(`[{"severity":"warning","code":"dlq_protocol_loss_roundtrip","reason":"settlement recovery must replay audit evidence"}]`),
 			StreamAttempt:       streamAttempt,
 			Fingerprint:         "fp-xyz",
 			AuditRequestID:      "audit-req-7",
@@ -123,6 +152,12 @@ func TestPayload_RoundTrip_SettleRequestFieldsByteIdentical(t *testing.T) {
 		t.Fatalf("fingerprint/audit/snapshot mismatch: got=(%q,%q,%q) want=(%q,%q,%q)",
 			got.Fingerprint, got.AuditRequestID, got.SnapshotVersion,
 			original.Fingerprint, original.AuditRequestID, original.SnapshotVersion)
+	}
+	// S1-025-fu item 1: protocol_loss 必须存活 DLQ replay round-trip,否则重放写 "[]"。
+	// Mutation: 删 FromCompletionEvent 或 ToSettleRequest 的 ProtocolLoss 赋值 → 空 → RED。
+	if !containsCode(lossCodes(t, got.ProtocolLoss), "dlq_protocol_loss_roundtrip") {
+		t.Fatalf("ProtocolLoss lost in round-trip: got codes=%v want contains dlq_protocol_loss_roundtrip (raw=%s)",
+			lossCodes(t, got.ProtocolLoss), got.ProtocolLoss)
 	}
 }
 

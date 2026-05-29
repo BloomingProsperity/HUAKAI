@@ -96,6 +96,13 @@ type UsageRecordDraft struct {
 	PendingReconciliation   bool            `json:"pending_reconciliation"`
 	FirstTokenLatencyMillis int64           `json:"first_token_latency_ms"`
 	TotalDurationMillis     int64           `json:"total_duration_ms"`
+
+	// StreamProtocolLoss 累积流式逐事件的协议损失(provider→canonical 与
+	// canonical→client chunk 转换)。settler / SettleRequest 绝不可直接读它 ——
+	// 由 chat_completions_stream.go 的 streamingCompletionEvent 合并进
+	// SettleRequest.ProtocolLoss。命名为 StreamProtocolLoss(而非 ProtocolLoss)是
+	// 为避免复活 S1-025 已删除的死字段 Draft.ProtocolLoss(settler 曾误读它)。
+	StreamProtocolLoss []proto.ProtocolLossEntry `json:"stream_protocol_loss,omitempty"`
 }
 
 // ForwardRequest 携带 F-GW-002 请求身份和协议元数据。
@@ -145,6 +152,8 @@ type UsageAccumulator struct {
 	Source              UsageSource          `json:"source"`
 	TerminalLocked      bool                 `json:"terminal_locked"`
 	DeliveredChunkCount int64                `json:"delivered_chunk_count"`
+	// StreamProtocolLoss 累积逐事件协议损失,finishDraft 拷入 UsageRecordDraft。
+	StreamProtocolLoss []proto.ProtocolLossEntry `json:"stream_protocol_loss,omitempty"`
 }
 
 // Update 合并 F-GW-002 Phase B usage 信号。

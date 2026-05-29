@@ -48,8 +48,11 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		}
 		return markAttemptOutcomeDelivered(outcome)
 	}
-	ex.protocolLoss = protocolLossJSONFromEnv(bufferedEnv)
 	ledgerResult, err := submitAuditLedgerEntry(ex.ctx, ex.d, bufferedEnv, ex.ident.TenantID, ex.requestID)
+	// 快照取在 submitAuditLedgerEntry 之后:它会向 env.CapabilityGraph.ProtocolLoss
+	// 追加 ledger/trust-chain 警告(appendTrustChainWarning),提前快照会漏掉这些证据,
+	// 使 audit_ledger_error abort 与成功 settle 的 protocol_loss 缺 ledger 侧损失(S1-025-fu item 2)。
+	ex.protocolLoss = protocolLossJSONFromEnv(bufferedEnv)
 	if err != nil {
 		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "audit_ledger_error", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
@@ -59,7 +62,13 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 	}
 	seed := requestMetaSeed(ex.r, ex.ident, ex.clientProtocol, ex.resolved.ProtocolFamily, ex.routeID, ex.requestID, ex.acquiredAccountID, ex.acquisitionToken)
 	seedCtx := proto.ContextWithRequestMetaSeed(ex.ctx, seed)
-	clientBody, _, err := ex.clientAdapter.CanonicalToClientResponse(seedCtx, bufferedEnv)
+	clientBody, clientLosses, err := ex.clientAdapter.CanonicalToClientResponse(seedCtx, bufferedEnv)
+	// 响应转换损失之前被丢弃(_);折入 env 并重新快照,使成功 settle 与
+	// canonical_response_error abort 都带上响应侧证据(S1-025-fu item 2)。
+	if len(clientLosses) > 0 {
+		bufferedEnv.CapabilityGraph.ProtocolLoss = append(bufferedEnv.CapabilityGraph.ProtocolLoss, clientLosses...)
+		ex.protocolLoss = protocolLossJSONFromEnv(bufferedEnv)
+	}
 	if err != nil {
 		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "canonical_response_error", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
@@ -159,6 +168,24 @@ func protocolLossJSONFromEntries(entries []proto.ProtocolLossEntry) json.RawMess
 		return nil
 	}
 	return raw
+}
+
+// mergeProtocolLossWithEntries 合并已序列化的 base(请求翻译损失)与追加的 typed
+// 条目(流式逐事件 provider/client 损失),一次性 marshal(S1-025-fu item 4)。
+// 顺序:base 在前、entries 在后(请求 → 逐事件发射序);不去重(每条独立观测,审计全留)。
+// base 不可解析时退化为仅返回 base,绝不静默丢已有请求侧证据。
+func mergeProtocolLossWithEntries(base json.RawMessage, entries []proto.ProtocolLossEntry) json.RawMessage {
+	if len(entries) == 0 {
+		return base
+	}
+	var baseEntries []proto.ProtocolLossEntry
+	if len(base) > 0 {
+		if err := json.Unmarshal(base, &baseEntries); err != nil {
+			return base
+		}
+	}
+	merged := append(baseEntries, entries...)
+	return protocolLossJSONFromEntries(merged)
 }
 
 // normalizedPayloadHash 对客户端原始请求体做 SHA256 摘要, 作为 idempotency
@@ -272,7 +299,10 @@ func rejectMoneyPathAuditRef(ctx context.Context, d ChatHandlerDeps, event event
 	}
 	var abortErr error
 	if d.Settler != nil && event.ClaimID > 0 {
-		abortErr = d.Settler.Abort(ctx, event.TenantID, event.ClaimID, clienterr.CodeAuditRefMissing, event.RequestID, 0, nil)
+		// 复用事件已携带的 protocol_loss 证据(event.SettleRequest.ProtocolLoss),
+		// 这条 audit-ref-missing 的零成本 abort 是该 claim 唯一持久行;之前传 nil
+		// 会丢失损失证据(S1-025-fu item 3)。不新增 eventbus 字段。
+		abortErr = d.Settler.Abort(ctx, event.TenantID, event.ClaimID, clienterr.CodeAuditRefMissing, event.RequestID, 0, event.SettleRequest.ProtocolLoss)
 	}
 	logMoneyPathAuditRefError(ctx, event, validationErr, source, false)
 	if abortErr != nil {
