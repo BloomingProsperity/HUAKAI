@@ -121,16 +121,28 @@ func (h *verifyHandler) verify(ctx context.Context, raw []byte) VerifyResponse {
 	// 验签通过后再要求 canonical 确为 trust.receipt.v1;object 分支已在
 	// trustReceiptFromJSONObject 强校验 schema_version,此处补齐 base64 分支(放在验签之后,
 	// 不改变「篡改字节 → signature_mismatch」既有语义)。
-	if err := requireCanonicalTrustReceipt(canonical); err != nil {
+	occurredAt, perr := parseCanonicalTrustReceipt(canonical)
+	if perr != nil {
 		// reason 复用 OpenAPI TrustVerifyResponse.reason 已声明的 payload_invalid(契约内),
 		// status=unverified 表示「签名有效但载荷不是可验证的 trust receipt」(codex #8 P2:不引入未声明枚举值)。
 		return VerifyResponse{Valid: false, Status: "unverified", SignatureValid: true, KeyStatus: keyStatus, Reason: "payload_invalid", CanonicalHash: canonicalHash, SchemaVersion: trustSchemaVersion}
 	}
+	// 撤销优先于窗口校验:若 key 已 CRL 撤销(泄漏/作废),即便同时落在有效窗口外,也要
+	// 如实报 revoked/key_revoked,保证撤销/泄漏对客户端与运维可见(codex #8 S1-032 Round2 P2)。
 	if keyStatus == "revoked" {
 		if reason == "" {
 			reason = "key_revoked"
 		}
 		return VerifyResponse{Valid: false, Status: "unverified", SignatureValid: true, KeyStatus: keyStatus, Reason: reason, CanonicalHash: canonicalHash, SchemaVersion: trustSchemaVersion}
+	}
+	// S1-032: receipt 必须由签名时仍在有效窗口内的 key 签发。occurred_at 已知且落在 key
+	// 有效窗口外 → 拒(堵泄漏旧 key 签新日期 receipt、未来 key 提前生效)。occurred_at 缺省
+	// (零值)无法判定签名时刻,豁免以免误伤无 occurred_at 的旧 receipt。
+	// 仅在使用真实 pubkey registry(带真实 EffectiveFrom/To)时强制窗口:signer-only 回退
+	// 无 registry,lookupKey 会用验证时刻 fabricate EffectiveFrom,据此否决会误杀正常历史
+	// receipt(codex #8 S1-032a P2)。
+	if h.deps.Registry != nil && !occurredAt.IsZero() && auditledger.SignatureOutsideKeyWindow(occurredAt, key) {
+		return VerifyResponse{Valid: false, Status: "unverified", SignatureValid: true, KeyStatus: key.Status(), Reason: "signature_outside_key_window", CanonicalHash: canonicalHash, SchemaVersion: trustSchemaVersion}
 	}
 	return VerifyResponse{Valid: true, Status: "signed-only", SignatureValid: true, KeyStatus: keyStatus, CanonicalHash: canonicalHash, SchemaVersion: trustSchemaVersion}
 }
@@ -168,22 +180,31 @@ func (h *verifyHandler) lookupKey(ctx context.Context, fingerprint string) (*aud
 	return key, keyStatus, "", nil
 }
 
-// requireCanonicalTrustReceipt 确认 canonical 字节是一份 trust.receipt.v1,
-// 为 base64 分支提供与 object 分支等同的域约束(S1-031)。object 分支由
+// parseCanonicalTrustReceipt 确认 canonical 字节是一份 trust.receipt.v1,并提取
+// occurred_at 供 key 有效窗口校验使用(S1-031 域分离 + S1-032 窗口校验)。object 分支由
 // trustReceiptFromJSONObject 校验 schema_version;base64 分支历史上直接放行任意被签
 // 字节,故在验签通过后调用此函数完成域分离。非 JSON(如 audit ledger 的 entry_hash
-// 原始字节)或 schema_version 非 trust.receipt.v1(如 trust.ledger.v1)一律拒绝。
-func requireCanonicalTrustReceipt(canonical []byte) error {
+// 原始字节)或 schema_version 非 trust.receipt.v1(如 trust.ledger.v1)一律返回 error。
+// occurred_at 缺省时返回零值 time(不报错),调用方据此豁免窗口校验。
+func parseCanonicalTrustReceipt(canonical []byte) (time.Time, error) {
 	var probe struct {
 		SchemaVersion string `json:"schema_version"`
+		OccurredAt    string `json:"occurred_at"`
 	}
 	if err := json.Unmarshal(canonical, &probe); err != nil {
-		return fmt.Errorf("payload 不是 canonical trust receipt: %w", err)
+		return time.Time{}, fmt.Errorf("payload 不是 canonical trust receipt: %w", err)
 	}
 	if strings.TrimSpace(probe.SchemaVersion) != trustSchemaVersion {
-		return fmt.Errorf("payload schema_version=%q, 期望 %s", probe.SchemaVersion, trustSchemaVersion)
+		return time.Time{}, fmt.Errorf("payload schema_version=%q, 期望 %s", probe.SchemaVersion, trustSchemaVersion)
 	}
-	return nil
+	if s := strings.TrimSpace(probe.OccurredAt); s != "" {
+		t, err := time.Parse(time.RFC3339Nano, s)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("payload occurred_at 非法: %w", err)
+		}
+		return t.UTC(), nil
+	}
+	return time.Time{}, nil
 }
 
 func canonicalPayloadFromRequest(raw json.RawMessage) ([]byte, error) {

@@ -3547,6 +3547,7 @@ components:
             - signature_mismatch
             - key_revoked
             - canonical_hash_mismatch
+            - signature_outside_key_window
         age_seconds: { type: integer, format: int64, minimum: 0 }
         receipt_sequence:
           type: integer
@@ -3678,6 +3679,7 @@ components:
             - invalid_public_key
             - signature_mismatch
             - key_revoked
+            - signature_outside_key_window
         fields_mismatch:
           type: array
           items: { type: string }

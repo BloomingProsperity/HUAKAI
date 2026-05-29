@@ -224,8 +224,8 @@ func NewCostReceiptVerifyHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 		keyStatus = verification.KeyStatus
 		reason = verification.Reason
 		signatureValid = verification.Valid
-		valid = canonicalHashMatches && verification.Valid && verification.Reason != "key_revoked"
-		if verification.Valid && verification.Reason == "key_revoked" {
+		valid = canonicalHashMatches && verification.Valid && !receiptVerificationRejected(verification.Reason)
+		if verification.Valid && receiptVerificationRejected(verification.Reason) {
 			status = "unverified"
 		}
 		if verification.Valid && !canonicalHashMatches {
@@ -391,9 +391,9 @@ func verifyStoredCostReceiptByID(w http.ResponseWriter, r *http.Request, d CostR
 	resp.Reason = verification.Reason
 	resp.Status = "mismatch"
 	if verification.Valid {
-		if verification.Reason == "key_revoked" {
+		if receiptVerificationRejected(verification.Reason) {
 			resp.Status = "unverified"
-			resp.Reason = "key_revoked"
+			resp.Reason = verification.Reason
 		} else {
 			resp.Valid = true
 			resp.Status = "signed-only"
@@ -461,6 +461,33 @@ func receiptSignatureBytes(signature []byte) ([]byte, error) {
 	return nil, errors.New("invalid ed25519 signature")
 }
 
+// receiptVerificationRejected 报告某 verification.Reason 是否表示「签名密码学有效但 receipt
+// 不被采信」——目前为 key 撤销与签名落在 key 有效窗口外(S1-032)。两个 verify 调用点据此
+// 统一判为 unverified、valid=false。
+func receiptVerificationRejected(reason string) bool {
+	return reason == "key_revoked" || reason == "signature_outside_key_window"
+}
+
+// receiptOccurredAtFromCanonical 从 canonical trust.receipt.v1 字节解析 occurred_at,供 key
+// 有效窗口校验(S1-032)。缺省/不可解析返回 ok=false,调用方据此豁免窗口校验。
+func receiptOccurredAtFromCanonical(canonical []byte) (time.Time, bool) {
+	var probe struct {
+		OccurredAt string `json:"occurred_at"`
+	}
+	if err := json.Unmarshal(canonical, &probe); err != nil {
+		return time.Time{}, false
+	}
+	s := strings.TrimSpace(probe.OccurredAt)
+	if s == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t.UTC(), true
+}
+
 func verifyReceiptTrustSignature(ctx context.Context, d CostReceiptHandlerDeps, canonical []byte, sig []byte, fingerprint string) (auditledger.SignatureVerification, error) {
 	normalizedFingerprint := strings.TrimSpace(fingerprint)
 	if d.PubkeyRegistry != nil {
@@ -471,7 +498,24 @@ func verifyReceiptTrustSignature(ctx context.Context, d CostReceiptHandlerDeps, 
 		if err != nil || !verification.Valid {
 			return verification, err
 		}
-		return applyReceiptRevocationOverlay(d, verification, normalizedFingerprint)
+		verification, err = applyReceiptRevocationOverlay(d, verification, normalizedFingerprint)
+		if err != nil || verification.Reason == "key_revoked" {
+			return verification, err
+		}
+		// S1-032: 强制签名 key 有效窗口。receipt 的 occurred_at(从 canonical trust.receipt.v1
+		// 解析)须落在签名 key 的 [EffectiveFrom, EffectiveTo] 内,堵泄漏旧 key 签新日期 receipt。
+		// 仅 registry 路径有真实窗口(signer-only 无 registry,见 trust verify 同款豁免);occurred_at
+		// 缺省则豁免。窗口外保持 Valid=true(签名密码学有效),靠 Reason 让 caller 判 unverified。
+		if occurredAt, ok := receiptOccurredAtFromCanonical(canonical); ok {
+			key, lerr := auditledger.LookupPubkey(ctx, d.PubkeyRegistry, []byte(normalizedFingerprint))
+			if lerr != nil {
+				return auditledger.SignatureVerification{}, lerr
+			}
+			if auditledger.SignatureOutsideKeyWindow(occurredAt, key) {
+				verification.Reason = "signature_outside_key_window"
+			}
+		}
+		return verification, nil
 	}
 	if d.Signer == nil || normalizedFingerprint != d.Signer.Fingerprint() {
 		return auditledger.SignatureVerification{Valid: false, KeyStatus: "unknown", Reason: "unknown_signer"}, nil

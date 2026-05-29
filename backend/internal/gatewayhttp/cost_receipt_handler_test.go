@@ -233,6 +233,61 @@ func TestReceiptVerifyMarksRevokedKeyAsUnverified(t *testing.T) {
 	}
 }
 
+// TestReceiptVerifyRejectsSignatureOutsideKeyWindow guards S1-032 on the cost-receipt
+// path: /v1/receipts/{id}/verify must reject a stored receipt whose occurred_at is
+// outside the signing key's [EffectiveFrom, EffectiveTo] window — even with a valid
+// ed25519 signature. This is the leaked rotated-key attack mirrored on the user receipt
+// endpoint (the gap codex flagged on the trust-verify-only first pass).
+//
+// Mutation check: remove the SignatureOutsideKeyWindow branch in verifyReceiptTrustSignature
+// and the "outside" case flips to valid=true status="signed-only" → red. The in-window
+// sub-case proves the check is discriminating, not a blanket reject.
+func TestReceiptVerifyRejectsSignatureOutsideKeyWindow(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	receipt := signedGatewayReceipt(t, signer, 7, "req-window") // occurred_at == CreatedAt 2026-05-18
+	store := newReceiptStoreStub(receipt)
+
+	// rotated key valid only 2026-05-01 .. 2026-05-10; receipt dated 2026-05-18 is AFTER EffectiveTo.
+	outKey := mustGatewayReceiptPubkey(t, signer)
+	outTo := time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC)
+	outKey.EffectiveTo = &outTo
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{
+		Receipts:       store,
+		PubkeyRegistry: auditledger.NewMemoryPubkeyRegistry(outKey),
+		Now:            fixedReceiptNow,
+	}), http.MethodPost, "/v1/receipts/req-window/verify", nil, receiptSession(7))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got receiptVerifyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.SignatureValid {
+		t.Fatalf("precondition: ed25519 signature must be valid, got %+v", got)
+	}
+	if got.Valid || got.Status != "unverified" || got.Reason != "signature_outside_key_window" {
+		t.Fatalf("receipt signed outside key window must be rejected: %+v", got)
+	}
+
+	// Control: same receipt, key window extended past occurred_at → still verifies.
+	inKey := mustGatewayReceiptPubkey(t, signer)
+	inTo := time.Date(2026, 5, 25, 0, 0, 0, 0, time.UTC)
+	inKey.EffectiveTo = &inTo
+	recOK := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{
+		Receipts:       newReceiptStoreStub(signedGatewayReceipt(t, signer, 7, "req-window-ok")),
+		PubkeyRegistry: auditledger.NewMemoryPubkeyRegistry(inKey),
+		Now:            fixedReceiptNow,
+	}), http.MethodPost, "/v1/receipts/req-window-ok/verify", nil, receiptSession(7))
+	var gotOK receiptVerifyResponse
+	if err := json.Unmarshal(recOK.Body.Bytes(), &gotOK); err != nil {
+		t.Fatalf("decode ok: %v", err)
+	}
+	if !gotOK.Valid || gotOK.Status != "signed-only" {
+		t.Fatalf("in-window receipt must still verify: %+v", gotOK)
+	}
+}
+
 func TestCostReceiptVerifyDisplayReceiptIDUsesStoredReceipt(t *testing.T) {
 	signer := mustReceiptSigner(t)
 	receipt := signedGatewayReceipt(t, signer, 7, "req-display-id")
