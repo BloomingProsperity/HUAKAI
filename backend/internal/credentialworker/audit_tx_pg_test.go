@@ -337,17 +337,20 @@ func TestRecordAudit_HealthStateTransitionRoundTripPG(t *testing.T) {
 	if err := s.recordAuditString(ctx, row, "auth_expired", "account", errors.New("expired refresh")); err != nil {
 		t.Fatalf("record auth_expired: %v", err)
 	}
-	wantUntil := s.now().UTC().Add(30 * time.Minute)
+	// S2-062: auth_expired is terminal — it must persist health_state_until as NULL so the
+	// eligibility CTE (which only normalizes rows WHERE health_state_until IS NOT NULL AND <= NOW)
+	// can never auto-recover a grant-loss account on a 30-minute timer. Mutation check: restore the
+	// now+cooldown deadline and the `until != nil` assertion below goes red.
 	var state string
-	var until time.Time
+	var until *time.Time
 	if err := pool.QueryRow(ctx,
 		`SELECT health_state, health_state_until FROM provider_accounts WHERE id = $1`,
 		paID,
 	).Scan(&state, &until); err != nil {
 		t.Fatalf("select revoked state: %v", err)
 	}
-	if state != "revoked" || !until.Equal(wantUntil) {
-		t.Fatalf("after auth_expired health=(%q,%s), want revoked until %s", state, until, wantUntil)
+	if state != "revoked" || until != nil {
+		t.Fatalf("after auth_expired health=(%q,%v), want terminal revoked with NULL until", state, until)
 	}
 
 	if err := s.recordAudit(ctx, row, auth.OutcomeRefreshSucceeded, "account", nil); err != nil {
@@ -363,5 +366,65 @@ func TestRecordAudit_HealthStateTransitionRoundTripPG(t *testing.T) {
 	}
 	if resetState != "healthy" || resetUntil != nil {
 		t.Fatalf("after refresh_succeeded health=(%q,%v), want healthy NULL", resetState, resetUntil)
+	}
+}
+
+// TestUpdateProviderAccountHealthTerminalStickyAgainstTransientPG guards S2-062 [codex P1]: a
+// transient (throttled + deadline) health write must NOT downgrade an account that is already
+// terminally revoked (revoked + NULL deadline). Without the CASE guard in
+// updateProviderAccountHealthSQL, a stray rate_limit retry on a still-grant-lost account would
+// rewrite it to throttled+3m, after which the eligibility CTE auto-heals it back to healthy with no
+// successful refresh or operator action — reopening exactly the timer-recovery path the terminal
+// state exists to close.
+//
+// Mutation check: replace the two CASE expressions with the unconditional $3/$4 assignment and the
+// "terminal revocation downgraded" assertion goes red. The non-terminal control proves the guard
+// targets only terminal rows (it does NOT blanket-block throttling), and the success step proves the
+// recovery path (healthy clears terminal) is preserved.
+func TestUpdateProviderAccountHealthTerminalStickyAgainstTransientPG(t *testing.T) {
+	ctx := context.Background()
+	pool := openCredentialWorkerTestPool(t, ctx)
+	suffix := uuid.NewString()
+	tenantID, paID := seedCredentialWorkerProviderAccount(t, ctx, pool, suffix)
+
+	setHealth := func(state string, until *time.Time) {
+		t.Helper()
+		if err := updateProviderAccountHealth(ctx, pool, ProviderAccountHealthChange{
+			TenantID: tenantID, ProviderAccountID: paID, HealthState: state, HealthStateUntil: until,
+		}); err != nil {
+			t.Fatalf("updateProviderAccountHealth(%s): %v", state, err)
+		}
+	}
+	readHealth := func() (string, *time.Time) {
+		t.Helper()
+		var state string
+		var until *time.Time
+		if err := pool.QueryRow(ctx,
+			`SELECT health_state, health_state_until FROM provider_accounts WHERE id = $1`, paID,
+		).Scan(&state, &until); err != nil {
+			t.Fatalf("read health: %v", err)
+		}
+		return state, until
+	}
+
+	// 1) Terminal revocation (auth_expired / risk_control_triggered style): revoked + NULL deadline.
+	setHealth("revoked", nil)
+	// 2) A later rate_limit retry on the same (still grant-lost) account classifies transient.
+	cooldown := time.Now().UTC().Add(3 * time.Minute)
+	setHealth("throttled", &cooldown)
+	if state, until := readHealth(); state != "revoked" || until != nil {
+		t.Fatalf("terminal revocation downgraded by transient write: state=%q until=%v, want revoked/NULL", state, until)
+	}
+	// 3) Recovery preserved: a successful refresh (healthy, no deadline) DOES clear the terminal state.
+	setHealth("healthy", nil)
+	if state, until := readHealth(); state != "healthy" || until != nil {
+		t.Fatalf("successful refresh failed to clear terminal: state=%q until=%v, want healthy/NULL", state, until)
+	}
+
+	// Control (discriminating): a non-terminal (healthy) account MUST still be throttled by a transient
+	// write — the guard targets terminal rows only, it does not blanket-suppress throttling.
+	setHealth("throttled", &cooldown)
+	if state, until := readHealth(); state != "throttled" || until == nil {
+		t.Fatalf("transient throttle wrongly suppressed on non-terminal account: state=%q until=%v, want throttled/deadline", state, until)
 	}
 }
