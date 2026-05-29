@@ -103,6 +103,7 @@ type Reservation struct {
 	ClaimID            int64
 	RequestFingerprint string
 	Scopes             []Scope
+	PolicySnapshot     []byte
 	PredictedCost      decimal.Decimal
 	ReservedUnits      decimal.Decimal
 	Status             ReservationStatus

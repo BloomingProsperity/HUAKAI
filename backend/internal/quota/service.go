@@ -124,7 +124,7 @@ func (s *Service) Reserve(ctx context.Context, req ReserveRequest) (ReserveResul
 				ClaimID:            req.ClaimID,
 				RequestFingerprint: req.RequestFingerprint,
 				Scopes:             req.Scopes,
-				PolicySnapshot:     marshalPolicySnapshot(resolved.Ordered),
+				PolicySnapshot:     marshalReservationPolicySnapshot(resolved.Ordered, evaluated.enforceWindows),
 				PredictedCost:      req.PredictedCost,
 				ReservedUnits:      decimal.NewFromInt(1),
 				LeaseExpiresAt:     req.LeaseExpiresAt,
@@ -209,6 +209,41 @@ type policyEvaluation struct {
 	observations   []policyObservation
 	deny           *DenyError
 	denyPayload    []byte
+}
+
+func marshalReservationPolicySnapshot(policies []Policy, evaluated []evaluatedPolicy) []byte {
+	concreteWindows := make(map[policyMetricKey]Window, len(evaluated))
+	for _, item := range evaluated {
+		if item.policy.Mode != ModeEnforce {
+			continue
+		}
+		if item.metric != MetricRequests && item.metric != MetricCostUSD {
+			continue
+		}
+		concreteWindows[policyMetricKey{policyID: item.policy.ID, metric: item.metric}] = item.window.Window
+	}
+
+	snapshotPolicies := make([]Policy, len(policies))
+	copy(snapshotPolicies, policies)
+	for i := range snapshotPolicies {
+		policy := snapshotPolicies[i]
+		if policy.Mode != ModeEnforce {
+			continue
+		}
+		if policy.Metric != MetricRequests && policy.Metric != MetricCostUSD {
+			continue
+		}
+		if window, ok := concreteWindows[policyMetricKey{policyID: policy.ID, metric: policy.Metric}]; ok {
+			snapshotPolicies[i].Window.Start = window.Start
+			snapshotPolicies[i].Window.End = window.End
+		}
+	}
+	return marshalPolicySnapshot(snapshotPolicies)
+}
+
+type policyMetricKey struct {
+	policyID int64
+	metric   Metric
 }
 
 func evaluatePolicies(ctx context.Context, store PGStore, req ReserveRequest, resolved ResolvedPolicies) (policyEvaluation, error) {
@@ -605,7 +640,7 @@ func reactivateExistingReservation(ctx context.Context, store PGStore, req Reser
 		ClaimID:            req.ClaimID,
 		RequestFingerprint: req.RequestFingerprint,
 		Scopes:             req.Scopes,
-		PolicySnapshot:     marshalPolicySnapshot(resolved.Ordered),
+		PolicySnapshot:     marshalReservationPolicySnapshot(resolved.Ordered, evaluated.enforceWindows),
 		PredictedCost:      req.PredictedCost,
 		ReservedUnits:      decimal.NewFromInt(1),
 		LeaseExpiresAt:     req.LeaseExpiresAt,
