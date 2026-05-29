@@ -374,7 +374,10 @@ LANE: <specifier | reviewer>
 
 PRIOR LANES ON THIS ARTIFACT: <list (agent + lane + UTC) | "none">
 
-REFERENCE PROJECTS IN SCOPE: <list e.g. sub2api / one-api / portkey>
+REFERENCE PROJECTS IN SCOPE: <MUST include ALL THREE default mirrors
+  CLIProxyAPI + sub2api + new-api, then domain extras e.g. LiteLLM /
+  portkey. Omitting any default mirror makes this dispatch invalid
+  — see §"sub2api + CLIProxyAPI + new-api Default Triple-Mirror".>
 
 HARD PROHIBITIONS:
   - NEVER copy function names verbatim
@@ -690,3 +693,26 @@ Owner 不能凭 Claude/Codex 内部 trade-off 拍板决策;参考项目横向对
 - staged docs 决策点是否缺 prestudy 链接
 
 任一标 HIGH 阻 land。
+
+## sub2api + CLIProxyAPI + new-api Default Triple-Mirror (added 2026-05-29 Owner directive)
+
+Owner 2026-05-29 quotes「你做任何功能的时候都要看下 sub2 和 cliproxy 是如何做的」+「刚刚的问题是 这个支付功能你搞错了！他有两套，你以为只有一套! 下次你开始写功能的时候必须调研成熟的项目」+「再加一个 new-api」。镜像 `CLAUDE.md` #16 给 codex / reviewer / 所有 lane。
+
+### 触发的真实故障
+
+支付子系统首版只设计了**一条入账路径**(管理员手动),因为**开写前没调研成熟项目**;成熟架构实际有**两条**(自动支付回调/webhook + 管理员手动)。漏掉整条 feature 路径 = 架构错+不全。本规则强制**开写前的调研步**,与 #15(仅在决策 surface 触发)不同、比 citation 卫生更广:调研是为了**开写前摸清功能完整形态(每条 path/mode/state)**,不是事后补脚注。
+
+### 规则
+
+- **三面默认镜子,每个 feature 开写/计划前都查**:`~/refs/sub2api/`(account-hub / 支付 / billing / topup / 订阅 parity 最全源)+ `~/refs/CLIProxyAPI/`(relay account→API 头号源,`@21fad9db`)+ `~/refs/new-api/`(AI 网关 / channel / topup / 兑换码 / quota-log 最全源,one-api 血统)。读**三者各自怎么组织该 feature——数路径/模式,不只确认存在**。其它领域参考(routing 看 LiteLLM、portkey 等)叠加在三默认之上,不可替代。
+- **设计前先产出 shape inventory**:列出成熟项目对该 feature 暴露的全部 path/mode/state/actor(例:支付 = {自动 webhook 入账, 管理员手动入账, 退款, 幂等重放}),再决定 HUAKAI 当前建哪些 / 哪些进路线图(Feature Preservation Rule)。inventory 必须先存在,杜绝遗漏式缺失。
+- **每个 codex dispatch prompt + 每个 plan artifact 的 `REFERENCE PROJECTS IN SCOPE` 必须同时含 CLIProxyAPI + sub2api + new-api 三者**(+ 领域附加)。支付 P2a 的 codex dispatch 只写了「new-api / sub2api」漏了 CLIProxyAPI —— 这正是本规则要杀的 bug;缺任一默认镜子的 dispatch/plan 无效,必须重拟。
+- **no-equivalent 合法但必须先看**:镜子可能确实没这 feature(已核实:CLIProxyAPI 是纯 relay account→API 代理,**无 payment/order/billing/subscription 模块**——`payment|billing|webhook|recharge` 关键词命中全是 `antigravity_credits` vendor-quota + websocket relay,`~/refs/CLIProxyAPI/internal/` 无 payment 包)。仍要写显式 source-cite 的 "no equivalent" 注脚(per #15),不可静默跳过。
+
+### Codex reviewer enforcement
+
+`codex exec review --uncommitted` / 切片 cross-review 必须把以下标为 HIGH 阻 land:
+- feature 实现/plan/dispatch 未在开写前调研**三面**默认镜子
+- `REFERENCE PROJECTS IN SCOPE` 缺 CLIProxyAPI / sub2api / new-api 三者任一
+- 某镜子无等价物却没写 source-cite 的 "no equivalent" 注脚
+- 复杂 feature 的 plan 缺 shape inventory(path/mode 清单)导致路径遗漏
