@@ -611,7 +611,10 @@ func (a mockTokenExchangeAdapter) httpClient() *http.Client {
 	if a.client != nil {
 		return a.client
 	}
-	return http.DefaultClient
+	// S1-011: mock_token_endpoint 取自凭据 payload(任意值),未注入 client 时的 fallback 必须走
+	// SSRF 保护客户端,拨号期拒绝环回/内网/link-local 目标,防止被构造的凭据把 worker 导向内网
+	// 地址并窃取返回的 access_token。与 operator adapter 同范式。
+	return auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
 }
 
 type metadataTokenAdapter struct {
@@ -637,7 +640,10 @@ func (a metadataTokenAdapter) RefreshCredential(ctx context.Context, in ModeRefr
 	req.Header.Set("Metadata-Flavor", "Google")
 	client := a.client
 	if client == nil {
-		client = http.DefaultClient
+		// S1-011: metadata_token_endpoint 同为 payload 提供的任意值 —— HUAKAI 把它当普通可配置端点,
+		// 而非真实的 in-instance GCE metadata 调用,故 fallback 走 SSRF 保护客户端、拒绝 link-local
+		// 169.254 在此是正确的(不会破坏真实 GCE 元数据获取,因为本就不是那条路径)。
+		client = auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
 	}
 	return executeTokenRequest(client, req, fields)
 }

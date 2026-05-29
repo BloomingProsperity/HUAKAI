@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -375,6 +376,48 @@ func TestMetadataTokenAdapterUsesStdlibMetadataRequest(t *testing.T) {
 	if got["access_token"] != "gcp-access" {
 		t.Fatalf("payload=%v", got)
 	}
+}
+
+// assertSSRFBlocksLoopbackEndpoint runs a credential-driven token adapter with NO injected client
+// (forcing the production fallback) against a real loopback HTTP server that WOULD hand back a usable
+// access_token if reached. The SSRF-protected fallback must refuse to dial 127.0.0.1, so run() must
+// return a dial error and never capture the token. This is the S1-011 discriminating fixture shared
+// by the mock and metadata adapters.
+//
+// Mutation check: restore the bare `http.DefaultClient` fallback in either adapter — the request then
+// reaches the loopback server, RefreshCredential succeeds with a captured token, err is nil, and this
+// assertion goes red. The success path proves the regression is real token exfiltration, not a
+// cosmetic error.
+func assertSSRFBlocksLoopbackEndpoint(t *testing.T, run func(endpoint string) error) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"access_token":"ssrf-leaked-token","expires_in":3600}`))
+	}))
+	defer srv.Close()
+
+	if err := run(srv.URL); err == nil {
+		t.Fatal("SSRF guard must reject the loopback token endpoint; got nil error (token was captured)")
+	}
+}
+
+func TestMockTokenExchangeAdapterFallbackBlocksInternalEndpoint(t *testing.T) {
+	assertSSRFBlocksLoopbackEndpoint(t, func(endpoint string) error {
+		raw := []byte(`{"mock_token_endpoint":"` + endpoint + `"}`)
+		_, err := (mockTokenExchangeAdapter{providerName: "azure"}).RefreshCredential(context.Background(), ModeRefreshInput{
+			Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeAzure, Payload: raw, Now: time.Now(),
+		})
+		return err
+	})
+}
+
+func TestMetadataTokenAdapterFallbackBlocksInternalEndpoint(t *testing.T) {
+	assertSSRFBlocksLoopbackEndpoint(t, func(endpoint string) error {
+		raw := []byte(`{"metadata_token_endpoint":"` + endpoint + `","client_email":"svc@example.test"}`)
+		_, err := (metadataTokenAdapter{}).RefreshCredential(context.Background(), ModeRefreshInput{
+			Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeVertexSA, Payload: raw, Now: time.Now(),
+		})
+		return err
+	})
 }
 
 func TestRefreshAdvisoryLockPrecedesRereadAndSave(t *testing.T) {
