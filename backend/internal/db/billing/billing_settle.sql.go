@@ -13,6 +13,50 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+const finalizePendingReconciliation = `-- name: FinalizePendingReconciliation :execrows
+INSERT INTO usage_record_reconciliation_events (
+    tenant_id, original_usage_record_id,
+    authoritative_tokens_input, authoritative_tokens_output,
+    authoritative_cost, cost_delta, reconciliation_source
+)
+SELECT
+    ur.tenant_id, ur.id,
+    -- authoritative tokens = 0: this finalize is for no-authoritative-usage provisionals.
+    -- ur.tokens_output may be a delivered CONTENT-FRAME count (not a token count) on the
+    -- missing-usage path, so copying it would label frame counts as authoritative usage.
+    -- Record 0 authoritative usage to match the $0 settlement (cost_delta = 0, no charge change).
+    0, 0,
+    ur.actual_cost, 0, 'finalize_after_grace'
+FROM usage_records ur
+WHERE ur.id = $1
+  AND ur.tenant_id = $2
+  AND ur.pending_reconciliation = true
+  -- defensive: only the $0 no-usage provisional is finalize-after-grace eligible (matches the selector).
+  AND ur.actual_cost = 0
+  AND NOT EXISTS (
+      SELECT 1
+      FROM usage_record_reconciliation_events ure
+      WHERE ure.tenant_id = ur.tenant_id
+        AND ure.original_usage_record_id = ur.id
+        AND ure.reconciliation_source = 'finalize_after_grace'
+  )
+`
+
+type FinalizePendingReconciliationParams struct {
+	ID       int64 `db:"id" json:"id"`
+	TenantID int64 `db:"tenant_id" json:"tenant_id"`
+}
+
+// Append-only finalization marker; rows already finalized by another worker
+// insert 0 rows and are treated as benign.
+func (q *Queries) FinalizePendingReconciliation(ctx context.Context, arg FinalizePendingReconciliationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, finalizePendingReconciliation, arg.ID, arg.TenantID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getClaimForSettle = `-- name: GetClaimForSettle :one
 
 SELECT
@@ -335,6 +379,70 @@ func (q *Queries) ReleaseSlotAndDecrementInFlight(ctx context.Context, arg Relea
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const selectPendingReconciliationForFinalize = `-- name: SelectPendingReconciliationForFinalize :many
+SELECT id, tenant_id, claim_id, actual_cost, usage_source
+FROM usage_records ur
+WHERE ur.pending_reconciliation = true
+  -- inferred = usage was inferred (no authoritative upstream usage) -> safe to finalize; reported-but-flagged rows stay pending for genuine reconciliation.
+  AND ur.usage_source = 'inferred'
+  -- actual_cost = 0 restricts finalize to the no-authoritative-usage streaming provisional (cost was $0).
+  -- inferred is ALSO set on UpstreamEOFNoTerminal streams that accumulated PARTIAL usage (cost > 0):
+  -- those are abnormal/partial and must stay pending for genuine reconciliation, never auto-finalized.
+  AND ur.actual_cost = 0
+  AND ur.settled_at < NOW() - $1::interval
+  AND NOT EXISTS (
+      SELECT 1
+      FROM usage_record_reconciliation_events ure
+      WHERE ure.tenant_id = ur.tenant_id
+        AND ure.original_usage_record_id = ur.id
+        AND ure.reconciliation_source = 'finalize_after_grace'
+  )
+ORDER BY ur.settled_at, ur.id
+LIMIT $2::int
+FOR UPDATE SKIP LOCKED
+`
+
+type SelectPendingReconciliationForFinalizeParams struct {
+	Grace     pgtype.Interval `db:"grace" json:"grace"`
+	BatchSize int32           `db:"batch_size" json:"batch_size"`
+}
+
+type SelectPendingReconciliationForFinalizeRow struct {
+	ID          int64           `db:"id" json:"id"`
+	TenantID    int64           `db:"tenant_id" json:"tenant_id"`
+	ClaimID     int64           `db:"claim_id" json:"claim_id"`
+	ActualCost  decimal.Decimal `db:"actual_cost" json:"actual_cost"`
+	UsageSource string          `db:"usage_source" json:"usage_source"`
+}
+
+// Background finalize-after-grace worker: lock aged pending usage rows so
+// concurrent workers do not process the same batch.
+func (q *Queries) SelectPendingReconciliationForFinalize(ctx context.Context, arg SelectPendingReconciliationForFinalizeParams) ([]SelectPendingReconciliationForFinalizeRow, error) {
+	rows, err := q.db.Query(ctx, selectPendingReconciliationForFinalize, arg.Grace, arg.BatchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SelectPendingReconciliationForFinalizeRow
+	for rows.Next() {
+		var i SelectPendingReconciliationForFinalizeRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.ClaimID,
+			&i.ActualCost,
+			&i.UsageSource,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const updateClaimAbortedWithReason = `-- name: UpdateClaimAbortedWithReason :execrows

@@ -47,6 +47,7 @@ import (
 	providerwindsurf "github.com/BloomingProsperity/HUAKAI/internal/provider/windsurf"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementreconcile"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
@@ -377,6 +378,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	leaseSweeper := billing.NewLeaseSweeper(pgPool, settler, 0)
 	leaseSweeper.Start(ctx)
 	rt.leaseSweepStop = leaseSweeper.Stop
+	reconciler := settlementreconcile.NewSettlementReconciler(pgPool, 0, 0)
+	reconciler.Start(ctx)
+	rt.settlementReconcileStop = reconciler.Stop
 
 	d := &deps{
 		cfg:                   cfg,

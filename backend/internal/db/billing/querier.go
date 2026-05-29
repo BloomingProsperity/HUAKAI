@@ -28,6 +28,9 @@ type Querier interface {
 	DeleteExpiredIdempotencyReplayRecords(ctx context.Context) (int64, error)
 	DeleteExpiredStickyBindings(ctx context.Context) error
 	DeletePool(ctx context.Context, arg DeletePoolParams) (PoolGroup, error)
+	// Append-only finalization marker; rows already finalized by another worker
+	// insert 0 rows and are treated as benign.
+	FinalizePendingReconciliation(ctx context.Context, arg FinalizePendingReconciliationParams) (int64, error)
 	GetAccountForRevalidation(ctx context.Context, arg GetAccountForRevalidationParams) (GetAccountForRevalidationRow, error)
 	GetBalanceHoldForUpdate(ctx context.Context, claimID int64) (GetBalanceHoldForUpdateRow, error)
 	// Case C 计费策略租户级设置的增删改查。表见 migration 0046。
@@ -147,6 +150,9 @@ type Querier interface {
 	// F-OBS-001 balance hold queries for durable atomic debit.
 	ReserveBalanceHold(ctx context.Context, arg ReserveBalanceHoldParams) (ReserveBalanceHoldRow, error)
 	SelectExpiredReservingClaims(ctx context.Context, batchSize int32) ([]SelectExpiredReservingClaimsRow, error)
+	// Background finalize-after-grace worker: lock aged pending usage rows so
+	// concurrent workers do not process the same batch.
+	SelectPendingReconciliationForFinalize(ctx context.Context, arg SelectPendingReconciliationForFinalizeParams) ([]SelectPendingReconciliationForFinalizeRow, error)
 	// Abort path: claim status reserving → aborted; usage_record/billing_event
 	// still written (with zero cost) for audit completeness.
 	// Tenant-scoped to prevent cross-tenant abort via stale claim id.

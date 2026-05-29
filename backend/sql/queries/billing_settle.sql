@@ -58,6 +58,60 @@ INSERT INTO usage_records (
 )
 RETURNING id;
 
+-- name: SelectPendingReconciliationForFinalize :many
+-- Background finalize-after-grace worker: lock aged pending usage rows so
+-- concurrent workers do not process the same batch.
+SELECT id, tenant_id, claim_id, actual_cost, usage_source
+FROM usage_records ur
+WHERE ur.pending_reconciliation = true
+  -- inferred = usage was inferred (no authoritative upstream usage) -> safe to finalize; reported-but-flagged rows stay pending for genuine reconciliation.
+  AND ur.usage_source = 'inferred'
+  -- actual_cost = 0 restricts finalize to the no-authoritative-usage streaming provisional (cost was $0).
+  -- inferred is ALSO set on UpstreamEOFNoTerminal streams that accumulated PARTIAL usage (cost > 0):
+  -- those are abnormal/partial and must stay pending for genuine reconciliation, never auto-finalized.
+  AND ur.actual_cost = 0
+  AND ur.settled_at < NOW() - sqlc.arg(grace)::interval
+  AND NOT EXISTS (
+      SELECT 1
+      FROM usage_record_reconciliation_events ure
+      WHERE ure.tenant_id = ur.tenant_id
+        AND ure.original_usage_record_id = ur.id
+        AND ure.reconciliation_source = 'finalize_after_grace'
+  )
+ORDER BY ur.settled_at, ur.id
+LIMIT sqlc.arg(batch_size)::int
+FOR UPDATE SKIP LOCKED;
+
+-- name: FinalizePendingReconciliation :execrows
+-- Append-only finalization marker; rows already finalized by another worker
+-- insert 0 rows and are treated as benign.
+INSERT INTO usage_record_reconciliation_events (
+    tenant_id, original_usage_record_id,
+    authoritative_tokens_input, authoritative_tokens_output,
+    authoritative_cost, cost_delta, reconciliation_source
+)
+SELECT
+    ur.tenant_id, ur.id,
+    -- authoritative tokens = 0: this finalize is for no-authoritative-usage provisionals.
+    -- ur.tokens_output may be a delivered CONTENT-FRAME count (not a token count) on the
+    -- missing-usage path, so copying it would label frame counts as authoritative usage.
+    -- Record 0 authoritative usage to match the $0 settlement (cost_delta = 0, no charge change).
+    0, 0,
+    ur.actual_cost, 0, 'finalize_after_grace'
+FROM usage_records ur
+WHERE ur.id = sqlc.arg(id)
+  AND ur.tenant_id = sqlc.arg(tenant_id)
+  AND ur.pending_reconciliation = true
+  -- defensive: only the $0 no-usage provisional is finalize-after-grace eligible (matches the selector).
+  AND ur.actual_cost = 0
+  AND NOT EXISTS (
+      SELECT 1
+      FROM usage_record_reconciliation_events ure
+      WHERE ure.tenant_id = ur.tenant_id
+        AND ure.original_usage_record_id = ur.id
+        AND ure.reconciliation_source = 'finalize_after_grace'
+  );
+
 -- name: InsertBillingEvent :one
 -- Spec §Tx2 step 13: audit-grade event row in same Tx; survives Usage Record
 -- async failure (per F-OBS-001 H8). event_type per CHECK constraint.

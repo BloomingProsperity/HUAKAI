@@ -24,17 +24,18 @@ import (
 )
 
 type gatewayRuntime struct {
-	deps                *deps
-	pgPool              *pgxpool.Pool
-	selectorCleanup     func()
-	replayJanitorStop   func()
-	leaseSweepStop      func()
-	closeReplica        func()
-	credentialScheduler *credentialworker.Scheduler
-	dlqWorker           *legacydlq.Worker
-	outboxWorker        *obsoutbox.Worker
-	obsDLQEnabled       bool
-	outboxRuntime       obsoutbox.RuntimeConfig
+	deps                    *deps
+	pgPool                  *pgxpool.Pool
+	selectorCleanup         func()
+	replayJanitorStop       func()
+	leaseSweepStop          func()
+	settlementReconcileStop func()
+	closeReplica            func()
+	credentialScheduler     *credentialworker.Scheduler
+	dlqWorker               *legacydlq.Worker
+	outboxWorker            *obsoutbox.Worker
+	obsDLQEnabled           bool
+	outboxRuntime           obsoutbox.RuntimeConfig
 }
 
 func (rt *gatewayRuntime) close() {
@@ -52,6 +53,9 @@ func (rt *gatewayRuntime) close() {
 	}
 	if rt.leaseSweepStop != nil {
 		rt.leaseSweepStop()
+	}
+	if rt.settlementReconcileStop != nil {
+		rt.settlementReconcileStop()
 	}
 	if rt.pgPool != nil {
 		rt.pgPool.Close()
