@@ -11,7 +11,31 @@ import (
 	"github.com/shopspring/decimal"
 
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 )
+
+// TestOutputTokensForAttemptIgnoresDeliveredFrames 守 C1(frames/tokens 消歧):usage_records.tokens_output
+// 只反映真实输出 token,绝不用 DeliveredTokenCount(SSE 帧/chunk 投递计数)回退充当。缺真实 usage 时
+// (TokensOutput==0)即便投递了 40 帧也记 0(帧数另由 delivered_token_count 列承载);有真实 usage 时照实记。
+// 这恢复了"tokens_output==0 ⇔ 无真实输出 token"的可靠信号(reconcile 行识别 R4-P2 依赖它)。self-proving 双路。
+func TestOutputTokensForAttemptIgnoresDeliveredFrames(t *testing.T) {
+	// 缺 usage:上游报告输出 0,但投递了 40 帧。
+	// MUTATION: 恢复 `if attempt.DeliveredTokenCount > output { output = attempt.DeliveredTokenCount }`
+	// → 返回 40(帧数被当成 token)→ RED。
+	if got := outputTokensForAttempt(
+		gateway.UsageRecordDraft{TokensOutput: 0},
+		Attempt{DeliveredTokenCount: 40},
+	); got != 0 {
+		t.Fatalf("missing-usage tokens_output=%d want 0 (delivered frames must NOT count as output tokens)", got)
+	}
+	// 有真实 usage:上游报告 19,帧 2 → 照实 19,不被帧数影响。
+	if got := outputTokensForAttempt(
+		gateway.UsageRecordDraft{TokensOutput: 19},
+		Attempt{DeliveredTokenCount: 2},
+	); got != 19 {
+		t.Fatalf("reported tokens_output=%d want 19 (real output tokens authoritative)", got)
+	}
+}
 
 func TestAT_AUDIT_001_060_RefundZeroReturnsSkippedCode(t *testing.T) {
 	tx := newRefundSettlerTestTx(

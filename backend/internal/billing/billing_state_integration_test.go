@@ -13,7 +13,11 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 )
 
-func TestBillingState_PartialRSTCommitsDeliveredTokens(t *testing.T) {
+// TestBillingState_PartialRSTKeepsFramesOutOfTokensOutput 守 C1:partial RST(投递了内容但上游报告
+// 输出 0)结算后 delivered_token_count 记帧数 3,但 tokens_output 记 0(不把帧数当 token)。成本由 draft
+// 携带(0.02,partial 可计费),与 tokens_output 解耦。MUTATION:恢复 outputTokensForAttempt 的帧数回退
+// → tokens_output==3 → RED。
+func TestBillingState_PartialRSTKeepsFramesOutOfTokensOutput(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	pool := openPool(t, ctx)
@@ -33,7 +37,7 @@ func TestBillingState_PartialRSTCommitsDeliveredTokens(t *testing.T) {
 		t.Fatalf("Settle partial RST: %v", err)
 	}
 
-	assertStreamStateRow(t, ctx, pool, seed.claimID, int16(StreamStatePartial), 3, "upstream_5xx", "0.02000000")
+	assertStreamStateRow(t, ctx, pool, seed.claimID, int16(StreamStatePartial), 3, 0, "upstream_5xx", "0.02000000")
 }
 
 func TestBillingState_FailedBeforeOutputNoCharge(t *testing.T) {
@@ -56,10 +60,10 @@ func TestBillingState_FailedBeforeOutputNoCharge(t *testing.T) {
 		t.Fatalf("Settle failed timeout: %v", err)
 	}
 
-	assertStreamStateRow(t, ctx, pool, seed.claimID, int16(StreamStateFailed), 0, "upstream_timeout", "0.00000000")
+	assertStreamStateRow(t, ctx, pool, seed.claimID, int16(StreamStateFailed), 0, 0, "upstream_timeout", "0.00000000")
 }
 
-func assertStreamStateRow(t *testing.T, ctx context.Context, pool *pgxpool.Pool, claimID int64, wantState int16, wantDelivered int64, wantReason, wantCost string) {
+func assertStreamStateRow(t *testing.T, ctx context.Context, pool *pgxpool.Pool, claimID int64, wantState int16, wantDelivered, wantTokensOutput int64, wantReason, wantCost string) {
 	t.Helper()
 	var usageState int16
 	var usageDelivered int64
@@ -82,8 +86,10 @@ func assertStreamStateRow(t *testing.T, ctx context.Context, pool *pgxpool.Pool,
 	if usageCost.StringFixed(8) != wantCost {
 		t.Fatalf("usage cost=%s want %s", usageCost.StringFixed(8), wantCost)
 	}
-	if int64(tokensOutput) != wantDelivered {
-		t.Fatalf("tokens_output=%d want delivered %d", tokensOutput, wantDelivered)
+	// C1: tokens_output 与 delivered_token_count 解耦 —— tokens_output 只记真实输出 token,
+	// 帧/chunk 投递量单独记 delivered_token_count。缺真实 usage 时 tokens_output==0 而 delivered>0。
+	if int64(tokensOutput) != wantTokensOutput {
+		t.Fatalf("tokens_output=%d want %d (real output tokens; NOT delivered frames %d)", tokensOutput, wantTokensOutput, wantDelivered)
 	}
 
 	var eventState int16
