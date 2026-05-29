@@ -490,11 +490,26 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	subscriptionExpiryWorker := subscription.NewExpiryWorker(subscription.ExpiryWorkerConfig{Service: d.subscriptionService})
 	subscriptionExpiryWorker.Start(ctx)
 
+	// 订阅到期提醒 worker。auth email sender 是接口 (不暴露 SendTenantMessage), 这里单独构造一个
+	// 接好 DLQ outbox 的 concrete sender 给提醒复用 (瞬时失败入同一 DLQ 重试)。
+	reminderEmailSender, err := mailinfra.BuildEmailSender(ctx, emailSettingsStore, credentialKeys, mailinfra.WithOutbox(outboxStore))
+	if err != nil {
+		return nil, fmt.Errorf("build subscription reminder email sender: %w", err)
+	}
+	subscriptionReminderWorker := subscription.NewReminderWorker(subscription.ReminderWorkerConfig{
+		Service: subscription.NewReminderService(
+			subscription.NewPostgresStore(pgPool),
+			subscription.NewEmailReminderMailer(reminderEmailSender),
+		),
+	})
+	subscriptionReminderWorker.Start(ctx)
+
 	rt.deps = d
 	rt.credentialScheduler = credentialScheduler
 	rt.dlqWorker = dlqWorker
 	rt.outboxWorker = outboxWorker
 	rt.subscriptionExpiryWorker = subscriptionExpiryWorker
+	rt.subscriptionReminderWorker = subscriptionReminderWorker
 	rt.obsDLQEnabled = opts.obsDLQ.Enabled
 	ready = true
 	return rt, nil

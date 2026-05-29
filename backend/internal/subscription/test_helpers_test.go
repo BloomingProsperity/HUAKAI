@@ -75,6 +75,7 @@ func (f *subFixture) seedUser(tenantID int64, label string) int64 {
 func (f *subFixture) cleanup() {
 	ctx := context.Background()
 	for _, tenantID := range []int64{f.tenantA, f.tenantB} {
+		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_expiry_reminders WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_audit_events WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_policy_links WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM user_subscriptions WHERE tenant_id=$1`, tenantID)
@@ -82,6 +83,13 @@ func (f *subFixture) cleanup() {
 		_, _ = f.pool.Exec(ctx, `DELETE FROM quota_policies WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM users WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM tenants WHERE id=$1`, tenantID)
+	}
+}
+
+func (f *subFixture) setUserEmail(tenantID, userID int64, email string) {
+	f.t.Helper()
+	if _, err := f.pool.Exec(f.ctx, `UPDATE users SET email=$3 WHERE tenant_id=$1 AND id=$2`, tenantID, userID, email); err != nil {
+		f.t.Fatalf("set user email: %v", err)
 	}
 }
 
