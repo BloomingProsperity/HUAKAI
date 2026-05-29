@@ -3,6 +3,7 @@ package credentialacq
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -176,5 +177,84 @@ func TestGeminiOperatorOAuthCallbackPostsAuthorizationCodeToConfiguredTokenEndpo
 	payload := string(candidate.Payload)
 	if !strings.Contains(payload, "gem-access") || !strings.Contains(payload, "gem-refresh") {
 		t.Fatalf("payload=%s, want exchanged Google token material", payload)
+	}
+}
+
+// TestValidateOAuthModeConsistencyAcceptsHealthyDefaults guards S1-008: the production default
+// registry + mode plans must pass the boot consistency gate. Mutation: re-register any OAuth mode
+// with a fake (see the reject test) and this baseline goes red — proving the gate actually runs.
+func TestValidateOAuthModeConsistencyAcceptsHealthyDefaults(t *testing.T) {
+	if err := ValidateOAuthModeConsistency(DefaultModePlans(), DefaultExchangerRegistry()); err != nil {
+		t.Fatalf("healthy default registry must pass the OAuth consistency gate: %v", err)
+	}
+}
+
+// TestValidateOAuthModeConsistencyRejectsFakeExchanger guards S1-008: a fake exchanger on any
+// FlowKindOAuth mode must be caught at boot and named. Mutation: delete the pkceFakeExchanger type
+// assertion in ValidateOAuthModeConsistency and this test goes red (the injected fake passes).
+func TestValidateOAuthModeConsistencyRejectsFakeExchanger(t *testing.T) {
+	registry := DefaultExchangerRegistry()
+	key := exchangerKey(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity)
+	if err := registry.RegisterOrReplaceExchanger(key, NewPKCEFakeExchanger(TokenShapeAnySessionOrAccess)); err != nil {
+		t.Fatalf("inject fake: %v", err)
+	}
+	err := ValidateOAuthModeConsistency(DefaultModePlans(), registry)
+	if err == nil {
+		t.Fatal("consistency gate must reject a fake exchanger registered on an OAuth mode")
+	}
+	if !strings.Contains(err.Error(), key) {
+		t.Fatalf("gate error must name the offending mode key %q: %v", key, err)
+	}
+}
+
+// TestValidateOAuthModeConsistencyRejectsMissingExchanger guards S1-008: a FlowKindOAuth ModePlan
+// with no registered exchanger must be caught at boot, not silently surface ErrOAuthExchangerMissing
+// only on a live callback.
+func TestValidateOAuthModeConsistencyRejectsMissingExchanger(t *testing.T) {
+	plans := []ModePlan{{Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeChatGPTOAuth, Kind: FlowKindOAuth}}
+	if err := ValidateOAuthModeConsistency(plans, NewExchangerRegistry()); err == nil {
+		t.Fatal("consistency gate must reject an OAuth mode with no registered exchanger")
+	}
+}
+
+// TestGeminiAntigravityAcquisitionFailsClosedNotFake guards the S1-008 core trust-boundary fix:
+// gemini/antigravity acquisition must NO LONGER accept a JSON-token-shaped callback code as a real
+// credential; it must fail-closed with ErrFeatureDisabled, consistent with the paused refresh side.
+// Mutation: restore NewPKCEFakeExchanger for this mode and the forged blob is accepted (err==nil) —
+// this test goes red, proving it guards real forged-credential acceptance, not a cosmetic error.
+func TestGeminiAntigravityAcquisitionFailsClosedNotFake(t *testing.T) {
+	registry := DefaultExchangerRegistry()
+	_, err := registry.Exchange(context.Background(), Session{
+		TenantID: 1, ProviderAccountID: 7, Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeAntigravity, ActorID: "op",
+	}, `{"session_token":"attacker-forged"}`)
+	if !errors.Is(err, ErrFeatureDisabled) {
+		t.Fatalf("gemini/antigravity acquisition must fail-closed with ErrFeatureDisabled, got %v", err)
+	}
+}
+
+// TestCopilotOAuthAcquisitionFailsClosed guards S1-008: copilot/copilot_oauth is advertised as an
+// OAuth mode but its callback acquisition is unimplemented; it must fail-closed with a clear
+// ErrFeatureDisabled rather than the prior vague ErrOAuthExchangerMissing.
+func TestCopilotOAuthAcquisitionFailsClosed(t *testing.T) {
+	registry := DefaultExchangerRegistry()
+	_, err := registry.Exchange(context.Background(), Session{
+		TenantID: 1, ProviderAccountID: 8, Vendor: credentialstore.VendorCopilot, AuthMode: credentialstore.AuthModeCopilotOAuth, ActorID: "op",
+	}, `{"access_token":"x"}`)
+	if !errors.Is(err, ErrFeatureDisabled) {
+		t.Fatalf("copilot/copilot_oauth acquisition must fail-closed with ErrFeatureDisabled, got %v", err)
+	}
+}
+
+// TestNoFakeExchangerRemainsInDefaultRegistry guards S1-008: no pkceFakeExchanger may remain
+// reachable in the production default registry (orphaned cursor/windsurf fakes removed,
+// gemini/antigravity migrated to fail-closed). Mutation: restore any NewPKCEFakeExchanger
+// registration and this scan finds it → red.
+func TestNoFakeExchangerRemainsInDefaultRegistry(t *testing.T) {
+	registry := DefaultExchangerRegistry()
+	for _, name := range registry.Names() {
+		exc, _ := registry.Lookup(name)
+		if _, isFake := exc.(pkceFakeExchanger); isFake {
+			t.Fatalf("default registry still exposes a fake exchanger at %q (orphaned/dangerous wiring)", name)
+		}
 	}
 }
