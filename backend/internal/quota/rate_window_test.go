@@ -69,6 +69,45 @@ func TestComputeWindow_Boundaries(t *testing.T) {
 			wantOK:        true,
 		},
 		{
+			// 2 月只有 28 天: 天真的 AddDate(0,0,30) 会给出 3/3, 此例钉死月长。
+			name:          "calendar month February uses month-length boundary",
+			kind:          WindowCalendarMonth,
+			windowSeconds: 0,
+			at:            time.Date(2026, 2, 15, 12, 0, 0, 0, time.UTC),
+			wantStart:     time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC),
+			wantEnd:       time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+			wantOK:        true,
+		},
+		{
+			name:          "calendar month exact first-of-month starts a new month",
+			kind:          WindowCalendarMonth,
+			windowSeconds: 0,
+			at:            time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+			wantStart:     time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+			wantEnd:       time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
+			wantOK:        true,
+		},
+		{
+			// 12 月跨年: end 必须是次年 1/1, 钉死月进位的跨年处理。
+			name:          "calendar month December crosses into next year",
+			kind:          WindowCalendarMonth,
+			windowSeconds: 0,
+			at:            time.Date(2026, 12, 20, 8, 30, 0, 0, time.UTC),
+			wantStart:     time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC),
+			wantEnd:       time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC),
+			wantOK:        true,
+		},
+		{
+			// 本地 3/1 07:00 (+8) = UTC 2/28 23:00, 必须落在 2 月窗口而非 3 月, 钉死 UTC 锚定。
+			name:          "calendar month anchors to UTC not local month",
+			kind:          WindowCalendarMonth,
+			windowSeconds: 0,
+			at:            time.Date(2026, 3, 1, 7, 0, 0, 0, shanghai),
+			wantStart:     time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC),
+			wantEnd:       time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+			wantOK:        true,
+		},
+		{
 			name:          "manual uses one open administrative window",
 			kind:          WindowManual,
 			windowSeconds: 0,
