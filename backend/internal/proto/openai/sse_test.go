@@ -223,6 +223,24 @@ func TestOpenAIBufferedResponseHelperParsesUsageAndTools(t *testing.T) {
 	}
 }
 
+// TestOpenAIBufferedResponseParsesReasoningTokens 守 S2-163-fu: o1/o3 的
+// completion_tokens_details.reasoning_tokens 必须映射进 CanonicalUsage.ReasoningTokens
+// 供 token 交叉校验扣除。Mutation: 去掉 canonical() 里的 CompletionTokensDetails 映射 →
+// ReasoningTokens=0 → RED。
+func TestOpenAIBufferedResponseParsesReasoningTokens(t *testing.T) {
+	raw := []byte(`{"id":"chatcmpl-o1","object":"chat.completion","model":"o1","choices":[{"index":0,"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":300,"total_tokens":310,"completion_tokens_details":{"reasoning_tokens":200}}}`)
+	resp, _, err := openAIResponseToCanonicalResponse(raw)
+	if err != nil {
+		t.Fatalf("openAIResponseToCanonicalResponse: %v", err)
+	}
+	if resp.Usage.OutputTokens != 300 {
+		t.Fatalf("OutputTokens=%d want 300 (completion_tokens unchanged)", resp.Usage.OutputTokens)
+	}
+	if resp.Usage.ReasoningTokens != 200 {
+		t.Fatalf("ReasoningTokens=%d want 200 (parsed from completion_tokens_details)", resp.Usage.ReasoningTokens)
+	}
+}
+
 func runOpenAIGoldenSSE(t *testing.T, fixture string) ([]proto.CanonicalEvent, []proto.ProtocolLossEntry, *UpstreamState) {
 	t.Helper()
 	adapter := &Adapter{}

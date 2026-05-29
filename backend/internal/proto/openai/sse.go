@@ -103,11 +103,19 @@ type openAIUsage struct {
 	// （implicit caching），只暴露读命中。映射到 proto.CanonicalUsage.CacheReadInputTokens。
 	// (sonnet F4 MEDIUM 修复: 缺失 OpenAI cache 观测)
 	PromptTokensDetails *openAIPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	// completion_tokens_details.reasoning_tokens: OpenAI o1/o3 隐藏推理 token，已计入
+	// completion_tokens（=OutputTokens）。映射到 proto.CanonicalUsage.ReasoningTokens
+	// 供 token 交叉校验扣除（S2-163-fu）。
+	CompletionTokensDetails *openAICompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 }
 
 type openAIPromptTokensDetails struct {
 	CachedTokens int `json:"cached_tokens,omitempty"`
 	AudioTokens  int `json:"audio_tokens,omitempty"`
+}
+
+type openAICompletionTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }
 
 type openAIChatCompletionResponse struct {
@@ -453,6 +461,9 @@ func (u openAIUsage) canonical() proto.CanonicalUsage {
 	if u.PromptTokensDetails != nil {
 		// OpenAI 只暴露 read（命中）；creation 永远 0
 		out.CacheReadInputTokens = u.PromptTokensDetails.CachedTokens
+	}
+	if u.CompletionTokensDetails != nil {
+		out.ReasoningTokens = u.CompletionTokensDetails.ReasoningTokens
 	}
 	if out.TotalTokens == 0 {
 		out.TotalTokens = out.InputTokens + out.OutputTokens
