@@ -155,6 +155,7 @@ func TestAT_AUTH_007_006_007_OAuthFlowUsesVerifiedProviderClaims(t *testing.T) {
 		},
 	}
 	svc.OAuth = NewOAuthService(provider)
+	svc.AllowedRedirectURIs = []string{"https://huakai.example.test/callback"} // S2-009: 显式允许该 caller redirect
 	existing, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "user@example.test", Password: "secret"})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
@@ -211,6 +212,40 @@ func TestAT_AUTH_007_006_007_OAuthFlowUsesVerifiedProviderClaims(t *testing.T) {
 	})
 	if _, err := svc.CompleteOAuth(ctx, OAuthCallbackInput{TenantID: 2, Provider: SocialProviderGitHub, State: init.State, Code: "github-code"}); !errors.Is(err, ErrSocialLoginRejected) {
 		t.Fatalf("disabled social signup = %v, want ErrSocialLoginRejected", err)
+	}
+}
+
+// TestStartOAuthRedirectAllowlist guards S2-009: a caller-supplied redirect_uri must be rejected
+// unless it exactly matches the configured allowlist (fail-closed); an empty redirect_uri is allowed
+// and falls back to the provider's server-side RedirectURI. Prevents open-redirect / authorization
+// -code hijack to attacker-controlled callbacks.
+//
+// Mutation check: delete the validateOAuthRedirectURI call in StartOAuth and the "not in allowlist"
+// case is accepted → red. Discriminating: same provider/tenant, only the redirect_uri + allowlist vary.
+func TestStartOAuthRedirectAllowlist(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 16, 10, 30, 0, 0, time.UTC)
+	newSvc := func(allow ...string) *Service {
+		s := NewService(newMemoryAuthStore(now))
+		s.Now = func() time.Time { return now }
+		s.OAuth = NewOAuthService(&fakeOAuthProvider{
+			provider: SocialProviderGoogle,
+			identity: VerifiedIdentity{Provider: SocialProviderGoogle, Subject: "s", Email: "u@example.test", EmailVerified: true},
+		})
+		s.AllowedRedirectURIs = allow
+		return s
+	}
+	// (1) caller redirect_uri not in (empty) allowlist → rejected fail-closed.
+	if _, err := newSvc().StartOAuth(ctx, OAuthInitInput{TenantID: 1, Provider: SocialProviderGoogle, RedirectURI: "https://evil.example.test/steal"}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("caller redirect_uri not in allowlist must be rejected; got %v", err)
+	}
+	// (2) caller redirect_uri exactly in allowlist → accepted.
+	if _, err := newSvc("https://app.example.test/cb").StartOAuth(ctx, OAuthInitInput{TenantID: 1, Provider: SocialProviderGoogle, RedirectURI: "https://app.example.test/cb"}); err != nil {
+		t.Fatalf("allowlisted redirect_uri must be accepted; got %v", err)
+	}
+	// (3) empty redirect_uri → accepted (server-side default callback used).
+	if _, err := newSvc().StartOAuth(ctx, OAuthInitInput{TenantID: 1, Provider: SocialProviderGoogle}); err != nil {
+		t.Fatalf("empty redirect_uri must be accepted (server default); got %v", err)
 	}
 }
 

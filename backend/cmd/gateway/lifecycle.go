@@ -221,6 +221,8 @@ func loadRuntimeOptions(logger *zap.Logger) (*runtimeOptions, error) {
 func buildUserServices(pgPool *pgxpool.Pool, keys credentialstore.KeyProvider, emailSettings *mailinfra.PostgresSettingsStore, logger *zap.Logger) (*userauth.Service, *usersession.Service, error) {
 	userAuthService := userauth.NewService(userauth.NewPostgresStoreWithKeys(pgPool, keys))
 	userAuthService.OAuth = buildUserOAuthService(logger)
+	// S2-009: caller 提供的 redirect_uri 必须在此白名单内,否则拒绝;空 = 只用 provider 服务端固定回调。
+	userAuthService.AllowedRedirectURIs = loadUserOAuthRedirectAllowlistFromEnv()
 	userAuthService.VerificationTTL = mailinfra.DefaultVerificationTTL
 	userAuthService.Verification = mailinfra.NewVerificationPolicy(emailSettings)
 	sessionSigningKey, err := loadSessionSigningKey()
