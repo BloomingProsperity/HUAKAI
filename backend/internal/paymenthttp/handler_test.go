@@ -3,11 +3,18 @@
 package paymenthttp
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 )
 
@@ -65,5 +72,210 @@ func TestAdminOrderViewIncludesAdminFieldsSnakeCase(t *testing.T) {
 	// 不得出现 PascalCase 字段名。
 	if strings.Contains(js, "OutTradeNo") || strings.Contains(js, "AmountCents") {
 		t.Fatalf("admin order view leaked PascalCase field: %s", js)
+	}
+}
+
+// ---- 5c: order_kind / subscription 透传 + 渲染 ----
+
+// 守渲染: 充值单 order_kind=topup 且无 subscription_plan_id; 订阅单 order_kind=subscription 且带 plan_id。
+// mutation: toOrderView 漏拷 OrderKind → 订阅单 order_kind 空 → 红; 漏拷 SubscriptionPlanID → plan_id 不出现 → 红。
+func TestOrderViewRendersKind(t *testing.T) {
+	topup := sampleOrder()
+	topup.OrderKind = payment.OrderKindTopup
+	rawTopup, _ := json.Marshal(toOrderView(topup))
+	if !strings.Contains(string(rawTopup), `"order_kind":"topup"`) {
+		t.Fatalf("topup view missing order_kind=topup: %s", rawTopup)
+	}
+	if strings.Contains(string(rawTopup), "subscription_plan_id") {
+		t.Fatalf("topup view must omit subscription_plan_id (nil): %s", rawTopup)
+	}
+
+	planID := int64(42)
+	sub := sampleOrder()
+	sub.OrderKind = payment.OrderKindSubscription
+	sub.SubscriptionPlanID = &planID
+	rawSub, _ := json.Marshal(toOrderView(sub))
+	if !strings.Contains(string(rawSub), `"order_kind":"subscription"`) {
+		t.Fatalf("subscription view missing order_kind=subscription: %s", rawSub)
+	}
+	if !strings.Contains(string(rawSub), `"subscription_plan_id":42`) {
+		t.Fatalf("subscription view missing subscription_plan_id=42: %s", rawSub)
+	}
+}
+
+type captureService struct {
+	gotCreate  payment.CreateOrderInput
+	createRes  payment.CreateOrderResult
+	createErr  error
+	confirmRes payment.FulfillResult
+	confirmErr error
+}
+
+func (s *captureService) CreateOrder(_ context.Context, in payment.CreateOrderInput) (payment.CreateOrderResult, error) {
+	s.gotCreate = in
+	return s.createRes, s.createErr
+}
+
+func (s *captureService) AdminConfirmPaid(_ context.Context, _ payment.AdminConfirmPaidInput) (payment.FulfillResult, error) {
+	return s.confirmRes, s.confirmErr
+}
+
+func (s *captureService) GetOrder(_ context.Context, _, _ int64) (payment.Order, error) {
+	return payment.Order{}, nil
+}
+func (s *captureService) ListAuditEvents(_ context.Context, _, _ int64) ([]payment.AuditEvent, error) {
+	return nil, nil
+}
+func (s *captureService) GetBalance(_ context.Context, _, _ int64) (payment.Balance, error) {
+	return payment.Balance{}, nil
+}
+func (s *captureService) ListOrders(_ context.Context, _, _ int64, _ int) ([]payment.Order, error) {
+	return nil, nil
+}
+
+type fakeAdminAuth struct{ ident admin.AdminIdentity }
+
+func (a fakeAdminAuth) Resolve(context.Context, *http.Request) (admin.AdminIdentity, error) {
+	return a.ident, nil
+}
+
+func newAdminTestRouter(svc Service) http.Handler {
+	r := chi.NewRouter()
+	d := AdminDeps{
+		Auth:    fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin, TokenID: 99}},
+		Service: svc,
+	}
+	r.Route("/orders", func(r chi.Router) { MountPaymentAdminRoutes(r, d) })
+	return r
+}
+
+// 守透传: 建单 handler 必须把 order_kind + subscription_plan_id 原样传给 service。
+// mutation: handler 漏带这两个字段 → 捕获到的 OrderKind 为空 / plan 指针 nil → 红 (订阅单会被当充值建错)。
+func TestCreateOrderPassesSubscriptionFields(t *testing.T) {
+	planID := int64(42)
+	svc := &captureService{createRes: payment.CreateOrderResult{Order: payment.Order{ID: 1, OrderKind: payment.OrderKindSubscription, SubscriptionPlanID: &planID}}}
+	router := newAdminTestRouter(svc)
+
+	body, _ := json.Marshal(createOrderRequest{
+		TenantID: 5, UserID: 7, AmountCents: 1990, OutTradeNo: "sub-1",
+		OrderKind: payment.OrderKindSubscription, SubscriptionPlanID: &planID,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/orders/", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
+	}
+	if svc.gotCreate.OrderKind != payment.OrderKindSubscription {
+		t.Fatalf("service got order_kind = %q, want subscription", svc.gotCreate.OrderKind)
+	}
+	if svc.gotCreate.SubscriptionPlanID == nil || *svc.gotCreate.SubscriptionPlanID != planID {
+		t.Fatalf("service got subscription_plan_id = %v, want %d", svc.gotCreate.SubscriptionPlanID, planID)
+	}
+}
+
+// 守响应分流: 订阅单 confirm 表 subscription 授予且不渲染 credit/balance (订阅零入账, 渲染零值入账会误导)。
+// mutation: handler 总写 credit/balance (删订阅分支) → 出现 "credit" 键 → 红; 漏 subscription → "subscription" 缺 → 红。
+func TestConfirmSubscriptionOrderSurfacesGrantNoCredit(t *testing.T) {
+	planID := int64(42)
+	exp := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)
+	svc := &captureService{confirmRes: payment.FulfillResult{
+		Order: payment.Order{ID: 1, OrderKind: payment.OrderKindSubscription, SubscriptionPlanID: &planID},
+		Subscription: &payment.SubscriptionGrant{
+			UserSubscriptionID: 9, PlanID: planID, ResultKind: "created", NewExpiresAt: exp, AppliedValidityDays: 30,
+		},
+	}}
+	router := newAdminTestRouter(svc)
+
+	body, _ := json.Marshal(confirmRequest{TenantID: 5, ConfirmReason: "manual"})
+	req := httptest.NewRequest(http.MethodPost, "/orders/1/confirm", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	grantRaw, ok := resp["subscription"]
+	if !ok {
+		t.Fatalf("subscription order confirm missing subscription grant: %s", rec.Body.String())
+	}
+	var grant subscriptionGrantView
+	if err := json.Unmarshal(grantRaw, &grant); err != nil {
+		t.Fatalf("decode grant: %v", err)
+	}
+	if grant.PlanID != planID || grant.UserSubscriptionID != 9 || grant.ResultKind != "created" {
+		t.Fatalf("grant mismatch: %+v", grant)
+	}
+	if _, leaked := resp["credit"]; leaked {
+		t.Fatalf("subscription order confirm must not render credit: %s", rec.Body.String())
+	}
+	if _, leaked := resp["balance_cents"]; leaked {
+		t.Fatalf("subscription order confirm must not render balance_cents: %s", rec.Body.String())
+	}
+}
+
+// 守错误映射: 内存 store 确认订阅单回 ErrSubscriptionOrderRequiresPG → 503 + 专属 code。
+// 判别陷阱: writePaymentError 的 default 分支也回 503, 故必须断言 code 字符串而非仅状态码;
+// mutation: 删掉该 errors.Is 分支 → 落 default → code 变 payment_backend_error → 红。
+func TestConfirmSubscriptionOrderRequiresPGMapsTo503(t *testing.T) {
+	svc := &captureService{confirmErr: payment.ErrSubscriptionOrderRequiresPG}
+	router := newAdminTestRouter(svc)
+
+	body, _ := json.Marshal(confirmRequest{TenantID: 5})
+	req := httptest.NewRequest(http.MethodPost, "/orders/1/confirm", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if resp.Error.Code != "subscription_order_requires_pg" {
+		t.Fatalf("error code = %q, want subscription_order_requires_pg (default 503 would give payment_backend_error)", resp.Error.Code)
+	}
+}
+
+// 守充值单未回退: 充值单 confirm 仍渲染 credit + balance, 不渲染 subscription。
+// mutation: handler 把分支反了 → 充值单丢 credit / 误加 subscription → 红。
+func TestConfirmTopupOrderSurfacesCreditNoSubscription(t *testing.T) {
+	svc := &captureService{confirmRes: payment.FulfillResult{
+		Order:        payment.Order{ID: 1, OrderKind: payment.OrderKindTopup},
+		Credit:       payment.CreditRecord{ID: 3, AmountCents: 1000, CurrencyCode: "USD"},
+		BalanceCents: 1000,
+	}}
+	router := newAdminTestRouter(svc)
+
+	body, _ := json.Marshal(confirmRequest{TenantID: 5})
+	req := httptest.NewRequest(http.MethodPost, "/orders/1/confirm", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if _, ok := resp["credit"]; !ok {
+		t.Fatalf("topup confirm missing credit: %s", rec.Body.String())
+	}
+	if _, ok := resp["balance_cents"]; !ok {
+		t.Fatalf("topup confirm missing balance_cents: %s", rec.Body.String())
+	}
+	if _, leaked := resp["subscription"]; leaked {
+		t.Fatalf("topup confirm must not render subscription grant: %s", rec.Body.String())
 	}
 }

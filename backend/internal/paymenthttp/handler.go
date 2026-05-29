@@ -55,6 +55,9 @@ type createOrderRequest struct {
 	CurrencyCode string `json:"currency_code,omitempty"`
 	OutTradeNo   string `json:"out_trade_no,omitempty"`
 	ProviderKind string `json:"provider_kind,omitempty"`
+	// OrderKind 省略=充值 (topup); subscription 时 SubscriptionPlanID 必填 (service 层校验)。
+	OrderKind          string `json:"order_kind,omitempty"`
+	SubscriptionPlanID *int64 `json:"subscription_plan_id,omitempty"`
 }
 
 type confirmRequest struct {
@@ -64,18 +67,21 @@ type confirmRequest struct {
 
 // orderView 是面向用户的订单 DTO — 仅公开字段, snake_case, 不暴露任何内部/管理字段。
 type orderView struct {
-	ID           int64      `json:"id"`
-	OutTradeNo   string     `json:"out_trade_no"`
-	UserID       int64      `json:"user_id"`
-	AmountCents  int64      `json:"amount_cents"`
-	CurrencyCode string     `json:"currency_code"`
-	Status       string     `json:"status"`
-	ProviderKind string     `json:"provider_kind"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
-	PaidAt       *time.Time `json:"paid_at,omitempty"`
-	CompletedAt  *time.Time `json:"completed_at,omitempty"`
+	ID           int64  `json:"id"`
+	OutTradeNo   string `json:"out_trade_no"`
+	UserID       int64  `json:"user_id"`
+	AmountCents  int64  `json:"amount_cents"`
+	CurrencyCode string `json:"currency_code"`
+	Status       string `json:"status"`
+	ProviderKind string `json:"provider_kind"`
+	// OrderKind 区分充值/购订阅; SubscriptionPlanID 仅订阅单非空 (用户可见自己买的是哪种)。
+	OrderKind          string     `json:"order_kind"`
+	SubscriptionPlanID *int64     `json:"subscription_plan_id,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	ExpiresAt          *time.Time `json:"expires_at,omitempty"`
+	PaidAt             *time.Time `json:"paid_at,omitempty"`
+	CompletedAt        *time.Time `json:"completed_at,omitempty"`
 }
 
 // adminOrderView 面向管理员 — 含管理字段, 但仍不暴露纯内部的 request_fingerprint。
@@ -106,6 +112,25 @@ type balanceView struct {
 	AmountCents int64 `json:"amount_cents"`
 }
 
+// subscriptionGrantView 订阅单履约后的订阅授予摘要 DTO (零入账, 不含 credit/balance)。
+type subscriptionGrantView struct {
+	UserSubscriptionID  int64     `json:"user_subscription_id"`
+	PlanID              int64     `json:"plan_id"`
+	ResultKind          string    `json:"result_kind"`
+	NewExpiresAt        time.Time `json:"new_expires_at"`
+	AppliedValidityDays int       `json:"applied_validity_days"`
+}
+
+func toSubscriptionGrantView(g *payment.SubscriptionGrant) subscriptionGrantView {
+	return subscriptionGrantView{
+		UserSubscriptionID:  g.UserSubscriptionID,
+		PlanID:              g.PlanID,
+		ResultKind:          g.ResultKind,
+		NewExpiresAt:        g.NewExpiresAt,
+		AppliedValidityDays: g.AppliedValidityDays,
+	}
+}
+
 type auditEventView struct {
 	EventType   string    `json:"event_type"`
 	ActorKind   string    `json:"actor_kind"`
@@ -118,6 +143,7 @@ func toOrderView(o payment.Order) orderView {
 	return orderView{
 		ID: o.ID, OutTradeNo: o.OutTradeNo, UserID: o.UserID, AmountCents: o.AmountCents,
 		CurrencyCode: o.CurrencyCode, Status: string(o.Status), ProviderKind: string(o.ProviderKind),
+		OrderKind: o.OrderKind, SubscriptionPlanID: o.SubscriptionPlanID,
 		CreatedAt: o.CreatedAt, UpdatedAt: o.UpdatedAt, ExpiresAt: o.ExpiresAt, PaidAt: o.PaidAt, CompletedAt: o.CompletedAt,
 	}
 }
@@ -189,14 +215,16 @@ func newAdminCreateOrderHandler(d AdminDeps) http.HandlerFunc {
 			return
 		}
 		res, err := d.Service.CreateOrder(r.Context(), payment.CreateOrderInput{
-			TenantID:     req.TenantID,
-			UserID:       req.UserID,
-			AmountCents:  req.AmountCents,
-			CurrencyCode: req.CurrencyCode,
-			OutTradeNo:   req.OutTradeNo,
-			ProviderKind: payment.ProviderKind(req.ProviderKind),
-			ActorAdminID: ident.TokenID,
-			RequestID:    requestID(r),
+			TenantID:           req.TenantID,
+			UserID:             req.UserID,
+			AmountCents:        req.AmountCents,
+			CurrencyCode:       req.CurrencyCode,
+			OutTradeNo:         req.OutTradeNo,
+			ProviderKind:       payment.ProviderKind(req.ProviderKind),
+			OrderKind:          req.OrderKind,
+			SubscriptionPlanID: req.SubscriptionPlanID,
+			ActorAdminID:       ident.TokenID,
+			RequestID:          requestID(r),
 		})
 		if err != nil {
 			writePaymentError(w, err)
@@ -235,12 +263,19 @@ func newAdminConfirmHandler(d AdminDeps) http.HandlerFunc {
 			writePaymentError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"order":         toAdminOrderView(res.Order),
-			"credit":        toCreditView(res.Credit),
-			"balance_cents": res.BalanceCents,
-			"idempotent":    res.Idempotent,
-		})
+		resp := map[string]any{
+			"order":      toAdminOrderView(res.Order),
+			"idempotent": res.Idempotent,
+		}
+		// 订阅单: 表订阅授予, 零入账 → 不渲染 credit/balance (避免误导出零值入账)。
+		// 充值单: 渲染入账 credit + 派生余额。
+		if res.Subscription != nil {
+			resp["subscription"] = toSubscriptionGrantView(res.Subscription)
+		} else {
+			resp["credit"] = toCreditView(res.Credit)
+			resp["balance_cents"] = res.BalanceCents
+		}
+		writeJSON(w, http.StatusOK, resp)
 	}
 }
 
@@ -428,6 +463,8 @@ func writePaymentError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusConflict, "order_not_confirmable", "order is not in a confirmable state")
 	case errors.Is(err, payment.ErrOrderNotFulfillable):
 		writeJSONError(w, http.StatusConflict, "order_not_fulfillable", "order is not in a fulfillable state")
+	case errors.Is(err, payment.ErrSubscriptionOrderRequiresPG):
+		writeJSONError(w, http.StatusServiceUnavailable, "subscription_order_requires_pg", "subscription order fulfillment requires postgres store")
 	default:
 		writeJSONError(w, http.StatusServiceUnavailable, "payment_backend_error", "payment service unavailable")
 	}
