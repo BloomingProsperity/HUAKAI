@@ -309,6 +309,14 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err := assertChatGPTOAuthExchangerHasHTTPClient(credentialExchangers); err != nil {
 		return nil, fmt.Errorf("openai chatgpt_oauth wiring self-check: %w", err)
 	}
+	// S1-008: OAuth ModePlan 自一致性闸。在全部 install 之后,对运行时真实使用的 registry 校验:
+	// 每个 Kind==FlowKindOAuth 的 ModePlan 必须映射到一个非-fake、非-缺失的 exchanger(显式 fail-closed
+	// 的暂停态视为合规)。若某 OAuth mode 仍是 fake(会把攻击者可影响的回调码当 JSON 凭据接受)或根本没
+	// 注册 exchanger(只在回调期才暴露 ErrOAuthExchangerMissing),进程在此拒启动 —— 把配置漂移在 boot
+	// 时变成 fatal,杜绝"暴露为可完成的 OAuth mode 实则映射 fake/缺失"这类信任边界回归。
+	if err := credentialacq.ValidateOAuthModeConsistency(credentialacq.DefaultModePlans(), credentialExchangers); err != nil {
+		return nil, fmt.Errorf("oauth mode-plan consistency self-check: %w", err)
+	}
 	emailSettingsStore := mailinfra.NewPostgresSettingsStore(pgPool)
 	if releaseModeProduction() {
 		if err := mailinfra.ValidateProductionReleaseGate(ctx, emailSettingsStore, credentialKeys); err != nil {

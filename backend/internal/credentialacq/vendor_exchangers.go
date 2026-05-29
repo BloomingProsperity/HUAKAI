@@ -39,7 +39,12 @@ func DefaultExchangerRegistry() *ExchangerRegistry {
 	register(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth), newClaudeAIOAuthExchanger())
 	register(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist), newGeminiPublicCLIOAuthExchanger(credentialstore.AuthModeCodeAssist))
 	register(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne), newGeminiPublicCLIOAuthExchanger(credentialstore.AuthModeGoogleOne))
-	register(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity), NewPKCEFakeExchanger(TokenShapeAnySessionOrAccess))
+	// S1-008: gemini/antigravity refresh 侧已 fail-closed(mode_refresh.go geminiAntigravityPausedAdapter,
+	// DR-GEM-3-ANTIGRAVITY-PAUSED)。acquisition 侧此前仍是 fake exchanger,会把 JSON-token 形状的回调码当真
+	// 凭据接受 —— 与 refresh 暂停不一致且是 acquisition 信任边界破坏。改为 fail-closed,两侧一致;OCAW 重新激活时
+	// 换回真实 authorization-code exchanger。
+	register(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity),
+		newFailClosedExchanger("gemini/antigravity OAuth acquisition 暂停(DR-GEM-3-ANTIGRAVITY-PAUSED);refresh 侧已 fail-closed"))
 	register("gemini/oauth", newAuthorizationCodeOAuthExchanger(credentialstore.VendorGemini, credentialstore.AuthModeOAuth, TokenShapeAnySessionOrAccess))
 	register(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth), newChatGPTOAuthExchanger())
 	register(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth), openAICodexDeviceCode)
@@ -49,8 +54,15 @@ func DefaultExchangerRegistry() *ExchangerRegistry {
 	register("antigravity/oauth", newAuthorizationCodeOAuthExchanger(credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth, TokenShapeAnySessionOrAccess))
 	register("copilot/device_code", NewDeviceCodeExchanger())
 	register("kiro/sso", NewSSOExchanger())
-	register("cursor/oauth", NewPKCEFakeExchanger(TokenShapeSession))
-	register("windsurf/oauth", NewPKCEFakeExchanger(TokenShapeSession))
+	// S1-008: copilot/copilot_oauth 的 ModePlan 暴露为 FlowKindOAuth(types.go),但此前没有为该 mode key
+	// 注册任何 acquisition exchanger —— 回调会走到 vendor 级 fallback miss 后才返回 ErrOAuthExchangerMissing
+	// (模糊、且只在回调期才暴露)。callback acquisition 尚未实现,这里显式 fail-closed(明确 ErrFeatureDisabled),
+	// 并让 copilot 凭据仍可经 device_code / JSON import 获取。完整 copilot_oauth callback acquisition 记 roadmap。
+	register(credentialstore.ModeKey(credentialstore.VendorCopilot, credentialstore.AuthModeCopilotOAuth),
+		newFailClosedExchanger("copilot/copilot_oauth callback acquisition 未实现;请用 device_code 或 JSON import"))
+	// S1-008: cursor/oauth 无对应 ModePlan、windsurf/oauth 的 ModePlan 实为 FlowKindTokenExchange(types.go),
+	// 两个 fake exchanger 注册已成孤儿(orphaned dead/dangerous wiring)。移除,确保默认 registry 不残留任何
+	// 会把回调码当 JSON 凭据吞下的 fake exchanger。
 	return r
 }
 
@@ -149,6 +161,59 @@ func exchangerKey(vendor, authMode string) string {
 
 func normalizeExchangerName(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
+}
+
+// failClosedExchanger 是一个显式停用的 acquisition exchanger:StartOAuthFlow 与 ExchangeOAuthCode 都
+// 立即返回 ErrFeatureDisabled。用于把"已知暂停/未实现"的 OAuth mode 明确 fail-closed(替代 fake exchanger
+// 静默接受伪造凭据,或 missing exchanger 只在回调期才暴露 ErrOAuthExchangerMissing)。reason 写明原因。
+type failClosedExchanger struct {
+	reason string
+}
+
+func newFailClosedExchanger(reason string) Exchanger {
+	return failClosedExchanger{reason: reason}
+}
+
+func (e failClosedExchanger) StartOAuthFlow(context.Context, *PostgresSessionStore, StartInput, OAuthClientConfig) (OAuthStartResult, error) {
+	return OAuthStartResult{}, fmt.Errorf("%w: %s", ErrFeatureDisabled, e.reason)
+}
+
+func (e failClosedExchanger) ExchangeOAuthCode(context.Context, Session, string) (CredentialCandidate, error) {
+	return CredentialCandidate{}, fmt.Errorf("%w: %s", ErrFeatureDisabled, e.reason)
+}
+
+// ValidateOAuthModeConsistency 是启动期自一致性闸:每个 Kind==FlowKindOAuth 的 ModePlan 必须在 registry
+// 解析到一个非-nil 且非-fake 的 exchanger。fake exchanger(pkceFakeExchanger)会把攻击者可影响的回调码当
+// JSON 凭据接受 —— acquisition 信任边界破坏;缺失 exchanger 只会在回调期静默 ErrOAuthExchangerMissing。
+// 本闸把这两类配置漂移在 boot 时暴露为 fatal,杜绝"暴露为可完成的 OAuth mode 实则映射到 fake/缺失"的回归。
+// failClosedExchanger(明确 ErrFeatureDisabled 的暂停态)视为合规——它是 intentional 的 fail-closed。
+// lookup 顺序与运行期 ExchangerRegistry.Exchange 保持一致(先 mode key,后 vendor 级 fallback)。
+func ValidateOAuthModeConsistency(plans []ModePlan, registry *ExchangerRegistry) error {
+	if registry == nil {
+		return errors.New("credentialacq: OAuth 自一致性校验需要非 nil 的 exchanger registry")
+	}
+	var problems []string
+	for _, plan := range plans {
+		if plan.Kind != FlowKindOAuth {
+			continue
+		}
+		key := exchangerKey(plan.Vendor, plan.AuthMode)
+		exc, ok := registry.Lookup(key)
+		if !ok || exc == nil {
+			exc, ok = registry.Lookup(plan.Vendor)
+		}
+		if !ok || exc == nil {
+			problems = append(problems, fmt.Sprintf("%s: 无 exchanger 注册(回调期会 ErrOAuthExchangerMissing)", key))
+			continue
+		}
+		if _, isFake := exc.(pkceFakeExchanger); isFake {
+			problems = append(problems, fmt.Sprintf("%s: 注册的是 fake exchanger(会把回调码当 JSON 凭据接受)", key))
+		}
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("credentialacq: OAuth ModePlan 自一致性校验失败: %s", strings.Join(problems, "; "))
+	}
+	return nil
 }
 
 type TokenShape string

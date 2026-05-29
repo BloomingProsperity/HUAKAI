@@ -83,23 +83,25 @@ func TestCompleteOAuthCallbackRejectsCrossFlowStateReplay(t *testing.T) {
 	}
 	store := NewPostgresSessionStoreWithKeys(newTestSessionDB(now), keys).WithNow(func() time.Time { return now })
 
-	victim, err := StartOAuthFlow(context.Background(), store, StartInput{
+	// S1-008: 用独立空 registry 起 flow,确保走通用 PKCE fallback(startPKCEOAuthFlow)。本测试验证的是
+	// 跨 flow state-replay 防护这一通用机制,与具体 vendor 的生产 exchanger 解耦(copilot 现已 fail-closed)。
+	victim, err := StartOAuthFlowWithRegistry(context.Background(), store, StartInput{
 		TenantID: 1, ProviderAccountID: 101,
 		Vendor: credentialstore.VendorCopilot, AuthMode: credentialstore.AuthModeCopilotOAuth,
 		ActorID: "admin-1", ActorRole: "platform_admin",
 	}, OAuthClientConfig{
 		ClientID: "client-id", AuthURL: "https://auth.example.test/oauth", RedirectURI: "https://huakai.example.test/callback",
-	})
+	}, NewExchangerRegistry())
 	if err != nil {
 		t.Fatalf("start victim flow: %v", err)
 	}
-	attacker, err := StartOAuthFlow(context.Background(), store, StartInput{
+	attacker, err := StartOAuthFlowWithRegistry(context.Background(), store, StartInput{
 		TenantID: 1, ProviderAccountID: 202,
 		Vendor: credentialstore.VendorCopilot, AuthMode: credentialstore.AuthModeCopilotOAuth,
 		ActorID: "admin-1", ActorRole: "platform_admin",
 	}, OAuthClientConfig{
 		ClientID: "client-id", AuthURL: "https://auth.example.test/oauth", RedirectURI: "https://huakai.example.test/callback",
-	})
+	}, NewExchangerRegistry())
 	if err != nil {
 		t.Fatalf("start attacker flow: %v", err)
 	}
@@ -131,13 +133,15 @@ func TestStartOAuthFlowPKCEVerifierEncryptedAtRest(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := NewPostgresSessionStoreWithKeys(newTestSessionDB(now), keys).WithNow(func() time.Time { return now })
-	result, err := StartOAuthFlow(context.Background(), store, StartInput{
+	// S1-008: 独立空 registry → 通用 PKCE fallback。本测试验证 PKCE verifier 静态加密这一通用机制,
+	// 与具体 vendor 的生产 exchanger 解耦(copilot 现已 fail-closed)。
+	result, err := StartOAuthFlowWithRegistry(context.Background(), store, StartInput{
 		TenantID: 1, ProviderAccountID: 2,
 		Vendor: credentialstore.VendorCopilot, AuthMode: credentialstore.AuthModeCopilotOAuth,
 		ActorID: "admin-1", ActorRole: "platform_admin",
 	}, OAuthClientConfig{
 		ClientID: "client-id", AuthURL: "https://auth.example.test/oauth", RedirectURI: "https://huakai.example.test/callback",
-	})
+	}, NewExchangerRegistry())
 	if err != nil {
 		t.Fatalf("StartOAuthFlow: %v", err)
 	}
@@ -220,25 +224,16 @@ func TestOAuthCallbackExchangeSuccessAndFailure(t *testing.T) {
 	}
 }
 
-func TestDefaultExchangerRegistryIncludesWindsurfOAuthSessionShape(t *testing.T) {
-	// Regression killed: Windsurf OAuth callback must not fall through to
-	// exchanger_missing, and its fake capture payload must contain session
-	// material. Mutation self-check: deleting the registry line or using an
-	// access/refresh-only shape makes one side of this test fail.
-	registry := DefaultExchangerRegistry()
-	if _, ok := registry.Lookup("windsurf/oauth"); !ok {
-		t.Fatal("windsurf/oauth exchanger missing")
-	}
-	session := Session{
-		TenantID:          1,
-		ProviderAccountID: 42,
-		Vendor:            "windsurf",
-		AuthMode:          "oauth",
-		ActorID:           "operator-1",
-	}
-	candidate, err := registry.Exchange(context.Background(), session, `{"session_token":"windsurf-session-token","refresh_token":"windsurf-refresh-token"}`)
+func TestWindsurfAcquisitionUsesTokenExchangeNotOAuthFake(t *testing.T) {
+	// S1-008: windsurf 的 ModePlan 是 FlowKindTokenExchange(types.go),其 acquisition 走
+	// NewWindsurfCodeiumAuthTokenCandidate 直接构造 candidate,不经 OAuth callback registry.Exchange。
+	// 此前注册的 windsurf/oauth fake exchanger 属 orphaned dangerous wiring(会把任意 JSON 当 session 凭据
+	// 接受),已移除。断言:(1) 真实的 token-exchange acquisition 仍产出带 session 材料的 candidate;
+	// (2) 默认 registry 不再注册 windsurf/oauth fake —— 移除后即便误走 OAuth callback 也只会 fail-closed
+	// (ErrOAuthExchangerMissing),而非接受伪造 session。Mutation:还原 windsurf/oauth fake 注册 → (2) 转红。
+	candidate, err := NewWindsurfCodeiumAuthTokenCandidate(1, 42, "operator-1", "windsurf-session-token")
 	if err != nil {
-		t.Fatalf("Exchange windsurf/oauth: %v", err)
+		t.Fatalf("NewWindsurfCodeiumAuthTokenCandidate: %v", err)
 	}
 	if candidate.Vendor != "windsurf" || candidate.AuthMode != "oauth" || candidate.ProviderAccountID != 42 {
 		t.Fatalf("candidate target=%s/%s account=%d", candidate.Vendor, candidate.AuthMode, candidate.ProviderAccountID)
@@ -246,10 +241,8 @@ func TestDefaultExchangerRegistryIncludesWindsurfOAuthSessionShape(t *testing.T)
 	if !strings.Contains(string(candidate.Payload), "windsurf-session-token") {
 		t.Fatalf("candidate payload=%s, want session token material", string(candidate.Payload))
 	}
-
-	_, err = registry.Exchange(context.Background(), session, `{"access_token":"access-only","refresh_token":"refresh-only"}`)
-	if !errors.Is(err, ErrInvalidTokenShape) {
-		t.Fatalf("access/refresh-only Windsurf payload err=%v, want ErrInvalidTokenShape", err)
+	if _, ok := DefaultExchangerRegistry().Lookup("windsurf/oauth"); ok {
+		t.Fatal("windsurf/oauth fake exchanger must be removed (orphaned; windsurf acquisition uses TokenExchange)")
 	}
 }
 
