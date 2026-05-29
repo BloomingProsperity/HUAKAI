@@ -102,7 +102,10 @@ func (db *testSessionDB) QueryRow(_ context.Context, sql string, args ...interfa
 	case strings.Contains(sql, "SET consumed_at = NOW()"):
 		id := stringArg(args[0])
 		row, ok := db.rows[id]
-		if !ok || !row.ConsumedAt.IsZero() || row.Status == StatusFinalized || row.Status == StatusCancelled || row.Status == StatusExpired || !row.ExpiresAt.After(db.now) {
+		// S1-010: 与真 SQL 的 BeginFinalize predicate 保持一致 —— callback 式 OAuth(非 device_code/sso)
+		// 未到 validated 不可 finalize。复用生产 helper RequiresCallbackValidation,避免 fake 与真 SQL 漂移。
+		if !ok || !row.ConsumedAt.IsZero() || row.Status == StatusFinalized || row.Status == StatusCancelled || row.Status == StatusExpired || !row.ExpiresAt.After(db.now) ||
+			(RequiresCallbackValidation(row.Kind, row.AuthType) && row.Status != StatusValidated) {
 			return testSessionRow{err: pgx.ErrNoRows}
 		}
 		row.ConsumedAt = db.now
@@ -393,4 +396,65 @@ func timeArg(value any) time.Time {
 		return v
 	}
 	return time.Time{}
+}
+
+// TestBeginFinalizeRequiresCallbackValidationForCallbackOAuth guards S1-010: a callback-style OAuth
+// flow (PKCE) must NOT be finalizable while status is started/waiting_for_user — it must first pass
+// CompleteOAuthCallback (state check + code exchange) to reach validated. Otherwise an over-privileged
+// admin could skip the callback and finalize with a hand-written credentials body, injecting arbitrary
+// upstream bearer material. The fake DB reuses the production RequiresCallbackValidation helper, so it
+// tracks the real BeginFinalize SQL predicate.
+//
+// Discriminating controls prove the gate is precise, not blanket: (b) a validated callback flow
+// finalizes; (c) a device_code flow at waiting_for_user is EXEMPT and finalizes — without this the fix
+// would permanently break device-code/sso credential acquisition.
+//
+// Mutation: make RequiresCallbackValidation return false unconditionally → case (a) finalizes and the
+// ErrOAuthRequiresCallback assertion goes red.
+func TestBeginFinalizeRequiresCallbackValidationForCallbackOAuth(t *testing.T) {
+	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
+	store := NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now })
+	ctx := context.Background()
+	mk := func(id string, status FlowStatus) Session {
+		s, err := store.Create(ctx, Session{
+			ID: id, TenantID: 1, ProviderAccountID: 2, Vendor: "openai", AuthMode: "chatgpt_oauth",
+			Kind: FlowKindOAuth, Status: status,
+			ActorID: "admin-1", ActorRole: "platform_admin", ExpiresAt: now.Add(10 * time.Minute),
+		})
+		if err != nil {
+			t.Fatalf("Create %s: %v", id, err)
+		}
+		return s
+	}
+
+	// (a) callback OAuth (default pkce auth_type) still at started → refused.
+	cb := mk("cb-started", StatusStarted)
+	if _, err := store.BeginFinalize(ctx, cb.ID); !errors.Is(err, ErrOAuthRequiresCallback) {
+		t.Fatalf("callback OAuth at started: err=%v, want ErrOAuthRequiresCallback", err)
+	}
+	// (b) callback OAuth advanced to validated → finalize proceeds.
+	cbv := mk("cb-validated", StatusValidated)
+	if _, err := store.BeginFinalize(ctx, cbv.ID); err != nil {
+		t.Fatalf("validated callback OAuth must finalize: %v", err)
+	}
+	// (c) device_code flow at waiting_for_user → EXEMPT (auth_type=device_code), finalize proceeds.
+	dc := mk("dc-waiting", StatusWaitingForUser)
+	if err := store.SetAuthPayload(ctx, dc.ID, AuthTypeDeviceCode, map[string]any{
+		"auth_type": string(AuthTypeDeviceCode), "device_code": "dev", "user_code": "U-1",
+		"verification_uri": "https://device.example.test", "expires_in": 900, "interval": 5,
+		"issued_at": now.Format(time.RFC3339Nano), "token_url": "https://device.example.test/token", "client_id": "c",
+	}); err != nil {
+		t.Fatalf("SetAuthPayload device_code: %v", err)
+	}
+	if _, err := store.BeginFinalize(ctx, dc.ID); err != nil {
+		t.Fatalf("device_code flow must be exempt from callback-validation gate: %v", err)
+	}
+	// (d) [codex round2 P2] a terminal (cancelled) callback OAuth flow must surface the replay/terminal
+	// error, NOT oauth_requires_callback — the gate is limited to active pre-validation statuses so it
+	// doesn't mask the real state. Mutation: drop the status switch (run the check on any non-validated
+	// status) and a cancelled flow reports ErrOAuthRequiresCallback → this assertion goes red.
+	cc := mk("cb-cancelled", StatusCancelled)
+	if _, err := store.BeginFinalize(ctx, cc.ID); !errors.Is(err, ErrFlowReplay) {
+		t.Fatalf("cancelled callback OAuth: err=%v, want ErrFlowReplay (not ErrOAuthRequiresCallback)", err)
+	}
 }

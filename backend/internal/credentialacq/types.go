@@ -63,6 +63,7 @@ var (
 	ErrInvalidTokenShape     = errors.New("credentialacq: invalid token shape")
 	ErrResponseTooLarge      = errors.New("credentialacq: response too large")
 	ErrOAuthExchangerMissing = errors.New("credentialacq: oauth exchanger missing")
+	ErrOAuthRequiresCallback = errors.New("credentialacq: oauth flow requires callback validation before finalize")
 )
 
 type ModePlan struct {
@@ -205,6 +206,17 @@ func flowKindAllowed(allowed []FlowKind, candidate FlowKind) bool {
 		}
 	}
 	return false
+}
+
+// RequiresCallbackValidation 报告某 acquisition flow 是否必须先经 OAuth 回调校验(status=validated)
+// 才能 finalize。callback 式 OAuth(PKCE,经 CompleteOAuthCallback 校验 state 并交换授权码)的 finalize
+// 不能仅凭 caller 手写 credentials body 完成,否则越权/恶意 admin 可绕过回调直接注入任意凭据(S1-010)。
+// 但 device_code / sso 式 flow 的凭据来自轮询(PollDeviceCodeToken / PollSSOToken),其生命周期【不经】
+// validated 状态 —— 必须豁免,否则会永久阻断 device-code/sso 凭据获取(copilot/openai-codex/kiro)。
+// 故按 auth_type 精确区分:排除 device_code/sso,其余 OAuth(含 pkce 与 auth_type 未定的 callback flow)
+// 一律要求 validated。
+func RequiresCallbackValidation(kind FlowKind, authType AuthType) bool {
+	return NormalizeFlowKind(kind) == FlowKindOAuth && authType != AuthTypeDeviceCode && authType != AuthTypeSSO
 }
 
 func NormalizeFlowStatus(status FlowStatus) FlowStatus {

@@ -910,7 +910,11 @@ func (db *credentialAcqSessionDB) QueryRow(_ context.Context, sql string, args .
 		return credentialAcqRow{session: row}
 	case strings.Contains(sql, "SET consumed_at = NOW()"):
 		row, ok := db.rows[argString(args[0])]
-		if !ok || !row.ConsumedAt.IsZero() || row.Status == credentialacq.StatusFinalized || row.Status == credentialacq.StatusCancelled || row.Status == credentialacq.StatusExpired || !row.ExpiresAt.After(db.now) {
+		// S1-010 [codex round2 P2]: mirror BeginFinalize 的真 SQL predicate —— callback 式 OAuth(非
+		// device_code/sso)未到 validated 不可 finalize。复用生产导出 helper credentialacq.RequiresCallbackValidation,
+		// 与真 SQL / credentialacq fake 同源,避免 handler 测试 double 漂移、给"started PKCE OAuth 可 finalize"假信心。
+		if !ok || !row.ConsumedAt.IsZero() || row.Status == credentialacq.StatusFinalized || row.Status == credentialacq.StatusCancelled || row.Status == credentialacq.StatusExpired || !row.ExpiresAt.After(db.now) ||
+			(credentialacq.RequiresCallbackValidation(row.Kind, row.AuthType) && row.Status != credentialacq.StatusValidated) {
 			return credentialAcqRow{err: pgx.ErrNoRows}
 		}
 		row.ConsumedAt = db.now
