@@ -374,3 +374,33 @@ func tenantOperator(tenantID int64) admin.AdminIdentity {
 func pgTimestamp(t time.Time) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: t, Valid: true}
 }
+
+// TestWriteErrorProducesValidJSONForControlChars guards S2-148 for the admin API-key error
+// writer: its default branch echoes err.Error() into message, which can carry control bytes.
+// The body must stay RFC-valid JSON. Mutation check: restore the fmt %q hand-formatter and
+// json.Valid goes false on the \x01 byte (plus the message no longer round-trips) → red.
+func TestWriteErrorProducesValidJSONForControlChars(t *testing.T) {
+	rec := httptest.NewRecorder()
+	msg := "admin backend failure: \x01\x1f \"q\"\ntab\there"
+	writeError(rec, http.StatusInternalServerError, "admin_unknown_error", msg)
+
+	body := rec.Body.Bytes()
+	if !json.Valid(body) {
+		t.Fatalf("admin error body must be valid JSON even with control chars; got %q", body)
+	}
+	var parsed struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("unmarshal admin error body: %v; body=%q", err, body)
+	}
+	if parsed.Error.Code != "admin_unknown_error" {
+		t.Fatalf("code must round-trip; got %q", parsed.Error.Code)
+	}
+	if parsed.Error.Message != msg {
+		t.Fatalf("message must round-trip exactly; want %q got %q", msg, parsed.Error.Message)
+	}
+}

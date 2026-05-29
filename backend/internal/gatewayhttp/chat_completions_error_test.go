@@ -1,7 +1,9 @@
 package gatewayhttp
 
 import (
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,6 +13,41 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 )
+
+// TestWriteJSONErrorProducesValidJSONForControlChars guards S2-148: the gateway error writer must
+// emit RFC-valid JSON even when code/message carry control bytes (an admin create with
+// vendor="\x01" flows err.Error() into message). The old hand-formatter used fmt %q, which emits
+// Go literal escapes like \x01 — valid Go, invalid JSON — so strict SDK/proxy/log parsers fail.
+//
+// Mutation check: restore `fmt.Fprintf(w, `{"error":{"code":%q,"message":%q}}`, ...)` in
+// writeJSONError; json.Valid goes false on the \x01 byte AND the round-trip message equality
+// fails (the literal escape does not decode back to the original bytes) → this test goes red.
+func TestWriteJSONErrorProducesValidJSONForControlChars(t *testing.T) {
+	t.Parallel()
+	rec := httptest.NewRecorder()
+	msg := "credentialstore: unknown vendor/auth_mode: vendor=\x01 auth_mode=\"oauth\"\nline\\two"
+	writeJSONError(rec, http.StatusBadRequest, "admin_bad_request", msg)
+
+	body := rec.Body.Bytes()
+	if !json.Valid(body) {
+		t.Fatalf("error body must be valid JSON even with control chars; got %q", body)
+	}
+	var parsed struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("unmarshal error body: %v; body=%q", err, body)
+	}
+	if parsed.Error.Code != "admin_bad_request" {
+		t.Fatalf("code must round-trip; got %q", parsed.Error.Code)
+	}
+	if parsed.Error.Message != msg {
+		t.Fatalf("message must round-trip exactly; want %q got %q", msg, parsed.Error.Message)
+	}
+}
 
 func TestSignalFromClassification_Suppresses401AuthHealthSignal(t *testing.T) {
 	t.Parallel()

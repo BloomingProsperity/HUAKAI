@@ -120,3 +120,30 @@ func TestWriteAdminGateError_OutputShape(t *testing.T) {
 		})
 	}
 }
+
+// TestWriteAdminGateErrorProducesValidJSONForControlChars guards S2-148 for the admin-gate error
+// writer. Today it is only called with static literals, but it shared the fmt %q hand-formatter,
+// so this locks the writer itself against re-introducing the invalid-JSON anti-pattern.
+// Mutation check: restore the fmt %q formatter and json.Valid goes false on the \x01 byte → red.
+func TestWriteAdminGateErrorProducesValidJSONForControlChars(t *testing.T) {
+	rec := httptest.NewRecorder()
+	msg := "missing or invalid admin credential \x01 \"x\"\nline2"
+	writeAdminGateError(rec, http.StatusUnauthorized, "admin_unauthorized", msg)
+
+	body := rec.Body.Bytes()
+	if !json.Valid(body) {
+		t.Fatalf("admin-gate error body must be valid JSON even with control chars; got %q", body)
+	}
+	var parsed struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("unmarshal admin-gate error body: %v; body=%q", err, body)
+	}
+	if parsed.Error.Code != "admin_unauthorized" || parsed.Error.Message != msg {
+		t.Fatalf("code/message must round-trip; got code=%q message=%q", parsed.Error.Code, parsed.Error.Message)
+	}
+}

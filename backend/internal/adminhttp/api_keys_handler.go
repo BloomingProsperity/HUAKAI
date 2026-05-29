@@ -487,5 +487,13 @@ func writeAdminError(w http.ResponseWriter, err error) {
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_, _ = fmt.Fprintf(w, `{"error":{"code":%q,"message":%q}}`, code, message)
+	// 用 encoding/json 编码而非 fmt %q 手拼:%q 对部分控制字节会产出非法 JSON(S2-148)。本入口的
+	// default 分支会回显 err.Error(),可能携带控制字符,故必须用 JSON 编码器保证响应可被严格解析。
+	body, err := json.Marshal(map[string]map[string]string{
+		"error": {"code": code, "message": message},
+	})
+	if err != nil {
+		body = []byte(`{"error":{"code":"internal_error","message":"internal error"}}`)
+	}
+	_, _ = w.Write(body)
 }
