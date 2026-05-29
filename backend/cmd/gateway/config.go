@@ -78,6 +78,18 @@ func releaseMode() eventbus.ReleaseMode {
 	return eventbus.ReleaseModeDev
 }
 
+// validateDevAuthTokenFlag 在启动时 fail-closed:HUAKAI_DEV_AUTH_RETURN_TOKEN=true 会让公开的
+// 注册/密码重置接口把一次性明文 secret 直接回写进 JSON 响应体(addDevAuthToken),仅供本地/CI 调试。
+// 生产环境(HUAKAI_RELEASE_MODE=production)绝不能开启,否则每次注册/重置都会泄露令牌(S1-018)。
+// 与 S1-019 同族:把该 dev 开关纳入与 audit/email/channelhealth 一致的启动门控,带病配置直接拒启,
+// 而非此前仅打一条 warning 仍照常 boot 并泄露。
+func validateDevAuthTokenFlag() error {
+	if releaseModeProduction() && strings.EqualFold(strings.TrimSpace(os.Getenv("HUAKAI_DEV_AUTH_RETURN_TOKEN")), "true") {
+		return fmt.Errorf("HUAKAI_DEV_AUTH_RETURN_TOKEN 不得在 production 下为 true（会在注册/重置响应中泄露明文一次性令牌）")
+	}
+	return nil
+}
+
 func requireProductionChannelHealthSigner(signer *sign.Signer) error {
 	if !releaseModeProduction() {
 		return nil

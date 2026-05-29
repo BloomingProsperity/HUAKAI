@@ -530,6 +530,12 @@ func addDevAuthToken(resp map[string]any, key string, token string) {
 }
 
 func devAuthReturnTokenEnabled() bool {
+	// 防御纵深(S1-018):即使误设 HUAKAI_DEV_AUTH_RETURN_TOKEN=true,生产模式下也绝不把明文
+	// 验证/重置令牌回写进公开响应体。启动门控 validateDevAuthTokenFlag 是权威拦截(进程直接拒启),
+	// 这里在响应写出层再兜一道,确保即便运行期被改环境绕过启动检查也不泄露明文 secret。
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("HUAKAI_RELEASE_MODE")), "production") {
+		return false
+	}
 	return strings.EqualFold(strings.TrimSpace(os.Getenv("HUAKAI_DEV_AUTH_RETURN_TOKEN")), "true")
 }
 
