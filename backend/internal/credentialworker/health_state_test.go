@@ -10,6 +10,17 @@ import (
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
+// TestDefaultProviderAccountHealthPolicyMapsAuditOutcomes guards S2-062: the three-way
+// terminal / transient-cooldown / healthy taxonomy. The table is self-discriminating —
+// the terminal classes (auth_expired, risk_control_triggered, account_disabled) MUST carry a
+// nil HealthStateUntil so the eligibility SQL (health_state_until IS NOT NULL) and router gate
+// (until.IsZero) refuse to auto-recover them, while the genuinely-transient rate_limit_exceeded
+// MUST keep a finite future deadline so it DOES auto-recover.
+//
+// Mutation check: revert auth_expired (or risk_control_triggered) to now+RevokedCooldown and its
+// wantUntil:nil assertion goes red; conversely if a fix blanket-nils every outcome, the
+// rate_limit_exceeded wantUntil:+3m row goes red — proving the test distinguishes terminal from
+// transient rather than rubber-stamping either extreme.
 func TestDefaultProviderAccountHealthPolicyMapsAuditOutcomes(t *testing.T) {
 	fixed := time.Date(2026, 5, 25, 9, 30, 0, 0, time.UTC)
 	policy := DefaultProviderAccountHealthPolicy()
@@ -22,10 +33,11 @@ func TestDefaultProviderAccountHealthPolicyMapsAuditOutcomes(t *testing.T) {
 		wantAlert bool
 	}{
 		{
-			name:      "auth expired revoked cooldown",
+			name:      "auth expired is terminal revoked with operator alert",
 			outcome:   auth.RefreshAuditOutcome("auth_expired"),
 			wantState: "revoked",
-			wantUntil: timePtr(fixed.Add(30 * time.Minute)),
+			wantUntil: nil,
+			wantAlert: true,
 		},
 		{
 			name:      "rate limit throttled cooldown",
@@ -34,10 +46,10 @@ func TestDefaultProviderAccountHealthPolicyMapsAuditOutcomes(t *testing.T) {
 			wantUntil: timePtr(fixed.Add(3 * time.Minute)),
 		},
 		{
-			name:      "risk control revoked cooldown with alert",
+			name:      "risk control is terminal revoked with alert",
 			outcome:   auth.RefreshAuditOutcome("risk_control_triggered"),
 			wantState: "revoked",
-			wantUntil: timePtr(fixed.Add(30 * time.Minute)),
+			wantUntil: nil,
 			wantAlert: true,
 		},
 		{
@@ -105,8 +117,14 @@ func TestSchedulerAuthExpiredMarksProviderAccountRevoked(t *testing.T) {
 	if got.HealthState != "revoked" {
 		t.Fatalf("health state=%q, want revoked", got.HealthState)
 	}
-	if got.HealthStateUntil == nil || !got.HealthStateUntil.Equal(fixed.Add(30*time.Minute)) {
-		t.Fatalf("health until=%v, want %s", got.HealthStateUntil, fixed.Add(30*time.Minute))
+	// S2-062: auth_expired is terminal — HealthStateUntil must be nil so neither the eligibility
+	// SQL nor the router gate auto-recovers the account on a timer. Mutation check: restore the
+	// now+cooldown deadline and this assertion goes red.
+	if got.HealthStateUntil != nil {
+		t.Fatalf("health until=%v, want nil (terminal)", got.HealthStateUntil)
+	}
+	if !got.Alert {
+		t.Fatalf("auth_expired must raise an operator alert")
 	}
 }
 
