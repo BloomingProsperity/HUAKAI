@@ -806,3 +806,132 @@ func authTestKey(tenantID int64, value string) string {
 func testSessionSigningKey() []byte {
 	return []byte("0123456789abcdef0123456789abcdef")
 }
+
+// revokeFailSessionStore embeds a working memory store but forces the user-scope revoke to fail,
+// driving the S1-028 "revoke failed after password change" path.
+type revokeFailSessionStore struct {
+	usersession.Store
+}
+
+func (revokeFailSessionStore) RevokeUser(context.Context, int64, int64, string, time.Time) (int64, error) {
+	return 0, errors.New("revoke boom")
+}
+
+// resetConfirmTestSetup registers + verifies a user and returns a live router plus the captured
+// reset token, so reset-confirm tests can exercise the real handler path.
+func resetConfirmTestSetup(t *testing.T, sessions *usersession.Service) (http.Handler, *captureAuthEmail, *userauth.Service) {
+	t.Helper()
+	now := time.Date(2026, 5, 17, 11, 0, 0, 0, time.UTC)
+	authStore := newGatewayMemoryAuthStore(now)
+	authSvc := userauth.NewService(authStore)
+	authSvc.PasswordPolicy = userauth.PasswordPolicy{MemoryKiB: 64, Iterations: 1, Parallelism: 1, SaltBytes: 8, KeyBytes: 16}
+	authSvc.Now = func() time.Time { return now }
+	email := &captureAuthEmail{}
+	r := chi.NewRouter()
+	r.Route("/v1/auth", func(r chi.Router) {
+		MountAuthRoutes(r, AuthHandlerDeps{Auth: authSvc, Sessions: sessions, EmailSender: email})
+	})
+	t.Setenv("HUAKAI_DEV_AUTH_RETURN_TOKEN", "true")
+	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/register", map[string]any{"tenant_id": 1, "email": "reset@example.test", "password": "secret-old"})
+	assertHTTPStatus(t, rec, http.StatusCreated)
+	rec = serveJSON(t, r, http.MethodPost, "/v1/auth/verify-email", map[string]any{"tenant_id": 1, "token": email.verification})
+	assertHTTPStatus(t, rec, http.StatusOK)
+	return r, email, authSvc
+}
+
+// TestAuthPasswordResetConfirmReportsRevokeFailureHonestly guards S1-028: the password reset is an
+// atomic, already-committed success (the one-time token is consumed inside ResetPassword), so a
+// later session-revocation failure must NOT (a) be falsely reported as "revoked" (the original
+// dropped-error bug) NOR (b) flip the whole reset to a non-retryable 503 (which would strand the
+// consumed token — flagged by codex). Correct behavior: 200 with an honest session_revocation:
+// "failed" signal; guaranteed eventual revocation is a roadmap item.
+//
+// Mutation checks: (1) restore `revoked, _ = ...` + always SessionPolicy="revoked"
+// → session_revocation reports "revoked" → red; (2) restore the writeSessionError 503 path → status
+// is not 200 → red. Discriminating fixture: the injected store fails ONLY RevokeUser so the reset
+// genuinely succeeds and only the revocation degrades.
+func TestAuthPasswordResetConfirmReportsRevokeFailureHonestly(t *testing.T) {
+	sessionSvc := usersession.NewService(revokeFailSessionStore{Store: usersession.NewMemoryStore()})
+	sessionSvc.Now = func() time.Time { return time.Date(2026, 5, 17, 11, 0, 0, 0, time.UTC) }
+	sessionSvc.SigningKey = testSessionSigningKey()
+	r, email, authSvc := resetConfirmTestSetup(t, sessionSvc)
+
+	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/reset-password", map[string]any{"tenant_id": 1, "email": "reset@example.test"})
+	assertHTTPStatus(t, rec, http.StatusAccepted)
+	if email.reset == "" {
+		t.Fatal("reset token was not issued")
+	}
+	rec = serveJSON(t, r, http.MethodPost, "/v1/auth/reset-password", map[string]any{
+		"tenant_id": 1, "token": email.reset, "new_password": "secret-rotated",
+	})
+	// (b) reset succeeded (password+token are atomic) → must be 200, not a stranding 503.
+	assertHTTPStatus(t, rec, http.StatusOK)
+	var resp struct {
+		SessionRevocation string `json:"session_revocation"`
+		SessionsRevoked   int64  `json:"sessions_revoked"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
+	}
+	// (a) honest about the revoke failure — never falsely "revoked".
+	if resp.SessionRevocation != "failed" {
+		t.Fatalf("session revocation failed but response reports %q; must be honest \"failed\"; body=%s", resp.SessionRevocation, rec.Body.String())
+	}
+	// The reset itself genuinely took effect: the new password authenticates, the old one does not.
+	if _, err := authSvc.Authenticate(context.Background(), userauth.LoginInput{TenantID: 1, Email: "reset@example.test", Password: "secret-rotated"}); err != nil {
+		t.Fatalf("new password must authenticate after a successful reset; got %v", err)
+	}
+}
+
+// TestAuthPasswordResetConfirmRequiresSessions guards S1-028: when no session store is wired,
+// reset-confirm must refuse (it cannot revoke sessions) and must NOT change the password — the
+// guard runs BEFORE ResetPassword. The old code skipped revocation when Sessions==nil yet still
+// reset the password and reported success with SessionPolicy "revoked".
+//
+// Mutation check: remove the `if d.Sessions == nil` guard; the password is then changed (old
+// password stops working) → the "old password still authenticates" assertion goes red.
+func TestAuthPasswordResetConfirmRequiresSessions(t *testing.T) {
+	r, email, authSvc := resetConfirmTestSetup(t, nil) // no session store wired
+
+	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/reset-password", map[string]any{"tenant_id": 1, "email": "reset@example.test"})
+	assertHTTPStatus(t, rec, http.StatusAccepted)
+	if email.reset == "" {
+		t.Fatal("reset token was not issued")
+	}
+	rec = serveJSON(t, r, http.MethodPost, "/v1/auth/reset-password", map[string]any{
+		"tenant_id": 1, "token": email.reset, "new_password": "secret-rotated",
+	})
+	if rec.Code/100 == 2 {
+		t.Fatalf("reset-confirm without a session store must refuse, not succeed; got %d body=%s", rec.Code, rec.Body.String())
+	}
+	// The real discriminator: the password must be UNCHANGED (guard ran before ResetPassword).
+	if _, err := authSvc.Authenticate(context.Background(), userauth.LoginInput{TenantID: 1, Email: "reset@example.test", Password: "secret-old"}); err != nil {
+		t.Fatalf("old password must still authenticate — reset must not change the password when sessions cannot be revoked; got %v", err)
+	}
+}
+
+// TestAuthPasswordResetConfirmRefusesWhenSessionStoreUnset guards S1-028 (codex round 2): a non-nil
+// session Service whose backing Store is unset (NewService(nil)) must STILL be rejected before the
+// password is changed — a bare service-pointer check is insufficient, because Revoke would then fail
+// with ErrStoreNotConfigured only after the one-time token is consumed and the password changed.
+//
+// Mutation check: drop the `|| d.Sessions.Store == nil` clause from the guard; the reset proceeds
+// (old password stops working) → the "old password still authenticates" assertion goes red.
+func TestAuthPasswordResetConfirmRefusesWhenSessionStoreUnset(t *testing.T) {
+	r, email, authSvc := resetConfirmTestSetup(t, usersession.NewService(nil)) // service set, backing store unset
+
+	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/reset-password", map[string]any{"tenant_id": 1, "email": "reset@example.test"})
+	assertHTTPStatus(t, rec, http.StatusAccepted)
+	if email.reset == "" {
+		t.Fatal("reset token was not issued")
+	}
+	rec = serveJSON(t, r, http.MethodPost, "/v1/auth/reset-password", map[string]any{
+		"tenant_id": 1, "token": email.reset, "new_password": "secret-rotated",
+	})
+	if rec.Code/100 == 2 {
+		t.Fatalf("reset-confirm with an unconfigured session store must refuse before changing the password; got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := authSvc.Authenticate(context.Background(), userauth.LoginInput{TenantID: 1, Email: "reset@example.test", Password: "secret-old"}); err != nil {
+		t.Fatalf("old password must still authenticate — reset must not commit when the session store is unset; got %v", err)
+	}
+}
