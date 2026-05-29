@@ -16,6 +16,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeshttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkeyhttp"
 )
@@ -91,6 +92,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Route("/v1/users/me/vouchers", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions))
 		gatewayhttp.MountVoucherUserRoutes(r, gatewayhttp.VoucherUserDeps{Service: d.voucherService})
+	})
+	r.Route("/v1/users/me/payments", func(r chi.Router) {
+		r.Use(auth.SessionMiddleware(d.userSessions))
+		paymenthttp.MountPaymentUserRoutes(r, paymenthttp.UserDeps{Service: d.paymentService})
 	})
 	r.Route("/v1/api-keys", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions))
@@ -400,6 +405,12 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		gatewayhttp.MountVoucherAdminRoutes(r, gatewayhttp.VoucherAdminDeps{
 			Auth:    d.adminAuth,
 			Service: d.voucherService,
+		})
+	})
+	r.Route("/v1/admin/payments", func(r chi.Router) {
+		paymenthttp.MountPaymentAdminRoutes(r, paymenthttp.AdminDeps{
+			Auth:    d.adminAuth,
+			Service: d.paymentService,
 		})
 	})
 	r.Get("/admin/v1/usage", gatewayhttp.NewUsageHandler(d))
