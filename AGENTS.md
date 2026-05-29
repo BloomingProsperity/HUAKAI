@@ -708,6 +708,7 @@ Owner 2026-05-29 quotes「你做任何功能的时候都要看下 sub2 和 clipr
 - **设计前先产出 shape inventory**:列出成熟项目对该 feature 暴露的全部 path/mode/state/actor(例:支付 = {自动 webhook 入账, 管理员手动入账, 退款, 幂等重放}),再决定 HUAKAI 当前建哪些 / 哪些进路线图(Feature Preservation Rule)。inventory 必须先存在,杜绝遗漏式缺失。
 - **每个 codex dispatch prompt + 每个 plan artifact 的 `REFERENCE PROJECTS IN SCOPE` 必须同时含 CLIProxyAPI + sub2api + new-api 三者**(+ 领域附加)。支付 P2a 的 codex dispatch 只写了「new-api / sub2api」漏了 CLIProxyAPI —— 这正是本规则要杀的 bug;缺任一默认镜子的 dispatch/plan 无效,必须重拟。
 - **no-equivalent 合法但必须先看**:镜子可能确实没这 feature(已核实:CLIProxyAPI 是纯 relay account→API 代理,**无 payment/order/billing/subscription 模块**——`payment|billing|webhook|recharge` 关键词命中全是 `antigravity_credits` vendor-quota + websocket relay,`~/refs/CLIProxyAPI/internal/` 无 payment 包)。仍要写显式 source-cite 的 "no equivalent" 注脚(per #15),不可静默跳过。
+- **sub2api 默认裁决 (Owner 2026-05-29「有功能模块选择做法的时候,默认按照 sub2api 做。他已经是成熟体了」)**:三镜调研后若做法分歧、工程岔路(数据模型/状态机/重置策略/幂等做法等)需选一个,**默认采 sub2api 同款**(最成熟),再叠 HUAKAI fusion-upgrade delta(非纯 parity)。减少逐 fork 问 Owner、提吞吐。Carve-out:fork 触 money/security/schema 高风险闸、或 sub2api 做法明显劣时仍 surface;Owner 显式选择优先于此默认。
 
 ### Codex reviewer enforcement
 
