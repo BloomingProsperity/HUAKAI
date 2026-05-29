@@ -458,6 +458,29 @@ func jsonResponse(body string) *http.Response {
 	}
 }
 
+// TestRefreshLockedRecordSurfacesSaveFailureError guards S2-099: when persisting the refresh-failure
+// state itself fails, refreshLockedRecord must surface that error (joined with the cause), not drop
+// it with `_ =`. Otherwise the credential's failure state (cooldown / retry count / reason) is
+// silently lost and the scheduler keeps retrying on stale state.
+//
+// Mutation check: restore `_ = txStore.SaveRefreshFailure(...)` and the returned error no longer
+// wraps the persistence sentinel → red. Uses the adapter-missing branch (no live adapter needed).
+func TestRefreshLockedRecordSurfacesSaveFailureError(t *testing.T) {
+	saveErr := errors.New("save refresh failure write failed")
+	calls := []string{}
+	tx := &recordingRefreshTx{calls: &calls, saveFailureErr: saveErr}
+	refresher := &AccountCredentialRefresher{registry: DefaultModeAdapterRegistry(), now: func() time.Time { return time.Unix(0, 0).UTC() }}
+	rec := credentialstore.CredentialRecord{ID: 7, Vendor: "nonexistent-vendor", AuthMode: "oauth"}
+
+	err := refresher.refreshLockedRecord(context.Background(), tx, 7, rec)
+	if !errors.Is(err, saveErr) {
+		t.Fatalf("refreshLockedRecord must surface the SaveRefreshFailure persistence error; got %v", err)
+	}
+	if !errors.Is(err, ErrProviderAdapterMissing) {
+		t.Fatalf("should also preserve the adapter-missing cause; got %v", err)
+	}
+}
+
 type recordingRefreshStore struct {
 	calls *[]string
 	rec   credentialstore.CredentialRecord
@@ -475,8 +498,9 @@ func (s *recordingRefreshStore) WithRefreshTransaction(_ context.Context, fn fun
 }
 
 type recordingRefreshTx struct {
-	calls *[]string
-	rec   credentialstore.CredentialRecord
+	calls          *[]string
+	rec            credentialstore.CredentialRecord
+	saveFailureErr error // 注入:让 SaveRefreshFailure 返回错误(S2-099 测试)
 }
 
 func (tx *recordingRefreshTx) Exec(_ context.Context, _ string, args ...interface{}) (pgconn.CommandTag, error) {
@@ -504,7 +528,7 @@ func (tx *recordingRefreshTx) SaveRefreshSuccess(_ context.Context, rec credenti
 
 func (tx *recordingRefreshTx) SaveRefreshFailure(_ context.Context, rec credentialstore.CredentialRecord, failureClass string, _ time.Time) error {
 	*tx.calls = append(*tx.calls, "failure:"+strconv.FormatInt(rec.ID, 10)+":"+failureClass)
-	return nil
+	return tx.saveFailureErr
 }
 
 func (tx *recordingRefreshTx) InsertAuditEvent(_ context.Context, e credentialstore.AuditEvent) error {
