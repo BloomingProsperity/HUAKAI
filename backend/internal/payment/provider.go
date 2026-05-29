@@ -2,7 +2,14 @@
 
 package payment
 
-import "context"
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"strings"
+)
 
 // PaymentIntent provider 为订单创建支付意图后的安全返回 — 只含可公开的引用与快照, 无密钥/敏感 payload。
 type PaymentIntent struct {
@@ -18,6 +25,23 @@ type Provider interface {
 	CreateIntent(ctx context.Context, order Order) (PaymentIntent, error)
 }
 
+// CallbackResult 是 provider 对一条回调验签通过后, 归一化出的可信字段。
+// 关键: tenant 来自已验签的回调体, 不来自 URL/query — 防越权路由 (见 ConfirmPaidByCallback)。
+type CallbackResult struct {
+	TenantID        int64
+	OutTradeNo      string
+	PaidAmountCents int64
+	CurrencyCode    string
+	ProviderRef     string
+}
+
+// CallbackVerifier 由支持自动回调入账的 provider 实现 (P2a: 仅 test provider)。
+// manual provider 不实现 → webhook 对它返 ErrProviderNoCallback (手动路径不走回调)。
+// 入参 signature 由 HTTP 层从签名头取出; 实现侧用密钥重算并常量时间比较, 通过才解析字段。
+type CallbackVerifier interface {
+	VerifyCallback(rawBody []byte, signature string) (CallbackResult, error)
+}
+
 // manualProvider 生产可用但只能管理员手动确认; 不接触任何真实商户密钥。
 type manualProvider struct{}
 
@@ -31,16 +55,76 @@ func (manualProvider) CreateIntent(_ context.Context, _ Order) (PaymentIntent, e
 	return PaymentIntent{}, nil
 }
 
-// testProvider 仅测试 / 本地配置启用; 任何生产配置默认关闭。
-type testProvider struct{}
+// defaultTestProviderSecret 是 NewTestProvider() 缺省 HMAC 密钥; 仅测试/本地, 永不用于真实渠道。
+const defaultTestProviderSecret = "huakai-test-provider-secret"
 
-// NewTestProvider 返回测试 provider。
-func NewTestProvider() Provider { return testProvider{} }
+// testProvider 仅测试 / 本地配置启用; 任何生产配置默认关闭。secret 用于回调验签。
+type testProvider struct{ secret []byte }
+
+// NewTestProvider 返回带缺省密钥的测试 provider。
+func NewTestProvider() Provider { return testProvider{secret: []byte(defaultTestProviderSecret)} }
+
+// NewTestProviderWithSecret 返回带指定 HMAC 密钥的测试 provider (回调链路测试用)。
+func NewTestProviderWithSecret(secret string) Provider { return testProvider{secret: []byte(secret)} }
 
 func (testProvider) Kind() ProviderKind { return ProviderTest }
 
 func (testProvider) CreateIntent(_ context.Context, order Order) (PaymentIntent, error) {
 	return PaymentIntent{OrderRef: "test-ref-" + order.OutTradeNo}, nil
+}
+
+// 编译期断言: test provider 必须满足回调验签契约。
+var _ CallbackVerifier = testProvider{}
+
+// testCallbackEnvelope 是 test provider 回调体的签名载荷 (我们自控格式; 真渠道用各自格式留 P-RealMoney)。
+type testCallbackEnvelope struct {
+	TenantID        int64  `json:"tenant_id"`
+	OutTradeNo      string `json:"out_trade_no"`
+	PaidAmountCents int64  `json:"paid_amount_cents"`
+	CurrencyCode    string `json:"currency_code,omitempty"`
+	ProviderRef     string `json:"provider_ref,omitempty"`
+	EventID         string `json:"event_id,omitempty"`
+	Timestamp       int64  `json:"ts,omitempty"` // 签进体内防篡改; P2a 不强制时效窗 (重放靠 P1 幂等), 留 P-RealMoney 加固
+}
+
+// VerifyCallback 用密钥对 raw body 重算 HMAC-SHA256 并常量时间比较, 通过才解析归一化字段。
+// 任何失败 (无密钥 / 签名不匹配 / body 非法 / 关键字段缺) 一律 ErrCallbackUnverified — 不区分原因, 不泄露给伪造者。
+func (p testProvider) VerifyCallback(rawBody []byte, signature string) (CallbackResult, error) {
+	if len(p.secret) == 0 {
+		return CallbackResult{}, ErrCallbackUnverified
+	}
+	expected := computeTestSignature(p.secret, rawBody)
+	provided := strings.ToLower(strings.TrimSpace(signature))
+	// hmac.Equal 常量时间比较, 防签名比对的时序侧信道; 长度不等安全返回 false。
+	if !hmac.Equal([]byte(provided), []byte(expected)) {
+		return CallbackResult{}, ErrCallbackUnverified
+	}
+	var env testCallbackEnvelope
+	if err := json.Unmarshal(rawBody, &env); err != nil {
+		return CallbackResult{}, ErrCallbackUnverified
+	}
+	if env.TenantID <= 0 || strings.TrimSpace(env.OutTradeNo) == "" || env.PaidAmountCents <= 0 {
+		return CallbackResult{}, ErrCallbackUnverified
+	}
+	return CallbackResult{
+		TenantID:        env.TenantID,
+		OutTradeNo:      strings.TrimSpace(env.OutTradeNo),
+		PaidAmountCents: env.PaidAmountCents,
+		CurrencyCode:    strings.TrimSpace(env.CurrencyCode),
+		ProviderRef:     strings.TrimSpace(env.ProviderRef),
+	}, nil
+}
+
+func computeTestSignature(secret, rawBody []byte) string {
+	mac := hmac.New(sha256.New, secret)
+	mac.Write(rawBody)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// SignTestCallback 用 test provider 密钥对回调体算签名 (HMAC-SHA256 hex)。
+// 仅供 test provider 链路 (测试 / 本地模拟) 使用; 真实渠道用各自 SDK 验签, 不走此函数。
+func SignTestCallback(secret string, rawBody []byte) string {
+	return computeTestSignature([]byte(secret), rawBody)
 }
 
 // providerRegistry 按 kind 解析 provider。

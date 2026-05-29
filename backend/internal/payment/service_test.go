@@ -4,6 +4,7 @@ package payment
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -164,6 +165,101 @@ func TestService_ProviderUnknownRejected(t *testing.T) {
 	svc := NewService(NewMemoryStore())
 	ctx := context.Background()
 	if _, err := svc.CreateOrder(ctx, CreateOrderInput{TenantID: 1, UserID: 2, AmountCents: 100, ProviderKind: ProviderTest}); !errors.Is(err, ErrProviderUnknown) {
+		t.Fatalf("err = %v, want ErrProviderUnknown", err)
+	}
+}
+
+const svcCallbackSecret = "svc-callback-secret"
+
+func newCallbackService() *Service {
+	fixed := time.Date(2026, 5, 29, 0, 0, 0, 0, time.UTC)
+	return NewService(NewMemoryStore(), WithTestProviderSecret(svcCallbackSecret), WithClock(func() time.Time { return fixed }))
+}
+
+func signCallback(t *testing.T, env testCallbackEnvelope) ([]byte, string) {
+	t.Helper()
+	raw, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return raw, SignTestCallback(svcCallbackSecret, raw)
+}
+
+func TestService_ConfirmPaidByCallback_HappyPathSystemActor(t *testing.T) {
+	svc := newCallbackService()
+	ctx := context.Background()
+	r, err := svc.CreateOrder(ctx, CreateOrderInput{TenantID: 1, UserID: 2, AmountCents: 1500, OutTradeNo: "cb-h", ProviderKind: ProviderTest})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	raw, sig := signCallback(t, testCallbackEnvelope{TenantID: 1, OutTradeNo: "cb-h", PaidAmountCents: 1500, CurrencyCode: "USD"})
+	res, err := svc.ConfirmPaidByCallback(ctx, ProviderTest, raw, sig)
+	if err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	if res.Order.Status != StatusCompleted || res.BalanceCents != 1500 {
+		t.Fatalf("status=%q balance=%d, want completed/1500", res.Order.Status, res.BalanceCents)
+	}
+	// 确认归属 system (回调路径), 不是 admin。
+	events, _ := svc.ListAuditEvents(ctx, 1, r.Order.ID)
+	var paidActor string
+	for _, ev := range events {
+		if ev.EventType == AuditPaidConfirmed {
+			paidActor = ev.ActorKind
+		}
+	}
+	if paidActor != ActorKindSystem {
+		t.Fatalf("paid_confirmed actor = %q, want system", paidActor)
+	}
+}
+
+func TestService_ConfirmPaidByCallback_ForgedRejected(t *testing.T) {
+	svc := newCallbackService()
+	ctx := context.Background()
+	if _, err := svc.CreateOrder(ctx, CreateOrderInput{TenantID: 1, UserID: 2, AmountCents: 1500, OutTradeNo: "cb-f", ProviderKind: ProviderTest}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	raw, _ := signCallback(t, testCallbackEnvelope{TenantID: 1, OutTradeNo: "cb-f", PaidAmountCents: 1500})
+	// 用错密钥伪造签名。
+	forged := SignTestCallback("wrong-secret", raw)
+	if _, err := svc.ConfirmPaidByCallback(ctx, ProviderTest, raw, forged); !errors.Is(err, ErrCallbackUnverified) {
+		t.Fatalf("err = %v, want ErrCallbackUnverified", err)
+	}
+	if bal, _ := svc.GetBalance(ctx, 1, 2); bal.AmountCents != 0 {
+		t.Fatalf("balance = %d, want 0", bal.AmountCents)
+	}
+}
+
+func TestService_ConfirmPaidByCallback_AmountMismatchRejected(t *testing.T) {
+	svc := newCallbackService()
+	ctx := context.Background()
+	if _, err := svc.CreateOrder(ctx, CreateOrderInput{TenantID: 1, UserID: 2, AmountCents: 5000, OutTradeNo: "cb-a", ProviderKind: ProviderTest}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	raw, sig := signCallback(t, testCallbackEnvelope{TenantID: 1, OutTradeNo: "cb-a", PaidAmountCents: 4900, CurrencyCode: "USD"})
+	if _, err := svc.ConfirmPaidByCallback(ctx, ProviderTest, raw, sig); !errors.Is(err, ErrCallbackRejected) {
+		t.Fatalf("err = %v, want ErrCallbackRejected", err)
+	}
+	if bal, _ := svc.GetBalance(ctx, 1, 2); bal.AmountCents != 0 {
+		t.Fatalf("balance = %d, want 0", bal.AmountCents)
+	}
+}
+
+func TestService_ConfirmPaidByCallback_ManualProviderNoCallback(t *testing.T) {
+	svc := newCallbackService()
+	ctx := context.Background()
+	// manual provider 不实现 CallbackVerifier。
+	raw, sig := signCallback(t, testCallbackEnvelope{TenantID: 1, OutTradeNo: "cb-m", PaidAmountCents: 100})
+	if _, err := svc.ConfirmPaidByCallback(ctx, ProviderManual, raw, sig); !errors.Is(err, ErrProviderNoCallback) {
+		t.Fatalf("err = %v, want ErrProviderNoCallback", err)
+	}
+}
+
+func TestService_ConfirmPaidByCallback_UnknownProvider(t *testing.T) {
+	// 未启用 test provider 的 service, test 渠道回调应 ErrProviderUnknown。
+	svc := NewService(NewMemoryStore())
+	ctx := context.Background()
+	if _, err := svc.ConfirmPaidByCallback(ctx, ProviderTest, []byte(`{}`), "sig"); !errors.Is(err, ErrProviderUnknown) {
 		t.Fatalf("err = %v, want ErrProviderUnknown", err)
 	}
 }

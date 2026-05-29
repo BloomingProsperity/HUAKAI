@@ -34,6 +34,14 @@ func WithTestProvider() Option {
 	}
 }
 
+// WithTestProviderSecret 启用带指定 HMAC 验签密钥的 test provider (回调链路测试用)。
+// 真实渠道密钥走 Owner-gated P-RealMoney, 不经此 option。
+func WithTestProviderSecret(secret string) Option {
+	return func(s *Service) {
+		s.providers[ProviderTest] = NewTestProviderWithSecret(secret)
+	}
+}
+
 // NewService 构造支付 service。默认只注册 manual provider。
 func NewService(store Store, opts ...Option) *Service {
 	s := &Service{
@@ -120,6 +128,7 @@ func (s *Service) AdminConfirmPaid(ctx context.Context, in AdminConfirmPaidInput
 		TenantID:      in.TenantID,
 		OrderID:       in.OrderID,
 		AdminID:       in.ActorAdminID,
+		ActorKind:     ActorKindAdmin, // P1 手动确认显式归属 admin (区别于 P2a 回调的 system)。
 		ConfirmReason: in.ConfirmReason,
 		RequestID:     in.RequestID,
 		Now:           s.now(),

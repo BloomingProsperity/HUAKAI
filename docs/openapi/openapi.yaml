@@ -1740,6 +1740,53 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/payments/webhooks/{provider}:
+    parameters:
+      - name: provider
+        in: path
+        required: true
+        schema: { type: string }
+        description: Payment provider kind (P2a 仅 test; 真实渠道 Owner-gated P-RealMoney)。
+      - name: X-Payment-Signature
+        in: header
+        required: true
+        schema: { type: string }
+        description: Provider 回调签名 (P2a test provider 为 HMAC-SHA256 hex); 验签失败回调被拒。
+    post:
+      tags: [payments]
+      summary: Public payment provider callback (auto-credit on verified signature)
+      operationId: paymentProviderWebhook
+      # 公开端点: provider 无法持有 HUAKAI 会话, 信任完全来自验签 — 覆盖顶层 bearerAuth。
+      security: []
+      description: |
+        公开回调端点 (无 session/admin 中间件): 信任完全来自验签。读 raw body 与
+        X-Payment-Signature 头, provider 验签通过后用已验签体内的可信 tenant + 外部订单号
+        定位本地订单, 比对金额/币种/渠道一致后复用手动路径同款 ConfirmPaid+Fulfill 入账。
+        重放安全靠订单幂等。生产未注册真实 provider 时 fail-closed 拒一切。
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p2a-synthesis.md]
+      requestBody:
+        required: true
+        description: 渠道回调原始体 (验签基于原始字节; P2a test provider 为签名 JSON 信封)。
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Callback verified and order credited (idempotent on replay).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  idempotent: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   # ==========================================================================
   # Admin: API Keys (Slice 2 N+4b2)
   # ==========================================================================
