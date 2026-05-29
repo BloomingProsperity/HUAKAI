@@ -28,13 +28,36 @@ const (
 	StatusCancelled SubscriptionStatus = "cancelled"
 )
 
-// Source 订阅来源。P3a 仅 admin; order (支付购买激活) 留 P3b。
+// Source 订阅来源。admin=管理员分配; order=支付订单购买; voucher=兑换码购买。
 type Source string
 
 const (
-	SourceAdmin Source = "admin"
-	SourceOrder Source = "order"
+	SourceAdmin   Source = "admin"
+	SourceOrder   Source = "order"
+	SourceVoucher Source = "voucher"
 )
+
+// 订阅履约效果来源 (subscription_fulfillment_effects.source_kind, 与 Source 字面值对齐)。
+const (
+	EffectSourceOrder   = "order"
+	EffectSourceVoucher = "voucher"
+	EffectSourceAdmin   = "admin"
+)
+
+// 履约结果种类 (subscription_fulfillment_effects.result_kind)。
+const (
+	ResultCreated = "created"
+	ResultRenewed = "renewed"
+)
+
+// 退款逆转状态 (subscription_fulfillment_effects.reversal_state; P5 才写 reversed)。
+const (
+	ReversalNone     = "none"
+	ReversalReversed = "reversed"
+)
+
+// MaxExpiresAt 订阅到期上限 (防多次叠买累加溢出 timestamptz)。
+var MaxExpiresAt = time.Date(2099, 12, 31, 23, 59, 59, 0, time.UTC)
 
 // CapWindow 是某档 cap 对应的 quota 引擎日历窗口标识。
 // 与 internal/quota 的 WindowKind 字面值一致, 但本包不 import quota 以免循环依赖,
@@ -146,15 +169,36 @@ type AuditEvent struct {
 	OccurredAt         time.Time
 }
 
-// 审计事件类型 (与 0073 subscription_audit_events.event_type CHECK 对齐)。
+// 审计事件类型 (与 subscription_audit_events.event_type CHECK 对齐; renewed 由 0075 放开)。
 const (
 	AuditSubscriptionCreated = "subscription_created"
+	AuditSubscriptionRenewed = "subscription_renewed"
 	AuditExpired             = "expired"
 	AuditCancelled           = "cancelled"
 	AuditGroupUpgraded       = "group_upgraded"
 	AuditGroupDowngraded     = "group_downgraded"
 	AuditIdempotentReplay    = "idempotent_replay"
 )
+
+// FulfillmentEffect 订阅履约效果账本一行 (subscription_fulfillment_effects)。
+// 一笔订单/一次兑换至多一条 (幂等锚); 记本次激活的精确效果供完成态重放读与退款逆转 (P5)。
+type FulfillmentEffect struct {
+	ID                  int64
+	TenantID            int64
+	SourceKind          string
+	PaymentOrderID      *int64
+	VoucherRedemptionID *int64
+	UserID              int64
+	PlanID              int64
+	UserSubscriptionID  int64
+	ResultKind          string
+	AppliedValidityDays int
+	PrevExpiresAt       *time.Time
+	NewExpiresAt        time.Time
+	ReversalState       string
+	ReversedAt          *time.Time
+	CreatedAt           time.Time
+}
 
 // 操作者类型。
 const (
@@ -202,4 +246,7 @@ var (
 	ErrPlanInvalid          = errors.New("subscription: plan fields invalid")
 	ErrSubscriptionNotFound = errors.New("subscription: subscription not found")
 	ErrQuotaInstallFailed   = errors.New("subscription: quota policy install failed")
+	// ErrDowngradeNotAllowed 自助购买 (订单/兑换码) 同组叠买时新套餐额度低于当前 (往低), 拒绝;
+	// 降档仅管理员手动 (EnforceUpgradeOnly=false) 可行。
+	ErrDowngradeNotAllowed = errors.New("subscription: self-service downgrade not allowed")
 )

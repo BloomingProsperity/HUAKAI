@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -75,6 +76,8 @@ func (f *subFixture) seedUser(tenantID int64, label string) int64 {
 func (f *subFixture) cleanup() {
 	ctx := context.Background()
 	for _, tenantID := range []int64{f.tenantA, f.tenantB} {
+		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_fulfillment_effects WHERE tenant_id=$1`, tenantID)
+		_, _ = f.pool.Exec(ctx, `DELETE FROM payment_orders WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_expiry_reminders WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_audit_events WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_policy_links WHERE tenant_id=$1`, tenantID)
@@ -100,6 +103,15 @@ func (f *subFixture) userGroup(tenantID, userID int64) string {
 		f.t.Fatalf("read user_group: %v", err)
 	}
 	return g
+}
+
+func (f *subFixture) userSubExpires(tenantID, userID int64) time.Time {
+	f.t.Helper()
+	var t time.Time
+	if err := f.pool.QueryRow(f.ctx, `SELECT expires_at FROM user_subscriptions WHERE tenant_id=$1 AND user_id=$2 AND status='active' ORDER BY id DESC LIMIT 1`, tenantID, userID).Scan(&t); err != nil {
+		f.t.Fatalf("read active expires: %v", err)
+	}
+	return t.UTC()
 }
 
 func (f *subFixture) countInt(query string, args ...any) int64 {

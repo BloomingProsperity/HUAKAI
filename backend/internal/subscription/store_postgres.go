@@ -764,6 +764,125 @@ WHERE tenant_id=$1 AND user_subscription_id=$2 AND status='active'`,
 	return nil
 }
 
+// renewSubscriptionTx 把同组 active 订阅续期: 覆盖 plan/caps 为新套餐, 延长 expires_at。
+// 调用方负责 close 旧 caps 策略 + install 新策略 (基于返回的更新后订阅)。
+func renewSubscriptionTx(ctx context.Context, tx pgx.Tx, existing UserSubscription, plan Plan, newExpires, now time.Time) (UserSubscription, error) {
+	daily, err := capParam(plan.DailyCapUSD)
+	if err != nil {
+		return UserSubscription{}, ErrInvalidInput
+	}
+	weekly, err := capParam(plan.WeeklyCapUSD)
+	if err != nil {
+		return UserSubscription{}, ErrInvalidInput
+	}
+	monthly, err := capParam(plan.MonthlyCapUSD)
+	if err != nil {
+		return UserSubscription{}, ErrInvalidInput
+	}
+	row := tx.QueryRow(ctx, `
+UPDATE user_subscriptions
+SET plan_id=$3, daily_cap_usd=$4, weekly_cap_usd=$5, monthly_cap_usd=$6, expires_at=$7, updated_at=$8
+WHERE tenant_id=$1 AND id=$2 AND status='active'
+RETURNING`+subscriptionSelectColumns,
+		existing.TenantID, existing.ID, plan.ID, daily, weekly, monthly, newExpires, now)
+	sub, err := scanSubscription(row)
+	if err != nil {
+		return UserSubscription{}, fmt.Errorf("subscription: renew update: %w", err)
+	}
+	return sub, nil
+}
+
+const fulfillmentEffectColumns = `
+	id, tenant_id, source_kind, payment_order_id, voucher_redemption_id,
+	user_id, plan_id, user_subscription_id, result_kind, applied_validity_days,
+	prev_expires_at, new_expires_at, reversal_state, reversed_at, created_at`
+
+// insertFulfillmentEffectTx 写一条订阅履约效果行。撞 (tenant, order_id) / (tenant, redemption_id)
+// 部分唯一索引返回 23505 (由调用方的幂等预检/重试处理), 本函数不吞冲突。
+func insertFulfillmentEffectTx(ctx context.Context, tx pgx.Tx, e FulfillmentEffect) (FulfillmentEffect, error) {
+	row := tx.QueryRow(ctx, `
+INSERT INTO subscription_fulfillment_effects (
+	tenant_id, source_kind, payment_order_id, voucher_redemption_id,
+	user_id, plan_id, user_subscription_id, result_kind, applied_validity_days,
+	prev_expires_at, new_expires_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+RETURNING`+fulfillmentEffectColumns,
+		e.TenantID, e.SourceKind, ptrInt64Param(e.PaymentOrderID), ptrInt64Param(e.VoucherRedemptionID),
+		e.UserID, e.PlanID, e.UserSubscriptionID, e.ResultKind, e.AppliedValidityDays,
+		ptrTimeParam(e.PrevExpiresAt), e.NewExpiresAt)
+	return scanFulfillmentEffect(row)
+}
+
+// getFulfillmentEffectByOrderTx 查某支付订单是否已有履约效果 (调用方完成态幂等重放读)。
+func getFulfillmentEffectByOrderTx(ctx context.Context, tx pgx.Tx, tenantID, orderID int64) (FulfillmentEffect, bool, error) {
+	row := tx.QueryRow(ctx, `SELECT`+fulfillmentEffectColumns+`
+FROM subscription_fulfillment_effects WHERE tenant_id=$1 AND payment_order_id=$2`, tenantID, orderID)
+	return scanEffectOptional(row)
+}
+
+// getFulfillmentEffectByVoucherTx 查某兑换是否已有履约效果。
+func getFulfillmentEffectByVoucherTx(ctx context.Context, tx pgx.Tx, tenantID, redemptionID int64) (FulfillmentEffect, bool, error) {
+	row := tx.QueryRow(ctx, `SELECT`+fulfillmentEffectColumns+`
+FROM subscription_fulfillment_effects WHERE tenant_id=$1 AND voucher_redemption_id=$2`, tenantID, redemptionID)
+	return scanEffectOptional(row)
+}
+
+func scanEffectOptional(row pgx.Row) (FulfillmentEffect, bool, error) {
+	e, err := scanFulfillmentEffect(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return FulfillmentEffect{}, false, nil
+	}
+	if err != nil {
+		return FulfillmentEffect{}, false, err
+	}
+	return e, true, nil
+}
+
+func scanFulfillmentEffect(row pgx.Row) (FulfillmentEffect, error) {
+	var e FulfillmentEffect
+	var orderID, redemptionID pgtype.Int8
+	var prevExpires, reversedAt pgtype.Timestamptz
+	if err := row.Scan(&e.ID, &e.TenantID, &e.SourceKind, &orderID, &redemptionID,
+		&e.UserID, &e.PlanID, &e.UserSubscriptionID, &e.ResultKind, &e.AppliedValidityDays,
+		&prevExpires, &e.NewExpiresAt, &e.ReversalState, &reversedAt, &e.CreatedAt); err != nil {
+		return FulfillmentEffect{}, err
+	}
+	if orderID.Valid {
+		v := orderID.Int64
+		e.PaymentOrderID = &v
+	}
+	if redemptionID.Valid {
+		v := redemptionID.Int64
+		e.VoucherRedemptionID = &v
+	}
+	if prevExpires.Valid {
+		t := prevExpires.Time.UTC()
+		e.PrevExpiresAt = &t
+	}
+	if reversedAt.Valid {
+		t := reversedAt.Time.UTC()
+		e.ReversedAt = &t
+	}
+	e.NewExpiresAt = e.NewExpiresAt.UTC()
+	e.CreatedAt = e.CreatedAt.UTC()
+	return e, nil
+}
+
+// ptrInt64Param / ptrTimeParam: 指针为 nil 时传 NULL。
+func ptrInt64Param(v *int64) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+func ptrTimeParam(v *time.Time) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
 type subAuditInsert struct {
 	TenantID           int64
 	UserSubscriptionID int64
