@@ -333,6 +333,7 @@ SET consumed_at = NOW(),
 WHERE id = $1::uuid
   AND consumed_at IS NULL
   AND status IN ('started', 'waiting_for_user', 'callback_received', 'validated')
+  AND (flow_kind <> 'oauth' OR auth_type IN ('device_code', 'sso') OR status = 'validated')
   AND expires_at > NOW()
 RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind, status,
           actor_id, actor_role, state_hash, nonce_hash, encrypted_pkce_verifier,
@@ -358,6 +359,18 @@ RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind
 	if s.now().UTC().After(existing.ExpiresAt) {
 		_, _ = s.UpdateStatus(ctx, id, StatusExpired, "expired", "acquisition flow expired")
 		return existing, ErrFlowExpired
+	}
+	// S1-010: callback 式 OAuth flow(PKCE)必须先经 callback 校验(status=validated)才能 finalize。
+	// 被上面 predicate 排除而落到这里 —— 显式返回 ErrOAuthRequiresCallback,而非误当普通 replay,防止
+	// caller 跳过回调、用手写 credentials body 直接 finalize 注入任意凭据。device_code/sso flow 已豁免
+	// (其凭据来自轮询、不经 validated)。仅对仍处回调前的【活跃】状态(started/waiting_for_user/
+	// callback_received)报此错;已 cancelled/failed/expired 等终态不在此列,保持原 replay/terminal 语义,
+	// 避免把"已取消/已失败"掩盖成"需要回调"(codex round2 P2)。
+	switch existing.Status {
+	case StatusStarted, StatusWaitingForUser, StatusCallbackReceived:
+		if RequiresCallbackValidation(existing.Kind, existing.AuthType) {
+			return existing, ErrOAuthRequiresCallback
+		}
 	}
 	return existing, ErrFlowReplay
 }

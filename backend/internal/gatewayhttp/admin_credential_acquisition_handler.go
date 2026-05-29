@@ -488,6 +488,8 @@ func writeCredentialAcqError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusBadRequest, "redacted_context_secret", "redacted_context contains secret-shaped material")
 	case errors.Is(err, credentialacq.ErrOAuthExchangerMissing):
 		writeJSONError(w, http.StatusUnprocessableEntity, "oauth_exchanger_missing", "oauth exchanger missing for credential acquisition flow")
+	case errors.Is(err, credentialacq.ErrOAuthRequiresCallback):
+		writeJSONError(w, http.StatusConflict, "oauth_requires_callback", "OAuth flow must be validated via callback before finalize")
 	default:
 		writeJSONError(w, http.StatusBadRequest, "credential_acquisition_failed", err.Error())
 	}
