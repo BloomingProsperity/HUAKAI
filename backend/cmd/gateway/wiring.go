@@ -161,6 +161,7 @@ type vendorRefresherBinding struct {
 const (
 	geminiPublicCLIOAuthClientSecretEnv = "HUAKAI_GEMINI_OAUTH_CLIENT_SECRET"
 	adminOAuthCallbackAllowlistEnv      = "HUAKAI_ADMIN_OAUTH_CALLBACK_ALLOWLIST"
+	userOAuthRedirectAllowlistEnv       = "HUAKAI_USER_OAUTH_REDIRECT_ALLOWLIST"
 )
 
 func buildVendorRefresherBindings(configs runtimeconfig.VendorOAuthConfigs, store *credentialstore.Store) []vendorRefresherBinding {
@@ -567,7 +568,18 @@ func loadGeminiPublicCLIOAuthClientSecretFromEnv() (string, error) {
 }
 
 func loadAdminOAuthCallbackAllowlistFromEnv() []string {
-	raw := os.Getenv(adminOAuthCallbackAllowlistEnv)
+	return parseCSVAllowlistEnv(adminOAuthCallbackAllowlistEnv)
+}
+
+// loadUserOAuthRedirectAllowlistFromEnv 加载 social OAuth init 允许的 caller redirect_uri 白名单(S2-009);
+// 空 = 不接受任何 caller redirect_uri,只用 provider 服务端固定 RedirectURI(fail-closed)。
+func loadUserOAuthRedirectAllowlistFromEnv() []string {
+	return parseCSVAllowlistEnv(userOAuthRedirectAllowlistEnv)
+}
+
+// parseCSVAllowlistEnv 解析逗号分隔的 env 白名单,trim 空项;全空/未设返回 nil。
+func parseCSVAllowlistEnv(name string) []string {
+	raw := os.Getenv(name)
 	if strings.TrimSpace(raw) == "" {
 		return nil
 	}

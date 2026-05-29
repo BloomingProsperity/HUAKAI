@@ -42,6 +42,10 @@ type Service struct {
 	Now              func() time.Time
 	OAuth            *OAuthService
 	Verification     EmailVerificationPolicy
+	// AllowedRedirectURIs 是 social OAuth init 允许的 caller redirect_uri 精确白名单(S2-009)。空(默认)=
+	// 不接受任何 caller 提供的 redirect_uri,只能用各 provider 服务端配置的固定 RedirectURI,fail-closed 防
+	// open-redirect / 授权码外泄。
+	AllowedRedirectURIs []string
 }
 
 func NewService(store Store) *Service {

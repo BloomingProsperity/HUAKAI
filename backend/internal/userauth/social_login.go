@@ -3,6 +3,7 @@ package userauth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -75,6 +76,10 @@ func (s *Service) StartOAuth(ctx context.Context, in OAuthInitInput) (OAuthInitR
 	if !ok {
 		return OAuthInitResult{}, ErrOAuthProviderMissing
 	}
+	// S2-009: fail-closed 校验 caller 提供的 redirect_uri,杜绝 open-redirect / 授权码被引导到攻击者地址。
+	if err := s.validateOAuthRedirectURI(in.RedirectURI); err != nil {
+		return OAuthInitResult{}, err
+	}
 	ttl := s.OAuthFlowTTL
 	if ttl <= 0 {
 		ttl = DefaultOAuthFlowTTL
@@ -91,6 +96,22 @@ func (s *Service) StartOAuth(ctx context.Context, in OAuthInitInput) (OAuthInitR
 		return OAuthInitResult{}, err
 	}
 	return OAuthInitResult{Provider: providerName, State: challenge.State, AuthURL: authURL, ExpiresAt: challenge.ExpiresAt}, nil
+}
+
+// validateOAuthRedirectURI fail-closed 校验 caller 提供的 redirect_uri:为空 → 允许(后续用各 provider
+// 服务端配置的固定 RedirectURI);非空 → 必须精确匹配管理员配置的 AllowedRedirectURIs 之一,否则拒绝。
+// 默认白名单为空 → 任何非空 caller redirect 都被拒,杜绝把授权码/回调引导到攻击者控制的地址(S2-009)。
+func (s *Service) validateOAuthRedirectURI(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	for _, allowed := range s.AllowedRedirectURIs {
+		if raw == strings.TrimSpace(allowed) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: redirect_uri 不在允许白名单", ErrInvalidInput)
 }
 
 func (s *Service) CompleteOAuth(ctx context.Context, in OAuthCallbackInput) (User, error) {
