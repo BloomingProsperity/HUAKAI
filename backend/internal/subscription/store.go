@@ -36,6 +36,15 @@ type Store interface {
 	// ExpireSubscription: 标 expired + 关 quota 策略 + 降级 (downgrade 守卫: 无更新 active 升级订阅才降), 单事务, 幂等。
 	ExpireSubscription(ctx context.Context, rec lifecycleRecord) (UserSubscription, error)
 
+	// --- 到期提醒 (P3b-1) ---
+	// ListDueReminder: active 且 expires_at 在 (now, now+within] 且 (expires_at, id) > 游标 的订阅,
+	// 按 (expires_at, id) 升序限量返回, 附收件邮箱与套餐名 (游标用于一次 tick 翻完整窗口)。
+	ListDueReminder(ctx context.Context, now time.Time, within time.Duration, after ReminderCursor, limit int) ([]ReminderCandidate, error)
+	// SentReminderKeys: 某订阅已记录的提醒档位集合 (任意 status), 供 worker 跳过已处理档。
+	SentReminderKeys(ctx context.Context, tenantID, subscriptionID int64) (map[string]struct{}, error)
+	// RecordReminder: 记一条提醒投递结果 (ON CONFLICT DO NOTHING 幂等), 返回是否新插入。
+	RecordReminder(ctx context.Context, rec reminderRecord) (bool, error)
+
 	// --- 审计 ---
 	ListAuditEvents(ctx context.Context, tenantID, subscriptionID int64) ([]AuditEvent, error)
 }

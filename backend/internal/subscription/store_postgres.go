@@ -525,6 +525,91 @@ ORDER BY occurred_at, id`, tenantID, subscriptionID)
 	return out, rows.Err()
 }
 
+// ---- 到期提醒 (P3b-1) ----
+
+// ListDueReminder 扫 active 且 expires_at 在 (now, now+within] 且 (expires_at, id) 大于游标的订阅,
+// 按 (expires_at, id) 升序限量返回, 附用户邮箱与套餐名。游标用行值比较 (expires_at, id) > ($4, $5),
+// 零值游标 (year-1, 0) 命中全部, 调用方逐页推进翻完整窗口。
+// INNER JOIN users 过滤已删用户 (不给删号发提醒); email 为空时 RecipientEmail 返回空串 (上层记 skipped)。
+func (s *PostgresStore) ListDueReminder(ctx context.Context, now time.Time, within time.Duration, after ReminderCursor, limit int) ([]ReminderCandidate, error) {
+	if s == nil || s.pool == nil {
+		return nil, ErrStoreNotConfigured
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 300
+	}
+	if within <= 0 {
+		within = 7 * 24 * time.Hour
+	}
+	upper := now.Add(within)
+	rows, err := s.pool.Query(ctx, `
+SELECT s.tenant_id, s.id, s.user_id, s.expires_at,
+	COALESCE(u.email, ''), COALESCE(p.name, '')
+FROM user_subscriptions s
+JOIN users u ON u.tenant_id = s.tenant_id AND u.id = s.user_id AND u.deleted_at IS NULL
+LEFT JOIN subscription_plans p ON p.tenant_id = s.tenant_id AND p.id = s.plan_id
+WHERE s.status = 'active' AND s.expires_at > $1 AND s.expires_at <= $2
+	AND (s.expires_at, s.id) > ($4, $5)
+ORDER BY s.expires_at, s.id
+LIMIT $3`, now, upper, limit, after.ExpiresAt, after.ID)
+	if err != nil {
+		return nil, fmt.Errorf("subscription: list due reminder: %w", err)
+	}
+	defer rows.Close()
+	var out []ReminderCandidate
+	for rows.Next() {
+		var c ReminderCandidate
+		if err := rows.Scan(&c.TenantID, &c.SubscriptionID, &c.UserID, &c.ExpiresAt,
+			&c.RecipientEmail, &c.PlanName); err != nil {
+			return nil, err
+		}
+		c.ExpiresAt = c.ExpiresAt.UTC()
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// SentReminderKeys 返回某订阅已记录的提醒档位集合 (任意 status)。
+func (s *PostgresStore) SentReminderKeys(ctx context.Context, tenantID, subscriptionID int64) (map[string]struct{}, error) {
+	if s == nil || s.pool == nil {
+		return nil, ErrStoreNotConfigured
+	}
+	rows, err := s.pool.Query(ctx, `
+SELECT reminder_key FROM subscription_expiry_reminders
+WHERE tenant_id=$1 AND user_subscription_id=$2`, tenantID, subscriptionID)
+	if err != nil {
+		return nil, fmt.Errorf("subscription: sent reminder keys: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]struct{})
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		out[key] = struct{}{}
+	}
+	return out, rows.Err()
+}
+
+// RecordReminder 记一条提醒投递结果, ON CONFLICT (tenant, sub, key) DO NOTHING 幂等。
+// 返回是否新插入 (false = 该档位已存在)。
+func (s *PostgresStore) RecordReminder(ctx context.Context, rec reminderRecord) (bool, error) {
+	if s == nil || s.pool == nil {
+		return false, ErrStoreNotConfigured
+	}
+	tag, err := s.pool.Exec(ctx, `
+INSERT INTO subscription_expiry_reminders
+	(tenant_id, user_subscription_id, reminder_key, status, recipient, expires_at_snapshot)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (tenant_id, user_subscription_id, reminder_key) DO NOTHING`,
+		rec.TenantID, rec.SubscriptionID, rec.ReminderKey, rec.Status, rec.Recipient, rec.ExpiresAt)
+	if err != nil {
+		return false, fmt.Errorf("subscription: record reminder: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // ---- 内部事务级辅助 ----
 
 func getPlanTx(ctx context.Context, tx pgx.Tx, tenantID, planID int64) (Plan, error) {
