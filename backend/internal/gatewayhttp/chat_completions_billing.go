@@ -30,6 +30,45 @@ import (
 // Above the heuristic estimator's own noise floor; sub-floor deltas are false-positive-dominated.
 const crossCheckMinAbsTokenDelta = 50
 
+// crossCheckAudit 计算 token 交叉校验的审计信号(confidence_score / pending_reconciliation)。
+// reportedOutput = 上游报告 OutputTokens;reasoningTokens = 其中隐藏推理 token(o1/o3,
+// 客户端不可见、估算器数不到),先扣除得可见输出再与 estimated(可见内容估算)比对。
+// estimatedReasoning = 流式累加的可见 reasoning 文本估算(非流路径传 0,其估算器已含思考块)。
+// 仅在 hasPositiveCost(排除 cache-hit 零成本回放)且绝对偏差 >= 下限时才降级,避免短响应/
+// 估算噪声误报;estimated<=0(无可估内容)→ CrossCheck 返回 Unknown → 不降级。
+// 非流(nonStreamingUsageDraft)与流式(streamingCompletionEvent)共用,确保口径一致
+// (S2-163 + S2-163-fu)。
+func crossCheckAudit(reportedOutput, reasoningTokens, estimated, estimatedReasoning int, hasPositiveCost bool) (confidence float64, pending bool) {
+	confidence = 1.0
+	// reasoning 文本被流出(estimatedReasoning>0)却无对应 ReasoningTokens 单列时,无法判断
+	// reported OutputTokens 是否已含 thinking:Anthropic 扩展思考把 thinking 计入 output_tokens,
+	// 而 Gemini thought 不计入 candidatesTokenCount,canonical 层无此 folding 信号。任一方向的
+	// 加/减都会误判一类 provider,故此处跳过交叉校验(保持满置信、不 pending),宁可在 thinking 流上
+	// 少覆盖也不误报主路径 Claude thinking 流量(S2-163-fu review R2;reasoning-aware 校验见延后 spec)。
+	if reasoningTokens == 0 && estimatedReasoning > 0 {
+		return confidence, pending
+	}
+	visibleOutput := reportedOutput - reasoningTokens
+	if visibleOutput < 0 {
+		visibleOutput = 0
+	}
+	verdict := tokencheck.CrossCheck(visibleOutput, estimated).Verdict
+	delta := visibleOutput - estimated
+	if delta < 0 {
+		delta = -delta
+	}
+	if hasPositiveCost && delta >= crossCheckMinAbsTokenDelta {
+		switch verdict {
+		case tokencheck.VerdictWarn5:
+			confidence = 0.8
+		case tokencheck.VerdictFail20:
+			confidence = 0.5
+			pending = true
+		}
+	}
+	return confidence, pending
+}
+
 func (ex *chatExecution) handleNonStreamingResponse(w http.ResponseWriter) {
 	outcome := ex.executeNonStreamingAttempt(w)
 	if outcome.Success != nil {
@@ -612,32 +651,13 @@ func nonStreamingUsageDraft(env *proto.HCSF, actualCost completionCostBreakdown,
 	if cacheCreationTokens == 0 {
 		cacheCreationTokens = usage.CacheCreationInputTokens5m + usage.CacheCreationInputTokens1h
 	}
-	confidence := 1.0
-	pendingReconciliation := false
 	estimatedOutputTokens := 0
 	if env != nil && env.BufferedResponse != nil {
 		estimatedOutputTokens = tokencheck.HeuristicEstimator{}.Estimate(env.BufferedResponse.Content)
 	}
-	// 隐藏推理 token（o1/o3）已计入 reported OutputTokens 但客户端不可见、估算器数不到，
-	// 交叉校验须先扣除再对比可见内容估算，否则推理重的合法响应被误判 usage 不一致（S2-163-fu）。
-	visibleOutputTokens := usage.OutputTokens - usage.ReasoningTokens
-	if visibleOutputTokens < 0 {
-		visibleOutputTokens = 0
-	}
-	verdict := tokencheck.CrossCheck(visibleOutputTokens, estimatedOutputTokens).Verdict
-	outputTokenDelta := visibleOutputTokens - estimatedOutputTokens
-	if outputTokenDelta < 0 {
-		outputTokenDelta = -outputTokenDelta
-	}
-	if actualCost.Total.IsPositive() && outputTokenDelta >= crossCheckMinAbsTokenDelta {
-		switch verdict {
-		case tokencheck.VerdictWarn5:
-			confidence = 0.8
-		case tokencheck.VerdictFail20:
-			confidence = 0.5
-			pendingReconciliation = true
-		}
-	}
+	// 非流估算器(HeuristicEstimator.Estimate)对 buffered thinking 块已计入估算(estimateBlock
+	// 计 block.Thinking),与 reported 口径自洽,故 estimatedReasoning 传 0、不触发 folding-跳过(S2-163-fu)。
+	confidence, pendingReconciliation := crossCheckAudit(usage.OutputTokens, usage.ReasoningTokens, estimatedOutputTokens, 0, actualCost.Total.IsPositive())
 	return gateway.UsageRecordDraft{
 		TokensInput:           usage.InputTokens,
 		TokensOutput:          usage.OutputTokens,

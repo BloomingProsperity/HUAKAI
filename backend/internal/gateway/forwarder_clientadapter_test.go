@@ -99,6 +99,88 @@ func forwarderLossHasCode(losses []proto.ProtocolLossEntry, code string) bool {
 	return false
 }
 
+// TestCanonicalVisibleEstimateExcludesReasoning 守 S2-163-fu 流式交叉校验:逐事件可见输出
+// 估算计入 Delta.Text(+ PartialJSON / ContentBlock.Text),但**排除** Delta.ReasoningText ——
+// 隐藏推理已由 CanonicalUsage.ReasoningTokens 单列、交叉校验时从 reported 扣除。self-proving:
+// 同一可见文本、其一附带大段 reasoning delta,断言两者估算相等。
+func TestCanonicalVisibleEstimateExcludesReasoning(t *testing.T) {
+	visibleText := "the visible answer streamed to the client token by token"
+	visibleOnly := proto.CanonicalEvent{Type: "content_block_delta", Delta: &proto.CanonicalContentDelta{Text: visibleText}}
+	withReasoning := proto.CanonicalEvent{Type: "content_block_delta", Delta: &proto.CanonicalContentDelta{
+		Text:          visibleText,
+		ReasoningText: strings.Repeat("hidden chain of thought reasoning tokens ", 50),
+	}}
+
+	gotVisible := canonicalVisibleEstimate(visibleOnly)
+	if gotVisible <= 0 {
+		t.Fatalf("visible estimate=%d want positive", gotVisible)
+	}
+	// MUTATION: canonicalVisibleEstimate 把 d.ReasoningText 也计进估算 → withReasoning > visible → RED。
+	if got := canonicalVisibleEstimate(withReasoning); got != gotVisible {
+		t.Fatalf("estimate with hidden reasoning=%d want == visible-only %d (reasoning must be excluded)", got, gotVisible)
+	}
+}
+
+// TestCanonicalReasoningEstimateCountsOnlyReasoningText 守 S2-163-fu review R2 修复:
+// canonicalReasoningEstimate **只**统计可见 reasoning 文本(Delta.ReasoningText),不计可见输出
+// 文本(Delta.Text)—— 它与 canonicalVisibleEstimate 互补,供 crossCheckAudit 在 reasoning 文本
+// 流出但缺 ReasoningTokens 时跳过校验。self-proving:reasoning-only delta 估算为正,而 visible-only
+// delta 的 reasoning 估算必须为 0。
+func TestCanonicalReasoningEstimateCountsOnlyReasoningText(t *testing.T) {
+	reasoningOnly := proto.CanonicalEvent{Type: "content_block_delta", Delta: &proto.CanonicalContentDelta{
+		ReasoningText: strings.Repeat("extended thinking chain of thought tokens ", 20),
+	}}
+	visibleOnly := proto.CanonicalEvent{Type: "content_block_delta", Delta: &proto.CanonicalContentDelta{
+		Text: "the visible answer streamed to the client",
+	}}
+
+	if got := canonicalReasoningEstimate(reasoningOnly); got <= 0 {
+		t.Fatalf("reasoning-only estimate=%d want positive (ReasoningText must count)", got)
+	}
+	// MUTATION: canonicalReasoningEstimate 把 d.Text 也计进 → visible-only 估算 >0 → RED。
+	if got := canonicalReasoningEstimate(visibleOnly); got != 0 {
+		t.Fatalf("visible-only reasoning estimate=%d want 0 (only ReasoningText counts)", got)
+	}
+}
+
+// TestCanonicalVisibleEstimateCountsContentBlockInput 守 S2-163-fu review R2 finding 2:
+// 部分 provider(如 Gemini)在 content_block_start 一次性发完整 tool call 参数(ContentBlock.Input)
+// 而非 input_json_delta。估算须计入 cb.Input,否则 tool-only 流估算为 0 → CrossCheck Unknown 绕过审计。
+func TestCanonicalVisibleEstimateCountsContentBlockInput(t *testing.T) {
+	oneShotTool := proto.CanonicalEvent{Type: "content_block_start", ContentBlock: &proto.CanonicalContentBlock{
+		Type:  "tool_use",
+		Name:  "search",
+		Input: []byte(`{"query":"weather in hangzhou","units":"metric","verbose":true}`),
+	}}
+	// MUTATION: canonicalVisibleEstimate 丢弃 cb.Input(传 nil)→ 0 → tool-only 流被 CrossCheck 判 Unknown → RED。
+	if got := canonicalVisibleEstimate(oneShotTool); got <= 0 {
+		t.Fatalf("one-shot tool content_block_start estimate=%d want positive (Input must count)", got)
+	}
+}
+
+// TestDrainWithAdapterAccumulatesOutputEstimate 守 S2-163-fu review R2 finding 1:
+// 客户端断连后 bounded drain 读完剩余流;drain 期产生的可见输出也须累加进估算,使其与
+// reported OutputTokens(含 drain 期 usage)同步,否则断连后 drain 完成的长响应被误判假 pending。
+func TestDrainWithAdapterAccumulatesOutputEstimate(t *testing.T) {
+	adapter := &forwarderClientAdapterUpstreamStub{
+		events: []any{proto.CanonicalEvent{Type: "content_block_delta", Delta: &proto.CanonicalContentDelta{
+			Text: "drained visible completion text produced after the client disconnected",
+		}}},
+	}
+	f := newForwarder()
+	acc := &UsageAccumulator{}
+	events := make(chan scanResult, 1)
+	events <- scanResult{event: SSEEvent{Type: "content_block_delta", Data: []byte(`{"type":"content_block_delta"}`)}}
+	close(events)
+
+	f.drainWithAdapter(context.Background(), adapter, events, nil, acc)
+
+	// MUTATION: drain 循环不累加 canonicalVisibleEstimate → acc.EstimatedOutputTokens==0 → RED。
+	if acc.EstimatedOutputTokens <= 0 {
+		t.Fatalf("acc.EstimatedOutputTokens=%d want positive (drained visible output must be estimated)", acc.EstimatedOutputTokens)
+	}
+}
+
 // TestHandleEventWithAdapterAccumulatesLossOnErrorReturn 守 S1-025-fu review R1 finding 2:
 // 部分上游 adapter 把 ProtocolLossEntry 连同 error 一起返回(anthropic/sse.go:228 未知事件
 // → loss + ErrUnknownEventType)。handleEventWithAdapter 原先在 append providerLosses 之前

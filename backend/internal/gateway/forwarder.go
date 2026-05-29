@@ -18,6 +18,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
+	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
@@ -296,6 +297,13 @@ func (f *StreamForwarder) handleEventWithAdapter(
 		if usage, ok := canonicalUsage(canonical); ok {
 			acc.Update(UsageSourceReported, usage)
 		}
+		// 逐事件累加可见输出 token 估算(排除隐藏 reasoning delta),settle 时与 reported
+		// OutputTokens 交叉校验。O(1) 内存、不滞留响应内容(S2-163-fu 流式交叉校验)。
+		acc.EstimatedOutputTokens += canonicalVisibleEstimate(canonical)
+		// 单独累加可见 reasoning 文本估算:Anthropic 扩展思考 / Gemini thought 把 thinking 以
+		// ReasoningText 流出却不单列 ReasoningTokens,settle 时据此判断 reasoning-folding 是否可知,
+		// 不可知则跳过交叉校验以免误报主路径 thinking 流(S2-163-fu review R2)。
+		acc.EstimatedReasoningTokens += canonicalReasoningEstimate(canonical)
 		if canonicalTerminal(canonical) {
 			terminalSeen = true
 			acc.Freeze()
@@ -391,6 +399,12 @@ func (f *StreamForwarder) drainWithAdapter(
 						if usage, ok := canonicalUsage(canonical); ok {
 							acc.Update(UsageSourcePartial, usage)
 						}
+						// drain 阶段产生的可见输出也累加进估算:settle 比对的 reported
+						// OutputTokens 已含 drain 期 usage(上方 acc.Update),估算须同步含
+						// drain 期可见内容,否则断连后 drain 完成的长响应会因估算偏低被误判
+						// 假 pending_reconciliation(S2-163-fu review R2)。
+						acc.EstimatedOutputTokens += canonicalVisibleEstimate(canonical)
+						acc.EstimatedReasoningTokens += canonicalReasoningEstimate(canonical)
 					}
 				}
 			}
@@ -427,6 +441,11 @@ func (f *StreamForwarder) finishDraft(d UsageRecordDraft, acc UsageAccumulator, 
 	d.CacheReadTokens = acc.Usage.CacheReadInputTokens
 	d.DeliveredTokenCount = acc.DeliveredTokenCount()
 	d.StreamProtocolLoss = acc.StreamProtocolLoss
+	// 流式 token 交叉校验信号(审计-only,settle 时在 gatewayhttp 比对):隐藏 reasoning、
+	// 逐事件累加的可见输出估算、以及可见 reasoning 文本估算(用于 folding-不可知时跳过)(S2-163-fu)。
+	d.ReasoningTokens = acc.Usage.ReasoningTokens
+	d.EstimatedOutputTokens = acc.EstimatedOutputTokens
+	d.EstimatedReasoningTokens = acc.EstimatedReasoningTokens
 	if d.UsageSource == UsageSourceAmbiguous && acc.Source != "" {
 		d.UsageSource = acc.Source
 	}
@@ -595,6 +614,55 @@ func canonicalUsage(v any) (proto.CanonicalUsage, bool) {
 		return proto.CanonicalUsage{}, false
 	}
 	return *evt.Usage, true
+}
+
+// canonicalVisibleEstimate 估算单个 canonical 事件对**可见**输出 token 的贡献:可见文本
+// delta(Delta.Text)+工具参数增量(Delta.PartialJSON)+初始可见文本与一次性 tool 参数
+// (ContentBlock.Text / ContentBlock.Input)。**排除** Delta.ReasoningText —— 思考/隐藏 reasoning
+// 由 canonicalReasoningEstimate 单独累加,交叉校验时按 reasoning-folding 是否可知分别处理
+// (S2-163-fu 流式交叉校验)。
+func canonicalVisibleEstimate(v any) int {
+	evt, ok := v.(proto.CanonicalEvent)
+	if !ok {
+		return 0
+	}
+	total := 0
+	if d := evt.Delta; d != nil {
+		total += tokencheck.EstimateStreamDelta(d.Text, d.PartialJSON)
+	}
+	if cb := evt.ContentBlock; cb != nil {
+		// 计入 ContentBlock.Input —— 部分 provider(如 Gemini)在 content_block_start 一次性
+		// 发完整 tool call 参数而非 input_json_delta(PartialJSON)。用 delta 流式发参数的
+		// provider(如 Anthropic)其 content_block_start.Input 为空,不会与 PartialJSON 重复计数。
+		// 与非流估算器对 tool 节点的口径一致(S2-163-fu)。
+		total += tokencheck.EstimateStreamDelta(cb.Text, cb.Input)
+	}
+	return total
+}
+
+// canonicalReasoningEstimate 估算单个 canonical 事件的**可见 reasoning 文本**贡献
+// (Delta.ReasoningText,以及罕见的 ContentBlock.Thinking)。与 canonicalVisibleEstimate 分开累加:
+// Anthropic 扩展思考 / Gemini thought 把 thinking 以 ReasoningText 流出且不单列 ReasoningTokens,
+// 而 reported OutputTokens 是否含 thinking 因 provider 而异(Anthropic 计入 output_tokens /
+// Gemini 不计入 candidatesTokenCount),canonical 层无此 folding 信号。crossCheckAudit 据此在
+// reasoning 文本流出但缺对应 ReasoningTokens 时跳过交叉校验,避免误报主路径 thinking 流
+// (S2-163-fu review R2)。
+func canonicalReasoningEstimate(v any) int {
+	evt, ok := v.(proto.CanonicalEvent)
+	if !ok {
+		return 0
+	}
+	total := 0
+	if d := evt.Delta; d != nil {
+		total += tokencheck.EstimateStreamDelta(d.ReasoningText, nil)
+	}
+	if cb := evt.ContentBlock; cb != nil {
+		// 流式 Anthropic 当前不在 content_block_start 给 thinking(只 text/tool_use),
+		// 但计入 ContentBlock.Thinking 以保持与可见估算对 ContentBlock 的对称口径,兼容未来
+		// 在起始块直接携带思考文本的 provider(S2-163-fu)。
+		total += tokencheck.EstimateStreamDelta(cb.Thinking, nil)
+	}
+	return total
 }
 
 func canonicalTerminal(v any) bool {
