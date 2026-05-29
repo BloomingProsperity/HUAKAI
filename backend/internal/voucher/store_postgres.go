@@ -35,7 +35,7 @@ INSERT INTO voucher (
 ) VALUES (
 	$1, $2, $3, $4, $5, $6,
 	$7, $8, $9, $10,
-	CASE WHEN $8 <= $13 THEN 'expired' ELSE 'active' END,
+	CASE WHEN $8::timestamptz <= $13::timestamptz THEN 'expired' ELSE 'active' END,
 	$14, $11, $12, $12
 )
 RETURNING id, tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, currency_code,
@@ -409,7 +409,7 @@ INSERT INTO voucher (
 ) VALUES (
 	$1, $2, $3, $4, $5, $6,
 	$7, $8, $9, $10,
-	CASE WHEN $8 <= $13 THEN 'expired' ELSE 'active' END,
+	CASE WHEN $8::timestamptz <= $13::timestamptz THEN 'expired' ELSE 'active' END,
 	$14, $11, $12, $12
 )
 RETURNING id, tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, currency_code,
