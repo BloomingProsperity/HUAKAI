@@ -39,11 +39,12 @@ const (
 type WindowKind string
 
 const (
-	WindowNone         WindowKind = "none"
-	WindowFixed        WindowKind = "fixed"
-	WindowCalendarDay  WindowKind = "calendar_day"
-	WindowCalendarWeek WindowKind = "calendar_week"
-	WindowManual       WindowKind = "manual"
+	WindowNone          WindowKind = "none"
+	WindowFixed         WindowKind = "fixed"
+	WindowCalendarDay   WindowKind = "calendar_day"
+	WindowCalendarWeek  WindowKind = "calendar_week"
+	WindowCalendarMonth WindowKind = "calendar_month"
+	WindowManual        WindowKind = "manual"
 )
 
 // Window 是一个已解析的配额窗口。

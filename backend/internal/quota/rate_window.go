@@ -32,6 +32,12 @@ func ComputeWindow(kind WindowKind, windowSeconds int64, at time.Time) (start ti
 		daysSinceMonday := (int(at.Weekday()) + 6) % 7
 		start = dayStart.AddDate(0, 0, -daysSinceMonday)
 		return start, start.AddDate(0, 0, 7), true
+	case WindowCalendarMonth:
+		// 当月 1 号 00:00 UTC 到下月 1 号 00:00 UTC。用 AddDate 月进位,
+		// 自动处理 28/29/30/31 天月长差异与跨年 (12 月 -> 次年 1 月)。
+		y, m, _ := at.Date()
+		start = time.Date(y, m, 1, 0, 0, 0, 0, time.UTC)
+		return start, start.AddDate(0, 1, 0), true
 	case WindowManual:
 		return manualWindowStart, manualWindowEnd, true
 	default:
