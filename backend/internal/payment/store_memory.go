@@ -118,7 +118,7 @@ func (m *MemoryStore) ConfirmPaid(_ context.Context, rec confirmRecord) (Order, 
 		o.ConfirmedByAdminID = rec.AdminID
 		o.ConfirmReason = rec.ConfirmReason
 		o.UpdatedAt = rec.Now
-		m.appendAudit(rec.TenantID, o.ID, AuditPaidConfirmed, ActorKindAdmin, rec.AdminID, rec.ConfirmReason, rec.RequestID)
+		m.appendAudit(rec.TenantID, o.ID, AuditPaidConfirmed, actorKindOrDefault(rec.ActorKind), rec.AdminID, rec.ConfirmReason, rec.RequestID)
 	case StatusPaid, StatusRecharging, StatusCompleted:
 		// 幂等
 	default:

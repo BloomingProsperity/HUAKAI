@@ -191,7 +191,7 @@ RETURNING`+orderSelectColumns, rec.TenantID, rec.OrderID, rec.Now, nullableInt64
 			TenantID:    rec.TenantID,
 			OrderID:     order.ID,
 			EventType:   AuditPaidConfirmed,
-			ActorKind:   ActorKindAdmin,
+			ActorKind:   actorKindOrDefault(rec.ActorKind), // admin=手动 / system=回调; 见 confirmRecord.ActorKind
 			ActorID:     rec.AdminID,
 			ReasonClass: rec.ConfirmReason,
 			RequestID:   rec.RequestID,

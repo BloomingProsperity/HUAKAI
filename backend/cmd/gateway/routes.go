@@ -97,6 +97,8 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		r.Use(auth.SessionMiddleware(d.userSessions))
 		paymenthttp.MountPaymentUserRoutes(r, paymenthttp.UserDeps{Service: d.paymentService})
 	})
+	// 公开支付回调端点 (P2a): 无 session/admin 中间件, 信任靠验签; 复用 d.paymentService。
+	paymenthttp.MountPaymentWebhookRoutes(r, paymenthttp.WebhookDeps{Service: d.paymentService})
 	r.Route("/v1/api-keys", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions))
 		userkeyhttp.MountUserAPIKeyRoutes(r, userkeyhttp.Deps{Service: d.userKeyService})

@@ -144,4 +144,8 @@ var (
 	ErrIdempotencyConflict = errors.New("payment: out_trade_no reused with different order fields")
 	ErrProviderUnknown     = errors.New("payment: unknown provider kind")
 	ErrUnsupportedCurrency = errors.New("payment: unsupported currency (P1 ledger is USD-only)")
+	// P2a 自动回调路径错误。
+	ErrProviderNoCallback = errors.New("payment: provider does not support callbacks")            // provider 存在但非 CallbackVerifier (如 manual)
+	ErrCallbackUnverified = errors.New("payment: callback signature verification failed")          // 验签失败 → 零入账
+	ErrCallbackRejected   = errors.New("payment: callback rejected by business validation")        // 验签通过但金额/币种/渠道不符 → 零入账
 )
