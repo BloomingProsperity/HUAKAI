@@ -2,6 +2,7 @@ package gatewayhttp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -23,7 +24,22 @@ const (
 func writeJSONError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_, _ = fmt.Fprintf(w, `{"error":{"code":%q,"message":%q}}`, code, message)
+	_, _ = w.Write(encodeJSONErrorBody(code, message))
+}
+
+// encodeJSONErrorBody 用 encoding/json 编码 {"error":{"code","message"}},而非 fmt %q 手拼。
+// %q 是 Go 字符串字面量格式化器:对部分控制字节(如 \x01)会输出 \xNN —— 合法 Go 字面量却是
+// 非法 JSON,严格客户端/SDK/反代日志解析会失败(S2-148)。code 多为内部常量,但 message 可能携带
+// 用户可控内容(如 admin 创建账号时回显归一化后的 vendor)。json.Marshal 对 string 不会失败,
+// 兜底仍回退一个静态合法 JSON,绝不写出半截/非法响应。
+func encodeJSONErrorBody(code, message string) []byte {
+	body, err := json.Marshal(map[string]map[string]string{
+		"error": {"code": code, "message": message},
+	})
+	if err != nil {
+		return []byte(`{"error":{"code":"internal_error","message":"internal error"}}`)
+	}
+	return body
 }
 
 func writeLoggedJSONError(ctx context.Context, requestID string, w http.ResponseWriter, status int, code string, err error) {

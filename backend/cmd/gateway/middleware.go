@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"expvar"
 	"fmt"
@@ -81,7 +82,15 @@ func adminGate(resolver *admin.AdminResolver, h http.Handler) http.Handler {
 func writeAdminGateError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_, _ = fmt.Fprintf(w, `{"error":{"code":%q,"message":%q}}`, code, message)
+	// 与 gateway/admin 其它错误写入器一致:用 encoding/json 编码而非 fmt %q 手拼,避免控制字节产出
+	// 非法 JSON(S2-148)。本入口当前只传静态字面量,统一改法是纵深防御 + 防回归。
+	body, err := json.Marshal(map[string]map[string]string{
+		"error": {"code": code, "message": message},
+	})
+	if err != nil {
+		body = []byte(`{"error":{"code":"internal_error","message":"internal error"}}`)
+	}
+	_, _ = w.Write(body)
 }
 
 func notImplemented(label string) http.HandlerFunc {
