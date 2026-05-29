@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
@@ -184,7 +185,9 @@ func buildOAuthProvider(logger *zap.Logger, cfg userauth.OAuthConfig) userauth.O
 		}
 		return nil
 	}
-	p, err := userauth.NewOAuthHTTPProvider(cfg, http.DefaultClient)
+	// S2-009: 给 social OAuth 出站调用(token 兑换 / JWKS / GitHub user&emails)注入拨号期 SSRF 防护
+	// 客户端,带私有/环回/元数据 IP 拦截 + Proxy=nil + 抑制 3xx,堵住凭据被发往内网/metadata/被 DNS-rebind。
+	p, err := userauth.NewOAuthHTTPProvider(cfg, auth.NewSSRFProtectedOAuthClient(http.DefaultClient))
 	if err != nil {
 		if logger != nil {
 			logger.Warn("user oauth provider disabled", zap.String("provider", cfg.Provider), zap.Error(err))
