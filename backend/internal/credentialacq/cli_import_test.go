@@ -63,3 +63,27 @@ func TestCLIImportRejectsEmptyInput(t *testing.T) {
 		t.Fatalf("err=%v want %v", err, ErrInvalidImportBody)
 	}
 }
+
+// TestCLIImportRejectsMalformedJSONLine guards S2-115: a line that clearly intends structured JSON
+// (starts with { or [) but fails to parse must be rejected, not silently stored as a raw session
+// token — which previously made imports "succeed" with unusable credential text.
+//
+// Mutation check: drop the jsonLikeLine branch and each malformed line is accepted as a token
+// (err==nil) → the "expect ErrInvalidImportBody" assertions go red. The trailing raw-token case
+// proves we did NOT regress legitimate non-JSON token import.
+func TestCLIImportRejectsMalformedJSONLine(t *testing.T) {
+	malformed := []string{
+		`{"session_token":"abc"`,    // missing closing brace
+		`[{"session_token":"abc"}`,  // missing closing bracket
+		`{"vendor":"openai", oops}`, // unquoted garbage
+	}
+	for _, in := range malformed {
+		if _, err := ParseImportContent(in, credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth); err != ErrInvalidImportBody {
+			t.Fatalf("malformed JSON-like line %q must be rejected; got err=%v", in, err)
+		}
+	}
+	got, err := ParseImportContent("session-raw-value-xyz", credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth)
+	if err != nil || len(got) != 1 || got[0].RedactedContext["shape"] != "single_token" {
+		t.Fatalf("non-JSON raw token must still import as single_token; got=%d err=%v", len(got), err)
+	}
+}
