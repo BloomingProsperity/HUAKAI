@@ -49,6 +49,10 @@ func run(logger *zap.Logger) error {
 	if err := validateReleaseMode(); err != nil {
 		return err
 	}
+	// S1-018: 生产环境禁止开启 dev 令牌回显开关,否则注册/重置响应会泄露明文一次性令牌;带病配置直接拒启。
+	if err := validateDevAuthTokenFlag(); err != nil {
+		return err
+	}
 	cfg, err := loadGatewayConfig(logger)
 	if err != nil {
 		return err

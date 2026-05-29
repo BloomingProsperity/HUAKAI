@@ -58,3 +58,33 @@ func TestValidateReleaseMode_TypoDoesNotEnableProduction(t *testing.T) {
 		t.Fatal("\"prod\" must be rejected at startup so it cannot silently run as dev")
 	}
 }
+
+// TestValidateDevAuthTokenFlag guards S1-018: HUAKAI_DEV_AUTH_RETURN_TOKEN=true echoes the raw
+// one-time verification/reset secret into the public register/reset JSON response. In production it
+// must FAIL CLOSED at startup, not merely log a warning and boot (the prior behavior).
+//
+// Mutation check: delete the production+flag guard in validateDevAuthTokenFlag (always return nil);
+// the prod+flag case goes green → red. The dev/no-flag cases prove local/CI ergonomics still boot.
+func TestValidateDevAuthTokenFlag(t *testing.T) {
+	t.Run("prod+flag=fail", func(t *testing.T) {
+		t.Setenv("HUAKAI_RELEASE_MODE", "production")
+		t.Setenv("HUAKAI_DEV_AUTH_RETURN_TOKEN", "true")
+		if err := validateDevAuthTokenFlag(); err == nil {
+			t.Fatal("production + HUAKAI_DEV_AUTH_RETURN_TOKEN=true must fail closed at startup")
+		}
+	})
+	t.Run("prod+noflag=ok", func(t *testing.T) {
+		t.Setenv("HUAKAI_RELEASE_MODE", "production")
+		t.Setenv("HUAKAI_DEV_AUTH_RETURN_TOKEN", "")
+		if err := validateDevAuthTokenFlag(); err != nil {
+			t.Fatalf("production without the dev flag must boot; got %v", err)
+		}
+	})
+	t.Run("dev+flag=ok", func(t *testing.T) {
+		t.Setenv("HUAKAI_RELEASE_MODE", "")
+		t.Setenv("HUAKAI_DEV_AUTH_RETURN_TOKEN", "true")
+		if err := validateDevAuthTokenFlag(); err != nil {
+			t.Fatalf("dev mode with the flag must still boot (CI/local ergonomics); got %v", err)
+		}
+	})
+}

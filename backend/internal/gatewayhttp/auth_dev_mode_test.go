@@ -66,3 +66,39 @@ func TestAuthPasswordResetDevModeReturnsResetToken(t *testing.T) {
 		t.Fatalf("dev reset token mismatch: resp=%v sent=%q", resp["reset_token"], email.reset)
 	}
 }
+
+// TestAuthRegisterDevTokenSuppressedInProduction guards S1-018 defense-in-depth: even if the dev
+// echo flag is mistakenly left on, a production release mode must NOT leak the one-time verification
+// secret into the public register response (the startup gate is authoritative; this is the in-handler
+// backstop for a runtime-flipped env).
+//
+// Mutation check: remove the production short-circuit in devAuthReturnTokenEnabled and the response
+// regains verification_token under production → this assertion goes red. Discriminating vs the dev
+// test above: identical flag, only HUAKAI_RELEASE_MODE differs, and the expected body differs (key
+// absent in prod vs present in dev).
+func TestAuthRegisterDevTokenSuppressedInProduction(t *testing.T) {
+	t.Setenv("HUAKAI_DEV_AUTH_RETURN_TOKEN", "true")
+	t.Setenv("HUAKAI_RELEASE_MODE", "production")
+	now := time.Date(2026, 5, 17, 11, 0, 0, 0, time.UTC)
+	authStore := newGatewayMemoryAuthStore(now)
+	authSvc := userauth.NewService(authStore)
+	authSvc.PasswordPolicy = userauth.PasswordPolicy{MemoryKiB: 64, Iterations: 1, Parallelism: 1, SaltBytes: 8, KeyBytes: 16}
+	authSvc.Now = func() time.Time { return now }
+	email := &captureAuthEmail{}
+	r := chi.NewRouter()
+	r.Route("/v1/auth", func(r chi.Router) {
+		MountAuthRoutes(r, AuthHandlerDeps{Auth: authSvc, EmailSender: email})
+	})
+
+	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/register", map[string]any{
+		"tenant_id": 1, "email": "prod@example.test", "password": "secret",
+	})
+	assertHTTPStatus(t, rec, http.StatusCreated)
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, present := resp["verification_token"]; present {
+		t.Fatalf("production must NOT echo verification_token even with dev flag on; body=%v", resp)
+	}
+}
