@@ -67,15 +67,25 @@ state machine），本修复把 cache 桶纳入「可计费信号」，与多数
 - piece (A) 计费方向：**已确认（计 cache + 写行）**。无其他未决点。
 
 ## 执行结果（2026-05-29）
-- **piece (A) 落地**：state.go + state_test.go 实现完成；判别单测 self-proving（cache-only=Partial /
-  no-cache=Failed 两路相异），mutation（cache 分支退回无条件 Failed）→ RED 已证；
-  `go build ./...` + billing/gateway/gatewayhttp/settlementrecovery 非集成测试全绿。
-- **piece (B) 延后**：循环 sweep 隔离修复已实现且 `go vet -tags=integration_pg` 通过，但本地 dev DB
-  落后一个迁移（0060 user_balance_holds 未应用，`user_balances` 表缺失），集成测试无法运行；
-  应用迁移命中 standing migration gate（共享库需显式授权）。按 #14「测试须经变异证明」不落未验证的
-  集成测试改动 → 本切片仅落 piece (A)，piece (B) 回退，待 Owner 决定是否放行 dev DB 迁移后再验证落地。
-  piece (B) 是 deferred 文档明示的 test-hygiene 债（非 review finding），延后不影响 piece (A) 正确性。
+- **piece (A) 已落地**：state.go + state_test.go；判别单测 self-proving（cache-only=Partial /
+  no-cache=Failed 两路相异），mutation（cache 分支退回无条件 Failed）→ RED 已证；commit 4221ad2 ff
+  落 fix/hermes 并推送（ahead=0）。#8 R1 出 1×S1（代码注释含无锚点参考项目 claim，违 clean-room
+  #11/#12）→ 移除注释提法、指向本文档 → R2 clean。
+
+- **piece (B) 延后**（Owner 2026-05-29 授权了本地 dev 库迁移 0060 以验证，但 piece B 经两轮 #8 review
+  暴露需 test-infra 改造，不在本切片闭合 —— 详见 docs/process/reviews/DEFERRED-S1-015-lease-sweep-isolation.md）：
+  - 本地 dev 库已应用迁移 0060（user_balance_holds，DB 59→60；仅本地、非 prod）。
+  - 尝试 3 个方案均被 #8 review 否决，根因相同：**lease sweeper 本质全局**（SelectExpiredReservingClaims
+    无租户维度），任何在共享 dev 库驱动真实 sweeper 的测试要么留 poison flaky、要么全局污染其他租户数据。
+    ① 循环 sweep → poison 孤儿（hold 失、Abort 永败、按 lease 排首、batch=1 永占位）阻塞；
+    ② setup 全局 UPDATE status=aborted → 绕过 Abort、残留他租户 held（#8 R1 P1）；
+    ③ batch=count+余量 → 单次 sweep 覆盖全部待回收 → abort 他租户 claim、写 event 到 fixture 外（#8 R2 P1），
+       且 poison fixture 不忠实（`balancehold.Release` 把缺 balance_holds 行当成功，未造出 stuck 路径，#8 R2 P1）。
+  - 按 #8「review 反复发现新需求 → 停 commit 扩张、写完整 spec、当前切片 no-S0/S1 闭合」+ piece B 是
+    deferred 文档明示的 test-hygiene 债（非 review finding），**回退 piece B**，写成 DEFERRED spec。
 
 ## 提交
-- 单 commit（commit-naming-v2）：`billing 纯缓存流结算闸门补全（cache token 视为可计费信号）`
-- #8 review → 无 S0/S1 → 落 fix/hermes（ff）→ push（非 force、非 main）。无迁移、不动 prod。
+- 单 commit（已落）：`billing 纯缓存流结算闸门补全（cache token 视为可计费信号）` —— piece A（4221ad2）。
+- piece B 延后为独立 follow-up（需隔离/一次性测试 DB 或 sweeper 支持租户 scope）；spec 见
+  docs/process/reviews/DEFERRED-S1-015-lease-sweep-isolation.md。
+- **迁移**：仅对本地 dev 库应用 0060（Owner 授权）；**prod 迁移仍门控、未动**。
