@@ -1,0 +1,349 @@
+// HUAKAI · iKun
+
+package subscription
+
+import (
+	"context"
+	"sort"
+	"sync"
+	"time"
+)
+
+// memoryStore 是订阅 Store 的内存实现, 用于 service 层逻辑/校验单测 (快速、无 PG)。
+// 它忠实镜像 PG 的关键语义 (按 granted_group 幂等 / 分组升级 / 到期降级守卫 / 状态机),
+// 但不装真 quota_policies (仅记 link 占位) —— 配额强制、并发、跨租户 FK 等真风险由 PG 集成测试覆盖。
+type memoryStore struct {
+	mu         sync.Mutex
+	planSeq    int64
+	subSeq     int64
+	policySeq  int64
+	auditSeq   int64
+	plans      map[planKey]Plan
+	subs       map[subKey]UserSubscription
+	links      map[int64][]PolicyLink
+	audits     map[int64][]AuditEvent
+	users      map[userKey]bool
+	userGroups map[userKey]string
+}
+
+type planKey struct{ tenant, id int64 }
+type subKey struct{ tenant, id int64 }
+type userKey struct{ tenant, user int64 }
+
+func newMemoryStore() *memoryStore {
+	return &memoryStore{
+		plans:      map[planKey]Plan{},
+		subs:       map[subKey]UserSubscription{},
+		links:      map[int64][]PolicyLink{},
+		audits:     map[int64][]AuditEvent{},
+		users:      map[userKey]bool{},
+		userGroups: map[userKey]string{},
+	}
+}
+
+var _ Store = (*memoryStore)(nil)
+
+// seedUser 注册一个用户 (镜像 PG 的 users 行存在 + 当前分组), 供测试预置。
+func (m *memoryStore) seedUser(tenantID, userID int64, group string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if group == "" {
+		group = DefaultUserGroup
+	}
+	m.users[userKey{tenantID, userID}] = true
+	m.userGroups[userKey{tenantID, userID}] = group
+}
+
+func (m *memoryStore) userGroupOf(k userKey) string {
+	if g, ok := m.userGroups[k]; ok {
+		return g
+	}
+	return DefaultUserGroup
+}
+
+func (m *memoryStore) CreatePlan(_ context.Context, rec createPlanRecord) (Plan, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.planSeq++
+	plan := Plan{
+		ID:            m.planSeq,
+		TenantID:      rec.TenantID,
+		Name:          rec.Name,
+		Description:   rec.Description,
+		PriceCents:    rec.PriceCents,
+		CurrencyCode:  rec.CurrencyCode,
+		ValidityDays:  rec.ValidityDays,
+		GrantedGroup:  rec.GrantedGroup,
+		DailyCapUSD:   rec.DailyCapUSD,
+		WeeklyCapUSD:  rec.WeeklyCapUSD,
+		MonthlyCapUSD: rec.MonthlyCapUSD,
+		ForSale:       rec.ForSale,
+		Enabled:       true,
+		SortOrder:     rec.SortOrder,
+		CreatedAt:     rec.Now.UTC(),
+		UpdatedAt:     rec.Now.UTC(),
+	}
+	m.plans[planKey{rec.TenantID, plan.ID}] = plan
+	return plan, nil
+}
+
+func (m *memoryStore) GetPlan(_ context.Context, tenantID, planID int64) (Plan, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	plan, ok := m.plans[planKey{tenantID, planID}]
+	if !ok {
+		return Plan{}, ErrPlanNotFound
+	}
+	return plan, nil
+}
+
+func (m *memoryStore) ListPlans(_ context.Context, tenantID int64, onlyForSale bool) ([]Plan, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []Plan
+	for k, p := range m.plans {
+		if k.tenant != tenantID {
+			continue
+		}
+		if onlyForSale && (!p.ForSale || !p.Enabled) {
+			continue
+		}
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].SortOrder != out[j].SortOrder {
+			return out[i].SortOrder < out[j].SortOrder
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+func (m *memoryStore) DisablePlan(_ context.Context, tenantID, planID int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := planKey{tenantID, planID}
+	plan, ok := m.plans[k]
+	if !ok {
+		return ErrPlanNotFound
+	}
+	plan.Enabled = false
+	plan.ForSale = false
+	m.plans[k] = plan
+	return nil
+}
+
+func (m *memoryStore) AssignSubscription(_ context.Context, rec assignRecord) (AssignResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	plan, ok := m.plans[planKey{rec.TenantID, rec.PlanID}]
+	if !ok {
+		return AssignResult{}, ErrPlanNotFound
+	}
+	if !plan.Enabled {
+		return AssignResult{}, ErrPlanDisabled
+	}
+	uk := userKey{rec.TenantID, rec.UserID}
+	if !m.users[uk] {
+		return AssignResult{}, ErrInvalidInput
+	}
+
+	// 幂等: 同 (tenant, user, granted_group) 已有 active。
+	if existing, found := m.findActiveByGroup(rec.TenantID, rec.UserID, plan.GrantedGroup); found {
+		m.appendAudit(existing.ID, AuditEvent{
+			TenantID: rec.TenantID, UserSubscriptionID: existing.ID, EventType: AuditIdempotentReplay,
+			ActorKind: ActorKindAdmin, ActorID: rec.ActorAdminID, RequestID: rec.RequestID,
+			Payload: map[string]any{"plan_id": rec.PlanID}, OccurredAt: rec.Now.UTC(),
+		})
+		return AssignResult{Subscription: existing, Idempotent: true}, nil
+	}
+
+	prevGroup := m.userGroupOf(uk)
+	m.subSeq++
+	sub := UserSubscription{
+		ID: m.subSeq, TenantID: rec.TenantID, UserID: rec.UserID, PlanID: plan.ID,
+		GrantedGroup: plan.GrantedGroup, DailyCapUSD: plan.DailyCapUSD, WeeklyCapUSD: plan.WeeklyCapUSD,
+		MonthlyCapUSD: plan.MonthlyCapUSD, Status: StatusActive, Source: SourceAdmin,
+		AssignedByAdminID: rec.ActorAdminID, PrevUserGroup: prevGroup,
+		StartsAt: rec.Now.UTC(), ExpiresAt: rec.Now.AddDate(0, 0, plan.ValidityDays).UTC(),
+		CreatedAt: rec.Now.UTC(), UpdatedAt: rec.Now.UTC(),
+	}
+	m.subs[subKey{rec.TenantID, sub.ID}] = sub
+
+	for _, cap := range sub.Caps() {
+		m.policySeq++
+		m.links[sub.ID] = append(m.links[sub.ID], PolicyLink{
+			ID: m.policySeq, TenantID: rec.TenantID, UserSubscriptionID: sub.ID,
+			QuotaPolicyID: m.policySeq, WindowKind: string(cap.Window), Status: "active",
+			CreatedAt: rec.Now.UTC(),
+		})
+	}
+
+	if plan.GrantedGroup != "" && plan.GrantedGroup != prevGroup {
+		m.userGroups[uk] = plan.GrantedGroup
+		m.appendAudit(sub.ID, AuditEvent{
+			TenantID: rec.TenantID, UserSubscriptionID: sub.ID, EventType: AuditGroupUpgraded,
+			ActorKind: ActorKindAdmin, ActorID: rec.ActorAdminID, RequestID: rec.RequestID,
+			Payload: map[string]any{"from": prevGroup, "to": plan.GrantedGroup}, OccurredAt: rec.Now.UTC(),
+		})
+	}
+	m.appendAudit(sub.ID, AuditEvent{
+		TenantID: rec.TenantID, UserSubscriptionID: sub.ID, EventType: AuditSubscriptionCreated,
+		ActorKind: ActorKindAdmin, ActorID: rec.ActorAdminID, RequestID: rec.RequestID,
+		Payload: assignAuditPayload(sub), OccurredAt: rec.Now.UTC(),
+	})
+	return AssignResult{Subscription: sub, Idempotent: false}, nil
+}
+
+func (m *memoryStore) GetSubscription(_ context.Context, tenantID, subscriptionID int64) (UserSubscription, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sub, ok := m.subs[subKey{tenantID, subscriptionID}]
+	if !ok {
+		return UserSubscription{}, ErrSubscriptionNotFound
+	}
+	return sub, nil
+}
+
+func (m *memoryStore) ListUserSubscriptions(_ context.Context, tenantID, userID int64) ([]UserSubscription, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []UserSubscription
+	for k, sub := range m.subs {
+		if k.tenant == tenantID && sub.UserID == userID {
+			out = append(out, sub)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+	return out, nil
+}
+
+func (m *memoryStore) CancelSubscription(_ context.Context, rec lifecycleRecord) (UserSubscription, error) {
+	return m.closeMem(rec, StatusCancelled, AuditCancelled)
+}
+
+func (m *memoryStore) ExpireSubscription(_ context.Context, rec lifecycleRecord) (UserSubscription, error) {
+	return m.closeMem(rec, StatusExpired, AuditExpired)
+}
+
+func (m *memoryStore) closeMem(rec lifecycleRecord, terminal SubscriptionStatus, event string) (UserSubscription, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := subKey{rec.TenantID, rec.SubscriptionID}
+	sub, ok := m.subs[k]
+	if !ok {
+		return UserSubscription{}, ErrSubscriptionNotFound
+	}
+	if sub.Status != StatusActive {
+		return sub, nil // 幂等
+	}
+	sub.Status = terminal
+	sub.UpdatedAt = rec.Now.UTC()
+	if terminal == StatusCancelled {
+		t := rec.Now.UTC()
+		sub.CancelledAt = &t
+	}
+	m.subs[k] = sub
+
+	for i := range m.links[sub.ID] {
+		if m.links[sub.ID][i].Status == "active" {
+			m.links[sub.ID][i].Status = "closed"
+			t := rec.Now.UTC()
+			m.links[sub.ID][i].ClosedAt = &t
+		}
+	}
+
+	if sub.GrantedGroup != "" {
+		uk := userKey{rec.TenantID, sub.UserID}
+		current := m.userGroupOf(uk)
+		if current == sub.GrantedGroup {
+			// 从剩余 active 订阅重算目标组 (镜像 PG resolveGroupFromActiveTx), 无则 default。
+			target := m.resolveGroupFromActive(rec.TenantID, sub.UserID)
+			if target != current {
+				m.userGroups[uk] = target
+				m.appendAudit(sub.ID, AuditEvent{
+					TenantID: rec.TenantID, UserSubscriptionID: sub.ID, EventType: AuditGroupDowngraded,
+					ActorKind: actorKindOrDefault(rec.ActorKind), ActorID: rec.ActorID, RequestID: rec.RequestID,
+					Payload: map[string]any{"from": current, "to": target}, OccurredAt: rec.Now.UTC(),
+				})
+			}
+		}
+	}
+	m.appendAudit(sub.ID, AuditEvent{
+		TenantID: rec.TenantID, UserSubscriptionID: sub.ID, EventType: event,
+		ActorKind: actorKindOrDefault(rec.ActorKind), ActorID: rec.ActorID, RequestID: rec.RequestID,
+		OccurredAt: rec.Now.UTC(),
+	})
+	return sub, nil
+}
+
+func (m *memoryStore) ListDueExpiry(_ context.Context, now time.Time, limit int) ([]UserSubscription, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if limit <= 0 || limit > 1000 {
+		limit = 300
+	}
+	var out []UserSubscription
+	for _, sub := range m.subs {
+		if sub.Status == StatusActive && !sub.ExpiresAt.After(now) {
+			out = append(out, sub)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].ExpiresAt.Equal(out[j].ExpiresAt) {
+			return out[i].ExpiresAt.Before(out[j].ExpiresAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (m *memoryStore) ListAuditEvents(_ context.Context, tenantID, subscriptionID int64) ([]AuditEvent, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []AuditEvent
+	for _, ev := range m.audits[subscriptionID] {
+		if ev.TenantID == tenantID {
+			out = append(out, ev)
+		}
+	}
+	return out, nil
+}
+
+// resolveGroupFromActive 返回剩余 active 订阅中最新 (starts_at 最晚, 平局取大 ID) 的非空 granted_group; 无则 default。
+func (m *memoryStore) resolveGroupFromActive(tenantID, userID int64) string {
+	best := UserSubscription{}
+	found := false
+	for k, sub := range m.subs {
+		if k.tenant != tenantID || sub.UserID != userID || sub.Status != StatusActive || sub.GrantedGroup == "" {
+			continue
+		}
+		if !found || sub.StartsAt.After(best.StartsAt) || (sub.StartsAt.Equal(best.StartsAt) && sub.ID > best.ID) {
+			best = sub
+			found = true
+		}
+	}
+	if !found {
+		return DefaultUserGroup
+	}
+	return best.GrantedGroup
+}
+
+func (m *memoryStore) findActiveByGroup(tenantID, userID int64, group string) (UserSubscription, bool) {
+	for k, sub := range m.subs {
+		if k.tenant == tenantID && sub.UserID == userID && sub.GrantedGroup == group && sub.Status == StatusActive {
+			return sub, true
+		}
+	}
+	return UserSubscription{}, false
+}
+
+func (m *memoryStore) appendAudit(subID int64, ev AuditEvent) {
+	m.auditSeq++
+	ev.ID = m.auditSeq
+	m.audits[subID] = append(m.audits[subID], ev)
+}
