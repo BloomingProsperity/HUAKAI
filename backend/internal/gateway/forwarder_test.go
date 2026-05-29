@@ -387,6 +387,120 @@ func TestAT_GW_002_11b_FirstTokenTimeout(t *testing.T) {
 	}
 }
 
+// TestForwarderEmitsKeepaliveDuringLongTTFT guards the CF/long-run fix: during a long
+// silent upstream wait (slow codex/o1 thinking before first token), the forwarder must
+// write periodic SSE keepalive comments to the client so a fronting Cloudflare/proxy does
+// not drop the idle connection (~100s 524) before the answer arrives.
+//
+// Mutation check: delete the keepaliveTimer select case in Forward and no ": hk" comment is
+// ever written → this assertion fails. The interval (20ms) is well under the first-token
+// timeout (200ms) so multiple keepalives fire during the wait.
+func TestForwarderEmitsKeepaliveDuringLongTTFT(t *testing.T) {
+	silent := newSlowReader(300 * time.Millisecond)
+	f := newForwarder()
+	f.Timeouts.KeepAliveInterval = 20 * time.Millisecond
+	f.Timeouts.FirstTokenTimeout = 200 * time.Millisecond
+	f.Timeouts.InterEventTimeout = 0
+	f.Timeouts.TotalStreamTimeout = 0
+	rec := httptest.NewRecorder()
+	_, err := f.Forward(context.Background(), silent, rec, anthropicForwardRequest(1, 100))
+	if !errors.Is(err, ErrFirstTokenTimeout) {
+		t.Fatalf("expected first-token timeout after silent upstream; got %v", err)
+	}
+	if !strings.Contains(rec.Body.String(), ": hk") {
+		t.Fatalf("expected SSE keepalive comments during long TTFT to keep the proxy connection alive; body=%q", rec.Body.String())
+	}
+	// codex #8 P1 fix: once a heartbeat has been written the response is committed (HTTP 200 +
+	// bytes on the wire), so deliveryTracker.started() flips true and the upstream caller can no
+	// longer turn the first-token timeout into a retryable failure / HTTP error status. To avoid
+	// handing the client a silent, comment-only 200 stream, Forward must emit an explicit in-band
+	// SSE error event on the terminating error. Mutation check: delete the keepaliveCommitted
+	// error-emit block in Forward and this assertion goes red (only ": hk" comments, no error).
+	if !strings.Contains(rec.Body.String(), "event: error") {
+		t.Fatalf("expected an explicit in-band SSE error event after keepalive-committed first-token timeout (not a silent comment-only 200); body=%q", rec.Body.String())
+	}
+}
+
+// TestForwarderKeepaliveDisabledWhenIntervalZero proves KeepAliveInterval=0 is OFF (no
+// stray keepalive frames injected when the operator disables it), so the feature is opt-out.
+func TestForwarderKeepaliveDisabledWhenIntervalZero(t *testing.T) {
+	silent := newSlowReader(200 * time.Millisecond)
+	f := newForwarder()
+	f.Timeouts.KeepAliveInterval = 0
+	f.Timeouts.FirstTokenTimeout = 100 * time.Millisecond
+	f.Timeouts.InterEventTimeout = 0
+	f.Timeouts.TotalStreamTimeout = 0
+	rec := httptest.NewRecorder()
+	_, _ = f.Forward(context.Background(), silent, rec, anthropicForwardRequest(1, 100))
+	if strings.Contains(rec.Body.String(), ": hk") {
+		t.Fatalf("keepalive must be OFF when interval=0; body=%q", rec.Body.String())
+	}
+}
+
+// TestForwarderInterEventTimeoutFiresAfterFirstEvent guards codex #8 P1: adding the keepalive
+// select case must NOT cannibalise the inter-event-timeout case. After the upstream delivers its
+// first event and then stalls (sparse/stuck stream), InterEventTimeout must still fire on its own
+// short deadline — the heartbeat keeps the connection warm but must not reset interTimer or mask
+// the stall.
+//
+// Mutation check: remove the `case <-timerC(interTimer)` branch in Forward (the regression codex
+// caught). interTimer is still armed after the event but nothing selects on it, so the stall runs
+// to the much longer TotalStreamTimeout instead → err becomes ErrTotalStreamTimeout and this test
+// goes red on both assertions. Discriminating fixture: InterEventTimeout (50ms) is 40× shorter
+// than TotalStreamTimeout (2s), so the two outcomes are unambiguous.
+func TestForwarderInterEventTimeoutFiresAfterFirstEvent(t *testing.T) {
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	pr, pw := io.Pipe()
+	go func() {
+		defer pw.Close()
+		_, _ = pw.Write(sseBytes(messageStart("m")))
+		<-stop // 首事件后上游卡死:不再产出、也不 EOF,直到测试结束
+	}()
+	f := newForwarder()
+	f.Timeouts.FirstTokenTimeout = 1 * time.Second
+	f.Timeouts.InterEventTimeout = 50 * time.Millisecond
+	f.Timeouts.TotalStreamTimeout = 2 * time.Second
+	f.Timeouts.KeepAliveInterval = 0
+	draft, err := f.Forward(context.Background(), pr, httptest.NewRecorder(), anthropicForwardRequest(1, 100))
+	if !errors.Is(err, ErrInterEventTimeout) {
+		t.Fatalf("inter-event timeout MUST fire when upstream stalls after the first event; got err=%v (end_class=%q)", err, draft.EndClass)
+	}
+	if draft.EndClass != InterEventTimeout {
+		t.Fatalf("expected end_class=inter_event_timeout; got %q", draft.EndClass)
+	}
+}
+
+// TestForwarderKeepaliveDoesNotResetInterEventTimeout proves the heartbeat is a pure liveness
+// signal: with keepalive ON and firing several times inside one inter-event gap, the stall is
+// still detected at InterEventTimeout — the heartbeat must NOT push the inter-event deadline out.
+//
+// Mutation check: add `stopTimer(interTimer); interTimer = newTimer(...)` to the keepalive case
+// (i.e. let the heartbeat reset the stall detector). Then the heartbeat (15ms) keeps re-arming the
+// 60ms inter-event timer forever and the stream runs to TotalStreamTimeout → red.
+func TestForwarderKeepaliveDoesNotResetInterEventTimeout(t *testing.T) {
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	pr, pw := io.Pipe()
+	go func() {
+		defer pw.Close()
+		_, _ = pw.Write(sseBytes(messageStart("m")))
+		<-stop
+	}()
+	f := newForwarder()
+	f.Timeouts.FirstTokenTimeout = 1 * time.Second
+	f.Timeouts.InterEventTimeout = 60 * time.Millisecond
+	f.Timeouts.TotalStreamTimeout = 2 * time.Second
+	f.Timeouts.KeepAliveInterval = 15 * time.Millisecond // 在一个 inter-event 间隙内会触发多次
+	draft, err := f.Forward(context.Background(), pr, httptest.NewRecorder(), anthropicForwardRequest(1, 100))
+	if !errors.Is(err, ErrInterEventTimeout) {
+		t.Fatalf("keepalive heartbeats must not reset the inter-event stall detector; got err=%v (end_class=%q)", err, draft.EndClass)
+	}
+	if draft.EndClass != InterEventTimeout {
+		t.Fatalf("expected end_class=inter_event_timeout despite active keepalive; got %q", draft.EndClass)
+	}
+}
+
 // AT-GW-002-12: 超大事件类型化终态 — RESPONSE_EVENT_TOO_LARGE，usage_source 非 reported。
 func TestAT_GW_002_12_OversizeTerminalNoCharge(t *testing.T) {
 	bigPayload := strings.Repeat("Y", 500)

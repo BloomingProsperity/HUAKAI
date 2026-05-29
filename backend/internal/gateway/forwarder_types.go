@@ -66,6 +66,10 @@ type TimeoutConfig struct {
 	ScannerReadTimeout  time.Duration `json:"scanner_read"`
 	HeaderToFirstByte   time.Duration `json:"header_to_first_byte"`
 	RequestTotalTimeout time.Duration `json:"request_total"`
+	// KeepAliveInterval 控制空闲时向客户端发送 SSE 注释心跳(": hk\n\n")的间隔,用于在长 TTFT /
+	// 稀疏 token 间隙保持连接活跃,避免 Cloudflare 等反代 ~100s 空闲超时断链(524)。0 = 关闭。
+	// 应显著小于反代空闲阈值(默认 15s)。心跳不影响 First/Inter/Total 这些"上游静默即放弃"的检测。
+	KeepAliveInterval time.Duration `json:"keep_alive_interval"`
 }
 
 // DrainBudgets 携带 F-GW-002 Phase C-bis drain 护栏参数。

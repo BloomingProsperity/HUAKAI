@@ -185,6 +185,9 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// 告诉 nginx/ingress 等反代不要缓冲此 SSE 响应,否则它会攒着我们的逐块输出与 keepalive 心跳,
+	// 反而把"连接活跃"信号挡掉,重新引入空闲超时问题。
+	w.Header().Set("X-Accel-Buffering", "no")
 	if ex.d.ResponseCache != nil {
 		w.Header().Set("X-HUAKAI-Cache-L2", "skip")
 	}

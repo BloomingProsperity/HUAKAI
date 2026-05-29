@@ -149,14 +149,23 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 	clientState := f.newClientState()
 	var terminalSeen bool
 	var firstEmitted bool
+	var keepaliveCommitted bool // 仅心跳已向客户端提交 200、尚无真实内容(用于错误收尾时补发显式 error 事件)
 	var endErr error
 
 	totalTimer := newTimer(f.Timeouts.TotalStreamTimeout)
 	firstTimer := newTimer(f.Timeouts.FirstTokenTimeout)
 	interTimer := newTimer(0)
-	defer stopTimer(totalTimer)
-	defer stopTimer(firstTimer)
-	defer stopTimer(interTimer)
+	keepaliveTimer := newTimer(f.Timeouts.KeepAliveInterval) // 0 = 关闭(永不触发)
+	// 用闭包在 return 时按变量"当前值"停表:interTimer / keepaliveTimer 会在循环里被 newTimer 重新赋值,
+	// 若用 `defer stopTimer(interTimer)` 形式会捕获最初的 timer 值,导致重新赋值后的活动 timer 在返回后
+	// 仍存活到下次触发——高频短流会累积一个 keepalive 间隔的悬挂 timer(codex #9 P2)。闭包按引用捕获变量,
+	// 停的是返回时刻真正在跑的那个 timer。
+	defer func() {
+		stopTimer(totalTimer)
+		stopTimer(firstTimer)
+		stopTimer(interTimer)
+		stopTimer(keepaliveTimer)
+	}()
 
 	for {
 		select {
@@ -167,7 +176,26 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 		case <-timerC(firstTimer):
 			draft.EndClass, endErr = FirstTokenTimeout, ErrFirstTokenTimeout
 		case <-timerC(interTimer):
+			// 上游在交付首事件后静默过久(稀疏/卡死)→ inter-event 超时放弃。心跳 case(见下)不重置
+			// interTimer,因此保活心跳不会掩盖真正的上游停滞:心跳只维持连接,interTimer 照常计到点。
 			draft.EndClass, endErr = InterEventTimeout, ErrInterEventTimeout
+		case <-timerC(keepaliveTimer):
+			// CF/长跑保活:长 TTFT 或稀疏 token 间隙时向客户端发 SSE 注释行心跳,避开 Cloudflare 等
+			// 反代 ~100s 空闲超时断链。心跳是独立于 First/Inter/Total 的保活,不重置那些"上游静默即放弃"
+			// 检测器(见上 interTimer case)。写失败 = 客户端/反代已断 → 按 ClientDisconnect 收尾。
+			if err := writeAndFlush(clientWriter, sseKeepaliveComment); err != nil {
+				draft.EndClass, endErr = ClientDisconnect, err
+			} else {
+				// 心跳一旦写出即向客户端提交了 HTTP 200 响应头+字节:此后无法再改 HTTP 状态码或换上游重试。
+				// 记录"仅心跳已提交、尚无真实内容",以便首字节/inter/total 超时收尾时补发一个显式 SSE
+				// error 事件,而非静默关闭一个只含 ": hk" 注释的空 200 流(codex #8 P1)。
+				if !firstEmitted {
+					keepaliveCommitted = true
+				}
+				stopTimer(keepaliveTimer)
+				keepaliveTimer = newTimer(f.Timeouts.KeepAliveInterval)
+				continue
+			}
 		case res, ok := <-events:
 			if !ok {
 				if terminalSeen {
@@ -205,6 +233,8 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 				}
 				stopTimer(interTimer)
 				interTimer = newTimer(f.Timeouts.InterEventTimeout)
+				stopTimer(keepaliveTimer)
+				keepaliveTimer = newTimer(f.Timeouts.KeepAliveInterval) // 真事件来 → 重置心跳,只在空闲间隙发
 				// 将解析好的 adapter 传入 handleEvent，避免重复 registry 查询
 				seen, wrote, delivered, err := f.handleEventWithAdapter(upstreamCtx, adapter, res.event, clientWriter, upstreamState, clientState, &acc, req)
 				terminalSeen = terminalSeen || seen
@@ -226,6 +256,13 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 					draft.EndClass, endErr = UnknownTermination, err
 				}
 			}
+		}
+		// 若此前仅用心跳向客户端提交了 200(尚无任何真实内容),而流以错误收尾:deliveryStarted 已为真,
+		// 上层"未交付→可重试/写 HTTP 错误状态"路径不再可走,必须在流内补发一个显式 error 事件,
+		// 否则客户端只收到 ": hk" 注释后被静默关闭、无从判断成败(codex #8 P1)。仅针对"心跳已提交且
+		// 零真实交付"这一新引入情形;"已交付内容后再超时/断连"等既有路径行为不变。
+		if endErr != nil && keepaliveCommitted && !firstEmitted && draft.EndClass != ClientDisconnect {
+			_ = writeAndFlush(clientWriter, canonicalStreamErrorSSE())
 		}
 		return finish(draft, acc, endErr)
 	}
@@ -683,6 +720,10 @@ data: {"error":{"code":"` + streamProtocolErrorCode + `","message":"` + streamPr
 
 `)
 }
+
+// sseKeepaliveComment 是发给客户端的 SSE 注释行心跳。行首 ':' 的行是 SSE 注释,合规客户端会
+// 忽略其内容,但这次写入会让反代/客户端看到连接仍活跃,从而避开 ~100s 空闲超时断链。
+var sseKeepaliveComment = []byte(": hk\n\n")
 
 func writeAndFlush(w http.ResponseWriter, b []byte) error {
 	if _, err := w.Write(b); err != nil {

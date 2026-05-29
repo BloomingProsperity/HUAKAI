@@ -6,6 +6,8 @@ import (
 	"expvar"
 	"fmt"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -90,15 +92,29 @@ func notImplemented(label string) http.HandlerFunc {
 	}
 }
 
+// streamDurationEnv 读取 time.ParseDuration 格式(如 "120s"、"10m")的流超时配置;空或非法回退默认。
+// 允许运维按需调整,避免把长跑推理/agentic 请求写死掐断。
+func streamDurationEnv(name string, fallback time.Duration) time.Duration {
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			return d
+		}
+	}
+	return fallback
+}
+
 func buildStreamForwarder(auditLedger auditledger.Ledger, auditSigner *sign.Signer, auditLedgerDLQ auditledger.DLQEnqueuer) *gateway.StreamForwarder {
 	return &gateway.StreamForwarder{
 		ProtocolAdapters: gateway.BuildDefaultProtocolAdapterRegistry(),
 		Scanners:         gateway.BuildDefaultStreamScannerRegistry(),
+		// 流超时改为 env 可配 + 调大默认,适配长跑(codex/o1/agentic):旧硬编码 First=5s/Inter=10s/
+		// Total=60s 会在上游还在思考时就被 HUAKAI 自己掐断。配合 KeepAlive 心跳避开反代空闲超时。
 		Timeouts: gateway.TimeoutConfig{
-			FirstTokenTimeout:  5 * time.Second,
-			InterEventTimeout:  10 * time.Second,
-			TotalStreamTimeout: 60 * time.Second,
-			DrainMaxSeconds:    1 * time.Second,
+			FirstTokenTimeout:  streamDurationEnv("HUAKAI_STREAM_FIRST_TOKEN_TIMEOUT", 120*time.Second),
+			InterEventTimeout:  streamDurationEnv("HUAKAI_STREAM_INTER_EVENT_TIMEOUT", 60*time.Second),
+			TotalStreamTimeout: streamDurationEnv("HUAKAI_STREAM_TOTAL_TIMEOUT", 600*time.Second),
+			DrainMaxSeconds:    streamDurationEnv("HUAKAI_STREAM_DRAIN_MAX", 15*time.Second),
+			KeepAliveInterval:  streamDurationEnv("HUAKAI_STREAM_KEEPALIVE_INTERVAL", 15*time.Second),
 		},
 		ScannerBufferCap: 1 << 20,
 		AuditLedger:      auditLedger,
