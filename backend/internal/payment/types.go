@@ -60,6 +60,8 @@ type Order struct {
 	ConfirmReason      string
 	FailureCode        string
 	FailureMessage     string
+	OrderKind          string // OrderKindTopup / OrderKindSubscription
+	SubscriptionPlanID *int64 // 订阅单指向套餐; 充值单为 nil
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 	ExpiresAt          *time.Time
@@ -67,6 +69,21 @@ type Order struct {
 	RechargingAt       *time.Time
 	CompletedAt        *time.Time
 	FailedAt           *time.Time
+}
+
+// 订单种类 (与 payment_orders.order_kind CHECK 对齐, 0075 加)。
+const (
+	OrderKindTopup        = "topup"        // 充值: 入余额 (写 payment_credits + billing_events)
+	OrderKindSubscription = "subscription" // 购订阅: 激活订阅 (零 billing_events, 走效果账本)
+)
+
+// SubscriptionGrant 订阅单完成后的订阅授予摘要 (从订阅激活结果回传; 充值单为 nil)。
+type SubscriptionGrant struct {
+	UserSubscriptionID  int64     `json:"user_subscription_id"`
+	PlanID              int64     `json:"plan_id"`
+	ResultKind          string    `json:"result_kind"` // created / renewed
+	NewExpiresAt        time.Time `json:"new_expires_at"`
+	AppliedValidityDays int       `json:"applied_validity_days"`
 }
 
 // CreditRecord 一次已入账事实, 一张订单最多一条。
@@ -93,6 +110,9 @@ type CreateOrderInput struct {
 	ActorAdminID int64
 	RequestID    string
 	ExpiresIn    time.Duration // 0 = 默认 TTL
+	// OrderKind 缺省 topup; subscription 时 SubscriptionPlanID 必填。
+	OrderKind          string
+	SubscriptionPlanID *int64
 }
 
 // CreateOrderResult 建单结果。Idempotent=true 表示同 out_trade_no 重放命中已有单。
@@ -125,6 +145,8 @@ type FulfillResult struct {
 	Credit       CreditRecord
 	BalanceCents int64
 	Idempotent   bool
+	// Subscription: 订阅单的授予结果; 充值单为 nil。零 billing_events, 不计入 BalanceCents。
+	Subscription *SubscriptionGrant
 }
 
 // Balance 用户支付来源余额 (来自 payment_credits 派生 SUM)。
@@ -141,11 +163,13 @@ var (
 	ErrInvalidInput        = errors.New("payment: invalid input")
 	ErrOrderNotConfirmable = errors.New("payment: order not in a confirmable state")
 	ErrOrderNotFulfillable = errors.New("payment: order not in a fulfillable state")
-	ErrIdempotencyConflict = errors.New("payment: out_trade_no reused with different order fields")
-	ErrProviderUnknown     = errors.New("payment: unknown provider kind")
-	ErrUnsupportedCurrency = errors.New("payment: unsupported currency (P1 ledger is USD-only)")
+	// ErrSubscriptionOrderRequiresPG: 订阅单履约依赖真订阅/配额表, 内存 store 不镜像 (P3b-4 计划 §5 D3); 真路径 PG-only。
+	ErrSubscriptionOrderRequiresPG = errors.New("payment: subscription order fulfillment requires postgres store")
+	ErrIdempotencyConflict         = errors.New("payment: out_trade_no reused with different order fields")
+	ErrProviderUnknown             = errors.New("payment: unknown provider kind")
+	ErrUnsupportedCurrency         = errors.New("payment: unsupported currency (P1 ledger is USD-only)")
 	// P2a 自动回调路径错误。
-	ErrProviderNoCallback = errors.New("payment: provider does not support callbacks")            // provider 存在但非 CallbackVerifier (如 manual)
-	ErrCallbackUnverified = errors.New("payment: callback signature verification failed")          // 验签失败 → 零入账
-	ErrCallbackRejected   = errors.New("payment: callback rejected by business validation")        // 验签通过但金额/币种/渠道不符 → 零入账
+	ErrProviderNoCallback = errors.New("payment: provider does not support callbacks")      // provider 存在但非 CallbackVerifier (如 manual)
+	ErrCallbackUnverified = errors.New("payment: callback signature verification failed")   // 验签失败 → 零入账
+	ErrCallbackRejected   = errors.New("payment: callback rejected by business validation") // 验签通过但金额/币种/渠道不符 → 零入账
 )
