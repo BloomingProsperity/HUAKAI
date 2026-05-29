@@ -32,6 +32,26 @@ type Pubkey struct {
 	CreatedAt     time.Time
 }
 
+// SignatureOutsideKeyWindow 报告签名时刻 ts 是否落在 key 的有效窗口
+// [EffectiveFrom, EffectiveTo] 之外。nil key 视为窗口外。导出供 receipt 验证路径
+// (trusthttp / cost_receipt)与 audit-ledger 验证路径共用同一窗口策略(S1-032),
+// 避免 receipt 侧只验密码学有效性、忽略 key 轮换/未来生效窗口。
+// 注:ts 为零值时调用方应自行决定是否豁免(无法确定签名时刻);本函数对零值
+// ts 在 EffectiveFrom 非零时会判为窗口外。
+func SignatureOutsideKeyWindow(ts time.Time, key *Pubkey) bool {
+	if key == nil {
+		return true
+	}
+	ts = ts.UTC()
+	if !key.EffectiveFrom.IsZero() && ts.Before(key.EffectiveFrom.UTC()) {
+		return true
+	}
+	if key.EffectiveTo != nil && ts.After(key.EffectiveTo.UTC()) {
+		return true
+	}
+	return false
+}
+
 type PubkeyRegistry interface {
 	GetByFingerprint(fingerprint []byte) (*Pubkey, error)
 	ListAll() []*Pubkey
