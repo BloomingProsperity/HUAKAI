@@ -3,11 +3,14 @@ package email
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/textproto"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	obsdlq "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 )
 
@@ -168,6 +171,105 @@ func TestAT_EMAIL_010_PasswordResetEmailCooldown(t *testing.T) {
 	}
 	if sends != 2 {
 		t.Fatalf("reset sends after cooldown = %d, want 2", sends)
+	}
+}
+
+// TestAuthSender_CooldownRolledBackOnHardFailure guards S2-079: a first send that fails hard
+// (dispatch error, no outbox to queue a retry) must NOT consume the cooldown, so an immediate
+// second request actually attempts delivery again instead of being silently suppressed with a
+// misleading nil result.
+//
+// Mutation check: revert reserveCooldown to the old consume-without-rollback markAllowed; the
+// second send is then suppressed inside the cooldown window → dispatch attempts stays 1 and the
+// second call returns nil → both assertions go red. Discriminating: same instant for both sends,
+// so only rollback can let the second one through.
+func TestAuthSender_CooldownRolledBackOnHardFailure(t *testing.T) {
+	keys := testEmailKeys(t)
+	now := time.Date(2026, 5, 17, 10, 0, 0, 0, time.UTC)
+	store := &fakeSettingsStore{settings: map[int64]StoredSettings{1: completeRawSettings(t, keys, 1)}}
+	attempts := 0
+	// 无 WithOutbox → 任何 dispatch 失败都从 sendForTenant 直接返回 err(硬失败,未入队重试)。
+	sender, err := BuildEmailSender(context.Background(), store, keys,
+		WithClock(func() time.Time { return now }),
+		WithSMTPDispatch(func(context.Context, SMTPSettings, Message) error {
+			attempts++
+			return errors.New("smtp data: dial tcp: connection refused")
+		}),
+	)
+	if err != nil {
+		t.Fatalf("BuildEmailSender: %v", err)
+	}
+	user := userauth.User{TenantID: 1, Email: "u@example.test"}
+	if err := sender.SendVerification(context.Background(), user, "one"); err == nil {
+		t.Fatal("first send must surface the hard dispatch failure")
+	}
+	if err := sender.SendVerification(context.Background(), user, "two"); err == nil {
+		t.Fatal("second send within cooldown must also attempt delivery (and surface failure), not be suppressed")
+	}
+	if attempts != 2 {
+		t.Fatalf("dispatch attempts = %d, want 2 (cooldown must be rolled back after a hard failure)", attempts)
+	}
+}
+
+// TestAuthSender_CooldownHeldWhenQueuedForRetry guards the other half of S2-079: when the first
+// send fails transiently but is durably enqueued to the DLQ outbox, the cooldown MUST be held so a
+// second immediate request is suppressed (no double-queue / double-send while a retry is pending).
+//
+// Mutation check: let rollback fire on the queued (nil-return) path too; the second send then
+// dispatches and enqueues again → attempts 2 / outbox rows 2 → red.
+func TestAuthSender_CooldownHeldWhenQueuedForRetry(t *testing.T) {
+	keys := testEmailKeys(t)
+	now := time.Date(2026, 5, 17, 10, 0, 0, 0, time.UTC)
+	store := &fakeSettingsStore{settings: map[int64]StoredSettings{1: completeRawSettings(t, keys, 1)}}
+	outbox := obsdlq.NewMemoryOutbox()
+	attempts := 0
+	sender, err := BuildEmailSender(context.Background(), store, keys,
+		WithClock(func() time.Time { return now }),
+		WithOutbox(outbox),
+		WithSMTPDispatch(func(context.Context, SMTPSettings, Message) error {
+			attempts++
+			return errors.New("smtp data: temporary network blip") // 临时失败 → 入队重试
+		}),
+	)
+	if err != nil {
+		t.Fatalf("BuildEmailSender: %v", err)
+	}
+	user := userauth.User{TenantID: 1, Email: "u@example.test"}
+	if err := sender.SendVerification(context.Background(), user, "one"); err != nil {
+		t.Fatalf("transient failure must be queued (nil error), got %v", err)
+	}
+	if err := sender.SendVerification(context.Background(), user, "two"); err != nil {
+		t.Fatalf("second send within cooldown should be suppressed (nil), got %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("dispatch attempts = %d, want 1 (cooldown held after a queued retry)", attempts)
+	}
+	if rows := outbox.Snapshot(); len(rows) != 1 {
+		t.Fatalf("outbox rows = %d, want exactly 1 queued retry (no double-queue)", len(rows))
+	}
+}
+
+// TestIsPermanentEmailFailure_SMTPCodeSemantics guards the S2-079 classifier fix: SMTP 4xx is a
+// TRANSIENT reply (must retry via DLQ), 5xx is PERMANENT (must not retry). The old rule matched the
+// substring " 4" and wrongly treated transient 4xx as permanent, so those skipped the retry outbox.
+//
+// Mutation check: widen the permanent code test to `tperr.Code >= 400` (the old backwards
+// semantics) and the 4xx case flips to permanent → red. Discriminating fixtures: identical wrapper
+// shape, only the reply-code digit differs.
+func TestIsPermanentEmailFailure_SMTPCodeSemantics(t *testing.T) {
+	transient := fmt.Errorf("smtp rcpt: %w", &textproto.Error{Code: 451, Msg: "4.7.1 try again later"})
+	if isPermanentEmailFailure(transient) {
+		t.Fatal("SMTP 4xx must be transient (retryable), not permanent")
+	}
+	permanent := fmt.Errorf("smtp rcpt: %w", &textproto.Error{Code: 550, Msg: "5.1.1 mailbox unavailable"})
+	if !isPermanentEmailFailure(permanent) {
+		t.Fatal("SMTP 5xx must be permanent (no retry)")
+	}
+	if !isPermanentEmailFailure(Permanent(errors.New("explicitly permanent"))) {
+		t.Fatal("explicit PermanentFailure must stay permanent")
+	}
+	if isPermanentEmailFailure(errors.New("dial tcp: connection refused")) {
+		t.Fatal("non-SMTP network errors must be transient (retryable)")
 	}
 }
 

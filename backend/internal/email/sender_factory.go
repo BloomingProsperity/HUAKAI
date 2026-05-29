@@ -77,15 +77,23 @@ func (s *AuthSender) SendVerification(ctx context.Context, user userauth.User, t
 	if strings.TrimSpace(token) == "" {
 		return nil
 	}
-	if !s.markAllowed("verify", user.TenantID, user.Email, s.verificationCooldown) {
+	allowed, rollback := s.reserveCooldown("verify", user.TenantID, user.Email, s.verificationCooldown)
+	if !allowed {
 		return nil
 	}
-	return s.sendForTenant(ctx, user.TenantID, Message{
+	err := s.sendForTenant(ctx, user.TenantID, Message{
 		TenantID: user.TenantID,
 		To:       user.Email,
 		Subject:  "HUAKAI email verification",
 		HTMLBody: buildVerificationBody(token),
 	})
+	if err != nil {
+		// 硬失败(永久失败 / 无 outbox / enqueue 失败)= 既没发出也没入队重试 → 回滚 cooldown,
+		// 否则用户首发失败后,冷却窗口内的合法重发会被静默吞掉、返回 nil 却没发任何邮件(S2-079)。
+		// 发送成功或已入 DLQ 重试时 sendForTenant 返回 nil,保留 cooldown,不重复发。
+		rollback()
+	}
+	return err
 }
 
 func (s *AuthSender) SendPasswordReset(ctx context.Context, user userauth.User, token string) error {
@@ -95,15 +103,21 @@ func (s *AuthSender) SendPasswordReset(ctx context.Context, user userauth.User, 
 	if strings.TrimSpace(token) == "" {
 		return nil
 	}
-	if !s.markAllowed("reset", user.TenantID, user.Email, s.resetCooldown) {
+	allowed, rollback := s.reserveCooldown("reset", user.TenantID, user.Email, s.resetCooldown)
+	if !allowed {
 		return nil
 	}
-	return s.sendForTenant(ctx, user.TenantID, Message{
+	err := s.sendForTenant(ctx, user.TenantID, Message{
 		TenantID: user.TenantID,
 		To:       user.Email,
 		Subject:  "HUAKAI password reset",
 		HTMLBody: buildPasswordResetBody(token),
 	})
+	if err != nil {
+		// 见 SendVerification:硬失败回滚 cooldown,避免冷却窗口吞掉合法重发(S2-079)。
+		rollback()
+	}
+	return err
 }
 
 func (s *AuthSender) EmailVerificationEnabled(ctx context.Context, tenantID int64) (bool, error) {
@@ -138,20 +152,38 @@ func (s *AuthSender) sendForTenant(ctx context.Context, tenantID int64, msg Mess
 	return nil
 }
 
-func (s *AuthSender) markAllowed(kind string, tenantID int64, email string, cooldown time.Duration) bool {
+// reserveCooldown 原子地检查并占用冷却窗口。返回 (allowed, rollback):
+//   - allowed=false:仍在冷却期,应抑制本次发送(rollback 为 no-op)。
+//   - allowed=true:已占用窗口;调用方在发送"硬失败"(既未发出也未入队重试)时调用 rollback
+//     释放窗口,使下一次请求能真正发送,避免冷却窗口把首发失败后的合法重发静默吞掉(S2-079)。
+//
+// cooldown<=0 视为禁用冷却(始终 allowed,rollback 为 no-op)。
+func (s *AuthSender) reserveCooldown(kind string, tenantID int64, email string, cooldown time.Duration) (bool, func()) {
+	noop := func() {}
 	if cooldown <= 0 {
-		return true
+		return true, noop
 	}
 	key := fmt.Sprintf("%s:%d:%s", kind, tenantID, strings.ToLower(strings.TrimSpace(email)))
 	now := s.now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	last, ok := s.lastSent[key]
-	if ok && now.Sub(last) < cooldown {
-		return false
+	prev, had := s.lastSent[key]
+	if had && now.Sub(prev) < cooldown {
+		return false, noop
 	}
 	s.lastSent[key] = now
-	return true
+	return true, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		// 仅当当前标记仍是本次占用写入的值时才回滚,避免覆盖期间另一次成功发送写入的更新值。
+		if cur, ok := s.lastSent[key]; ok && cur.Equal(now) {
+			if had {
+				s.lastSent[key] = prev
+			} else {
+				delete(s.lastSent, key)
+			}
+		}
+	}
 }
 
 func LoadSMTPSettings(ctx context.Context, store SettingsStore, keys SecretKeyProvider, tenantID int64) (SMTPSettings, error) {
