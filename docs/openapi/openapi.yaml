@@ -1543,6 +1543,204 @@ paths:
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   # ==========================================================================
+  # Payments / Recharge (Slice P1) — 内部支付机器, 真实渠道 SDK 留 Owner-gated 后续
+  # ==========================================================================
+
+  /v1/users/me/payments/orders:
+    get:
+      tags: [user-payments]
+      summary: List the authenticated User's payment orders
+      operationId: listMyPaymentOrders
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p1-synthesis.md]
+      security:
+        - sessionBearerAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Caller's payment orders (newest first).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orders: { type: array, items: { type: object } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/users/me/payments/balance:
+    get:
+      tags: [user-payments]
+      summary: Authenticated User's payment-source balance (derived SUM)
+      operationId: getMyPaymentBalance
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p1-synthesis.md]
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: Derived balance from payment credits.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  balance:
+                    type: object
+                    properties:
+                      tenant_id: { type: integer, format: int64 }
+                      user_id: { type: integer, format: int64 }
+                      amount_cents: { type: integer, format: int64 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/payments:
+    get:
+      tags: [admin-payments]
+      summary: List a tenant user's payment orders
+      operationId: adminListPaymentOrders
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p1-synthesis.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: user_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Tenant user's payment orders.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orders: { type: array, items: { type: object } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-payments]
+      summary: Create a pending payment order (idempotent by out_trade_no)
+      operationId: adminCreatePaymentOrder
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p1-synthesis.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, user_id, amount_cents, out_trade_no]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                user_id: { type: integer, format: int64, minimum: 1 }
+                amount_cents: { type: integer, format: int64, minimum: 1, maximum: 100000000000 }
+                currency_code: { type: string, enum: [USD], default: USD }
+                out_trade_no: { type: string, description: Caller-stable idempotency key; required so retries collapse instead of creating duplicate orders. }
+                provider_kind: { type: string, enum: [manual, test] }
+      responses:
+        '201':
+          description: Payment order created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order: { type: object }
+                  idempotent: { type: boolean }
+        '200':
+          description: Idempotent replay — existing order returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order: { type: object }
+                  idempotent: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/payments/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    get:
+      tags: [admin-payments]
+      summary: Get a payment order with its operation audit trail
+      operationId: adminGetPaymentOrder
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p1-synthesis.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Payment order plus audit events.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order: { type: object }
+                  audit_events: { type: array, items: { type: object } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/payments/{id}/confirm:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-payments]
+      summary: Manually confirm payment and fulfill (credit) the order
+      operationId: adminConfirmPaymentOrder
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p1-synthesis.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                confirm_reason: { type: string }
+      responses:
+        '200':
+          description: Order confirmed and credited (idempotent on replay).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order: { type: object }
+                  credit: { type: object }
+                  balance_cents: { type: integer, format: int64 }
+                  idempotent: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  # ==========================================================================
   # Admin: API Keys (Slice 2 N+4b2)
   # ==========================================================================
 

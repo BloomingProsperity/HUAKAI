@@ -36,6 +36,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
+	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	providercopilot "github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
@@ -82,6 +83,7 @@ type deps struct {
 	userSessions             *usersession.Service
 	userKeyService           *userkey.Service
 	voucherService           *voucher.Service
+	paymentService           *payment.Service
 	invitationService        *communityinvitation.Service
 	dispatcher               *gateway.UpstreamDispatcher
 	responseCache            l2cache.Store
@@ -399,6 +401,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		userSessions:          userSessionService,
 		userKeyService:        userkey.NewService(pgPool, nil),
 		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool)),
+		paymentService:        payment.NewService(payment.NewPostgresStore(pgPool)),
 		invitationService:     communityinvitation.NewService(communityinvitation.NewPostgresStore(pgPool)),
 		responseCache:         opts.responseCache,
 		dlqService:            dlqService,
