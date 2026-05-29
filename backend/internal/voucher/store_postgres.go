@@ -11,6 +11,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
 )
 
 type PostgresStore struct {
@@ -38,7 +40,8 @@ INSERT INTO voucher (
 )
 RETURNING id, tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, currency_code,
 	valid_from, valid_until, max_redemptions, redeemed_count, single_use_per_user, status,
-	eligible_user_id, created_by_admin_id, revoked_by_admin_id, revoked_reason, created_at, updated_at, revoked_at`,
+	eligible_user_id, created_by_admin_id, revoked_by_admin_id, revoked_reason, created_at, updated_at, revoked_at,
+	grant_kind, subscription_plan_id`,
 		rec.TenantID, rec.BatchID, rec.CodeHash, rec.CodeFingerprint, rec.AmountCents, rec.CurrencyCode,
 		rec.ValidFrom, rec.ValidUntil, rec.MaxRedemptions, rec.SingleUsePerUser, nullableAdminID(rec.AdminID),
 		rec.Now, rec.Now, rec.EligibleUserID)
@@ -106,7 +109,8 @@ func (s *PostgresStore) ListVouchers(ctx context.Context, input ListInput) ([]Vo
 	rows, err := s.pool.Query(ctx, `
 SELECT id, tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, currency_code,
 	valid_from, valid_until, max_redemptions, redeemed_count, single_use_per_user, status,
-	eligible_user_id, created_by_admin_id, revoked_by_admin_id, revoked_reason, created_at, updated_at, revoked_at
+	eligible_user_id, created_by_admin_id, revoked_by_admin_id, revoked_reason, created_at, updated_at, revoked_at,
+	grant_kind, subscription_plan_id
 FROM voucher
 WHERE tenant_id=$1
 ORDER BY id DESC
@@ -169,7 +173,8 @@ SET status='revoked', revoked_by_admin_id=$3, revoked_reason=$4, revoked_at=$5, 
 WHERE tenant_id=$1 AND id=$2
 RETURNING id, tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, currency_code,
 	valid_from, valid_until, max_redemptions, redeemed_count, single_use_per_user, status,
-	eligible_user_id, created_by_admin_id, revoked_by_admin_id, revoked_reason, created_at, updated_at, revoked_at`,
+	eligible_user_id, created_by_admin_id, revoked_by_admin_id, revoked_reason, created_at, updated_at, revoked_at,
+	grant_kind, subscription_plan_id`,
 		input.TenantID, input.ID, nullableAdminID(input.AdminID), input.Reason, input.Now)
 	v, err := scanVoucher(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -258,6 +263,24 @@ WHERE tenant_id=$1 AND id=$2`, v.TenantID, v.ID, rec.Now); err != nil {
 	}
 	v.Status = nextStatus
 	v.UpdatedAt = rec.Now
+
+	if v.GrantKind == GrantKindSubscription {
+		// 订阅券: 同事务激活订阅 (自助 only-up 语义) + 写效果账本; 零 billing_events / 零余额。
+		grant, err := s.fulfillSubscriptionRedemption(ctx, tx, v, red, rec)
+		if err != nil {
+			return RedeemResult{}, err
+		}
+		balance, err := redemptionBalance(ctx, tx, rec.TenantID, rec.UserID)
+		if err != nil {
+			return RedeemResult{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return RedeemResult{}, fmt.Errorf("voucher: commit subscription redeem: %w", err)
+		}
+		return RedeemResult{Voucher: v, Redemption: red, BalanceCents: balance, Subscription: grant}, nil
+	}
+
+	// 余额券 (默认): 入余额, 同事务写 billing_events 'voucher_redeemed'。
 	amount := decimal.NewFromInt(v.AmountCents).Div(decimal.NewFromInt(100))
 	var billingID int64
 	if err := tx.QueryRow(ctx, `
@@ -280,6 +303,33 @@ RETURNING id`, rec.TenantID, amount, v.CodeFingerprint, red.ID).Scan(&billingID)
 		return RedeemResult{}, fmt.Errorf("voucher: commit redeem: %w", err)
 	}
 	return RedeemResult{Voucher: v, Redemption: red, BalanceCents: balance}, nil
+}
+
+// fulfillSubscriptionRedemption 订阅券分支: 在兑换事务内激活订阅 + 写效果账本, 回传授予摘要。
+// 不写 billing_events, 不动余额; subscription.ErrDowngradeNotAllowed 等错误向上传播 → 整事务回滚 → 券未消耗。
+func (s *PostgresStore) fulfillSubscriptionRedemption(ctx context.Context, tx pgx.Tx, v Voucher, red Redemption, rec redeemRecord) (*SubscriptionGrant, error) {
+	if v.SubscriptionPlanID == nil {
+		// DB CHECK (voucher_subscription_kind_check) 已保证非空, 防御性二道闸。
+		return nil, ErrInvalidInput
+	}
+	res, err := subscription.FulfillVoucherTx(ctx, tx, subscription.FulfillVoucherInput{
+		TenantID:            rec.TenantID,
+		UserID:              rec.UserID,
+		PlanID:              *v.SubscriptionPlanID,
+		VoucherRedemptionID: red.ID,
+		RequestID:           rec.RequestID,
+		Now:                 rec.Now,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &SubscriptionGrant{
+		UserSubscriptionID:  res.Subscription.ID,
+		PlanID:              res.PlanID,
+		ResultKind:          res.ResultKind,
+		NewExpiresAt:        res.NewExpiresAt,
+		AppliedValidityDays: res.AppliedValidityDays,
+	}, nil
 }
 
 func (s *PostgresStore) BillingEvents(ctx context.Context, tenantID, userID int64) ([]BillingEvent, error) {
@@ -338,7 +388,16 @@ FOR UPDATE`, rec.TenantID, rec.UserID, rec.IdempotencyKey).Scan(
 	if err != nil {
 		return RedeemResult{}, false, err
 	}
-	return RedeemResult{Voucher: v, Redemption: red, BalanceCents: balance, Idempotent: true}, true, nil
+	result := RedeemResult{Voucher: v, Redemption: red, BalanceCents: balance, Idempotent: true}
+	if v.GrantKind == GrantKindSubscription {
+		// 订阅券重放: 回放已有效果账本 (FulfillVoucherTx 命中 voucher_redemption_id 即返回, 不重复激活)。
+		grant, err := s.fulfillSubscriptionRedemption(ctx, tx, v, red, rec)
+		if err != nil {
+			return RedeemResult{}, false, err
+		}
+		result.Subscription = grant
+	}
+	return result, true, nil
 }
 
 func insertVoucherTx(ctx context.Context, tx pgx.Tx, rec createVoucherRecord) (Voucher, error) {
@@ -355,7 +414,8 @@ INSERT INTO voucher (
 )
 RETURNING id, tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, currency_code,
 	valid_from, valid_until, max_redemptions, redeemed_count, single_use_per_user, status,
-	eligible_user_id, created_by_admin_id, revoked_by_admin_id, revoked_reason, created_at, updated_at, revoked_at`,
+	eligible_user_id, created_by_admin_id, revoked_by_admin_id, revoked_reason, created_at, updated_at, revoked_at,
+	grant_kind, subscription_plan_id`,
 		rec.TenantID, rec.BatchID, rec.CodeHash, rec.CodeFingerprint, rec.AmountCents, rec.CurrencyCode,
 		rec.ValidFrom, rec.ValidUntil, rec.MaxRedemptions, rec.SingleUsePerUser, nullableAdminID(rec.AdminID),
 		rec.Now, rec.Now, rec.EligibleUserID)
@@ -370,7 +430,8 @@ func getVoucherByCodeHashForUpdate(ctx context.Context, tx pgx.Tx, tenantID int6
 	return scanVoucher(tx.QueryRow(ctx, `
 SELECT id, tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, currency_code,
 	valid_from, valid_until, max_redemptions, redeemed_count, single_use_per_user, status,
-	eligible_user_id, created_by_admin_id, revoked_by_admin_id, revoked_reason, created_at, updated_at, revoked_at
+	eligible_user_id, created_by_admin_id, revoked_by_admin_id, revoked_reason, created_at, updated_at, revoked_at,
+	grant_kind, subscription_plan_id
 FROM voucher
 WHERE tenant_id=$1 AND code_hash=$2
 FOR UPDATE`, tenantID, hash))
@@ -380,7 +441,8 @@ func getVoucherByID(ctx context.Context, tx pgx.Tx, tenantID, id int64) (Voucher
 	return scanVoucher(tx.QueryRow(ctx, `
 SELECT id, tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, currency_code,
 	valid_from, valid_until, max_redemptions, redeemed_count, single_use_per_user, status,
-	eligible_user_id, created_by_admin_id, revoked_by_admin_id, revoked_reason, created_at, updated_at, revoked_at
+	eligible_user_id, created_by_admin_id, revoked_by_admin_id, revoked_reason, created_at, updated_at, revoked_at,
+	grant_kind, subscription_plan_id
 FROM voucher
 WHERE tenant_id=$1 AND id=$2`, tenantID, id))
 }
@@ -391,15 +453,21 @@ type voucherScanner interface {
 
 func scanVoucher(row voucherScanner) (Voucher, error) {
 	var v Voucher
-	var batchID, eligibleUserID, createdBy, revokedBy sql.NullInt64
+	var batchID, eligibleUserID, createdBy, revokedBy, subPlanID sql.NullInt64
+	var revokedReason sql.NullString
 	var revokedAt sql.NullTime
 	if err := row.Scan(
 		&v.ID, &v.TenantID, &batchID, &v.CodeHash, &v.CodeFingerprint,
 		&v.AmountCents, &v.CurrencyCode, &v.ValidFrom, &v.ValidUntil,
 		&v.MaxRedemptions, &v.RedeemedCount, &v.SingleUsePerUser, &v.Status,
-		&eligibleUserID, &createdBy, &revokedBy, &v.RevokedReason, &v.CreatedAt, &v.UpdatedAt, &revokedAt,
+		&eligibleUserID, &createdBy, &revokedBy, &revokedReason, &v.CreatedAt, &v.UpdatedAt, &revokedAt,
+		&v.GrantKind, &subPlanID,
 	); err != nil {
 		return Voucher{}, err
+	}
+	v.RevokedReason = revokedReason.String
+	if subPlanID.Valid {
+		v.SubscriptionPlanID = &subPlanID.Int64
 	}
 	if batchID.Valid {
 		v.BatchID = &batchID.Int64
@@ -425,12 +493,15 @@ func scanVoucher(row voucherScanner) (Voucher, error) {
 	return v, nil
 }
 
+// redemptionBalance 用户的券派生余额 (分)。仅 balance 券计入: 订阅券走配额权益不入余额,
+// 必须排除, 否则订阅券正向 amount_cents 会虚增余额视图 (违零碰钱红线)。
 func redemptionBalance(ctx context.Context, tx pgx.Tx, tenantID, userID int64) (int64, error) {
 	var balance int64
 	if err := tx.QueryRow(ctx, `
-SELECT COALESCE(SUM(amount_cents), 0)::bigint
-FROM voucher_redemption
-WHERE tenant_id=$1 AND user_id=$2`, tenantID, userID).Scan(&balance); err != nil {
+SELECT COALESCE(SUM(vr.amount_cents), 0)::bigint
+FROM voucher_redemption vr
+JOIN voucher v ON v.tenant_id = vr.tenant_id AND v.id = vr.voucher_id
+WHERE vr.tenant_id=$1 AND vr.user_id=$2 AND v.grant_kind='balance'`, tenantID, userID).Scan(&balance); err != nil {
 		return 0, fmt.Errorf("voucher: read balance: %w", err)
 	}
 	return balance, nil

@@ -184,14 +184,26 @@ func (s *Service) Redeem(ctx context.Context, input RedeemInput) (RedeemResult, 
 		}
 		return RedeemResult{}, err
 	}
+	payload := map[string]any{"source_ip_hash": ipHash}
+	if result.Subscription != nil {
+		// 订阅券: 记订阅维度 (套餐/结果/到期), 不记 balance/billing (订阅零入账)。
+		// 键后缀须落在 privacy allowlist (_kind/_id/_at); validity 天数后缀 _days 不在白名单,
+		// 且 new_expires_at 已表达效果, 审计不再单列。
+		payload["grant_kind"] = GrantKindSubscription
+		payload["subscription_plan_id"] = result.Subscription.PlanID
+		payload["result_kind"] = result.Subscription.ResultKind
+		payload["new_expires_at"] = result.Subscription.NewExpiresAt.UTC()
+	} else {
+		payload["grant_kind"] = GrantKindBalance
+		payload["amount_cents"] = result.Redemption.AmountCents
+		payload["balance_cents"] = result.BalanceCents
+		payload["billing_event_id"] = result.Redemption.BillingEventID
+	}
 	_ = s.emit(ctx, AuditEvent{
 		EventType: AuditVoucherRedeemed, TenantID: result.Voucher.TenantID, VoucherID: result.Voucher.ID,
 		RedemptionID: result.Redemption.ID, UserID: result.Redemption.UserID, RequestID: input.RequestID,
 		CodeFingerprint: result.Voucher.CodeFingerprint, OccurredAt: input.Now,
-		Payload: map[string]any{
-			"amount_cents": result.Redemption.AmountCents, "balance_cents": result.BalanceCents,
-			"billing_event_id": result.Redemption.BillingEventID, "source_ip_hash": ipHash,
-		},
+		Payload: payload,
 	})
 	return result, nil
 }

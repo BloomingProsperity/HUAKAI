@@ -164,6 +164,10 @@ func (s *MemoryStore) Redeem(_ context.Context, rec redeemRecord) (RedeemResult,
 		return RedeemResult{}, ErrVoucherNotFound
 	}
 	v := s.vouchers[voucherID]
+	if v.GrantKind == GrantKindSubscription {
+		// 订阅券激活依赖真订阅/配额表, 内存 store 不镜像 (见 P3b-3 计划 §5 D3); 真路径用 PG store。
+		return RedeemResult{}, ErrSubscriptionVoucherUnsupported
+	}
 	if err := evaluateVoucher(v, rec.UserID, now, s.userRedeemedLocked); err != nil {
 		if err == ErrVoucherExpired && v.Status == StatusActive {
 			v.Status = StatusExpired
