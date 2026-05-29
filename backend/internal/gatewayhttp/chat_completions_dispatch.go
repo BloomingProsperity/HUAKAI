@@ -335,7 +335,12 @@ func (ex *chatExecution) dispatchBufferedEnvelope(w http.ResponseWriter) (*proto
 }
 
 func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCtx context.Context, startedAt time.Time) (*proto.HCSF, *classifiedAttemptFailure, bool) {
-	canonicalReq, _, err := ex.clientAdapter.RequestToCanonical(seedCtx, ex.body)
+	canonicalReq, requestLosses, err := ex.clientAdapter.RequestToCanonical(seedCtx, ex.body)
+	// 请求翻译损失之前被丢弃(_)。先快照供下方 dispatch-internal abort 携带证据;
+	// canonicalReq 非空时再折入其 CapabilityGraph —— DispatchHCSF 用 cloneHCSF 把请求侧
+	// ProtocolLoss 带进响应 env(upstream_dispatcher_hcsf.go:144/153),使成功路径的
+	// billing 快照也累积请求侧证据(S1-025-fu item 2;非流式 buffered 路径原本整段丢失)。
+	ex.protocolLoss = protocolLossJSONFromEntries(requestLosses)
 	if err != nil {
 		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
@@ -349,6 +354,9 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		}
 		writeJSONError(w, http.StatusBadRequest, clienterr.CodeInvalidRequestBody, clienterr.MessageFor(clienterr.CodeInvalidRequestBody))
 		return nil, nil, false
+	}
+	if len(requestLosses) > 0 {
+		canonicalReq.CapabilityGraph.ProtocolLoss = append(canonicalReq.CapabilityGraph.ProtocolLoss, requestLosses...)
 	}
 	enrichCanonicalRequestMeta(canonicalReq, ex.upstreamModelID, ex.accInfo.Platform, ex.idempotencyHeader, ex.promptHash)
 	canonicalReq.RequestMeta.EndpointFamily = ex.resolved.ProtocolFamily
@@ -373,6 +381,12 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		RawBody:         ex.body,
 	})
 	bufferedEnv, err := dispatcher.DispatchHCSF(dispatchCtx, canonicalReq)
+	// DispatchHCSF 内 MarshalToProviderRequest 会原地往 canonicalReq.CapabilityGraph.ProtocolLoss
+	// 追加 canonical→upstream marshal 损失(addMarshalLossRaw)。下方 dispatch-error 与
+	// finalizeBufferedEnvelope 的 empty-response abort 都走 ex.protocolLoss 快照,必须在此刷新,
+	// 否则只剩 dispatch 前的请求翻译损失,marshal 证据整段丢失(S1-025-fu review R1)。
+	// 成功路径稍后由 billing 快照从 bufferedEnv(已含 marshal+resp 损失)覆盖,无重复累加。
+	ex.protocolLoss = protocolLossJSONFromEnv(canonicalReq)
 	if err != nil {
 		// 上游真实 status / header / body 只用于 retry 与 health classification;
 		// client 只拿脱敏后的 code/message。

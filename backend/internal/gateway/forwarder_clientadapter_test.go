@@ -51,6 +51,108 @@ func TestForwarderClientAdapterFinalizeCalledAndChunksWritten(t *testing.T) {
 	}
 }
 
+// TestForwardAccumulatesPerEventProtocolLoss 守 S1-025-fu item 4:
+// StreamForwarder 之前丢弃 ProviderEventToCanonicalEvents 与 CanonicalEventToClientChunk
+// 的逐事件协议损失;现在累积进 acc 并经 finishDraft 落到 draft.StreamProtocolLoss。
+func TestForwardAccumulatesPerEventProtocolLoss(t *testing.T) {
+	clientAdapter := &recordingForwarderClientAdapter{
+		eventChunks: [][]byte{[]byte("data: chunk\n\n")},
+		finalChunks: [][]byte{[]byte("data: final\n\n")},
+		eventLosses: []proto.ProtocolLossEntry{{Severity: proto.ProtocolLossWarning, Code: "client_event_loss_sentinel", Reason: "client chunk conversion"}},
+	}
+	f := newForwarder()
+	f.ProtocolAdapters = &stubSingleAdapterRegistry{
+		family: "anthropic_messages",
+		adapter: &forwarderClientAdapterUpstreamStub{
+			events: []any{&proto.CanonicalEvent{Type: "message_stop"}},
+			losses: []proto.ProtocolLossEntry{{Severity: proto.ProtocolLossWarning, Code: "provider_event_loss_sentinel", Reason: "provider event conversion"}},
+		},
+	}
+	f.ClientAdapter = clientAdapter
+
+	rec := httptest.NewRecorder()
+	draft, err := f.Forward(
+		context.Background(),
+		bytes.NewReader([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")),
+		rec,
+		anthropicForwardRequest(1, 100),
+	)
+	if err != nil {
+		t.Fatalf("Forward: %v", err)
+	}
+	// MUTATION: forwarder.go 还原 provider(handleEventWithAdapter)或 client(clientChunks)损失丢弃(_)
+	// → draft.StreamProtocolLoss 缺对应 sentinel → RED。
+	if !forwarderLossHasCode(draft.StreamProtocolLoss, "provider_event_loss_sentinel") {
+		t.Fatalf("draft.StreamProtocolLoss missing provider sentinel: %+v", draft.StreamProtocolLoss)
+	}
+	if !forwarderLossHasCode(draft.StreamProtocolLoss, "client_event_loss_sentinel") {
+		t.Fatalf("draft.StreamProtocolLoss missing client sentinel: %+v", draft.StreamProtocolLoss)
+	}
+}
+
+func forwarderLossHasCode(losses []proto.ProtocolLossEntry, code string) bool {
+	for _, l := range losses {
+		if l.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+// TestHandleEventWithAdapterAccumulatesLossOnErrorReturn 守 S1-025-fu review R1 finding 2:
+// 部分上游 adapter 把 ProtocolLossEntry 连同 error 一起返回(anthropic/sse.go:228 未知事件
+// → loss + ErrUnknownEventType)。handleEventWithAdapter 原先在 append providerLosses 之前
+// 就 error 早返,证据丢失;现在累积先于 error 返回。
+func TestHandleEventWithAdapterAccumulatesLossOnErrorReturn(t *testing.T) {
+	adapter := &forwarderClientAdapterUpstreamStub{
+		losses: []proto.ProtocolLossEntry{{Severity: proto.ProtocolLossWarning, Code: "provider_error_loss_sentinel", Reason: "unknown upstream event"}},
+		err:    proto.ErrUnknownEventType,
+	}
+	f := newForwarder()
+	acc := &UsageAccumulator{}
+	rec := httptest.NewRecorder()
+
+	_, _, _, err := f.handleEventWithAdapter(
+		context.Background(),
+		adapter,
+		SSEEvent{Type: "unknown_event", Data: []byte(`{"type":"unknown_event"}`)},
+		rec,
+		nil,
+		nil,
+		acc,
+		ForwardRequest{RequestID: "req-r1-provider"},
+	)
+	if err == nil {
+		t.Fatal("expected adapter error to propagate")
+	}
+	// MUTATION: 把 providerLosses append 移回 error 早返之后 → acc.StreamProtocolLoss 为空 → RED。
+	if !forwarderLossHasCode(acc.StreamProtocolLoss, "provider_error_loss_sentinel") {
+		t.Fatalf("acc.StreamProtocolLoss missing sentinel after errored provider event: %+v", acc.StreamProtocolLoss)
+	}
+}
+
+// TestDrainWithAdapterAccumulatesLossOnErrorReturn 守 finding 2 的 drain 镜像:
+// drainWithAdapter 原先只在 err==nil 时 append drainLosses,drain 期未知/畸形事件
+// (loss+error)证据丢失;现在累积不受 err 影响,usage 仍仅在 err==nil 时采信。
+func TestDrainWithAdapterAccumulatesLossOnErrorReturn(t *testing.T) {
+	adapter := &forwarderClientAdapterUpstreamStub{
+		losses: []proto.ProtocolLossEntry{{Severity: proto.ProtocolLossWarning, Code: "drain_error_loss_sentinel", Reason: "unknown drain event"}},
+		err:    proto.ErrUnknownEventType,
+	}
+	f := newForwarder()
+	acc := &UsageAccumulator{}
+	events := make(chan scanResult, 1)
+	events <- scanResult{event: SSEEvent{Type: "unknown_event", Data: []byte(`{"type":"unknown_event"}`)}}
+	close(events)
+
+	f.drainWithAdapter(context.Background(), adapter, events, nil, acc)
+
+	// MUTATION: 把 drainLosses append 移回 `if err == nil` 内 → acc.StreamProtocolLoss 为空 → RED。
+	if !forwarderLossHasCode(acc.StreamProtocolLoss, "drain_error_loss_sentinel") {
+		t.Fatalf("acc.StreamProtocolLoss missing drain sentinel after errored drain event: %+v", acc.StreamProtocolLoss)
+	}
+}
+
 func TestForwarderClientStateInitializedByAdapterType(t *testing.T) {
 	if got := (&StreamForwarder{ClientAdapter: &proto.AnthropicMessagesClient{}}).newClientState(); got == nil {
 		t.Fatal("anthropic_messages client state is nil")
@@ -130,6 +232,7 @@ func TestHandleEventWithAdapterSanitizesProtocolErrorBeforeAdapter(t *testing.T)
 // forwarderClientAdapterUpstreamStub 只负责把 scanner 事件映射成测试指定的 canonical events。
 type forwarderClientAdapterUpstreamStub struct {
 	events []any
+	losses []proto.ProtocolLossEntry
 	err    error
 }
 
@@ -142,7 +245,7 @@ func (s *forwarderClientAdapterUpstreamStub) ProviderResponseToCanonical(context
 }
 
 func (s *forwarderClientAdapterUpstreamStub) ProviderEventToCanonicalEvents(context.Context, any, any) ([]any, []proto.ProtocolLossEntry, error) {
-	return s.events, nil, s.err
+	return s.events, s.losses, s.err
 }
 
 func (s *forwarderClientAdapterUpstreamStub) FinalizeUpstreamStream(context.Context, any) ([]any, error) {
@@ -154,6 +257,7 @@ type recordingForwarderClientAdapter struct {
 	eventChunks       [][]byte
 	finalChunks       [][]byte
 	bufferedBody      []byte
+	eventLosses       []proto.ProtocolLossEntry
 	eventCalls        int
 	finalizeCalls     int
 	bufferedCalls     int
@@ -175,7 +279,7 @@ func (a *recordingForwarderClientAdapter) CanonicalToClientResponse(_ context.Co
 func (a *recordingForwarderClientAdapter) CanonicalEventToClientChunk(_ context.Context, _ any, state any) ([][]byte, []proto.ProtocolLossEntry, error) {
 	a.eventCalls++
 	a.eventState = state
-	return a.eventChunks, nil, nil
+	return a.eventChunks, a.eventLosses, nil
 }
 
 func (a *recordingForwarderClientAdapter) FinalizeClientStream(_ context.Context, state any) ([][]byte, error) {

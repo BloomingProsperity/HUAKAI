@@ -42,6 +42,52 @@ func (m *mockCanonicalBufferedDispatcher) DispatchHCSF(_ context.Context, reques
 	return env, nil
 }
 
+// protocolLossTestDispatcher 是 S1-025-fu item 2 用的可配置 buffered dispatcher。
+// stopReason 默认 end_turn;设为 CanonicalStopUnknown 触发 client 响应转换损失
+// (stop_reason_unknown)。preserveRequestLoss 模拟真实 cloneHCSF
+// (upstream_dispatcher_hcsf.go:144/153)把请求侧 CapabilityGraph.ProtocolLoss 带入响应 env。
+type protocolLossTestDispatcher struct {
+	calls               int
+	stopReason          proto.CanonicalStopReason
+	preserveRequestLoss bool
+}
+
+func (m *protocolLossTestDispatcher) DispatchHCSF(_ context.Context, requestEnvelope *proto.HCSF) (*proto.HCSF, error) {
+	m.calls++
+	stop := m.stopReason
+	if stop == "" {
+		stop = proto.CanonicalStopEndTurn
+	}
+	env := proto.NewEmptyEnvelope()
+	env.RequestMeta = requestEnvelope.RequestMeta
+	env.BufferedResponse = &proto.CanonicalResponse{
+		ID:         "chatcmpl-protocol-loss-test",
+		Model:      requestEnvelope.RequestMeta.UpstreamModel,
+		Content:    []proto.CanonicalContentBlock{{Type: "text", Text: "hi"}},
+		Usage:      proto.CanonicalUsage{InputTokens: 2, OutputTokens: 3},
+		StopReason: stop,
+	}
+	env.Accounting.Usage = env.BufferedResponse.Usage
+	env.Accounting.EvidenceLabel = proto.EvidenceMock
+	if m.preserveRequestLoss {
+		env.CapabilityGraph.ProtocolLoss = append(env.CapabilityGraph.ProtocolLoss, requestEnvelope.CapabilityGraph.ProtocolLoss...)
+	}
+	return env, nil
+}
+
+// settledLossHasCode 解码 SettleRequest.ProtocolLoss(json.RawMessage)并判 code 成员。
+func settledLossHasCode(t *testing.T, raw json.RawMessage, code string) bool {
+	t.Helper()
+	if len(raw) == 0 {
+		return false
+	}
+	var entries []proto.ProtocolLossEntry
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		t.Fatalf("unmarshal settle protocol_loss: %v (raw=%s)", err, raw)
+	}
+	return hasProtocolLossCode(entries, code)
+}
+
 func enableHCSFDispatchForTest(t *testing.T) {
 	t.Helper()
 	t.Setenv("HUAKAI_DISPATCH_HCSF", "1")
@@ -242,6 +288,47 @@ func TestChatCompletionsClientAdapter_NonStreamingInvalidRequestBody(t *testing.
 	}
 	if dispatcher.calls != 0 {
 		t.Fatalf("canonical dispatcher calls = %d; want 0", dispatcher.calls)
+	}
+}
+
+// marshalLossErrorDispatcher 模拟 DispatchHCSF 内 MarshalToProviderRequest 原地往
+// requestEnvelope.CapabilityGraph.ProtocolLoss 追加 canonical→upstream marshal 损失
+// (addMarshalLossRaw, hcsf_graph_marshal.go),随后上游 dispatch 失败(client.Do/非 2xx)。
+// 守 S1-025-fu review R1 finding 1: dispatch-error abort 必须携带 marshal 阶段证据。
+type marshalLossErrorDispatcher struct {
+	calls int
+	code  string
+}
+
+func (m *marshalLossErrorDispatcher) DispatchHCSF(_ context.Context, requestEnvelope *proto.HCSF) (*proto.HCSF, error) {
+	m.calls++
+	requestEnvelope.CapabilityGraph.ProtocolLoss = append(requestEnvelope.CapabilityGraph.ProtocolLoss,
+		proto.ProtocolLossEntry{Severity: proto.ProtocolLossWarning, Code: m.code, Reason: "marshal downgrade"})
+	return nil, errors.New("upstream connection reset")
+}
+
+func TestNonStreamingDispatchError_RefreshesMarshalLossBeforeAbort(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	dispatcher := &marshalLossErrorDispatcher{code: "marshal_loss_on_dispatch_error"}
+	settler := &recordingSettler{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = dispatcher
+	d.Settler = settler
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("expected dispatch-error status, got 200: %s", rec.Body.String())
+	}
+	if dispatcher.calls != 1 {
+		t.Fatalf("dispatcher calls=%d want 1", dispatcher.calls)
+	}
+	if len(settler.aborts) != 1 {
+		t.Fatalf("aborts=%+v want exactly one dispatch-error abort", settler.aborts)
+	}
+	// MUTATION: 删除 dispatch.go 中 DispatchHCSF 之后的 ex.protocolLoss = protocolLossJSONFromEnv(canonicalReq)
+	// 刷新 → abort 仍用 dispatch 前快照(仅请求翻译损失,本例为空)→ 缺 marshal sentinel → RED。
+	if !settledLossHasCode(t, settler.aborts[0].protocolLoss, "marshal_loss_on_dispatch_error") {
+		t.Fatalf("dispatch-error abort missing marshal-stage loss: %s", settler.aborts[0].protocolLoss)
 	}
 }
 

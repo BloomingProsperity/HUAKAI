@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -228,6 +229,45 @@ func TestChatCompletionResponseFailOpenWhenSignerNilInProduction(t *testing.T) {
 	}
 	if !hasProtocolLossCode(dispatcher.returned.CapabilityGraph.ProtocolLoss, "audit_signer_deferred") {
 		t.Fatalf("ProtocolLoss codes=%v want audit_signer_deferred", protocolLossCodes(dispatcher.returned.CapabilityGraph.ProtocolLoss))
+	}
+}
+
+// TestNonStreamingSettle_CapturesLedgerProtocolLoss 守 S1-025-fu item 2(b):
+// submitAuditLedgerEntry 会向 env.CapabilityGraph.ProtocolLoss 追加 ledger/trust 警告
+// (signer nil fail-open → audit_signer_deferred);快照必须取在 ledger 之后,settle 才带得到。
+func TestNonStreamingSettle_CapturesLedgerProtocolLoss(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	ledgerSigner, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("ledger signer: %v", err)
+	}
+	ledger, err := auditledger.NewMemoryLedger(ledgerSigner)
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	settler := &recordingSettler{}
+	d := clientAdapterDeps(t)
+	d.Signer = nil
+	d.AuditLedger = ledger
+	d.AuditLedgerDLQ = &recordingGatewayAuditLedgerDLQ{id: 919}
+	d.AuditRefPolicy = productionAuditRefPolicyForGatewayTest(false)
+	d.Settler = settler
+	d.CanonicalDispatcher = &signerNilFailOpenDispatcher{}
+	d.RateTables = &rateTableSourceStub{table: billing.RateTable{
+		Version:     "test-policy",
+		PricingData: json.RawMessage(`{"models":{"gpt-4o":{"input_micro_usd":1000,"output_micro_usd":2000}}}`),
+	}}
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 (D-8 fail-open) body=%s", rec.Code, rec.Body.String())
+	}
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1", len(settler.calls))
+	}
+	// MUTATION: 把 ex.protocolLoss 快照移回 submitAuditLedgerEntry 之前 → settle 缺 audit_signer_deferred → RED。
+	if !settledLossHasCode(t, settler.calls[0].ProtocolLoss, "audit_signer_deferred") {
+		t.Fatalf("settle ProtocolLoss=%s want code audit_signer_deferred", settler.calls[0].ProtocolLoss)
 	}
 }
 

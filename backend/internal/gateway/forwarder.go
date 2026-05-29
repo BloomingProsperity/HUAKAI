@@ -276,7 +276,15 @@ func (f *StreamForwarder) handleEventWithAdapter(
 		return terminalSeen, true, 1, nil
 	}
 
-	canonicalEvents, _, err := adapter.ProviderEventToCanonicalEvents(ctx, evt.Data, upstreamState)
+	canonicalEvents, providerLosses, err := adapter.ProviderEventToCanonicalEvents(ctx, evt.Data, upstreamState)
+	// 逐事件 provider→canonical 协议损失之前被丢弃(_);累积进 acc,
+	// finishDraft 拷入 draft,settle 路径合并(S1-025-fu item 4)。
+	// 部分 adapter 把 loss 连同 error 一起返回(如 anthropic 未知事件 →
+	// loss + ErrUnknownEventType, anthropic/sse.go:228),所以必须在 error 早返之前
+	// 累积,否则 AmbiguousUsage settle 行对未知/畸形上游事件无证据(S1-025-fu review R1)。
+	if len(providerLosses) > 0 {
+		acc.StreamProtocolLoss = append(acc.StreamProtocolLoss, providerLosses...)
+	}
 	if err != nil {
 		return terminalSeen, false, 0, err
 	}
@@ -292,9 +300,12 @@ func (f *StreamForwarder) handleEventWithAdapter(
 			terminalSeen = true
 			acc.Freeze()
 		}
-		chunks, err := f.clientChunks(ctx, canonical, clientState, evt)
+		chunks, clientLosses, err := f.clientChunks(ctx, canonical, clientState, evt)
 		if err != nil {
 			return terminalSeen, wrote, delivered, err
+		}
+		if len(clientLosses) > 0 {
+			acc.StreamProtocolLoss = append(acc.StreamProtocolLoss, clientLosses...)
 		}
 		wroteEvent := false
 		for _, chunk := range chunks {
@@ -365,7 +376,16 @@ func (f *StreamForwarder) drainWithAdapter(
 			}
 			// 用传入的 adapter 解析 drain 阶段的 usage，保证与主流水线一致
 			if adapter != nil {
-				canonicalEvents, _, err := adapter.ProviderEventToCanonicalEvents(ctx, res.event.Data, upstreamState)
+				canonicalEvents, drainLosses, err := adapter.ProviderEventToCanonicalEvents(ctx, res.event.Data, upstreamState)
+				// loss 可能连同 error 一起返回(anthropic/sse.go:228 未知事件 → loss +
+				// ErrUnknownEventType),drain 阶段同样在 err 判断之前累积,否则 drain 期的
+				// 未知/畸形事件证据丢失;usage 仅在 err==nil 时可信(S1-025-fu review R1)。
+				// loss 可能连同 error 一起返回(anthropic/sse.go:228 未知事件 → loss +
+				// ErrUnknownEventType),drain 阶段同样在 err 判断之前累积,否则 drain 期的
+				// 未知/畸形事件证据丢失;usage 仅在 err==nil 时可信(S1-025-fu review R1)。
+				if len(drainLosses) > 0 {
+					acc.StreamProtocolLoss = append(acc.StreamProtocolLoss, drainLosses...)
+				}
 				if err == nil {
 					for _, canonical := range canonicalEvents {
 						if usage, ok := canonicalUsage(canonical); ok {
@@ -383,12 +403,12 @@ func (f *StreamForwarder) drainWithAdapter(
 	}
 }
 
-func (f *StreamForwarder) clientChunks(ctx context.Context, canonical any, state any, fallback SSEEvent) ([][]byte, error) {
+func (f *StreamForwarder) clientChunks(ctx context.Context, canonical any, state any, fallback SSEEvent) ([][]byte, []proto.ProtocolLossEntry, error) {
 	if f.ClientAdapter == nil {
-		return [][]byte{rawSSE(fallback)}, nil
+		return [][]byte{rawSSE(fallback)}, nil, nil
 	}
-	chunks, _, err := f.ClientAdapter.CanonicalEventToClientChunk(ctx, canonical, state)
-	return chunks, err
+	chunks, losses, err := f.ClientAdapter.CanonicalEventToClientChunk(ctx, canonical, state)
+	return chunks, losses, err
 }
 
 func (f *StreamForwarder) finishDraft(d UsageRecordDraft, acc UsageAccumulator, startedAt time.Time, err error) (UsageRecordDraft, error) {
@@ -406,6 +426,7 @@ func (f *StreamForwarder) finishDraft(d UsageRecordDraft, acc UsageAccumulator, 
 	d.CacheCreation1hTokens = acc.Usage.CacheCreationInputTokens1h
 	d.CacheReadTokens = acc.Usage.CacheReadInputTokens
 	d.DeliveredTokenCount = acc.DeliveredTokenCount()
+	d.StreamProtocolLoss = acc.StreamProtocolLoss
 	if d.UsageSource == UsageSourceAmbiguous && acc.Source != "" {
 		d.UsageSource = acc.Source
 	}

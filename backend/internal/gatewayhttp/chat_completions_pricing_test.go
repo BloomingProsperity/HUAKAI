@@ -12,6 +12,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
@@ -172,6 +173,137 @@ func TestStreamingCompletionEvent_AmbiguousUsagePreservedNotInferred(t *testing.
 	}
 	if !event.SettleRequest.Draft.PendingReconciliation {
 		t.Fatal("PendingReconciliation=false want true")
+	}
+}
+
+// TestStreamingCompletionEvent_MergesRequestAndStreamProtocolLoss 守 S1-025-fu item 4:
+// 流式 settle 必须合并请求翻译损失(ex.protocolLoss)与逐事件损失(draft.StreamProtocolLoss)。
+func TestStreamingCompletionEvent_MergesRequestAndStreamProtocolLoss(t *testing.T) {
+	ex := &chatExecution{
+		ctx: context.Background(),
+		d: ChatHandlerDeps{
+			RateTables: &rateTableSourceStub{table: billing.RateTable{
+				Version:     "test-policy",
+				PricingData: json.RawMessage(`{"models":{"gpt-4o":{"input_micro_usd":1000,"output_micro_usd":2000}}}`),
+			}},
+			BillingPolicyVersion: "test-policy",
+		},
+		ident:             auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 13},
+		req:               chatRequest{Model: "gpt-4o", Stream: true},
+		requestID:         "req-merge-loss",
+		reserveRes:        &billing.ReserveResult{ClaimID: 31},
+		acquiredAccountID: 29,
+		upstreamModelID:   "gpt-4o",
+		cacheVendor:       "openai",
+		plan:              router.RoutePlan{SnapshotVersion: "registry:7:9;router:test"},
+	}
+	ex.protocolLoss = json.RawMessage(`[{"severity":"info","code":"request_translation_loss_sentinel","reason":"request translation"}]`)
+	draft := gateway.UsageRecordDraft{
+		TokensInput:  10,
+		TokensOutput: 20,
+		StreamProtocolLoss: []proto.ProtocolLossEntry{
+			{Severity: proto.ProtocolLossWarning, Code: "stream_event_loss_sentinel", Reason: "provider/client stream event"},
+		},
+	}
+
+	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 20}, auditledger.AuditLedgerResult{})
+
+	// MUTATION: stream.go 还原 `ProtocolLoss: ex.protocolLoss`(不合并 draft.StreamProtocolLoss)
+	// → 缺 stream_event_loss_sentinel → RED。
+	if !settledLossHasCode(t, event.SettleRequest.ProtocolLoss, "request_translation_loss_sentinel") {
+		t.Fatalf("merged ProtocolLoss missing request sentinel: %s", event.SettleRequest.ProtocolLoss)
+	}
+	if !settledLossHasCode(t, event.SettleRequest.ProtocolLoss, "stream_event_loss_sentinel") {
+		t.Fatalf("merged ProtocolLoss missing stream sentinel: %s", event.SettleRequest.ProtocolLoss)
+	}
+}
+
+// TestRejectMoneyPathAuditRef_PreservesEventProtocolLoss 守 S1-025-fu item 3:
+// audit-ref-missing 的零成本 abort 必须带上 event.SettleRequest.ProtocolLoss(而非 nil)。
+func TestRejectMoneyPathAuditRef_PreservesEventProtocolLoss(t *testing.T) {
+	sentinel := json.RawMessage(`[{"severity":"warning","code":"audit_ref_abort_sentinel","reason":"audit-ref reject must preserve losses"}]`)
+	event := eventbus.RequestCompletionEvent{
+		TenantID:      7,
+		ClaimID:       9,
+		RequestID:     "req-audit-ref-loss",
+		SettleRequest: billing.SettleRequest{ProtocolLoss: sentinel},
+	}
+	cases := []struct {
+		name string
+		call func(d ChatHandlerDeps)
+	}{
+		{"direct_settle", func(d ChatHandlerDeps) {
+			_ = rejectMoneyPathDirectSettle(context.Background(), d, event, eventbus.ErrAuditRefMissing)
+		}},
+		{"cache_hit_commit", func(d ChatHandlerDeps) {
+			_, _ = rejectMoneyPathCacheHitCommit(context.Background(), d, event, eventbus.ErrAuditRefMissing)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			settler := &recordingSettler{}
+			tc.call(ChatHandlerDeps{Settler: settler})
+			if len(settler.aborts) != 1 {
+				t.Fatalf("aborts=%d want 1", len(settler.aborts))
+			}
+			// MUTATION: rejectMoneyPathAuditRef 传 nil 而非 event.SettleRequest.ProtocolLoss → 空 → RED。
+			if !settledLossHasCode(t, settler.aborts[0].protocolLoss, "audit_ref_abort_sentinel") {
+				t.Fatalf("abort protocolLoss=%s want code audit_ref_abort_sentinel", settler.aborts[0].protocolLoss)
+			}
+		})
+	}
+}
+
+// TestNonStreamingSettle_CapturesResponseConversionProtocolLoss 守 S1-025-fu item 2(c):
+// CanonicalToClientResponse 的损失返回之前被丢弃;StopUnknown → stop_reason_unknown 必须进 settle。
+func TestNonStreamingSettle_CapturesResponseConversionProtocolLoss(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	settler := &recordingSettler{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &protocolLossTestDispatcher{stopReason: proto.CanonicalStopUnknown}
+	d.Settler = settler
+	d.RateTables = &rateTableSourceStub{table: billing.RateTable{
+		Version:     "test-policy",
+		PricingData: json.RawMessage(`{"models":{"gpt-4o":{"input_micro_usd":1000,"output_micro_usd":2000}}}`),
+	}}
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1", len(settler.calls))
+	}
+	// MUTATION: 还原 billing.go CanonicalToClientResponse 的损失丢弃(_) → settle 缺 stop_reason_unknown → RED。
+	if !settledLossHasCode(t, settler.calls[0].ProtocolLoss, "stop_reason_unknown") {
+		t.Fatalf("settle ProtocolLoss=%s want code stop_reason_unknown", settler.calls[0].ProtocolLoss)
+	}
+}
+
+// TestNonStreamingSettle_CapturesRequestTranslationProtocolLoss 守 S1-025-fu item 2(a):
+// RequestToCanonical 的损失之前在非流式 buffered 路径整段丢弃;请求体带 metadata →
+// d5_metadata_field_pending 必须经 cloneHCSF 进 settle(preserveRequestLoss 模拟真实克隆)。
+func TestNonStreamingSettle_CapturesRequestTranslationProtocolLoss(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	settler := &recordingSettler{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &protocolLossTestDispatcher{preserveRequestLoss: true}
+	d.Settler = settler
+	d.RateTables = &rateTableSourceStub{table: billing.RateTable{
+		Version:     "test-policy",
+		PricingData: json.RawMessage(`{"models":{"gpt-4o":{"input_micro_usd":1000,"output_micro_usd":2000}}}`),
+	}}
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"metadata":{"trace":"x"},"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1", len(settler.calls))
+	}
+	// MUTATION: 还原 dispatch.go RequestToCanonical 的损失丢弃(_) → settle 缺 d5_metadata_field_pending → RED。
+	if !settledLossHasCode(t, settler.calls[0].ProtocolLoss, "d5_metadata_field_pending") {
+		t.Fatalf("settle ProtocolLoss=%s want code d5_metadata_field_pending", settler.calls[0].ProtocolLoss)
 	}
 }
 

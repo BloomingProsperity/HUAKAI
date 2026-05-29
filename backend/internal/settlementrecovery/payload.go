@@ -73,10 +73,13 @@ type settleRequestPersisted struct {
 	Provider            string                   `json:"provider"`
 	Stream              bool                     `json:"stream"`
 	Draft               gateway.UsageRecordDraft `json:"draft"`
-	StreamAttempt       *billing.Attempt         `json:"stream_attempt,omitempty"`
-	Fingerprint         string                   `json:"fingerprint"`
-	AuditRequestID      string                   `json:"audit_request_id"`
-	SnapshotVersion     string                   `json:"snapshot_version"`
+	// ProtocolLoss 镜像 billing.SettleRequest.ProtocolLoss(billing.go:99);S1-025-fu
+	// 之前缺此字段 → settle 失败 DLQ replay 重放时 usage_records.protocol_loss 退化成 "[]"。
+	ProtocolLoss    json.RawMessage  `json:"protocol_loss,omitempty"`
+	StreamAttempt   *billing.Attempt `json:"stream_attempt,omitempty"`
+	Fingerprint     string           `json:"fingerprint"`
+	AuditRequestID  string           `json:"audit_request_id"`
+	SnapshotVersion string           `json:"snapshot_version"`
 }
 
 // Validate 失败原因 — worker 用这些判断"该 quarantine 还是默默重试"。
@@ -123,6 +126,7 @@ func FromCompletionEvent(src Source, event eventbus.RequestCompletionEvent) Payl
 			Provider:            req.Provider,
 			Stream:              req.Stream,
 			Draft:               req.Draft,
+			ProtocolLoss:        req.ProtocolLoss,
 			StreamAttempt:       req.StreamAttempt,
 			Fingerprint:         req.Fingerprint,
 			AuditRequestID:      auditRequestID,
@@ -169,6 +173,7 @@ func (p Payload) ToSettleRequest() billing.SettleRequest {
 		Provider:            p.Settle.Provider,
 		Stream:              p.Settle.Stream,
 		Draft:               p.Settle.Draft,
+		ProtocolLoss:        p.Settle.ProtocolLoss,
 		StreamAttempt:       p.Settle.StreamAttempt,
 		Fingerprint:         p.Settle.Fingerprint,
 		AuditRequestID:      p.Settle.AuditRequestID,
