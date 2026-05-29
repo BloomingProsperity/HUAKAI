@@ -80,6 +80,9 @@ type openAIStreamDelta struct {
 	Content   *string                `json:"content,omitempty"`
 	ToolCalls []openAIStreamToolCall `json:"tool_calls,omitempty"`
 	Refusal   *string                `json:"refusal,omitempty"`
+	// ReasoningContent 接收 DeepSeek-R1 / o1-compat 等上游在 OpenAI Chat 流式
+	// delta 里携带的思维链文本。投影为 canonical reasoning_delta, 不计入答案正文。
+	ReasoningContent *string `json:"reasoning_content,omitempty"`
 }
 
 type openAIStreamToolCall struct {
@@ -252,6 +255,18 @@ func openAIChunkToCanonicalEvents(chunk openAIChatCompletionChunk, state *Upstre
 
 	events = append(events, ensureOpenAIMessageStart(state)...)
 	for _, choice := range chunk.Choices {
+		// 思维链先于可见正文: 复用 text block index 投影为 reasoning_delta,
+		// 不累加进 AccumulatedContent(思维链非答案正文, 也不参与计费正文)。
+		// 镜像 gemini 子包对 thought part 的处理。
+		if choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != "" {
+			events = append(events, ensureOpenAITextBlock(state)...)
+			events = append(events, proto.CanonicalEvent{
+				Type:  "content_block_delta",
+				Index: state.TextBlockIndex,
+				Delta: &proto.CanonicalContentDelta{Type: "reasoning_delta", ReasoningText: *choice.Delta.ReasoningContent},
+			})
+		}
+
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
 			events = append(events, ensureOpenAITextBlock(state)...)
 			state.AccumulatedContent += *choice.Delta.Content
@@ -260,6 +275,21 @@ func openAIChunkToCanonicalEvents(chunk openAIChatCompletionChunk, state *Upstre
 				Type:  "content_block_delta",
 				Index: state.TextBlockIndex,
 				Delta: &proto.CanonicalContentDelta{Type: "text_delta", Text: *choice.Delta.Content},
+			})
+		}
+
+		// 结构化拒答: 上游已在 delta.refusal 给出拒答文本。投影为 text_delta
+		// 并累加进正文(对齐非流式 openAIResponseText 把 refusal 拼入返回文本),
+		// 使客户端在同一正文通道看到拒答原因; 语义拒答由 finish_reason 的
+		// canonical stop reason 承载。
+		if choice.Delta.Refusal != nil && *choice.Delta.Refusal != "" {
+			events = append(events, ensureOpenAITextBlock(state)...)
+			state.AccumulatedContent += *choice.Delta.Refusal
+			state.DeliveredChunkCount++
+			events = append(events, proto.CanonicalEvent{
+				Type:  "content_block_delta",
+				Index: state.TextBlockIndex,
+				Delta: &proto.CanonicalContentDelta{Type: "text_delta", Text: *choice.Delta.Refusal},
 			})
 		}
 
@@ -484,7 +514,9 @@ func mapOpenAIStopReason(reason string) proto.CanonicalStopReason {
 		return proto.CanonicalStopMaxTokens
 	case "tool_calls", "function_call":
 		return proto.CanonicalStopToolUse
-	case "content_filter":
+	case "content_filter", "refusal":
+		// content_filter 与 refusal 同属拒答终止: refusal 是上游结构化拒答的
+		// 终止原因, 之前落入 unknown 分支并误报 unknown-reason loss。
 		return proto.CanonicalStopRefusal
 	default:
 		return proto.CanonicalStopUnknown

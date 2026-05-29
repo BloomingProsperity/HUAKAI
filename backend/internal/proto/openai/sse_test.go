@@ -223,6 +223,143 @@ func TestOpenAIBufferedResponseHelperParsesUsageAndTools(t *testing.T) {
 	}
 }
 
+// TestOpenAIAdapterReasoningContentEmitsReasoningDelta 守住 ADP-1: 上游
+// reasoning_content 必须投影为 canonical reasoning_delta, 且不污染答案正文。
+// Mutation: 删 reasoning 处理分支 → 无 reasoning_delta 事件 → 红。
+func TestOpenAIAdapterReasoningContentEmitsReasoningDelta(t *testing.T) {
+	adapter := &Adapter{}
+	state := &UpstreamState{}
+	payload := []byte(`{"id":"chatcmpl-r","object":"chat.completion.chunk","model":"deepseek-r1","choices":[{"index":0,"delta":{"reasoning_content":"check hidden sum 2+2=4"},"finish_reason":null}]}`)
+	out, losses, err := adapter.ProviderEventToCanonicalEvents(context.Background(), payload, state)
+	if err != nil {
+		t.Fatalf("ProviderEventToCanonicalEvents: %v", err)
+	}
+	if len(losses) != 0 {
+		t.Fatalf("reasoning projection should not emit losses: %+v", losses)
+	}
+	events := anyToCanonicalEvents(t, out)
+	var reasoning *proto.CanonicalContentDelta
+	for i := range events {
+		if events[i].Type == "content_block_delta" && events[i].Delta != nil && events[i].Delta.Type == "reasoning_delta" {
+			reasoning = events[i].Delta
+		}
+	}
+	if reasoning == nil {
+		t.Fatalf("expected a reasoning_delta event, got %v", openAIEventTypes(events))
+	}
+	if reasoning.ReasoningText != "check hidden sum 2+2=4" {
+		t.Fatalf("reasoning text mismatch: %q", reasoning.ReasoningText)
+	}
+	if reasoning.Text != "" {
+		t.Fatalf("reasoning delta must not populate answer Text: %q", reasoning.Text)
+	}
+	if state.AccumulatedContent != "" {
+		t.Fatalf("reasoning must not accumulate into answer content: %q", state.AccumulatedContent)
+	}
+}
+
+// TestOpenAIAdapterReasoningDoesNotPolluteAnswerText 自证测试: 同一 chunk 同时
+// 含思维链与可见正文, 答案正文必须只含可见 content。Mutation: 把 reasoning 累加
+// 进 AccumulatedContent → 正文变成 "thinking...Final 4" ≠ "Final 4" → 红。
+func TestOpenAIAdapterReasoningDoesNotPolluteAnswerText(t *testing.T) {
+	adapter := &Adapter{}
+	state := &UpstreamState{}
+	payload := []byte(`{"id":"chatcmpl-r","object":"chat.completion.chunk","model":"deepseek-r1","choices":[{"index":0,"delta":{"reasoning_content":"thinking...","content":"Final 4"},"finish_reason":null}]}`)
+	if _, _, err := adapter.ProviderEventToCanonicalEvents(context.Background(), payload, state); err != nil {
+		t.Fatalf("ProviderEventToCanonicalEvents: %v", err)
+	}
+	if state.AccumulatedContent != "Final 4" {
+		t.Fatalf("answer content should exclude reasoning, got %q", state.AccumulatedContent)
+	}
+}
+
+// TestOpenAIAdapterRefusalEmitsTextDeltaAndAccumulates 守住 ADP-4: 流式 refusal
+// 必须 emit 为 text_delta 并累加进正文(对齐非流式)。Mutation: 不读 Delta.Refusal
+// (改动前现状) → 无 text_delta、正文为空 → 红。
+func TestOpenAIAdapterRefusalEmitsTextDeltaAndAccumulates(t *testing.T) {
+	adapter := &Adapter{}
+	state := &UpstreamState{}
+	payload := []byte(`{"id":"chatcmpl-x","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"refusal":"I cannot assist with that."},"finish_reason":null}]}`)
+	out, losses, err := adapter.ProviderEventToCanonicalEvents(context.Background(), payload, state)
+	if err != nil {
+		t.Fatalf("ProviderEventToCanonicalEvents: %v", err)
+	}
+	if len(losses) != 0 {
+		t.Fatalf("refusal emit should not emit losses: %+v", losses)
+	}
+	events := anyToCanonicalEvents(t, out)
+	var refusalText string
+	for i := range events {
+		if events[i].Type == "content_block_delta" && events[i].Delta != nil && events[i].Delta.Type == "text_delta" {
+			refusalText = events[i].Delta.Text
+		}
+	}
+	if refusalText != "I cannot assist with that." {
+		t.Fatalf("refusal text not emitted as text_delta: %q", refusalText)
+	}
+	if state.AccumulatedContent != "I cannot assist with that." {
+		t.Fatalf("refusal should accumulate into content (align non-streaming): %q", state.AccumulatedContent)
+	}
+}
+
+// TestOpenAIAdapterRefusalFinishReasonMapsToCanonicalRefusal 守住 finish_reason
+// "refusal" 映射为 canonical refusal 且不误报 unknown-reason loss。Mutation: 删
+// refusal case → 落 unknown → StopUnknown + openAIStopLoss 产 loss → 红。
+func TestOpenAIAdapterRefusalFinishReasonMapsToCanonicalRefusal(t *testing.T) {
+	adapter := &Adapter{}
+	state := &UpstreamState{}
+	payload := []byte(`{"id":"chatcmpl-x","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"refusal"}]}`)
+	out, losses, err := adapter.ProviderEventToCanonicalEvents(context.Background(), payload, state)
+	if err != nil {
+		t.Fatalf("ProviderEventToCanonicalEvents: %v", err)
+	}
+	if len(losses) != 0 {
+		t.Fatalf("refusal finish reason is known, should not emit unknown-reason loss: %+v", losses)
+	}
+	events := anyToCanonicalEvents(t, out)
+	var got proto.CanonicalStopReason
+	for _, ev := range events {
+		if ev.Type == "message_delta" {
+			got = ev.StopReason
+		}
+	}
+	if got != proto.CanonicalStopRefusal {
+		t.Fatalf("finish_reason refusal mapped to %q, want refusal", got)
+	}
+}
+
+// TestOpenAIAdapterReasoningContentRefusalEmitOrder 锁定同一 chunk 内的 emit 顺序:
+// reasoning_delta(不累正文) → content text_delta(累) → refusal text_delta(累)。
+// Mutation: 顺序错乱或把 reasoning 计入正文 → seq 或 AccumulatedContent 不符 → 红。
+func TestOpenAIAdapterReasoningContentRefusalEmitOrder(t *testing.T) {
+	adapter := &Adapter{}
+	state := &UpstreamState{}
+	payload := []byte(`{"id":"chatcmpl-x","object":"chat.completion.chunk","model":"deepseek-r1","choices":[{"index":0,"delta":{"reasoning_content":"R","content":"C","refusal":"F"},"finish_reason":null}]}`)
+	out, _, err := adapter.ProviderEventToCanonicalEvents(context.Background(), payload, state)
+	if err != nil {
+		t.Fatalf("ProviderEventToCanonicalEvents: %v", err)
+	}
+	events := anyToCanonicalEvents(t, out)
+	var seq []string
+	for _, ev := range events {
+		if ev.Type == "content_block_delta" && ev.Delta != nil {
+			switch ev.Delta.Type {
+			case "reasoning_delta":
+				seq = append(seq, "R:"+ev.Delta.ReasoningText)
+			case "text_delta":
+				seq = append(seq, "T:"+ev.Delta.Text)
+			}
+		}
+	}
+	want := []string{"R:R", "T:C", "T:F"}
+	if strings.Join(seq, ",") != strings.Join(want, ",") {
+		t.Fatalf("emit order mismatch: got %v want %v", seq, want)
+	}
+	if state.AccumulatedContent != "CF" {
+		t.Fatalf("accumulated content should be content+refusal only (reasoning excluded): %q", state.AccumulatedContent)
+	}
+}
+
 func runOpenAIGoldenSSE(t *testing.T, fixture string) ([]proto.CanonicalEvent, []proto.ProtocolLossEntry, *UpstreamState) {
 	t.Helper()
 	adapter := &Adapter{}
