@@ -2057,6 +2057,48 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/subscriptions/vouchers:
+    post:
+      tags: [admin-subscriptions]
+      summary: Create a subscription voucher (grant_kind forced to subscription)
+      operationId: adminCreateSubscriptionVoucher
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3b3-voucher-claude.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, plan_id, amount_cents, valid_from, valid_until]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                plan_id: { type: integer, format: int64, minimum: 1 }
+                code: { type: string }
+                amount_cents: { type: integer, format: int64, minimum: 1 }
+                currency_code: { type: string }
+                valid_from: { type: string, format: date-time }
+                valid_until: { type: string, format: date-time }
+                max_redemptions: { type: integer, minimum: 1 }
+                single_use_per_user: { type: boolean }
+                eligible_user_id: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '201':
+          description: Subscription voucher created; code returned once for distribution.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  voucher: { type: object }
+                  code: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/users/me/subscriptions:
     get:
       tags: [user-subscriptions]
