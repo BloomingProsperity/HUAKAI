@@ -19,6 +19,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
+	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
 )
 
 const maxBodyBytes = 1 << 20 // 1 MiB
@@ -41,10 +42,18 @@ type Service interface {
 	ListAuditEvents(context.Context, int64, int64) ([]subscription.AuditEvent, error)
 }
 
+// VoucherService 是订阅券创建端点依赖的券能力子集 (由 *voucher.Service 实现)。
+// 仅暴露 Create — 订阅券的列券/吊销/兑换走既有 voucher / gatewayhttp 路由, 不在此重复。
+type VoucherService interface {
+	Create(context.Context, voucher.CreateInput) (voucher.CreateResult, error)
+}
+
 // AdminDeps 管理员路由依赖。
 type AdminDeps struct {
 	Auth    AdminAuth
 	Service Service
+	// VoucherService 仅订阅券创建端点用; 其余订阅 admin 端点不依赖它 (可为 nil, 该端点回 503)。
+	VoucherService VoucherService
 }
 
 // UserDeps 用户路由依赖。
@@ -79,6 +88,22 @@ type assignRequest struct {
 
 type tenantBodyRequest struct {
 	TenantID int64 `json:"tenant_id"`
+}
+
+// createSubscriptionVoucherRequest 建一张订阅券 (grant_kind=subscription) 的请求体。
+// 字段命名对齐 gatewayhttp 余额券建券请求 + plan_id; grant_kind 由端点强制 subscription, 不由客户端传。
+type createSubscriptionVoucherRequest struct {
+	TenantID     int64     `json:"tenant_id"`
+	PlanID       int64     `json:"plan_id"`
+	Code         string    `json:"code,omitempty"`
+	AmountCents  int64     `json:"amount_cents"` // 名义价 (信息性, 兑换时不入余额)
+	CurrencyCode string    `json:"currency_code,omitempty"`
+	ValidFrom    time.Time `json:"valid_from"`
+	ValidUntil   time.Time `json:"valid_until"`
+	// 券码本身的可兑换窗口 (与套餐授予的 validity_days 无关)。
+	MaxRedemptions   int    `json:"max_redemptions,omitempty"`
+	SingleUsePerUser *bool  `json:"single_use_per_user,omitempty"`
+	EligibleUserID   *int64 `json:"eligible_user_id,omitempty"`
 }
 
 // ---- DTO (snake_case, 不暴露内部字段) ----
@@ -215,6 +240,7 @@ func MountSubscriptionAdminRoutes(r chi.Router, d AdminDeps) {
 	r.Get("/assignments", newAdminListAssignmentsHandler(d))
 	r.Get("/assignments/{id}", newAdminGetAssignmentHandler(d))
 	r.Post("/assignments/{id}/cancel", newAdminCancelHandler(d))
+	r.Post("/vouchers", newAdminCreateSubscriptionVoucherHandler(d))
 }
 
 // MountSubscriptionUserRoutes 挂载用户订阅端点 (自己的订阅 / 可购套餐)。
@@ -441,6 +467,50 @@ func newAdminCancelHandler(d AdminDeps) http.HandlerFunc {
 	}
 }
 
+// newAdminCreateSubscriptionVoucherHandler 建一张订阅券 (grant_kind 由端点强制 subscription)。
+// 复用 voucher.Service 落库 (含 P3b-5b 的一致性校验); 先经订阅 Service.GetPlan 确认套餐存在,
+// 给清晰 404 而非建券撞 FK 回模糊后端错。
+func newAdminCreateSubscriptionVoucherHandler(d AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, ok := resolveAdmin(w, r, d)
+		if !ok {
+			return
+		}
+		if d.VoucherService == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "voucher dependency unset")
+			return
+		}
+		var req createSubscriptionVoucherRequest
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		if req.PlanID <= 0 {
+			writeJSONError(w, http.StatusBadRequest, "invalid_plan", "plan_id must be positive")
+			return
+		}
+		// 先确认套餐存在 (清晰 404, 而非建券撞 voucher_subscription_plan_fk 回模糊错)。
+		if _, err := d.Service.GetPlan(r.Context(), req.TenantID, req.PlanID); err != nil {
+			writeSubscriptionError(w, err)
+			return
+		}
+		planID := req.PlanID
+		result, err := d.VoucherService.Create(r.Context(), voucher.CreateInput{
+			TenantID: req.TenantID, AdminID: ident.TokenID, Code: req.Code,
+			AmountCents: req.AmountCents, CurrencyCode: req.CurrencyCode,
+			ValidFrom: req.ValidFrom, ValidUntil: req.ValidUntil,
+			MaxRedemptions: req.MaxRedemptions, SingleUsePerUser: boolDefault(req.SingleUsePerUser, true),
+			EligibleUserID:     req.EligibleUserID,
+			GrantKind:          voucher.GrantKindSubscription,
+			SubscriptionPlanID: &planID,
+		})
+		if err != nil {
+			writeVoucherError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"voucher": result.Voucher, "code": result.Code})
+	}
+}
+
 // ---- user handlers ----
 
 func newUserListSubscriptionsHandler(d UserDeps) http.HandlerFunc {
@@ -544,6 +614,13 @@ func parsePositiveQuery(w http.ResponseWriter, r *http.Request, name string) (in
 	return n, true
 }
 
+func boolDefault(p *bool, def bool) bool {
+	if p == nil {
+		return def
+	}
+	return *p
+}
+
 func requestID(r *http.Request) string {
 	return r.Header.Get("X-Request-Id")
 }
@@ -585,5 +662,19 @@ func writeSubscriptionError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusServiceUnavailable, "quota_install_failed", "failed to install subscription quota")
 	default:
 		writeJSONError(w, http.StatusServiceUnavailable, "subscription_backend_error", "subscription service unavailable")
+	}
+}
+
+// writeVoucherError 把订阅券创建路径的 voucher 错误映射为 HTTP 响应。
+func writeVoucherError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, voucher.ErrInvalidInput):
+		writeJSONError(w, http.StatusBadRequest, "invalid_voucher_request", "voucher request is invalid")
+	case errors.Is(err, voucher.ErrVoucherDuplicate):
+		writeJSONError(w, http.StatusConflict, "voucher_duplicate", "voucher code already exists")
+	case errors.Is(err, voucher.ErrSubscriptionVoucherUnsupported):
+		writeJSONError(w, http.StatusServiceUnavailable, "subscription_voucher_unsupported", "subscription voucher requires postgres store")
+	default:
+		writeJSONError(w, http.StatusServiceUnavailable, "voucher_backend_error", "voucher service unavailable")
 	}
 }

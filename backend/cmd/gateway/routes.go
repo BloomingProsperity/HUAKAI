@@ -422,8 +422,9 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	})
 	r.Route("/v1/admin/subscriptions", func(r chi.Router) {
 		subscriptionhttp.MountSubscriptionAdminRoutes(r, subscriptionhttp.AdminDeps{
-			Auth:    d.adminAuth,
-			Service: d.subscriptionService,
+			Auth:           d.adminAuth,
+			Service:        d.subscriptionService,
+			VoucherService: d.voucherService,
 		})
 	})
 	r.Get("/admin/v1/usage", gatewayhttp.NewUsageHandler(d))
