@@ -524,10 +524,23 @@ func (a canonicalEventPointerClientAdapter) FinalizeClientStream(ctx context.Con
 }
 
 func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft, streamAttempt billing.Attempt, ledgerResult auditledger.AuditLedgerResult) eventbus.RequestCompletionEvent {
-	actualCost, err := ex.actualCompletionCost(usageFromDraft(draft))
+	usage := usageFromDraft(draft)
+	actualCost, err := ex.actualCompletionCost(usage)
 	if err != nil {
 		draft.PendingReconciliation = true
 		actualCost = completionCostBreakdown{}
+		// 缺上游 usage（无任何 token 信号）但已交付内容：不把 DeliveredTokenCount 当 token 计费——
+		// 它此处是内容帧数（canonicalDeliveredChunks）而非 token 数；细碎 tool_input/sub-token 分帧
+		// 会使帧数 > 真实 token 数，按帧计费会向用户多收。保持 ActualCost=0 + pending + inferred，
+		// 交由 settlementreconcile worker 宽限后零差额定稿（无权威 usage 会到达）。
+		// 仅在确为缺 usage 时标 inferred：计费配置失败（rate table 缺失但有真实 token）不可标 inferred，
+		// 否则 worker 会把真实请求零差额定稿成 $0（静默零计费）。
+		// 不覆盖 Ambiguous：歧义用量（unknown termination 等）须保留歧义态留待真对账，
+		// 不可降级成 inferred 而被宽限定稿。
+		if reportedUsageMissing(usage) && draft.DeliveredTokenCount > 0 &&
+			draft.UsageSource != gateway.UsageSourceAmbiguous {
+			draft.UsageSource = gateway.UsageSourceInferred
+		}
 	}
 	draft.ActualCost = actualCost.Total
 	draft.CacheCreationCost = actualCost.CacheCreationCost

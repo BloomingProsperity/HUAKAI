@@ -1,6 +1,7 @@
 package gatewayhttp
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -8,9 +9,12 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
 )
 
@@ -53,6 +57,121 @@ func TestSettleCompletion_UsesRateTableActualCost(t *testing.T) {
 	}
 	if !settler.calls[0].Draft.ActualCost.Equal(want) {
 		t.Fatalf("Draft.ActualCost=%s want %s", settler.calls[0].Draft.ActualCost, want)
+	}
+}
+
+func TestStreamingCompletionEvent_NoUsageKeepsZeroCostPendingInferred(t *testing.T) {
+	ex := &chatExecution{
+		ctx: context.Background(),
+		d: ChatHandlerDeps{
+			RateTables: &rateTableSourceStub{table: billing.RateTable{
+				Version:     "test-policy",
+				PricingData: json.RawMessage(`{"models":{"gpt-4o":{"input_micro_usd":999999,"output_micro_usd":2500}}}`),
+			}},
+			BillingPolicyVersion: "test-policy",
+		},
+		ident:             auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 13},
+		req:               chatRequest{Model: "gpt-4o", Stream: true},
+		requestID:         "req-provisional-stream",
+		reserveRes:        &billing.ReserveResult{ClaimID: 23},
+		acquiredAccountID: 29,
+		upstreamModelID:   "gpt-4o",
+		cacheVendor:       "openai",
+		plan:              router.RoutePlan{SnapshotVersion: "registry:7:9;router:test"},
+	}
+	draft := gateway.UsageRecordDraft{
+		DeliveredTokenCount:   40,
+		PendingReconciliation: false,
+		UsageSource:           gateway.UsageSourceReported,
+	}
+
+	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
+
+	// MUTATION: 若重新按 DeliveredTokenCount（此处为 40 个内容帧）计 provisional，有效费率表（output 2500）
+	// 会把 40 帧当 40 token 计成 ActualCost=0.1（向用户多收）→ 此断言（==0）RED；修复后帧数不计费 → 0 → GREEN。
+	// 有效费率表是判别关键：费率表损坏会让新旧都为 0（非判别）。
+	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, decimal.Zero)
+	assertDecimalEqual(t, "Draft.ActualCost", event.SettleRequest.Draft.ActualCost, decimal.Zero)
+	if event.SettleRequest.Draft.UsageSource != gateway.UsageSourceInferred {
+		t.Fatalf("UsageSource=%q want %q", event.SettleRequest.Draft.UsageSource, gateway.UsageSourceInferred)
+	}
+	if !event.SettleRequest.Draft.PendingReconciliation {
+		t.Fatal("PendingReconciliation=false want true")
+	}
+}
+
+func TestStreamingCompletionEvent_PricingConfigFailureStaysReportedNotInferred(t *testing.T) {
+	ex := &chatExecution{
+		ctx: context.Background(),
+		d: ChatHandlerDeps{
+			RateTables:           &rateTableSourceStub{err: billing.ErrRateTableNotFound},
+			BillingPolicyVersion: "test-policy",
+		},
+		ident:             auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 13},
+		req:               chatRequest{Model: "gpt-4o", Stream: true},
+		requestID:         "req-config-failure-stream",
+		reserveRes:        &billing.ReserveResult{ClaimID: 24},
+		acquiredAccountID: 29,
+		upstreamModelID:   "gpt-4o",
+		cacheVendor:       "openai",
+		plan:              router.RoutePlan{SnapshotVersion: "registry:7:9;router:test"},
+	}
+	draft := gateway.UsageRecordDraft{
+		TokensInput:           10,
+		TokensOutput:          100,
+		DeliveredTokenCount:   40,
+		PendingReconciliation: false,
+		UsageSource:           gateway.UsageSourceReported,
+	}
+
+	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
+
+	// MUTATION: 若错误分支无条件标 inferred（去掉 reportedUsageMissing 守卫），这条有真实 token 的行会变 inferred
+	// → settlementreconcile worker 会把真实请求零差额定稿成 $0（静默零计费）→ RED；有守卫则保持 reported（留人工对账）→ GREEN。
+	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, decimal.Zero)
+	if !event.SettleRequest.Draft.PendingReconciliation {
+		t.Fatal("PendingReconciliation=false want true")
+	}
+	if event.SettleRequest.Draft.UsageSource != gateway.UsageSourceReported {
+		t.Fatalf("UsageSource=%q want %q", event.SettleRequest.Draft.UsageSource, gateway.UsageSourceReported)
+	}
+}
+
+func TestStreamingCompletionEvent_AmbiguousUsagePreservedNotInferred(t *testing.T) {
+	ex := &chatExecution{
+		ctx: context.Background(),
+		d: ChatHandlerDeps{
+			RateTables: &rateTableSourceStub{table: billing.RateTable{
+				Version:     "test-policy",
+				PricingData: json.RawMessage(`{"models":{"gpt-4o":{"input_micro_usd":999999,"output_micro_usd":2500}}}`),
+			}},
+			BillingPolicyVersion: "test-policy",
+		},
+		ident:             auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 13},
+		req:               chatRequest{Model: "gpt-4o", Stream: true},
+		requestID:         "req-ambiguous-stream",
+		reserveRes:        &billing.ReserveResult{ClaimID: 25},
+		acquiredAccountID: 29,
+		upstreamModelID:   "gpt-4o",
+		cacheVendor:       "openai",
+		plan:              router.RoutePlan{SnapshotVersion: "registry:7:9;router:test"},
+	}
+	draft := gateway.UsageRecordDraft{
+		DeliveredTokenCount:   40,
+		PendingReconciliation: false,
+		UsageSource:           gateway.UsageSourceAmbiguous,
+	}
+
+	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
+
+	// MUTATION: 去掉 `!= UsageSourceAmbiguous` 守卫，歧义用量会被降级成 inferred → RED。
+	// 歧义流须保留 ambiguous 态留待真对账，不可降级成可被宽限定稿的 $0 provisional。
+	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, decimal.Zero)
+	if event.SettleRequest.Draft.UsageSource != gateway.UsageSourceAmbiguous {
+		t.Fatalf("UsageSource=%q want %q (ambiguous must be preserved)", event.SettleRequest.Draft.UsageSource, gateway.UsageSourceAmbiguous)
+	}
+	if !event.SettleRequest.Draft.PendingReconciliation {
+		t.Fatal("PendingReconciliation=false want true")
 	}
 }
 
