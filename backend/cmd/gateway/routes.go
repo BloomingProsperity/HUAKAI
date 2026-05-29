@@ -17,6 +17,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkeyhttp"
 )
@@ -96,6 +97,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Route("/v1/users/me/payments", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions))
 		paymenthttp.MountPaymentUserRoutes(r, paymenthttp.UserDeps{Service: d.paymentService})
+	})
+	r.Route("/v1/users/me/subscriptions", func(r chi.Router) {
+		r.Use(auth.SessionMiddleware(d.userSessions))
+		subscriptionhttp.MountSubscriptionUserRoutes(r, subscriptionhttp.UserDeps{Service: d.subscriptionService})
 	})
 	// 公开支付回调端点 (P2a): 无 session/admin 中间件, 信任靠验签; 复用 d.paymentService。
 	paymenthttp.MountPaymentWebhookRoutes(r, paymenthttp.WebhookDeps{Service: d.paymentService})
@@ -413,6 +418,12 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		paymenthttp.MountPaymentAdminRoutes(r, paymenthttp.AdminDeps{
 			Auth:    d.adminAuth,
 			Service: d.paymentService,
+		})
+	})
+	r.Route("/v1/admin/subscriptions", func(r chi.Router) {
+		subscriptionhttp.MountSubscriptionAdminRoutes(r, subscriptionhttp.AdminDeps{
+			Auth:    d.adminAuth,
+			Service: d.subscriptionService,
 		})
 	})
 	r.Get("/admin/v1/usage", gatewayhttp.NewUsageHandler(d))

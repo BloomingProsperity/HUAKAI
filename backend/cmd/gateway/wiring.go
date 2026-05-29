@@ -50,6 +50,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
+	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
@@ -84,6 +85,7 @@ type deps struct {
 	userKeyService           *userkey.Service
 	voucherService           *voucher.Service
 	paymentService           *payment.Service
+	subscriptionService      *subscription.Service
 	invitationService        *communityinvitation.Service
 	dispatcher               *gateway.UpstreamDispatcher
 	responseCache            l2cache.Store
@@ -402,6 +404,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		userKeyService:        userkey.NewService(pgPool, nil),
 		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool)),
 		paymentService:        payment.NewService(payment.NewPostgresStore(pgPool)),
+		subscriptionService:   subscription.NewService(subscription.NewPostgresStore(pgPool)),
 		invitationService:     communityinvitation.NewService(communityinvitation.NewPostgresStore(pgPool)),
 		responseCache:         opts.responseCache,
 		dlqService:            dlqService,
@@ -484,10 +487,14 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	}
 	outboxWorker.Start(ctx)
 
+	subscriptionExpiryWorker := subscription.NewExpiryWorker(subscription.ExpiryWorkerConfig{Service: d.subscriptionService})
+	subscriptionExpiryWorker.Start(ctx)
+
 	rt.deps = d
 	rt.credentialScheduler = credentialScheduler
 	rt.dlqWorker = dlqWorker
 	rt.outboxWorker = outboxWorker
+	rt.subscriptionExpiryWorker = subscriptionExpiryWorker
 	rt.obsDLQEnabled = opts.obsDLQ.Enabled
 	ready = true
 	return rt, nil

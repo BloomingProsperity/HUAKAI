@@ -1788,6 +1788,316 @@ paths:
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   # ==========================================================================
+  # Subscriptions (Slice P3a — quota-only; admin assign + 到期 worker)
+  # ==========================================================================
+
+  /v1/admin/subscriptions/plans:
+    get:
+      tags: [admin-subscriptions]
+      summary: List subscription plans for a tenant
+      operationId: adminListSubscriptionPlans
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: for_sale
+          schema: { type: boolean }
+          description: When true, only enabled for-sale plans are returned.
+      responses:
+        '200':
+          description: Tenant subscription plans.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plans: { type: array, items: { type: object } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-subscriptions]
+      summary: Create a quota subscription plan
+      operationId: adminCreateSubscriptionPlan
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, name, validity_days]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                name: { type: string }
+                description: { type: string }
+                price_cents: { type: integer, format: int64, minimum: 0 }
+                currency_code: { type: string, default: USD }
+                validity_days: { type: integer, minimum: 1 }
+                granted_group: { type: string, description: 授予的用户路由分组; 空=不改组。 }
+                daily_cap_usd: { type: string, description: 日历日窗口 USD 花费上限 (十进制字符串; 省略=不设限)。 }
+                weekly_cap_usd: { type: string, description: 日历周窗口 USD 上限。 }
+                monthly_cap_usd: { type: string, description: 日历月窗口 USD 上限。 }
+                for_sale: { type: boolean }
+                sort_order: { type: integer }
+      responses:
+        '201':
+          description: Plan created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/subscriptions/plans/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    get:
+      tags: [admin-subscriptions]
+      summary: Get a subscription plan
+      operationId: adminGetSubscriptionPlan
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Subscription plan.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/subscriptions/plans/{id}/disable:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-subscriptions]
+      summary: Disable a subscription plan (no longer for sale/assignable)
+      operationId: adminDisableSubscriptionPlan
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Plan disabled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  disabled: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/subscriptions/assignments:
+    get:
+      tags: [admin-subscriptions]
+      summary: List a tenant user's subscriptions
+      operationId: adminListSubscriptions
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: user_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: User subscriptions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscriptions: { type: array, items: { type: object } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-subscriptions]
+      summary: Assign a subscription to a user (idempotent per granted group)
+      operationId: adminAssignSubscription
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, user_id, plan_id]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                user_id: { type: integer, format: int64, minimum: 1 }
+                plan_id: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '201':
+          description: Subscription assigned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscription: { type: object }
+                  idempotent: { type: boolean }
+        '200':
+          description: Idempotent replay — existing active subscription returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscription: { type: object }
+                  idempotent: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/subscriptions/assignments/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    get:
+      tags: [admin-subscriptions]
+      summary: Get a subscription with its operation audit trail
+      operationId: adminGetSubscription
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Subscription plus audit events.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscription: { type: object }
+                  audit_events: { type: array, items: { type: object } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/subscriptions/assignments/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-subscriptions]
+      summary: Cancel a subscription (close quota + downgrade group)
+      operationId: adminCancelSubscription
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Subscription cancelled (idempotent if already terminal).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscription: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/users/me/subscriptions:
+    get:
+      tags: [user-subscriptions]
+      summary: List the authenticated User's subscriptions
+      operationId: listMySubscriptions
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: Caller's subscriptions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscriptions: { type: array, items: { type: object } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/users/me/subscriptions/plans:
+    get:
+      tags: [user-subscriptions]
+      summary: List subscription plans available for purchase
+      operationId: listAvailableSubscriptionPlans
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: For-sale subscription plans in the caller's tenant.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plans: { type: array, items: { type: object } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  # ==========================================================================
   # Admin: API Keys (Slice 2 N+4b2)
   # ==========================================================================
 

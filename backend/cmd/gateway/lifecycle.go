@@ -19,21 +19,23 @@ import (
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
+	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
 
 type gatewayRuntime struct {
-	deps                *deps
-	pgPool              *pgxpool.Pool
-	selectorCleanup     func()
-	replayJanitorStop   func()
-	closeReplica        func()
-	credentialScheduler *credentialworker.Scheduler
-	dlqWorker           *legacydlq.Worker
-	outboxWorker        *obsoutbox.Worker
-	obsDLQEnabled       bool
-	outboxRuntime       obsoutbox.RuntimeConfig
+	deps                     *deps
+	pgPool                   *pgxpool.Pool
+	selectorCleanup          func()
+	replayJanitorStop        func()
+	closeReplica             func()
+	credentialScheduler      *credentialworker.Scheduler
+	dlqWorker                *legacydlq.Worker
+	outboxWorker             *obsoutbox.Worker
+	subscriptionExpiryWorker *subscription.ExpiryWorker
+	obsDLQEnabled            bool
+	outboxRuntime            obsoutbox.RuntimeConfig
 }
 
 func (rt *gatewayRuntime) close() {
@@ -129,6 +131,10 @@ func shutdownGateway(srv *http.Server, rt *gatewayRuntime) error {
 		outboxCtx, cancel := context.WithTimeout(context.Background(), rt.outboxRuntime.DrainTimeout)
 		outboxStopErr = rt.outboxWorker.Stop(outboxCtx)
 		cancel()
+	}
+	// 到期 worker 独立于 in-flight handler; Stop 在当前 tick 结束后立即返回 (非整周期等待)。
+	if rt.subscriptionExpiryWorker != nil {
+		rt.subscriptionExpiryWorker.Stop()
 	}
 
 	// 合并错误一并返回, 不让前面 step 的失败遮盖后面 step。
