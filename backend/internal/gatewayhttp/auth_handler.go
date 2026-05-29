@@ -256,6 +256,14 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 			writeAuditJSON(w, http.StatusAccepted, resp)
 			return
 		}
+		// S1-028: 密码重置必须能吊销既有会话,否则被盗/旧会话在改密后仍存活。在改密前即要求 session
+		// 依赖**且后端 store 已配置**:仅判 service 指针非 nil 不够——Store 未注入的服务(NewService(nil))
+		// 会让 Revoke 在改密、token 已消费之后才以 ErrStoreNotConfigured 失败,落入"无法吊销"的危险半成态。
+		// 故把这类静态可检测的配置缺失在改密前 fail-closed 拦下。
+		if d.Sessions == nil || d.Sessions.Store == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "session dependency unset")
+			return
+		}
 		user, err := d.Auth.ResetPassword(r.Context(), userauth.PasswordResetConfirm{
 			TenantID: req.TenantID, Token: req.Token, NewPassword: req.NewPassword,
 		})
@@ -266,17 +274,29 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 			writeAuthError(w, err)
 			return
 		}
-		revoked := int64(0)
-		if d.Sessions != nil {
-			revoked, _ = d.Sessions.Revoke(r.Context(), usersession.RevokeInput{
-				TenantID: user.TenantID, UserID: user.ID, Reason: "password_reset",
+		// S1-028: 密码已原子改成且 reset token 已被 ConsumePasswordResetToken 一并消费——重置本身已成功
+		// 且无法用同一 token 重试。会话吊销是其后的尽力清理:失败时(a)绝不能谎报"已吊销"(原缺陷:
+		// revoked,_ 吞错且永远写 SessionPolicy=revoked);(b)也绝不能把"已成功、token 已消费"的重置反报
+		// 成 503 失败——否则同一 token 无法重试且误导调用方。故如实返回重置成功 + 在响应/事件里标注会话
+		// 吊销真实状态,失败时记 ERROR 审计供告警。旧会话的"保证最终吊销"(跨库原子 / 密码版本失效 /
+		// durable pending-revoke)涉及跨库原子性,属架构升级,记入强制 roadmap,不在本 bugfix 内擅自加。
+		revoked, revErr := d.Sessions.Revoke(r.Context(), usersession.RevokeInput{
+			TenantID: user.TenantID, UserID: user.ID, Reason: "password_reset",
+		})
+		sessionRevocation := "revoked"
+		if revErr != nil {
+			sessionRevocation = "failed"
+			logInternalError(r.Context(), "", "user_password_reset_session_revoke_failed", revErr)
+			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				EventType: "user_password_reset_session_revoke_failed", TenantID: user.TenantID, UserID: user.ID,
+				Outcome: "failure", ReasonClass: sessionReasonClass(revErr),
 			})
 		}
 		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
 			EventType: "user_password_reset_completed", TenantID: user.TenantID, UserID: user.ID,
-			Outcome: "success", SessionPolicy: "revoked", SessionsRevoked: revoked,
+			Outcome: "success", SessionPolicy: sessionRevocation, SessionsRevoked: revoked,
 		})
-		writeAuditJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "sessions_revoked": revoked})
+		writeAuditJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "sessions_revoked": revoked, "session_revocation": sessionRevocation})
 	}
 }
 
