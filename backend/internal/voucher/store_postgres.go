@@ -31,12 +31,14 @@ func (s *PostgresStore) CreateVoucher(ctx context.Context, rec createVoucherReco
 INSERT INTO voucher (
 	tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, currency_code,
 	valid_from, valid_until, max_redemptions, single_use_per_user, status,
-	eligible_user_id, created_by_admin_id, created_at, updated_at
+	eligible_user_id, created_by_admin_id, created_at, updated_at,
+	grant_kind, subscription_plan_id
 ) VALUES (
 	$1, $2, $3, $4, $5, $6,
 	$7, $8, $9, $10,
 	CASE WHEN $8::timestamptz <= $13::timestamptz THEN 'expired' ELSE 'active' END,
-	$14, $11, $12, $12
+	$14, $11, $12, $12,
+	$15, $16
 )
 RETURNING id, tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, currency_code,
 	valid_from, valid_until, max_redemptions, redeemed_count, single_use_per_user, status,
@@ -44,7 +46,8 @@ RETURNING id, tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, cu
 	grant_kind, subscription_plan_id`,
 		rec.TenantID, rec.BatchID, rec.CodeHash, rec.CodeFingerprint, rec.AmountCents, rec.CurrencyCode,
 		rec.ValidFrom, rec.ValidUntil, rec.MaxRedemptions, rec.SingleUsePerUser, nullableAdminID(rec.AdminID),
-		rec.Now, rec.Now, rec.EligibleUserID)
+		rec.Now, rec.Now, rec.EligibleUserID,
+		grantKindOrDefault(rec.GrantKind), rec.SubscriptionPlanID)
 	v, err := scanVoucher(row)
 	if isUniqueViolation(err) {
 		return Voucher{}, ErrVoucherDuplicate
@@ -405,12 +408,14 @@ func insertVoucherTx(ctx context.Context, tx pgx.Tx, rec createVoucherRecord) (V
 INSERT INTO voucher (
 	tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, currency_code,
 	valid_from, valid_until, max_redemptions, single_use_per_user, status,
-	eligible_user_id, created_by_admin_id, created_at, updated_at
+	eligible_user_id, created_by_admin_id, created_at, updated_at,
+	grant_kind, subscription_plan_id
 ) VALUES (
 	$1, $2, $3, $4, $5, $6,
 	$7, $8, $9, $10,
 	CASE WHEN $8::timestamptz <= $13::timestamptz THEN 'expired' ELSE 'active' END,
-	$14, $11, $12, $12
+	$14, $11, $12, $12,
+	$15, $16
 )
 RETURNING id, tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, currency_code,
 	valid_from, valid_until, max_redemptions, redeemed_count, single_use_per_user, status,
@@ -418,12 +423,23 @@ RETURNING id, tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, cu
 	grant_kind, subscription_plan_id`,
 		rec.TenantID, rec.BatchID, rec.CodeHash, rec.CodeFingerprint, rec.AmountCents, rec.CurrencyCode,
 		rec.ValidFrom, rec.ValidUntil, rec.MaxRedemptions, rec.SingleUsePerUser, nullableAdminID(rec.AdminID),
-		rec.Now, rec.Now, rec.EligibleUserID)
+		rec.Now, rec.Now, rec.EligibleUserID,
+		grantKindOrDefault(rec.GrantKind), rec.SubscriptionPlanID)
 	v, err := scanVoucher(row)
 	if err != nil {
 		return Voucher{}, fmt.Errorf("voucher: insert voucher: %w", err)
 	}
 	return v, nil
+}
+
+// grantKindOrDefault 兜底空 grant_kind 为 'balance':
+// 批量创建路径 (CreateBatch) 不设 GrantKind, 直插空串会触 voucher_grant_kind_check;
+// 故所有 INSERT 经此函数把空值规整为 balance。
+func grantKindOrDefault(k string) string {
+	if k == "" {
+		return GrantKindBalance
+	}
+	return k
 }
 
 func getVoucherByCodeHashForUpdate(ctx context.Context, tx pgx.Tx, tenantID int64, hash []byte) (Voucher, error) {

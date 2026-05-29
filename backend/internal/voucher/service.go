@@ -62,19 +62,26 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (CreateResult, 
 		AmountCents: input.AmountCents, CurrencyCode: input.CurrencyCode,
 		ValidFrom: input.ValidFrom, ValidUntil: input.ValidUntil,
 		MaxRedemptions: input.MaxRedemptions, SingleUsePerUser: input.SingleUsePerUser,
-		EligibleUserID: input.EligibleUserID,
-		Now:            input.Now,
+		EligibleUserID:     input.EligibleUserID,
+		GrantKind:          input.GrantKind,
+		SubscriptionPlanID: input.SubscriptionPlanID,
+		Now:                input.Now,
 	})
 	if err != nil {
 		return CreateResult{}, err
 	}
+	payload := map[string]any{
+		"amount_cents": v.AmountCents, "currency_code": v.CurrencyCode,
+		"max_redemptions": v.MaxRedemptions, "single_use_per_user": v.SingleUsePerUser,
+		"grant_kind": v.GrantKind,
+	}
+	if v.SubscriptionPlanID != nil {
+		payload["subscription_plan_id"] = *v.SubscriptionPlanID
+	}
 	_ = s.emit(ctx, AuditEvent{
 		EventType: AuditVoucherCreated, TenantID: v.TenantID, VoucherID: v.ID,
 		ActorID: strconv.FormatInt(input.AdminID, 10), CodeFingerprint: v.CodeFingerprint,
-		Payload: map[string]any{
-			"amount_cents": v.AmountCents, "currency_code": v.CurrencyCode,
-			"max_redemptions": v.MaxRedemptions, "single_use_per_user": v.SingleUsePerUser,
-		},
+		Payload:    payload,
 		OccurredAt: input.Now,
 	})
 	return CreateResult{Voucher: v, Code: code}, nil
@@ -276,6 +283,7 @@ func (s *Service) emit(ctx context.Context, event AuditEvent) error {
 func normalizeCreateInput(input CreateInput) CreateInput {
 	input.CurrencyCode = normalizeCurrency(input.CurrencyCode)
 	input.Code = NormalizeCode(input.Code)
+	input.GrantKind = normalizeGrantKind(input.GrantKind)
 	input.ValidFrom = input.ValidFrom.UTC()
 	input.ValidUntil = input.ValidUntil.UTC()
 	if input.MaxRedemptions == 0 {
@@ -287,11 +295,35 @@ func normalizeCreateInput(input CreateInput) CreateInput {
 	return input
 }
 
+// normalizeGrantKind 空值默认 balance, 其余 trim+lower (与 GrantKind* 常量对齐)。
+func normalizeGrantKind(k string) string {
+	k = strings.ToLower(strings.TrimSpace(k))
+	if k == "" {
+		return GrantKindBalance
+	}
+	return k
+}
+
 func validateCreateInput(input CreateInput) error {
+	// AmountCents 对两种券都要求为正: 余额券即面额; 订阅券为名义价 (信息性, 兑换时不入余额)。
 	if input.TenantID <= 0 || input.AdminID <= 0 || input.AmountCents <= 0 || input.MaxRedemptions <= 0 {
 		return ErrInvalidInput
 	}
 	if input.ValidFrom.IsZero() || input.ValidUntil.IsZero() || !input.ValidUntil.After(input.ValidFrom) {
+		return ErrInvalidInput
+	}
+	// grant_kind 与套餐指针一致性 (镜像 DB voucher_subscription_kind_check, 在写库前拦截):
+	// 订阅券必须指向有效套餐; 余额券不得携带套餐指针 (防误配)。
+	switch input.GrantKind {
+	case GrantKindBalance:
+		if input.SubscriptionPlanID != nil {
+			return ErrInvalidInput
+		}
+	case GrantKindSubscription:
+		if input.SubscriptionPlanID == nil || *input.SubscriptionPlanID <= 0 {
+			return ErrInvalidInput
+		}
+	default:
 		return ErrInvalidInput
 	}
 	return nil

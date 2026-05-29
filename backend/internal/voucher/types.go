@@ -50,29 +50,29 @@ var (
 )
 
 type Voucher struct {
-	ID               int64         `json:"id"`
-	TenantID         int64         `json:"tenant_id"`
-	BatchID          *int64        `json:"batch_id,omitempty"`
-	CodeFingerprint  string        `json:"code_fingerprint"`
-	CodeHash         []byte        `json:"-"`
-	AmountCents      int64         `json:"amount_cents"`
-	CurrencyCode     string        `json:"currency_code"`
-	ValidFrom        time.Time     `json:"valid_from"`
-	ValidUntil       time.Time     `json:"valid_until"`
-	MaxRedemptions   int           `json:"max_redemptions"`
-	RedeemedCount    int           `json:"redeemed_count"`
-	SingleUsePerUser bool          `json:"single_use_per_user"`
-	EligibleUserID   *int64        `json:"eligible_user_id,omitempty"`
-	GrantKind        string        `json:"grant_kind"`
+	ID               int64     `json:"id"`
+	TenantID         int64     `json:"tenant_id"`
+	BatchID          *int64    `json:"batch_id,omitempty"`
+	CodeFingerprint  string    `json:"code_fingerprint"`
+	CodeHash         []byte    `json:"-"`
+	AmountCents      int64     `json:"amount_cents"`
+	CurrencyCode     string    `json:"currency_code"`
+	ValidFrom        time.Time `json:"valid_from"`
+	ValidUntil       time.Time `json:"valid_until"`
+	MaxRedemptions   int       `json:"max_redemptions"`
+	RedeemedCount    int       `json:"redeemed_count"`
+	SingleUsePerUser bool      `json:"single_use_per_user"`
+	EligibleUserID   *int64    `json:"eligible_user_id,omitempty"`
+	GrantKind        string    `json:"grant_kind"`
 	// SubscriptionPlanID: grant_kind='subscription' 时指向套餐; 余额券为 nil。
 	SubscriptionPlanID *int64        `json:"subscription_plan_id,omitempty"`
 	Status             VoucherStatus `json:"status"`
-	CreatedByAdminID int64         `json:"created_by_admin_id,omitempty"`
-	RevokedByAdminID int64         `json:"revoked_by_admin_id,omitempty"`
-	RevokedReason    string        `json:"revoked_reason,omitempty"`
-	CreatedAt        time.Time     `json:"created_at"`
-	UpdatedAt        time.Time     `json:"updated_at"`
-	RevokedAt        *time.Time    `json:"revoked_at,omitempty"`
+	CreatedByAdminID   int64         `json:"created_by_admin_id,omitempty"`
+	RevokedByAdminID   int64         `json:"revoked_by_admin_id,omitempty"`
+	RevokedReason      string        `json:"revoked_reason,omitempty"`
+	CreatedAt          time.Time     `json:"created_at"`
+	UpdatedAt          time.Time     `json:"updated_at"`
+	RevokedAt          *time.Time    `json:"revoked_at,omitempty"`
 }
 
 type Redemption struct {
@@ -130,7 +130,10 @@ type CreateInput struct {
 	MaxRedemptions   int
 	SingleUsePerUser bool
 	EligibleUserID   *int64
-	Now              time.Time
+	// GrantKind 空=balance (现状默认); subscription 时 SubscriptionPlanID 必填。
+	GrantKind          string
+	SubscriptionPlanID *int64
+	Now                time.Time
 }
 
 type CreateResult struct {
