@@ -59,10 +59,14 @@ func (ex *chatExecution) predictedCompletionCost() (decimal.Decimal, error) {
 	return cost.Total, nil
 }
 
+func reportedUsageMissing(u completionUsageForCost) bool {
+	return u.InputTokens <= 0 && u.OutputTokens <= 0 &&
+		u.CacheCreationTokens <= 0 && u.CacheCreation5mTokens <= 0 &&
+		u.CacheCreation1hTokens <= 0 && u.CacheReadTokens <= 0
+}
+
 func (ex *chatExecution) actualCompletionCost(usage completionUsageForCost) (completionCostBreakdown, error) {
-	if usage.InputTokens <= 0 && usage.OutputTokens <= 0 &&
-		usage.CacheCreationTokens <= 0 && usage.CacheCreation5mTokens <= 0 &&
-		usage.CacheCreation1hTokens <= 0 && usage.CacheReadTokens <= 0 {
+	if reportedUsageMissing(usage) {
 		return completionCostBreakdown{}, pricingUnavailable("reported usage missing")
 	}
 	return ex.completionCost(usage)
