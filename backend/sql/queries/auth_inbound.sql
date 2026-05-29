@@ -23,6 +23,7 @@ SELECT
     ak.status        AS key_status,
     ak.expires_at,
     u.status         AS user_status,
+    u.user_group     AS user_group,
     t.status         AS tenant_status
 FROM api_keys ak
 INNER JOIN users u
