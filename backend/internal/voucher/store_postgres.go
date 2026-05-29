@@ -146,17 +146,39 @@ WHERE tenant_id=$1 AND id=$2`, tenantID, id).Scan(
 	if err != nil {
 		return GetBatchResult{}, fmt.Errorf("voucher: get batch: %w", err)
 	}
-	vouchers, err := s.ListVouchers(ctx, ListInput{TenantID: tenantID, Limit: 1000})
+	vouchers, err := s.listVouchersByBatch(ctx, tenantID, id)
 	if err != nil {
 		return GetBatchResult{}, err
 	}
-	filtered := vouchers[:0]
-	for _, v := range vouchers {
-		if v.BatchID != nil && *v.BatchID == id {
-			filtered = append(filtered, v)
-		}
+	return GetBatchResult{Batch: b, Vouchers: vouchers}, nil
+}
+
+// listVouchersByBatch 按 (tenant_id, batch_id) 直接查询该批次的全部 voucher。此前 GetBatch 复用了
+// 租户级 ListVouchers(LIMIT 1000, ORDER BY id DESC)再在内存里按 batch_id 过滤 —— 一旦该租户在目标
+// 批次之后又产生了 1000 张更新的 voucher,目标批次就会落在最新 1000 之外,被静默漏掉或只返回部分
+// (批次上限正是 1000,极端情况下整批返回为空),且接口仍返回 200(S2-091)。批次级 WHERE 把行集
+// 限定在该批次内(schema 限定单批 ≤1000 张),无需再加可能重新引入"静默截断"的全局 LIMIT。
+func (s *PostgresStore) listVouchersByBatch(ctx context.Context, tenantID, batchID int64) ([]Voucher, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT id, tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, currency_code,
+	valid_from, valid_until, max_redemptions, redeemed_count, single_use_per_user, status,
+	eligible_user_id, created_by_admin_id, revoked_by_admin_id, revoked_reason, created_at, updated_at, revoked_at
+FROM voucher
+WHERE tenant_id=$1 AND batch_id=$2
+ORDER BY id DESC`, tenantID, batchID)
+	if err != nil {
+		return nil, fmt.Errorf("voucher: list batch vouchers: %w", err)
 	}
-	return GetBatchResult{Batch: b, Vouchers: filtered}, nil
+	defer rows.Close()
+	var out []Voucher
+	for rows.Next() {
+		v, err := scanVoucher(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }
 
 func (s *PostgresStore) RevokeVoucher(ctx context.Context, input RevokeInput) (Voucher, error) {
