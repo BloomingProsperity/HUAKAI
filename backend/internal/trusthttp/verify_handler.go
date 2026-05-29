@@ -115,6 +115,17 @@ func (h *verifyHandler) verify(ctx context.Context, raw []byte) VerifyResponse {
 	if !ed25519.Verify(ed25519.PublicKey(key.PublicKey), canonical, sig) {
 		return VerifyResponse{Valid: false, Status: "mismatch", SignatureValid: false, KeyStatus: keyStatus, Reason: "signature_mismatch", CanonicalHash: canonicalHash, SchemaVersion: trustSchemaVersion}
 	}
+	// S1-031: 域分离 —— 签名有效 ≠「这是有效 HUAKAI trust receipt」。audit ledger 用
+	// 同一 key 家族签 entry_hash / trust.ledger.v1 等载荷;若不校验被签 canonical 字节
+	// 的语义域,任何被该 key 签过的 base64 字节都能拿到 signed-only=valid 的伪 receipt 判定。
+	// 验签通过后再要求 canonical 确为 trust.receipt.v1;object 分支已在
+	// trustReceiptFromJSONObject 强校验 schema_version,此处补齐 base64 分支(放在验签之后,
+	// 不改变「篡改字节 → signature_mismatch」既有语义)。
+	if err := requireCanonicalTrustReceipt(canonical); err != nil {
+		// reason 复用 OpenAPI TrustVerifyResponse.reason 已声明的 payload_invalid(契约内),
+		// status=unverified 表示「签名有效但载荷不是可验证的 trust receipt」(codex #8 P2:不引入未声明枚举值)。
+		return VerifyResponse{Valid: false, Status: "unverified", SignatureValid: true, KeyStatus: keyStatus, Reason: "payload_invalid", CanonicalHash: canonicalHash, SchemaVersion: trustSchemaVersion}
+	}
 	if keyStatus == "revoked" {
 		if reason == "" {
 			reason = "key_revoked"
@@ -155,6 +166,24 @@ func (h *verifyHandler) lookupKey(ctx context.Context, fingerprint string) (*aud
 		return key, "revoked", "key_revoked", nil
 	}
 	return key, keyStatus, "", nil
+}
+
+// requireCanonicalTrustReceipt 确认 canonical 字节是一份 trust.receipt.v1,
+// 为 base64 分支提供与 object 分支等同的域约束(S1-031)。object 分支由
+// trustReceiptFromJSONObject 校验 schema_version;base64 分支历史上直接放行任意被签
+// 字节,故在验签通过后调用此函数完成域分离。非 JSON(如 audit ledger 的 entry_hash
+// 原始字节)或 schema_version 非 trust.receipt.v1(如 trust.ledger.v1)一律拒绝。
+func requireCanonicalTrustReceipt(canonical []byte) error {
+	var probe struct {
+		SchemaVersion string `json:"schema_version"`
+	}
+	if err := json.Unmarshal(canonical, &probe); err != nil {
+		return fmt.Errorf("payload 不是 canonical trust receipt: %w", err)
+	}
+	if strings.TrimSpace(probe.SchemaVersion) != trustSchemaVersion {
+		return fmt.Errorf("payload schema_version=%q, 期望 %s", probe.SchemaVersion, trustSchemaVersion)
+	}
+	return nil
 }
 
 func canonicalPayloadFromRequest(raw json.RawMessage) ([]byte, error) {
