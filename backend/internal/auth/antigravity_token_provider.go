@@ -472,6 +472,13 @@ func isPublicRemoteAddr(addr net.Addr) bool {
 	return isPublicOAuthIP(ip)
 }
 
+// IsPublicOAuthIP 报告 ip 是否为可接受的公网 OAuth 目标(非环回/私有/链路本地/CGNAT/special-use/
+// 组播/非全局单播)。导出供其它包(如 userauth 的 OAuth endpoint 静态门控)复用拨号期 guard 的同一套
+// IP deny 策略,避免静态校验与拨号校验出现策略漂移。
+func IsPublicOAuthIP(ip net.IP) bool {
+	return isPublicOAuthIP(ip)
+}
+
 func isPublicOAuthIP(ip net.IP) bool {
 	if ip == nil {
 		return false
