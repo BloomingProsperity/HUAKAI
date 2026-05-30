@@ -129,6 +129,50 @@ def release(agent):
             c.close()
 
 
+VIEW_HTML = """<!DOCTYPE html>
+<html lang=zh><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>HUAKAI 协调看板</title><style>
+body{margin:0;background:#0f1419;color:#e6edf3;font:14px/1.6 system-ui,"PingFang SC","Microsoft YaHei",sans-serif}
+.w{max-width:900px;margin:0 auto;padding:18px}
+h1{font-size:18px;margin:0 0 2px}.sub{color:#8b98a9;font-size:12px;margin-bottom:12px}
+.tok{display:flex;gap:8px;margin-bottom:14px}
+.tok input{flex:1;background:#1e2630;border:1px solid #2a3340;color:#e6edf3;border-radius:6px;padding:7px 10px}
+.tok button{background:#143d22;border:1px solid #2d6a3f;color:#7ee29a;border-radius:6px;padding:7px 14px;cursor:pointer}
+.card{background:#171d26;border:1px solid #2a3340;border-radius:9px;padding:12px;margin-bottom:8px}
+.ag{font-weight:600;font-size:15px}.ft{color:#4da3ff;font-size:12px;margin-left:8px}
+.pp{color:#8b98a9;font-size:12px}.fl{font-family:ui-monospace,monospace;font-size:12px;color:#cfd8e3;margin-top:4px}
+.age{float:right;color:#8b98a9;font-size:11px}.empty{color:#8b98a9;padding:24px;text-align:center}
+.err{color:#e5534b}.st{color:#8b98a9;font-size:11px;margin-top:10px}
+</style></head><body><div class=w>
+<h1>HUAKAI 协调看板 · 谁在编什么</h1>
+<div class=sub>三台机器实时编辑状态 · 每 4 秒自动刷新 · 只读</div>
+<div class=tok><input id=t type=password placeholder="粘贴 COORD_TOKEN 后回车"><button onclick=save()>看</button></div>
+<div id=out class=empty>输入 token 开始</div><div id=st class=st></div>
+</div><script>
+var T=sessionStorage.getItem('ct')||'';
+if(T)document.getElementById('t').value=T;
+document.getElementById('t').addEventListener('keydown',function(e){if(e.key==='Enter')save();});
+function save(){T=document.getElementById('t').value.trim();sessionStorage.setItem('ct',T);tick();}
+function esc(s){return (s==null?'':''+s).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
+function ago(iso){try{var d=(Date.now()-new Date(iso).getTime())/1000;return d<60?Math.round(d)+'s':Math.round(d/60)+'m';}catch(e){return '';}}
+function tick(){ if(!T)return;
+ fetch('/board',{headers:{Authorization:'Bearer '+T}}).then(function(r){
+  if(r.status===401){document.getElementById('out').className='empty err';document.getElementById('out').textContent='token 错误';return null;}
+  return r.json();
+ }).then(function(d){ if(!d)return;
+  var L=d.locks||[], o=document.getElementById('out');
+  if(!L.length){o.className='empty';o.textContent='(当前无人在编)';}
+  else{o.className='';o.innerHTML=L.map(function(l){return '<div class=card><span class=age>'+ago(l.heartbeat_at)+' 前</span>'+
+   '<div><span class=ag>'+esc(l.agent)+'</span><span class=ft>'+esc(l.core_feature||'')+'</span></div>'+
+   '<div class=pp>'+esc(l.purpose||'')+'</div><div class=fl>'+(l.files||[]).map(esc).join('<br>')+'</div></div>';}).join('');}
+  document.getElementById('st').textContent='更新于 '+new Date().toLocaleTimeString();
+ }).catch(function(e){document.getElementById('out').className='empty err';
+  document.getElementById('out').innerHTML='连不上服务。先在浏览器打开 https://45.8.114.249:8443/healthz 接受一次自签证书,再回来。';});
+}
+setInterval(tick,4000); tick();
+</script></body></html>"""
+
+
 class H(BaseHTTPRequestHandler):
     def _send(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode()
@@ -161,6 +205,17 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path == "/healthz":
             return self._send(200, {"ok": True, "ts": now()})
+        if u.path in ("/", "/view"):
+            # Public read-only board viewer (HTML only, no data). The page's JS
+            # calls /board with the token the viewer pastes — same-origin, so no
+            # CORS and the TLS cert is already accepted for this origin.
+            body = VIEW_HTML.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if not self._auth():
             return
         c = db()
