@@ -139,3 +139,13 @@ License risk and security risk must not reduce functionality. If a feature is ri
 ## Risk-Based Confirmation Rule
 
 Low-risk docs, tests, prompts, type fixes, UI copy, small refactors, and non-sensitive config examples may proceed after Owner start. Medium-risk implementation support may proceed when needed with recorded reason and risk. High-risk changes require Owner confirmation, including `LICENSE`, production secrets, real credentials, payment logic, authentication core, billing ledger, quota enforcement, database schema, deployment scripts, destructive migration files, destructive shell commands, new runtime dependencies, and production deployment.
+
+## Parallel-Edit Coordination (added 2026-05-30 Owner directive)
+
+Owner runs **multiple AIs and threads in parallel** on the same working tree; they overwrite each other's concurrent edits. Before editing ANY shared repo file, broadcast intent and check for conflicts via `.coordination/` (canonical spec: `.coordination/README.md`; cross-AI rule also in `AGENTS.md`):
+
+1. `bash .coordination/check.sh [<file>]` — board of who's editing what.
+2. If another live agent's lock holds your target file → **do not overwrite**; pick other work / wait / coordinate.
+3. `bash .coordination/claim.sh "<agent>" "<files-csv>" "<core_feature>" "<purpose>"` (refuses on conflict) → refresh periodically → `release.sh "<agent>"` when done.
+
+Per-agent lock files (`locks/<agent>.json`) mean the coordination state itself never collides. It's a broadcast convention, not an OS lock. (Optional: a Claude PreToolUse hook on Edit|Write can auto-run check/claim — other AIs won't run Claude hooks, so the file convention is the cross-AI contract.)

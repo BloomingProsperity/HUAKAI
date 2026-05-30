@@ -690,3 +690,18 @@ Owner 不能凭 Claude/Codex 内部 trade-off 拍板决策;参考项目横向对
 - staged docs 决策点是否缺 prestudy 链接
 
 任一标 HIGH 阻 land。
+
+## Parallel-Edit Coordination (added 2026-05-30 Owner directive)
+
+Owner runs **multiple AIs (Claude / Codex / Gemini) and multiple threads in parallel** on the same working tree. They edit the same files concurrently → silent overwrites. Every agent MUST broadcast what it is editing, which core feature, and why — and check before touching a shared file.
+
+**Mechanism**: `.coordination/` (canonical spec in `.coordination/README.md`). Per-agent lock files `locks/<agent>.json` (each agent writes ONLY its own → the coordination state itself never collides). `activity.log` is an append-only intent broadcast.
+
+**Protocol — before editing ANY shared repo file:**
+1. `bash .coordination/check.sh [<file>]` — see who's editing what (stale locks past `ttl_seconds` ignored).
+2. If a live lock by **another** agent lists your target file → **do NOT edit it** (no overwrite); pick other work / wait for its `done` / coordinate with Owner.
+3. `bash .coordination/claim.sh "<agent>" "<file1,file2>" "<core_feature>" "<purpose>"` — refuses (exit 2) on conflict, else writes your lock + logs intent.
+4. Re-run `claim.sh` periodically to refresh the heartbeat during long edits.
+5. `bash .coordination/release.sh "<agent>"` when done.
+
+Scripts are convenience; hand-writing `locks/<agent>.json` per the README schema is equally valid. This is a **broadcast convention**, not an OS lock — adoption by every AI is mandatory. Codex per-commit / slice review SHOULD flag a diff that edited a file held by another live lock without coordination.

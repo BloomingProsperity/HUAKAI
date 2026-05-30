@@ -1,0 +1,252 @@
+{
+  "meta": {
+    "title": "HUAKAI 功能树 · 推进 + 修复 状态地图",
+    "generated": "2026-05-30",
+    "supersedes": "docs/process/research/2026-05-21-full-audit-tree.md (codex 基线,不删)",
+    "overall_weighted_pct": 31,
+    "overall_note": "总加权来自 02_HUAKAI_FUSION_ARCHITECTURE.md 的 9 轴(治理100/计费70/调度60/协议15/上下文10/异步0/L0-L2 0 → ~30%);修复战役后 money-path/auth 多节点已硬化,微升至 ~31%。这是【建设进度】;另一条轴是【问题修复】。",
+    "weighted_axes": [
+      {"name": "治理基线", "weight": 5, "pct": 100},
+      {"name": "计费补偿 money-path", "weight": 25, "pct": 70},
+      {"name": "渠道调度", "weight": 15, "pct": 60},
+      {"name": "协议转换", "weight": 10, "pct": 15},
+      {"name": "上下文状态", "weight": 5, "pct": 10},
+      {"name": "异步任务", "weight": 5, "pct": 0},
+      {"name": "L0 商业化", "weight": 20, "pct": 0},
+      {"name": "L1 产品完整", "weight": 10, "pct": 0},
+      {"name": "L2 生产就绪", "weight": 5, "pct": 0}
+    ],
+    "fix_campaign": {
+      "source": "/home/ubuntu/audit/MASTER-verification-2026-05-29.md (195 条第三方审计逐条对真码核实)",
+      "total": 195, "real": 182, "refuted_or_alreadyfixed_or_drifted": 13,
+      "by_real_sev": {"S1": 56, "S2": 127, "S3": 1, "none": 11},
+      "landed": 16, "deferred": 2, "open_real": 164,
+      "landed_ids": ["S1-019","S1-031","S1-032","S2-148","S2-079","S2-096","S2-091","S2-054","S2-062","S1-011","S1-008","S1-010","S1-012","S1-014","S2-109","S2-045"],
+      "deferred_ids": ["S1-021","S1-024"],
+      "note": "已落地=Wave1(7)+credentialacq OAuth 簇(7,含 S2-054/062)+S2-109+S2-045。deferred=S1-021 voucher↔wallet(钱路,需 Owner gate)+S1-024 revoked-cooldown(钱路)。余 164 条按 Wave 3-8 排期。S2-045 另有 D1/D2 精度细化记 roadmap。"
+    },
+    "legend": {
+      "stage": {
+        "spec": "📋 仅 spec / 文档(impl≈0)",
+        "partial": "🟡 部分(有实现但缺口:未接线/缺测试/仅 happy-path/仅单 vendor)",
+        "wired": "🔵 已接线(打通主链,但未全测试/未生产硬化)",
+        "tested": "✅ 测试+生产可用",
+        "deadcode": "⚠️ 代码在但生产零调用 / 名实不符",
+        "missing": "❌ 缺失",
+        "nogo": "⛔ 真实代码但未上线(NO-GO)"
+      },
+      "verified": "✓ = Claude 已对真实代码深核(多为修复战役亲历);无 ✓ = 按 codex 2026-05-21 审计 + 文档综合(声称)",
+      "fix": "每节点关联审计 finding:✅landed / ⏸deferred / ○open;参考对照来自 codex 三参照 file:line"
+    }
+  },
+  "sections": [
+    {
+      "id": "§1", "name": "用户与权限", "pct": 55,
+      "summary": "身份链强(session 防重放/Credential V2),组/多租户管理面弱。",
+      "leaves": [
+        {"name": "用户注册/登录", "fid": "F-AUTH-001", "pkgs": ["userauth","auth"], "stage": "tested", "pct": 80, "verified": false, "fix": {"open": ["S2-114","S2-048"]}, "parity": "缺 2FA/验证码/默认权益初始化(vs sub2api MED)"},
+        {"name": "Session 会话", "fid": "F-AUTH-002/F-SESSION-MGT", "pkgs": ["usersession","auth"], "stage": "tested", "pct": 85, "verified": false, "fix": {"open": ["S2-092"]}, "parity": "防重放+token hash,强于三参照(LOW)"},
+        {"name": "API Key 管理", "fid": "F-KEY-001", "pkgs": ["userkey","userkeyhttp"], "stage": "wired", "pct": 60, "verified": false, "fix": {"open": ["S2-077","S2-046","S2-150","S2-151"]}, "parity": "缺用户自助+令牌级配额/IP/模型策略(vs new-api MED)"},
+        {"name": "用户组/权限组", "fid": "F-GROUP-001/F-RBAC-001", "pkgs": ["auth"], "stage": "missing", "pct": 5, "verified": false, "fix": {"open": ["S2-011","S2-125"]}, "parity": "❗未找到组实体/成员/CRUD;sub2api 显式组+策略,new-api 用户组+令牌组(HIGH)"},
+        {"name": "管理员权限", "fid": "F-SEC-002", "pkgs": ["admin","adminhttp"], "stage": "tested", "pct": 75, "verified": false, "fix": {"open": ["S2-075","S2-117"]}, "parity": "平台/租户 operator+审计(LOW)"},
+        {"name": "dev auth token 生产泄露", "fid": "F-SEC-002", "pkgs": ["gatewayhttp"], "stage": "partial", "pct": 50, "verified": false, "fix": {"open": ["S1-018"]}, "parity": "S1-018:dev auth 返回 flag 未在生产屏蔽(HIGH,Wave2 待修)"},
+        {"name": "多租户隔离", "fid": "F-TENANT", "pkgs": ["db","pool"], "stage": "partial", "pct": 55, "verified": false, "fix": {"open": []}, "parity": "底层 schema 强,pool 管理面硬编码默认租户(MED)"}
+      ]
+    },
+    {
+      "id": "§2", "name": "模型接入", "pct": 32,
+      "summary": "主路径(OpenAI/Anthropic/Gemini)通,长尾 provider 薄;协议转换轴仅 15%。",
+      "leaves": [
+        {"name": "OpenAI Chat/Responses", "fid": "F-PROTO-002", "pkgs": ["proto","gateway"], "stage": "partial", "pct": 55, "verified": false, "fix": {"open": ["S2-060","S2-061","S2-082"]}, "parity": "主路可用,高级字段有损耗(MED)"},
+        {"name": "OpenAI Codex 接入", "fid": "F-PROTO-002", "pkgs": ["provider","hermes"], "stage": "partial", "pct": 30, "verified": false, "fix": {"open": []}, "parity": "❗仅 session passthrough,非完整接入;sub2api Codex 导入/CLIProxyAPI 专门 executor/new-api Codex 渠道(HIGH)"},
+        {"name": "Anthropic Messages", "fid": "F-PROTO-002", "pkgs": ["proto"], "stage": "wired", "pct": 60, "verified": false, "fix": {"open": ["S2-136","S2-137"]}, "parity": "刚补非流式;跨协议保真待补(MED)"},
+        {"name": "Gemini Messages/SSE", "fid": "F-PROTO-002", "pkgs": ["proto","gateway"], "stage": "partial", "pct": 35, "verified": false, "fix": {"open": ["S2-138","S2-139","S2-140"]}, "parity": "❗能读流但请求归一化/原生入口未闭环;三参照均一等支持 Gemini(HIGH)"},
+        {"name": "Bedrock", "fid": "F-PROTO-002", "pkgs": ["proto"], "stage": "partial", "pct": 50, "verified": false, "fix": {"open": ["S1-022"]}, "parity": "typed adapter 较强,缺未知事件策略;S1-022 非流式无法转译(MED)"},
+        {"name": "长尾 OpenAI-compatible (Grok/DeepSeek/Mistral/Groq/Together/Perplexity/Fireworks/OpenRouter)", "fid": "F-PROTO-002", "pkgs": ["provider","proto"], "stage": "partial", "pct": 35, "verified": false, "fix": {"open": ["S2-002","S2-042","S2-108"]}, "parity": "薄 passthrough,缺 provider 语义(LOW/MED)"},
+        {"name": "Rerank 模型surface", "fid": "F-MODEL-002", "pkgs": [], "stage": "missing", "pct": 0, "verified": false, "fix": {"open": []}, "parity": "❗参考缺口:new-api 有 Cohere/Jina rerank;HUAKAI 无(roadmap Phase9+)"}
+      ]
+    },
+    {
+      "id": "§3", "name": "账号与凭证", "pct": 66,
+      "summary": "框架强、修复战役刚硬化一大批(OAuth 簇+storm);运营闭环(批量/主动巡检)仍弱。",
+      "leaves": [
+        {"name": "Provider Account", "fid": "F-POOL-001", "pkgs": ["credentialstore","billing"], "stage": "tested", "pct": 75, "verified": false, "fix": {"open": ["S1-007","S2-008","S2-089","S2-131"]}, "parity": "字段全,缺批量导入/多 key(MED)"},
+        {"name": "凭证存储(7 类,V2 AES-GCM)", "fid": "F-CRED-001", "pkgs": ["credentialstore"], "stage": "tested", "pct": 90, "verified": false, "fix": {"open": []}, "parity": "Credential V2 AES-GCM+AAD,强于三参照(LOW)"},
+        {"name": "凭证续期 + 3-scope storm 限流", "fid": "F-AUTH-005 / A07", "pkgs": ["credentialworker","auth"], "stage": "tested", "pct": 80, "verified": true, "fix": {"landed": ["S2-045","S2-062"], "deferred": ["S1-024"], "open": ["S2-099"]}, "parity": "S2-045 已把 3-scope(account DB + endpoint/global 进程内)接入;强于 sub2api(仅 account Redis 锁)/CLIProxyAPI(仅进程内 cap)/new-api(~无)。D1/D2 精度细化 roadmap"},
+        {"name": "OAuth 交换/回调安全", "fid": "F-AUTH-005", "pkgs": ["credentialacq","anthropicoauth"], "stage": "tested", "pct": 78, "verified": true, "fix": {"landed": ["S1-008","S1-010","S1-012","S1-014"], "open": ["S2-115","S2-010"]}, "parity": "fail-close 假/孤儿 exchanger+终态守卫+claude_ai loopback-only;HTTPS-admin parity roadmap"},
+        {"name": "刷新 adapter SSRF 加固", "fid": "F-AUTH-005", "pkgs": ["credentialworker"], "stage": "tested", "pct": 80, "verified": true, "fix": {"landed": ["S1-011","S2-054"]}, "parity": "S1-011/S2-054:vendor refresher/metadata token 端点 pin,堵 SSRF;CLIProxyAPI/new-api 有 SSRF 防护"},
+        {"name": "凭证轮换/健康巡检", "fid": "F-AUTH-005", "pkgs": ["credentialworker","channelhealth"], "stage": "partial", "pct": 55, "verified": false, "fix": {"open": []}, "parity": "单凭证轮换有,缺批量+主动巡检(MED)"},
+        {"name": "凭证获取流程(OAuth/批量导入运营)", "fid": "F-AUTH-006", "pkgs": ["credentialacq"], "stage": "partial", "pct": 45, "verified": false, "fix": {"open": []}, "parity": "❗通用表有,OAuth bootstrap/批量导入运营闭环不足;sub2api Codex 批量/CLIProxyAPI 多 provider OAuth(HIGH,L0 商业化阻塞)"}
+      ]
+    },
+    {
+      "id": "§4", "name": "账号池 / 资源池", "pct": 50,
+      "summary": "主链有骨架(入站→路由→claim→attempt→结算),绑定关系是权益/隔离/调度的核心缺口。",
+      "leaves": [
+        {"name": "Pool 管理 CRUD", "fid": "F-POOL-001", "pkgs": ["pool"], "stage": "partial", "pct": 55, "verified": false, "fix": {"open": ["S2-130"]}, "parity": "CRUD 有,管理面未全租户化(MED)"},
+        {"name": "账号/用户/API Key/模型 绑定", "fid": "F-POOL-001/F-GROUP-001", "pkgs": ["binding","pool"], "stage": "partial", "pct": 40, "verified": false, "fix": {"open": ["S1-006","S2-007","S2-051"]}, "parity": "❗绑定是权益+隔离+调度共同地基,缺口大;sub2api 显式组/new-api 用户组+令牌组(HIGH)"},
+        {"name": "并发槽位", "fid": "F-CONC-001", "pkgs": ["pool","balancehold"], "stage": "wired", "pct": 60, "verified": false, "fix": {"open": ["S2-068"]}, "parity": "原子获取测试通过,缺 orphan sweep/重试(MED)"},
+        {"name": "等待队列", "fid": "F-POOL-001", "pkgs": ["pool"], "stage": "partial", "pct": 35, "verified": false, "fix": {"open": []}, "parity": "只\"告知等待\"返 429,非真排队(MED)"},
+        {"name": "Sticky 会话", "fid": "F-POOL-AFFINITY-001", "pkgs": ["pool","cache_routing"], "stage": "tested", "pct": 75, "verified": false, "fix": {"open": []}, "parity": "DB sticky+TTL(LOW)"},
+        {"name": "Account-to-API 主链", "fid": "F-POOL-001", "pkgs": ["pool","router","billing"], "stage": "tested", "pct": 70, "verified": false, "fix": {"open": ["S2-035","S2-053"]}, "parity": "入站→路由→claim→attempt→结算 全接线(LOW)"}
+      ]
+    },
+    {
+      "id": "§5", "name": "网关核心", "pct": 55,
+      "summary": "三入口(/v1/chat,/v1/responses,/v1/messages)完整;HCSF 方向对但 vendor 覆盖+请求归一化未闭环。frozen 包。",
+      "leaves": [
+        {"name": "三入口 handler", "fid": "F-GW-001", "pkgs": ["gatewayhttp"], "stage": "tested", "pct": 80, "verified": false, "fix": {"open": ["S2-009","S2-093","S2-129"]}, "parity": "三入口完整(LOW)"},
+        {"name": "HCSF canonical 协议转换中间层", "fid": "F-PROTO-002", "pkgs": ["gateway","proto"], "stage": "partial", "pct": 25, "verified": true, "fix": {"open": ["S1-016"]}, "parity": "✓深核:hcsf_graph_marshal.go+helpers 存在,15 文件引用;codex 漏列。HUAKAI 架构优势(集中可审计),但 Gemini 请求转换未实现+S1-016 非流式静默 raw-fallback(HIGH)"},
+        {"name": "请求/响应标准化", "fid": "F-PROTO-002", "pkgs": ["gateway","proto"], "stage": "partial", "pct": 45, "verified": false, "fix": {"open": ["S2-003","S2-006","S2-021"]}, "parity": "核心可用,高保真不足(MED)"},
+        {"name": "模型别名/mapping", "fid": "F-MODEL-001", "pkgs": ["gateway","registry"], "stage": "partial", "pct": 45, "verified": false, "fix": {"open": []}, "parity": "基础 override 有,缺运维级 mapping;CLIProxyAPI model mapping(MED)"},
+        {"name": "路由选择 RoutePlan", "fid": "F-ROUTE-001", "pkgs": ["router"], "stage": "partial", "pct": 55, "verified": false, "fix": {"open": ["S2-020","S2-043"]}, "parity": "RoutePlan 有,只提取 stream feature(MED)"},
+        {"name": "重试 / Failover", "fid": "F-GW-004", "pkgs": ["gatewayhttp","router"], "stage": "partial", "pct": 50, "verified": false, "fix": {"open": ["S1-004","S2-069","S2-070","S2-100","S2-101"]}, "parity": "跨账号/池有,缺同账号短重试+内部 backoff;WaitPlan 直接返客户端(MED)"},
+        {"name": "Timeout", "fid": "F-TIMEOUT-001", "pkgs": ["gatewayhttp"], "stage": "partial", "pct": 50, "verified": false, "fix": {"open": []}, "parity": "基础有,缺细粒度配置(LOW/MED)"},
+        {"name": "Streaming 转发", "fid": "F-GW-002", "pkgs": ["gatewayhttp","protosse","transport"], "stage": "partial", "pct": 55, "verified": false, "fix": {"open": ["S2-098","S2-100"]}, "parity": "框架较强,provider 长尾有坑;bounded 1MiB buffer(MED)"},
+        {"name": "Error Normalization + transport taxonomy", "fid": "F-GW-002", "pkgs": ["transport","clienterr"], "stage": "wired", "pct": 60, "verified": false, "fix": {"open": []}, "parity": "❗codex 漏列细节;类型化 StreamEndClass 强于三参照,provider-specific 解析不足(MED)"},
+        {"name": "tool_call_id 解析(base62 非 hex)", "fid": "F-PROTO-002", "pkgs": ["proto"], "stage": "partial", "pct": 40, "verified": false, "fix": {"open": ["洞③"]}, "parity": "❗系统性 bug:isHexID 假设错,多轮 tool 调用跨 4 协议会断(HIGH)"}
+      ]
+    },
+    {
+      "id": "§6", "name": "Rust 高性能网关", "pct": 10,
+      "summary": "⚠️ 名实不符:Rust crate 真实存在(listener/proxy/SSE/限流/redaction/mimicry)但 READINESS.md 标 NO-GO,生产入口是 Go。",
+      "leaves": [
+        {"name": "core_gateway 等 8 crate", "fid": "-", "pkgs": ["(rust)"], "stage": "nogo", "pct": 20, "verified": false, "fix": {"open": []}, "parity": "Rust 真实存在但 NO-GO,非生产数据面(应标 outbound sidecar 候选)"},
+        {"name": "Go 控制面 gRPC 交互", "fid": "-", "pkgs": [], "stage": "missing", "pct": 0, "verified": false, "fix": {"open": []}, "parity": "❗Rust 侧定义 proto,Go 侧无对应 gRPC server(HIGH→按新方向 MED)"}
+      ]
+    },
+    {
+      "id": "§7", "name": "路由与调度", "pct": 55,
+      "summary": "底座有(9-gate selector + PASR 评分),策略未产品化;渠道调度轴 60%。",
+      "leaves": [
+        {"name": "Account Selection 9-gate", "fid": "F-ROUTE-002", "pkgs": ["pool","router"], "stage": "wired", "pct": 60, "verified": false, "fix": {"open": ["S2-130"]}, "parity": "gate/sticky/rank/slot 链有(MED)"},
+        {"name": "命名路由策略(weighted/RR/fill-first/risk-pareto)", "fid": "F-CONFIG-001", "pkgs": ["router"], "stage": "partial", "pct": 45, "verified": false, "fix": {"open": []}, "parity": "可近似,缺 operator 可见命名策略;portkey/new-api 有显式策略(MED)"},
+        {"name": "PASR cache-locality routing", "fid": "F-CACHE-001", "pkgs": ["cache_routing","cachemetrics"], "stage": "partial", "pct": 40, "verified": true, "fix": {"open": []}, "parity": "✓深核:cache_routing 仅 2 文件(比 codex 暗示薄);segment/locality 雏形,HUAKAI 独有成本优化方向(MED)"},
+        {"name": "channel health cooldown/ramp 状态机", "fid": "F-CH-002", "pkgs": ["channelhealth"], "stage": "wired", "pct": 60, "verified": true, "fix": {"open": ["S2-110","S2-027","S2-156"]}, "parity": "✓深核:channelhealth 10 文件/89 处 cooldown·ramp·degraded;codex 漏列状态细节;new-api 2-gate auto-disable(MED)"},
+        {"name": "Retry Budget / Model Fallback", "fid": "F-GW-004", "pkgs": ["router"], "stage": "partial", "pct": 45, "verified": false, "fix": {"open": []}, "parity": "预算有,等待/冷却消化弱;缺产品化 policy(MED)"},
+        {"name": "L2 响应缓存 + 幂等重放", "fid": "F-CACHE-002", "pkgs": ["cache"], "stage": "partial", "pct": 45, "verified": false, "fix": {"open": []}, "parity": "❗codex 漏列;影响钱路径与重复请求;new-api cache-hit 计费(MED)"}
+      ]
+    },
+    {
+      "id": "§8", "name": "用量与计费 (money-path)", "pct": 45,
+      "summary": "❗最危险:Tx1/Tx2 结算基建 70%,但真钱包扣减/充值订单/cache-TTL 落账 未闭环。多条钱路 finding 待 Wave3+Owner gate。",
+      "leaves": [
+        {"name": "Usage Record / Token 统计", "fid": "F-OBS-001", "pkgs": ["billing"], "stage": "wired", "pct": 60, "verified": false, "fix": {"open": ["S2-049","S2-118"]}, "parity": "Tx1 reserve+Tx2 settle+50 invariants;5m/1h cache TTL 落账细分待补(S1-015 已证非漏)(MED)"},
+        {"name": "价格表 / Pricing Snapshot", "fid": "F-BILL-001", "pkgs": ["billing"], "stage": "partial", "pct": 50, "verified": false, "fix": {"open": ["S2-023","S2-026","S2-067"]}, "parity": "版本表有,默认价格空,细分 bucket 不足;new-api 缓存差价计费(MED)"},
+        {"name": "余额扣费 / 配额预留 / 结算 / 退款", "fid": "F-OBS-001", "pkgs": ["billing","balancehold","settlementrecovery"], "stage": "wired", "pct": 55, "verified": false, "fix": {"open": ["S2-063","S2-049"]}, "parity": "❗claim/settle/refund + durable hold 原子预扣(S1-013 已证存在)在;真钱包余额扣减闭环待补;new-api 预扣/补扣/退款完整(HIGH)"},
+        {"name": "Voucher 兑换", "fid": "F-BILL-002", "pkgs": ["voucher"], "stage": "tested", "pct": 70, "verified": true, "fix": {"landed": ["S2-091"], "deferred": ["S1-021"], "open": ["S2-090","S2-050"]}, "parity": "S2-091 batch 明细已修(防大租户漏券);S1-021 balance_cents 报累计非可花余额→voucher↔wallet 集成(钱路 deferred,需 Owner gate)"},
+        {"name": "充值订单 / 支付回调", "fid": "F-PAY-001", "pkgs": ["community"], "stage": "spec", "pct": 10, "verified": false, "fix": {"open": ["S2-081"]}, "parity": "❗仅 voucher,无充值订单/支付回调;sub2api EasyPay/Alipay/WeChat/Stripe,new-api 充值订单+回调完整(HIGH,L0 商业化)"},
+        {"name": "成本收据(签名)", "fid": "F-OBS-001/F-RECEIPT-VERIFY", "pkgs": ["trustreceipt"], "stage": "wired", "pct": 55, "verified": false, "fix": {"open": []}, "parity": "链路真存在但 receipt 缺细分 token 且非强制结算产物;三参照均无签名 receipt(HUAKAI 独有,HIGH 收尾)"}
+      ]
+    },
+    {
+      "id": "§9", "name": "审计与信任链", "pct": 58,
+      "summary": "HUAKAI 差异化强项(Ed25519 签名账本+公钥 registry+receipt mismatch 自动退款),三参照都无用户可验证账本;被 §8 钱路拖累。",
+      "leaves": [
+        {"name": "Audit Ledger / hash-chain / Ed25519 / PubKey registry", "fid": "F-TRUST-001", "pkgs": ["auditledger","sign"], "stage": "wired", "pct": 65, "verified": false, "fix": {"open": ["S2-005"]}, "parity": "后端真实;Merkle 实为 hash-chain 非标准 inclusion proof(MED)"},
+        {"name": "Receipt Verify + 有效窗口 + receipt/domain 绑定", "fid": "F-TRUST-001", "pkgs": ["trusthttp","trustreceipt","gatewayhttp"], "stage": "tested", "pct": 75, "verified": true, "fix": {"landed": ["S1-031","S1-032"], "open": ["S2-146","S2-147"]}, "parity": "S1-031 绑 receipt/domain+S1-032 验签名 key 有效窗口 已修;强于三参照(无签名 receipt)"},
+        {"name": "Key Rotation / Revocation / CRL", "fid": "F-TRUST-001", "pkgs": ["sign","trust"], "stage": "partial", "pct": 45, "verified": false, "fix": {"open": []}, "parity": "90 天轮换+撤销 registry spec;实现部分(MED)"},
+        {"name": "反掺水 / 用户可验证账单 (Trust Chain UX)", "fid": "F-RECEIPT-VERIFY", "pkgs": ["trusthttp"], "stage": "partial", "pct": 45, "verified": false, "fix": {"open": []}, "parity": "方向强于三参照,前端仍 mock(MED)"}
+      ]
+    },
+    {
+      "id": "§10", "name": "可观测与运维", "pct": 50,
+      "summary": "后端较强(DLQ/outbox/eventbus/settlement recovery),运维 UI 弱;异步任务轴 0%(orphan-sweep/replay consumer 实现 0)。",
+      "leaves": [
+        {"name": "Request Log / Attempt / Ops Trace", "fid": "F-OPS-001", "pkgs": ["obs","observability"], "stage": "wired", "pct": 60, "verified": false, "fix": {"open": ["S2-162"]}, "parity": "后端有(Slice4 Obs Reader),前端排障面弱(MED)"},
+        {"name": "DLQ / outbox / savepoint", "fid": "F-OBS-005", "pkgs": ["dlq"], "stage": "wired", "pct": 60, "verified": true, "fix": {"landed": ["S2-096"], "open": ["S2-094","S2-095","S2-161"]}, "parity": "❗codex 漏列 billing 集成;S2-096 replay 失败浮出 MarkFailed err 已修;DLQ operator replay 强于三参照(MED)"},
+        {"name": "Event Bus / Hermes 编排", "fid": "F-OBS-004", "pkgs": ["eventbus","hermes","hermeschat","hermeshttp"], "stage": "partial", "pct": 45, "verified": true, "fix": {"open": ["S2-055","S2-028","S2-085","S2-087","S2-066","S2-159"]}, "parity": "✓深核:eventbus 4 文件存在;codex 漏列;异步 backbone(14-segment chain spec),实现部分(MED)"},
+        {"name": "Settlement Recovery", "fid": "F-OBS-005", "pkgs": ["settlementrecovery"], "stage": "wired", "pct": 60, "verified": true, "fix": {"open": []}, "parity": "✓深核:已接入 runtime(wiring.go + chat_completions billing/stream/handler + obs persister),非仅存在;交付后结算 durable 恢复,HUAKAI 独有(MED)"},
+        {"name": "Channel Health / Error Trend 聚合", "fid": "F-OBS-001", "pkgs": ["channelhealth"], "stage": "partial", "pct": 50, "verified": false, "fix": {"open": []}, "parity": "自动健康处置成形,趋势聚合不足(MED)"},
+        {"name": "Admin Retry / 故障排查面板", "fid": "F-OPS-001", "pkgs": ["adminhttp"], "stage": "partial", "pct": 40, "verified": false, "fix": {"open": ["S2-075","S2-117"]}, "parity": "后端动作在,缺操作员可用页面(MED)"},
+        {"name": "可配置外部告警 (OpenTelemetry)", "fid": "F-OBS-002", "pkgs": ["observability"], "stage": "partial", "pct": 35, "verified": false, "fix": {"open": []}, "parity": "OTel 契约方向;exporter 待接(MED)"}
+      ]
+    },
+    {
+      "id": "§11", "name": "安全与隐私", "pct": 56,
+      "summary": "隐私强(body zeroize+sentinel+3 通道日志分离,强于三参照);SSRF Guard 生产链路+通用限流是硬缺口。",
+      "leaves": [
+        {"name": "Secret Redaction / Body zeroize / Log Guard", "fid": "F-PRIVACY-001", "pkgs": ["privacy","redact"], "stage": "tested", "pct": 85, "verified": false, "fix": {"open": []}, "parity": "body zeroize+sentinel 测试,强于三参照(LOW)"},
+        {"name": "可信代理 client IP 提取 (anti-spoof)", "fid": "F-SEC-005", "pkgs": ["clientip","clientid"], "stage": "tested", "pct": 85, "verified": true, "fix": {"landed": ["S2-109"]}, "parity": "S2-109:fail-closed trusted-proxy CIDR+rightmost-untrusted XFF;强于 sub2api leftmost/new-api trust-any/CLIProxyAPI trust-peer"},
+        {"name": "SSRF Guard (生产链路)", "fid": "F-SEC-005", "pkgs": ["credentialworker","transport"], "stage": "partial", "pct": 50, "verified": true, "fix": {"landed": ["S1-011","S2-054"], "open": []}, "parity": "❗刷新链路 SSRF 已部分加固(S1-011/S2-054),但通用出站 SSRF Guard 生产链路仍缺;CLIProxyAPI/new-api 有(HIGH)"},
+        {"name": "通用 API 限流", "fid": "F-SEC-001/F-SEC-004", "pkgs": ["rate"], "stage": "partial", "pct": 30, "verified": false, "fix": {"open": []}, "parity": "❗F-RATE-001 上游冷却有,通用 per-IP/per-user 限流未落地;三参照都有(HIGH)"},
+        {"name": "跨租户隔离 / 敏感脱敏", "fid": "F-TENANT", "pkgs": ["privacy","db"], "stage": "wired", "pct": 60, "verified": false, "fix": {"open": ["S2-132","S2-145"]}, "parity": "隔离+规则强,低层 error string 泄露风险(MED)"}
+      ]
+    },
+    {
+      "id": "§12", "name": "反封禁 / 网络策略", "pct": 15,
+      "summary": "🟡/📋 大量仅 spec,不能按已实现承诺。出口 IP 池/设备指纹/请求节奏 多停在 spec。",
+      "leaves": [
+        {"name": "Proxy / 出口 IP 池 / IP 绑定", "fid": "F-OUTBOUND-IP-001", "pkgs": ["transport"], "stage": "spec", "pct": 20, "verified": false, "fix": {"open": []}, "parity": "❗Proxy 有基础,出口 IP 池/账号稳定 IP 绑定仅 spec;sub2api 部分代理/CLIProxyAPI 代理工具(HIGH)"},
+        {"name": "TLS / H2 / Header 指纹控制面", "fid": "F-ACTIVE-DETECT", "pkgs": ["clientshape","transport"], "stage": "partial", "pct": 30, "verified": false, "fix": {"open": []}, "parity": "❗Go uTLS 有真实现,H2/header 控制面不完整;依赖 Rust 上线;CLIProxyAPI uTLS 库(HIGH)"},
+        {"name": "设备指纹 / 请求节奏 / 风险探测", "fid": "F-DEVICE-001/F-REQUEST-PACING", "pkgs": [], "stage": "spec", "pct": 8, "verified": false, "fix": {"open": []}, "parity": "❗大多停在 spec,生产实现缺失;三参照均无(HUAKAI 自研方向,HIGH 大工程)"}
+      ]
+    },
+    {
+      "id": "§13", "name": "Juice (模型路由透明)", "pct": 22,
+      "summary": "⚠️ 旧\"降智检测\"已改\"透明版\"。ModelChain/header/ledger 有但完整透明 UX 未成;EmitModelMismatchLoss/tokencheck 是死代码(生产零调用)。",
+      "leaves": [
+        {"name": "用户可见 请求→路由→上游 三段链", "fid": "F-TRUST-001", "pkgs": ["gateway","auditledger"], "stage": "partial", "pct": 35, "verified": false, "fix": {"open": []}, "parity": "❗ModelChain/header/ledger 有,完整透明 UX 未成(HIGH)"},
+        {"name": "ModelChain", "fid": "-", "pkgs": ["gateway"], "stage": "partial", "pct": 45, "verified": false, "fix": {"open": []}, "parity": "类型/header/ledger/测试有,异常/fallback 路径未全覆盖(MED)"},
+        {"name": "EmitModelMismatchLoss", "fid": "-", "pkgs": ["gateway"], "stage": "deadcode", "pct": 20, "verified": false, "fix": {"open": []}, "parity": "❗函数+测试存在,生产零调用=死代码;1-2 天接线点亮差异化(HIGH)"},
+        {"name": "tokencheck 包 (CrossCheck/CacheVerify)", "fid": "-", "pkgs": ["tokencheck"], "stage": "deadcode", "pct": 40, "verified": false, "fix": {"open": []}, "parity": "S2-163 已证非完全死(ce31bdf 接了非流式);流式侧覆盖仍弱(MED)"}
+      ]
+    },
+    {
+      "id": "§14", "name": "社区 / 商业增长", "pct": 20,
+      "summary": "🟡/📋 邀请码有头,推荐/返佣/Tier/反作弊/活动审计 多 spec+schema 未接账单。",
+      "leaves": [
+        {"name": "邀请码", "fid": "F-COMM-001", "pkgs": ["community","voucher"], "stage": "partial", "pct": 45, "verified": false, "fix": {"open": []}, "parity": "生成/校验/幂等/注册 redeem 有,缺 UI/admin;new-api 完整邀请/兑换(MED)"},
+        {"name": "推荐码 / Referral", "fid": "F-COMM-001", "pkgs": ["community"], "stage": "spec", "pct": 20, "verified": false, "fix": {"open": []}, "parity": "❗表+spec 有,qualification 未接账单(HIGH)"},
+        {"name": "Reward / 返佣 / Tier / 反作弊 / 活动审计", "fid": "F-COMM-001", "pkgs": ["community"], "stage": "spec", "pct": 8, "verified": false, "fix": {"open": []}, "parity": "❗仅表+spec,无发放/冻结/退扣/提现/recompute;sub2api/new-api 完整推广闭环(HIGH)"}
+      ]
+    },
+    {
+      "id": "§15", "name": "前端管理面板", "pct": 30,
+      "summary": "⚠️ 部分真接后端(chat/audit/accounts/pools),Dashboard/Mimicry/Pool 绑定 仍 mock/假数据。Owner 已决定搁置到 Rust 之后,本战役不碰。",
+      "leaves": [
+        {"name": "用户面板 (chat/audit 真调用)", "fid": "F-UI-001", "pkgs": ["(frontend)"], "stage": "partial", "pct": 45, "verified": false, "fix": {"open": []}, "parity": "chat/audit 真调用,缺 key/用量/钱包/推广页(MED)"},
+        {"name": "管理员面板 (accounts/pools/audit 真页)", "fid": "F-UI-001", "pkgs": ["(frontend)"], "stage": "partial", "pct": 45, "verified": false, "fix": {"open": []}, "parity": "真页,缺导航/settings;部分 501(MED)"},
+        {"name": "Dashboard", "fid": "F-UI-001", "pkgs": ["(frontend)"], "stage": "deadcode", "pct": 20, "verified": false, "fix": {"open": []}, "parity": "❗mock 数据,UI 自称 simulated(MED,违\"不做假\")"},
+        {"name": "Pool 绑定 UI / Mimicry 配置", "fid": "F-UI-001", "pkgs": ["(frontend)"], "stage": "deadcode", "pct": 15, "verified": false, "fix": {"open": []}, "parity": "❗pool CRUD 真,account 绑定假 preview;Mimicry 纯 mock 无后端(HIGH)"},
+        {"name": "审计验证页 (verify/merkle 真调)", "fid": "F-RECEIPT-VERIFY", "pkgs": ["(frontend)"], "stage": "wired", "pct": 55, "verified": false, "fix": {"open": []}, "parity": "真调 verify/merkle,浏览器侧校验(偏强,LOW)"},
+        {"name": "系统设置页", "fid": "F-UI-001", "pkgs": ["(frontend)"], "stage": "missing", "pct": 5, "verified": false, "fix": {"open": []}, "parity": "Sidebar 有但 disabled,无 /settings 页(MED)"}
+      ]
+    },
+    {
+      "id": "§16", "name": "文档 / 测试 / 发布 + 部署", "pct": 50,
+      "summary": "文档治理强(capability contract/clean-room/15 规则),测试弱(前端无测试/无 CI 安全链);release-mode 硬化已修。L2 生产就绪轴 0%。",
+      "leaves": [
+        {"name": "release-mode 生产硬化", "fid": "F-MODE-001", "pkgs": ["config","cmd-gateway"], "stage": "tested", "pct": 80, "verified": true, "fix": {"landed": ["S1-019"], "open": ["S2-004","S2-029","S1-023","S2-084"]}, "parity": "S1-019:unset 不能静默进 dev,必须显式 production 才开硬化(已修)"},
+        {"name": "JSON error writer 健壮性", "fid": "-", "pkgs": ["gatewayhttp"], "stage": "tested", "pct": 80, "verified": true, "fix": {"landed": ["S2-148"]}, "parity": "S2-148:控制字符不再打坏响应(encoding/json)(已修)"},
+        {"name": "邮件发送 cooldown", "fid": "-", "pkgs": ["email"], "stage": "tested", "pct": 75, "verified": true, "fix": {"landed": ["S2-079"], "open": ["S2-037"]}, "parity": "S2-079:cooldown 改 consume-on-success+SMTP 4xx/5xx 分类(已修)"},
+        {"name": "OpenAPI 契约", "fid": "-", "pkgs": ["openapicheck"], "stage": "partial", "pct": 50, "verified": false, "fix": {"open": ["S2-033","S2-097"]}, "parity": "存在但有契约 drift(get/post 错位)(MED)"},
+        {"name": "Capability Contract / Clean-room 治理", "fid": "-", "pkgs": [], "stage": "tested", "pct": 95, "verified": false, "fix": {"open": []}, "parity": "治理完整(LOW);治理基线轴 100%"},
+        {"name": "Feature Parity / Acceptance Test Matrix", "fid": "-", "pkgs": [], "stage": "partial", "pct": 50, "verified": false, "fix": {"open": []}, "parity": "矩阵在,多条目仍 planned/需实现证据(MED)"},
+        {"name": "Go / Rust / Frontend 测试", "fid": "-", "pkgs": ["db","cache","registry"], "stage": "partial", "pct": 45, "verified": false, "fix": {"open": ["S2-052","S2-116","S2-014"]}, "parity": "Go 测试多;前端只 type-check 无测试;Rust NO-GO(MED)"},
+        {"name": "部署 (Docker/K8s/签名镜像 SBOM)", "fid": "F-DEPLOY-001/002/F-SEC-003", "pkgs": [], "stage": "spec", "pct": 10, "verified": false, "fix": {"open": []}, "parity": "L2 生产就绪 0%:监控/Backup-DR/CI-CD/KMS/SDK/法务 全 0(roadmap Phase8+)"}
+      ]
+    }
+  ],
+  "reference_parity_union": {
+    "note": "参考并集 22 功能类(sub2api@16793d3a / CLIProxyAPI@21fad9db / new-api@20d3e737)——确保 HUAKAI 树覆盖 ≥ 借鉴项目。缺口显式列出不隐藏。",
+    "_provenance": "本节是【派生汇总】,非主证据。每条 ref-project 断言的 repo@sha:file:line 证据在两份带 cite 的报告里:(1) codex docs/process/research/2026-05-21-audit-A~E.md(逐叶 file:line + 三参照 @sha);(2) 2026-05-30 clean-room Explore 侦察(本会话)。下面 gaps 为【候选缺口】,接入/决策前须按 AGENTS.md Source-Must-Read 回源逐条 file:line 核实,勿据此直接下结论。",
+    "covered": ["多 provider 中继+协议转换(§2/§5)","用户与账号管理(§1)","token 级计费(§8)","智能调度+负载均衡(§4/§7)","限流+并发控制(§4/§11)","凭证+OAuth(§3)","可观测+审计(§9/§10)","admin 面板(§15)","支付/voucher(§8)","流式+实时(§5)","thinking/reasoning(§2/§5)","缓存(§7)","provider 健康(§7/§10)","配置+热重载(§16)","模型 registry(§5)","信任链签名(§9,HUAKAI 独有强项)","隐私脱敏(§11,强于三参照)"],
+    "gaps": [
+      {"item": "Rerank 模型 (Cohere/Jina)", "ref": "new-api@20d3e737", "huakai": "无 → roadmap Phase9+ F-MODEL-002"},
+      {"item": "后端 i18n (go-i18n 多语言)", "ref": "new-api@20d3e737", "huakai": "无 → roadmap F-I18N-001 Phase7+"},
+      {"item": "Realtime WebSocket API", "ref": "new-api@20d3e737 (OpenAI Realtime)", "huakai": "无 → roadmap F-RT-001 Phase9+"},
+      {"item": "充值订单+支付回调", "ref": "sub2api EasyPay/new-api 充值订单", "huakai": "仅 voucher,无订单/回调 → §8 HIGH 缺口 F-PAY-001"},
+      {"item": "成熟商业前端", "ref": "new-api React 面板", "huakai": "§15 部分真+部分 mock,Owner 搁置"},
+      {"item": "移动端 App", "ref": "sub2api React Native", "huakai": "范围外(独立 app)"},
+      {"item": "TUI 终端 UI", "ref": "CLIProxyAPI Bubbletea", "huakai": "范围外"}
+    ]
+  },
+  "codex_diff": {
+    "supersedes": "codex 2026-05-21-full-audit-tree.md",
+    "added_subsystems_codex_missed": ["HCSF canonical 中间层(§5)","L2 响应缓存+幂等重放(§7)","PASR cache-locality routing(§7)","channel health 状态机细节(§7)","DLQ↔billing 集成(§10)","Settlement Recovery(§10)","Event Bus/Hermes 编排(§10)","Email(§16)","clientip anti-spoof(§11)","transport 错误 taxonomy(§5)","clientshape/uTLS(§12)","userauth 拆分(§1)","community(§14)"],
+    "corrected": "加了【修复轴】——codex 树 2026-05-21 早于整个审计修复战役;本树叠加 195 条 finding 状态(16 landed/2 deferred/13 not-fix/164 open),并对战役亲历的 ~12 个节点打 verified✓(真实代码核实,非仅文档声称)。",
+    "verified_nodes": ["§3 凭证续期+storm(S2-045)","§3 OAuth 安全(S1-008/010/012/014)","§3 SSRF 加固(S1-011/S2-054)","§8 Voucher(S2-091)","§9 Receipt verify(S1-031/032)","§10 DLQ(S2-096)","§11 clientip(S2-109)","§11 SSRF 刷新链路","§16 release-mode(S1-019)","§16 JSON error(S2-148)","§16 email(S2-079)"],
+    "unverified_note": "其余节点为 codex 2026-05-21 审计 + 文档综合(声称);可后续逐簇深核打 ✓。"
+  }
+}
