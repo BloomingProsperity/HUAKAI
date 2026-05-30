@@ -114,3 +114,75 @@ func TestForSelection_NonPreparerGateUnchanged(t *testing.T) {
 		t.Fatalf("non-preparer GroupPolicy gate after ForSelection: ok=%v err=%v, want allow (identity transform)", ok, err)
 	}
 }
+
+// TestPASR_ForSelection_PreparesGroupPolicyGateOncePerSelect 守 PASR 段内候选路径把
+// gate 准备 hoist 到每 Select 一次, 不对每个候选账号重复查库。全 ring fallback 路径
+// 由 TestPASR_ForSelection_FallbackPathUsesScopedGate 单独覆盖。
+//
+// 判别(mutation):
+//   - 段内 allowAccount 改回直接用 p.gates / Select 不算 scoped → originalAllow>0 +
+//     preparedAllow==0 红。
+//   - prepare 误置于 per-candidate 循环 → prepareCalls==候选数 红。
+func TestPASR_ForSelection_PreparesGroupPolicyGateOncePerSelect(t *testing.T) {
+	accs := []int64{10, 20, 30}
+	sel, _, _, _, _ := newPASRTestRig(t, accs)
+
+	var prepareCalls, originalAllow, preparedAllow int32
+	sel.gates.GroupPolicy = countingPreparerGate{
+		prepareCalls:  &prepareCalls,
+		originalAllow: &originalAllow,
+		preparedAllow: &preparedAllow,
+	}
+
+	if _, err := sel.Select(context.Background(), SelectionRequest{
+		TenantID: 1, ClaimID: 1, RequestedModel: "claude-3-5", SessionHash: "prefix-1",
+	}); err != nil {
+		t.Fatalf("PASR Select: %v", err)
+	}
+
+	if got := atomic.LoadInt32(&prepareCalls); got != 1 {
+		t.Fatalf("PASR PrepareForSelection called %d times, want exactly 1 per Select (hoist invariant)", got)
+	}
+	if got := atomic.LoadInt32(&preparedAllow); got < 1 {
+		t.Fatalf("PASR prepared gate Allow called %d times, want >=1 (prepared gate must drive per-candidate filtering)", got)
+	}
+	if got := atomic.LoadInt32(&originalAllow); got != 0 {
+		t.Fatalf("PASR original gate Allow called %d times, want 0 (original must be replaced by prepared copy)", got)
+	}
+}
+
+// TestPASR_ForSelection_FallbackPathUsesScopedGate 守 PASR 的全 ring fallback 路径
+// (SessionHash 空 → scheduleNoSegment → scheduleHRWFullRing)同样用本次 Select 的
+// scoped gate, 而非每候选直接查 p.gates。补 codex review A2 S2: 段内成功路径测不到
+// 这条 fallback 路径的 scoped 穿线。
+//
+// 判别(mutation): 把 scheduleHRWFullRing 段内 allowAccount 改回 p.gates → 该 fallback
+// 路径逐候选过滤会调原始 gate → originalAllow>0 且 preparedAllow==0 → 红。
+func TestPASR_ForSelection_FallbackPathUsesScopedGate(t *testing.T) {
+	accs := []int64{10, 20, 30}
+	sel, _, _, _, _ := newPASRTestRig(t, accs)
+
+	var prepareCalls, originalAllow, preparedAllow int32
+	sel.gates.GroupPolicy = countingPreparerGate{
+		prepareCalls:  &prepareCalls,
+		originalAllow: &originalAllow,
+		preparedAllow: &preparedAllow,
+	}
+
+	// SessionHash 为空 → 强制走 scheduleNoSegment → scheduleHRWFullRing 全 ring 路径。
+	if _, err := sel.Select(context.Background(), SelectionRequest{
+		TenantID: 1, ClaimID: 1, RequestedModel: "claude-3-5", SessionHash: "",
+	}); err != nil {
+		t.Fatalf("PASR no-session Select: %v", err)
+	}
+
+	if got := atomic.LoadInt32(&prepareCalls); got != 1 {
+		t.Fatalf("fallback path: PrepareForSelection called %d times, want exactly 1", got)
+	}
+	if got := atomic.LoadInt32(&preparedAllow); got < 1 {
+		t.Fatalf("fallback path: prepared gate Allow called %d times, want >=1 (HRW loop must use scoped gate)", got)
+	}
+	if got := atomic.LoadInt32(&originalAllow); got != 0 {
+		t.Fatalf("fallback path: original gate Allow called %d times, want 0 (HRW allowAccount must use scoped, not p.gates)", got)
+	}
+}

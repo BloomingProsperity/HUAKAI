@@ -148,6 +148,12 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 		return nil, ErrNoEligibleAccount
 	}
 
+	// 一次 Select 只准备一次 gate 链(与 DefaultSelector 同): 把"决策只依赖 req"的
+	// gate(如订阅分组)查库一次, 段内候选 + 全 ring fallback 逐候选复用其缓存。scoped
+	// 是局部副本, 不改 p.gates, 并发 Select 各自独立。healthStatus 仍读 p.gates.Health
+	// (Health 不受 GroupPolicy 预备影响), 不走 scoped 以保持 nil-Health 等既有语义。
+	scoped := p.gates.ForSelection(ctx, req)
+
 	// 2. 取/建段 - prefix key 用 req.SessionHash; 空 hash 直降级到 HRW 全 ring
 	// M5: RingProvider 注入则用注入路径 (向后兼容老 atom 测试 + 显式 hot-swap);
 	// 否则用 request-scoped ring (synthesis D3): 直接从 ListAccounts snapshots
@@ -165,7 +171,7 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 	prefixKey := []byte(req.SessionHash)
 	if len(prefixKey) == 0 {
 		// 客户端没给 prompt prefix hash → PASR 退化, 全 ring 选首个 healthy
-		return p.scheduleNoSegment(ctx, req, ring, snapshots)
+		return p.scheduleNoSegment(ctx, scoped, req, ring, snapshots)
 	}
 	// M4 (D2): readOnlySegments=true (shadow 实例) 用 Lookup 不创建; 段未命中
 	// 直接走 HRW 全 ring 接力, 不污染段表 — 让 actual 路径独占段学习数据。
@@ -174,7 +180,7 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 	if p.readOnlySegments {
 		seg = p.segments.Lookup(req.TenantID, prefixKey)
 		if seg == nil {
-			return p.scheduleHRWFullRing(ctx, req, ring, snapshots, [PASRSegmentSize]int64{}, selectionFailures{})
+			return p.scheduleHRWFullRing(ctx, scoped, req, ring, snapshots, [PASRSegmentSize]int64{}, selectionFailures{})
 		}
 	} else {
 		seg = p.segments.LookupOrCreate(req.TenantID, prefixKey, ring)
@@ -205,7 +211,7 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 			failures.other++
 			continue
 		}
-		ok, why := p.allowAccount(ctx, snap, req)
+		ok, why := p.allowAccount(ctx, scoped, snap, req)
 		if !ok {
 			failures.add(why)
 			continue
@@ -222,7 +228,7 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 
 	// 4. 段全 unhealthy → HRW 全 ring 接力 (D5)
 	if len(candidates) == 0 {
-		return p.scheduleHRWFullRing(ctx, req, ring, snapshots, seg.Members, failures)
+		return p.scheduleHRWFullRing(ctx, scoped, req, ring, snapshots, seg.Members, failures)
 	}
 
 	// 5-6. score-based ranking (cache-aware A2, 替代纯 hasCache 优先 + tie-break):
@@ -272,7 +278,7 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 // scheduleNoSegment: req.SessionHash 为空时, 直接全 ring 走 HRW 排序选
 // 首个 healthy 账号 (相当于无 prefix 的 PASR 退化形态)。
 func (p *PASRSelector) scheduleNoSegment(
-	ctx context.Context, req SelectionRequest,
+	ctx context.Context, gates GateChain, req SelectionRequest,
 	ring *AccountRing, snapshots map[int64]*AccountSnapshot,
 ) (*SelectionResult, error) {
 	// 用 req.RequestedModel 作为弱 prefix, 至少在 model 维度有 cache locality
@@ -282,7 +288,7 @@ func (p *PASRSelector) scheduleNoSegment(
 		// 这不是好情况但兜底, caller 应保证 SessionHash 或 RequestedModel 非空
 		prefixKey = []byte("__pasr_noprefix__")
 	}
-	return p.scheduleHRWFullRing(ctx, req, ring, snapshots, [PASRSegmentSize]int64{}, selectionFailures{})
+	return p.scheduleHRWFullRing(ctx, gates, req, ring, snapshots, [PASRSegmentSize]int64{}, selectionFailures{})
 }
 
 // scheduleHRWFullRing: 段全 unhealthy 时 (synthesis D5), 直接对全 ring
@@ -291,7 +297,7 @@ func (p *PASRSelector) scheduleNoSegment(
 //
 // 性能: O(N) 排序 (cold path), N 通常 < 1000, ~50 µs 一次, 可接受。
 func (p *PASRSelector) scheduleHRWFullRing(
-	ctx context.Context, req SelectionRequest,
+	ctx context.Context, gates GateChain, req SelectionRequest,
 	ring *AccountRing, snapshots map[int64]*AccountSnapshot,
 	excludedSegmentMembers [PASRSegmentSize]int64,
 	failures selectionFailures,
@@ -332,7 +338,7 @@ func (p *PASRSelector) scheduleHRWFullRing(
 			failures.other++
 			continue
 		}
-		ok, why := p.allowAccount(ctx, snap, req)
+		ok, why := p.allowAccount(ctx, gates, snap, req)
 		if !ok {
 			failures.add(why)
 			continue
@@ -371,11 +377,11 @@ func (f selectionFailures) onlyHealth() bool {
 	return f.health > 0 && f.other == 0
 }
 
-func (p *PASRSelector) allowAccount(ctx context.Context, snap *AccountSnapshot, req SelectionRequest) (bool, GateFailureReason) {
+func (p *PASRSelector) allowAccount(ctx context.Context, gates GateChain, snap *AccountSnapshot, req SelectionRequest) (bool, GateFailureReason) {
 	if p == nil {
 		return false, ""
 	}
-	ok, why, err := p.gates.Allow(ctx, snap, req)
+	ok, why, err := gates.Allow(ctx, snap, req)
 	if err != nil {
 		return false, why
 	}
