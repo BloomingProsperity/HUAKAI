@@ -64,12 +64,12 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		PubkeyRegistry:  d.auditPubkeyRegistry,
 	}
 	r.Route("/v1/receipts", func(r chi.Router) {
-		r.With(auth.SessionMiddleware(d.userSessions)).Get("/{request_id}", gatewayhttp.NewCostReceiptGetHandler(receiptDeps))
+		r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Get("/{request_id}", gatewayhttp.NewCostReceiptGetHandler(receiptDeps))
 		r.Post("/{request_id}", http.NotFound)
-		r.With(auth.SessionMiddleware(d.userSessions)).Post("/{request_id}/verify", gatewayhttp.NewCostReceiptVerifyHandler(receiptDeps))
-		r.With(auth.SessionMiddleware(d.userSessions)).Get("/{request_id_host}/{request_id_tail}", gatewayhttp.NewCostReceiptGetHandler(receiptDeps))
+		r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Post("/{request_id}/verify", gatewayhttp.NewCostReceiptVerifyHandler(receiptDeps))
+		r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Get("/{request_id_host}/{request_id_tail}", gatewayhttp.NewCostReceiptGetHandler(receiptDeps))
 		r.Post("/{request_id_host}/{request_id_tail}", http.NotFound)
-		r.With(auth.SessionMiddleware(d.userSessions)).Post("/{request_id_host}/{request_id_tail}/verify", gatewayhttp.NewCostReceiptVerifyHandler(receiptDeps))
+		r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Post("/{request_id_host}/{request_id_tail}/verify", gatewayhttp.NewCostReceiptVerifyHandler(receiptDeps))
 	})
 	r.Get("/v1/pricing/rate-table", gatewayhttp.NewPricingRateTableHandler(receiptDeps))
 	r.Get("/v1/pricing/snapshots", gatewayhttp.NewPricingSnapshotsHandler(receiptDeps))
@@ -77,23 +77,24 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 
 	r.Route("/v1/auth", func(r chi.Router) {
 		gatewayhttp.MountAuthRoutes(r, gatewayhttp.AuthHandlerDeps{
-			Auth:        d.userAuth,
-			Sessions:    d.userSessions,
-			EmailSender: d.authEmailSender,
-			AdminAuth:   d.adminAuth,
+			Auth:             d.userAuth,
+			Sessions:         d.userSessions,
+			EmailSender:      d.authEmailSender,
+			AdminAuth:        d.adminAuth,
+			ClientIPResolver: d.clientIPResolver,
 		})
 	})
 
 	r.Route("/v1/sessions", func(r chi.Router) {
-		r.Use(auth.SessionMiddleware(d.userSessions))
-		gatewayhttp.MountSessionRoutes(r, gatewayhttp.SessionHandlerDeps{Sessions: d.userSessions})
+		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
+		gatewayhttp.MountSessionRoutes(r, gatewayhttp.SessionHandlerDeps{Sessions: d.userSessions, ClientIPResolver: d.clientIPResolver})
 	})
 	r.Route("/v1/users/me/vouchers", func(r chi.Router) {
-		r.Use(auth.SessionMiddleware(d.userSessions))
-		gatewayhttp.MountVoucherUserRoutes(r, gatewayhttp.VoucherUserDeps{Service: d.voucherService})
+		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
+		gatewayhttp.MountVoucherUserRoutes(r, gatewayhttp.VoucherUserDeps{Service: d.voucherService, ClientIPResolver: d.clientIPResolver})
 	})
 	r.Route("/v1/api-keys", func(r chi.Router) {
-		r.Use(auth.SessionMiddleware(d.userSessions))
+		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
 		userkeyhttp.MountUserAPIKeyRoutes(r, userkeyhttp.Deps{Service: d.userKeyService})
 	})
 	if d.hermesService != nil && d.hermesRunner != nil {
@@ -103,7 +104,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Post("/internal/runner/bootstrap", d.handleRunnerBootstrap)
 	r.Post("/internal/runner/refresh", d.handleRunnerRefresh)
 	r.Get("/internal/keys", d.handleRunnerKeys)
-	r.With(auth.SessionMiddleware(d.userSessions)).Post("/v1/invitations", gatewayhttp.NewInvitationCreateHandler(gatewayhttp.InvitationDeps{
+	r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Post("/v1/invitations", gatewayhttp.NewInvitationCreateHandler(gatewayhttp.InvitationDeps{
 		Service: d.invitationService,
 	}))
 

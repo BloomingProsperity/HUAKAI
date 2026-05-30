@@ -21,7 +21,7 @@ func TestInvitationCreateHandlerUsesSessionAndDefaults(t *testing.T) {
 			Code: "ABC12345", InviterUserID: 42, ExpiresAt: now.AddDate(0, 0, 30), MaxUsage: 1,
 		},
 	}
-	handler := auth.SessionMiddleware(invitationValidatorStub{})(NewInvitationCreateHandler(InvitationDeps{Service: stub}))
+	handler := auth.SessionMiddleware(invitationValidatorStub{}, nil)(NewInvitationCreateHandler(InvitationDeps{Service: stub}))
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/invitations", strings.NewReader(`{"client_idempotency_key":"retry-1"}`))

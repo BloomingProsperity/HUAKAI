@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
@@ -50,11 +50,12 @@ func (NoopAuthEmailSender) SendPasswordReset(context.Context, userauth.User, str
 }
 
 type AuthHandlerDeps struct {
-	Auth        *userauth.Service
-	Sessions    *usersession.Service
-	EmailSender AuthEmailSender
-	AdminAuth   AuthAdminAuth
-	EventSink   AuthEventSink
+	Auth             *userauth.Service
+	Sessions         *usersession.Service
+	EmailSender      AuthEmailSender
+	AdminAuth        AuthAdminAuth
+	EventSink        AuthEventSink
+	ClientIPResolver *clientip.Resolver
 }
 
 type authRegisterRequest struct {
@@ -176,7 +177,7 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		}
 		tokens, err := d.Sessions.Create(r.Context(), usersession.CreateInput{
 			TenantID: user.TenantID, UserID: user.ID, DeviceInfo: req.DeviceInfo,
-			IP: clientIP(r), UserAgent: r.UserAgent(), AuthMethod: "password",
+			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: "password",
 		})
 		if err != nil {
 			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
@@ -344,7 +345,7 @@ func newAuthOAuthCallbackHandler(d AuthHandlerDeps) http.HandlerFunc {
 		}
 		tokens, err := d.Sessions.Create(r.Context(), usersession.CreateInput{
 			TenantID: user.TenantID, UserID: user.ID, DeviceInfo: req.DeviceInfo,
-			IP: clientIP(r), UserAgent: r.UserAgent(), AuthMethod: req.Provider,
+			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: req.Provider,
 		})
 		if err != nil {
 			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
@@ -604,15 +605,4 @@ func writeAuthError(w http.ResponseWriter, err error) {
 	default:
 		writeJSONError(w, http.StatusServiceUnavailable, "auth_backend_error", "auth backend transient failure")
 	}
-}
-
-func clientIP(r *http.Request) string {
-	if r == nil {
-		return ""
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
-	}
-	return r.RemoteAddr
 }

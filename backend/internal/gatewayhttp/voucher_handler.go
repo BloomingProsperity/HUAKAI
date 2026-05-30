@@ -12,6 +12,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
 )
 
@@ -34,7 +35,8 @@ type VoucherAdminDeps struct {
 }
 
 type VoucherUserDeps struct {
-	Service VoucherService
+	Service          VoucherService
+	ClientIPResolver *clientip.Resolver
 }
 
 type voucherCreateRequest struct {
@@ -224,7 +226,7 @@ func newVoucherRedeemHandler(d VoucherUserDeps) http.HandlerFunc {
 		}
 		result, err := d.Service.Redeem(r.Context(), voucher.RedeemInput{
 			TenantID: ident.TenantID, UserID: ident.UserID, Code: req.Code,
-			IdempotencyKey: req.IdempotencyKey, SourceIP: clientIP(r),
+			IdempotencyKey: req.IdempotencyKey, SourceIP: d.ClientIPResolver.ClientIP(r),
 			RequestID: r.Header.Get("X-Request-Id"),
 		})
 		if err != nil {

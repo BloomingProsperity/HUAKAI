@@ -18,6 +18,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	communityinvitation "github.com/BloomingProsperity/HUAKAI/internal/community/invitation"
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
@@ -60,6 +61,7 @@ import (
 // deps is the live dependency tree handlers receive after run() boots.
 type deps struct {
 	cfg                      *Config
+	clientIPResolver         *clientip.Resolver
 	pgPool                   *pgxpool.Pool
 	adminQueries             *admindb.Queries
 	billingQueries           *dbbilling.Queries
@@ -162,7 +164,17 @@ const (
 	geminiPublicCLIOAuthClientSecretEnv = "HUAKAI_GEMINI_OAUTH_CLIENT_SECRET"
 	adminOAuthCallbackAllowlistEnv      = "HUAKAI_ADMIN_OAUTH_CALLBACK_ALLOWLIST"
 	userOAuthRedirectAllowlistEnv       = "HUAKAI_USER_OAUTH_REDIRECT_ALLOWLIST"
+	// trustedProxyCIDRsEnv lists the reverse-proxy / CDN CIDRs whose X-Forwarded-For
+	// is trusted for client-IP extraction (S2-109). Empty = direct exposure, RemoteAddr only.
+	trustedProxyCIDRsEnv = "HUAKAI_TRUSTED_PROXY_CIDRS"
 )
+
+// loadClientIPResolverFromEnv builds the trusted-proxy-aware client IP resolver from
+// trustedProxyCIDRsEnv (comma-separated CIDR/IP). A malformed entry is a hard boot error
+// (fail loud) rather than silently degrading the burst-limit / anomaly / voucher source.
+func loadClientIPResolverFromEnv() (*clientip.Resolver, error) {
+	return clientip.NewResolver(parseCSVAllowlistEnv(trustedProxyCIDRsEnv))
+}
 
 func buildVendorRefresherBindings(configs runtimeconfig.VendorOAuthConfigs, store *credentialstore.Store) []vendorRefresherBinding {
 	configured := configs.Configured()
@@ -387,8 +399,14 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	leaseSweeper.Start(ctx)
 	rt.leaseSweepStop = leaseSweeper.Stop
 
+	clientIPResolver, err := loadClientIPResolverFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("load trusted proxy client IP resolver: %w", err)
+	}
+
 	d := &deps{
 		cfg:                   cfg,
+		clientIPResolver:      clientIPResolver,
 		adminQueries:          adminQueries,
 		billingQueries:        billingQueries,
 		billingPolicyStore:    billing.NewPolicyStore(pgPool),

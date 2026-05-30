@@ -8,12 +8,14 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
 
 type SessionHandlerDeps struct {
-	Sessions  *usersession.Service
-	EventSink AuthEventSink
+	Sessions         *usersession.Service
+	EventSink        AuthEventSink
+	ClientIPResolver *clientip.Resolver
 }
 
 type sessionRefreshRequest struct {
@@ -52,7 +54,7 @@ func newSessionRefreshHandler(d SessionHandlerDeps) http.HandlerFunc {
 		}
 		result, err := d.Sessions.Refresh(r.Context(), usersession.RefreshInput{
 			TenantID: ident.TenantID, UserID: ident.UserID, RefreshToken: req.RefreshToken,
-			IP: clientIP(r), UserAgent: r.UserAgent(),
+			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(),
 		})
 		if err != nil {
 			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
