@@ -82,7 +82,44 @@ func (c GateChain) Allow(ctx context.Context, account *AccountSnapshot, req Sele
 	return true, "", nil
 }
 
-func (c GateChain) ordered() []namedGate {
+// SelectionGatePreparer 由"决策只依赖 SelectionRequest、与候选账号无关"的 gate 实现:
+// 允许其在一次 Select 内只做一次准备(典型是查库), 返回一个本次 Select 专用、
+// 后续 Allow 不再查库的 gate。未实现该接口的 gate 在 ForSelection 中原样保留。
+type SelectionGatePreparer interface {
+	PrepareForSelection(ctx context.Context, req SelectionRequest) Gate
+}
+
+// ForSelection 返回本次 Select 专用的 GateChain: 先把 nil 槽补成默认 gate, 再对
+// 实现了 SelectionGatePreparer 的 gate 调一次 PrepareForSelection, 用其返回的
+// prepared gate 替换该槽; 其余 gate 原样保留。
+//
+// 值接收 + 返回局部副本, 绝不修改接收者(selector 实例上的 gates 字段), 因此多
+// goroutine 并发 Select 各自持有自己的局部链, 无竞态。AllowAllGate 等不实现
+// preparer 的 gate → 链不变 → 行为保持(接线前 ForSelection 是恒等变换)。
+func (c GateChain) ForSelection(ctx context.Context, req SelectionRequest) GateChain {
+	c = c.withDefaults()
+	c.Tenant = prepareGate(ctx, c.Tenant, req)
+	c.Lifecycle = prepareGate(ctx, c.Lifecycle, req)
+	c.Channel = prepareGate(ctx, c.Channel, req)
+	c.Model = prepareGate(ctx, c.Model, req)
+	c.Capability = prepareGate(ctx, c.Capability, req)
+	c.Credential = prepareGate(ctx, c.Credential, req)
+	c.Health = prepareGate(ctx, c.Health, req)
+	c.GroupPolicy = prepareGate(ctx, c.GroupPolicy, req)
+	c.Exclusion = prepareGate(ctx, c.Exclusion, req)
+	return c
+}
+
+// prepareGate: g 实现 SelectionGatePreparer 则返回其准备后的 gate, 否则原样返回。
+func prepareGate(ctx context.Context, g Gate, req SelectionRequest) Gate {
+	if p, ok := g.(SelectionGatePreparer); ok {
+		return p.PrepareForSelection(ctx, req)
+	}
+	return g
+}
+
+// withDefaults 把 nil 槽补成 DefaultGateChain 的默认 gate, 返回补齐后的副本(值接收, 不改原链)。
+func (c GateChain) withDefaults() GateChain {
 	d := DefaultGateChain()
 	if c.Tenant == nil {
 		c.Tenant = d.Tenant
@@ -111,6 +148,11 @@ func (c GateChain) ordered() []namedGate {
 	if c.Exclusion == nil {
 		c.Exclusion = d.Exclusion
 	}
+	return c
+}
+
+func (c GateChain) ordered() []namedGate {
+	c = c.withDefaults()
 	return []namedGate{
 		{c.Tenant, GateFailureTenantFilter},
 		{c.Lifecycle, GateFailureLifecycle},
