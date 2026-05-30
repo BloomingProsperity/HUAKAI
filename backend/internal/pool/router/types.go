@@ -39,6 +39,11 @@ type SelectionRequest struct {
 	// Vendor 来自 ResolvedModel.ProtocolFamily 派生的 vendor 字面量，用于
 	// dispatcher 按 vendor 切片 metric；空字符串时不记 vendor 维度。
 	Vendor string
+
+	// UserGroup 是调用者订阅档 (users.user_group, 来自 auth.Identity)，供
+	// GroupPolicyGate 按 routes.user_group_match 限制可用 pool_group。
+	// 空字符串视同无限制 (向后兼容未接线 / 无订阅链路)。
+	UserGroup string
 }
 
 // SelectionResult 是 Phase C 输出：已拿到的 Provider Account 或等待计划。
