@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -39,8 +40,20 @@ func seedTenant(t *testing.T, ctx context.Context, pool *pgxpool.Pool, name stri
 
 func seedPoolGroup(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID int64, name string) int64 {
 	t.Helper()
+	return seedPoolGroupEx(t, ctx, pool, tenantID, name, true, false)
+}
+
+// seedPoolGroupEx 可指定 enabled 与是否软删, 用于 F4 排除无效目标池的判别测。
+func seedPoolGroupEx(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID int64, name string, enabled, deleted bool) int64 {
+	t.Helper()
+	var deletedAt *time.Time
+	if deleted {
+		tnow := time.Now()
+		deletedAt = &tnow
+	}
 	var id int64
-	if err := pool.QueryRow(ctx, `INSERT INTO pool_groups (tenant_id, name) VALUES ($1,$2) RETURNING id`, tenantID, name).Scan(&id); err != nil {
+	if err := pool.QueryRow(ctx, `INSERT INTO pool_groups (tenant_id, name, enabled, deleted_at) VALUES ($1,$2,$3,$4) RETURNING id`,
+		tenantID, name, enabled, deletedAt).Scan(&id); err != nil {
 		t.Fatalf("seed pool_group: %v", err)
 	}
 	return id
@@ -48,10 +61,21 @@ func seedPoolGroup(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenant
 
 func seedRoute(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID int64, name, userGroup, modelPattern string, poolGroupID int64, enabled bool) {
 	t.Helper()
+	seedRouteEx(t, ctx, pool, tenantID, name, userGroup, modelPattern, poolGroupID, enabled, false)
+}
+
+// seedRouteEx 可指定是否软删路由, 用于 F4 软删谓词判别测。
+func seedRouteEx(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID int64, name, userGroup, modelPattern string, poolGroupID int64, enabled, deleted bool) {
+	t.Helper()
+	var deletedAt *time.Time
+	if deleted {
+		tnow := time.Now()
+		deletedAt = &tnow
+	}
 	if _, err := pool.Exec(ctx, `
-INSERT INTO routes (tenant_id, name, user_group_match, model_pattern_match, pool_group_id, enabled)
-VALUES ($1,$2,$3,$4,$5,$6)`,
-		tenantID, name, userGroup, modelPattern, poolGroupID, enabled); err != nil {
+INSERT INTO routes (tenant_id, name, user_group_match, model_pattern_match, pool_group_id, enabled, deleted_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		tenantID, name, userGroup, modelPattern, poolGroupID, enabled, deletedAt); err != nil {
 		t.Fatalf("seed route: %v", err)
 	}
 }
@@ -76,24 +100,29 @@ func setKeys(m map[int64]struct{}) []int64 {
 	return out
 }
 
-// TestPG_AllowedPoolGroups 守 routes 查询的 WHERE 范围 + model_pattern 过滤。
+func cleanupTenants(pool *pgxpool.Pool, ids ...int64) func() {
+	return func() {
+		c := context.Background()
+		_, _ = pool.Exec(c, `DELETE FROM routes WHERE tenant_id = ANY($1)`, ids)
+		_, _ = pool.Exec(c, `DELETE FROM pool_groups WHERE tenant_id = ANY($1)`, ids)
+		_, _ = pool.Exec(c, `DELETE FROM tenants WHERE id = ANY($1)`, ids)
+	}
+}
+
+// TestPG_GroupRoutes 守 routes 查询的 WHERE 范围 + model_pattern 过滤 + Configured 语义。
 // 判别:
 //   - 漏 tenant_id 谓词 → 跨租户 pgOther 泄入 premium 集 → assertSet 变红 (串租户路由 = 安全)。
 //   - 漏 enabled 谓词 → 禁用路由 pgDisabled 泄入 → 红。
 //   - model_pattern 过滤错 → claude 请求拿到 gpt-only 的 pgB / 反之 → 红。
-func TestPG_AllowedPoolGroups(t *testing.T) {
+//   - gemini(无命中)但 Configured 应为 true(premium 配了路由)→ 白名单据此对越档拒(F1)。
+func TestPG_GroupRoutes(t *testing.T) {
 	ctx := context.Background()
 	pool := openPool(t, ctx)
 	suffix := uuid.NewString()
 
 	tenantID := seedTenant(t, ctx, pool, "se-"+suffix)
 	otherTenantID := seedTenant(t, ctx, pool, "se-other-"+suffix)
-	t.Cleanup(func() {
-		c := context.Background()
-		_, _ = pool.Exec(c, `DELETE FROM routes WHERE tenant_id IN ($1,$2)`, tenantID, otherTenantID)
-		_, _ = pool.Exec(c, `DELETE FROM pool_groups WHERE tenant_id IN ($1,$2)`, tenantID, otherTenantID)
-		_, _ = pool.Exec(c, `DELETE FROM tenants WHERE id IN ($1,$2)`, tenantID, otherTenantID)
-	})
+	t.Cleanup(cleanupTenants(pool, tenantID, otherTenantID))
 
 	pgA := seedPoolGroup(t, ctx, pool, tenantID, "premiumA-"+suffix)
 	pgB := seedPoolGroup(t, ctx, pool, tenantID, "premiumB-"+suffix)
@@ -104,36 +133,110 @@ func TestPG_AllowedPoolGroups(t *testing.T) {
 	seedRoute(t, ctx, pool, tenantID, "r-claude-"+suffix, "premium", "claude-*", pgA, true)
 	seedRoute(t, ctx, pool, tenantID, "r-gpt-"+suffix, "premium", "gpt-4o", pgB, true)
 	seedRoute(t, ctx, pool, tenantID, "r-def-"+suffix, "default", "*", pgC, true)
-	seedRoute(t, ctx, pool, tenantID, "r-disabled-"+suffix, "premium", "*", pgDisabled, false) // 禁用
+	seedRoute(t, ctx, pool, tenantID, "r-disabled-"+suffix, "premium", "*", pgDisabled, false) // 禁用路由
 	seedRoute(t, ctx, pool, otherTenantID, "r-other-"+suffix, "premium", "*", pgOther, true)   // 跨租户
 
 	repo := NewPostgresRoutesRepo(pool)
 
 	// premium + claude 模型 → 只 premiumA (claude-* 命中; gpt-4o 不命中; 禁用/跨租户排除)。
-	got, err := repo.AllowedPoolGroups(ctx, tenantID, "premium", "claude-3-5-sonnet")
+	got, err := repo.GroupRoutes(ctx, tenantID, "premium", "claude-3-5-sonnet")
 	if err != nil {
 		t.Fatalf("query claude: %v", err)
 	}
-	assertSet(t, got, pgA)
+	assertSet(t, got.Allowed, pgA)
+	if !got.Configured {
+		t.Fatal("premium 配了有效路由, Configured 应为 true")
+	}
 
 	// premium + gpt-4o → 只 premiumB (精确命中)。
-	got, err = repo.AllowedPoolGroups(ctx, tenantID, "premium", "gpt-4o")
+	got, err = repo.GroupRoutes(ctx, tenantID, "premium", "gpt-4o")
 	if err != nil {
 		t.Fatalf("query gpt: %v", err)
 	}
-	assertSet(t, got, pgB)
+	assertSet(t, got.Allowed, pgB)
 
-	// premium + 无任何 pattern 命中的模型 → 空集 (调用方据此放行)。
-	got, err = repo.AllowedPoolGroups(ctx, tenantID, "premium", "gemini-2-pro")
+	// premium + 无任何 pattern 命中的模型 → Allowed 空, 但 Configured=true (白名单据此越档拒)。
+	got, err = repo.GroupRoutes(ctx, tenantID, "premium", "gemini-2-pro")
 	if err != nil {
 		t.Fatalf("query gemini: %v", err)
 	}
-	assertSet(t, got)
+	assertSet(t, got.Allowed)
+	if !got.Configured {
+		t.Fatal("premium 有 claude/gpt 路由但本 model 未命中: Configured 必须仍为 true(白名单越档拒的前提)")
+	}
 
 	// default 档 + 任意模型 → 只 defaultC ('*' 全匹配), 不含 premium 的池。
-	got, err = repo.AllowedPoolGroups(ctx, tenantID, "default", "claude-3-5-sonnet")
+	got, err = repo.GroupRoutes(ctx, tenantID, "default", "claude-3-5-sonnet")
 	if err != nil {
 		t.Fatalf("query default: %v", err)
 	}
-	assertSet(t, got, pgC)
+	assertSet(t, got.Allowed, pgC)
+}
+
+// TestPG_GroupRoutes_ExcludesInvalidTargets 守 F2/F4: JOIN pool_groups 排除目标池为
+// 已禁用/软删的路由, routes.deleted_at 谓词排除软删路由; 这些既不进 Allowed 也不让
+// Configured 误真。
+// 判别:
+//   - 漏 routes.deleted_at IS NULL → 软删路由 r-softroute 泄入 → Allowed 多一项 → 红。
+//   - 漏 JOIN pg.enabled → 目标池禁用的路由泄入 → 红。
+//   - 漏 JOIN pg.deleted_at IS NULL → 目标池软删的路由泄入 → 红。
+//   - Configured 误把无效路由也计真 → gold(唯一路由软删)的 Configured 断言红。
+func TestPG_GroupRoutes_ExcludesInvalidTargets(t *testing.T) {
+	ctx := context.Background()
+	pool := openPool(t, ctx)
+	suffix := uuid.NewString()
+
+	tenantID := seedTenant(t, ctx, pool, "se-inv-"+suffix)
+	otherTenantID := seedTenant(t, ctx, pool, "se-inv-other-"+suffix)
+	t.Cleanup(cleanupTenants(pool, tenantID, otherTenantID))
+
+	pgValid := seedPoolGroupEx(t, ctx, pool, tenantID, "valid-"+suffix, true, false)
+	// pgCrossTenant: 有效池但属于另一租户 — 当前租户 route 指向它须被 JOIN 的
+	// pg.tenant_id = r.tenant_id 排除 (tenant isolation = 安全, codex review B S1)。
+	pgCrossTenant := seedPoolGroupEx(t, ctx, pool, otherTenantID, "crosspg-"+suffix, true, false)
+	pgDisabledTarget := seedPoolGroupEx(t, ctx, pool, tenantID, "disabledpg-"+suffix, false, false) // 目标池禁用
+	pgDeletedTarget := seedPoolGroupEx(t, ctx, pool, tenantID, "deletedpg-"+suffix, true, true)     // 目标池软删
+
+	seedRouteEx(t, ctx, pool, tenantID, "r-valid-"+suffix, "premium", "*", pgValid, true, false)
+	seedRouteEx(t, ctx, pool, tenantID, "r-crosstgt-"+suffix, "premium", "*", pgCrossTenant, true, false)       // 当前租户 route 指向他租户池
+	seedRouteEx(t, ctx, pool, tenantID, "r-softroute-"+suffix, "premium", "*", pgValid, true, true)             // 软删路由
+	seedRouteEx(t, ctx, pool, tenantID, "r-disabledtgt-"+suffix, "premium", "*", pgDisabledTarget, true, false) // 目标池禁用
+	seedRouteEx(t, ctx, pool, tenantID, "r-deletedtgt-"+suffix, "premium", "*", pgDeletedTarget, true, false)   // 目标池软删
+
+	repo := NewPostgresRoutesRepo(pool)
+
+	got, err := repo.GroupRoutes(ctx, tenantID, "premium", "claude-3-5-sonnet")
+	if err != nil {
+		t.Fatalf("query premium: %v", err)
+	}
+	// 只有 pgValid 进集: 软删路由 / 目标池禁用 / 目标池软删 全排除。
+	assertSet(t, got.Allowed, pgValid)
+	if !got.Configured {
+		t.Fatal("premium 有一条有效路由(pgValid), Configured 应为 true")
+	}
+
+	// gold 档唯一路由被软删 → 视同未配置: Configured=false (越档时该放行而非拒)。
+	seedRouteEx(t, ctx, pool, tenantID, "r-gold-soft-"+suffix, "gold", "*", pgValid, true, true)
+	gold, err := repo.GroupRoutes(ctx, tenantID, "gold", "claude-3-5-sonnet")
+	if err != nil {
+		t.Fatalf("query gold: %v", err)
+	}
+	if gold.Configured {
+		t.Fatal("gold 唯一路由已软删: Configured 应为 false(该档视同未配置分组路由→放行)")
+	}
+	assertSet(t, gold.Allowed)
+
+	// silver 档唯一路由指向他租户 pool → 被 JOIN 的 pg.tenant_id 排除, 视同未配置:
+	// Configured=false。这是 tenant isolation 安全关键判别 (codex review B S1)。
+	// mutation: 删 SQL 的 `AND pg.tenant_id = r.tenant_id` → silver 会 Configured=true,
+	// 且上面 premium 的 Allowed 会泄入 pgCrossTenant → 两处断言红。
+	seedRouteEx(t, ctx, pool, tenantID, "r-silver-cross-"+suffix, "silver", "*", pgCrossTenant, true, false)
+	silver, err := repo.GroupRoutes(ctx, tenantID, "silver", "claude-3-5-sonnet")
+	if err != nil {
+		t.Fatalf("query silver: %v", err)
+	}
+	if silver.Configured {
+		t.Fatal("silver 唯一路由指向他租户 pool: Configured 应为 false(跨租户目标池被 JOIN 排除)")
+	}
+	assertSet(t, silver.Allowed)
 }
