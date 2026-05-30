@@ -47,6 +47,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 	providerwindsurf "github.com/BloomingProsperity/HUAKAI/internal/provider/windsurf"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
+	"github.com/BloomingProsperity/HUAKAI/internal/routeadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
@@ -86,6 +87,7 @@ type deps struct {
 	voucherService           *voucher.Service
 	paymentService           *payment.Service
 	subscriptionService      *subscription.Service
+	routeAdminService        *routeadmin.Service
 	invitationService        *communityinvitation.Service
 	dispatcher               *gateway.UpstreamDispatcher
 	responseCache            l2cache.Store
@@ -405,6 +407,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool)),
 		paymentService:        payment.NewService(payment.NewPostgresStore(pgPool)),
 		subscriptionService:   subscription.NewService(subscription.NewPostgresStore(pgPool)),
+		routeAdminService:     routeadmin.NewService(routeadmin.NewPostgresStore(pgPool), nil),
 		invitationService:     communityinvitation.NewService(communityinvitation.NewPostgresStore(pgPool)),
 		responseCache:         opts.responseCache,
 		dlqService:            dlqService,
