@@ -219,6 +219,22 @@ func RequiresCallbackValidation(kind FlowKind, authType AuthType) bool {
 	return NormalizeFlowKind(kind) == FlowKindOAuth && authType != AuthTypeDeviceCode && authType != AuthTypeSSO
 }
 
+// isTerminalStatus 报告某 acquisition flow 是否已处终态(finalized/cancelled/expired/failed)。终态 flow 的
+// 状态机已结束:既不能再被 OAuth 回调重新驱动(CompleteOAuthCallback replay),也不能被 UpdateStatus 前推
+// 或被 Cancel。任何对终态行的状态写入都应作为 ErrFlowReplay 拒绝,迫使调用方开新 flow —— 否则攻击者/重放
+// 可把已 cancelled/failed/expired 的 flow 拉回 callback_received→validated 复活后注入凭据(S1-012)。
+// 此前 finalized 单独被守(consumed_at + StatusFinalized),cancelled/expired/failed 三态无人守:既是
+// CompleteOAuthCallback 的提前 replay 闸,也是 UpdateStatus/Cancel SQL CAS predicate 的 Go 侧真相源,
+// 三处共用避免漂移(同 RequiresCallbackValidation 在 S1-010 的 fake-vs-真 SQL 教训)。
+func isTerminalStatus(status FlowStatus) bool {
+	switch status {
+	case StatusFinalized, StatusCancelled, StatusExpired, StatusFailed:
+		return true
+	default:
+		return false
+	}
+}
+
 func NormalizeFlowStatus(status FlowStatus) FlowStatus {
 	switch status {
 	case StatusStarted, StatusWaitingForUser, StatusCallbackReceived, StatusValidated, StatusFinalized, StatusCancelled, StatusExpired, StatusFailed:

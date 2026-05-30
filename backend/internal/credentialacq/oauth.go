@@ -139,7 +139,10 @@ func CompleteOAuthCallback(ctx context.Context, store *PostgresSessionStore, flo
 	if err != nil {
 		return CredentialCandidate{}, Session{}, err
 	}
-	if !session.ConsumedAt.IsZero() || session.Status == StatusFinalized {
+	// S1-012: 终态 flow(finalized/cancelled/expired/failed)不得再被回调驱动。此前只守 finalized +
+	// consumed_at,致使 cancelled/failed/expired 的 flow 仍可被同 state+code 的回调重新拉回
+	// callback_received→validated 复活。terminal 校验置于 state/expiry/PKCE 之前,死 flow 直接 replay。
+	if !session.ConsumedAt.IsZero() || isTerminalStatus(session.Status) {
 		return CredentialCandidate{}, session, ErrFlowReplay
 	}
 	now := store.now().UTC()
