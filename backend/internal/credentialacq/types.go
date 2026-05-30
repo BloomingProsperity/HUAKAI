@@ -154,7 +154,12 @@ type FinalizeResult struct {
 func DefaultModePlans() []ModePlan {
 	return []ModePlan{
 		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeAPIKey, Kind: FlowKindPaste, ClientIdentitySource: ClientSourceNone, AllowedHelpers: []FlowKind{FlowKindPaste, FlowKindCSVImport, FlowKindJSONImport}},
-		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeAIOAuth, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindOAuth, FlowKindPaste}},
+		// S1-014: claude_ai_oauth 是交互式 OAuth(PKCE)模式,AllowedHelpers 必须仅含 FlowKindOAuth,
+		// 与 chatgpt_oauth / code_assist / google_one 对齐。此前混入 FlowKindPaste 等于开了一扇手工旁路——
+		// 管理员可 START flow_kind=paste 再 finalize,用手写 credentials body 注入任意 Anthropic token,
+		// 完全绕过 callback/PKCE/state/授权码交换。需要粘贴既有 Anthropic OAuth 凭据者走 claude_code
+		// (FlowKindCLIImport/JSONImport);粘贴 API key 走 anthropic/api_key(FlowKindPaste)。
+		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeAIOAuth, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindOAuth}},
 		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeCode, Kind: FlowKindCLIImport, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindCLIImport, FlowKindJSONImport}},
 		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeBedrock, Kind: FlowKindPaste, ClientIdentitySource: ClientSourceNone, ManualFirst: true, AllowedHelpers: []FlowKind{FlowKindPaste, FlowKindCloudBootstrap, FlowKindOAuth}},
 		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeVertexAnthropic, Kind: FlowKindJSONImport, ClientIdentitySource: ClientSourceOperatorConfig, AllowedHelpers: []FlowKind{FlowKindJSONImport, FlowKindCloudBootstrap}},

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +22,7 @@ const (
 	claudeAIOAuthPublicClientID   = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 	claudeAIOAuthScope            = "org:create_api_key user:profile user:inference"
 	claudeAIOAuthLoopbackRedirect = "http://localhost:54545/callback"
+	claudeAIOAuthLoopbackPath     = "/callback"
 
 	claudeAIOAuthApprovedProfileSource = "approved_builtin_profile"
 )
@@ -163,7 +166,13 @@ func validateBuiltinProfile(cfg OAuthClientConfig) error {
 	if strings.TrimSpace(cfg.TokenURL) != claudeAIOAuthTokenURL {
 		mismatches = append(mismatches, "token_url")
 	}
-	if strings.TrimSpace(cfg.RedirectURI) == "" {
+	// S1-014: redirect_uri 此前只查非空,致使管理员 override 的任意 redirect(含攻击者 https host)能进
+	// authorize URL 接走授权码。改为严格 loopback 校验,与 gemini/chatgpt 的 loopback 分支等强(不达标即
+	// 作 profile mismatch 拒绝)。claude_ai_oauth 是 claude.ai 固定 public client、只注册 loopback redirect,
+	// claude.ai 不会接受非 loopback;且 HTTPS admin server callback 还需把 flow_id 注入 redirect(本模式走
+	// 通用 startStoredPKCEOAuthFlow,未注入),否则回调缺 flow_id 必被 admin handler 拒(400)。故此处一律拒
+	// 非 loopback —— 不放出一条无法完成的 admin 回调路径。HTTPS admin allowlist 对齐留 roadmap。
+	if err := validateClaudeAIRedirectURI(cfg.RedirectURI); err != nil {
 		mismatches = append(mismatches, "redirect_uri")
 	}
 	if strings.Join(trimmedFields(cfg.Scopes), " ") != claudeAIOAuthScope {
@@ -174,6 +183,38 @@ func validateBuiltinProfile(cfg OAuthClientConfig) error {
 	}
 	if len(mismatches) > 0 {
 		return fmt.Errorf("%w: anthropic claude_ai_oauth built-in profile mismatch: %s", ErrFeatureDisabled, strings.Join(mismatches, ","))
+	}
+	return nil
+}
+
+// validateClaudeAIRedirectURI 严格校验 claude_ai_oauth 的 redirect_uri:仅接受 localhost loopback
+// (无 userinfo、显式端口 [1024,65535]、path 恰为 /callback)。claude.ai public client 只注册 loopback,
+// 非 loopback(含任意 https host)一律拒绝 —— 闭合 S1-014"redirect 只查非空,override 任意目标可接走授权码"。
+func validateClaudeAIRedirectURI(raw string) error {
+	trimmed := strings.TrimSpace(raw)
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return fmt.Errorf("%w: invalid redirect_uri: %v", ErrFeatureDisabled, err)
+	}
+	if parsed.Scheme != "http" {
+		return fmt.Errorf("%w: redirect must be http loopback (claude.ai public client registers loopback only)", ErrFeatureDisabled)
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("%w: loopback redirect must not include userinfo", ErrFeatureDisabled)
+	}
+	if parsed.Hostname() != "localhost" {
+		return fmt.Errorf("%w: loopback redirect host must be localhost", ErrFeatureDisabled)
+	}
+	portRaw := parsed.Port()
+	if portRaw == "" {
+		return fmt.Errorf("%w: loopback redirect requires explicit port", ErrFeatureDisabled)
+	}
+	port, err := strconv.Atoi(portRaw)
+	if err != nil || port < 1024 || port > 65535 {
+		return fmt.Errorf("%w: loopback redirect port out of range", ErrFeatureDisabled)
+	}
+	if parsed.EscapedPath() != claudeAIOAuthLoopbackPath {
+		return fmt.Errorf("%w: loopback redirect path must be %s", ErrFeatureDisabled, claudeAIOAuthLoopbackPath)
 	}
 	return nil
 }
