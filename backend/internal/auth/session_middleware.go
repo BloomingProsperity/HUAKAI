@@ -3,10 +3,10 @@ package auth
 import (
 	"context"
 	"errors"
-	"net"
 	"net/http"
 	"strings"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
 
@@ -33,7 +33,13 @@ func SessionFromContext(ctx context.Context) (SessionIdentity, bool) {
 	return ident, ok
 }
 
-func SessionMiddleware(validator SessionValidator) func(http.Handler) http.Handler {
+// SessionMiddleware validates the bearer session and stamps the identity into the request
+// context. The resolver derives the client IP used for session drift/anomaly checks; it MUST
+// be the same trusted-proxy-aware resolver used at login (usersession.Create) and refresh, or
+// behind a reverse proxy the stored baseline IP (real client) and the validation IP (proxy
+// socket) diverge and DetectDrift can falsely revoke a valid session (S2-109). A nil resolver
+// is safe and falls back to RemoteAddr — matching pre-S2-109 behavior for direct exposure.
+func SessionMiddleware(validator SessionValidator, resolver *clientip.Resolver) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if validator == nil {
@@ -45,7 +51,7 @@ func SessionMiddleware(validator SessionValidator) func(http.Handler) http.Handl
 				writeSessionAuthError(w, http.StatusUnauthorized, "session_token_required", "session bearer token is required")
 				return
 			}
-			validated, err := validator.Validate(r.Context(), token, requestIP(r), r.UserAgent())
+			validated, err := validator.Validate(r.Context(), token, resolver.ClientIP(r), r.UserAgent())
 			if err != nil {
 				switch {
 				case errors.Is(err, usersession.ErrSigningKeyMissing):
@@ -73,16 +79,6 @@ func parseSessionBearer(header string) (string, bool) {
 	}
 	token := strings.TrimSpace(strings.TrimPrefix(header, prefix))
 	return token, token != ""
-}
-
-func requestIP(r *http.Request) string {
-	if r == nil {
-		return ""
-	}
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
-	}
-	return r.RemoteAddr
 }
 
 func writeSessionAuthError(w http.ResponseWriter, status int, code, message string) {

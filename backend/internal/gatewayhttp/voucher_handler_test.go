@@ -15,6 +15,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
 )
 
@@ -70,6 +71,71 @@ func TestVoucherHandlersAdminAndUserRoutes(t *testing.T) {
 	listResp := doVoucherRequest(t, r, http.MethodGet, "/v1/admin/vouchers?tenant_id=1", nil)
 	if listResp.Code != http.StatusOK {
 		t.Fatalf("list status=%d body=%s", listResp.Code, listResp.Body.String())
+	}
+}
+
+// sourceIPCapturingVoucherService records the SourceIP the handler passes into Redeem.
+type sourceIPCapturingVoucherService struct{ lastSourceIP string }
+
+func (c *sourceIPCapturingVoucherService) Create(context.Context, voucher.CreateInput) (voucher.CreateResult, error) {
+	return voucher.CreateResult{}, nil
+}
+func (c *sourceIPCapturingVoucherService) CreateBatch(context.Context, voucher.BatchCreateInput) (voucher.BatchCreateResult, error) {
+	return voucher.BatchCreateResult{}, nil
+}
+func (c *sourceIPCapturingVoucherService) Redeem(_ context.Context, in voucher.RedeemInput) (voucher.RedeemResult, error) {
+	c.lastSourceIP = in.SourceIP
+	return voucher.RedeemResult{BalanceCents: 1}, nil
+}
+func (c *sourceIPCapturingVoucherService) Revoke(context.Context, voucher.RevokeInput) (voucher.Voucher, error) {
+	return voucher.Voucher{}, nil
+}
+func (c *sourceIPCapturingVoucherService) List(context.Context, voucher.ListInput) ([]voucher.Voucher, error) {
+	return nil, nil
+}
+func (c *sourceIPCapturingVoucherService) GetBatch(context.Context, int64, int64) (voucher.GetBatchResult, error) {
+	return voucher.GetBatchResult{}, nil
+}
+
+// TestVoucherUserRedeemUsesTrustedProxyClientIP (S2-109) proves the redeem handler routes the
+// request through the trusted-proxy-aware ClientIPResolver, not raw RemoteAddr. The socket peer
+// (10.1.2.3) is a trusted proxy and the real client (198.51.100.9) is in X-Forwarded-For, so the
+// SourceIP recorded for burst/anomaly purposes must be the forwarded client.
+//
+// Mutation check: revert the call site to RemoteAddr (or drop ClientIPResolver from the deps so the
+// nil-safe resolver falls back to the socket peer) → recorded SourceIP becomes "10.1.2.3" → red.
+func TestVoucherUserRedeemUsesTrustedProxyClientIP(t *testing.T) {
+	svc := &sourceIPCapturingVoucherService{}
+	resolver, err := clientip.NewResolver([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	r := chi.NewRouter()
+	r.Route("/v1/users/me/vouchers", func(r chi.Router) {
+		r.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				ctx := sessionauth.ContextWithSession(req.Context(), sessionauth.SessionIdentity{TenantID: 1, UserID: 42})
+				next.ServeHTTP(w, req.WithContext(ctx))
+			})
+		})
+		MountVoucherUserRoutes(r, VoucherUserDeps{Service: svc, ClientIPResolver: resolver})
+	})
+
+	payload, err := json.Marshal(map[string]any{"code": "c", "idempotency_key": "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpReq := httptest.NewRequest(http.MethodPost, "/v1/users/me/vouchers/redeem", bytes.NewReader(payload))
+	httpReq.RemoteAddr = "10.1.2.3:5000"                  // trusted reverse-proxy peer
+	httpReq.Header.Set("X-Forwarded-For", "198.51.100.9") // real client behind it
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httpReq)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("redeem status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if svc.lastSourceIP != "198.51.100.9" {
+		t.Fatalf("Redeem SourceIP=%q want forwarded client 198.51.100.9 (handler must consult ClientIPResolver, not RemoteAddr)", svc.lastSourceIP)
 	}
 }
 

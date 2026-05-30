@@ -37,7 +37,7 @@ func TestAuthAndSessionHandlersRegisterVerifyLoginRefreshList(t *testing.T) {
 		MountAuthRoutes(r, AuthHandlerDeps{Auth: authSvc, Sessions: sessionSvc, EmailSender: email})
 	})
 	r.Route("/v1/sessions", func(r chi.Router) {
-		r.Use(sessionauth.SessionMiddleware(sessionSvc))
+		r.Use(sessionauth.SessionMiddleware(sessionSvc, nil))
 		MountSessionRoutes(r, SessionHandlerDeps{Sessions: sessionSvc})
 	})
 
@@ -105,7 +105,7 @@ func TestAT_SESSION_001_004_HandlersRequireBearerAndIgnoreBodyUser(t *testing.T)
 	}
 	r := chi.NewRouter()
 	r.Route("/v1/sessions", func(r chi.Router) {
-		r.Use(sessionauth.SessionMiddleware(sessionSvc))
+		r.Use(sessionauth.SessionMiddleware(sessionSvc, nil))
 		MountSessionRoutes(r, SessionHandlerDeps{Sessions: sessionSvc})
 	})
 
@@ -153,7 +153,7 @@ func TestAT_AUTH_007_011_CrossUserRefreshRejected(t *testing.T) {
 	}
 	r := chi.NewRouter()
 	r.Route("/v1/sessions", func(r chi.Router) {
-		r.Use(sessionauth.SessionMiddleware(sessionSvc))
+		r.Use(sessionauth.SessionMiddleware(sessionSvc, nil))
 		MountSessionRoutes(r, SessionHandlerDeps{Sessions: sessionSvc})
 	})
 
@@ -199,7 +199,7 @@ func TestAT_AUTH_007_010_AuthRedactionAcrossAuditLogAndStructuredSinks(t *testin
 		MountAuthRoutes(r, AuthHandlerDeps{Auth: authSvc, Sessions: sessionSvc, EmailSender: email, AdminAuth: adminAuth, EventSink: events})
 	})
 	r.Route("/v1/sessions", func(r chi.Router) {
-		r.Use(sessionauth.SessionMiddleware(sessionSvc))
+		r.Use(sessionauth.SessionMiddleware(sessionSvc, nil))
 		MountSessionRoutes(r, SessionHandlerDeps{Sessions: sessionSvc, EventSink: events})
 	})
 
