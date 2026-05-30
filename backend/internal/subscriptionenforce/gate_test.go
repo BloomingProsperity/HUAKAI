@@ -11,14 +11,30 @@ import (
 )
 
 type fakeRoutesRepo struct {
-	allowed map[int64]struct{}
-	err     error
-	called  int
+	result GroupRoutes
+	err    error
+	called int
+	// F3: 记录入参以判别 gate 是否把 (tenantID, userGroup, model) 正确透传给 repo。
+	gotTenantID  int64
+	gotUserGroup string
+	gotModel     string
 }
 
-func (f *fakeRoutesRepo) AllowedPoolGroups(_ context.Context, _ int64, _ string, _ string) (map[int64]struct{}, error) {
+func (f *fakeRoutesRepo) GroupRoutes(_ context.Context, tenantID int64, userGroup, model string) (GroupRoutes, error) {
 	f.called++
-	return f.allowed, f.err
+	f.gotTenantID = tenantID
+	f.gotUserGroup = userGroup
+	f.gotModel = model
+	return f.result, f.err
+}
+
+// configured 构造"已配置且命中本 model 的 pool 集为 ids"的查询结果。
+func configured(ids ...int64) GroupRoutes {
+	m := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		m[id] = struct{}{}
+	}
+	return GroupRoutes{Configured: true, Allowed: m}
 }
 
 func req(userGroup string, poolGroupID int64) poolrouter.SelectionRequest {
@@ -27,10 +43,10 @@ func req(userGroup string, poolGroupID int64) poolrouter.SelectionRequest {
 	}
 }
 
-// 守核心限制语义: 配了分组路由后, 候选池在允许集内放行、不在则拒。
+// 守核心限制语义: 配了分组路由且命中本 model 后, 候选池在允许集内放行、不在则拒。
 // mutation: gate 改回 AllowAll(恒 true) → 不允许池(9)的拒断言变红 (高档用户能溜进未授权池)。
 func TestGroupPolicyGate_RestrictsToAllowedPool(t *testing.T) {
-	repo := &fakeRoutesRepo{allowed: map[int64]struct{}{5: {}}}
+	repo := &fakeRoutesRepo{result: configured(5)}
 	g := NewGroupPolicyGate(repo)
 
 	if ok, _, err := g.Allow(context.Background(), nil, req("premium", 5)); err != nil || !ok {
@@ -48,10 +64,30 @@ func TestGroupPolicyGate_RestrictsToAllowedPool(t *testing.T) {
 	}
 }
 
+// 守白名单核心(F1, Owner 2026-05-30): 该档配了有效路由、但本 model 没命中任何规则
+// (Configured=true 且 Allowed 空) → 拒, 而非放行。这是与 sub2api/new-api 对齐的越档拦截。
+// mutation: 把"配置了但本 model 未命中 → 拒"退回旧的"空集 → 放行" → 红
+// (premium 只配 claude-* 时, 请求 gemini 会越档溜进任意池)。
+func TestGroupPolicyGate_ConfiguredButModelMissDenies(t *testing.T) {
+	repo := &fakeRoutesRepo{result: GroupRoutes{Configured: true, Allowed: map[int64]struct{}{}}}
+	g := NewGroupPolicyGate(repo)
+
+	ok, reason, err := g.Allow(context.Background(), nil, req("premium", 9))
+	if err != nil {
+		t.Fatalf("unexpected err %v", err)
+	}
+	if ok {
+		t.Fatal("configured group with no rule matching this model must be denied (white-list), got allow")
+	}
+	if reason != poolrouter.GateFailureGroupPolicy {
+		t.Fatalf("reason = %q, want group_policy", reason)
+	}
+}
+
 // 守空档放行 + 不查库: user_group 空时直接放行, 绝不触 repo (无谓 DB 往返 + 老链路零影响)。
 // mutation: gate 漏掉空档短路 → repo.called>0 / 行为依赖库 → 红。
 func TestGroupPolicyGate_EmptyUserGroupAllowsWithoutRepo(t *testing.T) {
-	repo := &fakeRoutesRepo{allowed: map[int64]struct{}{5: {}}}
+	repo := &fakeRoutesRepo{result: configured(5)}
 	g := NewGroupPolicyGate(repo)
 
 	ok, _, err := g.Allow(context.Background(), nil, req("", 9))
@@ -63,25 +99,37 @@ func TestGroupPolicyGate_EmptyUserGroupAllowsWithoutRepo(t *testing.T) {
 	}
 }
 
-// 守未配置直通: 该租户/档/模型无路由规则(允许集空) → 放行 (不破坏未启用分组路由的租户)。
-// mutation: 把"空集→放行"改成"空集→拒" → 红 (会拒掉所有未配置分组路由的付费用户)。
-func TestGroupPolicyGate_NoRulesAllows(t *testing.T) {
-	repo := &fakeRoutesRepo{allowed: map[int64]struct{}{}}
+// 守未配置直通: 该 (租户,档) 无任何有效路由 (Configured=false) → 放行 (不破坏未启用分组路由
+// 的老租户)。mutation: 把"未配置→放行"改成"未配置→拒" → 红 (会拒掉所有未配置分组路由的付费用户)。
+func TestGroupPolicyGate_UnconfiguredGroupAllows(t *testing.T) {
+	repo := &fakeRoutesRepo{result: GroupRoutes{Configured: false, Allowed: map[int64]struct{}{}}}
 	g := NewGroupPolicyGate(repo)
 
 	if ok, _, err := g.Allow(context.Background(), nil, req("premium", 9)); err != nil || !ok {
-		t.Fatalf("no rules: ok=%v err=%v, want allow", ok, err)
+		t.Fatalf("unconfigured group: ok=%v err=%v, want allow", ok, err)
 	}
 }
 
-// 守 repo 错 fail-open: 路由档位非钱/安全闸, 瞬时 DB 错放行 (不拒付费用户)。
-// mutation: 改成 fail-closed(err→拒) → 红 (DB 抖动会拒掉所有高档用户路由)。
-func TestGroupPolicyGate_RepoErrorFailsOpen(t *testing.T) {
+// 守 repo 错 fail-open + 触发 observer: 路由档位非钱/安全闸, 瞬时 DB 错放行 (不拒付费用户),
+// 但必须触发观测钩子以便告警 (R4: 持续 fail-open 须可监控)。
+// mutation: 改成 fail-closed(err→拒) → 放行断言红; 漏调 observer → observed 断言红。
+func TestGroupPolicyGate_RepoErrorFailsOpenAndObserves(t *testing.T) {
 	repo := &fakeRoutesRepo{err: errors.New("transient db error")}
-	g := NewGroupPolicyGate(repo)
+	var observed int
+	var gotErr error
+	g := NewGroupPolicyGate(repo, WithFailOpenObserver(func(_ context.Context, _ poolrouter.SelectionRequest, err error) {
+		observed++
+		gotErr = err
+	}))
 
 	if ok, _, err := g.Allow(context.Background(), nil, req("premium", 9)); err != nil || !ok {
 		t.Fatalf("repo error: ok=%v err=%v, want fail-open allow with no err", ok, err)
+	}
+	if observed != 1 {
+		t.Fatalf("fail-open observer called %d times, want 1", observed)
+	}
+	if gotErr == nil {
+		t.Fatal("observer must receive the underlying repo error")
 	}
 }
 
@@ -90,6 +138,49 @@ func TestGroupPolicyGate_NilRepoAllows(t *testing.T) {
 	g := NewGroupPolicyGate(nil)
 	if ok, _, err := g.Allow(context.Background(), nil, req("premium", 9)); err != nil || !ok {
 		t.Fatalf("nil repo: ok=%v err=%v, want allow", ok, err)
+	}
+}
+
+// 守入参透传(F3): gate 必须把 req 的 TenantID/UserGroup/RequestedModel 原样传给 repo。
+// fake repo 记录实收参数。mutation: gate 传错字段(如把 PoolGroupID 当 tenantID)或写死 → 红。
+func TestGroupPolicyGate_PassesParamsThrough(t *testing.T) {
+	repo := &fakeRoutesRepo{result: configured(7)}
+	g := NewGroupPolicyGate(repo)
+
+	r := poolrouter.SelectionRequest{TenantID: 42, UserGroup: "gold", RequestedModel: "gpt-4o", PoolGroupID: 7}
+	if _, _, err := g.Allow(context.Background(), nil, r); err != nil {
+		t.Fatalf("unexpected err %v", err)
+	}
+	if repo.gotTenantID != 42 || repo.gotUserGroup != "gold" || repo.gotModel != "gpt-4o" {
+		t.Fatalf("repo got (tenant=%d, group=%q, model=%q), want (42, gold, gpt-4o)", repo.gotTenantID, repo.gotUserGroup, repo.gotModel)
+	}
+}
+
+// 守 PrepareForSelection 缓存裁决(hoist 的 gate 侧不变量): 预备后逐候选 Allow 不再查库,
+// 且裁决与直接 Allow 一致、与候选账号无关。
+// mutation: PrepareForSelection 返回 gate 自身(每候选再查库)→ repo.called>1 红;
+//
+//	prepared 裁决与 Allow 分叉 → 断言红。
+func TestGroupPolicyGate_PrepareForSelectionCachesVerdict(t *testing.T) {
+	repo := &fakeRoutesRepo{result: configured(5)}
+	g := NewGroupPolicyGate(repo)
+
+	prepared := g.PrepareForSelection(context.Background(), req("premium", 5))
+	for i := 0; i < 3; i++ {
+		if ok, _, err := prepared.Allow(context.Background(), &poolrouter.AccountSnapshot{ID: int64(i)}, req("premium", 5)); err != nil || !ok {
+			t.Fatalf("prepared allow pool 5 (candidate %d): ok=%v err=%v", i, ok, err)
+		}
+	}
+	if repo.called != 1 {
+		t.Fatalf("repo called %d times, want 1 (PrepareForSelection caches verdict; per-candidate Allow must not re-query)", repo.called)
+	}
+
+	repoDeny := &fakeRoutesRepo{result: configured(5)}
+	gDeny := NewGroupPolicyGate(repoDeny)
+	preparedDeny := gDeny.PrepareForSelection(context.Background(), req("premium", 9))
+	ok, reason, err := preparedDeny.Allow(context.Background(), &poolrouter.AccountSnapshot{ID: 1}, req("premium", 9))
+	if err != nil || ok || reason != poolrouter.GateFailureGroupPolicy {
+		t.Fatalf("prepared deny pool 9: ok=%v reason=%q err=%v, want deny+group_policy", ok, reason, err)
 	}
 }
 
