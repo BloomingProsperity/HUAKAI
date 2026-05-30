@@ -29,6 +29,13 @@
    当成"死会话"自动过期,别人就能接管)。
 5) 改完立刻释放:      bash .coordination/release.sh "$COORD_AGENT"
 
+【任务调度(领活/干活/审核/再派)】
+- 这套不止"别撞文件",还有一层【任务账本】:总指挥派活、你领活干、完成标 review、
+  调度者独立审核后再派。完整协议见 .coordination/DISPATCH.md,**务必先读它**。
+- 你的循环:bash .coordination/task.sh mine → start <id>(自动 claim 文件)→ 干 + 每提交
+  codex 自审 → review <id>。不要自己标 done(等调度者审)。被打回按 review_notes 改。
+- 需要 Owner 拍板的事:task.sh park <id> "问题",然后**立刻做下一个**;最多等 2 分钟,绝不停滞。
+
 【其它】
 - COORD_URL 没设时,这套会退回"本地文件模式"(只在单机有效);跨机器务必设 COORD_URL。
 - 这是"广播+约定",不是操作系统强制锁——靠你自觉遵守。别绕过。

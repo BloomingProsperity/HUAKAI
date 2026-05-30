@@ -4,7 +4,21 @@
 Per-agent lock files in locks/<agent>.json avoid the meta-collision of a single
 shared status file. Subcommands: claim | check | release.
 """
-import sys, os, json, re, datetime, urllib.request, urllib.error, urllib.parse, ssl
+import sys, os, json, re, datetime, urllib.request, urllib.error, urllib.parse, ssl, posixpath
+
+
+def _norm_files(items):
+    """Match the server's norm_files so a conflict check on './backend/x.go' or
+    'backend//x.go' still collides with a stored 'backend/x.go'."""
+    out = set()
+    for f in items or []:
+        f = (f or "").strip().replace("\\", "/")
+        if f.startswith("./"):
+            f = f[2:]
+        f = posixpath.normpath(f).lstrip("/")
+        if f and f != ".":
+            out.add(f)
+    return out
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -98,6 +112,234 @@ def remote_release(agent):
         return 1
     print(f"✓ released locks for {agent}")
     return 0
+
+
+# --- Task-dispatch client (remote only — the backlog is a shared ledger, not a
+# per-machine file). Workers: mine/start/review/block. Dispatcher: assign/pass/
+# bounce/park/load. assign goes through the server's verify_rounds>=3 gate. ---
+def _need_remote():
+    if not COORD_URL:
+        print("task commands need COORD_URL (shared ledger lives on the coord server).", file=sys.stderr)
+        return False
+    return True
+
+
+def _agent():
+    return os.environ.get("COORD_AGENT", "")
+
+
+def remote_tasks(status=None, assignee=None, wave=None):
+    if not _need_remote():
+        return 1
+    qs = []
+    if status:
+        qs.append("status=" + urllib.parse.quote(status))
+    if assignee:
+        qs.append("assignee=" + urllib.parse.quote(assignee))
+    if wave:
+        qs.append("wave=" + urllib.parse.quote(wave))
+    code, obj = _http("GET", "/tasks" + ("?" + "&".join(qs) if qs else ""))
+    if code != 200:
+        print(f"⚠️  cannot read tasks (error {code}: {obj.get('error', obj)})", file=sys.stderr)
+        return 3
+    ts = obj.get("tasks", [])
+    if not ts:
+        print("(no tasks)")
+        return 0
+    for t in ts:
+        v = "✓3" if t.get("verify_rounds", 0) >= 3 else f"⚠{t.get('verify_rounds', 0)}/3"
+        risk = f" !{t['risk']}" if t.get("risk") else ""
+        print(f"  [{t.get('status', ''):<11}] {t.get('id', ''):<10} {t.get('wave', '')}  "
+              f"{t.get('title', '')}  → {t.get('assignee') or '(unassigned)'}  ({v}{risk})")
+        if t.get("acceptance"):
+            print(f"        ✔ DoD: {t['acceptance']}")
+        if t.get("spec_refs"):
+            print(f"        📚 specs: {', '.join(t['spec_refs'])}")
+        if t.get("scope_files"):
+            print(f"        📁 files: {', '.join(t['scope_files'])}")
+        if t.get("review_notes"):
+            print(f"        ↩ review/owner: {t['review_notes']}")
+    return 0
+
+
+def _get_task(tid):
+    code, obj = _http("GET", "/tasks")
+    if code != 200:
+        return None
+    for t in obj.get("tasks", []):
+        if t.get("id") == tid:
+            return t
+    return None
+
+
+def remote_task_status(tid, status, **extra):
+    if not _need_remote():
+        return 1
+    body = {"id": tid, "status": status}
+    body.update({k: v for k, v in extra.items() if v is not None})
+    code, obj = _http("POST", "/tasks/status", body)
+    if code == 200:
+        print(f"✓ {tid} → {status}")
+        return 0
+    print(f"server error {code}: {obj.get('error', obj)}", file=sys.stderr)
+    return 1
+
+
+def remote_task_start(tid):
+    if not _need_remote():
+        return 1
+    ag = _agent()
+    if not ag:
+        print("set COORD_AGENT first", file=sys.stderr)
+        return 1
+    t = _get_task(tid)
+    if not t:
+        print(f"no such task {tid}", file=sys.stderr)
+        return 1
+    if t.get("assignee") and t["assignee"] != ag:
+        print(f"⚠️  {tid} is assigned to {t['assignee']}, not you ({ag}); not starting.", file=sys.stderr)
+        return 2
+    # Claim the task's scope files first (true atomic file lock) — refuse on conflict.
+    files = t.get("scope_files", [])
+    claimed = False
+    if files:
+        code, obj = _http("POST", "/claim", {"agent": ag, "files": files,
+                          "core_feature": t.get("feature") or tid, "purpose": "task " + tid})
+        if code == 409:
+            print("⚠️  cannot start — files already locked by another agent:")
+            for c in obj.get("conflicts", []):
+                print(f"    - {c.get('agent')} overlaps: {', '.join(c.get('files', []))}")
+            return 2
+        if code != 200:
+            print(f"claim error {code}: {obj.get('error', obj)}", file=sys.stderr)
+            return 1
+        claimed = True
+    rc = remote_task_status(tid, "in_progress", updated_by=ag)
+    if rc != 0 and claimed:
+        # The status flip failed (e.g. transition/verify gate) — release the file
+        # lock we just took so we don't block other workers on a task that didn't start.
+        _http("POST", "/release", {"agent": ag})
+        print(f"  (rolled back file lock for {ag} — start did not complete)", file=sys.stderr)
+    return rc
+
+
+def remote_task_assign(tid, agent, verify_rounds, verify_notes=""):
+    if not _need_remote():
+        return 1
+    try:
+        vr = int(verify_rounds)
+    except (TypeError, ValueError):
+        print("verify_rounds must be an integer (3 = passed 3 self-verify rounds)", file=sys.stderr)
+        return 1
+    code, obj = _http("POST", "/tasks", {"id": tid, "assignee": agent, "status": "assigned",
+                      "verify_rounds": vr, "verify_notes": verify_notes,
+                      "updated_by": _agent() or "dispatcher"})
+    if code == 200:
+        print(f"✓ assigned {tid} → {agent} (verify_rounds={vr})")
+        return 0
+    if code == 422:
+        print(f"⛔ refused: {obj.get('error')} — 分配前必须 3 轮自反验证", file=sys.stderr)
+        return 2
+    print(f"server error {code}: {obj.get('error', obj)}", file=sys.stderr)
+    return 1
+
+
+def remote_task_load(path):
+    if not _need_remote():
+        return 1
+    try:
+        items = json.load(open(path))
+    except Exception as e:
+        print(f"cannot read {path}: {e}", file=sys.stderr)
+        return 1
+    if isinstance(items, dict):
+        items = items.get("tasks", [])
+    ok = 0
+    for it in items:
+        it.setdefault("updated_by", _agent() or "dispatcher")
+        code, obj = _http("POST", "/tasks", it)
+        if code == 200:
+            ok += 1
+        else:
+            print(f"  ✗ {it.get('id')}: {code} {obj.get('error', obj)}", file=sys.stderr)
+    print(f"loaded {ok}/{len(items)} tasks")
+    return 0 if ok == len(items) else 1
+
+
+def remote_heartbeat(agent):
+    if not _need_remote():
+        return 1
+    code, _ = _http("POST", "/heartbeat", {"agent": agent})
+    return 0 if code == 200 else 1
+
+
+def remote_task_show(tid):
+    if not _need_remote():
+        return 1
+    t = _get_task(tid)
+    if not t:
+        print(f"no such task {tid}", file=sys.stderr)
+        return 1
+    print(f"{t['id']}  [{t.get('status')}]  {t.get('wave', '')}  risk={t.get('risk') or '-'}  "
+          f"verify={t.get('verify_rounds', 0)}/3")
+    print(f"  title:      {t.get('title', '')}")
+    if t.get('detail'):
+        print(f"  detail:     {t['detail']}")
+    print(f"  assignee:   {t.get('assignee') or '(unassigned)'}")
+    print(f"  acceptance: {t.get('acceptance') or '(none)'}")
+    print(f"  spec_refs:  {', '.join(t.get('spec_refs', [])) or '(none)'}")
+    print(f"  files:      {', '.join(t.get('scope_files', [])) or '(none)'}")
+    if t.get('review_notes'):
+        print(f"  review/owner: {t['review_notes']}")
+    if t.get('notes'):
+        print(f"  notes:      {t['notes']}")
+    return 0
+
+
+def remote_task_approve(tid):
+    """Owner-only: approve a parked (needs_owner) task to done. Requires the
+    separate COORD_OWNER_TOKEN secret — workers/dispatcher cannot do this."""
+    if not _need_remote():
+        return 1
+    ot = os.environ.get("COORD_OWNER_TOKEN", "")
+    if not ot:
+        print("set COORD_OWNER_TOKEN (Owner-only secret) to approve high-risk tasks", file=sys.stderr)
+        return 1
+    code, obj = _http("POST", "/tasks/status", {"id": tid, "status": "done",
+                      "owner_token": ot, "reviewed_by": "owner"})
+    if code == 200:
+        print(f"✓ Owner approved {tid} → done")
+        return 0
+    print(f"approve failed {code}: {obj.get('error', obj)}", file=sys.stderr)
+    return 1
+
+
+def remote_task_conflicts(files_csv):
+    """Q3 guard: does a candidate scope overlap any NON-TERMINAL task — including
+    parked (needs_owner) or blocked work that stopped mid-edit? Use before assigning."""
+    if not _need_remote():
+        return 1
+    want = _norm_files(files_csv.split(","))
+    code, obj = _http("GET", "/tasks")
+    if code != 200:
+        print(f"⚠️  cannot read tasks ({code})", file=sys.stderr)
+        return 3
+    nonterminal = {"assigned", "in_progress", "review", "needs_owner", "blocked"}
+    hits = []
+    for t in obj.get("tasks", []):
+        if t.get("status") in nonterminal:
+            ov = want & _norm_files(t.get("scope_files", []))
+            if ov:
+                hits.append((t["id"], t.get("status"), t.get("assignee"), sorted(ov)))
+    if not hits:
+        print("✓ no scope conflict with any active/parked/blocked task")
+        return 0
+    print("⚠️  scope overlaps existing non-terminal tasks (incl. parked/blocked — may resume):")
+    for i, s, a, ov in hits:
+        print(f"    - {i} [{s}] {a or '-'} overlaps: {', '.join(ov)}")
+    return 2
+
+
 LOCKS = os.path.join(DIR, "locks")
 LOG = os.path.join(DIR, "activity.log")
 DEFAULT_TTL = 1800
@@ -263,6 +505,65 @@ def main(argv):
             print("usage: coord.py release <agent>", file=sys.stderr)
             return 1
         return remote_release(argv[2]) if remote else cmd_release(argv[2])
+    # --- task-dispatch verbs (remote ledger) ---
+    if cmd == "tasks":
+        status = assignee = wave = None
+        rest = argv[2:]
+        if rest and rest[0] == "mine":
+            assignee = _agent()
+        else:
+            for x in rest:
+                if x.startswith("status="):
+                    status = x.split("=", 1)[1]
+                elif x.startswith("wave="):
+                    wave = x.split("=", 1)[1]
+                elif x.startswith("assignee="):
+                    assignee = x.split("=", 1)[1]
+        return remote_tasks(status, assignee, wave)
+    if cmd == "task-start":
+        return remote_task_start(argv[2]) if len(argv) > 2 else 1
+    if cmd == "task-review":
+        rc = remote_task_status(argv[2], "review", updated_by=_agent(),
+                                notes=(argv[3] if len(argv) > 3 else None))
+        if rc == 0 and COORD_URL and _agent():
+            remote_release(_agent())  # editing done -> free the scope files for others
+        return rc
+    if cmd == "task-block":
+        rc = remote_task_status(argv[2], "blocked", updated_by=_agent(),
+                                notes=(argv[3] if len(argv) > 3 else None))
+        if rc == 0 and COORD_URL and _agent():
+            remote_release(_agent())  # paused -> free the files (scope still tracked on the task)
+        return rc
+    if cmd == "task-show":
+        return remote_task_show(argv[2]) if len(argv) > 2 else 1
+    if cmd == "task-approve":
+        return remote_task_approve(argv[2]) if len(argv) > 2 else 1
+    if cmd == "task-conflicts":
+        return remote_task_conflicts(argv[2]) if len(argv) > 2 else 1
+    if cmd == "heartbeat":
+        return remote_heartbeat(argv[2] if len(argv) > 2 else _agent())
+    if cmd == "task-assign":
+        if len(argv) < 5:
+            print("usage: coord.py task-assign <id> <agent> <verify_rounds> [verify_notes]", file=sys.stderr)
+            return 1
+        return remote_task_assign(argv[2], argv[3], argv[4], argv[5] if len(argv) > 5 else "")
+    if cmd == "task-pass":
+        return remote_task_status(argv[2], "done", reviewed_by=(_agent() or "dispatcher"),
+                                  review_notes=(argv[3] if len(argv) > 3 else None))
+    if cmd == "task-bounce":
+        if len(argv) < 4:
+            print("usage: coord.py task-bounce <id> <review_notes>", file=sys.stderr)
+            return 1
+        return remote_task_status(argv[2], "assigned", reviewed_by=(_agent() or "dispatcher"),
+                                  review_notes=argv[3])
+    if cmd == "task-park":
+        rc = remote_task_status(argv[2], "needs_owner", reviewed_by=(_agent() or "dispatcher"),
+                                review_notes=(argv[3] if len(argv) > 3 else None))
+        if rc == 0 and COORD_URL and _agent():
+            remote_release(_agent())  # parked & moving on -> free the files (scope tracked on task)
+        return rc
+    if cmd == "task-load":
+        return remote_task_load(argv[2]) if len(argv) > 2 else 1
     print(f"unknown subcommand: {cmd}", file=sys.stderr)
     return 1
 
