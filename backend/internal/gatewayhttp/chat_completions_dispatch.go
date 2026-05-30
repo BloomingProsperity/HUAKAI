@@ -236,6 +236,7 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 		CapabilityFlags:  ex.attempt.RequiredCapabilities,
 		SessionHash:      ex.promptHash,
 		Vendor:           pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily),
+		UserGroup:        ex.ident.UserGroup,
 	})
 	if errors.Is(err, pool.ErrNoEligibleAccount) || errors.Is(err, pool.ErrNoSlotAvailable) || errors.Is(err, pool.ErrAllChannelsDegraded) {
 		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pool_no_capacity", ex.requestID, 0)

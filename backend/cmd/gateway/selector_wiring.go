@@ -30,6 +30,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionenforce"
 )
 
 // buildSelector 装配 selector 链, 返 (Selector 接口, cleanup 闭包, error)。
@@ -58,11 +59,11 @@ func buildSelector(
 		return nil, nil, fmt.Errorf("buildSelector: invalid config: %w", err)
 	}
 
-	// 1. default selector 总是构造 — 即使 PASR 模式也作为 fallback 实例
-	gates := pool.DefaultGateChain()
-	if healthService != nil {
-		gates.Health = channelhealth.NewServicePoolGate(healthService, nil)
-	}
+	// 1. default selector 总是构造 — 即使 PASR 模式也作为 fallback 实例。
+	// gate 链构造抽到 buildGroupRoutingGates 便于直接单测生产激活接线 (否则漏接订阅
+	// gate 静默退回 AllowAll 无测可抓)。同一 gates 值流入 default selector + actual/shadow PASR,
+	// 一处接线覆盖全 5 mode。
+	gates := buildGroupRoutingGates(subscriptionenforce.NewPostgresRoutesRepo(pgPool), healthService, logger)
 	defaultSel := pool.NewDefaultSelector(
 		pool.NewDBAccountSource(q),
 		pool.WithGateChain(gates),
@@ -142,4 +143,21 @@ func buildSelector(
 		agingWorker.Stop()
 	}
 	return dispatcher, cleanup, nil
+}
+
+// buildGroupRoutingGates 构造 selector 用的 gate 链 (R-SUB-WIRE-1 生产激活点)。在
+// DefaultGateChain 基础上把 GroupPolicy 槽换成接 routes 的真订阅 gate, 并按需替换 Health。
+// 抽成独立函数便于单测直接验证激活接线: 漏接订阅 gate 时 GroupPolicy 退回 AllowAll, 单测
+// 必红 (TestBuildGroupRoutingGates_WiresRealGroupPolicyGate)。
+// fail-open observer: routes 查询失败时放行 + 累计 metric + WARN (R4 可告警)。
+func buildGroupRoutingGates(routesRepo subscriptionenforce.RoutesRepo, healthService *channelhealth.Service, logger *zap.Logger) pool.GateChain {
+	gates := pool.DefaultGateChain()
+	if healthService != nil {
+		gates.Health = channelhealth.NewServicePoolGate(healthService, nil)
+	}
+	gates.GroupPolicy = subscriptionenforce.NewGroupPolicyGate(
+		routesRepo,
+		subscriptionenforce.WithFailOpenObserver(newGroupPolicyFailOpenObserver(logger)),
+	)
+	return gates
 }
