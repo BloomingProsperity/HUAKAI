@@ -269,6 +269,11 @@ func (s *PostgresSessionStore) UpdateStatus(ctx context.Context, id string, stat
 	if NormalizeFlowStatus(status) == "" {
 		return Session{}, ErrInvalidImportBody
 	}
+	// S1-012: terminal flow(finalized/cancelled/expired/failed)不可再被状态推进。无此 CAS predicate 时,
+	// Get 与状态写之间的并发 Cancel/expire 会被 TOCTOU 绕过 —— CompleteOAuthCallback 的 UpdateStatus(
+	// callback_received/validated)仍会落到一个已 cancelled 的 flow 上把它复活。terminal 行被排除后
+	// RETURNING 无行 → 下面 re-fetch 区分"终态(replay)"与"真不存在(not found)"。validated 不在终态集,
+	// 仍可被 oauth.go:176 由 callback_received 推进 / 失败回退为 failed。
 	const q = `
 UPDATE credential_acquisition_flow_sessions
 SET status = $2,
@@ -276,6 +281,7 @@ SET status = $2,
     error_message_redacted = NULLIF($4, ''),
     updated_at = NOW()
 WHERE id = $1::uuid
+  AND status NOT IN ('finalized', 'cancelled', 'expired', 'failed')
 RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind, status,
           actor_id, actor_role, state_hash, nonce_hash, encrypted_pkce_verifier,
           client_identity_source, auth_type, device_code_payload,
@@ -284,10 +290,20 @@ RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind
           error_class, error_message_redacted, expires_at, consumed_at, cancelled_at,
           created_at, updated_at`
 	row, err := scanSession(s.db.QueryRow(ctx, q, strings.TrimSpace(id), status, strings.TrimSpace(errorClass), strings.TrimSpace(redactedMessage)))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Session{}, ErrFlowNotFound
+	if err == nil {
+		return row, nil
 	}
-	return row, err
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return Session{}, err
+	}
+	existing, getErr := s.Get(ctx, id)
+	if getErr != nil {
+		return Session{}, getErr
+	}
+	if isTerminalStatus(existing.Status) {
+		return existing, ErrFlowReplay
+	}
+	return Session{}, ErrFlowNotFound
 }
 
 func (s *PostgresSessionStore) Cancel(ctx context.Context, id string) (Session, error) {
@@ -300,7 +316,7 @@ SET status = 'cancelled',
     cancelled_at = NOW(),
     updated_at = NOW()
 WHERE id = $1::uuid
-  AND status NOT IN ('finalized', 'cancelled', 'expired')
+  AND status NOT IN ('finalized', 'cancelled', 'expired', 'failed')
 RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind, status,
           actor_id, actor_role, state_hash, nonce_hash, encrypted_pkce_verifier,
           client_identity_source, auth_type, device_code_payload,
@@ -314,7 +330,9 @@ RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind
 		if getErr != nil {
 			return Session{}, getErr
 		}
-		if existing.Status == StatusFinalized || existing.Status == StatusCancelled || existing.Status == StatusExpired {
+		// S1-012: 'failed' 亦为终态 —— 此前 NOT IN 漏了它,致使一个已 failed 的 flow 仍可被 Cancel 改写
+		// 成 cancelled(终态→终态的虚假状态翻转)。终态一律返回 ErrFlowReplay,与 isTerminalStatus 同源。
+		if isTerminalStatus(existing.Status) {
 			return existing, ErrFlowReplay
 		}
 		return existing, ErrFlowNotFound

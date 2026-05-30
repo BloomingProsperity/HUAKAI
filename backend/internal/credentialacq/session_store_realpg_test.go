@@ -148,3 +148,81 @@ func TestBeginFinalizeCallbackOAuthGatePG(t *testing.T) {
 		t.Fatalf("device_code flow must be exempt from callback-validation gate: %v", err)
 	}
 }
+
+// TestUpdateStatusAndCancelRejectTerminalFlowsPG guards S1-012 against real Postgres: it proves the two
+// CAS predicates the fake test double cannot prove (the fake reimplements the rule in Go via
+// isTerminalStatus, so it stays green even if the SQL were deleted):
+//
+//	UpdateStatus: WHERE ... AND status NOT IN ('finalized','cancelled','expired','failed')
+//	Cancel:       WHERE ... AND status NOT IN ('finalized','cancelled','expired','failed')   // 'failed' added by S1-012
+//
+// Without these, the Get→write TOCTOU lets a concurrent Cancel/expire be overwritten — e.g.
+// CompleteOAuthCallback's UpdateStatus(callback_received/validated) would resurrect an already-cancelled
+// flow, and a failed flow could be flipped to cancelled.
+//
+// Mutation checks:
+//   - delete `AND status NOT IN (...)` from UpdateStatus's SQL → case (b) updates the cancelled row
+//     (err==nil) → red.
+//   - drop `'failed'` from Cancel's NOT IN set → case (c) cancels the failed row (err==nil) → red.
+//
+// Discriminating controls (a)/(d) prove the predicates are precise, not blanket: an active flow is still
+// cancellable, and a started flow can still be advanced.
+func TestUpdateStatusAndCancelRejectTerminalFlowsPG(t *testing.T) {
+	ctx := context.Background()
+	pool := openCredentialAcqTestPool(t, ctx)
+	keys, err := credentialstore.NewStaticKeyProvider("test-v1", bytes.Repeat([]byte{6}, 32))
+	if err != nil {
+		t.Fatalf("keys: %v", err)
+	}
+	now := time.Now().UTC()
+	store := NewPostgresSessionStoreWithKeys(pool, keys).WithNow(func() time.Time { return now })
+	tenantID, paID := seedCredentialAcqProviderAccount(t, ctx, pool, uuid.NewString())
+
+	mk := func(status FlowStatus) string {
+		id := uuid.NewString()
+		if _, err := store.Create(ctx, Session{
+			ID: id, TenantID: tenantID, ProviderAccountID: paID, Vendor: "openai", AuthMode: "chatgpt_oauth",
+			Kind: FlowKindOAuth, Status: status, ActorID: "admin-1", ActorRole: "platform_admin",
+			ClientIdentitySource: ClientSourcePublicCLI,
+			RequestedScopes:      []string{"openid"},
+			RedactedContext:      map[string]any{"path": "oauth"},
+			ExpiresAt:            now.Add(10 * time.Minute),
+		}); err != nil {
+			t.Fatalf("Create %s: %v", status, err)
+		}
+		return id
+	}
+
+	// (a) control: an active (started) flow is cancellable.
+	active := mk(StatusStarted)
+	cancelled, err := store.Cancel(ctx, active)
+	if err != nil {
+		t.Fatalf("Cancel of active flow: %v", err)
+	}
+	if cancelled.Status != StatusCancelled {
+		t.Fatalf("Cancel(active).Status=%q want cancelled", cancelled.Status)
+	}
+	// (b) UpdateStatus must not resurrect the now-cancelled flow.
+	if _, err := store.UpdateStatus(ctx, active, StatusCallbackReceived, "", ""); !errors.Is(err, ErrFlowReplay) {
+		t.Fatalf("UpdateStatus on cancelled flow: err=%v want ErrFlowReplay", err)
+	}
+
+	// (c) a failed flow must not be Cancel-able (terminal→terminal flip blocked; 'failed' added by S1-012).
+	failedID := mk(StatusStarted)
+	if _, err := store.MarkFailed(ctx, failedID, "exchange_failed", "redacted"); err != nil {
+		t.Fatalf("MarkFailed of started flow: %v", err)
+	}
+	if _, err := store.Cancel(ctx, failedID); !errors.Is(err, ErrFlowReplay) {
+		t.Fatalf("Cancel on failed flow: err=%v want ErrFlowReplay", err)
+	}
+
+	// (d) control: a started flow can still be advanced by UpdateStatus.
+	advancing := mk(StatusStarted)
+	waiting, err := store.UpdateStatus(ctx, advancing, StatusWaitingForUser, "", "")
+	if err != nil {
+		t.Fatalf("UpdateStatus advance of started flow: %v", err)
+	}
+	if waiting.Status != StatusWaitingForUser {
+		t.Fatalf("UpdateStatus(started→waiting).Status=%q want waiting_for_user", waiting.Status)
+	}
+}

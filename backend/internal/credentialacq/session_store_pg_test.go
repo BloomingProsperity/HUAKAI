@@ -79,7 +79,10 @@ func (db *testSessionDB) QueryRow(_ context.Context, sql string, args ...interfa
 	case strings.Contains(sql, "SET status = $2"):
 		id := stringArg(args[0])
 		row, ok := db.rows[id]
-		if !ok {
+		// S1-012: 镜像真 SQL 的 `AND status NOT IN ('finalized','cancelled','expired','failed')` CAS —— 终态
+		// 行不可被状态推进,RETURNING 无行 → ErrNoRows(production 再 re-fetch 区分 replay/not-found)。
+		// 复用生产 isTerminalStatus,避免 fake 与真 SQL 漂移(S1-010 教训)。
+		if !ok || isTerminalStatus(row.Status) {
 			return testSessionRow{err: pgx.ErrNoRows}
 		}
 		row.Status = FlowStatus(stringArg(args[1]))
@@ -91,7 +94,8 @@ func (db *testSessionDB) QueryRow(_ context.Context, sql string, args ...interfa
 	case strings.Contains(sql, "SET status = 'cancelled'"):
 		id := stringArg(args[0])
 		row, ok := db.rows[id]
-		if !ok || row.Status == StatusFinalized || row.Status == StatusCancelled || row.Status == StatusExpired {
+		// S1-012: Cancel 的 NOT IN 现含 'failed' —— 与 isTerminalStatus 同源,终态行不可再 Cancel。
+		if !ok || isTerminalStatus(row.Status) {
 			return testSessionRow{err: pgx.ErrNoRows}
 		}
 		row.Status = StatusCancelled

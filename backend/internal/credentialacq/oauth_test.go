@@ -126,6 +126,74 @@ func TestCompleteOAuthCallbackRejectsCrossFlowStateReplay(t *testing.T) {
 	}
 }
 
+// TestCompleteOAuthCallbackRejectsTerminalFlows guards S1-012: the production CompleteOAuthCallback must
+// reject a callback landing on a terminal flow (cancelled/failed/expired-by-status) as ErrFlowReplay,
+// BEFORE running the state/expiry/PKCE checks — a dead flow cannot be resurrected back to
+// callback_received→validated by replaying the original state+code.
+//
+// It exercises the *production* CompleteOAuthCallback (not the in-memory completeOAuthCallback helper in
+// this file, which is a parallel reimplementation that does not prove the production guard). Discriminating
+// design: each terminal flow is hit with a MISMATCHED state. With the terminal guard the call returns
+// ErrFlowReplay (guard fires first); the `started` control (non-terminal) instead proceeds to the state
+// check and returns ErrStateMismatch — proving the guard is status-precise, not a blanket reject.
+//
+// Mutation check: revert oauth.go's guard to `session.Status == StatusFinalized` (dropping
+// isTerminalStatus). The cancelled/failed/expired cases then fall through to the state check and return
+// ErrStateMismatch instead of ErrFlowReplay → those assertions go red. The `started` control stays green
+// (it always reaches the state check), confirming the test isolates the terminal-status regression.
+func TestCompleteOAuthCallbackRejectsTerminalFlows(t *testing.T) {
+	now := time.Date(2026, 5, 24, 9, 0, 0, 0, time.UTC)
+	keys, err := credentialstore.NewStaticKeyProvider("test-v1", bytes.Repeat([]byte{9}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewPostgresSessionStoreWithKeys(newTestSessionDB(now), keys).WithNow(func() time.Time { return now })
+
+	seed := func(id string, status FlowStatus) string {
+		if _, err := store.Create(context.Background(), Session{
+			ID: id, TenantID: 1, ProviderAccountID: 101,
+			Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeChatGPTOAuth,
+			Kind: FlowKindOAuth, Status: status, ActorID: "admin-1", ActorRole: "platform_admin",
+			ClientIdentitySource: ClientSourcePublicCLI,
+			StateHash:            HashOAuthState("real-state"),
+			RedactedContext:      map[string]any{"path": "oauth"},
+			ExpiresAt:            now.Add(10 * time.Minute), // future: clock-expiry never fires; only status drives the guard
+		}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+		return id
+	}
+
+	cases := []struct {
+		name    string
+		status  FlowStatus
+		wantErr error
+	}{
+		{"cancelled", StatusCancelled, ErrFlowReplay},
+		{"failed", StatusFailed, ErrFlowReplay},
+		{"expired-status", StatusExpired, ErrFlowReplay},
+		{"finalized", StatusFinalized, ErrFlowReplay},
+		{"started-control", StatusStarted, ErrStateMismatch}, // non-terminal: reaches state check
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id := seed(tc.name, tc.status)
+			exchangeCalled := false
+			_, _, err := CompleteOAuthCallback(context.Background(), store, id, "wrong-state", "code",
+				func(context.Context, Session, string) (CredentialCandidate, error) {
+					exchangeCalled = true
+					return CredentialCandidate{Payload: []byte(`{"session_token":"should-not-run"}`)}, nil
+				})
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("status=%s: err=%v want %v", tc.status, err, tc.wantErr)
+			}
+			if exchangeCalled {
+				t.Fatalf("status=%s: exchange ran for a callback it should never reach", tc.status)
+			}
+		})
+	}
+}
+
 func TestStartOAuthFlowPKCEVerifierEncryptedAtRest(t *testing.T) {
 	now := time.Date(2026, 5, 16, 5, 0, 0, 0, time.UTC)
 	keys, err := credentialstore.NewStaticKeyProvider("test-v1", bytes.Repeat([]byte{7}, 32))
