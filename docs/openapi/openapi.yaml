@@ -1184,6 +1184,29 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/auth/me:
+    get:
+      tags: [auth]
+      summary: Resolve the authenticated user's panel entitlement (admin / user)
+      operationId: authMe
+      x-huakai-spec-source: [docs/process/plans/2026-05-30-role-panel-switch-synthesis.md]
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: Panel entitlement resolved from the account role (backend-authoritative).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  panel: { type: string, enum: [admin, user] }
+                  user_id: { type: integer, format: int64 }
+                  tenant_id: { type: integer, format: int64 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/sessions/refresh:
     post:
       tags: [sessions]
