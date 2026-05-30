@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HUAKAI 功能树 · 推进 + 修复 状态地图</title>
+<style>
+  :root{
+    --bg:#0f1419; --panel:#171d26; --panel2:#1e2630; --line:#2a3340;
+    --txt:#e6edf3; --dim:#8b98a9; --accent:#4da3ff;
+    --red:#e5534b; --orange:#e3873c; --yellow:#d9c64a; --green:#3fb950; --blue:#4da3ff; --grey:#566;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  a{color:var(--accent)}
+  .wrap{max-width:1180px;margin:0 auto;padding:20px 18px 80px}
+  h1{font-size:21px;margin:0 0 2px}
+  .sub{color:var(--dim);font-size:12.5px;margin-bottom:16px}
+  .err{background:#3a1d1d;border:1px solid var(--red);padding:16px;border-radius:8px;margin-top:20px}
+  .err code{background:#000;padding:2px 6px;border-radius:4px}
+  /* dashboard */
+  .dash{display:grid;grid-template-columns:230px 1fr;gap:14px;margin-bottom:16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+  .gauge{display:flex;flex-direction:column;align-items:center;justify-content:center}
+  .gauge .big{font-size:46px;font-weight:700;line-height:1}
+  .gauge .lbl{color:var(--dim);font-size:12px;margin-top:6px;text-align:center}
+  .axis{display:grid;grid-template-columns:120px 1fr 42px;gap:8px;align-items:center;margin:3px 0;font-size:12.5px}
+  .axis .nm{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .axis .pc{text-align:right;font-variant-numeric:tabular-nums;color:var(--dim)}
+  .bar{height:9px;background:var(--panel2);border-radius:5px;overflow:hidden}
+  .bar>i{display:block;height:100%;border-radius:5px}
+  .fixstat{display:flex;gap:14px;flex-wrap:wrap;margin-top:4px}
+  .fixstat .s{font-size:12.5px;color:var(--dim)}
+  .fixstat .s b{font-size:17px;color:var(--txt);margin-right:3px}
+  /* controls */
+  .controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:14px 0 10px}
+  .controls input,.controls select{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px}
+  .controls input{flex:1;min-width:160px}
+  .chip{background:var(--panel2);border:1px solid var(--line);color:var(--dim);border-radius:14px;padding:4px 10px;font-size:12px;cursor:pointer;user-select:none}
+  .chip.on{background:#143;border-color:var(--green);color:#cdebd2}
+  .legend{font-size:11.5px;color:var(--dim);margin:6px 0 0;display:flex;gap:14px;flex-wrap:wrap}
+  /* tree */
+  .sec{background:var(--panel);border:1px solid var(--line);border-radius:9px;margin-bottom:8px;overflow:hidden}
+  .sechd{display:grid;grid-template-columns:26px 1fr 150px 90px 150px;gap:10px;align-items:center;padding:11px 13px;cursor:pointer}
+  .sechd:hover{background:var(--panel2)}
+  .sechd .tw{color:var(--dim);font-size:12px;transition:transform .15s}
+  .sechd.open .tw{transform:rotate(90deg)}
+  .sechd .nm{font-weight:600;font-size:15px}
+  .sechd .nm small{color:var(--dim);font-weight:400;font-size:12px;margin-left:8px}
+  .pcwrap{display:flex;align-items:center;gap:7px}
+  .pcwrap .pct{font-variant-numeric:tabular-nums;font-size:12.5px;width:34px;text-align:right;color:var(--dim)}
+  .fixmini{font-size:11.5px;color:var(--dim);text-align:right;white-space:nowrap}
+  .leaves{display:none;padding:2px 0 8px}
+  .sec.open .leaves{display:block}
+  .leaf{display:grid;grid-template-columns:26px 1fr 150px 90px 150px;gap:10px;align-items:start;padding:7px 13px;border-top:1px solid var(--line)}
+  .leaf:hover{background:var(--panel2)}
+  .leaf .stg{font-size:15px;text-align:center;cursor:default}
+  .leaf .nm{font-size:13.5px}
+  .leaf .nm .fid{color:var(--accent);font-size:11px;font-family:ui-monospace,monospace;margin-left:6px}
+  .leaf .nm .vf{color:var(--green);font-weight:700;margin-left:6px;cursor:help}
+  .leaf .nm .parity{display:block;color:var(--dim);font-size:11.5px;margin-top:2px}
+  .leaf .nm .pk{display:block;color:#6b7a8d;font-size:10.5px;font-family:ui-monospace,monospace;margin-top:1px}
+  .badge{display:inline-block;font-size:10px;padding:1px 6px;border-radius:9px;margin:1px 2px 1px 0;white-space:nowrap}
+  .b-land{background:#143d22;color:#7ee29a;border:1px solid #2d6a3f}
+  .b-open{background:#3a2a14;color:#e3b777;border:1px solid #6a4f2d}
+  .b-def{background:#2a2438;color:#c0a8e8;border:1px solid #4f3f6a}
+  .fixcell{font-size:11px}
+  .hl{background:#3a3416 !important}
+  .foot{margin-top:22px;color:var(--dim);font-size:12px}
+  .panel-h{font-size:15px;font-weight:600;margin:22px 0 8px}
+  .gap{display:grid;grid-template-columns:1fr 1.4fr;gap:10px;padding:6px 0;border-top:1px solid var(--line);font-size:12.5px}
+  .gap .it{font-weight:600}
+  .gap .rf{color:var(--dim)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>HUAKAI 功能树 · 推进 + 修复 状态地图</h1>
+  <div class="sub" id="sub"></div>
+  <div id="root"></div>
+</div>
+<script>
+const STAGE = {
+  spec:{i:"📋",n:"仅spec"}, partial:{i:"🟡",n:"部分"}, wired:{i:"🔵",n:"已接线"},
+  tested:{i:"✅",n:"测试/生产"}, deadcode:{i:"⚠️",n:"死码/名实不符"}, missing:{i:"❌",n:"缺失"}, nogo:{i:"⛔",n:"NO-GO"}
+};
+function pctColor(p){ return p>=80?"var(--green)":p>=60?"var(--yellow)":p>=30?"var(--orange)":"var(--red)"; }
+function bar(p){ return `<div class="bar"><i style="width:${p}%;background:${pctColor(p)}"></i></div>`; }
+function secPct(s){ const ls=s.leaves; return Math.round(ls.reduce((a,l)=>a+(l.pct||0),0)/ls.length); }
+function secFix(s){ let land=0,open=0,def=0; s.leaves.forEach(l=>{const f=l.fix||{}; land+=(f.landed||[]).length; open+=(f.open||[]).length; def+=(f.deferred||[]).length;}); return {land,open,def}; }
+function esc(x){ return (x==null?"":(""+x)).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+let DATA=null, state={q:"",stage:"",onlyOpen:false,onlyVerified:false};
+
+function fixBadges(f){
+  f=f||{}; let h="";
+  (f.landed||[]).forEach(x=>h+=`<span class="badge b-land">✅${esc(x)}</span>`);
+  (f.deferred||[]).forEach(x=>h+=`<span class="badge b-def">⏸${esc(x)}</span>`);
+  (f.open||[]).forEach(x=>h+=`<span class="badge b-open">○${esc(x)}</span>`);
+  return h||'<span style="color:#566">—</span>';
+}
+
+function leafMatch(l){
+  if(state.stage && l.stage!==state.stage) return false;
+  if(state.onlyOpen && !((l.fix&&l.fix.open||[]).length)) return false;
+  if(state.onlyVerified && !l.verified) return false;
+  if(state.q){ const q=state.q.toLowerCase();
+    const hay=(l.name+" "+(l.fid||"")+" "+(l.pkgs||[]).join(" ")+" "+(l.parity||"")+" "+JSON.stringify(l.fix||{})).toLowerCase();
+    if(!hay.includes(q)) return false; }
+  return true;
+}
+
+function render(){
+  const m=DATA.meta;
+  const wsum=m.weighted_axes.reduce((a,x)=>a+x.weight,0);
+  const overall=Math.round(m.weighted_axes.reduce((a,x)=>a+x.weight*x.pct,0)/wsum);
+  document.getElementById("sub").innerHTML=
+    `生成 ${esc(m.generated)} · supersedes <code style="color:#8b98a9">${esc(m.supersedes)}</code> · 两条轴:【建设进度】+【问题修复】 · ✓=已对真实代码深核,无✓=文档综合(声称)`;
+
+  const fc=m.fix_campaign;
+  let axes=m.weighted_axes.map(x=>`<div class="axis"><span class="nm" title="${esc(x.name)}">${esc(x.name)} ·${x.weight}%</span>${bar(x.pct)}<span class="pc">${x.pct}%</span></div>`).join("");
+
+  let dash=`<div class="dash">
+    <div class="card gauge"><div class="big" style="color:${pctColor(overall)}">${overall}%</div><div class="lbl">建设加权完工度<br>(9 轴 · 02_FUSION_ARCH)</div></div>
+    <div class="card">
+      <div style="font-weight:600;margin-bottom:6px">建设进度 — 9 加权轴</div>${axes}
+      <div style="border-top:1px solid var(--line);margin-top:10px;padding-top:9px;font-weight:600">问题修复 — 195 条第三方审计核实</div>
+      <div class="fixstat">
+        <span class="s"><b style="color:var(--green)">${fc.landed}</b>已落地</span>
+        <span class="s"><b style="color:#c0a8e8">${fc.deferred}</b>延后(钱路gate)</span>
+        <span class="s"><b style="color:var(--orange)">${fc.open_real}</b>待修(Wave3-8)</span>
+        <span class="s"><b style="color:var(--dim)">${fc.refuted_or_alreadyfixed_or_drifted}</b>不修(伪/已修)</span>
+        <span class="s"><b>${fc.real}</b>/${fc.total} 核实为真</span>
+      </div>
+    </div>
+  </div>`;
+
+  let ctrls=`<div class="controls">
+    <input id="q" placeholder="🔎 搜索 能力/F-ID/代码包/finding…" value="${esc(state.q)}">
+    <select id="stage"><option value="">全部阶段</option>${Object.entries(STAGE).map(([k,v])=>`<option value="${k}"${state.stage===k?" selected":""}>${v.i} ${v.n}</option>`).join("")}</select>
+    <span class="chip${state.onlyOpen?" on":""}" id="cOpen">有未决 finding ○</span>
+    <span class="chip${state.onlyVerified?" on":""}" id="cVer">仅已核实 ✓</span>
+    <span class="chip" id="cExpand">展开全部</span><span class="chip" id="cCollapse">折叠全部</span>
+  </div>
+  <div class="legend">${Object.values(STAGE).map(v=>`<span>${v.i} ${v.n}</span>`).join("")}<span>· 进度条色:🔴&lt;30 🟠30-60 🟡60-80 🟢≥80</span></div>`;
+
+  let tree=DATA.sections.map((s,si)=>{
+    const vis=s.leaves.filter(leafMatch);
+    const anyFilter=state.q||state.stage||state.onlyOpen||state.onlyVerified;
+    if(anyFilter && !vis.length) return "";
+    const sp=secPct(s), sf=secFix(s);
+    const openCls=(anyFilter|| s._open)?" open":"";
+    const leaves=(anyFilter?vis:s.leaves).map(l=>{
+      const f=l.fix||{};
+      return `<div class="leaf">
+        <div class="stg" title="${STAGE[l.stage]?STAGE[l.stage].n:l.stage}">${STAGE[l.stage]?STAGE[l.stage].i:"·"}</div>
+        <div class="nm">${esc(l.name)}${l.fid&&l.fid!=="-"?`<span class="fid">${esc(l.fid)}</span>`:""}${l.verified?`<span class="vf" title="已对真实代码深核">✓</span>`:""}
+          <span class="parity">${esc(l.parity||"")}</span>
+          <span class="pk">${(l.pkgs||[]).join(" · ")}</span></div>
+        <div class="pcwrap">${bar(l.pct)}<span class="pct">${l.pct}%</span></div>
+        <div></div>
+        <div class="fixcell">${fixBadges(f)}</div>
+      </div>`;
+    }).join("");
+    return `<div class="sec${openCls}" data-si="${si}">
+      <div class="sechd${openCls}">
+        <span class="tw">▶</span>
+        <span class="nm">${esc(s.id)} ${esc(s.name)}<small>${esc(s.summary||"")}</small></span>
+        <div class="pcwrap">${bar(sp)}<span class="pct">${sp}%</span></div>
+        <div></div>
+        <div class="fixmini">✅${sf.land} ⏸${sf.def} ○${sf.open}</div>
+      </div>
+      <div class="leaves">${leaves}</div>
+    </div>`;
+  }).join("");
+
+  // reference parity gaps + codex diff
+  const rp=DATA.reference_parity_union||{};
+  let gaps=`<div class="panel-h">参考项目对照 — 覆盖 ≥ 借鉴项目(缺口显式列出)</div>
+    <div class="card"><div style="color:var(--dim);font-size:12px;margin-bottom:6px">${esc(rp.note||"")}</div>
+    ${(rp.gaps||[]).map(g=>`<div class="gap"><div class="it">${esc(g.item)}</div><div class="rf"><b>${esc(g.ref)}</b> → ${esc(g.huakai)}</div></div>`).join("")}</div>`;
+
+  const cd=DATA.codex_diff||{};
+  let diff=`<div class="panel-h">vs codex 2026-05-21 树</div><div class="card" style="font-size:12.5px">
+    <div><b>补齐 codex 漏列子系统</b>:${(cd.added_subsystems_codex_missed||[]).map(esc).join(" · ")}</div>
+    <div style="margin-top:8px"><b>纠正</b>:${esc(cd.corrected||"")}</div>
+    <div style="margin-top:8px;color:var(--dim)">已深核 ✓ 节点:${(cd.verified_nodes||[]).map(esc).join(" · ")}</div>
+  </div>`;
+
+  document.getElementById("root").innerHTML=dash+ctrls+tree+gaps+diff+
+    `<div class="foot">改 <code>feature-tree.json</code> 任一 <code>pct</code>/<code>fix</code> 存盘 → 刷新本页即更新(视图/数据分离)。来源:codex 树 + 02 加权 + 03 parity matrix + audit MASTER(195)+ 修复战役亲历。</div>`;
+
+  // wire events
+  const q=document.getElementById("q"); q.oninput=e=>{state.q=e.target.value; render(); document.getElementById("q").focus();};
+  document.getElementById("stage").onchange=e=>{state.stage=e.target.value; render();};
+  document.getElementById("cOpen").onclick=()=>{state.onlyOpen=!state.onlyOpen; render();};
+  document.getElementById("cVer").onclick=()=>{state.onlyVerified=!state.onlyVerified; render();};
+  document.getElementById("cExpand").onclick=()=>{DATA.sections.forEach(s=>s._open=true); render();};
+  document.getElementById("cCollapse").onclick=()=>{DATA.sections.forEach(s=>s._open=false); render();};
+  document.querySelectorAll(".sechd").forEach(h=>h.onclick=()=>{
+    const si=+h.parentElement.dataset.si; DATA.sections[si]._open=!DATA.sections[si]._open; render();
+  });
+}
+
+fetch("./feature-tree.json").then(r=>r.json()).then(d=>{DATA=d; render();}).catch(e=>{
+  document.getElementById("root").innerHTML=`<div class="err"><b>无法加载 feature-tree.json</b><br>
+  浏览器在 <code>file://</code> 下禁止读取本地 JSON(CORS)。请用 http 预览:<br>
+  ① VSCode 装 <b>Live Preview</b> 扩展 → 右键本文件 <i>Open with Live Preview</i>;或<br>
+  ② 终端 <code>cd docs/process/feature-tree && python3 -m http.server</code> 然后开 <code>http://localhost:8000/feature-tree.html</code><br>
+  <small style="color:#8b98a9">错误:${esc(e.message)}</small></div>`;
+});
+</script>
+</body>
+</html>
