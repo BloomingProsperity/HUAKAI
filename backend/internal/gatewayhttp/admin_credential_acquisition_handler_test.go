@@ -308,8 +308,11 @@ func TestAdminClaudeAIOAuthFullFlowEncryptsAndSavesCredential(t *testing.T) {
 	}))
 	defer restore()
 
+	// S1-014: claude_ai_oauth redirect_uri 现严格校验(loopback / 静态 allowlist 的 HTTPS admin)。
+	// 本全流程测试与 redirect 校验无关,用合法 built-in loopback 即可(回调由测试直接打服务端
+	// /admin/v1/credentials/oauth-callback 端点驱动,与 OAuth redirect_uri 取值无关)。
 	startRec := fx.do(t, http.MethodPost, "/admin/v1/credentials/oauth-init",
-		`{"tenant_id":1,"provider_account_id":101,"vendor":"anthropic","auth_mode":"claude_ai_oauth","redirect_uri":"https://huakai.example.test/admin/oauth/anthropic/callback"}`)
+		`{"tenant_id":1,"provider_account_id":101,"vendor":"anthropic","auth_mode":"claude_ai_oauth","redirect_uri":"http://localhost:54545/callback"}`)
 	if startRec.Code != http.StatusCreated {
 		t.Fatalf("start status=%d want 201 body=%s", startRec.Code, startRec.Body.String())
 	}

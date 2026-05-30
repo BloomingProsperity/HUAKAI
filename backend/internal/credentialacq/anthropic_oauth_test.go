@@ -71,6 +71,64 @@ func TestClaudeAIOAuthExchangerRejectsRuntimeEndpointOverride(t *testing.T) {
 	}
 }
 
+// S1-014: redirect_uri 此前只查非空,管理员 override 的任意 redirect 能进 authorize URL 接走授权码。
+// 判别 mutation: 把 validateClaudeAIBuiltinProfileWithHTTPSAdminAllowlist 的 redirect 校验改回
+// `strings.TrimSpace(cfg.RedirectURI) == ""` 时,本测试变红 —— 攻击者 redirect 通过校验并建出 flow。
+func TestClaudeAIOAuthExchangerRejectsRedirectOverride(t *testing.T) {
+	now := time.Date(2026, 5, 26, 12, 6, 0, 0, time.UTC)
+	store, db := newClaudeAIOAuthTestStore(t, now)
+	exchanger := newClaudeAIOAuthExchanger()
+
+	_, err := exchanger.StartOAuthFlow(context.Background(), store, StartInput{
+		TenantID: 1, ProviderAccountID: 103,
+		Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeAIOAuth,
+		ActorID: "owner", ActorRole: "platform_admin",
+	}, OAuthClientConfig{RedirectURI: "http://attacker.test/callback"})
+	if !errors.Is(err, ErrFeatureDisabled) {
+		t.Fatalf("err=%v want ErrFeatureDisabled for non-loopback redirect override", err)
+	}
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if got := len(db.rows); got != 0 {
+		t.Fatalf("stored flows=%d want 0 after rejected redirect override", got)
+	}
+}
+
+// TestValidateClaudeAIRedirectURI:claude_ai_oauth 是 claude.ai 固定 public client,只注册 loopback
+// redirect,故 redirect_uri 仅接受严格 localhost loopback;任意 https host(含 admin callback path)一律
+// 拒绝 —— claude.ai 不会接受非 loopback,且 HTTPS admin server callback 缺 flow_id 注入(codex S1-014 P1),
+// 放出即是一条无法完成的回调路径。HTTPS admin allowlist 对齐留 roadmap。
+// 判别 mutation: 删 http 分支任一约束(host/port/path),对应 reject 用例变绿、断言失败。
+func TestValidateClaudeAIRedirectURI(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		ok   bool
+	}{
+		{name: "accept_builtin_loopback", raw: claudeAIOAuthLoopbackRedirect, ok: true},
+		{name: "accept_other_localhost_port", raw: "http://localhost:8080/callback", ok: true},
+		{name: "reject_attacker_https", raw: "https://attacker.test/cb"},
+		{name: "reject_127_loopback", raw: "http://127.0.0.1:54545/callback"},
+		{name: "reject_https_admin_callback", raw: "https://huakai.example/admin/v1/credentials/oauth-callback"},
+		{name: "reject_loopback_wrong_path", raw: "http://localhost:54545/evil"},
+		{name: "reject_loopback_without_port", raw: "http://localhost/callback"},
+		{name: "reject_loopback_low_port", raw: "http://localhost:80/callback"},
+		{name: "reject_loopback_userinfo", raw: "http://user@localhost:54545/callback"},
+		{name: "reject_empty", raw: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateClaudeAIRedirectURI(tc.raw)
+			if tc.ok && err != nil {
+				t.Fatalf("validateClaudeAIRedirectURI(%q)=%v want nil", tc.raw, err)
+			}
+			if !tc.ok && !errors.Is(err, ErrFeatureDisabled) {
+				t.Fatalf("validateClaudeAIRedirectURI(%q)=%v want ErrFeatureDisabled", tc.raw, err)
+			}
+		})
+	}
+}
+
 func TestClaudeAIOAuthExchangeUsesJSONBody(t *testing.T) {
 	now := time.Date(2026, 5, 26, 12, 10, 0, 0, time.UTC)
 	store, _ := newClaudeAIOAuthTestStore(t, now)
@@ -110,7 +168,7 @@ func TestClaudeAIOAuthExchangeUsesJSONBody(t *testing.T) {
 		TenantID: 1, ProviderAccountID: 103,
 		Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeAIOAuth,
 		ActorID: "owner", ActorRole: "platform_admin",
-	}, OAuthClientConfig{RedirectURI: "https://huakai.example.test/admin/oauth/anthropic/callback"})
+	}, OAuthClientConfig{})
 	if err != nil {
 		t.Fatalf("StartOAuthFlow: %v", err)
 	}
@@ -124,7 +182,7 @@ func TestClaudeAIOAuthExchangeUsesJSONBody(t *testing.T) {
 	for key, want := range map[string]string{
 		"grant_type":    "authorization_code",
 		"code":          "anthropic-auth-code",
-		"redirect_uri":  "https://huakai.example.test/admin/oauth/anthropic/callback",
+		"redirect_uri":  claudeAIOAuthLoopbackRedirect,
 		"client_id":     claudeAIOAuthPublicClientID,
 		"code_verifier": start.CodeVerifier,
 	} {
@@ -297,7 +355,7 @@ func TestClaudeAIOAuthExchangerUsesInjectedHTTPClient(t *testing.T) {
 		TenantID: 1, ProviderAccountID: 999,
 		Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeAIOAuth,
 		ActorID: "owner", ActorRole: "platform_admin",
-	}, OAuthClientConfig{RedirectURI: "https://huakai.example.test/admin/oauth/anthropic/callback"})
+	}, OAuthClientConfig{})
 	if err != nil {
 		t.Fatalf("StartOAuthFlow: %v", err)
 	}
@@ -412,6 +470,10 @@ func TestOAuthOnlyModeRejectsPasteSessionStart(t *testing.T) {
 		{name: "openai_chatgpt_oauth_cli_import", vendor: credentialstore.VendorOpenAI, authMode: credentialstore.AuthModeChatGPTOAuth, flowKind: FlowKindCLIImport},
 		{name: "gemini_code_assist_paste", vendor: credentialstore.VendorGemini, authMode: credentialstore.AuthModeCodeAssist, flowKind: FlowKindPaste},
 		{name: "gemini_google_one_json_import", vendor: credentialstore.VendorGemini, authMode: credentialstore.AuthModeGoogleOne, flowKind: FlowKindJSONImport},
+		// S1-014: claude_ai_oauth 现为 OAuth-only,paste 旁路必须被拒。
+		// 判别 mutation: 把 types.go 的 AllowedHelpers 改回 {FlowKindOAuth, FlowKindPaste},此用例立即变红
+		// (paste START 被接受,任意 Anthropic token 注入旁路复现)。
+		{name: "anthropic_claude_ai_oauth_paste", vendor: credentialstore.VendorAnthropic, authMode: credentialstore.AuthModeClaudeAIOAuth, flowKind: FlowKindPaste},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
