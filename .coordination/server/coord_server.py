@@ -19,6 +19,11 @@ Authorization: Bearer <COORD_TOKEN>):
   GET  /  /view                    -> board viewer HTML (no auth; data via token)
   GET  /tree                       -> feature-tree dashboard HTML (no auth; data via token)
   GET  /tree/data                  -> feature-tree.json (token-gated)
+  GET  /dispatch                   -> task-dispatch board HTML (no auth; data via token)
+  GET  /tasks[?status=&assignee=&wave=] -> {"tasks":[...]}            (token-gated)
+  POST /tasks    {id,title,...,verify_rounds,assignee,status}   upsert/assign
+                                   -> 422 unless verify_rounds>=3 to assign
+  POST /tasks/status {id,status,notes?,review_notes?,reviewed_by?}  transition
 
 Env: COORD_TOKEN (required, shared secret), COORD_DB (default coord.db),
      COORD_BIND (default 127.0.0.1), COORD_PORT (default 8787), COORD_TTL (default 1800).
@@ -44,6 +49,10 @@ def norm_files(files):
     return sorted(out)
 
 TOKEN = os.environ.get("COORD_TOKEN", "")
+# Separate Owner-only secret. All machines share COORD_TOKEN, so it cannot prove
+# "the Owner" — high-risk approval (needs_owner -> done) requires THIS instead.
+# Unset = fail-closed: parked high-risk tasks cannot be closed until the Owner sets it.
+OWNER_TOKEN = os.environ.get("COORD_OWNER_TOKEN", "")
 DB = os.environ.get("COORD_DB", os.path.join(os.path.dirname(os.path.abspath(__file__)), "coord.db"))
 BIND = os.environ.get("COORD_BIND", "127.0.0.1")
 PORT = int(os.environ.get("COORD_PORT", "8787"))
@@ -73,6 +82,17 @@ def db():
     c.execute("""CREATE TABLE IF NOT EXISTS locks(
         agent TEXT PRIMARY KEY, files TEXT, core_feature TEXT, purpose TEXT,
         started_at TEXT, heartbeat_at TEXT, ttl INTEGER, epoch REAL)""")
+    # Task-dispatch ledger: the PM/commander (Claude) writes allocations here; the
+    # three machines pull their assigned work. An allocation may NOT be assigned
+    # until it has passed 3 self-refute + self-verify rounds (verify_rounds>=3) —
+    # enforced in upsert_task(), per Owner rule "分配的人必须 review 三遍".
+    c.execute("""CREATE TABLE IF NOT EXISTS tasks(
+        id TEXT PRIMARY KEY, title TEXT, detail TEXT, wave TEXT, feature TEXT,
+        spec_refs TEXT, acceptance TEXT,
+        scope_files TEXT, assignee TEXT, status TEXT, priority INTEGER, risk TEXT,
+        verify_rounds INTEGER, verify_notes TEXT, notes TEXT,
+        review_notes TEXT, reviewed_by TEXT,
+        updated_by TEXT, created_at TEXT, updated_at TEXT)""")
     return c
 
 
@@ -141,6 +161,168 @@ def release(agent):
             c.close()
 
 
+# Loop state machine: todo -> (PM assigns, needs verify_rounds>=3) -> assigned ->
+# in_progress -> review (worker done) -> [dispatcher audits] -> done | back to
+# assigned (bounce w/ review_notes) | needs_owner (high-risk parked for Owner).
+TASK_STATUSES = ("todo", "assigned", "in_progress", "review", "done", "blocked", "needs_owner")
+# Legal state-machine transitions (enforced on /tasks/status so a worker can't skip
+# the review step or reopen finished work by accident).
+ALLOWED_TX = {
+    "todo": {"assigned", "blocked", "needs_owner"},
+    "assigned": {"in_progress", "blocked", "needs_owner", "todo"},
+    "in_progress": {"review", "blocked", "needs_owner", "assigned", "todo"},
+    "review": {"done", "assigned", "needs_owner", "blocked"},
+    "needs_owner": {"done", "assigned", "in_progress", "blocked", "todo"},
+    "blocked": {"assigned", "in_progress", "needs_owner", "todo"},
+    "done": {"assigned", "needs_owner"},
+}
+_TASK_COLS = ["id", "title", "detail", "wave", "feature", "spec_refs", "acceptance",
+              "scope_files", "assignee", "status", "priority", "risk", "verify_rounds",
+              "verify_notes", "notes", "review_notes", "reviewed_by",
+              "updated_by", "created_at", "updated_at"]
+
+
+def _task_to_dict(r):
+    d = dict(zip(_TASK_COLS, r))
+    d["scope_files"] = json.loads(d.get("scope_files") or "[]")
+    d["spec_refs"] = json.loads(d.get("spec_refs") or "[]")
+    return d
+
+
+def list_tasks(c, status=None, assignee=None, wave=None):
+    q = "SELECT " + ",".join(_TASK_COLS) + " FROM tasks"
+    conds, args = [], []
+    if status:
+        conds.append("status=?"); args.append(status)
+    if assignee:
+        conds.append("assignee=?"); args.append(assignee)
+    if wave:
+        conds.append("wave=?"); args.append(wave)
+    if conds:
+        q += " WHERE " + " AND ".join(conds)
+    q += " ORDER BY priority ASC, id ASC"
+    return [_task_to_dict(r) for r in c.execute(q, args).fetchall()]
+
+
+def upsert_task(b):
+    """Create or merge-update a task (fields absent from the body keep their stored
+    value, so a partial update never clobbers other fields). The 3-round self-verify
+    gate lives HERE: a task cannot carry an assignee or move past 'todo' unless
+    verify_rounds>=3 — Owner rule '分配的人必须 review 三遍'."""
+    tid = (b.get("id") or "").strip()
+    if not tid:
+        return 400, {"error": "task id required"}
+    with _lock:
+        c = db()
+        try:
+            row = c.execute("SELECT " + ",".join(_TASK_COLS) + " FROM tasks WHERE id=?", (tid,)).fetchone()
+            cur = _task_to_dict(row) if row else {}
+
+            def take(k, dflt):
+                return b[k] if k in b else cur.get(k, dflt)
+
+            status = (take("status", "todo") or "todo").strip()
+            if status not in TASK_STATUSES:
+                return 400, {"error": "bad status", "allowed": list(TASK_STATUSES)}
+            # For an EXISTING task, route status changes through the same state machine
+            # as /tasks/status so upsert/load can't be a backdoor around the review step.
+            cur_status = cur.get("status")
+            if cur_status and status != cur_status and status not in ALLOWED_TX.get(cur_status, set()):
+                return 409, {"error": f"illegal transition {cur_status} -> {status}",
+                             "allowed_from_here": sorted(ALLOWED_TX.get(cur_status, set()))}
+            assignee = (take("assignee", "") or "").strip()
+            try:
+                vr = int(take("verify_rounds", 0) or 0)
+            except (TypeError, ValueError):
+                return 400, {"error": "verify_rounds must be an integer"}
+            needs_verify = bool(assignee) or status in ("assigned", "in_progress", "review", "done")
+            if needs_verify and vr < 3:
+                return 422, {"error": "allocation needs 3 self-refute + self-verify rounds before it can be assigned",
+                             "verify_rounds": vr,
+                             "rule": "分配的人必须 review 三遍(自我反驳 + 自我验证)才能派活"}
+            stored_risk = (cur.get("risk") or "").strip()
+            incoming_risk = (take("risk", "") or "").strip()
+            owner_ok = bool(OWNER_TOKEN) and b.get("owner_token", "") == OWNER_TOKEN
+            # risk is STICKY: once set, only the Owner token may lower/clear it. This
+            # stops a worker from clearing risk to slip a high-risk task past the gate.
+            risk = incoming_risk if (owner_ok or not stored_risk) else stored_risk
+            # A risk task can never be closed via upsert — must go through the
+            # /tasks/status needs_owner + owner-token path.
+            if status == "done" and risk:
+                return 423, {"error": f"high-risk task (risk={risk}) cannot be closed via upsert; needs Owner approval via /tasks/status",
+                             "rule": "高危任务只能经 needs_owner + Owner 令牌走 /tasks/status 关闭"}
+            try:
+                priority = int(take("priority", 100) or 100)
+            except (TypeError, ValueError):
+                priority = 100
+            files = norm_files(take("scope_files", []))
+            spec_refs = take("spec_refs", [])
+            if isinstance(spec_refs, str):
+                spec_refs = [s.strip() for s in spec_refs.split(",") if s.strip()]
+            created = cur.get("created_at") or now()
+            c.execute("REPLACE INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+                tid, take("title", ""), take("detail", ""), take("wave", ""),
+                take("feature", ""), json.dumps(spec_refs), take("acceptance", ""),
+                json.dumps(files), assignee, status, priority, risk,
+                vr, take("verify_notes", ""), take("notes", ""),
+                take("review_notes", ""), take("reviewed_by", ""),
+                b.get("updated_by", ""), created, now()))
+            c.commit()
+            return 200, {"ok": True, "id": tid, "status": status,
+                         "assignee": assignee, "verify_rounds": vr}
+        finally:
+            c.close()
+
+
+def update_task_status(b):
+    """Transition a task (worker progress OR dispatcher review verdict). Cannot
+    create tasks or change assignee/verify_rounds. Sets any of notes / review_notes
+    / reviewed_by / updated_by that are present in the body, plus the new status."""
+    tid = (b.get("id") or "").strip()
+    status = (b.get("status") or "").strip()
+    if not tid or status not in TASK_STATUSES:
+        return 400, {"error": "id + valid status required", "allowed": list(TASK_STATUSES)}
+    with _lock:
+        c = db()
+        try:
+            row = c.execute("SELECT status, verify_rounds, risk FROM tasks WHERE id=?", (tid,)).fetchone()
+            if not row:
+                return 404, {"error": "no such task", "id": tid}
+            cur_status, vr, risk = (row[0] or "todo"), (row[1] or 0), (row[2] or "").strip()
+            # State-machine: only legal transitions (no skipping review, no silent reopen).
+            if status != cur_status and status not in ALLOWED_TX.get(cur_status, set()):
+                return 409, {"error": f"illegal transition {cur_status} -> {status}",
+                             "allowed_from_here": sorted(ALLOWED_TX.get(cur_status, set()))}
+            # Same 3-round gate as upsert_task: cannot progress (assigned/in_progress/
+            # review/done) unless 3 self-verify rounds passed. Park/block/reset always ok.
+            if status in ("assigned", "in_progress", "review", "done") and vr < 3:
+                return 422, {"error": "task has not passed 3 self-refute + self-verify rounds; cannot progress it",
+                             "verify_rounds": vr,
+                             "rule": "分配/推进前必须 3 轮自反验证(verify_rounds>=3)"}
+            # High-risk Owner gate (two locks): (1) a risk task can only reach 'done'
+            # via needs_owner; (2) the needs_owner -> done approval requires the separate
+            # Owner token — workers/dispatcher share COORD_TOKEN and must NOT self-approve.
+            if status == "done":
+                if risk and cur_status != "needs_owner":
+                    return 423, {"error": f"high-risk task (risk={risk}) needs Owner approval: park to needs_owner first",
+                                 "rule": "高危必须先 park 成 needs_owner,再由 Owner 批准"}
+                if cur_status == "needs_owner":
+                    if not OWNER_TOKEN or b.get("owner_token", "") != OWNER_TOKEN:
+                        return 403, {"error": "only the Owner can approve a parked task to done (needs COORD_OWNER_TOKEN)",
+                                     "rule": "needs_owner -> done 必须 Owner 令牌;worker/dispatcher 不能自批"}
+            sets, args = ["status=?"], [status]
+            for f in ("notes", "review_notes", "reviewed_by", "updated_by"):
+                if f in b:
+                    sets.append(f + "=?"); args.append(b[f])
+            sets.append("updated_at=?"); args.append(now())
+            args.append(tid)
+            c.execute("UPDATE tasks SET " + ",".join(sets) + " WHERE id=?", args)
+            c.commit()
+            return 200, {"ok": True, "id": tid, "status": status}
+        finally:
+            c.close()
+
+
 VIEW_HTML = """<!DOCTYPE html>
 <html lang=zh><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>HUAKAI 协调看板</title><style>
@@ -180,6 +362,73 @@ function tick(){ if(!T)return;
   document.getElementById('st').textContent='更新于 '+new Date().toLocaleTimeString();
  }).catch(function(e){document.getElementById('out').className='empty err';
   document.getElementById('out').innerHTML='连不上服务。先在浏览器打开 https://45.8.114.249:8443/healthz 接受一次自签证书,再回来。';});
+}
+setInterval(tick,4000); tick();
+</script></body></html>"""
+
+
+DISPATCH_HTML = """<!DOCTYPE html>
+<html lang=zh><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>HUAKAI 调度看板 · 谁分到什么</title><style>
+body{margin:0;background:#0f1419;color:#e6edf3;font:14px/1.6 system-ui,"PingFang SC","Microsoft YaHei",sans-serif}
+.w{max-width:1100px;margin:0 auto;padding:18px}
+h1{font-size:18px;margin:0 0 2px}.sub{color:#8b98a9;font-size:12px;margin-bottom:12px}
+.tok{display:flex;gap:8px;margin-bottom:14px}
+.tok input{flex:1;background:#1e2630;border:1px solid #2a3340;color:#e6edf3;border-radius:6px;padding:7px 10px}
+.tok button{background:#143d22;border:1px solid #2d6a3f;color:#7ee29a;border-radius:6px;padding:7px 14px;cursor:pointer}
+.sum{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+.pill{background:#171d26;border:1px solid #2a3340;border-radius:20px;padding:3px 11px;font-size:12px}
+.grp{margin-bottom:18px}.grp h2{font-size:14px;margin:0 0 6px;color:#cdd9e5}
+.task{background:#171d26;border:1px solid #2a3340;border-radius:9px;padding:10px 12px;margin-bottom:7px}
+.task .top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.id{font-weight:600;color:#9ecbff}.ttl{flex:1;min-width:160px}
+.b{font-size:11px;padding:1px 8px;border-radius:11px;border:1px solid}
+.s-todo{color:#8b98a9;border-color:#3a4350}.s-assigned{color:#9ecbff;border-color:#2b4a6b}
+.s-in_progress{color:#f0c674;border-color:#6b5a2b}.s-review{color:#c9a7f0;border-color:#5a3a6b}
+.s-done{color:#7ee29a;border-color:#2d6a3f}.s-blocked{color:#ff8b8b;border-color:#6b2b2b}
+.v-ok{color:#7ee29a;border-color:#2d6a3f}.v-no{color:#f0c674;border-color:#6b5a2b}
+.risk{color:#ff8b8b;border-color:#6b2b2b}.wave{color:#8b98a9;border-color:#3a4350}
+.meta{color:#7d8794;font-size:12px;margin-top:4px}.files{color:#6b7480;font-size:11px;font-family:ui-monospace,monospace}
+.err{color:#ff8b8b}small{color:#8b98a9}
+</style></head><body><div class=w>
+<h1>HUAKAI 调度看板 · 谁分到什么</h1>
+<div class=sub>三台机器的任务分配 · 每 4 秒刷新 · 只读 · 派活必须 3 轮自验(✓3)</div>
+<div class=tok><input id=t type=password placeholder="贴 COORD_TOKEN(只存本会话,不进 URL)"><button onclick=save()>看</button></div>
+<div id=sum class=sum></div><div id=out></div>
+<div class=sub id=ts></div></div>
+<script>
+var T=sessionStorage.getItem('COORD_TOKEN')||'';
+if(T)document.getElementById('t').value=T;
+function save(){T=document.getElementById('t').value.trim();sessionStorage.setItem('COORD_TOKEN',T);tick();}
+function esc(s){return (s==null?'':''+s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+var STAT=['in_progress','review','assigned','blocked','todo','done'];
+function tick(){
+ if(!T){document.getElementById('out').innerHTML='<div class=err>先贴 token。</div>';return;}
+ fetch('/tasks',{headers:{Authorization:'Bearer '+T}}).then(function(r){
+  if(r.status===401)throw new Error('token 不对(401)');if(!r.ok)throw new Error('HTTP '+r.status);return r.json();
+ }).then(function(d){
+  var ts=d.tasks||[];
+  var cnt={};ts.forEach(function(t){cnt[t.status]=(cnt[t.status]||0)+1;});
+  document.getElementById('sum').innerHTML='<span class=pill>共 '+ts.length+'</span>'+
+   STAT.map(function(s){return cnt[s]?'<span class="pill s-'+s+'">'+s+' '+cnt[s]+'</span>':'';}).join('');
+  var groups={};ts.forEach(function(t){var k=t.assignee||'(未分配)';(groups[k]=groups[k]||[]).push(t);});
+  var keys=Object.keys(groups).sort();
+  document.getElementById('out').innerHTML=keys.length?keys.map(function(k){
+   return '<div class=grp><h2>'+esc(k)+' · '+groups[k].length+'</h2>'+groups[k].map(card).join('')+'</div>';
+  }).join(''):'<div class=sub>(还没有任务。等总指挥派活。)</div>';
+  document.getElementById('ts').textContent='更新于 '+new Date().toLocaleTimeString();
+ }).catch(function(e){document.getElementById('out').innerHTML='<div class=err>'+esc(e.message)+'</div>';});
+}
+function card(t){
+ var v=(t.verify_rounds>=3)?'<span class="b v-ok">✓3 自验</span>':'<span class="b v-no">⚠ '+(t.verify_rounds||0)+'/3 未足验</span>';
+ var risk=t.risk?'<span class="b risk">'+esc(t.risk)+'</span>':'';
+ var wave=t.wave?'<span class="b wave">'+esc(t.wave)+'</span>':'';
+ var files=(t.scope_files&&t.scope_files.length)?'<div class=files>'+esc(t.scope_files.join(', '))+'</div>':'';
+ return '<div class=task><div class=top><span class=id>'+esc(t.id)+'</span>'+
+  '<span class=ttl>'+esc(t.title)+'</span>'+wave+'<span class="b s-'+esc(t.status)+'">'+esc(t.status)+'</span>'+v+risk+'</div>'+
+  (t.detail?'<div class=meta>'+esc(t.detail)+'</div>':'')+
+  (t.review_notes?'<div class=meta>↩ 审核/Owner:'+esc(t.review_notes)+(t.reviewed_by?' ('+esc(t.reviewed_by)+')':'')+'</div>':'')+
+  (t.notes?'<div class=meta>📝 '+esc(t.notes)+'</div>':'')+files+'</div>';
 }
 setInterval(tick,4000); tick();
 </script></body></html>"""
@@ -262,12 +511,29 @@ class H(BaseHTTPRequestHandler):
             # Carries no project data — its JS prompts for the token (only when it
             # sees the injected coordinator marker) and fetches /tree/data below.
             return self._serve_tree_html()
+        if u.path in ("/dispatch", "/dispatch/"):
+            # Public read-only task-dispatch board (HTML only). Its JS fetches
+            # /tasks with the token the viewer pastes — same-origin, inline, so it
+            # is always coordinator-served (no marker needed).
+            body = DISPATCH_HTML.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if not self._auth():
             return
         c = db()
         try:
             if u.path == "/tree/data":
                 return self._serve_file(TREE_JSON, "application/json; charset=utf-8")
+            if u.path == "/tasks":
+                q = parse_qs(u.query)
+                return self._send(200, {"tasks": list_tasks(
+                    c, status=(q.get("status") or [None])[0],
+                    assignee=(q.get("assignee") or [None])[0],
+                    wave=(q.get("wave") or [None])[0])})
             if u.path == "/board":
                 return self._send(200, {"locks": live_locks(c)})
             if u.path == "/check":
@@ -285,6 +551,11 @@ class H(BaseHTTPRequestHandler):
             return
         u = urlparse(self.path)
         b = self._body()
+        # Task-dispatch routes use updated_by, not the lock 'agent' field.
+        if u.path == "/tasks":
+            code, obj = upsert_task(b); return self._send(code, obj)
+        if u.path == "/tasks/status":
+            code, obj = update_task_status(b); return self._send(code, obj)
         agent = b.get("agent", "")
         if not agent:
             return self._send(400, {"error": "agent required"})
