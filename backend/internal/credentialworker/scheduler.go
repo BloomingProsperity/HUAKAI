@@ -185,6 +185,7 @@ func (s *Scheduler) validate() error {
 }
 
 func (s *Scheduler) processAccount(ctx context.Context, account dbbilling.ListAccountsForRefreshRow) error {
+	// Scope 1 (account): durable DB concurrency slot; released after the attempt.
 	release, outcome, err := s.acquirer.Acquire(ctx, account.TenantID, account.ID)
 	if err != nil {
 		_ = s.recordAudit(ctx, account, auth.OutcomeStormBudgetExhausted, "account", err)
@@ -197,6 +198,35 @@ func (s *Scheduler) processAccount(ctx context.Context, account dbbilling.ListAc
 		return s.recordAudit(ctx, account, outcome, "account", nil)
 	}
 	defer release()
+
+	// Scope 2 (provider-endpoint): in-memory per-vendor-endpoint rate budget.
+	// The vendor name keys the shared OAuth token endpoint, so many accounts of
+	// the same vendor expiring at once cannot stampede it.
+	endpointKey := normalizeProviderName(account.VendorName)
+	endpointRefund, outcome, err := s.acquirer.AcquireProviderEndpoint(ctx, account.TenantID, endpointKey, "")
+	if err != nil {
+		return errors.Join(err, s.recordAudit(ctx, account, auth.OutcomeStormBudgetExhausted, "provider_endpoint", err))
+	}
+	if outcome != "" {
+		return s.recordAudit(ctx, account, outcome, "provider_endpoint", nil)
+	}
+
+	// Scope 3 (global): in-memory process-wide rate budget, last-resort cap.
+	_, outcome, err = s.acquirer.AcquireGlobal(ctx, account.TenantID)
+	if err != nil {
+		endpointRefund()
+		return errors.Join(err, s.recordAudit(ctx, account, auth.OutcomeStormBudgetExhausted, "global", err))
+	}
+	if outcome != "" {
+		// Refund the endpoint token: this attempt never ran, so it must not
+		// consume the endpoint budget (A07: refund only on a downstream scope
+		// denial, never on a failed refresh).
+		endpointRefund()
+		return s.recordAudit(ctx, account, outcome, "global", nil)
+	}
+
+	// All three scopes admitted. Endpoint/global tokens stay consumed regardless
+	// of the refresh outcome — a failed attempt must not reopen the storm window.
 	if err := s.refreshWithBackoff(ctx, account); err != nil {
 		if outcome := auth.RefreshAuditOutcomeFromError(err); outcome != "" {
 			return errors.Join(err, s.recordAuditString(ctx, account, outcome, "", err))

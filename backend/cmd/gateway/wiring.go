@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -167,7 +169,83 @@ const (
 	// trustedProxyCIDRsEnv lists the reverse-proxy / CDN CIDRs whose X-Forwarded-For
 	// is trusted for client-IP extraction (S2-109). Empty = direct exposure, RemoteAddr only.
 	trustedProxyCIDRsEnv = "HUAKAI_TRUSTED_PROXY_CIDRS"
+	// Refresh-storm endpoint/global token budgets (S2-045). Each scope needs BOTH
+	// a positive rate (tokens/sec) and a burst >= 1 to engage; all unset = account
+	// scope only. The account scope is always enforced (DB-durable), independent of these.
+	stormEndpointRateEnv  = "HUAKAI_STORM_ENDPOINT_RATE"
+	stormEndpointBurstEnv = "HUAKAI_STORM_ENDPOINT_BURST"
+	stormGlobalRateEnv    = "HUAKAI_STORM_GLOBAL_RATE"
+	stormGlobalBurstEnv   = "HUAKAI_STORM_GLOBAL_BURST"
 )
+
+// loadStormScopeConfigFromEnv parses the optional endpoint/global refresh-storm
+// budgets (S2-045). A scope half-configured (only rate or only burst, or burst<1)
+// is a boot error — fail loud rather than silently leaving the throttle off and
+// letting a cross-account stampede through. All four unset => account scope only.
+func loadStormScopeConfigFromEnv() (auth.StormScopeConfig, error) {
+	endpointRate, err := parseStormFloatEnv(stormEndpointRateEnv)
+	if err != nil {
+		return auth.StormScopeConfig{}, err
+	}
+	endpointBurst, err := parseStormFloatEnv(stormEndpointBurstEnv)
+	if err != nil {
+		return auth.StormScopeConfig{}, err
+	}
+	globalRate, err := parseStormFloatEnv(stormGlobalRateEnv)
+	if err != nil {
+		return auth.StormScopeConfig{}, err
+	}
+	globalBurst, err := parseStormFloatEnv(stormGlobalBurstEnv)
+	if err != nil {
+		return auth.StormScopeConfig{}, err
+	}
+	if err := validateStormScopePair("endpoint", endpointRate, endpointBurst); err != nil {
+		return auth.StormScopeConfig{}, err
+	}
+	if err := validateStormScopePair("global", globalRate, globalBurst); err != nil {
+		return auth.StormScopeConfig{}, err
+	}
+	return auth.StormScopeConfig{
+		PerEndpointRate:  endpointRate,
+		PerEndpointBurst: endpointBurst,
+		GlobalRate:       globalRate,
+		GlobalBurst:      globalBurst,
+	}, nil
+}
+
+func parseStormFloatEnv(name string) (float64, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return 0, nil
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: invalid float %q: %w", name, raw, err)
+	}
+	if math.IsInf(v, 0) || math.IsNaN(v) {
+		// ParseFloat accepts "Inf"/"NaN" without error; an infinite budget would
+		// boot an effectively unbounded throttle and a NaN would silently disable
+		// the scope — both defeat the fail-loud contract, so reject them here.
+		return 0, fmt.Errorf("%s: must be a finite number, got %q", name, raw)
+	}
+	if v < 0 {
+		return 0, fmt.Errorf("%s: must be non-negative, got %v", name, v)
+	}
+	return v, nil
+}
+
+// validateStormScopePair rejects a half-configured scope so a typo (rate set,
+// burst forgotten) cannot silently disable the throttle.
+func validateStormScopePair(scope string, rate, burst float64) error {
+	switch {
+	case rate == 0 && burst == 0:
+		return nil // scope intentionally off
+	case rate > 0 && burst >= 1:
+		return nil // scope fully configured
+	default:
+		return fmt.Errorf("storm %s scope half-configured: rate=%v burst=%v (need both rate>0 and burst>=1, or both unset)", scope, rate, burst)
+	}
+}
 
 // loadClientIPResolverFromEnv builds the trusted-proxy-aware client IP resolver from
 // trustedProxyCIDRsEnv (comma-separated CIDR/IP). A malformed entry is a hard boot error
@@ -404,6 +482,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		return nil, fmt.Errorf("load trusted proxy client IP resolver: %w", err)
 	}
 
+	stormScopeCfg, err := loadStormScopeConfigFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("load refresh-storm scope budgets: %w", err)
+	}
+
 	d := &deps{
 		cfg:                   cfg,
 		clientIPResolver:      clientIPResolver,
@@ -498,7 +581,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	)
 	credentialScheduler := credentialworker.NewScheduler(
 		billingQueries,
-		auth.NewStormController(authQueries),
+		auth.NewStormControllerWithScopeBudget(authQueries, stormScopeCfg),
 		auditSigner,
 		credentialRefresher,
 		credentialSchedulerOptions...,
