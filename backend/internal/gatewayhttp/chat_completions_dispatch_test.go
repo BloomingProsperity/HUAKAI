@@ -5,10 +5,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
@@ -408,6 +410,34 @@ func (s *recordingSelectionRequestSelector) Select(_ context.Context, req pool.S
 	s.calls++
 	s.requests = append(s.requests, req)
 	return &pool.SelectionResult{AccountID: 1}, nil
+}
+
+// TestSelectPoolAccount_ThreadsUserGroupFromIdentity 守 R-SUB-WIRE-1 接线: 选号时
+// SelectionRequest.UserGroup 必须从 auth.Identity.UserGroup 透传, 否则订阅分组路由 gate
+// 永远收到空档 → 恒放行 → 限档失效。
+// mutation: 删 selectPoolAccount 里 `UserGroup: ex.ident.UserGroup` → 透传为空串 → 红。
+func TestSelectPoolAccount_ThreadsUserGroupFromIdentity(t *testing.T) {
+	selector := &recordingSelectionRequestSelector{}
+	ex := &chatExecution{
+		ctx:        context.Background(),
+		ident:      auth.Identity{TenantID: 7, UserID: 3, APIKeyID: 9, UserGroup: "premium"},
+		d:          ChatHandlerDeps{Selector: selector},
+		body:       []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`),
+		req:        chatRequest{Model: "gpt-4o"},
+		attempt:    router.AttemptPlan{PoolGroupID: 42},
+		reserveRes: &billing.ReserveResult{},
+		resolved:   registry.Resolved{ProtocolFamily: "openai_chat"},
+	}
+
+	if f := ex.selectPoolAccount(httptest.NewRecorder(), attemptInput{AttemptSeq: 1}); f != nil {
+		t.Fatalf("selectPoolAccount returned failure: %+v", f)
+	}
+	if len(selector.requests) != 1 {
+		t.Fatalf("selector calls=%d want 1", len(selector.requests))
+	}
+	if got := selector.requests[0].UserGroup; got != "premium" {
+		t.Fatalf("SelectionRequest.UserGroup=%q want premium (must thread from auth.Identity.UserGroup)", got)
+	}
 }
 
 func unsetEnvForTest(t *testing.T, key string) {
