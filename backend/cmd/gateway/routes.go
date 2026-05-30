@@ -17,6 +17,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/routeadminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkeyhttp"
@@ -425,6 +426,12 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Auth:           d.adminAuth,
 			Service:        d.subscriptionService,
 			VoucherService: d.voucherService,
+		})
+	})
+	r.Route("/v1/admin/routes", func(r chi.Router) {
+		routeadminhttp.MountRouteAdminRoutes(r, routeadminhttp.AdminDeps{
+			Auth:    d.adminAuth,
+			Service: d.routeAdminService,
 		})
 	})
 	r.Get("/admin/v1/usage", gatewayhttp.NewUsageHandler(d))
