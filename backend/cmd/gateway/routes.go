@@ -16,6 +16,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeshttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/panelauthhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/routeadminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
@@ -85,6 +86,9 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			EmailSender: d.authEmailSender,
 			AdminAuth:   d.adminAuth,
 		})
+		// GET /v1/auth/me 需已认证 session(同块的 login/register 等不需要), 故用 per-route session 中间件,
+		// 不另起 /v1/auth Route 组(chi 同前缀重复 Mount 会 panic)。
+		panelauthhttp.MountAuthMeRoutes(r.With(auth.SessionMiddleware(d.userSessions)), panelauthhttp.Deps{Resolver: d.panelAuthResolver})
 	})
 
 	r.Route("/v1/sessions", func(r chi.Router) {
