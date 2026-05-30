@@ -86,6 +86,96 @@ func TestSchedulerStormRejectsSkipsRefresh(t *testing.T) {
 	}
 }
 
+func TestSchedulerEndpointStormDenialSkipsRefreshAndAuditsScope(t *testing.T) {
+	// Regression killed (S2-045): an endpoint-scope storm denial must skip the
+	// refresh, release the account slot, NOT consult the global scope, and audit
+	// the denial under the "provider_endpoint" scope (not "account"). Mutation:
+	// drop the endpoint acquire in processAccount, or mislabel it "account" → the
+	// scope/skip/short-circuit assertions go red.
+	storm := &stormSpy{endpointOutcome: auth.OutcomeStormBudgetExhausted}
+	ref := &refresherSpy{}
+	audit := &auditSpy{}
+	s := newTestScheduler([]dbbilling.ListAccountsForRefreshRow{testAccountWithVendor(31, "anthropic")}, storm, ref,
+		withAuditWriter(audit), WithAuditLedger(&ledgerSpy{}))
+
+	if err := s.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if len(ref.calls) != 0 {
+		t.Fatalf("refresh called despite endpoint storm denial: %v", ref.calls)
+	}
+	if storm.released != 1 {
+		t.Fatalf("account slot released=%d, want 1 (slot must free on endpoint denial)", storm.released)
+	}
+	if storm.globalCalls != 0 {
+		t.Fatalf("global scope acquired=%d, want 0 (endpoint denial must short-circuit before global)", storm.globalCalls)
+	}
+	if len(audit.entries) != 1 {
+		t.Fatalf("audit entries=%d, want 1", len(audit.entries))
+	}
+	if got := audit.entries[0]; got.Outcome != auth.OutcomeStormBudgetExhausted || got.StormScope != "provider_endpoint" {
+		t.Fatalf("audit outcome=%q scope=%q, want storm_budget_exhausted / provider_endpoint", got.Outcome, got.StormScope)
+	}
+}
+
+func TestSchedulerGlobalStormDenialRefundsEndpointAndAuditsScope(t *testing.T) {
+	// Regression killed (S2-045): a global-scope denial must refund the already-
+	// consumed endpoint token (a never-run attempt must not waste the endpoint
+	// budget), skip the refresh, and audit under the "global" scope. Mutation:
+	// remove the endpointRefund() call on the global-deny branch → endpointRefunds
+	// stays 0 → red; relabel the audit scope → the scope assertion goes red.
+	storm := &stormSpy{globalOutcome: auth.OutcomeStormBudgetExhausted}
+	ref := &refresherSpy{}
+	audit := &auditSpy{}
+	s := newTestScheduler([]dbbilling.ListAccountsForRefreshRow{testAccountWithVendor(32, "anthropic")}, storm, ref,
+		withAuditWriter(audit), WithAuditLedger(&ledgerSpy{}))
+
+	if err := s.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if len(ref.calls) != 0 {
+		t.Fatalf("refresh called despite global storm denial: %v", ref.calls)
+	}
+	if storm.endpointCalls != 1 || storm.endpointRefunds != 1 {
+		t.Fatalf("endpoint acquire/refund = %d/%d, want 1/1 (global denial must refund the endpoint token)", storm.endpointCalls, storm.endpointRefunds)
+	}
+	if storm.released != 1 {
+		t.Fatalf("account slot released=%d, want 1", storm.released)
+	}
+	if got := audit.entries[len(audit.entries)-1]; got.Outcome != auth.OutcomeStormBudgetExhausted || got.StormScope != "global" {
+		t.Fatalf("audit outcome=%q scope=%q, want storm_budget_exhausted / global", got.Outcome, got.StormScope)
+	}
+}
+
+func TestSchedulerAllScopesAdmitConsultEachOnceThenRefresh(t *testing.T) {
+	// Regression killed (S2-045): the happy path must consult all three scopes
+	// (account, endpoint, global) exactly once and then refresh; a completed
+	// attempt must NOT refund the endpoint token (its budget stays consumed so a
+	// success cannot reopen the storm window). Mutation: skip the endpoint or
+	// global acquire → its call counter drops to 0 → red.
+	storm := &stormSpy{}
+	ref := &refresherSpy{}
+	audit := &auditSpy{}
+	s := newTestScheduler([]dbbilling.ListAccountsForRefreshRow{testAccountWithVendor(33, "anthropic")}, storm, ref,
+		withAuditWriter(audit), WithAuditLedger(&ledgerSpy{}))
+
+	if err := s.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if storm.calls != 1 || storm.endpointCalls != 1 || storm.globalCalls != 1 {
+		t.Fatalf("scope calls account/endpoint/global = %d/%d/%d, want 1/1/1", storm.calls, storm.endpointCalls, storm.globalCalls)
+	}
+	if len(ref.calls) != 1 || ref.calls[0] != 33 {
+		t.Fatalf("refresh calls=%v, want [33]", ref.calls)
+	}
+	if storm.endpointRefunds != 0 {
+		t.Fatalf("endpoint refunds=%d, want 0 on success (consumed token must persist)", storm.endpointRefunds)
+	}
+	if got := audit.lastOutcome(); got != auth.OutcomeRefreshSucceeded {
+		t.Fatalf("audit outcome=%q, want refresh_succeeded", got)
+	}
+}
+
 func TestSchedulerRefreshSuccessWritesAudit(t *testing.T) {
 	storm := &stormSpy{}
 	audit := &auditSpy{}
@@ -422,9 +512,14 @@ func (l *listSpy) ListAccountsForRefresh(_ context.Context, arg dbbilling.ListAc
 }
 
 type stormSpy struct {
-	outcome  auth.Outcome
-	calls    int
-	released int
+	outcome         auth.Outcome // account-scope denial outcome ("" = admit)
+	endpointOutcome auth.Outcome // provider-endpoint denial outcome ("" = admit)
+	globalOutcome   auth.Outcome // global-scope denial outcome ("" = admit)
+	calls           int
+	released        int
+	endpointCalls   int
+	globalCalls     int
+	endpointRefunds int
 }
 
 func (s *stormSpy) Acquire(context.Context, int64, int64) (func(), auth.Outcome, error) {
@@ -433,6 +528,22 @@ func (s *stormSpy) Acquire(context.Context, int64, int64) (func(), auth.Outcome,
 		return nil, s.outcome, nil
 	}
 	return func() { s.released++ }, "", nil
+}
+
+func (s *stormSpy) AcquireProviderEndpoint(context.Context, int64, string, string) (func(), auth.Outcome, error) {
+	s.endpointCalls++
+	if s.endpointOutcome != "" {
+		return nil, s.endpointOutcome, nil
+	}
+	return func() { s.endpointRefunds++ }, "", nil
+}
+
+func (s *stormSpy) AcquireGlobal(context.Context, int64) (func(), auth.Outcome, error) {
+	s.globalCalls++
+	if s.globalOutcome != "" {
+		return nil, s.globalOutcome, nil
+	}
+	return func() {}, "", nil
 }
 
 type refresherSpy struct {

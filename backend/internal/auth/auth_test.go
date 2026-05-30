@@ -864,7 +864,7 @@ func (s *casForcingStore) SaveRefreshedCredential(ctx context.Context, u Refresh
 }
 
 // =====================================================================
-// Storm controller (account scope only for v0.1)
+// Storm controller (three scopes: DB account + in-memory endpoint/global, S2-045)
 // =====================================================================
 
 // TestStormControllerSmoke verifies the constructor doesn't panic.
@@ -875,17 +875,26 @@ func TestStormControllerSmoke(t *testing.T) {
 	}
 }
 
-// TestAT_SECURITY_W1_O1_StormControllerDeferredScopesFailClosedWithoutPanic
-// kills the risk that currently unwired provider-endpoint/global storm scopes
-// crash a production caller if they become reachable later.
-func TestAT_SECURITY_W1_O1_StormControllerDeferredScopesFailClosedWithoutPanic(t *testing.T) {
+// TestStormControllerUnconfiguredScopesAdmitWithoutPanic proves that with no
+// endpoint/global budget configured (the default account-scope-only controller)
+// both scopes ADMIT (non-nil func, no outcome, no error) and never panic. This is
+// the opt-in-additive-throttle contract: an unconfigured throttle must not block
+// refresh — the always-on DB account budget stays the guard.
+//
+// Mutation check: make AcquireProviderEndpoint return a denial outcome when the
+// scope is disabled → the outcome assertion goes red.
+func TestStormControllerUnconfiguredScopesAdmitWithoutPanic(t *testing.T) {
 	c := NewStormController(nil)
-	if _, _, err := c.AcquireProviderEndpoint(context.Background(), 1, "p", "f"); !errors.Is(err, ErrStormScopeNotImplemented) {
-		t.Fatalf("provider endpoint error=%v, want ErrStormScopeNotImplemented", err)
+	refund, outcome, err := c.AcquireProviderEndpoint(context.Background(), 1, "p", "f")
+	if err != nil || outcome != "" || refund == nil {
+		t.Fatalf("unconfigured endpoint scope: refund!=nil=%v outcome=%q err=%v, want admit", refund != nil, outcome, err)
 	}
-	if _, _, err := c.AcquireGlobal(context.Background(), 1); !errors.Is(err, ErrStormScopeNotImplemented) {
-		t.Fatalf("global error=%v, want ErrStormScopeNotImplemented", err)
+	refund() // must not panic
+	gRefund, outcome, err := c.AcquireGlobal(context.Background(), 1)
+	if err != nil || outcome != "" || gRefund == nil {
+		t.Fatalf("unconfigured global scope: refund!=nil=%v outcome=%q err=%v, want admit", gRefund != nil, outcome, err)
 	}
+	gRefund() // must not panic
 }
 
 // TestAT_SECURITY_W1_O1_StormControllerAccountScopeMissingStateReturnsError
