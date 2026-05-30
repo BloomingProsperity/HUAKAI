@@ -202,13 +202,50 @@ function render(){
   });
 }
 
-fetch("./feature-tree.json").then(r=>r.json()).then(d=>{DATA=d; render();}).catch(e=>{
+// Two load paths from ONE file:
+//  • Local (Live Preview / python -m http.server): ./feature-tree.json loads directly.
+//  • Hosted on the coordination server at /tree: that fetch 404s, so we fall back
+//    to the token-gated /tree/data endpoint (token pasted once, kept in sessionStorage).
+function loadRemote(tok){
+  return fetch("/tree/data",{headers:{Authorization:"Bearer "+tok}}).then(r=>{
+    if(r.status===401) throw new Error("401");
+    if(!r.ok) throw new Error("http "+r.status);
+    return r.json();
+  });
+}
+function tokenBox(msg){
+  var saved=sessionStorage.getItem("COORD_TOKEN")||"";
+  document.getElementById("root").innerHTML=`<div class="err"><b>${esc(msg)}</b><br>
+  贴入协调服务 token 看进度地图(只读,token 只存本浏览器会话,不进 URL):<br>
+  <input id="tok" type="password" value="${esc(saved)}" placeholder="COORD_TOKEN"
+   style="width:60%;padding:8px;margin:8px 6px 0 0;background:#0d1420;border:1px solid #2a3950;color:#cfe;border-radius:6px">
+  <button id="go" style="padding:8px 16px;background:#143d2a;color:#7fe0a8;border:1px solid #1e5c3f;border-radius:6px;cursor:pointer">看</button></div>`;
+  document.getElementById("go").onclick=function(){
+    var t=document.getElementById("tok").value.trim(); if(!t) return;
+    sessionStorage.setItem("COORD_TOKEN",t);
+    loadRemote(t).then(d=>{DATA=d; render();}).catch(e=>tokenBox("token 不对或加载失败:"+esc(e.message)));
+  };
+}
+function localHelp(msg){
   document.getElementById("root").innerHTML=`<div class="err"><b>无法加载 feature-tree.json</b><br>
   浏览器在 <code>file://</code> 下禁止读取本地 JSON(CORS)。请用 http 预览:<br>
   ① VSCode 装 <b>Live Preview</b> 扩展 → 右键本文件 <i>Open with Live Preview</i>;或<br>
   ② 终端 <code>cd docs/process/feature-tree && python3 -m http.server</code> 然后开 <code>http://localhost:8000/feature-tree.html</code><br>
-  <small style="color:#8b98a9">错误:${esc(e.message)}</small></div>`;
-});
+  <small style="color:#8b98a9">错误:${esc(msg)}</small></div>`;
+}
+// Token fallback is enabled ONLY when the coordinator server itself served this
+// page — it injects window.__COORD_SERVED__. The raw file hosted by any other
+// origin/proxy/docs-site (which cannot inject that marker) shows local help on a
+// JSON failure and never prompts for, or POSTs, the coordination token.
+var ON_COORD = (window.__COORD_SERVED__ === true);
+fetch("./feature-tree.json").then(r=>{if(!r.ok)throw new Error("http "+r.status);return r.json();})
+ .then(d=>{DATA=d; render();})
+ .catch(e=>{
+   if(!ON_COORD){ localHelp(e.message); return; }
+   var saved=sessionStorage.getItem("COORD_TOKEN");
+   if(saved){ loadRemote(saved).then(d=>{DATA=d; render();}).catch(()=>tokenBox("功能树进度地图 · 需要 token")); }
+   else tokenBox("功能树进度地图 · 需要 token");
+ });
 </script>
 </body>
 </html>

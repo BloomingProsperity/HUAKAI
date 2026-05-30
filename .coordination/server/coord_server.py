@@ -16,6 +16,9 @@ Authorization: Bearer <COORD_TOKEN>):
   POST /heartbeat{agent}           -> refresh ttl
   POST /release  {agent}           -> drop the agent's lock
   GET  /healthz                    -> ok (no auth)
+  GET  /  /view                    -> board viewer HTML (no auth; data via token)
+  GET  /tree                       -> feature-tree dashboard HTML (no auth; data via token)
+  GET  /tree/data                  -> feature-tree.json (token-gated)
 
 Env: COORD_TOKEN (required, shared secret), COORD_DB (default coord.db),
      COORD_BIND (default 127.0.0.1), COORD_PORT (default 8787), COORD_TTL (default 1800).
@@ -49,6 +52,15 @@ TTL = int(os.environ.get("COORD_TTL", "1800"))
 # Unset = plain HTTP (fine for 127.0.0.1 / private-network binds).
 TLS_CERT = os.environ.get("COORD_TLS_CERT", "")
 TLS_KEY = os.environ.get("COORD_TLS_KEY", "")
+# Feature-tree dashboard hosting. Defaults sit in a tree/ dir next to this script
+# (on the box: /opt/huakai-coord/tree/), so deploying needs only a file copy — no
+# env/config edit. Override via env if the files live elsewhere. Missing files →
+# /tree and /tree/data return 404 cleanly. GET /tree serves the HTML shell (public,
+# carries no project data); GET /tree/data serves the JSON (token-gated — it reveals
+# which audit findings are still open, so it stays behind the bearer token like /board).
+_HERE = os.path.dirname(os.path.abspath(__file__))
+TREE_HTML = os.environ.get("COORD_TREE_HTML", os.path.join(_HERE, "tree", "feature-tree.html"))
+TREE_JSON = os.environ.get("COORD_TREE_JSON", os.path.join(_HERE, "tree", "feature-tree.json"))
 _lock = threading.Lock()
 
 
@@ -182,6 +194,35 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_raw(self, code, ctype, body):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_file(self, path, ctype):
+        if not path or not os.path.isfile(path):
+            return self._send(404, {"error": "feature-tree not deployed on this server"})
+        with open(path, "rb") as fh:
+            self._send_raw(200, ctype, fh.read())
+
+    def _serve_tree_html(self):
+        if not TREE_HTML or not os.path.isfile(TREE_HTML):
+            return self._send(404, {"error": "feature-tree not deployed on this server"})
+        with open(TREE_HTML, "rb") as fh:
+            html = fh.read()
+        # Stamp the response as coordinator-served. The page enables its token
+        # prompt ONLY when it sees this marker, so the same raw file hosted by any
+        # other origin/proxy (which cannot inject it) will never prompt for or POST
+        # the COORD_TOKEN. This verifies the coordinator origin, not just the path.
+        marker = b"<script>window.__COORD_SERVED__=true;</script>"
+        if b"</head>" in html:
+            html = html.replace(b"</head>", marker + b"</head>", 1)
+        else:
+            html = marker + html
+        self._send_raw(200, "text/html; charset=utf-8", html)
+
     def _auth(self):
         if not TOKEN:
             self._send(500, {"error": "server COORD_TOKEN not set"}); return False
@@ -216,10 +257,17 @@ class H(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if u.path in ("/tree", "/tree/"):
+            # Public HTML shell of the feature-tree dashboard (both slash forms).
+            # Carries no project data — its JS prompts for the token (only when it
+            # sees the injected coordinator marker) and fetches /tree/data below.
+            return self._serve_tree_html()
         if not self._auth():
             return
         c = db()
         try:
+            if u.path == "/tree/data":
+                return self._serve_file(TREE_JSON, "application/json; charset=utf-8")
             if u.path == "/board":
                 return self._send(200, {"locks": live_locks(c)})
             if u.path == "/check":
