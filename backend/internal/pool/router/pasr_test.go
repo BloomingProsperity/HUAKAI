@@ -232,7 +232,7 @@ func TestPASR_HRWFallback_DeprioritizesDegradedChannel(t *testing.T) {
 	}
 	sel.gates = gates
 
-	res, err := sel.scheduleHRWFullRing(context.Background(), SelectionRequest{
+	res, err := sel.scheduleHRWFullRing(context.Background(), gates, SelectionRequest{
 		TenantID: 1, RequestedModel: "m", SessionHash: prefix,
 	}, ring, snapshots, [PASRSegmentSize]int64{}, selectionFailures{})
 	if err != nil {
