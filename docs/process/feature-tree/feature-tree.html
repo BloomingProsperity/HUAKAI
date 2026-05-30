@@ -176,7 +176,7 @@ function render(){
 
   // reference parity gaps + codex diff
   const rp=DATA.reference_parity_union||{};
-  let gaps=`<div class="panel-h">参考项目对照 — 覆盖 ≥ 借鉴项目(缺口显式列出)</div>
+  let gaps=`<div class="panel-h">参考项目对照 — 候选缺口(未核实:repo@sha:file:line 证据见 2026-05-21 audit-A~E + 2026-05-30 侦察,回源核实前不作结论)</div>
     <div class="card"><div style="color:var(--dim);font-size:12px;margin-bottom:6px">${esc(rp.note||"")}</div>
     ${(rp.gaps||[]).map(g=>`<div class="gap"><div class="it">${esc(g.item)}</div><div class="rf"><b>${esc(g.ref)}</b> → ${esc(g.huakai)}</div></div>`).join("")}</div>`;
 

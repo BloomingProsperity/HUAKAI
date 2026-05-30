@@ -3,8 +3,8 @@
     "title": "HUAKAI 功能树 · 推进 + 修复 状态地图",
     "generated": "2026-05-30",
     "supersedes": "docs/process/research/2026-05-21-full-audit-tree.md (codex 基线,不删)",
-    "overall_weighted_pct": 31,
-    "overall_note": "总加权来自 02_HUAKAI_FUSION_ARCHITECTURE.md 的 9 轴(治理100/计费70/调度60/协议15/上下文10/异步0/L0-L2 0 → ~30%);修复战役后 money-path/auth 多节点已硬化,微升至 ~31%。这是【建设进度】;另一条轴是【问题修复】。",
+    "overall_weighted_pct": 34,
+    "overall_note": "总加权 = 9 轴按权重算(5×100+25×70+15×60+10×15+5×10 = 3350/100 = 33.5 ≈ 34%);轴值源自 02_HUAKAI_FUSION_ARCHITECTURE.md(那里口径约 30%,本表按权重精确重算为 34%,页面即显示此数)。这是【建设进度】;另一条轴是【问题修复】。",
     "weighted_axes": [
       {"name": "治理基线", "weight": 5, "pct": 100},
       {"name": "计费补偿 money-path", "weight": 25, "pct": 70},
