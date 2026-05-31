@@ -1,4 +1,3 @@
-// registrydefault 单元测试。
 package registrydefault
 
 import (
@@ -12,6 +11,7 @@ import (
 
 func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "")
+	clearPlaceholderSessionAdapterEnvs(t)
 	r := Build()
 	want := []string{
 		ProtocolOpenAIChat,
@@ -33,17 +33,18 @@ func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
 	sort.Strings(got)
 	sort.Strings(want)
 	if len(got) != len(want) {
-		t.Errorf("注册数=%d want %d (%v)", len(got), len(want), got)
+		t.Errorf("registered count=%d want %d (%v)", len(got), len(want), got)
 	}
 	for i, pf := range want {
 		if i >= len(got) || got[i] != pf {
-			t.Errorf("缺 protocol %q（已注册：%v）", pf, got)
+			t.Errorf("missing protocol %q; registered=%v", pf, got)
 		}
 	}
 }
 
 func TestBuild_AdaptersAreReachable(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "")
+	clearPlaceholderSessionAdapterEnvs(t)
 	r := Build()
 	for _, pf := range []string{
 		ProtocolOpenAIChat,
@@ -62,13 +63,14 @@ func TestBuild_AdaptersAreReachable(t *testing.T) {
 			t.Errorf("For(%q) returned nil adapter", pf)
 		}
 		if a.Platform() == "" {
-			t.Errorf("For(%q) adapter.Platform() 空", pf)
+			t.Errorf("For(%q) adapter.Platform() empty", pf)
 		}
 	}
 }
 
 func TestBuild_PlatformIDsCorrect(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "")
+	clearPlaceholderSessionAdapterEnvs(t)
 	r := Build()
 	cases := map[string]string{
 		ProtocolOpenAIChat:        "openai",
@@ -92,13 +94,14 @@ func TestBuild_PlatformIDsCorrect(t *testing.T) {
 			t.Fatalf("For(%q) err=%v", pf, err)
 		}
 		if got := a.Platform(); got != wantPlatform {
-			t.Errorf("%q → Platform=%q want %q", pf, got, wantPlatform)
+			t.Errorf("%q Platform=%q want %q", pf, got, wantPlatform)
 		}
 	}
 }
 
 func TestBuild_OpenAIResponsesEndpointIsResponsesAPI(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "")
+	clearPlaceholderSessionAdapterEnvs(t)
 	r := Build()
 	a, err := r.For(ProtocolOpenAIResponses)
 	if err != nil {
@@ -115,6 +118,7 @@ func TestBuild_OpenAIResponsesEndpointIsResponsesAPI(t *testing.T) {
 
 func TestBuild_AnthropicClaudeSessionDefaultFailClosed(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "")
+	clearPlaceholderSessionAdapterEnvs(t)
 	r := Build()
 
 	_, err := r.For(ProtocolAnthropicClaudeSession)
@@ -125,6 +129,7 @@ func TestBuild_AnthropicClaudeSessionDefaultFailClosed(t *testing.T) {
 
 func TestBuild_PlaceholderSessionAdaptersDefaultOff(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "")
+	clearPlaceholderSessionAdapterEnvs(t)
 	r := Build()
 	for _, pf := range placeholderSessionProtocolFamilies() {
 		_, err := r.For(pf)
@@ -134,53 +139,81 @@ func TestBuild_PlaceholderSessionAdaptersDefaultOff(t *testing.T) {
 	}
 }
 
-func TestBuild_PlaceholderSessionAdaptersOptIn(t *testing.T) {
+func TestBuild_LegacyPlaceholderSessionFlagDoesNotEnableAllFamilies(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "true")
+	clearPlaceholderSessionAdapterEnvs(t)
 	r := Build()
-	cases := map[string]string{
-		ProtocolCursorSession:         "cursor",
-		ProtocolCopilotSession:        "copilot",
-		ProtocolGeminiAdvancedSession: "gemini_advanced",
-		ProtocolAntigravitySession:    "antigravity",
-		ProtocolKiroSession:           "kiro",
-		ProtocolWindsurfSession:       "windsurf",
+	for _, pf := range placeholderSessionProtocolFamilies() {
+		_, err := r.For(pf)
+		if !errors.Is(err, provider.ErrAdapterNotRegistered) {
+			t.Fatalf("legacy aggregate flag registered %q; each placeholder session family must be gated independently", pf)
+		}
 	}
-	for pf, wantPlatform := range cases {
-		a, err := r.For(pf)
-		if err != nil {
-			t.Fatalf("For(%q) err=%v", pf, err)
-		}
-		if got := a.Platform(); got != wantPlatform {
-			t.Errorf("%q → Platform=%q want %q", pf, got, wantPlatform)
-		}
+}
+
+func TestBuild_PlaceholderSessionAdaptersOptIn(t *testing.T) {
+	cases := []struct {
+		protocol     string
+		env          string
+		wantPlatform string
+	}{
+		{ProtocolCursorSession, cursorSessionAdapterEnv, "cursor"},
+		{ProtocolCopilotSession, copilotSessionAdapterEnv, "copilot"},
+		{ProtocolGeminiAdvancedSession, geminiAdvancedSessionAdapterEnv, "gemini_advanced"},
+		{ProtocolAntigravitySession, antigravitySessionAdapterEnv, "antigravity"},
+		{ProtocolKiroSession, kiroSessionAdapterEnv, "kiro"},
+		{ProtocolWindsurfSession, windsurfSessionAdapterEnv, "windsurf"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.protocol, func(t *testing.T) {
+			t.Setenv(placeholderSessionAdaptersEnv, "true")
+			clearPlaceholderSessionAdapterEnvs(t)
+			t.Setenv(tc.env, "true")
+			r := Build()
+			a, err := r.For(tc.protocol)
+			if err != nil {
+				t.Fatalf("For(%q) err=%v", tc.protocol, err)
+			}
+			if got := a.Platform(); got != tc.wantPlatform {
+				t.Errorf("%q Platform=%q want %q", tc.protocol, got, tc.wantPlatform)
+			}
+			for _, sibling := range placeholderSessionProtocolFamilies() {
+				if sibling == tc.protocol {
+					continue
+				}
+				_, err := r.For(sibling)
+				if !errors.Is(err, provider.ErrAdapterNotRegistered) {
+					t.Fatalf("enabling %s also registered sibling %s", tc.env, sibling)
+				}
+			}
+		})
 	}
 }
 
 func TestBuild_UnregisteredReturnsErrAdapterNotRegistered(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "")
+	clearPlaceholderSessionAdapterEnvs(t)
 	r := Build()
 	for _, pf := range []string{
-		"chatgpt_session", // OpenAI 反转旧名（现 openai_codex），未注册
-		"anthropic_oauth", // Anthropic 反转（暂停）
-		"copilot_oauth",   // Copilot OAuth 旧名（现 copilot_session），未注册
-		"unknown",         // 完全未知
+		"chatgpt_session",
+		"anthropic_oauth",
+		"copilot_oauth",
+		"unknown",
 	} {
 		_, err := r.For(pf)
 		if err == nil {
-			t.Errorf("For(%q) 应返回 error", pf)
+			t.Errorf("For(%q) expected error", pf)
 			continue
 		}
-		// 不要求严格 errors.Is，只确认 error 文案含 protocol family
 		if errStr := err.Error(); errStr == "" {
-			t.Errorf("For(%q) error 文案空", pf)
+			t.Errorf("For(%q) error text empty", pf)
 		}
 	}
 }
 
-// TestBuild_ConsistentWithProviderInterface 确保所有注册的 adapter
-// 都满足 provider.Adapter 接口（编译期已保证；本测试仅作 smoke）。
 func TestBuild_ConsistentWithProviderInterface(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "")
+	clearPlaceholderSessionAdapterEnvs(t)
 	r := Build()
 	var _ provider.Adapter
 	for _, pf := range r.RegisteredProtocolFamilies() {
@@ -188,7 +221,6 @@ func TestBuild_ConsistentWithProviderInterface(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// 调用接口三个方法不应 panic
 		_ = a.Platform()
 		_ = a.AcceptableCredentialTypes()
 	}
@@ -202,5 +234,23 @@ func placeholderSessionProtocolFamilies() []string {
 		ProtocolAntigravitySession,
 		ProtocolKiroSession,
 		ProtocolWindsurfSession,
+	}
+}
+
+func clearPlaceholderSessionAdapterEnvs(t *testing.T) {
+	t.Helper()
+	for _, env := range placeholderSessionAdapterEnvNames() {
+		t.Setenv(env, "")
+	}
+}
+
+func placeholderSessionAdapterEnvNames() []string {
+	return []string{
+		cursorSessionAdapterEnv,
+		copilotSessionAdapterEnv,
+		geminiAdvancedSessionAdapterEnv,
+		antigravitySessionAdapterEnv,
+		kiroSessionAdapterEnv,
+		windsurfSessionAdapterEnv,
 	}
 }

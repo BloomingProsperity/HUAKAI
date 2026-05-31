@@ -82,7 +82,16 @@ const (
 	ProtocolWindsurfSession       = "windsurf_session"
 )
 
-const placeholderSessionAdaptersEnv = "HUAKAI_ENABLE_PLACEHOLDER_SESSION_ADAPTERS"
+const (
+	placeholderSessionAdaptersEnv = "HUAKAI_ENABLE_PLACEHOLDER_SESSION_ADAPTERS"
+
+	cursorSessionAdapterEnv         = "HUAKAI_ENABLE_CURSOR_SESSION_ADAPTER"
+	copilotSessionAdapterEnv        = "HUAKAI_ENABLE_COPILOT_SESSION_ADAPTER"
+	geminiAdvancedSessionAdapterEnv = "HUAKAI_ENABLE_GEMINI_ADVANCED_SESSION_ADAPTER"
+	antigravitySessionAdapterEnv    = "HUAKAI_ENABLE_ANTIGRAVITY_SESSION_ADAPTER"
+	kiroSessionAdapterEnv           = "HUAKAI_ENABLE_KIRO_SESSION_ADAPTER"
+	windsurfSessionAdapterEnv       = "HUAKAI_ENABLE_WINDSURF_SESSION_ADAPTER"
+)
 
 // Build 创建注册表并注册全部已实现 vendor adapter。失败时 panic — 启动
 // 期问题不应静默吞，必须 fail-loud。
@@ -131,19 +140,29 @@ func Build() *provider.StaticRegistry {
 
 	// 6 家订阅 session 反转路径仍含未验证 placeholder endpoint。
 	// 默认不注册，避免把真实 session credential 发到未确认上游；实验环境
-	// 显式 opt-in 后才注册。
-	if placeholderSessionAdaptersEnabled() {
+	// 必须逐 family 显式 opt-in，不能用一个总开关一次性打开全部。
+	if placeholderSessionAdapterEnabled(cursorSessionAdapterEnv) {
 		r.MustRegister(ProtocolCursorSession, &cursor.CursorSessionAdapter{})
+	}
+	if placeholderSessionAdapterEnabled(copilotSessionAdapterEnv) {
 		r.MustRegister(ProtocolCopilotSession, &copilot.CopilotSessionAdapter{})
+	}
+	if placeholderSessionAdapterEnabled(geminiAdvancedSessionAdapterEnv) {
 		r.MustRegister(ProtocolGeminiAdvancedSession, &gemini.GeminiAdvancedSessionAdapter{})
+	}
+	if placeholderSessionAdapterEnabled(antigravitySessionAdapterEnv) {
 		r.MustRegister(ProtocolAntigravitySession, &antigravity.AntigravitySessionAdapter{})
+	}
+	if placeholderSessionAdapterEnabled(kiroSessionAdapterEnv) {
 		r.MustRegister(ProtocolKiroSession, &kiro.KiroSessionAdapter{})
+	}
+	if placeholderSessionAdapterEnabled(windsurfSessionAdapterEnv) {
 		r.MustRegister(ProtocolWindsurfSession, &windsurf.WindsurfSessionAdapter{})
 	}
 
 	return r
 }
 
-func placeholderSessionAdaptersEnabled() bool {
-	return os.Getenv(placeholderSessionAdaptersEnv) == "true"
+func placeholderSessionAdapterEnabled(env string) bool {
+	return os.Getenv(env) == "true"
 }
