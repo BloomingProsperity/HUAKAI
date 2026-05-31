@@ -13,8 +13,9 @@
 //     Pool/Adapter/Ledger.
 //   - CMB-5: Plaintext bearer is never logged. Errors return only the
 //     key_prefix (never the suffix or full token) for debugging.
-//   - CMB-7: This package writes nothing. last_used_at update
-//     is intentionally omitted; scheduled for a later slice.
+//   - CMB-7: The only write in this package is best-effort auth telemetry:
+//     last_used_at is touched after successful verification, and touch
+//     failure must not reject otherwise valid credentials.
 //
 // All authentication failures map to a single ErrUnauthorized return
 // (D10 in synthesized plan) so the handler can map to HTTP 401 without
@@ -26,6 +27,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -56,6 +58,10 @@ const APIKeyPrefixLen = 16
 // will bcrypt-compare. The SQL query also LIMITs to this value; the
 // constant exists so the cap is visible at the resolver layer too.
 const MaxBcryptFanout = 5
+
+// lastUsedTouchTimeout keeps best-effort telemetry from coupling auth
+// availability to row locks or slow writes on api_keys.
+const lastUsedTouchTimeout = 100 * time.Millisecond
 
 // ErrUnauthorized is returned for ANY CREDENTIAL-LEVEL failure: bad
 // header, malformed bearer, prefix miss, bcrypt mismatch, key revoked,
@@ -134,6 +140,15 @@ func (r *APIKeyResolver) Resolve(ctx context.Context, req *http.Request) (Identi
 		}
 		if err := bcrypt.CompareHashAndPassword([]byte(row.KeyHash), []byte(bearer)); err != nil {
 			continue
+		}
+		touchCtx, cancel := context.WithTimeout(ctx, lastUsedTouchTimeout)
+		touchErr := r.q.TouchAPIKeyLastUsed(touchCtx, row.ID)
+		cancel()
+		if touchErr != nil {
+			slog.WarnContext(ctx, "api_key_last_used_touch_failed",
+				"tenant_id", row.TenantID,
+				"api_key_id", row.ID,
+				"error", touchErr)
 		}
 		return Identity{
 			TenantID: row.TenantID,

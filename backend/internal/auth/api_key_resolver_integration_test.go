@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 
@@ -127,6 +128,28 @@ func newRequest(t *testing.T, header string) *http.Request {
 	return r
 }
 
+func setAPIKeyLastUsedAt(t *testing.T, ctx context.Context, pool *pgxpool.Pool, apiKeyID int64, ts time.Time) {
+	t.Helper()
+	if _, err := pool.Exec(ctx,
+		`UPDATE api_keys SET last_used_at=$1 WHERE id=$2`,
+		ts, apiKeyID,
+	); err != nil {
+		t.Fatalf("set last_used_at: %v", err)
+	}
+}
+
+func readAPIKeyLastUsedAt(t *testing.T, ctx context.Context, pool *pgxpool.Pool, apiKeyID int64) pgtype.Timestamptz {
+	t.Helper()
+	var ts pgtype.Timestamptz
+	if err := pool.QueryRow(ctx,
+		`SELECT last_used_at FROM api_keys WHERE id=$1`,
+		apiKeyID,
+	).Scan(&ts); err != nil {
+		t.Fatalf("read last_used_at: %v", err)
+	}
+	return ts
+}
+
 func TestAPIKeyResolver_HappyPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -140,6 +163,95 @@ func TestAPIKeyResolver_HappyPath(t *testing.T) {
 	}
 	if ident.TenantID != seed.tenantID || ident.APIKeyID != seed.apiKeyID || ident.UserID != seed.userID {
 		t.Fatalf("identity mismatch: %+v vs seed %+v", ident, seed)
+	}
+}
+
+func TestAPIKeyResolver_TouchesLastUsedAtOnSuccessfulResolve(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openIntegrationPool(t, ctx)
+	seed := seedAPIKey(t, ctx, pool, apiKeySeedOpts{})
+	old := time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)
+	setAPIKeyLastUsedAt(t, ctx, pool, seed.apiKeyID, old)
+
+	r := NewAPIKeyResolver(dbauth.New(pool))
+	if _, err := r.Resolve(ctx, newRequest(t, "Bearer "+seed.plaintext)); err != nil {
+		t.Fatalf("first Resolve: %v", err)
+	}
+	first := readAPIKeyLastUsedAt(t, ctx, pool, seed.apiKeyID)
+	if !first.Valid {
+		t.Fatalf("successful Resolve must set last_used_at; got NULL")
+	}
+	if !first.Time.After(old) {
+		t.Fatalf("successful Resolve must advance last_used_at beyond old timestamp: got %s, old %s",
+			first.Time, old)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	if _, err := r.Resolve(ctx, newRequest(t, "Bearer "+seed.plaintext)); err != nil {
+		t.Fatalf("second Resolve: %v", err)
+	}
+	second := readAPIKeyLastUsedAt(t, ctx, pool, seed.apiKeyID)
+	if !second.Valid {
+		t.Fatalf("second successful Resolve must keep last_used_at non-NULL")
+	}
+	if !second.Time.After(first.Time) {
+		t.Fatalf("second successful Resolve must advance last_used_at again: first %s, second %s",
+			first.Time, second.Time)
+	}
+}
+
+func TestAPIKeyResolver_FailedAuthDoesNotTouchLastUsedAt(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openIntegrationPool(t, ctx)
+
+	expiredAt := time.Now().Add(-1 * time.Hour)
+	cases := []struct {
+		name   string
+		opts   apiKeySeedOpts
+		header func(*seededAPIKey) string
+	}{
+		{
+			name: "wrong bearer",
+			header: func(seed *seededAPIKey) string {
+				return "Bearer " + seed.plaintext[:APIKeyPrefixLen] + "_WRONG_SUFFIX_HERE"
+			},
+		},
+		{
+			name: "revoked key",
+			opts: apiKeySeedOpts{status: "revoked"},
+			header: func(seed *seededAPIKey) string {
+				return "Bearer " + seed.plaintext
+			},
+		},
+		{
+			name: "expired key",
+			opts: apiKeySeedOpts{expiresAt: expiredAt},
+			header: func(seed *seededAPIKey) string {
+				return "Bearer " + seed.plaintext
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			seed := seedAPIKey(t, ctx, pool, tc.opts)
+			old := time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)
+			setAPIKeyLastUsedAt(t, ctx, pool, seed.apiKeyID, old)
+
+			r := NewAPIKeyResolver(dbauth.New(pool))
+			_, err := r.Resolve(ctx, newRequest(t, tc.header(seed)))
+			if !errors.Is(err, ErrUnauthorized) {
+				t.Fatalf("failed bearer must collapse to ErrUnauthorized; got %v", err)
+			}
+			after := readAPIKeyLastUsedAt(t, ctx, pool, seed.apiKeyID)
+			if !after.Valid {
+				t.Fatalf("failed Resolve must preserve existing last_used_at; got NULL")
+			}
+			if !after.Time.Equal(old) {
+				t.Fatalf("failed Resolve must not update last_used_at: got %s, want %s", after.Time, old)
+			}
+		})
 	}
 }
 
