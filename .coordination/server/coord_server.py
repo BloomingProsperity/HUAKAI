@@ -24,6 +24,10 @@ Authorization: Bearer <COORD_TOKEN>):
   POST /tasks    {id,title,...,verify_rounds,assignee,status}   upsert/assign
                                    -> 422 unless verify_rounds>=3 to assign
   POST /tasks/status {id,status,notes?,review_notes?,reviewed_by?}  transition
+  POST /dispatcher/output {agent,lines:[str,...]}  append AI stdout to live terminal
+                                   -> {"ok":true,"last_id":N}
+  GET  /dispatcher/output?agent=&since=<id>  incremental tail for the live terminal
+                                   -> {"lines":[{id,ts,line}],"last_id":N}
 
 Env: COORD_TOKEN (required, shared secret), COORD_DB (default coord.db),
      COORD_BIND (default 127.0.0.1), COORD_PORT (default 8787), COORD_TTL (default 1800).
@@ -103,6 +107,13 @@ def db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, agent TEXT, ts TEXT, kind TEXT, text TEXT)""")
     c.execute("""CREATE TABLE IF NOT EXISTS dispatcher_control(
         k TEXT PRIMARY KEY, v TEXT, set_at TEXT)""")
+    # Live AI terminal stream: each worker tees its AI's stdout/stderr here line-by-line
+    # so the /console 机器 tab can render a VSCode-style live terminal per machine. This
+    # is a global ring buffer (trimmed to the most recent ~800 rows) the panel polls
+    # incrementally via GET /dispatcher/output?agent=&since=<lastId> (append-only, never
+    # rebuilt). Separate from dispatcher_events (which is a curated low-volume action log).
+    c.execute("""CREATE TABLE IF NOT EXISTS dispatcher_output(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, agent TEXT, ts TEXT, line TEXT)""")
     return c
 
 
@@ -382,6 +393,54 @@ def set_dispatcher_control(b):
     return 200, {"ok": True, "control": action}
 
 
+# --- live AI terminal stream (per-machine VSCode-style chat in the /console 机器 tab) ---
+# Symmetric to dispatcher events but high-volume + raw: a worker tees its AI's combined
+# stdout/stderr here, the panel polls it incrementally and APPENDS new rows so a long run
+# scrolls like a real terminal. Buffer is global-trimmed so it can never grow unbounded.
+_OUTPUT_KEEP = 800   # most-recent rows kept across ALL agents (global ring buffer)
+
+
+def record_output(b):
+    agent = (b.get("agent") or "").strip()
+    if not agent:
+        return 400, {"error": "agent required"}
+    lines = b.get("lines")
+    if not isinstance(lines, list):
+        return 400, {"error": "lines must be a list of strings"}
+    c = db()
+    try:
+        last_id = None
+        # Each line is appended with its own timestamp; line[:2000] caps a runaway
+        # single line so one giant blob cannot blow the row size / buffer budget.
+        for ln in lines:
+            cur = c.execute("INSERT INTO dispatcher_output(agent,ts,line) VALUES(?,?,?)",
+                            (agent, now(), (str(ln) if ln is not None else "")[:2000]))
+            last_id = cur.lastrowid
+        # Trim to the most recent ~800 rows globally (ring buffer) so unbounded AI
+        # output never bloats the DB; the panel only ever needs the recent tail.
+        c.execute("DELETE FROM dispatcher_output WHERE id NOT IN "
+                  "(SELECT id FROM dispatcher_output ORDER BY id DESC LIMIT ?)", (_OUTPUT_KEEP,))
+        c.commit()
+        if last_id is None:
+            row = c.execute("SELECT MAX(id) FROM dispatcher_output").fetchone()
+            last_id = row[0] if row and row[0] is not None else 0
+        return 200, {"ok": True, "last_id": last_id}
+    finally:
+        c.close()
+
+
+def output_view(c, agent, since):
+    # Incremental tail: only rows newer than the caller's lastId for this agent, oldest
+    # first so the panel can append in order. Capped per poll so a burst can't ship a
+    # megabyte at once (the panel just catches up over the next polls).
+    rows = c.execute(
+        "SELECT id,ts,line FROM dispatcher_output WHERE agent=? AND id>? ORDER BY id ASC LIMIT 400",
+        (agent, since)).fetchall()
+    lines = [{"id": i, "ts": t, "line": x} for (i, t, x) in rows]
+    last_id = lines[-1]["id"] if lines else since
+    return {"lines": lines, "last_id": last_id}
+
+
 VIEW_HTML = """<!DOCTYPE html>
 <html lang=zh><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>HUAKAI 协调看板</title><style>
@@ -495,22 +554,30 @@ setInterval(tick,4000); tick();
 
 CONSOLE_HTML = """<!DOCTYPE html>
 <html lang=zh><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
-<title>HUAKAI 控制台 · 一页全局</title><style>
+<title>HUAKAI 控制台</title><style>
+*{box-sizing:border-box}
 body{margin:0;background:#0f1419;color:#e6edf3;font:14px/1.6 system-ui,"PingFang SC","Microsoft YaHei",sans-serif}
-.w{max-width:1180px;margin:0 auto;padding:16px}
-h1{font-size:19px;margin:0 0 2px}.sub{color:#8b98a9;font-size:12px;margin-bottom:10px}
-a{color:#9ecbff}
-.tok{display:flex;gap:8px;margin-bottom:12px}
-.tok input{flex:1;background:#1e2630;border:1px solid #2a3340;color:#e6edf3;border-radius:6px;padding:7px 10px}
-.tok button{background:#143d22;border:1px solid #2d6a3f;color:#7ee29a;border-radius:6px;padding:7px 14px;cursor:pointer}
-.card{background:#171d26;border:1px solid #2a3340;border-radius:10px;padding:12px 14px;margin-bottom:14px}
+.w{max-width:1240px;margin:0 auto;padding:14px 16px 40px}
+a{color:#9ecbff;text-decoration:none}
+.bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:4px}
+h1{font-size:18px;margin:0;white-space:nowrap}
+.tok{display:flex;gap:6px;flex:1;min-width:220px;max-width:420px}
+.tok input{flex:1;background:#1e2630;border:1px solid #2a3340;color:#e6edf3;border-radius:6px;padding:6px 10px;font-size:13px}
+.tok button{background:#143d22;border:1px solid #2d6a3f;color:#7ee29a;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:13px}
+.sub{color:#8b98a9;font-size:12px}
+.tabs{display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid #2a3340;margin:10px 0 14px}
+.tab{background:none;border:none;border-bottom:2px solid transparent;color:#8b98a9;padding:8px 14px;cursor:pointer;font-size:14px;border-radius:6px 6px 0 0}
+.tab:hover{color:#cdd9e5;background:#171d26}
+.tab.active{color:#7ee29a;border-bottom-color:#2d6a3f;background:#141a22}
+.tab .badge{background:#6b2b2b;color:#ff8b8b;border-radius:10px;font-size:11px;padding:0 7px;margin-left:6px}
+.card{background:#171d26;border:1px solid #2a3340;border-radius:10px;padding:12px 14px;margin-bottom:12px}
 .card h2{font-size:14px;margin:0 0 8px;color:#cdd9e5}
 .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.b{font-size:11px;padding:1px 8px;border-radius:11px;border:1px solid}
+.b{font-size:11px;padding:1px 8px;border-radius:11px;border:1px solid;white-space:nowrap}
 .on{color:#7ee29a;border-color:#2d6a3f}.off{color:#ff8b8b;border-color:#6b2b2b}.warn{color:#f0c674;border-color:#6b5a2b}
 .btn{background:#1e2630;border:1px solid #2a3340;color:#e6edf3;border-radius:6px;padding:5px 12px;cursor:pointer;font-size:12px}
 .btn.stop{color:#ff8b8b;border-color:#6b2b2b}.btn.go{color:#7ee29a;border-color:#2d6a3f}
-.ev{font-family:ui-monospace,monospace;font-size:11.5px;max-height:280px;overflow:auto;background:#0c1116;border:1px solid #232c36;border-radius:7px;padding:8px}
+.ev{font-family:ui-monospace,monospace;font-size:11.5px;max-height:480px;overflow:auto;background:#0c1116;border:1px solid #232c36;border-radius:7px;padding:8px}
 .ev .e{padding:3px 0;border-bottom:1px solid #1a222c;white-space:pre-wrap}
 .ev .t{color:#6b7480}.ev .k{color:#9ecbff}
 .pill{background:#171d26;border:1px solid #2a3340;border-radius:20px;padding:3px 11px;font-size:12px;display:inline-block;margin:0 5px 5px 0}
@@ -522,98 +589,286 @@ a{color:#9ecbff}
 .files{color:#6b7480;font-size:11px;font-family:ui-monospace,monospace}
 .lock{font-size:12px;color:#cdd9e5;margin-bottom:4px}.lock .who{color:#f0c674}
 .err{color:#ff8b8b}.grp h3{font-size:13px;color:#cdd9e5;margin:8px 0 5px}
+.mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.mcard{background:#141a22;border:1px solid #232c36;border-radius:9px;padding:10px 12px;cursor:pointer}
+.mcard:hover{border-color:#2d6a3f}.mcard.sel{border-color:#2d6a3f;background:#13241a}
+.mcard .nm{font-weight:600;font-size:14px;color:#e6edf3}
+.mline{color:#8b98a9;font-size:12px;margin-top:3px}
+.term-wrap{margin-top:12px}
+.term-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.term-head .live{color:#7ee29a;font-size:12px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#7ee29a;margin-right:5px;animation:bl 1.4s ease-in-out infinite}
+@keyframes bl{0%,100%{opacity:1}50%{opacity:.25}}
+.term{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;height:520px;overflow:auto;background:#05080b;border:1px solid #232c36;border-radius:8px;padding:10px}
+.term .ln{white-space:pre-wrap;word-break:break-word;color:#c8d3df}
+.term .ts{color:#46525e;margin-right:8px}
+.tnote{color:#8b98a9;padding:30px;text-align:center}
 </style></head><body><div class=w>
-<h1>HUAKAI 控制台</h1>
-<div class=sub>一页看全:调度守护进程 · 任务账本 · 谁在编辑 · 每 5 秒刷新 · <a href="/tree">功能树</a></div>
-<div class=tok><input id=t type=password placeholder="贴 COORD_TOKEN(只存本会话,不进 URL)"><button id=go>进入</button></div>
-<div id=app></div>
-<div class=sub id=ts></div></div>
+<div class=bar>
+ <h1>HUAKAI 控制台</h1>
+ <div class=tok><input id=t type=password placeholder="贴 COORD_TOKEN(只存本会话,不进 URL)"><button id=go>进入</button></div>
+ <span class=sub id=ts></span>
+</div>
+<div class=tabs id=tabs></div>
+<div id=view></div>
+</div>
 <script>
 var T=sessionStorage.getItem('COORD_TOKEN')||'';
 if(T)document.getElementById('t').value=T;
-document.getElementById('go').addEventListener('click',function(){T=document.getElementById('t').value.trim();sessionStorage.setItem('COORD_TOKEN',T);tick();});
 function esc(s){return (s==null?'':''+s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function hdr(){return {Authorization:'Bearer '+T};}
 function ago(s){if(s==null)return '?';if(s<60)return s+'秒前';if(s<3600)return Math.floor(s/60)+'分前';return Math.floor(s/3600)+'时前';}
-var STAT=['needs_owner','in_progress','review','assigned','blocked','todo','done'];
-var FRESH={};
 function chk(r){if(r.status===401)throw new Error('token 不对(401)');if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}
+var STAT=['needs_owner','in_progress','review','assigned','blocked','todo','done'];
+var TABS=[['overview','总览'],['machines','机器'],['tasks','任务'],['approve','待批'],['logs','日志']];
+
+// ---- shared latest data (filled by poll) ----
+var DATA={ds:null,tasks:[],locks:[]}, FRESH={};
+var TAB=sessionStorage.getItem('console_tab')||'overview';
+if(!TABS.some(function(x){return x[0]===TAB;}))TAB='overview';
+var SEL=sessionStorage.getItem('console_machine')||'';   // selected machine for terminal
+
+// ---- anti-clobber re-render: only touch a section when its html changed; pause while
+// the pointer is over / focus is inside the content; keep window scroll across renders.
+var interacting=false, lastSectionHtml={};
+var VIEW=document.getElementById('view');
+VIEW.addEventListener('pointerenter',function(){interacting=true;});
+VIEW.addEventListener('pointerleave',function(){interacting=false;});
+VIEW.addEventListener('focusin',function(){interacting=true;});
+VIEW.addEventListener('focusout',function(){setTimeout(function(){interacting=false;},250);});
+
+function setHtml(el,html,key){
+ // re-render ONLY if changed; preserve window scroll so a refresh never yanks the page.
+ if(lastSectionHtml[key]===html)return;
+ lastSectionHtml[key]=html;
+ var sx=window.scrollX, sy=window.scrollY;
+ el.innerHTML=html;
+ window.scrollTo(sx,sy);
+}
+
+// ---- token + tabs ----
+document.getElementById('go').addEventListener('click',function(){
+ T=document.getElementById('t').value.trim();sessionStorage.setItem('COORD_TOKEN',T);
+ lastSectionHtml={};poll(true);
+});
+document.getElementById('t').addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('go').click();});
+
+function renderTabs(){
+ var pend=DATA.tasks.filter(function(t){return t.status==='needs_owner';}).length;
+ var h=TABS.map(function(x){
+  var id=x[0],lbl=x[1];
+  var badge=(id==='approve'&&pend)?'<span class=badge>'+pend+'</span>':'';
+  return '<button class="tab'+(id===TAB?' active':'')+'" data-tab="'+id+'">'+esc(lbl)+badge+'</button>';
+ }).join('');
+ document.getElementById('tabs').innerHTML=h;
+}
+document.getElementById('tabs').addEventListener('click',function(e){
+ var b=e.target.closest('button[data-tab]');if(!b)return;
+ var id=b.getAttribute('data-tab');if(id===TAB)return;
+ TAB=id;sessionStorage.setItem('console_tab',TAB);
+ lastSectionHtml={};                 // tab switch is deliberate -> force a full render
+ stopTerm();                          // leave terminal poll when navigating away
+ renderTabs();renderView(true);
+ if(TAB==='machines'&&SEL)startTerm(SEL);
+});
+
+// ---- delegated actions (work even while interacting, they are user-driven) ----
+VIEW.addEventListener('click',function(e){
+ var el=e.target;
+ var act=el.closest&&el.closest('[data-act]');
+ if(act){control(act.getAttribute('data-act'));return;}
+ var ap=el.closest&&el.closest('[data-approve]');
+ if(ap){approve(ap.getAttribute('data-approve'));return;}
+ var mc=el.closest&&el.closest('[data-machine]');
+ if(mc){selectMachine(mc.getAttribute('data-machine'));return;}
+});
 function control(action){
  fetch('/dispatcher/control',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},hdr()),body:JSON.stringify({action:action})})
-  .then(chk).then(function(){tick();}).catch(function(e){alert('操作失败:'+e.message);});
+  .then(chk).then(function(){poll(true);}).catch(function(e){alert('操作失败:'+e.message);});
 }
 function approve(id){
- var ot=prompt('批准高危任务 '+id+' → done。\\n输入 Owner 专用令牌(COORD_OWNER_TOKEN):');
+ var ot=prompt('批准高危任务 '+id+' \\u2192 done。\\n输入 Owner 专用令牌(COORD_OWNER_TOKEN):');
  if(!ot)return;
  fetch('/tasks/status',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},hdr()),
    body:JSON.stringify({id:id,status:'done',owner_token:ot,updated_by:'owner-console'})})
-  .then(function(r){return r.json();}).then(function(d){if(d.error)alert('未批准:'+d.error);else tick();})
+  .then(function(r){return r.json();}).then(function(d){if(d.error)alert('未批准:'+d.error);else poll(true);})
   .catch(function(e){alert('失败:'+e.message);});
 }
-document.addEventListener('click',function(e){
- var el=e.target; if(!el.getAttribute)return;
- var a=el.getAttribute('data-act'); if(a){control(a);return;}
- var ap=el.getAttribute('data-approve'); if(ap){approve(ap);return;}
-});
-function tick(){
- if(!T){document.getElementById('app').innerHTML='<div class=err>先贴 token。</div>';return;}
+
+// ---- polling: status + tasks + locks every 5s (terminal has its own 2s loop) ----
+function poll(force){
+ if(!T){VIEW.innerHTML='<div class=err>先贴 token 再点进入。</div>';document.getElementById('tabs').innerHTML='';return;}
  Promise.all([
   fetch('/dispatcher/status',{headers:hdr()}).then(chk),
   fetch('/tasks',{headers:hdr()}).then(chk),
   fetch('/board',{headers:hdr()}).then(chk)
  ]).then(function(res){
-  render(res[0],res[1].tasks||[],res[2].locks||[]);
-  document.getElementById('ts').textContent='更新于 '+new Date().toLocaleTimeString();
- }).catch(function(e){document.getElementById('app').innerHTML='<div class=err>'+esc(e.message)+'</div>';});
+  DATA.ds=res[0];DATA.tasks=res[1].tasks||[];DATA.locks=res[2].locks||[];
+  FRESH={};(DATA.ds.agents||[]).forEach(function(a){FRESH[a.agent]=a;});
+  renderTabs();renderView(force);
+  document.getElementById('ts').textContent='更新于 '+new Date().toLocaleTimeString()+(interacting?' · 悬停中(列表已暂停刷新)':'');
+ }).catch(function(e){VIEW.innerHTML='<div class=err>'+esc(e.message)+'</div>';});
 }
-function render(ds,tasks,locks){
- var html='';
- var paused=(ds.control==='pause');
- var ags=(ds.agents||[]);
- FRESH={}; ags.forEach(function(a){FRESH[a.agent]=a;});
- var dstat=ags.length?ags.map(function(a){
-   var cls=a.fresh?'on':'off';var lbl=a.fresh?(a.state||'?'):'失联';
-   return '<div class=row style="margin-bottom:4px"><span class="b '+cls+'">'+esc(a.agent)+' · '+esc(lbl)+'</span>'+
-     '<span class=sub>心跳 '+ago(a.age_sec)+'</span>'+(a.detail?'<span class=sub>· '+esc(a.detail)+'</span>':'')+'</div>';
- }).join(''):'<div class=sub>(还没有机器上报心跳。重启 daemon / 各 worker 的 loop 后,每轮自动上报。)</div>';
- var ctlbtn=paused?'<button class="btn go" data-act="run">▶ 恢复调度</button>':'<button class="btn stop" data-act="pause">⏸ 暂停调度</button>';
- html+='<div class=card><h2>🖥 机器在线 · 调度+各 worker '+(paused?'<span class="b warn">调度已暂停</span>':'<span class="b on">调度运行中</span>')+'</h2>'+
-   dstat+'<div class=row style="margin-top:8px">'+ctlbtn+
-   '<span class=sub>暂停=调度进程保活但不再审/合并 · 彻底停用:systemctl --user stop huakai-dispatcher</span></div></div>';
- var ev=(ds.events||[]);
- html+='<div class=card><h2>📜 最近动作(调度日志,免命令)</h2><div class=ev>'+
-   (ev.length?ev.map(function(e){return '<div class=e><span class=t>'+esc((e.ts||'').replace('T',' ').slice(5,19))+'</span> <span class=k>['+esc(e.kind)+']</span> '+esc(e.text);}).join(''):'<div class=sub>(暂无)</div>')+
-   '</div></div>';
- var cnt={};tasks.forEach(function(t){cnt[t.status]=(cnt[t.status]||0)+1;});
- var pills='<span class=pill>共 '+tasks.length+'</span>'+STAT.map(function(s){return cnt[s]?'<span class="pill s-'+s+'">'+s+' '+cnt[s]+'</span>':'';}).join('');
- var groups={};tasks.forEach(function(t){var k=t.assignee||'(未分配)';(groups[k]=groups[k]||[]).push(t);});
- var keys=Object.keys(groups).sort();
- var board=keys.map(function(k){return '<div class=grp><h3>'+esc(k)+' · '+groups[k].length+'</h3>'+groups[k].map(card).join('')+'</div>';}).join('');
- html+='<div class=card><h2>📋 任务账本</h2>'+pills+'<div style="margin-top:8px">'+(board||'<div class=sub>(还没有任务)</div>')+'</div></div>';
- var lk=locks.filter(function(l){return l.files&&l.files.length;});
- html+='<div class=card><h2>🔧 谁在编辑(实时文件锁)</h2>'+
-   (lk.length?lk.map(function(l){return '<div class=lock><span class=who>'+esc(l.agent)+'</span> · '+esc(l.core_feature||'')+' · <span class=files>'+esc((l.files||[]).join(', '))+'</span></div>';}).join(''):'<div class=sub>(当前无人在编辑)</div>')+'</div>';
- document.getElementById('app').innerHTML=html;
+
+function renderView(force){
+ // pause LIST re-renders while the user is interacting so clicks land + scroll stays;
+ // a tab switch passes force=true. The terminal append path is exempt (separate loop).
+ if(!force && interacting) return;
+ if(TAB==='overview')return viewOverview();
+ if(TAB==='machines')return viewMachines();
+ if(TAB==='tasks')return viewTasks();
+ if(TAB==='approve')return viewApprove();
+ if(TAB==='logs')return viewLogs();
 }
-function card(t){
+
+function statusPills(){
+ var cnt={};DATA.tasks.forEach(function(t){cnt[t.status]=(cnt[t.status]||0)+1;});
+ return '<span class=pill>共 '+DATA.tasks.length+'</span>'+STAT.map(function(s){return cnt[s]?'<span class="pill s-'+s+'">'+esc(s)+' '+cnt[s]+'</span>':'';}).join('');
+}
+function machineLine(a){
+ var cls=a.fresh?'on':'off',lbl=a.fresh?(a.state||'?'):'失联';
+ return '<span class="b '+cls+'">'+esc(a.agent)+' · '+esc(lbl)+'</span>'+
+  ' <span class=sub>心跳 '+ago(a.age_sec)+'</span>'+(a.detail?' <span class=sub>· '+esc(a.detail)+'</span>':'');
+}
+function ctlBtn(paused){
+ return paused?'<button class="btn go" data-act="run">▶ 恢复</button>':'<button class="btn stop" data-act="pause">⏸ 暂停</button>';
+}
+
+// ---- 总览 ----
+function viewOverview(){
+ var ds=DATA.ds||{},paused=(ds.control==='pause'),ags=(ds.agents||[]);
+ var pend=DATA.tasks.filter(function(t){return t.status==='needs_owner';}).length;
+ var h='<div class=card><h2>📊 任务状态</h2>'+statusPills()+'</div>';
+ h+='<div class=card><h2>🖥 机器</h2>'+
+   (ags.length?ags.map(function(a){return '<div style="margin-bottom:4px">'+machineLine(a)+'</div>';}).join(''):'<div class=sub>(还没有机器上报心跳)</div>')+'</div>';
+ h+='<div class=card><h2>⚙ 调度守护进程</h2><div class=row>'+
+   (paused?'<span class="b warn">已暂停</span>':'<span class="b on">运行中</span>')+ctlBtn(paused)+
+   (pend?'<span class="b off">待批 '+pend+'</span>':'')+
+   '<a class=sub href="/tree">→ 功能树</a></div>'+
+   '<div class=sub style="margin-top:6px">暂停=调度进程保活但不再审/合并 · 彻底停用:systemctl --user stop huakai-dispatcher</div></div>';
+ setHtml(VIEW,h,'overview');
+}
+
+// ---- 机器(卡片 + 选中机器的实时终端)----
+function viewMachines(){
+ var ds=DATA.ds||{},paused=(ds.control==='pause'),ags=(ds.agents||[]);
+ var h='<div class=card><div class=row><h2 style="margin:0;flex:1">🖥 机器 · 点卡片看实时终端</h2>'+
+   (paused?'<span class="b warn">调度已暂停</span>':'<span class="b on">调度运行中</span>')+ctlBtn(paused)+'</div>';
+ h+='<div class=mgrid style="margin-top:10px">'+
+   (ags.length?ags.map(function(a){
+     var cls=a.fresh?'on':'off',lbl=a.fresh?(a.state||'?'):'失联';
+     return '<div class="mcard'+(a.agent===SEL?' sel':'')+'" data-machine="'+esc(a.agent)+'">'+
+       '<div class=nm>'+esc(a.agent)+' <span class="b '+cls+'">'+esc(lbl)+'</span></div>'+
+       '<div class=mline>心跳 '+ago(a.age_sec)+'</div>'+
+       (a.detail?'<div class=mline>'+esc(a.detail)+'</div>':'')+'</div>';
+   }).join(''):'<div class=sub>(还没有机器上报心跳)</div>')+'</div></div>';
+ // terminal shell (the term body itself is owned by the terminal loop, not setHtml)
+ h+='<div class=term-wrap><div class=term-head>'+
+   (SEL?'<span class=live><span class=dot></span>▶ 实时 · '+esc(SEL)+'</span>':'<span class=sub>选一台机器看它的实时 AI 终端</span>')+
+   '</div><div class=term id=term>'+(SEL?'':'<div class=tnote>点上面的机器卡片打开它的实时终端</div>')+'</div></div>';
+ setHtml(VIEW,h,'machines');
+ // after the list re-renders, (re)bind the live terminal element + resume streaming
+ if(SEL)startTerm(SEL);
+}
+function selectMachine(m){
+ if(SEL===m)return;
+ SEL=m;sessionStorage.setItem('console_machine',m);
+ lastSectionHtml['machines']=null;       // force the machines view to re-render selection
+ renderView(true);
+}
+
+// ---- 任务 ----
+function taskCard(t){
  var v=(t.verify_rounds>=3)?'<span class="b on">✓3</span>':'<span class="b warn">'+(t.verify_rounds||0)+'/3</span>';
  var risk=t.risk?'<span class="b off">'+esc(t.risk)+'</span>':'';
  var stuck='';
  if((t.status==='assigned'||t.status==='in_progress')&&t.assignee){
    var w=FRESH[t.assignee];
-   if(!w) stuck='<span class="b off">⚠ worker 未上报(重启其 loop)</span>';
-   else if(!w.fresh) stuck='<span class="b off">⚠ worker 失联(心跳超时,活没人接)</span>';
+   if(!w) stuck='<span class="b off">⚠ worker 未上报</span>';
+   else if(!w.fresh) stuck='<span class="b off">⚠ 失联</span>';
    else if(t.status==='assigned'&&w.state!=='working') stuck='<span class="b warn">已派·待接</span>';
-   else stuck='<span class="b on">✓ '+esc(t.assignee)+' 在做</span>';
+   else stuck='<span class="b on">✓ 在做</span>';
  }
- var ap=(t.status==='needs_owner')?'<div style="margin-top:6px"><button class="btn go" data-approve="'+esc(t.id)+'">✅ 批准(Owner 令牌)</button></div>':'';
  return '<div class=task><div class=row><span class=id>'+esc(t.id)+'</span><span style="flex:1">'+esc(t.title)+'</span>'+
   (t.wave?'<span class="b s-todo">'+esc(t.wave)+'</span>':'')+'<span class="b s-'+esc(t.status)+'">'+esc(t.status)+'</span>'+v+risk+stuck+'</div>'+
   (t.review_notes?'<div class=meta>↩ '+esc(t.review_notes)+(t.reviewed_by?' ('+esc(t.reviewed_by)+')':'')+'</div>':'')+
   (t.notes?'<div class=meta>📝 '+esc(t.notes)+'</div>':'')+
-  ((t.scope_files&&t.scope_files.length)?'<div class=files>'+esc(t.scope_files.join(', '))+'</div>':'')+ap+'</div>';
+  ((t.scope_files&&t.scope_files.length)?'<div class=files>'+esc(t.scope_files.join(', '))+'</div>':'')+'</div>';
 }
-setInterval(tick,5000); tick();
+function viewTasks(){
+ var groups={};DATA.tasks.forEach(function(t){var k=t.assignee||'(未分配)';(groups[k]=groups[k]||[]).push(t);});
+ var keys=Object.keys(groups).sort();
+ var board=keys.map(function(k){return '<div class=grp><h3>'+esc(k)+' · '+groups[k].length+'</h3>'+groups[k].map(taskCard).join('')+'</div>';}).join('');
+ var h='<div class=card><h2>📋 任务账本</h2>'+statusPills()+'<div style="margin-top:8px">'+(board||'<div class=sub>(还没有任务)</div>')+'</div></div>';
+ setHtml(VIEW,h,'tasks');
+}
+
+// ---- 待批(只列 needs_owner)----
+function viewApprove(){
+ var ps=DATA.tasks.filter(function(t){return t.status==='needs_owner';});
+ var h='<div class=card><h2>🔐 待 Owner 批准 · needs_owner</h2>'+
+  (ps.length?ps.map(function(t){
+    return '<div class=task><div class=row><span class=id>'+esc(t.id)+'</span><span style="flex:1">'+esc(t.title)+'</span>'+
+     (t.risk?'<span class="b off">'+esc(t.risk)+'</span>':'')+'<span class="b s-needs_owner">needs_owner</span></div>'+
+     (t.detail?'<div class=meta>'+esc(t.detail)+'</div>':'')+
+     (t.review_notes?'<div class=meta>↩ '+esc(t.review_notes)+(t.reviewed_by?' ('+esc(t.reviewed_by)+')':'')+'</div>':'')+
+     (t.notes?'<div class=meta>📝 '+esc(t.notes)+'</div>':'')+
+     ((t.scope_files&&t.scope_files.length)?'<div class=files>'+esc(t.scope_files.join(', '))+'</div>':'')+
+     '<div style="margin-top:6px"><button class="btn go" data-approve="'+esc(t.id)+'">✅ 批准(Owner 令牌)</button></div></div>';
+  }).join(''):'<div class=sub>(没有待批任务)</div>')+'</div>';
+ setHtml(VIEW,h,'approve');
+}
+
+// ---- 日志(调度事件流)----
+function viewLogs(){
+ var ev=((DATA.ds||{}).events||[]);
+ var h='<div class=card><h2>📜 调度日志</h2><div class=ev>'+
+   (ev.length?ev.map(function(e){return '<div class=e><span class=t>'+esc((e.ts||'').replace('T',' ').slice(5,19))+'</span> <span class=k>['+esc(e.kind)+']</span> '+esc(e.agent?e.agent+': ':'')+esc(e.text);}).join(''):'<div class=sub>(暂无)</div>')+
+   '</div></div>';
+ setHtml(VIEW,h,'logs');
+}
+
+// ===== LIVE TERMINAL: incremental append-only polling of /dispatcher/output =====
+var termTimer=null, termAgent='', termLast=0, termEl=null;
+function stopTerm(){if(termTimer){clearInterval(termTimer);termTimer=null;}}
+function atBottom(el){return (el.scrollHeight-el.scrollTop-el.clientHeight)<24;}
+function startTerm(agent){
+ var el=document.getElementById('term');if(!el)return;
+ // If we re-render the machines list, #term is a NEW element: if same agent, keep the
+ // since cursor but the buffer is empty -> reset cursor so we re-pull the recent tail.
+ if(termAgent!==agent || el!==termEl){
+   termAgent=agent;termLast=0;termEl=el;el.innerHTML='';
+ }
+ stopTerm();
+ pullTerm();                              // immediate first pull
+ termTimer=setInterval(pullTerm,2000);
+}
+function pullTerm(){
+ if(!T||!termAgent)return;
+ var el=document.getElementById('term');
+ if(!el){stopTerm();return;}             // navigated away
+ if(el!==termEl){termEl=el;termLast=0;el.innerHTML='';}   // list re-rendered under us
+ fetch('/dispatcher/output?agent='+encodeURIComponent(termAgent)+'&since='+termLast,{headers:hdr()})
+  .then(chk).then(function(d){
+   var lines=d.lines||[];if(!lines.length){termLast=d.last_id||termLast;return;}
+   var stick=atBottom(el);              // remember BEFORE appending
+   var frag='';
+   lines.forEach(function(r){
+     frag+='<div class=ln><span class=ts>'+esc((r.ts||'').slice(11,19))+'</span>'+esc(r.line)+'</div>';
+   });
+   el.insertAdjacentHTML('beforeend',frag);   // APPEND only — never rebuild the buffer
+   termLast=d.last_id||termLast;
+   // cap the DOM so a very long run can't grow unbounded in the browser
+   while(el.childElementCount>1200)el.removeChild(el.firstChild);
+   if(stick)el.scrollTop=el.scrollHeight;      // auto-scroll only if user was at bottom
+  }).catch(function(){/* best-effort; next poll retries */});
+}
+
+// ---- boot ----
+renderTabs();
+if(T)poll(true); else VIEW.innerHTML='<div class=err>先贴 token 再点进入。</div>';
+setInterval(function(){poll(false);},5000);
+if(TAB==='machines'&&SEL)startTerm(SEL);
 </script></body></html>"""
 
 
@@ -726,6 +981,15 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"locks": live_locks(c)})
             if u.path == "/dispatcher/status":
                 return self._send(200, dispatcher_view(c))
+            if u.path == "/dispatcher/output":
+                # Incremental live-terminal tail for one machine. ?agent=<m>&since=<id>.
+                q = parse_qs(u.query)
+                agent = (q.get("agent") or [""])[0]
+                try:
+                    since = int((q.get("since") or ["0"])[0] or "0")
+                except (TypeError, ValueError):
+                    since = 0
+                return self._send(200, output_view(c, agent, since))
             if u.path == "/check":
                 raw = (parse_qs(u.query).get("file") or [""])[0]
                 nf = norm_files([raw])
@@ -748,6 +1012,11 @@ class H(BaseHTTPRequestHandler):
             code, obj = update_task_status(b); return self._send(code, obj)
         if u.path == "/dispatcher/status":
             code, obj = record_dispatcher(b); return self._send(code, obj)
+        if u.path == "/dispatcher/output":
+            # Worker streams a batch of AI stdout/stderr lines for its machine's live
+            # terminal. Placed BEFORE the lock 'agent required' block (like /dispatcher/
+            # status) because it carries its own agent field, not the lock 'agent'.
+            code, obj = record_output(b); return self._send(code, obj)
         if u.path == "/dispatcher/control":
             code, obj = set_dispatcher_control(b); return self._send(code, obj)
         agent = b.get("agent", "")
