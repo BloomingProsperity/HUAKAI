@@ -110,6 +110,7 @@ type chatExecution struct {
 	logicalRequestID                 string
 	payloadHash                      string
 	promptHash                       string
+	sessionHash                      string
 	reserveRes                       *billing.ReserveResult
 	streamInputOnlyInterruptedPolicy billing.StreamInputOnlyInterruptedPolicy
 
@@ -352,7 +353,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 	}
 	if bufferedEnv != nil {
 		_ = seed.ApplyToRequestMeta(&bufferedEnv.RequestMeta)
-		enrichCanonicalRequestMeta(bufferedEnv, ex.upstreamModelID, ex.accInfo.Platform, ex.idempotencyHeader, ex.promptHash)
+		enrichCanonicalRequestMeta(bufferedEnv, ex.upstreamModelID, ex.accInfo.Platform, ex.idempotencyHeader, ex.sessionHash)
 	}
 	return ex.finalizeBufferedEnvelope(w, bufferedEnv, dispatchRes.StatusCode, startedAt)
 }
