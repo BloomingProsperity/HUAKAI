@@ -322,6 +322,15 @@ JOIN provider_accounts pa ON pa.id = ac.provider_account_id
 WHERE ac.deleted_at IS NULL
   AND pa.deleted_at IS NULL
   AND pa.enabled
+  AND pa.health_state <> 'revoked'
+  AND (
+      pa.health_state = 'healthy'
+      OR (
+          pa.health_state IN ('throttled', 'cooldown')
+          AND pa.health_state_until IS NOT NULL
+          AND pa.health_state_until <= NOW()
+      )
+  )
   AND ac.state IN ('active', 'refreshing_with_grace', 'temp_unschedulable')
   AND ac.refresh_before_at IS NOT NULL
   AND ac.refresh_before_at <= $1

@@ -278,6 +278,15 @@ JOIN providers p
  AND p.deleted_at IS NULL
 WHERE pa.deleted_at IS NULL
   AND pa.enabled
+  AND pa.health_state <> 'revoked'
+  AND (
+      pa.health_state = 'healthy'
+      OR (
+          pa.health_state IN ('throttled', 'cooldown')
+          AND pa.health_state_until IS NOT NULL
+          AND pa.health_state_until <= NOW()
+      )
+  )
   AND (pa.expires_at IS NULL OR pa.expires_at < sqlc.arg(refresh_before))
 ORDER BY COALESCE(pa.expires_at, NOW() + interval '1 year') ASC
 LIMIT sqlc.arg(limit_count);

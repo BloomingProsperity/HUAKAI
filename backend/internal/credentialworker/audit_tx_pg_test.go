@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
@@ -48,6 +51,83 @@ func TestDBAuditWriter_NilQueriesReturnsErrAuditWriterMissing(t *testing.T) {
 	if !errors.Is(err, ErrAuditWriterMissing) {
 		t.Fatalf("nil queries: want ErrAuditWriterMissing; got %v", err)
 	}
+}
+
+func TestAccountCredentialRefreshQueriesSQLFiltersUnsafeProviderAccountHealth(t *testing.T) {
+	// Non-PG guard for S1-024: production wiring uses
+	// AccountCredentialRefreshQueries, so its scan SQL must carry the same
+	// provider-account health predicate as the real-PG fixture below. Mutation:
+	// remove the predicate from NewAccountCredentialRefreshQueries and this test
+	// fails even when HUAKAI_DATABASE_URL is unset.
+	db := &refreshListQueryDBStub{}
+	_, err := NewAccountCredentialRefreshQueries(db).ListAccountsForRefresh(context.Background(), dbbilling.ListAccountsForRefreshParams{
+		RefreshBefore: pgTimestamptz(time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)),
+		LimitCount:    10,
+	})
+	if err != nil {
+		t.Fatalf("ListAccountsForRefresh: %v", err)
+	}
+	if db.calls != 1 {
+		t.Fatalf("query calls=%d want 1", db.calls)
+	}
+}
+
+func TestListAccountsForRefreshSkipsUnsafeProviderAccountHealthPG(t *testing.T) {
+	// S1-024: refresh scans must not hammer provider accounts already revoked
+	// or still cooling down. Mutation check: remove the provider-account health
+	// predicate from either refresh list query and the revoked/future-cooldown
+	// IDs below appear in the result set, turning this test red. The expired
+	// cooldown control proves the guard is not an over-broad health_state='healthy'
+	// filter that strands capacity after a transient cooldown deadline passes.
+	ctx := context.Background()
+	pool := openCredentialWorkerTestPool(t, ctx)
+	suffix := uuid.NewString()
+	now := time.Now().UTC()
+	refreshBefore := dbbilling.ListAccountsForRefreshParams{
+		RefreshBefore: pgTimestamptz(now.Add(time.Hour)),
+		LimitCount:    1000,
+	}
+
+	healthyTenant, healthyID := seedCredentialWorkerProviderAccount(t, ctx, pool, suffix+"-healthy")
+	revokedTenant, revokedID := seedCredentialWorkerProviderAccount(t, ctx, pool, suffix+"-revoked")
+	futureTenant, futureID := seedCredentialWorkerProviderAccount(t, ctx, pool, suffix+"-future")
+	expiredTenant, expiredID := seedCredentialWorkerProviderAccount(t, ctx, pool, suffix+"-expired")
+
+	seedRefreshCandidateCredential(t, ctx, pool, healthyTenant, healthyID, "healthy", now.Add(-time.Minute))
+	seedRefreshCandidateCredential(t, ctx, pool, revokedTenant, revokedID, "revoked", now.Add(-time.Minute))
+	seedRefreshCandidateCredential(t, ctx, pool, futureTenant, futureID, "future", now.Add(-time.Minute))
+	seedRefreshCandidateCredential(t, ctx, pool, expiredTenant, expiredID, "expired", now.Add(-time.Minute))
+
+	if _, err := pool.Exec(ctx,
+		`UPDATE provider_accounts SET health_state = 'revoked', health_state_until = NULL WHERE id = $1`,
+		revokedID,
+	); err != nil {
+		t.Fatalf("mark revoked provider account: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE provider_accounts SET health_state = 'cooldown', health_state_until = $2 WHERE id = $1`,
+		futureID, now.Add(10*time.Minute),
+	); err != nil {
+		t.Fatalf("mark future cooldown provider account: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE provider_accounts SET health_state = 'cooldown', health_state_until = $2 WHERE id = $1`,
+		expiredID, now.Add(-10*time.Minute),
+	); err != nil {
+		t.Fatalf("mark expired cooldown provider account: %v", err)
+	}
+
+	modeRows, err := NewAccountCredentialRefreshQueries(pool).ListAccountsForRefresh(ctx, refreshBefore)
+	if err != nil {
+		t.Fatalf("mode ListAccountsForRefresh: %v", err)
+	}
+	assertRefreshScanHealthSet(t, "mode", modeRows, []int64{healthyID, expiredID}, []int64{revokedID, futureID})
+
+	legacyRows, err := dbbilling.New(pool).ListAccountsForRefresh(ctx, refreshBefore)
+	if err != nil {
+		t.Fatalf("legacy ListAccountsForRefresh: %v", err)
+	}
+	assertRefreshScanHealthSet(t, "legacy", legacyRows, []int64{healthyID, expiredID}, []int64{revokedID, futureID})
 }
 
 func openCredentialWorkerTestPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
@@ -118,6 +198,7 @@ func seedCredentialWorkerProviderAccount(t *testing.T, ctx context.Context, pool
 		c := context.Background()
 		_, _ = pool.Exec(c, `DELETE FROM audit_ledger_entries WHERE tenant_id = $1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM oauth_refresh_audit_events WHERE tenant_id = $1`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM account_credentials WHERE tenant_id = $1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM provider_accounts WHERE id = $1`, paID)
 		_, _ = pool.Exec(c, `DELETE FROM providers WHERE id = $1`, providerID)
 		_, _ = pool.Exec(c, `DELETE FROM channels WHERE id = $1`, channelID)
@@ -126,6 +207,94 @@ func seedCredentialWorkerProviderAccount(t *testing.T, ctx context.Context, pool
 	})
 	return tenantID, paID
 }
+
+func seedRefreshCandidateCredential(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID, providerAccountID int64, suffix string, refreshBefore time.Time) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO account_credentials (
+			tenant_id, provider_account_id, vendor, auth_mode, state,
+			encrypted_payload, key_id, nonce, aad_hash, refresh_before_at
+		) VALUES ($1, $2, 'anthropic', 'api_key', 'active', $3, $4, $5, $6, $7)`,
+		tenantID, providerAccountID,
+		[]byte("ciphertext-"+suffix),
+		"key-"+suffix,
+		[]byte("nonce-"+suffix),
+		"aad-"+suffix,
+		refreshBefore,
+	); err != nil {
+		t.Fatalf("seed account credential %s: %v", suffix, err)
+	}
+}
+
+func pgTimestamptz(ts time.Time) pgtype.Timestamptz {
+	return pgtype.Timestamptz{Time: ts.UTC(), Valid: true}
+}
+
+func assertRefreshScanHealthSet(t *testing.T, label string, rows []dbbilling.ListAccountsForRefreshRow, wantPresent, wantAbsent []int64) {
+	t.Helper()
+	seen := make(map[int64]bool, len(rows))
+	for _, row := range rows {
+		seen[row.ID] = true
+	}
+	for _, id := range wantPresent {
+		if !seen[id] {
+			t.Fatalf("%s refresh scan missing safe account %d; rows=%v", label, id, refreshScanIDs(rows))
+		}
+	}
+	for _, id := range wantAbsent {
+		if seen[id] {
+			t.Fatalf("%s refresh scan returned unsafe account %d; rows=%v", label, id, refreshScanIDs(rows))
+		}
+	}
+}
+
+func refreshScanIDs(rows []dbbilling.ListAccountsForRefreshRow) []int64 {
+	ids := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	return ids
+}
+
+type refreshListQueryDBStub struct {
+	calls int
+}
+
+func (s *refreshListQueryDBStub) Exec(context.Context, string, ...interface{}) (pgconn.CommandTag, error) {
+	return pgconn.CommandTag{}, errors.New("unexpected Exec")
+}
+
+func (s *refreshListQueryDBStub) Query(_ context.Context, sql string, _ ...interface{}) (pgx.Rows, error) {
+	s.calls++
+	for _, required := range []string{
+		"pa.enabled",
+		"pa.health_state = 'healthy'",
+		"pa.health_state IN ('throttled', 'cooldown')",
+		"pa.health_state_until <= NOW()",
+		"pa.health_state <> 'revoked'",
+	} {
+		if !strings.Contains(sql, required) {
+			return nil, errors.New("refresh list SQL missing " + required)
+		}
+	}
+	return emptyRefreshRows{}, nil
+}
+
+func (s *refreshListQueryDBStub) QueryRow(context.Context, string, ...interface{}) pgx.Row {
+	return nil
+}
+
+type emptyRefreshRows struct{}
+
+func (emptyRefreshRows) Close()                                       {}
+func (emptyRefreshRows) Err() error                                   { return nil }
+func (emptyRefreshRows) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
+func (emptyRefreshRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
+func (emptyRefreshRows) Next() bool                                   { return false }
+func (emptyRefreshRows) Scan(...any) error                            { return errors.New("unexpected Scan") }
+func (emptyRefreshRows) Values() ([]any, error)                       { return nil, errors.New("unexpected Values") }
+func (emptyRefreshRows) RawValues() [][]byte                          { return nil }
+func (emptyRefreshRows) Conn() *pgx.Conn                              { return nil }
 
 // installOAuthAuditRejectTrigger 装 BEFORE INSERT trigger 拒 outcome == reject 的 oauth_refresh_audit_events 行。
 func installOAuthAuditRejectTrigger(t *testing.T, ctx context.Context, pool *pgxpool.Pool, name, rejectOutcome string) {
