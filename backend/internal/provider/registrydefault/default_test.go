@@ -18,7 +18,6 @@ func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
 		ProtocolOpenAIResponses,
 		ProtocolOpenAICodex,
 		ProtocolAnthropicMessages,
-		ProtocolAnthropicClaudeSession,
 		ProtocolGeminiMessages,
 		ProtocolOpenRouterChat,
 		ProtocolBedrockInvoke,
@@ -49,7 +48,6 @@ func TestBuild_AdaptersAreReachable(t *testing.T) {
 	for _, pf := range []string{
 		ProtocolOpenAIChat,
 		ProtocolAnthropicMessages,
-		ProtocolAnthropicClaudeSession,
 		ProtocolGeminiMessages,
 		ProtocolOpenRouterChat,
 		ProtocolBedrockInvoke,
@@ -73,21 +71,20 @@ func TestBuild_PlatformIDsCorrect(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "")
 	r := Build()
 	cases := map[string]string{
-		ProtocolOpenAIChat:             "openai",
-		ProtocolOpenAIResponses:        "openai",
-		ProtocolOpenAICodex:            "openai_codex",
-		ProtocolAnthropicMessages:      "anthropic",
-		ProtocolAnthropicClaudeSession: "anthropic_claude_session",
-		ProtocolGeminiMessages:         "gemini",
-		ProtocolOpenRouterChat:         "openrouter",
-		ProtocolBedrockInvoke:          "bedrock",
-		ProtocolGrokChat:               "grok",
-		ProtocolDeepSeekChat:           "deepseek",
-		ProtocolMistralChat:            "mistral",
-		ProtocolGroqCloudChat:          "groqcloud",
-		ProtocolTogetherChat:           "together",
-		ProtocolPerplexityChat:         "perplexity",
-		ProtocolFireworksChat:          "fireworks",
+		ProtocolOpenAIChat:        "openai",
+		ProtocolOpenAIResponses:   "openai",
+		ProtocolOpenAICodex:       "openai_codex",
+		ProtocolAnthropicMessages: "anthropic",
+		ProtocolGeminiMessages:    "gemini",
+		ProtocolOpenRouterChat:    "openrouter",
+		ProtocolBedrockInvoke:     "bedrock",
+		ProtocolGrokChat:          "grok",
+		ProtocolDeepSeekChat:      "deepseek",
+		ProtocolMistralChat:       "mistral",
+		ProtocolGroqCloudChat:     "groqcloud",
+		ProtocolTogetherChat:      "together",
+		ProtocolPerplexityChat:    "perplexity",
+		ProtocolFireworksChat:     "fireworks",
 	}
 	for pf, wantPlatform := range cases {
 		a, err := r.For(pf)
@@ -113,6 +110,16 @@ func TestBuild_OpenAIResponsesEndpointIsResponsesAPI(t *testing.T) {
 	}
 	if passthrough.Endpoint != "https://api.openai.com/v1/responses" {
 		t.Fatalf("Responses endpoint=%q want https://api.openai.com/v1/responses", passthrough.Endpoint)
+	}
+}
+
+func TestBuild_AnthropicClaudeSessionDefaultFailClosed(t *testing.T) {
+	t.Setenv(placeholderSessionAdaptersEnv, "")
+	r := Build()
+
+	_, err := r.For(ProtocolAnthropicClaudeSession)
+	if !errors.Is(err, provider.ErrAdapterNotRegistered) {
+		t.Fatalf("For(%q) err=%v want ErrAdapterNotRegistered", ProtocolAnthropicClaudeSession, err)
 	}
 }
 
