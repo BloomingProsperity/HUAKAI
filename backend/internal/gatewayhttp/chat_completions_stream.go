@@ -359,7 +359,7 @@ func (ex *chatExecution) translatedStreamingInboundBody(w http.ResponseWriter) (
 		writeJSONError(w, http.StatusBadRequest, clienterr.CodeInvalidRequestBody, clienterr.MessageFor(clienterr.CodeInvalidRequestBody))
 		return nil, nil, false
 	}
-	enrichCanonicalRequestMeta(canonicalReq, ex.upstreamModelID, ex.accInfo.Platform, ex.idempotencyHeader, ex.promptHash)
+	enrichCanonicalRequestMeta(canonicalReq, ex.upstreamModelID, ex.accInfo.Platform, ex.idempotencyHeader, ex.sessionHash)
 	canonicalReq.RequestMeta.EndpointFamily = ex.resolved.ProtocolFamily
 	setAccountingModelRequested(canonicalReq, ex.req.Model)
 	setAccountingModelRouteDecided(canonicalReq, ex.forwardReq.Model)
