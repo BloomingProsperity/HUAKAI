@@ -82,6 +82,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			EmailSender:      d.authEmailSender,
 			AdminAuth:        d.adminAuth,
 			ClientIPResolver: d.clientIPResolver,
+			LoginThrottle:    d.loginThrottle,
 		})
 	})
 

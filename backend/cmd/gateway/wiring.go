@@ -38,6 +38,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
+	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -84,6 +85,7 @@ type deps struct {
 	authEmailSender          gatewayhttp.AuthEmailSender
 	userAuth                 *userauth.Service
 	userSessions             *usersession.Service
+	loginThrottle            *loginthrottle.Limiter
 	userKeyService           *userkey.Service
 	voucherService           *voucher.Service
 	invitationService        *communityinvitation.Service
@@ -487,6 +489,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		return nil, fmt.Errorf("load refresh-storm scope budgets: %w", err)
 	}
 
+	loginThrottle, err := loadLoginThrottleFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("load login throttle config: %w", err)
+	}
+
 	d := &deps{
 		cfg:                   cfg,
 		clientIPResolver:      clientIPResolver,
@@ -510,6 +517,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		userAuth:              userAuthService,
 		pgPool:                pgPool,
 		userSessions:          userSessionService,
+		loginThrottle:         loginThrottle,
 		userKeyService:        userkey.NewService(pgPool, nil),
 		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool)),
 		invitationService:     communityinvitation.NewService(communityinvitation.NewPostgresStore(pgPool)),
