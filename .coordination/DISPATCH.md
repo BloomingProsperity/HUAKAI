@@ -67,7 +67,7 @@ review ─③ dispatcher 独立审核(另一个脑子,绝不自审):完工门(Do
 每个 worker 循环:
 1. `bash .coordination/task.sh mine` —— 看分给自己的活;没有就等下一轮。
 2. 有活:先读它的 `spec_refs` 指向的文档 + `CLAUDE.md`/`AGENTS.md`;`bash .coordination/task.sh start <id>`(自动 claim 文件,撞锁会被拒→换别的)。
-3. 干。每提交前 `codex exec review --uncommitted -m gpt-5.5 -c model_reasoning_effort=xhigh`(本地 codex 自检一道,无 S0/S1 才 commit;clean-room、判别性测试照 §14)。
+3. 干。每提交前**限时**自检:`timeout 600 codex exec review --uncommitted -m gpt-5.5 -c model_reasoning_effort=xhigh`(本地 codex 自检一道,无 S0/S1 才 commit;clean-room、判别性测试照 §14)。**最佳努力**:若超时(exit 124)/报错,记一句"自检跳过:超时/错"然后**照常 commit+push+review** —— **绝不让自检卡死任务**(调度者会跑有约束力的跨脑 codex 审,所以自检挂了不该堵你)。
 4. 满足 `acceptance` 后:**先把提交 push 到 origin 的每任务工作分支 `work/<id 小写>`**(如 `work/s1-005`),让 dispatcher 能 fetch 到代码做跨脑审核——**没 push = dispatcher 看不见代码 = 必被 bounce**(本地 codex 在 Windows 上 `commit` 后若不 push,云端 dispatcher 永远拉不到那个 SHA)。然后 `bash .coordination/task.sh review <id> "branch work/<id> @ <commit sha> + 自检结论"`(review 备注**必须**写明分支名 + SHA)。**不要自己标 done、也不要自己 ff-merge 到落地分支**——审过后由 pass 步骤合并。
 5. 被 bounce 回来(`review_notes` 有原因)→ 按原因改,再回 review。卡住 → `task.sh block <id> "原因"`。
 
@@ -103,11 +103,15 @@ worker 长编辑期由 `worker-loop.sh` 自动续心跳,不会误判。
 
 **③ 新任务会不会和"之前停摆的事"冲突**:派活前**必查**:`task.sh conflicts "<新任务的文件>"` —— 它检查的不只是正在编的锁,而是**所有非终态任务(assigned/in_progress/review/needs_owner/blocked)的 scope_files**。所以即使某任务被 park/block 停在半路,它占的文件仍会被算进冲突,新任务不会撞上"停摆中、随时会续"的活。这是 3 轮自验 R1 的强制步骤。
 
-## 自动 driver(全自动)
+## 触发机制(怎么让他们动起来)——全是 PULL,不是 PUSH
 
-- **Worker 端(每台机器)**:把 AI 跑成循环——反复 `task.sh mine`→有活就走上面 1–5→无活 sleep 再来。可用 `worker-loop.sh`(把启动 AI 的命令填进去)。
-- **Dispatcher 端**:Claude 总指挥**周期性醒来跑一轮**(审所有 `review` 的 + 给空出的机器派下一批,全程 A/B/C 协议)。用定时任务触发或手动喊一轮。
+没人去"推"任务给谁。两边各跑一个**轮询常驻循环**,自己来拉:
+
+- **Worker 触发**:每台机器常驻跑 `worker-loop.sh`,每 `WORKER_POLL_SECONDS`(默认 60s)`task.sh mine` 一次。dispatcher `assign` 把任务状态置 `assigned` → 那台机器**下一次 poll(≤60s)就自动唤起本机 AI** 走 worker 步骤 1–5。所以"派活"本身就是触发,由对面的轮询接住。前提:这循环得在那台机器上常驻(本地 Windows codex 用 codex 的 **goal** 功能保活;server-b 用 nohup/systemd 跑 `worker-loop.sh`)。任务自己 `assigned→in_progress→review` 往前走、worker 干完一个自动领下一个 = 轮询触发在生效的铁证。
+- **Dispatcher 触发**:同理,`dispatcher-loop.sh` 常驻在装了 `claude` CLI 的那台机器上,每 `DISPATCH_POLL_SECONDS`(默认 90s)`task.sh list` 一次;一旦有 `review` 任务,就 `claude -p` headless 跑一轮(`dispatcher-round.md`),`flock` 保证同一时刻只跑一轮。worker 标 `review` 就是触发,由 dispatcher 的轮询接住。
+  - 没有 `claude` CLI / 没起 `dispatcher-loop.sh` 的退路:在一个开着的 Claude 会话里挂定时任务(cron),空闲时自动跑一轮——只在会话存活时有效。
 - **高危**:永远 `needs_owner`,停下等 Owner;其余全自动流转。
+- **常驻命令**:`source ~/.config/huakai-coord/client.env && export PATH="$HOME/.local/bin:$PATH" && bash .coordination/dispatcher-loop.sh`(dispatcher 端)/ 各 worker 机器填好 `WORKER_AI_CMD` 后 `bash .coordination/worker-loop.sh`。`claude -p` 跑 headless 需 `--permission-mode bypassPermissions`(无人逐条点同意),Owner 须显式授权后启动。
 
 ## 命令速查
 
