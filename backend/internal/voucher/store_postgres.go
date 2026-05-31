@@ -244,6 +244,10 @@ func (s *PostgresStore) Redeem(ctx context.Context, rec redeemRecord) (RedeemRes
 		}
 		return RedeemResult{}, err
 	}
+	amount, err := redeemedBalanceAmount(v)
+	if err != nil {
+		return RedeemResult{}, err
+	}
 	var red Redemption
 	err = tx.QueryRow(ctx, `
 INSERT INTO voucher_redemption (
@@ -280,7 +284,6 @@ WHERE tenant_id=$1 AND id=$2`, v.TenantID, v.ID, rec.Now); err != nil {
 	}
 	v.Status = nextStatus
 	v.UpdatedAt = rec.Now
-	amount := decimal.NewFromInt(v.AmountCents).Div(decimal.NewFromInt(100))
 	var billingID int64
 	if err := tx.QueryRow(ctx, `
 INSERT INTO billing_events (
@@ -294,9 +297,12 @@ RETURNING id`, rec.TenantID, amount, v.CodeFingerprint, red.ID).Scan(&billingID)
 		return RedeemResult{}, fmt.Errorf("voucher: link billing event: %w", err)
 	}
 	red.BillingEventID = billingID
-	balance, err := redemptionBalance(ctx, tx, rec.TenantID, rec.UserID)
-	if err != nil {
+	if err := creditRedeemedBalance(ctx, tx, rec.TenantID, rec.UserID, amount, rec.Now); err != nil {
 		return RedeemResult{}, err
+	}
+	balance, err := userBalanceCents(ctx, tx, rec.TenantID, rec.UserID)
+	if err != nil {
+		return RedeemResult{}, fmt.Errorf("voucher: read credited user balance: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return RedeemResult{}, fmt.Errorf("voucher: commit redeem: %w", err)
@@ -356,11 +362,106 @@ FOR UPDATE`, rec.TenantID, rec.UserID, rec.IdempotencyKey).Scan(
 		return RedeemResult{}, false, ErrIdempotencyConflict
 	}
 	red.CodeFingerprint = v.CodeFingerprint
-	balance, err := redemptionBalance(ctx, tx, rec.TenantID, rec.UserID)
+	balance, err := idempotentBalanceCents(ctx, tx, rec.TenantID, rec.UserID, red)
 	if err != nil {
 		return RedeemResult{}, false, err
 	}
 	return RedeemResult{Voucher: v, Redemption: red, BalanceCents: balance, Idempotent: true}, true, nil
+}
+
+func redeemedBalanceAmount(v Voucher) (decimal.Decimal, error) {
+	if v.CurrencyCode != supportedVoucherBalanceCurrency {
+		return decimal.Decimal{}, fmt.Errorf("%w: unsupported user balance currency %s", ErrInvalidInput, v.CurrencyCode)
+	}
+	return decimal.NewFromInt(v.AmountCents).Div(decimal.NewFromInt(100)), nil
+}
+
+func creditRedeemedBalance(ctx context.Context, tx pgx.Tx, tenantID, userID int64, amount decimal.Decimal, now time.Time) error {
+	if _, err := tx.Exec(ctx, `
+INSERT INTO user_balances (tenant_id, user_id, balance, held, version, updated_at)
+VALUES ($1, $2, $3, 0, 1, $4)
+ON CONFLICT (tenant_id, user_id) DO UPDATE
+SET balance = user_balances.balance + EXCLUDED.balance,
+    version = user_balances.version + 1,
+    updated_at = EXCLUDED.updated_at`,
+		tenantID, userID, amount, now); err != nil {
+		return fmt.Errorf("voucher: credit user balance: %w", err)
+	}
+	return nil
+}
+
+func userBalanceCents(ctx context.Context, tx pgx.Tx, tenantID, userID int64) (int64, error) {
+	balance, err := userBalanceAmount(ctx, tx, tenantID, userID)
+	if err != nil {
+		return 0, err
+	}
+	return balanceCents(balance), nil
+}
+
+func userBalanceAmount(ctx context.Context, tx pgx.Tx, tenantID, userID int64) (decimal.Decimal, error) {
+	var balance decimal.Decimal
+	if err := tx.QueryRow(ctx, `
+SELECT balance
+FROM user_balances
+WHERE tenant_id=$1 AND user_id=$2`, tenantID, userID).Scan(&balance); err != nil {
+		return decimal.Decimal{}, err
+	}
+	return balance, nil
+}
+
+func balanceCents(balance decimal.Decimal) int64 {
+	return balance.Mul(decimal.NewFromInt(100)).Round(0).IntPart()
+}
+
+func idempotentBalanceCents(ctx context.Context, tx pgx.Tx, tenantID, userID int64, red Redemption) (int64, error) {
+	if red.BillingEventID <= 0 {
+		return redemptionBalanceThrough(ctx, tx, tenantID, userID, red.ID)
+	}
+	currentBalance, err := userBalanceAmount(ctx, tx, tenantID, userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return redemptionBalanceThrough(ctx, tx, tenantID, userID, red.ID)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("voucher: read idempotent user balance: %w", err)
+	}
+	redemptionEventTime, err := billingEventOccurredAt(ctx, tx, tenantID, red.BillingEventID)
+	if err != nil {
+		return 0, err
+	}
+	var postRedemptionDelta decimal.Decimal
+	if err := tx.QueryRow(ctx, `
+SELECT COALESCE(SUM(CASE
+	WHEN be.event_type = 'claim_committed' AND bh.claim_id IS NOT NULL AND bh.resolved_at > $2 THEN be.actual_cost
+	WHEN be.event_type = 'voucher_redeemed' AND (be.occurred_at > $2 OR (be.occurred_at = $2 AND be.id > $3)) THEN -be.actual_cost
+	WHEN be.event_type = 'reconciliation_appended' AND be.occurred_at > $2 THEN be.actual_cost_signed
+	ELSE 0
+END), 0)
+FROM billing_events be
+LEFT JOIN billing_ledger_claims blc ON blc.tenant_id = be.tenant_id AND blc.id = be.claim_id
+LEFT JOIN balance_holds bh ON bh.tenant_id = be.tenant_id AND bh.claim_id = be.claim_id AND bh.state = 'captured'
+LEFT JOIN voucher_redemption vr ON vr.tenant_id = be.tenant_id AND vr.id = be.voucher_redemption_id
+WHERE be.tenant_id = $1
+  AND (
+	(be.event_type IN ('claim_committed', 'reconciliation_appended') AND blc.user_id = $4)
+	OR (be.event_type = 'voucher_redeemed' AND vr.user_id = $4)
+  )`, tenantID, redemptionEventTime, red.BillingEventID, userID).Scan(&postRedemptionDelta); err != nil {
+		return 0, fmt.Errorf("voucher: read idempotent balance deltas: %w", err)
+	}
+	walletCents := balanceCents(currentBalance.Add(postRedemptionDelta))
+	redemptionCents, err := redemptionBalanceThrough(ctx, tx, tenantID, userID, red.ID)
+	if err != nil {
+		return 0, err
+	}
+	if redemptionCents > walletCents {
+		hasPriorDebit, err := hasWalletDebitBeforeTime(ctx, tx, tenantID, userID, redemptionEventTime)
+		if err != nil {
+			return 0, err
+		}
+		if !hasPriorDebit {
+			return redemptionCents, nil
+		}
+	}
+	return walletCents, nil
 }
 
 func insertVoucherTx(ctx context.Context, tx pgx.Tx, rec createVoucherRecord) (Voucher, error) {
@@ -447,15 +548,44 @@ func scanVoucher(row voucherScanner) (Voucher, error) {
 	return v, nil
 }
 
-func redemptionBalance(ctx context.Context, tx pgx.Tx, tenantID, userID int64) (int64, error) {
+func redemptionBalanceThrough(ctx context.Context, tx pgx.Tx, tenantID, userID, redemptionID int64) (int64, error) {
 	var balance int64
 	if err := tx.QueryRow(ctx, `
 SELECT COALESCE(SUM(amount_cents), 0)::bigint
 FROM voucher_redemption
-WHERE tenant_id=$1 AND user_id=$2`, tenantID, userID).Scan(&balance); err != nil {
+WHERE tenant_id=$1 AND user_id=$2 AND id <= $3`, tenantID, userID, redemptionID).Scan(&balance); err != nil {
 		return 0, fmt.Errorf("voucher: read balance: %w", err)
 	}
 	return balance, nil
+}
+
+func billingEventOccurredAt(ctx context.Context, tx pgx.Tx, tenantID, billingEventID int64) (time.Time, error) {
+	var occurredAt time.Time
+	if err := tx.QueryRow(ctx, `
+SELECT occurred_at
+FROM billing_events
+WHERE tenant_id=$1 AND id=$2`, tenantID, billingEventID).Scan(&occurredAt); err != nil {
+		return time.Time{}, fmt.Errorf("voucher: read redemption billing event time: %w", err)
+	}
+	return occurredAt.UTC(), nil
+}
+
+func hasWalletDebitBeforeTime(ctx context.Context, tx pgx.Tx, tenantID, userID int64, before time.Time) (bool, error) {
+	var exists bool
+	if err := tx.QueryRow(ctx, `
+SELECT EXISTS (
+	SELECT 1
+	FROM billing_events be
+	JOIN billing_ledger_claims blc ON blc.tenant_id = be.tenant_id AND blc.id = be.claim_id
+	JOIN balance_holds bh ON bh.tenant_id = be.tenant_id AND bh.claim_id = be.claim_id AND bh.state = 'captured'
+	WHERE be.tenant_id = $1
+	  AND bh.resolved_at < $2
+	  AND be.event_type = 'claim_committed'
+	  AND blc.user_id = $3
+)`, tenantID, before, userID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("voucher: read prior wallet debit evidence: %w", err)
+	}
+	return exists, nil
 }
 
 func nullableAdminID(id int64) any {

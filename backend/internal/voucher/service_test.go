@@ -36,6 +36,49 @@ func TestAT_BILL_002_001_CreateVoucherAuditRedactsRawCode(t *testing.T) {
 	}
 }
 
+func TestVoucherCreateRejectsUnsupportedCurrencyBeforeIssuing(t *testing.T) {
+	ctx := context.Background()
+	now := fixedNow()
+	store := NewMemoryStore()
+	svc := NewService(store)
+
+	if _, err := svc.Create(ctx, CreateInput{
+		TenantID: 1, AdminID: 10, Code: "eur-create", AmountCents: 2500,
+		CurrencyCode: "EUR", ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour),
+		SingleUsePerUser: true, Now: now,
+	}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("Create(EUR) error = %v, want ErrInvalidInput", err)
+	}
+	if _, err := svc.Create(ctx, CreateInput{
+		TenantID: 1, AdminID: 10, Code: "malformed-currency-create", AmountCents: 2500,
+		CurrencyCode: "EURX", ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour),
+		SingleUsePerUser: true, Now: now,
+	}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("Create(EURX) error = %v, want ErrInvalidInput", err)
+	}
+	if vouchers, err := svc.List(ctx, ListInput{TenantID: 1, Limit: 10}); err != nil || len(vouchers) != 0 {
+		t.Fatalf("Create(EUR) issued vouchers: vouchers=%+v err=%v", vouchers, err)
+	}
+
+	if _, err := svc.CreateBatch(ctx, BatchCreateInput{
+		TenantID: 1, AdminID: 10, Count: 2, AmountCents: 2500,
+		CurrencyCode: "EUR", ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour),
+		SingleUsePerUser: true, Now: now,
+	}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("CreateBatch(EUR) error = %v, want ErrInvalidInput", err)
+	}
+	if _, err := svc.CreateBatch(ctx, BatchCreateInput{
+		TenantID: 1, AdminID: 10, Count: 2, AmountCents: 2500,
+		CurrencyCode: "EURO", ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour),
+		SingleUsePerUser: true, Now: now,
+	}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("CreateBatch(EURO) error = %v, want ErrInvalidInput", err)
+	}
+	if vouchers, err := svc.List(ctx, ListInput{TenantID: 1, Limit: 10}); err != nil || len(vouchers) != 0 {
+		t.Fatalf("CreateBatch(EUR) issued vouchers: vouchers=%+v err=%v", vouchers, err)
+	}
+}
+
 func TestAT_BILL_002_002_007_RedeemWritesBillingEventAndBalance(t *testing.T) {
 	ctx := context.Background()
 	now := fixedNow()
