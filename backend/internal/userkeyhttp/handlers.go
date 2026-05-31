@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -202,7 +203,12 @@ func newRevokeHandler(d Deps) http.HandlerFunc {
 		}
 		var req revokeRequest
 		// body 可选;空 body 也合法
-		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req)
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+			return
+		}
 		out, err := d.Service.Revoke(r.Context(), userkey.RevokeRequest{
 			TenantID:  ident.TenantID,
 			UserID:    ident.UserID,
