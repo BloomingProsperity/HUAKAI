@@ -536,6 +536,7 @@ function esc(s){return (s==null?'':''+s).replace(/[&<>"']/g,function(c){return{'
 function hdr(){return {Authorization:'Bearer '+T};}
 function ago(s){if(s==null)return '?';if(s<60)return s+'秒前';if(s<3600)return Math.floor(s/60)+'分前';return Math.floor(s/3600)+'时前';}
 var STAT=['needs_owner','in_progress','review','assigned','blocked','todo','done'];
+var FRESH={};
 function chk(r){if(r.status===401)throw new Error('token 不对(401)');if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}
 function control(action){
  fetch('/dispatcher/control',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},hdr()),body:JSON.stringify({action:action})})
@@ -569,15 +570,16 @@ function render(ds,tasks,locks){
  var html='';
  var paused=(ds.control==='pause');
  var ags=(ds.agents||[]);
+ FRESH={}; ags.forEach(function(a){FRESH[a.agent]=a;});
  var dstat=ags.length?ags.map(function(a){
    var cls=a.fresh?'on':'off';var lbl=a.fresh?(a.state||'?'):'失联';
    return '<div class=row style="margin-bottom:4px"><span class="b '+cls+'">'+esc(a.agent)+' · '+esc(lbl)+'</span>'+
      '<span class=sub>心跳 '+ago(a.age_sec)+'</span>'+(a.detail?'<span class=sub>· '+esc(a.detail)+'</span>':'')+'</div>';
- }).join(''):'<div class=sub>(还没有守护进程上报。daemon 重启后会每轮上报。)</div>';
+ }).join(''):'<div class=sub>(还没有机器上报心跳。重启 daemon / 各 worker 的 loop 后,每轮自动上报。)</div>';
  var ctlbtn=paused?'<button class="btn go" data-act="run">▶ 恢复调度</button>':'<button class="btn stop" data-act="pause">⏸ 暂停调度</button>';
- html+='<div class=card><h2>🛰 调度守护进程 '+(paused?'<span class="b warn">已暂停</span>':'<span class="b on">运行中</span>')+'</h2>'+
+ html+='<div class=card><h2>🖥 机器在线 · 调度+各 worker '+(paused?'<span class="b warn">调度已暂停</span>':'<span class="b on">调度运行中</span>')+'</h2>'+
    dstat+'<div class=row style="margin-top:8px">'+ctlbtn+
-   '<span class=sub>暂停=进程保活但不再审/合并 · 彻底停用:systemctl --user stop huakai-dispatcher</span></div></div>';
+   '<span class=sub>暂停=调度进程保活但不再审/合并 · 彻底停用:systemctl --user stop huakai-dispatcher</span></div></div>';
  var ev=(ds.events||[]);
  html+='<div class=card><h2>📜 最近动作(调度日志,免命令)</h2><div class=ev>'+
    (ev.length?ev.map(function(e){return '<div class=e><span class=t>'+esc((e.ts||'').replace('T',' ').slice(5,19))+'</span> <span class=k>['+esc(e.kind)+']</span> '+esc(e.text);}).join(''):'<div class=sub>(暂无)</div>')+
@@ -596,9 +598,17 @@ function render(ds,tasks,locks){
 function card(t){
  var v=(t.verify_rounds>=3)?'<span class="b on">✓3</span>':'<span class="b warn">'+(t.verify_rounds||0)+'/3</span>';
  var risk=t.risk?'<span class="b off">'+esc(t.risk)+'</span>':'';
+ var stuck='';
+ if((t.status==='assigned'||t.status==='in_progress')&&t.assignee){
+   var w=FRESH[t.assignee];
+   if(!w) stuck='<span class="b off">⚠ worker 未上报(重启其 loop)</span>';
+   else if(!w.fresh) stuck='<span class="b off">⚠ worker 失联(心跳超时,活没人接)</span>';
+   else if(t.status==='assigned'&&w.state!=='working') stuck='<span class="b warn">已派·待接</span>';
+   else stuck='<span class="b on">✓ '+esc(t.assignee)+' 在做</span>';
+ }
  var ap=(t.status==='needs_owner')?'<div style="margin-top:6px"><button class="btn go" data-approve="'+esc(t.id)+'">✅ 批准(Owner 令牌)</button></div>':'';
  return '<div class=task><div class=row><span class=id>'+esc(t.id)+'</span><span style="flex:1">'+esc(t.title)+'</span>'+
-  (t.wave?'<span class="b s-todo">'+esc(t.wave)+'</span>':'')+'<span class="b s-'+esc(t.status)+'">'+esc(t.status)+'</span>'+v+risk+'</div>'+
+  (t.wave?'<span class="b s-todo">'+esc(t.wave)+'</span>':'')+'<span class="b s-'+esc(t.status)+'">'+esc(t.status)+'</span>'+v+risk+stuck+'</div>'+
   (t.review_notes?'<div class=meta>↩ '+esc(t.review_notes)+(t.reviewed_by?' ('+esc(t.reviewed_by)+')':'')+'</div>':'')+
   (t.notes?'<div class=meta>📝 '+esc(t.notes)+'</div>':'')+
   ((t.scope_files&&t.scope_files.length)?'<div class=files>'+esc(t.scope_files.join(', '))+'</div>':'')+ap+'</div>';
