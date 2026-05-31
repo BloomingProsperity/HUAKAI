@@ -66,6 +66,7 @@
     {"id": "FU-S2-082", "title": "L2 cache-hit 重放路径 chat_completions_handler_headers.go:167/189 用 PromptHash 而非 sessionHash(纯审计元数据)", "from": "S2-082 审计", "sev": "S3"}
   ],
   "log": [
+    {"ts": "2026-05-31", "text": "money-loop 双计划稿(claude+codex,#9/#10 门)push GitHub@ae5e378;MONEY-3 解锁——local-codex 此前正确拒绝提交(缺可见计划门,非 bug),重派 pull→commit→push。看板部署上线 /tree。GitHub remote=BloomingProsperity/HUAKAI。"},
     {"ts": "2026-05-31", "text": "S1-024(security)+ S2-082(Wave7)跨脑审 PASS → 合并 landing(a92af42)、复验绿、push GitHub。S1-024 用 owner-token 自批。3 条非阻塞 follow-up 已记。"},
     {"ts": "2026-05-31", "text": "完工评估(8-agent 实测):后端 42%(建设 34 / 加固 23)、campaign 4-7 周、v1 2.5-4 月、前端 45%、测试 343 文件全绿但 money-path 集成测试未跑。"},
     {"ts": "2026-05-31", "text": "钱闭环三参考融合设计 + codex #10 交叉(两脑强收敛),6+1 切片进 ledger;MONEY-1→server-b、MONEY-3→local-codex 并行开工。"},
