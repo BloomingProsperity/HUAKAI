@@ -505,6 +505,84 @@ func TestRedeemReplayIgnoresNonUSDLegacyRedemptionFloor(t *testing.T) {
 	}
 }
 
+func TestRedeemReplayIgnoresNonUSDLegacyVoucherDelta(t *testing.T) {
+	// Mutation check: remove the USD currency predicate from the post-redemption
+	// voucher_redeemed delta. With a prior wallet debit, replay must not fall back
+	// to the redemption floor; counting a later EUR voucher event reconstructs
+	// 5000c instead of the original USD voucher response of 10000c.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool := openVoucherPool(t, ctx)
+	tenantID, userID, apiKeyID := seedVoucherMoneyUser(t, ctx, pool)
+	cleanupVoucherMoneyTenant(t, pool, tenantID)
+
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO user_balances (tenant_id, user_id, balance, held) VALUES ($1, $2, 100, 0)`,
+		tenantID, userID,
+	); err != nil {
+		t.Fatalf("seed prior user balance: %v", err)
+	}
+	priorClaim := seedVoucherMoneyClaim(t, ctx, pool, tenantID, userID, apiKeyID)
+	if _, err := reserveVoucherMoney(ctx, pool, tenantID, userID, priorClaim.id, decimal.NewFromInt(100)); err != nil {
+		t.Fatalf("reserve prior wallet debit: %v", err)
+	}
+	if _, err := billing.NewSettler(pool).Settle(ctx, settleVoucherMoneyRequest(priorClaim, decimal.NewFromInt(100))); err != nil {
+		t.Fatalf("settle prior wallet debit: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE balance_holds SET resolved_at=NOW() - interval '1 second' WHERE tenant_id=$1 AND claim_id=$2`,
+		tenantID, priorClaim.id,
+	); err != nil {
+		t.Fatalf("backdate prior wallet debit resolution: %v", err)
+	}
+	assertVoucherUserBalance(t, ctx, pool, tenantID, userID, "after prior wallet debit", decimal.Zero, decimal.Zero)
+
+	store := NewPostgresStore(pool)
+	svc := NewService(store)
+	now := time.Now().UTC()
+	code := fmt.Sprintf("money-bridge-usd-delta-%d", tenantID)
+	seedVoucherMoneyVoucher(t, ctx, pool, tenantID, code, now)
+	first, err := svc.Redeem(ctx, RedeemInput{
+		TenantID:       tenantID,
+		UserID:         userID,
+		Code:           code,
+		IdempotencyKey: "money-bridge-usd-delta",
+		SourceIP:       "203.0.113.17",
+		RequestID:      "req-money-bridge-usd-delta",
+		Now:            now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("redeem after prior debit: %v", err)
+	}
+	if first.BalanceCents != 10000 {
+		t.Fatalf("redeem balance cents=%d want 10000", first.BalanceCents)
+	}
+
+	legacyCode := fmt.Sprintf("money-bridge-later-eur-%d", tenantID)
+	seedVoucherMoneyVoucherCurrencyAmount(t, ctx, pool, tenantID, legacyCode, "EUR", 5000, now.Add(2*time.Second))
+	seedLegacyVoucherRedemptionCurrencyAmount(t, ctx, pool, tenantID, userID, legacyCode, "money-bridge-later-eur", "EUR", 5000, now.Add(2*time.Second))
+
+	replay, err := svc.Redeem(ctx, RedeemInput{
+		TenantID:       tenantID,
+		UserID:         userID,
+		Code:           code,
+		IdempotencyKey: "money-bridge-usd-delta",
+		SourceIP:       "203.0.113.17",
+		RequestID:      "req-money-bridge-usd-delta-replay",
+		Now:            now.Add(3 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("replay after later EUR voucher event: %v", err)
+	}
+	if !replay.Idempotent {
+		t.Fatalf("replay Idempotent=false, want true")
+	}
+	if replay.BalanceCents != first.BalanceCents {
+		t.Fatalf("replay balance cents=%d want original USD response %d", replay.BalanceCents, first.BalanceCents)
+	}
+}
+
 func TestRedeemReplayIncludesSameTimestampReconciliationByEventID(t *testing.T) {
 	// Mutation check: filter reconciliation_appended only by occurred_at > voucher
 	// event time. If a later refund event shares the voucher timestamp, replay misses

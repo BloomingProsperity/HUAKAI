@@ -432,7 +432,7 @@ func idempotentBalanceCents(ctx context.Context, tx pgx.Tx, tenantID, userID int
 	if err := tx.QueryRow(ctx, `
 SELECT COALESCE(SUM(CASE
 	WHEN be.event_type = 'claim_committed' AND bh.claim_id IS NOT NULL AND bh.resolved_at > $2 THEN be.actual_cost
-	WHEN be.event_type = 'voucher_redeemed' AND (be.occurred_at > $2 OR (be.occurred_at = $2 AND be.id > $3)) THEN -be.actual_cost
+	WHEN be.event_type = 'voucher_redeemed' AND vr.currency_code = $5 AND (be.occurred_at > $2 OR (be.occurred_at = $2 AND be.id > $3)) THEN -be.actual_cost
 	WHEN be.event_type = 'reconciliation_appended' AND (be.occurred_at > $2 OR (be.occurred_at = $2 AND be.id > $3)) THEN be.actual_cost_signed
 	ELSE 0
 END), 0)
@@ -443,8 +443,8 @@ LEFT JOIN voucher_redemption vr ON vr.tenant_id = be.tenant_id AND vr.id = be.vo
 WHERE be.tenant_id = $1
   AND (
 	(be.event_type IN ('claim_committed', 'reconciliation_appended') AND blc.user_id = $4)
-	OR (be.event_type = 'voucher_redeemed' AND vr.user_id = $4)
-  )`, tenantID, redemptionEventTime, red.BillingEventID, userID).Scan(&postRedemptionDelta); err != nil {
+	OR (be.event_type = 'voucher_redeemed' AND vr.user_id = $4 AND vr.currency_code = $5)
+  )`, tenantID, redemptionEventTime, red.BillingEventID, userID, supportedVoucherBalanceCurrency).Scan(&postRedemptionDelta); err != nil {
 		return 0, fmt.Errorf("voucher: read idempotent balance deltas: %w", err)
 	}
 	walletCents := balanceCents(currentBalance.Add(postRedemptionDelta))
