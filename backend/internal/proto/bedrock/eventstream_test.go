@@ -77,6 +77,51 @@ func TestBedrockAdapter_HappyPath_EquivalentToAnthropic(t *testing.T) {
 	}
 }
 
+func TestBedrockAdapter_NonStreamingAnthropicResponseToCanonical(t *testing.T) {
+	ad := NewEventStreamAdapter()
+	env, losses, err := ad.ProviderResponseToCanonical(context.Background(), []byte(`{
+		"id":"msg_bedrock_nonstream_01",
+		"type":"message",
+		"role":"assistant",
+		"model":"claude-3-5-sonnet-bedrock",
+		"content":[{"type":"text","text":"bedrock non-stream translated"}],
+		"stop_reason":"end_turn",
+		"usage":{"input_tokens":11,"output_tokens":13},
+		"amazon-bedrock-invocationMetrics":{"inputTokenCount":11,"outputTokenCount":13,"invocationLatency":321}
+	}`))
+	if errors.Is(err, proto.ErrNotImplemented) {
+		t.Fatalf("ProviderResponseToCanonical returned ErrNotImplemented")
+	}
+	if err != nil {
+		t.Fatalf("ProviderResponseToCanonical: %v", err)
+	}
+	if len(losses) != 0 {
+		t.Fatalf("unexpected losses: %+v", losses)
+	}
+	if env == nil || env.Version != proto.HCSFVersion || env.BufferedResponse == nil {
+		t.Fatalf("envelope = %+v", env)
+	}
+	resp := env.BufferedResponse
+	if resp.ID != "msg_bedrock_nonstream_01" || resp.Model != "claude-3-5-sonnet-bedrock" {
+		t.Fatalf("metadata mismatch: %+v", resp)
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Type != "text" || resp.Content[0].Text != "bedrock non-stream translated" {
+		t.Fatalf("content mismatch: %+v", resp.Content)
+	}
+	if resp.Usage.InputTokens != 11 || resp.Usage.OutputTokens != 13 || resp.Usage.TotalTokens != 24 {
+		t.Fatalf("usage mismatch: %+v", resp.Usage)
+	}
+	if resp.StopReason != proto.CanonicalStopEndTurn {
+		t.Fatalf("stop_reason=%q want %q", resp.StopReason, proto.CanonicalStopEndTurn)
+	}
+	if env.Accounting.Usage != resp.Usage {
+		t.Fatalf("accounting usage=%+v want %+v", env.Accounting.Usage, resp.Usage)
+	}
+	if resp.Passthrough == nil || len(resp.Passthrough.Extra["amazon-bedrock-invocationMetrics"]) == 0 {
+		t.Fatalf("Bedrock invocation metrics should be tolerated and preserved as passthrough: %+v", resp.Passthrough)
+	}
+}
+
 func TestBedrockAdapter_ToolUseBlock(t *testing.T) {
 	ad := NewEventStreamAdapter()
 	state := &anthropic.UpstreamState{}
