@@ -456,13 +456,16 @@ def update_task_status(b):
     status = (b.get("status") or "").strip()
     if not tid or status not in TASK_STATUSES:
         return 400, {"error": "id + valid status required", "allowed": list(TASK_STATUSES)}
-    # L4 actor identity: prefer an explicit body.actor; fall back to the fields existing
-    # clients already send (updated_by on progress, reviewed_by on a verdict) so an old
-    # client that never learned to send `actor` is still attributed and not 403'd to a
-    # standstill. Empty actor => we cannot prove identity, so identity-equality checks
-    # below degrade to "skip" (soft) rather than block — backward-compatible by design.
-    actor = (b.get("actor") or b.get("updated_by") or b.get("reviewed_by") or "").strip()
-    is_dispatcher = actor in DISPATCHER_AGENTS if actor else False
+    # L4 actor identity. ROLE decisions (is_dispatcher) use the explicit `actor` field ONLY
+    # (codex P1 round2): reviewed_by/updated_by are caller-supplied AUDIT fields, so deriving
+    # role identity from them let a `reviewed_by=dispatcher` body satisfy the dispatcher gate
+    # on the default CLI path (COORD_AGENT unset). `actor` (with those fallbacks) is still used
+    # for attribution + the assignee-equality check on low-risk progress. NOTE: under the
+    # shared dispatch token a caller can still FORGE `actor`; hard per-agent auth is an Owner
+    # architecture decision (surfaced) — this closes the default-CLI bypass, not forgery.
+    role_actor = (b.get("actor") or "").strip()
+    actor = role_actor or (b.get("updated_by") or "").strip() or (b.get("reviewed_by") or "").strip()
+    is_dispatcher = (role_actor in DISPATCHER_AGENTS) if role_actor else False
     with _lock:
         c = db()
         try:
