@@ -449,6 +449,150 @@ WHERE claim_id=$1 AND tenant_id=$2 AND user_id=$3`,
 	}
 }
 
+func TestRedeemReplayIgnoresNonUSDLegacyRedemptionFloor(t *testing.T) {
+	// Mutation check: remove the USD currency predicate from redemptionBalanceThrough.
+	// The replay floor then counts a legacy EUR redemption as USD cents and returns
+	// 15000c instead of the original USD voucher response of 10000c.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool := openVoucherPool(t, ctx)
+	tenantID, userID, _ := seedVoucherMoneyUser(t, ctx, pool)
+	cleanupVoucherMoneyTenant(t, pool, tenantID)
+
+	store := NewPostgresStore(pool)
+	svc := NewService(store)
+	now := time.Now().UTC()
+	legacyCode := fmt.Sprintf("money-bridge-legacy-eur-%d", tenantID)
+	seedVoucherMoneyVoucherCurrencyAmount(t, ctx, pool, tenantID, legacyCode, "EUR", 5000, now)
+	seedLegacyVoucherRedemptionCurrencyAmount(t, ctx, pool, tenantID, userID, legacyCode, "money-bridge-legacy-eur", "EUR", 5000, now)
+
+	code := fmt.Sprintf("money-bridge-usd-floor-%d", tenantID)
+	seedVoucherMoneyVoucher(t, ctx, pool, tenantID, code, now)
+	first, err := svc.Redeem(ctx, RedeemInput{
+		TenantID:       tenantID,
+		UserID:         userID,
+		Code:           code,
+		IdempotencyKey: "money-bridge-usd-floor",
+		SourceIP:       "203.0.113.15",
+		RequestID:      "req-money-bridge-usd-floor",
+		Now:            now.Add(2 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("redeem after legacy EUR redemption: %v", err)
+	}
+	if first.BalanceCents != 10000 {
+		t.Fatalf("redeem balance cents=%d want 10000", first.BalanceCents)
+	}
+
+	replay, err := svc.Redeem(ctx, RedeemInput{
+		TenantID:       tenantID,
+		UserID:         userID,
+		Code:           code,
+		IdempotencyKey: "money-bridge-usd-floor",
+		SourceIP:       "203.0.113.15",
+		RequestID:      "req-money-bridge-usd-floor-replay",
+		Now:            now.Add(3 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("replay after legacy EUR redemption: %v", err)
+	}
+	if !replay.Idempotent {
+		t.Fatalf("replay Idempotent=false, want true")
+	}
+	if replay.BalanceCents != first.BalanceCents {
+		t.Fatalf("replay balance cents=%d want original USD response %d", replay.BalanceCents, first.BalanceCents)
+	}
+}
+
+func TestRedeemReplayIncludesSameTimestampReconciliationByEventID(t *testing.T) {
+	// Mutation check: filter reconciliation_appended only by occurred_at > voucher
+	// event time. If a later refund event shares the voucher timestamp, replay misses
+	// the refund and reconstructs 15000c instead of the original 10000c.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool := openVoucherPool(t, ctx)
+	tenantID, userID, apiKeyID := seedVoucherMoneyUser(t, ctx, pool)
+	cleanupVoucherMoneyTenant(t, pool, tenantID)
+
+	store := NewPostgresStore(pool)
+	svc := NewService(store)
+	now := time.Now().UTC()
+	code := fmt.Sprintf("money-bridge-recon-tie-%d", tenantID)
+	seedVoucherMoneyVoucher(t, ctx, pool, tenantID, code, now)
+	first, err := svc.Redeem(ctx, RedeemInput{
+		TenantID:       tenantID,
+		UserID:         userID,
+		Code:           code,
+		IdempotencyKey: "money-bridge-recon-tie",
+		SourceIP:       "203.0.113.16",
+		RequestID:      "req-money-bridge-recon-tie",
+		Now:            now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("redeem before tied reconciliation: %v", err)
+	}
+	if first.BalanceCents != 10000 {
+		t.Fatalf("redeem balance cents=%d want 10000", first.BalanceCents)
+	}
+	var redemptionEventTime time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT occurred_at FROM billing_events WHERE tenant_id=$1 AND id=$2`,
+		tenantID, first.Redemption.BillingEventID,
+	).Scan(&redemptionEventTime); err != nil {
+		t.Fatalf("read redemption billing event time: %v", err)
+	}
+
+	claim := seedVoucherMoneyClaim(t, ctx, pool, tenantID, userID, apiKeyID)
+	if _, err := reserveVoucherMoney(ctx, pool, tenantID, userID, claim.id, decimal.NewFromInt(100)); err != nil {
+		t.Fatalf("reserve redeemed balance before tied reconciliation: %v", err)
+	}
+	if _, err := billing.NewSettler(pool).Settle(ctx, settleVoucherMoneyRequest(claim, decimal.NewFromInt(100))); err != nil {
+		t.Fatalf("settle redeemed balance before tied reconciliation: %v", err)
+	}
+	var reconciliationEventID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO billing_events (
+	tenant_id, claim_id, event_type, actual_cost, actual_cost_signed,
+	stream_state, delivered_token_count, fingerprint, audit_request_id, occurred_at
+) VALUES ($1, $2, 'reconciliation_appended', 0, -50, 2, 0, $3, $4, $5)
+RETURNING id`,
+		tenantID, claim.id, claim.fingerprint, "money-bridge-recon-tie-refund", redemptionEventTime,
+	).Scan(&reconciliationEventID); err != nil {
+		t.Fatalf("append tied reconciliation event: %v", err)
+	}
+	if reconciliationEventID <= first.Redemption.BillingEventID {
+		t.Fatalf("reconciliation event id=%d want after voucher event id=%d", reconciliationEventID, first.Redemption.BillingEventID)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE user_balances SET balance=balance+50, version=version+1 WHERE tenant_id=$1 AND user_id=$2`,
+		tenantID, userID,
+	); err != nil {
+		t.Fatalf("credit tied reconciliation balance: %v", err)
+	}
+	assertVoucherUserBalance(t, ctx, pool, tenantID, userID, "after tied refund", decimal.NewFromInt(50), decimal.Zero)
+
+	replay, err := svc.Redeem(ctx, RedeemInput{
+		TenantID:       tenantID,
+		UserID:         userID,
+		Code:           code,
+		IdempotencyKey: "money-bridge-recon-tie",
+		SourceIP:       "203.0.113.16",
+		RequestID:      "req-money-bridge-recon-tie-replay",
+		Now:            now.Add(4 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("replay after tied reconciliation: %v", err)
+	}
+	if !replay.Idempotent {
+		t.Fatalf("replay Idempotent=false, want true")
+	}
+	if replay.BalanceCents != first.BalanceCents {
+		t.Fatalf("replay balance cents=%d want original response %d", replay.BalanceCents, first.BalanceCents)
+	}
+}
+
 type voucherMoneyClaim struct {
 	id                int64
 	tenantID          int64
@@ -467,17 +611,27 @@ func seedVoucherMoneyVoucher(t *testing.T, ctx context.Context, pool *pgxpool.Po
 
 func seedVoucherMoneyVoucherCurrency(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID int64, code, currency string, now time.Time) {
 	t.Helper()
+	seedVoucherMoneyVoucherCurrencyAmount(t, ctx, pool, tenantID, code, currency, 10000, now)
+}
+
+func seedVoucherMoneyVoucherCurrencyAmount(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID int64, code, currency string, amountCents int64, now time.Time) {
+	t.Helper()
 	hash, fingerprint := CodeHash(tenantID, NormalizeCode(code))
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO voucher (tenant_id, code_hash, code_fingerprint, amount_cents, currency_code, valid_from, valid_until, max_redemptions, single_use_per_user, status, created_by_admin_id, revoked_reason, created_at, updated_at)
-		 VALUES ($1, $2, $3, 10000, $4, $5, $6, 1, true, 'active', 1, '', $7, $7)`,
-		tenantID, hash, fingerprint, currency, now.Add(-time.Minute), now.Add(time.Hour), now,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, 1, true, 'active', 1, '', $8, $8)`,
+		tenantID, hash, fingerprint, amountCents, currency, now.Add(-time.Minute), now.Add(time.Hour), now,
 	); err != nil {
 		t.Fatalf("seed voucher: %v", err)
 	}
 }
 
 func seedLegacyVoucherRedemption(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID, userID int64, code, key string, now time.Time) int64 {
+	t.Helper()
+	return seedLegacyVoucherRedemptionCurrencyAmount(t, ctx, pool, tenantID, userID, code, key, "USD", 10000, now)
+}
+
+func seedLegacyVoucherRedemptionCurrencyAmount(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID, userID int64, code, key, currency string, amountCents int64, now time.Time) int64 {
 	t.Helper()
 	hash, _ := CodeHash(tenantID, NormalizeCode(code))
 	var voucherID int64
@@ -492,20 +646,21 @@ func seedLegacyVoucherRedemption(t *testing.T, ctx context.Context, pool *pgxpoo
 INSERT INTO voucher_redemption (
 	tenant_id, voucher_id, user_id, idempotency_key, amount_cents, currency_code,
 	single_use_per_user, source_ip_hash, request_id, redeemed_at
-) VALUES ($1, $2, $3, $4, 10000, 'USD', true, '', 'legacy-redemption', $5)
+) VALUES ($1, $2, $3, $4, $5, $6, true, '', 'legacy-redemption', $7)
 RETURNING id`,
-		tenantID, voucherID, userID, key, now.Add(time.Second),
+		tenantID, voucherID, userID, key, amountCents, currency, now.Add(time.Second),
 	).Scan(&redemptionID); err != nil {
 		t.Fatalf("seed legacy redemption: %v", err)
 	}
+	amount := decimal.NewFromInt(amountCents).Div(decimal.NewFromInt(100))
 	var billingID int64
 	if err := pool.QueryRow(ctx, `
 INSERT INTO billing_events (
 	tenant_id, event_type, actual_cost, actual_cost_signed,
 	stream_state, delivered_token_count, fingerprint, voucher_redemption_id
-) VALUES ($1, 'voucher_redeemed', 100, 100, 2, 0, 'legacy-voucher', $2)
+) VALUES ($1, 'voucher_redeemed', $2, $2, 2, 0, 'legacy-voucher', $3)
 RETURNING id`,
-		tenantID, redemptionID,
+		tenantID, amount, redemptionID,
 	).Scan(&billingID); err != nil {
 		t.Fatalf("seed legacy billing event: %v", err)
 	}
