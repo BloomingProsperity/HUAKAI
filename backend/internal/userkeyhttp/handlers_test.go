@@ -297,6 +297,28 @@ func TestDeleteAPIKeys_IdempotentBody(t *testing.T) {
 	}
 }
 
+// T8b: DELETE with malformed non-empty JSON must fail before Revoke.
+//
+// Mutation self-check: if the handler discards Decode errors again, this fixture
+// returns 200 and records one revoke call, so both load-bearing assertions go red.
+func TestDeleteAPIKeys_MalformedBodyRejected(t *testing.T) {
+	svc := &stubService{revokeReturn: userkey.RevokeResult{APIKeyID: 88}}
+	mux := mountWithSession(t, svc, sessionauth.SessionIdentity{TenantID: 7, UserID: 42}, true)
+	req := httptest.NewRequest(http.MethodDelete, "/v1/api-keys/88", strings.NewReader(`{"reason":`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("malformed body: want 400; got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid_json") {
+		t.Fatalf("malformed body must return invalid_json; got %s", rec.Body.String())
+	}
+	if len(svc.revokeCalls) != 0 {
+		t.Fatalf("Revoke MUST NOT be called for malformed JSON; got %d calls", len(svc.revokeCalls))
+	}
+}
+
 // T9: ErrActiveKeyCapHit → 409 (Conflict),不是 503。
 //
 // 判别 fixture:cap 命中是用户输入问题不是后端故障;mapping 错 → 用户拿到 503
