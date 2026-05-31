@@ -4,12 +4,12 @@
   "note": "结果汇报留存于此(PM 自主驱动,实时更新)。两条并行流:钱闭环 + 审计缺陷修复战役。",
   "overall": {
     "backend_pct": 42,
-    "build_line_pct": 34,
+    "build_line_pct": 36,
     "harden_line_pct": 23,
     "frontend_pct": 45,
     "eta_campaign": "4–7 周",
     "eta_v1": "2.5–4 个月",
-    "tests": "343 测试文件 / ~2475 Test 函数 / 96 包全绿 0 FAIL；money-path 关键路径只有 integration_pg 测试(需真 PG),plain go test 跳过=未真验。go build 绿。"
+    "tests": "343 测试文件 / ~2475 Test 函数 / 96 包全绿 0 FAIL;voucher+dlq money-path integration_pg 已在合并 landing 上实跑全绿(非仅跳过)。go build 绿。"
   },
   "modules": [
     {
@@ -19,13 +19,59 @@
       "priority": 1,
       "summary": "voucher.Redeem 不写 user_balances、balancehold 只读 user_balances、生产无 INSERT → 兑券不可花、enforcement 全员关闭。三参考融合 sub2api@91da8159 + new-api@20d3e73 清洁室自研。Owner:支付回调照做、没余额=402 直接显示「余额不足」。",
       "items": [
-        {"id": "MONEY-1", "title": "voucher→user_balances 桥接(同 tx UPSERT credit+自动建行)", "status": "coding", "worker": "server-b", "risk": "money"},
-        {"id": "MONEY-2", "title": "返回余额读 user_balances 真值(非 SUM)", "status": "queued", "worker": "server-b", "risk": "money", "depends": "MONEY-1"},
-        {"id": "MONEY-3", "title": "充值订单实体+建单管线(新 internal/payment 包,迁移 0061)", "status": "coding", "worker": "local-codex", "risk": "schema"},
-        {"id": "MONEY-4", "title": "支付回调验签+防篡改+幂等 PAID+履约入账", "status": "queued", "risk": "money", "depends": "MONEY-1,3"},
-        {"id": "MONEY-5", "title": "admin 手动充值/调额+统一审计", "status": "queued", "risk": "money", "depends": "MONEY-1,3"},
-        {"id": "MONEY-6", "title": "翻 mandatory(没余额=402 直显「余额不足」)+历史 backfill+admin/trust bypass", "status": "queued", "risk": "money", "depends": "MONEY-1,2"},
-        {"id": "MONEY-7", "title": "花费/退款一致性验证(起$10→reserve$3→settle$2.25→$7.75)", "status": "queued", "risk": "money", "depends": "MONEY-1,2"}
+        {
+          "id": "MONEY-1",
+          "title": "voucher→user_balances 桥接(同 tx UPSERT credit+自动建行)",
+          "status": "done✓ merged f8141c0",
+          "worker": "server-b",
+          "risk": "money",
+          "note": "voucher→user_balances 桥接落地:同tx幂等UPSERT credit + 整类混币漏修(voucher_redeemed wallet-delta:435+floor:556 加USD过滤,(occurred_at,id)tie-break;claim_committed/recon故意不加=镜像真实USD wallet debit)。跨脑审PASS(opus worktree+codex,4 mutation红,integration_pg 19测绿,owner-token批)。"
+        },
+        {
+          "id": "MONEY-2",
+          "title": "返回余额读 user_balances 真值(非 SUM)",
+          "status": "in_progress server-b",
+          "worker": "server-b",
+          "risk": "money",
+          "depends": "MONEY-1",
+          "note": "余额返回改读user_balances真实可花,弃SUM(voucher_redemption)。依赖MONEY-1已落。"
+        },
+        {
+          "id": "MONEY-3",
+          "title": "充值订单实体+建单管线(新 internal/payment 包,迁移 0061)",
+          "status": "done✓ merged 648f372",
+          "worker": "local-codex",
+          "risk": "schema"
+        },
+        {
+          "id": "MONEY-4",
+          "title": "支付回调验签+防篡改+幂等 PAID+履约入账",
+          "status": "in_progress local-codex",
+          "risk": "money",
+          "depends": "MONEY-1,3",
+          "note": "支付回调验签+幂等PAID+履约入账。依赖MONEY-3+MONEY-1已落。high-risk落地走park+owner。"
+        },
+        {
+          "id": "MONEY-5",
+          "title": "admin 手动充值/调额+统一审计",
+          "status": "queued",
+          "risk": "money",
+          "depends": "MONEY-1,3"
+        },
+        {
+          "id": "MONEY-6",
+          "title": "翻 mandatory(没余额=402 直显「余额不足」)+历史 backfill+admin/trust bypass",
+          "status": "queued",
+          "risk": "money",
+          "depends": "MONEY-1,2"
+        },
+        {
+          "id": "MONEY-7",
+          "title": "花费/退款一致性验证(起$10→reserve$3→settle$2.25→$7.75)",
+          "status": "queued",
+          "risk": "money",
+          "depends": "MONEY-1,2"
+        }
       ]
     },
     {
@@ -33,15 +79,48 @@
       "name": "审计缺陷修复战役(Track-A bug)",
       "status": "in-progress",
       "priority": 2,
-      "summary": "195 审计→182 真→Track-A 139;已落 32,open ~105。按热点文件耦合压波次,每条判别性测试(过 mutation)+ codex#8 + 跨脑审,落 fix/hermes-phase-1-e33d940。",
+      "summary": "195 审计→182 真→Track-A 139;已落 33,open ~105。按热点文件耦合压波次,每条判别性测试(过 mutation)+ codex#8 + 跨脑审,落 fix/hermes-phase-1-e33d940。",
       "waves": [
-        {"wave": "W1-W2 auth/credential", "open": "少(基本完成)", "status": "near-done"},
-        {"wave": "W3 money-path", "open": "~10", "status": "open", "note": "与钱闭环协调,避免同文件冲突"},
-        {"wave": "W4 routing/pool", "open": "~16", "status": "open", "note": "pool SQL/router 串行"},
-        {"wave": "W5 streaming/DLQ", "open": "~6", "status": "open"},
-        {"wave": "W6 routes.go/openapi 合同", "open": "~20", "status": "open", "note": "routes.go+openapi.yaml 强制串行(无法并行)"},
-        {"wave": "W7 provider/protocol", "open": "少", "status": "in-progress", "note": "S1-022/S2-006/S2-082 已审"},
-        {"wave": "W8 ops/security 硬化", "open": "~10", "status": "open"}
+        {
+          "wave": "W1-W2 auth/credential",
+          "open": "少(基本完成)",
+          "status": "near-done"
+        },
+        {
+          "wave": "W3 money-path",
+          "open": "~10",
+          "status": "open",
+          "note": "与钱闭环协调,避免同文件冲突"
+        },
+        {
+          "wave": "W4 routing/pool",
+          "open": "~16",
+          "status": "open",
+          "note": "pool SQL/router 串行"
+        },
+        {
+          "wave": "W5 streaming/DLQ",
+          "open": "~5",
+          "status": "in-progress",
+          "note": "S2-161(DLQ Mark* 租约所有权 fence)跨脑审PASS已落 0298578"
+        },
+        {
+          "wave": "W6 routes.go/openapi 合同",
+          "open": "~20",
+          "status": "open",
+          "note": "routes.go+openapi.yaml 强制串行(无法并行)"
+        },
+        {
+          "wave": "W7 provider/protocol",
+          "open": "少",
+          "status": "in-progress",
+          "note": "S1-022/S2-006/S2-082 已审"
+        },
+        {
+          "wave": "W8 ops/security 硬化",
+          "open": "~10",
+          "status": "open"
+        }
       ]
     },
     {
@@ -51,26 +130,110 @@
       "priority": 3,
       "summary": "请求方向翻译 4 个适配器全 ErrNotImplemented(跨协议请求翻译=0%,仅 client=upstream 协议时靠 mimicry 透传);OpenAI Responses 无专用上游适配器、被注册成 Chat 解析器(wire 不兼容,真实流量下静默丢内容/计费)。",
       "items": [
-        {"id": "PROTO-1", "title": "anthropic/gemini/openai/bedrock CanonicalToProviderRequest 实现", "status": "queued", "risk": "none"},
-        {"id": "PROTO-2", "title": "OpenAI Responses 专用上游适配器", "status": "queued", "risk": "none"}
+        {
+          "id": "PROTO-1",
+          "title": "anthropic/gemini/openai/bedrock CanonicalToProviderRequest 实现",
+          "status": "queued",
+          "risk": "none"
+        },
+        {
+          "id": "PROTO-2",
+          "title": "OpenAI Responses 专用上游适配器",
+          "status": "queued",
+          "risk": "none"
+        }
       ]
     }
   ],
   "reviews": [
-    {"id": "S1-024", "title": "凭据刷新忽略 provider-account 健康吊销/冷却 → 已审 PASS、已合并", "status": "done", "risk": "security"},
-    {"id": "S2-082", "title": "OpenAI Responses previous_response_id 会话亲和 → 已审 PASS、已合并", "status": "done"}
+    {
+      "id": "S1-024",
+      "title": "凭据刷新忽略 provider-account 健康吊销/冷却 → 已审 PASS、已合并",
+      "status": "done",
+      "risk": "security"
+    },
+    {
+      "id": "S2-082",
+      "title": "OpenAI Responses previous_response_id 会话亲和 → 已审 PASS、已合并",
+      "status": "done"
+    }
   ],
   "followups": [
-    {"id": "FU-S1-024a", "title": "S2-062 终态-revoke 恢复协调:更新 health_state.go 注释 + 补 operator 复活查询", "from": "S1-024 审计", "sev": "S2"},
-    {"id": "FU-S1-024b", "title": "codex 审计标签 nit:locked-reread 健康竞态记 permanent_disable(无容量损失)", "from": "S1-024 审计", "sev": "S2"},
-    {"id": "FU-S2-082", "title": "L2 cache-hit 重放路径 chat_completions_handler_headers.go:167/189 用 PromptHash 而非 sessionHash(纯审计元数据)", "from": "S2-082 审计", "sev": "S3"}
+    {
+      "id": "FU-MONEY-3b",
+      "title": "external_trade_no 长度上界(供给路径防 btree index-row 超限)——接 provider-bridge 时补",
+      "from": "MONEY-3 审",
+      "sev": "S2"
+    },
+    {
+      "id": "FU-MONEY-3a",
+      "title": "pending 充值订单过期(否则废弃 pending 永占额度)——接 route/provider 前必须补",
+      "from": "MONEY-3 审",
+      "sev": "S2→S1@route"
+    },
+    {
+      "id": "FU-S1-024a",
+      "title": "S2-062 终态-revoke 恢复协调:更新 health_state.go 注释 + 补 operator 复活查询",
+      "from": "S1-024 审计",
+      "sev": "S2"
+    },
+    {
+      "id": "FU-S1-024b",
+      "title": "codex 审计标签 nit:locked-reread 健康竞态记 permanent_disable(无容量损失)",
+      "from": "S1-024 审计",
+      "sev": "S2"
+    },
+    {
+      "id": "FU-S2-082",
+      "title": "L2 cache-hit 重放路径 chat_completions_handler_headers.go:167/189 用 PromptHash 而非 sessionHash(纯审计元数据)",
+      "from": "S2-082 审计",
+      "sev": "S3"
+    }
   ],
   "log": [
-    {"ts": "2026-05-31", "text": "money-loop 双计划稿(claude+codex,#9/#10 门)push GitHub@ae5e378;MONEY-3 解锁——local-codex 此前正确拒绝提交(缺可见计划门,非 bug),重派 pull→commit→push。看板部署上线 /tree。GitHub remote=BloomingProsperity/HUAKAI。"},
-    {"ts": "2026-05-31", "text": "S1-024(security)+ S2-082(Wave7)跨脑审 PASS → 合并 landing(a92af42)、复验绿、push GitHub。S1-024 用 owner-token 自批。3 条非阻塞 follow-up 已记。"},
-    {"ts": "2026-05-31", "text": "完工评估(8-agent 实测):后端 42%(建设 34 / 加固 23)、campaign 4-7 周、v1 2.5-4 月、前端 45%、测试 343 文件全绿但 money-path 集成测试未跑。"},
-    {"ts": "2026-05-31", "text": "钱闭环三参考融合设计 + codex #10 交叉(两脑强收敛),6+1 切片进 ledger;MONEY-1→server-b、MONEY-3→local-codex 并行开工。"},
-    {"ts": "2026-05-31", "text": "S1-024(security)/S2-082(Wave7)跨脑审核中,过则 owner-token 自批合并。"},
-    {"ts": "2026-05-31", "text": "Owner 指示:报告进 HTML 留存、不停、推下个模块;审计 105 bug 一并规划。看板上线。"}
+    {
+      "ts": "2026-05-31",
+      "text": "MONEY-1 重审:S1-#1/#2 真修好(mutation验证),codex又揪第3同类漏修(:435 wallet-delta缺USD过滤,实测重放5000c应10000c)→bounce修整类。审agent worktree隔离✓未碰主树。"
+    },
+    {
+      "ts": "2026-05-31",
+      "text": "MONEY-3(充值订单)审 PASS→合并 landing 648f372、push GitHub、done(owner-token)。MONEY-1(桥接)审 BOUNCE(2 S1:重放余额重建混币/同时刻 tie-break,持久余额无损)→退 server-b 重修。console coord_server 正确版(门+对话)已部署 box。"
+    },
+    {
+      "ts": "2026-05-31",
+      "text": "money-loop 双计划稿(claude+codex,#9/#10 门)push GitHub@ae5e378;MONEY-3 解锁——local-codex 此前正确拒绝提交(缺可见计划门,非 bug),重派 pull→commit→push。看板部署上线 /tree。GitHub remote=BloomingProsperity/HUAKAI。"
+    },
+    {
+      "ts": "2026-05-31",
+      "text": "S1-024(security)+ S2-082(Wave7)跨脑审 PASS → 合并 landing(a92af42)、复验绿、push GitHub。S1-024 用 owner-token 自批。3 条非阻塞 follow-up 已记。"
+    },
+    {
+      "ts": "2026-05-31",
+      "text": "完工评估(8-agent 实测):后端 42%(建设 34 / 加固 23)、campaign 4-7 周、v1 2.5-4 月、前端 45%、测试 343 文件全绿但 money-path 集成测试未跑。"
+    },
+    {
+      "ts": "2026-05-31",
+      "text": "钱闭环三参考融合设计 + codex #10 交叉(两脑强收敛),6+1 切片进 ledger;MONEY-1→server-b、MONEY-3→local-codex 并行开工。"
+    },
+    {
+      "ts": "2026-05-31",
+      "text": "S1-024(security)/S2-082(Wave7)跨脑审核中,过则 owner-token 自批合并。"
+    },
+    {
+      "ts": "2026-05-31",
+      "text": "Owner 指示:报告进 HTML 留存、不停、推下个模块;审计 105 bug 一并规划。看板上线。"
+    },
+    {
+      "ts": "2026-05-31",
+      "text": "MONEY-1(钱闭环#1阻断:voucher→可花余额桥接)第3轮跨脑审PASS:整类混币漏修修干净(4 mutation红/integration_pg绿/clean-room)→owner-token合并 f8141c0。已issued vouchers 现真正可花、enforcement 基础就位。"
+    },
+    {
+      "ts": "2026-05-31",
+      "text": "S2-161(DLQ租约所有权:lease_owner+lease_until fence防过期worker覆盖新owner)跨脑审PASS→合并 0298578。"
+    },
+    {
+      "ts": "2026-05-31",
+      "text": "并行推进:MONEY-2(余额读真实可花)→server-b、MONEY-4(支付回调验签+幂等履约)→local-codex 同时开工(文件不冲突)。"
+    }
   ]
 }
