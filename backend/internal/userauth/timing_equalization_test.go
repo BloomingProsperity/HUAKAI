@@ -84,3 +84,65 @@ func TestAuthenticate_EqualWorkOnUserMiss(t *testing.T) {
 		t.Fatalf("social-only path verified against %q, want the canonical timingEqualizationHash; mismatched cost re-opens the timing oracle", lastHash)
 	}
 }
+
+// TestAuthenticate_EqualWorkOnAccountStateBranches 守 S2-048 重修门2(时序维度): disabled / locked /
+// reset / unverified 这些「因账号状态失败」的分支此前在 argon2 之前 early-return, 比「口令错」(跑
+// argon2)快得多 → 泄露「该邮箱存在且处于某状态」(时序枚举侧信道)。修复让每条状态分支返回前也跑
+// 一次等价 argon2(用用户真实 hash, 成本与口令校验一致)。本测断言每条恰好 1 次校验且仍返回各自
+// typed error(供 handler 审计;对外 generic 由 handler 层并入, 见 gatewayhttp 测)。
+//
+// mutation: 删掉任一状态分支的 equalizeLoginWork 调用 → 该 case calls==0 → 红(时序 oracle 复活)。
+func TestAuthenticate_EqualWorkOnAccountStateBranches(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 31, 9, 0, 0, 0, time.UTC)
+	cheap := PasswordPolicy{MemoryKiB: 64, Iterations: 1, Parallelism: 1, SaltBytes: 8, KeyBytes: 16}
+
+	cases := []struct {
+		name          string
+		status        UserStatus
+		emailVerified bool
+		wantErr       error
+	}{
+		{"disabled", UserStatusDisabled, true, ErrUserDisabled},
+		{"reset_required", UserStatusResetRequired, true, ErrPasswordResetRequired},
+		{"locked", UserStatusLocked, true, ErrUserLocked},
+		{"unverified", UserStatusActive, false, ErrEmailUnverified},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMemoryAuthStore(now)
+			svc := NewService(store)
+			svc.PasswordPolicy = cheap
+			svc.RequireVerified = true // 让 unverified 分支可触发;有口令的 active 用户需先验证
+			svc.Now = func() time.Time { return now }
+
+			hash, err := HashPassword("secret", cheap)
+			if err != nil {
+				t.Fatalf("hash: %v", err)
+			}
+			if _, err := store.CreateUser(ctx, CreateUserParams{
+				TenantID: 1, Email: "u@example.test", PasswordHash: hash,
+				EmailVerified: tc.emailVerified, Status: tc.status,
+			}); err != nil {
+				t.Fatalf("create user: %v", err)
+			}
+
+			orig := verifyPasswordFn
+			t.Cleanup(func() { verifyPasswordFn = orig })
+			var calls int
+			verifyPasswordFn = func(encoded, password string) (bool, error) {
+				calls++
+				return orig(encoded, password)
+			}
+
+			calls = 0
+			_, err = svc.Authenticate(ctx, LoginInput{TenantID: 1, Email: "u@example.test", Password: "secret-wrong-or-right"})
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("auth error = %v, want %v", err, tc.wantErr)
+			}
+			if calls != 1 {
+				t.Fatalf("%s branch ran %d argon2 verifications, want exactly 1 (equal work with wrong-password path); 0 = timing oracle leaks account state", tc.name, calls)
+			}
+		})
+	}
+}

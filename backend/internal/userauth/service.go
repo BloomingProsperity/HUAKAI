@@ -17,6 +17,16 @@ var verifyPasswordFn = VerifyPassword
 // 硬编码常量而非运行时生成, 杜绝生成失败时 fail-open 成快速 parse-fail(S2-048 R1 codex 跟进)。
 const timingEqualizationHash = "$argon2id$v=19$m=65536,t=3,p=1$0k8KjQ01TveJhg0daai5hw$m6FwG+zGw8X2YLWE1grPszMNN84IGcyd5xhFrEGMhIc"
 
+// equalizeLoginWork 跑一次与正常口令校验等价成本的 argon2(结果丢弃)。用于让「因不存在 / 账号状态 /
+// 无本地口令而提前返回」的登录失败路径与「口令错」路径耗时一致, 杜绝登录时序枚举侧信道(S2-048)。
+// 有真实口令 hash 用真实 hash(成本与正常校验完全一致), 否则用硬编码的合法 dummy argon2id 常量。
+func (s *Service) equalizeLoginWork(passwordHash, attempted string) {
+	if passwordHash == "" {
+		passwordHash = timingEqualizationHash
+	}
+	_, _ = verifyPasswordFn(passwordHash, attempted)
+}
+
 type Store interface {
 	CreateUser(context.Context, CreateUserParams) (User, error)
 	GetUserByEmail(context.Context, int64, string) (User, error)
@@ -152,30 +162,38 @@ func (s *Service) Authenticate(ctx context.Context, in LoginInput) (User, error)
 			// S2-048 时序等工: 对不存在的邮箱也跑一次等价 argon2 校验再返回, 否则
 			// 「存在(下面走 VerifyPassword 跑 argon2)」与「不存在(直接返回)」的响应时延差
 			// 会暴露该邮箱是否已注册(用户枚举侧信道)。比较结果丢弃, 一律返 ErrInvalidCredentials。
-			_, _ = verifyPasswordFn(timingEqualizationHash, in.Password)
+			s.equalizeLoginWork("", in.Password)
 			return User{}, ErrInvalidCredentials
 		}
 		return User{}, err
 	}
+	// S2-048 时序等工: 以下「因账号状态而失败」的分支若直接返回, 耗时会明显短于「口令错」(跑 argon2)
+	// 分支, 从而泄露「该邮箱存在且处于某状态」(时序枚举侧信道)。配合 handler 把这些状态对外统一成
+	// generic invalid_credentials(消状态码 oracle), service 这里负责消时序: 每条返回前都跑一次与口令
+	// 校验等价成本的 argon2。typed error 仍返回, 供 handler 审计归类真实 reason(对外不暴露)。
 	if user.Status == UserStatusDisabled || user.Status == UserStatusDeleted {
+		s.equalizeLoginWork(user.PasswordHash, in.Password)
 		return User{}, ErrUserDisabled
 	}
 	if user.Status == UserStatusResetRequired {
+		s.equalizeLoginWork(user.PasswordHash, in.Password)
 		return User{}, ErrPasswordResetRequired
 	}
 	threshold := s.lockoutThreshold()
 	if user.Status == UserStatusLocked || user.FailedLoginCount >= threshold || (user.LockedUntil != nil && s.now().Before(*user.LockedUntil)) {
+		s.equalizeLoginWork(user.PasswordHash, in.Password)
 		_ = s.Store.MarkLoginFailure(ctx, user.TenantID, user.ID, threshold)
 		return User{}, ErrUserLocked
 	}
 	if s.requireEmailVerification(ctx, in.TenantID) && !user.EmailVerified {
+		s.equalizeLoginWork(user.PasswordHash, in.Password)
 		return User{}, ErrEmailUnverified
 	}
 	if user.PasswordHash == "" {
 		// S2-048 时序等工: 存在但无本地口令(social-only)的用户也跑一次等价 argon2 再返回,
 		// 否则其「快速返回」会与「不存在(已跑 dummy)」「口令错(跑真 argon2)」的时延不同, 仍暴露
 		// 该邮箱已注册(social-only)。不 MarkLoginFailure(无本地口令可失败, 保留既有语义)。
-		_, _ = verifyPasswordFn(timingEqualizationHash, in.Password)
+		s.equalizeLoginWork("", in.Password)
 		return User{}, ErrInvalidCredentials
 	}
 	ok, verifyErr := verifyPasswordFn(user.PasswordHash, in.Password)
