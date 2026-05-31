@@ -24,6 +24,30 @@ REPO="$(cd "$DIR/.." && pwd)"
 : "${COORD_URL:?set COORD_URL}"
 : "${WORKER_AI_CMD:?set WORKER_AI_CMD to your headless AI invocation (reads prompt on stdin)}"
 POLL="${WORKER_POLL_SECONDS:-60}"
+UPDATE_BRANCH="${COORD_UPDATE_BRANCH:-fix/hermes-phase-1-e33d940}"
+
+# Auto-update coordination scripts from origin each cycle so future changes propagate
+# without a manual restart. Surgically refreshes ONLY .coordination/ from origin/<landing>
+# (never merges the worker's branch or touches its in-flight work), then re-execs itself
+# if THIS script changed (syntax-checked first so a bad push can't kill the loop).
+# Disable with COORD_AUTO_UPDATE=0. Best-effort: any failure leaves the running loop intact.
+self_update(){
+  [ "${COORD_AUTO_UPDATE:-1}" = "1" ] || return 0
+  git -C "$REPO" fetch -q origin "$UPDATE_BRANCH" 2>/dev/null || return 0
+  local before after
+  before="$(sha1sum "$DIR/worker-loop.sh" 2>/dev/null | cut -d' ' -f1)"
+  git -C "$REPO" restore --source="origin/$UPDATE_BRANCH" --worktree -- .coordination/ 2>/dev/null \
+    || git -C "$REPO" checkout -q "origin/$UPDATE_BRANCH" -- .coordination/ 2>/dev/null || return 0
+  after="$(sha1sum "$DIR/worker-loop.sh" 2>/dev/null | cut -d' ' -f1)"
+  if [ -n "$before" ] && [ "$before" != "$after" ]; then
+    if bash -n "$DIR/worker-loop.sh" 2>/dev/null; then
+      echo "[$(date '+%H:%M:%S')] worker-loop.sh updated from origin -> re-exec new version"
+      exec bash "$DIR/worker-loop.sh"
+    else
+      echo "[$(date '+%H:%M:%S')] updated worker-loop.sh has a syntax error; keeping current version"
+    fi
+  fi
+}
 
 prompt() {
   cat <<EOF
@@ -61,8 +85,9 @@ except Exception: pass
 PY
 }
 
-echo "worker-loop: agent=$COORD_AGENT poll=${POLL}s  (Ctrl-C to stop)"
+echo "worker-loop: agent=$COORD_AGENT poll=${POLL}s update=${UPDATE_BRANCH}  (Ctrl-C to stop)"
 while true; do
+  self_update    # pull latest .coordination scripts (+ re-exec self if changed) before each poll
   mine="$(bash "$DIR/task.sh" mine 2>&1 || true)"
   if echo "$mine" | grep -Eq '\[(assigned|in_progress)\b'; then
     tid="$(printf '%s\n' "$mine" | grep -E '\[(assigned|in_progress)' | head -1 | sed -E 's/^[[:space:]]*\[[^]]*\][[:space:]]*//' | awk '{print $1}')"
