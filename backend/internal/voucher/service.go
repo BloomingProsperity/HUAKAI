@@ -15,6 +15,8 @@ type Service struct {
 	limiter BurstLimiter
 }
 
+const supportedVoucherBalanceCurrency = "USD"
+
 type Option func(*Service)
 
 func WithAuditSink(sink AuditSink) Option {
@@ -279,6 +281,9 @@ func validateCreateInput(input CreateInput) error {
 	if input.TenantID <= 0 || input.AdminID <= 0 || input.AmountCents <= 0 || input.MaxRedemptions <= 0 {
 		return ErrInvalidInput
 	}
+	if input.CurrencyCode != supportedVoucherBalanceCurrency {
+		return ErrInvalidInput
+	}
 	if input.ValidFrom.IsZero() || input.ValidUntil.IsZero() || !input.ValidUntil.After(input.ValidFrom) {
 		return ErrInvalidInput
 	}
@@ -301,6 +306,9 @@ func normalizeBatchInput(input BatchCreateInput) BatchCreateInput {
 func validateBatchInput(input BatchCreateInput) error {
 	if input.TenantID <= 0 || input.AdminID <= 0 || input.Count <= 0 || input.Count > 1000 ||
 		input.AmountCents <= 0 || input.MaxRedemptions <= 0 {
+		return ErrInvalidInput
+	}
+	if input.CurrencyCode != supportedVoucherBalanceCurrency {
 		return ErrInvalidInput
 	}
 	if input.ValidFrom.IsZero() || input.ValidUntil.IsZero() || !input.ValidUntil.After(input.ValidFrom) {
@@ -328,10 +336,7 @@ func validateRedeemInput(input RedeemInput) error {
 func normalizeCurrency(code string) string {
 	code = strings.TrimSpace(strings.ToUpper(code))
 	if code == "" {
-		return "USD"
-	}
-	if len(code) != 3 {
-		return "USD"
+		return supportedVoucherBalanceCurrency
 	}
 	return code
 }
