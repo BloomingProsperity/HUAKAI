@@ -4,7 +4,7 @@
 Per-agent lock files in locks/<agent>.json avoid the meta-collision of a single
 shared status file. Subcommands: claim | check | release.
 """
-import sys, os, json, re, datetime, urllib.request, urllib.error, urllib.parse, ssl, posixpath
+import sys, os, json, re, datetime, urllib.request, urllib.error, urllib.parse, ssl, posixpath, subprocess
 
 
 def _norm_files(items):
@@ -55,8 +55,12 @@ def _http(method, path, body=None):
 
 def remote_claim(agent, files_csv, feature, purpose):
     files = [x.strip() for x in files_csv.split(",") if x.strip()]
+    # L5: pass the session id so the server can refuse a SECOND live session of the same
+    # agent (one agent = one editing session). Empty when COORD_SESSION is unset -> the
+    # server keeps the legacy single-session behaviour, so this is backward-compatible.
     code, obj = _http("POST", "/claim", {"agent": agent, "files": files,
-                                         "core_feature": feature, "purpose": purpose})
+                                         "core_feature": feature, "purpose": purpose,
+                                         "session": os.environ.get("COORD_SESSION", "")})
     if code == 200:
         print(f"✓ claimed {files} for [{feature}] — {purpose}")
         return 0
@@ -176,6 +180,13 @@ def remote_task_status(tid, status, **extra):
     if not _need_remote():
         return 1
     body = {"id": tid, "status": status}
+    # L4: carry the actor identity so the server can enforce its actor/role matrix
+    # (assignee-only progress, dispatcher-only verdicts, reviewer != assignee). Falls
+    # back to COORD_AGENT; the server treats an empty actor as "identity unknown" and
+    # degrades to legacy behaviour, so this stays backward-compatible for old callers.
+    ag = _agent()
+    if ag and "actor" not in extra:
+        body["actor"] = ag
     body.update({k: v for k, v in extra.items() if v is not None})
     code, obj = _http("POST", "/tasks/status", body)
     if code == 200:
@@ -204,7 +215,8 @@ def remote_task_start(tid):
     claimed = False
     if files:
         code, obj = _http("POST", "/claim", {"agent": ag, "files": files,
-                          "core_feature": t.get("feature") or tid, "purpose": "task " + tid})
+                          "core_feature": t.get("feature") or tid, "purpose": "task " + tid,
+                          "session": os.environ.get("COORD_SESSION", "")})
         if code == 409:
             print("⚠️  cannot start — files already locked by another agent:")
             for c in obj.get("conflicts", []):
@@ -314,9 +326,59 @@ def remote_task_approve(tid):
     return 1
 
 
+# Landing base the unmerged work/* branches are diffed against (L7). Mirrors the
+# worker-loop self-update branch; override with COORD_LANDING_BASE if the landing
+# branch ever changes so the conflict scan keeps diffing against the right base.
+LANDING_BASE = os.environ.get("COORD_LANDING_BASE",
+                              os.environ.get("COORD_UPDATE_BRANCH", "fix/hermes-phase-1-e33d940"))
+
+
+def _git(*args):
+    """Best-effort git in the repo root (.coordination/..). Returns (rc, stdout) and
+    NEVER raises — a missing git / no-network / not-a-repo environment must fail soft so
+    the conflicts pre-check can't crash or hang the dispatcher's assign flow (L7)."""
+    repo = os.path.dirname(DIR)
+    try:
+        p = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, timeout=20)
+        return p.returncode, p.stdout
+    except Exception:
+        return 1, ""
+
+
+def _branch_conflicts(want):
+    """L7: an unmerged work/* branch still 'owns' every file it changed, even after its
+    ledger task has left the non-terminal set (e.g. done-but-not-yet-merged, or files it
+    touched OUTSIDE its declared scope_files). For each origin/work/* head, diff its real
+    changed files vs the landing base and intersect with the candidate scope. Best-effort:
+    a fetch/diff failure prints a soft warning and is skipped — it never blocks assigning."""
+    hits = []
+    rc, out = _git("ls-remote", "--heads", "origin", "work/*")
+    if rc != 0 or not out.strip():
+        return hits  # no remote work branches visible (or git/network unavailable) -> soft
+    # Make sure the landing base + the work heads are locally resolvable for the diff.
+    _git("fetch", "-q", "origin", LANDING_BASE)
+    branches = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 2 and parts[1].startswith("refs/heads/"):
+            branches.append(parts[1][len("refs/heads/"):])  # e.g. work/s2-048
+    for br in branches:
+        _git("fetch", "-q", "origin", br)
+        rc, diff = _git("diff", "--name-only", f"origin/{LANDING_BASE}...origin/{br}")
+        if rc != 0:
+            print(f"    (note: could not diff origin/{br} vs {LANDING_BASE} — skipped)", file=sys.stderr)
+            continue
+        changed = _norm_files(diff.splitlines())
+        ov = want & changed
+        if ov:
+            hits.append((br, sorted(ov)))
+    return hits
+
+
 def remote_task_conflicts(files_csv):
     """Q3 guard: does a candidate scope overlap any NON-TERMINAL task — including
-    parked (needs_owner) or blocked work that stopped mid-edit? Use before assigning."""
+    parked (needs_owner) or blocked work that stopped mid-edit — OR the real changed
+    files of any unmerged origin/work/* branch (L7)? Use before assigning."""
     if not _need_remote():
         return 1
     want = _norm_files(files_csv.split(","))
@@ -331,12 +393,18 @@ def remote_task_conflicts(files_csv):
             ov = want & _norm_files(t.get("scope_files", []))
             if ov:
                 hits.append((t["id"], t.get("status"), t.get("assignee"), sorted(ov)))
-    if not hits:
-        print("✓ no scope conflict with any active/parked/blocked task")
+    branch_hits = _branch_conflicts(want)
+    if not hits and not branch_hits:
+        print("✓ no scope conflict with any active/parked/blocked task or unmerged work branch")
         return 0
-    print("⚠️  scope overlaps existing non-terminal tasks (incl. parked/blocked — may resume):")
-    for i, s, a, ov in hits:
-        print(f"    - {i} [{s}] {a or '-'} overlaps: {', '.join(ov)}")
+    if hits:
+        print("⚠️  scope overlaps existing non-terminal tasks (incl. parked/blocked — may resume):")
+        for i, s, a, ov in hits:
+            print(f"    - {i} [{s}] {a or '-'} overlaps: {', '.join(ov)}")
+    if branch_hits:
+        print("⚠️  scope overlaps UNMERGED work branches (finished-but-unmerged still owns its files):")
+        for br, ov in branch_hits:
+            print(f"    - origin/{br} changed: {', '.join(ov)}")
     return 2
 
 
