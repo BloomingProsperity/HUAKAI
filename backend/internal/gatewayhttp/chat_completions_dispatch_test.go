@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/cache_routing"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	protoanthropic "github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
@@ -284,6 +285,63 @@ func TestResponsesFamilySetEndpointFamily(t *testing.T) {
 	if string(dispatcher.observed.RequestMeta.ClientProtocol) != "openai_responses" ||
 		dispatcher.observed.RequestMeta.EndpointFamily != "openai_responses" {
 		t.Fatalf("responses meta client/family=%q/%q", dispatcher.observed.RequestMeta.ClientProtocol, dispatcher.observed.RequestMeta.EndpointFamily)
+	}
+}
+
+func TestResponsesPreviousResponseIDPreservesSessionHashThroughDispatch(t *testing.T) {
+	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	selector := &recordingSelectionRequestSelector{}
+	d := responsesClientAdapterDeps(t)
+	d.CanonicalDispatcher = dispatcher
+	d.Selector = selector
+
+	rec := invokeResponsesHandlerPath(t, d, "/v1/responses", `{"model":"gpt-4o","stream":false,"previous_response_id":"resp_abc","input":"hi"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if len(selector.requests) != 1 {
+		t.Fatalf("selector requests = %d; want 1", len(selector.requests))
+	}
+	if got := selector.requests[0].SessionHash; got != "resp_abc" {
+		t.Fatalf("selector SessionHash=%q want previous_response_id resp_abc", got)
+	}
+	if dispatcher.observed == nil {
+		t.Fatal("canonical dispatcher did not observe request")
+	}
+	if got := dispatcher.observed.RequestMeta.SessionHash; got != "resp_abc" {
+		t.Fatalf("SessionHash=%q want previous_response_id resp_abc; empty prompt hash must not overwrite sticky affinity", got)
+	}
+}
+
+func TestResponsesPreviousResponseIDDoesNotReplacePromptHashAffinity(t *testing.T) {
+	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	selector := &recordingSelectionRequestSelector{}
+	d := responsesClientAdapterDeps(t)
+	d.CanonicalDispatcher = dispatcher
+	d.Selector = selector
+
+	body := `{"model":"gpt-4o","stream":false,"previous_response_id":"resp_abc","input":"hi","tools":[{"type":"function","name":"f1","description":"...","parameters":{}}]}`
+	want := cache_routing.ComputePromptHash([]byte(body))
+	if want == "" {
+		t.Fatal("test fixture must produce a non-empty prompt hash")
+	}
+	rec := invokeResponsesHandlerPath(t, d, "/v1/responses", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if len(selector.requests) != 1 {
+		t.Fatalf("selector requests = %d; want 1", len(selector.requests))
+	}
+	if got := selector.requests[0].SessionHash; got != want {
+		t.Fatalf("selector SessionHash=%q want prompt hash %q", got, want)
+	}
+	if dispatcher.observed == nil {
+		t.Fatal("canonical dispatcher did not observe request")
+	}
+	if got := dispatcher.observed.RequestMeta.SessionHash; got != want {
+		t.Fatalf("RequestMeta.SessionHash=%q want prompt hash %q", got, want)
 	}
 }
 

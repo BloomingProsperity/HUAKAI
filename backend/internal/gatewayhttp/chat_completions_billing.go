@@ -493,7 +493,9 @@ func enrichCanonicalRequestMeta(env *proto.HCSF, upstreamModelID, providerName, 
 	env.RequestMeta.UpstreamModel = upstreamModelID
 	env.RequestMeta.Provider = providerName
 	env.RequestMeta.IdempotencyKey = idempotencyKey
-	env.RequestMeta.SessionHash = sessionHash
+	if sessionHash != "" {
+		env.RequestMeta.SessionHash = sessionHash
+	}
 	if env.RequestMeta.EvidenceLabel == "" {
 		env.RequestMeta.EvidenceLabel = proto.EvidenceMock
 	}
