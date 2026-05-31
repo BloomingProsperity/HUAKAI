@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +19,8 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
+	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
@@ -933,5 +936,162 @@ func TestAuthPasswordResetConfirmRefusesWhenSessionStoreUnset(t *testing.T) {
 	}
 	if _, err := authSvc.Authenticate(context.Background(), userauth.LoginInput{TenantID: 1, Email: "reset@example.test", Password: "secret-old"}); err != nil {
 		t.Fatalf("old password must still authenticate — reset must not commit when the session store is unset; got %v", err)
+	}
+}
+
+// gatewayCountingAuthStore 包住内存 store 并数 GetUserByEmail 次数, 用于证明限流命中时登录请求
+// 根本没走到查用户 / argon2(pre-KDF 顺序)。
+type gatewayCountingAuthStore struct {
+	*gatewayMemoryAuthStore
+	getByEmail int64
+}
+
+func (s *gatewayCountingAuthStore) GetUserByEmail(ctx context.Context, tenantID int64, email string) (userauth.User, error) {
+	atomic.AddInt64(&s.getByEmail, 1)
+	return s.gatewayMemoryAuthStore.GetUserByEmail(ctx, tenantID, email)
+}
+
+func (s *gatewayCountingAuthStore) calls() int64 { return atomic.LoadInt64(&s.getByEmail) }
+
+func seedLoginUser(t *testing.T, store *gatewayMemoryAuthStore, email, password string, status userauth.UserStatus, emailVerified bool) {
+	t.Helper()
+	cheap := userauth.PasswordPolicy{MemoryKiB: 64, Iterations: 1, Parallelism: 1, SaltBytes: 8, KeyBytes: 16}
+	hash, err := userauth.HashPassword(password, cheap)
+	if err != nil {
+		t.Fatalf("hash seed password: %v", err)
+	}
+	if _, err := store.CreateUser(context.Background(), userauth.CreateUserParams{
+		TenantID: 1, Email: email, PasswordHash: hash, EmailVerified: emailVerified, Status: status,
+	}); err != nil {
+		t.Fatalf("seed login user: %v", err)
+	}
+}
+
+func newLoginTestHandler(t *testing.T, now time.Time, store userauth.Store, throttle *loginthrottle.Limiter, requireVerified bool) (http.Handler, *captureAuthEventSink) {
+	t.Helper()
+	authSvc := userauth.NewService(store)
+	authSvc.PasswordPolicy = userauth.PasswordPolicy{MemoryKiB: 64, Iterations: 1, Parallelism: 1, SaltBytes: 8, KeyBytes: 16}
+	authSvc.RequireVerified = requireVerified
+	authSvc.Now = func() time.Time { return now }
+	sessionSvc := usersession.NewService(usersession.NewMemoryStore())
+	sessionSvc.Now = func() time.Time { return now }
+	sessionSvc.SigningKey = testSessionSigningKey()
+	resolver, err := clientip.NewResolver(nil)
+	if err != nil {
+		t.Fatalf("client ip resolver: %v", err)
+	}
+	events := &captureAuthEventSink{}
+	r := chi.NewRouter()
+	r.Route("/v1/auth", func(r chi.Router) {
+		MountAuthRoutes(r, AuthHandlerDeps{
+			Auth: authSvc, Sessions: sessionSvc, EventSink: events,
+			ClientIPResolver: resolver, LoginThrottle: throttle,
+		})
+	})
+	return r, events
+}
+
+func loginErrorCode(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var resp struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error body: %v (%s)", err, rec.Body.String())
+	}
+	return resp.Error.Code
+}
+
+func lastLoginFailedReason(t *testing.T, events *captureAuthEventSink) string {
+	t.Helper()
+	events.mu.Lock()
+	defer events.mu.Unlock()
+	for i := len(events.events) - 1; i >= 0; i-- {
+		if events.events[i].EventType == "user_login_failed" {
+			return events.events[i].ReasonClass
+		}
+	}
+	t.Fatal("no user_login_failed audit event was recorded")
+	return ""
+}
+
+// TestLogin_ThrottleBlocksBeforeKDF 是 S2-048 门1 的核心判别测: 限流命中时, 登录请求必须在调用
+// Authenticate(查用户 + argon2)之前就被 429 挡掉。用「查用户次数」证明 pre-KDF 顺序: 被限流的那
+// 次请求绝不能再触发一次 GetUserByEmail(进而 argon2)。
+//
+// mutation: 把 handler 里的限流闸移到 Authenticate 之后 → 被限流的请求仍先查了用户/跑了 argon2 →
+// 查用户次数从 1 涨到 2 → 红(未认证 CPU 放大 DoS 复活)。
+func TestLogin_ThrottleBlocksBeforeKDF(t *testing.T) {
+	now := time.Date(2026, 5, 31, 9, 0, 0, 0, time.UTC)
+	base := newGatewayMemoryAuthStore(now)
+	seedLoginUser(t, base, "u@example.test", "secret", userauth.UserStatusActive, true)
+	counting := &gatewayCountingAuthStore{gatewayMemoryAuthStore: base}
+	// WindowLimit=1: 第一次失败后, 同 IP 第二次在限流闸即被拒(不进 Authenticate)。
+	limiter := loginthrottle.New(loginthrottle.Config{WindowLimit: 1, InFlightLimit: 10, BanAfter: 100, Now: func() time.Time { return now }})
+	r, _ := newLoginTestHandler(t, now, counting, limiter, false)
+
+	body := map[string]any{"tenant_id": 1, "email": "u@example.test", "password": "wrong"}
+	rec1 := serveJSON(t, r, http.MethodPost, "/v1/auth/login", body)
+	assertHTTPStatus(t, rec1, http.StatusUnauthorized)
+	if code := loginErrorCode(t, rec1); code != "invalid_credentials" {
+		t.Fatalf("wrong-password code=%q, want generic invalid_credentials", code)
+	}
+	hits := counting.calls()
+	if hits != 1 {
+		t.Fatalf("first login should reach the store exactly once, got %d", hits)
+	}
+
+	rec2 := serveJSON(t, r, http.MethodPost, "/v1/auth/login", body)
+	assertHTTPStatus(t, rec2, http.StatusTooManyRequests)
+	if got := counting.calls(); got != hits {
+		t.Fatalf("throttled login MUST NOT reach the store/argon2 (pre-KDF); store lookups went %d -> %d", hits, got)
+	}
+	if rec2.Header().Get("Retry-After") == "" {
+		t.Fatal("429 throttle response must carry a Retry-After header")
+	}
+}
+
+// TestLogin_AccountStateFailuresAreGeneric 是 S2-048 门2 的判别测: 所有「账号存在性/状态」相关的
+// 登录失败对外必须是同一个 generic 401 invalid_credentials(消状态码枚举 oracle), 但审计事件仍保留
+// 真实 reason_class(操作员可见)。
+//
+// mutation: 任一状态在 handler 仍走 writeAuthError(保留 403 user_disabled 等专用码)→ 该 case 的
+// HTTP 401 / code 断言红; handler 把审计 reason 也抹成 generic → 审计 reason 断言红。
+func TestLogin_AccountStateFailuresAreGeneric(t *testing.T) {
+	now := time.Date(2026, 5, 31, 9, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name          string
+		status        userauth.UserStatus
+		emailVerified bool
+		password      string
+		wantReason    string
+	}{
+		{"disabled", userauth.UserStatusDisabled, true, "secret", "user_disabled"},
+		{"locked", userauth.UserStatusLocked, true, "secret", "user_locked"},
+		{"reset_required", userauth.UserStatusResetRequired, true, "secret", "password_reset_required"},
+		{"unverified", userauth.UserStatusActive, false, "secret", "email_unverified"},
+		{"wrong_password", userauth.UserStatusActive, true, "wrong", "invalid_credentials"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base := newGatewayMemoryAuthStore(now)
+			seedLoginUser(t, base, "u@example.test", "secret", tc.status, tc.emailVerified)
+			r, events := newLoginTestHandler(t, now, base, nil, true) // RequireVerified=true; 无限流隔离本测
+
+			rec := serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
+				"tenant_id": 1, "email": "u@example.test", "password": tc.password,
+			})
+			// 对外: 统一 generic 401 invalid_credentials, 不泄露账号状态。
+			assertHTTPStatus(t, rec, http.StatusUnauthorized)
+			if code := loginErrorCode(t, rec); code != "invalid_credentials" {
+				t.Fatalf("%s: public error code=%q, want invalid_credentials (no status enumeration)", tc.name, code)
+			}
+			// 对内: 审计事件仍记真实 reason, 操作员可见。
+			if reason := lastLoginFailedReason(t, events); reason != tc.wantReason {
+				t.Fatalf("%s: audit reason_class=%q, want %q (audit must keep the real reason while user sees generic)", tc.name, reason, tc.wantReason)
+			}
+		})
 	}
 }
