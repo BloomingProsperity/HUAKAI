@@ -88,16 +88,60 @@ function pctColor(p){ return p>=80?"var(--green)":p>=60?"var(--yellow)":p>=30?"v
 function bar(p){ return `<div class="bar"><i style="width:${p}%;background:${pctColor(p)}"></i></div>`; }
 function secPct(s){ const ls=s.leaves; return Math.round(ls.reduce((a,l)=>a+(l.pct||0),0)/ls.length); }
 function secFix(s){ let land=0,open=0,def=0; s.leaves.forEach(l=>{const f=l.fix||{}; land+=(f.landed||[]).length; open+=(f.open||[]).length; def+=(f.deferred||[]).length;}); return {land,open,def}; }
-function esc(x){ return (x==null?"":(""+x)).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+// escapes &<> AND both quote chars, so esc() is safe in text content AND inside
+// double/single-quoted attribute values (live /tasks fields are attacker-influenceable).
+function esc(x){ return (x==null?"":(""+x)).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
 let DATA=null, state={q:"",stage:"",onlyOpen:false,onlyVerified:false};
 
+// --- live dispatch overlay: match the /tasks ledger onto tree nodes by finding id ---
+// (a leaf's fix.landed/deferred/open ARE finding ids, e.g. S2-114, so the task↔node
+//  link already exists; no schema change needed.) Populated only when coordinator-served.
+var LIVE_TASKS = {};            // findingId -> task {status, assignee, ...}
+var OVERLAY_ON = false;
+var LIVE_ERR = "";              // last /tasks fetch error; surfaced — never silently shown as "empty ledger"
+const TASK_STAT = {
+  todo:{c:"#8b98a9",t:"待派"},  // legal default status (coord_server TASK_STATUSES) — must show, else backlog hides
+  assigned:{c:"#9ecbff",t:"已派"}, in_progress:{c:"#f0c674",t:"在改"}, review:{c:"#c9a7f0",t:"待审"},
+  done:{c:"#7ee29a",t:"完成"}, blocked:{c:"#ff8b8b",t:"卡住"}, needs_owner:{c:"#ff5f5f",t:"待你批"}
+};
+function liveTag(id){
+  var t=LIVE_TASKS[id]; if(!t) return "";
+  var s=TASK_STAT[t.status]||{c:"#8b98a9",t:t.status};
+  return `<span style="font-size:10px;padding:0 5px;margin-left:3px;border:1px solid ${s.c};color:${s.c};border-radius:9px"`+
+    ` title="${esc(t.assignee||'')} · ${esc((t.status||''))}">▶${esc(s.t)}${t.assignee?'·'+esc(t.assignee):''}</span>`;
+}
+
 function fixBadges(f){
   f=f||{}; let h="";
-  (f.landed||[]).forEach(x=>h+=`<span class="badge b-land">✅${esc(x)}</span>`);
-  (f.deferred||[]).forEach(x=>h+=`<span class="badge b-def">⏸${esc(x)}</span>`);
-  (f.open||[]).forEach(x=>h+=`<span class="badge b-open">○${esc(x)}</span>`);
+  (f.landed||[]).forEach(x=>h+=`<span class="badge b-land">✅${esc(x)}</span>`+liveTag(x));
+  (f.deferred||[]).forEach(x=>h+=`<span class="badge b-def">⏸${esc(x)}</span>`+liveTag(x));
+  (f.open||[]).forEach(x=>h+=`<span class="badge b-open">○${esc(x)}</span>`+liveTag(x));
   return h||'<span style="color:#566">—</span>';
+}
+
+// All finding ids that ARE mapped onto the tree (any leaf's fix.*).
+function treeFindingIds(){
+  var s=new Set();
+  (DATA.sections||[]).forEach(sec=>sec.leaves.forEach(l=>{
+    var f=l.fix||{}; ["landed","deferred","open"].forEach(k=>(f[k]||[]).forEach(id=>s.add(id)));
+  }));
+  return s;
+}
+
+// Start the real-time overlay: poll /tasks every 5s and re-render. Coordinator-only.
+function startOverlay(){
+  var tok=sessionStorage.getItem("COORD_TOKEN");
+  if(!ON_COORD || !tok || OVERLAY_ON) return;
+  OVERLAY_ON=true;
+  function refresh(){
+    fetch("/tasks",{headers:{Authorization:"Bearer "+tok}})
+      .then(r=>{ if(!r.ok) throw new Error("HTTP "+r.status+(r.status===401?" · token 可能已失效":"")); return r.json(); })
+      .then(d=>{ LIVE_ERR=""; LIVE_TASKS={}; (d.tasks||[]).forEach(t=>{LIVE_TASKS[t.id]=t;}); if(DATA) render(); })
+      // never collapse a fetch/auth failure into an empty ledger — surface it, keep the last-known snapshot.
+      .catch(e=>{ LIVE_ERR=(e&&e.message)||(""+e); if(DATA) render(); });
+  }
+  refresh(); setInterval(refresh, 5000);
 }
 
 function leafMatch(l){
@@ -187,8 +231,26 @@ function render(){
     <div style="margin-top:8px;color:var(--dim)">已深核 ✓ 节点:${(cd.verified_nodes||[]).map(esc).join(" · ")}</div>
   </div>`;
 
-  document.getElementById("root").innerHTML=dash+ctrls+tree+gaps+diff+
-    `<div class="foot">改 <code>feature-tree.json</code> 任一 <code>pct</code>/<code>fix</code> 存盘 → 刷新本页即更新(视图/数据分离)。来源:codex 树 + 02 加权 + 03 parity matrix + audit MASTER(195)+ 修复战役亲历。</div>`;
+  // 实时调度叠加层(coordinator-served 时显示):谁在弄哪个模块 + 树外未登记的活
+  let live="";
+  if(OVERLAY_ON){
+    const tasks=Object.values(LIVE_TASKS), tids=treeFindingIds();
+    const unmapped=tasks.filter(t=>!tids.has(t.id));
+    const byStat={}; tasks.forEach(t=>{(byStat[t.status]=byStat[t.status]||[]).push(t);});
+    const order=["in_progress","review","needs_owner","blocked","assigned","todo","done"];
+    const chips=order.filter(s=>byStat[s]).map(s=>{const m=TASK_STAT[s]||{c:"#8b98a9",t:s};
+      return `<span style="font-size:12px;padding:2px 9px;margin:0 5px 5px 0;border:1px solid ${m.c};color:${m.c};border-radius:11px;display:inline-block">${esc(m.t)} ${byStat[s].length}</span>`;}).join("");
+    const active=(byStat.in_progress||[]).concat(byStat.review||[],byStat.needs_owner||[]).map(t=>{
+      const m=TASK_STAT[t.status]||{t:t.status}; return `<div style="margin:2px 0">▶ <b>${esc(t.assignee||'?')}</b> · <code>${esc(t.id)}</code> ${esc(t.title||'')} <span style="color:var(--dim)">[${esc(m.t)}]</span>${t.review_notes?` <span style="color:var(--orange)">↩ ${esc(t.review_notes)}</span>`:""}</div>`;}).join("");
+    const um=unmapped.length?`<div style="margin-top:9px;padding-top:8px;border-top:1px solid var(--line);color:var(--orange)"><b>🆕 ${unmapped.length} 个未登记到功能树的活</b>(树外新功能/突发任务 → 需排进功能树):<br><span style="font-size:12px">${unmapped.map(t=>`<code>${esc(t.id)}</code> ${esc(t.title||'')} → ${esc(t.assignee||'未派')}`).join("　·　")}</span></div>`:"";
+    const errBanner=LIVE_ERR?`<div style="margin-bottom:7px;padding:5px 9px;border:1px solid var(--orange);color:var(--orange);border-radius:7px;font-size:12.5px">⚠️ 实时数据获取失败:${esc(LIVE_ERR)} — 下面是最后一次成功快照,可能已过期</div>`:"";
+    live=`<div class="panel-h">实时调度叠加 · 谁在弄哪个模块(每 5 秒刷新 · 源自 /tasks 账本)</div>
+      <div class="card">${errBanner}${tasks.length?chips:'<span style="color:var(--dim)">(账本暂无任务)</span>'}
+      <div style="margin-top:6px;font-size:12.5px">${active||'<span style="color:var(--dim)">(当前无人在改)</span>'}</div>${um}</div>`;
+  }
+
+  document.getElementById("root").innerHTML=dash+live+ctrls+tree+gaps+diff+
+    `<div class="foot">改 <code>feature-tree.json</code> 任一 <code>pct</code>/<code>fix</code> 存盘 → 刷新本页即更新(视图/数据分离)。叠加层实时读 <code>/tasks</code> 账本(谁在弄哪个模块 + 树外新活)。来源:codex 树 + 02 加权 + 03 parity matrix + audit MASTER(195)+ 修复战役亲历。</div>`;
 
   // wire events
   const q=document.getElementById("q"); q.oninput=e=>{state.q=e.target.value; render(); document.getElementById("q").focus();};
@@ -223,7 +285,7 @@ function tokenBox(msg){
   document.getElementById("go").onclick=function(){
     var t=document.getElementById("tok").value.trim(); if(!t) return;
     sessionStorage.setItem("COORD_TOKEN",t);
-    loadRemote(t).then(d=>{DATA=d; render();}).catch(e=>tokenBox("token 不对或加载失败:"+esc(e.message)));
+    loadRemote(t).then(d=>{DATA=d; render(); startOverlay();}).catch(e=>tokenBox("token 不对或加载失败:"+esc(e.message)));
   };
 }
 function localHelp(msg){
@@ -239,11 +301,11 @@ function localHelp(msg){
 // JSON failure and never prompts for, or POSTs, the coordination token.
 var ON_COORD = (window.__COORD_SERVED__ === true);
 fetch("./feature-tree.json").then(r=>{if(!r.ok)throw new Error("http "+r.status);return r.json();})
- .then(d=>{DATA=d; render();})
+ .then(d=>{DATA=d; render(); startOverlay();})
  .catch(e=>{
    if(!ON_COORD){ localHelp(e.message); return; }
    var saved=sessionStorage.getItem("COORD_TOKEN");
-   if(saved){ loadRemote(saved).then(d=>{DATA=d; render();}).catch(()=>tokenBox("功能树进度地图 · 需要 token")); }
+   if(saved){ loadRemote(saved).then(d=>{DATA=d; render(); startOverlay();}).catch(()=>tokenBox("功能树进度地图 · 需要 token")); }
    else tokenBox("功能树进度地图 · 需要 token");
  });
 </script>
