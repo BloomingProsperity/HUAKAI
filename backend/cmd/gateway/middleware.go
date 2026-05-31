@@ -46,10 +46,29 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 	router.Use(securityHeaders)
 	router.Use(middleware.RequestID)
 	router.Use(gatewayhttp.RequestIDLengthLimiter(gatewayhttp.MaxRequestIDLength))
-	router.Use(middleware.RealIP)
 	// S2-141: explicit allowlist CORS, early (preflight answered before auth).
 	// Allowlist via HUAKAI_CORS_ALLOWED_ORIGINS (comma-separated); empty = deny.
+	// It runs before the S2-057 limiter so a 429 to an allowlisted browser origin
+	// still carries Access-Control-Allow-Origin/Vary (the frontend sees the JSON
+	// 429 + Retry-After, not an opaque CORS failure), and an allowlisted preflight
+	// is answered 204 before the limiter even runs. corsMiddleware reads only
+	// Origin/Method, never RemoteAddr, so this is independent of RealIP ordering.
 	router.Use(corsMiddleware(parseAllowedOrigins(os.Getenv("HUAKAI_CORS_ALLOWED_ORIGINS"))))
+	// S2-057: always-on per-IP inbound rate limit. It runs BEFORE middleware.RealIP
+	// on purpose: chi's RealIP overwrites RemoteAddr from client-supplied
+	// True-Client-IP/X-Real-IP/X-Forwarded-For with NO trusted-proxy check, so a
+	// limiter keyed off the post-RealIP RemoteAddr would let an attacker mint fresh
+	// per-IP buckets by rotating those headers. Running before RealIP lets the
+	// gateway's fail-closed trusted-proxy resolver derive the key from the genuine
+	// socket peer (honoring forwarded hops only when the peer is an allowlisted
+	// proxy). Floods (including the expensive S2-048 argon2 auth path) are shed with
+	// 429 before any route handler / quota / provider-account use. Additive: it does
+	// not change the S2-141 securityHeaders/corsMiddleware behavior, only slots in
+	// after CORS. HUAKAI_RL_DISABLE turns it off.
+	if !rateLimitDisabled() {
+		router.Use(newRateLimiter(d.clientIPResolver, logger).middleware)
+	}
+	router.Use(middleware.RealIP)
 	router.Use(privacy.Recoverer(privacyLogger))
 	router.Use(middleware.Timeout(60 * time.Second))
 	router.Use(privacy.Middleware(8 << 20))
