@@ -3,16 +3,20 @@ package dlq
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Store struct {
 	pool *pgxpool.Pool
 }
+
+var ErrStaleLease = errors.New("dlq: stale lease")
 
 type queryer interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
@@ -168,10 +172,14 @@ func (s *Store) MarkDelivered(ctx context.Context, rec Record) error {
 	if s == nil || s.pool == nil {
 		return ErrStoreNotConfigured
 	}
-	_, err := s.pool.Exec(ctx, `
-UPDATE usage_record_dlq
-SET status = 'delivered',
-    replayed_at = now(),
+	leaseOwner, leaseUntil, err := requiredLeaseFence(rec)
+	if err != nil {
+		return err
+	}
+	tag, err := s.pool.Exec(ctx, `
+	UPDATE usage_record_dlq
+	SET status = 'delivered',
+	    replayed_at = now(),
     replay_failure_reason = NULL,
     lease_owner = NULL,
     lease_until = NULL,
@@ -182,11 +190,17 @@ SET status = 'delivered',
     replica_committed_at = CASE
         WHEN event_kind IN ('billing_event_replica', 'audit_event_replica') THEN now()
         ELSE replica_committed_at
-    END,
-    updated_at = now()
-WHERE id = $1`, rec.ID)
+	    END,
+	    updated_at = now()
+	WHERE id = $1
+	  AND status = 'inflight'
+	  AND lease_owner = $2
+	  AND lease_until = $3`, rec.ID, leaseOwner, leaseUntil)
 	if err != nil {
 		return fmt.Errorf("dlq: mark delivered: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("%w: mark delivered id=%d", ErrStaleLease, rec.ID)
 	}
 	return nil
 }
@@ -195,14 +209,18 @@ func (s *Store) MarkFailed(ctx context.Context, rec Record, reason string, decis
 	if s == nil || s.pool == nil {
 		return ErrStoreNotConfigured
 	}
+	leaseOwner, leaseUntil, err := requiredLeaseFence(rec)
+	if err != nil {
+		return err
+	}
 	var next any
 	if decision.Status == StatusPending {
 		next = decision.NextRetryAt.UTC()
 	}
-	_, err := s.pool.Exec(ctx, `
-UPDATE usage_record_dlq
-SET status = $2,
-    replay_attempts = $3,
+	tag, err := s.pool.Exec(ctx, `
+	UPDATE usage_record_dlq
+	SET status = $2,
+	    replay_attempts = $3,
     next_retry_at = COALESCE($4::timestamptz, next_retry_at),
     replay_failure_reason = $5,
     replica_status = CASE
@@ -213,14 +231,30 @@ SET status = $2,
         WHEN $2 IN ('operator_review', 'dlq') THEN now()
         ELSE operator_review_at
     END,
-    lease_owner = NULL,
-    lease_until = NULL,
-    updated_at = now()
-WHERE id = $1`, rec.ID, string(decision.Status), decision.Attempts, next, reason)
+	    lease_owner = NULL,
+	    lease_until = NULL,
+	    updated_at = now()
+	WHERE id = $1
+	  AND status = 'inflight'
+	  AND lease_owner = $6
+	  AND lease_until = $7`, rec.ID, string(decision.Status), decision.Attempts, next, reason, leaseOwner, leaseUntil)
 	if err != nil {
 		return fmt.Errorf("dlq: mark failed: %w", err)
 	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("%w: mark failed id=%d", ErrStaleLease, rec.ID)
+	}
 	return nil
+}
+
+func requiredLeaseFence(rec Record) (string, pgtype.Timestamptz, error) {
+	if rec.LeaseOwner == nil || *rec.LeaseOwner == "" {
+		return "", pgtype.Timestamptz{}, fmt.Errorf("%w: record id=%d has no lease owner", ErrStaleLease, rec.ID)
+	}
+	if !rec.LeaseUntil.Valid {
+		return "", pgtype.Timestamptz{}, fmt.Errorf("%w: record id=%d has no lease deadline", ErrStaleLease, rec.ID)
+	}
+	return *rec.LeaseOwner, rec.LeaseUntil, nil
 }
 
 func normalizeEvent(e Event) Event {
