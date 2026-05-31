@@ -42,19 +42,42 @@ $(bash "$DIR/task.sh" mine 2>&1)
 EOF
 }
 
+# Report this worker's heartbeat + state to the coord server each poll, so the
+# /console panel shows it online and what it is doing (symmetric to the dispatcher).
+# Without this the Owner cannot tell a dead worker-loop from an idle one. Best-effort.
+wpush(){ # $1=state $2=detail [$3=event_kind $4=event_text]
+  ST="$1" DT="$2" EK="${3:-}" ET="${4:-}" python3 - <<'PY' 2>/dev/null || true
+import os,json,ssl,urllib.request
+url=os.environ.get("COORD_URL",""); tok=os.environ.get("COORD_TOKEN",""); ca=os.environ.get("COORD_CACERT","")
+if not url or not tok: raise SystemExit
+body={"agent":os.environ.get("COORD_AGENT","worker"),"state":os.environ["ST"],"detail":os.environ["DT"][:500]}
+if os.environ.get("EK"): body["event"]={"kind":os.environ["EK"],"text":os.environ.get("ET","")[:2000]}
+ctx=ssl.create_default_context(cafile=ca) if ca else ssl.create_default_context()
+op=urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ctx))
+req=urllib.request.Request(url+"/dispatcher/status",data=json.dumps(body).encode(),
+    headers={"Authorization":"Bearer "+tok,"Content-Type":"application/json"})
+try: op.open(req,timeout=10).read()
+except Exception: pass
+PY
+}
+
 echo "worker-loop: agent=$COORD_AGENT poll=${POLL}s  (Ctrl-C to stop)"
 while true; do
   mine="$(bash "$DIR/task.sh" mine 2>&1 || true)"
   if echo "$mine" | grep -Eq '\[(assigned|in_progress)\b'; then
+    tid="$(printf '%s\n' "$mine" | grep -E '\[(assigned|in_progress)' | head -1 | sed -E 's/^[[:space:]]*\[[^]]*\][[:space:]]*//' | awk '{print $1}')"
     echo "[$(date '+%H:%M:%S')] work available -> invoking $WORKER_AI_CMD"
-    # Keep this machine's file lock alive while the AI works (edits can exceed
-    # COORD_TTL); the heartbeat loop is killed as soon as the AI returns.
-    ( while sleep 300; do python3 "$DIR/_coord.py" heartbeat "$COORD_AGENT" >/dev/null 2>&1; done ) &
+    wpush working "在做 ${tid:-任务}" start "领到活,开始执行 ${tid}"
+    # Keep this machine's file lock alive AND refresh the panel heartbeat while the
+    # AI works (edits can exceed COORD_TTL); this loop is killed when the AI returns.
+    ( while sleep 120; do python3 "$DIR/_coord.py" heartbeat "$COORD_AGENT" >/dev/null 2>&1; wpush working "在做 ${tid:-任务}(进行中)"; done ) &
     HB=$!
     prompt | (cd "$REPO" && eval "$WORKER_AI_CMD") || echo "  (AI run returned non-zero; will retry next cycle)"
     kill "$HB" 2>/dev/null || true
+    wpush idle "上个任务跑完,轮询中" done "结束一轮 ${tid}"
   else
     echo "[$(date '+%H:%M:%S')] no work for $COORD_AGENT; sleeping ${POLL}s"
+    wpush idle "空闲 · 轮询中(暂无分配)"
   fi
   sleep "$POLL"
 done
