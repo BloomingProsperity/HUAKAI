@@ -26,6 +26,7 @@ const anthropicLossyHCSFResponse = `{
 
 func testHCSFEnvelope() *proto.HCSF {
 	env := proto.NewEmptyEnvelope()
+	env.RequestMeta.ClientProtocol = proto.ClientProtocolOpenAIChat
 	env.RequestMeta.ProtocolFamily = "openai_chat"
 	env.RequestMeta.Model = "gpt-4o"
 	env.RequestMeta.UpstreamModel = "gpt-4o-upstream"
@@ -91,6 +92,295 @@ func TestDispatchHCSFHappyPathBuildsBodyFromEnvelope(t *testing.T) {
 	msgs := body["messages"].([]any)
 	if msgs[0].(map[string]any)["content"] != "graph text" {
 		t.Fatalf("messages = %+v; want CapabilityGraph text", msgs)
+	}
+}
+
+func TestDispatchHCSFUnsupportedEndpointFamilyFailsBeforeRawFallback(t *testing.T) {
+	const rawMarker = "RAWFALLBACK_MARKER"
+	env := testHCSFEnvelope()
+	env.RequestMeta.EndpointFamily = "gemini_generate"
+	ctx := ContextWithHCSFDispatchInput(context.Background(), HCSFDispatchInput{
+		ProtocolFamily:  "openai_chat",
+		UpstreamModelID: "gpt-4o-upstream",
+		Account:         provider.AccountInfo{AccountID: 7, Platform: "openai", AccountType: "apikey"},
+		Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-test"},
+		RawBody:         []byte(`{"raw_client_marker":"` + rawMarker + `"}`),
+	})
+	adapter := &stubAdapter{platform: "openai"}
+	doer := &stubDoer{respStatus: 200, respBody: openAIHCSFResponse}
+	d := newDispatcherForTest(adapter, doer)
+
+	_, err := d.DispatchHCSF(ctx, env)
+	if err == nil {
+		t.Fatal("DispatchHCSF err=nil; want unsupported endpoint family error")
+	}
+	if !strings.Contains(err.Error(), "unsupported HCSF endpoint family") || !strings.Contains(err.Error(), "gemini_generate") {
+		t.Fatalf("err=%v want unsupported endpoint family gemini_generate", err)
+	}
+	if doer.got != nil {
+		body, _ := io.ReadAll(doer.got.Body)
+		if strings.Contains(string(body), rawMarker) {
+			t.Fatalf("raw fallback marker was forwarded upstream: %s", body)
+		}
+		t.Fatalf("HTTP Do was called for unsupported endpoint family with body: %s", body)
+	}
+}
+
+func TestDispatchHCSFNativeOnlySessionFamilyFailsBeforeRawFallback(t *testing.T) {
+	const rawMarker = "CURSOR_RAWFALLBACK_MARKER"
+	env := testHCSFEnvelope()
+	env.RequestMeta.ProtocolFamily = "cursor_session"
+	env.RequestMeta.EndpointFamily = "cursor_session"
+	ctx := ContextWithHCSFDispatchInput(context.Background(), HCSFDispatchInput{
+		ProtocolFamily:  "cursor_session",
+		UpstreamModelID: "cursor-model",
+		Account:         provider.AccountInfo{AccountID: 11, Platform: "cursor", AccountType: "session"},
+		Credential:      provider.Credential{Type: provider.CredentialTypeSessionToken, Value: "cursor-session-test"},
+		RawBody:         []byte(`{"raw_client_marker":"` + rawMarker + `"}`),
+	})
+	adapter := &stubAdapter{platform: "cursor"}
+	doer := &stubDoer{respStatus: 200, respBody: openAIHCSFResponse}
+	d := newDispatcherForTest(adapter, doer)
+
+	_, err := d.DispatchHCSF(ctx, env)
+	if err == nil {
+		t.Fatal("DispatchHCSF err=nil; want unsupported cursor_session endpoint family error")
+	}
+	if !strings.Contains(err.Error(), "unsupported HCSF endpoint family") || !strings.Contains(err.Error(), "cursor_session") {
+		t.Fatalf("err=%v want unsupported endpoint family cursor_session", err)
+	}
+	if doer.got != nil {
+		body, _ := io.ReadAll(doer.got.Body)
+		if strings.Contains(string(body), rawMarker) {
+			t.Fatalf("cursor raw fallback marker was forwarded upstream: %s", body)
+		}
+		t.Fatalf("HTTP Do was called for cursor_session HCSF path with body: %s", body)
+	}
+}
+
+func TestBuildHCSFProviderRequestNativeFamiliesUseExplicitNativeRawBody(t *testing.T) {
+	for _, tc := range []struct {
+		family   string
+		provider string
+		model    string
+		marker   string
+	}{
+		{
+			family:   "bedrock_invoke",
+			provider: "bedrock",
+			model:    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+			marker:   "BEDROCK_NATIVE_RAW_MARKER",
+		},
+		{
+			family:   "openai_codex",
+			provider: "openai",
+			model:    "gpt-5-codex",
+			marker:   "CODEX_NATIVE_RAW_MARKER",
+		},
+	} {
+		t.Run(tc.family, func(t *testing.T) {
+			env := testHCSFEnvelope()
+			env.RequestMeta.EndpointFamily = tc.family
+			adapter := &stubAdapter{platform: tc.provider}
+
+			req, err := buildHCSFProviderRequest(context.Background(), adapter, provider.BuildInput{
+				UpstreamModelID: tc.model,
+				Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "secret"},
+				Account:         provider.AccountInfo{AccountID: 12, Platform: tc.provider, AccountType: "native"},
+			}, env, tc.family, tc.family, []byte(`{"raw_client_marker":"`+tc.marker+`"}`))
+			if err != nil {
+				t.Fatalf("buildHCSFProviderRequest %s: %v", tc.family, err)
+			}
+			if !strings.Contains(string(adapter.lastInput.InboundBody), tc.marker) {
+				t.Fatalf("%s native raw body = %s; want marker", tc.family, adapter.lastInput.InboundBody)
+			}
+			body, _ := io.ReadAll(req.Body)
+			if !strings.Contains(string(body), tc.marker) {
+				t.Fatalf("request body = %s; want %s native raw marker", body, tc.family)
+			}
+		})
+	}
+}
+
+func TestHCSFRequestBodyOmitsSeedForOpenAIResponses(t *testing.T) {
+	seed := 2026
+	env := testHCSFEnvelope()
+	env.RequestControls.Seed = &seed
+
+	raw, err := hcsfRequestBody(env, "openai_responses")
+	if err != nil {
+		t.Fatalf("hcsfRequestBody openai_responses: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("responses body json: %v\n%s", err, raw)
+	}
+	if _, ok := body["seed"]; ok {
+		t.Fatalf("openai_responses body must not include unsupported seed: %s", raw)
+	}
+	if body["max_output_tokens"] != float64(64) {
+		t.Fatalf("max_output_tokens=%v want 64", body["max_output_tokens"])
+	}
+}
+
+func TestDispatchHCSFOpenAICompatibleAliasUsesModeledChatBody(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		family   string
+		provider string
+		model    string
+	}{
+		{name: "direct_api_key_alias", family: "deepseek_chat", provider: "deepseek", model: "deepseek-chat"},
+		{name: "opt_in_session_alias", family: "copilot_session", provider: "copilot", model: "gpt-4o-copilot"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seed := 4242
+			env := testHCSFEnvelope()
+			env.RequestMeta.ProtocolFamily = tc.family
+			env.RequestMeta.EndpointFamily = tc.family
+			env.RequestMeta.Provider = tc.provider
+			env.RequestMeta.Model = tc.model
+			env.RequestMeta.UpstreamModel = tc.model
+			env.RequestControls.Seed = &seed
+			env.Accounting.ModelChain = &proto.ModelChain{Requested: tc.model, RouteDecided: tc.model}
+			ctx := ContextWithHCSFDispatchInput(context.Background(), HCSFDispatchInput{
+				ProtocolFamily:  tc.family,
+				UpstreamModelID: tc.model,
+				Account:         provider.AccountInfo{AccountID: 8, Platform: tc.provider, AccountType: "apikey"},
+				Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-alias-test"},
+				RawBody:         []byte(`{"model":"raw-stale-model","messages":[{"role":"user","content":"raw stale"}],"max_tokens":5,"max_completion_tokens":64,"seed":999,"n":2,"frequency_penalty":0.75,"logit_bias":{"198":-100},"metadata":{"trace":"alias-raw-control"}}`),
+			})
+			adapter := &stubAdapter{platform: tc.provider}
+			doer := &stubDoer{respStatus: 200, respBody: openAIHCSFResponse}
+			d := newDispatcherForTest(adapter, doer)
+
+			_, err := d.DispatchHCSF(ctx, env)
+			if err != nil {
+				t.Fatalf("DispatchHCSF %s alias: %v", tc.family, err)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(adapter.lastInput.InboundBody, &body); err != nil {
+				t.Fatalf("alias body json: %v\n%s", err, adapter.lastInput.InboundBody)
+			}
+			if body["model"] != tc.model {
+				t.Fatalf("alias body model=%v want %s", body["model"], tc.model)
+			}
+			if body["seed"] != float64(seed) {
+				t.Fatalf("alias body seed=%v want %d", body["seed"], seed)
+			}
+			if _, ok := body["max_tokens"]; ok {
+				t.Fatalf("alias body must preserve max_completion_tokens dialect instead of max_tokens: %s", adapter.lastInput.InboundBody)
+			}
+			if body["max_completion_tokens"] != float64(64) {
+				t.Fatalf("alias max_completion_tokens=%v want canonical limit 64; body=%s", body["max_completion_tokens"], adapter.lastInput.InboundBody)
+			}
+			if _, ok := body["n"]; ok {
+				t.Fatalf("alias body must not passthrough multi-choice n because buffered response drops extra choices: %s", adapter.lastInput.InboundBody)
+			}
+			msgs := body["messages"].([]any)
+			if msgs[0].(map[string]any)["content"] != "graph text" {
+				t.Fatalf("alias messages = %+v; want CapabilityGraph text", msgs)
+			}
+			if body["frequency_penalty"] != 0.75 {
+				t.Fatalf("alias frequency_penalty=%v want raw passthrough 0.75; body=%s", body["frequency_penalty"], adapter.lastInput.InboundBody)
+			}
+			logitBias, ok := body["logit_bias"].(map[string]any)
+			if !ok || logitBias["198"] != float64(-100) {
+				t.Fatalf("alias logit_bias=%+v want raw passthrough 198=-100; body=%s", body["logit_bias"], adapter.lastInput.InboundBody)
+			}
+			metadata, ok := body["metadata"].(map[string]any)
+			if !ok || metadata["trace"] != "alias-raw-control" {
+				t.Fatalf("alias metadata=%+v want raw passthrough trace; body=%s", body["metadata"], adapter.lastInput.InboundBody)
+			}
+		})
+	}
+}
+
+func TestDispatchHCSFOpenRouterAliasPreservesProviderRoutingControls(t *testing.T) {
+	env := testHCSFEnvelope()
+	env.RequestMeta.ProtocolFamily = "openrouter_chat"
+	env.RequestMeta.EndpointFamily = "openrouter_chat"
+	env.RequestMeta.Provider = "openrouter"
+	env.RequestMeta.Model = "openrouter/auto"
+	env.RequestMeta.UpstreamModel = "openrouter/auto"
+	ctx := ContextWithHCSFDispatchInput(context.Background(), HCSFDispatchInput{
+		ProtocolFamily:  "openrouter_chat",
+		UpstreamModelID: "openrouter/auto",
+		Account:         provider.AccountInfo{AccountID: 13, Platform: "openrouter", AccountType: "apikey"},
+		Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-openrouter-test"},
+		RawBody:         []byte(`{"model":"raw-openrouter-model","messages":[{"role":"user","content":"raw stale"}],"provider":{"order":["anthropic"],"allow_fallbacks":false},"transforms":["middle-out"],"route":"fallback"}`),
+	})
+	adapter := &stubAdapter{platform: "openrouter"}
+	doer := &stubDoer{respStatus: 200, respBody: openAIHCSFResponse}
+	d := newDispatcherForTest(adapter, doer)
+
+	_, err := d.DispatchHCSF(ctx, env)
+	if err != nil {
+		t.Fatalf("DispatchHCSF openrouter_chat alias: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(adapter.lastInput.InboundBody, &body); err != nil {
+		t.Fatalf("openrouter body json: %v\n%s", err, adapter.lastInput.InboundBody)
+	}
+	if body["model"] != "openrouter/auto" {
+		t.Fatalf("openrouter body model=%v want HCSF upstream model; body=%s", body["model"], adapter.lastInput.InboundBody)
+	}
+	msgs := body["messages"].([]any)
+	if msgs[0].(map[string]any)["content"] != "graph text" {
+		t.Fatalf("openrouter messages = %+v; want CapabilityGraph text", msgs)
+	}
+	providerBody, ok := body["provider"].(map[string]any)
+	if !ok {
+		t.Fatalf("openrouter provider routing controls missing: %s", adapter.lastInput.InboundBody)
+	}
+	order := providerBody["order"].([]any)
+	if order[0] != "anthropic" || providerBody["allow_fallbacks"] != false {
+		t.Fatalf("provider routing controls = %+v", providerBody)
+	}
+	transforms, ok := body["transforms"].([]any)
+	if !ok || transforms[0] != "middle-out" || body["route"] != "fallback" {
+		t.Fatalf("openrouter raw passthrough controls missing: transforms=%+v route=%v body=%s", body["transforms"], body["route"], adapter.lastInput.InboundBody)
+	}
+}
+
+func TestDispatchHCSFCrossProtocolAliasDoesNotPassthroughSourceRawFields(t *testing.T) {
+	env := testHCSFEnvelope()
+	env.RequestMeta.ClientProtocol = proto.ClientProtocolAnthropicMessages
+	env.RequestMeta.ProtocolFamily = "deepseek_chat"
+	env.RequestMeta.EndpointFamily = "deepseek_chat"
+	env.RequestMeta.Provider = "deepseek"
+	env.RequestMeta.Model = "deepseek-chat"
+	env.RequestMeta.UpstreamModel = "deepseek-chat"
+	ctx := ContextWithHCSFDispatchInput(context.Background(), HCSFDispatchInput{
+		ProtocolFamily:  "deepseek_chat",
+		UpstreamModelID: "deepseek-chat",
+		Account:         provider.AccountInfo{AccountID: 14, Platform: "deepseek", AccountType: "apikey"},
+		Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-cross-protocol-test"},
+		RawBody:         []byte(`{"system":"anthropic raw system","stop_sequences":["END"],"metadata":{"source":"anthropic"}}`),
+	})
+	adapter := &stubAdapter{platform: "deepseek"}
+	doer := &stubDoer{respStatus: 200, respBody: openAIHCSFResponse}
+	d := newDispatcherForTest(adapter, doer)
+
+	_, err := d.DispatchHCSF(ctx, env)
+	if err != nil {
+		t.Fatalf("DispatchHCSF anthropic_messages -> deepseek_chat: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(adapter.lastInput.InboundBody, &body); err != nil {
+		t.Fatalf("cross-protocol body json: %v\n%s", err, adapter.lastInput.InboundBody)
+	}
+	for _, key := range []string{"system", "stop_sequences", "metadata"} {
+		if _, ok := body[key]; ok {
+			t.Fatalf("cross-protocol raw field %q leaked into OpenAI-compatible body: %s", key, adapter.lastInput.InboundBody)
+		}
+	}
+	if body["model"] != "deepseek-chat" {
+		t.Fatalf("cross-protocol body model=%v want deepseek-chat; body=%s", body["model"], adapter.lastInput.InboundBody)
+	}
+	msgs := body["messages"].([]any)
+	if msgs[0].(map[string]any)["content"] != "graph text" {
+		t.Fatalf("cross-protocol messages = %+v; want CapabilityGraph text", msgs)
 	}
 }
 
