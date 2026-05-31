@@ -7,6 +7,16 @@ import (
 	"time"
 )
 
+// verifyPasswordFn 是口令校验的可注入入口(生产即 VerifyPassword)。抽成变量是为了让测试
+// 能观察「邮箱不存在 / 存在但无本地口令」路径是否也跑了一次等价 argon2 校验 —— 这是 S2-048 时序等工的核心。
+var verifyPasswordFn = VerifyPassword
+
+// timingEqualizationHash 是一个无人知晓口令的合法 argon2id hash(常量, 默认 policy 成本 m=64MiB,t=3)。
+// 仅用于 Authenticate 在「邮箱不存在」或「存在但无本地口令(social-only)」时做等工量 argon2 校验:
+// 否则「走 VerifyPassword 跑 argon2」与「直接返回」的响应时延差会泄露邮箱是否已注册(用户枚举侧信道, S2-048)。
+// 硬编码常量而非运行时生成, 杜绝生成失败时 fail-open 成快速 parse-fail(S2-048 R1 codex 跟进)。
+const timingEqualizationHash = "$argon2id$v=19$m=65536,t=3,p=1$0k8KjQ01TveJhg0daai5hw$m6FwG+zGw8X2YLWE1grPszMNN84IGcyd5xhFrEGMhIc"
+
 type Store interface {
 	CreateUser(context.Context, CreateUserParams) (User, error)
 	GetUserByEmail(context.Context, int64, string) (User, error)
@@ -159,6 +169,10 @@ func (s *Service) Authenticate(ctx context.Context, in LoginInput) (User, error)
 	user, err := s.Store.GetUserByEmail(ctx, in.TenantID, email)
 	if err != nil {
 		if errors.Is(err, ErrUserNotFound) {
+			// S2-048 时序等工: 对不存在的邮箱也跑一次等价 argon2 校验再返回, 否则
+			// 「存在(下面走 VerifyPassword 跑 argon2)」与「不存在(直接返回)」的响应时延差
+			// 会暴露该邮箱是否已注册(用户枚举侧信道)。比较结果丢弃, 一律返 ErrInvalidCredentials。
+			_, _ = verifyPasswordFn(timingEqualizationHash, in.Password)
 			return User{}, ErrInvalidCredentials
 		}
 		return User{}, err
@@ -178,9 +192,13 @@ func (s *Service) Authenticate(ctx context.Context, in LoginInput) (User, error)
 		return User{}, ErrEmailUnverified
 	}
 	if user.PasswordHash == "" {
+		// S2-048 时序等工: 存在但无本地口令(social-only)的用户也跑一次等价 argon2 再返回,
+		// 否则其「快速返回」会与「不存在(已跑 dummy)」「口令错(跑真 argon2)」的时延不同, 仍暴露
+		// 该邮箱已注册(social-only)。不 MarkLoginFailure(无本地口令可失败, 保留既有语义)。
+		_, _ = verifyPasswordFn(timingEqualizationHash, in.Password)
 		return User{}, ErrInvalidCredentials
 	}
-	ok, verifyErr := VerifyPassword(user.PasswordHash, in.Password)
+	ok, verifyErr := verifyPasswordFn(user.PasswordHash, in.Password)
 	if verifyErr != nil || !ok {
 		_ = s.Store.MarkLoginFailure(ctx, user.TenantID, user.ID, threshold)
 		return User{}, ErrInvalidCredentials
