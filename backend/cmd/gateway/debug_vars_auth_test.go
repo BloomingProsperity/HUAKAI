@@ -11,14 +11,29 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"expvar"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 )
+
+// fakeAdminResolver injects a fixed identity/error so the gate's RBAC is testable
+// without a real *admindb.Queries / pgxpool (S2-075 discriminating test).
+type fakeAdminResolver struct {
+	id  admin.AdminIdentity
+	err error
+}
+
+func (f fakeAdminResolver) Resolve(_ context.Context, _ *http.Request) (admin.AdminIdentity, error) {
+	return f.id, f.err
+}
 
 // 无 Bearer header → 401，且 body 不能泄漏 expvar 内容。
 //
@@ -47,6 +62,64 @@ func TestDebugVarsAuth_NoCredentials_Returns_503_When_Resolver_Nil(t *testing.T)
 	// stdlib 默认变量名）。
 	if strings.Contains(string(body), "cmdline") || strings.Contains(string(body), "memstats") {
 		t.Errorf("503 body 泄漏 expvar 默认变量名：%s", string(body))
+	}
+}
+
+// S2-075: a tenant_operator is AUTHENTICATED but must NOT be AUTHORIZED to read
+// the process-global /debug/vars metrics — only platform_admin may. This is the
+// discriminating pair: same gate + handler, tenant denied (403, no expvar leak)
+// vs platform allowed (200, reaches expvar). Mutation check: drop the role check
+// in adminGate and the tenant case flips to 200 + leaks "memstats" → red.
+func TestDebugVarsAuth_TenantOperator_Forbidden_NoLeak(t *testing.T) {
+	resolver := fakeAdminResolver{id: admin.AdminIdentity{Role: admin.RoleTenantOperator, ScopeTenantID: 42}}
+	gated := adminGate(resolver, expvar.Handler())
+
+	rec := httptest.NewRecorder()
+	gated.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/debug/vars", nil))
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("tenant_operator 必须 403 forbidden（已认证但未授权），实际 %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "admin_forbidden_scope") {
+		t.Errorf("body 必须含 admin_forbidden_scope，实际: %s", body)
+	}
+	// 关键：被拒时绝不能泄漏任何 expvar 全局指标内容。
+	if strings.Contains(body, "memstats") || strings.Contains(body, "cmdline") {
+		t.Errorf("403 仍泄漏了 expvar 全局指标内容：%s", body)
+	}
+}
+
+// S2-075 positive half: platform_admin reaches the metrics (proves the gate is
+// not just blanket-denying — it discriminates by role).
+func TestDebugVarsAuth_PlatformAdmin_ReachesMetrics(t *testing.T) {
+	resolver := fakeAdminResolver{id: admin.AdminIdentity{Role: admin.RolePlatformAdmin}}
+	gated := adminGate(resolver, expvar.Handler())
+
+	rec := httptest.NewRecorder()
+	gated.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/debug/vars", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("platform_admin 必须 200 命中 metrics，实际 %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "memstats") {
+		t.Errorf("platform_admin 应能读到 expvar 内容（memstats），实际 body 头: %.120s", rec.Body.String())
+	}
+}
+
+// A resolver error (invalid/missing credential) still yields 401 — not 403/200.
+func TestDebugVarsAuth_ResolverError_Returns401(t *testing.T) {
+	resolver := fakeAdminResolver{err: errors.New("unauthorized")}
+	gated := adminGate(resolver, expvar.Handler())
+
+	rec := httptest.NewRecorder()
+	gated.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/debug/vars", nil))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("resolver error 必须 401，实际 %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "memstats") {
+		t.Errorf("401 不得泄漏 expvar 内容")
 	}
 }
 

@@ -50,22 +50,42 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 	// U6-B: 把 client identity 写入 request ctx，必须早于后续 auth/quota/billing。
 	router.Use(clientid.Middleware(logger))
 
-	// /debug/vars 使用 admin auth gate 包住，避免 metrics 裸露。
-	router.Handle("/debug/vars", adminGate(d.adminAuth, expvar.Handler()))
+	// /debug/vars 使用 admin auth gate + platform-admin RBAC 包住，避免 metrics 裸露。
+	// 用局部接口变量承接:typed-nil *AdminResolver(未配置 deps)会塌成 nil 接口,
+	// 让 adminGate 的 resolver==nil 仍命中 → 保持 admin_gate_not_configured(503)语义。
+	var adminResolver adminIdentityResolver
+	if d.adminAuth != nil {
+		adminResolver = d.adminAuth
+	}
+	router.Handle("/debug/vars", adminGate(adminResolver, expvar.Handler()))
 	mountRoutes(router, d, logger)
 	return router
 }
 
-// adminGate 把任意 http.Handler 包到 admin auth 后面。
-// resolver 为 nil 时 fail-closed 返 503，不允许 ops 暴露面裸奔。
-func adminGate(resolver *admin.AdminResolver, h http.Handler) http.Handler {
+// adminIdentityResolver resolves an admin credential to its identity (or error).
+// adminGate depends on this interface — not the concrete *admin.AdminResolver — so
+// the gate's RBAC is unit-testable with injected identities. *admin.AdminResolver
+// satisfies it.
+type adminIdentityResolver interface {
+	Resolve(ctx context.Context, req *http.Request) (admin.AdminIdentity, error)
+}
+
+// adminGate 把任意 http.Handler 包到 admin auth + platform-admin RBAC 后面。
+//
+// /debug/vars 暴露的是 PROCESS-GLOBAL metrics(clientid/cache/dispatcher 计数器,
+// 无租户过滤),所以 tenant_operator 即使持合法凭据也【不得】命中——只有
+// platform_admin 可以。原实现只验 auth、丢弃 Resolve 返回的身份(role),任何
+// 已认证 operator 都能读到全局进程指标 → 多租户信息泄漏(S2-075)。
+// resolver 为 nil 时 fail-closed 返 503,不允许 ops 暴露面裸奔。
+func adminGate(resolver adminIdentityResolver, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if resolver == nil {
 			writeAdminGateError(w, http.StatusServiceUnavailable,
 				"admin_gate_not_configured", "admin auth resolver unset")
 			return
 		}
-		if _, err := resolver.Resolve(r.Context(), r); err != nil {
+		id, err := resolver.Resolve(r.Context(), r)
+		if err != nil {
 			if errors.Is(err, admin.ErrAdminBackend) {
 				writeAdminGateError(w, http.StatusServiceUnavailable,
 					"admin_backend_error", "admin auth backend transient failure")
@@ -73,6 +93,12 @@ func adminGate(resolver *admin.AdminResolver, h http.Handler) http.Handler {
 			}
 			writeAdminGateError(w, http.StatusUnauthorized,
 				"admin_unauthorized", "missing or invalid admin credential")
+			return
+		}
+		// RBAC: 全局 ops 面是 platform-only。tenant_operator 已认证但未授权(S2-075)。
+		if id.Role != admin.RolePlatformAdmin {
+			writeAdminGateError(w, http.StatusForbidden,
+				"admin_forbidden_scope", "platform_admin role required for global ops surface")
 			return
 		}
 		h.ServeHTTP(w, r)
