@@ -85,6 +85,66 @@ except Exception: pass
 PY
 }
 
+# Live AI terminal stream. While the AI runs, we tee its combined stdout+stderr to a
+# temp file; this background streamer reads NEW bytes from that file every ~2s and POSTs
+# them (batched JSON) to /dispatcher/output {agent,lines:[...]} so the /console 机器 tab
+# renders a VSCode-style live terminal for this machine. Cert-pinned + no-proxy like
+# wpush. STRICTLY best-effort: every failure path is swallowed so streaming can NEVER
+# break the actual worker run. Caps per-line length + per-batch size so a runaway AI
+# cannot flood the server. The parent signals "AI done, flush + exit" by creating
+# <outfile>.done; the streamer then ships its held partial line and any final tail (so
+# no line is lost AND nothing is double-sent, because one process owns the byte cursor).
+# Args: $1 = temp file the AI's combined output is tee'd into.
+stream_output(){ # $1=outfile  (run in background; finishes after <outfile>.done appears)
+  OUTFILE="$1" python3 - <<'PY' 2>/dev/null || true
+import os,time,json,ssl,urllib.request
+url=os.environ.get("COORD_URL",""); tok=os.environ.get("COORD_TOKEN",""); ca=os.environ.get("COORD_CACERT","")
+agent=os.environ.get("COORD_AGENT","worker"); path=os.environ.get("OUTFILE","")
+if not url or not tok or not path: raise SystemExit
+ctx=ssl.create_default_context(cafile=ca) if ca else ssl.create_default_context()
+op=urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ctx))
+MAXLINE=2000; MAXBATCH=120
+def post(lines):
+    if not lines: return
+    for i in range(0,len(lines),MAXBATCH):     # chunk so a backlog never builds one giant request
+        body=json.dumps({"agent":agent,"lines":[(l[:MAXLINE]) for l in lines[i:i+MAXBATCH]]}).encode()
+        req=urllib.request.Request(url+"/dispatcher/output",data=body,
+            headers={"Authorization":"Bearer "+tok,"Content-Type":"application/json"})
+        try: op.open(req,timeout=10).read()
+        except Exception: pass
+buf=""; pos=0
+done_marker=path+".done"
+# Track byte offset so re-reads only ship NEW content; hold a trailing partial line
+# until its newline arrives so a line is never split mid-character. After the parent
+# drops the .done marker, do ONE final read + flush the held partial, then exit.
+while True:
+    try:
+        with open(path,"r",errors="replace") as fh:
+            fh.seek(pos); chunk=fh.read(); pos=fh.tell()
+    except Exception:
+        chunk=""
+    if chunk:
+        buf+=chunk
+        parts=buf.split("\n")
+        buf=parts.pop()                        # keep trailing partial for next round
+        post(parts)
+    if os.path.exists(done_marker):
+        # one last drain so the very last lines (written between polls) are not lost
+        try:
+            with open(path,"r",errors="replace") as fh:
+                fh.seek(pos); tail=fh.read()
+        except Exception:
+            tail=""
+        buf+=tail
+        parts=buf.split("\n")
+        last=parts.pop()                       # final held partial (no newline) -> ship if non-empty
+        post(parts)
+        if last.strip(): post([last])
+        break
+    time.sleep(2)
+PY
+}
+
 echo "worker-loop: agent=$COORD_AGENT poll=${POLL}s update=${UPDATE_BRANCH}  (Ctrl-C to stop)"
 while true; do
   self_update    # pull latest .coordination scripts (+ re-exec self if changed) before each poll
@@ -97,7 +157,23 @@ while true; do
     # AI works (edits can exceed COORD_TTL); this loop is killed when the AI returns.
     ( while sleep 120; do python3 "$DIR/_coord.py" heartbeat "$COORD_AGENT" >/dev/null 2>&1; wpush working "在做 ${tid:-任务}(进行中)"; done ) &
     HB=$!
-    prompt | (cd "$REPO" && eval "$WORKER_AI_CMD") || echo "  (AI run returned non-zero; will retry next cycle)"
+    # Live terminal: tee the AI's combined stdout+stderr into a temp file and run the
+    # background streamer that POSTs new lines to /console. tee keeps the AI's own output
+    # behaving (still printed to this loop's stdout). Streaming is best-effort: if the
+    # temp file can't be made we just skip it and run the AI exactly as before.
+    OUT="$(mktemp "${TMPDIR:-/tmp}/huakai-worker-XXXXXX.log" 2>/dev/null || true)"
+    SP=""
+    if [ -n "$OUT" ]; then
+      rm -f "$OUT.done" 2>/dev/null || true
+      stream_output "$OUT" &
+      SP=$!
+      prompt | (cd "$REPO" && eval "$WORKER_AI_CMD") 2>&1 | tee "$OUT" || echo "  (AI run returned non-zero; will retry next cycle)"
+      : > "$OUT.done"                          # tell the streamer to flush + exit
+      wait "$SP" 2>/dev/null || true           # let it ship the final tail
+      rm -f "$OUT" "$OUT.done" 2>/dev/null || true
+    else
+      prompt | (cd "$REPO" && eval "$WORKER_AI_CMD") || echo "  (AI run returned non-zero; will retry next cycle)"
+    fi
     kill "$HB" 2>/dev/null || true
     wpush idle "上个任务跑完,轮询中" done "结束一轮 ${tid}"
   else
