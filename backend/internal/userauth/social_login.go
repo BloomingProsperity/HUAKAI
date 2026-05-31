@@ -175,6 +175,13 @@ func (s *Service) applyVerifiedSocialIdentity(ctx context.Context, tenantID int6
 	if !s.SocialSignup {
 		return User{}, ErrSocialLoginRejected
 	}
+	// S2-114: 走到这里说明是「全新用户首次社交注册」(社交身份与邮箱都查无既有用户)。社交流程没有
+	// 邀请码输入通道, 必须与密码 Register 受同一邀请闸约束 —— 租户要求邀请注册时, 不能让任意
+	// Google/GitHub 账号绕过 invite 闸直接开户(Register 在无邀请码时返回 ErrInviteRequired,
+	// 这里对等处理)。本检查只在新用户分支生效, 既有用户的社交登录/绑定走上面的 link 路径不受影响。
+	if s.InviteRequired {
+		return User{}, ErrInviteRequired
+	}
 	user, err := s.Store.CreateUser(ctx, CreateUserParams{
 		TenantID:            tenantID,
 		Email:               email,
