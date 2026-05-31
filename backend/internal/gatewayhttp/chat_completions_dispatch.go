@@ -2,6 +2,7 @@ package gatewayhttp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -37,6 +38,33 @@ func newChatExecution(d ChatHandlerDeps, r *http.Request, ident auth.Identity, v
 		clientRequestID:                  validated.ClientRequestID,
 		streamInputOnlyInterruptedPolicy: d.BillingPolicyResolver.ResolveStreamInputOnlyInterruptedPolicy(r.Context(), ident.TenantID),
 	}
+}
+
+func (ex *chatExecution) refreshRequestSessionHashes() {
+	ex.promptHash = cache_routing.ComputePromptHash(ex.body)
+	ex.sessionHash = requestSessionHash(ex.clientProtocol, ex.body, ex.promptHash)
+}
+
+func requestSessionHash(clientProtocol proto.ClientProtocol, rawBody []byte, promptHash string) string {
+	if promptHash != "" {
+		return promptHash
+	}
+	if clientProtocol == proto.ClientProtocolOpenAIResponses {
+		if previousID := openAIResponsesPreviousResponseID(rawBody); previousID != "" {
+			return previousID
+		}
+	}
+	return promptHash
+}
+
+func openAIResponsesPreviousResponseID(rawBody []byte) string {
+	var req struct {
+		PreviousResponseID string `json:"previous_response_id"`
+	}
+	if err := json.Unmarshal(rawBody, &req); err != nil {
+		return ""
+	}
+	return req.PreviousResponseID
 }
 
 func (ex *chatExecution) prepareRoute(w http.ResponseWriter) bool {
@@ -80,7 +108,7 @@ func (ex *chatExecution) prepareRoute(w http.ResponseWriter) bool {
 	ex.plan = plan
 	ex.activateRouteAttempt(plan.Attempts[0])
 	ex.cacheVendor = pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily)
-	ex.promptHash = cache_routing.ComputePromptHash(ex.body)
+	ex.refreshRequestSessionHashes()
 	return true
 }
 
@@ -219,7 +247,7 @@ func (ex *chatExecution) ensureIdempotencyState() {
 
 func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInput) *classifiedAttemptFailure {
 	// 同一 prompt prefix 固定到同一账号，提高 vendor prompt cache 命中率。
-	ex.promptHash = cache_routing.ComputePromptHash(ex.body)
+	ex.refreshRequestSessionHashes()
 	attemptSeq := in.AttemptSeq
 	if attemptSeq <= 0 {
 		attemptSeq = ex.activeAttemptSeq()
@@ -240,7 +268,7 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 		AttemptSeq:       attemptSeq,
 		ExcludedAccounts: excludedAccounts,
 		CapabilityFlags:  ex.attempt.RequiredCapabilities,
-		SessionHash:      ex.promptHash,
+		SessionHash:      ex.sessionHash,
 		Vendor:           pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily),
 	})
 	if errors.Is(err, pool.ErrNoEligibleAccount) || errors.Is(err, pool.ErrNoSlotAvailable) || errors.Is(err, pool.ErrAllChannelsDegraded) {
@@ -318,7 +346,7 @@ func (ex *chatExecution) resolveCredential() *classifiedAttemptFailure {
 		RequestedModel:       ex.req.Model,
 		Provider:             accInfo.Platform,
 		RoutingReasonPayload: ex.selRes.RoutingReasonJSON,
-		SessionHash:          ex.promptHash,
+		SessionHash:          ex.sessionHash,
 	}
 	ex.healthKey, ex.healthKeyOK = channelHealthKey(ex.ident.TenantID, accInfo)
 	return nil
@@ -358,7 +386,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 	if len(requestLosses) > 0 {
 		canonicalReq.CapabilityGraph.ProtocolLoss = append(canonicalReq.CapabilityGraph.ProtocolLoss, requestLosses...)
 	}
-	enrichCanonicalRequestMeta(canonicalReq, ex.upstreamModelID, ex.accInfo.Platform, ex.idempotencyHeader, ex.promptHash)
+	enrichCanonicalRequestMeta(canonicalReq, ex.upstreamModelID, ex.accInfo.Platform, ex.idempotencyHeader, ex.sessionHash)
 	canonicalReq.RequestMeta.EndpointFamily = ex.resolved.ProtocolFamily
 	setAccountingModelRequested(canonicalReq, ex.req.Model)
 	setAccountingModelRouteDecided(canonicalReq, ex.forwardReq.Model)
