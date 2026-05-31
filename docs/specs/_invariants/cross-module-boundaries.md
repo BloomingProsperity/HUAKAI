@@ -148,16 +148,23 @@ The chi middleware sets `request_id` BEFORE auth. The Executor sets `attempt_id`
 
 ### CMB-7: Router writes nothing; Pool writes only its slot row; Ledger writes everything else
 
+Date superseded for Auth read-only wording: 2026-05-31 by
+[DR-010](../../process/decisions/DR-010-auth-last-used-telemetry.md).
+Auth now has one narrow telemetry carve-out: after successful inbound
+API-key authentication, Auth may best-effort update `api_keys.last_used_at`.
+The write must be timeout-bounded, failure must be log-only, and failed
+authentication must not touch the row.
+
 | Layer | Writes to DB? |
 |---|---|
-| Auth | No (read-only on api_keys/users in Phase E) |
+| Auth | YES, telemetry-only: successful API-key auth may touch `api_keys.last_used_at`; no user/tenant/key-status/routing/pool/billing/ledger writes |
 | Registry | No (read-only on model/capability tables) |
 | Router | No |
 | Pool | YES — but only `pool_slot_acquisitions` row + atomic `provider_accounts.in_flight_count` increment; nothing else |
 | Adapter | No |
 | Ledger | YES — `billing_ledger_claims`, `usage_records`, `billing_events`, `scheduler_outbox`, `billing_ledger_adjustments` |
 
-**Why**: localizes the failure surface. If a Tx2 invariant is violated, the bug is in Ledger code, not in Router.
+**Why**: localizes the failure surface. If a Tx2 invariant is violated, the bug is in Ledger code, not in Router. The Auth telemetry carve-out is deliberately outside Tx1/Tx2 money state and cannot change credential validity.
 
 ---
 

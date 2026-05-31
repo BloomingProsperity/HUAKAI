@@ -45,8 +45,8 @@ COMMENT ON TABLE users IS 'L0 minimum (2026-04-30 N+4a) end-user identity. No pa
 -- Table: api_keys
 -- Inbound bearer-token storage. key_hash is bcrypt; key_prefix is the
 -- first 16 chars of the plaintext for indexed lookup (no plaintext stored).
--- last_used_at is NOT updated in N+4a per CMB-7 (Auth is read-only); a
--- later slice may add an event-driven async writer.
+-- last_used_at is updated only by the DR-010 bounded best-effort telemetry
+-- carve-out after successful inbound bearer verification.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS api_keys (
     id              bigserial PRIMARY KEY,
@@ -88,7 +88,7 @@ CREATE INDEX idx_api_keys_user_status ON api_keys (tenant_id, user_id, status)
 CREATE INDEX idx_api_keys_expires_at ON api_keys (expires_at)
     WHERE expires_at IS NOT NULL AND deleted_at IS NULL;
 
-COMMENT ON TABLE api_keys IS 'L0 minimum (2026-04-30 N+4a) inbound bearer storage. key_hash is bcrypt; key_prefix indexed for tenant-scoped lookup. CMB-5: no plaintext bearer EVER persisted; CMB-7: last_used_at NOT updated synchronously in N+4.';
+COMMENT ON TABLE api_keys IS 'L0 minimum (2026-04-30 N+4a) inbound bearer storage. key_hash is bcrypt; key_prefix indexed for tenant-scoped lookup. CMB-5: no plaintext bearer EVER persisted; CMB-7/DR-010: only bounded best-effort success-path last_used_at telemetry may write here.';
 COMMENT ON COLUMN api_keys.key_prefix IS 'First 16 chars of plaintext bearer (incl. "hk_live_" or "hk_test_" namespace prefix). Indexed for hot-path; insufficient on its own to authenticate.';
 COMMENT ON COLUMN api_keys.key_hash IS 'bcrypt hash of the full plaintext bearer (cost=10). NEVER append to logs; CMB-5.';
 

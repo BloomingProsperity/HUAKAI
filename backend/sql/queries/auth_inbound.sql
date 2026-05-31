@@ -2,8 +2,8 @@
 -- Per docs/specs/_invariants/cross-module-boundaries.md CMB-5:
 --   queries here MUST NOT return key_hash to logs / traces; the resolver
 --   only uses key_hash for bcrypt comparison and discards it.
--- Per CMB-7: this set is read-only (Auth is a read-only layer in N+4a);
---   last_used_at update intentionally omitted, scheduled for N+4b.
+-- Per CMB-7: resolver writes stay limited to best-effort auth telemetry;
+--   failed telemetry updates must not reject otherwise valid credentials.
 
 -- name: LookupAPIKeysByPrefix :many
 -- Returns active candidates whose key_prefix matches. Capped at 5 to
@@ -37,6 +37,14 @@ WHERE ak.key_prefix = sqlc.arg(key_prefix)
   AND ak.status = 'active'
 ORDER BY ak.id
 LIMIT 5;
+
+-- name: TouchAPIKeyLastUsed :exec
+-- Best-effort auth telemetry update after successful bearer verification.
+-- The resolver logs and continues if this write fails.
+UPDATE api_keys
+SET last_used_at = NOW()
+WHERE id = sqlc.arg(id)
+  AND deleted_at IS NULL;
 
 -- name: GetUserByID :one
 -- Tenant-scoped user lookup. Used by admin/audit queries (Phase E)
