@@ -15,11 +15,11 @@ Owner-only approve token.) Full protocol detail: `.coordination/DISPATCH.md` (§
 ## 1. Scan the ledger
 `bash .coordination/task.sh list` — bucket tasks:
 - **review** → need cross-brain audit (step 2).
-- **idle machine + backlog** → a worker whose tasks are all done/terminal, while `todo`/unassigned work or a next wave exists → assign (step 4).
-- **needs_owner** → summarize for the Owner (step 5); do NOT try to decide it yourself.
-- **blocked / stuck** → a task `in_progress` with a stale heartbeat (worker died) or `blocked` → re-open or re-assign.
+- **idle machine** → a worker whose tasks are ALL terminal/blocked-on-Owner (incl. its current task parked at `needs_owner`). An idle worker is **NEVER "nothing to do"** while open backlog exists — the campaign has ~122 open Track-A findings. You MUST define+verify+assign its next batch (step 4) before the round ends. A worker sitting idle while non-conflicting open backlog exists is a **no-stall violation** — the exact bug this rule closes.
+- **needs_owner** → summarize for the Owner (step 5); do NOT try to decide it yourself. **A task parked on the Owner does NOT pause its worker** — give that worker the next non-conflicting task immediately (no-stall: park & advance).
+- **blocked / stuck** → a task `in_progress` whose assignee is `失联`/stale on `/dispatcher/status`, or one re-invoked many cycles without reaching `review` (worker spinning), or `blocked` → re-open / re-assign / flag for the Owner.
 
-**If nothing is in `review` AND no idle machine has assignable backlog → log "nothing to dispatch this round" and STOP.** (Keeps idle rounds cheap — do not spawn agents for nothing.)
+**Only STOP ("nothing to dispatch") when ALL of:** nothing in `review`, AND every worker is either actively `working` or has assigned work queued, AND the only remaining open backlog is genuinely conflicting (hot-file held by an in-flight/unmerged branch) or Owner-gated (money-path / high-risk). If a machine is idle and ANY non-conflicting open finding remains for its lane → do step 4, do not stop.
 
 ## 2. Audit each `review` task — cross-brain, never self-review
 For each review task, FIRST `bash .coordination/task.sh show <id>` to read its `notes` (must carry `branch work/<id> @ <sha>`). **No pushed branch / can't `git fetch origin work/<id>` → immediately `task.sh bounce <id> "push 提交到 origin work/<id>,看不见的代码无法审核"`.**
@@ -51,9 +51,9 @@ Then spawn **one independent audit agent per task** (Agent tool, `isolation: wor
 - Never commit other agents' stray uncommitted files (e.g. a parked `storm_policy.go`); only merge the audited `work/<id>` branch.
 
 ## 4. Assign next batch to idle machines (§A)
-Pick the next task(s) from the backlog/wave for each idle machine. Before assigning EACH:
-- **self-refute + self-verify 3 rounds** (R1 conflict/dup, R2 wave/scope/coupling, R3 premise·DoD·docs still hold) → only then `task.sh assign <id> <agent> 3 "<3-round evidence>"` (server enforces `verify_rounds≥3`).
-- **`task.sh conflicts "<files>"`** vs ALL non-terminal tasks (incl. parked/blocked) — never assign onto a file another non-terminal task holds.
+**Source of the "next batch" = the open campaign backlog**, not just pre-loaded ledger rows. When a machine is idle, pick its next findings from `/home/ubuntu/audit/MASTER-verification-2026-05-29.md` (+ `_rows.json`) for that worker's lane (local-codex=provider/protocol Wave7; server-b=auth/session/hermes; server-a=ops-security Wave8), excluding the 13 refuted, the Track-B-deferred set, and Owner-gated money-path. DEFINE each (root-cause from real code, scope_files, discriminating-test-able acceptance, spec_refs) — typically via a worktree-isolated verify agent per candidate — then before assigning EACH:
+- **self-refute + self-verify 3 rounds** (R1 conflict/dup, R2 wave/scope/coupling, R3 premise·DoD·docs still hold — premise must reproduce on CURRENT code, may already be fixed) → only then `task.sh assign <id> <agent> 3 "<3-round evidence>"` (server enforces `verify_rounds≥3`). A refuted premise (e.g. S2-042) is recorded REFUTED, not assigned.
+- **`task.sh conflicts "<files>"`** vs ALL non-terminal tasks (incl. parked/blocked) AND vs **unmerged work branches** (`git ls-remote --heads origin 'work/*'`) — a finished-but-unmerged task (e.g. `work/s2-048` awaiting Owner approve) still owns its files; do NOT assign a batch that edits them (pick a disjoint lane task instead). Keep each idle lane fed so no worker stalls.
 - **high-risk** (money-path/auth/billing/quota/schema): acceptance MUST require **三参考融合** — read sub2api + CLIProxyAPI + new-api on the same concern → compare → fuse (tie-break sub2api base, but always fuse CLIProxyAPI + new-api), cite `repo@sha:file:line` + state the delta/dimension. High-risk done-approval is Owner-only (`needs_owner`).
 
 ## 5. Park for Owner + no-stall
