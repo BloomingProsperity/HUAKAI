@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang=zh><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>HUAKAI 进度 + 修复看板</title>
+<style>
+:root{--bg:#0d1117;--card:#161b22;--bd:#30363d;--fg:#e6edf3;--mut:#8b949e;--accent:#58a6ff;
+ --ok:#3fb950;--warn:#d29922;--bad:#f85149;--info:#a371f7;}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
+ font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+header{padding:18px 22px;border-bottom:1px solid var(--bd);background:var(--card)}
+h1{margin:0 0 4px;font-size:19px}.sub{color:var(--mut);font-size:12.5px}
+.wrap{max-width:1100px;margin:0 auto;padding:18px 22px}
+.gauges{display:flex;flex-wrap:wrap;gap:14px;margin:14px 0}
+.g{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px 16px;min-width:150px;flex:1}
+.g .v{font-size:26px;font-weight:700}.g .l{color:var(--mut);font-size:12px}
+.bar{height:8px;background:#21262d;border-radius:6px;overflow:hidden;margin-top:8px}
+.bar>i{display:block;height:100%;background:linear-gradient(90deg,#1f6feb,#3fb950)}
+.note{color:var(--mut);font-size:12.5px;margin:6px 0 0}
+section{margin:22px 0}.mod{background:var(--card);border:1px solid var(--bd);border-radius:12px;margin:14px 0;overflow:hidden}
+.mh{padding:13px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.mh h3{margin:0;font-size:15.5px}.mh .pri{color:var(--mut);font-size:11.5px}
+.msum{padding:10px 16px;color:var(--mut);font-size:12.8px;border-bottom:1px solid var(--bd)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{padding:8px 16px;text-align:left;border-bottom:1px solid #21262d}th{color:var(--mut);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.3px}
+tr:last-child td{border-bottom:none}
+.badge{display:inline-block;padding:1px 9px;border-radius:20px;font-size:11px;font-weight:600;white-space:nowrap}
+.s-coding{background:rgba(88,166,255,.16);color:var(--accent)}
+.s-queued{background:rgba(139,148,158,.18);color:var(--mut)}
+.s-auditing{background:rgba(163,113,247,.18);color:var(--info)}
+.s-done,.s-pass,.s-neardone{background:rgba(63,185,80,.16);color:var(--ok)}
+.s-open,.s-inprogress{background:rgba(210,153,34,.18);color:var(--warn)}
+.s-bounce,.s-bad{background:rgba(248,81,73,.16);color:var(--bad)}
+.rk{font-size:10.5px;padding:1px 7px;border-radius:5px;background:#21262d;color:var(--mut)}
+.rk.money,.rk.security,.rk.schema{background:rgba(248,81,73,.13);color:#ff7b72}
+.log{list-style:none;padding:0;margin:0}.log li{padding:9px 16px;border-bottom:1px solid #21262d;font-size:13px}
+.log .t{color:var(--mut);font-size:11.5px;margin-right:8px}
+.err{color:var(--bad);padding:20px}
+a.back{color:var(--accent);text-decoration:none;font-size:12.5px}
+</style></head><body>
+<header><h1 id=title>HUAKAI 进度 + 修复看板</h1>
+<div class=sub><span id=updated></span> · <a class=back href="/console">← console</a> · <a class=back href="/dispatch">任务台</a></div></header>
+<div class=wrap id=root><div class=note>加载中…</div></div>
+<script>
+function esc(s){return String(s==null?'':s).replace(/[&<>]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;'}[c]})}
+function sc(s){return 's-'+String(s||'').replace(/[^a-z]/gi,'').toLowerCase()}
+function getData(tok){
+ return fetch('/tree/data',{headers:tok?{Authorization:'Bearer '+tok}:{}}).then(function(r){
+  if(r.status===401||r.status===403){var t=prompt('coord token:');if(t){localStorage.setItem('coord_token',t);return getData(t);}throw 'no token';}
+  if(!r.ok)throw r.status;return r.json();});
+}
+function gauge(v,l){return '<div class=g><div class=v>'+esc(v)+'</div><div class=l>'+esc(l)+'</div>'+
+ (typeof v==='number'?'<div class=bar><i style="width:'+Math.max(0,Math.min(100,v))+'%"></i></div>':'')+'</div>'}
+function itemsTable(items){
+ var h='<table><tr><th>ID</th><th>切片</th><th>状态</th><th>worker</th><th>风险</th><th>依赖</th></tr>';
+ items.forEach(function(it){h+='<tr><td><b>'+esc(it.id)+'</b></td><td>'+esc(it.title)+'</td>'+
+  '<td><span class="badge '+sc(it.status)+'">'+esc(it.status)+'</span></td>'+
+  '<td>'+esc(it.worker||'—')+'</td><td>'+(it.risk&&it.risk!=='none'?'<span class="rk '+esc(it.risk)+'">'+esc(it.risk)+'</span>':'—')+'</td>'+
+  '<td>'+esc(it.depends||'—')+'</td></tr>';});
+ return h+'</table>';
+}
+function wavesTable(waves){
+ var h='<table><tr><th>波次</th><th>open</th><th>状态</th><th>备注</th></tr>';
+ waves.forEach(function(w){h+='<tr><td>'+esc(w.wave)+'</td><td>'+esc(w.open)+'</td>'+
+  '<td><span class="badge '+sc(w.status)+'">'+esc(w.status)+'</span></td><td style="color:var(--mut)">'+esc(w.note||'')+'</td></tr>';});
+ return h+'</table>';
+}
+function render(d){
+ document.getElementById('title').textContent=d.title||'HUAKAI 看板';
+ document.getElementById('updated').textContent='更新 '+(d.updated||'');
+ var o=d.overall||{},h='';
+ h+='<div class=gauges>'+gauge(o.backend_pct,'后端综合 %')+gauge(o.build_line_pct,'建设线(功能建出)%')+
+   gauge(o.harden_line_pct,'加固线(修复)%')+gauge(o.frontend_pct,'前端 %')+
+   gauge(o.eta_campaign,'修复战役 ETA')+gauge(o.eta_v1,'v1 ETA')+'</div>';
+ if(o.tests)h+='<div class=note><b>测试:</b>'+esc(o.tests)+'</div>';
+ if(d.note)h+='<div class=note>'+esc(d.note)+'</div>';
+ h+='<section><h2 style="font-size:16px">模块</h2>';
+ (d.modules||[]).forEach(function(m){
+  h+='<div class=mod><div class=mh><h3>'+esc(m.name)+'</h3>'+
+   '<span class="badge '+sc(m.status)+'">'+esc(m.status)+'</span><span class=pri>优先级 '+esc(m.priority)+'</span></div>';
+  if(m.summary)h+='<div class=msum>'+esc(m.summary)+'</div>';
+  if(m.items)h+=itemsTable(m.items);
+  if(m.waves)h+=wavesTable(m.waves);
+  h+='</div>';
+ });
+ h+='</section>';
+ if(d.reviews&&d.reviews.length){
+  h+='<section><h2 style="font-size:16px">待审 / 审核中</h2><div class=mod>';
+  h+='<table><tr><th>ID</th><th>标题</th><th>状态</th><th>风险</th></tr>';
+  d.reviews.forEach(function(r){h+='<tr><td><b>'+esc(r.id)+'</b></td><td>'+esc(r.title)+'</td>'+
+   '<td><span class="badge '+sc(r.status)+'">'+esc(r.status)+'</span></td>'+
+   '<td>'+(r.risk?'<span class="rk '+esc(r.risk)+'">'+esc(r.risk)+'</span>':'—')+'</td></tr>';});
+  h+='</table></div></section>';
+ }
+ if(d.followups&&d.followups.length){
+  h+='<section><h2 style="font-size:16px">Follow-up(非阻塞)</h2><div class=mod>';
+  h+='<table><tr><th>ID</th><th>项</th><th>来源</th><th>严重度</th></tr>';
+  d.followups.forEach(function(f){h+='<tr><td><b>'+esc(f.id)+'</b></td><td>'+esc(f.title)+'</td><td style="color:var(--mut)">'+esc(f.from)+'</td><td><span class=rk>'+esc(f.sev)+'</span></td></tr>';});
+  h+='</table></div></section>';
+ }
+ if(d.log&&d.log.length){
+  h+='<section><h2 style="font-size:16px">结果日志</h2><div class=mod><ul class=log>';
+  d.log.forEach(function(e){h+='<li><span class=t>'+esc(e.ts)+'</span>'+esc(e.text)+'</li>';});
+  h+='</ul></div></section>';
+ }
+ document.getElementById('root').innerHTML=h;
+}
+getData(localStorage.getItem('coord_token'))
+ .catch(function(){return fetch('./feature-tree.json').then(function(r){return r.json()})})
+ .then(render)
+ .catch(function(e){document.getElementById('root').innerHTML='<div class=err>加载失败:'+esc(e)+'</div>'});
+</script></body></html>
