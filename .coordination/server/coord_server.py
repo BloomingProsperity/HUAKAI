@@ -32,9 +32,67 @@ Authorization: Bearer <COORD_TOKEN>):
 Env: COORD_TOKEN (required, shared secret), COORD_DB (default coord.db),
      COORD_BIND (default 127.0.0.1), COORD_PORT (default 8787), COORD_TTL (default 1800).
 """
-import os, json, sqlite3, time, datetime, threading, ssl, posixpath
+import os, json, sqlite3, time, datetime, threading, ssl, posixpath, hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+
+
+# High-risk scope-file patterns: when a task's scope_files touch any of these path
+# segments/substrings, the server treats the task as Owner-gated even if its risk
+# field was never hand-set. This is the fail-safe behind L10 — a forgotten risk tag
+# must not let an auth/billing/credential change auto-close on the shared token.
+HIGH_RISK_PATTERNS = (
+    "auth", "billing", "quota", "schema", "migration", "security",
+    "ledger", "settlement", "credential", "secret", "token", "payment", "money",
+)
+# Dispatcher-role agents: only these may render verdicts (pass/bounce/park) and
+# reopen done work. Worker agents may only drive their own task's progress. Overridable
+# via env (comma-separated) so a new dispatcher box doesn't require a code edit; the
+# default mirrors the deployed topology (the PM/commander runs as server-a / dispatcher).
+DISPATCHER_AGENTS = set(
+    a.strip() for a in os.environ.get(
+        "COORD_DISPATCHER_AGENTS", "server-a,dispatcher").split(",") if a.strip()
+)
+
+
+def _scope_is_high_risk(scope_files):
+    """True if any scope file path matches a high-risk pattern (substring on the
+    normalized lowercased path). scope_files may be a JSON string or a list."""
+    if isinstance(scope_files, str):
+        try:
+            scope_files = json.loads(scope_files or "[]")
+        except (ValueError, TypeError):
+            scope_files = []
+    for f in scope_files or []:
+        fl = (f or "").lower()
+        for pat in HIGH_RISK_PATTERNS:
+            if pat in fl:
+                return True
+    return False
+
+
+def _contract_hash(assignee, scope_files, spec_refs, acceptance, risk):
+    """Fingerprint the verified contract (L9). When any of these five fields change,
+    a prior verification no longer applies and verify_rounds must reset to 0. notes /
+    detail / status are deliberately excluded so routine progress writes never reset."""
+    if isinstance(scope_files, str):
+        try:
+            scope_files = json.loads(scope_files or "[]")
+        except (ValueError, TypeError):
+            scope_files = []
+    if isinstance(spec_refs, str):
+        try:
+            spec_refs = json.loads(spec_refs or "[]")
+        except (ValueError, TypeError):
+            spec_refs = []
+    payload = json.dumps({
+        "assignee": (assignee or "").strip(),
+        "scope_files": sorted(scope_files or []),
+        "spec_refs": sorted(spec_refs or []),
+        "acceptance": (acceptance or "").strip(),
+        "risk": (risk or "").strip(),
+    }, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def norm_files(files):
@@ -114,6 +172,25 @@ def db():
     # rebuilt). Separate from dispatcher_events (which is a curated low-volume action log).
     c.execute("""CREATE TABLE IF NOT EXISTS dispatcher_output(
         id INTEGER PRIMARY KEY AUTOINCREMENT, agent TEXT, ts TEXT, line TEXT)""")
+    # Idempotent column migrations (CREATE TABLE IF NOT EXISTS never alters an existing
+    # table). Each is wrapped so a re-run on a DB that already has the column is a no-op.
+    # Backward-compatible: every added column has a default / NULL-tolerant read, so an
+    # old client that never sends the new field keeps working unchanged.
+    for tbl, col, ddl in (
+        # L5 — record the claiming session so a second live session of the SAME agent
+        # is detectable (the agent PK alone made a re-claim silently overwrite itself).
+        ("locks", "session", "ALTER TABLE locks ADD COLUMN session TEXT"),
+        # L2 — per-task attempt / no-progress fingerprint (spinning detection).
+        ("tasks", "attempt_count", "ALTER TABLE tasks ADD COLUMN attempt_count INTEGER DEFAULT 0"),
+        ("tasks", "last_progress_sig", "ALTER TABLE tasks ADD COLUMN last_progress_sig TEXT"),
+        ("tasks", "no_progress_streak", "ALTER TABLE tasks ADD COLUMN no_progress_streak INTEGER DEFAULT 0"),
+        # L9 — persisted contract fingerprint so a changed contract resets verify_rounds.
+        ("tasks", "contract_hash", "ALTER TABLE tasks ADD COLUMN contract_hash TEXT"),
+    ):
+        try:
+            c.execute(ddl)
+        except sqlite3.OperationalError:
+            pass  # column already exists — migration already applied
     return c
 
 
@@ -132,26 +209,54 @@ def live_locks(c):
     return out
 
 
-def claim(agent, files, feature, purpose):
+def claim(agent, files, feature, purpose, session=""):
     files = norm_files(files)
+    session = (session or "").strip()
     with _lock:
         c = db()
         try:
             c.execute("BEGIN IMMEDIATE")  # serialize concurrent claims => true atomicity
             prune(c)
+            # L5: reject a SECOND live session of the same agent. The agent is the lock
+            # PK, so a second worker-loop / manual session under the same COORD_AGENT used
+            # to silently REPLACE (overwrite) the first lock, hiding a two-driver-on-one-tree
+            # race. Now: if this agent already holds a LIVE lock under a DIFFERENT session,
+            # refuse. A same-session re-claim (heartbeat / lock refresh) still proceeds, and
+            # a caller that sends no session keeps the legacy single-session behaviour.
+            self_row = c.execute("SELECT session FROM locks WHERE agent=?", (agent,)).fetchone()
+            if self_row is not None and session:
+                prior_session = (self_row[0] or "").strip()
+                if prior_session and prior_session != session:
+                    c.execute("ROLLBACK")
+                    return 409, {"ok": False,
+                                 "reason": f"agent {agent} already has a live session ({prior_session}); refusing a second driver",
+                                 "note": "one agent = one live editing session; stop the other session or reuse its COORD_SESSION"}
             conflicts = []
             for a, f in c.execute("SELECT agent,files FROM locks WHERE agent != ?", (agent,)).fetchall():
                 overlap = sorted(set(files) & set(json.loads(f or "[]")))
                 if overlap:
                     conflicts.append({"agent": a, "files": overlap})
+            # L8: a live lock is released on review/block/park, but the task itself still
+            # "owns" its scope until it reaches a terminal state. Reject a claim that
+            # overlaps the scope_files of ANY OTHER agent's non-terminal task — even when
+            # no live lock is currently held — so a parked/blocked/in-review task's files
+            # can't be silently re-edited by a second worker and later clobbered on resume.
+            for tid, owner, sf, st in c.execute(
+                    "SELECT id,assignee,scope_files,status FROM tasks "
+                    "WHERE status IN ('assigned','in_progress','review','needs_owner','blocked')").fetchall():
+                if (owner or "").strip() == agent:
+                    continue  # the claiming agent's own task scope is not a conflict
+                overlap = sorted(set(files) & set(norm_files(json.loads(sf or "[]"))))
+                if overlap:
+                    conflicts.append({"task": tid, "owner": owner, "status": st, "files": overlap})
             if conflicts:
                 c.execute("ROLLBACK")
                 return 409, {"ok": False, "conflicts": conflicts,
                              "note": "do NOT overwrite; pick other work / wait / coordinate"}
             row = c.execute("SELECT started_at FROM locks WHERE agent=?", (agent,)).fetchone()
             started = row[0] if row else now()
-            c.execute("REPLACE INTO locks VALUES(?,?,?,?,?,?,?,?)",
-                      (agent, json.dumps(files), feature, purpose, started, now(), TTL, time.time()))
+            c.execute("REPLACE INTO locks VALUES(?,?,?,?,?,?,?,?,?)",
+                      (agent, json.dumps(files), feature, purpose, started, now(), TTL, time.time(), session))
             c.execute("COMMIT")
             return 200, {"ok": True, "agent": agent, "files": files,
                          "core_feature": feature, "purpose": purpose}
@@ -195,12 +300,25 @@ ALLOWED_TX = {
     "review": {"done", "assigned", "needs_owner", "blocked"},
     "needs_owner": {"done", "assigned", "in_progress", "blocked", "todo"},
     "blocked": {"assigned", "in_progress", "needs_owner", "todo"},
-    "done": {"assigned", "needs_owner"},
+    # L11: done is a TRUE terminal state. It has no ordinary out-edges — reopening a
+    # done task is not a normal transition, it goes through the explicit, controlled
+    # reopen gate in update_task_status (dispatcher role + reopen_reason; Owner token if
+    # the done task was high-risk). This stops any shared-token client from silently
+    # reopening (and erasing the accountability of) a finished — possibly Owner-approved
+    # — task via /tasks/status or the upsert/load backdoor.
+    "done": set(),
 }
+# Reopen targets are evaluated by the dedicated L11 gate, NOT by ALLOWED_TX.
+REOPEN_TARGETS = {"assigned", "needs_owner", "todo", "in_progress"}
+# Order MUST match the tasks table column order: the original 20 columns first, then
+# the ALTER-added columns in the exact order they were added in db(). REPLACE INTO uses
+# positional binding, so any reorder here corrupts writes.
 _TASK_COLS = ["id", "title", "detail", "wave", "feature", "spec_refs", "acceptance",
               "scope_files", "assignee", "status", "priority", "risk", "verify_rounds",
               "verify_notes", "notes", "review_notes", "reviewed_by",
-              "updated_by", "created_at", "updated_at"]
+              "updated_by", "created_at", "updated_at",
+              # ALTER-added (L2 spinning fingerprint, L9 contract hash):
+              "attempt_count", "last_progress_sig", "no_progress_streak", "contract_hash"]
 
 
 def _task_to_dict(r):
@@ -248,6 +366,11 @@ def upsert_task(b):
             # For an EXISTING task, route status changes through the same state machine
             # as /tasks/status so upsert/load can't be a backdoor around the review step.
             cur_status = cur.get("status")
+            # L11: done is terminal; upsert/load must NOT be a backdoor to reopen it.
+            # Reopen has a single controlled entrance (/tasks/status reopen gate).
+            if cur_status == "done" and status != "done":
+                return 409, {"error": "done is terminal; reopen only via /tasks/status with reopen_reason (and Owner token if high-risk)",
+                             "rule": "done 是终态;重开只能经 /tasks/status + reopen_reason(高危还需 Owner 令牌)"}
             if cur_status and status != cur_status and status not in ALLOWED_TX.get(cur_status, set()):
                 return 409, {"error": f"illegal transition {cur_status} -> {status}",
                              "allowed_from_here": sorted(ALLOWED_TX.get(cur_status, set()))}
@@ -256,41 +379,71 @@ def upsert_task(b):
                 vr = int(take("verify_rounds", 0) or 0)
             except (TypeError, ValueError):
                 return 400, {"error": "verify_rounds must be an integer"}
-            needs_verify = bool(assignee) or status in ("assigned", "in_progress", "review", "done")
-            if needs_verify and vr < 3:
-                return 422, {"error": "allocation needs 3 self-refute + self-verify rounds before it can be assigned",
-                             "verify_rounds": vr,
-                             "rule": "分配的人必须 review 三遍(自我反驳 + 自我验证)才能派活"}
             stored_risk = (cur.get("risk") or "").strip()
             incoming_risk = (take("risk", "") or "").strip()
             owner_ok = bool(OWNER_TOKEN) and b.get("owner_token", "") == OWNER_TOKEN
             # risk is STICKY: once set, only the Owner token may lower/clear it. This
             # stops a worker from clearing risk to slip a high-risk task past the gate.
             risk = incoming_risk if (owner_ok or not stored_risk) else stored_risk
-            # A risk task can never be closed via upsert — must go through the
-            # /tasks/status needs_owner + owner-token path.
-            if status == "done" and risk:
-                return 423, {"error": f"high-risk task (risk={risk}) cannot be closed via upsert; needs Owner approval via /tasks/status",
+            files = norm_files(take("scope_files", []))
+            spec_refs = take("spec_refs", [])
+            if isinstance(spec_refs, str):
+                spec_refs = [s.strip() for s in spec_refs.split(",") if s.strip()]
+            acceptance = take("acceptance", "")
+            # L9 contract-hash: if this is an EXISTING task whose verified contract
+            # (assignee/scope_files/spec_refs/acceptance/risk) changed, the prior
+            # verification no longer applies — force verify_rounds back to 0 so the
+            # 3-round gate below re-blocks until the new contract is re-verified. An
+            # explicit verify_rounds>=3 in THIS body is honoured (the caller asserts the
+            # new contract was re-verified); otherwise the change voids the old count.
+            new_hash = _contract_hash(assignee, files, spec_refs, acceptance, risk)
+            old_hash = cur.get("contract_hash") if row else None
+            if old_hash is None and row:
+                # Pre-migration row had no stored hash — derive the old one from stored
+                # fields so a later contract change still triggers a reset (not a false one).
+                old_hash = _contract_hash(cur.get("assignee", ""), cur.get("scope_files", []),
+                                          cur.get("spec_refs", []), cur.get("acceptance", ""),
+                                          (cur.get("risk") or ""))
+            contract_changed = bool(row) and new_hash != old_hash
+            reverified_now = ("verify_rounds" in b) and vr >= 3
+            if contract_changed and not reverified_now:
+                vr = 0
+            needs_verify = bool(assignee) or status in ("assigned", "in_progress", "review", "done")
+            if needs_verify and vr < 3:
+                return 422, {"error": "allocation needs 3 self-refute + self-verify rounds before it can be assigned",
+                             "verify_rounds": vr,
+                             "contract_changed": contract_changed,
+                             "rule": "分配的人必须 review 三遍(自我反驳 + 自我验证)才能派活"}
+            # A high-risk task can never be closed via upsert — must go through the
+            # /tasks/status needs_owner + owner-token path. L10: a task whose SCOPE matches
+            # a high-risk pattern is treated as high-risk even if its risk tag is empty,
+            # so a forgotten tag cannot make an auth/billing change closable via this backdoor.
+            effective_high_risk = bool(risk) or _scope_is_high_risk(files)
+            if status == "done" and effective_high_risk:
+                return 423, {"error": f"high-risk task (risk={risk or 'auto:scope'}) cannot be closed via upsert; needs Owner approval via /tasks/status",
                              "rule": "高危任务只能经 needs_owner + Owner 令牌走 /tasks/status 关闭"}
             try:
                 priority = int(take("priority", 100) or 100)
             except (TypeError, ValueError):
                 priority = 100
-            files = norm_files(take("scope_files", []))
-            spec_refs = take("spec_refs", [])
-            if isinstance(spec_refs, str):
-                spec_refs = [s.strip() for s in spec_refs.split(",") if s.strip()]
             created = cur.get("created_at") or now()
-            c.execute("REPLACE INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+            # Preserve L2 spinning-fingerprint columns across the partial-update REPLACE
+            # (they are owned by update_task_status, not the dispatcher upsert path).
+            attempt_count = int(cur.get("attempt_count") or 0)
+            last_progress_sig = cur.get("last_progress_sig")
+            no_progress_streak = int(cur.get("no_progress_streak") or 0)
+            c.execute("REPLACE INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
                 tid, take("title", ""), take("detail", ""), take("wave", ""),
-                take("feature", ""), json.dumps(spec_refs), take("acceptance", ""),
+                take("feature", ""), json.dumps(spec_refs), acceptance,
                 json.dumps(files), assignee, status, priority, risk,
                 vr, take("verify_notes", ""), take("notes", ""),
                 take("review_notes", ""), take("reviewed_by", ""),
-                b.get("updated_by", ""), created, now()))
+                b.get("updated_by", ""), created, now(),
+                attempt_count, last_progress_sig, no_progress_streak, new_hash))
             c.commit()
             return 200, {"ok": True, "id": tid, "status": status,
-                         "assignee": assignee, "verify_rounds": vr}
+                         "assignee": assignee, "verify_rounds": vr,
+                         "contract_reset": contract_changed and not reverified_now}
         finally:
             c.close()
 
@@ -303,43 +456,144 @@ def update_task_status(b):
     status = (b.get("status") or "").strip()
     if not tid or status not in TASK_STATUSES:
         return 400, {"error": "id + valid status required", "allowed": list(TASK_STATUSES)}
+    # L4 actor identity. ROLE decisions (is_dispatcher) use the explicit `actor` field ONLY
+    # (codex P1 round2): reviewed_by/updated_by are caller-supplied AUDIT fields, so deriving
+    # role identity from them let a `reviewed_by=dispatcher` body satisfy the dispatcher gate
+    # on the default CLI path (COORD_AGENT unset). `actor` (with those fallbacks) is still used
+    # for attribution + the assignee-equality check on low-risk progress. NOTE: under the
+    # shared dispatch token a caller can still FORGE `actor`; hard per-agent auth is an Owner
+    # architecture decision (surfaced) — this closes the default-CLI bypass, not forgery.
+    role_actor = (b.get("actor") or "").strip()
+    actor = role_actor or (b.get("updated_by") or "").strip() or (b.get("reviewed_by") or "").strip()
+    is_dispatcher = (role_actor in DISPATCHER_AGENTS) if role_actor else False
     with _lock:
         c = db()
         try:
-            row = c.execute("SELECT status, verify_rounds, risk FROM tasks WHERE id=?", (tid,)).fetchone()
+            row = c.execute(
+                "SELECT status, verify_rounds, risk, assignee, scope_files, "
+                "no_progress_streak, last_progress_sig, notes FROM tasks WHERE id=?",
+                (tid,)).fetchone()
             if not row:
                 return 404, {"error": "no such task", "id": tid}
-            cur_status, vr, risk = (row[0] or "todo"), (row[1] or 0), (row[2] or "").strip()
-            # State-machine: only legal transitions (no skipping review, no silent reopen).
-            if status != cur_status and status not in ALLOWED_TX.get(cur_status, set()):
-                return 409, {"error": f"illegal transition {cur_status} -> {status}",
-                             "allowed_from_here": sorted(ALLOWED_TX.get(cur_status, set()))}
+            (cur_status, vr, risk, t_assignee, t_scope,
+             streak, last_sig, t_notes) = (
+                (row[0] or "todo"), (row[1] or 0), (row[2] or "").strip(),
+                (row[3] or "").strip(), (row[4] or "[]"),
+                (row[5] or 0), (row[6] or ""), (row[7] or ""))
+            effective_high_risk = bool(risk) or _scope_is_high_risk(t_scope)
+
+            # --- L11 controlled reopen: done is terminal; leaving it is NOT an ordinary
+            # transition. A reopen needs an explicit reason + a dispatcher actor; if the
+            # done task was high-risk it additionally needs the Owner token. This runs
+            # BEFORE the ALLOWED_TX check (where done has no out-edges) so the reopen has
+            # a single audited entrance and shared-token clients can't silently reopen.
+            reopening = (cur_status == "done" and status != "done")
+            if reopening:
+                if status not in REOPEN_TARGETS:
+                    return 409, {"error": f"cannot move a done task to {status}",
+                                 "allowed_from_here": sorted(REOPEN_TARGETS)}
+                reason = (b.get("reopen_reason") or "").strip()
+                if not reason:
+                    return 422, {"error": "reopening a done task requires reopen_reason",
+                                 "rule": "done 是终态;重开必须给 reopen_reason"}
+                if not is_dispatcher:   # fail-closed (codex P1): empty/unknown actor is NOT a dispatcher
+                    return 403, {"error": f"only a dispatcher may reopen a done task (actor={actor or '∅'})",
+                                 "rule": "重开 done 任务只能由 dispatcher 角色发起(空身份=拒绝)"}
+                if effective_high_risk:
+                    if not OWNER_TOKEN or b.get("owner_token", "") != OWNER_TOKEN:
+                        return 403, {"error": f"reopening a high-risk done task (risk={risk or 'auto:scope'}) needs the Owner token",
+                                     "rule": "高危 done 任务重开必须 Owner 令牌"}
+                # Stamp the reason into review_notes so the reopen leaves an audit trail.
+                if "review_notes" not in b:
+                    b["review_notes"] = "REOPEN(" + (actor or "?") + "): " + reason
+            else:
+                # State-machine: only legal transitions (no skipping review, no silent reopen).
+                if status != cur_status and status not in ALLOWED_TX.get(cur_status, set()):
+                    return 409, {"error": f"illegal transition {cur_status} -> {status}",
+                                 "allowed_from_here": sorted(ALLOWED_TX.get(cur_status, set()))}
+
+            # --- L4 actor / role authorization matrix (skipped during a reopen, which has
+            # its own dispatcher+owner gate above). Only enforced when we can prove the
+            # actor identity; an empty actor degrades to the legacy behaviour so old
+            # clients aren't broken, but the rule is written into the server for the day
+            # every client sends `actor`.
+            if not reopening:
+                # Worker progress (-> in_progress / review) is assignee-only. Enforced ONLY
+                # when the actor is known, so a legacy worker that never sends `actor` isn't
+                # 403'd to a standstill on its OWN low-risk progress steps (backward compat).
+                if actor and status in ("in_progress", "review") and t_assignee and actor != t_assignee and not is_dispatcher:
+                    return 403, {"error": f"only the assignee ({t_assignee}) may move this task to {status} (actor={actor})",
+                                 "rule": "进度推进只能由该任务的 assignee 操作"}
+                # Verdicts (pass/bounce: review -> done/assigned) are a PRIVILEGED transition
+                # and are FAIL-CLOSED (codex P1): they REQUIRE a proven dispatcher actor. An
+                # empty/unknown actor cannot be a dispatcher, so it is refused — a shared-token
+                # caller must NOT close or bounce a review without dispatcher identity. The
+                # reviewer must also differ from the assignee (no self-review). This check is
+                # OUTSIDE the `actor` guard above precisely so a missing actor fails closed.
+                if cur_status == "review" and status in ("done", "assigned"):
+                    if not is_dispatcher:
+                        return 403, {"error": f"a review verdict (pass/bounce) requires a dispatcher actor (got actor={actor or '∅'})",
+                                     "rule": "review 裁决(pass/bounce)必须由 dispatcher 角色发起(空身份=拒绝)"}
+                    if t_assignee and actor == t_assignee:
+                        return 403, {"error": f"reviewer ({actor}) must not be the assignee — no self-review",
+                                     "rule": "审核人不能是 assignee(禁止自审)"}
+
             # Same 3-round gate as upsert_task: cannot progress (assigned/in_progress/
             # review/done) unless 3 self-verify rounds passed. Park/block/reset always ok.
-            if status in ("assigned", "in_progress", "review", "done") and vr < 3:
+            # (A reopen lands on assigned/needs_owner/todo, none of which is gated as a
+            # forward step here, so the gate doesn't fight the controlled reopen above.)
+            if not reopening and status in ("assigned", "in_progress", "review", "done") and vr < 3:
                 return 422, {"error": "task has not passed 3 self-refute + self-verify rounds; cannot progress it",
                              "verify_rounds": vr,
                              "rule": "分配/推进前必须 3 轮自反验证(verify_rounds>=3)"}
-            # High-risk Owner gate (two locks): (1) a risk task can only reach 'done'
+            # High-risk Owner gate (two locks): (1) a high-risk task can only reach 'done'
             # via needs_owner; (2) the needs_owner -> done approval requires the separate
             # Owner token — workers/dispatcher share COORD_TOKEN and must NOT self-approve.
+            # L10: "high-risk" = an explicit risk tag OR a scope_files match against a
+            # high-risk path pattern, so a forgotten tag can't let an auth/billing/security
+            # task auto-close on the shared dispatch token (the incident this guards).
             if status == "done":
-                if risk and cur_status != "needs_owner":
-                    return 423, {"error": f"high-risk task (risk={risk}) needs Owner approval: park to needs_owner first",
+                if effective_high_risk and cur_status != "needs_owner":
+                    return 423, {"error": f"high-risk task (risk={risk or 'auto:scope'}) needs Owner approval: park to needs_owner first",
                                  "rule": "高危必须先 park 成 needs_owner,再由 Owner 批准"}
                 if cur_status == "needs_owner":
                     if not OWNER_TOKEN or b.get("owner_token", "") != OWNER_TOKEN:
                         return 403, {"error": "only the Owner can approve a parked task to done (needs COORD_OWNER_TOKEN)",
                                      "rule": "needs_owner -> done 必须 Owner 令牌;worker/dispatcher 不能自批"}
+
             sets, args = ["status=?"], [status]
             for f in ("notes", "review_notes", "reviewed_by", "updated_by"):
                 if f in b:
                     sets.append(f + "=?"); args.append(b[f])
+
+            # --- L2 spinning fingerprint: each time a task (re-)enters in_progress, compare
+            # a progress signature (notes + branch/sha carried in notes) to the last one.
+            # Unchanged => no_progress_streak += 1 (the worker re-ran the AI with nothing to
+            # show); changed => reset to 0. attempt_count counts entries into in_progress.
+            # The signal drives the console "空转 Nx" badge + lets the dispatcher catch a
+            # worker that is burning cycles without reaching review.
+            attempt_count = new_streak = None
+            if status == "in_progress":
+                incoming_notes = b["notes"] if "notes" in b else t_notes
+                sig = hashlib.sha256((incoming_notes or "").encode()).hexdigest()
+                ac_row = c.execute("SELECT attempt_count FROM tasks WHERE id=?", (tid,)).fetchone()
+                attempt_count = int((ac_row[0] if ac_row and ac_row[0] is not None else 0)) + 1
+                new_streak = (int(streak or 0) + 1) if (last_sig and sig == last_sig) else 0
+                sets.append("attempt_count=?"); args.append(attempt_count)
+                sets.append("last_progress_sig=?"); args.append(sig)
+                sets.append("no_progress_streak=?"); args.append(new_streak)
+
             sets.append("updated_at=?"); args.append(now())
             args.append(tid)
             c.execute("UPDATE tasks SET " + ",".join(sets) + " WHERE id=?", args)
             c.commit()
-            return 200, {"ok": True, "id": tid, "status": status}
+            out = {"ok": True, "id": tid, "status": status}
+            if status == "in_progress":
+                out["attempt_count"] = attempt_count
+                out["no_progress_streak"] = new_streak
+            if reopening:
+                out["reopened"] = True
+            return 200, out
         finally:
             c.close()
 
@@ -790,6 +1044,9 @@ function selectMachine(m){
 function taskCard(t){
  var v=(t.verify_rounds>=3)?'<span class="b on">✓3</span>':'<span class="b warn">'+(t.verify_rounds||0)+'/3</span>';
  var risk=t.risk?'<span class="b off">'+esc(t.risk)+'</span>':'';
+ // L2 spinning badge: a worker re-entering in_progress with no progress signature change
+ // bumps no_progress_streak; surface it so the dispatcher can re-assign / flag Owner.
+ var spin=(t.no_progress_streak&&t.no_progress_streak>=2)?'<span class="b off">⚠ 空转 '+t.no_progress_streak+'x</span>':'';
  var stuck='';
  if((t.status==='assigned'||t.status==='in_progress')&&t.assignee){
    var w=FRESH[t.assignee];
@@ -799,7 +1056,7 @@ function taskCard(t){
    else stuck='<span class="b on">✓ 在做</span>';
  }
  return '<div class=task><div class=row><span class=id>'+esc(t.id)+'</span><span style="flex:1">'+esc(t.title)+'</span>'+
-  (t.wave?'<span class="b s-todo">'+esc(t.wave)+'</span>':'')+'<span class="b s-'+esc(t.status)+'">'+esc(t.status)+'</span>'+v+risk+stuck+'</div>'+
+  (t.wave?'<span class="b s-todo">'+esc(t.wave)+'</span>':'')+'<span class="b s-'+esc(t.status)+'">'+esc(t.status)+'</span>'+v+risk+spin+stuck+'</div>'+
   (t.review_notes?'<div class=meta>↩ '+esc(t.review_notes)+(t.reviewed_by?' ('+esc(t.reviewed_by)+')':'')+'</div>':'')+
   (t.notes?'<div class=meta>📝 '+esc(t.notes)+'</div>':'')+
   ((t.scope_files&&t.scope_files.length)?'<div class=files>'+esc(t.scope_files.join(', '))+'</div>':'')+'</div>';
@@ -1033,7 +1290,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(400, {"error": "agent required"})
         if u.path == "/claim":
             code, obj = claim(agent, [x for x in b.get("files", []) if x],
-                              b.get("core_feature", ""), b.get("purpose", ""))
+                              b.get("core_feature", ""), b.get("purpose", ""),
+                              b.get("session", ""))
             return self._send(code, obj)
         if u.path == "/heartbeat":
             code, obj = heartbeat(agent); return self._send(code, obj)
