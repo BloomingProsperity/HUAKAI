@@ -857,6 +857,9 @@ h1{font-size:18px;margin:0;white-space:nowrap}
 .term .ln{white-space:pre-wrap;word-break:break-word;color:#c8d3df}
 .term .ts{color:#46525e;margin-right:8px}
 .tnote{color:#8b98a9;padding:30px;text-align:center}
+.term-input{display:flex;gap:6px;margin-top:8px}
+.term-input input{flex:1;background:#0c1116;border:1px solid #2a3340;color:#e6edf3;border-radius:6px;padding:7px 10px;font-size:13px}
+.term-input button{background:#143d22;border:1px solid #2d6a3f;color:#7ee29a;border-radius:6px;padding:7px 14px;cursor:pointer;font-size:13px}
 </style></head><body><div class=w>
 <div class=bar>
  <h1>HUAKAI 控制台</h1>
@@ -1028,10 +1031,21 @@ function viewMachines(){
  // terminal shell (the term body itself is owned by the terminal loop, not setHtml)
  h+='<div class=term-wrap><div class=term-head>'+
    (SEL?'<span class=live><span class=dot></span>▶ 实时 · '+esc(SEL)+'</span>':'<span class=sub>选一台机器看它的实时 AI 终端</span>')+
-   '</div><div class=term id=term>'+(SEL?'':'<div class=tnote>点上面的机器卡片打开它的实时终端</div>')+'</div></div>';
+   '</div><div class=term id=term>'+(SEL?'':'<div class=tnote>点上面的机器卡片打开它的实时终端</div>')+'</div>'+
+   (SEL?'<div class=term-input><input id=ownermsg placeholder="对 '+esc(SEL)+' 说…(Enter 发送;server-a=PM 会读并回你)"><button onclick="sendOwnerMsg()">发送</button></div>':'')+
+   '</div>';
  setHtml(VIEW,h,'machines');
  // after the list re-renders, (re)bind the live terminal element + resume streaming
- if(SEL)startTerm(SEL);
+ if(SEL){startTerm(SEL);var oi=document.getElementById('ownermsg');if(oi)oi.onkeydown=function(e){if(e.key==='Enter')sendOwnerMsg();};}
+}
+// Owner→PM 对话:打字 POST 成 owner-to-pm(PM server-a 每轮 poll 读取并回复),并回显进当前机器终端
+function sendOwnerMsg(){
+ var i=document.getElementById('ownermsg');if(!i||!i.value.trim()||!T)return;
+ var txt=i.value.trim();i.value='';
+ var H=Object.assign({'Content-Type':'application/json'},hdr());
+ fetch('/dispatcher/output',{method:'POST',headers:H,body:JSON.stringify({agent:'owner-to-pm',lines:['[Owner→'+SEL+'] '+txt]})})
+  .then(function(){fetch('/dispatcher/output',{method:'POST',headers:H,body:JSON.stringify({agent:SEL,lines:['📨 [Owner] '+txt+'  (已发给 PM,server-a 会读取)']})});})
+  .catch(function(){});
 }
 function selectMachine(m){
  if(SEL===m)return;
