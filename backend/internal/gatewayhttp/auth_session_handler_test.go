@@ -1312,3 +1312,30 @@ func TestLogin_AccountStateFailuresAreGeneric(t *testing.T) {
 		})
 	}
 }
+
+// TestLogin_ThrottleKeyedByIPNotTenant 钉住限流 key 的来源: 用可信 client IP, 不用未认证可伪造
+// 的 body tenant_id。否则攻击者只要每次换一个 tenant_id 就能绕过 CPU 防护(用任意值刷满 argon2)。
+// codex 复审点名补强。同一 IP 先在 tenant=1 失败一次打满窗口, 再用 tenant=2 请求必须仍被 429。
+//
+// mutation: 把限流 key 改成含 body tenant_id(如 fmt.Sprintf("%d|%s", tenantID, ip))→ tenant=2
+// 是新 key → 第二次不再 429(走到 Authenticate)→ 本测红。
+func TestLogin_ThrottleKeyedByIPNotTenant(t *testing.T) {
+	now := time.Date(2026, 5, 31, 9, 0, 0, 0, time.UTC)
+	base := newGatewayMemoryAuthStore(now)
+	seedLoginUser(t, base, "u@example.test", "secret", userauth.UserStatusActive, true)
+	// WindowLimit=1: 同 IP 第一次失败后第二次即在限流闸被拒。
+	limiter := loginthrottle.New(loginthrottle.Config{WindowLimit: 1, InFlightLimit: 10, BanAfter: 100, Now: func() time.Time { return now }})
+	r, _ := newLoginTestHandler(t, now, base, limiter, false)
+
+	// tenant=1 错口令 → 401, 记一次失败(按 IP)。
+	rec1 := serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
+		"tenant_id": 1, "email": "u@example.test", "password": "wrong",
+	})
+	assertHTTPStatus(t, rec1, http.StatusUnauthorized)
+
+	// 同 IP 换 tenant=2 → 若按 IP 限流(正确)则仍 429; 若按 tenant 限流则会放行(被本测抓到)。
+	rec2 := serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
+		"tenant_id": 2, "email": "someone@example.test", "password": "whatever",
+	})
+	assertHTTPStatus(t, rec2, http.StatusTooManyRequests)
+}
