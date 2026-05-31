@@ -146,20 +146,102 @@ func TestBedrockScanner_ExceptionTerminates(t *testing.T) {
 	}
 }
 
-func TestBedrockScanner_UnknownEventTypeSkipped(t *testing.T) {
-	// 未知 event-type 应静默 skip，不阻塞后续 chunk
+func TestBedrockScanner_EventExceptionTypeTerminates(t *testing.T) {
+	chunk := chunkFrame(`{"type":"message_start"}`)
+	exception := encodeBedrockFrame(
+		map[string]string{":message-type": "event", ":event-type": "modelStreamErrorException"},
+		[]byte(`{"message":"upstream throttled"}`),
+	)
+	postException := chunkFrame(`{"type":"message_stop"}`)
+	stream := append(append(chunk, exception...), postException...)
+
+	scanner := &BedrockEventStreamScanner{}
+	var events []SSEEvent
+	var lastErr error
+	for evt, err := range scanner.Scan(context.Background(), bytes.NewReader(stream), 0) {
+		if err != nil {
+			lastErr = err
+			break
+		}
+		events = append(events, evt)
+	}
+
+	if !errors.Is(lastErr, ErrBedrockException) {
+		t.Fatalf("err=%v want ErrBedrockException", lastErr)
+	}
+	if len(events) != 2 {
+		t.Fatalf("event count=%d want 2 (chunk+exception emit)", len(events))
+	}
+	if events[0].Type != "message_start" {
+		t.Errorf("event[0].Type=%q want message_start", events[0].Type)
+	}
+	if events[1].Type != "error" {
+		t.Errorf("event[1].Type=%q want error", events[1].Type)
+	}
+	if !strings.Contains(string(events[1].Data), "upstream throttled") {
+		t.Errorf("exception payload missing: %q", events[1].Data)
+	}
+	for i, evt := range events {
+		if evt.Type == "message_stop" {
+			t.Fatalf("event[%d] delivered clean terminal after exception: %+v", i, evt)
+		}
+	}
+}
+
+func TestBedrockScanner_UnknownMessageTypeTerminates(t *testing.T) {
+	chunk := chunkFrame(`{"type":"message_start"}`)
 	unknown := encodeBedrockFrame(
-		map[string]string{":message-type": "event", ":event-type": "future-event-not-yet-supported"},
-		[]byte(`{"some":"future"}`),
+		map[string]string{":message-type": "unexpected-control"},
+		[]byte(`{"message":"unknown frame"}`),
+	)
+	postUnknown := chunkFrame(`{"type":"message_stop"}`)
+	stream := append(append(chunk, unknown...), postUnknown...)
+
+	scanner := &BedrockEventStreamScanner{}
+	var events []SSEEvent
+	var lastErr error
+	for evt, err := range scanner.Scan(context.Background(), bytes.NewReader(stream), 0) {
+		if err != nil {
+			lastErr = err
+			break
+		}
+		events = append(events, evt)
+	}
+
+	if !errors.Is(lastErr, ErrBedrockException) {
+		t.Fatalf("err=%v want ErrBedrockException", lastErr)
+	}
+	if len(events) != 2 {
+		t.Fatalf("event count=%d want 2 (chunk+unknown-type error emit)", len(events))
+	}
+	if events[1].Type != "error" {
+		t.Errorf("event[1].Type=%q want error", events[1].Type)
+	}
+	if !strings.Contains(string(events[1].Data), "unknown frame") {
+		t.Errorf("unknown message payload missing: %q", events[1].Data)
+	}
+	for i, evt := range events {
+		if evt.Type == "message_stop" {
+			t.Fatalf("event[%d] delivered clean terminal after unknown message type: %+v", i, evt)
+		}
+	}
+}
+
+func TestBedrockScanner_InitialResponseEventSkipped(t *testing.T) {
+	// Smithy Event Stream RPC protocols can send initial-response control events.
+	// They are not Bedrock model output and can be skipped without hiding errors.
+	control := encodeBedrockFrame(
+		map[string]string{":message-type": "event", ":event-type": "initial-response"},
+		[]byte(`{"requestId":"control"}`),
 	)
 	chunk := chunkFrame(`{"type":"message_stop"}`)
-	stream := append(unknown, chunk...)
+	stream := append(control, chunk...)
 
 	events, err := collectBedrockEvents(t, stream)
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
-	// 只 emit chunk，不 emit unknown
+	// 只 emit chunk，不 emit control event
 	if len(events) != 1 {
 		t.Fatalf("event count=%d want 1 (only the chunk)", len(events))
 	}

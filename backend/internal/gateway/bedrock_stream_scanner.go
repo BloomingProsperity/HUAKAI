@@ -13,7 +13,8 @@
 //     * "exception" / "error" → emit 为 protocol-level error
 //       SSEEvent（Type="error", Data=原 payload），随后 yield ErrBedrockException
 //       结束流（R4 决策：当 protocol-level error 处理）
-//     * 其它（未知 message-type / unknown event-type）→ 跳过 + 留 TODO
+//     * Bedrock response exception event-types / unknown message-type →
+//       protocol-level error；明确的 control event 才可跳过
 //   - decoder 错误传播为 (SSEEvent{}, err)，scanner 退出
 //
 // 设计约束（与 codex_session 同条款）：
@@ -44,6 +45,15 @@ var ErrBedrockException = errors.New("gateway: Bedrock EventStream 返回 except
 
 // ErrBedrockChunkPayload 表示 chunk envelope 解析失败（base64 / JSON 错）。
 var ErrBedrockChunkPayload = errors.New("gateway: Bedrock chunk envelope 解析失败")
+
+var bedrockExceptionEventTypes = map[string]struct{}{
+	"internalServerException":     {},
+	"modelStreamErrorException":   {},
+	"modelTimeoutException":       {},
+	"serviceUnavailableException": {},
+	"throttlingException":         {},
+	"validationException":         {},
+}
 
 // BedrockEventStreamScanner 实现 StreamScanner，把二进制 EventStream
 // 切帧并解 chunk envelope 为内层 SSEEvent。
@@ -92,16 +102,11 @@ func (s *BedrockEventStreamScanner) Scan(ctx context.Context, r io.Reader, buffe
 				}
 			case "exception", "error":
 				// R4 决策：当 protocol-level error；emit error event + 终止
-				if !yield(SSEEvent{Type: "error", Data: msg.Payload, ObservedAt: time.Now()}, nil) {
-					return
-				}
-				yield(SSEEvent{}, fmt.Errorf("%w: type=%q payload=%s", ErrBedrockException, messageType, string(msg.Payload)))
+				yieldBedrockProtocolError("message-type", messageType, msg.Payload, yield)
 				return
 			default:
-				// 未知 message-type：跳过 + TODO（OCAW 实测后再决定是否报错或转发）
-				// TODO(OCAW): 出现未知 :message-type 时是否需要 fail-loud？
-				// 当前选择跳过（保持 forwarder 可恢复）。
-				continue
+				yieldBedrockProtocolError("message-type", messageType, msg.Payload, yield)
+				return
 			}
 		}
 	}
@@ -110,11 +115,15 @@ func (s *BedrockEventStreamScanner) Scan(ctx context.Context, r io.Reader, buffe
 // handleEventFrame 处理 :message-type=event 帧。当前只识别 :event-type=chunk
 // 的 Anthropic-on-Bedrock 形态。返回 false 表示 yield 收到 stop 信号。
 func (s *BedrockEventStreamScanner) handleEventFrame(eventType string, payload []byte, yield func(SSEEvent, error) bool) bool {
-	if eventType != "chunk" {
-		// 未知 event-type（非 chunk）：跳过。OCAW 实测如发现其它 event-type
-		// （如 internal-server-exception 等）再补 case。
-		// TODO(OCAW): 列出所有 Bedrock streaming event-type 并补全 case
+	switch eventType {
+	case "chunk":
+	case "initial-response":
 		return true
+	default:
+		if _, ok := bedrockExceptionEventTypes[eventType]; ok {
+			return yieldBedrockProtocolError("exception event-type", eventType, payload, yield)
+		}
+		return yieldBedrockProtocolError("event-type", eventType, payload, yield)
 	}
 
 	// chunk envelope 形态：{"bytes": "<base64-encoded inner JSON>"}
@@ -142,6 +151,14 @@ func (s *BedrockEventStreamScanner) handleEventFrame(eventType string, payload [
 		Data:       innerJSON,
 		ObservedAt: time.Now(),
 	}, nil)
+}
+
+func yieldBedrockProtocolError(kind, value string, payload []byte, yield func(SSEEvent, error) bool) bool {
+	if !yield(SSEEvent{Type: "error", Data: payload, ObservedAt: time.Now()}, nil) {
+		return false
+	}
+	yield(SSEEvent{}, fmt.Errorf("%w: %s=%q payload=%s", ErrBedrockException, kind, value, string(payload)))
+	return false
 }
 
 // Source files read:
