@@ -155,6 +155,44 @@ func TestLimiter_SuccessDoesNotAccumulate(t *testing.T) {
 	}
 }
 
+// TestLimiter_SuccessDoesNotClearPriorFailures 钉住一个安全属性: 一次成功登录只释放在途槽,
+// 绝不清空该 IP 之前累计的失败 —— 否则攻击者用一个有效账号穿插登录即可重置风控窗口, 让暴力
+// 破解永不触发封禁。codex 复审点名补强。
+//
+// mutation: 让 Success 顺手清空 failures(误把成功当「洗白」)→ 成功后 failureCount 归零 +
+// 后续达不到窗口阈值 → 本测红。
+func TestLimiter_SuccessDoesNotClearPriorFailures(t *testing.T) {
+	c := newClk()
+	l := New(Config{InFlightLimit: 10, Window: time.Minute, WindowLimit: 3, BanAfter: 100, Now: c.now})
+
+	// 先攒 2 次失败(未到窗口阈值 3)。
+	for i := 0; i < 2; i++ {
+		le, d := l.Begin("ip")
+		if !d.Allowed {
+			t.Fatalf("failure begin %d denied: %v", i, d.Reason)
+		}
+		le.Failure()
+	}
+	// 一次成功 —— 不得清掉那 2 次失败。
+	le, d := l.Begin("ip")
+	if !d.Allowed {
+		t.Fatalf("success begin denied: %v", d.Reason)
+	}
+	le.Success()
+	if got := l.failureCount("ip"); got != 2 {
+		t.Fatalf("a successful login cleared prior failures (failureCount=%d, want 2); attacker could reset the throttle with one valid login", got)
+	}
+	// 再来 1 次失败 → 累计 3 → 窗口必须触发(证明成功没把预算洗白)。
+	le, d = l.Begin("ip")
+	if !d.Allowed {
+		t.Fatalf("post-success failure begin denied: %v", d.Reason)
+	}
+	le.Failure()
+	if _, d := l.Begin("ip"); d.Allowed {
+		t.Fatal("2 prior + 1 post-success failures = 3 must trip the window; success must not have reset the budget")
+	}
+}
+
 // TestLimiter_CancelReleasesAndCommitIdempotent 钉住:Cancel 释放槽且不记失败;commit 后再调任何
 // commit 方法都是 no-op(不会重复记失败/重复释放)。
 // mutation: Cancel 不释放槽 → 后续 Begin 被 in-flight 拒 → 红; Cancel 误记失败 → failureCount>0 → 红。
