@@ -493,9 +493,9 @@ def update_task_status(b):
                 if not reason:
                     return 422, {"error": "reopening a done task requires reopen_reason",
                                  "rule": "done 是终态;重开必须给 reopen_reason"}
-                if actor and not is_dispatcher:
-                    return 403, {"error": f"only a dispatcher may reopen a done task (actor={actor})",
-                                 "rule": "重开 done 任务只能由 dispatcher 角色发起"}
+                if not is_dispatcher:   # fail-closed (codex P1): empty/unknown actor is NOT a dispatcher
+                    return 403, {"error": f"only a dispatcher may reopen a done task (actor={actor or '∅'})",
+                                 "rule": "重开 done 任务只能由 dispatcher 角色发起(空身份=拒绝)"}
                 if effective_high_risk:
                     if not OWNER_TOKEN or b.get("owner_token", "") != OWNER_TOKEN:
                         return 403, {"error": f"reopening a high-risk done task (risk={risk or 'auto:scope'}) needs the Owner token",
@@ -514,17 +514,23 @@ def update_task_status(b):
             # actor identity; an empty actor degrades to the legacy behaviour so old
             # clients aren't broken, but the rule is written into the server for the day
             # every client sends `actor`.
-            if not reopening and actor:
-                # Worker progress (-> in_progress / review) is assignee-only.
-                if status in ("in_progress", "review") and t_assignee and actor != t_assignee and not is_dispatcher:
+            if not reopening:
+                # Worker progress (-> in_progress / review) is assignee-only. Enforced ONLY
+                # when the actor is known, so a legacy worker that never sends `actor` isn't
+                # 403'd to a standstill on its OWN low-risk progress steps (backward compat).
+                if actor and status in ("in_progress", "review") and t_assignee and actor != t_assignee and not is_dispatcher:
                     return 403, {"error": f"only the assignee ({t_assignee}) may move this task to {status} (actor={actor})",
                                  "rule": "进度推进只能由该任务的 assignee 操作"}
-                # Verdicts (pass/bounce from review) are dispatcher-only AND the reviewer
-                # must not be the assignee (no self-review).
+                # Verdicts (pass/bounce: review -> done/assigned) are a PRIVILEGED transition
+                # and are FAIL-CLOSED (codex P1): they REQUIRE a proven dispatcher actor. An
+                # empty/unknown actor cannot be a dispatcher, so it is refused — a shared-token
+                # caller must NOT close or bounce a review without dispatcher identity. The
+                # reviewer must also differ from the assignee (no self-review). This check is
+                # OUTSIDE the `actor` guard above precisely so a missing actor fails closed.
                 if cur_status == "review" and status in ("done", "assigned"):
                     if not is_dispatcher:
-                        return 403, {"error": f"only a dispatcher may render a review verdict (actor={actor})",
-                                     "rule": "review 裁决(pass/bounce)只能由 dispatcher 角色"}
+                        return 403, {"error": f"a review verdict (pass/bounce) requires a dispatcher actor (got actor={actor or '∅'})",
+                                     "rule": "review 裁决(pass/bounce)必须由 dispatcher 角色发起(空身份=拒绝)"}
                     if t_assignee and actor == t_assignee:
                         return 403, {"error": f"reviewer ({actor}) must not be the assignee — no self-review",
                                      "rule": "审核人不能是 assignee(禁止自审)"}
