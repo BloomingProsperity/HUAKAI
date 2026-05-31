@@ -6,13 +6,16 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
+	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
@@ -56,6 +59,9 @@ type AuthHandlerDeps struct {
 	AdminAuth        AuthAdminAuth
 	EventSink        AuthEventSink
 	ClientIPResolver *clientip.Resolver
+	// LoginThrottle 是密码登录的「argon2 前置」IP 限流闸(S2-048)。nil = 不限流(测试/旧装配),
+	// 生产装配必须注入,否则未认证攻击者可对任意邮箱触发昂贵 argon2 放大 CPU。
+	LoginThrottle *loginthrottle.Limiter
 }
 
 type authRegisterRequest struct {
@@ -167,14 +173,35 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		if !decodeAdminPoolJSON(w, r, &req) {
 			return
 		}
+		// S2-048 门1: 在调用 Authenticate(会跑 argon2)之前先过 IP 限流闸。命中即 429, 绝不进 KDF ——
+		// 否则未认证攻击者可对任意邮箱触发昂贵 argon2(等工修复让 miss 也跑 argon2, 放大了这个面)。
+		// key 用可信 client IP(body 的 tenant_id 未认证可伪造, 不进 key)。lease 在登录结果回灌:
+		// 成功 Success(不计失败), 失败 Failure(累计/可能封禁); defer Cancel 兜底 panic/早退释放在途槽。
+		var lease *loginthrottle.Lease
+		if d.LoginThrottle != nil {
+			ip := d.ClientIPResolver.ClientIP(r)
+			var dec loginthrottle.Decision
+			lease, dec = d.LoginThrottle.Begin(ip)
+			defer lease.Cancel()
+			if !dec.Allowed {
+				recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+					EventType: "user_login_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: "login_rate_limited", AuthMethod: "password",
+				})
+				writeLoginThrottled(w, dec.RetryAfter)
+				return
+			}
+		}
 		user, err := d.Auth.Authenticate(r.Context(), userauth.LoginInput{TenantID: req.TenantID, Email: req.Email, Password: req.Password})
 		if err != nil {
+			lease.Failure() // nil-safe: 限流未装配时为 no-op
+			// 审计记录真实 reason(操作员可见), 但对外统一 generic, 杜绝状态码/消息枚举(S2-048 门2)。
 			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
 				EventType: "user_login_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: authReasonClass(err), AuthMethod: "password",
 			})
-			writeAuthError(w, err)
+			writeLoginFailureGeneric(w, err)
 			return
 		}
+		lease.Success() // 登录凭据通过, 释放在途槽且不计失败(成功不消耗限流配额)
 		tokens, err := d.Sessions.Create(r.Context(), usersession.CreateInput{
 			TenantID: user.TenantID, UserID: user.ID, DeviceInfo: req.DeviceInfo,
 			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: "password",
@@ -636,4 +663,35 @@ func writeAuthError(w http.ResponseWriter, err error) {
 	default:
 		writeJSONError(w, http.StatusServiceUnavailable, "auth_backend_error", "auth backend transient failure")
 	}
+}
+
+// writeLoginFailureGeneric 是密码登录专用的失败响应(S2-048 门2)。它把所有「与账号存在性/状态
+// 相关」的认证失败 —— 口令错、账号停用、锁定、待邮箱验证、需重置 —— 对外统一成同一个 generic
+// 401 invalid_credentials, 杜绝攻击者借状态码/消息差异枚举用户是否存在及其状态。真实 reason 已在
+// 调用前写入审计事件(操作员可见, 用户不可见)。非枚举类错误(请求格式错/后端故障)保持区分, 不
+// 影响正常排障。注意: 仅登录路径用本函数; 注册/验证/重置/OAuth 仍用 writeAuthError(那些场景的
+// invite_required 等提示是正常 UX, 不构成枚举泄露)。
+func writeLoginFailureGeneric(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, userauth.ErrInvalidInput):
+		writeJSONError(w, http.StatusBadRequest, "invalid_auth_request", "auth request is invalid")
+	case errors.Is(err, userauth.ErrInvalidCredentials),
+		errors.Is(err, userauth.ErrUserDisabled),
+		errors.Is(err, userauth.ErrUserLocked),
+		errors.Is(err, userauth.ErrPasswordResetRequired),
+		errors.Is(err, userauth.ErrEmailUnverified):
+		writeJSONError(w, http.StatusUnauthorized, "invalid_credentials", "email or password is invalid")
+	default:
+		// ErrStoreNotConfigured 等后端异常不是枚举泄露 —— 返回后端错误便于排障。
+		writeJSONError(w, http.StatusServiceUnavailable, "auth_backend_error", "auth backend transient failure")
+	}
+}
+
+// writeLoginThrottled 是限流命中(S2-048 门1)的响应: 429 + 粗粒度 Retry-After(秒, 已在 limiter
+// 侧对齐), 不携带剩余次数/账号状态, 避免侧信道。
+func writeLoginThrottled(w http.ResponseWriter, retryAfter time.Duration) {
+	if retryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.FormatInt(int64(retryAfter/time.Second), 10))
+	}
+	writeJSONError(w, http.StatusTooManyRequests, "too_many_attempts", "too many login attempts; please retry later")
 }
