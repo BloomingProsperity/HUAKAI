@@ -93,6 +93,16 @@ def db():
         verify_rounds INTEGER, verify_notes TEXT, notes TEXT,
         review_notes TEXT, reviewed_by TEXT,
         updated_by TEXT, created_at TEXT, updated_at TEXT)""")
+    # Dispatcher daemon self-report (drives the /console panel so the Owner never
+    # needs a shell to see what the 24/7 dispatcher is doing): one row per dispatcher
+    # agent (state + heartbeat), a ring buffer of recent actions, and a control flag.
+    c.execute("""CREATE TABLE IF NOT EXISTS dispatcher(
+        agent TEXT PRIMARY KEY, state TEXT, detail TEXT,
+        heartbeat_at TEXT, epoch REAL, updated_at TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS dispatcher_events(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, agent TEXT, ts TEXT, kind TEXT, text TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS dispatcher_control(
+        k TEXT PRIMARY KEY, v TEXT, set_at TEXT)""")
     return c
 
 
@@ -323,6 +333,55 @@ def update_task_status(b):
             c.close()
 
 
+# --- dispatcher daemon status / control (drives the /console panel) ---
+def record_dispatcher(b):
+    agent = (b.get("agent") or "").strip()
+    if not agent:
+        return 400, {"error": "agent required"}
+    c = db()
+    try:
+        c.execute("REPLACE INTO dispatcher(agent,state,detail,heartbeat_at,epoch,updated_at) VALUES(?,?,?,?,?,?)",
+                  (agent, (b.get("state") or "unknown")[:40], (b.get("detail") or "")[:500],
+                   now(), time.time(), now()))
+        ev = b.get("event")
+        if isinstance(ev, dict) and (ev.get("text") or ev.get("kind")):
+            c.execute("INSERT INTO dispatcher_events(agent,ts,kind,text) VALUES(?,?,?,?)",
+                      (agent, now(), (ev.get("kind") or "log")[:40], (ev.get("text") or "")[:4000]))
+            c.execute("DELETE FROM dispatcher_events WHERE id NOT IN "
+                      "(SELECT id FROM dispatcher_events ORDER BY id DESC LIMIT 150)")
+        c.commit()
+        row = c.execute("SELECT v FROM dispatcher_control WHERE k='desired'").fetchone()
+        return 200, {"ok": True, "control": (row[0] if row else "run")}
+    finally:
+        c.close()
+
+
+def dispatcher_view(c):
+    agents = []
+    for a, st, dt, hb, ep, up in c.execute(
+            "SELECT agent,state,detail,heartbeat_at,epoch,updated_at FROM dispatcher ORDER BY agent").fetchall():
+        age = int(time.time() - ep) if ep else None
+        agents.append({"agent": a, "state": st, "detail": dt, "heartbeat_at": hb,
+                       "age_sec": age, "fresh": bool(ep) and (time.time() - ep) < 240})
+    events = [{"agent": ag, "ts": t, "kind": k, "text": x} for ag, t, k, x in c.execute(
+        "SELECT agent,ts,kind,text FROM dispatcher_events ORDER BY id DESC LIMIT 60").fetchall()]
+    row = c.execute("SELECT v FROM dispatcher_control WHERE k='desired'").fetchone()
+    return {"agents": agents, "events": events, "control": (row[0] if row else "run")}
+
+
+def set_dispatcher_control(b):
+    action = (b.get("action") or "").strip()
+    if action not in ("run", "pause"):
+        return 400, {"error": "action must be run|pause"}
+    c = db()
+    try:
+        c.execute("REPLACE INTO dispatcher_control(k,v,set_at) VALUES('desired',?,?)", (action, now()))
+        c.commit()
+    finally:
+        c.close()
+    return 200, {"ok": True, "control": action}
+
+
 VIEW_HTML = """<!DOCTYPE html>
 <html lang=zh><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>HUAKAI 协调看板</title><style>
@@ -434,6 +493,120 @@ setInterval(tick,4000); tick();
 </script></body></html>"""
 
 
+CONSOLE_HTML = """<!DOCTYPE html>
+<html lang=zh><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>HUAKAI 控制台 · 一页全局</title><style>
+body{margin:0;background:#0f1419;color:#e6edf3;font:14px/1.6 system-ui,"PingFang SC","Microsoft YaHei",sans-serif}
+.w{max-width:1180px;margin:0 auto;padding:16px}
+h1{font-size:19px;margin:0 0 2px}.sub{color:#8b98a9;font-size:12px;margin-bottom:10px}
+a{color:#9ecbff}
+.tok{display:flex;gap:8px;margin-bottom:12px}
+.tok input{flex:1;background:#1e2630;border:1px solid #2a3340;color:#e6edf3;border-radius:6px;padding:7px 10px}
+.tok button{background:#143d22;border:1px solid #2d6a3f;color:#7ee29a;border-radius:6px;padding:7px 14px;cursor:pointer}
+.card{background:#171d26;border:1px solid #2a3340;border-radius:10px;padding:12px 14px;margin-bottom:14px}
+.card h2{font-size:14px;margin:0 0 8px;color:#cdd9e5}
+.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.b{font-size:11px;padding:1px 8px;border-radius:11px;border:1px solid}
+.on{color:#7ee29a;border-color:#2d6a3f}.off{color:#ff8b8b;border-color:#6b2b2b}.warn{color:#f0c674;border-color:#6b5a2b}
+.btn{background:#1e2630;border:1px solid #2a3340;color:#e6edf3;border-radius:6px;padding:5px 12px;cursor:pointer;font-size:12px}
+.btn.stop{color:#ff8b8b;border-color:#6b2b2b}.btn.go{color:#7ee29a;border-color:#2d6a3f}
+.ev{font-family:ui-monospace,monospace;font-size:11.5px;max-height:280px;overflow:auto;background:#0c1116;border:1px solid #232c36;border-radius:7px;padding:8px}
+.ev .e{padding:3px 0;border-bottom:1px solid #1a222c;white-space:pre-wrap}
+.ev .t{color:#6b7480}.ev .k{color:#9ecbff}
+.pill{background:#171d26;border:1px solid #2a3340;border-radius:20px;padding:3px 11px;font-size:12px;display:inline-block;margin:0 5px 5px 0}
+.s-todo{color:#8b98a9;border-color:#3a4350}.s-assigned{color:#9ecbff;border-color:#2b4a6b}
+.s-in_progress{color:#f0c674;border-color:#6b5a2b}.s-review{color:#c9a7f0;border-color:#5a3a6b}
+.s-done{color:#7ee29a;border-color:#2d6a3f}.s-blocked{color:#ff8b8b;border-color:#6b2b2b}.s-needs_owner{color:#ff5f5f;border-color:#6b2b2b}
+.task{background:#141a22;border:1px solid #232c36;border-radius:8px;padding:8px 10px;margin-bottom:6px}
+.id{font-weight:600;color:#9ecbff}.meta{color:#7d8794;font-size:12px;margin-top:3px}
+.files{color:#6b7480;font-size:11px;font-family:ui-monospace,monospace}
+.lock{font-size:12px;color:#cdd9e5;margin-bottom:4px}.lock .who{color:#f0c674}
+.err{color:#ff8b8b}.grp h3{font-size:13px;color:#cdd9e5;margin:8px 0 5px}
+</style></head><body><div class=w>
+<h1>HUAKAI 控制台</h1>
+<div class=sub>一页看全:调度守护进程 · 任务账本 · 谁在编辑 · 每 5 秒刷新 · <a href="/tree">功能树</a></div>
+<div class=tok><input id=t type=password placeholder="贴 COORD_TOKEN(只存本会话,不进 URL)"><button id=go>进入</button></div>
+<div id=app></div>
+<div class=sub id=ts></div></div>
+<script>
+var T=sessionStorage.getItem('COORD_TOKEN')||'';
+if(T)document.getElementById('t').value=T;
+document.getElementById('go').addEventListener('click',function(){T=document.getElementById('t').value.trim();sessionStorage.setItem('COORD_TOKEN',T);tick();});
+function esc(s){return (s==null?'':''+s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+function hdr(){return {Authorization:'Bearer '+T};}
+function ago(s){if(s==null)return '?';if(s<60)return s+'秒前';if(s<3600)return Math.floor(s/60)+'分前';return Math.floor(s/3600)+'时前';}
+var STAT=['needs_owner','in_progress','review','assigned','blocked','todo','done'];
+function chk(r){if(r.status===401)throw new Error('token 不对(401)');if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}
+function control(action){
+ fetch('/dispatcher/control',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},hdr()),body:JSON.stringify({action:action})})
+  .then(chk).then(function(){tick();}).catch(function(e){alert('操作失败:'+e.message);});
+}
+function approve(id){
+ var ot=prompt('批准高危任务 '+id+' → done。\\n输入 Owner 专用令牌(COORD_OWNER_TOKEN):');
+ if(!ot)return;
+ fetch('/tasks/status',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},hdr()),
+   body:JSON.stringify({id:id,status:'done',owner_token:ot,updated_by:'owner-console'})})
+  .then(function(r){return r.json();}).then(function(d){if(d.error)alert('未批准:'+d.error);else tick();})
+  .catch(function(e){alert('失败:'+e.message);});
+}
+document.addEventListener('click',function(e){
+ var el=e.target; if(!el.getAttribute)return;
+ var a=el.getAttribute('data-act'); if(a){control(a);return;}
+ var ap=el.getAttribute('data-approve'); if(ap){approve(ap);return;}
+});
+function tick(){
+ if(!T){document.getElementById('app').innerHTML='<div class=err>先贴 token。</div>';return;}
+ Promise.all([
+  fetch('/dispatcher/status',{headers:hdr()}).then(chk),
+  fetch('/tasks',{headers:hdr()}).then(chk),
+  fetch('/board',{headers:hdr()}).then(chk)
+ ]).then(function(res){
+  render(res[0],res[1].tasks||[],res[2].locks||[]);
+  document.getElementById('ts').textContent='更新于 '+new Date().toLocaleTimeString();
+ }).catch(function(e){document.getElementById('app').innerHTML='<div class=err>'+esc(e.message)+'</div>';});
+}
+function render(ds,tasks,locks){
+ var html='';
+ var paused=(ds.control==='pause');
+ var ags=(ds.agents||[]);
+ var dstat=ags.length?ags.map(function(a){
+   var cls=a.fresh?'on':'off';var lbl=a.fresh?(a.state||'?'):'失联';
+   return '<div class=row style="margin-bottom:4px"><span class="b '+cls+'">'+esc(a.agent)+' · '+esc(lbl)+'</span>'+
+     '<span class=sub>心跳 '+ago(a.age_sec)+'</span>'+(a.detail?'<span class=sub>· '+esc(a.detail)+'</span>':'')+'</div>';
+ }).join(''):'<div class=sub>(还没有守护进程上报。daemon 重启后会每轮上报。)</div>';
+ var ctlbtn=paused?'<button class="btn go" data-act="run">▶ 恢复调度</button>':'<button class="btn stop" data-act="pause">⏸ 暂停调度</button>';
+ html+='<div class=card><h2>🛰 调度守护进程 '+(paused?'<span class="b warn">已暂停</span>':'<span class="b on">运行中</span>')+'</h2>'+
+   dstat+'<div class=row style="margin-top:8px">'+ctlbtn+
+   '<span class=sub>暂停=进程保活但不再审/合并 · 彻底停用:systemctl --user stop huakai-dispatcher</span></div></div>';
+ var ev=(ds.events||[]);
+ html+='<div class=card><h2>📜 最近动作(调度日志,免命令)</h2><div class=ev>'+
+   (ev.length?ev.map(function(e){return '<div class=e><span class=t>'+esc((e.ts||'').replace('T',' ').slice(5,19))+'</span> <span class=k>['+esc(e.kind)+']</span> '+esc(e.text);}).join(''):'<div class=sub>(暂无)</div>')+
+   '</div></div>';
+ var cnt={};tasks.forEach(function(t){cnt[t.status]=(cnt[t.status]||0)+1;});
+ var pills='<span class=pill>共 '+tasks.length+'</span>'+STAT.map(function(s){return cnt[s]?'<span class="pill s-'+s+'">'+s+' '+cnt[s]+'</span>':'';}).join('');
+ var groups={};tasks.forEach(function(t){var k=t.assignee||'(未分配)';(groups[k]=groups[k]||[]).push(t);});
+ var keys=Object.keys(groups).sort();
+ var board=keys.map(function(k){return '<div class=grp><h3>'+esc(k)+' · '+groups[k].length+'</h3>'+groups[k].map(card).join('')+'</div>';}).join('');
+ html+='<div class=card><h2>📋 任务账本</h2>'+pills+'<div style="margin-top:8px">'+(board||'<div class=sub>(还没有任务)</div>')+'</div></div>';
+ var lk=locks.filter(function(l){return l.files&&l.files.length;});
+ html+='<div class=card><h2>🔧 谁在编辑(实时文件锁)</h2>'+
+   (lk.length?lk.map(function(l){return '<div class=lock><span class=who>'+esc(l.agent)+'</span> · '+esc(l.core_feature||'')+' · <span class=files>'+esc((l.files||[]).join(', '))+'</span></div>';}).join(''):'<div class=sub>(当前无人在编辑)</div>')+'</div>';
+ document.getElementById('app').innerHTML=html;
+}
+function card(t){
+ var v=(t.verify_rounds>=3)?'<span class="b on">✓3</span>':'<span class="b warn">'+(t.verify_rounds||0)+'/3</span>';
+ var risk=t.risk?'<span class="b off">'+esc(t.risk)+'</span>':'';
+ var ap=(t.status==='needs_owner')?'<div style="margin-top:6px"><button class="btn go" data-approve="'+esc(t.id)+'">✅ 批准(Owner 令牌)</button></div>':'';
+ return '<div class=task><div class=row><span class=id>'+esc(t.id)+'</span><span style="flex:1">'+esc(t.title)+'</span>'+
+  (t.wave?'<span class="b s-todo">'+esc(t.wave)+'</span>':'')+'<span class="b s-'+esc(t.status)+'">'+esc(t.status)+'</span>'+v+risk+'</div>'+
+  (t.review_notes?'<div class=meta>↩ '+esc(t.review_notes)+(t.reviewed_by?' ('+esc(t.reviewed_by)+')':'')+'</div>':'')+
+  (t.notes?'<div class=meta>📝 '+esc(t.notes)+'</div>':'')+
+  ((t.scope_files&&t.scope_files.length)?'<div class=files>'+esc(t.scope_files.join(', '))+'</div>':'')+ap+'</div>';
+}
+setInterval(tick,5000); tick();
+</script></body></html>"""
+
+
 class H(BaseHTTPRequestHandler):
     def _send(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode()
@@ -522,6 +695,11 @@ class H(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if u.path in ("/console", "/console/"):
+            # Unified SaaS control panel (HTML shell only; token pasted in-page). Shows
+            # dispatcher daemon state + recent actions + task ledger + live locks, with
+            # pause/resume + Owner-approve controls. Its JS fetches the token-gated APIs.
+            return self._send_raw(200, "text/html; charset=utf-8", CONSOLE_HTML.encode())
         if not self._auth():
             return
         c = db()
@@ -536,6 +714,8 @@ class H(BaseHTTPRequestHandler):
                     wave=(q.get("wave") or [None])[0])})
             if u.path == "/board":
                 return self._send(200, {"locks": live_locks(c)})
+            if u.path == "/dispatcher/status":
+                return self._send(200, dispatcher_view(c))
             if u.path == "/check":
                 raw = (parse_qs(u.query).get("file") or [""])[0]
                 nf = norm_files([raw])
@@ -556,6 +736,10 @@ class H(BaseHTTPRequestHandler):
             code, obj = upsert_task(b); return self._send(code, obj)
         if u.path == "/tasks/status":
             code, obj = update_task_status(b); return self._send(code, obj)
+        if u.path == "/dispatcher/status":
+            code, obj = record_dispatcher(b); return self._send(code, obj)
+        if u.path == "/dispatcher/control":
+            code, obj = set_dispatcher_control(b); return self._send(code, obj)
         agent = b.get("agent", "")
         if not agent:
             return self._send(400, {"error": "agent required"})
