@@ -61,6 +61,10 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 		return nil, errors.New("dispatcher: HCSF ProtocolFamily 未指定")
 	}
 	endpointFamily := firstNonEmpty(env.RequestMeta.EndpointFamily, family)
+	ingressFamily := string(env.RequestMeta.ClientProtocol)
+	if ingressFamily == "" {
+		ingressFamily = firstNonEmpty(env.RequestMeta.ProtocolFamily, family)
+	}
 	upstreamModel := firstNonEmpty(in.UpstreamModelID, env.RequestMeta.UpstreamModel, env.RequestMeta.Model)
 	account := in.Account
 	if account.AccountID == 0 {
@@ -78,7 +82,7 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 		UpstreamModelID: upstreamModel,
 		Credential:      in.Credential,
 		Account:         account,
-	}, env, endpointFamily, in.RawBody)
+	}, env, ingressFamily, endpointFamily, in.RawBody)
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: BuildRequestFromEnvelope/BuildRequest 失败: %w", err)
 	}
@@ -156,31 +160,110 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 	return out, nil
 }
 
-func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provider.BuildInput, env *proto.HCSF, endpointFamily string, rawFallback []byte) (*http.Request, error) {
+func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provider.BuildInput, env *proto.HCSF, ingressFamily string, endpointFamily string, nativeRawBody []byte) (*http.Request, error) {
 	if b, ok := a.(envelopeRequestBuilder); ok {
 		return b.BuildRequestFromEnvelope(ctx, in, env)
 	}
+	if hcsfProviderRequestUsesNativeRawBody(endpointFamily) {
+		if len(nativeRawBody) == 0 {
+			return nil, fmt.Errorf("dispatcher: HCSF native raw body missing for endpoint family %q", endpointFamily)
+		}
+		in.InboundBody = nativeRawBody
+		return a.BuildRequest(ctx, in)
+	}
 	body, err := hcsfRequestBody(env, endpointFamily)
 	if err != nil {
-		if len(rawFallback) == 0 {
-			return nil, err
-		}
-		body = rawFallback
+		return nil, err
+	}
+	body, err = mergeHCSFRawPassthroughFields(body, ingressFamily, endpointFamily, nativeRawBody)
+	if err != nil {
+		return nil, err
 	}
 	in.InboundBody = body
 	return a.BuildRequest(ctx, in)
 }
 
 func hcsfRequestBody(env *proto.HCSF, endpointFamily string) ([]byte, error) {
-	body, err := MarshalToProviderRequest(env, endpointFamily)
+	modeledFamily := hcsfProviderRequestModelFamily(endpointFamily)
+	body, err := MarshalToProviderRequest(env, modeledFamily)
 	if err != nil {
 		return nil, err
 	}
-	body, err = injectRequestControls(body, env, endpointFamily)
+	body, err = injectRequestControls(body, env, modeledFamily)
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: HCSF request controls 注入失败: %w", err)
 	}
 	return body, nil
+}
+
+func hcsfProviderRequestModelFamily(endpointFamily string) string {
+	switch endpointFamily {
+	case "openrouter_chat", "grok_chat", "deepseek_chat", "mistral_chat", "groqcloud_chat", "together_chat", "perplexity_chat", "fireworks_chat",
+		"copilot_session", "antigravity_session", "kiro_session", "windsurf_session":
+		return "openai_chat"
+	default:
+		return endpointFamily
+	}
+}
+
+func hcsfProviderRequestUsesNativeRawBody(endpointFamily string) bool {
+	switch endpointFamily {
+	case "bedrock_invoke", "openai_codex":
+		return true
+	default:
+		return false
+	}
+}
+
+func mergeHCSFRawPassthroughFields(body []byte, ingressFamily string, endpointFamily string, raw []byte) ([]byte, error) {
+	if ingressFamily != "openai_chat" || hcsfProviderRequestModelFamily(endpointFamily) != "openai_chat" || len(raw) == 0 {
+		return body, nil
+	}
+	var original map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &original); err != nil {
+		return nil, fmt.Errorf("dispatcher: HCSF raw passthrough controls parse failed: %w", err)
+	}
+	var out map[string]json.RawMessage
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	for k, v := range original {
+		if k == "max_completion_tokens" {
+			if canonicalLimit, ok := out["max_tokens"]; ok {
+				out["max_completion_tokens"] = canonicalLimit
+				delete(out, "max_tokens")
+			}
+			continue
+		}
+		if _, modeled := hcsfModeledOpenAIChatRequestFields[k]; modeled {
+			continue
+		}
+		if _, blocked := hcsfBlockedOpenAIChatRawPassthroughFields[k]; blocked {
+			continue
+		}
+		out[k] = v
+	}
+	return json.Marshal(out)
+}
+
+var hcsfModeledOpenAIChatRequestFields = map[string]struct{}{
+	"model":                 {},
+	"messages":              {},
+	"stream":                {},
+	"max_tokens":            {},
+	"max_completion_tokens": {},
+	"temperature":           {},
+	"top_p":                 {},
+	"stop":                  {},
+	"tools":                 {},
+	"tool_choice":           {},
+	"parallel_tool_calls":   {},
+	"response_format":       {},
+	"seed":                  {},
+}
+
+var hcsfBlockedOpenAIChatRawPassthroughFields = map[string]struct{}{
+	"n": {},
 }
 
 func cloneHCSF(env *proto.HCSF) (*proto.HCSF, error) {

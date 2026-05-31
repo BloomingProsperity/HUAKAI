@@ -179,6 +179,9 @@ func injectRequestControls(raw []byte, env *proto.HCSF, family string) ([]byte, 
 	if c.TopP != nil {
 		body["top_p"] = *c.TopP
 	}
+	if c.Seed != nil && family == "openai_chat" {
+		body["seed"] = *c.Seed
+	}
 	if c.ParallelToolCalls != nil && family != "anthropic_messages" {
 		body["parallel_tool_calls"] = *c.ParallelToolCalls
 	}
