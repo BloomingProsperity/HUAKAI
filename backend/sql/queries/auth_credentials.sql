@@ -25,6 +25,16 @@ SELECT
 FROM provider_accounts
 WHERE id = sqlc.arg(id)
   AND tenant_id = sqlc.arg(tenant_id)
+  AND enabled
+  AND health_state <> 'revoked'
+  AND (
+      health_state = 'healthy'
+      OR (
+          health_state IN ('throttled', 'cooldown')
+          AND health_state_until IS NOT NULL
+          AND health_state_until <= NOW()
+      )
+  )
 FOR UPDATE;
 
 -- name: UpdateAccountCredentialsCAS :execrows

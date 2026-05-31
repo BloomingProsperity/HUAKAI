@@ -39,6 +39,37 @@ func TestResolveActiveRejectsCrossTenantCredentialJoin(t *testing.T) {
 	}
 }
 
+func TestLoadForRefreshQueryFiltersUnsafeProviderAccountHealth(t *testing.T) {
+	// S1-024 locked reread guard: LoadForRefresh is called before adapter work
+	// and again inside the refresh transaction. Its SQL must refuse revoked and
+	// still-cooling provider accounts, otherwise a row revoked after the scan can
+	// still reach the upstream refresh adapter. Mutation check: delete the
+	// provider-account health predicate from LoadForRefresh and this SQL-shape
+	// guard goes red even when real-PG tests are skipped locally.
+	db := &credentialStoreDBStub{
+		queryRow: func(_ context.Context, sql string, _ ...interface{}) pgx.Row {
+			for _, required := range []string{
+				"pa.enabled",
+				"pa.health_state = 'healthy'",
+				"pa.health_state IN ('throttled', 'cooldown')",
+				"pa.health_state_until <= NOW()",
+				"pa.health_state <> 'revoked'",
+			} {
+				if !strings.Contains(sql, required) {
+					t.Fatalf("LoadForRefresh SQL missing %q:\n%s", required, sql)
+				}
+			}
+			return credentialStoreRowStub{err: pgx.ErrNoRows}
+		},
+	}
+	store := NewStore(db, mustTestKeyProvider(t), DefaultHandlerRegistry())
+
+	_, err := store.LoadForRefresh(context.Background(), 77)
+	if !errors.Is(err, ErrCredentialNotFound) {
+		t.Fatalf("LoadForRefresh err=%v want %v", err, ErrCredentialNotFound)
+	}
+}
+
 func TestCreateRejectsProviderAccountTenantMismatchBeforeInsert(t *testing.T) {
 	insertSeen := false
 	db := &credentialStoreDBStub{
