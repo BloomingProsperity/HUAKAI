@@ -726,9 +726,14 @@ function statusPills(){
  return '<span class=pill>共 '+DATA.tasks.length+'</span>'+STAT.map(function(s){return cnt[s]?'<span class="pill s-'+s+'">'+esc(s)+' '+cnt[s]+'</span>':'';}).join('');
 }
 function machineLine(a){
- var cls=a.fresh?'on':'off',lbl=a.fresh?(a.state||'?'):'失联';
+ var paused=((DATA.ds||{}).control==='pause'),stale=!a.fresh;
+ // 暂停时调度方(server-a/PM)不再跑轮→心跳必然变陈旧,这是预期而非崩溃,所以标「调度暂停」不标「失联」
+ var cls=stale?(paused?'warn':'off'):'on';
+ var lbl=stale?(paused?'调度暂停':'失联'):(a.state||'?');
+ // 陈旧时 detail 是历史快照,不是正在发生的动作 — 加「上次」前缀避免误读
+ var det=a.detail?(stale?'上次('+ago(a.age_sec)+'):'+a.detail:a.detail):'';
  return '<span class="b '+cls+'">'+esc(a.agent)+' · '+esc(lbl)+'</span>'+
-  ' <span class=sub>心跳 '+ago(a.age_sec)+'</span>'+(a.detail?' <span class=sub>· '+esc(a.detail)+'</span>':'');
+  ' <span class=sub>心跳 '+ago(a.age_sec)+'</span>'+(det?' <span class=sub>· '+esc(det)+'</span>':'');
 }
 function ctlBtn(paused){
  return paused?'<button class="btn go" data-act="run">▶ 恢复</button>':'<button class="btn stop" data-act="pause">⏸ 暂停</button>';
@@ -756,11 +761,15 @@ function viewMachines(){
    (paused?'<span class="b warn">调度已暂停</span>':'<span class="b on">调度运行中</span>')+ctlBtn(paused)+'</div>';
  h+='<div class=mgrid style="margin-top:10px">'+
    (ags.length?ags.map(function(a){
-     var cls=a.fresh?'on':'off',lbl=a.fresh?(a.state||'?'):'失联';
+     var stale=!a.fresh;
+     // 与 machineLine 同逻辑:暂停时陈旧的调度方标「调度暂停」,detail 标「上次」历史快照
+     var cls=stale?(paused?'warn':'off'):'on';
+     var lbl=stale?(paused?'调度暂停':'失联'):(a.state||'?');
+     var det=a.detail?(stale?'上次('+ago(a.age_sec)+'):'+a.detail:a.detail):'';
      return '<div class="mcard'+(a.agent===SEL?' sel':'')+'" data-machine="'+esc(a.agent)+'">'+
        '<div class=nm>'+esc(a.agent)+' <span class="b '+cls+'">'+esc(lbl)+'</span></div>'+
        '<div class=mline>心跳 '+ago(a.age_sec)+'</div>'+
-       (a.detail?'<div class=mline>'+esc(a.detail)+'</div>':'')+'</div>';
+       (det?'<div class=mline>'+esc(det)+'</div>':'')+'</div>';
    }).join(''):'<div class=sub>(还没有机器上报心跳)</div>')+'</div></div>';
  // terminal shell (the term body itself is owned by the terminal loop, not setHtml)
  h+='<div class=term-wrap><div class=term-head>'+
