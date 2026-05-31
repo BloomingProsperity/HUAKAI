@@ -35,7 +35,8 @@
 
 ## 切片(调和方案,以 Owner 拍后为准)
 - **S1**:principal 契约 + `GET /auth/me` 合约(返 panel=admin|user|none + tenant scope + expiry,不返敏感)+ 后端测试骨架。新包 `internal/panelauth`(非冻结)。无 schema。
-- **S2**:admin 面板会话(role=admin principal)+ admin API 加 session-role 中间件(仍兼容 hk_admin token)。
+- **S2**:admin 面板会话(role=admin principal)+ admin API 加 session-role 中间件(仍兼容 hk_admin token)。**Owner 2026-05-31 定 role=admin 用户权限 = 只管自己租户(tenant-scoped, 最小暴露; 跨租户仍只 hk_admin platform_admin)**。S2a provisioning 端点(platform_admin 把 user 设 role=admin, 第一个由 env-bootstrap hk_admin 提升)+ S2b adapter(role=admin session → scope=session.TenantID 的 admin principal, audit 用 user 身份, 类型分离防 confused-deputy)。新包 internal/useradmin(+http), 镜像 routeadmin 两 commit 节奏。
+- **进度**: S1a fa7caf7(users.role + panelauth) / S1b 8d45362(/auth/me) / 留底 88ca605。userauth 登录(密码+OAuth+social)早已存在故 S3 基本完成。
 - **S3**:用户登录流(schema gate:users 加 role + 登录凭据表/列)+ /auth/me 返 user entitlement;复用既有 usersession revoke。
 - **S4**(前端解封后):登录页 + 后端驱动的面板分流 + admin/user 导航分离 + 移除 localStorage 手填 token;Playwright 守卫测。
 - **S5**:后端授权加固(admin API 拒 user session、user API 拒 admin bearer、tenant_operator 不串租户);判别 fixture 仅差 principal 类型+租户。
