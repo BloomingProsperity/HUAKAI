@@ -46,7 +46,7 @@ review ─③ dispatcher 独立审核(另一个脑子,绝不自审):完工门(Do
 
 ### B. 审核(worker 标 review 后)——完工门 DoD
 **dispatcher 是独立另一个脑子,绝不审自己干的**。逐条核,任一不过 → `task.sh bounce <id> "缺哪条"`:
-- [ ] **先 fetch worker 的工作分支再审**(review 备注里的 `work/<id> @ <sha>`):`git fetch origin work/<id>` 后在该 SHA 上审。**取不到 / 没 push → 立即 bounce「push 提交到 origin,dispatcher 无法审核看不见的代码」**——跨脑审核成立的前提就是代码可见。
+- [ ] **先 fetch + 钉住审核 SHA 再审**(review 备注里的 `work/<id> @ <sha>`):`git fetch origin work/<id>`,把备注里的 `<sha>` 钉成 `AUD_SHA`,在**那个 exact SHA**(`git checkout --detach $AUD_SHA`)上审,**绝不审 `origin/work/<id>` 的移动 tip**(L6:审核后又被 push 的代码不能溜过审核)。**取不到 / 没 push / SHA 解析不出 → 立即 bounce「push 提交到 origin,dispatcher 无法审核看不见的代码」**——跨脑审核成立的前提就是代码可见。
 - [ ] `go build ./...` 绿;`make test`(`-race`)绿
 - [ ] **判别性测试**(§14):注入该缺陷测试必须变红,否则 fixture 不合格 → 退回
 - [ ] **codex §8 review 无 S0/S1**(见 [[codex-review-command-0134]] 的命令)
@@ -54,7 +54,7 @@ review ─③ dispatcher 独立审核(另一个脑子,绝不自审):完工门(Do
 - [ ] **parity-or-stronger**:对借鉴项目效果不缩水
 - [ ] 按 `spec_refs` **逐条对文档核**:确实照要求文档做了
 - [ ] **3 轮反驳"真的完了吗"**:每轮试图证明它没完/有回归,过不了就退回
-过 → **dispatcher 把 worker 的 `work/<id>` ff-merge 到落地分支 `fix/hermes-phase-1-e33d940` + push**(未过审代码绝不进落地分支),再 `task.sh pass <id>`;高危 → `task.sh park <id> "理由"`。
+过 → **dispatcher 把审过的那个 `AUD_SHA`(不可变 commit,不是移动分支名)merge 到落地分支 `fix/hermes-phase-1-e33d940` + push**;merge 前先校验 `git rev-parse origin/work/<id>` 仍 == `AUD_SHA`,不等则 bounce(L6:审核后又被 push → 重审新 SHA,不能 merge 未审的 tip)。未过审代码绝不进落地分支,再 `task.sh pass <id>`;高危 → `task.sh park <id> "理由"`。
 
 ### C. 高危必看借鉴项目(Owner 规则)
 凡 `risk` 非空(money-path/auth/billing/quota/schema 等),其 `acceptance` 必须包含**三参考融合**:读 **sub2api + CLIProxyAPI + new-api** 对同一问题的处理 → **对比取优 → 融合**进 HUAKAI 设计(三者都引 `repo@sha:file:line` + 写明 fused delta 与维度,见 §12)。**分歧时以 sub2api 为基**,但**必须融合 CLIProxyAPI 与 new-api 的方法**(不是只取一家)。dispatcher 审核高危任务时必须确认这套融合在,否则 bounce。详见 [[consult-sub2api-cliproxy-for-features]]。

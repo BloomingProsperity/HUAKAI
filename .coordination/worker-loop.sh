@@ -85,6 +85,36 @@ except Exception: pass
 PY
 }
 
+# Owner rule: the worker AI MUST run the strongest tier — codex: gpt-5.5 + xhigh, NO fast
+# mode; claude: opus + max effort. Warn loudly if WORKER_AI_CMD looks under-tiered, and
+# report the (token-free) command to the panel so the Owner sees each machine's REAL
+# model/effort instead of guessing (server-b's env is NOT visible from the dispatcher box).
+ai_tier_report(){
+  local warn="" model effort summary
+  case "$WORKER_AI_CMD" in
+    *codex*)
+      case "$WORKER_AI_CMD" in *gpt-5.5*) ;; *) warn="${warn}未指定gpt-5.5;" ;; esac
+      case "$WORKER_AI_CMD" in *xhigh*) ;; *) warn="${warn}未设reasoning=xhigh;" ;; esac
+      case "$WORKER_AI_CMD" in *fast*) warn="${warn}含fast(Owner禁止);" ;; esac ;;
+    *claude*)
+      case "$WORKER_AI_CMD" in *opus*) ;; *) warn="${warn}未锁opus;" ;; esac
+      case "$WORKER_AI_CMD" in *max*|*xhigh*) ;; *) warn="${warn}未设effort=max;" ;; esac ;;
+  esac
+  # codex P1: WORKER_AI_CMD is an arbitrary headless invocation that COULD carry inline
+  # credentials/token flags. Publish ONLY a sanitized model/effort summary (the bits the
+  # Owner actually needs to see) to stdout AND the panel — never the raw command.
+  model="$(printf '%s' "$WORKER_AI_CMD" | grep -oiE 'gpt-[0-9.]+|opus|sonnet|haiku|gemini[a-z0-9.-]*' | head -1)"
+  effort="$(printf '%s' "$WORKER_AI_CMD" | grep -oiE 'xhigh|high|medium|low|minimal|max|fast' | tr '\n' '/' | sed 's:/$::')"
+  summary="model=${model:-?} effort=${effort:-?}"
+  if [ -n "$warn" ]; then
+    echo "[$(date '+%H:%M:%S')] [WARN] AI 未达最高档: ${warn} (${summary})"
+    wpush degraded "⚠ AI档位偏低: ${warn}(${summary})" warn "AI 未达 Owner 最高档要求: ${warn} 实测 ${summary}"
+  else
+    echo "[$(date '+%H:%M:%S')] AI tier OK: ${summary}"
+    wpush idle "启动 · ${summary}" start "worker 启动 · AI 档位已校验(最高): ${summary}"
+  fi
+}
+
 # Live AI terminal stream. While the AI runs, we tee its combined stdout+stderr to a
 # temp file; this background streamer reads NEW bytes from that file every ~2s and POSTs
 # them (batched JSON) to /dispatcher/output {agent,lines:[...]} so the /console 机器 tab
@@ -146,10 +176,14 @@ PY
 }
 
 echo "worker-loop: agent=$COORD_AGENT poll=${POLL}s update=${UPDATE_BRANCH}  (Ctrl-C to stop)"
+ai_tier_report   # Owner rule: verify this machine's AI is top-tier + report it to the panel
 while true; do
   self_update    # pull latest .coordination scripts (+ re-exec self if changed) before each poll
-  mine="$(bash "$DIR/task.sh" mine 2>&1 || true)"
-  if echo "$mine" | grep -Eq '\[(assigned|in_progress)\b'; then
+  # L12 fail-closed: capture mine's exit code. rc=0 => authoritative answer (may be idle);
+  # rc!=0 => ledger/coord server unreachable, which is NOT the same as "no work". We must
+  # not let an outage masquerade as idle (that hid a real stall before).
+  mine="$(bash "$DIR/task.sh" mine 2>&1)"; mrc=$?
+  if [ "$mrc" -eq 0 ] && echo "$mine" | grep -Eq '\[(assigned|in_progress)\b'; then
     tid="$(printf '%s\n' "$mine" | grep -E '\[(assigned|in_progress)' | head -1 | sed -E 's/^[[:space:]]*\[[^]]*\][[:space:]]*//' | awk '{print $1}')"
     echo "[$(date '+%H:%M:%S')] work available -> invoking $WORKER_AI_CMD"
     wpush working "在做 ${tid:-任务}" start "领到活,开始执行 ${tid}"
@@ -176,6 +210,13 @@ while true; do
     fi
     kill "$HB" 2>/dev/null || true
     wpush idle "上个任务跑完,轮询中" done "结束一轮 ${tid}"
+  elif [ "$mrc" -ne 0 ]; then
+    # L12 fail-closed: ledger unreachable -> surface degraded + back off harder, never
+    # report idle. The dispatcher sees `degraded` (not `idle`) and won't assume this
+    # worker is healthily polling. `degraded` is free-text state the server stores as-is.
+    echo "[$(date '+%H:%M:%S')] ledger UNREACHABLE (task.sh mine rc=$mrc) — degraded, backing off"
+    wpush degraded "无法读取调度台(rc=$mrc)· 退避重试" error "ledger 读取失败 rc=$mrc: $(printf '%s' "$mine" | tail -1)"
+    sleep "$(( POLL * 3 ))"; continue
   else
     echo "[$(date '+%H:%M:%S')] no work for $COORD_AGENT; sleeping ${POLL}s"
     wpush idle "空闲 · 轮询中(暂无分配)"

@@ -22,7 +22,7 @@ Owner-only approve token.) Full protocol detail: `.coordination/DISPATCH.md` (§
 **Only STOP ("nothing to dispatch") when ALL of:** nothing in `review`, AND every worker is either actively `working` or has assigned work queued, AND the only remaining open backlog is genuinely conflicting (hot-file held by an in-flight/unmerged branch) or Owner-gated (money-path / high-risk). If a machine is idle and ANY non-conflicting open finding remains for its lane → do step 4, do not stop.
 
 ## 2. Audit each `review` task — cross-brain, never self-review
-For each review task, FIRST `bash .coordination/task.sh show <id>` to read its `notes` (must carry `branch work/<id> @ <sha>`). **No pushed branch / can't `git fetch origin work/<id>` → immediately `task.sh bounce <id> "push 提交到 origin work/<id>,看不见的代码无法审核"`.**
+For each review task, FIRST `bash .coordination/task.sh show <id>` to read its `notes` (must carry `branch work/<id> @ <sha>`). **No pushed branch / can't `git fetch origin work/<id>` → immediately `task.sh bounce <id> "push 提交到 origin work/<id>,看不见的代码无法审核"`.** **Pin the audited SHA (L6 — never audit a moving branch):** parse `<sha>` from the notes, `git fetch origin work/<id>`, then `AUD_SHA=<sha>; git rev-parse --verify "$AUD_SHA^{commit}"` (bounce if it doesn't resolve) and run the whole audit against THAT exact commit (`git checkout --detach $AUD_SHA` or diff `$AUD_SHA`), **NOT** the live `origin/work/<id>` tip — a push landing after you start must never slip un-audited code past review.
 
 Then spawn **one independent audit agent per task** (Agent tool, `isolation: worktree`, `model: opus` for auth/security/money; the agent is a DIFFERENT brain than the worker). The agent runs the full DoD against the worker's `work/<id>` branch and returns a structured verdict:
 - `go build ./...` + targeted `go test` green
@@ -38,10 +38,18 @@ Then spawn **one independent audit agent per task** (Agent tool, `isolation: wor
 **Verify codex/agent findings before acting** (memory rule): re-check each finding's premise against the real code; refute with `file:line` if the premise is stale; never blind-trust.
 
 ## 3. Act on verdicts
-- **PASS** → merge the worker branch into the landing branch, re-verify, then mark pass:
+- **PASS** → merge the **audited SHA** (the immutable commit you reviewed, NOT the moving branch) into the landing branch, re-verify, then mark pass:
   ```
+  git fetch origin work/<id>
+  TIP=$(git rev-parse origin/work/<id>)
+  if [ "$TIP" != "$AUD_SHA" ]; then               # L6 ref-equality guard
+    bash .coordination/task.sh bounce <id> "work/<id> 在审核后又被 push($TIP != 审过的 $AUD_SHA);重新 review 新 SHA"
+    # codex P1: ABORT the PASS path here — NEVER fall through to merge a tip you did not audit
+    # (the bounce alone does not stop the script; this round ends for this task).
+    return 1 2>/dev/null || exit 1
+  fi
   git checkout fix/hermes-phase-1-e33d940
-  git merge --no-ff origin/work/<id> -m "merge(<id>): <one-line> ... Co-Authored-By: ..."
+  git merge --no-ff "$AUD_SHA" -m "merge(<id>): <one-line> @${AUD_SHA} ... Co-Authored-By: ..."   # merge the immutable audited SHA, not origin/work/<id>
   cd backend && go build ./... && go test ./<scope pkg>/ -count=1     # re-verify AFTER merge — a textually-clean merge of two edits to the same file can still break
   git push origin fix/hermes-phase-1-e33d940
   bash .coordination/task.sh pass <id>
