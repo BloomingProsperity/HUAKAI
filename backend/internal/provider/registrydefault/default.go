@@ -106,7 +106,9 @@ func Build() *provider.StaticRegistry {
 	r.MustRegister(ProtocolOpenAICodex, &openai.CodexSessionAdapter{})
 
 	r.MustRegister(ProtocolAnthropicMessages, &anthropic.PassthroughAdapter{})
-	r.MustRegister(ProtocolAnthropicClaudeSession, &anthropic.OAuthSessionAdapter{})
+	// S1-005: the provider-side OAuthSessionAdapter exists, but the
+	// anthropic_claude_session serving path is not fully wired end-to-end.
+	// Keep it fail-closed by default rather than exposing a half-served family.
 	r.MustRegister(ProtocolGeminiMessages, &gemini.PassthroughAdapter{})
 	r.MustRegister(ProtocolOpenRouterChat, &openrouter.PassthroughAdapter{})
 	// AutoTranslateAnthropicAPIBody=true 让 Anthropic CLI / Claude Code 直发的
