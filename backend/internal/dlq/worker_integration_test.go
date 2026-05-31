@@ -4,6 +4,7 @@ package dlq
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"testing"
@@ -29,6 +30,7 @@ func TestWorkerFailureFiveRetriesOperatorReview(t *testing.T) {
 		IdempotencyKey: "metrics:test-five-retry",
 		SourceTable:    "metrics",
 		SourceID:       1,
+		NextRetryAt:    time.Now().UTC().Add(-time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -85,6 +87,7 @@ func TestReplicaDownFailureStaysDurable(t *testing.T) {
 		IdempotencyKey: "billing_event_replica:test-down",
 		SourceTable:    "billing_events",
 		SourceID:       1,
+		NextRetryAt:    time.Now().UTC().Add(-time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("enqueue replica: %v", err)
@@ -120,6 +123,99 @@ func TestReplicaDownFailureStaysDurable(t *testing.T) {
 	}
 }
 
+func TestStoreMarkRequiresCurrentLeaseOwner(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openDLQPool(t, ctx)
+	tenantID := seedDLQTenant(t, ctx, pool)
+	store := NewStore(pool)
+
+	for _, tc := range []struct {
+		name        string
+		finalStatus Status
+		mark        func(context.Context, *Store, Record) error
+	}{
+		{
+			name:        "delivered",
+			finalStatus: StatusDelivered,
+			mark: func(ctx context.Context, store *Store, rec Record) error {
+				return store.MarkDelivered(ctx, rec)
+			},
+		},
+		{
+			name:        "failed",
+			finalStatus: StatusPending,
+			mark: func(ctx context.Context, store *Store, rec Record) error {
+				return store.MarkFailed(ctx, rec, "current owner failure", pendingRetryDecision(rec))
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recA, recB := claimExpiredThenReclaimedDLQRecord(t, ctx, pool, store, tenantID, "mark-"+tc.name)
+			err := tc.mark(ctx, store, recA)
+			if !errors.Is(err, ErrStaleLease) {
+				t.Fatalf("stale worker Mark%s err=%v; want stale lease error", tc.name, err)
+			}
+			status, owner := readDLQStatusAndOwner(t, ctx, pool, recB.ID)
+			if status != string(StatusInflight) || !owner.Valid || owner.String != *recB.LeaseOwner {
+				t.Fatalf("stale Mark%s changed row status=%s owner=%q; want inflight owned by %q", tc.name, status, owner.String, *recB.LeaseOwner)
+			}
+			if err := tc.mark(ctx, store, recB); err != nil {
+				t.Fatalf("current owner Mark%s: %v", tc.name, err)
+			}
+			status, owner = readDLQStatusAndOwner(t, ctx, pool, recB.ID)
+			if status != string(tc.finalStatus) || owner.Valid {
+				t.Fatalf("current owner Mark%s status=%s owner_valid=%v; want %s with cleared owner", tc.name, status, owner.Valid, tc.finalStatus)
+			}
+		})
+	}
+}
+
+func TestStoreMarkRequiresCurrentLeaseGenerationWhenOwnerReused(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openDLQPool(t, ctx)
+	tenantID := seedDLQTenant(t, ctx, pool)
+	store := NewStore(pool)
+
+	for _, tc := range []struct {
+		name string
+		mark func(context.Context, *Store, Record) error
+	}{
+		{
+			name: "delivered",
+			mark: func(ctx context.Context, store *Store, rec Record) error {
+				return store.MarkDelivered(ctx, rec)
+			},
+		},
+		{
+			name: "failed",
+			mark: func(ctx context.Context, store *Store, rec Record) error {
+				return store.MarkFailed(ctx, rec, "stale worker failure", pendingRetryDecision(rec))
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			actor := "worker-reused-" + tc.name
+			recA, recB := claimExpiredThenReclaimedDLQRecordWithActors(t, ctx, pool, store, tenantID, "reused-"+tc.name, actor, actor)
+			if recA.LeaseOwner == nil || recB.LeaseOwner == nil || *recA.LeaseOwner != *recB.LeaseOwner {
+				t.Fatalf("test setup lease_owner A=%v B=%v; want reused owner", recA.LeaseOwner, recB.LeaseOwner)
+			}
+			if !recA.LeaseUntil.Valid || !recB.LeaseUntil.Valid || recA.LeaseUntil.Time.Equal(recB.LeaseUntil.Time) {
+				t.Fatalf("test setup lease_until A=%v B=%v; want distinct lease generations", recA.LeaseUntil, recB.LeaseUntil)
+			}
+			err := tc.mark(ctx, store, recA)
+			if !errors.Is(err, ErrStaleLease) {
+				t.Fatalf("stale worker Mark%s with reused owner err=%v; want stale lease error", tc.name, err)
+			}
+			status, owner := readDLQStatusAndOwner(t, ctx, pool, recB.ID)
+			if status != string(StatusInflight) || !owner.Valid || owner.String != *recB.LeaseOwner {
+				t.Fatalf("stale Mark%s changed row status=%s owner=%q; want inflight owned by %q", tc.name, status, owner.String, *recB.LeaseOwner)
+			}
+		})
+	}
+}
+
 func openDLQPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("HUAKAI_DATABASE_URL")
@@ -132,6 +228,60 @@ func openDLQPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	return pool
+}
+
+func claimExpiredThenReclaimedDLQRecord(t *testing.T, ctx context.Context, pool *pgxpool.Pool, store *Store, tenantID int64, key string) (Record, Record) {
+	t.Helper()
+	return claimExpiredThenReclaimedDLQRecordWithActors(t, ctx, pool, store, tenantID, key, "worker-a-"+key, "worker-b-"+key)
+}
+
+func claimExpiredThenReclaimedDLQRecordWithActors(t *testing.T, ctx context.Context, pool *pgxpool.Pool, store *Store, tenantID int64, key string, actorA string, actorB string) (Record, Record) {
+	t.Helper()
+	id, err := store.Enqueue(ctx, Event{
+		TenantID:       tenantID,
+		EventKind:      EventKindMetrics,
+		Lane:           LaneLow,
+		Payload:        []byte(`{"metric":"lease-owner"}`),
+		FailureReason:  "lease_owner_seed",
+		IdempotencyKey: "metrics:" + key,
+		SourceTable:    "metrics",
+		SourceID:       1,
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	recA, err := store.ClaimByID(ctx, id, actorA, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("claim worker A: %v", err)
+	}
+	if recA.LeaseOwner == nil || *recA.LeaseOwner != "manual:"+actorA {
+		t.Fatalf("worker A lease_owner=%v; want manual:%s", recA.LeaseOwner, actorA)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE usage_record_dlq SET lease_until = now() - interval '1 second' WHERE id=$1`, id); err != nil {
+		t.Fatalf("expire worker A lease: %v", err)
+	}
+	recB, err := store.ClaimByID(ctx, id, actorB, time.Minute)
+	if err != nil {
+		t.Fatalf("claim worker B: %v", err)
+	}
+	if recB.LeaseOwner == nil || *recB.LeaseOwner != "manual:"+actorB {
+		t.Fatalf("worker B lease_owner=%v; want manual:%s", recB.LeaseOwner, actorB)
+	}
+	return *recA, *recB
+}
+
+func readDLQStatusAndOwner(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int64) (string, sql.NullString) {
+	t.Helper()
+	var status string
+	var owner sql.NullString
+	if err := pool.QueryRow(ctx, `SELECT status, lease_owner FROM usage_record_dlq WHERE id=$1`, id).Scan(&status, &owner); err != nil {
+		t.Fatalf("read dlq row: %v", err)
+	}
+	return status, owner
+}
+
+func pendingRetryDecision(rec Record) RetryDecision {
+	return RetryDecision{Status: StatusPending, NextRetryAt: time.Now().UTC().Add(time.Minute), Attempts: rec.ReplayAttempts + 1, Delay: time.Minute}
 }
 
 func seedDLQTenant(t *testing.T, ctx context.Context, pool *pgxpool.Pool) int64 {
