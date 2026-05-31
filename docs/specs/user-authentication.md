@@ -151,8 +151,9 @@ The storage layer for these records is separate from `account_credentials`. A Us
 ### Failure: Invalid Password Or Locked User
 
 - Trigger: wrong password, too many attempts, disabled User, required reset, or unverified email when policy requires verification.
-- Observable outcome: safe generic login error to the User; no session created.
-- Operator-visible signal: failure counter and `user_login_failed` audit reason class.
+- Observable outcome: safe generic login error to the User; no session created. All of these causes return the SAME `401 invalid_credentials` at the HTTP layer (no status-distinguishing `403` codes) and run equal-work password verification before returning, so neither the response code nor the response time reveals whether the account exists or its state (account-enumeration safe, S2-048).
+- DoS guard: login attempts are rate-limited per client IP BEFORE the password KDF runs (in-flight concurrency cap + sliding failure window + temporary ban on repeated failures); throttled requests return `429` with a coarse `Retry-After` and never reach the hashing path. Successful logins do not consume the failure budget.
+- Operator-visible signal: failure counter and `user_login_failed` audit reason class (the real cause — `user_disabled`/`user_locked`/`email_unverified`/`password_reset_required`/`invalid_credentials`/`login_rate_limited` — is preserved in the audit log even though the User sees only the generic error).
 
 ### Failure: Invalid Or Expired Invite
 

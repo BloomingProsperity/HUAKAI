@@ -1114,6 +1114,12 @@ paths:
       operationId: authLogin
       x-huakai-spec-source: [docs/specs/user-authentication.md, docs/specs/session-management.md]
       security: []
+      description: |
+        Login failures are collapsed to a single generic 401 invalid_credentials regardless of cause
+        (wrong password, unknown email, or disabled/locked/unverified/reset-required account), so the
+        response never reveals whether an account exists or its state (account-enumeration safe, S2-048).
+        The real reason is recorded only in the operator-visible audit log. Requests are rate-limited per
+        client IP BEFORE any password hashing; throttled requests get 429 with a coarse Retry-After.
       requestBody:
         required: true
         content:
@@ -1125,8 +1131,9 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AuthSessionResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/auth/verify-email:
