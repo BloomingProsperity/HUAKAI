@@ -20,8 +20,8 @@ type Querier interface {
 	// Per docs/specs/_invariants/cross-module-boundaries.md CMB-5:
 	//   queries here MUST NOT return key_hash to logs / traces; the resolver
 	//   only uses key_hash for bcrypt comparison and discards it.
-	// Per CMB-7: this set is read-only (Auth is a read-only layer in N+4a);
-	//   last_used_at update intentionally omitted, scheduled for N+4b.
+	// Per CMB-7: resolver writes stay limited to best-effort auth telemetry;
+	//   failed telemetry updates must not reject otherwise valid credentials.
 	// Returns active candidates whose key_prefix matches. Capped at 5 to
 	// bound bcrypt-verify-fanout DOS via colliding prefixes (codex
 	// synthesized plan §risk matrix).
@@ -34,6 +34,9 @@ type Querier interface {
 	LookupAPIKeysByPrefix(ctx context.Context, keyPrefix string) ([]LookupAPIKeysByPrefixRow, error)
 	MarkAccountTempUnschedulable(ctx context.Context, arg MarkAccountTempUnschedulableParams) error
 	ReleaseAccountStormSlot(ctx context.Context, id int64) error
+	// Best-effort auth telemetry update after successful bearer verification.
+	// The resolver logs and continues if this write fails.
+	TouchAPIKeyLastUsed(ctx context.Context, id int64) error
 	TryAcquireAccountStormSlot(ctx context.Context, id int64) (int32, error)
 	UpdateAccountCredentialsCAS(ctx context.Context, arg UpdateAccountCredentialsCASParams) (int64, error)
 }

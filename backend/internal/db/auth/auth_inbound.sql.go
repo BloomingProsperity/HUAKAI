@@ -90,9 +90,9 @@ type LookupAPIKeysByPrefixRow struct {
 //	queries here MUST NOT return key_hash to logs / traces; the resolver
 //	only uses key_hash for bcrypt comparison and discards it.
 //
-// Per CMB-7: this set is read-only (Auth is a read-only layer in N+4a);
+// Per CMB-7: resolver writes stay limited to best-effort auth telemetry;
 //
-//	last_used_at update intentionally omitted, scheduled for N+4b.
+//	failed telemetry updates must not reject otherwise valid credentials.
 //
 // Returns active candidates whose key_prefix matches. Capped at 5 to
 // bound bcrypt-verify-fanout DOS via colliding prefixes (codex
@@ -130,4 +130,18 @@ func (q *Queries) LookupAPIKeysByPrefix(ctx context.Context, keyPrefix string) (
 		return nil, err
 	}
 	return items, nil
+}
+
+const touchAPIKeyLastUsed = `-- name: TouchAPIKeyLastUsed :exec
+UPDATE api_keys
+SET last_used_at = NOW()
+WHERE id = $1
+  AND deleted_at IS NULL
+`
+
+// Best-effort auth telemetry update after successful bearer verification.
+// The resolver logs and continues if this write fails.
+func (q *Queries) TouchAPIKeyLastUsed(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, touchAPIKeyLastUsed, id)
+	return err
 }
