@@ -433,7 +433,7 @@ func idempotentBalanceCents(ctx context.Context, tx pgx.Tx, tenantID, userID int
 SELECT COALESCE(SUM(CASE
 	WHEN be.event_type = 'claim_committed' AND bh.claim_id IS NOT NULL AND bh.resolved_at > $2 THEN be.actual_cost
 	WHEN be.event_type = 'voucher_redeemed' AND (be.occurred_at > $2 OR (be.occurred_at = $2 AND be.id > $3)) THEN -be.actual_cost
-	WHEN be.event_type = 'reconciliation_appended' AND be.occurred_at > $2 THEN be.actual_cost_signed
+	WHEN be.event_type = 'reconciliation_appended' AND (be.occurred_at > $2 OR (be.occurred_at = $2 AND be.id > $3)) THEN be.actual_cost_signed
 	ELSE 0
 END), 0)
 FROM billing_events be
@@ -553,7 +553,7 @@ func redemptionBalanceThrough(ctx context.Context, tx pgx.Tx, tenantID, userID, 
 	if err := tx.QueryRow(ctx, `
 SELECT COALESCE(SUM(amount_cents), 0)::bigint
 FROM voucher_redemption
-WHERE tenant_id=$1 AND user_id=$2 AND id <= $3`, tenantID, userID, redemptionID).Scan(&balance); err != nil {
+WHERE tenant_id=$1 AND user_id=$2 AND id <= $3 AND currency_code=$4`, tenantID, userID, redemptionID, supportedVoucherBalanceCurrency).Scan(&balance); err != nil {
 		return 0, fmt.Errorf("voucher: read balance: %w", err)
 	}
 	return balance, nil
