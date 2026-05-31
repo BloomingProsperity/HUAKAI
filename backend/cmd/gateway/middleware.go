@@ -41,9 +41,15 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 	router := chi.NewRouter()
 	privacyRedactor := privacy.DefaultRedactor()
 	privacyLogger := privacy.NewStdoutSystemLogger(privacyRedactor)
+	// S2-141: security headers go FIRST so even early-exit responses (e.g. the
+	// RequestIDLengthLimiter 400) carry the browser security-header contract.
+	router.Use(securityHeaders)
 	router.Use(middleware.RequestID)
 	router.Use(gatewayhttp.RequestIDLengthLimiter(gatewayhttp.MaxRequestIDLength))
 	router.Use(middleware.RealIP)
+	// S2-141: explicit allowlist CORS, early (preflight answered before auth).
+	// Allowlist via HUAKAI_CORS_ALLOWED_ORIGINS (comma-separated); empty = deny.
+	router.Use(corsMiddleware(parseAllowedOrigins(os.Getenv("HUAKAI_CORS_ALLOWED_ORIGINS"))))
 	router.Use(privacy.Recoverer(privacyLogger))
 	router.Use(middleware.Timeout(60 * time.Second))
 	router.Use(privacy.Middleware(8 << 20))
@@ -117,6 +123,78 @@ func writeAdminGateError(w http.ResponseWriter, status int, code, message string
 		body = []byte(`{"error":{"code":"internal_error","message":"internal error"}}`)
 	}
 	_, _ = w.Write(body)
+}
+
+// parseAllowedOrigins parses a comma-separated CORS allowlist (HUAKAI_CORS_ALLOWED_ORIGINS).
+// Empty => no cross-origin browser access is granted (default-deny).
+func parseAllowedOrigins(raw string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, o := range strings.Split(raw, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			out[o] = struct{}{}
+		}
+	}
+	return out
+}
+
+// securityHeaders installs the browser security-header contract on every response
+// (S2-141). The gateway is a JSON API behind browser-facing /v1/auth, /v1/sessions,
+// /v1/api-keys, /v1/admin routes that previously shipped zero security headers.
+// HSTS is only emitted when the edge is TLS (r.TLS or X-Forwarded-Proto=https) so
+// it is never wrongly asserted over plaintext.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		// API responses are JSON, never a document context: lock the page down hard.
+		h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+			h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// corsMiddleware enforces an explicit, allowlist-based CORS policy. It echoes ONLY
+// an allowlisted Origin back (never "*"), so credentialed cross-origin requests are
+// scoped to vetted front-ends — the wildcard-with-credentials anti-pattern is
+// structurally impossible. A disallowed/absent Origin gets no CORS headers
+// (browser blocks). Preflight (OPTIONS) is answered 204 here, before auth. (S2-141)
+func corsMiddleware(allowed map[string]struct{}) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Vary: Origin on EVERY response this middleware touches — a shared
+			// cache must never reuse a no-origin/disallowed response (without CORS
+			// headers) for a later allowlisted browser request.
+			w.Header().Add("Vary", "Origin")
+			origin := r.Header.Get("Origin")
+			if origin != "" {
+				if _, ok := allowed[origin]; ok {
+					h := w.Header()
+					h.Set("Access-Control-Allow-Origin", origin)
+					h.Set("Access-Control-Allow-Credentials", "true")
+					if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
+						h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+						reqHeaders := r.Header.Get("Access-Control-Request-Headers")
+						if reqHeaders == "" {
+							reqHeaders = "Authorization, Content-Type"
+						}
+						h.Set("Access-Control-Allow-Headers", reqHeaders)
+						h.Set("Access-Control-Max-Age", "600")
+						w.WriteHeader(http.StatusNoContent)
+						return
+					}
+				} else if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
+					// Disallowed origin preflight: deny with no CORS headers.
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func notImplemented(label string) http.HandlerFunc {
