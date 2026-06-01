@@ -211,6 +211,11 @@ func (ex *chatExecution) reserveClaim(w http.ResponseWriter) bool {
 		writeInsufficientBalanceError(w)
 		return false
 	}
+	if errors.Is(err, billing.ErrClaimRace) {
+		w.Header().Set("Retry-After", "1")
+		writeJSONError(w, http.StatusConflict, clienterr.CodeClaimRace, clienterr.MessageFor(clienterr.CodeClaimRace))
+		return false
+	}
 	if err != nil {
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, clienterr.CodeReserveError, err)
 		return false
