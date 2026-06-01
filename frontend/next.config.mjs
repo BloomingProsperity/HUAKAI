@@ -3,6 +3,9 @@
 // 把 /v1/*、/admin/v1/*、/debug/* 反代到后端 :8080，规避浏览器 CORS 限制。
 // 开发环境 next dev 生效；生产部署时需 nginx/caddy 层做同样规则。
 const nextConfig = {
+  images: {
+    unoptimized: true,
+  },
   async rewrites() {
     return [
       {
