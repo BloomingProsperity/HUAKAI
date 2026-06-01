@@ -36,8 +36,9 @@ WHERE tenant_id = @tenant_id
   AND user_id = @user_id;
 
 -- name: UserBalanceExists :one
--- 区分 ReserveBalanceHold 返 0 行的两种情形:无余额行(未启用余额强制 → 放行,
--- opt-in) vs 行在但 (balance-held)<cost(余额不足 → 402)。
+-- 区分 ReserveBalanceHold 返 0 行的两种情形:无余额行 vs 行在但
+-- (balance-held)<cost。mandatory 由调用方将两者都映射为 402; opt_in 只
+-- 对已有余额行不足返回 402。
 SELECT EXISTS (
     SELECT 1 FROM user_balances
     WHERE tenant_id = @tenant_id AND user_id = @user_id

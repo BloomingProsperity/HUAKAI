@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -195,7 +196,10 @@ func TestBalanceHold_MissingRowAllowsOptIn(t *testing.T) {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// 无余额行 → 放行(nil),不是 ErrInsufficientBalance。
-	if _, err := Reserve(ctx, tx, ReserveParams{TenantID: tenantID, UserID: userID, ClaimID: claimID, Cost: decimal.NewFromInt(1)}); err != nil {
+	if _, err := Reserve(ctx, tx, ReserveParams{
+		TenantID: tenantID, UserID: userID, ClaimID: claimID, Cost: decimal.NewFromInt(1),
+		EnforcementMode: EnforcementModeOptIn,
+	}); err != nil {
 		t.Fatalf("expected allow (nil) for opt-in user with no balance row, got %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -209,6 +213,233 @@ func TestBalanceHold_MissingRowAllowsOptIn(t *testing.T) {
 	}
 	if holdRows != 0 {
 		t.Fatalf("expected no hold row for opt-in-allowed user, got %d", holdRows)
+	}
+}
+
+func TestBalanceHold_MissingRowMandatoryRejects(t *testing.T) {
+	// Mutation check: treating mandatory the same as opt-in lets a no-balance
+	// user through and fails both the ErrInsufficientBalance assertion and the
+	// "no hold row" guard.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	tenantID, userID, apiKeyID := seedTenantNoBalance(t, ctx, pool)
+	var claimID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO billing_ledger_claims (tenant_id, idempotency_key, request_fingerprint, api_key_id, user_id, logical_request_id, endpoint_family, requested_model, billing_policy_version, request_class, attempt_seq, predicted_cost, currency_code, lease_expires_at)
+		 VALUES ($1, 'mandatory-no-balance', 'fp-mandatory', $2, $3, 'lr-mandatory', 'chat', 'gpt-4', '1.0', 'standard', 1, 0.01, 'USD', NOW() + interval '90 seconds')
+		 RETURNING id`,
+		tenantID, apiKeyID, userID,
+	).Scan(&claimID); err != nil {
+		t.Fatalf("seed claim: %v", err)
+	}
+
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	_, err = Reserve(ctx, tx, ReserveParams{
+		TenantID: tenantID, UserID: userID, ClaimID: claimID, Cost: decimal.NewFromInt(1),
+		EnforcementMode: EnforcementModeMandatory,
+	})
+	if !errors.Is(err, ErrInsufficientBalance) {
+		t.Fatalf("mandatory missing balance row err=%v want %v", err, ErrInsufficientBalance)
+	}
+
+	var holdRows int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM balance_holds WHERE claim_id=$1`, claimID).Scan(&holdRows); err != nil {
+		t.Fatalf("count holds: %v", err)
+	}
+	if holdRows != 0 {
+		t.Fatalf("mandatory rejection must not create hold row, got %d", holdRows)
+	}
+}
+
+func TestBalanceHold_BackfillHistoricalVoucherUserCanReserveMandatory(t *testing.T) {
+	// Mutation check: deleting the 0065 voucher_redemption backfill statement,
+	// filtering out USD redemptions, or forgetting cents->USD conversion leaves
+	// no usable $100 balance and Reserve returns ErrInsufficientBalance.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var tenantID, userID, apiKeyID int64
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO tenants (name) VALUES ($1) RETURNING id`,
+		fmt.Sprintf("tenant-bh-backfill-%d", time.Now().UTC().UnixNano()),
+	).Scan(&tenantID); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO users (tenant_id, display_name) VALUES ($1, 'historical-user') RETURNING id`,
+		tenantID,
+	).Scan(&userID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO api_keys (tenant_id, user_id, name, key_hash, key_prefix, status)
+		 VALUES ($1, $2, 'k', 'ph', 'hk', 'active') RETURNING id`,
+		tenantID, userID,
+	).Scan(&apiKeyID); err != nil {
+		t.Fatalf("seed api key: %v", err)
+	}
+	var voucherID int64
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO voucher (tenant_id, code_hash, code_fingerprint, amount_cents, currency_code, valid_from, valid_until)
+		 VALUES ($1, decode('01', 'hex'), 'old-voucher', 10000, 'USD', NOW() - interval '1 hour', NOW() + interval '1 hour')
+		 RETURNING id`,
+		tenantID,
+	).Scan(&voucherID); err != nil {
+		t.Fatalf("seed voucher: %v", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO voucher_redemption (tenant_id, voucher_id, user_id, idempotency_key, amount_cents, currency_code)
+		 VALUES ($1, $2, $3, 'old-redeem', 10000, 'USD')`,
+		tenantID, voucherID, userID,
+	); err != nil {
+		t.Fatalf("seed voucher redemption: %v", err)
+	}
+	var claimID int64
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO billing_ledger_claims (tenant_id, idempotency_key, request_fingerprint, api_key_id, user_id, logical_request_id, endpoint_family, requested_model, billing_policy_version, request_class, attempt_seq, predicted_cost, currency_code, lease_expires_at)
+		 VALUES ($1, 'backfill-mandatory', 'fp-backfill', $2, $3, 'lr-backfill', 'chat', 'gpt-4', '1.0', 'standard', 1, 100, 'USD', NOW() + interval '90 seconds')
+		 RETURNING id`,
+		tenantID, apiKeyID, userID,
+	).Scan(&claimID); err != nil {
+		t.Fatalf("seed claim: %v", err)
+	}
+
+	backfillSQL := readMarkedMigrationSQL(t,
+		"../../sql/migrations/0065_backfill_user_balances.up.sql",
+		"-- balance backfill begin",
+		"-- balance backfill end",
+	)
+	if _, err := tx.Exec(ctx, backfillSQL); err != nil {
+		t.Fatalf("run marked backfill SQL: %v", err)
+	}
+
+	snap, err := Reserve(ctx, tx, ReserveParams{
+		TenantID: tenantID, UserID: userID, ClaimID: claimID, Cost: decimal.NewFromInt(100),
+		EnforcementMode: EnforcementModeMandatory,
+	})
+	if err != nil {
+		t.Fatalf("reserve after historical voucher backfill: %v", err)
+	}
+	if !snap.Balance.Equal(decimal.NewFromInt(100)) || !snap.Held.Equal(decimal.NewFromInt(100)) {
+		t.Fatalf("snapshot balance/held=%s/%s want 100/100", snap.Balance, snap.Held)
+	}
+}
+
+func TestBalanceHold_BackfillReconcilesExistingWalletRows(t *testing.T) {
+	// Mutation check: keeping a NOT EXISTS(user_balances) filter in the
+	// backfill leaves this user at the existing $50 recharge row, so a $150
+	// mandatory reserve fails even though the durable ledger says $100 voucher
+	// credit + $50 recharge credit are spendable.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openTestPool(t, ctx)
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var tenantID, userID, apiKeyID int64
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO tenants (name) VALUES ($1) RETURNING id`,
+		fmt.Sprintf("tenant-bh-backfill-existing-%d", time.Now().UTC().UnixNano()),
+	).Scan(&tenantID); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO users (tenant_id, display_name) VALUES ($1, 'historical-existing-user') RETURNING id`,
+		tenantID,
+	).Scan(&userID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO api_keys (tenant_id, user_id, name, key_hash, key_prefix, status)
+		 VALUES ($1, $2, 'k', 'ph', 'hk', 'active') RETURNING id`,
+		tenantID, userID,
+	).Scan(&apiKeyID); err != nil {
+		t.Fatalf("seed api key: %v", err)
+	}
+	var voucherID int64
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO voucher (tenant_id, code_hash, code_fingerprint, amount_cents, currency_code, valid_from, valid_until)
+		 VALUES ($1, decode('02', 'hex'), 'old-voucher-existing', 10000, 'USD', NOW() - interval '1 hour', NOW() + interval '1 hour')
+		 RETURNING id`,
+		tenantID,
+	).Scan(&voucherID); err != nil {
+		t.Fatalf("seed voucher: %v", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO voucher_redemption (tenant_id, voucher_id, user_id, idempotency_key, amount_cents, currency_code)
+		 VALUES ($1, $2, $3, 'old-redeem-existing', 10000, 'USD')`,
+		tenantID, voucherID, userID,
+	); err != nil {
+		t.Fatalf("seed voucher redemption: %v", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO user_balances (tenant_id, user_id, balance, held) VALUES ($1, $2, 50, 0)`,
+		tenantID, userID,
+	); err != nil {
+		t.Fatalf("seed existing recharge balance: %v", err)
+	}
+	var rechargeOrderID int64
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO recharge_orders (tenant_id, user_id, external_trade_no, recharge_ref, status, requested_amount, credited_amount, currency_code, provider, completed_at)
+		 VALUES ($1, $2, 'trade-backfill-existing', 'recharge-backfill-existing', 'COMPLETED', 50, 50, 'USD', 'manual', NOW())
+		 RETURNING id`,
+		tenantID, userID,
+	).Scan(&rechargeOrderID); err != nil {
+		t.Fatalf("seed recharge order: %v", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO billing_events (tenant_id, event_type, actual_cost, actual_cost_signed, stream_state, delivered_token_count, fingerprint, recharge_order_id)
+		 VALUES ($1, 'balance_recharged', 50, 50, 2, 0, 'recharge-backfill-existing', $2)`,
+		tenantID, rechargeOrderID,
+	); err != nil {
+		t.Fatalf("seed recharge billing event: %v", err)
+	}
+	var claimID int64
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO billing_ledger_claims (tenant_id, idempotency_key, request_fingerprint, api_key_id, user_id, logical_request_id, endpoint_family, requested_model, billing_policy_version, request_class, attempt_seq, predicted_cost, currency_code, lease_expires_at)
+		 VALUES ($1, 'backfill-existing-mandatory', 'fp-backfill-existing', $2, $3, 'lr-backfill-existing', 'chat', 'gpt-4', '1.0', 'standard', 1, 150, 'USD', NOW() + interval '90 seconds')
+		 RETURNING id`,
+		tenantID, apiKeyID, userID,
+	).Scan(&claimID); err != nil {
+		t.Fatalf("seed claim: %v", err)
+	}
+
+	backfillSQL := readMarkedMigrationSQL(t,
+		"../../sql/migrations/0065_backfill_user_balances.up.sql",
+		"-- balance backfill begin",
+		"-- balance backfill end",
+	)
+	if _, err := tx.Exec(ctx, backfillSQL); err != nil {
+		t.Fatalf("run marked backfill SQL: %v", err)
+	}
+
+	snap, err := Reserve(ctx, tx, ReserveParams{
+		TenantID: tenantID, UserID: userID, ClaimID: claimID, Cost: decimal.NewFromInt(150),
+		EnforcementMode: EnforcementModeMandatory,
+	})
+	if err != nil {
+		t.Fatalf("reserve after existing wallet backfill: %v", err)
+	}
+	if !snap.Balance.Equal(decimal.NewFromInt(150)) || !snap.Held.Equal(decimal.NewFromInt(150)) {
+		t.Fatalf("snapshot balance/held=%s/%s want 150/150", snap.Balance, snap.Held)
 	}
 }
 
@@ -232,6 +463,25 @@ func execReserve(ctx context.Context, pool *pgxpool.Pool, tenantID, userID, clai
 		return Snapshot{}, err
 	}
 	return snap, nil
+}
+
+func readMarkedMigrationSQL(t *testing.T, path, beginMarker, endMarker string) string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read migration %s: %v", path, err)
+	}
+	text := string(raw)
+	begin := strings.Index(text, beginMarker)
+	end := strings.Index(text, endMarker)
+	if begin < 0 || end < 0 || end <= begin {
+		t.Fatalf("migration %s missing ordered markers %q / %q", path, beginMarker, endMarker)
+	}
+	stmt := strings.TrimSpace(text[begin+len(beginMarker) : end])
+	if stmt == "" || !strings.Contains(stmt, "voucher_redemption") || !strings.Contains(stmt, "user_balances") {
+		t.Fatalf("marked backfill SQL does not connect voucher_redemption to user_balances: %q", stmt)
+	}
+	return stmt
 }
 
 func execCapture(ctx context.Context, pool *pgxpool.Pool, claimID int64, actual decimal.Decimal) error {
