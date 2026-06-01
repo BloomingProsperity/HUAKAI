@@ -155,7 +155,9 @@ SET status = 'inflight',
     lease_until = now() + $3::interval,
     last_replay_at = now(),
     updated_at = now()
-WHERE d.id = $1 AND d.status <> 'delivered'
+WHERE d.id = $1
+  AND d.status <> 'delivered'
+  AND (d.status <> 'inflight' OR d.lease_until < now())
 RETURNING `+recordColumnsDLQ,
 		id, "manual:"+actorID, intervalLiteral(leaseTTL),
 	))
