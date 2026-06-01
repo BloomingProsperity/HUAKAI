@@ -92,6 +92,7 @@ func (s *DefaultSelector) Select(ctx context.Context, req SelectionRequest) (*Se
 		return nil, ErrNoEligibleAccount
 	}
 
+	routeConstrained := hasModelRoute(policy, req.RequestedModel)
 	routed := modelRoute(policy, req.RequestedModel, eligible)
 	if len(routed) > 0 {
 		if res, done, err := s.trySticky(ctx, req, routed, RoutingLayerStickyWithinRoute, reason); done || err != nil {
@@ -100,13 +101,17 @@ func (s *DefaultSelector) Select(ctx context.Context, req SelectionRequest) (*Se
 		if res, done, err := s.tryLayer(ctx, req, routed, RoutingLayerRoutingAffinity, reason); done || err != nil {
 			return res, err
 		}
-	} else if policy == nil || len(policy.ModelAccountIDs[req.RequestedModel]) == 0 {
+	} else if !routeConstrained {
 		if res, done, err := s.trySticky(ctx, req, eligible, RoutingLayerStickyStandalone, reason); done || err != nil {
 			return res, err
 		}
 	}
 
-	fresh := s.rankFresh(eligible, policy)
+	freshCandidates := eligible
+	if routeConstrained {
+		freshCandidates = routed
+	}
+	fresh := s.rankFresh(freshCandidates, policy)
 	if res, done, err := s.tryLayer(ctx, req, fresh, RoutingLayerFresh, reason); done || err != nil {
 		// Track B 闭环最后一片: fresh 选定后写 sticky_bindings 让后续相同
 		// prompt prefix 命中此账号. 用 type assertion 让 StickyStore 接口
@@ -247,7 +252,7 @@ func topK(policy *RoutingPolicy, accounts []*AccountSnapshot) int {
 }
 
 func modelRoute(policy *RoutingPolicy, model string, accounts []*AccountSnapshot) []*AccountSnapshot {
-	if policy == nil || len(policy.ModelAccountIDs[model]) == 0 {
+	if !hasModelRoute(policy, model) {
 		return nil
 	}
 	allowed := map[int64]struct{}{}
@@ -261,6 +266,10 @@ func modelRoute(policy *RoutingPolicy, model string, accounts []*AccountSnapshot
 		}
 	}
 	return out
+}
+
+func hasModelRoute(policy *RoutingPolicy, model string) bool {
+	return policy != nil && len(policy.ModelAccountIDs[model]) > 0
 }
 
 func fallbackPlan(candidates []*AccountSnapshot, policy *RoutingPolicy) *WaitPlan {
