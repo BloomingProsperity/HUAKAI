@@ -1,0 +1,80 @@
+[
+  {
+    "id": "S2-052",
+    "title": "admin provider-account 状态过滤仍用 0056 前的旧 health 枚举",
+    "wave": "W4 routing/pool",
+    "feature": "F-POOL admin provider-account 运维筛选",
+    "status": "todo",
+    "risk": "schema",
+    "verify_rounds": 3,
+    "detail": "根因(已核当前真码 backend/internal/db/admin/admin_provider_accounts.go:130,138):listAdminProviderAccounts 的 state_filter 仍按旧枚举过滤——'active' 分支 health_state IN ('operational','degraded')、'error' 分支 health_state IN ('failed','error')。但 migration 0056_provider_account_health_state_check.up.sql:3-10 已把 operational/degraded→healthy、failed/error→revoked,并加 CHECK 仅允许 ('healthy','throttled','revoked','cooldown')。因此 state_filter=active|error 永不命中,运维按状态筛号得空结果。修复:把两处旧枚举改为 0056 后的实际值(active→healthy 且保留 enabled/rate-limit/overload/temp 子条件;error→revoked + credential_state 仍 refresh_failed/revoked)。clean-room 只自研等价不读不抄 reference;以 0056 迁移文件为权威 schema 真相。每 commit codex#8(gpt-5.5 xhigh)无未结 S0/S1;判别测试过 mutation。本文件在 db/admin(非冻结包),只改已有文件。",
+    "acceptance": "在 backend/internal/db/admin/admin_audit_integration_test.go 增/扩 fixture:插入两行 provider_accounts,一行 health_state='healthy' enabled=true、一行 health_state='revoked'。断言 ListAdminProviderAccounts(state_filter='active') 返回且仅返回 healthy 那行;state_filter='error' 返回且仅返回 revoked 那行。MUTATION CHECK:把查询改回 'operational'/'degraded' 与 'failed'/'error'(还原 bug)→ 命名断言 TestListAdminProviderAccounts_StateFilterMatchesPost0056Enum 中 active/error 结果集变空,测试 RED。",
+    "spec_refs": "backend/internal/db/admin/admin_provider_accounts.go:130,138(offending IN 列表) + backend/sql/migrations/0056_provider_account_health_state_check.up.sql:3-10,16-18(权威枚举映射+CHECK) + CLAUDE.md #8/#13/#14",
+    "scope_files": ["backend/internal/db/admin/admin_provider_accounts.go", "backend/internal/db/admin/admin_audit_integration_test.go"]
+  },
+  {
+    "id": "S2-068",
+    "title": "PASR 选号丢失 routing-reason 证据(usage/audit 落 '{}')",
+    "wave": "W4 routing/pool",
+    "feature": "F-POOL PASR selector routing-reason 审计",
+    "status": "todo",
+    "risk": "-",
+    "verify_rounds": 3,
+    "detail": "根因(已核当前真码 backend/internal/pool/router/pasr.go:503-506 与 :528-531):PASR 两条成功返回路径构造 SelectionResult{AccountID,AcquisitionToken} 时未填 RoutingReasonJSON,而 default_selector.go:206,126 正确填充。当 PASR 为活跃 selector(canary/primary/strict)时,下游 billing/settler 写 usage_records.routing_reason 拿到空值落成 '{}',审计链证据缺失。修复:在 PASR 选号流程内构建等价 routing-reason(选中账号/层级/score 依据)塞进两处返回的 SelectionResult.RoutingReasonJSON;若已有 RoutingReasonBuilder 等价机制则复用,无则在本文件内自研最小等价 JSON。clean-room 只自研等价不读不抄 reference。每 commit codex#8(gpt-5.5 xhigh)无未结 S0/S1;判别测试过 mutation。pool/router 非冻结包,只改已有文件。",
+    "acceptance": "在 backend/internal/pool/router/pasr_test.go 增用例:用注入的 Slots/Claims stub 驱动 PASRSelector.Select 走到成功返回,断言 result.RoutingReasonJSON 非空且为合法 JSON object(含选中 account_id 等可判别字段),与 '{}'/'' 不相等。MUTATION CHECK:删掉新加的 RoutingReasonJSON 赋值(还原 bug)→ 命名断言 TestPASRSelect_PopulatesRoutingReason 中 'RoutingReasonJSON 非空' 断言 RED。",
+    "spec_refs": "backend/internal/pool/router/pasr.go:503-506,528-531(缺字段) + backend/internal/pool/router/default_selector.go:206,126(正确实现对照) + CLAUDE.md #8/#13/#14",
+    "scope_files": ["backend/internal/pool/router/pasr.go", "backend/internal/pool/router/pasr_test.go"]
+  },
+  {
+    "id": "S2-095",
+    "title": "DLQ 手动 replay 可抢占未过期 in-flight lease(双执行 money/audit)",
+    "wave": "W8 ops/security",
+    "feature": "F-DLQ 手动 replay 租约安全",
+    "status": "todo",
+    "risk": "money",
+    "verify_rounds": 3,
+    "detail": "根因(已核当前真码 backend/internal/dlq/store.go:145-157):ClaimByID(手动 replay 路径)的 UPDATE 仅 WHERE d.id=$1 AND d.status<>'delivered',不检查 lease。后台 Claim(:104-115)在候选 CTE 里有 (status='inflight' AND lease_until<now()) 保护,拒绝抢占活跃 lease。手动 replay 在 worker 正执行同一行(lease 未过期)时强夺,导致 usage/billing/refund-audit handler 重复执行。已核 S2-161 fence(已落 0298578)只 fence Mark* 写,未触及 ClaimByID 获取——本条是其兄弟漏点。修复:给 ClaimByID 的 WHERE 加 lease-aware 条件(status<>'inflight' OR lease_until<now()),命中不到行时按现有 pgx.ErrNoRows→ErrNotFound 路径返回(语义上提示'活跃 lease 不可手动 replay');保留 status<>'delivered' 既有保护。clean-room 只自研等价不读不抄 reference。每 commit codex#8(gpt-5.5 xhigh)无未结 S0/S1;判别测试过 mutation。dlq 非冻结包,只改已有文件。",
+    "acceptance": "在 backend/internal/dlq/worker_integration_test.go(已用真 pg/integration harness)增用例:先用一个 worker Claim 取得某行 inflight + 未来 lease_until;随后 ClaimByID 同一 id,断言返回 ErrNotFound(或不返回该行),且该行 lease_owner 仍为原 worker(未被改写)。再把 lease_until 设为过去,ClaimByID 这次应成功取回。MUTATION CHECK:还原 WHERE 仅 status<>'delivered'(去掉 lease 条件)→ 命名断言 TestClaimByID_RefusesActiveLease 中 '活跃 lease 时 ErrNotFound' RED。",
+    "spec_refs": "backend/internal/dlq/store.go:145-157(无 lease guard 的 ClaimByID)对照 :104-115(后台 Claim 的 lease guard) + CLAUDE.md #8/#13/#14",
+    "scope_files": ["backend/internal/dlq/store.go", "backend/internal/dlq/worker_integration_test.go"]
+  },
+  {
+    "id": "S2-070",
+    "title": "并发 Idempotency claim 竞态在 reserve 阶段落 500(非约定 409)",
+    "wave": "W8 ops/security",
+    "feature": "F-BILL 幂等 claim 竞态状态码",
+    "status": "todo",
+    "risk": "money",
+    "verify_rounds": 3,
+    "detail": "根因(已核当前真码 backend/internal/gatewayhttp/chat_completions_dispatch.go:178-180):reserveClaim 对 ClaimGate.Reserve 返回的任意 err(含 billing.ErrClaimRace,定义于 backend/internal/billing/claim_gate.go:31,从 :100/:165 抛出)统一走 writeLoggedJSONError 500。同文件 :246 对 pool.ErrClaimRace→409+Retry-After 的处理在 selectPoolAccount(slot 获取阶段),与 TX1 reserve-phase 竞态不是同一场景,reserve 阶段竞态仍 500。正常并发客户端重试被变成 500,违反幂等热路径契约。修复:在 :178 之前显式 errors.Is(err, billing.ErrClaimRace) 分支,返回 409(沿用现成 clienterr.CodeClaimRace + Retry-After,与 :252 一致语义),不污染 internal-error 计数。clean-room 只自研等价不读不抄 reference。每 commit codex#8(gpt-5.5 xhigh)无未结 S0/S1;判别测试过 mutation。gatewayhttp 冻结包——只改已有文件 chat_completions_dispatch.go,禁新文件。",
+    "acceptance": "在已有 gatewayhttp dispatch 测试(chat_completions_dispatch_test.go,不存在则就近 dispatch 行为测试文件)注入返回 billing.ErrClaimRace 的 ClaimGate stub,跑 reserveClaim/请求路径,断言响应 status==409(且带 Retry-After / code=claim_race),不是 500。MUTATION CHECK:移除新加的 ErrClaimRace 分支(还原 bug)→ 命名断言 TestReserveClaim_ClaimRaceReturns409 中 'status==409' RED(变 500)。",
+    "spec_refs": "backend/internal/gatewayhttp/chat_completions_dispatch.go:178-180(漏分支)、:246-254(同文件已有 ClaimRace→409 范式) + backend/internal/billing/claim_gate.go:28-31,100,165(ErrClaimRace 来源) + CLAUDE.md #8/#13/#14",
+    "scope_files": ["backend/internal/gatewayhttp/chat_completions_dispatch.go", "backend/internal/gatewayhttp/chat_completions_dispatch_test.go"]
+  },
+  {
+    "id": "S2-101",
+    "title": "replay 持久化写失败被吞,后续同 key 重试错返 409 replay_without_cache",
+    "wave": "W8 ops/security",
+    "feature": "F-BILL 幂等 replay 写失败可观测",
+    "status": "todo",
+    "risk": "money",
+    "verify_rounds": 3,
+    "detail": "根因(已核当前真码 backend/internal/gatewayhttp/chat_completions_idempotency_replay.go:51 与 :63-64):ReplayStore.Record 的返回错误被 '_ =' 丢弃(best-effort)。当结算成功后 replay 写失败,原响应已交付但无重放记录;后续同 Idempotency-Key 重试命中 reserveRes.IdempotencyHit(dispatch.go:182),serveIdempotentReplay 取不到 → 落 409 replay_without_cache(dispatch.go:188),破坏幂等契约。修复:不丢 Record 错误——至少在 recordCtx 写失败时记结构化告警/计数并(可选)在响应头标注 replay 未持久化,使后续 409 可归因;或将写失败上抛到调用方按既有 degrade 语义处理(不改变已提交的结算)。具体取舍按 #8 codex 讨论后定,核心是错误不再静默。clean-room 只自研等价不读不抄 reference。每 commit codex#8(gpt-5.5 xhigh)无未结 S0/S1;判别测试过 mutation。gatewayhttp 冻结包——只改已有文件 chat_completions_idempotency_replay.go,禁新文件。",
+    "acceptance": "在就近 gatewayhttp 幂等/重放行为测试文件注入返回 error 的 ReplayStore stub:断言写失败被观测(返回错误被处理/计数自增/响应头标注),而非被丢弃。自证型:correct-path(Record 成功)与 broken-path(Record 返错)两次运行结果可区分。MUTATION CHECK:把处理改回 '_ =' 丢弃(还原 bug)→ 命名断言 TestRecordIdempotencyReplay_SurfacesWriteFailure 中 '写失败被观测' RED。",
+    "spec_refs": "backend/internal/gatewayhttp/chat_completions_idempotency_replay.go:51,63-64(吞错) + backend/internal/gatewayhttp/chat_completions_dispatch.go:182-190(IdempotencyHit→serveIdempotentReplay→409 fallback 链) + CLAUDE.md #8/#13/#14",
+    "scope_files": ["backend/internal/gatewayhttp/chat_completions_idempotency_replay.go", "backend/internal/gatewayhttp/chat_completions_idempotency_replay_test.go"]
+  },
+  {
+    "id": "S2-021",
+    "title": "Bedrock 上游错误原始 payload 进多租户内部日志(数据泄露)",
+    "wave": "W7 provider/protocol",
+    "feature": "F-SEC 上游错误 payload 脱敏",
+    "status": "todo",
+    "risk": "security",
+    "verify_rounds": 3,
+    "detail": "根因(已核当前真码):backend/internal/gateway/bedrock_stream_scanner.go:98 把原始 msg.Payload 用 string(msg.Payload) 拼进 ErrBedrockException 错误串;backend/internal/gateway/forwarder.go:264 又把原始 evt.Data(上游 raw payload)经 clienterr.LogInternal 落内部日志(:250 注释自承'raw payload 进内部日志')。上游 Bedrock 错误体可含 prompt / tool 参数 / account ID / provider 调试信息,在多租户可观测系统里泄露。官方协议参考:AWS Bedrock EventStream exception 帧仅需类型即可定位,无需落原文。修复:内部日志与错误串去原文化——保留 :message-type / :exception-type 等结构化字段 + payload 的有界指纹/长度,而非整段原文;client 侧已只收 canonical public error,不受影响。clean-room 只自研等价不读不抄 reference(protocol 类已查 AWS 公开 EventStream 文档,不读 aws-sdk-go 源)。每 commit codex#8(gpt-5.5 xhigh)无未结 S0/S1;判别测试过 mutation。gateway 冻结包——只改已有文件 bedrock_stream_scanner.go + forwarder.go,禁新文件。注意 forwarder.go 是高流量共享热文件,调度时勿与其它任务并发占用。",
+    "acceptance": "改写 backend/internal/gateway/bedrock_stream_scanner_test.go 现有 exception 用例:构造含敏感标记(如 'SENSITIVE_PROMPT_XYZ')的 exception payload,断言 ErrBedrockException 错误串 + 内部日志输出 NOT Contains 该原文标记,但 Contains 结构化字段(message-type/exception-type)。MUTATION CHECK:还原把 string(msg.Payload) 拼回错误串/日志(还原 bug)→ 命名断言 TestBedrockException_RedactsRawPayload 中 'NOT Contains SENSITIVE_PROMPT_XYZ' RED。",
+    "spec_refs": "backend/internal/gateway/bedrock_stream_scanner.go:98(payload 入错误串)、backend/internal/gateway/forwarder.go:264(raw evt.Data 入 LogInternal)、:248-250(注释自承泄露) + AWS Bedrock EventStream 公开文档(exception/error 帧字段) + CLAUDE.md #8/#11/#13/#14",
+    "scope_files": ["backend/internal/gateway/bedrock_stream_scanner.go", "backend/internal/gateway/forwarder.go", "backend/internal/gateway/bedrock_stream_scanner_test.go"]
+  }
+]
