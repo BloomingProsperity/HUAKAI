@@ -27,8 +27,8 @@ import (
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
-// DefaultLeaseDuration is the slot lease grace window before orphan-sweep
-// can reclaim it (Phase 4.5 sweeper not yet implemented).
+// DefaultLeaseDuration is the slot lease grace window before orphan-slot
+// recovery can reclaim it.
 const DefaultLeaseDuration = 90 * time.Second
 
 // DBSlotManager binds the selector's slot acquire/release seam to real
@@ -47,14 +47,6 @@ func NewDBSlotManager(pool *pgxpool.Pool) *DBSlotManager {
 	return &DBSlotManager{pool: pool, q: dbbilling.New(pool)}
 }
 
-// Acquire implements pool.SlotManager.
-//
-// TODO(phase-e): wrap the body in a Serializable retry loop. PostgreSQL can
-// return SQLSTATE 40001 (serialization_failure) under concurrent
-// IncrementInFlightCount on the same provider_account. Phase C smoke runs
-// single-request so will not hit this; production hot path will. Current
-// behavior surfaces 40001 as a fatal slot error → request fails. Deferred
-// to Phase E along with the rest of the production contention story.
 func (m *DBSlotManager) Acquire(ctx context.Context, account *AccountSnapshot, req SelectionRequest) (*AcquireResult, error) {
 	if m == nil || m.pool == nil {
 		return nil, ErrSlotManagerUnavailable
@@ -69,7 +61,12 @@ func (m *DBSlotManager) Acquire(ctx context.Context, account *AccountSnapshot, r
 		return nil, fmt.Errorf("pool: account tenant=%d ≠ request tenant=%d (cross-tenant slot acquire refused)",
 			account.TenantID, req.TenantID)
 	}
+	return retrySerializableSlotAcquire(ctx, func(ctx context.Context) (*AcquireResult, error) {
+		return m.acquireOnce(ctx, account, req)
+	})
+}
 
+func (m *DBSlotManager) acquireOnce(ctx context.Context, account *AccountSnapshot, req SelectionRequest) (*AcquireResult, error) {
 	tx, err := m.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return nil, fmt.Errorf("pool: begin acquire tx: %w", err)
