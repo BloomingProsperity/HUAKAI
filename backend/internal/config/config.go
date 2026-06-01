@@ -19,7 +19,7 @@ type Config struct {
 	// Listen is the HTTP bind address (e.g. ":8080" or ":0" for tests).
 	Listen string
 
-	// BillingPolicyVersion is recorded on every claim row. Default "1.0".
+	// BillingPolicyVersion is recorded on every claim row.
 	BillingPolicyVersion string
 
 	// RequestClass tags the claim for downstream policy routing. Default "standard".
@@ -35,16 +35,17 @@ type Config struct {
 }
 
 const (
-	VendorOAuthCursor       = "cursor"
-	VendorOAuthWindsurf     = "windsurf"
-	VendorOAuthOpenAICodex  = "openai_codex"
-	VendorOAuthKiro         = "kiro"
-	VendorOAuthGemini       = "gemini"
-	vendorOAuthAuthURL      = "AUTH_URL"
-	vendorOAuthTokenURL     = "TOKEN_URL"
-	vendorOAuthClientID     = "CLIENT_ID"
-	vendorOAuthClientSecret = "CLIENT_SECRET"
-	vendorOAuthScope        = "SCOPE"
+	DefaultBillingPolicyVersion = "1.0"
+	VendorOAuthCursor           = "cursor"
+	VendorOAuthWindsurf         = "windsurf"
+	VendorOAuthOpenAICodex      = "openai_codex"
+	VendorOAuthKiro             = "kiro"
+	VendorOAuthGemini           = "gemini"
+	vendorOAuthAuthURL          = "AUTH_URL"
+	vendorOAuthTokenURL         = "TOKEN_URL"
+	vendorOAuthClientID         = "CLIENT_ID"
+	vendorOAuthClientSecret     = "CLIENT_SECRET"
+	vendorOAuthScope            = "SCOPE"
 )
 
 // VendorOAuth is one operator-provided OAuth client configuration.
@@ -72,7 +73,7 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		DatabaseURL:            os.Getenv("HUAKAI_DATABASE_URL"),
 		Listen:                 envDefault("HUAKAI_ADDR", ":8080"),
-		BillingPolicyVersion:   envDefault("HUAKAI_BILLING_POLICY_VERSION", "1.0"),
+		BillingPolicyVersion:   envDefault("HUAKAI_BILLING_POLICY_VERSION", DefaultBillingPolicyVersion),
 		RequestClass:           envDefault("HUAKAI_REQUEST_CLASS", "standard"),
 		TransportSidecarSocket: os.Getenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET"),
 		VendorOAuth:            loadVendorOAuthConfigs(),
