@@ -78,7 +78,7 @@ func fixtureCompletionEvent(t *testing.T) eventbus.RequestCompletionEvent {
 			StreamAttempt:       streamAttempt,
 			Fingerprint:         "fp-xyz",
 			AuditRequestID:      "audit-req-7",
-			OutboxEmitter:       func() bool { return true }, // 不应被持久化
+			EmitSchedulerOutbox: true,
 			SnapshotVersion:     "registry:3001:v9;router:rv2",
 		},
 	}
@@ -153,6 +153,9 @@ func TestPayload_RoundTrip_SettleRequestFieldsByteIdentical(t *testing.T) {
 			got.Fingerprint, got.AuditRequestID, got.SnapshotVersion,
 			original.Fingerprint, original.AuditRequestID, original.SnapshotVersion)
 	}
+	if got.EmitSchedulerOutbox != original.EmitSchedulerOutbox {
+		t.Fatalf("EmitSchedulerOutbox=%v want %v", got.EmitSchedulerOutbox, original.EmitSchedulerOutbox)
+	}
 	// S1-025-fu item 1: protocol_loss 必须存活 DLQ replay round-trip,否则重放写 "[]"。
 	// Mutation: 删 FromCompletionEvent 或 ToSettleRequest 的 ProtocolLoss 赋值 → 空 → RED。
 	if !containsCode(lossCodes(t, got.ProtocolLoss), "dlq_protocol_loss_roundtrip") {
@@ -161,26 +164,27 @@ func TestPayload_RoundTrip_SettleRequestFieldsByteIdentical(t *testing.T) {
 	}
 }
 
-// TestPayload_ToSettleRequest_OutboxEmitterIsNil 守 codex D 决策:重 settle 时
-// OutboxEmitter 必 nil,防与原 attempt 已 emit 的 cross-threshold scheduler
-// outbox 事件重复 emit account_quota_changed。
+// TestPayload_ToSettleRequest_SchedulerOutboxIntentPreserved 守 S2-005:
+// outbox intent 必须是可 JSON 持久化的 bool,post-delivery settle replay 成功
+// 时才能补写原本应该跟 Tx2 同事务产生的 scheduler_outbox 行。
 //
-// Mutation:把 ToSettleRequest 改成把原 func 也填回去 → 本用例必红。
-func TestPayload_ToSettleRequest_OutboxEmitterIsNil(t *testing.T) {
+// Mutation:删 FromCompletionEvent 或 ToSettleRequest 的 EmitSchedulerOutbox
+// 赋值 → worker 重放不 emit outbox → 本用例必红。
+func TestPayload_ToSettleRequest_SchedulerOutboxIntentPreserved(t *testing.T) {
 	event := fixtureCompletionEvent(t)
-	if event.SettleRequest.OutboxEmitter == nil {
-		t.Fatal("fixture should have OutboxEmitter set to verify it gets stripped")
+	if !event.SettleRequest.EmitSchedulerOutbox {
+		t.Fatal("fixture should have EmitSchedulerOutbox set to verify it survives recovery payload")
 	}
 	payload := FromCompletionEvent(SourceStream, event)
 	got := payload.ToSettleRequest()
-	if got.OutboxEmitter != nil {
-		t.Fatalf("OutboxEmitter must be nil after round-trip, got non-nil (would re-emit cross-threshold outbox)")
+	if !got.EmitSchedulerOutbox {
+		t.Fatal("EmitSchedulerOutbox lost after round-trip; recovered settlement would miss scheduler_outbox")
 	}
 }
 
-// TestPayload_JSONShape_NoOutboxEmitterField 守 settleRequestPersisted 不带
-// OutboxEmitter 字段,即使 marshal 出错也不会持久 func。
-func TestPayload_JSONShape_NoOutboxEmitterField(t *testing.T) {
+// TestPayload_JSONShape_UsesSerializableOutboxIntent 守 settleRequestPersisted 不带
+// func 字段,只带可持久化 bool。这样既不 JSON marshal func,又不丢重放语义。
+func TestPayload_JSONShape_UsesSerializableOutboxIntent(t *testing.T) {
 	event := fixtureCompletionEvent(t)
 	payload := FromCompletionEvent(SourceStream, event)
 	raw, err := payload.Encode()
@@ -200,6 +204,9 @@ func TestPayload_JSONShape_NoOutboxEmitterField(t *testing.T) {
 	}
 	if _, present := settle["OutboxEmitter"]; present {
 		t.Fatalf("settle.OutboxEmitter must not be serialized: %+v", settle)
+	}
+	if got, present := settle["emit_scheduler_outbox"].(bool); !present || !got {
+		t.Fatalf("settle.emit_scheduler_outbox=%v present=%v want true", settle["emit_scheduler_outbox"], present)
 	}
 }
 

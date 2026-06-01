@@ -2649,7 +2649,7 @@ paths:
         required: true
         schema:
           type: string
-          enum: [usage_record, billing_event_replica, audit_event_replica, audit_mismatch_refund, audit_ledger_entry, account_health, metrics]
+          enum: [usage_record, billing_event_replica, audit_event_replica, audit_mismatch_refund, audit_ledger_entry, post_delivery_settlement, cost_receipt_append, account_health, metrics]
     post:
       tags: [admin-dlq]
       summary: List DLQ entries by handler
@@ -5073,7 +5073,7 @@ components:
         claim_id: { type: [integer, 'null'], format: int64 }
         event_kind:
           type: string
-          enum: [usage_record, billing_event_replica, audit_event_replica, audit_mismatch_refund, audit_ledger_entry, account_health, metrics]
+          enum: [usage_record, billing_event_replica, audit_event_replica, audit_mismatch_refund, audit_ledger_entry, post_delivery_settlement, cost_receipt_append, account_health, metrics]
         lane:
           type: string
           enum: [HIGH, MED, LOW]

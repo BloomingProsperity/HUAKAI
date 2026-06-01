@@ -3,8 +3,9 @@
 //
 // See docs/specs/observability-billing.md for the released spec.
 // Current slice includes PostgreSQL-backed ClaimGate and DefaultSettler
-// implementations. Dynamic pricing, outbox emission, and reconciliation
-// workers remain Phase E+ work.
+// implementations. Dynamic pricing precision and reconciliation workers remain
+// Phase E+ work; scheduler outbox intent is carried by SettleRequest so direct
+// settlement and post-delivery recovery preserve the same proof-chain effect.
 package billing
 
 import (
@@ -102,7 +103,10 @@ type SettleRequest struct {
 	StreamAttempt       *Attempt
 	Fingerprint         string
 	AuditRequestID      string
-	OutboxEmitter       func() bool
+	// EmitSchedulerOutbox requests an account_quota_changed scheduler_outbox
+	// row inside Tx2. It is a serializable intent instead of a callback so
+	// post-delivery settlement recovery can replay the same outbox effect.
+	EmitSchedulerOutbox bool
 	// SnapshotVersion is the registry+router stamp produced by
 	// router.Plan (format "registry:<tid>:<v>;router:<rv>").
 	// Written into usage_records.snapshot_version so audit replay can
@@ -139,6 +143,5 @@ type RefundResult struct {
 	BalanceCredited bool
 }
 
-// TODO(phase-e): replace placeholder pricing with versioned pricing tables,
-// wire scheduler outbox emission, and add reconciliation workers for pending
-// usage records.
+// TODO(phase-e): replace placeholder pricing with complete versioned pricing
+// tables and add reconciliation workers for pending usage records.

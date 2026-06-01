@@ -11,11 +11,17 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
+	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 )
 
@@ -35,6 +41,51 @@ func TestChatCompletions_AuditLedgerNilGracefulNoPanic(t *testing.T) {
 	}
 	if got := rec.Header().Get(headerHUAKAIAuditLedgerID); got != "" {
 		t.Fatalf("%s=%q want empty when ledger is nil", headerHUAKAIAuditLedgerID, got)
+	}
+}
+
+func TestNonStreamingSettleRequestCarriesSchedulerOutboxIntent(t *testing.T) {
+	ex := &chatExecution{
+		ident:             auth.Identity{TenantID: 7, APIKeyID: 8, UserID: 9},
+		req:               chatRequest{Model: "gpt-4o"},
+		reserveRes:        &billing.ReserveResult{ClaimID: 9001},
+		acquiredAccountID: 7001,
+		acquisitionToken:  uuid.MustParse("11111111-2222-3333-4444-555555555555"),
+		upstreamModelID:   "gpt-4o-2024-08-06",
+		cacheVendor:       "openai",
+		payloadHash:       "payload-fp",
+		plan:              router.RoutePlan{SnapshotVersion: "registry:7:v1;router:r1"},
+	}
+
+	req := ex.nonStreamingSettleRequest(proto.NewEmptyEnvelope(), completionCostBreakdown{}, nil)
+	if !req.EmitSchedulerOutbox {
+		t.Fatal("provider-backed non-streaming settlement must carry scheduler outbox intent")
+	}
+}
+
+func TestStreamingCompletionEventCarriesSchedulerOutboxIntent(t *testing.T) {
+	ex := &chatExecution{
+		ident:             auth.Identity{TenantID: 7, APIKeyID: 8, UserID: 9},
+		req:               chatRequest{Model: "gpt-4o"},
+		requestID:         "req-stream-outbox",
+		reserveRes:        &billing.ReserveResult{ClaimID: 9002},
+		acquiredAccountID: 7002,
+		acquisitionToken:  uuid.MustParse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+		upstreamModelID:   "gpt-4o-2024-08-06",
+		cacheVendor:       "openai",
+		payloadHash:       "payload-fp-stream",
+		plan:              router.RoutePlan{SnapshotVersion: "registry:7:v1;router:r1"},
+	}
+
+	event := ex.streamingCompletionEvent(gateway.UsageRecordDraft{
+		TokensInput:         11,
+		TokensOutput:        13,
+		UsageSource:         gateway.UsageSourceReported,
+		EndClass:            gateway.StreamEndGraceful,
+		DeliveredTokenCount: 13,
+	}, billing.Attempt{State: billing.StreamStatePartial, DeliveredTokenCount: 13}, auditledger.AuditLedgerResult{})
+	if !event.SettleRequest.EmitSchedulerOutbox {
+		t.Fatal("provider-backed streaming settlement must carry scheduler outbox intent")
 	}
 }
 

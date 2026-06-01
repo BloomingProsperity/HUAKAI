@@ -205,9 +205,8 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 		return nil, err
 	}
 
-	// TODO: outbox emission deferred until Phase 4.5; CrossThreshold callback hook is in SettleRequest.OutboxEmitter func() bool - when true, an outbox row is inserted.
 	outboxEvents := 0
-	if req.OutboxEmitter != nil && req.OutboxEmitter() {
+	if req.EmitSchedulerOutbox {
 		if _, err := qtx.InsertSchedulerOutboxRow(ctx, dbbilling.InsertSchedulerOutboxRowParams{
 			TenantID:          claim.TenantID,
 			EventType:         "account_quota_changed",
