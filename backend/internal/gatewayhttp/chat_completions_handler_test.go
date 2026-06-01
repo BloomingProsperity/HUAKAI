@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -48,6 +50,12 @@ type stubClaimGate struct{}
 
 func (stubClaimGate) Reserve(_ context.Context, _ billing.ReserveRequest) (*billing.ReserveResult, error) {
 	return &billing.ReserveResult{ClaimID: 999}, nil
+}
+
+type insufficientBalanceClaimGate struct{}
+
+func (insufficientBalanceClaimGate) Reserve(_ context.Context, _ billing.ReserveRequest) (*billing.ReserveResult, error) {
+	return nil, billing.ErrInsufficientBalance
 }
 
 type stubSelector struct{}
@@ -132,4 +140,33 @@ func testRateTables(version string) *rateTableSourceStub {
 
 func validBody() string {
 	return `{"model":"claude-opus-4-7","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+}
+
+func TestHandler_InsufficientBalanceReturnsClientParseable402(t *testing.T) {
+	// Mutation check: leaving the old reserve_error branch returns a generic
+	// body without type=insufficient_quota, code=insufficient_balance, and the
+	// exact Chinese message clients parse for top-up UX.
+	d := minimalDeps()
+	d.ClaimGate = insufficientBalanceClaimGate{}
+
+	rec := invokeHandler(t, d, validBody())
+
+	if rec.Code != http.StatusPaymentRequired {
+		t.Fatalf("status=%d want 402 body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`"type":"insufficient_quota"`,
+		`"code":"insufficient_balance"`,
+		`"message":"余额不足"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body=%s missing %s", body, want)
+		}
+	}
+	for _, bad := range []string{clienterr.CodeReserveError, "request reservation failed"} {
+		if strings.Contains(body, bad) {
+			t.Fatalf("body=%s leaked generic reserve error marker %q", body, bad)
+		}
+	}
 }

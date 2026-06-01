@@ -37,6 +37,7 @@ func newChatExecution(d ChatHandlerDeps, r *http.Request, ident auth.Identity, v
 		requestID:                        validated.RequestID,
 		clientRequestID:                  validated.ClientRequestID,
 		streamInputOnlyInterruptedPolicy: d.BillingPolicyResolver.ResolveStreamInputOnlyInterruptedPolicy(r.Context(), ident.TenantID),
+		balanceEnforcementMode:           d.BillingPolicyResolver.ResolveBalanceEnforcementMode(r.Context(), ident.TenantID),
 	}
 }
 
@@ -198,6 +199,7 @@ func (ex *chatExecution) reserveClaim(w http.ResponseWriter) bool {
 		RequestClass:               ex.d.RequestClass,
 		PredictedCost:              predictedCost,
 		IdempotencyKeyClientHeader: ex.idempotencyHeader,
+		BalanceEnforcementMode:     ex.balanceEnforcementMode,
 	})
 	if errors.Is(err, billing.ErrFingerprintConflict) || (reserveRes != nil && reserveRes.FingerprintConflict) {
 		writeJSONError(w, http.StatusConflict, "idempotency_conflict",
@@ -205,7 +207,8 @@ func (ex *chatExecution) reserveClaim(w http.ResponseWriter) bool {
 		return false
 	}
 	if errors.Is(err, billing.ErrInsufficientBalance) {
-		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusPaymentRequired, clienterr.CodeReserveError, err)
+		logInternalError(ex.ctx, ex.requestID, clienterr.CodeInsufficientBalance, err)
+		writeInsufficientBalanceError(w)
 		return false
 	}
 	if err != nil {
