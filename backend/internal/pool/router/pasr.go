@@ -132,6 +132,8 @@ func NewPASRSelector(cfg PASRSelectorConfig) (*PASRSelector, error) {
 
 // Select 实现 Selector 接口主入口。
 func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*SelectionResult, error) {
+	reason := NewRoutingReasonBuilder(req)
+
 	// 1. 拉账号快照 → snapshots[accID] = *AccountSnapshot 用于 health/load 判
 	accs, err := p.accounts.ListAccounts(ctx, req)
 	if err != nil {
@@ -165,7 +167,7 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 	prefixKey := []byte(req.SessionHash)
 	if len(prefixKey) == 0 {
 		// 客户端没给 prompt prefix hash → PASR 退化, 全 ring 选首个 healthy
-		return p.scheduleNoSegment(ctx, req, ring, snapshots)
+		return p.scheduleNoSegment(ctx, req, ring, snapshots, reason)
 	}
 	// M4 (D2): readOnlySegments=true (shadow 实例) 用 Lookup 不创建; 段未命中
 	// 直接走 HRW 全 ring 接力, 不污染段表 — 让 actual 路径独占段学习数据。
@@ -174,7 +176,7 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 	if p.readOnlySegments {
 		seg = p.segments.Lookup(req.TenantID, prefixKey)
 		if seg == nil {
-			return p.scheduleHRWFullRing(ctx, req, ring, snapshots, [PASRSegmentSize]int64{}, selectionFailures{})
+			return p.scheduleHRWFullRing(ctx, req, ring, snapshots, [PASRSegmentSize]int64{}, selectionFailures{}, reason)
 		}
 	} else {
 		seg = p.segments.LookupOrCreate(req.TenantID, prefixKey, ring)
@@ -195,6 +197,7 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 			continue
 		}
 		if _, excluded := req.ExcludedAccounts[accID]; excluded {
+			reason.GateFailure(accID, GateFailurePerRequestExclusion)
 			continue
 		}
 		snap, ok := snapshots[accID]
@@ -202,11 +205,13 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 			continue // 段成员账号已不存在 (rebalance 滞后)
 		}
 		if snap.LoadRate >= p.loadCap {
+			reason.GateFailure(accID, GateFailureScoredBand)
 			failures.other++
 			continue
 		}
 		ok, why := p.allowAccount(ctx, snap, req)
 		if !ok {
+			reason.GateFailure(accID, why)
 			failures.add(why)
 			continue
 		}
@@ -222,7 +227,7 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 
 	// 4. 段全 unhealthy → HRW 全 ring 接力 (D5)
 	if len(candidates) == 0 {
-		return p.scheduleHRWFullRing(ctx, req, ring, snapshots, seg.Members, failures)
+		return p.scheduleHRWFullRing(ctx, req, ring, snapshots, seg.Members, failures, reason)
 	}
 
 	// 5-6. score-based ranking (cache-aware A2, 替代纯 hasCache 优先 + tie-break):
@@ -266,7 +271,9 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 	}
 
 	// 7. claim 写入 + 返
-	return p.acquireAndReturn(ctx, req, chosen.snapshot)
+	reason.Layer(RoutingLayerRoutingAffinity)
+	reason.Account(chosen.accountID)
+	return p.acquireAndReturn(ctx, req, chosen.snapshot, reason.JSON())
 }
 
 // scheduleNoSegment: req.SessionHash 为空时, 直接全 ring 走 HRW 排序选
@@ -274,6 +281,7 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 func (p *PASRSelector) scheduleNoSegment(
 	ctx context.Context, req SelectionRequest,
 	ring *AccountRing, snapshots map[int64]*AccountSnapshot,
+	reason *RoutingReasonBuilder,
 ) (*SelectionResult, error) {
 	// 用 req.RequestedModel 作为弱 prefix, 至少在 model 维度有 cache locality
 	prefixKey := []byte(req.RequestedModel)
@@ -282,7 +290,7 @@ func (p *PASRSelector) scheduleNoSegment(
 		// 这不是好情况但兜底, caller 应保证 SessionHash 或 RequestedModel 非空
 		prefixKey = []byte("__pasr_noprefix__")
 	}
-	return p.scheduleHRWFullRing(ctx, req, ring, snapshots, [PASRSegmentSize]int64{}, selectionFailures{})
+	return p.scheduleHRWFullRing(ctx, req, ring, snapshots, [PASRSegmentSize]int64{}, selectionFailures{}, reason)
 }
 
 // scheduleHRWFullRing: 段全 unhealthy 时 (synthesis D5), 直接对全 ring
@@ -295,8 +303,13 @@ func (p *PASRSelector) scheduleHRWFullRing(
 	ring *AccountRing, snapshots map[int64]*AccountSnapshot,
 	excludedSegmentMembers [PASRSegmentSize]int64,
 	failures selectionFailures,
+	reason *RoutingReasonBuilder,
 ) (*SelectionResult, error) {
 	IncFullRingFallback()
+	if reason == nil {
+		reason = NewRoutingReasonBuilder(req)
+	}
+	reason.Layer(RoutingLayerFresh)
 	prefixKey := []byte(req.SessionHash)
 	if len(prefixKey) == 0 {
 		prefixKey = []byte(req.RequestedModel)
@@ -321,6 +334,7 @@ func (p *PASRSelector) scheduleHRWFullRing(
 			continue
 		}
 		if _, excluded := req.ExcludedAccounts[accID]; excluded {
+			reason.GateFailure(accID, GateFailurePerRequestExclusion)
 			failures.other++
 			continue
 		}
@@ -329,11 +343,13 @@ func (p *PASRSelector) scheduleHRWFullRing(
 			continue
 		}
 		if snap.LoadRate >= p.loadCap {
+			reason.GateFailure(accID, GateFailureScoredBand)
 			failures.other++
 			continue
 		}
 		ok, why := p.allowAccount(ctx, snap, req)
 		if !ok {
+			reason.GateFailure(accID, why)
 			failures.add(why)
 			continue
 		}
@@ -343,10 +359,12 @@ func (p *PASRSelector) scheduleHRWFullRing(
 			}
 			continue
 		}
-		return p.acquireAndReturn(ctx, req, snap)
+		reason.Account(snap.ID)
+		return p.acquireAndReturn(ctx, req, snap, reason.JSON())
 	}
 	if firstDegraded != nil {
-		return p.acquireAndReturn(ctx, req, firstDegraded)
+		reason.Account(firstDegraded.ID)
+		return p.acquireAndReturn(ctx, req, firstDegraded, reason.JSON())
 	}
 	if failures.onlyHealth() {
 		return nil, ErrAllChannelsDegraded
@@ -415,7 +433,7 @@ func (p *PASRSelector) healthStatus(ctx context.Context, snap *AccountSnapshot, 
 // 还原到入函数前的状态; 返回 (*SelectionResult, nil) 时刚好写了 1 行 slot
 // acquisition + 1 行 claim acquisition (若 ClaimGate 注入)。
 func (p *PASRSelector) acquireAndReturn(
-	ctx context.Context, req SelectionRequest, snapshot *AccountSnapshot,
+	ctx context.Context, req SelectionRequest, snapshot *AccountSnapshot, routingReasonJSON []byte,
 ) (*SelectionResult, error) {
 	if snapshot == nil {
 		return nil, fmt.Errorf("%w: nil snapshot", ErrPASRPreMutationFail)
@@ -427,7 +445,7 @@ func (p *PASRSelector) acquireAndReturn(
 	// 没暴露 ReleaseFunc, caller 无法 release → slot 泄漏到 sweeper。
 	// shadow 实例 / dispatcher 已设 ClaimID=0 表示"不持 slot"路径。
 	if req.ClaimID == 0 {
-		return p.tokenOnlyResult(ctx, req, accountID)
+		return p.tokenOnlyResult(ctx, req, accountID, routingReasonJSON)
 	}
 
 	// HIGH-1 fix: 真 SlotManager 注入但 Claims=nil 是 misconfigure —
@@ -446,7 +464,7 @@ func (p *PASRSelector) acquireAndReturn(
 		acq, err := p.slots.Acquire(ctx, snapshot, req)
 		if err != nil {
 			if errors.Is(err, ErrSlotManagerUnavailable) {
-				return p.tokenOnlyResult(ctx, req, accountID)
+				return p.tokenOnlyResult(ctx, req, accountID, routingReasonJSON)
 			}
 			// MEDIUM-2 fix: 用 %w 而非 %v 包装根因, errors.Is 链保持 ErrNoSlotAvailable
 			// 与 ErrClaimRace 等 sentinel 可被上游 dispatcher 进一步判别。
@@ -478,7 +496,7 @@ func (p *PASRSelector) acquireAndReturn(
 		release = acq.Release
 	} else {
 		// 显式 nil: shadow 实例不持 slot 直接返 token (D2 段表只读路径配套)。
-		return p.tokenOnlyResult(ctx, req, accountID)
+		return p.tokenOnlyResult(ctx, req, accountID, routingReasonJSON)
 	}
 
 	// post-mutation: 写 claim — 失败必须 release slot 并标 PostMutationFail。
@@ -501,8 +519,9 @@ func (p *PASRSelector) acquireAndReturn(
 	}
 
 	return &SelectionResult{
-		AccountID:        accountID,
-		AcquisitionToken: token,
+		AccountID:         accountID,
+		AcquisitionToken:  token,
+		RoutingReasonJSON: routingReasonJSON,
 	}, nil
 }
 
@@ -517,7 +536,7 @@ func (p *PASRSelector) acquireAndReturn(
 // dispatcher actual / canary 模式下绝不应触发本函数 — dispatcher 必须保证
 // req.ClaimID != 0 + Slots/Claims 都注入。
 func (p *PASRSelector) tokenOnlyResult(
-	ctx context.Context, req SelectionRequest, accountID int64,
+	ctx context.Context, req SelectionRequest, accountID int64, routingReasonJSON []byte,
 ) (*SelectionResult, error) {
 	token := uuid.New()
 	if p.claims != nil && req.ClaimID != 0 {
@@ -526,8 +545,9 @@ func (p *PASRSelector) tokenOnlyResult(
 		}
 	}
 	return &SelectionResult{
-		AccountID:        accountID,
-		AcquisitionToken: token,
+		AccountID:         accountID,
+		AcquisitionToken:  token,
+		RoutingReasonJSON: routingReasonJSON,
 	}, nil
 }
 

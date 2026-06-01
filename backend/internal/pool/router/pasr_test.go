@@ -3,6 +3,7 @@ package router
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"testing"
@@ -105,6 +106,42 @@ func TestPASR_Select_HappyPath_PicksHRWTop(t *testing.T) {
 	}
 	if res.AcquisitionToken == uuid.Nil {
 		t.Error("AcquisitionToken 不应为 nil")
+	}
+}
+
+func TestPASRSelect_PopulatesRoutingReason(t *testing.T) {
+	claims := &fakeClaimGate{}
+	sel, _ := newPASRSlotRig(t, []int64{10, 20, 30, 40, 50}, newMemSlotManager(), claims)
+	req := SelectionRequest{
+		TenantID:       1,
+		ClaimID:        9001,
+		PoolGroupID:    77,
+		RequestedModel: "claude-3-5",
+		SessionHash:    "routing-reason-test",
+		AttemptSeq:     2,
+	}
+	res, err := sel.Select(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Select err=%v", err)
+	}
+	if len(res.RoutingReasonJSON) == 0 {
+		t.Fatal("RoutingReasonJSON must be populated on successful PASR selection")
+	}
+	if string(res.RoutingReasonJSON) == "{}" {
+		t.Fatal("RoutingReasonJSON must not be an empty object")
+	}
+
+	var reason map[string]any
+	if err := json.Unmarshal(res.RoutingReasonJSON, &reason); err != nil {
+		t.Fatalf("RoutingReasonJSON must be valid JSON object: %v; body=%s", err, res.RoutingReasonJSON)
+	}
+	if got, ok := reason["provider_account_id"].(float64); !ok || int64(got) != res.AccountID {
+		t.Fatalf("provider_account_id must match selected account: got=%v want=%d body=%s",
+			reason["provider_account_id"], res.AccountID, res.RoutingReasonJSON)
+	}
+	if got, ok := reason["billing_ledger_claim_id"].(float64); !ok || int64(got) != req.ClaimID {
+		t.Fatalf("billing_ledger_claim_id must match request claim: got=%v want=%d body=%s",
+			reason["billing_ledger_claim_id"], req.ClaimID, res.RoutingReasonJSON)
 	}
 }
 
@@ -234,7 +271,7 @@ func TestPASR_HRWFallback_DeprioritizesDegradedChannel(t *testing.T) {
 
 	res, err := sel.scheduleHRWFullRing(context.Background(), SelectionRequest{
 		TenantID: 1, RequestedModel: "m", SessionHash: prefix,
-	}, ring, snapshots, [PASRSegmentSize]int64{}, selectionFailures{})
+	}, ring, snapshots, [PASRSegmentSize]int64{}, selectionFailures{}, nil)
 	if err != nil {
 		t.Fatalf("scheduleHRWFullRing: %v", err)
 	}
