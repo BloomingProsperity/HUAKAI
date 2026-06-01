@@ -1190,8 +1190,7 @@ paths:
       summary: Rotate a refresh token and issue a new platform session token
       operationId: sessionRefresh
       x-huakai-spec-source: [docs/specs/session-management.md]
-      security:
-        - sessionBearerAuth: []
+      security: []
       requestBody:
         required: true
         content:

@@ -32,7 +32,15 @@ type sessionRevokeRequest struct {
 type sessionListRequest struct{}
 
 func MountSessionRoutes(r chi.Router, d SessionHandlerDeps) {
+	MountSessionRefreshRoute(r, d)
+	MountSessionProtectedRoutes(r, d)
+}
+
+func MountSessionRefreshRoute(r chi.Router, d SessionHandlerDeps) {
 	r.Post("/refresh", newSessionRefreshHandler(d))
+}
+
+func MountSessionProtectedRoutes(r chi.Router, d SessionHandlerDeps) {
 	r.Post("/revoke", newSessionRevokeHandler(d))
 	r.Post("/list", newSessionListHandler(d))
 }
@@ -47,28 +55,63 @@ func newSessionRefreshHandler(d SessionHandlerDeps) http.HandlerFunc {
 		if !decodeAdminPoolJSON(w, r, &req) {
 			return
 		}
-		ident, ok := sessionauth.SessionFromContext(r.Context())
-		if !ok {
-			writeJSONError(w, http.StatusUnauthorized, "session_token_required", "session bearer token is required")
-			return
+		ident, hasValidBearer := optionalSessionIdentity(r, d)
+		input := usersession.RefreshInput{
+			RefreshToken: req.RefreshToken,
+			IP:           d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(),
 		}
-		result, err := d.Sessions.Refresh(r.Context(), usersession.RefreshInput{
-			TenantID: ident.TenantID, UserID: ident.UserID, RefreshToken: req.RefreshToken,
-			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(),
-		})
+		if hasValidBearer {
+			input.TenantID = ident.TenantID
+			input.UserID = ident.UserID
+		}
+		result, err := d.Sessions.Refresh(r.Context(), input)
 		if err != nil {
+			tenantID, userID := int64(0), int64(0)
+			if hasValidBearer {
+				tenantID, userID = ident.TenantID, ident.UserID
+			}
 			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
-				EventType: "session_refresh_failed", TenantID: ident.TenantID, UserID: ident.UserID,
+				EventType: "session_refresh_failed", TenantID: tenantID, UserID: userID,
 				Outcome: "failure", ReasonClass: sessionReasonClass(err),
 			})
 			writeSessionError(w, err)
 			return
 		}
 		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
-			EventType: "session_refreshed", TenantID: ident.TenantID, UserID: ident.UserID, Outcome: "success",
+			EventType: "session_refreshed", TenantID: result.Family.TenantID, UserID: result.Family.UserID, Outcome: "success",
 		})
 		writeAuditJSON(w, http.StatusOK, map[string]any{"session": result})
 	}
+}
+
+func optionalSessionIdentity(r *http.Request, d SessionHandlerDeps) (sessionauth.SessionIdentity, bool) {
+	if r == nil || d.Sessions == nil {
+		return sessionauth.SessionIdentity{}, false
+	}
+	token, ok := sessionBearerFromHeader(r.Header.Get("Authorization"))
+	if !ok {
+		return sessionauth.SessionIdentity{}, false
+	}
+	validated, err := d.Sessions.Validate(r.Context(), token, d.ClientIPResolver.ClientIP(r), r.UserAgent())
+	if err != nil {
+		return sessionauth.SessionIdentity{}, false
+	}
+	return sessionauth.SessionIdentity{
+		TenantID:   validated.TenantID,
+		UserID:     validated.UserID,
+		FamilyID:   validated.FamilyID,
+		TokenID:    validated.TokenID,
+		Generation: validated.Generation,
+	}, true
+}
+
+func sessionBearerFromHeader(header string) (string, bool) {
+	const prefix = "Bearer "
+	if !strings.HasPrefix(header, prefix) {
+		return "", false
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(header, prefix))
+	return token, token != ""
 }
 
 func newSessionRevokeHandler(d SessionHandlerDeps) http.HandlerFunc {
