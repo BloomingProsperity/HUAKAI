@@ -329,12 +329,16 @@ func (s *PostgresStore) RedeemInvite(ctx context.Context, tenantID int64, rawCod
 	if s == nil || s.db == nil {
 		return InviteCode{}, ErrStoreNotConfigured
 	}
+	rawCode = strings.TrimSpace(rawCode)
+	if rawCode == "" {
+		return InviteCode{}, ErrInviteInvalid
+	}
 	codeHash := HashInviteCode(rawCode)
 	if _, inTx := s.db.(pgx.Tx); inTx {
 		if err := AcquireInviteAdvisoryLock(ctx, s.db, codeHash); err != nil {
 			return InviteCode{}, err
 		}
-		return redeemInviteWithDB(ctx, s.db, tenantID, codeHash, now)
+		return redeemInviteWithDB(ctx, s.db, tenantID, codeHash, rawCode, now)
 	}
 	if beginner, ok := s.db.(txBeginner); ok {
 		tx, err := beginner.Begin(ctx)
@@ -345,7 +349,7 @@ func (s *PostgresStore) RedeemInvite(ctx context.Context, tenantID int64, rawCod
 		if err := AcquireInviteAdvisoryLock(ctx, tx, codeHash); err != nil {
 			return InviteCode{}, err
 		}
-		invite, err := redeemInviteWithDB(ctx, tx, tenantID, codeHash, now)
+		invite, err := redeemInviteWithDB(ctx, tx, tenantID, codeHash, rawCode, now)
 		if err != nil {
 			return InviteCode{}, err
 		}
@@ -354,10 +358,38 @@ func (s *PostgresStore) RedeemInvite(ctx context.Context, tenantID int64, rawCod
 		}
 		return invite, nil
 	}
-	return redeemInviteWithDB(ctx, s.db, tenantID, codeHash, now)
+	return redeemInviteWithDB(ctx, s.db, tenantID, codeHash, rawCode, now)
 }
 
-func redeemInviteWithDB(ctx context.Context, database db.DBTX, tenantID int64, codeHash string, now time.Time) (InviteCode, error) {
+func redeemInviteWithDB(ctx context.Context, database db.DBTX, tenantID int64, codeHash, rawCode string, now time.Time) (InviteCode, error) {
+	invite, err := redeemAuthInviteWithDB(ctx, database, tenantID, codeHash, now)
+	if err == nil {
+		community, communityErr := redeemCommunityInvitationIfPresent(ctx, database, tenantID, rawCode, codeHash, now)
+		if communityErr != nil {
+			return InviteCode{}, communityErr
+		}
+		if community.CommunityInvitationID > 0 {
+			invite.CommunityInvitationID = community.CommunityInvitationID
+			if invite.CreatedBy == 0 {
+				invite.CreatedBy = community.CreatedBy
+			}
+		}
+		return invite, nil
+	}
+	if !errors.Is(err, ErrInviteInvalid) {
+		return InviteCode{}, err
+	}
+	exists, existsErr := authInviteExists(ctx, database, tenantID, codeHash)
+	if existsErr != nil {
+		return InviteCode{}, existsErr
+	}
+	if exists {
+		return InviteCode{}, ErrInviteInvalid
+	}
+	return redeemCommunityInvitationWithDB(ctx, database, tenantID, rawCode, now)
+}
+
+func redeemAuthInviteWithDB(ctx context.Context, database db.DBTX, tenantID int64, codeHash string, now time.Time) (InviteCode, error) {
 	const q = `
 UPDATE invite_codes
 SET used_count = used_count + 1,
@@ -376,6 +408,98 @@ RETURNING code, tenant_id, created_by, max_uses, used_count, valid_until, status
 	return invite, err
 }
 
+func authInviteExists(ctx context.Context, database db.DBTX, tenantID int64, codeHash string) (bool, error) {
+	var exists bool
+	if err := database.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM invite_codes WHERE tenant_id = $1 AND code = $2
+)`, tenantID, codeHash).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+func redeemCommunityInvitationIfPresent(ctx context.Context, database db.DBTX, tenantID int64, rawCode, codeHash string, now time.Time) (InviteCode, error) {
+	invite, err := redeemCommunityInvitationWithHash(ctx, database, tenantID, rawCode, codeHash, now)
+	if err == nil {
+		return invite, nil
+	}
+	if !errors.Is(err, ErrInviteInvalid) {
+		return InviteCode{}, err
+	}
+	code := normalizeCommunityInvitationCode(rawCode)
+	if code == "" {
+		return InviteCode{}, nil
+	}
+	var exists bool
+	if err := database.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM invitations WHERE tenant_id = $1 AND code = $2
+)`, tenantID, code).Scan(&exists); err != nil {
+		return InviteCode{}, err
+	}
+	if exists {
+		return InviteCode{}, ErrInviteInvalid
+	}
+	return InviteCode{}, nil
+}
+
+func redeemCommunityInvitationWithDB(ctx context.Context, database db.DBTX, tenantID int64, rawCode string, now time.Time) (InviteCode, error) {
+	communityCodeHash := HashInviteCode(normalizeCommunityInvitationCode(rawCode))
+	return redeemCommunityInvitationWithHash(ctx, database, tenantID, rawCode, communityCodeHash, now)
+}
+
+func redeemCommunityInvitationWithHash(ctx context.Context, database db.DBTX, tenantID int64, rawCode, codeHash string, now time.Time) (InviteCode, error) {
+	code := normalizeCommunityInvitationCode(rawCode)
+	if code == "" {
+		return InviteCode{}, ErrInviteInvalid
+	}
+	if _, inTx := database.(pgx.Tx); inTx && codeHash != "" && codeHash != HashInviteCode(strings.TrimSpace(rawCode)) {
+		if err := AcquireInviteAdvisoryLock(ctx, database, codeHash); err != nil {
+			return InviteCode{}, err
+		}
+	}
+	const q = `
+UPDATE invitations
+SET usage_count = usage_count + 1
+WHERE tenant_id = $1
+  AND code = $2
+  AND (expires_at IS NULL OR expires_at > $3)
+  AND usage_count < max_usage
+RETURNING id, tenant_id, inviter_user_id, max_usage, usage_count, expires_at, created_at`
+	invite, err := scanCommunityInvitationRedemption(database.QueryRow(ctx, q, tenantID, code, now.UTC()), codeHash, now)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return InviteCode{}, ErrInviteInvalid
+	}
+	if err != nil {
+		return InviteCode{}, err
+	}
+	if err := upsertInviteCodeFromCommunity(ctx, database, invite); err != nil {
+		return InviteCode{}, err
+	}
+	return invite, nil
+}
+
+func upsertInviteCodeFromCommunity(ctx context.Context, database db.DBTX, invite InviteCode) error {
+	if invite.Code == "" || invite.TenantID <= 0 || invite.CreatedBy <= 0 || invite.MaxUses <= 0 {
+		return ErrInviteInvalid
+	}
+	_, err := database.Exec(ctx, `
+INSERT INTO invite_codes (code, tenant_id, created_by, max_uses, used_count, valid_until, status, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT (code)
+DO UPDATE SET
+    tenant_id = EXCLUDED.tenant_id,
+    created_by = EXCLUDED.created_by,
+    max_uses = EXCLUDED.max_uses,
+    used_count = EXCLUDED.used_count,
+    valid_until = EXCLUDED.valid_until,
+    status = EXCLUDED.status,
+    updated_at = EXCLUDED.updated_at
+`, invite.Code, invite.TenantID, invite.CreatedBy, invite.MaxUses, invite.UsedCount, invite.ValidUntil, invite.Status, invite.CreatedAt, invite.UpdatedAt)
+	return err
+}
+
 func (s *PostgresStore) CreateInviteBinding(ctx context.Context, tenantID, userID int64, inviteCodeHash string, redeemedAt time.Time) error {
 	if s == nil || s.db == nil {
 		return ErrStoreNotConfigured
@@ -387,6 +511,24 @@ func (s *PostgresStore) CreateInviteBinding(ctx context.Context, tenantID, userI
 INSERT INTO invite_bindings (id, tenant_id, user_id, invite_code, redeemed_at)
 VALUES ($1::uuid, $2, $3, $4, $5)
 `, uuid.NewString(), tenantID, userID, strings.TrimSpace(inviteCodeHash), redeemedAt.UTC())
+	return err
+}
+
+func (s *PostgresStore) CreateCommunityReferral(ctx context.Context, tenantID, refereeUserID, referrerUserID, invitationID int64) error {
+	if s == nil || s.db == nil {
+		return ErrStoreNotConfigured
+	}
+	if invitationID <= 0 {
+		return nil
+	}
+	if tenantID <= 0 || refereeUserID <= 0 || referrerUserID <= 0 || refereeUserID == referrerUserID {
+		return ErrInvalidInput
+	}
+	_, err := s.db.Exec(ctx, `
+INSERT INTO referrals (tenant_id, referee_user_id, referrer_user_id, invitation_id, status)
+VALUES ($1, $2, $3, $4, 'pending')
+ON CONFLICT (referee_user_id) DO NOTHING
+`, tenantID, refereeUserID, referrerUserID, invitationID)
 	return err
 }
 
@@ -497,6 +639,33 @@ func scanInvite(row pgx.Row) (InviteCode, error) {
 		t := validUntil.Time
 		out.ValidUntil = &t
 	}
+	return out, nil
+}
+
+func scanCommunityInvitationRedemption(row pgx.Row, codeHash string, now time.Time) (InviteCode, error) {
+	var out InviteCode
+	var validUntil pgtype.Timestamptz
+	if err := row.Scan(
+		&out.CommunityInvitationID,
+		&out.TenantID,
+		&out.CreatedBy,
+		&out.MaxUses,
+		&out.UsedCount,
+		&validUntil,
+		&out.CreatedAt,
+	); err != nil {
+		return InviteCode{}, err
+	}
+	out.Code = codeHash
+	out.Status = "active"
+	if out.UsedCount >= out.MaxUses {
+		out.Status = "exhausted"
+	}
+	if validUntil.Valid {
+		t := validUntil.Time
+		out.ValidUntil = &t
+	}
+	out.UpdatedAt = now.UTC()
 	return out, nil
 }
 
@@ -612,4 +781,8 @@ func textValue(value pgtype.Text) string {
 		return value.String
 	}
 	return ""
+}
+
+func normalizeCommunityInvitationCode(raw string) string {
+	return strings.ToUpper(strings.TrimSpace(raw))
 }

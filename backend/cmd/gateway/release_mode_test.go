@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 )
 
 // TestValidateReleaseMode_RejectsMisspelledProduction guards S1-019:
@@ -87,4 +89,45 @@ func TestValidateDevAuthTokenFlag(t *testing.T) {
 			t.Fatalf("dev mode with the flag must still boot (CI/local ergonomics); got %v", err)
 		}
 	})
+}
+
+// TestLoadUserRegistrationModeFromEnv guards S2-012: production startup must not leave public
+// registration open just because no operator explicitly configured a registration policy. Dev/test keep
+// the historical open default, while production defaults to disabled until the operator opts into open
+// or invite-required registration.
+func TestLoadUserRegistrationModeFromEnv(t *testing.T) {
+	tests := []struct {
+		name        string
+		releaseMode string
+		regMode     string
+		want        userauth.RegistrationMode
+		wantErr     bool
+	}{
+		{name: "production_unset_fails_closed", releaseMode: "production", want: userauth.RegistrationModeDisabled},
+		{name: "dev_unset_stays_open", releaseMode: "", want: userauth.RegistrationModeOpen},
+		{name: "production_explicit_open", releaseMode: "production", regMode: "open", want: userauth.RegistrationModeOpen},
+		{name: "production_explicit_invite_required", releaseMode: "production", regMode: "invite_required", want: userauth.RegistrationModeInviteRequired},
+		{name: "admin_only_alias_disables_public_registration", releaseMode: "production", regMode: "admin_only", want: userauth.RegistrationModeDisabled},
+		{name: "misspelled_value_rejected", releaseMode: "production", regMode: "invite-required", wantErr: true},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HUAKAI_RELEASE_MODE", tt.releaseMode)
+			t.Setenv("HUAKAI_USER_REGISTRATION_MODE", tt.regMode)
+			got, err := loadUserRegistrationModeFromEnv()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("loadUserRegistrationModeFromEnv() = nil error, want rejection for %q", tt.regMode)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("loadUserRegistrationModeFromEnv() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("loadUserRegistrationModeFromEnv() = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }
