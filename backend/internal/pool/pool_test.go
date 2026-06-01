@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // =====================================================================
@@ -48,6 +50,51 @@ func TestAT_POOL_001_RoutingConfigHit(t *testing.T) {
 	if res.AccountID != 101 {
 		t.Fatalf("expected only-healthy routing-list winner 101; got %d", res.AccountID)
 	}
+}
+
+func TestAT_POOL_001_ModelRouteFallbackCannotEscapeAllowlist(t *testing.T) {
+	now := time.Now()
+	allowed := snap(101, 1, 100, 0.1, now.Add(-1*time.Hour))
+	allowed.WaitTimeoutMS = 250
+	allowed.MaxWaiting = 1
+	src := &stubAccountSource{accounts: []*AccountSnapshot{
+		allowed,
+		snap(999, 1, 1, 0.01, now.Add(-2*time.Hour)), // would win fresh if the allowlist is dropped
+	}}
+	policy := &stubPolicy{p: &RoutingPolicy{
+		ModelAccountIDs: map[string][]int64{"claude-3-5-sonnet": {101}},
+		TopKDefault:     1,
+	}}
+	sel := NewDefaultSelector(src,
+		WithRoutingPolicySource(policy),
+		WithSlotManager(slotUnavailableFor{101: {}}),
+		WithClaimGate(&captureClaimGate{}),
+	)
+
+	res, err := sel.Select(context.Background(), SelectionRequest{
+		TenantID: 1, ClaimID: 57, RequestedModel: "claude-3-5-sonnet",
+	})
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if res == nil || res.WaitPlan == nil {
+		t.Fatalf("model allowlist must constrain fresh fallback to wait on account 101; got result %+v", res)
+	}
+	if res.WaitPlan.AccountID != 101 {
+		t.Fatalf("fresh fallback escaped model allowlist: wait account=%d, want 101", res.WaitPlan.AccountID)
+	}
+	if res.AccountID != 0 {
+		t.Fatalf("must not acquire non-allowlisted fresh account; acquired %d", res.AccountID)
+	}
+}
+
+type slotUnavailableFor map[int64]struct{}
+
+func (s slotUnavailableFor) Acquire(_ context.Context, account *AccountSnapshot, _ SelectionRequest) (*AcquireResult, error) {
+	if _, blocked := s[account.ID]; blocked {
+		return nil, ErrNoSlotAvailable
+	}
+	return &AcquireResult{AcquisitionToken: uuid.New()}, nil
 }
 
 // AT-POOL-011: routing reason JSON schema-conformant on every selection result.
