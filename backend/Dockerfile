@@ -7,7 +7,8 @@
 #   HUAKAI_CREDENTIAL_KEY_B64    - 32-byte base64 加密 key
 #   HUAKAI_SESSION_SIGNING_KEY_HEX 或 _B64 - JWT session 签名 key
 #   HUAKAI_ADMIN_BOOTSTRAP_TOKEN - 首次启动 (admin_tokens 空时) bootstrap token
-#   可选: HUAKAI_ADDR (default :8080), HUAKAI_RELEASE_MODE, OAuth client_id/secret 等
+#   HUAKAI_RELEASE_MODE          - explicit: production / dev / development / test
+#   可选: HUAKAI_ADDR (default :8080), OAuth client_id/secret 等
 # 缺关键 env 启动 fail-loud。
 
 FROM golang:1.25-alpine AS builder

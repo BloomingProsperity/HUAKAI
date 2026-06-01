@@ -5,19 +5,16 @@ import (
 	"testing"
 )
 
-// TestValidateReleaseMode_RejectsMisspelledProduction guards S1-019:
-// a SET-but-unrecognized HUAKAI_RELEASE_MODE (e.g. an operator typo "prod"
-// meant as production) must FAIL CLOSED at startup, not silently degrade to dev.
-// Before the fix, releaseModeProduction() exact-matched "production", so "prod"
-// returned false → dev path with ephemeral keys / memory ledger / skipped gates,
-// and the service still booted with no error.
+// TestValidateReleaseMode_RequiresExplicitMode guards S1-019: the gateway
+// must not boot with an omitted or unrecognized HUAKAI_RELEASE_MODE because
+// that silently selects the dev path with ephemeral keys, memory ledger, and
+// skipped release gates.
 //
-// Mutation check: delete validateReleaseMode's `default` error branch (return nil
-// for everything) and the misspelled cases below go green → test fails. The empty
-// and recognized cases prove we did NOT break the established "空=dev" convention
-// that existing tests (wiring_test.go uses HUAKAI_RELEASE_MODE="") depend on.
-func TestValidateReleaseMode_RejectsMisspelledProduction(t *testing.T) {
-	allowed := []string{"", "dev", "development", "DEV", "test", "production", "Production", " production "}
+// Mutation check: allow the empty string again in validateReleaseMode and the
+// missing_env case below fails while explicit dev/test modes still prove local
+// and CI runs have a supported non-production path.
+func TestValidateReleaseMode_RequiresExplicitMode(t *testing.T) {
+	allowed := []string{"dev", "development", "DEV", "test", "production", "Production", " production "}
 	for _, v := range allowed {
 		v := v
 		t.Run("allow/"+v, func(t *testing.T) {
@@ -28,8 +25,7 @@ func TestValidateReleaseMode_RejectsMisspelledProduction(t *testing.T) {
 		})
 	}
 
-	// Realistic production-intent typos that previously silently became dev.
-	rejected := []string{"prod", "PROD", "produciton", "prd", "prod-us", "release", "staging", "1"}
+	rejected := []string{"", " ", "prod", "PROD", "produciton", "prd", "prod-us", "release", "staging", "1"}
 	for _, v := range rejected {
 		v := v
 		t.Run("reject/"+v, func(t *testing.T) {
@@ -38,7 +34,7 @@ func TestValidateReleaseMode_RejectsMisspelledProduction(t *testing.T) {
 			if err == nil {
 				t.Fatalf("validateReleaseMode(%q) = nil, want fail-closed error (silent dev degradation)", v)
 			}
-			if !strings.Contains(err.Error(), v) {
+			if strings.TrimSpace(v) != "" && !strings.Contains(err.Error(), v) {
 				t.Fatalf("error %q should echo the offending value %q", err.Error(), v)
 			}
 		})
@@ -81,7 +77,7 @@ func TestValidateDevAuthTokenFlag(t *testing.T) {
 		}
 	})
 	t.Run("dev+flag=ok", func(t *testing.T) {
-		t.Setenv("HUAKAI_RELEASE_MODE", "")
+		t.Setenv("HUAKAI_RELEASE_MODE", "dev")
 		t.Setenv("HUAKAI_DEV_AUTH_RETURN_TOKEN", "true")
 		if err := validateDevAuthTokenFlag(); err != nil {
 			t.Fatalf("dev mode with the flag must still boot (CI/local ergonomics); got %v", err)
