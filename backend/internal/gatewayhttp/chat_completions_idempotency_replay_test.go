@@ -3,12 +3,15 @@ package gatewayhttp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 )
 
 func TestReplayCaptureWriterPreservesFlushAndCapturesWrittenBytes(t *testing.T) {
@@ -101,6 +104,61 @@ func TestServeIdempotentReplayAddsNoCacheForEventStreamWithParameters(t *testing
 	if got := rec.Header().Get("Connection"); got != "" {
 		t.Fatalf("Connection=%q want empty", got)
 	}
+}
+
+func TestIdempotencyReplayRecordErrorsAreLogged(t *testing.T) {
+	const wantReplayRecordFailedCode = "idempotency_replay_record_failed"
+
+	t.Run("response replay write failure", func(t *testing.T) {
+		const marker = "S2_101_RESPONSE_REPLAY_RECORD_FAILURE"
+		logs := captureSlogForTest(t)
+		ex := &chatExecution{
+			ctx:               context.Background(),
+			requestID:         "req-s2-101-response",
+			idempotencyHeader: "idem-s2-101-response",
+			ident:             auth.Identity{TenantID: 7},
+			d: ChatHandlerDeps{
+				ReplayStore: failingRecordReplayStore{err: errors.New(marker)},
+			},
+		}
+
+		ex.recordIdempotencyReplayWithContentType(99, http.StatusOK, idempotencyReplayContentTypeJSON, []byte(`{"ok":true}`))
+
+		assertLogContains(t, logs, "req-s2-101-response", wantReplayRecordFailedCode, marker)
+	})
+
+	t.Run("cache hit replay write failure", func(t *testing.T) {
+		const marker = "S2_101_CACHE_REPLAY_RECORD_FAILURE"
+		logs := captureSlogForTest(t)
+
+		recordCacheHitReplay(context.Background(), ChatHandlerDeps{
+			ReplayStore: failingRecordReplayStore{err: errors.New(marker)},
+		}, l2CacheHitInput{
+			Entry:             l2cache.Entry{Body: []byte(`{"cached":true}`)},
+			Ident:             auth.Identity{TenantID: 8},
+			RequestID:         "req-s2-101-cache",
+			IdempotencyHeader: "idem-s2-101-cache",
+			ReserveResult:     &billing.ReserveResult{ClaimID: 100},
+		})
+
+		assertLogContains(t, logs, "req-s2-101-cache", wantReplayRecordFailedCode, marker)
+	})
+}
+
+type failingRecordReplayStore struct {
+	err error
+}
+
+func (s failingRecordReplayStore) Record(context.Context, int64, int64, int, string, []byte, time.Duration) error {
+	return s.err
+}
+
+func (s failingRecordReplayStore) Lookup(context.Context, int64, int64) (*billing.ReplayRecord, bool, error) {
+	return nil, false, nil
+}
+
+func (s failingRecordReplayStore) DeleteExpired(context.Context) (int64, error) {
+	return 0, nil
 }
 
 type flushCountingResponseWriter struct {

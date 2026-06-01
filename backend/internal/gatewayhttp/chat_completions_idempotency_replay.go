@@ -15,9 +15,10 @@ import (
 const maxIdempotencyReplayBodyBytes = 1 << 20 // 1 MiB
 
 const (
-	idempotencyReplayContentTypeJSON = "application/json"
-	idempotencyReplayContentTypeSSE  = "text/event-stream"
-	idempotencyReplayRecordTimeout   = 5 * time.Second
+	idempotencyReplayContentTypeJSON  = "application/json"
+	idempotencyReplayContentTypeSSE   = "text/event-stream"
+	idempotencyReplayRecordTimeout    = 5 * time.Second
+	idempotencyReplayRecordFailedCode = "idempotency_replay_record_failed"
 )
 
 // recordIdempotencyReplay best-effort 存一条幂等重放记录: 仅当请求带
@@ -48,7 +49,9 @@ func (ex *chatExecution) recordIdempotencyReplayWithContentType(claimID int64, s
 	// 超时避免异常存储写入拖住 handler。
 	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ex.ctx), idempotencyReplayRecordTimeout)
 	defer cancel()
-	_ = ex.d.ReplayStore.Record(recordCtx, ex.ident.TenantID, claimID, status, contentType, body, 0)
+	if err := ex.d.ReplayStore.Record(recordCtx, ex.ident.TenantID, claimID, status, contentType, body, 0); err != nil {
+		logInternalError(recordCtx, ex.requestID, idempotencyReplayRecordFailedCode, err)
+	}
 }
 
 // recordCacheHitReplay 是 serveL2CacheHit 用的 best-effort 重放记录写入 ——
@@ -60,8 +63,10 @@ func recordCacheHitReplay(ctx context.Context, d ChatHandlerDeps, in l2CacheHitI
 	if len(in.Entry.Body) > maxIdempotencyReplayBodyBytes {
 		return
 	}
-	_ = d.ReplayStore.Record(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID,
-		http.StatusOK, idempotencyReplayContentTypeJSON, in.Entry.Body, 0)
+	if err := d.ReplayStore.Record(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID,
+		http.StatusOK, idempotencyReplayContentTypeJSON, in.Entry.Body, 0); err != nil {
+		logInternalError(ctx, in.RequestID, idempotencyReplayRecordFailedCode, err)
+	}
 }
 
 // serveIdempotentReplay 处理同 Idempotency-Key 的重试 (ClaimGate 返
