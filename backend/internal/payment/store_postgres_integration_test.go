@@ -338,6 +338,9 @@ func seedPaymentUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suff
 	}
 	t.Cleanup(func() {
 		c := context.Background()
+		_, _ = pool.Exec(c, `DELETE FROM payment_audit_log WHERE tenant_id=$1`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1 AND recharge_order_id IS NOT NULL`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM user_balances WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM recharge_orders WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM users WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM tenants WHERE id=$1`, tenantID)
