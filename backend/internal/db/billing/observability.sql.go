@@ -131,7 +131,19 @@ WHERE ($1::bigint IS NULL OR ur.tenant_id = $1::bigint)
   AND ($6::bigint IS NULL OR ur.api_key_id = $6::bigint)
   AND ($7::bigint IS NULL OR ur.provider_account_id = $7::bigint)
   AND ($8::text IS NULL OR ur.requested_model = $8::text)
-  AND ($9::boolean = false OR ur.pending_reconciliation = true)
+  AND (
+    $9::boolean = false
+    OR (
+      ur.pending_reconciliation = true
+      AND NOT EXISTS (
+        SELECT 1
+        FROM usage_record_reconciliation_events re
+        WHERE re.tenant_id = ur.tenant_id
+          AND re.original_usage_record_id = ur.id
+          AND re.reconciliation_source = 'stream_no_usage_finalized'
+      )
+    )
+  )
 `
 
 type CountUsageRecordsParams struct {
@@ -448,7 +460,19 @@ WHERE ($1::bigint IS NULL OR ur.tenant_id = $1::bigint)
   AND ($6::bigint IS NULL OR ur.api_key_id = $6::bigint)
   AND ($7::bigint IS NULL OR ur.provider_account_id = $7::bigint)
   AND ($8::text IS NULL OR ur.requested_model = $8::text)
-  AND ($9::boolean = false OR ur.pending_reconciliation = true)
+  AND (
+    $9::boolean = false
+    OR (
+      ur.pending_reconciliation = true
+      AND NOT EXISTS (
+        SELECT 1
+        FROM usage_record_reconciliation_events re
+        WHERE re.tenant_id = ur.tenant_id
+          AND re.original_usage_record_id = ur.id
+          AND re.reconciliation_source = 'stream_no_usage_finalized'
+      )
+    )
+  )
   AND ($10::boolean = false OR (ur.settled_at, ur.id) < ($11::timestamptz, $12::bigint))
 ORDER BY ur.settled_at DESC, ur.id DESC
 LIMIT $13::integer
