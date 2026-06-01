@@ -1,6 +1,7 @@
 package proto
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -45,14 +46,33 @@ func (o *OpenAIResponsesClient) CanonicalToClientResponse(ctx context.Context, c
 	var losses []ProtocolLossEntry
 
 	output := make([]map[string]any, 0, len(resp.Content))
-	// 文本 block 合并到一个 message item（assistant role）下；tool_use 各自成
-	// function_call output item。
+	// 文本 block 合并到 message item；非文本 item 先 flush，避免把 reasoning
+	// continuation state 移到错误的 output 顺序。
 	var msgTexts []map[string]any
+	messageSeq := 0
+	flushMessage := func() {
+		if len(msgTexts) == 0 {
+			return
+		}
+		messageSeq++
+		msgID := "msg_" + resp.ID
+		if messageSeq > 1 {
+			msgID = fmt.Sprintf("msg_%s_%d", resp.ID, messageSeq)
+		}
+		output = append(output, map[string]any{
+			"type":    "message",
+			"id":      msgID,
+			"role":    "assistant",
+			"content": msgTexts,
+		})
+		msgTexts = nil
+	}
 	for i, b := range resp.Content {
 		switch b.Type {
 		case "text":
 			msgTexts = append(msgTexts, map[string]any{"type": "output_text", "text": b.Text})
 		case "tool_use":
+			flushMessage()
 			if b.CallID == "" || b.Name == "" {
 				return nil, nil, fmt.Errorf("proto: openai_responses content[%d] tool_use missing call_id or name", i)
 			}
@@ -70,9 +90,9 @@ func (o *OpenAIResponsesClient) CanonicalToClientResponse(ctx context.Context, c
 		case "tool_result":
 			loss, _ := NewClientLossEntry(ProtocolLossWarning, "tool_result_in_assistant_response_dropped", "tool_result_in_response", CapabilityToolResult, "")
 			losses = append(losses, loss)
-		case "reasoning":
-			loss, _ := NewClientLossEntry(ProtocolLossWarning, "reasoning_block_d10_pending", "d10_reasoning_pending", CapabilityThinking, "")
-			losses = append(losses, loss)
+		case "thinking", "reasoning", "redacted_thinking":
+			flushMessage()
+			output = append(output, openAIResponsesReasoningOutputItem(resp.ID, i, b))
 		case "image":
 			loss, _ := NewClientLossEntry(ProtocolLossWarning, "image_in_response_d10_pending", "d10_image_response_pending", CapabilityImage, "")
 			losses = append(losses, loss)
@@ -81,16 +101,7 @@ func (o *OpenAIResponsesClient) CanonicalToClientResponse(ctx context.Context, c
 			losses = append(losses, loss)
 		}
 	}
-	if len(msgTexts) > 0 {
-		// 把 message item 放在 output 数组前部，function_call 在后部（与 OpenAI 规范一致）。
-		msgItem := map[string]any{
-			"type":    "message",
-			"id":      "msg_" + resp.ID,
-			"role":    "assistant",
-			"content": msgTexts,
-		}
-		output = append([]map[string]any{msgItem}, output...)
-	}
+	flushMessage()
 
 	status, incomplete, statusLoss := canonicalToResponsesStatus(resp.StopReason)
 	losses = append(losses, statusLoss...)
@@ -121,4 +132,35 @@ func (o *OpenAIResponsesClient) CanonicalToClientResponse(ctx context.Context, c
 		return nil, nil, fmt.Errorf("proto: openai_responses marshal response: %w", err)
 	}
 	return body, losses, nil
+}
+
+func openAIResponsesReasoningOutputItem(responseID string, index int, b CanonicalContentBlock) map[string]any {
+	summary := make([]map[string]string, 0, 1)
+	if text := firstNonEmptyString(b.Thinking, b.ReasoningSummary, b.Text); text != "" {
+		summary = append(summary, map[string]string{"type": "summary_text", "text": text})
+	}
+	item := map[string]any{
+		"type":    "reasoning",
+		"id":      fmt.Sprintf("rs_%s_%d", responseID, index),
+		"status":  "completed",
+		"summary": summary,
+	}
+	if encrypted := openAIResponsesReasoningState(b); encrypted != "" {
+		item["encrypted_content"] = encrypted
+	}
+	return item
+}
+
+func openAIResponsesReasoningState(b CanonicalContentBlock) string {
+	if b.Signature != "" {
+		return b.Signature
+	}
+	if raw := bytes.TrimSpace(b.Data); len(raw) > 0 {
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil {
+			return s
+		}
+		return string(raw)
+	}
+	return ""
 }

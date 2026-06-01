@@ -142,7 +142,11 @@ func marshalAnthropicMessages(env *proto.HCSF) ([]byte, error) {
 				continue
 			}
 			for _, b := range thinkingBlocks(n.Thinking) {
-				appendMsg("assistant", withCache(map[string]any{"type": "thinking", "thinking": b.Text}, n.ID, cache, applied))
+				block := map[string]any{"type": "thinking", "thinking": firstNonEmpty(b.Thinking, b.Text, b.ReasoningSummary)}
+				if sig := firstNonEmpty(b.Signature, n.Thinking.Signature); sig != "" {
+					block["signature"] = sig
+				}
+				appendMsg("assistant", withCache(block, n.ID, cache, applied))
 			}
 		case proto.CapabilityCacheControl:
 			continue

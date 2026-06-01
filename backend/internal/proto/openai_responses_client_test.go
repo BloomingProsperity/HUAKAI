@@ -157,6 +157,63 @@ func TestOpenAIResponsesClient_StreamFlag(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponsesClient_RequestReasoningItemPreservesOpaqueState(t *testing.T) {
+	adapter := &OpenAIResponsesClient{}
+	body := []byte(`{
+		"model":"gpt-4o",
+		"input":[
+			{
+				"type":"reasoning",
+				"id":"rs_abc",
+				"status":"completed",
+				"encrypted_content":"sig_openai_state",
+				"summary":[{"type":"summary_text","text":"visible chain summary"}]
+			},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]
+	}`)
+	env, losses, err := adapter.RequestToCanonical(newTestOpenAIResponsesCtx(t), body)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	for _, l := range losses {
+		if strings.Contains(l.Code, "unknown_input_item") || strings.Contains(l.Reason, "unknown_input_item") ||
+			strings.Contains(l.Code, "reasoning_pending") || strings.Contains(l.Reason, "reasoning_pending") {
+			t.Fatalf("reasoning input item must be preserved without pending/unknown loss: %+v", losses)
+		}
+	}
+	if len(env.Messages) != 2 {
+		t.Fatalf("expected assistant reasoning + user message, got %+v", env.Messages)
+	}
+	if env.Messages[0].Role != "assistant" || len(env.Messages[0].Content) != 1 {
+		t.Fatalf("assistant reasoning message: %+v", env.Messages[0])
+	}
+	block := env.Messages[0].Content[0]
+	if block.Type != "thinking" || block.Thinking != "visible chain summary" || block.Text != "visible chain summary" || block.Signature != "sig_openai_state" {
+		t.Fatalf("reasoning block not preserved: %+v", block)
+	}
+	if env.Messages[1].Role != "user" || env.Messages[1].Content[0].Text != "continue" {
+		t.Fatalf("user continuation message: %+v", env.Messages[1])
+	}
+
+	var thinking *ThinkingNode
+	for i := range env.CapabilityGraph.Nodes {
+		if env.CapabilityGraph.Nodes[i].Kind == CapabilityThinking {
+			thinking = env.CapabilityGraph.Nodes[i].Thinking
+			break
+		}
+	}
+	if thinking == nil {
+		t.Fatal("expected CapabilityThinking node for reasoning item")
+	}
+	if thinking.Signature != "sig_openai_state" || thinking.Redaction != RedactionPublic {
+		t.Fatalf("thinking metadata not preserved: %+v", thinking)
+	}
+	if len(thinking.Blocks) != 1 || thinking.Blocks[0].Thinking != "visible chain summary" || thinking.Blocks[0].Signature != "sig_openai_state" {
+		t.Fatalf("thinking blocks not preserved: %+v", thinking.Blocks)
+	}
+}
+
 func TestOpenAIResponsesClient_ImageInputPending(t *testing.T) {
 	adapter := &OpenAIResponsesClient{}
 	body := []byte(`{
@@ -446,6 +503,61 @@ func TestOpenAIResponsesClient_D10_FunctionCallOutputItem(t *testing.T) {
 	fc := outputs[1].(map[string]any)
 	if fc["type"] != "function_call" || fc["call_id"] != "call_a" || fc["name"] != "get_x" {
 		t.Errorf("function_call: %+v", fc)
+	}
+}
+
+func TestOpenAIResponsesClient_D10_PreservesReasoningOutputItems(t *testing.T) {
+	adapter := &OpenAIResponsesClient{}
+	env := makeOpenAIResponsesBufferedEnv(
+		[]CanonicalContentBlock{
+			{Type: "thinking", Thinking: "visible chain summary", Signature: "sig_openai_state"},
+			{Type: "text", Text: "final answer"},
+		},
+		CanonicalStopEndTurn,
+	)
+	body, losses, err := adapter.CanonicalToClientResponse(context.Background(), env)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	for _, l := range losses {
+		if strings.Contains(l.Code, "reasoning_pending") || strings.Contains(l.Reason, "reasoning_pending") ||
+			strings.Contains(l.Code, "unknown_response_block_type") || strings.Contains(l.Reason, "unknown_response_block_type") {
+			t.Fatalf("reasoning output must be emitted without pending/unknown loss: %+v", losses)
+		}
+	}
+
+	var out map[string]any
+	_ = jsonUnmarshal(body, &out)
+	outputs := out["output"].([]any)
+	if len(outputs) != 2 {
+		t.Fatalf("expected reasoning item + message item, got %d: %+v", len(outputs), outputs)
+	}
+	reasoning := outputs[0].(map[string]any)
+	if reasoning["type"] != "reasoning" || reasoning["status"] != "completed" {
+		t.Fatalf("reasoning item metadata: %+v", reasoning)
+	}
+	if reasoning["id"] == "" {
+		t.Fatalf("reasoning item must have id: %+v", reasoning)
+	}
+	if reasoning["encrypted_content"] != "sig_openai_state" {
+		t.Fatalf("encrypted_content not preserved: %+v", reasoning)
+	}
+	summary := reasoning["summary"].([]any)
+	if len(summary) != 1 {
+		t.Fatalf("summary len: %d", len(summary))
+	}
+	firstSummary := summary[0].(map[string]any)
+	if firstSummary["type"] != "summary_text" || firstSummary["text"] != "visible chain summary" {
+		t.Fatalf("summary not preserved: %+v", firstSummary)
+	}
+	msg := outputs[1].(map[string]any)
+	if msg["type"] != "message" || msg["role"] != "assistant" {
+		t.Fatalf("message item: %+v", msg)
+	}
+	content := msg["content"].([]any)
+	first := content[0].(map[string]any)
+	if first["type"] != "output_text" || first["text"] != "final answer" {
+		t.Fatalf("output_text not preserved: %+v", first)
 	}
 }
 
