@@ -17,6 +17,8 @@ const (
 	leaseSweepBatchSize      = int32(100)
 )
 
+const orphanSlotReleaseReason = "slot_orphan_swept"
+
 type LeaseSweeper struct {
 	pool    *pgxpool.Pool
 	settler Settler
@@ -95,6 +97,15 @@ func (s *LeaseSweeper) sweepOnce(ctx context.Context) (int, error) {
 			errs = append(errs, fmt.Errorf("abort claim %d: %w", claim.ID, err))
 		}
 	}
+	reason := orphanSlotReleaseReason
+	slotSwept, err := q.SweepOrphanedSlotAcquisitions(ctx, dbbilling.SweepOrphanedSlotAcquisitionsParams{
+		BatchSize:     s.batch,
+		ReleaseReason: &reason,
+	})
+	if err != nil {
+		errs = append(errs, fmt.Errorf("sweep orphan slots: %w", err))
+	}
+	swept += int(slotSwept)
 	return swept, errors.Join(errs...)
 }
 
