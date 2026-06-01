@@ -116,10 +116,11 @@ func (g *DefaultClaimGate) Reserve(ctx context.Context, req ReserveRequest) (*Re
 				return nil, fmt.Errorf("billing: re-reserve aborted claim: %w", err)
 			}
 			if _, err := balancehold.Reserve(ctx, tx, balancehold.ReserveParams{
-				TenantID: req.TenantID,
-				UserID:   req.UserID,
-				ClaimID:  row.ID,
-				Cost:     req.PredictedCost,
+				TenantID:        req.TenantID,
+				UserID:          req.UserID,
+				ClaimID:         row.ID,
+				Cost:            req.PredictedCost,
+				EnforcementMode: balanceHoldEnforcementMode(req.BalanceEnforcementMode),
 			}); err != nil {
 				if errors.Is(err, balancehold.ErrInsufficientBalance) {
 					return nil, ErrInsufficientBalance
@@ -179,10 +180,11 @@ func (g *DefaultClaimGate) Reserve(ctx context.Context, req ReserveRequest) (*Re
 		return nil, fmt.Errorf("billing: insert claim: %w", err)
 	}
 	if _, err := balancehold.Reserve(ctx, tx, balancehold.ReserveParams{
-		TenantID: req.TenantID,
-		UserID:   req.UserID,
-		ClaimID:  inserted.ID,
-		Cost:     req.PredictedCost,
+		TenantID:        req.TenantID,
+		UserID:          req.UserID,
+		ClaimID:         inserted.ID,
+		Cost:            req.PredictedCost,
+		EnforcementMode: balanceHoldEnforcementMode(req.BalanceEnforcementMode),
 	}); err != nil {
 		if errors.Is(err, balancehold.ErrInsufficientBalance) {
 			return nil, ErrInsufficientBalance
@@ -237,6 +239,13 @@ func nullableInt64(v int64) *int64 {
 		return nil
 	}
 	return &v
+}
+
+func balanceHoldEnforcementMode(mode BalanceEnforcementMode) balancehold.EnforcementMode {
+	if mode == BalanceEnforcementModeOptIn {
+		return balancehold.EnforcementModeOptIn
+	}
+	return balancehold.EnforcementModeMandatory
 }
 
 // Compile-time interface check — DefaultClaimGate must satisfy ClaimGate.

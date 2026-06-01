@@ -6,8 +6,11 @@ import (
 	"strings"
 )
 
-// StreamInputOnlyInterruptedPolicyKey 是 Case C 当前唯一可配置的设置键。
+// StreamInputOnlyInterruptedPolicyKey 保存流式仅输入后中断场景的结算策略。
 const StreamInputOnlyInterruptedPolicyKey = "stream_input_only_interrupted_policy"
+
+// BalanceEnforcementModeKey 保存余额强制模式;缺省为 mandatory。
+const BalanceEnforcementModeKey = "balance_enforcement_mode"
 
 // StreamInputOnlyInterruptedPolicy 表示流式仅输入后中断场景的结算策略。
 type StreamInputOnlyInterruptedPolicy string
@@ -21,6 +24,13 @@ const (
 
 const streamInputOnlyInterruptedPolicyBillInputRoadmap = "bill_input"
 
+type BalanceEnforcementMode string
+
+const (
+	BalanceEnforcementModeMandatory BalanceEnforcementMode = "mandatory"
+	BalanceEnforcementModeOptIn     BalanceEnforcementMode = "opt_in"
+)
+
 var (
 	// ErrBillingSettingInvalid 表示设置键、租户或值不合法。
 	ErrBillingSettingInvalid = errors.New("billing: setting invalid")
@@ -31,8 +41,14 @@ var (
 // DefaultStreamInputOnlyInterruptedPolicy 是配置缺失或读取失败时的安全默认值。
 const DefaultStreamInputOnlyInterruptedPolicy = StreamInputOnlyInterruptedPolicyNoBill
 
+const DefaultBalanceEnforcementMode = BalanceEnforcementModeMandatory
+
 func (p StreamInputOnlyInterruptedPolicy) String() string {
 	return string(p)
+}
+
+func (m BalanceEnforcementMode) String() string {
+	return string(m)
 }
 
 // Valid 只接受阶段 1A+1B 已批准的持久值。
@@ -57,5 +73,17 @@ func ParseStreamInputOnlyInterruptedPolicy(value string) (StreamInputOnlyInterru
 		return "", fmt.Errorf("%w: %s", ErrBillingPolicyRoadmap, trimmed)
 	default:
 		return "", fmt.Errorf("%w: %s", ErrBillingSettingInvalid, StreamInputOnlyInterruptedPolicyKey)
+	}
+}
+
+func ParseBalanceEnforcementMode(value string) (BalanceEnforcementMode, error) {
+	trimmed := strings.TrimSpace(value)
+	switch BalanceEnforcementMode(trimmed) {
+	case BalanceEnforcementModeMandatory:
+		return BalanceEnforcementModeMandatory, nil
+	case BalanceEnforcementModeOptIn:
+		return BalanceEnforcementModeOptIn, nil
+	default:
+		return "", fmt.Errorf("%w: %s", ErrBillingSettingInvalid, BalanceEnforcementModeKey)
 	}
 }
