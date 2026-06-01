@@ -53,15 +53,16 @@ CI 配置文件本身不在本次 PR 改动范围内；如需调，对照本文�
 ## 已知"long-running / Phase 4.5"占位
 
 下列测试目前以 `t.Skip("...Phase 4.5...")` 标占位，直到对应 feature 着陆
-（中央 orchestrator、buffered translator、idempotent-stream-replay、
-tokenizer 等）才能 unstick：
+才能 unstick。S2-003 已于 2026-06-01 退休
+`internal/gateway/forwarder_test.go` 的 AT_GW_002 占位；stream failover、
+replay、settlement recovery、tenant isolation、inferred usage 现在由
+`internal/gateway` 和 `internal/gatewayhttp` 的可执行测试守住。
 
-- `internal/gateway/forwarder_test.go`：8 个 AT_GW_002_* 占位
 - `internal/proto/proto_test.go`：3 个 AT_PROTO_002_* buffered 占位
 - `internal/pool/pool_test.go`：`TestAT_POOL_019_Tx2Atomicity`（等 Slice 5）
 - `internal/auth/auth_test.go`：1 个 bounded-timeout 8s 占位
 - `internal/pool/pasr_selector_test.go`：5 个段内"无第二成员"分支跳过
 - `internal/auditledger/canonical_test.go`：跨语言可复现验证（缺 python3 时跳）
 
-这些 skip 是 future-feature 占位，**不是**集成测试入口能改变的。Phase 4.5
+这些 skip 是 future-feature 占位，**不是**集成测试入口能改变的。对应 feature
 landing 时同 commit 取消对应 `t.Skip`。
