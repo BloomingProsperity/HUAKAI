@@ -196,6 +196,10 @@
     {
       "id": "FU-S2-068",
       "note": "PASR tokenOnlyResult(:547)路径 RoutingReasonJSON 代码正确但无测试覆盖(mutation survive),补一条断言驱动 nil-slot 路径。S3 非阻断。"
+    },
+    {
+      "id": "INFRA-codex-401",
+      "note": "⚠️server-b(实现)+server-a(审核第二脑)两侧 codex/gpt token 401 revoked(MONEY-6 中途失效)。server-b worker-loop 活着但 codex 驱动→接任务跑不动(S2-070 挂起等待);只有 local-codex(独立auth)正常。需 Owner 在两台跑 codex login 恢复。审核侧已用人工+mutation+真PG探针补位,不阻塞钱闭环(全压 local-codex)。"
     }
   ],
   "log": [
@@ -282,6 +286,10 @@
     {
       "ts": "2026-06-01",
       "text": "server-b转第2流 S2-070(reserve阶段claim竞态错500应409);local-codex续 MONEY-5(admin手动充值)。MONEY-7(provider插件)待MONEY-5落(共享wiring.go)。"
+    },
+    {
+      "ts": "2026-06-01",
+      "text": "⚠️基础设施:server-b + server-a 两侧 codex token 401 revoked(MONEY-6 中途掉)。server-b 进程活着但无法实现新任务(它是 codex 驱动),S2-070 挂起等其恢复;local-codex 独立 auth 正常,继续扛 MONEY-5→MONEY-7 钱闭环。已请 Owner re-login codex。审核侧人工+mutation+真PG探针补位中。"
     }
   ]
 }
