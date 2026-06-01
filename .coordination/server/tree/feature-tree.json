@@ -30,11 +30,11 @@
         {
           "id": "MONEY-2",
           "title": "返回余额读 user_balances 真值(非 SUM)",
-          "status": "in_progress server-b",
+          "status": "done✓ merged bb5d11b",
           "worker": "server-b",
           "risk": "money",
           "depends": "MONEY-1",
-          "note": "余额返回改读user_balances真实可花,弃SUM(voucher_redemption)。依赖MONEY-1已落。"
+          "note": "redeem/replay 余额改读权威 user_balances(花钱即下降);旧事件重放重建整块删除。跨脑审PASS(round-half-up无金额边界丢造、mutation双红、23 integration_pg绿)。"
         },
         {
           "id": "MONEY-3",
@@ -46,10 +46,10 @@
         {
           "id": "MONEY-4",
           "title": "支付回调验签+防篡改+幂等 PAID+履约入账",
-          "status": "in_progress local-codex",
+          "status": "in_progress local-codex(已解锁)",
           "risk": "money",
           "depends": "MONEY-1,3",
-          "note": "支付回调验签+幂等PAID+履约入账。依赖MONEY-3+MONEY-1已落。high-risk落地走park+owner。"
+          "note": "阻塞点随 MONEY-2 删重建而消失:无需碰 voucher,balance_recharged 写权威 user_balances 即自动反映。支付包 WIP rebase 到 bb5d11b 续做。"
         },
         {
           "id": "MONEY-5",
@@ -79,7 +79,7 @@
       "name": "审计缺陷修复战役(Track-A bug)",
       "status": "in-progress",
       "priority": 2,
-      "summary": "195 审计→182 真→Track-A 139;已落 33,open ~105。按热点文件耦合压波次,每条判别性测试(过 mutation)+ codex#8 + 跨脑审,落 fix/hermes-phase-1-e33d940。",
+      "summary": "195 审计→182 真→Track-A 139;已落 35,open ~105(已核 6 条 W4/W7/W8 真码确认开放、判别 DoD 就绪入队待派)。按热点文件耦合压波次,每条判别性测试(过 mutation)+ codex#8 + 跨脑审,落 fix/hermes-phase-1-e33d940。",
       "waves": [
         {
           "wave": "W1-W2 auth/credential",
@@ -95,8 +95,8 @@
         {
           "wave": "W4 routing/pool",
           "open": "~16",
-          "status": "open",
-          "note": "pool SQL/router 串行"
+          "status": "in-progress",
+          "note": "server-b 在修 S2-052(admin 状态过滤旧枚举);待派 S2-068(PASR routing-reason)"
         },
         {
           "wave": "W5 streaming/DLQ",
@@ -114,12 +114,13 @@
           "wave": "W7 provider/protocol",
           "open": "少",
           "status": "in-progress",
-          "note": "S1-022/S2-006/S2-082 已审"
+          "note": "S1-022/S2-006/S2-082 已审 | 已核开放入队:S2-021(Bedrock错误payload泄露内部日志)"
         },
         {
           "wave": "W8 ops/security 硬化",
           "open": "~10",
-          "status": "open"
+          "status": "in-progress",
+          "note": "S2-095(DLQ ClaimByID 抢活跃lease)已落 2192117(S2-161兄弟漏点已补);待派 S2-070/S2-101"
         }
       ]
     },
@@ -234,6 +235,26 @@
     {
       "ts": "2026-05-31",
       "text": "并行推进:MONEY-2(余额读真实可花)→server-b、MONEY-4(支付回调验签+幂等履约)→local-codex 同时开工(文件不冲突)。"
+    },
+    {
+      "ts": "2026-05-31",
+      "text": "第2流(审计bug)备料:worktree隔离agent对照MASTER表+真码重核,W1-W2抽样5条均已落地,W4/W7/W8 找出6条真开放(判别DoD+mutation就绪)入队待派——含S2-095(DLQ手动replay可抢未过期lease,正是刚落S2-161 fence的兄弟漏点)。两台忙完money切片即按文件不冲突派下去。"
+    },
+    {
+      "ts": "2026-05-31",
+      "text": "MONEY-4 被 worker 正确 block:codex 审出真 S1——新 balance_recharged 事件须并入 voucher 幂等重放的余额重建逻辑(store_postgres.go),但该文件正被 MONEY-2 占用编辑。PM 决策:money-path 同文件串行(MONEY-2 先落→MONEY-4 rebase 把重建分支并入本切片);支付包 WIP 保留。local-codex 不空转——改派 S2-095(它刚落的 S2-161 的兄弟漏点:ClaimByID 缺 lease 守卫)。"
+    },
+    {
+      "ts": "2026-06-01",
+      "text": "S2-095(DLQ ClaimByID 抢活跃lease,S2-161兄弟漏点)跨脑审PASS→合并 2192117。DLQ 现读写两端租约全闭合。"
+    },
+    {
+      "ts": "2026-06-01",
+      "text": "MONEY-2(redeem/replay 余额改读权威 user_balances、花钱即下降;旧事件重放重建整块删除)跨脑审PASS→owner-token 合并 bb5d11b。连带效果:MONEY-4 的阻塞 S1 自动消失。"
+    },
+    {
+      "ts": "2026-06-01",
+      "text": "MONEY-4 已解锁重派 local-codex(无需碰 voucher,balance_recharged 写权威钱包即反映);server-b 转第2流 S2-052(routing 状态过滤旧枚举)。两台满载。"
     }
   ]
 }
