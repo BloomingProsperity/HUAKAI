@@ -268,12 +268,14 @@ func readRawBufferedUpstreamBody(r io.Reader) ([]byte, error) {
 }
 
 func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.RequestMetaSeed, seedCtx context.Context, startedAt time.Time) (*proto.HCSF, *classifiedAttemptFailure, bool) {
+	transportSelection := transportSelectionForDispatch(ex.accInfo, ex.resolved.ProtocolFamily)
 	dispatchRes, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
 		ProtocolFamily:  ex.resolved.ProtocolFamily,
 		UpstreamModelID: ex.upstreamModelID,
 		InboundBody:     ex.body,
-		Account:         ex.accInfo,
+		Account:         transportSelection.account,
 		Credential:      ex.cred,
+		TransportMode:   transportSelection.mode,
 	})
 	if err != nil {
 		classification, _ := gateway.Classify(0, nil, []byte(err.Error()), ex.accInfo.Platform)
