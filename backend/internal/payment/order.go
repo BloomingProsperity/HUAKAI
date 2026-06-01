@@ -25,14 +25,34 @@ const (
 	StatusCancelled Status = "CANCELLED"
 )
 
+const (
+	defaultPaymentProvider = "mock"
+
+	AuditOutcomeAccepted = "ACCEPTED"
+	AuditOutcomeRejected = "REJECTED"
+	AuditOutcomeReplay   = "REPLAY_NOOP"
+
+	AuditReasonCompleted        = "PAYMENT_COMPLETED"
+	AuditReasonReplay           = "PAYMENT_REPLAY"
+	AuditReasonAmountMismatch   = "PAYMENT_AMOUNT_MISMATCH"
+	AuditReasonProviderMismatch = "PAYMENT_PROVIDER_MISMATCH"
+	AuditReasonOrderNotFound    = "PAYMENT_ORDER_NOT_FOUND"
+	AuditReasonStateMismatch    = "PAYMENT_ORDER_STATE_MISMATCH"
+)
+
 var (
-	ErrInvalidInput          = errors.New("payment: invalid input")
-	ErrStoreNotConfigured    = errors.New("payment: store not configured")
-	ErrUserNotFound          = errors.New("payment: user not found")
-	ErrAccountInactive       = errors.New("payment: account inactive")
-	ErrPendingLimit          = errors.New("payment: pending order limit reached")
-	ErrDailyAmountLimit      = errors.New("payment: daily amount limit reached")
-	ErrExternalTradeConflict = errors.New("payment: external trade conflict")
+	ErrInvalidInput            = errors.New("payment: invalid input")
+	ErrStoreNotConfigured      = errors.New("payment: store not configured")
+	ErrUserNotFound            = errors.New("payment: user not found")
+	ErrAccountInactive         = errors.New("payment: account inactive")
+	ErrPendingLimit            = errors.New("payment: pending order limit reached")
+	ErrDailyAmountLimit        = errors.New("payment: daily amount limit reached")
+	ErrExternalTradeConflict   = errors.New("payment: external trade conflict")
+	ErrInvalidSignature        = errors.New("payment: invalid callback signature")
+	ErrPaymentAmountMismatch   = errors.New("payment: callback amount mismatch")
+	ErrPaymentProviderMismatch = errors.New("payment: callback provider mismatch")
+	ErrOrderNotFound           = errors.New("payment: order not found")
+	ErrOrderStateConflict      = errors.New("payment: order state conflict")
 )
 
 var moneyNumericUpperBound = decimal.NewFromInt(1_000_000_000_000)
@@ -83,6 +103,7 @@ type Order struct {
 	Status          Status
 	CreditedAmount  decimal.Decimal
 	CurrencyCode    string
+	Provider        string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
@@ -91,6 +112,7 @@ type OpenInput struct {
 	TenantID          int64
 	UserID            int64
 	ExternalTradeNo   string
+	Provider          string
 	Amount            decimal.Decimal
 	CurrencyCode      string
 	MaxPendingPerUser int
@@ -142,6 +164,10 @@ func normalizeOpenInput(input OpenInput) OpenInput {
 	if input.CurrencyCode == "" {
 		input.CurrencyCode = "USD"
 	}
+	input.Provider = normalizeProvider(input.Provider)
+	if input.Provider == "" {
+		input.Provider = defaultPaymentProvider
+	}
 	input.ExternalTradeNo = strings.TrimSpace(input.ExternalTradeNo)
 	if input.Now.IsZero() {
 		input.Now = time.Now().UTC()
@@ -162,6 +188,9 @@ func validateOpenInput(input OpenInput, requireExternal bool) error {
 		return ErrInvalidInput
 	}
 	if input.CurrencyCode != "USD" {
+		return ErrInvalidInput
+	}
+	if input.Provider == "" {
 		return ErrInvalidInput
 	}
 	if input.DailyAmountLimit.IsNegative() {
