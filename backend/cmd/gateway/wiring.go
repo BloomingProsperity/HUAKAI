@@ -49,6 +49,7 @@ import (
 	provideropenaicodex "github.com/BloomingProsperity/HUAKAI/internal/provider/openai_codex"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 	providerwindsurf "github.com/BloomingProsperity/HUAKAI/internal/provider/windsurf"
+	ratelimit "github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
@@ -72,6 +73,7 @@ type deps struct {
 	billingPolicyResolver    *billing.PolicyResolver
 	selector                 pool.Selector
 	channelHealth            *channelhealth.Service
+	modelCooldowns           *ratelimit.ModelCooldownService
 	claimGate                billing.ClaimGate
 	settler                  billing.Settler
 	replayStore              billing.ReplayStore
@@ -498,6 +500,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		billingPolicyResolver: billing.NewPolicyResolver(billing.NewPolicyStore(pgPool), 0),
 		selector:              selector,
 		channelHealth:         channelHealthService,
+		modelCooldowns:        ratelimit.NewModelCooldownService(billingQueries),
 		claimGate:             billing.NewClaimGate(pgPool),
 		settler:               settler,
 		replayStore:           replayStore,

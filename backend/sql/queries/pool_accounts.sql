@@ -134,6 +134,7 @@ SELECT
     pa.last_dispatch_at,
     pa.health_state,
     pa.health_state_until,
+    pa.model_rate_limits,
     pa.model_allow_list,
     pa.capability_flags,
     pa.cap_queue_sticky,
@@ -168,6 +169,51 @@ WHERE pa.tenant_id = sqlc.arg(tenant_id)
   -- + 'revoked' 直接跳过, 防 selector 选到已死账号 → 401 后再 cooldown 浪费一轮。
   AND pa.credential_state IN ('valid', 'refreshing_with_grace')
 ORDER BY pa.priority, pa.last_dispatch_at NULLS FIRST;
+
+-- name: SetProviderAccountModelRateLimit :exec
+WITH updated AS (
+    UPDATE provider_accounts pa
+    SET
+        model_rate_limits = jsonb_set(
+            COALESCE(pa.model_rate_limits, '{}'::jsonb),
+            ARRAY[sqlc.arg(model_key)::text],
+            jsonb_build_object(
+                'rate_limit_reset_at', to_jsonb(sqlc.arg(reset_at)::timestamptz),
+                'reason', sqlc.arg(reason)::text
+            ),
+            true
+        ),
+        updated_at = NOW(),
+        last_modified_by_actor = sqlc.arg(actor_id)::text
+    WHERE pa.tenant_id = sqlc.arg(tenant_id)
+      AND pa.id = sqlc.arg(provider_account_id)
+      AND pa.deleted_at IS NULL
+    RETURNING pa.tenant_id, pa.id
+)
+INSERT INTO rate_limit_audit_events (
+    tenant_id,
+    provider_account_id,
+    event_type,
+    rate_limit_reason,
+    upstream_status_code,
+    upstream_request_id,
+    payload,
+    actor_id
+)
+SELECT
+    tenant_id,
+    id,
+    'model_rate_limit_set',
+    sqlc.arg(reason)::text,
+    sqlc.arg(upstream_status_code)::integer,
+    NULLIF(sqlc.arg(upstream_request_id)::text, ''),
+    jsonb_build_object(
+        'model_key', sqlc.arg(model_key)::text,
+        'reset_at', sqlc.arg(reset_at)::timestamptz,
+        'source_layer', sqlc.arg(source_layer)::text
+    ),
+    sqlc.arg(actor_id)::text
+FROM updated;
 
 -- name: GetAccountForRevalidation :one
 SELECT

@@ -1,6 +1,7 @@
 package gatewayhttp
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 )
 
 // TestWriteJSONErrorProducesValidJSONForControlChars guards S2-148: the gateway error writer must
@@ -71,6 +73,39 @@ func TestSignalFromClassification_StillEmits403Forbidden(t *testing.T) {
 	if got := signalFromClassification(http.StatusForbidden, classification); got != channelhealth.SignalForbidden {
 		t.Fatalf("signalFromClassification(403)=%q want %q", got, channelhealth.SignalForbidden)
 	}
+}
+
+func TestRecordModelCooldownOnUpstream404ScopesAccountAndModel(t *testing.T) {
+	t.Parallel()
+
+	rec := &recordingModelRateLimiter{}
+	recordModelCooldownOnUpstream404(context.Background(), ChatHandlerDeps{ModelCooldowns: rec}, 7, 101, "upstream-gpt-4o", http.StatusNotFound, "req-404")
+	if rec.calls != 1 {
+		t.Fatalf("calls=%d, want 1", rec.calls)
+	}
+	if rec.input.TenantID != 7 || rec.input.ProviderAccountID != 101 || rec.input.ModelKey != "upstream-gpt-4o" {
+		t.Fatalf("input scope=(tenant=%d account=%d model=%q), want tenant 7 account 101 model upstream-gpt-4o",
+			rec.input.TenantID, rec.input.ProviderAccountID, rec.input.ModelKey)
+	}
+	if rec.input.StatusCode != http.StatusNotFound || rec.input.UpstreamRequestID != "req-404" {
+		t.Fatalf("upstream evidence=(%d,%q), want 404 req-404", rec.input.StatusCode, rec.input.UpstreamRequestID)
+	}
+
+	recordModelCooldownOnUpstream404(context.Background(), ChatHandlerDeps{ModelCooldowns: rec}, 7, 101, "upstream-gpt-4o", http.StatusBadRequest, "req-400")
+	if rec.calls != 1 {
+		t.Fatalf("non-404 status recorded model cooldown; calls=%d want 1", rec.calls)
+	}
+}
+
+type recordingModelRateLimiter struct {
+	calls int
+	input rate.ModelCooldownInput
+}
+
+func (r *recordingModelRateLimiter) RecordModelRateLimit(_ context.Context, in rate.ModelCooldownInput) error {
+	r.calls++
+	r.input = in
+	return nil
 }
 
 func TestChatCompletionsPublicErrorsDoNotUseRawErrorStrings(t *testing.T) {
