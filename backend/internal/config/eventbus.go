@@ -14,9 +14,13 @@ var (
 	ErrInvalidEventBusDuration = errors.New("config: invalid eventbus duration seconds")
 	ErrInvalidEventBusWorkers  = errors.New("config: invalid eventbus worker count")
 	ErrInvalidEventBusBuffer   = errors.New("config: invalid eventbus buffer size")
+	ErrUnsafeEventBusConfig    = errors.New("config: unsafe eventbus configuration")
 )
 
-const EnvTrustLedgerAllowMissingMoneyRef = "HUAKAI_TRUST_LEDGER_ALLOW_MISSING_MONEY_REF"
+const (
+	EnvReleaseMode                     = "HUAKAI_RELEASE_MODE"
+	EnvTrustLedgerAllowMissingMoneyRef = "HUAKAI_TRUST_LEDGER_ALLOW_MISSING_MONEY_REF"
+)
 
 type EventBusConfig struct {
 	Enabled              bool
@@ -57,6 +61,9 @@ func LoadEventBus() (*EventBusConfig, error) {
 		}
 		cfg.AllowMissingMoneyRef = allowMissing
 	}
+	if cfg.AllowMissingMoneyRef && eventBusProductionReleaseMode() {
+		return nil, fmt.Errorf("%w: %s=true is forbidden when %s=production", ErrUnsafeEventBusConfig, EnvTrustLedgerAllowMissingMoneyRef, EnvReleaseMode)
+	}
 	var err error
 	if cfg.HandlerTimeout, err = envEventBusDurationSeconds("HUAKAI_EVENTBUS_HANDLER_TIMEOUT_SECONDS", cfg.HandlerTimeout); err != nil {
 		return nil, err
@@ -83,6 +90,10 @@ func LoadEventBus() (*EventBusConfig, error) {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+func eventBusProductionReleaseMode() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv(EnvReleaseMode)), "production")
 }
 
 func parseEventBusBool(name, raw string) (bool, error) {

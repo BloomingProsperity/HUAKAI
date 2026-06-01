@@ -20,7 +20,7 @@ Release gates do not authorize over-blocking. After the Owner starts a phase or 
 | Reference Tracking Continuous Gate | Per [24_REFERENCE_TRACKING_POLICY.md](24_REFERENCE_TRACKING_POLICY.md), the tracking ledger under `docs/tracking/` is current within its cadence windows (per-release within 7 days; monthly sweep last business day; quarterly strategic at quarter end). Every HUAKAI release requires the tracking ledger to be current. **Continuous, never closes.** | Claude PM |
 | Security Gate | Secrets, permissions, audit logs, and abuse controls are reviewed. | Claude |
 | Billing Gate | Usage, quota, and billing behavior is testable and reconciled. | Codex |
-| Trust Ledger Escape Flag Gate | Production deployments MUST verify `HUAKAI_TRUST_LEDGER_ALLOW_MISSING_MONEY_REF=false` or unset. Any true/on/1 value blocks release until Owner explicitly accepts the mandatory reconciliation risk. | Codex |
+| Trust Ledger Escape Flag Gate | Production startup fails if `HUAKAI_TRUST_LEDGER_ALLOW_MISSING_MONEY_REF=true/on/1`. Release checks still MUST verify the flag is false or unset before production deployment. | Codex |
 | UI Ops Gate | Admin workflows are complete and operable. | Gemini |
 | Release Decision Gate | Open mandatory roadmap items are explicitly accepted or blocked. | Claude |
 

@@ -337,8 +337,8 @@ func TestChatCompletions_DirectSettleFallbackAllowsDLQRef(t *testing.T) {
 	}
 }
 
-func TestChatCompletions_DirectSettleEscapeFlagBypassesAndLogs(t *testing.T) {
-	// Mutation: 忽略 AllowMissingMoneyRef 时，本用例会返回 500；删除 bypass ERROR 日志时，日志断言会失败。
+func TestChatCompletions_DirectSettleProductionEscapeFlagStillRejectsMissingAuditRef(t *testing.T) {
+	// Mutation: 恢复 production AllowMissingMoneyRef 旁路时，本用例会返回 200 且 settle calls 变成 1。
 	enableHCSFDispatchForTest(t)
 	logs := captureSlogForTest(t)
 	settler := &recordingSettler{}
@@ -349,13 +349,19 @@ func TestChatCompletions_DirectSettleEscapeFlagBypassesAndLogs(t *testing.T) {
 	d.AuditRefPolicy = productionAuditRefPolicyForGatewayTest(true)
 
 	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d want 500 body=%s", rec.Code, rec.Body.String())
 	}
-	if len(settler.calls) != 1 {
-		t.Fatalf("settle calls=%d want 1", len(settler.calls))
+	if !strings.Contains(rec.Body.String(), clienterr.CodeAuditRefMissing) {
+		t.Fatalf("body=%s want %s", rec.Body.String(), clienterr.CodeAuditRefMissing)
 	}
-	assertLogContains(t, logs, clienterr.CodeAuditRefMissing, "direct_settle", "escape_flag_active", "missing_ref_details")
+	if len(settler.calls) != 0 {
+		t.Fatalf("settle calls=%d want 0", len(settler.calls))
+	}
+	if len(settler.aborts) != 1 || settler.aborts[0].reason != clienterr.CodeAuditRefMissing {
+		t.Fatalf("aborts=%+v want one %s abort", settler.aborts, clienterr.CodeAuditRefMissing)
+	}
+	assertLogContains(t, logs, clienterr.CodeAuditRefMissing, "direct_settle", "missing_ref_details")
 }
 
 type failingAppendLedger struct {
