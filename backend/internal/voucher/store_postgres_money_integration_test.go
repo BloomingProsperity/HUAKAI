@@ -103,10 +103,158 @@ func TestRedeemCreditsUserBalanceForReserveCaptureAndIdempotency(t *testing.T) {
 	if !afterSpendReplay.Idempotent {
 		t.Fatalf("after-spend replay Idempotent=false, want true")
 	}
-	if afterSpendReplay.BalanceCents != first.BalanceCents {
-		t.Fatalf("after-spend replay balance cents=%d want prior result %d", afterSpendReplay.BalanceCents, first.BalanceCents)
+	if afterSpendReplay.BalanceCents != 0 {
+		t.Fatalf("after-spend replay balance cents=%d want current wallet 0", afterSpendReplay.BalanceCents)
 	}
 	assertVoucherUserBalance(t, ctx, pool, tenantID, userID, "after spent replay", decimal.Zero, decimal.Zero)
+}
+
+func TestRedeemReplayReturnsCurrentWalletAfterPartialCapture(t *testing.T) {
+	// Mutation check: make the idempotent redeem result read voucher_redemption
+	// totals again. After a $30 capture, that broken path returns the original
+	// 10000c voucher total instead of the current 7000c spendable balance.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool := openVoucherPool(t, ctx)
+	tenantID, userID, apiKeyID := seedVoucherMoneyUser(t, ctx, pool)
+	cleanupVoucherMoneyTenant(t, pool, tenantID)
+
+	store := NewPostgresStore(pool)
+	svc := NewService(store)
+	now := time.Now().UTC()
+	code := fmt.Sprintf("money-current-wallet-%d", tenantID)
+	seedVoucherMoneyVoucher(t, ctx, pool, tenantID, code, now)
+
+	first, err := svc.Redeem(ctx, RedeemInput{
+		TenantID:       tenantID,
+		UserID:         userID,
+		Code:           code,
+		IdempotencyKey: "money-current-wallet",
+		SourceIP:       "203.0.113.18",
+		RequestID:      "req-money-current-wallet",
+		Now:            now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("redeem: %v", err)
+	}
+	if first.BalanceCents != 10000 {
+		t.Fatalf("redeem balance cents=%d want 10000", first.BalanceCents)
+	}
+
+	claim := seedVoucherMoneyClaim(t, ctx, pool, tenantID, userID, apiKeyID)
+	if _, err := reserveVoucherMoney(ctx, pool, tenantID, userID, claim.id, decimal.NewFromInt(30)); err != nil {
+		t.Fatalf("reserve redeemed balance: %v", err)
+	}
+	if _, err := billing.NewSettler(pool).Settle(ctx, settleVoucherMoneyRequest(claim, decimal.NewFromInt(30))); err != nil {
+		t.Fatalf("settle redeemed balance: %v", err)
+	}
+	assertVoucherUserBalance(t, ctx, pool, tenantID, userID, "after partial capture", decimal.NewFromInt(70), decimal.Zero)
+
+	replay, err := svc.Redeem(ctx, RedeemInput{
+		TenantID:       tenantID,
+		UserID:         userID,
+		Code:           code,
+		IdempotencyKey: "money-current-wallet",
+		SourceIP:       "203.0.113.18",
+		RequestID:      "req-money-current-wallet-replay",
+		Now:            now.Add(2 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("redeem replay after partial capture: %v", err)
+	}
+	if !replay.Idempotent {
+		t.Fatalf("replay Idempotent=false, want true")
+	}
+	if replay.BalanceCents != 7000 {
+		t.Fatalf("replay balance cents=%d want current wallet 7000", replay.BalanceCents)
+	}
+}
+
+func TestRedeemReplayReturnsCurrentWalletAfterPriorVoucherWasSpent(t *testing.T) {
+	// Mutation check: preserve the legacy cumulative voucher-redemption floor
+	// even after any wallet debit exists. After spending the first $100 voucher,
+	// replaying the second $100 voucher must report the current 10000c wallet
+	// rather than the cumulative 20000c voucher audit total.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool := openVoucherPool(t, ctx)
+	tenantID, userID, apiKeyID := seedVoucherMoneyUser(t, ctx, pool)
+	cleanupVoucherMoneyTenant(t, pool, tenantID)
+
+	store := NewPostgresStore(pool)
+	svc := NewService(store)
+	now := time.Now().UTC()
+	firstCode := fmt.Sprintf("money-prior-spent-first-%d", tenantID)
+	seedVoucherMoneyVoucher(t, ctx, pool, tenantID, firstCode, now)
+	first, err := svc.Redeem(ctx, RedeemInput{
+		TenantID:       tenantID,
+		UserID:         userID,
+		Code:           firstCode,
+		IdempotencyKey: "money-prior-spent-first",
+		SourceIP:       "203.0.113.20",
+		RequestID:      "req-money-prior-spent-first",
+		Now:            now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("redeem first voucher: %v", err)
+	}
+	if first.BalanceCents != 10000 {
+		t.Fatalf("first redeem balance cents=%d want 10000", first.BalanceCents)
+	}
+
+	claim := seedVoucherMoneyClaim(t, ctx, pool, tenantID, userID, apiKeyID)
+	if _, err := reserveVoucherMoney(ctx, pool, tenantID, userID, claim.id, decimal.NewFromInt(100)); err != nil {
+		t.Fatalf("reserve first voucher spend: %v", err)
+	}
+	if _, err := billing.NewSettler(pool).Settle(ctx, settleVoucherMoneyRequest(claim, decimal.NewFromInt(100))); err != nil {
+		t.Fatalf("settle first voucher spend: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE balance_holds SET resolved_at=$3 WHERE tenant_id=$1 AND claim_id=$2`,
+		tenantID, claim.id, now.Add(-time.Second),
+	); err != nil {
+		t.Fatalf("backdate first voucher spend: %v", err)
+	}
+	assertVoucherUserBalance(t, ctx, pool, tenantID, userID, "after spending first voucher", decimal.Zero, decimal.Zero)
+
+	secondCode := fmt.Sprintf("money-prior-spent-second-%d", tenantID)
+	seedVoucherMoneyVoucher(t, ctx, pool, tenantID, secondCode, now.Add(2*time.Second))
+	second, err := svc.Redeem(ctx, RedeemInput{
+		TenantID:       tenantID,
+		UserID:         userID,
+		Code:           secondCode,
+		IdempotencyKey: "money-prior-spent-second",
+		SourceIP:       "203.0.113.20",
+		RequestID:      "req-money-prior-spent-second",
+		Now:            now.Add(3 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("redeem second voucher: %v", err)
+	}
+	if second.BalanceCents != 10000 {
+		t.Fatalf("second redeem balance cents=%d want current wallet 10000", second.BalanceCents)
+	}
+
+	replay, err := svc.Redeem(ctx, RedeemInput{
+		TenantID:       tenantID,
+		UserID:         userID,
+		Code:           secondCode,
+		IdempotencyKey: "money-prior-spent-second",
+		SourceIP:       "203.0.113.20",
+		RequestID:      "req-money-prior-spent-second-replay",
+		Now:            now.Add(4 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("replay second voucher: %v", err)
+	}
+	if !replay.Idempotent {
+		t.Fatalf("second replay Idempotent=false, want true")
+	}
+	if replay.BalanceCents != 10000 {
+		t.Fatalf("second replay balance cents=%d want current wallet 10000", replay.BalanceCents)
+	}
 }
 
 func TestRedeemRejectsNonUSDBalanceCredit(t *testing.T) {
@@ -257,15 +405,14 @@ func TestRedeemReplayIgnoresPostRedeemUnheldClaims(t *testing.T) {
 		t.Fatalf("unheld replay Idempotent=false, want true")
 	}
 	if replay.BalanceCents != first.BalanceCents {
-		t.Fatalf("unheld replay balance cents=%d want prior result %d", replay.BalanceCents, first.BalanceCents)
+		t.Fatalf("unheld replay balance cents=%d want current wallet %d", replay.BalanceCents, first.BalanceCents)
 	}
 }
 
 func TestRedeemReplayPreservesLegacyUnmaterializedVoucherCredit(t *testing.T) {
 	// Mutation check: replay a historical voucher_redemption that has a billing
-	// event but no user_balances credit, then add a later wallet row. Without the
-	// redemption-sum floor, replay returns only the later wallet row and hides the
-	// historical voucher credit.
+	// event but no user_balances credit. Without the legacy no-row fallback, replay
+	// cannot return the historical voucher credit.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -279,12 +426,6 @@ func TestRedeemReplayPreservesLegacyUnmaterializedVoucherCredit(t *testing.T) {
 	code := fmt.Sprintf("money-bridge-legacy-%d", tenantID)
 	seedVoucherMoneyVoucher(t, ctx, pool, tenantID, code, now)
 	legacyID := seedLegacyVoucherRedemption(t, ctx, pool, tenantID, userID, code, "money-bridge-legacy", now)
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO user_balances (tenant_id, user_id, balance, held) VALUES ($1, $2, 50, 0)`,
-		tenantID, userID,
-	); err != nil {
-		t.Fatalf("seed later materialized balance row: %v", err)
-	}
 
 	replay, err := svc.Redeem(ctx, RedeemInput{
 		TenantID:       tenantID,
@@ -306,10 +447,115 @@ func TestRedeemReplayPreservesLegacyUnmaterializedVoucherCredit(t *testing.T) {
 	}
 }
 
-func TestRedeemReplayRoundsAfterFractionalWalletDeltas(t *testing.T) {
-	// Mutation check: round current wallet cents before adding post-redemption
-	// fractional claim deltas. A 0.005 capture would double-round the replay to
-	// 10001c instead of the original 10000c.
+func TestRedeemReplayNoEventLegacyUsesCurrentWalletAfterSpend(t *testing.T) {
+	// Mutation check: keep the BillingEventID<=0 shortcut returning the
+	// voucher_redemption sum. Once the legacy credit has a materialized balance row
+	// and a captured spend, replay must report the current 7000c wallet.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool := openVoucherPool(t, ctx)
+	tenantID, userID, apiKeyID := seedVoucherMoneyUser(t, ctx, pool)
+	cleanupVoucherMoneyTenant(t, pool, tenantID)
+
+	store := NewPostgresStore(pool)
+	svc := NewService(store)
+	now := time.Now().UTC()
+	code := fmt.Sprintf("money-bridge-legacy-no-event-%d", tenantID)
+	seedVoucherMoneyVoucher(t, ctx, pool, tenantID, code, now)
+	legacyID := seedLegacyVoucherRedemptionWithoutBillingEvent(t, ctx, pool, tenantID, userID, code, "money-bridge-legacy-no-event", now)
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO user_balances (tenant_id, user_id, balance, held) VALUES ($1, $2, 100, 0)`,
+		tenantID, userID,
+	); err != nil {
+		t.Fatalf("seed materialized legacy balance row: %v", err)
+	}
+
+	claim := seedVoucherMoneyClaim(t, ctx, pool, tenantID, userID, apiKeyID)
+	if _, err := reserveVoucherMoney(ctx, pool, tenantID, userID, claim.id, decimal.NewFromInt(30)); err != nil {
+		t.Fatalf("reserve legacy spend: %v", err)
+	}
+	if _, err := billing.NewSettler(pool).Settle(ctx, settleVoucherMoneyRequest(claim, decimal.NewFromInt(30))); err != nil {
+		t.Fatalf("settle legacy spend: %v", err)
+	}
+	assertVoucherUserBalance(t, ctx, pool, tenantID, userID, "after legacy spend", decimal.NewFromInt(70), decimal.Zero)
+
+	replay, err := svc.Redeem(ctx, RedeemInput{
+		TenantID:       tenantID,
+		UserID:         userID,
+		Code:           code,
+		IdempotencyKey: "money-bridge-legacy-no-event",
+		SourceIP:       "203.0.113.21",
+		RequestID:      "req-money-bridge-legacy-no-event-replay",
+		Now:            now.Add(2 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("legacy no-event replay: %v", err)
+	}
+	if !replay.Idempotent || replay.Redemption.ID != legacyID {
+		t.Fatalf("legacy no-event replay result = %+v, want idempotent redemption %d", replay, legacyID)
+	}
+	if replay.BalanceCents != 7000 {
+		t.Fatalf("legacy no-event replay balance cents=%d want current wallet 7000", replay.BalanceCents)
+	}
+}
+
+func TestRedeemReplayPreservesLegacyCreditWithLaterWalletRow(t *testing.T) {
+	// Mutation check: return user_balances immediately whenever a wallet row
+	// exists. For a pre-bridge redemption, a later wallet row may not include that
+	// historical voucher credit; the replay must keep the legacy redemption floor
+	// while no positive captured wallet debit proves spend should be visible.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool := openVoucherPool(t, ctx)
+	tenantID, userID, apiKeyID := seedVoucherMoneyUser(t, ctx, pool)
+	cleanupVoucherMoneyTenant(t, pool, tenantID)
+
+	store := NewPostgresStore(pool)
+	svc := NewService(store)
+	now := time.Now().UTC()
+	code := fmt.Sprintf("money-bridge-legacy-row-%d", tenantID)
+	seedVoucherMoneyVoucher(t, ctx, pool, tenantID, code, now)
+	legacyID := seedLegacyVoucherRedemption(t, ctx, pool, tenantID, userID, code, "money-bridge-legacy-row", now)
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO user_balances (tenant_id, user_id, balance, held) VALUES ($1, $2, 50, 0)`,
+		tenantID, userID,
+	); err != nil {
+		t.Fatalf("seed later materialized balance row: %v", err)
+	}
+	zeroClaim := seedVoucherMoneyClaim(t, ctx, pool, tenantID, userID, apiKeyID)
+	if _, err := reserveVoucherMoney(ctx, pool, tenantID, userID, zeroClaim.id, decimal.Zero); err != nil {
+		t.Fatalf("reserve zero-cost hold: %v", err)
+	}
+	if _, err := billing.NewSettler(pool).Settle(ctx, settleVoucherMoneyRequest(zeroClaim, decimal.Zero)); err != nil {
+		t.Fatalf("settle zero-cost hold: %v", err)
+	}
+
+	replay, err := svc.Redeem(ctx, RedeemInput{
+		TenantID:       tenantID,
+		UserID:         userID,
+		Code:           code,
+		IdempotencyKey: "money-bridge-legacy-row",
+		SourceIP:       "203.0.113.19",
+		RequestID:      "req-money-bridge-legacy-row-replay",
+		Now:            now.Add(2 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("legacy row replay: %v", err)
+	}
+	if !replay.Idempotent || replay.Redemption.ID != legacyID {
+		t.Fatalf("legacy row replay result = %+v, want idempotent redemption %d", replay, legacyID)
+	}
+	if replay.BalanceCents != 10000 {
+		t.Fatalf("legacy row replay balance cents=%d want preserved voucher credit 10000", replay.BalanceCents)
+	}
+}
+
+func TestRedeemReplayRoundsCurrentFractionalWalletBalance(t *testing.T) {
+	// Mutation check: make idempotent replay read voucher_redemption totals. After
+	// a fractional capture leaves the wallet at 99.985, the broken sum path returns
+	// the original 10000c instead of the rounded current wallet 9999c.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -323,7 +569,7 @@ func TestRedeemReplayRoundsAfterFractionalWalletDeltas(t *testing.T) {
 	code := fmt.Sprintf("money-bridge-fractional-%d", tenantID)
 	seedVoucherMoneyVoucher(t, ctx, pool, tenantID, code, now)
 
-	first, err := svc.Redeem(ctx, RedeemInput{
+	_, err := svc.Redeem(ctx, RedeemInput{
 		TenantID:       tenantID,
 		UserID:         userID,
 		Code:           code,
@@ -336,7 +582,7 @@ func TestRedeemReplayRoundsAfterFractionalWalletDeltas(t *testing.T) {
 		t.Fatalf("fractional redeem: %v", err)
 	}
 	claim := seedVoucherMoneyClaim(t, ctx, pool, tenantID, userID, apiKeyID)
-	fractionalCost := decimal.RequireFromString("0.005")
+	fractionalCost := decimal.RequireFromString("0.015")
 	if _, err := reserveVoucherMoney(ctx, pool, tenantID, userID, claim.id, fractionalCost); err != nil {
 		t.Fatalf("reserve fractional redeemed balance: %v", err)
 	}
@@ -356,16 +602,17 @@ func TestRedeemReplayRoundsAfterFractionalWalletDeltas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fractional replay: %v", err)
 	}
-	if replay.BalanceCents != first.BalanceCents {
-		t.Fatalf("fractional replay balance cents=%d want prior result %d", replay.BalanceCents, first.BalanceCents)
+	if replay.BalanceCents != 9999 {
+		t.Fatalf("fractional replay balance cents=%d want current wallet 9999", replay.BalanceCents)
 	}
 }
 
-func TestRedeemReplayUsesHoldResolutionOrderNotBillingEventID(t *testing.T) {
-	// Mutation check: filter post-redemption claim debits by billing_events.id.
-	// A settler can insert the claim_committed event before voucher redemption
-	// but resolve the balance hold after the voucher response. Replay must follow
-	// the hold resolution time, not the billing event sequence.
+func TestRedeemReplayReturnsCurrentWalletAfterDelayedCapture(t *testing.T) {
+	// Mutation check: reconstruct the original idempotent response from billing
+	// events instead of reading user_balances. A settler can insert the
+	// claim_committed event before voucher redemption but resolve the balance hold
+	// after the voucher response; replay must report the current wallet after that
+	// capture, not the original 20000c response.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -444,8 +691,8 @@ WHERE claim_id=$1 AND tenant_id=$2 AND user_id=$3`,
 	if err != nil {
 		t.Fatalf("replay after delayed capture: %v", err)
 	}
-	if replay.BalanceCents != first.BalanceCents {
-		t.Fatalf("replay balance cents=%d want prior result %d", replay.BalanceCents, first.BalanceCents)
+	if replay.BalanceCents != 10000 {
+		t.Fatalf("replay balance cents=%d want current wallet 10000", replay.BalanceCents)
 	}
 }
 
@@ -583,10 +830,11 @@ func TestRedeemReplayIgnoresNonUSDLegacyVoucherDelta(t *testing.T) {
 	}
 }
 
-func TestRedeemReplayIncludesSameTimestampReconciliationByEventID(t *testing.T) {
-	// Mutation check: filter reconciliation_appended only by occurred_at > voucher
-	// event time. If a later refund event shares the voucher timestamp, replay misses
-	// the refund and reconstructs 15000c instead of the original 10000c.
+func TestRedeemReplayReturnsCurrentWalletAfterSameTimestampReconciliation(t *testing.T) {
+	// Mutation check: reconstruct the idempotent replay response from voucher
+	// redemptions instead of user_balances. After a same-timestamp refund moves the
+	// wallet to 5000c, the broken audit-derived path still returns the original
+	// 10000c voucher total.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -666,8 +914,8 @@ RETURNING id`,
 	if !replay.Idempotent {
 		t.Fatalf("replay Idempotent=false, want true")
 	}
-	if replay.BalanceCents != first.BalanceCents {
-		t.Fatalf("replay balance cents=%d want original response %d", replay.BalanceCents, first.BalanceCents)
+	if replay.BalanceCents != 5000 {
+		t.Fatalf("replay balance cents=%d want current wallet 5000", replay.BalanceCents)
 	}
 }
 
@@ -707,6 +955,36 @@ func seedVoucherMoneyVoucherCurrencyAmount(t *testing.T, ctx context.Context, po
 func seedLegacyVoucherRedemption(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID, userID int64, code, key string, now time.Time) int64 {
 	t.Helper()
 	return seedLegacyVoucherRedemptionCurrencyAmount(t, ctx, pool, tenantID, userID, code, key, "USD", 10000, now)
+}
+
+func seedLegacyVoucherRedemptionWithoutBillingEvent(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID, userID int64, code, key string, now time.Time) int64 {
+	t.Helper()
+	hash, _ := CodeHash(tenantID, NormalizeCode(code))
+	var voucherID int64
+	if err := pool.QueryRow(ctx,
+		`SELECT id FROM voucher WHERE tenant_id=$1 AND code_hash=$2`,
+		tenantID, hash,
+	).Scan(&voucherID); err != nil {
+		t.Fatalf("read legacy voucher id: %v", err)
+	}
+	var redemptionID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO voucher_redemption (
+	tenant_id, voucher_id, user_id, idempotency_key, amount_cents, currency_code,
+	single_use_per_user, source_ip_hash, request_id, redeemed_at
+) VALUES ($1, $2, $3, $4, 10000, 'USD', true, '', 'legacy-redemption-no-event', $5)
+RETURNING id`,
+		tenantID, voucherID, userID, key, now.Add(time.Second),
+	).Scan(&redemptionID); err != nil {
+		t.Fatalf("seed legacy redemption without billing event: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE voucher SET redeemed_count=1, status='exhausted' WHERE tenant_id=$1 AND id=$2`,
+		tenantID, voucherID,
+	); err != nil {
+		t.Fatalf("mark no-event legacy voucher redeemed: %v", err)
+	}
+	return redemptionID
 }
 
 func seedLegacyVoucherRedemptionCurrencyAmount(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID, userID int64, code, key, currency string, amountCents int64, now time.Time) int64 {
