@@ -15,8 +15,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
@@ -57,18 +57,19 @@ func releaseModeProduction() bool {
 }
 
 // validateReleaseMode 在启动时校验 HUAKAI_RELEASE_MODE。
-// 历史约定:空/未设 = dev(测试与本地依赖此默认)。问题(S1-019):设置了但拼错的值
-// (如 "prod"、"Production!"、"prd")会被 releaseModeProduction() 的精确匹配判 false,
+// S1-019:空/未设或拼错的值都会让 releaseModeProduction() 判 false,
 // 静默降级为 dev —— 绕过 postgres ledger / 持久私钥 / email / channelhealth signer 等全部
-// production fail-closed 门控,而服务照常启动、无任何报错提示运维。这里改为:非空但非已知
-// 取值即启动失败,杜绝"想上生产却因打错字静默跑在 dev"。空值仍按 dev 放行,不破坏既有约定。
+// production fail-closed 门控。启动必须显式声明 production 或一个非生产模式,
+// 杜绝"部署遗漏 env 就跑在 dev"和"想上生产却因打错字静默跑在 dev"。
 func validateReleaseMode() error {
 	raw := strings.TrimSpace(os.Getenv("HUAKAI_RELEASE_MODE"))
 	switch strings.ToLower(raw) {
-	case "", "dev", "development", "test", "production":
+	case "dev", "development", "test", "production":
 		return nil
+	case "":
+		return fmt.Errorf("HUAKAI_RELEASE_MODE is required; set production, dev, development, or test explicitly")
 	default:
-		return fmt.Errorf("HUAKAI_RELEASE_MODE=%q 不是已知取值（production / development / dev / test / 空=dev）；拒绝静默降级为 dev", raw)
+		return fmt.Errorf("HUAKAI_RELEASE_MODE=%q 不是已知取值（production / development / dev / test）；拒绝静默降级为 dev", raw)
 	}
 }
 
