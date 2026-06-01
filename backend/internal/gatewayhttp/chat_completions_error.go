@@ -27,6 +27,22 @@ func writeJSONError(w http.ResponseWriter, status int, code, message string) {
 	_, _ = w.Write(encodeJSONErrorBody(code, message))
 }
 
+func writeInsufficientBalanceError(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusPaymentRequired)
+	body, err := json.Marshal(map[string]map[string]string{
+		"error": {
+			"type":    "insufficient_quota",
+			"code":    clienterr.CodeInsufficientBalance,
+			"message": clienterr.MessageFor(clienterr.CodeInsufficientBalance),
+		},
+	})
+	if err != nil {
+		body = []byte(`{"error":{"type":"insufficient_quota","code":"insufficient_balance","message":"余额不足"}}`)
+	}
+	_, _ = w.Write(body)
+}
+
 // encodeJSONErrorBody 用 encoding/json 编码 {"error":{"code","message"}},而非 fmt %q 手拼。
 // %q 是 Go 字符串字面量格式化器:对部分控制字节(如 \x01)会输出 \xNN —— 合法 Go 字面量却是
 // 非法 JSON,严格客户端/SDK/反代日志解析会失败(S2-148)。code 多为内部常量,但 message 可能携带

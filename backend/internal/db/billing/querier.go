@@ -159,8 +159,9 @@ type Querier interface {
 	// 写入或更新单个计费设置; updated_at 总是以数据库时间刷新。
 	UpsertBillingSetting(ctx context.Context, arg UpsertBillingSettingParams) (BillingSetting, error)
 	UpsertStickyBinding(ctx context.Context, arg UpsertStickyBindingParams) error
-	// 区分 ReserveBalanceHold 返 0 行的两种情形:无余额行(未启用余额强制 → 放行,
-	// opt-in) vs 行在但 (balance-held)<cost(余额不足 → 402)。
+	// 区分 ReserveBalanceHold 返 0 行的两种情形:无余额行 vs 行在但
+	// (balance-held)<cost。mandatory 由调用方将两者都映射为 402; opt_in 只
+	// 对已有余额行不足返回 402。
 	UserBalanceExists(ctx context.Context, arg UserBalanceExistsParams) (bool, error)
 	// Pattern B placeholder writeback per F-POOL-001 §6 + F-OBS-001 §Tx1 step 6.
 	// Pool acquire returns; we set provider_account_id + acquisition_token onto

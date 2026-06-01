@@ -40,6 +40,17 @@ func TestParseStreamInputOnlyInterruptedPolicyValidation(t *testing.T) {
 	}
 }
 
+func TestParseBalanceEnforcementModeValidation(t *testing.T) {
+	for _, value := range []string{"mandatory", " opt_in "} {
+		if _, err := ParseBalanceEnforcementMode(value); err != nil {
+			t.Fatalf("ParseBalanceEnforcementMode(%q) err=%v", value, err)
+		}
+	}
+	if _, err := ParseBalanceEnforcementMode("disabled"); !errors.Is(err, ErrBillingSettingInvalid) {
+		t.Fatalf("invalid err=%v want %v", err, ErrBillingSettingInvalid)
+	}
+}
+
 func TestSQLPolicyStore_UpsertCanonicalizesStreamInputOnlyInterruptedPolicy(t *testing.T) {
 	q := newFakeBillingSettingsQueries()
 	store := &SQLPolicyStore{q: q}
@@ -62,6 +73,31 @@ func TestSQLPolicyStore_UpsertCanonicalizesStreamInputOnlyInterruptedPolicy(t *t
 	}
 }
 
+func TestSQLPolicyStore_UpsertCanonicalizesBalanceEnforcementMode(t *testing.T) {
+	q := newFakeBillingSettingsQueries()
+	store := &SQLPolicyStore{q: q}
+
+	got, err := store.UpsertBalanceEnforcementMode(context.Background(), 702, BalanceEnforcementMode(" mandatory "), "owner")
+	if err != nil {
+		t.Fatalf("UpsertBalanceEnforcementMode: %v", err)
+	}
+
+	want := BalanceEnforcementModeMandatory.String()
+	if got.Value != want {
+		t.Fatalf("stored value=%q want %q", got.Value, want)
+	}
+	if q.lastUpsert.SettingKey != BalanceEnforcementModeKey {
+		t.Fatalf("upsert setting_key=%q want %q", q.lastUpsert.SettingKey, BalanceEnforcementModeKey)
+	}
+	if q.lastUpsert.SettingValue != want {
+		t.Fatalf("upsert setting_value=%q want %q", q.lastUpsert.SettingValue, want)
+	}
+	row := q.rows[702][BalanceEnforcementModeKey]
+	if row.SettingValue != want {
+		t.Fatalf("persisted setting_value=%q want %q", row.SettingValue, want)
+	}
+}
+
 func TestPolicyResolver_TenantIsolation(t *testing.T) {
 	store := newFakePolicyStore()
 	store.set(201, StreamInputOnlyInterruptedPolicyNoBillRecord)
@@ -75,6 +111,34 @@ func TestPolicyResolver_TenantIsolation(t *testing.T) {
 	}
 	if gotB != StreamInputOnlyInterruptedPolicyNoBill {
 		t.Fatalf("tenant B policy=%q want %q", gotB, StreamInputOnlyInterruptedPolicyNoBill)
+	}
+}
+
+func TestPolicyResolver_BalanceEnforcementDefaultMandatoryAndOptIn(t *testing.T) {
+	store := newFakePolicyStore()
+	store.setBalanceMode(801, BalanceEnforcementModeOptIn)
+	resolver := NewPolicyResolver(store, time.Minute)
+
+	gotConfigured := resolver.ResolveBalanceEnforcementMode(context.Background(), 801)
+	gotDefault := resolver.ResolveBalanceEnforcementMode(context.Background(), 802)
+
+	if gotConfigured != BalanceEnforcementModeOptIn {
+		t.Fatalf("tenant configured mode=%q want %q", gotConfigured, BalanceEnforcementModeOptIn)
+	}
+	if gotDefault != BalanceEnforcementModeMandatory {
+		t.Fatalf("tenant default mode=%q want %q", gotDefault, BalanceEnforcementModeMandatory)
+	}
+}
+
+func TestPolicyResolver_BalanceEnforcementInvalidFallsBackMandatory(t *testing.T) {
+	store := newFakePolicyStore()
+	store.setRaw(803, BalanceEnforcementModeKey, "disabled")
+	resolver := NewPolicyResolver(store, time.Minute)
+
+	got := resolver.ResolveBalanceEnforcementMode(context.Background(), 803)
+
+	if got != BalanceEnforcementModeMandatory {
+		t.Fatalf("invalid mode fallback=%q want %q", got, BalanceEnforcementModeMandatory)
 	}
 }
 
@@ -399,6 +463,42 @@ func (s *fakePolicyStore) set(tenantID int64, policy StreamInputOnlyInterruptedP
 	}
 }
 
+func (s *fakePolicyStore) setBalanceMode(tenantID int64, mode BalanceEnforcementMode) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	settingValue := mode.String()
+	if !validBalanceEnforcementModeSettingValue(settingValue) {
+		panic("invalid balance enforcement mode fixture")
+	}
+	if s.rows[tenantID] == nil {
+		s.rows[tenantID] = make(map[string]StoredBillingSetting)
+	}
+	s.rows[tenantID][BalanceEnforcementModeKey] = StoredBillingSetting{
+		ID:        int64(len(s.rows[tenantID]) + 1),
+		TenantID:  tenantID,
+		Key:       BalanceEnforcementModeKey,
+		Value:     settingValue,
+		UpdatedAt: time.Now().UTC(),
+		UpdatedBy: "test",
+	}
+}
+
+func (s *fakePolicyStore) setRaw(tenantID int64, key, value string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rows[tenantID] == nil {
+		s.rows[tenantID] = make(map[string]StoredBillingSetting)
+	}
+	s.rows[tenantID][key] = StoredBillingSetting{
+		ID:        int64(len(s.rows[tenantID]) + 1),
+		TenantID:  tenantID,
+		Key:       key,
+		Value:     value,
+		UpdatedAt: time.Now().UTC(),
+		UpdatedBy: "test",
+	}
+}
+
 func (s *fakePolicyStore) getCallsForTenant(tenantID int64) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -429,6 +529,9 @@ func (q *fakeBillingSettingsQueries) GetBillingSetting(_ context.Context, arg db
 func (q *fakeBillingSettingsQueries) UpsertBillingSetting(_ context.Context, arg dbbilling.UpsertBillingSettingParams) (dbbilling.BillingSetting, error) {
 	q.lastUpsert = arg
 	if arg.SettingKey == StreamInputOnlyInterruptedPolicyKey && !validStreamInputOnlyInterruptedSettingValue(arg.SettingValue) {
+		return dbbilling.BillingSetting{}, errors.New("billing_settings setting_value check violation")
+	}
+	if arg.SettingKey == BalanceEnforcementModeKey && !validBalanceEnforcementModeSettingValue(arg.SettingValue) {
 		return dbbilling.BillingSetting{}, errors.New("billing_settings setting_value check violation")
 	}
 	if q.rows[arg.TenantID] == nil {
@@ -465,6 +568,15 @@ func (q *fakeBillingSettingsQueries) ListBillingSettingsByTenant(_ context.Conte
 func validStreamInputOnlyInterruptedSettingValue(value string) bool {
 	switch StreamInputOnlyInterruptedPolicy(value) {
 	case StreamInputOnlyInterruptedPolicyNoBill, StreamInputOnlyInterruptedPolicyNoBillRecord:
+		return true
+	default:
+		return false
+	}
+}
+
+func validBalanceEnforcementModeSettingValue(value string) bool {
+	switch BalanceEnforcementMode(value) {
+	case BalanceEnforcementModeMandatory, BalanceEnforcementModeOptIn:
 		return true
 	default:
 		return false

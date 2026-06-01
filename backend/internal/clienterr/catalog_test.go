@@ -20,6 +20,7 @@ func TestMessageForKnownCodesAndFallback(t *testing.T) {
 		{CodeRouterPlanError, "route planning failed"},
 		{CodeInvalidJSON, "request body is not valid JSON"},
 		{CodeUpstreamDispatchError, "upstream request failed"},
+		{CodeInsufficientBalance, "余额不足"},
 		{CodeCanonicalResponseError, "upstream response could not be converted"},
 		{CodeQueueWait, "request is queued; retry later"},
 		{CodeAuditRefMissing, "Audit reference missing for money-path operation."},

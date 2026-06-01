@@ -97,6 +97,33 @@ func (s *SQLPolicyStore) UpsertStreamInputOnlyInterruptedPolicy(ctx context.Cont
 	return storedBillingSettingFromDB(row), nil
 }
 
+func (s *SQLPolicyStore) UpsertBalanceEnforcementMode(ctx context.Context, tenantID int64, mode BalanceEnforcementMode, updatedBy string) (StoredBillingSetting, error) {
+	if s == nil || s.q == nil {
+		return StoredBillingSetting{}, ErrPoolNotConfigured
+	}
+	if tenantID <= 0 {
+		return StoredBillingSetting{}, fmt.Errorf("%w: tenant_id", ErrBillingSettingInvalid)
+	}
+	canonical, err := ParseBalanceEnforcementMode(mode.String())
+	if err != nil {
+		return StoredBillingSetting{}, err
+	}
+	updatedBy = strings.TrimSpace(updatedBy)
+	if updatedBy == "" {
+		updatedBy = "system"
+	}
+	row, err := s.q.UpsertBillingSetting(ctx, dbbilling.UpsertBillingSettingParams{
+		TenantID:     tenantID,
+		SettingKey:   BalanceEnforcementModeKey,
+		SettingValue: canonical.String(),
+		UpdatedBy:    updatedBy,
+	})
+	if err != nil {
+		return StoredBillingSetting{}, err
+	}
+	return storedBillingSettingFromDB(row), nil
+}
+
 func (s *SQLPolicyStore) List(ctx context.Context, tenantID int64) ([]StoredBillingSetting, error) {
 	if s == nil || s.q == nil {
 		return nil, ErrPoolNotConfigured
