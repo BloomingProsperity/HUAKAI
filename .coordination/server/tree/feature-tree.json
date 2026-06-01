@@ -62,10 +62,10 @@
         {
           "id": "MONEY-6",
           "title": "翻 mandatory(没余额=402 直显「余额不足」)+历史 backfill+admin/trust bypass",
-          "status": "in_progress server-b",
+          "status": "done✓ merged fd4edd3",
           "risk": "money",
           "depends": "MONEY-1,2",
-          "note": "Owner top:没余额=402「余额不足」mandatory enforcement+历史backfill(防误伤老用户)+admin/trust bypass。迁移0064/0065。"
+          "note": "余额enforcement已翻mandatory:没余额/零余额→HTTP 402 OpenAI兼容body(code=insufficient_balance,message='余额不足')。双脑审PASS:backfill全账本重建GREATEST不双入账(MONEY-1用户停$70非$140,幂等)、无内部/admin误402(auth无role层已核)、0064先backfill再翻默认无空窗。Owner #1 enforcement诉求达成。"
         },
         {
           "id": "MONEY-7",
@@ -75,7 +75,7 @@
           "depends": "MONEY-1,2"
         }
       ],
-      "pct": 60
+      "pct": 78
     },
     {
       "id": "audit-campaign",
@@ -123,7 +123,7 @@
           "wave": "W8 ops/security 硬化",
           "open": "~10",
           "status": "in-progress",
-          "note": "S2-095(DLQ ClaimByID 抢活跃lease)已落 2192117(S2-161兄弟漏点已补);待派 S2-070/S2-101"
+          "note": "server-b在修S2-070(claim竞态错500应409);S2-095已落;待派S2-101/S2-021"
         }
       ]
     },
@@ -274,6 +274,14 @@
     {
       "ts": "2026-06-01",
       "text": "修复:server-a codex token 失效(401)→审核侧改人工+mutation+真PG探针(workers各自codex不受影响);并修了被并行driver半重置的共享测试库(force60→up 0063)。"
+    },
+    {
+      "ts": "2026-06-01",
+      "text": "🔒 里程碑:MONEY-6 余额enforcement翻mandatory落地 fd4edd3——没余额=HTTP402「余额不足」(Owner #1 enforcement诉求)。双脑worktree隔离审PASS,重点验证backfill不双入账(GREATEST重建)+无内部/admin流量被误402(auth模型无role层,bypass无需造)。钱闭环现端到端可强制:充值/兑券→入账→enforce→消费。"
+    },
+    {
+      "ts": "2026-06-01",
+      "text": "server-b转第2流 S2-070(reserve阶段claim竞态错500应409);local-codex续 MONEY-5(admin手动充值)。MONEY-7(provider插件)待MONEY-5落(共享wiring.go)。"
     }
   ]
 }
