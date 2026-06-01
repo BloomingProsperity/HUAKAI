@@ -1402,7 +1402,7 @@ paths:
             schema: { $ref: '#/components/schemas/VoucherRedeemRequest' }
       responses:
         '200':
-          description: Voucher redeemed or idempotent prior redemption returned.
+          description: Voucher redeemed, or existing redemption identity returned for an idempotent retry with the current balance view. Historical unmaterialized voucher credits may be preserved until positive captured wallet debit evidence exists.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/VoucherRedeemResponse' }
