@@ -227,6 +227,21 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/realtime:
+    get:
+      tags: [gateway]
+      summary: Realtime WebSocket surface roadmap guard
+      operationId: getRealtime
+      x-huakai-spec-source:
+        - docs/03_FEATURE_PARITY_MATRIX.md
+      description: |
+        Placeholder runtime guard for F-RT-001. Full OpenAI Realtime-style
+        WebSocket proxying, stream resume, and partial usage settlement remain a
+        Phase 9+ mandatory roadmap item. Until that slice is released, the
+        gateway returns a typed 501 response instead of an implicit 404.
+      responses:
+        '501': { $ref: '#/components/responses/NotImplemented' }
+
   /v1/hermes/settings:
     get:
       tags: [hermes]
@@ -2803,6 +2818,11 @@ components:
         Retry-After:
           description: Seconds until retry per F-RATE-001 H5 (jittered if HUAKAI-cooldown applied).
           schema: { type: integer, minimum: 0 }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    NotImplemented:
+      description: Capability is preserved on the mandatory roadmap but is not released at runtime.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }

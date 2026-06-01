@@ -13,6 +13,7 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -127,6 +128,38 @@ func TestAT_GATEWAY_route_uncovered_404(t *testing.T) {
 	// 旧 wildcard 会把未声明子路径交给 receipt verify；这里必须完全不进 handler。
 	if strings.Contains(rec.Body.String(), "receipt_verify_route_not_found") {
 		t.Fatalf("unexpected receipt verify handler response: %s", rec.Body.String())
+	}
+}
+
+func TestAT_RT_001_RealtimeRouteReturnsExplicitRoadmapError(t *testing.T) {
+	r := buildTestRouter(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/realtime", nil)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status=%d body=%s want 501", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "application/json") {
+		t.Fatalf("Content-Type=%q want application/json", got)
+	}
+	var parsed struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("error body is not valid JSON: %v body=%s", err, rec.Body.String())
+	}
+	if parsed.Error.Code != "realtime_not_available" {
+		t.Fatalf("error.code=%q want realtime_not_available body=%s", parsed.Error.Code, rec.Body.String())
+	}
+	if !strings.Contains(parsed.Error.Message, "Phase 9") {
+		t.Fatalf("error.message=%q must mention Phase 9 roadmap status", parsed.Error.Message)
 	}
 }
 
