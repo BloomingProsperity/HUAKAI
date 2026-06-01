@@ -299,12 +299,14 @@ func buildSettlementServices(_ context.Context, pgPool *pgxpool.Pool, auditSigne
 	refundQueue := auditreceipt.NewMismatchRefundQueue(dlqService)
 	receiptHook := auditreceipt.NewReceiptHookHandler(receiptFormatter, receiptStore,
 		auditreceipt.WithReceiptHookTrustSigner(auditSigner),
+		auditreceipt.WithReceiptHookRecoveryEnqueuer(dlqService),
 		auditreceipt.WithReceiptHookErrorHandler(func(_ context.Context, requestID string, err error) {
 			logger.Warn("cost receipt hook warning after settle",
 				zap.String("request_id", requestID),
 				zap.Error(err),
 			)
 		}))
+	dlqService.Register(legacydlq.EventKindCostReceiptAppend, receiptHook.HandleReceiptRecovery)
 	settler := auditreceipt.NewReceiptHookSettler(baseSettler, receiptHook)
 	completionBus, err := buildCompletionEventBus(eventBusCfg, settler, dlqService, auditRefPolicy, logger)
 	if err != nil {

@@ -24,6 +24,10 @@ const (
 	// 不重写底层 SQL),并用 claim/usage/billing_event 三证 proof 防重复扣费。
 	// 详见 docs/process/plans/2026-05-24-post-delivery-settle-recovery-synthesis.md。
 	EventKindPostDeliverySettlement EventKind = "post_delivery_settlement"
+	// EventKindCostReceiptAppend 用于 Tx2 已提交但 user_cost_receipts append
+	// hook 失败的 durable recovery intent。worker 重放只派生并写 receipt,
+	// 不重调 billing settle,避免成功收费后因 receipt 存储短故障丢用户凭证。
+	EventKindCostReceiptAppend EventKind = "cost_receipt_append"
 )
 
 type Lane string
@@ -103,7 +107,7 @@ type Record struct {
 
 func LaneForKind(kind EventKind) Lane {
 	switch kind {
-	case EventKindBillingEventReplica, EventKindAuditEventReplica, EventKindAuditMismatchRefund, EventKindUsageRecord, EventKindAuditLedgerEntry, EventKindPostDeliverySettlement:
+	case EventKindBillingEventReplica, EventKindAuditEventReplica, EventKindAuditMismatchRefund, EventKindUsageRecord, EventKindAuditLedgerEntry, EventKindPostDeliverySettlement, EventKindCostReceiptAppend:
 		return LaneHigh
 	case EventKindAccountHealth:
 		return LaneMed

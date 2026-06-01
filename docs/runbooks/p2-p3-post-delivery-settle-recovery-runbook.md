@@ -16,7 +16,7 @@ CITATION POLICY: HUAKAI 内部 file:line;参考项目用 prestudy 已 cited 的 
 
 ## §1 目的
 
-把"流式 / eventbus billing handler 失败后,模型内容已发给客户端但 Tx2 settlement 未确认提交 = 钱账丢失"的灰区漏洞堵掉。Settle 失败时把 `eventbus.RequestCompletionEvent` 转 `settlementrecovery.Payload`(strip 不可 JSON 化的 `OutboxEmitter func`),enqueue 进 `usage_record_dlq` 新 event_kind `post_delivery_settlement`,worker 后续重调 public `billing.Settler.Settle`。
+把"流式 / eventbus billing handler 失败后,模型内容已发给客户端但 Tx2 settlement 未确认提交 = 钱账丢失"的灰区漏洞堵掉。Settle 失败时把 `eventbus.RequestCompletionEvent` 转 `settlementrecovery.Payload`(保留可 JSON 持久化的 `emit_scheduler_outbox` intent,不再使用不可序列化 callback),enqueue 进 `usage_record_dlq` 新 event_kind `post_delivery_settlement`,worker 后续重调 public `billing.Settler.Settle`。
 
 ErrClaimNotReserving(claim 已 committed)时走三证 proof:claim status='committed' + usage_records 行存在 + billing_events 含 event_type='claim_committed' — 三证齐才视已成功,缺一继续视失败(防止假阳性 idempotent 重复扣费)。
 

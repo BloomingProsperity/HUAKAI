@@ -14,6 +14,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/trustreceipt"
@@ -147,6 +148,176 @@ func TestReceiptHookSettlerBestEffortDoesNotBlockSettle(t *testing.T) {
 	}
 	if !errors.Is(reported, ErrReceiptInputsNotFound) {
 		t.Fatalf("reported error=%v want ErrReceiptInputsNotFound", reported)
+	}
+}
+
+func TestReceiptHookSettlerEnqueuesRecoveryOnHookErrorWithoutBlockingSettle(t *testing.T) {
+	ctx := context.Background()
+	requestID := "req-worker-recovery-enqueue"
+	signer := testAuditSigner(t, 36)
+	ledger, err := auditledger.NewMemoryLedger(signer)
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	if _, err := ledger.Append(ctx, mustPrepareAuditLedgerEntry(t, ctx, auditledger.LedgerEntry{
+		RequestID: requestID,
+		TenantID:  7,
+		ModelChain: &proto.ModelChain{
+			Requested: "gpt-4o",
+			Verdict:   "match",
+		},
+	})); err != nil {
+		t.Fatalf("append ledger: %v", err)
+	}
+	formatter, err := NewReceiptFormatter(ledger, nil, &staticReceiptSource{err: ErrReceiptInputsNotFound}, signer)
+	if err != nil {
+		t.Fatalf("formatter: %v", err)
+	}
+	recovery := &recordingReceiptRecoveryEnqueuer{}
+	var reported error
+	hook := NewReceiptHookHandler(formatter, &recordingReceiptAppender{},
+		WithReceiptHookRecoveryEnqueuer(recovery),
+		WithReceiptHookErrorHandler(func(_ context.Context, _ string, err error) {
+			reported = err
+		}))
+	settler := NewReceiptHookSettler(&recordingBillingSettler{}, hook)
+
+	_, err = settler.Settle(ctx, billing.SettleRequest{
+		TenantID:       7,
+		ClaimID:        9001,
+		AuditRequestID: requestID,
+	})
+	if err != nil {
+		t.Fatalf("Settle must remain fail-open for receipt hook errors: %v", err)
+	}
+	if !errors.Is(reported, ErrReceiptInputsNotFound) {
+		t.Fatalf("reported error=%v want ErrReceiptInputsNotFound", reported)
+	}
+	if len(recovery.events) != 1 {
+		t.Fatalf("recovery events=%d want 1", len(recovery.events))
+	}
+	event := recovery.events[0]
+	if event.EventKind != dlq.EventKindCostReceiptAppend || event.Lane != dlq.LaneHigh {
+		t.Fatalf("recovery event route=(%q,%q) want (%q,HIGH)", event.EventKind, event.Lane, dlq.EventKindCostReceiptAppend)
+	}
+	if event.TenantID != 7 || event.ClaimID != 9001 || event.SourceTable != "user_cost_receipts" || event.SourceID != 9001 {
+		t.Fatalf("recovery event ownership mismatch: %+v", event)
+	}
+	if event.IdempotencyKey != "cost_receipt_append:7:9001:req-worker-recovery-enqueue" {
+		t.Fatalf("idempotency key=%q", event.IdempotencyKey)
+	}
+	payload, err := DecodeReceiptRecoveryPayload(event.Payload)
+	if err != nil {
+		t.Fatalf("decode recovery payload: %v", err)
+	}
+	if payload.RequestID != requestID || payload.TenantID != 7 || payload.ClaimID != 9001 {
+		t.Fatalf("payload mismatch: %+v", payload)
+	}
+}
+
+func TestReceiptHookSettlerRecoveryEnqueueUsesDetachedContextAfterSettle(t *testing.T) {
+	ctx := context.Background()
+	requestID := "req-worker-recovery-detached-context"
+	signer := testAuditSigner(t, 38)
+	ledger, err := auditledger.NewMemoryLedger(signer)
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	if _, err := ledger.Append(ctx, mustPrepareAuditLedgerEntry(t, ctx, auditledger.LedgerEntry{
+		RequestID: requestID,
+		TenantID:  7,
+		ModelChain: &proto.ModelChain{
+			Requested: "gpt-4o",
+			Verdict:   "match",
+		},
+	})); err != nil {
+		t.Fatalf("append ledger: %v", err)
+	}
+	formatter, err := NewReceiptFormatter(ledger, nil, &staticReceiptSource{err: ErrReceiptInputsNotFound}, signer)
+	if err != nil {
+		t.Fatalf("formatter: %v", err)
+	}
+	recovery := &contextAwareReceiptRecoveryEnqueuer{}
+	hook := NewReceiptHookHandler(formatter, &recordingReceiptAppender{},
+		WithReceiptHookRecoveryEnqueuer(recovery))
+	settler := NewReceiptHookSettler(&recordingBillingSettler{}, hook)
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = settler.Settle(canceledCtx, billing.SettleRequest{
+		TenantID:       7,
+		ClaimID:        9003,
+		AuditRequestID: requestID,
+	})
+	if err != nil {
+		t.Fatalf("Settle must remain fail-open for receipt hook errors after client cancel: %v", err)
+	}
+	if recovery.sawCanceledContext {
+		t.Fatal("receipt recovery enqueue saw canceled request context; want bounded context detached from request cancellation")
+	}
+	if len(recovery.events) != 1 {
+		t.Fatalf("recovery events=%d want 1", len(recovery.events))
+	}
+}
+
+func TestReceiptRecoveryHandlerAppendsMissingReceipt(t *testing.T) {
+	ctx := context.Background()
+	requestID := "req-worker-recovery-replay"
+	auditSigner := testAuditSigner(t, 37)
+	ledger, err := auditledger.NewMemoryLedger(auditSigner)
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	if _, err := ledger.Append(ctx, mustPrepareAuditLedgerEntry(t, ctx, auditledger.LedgerEntry{
+		RequestID: requestID,
+		TenantID:  7,
+		ModelChain: &proto.ModelChain{
+			Requested:        "gpt-4o",
+			RouteDecided:     "gpt-4o",
+			UpstreamReported: "gpt-4o",
+			Verdict:          "match",
+		},
+	})); err != nil {
+		t.Fatalf("append ledger: %v", err)
+	}
+	formatter, err := NewReceiptFormatter(ledger, nil, &staticReceiptSource{inputs: ReceiptInputs{
+		TenantID:            7,
+		UserID:              7001,
+		ClaimID:             9001,
+		Model:               "gpt-4o",
+		InputTokens:         10,
+		OutputTokens:        3,
+		CostUSDMicros:       100,
+		RateTableSnapshotID: 4,
+		CreatedAt:           time.Date(2026, 6, 1, 10, 30, 0, 0, time.UTC),
+	}}, auditSigner)
+	if err != nil {
+		t.Fatalf("formatter: %v", err)
+	}
+	appender := &recordingReceiptAppender{}
+	hook := NewReceiptHookHandler(formatter, appender, WithReceiptHookTrustSigner(testTrustReceiptSigner(t, 67)))
+	payload := ReceiptRecoveryPayload{
+		Source:    ReceiptRecoverySourceSettleHook,
+		RequestID: requestID,
+		TenantID:  7,
+		ClaimID:   9001,
+	}
+	raw, err := payload.Encode()
+	if err != nil {
+		t.Fatalf("encode payload: %v", err)
+	}
+	claimID := int64(9001)
+
+	if err := hook.HandleReceiptRecovery(ctx, dlq.Record{
+		TenantID:  7,
+		ClaimID:   &claimID,
+		EventKind: dlq.EventKindCostReceiptAppend,
+		Payload:   raw,
+	}); err != nil {
+		t.Fatalf("HandleReceiptRecovery: %v", err)
+	}
+	if appender.receipt == nil || appender.receipt.RequestID != requestID || len(appender.receipt.SignedHash) == 0 {
+		t.Fatalf("receipt not appended by replay: %+v", appender.receipt)
 	}
 }
 
@@ -436,6 +607,33 @@ func (a *recordingReceiptAppender) AppendReceipt(_ context.Context, receipt *Cos
 	clone.SignedHash = append([]byte(nil), receipt.SignedHash...)
 	a.receipt = &clone
 	return nil
+}
+
+type recordingReceiptRecoveryEnqueuer struct {
+	events []dlq.Event
+	err    error
+}
+
+func (q *recordingReceiptRecoveryEnqueuer) Enqueue(_ context.Context, e dlq.Event) (int64, error) {
+	if q.err != nil {
+		return 0, q.err
+	}
+	q.events = append(q.events, e)
+	return int64(len(q.events)), nil
+}
+
+type contextAwareReceiptRecoveryEnqueuer struct {
+	events             []dlq.Event
+	sawCanceledContext bool
+}
+
+func (q *contextAwareReceiptRecoveryEnqueuer) Enqueue(ctx context.Context, e dlq.Event) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		q.sawCanceledContext = true
+		return 0, err
+	}
+	q.events = append(q.events, e)
+	return int64(len(q.events)), nil
 }
 
 func testTrustReceiptSigner(t *testing.T, seed byte) *sign.Signer {
