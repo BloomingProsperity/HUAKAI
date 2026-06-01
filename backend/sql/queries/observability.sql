@@ -30,7 +30,19 @@ WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_i
   AND (sqlc.narg(api_key_id)::bigint IS NULL OR ur.api_key_id = sqlc.narg(api_key_id)::bigint)
   AND (sqlc.narg(provider_account_id)::bigint IS NULL OR ur.provider_account_id = sqlc.narg(provider_account_id)::bigint)
   AND (sqlc.narg(model)::text IS NULL OR ur.requested_model = sqlc.narg(model)::text)
-  AND (sqlc.arg(pending_reconciliation_only)::boolean = false OR ur.pending_reconciliation = true)
+  AND (
+    sqlc.arg(pending_reconciliation_only)::boolean = false
+    OR (
+      ur.pending_reconciliation = true
+      AND NOT EXISTS (
+        SELECT 1
+        FROM usage_record_reconciliation_events re
+        WHERE re.tenant_id = ur.tenant_id
+          AND re.original_usage_record_id = ur.id
+          AND re.reconciliation_source = 'stream_no_usage_finalized'
+      )
+    )
+  )
   AND (sqlc.arg(has_cursor)::boolean = false OR (ur.settled_at, ur.id) < (sqlc.arg(cursor_created_at)::timestamptz, sqlc.arg(cursor_id)::bigint))
 ORDER BY ur.settled_at DESC, ur.id DESC
 LIMIT sqlc.arg(page_limit)::integer;
@@ -49,7 +61,19 @@ WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_i
   AND (sqlc.narg(api_key_id)::bigint IS NULL OR ur.api_key_id = sqlc.narg(api_key_id)::bigint)
   AND (sqlc.narg(provider_account_id)::bigint IS NULL OR ur.provider_account_id = sqlc.narg(provider_account_id)::bigint)
   AND (sqlc.narg(model)::text IS NULL OR ur.requested_model = sqlc.narg(model)::text)
-  AND (sqlc.arg(pending_reconciliation_only)::boolean = false OR ur.pending_reconciliation = true);
+  AND (
+    sqlc.arg(pending_reconciliation_only)::boolean = false
+    OR (
+      ur.pending_reconciliation = true
+      AND NOT EXISTS (
+        SELECT 1
+        FROM usage_record_reconciliation_events re
+        WHERE re.tenant_id = ur.tenant_id
+          AND re.original_usage_record_id = ur.id
+          AND re.reconciliation_source = 'stream_no_usage_finalized'
+      )
+    )
+  );
 
 -- name: ListBillingClaims :many
 SELECT

@@ -1,7 +1,15 @@
-# S1-029 — streaming provisional cost fix (LANDED) + reconcile worker (DEFERRED)
+# S1-029 — streaming provisional cost fix (LANDED) + no-usage reconcile worker (LANDED)
 
 Source: codex `exec review --uncommitted` Round-1..Round-4 (model gpt-5.5, reasoning xhigh, 2026-05-28/29) on the S1-029 diff.
 Owner decision (2026-05-29): land ONLY the streaming cost fix now; defer the settlementreconcile worker to a dedicated migration-backed slice (see docs/process/plans/2026-05-28-s1029-p1-provisional-overcharge-claude.md for the decision record).
+
+2026-06-01 update (S1-029 worker patch): the no-worker backlog part is now addressed by
+`backend/internal/billing/reconciliation_worker.go`, which appends a zero-delta
+`usage_record_reconciliation_events` marker (`stream_no_usage_finalized`) for the narrow
+zero-cost/no-provider-usage stream shape after a grace window. Admin pending-only usage queries
+now exclude rows carrying that marker. Positive estimated provisional billing remains deferred.
+The older "worker deferred" notes below are retained as historical review context from
+2026-05-29; their "not landed" status is superseded by this 2026-06-01 patch.
 
 ## LANDED in this commit — streaming provisional cost fix (no overcharge)
 A stream that delivered content but received NO upstream usage now keeps `ActualCost = 0` with
@@ -25,7 +33,7 @@ Guards (each RED→GREEN proven, #14):
 Tests: T1 (no-usage → $0/inferred/pending, mutation = chunk-count provisional → 0.1 overcharge → RED),
 T2 (config failure → $0/reported/pending), T3 (ambiguous preserved). All in chat_completions_pricing_test.go.
 
-## DEFERRED — settlementreconcile finalize-after-grace worker (own slice)
+## Historical deferred worker notes superseded by 2026-06-01 patch
 The worker (internal/settlementreconcile, billing_settle.sql SelectPendingReconciliationForFinalize +
 FinalizePendingReconciliation, cmd/gateway wiring) is implemented locally but NOT landed. Across four
 review rounds it kept misclassifying rows because it identifies "the no-authoritative-usage provisional"
@@ -54,17 +62,15 @@ Required for the deferred slice (both Owner-gated):
    settle-path billing-ledger code with encoding tests (state_test.go:77-83,
    billing_state_integration_test.go:29) → High-risk per the Risk-Based Confirmation Rule.
 
-Until the worker lands, missing-usage streams accrue as `pending_reconciliation = true` with no
-auto-finalizer (a growing but benign pending backlog; cost is correct at $0). The worker’s zero-delta
-`FinalizePendingReconciliation` marker (append-only, into `usage_record_reconciliation_events`) and its
-60s/grace-5m/batch FOR UPDATE SKIP LOCKED design are sound and carry over to the dedicated slice; only
-the row-identification predicate needs the marker above.
+The landed 2026-06-01 worker uses the zero-delta append-only marker path and guards on the now-reliable
+no-usage shape: `usage_source='inferred'`, stream partial, delivered frames present, all token/cache/image
+buckets zero, `actual_cost=0`, age past grace, and no prior `stream_no_usage_finalized` marker. Positive
+estimated provisional billing remains out of scope for this S1-029 closure.
 
 ## Other deferred follow-ups
-- **[S2] Admin/observability pending-views over-count finalized rows.** Once the worker lands, finalize
-  is append-only (the `pending_reconciliation` column stays true), so pending-only reads
-  (observability.sql:33,52) must exclude rows with a `finalize_after_grace` marker (or derive an
-  outstanding view). NOT a regression — pre-worker nothing cleared the flag. Belongs with the worker slice.
+- **[RESOLVED 2026-06-01] Admin/observability pending-views over-count finalized rows.** Pending-only
+  usage reads now exclude rows with the `stream_no_usage_finalized` marker while non-pending-only reads
+  still return the immutable usage rows.
 - **[S2] Integration-test data persists under append-only triggers.** Money-path integration tests can't
   DELETE seeded rows (migration 0039); use a unique per-run tenant + finalize markers, or an ephemeral
   per-run schema/DB. Subsumes the lease-sweep test-isolation debt in DEFERRED-S1-015.

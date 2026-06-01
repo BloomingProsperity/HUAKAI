@@ -478,6 +478,14 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	leaseSweeper := billing.NewLeaseSweeper(pgPool, settler, 0)
 	leaseSweeper.Start(ctx)
 	rt.leaseSweepStop = leaseSweeper.Stop
+	pendingReconciler := billing.NewPendingReconciliationWorker(
+		billing.NewPostgresPendingReconciliationFinalizer(pgPool),
+		0,
+		0,
+		0,
+	)
+	pendingReconciler.Start(ctx)
+	rt.pendingReconcileStop = pendingReconciler.Stop
 
 	clientIPResolver, err := loadClientIPResolverFromEnv()
 	if err != nil {
