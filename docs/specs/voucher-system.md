@@ -119,12 +119,12 @@ If Phase 6 implementation keeps `status` as only `active | expired | exhausted`,
 3. System starts the redemption transaction and acquires a transaction-scoped PostgreSQL advisory lock keyed to `(tenant_id, normalized_code_hash)` or an equivalent voucher identity. If `single_use_per_user` is true, the same transaction also protects the `(tenant_id, voucher_id, user_id)` redemption uniqueness check.
 4. System rereads voucher state inside the transaction.
 5. System rejects if voucher is not active, not yet valid, expired, exhausted, revoked, tenant-mismatched, or not eligible for this User.
-6. System checks idempotency. A retry with the same User and redemption idempotency key returns the prior result without adding balance twice.
+6. System checks idempotency. A retry with the same User and redemption idempotency key returns the existing redemption identity without adding balance twice; the returned balance/quota view is the current authoritative User balance, not a replayed voucher-redemption sum. Historical pre-bridge redemptions whose voucher credit is not materialized into the balance projection may use an audit-derived floor only while no positive captured wallet debit exists for the User.
 7. System writes a voucher redemption record, increments the successful redemption count, and transitions to exhausted if this redemption reaches `max_redemptions`.
 8. System writes `billing_events { type: voucher_redeemed, value, voucher_id }` in the same transaction as the balance/quota mutation.
 9. System increases User balance or balance-backed quota by the voucher value in the same transaction.
 10. System emits `voucher_redeemed` into the F-TRUST audit chain.
-11. Commit returns the new balance/quota view to the User.
+11. Commit returns the current balance/quota view to the User.
 
 ## F-BILL-001 / Tx2 Relationship
 

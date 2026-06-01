@@ -414,54 +414,28 @@ func balanceCents(balance decimal.Decimal) int64 {
 }
 
 func idempotentBalanceCents(ctx context.Context, tx pgx.Tx, tenantID, userID int64, red Redemption) (int64, error) {
-	if red.BillingEventID <= 0 {
-		return redemptionBalanceThrough(ctx, tx, tenantID, userID, red.ID)
-	}
-	currentBalance, err := userBalanceAmount(ctx, tx, tenantID, userID)
+	balance, err := userBalanceCents(ctx, tx, tenantID, userID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return redemptionBalanceThrough(ctx, tx, tenantID, userID, red.ID)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("voucher: read idempotent user balance: %w", err)
 	}
-	redemptionEventTime, err := billingEventOccurredAt(ctx, tx, tenantID, red.BillingEventID)
-	if err != nil {
-		return 0, err
-	}
-	var postRedemptionDelta decimal.Decimal
-	if err := tx.QueryRow(ctx, `
-SELECT COALESCE(SUM(CASE
-	WHEN be.event_type = 'claim_committed' AND bh.claim_id IS NOT NULL AND bh.resolved_at > $2 THEN be.actual_cost
-	WHEN be.event_type = 'voucher_redeemed' AND vr.currency_code = $5 AND (be.occurred_at > $2 OR (be.occurred_at = $2 AND be.id > $3)) THEN -be.actual_cost
-	WHEN be.event_type = 'reconciliation_appended' AND (be.occurred_at > $2 OR (be.occurred_at = $2 AND be.id > $3)) THEN be.actual_cost_signed
-	ELSE 0
-END), 0)
-FROM billing_events be
-LEFT JOIN billing_ledger_claims blc ON blc.tenant_id = be.tenant_id AND blc.id = be.claim_id
-LEFT JOIN balance_holds bh ON bh.tenant_id = be.tenant_id AND bh.claim_id = be.claim_id AND bh.state = 'captured'
-LEFT JOIN voucher_redemption vr ON vr.tenant_id = be.tenant_id AND vr.id = be.voucher_redemption_id
-WHERE be.tenant_id = $1
-  AND (
-	(be.event_type IN ('claim_committed', 'reconciliation_appended') AND blc.user_id = $4)
-	OR (be.event_type = 'voucher_redeemed' AND vr.user_id = $4 AND vr.currency_code = $5)
-  )`, tenantID, redemptionEventTime, red.BillingEventID, userID, supportedVoucherBalanceCurrency).Scan(&postRedemptionDelta); err != nil {
-		return 0, fmt.Errorf("voucher: read idempotent balance deltas: %w", err)
-	}
-	walletCents := balanceCents(currentBalance.Add(postRedemptionDelta))
 	redemptionCents, err := redemptionBalanceThrough(ctx, tx, tenantID, userID, red.ID)
 	if err != nil {
 		return 0, err
 	}
-	if redemptionCents > walletCents {
-		hasPriorDebit, err := hasWalletDebitBeforeTime(ctx, tx, tenantID, userID, redemptionEventTime)
-		if err != nil {
-			return 0, err
-		}
-		if !hasPriorDebit {
-			return redemptionCents, nil
-		}
+	if redemptionCents <= balance {
+		return balance, nil
 	}
-	return walletCents, nil
+	hasDebit, err := hasWalletDebit(ctx, tx, tenantID, userID)
+	if err != nil {
+		return 0, err
+	}
+	if !hasDebit {
+		return redemptionCents, nil
+	}
+	return balance, nil
 }
 
 func insertVoucherTx(ctx context.Context, tx pgx.Tx, rec createVoucherRecord) (Voucher, error) {
@@ -559,18 +533,7 @@ WHERE tenant_id=$1 AND user_id=$2 AND id <= $3 AND currency_code=$4`, tenantID, 
 	return balance, nil
 }
 
-func billingEventOccurredAt(ctx context.Context, tx pgx.Tx, tenantID, billingEventID int64) (time.Time, error) {
-	var occurredAt time.Time
-	if err := tx.QueryRow(ctx, `
-SELECT occurred_at
-FROM billing_events
-WHERE tenant_id=$1 AND id=$2`, tenantID, billingEventID).Scan(&occurredAt); err != nil {
-		return time.Time{}, fmt.Errorf("voucher: read redemption billing event time: %w", err)
-	}
-	return occurredAt.UTC(), nil
-}
-
-func hasWalletDebitBeforeTime(ctx context.Context, tx pgx.Tx, tenantID, userID int64, before time.Time) (bool, error) {
+func hasWalletDebit(ctx context.Context, tx pgx.Tx, tenantID, userID int64) (bool, error) {
 	var exists bool
 	if err := tx.QueryRow(ctx, `
 SELECT EXISTS (
@@ -579,11 +542,12 @@ SELECT EXISTS (
 	JOIN billing_ledger_claims blc ON blc.tenant_id = be.tenant_id AND blc.id = be.claim_id
 	JOIN balance_holds bh ON bh.tenant_id = be.tenant_id AND bh.claim_id = be.claim_id AND bh.state = 'captured'
 	WHERE be.tenant_id = $1
-	  AND bh.resolved_at < $2
 	  AND be.event_type = 'claim_committed'
-	  AND blc.user_id = $3
-)`, tenantID, before, userID).Scan(&exists); err != nil {
-		return false, fmt.Errorf("voucher: read prior wallet debit evidence: %w", err)
+	  AND blc.user_id = $2
+	  AND bh.user_id = $2
+	  AND bh.captured > 0
+)`, tenantID, userID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("voucher: read wallet debit evidence: %w", err)
 	}
 	return exists, nil
 }
@@ -608,4 +572,3 @@ func isUniqueViolation(err error) bool {
 }
 
 var _ Store = (*PostgresStore)(nil)
-var _ = time.Time{}
