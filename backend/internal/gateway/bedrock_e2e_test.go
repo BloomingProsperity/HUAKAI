@@ -14,8 +14,10 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -90,7 +92,7 @@ func TestBedrockE2E_TruncatedFrame_PropagatesAsScanError(t *testing.T) {
 }
 
 // TestBedrockE2E_ExceptionFrame_TerminatesWithError Bedrock exception 帧应
-// 触发 ErrBedrockException；客户端只看到 canonical error，raw payload 进日志。
+// 触发 ErrBedrockException；客户端只看到 canonical error，日志只保留脱敏摘要。
 func TestBedrockE2E_ExceptionFrame_TerminatesWithError(t *testing.T) {
 	var logs bytes.Buffer
 	prev := slog.Default()
@@ -100,7 +102,8 @@ func TestBedrockE2E_ExceptionFrame_TerminatesWithError(t *testing.T) {
 	})
 
 	const marker = "SENSITIVE_BEDROCK_MARKER"
-	exception := encodeBedrockExceptionFrame(t, "ModelStreamErrorException", `{"message":"`+marker+` upstream rate limited"}`)
+	payload := sensitiveBedrockPayload(marker)
+	exception := encodeBedrockExceptionFrame(t, "ModelStreamErrorException", payload)
 	recorder := httptest.NewRecorder()
 	forwarder := newForwarder()
 
@@ -114,7 +117,7 @@ func TestBedrockE2E_ExceptionFrame_TerminatesWithError(t *testing.T) {
 		t.Errorf("err=%v want ErrBedrockException", err)
 	}
 	// scanner 在 yield ErrBedrockException **之前**先 emit 一条 error SSEEvent，
-	// forwarder.handleEventWithAdapter 必须脱敏后再写入 ResponseRecorder。
+	// forwarder.handleEventWithAdapter 必须脱敏后再写入 ResponseRecorder 和内部日志。
 	body := recorder.Body.String()
 	if strings.Contains(body, marker) {
 		t.Errorf("exception payload leaked to client body: %q", body)
@@ -122,9 +125,11 @@ func TestBedrockE2E_ExceptionFrame_TerminatesWithError(t *testing.T) {
 	if !strings.Contains(body, `"code":"upstream_error"`) {
 		t.Errorf("sanitized exception frame missing upstream_error code: %q", body)
 	}
-	if gotLog := logs.String(); !strings.Contains(gotLog, marker) {
-		t.Errorf("raw exception payload missing from internal log: %s", gotLog)
+	assertSafePayloadSummary(t, logs.String(), payload, marker)
+	if strings.Contains(err.Error(), marker) {
+		t.Errorf("exception error leaked raw payload marker: %v", err)
 	}
+	assertSafePayloadSummary(t, err.Error(), payload, marker)
 }
 
 // TestBedrockE2E_RegistryWiring_BothLanesPresent 单元层守界：bedrock_invoke
@@ -183,6 +188,37 @@ func encodeBedrockExceptionFrame(t *testing.T, exceptionType, payload string) []
 	binary.BigEndian.PutUint32(crcBuf[:], mc)
 	msg.Write(crcBuf[:])
 	return msg.Bytes()
+}
+
+func sensitiveBedrockPayload(marker string) string {
+	return `{"message":"` + marker + ` upstream rate limited","content":"` + marker + ` prompt text","api_key":"sk-` + marker + `"}`
+}
+
+func assertSafePayloadSummary(t *testing.T, got, rawPayload, marker string) {
+	t.Helper()
+	if strings.Contains(got, marker) {
+		t.Fatalf("raw sensitive marker leaked: %s", got)
+	}
+	if want := fmt.Sprintf("payload_bytes=%d", len(rawPayload)); !strings.Contains(got, want) {
+		t.Fatalf("safe payload summary missing %q: %s", want, got)
+	}
+	if !strings.Contains(got, "payload_summary_sha256_prefix=") {
+		t.Fatalf("safe payload summary missing summary hash: %s", got)
+	}
+	if rawHash := payloadHashPrefix([]byte(rawPayload)); strings.Contains(got, "payload_sha256_prefix="+rawHash) || strings.Contains(got, rawHash) {
+		t.Fatalf("safe payload summary logged raw payload hash: %s", got)
+	}
+	if !strings.Contains(got, "payload_snippet=") {
+		t.Fatalf("safe payload summary missing capped snippet: %s", got)
+	}
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Fatalf("safe payload summary missing redaction marker: %s", got)
+	}
+}
+
+func payloadHashPrefix(raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:8])
 }
 
 // 静态使用断言：避免 unused import 警告（base64 / time 在 helpers 中由其它
