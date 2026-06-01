@@ -76,7 +76,10 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 	// model ID 用 path escape 防 URL 保留字符断 routing。
 	substituted := strings.ReplaceAll(defaultEndpoint, "{model}", url.PathEscape(in.UpstreamModelID))
 	// upstream_passthrough 凭据自带 base_url 优先用之。
-	endpoint := provider.EndpointForCredential(substituted, in.Credential)
+	endpoint, err := provider.EndpointForCredential(substituted, in.Credential)
+	if err != nil {
+		return nil, fmt.Errorf("gemini passthrough: endpoint rejected: %w", err)
+	}
 
 	// API key 在 query 还是 header
 	if in.Credential.Extra["auth_in_query"] == "true" {

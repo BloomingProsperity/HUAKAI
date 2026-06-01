@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"testing"
@@ -74,6 +76,12 @@ func (s *stubDoer) Do(req *http.Request) (*http.Response, error) {
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
 		Body:       io.NopCloser(strings.NewReader(s.respBody)),
 	}, nil
+}
+
+type dispatcherRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f dispatcherRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func newDispatcherForTest(adapter provider.Adapter, doer HTTPDoer) *UpstreamDispatcher {
@@ -161,6 +169,102 @@ func TestDispatcher_HTTPDoFails(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "HTTP Do 失败") {
 		t.Errorf("err=%v", err)
+	}
+}
+
+func TestDispatcher_RejectsPassthroughEndpointHostnameAliasBeforeDo(t *testing.T) {
+	restore := provider.SwapPassthroughEndpointLookupForTesting(func(_ context.Context, network, host string) ([]netip.Addr, error) {
+		if network != "ip" {
+			t.Fatalf("lookup network=%q, want ip", network)
+		}
+		if host != "ip6-localhost" {
+			t.Fatalf("lookup host=%q, want ip6-localhost", host)
+		}
+		return []netip.Addr{netip.MustParseAddr("::1")}, nil
+	})
+	t.Cleanup(restore)
+
+	innerCalled := false
+	tf := transport.NewFactory()
+	tf.SetStandard(dispatcherRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		innerCalled = true
+		if req.Header.Get("Authorization") != "" {
+			t.Fatalf("unsafe passthrough request reached transport with Authorization=%q", req.Header.Get("Authorization"))
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}))
+
+	d := &UpstreamDispatcher{
+		Adapters:         &stubRegistry{adapter: &stubAdapter{platform: "openai", endpoint: "https://ip6-localhost/v1/test"}},
+		TransportFactory: tf,
+	}
+	_, err := d.Dispatch(context.Background(), DispatchInput{
+		ProtocolFamily: "openai_chat",
+		Account:        provider.AccountInfo{AccountID: 77, Platform: "openai", AccountType: "upstream_static"},
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeUpstreamPassthrough,
+			Value: "Bearer proxy-secret",
+			Extra: map[string]string{"base_url": "https://ip6-localhost/v1"},
+		},
+	})
+	if !errors.Is(err, provider.ErrUnsafePassthroughEndpoint) {
+		t.Fatalf("Dispatch error=%v, want ErrUnsafePassthroughEndpoint", err)
+	}
+	if innerCalled {
+		t.Fatal("unsafe passthrough request reached transport")
+	}
+	if strings.Contains(err.Error(), "ip6-localhost") || strings.Contains(err.Error(), "proxy-secret") {
+		t.Fatalf("dispatcher rejection leaked raw hostname or secret: %v", err)
+	}
+}
+
+func TestDispatcher_RejectsPassthroughDNSRebindAtDial(t *testing.T) {
+	lookupCalls := 0
+	restore := provider.SwapPassthroughEndpointLookupForTesting(func(_ context.Context, network, host string) ([]netip.Addr, error) {
+		if network != "ip" {
+			t.Fatalf("lookup network=%q, want ip", network)
+		}
+		if host != "rebind.example" {
+			t.Fatalf("lookup host=%q, want rebind.example", host)
+		}
+		lookupCalls++
+		if lookupCalls == 1 {
+			return []netip.Addr{netip.MustParseAddr("93.184.216.34")}, nil
+		}
+		return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+	})
+	t.Cleanup(restore)
+
+	dialCalled := false
+	tf := transport.NewFactory()
+	tf.SetStandard(&http.Transport{
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			dialCalled = true
+			return nil, errors.New("base dial should not be reached")
+		},
+	})
+
+	d := &UpstreamDispatcher{
+		Adapters:         &stubRegistry{adapter: &stubAdapter{platform: "openai", endpoint: "https://rebind.example/v1/test"}},
+		TransportFactory: tf,
+	}
+	_, err := d.Dispatch(context.Background(), DispatchInput{
+		ProtocolFamily: "openai_chat",
+		Account:        provider.AccountInfo{AccountID: 78, Platform: "openai", AccountType: "upstream_static"},
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeUpstreamPassthrough,
+			Value: "Bearer proxy-secret",
+			Extra: map[string]string{"base_url": "https://rebind.example/v1"},
+		},
+	})
+	if !errors.Is(err, provider.ErrUnsafePassthroughEndpoint) {
+		t.Fatalf("Dispatch error=%v, want ErrUnsafePassthroughEndpoint", err)
+	}
+	if lookupCalls != 2 {
+		t.Fatalf("lookup calls=%d, want preflight + dial-time lookups", lookupCalls)
+	}
+	if dialCalled {
+		t.Fatal("DNS rebind target reached base dial")
 	}
 }
 
