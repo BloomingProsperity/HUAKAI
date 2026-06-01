@@ -115,6 +115,30 @@ func TestPassthroughAdapter_BuildRequest_UpstreamPassthroughCustomHeader(t *test
 	}
 }
 
+func TestPassthroughAdapter_BuildRequest_RejectsUnsafeUpstreamBaseURLBeforeSecret(t *testing.T) {
+	a := &PassthroughAdapter{}
+	req, err := a.BuildRequest(context.Background(), provider.BuildInput{
+		InboundBody: []byte(`{}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeUpstreamPassthrough,
+			Value: "Bearer secret-token",
+			Extra: map[string]string{
+				"auth_header": "Authorization",
+				"base_url":    "http://127.0.0.1:8080/v1/messages",
+			},
+		},
+	})
+	if err == nil {
+		if req != nil && req.Header.Get("Authorization") != "" {
+			t.Fatalf("unsafe base_url built request with secret Authorization header: url=%s", req.URL.String())
+		}
+		t.Fatal("unsafe base_url should be rejected before request construction")
+	}
+	if strings.Contains(err.Error(), "127.0.0.1") || strings.Contains(err.Error(), "secret-token") {
+		t.Fatalf("unsafe base_url rejection leaked destination or secret: %v", err)
+	}
+}
+
 func TestPassthroughAdapter_BuildRequest_RejectOAuthCredential(t *testing.T) {
 	// Pro/Max OAuth 反转走另外的 adapter（暂停）；passthrough 不接受
 	a := &PassthroughAdapter{}
