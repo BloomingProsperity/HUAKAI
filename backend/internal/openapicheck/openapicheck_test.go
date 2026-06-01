@@ -42,6 +42,41 @@ components:
 	}
 }
 
+func TestParseSpecOperations_BasicYAML(t *testing.T) {
+	spec := `openapi: 3.1.0
+info:
+  title: test
+paths:
+  /v1/foo:
+    get: {}
+    post:
+      requestBody:
+        required: true
+  /v1/bar/{id}:
+    delete: {}
+components:
+  schemas: {}
+`
+	tmp := filepath.Join(t.TempDir(), "spec.yaml")
+	if err := os.WriteFile(tmp, []byte(spec), 0o600); err != nil {
+		t.Fatalf("write spec: %v", err)
+	}
+
+	got, err := ParseSpecOperations(tmp)
+	if err != nil {
+		t.Fatalf("ParseSpecOperations: %v", err)
+	}
+	want := []Operation{
+		{Method: http.MethodDelete, Path: "/v1/bar/{id}"},
+		{Method: http.MethodGet, Path: "/v1/foo"},
+		{Method: http.MethodPost, Path: "/v1/foo"},
+	}
+	sortOperations(got)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("operations mismatch:\n got=%v\nwant=%v", got, want)
+	}
+}
+
 func TestParseSpecPaths_StopsAtNextTopKey(t *testing.T) {
 	// paths: 后面紧跟另一个顶层 key (components) — parser 必须停止。
 	spec := `paths:
@@ -64,6 +99,23 @@ components:
 	want := []string{"/a", "/b"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("parser 越界吸了 components 段:\n got=%v\nwant=%v", got, want)
+	}
+}
+
+func TestCompareOperations_DetectsSamePathMethodMismatch(t *testing.T) {
+	spec := []Operation{{Method: http.MethodGet, Path: "/v1/chat/completions"}}
+	impl := []Operation{{Method: http.MethodPost, Path: "/v1/chat/completions"}}
+
+	rep := CompareOperations(spec, impl)
+
+	if len(rep.Common) != 0 {
+		t.Fatalf("Common=%v want empty for GET-vs-POST drift", rep.Common)
+	}
+	if !reflect.DeepEqual(rep.SpecOnly, []string{"GET /v1/chat/completions"}) {
+		t.Fatalf("SpecOnly=%v want GET /v1/chat/completions", rep.SpecOnly)
+	}
+	if !reflect.DeepEqual(rep.ImplOnly, []string{"POST /v1/chat/completions"}) {
+		t.Fatalf("ImplOnly=%v want POST /v1/chat/completions", rep.ImplOnly)
 	}
 }
 

@@ -2,7 +2,7 @@
 // cmd/gateway 实际 chi 路由的一致性检查。
 //
 // 验证目标（Owner deep-review 2026-05-17）：
-//   - spec 中声明的 45 条 path 都能在 main.go mountRoutes 后真实命中
+//   - spec 中声明的 path 都能在 main.go mountRoutes 后真实命中
 //   - main.go 注册但 spec 未声明的 path 必须列出（用于触发文档补救）
 //
 // 与 main.go 同 package main：直接调用 mountRoutes(nil-deps)，依赖：
@@ -112,6 +112,43 @@ func TestOpenAPI_ImplementationConsistency(t *testing.T) {
 		t.Errorf("main.go 已注册但 OpenAPI 未声明的 %d 条 path（白名单后剩余）：%v",
 			len(residualImplOnly), residualImplOnly)
 	}
+}
+
+func TestOpenAPI_ChatCompletionsMethodMatchesRuntimePOST(t *testing.T) {
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	specOps, err := openapicheck.ParseSpecOperations(specAbs)
+	if err != nil {
+		t.Fatalf("解析 OpenAPI operations %s: %v", specAbs, err)
+	}
+
+	r := buildTestRouter(t)
+	implOps := openapicheck.WalkChiOperations(r)
+
+	const chatPath = "/v1/chat/completions"
+	if !hasOperation(implOps, http.MethodPost, chatPath) {
+		t.Fatalf("runtime missing POST %s; test premise no longer matches routes.go", chatPath)
+	}
+	if hasOperation(implOps, http.MethodGet, chatPath) {
+		t.Fatalf("runtime unexpectedly serves GET %s; S1-027 premise no longer matches routes.go", chatPath)
+	}
+	if !hasOperation(specOps, http.MethodPost, chatPath) {
+		t.Fatalf("OpenAPI must declare POST %s so generated clients call the mounted runtime route", chatPath)
+	}
+	if hasOperation(specOps, http.MethodGet, chatPath) {
+		t.Fatalf("OpenAPI must not declare GET %s; chi mounts only POST for the public chat route", chatPath)
+	}
+}
+
+func hasOperation(ops []openapicheck.Operation, method, path string) bool {
+	for _, op := range ops {
+		if op.Method == method && op.Path == path {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAT_GATEWAY_route_uncovered_404(t *testing.T) {

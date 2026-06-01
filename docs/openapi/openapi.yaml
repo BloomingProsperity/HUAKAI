@@ -98,7 +98,7 @@ paths:
   # ==========================================================================
 
   /v1/chat/completions:
-    get:
+    post:
       tags: [gateway]
       summary: OpenAI Chat Completions compatible relay
       operationId: postChatCompletions
