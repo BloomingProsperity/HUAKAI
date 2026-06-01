@@ -1,7 +1,7 @@
 //go:build integration_pg
 
 // Slice 2 integration tests for PostgresRegistry against real
-// PostgreSQL. Validates the 14 cases enumerated in
+// PostgreSQL. Validates the 14 original cases enumerated in
 // docs/process/plans/2026-04-30-n5-model-registry.md §"Test Plan":
 //
 //   1.  HappyPath
@@ -18,6 +18,7 @@
 //   12. EffectiveTimeWindow
 //   13. ProviderModelOverrideOnPrimary
 //   14. SnapshotVersionStamp
+//   15. ListModelsDiscoverySurface
 
 package registry
 
@@ -782,5 +783,102 @@ func TestPostgresRegistry_SnapshotVersionStamp(t *testing.T) {
 	}
 	if got.SnapshotVersion[len(got.SnapshotVersion)-len(wantSuffix):] != wantSuffix {
 		t.Errorf("SnapshotVersion = %q; want suffix %q", got.SnapshotVersion, wantSuffix)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Test 15 — ListModelsDiscoverySurface
+// ListModels returns only aliases the tenant can actually route: active alias,
+// active model, enabled in-window binding, and explicit global inheritance.
+// -----------------------------------------------------------------------------
+
+func TestPostgresRegistry_ListModelsDiscoverySurface(t *testing.T) {
+	ctx := context.Background()
+	pool := openIntegrationPool(t, ctx)
+	f := newFixture(t, ctx, pool)
+
+	visibleTenant := f.seedModel(modelOpts{
+		canonicalID:     "openai/gpt-visible-" + f.suffix,
+		providerModelID: "gpt-visible",
+		protocolFamily:  "openai_chat",
+	})
+	f.seedAlias(aliasOpts{
+		modelID:               visibleTenant,
+		publicAliasNormalized: "gpt-visible-" + f.suffix,
+		publicAliasDisplay:    "gpt-visible-" + f.suffix,
+	})
+	f.seedBinding(bindingOpts{modelID: visibleTenant, poolGroupID: f.poolGroupID})
+
+	unbound := f.seedModel(modelOpts{canonicalID: "openai/unbound-" + f.suffix, protocolFamily: "openai_chat"})
+	f.seedAlias(aliasOpts{
+		modelID:               unbound,
+		publicAliasNormalized: "unbound-" + f.suffix,
+		publicAliasDisplay:    "unbound-" + f.suffix,
+	})
+
+	disabled := f.seedModel(modelOpts{canonicalID: "openai/disabled-" + f.suffix, protocolFamily: "openai_chat"})
+	f.seedAlias(aliasOpts{
+		modelID:               disabled,
+		publicAliasNormalized: "disabled-" + f.suffix,
+		publicAliasDisplay:    "disabled-" + f.suffix,
+		status:                "disabled",
+	})
+	f.seedBinding(bindingOpts{modelID: disabled, poolGroupID: f.poolGroupID})
+
+	globalVisible := f.seedModel(modelOpts{
+		scope:           "global",
+		canonicalID:     "anthropic/claude-global-visible-" + f.suffix,
+		providerModelID: "claude-global-visible",
+	})
+	f.seedAlias(aliasOpts{
+		scope:                 "global",
+		modelID:               globalVisible,
+		publicAliasNormalized: "claude-global-visible-" + f.suffix,
+		publicAliasDisplay:    "claude-global-visible-" + f.suffix,
+	})
+	f.seedBinding(bindingOpts{modelID: globalVisible, poolGroupID: f.poolGroupID})
+
+	globalShadowed := f.seedModel(modelOpts{
+		scope:           "global",
+		canonicalID:     "anthropic/claude-shadowed-" + f.suffix,
+		providerModelID: "claude-shadowed",
+	})
+	f.seedAlias(aliasOpts{
+		scope:                 "global",
+		modelID:               globalShadowed,
+		publicAliasNormalized: "claude-shadowed-" + f.suffix,
+		publicAliasDisplay:    "claude-shadowed-" + f.suffix,
+	})
+	f.seedAlias(aliasOpts{
+		modelID:               visibleTenant,
+		publicAliasNormalized: "claude-shadowed-" + f.suffix,
+		publicAliasDisplay:    "claude-shadowed-" + f.suffix,
+		status:                "disabled",
+	})
+	f.seedBinding(bindingOpts{modelID: globalShadowed, poolGroupID: f.poolGroupID})
+	f.setInheritPolicy(true)
+
+	r := NewPostgresRegistry(pool, nil)
+	got, err := r.ListModels(ctx, f.tenantID)
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	ids := make(map[string]struct{}, len(got))
+	for _, model := range got {
+		ids[model.ID] = struct{}{}
+		if model.CreatedAt.IsZero() {
+			t.Fatalf("model %q has zero created time", model.ID)
+		}
+	}
+
+	for _, want := range []string{"claude-global-visible-" + f.suffix, "gpt-visible-" + f.suffix} {
+		if _, ok := ids[want]; !ok {
+			t.Fatalf("ListModels ids=%v missing %q", ids, want)
+		}
+	}
+	for _, notWant := range []string{"unbound-" + f.suffix, "disabled-" + f.suffix, "claude-shadowed-" + f.suffix} {
+		if _, ok := ids[notWant]; ok {
+			t.Fatalf("ListModels ids=%v unexpectedly includes %q", ids, notWant)
+		}
 	}
 }
