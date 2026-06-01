@@ -216,6 +216,64 @@ func TestStoreMarkRequiresCurrentLeaseGenerationWhenOwnerReused(t *testing.T) {
 	}
 }
 
+func TestClaimByID_RefusesActiveLease(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openDLQPool(t, ctx)
+	tenantID := seedDLQTenant(t, ctx, pool)
+	store := NewStore(pool)
+
+	id, err := store.Enqueue(ctx, Event{
+		TenantID:       tenantID,
+		EventKind:      EventKindMetrics,
+		Lane:           LaneHigh,
+		Payload:        []byte(`{"metric":"active-lease"}`),
+		FailureReason:  "active_lease_seed",
+		IdempotencyKey: "metrics:active-lease-claim-by-id",
+		SourceTable:    "metrics",
+		SourceID:       1,
+		NextRetryAt:    time.Now().UTC().Add(-time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	activeOwner := "background-active-lease-worker"
+	rec, err := store.Claim(ctx, LaneHigh, activeOwner, time.Minute)
+	if err != nil {
+		t.Fatalf("claim active lease: %v", err)
+	}
+	if rec == nil || rec.ID != id {
+		t.Fatalf("claim active lease rec=%v; want id=%d", rec, id)
+	}
+	if rec.LeaseOwner == nil || *rec.LeaseOwner != activeOwner {
+		t.Fatalf("active lease owner=%v; want %q", rec.LeaseOwner, activeOwner)
+	}
+	if !rec.LeaseUntil.Valid || !rec.LeaseUntil.Time.After(time.Now().UTC()) {
+		t.Fatalf("active lease_until=%v; want future deadline", rec.LeaseUntil)
+	}
+
+	stolen, err := store.ClaimByID(ctx, id, "manual-replay", time.Minute)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ClaimByID active lease rec=%v err=%v; want ErrNotFound", stolen, err)
+	}
+	status, owner := readDLQStatusAndOwner(t, ctx, pool, id)
+	if status != string(StatusInflight) || !owner.Valid || owner.String != activeOwner {
+		t.Fatalf("ClaimByID changed active lease status=%s owner=%q; want inflight owned by %q", status, owner.String, activeOwner)
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE usage_record_dlq SET lease_until = now() - interval '1 second' WHERE id=$1`, id); err != nil {
+		t.Fatalf("expire active lease: %v", err)
+	}
+	reclaimed, err := store.ClaimByID(ctx, id, "manual-replay", time.Minute)
+	if err != nil {
+		t.Fatalf("ClaimByID expired lease: %v", err)
+	}
+	if reclaimed == nil || reclaimed.LeaseOwner == nil || *reclaimed.LeaseOwner != "manual:manual-replay" {
+		t.Fatalf("expired lease owner=%v; want manual:manual-replay", reclaimed)
+	}
+}
+
 func openDLQPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("HUAKAI_DATABASE_URL")
