@@ -21,6 +21,7 @@ type Store interface {
 	ConsumePasswordResetToken(context.Context, int64, []byte, string, time.Time) (User, error)
 	RedeemInvite(context.Context, int64, string, time.Time) (InviteCode, error)
 	CreateInviteBinding(context.Context, int64, int64, string, time.Time) error
+	CreateCommunityReferral(context.Context, int64, int64, int64, int64) error
 	CreateOAuthFlowSession(context.Context, OAuthFlowChallenge) error
 	ConsumeOAuthFlowSession(context.Context, int64, string, []byte, time.Time) (OAuthFlowSession, error)
 }
@@ -35,6 +36,7 @@ type Service struct {
 	VerificationTTL  time.Duration
 	PasswordResetTTL time.Duration
 	OAuthFlowTTL     time.Duration
+	RegistrationMode RegistrationMode
 	InviteRequired   bool
 	RequireVerified  bool
 	SocialSignup     bool
@@ -74,6 +76,13 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (RegistrationR
 	if in.TenantID <= 0 || email == "" || strings.TrimSpace(in.Password) == "" {
 		return RegistrationResult{}, ErrInvalidInput
 	}
+	mode, err := s.registrationMode()
+	if err != nil {
+		return RegistrationResult{}, err
+	}
+	if mode == RegistrationModeDisabled {
+		return RegistrationResult{}, ErrRegistrationDisabled
+	}
 	passwordHash, err := HashPassword(in.Password, s.PasswordPolicy)
 	if err != nil {
 		return RegistrationResult{}, err
@@ -82,13 +91,15 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (RegistrationR
 	requireVerification := s.requireEmailVerification(ctx, in.TenantID)
 	if err := s.withStoreTx(ctx, func(store Store) error {
 		var inviteHash string
+		var redeemedInvite InviteCode
 		if strings.TrimSpace(in.InviteCode) != "" {
 			invite, err := store.RedeemInvite(ctx, in.TenantID, in.InviteCode, s.now())
 			if err != nil {
 				return err
 			}
 			inviteHash = invite.Code
-		} else if s.InviteRequired {
+			redeemedInvite = invite
+		} else if mode == RegistrationModeInviteRequired {
 			return ErrInviteRequired
 		}
 		status := UserStatusActive
@@ -110,6 +121,11 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (RegistrationR
 		if inviteHash != "" {
 			if err := store.CreateInviteBinding(ctx, user.TenantID, user.ID, inviteHash, s.now()); err != nil {
 				return err
+			}
+			if redeemedInvite.CommunityInvitationID > 0 && redeemedInvite.CreatedBy > 0 && redeemedInvite.CreatedBy != user.ID {
+				if err := store.CreateCommunityReferral(ctx, user.TenantID, user.ID, redeemedInvite.CreatedBy, redeemedInvite.CommunityInvitationID); err != nil {
+					return err
+				}
 			}
 		}
 		var token string
@@ -185,6 +201,23 @@ func (s *Service) lockoutThreshold() int {
 		return s.LockoutThreshold
 	}
 	return DefaultLockoutThreshold
+}
+
+func (s *Service) registrationMode() (RegistrationMode, error) {
+	if s == nil {
+		return RegistrationModeOpen, nil
+	}
+	switch s.RegistrationMode {
+	case "":
+		if s.InviteRequired {
+			return RegistrationModeInviteRequired, nil
+		}
+		return RegistrationModeOpen, nil
+	case RegistrationModeOpen, RegistrationModeInviteRequired, RegistrationModeDisabled:
+		return s.RegistrationMode, nil
+	default:
+		return "", ErrInvalidInput
+	}
 }
 
 func (s *Service) RequestPasswordReset(ctx context.Context, in PasswordResetRequest) (PasswordResetResult, error) {

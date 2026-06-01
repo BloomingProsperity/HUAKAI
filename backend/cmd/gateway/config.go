@@ -15,8 +15,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
@@ -77,6 +77,21 @@ func releaseMode() eventbus.ReleaseMode {
 		return eventbus.ReleaseModeProduction
 	}
 	return eventbus.ReleaseModeDev
+}
+
+func loadUserRegistrationModeFromEnv() (userauth.RegistrationMode, error) {
+	raw := strings.TrimSpace(os.Getenv("HUAKAI_USER_REGISTRATION_MODE"))
+	if raw == "" {
+		if releaseModeProduction() {
+			return userauth.RegistrationModeDisabled, nil
+		}
+		return userauth.RegistrationModeOpen, nil
+	}
+	mode, err := userauth.ParseRegistrationMode(raw)
+	if err != nil {
+		return "", fmt.Errorf("HUAKAI_USER_REGISTRATION_MODE=%q 不是已知取值（open / invite_required / disabled / admin_only）；%w", raw, err)
+	}
+	return mode, nil
 }
 
 // validateDevAuthTokenFlag 在启动时 fail-closed:HUAKAI_DEV_AUTH_RETURN_TOKEN=true 会让公开的
