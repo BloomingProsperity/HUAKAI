@@ -1,8 +1,10 @@
 package protosse
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 )
 
@@ -45,5 +47,28 @@ func TestReconstructBufferedFromSSEPlainJSONDoesNotTrigger(t *testing.T) {
 	}
 	if env != nil || losses != nil {
 		t.Fatalf("non-SSE body must return nil envelope/losses, got env=%+v losses=%+v", env, losses)
+	}
+}
+
+func TestReconstructBufferedFromSSEMissingMessageStartDoesNotReturnResponse(t *testing.T) {
+	// Risk killed: buffered fallback must not turn an Anthropic content delta
+	// without message_start into a successful response. Mutation self-check:
+	// removing the content-before-start guard returns a BufferedResponse here.
+	raw := []byte(strings.Join([]string{
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"orphan"}}`,
+		``,
+		``,
+	}, "\n"))
+
+	env, losses, ok := ReconstructBufferedFromSSE(&anthropic.Adapter{}, raw)
+	if !ok {
+		t.Fatal("SSE-shaped body must be recognized")
+	}
+	if env != nil && env.BufferedResponse != nil {
+		t.Fatalf("missing message_start reconstructed response: %+v", env.BufferedResponse)
+	}
+	if len(losses) == 0 {
+		t.Fatal("missing message_start should emit reconstruction loss evidence")
 	}
 }

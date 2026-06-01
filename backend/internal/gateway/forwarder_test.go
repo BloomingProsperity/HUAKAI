@@ -16,10 +16,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"iter"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +31,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	protoanthropic "github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
+	"github.com/BloomingProsperity/HUAKAI/internal/protosse"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/shopspring/decimal"
 )
@@ -1030,32 +1036,224 @@ func TestAT_GW_002_PF_03_UnknownProtocolFamilyReturnsError(t *testing.T) {
 }
 
 // =====================================================================
-// Skipped (above forwarder / Phase 4.5 / cross-feature)
+// Retired S2-003 skip guards and forwarder-owned AT-GW-002 coverage
 // =====================================================================
 
+func TestAT_GW_002_NoRetiredPlaceholderSkipsRemain(t *testing.T) {
+	// Risk killed: S2-003 found false-green AT-GW-002 acceptance placeholders
+	// implemented only as t.Skip. Mutation self-check: reintroducing t.Skip or
+	// t.Skipf in any retired AT function below makes this parser guard fail even
+	// though Go would otherwise report the skipped test file as PASS.
+	targets := map[string]struct{}{
+		"TestAT_GW_002_03_PreStreamFailoverList":                          {},
+		"TestAT_GW_002_04_PreStreamSanitizedError":                        {},
+		"TestAT_GW_002_05_BufferedMissingMessageStart":                    {},
+		"TestAT_GW_002_13_MidStreamFailoverBlocked":                       {},
+		"TestAT_GW_002_14_StreamingIdempotencyReplayRecordsSSEAndReplays": {},
+		"TestAT_GW_002_16_PostDeliverySettleFailureEnqueuesRecovery":      {},
+		"TestAT_GW_002_17_TenantIsolationUnderLoad":                       {},
+		"TestAT_GW_002_19_TokenizerFallbackInferredUsage":                 {},
+	}
+	files := []string{
+		currentTestFile(t),
+		"../gatewayhttp/chat_completions_stream_test.go",
+		"../gatewayhttp/post_delivery_recovery_test.go",
+	}
+	seen := make(map[string]bool, len(targets))
+	for _, file := range files {
+		parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", file, err)
+		}
+		for _, decl := range parsed.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Name == nil {
+				continue
+			}
+			if _, tracked := targets[fn.Name.Name]; !tracked {
+				continue
+			}
+			seen[fn.Name.Name] = true
+			if functionCallsTestSkip(fn) {
+				t.Fatalf("%s still calls t.Skip/t.Skipf; S2-003 skip regression", fn.Name.Name)
+			}
+		}
+	}
+	for name := range targets {
+		if !seen[name] {
+			t.Fatalf("%s missing; S2-003 AT coverage must remain executable", name)
+		}
+	}
+}
+
 func TestAT_GW_002_03_PreStreamFailoverList(t *testing.T) {
-	t.Skip("Pre-stream failover lives above the forwarder; Phase 4.5 request orchestrator.")
+	// Risk killed: pre-delivery upstream failures must classify into retryable
+	// attempt decisions before the handler executor chooses the next account.
+	// Mutation self-check: disabling RetryableBeforeDelivery or SwitchAccount
+	// in decisionFromHTTPClassification turns the affected table row red.
+	tests := []struct {
+		name       string
+		status     int
+		body       []byte
+		wantAbort  string
+		wantAuth   bool
+		wantPool   bool
+		wantStatus int
+	}{
+		{name: "5xx", status: http.StatusInternalServerError, wantAbort: "upstream_5xx", wantPool: true, wantStatus: http.StatusBadGateway},
+		{name: "overload_529", status: 529, wantAbort: "upstream_overloaded", wantPool: true, wantStatus: http.StatusServiceUnavailable},
+		{name: "rate_limit_429", status: http.StatusTooManyRequests, wantAbort: "upstream_rate_limited", wantPool: true, wantStatus: http.StatusServiceUnavailable},
+		{name: "auth_401", status: http.StatusUnauthorized, body: []byte(`{"error":"invalid_grant"}`), wantAbort: "upstream_auth_failure", wantAuth: true, wantStatus: http.StatusUnauthorized},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			decision, _, err := ClassifyAttemptHTTPError(tt.status, nil, tt.body, "openai")
+			if err != nil {
+				t.Fatalf("ClassifyAttemptHTTPError: %v", err)
+			}
+			if !decision.RetryableBeforeDelivery {
+				t.Fatalf("RetryableBeforeDelivery=false for %s", tt.name)
+			}
+			if !decision.SwitchAccount {
+				t.Fatalf("SwitchAccount=false for %s", tt.name)
+			}
+			if decision.SwitchPool != tt.wantPool {
+				t.Fatalf("SwitchPool=%v want %v", decision.SwitchPool, tt.wantPool)
+			}
+			if decision.CountsAgainstAuthFailoverBudget != tt.wantAuth {
+				t.Fatalf("CountsAgainstAuthFailoverBudget=%v want %v", decision.CountsAgainstAuthFailoverBudget, tt.wantAuth)
+			}
+			if decision.AbortReason != tt.wantAbort || decision.ClientStatus != tt.wantStatus {
+				t.Fatalf("decision=%+v want abort=%q status=%d", decision, tt.wantAbort, tt.wantStatus)
+			}
+		})
+	}
 }
+
 func TestAT_GW_002_04_PreStreamSanitizedError(t *testing.T) {
-	t.Skip("Pre-stream error envelope lives above the forwarder; Phase 4.5 chat-completions handler.")
+	// Risk killed: upstream error bodies must remain available for internal
+	// classification while staying out of the public error string.
+	// Mutation self-check: formatting UpstreamHTTPError.Error with Body leaks the
+	// marker; dropping Body prevents the iron-clad class assertion.
+	const marker = "SENSITIVE_UPSTREAM_MARKER"
+	upstreamErr := &UpstreamHTTPError{
+		StatusCode: http.StatusUnauthorized,
+		Body:       []byte(`{"error":"token_revoked","raw":"` + marker + `"}`),
+		Header:     make(http.Header),
+	}
+	if strings.Contains(upstreamErr.Error(), marker) || strings.Contains(upstreamErr.Error(), "token_revoked") {
+		t.Fatalf("UpstreamHTTPError.Error leaked upstream body: %q", upstreamErr.Error())
+	}
+	decision, classification, err := ClassifyAttemptHTTPError(upstreamErr.StatusCode, upstreamErr.Header, upstreamErr.Body, "openai")
+	if err != nil {
+		t.Fatalf("ClassifyAttemptHTTPError: %v", err)
+	}
+	if classification.Class != ErrorClassTokenRevoked || decision.AbortReason != "upstream_auth_failure" {
+		t.Fatalf("classification/decision=%+v/%+v want token_revoked auth failure", classification, decision)
+	}
 }
+
 func TestAT_GW_002_05_BufferedMissingMessageStart(t *testing.T) {
-	t.Skip("Buffered (non-streaming) path Phase 4.5; current forwarder is streaming-only.")
+	// Risk killed: an Anthropic-shaped buffered SSE body that starts with content
+	// but never establishes message_start must not be reconstructed into a valid
+	// buffered response.
+	// Mutation self-check: accepting content deltas before message_start produces
+	// a non-nil response and this test fails.
+	raw := []byte(strings.Join([]string{
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"orphan"}}`,
+		``,
+		``,
+	}, "\n"))
+	env, losses, ok := protosse.ReconstructBufferedFromSSE(&protoanthropic.Adapter{}, raw)
+	if !ok {
+		t.Fatal("fixture must be recognized as SSE-shaped buffered upstream data")
+	}
+	if env != nil && env.BufferedResponse != nil {
+		t.Fatalf("missing message_start reconstructed response: %+v", env.BufferedResponse)
+	}
+	if len(losses) == 0 {
+		t.Fatal("missing message_start should emit reconstruction loss evidence")
+	}
 }
+
 func TestAT_GW_002_13_MidStreamFailoverBlocked(t *testing.T) {
-	t.Skip("Mid-stream failover orchestration Phase 4.5; forwarder only classifies end class.")
+	// Risk killed: once content has been delivered, the forwarder must return a
+	// partial draft for settlement/recovery instead of presenting the failure as
+	// a clean pre-delivery retry candidate.
+	// Mutation self-check: if delivered chunks are no longer tracked before the
+	// scanner error, DeliveredTokenCount becomes zero and the handler can mistake
+	// the stream for a pre-delivery failure.
+	scanners := NewStaticStreamScannerRegistry()
+	scanners.MustRegister("anthropic_messages", scannerEventsThenError{
+		events: []SSEEvent{
+			sseEventFromTestEvent(messageStart("msg-midstream")),
+			sseEventFromTestEvent(textDelta(0, "visible-before-error")),
+		},
+		err: io.ErrUnexpectedEOF,
+	})
+	f := newForwarder()
+	f.Scanners = scanners
+	rec := httptest.NewRecorder()
+	draft, err := f.Forward(context.Background(), bytes.NewReader(nil), rec, anthropicForwardRequest(1, 100))
+	if err == nil {
+		t.Fatal("mid-stream scanner error must be returned")
+	}
+	if draft.EndClass != UpstreamError5xx {
+		t.Fatalf("EndClass=%q want %q", draft.EndClass, UpstreamError5xx)
+	}
+	if draft.DeliveredTokenCount == 0 || !strings.Contains(rec.Body.String(), "visible-before-error") {
+		t.Fatalf("delivered=%d body=%s; want visible partial delivery before error", draft.DeliveredTokenCount, rec.Body.String())
+	}
 }
-func TestAT_GW_002_14_MidStreamFailoverWithHeader(t *testing.T) {
-	t.Skip("Mid-stream failover orchestration Phase 4.5; needs Idempotent-Stream-Replay handler.")
+
+func currentTestFile(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	return file
 }
-func TestAT_GW_002_16_Tx2OrphanSweep(t *testing.T) {
-	t.Skip("Cross-feature with F-OBS-001 Tx2 + orphan sweeper; awaits slice 5.")
+
+func functionCallsTestSkip(fn *ast.FuncDecl) bool {
+	found := false
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel == nil {
+			return true
+		}
+		ident, ok := sel.X.(*ast.Ident)
+		if ok && ident.Name == "t" && (sel.Sel.Name == "Skip" || sel.Sel.Name == "Skipf") {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
-func TestAT_GW_002_17_TenantIsolationUnderLoad(t *testing.T) {
-	t.Skip("100 concurrent streams across 5 tenants requires full HTTP entry stack; Phase 4.5.")
+
+type scannerEventsThenError struct {
+	events []SSEEvent
+	err    error
 }
-func TestAT_GW_002_19_TokenizerFallbackInferredUsage(t *testing.T) {
-	t.Skip("Tokenizer fallback inferred-usage with confidence_score requires a tokenizer impl; Phase 4.5.")
+
+func (s scannerEventsThenError) Scan(context.Context, io.Reader, int) iter.Seq2[SSEEvent, error] {
+	return func(yield func(SSEEvent, error) bool) {
+		for _, evt := range s.events {
+			if !yield(evt, nil) {
+				return
+			}
+		}
+		if s.err != nil {
+			yield(SSEEvent{}, s.err)
+		}
+	}
 }
 
 // =====================================================================

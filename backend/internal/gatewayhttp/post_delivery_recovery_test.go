@@ -102,14 +102,14 @@ func TestSettleCompletionWithRecovery_SuccessDoesNotEnqueue(t *testing.T) {
 	}
 }
 
-// TestSettleCompletionWithRecovery_PostDeliveryFailureEnqueues 守 P2/P3 主修复:
+// TestAT_GW_002_16_PostDeliverySettleFailureEnqueuesRecovery 守 P2/P3 主修复:
 // 流式 settle 失败 + source=stream + SettleRecoveryDLQ 已注入 → enqueue 1 次,
 // 行 event_kind=post_delivery_settlement,payload 可 decode 回 SettleRequest。
 //
 // Mutation 1:删 settleCompletionWithRecovery 内 enqueue 调用 → spy.calls=0 红。
 // Mutation 2:把 source 改成 source="" 调用 → 同样不 enqueue 红。
 // Mutation 3:把 event_kind 改回 EventKindUsageRecord → assertion 红。
-func TestSettleCompletionWithRecovery_PostDeliveryFailureEnqueues(t *testing.T) {
+func TestAT_GW_002_16_PostDeliverySettleFailureEnqueuesRecovery(t *testing.T) {
 	settler := &postDeliveryFakeSettler{settleErr: errors.New("pgx: connection reset")}
 	spy := &postDeliverySpyEnqueuer{}
 	deps := ChatHandlerDeps{
