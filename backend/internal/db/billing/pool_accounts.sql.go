@@ -633,6 +633,7 @@ SELECT
     pa.last_dispatch_at,
     pa.health_state,
     pa.health_state_until,
+    pa.model_rate_limits,
     pa.model_allow_list,
     pa.capability_flags,
     pa.cap_queue_sticky,
@@ -689,6 +690,7 @@ type ListEligibleAccountsByPoolGroupRow struct {
 	LastDispatchAt   pgtype.Timestamptz `db:"last_dispatch_at" json:"last_dispatch_at"`
 	HealthState      string             `db:"health_state" json:"health_state"`
 	HealthStateUntil pgtype.Timestamptz `db:"health_state_until" json:"health_state_until"`
+	ModelRateLimits  []byte             `db:"model_rate_limits" json:"model_rate_limits"`
 	ModelAllowList   []string           `db:"model_allow_list" json:"model_allow_list"`
 	CapabilityFlags  []string           `db:"capability_flags" json:"capability_flags"`
 	CapQueueSticky   int32              `db:"cap_queue_sticky" json:"cap_queue_sticky"`
@@ -737,6 +739,7 @@ func (q *Queries) ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListE
 			&i.LastDispatchAt,
 			&i.HealthState,
 			&i.HealthStateUntil,
+			&i.ModelRateLimits,
 			&i.ModelAllowList,
 			&i.CapabilityFlags,
 			&i.CapQueueSticky,
@@ -750,4 +753,77 @@ func (q *Queries) ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListE
 		return nil, err
 	}
 	return items, nil
+}
+
+const setProviderAccountModelRateLimit = `-- name: SetProviderAccountModelRateLimit :exec
+WITH updated AS (
+    UPDATE provider_accounts pa
+    SET
+        model_rate_limits = jsonb_set(
+            COALESCE(pa.model_rate_limits, '{}'::jsonb),
+            ARRAY[$4::text],
+            jsonb_build_object(
+                'rate_limit_reset_at', to_jsonb($5::timestamptz),
+                'reason', $1::text
+            ),
+            true
+        ),
+        updated_at = NOW(),
+        last_modified_by_actor = $7::text
+    WHERE pa.tenant_id = $8
+      AND pa.id = $9
+      AND pa.deleted_at IS NULL
+    RETURNING pa.tenant_id, pa.id
+)
+INSERT INTO rate_limit_audit_events (
+    tenant_id,
+    provider_account_id,
+    event_type,
+    rate_limit_reason,
+    upstream_status_code,
+    upstream_request_id,
+    payload,
+    actor_id
+)
+SELECT
+    tenant_id,
+    id,
+    'model_rate_limit_set',
+    $1::text,
+    $2::integer,
+    NULLIF($3::text, ''),
+    jsonb_build_object(
+        'model_key', $4::text,
+        'reset_at', $5::timestamptz,
+        'source_layer', $6::text
+    ),
+    $7::text
+FROM updated
+`
+
+type SetProviderAccountModelRateLimitParams struct {
+	Reason             string             `db:"reason" json:"reason"`
+	UpstreamStatusCode int32              `db:"upstream_status_code" json:"upstream_status_code"`
+	UpstreamRequestID  string             `db:"upstream_request_id" json:"upstream_request_id"`
+	ModelKey           string             `db:"model_key" json:"model_key"`
+	ResetAt            pgtype.Timestamptz `db:"reset_at" json:"reset_at"`
+	SourceLayer        string             `db:"source_layer" json:"source_layer"`
+	ActorID            string             `db:"actor_id" json:"actor_id"`
+	TenantID           int64              `db:"tenant_id" json:"tenant_id"`
+	ProviderAccountID  int64              `db:"provider_account_id" json:"provider_account_id"`
+}
+
+func (q *Queries) SetProviderAccountModelRateLimit(ctx context.Context, arg SetProviderAccountModelRateLimitParams) error {
+	_, err := q.db.Exec(ctx, setProviderAccountModelRateLimit,
+		arg.Reason,
+		arg.UpstreamStatusCode,
+		arg.UpstreamRequestID,
+		arg.ModelKey,
+		arg.ResetAt,
+		arg.SourceLayer,
+		arg.ActorID,
+		arg.TenantID,
+		arg.ProviderAccountID,
+	)
+	return err
 }
