@@ -17,6 +17,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
+	"github.com/BloomingProsperity/HUAKAI/internal/redact"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
 	"github.com/google/uuid"
@@ -285,7 +286,7 @@ func (f *StreamForwarder) BufferedResponse(ctx context.Context, canonical *proto
 //   - evt.Type == "error" — protocol-level error 帧（如 Bedrock exception
 //     scanner 在 yield ErrBedrockException 前 emit 的 error SSEEvent）。
 //     这些 payload 不是 model 事件，喂给 adapter 会触发 JSON 解析失败；
-//     客户端只接收 canonical public error，raw payload 进内部日志。
+//     客户端只接收 canonical public error，内部日志只记录脱敏摘要。
 func (f *StreamForwarder) handleEventWithAdapter(
 	ctx context.Context,
 	adapter proto.UpstreamAdapter,
@@ -299,7 +300,7 @@ func (f *StreamForwarder) handleEventWithAdapter(
 	terminalSeen := evt.Type == "message_stop" || string(evt.Data) == "[DONE]"
 
 	if evt.Type == "error" {
-		clienterr.LogInternal(ctx, req.RequestID, streamProtocolErrorCode, fmt.Errorf("upstream stream error event: %s", evt.Data))
+		clienterr.LogInternal(ctx, req.RequestID, streamProtocolErrorCode, fmt.Errorf("upstream stream error event: %s", redact.SafePayloadLogSummary(evt.Data)))
 		if err := writeAndFlush(w, canonicalStreamErrorSSE()); err != nil {
 			return terminalSeen, false, 0, ErrClientDisconnect
 		}

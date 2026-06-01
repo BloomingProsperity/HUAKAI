@@ -381,12 +381,13 @@ func assertProtocolErrorSanitized(t *testing.T, adapter proto.UpstreamAdapter) {
 	})
 
 	const marker = "SENSITIVE_BEDROCK_MARKER"
+	payload := sensitiveBedrockPayload(marker)
 	f := newForwarder()
 	rec := httptest.NewRecorder()
 	terminalSeen, wrote, delivered, err := f.handleEventWithAdapter(
 		context.Background(),
 		adapter,
-		SSEEvent{Type: "error", Data: []byte(`{"message":"` + marker + `"}`)},
+		SSEEvent{Type: "error", Data: []byte(payload)},
 		rec,
 		nil,
 		nil,
@@ -416,9 +417,7 @@ func assertProtocolErrorSanitized(t *testing.T, adapter proto.UpstreamAdapter) {
 		t.Fatalf("client SSE should contain exactly one canonical error event, got %q", body)
 	}
 	gotLog := logs.String()
-	if !strings.Contains(gotLog, marker) {
-		t.Fatalf("internal log did not retain raw protocol error payload: %s", gotLog)
-	}
+	assertSafePayloadSummary(t, gotLog, payload, marker)
 	if !strings.Contains(gotLog, "req-c18") || !strings.Contains(gotLog, "upstream_error") {
 		t.Fatalf("internal log missing request/code context: %s", gotLog)
 	}
