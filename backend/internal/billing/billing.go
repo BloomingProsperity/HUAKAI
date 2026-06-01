@@ -68,6 +68,7 @@ type ReserveRequest struct {
 	RequestClass               string
 	PredictedCost              decimal.Decimal
 	IdempotencyKeyClientHeader string
+	BalanceEnforcementMode     BalanceEnforcementMode
 }
 
 // ReserveResult identifies the claim row and whether a cached prior response applies.

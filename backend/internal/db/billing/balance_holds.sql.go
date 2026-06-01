@@ -276,8 +276,9 @@ type UserBalanceExistsParams struct {
 	UserID   int64 `db:"user_id" json:"user_id"`
 }
 
-// 区分 ReserveBalanceHold 返 0 行的两种情形:无余额行(未启用余额强制 → 放行,
-// opt-in) vs 行在但 (balance-held)<cost(余额不足 → 402)。
+// 区分 ReserveBalanceHold 返 0 行的两种情形:无余额行 vs 行在但
+// (balance-held)<cost。mandatory 由调用方将两者都映射为 402; opt_in 只
+// 对已有余额行不足返回 402。
 func (q *Queries) UserBalanceExists(ctx context.Context, arg UserBalanceExistsParams) (bool, error) {
 	row := q.db.QueryRow(ctx, userBalanceExists, arg.TenantID, arg.UserID)
 	var exists bool

@@ -113,6 +113,7 @@ type chatExecution struct {
 	sessionHash                      string
 	reserveRes                       *billing.ReserveResult
 	streamInputOnlyInterruptedPolicy billing.StreamInputOnlyInterruptedPolicy
+	balanceEnforcementMode           billing.BalanceEnforcementMode
 
 	selRes            *pool.SelectionResult
 	acquiredAccountID int64

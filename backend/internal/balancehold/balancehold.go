@@ -13,12 +13,27 @@ import (
 
 var ErrInsufficientBalance = errors.New("balancehold: insufficient balance")
 
+type EnforcementMode string
+
+const (
+	EnforcementModeMandatory EnforcementMode = "mandatory"
+	EnforcementModeOptIn     EnforcementMode = "opt_in"
+)
+
+func (m EnforcementMode) effective() EnforcementMode {
+	if m == EnforcementModeOptIn {
+		return EnforcementModeOptIn
+	}
+	return EnforcementModeMandatory
+}
+
 // ReserveParams defines a single hold reservation request.
 type ReserveParams struct {
-	TenantID int64
-	UserID   int64
-	ClaimID  int64
-	Cost     decimal.Decimal
+	TenantID        int64
+	UserID          int64
+	ClaimID         int64
+	Cost            decimal.Decimal
+	EnforcementMode EnforcementMode
 }
 
 // Snapshot mirrors the latest known balance/held pair for a user in Tx scope.
@@ -42,9 +57,9 @@ func Reserve(ctx context.Context, tx pgx.Tx, p ReserveParams) (Snapshot, error) 
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// ReserveBalanceHold 返 0 行有两种情形:无余额行(用户未启用余额强制)
-			// vs 行在但 (balance-held)<cost(余额不足)。opt-in 策略(Owner 2026-05-28
-			// 选 A):无行=未 provision=放行(不建 hold);有行才在不足时 402。
+			// ReserveBalanceHold 返 0 行有两种情形:无余额行 vs 行在但
+			// (balance-held)<cost。mandatory 下两者都视为余额不足; opt-in
+			// 兼容旧租户,只在已有余额行但不足时 402。
 			exists, exErr := q.UserBalanceExists(ctx, dbbilling.UserBalanceExistsParams{
 				TenantID: p.TenantID,
 				UserID:   p.UserID,
@@ -55,9 +70,11 @@ func Reserve(ctx context.Context, tx pgx.Tx, p ReserveParams) (Snapshot, error) 
 			if exists {
 				return zero, ErrInsufficientBalance
 			}
-			// 未 provision 余额行 → 不纳入余额强制 → 放行(返 nil,不建 hold);
-			// claim_gate 现有逻辑遇 nil 即继续,不 402。后续 settle 的 Capture
-			// 因无 hold 行而 no-op。
+			if p.EnforcementMode.effective() == EnforcementModeMandatory {
+				return zero, ErrInsufficientBalance
+			}
+			// opt-in 未 provision 余额行 → 不纳入余额强制 → 放行(返 nil,
+			// 不建 hold);后续 settle 的 Capture 因无 hold 行而 no-op。
 			return zero, nil
 		}
 		return zero, fmt.Errorf("reserve balance hold: %w", err)
