@@ -28,10 +28,12 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/anthropic"
+	providercopilot "github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
 	provideropenai "github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
@@ -182,6 +184,242 @@ func (d *recordingStreamingDoer) Do(req *http.Request) (*http.Response, error) {
 		Header:     make(http.Header),
 		Body:       io.NopCloser(strings.NewReader(d.responseBody)),
 	}, nil
+}
+
+type selectiveTransportRoundTripper struct {
+	called       bool
+	err          error
+	statusCode   int
+	responseBody string
+}
+
+func (rt *selectiveTransportRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.called = true
+	if rt.err != nil {
+		return nil, rt.err
+	}
+	status := rt.statusCode
+	if status == 0 {
+		status = http.StatusOK
+	}
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(rt.responseBody)),
+		Request:    req,
+	}, nil
+}
+
+func TestChatCompletions_ReverseSessionUsesMimicryTransport(t *testing.T) {
+	// Mutation check: if chatExecution stops passing TransportMode into either
+	// Dispatch or DispatchHCSF, these cases take the standard transport and fail
+	// before delivery instead of returning the fixture response.
+	t.Run("streaming raw dispatch", func(t *testing.T) {
+		standard, mimicry, dispatcher := copilotTransportModeDispatcher(t, openAIStreamingFixture())
+		reqBody := []byte(`{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/copilot/session", bytes.NewReader(reqBody))
+		ex := &chatExecution{
+			d: ChatHandlerDeps{
+				Dispatcher: dispatcher,
+				Forwarder: &gateway.StreamForwarder{
+					ProtocolAdapters: gateway.BuildDefaultProtocolAdapterRegistry(),
+					Scanners:         gateway.BuildDefaultStreamScannerRegistry(),
+					ScannerBufferCap: 1 << 20,
+				},
+				Settler: &stubSettler{},
+			},
+			r:                 req,
+			ctx:               req.Context(),
+			startedAt:         time.Now(),
+			ident:             auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 3},
+			body:              reqBody,
+			req:               chatRequest{Model: "gpt-4o", Stream: true},
+			clientProtocol:    proto.ClientProtocol("copilot_session"),
+			requestID:         "req_transport_mode_stream",
+			resolved:          registry.Resolved{ProtocolFamily: "copilot_session", ProviderModelID: "gpt-4o"},
+			plan:              router.RoutePlan{SnapshotVersion: "test-snapshot"},
+			attempt:           router.AttemptPlan{PoolGroupID: 42},
+			routeID:           "route-1",
+			reserveRes:        &billing.ReserveResult{ClaimID: 999},
+			acquiredAccountID: 1,
+			upstreamModelID:   "gpt-4o",
+			cacheVendor:       "copilot",
+			cred:              provider.Credential{Type: provider.CredentialTypeSessionToken, Value: "session-token"},
+			accInfo:           provider.AccountInfo{AccountID: 1, TenantID: 7, Platform: credentialstore.VendorCopilot, AccountType: credentialstore.AuthModeCopilotOAuth},
+			forwardReq: gateway.ForwardRequest{
+				TenantID:       7,
+				AccountID:      1,
+				RequestID:      "req_transport_mode_stream",
+				RouteID:        "route-1",
+				PoolID:         "42",
+				IngressPath:    "/v1/copilot/session",
+				ProtocolFamily: "copilot_session",
+				ClientProtocol: "copilot_session",
+				Model:          "gpt-4o",
+				RequestedModel: "gpt-4o",
+				Provider:       "copilot",
+			},
+		}
+
+		rec := httptest.NewRecorder()
+		ex.handleStreamingResponse(rec)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		assertMimicryOnlyTransport(t, standard, mimicry)
+	})
+
+	t.Run("buffered HCSF dispatch", func(t *testing.T) {
+		enableHCSFDispatchForTest(t)
+		standard, mimicry, dispatcher := copilotTransportModeDispatcher(t, `{"id":"chatcmpl-transport-mode","object":"chat.completion","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		deps := copilotTransportModeDeps(t, dispatcher)
+
+		rec := invokeHandler(t, deps, `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		assertMimicryOnlyTransport(t, standard, mimicry)
+	})
+
+	t.Run("buffered raw dispatch", func(t *testing.T) {
+		t.Setenv("HUAKAI_DISPATCH_HCSF", "0")
+		standard, mimicry, dispatcher := copilotTransportModeDispatcher(t, `{"id":"chatcmpl-transport-mode","object":"chat.completion","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		deps := copilotTransportModeDeps(t, dispatcher)
+
+		rec := invokeHandler(t, deps, `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		assertMimicryOnlyTransport(t, standard, mimicry)
+	})
+}
+
+func TestTransportSelectionForDispatch_V2ReverseSessionShapes(t *testing.T) {
+	cases := []struct {
+		name           string
+		account        provider.AccountInfo
+		protocolFamily string
+		wantPlatform   string
+		wantMode       transport.TransportMode
+	}{
+		{
+			name:           "openai codex auth mode uses chatgpt mimicry provider",
+			account:        provider.AccountInfo{Platform: "openai", AccountType: credentialstore.AuthModeCodexCLIOAuth},
+			protocolFamily: "openai_codex",
+			wantPlatform:   string(transport.ProviderOpenAICodex),
+			wantMode:       transport.TransportModeMimicryChatGPT,
+		},
+		{
+			name:           "openai chatgpt auth mode uses chatgpt mimicry provider",
+			account:        provider.AccountInfo{Platform: "openai", AccountType: credentialstore.AuthModeChatGPTOAuth},
+			protocolFamily: "openai_codex",
+			wantPlatform:   string(transport.ProviderOpenAICodex),
+			wantMode:       transport.TransportModeMimicryChatGPT,
+		},
+		{
+			name:           "gemini google one auth mode uses gemini advanced provider",
+			account:        provider.AccountInfo{Platform: "gemini", AccountType: credentialstore.AuthModeGoogleOne},
+			protocolFamily: "gemini_advanced_session",
+			wantPlatform:   string(transport.ProviderGeminiAdvanced),
+			wantMode:       transport.TransportModeMimicryGeminiAdvanced,
+		},
+		{
+			name:           "gemini antigravity auth mode uses antigravity provider",
+			account:        provider.AccountInfo{Platform: "gemini", AccountType: credentialstore.AuthModeAntigravity},
+			protocolFamily: "antigravity_session",
+			wantPlatform:   string(transport.ProviderAntigravity),
+			wantMode:       transport.TransportModeMimicryAntigravity,
+		},
+		{
+			name:           "openai api key remains standard",
+			account:        provider.AccountInfo{Platform: "openai", AccountType: credentialstore.AuthModeAPIKey},
+			protocolFamily: "openai_chat",
+			wantPlatform:   string(transport.ProviderOpenAI),
+			wantMode:       transport.TransportModeStandard,
+		},
+		{
+			name:           "gemini api key remains standard",
+			account:        provider.AccountInfo{Platform: "gemini", AccountType: credentialstore.AuthModeAIStudioAPIKey},
+			protocolFamily: "gemini_messages",
+			wantPlatform:   string(transport.ProviderGemini),
+			wantMode:       transport.TransportModeStandard,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := transportSelectionForDispatch(tc.account, tc.protocolFamily)
+			if got.account.Platform != tc.wantPlatform || got.mode != tc.wantMode {
+				t.Fatalf("transport selection platform/mode=%q/%q want %q/%q", got.account.Platform, got.mode, tc.wantPlatform, tc.wantMode)
+			}
+			if err := transport.ValidateModeForProvider(transport.ProviderCode(got.account.Platform), got.mode); err != nil {
+				t.Fatalf("selected transport is not policy-valid: %v", err)
+			}
+		})
+	}
+}
+
+func copilotTransportModeDispatcher(t *testing.T, responseBody string) (*selectiveTransportRoundTripper, *selectiveTransportRoundTripper, *gateway.UpstreamDispatcher) {
+	t.Helper()
+	standard := &selectiveTransportRoundTripper{err: errors.New("standard transport must not be used for copilot session")}
+	mimicry := &selectiveTransportRoundTripper{responseBody: responseBody}
+	factory := transport.NewFactory()
+	factory.SetStandard(standard)
+	factory.SetMimicry(mimicry)
+
+	adapters := provider.NewStaticRegistry()
+	adapters.MustRegister("copilot_session", &providercopilot.CopilotSessionAdapter{
+		Endpoint: "https://copilot.example.test/chat/completions",
+	})
+	return standard, mimicry, &gateway.UpstreamDispatcher{
+		Adapters:         adapters,
+		TransportFactory: factory,
+	}
+}
+
+func copilotTransportModeDeps(t *testing.T, dispatcher *gateway.UpstreamDispatcher) ChatHandlerDeps {
+	t.Helper()
+	vault := provider.NewStaticVault()
+	if err := vault.Set(1, provider.Credential{
+		Type:  provider.CredentialTypeSessionToken,
+		Value: "session-token",
+	}, provider.AccountInfo{
+		AccountID:           1,
+		TenantID:            7,
+		Platform:            credentialstore.VendorCopilot,
+		AccountType:         credentialstore.AuthModeCopilotOAuth,
+		AccountCredentialID: 9101,
+		CredentialVersion:   1,
+	}); err != nil {
+		t.Fatalf("vault.Set: %v", err)
+	}
+
+	deps := clientAdapterDeps(t)
+	deps.Registry = stubRegistry{resolved: registry.Resolved{
+		PublicAlias:      "gpt-4o",
+		CanonicalModelID: "copilot/gpt-4o",
+		ProviderModelID:  "gpt-4o",
+		ProtocolFamily:   "copilot_session",
+		PoolCandidates:   []int64{42},
+	}}
+	deps.CredentialVault = vault
+	deps.Dispatcher = dispatcher
+	deps.Forwarder = &gateway.StreamForwarder{
+		ProtocolAdapters: gateway.BuildDefaultProtocolAdapterRegistry(),
+		Scanners:         gateway.BuildDefaultStreamScannerRegistry(),
+		ScannerBufferCap: 1 << 20,
+	}
+	return deps
+}
+
+func assertMimicryOnlyTransport(t *testing.T, standard, mimicry *selectiveTransportRoundTripper) {
+	t.Helper()
+	if standard.called {
+		t.Fatal("standard transport was used for reverse session account")
+	}
+	if !mimicry.called {
+		t.Fatal("mimicry transport was not used for reverse session account")
+	}
 }
 
 type erroringStreamingDoer struct {

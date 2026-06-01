@@ -114,12 +114,14 @@ func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptO
 			return markAttemptOutcomeDelivered(outcome)
 		}
 	}
+	transportSelection := transportSelectionForDispatch(ex.accInfo, ex.resolved.ProtocolFamily)
 	dispatchRes, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
 		ProtocolFamily:  ex.resolved.ProtocolFamily,
 		UpstreamModelID: ex.upstreamModelID,
 		InboundBody:     inboundBody,
-		Account:         ex.accInfo,
+		Account:         transportSelection.account,
 		Credential:      ex.cred,
+		TransportMode:   transportSelection.mode,
 	})
 	if err != nil {
 		classification, _ := gateway.Classify(0, nil, []byte(err.Error()), ex.accInfo.Platform)
