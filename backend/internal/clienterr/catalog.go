@@ -7,6 +7,7 @@ package clienterr
 // router_plan_error | 500 | route planning failed | TestMessageForKnownCodesAndFallback
 // pricing_unavailable | 503 | pricing is temporarily unavailable | TestMessageForKnownCodesAndFallback
 // reserve_error | 500 | request reservation failed | TestMessageForKnownCodesAndFallback
+// insufficient_balance | 402 | 余额不足 | TestMessageForKnownCodesAndFallback
 // no_capacity | 503 | no capacity is currently available | TestMessageForKnownCodesAndFallback
 // claim_race | 409 | request reservation changed; retry the request | TestPR5ClaimRaceAbortFailureSurfacesSafeHeader
 // pool_select_error | 500 | account selection failed | TestMessageForKnownCodesAndFallback
@@ -40,6 +41,7 @@ const (
 	CodeRouterPlanError                 = "router_plan_error"
 	CodePricingUnavailable              = "pricing_unavailable"
 	CodeReserveError                    = "reserve_error"
+	CodeInsufficientBalance             = "insufficient_balance"
 	CodeNoCapacity                      = "no_capacity"
 	CodeClaimRace                       = "claim_race"
 	CodePoolSelectError                 = "pool_select_error"
@@ -75,6 +77,7 @@ var messages = map[string]string{
 	CodeRouterPlanError:                 "route planning failed",
 	CodePricingUnavailable:              "pricing is temporarily unavailable",
 	CodeReserveError:                    "request reservation failed",
+	CodeInsufficientBalance:             "余额不足",
 	CodeNoCapacity:                      "no capacity is currently available",
 	CodeClaimRace:                       "request reservation changed; retry the request",
 	CodePoolSelectError:                 "account selection failed",
