@@ -127,7 +127,7 @@ WHERE pa.tenant_id = $1
   AND (
       $5::text = ''
       OR ($5::text = 'active' AND pa.enabled = true
-          AND pa.health_state IN ('operational', 'degraded')
+          AND pa.health_state = 'healthy'
           AND (pa.rate_limit_reset_at IS NULL OR pa.rate_limit_reset_at <= NOW())
           AND (pa.overload_until IS NULL OR pa.overload_until <= NOW())
           AND (pa.temp_unschedulable_until IS NULL OR pa.temp_unschedulable_until <= NOW()))
@@ -135,7 +135,7 @@ WHERE pa.tenant_id = $1
       OR ($5::text = 'rate_limited' AND pa.rate_limit_reset_at IS NOT NULL AND pa.rate_limit_reset_at > NOW())
       OR ($5::text = 'overloaded' AND pa.overload_until IS NOT NULL AND pa.overload_until > NOW())
       OR ($5::text = 'temp_unschedulable' AND pa.temp_unschedulable_until IS NOT NULL AND pa.temp_unschedulable_until > NOW())
-      OR ($5::text = 'error' AND (pa.health_state IN ('failed', 'error') OR pa.credential_state IN ('refresh_failed', 'revoked')))
+      OR ($5::text = 'error' AND (pa.health_state = 'revoked' OR pa.credential_state IN ('refresh_failed', 'revoked')))
   )
 ORDER BY pa.id ASC
 LIMIT $3
