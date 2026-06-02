@@ -45,7 +45,7 @@ func main() {
 }
 
 func run(logger *zap.Logger) error {
-	// S1-019: 启动即校验 release mode,拒绝 "想上生产却拼错字静默跑 dev" 的降级。
+	// S1-019: 启动即校验 release mode,拒绝遗漏或拼错 env 后静默跑 dev 的降级。
 	if err := validateReleaseMode(); err != nil {
 		return err
 	}
