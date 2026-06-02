@@ -102,7 +102,7 @@
 | ID | 规则 | 来源 |
 | --- | --- | --- |
 | TS-001 | 后端 Go (stdlib net/http + chi); 永禁 Fiber/fasthttp | [DR-003](process/decisions/DR-003-technology-stack.md), [DR-005](process/decisions/DR-005-go-http-framework.md) |
-| TS-002 | 前端 TS + React + Vite + TanStack + Tailwind | [DR-004](process/decisions/DR-004-frontend-framework.md) |
+| TS-002 | 前端 TS + React + Next.js App Router + Tailwind | [DR-004](process/decisions/DR-004-frontend-framework.md) |
 | TS-003 | 数据库 PostgreSQL + sqlc + Docker Compose；永禁 SQLite 上生产 | [DR-006](process/decisions/DR-006-database.md) |
 | TS-004 | OpenAPI 是 contract source of truth，前端类型从此 codegen | [DR-003 Constraint 2](process/decisions/DR-003-technology-stack.md) |
 | TS-005 | 命名跟 [18 术语表](18_GLOSSARY.md) 严格对齐；不许同义词 | [DR-003 Constraint 8](process/decisions/DR-003-technology-stack.md) |
