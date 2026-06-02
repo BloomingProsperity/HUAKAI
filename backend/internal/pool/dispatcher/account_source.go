@@ -13,7 +13,10 @@ package dispatcher
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
 
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
@@ -53,6 +56,10 @@ func (s *DBAccountSource) ListAccounts(ctx context.Context, req SelectionRequest
 	}
 	out := make([]*AccountSnapshot, 0, len(rows))
 	for _, r := range rows {
+		modelRateLimits, err := decodeModelRateLimits(r.ModelRateLimits)
+		if err != nil {
+			return nil, err
+		}
 		snap := &AccountSnapshot{
 			ID:             r.ID,
 			TenantID:       r.TenantID,
@@ -67,7 +74,8 @@ func (s *DBAccountSource) ListAccounts(ctx context.Context, req SelectionRequest
 			// WaitTimeoutMS left at 0 — selector overrides with
 			// RoutingPolicy.FallbackTimeoutMS when the policy is set.
 			// Per-account timeout override is a Phase E refinement.
-			HealthState: r.HealthState,
+			HealthState:     r.HealthState,
+			ModelRateLimits: modelRateLimits,
 		}
 		if r.LastDispatchAt.Valid {
 			snap.LastUsedAt = r.LastDispatchAt.Time
@@ -76,6 +84,44 @@ func (s *DBAccountSource) ListAccounts(ctx context.Context, req SelectionRequest
 			snap.HealthStateUntil = r.HealthStateUntil.Time
 		}
 		out = append(out, snap)
+	}
+	return out, nil
+}
+
+type modelRateLimitJSON struct {
+	RateLimitResetAt string `json:"rate_limit_reset_at"`
+	Reason           string `json:"reason"`
+}
+
+func decodeModelRateLimits(raw []byte) (map[string]ModelRateLimit, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var payload map[string]modelRateLimitJSON
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, fmt.Errorf("pool: decode model rate limits: %w", err)
+	}
+	if len(payload) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]ModelRateLimit, len(payload))
+	for key, entry := range payload {
+		key = strings.TrimSpace(key)
+		resetRaw := strings.TrimSpace(entry.RateLimitResetAt)
+		if key == "" || resetRaw == "" {
+			continue
+		}
+		resetAt, err := time.Parse(time.RFC3339Nano, resetRaw)
+		if err != nil {
+			continue
+		}
+		out[key] = ModelRateLimit{
+			RateLimitResetAt: resetAt,
+			Reason:           entry.Reason,
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
 	}
 	return out, nil
 }

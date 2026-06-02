@@ -68,6 +68,9 @@ func WithNow(fn func() time.Time) SelectorOption {
 		if _, ok := s.gates.Health.(ProviderAccountHealthGate); ok {
 			s.gates.Health = ProviderAccountHealthGate{Now: fn}
 		}
+		if _, ok := s.gates.Model.(modelRateLimitGate); ok {
+			s.gates.Model = modelRateLimitGate{Now: fn}
+		}
 	}
 }
 

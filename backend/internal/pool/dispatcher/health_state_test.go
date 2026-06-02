@@ -60,6 +60,46 @@ func TestDefaultSelectorReactivatesExpiredHealthStateSnapshot(t *testing.T) {
 	}
 }
 
+func TestDefaultSelectorSkipsActiveModelRateLimitSnapshot(t *testing.T) {
+	// Regression killed: model_rate_limits must be an account+model gate before
+	// ranking. Mutation self-check: replacing the model gate with AllowAllGate
+	// makes account 101 win on priority and this test turns red.
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	src := &healthStateAccountSource{accounts: []*AccountSnapshot{
+		{
+			ID:             101,
+			TenantID:       7,
+			Priority:       1,
+			MaxConcurrency: 4,
+			HealthState:    "healthy",
+			ModelRateLimits: map[string]ModelRateLimit{
+				"upstream-gpt-4o": {
+					RateLimitResetAt: now.Add(5 * time.Minute),
+					Reason:           "model_limit_exceeded",
+				},
+			},
+		},
+		{ID: 202, TenantID: 7, Priority: 9, MaxConcurrency: 4, HealthState: "healthy"},
+	}}
+	sel := router.NewDefaultSelector(src,
+		router.WithNow(func() time.Time { return now }),
+		router.WithSlotManager(healthStateSlotManager{}),
+	)
+
+	res, err := sel.Select(context.Background(), SelectionRequest{
+		TenantID:         7,
+		PoolGroupID:      3,
+		RequestedModel:   "public-gpt-4o",
+		ModelCooldownKey: "upstream-gpt-4o",
+	})
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if res.AccountID != 202 {
+		t.Fatalf("selected account=%d, want healthy non-cooled fallback 202", res.AccountID)
+	}
+}
+
 func TestDBAccountSourceSkipsThrottledAccount(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

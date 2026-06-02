@@ -70,7 +70,7 @@ type GateChain struct {
 func DefaultGateChain() GateChain {
 	g := AllowAllGate{}
 	return GateChain{
-		Tenant: g, Lifecycle: g, Channel: g, Protocol: protocolFamilyGate{}, Model: g, Capability: g,
+		Tenant: g, Lifecycle: g, Channel: g, Protocol: protocolFamilyGate{}, Model: modelRateLimitGate{}, Capability: g,
 		Credential: g, Health: ProviderAccountHealthGate{}, GroupPolicy: g, Exclusion: exclusionGate{},
 	}
 }
@@ -159,6 +159,38 @@ func (protocolFamilyGate) Allow(_ context.Context, account *AccountSnapshot, req
 		return false, GateFailureProtocolFamily, nil
 	}
 	return true, "", nil
+}
+
+type modelRateLimitGate struct {
+	Now func() time.Time
+}
+
+func (g modelRateLimitGate) Allow(_ context.Context, account *AccountSnapshot, req SelectionRequest) (bool, GateFailureReason, error) {
+	if account == nil {
+		return false, GateFailureModel, nil
+	}
+	key := req.ModelCooldownKey
+	if key == "" {
+		key = req.RequestedModel
+	}
+	if key == "" || len(account.ModelRateLimits) == 0 {
+		return true, "", nil
+	}
+	limit, ok := account.ModelRateLimits[key]
+	if !ok || limit.RateLimitResetAt.IsZero() {
+		return true, "", nil
+	}
+	if limit.RateLimitResetAt.After(g.now()) {
+		return false, GateFailureModel, nil
+	}
+	return true, "", nil
+}
+
+func (g modelRateLimitGate) now() time.Time {
+	if g.Now != nil {
+		return g.Now()
+	}
+	return time.Now()
 }
 
 type ProviderAccountHealthGate struct {

@@ -343,6 +343,7 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 		APIKeyID:         ex.ident.APIKeyID,
 		PoolGroupID:      ex.attempt.PoolGroupID,
 		RequestedModel:   ex.req.Model,
+		ModelCooldownKey: ex.upstreamModelID,
 		ProtocolFamily:   ex.resolved.ProtocolFamily,
 		EndpointFamily:   ex.d.effectiveEndpointFamily(),
 		ClaimID:          ex.reserveRes.ClaimID,
@@ -512,6 +513,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 			healthStatus = upstreamErr.StatusCode
 			classifyBody = upstreamErr.Body
 			decision, classification, _ = gateway.ClassifyAttemptHTTPError(upstreamErr.StatusCode, upstreamErr.Header, upstreamErr.Body, ex.accInfo.Platform)
+			recordModelCooldownOnUpstream404(ex.ctx, ex.d, ex.ident.TenantID, ex.acquiredAccountID, ex.upstreamModelID, upstreamErr.StatusCode, ex.requestID)
 		} else {
 			classifyBody = []byte(err.Error())
 			classification, _ = gateway.Classify(0, nil, classifyBody, ex.accInfo.Platform)
