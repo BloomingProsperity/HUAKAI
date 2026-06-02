@@ -9,6 +9,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "test:dashboard": "node --experimental-strip-types --test lib/dashboard-real-api.test.ts",
     "test:trust": "node --experimental-strip-types --test lib/usage-trust.test.ts",
     "type-check": "tsc --noEmit"
   },
