@@ -101,6 +101,11 @@ type Querier interface {
 	ListActiveProxiesByTenant(ctx context.Context, tenantID int64) ([]ListActiveProxiesByTenantRow, error)
 	// Drift worker 用; 只取 status='active' 且未软删。
 	ListActiveTLSFingerprintProfilesByTenant(ctx context.Context, tenantID int64) ([]ListActiveTLSFingerprintProfilesByTenantRow, error)
+	ListAdminChannelsByTenant(ctx context.Context, arg ListAdminChannelsByTenantParams) ([]ListAdminChannelsByTenantRow, error)
+	// P0 provider/channel admin catalog queries.
+	// Read-only directory data for admin UI. These SELECT lists intentionally
+	// exclude tenant_id and every credential-bearing provider_accounts column.
+	ListAdminProvidersByTenant(ctx context.Context, arg ListAdminProvidersByTenantParams) ([]ListAdminProvidersByTenantRow, error)
 	// HUAKAI F-FP-POOL Phase 1.3 sqlc queries — 出口代理池 CRUD。
 	//
 	// 多租户约束 (DR-001/TS-006): 所有 query 以 tenant_id 为第一参数过滤,
