@@ -1939,6 +1939,38 @@ paths:
           description: Cleared.
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /admin/v1/provider-accounts/{id}/test:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-accounts]
+      summary: Dry-run validate stored Provider Account credentials
+      operationId: testProviderAccountCredential
+      description: |
+        Runs a dry-run upstream credential validation against the provider account's currently stored
+        encrypted credential material. This endpoint never returns credential fields, raw upstream
+        response bodies, or secret-bearing error text, and it does not persist refresh results,
+        health changes, retry counters, credential versions, or token rotations.
+
+        Operational caution: this may call the upstream token/validation endpoint and can consume
+        upstream quota or rate-limit budget. Use only for operator validation and troubleshooting.
+        Credential modes whose validation would require a refresh-token grant that may rotate
+        upstream credentials, or whose adapter has no real non-mutating upstream validator,
+        fail closed until a non-mutating validator is available.
+      x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      responses:
+        '200':
+          description: Dry-run validation result.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderAccountTestResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/provider-accounts/{id}/enabled:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
@@ -4620,6 +4652,31 @@ components:
       properties:
         id: { type: integer, format: int64 }
         enabled: { type: boolean }
+
+    ProviderAccountTestResponse:
+      x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
+      type: object
+      additionalProperties: false
+      required: [ok, error_class, message]
+      properties:
+        ok:
+          type: boolean
+          description: True only when dry-run validation completed with a real non-mutating credential check.
+        error_class:
+          type: [string, 'null']
+          description: Safe error class only; never raw upstream error text.
+          enum:
+            - invalid_grant
+            - rate_limit_exceeded
+            - risk_control_triggered
+            - account_disabled
+            - temporary
+            - payload_invalid
+            - operator_config_required
+            - null
+        message:
+          type: string
+          description: Generic operator-facing message with no credential payload or raw upstream body.
 
     ProviderAccountList:
       x-huakai-spec-source:
