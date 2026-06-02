@@ -1,5 +1,9 @@
 # Owner 主链微步骤分析 — 评估与对齐(Claude 独立稿)
 
+> 【2026-06-02 已更新】本文关于前端“搁置到 Rust 四波后”的判断是 2026-05-21 历史；
+> landing commit `bcc4f5d` 已记录 “frontend Next 14->15; Owner lifted frontend freeze”，前端
+> wire-up 已解锁。以下为历史评估。
+
 - 日期: 2026-05-21
 - 性质: CLAUDE.md #10 平行评估的 Claude 稿。独立起草,未看 codex 平行稿(`2026-05-21-mainchain-analysis-eval-codex.md`)
 - 评估对象: Owner 提供的「请求主链 12 微步骤 + 功能 12 项 + 3 周排班」差异分析(基线 commit 880b443)

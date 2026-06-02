@@ -4,6 +4,10 @@
 > 10 点对比。按 `feedback_owner_input_codex_eval`,Claude 与 codex 各自独立评估再交叉。
 > codex lane:`bh7ja8zn6`(独立评估);Claude lane:本文合成。
 
+> 【2026-06-02 已更新】本文 point 1 的“前端搁置到 Rust 四波后”是 2026-05-22 历史。
+> landing commit `bcc4f5d` 已记录 “frontend Next 14->15; Owner lifted frontend freeze”，前端
+> wire-up 已解锁；以下分类保留为当日交叉评估历史。
+
 ## 结论
 
 **这份 critique 不改变 12 波补救计划与当前优先级。** Claude 与 codex 独立评估**结论一致**:

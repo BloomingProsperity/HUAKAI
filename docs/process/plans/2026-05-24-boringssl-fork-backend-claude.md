@@ -11,6 +11,16 @@
 - 参考 anchor:[docs/process/2026-05-24-ref-anchor.md](../2026-05-24-ref-anchor.md)
 - CLAUDE.md 条款:#10 parallel-draft / #11 clean-room / #12 fresh-fetch / #13 包结构 / #14 测试质量 / #15 ref 对照
 
+> 【2026-06-02 已更新】本计划中的“Rust core_gateway 未接通生产”“~5/15 步”
+> 是 2026-05-24 对旧 `core_gateway` 的历史锚点。当前 BoringSSL Rust sidecar 已落
+> Phase 1-3 基础能力：JA4 a/b/c/d + profile expectation、H2 SETTINGS 逐字段控制
+> (`crates/tls-sidecar/src/h2_settings.rs`)、Anthropic profile 对真抓包字段校准；Go 侧
+> `backend/internal/transport/mimicry/sidecar_client.go` 与
+> `backend/cmd/gateway/wiring.go` 已接通 sidecar socket。但 exact-fidelity / 生产启用仍未闭：
+> R-SIDECAR-001 raw sigalgs 10/26 gap 与 R-SIDECAR-002 ALPN=h2 raw tunnel/H2 framing
+> 在任何生产 sidecar 配置启用前必须解决或明确限制；同时还剩更多 vendor profile 与真上游验证。
+> 以下为历史计划。
+
 ## §1 目标范围
 
 HUAKAI 要 high-fidelity TLS mimicry,达到**逐字节控制**以下 5 个 fingerprint 维度,补 Go utls 的天花板:

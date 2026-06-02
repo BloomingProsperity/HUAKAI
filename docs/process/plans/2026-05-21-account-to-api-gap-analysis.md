@@ -5,6 +5,15 @@
 - 输入: 3 份 specifier-lane 调研 —— CLIProxyAPI 15 步深挖 / sub2api+new-api+one-api 交叉参照 / HUAKAI 自审
 - 状态: 调研完成,**待 Owner 定方向**
 
+> 【2026-06-02 已更新】本文件的“待 Owner 定方向”“跨池 Router 是 L0 桩”
+> “AttemptSeq:1 写死”“非流式 anthropic 是 501 桩”等是 2026-05-21 历史。
+> 后续 Owner 已锁定 C 方向：Go `gatewayhttp` 作生产大脑，Rust 重定位为高性能 +
+> 强伪装出站 sidecar；②⑥ 单请求 retry/failover/跨池已由 `router.DefaultRouter`
+> 多 attempt plan + `chatExecution` attempt loop 接通；③ Anthropic Messages
+> raw buffered 已有“不再 501”测试与实现；transport mimicry / sidecar 已由
+> `transport.Factory` 和 `SidecarSocketPath` 接线。`ApplyMimicryPlan` 本轮全仓搜索
+> 未观察到非测试 caller，因此应用层 body cloaking 不标为已闭；以下为历史。
+
 ## 0. 最关键发现:HUAKAI 有两套并行数据面
 
 `grep RouteQuery|RouteService|AttemptReport backend/` = 零命中;`backend/` 内无任何 gRPC server;`route.proto` 只存在于 `exploratory/rust-core-gateway/`。

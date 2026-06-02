@@ -4,6 +4,13 @@
 > 详细逐叶证据见 5 份 lane 报告:`2026-05-21-audit-A..E.md`。本文件是汇总视图。
 > 参照口径:`Wei-Shaw/sub2api@16793d3af0` / `router-for-me/CLIProxyAPI@21fad9db` / `QuantumNous/new-api@20d3e737`。
 
+> 【2026-06-02 已更新】本状态树是 2026-05-21 快照。当前已同步的关键变化：
+> 数据面方向已定为 C；旧 `core_gateway` RouteService/route_client/mock_control_plane 路线退役，
+> `tls-sidecar` + Go sidecar transport 接线已存在；②⑥ retry/failover/跨池与 ③ Anthropic
+> buffered 已落地；前端冻结已解除并完成 Next 14→15 升级。本文中“NO-GO/未上线”
+> 针对旧 `core_gateway` 快照仍是历史事实，但不能代表当前 tls-sidecar 接通状态；“前端搁置”
+> 为历史；以下为历史状态树。
+
 ## 0. 总结论 —— 回答「是这样的状态树吗」
 
 **结构对,状态不对。** 这 16 个 section 作为项目地图基本准确;但作为「状态树」会误导,因为它把所有节点画得像已完成的功能,**真实状态是「地基铺得很宽,闭环极少」**。

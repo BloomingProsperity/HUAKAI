@@ -2,6 +2,11 @@
 
 > 本文件按 CLAUDE.md #10 平行交叉规则,由 Claude 独立起草,未参考 codex 草案。配对文件:`2026-05-21-full-audit-codex.md`。
 
+> 【2026-06-02 已更新】本文是 2026-05-21 全面自查计划历史稿。当前 Rust 口径已从“并列生产网关”
+> 同步为 C 方向：Go `gatewayhttp` 是生产大脑，旧 `core_gateway` 控制面路线退役，
+> 新 `tls-sidecar` + Go `transport.Factory` sidecar 接线已存在；前端冻结也已由 landing
+> commit `bcc4f5d` 明确解除并完成 Next 14→15 升级。以下为历史计划口径。
+
 ## 1. 缘起与目标
 
 Owner 给出 16-section「HUAKAI 项目功能树」并问「是这样的状态树吗」。Owner 先前指令:洞③ 落地后做「全面自查 —— 差的就是和借鉴项目功能缺失模块」。

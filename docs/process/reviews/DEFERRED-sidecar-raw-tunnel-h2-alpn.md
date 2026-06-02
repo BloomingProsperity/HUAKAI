@@ -1,6 +1,13 @@
 # DEFERRED — sidecar raw tunnel 在 ALPN=h2 时未路由到 H2 path
 
 - **Severity**: S2 (sidecar 未接通生产,当前 production no-impact)
+
+> 【2026-06-02 已更新】上面的 severity 理由是 2026-05-25 历史。Go 端已通过
+> `HUAKAI_TRANSPORT_SIDECAR_SOCKET` / `Factory.SidecarSocketPath` 可配置接通 Rust/BoringSSL
+> sidecar；当前未闭风险变为“任何生产 sidecar 配置启用前必须解决或验证 ALPN=h2
+> raw tunnel 与 H2 framing，或通过 profile 限制明确规避”。
+> 以下为历史 review finding 原文。
+
 - **来源 codex review**: 2026-05-25T00:02Z, Phase 3 H2 SETTINGS Round 2 P2 finding
 - **Affected files**:
   - `exploratory/rust-core-gateway/merged/crates/tls-sidecar/src/connect.rs:80` (`connect_upstream` raw tunnel return)

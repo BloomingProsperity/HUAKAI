@@ -5,6 +5,12 @@
 - 范围档位: Owner 选定 **C 档 = 性能 + 防打爆 + 伪装**
 - 对照稿: `docs/process/plans/2026-05-21-rust-core-path-codex.md`
 
+> 【2026-06-02 已更新】本文是旧 `core_gateway` 独立计划稿,下文的 listener /
+> account_planner / proxy_engine / HTTP/2 fork 接线判断是 2026-05-21 历史。
+> 当前数据面方向已由 Owner 锁定为 C:Go `gatewayhttp` 做生产大脑,Rust 侧以
+> `tls-sidecar` 承担高性能 + 强伪装出站传输；Go 端已通过 transport sidecar socket
+> 接通。旧 `core_gateway` 控制面与模拟控制面口径按 C 退役,以下保留为历史。
+
 ## 1. 目标与成功标准
 
 把 Rust 数据面核心请求链路（listener → account_planner → proxy_engine → stream_pipeline → attempt_reporter）做到：

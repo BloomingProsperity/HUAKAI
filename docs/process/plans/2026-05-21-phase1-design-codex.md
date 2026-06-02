@@ -1,5 +1,10 @@
 # 2026-05-21 Phase 1 详细实施设计 - Codex 独立稿
 
+> 【2026-06-02 已更新】本 Phase 1 设计稿中的 L0 router / `AttemptSeq:1`
+> 状态是 2026-05-21 历史；当前 `router.DefaultRouter` 已生成多 attempt plan，
+> `chatExecution` 已执行 attempt loop、失败账号排除、交付前 retry/failover 与一次最终结算。
+> 以下为历史设计稿。
+
 | Owner directive | "HUAKAI 方向 1 已锁定并进入执行,Owner 批准开 Phase 1。现在要 Phase 1 的详细实施设计。" |
 |---|---|
 | 独立性声明 | 本稿未打开、显示、读取或引用 `docs/process/plans/2026-05-21-phase1-design-claude.md` 的内容；一次存在性检查返回过该路径存在。 |

@@ -6,6 +6,12 @@
 - 平行纪律: 按 CLAUDE.md #10 独立起草, 未读 codex 平行稿(`2026-05-21-direction-1-codex.md`)
 - 状态: 待与 codex 稿交叉对比 → surface Owner
 
+> 【2026-06-02 已更新】本 Claude 独立稿是 2026-05-21 的历史输入。当前 C 方向已锁定并推进：
+> ②⑥ retry/failover/跨池、③ Anthropic buffered、transport mimicry/sidecar
+> 接线已落地；旧 `core_gateway` 控制面方向按 C 退役为 legacy。本文关于
+> `ApplyMimicryPlan` “零 caller”的应用层 body cloaking 判断，本轮全仓搜索仍未发现非测试
+> caller，因此不更新为已闭；以下为历史草案。
+
 ## 0. 一句话
 
 Go 管线已覆盖 15 步里的 ~13 步、主干扎实, 差 6 个洞、都是周级补丁。Rust 不再追求做完整数据面(那要先建一个不存在的控制面, 数月级), 改做一件别人做不好的事: 字节级 TLS / HTTP2 伪装的出站传输。两者用一个**可降级**契约连接 —— 「可降级」就是 Owner「Go 和 Rust 交互不能出问题」的工程答案: Rust 这一跳坏了, Go 自动回退原生 transport, 网关照常服务。
