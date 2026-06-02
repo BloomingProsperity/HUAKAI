@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
@@ -81,6 +82,70 @@ func seedCredentialAcqProviderAccount(t *testing.T, ctx context.Context, pool *p
 		_, _ = pool.Exec(c, `DELETE FROM tenants WHERE id = $1`, tenantID)
 	})
 	return tenantID, paID
+}
+
+// TestCreateRejectsCrossTenantProviderAccountPG guards S2-010 against real Postgres:
+// credential_acquisition_flow_sessions must enforce that its tenant_id matches the
+// referenced Provider Account's tenant. The broken schema used only
+// provider_account_id REFERENCES provider_accounts(id), so tenant A could create a
+// flow row pointing at tenant B's account; finalization checks were too late to
+// protect the flow state itself.
+//
+// Mutation check: replace the composite FK with the old single-column FK and the
+// cross-tenant insert succeeds (err==nil) -> red. Control: tenant B with tenant
+// B's account still creates a normal flow.
+func TestCreateRejectsCrossTenantProviderAccountPG(t *testing.T) {
+	ctx := context.Background()
+	pool := openCredentialAcqTestPool(t, ctx)
+	now := time.Now().UTC()
+	store := NewPostgresSessionStore(pool).WithNow(func() time.Time { return now })
+	tenantA, _ := seedCredentialAcqProviderAccount(t, ctx, pool, "a-"+uuid.NewString())
+	tenantB, accountB := seedCredentialAcqProviderAccount(t, ctx, pool, "b-"+uuid.NewString())
+
+	_, err := store.Create(ctx, Session{
+		ID:                   uuid.NewString(),
+		TenantID:             tenantA,
+		ProviderAccountID:    accountB,
+		Vendor:               "openai",
+		AuthMode:             "api_key",
+		Kind:                 FlowKindPaste,
+		Status:               StatusStarted,
+		ActorID:              "admin-1",
+		ActorRole:            "platform_admin",
+		ClientIdentitySource: ClientSourceNone,
+		RequestedScopes:      []string{},
+		RedactedContext:      map[string]any{"case": "cross_tenant_fk"},
+		ExpiresAt:            now.Add(10 * time.Minute),
+	})
+	if err == nil {
+		t.Fatalf("cross-tenant flow insert succeeded: tenant_id=%d provider_account_id=%d; want FK rejection", tenantA, accountB)
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23503" {
+		t.Fatalf("cross-tenant flow insert err=%T %[1]v, want postgres foreign_key_violation", err)
+	}
+
+	created, err := store.Create(ctx, Session{
+		ID:                   uuid.NewString(),
+		TenantID:             tenantB,
+		ProviderAccountID:    accountB,
+		Vendor:               "openai",
+		AuthMode:             "api_key",
+		Kind:                 FlowKindPaste,
+		Status:               StatusStarted,
+		ActorID:              "admin-1",
+		ActorRole:            "platform_admin",
+		ClientIdentitySource: ClientSourceNone,
+		RequestedScopes:      []string{},
+		RedactedContext:      map[string]any{"case": "same_tenant_control"},
+		ExpiresAt:            now.Add(10 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("same-tenant control insert failed: %v", err)
+	}
+	if created.TenantID != tenantB || created.ProviderAccountID != accountB {
+		t.Fatalf("same-tenant control row=(tenant=%d account=%d), want (%d,%d)", created.TenantID, created.ProviderAccountID, tenantB, accountB)
+	}
 }
 
 // TestBeginFinalizeCallbackOAuthGatePG guards S1-010 [codex P2] against real Postgres: it exercises the
