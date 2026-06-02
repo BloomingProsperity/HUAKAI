@@ -51,16 +51,31 @@ type listResponse struct {
 }
 
 type usageRecord struct {
-	RequestedModel    string     `json:"requested_model"`
-	UpstreamModel     string     `json:"upstream_model"`
-	ActualCost        string     `json:"actual_cost"`
-	Provider          string     `json:"provider,omitempty"`
-	ProviderAccountID *int64     `json:"provider_account_id,omitempty"`
-	LedgerID          string     `json:"ledger_id"`
-	VerifyHint        verifyHint `json:"verify_hint"`
-	CreatedAt         string     `json:"created_at"`
-	Status            string     `json:"status"`
-	RequestID         string     `json:"request_id,omitempty"`
+	RequestedModel    string      `json:"requested_model"`
+	UpstreamModel     string      `json:"upstream_model"`
+	ActualCost        string      `json:"actual_cost"`
+	Tokens            usageTokens `json:"tokens"`
+	Provider          string      `json:"provider,omitempty"`
+	ProviderAccountID *int64      `json:"provider_account_id,omitempty"`
+	LedgerID          string      `json:"ledger_id"`
+	VerifyHint        verifyHint  `json:"verify_hint"`
+	CreatedAt         string      `json:"created_at"`
+	Status            string      `json:"status"`
+	RequestID         string      `json:"request_id,omitempty"`
+}
+
+// usageTokens surfaces the per-request token breakdown already stored in
+// usage_records (input/output always present; cache counts emitted only when
+// non-zero). This is the genuine residual of the "relay request log" feature:
+// GET /v1/me/usage already served model / cost / status / provider / verify_hint
+// with keyset pagination and self-scoped relay-key auth, so we surface the token
+// columns ListUsageRecords already SELECTs — instead of building a redundant
+// relay_request_logs table plus a fail-open money-path settler hook.
+type usageTokens struct {
+	Input         int32 `json:"input"`
+	Output        int32 `json:"output"`
+	CacheCreation int32 `json:"cache_creation,omitempty"`
+	CacheRead     int32 `json:"cache_read,omitempty"`
 }
 
 type verifyHint struct {
@@ -167,9 +182,15 @@ func mapUsageRecord(row dbbilling.ListUsageRecordsRow, tenantID int64) usageReco
 	ledgerID := valueString(row.AuditLedgerID)
 	requestID := strings.TrimSpace(row.RequestID)
 	return usageRecord{
-		RequestedModel:    strings.TrimSpace(row.RequestedModel),
-		UpstreamModel:     valueString(row.UpstreamModel),
-		ActualCost:        row.ActualCost.StringFixed(8),
+		RequestedModel: strings.TrimSpace(row.RequestedModel),
+		UpstreamModel:  valueString(row.UpstreamModel),
+		ActualCost:     row.ActualCost.StringFixed(8),
+		Tokens: usageTokens{
+			Input:         row.TokensInput,
+			Output:        row.TokensOutput,
+			CacheCreation: row.CacheCreationTokens,
+			CacheRead:     row.CacheReadTokens,
+		},
 		Provider:          valueString(row.Provider),
 		ProviderAccountID: row.ProviderAccountID,
 		LedgerID:          ledgerID,
