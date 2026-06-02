@@ -179,6 +179,41 @@ func TestMeUsageAuthErrorsMatchInboundAPIKeyPath(t *testing.T) {
 	}
 }
 
+// TestMeUsageExposesPerRequestTokenCounts is the discriminating test for the
+// "relay request log" residual. usage_records already stores token counts and
+// ListUsageRecords already SELECTs them, but the DTO dropped them. Mutation:
+// remove the Tokens mapping (or the DTO field) -> item["tokens"] is absent ->
+// this test goes red.
+func TestMeUsageExposesPerRequestTokenCounts(t *testing.T) {
+	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
+	row := meUsageRow(1, userA.TenantID, userA.APIKeyID, userA.UserID, "claude-opus-4", "claude-opus-4-20260514", "ledger-a", "anthropic")
+	row.TokensInput = 1234
+	row.TokensOutput = 567
+	row.CacheCreationTokens = 89
+	row.CacheReadTokens = 12
+	store := &usageStoreStub{rows: []dbbilling.ListUsageRecordsRow{row}}
+	h := NewHandler(Deps{Auth: authStub{identity: userA}, Store: store})
+
+	rec := invokeMeUsage(h, "/v1/me/usage")
+	assertMeStatus(t, rec, http.StatusOK)
+	var body struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || len(body.Items) != 1 {
+		t.Fatalf("decode/len body=%s err=%v", rec.Body.String(), err)
+	}
+	tokens, ok := body.Items[0]["tokens"].(map[string]any)
+	if !ok {
+		t.Fatalf("per-request token counts missing from usage log; body=%s", rec.Body.String())
+	}
+	if tokens["input"] != float64(1234) || tokens["output"] != float64(567) {
+		t.Fatalf("tokens input/output=%v/%v want 1234/567; body=%s", tokens["input"], tokens["output"], rec.Body.String())
+	}
+	if tokens["cache_creation"] != float64(89) || tokens["cache_read"] != float64(12) {
+		t.Fatalf("cache tokens=%v/%v want 89/12; body=%s", tokens["cache_creation"], tokens["cache_read"], rec.Body.String())
+	}
+}
+
 func invokeMeUsage(h http.HandlerFunc, target string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodGet, target, strings.NewReader(""))
 	rec := httptest.NewRecorder()
