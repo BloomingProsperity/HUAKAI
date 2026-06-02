@@ -30,7 +30,11 @@ type createVoucherRecord struct {
 	MaxRedemptions   int
 	SingleUsePerUser bool
 	EligibleUserID   *int64
-	Now              time.Time
+	// GrantKind 空=balance (批量路径不设, 由 grantKindOrDefault 兜底); subscription 时
+	// SubscriptionPlanID 必非空 (service 层校验 + DB voucher_subscription_kind_check)。
+	GrantKind          string
+	SubscriptionPlanID *int64
+	Now                time.Time
 }
 
 type createBatchRecord struct {

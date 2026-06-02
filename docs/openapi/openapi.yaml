@@ -1267,6 +1267,29 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/auth/me:
+    get:
+      tags: [auth]
+      summary: Resolve the authenticated user's panel entitlement (admin / user)
+      operationId: authMe
+      x-huakai-spec-source: [docs/process/plans/2026-05-30-role-panel-switch-synthesis.md]
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: Panel entitlement resolved from the account role (backend-authoritative).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  panel: { type: string, enum: [admin, user] }
+                  user_id: { type: integer, format: int64 }
+                  tenant_id: { type: integer, format: int64 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/sessions/refresh:
     post:
       tags: [sessions]
@@ -1683,6 +1706,721 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  # ==========================================================================
+  # Payments / Recharge (Slice P1) — 内部支付机器, 真实渠道 SDK 留 Owner-gated 后续
+  # ==========================================================================
+
+  /v1/users/me/payments/orders:
+    get:
+      tags: [user-payments]
+      summary: List the authenticated User's payment orders
+      operationId: listMyPaymentOrders
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p1-synthesis.md]
+      security:
+        - sessionBearerAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Caller's payment orders (newest first).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orders: { type: array, items: { type: object } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/users/me/payments/balance:
+    get:
+      tags: [user-payments]
+      summary: Authenticated User's payment-source balance (derived SUM)
+      operationId: getMyPaymentBalance
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p1-synthesis.md]
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: Derived balance from payment credits.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  balance:
+                    type: object
+                    properties:
+                      tenant_id: { type: integer, format: int64 }
+                      user_id: { type: integer, format: int64 }
+                      amount_cents: { type: integer, format: int64 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/payments:
+    get:
+      tags: [admin-payments]
+      summary: List a tenant user's payment orders
+      operationId: adminListPaymentOrders
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p1-synthesis.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: user_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Tenant user's payment orders.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orders: { type: array, items: { type: object } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-payments]
+      summary: Create a pending payment order (idempotent by out_trade_no)
+      operationId: adminCreatePaymentOrder
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p1-synthesis.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, user_id, amount_cents, out_trade_no]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                user_id: { type: integer, format: int64, minimum: 1 }
+                amount_cents: { type: integer, format: int64, minimum: 1, maximum: 100000000000 }
+                currency_code: { type: string, enum: [USD], default: USD }
+                out_trade_no: { type: string, description: Caller-stable idempotency key; required so retries collapse instead of creating duplicate orders. }
+                provider_kind: { type: string, enum: [manual, test] }
+      responses:
+        '201':
+          description: Payment order created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order: { type: object }
+                  idempotent: { type: boolean }
+        '200':
+          description: Idempotent replay — existing order returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order: { type: object }
+                  idempotent: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/payments/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    get:
+      tags: [admin-payments]
+      summary: Get a payment order with its operation audit trail
+      operationId: adminGetPaymentOrder
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p1-synthesis.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Payment order plus audit events.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order: { type: object }
+                  audit_events: { type: array, items: { type: object } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/payments/{id}/confirm:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-payments]
+      summary: Manually confirm payment and fulfill (credit) the order
+      operationId: adminConfirmPaymentOrder
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p1-synthesis.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                confirm_reason: { type: string }
+      responses:
+        '200':
+          description: Order confirmed and credited (idempotent on replay).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order: { type: object }
+                  credit: { type: object }
+                  balance_cents: { type: integer, format: int64 }
+                  idempotent: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/payments/webhooks/{provider}:
+    parameters:
+      - name: provider
+        in: path
+        required: true
+        schema: { type: string }
+        description: Payment provider kind (P2a 仅 test; 真实渠道 Owner-gated P-RealMoney)。
+      - name: X-Payment-Signature
+        in: header
+        required: true
+        schema: { type: string }
+        description: Provider 回调签名 (P2a test provider 为 HMAC-SHA256 hex); 验签失败回调被拒。
+    post:
+      tags: [payments]
+      summary: Public payment provider callback (auto-credit on verified signature)
+      operationId: paymentProviderWebhook
+      # 公开端点: provider 无法持有 HUAKAI 会话, 信任完全来自验签 — 覆盖顶层 bearerAuth。
+      security: []
+      description: |
+        公开回调端点 (无 session/admin 中间件): 信任完全来自验签。读 raw body 与
+        X-Payment-Signature 头, provider 验签通过后用已验签体内的可信 tenant + 外部订单号
+        定位本地订单, 比对金额/币种/渠道一致后复用手动路径同款 ConfirmPaid+Fulfill 入账。
+        重放安全靠订单幂等。生产未注册真实 provider 时 fail-closed 拒一切。
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p2a-synthesis.md]
+      requestBody:
+        required: true
+        description: 渠道回调原始体 (验签基于原始字节; P2a test provider 为签名 JSON 信封)。
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Callback verified and order credited (idempotent on replay).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  idempotent: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  # ==========================================================================
+  # Subscriptions (Slice P3a — quota-only; admin assign + 到期 worker)
+  # ==========================================================================
+
+  /v1/admin/subscriptions/plans:
+    get:
+      tags: [admin-subscriptions]
+      summary: List subscription plans for a tenant
+      operationId: adminListSubscriptionPlans
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: for_sale
+          schema: { type: boolean }
+          description: When true, only enabled for-sale plans are returned.
+      responses:
+        '200':
+          description: Tenant subscription plans.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plans: { type: array, items: { type: object } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-subscriptions]
+      summary: Create a quota subscription plan
+      operationId: adminCreateSubscriptionPlan
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, name, validity_days]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                name: { type: string }
+                description: { type: string }
+                price_cents: { type: integer, format: int64, minimum: 0 }
+                currency_code: { type: string, default: USD }
+                validity_days: { type: integer, minimum: 1 }
+                granted_group: { type: string, description: 授予的用户路由分组; 空=不改组。 }
+                daily_cap_usd: { type: string, description: 日历日窗口 USD 花费上限 (十进制字符串; 省略=不设限)。 }
+                weekly_cap_usd: { type: string, description: 日历周窗口 USD 上限。 }
+                monthly_cap_usd: { type: string, description: 日历月窗口 USD 上限。 }
+                for_sale: { type: boolean }
+                sort_order: { type: integer }
+      responses:
+        '201':
+          description: Plan created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/subscriptions/plans/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    get:
+      tags: [admin-subscriptions]
+      summary: Get a subscription plan
+      operationId: adminGetSubscriptionPlan
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Subscription plan.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/subscriptions/plans/{id}/disable:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-subscriptions]
+      summary: Disable a subscription plan (no longer for sale/assignable)
+      operationId: adminDisableSubscriptionPlan
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Plan disabled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  disabled: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/subscriptions/assignments:
+    get:
+      tags: [admin-subscriptions]
+      summary: List a tenant user's subscriptions
+      operationId: adminListSubscriptions
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: user_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: User subscriptions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscriptions: { type: array, items: { type: object } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-subscriptions]
+      summary: Assign a subscription to a user (idempotent per granted group)
+      operationId: adminAssignSubscription
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, user_id, plan_id]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                user_id: { type: integer, format: int64, minimum: 1 }
+                plan_id: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '201':
+          description: Subscription assigned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscription: { type: object }
+                  idempotent: { type: boolean }
+        '200':
+          description: Idempotent replay — existing active subscription returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscription: { type: object }
+                  idempotent: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/subscriptions/assignments/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    get:
+      tags: [admin-subscriptions]
+      summary: Get a subscription with its operation audit trail
+      operationId: adminGetSubscription
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Subscription plus audit events.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscription: { type: object }
+                  audit_events: { type: array, items: { type: object } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/subscriptions/assignments/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-subscriptions]
+      summary: Cancel a subscription (close quota + downgrade group)
+      operationId: adminCancelSubscription
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Subscription cancelled (idempotent if already terminal).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscription: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/subscriptions/vouchers:
+    post:
+      tags: [admin-subscriptions]
+      summary: Create a subscription voucher (grant_kind forced to subscription)
+      operationId: adminCreateSubscriptionVoucher
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3b3-voucher-claude.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, plan_id, amount_cents, valid_from, valid_until]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                plan_id: { type: integer, format: int64, minimum: 1 }
+                code: { type: string }
+                amount_cents: { type: integer, format: int64, minimum: 1 }
+                currency_code: { type: string }
+                valid_from: { type: string, format: date-time }
+                valid_until: { type: string, format: date-time }
+                max_redemptions: { type: integer, minimum: 1 }
+                single_use_per_user: { type: boolean }
+                eligible_user_id: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '201':
+          description: Subscription voucher created; code returned once for distribution.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  voucher: { type: object }
+                  code: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/routes:
+    get:
+      tags: [admin-routes]
+      summary: List a tenant's subscription group routing rules (routes table)
+      operationId: adminListRoutes
+      x-huakai-spec-source: [docs/process/plans/2026-05-30-routeadmin-crud-claude.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Tenant's routing rules ordered by match_priority.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  routes: { type: array, items: { type: object } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-routes]
+      summary: Create a subscription group routing rule (user_group + model_pattern -> pool_group)
+      operationId: adminCreateRoute
+      x-huakai-spec-source: [docs/process/plans/2026-05-30-routeadmin-crud-claude.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [tenant_id, name, user_group_match, pool_group_id]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                name: { type: string }
+                user_group_match: { type: string }
+                model_pattern_match:
+                  type: string
+                  description: Empty or '*' matches all; 'prefix*' trailing-wildcard; otherwise exact. Mid-string/multiple '*' rejected.
+                pool_group_id: { type: integer, format: int64, minimum: 1 }
+                match_priority: { type: integer, minimum: 0, default: 100 }
+      responses:
+        '201':
+          description: Routing rule created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  route: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/routes/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    get:
+      tags: [admin-routes]
+      summary: Get a subscription group routing rule
+      operationId: adminGetRoute
+      x-huakai-spec-source: [docs/process/plans/2026-05-30-routeadmin-crud-claude.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Routing rule.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  route: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    delete:
+      tags: [admin-routes]
+      summary: Soft-delete a subscription group routing rule (removes it from the active gate set)
+      operationId: adminDeleteRoute
+      x-huakai-spec-source: [docs/process/plans/2026-05-30-routeadmin-crud-claude.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Routing rule soft-deleted; the deleted row is returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  route: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/users/me/subscriptions:
+    get:
+      tags: [user-subscriptions]
+      summary: List the authenticated User's subscriptions
+      operationId: listMySubscriptions
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: Caller's subscriptions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscriptions: { type: array, items: { type: object } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/users/me/subscriptions/plans:
+    get:
+      tags: [user-subscriptions]
+      summary: List subscription plans available for purchase
+      operationId: listAvailableSubscriptionPlans
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: For-sale subscription plans in the caller's tenant.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plans: { type: array, items: { type: object } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   # ==========================================================================

@@ -79,6 +79,32 @@ func TestVoucherCreateRejectsUnsupportedCurrencyBeforeIssuing(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreSubscriptionVoucherDoesNotRedeemAsBalance(t *testing.T) {
+	ctx := context.Background()
+	now := fixedNow()
+	svc := NewService(NewMemoryStore())
+	planID := int64(77)
+	created, err := svc.Create(ctx, CreateInput{
+		TenantID: 1, AdminID: 10, Code: "subscription-memory", AmountCents: 9900,
+		ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour), SingleUsePerUser: true, Now: now,
+		GrantKind: GrantKindSubscription, SubscriptionPlanID: &planID,
+	})
+	if err != nil {
+		t.Fatalf("Create subscription voucher: %v", err)
+	}
+	if created.Voucher.GrantKind != GrantKindSubscription || created.Voucher.SubscriptionPlanID == nil || *created.Voucher.SubscriptionPlanID != planID {
+		t.Fatalf("created voucher lost subscription metadata: %+v", created.Voucher)
+	}
+
+	_, err = svc.Redeem(ctx, RedeemInput{
+		TenantID: 1, UserID: 22, Code: created.Code, IdempotencyKey: "sub-memory-redeem",
+		SourceIP: "203.0.113.10", RequestID: "req-sub-memory", Now: now,
+	})
+	if !errors.Is(err, ErrSubscriptionVoucherUnsupported) {
+		t.Fatalf("Redeem subscription voucher err=%v want ErrSubscriptionVoucherUnsupported", err)
+	}
+}
+
 func TestAT_BILL_002_002_007_RedeemWritesBillingEventAndBalance(t *testing.T) {
 	ctx := context.Background()
 	now := fixedNow()

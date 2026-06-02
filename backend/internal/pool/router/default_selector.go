@@ -87,7 +87,11 @@ func (s *DefaultSelector) Select(ctx context.Context, req SelectionRequest) (*Se
 	if err != nil {
 		return nil, err
 	}
-	eligible := s.filter(ctx, accounts, req, reason)
+	// 一次 Select 只准备一次 gate 链: 把"决策只依赖 req"的 gate(如订阅分组)在此
+	// 查库一次, 后续逐候选 Allow 复用其缓存, 避免 K 候选 ×2 循环重复查库。
+	// scoped 是局部副本, 不改 s.gates, 并发 Select 各自独立。
+	gates := s.gates.ForSelection(ctx, req)
+	eligible := s.filter(ctx, gates, accounts, req, reason)
 	if len(eligible) == 0 {
 		if reason.onlyFailure(GateFailureHealth, len(accounts)) {
 			return nil, ErrAllChannelsDegraded
@@ -98,14 +102,14 @@ func (s *DefaultSelector) Select(ctx context.Context, req SelectionRequest) (*Se
 	routeConstrained := hasModelRoute(policy, req.RequestedModel)
 	routed := modelRoute(policy, req.RequestedModel, eligible)
 	if len(routed) > 0 {
-		if res, done, err := s.trySticky(ctx, req, routed, RoutingLayerStickyWithinRoute, reason); done || err != nil {
+		if res, done, err := s.trySticky(ctx, gates, req, routed, RoutingLayerStickyWithinRoute, reason); done || err != nil {
 			return res, err
 		}
-		if res, done, err := s.tryLayer(ctx, req, routed, RoutingLayerRoutingAffinity, reason); done || err != nil {
+		if res, done, err := s.tryLayer(ctx, gates, req, routed, RoutingLayerRoutingAffinity, reason); done || err != nil {
 			return res, err
 		}
 	} else if !routeConstrained {
-		if res, done, err := s.trySticky(ctx, req, eligible, RoutingLayerStickyStandalone, reason); done || err != nil {
+		if res, done, err := s.trySticky(ctx, gates, req, eligible, RoutingLayerStickyStandalone, reason); done || err != nil {
 			return res, err
 		}
 	}
@@ -115,7 +119,7 @@ func (s *DefaultSelector) Select(ctx context.Context, req SelectionRequest) (*Se
 		freshCandidates = routed
 	}
 	fresh := s.rankFresh(freshCandidates, policy)
-	if res, done, err := s.tryLayer(ctx, req, fresh, RoutingLayerFresh, reason); done || err != nil {
+	if res, done, err := s.tryLayer(ctx, gates, req, fresh, RoutingLayerFresh, reason); done || err != nil {
 		// Track B 闭环最后一片: fresh 选定后写 sticky_bindings 让后续相同
 		// prompt prefix 命中此账号. 用 type assertion 让 StickyStore 接口
 		// 不被强制扩展（实测 stub 不实现 Upsert 也不破现有测试）。
@@ -143,13 +147,13 @@ func (s *DefaultSelector) policy(ctx context.Context, req SelectionRequest) (*Ro
 	return s.policies.GetRoutingPolicy(ctx, req)
 }
 
-func (s *DefaultSelector) filter(ctx context.Context, accounts []*AccountSnapshot, req SelectionRequest, reason *RoutingReasonBuilder) []*AccountSnapshot {
+func (s *DefaultSelector) filter(ctx context.Context, gates GateChain, accounts []*AccountSnapshot, req SelectionRequest, reason *RoutingReasonBuilder) []*AccountSnapshot {
 	out := make([]*AccountSnapshot, 0, len(accounts))
 	for _, account := range accounts {
 		if account == nil {
 			continue
 		}
-		ok, why, err := s.gates.Allow(ctx, account, req)
+		ok, why, err := gates.Allow(ctx, account, req)
 		if err != nil || !ok {
 			reason.GateFailure(account.ID, why)
 			continue
@@ -159,7 +163,7 @@ func (s *DefaultSelector) filter(ctx context.Context, accounts []*AccountSnapsho
 	return out
 }
 
-func (s *DefaultSelector) trySticky(ctx context.Context, req SelectionRequest, candidates []*AccountSnapshot, layer RoutingLayer, reason *RoutingReasonBuilder) (*SelectionResult, bool, error) {
+func (s *DefaultSelector) trySticky(ctx context.Context, gates GateChain, req SelectionRequest, candidates []*AccountSnapshot, layer RoutingLayer, reason *RoutingReasonBuilder) (*SelectionResult, bool, error) {
 	if s.sticky == nil {
 		return nil, false, nil
 	}
@@ -169,16 +173,16 @@ func (s *DefaultSelector) trySticky(ctx context.Context, req SelectionRequest, c
 	}
 	for _, candidate := range candidates {
 		if candidate.ID == id {
-			return s.tryLayer(ctx, req, []*AccountSnapshot{candidate}, layer, reason)
+			return s.tryLayer(ctx, gates, req, []*AccountSnapshot{candidate}, layer, reason)
 		}
 	}
 	return nil, false, nil
 }
 
-func (s *DefaultSelector) tryLayer(ctx context.Context, req SelectionRequest, candidates []*AccountSnapshot, layer RoutingLayer, reason *RoutingReasonBuilder) (*SelectionResult, bool, error) {
+func (s *DefaultSelector) tryLayer(ctx context.Context, gates GateChain, req SelectionRequest, candidates []*AccountSnapshot, layer RoutingLayer, reason *RoutingReasonBuilder) (*SelectionResult, bool, error) {
 	reason.Layer(layer)
 	for _, account := range candidates {
-		ok, why, err := s.gates.Allow(ctx, account, req)
+		ok, why, err := gates.Allow(ctx, account, req)
 		if err != nil {
 			return nil, true, err
 		}

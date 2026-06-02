@@ -29,7 +29,7 @@ func TestPaymentHTTPWebhookRejectsForgedSignatureBeforeCredit(t *testing.T) {
 	svc := payment.NewService(payment.NewPostgresStore(pool))
 	order := openPaymentHTTPOrder(t, ctx, svc, tenantID, userID, externalTradeNoForTenant(tenantID, "bad-signature"), "hmacpay")
 	mux := paymentHTTPIntegrationRouter(t, svc, time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC))
-	raw := webhookPayload("hmacpay", order.ExternalTradeNo, "evt_bad_signature", "50.00000000", "USD")
+	raw := webhookPayload("hmacpay", order.OutTradeNo, "evt_bad_signature", "50.00000000", "USD")
 	req := httptest.NewRequest(http.MethodPost, "/v1/payment/webhooks/hmacpay", strings.NewReader(string(raw)))
 	req.Header = signedHeaders(time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC), raw, "wrong-secret")
 	rec := httptest.NewRecorder()
@@ -53,7 +53,7 @@ func TestPaymentHTTPWebhookReplayCompletedIsIdempotentAndDoesNotDoubleCredit(t *
 	order := openPaymentHTTPOrder(t, ctx, svc, tenantID, userID, externalTradeNoForTenant(tenantID, "replay"), "hmacpay")
 	now := time.Date(2026, 6, 2, 10, 5, 0, 0, time.UTC)
 	mux := paymentHTTPIntegrationRouter(t, svc, now)
-	raw := webhookPayload("hmacpay", order.ExternalTradeNo, "evt_replay", "50.00000000", "USD")
+	raw := webhookPayload("hmacpay", order.OutTradeNo, "evt_replay", "50.00000000", "USD")
 
 	first := signedWebhookRequest(now, raw, "secret-one")
 	firstRec := httptest.NewRecorder()
@@ -103,7 +103,7 @@ func TestPaymentHTTPWebhookAmountCurrencyProviderMismatchDoesNotCredit(t *testin
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			order := openPaymentHTTPOrder(t, ctx, svc, tenantID, userID, externalTradeNoForTenant(tenantID, "mismatch-"+tc.name), tc.orderProvider)
-			raw := webhookPayload(tc.bodyProvider, order.ExternalTradeNo, "evt_mismatch_"+tc.name, tc.bodyAmount, tc.bodyCurrency)
+			raw := webhookPayload(tc.bodyProvider, order.OutTradeNo, "evt_mismatch_"+tc.name, tc.bodyAmount, tc.bodyCurrency)
 			rec := httptest.NewRecorder()
 			mux.ServeHTTP(rec, signedWebhookRequestForProvider(tc.routeProvider, now, raw, tc.routeSecret))
 			if rec.Code != http.StatusOK {
@@ -179,8 +179,11 @@ func seedPaymentHTTPUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 	}
 	t.Cleanup(func() {
 		c := context.Background()
+		_, _ = pool.Exec(c, `DELETE FROM payment_audit_events WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM payment_audit_log WHERE tenant_id=$1`, tenantID)
-		_, _ = pool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1 AND recharge_order_id IS NOT NULL`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM payment_credits WHERE tenant_id=$1`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM payment_orders WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM user_balances WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM recharge_orders WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM users WHERE tenant_id=$1`, tenantID)
@@ -245,16 +248,16 @@ func signedWebhookRequestForProvider(provider string, now time.Time, raw []byte,
 	return req
 }
 
-func assertPaymentHTTPOrderStatus(t *testing.T, ctx context.Context, pool queryPool, tenantID, orderID int64, want payment.Status) {
+func assertPaymentHTTPOrderStatus(t *testing.T, ctx context.Context, pool queryPool, tenantID, orderID int64, want payment.OrderStatus) {
 	t.Helper()
 	var status string
 	if err := pool.QueryRow(ctx,
-		`SELECT status FROM recharge_orders WHERE tenant_id=$1 AND id=$2`,
+		`SELECT status FROM payment_orders WHERE tenant_id=$1 AND id=$2`,
 		tenantID, orderID,
 	).Scan(&status); err != nil {
-		t.Fatalf("read recharge order status: %v", err)
+		t.Fatalf("read payment order status: %v", err)
 	}
-	if payment.Status(status) != want {
+	if payment.OrderStatus(status) != want {
 		t.Fatalf("order status=%q want %q", status, want)
 	}
 }
@@ -291,13 +294,20 @@ func assertPaymentHTTPBalanceEventCount(t *testing.T, ctx context.Context, pool 
 	t.Helper()
 	var count int
 	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM billing_events WHERE tenant_id=$1 AND recharge_order_id=$2 AND event_type='balance_recharged'`,
+		`SELECT count(*)
+FROM billing_events be
+JOIN payment_credits pc
+  ON pc.tenant_id = be.tenant_id
+ AND pc.id = be.payment_credit_id
+WHERE be.tenant_id=$1
+  AND pc.payment_order_id=$2
+  AND be.event_type='payment_credited'`,
 		tenantID, orderID,
 	).Scan(&count); err != nil {
-		t.Fatalf("count balance_recharged events: %v", err)
+		t.Fatalf("count payment_credited events: %v", err)
 	}
 	if count != want {
-		t.Fatalf("balance_recharged events=%d want %d", count, want)
+		t.Fatalf("payment_credited events=%d want %d", count, want)
 	}
 }
 
@@ -305,7 +315,12 @@ func assertPaymentHTTPAuditReasonCount(t *testing.T, ctx context.Context, pool q
 	t.Helper()
 	var count int
 	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM payment_audit_log WHERE tenant_id=$1 AND recharge_order_id=$2 AND reason=$3`,
+		`SELECT count(*)
+FROM payment_audit_events
+WHERE tenant_id=$1
+  AND payment_order_id=$2
+  AND event_type='fulfillment_failed'
+  AND reason_class=$3`,
 		tenantID, orderID, reason,
 	).Scan(&count); err != nil {
 		t.Fatalf("count payment audit reason %s: %v", reason, err)

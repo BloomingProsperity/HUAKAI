@@ -30,16 +30,16 @@ func TestCreateRechargeUsesSessionIdentityAndRejectsBodyTenantUser(t *testing.T)
 	}
 
 	service.openResult = payment.OpenResult{Order: payment.Order{
-		ID:              101,
-		TenantID:        7,
-		UserID:          42,
-		ExternalTradeNo: externalTradeNoForTenant(7, "unit-create"),
-		RechargeRef:     "rch_ref_101",
-		Status:          payment.StatusPending,
-		CreditedAmount:  decimal.RequireFromString("50.00000000"),
-		CurrencyCode:    "USD",
-		Provider:        "hmacpay",
-		CreatedAt:       time.Date(2026, 6, 2, 8, 0, 0, 0, time.UTC),
+		ID:                 101,
+		TenantID:           7,
+		UserID:             42,
+		OutTradeNo:         externalTradeNoForTenant(7, "unit-create"),
+		Status:             payment.StatusPending,
+		AmountCents:        5000,
+		CurrencyCode:       "USD",
+		ProviderKind:       payment.ProviderHMAC,
+		RequestFingerprint: "http_provider:hmacpay",
+		CreatedAt:          time.Date(2026, 6, 2, 8, 0, 0, 0, time.UTC),
 	}}
 	rec = postJSON(mux, "/v1/users/me/recharges", `{"amount":"50.00000000","currency":"USD","provider":"hmacpay","return_url":"https://app.example.test/return"}`)
 	if rec.Code != http.StatusCreated {
@@ -82,7 +82,7 @@ func TestWebhookBadSignatureRejectedBeforeMoneyService(t *testing.T) {
 func TestWebhookVerifiedMismatchReturns200WithoutCompletion(t *testing.T) {
 	now := time.Date(2026, 6, 2, 8, 40, 0, 0, time.UTC)
 	service := &paymentServiceStub{
-		fulfillResult: payment.CallbackResult{HTTPStatus: 200, AuditReason: payment.AuditReasonAmountMismatch},
+		fulfillResult: payment.VerifiedCallbackResult{HTTPStatus: 200, AuditReason: payment.AuditReasonAmountMismatch},
 		fulfillErr:    payment.ErrPaymentAmountMismatch,
 	}
 	mux := mountPaymentRoutes(t, service, now)
@@ -139,7 +139,7 @@ func TestWebhookRouteProviderMustMatchVerifiedBodyProvider(t *testing.T) {
 func TestWebhookReplayReturnsIdempotentNoDoubleCreditSignal(t *testing.T) {
 	now := time.Date(2026, 6, 2, 8, 50, 0, 0, time.UTC)
 	service := &paymentServiceStub{
-		fulfillResult: payment.CallbackResult{
+		fulfillResult: payment.VerifiedCallbackResult{
 			HTTPStatus:  200,
 			OrderID:     10,
 			UserID:      42,
@@ -246,7 +246,7 @@ type paymentServiceStub struct {
 	openResult    payment.OpenResult
 	openErr       error
 	fulfillCalls  []payment.VerifiedCallback
-	fulfillResult payment.CallbackResult
+	fulfillResult payment.VerifiedCallbackResult
 	fulfillErr    error
 }
 
@@ -258,7 +258,7 @@ func (s *paymentServiceStub) OpenRecharge(_ context.Context, input payment.OpenI
 	return s.openResult, nil
 }
 
-func (s *paymentServiceStub) FulfillVerifiedCallback(_ context.Context, cb payment.VerifiedCallback) (payment.CallbackResult, error) {
+func (s *paymentServiceStub) FulfillVerifiedCallback(_ context.Context, cb payment.VerifiedCallback) (payment.VerifiedCallbackResult, error) {
 	s.fulfillCalls = append(s.fulfillCalls, cb)
 	if s.fulfillErr != nil {
 		return s.fulfillResult, s.fulfillErr
