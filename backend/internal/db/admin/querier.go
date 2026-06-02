@@ -83,6 +83,7 @@ type Querier interface {
 	// bootstrap rows should be auto-disabled so the env-var token is no
 	// longer accepted by the resolver. Idempotent.
 	DisableBootstrapAdminTokens(ctx context.Context) (int64, error)
+	GetAdminProviderAccountHealth(ctx context.Context, arg GetAdminProviderAccountHealthParams) (GetAdminProviderAccountHealthRow, error)
 	GetProxy(ctx context.Context, arg GetProxyParams) (GetProxyRow, error)
 	// 单 profile 查询 (按 tenant + id 双过滤); admin UI 编辑 + resolver 走这条。
 	GetTLSFingerprintProfile(ctx context.Context, arg GetTLSFingerprintProfileParams) (GetTLSFingerprintProfileRow, error)

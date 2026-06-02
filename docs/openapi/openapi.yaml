@@ -1994,6 +1994,35 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/provider-accounts/{id}/health:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    get:
+      tags: [admin-accounts]
+      summary: Get Provider Account health and refresh snapshot
+      operationId: getProviderAccountHealth
+      description: |
+        Returns a read-only, tenant-scoped operator snapshot that combines
+        provider account health state with the newest non-revoked credential
+        refresh metadata. The response never includes credential payloads,
+        encrypted payload bytes, secret material, nonces, key ids, or raw
+        upstream response bodies.
+      x-huakai-spec-source:
+        - docs/specs/pool-routing.md
+        - docs/specs/upstream-credential-management.md
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      responses:
+        '200':
+          description: Provider account health and refresh snapshot.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderAccountHealthSnapshot' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/provider-accounts/{id}/enabled:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
@@ -4814,6 +4843,41 @@ components:
         message:
           type: string
           description: Generic operator-facing message with no credential payload or raw upstream body.
+
+    ProviderAccountHealthSnapshot:
+      x-huakai-spec-source:
+        - docs/specs/pool-routing.md
+        - docs/specs/upstream-credential-management.md
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - health_state
+        - last_refresh_at
+        - last_refresh_outcome
+        - failure_class
+        - failure_count
+        - enabled
+        - requires_action
+        - updated_at
+      properties:
+        id: { type: integer, format: int64 }
+        health_state:
+          type: string
+          enum: [healthy, throttled, revoked, cooldown]
+        health_state_until:
+          type: string
+          format: date-time
+          description: Present only when the current health state has an automatic recovery deadline.
+        last_refresh_at: { type: [string, 'null'], format: date-time }
+        last_refresh_outcome: { type: [string, 'null'] }
+        failure_class: { type: [string, 'null'] }
+        failure_count: { type: integer, format: int32, minimum: 0 }
+        enabled: { type: boolean }
+        requires_action:
+          type: boolean
+          description: True when health_state is revoked or failure_count is greater than 3.
+        updated_at: { type: string, format: date-time }
 
     ProviderAccountList:
       x-huakai-spec-source:
