@@ -40,6 +40,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
+	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	providercopilot "github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
@@ -89,6 +90,7 @@ type deps struct {
 	userSessions             *usersession.Service
 	userKeyService           *userkey.Service
 	paymentService           *payment.Service
+	paymentProviders         map[string]paymenthttp.ProviderBinding
 	voucherService           *voucher.Service
 	invitationService        *communityinvitation.Service
 	dispatcher               *gateway.UpstreamDispatcher
@@ -181,6 +183,17 @@ const (
 	stormGlobalRateEnv    = "HUAKAI_STORM_GLOBAL_RATE"
 	stormGlobalBurstEnv   = "HUAKAI_STORM_GLOBAL_BURST"
 )
+
+func buildPaymentProviderBindings(cfg *Config) (map[string]paymenthttp.ProviderBinding, error) {
+	if cfg == nil {
+		return map[string]paymenthttp.ProviderBinding{}, nil
+	}
+	return paymenthttp.BuildProviderBindings(paymenthttp.ProviderRegistryConfig{
+		HMACSecrets: cfg.PaymentHMACSecrets,
+		EnableMock:  cfg.PaymentEnableMock,
+		ReleaseMode: string(releaseMode()),
+	})
+}
 
 // loadStormScopeConfigFromEnv parses the optional endpoint/global refresh-storm
 // budgets (S2-045). A scope half-configured (only rate or only burst, or burst<1)
@@ -498,6 +511,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, fmt.Errorf("load refresh-storm scope budgets: %w", err)
 	}
+	paymentProviders, err := buildPaymentProviderBindings(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("build payment provider bindings: %w", err)
+	}
 
 	d := &deps{
 		cfg:                   cfg,
@@ -525,6 +542,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		userSessions:          userSessionService,
 		userKeyService:        userkey.NewService(pgPool, nil),
 		paymentService:        payment.NewService(payment.NewPostgresStore(pgPool)),
+		paymentProviders:      paymentProviders,
 		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool)),
 		invitationService:     communityinvitation.NewService(communityinvitation.NewPostgresStore(pgPool)),
 		responseCache:         opts.responseCache,

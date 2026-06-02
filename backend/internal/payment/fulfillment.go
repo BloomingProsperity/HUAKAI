@@ -21,3 +21,14 @@ func (s *Service) HandleCallback(ctx context.Context, input CallbackInput) (Call
 	}
 	return store.FulfillCallback(ctx, verifiedCallback(input))
 }
+
+func (s *Service) FulfillVerifiedCallback(ctx context.Context, cb VerifiedCallback) (CallbackResult, error) {
+	if s == nil || s.store == nil {
+		return CallbackResult{HTTPStatus: 500}, ErrStoreNotConfigured
+	}
+	store, ok := s.store.(CallbackStore)
+	if !ok || store == nil {
+		return CallbackResult{HTTPStatus: 500}, ErrStoreNotConfigured
+	}
+	return store.FulfillCallback(ctx, cb)
+}
