@@ -361,6 +361,9 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Queries: d.adminQueries,
 		})
 	})
+	r.Get("/admin/v1/account-modes", adminhttp.NewAccountModeListHandler(adminhttp.AdminAccountModesDeps{
+		Auth: d.adminAuth,
+	}))
 
 	mountProviderAccountAdminRoutes := func(r chi.Router) {
 		gatewayhttp.MountAdminPoolAccountRoutes(r, gatewayhttp.AdminPoolAccountDeps{

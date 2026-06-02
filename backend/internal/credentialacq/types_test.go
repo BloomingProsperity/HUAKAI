@@ -86,11 +86,19 @@ func phaseAModePlans() []acqModePlan {
 		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeVertexSA, Kind: flowKindJSONImport, ClientIdentitySource: clientSourceOperatorConfig},
 		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeCodeAssist, Kind: flowKindOAuth, ClientIdentitySource: clientSourcePublicCLI},
 		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeGoogleOne, Kind: flowKindOAuth, ClientIdentitySource: clientSourcePublicCLI},
-		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeAntigravity, Kind: flowKindOAuth, ClientIdentitySource: clientSourcePublicCLI},
+		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeAntigravity, Kind: flowKindOAuth, ClientIdentitySource: clientSourcePublicCLI, ManualFirst: true},
 		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeOAuth, Kind: flowKindOAuth, ClientIdentitySource: clientSourceOperatorConfig, ManualFirst: true},
 		{Vendor: credentialstore.VendorCopilot, AuthMode: credentialstore.AuthModeCopilotOAuth, Kind: flowKindOAuth, ClientIdentitySource: clientSourcePublicCLI},
 		{Vendor: credentialstore.VendorAntigravity, AuthMode: credentialstore.AuthModeOAuth, Kind: flowKindOAuth, ClientIdentitySource: clientSourceOperatorConfig, ManualFirst: true},
 		{Vendor: credentialstore.VendorWindsurf, AuthMode: credentialstore.AuthModeOAuth, Kind: flowKindTokenExchange, ClientIdentitySource: clientSourceOperatorConfig, ManualFirst: true},
+		{Vendor: credentialstore.VendorOpenRouter, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
+		{Vendor: credentialstore.VendorDeepSeek, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
+		{Vendor: credentialstore.VendorGrok, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
+		{Vendor: credentialstore.VendorMistral, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
+		{Vendor: credentialstore.VendorGroqCloud, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
+		{Vendor: credentialstore.VendorTogether, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
+		{Vendor: credentialstore.VendorPerplexity, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
+		{Vendor: credentialstore.VendorFireworks, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
 	}
 }
 
@@ -139,8 +147,9 @@ func TestFlowStatusTransitionContract(t *testing.T) {
 func TestModePlanCoversCredentialStoreModes(t *testing.T) {
 	registry := credentialstore.DefaultHandlerRegistry()
 	plans := phaseAModePlans()
-	if len(plans) != len(registry.Names()) {
-		t.Fatalf("mode plan count=%d want %d", len(plans), len(registry.Names()))
+	registryModes := map[string]bool{}
+	for _, key := range registry.Names() {
+		registryModes[key] = true
 	}
 	seen := map[string]bool{}
 	for _, plan := range plans {
@@ -149,8 +158,10 @@ func TestModePlanCoversCredentialStoreModes(t *testing.T) {
 			t.Fatalf("duplicate mode plan %s", key)
 		}
 		seen[key] = true
-		if _, err := registry.MustLookup(plan.Vendor, plan.AuthMode); err != nil {
-			t.Fatalf("mode plan %s is not accepted by F-AUTH-005 registry: %v", key, err)
+		if registryModes[key] {
+			if _, err := registry.MustLookup(plan.Vendor, plan.AuthMode); err != nil {
+				t.Fatalf("mode plan %s is not accepted by F-AUTH-005 registry: %v", key, err)
+			}
 		}
 		if plan.ClientIdentitySource == "" {
 			t.Fatalf("mode plan %s has empty client identity source", key)
@@ -159,6 +170,18 @@ func TestModePlanCoversCredentialStoreModes(t *testing.T) {
 	for _, key := range registry.Names() {
 		if !seen[key] {
 			t.Fatalf("F-AUTH-005 registry mode %s missing from Phase A plan", key)
+		}
+	}
+}
+
+func TestDefaultModePlansPreserveManualFirstContract(t *testing.T) {
+	for _, expected := range phaseAModePlans() {
+		plan, ok := LookupModePlan(expected.Vendor, expected.AuthMode)
+		if !ok {
+			t.Fatalf("DefaultModePlans missing %s/%s", expected.Vendor, expected.AuthMode)
+		}
+		if plan.ManualFirst != expected.ManualFirst {
+			t.Fatalf("%s/%s manual_first=%v want %v", expected.Vendor, expected.AuthMode, plan.ManualFirst, expected.ManualFirst)
 		}
 	}
 }

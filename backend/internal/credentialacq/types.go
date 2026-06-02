@@ -51,6 +51,43 @@ const (
 	ClientSourceDisabledMissingConfig = "disabled_missing_config"
 )
 
+type FieldKind string
+
+const (
+	FieldKindSecret     FieldKind = "secret"
+	FieldKindString     FieldKind = "string"
+	FieldKindURL        FieldKind = "url"
+	FieldKindSelect     FieldKind = "select"
+	FieldKindTextarea   FieldKind = "textarea"
+	FieldKindJSONObject FieldKind = "json_object"
+	FieldKindBoolean    FieldKind = "boolean"
+)
+
+type FieldRedaction string
+
+const (
+	RedactionSecret FieldRedaction = "secret"
+	RedactionNone   FieldRedaction = "none"
+)
+
+type FieldGroup string
+
+const (
+	FieldGroupCredential  FieldGroup = "credential"
+	FieldGroupOAuthClient FieldGroup = "oauth_client"
+	FieldGroupCloud       FieldGroup = "cloud"
+	FieldGroupAdvanced    FieldGroup = "advanced"
+)
+
+type RiskLevel string
+
+const (
+	RiskLevelLow     RiskLevel = "low"
+	RiskLevelMedium  RiskLevel = "medium"
+	RiskLevelHigh    RiskLevel = "high"
+	RiskLevelBlocked RiskLevel = "blocked"
+)
+
 var (
 	ErrFlowNotFound          = errors.New("credentialacq: flow not found")
 	ErrFlowExpired           = errors.New("credentialacq: flow expired")
@@ -67,13 +104,29 @@ var (
 )
 
 type ModePlan struct {
-	Vendor               string     `json:"vendor"`
-	AuthMode             string     `json:"auth_mode"`
-	Kind                 FlowKind   `json:"flow_kind"`
-	ClientIdentitySource string     `json:"client_identity_source"`
-	ManualFirst          bool       `json:"manual_first,omitempty"`
-	LongLivedToggle      bool       `json:"long_lived_toggle,omitempty"`
-	AllowedHelpers       []FlowKind `json:"allowed_helpers,omitempty"`
+	Vendor               string      `json:"vendor"`
+	AuthMode             string      `json:"auth_mode"`
+	Kind                 FlowKind    `json:"flow_kind"`
+	ClientIdentitySource string      `json:"client_identity_source"`
+	ManualFirst          bool        `json:"manual_first,omitempty"`
+	LongLivedToggle      bool        `json:"long_lived_toggle,omitempty"`
+	AllowedHelpers       []FlowKind  `json:"allowed_helpers,omitempty"`
+	RequiredFields       []FieldSpec `json:"required_fields,omitempty"`
+	IsEnabled            bool        `json:"is_enabled"`
+	IsExperimental       bool        `json:"is_experimental"`
+	FeatureFlag          string      `json:"feature_flag,omitempty"`
+	RiskLevel            RiskLevel   `json:"risk_level"`
+	RiskReasons          []string    `json:"risk_reasons,omitempty"`
+}
+
+type FieldSpec struct {
+	Name       string         `json:"name"`
+	Kind       FieldKind      `json:"kind"`
+	Required   bool           `json:"required"`
+	OneOfGroup string         `json:"one_of_group,omitempty"`
+	Input      string         `json:"input,omitempty"`
+	Redaction  FieldRedaction `json:"redaction"`
+	Group      FieldGroup     `json:"group"`
 }
 
 type StartInput struct {
@@ -153,31 +206,163 @@ type FinalizeResult struct {
 
 func DefaultModePlans() []ModePlan {
 	return []ModePlan{
-		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeAPIKey, Kind: FlowKindPaste, ClientIdentitySource: ClientSourceNone, AllowedHelpers: []FlowKind{FlowKindPaste, FlowKindCSVImport, FlowKindJSONImport}},
+		apiKeyPlan(credentialstore.VendorAnthropic),
 		// S1-014: claude_ai_oauth 是交互式 OAuth(PKCE)模式,AllowedHelpers 必须仅含 FlowKindOAuth,
 		// 与 chatgpt_oauth / code_assist / google_one 对齐。此前混入 FlowKindPaste 等于开了一扇手工旁路——
 		// 管理员可 START flow_kind=paste 再 finalize,用手写 credentials body 注入任意 Anthropic token,
 		// 完全绕过 callback/PKCE/state/授权码交换。需要粘贴既有 Anthropic OAuth 凭据者走 claude_code
 		// (FlowKindCLIImport/JSONImport);粘贴 API key 走 anthropic/api_key(FlowKindPaste)。
-		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeAIOAuth, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindOAuth}},
-		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeCode, Kind: FlowKindCLIImport, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindCLIImport, FlowKindJSONImport}},
-		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeBedrock, Kind: FlowKindPaste, ClientIdentitySource: ClientSourceNone, ManualFirst: true, AllowedHelpers: []FlowKind{FlowKindPaste, FlowKindCloudBootstrap, FlowKindOAuth}},
-		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeVertexAnthropic, Kind: FlowKindJSONImport, ClientIdentitySource: ClientSourceOperatorConfig, AllowedHelpers: []FlowKind{FlowKindJSONImport, FlowKindCloudBootstrap}},
-		{Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeAPIKey, Kind: FlowKindPaste, ClientIdentitySource: ClientSourceNone, AllowedHelpers: []FlowKind{FlowKindPaste, FlowKindCSVImport, FlowKindJSONImport}},
-		{Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeChatGPTOAuth, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindOAuth}},
-		{Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth, Kind: FlowKindCLIImport, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindCLIImport, FlowKindJSONImport, FlowKindOAuth}},
-		{Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeAzure, Kind: FlowKindPaste, ClientIdentitySource: ClientSourceOperatorConfig, ManualFirst: true, AllowedHelpers: []FlowKind{FlowKindPaste, FlowKindCloudBootstrap, FlowKindTokenExchange}},
-		{Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeRefreshToken, Kind: FlowKindTokenExchange, ClientIdentitySource: ClientSourcePerAccountOverride, AllowedHelpers: []FlowKind{FlowKindTokenExchange, FlowKindPaste}},
-		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeAIStudioAPIKey, Kind: FlowKindPaste, ClientIdentitySource: ClientSourceNone, AllowedHelpers: []FlowKind{FlowKindPaste, FlowKindCSVImport, FlowKindJSONImport}},
-		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeVertexSA, Kind: FlowKindJSONImport, ClientIdentitySource: ClientSourceOperatorConfig, AllowedHelpers: []FlowKind{FlowKindJSONImport, FlowKindCloudBootstrap}},
-		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeCodeAssist, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindOAuth}},
-		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeGoogleOne, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindOAuth}},
-		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeAntigravity, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindOAuth, FlowKindTokenExchange}, ManualFirst: true},
-		{Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeOAuth, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourceOperatorConfig, AllowedHelpers: []FlowKind{FlowKindOAuth, FlowKindTokenExchange}, ManualFirst: true},
-		{Vendor: credentialstore.VendorCopilot, AuthMode: credentialstore.AuthModeCopilotOAuth, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourcePublicCLI, AllowedHelpers: []FlowKind{FlowKindOAuth, FlowKindJSONImport}},
-		{Vendor: credentialstore.VendorAntigravity, AuthMode: credentialstore.AuthModeOAuth, Kind: FlowKindOAuth, ClientIdentitySource: ClientSourceOperatorConfig, AllowedHelpers: []FlowKind{FlowKindOAuth, FlowKindTokenExchange}, ManualFirst: true},
-		{Vendor: credentialstore.VendorWindsurf, AuthMode: credentialstore.AuthModeOAuth, Kind: FlowKindTokenExchange, ClientIdentitySource: ClientSourceOperatorConfig, AllowedHelpers: []FlowKind{FlowKindTokenExchange, FlowKindPaste}, ManualFirst: true},
+		oauthPlan(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth}, RiskLevelMedium),
+		cliSessionPlan(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeCode, ClientSourcePublicCLI, []FlowKind{FlowKindCLIImport, FlowKindJSONImport}),
+		cloudPlan(credentialstore.VendorAnthropic, credentialstore.AuthModeBedrock, FlowKindPaste, ClientSourceNone, []FlowKind{FlowKindPaste, FlowKindCloudBootstrap, FlowKindOAuth}, awsSigV4Fields()),
+		upstreamTokenPlan(credentialstore.VendorAnthropic, credentialstore.AuthModeVertexAnthropic, FlowKindJSONImport, ClientSourceOperatorConfig, []FlowKind{FlowKindJSONImport, FlowKindCloudBootstrap}, vertexFields()),
+		apiKeyPlan(credentialstore.VendorOpenAI),
+		oauthPlan(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth}, RiskLevelMedium),
+		cliSessionPlan(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth, ClientSourcePublicCLI, []FlowKind{FlowKindCLIImport, FlowKindJSONImport, FlowKindOAuth}),
+		upstreamTokenPlan(credentialstore.VendorOpenAI, credentialstore.AuthModeAzure, FlowKindPaste, ClientSourceOperatorConfig, []FlowKind{FlowKindPaste, FlowKindCloudBootstrap, FlowKindTokenExchange}, azureFields()),
+		upstreamTokenPlan(credentialstore.VendorOpenAI, credentialstore.AuthModeRefreshToken, FlowKindTokenExchange, ClientSourcePerAccountOverride, []FlowKind{FlowKindTokenExchange, FlowKindPaste}, tokenOneOfFields("runtime_token", "access_token", "refresh_token")),
+		apiKeyPlanWithMode(credentialstore.VendorGemini, credentialstore.AuthModeAIStudioAPIKey),
+		upstreamTokenPlan(credentialstore.VendorGemini, credentialstore.AuthModeVertexSA, FlowKindJSONImport, ClientSourceOperatorConfig, []FlowKind{FlowKindJSONImport, FlowKindCloudBootstrap}, vertexFields()),
+		oauthPlan(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth}, RiskLevelMedium),
+		oauthPlan(credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth}, RiskLevelMedium),
+		manualOAuthPlan(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth, FlowKindTokenExchange}),
+		manualOAuthPlan(credentialstore.VendorGemini, credentialstore.AuthModeOAuth, ClientSourceOperatorConfig, []FlowKind{FlowKindOAuth, FlowKindTokenExchange}),
+		oauthPlan(credentialstore.VendorCopilot, credentialstore.AuthModeCopilotOAuth, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth, FlowKindJSONImport}, RiskLevelMedium),
+		manualOAuthPlan(credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth, ClientSourceOperatorConfig, []FlowKind{FlowKindOAuth, FlowKindTokenExchange}),
+		manualUpstreamTokenPlan(credentialstore.VendorWindsurf, credentialstore.AuthModeOAuth, FlowKindTokenExchange, ClientSourceOperatorConfig, []FlowKind{FlowKindTokenExchange, FlowKindPaste}, sessionTokenFields()),
+		hiddenOpenAICompatiblePlan(credentialstore.VendorOpenRouter),
+		hiddenOpenAICompatiblePlan(credentialstore.VendorDeepSeek),
+		hiddenOpenAICompatiblePlan(credentialstore.VendorGrok),
+		hiddenOpenAICompatiblePlan(credentialstore.VendorMistral),
+		hiddenOpenAICompatiblePlan(credentialstore.VendorGroqCloud),
+		hiddenOpenAICompatiblePlan(credentialstore.VendorTogether),
+		hiddenOpenAICompatiblePlan(credentialstore.VendorPerplexity),
+		hiddenOpenAICompatiblePlan(credentialstore.VendorFireworks),
 	}
+}
+
+func apiKeyPlan(vendor string) ModePlan {
+	return apiKeyPlanWithMode(vendor, credentialstore.AuthModeAPIKey)
+}
+
+func apiKeyPlanWithMode(vendor, authMode string) ModePlan {
+	return ModePlan{
+		Vendor: vendor, AuthMode: authMode, Kind: FlowKindPaste, ClientIdentitySource: ClientSourceNone,
+		AllowedHelpers: []FlowKind{FlowKindPaste, FlowKindCSVImport, FlowKindJSONImport},
+		RequiredFields: apiKeyFields(),
+		IsEnabled:      true,
+		RiskLevel:      RiskLevelLow,
+	}
+}
+
+func hiddenOpenAICompatiblePlan(vendor string) ModePlan {
+	plan := apiKeyPlan(vendor)
+	plan.IsExperimental = true
+	plan.FeatureFlag = "account_modes.openai_compatible"
+	plan.RiskLevel = RiskLevelMedium
+	plan.RiskReasons = []string{"account credential storage constraints are not released for this provider"}
+	return plan
+}
+
+func oauthPlan(vendor, authMode, clientSource string, helpers []FlowKind, risk RiskLevel) ModePlan {
+	return ModePlan{
+		Vendor: vendor, AuthMode: authMode, Kind: FlowKindOAuth, ClientIdentitySource: clientSource,
+		AllowedHelpers: helpers,
+		RequiredFields: sessionTokenFields(),
+		IsEnabled:      true,
+		RiskLevel:      risk,
+	}
+}
+
+func cliSessionPlan(vendor, authMode, clientSource string, helpers []FlowKind) ModePlan {
+	return ModePlan{
+		Vendor: vendor, AuthMode: authMode, Kind: FlowKindCLIImport, ClientIdentitySource: clientSource,
+		AllowedHelpers: helpers,
+		RequiredFields: sessionTokenFields(),
+		IsEnabled:      true,
+		RiskLevel:      RiskLevelMedium,
+	}
+}
+
+func manualOAuthPlan(vendor, authMode, clientSource string, helpers []FlowKind) ModePlan {
+	plan := oauthPlan(vendor, authMode, clientSource, helpers, RiskLevelMedium)
+	plan.ManualFirst = true
+	return plan
+}
+
+func cloudPlan(vendor, authMode string, kind FlowKind, clientSource string, helpers []FlowKind, fields []FieldSpec) ModePlan {
+	return ModePlan{
+		Vendor: vendor, AuthMode: authMode, Kind: kind, ClientIdentitySource: clientSource,
+		ManualFirst:    true,
+		AllowedHelpers: helpers,
+		RequiredFields: fields,
+		IsEnabled:      true,
+		RiskLevel:      RiskLevelMedium,
+	}
+}
+
+func upstreamTokenPlan(vendor, authMode string, kind FlowKind, clientSource string, helpers []FlowKind, fields []FieldSpec) ModePlan {
+	return ModePlan{
+		Vendor: vendor, AuthMode: authMode, Kind: kind, ClientIdentitySource: clientSource,
+		ManualFirst:    kind == FlowKindPaste || kind == FlowKindOAuth,
+		AllowedHelpers: helpers,
+		RequiredFields: fields,
+		IsEnabled:      true,
+		RiskLevel:      RiskLevelMedium,
+	}
+}
+
+func manualUpstreamTokenPlan(vendor, authMode string, kind FlowKind, clientSource string, helpers []FlowKind, fields []FieldSpec) ModePlan {
+	plan := upstreamTokenPlan(vendor, authMode, kind, clientSource, helpers, fields)
+	plan.ManualFirst = true
+	return plan
+}
+
+func apiKeyFields() []FieldSpec {
+	return []FieldSpec{secretField("api_key", true)}
+}
+
+func sessionTokenFields() []FieldSpec {
+	return tokenOneOfFields("runtime_token", "session_token", "access_token", "refresh_token")
+}
+
+func tokenOneOfFields(group string, names ...string) []FieldSpec {
+	fields := make([]FieldSpec, 0, len(names))
+	for _, name := range names {
+		f := secretField(name, false)
+		f.OneOfGroup = group
+		fields = append(fields, f)
+	}
+	return fields
+}
+
+func azureFields() []FieldSpec {
+	return tokenOneOfFields("runtime_token", "api_key", "azure_api_key", "access_token")
+}
+
+func vertexFields() []FieldSpec {
+	return []FieldSpec{
+		withOneOf(secretField("access_token", false), "runtime_token"),
+		{Name: "metadata_token_endpoint", Kind: FieldKindURL, OneOfGroup: "runtime_token", Redaction: RedactionNone, Group: FieldGroupCloud},
+		{Name: "client_email", Kind: FieldKindString, OneOfGroup: "runtime_token", Redaction: RedactionNone, Group: FieldGroupCloud},
+	}
+}
+
+func awsSigV4Fields() []FieldSpec {
+	return []FieldSpec{
+		{Name: "aws_access_key_id", Kind: FieldKindSecret, Required: true, Redaction: RedactionSecret, Group: FieldGroupCloud},
+		{Name: "aws_secret_access_key", Kind: FieldKindSecret, Required: true, Redaction: RedactionSecret, Group: FieldGroupCloud},
+		{Name: "aws_region", Kind: FieldKindString, Required: true, Redaction: RedactionNone, Group: FieldGroupCloud},
+	}
+}
+
+func secretField(name string, required bool) FieldSpec {
+	return FieldSpec{Name: name, Kind: FieldKindSecret, Required: required, Redaction: RedactionSecret, Group: FieldGroupCredential}
+}
+
+func withOneOf(field FieldSpec, group string) FieldSpec {
+	field.OneOfGroup = group
+	return field
 }
 
 func LookupModePlan(vendor, authMode string) (ModePlan, bool) {
