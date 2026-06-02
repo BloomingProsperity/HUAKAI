@@ -646,6 +646,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env()?;
     println!("cargo:rerun-if-changed=deps/boringssl/include/openssl/ssl.h");
     println!("cargo:rerun-if-changed=deps/boringssl/ssl/ssl_lib.cc");
+    println!("cargo:rerun-if-changed=deps/boringssl/ssl/ssl_privkey.cc");
     println!("cargo:rerun-if-changed=deps/boringssl/ssl/internal.h");
     println!("cargo:rerun-if-changed=deps/boringssl/ssl/handshake_client.cc");
     println!("cargo:rerun-if-changed=deps/boringssl/ssl/extensions.cc");
