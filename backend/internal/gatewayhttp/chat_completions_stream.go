@@ -592,11 +592,12 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 			ActualCost:        actualCost.Total,
 			// 合并请求翻译损失(ex.protocolLoss)与流式逐事件损失(draft.StreamProtocolLoss);
 			// 后者之前被 StreamForwarder 丢弃,只有初始(常为空)请求侧损失能到 settle(S1-025-fu item 4)。
-			ProtocolLoss:    mergeProtocolLossWithEntries(ex.protocolLoss, draft.StreamProtocolLoss),
-			Fingerprint:     ex.payloadHash,
-			Draft:           draft,
-			StreamAttempt:   &streamAttempt,
-			SnapshotVersion: ex.plan.SnapshotVersion,
+			ProtocolLoss:        mergeProtocolLossWithEntries(ex.protocolLoss, draft.StreamProtocolLoss),
+			Fingerprint:         ex.payloadHash,
+			Draft:               draft,
+			StreamAttempt:       &streamAttempt,
+			EmitSchedulerOutbox: true,
+			SnapshotVersion:     ex.plan.SnapshotVersion,
 		},
 		Metadata: completionMetadata(ex.routeID, ex.clientRequestID),
 	}

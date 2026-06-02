@@ -40,11 +40,10 @@ const (
 
 // Payload 是 post_delivery_settlement DLQ 行的 JSON payload。
 //
-// 设计:不直接 JSON marshal billing.SettleRequest,因为
-// SettleRequest.OutboxEmitter 是 func() bool,不可序列化。Payload 镜像
-// SettleRequest 所有可持久字段,worker 重 settle 时重构 SettleRequest
-// 并把 OutboxEmitter 显式置 nil(不重发 cross-threshold scheduler outbox,
-// 防与原 attempt 内置 emit 重复 emit account_quota_changed 事件)。
+// 设计:不直接 JSON marshal billing.SettleRequest。Payload 镜像
+// SettleRequest 所有可持久字段,worker 重 settle 时重构 SettleRequest。
+// S2-005 后 scheduler outbox 改为 bool intent,必须持久化,否则原 Tx2
+// 失败后 recovery 成功时会漏写 scheduler_outbox。
 type Payload struct {
 	Source            Source                 `json:"source"`
 	Settle            settleRequestPersisted `json:"settle"`
@@ -53,7 +52,7 @@ type Payload struct {
 	AuditLedgerDLQRef string                 `json:"audit_ledger_dlq_ref,omitempty"`
 }
 
-// settleRequestPersisted 镜像 billing.SettleRequest,排除 OutboxEmitter func。
+// settleRequestPersisted 镜像 billing.SettleRequest 的可持久字段。
 // 字段顺序跟 billing.SettleRequest 对齐(billing.go:78-105),方便审计两边漏字段。
 type settleRequestPersisted struct {
 	ClaimID             int64                    `json:"claim_id"`
@@ -75,11 +74,12 @@ type settleRequestPersisted struct {
 	Draft               gateway.UsageRecordDraft `json:"draft"`
 	// ProtocolLoss 镜像 billing.SettleRequest.ProtocolLoss(billing.go:99);S1-025-fu
 	// 之前缺此字段 → settle 失败 DLQ replay 重放时 usage_records.protocol_loss 退化成 "[]"。
-	ProtocolLoss    json.RawMessage  `json:"protocol_loss,omitempty"`
-	StreamAttempt   *billing.Attempt `json:"stream_attempt,omitempty"`
-	Fingerprint     string           `json:"fingerprint"`
-	AuditRequestID  string           `json:"audit_request_id"`
-	SnapshotVersion string           `json:"snapshot_version"`
+	ProtocolLoss        json.RawMessage  `json:"protocol_loss,omitempty"`
+	StreamAttempt       *billing.Attempt `json:"stream_attempt,omitempty"`
+	Fingerprint         string           `json:"fingerprint"`
+	AuditRequestID      string           `json:"audit_request_id"`
+	EmitSchedulerOutbox bool             `json:"emit_scheduler_outbox"`
+	SnapshotVersion     string           `json:"snapshot_version"`
 }
 
 // Validate 失败原因 — worker 用这些判断"该 quarantine 还是默默重试"。
@@ -90,7 +90,6 @@ var (
 )
 
 // FromCompletionEvent 把 eventbus.RequestCompletionEvent 转 Payload。
-// OutboxEmitter 字段被显式 strip(不持久化 func)。
 //
 // AuditRequestID 规范化兜底(Owner P2 finding 2026-05-24):上层 settleCompletion
 // / Handler.Handle 都是在**栈本地副本**上把 SettleRequest.AuditRequestID 补成
@@ -130,6 +129,7 @@ func FromCompletionEvent(src Source, event eventbus.RequestCompletionEvent) Payl
 			StreamAttempt:       req.StreamAttempt,
 			Fingerprint:         req.Fingerprint,
 			AuditRequestID:      auditRequestID,
+			EmitSchedulerOutbox: req.EmitSchedulerOutbox,
 			SnapshotVersion:     req.SnapshotVersion,
 		},
 	}
@@ -152,8 +152,8 @@ func (p Payload) Validate() error {
 }
 
 // ToSettleRequest 把 Payload 转 billing.SettleRequest,worker 拿去重调
-// Settler.Settle。OutboxEmitter 显式 nil — Settler.Settle 识别 nil 时
-// 不调用,防与原 attempt 已 emit 的 cross-threshold outbox 事件重复。
+// Settler.Settle。EmitSchedulerOutbox 保留原 intent,确保 recovery 成功的
+// Tx2 与正常 Tx2 写同等 scheduler outbox 证据。
 func (p Payload) ToSettleRequest() billing.SettleRequest {
 	return billing.SettleRequest{
 		ClaimID:             p.Settle.ClaimID,
@@ -177,9 +177,8 @@ func (p Payload) ToSettleRequest() billing.SettleRequest {
 		StreamAttempt:       p.Settle.StreamAttempt,
 		Fingerprint:         p.Settle.Fingerprint,
 		AuditRequestID:      p.Settle.AuditRequestID,
-		// OutboxEmitter 不在 payload — worker 重 settle 时 nil,不重复 emit。
-		OutboxEmitter:   nil,
-		SnapshotVersion: p.Settle.SnapshotVersion,
+		EmitSchedulerOutbox: p.Settle.EmitSchedulerOutbox,
+		SnapshotVersion:     p.Settle.SnapshotVersion,
 	}
 }
 

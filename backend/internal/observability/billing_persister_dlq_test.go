@@ -85,9 +85,6 @@ func TestBillingPersisterHandler_DLQPayloadIsReplayable(t *testing.T) {
 	if req.TenantID != 3002 {
 		t.Fatalf("decoded TenantID=%d want=3002", req.TenantID)
 	}
-	if req.OutboxEmitter != nil {
-		t.Fatalf("ToSettleRequest must strip OutboxEmitter (prevent re-emit)")
-	}
 
 	// 验:Source 标识正确,worker observability 能区分 enqueue 入口
 	var probe map[string]any
@@ -99,10 +96,9 @@ func TestBillingPersisterHandler_DLQPayloadIsReplayable(t *testing.T) {
 	}
 }
 
-// TestBillingPersisterHandler_DLQPayload_NoOutboxEmitterPersisted 守 codex
-// 关键 bug fix:SettleRequest.OutboxEmitter 是 func() bool 不可 JSON 化,
-// 必须 strip。worker decode 后 OutboxEmitter 必 nil,防 cross-threshold
-// outbox 重复 emit。
+// TestBillingPersisterHandler_DLQPayload_NoOutboxEmitterPersisted 守 S2-005:
+// SettleRequest 不能再持久化 func 字段,但必须持久化 bool outbox intent,
+// 否则 post-delivery recovery 成功时会漏写 scheduler_outbox。
 //
 // 同 settlementrecovery package 的 payload_test.go 同名守护,这里加一层在
 // observability 包内验集成边界 — 万一未来 BillingPersister.DLQPayload 改
@@ -111,9 +107,9 @@ func TestBillingPersisterHandler_DLQPayload_NoOutboxEmitterPersisted(t *testing.
 	h := &BillingPersisterHandler{}
 	event := eventbus.RequestCompletionEvent{
 		SettleRequest: billing.SettleRequest{
-			ClaimID:       1,
-			TenantID:      1,
-			OutboxEmitter: func() bool { return true },
+			ClaimID:             1,
+			TenantID:            1,
+			EmitSchedulerOutbox: true,
 		},
 	}
 	raw, err := h.DLQPayload(event, nil)
@@ -135,5 +131,8 @@ func TestBillingPersisterHandler_DLQPayload_NoOutboxEmitterPersisted(t *testing.
 	}
 	if _, present := probe.Settle["OutboxEmitter"]; present {
 		t.Fatalf("OutboxEmitter must not be persisted: %+v", probe.Settle)
+	}
+	if got, present := probe.Settle["emit_scheduler_outbox"].(bool); !present || !got {
+		t.Fatalf("emit_scheduler_outbox=%v present=%v want true", probe.Settle["emit_scheduler_outbox"], present)
 	}
 }

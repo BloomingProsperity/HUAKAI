@@ -17,6 +17,13 @@ func TestLaneForKind_PostDeliverySettlementIsHigh(t *testing.T) {
 	}
 }
 
+func TestLaneForKind_CostReceiptAppendIsHigh(t *testing.T) {
+	got := LaneForKind(EventKindCostReceiptAppend)
+	if got != LaneHigh {
+		t.Fatalf("LaneForKind(cost_receipt_append) = %q, want HIGH (settled money without receipt proof must replay before low-priority work)", got)
+	}
+}
+
 // TestEventKindPostDeliverySettlement_StringValueMatchesSQLCheck 守 schema 0053:
 // Go 常量字符串值必须跟 SQL CHECK constraint 的 'post_delivery_settlement'
 // 字面值一致,否则 enqueue 时 INSERT 会被 CHECK 拒。
@@ -26,6 +33,13 @@ func TestEventKindPostDeliverySettlement_StringValueMatchesSQLCheck(t *testing.T
 	const expected = "post_delivery_settlement"
 	if string(EventKindPostDeliverySettlement) != expected {
 		t.Fatalf("EventKindPostDeliverySettlement = %q, want %q (must match 0053 SQL CHECK literal)", EventKindPostDeliverySettlement, expected)
+	}
+}
+
+func TestEventKindCostReceiptAppend_StringValueMatchesSQLCheck(t *testing.T) {
+	const expected = "cost_receipt_append"
+	if string(EventKindCostReceiptAppend) != expected {
+		t.Fatalf("EventKindCostReceiptAppend = %q, want %q (must match 0066 SQL CHECK literal)", EventKindCostReceiptAppend, expected)
 	}
 }
 
@@ -39,5 +53,12 @@ func TestReplicaStatusForKind_PostDeliverySettlementIsNone(t *testing.T) {
 	got := ReplicaStatusForKind(EventKindPostDeliverySettlement)
 	if got != ReplicaStatusNone {
 		t.Fatalf("ReplicaStatusForKind(post_delivery_settlement) = %q, want %q (settle replay is not a replica)", got, ReplicaStatusNone)
+	}
+}
+
+func TestReplicaStatusForKind_CostReceiptAppendIsNone(t *testing.T) {
+	got := ReplicaStatusForKind(EventKindCostReceiptAppend)
+	if got != ReplicaStatusNone {
+		t.Fatalf("ReplicaStatusForKind(cost_receipt_append) = %q, want %q (receipt replay is not replica delivery)", got, ReplicaStatusNone)
 	}
 }
