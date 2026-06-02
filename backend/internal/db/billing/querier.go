@@ -148,6 +148,7 @@ type Querier interface {
 	ReserveBalanceHold(ctx context.Context, arg ReserveBalanceHoldParams) (ReserveBalanceHoldRow, error)
 	SelectExpiredReservingClaims(ctx context.Context, batchSize int32) ([]SelectExpiredReservingClaimsRow, error)
 	SetProviderAccountModelRateLimit(ctx context.Context, arg SetProviderAccountModelRateLimitParams) error
+	SweepOrphanedSlotAcquisitions(ctx context.Context, arg SweepOrphanedSlotAcquisitionsParams) (int64, error)
 	// Abort path: claim status reserving → aborted; usage_record/billing_event
 	// still written (with zero cost) for audit completeness.
 	// Tenant-scoped to prevent cross-tenant abort via stale claim id.

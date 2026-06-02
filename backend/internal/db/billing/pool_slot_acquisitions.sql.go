@@ -127,3 +127,62 @@ func (q *Queries) ReleaseSlotAcquisition(ctx context.Context, arg ReleaseSlotAcq
 	_, err := q.db.Exec(ctx, releaseSlotAcquisition, arg.ReleaseReason, arg.AcquisitionToken)
 	return err
 }
+
+const sweepOrphanedSlotAcquisitions = `-- name: SweepOrphanedSlotAcquisitions :one
+WITH candidates AS (
+    SELECT id
+    FROM pool_slot_acquisitions
+    WHERE status = 'acquired'
+      AND lease_expires_at < NOW()
+      AND NOT EXISTS (
+          SELECT 1
+          FROM billing_ledger_claims blc
+          WHERE blc.id = pool_slot_acquisitions.claim_id
+            AND blc.tenant_id = pool_slot_acquisitions.tenant_id
+            AND blc.attempt_seq = pool_slot_acquisitions.attempt_seq
+            AND blc.status = 'reserving'
+      )
+    ORDER BY lease_expires_at
+    LIMIT $1
+    FOR UPDATE SKIP LOCKED
+),
+swept AS (
+    UPDATE pool_slot_acquisitions psa
+    SET
+        status = 'orphan_swept',
+        released_at = NOW(),
+        release_reason = $2
+    FROM candidates c
+    WHERE psa.id = c.id
+      AND psa.status = 'acquired'
+    RETURNING psa.provider_account_id
+),
+by_account AS (
+    SELECT provider_account_id, COUNT(*)::integer AS swept_count
+    FROM swept
+    GROUP BY provider_account_id
+),
+decremented AS (
+    UPDATE provider_accounts pa
+    SET
+        in_flight_count = GREATEST(pa.in_flight_count - by_account.swept_count, 0),
+        updated_at = NOW()
+    FROM by_account
+    WHERE pa.id = by_account.provider_account_id
+    RETURNING by_account.swept_count
+)
+SELECT COALESCE(SUM(swept_count), 0)::bigint AS swept_count
+FROM decremented
+`
+
+type SweepOrphanedSlotAcquisitionsParams struct {
+	BatchSize     int32   `db:"batch_size" json:"batch_size"`
+	ReleaseReason *string `db:"release_reason" json:"release_reason"`
+}
+
+func (q *Queries) SweepOrphanedSlotAcquisitions(ctx context.Context, arg SweepOrphanedSlotAcquisitionsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, sweepOrphanedSlotAcquisitions, arg.BatchSize, arg.ReleaseReason)
+	var swept_count int64
+	err := row.Scan(&swept_count)
+	return swept_count, err
+}

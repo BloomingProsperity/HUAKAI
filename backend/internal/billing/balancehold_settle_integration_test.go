@@ -148,7 +148,7 @@ func TestSettler_LeaseSweepAbortsExpiredClaims(t *testing.T) {
 	if err := reserveAndCommitBalanceHold(ctx, t, pool, seed.tenantID, seed.userID, seed.claimID, decimal.RequireFromString("0.01000000")); err != nil {
 		t.Fatalf("reserve hold: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE billing_ledger_claims SET lease_expires_at = NOW() - interval '10 minutes' WHERE id=$1`, seed.claimID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE billing_ledger_claims SET lease_expires_at = NOW() - interval '100 years' WHERE id=$1`, seed.claimID); err != nil {
 		t.Fatalf("expire lease: %v", err)
 	}
 
@@ -169,6 +169,143 @@ func TestSettler_LeaseSweepAbortsExpiredClaims(t *testing.T) {
 	if status != "aborted" {
 		t.Fatalf("status=%q want aborted", status)
 	}
+}
+
+func TestSettler_LeaseSweepReclaimsExpiredSlotAcquisitions(t *testing.T) {
+	// Mutation check: remove orphan slot sweeping and the slot stays acquired with in_flight_count=1.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openPool(t, ctx)
+	set := NewSettler(pool)
+	sweeper := NewLeaseSweeper(pool, set, 10)
+	graph := seedRetryAtomicityGraph(t, ctx, pool, "slot-orphan-sweep")
+	token := uuid.New()
+
+	if _, err := pool.Exec(ctx,
+		`UPDATE provider_accounts SET in_flight_count=1 WHERE id=$1`,
+		graph.firstAccountID,
+	); err != nil {
+		t.Fatalf("seed in_flight_count: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO pool_slot_acquisitions (
+			tenant_id, provider_account_id, acquisition_token, claim_id, attempt_seq, lease_expires_at
+		) VALUES ($1, $2, $3, NULL, 1, NOW() - interval '100 years')`,
+		graph.tenantID, graph.firstAccountID, token,
+	); err != nil {
+		t.Fatalf("seed expired slot acquisition: %v", err)
+	}
+
+	count, err := sweeper.SweepOnce(ctx)
+	if err != nil {
+		t.Logf("SweepOnce non-fatal errors from shared dev DB: %v", err)
+	}
+	if count == 0 {
+		t.Fatalf("SweepOnce=%d want at least one reclaimed lease or slot", count)
+	}
+
+	var status string
+	if err := pool.QueryRow(ctx,
+		`SELECT status FROM pool_slot_acquisitions WHERE acquisition_token=$1`,
+		token,
+	).Scan(&status); err != nil {
+		t.Fatalf("read slot status: %v", err)
+	}
+	if status != "orphan_swept" {
+		t.Fatalf("slot status=%q want orphan_swept", status)
+	}
+
+	var inFlight int32
+	if err := pool.QueryRow(ctx,
+		`SELECT in_flight_count FROM provider_accounts WHERE id=$1`,
+		graph.firstAccountID,
+	).Scan(&inFlight); err != nil {
+		t.Fatalf("read in_flight_count: %v", err)
+	}
+	if inFlight != 0 {
+		t.Fatalf("in_flight_count=%d want 0 after orphan slot sweep", inFlight)
+	}
+}
+
+func TestSettler_LeaseSweepReclaimsExpiredSlotFromPriorAttempt(t *testing.T) {
+	// Mutation check: remove attempt_seq from the live-claim guard and the prior-attempt slot remains acquired.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openPool(t, ctx)
+	set := NewSettler(pool)
+	sweeper := NewLeaseSweeper(pool, set, 10)
+	graph := seedRetryAtomicityGraph(t, ctx, pool, "slot-prior-attempt-sweep")
+	oldToken := uuid.New()
+	liveToken := uuid.New()
+
+	var claimID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO billing_ledger_claims (
+			tenant_id, idempotency_key, request_fingerprint, api_key_id, user_id,
+			logical_request_id, endpoint_family, requested_model, pooling_group_id,
+			billing_policy_version, request_class, provider_account_id, acquisition_token,
+			attempt_seq, predicted_cost, currency_code, lease_expires_at
+		) VALUES (
+			$1, $2, $3, $4, $5,
+			$6, 'chat', 'gpt-4.1-mini', $7,
+			'1.0', 'standard', $8, $9,
+			2, $10, 'USD', NOW() + interval '90 seconds'
+		) RETURNING id`,
+		graph.tenantID, "idempotency-"+graph.fingerprint, graph.fingerprint, graph.apiKeyID, graph.userID,
+		"logical-"+graph.fingerprint, graph.secondPoolID, graph.secondAccountID, liveToken,
+		decimal.RequireFromString("0.01000000"),
+	).Scan(&claimID); err != nil {
+		t.Fatalf("seed live re-reserved claim: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE provider_accounts SET in_flight_count=1 WHERE id IN ($1, $2)`,
+		graph.firstAccountID, graph.secondAccountID,
+	); err != nil {
+		t.Fatalf("seed in_flight_count: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO pool_slot_acquisitions (
+			tenant_id, provider_account_id, acquisition_token, claim_id, attempt_seq, lease_expires_at
+		) VALUES
+			($1, $2, $3, $4, 1, NOW() - interval '100 years'),
+			($1, $5, $6, $4, 2, NOW() - interval '100 years')`,
+		graph.tenantID, graph.firstAccountID, oldToken, claimID, graph.secondAccountID, liveToken,
+	); err != nil {
+		t.Fatalf("seed old and live slot acquisitions: %v", err)
+	}
+
+	count, err := sweeper.SweepOnce(ctx)
+	if err != nil {
+		t.Logf("SweepOnce non-fatal errors from shared dev DB: %v", err)
+	}
+	if count == 0 {
+		t.Fatalf("SweepOnce=%d want prior-attempt slot reclaimed", count)
+	}
+
+	var oldStatus, liveStatus string
+	if err := pool.QueryRow(ctx,
+		`SELECT status FROM pool_slot_acquisitions WHERE acquisition_token=$1`,
+		oldToken,
+	).Scan(&oldStatus); err != nil {
+		t.Fatalf("read old slot status: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT status FROM pool_slot_acquisitions WHERE acquisition_token=$1`,
+		liveToken,
+	).Scan(&liveStatus); err != nil {
+		t.Fatalf("read live slot status: %v", err)
+	}
+	if oldStatus != "orphan_swept" {
+		t.Fatalf("old attempt slot status=%q want orphan_swept", oldStatus)
+	}
+	if liveStatus != "acquired" {
+		t.Fatalf("live attempt slot status=%q want acquired", liveStatus)
+	}
+
+	assertAccountInFlight(t, ctx, pool, graph.firstAccountID, 0)
+	assertAccountInFlight(t, ctx, pool, graph.secondAccountID, 1)
 }
 
 func TestSettler_RefundCreditsUserBalance(t *testing.T) {
