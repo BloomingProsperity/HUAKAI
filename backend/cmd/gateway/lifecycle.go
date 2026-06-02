@@ -30,6 +30,7 @@ type gatewayRuntime struct {
 	replayJanitorStop    func()
 	leaseSweepStop       func()
 	pendingReconcileStop func()
+	modelSyncStop        func()
 	closeReplica         func()
 	credentialScheduler  *credentialworker.Scheduler
 	dlqWorker            *legacydlq.Worker
@@ -56,6 +57,9 @@ func (rt *gatewayRuntime) close() {
 	}
 	if rt.pendingReconcileStop != nil {
 		rt.pendingReconcileStop()
+	}
+	if rt.modelSyncStop != nil {
+		rt.modelSyncStop()
 	}
 	if rt.pgPool != nil {
 		rt.pgPool.Close()
@@ -138,6 +142,9 @@ func shutdownGateway(srv *http.Server, rt *gatewayRuntime) error {
 		outboxStopErr = rt.outboxWorker.Stop(outboxCtx)
 		cancel()
 	}
+	if rt.modelSyncStop != nil {
+		rt.modelSyncStop()
+	}
 
 	// 合并错误一并返回, 不让前面 step 的失败遮盖后面 step。
 	return errors.Join(
@@ -213,10 +220,23 @@ func loadRuntimeOptions(logger *zap.Logger) (*runtimeOptions, error) {
 		zap.Int("low_buffer", eventBusCfg.LowBuffer),
 		zap.Duration("handler_timeout", eventBusCfg.HandlerTimeout),
 	)
+	modelSyncCfg, err := runtimeconfig.LoadModelSync()
+	if err != nil {
+		return nil, fmt.Errorf("load model sync config: %w", err)
+	}
+	logger.Info("model sync config loaded",
+		zap.Bool("enabled", modelSyncCfg.Enabled),
+		zap.Duration("interval", modelSyncCfg.Interval),
+		zap.Duration("timeout", modelSyncCfg.Timeout),
+		zap.Bool("openai_configured", modelSyncCfg.OpenAI.Configured()),
+		zap.Bool("anthropic_configured", modelSyncCfg.Anthropic.Configured()),
+		zap.Bool("gemini_configured", modelSyncCfg.Gemini.Configured()),
+	)
 	return &runtimeOptions{
 		selector:      selectorCfg,
 		obsDLQ:        obsDLQCfg,
 		eventBus:      eventBusCfg,
+		modelSync:     modelSyncCfg,
 		outboxRuntime: outboxRuntime,
 		responseCache: responseCache,
 	}, nil
