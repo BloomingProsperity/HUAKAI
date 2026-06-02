@@ -460,6 +460,12 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Service: d.paymentService,
 		})
 	})
+	r.Route("/admin/v1/model-sync", func(r chi.Router) {
+		adminhttp.MountModelSyncRoutes(r, adminhttp.AdminModelSyncDeps{
+			Auth:    d.adminAuth,
+			Service: d.modelSync,
+		})
+	})
 	r.Route("/v1/admin/vouchers", func(r chi.Router) {
 		gatewayhttp.MountVoucherAdminRoutes(r, gatewayhttp.VoucherAdminDeps{
 			Auth:    d.adminAuth,
