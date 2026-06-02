@@ -40,6 +40,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
+	"github.com/BloomingProsperity/HUAKAI/internal/panelauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
@@ -53,9 +54,11 @@ import (
 	providerwindsurf "github.com/BloomingProsperity/HUAKAI/internal/provider/windsurf"
 	ratelimit "github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
+	"github.com/BloomingProsperity/HUAKAI/internal/routeadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
+	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
@@ -93,6 +96,9 @@ type deps struct {
 	paymentService           *payment.Service
 	paymentProviders         map[string]paymenthttp.ProviderBinding
 	voucherService           *voucher.Service
+	subscriptionService      *subscription.Service
+	routeAdminService        *routeadmin.Service
+	panelAuthResolver        *panelauth.Resolver
 	invitationService        *communityinvitation.Service
 	dispatcher               *gateway.UpstreamDispatcher
 	responseCache            l2cache.Store
@@ -197,6 +203,13 @@ func buildPaymentProviderBindings(cfg *Config) (map[string]paymenthttp.ProviderB
 		EnableMock:  cfg.PaymentEnableMock,
 		ReleaseMode: string(releaseMode()),
 	})
+}
+
+func paymentServiceOptions(cfg *Config) []payment.Option {
+	if cfg == nil || !cfg.PaymentEnableMock {
+		return nil
+	}
+	return []payment.Option{payment.WithTestProvider()}
 }
 
 // loadStormScopeConfigFromEnv parses the optional endpoint/global refresh-storm
@@ -547,9 +560,12 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		pgPool:                pgPool,
 		userSessions:          userSessionService,
 		userKeyService:        userkey.NewService(pgPool, nil),
-		paymentService:        payment.NewService(payment.NewPostgresStore(pgPool)),
+		paymentService:        payment.NewService(payment.NewPostgresStore(pgPool), paymentServiceOptions(cfg)...),
 		paymentProviders:      paymentProviders,
 		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool)),
+		subscriptionService:   subscription.NewService(subscription.NewPostgresStore(pgPool)),
+		routeAdminService:     routeadmin.NewService(routeadmin.NewPostgresStore(pgPool), nil),
+		panelAuthResolver:     panelauth.NewResolver(panelauth.NewPostgresRoleStore(pgPool)),
 		invitationService:     communityinvitation.NewService(communityinvitation.NewPostgresStore(pgPool)),
 		responseCache:         opts.responseCache,
 		dlqService:            dlqService,
@@ -640,10 +656,29 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		rt.modelSyncStop = scheduler.Start(ctx)
 	}
 
+	subscriptionExpiryWorker := subscription.NewExpiryWorker(subscription.ExpiryWorkerConfig{Service: d.subscriptionService})
+	subscriptionExpiryWorker.Start(ctx)
+
+	// 订阅到期提醒 worker。auth email sender 是接口 (不暴露 SendTenantMessage), 这里单独构造一个
+	// 接好 DLQ outbox 的 concrete sender 给提醒复用 (瞬时失败入同一 DLQ 重试)。
+	reminderEmailSender, err := mailinfra.BuildEmailSender(ctx, emailSettingsStore, credentialKeys, mailinfra.WithOutbox(outboxStore))
+	if err != nil {
+		return nil, fmt.Errorf("build subscription reminder email sender: %w", err)
+	}
+	subscriptionReminderWorker := subscription.NewReminderWorker(subscription.ReminderWorkerConfig{
+		Service: subscription.NewReminderService(
+			subscription.NewPostgresStore(pgPool),
+			subscription.NewEmailReminderMailer(reminderEmailSender),
+		),
+	})
+	subscriptionReminderWorker.Start(ctx)
+
 	rt.deps = d
 	rt.credentialScheduler = credentialScheduler
 	rt.dlqWorker = dlqWorker
 	rt.outboxWorker = outboxWorker
+	rt.subscriptionExpiryWorker = subscriptionExpiryWorker
+	rt.subscriptionReminderWorker = subscriptionReminderWorker
 	rt.obsDLQEnabled = opts.obsDLQ.Enabled
 	ready = true
 	return rt, nil

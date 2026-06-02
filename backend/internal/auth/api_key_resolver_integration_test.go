@@ -77,6 +77,11 @@ func seedAPIKey(t *testing.T, ctx context.Context, pool *pgxpool.Pool, opts apiK
 	).Scan(&s.userID); err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
+	if opts.userGroup != "" {
+		if _, err := pool.Exec(ctx, `UPDATE users SET user_group=$2 WHERE id=$1`, s.userID, opts.userGroup); err != nil {
+			t.Fatalf("set user_group: %v", err)
+		}
+	}
 
 	plaintext := opts.plaintext
 	if plaintext == "" {
@@ -117,6 +122,7 @@ type apiKeySeedOpts struct {
 	plaintext string
 	status    string
 	expiresAt interface{} // pass nil for no expiry, or time.Time
+	userGroup string      // 空=用 DB 默认 'default'; 非空=覆写 users.user_group
 }
 
 func newRequest(t *testing.T, header string) *http.Request {
@@ -163,6 +169,29 @@ func TestAPIKeyResolver_HappyPath(t *testing.T) {
 	}
 	if ident.TenantID != seed.tenantID || ident.APIKeyID != seed.apiKeyID || ident.UserID != seed.userID {
 		t.Fatalf("identity mismatch: %+v vs seed %+v", ident, seed)
+	}
+	// 普通 seed 用户走 DB 默认档 'default'; 空说明查询/Identity 漏带 user_group。
+	if ident.UserGroup != "default" {
+		t.Fatalf("UserGroup = %q, want default (seeded user uses DB default)", ident.UserGroup)
+	}
+}
+
+// TestAPIKeyResolver_ResolvesUserGroup 守 R-SUB-WIRE-1 地基: 解析出的 Identity 必须带用户订阅档。
+// 判别: 把 LookupAPIKeysByPrefix 的 u.user_group 列或 Identity.UserGroup 赋值去掉 →
+// ident.UserGroup 变空 (非 'premium') → 红 (分组→路由会拿不到档位, 高档用户被当无限制)。
+func TestAPIKeyResolver_ResolvesUserGroup(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openIntegrationPool(t, ctx)
+	seed := seedAPIKey(t, ctx, pool, apiKeySeedOpts{userGroup: "premium"})
+
+	r := NewAPIKeyResolver(dbauth.New(pool))
+	ident, err := r.Resolve(ctx, newRequest(t, "Bearer "+seed.plaintext))
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if ident.UserGroup != "premium" {
+		t.Fatalf("UserGroup = %q, want premium", ident.UserGroup)
 	}
 }
 
