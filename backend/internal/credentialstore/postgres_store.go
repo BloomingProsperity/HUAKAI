@@ -717,6 +717,54 @@ LIMIT 1`
 	return rec, nil
 }
 
+func (s *Store) LoadForProviderAccountTest(ctx context.Context, tenantID, providerAccountID int64) (CredentialRecord, error) {
+	if err := s.validateReady(); err != nil {
+		return CredentialRecord{}, err
+	}
+	const q = `
+	SELECT ac.id, ac.tenant_id, ac.provider_account_id, ac.vendor, ac.auth_mode, ac.state,
+	       ac.credential_version, ac.encrypted_payload, ac.encryption_scheme, ac.key_id,
+	       ac.nonce, ac.aad_hash, ac.payload_fingerprint, ac.refresh_token_fingerprint,
+	       ac.access_expires_at, ac.refresh_expires_at, ac.refresh_before_at, ac.grace_until,
+	       ac.last_refresh_at, ac.last_refresh_outcome, ac.failure_class, ac.failure_count,
+	       ac.next_attempt_at, ac.created_at, ac.updated_at, ac.deleted_at,
+	       COUNT(*) OVER () AS test_mode_count
+		FROM account_credentials ac
+		JOIN provider_accounts pa
+		  ON pa.id = ac.provider_account_id
+		 AND pa.tenant_id = ac.tenant_id
+		WHERE ac.provider_account_id = $1
+		  AND ac.tenant_id = $2
+		  AND ac.deleted_at IS NULL
+		  AND pa.deleted_at IS NULL
+		  AND ac.state IN ('active', 'refreshing_with_grace', 'temp_unschedulable', 'operator_attention')
+		ORDER BY
+		  CASE ac.state
+		    WHEN 'active' THEN 0
+	    WHEN 'refreshing_with_grace' THEN 1
+	    WHEN 'temp_unschedulable' THEN 2
+	    WHEN 'operator_attention' THEN 3
+	    ELSE 4
+	  END,
+		  ac.updated_at DESC,
+		  ac.id DESC
+	LIMIT 1`
+	rec, testModeCount, err := s.scanRecordWithCount(ctx, q, providerAccountID, tenantID)
+	if err != nil {
+		return CredentialRecord{}, err
+	}
+	if testModeCount > 1 {
+		return CredentialRecord{}, fmt.Errorf("%w: tenant_id=%d provider_account_id=%d test_modes=%d",
+			ErrCredentialAmbiguous, tenantID, providerAccountID, testModeCount)
+	}
+	plaintext, err := s.decryptRecord(ctx, rec)
+	if err != nil {
+		return CredentialRecord{}, err
+	}
+	rec.PlaintextPayload = plaintext
+	return rec, nil
+}
+
 func (s *Store) SaveRefreshSuccess(ctx context.Context, rec CredentialRecord, payload []byte, accessExpiresAt time.Time, outcome string) error {
 	if err := s.validateReady(); err != nil {
 		return err
@@ -886,6 +934,36 @@ func (s *Store) scanRecord(ctx context.Context, query string, args ...any) (Cred
 	rec.UpdatedAt = pgTime(updatedAt)
 	rec.DeletedAt = pgTime(deletedAt)
 	return rec, nil
+}
+
+func (s *Store) scanRecordWithCount(ctx context.Context, query string, args ...any) (CredentialRecord, int64, error) {
+	var rec CredentialRecord
+	var rowCount int64
+	var accessExp, refreshExp, refreshBefore, graceUntil, lastRefresh, nextAttempt, createdAt, updatedAt, deletedAt pgtype.Timestamptz
+	err := s.db.QueryRow(ctx, query, args...).Scan(
+		&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State,
+		&rec.CredentialVersion, &rec.EncryptedPayload, &rec.EncryptionScheme, &rec.KeyID,
+		&rec.Nonce, &rec.AADHash, &rec.PayloadFingerprint, &rec.RefreshTokenFingerprint,
+		&accessExp, &refreshExp, &refreshBefore, &graceUntil,
+		&lastRefresh, &rec.LastRefreshOutcome, &rec.FailureClass, &rec.FailureCount,
+		&nextAttempt, &createdAt, &updatedAt, &deletedAt, &rowCount,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return CredentialRecord{}, 0, ErrCredentialNotFound
+		}
+		return CredentialRecord{}, 0, err
+	}
+	rec.AccessExpiresAt = pgTime(accessExp)
+	rec.RefreshExpiresAt = pgTime(refreshExp)
+	rec.RefreshBeforeAt = pgTime(refreshBefore)
+	rec.GraceUntil = pgTime(graceUntil)
+	rec.LastRefreshAt = pgTime(lastRefresh)
+	rec.NextAttemptAt = pgTime(nextAttempt)
+	rec.CreatedAt = pgTime(createdAt)
+	rec.UpdatedAt = pgTime(updatedAt)
+	rec.DeletedAt = pgTime(deletedAt)
+	return rec, rowCount, nil
 }
 
 func (s *Store) getRecord(ctx context.Context, tenantID, providerAccountID, credentialID int64, decrypt bool) (CredentialRecord, error) {
