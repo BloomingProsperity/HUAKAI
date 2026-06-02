@@ -203,8 +203,8 @@ func TestWiring_InstallGeminiPublicCLIOAuthExchangersReplacesDefault(t *testing.
 	if err := installGeminiPublicCLIOAuthExchangers(credentialacq.DefaultExchangerRegistry(), nil, "from-env", nil); err == nil {
 		t.Fatal("install 必须拒 nil Gemini OAuth client")
 	}
-	if err := installGeminiPublicCLIOAuthExchangers(credentialacq.DefaultExchangerRegistry(), mockClient, " ", nil); err == nil {
-		t.Fatal("install 必须拒空 HUAKAI_GEMINI_OAUTH_CLIENT_SECRET")
+	if err := installGeminiPublicCLIOAuthExchangers(credentialacq.DefaultExchangerRegistry(), mockClient, " ", nil); err != nil {
+		t.Fatalf("missing Gemini secret must not fail global gateway boot: %v", err)
 	}
 }
 
@@ -344,11 +344,41 @@ func TestWiring_InstallChatGPTThreadsAdminCallbackAllowlist(t *testing.T) {
 	}
 }
 
-func TestWiring_GeminiPublicCLIOAuthSecretEnvFailFast(t *testing.T) {
-	// 判别 mutation：把启动缺 secret 改成 lazy ignore 时，本测试必须变红。
+func TestWiring_GeminiPublicCLIOAuthMissingSecretIsLazyFeatureGate(t *testing.T) {
+	// Regression killed: non-Gemini deployments must boot without the Gemini
+	// public CLI client secret, while Gemini public CLI OAuth remains disabled
+	// at the feature boundary. Mutation check: reverting either loader or
+	// installer to reject blank secrets makes this test red before StartOAuthFlow.
 	t.Setenv("HUAKAI_GEMINI_OAUTH_CLIENT_SECRET", " ")
-	if _, err := loadGeminiPublicCLIOAuthClientSecretFromEnv(); err == nil || !strings.Contains(err.Error(), "HUAKAI_GEMINI_OAUTH_CLIENT_SECRET") {
-		t.Fatalf("missing secret err=%v, want env var name", err)
+	secret, err := loadGeminiPublicCLIOAuthClientSecretFromEnv()
+	if err != nil {
+		t.Fatalf("missing Gemini secret must be a lazy feature gate, not a boot error: %v", err)
+	}
+	if secret != "" {
+		t.Fatalf("secret=%q want empty value for missing/blank env", secret)
+	}
+
+	registry := credentialacq.DefaultExchangerRegistry()
+	mockClient := &http.Client{Transport: wiringRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("Gemini OAuth should fail before token exchange when secret is missing")
+	})}
+	if err := installGeminiPublicCLIOAuthExchangers(registry, mockClient, secret, nil); err != nil {
+		t.Fatalf("installGeminiPublicCLIOAuthExchangers must allow missing secret at boot: %v", err)
+	}
+	if err := assertGeminiPublicCLIOAuthExchangersHaveHTTPClient(registry); err != nil {
+		t.Fatalf("Gemini exchangers must still get controlled HTTP client even when secret is absent: %v", err)
+	}
+	exc, ok := registry.Lookup(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist))
+	if !ok {
+		t.Fatal("installed registry missing gemini/code_assist exchanger")
+	}
+	_, err = exc.StartOAuthFlow(context.Background(), nil, credentialacq.StartInput{
+		TenantID: 1, ProviderAccountID: 203,
+		Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeCodeAssist,
+		ActorID: "owner", ActorRole: "platform_admin",
+	}, credentialacq.OAuthClientConfig{})
+	if !errors.Is(err, credentialacq.ErrFeatureDisabled) {
+		t.Fatalf("missing Gemini secret must disable only Gemini public CLI OAuth, got err=%v", err)
 	}
 
 	t.Setenv("HUAKAI_GEMINI_OAUTH_CLIENT_SECRET", " from-env ")

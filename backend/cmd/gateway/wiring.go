@@ -675,11 +675,7 @@ func assertAnthropicClaudeAIOAuthExchangerHasHTTPClient(registry *credentialacq.
 }
 
 func loadGeminiPublicCLIOAuthClientSecretFromEnv() (string, error) {
-	secret := strings.TrimSpace(os.Getenv(geminiPublicCLIOAuthClientSecretEnv))
-	if secret == "" {
-		return "", fmt.Errorf("%s is required for Gemini public CLI OAuth wiring", geminiPublicCLIOAuthClientSecretEnv)
-	}
-	return secret, nil
+	return strings.TrimSpace(os.Getenv(geminiPublicCLIOAuthClientSecretEnv)), nil
 }
 
 func loadAdminOAuthCallbackAllowlistFromEnv() []string {
@@ -716,16 +712,15 @@ func parseCSVAllowlistEnv(name string) []string {
 // installGeminiPublicCLIOAuthExchangers 把默认 registry 中 Gemini code_assist /
 // google_one 条目替换为带显式 OAuth-grade HTTP client 的版本。client 由调用方
 // 构造，生产 wiring 传 auth.NewSSRFProtectedOAuthClient，secret 与 admin callback
-// allowlist 必须来自 operator env。
+// allowlist 必须来自 operator env。secret 缺失时仍安装受控 HTTP client；Gemini
+// public CLI OAuth 在 StartOAuthFlow 边界因缺 client_secret fail-closed，避免
+// 非 Gemini 部署被全局启动依赖阻断。
 func installGeminiPublicCLIOAuthExchangers(registry *credentialacq.ExchangerRegistry, client *http.Client, clientSecret string, allowlist []string) error {
 	if registry == nil {
 		return fmt.Errorf("nil exchanger registry")
 	}
 	if client == nil {
 		return fmt.Errorf("nil http client (gemini OAuth transport missing)")
-	}
-	if strings.TrimSpace(clientSecret) == "" {
-		return fmt.Errorf("%s is required for Gemini public CLI OAuth wiring", geminiPublicCLIOAuthClientSecretEnv)
 	}
 	for _, mode := range []string{credentialstore.AuthModeCodeAssist, credentialstore.AuthModeGoogleOne} {
 		if err := registry.RegisterOrReplaceExchanger(
