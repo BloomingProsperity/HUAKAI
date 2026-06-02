@@ -14,6 +14,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/mixedchannelrisk"
 )
 
 type adminPoolAuthStub struct {
@@ -28,6 +29,7 @@ func (s adminPoolAuthStub) Resolve(context.Context, *http.Request) (admin.AdminI
 type adminPoolStoreStub struct {
 	insertID   int64
 	insert     *admindb.InsertProviderAccountParams
+	riskPeers  []providerAccountRiskPeerForTest
 	listArg    *admindb.ListAdminProviderAccountsParams
 	list       []admindb.AdminProviderAccountRow
 	getArg     *admindb.GetAdminProviderAccountParams
@@ -37,6 +39,16 @@ type adminPoolStoreStub struct {
 	clear      *admindb.ClearProviderAccountRateLimitParams
 	delete     *admindb.SoftDeleteProviderAccountParams
 	audits     []admindb.InsertAdminAuditEventParams
+}
+
+type providerAccountRiskPeerForTest struct {
+	ID       int64
+	TenantID int64
+	Provider int64
+	Channel  int64
+	Type     string
+	Vendor   string
+	AuthMode string
 }
 
 type adminPoolCredentialWriterStub struct {
@@ -72,6 +84,39 @@ func (s *adminPoolStoreStub) InsertProviderAccount(_ context.Context, arg admind
 		return 101, nil
 	}
 	return s.insertID, nil
+}
+
+func (s *adminPoolStoreStub) ListProviderAccountRiskPeers(_ context.Context, arg admindb.ListProviderAccountRiskPeersParams) ([]admindb.ProviderAccountRiskPeerRow, error) {
+	out := make([]admindb.ProviderAccountRiskPeerRow, 0, len(s.riskPeers))
+	for _, peer := range s.riskPeers {
+		if peer.TenantID != arg.TenantID || peer.Channel != arg.ChannelID {
+			continue
+		}
+		out = append(out, admindb.ProviderAccountRiskPeerRow{
+			ID: peer.ID, TenantID: peer.TenantID, ProviderID: peer.Provider, ChannelID: peer.Channel,
+			AccountType: peer.Type, CredentialVendor: peer.Vendor, CredentialAuthMode: peer.AuthMode,
+		})
+	}
+	return out, nil
+}
+
+func (s *adminPoolStoreStub) InsertProviderAccountWithMixedRiskCheck(ctx context.Context, arg adminPoolAccountCreateWithMixedRiskParams) (adminPoolAccountCreateWithMixedRiskResult, error) {
+	peers, err := s.ListProviderAccountRiskPeers(ctx, admindb.ListProviderAccountRiskPeersParams{
+		TenantID:  arg.Insert.TenantID,
+		ChannelID: arg.Insert.ChannelID,
+	})
+	if err != nil {
+		return adminPoolAccountCreateWithMixedRiskResult{}, err
+	}
+	report := mixedchannelrisk.Evaluate(arg.Candidate, mixedRiskPeerAccounts(peers))
+	if report.HighRisk && !arg.Confirmed {
+		return adminPoolAccountCreateWithMixedRiskResult{RiskReport: report}, errProviderAccountMixedRiskConfirmationRequired
+	}
+	id, err := s.InsertProviderAccount(ctx, arg.Insert)
+	if err != nil {
+		return adminPoolAccountCreateWithMixedRiskResult{RiskReport: report}, err
+	}
+	return adminPoolAccountCreateWithMixedRiskResult{ID: id, RiskReport: report}, nil
 }
 
 func (s *adminPoolStoreStub) ListAdminProviderAccounts(_ context.Context, arg admindb.ListAdminProviderAccountsParams) ([]admindb.AdminProviderAccountRow, error) {
@@ -253,6 +298,93 @@ func TestAdminPoolAccounts_CreateWithCredentialInitializesChannelHealth(t *testi
 	}
 	if strings.Contains(string(store.audits[0].Payload), "sk-live") {
 		t.Fatalf("audit leaked credential: %s", string(store.audits[0].Payload))
+	}
+}
+
+func TestAdminPoolAccounts_CreateMixedChannelRiskRequiresConfirm(t *testing.T) {
+	store := &adminPoolStoreStub{insertID: 77, riskPeers: []providerAccountRiskPeerForTest{{
+		ID: 61, TenantID: 7, Provider: 8, Channel: 9, Type: "oauth", Vendor: "anthropic", AuthMode: "claude_ai_oauth",
+	}}}
+	credentials := &adminPoolCredentialWriterStub{id: 88}
+	rec := invokeAdminPoolWithCredentialStore(t, store, credentials, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
+		`{"provider_id":11,"channel_id":9,"name":"acct","account_type":"api_key","vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if store.insert != nil {
+		t.Fatalf("InsertProviderAccount called despite unconfirmed mixed risk: %+v", store.insert)
+	}
+	var response struct {
+		Error           string `json:"error"`
+		ConfirmRequired bool   `json:"confirm_required"`
+		Risks           []struct {
+			Dimension         string `json:"dimension"`
+			ExistingAccountID int64  `json:"existing_account_id"`
+		} `json:"risks"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("response json: %v", err)
+	}
+	if response.Error != "mixed_channel_risk_confirmation_required" || !response.ConfirmRequired {
+		t.Fatalf("response risk gate mismatch: %+v body=%s", response, rec.Body.String())
+	}
+	if len(response.Risks) < 3 {
+		t.Fatalf("risks=%+v want source/vendor/credential_type items", response.Risks)
+	}
+	seen := map[string]bool{}
+	for _, item := range response.Risks {
+		seen[item.Dimension] = true
+		if item.ExistingAccountID != 61 {
+			t.Fatalf("risk item existing account=%d want 61", item.ExistingAccountID)
+		}
+	}
+	for _, dim := range []string{"source", "vendor", "credential_type"} {
+		if !seen[dim] {
+			t.Fatalf("missing risk dimension %s in %+v", dim, response.Risks)
+		}
+	}
+}
+
+func TestAdminPoolAccounts_CreateMixedChannelRiskConfirmAllowsAndAudits(t *testing.T) {
+	store := &adminPoolStoreStub{insertID: 77, riskPeers: []providerAccountRiskPeerForTest{{
+		ID: 61, TenantID: 7, Provider: 8, Channel: 9, Type: "oauth", Vendor: "anthropic", AuthMode: "claude_ai_oauth",
+	}}}
+	credentials := &adminPoolCredentialWriterStub{id: 88}
+	rec := invokeAdminPoolWithCredentialStore(t, store, credentials, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts?confirm=true",
+		`{"provider_id":11,"channel_id":9,"name":"acct","account_type":"api_key","vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if store.insert == nil || store.insert.ProviderID != 11 || store.insert.ChannelID != 9 {
+		t.Fatalf("insert params mismatch: %+v", store.insert)
+	}
+	if len(store.audits) != 1 || store.audits[0].Action != "create_provider_account" {
+		t.Fatalf("audit mismatch: %+v", store.audits)
+	}
+	if !strings.Contains(string(store.audits[0].Payload), `"mixed_channel_risk_confirmed":true`) ||
+		!strings.Contains(string(store.audits[0].Payload), `"dimension":"vendor"`) {
+		t.Fatalf("audit payload missing mixed-risk confirmation: %s", string(store.audits[0].Payload))
+	}
+	if strings.Contains(string(store.audits[0].Payload), "sk-live") {
+		t.Fatalf("audit leaked credential: %s", string(store.audits[0].Payload))
+	}
+}
+
+func TestAdminPoolAccounts_CreateSameSourceNoMixedChannelRisk(t *testing.T) {
+	store := &adminPoolStoreStub{insertID: 77, riskPeers: []providerAccountRiskPeerForTest{{
+		ID: 61, TenantID: 7, Provider: 11, Channel: 9, Type: "api_key", Vendor: "openai", AuthMode: "api_key",
+	}}}
+	credentials := &adminPoolCredentialWriterStub{id: 88}
+	rec := invokeAdminPoolWithCredentialStore(t, store, credentials, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
+		`{"provider_id":11,"channel_id":9,"name":"acct","account_type":"api_key","vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if store.insert == nil {
+		t.Fatal("InsertProviderAccount was not called for same-source account")
+	}
+	if strings.Contains(string(store.audits[0].Payload), `"mixed_channel_risk_confirmed":true`) {
+		t.Fatalf("same-source audit should not mark risk confirmation: %s", string(store.audits[0].Payload))
 	}
 }
 

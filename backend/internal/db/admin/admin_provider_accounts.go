@@ -53,6 +53,21 @@ type GetAdminProviderAccountParams struct {
 	TenantID int64 `db:"tenant_id" json:"tenant_id"`
 }
 
+type ListProviderAccountRiskPeersParams struct {
+	TenantID  int64 `db:"tenant_id" json:"tenant_id"`
+	ChannelID int64 `db:"channel_id" json:"channel_id"`
+}
+
+type ProviderAccountRiskPeerRow struct {
+	ID                 int64  `db:"id" json:"id"`
+	TenantID           int64  `db:"tenant_id" json:"tenant_id"`
+	ProviderID         int64  `db:"provider_id" json:"provider_id"`
+	ChannelID          int64  `db:"channel_id" json:"channel_id"`
+	AccountType        string `db:"account_type" json:"account_type"`
+	CredentialVendor   string `db:"credential_vendor" json:"credential_vendor"`
+	CredentialAuthMode string `db:"credential_auth_mode" json:"credential_auth_mode"`
+}
+
 type UpdateAdminProviderAccountParams struct {
 	ID                         int64   `db:"id" json:"id"`
 	TenantID                   int64   `db:"tenant_id" json:"tenant_id"`
@@ -174,6 +189,60 @@ func (q *Queries) GetAdminProviderAccount(ctx context.Context, arg GetAdminProvi
 	var i AdminProviderAccountRow
 	err := scanAdminProviderAccount(row, &i)
 	return i, err
+}
+
+const listProviderAccountRiskPeers = `
+SELECT
+    pa.id,
+    pa.tenant_id,
+    pa.provider_id,
+    pa.channel_id,
+    pa.account_type,
+    COALESCE(ac.vendor, '') AS credential_vendor,
+    COALESCE(ac.auth_mode, '') AS credential_auth_mode
+FROM provider_accounts pa
+LEFT JOIN LATERAL (
+    SELECT vendor, auth_mode
+    FROM account_credentials ac
+    WHERE ac.tenant_id = pa.tenant_id
+      AND ac.provider_account_id = pa.id
+      AND ac.deleted_at IS NULL
+      AND ac.state IN ('active', 'refreshing', 'refreshing_with_grace', 'temp_unschedulable', 'needs_rotation', 'operator_attention')
+    ORDER BY ac.credential_version DESC, ac.id DESC
+    LIMIT 1
+) ac ON true
+WHERE pa.tenant_id = $1
+  AND pa.channel_id = $2
+  AND pa.deleted_at IS NULL
+ORDER BY pa.id ASC
+`
+
+func (q *Queries) ListProviderAccountRiskPeers(ctx context.Context, arg ListProviderAccountRiskPeersParams) ([]ProviderAccountRiskPeerRow, error) {
+	rows, err := q.db.Query(ctx, listProviderAccountRiskPeers, arg.TenantID, arg.ChannelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProviderAccountRiskPeerRow{}
+	for rows.Next() {
+		var i ProviderAccountRiskPeerRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.ProviderID,
+			&i.ChannelID,
+			&i.AccountType,
+			&i.CredentialVendor,
+			&i.CredentialAuthMode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const updateAdminProviderAccount = `
