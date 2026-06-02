@@ -2,6 +2,7 @@ package mimicry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -27,6 +28,11 @@ const (
 	sidecarProbeProfileID = "__huakai_probe__"
 )
 
+var (
+	ErrSidecarUnavailable        = errors.New("mimicry sidecar: unavailable")
+	ErrSidecarProfileUnavailable = errors.New("mimicry sidecar: profile unavailable")
+)
+
 // TemplateRegistry 保存每个 mimicry mode 对应的 ClientHello 模板。
 type TemplateRegistry struct {
 	templates map[TransportMode]*ClientHelloTemplate
@@ -44,39 +50,63 @@ func SidecarProfileForMode(mode TransportMode) (string, bool) {
 func NewSidecarRoundTripperForMode(socketPath string, mode TransportMode) (http.RoundTripper, error) {
 	profileID, ok := SidecarProfileForMode(mode)
 	if !ok {
-		return nil, fmt.Errorf("mimicry: no sidecar profile for mode %s", mode)
+		return nil, fmt.Errorf("%w: no profile for mode %s", ErrSidecarProfileUnavailable, mode)
 	}
 	return NewSidecarRoundTripper(NewSidecarClient(socketPath), profileID), nil
 }
 
 func ProbeSidecarForMode(ctx context.Context, socketPath string, mode TransportMode) error {
-	if _, ok := SidecarProfileForMode(mode); !ok {
-		return fmt.Errorf("mimicry: no sidecar profile for mode %s", mode)
+	profileID, ok := SidecarProfileForMode(mode)
+	if !ok {
+		return fmt.Errorf("%w: no profile for mode %s", ErrSidecarProfileUnavailable, mode)
 	}
 	if socketPath == "" {
-		return fmt.Errorf("mimicry sidecar: empty socket path")
+		return fmt.Errorf("%w: empty socket path", ErrSidecarUnavailable)
 	}
 	conn, err := sidecarDialContext(ctx, "unix", socketPath)
 	if err != nil {
-		return fmt.Errorf("mimicry sidecar: dial unix socket %s: %w", socketPath, err)
+		return fmt.Errorf("%w: dial unix socket %s: %w", ErrSidecarUnavailable, socketPath, err)
 	}
 	defer conn.Close()
 	if err := setDeadlineFromContext(conn, ctx); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrSidecarUnavailable, err)
 	}
 	req := sidecarControlRequest{
 		TargetHost: sidecarProbeProfileID,
 		Port:       1,
-		ProfileID:  sidecarProbeProfileID,
+		ProfileID:  profileID,
 	}
 	if err := writeSidecarFrame(conn, req); err != nil {
-		return fmt.Errorf("mimicry sidecar: write probe frame: %w", err)
+		return fmt.Errorf("%w: write probe frame: %w", ErrSidecarUnavailable, err)
 	}
 	var ack sidecarControlAck
 	if err := readSidecarFrame(conn, &ack); err != nil {
-		return fmt.Errorf("mimicry sidecar: read probe ack frame: %w", err)
+		return fmt.Errorf("%w: read probe ack frame: %w", ErrSidecarUnavailable, err)
+	}
+	if !ack.OK {
+		if ack.Error == "" {
+			ack.Error = "sidecar profile probe rejected"
+		}
+		if sidecarAckReportsProfileUnavailable(ack.Error) {
+			return fmt.Errorf("%w: %s", ErrSidecarProfileUnavailable, ack.Error)
+		}
+		// 当前 Rust sidecar 只有完成真实 upstream connect 后才返回 ok。Probe
+		// 使用假 host 时,非 profile 类 error ACK 仍说明 sidecar 活着且 profile
+		// 已被查到,不能把健康 sidecar 误判为不可用。
+		return nil
 	}
 	return nil
+}
+
+func sidecarAckReportsProfileUnavailable(message string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	if normalized == "" {
+		return true
+	}
+	return strings.Contains(normalized, "unknown profile") ||
+		strings.Contains(normalized, "profile not found") ||
+		strings.Contains(normalized, "no profile") ||
+		(strings.Contains(normalized, "missing") && strings.Contains(normalized, "profile"))
 }
 
 // NewTemplateRegistry 返回空 registry。

@@ -138,7 +138,7 @@ func TestSidecarClientDialTLSNoAckTimesOutFailClosed(t *testing.T) {
 	}
 }
 
-func TestProbeSidecarForModeAcceptsErrorAckAsResponsive(t *testing.T) {
+func TestProbeSidecarForModeClassifiesUnknownProfileAck(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
 	oldDial := sidecarDialContext
@@ -165,7 +165,7 @@ func TestProbeSidecarForModeAcceptsErrorAckAsResponsive(t *testing.T) {
 			t.Errorf("decode request: %v", err)
 			return
 		}
-		if req.ProfileID != sidecarProbeProfileID || req.TargetHost != sidecarProbeProfileID || req.Port != 1 {
+		if req.ProfileID != SidecarProfileAnthropicCLIMimicryV1 || req.TargetHost != sidecarProbeProfileID || req.Port != 1 {
 			t.Errorf("probe request = %+v", req)
 			return
 		}
@@ -174,8 +174,50 @@ func TestProbeSidecarForModeAcceptsErrorAckAsResponsive(t *testing.T) {
 
 	err := ProbeSidecarForMode(context.Background(), "/tmp/probe-sidecar.sock", ModeMimicryClaudeCode)
 
+	if !errors.Is(err, ErrSidecarProfileUnavailable) {
+		t.Fatalf("profile error ACK must be classified as profile unavailable, got %v", err)
+	}
+	<-serverDone
+}
+
+func TestProbeSidecarForModeAcceptsNonProfileErrorAck(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	oldDial := sidecarDialContext
+	sidecarDialContext = func(context.Context, string, string) (net.Conn, error) {
+		return clientConn, nil
+	}
+	defer func() { sidecarDialContext = oldDial }()
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		conn := serverConn
+		var prefix [4]byte
+		if _, err := io.ReadFull(conn, prefix[:]); err != nil {
+			t.Errorf("read prefix: %v", err)
+			return
+		}
+		body := make([]byte, binary.LittleEndian.Uint32(prefix[:]))
+		if _, err := io.ReadFull(conn, body); err != nil {
+			t.Errorf("read body: %v", err)
+			return
+		}
+		var req sidecarControlRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		if req.ProfileID != SidecarProfileAnthropicCLIMimicryV1 || req.TargetHost != sidecarProbeProfileID || req.Port != 1 {
+			t.Errorf("probe request = %+v", req)
+			return
+		}
+		writeSidecarTestFrame(t, conn, []byte(`{"ok":false,"error":"upstream tcp error: failed to lookup address information"}`))
+	}()
+
+	err := ProbeSidecarForMode(context.Background(), "/tmp/probe-sidecar.sock", ModeMimicryClaudeCode)
+
 	if err != nil {
-		t.Fatalf("error ACK still proves sidecar responsiveness: %v", err)
+		t.Fatalf("non-profile error ACK proves sidecar liveness and profile lookup, got %v", err)
 	}
 	<-serverDone
 }
