@@ -1,12 +1,13 @@
 // Provider Account CRUD — 对应 OpenAPI operationId:
 //   listProviderAccounts / createProviderAccount / getProviderAccount /
-//   updateProviderAccount / clearProviderAccountRateLimit
+//   updateProviderAccount / clearProviderAccountRateLimit / getProviderAccountHealth
 // 所有调用均为 REAL（call backend）
 
 import { apiGet, apiPatch, apiPost, apiPostNoContent } from './client';
 import type {
   ProviderAccount,
   ProviderAccountCreate,
+  ProviderAccountHealthSnapshot,
   ProviderAccountList,
   ProviderAccountUpdate,
 } from './types';
@@ -36,6 +37,11 @@ export function createProviderAccount(body: ProviderAccountCreate): Promise<Prov
 // getProviderAccount — GET /admin/v1/provider-accounts/{id}
 export function getProviderAccount(id: number): Promise<ProviderAccount> {
   return apiGet<ProviderAccount>(`${BASE}/${id}`);
+}
+
+// getProviderAccountHealth — GET /admin/v1/provider-accounts/{id}/health
+export function getProviderAccountHealth(id: number): Promise<ProviderAccountHealthSnapshot> {
+  return apiGet<ProviderAccountHealthSnapshot>(`${BASE}/${id}/health`);
 }
 
 // updateProviderAccount — PATCH /admin/v1/provider-accounts/{id}

@@ -11,9 +11,18 @@ export interface PageMeta {
 
 // ---- Provider Accounts ----
 
-export type AccountType = 'oauth' | 'api_key' | 'service_account' | 'upstream_static';
+export type AccountType = 'oauth' | 'api_key' | 'service_account' | 'upstream_static' | 'session';
 
-export type HealthState = 'operational' | 'degraded' | 'failed' | 'cooling_down' | 'error';
+export type HealthState =
+  | 'operational'
+  | 'degraded'
+  | 'failed'
+  | 'cooling_down'
+  | 'error'
+  | 'healthy'
+  | 'throttled'
+  | 'revoked'
+  | 'cooldown';
 
 export type CredentialState =
   | 'valid'
@@ -94,6 +103,80 @@ export interface ProviderAccountUpdate {
 export interface ProviderAccountList {
   items: ProviderAccount[];
   page: PageMeta;
+}
+
+export type ProviderAccountHealthSnapshotState =
+  | 'healthy'
+  | 'throttled'
+  | 'revoked'
+  | 'cooldown'
+  | (string & {});
+
+export interface ProviderAccountHealthSnapshot {
+  id: number;
+  health_state: ProviderAccountHealthSnapshotState;
+  health_state_until?: string;
+  last_refresh_at: string | null;
+  last_refresh_outcome: string | null;
+  failure_class: string | null;
+  failure_count: number;
+  enabled: boolean;
+  requires_action: boolean;
+  updated_at: string;
+}
+
+// ---- Admin catalogs ----
+
+export interface AccountModeCatalogItem {
+  vendor: string;
+  auth_mode: string;
+  flow_kind: string;
+  client_identity_source: string;
+  manual_first: boolean;
+  long_lived_toggle: boolean;
+  allowed_helpers: string[];
+  required_fields: Array<Record<string, unknown>>;
+  is_enabled: boolean;
+  is_experimental: boolean;
+  feature_flag: string;
+  risk_level: string;
+  risk_reasons: string[];
+}
+
+export interface AccountModeCatalogResponse {
+  modes: AccountModeCatalogItem[];
+}
+
+export interface AdminProviderCatalogItem {
+  id: number;
+  code: string;
+  display_name: string;
+  upstream_protocol: string;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface AdminProviderCatalogList {
+  object: 'admin_providers_list';
+  items: AdminProviderCatalogItem[];
+  limit: number;
+  offset: number;
+}
+
+export interface AdminChannelCatalogItem {
+  id: number;
+  pool_group_id: number;
+  name: string;
+  failover_status_codes: number[];
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface AdminChannelCatalogList {
+  object: 'admin_channels_list';
+  items: AdminChannelCatalogItem[];
+  limit: number;
+  offset: number;
 }
 
 // ---- Pool Groups ----
@@ -184,8 +267,9 @@ export interface UsageRecord {
   tenant_id: number;
   claim_id: number;
   api_key_id: number;
-  provider_account_id: number;
+  provider_account_id: number | null;
   provider?: string | null;
+  user_id?: number;
   attempt_seq?: number;
   tokens_input?: number;
   tokens_output?: number;
@@ -201,7 +285,8 @@ export interface UsageRecord {
   routing_reason?: Record<string, unknown>;
   protocol_loss?: ProtocolLossEntry[];
   requested_at?: string;
-  settled_at: string;
+  created_at?: string;
+  settled_at?: string;
   requested_model?: string;
   upstream_model?: string | null;
   request_id?: string;
@@ -212,6 +297,8 @@ export interface UsageRecord {
 export interface UsageRecordList {
   items: UsageRecord[];
   page: PageMeta;
+  next_cursor?: string | null;
+  total?: number;
 }
 
 // ---- Billing Claims ----
