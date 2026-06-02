@@ -5,6 +5,7 @@ sql:
     queries:
       - sql/queries/admin_api_keys.sql
       - sql/queries/admin_audit.sql
+      - sql/queries/admin_provider_channel_catalog.sql
       - sql/queries/admin_provider_account_mutations.sql
       - sql/queries/admin_proxies.sql
       - sql/queries/admin_tls_fingerprint_profiles.sql
