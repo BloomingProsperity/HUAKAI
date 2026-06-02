@@ -52,6 +52,14 @@ func NewHTTPFetcher(cfg HTTPFetcherConfig) *HTTPFetcher {
 	if client == nil {
 		client = &http.Client{Timeout: timeout}
 	}
+	// 安全(S2-1):本 fetcher 携带 vendor API key(Gemini 在 query、其他在 header)。
+	// 拒绝跟随重定向 —— 防止恶意/被攻陷上游用 3xx 把 key 泄漏到攻击者主机。
+	// ErrUseLastResponse 让 3xx 原样返回(getJSON 按非 2xx 报错),key 永不外发。
+	if client.CheckRedirect == nil {
+		client.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
 	rawURL := strings.TrimSpace(cfg.URL)
 	if rawURL == "" {
 		rawURL = DefaultURLForVendor(cfg.Vendor)

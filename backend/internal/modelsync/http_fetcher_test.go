@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -46,6 +47,36 @@ func TestHTTPFetcherParsesOpenAIModelListAndSendsBearer(t *testing.T) {
 	}
 	if !model.CreatedAt.Equal(time.Unix(1761955200, 0).UTC()) {
 		t.Fatalf("CreatedAt=%s want unix timestamp mapped", model.CreatedAt)
+	}
+}
+
+// S2-1 回归:携带 vendor key 的 fetch 不得跟随上游 3xx 重定向,否则 key 会被泄漏
+// 到重定向目标主机。Mutation:删掉 CheckRedirect → 默认 client 跟随 302 → leak
+// 服务器被命中 → 本测试变红。
+func TestHTTPFetcherRefusesRedirectToPreventKeyLeak(t *testing.T) {
+	var leakHit int32
+	leak := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&leakHit, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models":[{"name":"models/leaked"}]}`))
+	}))
+	defer leak.Close()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, leak.URL+"/v1beta/models?stolen="+r.URL.Query().Get("key"), http.StatusFound)
+	}))
+	defer upstream.Close()
+
+	fetcher := NewHTTPFetcher(HTTPFetcherConfig{
+		Vendor:  VendorGemini,
+		URL:     upstream.URL,
+		APIKey:  "gemini-secret",
+		Timeout: time.Second,
+	})
+	if _, err := fetcher.FetchCatalog(context.Background()); err == nil {
+		t.Fatalf("FetchCatalog: want error (3xx must not be followed), got nil")
+	}
+	if n := atomic.LoadInt32(&leakHit); n != 0 {
+		t.Fatalf("leak server hit %d time(s): redirect was followed and key leaked", n)
 	}
 }
 
