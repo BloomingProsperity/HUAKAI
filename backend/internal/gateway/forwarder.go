@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
-	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
@@ -300,7 +300,15 @@ func (f *StreamForwarder) handleEventWithAdapter(
 	terminalSeen := evt.Type == "message_stop" || string(evt.Data) == "[DONE]"
 
 	if evt.Type == "error" {
-		clienterr.LogInternal(ctx, req.RequestID, streamProtocolErrorCode, fmt.Errorf("upstream stream error event: %s", redact.SafePayloadLogSummary(evt.Data)))
+		attrs := redact.SafePayloadLogAttrs(evt.Data)
+		attrs["event_class"] = "stream_protocol_error"
+		_ = privacy.LogSystem(ctx, privacy.SystemEvent{
+			Severity:   privacy.SeverityError,
+			Component:  "gateway.stream_forwarder",
+			RequestID:  req.RequestID,
+			ErrorClass: streamProtocolErrorCode,
+			Attrs:      attrs,
+		})
 		if err := writeAndFlush(w, canonicalStreamErrorSSE()); err != nil {
 			return terminalSeen, false, 0, ErrClientDisconnect
 		}

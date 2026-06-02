@@ -1,9 +1,12 @@
 package gatewayhttp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
@@ -211,9 +214,18 @@ func TestSettleCompletionWithRecovery_NilDLQDoesNotPanic(t *testing.T) {
 // 而不是 settle err,日志链断。
 // Mutation 2:helper panic on enqueue err → 本用例 panic。
 func TestSettleCompletionWithRecovery_EnqueueErrLoggedNotPropagated(t *testing.T) {
-	settleErr := errors.New("settle: db serialize")
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(prev)
+	})
+
+	const marker = "RAWPROMPT_SECRET_MARKER"
+	const token = "sk-settle-secret-marker"
+	settleErr := errors.New("settle raw prompt " + marker + " token " + token)
 	settler := &postDeliveryFakeSettler{settleErr: settleErr}
-	spy := &postDeliverySpyEnqueuer{retErr: errors.New("dlq enqueue: also down")}
+	spy := &postDeliverySpyEnqueuer{retErr: errors.New("dlq enqueue raw upstream body " + marker + " bearer " + token)}
 	deps := ChatHandlerDeps{
 		Settler:           settler,
 		SettleRecoveryDLQ: spy,
@@ -226,5 +238,22 @@ func TestSettleCompletionWithRecovery_EnqueueErrLoggedNotPropagated(t *testing.T
 	}
 	if spy.calls != 1 {
 		t.Fatalf("Enqueuer must be called once even if it errors, got %d", spy.calls)
+	}
+	if spy.lastEvt.FailureReason != "internal_error" {
+		t.Fatalf("DLQ FailureReason=%q want error class internal_error", spy.lastEvt.FailureReason)
+	}
+	gotLog := logs.String()
+	for _, want := range []string{"req-pd-1", "settle_recovery_dlq_enqueue_failed", "error_class"} {
+		if !strings.Contains(gotLog, want) {
+			t.Fatalf("sanitized settle recovery log missing %q: %s", want, gotLog)
+		}
+	}
+	for _, forbidden := range []string{marker, token, "raw prompt", "raw upstream body"} {
+		if strings.Contains(spy.lastEvt.FailureReason, forbidden) {
+			t.Fatalf("settle recovery DLQ failure reason leaked %q: %s", forbidden, spy.lastEvt.FailureReason)
+		}
+		if strings.Contains(gotLog, forbidden) {
+			t.Fatalf("settle recovery log leaked %q: %s", forbidden, gotLog)
+		}
 	}
 }

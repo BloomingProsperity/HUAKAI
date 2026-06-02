@@ -215,7 +215,8 @@ func TestBusHandlerFailureSanitizesStateDLQAndPayload(t *testing.T) {
 	bus := eventbus.New(eventbus.Config{HighWorkers: 1, HighBuffer: 1, HandlerTimeout: time.Second}, eventbus.WithDLQ(sink))
 	defer func() { _ = bus.Stop(context.Background()) }()
 
-	const marker = "SENSITIVE_SQL_MARKER"
+	const marker = "RAWPROMPT_SECRET_MARKER"
+	const token = "sk-eventbus-secret-marker"
 	mustRegister(t, bus, eventbus.HandlerFunc{
 		HandlerID:      eventbus.HandlerBillingPersister,
 		HandlerTier:    eventbus.TierHigh,
@@ -224,7 +225,7 @@ func TestBusHandlerFailureSanitizesStateDLQAndPayload(t *testing.T) {
 		HandlerTimeout: time.Second,
 		HandlerDLQKind: dlq.EventKindUsageRecord,
 		Fn: func(context.Context, eventbus.RequestCompletionEvent) error {
-			return errors.New("pq: relation usage_records leaked " + marker)
+			return errors.New("handler saw prompt " + marker + " bearer " + token)
 		},
 	})
 
@@ -261,8 +262,16 @@ func TestBusHandlerFailureSanitizesStateDLQAndPayload(t *testing.T) {
 	if strings.Contains(payloadReason, marker) {
 		t.Fatalf("DLQ payload leaked marker: %q", payloadReason)
 	}
-	if gotLog := logs.String(); !strings.Contains(gotLog, marker) {
-		t.Fatalf("raw handler error did not reach controlled log: %s", gotLog)
+	gotLog := logs.String()
+	for _, want := range []string{"evt-sensitive-handler", "eventbus_handler_failed", "handler_error"} {
+		if !strings.Contains(gotLog, want) {
+			t.Fatalf("sanitized handler log missing %q: %s", want, gotLog)
+		}
+	}
+	for _, forbidden := range []string{marker, token, "handler saw prompt"} {
+		if strings.Contains(gotLog, forbidden) {
+			t.Fatalf("handler log leaked %q: %s", forbidden, gotLog)
+		}
 	}
 }
 
@@ -308,9 +317,18 @@ func TestBusHandlerTimeoutUsesErrHandlerTimeoutSanitizedCode(t *testing.T) {
 }
 
 func TestBusDLQPersistFailureVisibleInCounterAndState(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(prev)
+	})
+
+	const marker = "RAWPROMPT_SECRET_MARKER"
+	const token = "sk-dlq-secret-marker"
 	bus := eventbus.New(
 		eventbus.Config{HighWorkers: 1, HighBuffer: 1, HandlerTimeout: time.Second},
-		eventbus.WithDLQ(failingDLQSink{err: errors.New("dlq store unavailable")}),
+		eventbus.WithDLQ(failingDLQSink{err: errors.New("dlq store unavailable for prompt " + marker + " token " + token)}),
 	)
 	defer func() { _ = bus.Stop(context.Background()) }()
 
@@ -322,7 +340,7 @@ func TestBusDLQPersistFailureVisibleInCounterAndState(t *testing.T) {
 		HandlerTimeout: time.Second,
 		HandlerDLQKind: dlq.EventKindUsageRecord,
 		Fn: func(context.Context, eventbus.RequestCompletionEvent) error {
-			return errors.New("handler failed before DLQ")
+			return errors.New("handler failed before DLQ prompt " + marker + " token " + token)
 		},
 	})
 
@@ -340,6 +358,17 @@ func TestBusDLQPersistFailureVisibleInCounterAndState(t *testing.T) {
 	}
 	if state.Error != "dlq_persist_failed" {
 		t.Fatalf("state.Error=%q want dlq_persist_failed", state.Error)
+	}
+	gotLog := logs.String()
+	for _, want := range []string{"evt-dlq-persist-failure", "eventbus_dlq_persist_failed", "dlq_persist_failed"} {
+		if !strings.Contains(gotLog, want) {
+			t.Fatalf("sanitized DLQ persist log missing %q: %s", want, gotLog)
+		}
+	}
+	for _, forbidden := range []string{marker, token, "handler failed before DLQ", "dlq store unavailable"} {
+		if strings.Contains(gotLog, forbidden) {
+			t.Fatalf("DLQ persist log leaked %q: %s", forbidden, gotLog)
+		}
 	}
 }
 

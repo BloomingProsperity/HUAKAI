@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
 
 const adminBillingSettingsActionUpdate = "update_billing_settings"
@@ -276,11 +276,18 @@ func writeAdminBillingSettingsTransactionError(w http.ResponseWriter, r *http.Re
 			writeJSONError(w, http.StatusServiceUnavailable, "billing_settings_read_failed", err.Error())
 			return
 		case adminBillingSettingsTxPhaseAudit:
-			slog.ErrorContext(r.Context(), "admin billing settings audit write failed",
-				"tenant_id", tenantID,
-				"actor_id", actorID,
-				"action", adminBillingSettingsActionUpdate,
-				"error", err)
+			_ = privacy.LogSystem(r.Context(), privacy.SystemEvent{
+				Severity:   privacy.SeverityError,
+				Component:  "gatewayhttp.admin_billing_settings",
+				RequestID:  middleware.GetReqID(r.Context()),
+				ErrorClass: privacy.ErrorClassFor(r.Context(), err),
+				Attrs: map[string]any{
+					"event_class": "admin_billing_settings_audit_write_failed",
+					"event_type":  adminBillingSettingsActionUpdate,
+					"tenant_id":   tenantID,
+					"actor_id":    actorID,
+				},
+			})
 			writeJSONError(w, http.StatusServiceUnavailable, "billing_settings_audit_failed", err.Error())
 			return
 		}

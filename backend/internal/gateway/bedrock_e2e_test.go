@@ -199,16 +199,18 @@ func assertSafePayloadSummary(t *testing.T, got, rawPayload, marker string) {
 	if strings.Contains(got, marker) {
 		t.Fatalf("raw sensitive marker leaked: %s", got)
 	}
-	if want := fmt.Sprintf("payload_bytes=%d", len(rawPayload)); !strings.Contains(got, want) {
-		t.Fatalf("safe payload summary missing %q: %s", want, got)
+	wantBytesText := fmt.Sprintf("payload_bytes=%d", len(rawPayload))
+	wantBytesJSON := fmt.Sprintf(`"payload_bytes":%d`, len(rawPayload))
+	if !strings.Contains(got, wantBytesText) && !strings.Contains(got, wantBytesJSON) {
+		t.Fatalf("safe payload summary missing payload byte count %q/%q: %s", wantBytesText, wantBytesJSON, got)
 	}
-	if !strings.Contains(got, "payload_summary_sha256_prefix=") {
+	if !strings.Contains(got, "payload_summary_sha256_prefix") {
 		t.Fatalf("safe payload summary missing summary hash: %s", got)
 	}
 	if rawHash := payloadHashPrefix([]byte(rawPayload)); strings.Contains(got, "payload_sha256_prefix="+rawHash) || strings.Contains(got, rawHash) {
 		t.Fatalf("safe payload summary logged raw payload hash: %s", got)
 	}
-	if !strings.Contains(got, "payload_snippet=") {
+	if !strings.Contains(got, "payload_snippet=") && !strings.Contains(got, `"payload_snippet"`) {
 		t.Fatalf("safe payload summary missing capped snippet: %s", got)
 	}
 	if !strings.Contains(got, "[REDACTED]") {

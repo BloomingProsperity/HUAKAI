@@ -15,16 +15,42 @@ const (
 	payloadLogInspectMaxBytes = 4096
 )
 
+type PayloadLogSummary struct {
+	PayloadBytes               int
+	PayloadSummarySHA256Prefix string
+	PayloadSnippet             string
+}
+
 // SafePayloadLogSummary returns correlation data without writing raw payload bytes.
 func SafePayloadLogSummary(payload []byte) string {
-	snippet := redactedPayloadSnippet(payload, payloadLogSnippetMaxBytes)
-	sum := sha256.Sum256([]byte(snippet))
+	summary := SafePayloadLogSummaryFields(payload)
 	return fmt.Sprintf(
 		"payload_bytes=%d payload_summary_sha256_prefix=%s payload_snippet=%q",
-		len(payload),
-		hex.EncodeToString(sum[:8]),
-		snippet,
+		summary.PayloadBytes,
+		summary.PayloadSummarySHA256Prefix,
+		summary.PayloadSnippet,
 	)
+}
+
+// SafePayloadLogSummaryFields 返回已脱敏且有长度边界的结构化字段,供隐私日志逐字段校验。
+func SafePayloadLogSummaryFields(payload []byte) PayloadLogSummary {
+	snippet := redactedPayloadSnippet(payload, payloadLogSnippetMaxBytes)
+	sum := sha256.Sum256([]byte(snippet))
+	return PayloadLogSummary{
+		PayloadBytes:               len(payload),
+		PayloadSummarySHA256Prefix: hex.EncodeToString(sum[:8]),
+		PayloadSnippet:             snippet,
+	}
+}
+
+// SafePayloadLogAttrs 返回隐私 allowlist 可接受的字段,避免整段摘要超过单字段长度上限。
+func SafePayloadLogAttrs(payload []byte) map[string]any {
+	summary := SafePayloadLogSummaryFields(payload)
+	return map[string]any{
+		"payload_bytes":                 summary.PayloadBytes,
+		"payload_summary_sha256_prefix": summary.PayloadSummarySHA256Prefix,
+		"payload_snippet":               summary.PayloadSnippet,
+	}
 }
 
 func redactedPayloadSnippet(payload []byte, maxBytes int) string {

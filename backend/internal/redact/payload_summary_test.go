@@ -100,6 +100,31 @@ func TestSafePayloadLogSummaryBoundsLargeJSONInspection(t *testing.T) {
 	}
 }
 
+func TestSafePayloadLogAttrsUsesBoundedFields(t *testing.T) {
+	const marker = "RAWPROMPT_SECRET_MARKER"
+	payload := []byte(`{"message":"` + marker + `","detail":"` + marker + `","details":"` + marker + `","error":"` + marker + `","reason":"` + marker + `","status":429,"type":"rate_limit","retryable":true,"unknown1":"` + marker + `","unknown2":"` + marker + `","api_key":"sk-` + marker + `"}`)
+
+	attrs := SafePayloadLogAttrs(payload)
+
+	if attrs["payload_bytes"] != len(payload) {
+		t.Fatalf("payload_bytes=%v want %d", attrs["payload_bytes"], len(payload))
+	}
+	for _, key := range []string{"payload_summary_sha256_prefix", "payload_snippet"} {
+		if _, ok := attrs[key]; !ok {
+			t.Fatalf("attrs missing %q: %+v", key, attrs)
+		}
+	}
+	for key, value := range attrs {
+		text := fmt.Sprint(value)
+		if len(text) > 256 {
+			t.Fatalf("%s length=%d exceeds privacy string cap: %q", key, len(text), text)
+		}
+		if strings.Contains(text, marker) || strings.Contains(text, "sk-") {
+			t.Fatalf("%s leaked sensitive text: %q", key, text)
+		}
+	}
+}
+
 func hashPrefix(payload []byte) string {
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:8])

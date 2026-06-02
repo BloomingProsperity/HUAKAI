@@ -85,9 +85,26 @@ func NewStdoutSystemLogger(redactor Redactor) *Logger {
 	return NewLogger(redactor, os.Stdout, nil, nil)
 }
 
+func LogSystem(ctx context.Context, event SystemEvent) error {
+	return logSystem(ctx, DefaultRedactor(), slog.Default(), event)
+}
+
 func (l *Logger) LogSystem(ctx context.Context, event SystemEvent) error {
 	if l == nil {
 		l = NewStdoutSystemLogger(nil)
+	}
+	return logSystem(ctx, l.redactor, l.system, event)
+}
+
+func logSystem(ctx context.Context, redactor Redactor, system *slog.Logger, event SystemEvent) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if redactor == nil {
+		redactor = DefaultRedactor()
+	}
+	if system == nil {
+		system = slog.Default()
 	}
 	payload := map[string]any{
 		"schema_version": SchemaVersion,
@@ -101,13 +118,13 @@ func (l *Logger) LogSystem(ctx context.Context, event SystemEvent) error {
 	for k, v := range event.Attrs {
 		payload[k] = v
 	}
-	raw, err := l.redactor.SanitizePayload(ctx, payload)
+	raw, err := redactor.SanitizePayload(ctx, payload)
 	if err != nil {
 		raw = BlockedPayload(ErrorClassPrivacyGuardHit)
 	}
 	var attrs map[string]any
 	_ = jsonUnmarshal(raw, &attrs)
-	l.system.LogAttrs(ctx, slogLevel(event.Severity), "privacy.system",
+	system.LogAttrs(ctx, slogLevel(event.Severity), "privacy.system",
 		slog.Any("event", attrs),
 	)
 	return err

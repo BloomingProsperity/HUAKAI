@@ -311,6 +311,48 @@ func TestHandleEventWithAdapterSanitizesProtocolErrorBeforeAdapter(t *testing.T)
 	})
 }
 
+func TestHandleEventWithAdapterKeepsBoundedSummaryForComplexProtocolError(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(prev)
+	})
+
+	const marker = "RAWPROMPT_SECRET_MARKER"
+	payload := []byte(`{"message":"` + marker + ` upstream rate limited","detail":"` + marker + ` detail","details":"` + marker + ` details","error":"` + marker + ` error","reason":"` + marker + ` reason","status":429,"type":"rate_limit","retryable":true,"unknown1":"` + marker + ` a","unknown2":"` + marker + ` b","api_key":"sk-` + marker + `"}`)
+	f := newForwarder()
+	rec := httptest.NewRecorder()
+
+	_, wrote, _, err := f.handleEventWithAdapter(
+		context.Background(),
+		nil,
+		SSEEvent{Type: "error", Data: payload},
+		rec,
+		nil,
+		nil,
+		&UsageAccumulator{},
+		ForwardRequest{RequestID: "req-complex-protocol-error"},
+	)
+	if err != nil {
+		t.Fatalf("handleEventWithAdapter returned err=%v", err)
+	}
+	if !wrote {
+		t.Fatal("canonical error frame was not written")
+	}
+	gotLog := logs.String()
+	for _, want := range []string{"req-complex-protocol-error", "stream_protocol_error", "payload_bytes", "payload_summary_sha256_prefix", "payload_snippet"} {
+		if !strings.Contains(gotLog, want) {
+			t.Fatalf("complex protocol log missing %q: %s", want, gotLog)
+		}
+	}
+	for _, forbidden := range []string{marker, "sk-", "privacy_guard_hit"} {
+		if strings.Contains(gotLog, forbidden) {
+			t.Fatalf("complex protocol log leaked or over-redacted %q: %s", forbidden, gotLog)
+		}
+	}
+}
+
 // forwarderClientAdapterUpstreamStub 只负责把 scanner 事件映射成测试指定的 canonical events。
 type forwarderClientAdapterUpstreamStub struct {
 	events []any
@@ -380,7 +422,7 @@ func assertProtocolErrorSanitized(t *testing.T, adapter proto.UpstreamAdapter) {
 		slog.SetDefault(prev)
 	})
 
-	const marker = "SENSITIVE_BEDROCK_MARKER"
+	const marker = "RAWPROMPT_SECRET_MARKER"
 	payload := sensitiveBedrockPayload(marker)
 	f := newForwarder()
 	rec := httptest.NewRecorder()
@@ -418,7 +460,15 @@ func assertProtocolErrorSanitized(t *testing.T, adapter proto.UpstreamAdapter) {
 	}
 	gotLog := logs.String()
 	assertSafePayloadSummary(t, gotLog, payload, marker)
-	if !strings.Contains(gotLog, "req-c18") || !strings.Contains(gotLog, "upstream_error") {
+	for _, want := range []string{"req-c18", "upstream_error", "stream_protocol_error"} {
+		if !strings.Contains(gotLog, want) {
+			t.Fatalf("internal log missing %q context: %s", want, gotLog)
+		}
+	}
+	if strings.Contains(gotLog, "sk-") {
+		t.Fatalf("internal log leaked fake token prefix: %s", gotLog)
+	}
+	if !strings.Contains(gotLog, "privacy.system") {
 		t.Fatalf("internal log missing request/code context: %s", gotLog)
 	}
 }

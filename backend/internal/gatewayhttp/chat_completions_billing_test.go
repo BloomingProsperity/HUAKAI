@@ -412,7 +412,12 @@ func TestChatCompletions_DirectSettleProductionEscapeFlagStillRejectsMissingAudi
 	if len(settler.aborts) != 1 || settler.aborts[0].reason != clienterr.CodeAuditRefMissing {
 		t.Fatalf("aborts=%+v want one %s abort", settler.aborts, clienterr.CodeAuditRefMissing)
 	}
-	assertLogContains(t, logs, clienterr.CodeAuditRefMissing, "direct_settle", "missing_ref_details")
+	assertLogContains(t, logs, clienterr.CodeAuditRefMissing, "direct_settle", "money_path_audit_ref_missing")
+	for _, forbidden := range []string{"missing_ref_details", "validation_err"} {
+		if strings.Contains(logs.String(), forbidden) {
+			t.Fatalf("money-path log leaked removed detail field %q: %s", forbidden, logs.String())
+		}
+	}
 }
 
 type failingAppendLedger struct {

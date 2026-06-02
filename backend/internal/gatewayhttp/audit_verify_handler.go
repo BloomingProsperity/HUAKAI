@@ -8,12 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
 
@@ -115,12 +115,30 @@ func NewAuditVerifyHandler(d AuditVerifyDeps) http.HandlerFunc {
 			return
 		}
 		if errors.Is(err, auditledger.ErrLedgerEntryCorrupt) {
-			slog.ErrorContext(r.Context(), "audit verify ledger entry corrupt", "request_id", req.RequestID, "error", err)
+			_ = privacy.LogSystem(r.Context(), privacy.SystemEvent{
+				Severity:   privacy.SeverityError,
+				Component:  "gatewayhttp.audit_verify",
+				RequestID:  req.RequestID,
+				ErrorClass: privacy.ErrorClassFor(r.Context(), err),
+				Attrs: map[string]any{
+					"event_class":  "audit_verify_ledger_entry_corrupt",
+					"reason_class": "ledger_corrupt",
+				},
+			})
 			writeAuditJSONError(w, http.StatusInternalServerError, "ledger_corrupt", "audit ledger entry corrupt")
 			return
 		}
 		if err != nil {
-			slog.ErrorContext(r.Context(), "audit verify ledger lookup failed", "request_id", req.RequestID, "error", err)
+			_ = privacy.LogSystem(r.Context(), privacy.SystemEvent{
+				Severity:   privacy.SeverityError,
+				Component:  "gatewayhttp.audit_verify",
+				RequestID:  req.RequestID,
+				ErrorClass: privacy.ErrorClassFor(r.Context(), err),
+				Attrs: map[string]any{
+					"event_class":  "audit_verify_ledger_lookup_failed",
+					"reason_class": "audit_ledger_error",
+				},
+			})
 			writeAuditJSONError(w, http.StatusInternalServerError, "audit_ledger_error", "audit ledger temporarily unavailable")
 			return
 		}
@@ -201,7 +219,15 @@ func NewAuditMerkleTreeHandler(d AuditVerifyDeps) http.HandlerFunc {
 		}
 		root, err := ledger.LatestMerkleRoot(r.Context())
 		if err != nil {
-			slog.ErrorContext(r.Context(), "audit merkle root lookup failed", "error", err)
+			_ = privacy.LogSystem(r.Context(), privacy.SystemEvent{
+				Severity:   privacy.SeverityError,
+				Component:  "gatewayhttp.audit_verify",
+				ErrorClass: privacy.ErrorClassFor(r.Context(), err),
+				Attrs: map[string]any{
+					"event_class":  "audit_merkle_root_lookup_failed",
+					"reason_class": "audit_ledger_error",
+				},
+			})
 			writeAuditJSONError(w, http.StatusInternalServerError, "audit_ledger_error", "audit ledger temporarily unavailable")
 			return
 		}

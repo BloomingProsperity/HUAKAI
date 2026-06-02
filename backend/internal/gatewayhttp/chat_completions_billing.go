@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -22,6 +21,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
@@ -272,16 +272,23 @@ func settleCompletionWithRecovery(ctx context.Context, d ChatHandlerDeps, event 
 		return res, err
 	}
 	payload := settlementrecovery.FromCompletionEvent(source, event)
-	if _, enqErr := settlementrecovery.EnqueuePayload(ctx, d.SettleRecoveryDLQ, payload, err.Error()); enqErr != nil {
+	// post-delivery recovery DLQ 是持久运维元数据,也只能保留错误类别,不能保留 settle 原始错误文本。
+	settleFailureClass := privacy.ErrorClassFor(ctx, err)
+	if _, enqErr := settlementrecovery.EnqueuePayload(ctx, d.SettleRecoveryDLQ, payload, settleFailureClass); enqErr != nil {
 		// DLQ persist 自己失败 = money path 双环灰区 (Owner D-4: 只 alert,不 disk spool)。
-		slog.Default().LogAttrs(ctx, slog.LevelError, "settle_recovery_dlq_enqueue_failed",
-			slog.String("request_id", event.RequestID),
-			slog.String("source", string(source)),
-			slog.Int64("tenant_id", event.TenantID),
-			slog.Int64("claim_id", event.ClaimID),
-			slog.Any("settle_err", err),
-			slog.Any("enqueue_err", enqErr),
-		)
+		_ = privacy.LogSystem(ctx, privacy.SystemEvent{
+			Severity:   privacy.SeverityError,
+			Component:  "gatewayhttp.settle_recovery",
+			RequestID:  event.RequestID,
+			ErrorClass: privacy.ErrorClassFor(ctx, enqErr),
+			Attrs: map[string]any{
+				"event_class":          "settle_recovery_dlq_enqueue_failed",
+				"event_type":           string(source),
+				"tenant_id":            event.TenantID,
+				"claim_id":             event.ClaimID,
+				"failure_reason_class": settleFailureClass,
+			},
+		})
 	}
 	return res, err
 }
@@ -362,38 +369,29 @@ func logMoneyPathAuditRefError(ctx context.Context, event eventbus.RequestComple
 	if validationErr == nil {
 		validationErr = eventbus.ErrAuditRefMissing
 	}
-	slog.Default().LogAttrs(ctx, slog.LevelError, "money-path audit reference missing",
-		slog.String("request_id", requestID),
-		slog.Int64("tenant_id", event.TenantID),
-		slog.String("route_id", routeIDFromEvent(event)),
-		slog.Int64("claim_id", event.ClaimID),
-		slog.String("missing_ref_details", missingMoneyPathAuditRefDetails(event)),
-		slog.String("validation_err", validationErr.Error()),
-		slog.Bool("escape_flag_active", escapeFlagActive),
-		slog.String("source", source),
-		slog.String("public_code", clienterr.CodeAuditRefMissing),
-	)
+	state := "enforced"
+	if escapeFlagActive {
+		state = "escape_flag_active"
+	}
+	_ = privacy.LogSystem(ctx, privacy.SystemEvent{
+		Severity:   privacy.SeverityError,
+		Component:  "gatewayhttp.money_path",
+		RequestID:  requestID,
+		ErrorClass: privacy.ErrorClassFor(ctx, validationErr),
+		Attrs: map[string]any{
+			"event_class":  "money_path_audit_ref_missing",
+			"event_type":   source,
+			"tenant_id":    event.TenantID,
+			"route_id":     routeIDFromEvent(event),
+			"claim_id":     event.ClaimID,
+			"reason_class": clienterr.CodeAuditRefMissing,
+			"state":        state,
+		},
+	})
 }
 
 func missingMoneyPathAuditRef(event eventbus.RequestCompletionEvent) bool {
 	return !(event.AuditLedgerDLQRef != "" || (event.AuditLedgerID != "" && event.AuditSignatureFingerprint != ""))
-}
-
-func missingMoneyPathAuditRefDetails(event eventbus.RequestCompletionEvent) string {
-	if !missingMoneyPathAuditRef(event) {
-		return ""
-	}
-	missing := make([]string, 0, 3)
-	if event.AuditLedgerID == "" {
-		missing = append(missing, "audit_ledger_id")
-	}
-	if event.AuditSignatureFingerprint == "" {
-		missing = append(missing, "audit_signature_fingerprint")
-	}
-	if event.AuditLedgerDLQRef == "" {
-		missing = append(missing, "audit_ledger_dlq_ref")
-	}
-	return strings.Join(missing, ",")
 }
 
 func moneyPathAuditRefEscapeActive(policy *eventbus.AuditRefPolicy) bool {
