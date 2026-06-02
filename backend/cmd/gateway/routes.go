@@ -87,8 +87,12 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	})
 
 	r.Route("/v1/sessions", func(r chi.Router) {
-		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
-		gatewayhttp.MountSessionRoutes(r, gatewayhttp.SessionHandlerDeps{Sessions: d.userSessions, ClientIPResolver: d.clientIPResolver})
+		sessionDeps := gatewayhttp.SessionHandlerDeps{Sessions: d.userSessions, ClientIPResolver: d.clientIPResolver}
+		gatewayhttp.MountSessionRefreshRoute(r, sessionDeps)
+		r.Group(func(r chi.Router) {
+			r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
+			gatewayhttp.MountSessionProtectedRoutes(r, sessionDeps)
+		})
 	})
 	r.Route("/v1/users/me/vouchers", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))

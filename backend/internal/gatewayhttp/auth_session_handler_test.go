@@ -182,6 +182,56 @@ func TestAT_AUTH_007_011_CrossUserRefreshRejected(t *testing.T) {
 	}
 }
 
+func TestS2_011_SessionRefreshSurvivesExpiredSessionBearer(t *testing.T) {
+	now := time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC)
+	sessionSvc := usersession.NewService(usersession.NewMemoryStore())
+	sessionSvc.Now = func() time.Time { return now }
+	sessionSvc.SigningKey = testSessionSigningKey()
+	sessionSvc.SessionTTL = time.Minute
+	sessionSvc.RefreshTTL = time.Hour
+
+	issued, err := sessionSvc.Create(context.Background(), usersession.CreateInput{
+		TenantID: 7, UserID: 7001, IP: "192.0.2.10", UserAgent: "Chrome/1",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	r := chi.NewRouter()
+	r.Route("/v1/sessions", func(r chi.Router) {
+		r.Post("/refresh", newSessionRefreshHandler(SessionHandlerDeps{Sessions: sessionSvc}))
+		r.Group(func(r chi.Router) {
+			r.Use(sessionauth.SessionMiddleware(sessionSvc, nil))
+			r.Post("/list", newSessionListHandler(SessionHandlerDeps{Sessions: sessionSvc}))
+		})
+	})
+
+	now = now.Add(2 * time.Minute)
+	if _, err := sessionSvc.Validate(context.Background(), issued.SessionToken, "192.0.2.10", "Chrome/1"); !errors.Is(err, usersession.ErrTokenExpired) {
+		t.Fatalf("fixture session token = %v, want ErrTokenExpired", err)
+	}
+
+	rec := serveJSON(t, r, http.MethodPost, "/v1/sessions/list", map[string]any{}, issued.SessionToken)
+	assertHTTPStatus(t, rec, http.StatusUnauthorized)
+
+	rec = serveJSON(t, r, http.MethodPost, "/v1/sessions/refresh", map[string]any{
+		"refresh_token": issued.RefreshToken,
+	}, issued.SessionToken)
+	assertHTTPStatus(t, rec, http.StatusOK)
+	var refreshResp struct {
+		Session usersession.IssuedTokens `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &refreshResp); err != nil {
+		t.Fatalf("decode refresh response: %v", err)
+	}
+	if refreshResp.Session.RefreshToken == "" || refreshResp.Session.RefreshToken == issued.RefreshToken {
+		t.Fatalf("refresh token was not rotated: old=%q response=%+v", issued.RefreshToken, refreshResp.Session)
+	}
+	if _, err := sessionSvc.Validate(context.Background(), refreshResp.Session.SessionToken, "192.0.2.10", "Chrome/1"); err != nil {
+		t.Fatalf("new session token should validate: %v", err)
+	}
+}
+
 func TestAT_AUTH_007_010_AuthRedactionAcrossAuditLogAndStructuredSinks(t *testing.T) {
 	now := time.Date(2026, 5, 17, 9, 0, 0, 0, time.UTC)
 	authStore := newGatewayMemoryAuthStore(now)
