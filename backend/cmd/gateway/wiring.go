@@ -55,6 +55,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
+	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
@@ -91,6 +92,7 @@ type deps struct {
 	userKeyService           *userkey.Service
 	paymentService           *payment.Service
 	paymentProviders         map[string]paymenthttp.ProviderBinding
+	subscriptionService      *subscription.Service
 	voucherService           *voucher.Service
 	invitationService        *communityinvitation.Service
 	dispatcher               *gateway.UpstreamDispatcher
@@ -516,6 +518,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		return nil, fmt.Errorf("build payment provider bindings: %w", err)
 	}
 
+	paymentService := payment.NewService(payment.NewPostgresStore(pgPool))
+	subscriptionService := subscription.NewService(subscription.NewPostgresStore(pgPool), paymentService)
+
 	d := &deps{
 		cfg:                   cfg,
 		clientIPResolver:      clientIPResolver,
@@ -541,8 +546,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		pgPool:                pgPool,
 		userSessions:          userSessionService,
 		userKeyService:        userkey.NewService(pgPool, nil),
-		paymentService:        payment.NewService(payment.NewPostgresStore(pgPool)),
+		paymentService:        paymentService,
 		paymentProviders:      paymentProviders,
+		subscriptionService:   subscriptionService,
 		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool)),
 		invitationService:     communityinvitation.NewService(communityinvitation.NewPostgresStore(pgPool)),
 		responseCache:         opts.responseCache,

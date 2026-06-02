@@ -20,6 +20,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/meusagehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
+	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkeyhttp"
 )
@@ -110,10 +112,15 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
 		gatewayhttp.MountVoucherUserRoutes(r, gatewayhttp.VoucherUserDeps{Service: d.voucherService, ClientIPResolver: d.clientIPResolver})
 	})
-	paymentDeps := paymenthttp.Deps{Service: d.paymentService, Providers: d.paymentProviders}
+	var paymentHTTPService paymenthttp.PaymentService = d.paymentService
+	if d.subscriptionService != nil {
+		paymentHTTPService = subscription.NewPaymentBridge(d.paymentService, d.subscriptionService)
+	}
+	paymentDeps := paymenthttp.Deps{Service: paymentHTTPService, Providers: d.paymentProviders}
 	r.Group(func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
 		paymenthttp.MountUserRoutes(r, paymentDeps)
+		subscriptionhttp.MountUserRoutes(r, subscriptionhttp.Deps{Service: d.subscriptionService, Providers: d.paymentProviders})
 	})
 	paymenthttp.MountWebhookRoutes(r, paymentDeps)
 	r.Route("/v1/api-keys", func(r chi.Router) {
@@ -458,6 +465,12 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		adminhttp.MountBalanceCreditRoutes(r, adminhttp.AdminBalanceCreditDeps{
 			Auth:    d.adminAuth,
 			Service: d.paymentService,
+		})
+	})
+	r.Route("/admin/v1/subscription-plans", func(r chi.Router) {
+		subscriptionhttp.MountAdminPlanRoutes(r, subscriptionhttp.Deps{
+			AdminAuth: d.adminAuth,
+			Service:   d.subscriptionService,
 		})
 	})
 	r.Route("/v1/admin/vouchers", func(r chi.Router) {
