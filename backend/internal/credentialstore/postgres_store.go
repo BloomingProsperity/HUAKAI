@@ -19,6 +19,7 @@ const RefreshWindow = 15 * time.Minute
 
 var (
 	ErrCredentialNotFound         = errors.New("credentialstore: account credential not found")
+	ErrCredentialAmbiguous        = errors.New("credentialstore: ambiguous active credential modes")
 	ErrCredentialAuditWriteFailed = errors.New("credentialstore: audit write failed")
 )
 
@@ -605,15 +606,16 @@ func (s *Store) ResolveActive(ctx context.Context, tenantID, providerAccountID i
 		return CredentialRecord{}, fmt.Errorf("%w: tenantID required", ErrInvalidPayload)
 	}
 	const q = `
-SELECT ac.id, ac.tenant_id, ac.provider_account_id, ac.vendor, ac.auth_mode, ac.state,
-       ac.credential_version, ac.encrypted_payload, ac.encryption_scheme, ac.key_id,
-       ac.nonce, ac.aad_hash, ac.payload_fingerprint, ac.refresh_token_fingerprint,
-       ac.access_expires_at, ac.refresh_expires_at, ac.refresh_before_at, ac.grace_until,
-       ac.last_refresh_at, ac.last_refresh_outcome, ac.failure_class, ac.failure_count,
-       ac.next_attempt_at, ac.created_at, ac.updated_at, ac.deleted_at
-	FROM account_credentials ac
-	JOIN provider_accounts pa
-	  ON pa.id = ac.provider_account_id
+	SELECT ac.id, ac.tenant_id, ac.provider_account_id, ac.vendor, ac.auth_mode, ac.state,
+	       ac.credential_version, ac.encrypted_payload, ac.encryption_scheme, ac.key_id,
+	       ac.nonce, ac.aad_hash, ac.payload_fingerprint, ac.refresh_token_fingerprint,
+	       ac.access_expires_at, ac.refresh_expires_at, ac.refresh_before_at, ac.grace_until,
+	       ac.last_refresh_at, ac.last_refresh_outcome, ac.failure_class, ac.failure_count,
+	       ac.next_attempt_at, ac.created_at, ac.updated_at, ac.deleted_at,
+	       COUNT(*) OVER () AS active_mode_count
+		FROM account_credentials ac
+		JOIN provider_accounts pa
+		  ON pa.id = ac.provider_account_id
 	 AND pa.tenant_id = ac.tenant_id
 	WHERE ac.provider_account_id = $1
 	  AND ac.tenant_id = $2
@@ -624,13 +626,39 @@ SELECT ac.id, ac.tenant_id, ac.provider_account_id, ac.vendor, ac.auth_mode, ac.
   AND (
       ac.state = 'active'
       OR (ac.state = 'refreshing_with_grace' AND (ac.grace_until IS NULL OR ac.grace_until > NOW()))
-  )
-ORDER BY CASE ac.state WHEN 'active' THEN 0 ELSE 1 END, ac.updated_at DESC
-LIMIT 1`
-	rec, err := s.scanRecord(ctx, q, providerAccountID, tenantID)
+	  )
+	ORDER BY CASE ac.state WHEN 'active' THEN 0 ELSE 1 END, ac.updated_at DESC
+	LIMIT 1`
+	var rec CredentialRecord
+	var activeModeCount int64
+	var accessExp, refreshExp, refreshBefore, graceUntil, lastRefresh, nextAttempt, createdAt, updatedAt, deletedAt pgtype.Timestamptz
+	err := s.db.QueryRow(ctx, q, providerAccountID, tenantID).Scan(
+		&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State,
+		&rec.CredentialVersion, &rec.EncryptedPayload, &rec.EncryptionScheme, &rec.KeyID,
+		&rec.Nonce, &rec.AADHash, &rec.PayloadFingerprint, &rec.RefreshTokenFingerprint,
+		&accessExp, &refreshExp, &refreshBefore, &graceUntil,
+		&lastRefresh, &rec.LastRefreshOutcome, &rec.FailureClass, &rec.FailureCount,
+		&nextAttempt, &createdAt, &updatedAt, &deletedAt, &activeModeCount,
+	)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return CredentialRecord{}, ErrCredentialNotFound
+		}
 		return CredentialRecord{}, err
 	}
+	if activeModeCount > 1 {
+		return CredentialRecord{}, fmt.Errorf("%w: tenant_id=%d provider_account_id=%d active_modes=%d",
+			ErrCredentialAmbiguous, tenantID, providerAccountID, activeModeCount)
+	}
+	rec.AccessExpiresAt = pgTime(accessExp)
+	rec.RefreshExpiresAt = pgTime(refreshExp)
+	rec.RefreshBeforeAt = pgTime(refreshBefore)
+	rec.GraceUntil = pgTime(graceUntil)
+	rec.LastRefreshAt = pgTime(lastRefresh)
+	rec.NextAttemptAt = pgTime(nextAttempt)
+	rec.CreatedAt = pgTime(createdAt)
+	rec.UpdatedAt = pgTime(updatedAt)
+	rec.DeletedAt = pgTime(deletedAt)
 	plaintext, err := s.decryptRecord(ctx, rec)
 	if err != nil {
 		return CredentialRecord{}, err

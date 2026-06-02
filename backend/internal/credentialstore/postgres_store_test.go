@@ -22,6 +22,38 @@ func TestRefreshFailureStateOperatorConfigRequiresAttention(t *testing.T) {
 	}
 }
 
+func TestResolveActiveRejectsAmbiguousActiveCredentialModes(t *testing.T) {
+	calls := 0
+	db := &credentialStoreDBStub{
+		queryRow: func(_ context.Context, sql string, args ...interface{}) pgx.Row {
+			calls++
+			for _, required := range []string{
+				"COUNT(*) OVER () AS active_mode_count",
+				"active_mode_count",
+				"WHERE ac.provider_account_id = $1",
+				"AND ac.tenant_id = $2",
+			} {
+				if !strings.Contains(sql, required) {
+					t.Fatalf("ResolveActive SQL missing %q:\n%s", required, sql)
+				}
+			}
+			if len(args) != 2 || args[0] != int64(42) || args[1] != int64(7) {
+				t.Fatalf("ResolveActive args=%#v, want account=42 tenant=7", args)
+			}
+			return credentialStoreRowValuesStub{values: resolveActiveRecordValues(2)}
+		},
+	}
+	store := NewStore(db, mustTestKeyProvider(t), DefaultHandlerRegistry())
+
+	_, err := store.ResolveActive(context.Background(), 7, 42)
+	if !errors.Is(err, ErrCredentialAmbiguous) {
+		t.Fatalf("ResolveActive err=%v, want ambiguous active credential modes", err)
+	}
+	if calls != 1 {
+		t.Fatalf("ResolveActive QueryRow calls=%d, want 1 atomic ambiguity-aware query", calls)
+	}
+}
+
 func TestResolveActiveRejectsCrossTenantCredentialJoin(t *testing.T) {
 	db := &credentialStoreDBStub{
 		queryRow: func(_ context.Context, sql string, _ ...interface{}) pgx.Row {
@@ -208,6 +240,56 @@ func (r credentialStoreRowStub) Scan(...interface{}) error {
 		return r.err
 	}
 	return nil
+}
+
+type credentialStoreRowValuesStub struct {
+	values []any
+}
+
+func (r credentialStoreRowValuesStub) Scan(dest ...interface{}) error {
+	if len(dest) != len(r.values) {
+		return errors.New("scan destination count mismatch")
+	}
+	for i := range dest {
+		if err := setScanValue(dest[i], r.values[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func resolveActiveRecordValues(activeModeCount int64) []any {
+	return []any{
+		int64(301), int64(7), int64(42), VendorGemini, AuthModeAIStudioAPIKey, StateActive,
+		int32(1), []byte("ciphertext"), "aes-256-gcm", "test-key",
+		[]byte("nonce"), "aad-hash", (*string)(nil), (*string)(nil),
+		pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{},
+		pgtype.Timestamptz{}, (*string)(nil), (*string)(nil), int32(0),
+		pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{},
+		activeModeCount,
+	}
+}
+
+func setScanValue(dest any, value any) error {
+	target := reflect.ValueOf(dest)
+	if target.Kind() != reflect.Ptr || target.IsNil() {
+		return errors.New("scan destination is not a non-nil pointer")
+	}
+	elem := target.Elem()
+	if value == nil {
+		elem.Set(reflect.Zero(elem.Type()))
+		return nil
+	}
+	source := reflect.ValueOf(value)
+	if source.Type().AssignableTo(elem.Type()) {
+		elem.Set(source)
+		return nil
+	}
+	if source.Type().ConvertibleTo(elem.Type()) {
+		elem.Set(source.Convert(elem.Type()))
+		return nil
+	}
+	return errors.New("scan destination type mismatch")
 }
 
 type credentialStoreRowsStub struct {
