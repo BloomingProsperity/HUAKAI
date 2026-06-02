@@ -16,6 +16,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeshttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/meusagehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkeyhttp"
@@ -46,6 +47,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Get("/v1/models", modelhttp.NewListHandler(modelhttp.Deps{
 		Auth:    d.inboundAuth,
 		Catalog: d.modelRegistry,
+	}))
+	r.Get("/v1/me/usage", meusagehttp.NewHandler(meusagehttp.Deps{
+		Auth:  d.inboundAuth,
+		Store: d.billingQueries,
 	}))
 
 	auditVerifyDeps := gatewayhttp.AuditVerifyStaticDeps{Ledger: d.auditLedger, Registry: d.auditPubkeyRegistry}
