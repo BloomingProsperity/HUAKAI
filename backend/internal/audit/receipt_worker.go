@@ -6,14 +6,20 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/trustreceipt"
 )
 
 type ReceiptAppender interface {
 	AppendReceipt(ctx context.Context, receipt *CostReceipt) error
+}
+
+type ReceiptRecoveryEnqueuer interface {
+	Enqueue(ctx context.Context, e dlq.Event) (int64, error)
 }
 
 type receiptFormatterService interface {
@@ -31,6 +37,7 @@ type ReceiptHookHandler struct {
 	storage     ReceiptAppender
 	trustSigner *sign.Signer
 	onError     ReceiptHookErrorHandler
+	recovery    ReceiptRecoveryEnqueuer
 }
 
 func NewReceiptHookHandler(formatter receiptFormatterService, storage ReceiptAppender, opts ...ReceiptHookOption) *ReceiptHookHandler {
@@ -55,7 +62,68 @@ func WithReceiptHookTrustSigner(signer *sign.Signer) ReceiptHookOption {
 	}
 }
 
+func WithReceiptHookRecoveryEnqueuer(q ReceiptRecoveryEnqueuer) ReceiptHookOption {
+	return func(h *ReceiptHookHandler) {
+		h.recovery = q
+	}
+}
+
+type ReceiptRecoverySource string
+
+const ReceiptRecoverySourceSettleHook ReceiptRecoverySource = "settle_hook"
+
+const receiptRecoveryEnqueueTimeout = 2 * time.Second
+
+var (
+	ErrReceiptRecoveryPayloadInvalid = errors.New("audit: receipt recovery payload invalid")
+	ErrReceiptRecoveryWrongKind      = errors.New("audit: receipt recovery wrong dlq kind")
+)
+
+type ReceiptRecoveryPayload struct {
+	Source    ReceiptRecoverySource `json:"source"`
+	RequestID string                `json:"request_id"`
+	TenantID  int64                 `json:"tenant_id"`
+	ClaimID   int64                 `json:"claim_id"`
+}
+
+func (p ReceiptRecoveryPayload) Validate() error {
+	switch {
+	case p.Source != ReceiptRecoverySourceSettleHook:
+		return fmt.Errorf("%w: source=%q", ErrReceiptRecoveryPayloadInvalid, p.Source)
+	case strings.TrimSpace(p.RequestID) == "":
+		return fmt.Errorf("%w: request_id required", ErrReceiptRecoveryPayloadInvalid)
+	case p.TenantID <= 0:
+		return fmt.Errorf("%w: tenant_id required", ErrReceiptRecoveryPayloadInvalid)
+	case p.ClaimID <= 0:
+		return fmt.Errorf("%w: claim_id required", ErrReceiptRecoveryPayloadInvalid)
+	default:
+		return nil
+	}
+}
+
+func (p ReceiptRecoveryPayload) Encode() ([]byte, error) {
+	if err := p.Validate(); err != nil {
+		return nil, err
+	}
+	return json.Marshal(p)
+}
+
+func DecodeReceiptRecoveryPayload(raw []byte) (ReceiptRecoveryPayload, error) {
+	var p ReceiptRecoveryPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return ReceiptRecoveryPayload{}, fmt.Errorf("audit: decode receipt recovery payload: %w", err)
+	}
+	if err := p.Validate(); err != nil {
+		return ReceiptRecoveryPayload{}, err
+	}
+	return p, nil
+}
+
 func (h *ReceiptHookHandler) AppendSettledReceipt(ctx context.Context, req billing.SettleRequest) error {
+	return h.appendSettledReceipt(ctx, req, true)
+}
+
+func (h *ReceiptHookHandler) appendSettledReceipt(ctx context.Context, req billing.SettleRequest, enqueueRecovery bool) error {
 	if h == nil {
 		return nil
 	}
@@ -71,16 +139,48 @@ func (h *ReceiptHookHandler) AppendSettledReceipt(ctx context.Context, req billi
 	}
 	receipt, err := h.formatter.DeriveReceipt(ctx, requestID)
 	if err != nil {
-		return fmt.Errorf("audit: derive receipt after settle: %w", err)
+		err = fmt.Errorf("audit: derive receipt after settle: %w", err)
+		if enqueueRecovery {
+			h.enqueueReceiptRecovery(ctx, req, nil, err)
+		}
+		return err
 	}
 	h.attachFinalTrustSignature(ctx, req, receipt)
 	if err := h.storage.AppendReceipt(ctx, receipt); err != nil {
 		if errors.Is(err, ErrReceiptDuplicate) {
 			return nil
 		}
-		return fmt.Errorf("audit: append receipt after settle: %w", err)
+		err = fmt.Errorf("audit: append receipt after settle: %w", err)
+		if enqueueRecovery {
+			h.enqueueReceiptRecovery(ctx, req, receipt, err)
+		}
+		return err
 	}
 	return nil
+}
+
+func (h *ReceiptHookHandler) HandleReceiptRecovery(ctx context.Context, record dlq.Record) error {
+	if h == nil {
+		return ErrReceiptFormatterNil
+	}
+	if record.EventKind != dlq.EventKindCostReceiptAppend {
+		return fmt.Errorf("%w: %q", ErrReceiptRecoveryWrongKind, record.EventKind)
+	}
+	payload, err := DecodeReceiptRecoveryPayload(record.Payload)
+	if err != nil {
+		return err
+	}
+	if record.TenantID != 0 && record.TenantID != payload.TenantID {
+		return fmt.Errorf("%w: record tenant_id=%d payload tenant_id=%d", ErrReceiptRecoveryPayloadInvalid, record.TenantID, payload.TenantID)
+	}
+	if record.ClaimID != nil && *record.ClaimID != payload.ClaimID {
+		return fmt.Errorf("%w: record claim_id=%d payload claim_id=%d", ErrReceiptRecoveryPayloadInvalid, *record.ClaimID, payload.ClaimID)
+	}
+	return h.appendSettledReceipt(ctx, billing.SettleRequest{
+		TenantID:       payload.TenantID,
+		ClaimID:        payload.ClaimID,
+		AuditRequestID: payload.RequestID,
+	}, false)
 }
 
 func (h *ReceiptHookHandler) attachFinalTrustSignature(ctx context.Context, req billing.SettleRequest, receipt *CostReceipt) {
@@ -159,7 +259,62 @@ func (h *ReceiptHookHandler) report(ctx context.Context, requestID string, err e
 	h.onError(ctx, strings.TrimSpace(requestID), err)
 }
 
-// ReceiptHookSettler 包装真实 settler；账务成功后 best-effort 写 receipt。
+func (h *ReceiptHookHandler) enqueueReceiptRecovery(ctx context.Context, req billing.SettleRequest, receipt *CostReceipt, cause error) {
+	if h == nil || h.recovery == nil || cause == nil {
+		return
+	}
+	requestID := strings.TrimSpace(req.AuditRequestID)
+	if requestID == "" {
+		return
+	}
+	tenantID := req.TenantID
+	claimID := req.ClaimID
+	if receipt != nil {
+		if tenantID == 0 {
+			tenantID = receipt.TenantID
+		}
+		if claimID == 0 {
+			claimID = receipt.ClaimID
+		}
+	}
+	payload := ReceiptRecoveryPayload{
+		Source:    ReceiptRecoverySourceSettleHook,
+		RequestID: requestID,
+		TenantID:  tenantID,
+		ClaimID:   claimID,
+	}
+	raw, err := payload.Encode()
+	if err != nil {
+		h.report(ctx, requestID, err)
+		return
+	}
+	enqueueCtx, cancel := receiptRecoveryEnqueueContext(ctx)
+	defer cancel()
+	_, err = h.recovery.Enqueue(enqueueCtx, dlq.Event{
+		TenantID:       tenantID,
+		ClaimID:        claimID,
+		EventKind:      dlq.EventKindCostReceiptAppend,
+		Lane:           dlq.LaneForKind(dlq.EventKindCostReceiptAppend),
+		Payload:        raw,
+		FailureReason:  cause.Error(),
+		IdempotencyKey: fmt.Sprintf("cost_receipt_append:%d:%d:%s", tenantID, claimID, requestID),
+		SourceTable:    "user_cost_receipts",
+		SourceID:       claimID,
+	})
+	if err != nil {
+		h.report(ctx, requestID, fmt.Errorf("audit: enqueue receipt recovery: %w", err))
+	}
+}
+
+func receiptRecoveryEnqueueContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), receiptRecoveryEnqueueTimeout)
+}
+
+// ReceiptHookSettler 包装真实 settler；账务成功后 fail-open 写 receipt,
+// 失败则交给 durable recovery 队列重放。
 type ReceiptHookSettler struct {
 	inner billing.Settler
 	hook  *ReceiptHookHandler
