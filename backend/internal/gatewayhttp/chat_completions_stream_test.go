@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"iter"
 	"log/slog"
@@ -22,6 +23,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -489,7 +491,7 @@ func anthropicStreamingFixture() string {
 	}, "\n")
 }
 
-func TestStreamingIdempotencyReplayRecordsSSEAndReplays(t *testing.T) {
+func TestAT_GW_002_14_StreamingIdempotencyReplayRecordsSSEAndReplays(t *testing.T) {
 	replayStore := billing.NewMemoryReplayStore()
 	body := openAIStreamingRequestBody()
 	claimID := int64(77701)
@@ -905,7 +907,7 @@ func TestStreamingCaseCNilResolverDefaultsNoBill(t *testing.T) {
 	}
 }
 
-func TestStreamingIdempotencyReplayRecordsEOFNoTerminalWhenForwardAndSettleSucceed(t *testing.T) {
+func TestAT_GW_002_19_TokenizerFallbackInferredUsage(t *testing.T) {
 	replayStore := billing.NewMemoryReplayStore()
 	body := openAIStreamingRequestBody()
 	claimID := int64(77707)
@@ -929,6 +931,12 @@ func TestStreamingIdempotencyReplayRecordsEOFNoTerminalWhenForwardAndSettleSucce
 	}
 	if !draft.PendingReconciliation {
 		t.Fatal("EOF without terminal marker must set PendingReconciliation")
+	}
+	if draft.UsageSource != gateway.UsageSourceInferred {
+		t.Fatalf("UsageSource=%q want %q for delivered stream without reported usage", draft.UsageSource, gateway.UsageSourceInferred)
+	}
+	if draft.ConfidenceScore == nil {
+		t.Fatal("ConfidenceScore=nil want audit confidence recorded for inferred stream usage")
 	}
 	if settler.calls[0].StreamAttempt == nil || !settler.calls[0].StreamAttempt.State.Chargeable() {
 		t.Fatalf("fixture must deliver a chargeable partial stream; StreamAttempt=%#v", settler.calls[0].StreamAttempt)
@@ -960,6 +968,92 @@ func TestStreamingIdempotencyReplayRecordsEOFNoTerminalWhenForwardAndSettleSucce
 	}
 	if first.Body.String() != second.Body.String() {
 		t.Fatalf("replay body mismatch:\nfirst=%s\nsecond=%s", first.Body.String(), second.Body.String())
+	}
+}
+
+func TestAT_GW_002_17_TenantIsolationUnderLoad(t *testing.T) {
+	// Risk killed: replay persistence is keyed by tenant_id + claim_id under
+	// concurrent streams. Mutation self-check: removing tenant_id from the replay
+	// key causes shared claim IDs below to collide and body-marker assertions turn
+	// red for at least one tenant.
+	const (
+		tenants          = 5
+		streamsPerTenant = 20
+	)
+	replayStore := billing.NewMemoryReplayStore()
+	body := openAIStreamingRequestBody()
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, tenants*streamsPerTenant)
+	for tenantIdx := 0; tenantIdx < tenants; tenantIdx++ {
+		tenantID := int64(7000 + tenantIdx)
+		for streamIdx := 0; streamIdx < streamsPerTenant; streamIdx++ {
+			streamIdx := streamIdx
+			tenantID := tenantID
+			claimID := int64(88000 + streamIdx)
+			marker := fmt.Sprintf("tenant_%d_stream_%02d", tenantID, streamIdx)
+			deps := streamingReplayDeps(t, claimID, false, strings.Replace(openAIStreamingFixture(), "pong", marker, 1), replayStore)
+			deps.Auth = stubAuth{identity: auth.Identity{
+				TenantID: tenantID,
+				APIKeyID: tenantID + 100,
+				UserID:   tenantID + 200,
+			}}
+			idempotencyKey := fmt.Sprintf("tenant-shared-stream-%02d", streamIdx)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				h := NewChatCompletionsHandler(deps)
+				req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Idempotency-Key", idempotencyKey)
+				rec := httptest.NewRecorder()
+				h(rec, req)
+				if rec.Code != http.StatusOK {
+					errCh <- fmt.Errorf("tenant %d stream %d status=%d body=%s", tenantID, streamIdx, rec.Code, rec.Body.String())
+					return
+				}
+				if !strings.Contains(rec.Body.String(), marker) {
+					errCh <- fmt.Errorf("tenant %d stream %d response missing marker %q: %s", tenantID, streamIdx, marker, rec.Body.String())
+				}
+			}()
+		}
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Error(err)
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
+
+	for tenantIdx := 0; tenantIdx < tenants; tenantIdx++ {
+		tenantID := int64(7000 + tenantIdx)
+		for streamIdx := 0; streamIdx < streamsPerTenant; streamIdx++ {
+			claimID := int64(88000 + streamIdx)
+			marker := fmt.Sprintf("tenant_%d_stream_%02d", tenantID, streamIdx)
+			stored, ok, err := replayStore.Lookup(context.Background(), tenantID, claimID)
+			if err != nil {
+				t.Fatalf("lookup tenant=%d claim=%d: %v", tenantID, claimID, err)
+			}
+			if !ok {
+				t.Fatalf("missing replay tenant=%d claim=%d", tenantID, claimID)
+			}
+			body := string(stored.ResponseBody)
+			if !strings.Contains(body, marker) {
+				t.Fatalf("tenant=%d claim=%d body missing marker %q: %s", tenantID, claimID, marker, body)
+			}
+			for otherTenantIdx := 0; otherTenantIdx < tenants; otherTenantIdx++ {
+				otherTenantID := int64(7000 + otherTenantIdx)
+				if otherTenantID == tenantID {
+					continue
+				}
+				otherMarker := fmt.Sprintf("tenant_%d_stream_%02d", otherTenantID, streamIdx)
+				if strings.Contains(body, otherMarker) {
+					t.Fatalf("tenant=%d claim=%d replay leaked other tenant marker %q: %s", tenantID, claimID, otherMarker, body)
+				}
+			}
+		}
 	}
 }
 
