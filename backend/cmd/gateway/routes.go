@@ -384,7 +384,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	mountProviderAccountAdminRoutes := func(r chi.Router) {
 		gatewayhttp.MountAdminPoolAccountRoutes(r, gatewayhttp.AdminPoolAccountDeps{
 			Auth:          d.adminAuth,
-			Store:         d.adminQueries,
+			Store:         gatewayhttp.NewAdminPoolAccountStoreAdapter(d.adminQueries, d.pgPool),
 			Credentials:   d.credentialStore,
 			ChannelHealth: d.channelHealth,
 		})
