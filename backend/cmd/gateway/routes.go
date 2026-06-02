@@ -429,6 +429,12 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			AuditUpdater:  d.billingAuditUpdater,
 		})
 	})
+	r.Route("/admin/v1/balances", func(r chi.Router) {
+		adminhttp.MountBalanceCreditRoutes(r, adminhttp.AdminBalanceCreditDeps{
+			Auth:    d.adminAuth,
+			Service: d.paymentService,
+		})
+	})
 	r.Route("/v1/admin/vouchers", func(r chi.Router) {
 		gatewayhttp.MountVoucherAdminRoutes(r, gatewayhttp.VoucherAdminDeps{
 			Auth:    d.adminAuth,

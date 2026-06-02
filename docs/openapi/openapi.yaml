@@ -2707,6 +2707,38 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/balances/adjustments:
+    post:
+      tags: [admin-billing]
+      summary: Apply an admin manual balance adjustment
+      operationId: adminAdjustBalance
+      description: |
+        Platform-admin only manual balance adjustment path. Positive amounts create
+        a completed recharge correlation row, append a balance_recharged billing
+        event, and write a redacted payment_audit_log entry. Negative amounts are
+        currently rejected with admin_debit_not_yet_supported until an approved
+        durable debit billing event schema lands.
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-02-money-5-fix-codex.md
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminBalanceAdjustmentRequest' }
+      responses:
+        '200':
+          description: Adjustment applied and net balance returned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminBalanceAdjustmentResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/audit-events:
     get:
       tags: [admin-audit]
@@ -5301,6 +5333,47 @@ components:
         reason:
           type: string
           minLength: 1
+
+    AdminBalanceAdjustmentRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-02-money-5-fix-codex.md
+      required: [tenant_id, user_id, amount, reason, idempotency_key]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        user_id: { type: integer, format: int64, minimum: 1 }
+        amount:
+          type: string
+          pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
+          description: Positive values recharge; negative values currently return admin_debit_not_yet_supported until durable debit billing events are added.
+        currency_code:
+          type: string
+          enum: [USD]
+          default: USD
+        reason:
+          type: string
+          minLength: 1
+        idempotency_key:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Stable operator-supplied key; retries with the same body and key are no-ops.
+
+    AdminBalanceAdjustmentResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-02-money-5-fix-codex.md
+      required: [tenant_id, user_id, net_balance, currency_code]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        user_id: { type: integer, format: int64, minimum: 1 }
+        net_balance:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]{1,8})?$'
+        currency_code: { type: string, enum: [USD] }
+        recharge_order_id: { type: integer, format: int64, minimum: 1 }
 
     AuditEvent:
       type: object
