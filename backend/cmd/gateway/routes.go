@@ -23,6 +23,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/routeadminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpadmin"
+	"github.com/BloomingProsperity/HUAKAI/internal/tlsfphttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkeyhttp"
 )
@@ -505,6 +507,12 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		routeadminhttp.MountRouteAdminRoutes(r, routeadminhttp.AdminDeps{
 			Auth:    d.adminAuth,
 			Service: d.routeAdminService,
+		})
+	})
+	r.Route("/v1/admin/tls-fingerprint-profiles", func(r chi.Router) {
+		tlsfphttp.MountTLSFPAdminRoutes(r, tlsfphttp.AdminDeps{
+			Auth:    d.adminAuth,
+			Service: tlsfpadmin.New(d.adminQueries),
 		})
 	})
 	r.Get("/admin/v1/usage", gatewayhttp.NewUsageHandler(d))
