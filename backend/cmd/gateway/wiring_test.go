@@ -513,7 +513,7 @@ func TestWiring_BuildCompletionEventBusWarnsWhenAuditRefEscapeFlagActive(t *test
 
 // dev 模式 + 无 path → 自动生成 ephemeral key，附 warn 日志，调用方拿到可用 signer。
 func TestWiring_LoadAuditSigner_DevModeEphemeral(t *testing.T) {
-	t.Setenv("HUAKAI_RELEASE_MODE", "")
+	t.Setenv("HUAKAI_RELEASE_MODE", "dev")
 	t.Setenv("HUAKAI_AUDIT_PRIVATE_KEY_PATH", "")
 
 	logger := zaptest.NewLogger(t)
@@ -615,7 +615,7 @@ func TestWiring_LoadAuditSigner_LoadsBase64Path(t *testing.T) {
 
 // dev 模式 + 无 backend env → memory ledger（warn 日志），调用方拿到可用 Ledger。
 func TestWiring_BuildAuditLedger_DevModeDefault(t *testing.T) {
-	t.Setenv("HUAKAI_RELEASE_MODE", "")
+	t.Setenv("HUAKAI_RELEASE_MODE", "dev")
 	t.Setenv("HUAKAI_AUDIT_LEDGER_BACKEND", "")
 
 	logger := zaptest.NewLogger(t)
@@ -658,7 +658,7 @@ func TestWiring_BuildAuditLedger_ProductionRequiresPostgres(t *testing.T) {
 			_ = pub
 			_ = priv
 			// 借 dev 路径快速拿到 signer，避免重复 PKCS8 marshal 样板。
-			t.Setenv("HUAKAI_RELEASE_MODE", "")
+			t.Setenv("HUAKAI_RELEASE_MODE", "dev")
 			t.Setenv("HUAKAI_AUDIT_PRIVATE_KEY_PATH", "")
 			signer, err := loadAuditSigner(zap.NewNop())
 			if err != nil {
@@ -689,7 +689,7 @@ func TestWiring_BuildAuditLedger_ProductionAcceptsPostgres(t *testing.T) {
 	t.Setenv("HUAKAI_RELEASE_MODE", "production")
 	t.Setenv("HUAKAI_AUDIT_LEDGER_BACKEND", "postgres")
 	// 先拿 ephemeral signer（绕过 production gate）。
-	t.Setenv("HUAKAI_RELEASE_MODE", "")
+	t.Setenv("HUAKAI_RELEASE_MODE", "dev")
 	t.Setenv("HUAKAI_AUDIT_PRIVATE_KEY_PATH", "")
 	signer, err := loadAuditSigner(zap.NewNop())
 	if err != nil {

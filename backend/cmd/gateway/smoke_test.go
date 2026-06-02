@@ -332,6 +332,7 @@ func startGateway(t *testing.T, _ context.Context, binPath, dsn, addr string, se
 	cmd.Env = append(os.Environ(),
 		"HUAKAI_DATABASE_URL="+dsn,
 		"HUAKAI_ADDR="+addr,
+		"HUAKAI_RELEASE_MODE=dev",
 		// Phase L0 minimum: SMOKE env vars no longer set; auth
 		// resolves via api_keys table seeded by seedSmokeGraph above.
 	)
