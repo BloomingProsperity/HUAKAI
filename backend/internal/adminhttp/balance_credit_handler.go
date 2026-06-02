@@ -84,7 +84,6 @@ func newBalanceCreditHandler(d AdminBalanceCreditDeps) http.HandlerFunc {
 				"tenant_id, user_id, non-zero amount, reason, and idempotency_key are required")
 			return
 		}
-
 		result, err := d.Service.AdminAdjustBalance(r.Context(), payment.AdminBalanceAdjustmentInput{
 			TenantID:        req.TenantID,
 			UserID:          req.UserID,
@@ -117,12 +116,18 @@ func newBalanceCreditHandler(d AdminBalanceCreditDeps) http.HandlerFunc {
 
 func writeBalanceCreditError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, payment.ErrAdminDebitNotSupported):
+		writeError(w, http.StatusBadRequest, "admin_debit_not_yet_supported",
+			"manual debit is gated until durable debit billing events are supported")
 	case errors.Is(err, payment.ErrInvalidInput):
 		writeError(w, http.StatusBadRequest, "invalid_balance_adjustment", err.Error())
 	case errors.Is(err, payment.ErrUserNotFound):
 		writeError(w, http.StatusNotFound, "user_not_found", "target user not found")
 	case errors.Is(err, payment.ErrAccountInactive):
 		writeError(w, http.StatusBadRequest, "account_inactive", "target tenant or user is inactive")
+	case errors.Is(err, payment.ErrExternalTradeConflict):
+		writeError(w, http.StatusConflict, "balance_adjustment_idempotency_conflict",
+			"idempotency_key was already used for a different balance adjustment")
 	case errors.Is(err, payment.ErrStoreNotConfigured):
 		writeError(w, http.StatusServiceUnavailable, "payment_backend_unavailable", "payment service unavailable")
 	default:
