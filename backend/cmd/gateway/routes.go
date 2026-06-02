@@ -378,6 +378,10 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Accounts: d.adminQueries,
 			Tester:   adminhttp.NewProviderAccountCredentialTester(d.credentialStore, credentialworker.DefaultModeAdapterRegistry()),
 		})
+		adminhttp.MountProviderAccountHealthRoutes(r, adminhttp.ProviderAccountHealthDeps{
+			Auth:  d.adminAuth,
+			Store: d.adminQueries,
+		})
 		gatewayhttp.MountAdminCredentialRoutes(r, gatewayhttp.AdminCredentialDeps{
 			Auth:        d.adminAuth,
 			Credentials: d.credentialStore,
