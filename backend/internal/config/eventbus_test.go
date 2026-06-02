@@ -47,9 +47,29 @@ func TestLoadEventBusAllowMissingMoneyRefInvalidFailsFast(t *testing.T) {
 	}
 }
 
+func TestLoadEventBusAllowMissingMoneyRefProductionFailsFast(t *testing.T) {
+	clearEventBusEnv(t)
+	t.Setenv(EnvReleaseMode, "production")
+	t.Setenv(EnvTrustLedgerAllowMissingMoneyRef, "true")
+
+	cfg, err := LoadEventBus()
+	if err == nil {
+		t.Fatalf("LoadEventBus cfg=%+v err=nil; want production escape flag rejection", cfg)
+	}
+	if !errors.Is(err, ErrUnsafeEventBusConfig) {
+		t.Fatalf("err=%v want ErrUnsafeEventBusConfig", err)
+	}
+	for _, want := range []string{EnvReleaseMode, EnvTrustLedgerAllowMissingMoneyRef, "production"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err=%v must include %s", err, want)
+		}
+	}
+}
+
 func clearEventBusEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
+		EnvReleaseMode,
 		"HUAKAI_EVENTBUS_ENABLED",
 		"HUAKAI_EVENTBUS_HANDLER_TIMEOUT_SECONDS",
 		"HUAKAI_EVENTBUS_SHUTDOWN_DRAIN_SECONDS",

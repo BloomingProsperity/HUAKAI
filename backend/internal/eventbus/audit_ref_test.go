@@ -70,17 +70,18 @@ func TestValidateMoneyPathAuditRef_NonProductionExempt(t *testing.T) {
 	}
 }
 
-func TestValidateMoneyPathAuditRef_EscapeFlagBypasses(t *testing.T) {
+func TestValidateMoneyPathAuditRef_ProductionEscapeFlagStillRejectsMissingRef(t *testing.T) {
 	allowPolicy := productionAuditRefPolicy(true)
-	denyPolicy := productionAuditRefPolicy(false)
 	missing := validAuditRefEvent()
+	withDLQRef := missing
+	withDLQRef.AuditLedgerDLQRef = "dlq:1"
 
-	// Mutation: 忽略 AllowMissingMoneyRef 时，allowPolicy 断言会失败。
-	if err := eventbus.ValidateMoneyPathAuditRef(&missing, allowPolicy); err != nil {
-		t.Fatalf("escape flag missing ref err=%v want nil", err)
+	// Mutation: 恢复 production AllowMissingMoneyRef 旁路时，missing 断言会失败。
+	if err := eventbus.ValidateMoneyPathAuditRef(&missing, allowPolicy); !errors.Is(err, eventbus.ErrAuditRefMissing) {
+		t.Fatalf("production escape flag missing ref err=%v want ErrAuditRefMissing", err)
 	}
-	if err := eventbus.ValidateMoneyPathAuditRef(&missing, denyPolicy); !errors.Is(err, eventbus.ErrAuditRefMissing) {
-		t.Fatalf("deny missing ref err=%v want ErrAuditRefMissing", err)
+	if err := eventbus.ValidateMoneyPathAuditRef(&withDLQRef, allowPolicy); err != nil {
+		t.Fatalf("production escape flag with DLQRef err=%v want nil", err)
 	}
 }
 

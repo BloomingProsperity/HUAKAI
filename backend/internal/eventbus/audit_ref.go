@@ -24,9 +24,8 @@ func ValidateMoneyPathAuditRef(event *RequestCompletionEvent, policy *AuditRefPo
 	if policy.ReleaseMode != ReleaseModeProduction {
 		return nil
 	}
-	if policy.AllowMissingMoneyRef {
-		return nil
-	}
+	// Production is fail-closed: the escape flag is rejected at config load and
+	// is not a validator bypass for missing money-path audit references.
 	if event.AuditLedgerID != "" && event.AuditSignatureFingerprint != "" {
 		return nil
 	}
