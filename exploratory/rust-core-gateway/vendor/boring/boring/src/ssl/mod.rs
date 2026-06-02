@@ -2013,6 +2013,21 @@ impl SslContextBuilder {
         }
     }
 
+    /// 设置 ClientHello signature_algorithms wire 列表 (HUAKAI patch).
+    ///
+    /// 该入口只控制 verify-advertisement 的 raw uint16 id，不声明额外 signing 能力。
+    #[corresponds(SSL_CTX_set_huakai_raw_verify_algorithm_prefs)]
+    pub fn set_raw_verify_algorithm_prefs(&mut self, prefs: &[u16]) -> Result<(), ErrorStack> {
+        unsafe {
+            cvt_0i(ffi::SSL_CTX_set_huakai_raw_verify_algorithm_prefs(
+                self.as_ptr(),
+                prefs.as_ptr(),
+                prefs.len(),
+            ))
+            .map(|_| ())
+        }
+    }
+
     /// Sets the context's supported signature verification algorithms.
     #[corresponds(SSL_CTX_set_verify_algorithm_prefs)]
     pub fn set_verify_algorithm_prefs(

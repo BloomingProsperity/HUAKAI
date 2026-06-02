@@ -173,7 +173,7 @@ fn parse_tls_client_hello_record(raw: &[u8]) -> Result<Ja4Parts, Ja4Error> {
     reader.skip(session_id_len)?;
 
     let cipher_len = reader.read_u16()? as usize;
-    if cipher_len % 2 != 0 {
+    if !cipher_len.is_multiple_of(2) {
         return Err(Ja4Error::Parse("invalid cipher list length"));
     }
     let cipher_end = reader.position() + cipher_len;
@@ -265,7 +265,7 @@ fn parse_last_alpn(data: &[u8]) -> Result<Option<String>, Ja4Error> {
 fn parse_supported_versions(data: &[u8]) -> Result<Vec<u16>, Ja4Error> {
     let mut reader = WireReader::new(data);
     let len = reader.read_u8()? as usize;
-    if len % 2 != 0 || reader.remaining() < len {
+    if !len.is_multiple_of(2) || reader.remaining() < len {
         return Err(Ja4Error::Parse("invalid supported_versions"));
     }
     let end = reader.position() + len;
@@ -419,10 +419,7 @@ mod tests {
         assert_eq!(fingerprint.b, "ht");
         assert_eq!(fingerprint.c, "9b003dc3eba7");
         assert_eq!(fingerprint.d, "4e5c652b160e");
-        assert_eq!(
-            fingerprint.full(),
-            "t13d5212_ht_9b003dc3eba7_4e5c652b160e"
-        );
+        assert_eq!(fingerprint.full(), "t13d5212_ht_9b003dc3eba7_4e5c652b160e");
         assert_ne!(fingerprint.b, "000000000000");
         assert_ne!(fingerprint.c, "111111111111");
         assert_ne!(fingerprint.d, "222222222222");

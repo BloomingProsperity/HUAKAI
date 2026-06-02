@@ -110,6 +110,37 @@ attribution: 修改人 HUAKAI codex executor lane (R-3-A-fix-2), 2026-05-17 UTC�
 
 attribution: 修改人 HUAKAI codex executor lane (R-3-A-fix-3), 2026-05-17 UTC。
 
+## R-SIDECAR-001: raw signature_algorithms wire setter
+
+Phase2 S1a 要求 tls-sidecar 出站 ClientHello 的 `signature_algorithms`
+extension 与 HUAKAI profile 的 26 个真抓包 `uint16` id 逐字节一致。上游
+`SSL_CTX_set1_sigalgs_list` 只能通过名称设置 BoringSSL 已知算法，无法表达
+profile 中的全部 legacy / extra id；`SSL_CTX_set_verify_algorithm_prefs` 也会
+校验算法是否为 BoringSSL 支持的实际验证算法。
+
+### boring-sys/deps/boringssl/
+
+- `include/openssl/ssl.h`: 增加 HUAKAI 本地
+  `SSL_CTX_set_huakai_raw_verify_algorithm_prefs` 声明。该 symbol 只控制
+  ClientHello `signature_algorithms` wire advertisement 使用的 raw `uint16`
+  id 序列，不把未知 id 加入实际 signing 能力。
+- `ssl/ssl_privkey.cc`: 实现该 setter；保留重复 id 检查，允许 BoringSSL
+  不认识但 profile 需要广告的 `uint16` id 原样进入 `ctx->verify_sigalgs`。
+- `build/main.rs`: 将 `ssl/ssl_privkey.cc` 加入 `rerun-if-changed`，确保本地
+  setter 修改会触发重新生成 / 重新编译。
+
+### boring/src/ssl/
+
+- `mod.rs`: 在 `SslContextBuilder` 增加
+  `set_raw_verify_algorithm_prefs(&mut self, prefs: &[u16]) -> Result<(), ErrorStack>`，
+  直接调用 bindgen 生成的 HUAKAI local API。
+
+### Apache-2.0 §4 attribution
+
+modification: HUAKAI codex executor lane (R-SIDECAR-001), 2026-06-02 UTC。
+未新增依赖，未修改 HUAKAI 主仓 `LICENSE`。该 patch 是中性 FFI/API 暴露和
+wire-advertisement 控制，不复制任何非 MIT 参考项目实现。
+
 ## R-3-A-fix-2-deeper: strict extension order + extension 22
 
 R-3-A-fix-4 发现上一轮排序 API 仍会补齐未列出的 `kExtensions[]`，导致 Kiro 多发
