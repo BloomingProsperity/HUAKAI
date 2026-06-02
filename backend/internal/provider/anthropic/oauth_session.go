@@ -47,7 +47,10 @@ func (a *OAuthSessionAdapter) BuildRequest(ctx context.Context, in provider.Buil
 	if endpoint == "" {
 		endpoint = defaultMessagesEndpoint
 	}
-	endpoint = provider.EndpointForCredential(endpoint, in.Credential)
+	endpoint, err := provider.EndpointForCredential(endpoint, in.Credential)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic oauth session: endpoint rejected: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(in.InboundBody))
 	if err != nil {
 		return nil, fmt.Errorf("anthropic oauth session: build request: %w", err)
