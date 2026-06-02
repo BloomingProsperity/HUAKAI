@@ -50,7 +50,7 @@ func TestMessageForNeverReflectsCallerInput(t *testing.T) {
 	}
 }
 
-func TestLogInternalWritesRequestCodeAndRawError(t *testing.T) {
+func TestLogInternalWritesRequestCodeAndErrorClassWithoutRawError(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
@@ -58,12 +58,19 @@ func TestLogInternalWritesRequestCodeAndRawError(t *testing.T) {
 		slog.SetDefault(prev)
 	})
 
-	LogInternal(context.Background(), "req-log-1", CodeReserveError, errors.New("SENSITIVE_LOG_MARKER"))
+	const marker = "RAWPROMPT_SECRET_MARKER"
+	const token = "sk-rawprompt-secret-marker"
+	LogInternal(context.Background(), "req-log-1", CodeReserveError, errors.New("upstream raw body prompt="+marker+" authorization=Bearer "+token))
 
 	got := buf.String()
-	for _, want := range []string{"req-log-1", CodeReserveError, "SENSITIVE_LOG_MARKER"} {
+	for _, want := range []string{"req-log-1", CodeReserveError, "error_class"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("log output=%s missing %q", got, want)
+		}
+	}
+	for _, forbidden := range []string{marker, token, "raw body prompt"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("log output leaked %q: %s", forbidden, got)
 		}
 	}
 }

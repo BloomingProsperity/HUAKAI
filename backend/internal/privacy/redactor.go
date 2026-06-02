@@ -34,6 +34,17 @@ func SafePayloadOrBlocked(ctx context.Context, payload any) []byte {
 	return BlockedPayload(ErrorClassPrivacyGuardHit)
 }
 
+func ErrorClassFor(ctx context.Context, err error) string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	errorClass, sanitizeErr := DefaultRedactor().SanitizeError(ctx, err)
+	if sanitizeErr != nil || errorClass == "" {
+		return ErrorClassPrivacyGuardHit
+	}
+	return errorClass
+}
+
 func BlockedPayload(errorClass string) []byte {
 	if errorClass == "" {
 		errorClass = ErrorClassPrivacyGuardHit

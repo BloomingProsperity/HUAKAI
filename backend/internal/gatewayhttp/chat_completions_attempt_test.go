@@ -71,7 +71,7 @@ func TestPR4PrepareNextAttemptAfterAbortClearsReservationAndAcquisition(t *testi
 	}
 }
 
-func TestDegradeFailureIfAbortFailedUsesSafeAbortReasonAndLogsRawError(t *testing.T) {
+func TestDegradeFailureIfAbortFailedUsesSafeAbortReasonAndLogsErrorClass(t *testing.T) {
 	const marker = "SENSITIVE_ABORT_REASON_MARKER"
 	logs := captureSlogForTest(t)
 	failure := terminalLocalAttemptFailure(409, "claim_race", "claim could not be completed", "claim_race", errors.New("claim race"))
@@ -86,5 +86,6 @@ func TestDegradeFailureIfAbortFailedUsesSafeAbortReasonAndLogsRawError(t *testin
 	if got.AbortReason != "claim_race;abort_failed=1" || got.Decision.AbortReason != got.AbortReason {
 		t.Fatalf("abort reason=%q decision=%q want safe abort_failed marker", got.AbortReason, got.Decision.AbortReason)
 	}
-	assertLogContains(t, logs, "req-abort-safe", "abort_failed", marker)
+	assertLogContains(t, logs, "req-abort-safe", "abort_failed", "error_class")
+	assertLogOmits(t, logs, marker)
 }

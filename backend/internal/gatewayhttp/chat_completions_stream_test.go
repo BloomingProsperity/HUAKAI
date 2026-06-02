@@ -1213,7 +1213,8 @@ func TestStreamingForwardSettleAndAbortErrorsAreLoggedNotHeaders(t *testing.T) {
 		if got := rec.Header().Get("X-Huakai-Forward-Error"); got != "" {
 			t.Fatalf("X-Huakai-Forward-Error=%q want empty", got)
 		}
-		assertLogContains(t, logs, "forward_failed", marker)
+		assertLogContains(t, logs, "forward_failed", "error_class")
+		assertLogOmits(t, logs, marker)
 	})
 
 	t.Run("settle error after delivery", func(t *testing.T) {
@@ -1229,7 +1230,8 @@ func TestStreamingForwardSettleAndAbortErrorsAreLoggedNotHeaders(t *testing.T) {
 		if got := rec.Header().Get("X-Huakai-Settle-Error"); got != "" {
 			t.Fatalf("X-Huakai-Settle-Error=%q want empty", got)
 		}
-		assertLogContains(t, logs, "settle_failed", marker)
+		assertLogContains(t, logs, "settle_failed", "error_class")
+		assertLogOmits(t, logs, marker)
 	})
 
 	t.Run("abort error after delivery", func(t *testing.T) {
@@ -1245,7 +1247,8 @@ func TestStreamingForwardSettleAndAbortErrorsAreLoggedNotHeaders(t *testing.T) {
 		if got := rec.Header().Get("X-Huakai-Abort-Failed"); got != "" {
 			t.Fatalf("X-Huakai-Abort-Failed=%q want empty post-Forward dead header", got)
 		}
-		assertLogContains(t, logs, "abort_failed", marker)
+		assertLogContains(t, logs, "abort_failed", "error_class")
+		assertLogOmits(t, logs, marker)
 	})
 }
 
@@ -1677,6 +1680,16 @@ func assertLogContains(t *testing.T, logs *bytes.Buffer, wants ...string) {
 	for _, want := range wants {
 		if !strings.Contains(got, want) {
 			t.Fatalf("log output=%s missing %q", got, want)
+		}
+	}
+}
+
+func assertLogOmits(t *testing.T, logs *bytes.Buffer, forbiddens ...string) {
+	t.Helper()
+	got := logs.String()
+	for _, forbidden := range forbiddens {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("log output=%s leaked %q", got, forbidden)
 		}
 	}
 }

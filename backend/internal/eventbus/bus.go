@@ -3,13 +3,13 @@ package eventbus
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
 
 type Option func(*Bus)
@@ -286,23 +286,48 @@ func (b *Bus) writeDLQ(event RequestCompletionEvent, h Handler, handlerErr error
 	})
 	if err != nil {
 		b.dlqPersistFailures.Add(1)
-		slog.Default().LogAttrs(ctx, slog.LevelError, "eventbus dlq persist failed",
-			slog.String("event_id", event.ID),
-			slog.String("handler_id", string(h.ID())),
-			slog.String("failure_reason", failureReason),
-			slog.Any("err", err),
-		)
+		b.logDLQPersistFailure(ctx, event, h, failureReason, err)
 		b.setStateErrorCode(event, h.ID(), HandlerStateFailed, "dlq_persist_failed")
 	}
 }
 
 func (b *Bus) logHandlerFailure(event RequestCompletionEvent, h Handler, failureReason string, err error) {
-	slog.Default().LogAttrs(context.Background(), slog.LevelError, "eventbus handler failed",
-		slog.String("event_id", event.ID),
-		slog.String("handler_id", string(h.ID())),
-		slog.String("failure_reason", failureReason),
-		slog.Any("err", err),
-	)
+	ctx := context.Background()
+	_ = privacy.LogSystem(ctx, privacy.SystemEvent{
+		Severity:   privacy.SeverityError,
+		Component:  "eventbus",
+		RequestID:  eventRequestID(event),
+		ErrorClass: privacy.ErrorClassFor(ctx, err),
+		Attrs: map[string]any{
+			"event_class":          "eventbus_handler_failed",
+			"event_id":             event.ID,
+			"handler_id":           string(h.ID()),
+			"failure_reason_class": failureReason,
+		},
+	})
+}
+
+func (b *Bus) logDLQPersistFailure(ctx context.Context, event RequestCompletionEvent, h Handler, failureReason string, err error) {
+	_ = privacy.LogSystem(ctx, privacy.SystemEvent{
+		Severity:   privacy.SeverityError,
+		Component:  "eventbus",
+		RequestID:  eventRequestID(event),
+		ErrorClass: privacy.ErrorClassFor(ctx, err),
+		Attrs: map[string]any{
+			"event_class":          "eventbus_dlq_persist_failed",
+			"event_id":             event.ID,
+			"handler_id":           string(h.ID()),
+			"failure_reason_class": failureReason,
+			"reason_class":         "dlq_persist_failed",
+		},
+	})
+}
+
+func eventRequestID(event RequestCompletionEvent) string {
+	if event.RequestID != "" {
+		return event.RequestID
+	}
+	return event.ID
 }
 
 func dlqKindForHandler(id HandlerID) dlq.EventKind {

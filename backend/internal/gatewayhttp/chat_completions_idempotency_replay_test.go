@@ -124,7 +124,8 @@ func TestIdempotencyReplayRecordErrorsAreLogged(t *testing.T) {
 
 		ex.recordIdempotencyReplayWithContentType(99, http.StatusOK, idempotencyReplayContentTypeJSON, []byte(`{"ok":true}`))
 
-		assertLogContains(t, logs, "req-s2-101-response", wantReplayRecordFailedCode, marker)
+		assertLogContains(t, logs, "req-s2-101-response", wantReplayRecordFailedCode, "error_class")
+		assertLogOmits(t, logs, marker)
 	})
 
 	t.Run("cache hit replay write failure", func(t *testing.T) {
@@ -141,7 +142,8 @@ func TestIdempotencyReplayRecordErrorsAreLogged(t *testing.T) {
 			ReserveResult:     &billing.ReserveResult{ClaimID: 100},
 		})
 
-		assertLogContains(t, logs, "req-s2-101-cache", wantReplayRecordFailedCode, marker)
+		assertLogContains(t, logs, "req-s2-101-cache", wantReplayRecordFailedCode, "error_class")
+		assertLogOmits(t, logs, marker)
 	})
 }
 

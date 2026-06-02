@@ -2,7 +2,8 @@ package clienterr
 
 import (
 	"context"
-	"log/slog"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
 
 func LogInternal(ctx context.Context, requestID, code string, err error) {
@@ -12,9 +13,13 @@ func LogInternal(ctx context.Context, requestID, code string, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	slog.Default().LogAttrs(ctx, slog.LevelError, "internal error for public response",
-		slog.String("request_id", requestID),
-		slog.String("public_code", code),
-		slog.Any("err", err),
-	)
+	_ = privacy.LogSystem(ctx, privacy.SystemEvent{
+		Severity:   privacy.SeverityError,
+		Component:  "clienterr",
+		RequestID:  requestID,
+		ErrorClass: privacy.ErrorClassFor(ctx, err),
+		Attrs: map[string]any{
+			"event_class": code,
+		},
+	})
 }

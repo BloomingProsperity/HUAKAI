@@ -245,7 +245,7 @@ var exactAllowlist = map[string]struct{}{
 	"feature_refs": {}, "handler_id": {}, "hop": {}, "hop_chain": {}, "hop_index": {}, "hop_kind": {}, "id": {}, "input_tokens": {},
 	"latency_bucket": {}, "latency_p99_ms": {}, "ledger_id": {}, "manual_override_actor_id": {}, "max_redemptions": {},
 	"message_count": {}, "metadata_keys": {}, "model": {}, "model_chain": {}, "model_verdict": {}, "new_state": {}, "occurred_at": {}, "outbox_event_id": {},
-	"outcome": {}, "output_tokens": {}, "panic_class": {}, "payload": {}, "policy_version": {}, "pool_group_id": {}, "previous_state": {},
+	"outcome": {}, "output_tokens": {}, "panic_class": {}, "payload": {}, "payload_bytes": {}, "payload_snippet": {}, "payload_summary_sha256_prefix": {}, "policy_version": {}, "pool_group_id": {}, "previous_state": {},
 	"priority": {}, "provider": {}, "provider_account_id": {}, "provider_family": {}, "protocol_family": {}, "pubkey_fingerprint": {},
 	"ramp_failure_count": {}, "ramp_stage_pct": {}, "rate_limit_hits": {}, "reason": {}, "reason_class": {}, "receipt_id": {}, "receipt_sequence": {},
 	"redaction_result": {}, "redemption_id": {}, "refund_microcents": {}, "request_id": {}, "requested": {}, "requested_model": {},
