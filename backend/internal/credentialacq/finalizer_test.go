@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -43,16 +44,17 @@ func (f *fakeCredentialCreator) Calls() int {
 	return f.calls
 }
 
-func TestFinalizerValidatesAllFifteenModesAgainstCredentialStoreRegistry(t *testing.T) {
+func TestFinalizerValidatesCredentialStoreRegistryModes(t *testing.T) {
 	finalizer := NewFinalizer(nil, credentialstore.DefaultHandlerRegistry(), &fakeCredentialCreator{}, nil)
-	for i, plan := range phaseAModePlans() {
-		payload := samplePayloadForMode(plan.Vendor, plan.AuthMode)
+	for i, key := range credentialstore.DefaultHandlerRegistry().Names() {
+		vendor, mode := splitModeKeyForFinalizerTest(key)
+		payload := samplePayloadForMode(vendor, mode)
 		candidate := CredentialCandidate{
 			TenantID: 1, ProviderAccountID: int64(100 + i),
-			Vendor: plan.Vendor, AuthMode: plan.AuthMode, Payload: payload, ActorID: "admin-1",
+			Vendor: vendor, AuthMode: mode, Payload: payload, ActorID: "admin-1",
 		}
 		if err := finalizer.ValidateCandidate(candidate); err != nil {
-			t.Fatalf("%s/%s validate: %v", plan.Vendor, plan.AuthMode, err)
+			t.Fatalf("%s validate: %v", key, err)
 		}
 	}
 }
@@ -173,4 +175,12 @@ func samplePayloadForMode(vendor, mode string) []byte {
 	}
 	raw, _ := json.Marshal(fields)
 	return raw
+}
+
+func splitModeKeyForFinalizerTest(key string) (string, string) {
+	vendor, mode, ok := strings.Cut(key, "/")
+	if !ok {
+		return key, ""
+	}
+	return vendor, mode
 }

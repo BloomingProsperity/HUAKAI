@@ -1622,6 +1622,29 @@ paths:
   # Admin: API Keys (Slice 2 N+4b2)
   # ==========================================================================
 
+  /admin/v1/account-modes:
+    get:
+      tags: [admin-account-modes]
+      summary: List safe account credential acquisition modes
+      operationId: listAccountModes
+      description: |
+        Returns the reviewed, fail-closed account-mode catalog used by the
+        admin UI to render add-account forms. The response contains field
+        contracts and helper allow-lists only; it never contains credential
+        values or account instances. Disabled, experimental, feature-flagged,
+        or incomplete modes are omitted by default.
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      x-huakai-required-role: tenant_operator
+      responses:
+        '200':
+          description: Safe visible account modes.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountModeCatalogResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/api-keys:
     post:
       tags: [admin-api-keys]
@@ -4114,6 +4137,88 @@ components:
         cursor: { type: [string, 'null'] }
         next_cursor: { type: [string, 'null'] }
         has_more: { type: boolean }
+
+    AccountModeCatalogResponse:
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      type: object
+      additionalProperties: false
+      required: [modes]
+      properties:
+        modes:
+          type: array
+          items: { $ref: '#/components/schemas/AccountMode' }
+
+    AccountMode:
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      type: object
+      additionalProperties: false
+      required:
+        - vendor
+        - auth_mode
+        - flow_kind
+        - client_identity_source
+        - manual_first
+        - long_lived_toggle
+        - allowed_helpers
+        - required_fields
+        - is_enabled
+        - is_experimental
+        - feature_flag
+        - risk_level
+        - risk_reasons
+      properties:
+        vendor: { type: string }
+        auth_mode: { type: string }
+        flow_kind:
+          type: string
+          enum: [oauth, cli_import, paste, csv_import, json_import, cloud_bootstrap, token_exchange, setup_token, manual_first]
+        client_identity_source:
+          type: string
+          enum: [none, public_cli_client, operator_config, per_account_override, disabled_missing_config]
+        manual_first: { type: boolean }
+        long_lived_toggle: { type: boolean }
+        allowed_helpers:
+          type: array
+          items:
+            type: string
+            enum: [oauth, cli_import, paste, csv_import, json_import, cloud_bootstrap, token_exchange, setup_token, manual_first]
+        required_fields:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/AccountModeField' }
+        is_enabled: { type: boolean }
+        is_experimental: { type: boolean }
+        feature_flag: { type: string }
+        risk_level:
+          type: string
+          enum: [low, medium, high, blocked]
+        risk_reasons:
+          type: array
+          items: { type: string }
+
+    AccountModeField:
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      type: object
+      additionalProperties: false
+      required: [name, kind, required, redaction, group]
+      properties:
+        name: { type: string }
+        kind:
+          type: string
+          enum: [secret, string, url, select, textarea, json_object, boolean]
+        required: { type: boolean }
+        one_of_group:
+          type: string
+          description: Stable group name; at least one non-empty field in the same group satisfies acquisition for one-of payloads.
+        input:
+          type: string
+          description: UI hint only. Security decisions are enforced server-side.
+        redaction:
+          type: string
+          enum: [secret, none]
+        group:
+          type: string
+          enum: [credential, oauth_client, cloud, advanced]
 
     APIKey:
       x-huakai-spec-source: [docs/specs/api-contract.md]

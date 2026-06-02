@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -250,6 +251,55 @@ func TestOpenAPI_ParserSmoke(t *testing.T) {
 	for _, p := range mustHave {
 		if _, ok := got[p]; !ok {
 			t.Errorf("parser 漏 anchor path %q", p)
+		}
+	}
+}
+
+func TestAccountModesRouteAndOpenAPISchemaStayInSync(t *testing.T) {
+	r := buildTestRouter(t)
+	implOps := openapicheck.WalkChiOperations(r)
+	if !hasOperation(implOps, http.MethodGet, "/admin/v1/account-modes") {
+		t.Fatalf("runtime missing GET /admin/v1/account-modes")
+	}
+
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	specOps, err := openapicheck.ParseSpecOperations(specAbs)
+	if err != nil {
+		t.Fatalf("解析 OpenAPI operations %s: %v", specAbs, err)
+	}
+	if !hasOperation(specOps, http.MethodGet, "/admin/v1/account-modes") {
+		t.Fatalf("OpenAPI missing GET /admin/v1/account-modes")
+	}
+
+	raw, err := os.ReadFile(specAbs)
+	if err != nil {
+		t.Fatalf("read OpenAPI: %v", err)
+	}
+	spec := string(raw)
+	for _, snippet := range []string{
+		"AccountModeCatalogResponse:",
+		"AccountMode:",
+		"AccountModeField:",
+		"vendor:",
+		"auth_mode:",
+		"flow_kind:",
+		"client_identity_source:",
+		"allowed_helpers:",
+		"required_fields:",
+		"is_enabled:",
+		"is_experimental:",
+		"feature_flag:",
+		"risk_level:",
+		"risk_reasons:",
+		"one_of_group:",
+		"redaction:",
+		"json_object",
+	} {
+		if !strings.Contains(spec, snippet) {
+			t.Fatalf("OpenAPI account mode schema missing snippet %q", snippet)
 		}
 	}
 }
