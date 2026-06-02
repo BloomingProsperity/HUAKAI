@@ -11,7 +11,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
@@ -21,6 +23,46 @@ import (
 // RoundTripper 还没实现（R3 / diagnostics 还在路径上）。
 var ErrTransportNotImplemented = errors.New("transport: round-tripper not yet implemented for this mode")
 
+type TransportErrorClass string
+
+const (
+	TransportErrorClassSidecarUnavailable        TransportErrorClass = "sidecar_unavailable"
+	TransportErrorClassSidecarProfileUnavailable TransportErrorClass = "sidecar_profile_unavailable"
+)
+
+type TransportError struct {
+	Class      TransportErrorClass
+	Mode       TransportMode
+	SocketPath string
+	Err        error
+}
+
+func (e *TransportError) Error() string {
+	if e == nil {
+		return "transport: unknown transport error"
+	}
+	base := fmt.Sprintf("transport: %s for mode=%s socket=%s", e.Class, e.Mode, e.SocketPath)
+	if e.Err == nil {
+		return base
+	}
+	return base + ": " + e.Err.Error()
+}
+
+func (e *TransportError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func TransportErrorClassOf(err error) TransportErrorClass {
+	var transportErr *TransportError
+	if errors.As(err, &transportErr) {
+		return transportErr.Class
+	}
+	return ""
+}
+
 // Factory 持有可选的非默认 RoundTripper 实例。零值即可使用，默认 standard
 // 路径走 http.DefaultTransport 的 Clone 并显式 Proxy=nil（见
 // standardRoundTripper），以剥离 HTTP_PROXY/HTTPS_PROXY env 对账号绑定
@@ -29,6 +71,10 @@ type Factory struct {
 	// SidecarSocketPath enables the Rust/BoringSSL TLS sidecar for mimicry
 	// modes. Empty keeps the existing Go uTLS path for backwards compatibility.
 	SidecarSocketPath string
+	// SidecarFallbackEnabled 只有显式打开时才允许 Rust sidecar 不可用后回退
+	// Go-native mimicry transport。默认 false，生产 fail-closed，防静默丢失
+	// 强伪装能力。
+	SidecarFallbackEnabled bool
 	// standard 是 standard mode 用的 RoundTripper。nil 时回落到
 	// fallback：http.DefaultTransport.Clone() 并把 Proxy 设为 nil，
 	// 任何代理只能通过 dispatcher.applyProxy 显式绑定生效。
@@ -44,10 +90,12 @@ type Factory struct {
 	mimicryMu        sync.Mutex
 	mimicryByMode    map[TransportMode]http.RoundTripper
 	sidecarByMode    map[TransportMode]http.RoundTripper
+	sidecarMandatory map[TransportMode]bool
+	sidecarFallbacks atomic.Uint64
 	// sidecarProbeTimeout bounds startup/request-time sidecar readiness checks.
 	// Zero uses defaultSidecarProbeTimeout.
 	sidecarProbeTimeout time.Duration
-	sidecarProbe        func(context.Context, string, mimicry.TransportMode) error
+	sidecarProbe        func(context.Context, string, mimicry.TransportMode, string) error
 	// diagnostics 是仅做连通性诊断的 RoundTripper。nil 表示尚未实施。
 	diagnostics http.RoundTripper
 }
@@ -65,6 +113,7 @@ func NewFactory(registries ...*mimicry.TemplateRegistry) *Factory {
 		templateRegistry: registry,
 		mimicryByMode:    make(map[TransportMode]http.RoundTripper),
 		sidecarByMode:    make(map[TransportMode]http.RoundTripper),
+		sidecarMandatory: make(map[TransportMode]bool),
 	}
 }
 
@@ -83,6 +132,26 @@ func (f *Factory) SetMimicry(rt http.RoundTripper) {
 // SetDiagnostics 注入仅诊断的 RoundTripper。
 func (f *Factory) SetDiagnostics(rt http.RoundTripper) {
 	f.diagnostics = rt
+}
+
+func (f *Factory) SetMandatorySidecarMode(mode TransportMode, mandatory bool) {
+	f.mimicryMu.Lock()
+	defer f.mimicryMu.Unlock()
+	if f.sidecarMandatory == nil {
+		f.sidecarMandatory = make(map[TransportMode]bool)
+	}
+	if mandatory {
+		f.sidecarMandatory[mode] = true
+		return
+	}
+	delete(f.sidecarMandatory, mode)
+}
+
+func (f *Factory) SidecarFallbackCount() uint64 {
+	if f == nil {
+		return 0
+	}
+	return f.sidecarFallbacks.Load()
 }
 
 // For 按 (provider, mode) 取 RoundTripper。
@@ -108,16 +177,34 @@ func (f *Factory) For(provider ProviderCode, mode TransportMode) (http.RoundTrip
 		TransportModeMimicryKiro,
 		TransportModeMimicryWindsurf:
 		if f.SidecarSocketPath != "" {
-			return f.sidecarRoundTripper(mode)
-		}
-		if f.mimicry != nil {
-			return f.mimicry, nil
-		}
-		tmpl, err := f.mimicryTemplate(mode)
-		if err != nil {
+			rt, err := f.sidecarRoundTripper(mode)
+			if err == nil {
+				if f.SidecarFallbackEnabled && !f.sidecarModeMandatory(mode) {
+					native, nativeErr := f.nativeMimicryRoundTripper(mode)
+					if nativeErr != nil {
+						return nil, fmt.Errorf("transport: sidecar fallback configured but native fallback unavailable for mode=%s: %w", mode, nativeErr)
+					}
+					return &sidecarFallbackRoundTripper{
+						primary:    rt,
+						fallback:   native,
+						factory:    f,
+						mode:       mode,
+						socketPath: f.SidecarSocketPath,
+					}, nil
+				}
+				return rt, nil
+			}
+			if f.SidecarFallbackEnabled && !f.sidecarModeMandatory(mode) {
+				native, nativeErr := f.nativeMimicryRoundTripper(mode)
+				if nativeErr != nil {
+					return nil, fmt.Errorf("transport: sidecar fallback failed for mode=%s: %w; native fallback: %w", mode, err, nativeErr)
+				}
+				f.recordSidecarFallback(mode, err)
+				return native, nil
+			}
 			return nil, err
 		}
-		return f.mimicryRoundTripper(mode, tmpl), nil
+		return f.nativeMimicryRoundTripper(mode)
 	case TransportModeDiagnosticsOnly:
 		if f.diagnostics != nil {
 			return f.diagnostics, nil
@@ -158,6 +245,17 @@ func (f *Factory) standardRoundTripper() http.RoundTripper {
 	return f.standardCached
 }
 
+func (f *Factory) nativeMimicryRoundTripper(mode TransportMode) (http.RoundTripper, error) {
+	if f.mimicry != nil {
+		return f.mimicry, nil
+	}
+	tmpl, err := f.mimicryTemplate(mode)
+	if err != nil {
+		return nil, err
+	}
+	return f.mimicryRoundTripper(mode, tmpl), nil
+}
+
 func (f *Factory) sidecarRoundTripper(mode TransportMode) (http.RoundTripper, error) {
 	f.mimicryMu.Lock()
 	defer f.mimicryMu.Unlock()
@@ -167,6 +265,12 @@ func (f *Factory) sidecarRoundTripper(mode TransportMode) (http.RoundTripper, er
 	if rt := f.sidecarByMode[mode]; rt != nil {
 		return rt, nil
 	}
+	sidecarMode := mimicry.TransportMode(mode)
+	profileID, ok := mimicry.SidecarProfileForMode(sidecarMode)
+	if !ok {
+		err := fmt.Errorf("%w: no profile for mode %s", mimicry.ErrSidecarProfileUnavailable, mode)
+		return nil, newSidecarTransportError(TransportErrorClassSidecarProfileUnavailable, mode, f.SidecarSocketPath, err)
+	}
 	timeout := f.sidecarProbeTimeout
 	if timeout <= 0 {
 		timeout = defaultSidecarProbeTimeout
@@ -175,23 +279,129 @@ func (f *Factory) sidecarRoundTripper(mode TransportMode) (http.RoundTripper, er
 	defer cancel()
 	probe := f.sidecarProbe
 	if probe == nil {
-		probe = mimicry.ProbeSidecarForMode
+		probe = func(ctx context.Context, socketPath string, mode mimicry.TransportMode, _ string) error {
+			return mimicry.ProbeSidecarForMode(ctx, socketPath, mode)
+		}
 	}
-	if err := probe(ctx, f.SidecarSocketPath, mimicry.TransportMode(mode)); err != nil {
+	if err := probe(ctx, f.SidecarSocketPath, sidecarMode, profileID); err != nil {
+		class := classifySidecarError(err)
 		slog.Warn("transport mimicry sidecar unavailable",
 			"mode", mode,
 			"socket_path", f.SidecarSocketPath,
-			"reason_class", "sidecar_unavailable",
+			"profile_id", profileID,
+			"reason_class", class,
 			"error", err,
 		)
-		return nil, fmt.Errorf("transport: sidecar unavailable for mode=%s socket=%s: %w", mode, f.SidecarSocketPath, err)
+		return nil, newSidecarTransportError(class, mode, f.SidecarSocketPath, err)
 	}
-	rt, err := mimicry.NewSidecarRoundTripperForMode(f.SidecarSocketPath, mimicry.TransportMode(mode))
+	rt, err := mimicry.NewSidecarRoundTripperForMode(f.SidecarSocketPath, sidecarMode)
 	if err != nil {
-		return nil, fmt.Errorf("transport: create sidecar round-tripper for mode=%s: %w", mode, err)
+		return nil, newSidecarTransportError(classifySidecarError(err), mode, f.SidecarSocketPath, err)
 	}
 	f.sidecarByMode[mode] = rt
 	return rt, nil
+}
+
+func (f *Factory) sidecarModeMandatory(mode TransportMode) bool {
+	f.mimicryMu.Lock()
+	defer f.mimicryMu.Unlock()
+	return f.sidecarMandatory != nil && f.sidecarMandatory[mode]
+}
+
+func (f *Factory) recordSidecarFallback(mode TransportMode, err error) {
+	if f == nil {
+		return
+	}
+	class := classifySidecarError(err)
+	f.sidecarFallbacks.Add(1)
+	slog.Warn("transport mimicry sidecar fallback to Go-native mimicry",
+		"audit_event", "transport_sidecar_fallback",
+		"mode", mode,
+		"socket_path", f.SidecarSocketPath,
+		"reason_class", class,
+		"fallback_enabled", true,
+		"error", err,
+	)
+}
+
+type sidecarFallbackRoundTripper struct {
+	primary    http.RoundTripper
+	fallback   http.RoundTripper
+	factory    *Factory
+	mode       TransportMode
+	socketPath string
+}
+
+func (rt *sidecarFallbackRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := rt.primary.RoundTrip(req)
+	if err == nil || resp != nil {
+		return resp, err
+	}
+	class, ok := sidecarRuntimeFallbackClass(err)
+	if !ok {
+		return nil, err
+	}
+	transportErr := newSidecarTransportError(class, rt.mode, rt.socketPath, err)
+	if rt.factory != nil {
+		rt.factory.recordSidecarFallback(rt.mode, transportErr)
+	}
+	fallbackResp, fallbackErr := rt.fallback.RoundTrip(req)
+	if fallbackErr != nil {
+		return nil, fmt.Errorf("transport: sidecar runtime fallback failed for mode=%s: %w; native fallback: %w", rt.mode, transportErr, fallbackErr)
+	}
+	return fallbackResp, nil
+}
+
+func newSidecarTransportError(class TransportErrorClass, mode TransportMode, socketPath string, err error) *TransportError {
+	if class == "" {
+		class = TransportErrorClassSidecarUnavailable
+	}
+	return &TransportError{
+		Class:      class,
+		Mode:       mode,
+		SocketPath: socketPath,
+		Err:        err,
+	}
+}
+
+func classifySidecarError(err error) TransportErrorClass {
+	var transportErr *TransportError
+	if errors.As(err, &transportErr) && transportErr.Class != "" {
+		return transportErr.Class
+	}
+	if errors.Is(err, mimicry.ErrSidecarProfileUnavailable) {
+		return TransportErrorClassSidecarProfileUnavailable
+	}
+	return TransportErrorClassSidecarUnavailable
+}
+
+func sidecarRuntimeFallbackClass(err error) (TransportErrorClass, bool) {
+	if errors.Is(err, mimicry.ErrSidecarProfileUnavailable) {
+		return TransportErrorClassSidecarProfileUnavailable, true
+	}
+	if errors.Is(err, mimicry.ErrSidecarUnavailable) {
+		return TransportErrorClassSidecarUnavailable, true
+	}
+	text := strings.ToLower(err.Error())
+	if strings.Contains(text, "unknown profile") ||
+		strings.Contains(text, "profile not found") ||
+		strings.Contains(text, "no profile") ||
+		(strings.Contains(text, "missing") && strings.Contains(text, "profile")) {
+		return TransportErrorClassSidecarProfileUnavailable, true
+	}
+	for _, marker := range []string{
+		"dial unix socket",
+		"read ack frame",
+		"write control frame",
+		"set deadline",
+		"empty socket path",
+		"nil client",
+	} {
+		if strings.Contains(text, marker) {
+			return TransportErrorClassSidecarUnavailable, true
+		}
+	}
+	return "", false
 }
 
 func (f *Factory) mimicryRoundTripper(mode TransportMode, tmpl *mimicry.ClientHelloTemplate) http.RoundTripper {
