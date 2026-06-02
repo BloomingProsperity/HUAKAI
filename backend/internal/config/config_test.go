@@ -16,9 +16,9 @@ func TestDefaultBillingPolicyVersionServesFreshDeploymentSeed(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	const wantVersion = "1.0"
-	const insertActor = "migration:0066_default_pricing_bootstrap"
-	const updatePrivateActor = "migration:0066_default_pricing_bootstrap:updated_empty_private_placeholder"
-	const updatePublicActor = "migration:0066_default_pricing_bootstrap:updated_empty_public_placeholder"
+	const insertActor = "migration:0068_default_pricing_bootstrap"
+	const updatePrivateActor = "migration:0068_default_pricing_bootstrap:updated_empty_private_placeholder"
+	const updatePublicActor = "migration:0068_default_pricing_bootstrap:updated_empty_public_placeholder"
 	if cfg.BillingPolicyVersion != wantVersion {
 		t.Fatalf("BillingPolicyVersion=%q want %q so a migrated fresh deployment can reserve requests", cfg.BillingPolicyVersion, wantVersion)
 	}
@@ -31,7 +31,7 @@ func TestDefaultBillingPolicyVersionServesFreshDeploymentSeed(t *testing.T) {
 		t.Fatalf("config.example.yaml must advertise billing policy %q", wantVersion)
 	}
 
-	migration, err := os.ReadFile("../../sql/migrations/0066_default_pricing_bootstrap.up.sql")
+	migration, err := os.ReadFile("../../sql/migrations/0068_default_pricing_bootstrap.up.sql")
 	if err != nil {
 		t.Fatalf("read pricing bootstrap migration: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestDefaultBillingPolicyVersionServesFreshDeploymentSeed(t *testing.T) {
 		}
 	}
 
-	rollback, err := os.ReadFile("../../sql/migrations/0066_default_pricing_bootstrap.down.sql")
+	rollback, err := os.ReadFile("../../sql/migrations/0068_default_pricing_bootstrap.down.sql")
 	if err != nil {
 		t.Fatalf("read pricing bootstrap rollback: %v", err)
 	}

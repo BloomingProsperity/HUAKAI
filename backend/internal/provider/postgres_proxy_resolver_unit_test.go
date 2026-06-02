@@ -119,7 +119,7 @@ func TestMigration0038RejectsMalformedProxyURLBeforeDroppingLegacyColumn(t *test
 		t.Fatal("mutation check failed: removing the guard must make this test red")
 	}
 
-	forwardRaw, err := os.ReadFile("../../sql/migrations/0066_s1_020_proxy_backfill_validation.up.sql")
+	forwardRaw, err := os.ReadFile("../../sql/migrations/0069_s1_020_proxy_backfill_validation.up.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
