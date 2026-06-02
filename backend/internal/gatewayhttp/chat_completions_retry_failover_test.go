@@ -182,6 +182,38 @@ func TestPR5NonStreamAllAttemptsFailReturnsLastClassifiedError(t *testing.T) {
 	}
 }
 
+func TestAT_GW_002_04_PreStreamFinalErrorSanitizesUpstreamBody(t *testing.T) {
+	// Risk killed: when every pre-delivery attempt fails, the client receives a
+	// typed sanitized error while the raw upstream body is used only for internal
+	// classification. Mutation self-check: writing upstreamErr.Body to the client
+	// leaks SENSITIVE_UPSTREAM_MARKER and turns this test red.
+	enableHCSFDispatchForTest(t)
+	const marker = "SENSITIVE_UPSTREAM_MARKER"
+	selector := newPR5Selector(t, 451)
+	dispatcher := &pr5CanonicalSequenceDispatcher{
+		steps: []pr5CanonicalStep{{
+			status: http.StatusInternalServerError,
+			body:   `{"error":"` + marker + `"}`,
+		}},
+	}
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88451}, &recordingSettler{}, dispatcher)
+	deps.Router = stubRouter{plan: pr5RoutePlan(router.AttemptPlan{Index: 0, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "only"})}
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%s; want sanitized 502", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), marker) {
+		t.Fatalf("response leaked upstream marker: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "upstream_upstream_5xx") {
+		t.Fatalf("body=%s want typed upstream_5xx code", rec.Body.String())
+	}
+	if selector.calls != 1 || dispatcher.calls != 1 {
+		t.Fatalf("selector/dispatcher calls=%d/%d want single final attempt", selector.calls, dispatcher.calls)
+	}
+}
+
 func TestPR5IdempotentReplayAfterRetriedSuccessWritesOneTerminalResponse(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	replayStore := billing.NewMemoryReplayStore()
@@ -416,7 +448,7 @@ func TestPR5ClaimRaceAbortFailureSurfacesSafeHeader(t *testing.T) {
 	}
 }
 
-func TestPR5StreamPreFirstByteTimeoutRetriesAndPostFirstByteErrorDoesNotRetry(t *testing.T) {
+func TestAT_GW_002_03_PreStreamRetryAnd13MidStreamRetryBlocked(t *testing.T) {
 	replayStore := billing.NewMemoryReplayStore()
 	settler := &recordingSettler{}
 	streamDoer := &pr5SequentialStreamingDoer{

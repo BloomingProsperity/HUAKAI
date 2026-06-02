@@ -165,6 +165,8 @@ func responseFromEvents(events []proto.CanonicalEvent) (proto.CanonicalResponse,
 	blocks := map[int]*blockState{}
 	var order []int
 	var losses []proto.ProtocolLossEntry
+	var sawMessageStart bool
+	var contentBeforeMessageStart bool
 
 	ensureBlock := func(index int, typ string) *blockState {
 		if b, ok := blocks[index]; ok {
@@ -182,6 +184,7 @@ func responseFromEvents(events []proto.CanonicalEvent) (proto.CanonicalResponse,
 	for _, evt := range events {
 		switch evt.Type {
 		case "message_start":
+			sawMessageStart = true
 			if evt.MessageID != "" {
 				resp.ID = evt.MessageID
 			}
@@ -192,12 +195,18 @@ func responseFromEvents(events []proto.CanonicalEvent) (proto.CanonicalResponse,
 				resp.Usage = *evt.Usage
 			}
 		case "content_block_start":
+			if !sawMessageStart {
+				contentBeforeMessageStart = true
+			}
 			if evt.ContentBlock == nil {
 				continue
 			}
 			b := ensureBlock(evt.Index, evt.ContentBlock.Type)
 			b.block = *evt.ContentBlock
 		case "content_block_delta":
+			if !sawMessageStart {
+				contentBeforeMessageStart = true
+			}
 			if evt.Delta == nil {
 				continue
 			}
@@ -217,6 +226,10 @@ func responseFromEvents(events []proto.CanonicalEvent) (proto.CanonicalResponse,
 				resp.StopReason = evt.StopReason
 			}
 		}
+	}
+	if contentBeforeMessageStart {
+		losses = append(losses, proto.NewLossEntry(proto.FeatureTextStreaming, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "buffered SSE content appeared before message_start"))
+		return proto.CanonicalResponse{}, losses
 	}
 
 	for _, index := range order {
