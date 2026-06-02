@@ -907,6 +907,28 @@ int SSL_CTX_set_verify_algorithm_prefs(SSL_CTX *ctx, const uint16_t *prefs,
   return set_sigalg_prefs(&ctx->verify_sigalgs, Span(prefs, num_prefs));
 }
 
+int SSL_CTX_set_huakai_raw_verify_algorithm_prefs(SSL_CTX *ctx,
+                                                  const uint16_t *prefs,
+                                                  size_t num_prefs) {
+  if (prefs == nullptr && num_prefs != 0) {
+    OPENSSL_PUT_ERROR(SSL, ERR_R_PASSED_NULL_PARAMETER);
+    return 0;
+  }
+
+  Span<const uint16_t> pref_span(prefs, num_prefs);
+  if (!sigalgs_unique(pref_span)) {
+    return 0;
+  }
+  if (num_prefs == 0) {
+    ctx->verify_sigalgs.Reset();
+    return 1;
+  }
+  if (!ctx->verify_sigalgs.CopyFrom(pref_span)) {
+    return 0;
+  }
+  return 1;
+}
+
 int SSL_set_verify_algorithm_prefs(SSL *ssl, const uint16_t *prefs,
                                    size_t num_prefs) {
   if (!ssl->config) {

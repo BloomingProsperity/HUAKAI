@@ -21,8 +21,7 @@ cipher_list = "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-E
 extension_order = [65281, 0, 11, 10, 35, 16, 22, 23, 13, 43, 45, 51]
 tls13_cipher_order = [4866, 4867, 4865]
 curves = "X25519:P-256:P-384"
-# // TODO: 当前 sigalgs string 仅覆盖 boring set_sigalgs_list 支持的 10 个标准名称；真抓包 wire 是 26 个数字 ID（含 ed448、rsa_pkcs1_sha224 等非标/旧算法）。
-# // TODO: 完整 fidelity 需等 boring 暴露 set_sigalgs_raw API 或 HUAKAI 自加 R-3-A-fix-6 local patch；sidecar 未生产接通前不影响真流量，接通前必须补，记入 Phase 4-5 收尾切片。
+# raw signature_algorithms 由 signature_algorithms 数字列表驱动；sigalgs 字符串仅作空数字列表时的兼容 fallback。
 sigalgs = "ecdsa_secp256r1_sha256:ecdsa_secp384r1_sha384:ecdsa_secp521r1_sha512:ed25519:rsa_pss_rsae_sha256:rsa_pss_rsae_sha384:rsa_pss_rsae_sha512:rsa_pkcs1_sha256:rsa_pkcs1_sha384:rsa_pkcs1_sha512"
 alpn = ["h2", "http/1.1"]
 expected_ja3 = "772,4866-4867-4865-49199-49195-49200-49196-158-49191-103-49192-107-163-159-52393-52392-52394-49325-49311-49245-49249-49239-49235-162-49324-49310-49244-49248-49238-49234-49188-106-49187-64-49162-49172-57-56-49161-49171-51-50-157-49309-49233-156-49308-49232-61-60-53-47,65281-0-11-10-35-16-22-23-13-43-45-51,4588-29-23-30-24-25-256-257,0-1-2"
