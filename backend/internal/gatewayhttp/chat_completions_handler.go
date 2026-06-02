@@ -24,6 +24,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/protosse"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
@@ -60,6 +61,7 @@ type ChatHandlerDeps struct {
 	SettleRecoveryDLQ    settlementrecovery.Enqueuer
 	Signer               *sign.Signer
 	ChannelHealth        channelHealthRecorder
+	ModelCooldowns       modelRateLimitRecorder
 	BillingPolicyVersion string
 	RequestClass         string
 
@@ -71,6 +73,10 @@ type ChatHandlerDeps struct {
 
 type channelHealthRecorder interface {
 	ApplySignal(context.Context, channelhealth.Signal) (channelhealth.Record, error)
+}
+
+type modelRateLimitRecorder interface {
+	RecordModelRateLimit(context.Context, rate.ModelCooldownInput) error
 }
 
 // HCSFDispatcher 是 non-streaming HCSF 主链路；默认开启，可由 env 开关关闭。
@@ -324,6 +330,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 			classification, _ = gateway.Classify(dispatchRes.StatusCode, dispatchRes.Headers, raw, ex.accInfo.Platform)
 			decision = gateway.AttemptRetryDecision{ClientStatus: clientStatusForUpstreamError(dispatchRes.StatusCode, classification.Class), AbortReason: "upstream_error"}
 		}
+		recordModelCooldownOnUpstream404(ex.ctx, ex.d, ex.ident.TenantID, ex.acquiredAccountID, ex.upstreamModelID, dispatchRes.StatusCode, ex.requestID)
 		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, decision.AbortReason, ex.requestID, 0, nil)
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromClassification(dispatchRes.StatusCode, classification), dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()))

@@ -311,6 +311,7 @@ func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 		SettleRecoveryDLQ:     d.dlqService,
 		Signer:                d.auditSigner,
 		ChannelHealth:         d.channelHealth,
+		ModelCooldowns:        d.modelCooldowns,
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
 		RequestClass:          d.cfg.RequestClass,
 	}

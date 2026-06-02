@@ -7,6 +7,7 @@ import (
 )
 
 type AccountSnapshot = router.AccountSnapshot
+type ModelRateLimit = router.ModelRateLimit
 type AccountSource = router.AccountSource
 type SelectionRequest = router.SelectionRequest
 type SelectionResult = router.SelectionResult

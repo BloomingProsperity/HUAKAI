@@ -13,6 +13,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 )
 
 const (
@@ -180,4 +181,19 @@ func rateLimitResetFromClassification(c gateway.Classification, now time.Time) *
 	}
 	reset := now.Add(time.Duration(c.RetryAfterMs) * time.Millisecond)
 	return &reset
+}
+
+func recordModelCooldownOnUpstream404(ctx context.Context, d ChatHandlerDeps, tenantID, accountID int64, modelKey string, statusCode int, requestID string) {
+	if d.ModelCooldowns == nil || statusCode != http.StatusNotFound || tenantID == 0 || accountID == 0 || modelKey == "" {
+		return
+	}
+	if err := d.ModelCooldowns.RecordModelRateLimit(ctx, rate.ModelCooldownInput{
+		TenantID:          tenantID,
+		ProviderAccountID: accountID,
+		ModelKey:          modelKey,
+		StatusCode:        statusCode,
+		UpstreamRequestID: requestID,
+	}); err != nil {
+		logInternalError(ctx, requestID, "model_rate_limit_record_failed", err)
+	}
 }

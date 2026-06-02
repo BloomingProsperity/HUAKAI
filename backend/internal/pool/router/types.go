@@ -28,6 +28,9 @@ type SelectionRequest struct {
 	APIKeyID       int64
 	PoolGroupID    int64
 	RequestedModel string
+	// ModelCooldownKey is the upstream/provider model key used by
+	// provider_accounts.model_rate_limits. Empty falls back to RequestedModel.
+	ModelCooldownKey string
 	// ProtocolFamily is the exact upstream protocol requested by registry
 	// resolution, matching providers.upstream_protocol.
 	ProtocolFamily   string
@@ -72,6 +75,12 @@ type AccountSnapshot struct {
 	MaxWaiting       int
 	HealthState      string
 	HealthStateUntil time.Time
+	ModelRateLimits  map[string]ModelRateLimit
+}
+
+type ModelRateLimit struct {
+	RateLimitResetAt time.Time
+	Reason           string
 }
 
 type RoutingPolicy struct {
