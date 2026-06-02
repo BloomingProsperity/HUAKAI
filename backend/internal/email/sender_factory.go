@@ -131,6 +131,19 @@ func (s *AuthSender) EmailVerificationEnabled(ctx context.Context, tenantID int6
 	return parseBool(raw[SettingVerifyRequirement]), nil
 }
 
+// SendTenantMessage 用租户 SMTP 设置发送一封任意邮件, 复用加载设置/校验/瞬时失败入 DLQ 的链路。
+// 供订阅到期提醒等非鉴权用途复用 (鉴权邮件走 SendVerification/SendPasswordReset 带冷却; 本入口不限频,
+// 去重由调用方账本负责)。租户未配 SMTP 返回 ErrEmailBackendUnconfigured; 瞬时失败已入 DLQ 时返回 nil。
+func (s *AuthSender) SendTenantMessage(ctx context.Context, tenantID int64, msg Message) error {
+	if s == nil {
+		return ErrEmailBackendUnconfigured
+	}
+	if msg.TenantID == 0 {
+		msg.TenantID = tenantID
+	}
+	return s.sendForTenant(ctx, tenantID, msg)
+}
+
 func (s *AuthSender) sendForTenant(ctx context.Context, tenantID int64, msg Message) error {
 	settings, err := LoadSMTPSettings(ctx, s.store, s.keys, tenantID)
 	if err != nil {

@@ -2,21 +2,22 @@ package payment
 
 import (
 	"context"
-	"encoding/json"
+	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/shopspring/decimal"
 )
 
 const (
-	adminPaymentProvider      = "manual_admin"
-	adminAuditRechargeSuccess = "RECHARGE_SUCCESS"
-	adminAuditAdjustment      = "MANUAL_BALANCE_ADJUSTMENT"
+	adminAdjustmentFingerprint = "admin_adjustment"
+	adminPaymentProvider       = "manual_admin"
+	adminAuditRechargeSuccess  = "RECHARGE_SUCCESS"
+	adminAuditAdjustment       = "MANUAL_BALANCE_ADJUSTMENT"
 )
 
 type AdminBalanceAdjustmentInput struct {
@@ -48,12 +49,12 @@ func (s *Service) AdminAdjustBalance(ctx context.Context, input AdminBalanceAdju
 		return AdminBalanceAdjustmentResult{}, ErrStoreNotConfigured
 	}
 	input = normalizeAdminBalanceAdjustmentInput(input)
+	if err := validateAdminBalanceAdjustmentInput(input); err != nil {
+		return AdminBalanceAdjustmentResult{}, err
+	}
 	store, ok := s.store.(AdminBalanceStore)
 	if !ok || store == nil {
 		return AdminBalanceAdjustmentResult{}, ErrStoreNotConfigured
-	}
-	if err := validateAdminBalanceAdjustmentInput(input); err != nil {
-		return AdminBalanceAdjustmentResult{}, err
 	}
 	return store.ApplyAdminBalanceAdjustment(ctx, input)
 }
@@ -67,15 +68,18 @@ func (s *PostgresStore) ApplyAdminBalanceAdjustment(ctx context.Context, input A
 		return AdminBalanceAdjustmentResult{}, err
 	}
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < fulfillTxRetryAttempts; attempt++ {
 		result, err := s.applyAdminBalanceAdjustmentOnce(ctx, input)
-		if isSerializationFailure(err) {
+		if err == nil {
+			return result, nil
+		}
+		if isPgRetryableTxConflict(err) || isUniqueViolation(err) {
 			lastErr = err
 			continue
 		}
-		return result, err
+		return AdminBalanceAdjustmentResult{}, err
 	}
-	return AdminBalanceAdjustmentResult{}, lastErr
+	return AdminBalanceAdjustmentResult{}, fmt.Errorf("payment: admin adjustment exhausted retries: %w", lastErr)
 }
 
 func (s *PostgresStore) applyAdminBalanceAdjustmentOnce(ctx context.Context, input AdminBalanceAdjustmentInput) (AdminBalanceAdjustmentResult, error) {
@@ -88,58 +92,99 @@ func (s *PostgresStore) applyAdminBalanceAdjustmentOnce(ctx context.Context, inp
 	if err := lockAdminAdjustmentKey(ctx, tx, input); err != nil {
 		return AdminBalanceAdjustmentResult{}, err
 	}
-	if result, ok, err := getExistingAdminBalanceAdjustment(ctx, tx, input); ok || err != nil {
+	if existing, ok, err := getExistingAdminAdjustmentTx(ctx, tx, input); ok || err != nil {
 		if err != nil {
 			return AdminBalanceAdjustmentResult{}, err
 		}
 		if err := tx.Commit(ctx); err != nil {
-			return AdminBalanceAdjustmentResult{}, fmt.Errorf("payment: commit admin balance adjustment replay: %w", err)
+			return AdminBalanceAdjustmentResult{}, fmt.Errorf("payment: commit admin adjustment replay: %w", err)
 		}
-		return result, nil
+		return existing, nil
 	}
-
 	if input.Amount.IsNegative() {
 		return AdminBalanceAdjustmentResult{}, ErrAdminDebitNotSupported
 	}
-
-	if err := lockUser(ctx, tx, input.TenantID, input.UserID); err != nil {
+	if err := lockPaymentUserTx(ctx, tx, input.TenantID, input.UserID); err != nil {
 		return AdminBalanceAdjustmentResult{}, err
 	}
-
-	var rechargeOrderID int64
-	if input.Amount.IsPositive() {
-		order, err := insertAdminRechargeOrder(ctx, tx, input)
-		if isUniqueViolation(err) {
-			return AdminBalanceAdjustmentResult{}, ErrExternalTradeConflict
-		}
-		if err != nil {
-			return AdminBalanceAdjustmentResult{}, err
-		}
-		if err := insertBalanceRechargedEvent(ctx, tx, order); err != nil {
-			return AdminBalanceAdjustmentResult{}, err
-		}
-		rechargeOrderID = order.ID
-	}
-
-	balance, err := adjustUserBalanceTx(ctx, tx, input)
+	amountCents, err := decimalAmountToCents(input.Amount)
 	if err != nil {
 		return AdminBalanceAdjustmentResult{}, err
 	}
-	if err := insertAdminBalanceAudit(ctx, tx, input, rechargeOrderID, balance); err != nil {
+	actorID := parseAdminActorID(input.ActorID)
+	order, err := insertOrderTx(ctx, tx, createOrderRecord{
+		TenantID:           input.TenantID,
+		UserID:             input.UserID,
+		OutTradeNo:         input.ExternalTradeNo,
+		AmountCents:        amountCents,
+		CurrencyCode:       input.CurrencyCode,
+		ProviderKind:       ProviderManual,
+		RequestFingerprint: adminAdjustmentFingerprint,
+		CreatedByAdminID:   actorID,
+		RequestID:          input.RequestID,
+		OrderKind:          OrderKindTopup,
+		Now:                input.Now,
+	})
+	if errors.Is(err, ErrIdempotencyConflict) || isUniqueViolation(err) {
+		return AdminBalanceAdjustmentResult{}, ErrExternalTradeConflict
+	}
+	if err != nil {
+		return AdminBalanceAdjustmentResult{}, fmt.Errorf("payment: insert admin adjustment order: %w", err)
+	}
+	for _, ev := range []auditInsert{
+		{TenantID: input.TenantID, OrderID: order.ID, EventType: AuditOrderCreated, ActorKind: ActorKindAdmin, ActorID: actorID, ReasonClass: input.Reason, RequestID: input.RequestID, Payload: map[string]any{"source": adminAdjustmentFingerprint, "amount_cents": amountCents}, Now: input.Now},
+		{TenantID: input.TenantID, OrderID: order.ID, EventType: AuditPaidConfirmed, ActorKind: ActorKindAdmin, ActorID: actorID, ReasonClass: input.Reason, RequestID: input.RequestID, Now: input.Now},
+		{TenantID: input.TenantID, OrderID: order.ID, EventType: AuditFulfillmentStarted, ActorKind: ActorKindAdmin, ActorID: actorID, ReasonClass: input.Reason, RequestID: input.RequestID, Now: input.Now},
+	} {
+		if err := insertAuditTx(ctx, tx, ev); err != nil {
+			return AdminBalanceAdjustmentResult{}, err
+		}
+	}
+	credit, billingID, err := insertTopupCreditTx(ctx, tx, order, actorKindOrDefault(ActorKindAdmin), actorID, input.RequestID, input.Now)
+	if err != nil {
+		return AdminBalanceAdjustmentResult{}, err
+	}
+	row := tx.QueryRow(ctx, `
+UPDATE payment_orders
+SET status='completed',
+    paid_at=$3,
+    recharging_at=$3,
+    completed_at=$3,
+    confirmed_by_admin_id=$4,
+    confirm_reason=$5,
+    updated_at=$3
+WHERE tenant_id=$1 AND id=$2
+RETURNING`+orderSelectColumns,
+		input.TenantID, order.ID, input.Now, nullableInt64(actorID), nullableText(input.Reason))
+	completed, err := scanOrder(row)
+	if err != nil {
+		return AdminBalanceAdjustmentResult{}, fmt.Errorf("payment: complete admin adjustment order: %w", err)
+	}
+	if err := insertAuditTx(ctx, tx, auditInsert{
+		TenantID:  input.TenantID,
+		OrderID:   completed.ID,
+		EventType: AuditCredited,
+		ActorKind: ActorKindAdmin,
+		ActorID:   actorID,
+		RequestID: input.RequestID,
+		Payload:   map[string]any{"amount_cents": completed.AmountCents, "credit_id": credit.ID, "billing_event_id": billingID},
+		Now:       input.Now,
+	}); err != nil {
+		return AdminBalanceAdjustmentResult{}, err
+	}
+	balance, err := userBalanceTx(ctx, tx, input.TenantID, input.UserID)
+	if err != nil {
 		return AdminBalanceAdjustmentResult{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		if isUniqueViolation(err) {
-			return AdminBalanceAdjustmentResult{}, ErrExternalTradeConflict
-		}
 		return AdminBalanceAdjustmentResult{}, fmt.Errorf("payment: commit admin balance adjustment: %w", err)
 	}
 	return AdminBalanceAdjustmentResult{
 		TenantID:        input.TenantID,
 		UserID:          input.UserID,
-		NewBalance:      balance,
+		NewBalance:      centsToDecimal(balance),
 		CurrencyCode:    input.CurrencyCode,
-		RechargeOrderID: rechargeOrderID,
+		RechargeOrderID: completed.ID,
 	}, nil
 }
 
@@ -165,41 +210,16 @@ func validateAdminBalanceAdjustmentInput(input AdminBalanceAdjustmentInput) erro
 		input.Reason == "" || input.ExternalTradeNo == "" {
 		return ErrInvalidInput
 	}
-	if len(input.ExternalTradeNo) > 128 {
+	if len(input.ExternalTradeNo) > maxOutTradeNoLen {
 		return ErrInvalidInput
 	}
-	if input.CurrencyCode != "USD" || !fitsSignedMoneyColumn(input.Amount) {
-		return ErrInvalidInput
+	if input.CurrencyCode != "USD" {
+		return ErrUnsupportedCurrency
+	}
+	if _, err := decimalAmountToCents(input.Amount.Abs()); err != nil {
+		return err
 	}
 	return nil
-}
-
-func fitsSignedMoneyColumn(value decimal.Decimal) bool {
-	if !value.Equal(value.Truncate(8)) {
-		return false
-	}
-	return value.Abs().LessThan(moneyNumericUpperBound)
-}
-
-func adjustUserBalanceTx(ctx context.Context, tx pgx.Tx, input AdminBalanceAdjustmentInput) (decimal.Decimal, error) {
-	var inserted decimal.Decimal
-	if input.Amount.IsPositive() {
-		inserted = input.Amount
-	}
-	var balance decimal.Decimal
-	if err := tx.QueryRow(ctx, `
-INSERT INTO user_balances (tenant_id, user_id, balance, held, version, updated_at)
-VALUES ($1, $2, $3, 0, 1, $5)
-ON CONFLICT (tenant_id, user_id) DO UPDATE
-SET balance = GREATEST(user_balances.held, user_balances.balance + $4),
-    version = user_balances.version + 1,
-    updated_at = $5
-RETURNING balance`,
-		input.TenantID, input.UserID, inserted, input.Amount, input.Now,
-	).Scan(&balance); err != nil {
-		return decimal.Decimal{}, fmt.Errorf("payment: admin adjust user balance: %w", err)
-	}
-	return balance, nil
 }
 
 func lockAdminAdjustmentKey(ctx context.Context, tx pgx.Tx, input AdminBalanceAdjustmentInput) error {
@@ -211,10 +231,45 @@ func lockAdminAdjustmentKey(ctx context.Context, tx pgx.Tx, input AdminBalanceAd
 	return nil
 }
 
-func getExistingAdminBalanceAdjustment(ctx context.Context, tx pgx.Tx, input AdminBalanceAdjustmentInput) (AdminBalanceAdjustmentResult, bool, error) {
+func getExistingAdminAdjustmentTx(ctx context.Context, tx pgx.Tx, input AdminBalanceAdjustmentInput) (AdminBalanceAdjustmentResult, bool, error) {
+	existing, err := getOrderByOutTradeNoTx(ctx, tx, input.TenantID, input.ExternalTradeNo)
+	if errors.Is(err, ErrOrderNotFound) {
+		return getExistingLegacyAdminAdjustmentTx(ctx, tx, input)
+	}
+	if err != nil {
+		return AdminBalanceAdjustmentResult{}, false, err
+	}
+	wantCents, err := decimalAmountToCents(input.Amount.Abs())
+	if err != nil {
+		return AdminBalanceAdjustmentResult{}, true, err
+	}
+	if input.Amount.IsNegative() ||
+		existing.UserID != input.UserID ||
+		existing.AmountCents != wantCents ||
+		existing.ProviderKind != ProviderManual ||
+		existing.RequestFingerprint != adminAdjustmentFingerprint {
+		return AdminBalanceAdjustmentResult{}, true, ErrExternalTradeConflict
+	}
+	if existing.Status != StatusCompleted {
+		return AdminBalanceAdjustmentResult{}, true, ErrExternalTradeConflict
+	}
+	balance, err := userBalanceTx(ctx, tx, input.TenantID, input.UserID)
+	if err != nil {
+		return AdminBalanceAdjustmentResult{}, true, err
+	}
+	return AdminBalanceAdjustmentResult{
+		TenantID:        input.TenantID,
+		UserID:          input.UserID,
+		NewBalance:      centsToDecimal(balance),
+		CurrencyCode:    input.CurrencyCode,
+		RechargeOrderID: existing.ID,
+	}, true, nil
+}
+
+func getExistingLegacyAdminAdjustmentTx(ctx context.Context, tx pgx.Tx, input AdminBalanceAdjustmentInput) (AdminBalanceAdjustmentResult, bool, error) {
 	var (
 		userID          int64
-		rechargeOrderID pgtype.Int8
+		rechargeOrderID sql.NullInt64
 		amount          decimal.Decimal
 		currencyCode    string
 	)
@@ -233,12 +288,12 @@ LIMIT 1`,
 		return AdminBalanceAdjustmentResult{}, false, nil
 	}
 	if err != nil {
-		return AdminBalanceAdjustmentResult{}, false, fmt.Errorf("payment: lookup admin adjustment replay: %w", err)
+		return AdminBalanceAdjustmentResult{}, false, fmt.Errorf("payment: lookup legacy admin adjustment replay: %w", err)
 	}
 	if userID != input.UserID || !amount.Equal(input.Amount) || strings.TrimSpace(currencyCode) != input.CurrencyCode {
 		return AdminBalanceAdjustmentResult{}, true, ErrExternalTradeConflict
 	}
-	balance, err := readUserBalanceTx(ctx, tx, input.TenantID, input.UserID)
+	balance, err := readLegacyUserBalanceTx(ctx, tx, input.TenantID, input.UserID)
 	if err != nil {
 		return AdminBalanceAdjustmentResult{}, true, err
 	}
@@ -255,7 +310,7 @@ LIMIT 1`,
 	}, true, nil
 }
 
-func readUserBalanceTx(ctx context.Context, tx pgx.Tx, tenantID, userID int64) (decimal.Decimal, error) {
+func readLegacyUserBalanceTx(ctx context.Context, tx pgx.Tx, tenantID, userID int64) (decimal.Decimal, error) {
 	var balance decimal.Decimal
 	if err := tx.QueryRow(ctx, `
 SELECT COALESCE((
@@ -265,91 +320,24 @@ SELECT COALESCE((
 ), 0)`,
 		tenantID, userID,
 	).Scan(&balance); err != nil {
-		return decimal.Decimal{}, fmt.Errorf("payment: read admin adjustment balance: %w", err)
+		return decimal.Decimal{}, fmt.Errorf("payment: read legacy admin adjustment balance: %w", err)
 	}
 	return balance, nil
 }
 
-func insertAdminRechargeOrder(ctx context.Context, tx pgx.Tx, input AdminBalanceAdjustmentInput) (Order, error) {
-	metadata, err := adminBalanceAuditMetadata(input, decimal.Decimal{}, adminAuditRechargeSuccess)
+func lockPaymentUserTx(ctx context.Context, tx pgx.Tx, tenantID, userID int64) error {
+	var one int
+	err := tx.QueryRow(ctx, `SELECT 1 FROM users WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, tenantID, userID).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrUserNotFound
+	}
 	if err != nil {
-		return Order{}, err
-	}
-	row := tx.QueryRow(ctx, `
-INSERT INTO recharge_orders (
-	tenant_id, user_id, external_trade_no, recharge_ref, status,
-	requested_amount, credited_amount, currency_code, provider, metadata,
-	created_at, updated_at, paid_at, completed_at
-) VALUES (
-	$1, $2, $3, $4, 'COMPLETED',
-	$5, $5, $6, $7, $8,
-	$9, $9, $9, $9
-)
-RETURNING id, tenant_id, user_id, external_trade_no, recharge_ref, status,
-	credited_amount, currency_code, provider, created_at, updated_at`,
-		input.TenantID, input.UserID, input.ExternalTradeNo, rechargeRef(input.TenantID, input.UserID, input.ExternalTradeNo),
-		input.Amount, input.CurrencyCode, adminPaymentProvider, string(metadata), input.Now,
-	)
-	order, err := scanOrder(row)
-	if err != nil {
-		return Order{}, fmt.Errorf("payment: insert admin recharge order: %w", err)
-	}
-	return order, nil
-}
-
-func insertAdminBalanceAudit(ctx context.Context, tx pgx.Tx, input AdminBalanceAdjustmentInput, rechargeOrderID int64, balance decimal.Decimal) error {
-	code := adminAuditAdjustment
-	if input.Amount.IsPositive() {
-		code = adminAuditRechargeSuccess
-	}
-	metadata, err := adminBalanceAuditMetadata(input, balance, code)
-	if err != nil {
-		return err
-	}
-	var orderID *int64
-	if rechargeOrderID > 0 {
-		orderID = &rechargeOrderID
-	}
-	if _, err := tx.Exec(ctx, `
-INSERT INTO payment_audit_log (
-	tenant_id, recharge_order_id, user_id, provider, external_trade_no,
-	provider_event_id, outcome, reason, paid_amount, expected_amount,
-	currency_code, metadata, created_at
-) VALUES (
-	$1, $2, $3, $4, $5,
-	$6, $7, $8, $9, $9,
-	$10, $11, $12
-)`,
-		input.TenantID, orderID, input.UserID, adminPaymentProvider, input.ExternalTradeNo,
-		code, AuditOutcomeAccepted, AuditReasonCompleted, input.Amount,
-		input.CurrencyCode, string(metadata), input.Now,
-	); err != nil {
-		return fmt.Errorf("payment: insert admin balance audit: %w", err)
+		return fmt.Errorf("payment: lock user: %w", err)
 	}
 	return nil
 }
 
-func adminBalanceAuditMetadata(input AdminBalanceAdjustmentInput, balance decimal.Decimal, code string) ([]byte, error) {
-	payload := map[string]string{
-		"audit_code":    code,
-		"actor_id":      input.ActorID,
-		"delta_amount":  input.Amount.StringFixed(8),
-		"currency_code": input.CurrencyCode,
-	}
-	if input.Reason != "" {
-		payload["admin_reason"] = input.Reason
-	}
-	if input.RequestID != "" {
-		payload["request_id"] = input.RequestID
-	}
-	if !balance.IsZero() {
-		payload["new_balance"] = balance.StringFixed(8)
-	}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("payment: marshal admin balance audit metadata: %w", err)
-	}
-	return raw, nil
+func parseAdminActorID(raw string) int64 {
+	id, _ := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	return id
 }
-
-var _ AdminBalanceStore = (*PostgresStore)(nil)
