@@ -54,6 +54,41 @@ func TestResolveActiveRejectsAmbiguousActiveCredentialModes(t *testing.T) {
 	}
 }
 
+func TestLoadForProviderAccountTestRejectsAmbiguousCredentialModes(t *testing.T) {
+	// 判别 provider-account test 不能随便 LIMIT 1:多个可测试 credential mode
+	// 与运行时 resolver 一样是歧义,否则操作员可能测到并非实际可安全使用的凭据。
+	calls := 0
+	db := &credentialStoreDBStub{
+		queryRow: func(_ context.Context, sql string, args ...interface{}) pgx.Row {
+			calls++
+			for _, required := range []string{
+				"COUNT(*) OVER () AS test_mode_count",
+				"test_mode_count",
+				"WHERE ac.provider_account_id = $1",
+				"AND ac.tenant_id = $2",
+				"AND ac.state IN ('active', 'refreshing_with_grace', 'temp_unschedulable', 'operator_attention')",
+			} {
+				if !strings.Contains(sql, required) {
+					t.Fatalf("LoadForProviderAccountTest SQL missing %q:\n%s", required, sql)
+				}
+			}
+			if len(args) != 2 || args[0] != int64(42) || args[1] != int64(7) {
+				t.Fatalf("LoadForProviderAccountTest args=%#v, want account=42 tenant=7", args)
+			}
+			return credentialStoreRowValuesStub{values: providerAccountTestRecordValues(2)}
+		},
+	}
+	store := NewStore(db, mustTestKeyProvider(t), DefaultHandlerRegistry())
+
+	_, err := store.LoadForProviderAccountTest(context.Background(), 7, 42)
+	if !errors.Is(err, ErrCredentialAmbiguous) {
+		t.Fatalf("LoadForProviderAccountTest err=%v, want ambiguous credential modes", err)
+	}
+	if calls != 1 {
+		t.Fatalf("LoadForProviderAccountTest QueryRow calls=%d, want 1 atomic ambiguity-aware query", calls)
+	}
+}
+
 func TestResolveActiveRejectsCrossTenantCredentialJoin(t *testing.T) {
 	db := &credentialStoreDBStub{
 		queryRow: func(_ context.Context, sql string, _ ...interface{}) pgx.Row {
@@ -268,6 +303,11 @@ func resolveActiveRecordValues(activeModeCount int64) []any {
 		pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{},
 		activeModeCount,
 	}
+}
+
+func providerAccountTestRecordValues(testModeCount int64) []any {
+	values := resolveActiveRecordValues(1)
+	return append(values[:len(values)-1], testModeCount)
 }
 
 func setScanValue(dest any, value any) error {

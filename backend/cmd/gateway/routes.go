@@ -13,6 +13,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeshttp"
@@ -371,6 +372,11 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Store:         d.adminQueries,
 			Credentials:   d.credentialStore,
 			ChannelHealth: d.channelHealth,
+		})
+		adminhttp.MountProviderAccountTestRoutes(r, adminhttp.ProviderAccountTestDeps{
+			Auth:     d.adminAuth,
+			Accounts: d.adminQueries,
+			Tester:   adminhttp.NewProviderAccountCredentialTester(d.credentialStore, credentialworker.DefaultModeAdapterRegistry()),
 		})
 		gatewayhttp.MountAdminCredentialRoutes(r, gatewayhttp.AdminCredentialDeps{
 			Auth:        d.adminAuth,
