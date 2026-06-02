@@ -41,6 +41,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Post("/v1/chat/completions", gatewayhttp.NewChatCompletionsHandler(chatHandlerDeps(d)))
 	r.Post("/v1/responses", gatewayhttp.NewResponsesHandler(chatHandlerDeps(d)))
 	r.Post("/v1/messages", gatewayhttp.NewMessagesHandler(chatHandlerDeps(d)))
+	r.Get("/v1/realtime", handleRealtimeRoadmap)
 
 	auditVerifyDeps := gatewayhttp.AuditVerifyStaticDeps{Ledger: d.auditLedger, Registry: d.auditPubkeyRegistry}
 	auditPubkeyDeps := gatewayhttp.AuditPubkeyDeps{Signer: d.auditSigner, Registry: d.auditPubkeyRegistry}
@@ -110,6 +111,19 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 
 	mountAdminRoutes(r, d)
 	logger.Info("routes mounted")
+}
+
+func handleRealtimeRoadmap(w http.ResponseWriter, _ *http.Request) {
+	writeGatewayJSONError(w, http.StatusNotImplemented, "realtime_not_available",
+		"Realtime WebSocket runtime is a Phase 9+ mandatory roadmap item; use /v1/responses or /v1/chat/completions until F-RT-001 is released.")
+}
+
+func writeGatewayJSONError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]map[string]string{
+		"error": {"code": code, "message": message},
+	})
 }
 
 func (d *deps) handleRunnerBootstrap(w http.ResponseWriter, r *http.Request) {
