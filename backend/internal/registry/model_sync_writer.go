@@ -50,6 +50,7 @@ func planVendorCatalogApply(catalog modelsync.Catalog, current []vendorAliasStat
 		out.Upserts = append(out.Upserts, model)
 	}
 
+	activeAutoSynced := 0
 	for _, state := range current {
 		if state.Source != modelSyncSource {
 			continue
@@ -57,6 +58,9 @@ func planVendorCatalogApply(catalog modelsync.Catalog, current []vendorAliasStat
 		alias := AliasNormalize(state.AliasNormalized)
 		if alias == "" {
 			continue
+		}
+		if state.Status == "active" {
+			activeAutoSynced++
 		}
 		_, stillPresent := incoming[alias]
 		if stillPresent {
@@ -67,6 +71,24 @@ func planVendorCatalogApply(catalog modelsync.Catalog, current []vendorAliasStat
 		}
 		if state.Status == "active" {
 			out.DisableAliases = append(out.DisableAliases, alias)
+		}
+	}
+
+	// S0 数据丢失护栏:上游空响应或截断(HTTP 200 但 models 为空 / 全被过滤)
+	// 会把现有全部 auto-sync alias 判为"消失"→ 一次性误禁整目录。这里拒绝可疑
+	// 同步(返回 error → 整事务回滚,保留现状),由调用方观测/重试,而非静默禁用。
+	if len(out.DisableAliases) > 0 {
+		// (1) 空目录但已有 active auto-sync alias = 几乎必然是上游异常。
+		if len(catalog.Models) == 0 && activeAutoSynced > 0 {
+			return vendorCatalogPlan{}, fmt.Errorf(
+				"registry model sync: refusing empty %s catalog that would disable %d active alias(es) (likely upstream blip)",
+				catalog.Vendor, len(out.DisableAliases))
+		}
+		// (2) 灾难性收缩:本次将禁用 >50% 的 active alias(且基数足够),疑似部分截断。
+		if activeAutoSynced >= 4 && len(out.DisableAliases)*2 > activeAutoSynced {
+			return vendorCatalogPlan{}, fmt.Errorf(
+				"registry model sync: refusing %s catalog that would disable %d of %d active alias(es) (>50%%, catastrophic shrink; manual confirm required)",
+				catalog.Vendor, len(out.DisableAliases), activeAutoSynced)
 		}
 	}
 	return out, nil
