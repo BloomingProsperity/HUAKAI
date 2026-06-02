@@ -29,6 +29,9 @@ type Config struct {
 	// TransportSidecarSocket points mimicry transport modes at the local TLS
 	// sidecar Unix socket. Empty keeps the existing Go uTLS path.
 	TransportSidecarSocket string
+	// TransportSidecarFallback is explicit opt-in. Default false keeps production
+	// fail-closed when Rust sidecar is configured but unavailable.
+	TransportSidecarFallback bool
 
 	// VendorOAuth holds operator-owned OAuth refresh settings for vendor
 	// refreshers. Empty TokenURL means that vendor refresher is not wired.
@@ -84,15 +87,20 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	transportSidecarFallback, err := envBool("HUAKAI_TRANSPORT_SIDECAR_FALLBACK")
+	if err != nil {
+		return nil, err
+	}
 	cfg := &Config{
-		DatabaseURL:            os.Getenv("HUAKAI_DATABASE_URL"),
-		Listen:                 envDefault("HUAKAI_ADDR", ":8080"),
-		BillingPolicyVersion:   envDefault("HUAKAI_BILLING_POLICY_VERSION", DefaultBillingPolicyVersion),
-		RequestClass:           envDefault("HUAKAI_REQUEST_CLASS", "standard"),
-		TransportSidecarSocket: os.Getenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET"),
-		VendorOAuth:            loadVendorOAuthConfigs(),
-		PaymentHMACSecrets:     paymentHMACSecrets,
-		PaymentEnableMock:      paymentEnableMock,
+		DatabaseURL:              os.Getenv("HUAKAI_DATABASE_URL"),
+		Listen:                   envDefault("HUAKAI_ADDR", ":8080"),
+		BillingPolicyVersion:     envDefault("HUAKAI_BILLING_POLICY_VERSION", DefaultBillingPolicyVersion),
+		RequestClass:             envDefault("HUAKAI_REQUEST_CLASS", "standard"),
+		TransportSidecarSocket:   os.Getenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET"),
+		TransportSidecarFallback: transportSidecarFallback,
+		VendorOAuth:              loadVendorOAuthConfigs(),
+		PaymentHMACSecrets:       paymentHMACSecrets,
+		PaymentEnableMock:        paymentEnableMock,
 	}
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("%w: HUAKAI_DATABASE_URL", ErrMissingRequired)

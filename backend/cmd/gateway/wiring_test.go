@@ -65,12 +65,15 @@ func TestWiring_AuditRefPolicySharedByBusConfigAndChatDeps(t *testing.T) {
 }
 
 func TestWiring_BuildTransportFactoryInjectsSidecarSocket(t *testing.T) {
-	cfg := &Config{TransportSidecarSocket: "/tmp/huakai-tls-sidecar.sock"}
+	cfg := &Config{TransportSidecarSocket: "/tmp/huakai-tls-sidecar.sock", TransportSidecarFallback: true}
 
 	factory := buildTransportFactory(cfg, nil)
 
 	if factory.SidecarSocketPath != cfg.TransportSidecarSocket {
 		t.Fatalf("SidecarSocketPath=%q want cfg.TransportSidecarSocket", factory.SidecarSocketPath)
+	}
+	if !factory.SidecarFallbackEnabled {
+		t.Fatal("SidecarFallbackEnabled=false want cfg.TransportSidecarFallback")
 	}
 }
 
