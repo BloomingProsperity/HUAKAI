@@ -1,0 +1,42 @@
+# 版本控制和本地状态
+.git
+.gitignore
+.dockerignore
+
+# Go 构建与测试产物
+bin/
+dist/
+out/
+tmp/
+temp/
+coverage/
+coverage*.out
+*.cover
+*.prof
+*.test
+*.tmp
+*.log
+
+# 测试缓存和报告
+.cache/
+.coverage/
+reports/
+report/
+test-results/
+junit*.xml
+*.lcov
+
+# 依赖和外部参考源码
+node_modules/
+vendor/
+reference/
+references/
+refs/
+third_party/
+
+# 大型文档和本地工具缓存
+docs/
+doc/
+.npm/
+.pnpm-store/
+.yarn/
