@@ -115,6 +115,7 @@ where
 
     let mut authority = None;
     let mut content_length = 0usize;
+    let mut content_length_set = false;
     let mut headers = Vec::new();
     let mut connection_tokens = Vec::new();
     for line in lines {
@@ -129,6 +130,13 @@ where
         let value_text = raw_value.trim();
         let lower_name = name.as_str();
         if lower_name.eq_ignore_ascii_case("host") {
+            // 安全:HTTP/1.1 多个 Host 头 = 请求走私 / authority 歧义。
+            // RFC 7230 §5.4 要求 MUST 拒(>1 Host → 400)。不能"最后一个赢"静默覆盖。
+            if authority.is_some() {
+                return Err(H2BridgeError::InvalidRequest(
+                    "duplicate Host header (ambiguous request authority)".to_owned(),
+                ));
+            }
             authority = Some(value_text.to_owned());
             continue;
         }
@@ -147,9 +155,19 @@ where
             ));
         }
         if lower_name.eq_ignore_ascii_case("content-length") {
-            content_length = value_text.parse::<usize>().map_err(|error| {
+            let parsed = value_text.parse::<usize>().map_err(|error| {
                 H2BridgeError::InvalidRequest(format!("invalid Content-Length: {error}"))
             })?;
+            // 安全:重复/冲突的 Content-Length = 请求走私(request smuggling)+ 框架歧义。
+            // RFC 7230 §3.3.3:差值 MUST 拒;同值也拒,避免重复 CL 被双份转发给上游造成歧义。
+            // 绝不"最后一个赢"静默接受。
+            if content_length_set {
+                return Err(H2BridgeError::InvalidRequest(
+                    "duplicate Content-Length header (ambiguous request framing)".to_owned(),
+                ));
+            }
+            content_length_set = true;
+            content_length = parsed;
         }
         if is_hop_by_hop(lower_name) {
             continue;
@@ -463,6 +481,85 @@ mod tests {
         assert!(
             err.to_string().contains("Stage-2"),
             "error must identify the deferred multi-request boundary, got {err}"
+        );
+        driver.abort();
+        let _ = server.await;
+    }
+
+    // 安全判别:两个互相矛盾的 Content-Length → 请求走私 / 框架歧义 → 必须拒(InvalidRequest),
+    // 不能"最后一个赢"静默接受、也不能把重复 CL 双份转发给上游。
+    // Mutation:还原成 `content_length = parse(last)`(去掉拒重逻辑)→ 本请求被当作 CL=7
+    // 正常解析转发、不再报 "duplicate" → 本测试红。
+    #[tokio::test]
+    async fn bridge_rejects_conflicting_content_length_request() {
+        let request = b"POST /v1/messages HTTP/1.1\r\nHost: api.example.test\r\nContent-Length: 0\r\nContent-Length: 7\r\n\r\nABCDEFG";
+        let (mut send_request, driver, server) = h2_pair(
+            ExpectedRequest {
+                method: "POST",
+                path_and_query: "/v1/messages",
+                host: "api.example.test",
+                header_name: "content-length",
+                header_value: "0",
+                absent_header_name: None,
+                body: b"",
+            },
+            StubResponse {
+                status: 200,
+                header_name: "x-upstream",
+                header_value: "unused",
+                body: b"unused",
+            },
+        )
+        .await;
+        let (mut go_side, mut rust_side) = tokio::io::duplex(64 * 1024);
+
+        go_side.write_all(request).await.unwrap();
+        let err = super::bridge_single_request(&mut rust_side, &mut send_request)
+            .await
+            .expect_err("conflicting Content-Length must be rejected (request smuggling)");
+
+        assert!(
+            err.to_string().contains("duplicate Content-Length"),
+            "error must identify the duplicate/conflicting Content-Length, got {err}"
+        );
+        driver.abort();
+        let _ = server.await;
+    }
+
+    // 安全判别:两个 Host 头 → 请求走私 / authority 歧义 → 必须拒(RFC 7230 §5.4 MUST)。
+    // Mutation:去掉 `authority.is_some()` 检查 → 后一个 Host 静默覆盖、请求被转发到 evil 主机
+    // 且不再报 "duplicate Host" → 本测试红。
+    #[tokio::test]
+    async fn bridge_rejects_duplicate_host_request() {
+        let request = b"GET /v1/messages HTTP/1.1\r\nHost: api.example.test\r\nHost: evil.example.test\r\nContent-Length: 0\r\n\r\n";
+        let (mut send_request, driver, server) = h2_pair(
+            ExpectedRequest {
+                method: "GET",
+                path_and_query: "/v1/messages",
+                host: "api.example.test",
+                header_name: "content-length",
+                header_value: "0",
+                absent_header_name: None,
+                body: b"",
+            },
+            StubResponse {
+                status: 200,
+                header_name: "x-upstream",
+                header_value: "unused",
+                body: b"unused",
+            },
+        )
+        .await;
+        let (mut go_side, mut rust_side) = tokio::io::duplex(64 * 1024);
+
+        go_side.write_all(request).await.unwrap();
+        let err = super::bridge_single_request(&mut rust_side, &mut send_request)
+            .await
+            .expect_err("duplicate Host must be rejected (request smuggling)");
+
+        assert!(
+            err.to_string().contains("duplicate Host"),
+            "error must identify the duplicate Host header, got {err}"
         );
         driver.abort();
         let _ = server.await;
