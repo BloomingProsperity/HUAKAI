@@ -743,6 +743,24 @@ func (s *gatewayMemoryAuthStore) CreatePasswordResetToken(_ context.Context, cha
 	return nil
 }
 
+func (s *gatewayMemoryAuthStore) PreparePasswordResetTokenUser(_ context.Context, tenantID int64, tokenHash []byte, now time.Time) (userauth.User, error) {
+	challenge, ok := s.resetTokens[string(tokenHash)]
+	if !ok || challenge.Consumed || challenge.TenantID != tenantID || !challenge.ExpiresAt.After(now) {
+		return userauth.User{}, userauth.ErrTokenInvalid
+	}
+	user := s.users[challenge.UserID]
+	if user.PasswordVersion != challenge.PasswordVersion {
+		return userauth.User{}, userauth.ErrTokenInvalid
+	}
+	switch user.Status {
+	case userauth.UserStatusActive, userauth.UserStatusLocked, userauth.UserStatusPendingVerification:
+		user.Status = userauth.UserStatusResetRequired
+		user.UpdatedAt = now
+		s.users[user.ID] = user
+	}
+	return user, nil
+}
+
 func (s *gatewayMemoryAuthStore) ConsumePasswordResetToken(_ context.Context, tenantID int64, tokenHash []byte, passwordHash string, now time.Time) (userauth.User, error) {
 	challenge, ok := s.resetTokens[string(tokenHash)]
 	if !ok || challenge.Consumed || challenge.TenantID != tenantID || !challenge.ExpiresAt.After(now) {
@@ -751,6 +769,9 @@ func (s *gatewayMemoryAuthStore) ConsumePasswordResetToken(_ context.Context, te
 	user := s.users[challenge.UserID]
 	user.PasswordHash = passwordHash
 	user.PasswordVersion++
+	if user.Status == userauth.UserStatusLocked || user.Status == userauth.UserStatusResetRequired || user.Status == userauth.UserStatusPendingVerification {
+		user.Status = userauth.UserStatusActive
+	}
 	user.UpdatedAt = now
 	challenge.Consumed = true
 	s.resetTokens[string(tokenHash)] = challenge
@@ -807,14 +828,47 @@ func testSessionSigningKey() []byte {
 	return []byte("0123456789abcdef0123456789abcdef")
 }
 
-// revokeFailSessionStore embeds a working memory store but forces the user-scope revoke to fail,
-// driving the S1-028 "revoke failed after password change" path.
-type revokeFailSessionStore struct {
+// flakyRevokeSessionStore embeds a working memory store but forces the first user-scope revoke to
+// fail, driving the S1-028 "revoke failed before password change" path while proving the same reset
+// token can be retried after the session backend recovers.
+type flakyRevokeSessionStore struct {
 	usersession.Store
+	failures           int
+	injectAfterSuccess bool
+	injected           bool
 }
 
-func (revokeFailSessionStore) RevokeUser(context.Context, int64, int64, string, time.Time) (int64, error) {
-	return 0, errors.New("revoke boom")
+func (s *flakyRevokeSessionStore) RevokeUser(ctx context.Context, tenantID, userID int64, reason string, now time.Time) (int64, error) {
+	if s.failures > 0 {
+		s.failures--
+		return 0, errors.New("revoke boom")
+	}
+	count, err := s.Store.RevokeUser(ctx, tenantID, userID, reason, now)
+	if err != nil {
+		return count, err
+	}
+	if s.injectAfterSuccess && !s.injected {
+		s.injected = true
+		if _, createErr := s.Store.CreateFamily(ctx, usersession.CreateInput{
+			TenantID: tenantID, UserID: userID, IP: "192.0.2.99", UserAgent: "RaceLogin/1",
+		}, now); createErr != nil {
+			return count, createErr
+		}
+	}
+	return count, nil
+}
+
+type postCommitRevokeFailSessionStore struct {
+	usersession.Store
+	calls int
+}
+
+func (s *postCommitRevokeFailSessionStore) RevokeUser(ctx context.Context, tenantID, userID int64, reason string, now time.Time) (int64, error) {
+	s.calls++
+	if s.calls == 2 {
+		return 0, errors.New("post revoke boom")
+	}
+	return s.Store.RevokeUser(ctx, tenantID, userID, reason, now)
 }
 
 // resetConfirmTestSetup registers + verifies a user and returns a live router plus the captured
@@ -839,22 +893,34 @@ func resetConfirmTestSetup(t *testing.T, sessions *usersession.Service) (http.Ha
 	return r, email, authSvc
 }
 
-// TestAuthPasswordResetConfirmReportsRevokeFailureHonestly guards S1-028: the password reset is an
-// atomic, already-committed success (the one-time token is consumed inside ResetPassword), so a
-// later session-revocation failure must NOT (a) be falsely reported as "revoked" (the original
-// dropped-error bug) NOR (b) flip the whole reset to a non-retryable 503 (which would strand the
-// consumed token — flagged by codex). Correct behavior: 200 with an honest session_revocation:
-// "failed" signal; guaranteed eventual revocation is a roadmap item.
+// TestAuthPasswordResetConfirmFailsClosedWhenRevokeFails guards S1-028: reset-confirm must place
+// the reset subject behind a login barrier, then refuse to consume the one-time token or change the
+// password unless old sessions were revoked first. The injected store fails ONLY the first
+// RevokeUser, then simulates an in-flight old-password login by creating a new active family after
+// the first successful revoke. The fixture distinguishes a correct fail-closed/retryable handler
+// with a post-commit sweep from the broken post-reset best-effort revoke path and from a pre-revoke
+// implementation that leaves old-password login open while waiting for retry.
 //
-// Mutation checks: (1) restore `revoked, _ = ...` + always SessionPolicy="revoked"
-// → session_revocation reports "revoked" → red; (2) restore the writeSessionError 503 path → status
-// is not 200 → red. Discriminating fixture: the injected store fails ONLY RevokeUser so the reset
-// genuinely succeeds and only the revocation degrades.
-func TestAuthPasswordResetConfirmReportsRevokeFailureHonestly(t *testing.T) {
-	sessionSvc := usersession.NewService(revokeFailSessionStore{Store: usersession.NewMemoryStore()})
+// Mutation check: move ResetPassword before Revoke, ignore the Revoke error, or remove the reset
+// login barrier, or remove the post-commit revoke sweep; either the first response becomes 2xx, the
+// new password authenticates too early, old-password login remains possible before retry, or the
+// injected race family remains active after retry -> red.
+func TestAuthPasswordResetConfirmFailsClosedWhenRevokeFails(t *testing.T) {
+	sessionStore := &flakyRevokeSessionStore{Store: usersession.NewMemoryStore(), failures: 1, injectAfterSuccess: true}
+	sessionSvc := usersession.NewService(sessionStore)
 	sessionSvc.Now = func() time.Time { return time.Date(2026, 5, 17, 11, 0, 0, 0, time.UTC) }
 	sessionSvc.SigningKey = testSessionSigningKey()
 	r, email, authSvc := resetConfirmTestSetup(t, sessionSvc)
+	user, err := authSvc.Authenticate(context.Background(), userauth.LoginInput{TenantID: 1, Email: "reset@example.test", Password: "secret-old"})
+	if err != nil {
+		t.Fatalf("Authenticate before reset: %v", err)
+	}
+	issued, err := sessionSvc.Create(context.Background(), usersession.CreateInput{
+		TenantID: 1, UserID: user.ID, IP: "192.0.2.1", UserAgent: "Chrome/1",
+	})
+	if err != nil {
+		t.Fatalf("Create session before reset: %v", err)
+	}
 
 	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/reset-password", map[string]any{"tenant_id": 1, "email": "reset@example.test"})
 	assertHTTPStatus(t, rec, http.StatusAccepted)
@@ -864,22 +930,83 @@ func TestAuthPasswordResetConfirmReportsRevokeFailureHonestly(t *testing.T) {
 	rec = serveJSON(t, r, http.MethodPost, "/v1/auth/reset-password", map[string]any{
 		"tenant_id": 1, "token": email.reset, "new_password": "secret-rotated",
 	})
-	// (b) reset succeeded (password+token are atomic) → must be 200, not a stranding 503.
+	if rec.Code/100 == 2 {
+		t.Fatalf("reset-confirm must fail closed when session revocation fails; got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := authSvc.Authenticate(context.Background(), userauth.LoginInput{TenantID: 1, Email: "reset@example.test", Password: "secret-old"}); !errors.Is(err, userauth.ErrPasswordResetRequired) {
+		t.Fatalf("old password login must be blocked by reset barrier after revoke failure; got %v", err)
+	}
+	if _, err := authSvc.Authenticate(context.Background(), userauth.LoginInput{TenantID: 1, Email: "reset@example.test", Password: "secret-rotated"}); !errors.Is(err, userauth.ErrPasswordResetRequired) {
+		t.Fatalf("new password login must also be blocked until retry consumes the token; got %v", err)
+	}
+	if _, err := sessionSvc.Validate(context.Background(), issued.SessionToken, "192.0.2.1", "Chrome/1"); err != nil {
+		t.Fatalf("pre-existing session should remain valid because reset did not complete; got %v", err)
+	}
+	rec = serveJSON(t, r, http.MethodPost, "/v1/auth/reset-password", map[string]any{
+		"tenant_id": 1, "token": email.reset, "new_password": "secret-rotated",
+	})
+	assertHTTPStatus(t, rec, http.StatusOK)
+	if _, err := authSvc.Authenticate(context.Background(), userauth.LoginInput{TenantID: 1, Email: "reset@example.test", Password: "secret-rotated"}); err != nil {
+		t.Fatalf("new password must authenticate after retry revokes sessions and consumes token; got %v", err)
+	}
+	if _, err := sessionSvc.Validate(context.Background(), issued.SessionToken, "192.0.2.1", "Chrome/1"); !errors.Is(err, usersession.ErrFamilyRevoked) {
+		t.Fatalf("pre-existing session after successful retry = %v, want ErrFamilyRevoked", err)
+	}
+	families, err := sessionSvc.List(context.Background(), 1, user.ID)
+	if err != nil {
+		t.Fatalf("List families after retry: %v", err)
+	}
+	for _, family := range families {
+		if family.Status == usersession.FamilyStatusActive || family.Status == usersession.FamilyStatusSuspicious {
+			t.Fatalf("family %s remained %s after reset retry; all old/race sessions must be revoked: %+v", family.ID, family.Status, families)
+		}
+	}
+}
+
+// TestAuthPasswordResetConfirmPostSweepFailureIsDegradedSuccess guards the committed-token half of
+// S1-028: once ResetPassword has changed the password and consumed the one-time token, a later
+// post-commit sweep failure must be reported as a degraded reset success, not as a retryable 5xx.
+//
+// Mutation check: return writeSessionError after ResetPassword or always report "revoked"; the
+// status/session_revocation assertions go red while the new password proves the token was consumed.
+func TestAuthPasswordResetConfirmPostSweepFailureIsDegradedSuccess(t *testing.T) {
+	sessionStore := &postCommitRevokeFailSessionStore{Store: usersession.NewMemoryStore()}
+	sessionSvc := usersession.NewService(sessionStore)
+	sessionSvc.Now = func() time.Time { return time.Date(2026, 5, 17, 11, 0, 0, 0, time.UTC) }
+	sessionSvc.SigningKey = testSessionSigningKey()
+	r, email, authSvc := resetConfirmTestSetup(t, sessionSvc)
+	user, err := authSvc.Authenticate(context.Background(), userauth.LoginInput{TenantID: 1, Email: "reset@example.test", Password: "secret-old"})
+	if err != nil {
+		t.Fatalf("Authenticate before reset: %v", err)
+	}
+	issued, err := sessionSvc.Create(context.Background(), usersession.CreateInput{
+		TenantID: 1, UserID: user.ID, IP: "192.0.2.1", UserAgent: "Chrome/1",
+	})
+	if err != nil {
+		t.Fatalf("Create session before reset: %v", err)
+	}
+
+	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/reset-password", map[string]any{"tenant_id": 1, "email": "reset@example.test"})
+	assertHTTPStatus(t, rec, http.StatusAccepted)
+	rec = serveJSON(t, r, http.MethodPost, "/v1/auth/reset-password", map[string]any{
+		"tenant_id": 1, "token": email.reset, "new_password": "secret-rotated",
+	})
 	assertHTTPStatus(t, rec, http.StatusOK)
 	var resp struct {
 		SessionRevocation string `json:"session_revocation"`
 		SessionsRevoked   int64  `json:"sessions_revoked"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
+		t.Fatalf("decode response: %v body=%s", err, rec.Body.String())
 	}
-	// (a) honest about the revoke failure — never falsely "revoked".
-	if resp.SessionRevocation != "failed" {
-		t.Fatalf("session revocation failed but response reports %q; must be honest \"failed\"; body=%s", resp.SessionRevocation, rec.Body.String())
+	if resp.SessionRevocation != "failed" || resp.SessionsRevoked != 1 {
+		t.Fatalf("post-sweep failure must be explicit degraded success; got %+v body=%s", resp, rec.Body.String())
 	}
-	// The reset itself genuinely took effect: the new password authenticates, the old one does not.
 	if _, err := authSvc.Authenticate(context.Background(), userauth.LoginInput{TenantID: 1, Email: "reset@example.test", Password: "secret-rotated"}); err != nil {
-		t.Fatalf("new password must authenticate after a successful reset; got %v", err)
+		t.Fatalf("new password must authenticate because reset token was consumed; got %v", err)
+	}
+	if _, err := sessionSvc.Validate(context.Background(), issued.SessionToken, "192.0.2.1", "Chrome/1"); !errors.Is(err, usersession.ErrFamilyRevoked) {
+		t.Fatalf("pre-existing session after degraded success = %v, want ErrFamilyRevoked", err)
 	}
 }
 

@@ -25,6 +25,10 @@ type Store interface {
 	ConsumeOAuthFlowSession(context.Context, int64, string, []byte, time.Time) (OAuthFlowSession, error)
 }
 
+type passwordResetPreparationStore interface {
+	PreparePasswordResetTokenUser(context.Context, int64, []byte, time.Time) (User, error)
+}
+
 type EmailVerificationPolicy interface {
 	EmailVerificationEnabled(context.Context, int64) (bool, error)
 }
@@ -228,6 +232,23 @@ func (s *Service) ResetPassword(ctx context.Context, in PasswordResetConfirm) (U
 		return User{}, err
 	}
 	return s.Store.ConsumePasswordResetToken(ctx, in.TenantID, HashToken(in.Token), passwordHash, s.now())
+}
+
+func (s *Service) PreparePasswordReset(ctx context.Context, in PasswordResetConfirm) (User, error) {
+	if s == nil || s.Store == nil {
+		return User{}, ErrStoreNotConfigured
+	}
+	if in.TenantID <= 0 || strings.TrimSpace(in.Token) == "" || strings.TrimSpace(in.NewPassword) == "" {
+		return User{}, ErrInvalidInput
+	}
+	if _, err := HashPassword(in.NewPassword, s.PasswordPolicy); err != nil {
+		return User{}, err
+	}
+	store, ok := s.Store.(passwordResetPreparationStore)
+	if !ok {
+		return User{}, ErrStoreNotConfigured
+	}
+	return store.PreparePasswordResetTokenUser(ctx, in.TenantID, HashToken(in.Token), s.now())
 }
 
 func (s *Service) now() time.Time {
