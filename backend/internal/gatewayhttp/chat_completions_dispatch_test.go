@@ -30,6 +30,12 @@ func (g *recordingClaimGate) Reserve(_ context.Context, req billing.ReserveReque
 	return &billing.ReserveResult{ClaimID: 999}, nil
 }
 
+type reserveClaimRaceClaimGate struct{}
+
+func (reserveClaimRaceClaimGate) Reserve(context.Context, billing.ReserveRequest) (*billing.ReserveResult, error) {
+	return nil, billing.ErrClaimRace
+}
+
 func TestHandler_NoStream(t *testing.T) {
 	t.Setenv("HUAKAI_DISPATCH_HCSF", "0")
 	d := clientAdapterDeps(t)
@@ -364,6 +370,36 @@ func TestHandler_WaitPlanReturnsQueueWait(t *testing.T) {
 	if settler.abortCalls != 1 || settler.lastAbortClaimID != 999 || settler.lastAbortReason != "queue_wait" {
 		t.Fatalf("abort calls/id/reason=%d/%d/%q; want 1/999/queue_wait",
 			settler.abortCalls, settler.lastAbortClaimID, settler.lastAbortReason)
+	}
+}
+
+func TestHandler_ReserveClaimRaceReturns409RetryAfterWithoutAbort(t *testing.T) {
+	// Mutation check: deleting the reserve-phase ErrClaimRace branch falls
+	// through to the generic reserve_error path, yielding 500 without
+	// Retry-After; the 409 assertion below must catch that regression.
+	settler := &stubSettler{}
+	d := minimalDeps()
+	d.ClaimGate = reserveClaimRaceClaimGate{}
+	d.Settler = settler
+
+	rec := invokeHandler(t, d, validBody())
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s; want 409 claim_race, not reserve_error 500", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Retry-After"); got != "1" {
+		t.Fatalf("Retry-After=%q want 1", got)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"code":"claim_race"`) {
+		t.Fatalf("body=%s; want claim_race code", body)
+	}
+	for _, bad := range []string{"reserve_error", "request reservation failed"} {
+		if strings.Contains(body, bad) {
+			t.Fatalf("body=%s leaked generic reserve error marker %q", body, bad)
+		}
+	}
+	if settler.abortCalls != 0 {
+		t.Fatalf("reserve-phase claim race must not abort a rolled-back Tx1 claim; abort calls=%d", settler.abortCalls)
 	}
 }
 
