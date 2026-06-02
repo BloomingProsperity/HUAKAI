@@ -262,6 +262,48 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/me/usage:
+    get:
+      tags: [user-audit]
+      summary: End-user self-service consumption records
+      operationId: listMyUsage
+      x-huakai-spec-source:
+        - docs/specs/observability-billing.md
+        - docs/specs/trust-chain-user-verifiable-ledger.md
+      description: |
+        Returns immutable usage records for the authenticated inbound API key.
+        Tenant and API-key scope are resolved from bearer auth; client-supplied
+        tenant_id, api_key_id, or user_id query parameters are ignored and do
+        not affect the server-side scope. Response records intentionally omit
+        tenant_id, api_key_id, user_id, prompt, body, and message payloads.
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque cursor returned as `next_cursor`.
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+      responses:
+        '200':
+          description: Auth-scoped consumption records for the caller's API key.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MeUsageListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/hermes/settings:
     get:
       tags: [hermes]
@@ -4893,6 +4935,89 @@ components:
         finalized:
           type: array
           items: { $ref: '#/components/schemas/CredentialAcquisitionFinalizeResponse' }
+
+    MeUsageListResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/specs/observability-billing.md
+        - docs/specs/trust-chain-user-verifiable-ledger.md
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/MeUsageRecord' }
+        next_cursor:
+          type: string
+          description: Empty string when no next page exists.
+
+    MeUsageRecord:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/specs/observability-billing.md
+        - docs/specs/trust-chain-user-verifiable-ledger.md
+      required:
+        - requested_model
+        - upstream_model
+        - actual_cost
+        - ledger_id
+        - verify_hint
+        - created_at
+        - status
+      properties:
+        requested_model:
+          type: string
+          description: Model requested by the caller before routing.
+        upstream_model:
+          type: string
+          description: Model delivered upstream; empty only for legacy rows missing upstream_model.
+        actual_cost:
+          type: string
+          description: 'numeric(20,8) real cost rendered as string for client BigNumber safety.'
+          pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
+        provider:
+          type: string
+          description: Provider code when available from usage joins.
+        provider_account_id:
+          type: integer
+          format: int64
+          description: Provider account metadata already exposed by the usage-read store; credentials are never exposed.
+        ledger_id:
+          type: string
+          description: Signed audit-ledger reference for independent verification.
+        verify_hint: { $ref: '#/components/schemas/MeUsageVerifyHint' }
+        created_at: { type: string, format: date-time }
+        status:
+          type: string
+          description: Usage terminal class, or `pending_reconciliation` while the record is still pending reconciliation.
+        request_id:
+          type: string
+          description: Audit request id used by `/v1/audit/verify` when present.
+
+    MeUsageVerifyHint:
+      type: object
+      additionalProperties: false
+      required: [trust_verify_path, trust_verify_method]
+      properties:
+        ledger_id: { type: string }
+        trust_verify_path:
+          type: string
+          const: /v1/trust/verify
+        trust_verify_method:
+          type: string
+          const: POST
+        audit_verify_path:
+          type: string
+          const: /v1/audit/verify
+        audit_verify_method:
+          type: string
+          const: GET
+        request_id:
+          type: string
+        tenant_scope_ref:
+          type: string
+          description: Non-reversible tenant scope reference for audit verification.
 
     UsageRecord:
       type: object
