@@ -193,6 +193,44 @@ func TestMarshalThinkingFamilyBehavior(t *testing.T) {
 	}
 }
 
+func TestMarshalThinkingFamilyPreservesContinuationState(t *testing.T) {
+	node := proto.CapabilityNode{
+		ID:          "n_thinking_sig",
+		Kind:        proto.CapabilityThinking,
+		StreamReady: proto.StreamReadyPartial,
+		Thinking: &proto.ThinkingNode{
+			Redaction: proto.RedactionPublic,
+			Signature: "sig_openai_state",
+			Blocks: []proto.CanonicalContentBlock{{
+				Type:      "thinking",
+				Text:      "visible thought",
+				Thinking:  "visible thought",
+				Signature: "sig_openai_state",
+			}},
+		},
+	}
+
+	anthropic := marshalBody(t, graphEnv(node), "anthropic_messages")
+	anthropicBlock := content0(msg0(anthropic))
+	if anthropicBlock["thinking"] != "visible thought" || anthropicBlock["signature"] != "sig_openai_state" {
+		t.Fatalf("anthropic thinking continuation state = %+v", anthropicBlock)
+	}
+
+	responses := marshalBody(t, graphEnv(node), "openai_responses")
+	responsesItem := responseInput0(responses)
+	if responsesItem["type"] != "reasoning" || responsesItem["encrypted_content"] != "sig_openai_state" {
+		t.Fatalf("responses reasoning continuation state = %+v", responsesItem)
+	}
+	summary := responsesItem["summary"].([]any)
+	if len(summary) != 1 {
+		t.Fatalf("responses summary len: %d", len(summary))
+	}
+	first := summary[0].(map[string]any)
+	if first["type"] != "summary_text" || first["text"] != "visible thought" {
+		t.Fatalf("responses reasoning summary = %+v", first)
+	}
+}
+
 func TestMarshalAnthropicMessagesPreservesTopLevelThinkingControl(t *testing.T) {
 	env := anthropicRequestEnv(t, `{
 		"model":"claude-3-5-sonnet-20241022",
