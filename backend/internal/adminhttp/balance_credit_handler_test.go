@@ -70,6 +70,40 @@ func TestAdminBalanceCreditHandlerRequiresIdempotencyKeyBeforeMoneyService(t *te
 	}
 }
 
+func TestAdminBalanceCreditHandlerDebitGateErrorReturns400(t *testing.T) {
+	service := &balanceCreditServiceStub{err: payment.ErrAdminDebitNotSupported}
+	rec := invokeAdminBalanceCredit(t, AdminBalanceCreditDeps{
+		Auth:    apiKeyAuthStub{ident: platformAdmin()},
+		Service: service,
+	}, `{"tenant_id":7,"user_id":3,"amount":"-10.00000000","reason":"manual debit blocked until durable debit event","idempotency_key":"admin-debit-blocked"}`)
+
+	assertAdminAPIKeyStatus(t, rec, http.StatusBadRequest)
+	assertBalanceCreditErrorCode(t, rec, "admin_debit_not_yet_supported")
+	if !service.called {
+		t.Fatal("debit gate must be decided by money service after idempotency lookup")
+	}
+}
+
+func TestAdminBalanceCreditHandlerIdempotencyConflictReturns409(t *testing.T) {
+	rec := invokeAdminBalanceCredit(t, AdminBalanceCreditDeps{
+		Auth:    apiKeyAuthStub{ident: platformAdmin()},
+		Service: &balanceCreditServiceStub{err: payment.ErrExternalTradeConflict},
+	}, `{"tenant_id":7,"user_id":3,"amount":"200.00000000","reason":"manual recharge changed amount","idempotency_key":"admin-idem-conflict"}`)
+
+	assertAdminAPIKeyStatus(t, rec, http.StatusConflict)
+	assertBalanceCreditErrorCode(t, rec, "balance_adjustment_idempotency_conflict")
+}
+
+func TestAdminBalanceCreditHandlerDebitIdempotencyConflictReturns409(t *testing.T) {
+	rec := invokeAdminBalanceCredit(t, AdminBalanceCreditDeps{
+		Auth:    apiKeyAuthStub{ident: platformAdmin()},
+		Service: &balanceCreditServiceStub{err: payment.ErrExternalTradeConflict},
+	}, `{"tenant_id":7,"user_id":3,"amount":"-50.00000000","reason":"manual debit with reused key","idempotency_key":"admin-idem-conflict"}`)
+
+	assertAdminAPIKeyStatus(t, rec, http.StatusConflict)
+	assertBalanceCreditErrorCode(t, rec, "balance_adjustment_idempotency_conflict")
+}
+
 type balanceCreditServiceStub struct {
 	result payment.AdminBalanceAdjustmentResult
 	err    error
@@ -107,6 +141,19 @@ func invokeAdminBalanceCredit(t *testing.T, deps AdminBalanceCreditDeps, body st
 		t.Fatalf("handler returned invalid JSON: %q", rec.Body.String())
 	}
 	return rec
+}
+
+func assertBalanceCreditErrorCode(t *testing.T, rec *httptest.ResponseRecorder, want string) {
+	t.Helper()
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	decodeAdminAPIKeyBody(t, rec, &body)
+	if body.Error.Code != want {
+		t.Fatalf("error code=%q want %q; body=%s", body.Error.Code, want, rec.Body.String())
+	}
 }
 
 var _ adminAPIKeysAuth = apiKeyAuthStub{}

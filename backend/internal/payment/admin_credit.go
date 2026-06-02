@@ -98,6 +98,10 @@ func (s *PostgresStore) applyAdminBalanceAdjustmentOnce(ctx context.Context, inp
 		return result, nil
 	}
 
+	if input.Amount.IsNegative() {
+		return AdminBalanceAdjustmentResult{}, ErrAdminDebitNotSupported
+	}
+
 	if err := lockUser(ctx, tx, input.TenantID, input.UserID); err != nil {
 		return AdminBalanceAdjustmentResult{}, err
 	}

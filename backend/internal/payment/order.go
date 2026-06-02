@@ -48,6 +48,7 @@ var (
 	ErrPendingLimit            = errors.New("payment: pending order limit reached")
 	ErrDailyAmountLimit        = errors.New("payment: daily amount limit reached")
 	ErrExternalTradeConflict   = errors.New("payment: external trade conflict")
+	ErrAdminDebitNotSupported  = errors.New("payment: admin debit not supported")
 	ErrInvalidSignature        = errors.New("payment: invalid callback signature")
 	ErrPaymentAmountMismatch   = errors.New("payment: callback amount mismatch")
 	ErrPaymentProviderMismatch = errors.New("payment: callback provider mismatch")
