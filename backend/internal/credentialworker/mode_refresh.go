@@ -715,8 +715,16 @@ func stringField(fields map[string]any, key string) string {
 	}
 }
 
+func ClassifyRefreshErrorClass(err error) string {
+	if err == nil {
+		return ""
+	}
+	return classifyModeRefreshError(err)
+}
+
 func classifyModeRefreshError(err error) string {
-	if errors.Is(err, adapters.ErrCodexOAuthConfigRequired) || errors.Is(err, adapters.ErrGeminiOAuthConfigRequired) || errors.Is(err, ErrOperatorOAuthConfigMissing) {
+	if errors.Is(err, adapters.ErrCodexOAuthConfigRequired) || errors.Is(err, adapters.ErrGeminiOAuthConfigRequired) ||
+		errors.Is(err, ErrOperatorOAuthConfigMissing) || errors.Is(err, ErrProviderAdapterMissing) {
 		return "operator_config_required"
 	}
 	if errors.Is(err, adapters.ErrInvalidCredentialMaterial) {
@@ -726,8 +734,18 @@ func classifyModeRefreshError(err error) string {
 	switch {
 	case strings.Contains(msg, "invalid_grant"):
 		return "invalid_grant"
+	case strings.Contains(msg, "rate_limit_exceeded") || strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "rate_limit") || strings.Contains(msg, "too many requests") ||
+		strings.Contains(msg, "status 429"):
+		return "rate_limit_exceeded"
+	case strings.Contains(msg, "risk_control_triggered") || strings.Contains(msg, "risk control") ||
+		strings.Contains(msg, "risk_control"):
+		return "risk_control_triggered"
+	case strings.Contains(msg, "account_disabled") || strings.Contains(msg, "account disabled") ||
+		strings.Contains(msg, "disabled account"):
+		return "account_disabled"
 	case strings.Contains(msg, "decrypt"):
-		return "decrypt_failed"
+		return "payload_invalid"
 	case strings.Contains(msg, "payload") || strings.Contains(msg, "json"):
 		return "payload_invalid"
 	default:
