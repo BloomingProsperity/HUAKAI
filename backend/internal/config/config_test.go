@@ -124,6 +124,36 @@ func TestLoadIncludesTransportSidecarSocket(t *testing.T) {
 	if cfg.TransportSidecarSocket != "/tmp/huakai-tls-sidecar.sock" {
 		t.Fatalf("TransportSidecarSocket=%q want env value", cfg.TransportSidecarSocket)
 	}
+	if cfg.TransportSidecarFallback {
+		t.Fatal("TransportSidecarFallback default must be false for production fail-closed")
+	}
+}
+
+func TestLoadIncludesTransportSidecarFallbackFlag(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_TRANSPORT_SIDECAR_FALLBACK", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.TransportSidecarFallback {
+		t.Fatal("TransportSidecarFallback=false want true from HUAKAI_TRANSPORT_SIDECAR_FALLBACK")
+	}
+}
+
+func TestLoadRejectsInvalidTransportSidecarFallbackFlag(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_TRANSPORT_SIDECAR_FALLBACK", "sometimes")
+
+	err := loadOnlyError()
+
+	if err == nil {
+		t.Fatal("invalid HUAKAI_TRANSPORT_SIDECAR_FALLBACK was accepted")
+	}
+	if !strings.Contains(err.Error(), "HUAKAI_TRANSPORT_SIDECAR_FALLBACK") {
+		t.Fatalf("err=%v must name HUAKAI_TRANSPORT_SIDECAR_FALLBACK", err)
+	}
 }
 
 func TestLoadIncludesVendorOAuthConfigs(t *testing.T) {

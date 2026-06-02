@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -116,12 +117,15 @@ func TestFactory_For_MimicrySidecarMissingSocketFailsClosed(t *testing.T) {
 	missingSocket := "/tmp/huakai-missing-sidecar.sock"
 	f := NewFactory()
 	f.SidecarSocketPath = missingSocket
-	f.sidecarProbe = func(_ context.Context, socketPath string, mode mimicry.TransportMode) error {
+	f.sidecarProbe = func(_ context.Context, socketPath string, mode mimicry.TransportMode, profileID string) error {
 		if socketPath != missingSocket {
 			t.Fatalf("probe socketPath=%q want %q", socketPath, missingSocket)
 		}
 		if mode != mimicry.ModeMimicryClaudeCode {
 			t.Fatalf("probe mode=%q want %q", mode, mimicry.ModeMimicryClaudeCode)
+		}
+		if profileID != mimicry.SidecarProfileAnthropicCLIMimicryV1 {
+			t.Fatalf("probe profileID=%q want %q", profileID, mimicry.SidecarProfileAnthropicCLIMimicryV1)
 		}
 		return errors.New("mimicry sidecar: dial unix socket " + socketPath + ": missing sidecar socket")
 	}
@@ -134,6 +138,9 @@ func TestFactory_For_MimicrySidecarMissingSocketFailsClosed(t *testing.T) {
 	if !strings.Contains(err.Error(), "sidecar") || !strings.Contains(err.Error(), missingSocket) {
 		t.Fatalf("error should identify sidecar socket failure, got %v", err)
 	}
+	if got := TransportErrorClassOf(err); got != TransportErrorClassSidecarUnavailable {
+		t.Fatalf("error class=%q want %q", got, TransportErrorClassSidecarUnavailable)
+	}
 }
 
 func TestFactory_For_MimicrySidecarSocketUsesSidecarRoundTripper(t *testing.T) {
@@ -143,13 +150,16 @@ func TestFactory_For_MimicrySidecarSocketUsesSidecarRoundTripper(t *testing.T) {
 	f := NewFactory()
 	f.SidecarSocketPath = socketPath
 	f.sidecarProbeTimeout = 500 * time.Millisecond
-	f.sidecarProbe = func(ctx context.Context, gotSocketPath string, mode mimicry.TransportMode) error {
+	f.sidecarProbe = func(ctx context.Context, gotSocketPath string, mode mimicry.TransportMode, profileID string) error {
 		probeCalls++
 		if gotSocketPath != socketPath {
 			t.Fatalf("probe socketPath=%q want %q", gotSocketPath, socketPath)
 		}
 		if mode != mimicry.ModeMimicryClaudeCode {
 			t.Fatalf("probe mode=%q want %q", mode, mimicry.ModeMimicryClaudeCode)
+		}
+		if profileID != mimicry.SidecarProfileAnthropicCLIMimicryV1 {
+			t.Fatalf("probe profileID=%q want %q", profileID, mimicry.SidecarProfileAnthropicCLIMimicryV1)
 		}
 		_, probeSawDeadline = ctx.Deadline()
 		return nil
@@ -186,7 +196,7 @@ func TestFactory_For_MimicrySidecarNoAckTimesOutFailClosed(t *testing.T) {
 	f := NewFactory()
 	f.SidecarSocketPath = "/tmp/huakai-nonresponsive-sidecar.sock"
 	f.sidecarProbeTimeout = 100 * time.Millisecond
-	f.sidecarProbe = func(ctx context.Context, _ string, _ mimicry.TransportMode) error {
+	f.sidecarProbe = func(ctx context.Context, _ string, _ mimicry.TransportMode, _ string) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -206,6 +216,170 @@ func TestFactory_For_MimicrySidecarNoAckTimesOutFailClosed(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "sidecar") {
 		t.Fatalf("error should identify sidecar failure, got %v", err)
+	}
+	if got := TransportErrorClassOf(err); got != TransportErrorClassSidecarUnavailable {
+		t.Fatalf("error class=%q want %q", got, TransportErrorClassSidecarUnavailable)
+	}
+}
+
+func TestFactory_For_MimicrySidecarUnavailableFallbackFlagOffDoesNotDegrade(t *testing.T) {
+	native := &stubRoundTripper{}
+	f := NewFactory()
+	f.SetMimicry(native)
+	f.SidecarSocketPath = "/tmp/huakai-sidecar-down.sock"
+	f.SidecarFallbackEnabled = false
+	f.sidecarProbe = func(context.Context, string, mimicry.TransportMode, string) error {
+		return errors.New("connection refused")
+	}
+
+	rt, err := f.For(ProviderAnthropic, TransportModeMimicryClaudeCode)
+
+	if err == nil {
+		t.Fatalf("sidecar unavailable with fallback off must fail closed, got rt=%T", rt)
+	}
+	if rt == native {
+		t.Fatal("fallback off must not return injected Go-native mimicry transport")
+	}
+	if got := f.SidecarFallbackCount(); got != 0 {
+		t.Fatalf("fallback metric=%d want 0 when fallback flag is off", got)
+	}
+	if got := TransportErrorClassOf(err); got != TransportErrorClassSidecarUnavailable {
+		t.Fatalf("error class=%q want %q", got, TransportErrorClassSidecarUnavailable)
+	}
+}
+
+func TestFactory_For_MimicrySidecarUnavailableFallbackFlagOnUsesNativeAndCountsMetric(t *testing.T) {
+	native := &stubRoundTripper{}
+	f := NewFactory()
+	f.SetMimicry(native)
+	f.SidecarSocketPath = "/tmp/huakai-sidecar-down.sock"
+	f.SidecarFallbackEnabled = true
+	f.sidecarProbe = func(context.Context, string, mimicry.TransportMode, string) error {
+		return errors.New("connection refused")
+	}
+
+	rt, err := f.For(ProviderAnthropic, TransportModeMimicryClaudeCode)
+
+	if err != nil {
+		t.Fatalf("fallback flag on should return Go-native mimicry transport, got %v", err)
+	}
+	if rt != native {
+		t.Fatalf("fallback rt=%T want injected native %T", rt, native)
+	}
+	if got := f.SidecarFallbackCount(); got != 1 {
+		t.Fatalf("fallback metric=%d want 1", got)
+	}
+}
+
+func TestFactory_For_MimicrySidecarRuntimeFailureFallbacksToNative(t *testing.T) {
+	native := &responseRoundTripper{statusCode: http.StatusNoContent}
+	f := NewFactory()
+	f.SetMimicry(native)
+	f.SidecarSocketPath = "/tmp/huakai-sidecar-restarted.sock"
+	f.SidecarFallbackEnabled = true
+	f.sidecarByMode = map[TransportMode]http.RoundTripper{
+		TransportModeMimicryClaudeCode: errorRoundTripper{err: errors.New("mimicry sidecar: dial unix socket /tmp/huakai-sidecar-restarted.sock: connection refused")},
+	}
+
+	rt, err := f.For(ProviderAnthropic, TransportModeMimicryClaudeCode)
+	if err != nil {
+		t.Fatalf("For: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodGet, "https://api.anthropic.com/v1/messages", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := rt.RoundTrip(req)
+
+	if err != nil {
+		t.Fatalf("runtime sidecar failure should fallback to native RoundTripper: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("fallback response status=%d want %d", resp.StatusCode, http.StatusNoContent)
+	}
+	if native.calls != 1 {
+		t.Fatalf("native fallback calls=%d want 1", native.calls)
+	}
+	if got := f.SidecarFallbackCount(); got != 1 {
+		t.Fatalf("fallback metric=%d want 1", got)
+	}
+}
+
+func TestFactory_For_MimicrySidecarUpstreamErrorDoesNotFallback(t *testing.T) {
+	native := &responseRoundTripper{statusCode: http.StatusNoContent}
+	f := NewFactory()
+	f.SetMimicry(native)
+	f.SidecarSocketPath = "/tmp/huakai-sidecar.sock"
+	f.SidecarFallbackEnabled = true
+	f.sidecarByMode = map[TransportMode]http.RoundTripper{
+		TransportModeMimicryClaudeCode: errorRoundTripper{err: errors.New("mimicry sidecar: upstream tcp error: no route to host")},
+	}
+	rt, err := f.For(ProviderAnthropic, TransportModeMimicryClaudeCode)
+	if err != nil {
+		t.Fatalf("For: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodGet, "https://api.anthropic.com/v1/messages", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := rt.RoundTrip(req)
+
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("upstream error should not be masked by sidecar fallback")
+	}
+	if native.calls != 0 {
+		t.Fatalf("native fallback calls=%d want 0 for upstream error", native.calls)
+	}
+	if got := f.SidecarFallbackCount(); got != 0 {
+		t.Fatalf("fallback metric=%d want 0 for upstream error", got)
+	}
+}
+
+func TestFactory_For_MimicrySidecarProbeProfileFailureHasStableClass(t *testing.T) {
+	f := NewFactory()
+	f.SidecarSocketPath = "/tmp/huakai-sidecar-profile-missing.sock"
+	f.sidecarProbe = func(_ context.Context, _ string, _ mimicry.TransportMode, profileID string) error {
+		if profileID != mimicry.SidecarProfileAnthropicCLIMimicryV1 {
+			t.Fatalf("probe profileID=%q want %q", profileID, mimicry.SidecarProfileAnthropicCLIMimicryV1)
+		}
+		return fmt.Errorf("%w: %s", mimicry.ErrSidecarProfileUnavailable, profileID)
+	}
+
+	rt, err := f.For(ProviderAnthropic, TransportModeMimicryClaudeCode)
+
+	if err == nil {
+		t.Fatalf("profile probe failure must fail closed, got rt=%T", rt)
+	}
+	if got := TransportErrorClassOf(err); got != TransportErrorClassSidecarProfileUnavailable {
+		t.Fatalf("error class=%q want %q", got, TransportErrorClassSidecarProfileUnavailable)
+	}
+}
+
+func TestFactory_For_MimicryMandatorySidecarModeNeverFallsBack(t *testing.T) {
+	native := &stubRoundTripper{}
+	f := NewFactory()
+	f.SetMimicry(native)
+	f.SidecarSocketPath = "/tmp/huakai-sidecar-down.sock"
+	f.SidecarFallbackEnabled = true
+	f.SetMandatorySidecarMode(TransportModeMimicryClaudeCode, true)
+	f.sidecarProbe = func(context.Context, string, mimicry.TransportMode, string) error {
+		return errors.New("connection refused")
+	}
+
+	rt, err := f.For(ProviderAnthropic, TransportModeMimicryClaudeCode)
+
+	if err == nil {
+		t.Fatalf("mandatory sidecar mode must fail fast instead of degrading, got rt=%T", rt)
+	}
+	if rt == native {
+		t.Fatal("mandatory sidecar mode returned Go-native fallback")
+	}
+	if got := f.SidecarFallbackCount(); got != 0 {
+		t.Fatalf("mandatory failure must not increment fallback metric, got %d", got)
 	}
 }
 
@@ -290,4 +464,33 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+type stubRoundTripper struct{}
+
+func (s *stubRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("stub round tripper should not be executed by factory tests")
+}
+
+type errorRoundTripper struct {
+	err error
+}
+
+func (rt errorRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, rt.err
+}
+
+type responseRoundTripper struct {
+	statusCode int
+	calls      int
+}
+
+func (rt *responseRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.calls++
+	return &http.Response{
+		StatusCode: rt.statusCode,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader("")),
+		Request:    req,
+	}, nil
 }

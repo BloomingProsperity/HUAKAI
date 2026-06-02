@@ -159,6 +159,7 @@ func buildTransportFactory(cfg *Config, mimicryRegistry *mimicry.TemplateRegistr
 	factory := transport.NewFactory(mimicryRegistry)
 	if cfg != nil {
 		factory.SidecarSocketPath = cfg.TransportSidecarSocket
+		factory.SidecarFallbackEnabled = cfg.TransportSidecarFallback
 	}
 	return factory
 }
