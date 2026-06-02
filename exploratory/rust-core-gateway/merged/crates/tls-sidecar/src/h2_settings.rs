@@ -88,7 +88,12 @@ pub fn configured_client_builder(
         }
     }
     if let Some(size) = initial_connection_window_size {
-        builder.initial_connection_window_size(size);
+        // profile 值表示 wire 上要发送的连接级 WINDOW_UPDATE 增量；h2 builder 需要目标窗口值。
+        let target = size
+            .checked_add(DEFAULT_CONNECTION_WINDOW_SIZE)
+            .filter(|value| *value <= MAX_INITIAL_WINDOW_SIZE)
+            .ok_or(H2SettingsError::InvalidInitialConnectionWindowSize(size))?;
+        builder.initial_connection_window_size(target);
     }
     Ok(builder)
 }
@@ -195,6 +200,8 @@ pub enum H2SettingsError {
     InvalidEnablePush(u32),
     #[error("invalid H2 INITIAL_WINDOW_SIZE value: {0}")]
     InvalidInitialWindowSize(u32),
+    #[error("invalid H2 connection WINDOW_UPDATE value: {0}")]
+    InvalidInitialConnectionWindowSize(u32),
     #[error("invalid H2 MAX_FRAME_SIZE value: {0}")]
     InvalidMaxFrameSize(u32),
     #[cfg(test)]
@@ -218,6 +225,7 @@ pub enum H2SettingsError {
 }
 
 const MAX_INITIAL_WINDOW_SIZE: u32 = (1 << 31) - 1;
+const DEFAULT_CONNECTION_WINDOW_SIZE: u32 = 65_535;
 const MIN_MAX_FRAME_SIZE: u32 = 16_384;
 const MAX_MAX_FRAME_SIZE: u32 = (1 << 24) - 1;
 
@@ -384,6 +392,11 @@ mod tests {
             settings_pos < window_pos,
             "client frame order must be SETTINGS before WINDOW_UPDATE, got {order:?}"
         );
+        assert_eq!(
+            frames[window_pos].window_increment,
+            Some(1_114_112),
+            "profile connection window value must be preserved as the wire WINDOW_UPDATE increment"
+        );
         assert_ne!(
             &order[settings_pos..=window_pos],
             &[FRAME_WINDOW_UPDATE, FRAME_SETTINGS],
@@ -513,6 +526,7 @@ mod tests {
                 kind,
                 stream_id,
                 settings,
+                window_increment: parse_window_increment(kind, payload),
             });
             offset += 9 + len;
         }
@@ -531,11 +545,24 @@ mod tests {
             .collect()
     }
 
+    fn parse_window_increment(kind: u8, payload: &[u8]) -> Option<u32> {
+        if kind != FRAME_WINDOW_UPDATE || payload.len() != 4 {
+            return None;
+        }
+        Some(u32::from_be_bytes([
+            payload[0] & 0x7f,
+            payload[1],
+            payload[2],
+            payload[3],
+        ]))
+    }
+
     #[derive(Clone, Debug)]
     struct CapturedFrame {
         kind: u8,
         stream_id: u32,
         settings: Vec<(u16, u32)>,
+        window_increment: Option<u32>,
     }
 
     struct CaptureReadIo<I> {
