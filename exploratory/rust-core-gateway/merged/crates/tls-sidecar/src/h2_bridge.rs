@@ -5,10 +5,13 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 const MAX_HTTP11_HEAD_LEN: usize = 64 * 1024;
-const MAX_STAGE1_BODY_LEN: usize = 1024 * 1024;
+// 请求体仍整体缓冲(单请求场景足够);上限放宽到 32MiB 容纳长上下文/带附件的大请求。
+const MAX_REQUEST_BODY_LEN: usize = 32 * 1024 * 1024;
 
-// Stage-1 只处理单个 HTTP/1.1 请求和单个 H2 响应；Stage-2 待办包括 keep-alive 多请求复用、
-// chunked request body 流式解析、trailers、大 body 背压、GOAWAY 和连接级错误传播。
+// Stage-2 已做:单请求 + **响应流式中继**(逐 H2 DATA 帧转 chunked 边收边发、每帧 flush、
+// 释放流控、转发 trailers、无响应体上限)—— 可承载 Claude Code 的 SSE 流式长回复。
+// Stage-2b 待办:keep-alive 多请求复用同一 H2 连接、chunked request body 流式解析、
+// 请求体背压、GOAWAY/连接级错误传播。
 pub(crate) async fn bridge_single_request<S>(
     ipc: &mut S,
     send_request: &mut h2::client::SendRequest<Cursor<Vec<u8>>>,
@@ -28,22 +31,24 @@ where
     let status = response.status();
     let headers = response.headers().clone();
     let mut body_stream = response.into_body();
-    let mut body = Vec::new();
-    while let Some(chunk) = body_stream.data().await {
-        body.extend_from_slice(&chunk?);
-        if body.len() > MAX_STAGE1_BODY_LEN {
-            return Err(H2BridgeError::Unsupported(
-                "Stage-2 待办: 大响应 body 背压与流式转发".to_owned(),
-            ));
-        }
-    }
-    if body_stream.trailers().await?.is_some() {
-        return Err(H2BridgeError::Unsupported(
-            "Stage-2 待办: H2 trailers 转回 HTTP/1.1".to_owned(),
-        ));
-    }
 
-    write_http11_response(ipc, status, &headers, &body).await?;
+    // Stage-2 流式中继:先写状态行 + 头(transfer-encoding: chunked,长度未知/SSE),
+    // 再把每个上游 H2 DATA 帧实时转成 HTTP/1.1 chunk 边收边发(每帧 flush,保证 SSE
+    // 低延迟),并按已消费字节释放流控,防止连接窗口耗尽卡死长流。不再整体缓存、无 1MiB 上限。
+    write_http11_response_head(ipc, status, &headers).await?;
+    while let Some(chunk) = body_stream.data().await {
+        let chunk = chunk?;
+        if !chunk.is_empty() {
+            write_http11_chunk(ipc, &chunk).await?;
+            ipc.flush().await?;
+        }
+        // 释放流级容量,让上游继续发后续 DATA(流式必需,否则窗口耗尽即停)。
+        let _ = body_stream.flow_control().release_capacity(chunk.len());
+    }
+    // H2 trailers → HTTP/1.1 chunked trailer(SSE 通常无;有则在 0-chunk 后写)。
+    let trailers = body_stream.trailers().await?;
+    write_http11_chunk_terminator(ipc, trailers.as_ref()).await?;
+    ipc.flush().await?;
     Ok(())
 }
 
@@ -155,9 +160,9 @@ where
     }
     headers.retain(|(name, _)| !is_connection_named_hop_by_hop(name.as_str(), &connection_tokens));
 
-    if content_length > MAX_STAGE1_BODY_LEN {
+    if content_length > MAX_REQUEST_BODY_LEN {
         return Err(H2BridgeError::Unsupported(
-            "Stage-2 待办: 大 request body 背压与流式转发".to_owned(),
+            "Stage-2b 待办: request body 超过 32MiB 缓冲上限,需流式转发".to_owned(),
         ));
     }
     let body_start = header_end + 4;
@@ -199,11 +204,12 @@ fn build_h2_request(inbound: &Http11Request) -> Result<Request<()>, H2BridgeErro
     Ok(builder.body(())?)
 }
 
-async fn write_http11_response<W>(
+// 写 HTTP/1.1 响应头(流式):状态行 + 上游头(去 content-length / transfer-encoding /
+// hop-by-hop)+ 固定声明 chunked + connection: close。content-length 不再适用(改 chunked)。
+async fn write_http11_response_head<W>(
     ipc: &mut W,
     status: StatusCode,
     headers: &HeaderMap,
-    body: &[u8],
 ) -> Result<(), H2BridgeError>
 where
     W: AsyncWrite + Unpin,
@@ -213,7 +219,10 @@ where
         .await?;
     for (name, value) in headers {
         let name_text = name.as_str();
-        if name_text.eq_ignore_ascii_case("content-length") || is_hop_by_hop(name_text) {
+        if name_text.eq_ignore_ascii_case("content-length")
+            || name_text.eq_ignore_ascii_case("transfer-encoding")
+            || is_hop_by_hop(name_text)
+        {
             continue;
         }
         ipc.write_all(name_text.as_bytes()).await?;
@@ -221,11 +230,46 @@ where
         ipc.write_all(value.as_bytes()).await?;
         ipc.write_all(b"\r\n").await?;
     }
-    ipc.write_all(b"connection: close\r\n").await?;
-    ipc.write_all(format!("content-length: {}\r\n\r\n", body.len()).as_bytes())
-        .await?;
-    ipc.write_all(body).await?;
+    ipc.write_all(b"transfer-encoding: chunked\r\n").await?;
+    ipc.write_all(b"connection: close\r\n\r\n").await?;
     ipc.flush().await?;
+    Ok(())
+}
+
+// 写单个 HTTP/1.1 chunk:十六进制长度 + CRLF + 数据 + CRLF。
+async fn write_http11_chunk<W>(ipc: &mut W, chunk: &[u8]) -> Result<(), H2BridgeError>
+where
+    W: AsyncWrite + Unpin,
+{
+    ipc.write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
+        .await?;
+    ipc.write_all(chunk).await?;
+    ipc.write_all(b"\r\n").await?;
+    Ok(())
+}
+
+// 写 chunked 终止块 0\r\n,后接可选 trailer 头,再 \r\n 收尾。
+async fn write_http11_chunk_terminator<W>(
+    ipc: &mut W,
+    trailers: Option<&HeaderMap>,
+) -> Result<(), H2BridgeError>
+where
+    W: AsyncWrite + Unpin,
+{
+    ipc.write_all(b"0\r\n").await?;
+    if let Some(trailers) = trailers {
+        for (name, value) in trailers {
+            let name_text = name.as_str();
+            if is_hop_by_hop(name_text) {
+                continue;
+            }
+            ipc.write_all(name_text.as_bytes()).await?;
+            ipc.write_all(b": ").await?;
+            ipc.write_all(value.as_bytes()).await?;
+            ipc.write_all(b"\r\n").await?;
+        }
+    }
+    ipc.write_all(b"\r\n").await?;
     Ok(())
 }
 
@@ -310,7 +354,7 @@ mod tests {
             &[
                 ("x-upstream", "h2-stub"),
                 ("connection", "close"),
-                ("content-length", "6"),
+                ("transfer-encoding", "chunked"),
             ],
             b"get-ok",
         );
@@ -346,7 +390,7 @@ mod tests {
             &[
                 ("x-upstream", "posted"),
                 ("connection", "close"),
-                ("content-length", "7"),
+                ("transfer-encoding", "chunked"),
             ],
             b"post-ok",
         );
@@ -382,7 +426,7 @@ mod tests {
             &[
                 ("x-upstream", "clean"),
                 ("connection", "close"),
-                ("content-length", "8"),
+                ("transfer-encoding", "chunked"),
             ],
             b"clean-ok",
         );
@@ -424,6 +468,77 @@ mod tests {
         let _ = server.await;
     }
 
+    // Stage-2 流式判别:上游分多个 H2 DATA 帧发送(模拟 SSE)且总量 >1MiB(旧 Stage-1 会在
+    // 1MiB 处 Unsupported 报错)。断言 bridge 边收边发、Go 侧还原完整 body、响应为 chunked。
+    // 同时验证流控释放——若无 release_capacity,>64KB 传输会在连接窗口耗尽处卡死/截断。
+    #[tokio::test]
+    async fn bridge_streams_multi_frame_and_large_response_without_cap() {
+        let big = vec![b'x'; 1_200_000];
+        let big_for_server = big.clone();
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let server = tokio::spawn(async move {
+            let mut server_h2 = h2::server::Builder::new()
+                .handshake::<_, Cursor<Vec<u8>>>(server_io)
+                .await
+                .unwrap();
+            let (_request, mut respond) = server_h2
+                .accept()
+                .await
+                .expect("server must accept one request")
+                .expect("server stream must be valid");
+            let response = Response::builder()
+                .status(200)
+                .header("x-upstream", "stream")
+                .body(())
+                .unwrap();
+            let mut stream = respond.send_response(response, false).unwrap();
+            stream
+                .send_data(Cursor::new(b"event-1\n".to_vec()), false)
+                .unwrap();
+            stream
+                .send_data(Cursor::new(b"event-2\n".to_vec()), false)
+                .unwrap();
+            stream.send_data(Cursor::new(big_for_server), true).unwrap();
+            // 驱动连接把 >1MiB 分窗口发完(客户端读取并释放流控后窗口才打开)。
+            let _ = timeout(Duration::from_secs(5), server_h2.accept()).await;
+        });
+        let (mut send_request, connection) =
+            crate::h2_settings::client_handshake(client_io, &BTreeMap::new(), None)
+                .await
+                .unwrap();
+        let driver = tokio::spawn(async move {
+            let _ = connection.await;
+        });
+
+        let (mut go_side, mut rust_side) = tokio::io::duplex(64 * 1024);
+        let bridge = tokio::spawn(async move {
+            super::bridge_single_request(&mut rust_side, &mut send_request)
+                .await
+                .unwrap();
+        });
+        go_side
+            .write_all(
+                b"GET /v1/stream HTTP/1.1\r\nHost: api.example.test\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let response = read_http11_response_bytes(&mut go_side).await;
+        bridge.await.unwrap();
+        driver.abort();
+        let _ = server.await;
+
+        let mut expected = Vec::with_capacity(big.len() + 16);
+        expected.extend_from_slice(b"event-1\n");
+        expected.extend_from_slice(b"event-2\n");
+        expected.extend_from_slice(&big);
+        assert_http11_response(
+            &response,
+            "HTTP/1.1 200 OK",
+            &[("transfer-encoding", "chunked"), ("x-upstream", "stream")],
+            &expected,
+        );
+    }
+
     async fn round_trip_request(
         request: &[u8],
         expected: ExpectedRequest,
@@ -459,25 +574,19 @@ mod tests {
             assert_ne!(n, 0, "response ended before headers completed");
             buf.extend_from_slice(&chunk[..n]);
         };
-        let head = std::str::from_utf8(&buf[..header_end]).unwrap();
-        let content_length = head
-            .lines()
-            .find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                name.eq_ignore_ascii_case("content-length")
-                    .then(|| value.trim().parse::<usize>().unwrap())
-            })
-            .expect("test response must include Content-Length");
-        let body_end = header_end + 4 + content_length;
-        while buf.len() < body_end {
-            let mut chunk = vec![0u8; body_end - buf.len()];
-            timeout(Duration::from_secs(1), stream.read_exact(&mut chunk))
+        let _ = header_end;
+        // 响应为 chunked + connection: close → 读到 EOF 即拿到完整响应(head + chunked body)。
+        loop {
+            let mut chunk = [0u8; 4096];
+            let n = timeout(Duration::from_secs(2), stream.read(&mut chunk))
                 .await
                 .expect("response body read must not hang")
                 .unwrap();
-            buf.extend_from_slice(&chunk);
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
         }
-        buf.truncate(body_end);
         buf
     }
 
@@ -584,7 +693,30 @@ mod tests {
                 "missing response header {needle:?}; head={head:?}"
             );
         }
-        assert_eq!(body.as_bytes(), expected_body);
+        let decoded = decode_chunked(body.as_bytes());
+        assert_eq!(decoded, expected_body, "decoded chunked body mismatch");
+    }
+
+    // 解析 HTTP/1.1 chunked body → 还原原始字节(忽略 trailer)。
+    fn decode_chunked(body: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut rest = body;
+        loop {
+            let pos = rest
+                .windows(2)
+                .position(|w| w == b"\r\n")
+                .expect("chunk size line CRLF");
+            let size_line = std::str::from_utf8(&rest[..pos]).unwrap();
+            let size_hex = size_line.split(';').next().unwrap_or(size_line).trim();
+            let size = usize::from_str_radix(size_hex, 16).expect("chunk size hex");
+            rest = &rest[pos + 2..];
+            if size == 0 {
+                break;
+            }
+            out.extend_from_slice(&rest[..size]);
+            rest = &rest[size + 2..];
+        }
+        out
     }
 
     #[derive(Clone, Copy)]
