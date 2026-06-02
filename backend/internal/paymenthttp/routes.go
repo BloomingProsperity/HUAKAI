@@ -27,7 +27,7 @@ var (
 
 type PaymentService interface {
 	OpenRecharge(context.Context, payment.OpenInput) (payment.OpenResult, error)
-	FulfillVerifiedCallback(context.Context, payment.VerifiedCallback) (payment.CallbackResult, error)
+	FulfillVerifiedCallback(context.Context, payment.VerifiedCallback) (payment.VerifiedCallbackResult, error)
 }
 
 type Deps struct {
@@ -80,7 +80,7 @@ func MountUserRoutes(r chi.Router, d Deps) {
 }
 
 func MountWebhookRoutes(r chi.Router, d Deps) {
-	r.Post("/v1/payment/webhooks/{provider}", newWebhookHandler(d))
+	r.Post("/v1/payment/webhooks/{provider}", newLegacyWebhookHandler(d))
 }
 
 func newCreateRechargeHandler(d Deps) http.HandlerFunc {
@@ -140,11 +140,11 @@ func newCreateRechargeHandler(d Deps) http.HandlerFunc {
 			writePaymentOpenError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, createRechargeResponse{Order: orderView(result.Order)})
+		writeJSON(w, http.StatusCreated, createRechargeResponse{Order: rechargeOrderViewFromOrder(result.Order, providerName)})
 	}
 }
 
-func newWebhookHandler(d Deps) http.HandlerFunc {
+func newLegacyWebhookHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		providerName := normalizeProviderName(chi.URLParam(r, "provider"))
 		binding, ok := d.Providers[providerName]
@@ -245,7 +245,7 @@ func writePaymentWebhookError(w http.ResponseWriter, err error) {
 	}
 }
 
-func webhookResultView(result payment.CallbackResult) webhookResponse {
+func webhookResultView(result payment.VerifiedCallbackResult) webhookResponse {
 	resp := webhookResponse{
 		OrderID:     result.OrderID,
 		UserID:      result.UserID,
@@ -259,15 +259,15 @@ func webhookResultView(result payment.CallbackResult) webhookResponse {
 	return resp
 }
 
-func orderView(order payment.Order) rechargeOrderView {
+func rechargeOrderViewFromOrder(order payment.Order, providerName string) rechargeOrderView {
 	return rechargeOrderView{
 		ID:              order.ID,
-		ExternalTradeNo: order.ExternalTradeNo,
-		RechargeRef:     order.RechargeRef,
+		ExternalTradeNo: order.OutTradeNo,
+		RechargeRef:     "pay_" + strings.TrimSpace(order.OutTradeNo),
 		Status:          string(order.Status),
-		Amount:          order.CreditedAmount.StringFixed(8),
+		Amount:          decimal.NewFromInt(order.AmountCents).Div(decimal.NewFromInt(100)).StringFixed(2),
 		Currency:        order.CurrencyCode,
-		Provider:        order.Provider,
+		Provider:        providerName,
 		CreatedAt:       order.CreatedAt.UTC().Format(time.RFC3339Nano),
 	}
 }
@@ -277,12 +277,6 @@ func nowUTC(d Deps) time.Time {
 		return d.Clock().UTC()
 	}
 	return time.Now().UTC()
-}
-
-func writeJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {

@@ -55,12 +55,9 @@ func TestAdminAdjustBalanceRejectsOversizedIdempotencyKeyBeforeStore(t *testing.
 }
 
 type adminBalanceStoreStub struct {
+	*MemoryStore
 	called bool
 	got    AdminBalanceAdjustmentInput
-}
-
-func (s *adminBalanceStoreStub) OpenRecharge(context.Context, OpenInput) (Order, error) {
-	return Order{}, ErrStoreNotConfigured
 }
 
 func (s *adminBalanceStoreStub) ApplyAdminBalanceAdjustment(_ context.Context, input AdminBalanceAdjustmentInput) (AdminBalanceAdjustmentResult, error) {
