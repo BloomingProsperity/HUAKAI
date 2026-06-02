@@ -86,6 +86,9 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: BuildRequestFromEnvelope/BuildRequest 失败: %w", err)
 	}
+	if err := validatePassthroughEndpointTarget(ctx, in.Credential, req); err != nil {
+		return nil, err
+	}
 
 	mode := in.TransportMode
 	if mode == "" {
@@ -100,6 +103,12 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 		rt, err = d.applyProxy(ctx, rt, account.AccountID)
 		if err != nil {
 			return nil, err
+		}
+		if provider.UsesCustomPassthroughEndpoint(in.Credential) {
+			rt, err = provider.WrapPassthroughEndpointTransport(rt)
+			if err != nil {
+				return nil, fmt.Errorf("dispatcher: passthrough endpoint rejected: %w", err)
+			}
 		}
 		client = &http.Client{Transport: rt}
 	}

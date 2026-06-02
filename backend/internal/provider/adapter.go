@@ -16,6 +16,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -82,21 +83,21 @@ type AccountInfo struct {
 //
 // 防第三方 upstream_passthrough 凭据 token 误发到官方
 // vendor endpoint (e.g. 客户配置自托管 proxy 但请求仍发 api.openai.com)。
-func EndpointForCredential(adapterDefault string, cred Credential) string {
+func EndpointForCredential(adapterDefault string, cred Credential) (string, error) {
 	if cred.Type != CredentialTypeUpstreamPassthrough {
-		return adapterDefault
+		return adapterDefault, nil
 	}
 	base := strings.TrimSpace(cred.Extra["base_url"])
 	if base == "" {
-		return adapterDefault
+		return adapterDefault, nil
 	}
-	baseURL, err := url.Parse(base)
-	if err != nil || baseURL.Host == "" {
-		return base
+	baseURL, err := safePassthroughBaseURL(base)
+	if err != nil {
+		return "", err
 	}
 	defaultURL, err := url.Parse(adapterDefault)
-	if err != nil {
-		return base
+	if err != nil || defaultURL.Host == "" {
+		return "", fmt.Errorf("%w: invalid adapter default endpoint", ErrUnsafePassthroughEndpoint)
 	}
 	defaultPath := defaultURL.Path
 	basePath := strings.TrimRight(baseURL.Path, "/")
@@ -128,7 +129,7 @@ func EndpointForCredential(adapterDefault string, cred Credential) string {
 	if combined.RawQuery == "" {
 		combined.RawQuery = defaultURL.RawQuery
 	}
-	return combined.String()
+	return combined.String(), nil
 }
 
 // isAPIVersionSegment 判断单个 path 段是否是 API 版本号: 以 'v' 开头, 紧跟

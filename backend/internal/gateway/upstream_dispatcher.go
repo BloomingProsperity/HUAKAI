@@ -118,6 +118,9 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: BuildRequest 失败: %w", err)
 	}
+	if err := validatePassthroughEndpointTarget(ctx, in.Credential, req); err != nil {
+		return nil, err
+	}
 
 	// 3. 取 transport
 	mode := in.TransportMode
@@ -135,6 +138,12 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 		rt, err = d.applyProxy(ctx, rt, in.Account.AccountID)
 		if err != nil {
 			return nil, err
+		}
+		if provider.UsesCustomPassthroughEndpoint(in.Credential) {
+			rt, err = provider.WrapPassthroughEndpointTransport(rt)
+			if err != nil {
+				return nil, fmt.Errorf("dispatcher: passthrough endpoint rejected: %w", err)
+			}
 		}
 		client = &http.Client{Transport: rt}
 	}
@@ -175,4 +184,17 @@ func (d *UpstreamDispatcher) applyProxy(ctx context.Context, rt http.RoundTrippe
 		return nil, fmt.Errorf("dispatcher: ProxyResolver.Resolve 失败: %w", err)
 	}
 	return provider.WrapTransportWithProxy(rt, proxyURL), nil
+}
+
+func validatePassthroughEndpointTarget(ctx context.Context, cred provider.Credential, req *http.Request) error {
+	if !provider.UsesCustomPassthroughEndpoint(cred) {
+		return nil
+	}
+	if req == nil {
+		return fmt.Errorf("dispatcher: passthrough endpoint rejected: %w", provider.ErrUnsafePassthroughEndpoint)
+	}
+	if err := provider.ValidatePassthroughEndpointTarget(ctx, req.URL); err != nil {
+		return fmt.Errorf("dispatcher: passthrough endpoint rejected: %w", err)
+	}
+	return nil
 }
