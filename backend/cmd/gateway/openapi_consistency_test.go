@@ -303,3 +303,50 @@ func TestAccountModesRouteAndOpenAPISchemaStayInSync(t *testing.T) {
 		}
 	}
 }
+
+func TestProviderChannelCatalogRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
+	r := buildTestRouter(t)
+	implOps := openapicheck.WalkChiOperations(r)
+	for _, path := range []string{"/admin/v1/providers", "/admin/v1/channels"} {
+		if !hasOperation(implOps, http.MethodGet, path) {
+			t.Fatalf("runtime missing GET %s", path)
+		}
+	}
+
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	specOps, err := openapicheck.ParseSpecOperations(specAbs)
+	if err != nil {
+		t.Fatalf("解析 OpenAPI operations %s: %v", specAbs, err)
+	}
+	for _, path := range []string{"/admin/v1/providers", "/admin/v1/channels"} {
+		if !hasOperation(specOps, http.MethodGet, path) {
+			t.Fatalf("OpenAPI missing GET %s", path)
+		}
+	}
+
+	raw, err := os.ReadFile(specAbs)
+	if err != nil {
+		t.Fatalf("read OpenAPI: %v", err)
+	}
+	spec := string(raw)
+	for _, snippet := range []string{
+		"AdminProviderCatalogList:",
+		"AdminProviderCatalogItem:",
+		"admin_providers_list",
+		"code:",
+		"display_name:",
+		"upstream_protocol:",
+		"AdminChannelCatalogList:",
+		"AdminChannelCatalogItem:",
+		"admin_channels_list",
+		"pool_group_id:",
+		"failover_status_codes:",
+	} {
+		if !strings.Contains(spec, snippet) {
+			t.Fatalf("OpenAPI provider/channel catalog schema missing snippet %q", snippet)
+		}
+	}
+}
