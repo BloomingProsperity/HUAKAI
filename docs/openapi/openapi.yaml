@@ -93,6 +93,8 @@ tags:
     description: Audit trail query (rate-limit + pool-routing + oauth-refresh). F-RATE-001 + F-POOL-001 + F-AUTH-005.
   - name: admin-cache
     description: L2 response cache inspection and operator eviction. F-CACHE-002.
+  - name: admin-model-sync
+    description: Platform-admin trigger for dynamic vendor model catalog synchronization.
   - name: admin-dlq
     description: Usage Record DLQ replay. F-OBS-001.
 
@@ -2947,6 +2949,62 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/model-sync:
+    post:
+      tags: [admin-model-sync]
+      summary: Trigger dynamic vendor model catalog synchronization
+      operationId: postAdminModelSync
+      description: |
+        Platform-admin only manual trigger for configured vendor model-list APIs.
+        The sync updates HUAKAI's global model registry without changing tenant
+        aliases, pool bindings, or pricing classes. Models that disappear from
+        an upstream auto-sync source are marked unavailable rather than deleted.
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-02-model-auto-sync-codex.md
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                reason:
+                  type: string
+                  maxLength: 200
+      responses:
+        '200':
+          description: Sync completed for all configured vendors.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [object, completed_at, total_added, total_updated, total_disabled, results]
+                properties:
+                  object: { type: string, enum: [admin_model_sync_result] }
+                  completed_at: { type: string, format: date-time }
+                  total_added: { type: integer, minimum: 0 }
+                  total_updated: { type: integer, minimum: 0 }
+                  total_disabled: { type: integer, minimum: 0 }
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      required: [vendor, added, updated, reactivated, disabled, unchanged, snapshot_bumps]
+                      properties:
+                        vendor: { type: string, enum: [anthropic, openai, gemini] }
+                        added: { type: integer, minimum: 0 }
+                        updated: { type: integer, minimum: 0 }
+                        reactivated: { type: integer, minimum: 0 }
+                        disabled: { type: integer, minimum: 0 }
+                        unchanged: { type: integer, minimum: 0 }
+                        snapshot_bumps: { type: integer, minimum: 0 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/audit-events:
