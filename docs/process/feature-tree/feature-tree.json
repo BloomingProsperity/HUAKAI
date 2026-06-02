@@ -217,7 +217,7 @@
       "id": "§16", "name": "文档 / 测试 / 发布 + 部署", "pct": 50,
       "summary": "文档治理强(capability contract/clean-room/15 规则),测试弱(前端无测试/无 CI 安全链);release-mode 硬化已修。L2 生产就绪轴 0%。",
       "leaves": [
-        {"name": "release-mode 生产硬化", "fid": "F-MODE-001", "pkgs": ["config","cmd-gateway"], "stage": "tested", "pct": 80, "verified": true, "fix": {"landed": ["S1-019"], "open": ["S2-004","S2-029","S1-023","S2-084"]}, "parity": "S1-019:unset 不能静默进 dev,必须显式 production 才开硬化(已修)"},
+        {"name": "release-mode 生产硬化", "fid": "F-MODE-001", "pkgs": ["config","cmd-gateway"], "stage": "tested", "pct": 82, "verified": true, "fix": {"landed": ["S1-019","S2-004"], "open": ["S2-029","S1-023","S2-084"]}, "parity": "S1-019:unset 不能静默进 dev,必须显式 production 才开硬化(已修);S2-004:production trust-ledger escape flag 启动失败且 validator fail-closed(已修)"},
         {"name": "JSON error writer 健壮性", "fid": "-", "pkgs": ["gatewayhttp"], "stage": "tested", "pct": 80, "verified": true, "fix": {"landed": ["S2-148"]}, "parity": "S2-148:控制字符不再打坏响应(encoding/json)(已修)"},
         {"name": "邮件发送 cooldown", "fid": "-", "pkgs": ["email"], "stage": "tested", "pct": 75, "verified": true, "fix": {"landed": ["S2-079"], "open": ["S2-037"]}, "parity": "S2-079:cooldown 改 consume-on-success+SMTP 4xx/5xx 分类(已修)"},
         {"name": "OpenAPI 契约", "fid": "-", "pkgs": ["openapicheck"], "stage": "partial", "pct": 50, "verified": false, "fix": {"open": ["S2-033","S2-097"]}, "parity": "存在但有契约 drift(get/post 错位)(MED)"},
