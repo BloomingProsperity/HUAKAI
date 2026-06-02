@@ -21,13 +21,22 @@ type openAIResponsesRequest struct {
 }
 
 type openAIResponsesInputItem struct {
-	Type      string          `json:"type"`
-	Role      string          `json:"role,omitempty"`      // message item
-	Content   json.RawMessage `json:"content,omitempty"`   // message item
-	CallID    string          `json:"call_id,omitempty"`   // function_call / function_call_output
-	Name      string          `json:"name,omitempty"`      // function_call
-	Arguments string          `json:"arguments,omitempty"` // function_call
-	Output    string          `json:"output,omitempty"`    // function_call_output
+	Type             string                         `json:"type"`
+	ID               string                         `json:"id,omitempty"`                // reasoning item
+	Status           string                         `json:"status,omitempty"`            // reasoning item
+	EncryptedContent string                         `json:"encrypted_content,omitempty"` // reasoning item
+	Summary          []openAIResponsesReasoningPart `json:"summary,omitempty"`           // reasoning item
+	Role             string                         `json:"role,omitempty"`              // message item
+	Content          json.RawMessage                `json:"content,omitempty"`           // message / reasoning item
+	CallID           string                         `json:"call_id,omitempty"`           // function_call / function_call_output
+	Name             string                         `json:"name,omitempty"`              // function_call
+	Arguments        string                         `json:"arguments,omitempty"`         // function_call
+	Output           string                         `json:"output,omitempty"`            // function_call_output
+}
+
+type openAIResponsesReasoningPart struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
 }
 
 type openAIResponsesInputPart struct {

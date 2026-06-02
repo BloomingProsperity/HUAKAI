@@ -66,17 +66,39 @@ func thinkingBlocks(t *proto.ThinkingNode) []proto.CanonicalContentBlock {
 }
 
 func responsesThinkingItems(t *proto.ThinkingNode) []any {
-	if t == nil || (t.Redaction != "" && t.Redaction != proto.RedactionPublic) {
+	if t == nil || (t.Redaction != "" && t.Redaction != proto.RedactionPublic && t.Redaction != proto.RedactionProviderOnly) {
 		return nil
 	}
+	providerOnly := t.Redaction == proto.RedactionProviderOnly
 	var items []any
 	for _, b := range t.Blocks {
-		if b.Text != "" {
-			items = append(items, map[string]any{
-				"type":    "reasoning",
-				"summary": []any{map[string]any{"type": "summary_text", "text": b.Text}},
-			})
+		text := firstNonEmpty(b.Text, b.Thinking, b.ReasoningSummary)
+		if providerOnly {
+			text = ""
 		}
+		signature := firstNonEmpty(b.Signature, t.Signature)
+		if text == "" && signature == "" {
+			continue
+		}
+		summary := []any{}
+		if text != "" {
+			summary = append(summary, map[string]any{"type": "summary_text", "text": text})
+		}
+		item := map[string]any{
+			"type":    "reasoning",
+			"summary": summary,
+		}
+		if signature != "" {
+			item["encrypted_content"] = signature
+		}
+		items = append(items, item)
+	}
+	if len(items) == 0 && t.Signature != "" {
+		items = append(items, map[string]any{
+			"type":              "reasoning",
+			"summary":           []any{},
+			"encrypted_content": t.Signature,
+		})
 	}
 	return items
 }

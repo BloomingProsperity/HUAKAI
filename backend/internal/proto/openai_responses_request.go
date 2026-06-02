@@ -148,6 +148,31 @@ func (o *OpenAIResponsesClient) RequestToCanonical(ctx context.Context, raw []by
 				})
 			}
 			env.Messages = append(env.Messages, cm)
+		case "reasoning":
+			blocks, redaction, err := openAIResponsesReasoningInputBlocks(it, mi)
+			if err != nil {
+				return nil, nil, err
+			}
+			if len(blocks) > 0 {
+				env.Messages = append(env.Messages, CanonicalMessage{Role: "assistant", Content: blocks})
+			}
+			nodeSeq++
+			nodeID := fmt.Sprintf("n_thinking_%d", nodeSeq)
+			msgIdx := mi
+			env.CapabilityGraph.Nodes = append(env.CapabilityGraph.Nodes, CapabilityNode{
+				ID:          nodeID,
+				Kind:        CapabilityThinking,
+				StreamReady: StreamReadyPartial,
+				Source:      &NodeSourceRef{MessageIndex: &msgIdx},
+				Thinking: &ThinkingNode{
+					Blocks:    blocks,
+					Signature: it.EncryptedContent,
+					Redaction: redaction,
+				},
+			})
+			env.ProviderProjection.CapabilityResults = append(env.ProviderProjection.CapabilityResults, CapabilityProjection{
+				Capability: CapabilityThinking, NodeID: nodeID, Verdict: ProjectionPreserved,
+			})
 		case "function_call":
 			if it.CallID == "" || it.Name == "" {
 				return nil, nil, fmt.Errorf("proto: openai_responses input[%d] function_call missing call_id or name", mi)
@@ -214,4 +239,36 @@ func (o *OpenAIResponsesClient) RequestToCanonical(ctx context.Context, raw []by
 	}
 
 	return env, losses, nil
+}
+
+func openAIResponsesReasoningInputBlocks(it openAIResponsesInputItem, itemIndex int) ([]CanonicalContentBlock, RedactionClass, error) {
+	parts := make([]openAIResponsesReasoningPart, 0, len(it.Summary))
+	parts = append(parts, it.Summary...)
+	if len(it.Content) > 0 {
+		var content []openAIResponsesReasoningPart
+		if err := json.Unmarshal(it.Content, &content); err != nil {
+			return nil, "", fmt.Errorf("proto: openai_responses input[%d] reasoning content parse: %w", itemIndex, err)
+		}
+		parts = append(parts, content...)
+	}
+
+	blocks := make([]CanonicalContentBlock, 0, len(parts))
+	for _, part := range parts {
+		if part.Text == "" {
+			continue
+		}
+		blocks = append(blocks, CanonicalContentBlock{
+			Type:      "thinking",
+			Text:      part.Text,
+			Thinking:  part.Text,
+			Signature: it.EncryptedContent,
+		})
+	}
+	if len(blocks) == 0 && it.EncryptedContent != "" {
+		blocks = append(blocks, CanonicalContentBlock{Type: "thinking", Signature: it.EncryptedContent})
+	}
+	if len(blocks) == 0 || firstNonEmptyString(blocks[0].Text, blocks[0].Thinking, blocks[0].ReasoningSummary) == "" {
+		return blocks, RedactionProviderOnly, nil
+	}
+	return blocks, RedactionPublic, nil
 }
