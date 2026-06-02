@@ -443,6 +443,8 @@ func authReasonClass(err error) string {
 	switch {
 	case errors.Is(err, userauth.ErrInvalidInput):
 		return "invalid_auth_request"
+	case errors.Is(err, userauth.ErrRegistrationDisabled):
+		return "registration_disabled"
 	case errors.Is(err, userauth.ErrInviteRequired):
 		return "invite_required"
 	case errors.Is(err, userauth.ErrInviteInvalid):
@@ -593,6 +595,8 @@ func writeAuthError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, userauth.ErrInvalidInput):
 		writeJSONError(w, http.StatusBadRequest, "invalid_auth_request", "auth request is invalid")
+	case errors.Is(err, userauth.ErrRegistrationDisabled):
+		writeJSONError(w, http.StatusForbidden, "registration_disabled", "public registration is disabled")
 	case errors.Is(err, userauth.ErrInviteRequired):
 		writeJSONError(w, http.StatusForbidden, "invite_required", "invite code is required")
 	case errors.Is(err, userauth.ErrInviteInvalid):
