@@ -5252,6 +5252,12 @@ OPENSSL_EXPORT int SSL_CTX_set_client_hello_profile(
     const uint16_t *groups, size_t groups_len, const uint8_t *ec_points,
     size_t ec_points_len);
 
+// 设置 ClientHello signature_algorithms wire 列表 (HUAKAI patch, not upstream
+// BoringSSL)。该入口只控制 verify-advertisement 使用的 uint16 id 序列，不把
+// 未支持算法加入实际 signing 能力。
+OPENSSL_EXPORT int SSL_CTX_set_huakai_raw_verify_algorithm_prefs(
+    SSL_CTX *ctx, const uint16_t *prefs, size_t num_prefs);
+
 // SSL_set_permute_extensions configures whether sockets on |ssl| should
 // permute extensions. For now, this is only implemented for the ClientHello.
 OPENSSL_EXPORT void SSL_set_permute_extensions(SSL *ssl, int enabled);

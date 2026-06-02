@@ -148,7 +148,7 @@ pub fn parse_settings_frame(frame: &[u8]) -> Result<Vec<(u16, u32)>, H2SettingsE
         }
         return Ok(Vec::new());
     }
-    if payload.len() % SETTINGS_ENTRY_LEN != 0 {
+    if !payload.len().is_multiple_of(SETTINGS_ENTRY_LEN) {
         return Err(H2SettingsError::InvalidSettingsPayloadLength(payload.len()));
     }
 

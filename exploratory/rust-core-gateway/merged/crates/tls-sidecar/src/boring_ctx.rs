@@ -41,7 +41,11 @@ pub fn build_connector(profile: &TlsProfile) -> Result<SslConnector, BoringCtxEr
             .set_alpn_protos(&alpn)
             .map_err(BoringCtxError::from)?;
     }
-    if !profile.sigalgs.is_empty() {
+    if !profile.signature_algorithms.is_empty() {
+        builder
+            .set_raw_verify_algorithm_prefs(&profile.signature_algorithms)
+            .map_err(BoringCtxError::from)?;
+    } else if !profile.sigalgs.is_empty() {
         builder
             .set_sigalgs_list(&profile.sigalgs)
             .map_err(BoringCtxError::from)?;
@@ -375,6 +379,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn boring_signature_algorithms_profile_controls_wire_bytes() {
+        let profile = anthropic_profile();
+
+        let good = capture_wire_client_hello(&profile).await;
+
+        assert_eq!(profile.signature_algorithms.len(), 26);
+        assert_eq!(good.signature_algorithms, profile.signature_algorithms);
+
+        let mut damaged = profile.clone();
+        damaged.signature_algorithms.clear();
+        let damaged_wire = capture_wire_client_hello(&damaged).await;
+
+        assert_ne!(damaged_wire.signature_algorithms, good.signature_algorithms);
+    }
+
+    #[tokio::test]
     async fn empty_boring_setter_fields_keep_boring_default_extension_path() {
         let mut profile = anthropic_profile();
         let explicit_order = profile.extension_order.clone();
@@ -512,7 +532,7 @@ mod tests {
         reader.skip(session_id_len)?;
 
         let cipher_len = reader.read_u16()? as usize;
-        if cipher_len % 2 != 0 {
+        if !cipher_len.is_multiple_of(2) {
             return Err("invalid cipher list length");
         }
         let cipher_end = reader.position() + cipher_len;
@@ -527,6 +547,7 @@ mod tests {
         let mut extensions = Vec::new();
         let mut groups = Vec::new();
         let mut ec_points = Vec::new();
+        let mut signature_algorithms = Vec::new();
         let mut supported_versions = Vec::new();
         if reader.remaining() > 0 {
             let extensions_len = reader.read_u16()? as usize;
@@ -539,6 +560,7 @@ mod tests {
                 match ext_type {
                     10 => groups = parse_u16_vector(data)?,
                     11 => ec_points = parse_u8_vector(data)?,
+                    13 => signature_algorithms = parse_u16_vector(data)?,
                     43 => supported_versions = parse_supported_versions(data)?,
                     _ => {}
                 }
@@ -550,6 +572,7 @@ mod tests {
             extensions,
             supported_groups: groups,
             ec_point_formats: ec_points,
+            signature_algorithms,
             supported_versions,
         })
     }
@@ -561,6 +584,7 @@ mod tests {
         extensions: Vec<u16>,
         supported_groups: Vec<u16>,
         ec_point_formats: Vec<u8>,
+        signature_algorithms: Vec<u16>,
         supported_versions: Vec<u16>,
     }
 
@@ -587,7 +611,7 @@ mod tests {
     fn parse_u16_vector(data: &[u8]) -> Result<Vec<u16>, &'static str> {
         let mut reader = WireReader::new(data);
         let len = reader.read_u16()? as usize;
-        if len % 2 != 0 || reader.remaining() < len {
+        if !len.is_multiple_of(2) || reader.remaining() < len {
             return Err("invalid u16 vector");
         }
         let end = reader.position() + len;
@@ -610,7 +634,7 @@ mod tests {
     fn parse_supported_versions(data: &[u8]) -> Result<Vec<u16>, &'static str> {
         let mut reader = WireReader::new(data);
         let len = reader.read_u8()? as usize;
-        if len % 2 != 0 || reader.remaining() < len {
+        if !len.is_multiple_of(2) || reader.remaining() < len {
             return Err("invalid supported_versions");
         }
         let end = reader.position() + len;
