@@ -316,7 +316,7 @@ func TestInviteRedemptionRollsBackWhenUserCreateFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateInviteCode: %v", err)
 	}
-	store.invites[inviteHash] = InviteCode{Code: inviteHash, TenantID: 1, MaxUses: 1, Status: "active", CreatedAt: now, UpdatedAt: now}
+	store.invites[inviteHash] = InviteCode{Code: inviteHash, TenantID: 1, MaxUses: 1, Status: "active", CreatedAt: now, UpdatedAt: now, CommunityInvitationID: 77, CreatedBy: 7001}
 	store.failCreate = true
 	svc := NewService(store)
 	svc.InviteRequired = true
@@ -328,24 +328,97 @@ func TestInviteRedemptionRollsBackWhenUserCreateFails(t *testing.T) {
 	if invite := store.invites[inviteHash]; invite.UsedCount != 0 || invite.Status != "active" {
 		t.Fatalf("invite consumed despite user create rollback: %+v", invite)
 	}
-	if len(store.bindings) != 0 || len(store.emailTokens) != 0 {
-		t.Fatalf("rollback left bindings/tokens: bindings=%+v tokens=%+v", store.bindings, store.emailTokens)
+	if len(store.bindings) != 0 || len(store.emailTokens) != 0 || len(store.communityReferrals) != 0 {
+		t.Fatalf("rollback left bindings/tokens/referrals: bindings=%+v tokens=%+v referrals=%+v", store.bindings, store.emailTokens, store.communityReferrals)
+	}
+}
+
+func TestRegisterDisabledPolicyRejectsPublicSignup(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 1, 8, 0, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	svc := NewService(store)
+	svc.RegistrationMode = RegistrationModeDisabled
+	svc.RequireVerified = false
+	svc.PasswordPolicy = PasswordPolicy{MemoryKiB: 64, Iterations: 1, Parallelism: 1, SaltBytes: 8, KeyBytes: 16}
+	svc.Now = func() time.Time { return now }
+
+	_, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "blocked@example.test", Password: "secret"})
+	if !errors.Is(err, ErrRegistrationDisabled) {
+		t.Fatalf("Register under disabled registration mode = %v, want ErrRegistrationDisabled", err)
+	}
+	if len(store.users) != 0 {
+		t.Fatalf("disabled registration persisted users: %+v", store.users)
+	}
+	if len(store.invites) != 0 || len(store.bindings) != 0 || len(store.communityReferrals) != 0 {
+		t.Fatalf("disabled registration touched invite state: invites=%+v bindings=%+v referrals=%+v", store.invites, store.bindings, store.communityReferrals)
+	}
+}
+
+func TestRegisterCommunityInvitationCreatesPendingReferral(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 1, 8, 30, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	rawInvite := "HKI-COMM-1234"
+	inviteHash := HashInviteCode(rawInvite)
+	store.invites[inviteHash] = InviteCode{
+		Code:                  inviteHash,
+		TenantID:              1,
+		CreatedBy:             9001,
+		MaxUses:               1,
+		Status:                "active",
+		CreatedAt:             now,
+		UpdatedAt:             now,
+		CommunityInvitationID: 55,
+	}
+	svc := NewService(store)
+	svc.RegistrationMode = RegistrationModeInviteRequired
+	svc.RequireVerified = false
+	svc.PasswordPolicy = PasswordPolicy{MemoryKiB: 64, Iterations: 1, Parallelism: 1, SaltBytes: 8, KeyBytes: 16}
+	svc.Now = func() time.Time { return now }
+
+	registered, err := svc.Register(ctx, RegisterInput{
+		TenantID: 1, Email: "referred@example.test", Password: "secret", InviteCode: rawInvite,
+	})
+	if err != nil {
+		t.Fatalf("Register with community invitation: %v", err)
+	}
+	if registered.User.InviteCodeUsed != inviteHash {
+		t.Fatalf("registered invite hash = %q, want %q", registered.User.InviteCodeUsed, inviteHash)
+	}
+	if len(store.bindings) != 1 || store.bindings[0].InviteCode != inviteHash || store.bindings[0].UserID != registered.User.ID {
+		t.Fatalf("invite binding not created for registered user: %+v", store.bindings)
+	}
+	if len(store.communityReferrals) != 1 {
+		t.Fatalf("community referral count = %d, want 1; rows=%+v", len(store.communityReferrals), store.communityReferrals)
+	}
+	referral := store.communityReferrals[0]
+	if referral.TenantID != 1 || referral.RefereeUserID != registered.User.ID || referral.ReferrerUserID != 9001 || referral.InvitationID != 55 {
+		t.Fatalf("community referral mismatch: %+v, registered user=%+v", referral, registered.User)
 	}
 }
 
 type memoryAuthStore struct {
-	mu          sync.Mutex
-	now         time.Time
-	nextID      int64
-	users       map[int64]User
-	byEmail     map[string]int64
-	emailTokens map[string]TokenChallenge
-	resetTokens map[string]resetChallenge
-	invites     map[string]InviteCode
-	oauthFlows  map[string]OAuthFlowSession
-	socialLinks map[string]int64
-	bindings    []InviteBinding
-	failCreate  bool
+	mu                 sync.Mutex
+	now                time.Time
+	nextID             int64
+	users              map[int64]User
+	byEmail            map[string]int64
+	emailTokens        map[string]TokenChallenge
+	resetTokens        map[string]resetChallenge
+	invites            map[string]InviteCode
+	oauthFlows         map[string]OAuthFlowSession
+	socialLinks        map[string]int64
+	bindings           []InviteBinding
+	communityReferrals []communityReferralRecord
+	failCreate         bool
+}
+
+type communityReferralRecord struct {
+	TenantID       int64
+	RefereeUserID  int64
+	ReferrerUserID int64
+	InvitationID   int64
 }
 
 type resetChallenge struct {
@@ -425,6 +498,7 @@ func (s *memoryAuthStore) WithTx(_ context.Context, fn func(Store) error) error 
 	oauthFlows := cloneOAuthFlowMap(s.oauthFlows)
 	socialLinks := cloneInt64Map(s.socialLinks)
 	bindings := append([]InviteBinding(nil), s.bindings...)
+	communityReferrals := append([]communityReferralRecord(nil), s.communityReferrals...)
 	nextID := s.nextID
 	s.mu.Unlock()
 
@@ -438,6 +512,7 @@ func (s *memoryAuthStore) WithTx(_ context.Context, fn func(Store) error) error 
 		s.oauthFlows = oauthFlows
 		s.socialLinks = socialLinks
 		s.bindings = bindings
+		s.communityReferrals = communityReferrals
 		s.nextID = nextID
 		s.mu.Unlock()
 		return err
@@ -592,6 +667,15 @@ func (s *memoryAuthStore) CreateInviteBinding(_ context.Context, tenantID, userI
 	s.bindings = append(s.bindings, InviteBinding{
 		ID: strconv.FormatInt(int64(len(s.bindings)+1), 10), TenantID: tenantID, UserID: userID,
 		InviteCode: inviteCodeHash, RedeemedAt: redeemedAt,
+	})
+	return nil
+}
+
+func (s *memoryAuthStore) CreateCommunityReferral(_ context.Context, tenantID, refereeUserID, referrerUserID, invitationID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.communityReferrals = append(s.communityReferrals, communityReferralRecord{
+		TenantID: tenantID, RefereeUserID: refereeUserID, ReferrerUserID: referrerUserID, InvitationID: invitationID,
 	})
 	return nil
 }

@@ -2,6 +2,8 @@ package userauth
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -25,6 +27,7 @@ var (
 	ErrUserDisabled          = errors.New("userauth: user is disabled")
 	ErrUserLocked            = errors.New("userauth: user is locked")
 	ErrPasswordResetRequired = errors.New("userauth: password reset required")
+	ErrRegistrationDisabled  = errors.New("userauth: registration disabled")
 	ErrInviteRequired        = errors.New("userauth: invite code required")
 	ErrInviteInvalid         = errors.New("userauth: invite code invalid")
 	ErrTokenInvalid          = errors.New("userauth: token invalid")
@@ -35,6 +38,27 @@ var (
 	ErrSocialLoginRejected   = errors.New("userauth: social login rejected")
 	ErrStoreNotConfigured    = errors.New("userauth: store not configured")
 )
+
+type RegistrationMode string
+
+const (
+	RegistrationModeOpen           RegistrationMode = "open"
+	RegistrationModeInviteRequired RegistrationMode = "invite_required"
+	RegistrationModeDisabled       RegistrationMode = "disabled"
+)
+
+func ParseRegistrationMode(raw string) (RegistrationMode, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(RegistrationModeOpen):
+		return RegistrationModeOpen, nil
+	case string(RegistrationModeInviteRequired):
+		return RegistrationModeInviteRequired, nil
+	case string(RegistrationModeDisabled), "admin_only":
+		return RegistrationModeDisabled, nil
+	default:
+		return "", fmt.Errorf("%w: registration mode %q", ErrInvalidInput, raw)
+	}
+}
 
 type User struct {
 	ID                  int64      `json:"id"`
@@ -54,15 +78,16 @@ type User struct {
 }
 
 type InviteCode struct {
-	Code       string     `json:"code"`
-	TenantID   int64      `json:"tenant_id"`
-	CreatedBy  int64      `json:"created_by,omitempty"`
-	MaxUses    int        `json:"max_uses"`
-	UsedCount  int        `json:"used_count"`
-	ValidUntil *time.Time `json:"valid_until,omitempty"`
-	Status     string     `json:"status"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
+	Code                  string     `json:"code"`
+	TenantID              int64      `json:"tenant_id"`
+	CreatedBy             int64      `json:"created_by,omitempty"`
+	MaxUses               int        `json:"max_uses"`
+	UsedCount             int        `json:"used_count"`
+	ValidUntil            *time.Time `json:"valid_until,omitempty"`
+	Status                string     `json:"status"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+	CommunityInvitationID int64      `json:"community_invitation_id,omitempty"`
 }
 
 type InviteBinding struct {

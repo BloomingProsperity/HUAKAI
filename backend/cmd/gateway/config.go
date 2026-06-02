@@ -80,6 +80,21 @@ func releaseMode() eventbus.ReleaseMode {
 	return eventbus.ReleaseModeDev
 }
 
+func loadUserRegistrationModeFromEnv() (userauth.RegistrationMode, error) {
+	raw := strings.TrimSpace(os.Getenv("HUAKAI_USER_REGISTRATION_MODE"))
+	if raw == "" {
+		if releaseModeProduction() {
+			return userauth.RegistrationModeDisabled, nil
+		}
+		return userauth.RegistrationModeOpen, nil
+	}
+	mode, err := userauth.ParseRegistrationMode(raw)
+	if err != nil {
+		return "", fmt.Errorf("HUAKAI_USER_REGISTRATION_MODE=%q 不是已知取值（open / invite_required / disabled / admin_only）；%w", raw, err)
+	}
+	return mode, nil
+}
+
 // validateDevAuthTokenFlag 在启动时 fail-closed:HUAKAI_DEV_AUTH_RETURN_TOKEN=true 会让公开的
 // 注册/密码重置接口把一次性明文 secret 直接回写进 JSON 响应体(addDevAuthToken),仅供本地/CI 调试。
 // 生产环境(HUAKAI_RELEASE_MODE=production)绝不能开启,否则每次注册/重置都会泄露令牌(S1-018)。

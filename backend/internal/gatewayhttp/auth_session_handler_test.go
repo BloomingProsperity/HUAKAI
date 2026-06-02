@@ -847,6 +847,10 @@ func (s *gatewayMemoryAuthStore) CreateInviteBinding(context.Context, int64, int
 	return nil
 }
 
+func (s *gatewayMemoryAuthStore) CreateCommunityReferral(context.Context, int64, int64, int64, int64) error {
+	return nil
+}
+
 func (s *gatewayMemoryAuthStore) CreateOAuthFlowSession(_ context.Context, challenge userauth.OAuthFlowChallenge) error {
 	s.oauthFlows[string(challenge.StateHash)] = userauth.OAuthFlowSession{
 		ID: challenge.ID, TenantID: challenge.TenantID, Provider: challenge.Provider,
