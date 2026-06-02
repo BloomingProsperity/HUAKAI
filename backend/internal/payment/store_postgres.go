@@ -309,7 +309,7 @@ func normalizeVerifiedCallback(cb VerifiedCallback) VerifiedCallback {
 
 func validateVerifiedCallback(cb VerifiedCallback) error {
 	if cb.TenantID <= 0 || cb.Provider == "" || cb.ExternalTradeNo == "" || cb.ProviderEventID == "" ||
-		cb.CurrencyCode != "USD" || !cb.PaidAmount.IsPositive() || !fitsMoneyColumn(cb.PaidAmount) {
+		len(cb.CurrencyCode) != 3 || !cb.PaidAmount.IsPositive() || !fitsMoneyColumn(cb.PaidAmount) {
 		return ErrInvalidInput
 	}
 	return nil

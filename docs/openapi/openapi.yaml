@@ -59,6 +59,10 @@ tags:
     description: Authenticated User invitation code creation. F-COMM-001.
   - name: user-vouchers
     description: User voucher redemption. F-BILL-002.
+  - name: user-recharges
+    description: Authenticated user wallet recharge order creation. F-PAY-001.
+  - name: payment-webhooks
+    description: Public provider payment webhook entrypoints with provider signature verification. F-PAY-001.
   - name: user-audit
     description: User-facing cost receipt and detached receipt verification. F-AUDIT-001.
   - name: pricing
@@ -1486,6 +1490,67 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/users/me/recharges:
+    post:
+      tags: [user-recharges]
+      summary: Create a wallet recharge order for the authenticated User
+      operationId: createUserRecharge
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-02-payment-loop-slice-a-codex.md
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserRechargeCreateRequest' }
+      responses:
+        '201':
+          description: Pending recharge order created with a server-generated external trade number.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserRechargeCreateResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/payment/webhooks/{provider}:
+    post:
+      tags: [payment-webhooks]
+      summary: Accept a signed payment provider webhook
+      operationId: acceptPaymentWebhook
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-02-payment-loop-slice-a-codex.md
+      security: []
+      parameters:
+        - in: path
+          name: provider
+          required: true
+          schema: { type: string, minLength: 1 }
+        - in: header
+          name: X-Huakai-Payment-Timestamp
+          required: true
+          schema: { type: string, pattern: '^[0-9]+$' }
+        - in: header
+          name: X-Huakai-Payment-Signature
+          required: true
+          schema: { type: string, minLength: 64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PaymentWebhookHMACPayload' }
+      responses:
+        '200':
+          description: Webhook verified and either fulfilled, idempotently replayed, or audit-rejected without provider retry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentWebhookResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/admin/vouchers:
@@ -5580,6 +5645,106 @@ components:
         reason:
           type: string
           minLength: 1
+
+    UserRechargeCreateRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-02-payment-loop-slice-a-codex.md
+      required: [amount, currency, provider]
+      properties:
+        amount:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]{1,8})?$'
+        currency:
+          type: string
+          enum: [USD]
+        provider:
+          type: string
+          minLength: 1
+          description: Configured payment provider name; mock is forbidden in production.
+        return_url:
+          type: string
+          format: uri
+
+    UserRechargeOrder:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-02-payment-loop-slice-a-codex.md
+      required: [id, external_trade_no, recharge_ref, status, amount, currency, provider, created_at]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        external_trade_no:
+          type: string
+          description: Server-generated provider correlation key; tenant is encoded by HUAKAI and not accepted from request body.
+        recharge_ref: { type: string }
+        status:
+          type: string
+          enum: [PENDING, PAID, CREDITING, COMPLETED, FAILED, EXPIRED, CANCELLED]
+        amount:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]{1,8})?$'
+        currency: { type: string, enum: [USD] }
+        provider: { type: string }
+        created_at: { type: string, format: date-time }
+
+    UserRechargeCreateResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-02-payment-loop-slice-a-codex.md
+      required: [order]
+      properties:
+        order: { $ref: '#/components/schemas/UserRechargeOrder' }
+
+    PaymentWebhookHMACPayload:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-02-payment-loop-slice-a-codex.md
+      required: [provider, external_trade_no, provider_event_id, amount, currency]
+      properties:
+        provider: { type: string, minLength: 1 }
+        external_trade_no: { type: string, minLength: 1 }
+        provider_event_id:
+          type: string
+          minLength: 1
+          description: Provider event id is audit correlation only; balance idempotency is the local order state transition.
+        amount:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]{1,8})?$'
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+        paid_at:
+          type: string
+          format: date-time
+
+    PaymentWebhookResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-02-payment-loop-slice-a-codex.md
+      required: [idempotent, completed, audit_reason]
+      properties:
+        order_id: { type: integer, format: int64, minimum: 1 }
+        user_id: { type: integer, format: int64, minimum: 1 }
+        new_balance:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]{1,8})?$'
+        idempotent: { type: boolean }
+        completed: { type: boolean }
+        audit_reason:
+          type: string
+          enum:
+            - PAYMENT_COMPLETED
+            - PAYMENT_REPLAY
+            - PAYMENT_AMOUNT_MISMATCH
+            - PAYMENT_PROVIDER_MISMATCH
+            - PAYMENT_ORDER_NOT_FOUND
+            - PAYMENT_ORDER_STATE_MISMATCH
 
     AdminBalanceAdjustmentRequest:
       type: object
