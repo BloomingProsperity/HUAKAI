@@ -7,6 +7,8 @@
 //     这套规则在 OpenAPI 3.1 + 2-space 缩进的本仓库 spec 上 work（已
 //     验过 45 条 path）。如果未来引入 1/4-space 缩进或 anchor，可
 //     再加 yaml dep。
+//   - method 维度与 path 一起比较。否则 spec 写 GET、runtime 挂 POST
+//     会被 path-only 检查误判为一致。
 //   - 路径归一：把 `{param}` 与 chi 的 `:param` 都归一为 `:_`。这样
 //     param 名字漂移（id ↔ flow_id）不会误报；只在结构差异上报警。
 //   - 后向兼容 alias 列在 KnownAliases，比对前展开到 canonical form。
@@ -26,10 +28,17 @@ import (
 
 // Report 是一次对比的结果。Common = 两边都有；SpecOnly = 只 spec 有；
 // ImplOnly = 只 impl 有。比对前已套用 normalization + alias 展开。
+// method-aware 对比会把条目格式化为 "METHOD /path"。
 type Report struct {
 	Common   []string
 	SpecOnly []string
 	ImplOnly []string
+}
+
+// Operation 是 OpenAPI / chi 的 method + path 合同单元。
+type Operation struct {
+	Method string
+	Path   string
 }
 
 // KnownAliases 列出后向兼容的 path alias：spec 用 canonical，impl 可能
@@ -52,9 +61,20 @@ var KnownAliases = map[string]string{
 
 // ParseSpecPaths 用行解析从 OpenAPI YAML 抽 paths 集合。
 func ParseSpecPaths(path string) ([]string, error) {
+	paths, _, err := parseSpec(path)
+	return paths, err
+}
+
+// ParseSpecOperations 用行解析从 OpenAPI YAML 抽 method + path 集合。
+func ParseSpecOperations(path string) ([]Operation, error) {
+	_, ops, err := parseSpec(path)
+	return ops, err
+}
+
+func parseSpec(path string) ([]string, []Operation, error) {
 	f, err := os.Open(path) // #nosec G304 — caller-supplied spec path
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer f.Close()
 
@@ -62,9 +82,12 @@ func ParseSpecPaths(path string) ([]string, error) {
 	scanner.Buffer(make([]byte, 256*1024), 1024*1024)
 	// 顶层缩进 0 的 `paths:` 行进入 in-paths 模式；遇到下一个顶层 key 退出。
 	pathLine := regexp.MustCompile(`^\s\s(/[A-Za-z0-9_\-{}./]+):\s*$`)
+	methodLine := regexp.MustCompile(`^\s{4}(get|put|post|delete|options|head|patch|trace):\s*(?:\{\})?\s*$`)
 	topKey := regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*:\s*$`)
 	inPaths := false
 	var paths []string
+	var ops []Operation
+	currentPath := ""
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "#") {
@@ -83,13 +106,23 @@ func ParseSpecPaths(path string) ([]string, error) {
 			}
 		}
 		if m := pathLine.FindStringSubmatch(line); m != nil {
-			paths = append(paths, m[1])
+			currentPath = m[1]
+			paths = append(paths, currentPath)
+			continue
+		}
+		if currentPath != "" {
+			if m := methodLine.FindStringSubmatch(line); m != nil {
+				ops = append(ops, Operation{
+					Method: strings.ToUpper(m[1]),
+					Path:   currentPath,
+				})
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return paths, nil
+	return paths, ops, nil
 }
 
 // WalkChiPaths 用 chi.Walk 把 router 注册的全部路径抽出（method 维度
@@ -106,6 +139,22 @@ func WalkChiPaths(r chi.Router) []string {
 		out = append(out, p)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// WalkChiOperations 用 chi.Walk 把 router 注册的 method + path 合同抽出。
+func WalkChiOperations(r chi.Router) []Operation {
+	seen := make(map[string]Operation)
+	_ = chi.Walk(r, func(method string, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		op := Operation{Method: strings.ToUpper(method), Path: route}
+		seen[operationKey(op)] = op
+		return nil
+	})
+	out := make([]Operation, 0, len(seen))
+	for _, op := range seen {
+		out = append(out, op)
+	}
+	sortOperations(out)
 	return out
 }
 
@@ -176,12 +225,24 @@ func normalize(p string) string {
 	return p
 }
 
-// Compare 计算 spec ↔ impl 漂移。
+func operationKey(op Operation) string {
+	return strings.ToUpper(strings.TrimSpace(op.Method)) + " " + normalize(op.Path)
+}
+
+func sortOperations(ops []Operation) {
+	sort.Slice(ops, func(i, j int) bool {
+		if ops[i].Path != ops[j].Path {
+			return ops[i].Path < ops[j].Path
+		}
+		return ops[i].Method < ops[j].Method
+	})
+}
+
+// Compare 计算 spec ↔ impl 的 path 级漂移。
 //
 // 边界 case：
 //   - 路径仅在 method 维度不一致（spec 有 POST 但 impl 注册了 PUT）
-//     不在本检查范围 — paths 级别只看 path 名；method 一致性留给
-//     更细的 contract test。
+//     不在本检查范围；method 一致性用 CompareOperations。
 //   - chi 的 r.Route("/x", ...) 注册时也会暴露 /x 这个父节点；
 //     如果父节点没有真实 handler 也会被 Walk 列出。本工具不区分
 //     真假 handler；多出一条 /admin/v1/provider-accounts 父节点
@@ -207,6 +268,36 @@ func Compare(specPaths, implPaths []string) Report {
 	for p := range implSet {
 		if _, ok := specSet[p]; !ok {
 			rep.ImplOnly = append(rep.ImplOnly, p)
+		}
+	}
+	sort.Strings(rep.Common)
+	sort.Strings(rep.SpecOnly)
+	sort.Strings(rep.ImplOnly)
+	return rep
+}
+
+// CompareOperations 计算 method + path 合同漂移。
+func CompareOperations(specOps, implOps []Operation) Report {
+	specSet := make(map[string]struct{}, len(specOps))
+	for _, op := range specOps {
+		specSet[operationKey(op)] = struct{}{}
+	}
+	implSet := make(map[string]struct{}, len(implOps))
+	for _, op := range implOps {
+		implSet[operationKey(op)] = struct{}{}
+	}
+
+	rep := Report{}
+	for op := range specSet {
+		if _, ok := implSet[op]; ok {
+			rep.Common = append(rep.Common, op)
+		} else {
+			rep.SpecOnly = append(rep.SpecOnly, op)
+		}
+	}
+	for op := range implSet {
+		if _, ok := specSet[op]; !ok {
+			rep.ImplOnly = append(rep.ImplOnly, op)
 		}
 	}
 	sort.Strings(rep.Common)
