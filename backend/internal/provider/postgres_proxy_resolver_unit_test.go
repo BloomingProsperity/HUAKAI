@@ -4,6 +4,8 @@ package provider
 
 import (
 	"errors"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -97,6 +99,35 @@ func TestPostgresProxyResolver_NilPoolReturnsMisconfigured(t *testing.T) {
 	}
 }
 
+func TestMigration0038RejectsMalformedProxyURLBeforeDroppingLegacyColumn(t *testing.T) {
+	raw, err := os.ReadFile("../../sql/migrations/0038_proxies_pool_and_account_links.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	if !migration0038HasMalformedProxyURLGuard(sql) {
+		t.Fatal("0038 must reject malformed non-empty provider_accounts.proxy_url rows before dropping proxy_url")
+	}
+
+	guardStart := strings.Index(sql, "S1-020 guard:")
+	dropStart := strings.Index(sql, "ALTER TABLE provider_accounts DROP COLUMN proxy_url;")
+	if guardStart < 0 || dropStart < 0 || guardStart >= dropStart {
+		t.Fatalf("guardStart=%d dropStart=%d; malformed proxy_url guard must appear before DROP COLUMN", guardStart, dropStart)
+	}
+	mutated := sql[:guardStart] + sql[dropStart:]
+	if migration0038HasMalformedProxyURLGuard(mutated) {
+		t.Fatal("mutation check failed: removing the guard must make this test red")
+	}
+
+	forwardRaw, err := os.ReadFile("../../sql/migrations/0066_s1_020_proxy_backfill_validation.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !migration0066HasForwardProxyBackfillValidation(string(forwardRaw)) {
+		t.Fatal("0066 must validate already-applied imported proxy rows and document the pre-0038 backup recovery path")
+	}
+}
+
 func TestParseProxyURLValue_SchemeButNoHostRejected(t *testing.T) {
 	// "http://" 有 scheme 但 host 为空，必须拒绝（防止后续 net/http
 	// 请求出 panic 或意外路由）
@@ -120,7 +151,55 @@ func TestParseProxyURLValue_NoSecretLeakInError(t *testing.T) {
 	}
 }
 
-// contains 是简易子串检查（避免引 strings 包，保持 import 列表整洁）
+func migration0038HasMalformedProxyURLGuard(sql string) bool {
+	dropStart := strings.Index(sql, "ALTER TABLE provider_accounts DROP COLUMN proxy_url;")
+	guardStart := strings.Index(sql, "S1-020 guard:")
+	if dropStart < 0 || guardStart < 0 || guardStart >= dropStart {
+		return false
+	}
+	guard := sql[guardStart:dropStart]
+	if strings.Contains(guard, "^[a-z]+://") {
+		return false
+	}
+	required := []string{
+		"RAISE EXCEPTION",
+		"malformed non-empty provider_accounts.proxy_url",
+		"^(?:http|https|socks5)://",
+		"WHERE pa.proxy_url IS NOT NULL AND pa.proxy_url != ''",
+		"src.has_supported_shape IS NOT TRUE",
+		"src.protocol IS NULL",
+		"src.host IS NULL",
+		"src.explicit_port IS NOT NULL AND src.explicit_port !~ '^[0-9]{1,5}$'",
+		"src.port IS NULL",
+		"src.port < 1",
+		"src.port > 65535",
+		"src.has_supported_shape IS TRUE",
+	}
+	for _, want := range required {
+		if !strings.Contains(guard, want) {
+			return false
+		}
+	}
+	return true
+}
+
+func migration0066HasForwardProxyBackfillValidation(sql string) bool {
+	required := []string{
+		"restore from a pre-0038 backup",
+		"p.name LIKE 'imported-%'",
+		"p.host !~ '^[^:/@?#]+$'",
+		"RAISE EXCEPTION",
+		"cannot validate S1-020 proxy backfill",
+	}
+	for _, want := range required {
+		if !strings.Contains(sql, want) {
+			return false
+		}
+	}
+	return true
+}
+
+// contains 是简易子串检查，保留给历史测试路径。
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (func() bool {
 		for i := 0; i+len(sub) <= len(s); i++ {

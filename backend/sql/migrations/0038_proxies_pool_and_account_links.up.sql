@@ -16,10 +16,67 @@
 -- Backfill 注意:
 --   - 老 proxy_url 列已禁止 INSERT 新数据 (生产部署需配合代码冻结)
 --   - dev DB 无数据 (SELECT count(*) WHERE proxy_url IS NOT NULL = 0)
---   - 解析失败的行 (proxy_url 非合法 URL) 静默跳过 → 该 account 进入直连
---     (FK 设为 NULL), 跟显式 NULL 行为一致
+--   - 非空 proxy_url 解析失败时本 migration fail-closed; operator 需先修复或清空
+--     这些遗留值, 避免历史代理账号被误迁成直连
 
 BEGIN;
+
+-- S1-020 guard: fail closed before proxy_url is dropped. Without this preflight,
+-- malformed non-empty legacy proxy_url rows do not produce a proxies row; the
+-- later proxy_id backfill leaves them NULL, which is indistinguishable from an
+-- explicit direct-connect account at runtime.
+DO $$
+DECLARE
+    malformed_count bigint;
+    malformed_ids   text;
+BEGIN
+    WITH parsed AS (
+        SELECT
+            pa.id,
+            pa.proxy_url ~ '^(http|https|socks5)://([^/@:]+(:[^@/]*)?@)?[^:/@?#]+(:[0-9]{1,5})?([/?#].*)?$' AS has_supported_shape,
+            (regexp_match(pa.proxy_url, '^(http|https|socks5)://'))[1] AS protocol,
+            COALESCE(
+                (regexp_match(pa.proxy_url, '^(?:http|https|socks5)://[^/@:]+(?::[^@/]*)?@([^:/@?#]+)'))[1],
+                (regexp_match(pa.proxy_url, '^(?:http|https|socks5)://([^:/@?#]+)'))[1]
+            ) AS host,
+            (regexp_match(pa.proxy_url, '^(?:http|https|socks5)://(?:[^/@:]+(?::[^@/]*)?@)?[^:/@?#]+:([^/?#]+)(?:[/?#]|$)'))[1] AS explicit_port
+        FROM provider_accounts pa
+        WHERE pa.proxy_url IS NOT NULL AND pa.proxy_url != ''
+    ), src AS (
+        SELECT
+            parsed.id,
+            parsed.has_supported_shape,
+            parsed.protocol,
+            parsed.host,
+            parsed.explicit_port,
+            CASE
+                WHEN parsed.explicit_port ~ '^[0-9]{1,5}$' THEN parsed.explicit_port::integer
+                WHEN parsed.explicit_port IS NULL THEN CASE parsed.protocol
+                    WHEN 'http'   THEN 80
+                    WHEN 'https'  THEN 443
+                    WHEN 'socks5' THEN 1080
+                END
+            END AS port
+        FROM parsed
+    )
+    SELECT count(*), string_agg(src.id::text, ', ' ORDER BY src.id)
+    INTO malformed_count, malformed_ids
+    FROM src
+    WHERE src.has_supported_shape IS NOT TRUE
+       OR src.protocol IS NULL
+       OR src.host IS NULL
+       OR (src.explicit_port IS NOT NULL AND src.explicit_port !~ '^[0-9]{1,5}$')
+       OR src.port IS NULL
+       OR src.port < 1
+       OR src.port > 65535;
+
+    IF malformed_count > 0 THEN
+        RAISE EXCEPTION
+            'cannot apply 0038: % malformed non-empty provider_accounts.proxy_url row(s), account ids=%; fix or clear proxy_url before retrying',
+            malformed_count,
+            malformed_ids;
+    END IF;
+END $$;
 
 CREATE TABLE proxies (
     id                bigserial   PRIMARY KEY,
@@ -69,29 +126,42 @@ SELECT
     NULLIF(src.secret, '')   AS auth_secret
 FROM (
     SELECT DISTINCT
-        pa.tenant_id,
-        pa.proxy_url,
-        (regexp_match(pa.proxy_url, '^(http|https|socks5)://'))[1] AS protocol,
-        COALESCE(
-            (regexp_match(pa.proxy_url, '^[a-z]+://[^@/]*@([^:/]+)'))[1],
-            (regexp_match(pa.proxy_url, '^[a-z]+://([^:/]+)'))[1]
-        ) AS host,
-        COALESCE(
-            NULLIF((regexp_match(pa.proxy_url, ':(\d+)(?:/|$)'))[1], '')::integer,
-            CASE (regexp_match(pa.proxy_url, '^(http|https|socks5)://'))[1]
+        parsed.tenant_id,
+        parsed.proxy_url,
+        parsed.has_supported_shape,
+        parsed.protocol,
+        parsed.host,
+        CASE
+            WHEN parsed.explicit_port ~ '^[0-9]{1,5}$' THEN parsed.explicit_port::integer
+            WHEN parsed.explicit_port IS NULL THEN CASE parsed.protocol
                 WHEN 'http'   THEN 80
                 WHEN 'https'  THEN 443
                 WHEN 'socks5' THEN 1080
             END
-        ) AS port,
-        (regexp_match(pa.proxy_url, '^[a-z]+://([^:@]+):[^@]*@'))[1] AS username,
-        (regexp_match(pa.proxy_url, '^[a-z]+://[^:@]+:([^@]*)@'))[1] AS secret
-    FROM provider_accounts pa
-    WHERE pa.proxy_url IS NOT NULL AND pa.proxy_url != ''
+        END AS port,
+        parsed.username,
+        parsed.secret
+    FROM (
+        SELECT
+            pa.tenant_id,
+            pa.proxy_url,
+            pa.proxy_url ~ '^(http|https|socks5)://([^/@:]+(:[^@/]*)?@)?[^:/@?#]+(:[0-9]{1,5})?([/?#].*)?$' AS has_supported_shape,
+            (regexp_match(pa.proxy_url, '^(http|https|socks5)://'))[1] AS protocol,
+            COALESCE(
+                (regexp_match(pa.proxy_url, '^(?:http|https|socks5)://[^/@:]+(?::[^@/]*)?@([^:/@?#]+)'))[1],
+                (regexp_match(pa.proxy_url, '^(?:http|https|socks5)://([^:/@?#]+)'))[1]
+            ) AS host,
+            (regexp_match(pa.proxy_url, '^(?:http|https|socks5)://(?:[^/@:]+(?::[^@/]*)?@)?[^:/@?#]+:([^/?#]+)(?:[/?#]|$)'))[1] AS explicit_port,
+            (regexp_match(pa.proxy_url, '^(?:http|https|socks5)://([^:@/]+)(?::[^@/]*)?@'))[1] AS username,
+            (regexp_match(pa.proxy_url, '^(?:http|https|socks5)://[^:@/]+:([^@/]*)@'))[1] AS secret
+        FROM provider_accounts pa
+        WHERE pa.proxy_url IS NOT NULL AND pa.proxy_url != ''
+    ) AS parsed
 ) AS src
-WHERE src.protocol IS NOT NULL
+WHERE src.has_supported_shape IS TRUE
+  AND src.protocol IS NOT NULL
   AND src.host IS NOT NULL
-  AND src.port IS NOT NULL
+  AND src.port BETWEEN 1 AND 65535
 ON CONFLICT DO NOTHING;
 
 -- 给 provider_accounts 加 FK 列
