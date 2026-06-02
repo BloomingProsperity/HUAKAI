@@ -45,6 +45,10 @@ type Identity struct {
 	TenantID int64
 	APIKeyID int64
 	UserID   int64
+	// UserGroup 是该用户当前订阅档位 (users.user_group, 默认 'default')。
+	// 供 R-SUB-WIRE-1 分组→路由的 GroupPolicyGate 在 pool 选择时限制可用渠道。
+	// 空字符串视同无限制 (向后兼容老链路)。
+	UserGroup string
 }
 
 // APIKeyPrefixLen is the number of leading characters of the bearer
@@ -151,9 +155,10 @@ func (r *APIKeyResolver) Resolve(ctx context.Context, req *http.Request) (Identi
 				"error", touchErr)
 		}
 		return Identity{
-			TenantID: row.TenantID,
-			APIKeyID: row.ID,
-			UserID:   row.UserID,
+			TenantID:  row.TenantID,
+			APIKeyID:  row.ID,
+			UserID:    row.UserID,
+			UserGroup: row.UserGroup,
 		}, nil
 	}
 	return Identity{}, ErrUnauthorized

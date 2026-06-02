@@ -1,378 +1,389 @@
+// HUAKAI · iKun
 //go:build integration_pg
+
+// 支付 P1 真 PG 判别测试。每个测试守一个具体钱路径缺陷, fixture 设计成 mutation 即变红:
+//   T1 重复 out_trade_no / 重复确认 不双账
+//   T2 并发履约只有一个 CAS 胜出 (32 goroutine barrier)
+//   T3 入账 billing_event 字段 + 互斥列 + 派生余额精确
+//   T4 跨租户隔离 (同 out_trade_no 不串租户/不错账)
+//   T5 recharging 断点续跑只入账一次
+//   T6 履约要求 paid/recharging 状态 (pending 越权履约被拒)
+//   T7 操作审计轨迹落库
 
 package payment
 
 import (
 	"context"
 	"errors"
-	"fmt"
-	"os"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/shopspring/decimal"
-
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
 )
 
-func TestPostgresStoreOpenRechargePersistsPendingOrder(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	pool := openPaymentPool(t, ctx)
-	tenantID, userID := seedPaymentUser(t, ctx, pool, "create")
+// T1: 重复建单 + 重复确认 → 仅一张订单 / 一条 credit / 一条 payment_credited / 余额只增一次。
+func TestPaymentPostgres_DuplicateOutTradeNoDoesNotDoubleCredit(t *testing.T) {
+	ctx := context.Background()
+	pool := openPaymentIntegrationPool(t, ctx)
+	f := newPaymentFixture(t, ctx, pool)
+	svc := NewService(NewPostgresStore(pool), WithTestProvider())
 
-	svc := NewService(NewPostgresStore(pool), WithExternalTradeNoGenerator(fixedExternalTradeNo("trade-create-50")))
-	amount := decimal.RequireFromString("50.00000000")
-	res, err := svc.OpenRecharge(ctx, OpenInput{
-		TenantID:          tenantID,
-		UserID:            userID,
-		Amount:            amount,
-		CurrencyCode:      "usd",
-		MaxPendingPerUser: 3,
-		DailyAmountLimit:  decimal.RequireFromString("500.00000000"),
-		Now:               time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC),
-	})
+	outNo := "pay-p1-dupe-" + f.suffix
+	const amount = int64(1234)
+	in := CreateOrderInput{TenantID: f.tenantA, UserID: f.userA, AmountCents: amount, OutTradeNo: outNo, ActorAdminID: 7}
+
+	r1, err := svc.CreateOrder(ctx, in)
+	if err != nil || r1.Idempotent {
+		t.Fatalf("first create: err=%v idempotent=%v", err, r1.Idempotent)
+	}
+	r2, err := svc.CreateOrder(ctx, in)
 	if err != nil {
-		t.Fatalf("OpenRecharge: %v", err)
+		t.Fatalf("second create: %v", err)
 	}
-	if res.Order.Status != StatusPending {
-		t.Fatalf("status=%q want %q", res.Order.Status, StatusPending)
-	}
-	if res.Order.ExternalTradeNo != "trade-create-50" {
-		t.Fatalf("external trade no=%q want generated value", res.Order.ExternalTradeNo)
-	}
-	if !res.Order.CreditedAmount.Equal(amount) {
-		t.Fatalf("credited amount=%s want %s", res.Order.CreditedAmount, amount)
-	}
-	if res.Order.RechargeRef == "" {
-		t.Fatal("recharge ref must be populated")
+	if !r2.Idempotent || r2.Order.ID != r1.Order.ID {
+		t.Fatalf("duplicate create should replay same order: idempotent=%v id1=%d id2=%d", r2.Idempotent, r1.Order.ID, r2.Order.ID)
 	}
 
-	var status, tradeNo, creditedText, currency, ref string
-	if err := pool.QueryRow(ctx, `
-SELECT status, external_trade_no, credited_amount::text, currency_code, recharge_ref
-FROM recharge_orders
-WHERE tenant_id=$1 AND id=$2`, tenantID, res.Order.ID).Scan(&status, &tradeNo, &creditedText, &currency, &ref); err != nil {
-		t.Fatalf("read recharge order: %v", err)
+	res1, err := svc.AdminConfirmPaid(ctx, AdminConfirmPaidInput{TenantID: f.tenantA, OrderID: r1.Order.ID, ActorAdminID: 7})
+	if err != nil || res1.Idempotent {
+		t.Fatalf("first confirm: err=%v idempotent=%v", err, res1.Idempotent)
 	}
-	if status != string(StatusPending) {
-		t.Fatalf("row status=%q want PENDING", status)
+	if res1.BalanceCents != amount {
+		t.Fatalf("balance after first fulfill = %d, want %d", res1.BalanceCents, amount)
 	}
-	if tradeNo != "trade-create-50" {
-		t.Fatalf("row external_trade_no=%q want trade-create-50", tradeNo)
+	res2, err := svc.AdminConfirmPaid(ctx, AdminConfirmPaidInput{TenantID: f.tenantA, OrderID: r1.Order.ID, ActorAdminID: 7})
+	if err != nil {
+		t.Fatalf("second confirm: %v", err)
 	}
-	if creditedText != "50.00000000" {
-		t.Fatalf("row credited_amount=%q want 50.00000000", creditedText)
+	// 自证: 重复确认后的余额必须与单次确认相同 (而非翻倍)。
+	if !res2.Idempotent || res2.BalanceCents != amount {
+		t.Fatalf("duplicate confirm doubled credit: idempotent=%v balance=%d want %d", res2.Idempotent, res2.BalanceCents, amount)
 	}
-	if currency != "USD" {
-		t.Fatalf("row currency=%q want USD", currency)
+
+	if n := f.countInt(`SELECT count(*) FROM payment_orders WHERE tenant_id=$1 AND out_trade_no=$2`, f.tenantA, outNo); n != 1 {
+		t.Fatalf("order count = %d, want 1", n)
 	}
-	if ref != res.Order.RechargeRef {
-		t.Fatalf("row recharge_ref=%q want result ref %q", ref, res.Order.RechargeRef)
+	if n := f.countInt(`SELECT count(*) FROM payment_credits WHERE tenant_id=$1 AND payment_order_id=$2`, f.tenantA, r1.Order.ID); n != 1 {
+		t.Fatalf("credit count = %d, want 1", n)
+	}
+	if n := f.countInt(`SELECT count(*) FROM billing_events WHERE tenant_id=$1 AND event_type='payment_credited'`, f.tenantA); n != 1 {
+		t.Fatalf("payment_credited event count = %d, want 1", n)
 	}
 }
 
-func TestPostgresStoreOpenRechargeEnforcesPendingLimit(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	pool := openPaymentPool(t, ctx)
-	tenantID, userID := seedPaymentUser(t, ctx, pool, "pending-limit")
+// T2: 同一 paid 订单 32 goroutine 并发履约 → 恰一次入账, 余额增一次。
+func TestPaymentPostgres_ConcurrentFulfillOnlyOneCASSucceeds(t *testing.T) {
+	ctx := context.Background()
+	pool := openPaymentIntegrationPool(t, ctx)
+	f := newPaymentFixture(t, ctx, pool)
+	store := NewPostgresStore(pool)
+	svc := NewService(store, WithTestProvider())
 
-	svc := NewService(NewPostgresStore(pool), WithExternalTradeNoGenerator(sequenceExternalTradeNo("limit-trade")))
-	input := OpenInput{
-		TenantID:          tenantID,
-		UserID:            userID,
-		Amount:            decimal.RequireFromString("50.00000000"),
-		CurrencyCode:      "USD",
-		MaxPendingPerUser: 2,
-		DailyAmountLimit:  decimal.RequireFromString("500.00000000"),
-		Now:               time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC),
+	const amount = int64(789)
+	r, err := svc.CreateOrder(ctx, CreateOrderInput{TenantID: f.tenantA, UserID: f.userA, AmountCents: amount, OutTradeNo: "pay-p1-cas-" + f.suffix, ActorAdminID: 7})
+	if err != nil {
+		t.Fatalf("create: %v", err)
 	}
-	for i := 0; i < 2; i++ {
-		if _, err := svc.OpenRecharge(ctx, input); err != nil {
-			t.Fatalf("OpenRecharge #%d: %v", i+1, err)
-		}
-	}
-	_, err := svc.OpenRecharge(ctx, input)
-	if !errors.Is(err, ErrPendingLimit) {
-		t.Fatalf("third pending order err=%v want ErrPendingLimit", err)
+	// 推进到 paid (不履约), 制造并发履约竞态。
+	if _, err := store.ConfirmPaid(ctx, confirmRecord{TenantID: f.tenantA, OrderID: r.Order.ID, AdminID: 7, Now: time.Now().UTC()}); err != nil {
+		t.Fatalf("confirm paid: %v", err)
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx, `
-SELECT count(*)
-FROM recharge_orders
-WHERE tenant_id=$1 AND user_id=$2 AND status='PENDING'`, tenantID, userID).Scan(&count); err != nil {
-		t.Fatalf("count pending orders: %v", err)
-	}
-	if count != 2 {
-		t.Fatalf("pending order count=%d want 2; mutation deleting guard would insert the third row", count)
-	}
-}
-
-func TestPostgresStoreOpenRechargeEnforcesDailyAmountLimit(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	pool := openPaymentPool(t, ctx)
-	tenantID, userID := seedPaymentUser(t, ctx, pool, "daily-limit")
-
-	svc := NewService(NewPostgresStore(pool), WithExternalTradeNoGenerator(sequenceExternalTradeNo("daily-trade")))
-	input := OpenInput{
-		TenantID:          tenantID,
-		UserID:            userID,
-		Amount:            decimal.RequireFromString("50.00000000"),
-		CurrencyCode:      "USD",
-		MaxPendingPerUser: 10,
-		DailyAmountLimit:  decimal.RequireFromString("99.00000000"),
-		Now:               time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC),
-	}
-	if _, err := svc.OpenRecharge(ctx, input); err != nil {
-		t.Fatalf("first OpenRecharge: %v", err)
-	}
-	_, err := svc.OpenRecharge(ctx, input)
-	if !errors.Is(err, ErrDailyAmountLimit) {
-		t.Fatalf("second same-day order err=%v want ErrDailyAmountLimit", err)
-	}
-
-	var count int
-	if err := pool.QueryRow(ctx, `
-SELECT count(*)
-FROM recharge_orders
-WHERE tenant_id=$1 AND user_id=$2`, tenantID, userID).Scan(&count); err != nil {
-		t.Fatalf("count daily-limit orders: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("daily-limit mutation should not insert the second row; count=%d want 1", count)
-	}
-}
-
-func TestPostgresStoreOpenRechargeExternalTradeNoUniqueUnderRace(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	pool := openPaymentPool(t, ctx)
-	tenantID, userID := seedPaymentUser(t, ctx, pool, "trade-race")
-
-	svc := NewService(NewPostgresStore(pool), WithExternalTradeNoGenerator(fixedExternalTradeNo("race-fixed-trade")))
-	input := OpenInput{
-		TenantID:          tenantID,
-		UserID:            userID,
-		Amount:            decimal.RequireFromString("50.00000000"),
-		CurrencyCode:      "USD",
-		MaxPendingPerUser: 10,
-		DailyAmountLimit:  decimal.RequireFromString("500.00000000"),
-		Now:               time.Date(2026, 5, 31, 14, 0, 0, 0, time.UTC),
-	}
-
-	start := make(chan struct{})
-	errs := make(chan error, 2)
+	const goroutines = 32 // 注释与实际 N 必须一致
 	var wg sync.WaitGroup
-	for i := 0; i < 2; i++ {
+	barrier := make(chan struct{})
+	var mu sync.Mutex
+	creditedCount := 0
+	var callerErrs []error
+	for i := 0; i < goroutines; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			<-start
-			_, err := svc.OpenRecharge(ctx, input)
-			errs <- err
+			<-barrier
+			res, err := svc.Fulfill(ctx, FulfillInput{TenantID: f.tenantA, OrderID: r.Order.ID, ActorKind: ActorKindAdmin, ActorID: 7})
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				callerErrs = append(callerErrs, err)
+				return
+			}
+			if !res.Idempotent {
+				creditedCount++
+			}
 		}()
 	}
-	close(start)
+	close(barrier)
 	wg.Wait()
-	close(errs)
 
-	var success, uniqueConflict int
-	for err := range errs {
-		switch {
-		case err == nil:
-			success++
-		case errors.Is(err, ErrExternalTradeConflict):
-			uniqueConflict++
-		default:
-			t.Fatalf("unexpected concurrent OpenRecharge error: %v", err)
-		}
+	// 幂等并发契约: 每一路都必须成功 (要么入账, 要么幂等返回), 没有一路该报错。
+	// 守住"loser 优雅幂等"而非"loser 报错"的回归 (mutation: loser 返回 error → callerErrs 非空 → 红)。
+	if len(callerErrs) != 0 {
+		t.Fatalf("concurrent fulfill returned %d unexpected caller errors (all should credit or idempotent-succeed): %v", len(callerErrs), callerErrs[0])
 	}
-	if success != 1 || uniqueConflict != 1 {
-		t.Fatalf("concurrent fixed trade no: success=%d uniqueConflict=%d, want exactly 1/1", success, uniqueConflict)
+	// 自证: 32 路并发只能有一路真入账。
+	if creditedCount != 1 {
+		t.Fatalf("non-idempotent fulfill count = %d, want exactly 1", creditedCount)
 	}
-}
-
-func TestPostgresStoreOpenRechargeRequiresActiveTenantAndUser(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	pool := openPaymentPool(t, ctx)
-
-	cases := []struct {
-		name       string
-		mutate     string
-		tenantOnly bool
-	}{
-		{
-			name:   "disabled user",
-			mutate: `UPDATE users SET status='disabled' WHERE tenant_id=$1 AND id=$2`,
-		},
-		{
-			name:   "deleted user status",
-			mutate: `UPDATE users SET status='deleted' WHERE tenant_id=$1 AND id=$2`,
-		},
-		{
-			name:   "soft-deleted user",
-			mutate: `UPDATE users SET deleted_at=now() WHERE tenant_id=$1 AND id=$2`,
-		},
-		{
-			name:       "disabled tenant",
-			mutate:     `UPDATE tenants SET status='disabled' WHERE id=$1`,
-			tenantOnly: true,
-		},
-		{
-			name:       "soft-deleted tenant",
-			mutate:     `UPDATE tenants SET deleted_at=now() WHERE id=$1`,
-			tenantOnly: true,
-		},
+	if n := f.countInt(`SELECT count(*) FROM payment_credits WHERE tenant_id=$1 AND payment_order_id=$2`, f.tenantA, r.Order.ID); n != 1 {
+		t.Fatalf("credit count = %d, want 1", n)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			tenantID, userID := seedPaymentUser(t, ctx, pool, "inactive-"+tc.name)
-			args := []any{tenantID, userID}
-			if tc.tenantOnly {
-				args = []any{tenantID}
-			}
-			if _, err := pool.Exec(ctx, tc.mutate, args...); err != nil {
-				t.Fatalf("mutate fixture: %v", err)
-			}
-
-			svc := NewService(NewPostgresStore(pool), WithExternalTradeNoGenerator(sequenceExternalTradeNo("inactive-trade")))
-			_, err := svc.OpenRecharge(ctx, OpenInput{
-				TenantID:          tenantID,
-				UserID:            userID,
-				Amount:            decimal.RequireFromString("50.00000000"),
-				CurrencyCode:      "USD",
-				MaxPendingPerUser: 3,
-				DailyAmountLimit:  decimal.RequireFromString("500.00000000"),
-				Now:               time.Date(2026, 5, 31, 16, 0, 0, 0, time.UTC),
-			})
-			if !errors.Is(err, ErrAccountInactive) {
-				t.Fatalf("OpenRecharge err=%v want ErrAccountInactive", err)
-			}
-
-			var count int
-			if err := pool.QueryRow(ctx, `
-SELECT count(*)
-FROM recharge_orders
-WHERE tenant_id=$1 AND user_id=$2`, tenantID, userID).Scan(&count); err != nil {
-				t.Fatalf("count recharge orders: %v", err)
-			}
-			if count != 0 {
-				t.Fatalf("inactive account must not get an order; count=%d want 0", count)
-			}
-		})
+	if n := f.countInt(`SELECT count(*) FROM billing_events WHERE tenant_id=$1 AND event_type='payment_credited'`, f.tenantA); n != 1 {
+		t.Fatalf("payment_credited event count = %d, want 1", n)
+	}
+	bal, err := svc.GetBalance(ctx, f.tenantA, f.userA)
+	if err != nil || bal.AmountCents != amount {
+		t.Fatalf("balance = %d (err=%v), want %d", bal.AmountCents, err, amount)
 	}
 }
 
-func TestLockUserAllowsDifferentUsersInSameTenant(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	pool := openPaymentPool(t, ctx)
-	tenantID, firstUserID := seedPaymentUser(t, ctx, pool, "tenant-lock")
-	secondUserID := seedAdditionalPaymentUser(t, ctx, pool, tenantID, "tenant-lock-b")
+// T3: 入账 billing_event 字段精确 (金额方向/互斥列) + 派生余额精确增。
+func TestPaymentPostgres_CreditBillingEventAndDerivedBalanceMatch(t *testing.T) {
+	ctx := context.Background()
+	pool := openPaymentIntegrationPool(t, ctx)
+	f := newPaymentFixture(t, ctx, pool)
+	svc := NewService(NewPostgresStore(pool), WithTestProvider())
 
-	firstTx, err := pool.Begin(ctx)
+	const amount = int64(2550) // 25.50
+	before, err := svc.GetBalance(ctx, f.tenantA, f.userA)
 	if err != nil {
-		t.Fatalf("begin first tx: %v", err)
+		t.Fatalf("balance before: %v", err)
 	}
-	defer func() { _ = firstTx.Rollback(context.Background()) }()
-	if err := lockUser(ctx, firstTx, tenantID, firstUserID); err != nil {
-		t.Fatalf("first lockUser: %v", err)
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		lockCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		defer cancel()
-		secondTx, err := pool.Begin(lockCtx)
-		if err != nil {
-			done <- err
-			return
-		}
-		defer func() { _ = secondTx.Rollback(context.Background()) }()
-		done <- lockUser(lockCtx, secondTx, tenantID, secondUserID)
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("second user's lockUser blocked or failed: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("second user's lockUser blocked behind an unrelated user in the same tenant")
-	}
-}
-
-func openPaymentPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
-	t.Helper()
-	dsn := os.Getenv("HUAKAI_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("HUAKAI_DATABASE_URL not set; skipping integration test")
-	}
-	pool, err := db.Open(ctx, db.PoolConfig{DSN: dsn})
+	r, err := svc.CreateOrder(ctx, CreateOrderInput{TenantID: f.tenantA, UserID: f.userA, AmountCents: amount, OutTradeNo: "pay-p1-credit-" + f.suffix, ActorAdminID: 7})
 	if err != nil {
-		t.Fatalf("Open: %v", err)
+		t.Fatalf("create: %v", err)
 	}
-	t.Cleanup(pool.Close)
-	return pool
+	res, err := svc.AdminConfirmPaid(ctx, AdminConfirmPaidInput{TenantID: f.tenantA, OrderID: r.Order.ID, ActorAdminID: 7})
+	if err != nil {
+		t.Fatalf("confirm+fulfill: %v", err)
+	}
+
+	var (
+		eventType    string
+		actualCost   string
+		actualSigned string
+		claimNull    bool
+		voucherNull  bool
+		creditMatch  bool
+	)
+	if err := pool.QueryRow(ctx, `
+SELECT event_type, actual_cost::text, actual_cost_signed::text,
+	claim_id IS NULL, voucher_redemption_id IS NULL, payment_credit_id = $3
+FROM billing_events WHERE tenant_id=$1 AND payment_credit_id=$2`,
+		f.tenantA, res.Credit.ID, res.Credit.ID).Scan(&eventType, &actualCost, &actualSigned, &claimNull, &voucherNull, &creditMatch); err != nil {
+		t.Fatalf("read billing event: %v", err)
+	}
+	if eventType != "payment_credited" {
+		t.Fatalf("event_type = %q, want payment_credited", eventType)
+	}
+	// 金额方向: 入账是正向 signed (mutation 写负/零 → 余额错 → 红)。
+	if actualCost != "25.50000000" || actualSigned != "25.50000000" {
+		t.Fatalf("actual_cost=%q actual_cost_signed=%q, want 25.50000000", actualCost, actualSigned)
+	}
+	if !claimNull || !voucherNull || !creditMatch {
+		t.Fatalf("mutual-exclusion columns wrong: claimNull=%v voucherNull=%v creditMatch=%v", claimNull, voucherNull, creditMatch)
+	}
+	// 自证: 余额增量必须恰等于入账金额 (mutation 余额漏算 payment → 增量 != amount → 红)。
+	after, err := svc.GetBalance(ctx, f.tenantA, f.userA)
+	if err != nil {
+		t.Fatalf("balance after: %v", err)
+	}
+	if got := after.AmountCents - before.AmountCents; got != amount {
+		t.Fatalf("balance delta = %d, want %d", got, amount)
+	}
 }
 
-func seedPaymentUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suffix string) (tenantID, userID int64) {
-	t.Helper()
-	if err := pool.QueryRow(ctx,
-		`INSERT INTO tenants (name) VALUES ($1) RETURNING id`,
-		fmt.Sprintf("payment-%s-%d", suffix, time.Now().UnixNano()),
-	).Scan(&tenantID); err != nil {
-		t.Fatalf("seed tenant: %v", err)
+// T4: 跨租户隔离 — 同 out_trade_no, 只履约 A; B 余额=0, B 查 A 单 not found, B 无 payment_credited。
+func TestPaymentPostgres_TenantIsolationForSameOutTradeNo(t *testing.T) {
+	ctx := context.Background()
+	pool := openPaymentIntegrationPool(t, ctx)
+	f := newPaymentFixture(t, ctx, pool)
+	store := NewPostgresStore(pool)
+	svc := NewService(store, WithTestProvider())
+
+	shared := "pay-p1-shared-" + f.suffix
+	const amountA = int64(321)
+	const amountB = int64(456)
+	rA, err := svc.CreateOrder(ctx, CreateOrderInput{TenantID: f.tenantA, UserID: f.userA, AmountCents: amountA, OutTradeNo: shared, ActorAdminID: 7})
+	if err != nil {
+		t.Fatalf("create A: %v", err)
 	}
-	if err := pool.QueryRow(ctx,
-		`INSERT INTO users (tenant_id, display_name) VALUES ($1, $2) RETURNING id`,
-		tenantID, "payment-user-"+suffix,
-	).Scan(&userID); err != nil {
-		t.Fatalf("seed user: %v", err)
+	if _, err := svc.CreateOrder(ctx, CreateOrderInput{TenantID: f.tenantB, UserID: f.userB, AmountCents: amountB, OutTradeNo: shared, ActorAdminID: 9}); err != nil {
+		t.Fatalf("create B (same out_trade_no, different tenant must be allowed): %v", err)
 	}
-	t.Cleanup(func() {
-		c := context.Background()
-		_, _ = pool.Exec(c, `DELETE FROM payment_audit_log WHERE tenant_id=$1`, tenantID)
-		_, _ = pool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1 AND recharge_order_id IS NOT NULL`, tenantID)
-		_, _ = pool.Exec(c, `DELETE FROM user_balances WHERE tenant_id=$1`, tenantID)
-		_, _ = pool.Exec(c, `DELETE FROM recharge_orders WHERE tenant_id=$1`, tenantID)
-		_, _ = pool.Exec(c, `DELETE FROM users WHERE tenant_id=$1`, tenantID)
-		_, _ = pool.Exec(c, `DELETE FROM tenants WHERE id=$1`, tenantID)
+	if _, err := svc.AdminConfirmPaid(ctx, AdminConfirmPaidInput{TenantID: f.tenantA, OrderID: rA.Order.ID, ActorAdminID: 7}); err != nil {
+		t.Fatalf("confirm A: %v", err)
+	}
+
+	balA, _ := svc.GetBalance(ctx, f.tenantA, f.userA)
+	balB, _ := svc.GetBalance(ctx, f.tenantB, f.userB)
+	if balA.AmountCents != amountA {
+		t.Fatalf("tenant A balance = %d, want %d", balA.AmountCents, amountA)
+	}
+	if balB.AmountCents != 0 {
+		t.Fatalf("tenant B balance = %d, want 0 (cross-tenant leak)", balB.AmountCents)
+	}
+	// 判别性核心: A 的 user_id 落在 B 租户下查余额必须为 0。
+	// 若 balance query 漏 tenant 谓词, 会把 A 的入账按 user_id 算进来 → != 0 → 红。
+	// (A/B 的 user_id 本不同, 仅查 balB 不足以判别 tenant 谓词缺失。)
+	leak, err := svc.GetBalance(ctx, f.tenantB, f.userA)
+	if err != nil {
+		t.Fatalf("cross-tenant balance probe: %v", err)
+	}
+	if leak.AmountCents != 0 {
+		t.Fatalf("GetBalance(tenantB, userA) = %d, want 0 (missing tenant predicate leaks A's credit)", leak.AmountCents)
+	}
+	// B 拿 A 的订单 id 查询必须 not found (tenant-scoped)。
+	if _, err := store.GetOrder(ctx, f.tenantB, rA.Order.ID); !errors.Is(err, ErrOrderNotFound) {
+		t.Fatalf("cross-tenant GetOrder err = %v, want ErrOrderNotFound", err)
+	}
+	if n := f.countInt(`SELECT count(*) FROM billing_events WHERE tenant_id=$1 AND event_type='payment_credited'`, f.tenantB); n != 0 {
+		t.Fatalf("tenant B payment_credited count = %d, want 0", n)
+	}
+}
+
+// T5: recharging 断点续跑 — 只跑 phase1 推进 recharging (无 credit), 再 Fulfill 续跑只入账一次。
+func TestPaymentPostgres_RechargingRetryCompletesOnce(t *testing.T) {
+	ctx := context.Background()
+	pool := openPaymentIntegrationPool(t, ctx)
+	f := newPaymentFixture(t, ctx, pool)
+	store := NewPostgresStore(pool)
+	svc := NewService(store, WithTestProvider())
+
+	const amount = int64(999)
+	r, err := svc.CreateOrder(ctx, CreateOrderInput{TenantID: f.tenantA, UserID: f.userA, AmountCents: amount, OutTradeNo: "pay-p1-retry-" + f.suffix, ActorAdminID: 7})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := store.ConfirmPaid(ctx, confirmRecord{TenantID: f.tenantA, OrderID: r.Order.ID, AdminID: 7, Now: time.Now().UTC()}); err != nil {
+		t.Fatalf("confirm paid: %v", err)
+	}
+	// 模拟崩溃点: 只跑 phase1 (推进 recharging, 不写 credit)。
+	if _, _, err := store.BeginFulfill(ctx, fulfillRecord{TenantID: f.tenantA, OrderID: r.Order.ID, ActorKind: ActorKindAdmin, ActorID: 7, Now: time.Now().UTC()}); err != nil {
+		t.Fatalf("begin fulfill phase1: %v", err)
+	}
+	got, err := store.GetOrder(ctx, f.tenantA, r.Order.ID)
+	if err != nil || got.Status != StatusRecharging {
+		t.Fatalf("after phase1 status = %q (err=%v), want recharging", got.Status, err)
+	}
+	if n := f.countInt(`SELECT count(*) FROM payment_credits WHERE tenant_id=$1 AND payment_order_id=$2`, f.tenantA, r.Order.ID); n != 0 {
+		t.Fatalf("credit exists before phase2: count=%d, want 0", n)
+	}
+	// 续跑: Fulfill 必须从 recharging 续完。
+	res, err := svc.Fulfill(ctx, FulfillInput{TenantID: f.tenantA, OrderID: r.Order.ID, ActorKind: ActorKindAdmin, ActorID: 7})
+	if err != nil {
+		t.Fatalf("resume fulfill: %v", err)
+	}
+	if res.Order.Status != StatusCompleted || res.BalanceCents != amount {
+		t.Fatalf("resume result status=%q balance=%d, want completed/%d", res.Order.Status, res.BalanceCents, amount)
+	}
+	if n := f.countInt(`SELECT count(*) FROM payment_credits WHERE tenant_id=$1 AND payment_order_id=$2`, f.tenantA, r.Order.ID); n != 1 {
+		t.Fatalf("credit count after resume = %d, want 1", n)
+	}
+}
+
+// T6: 状态机越权 — pending 订单直接 Fulfill 必须被拒, 无入账。
+func TestPaymentPostgres_FulfillRequiresPaidOrRecharging(t *testing.T) {
+	ctx := context.Background()
+	pool := openPaymentIntegrationPool(t, ctx)
+	f := newPaymentFixture(t, ctx, pool)
+	svc := NewService(NewPostgresStore(pool), WithTestProvider())
+
+	const amount = int64(500)
+	r, err := svc.CreateOrder(ctx, CreateOrderInput{TenantID: f.tenantA, UserID: f.userA, AmountCents: amount, OutTradeNo: "pay-p1-state-" + f.suffix, ActorAdminID: 7})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// 未确认 (pending) 直接履约 → 拒。
+	if _, err := svc.Fulfill(ctx, FulfillInput{TenantID: f.tenantA, OrderID: r.Order.ID, ActorKind: ActorKindAdmin, ActorID: 7}); !errors.Is(err, ErrOrderNotFulfillable) {
+		t.Fatalf("fulfill pending err = %v, want ErrOrderNotFulfillable", err)
+	}
+	// 自证: 越权履约不得产生任何入账。
+	if n := f.countInt(`SELECT count(*) FROM payment_credits WHERE tenant_id=$1 AND payment_order_id=$2`, f.tenantA, r.Order.ID); n != 0 {
+		t.Fatalf("credit count = %d, want 0 (illegal fulfill credited)", n)
+	}
+	if n := f.countInt(`SELECT count(*) FROM billing_events WHERE tenant_id=$1 AND event_type='payment_credited'`, f.tenantA); n != 0 {
+		t.Fatalf("payment_credited count = %d, want 0", n)
+	}
+	bal, _ := svc.GetBalance(ctx, f.tenantA, f.userA)
+	if bal.AmountCents != 0 {
+		t.Fatalf("balance = %d, want 0", bal.AmountCents)
+	}
+}
+
+// T7: 操作审计轨迹 — 建单/确认/履约后审计表含全链路事件 + actor 归属。
+func TestPaymentPostgres_PaymentAuditTrailRecorded(t *testing.T) {
+	ctx := context.Background()
+	pool := openPaymentIntegrationPool(t, ctx)
+	f := newPaymentFixture(t, ctx, pool)
+	svc := NewService(NewPostgresStore(pool), WithTestProvider())
+
+	const adminID = int64(42)
+	r, err := svc.CreateOrder(ctx, CreateOrderInput{TenantID: f.tenantA, UserID: f.userA, AmountCents: 1000, OutTradeNo: "pay-p1-audit-" + f.suffix, ActorAdminID: adminID})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := svc.AdminConfirmPaid(ctx, AdminConfirmPaidInput{TenantID: f.tenantA, OrderID: r.Order.ID, ActorAdminID: adminID, ConfirmReason: "manual ok"}); err != nil {
+		t.Fatalf("confirm+fulfill: %v", err)
+	}
+	events, err := svc.ListAuditEvents(ctx, f.tenantA, r.Order.ID)
+	if err != nil {
+		t.Fatalf("list audit: %v", err)
+	}
+	seen := map[string]AuditEvent{}
+	for _, ev := range events {
+		seen[ev.EventType] = ev
+	}
+	for _, want := range []string{AuditOrderCreated, AuditPaidConfirmed, AuditFulfillmentStarted, AuditCredited} {
+		if _, ok := seen[want]; !ok {
+			t.Fatalf("audit trail missing %q; got %v", want, keysOf(seen))
+		}
+	}
+	// actor 归属: credited / paid_confirmed 必须记到操作管理员。
+	if seen[AuditCredited].ActorID != adminID {
+		t.Fatalf("credited audit actor = %d, want %d", seen[AuditCredited].ActorID, adminID)
+	}
+	if seen[AuditPaidConfirmed].ActorID != adminID {
+		t.Fatalf("paid_confirmed audit actor = %d, want %d", seen[AuditPaidConfirmed].ActorID, adminID)
+	}
+}
+
+// T8: 过期 pending 订单确认被拒 — 标记 expired, 不入账 (防 stale 单无限期履约)。
+func TestPaymentPostgres_ExpiredPendingOrderRejected(t *testing.T) {
+	ctx := context.Background()
+	pool := openPaymentIntegrationPool(t, ctx)
+	f := newPaymentFixture(t, ctx, pool)
+	store := NewPostgresStore(pool)
+
+	now := time.Now().UTC()
+	past := now.Add(-time.Hour)
+	o, _, err := store.CreateOrder(ctx, createOrderRecord{
+		TenantID: f.tenantA, UserID: f.userA, OutTradeNo: "pay-p1-exp-" + f.suffix,
+		AmountCents: 600, CurrencyCode: "USD", ProviderKind: ProviderManual, ExpiresAt: &past, Now: now,
 	})
-	return tenantID, userID
+	if err != nil {
+		t.Fatalf("create expired order: %v", err)
+	}
+	// 已过期的 pending 订单确认必须被拒。
+	if _, err := store.ConfirmPaid(ctx, confirmRecord{TenantID: f.tenantA, OrderID: o.ID, AdminID: 7, Now: now}); !errors.Is(err, ErrOrderNotConfirmable) {
+		t.Fatalf("confirm expired order err = %v, want ErrOrderNotConfirmable", err)
+	}
+	// 自证: 过期单不得入账, 且应被标记 expired (mutation 去掉过期检查 → 入账 → 红)。
+	got, err := store.GetOrder(ctx, f.tenantA, o.ID)
+	if err != nil || got.Status != StatusExpired {
+		t.Fatalf("expired order status = %q (err=%v), want expired", got.Status, err)
+	}
+	if n := f.countInt(`SELECT count(*) FROM payment_credits WHERE tenant_id=$1 AND payment_order_id=$2`, f.tenantA, o.ID); n != 0 {
+		t.Fatalf("credit count = %d, want 0 (expired order credited)", n)
+	}
+	bal, _ := store.UserBalanceCents(ctx, f.tenantA, f.userA)
+	if bal != 0 {
+		t.Fatalf("balance = %d, want 0", bal)
+	}
 }
 
-func seedAdditionalPaymentUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID int64, suffix string) int64 {
-	t.Helper()
-	var userID int64
-	if err := pool.QueryRow(ctx,
-		`INSERT INTO users (tenant_id, display_name) VALUES ($1, $2) RETURNING id`,
-		tenantID, "payment-user-"+suffix,
-	).Scan(&userID); err != nil {
-		t.Fatalf("seed additional user: %v", err)
+func keysOf(m map[string]AuditEvent) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
 	}
-	return userID
-}
-
-func fixedExternalTradeNo(value string) ExternalTradeNoGenerator {
-	return func(context.Context) (string, error) {
-		return value, nil
-	}
-}
-
-func sequenceExternalTradeNo(prefix string) ExternalTradeNoGenerator {
-	var mu sync.Mutex
-	var n int
-	return func(context.Context) (string, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		n++
-		return fmt.Sprintf("%s-%02d", prefix, n), nil
-	}
+	return out
 }

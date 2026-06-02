@@ -15,12 +15,12 @@ import (
 func TestPostgresStoreHandleCallbackCompletesAndCreditsOnce(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	pool := openPaymentPool(t, ctx)
-	tenantID, userID := seedPaymentUser(t, ctx, pool, "callback-valid")
+	pool := openPaymentIntegrationPool(t, ctx)
+	f := newPaymentFixture(t, ctx, pool)
 
-	svc := NewService(NewPostgresStore(pool), WithExternalTradeNoGenerator(fixedExternalTradeNo("trade-callback-valid")))
-	order := openCallbackOrder(t, ctx, svc, tenantID, userID, "trade-callback-valid")
-	input := signedCallback(tenantID, order.ExternalTradeNo, "evt_callback_valid", "50.00000000")
+	svc := NewService(NewPostgresStore(pool))
+	order := openCallbackOrder(t, ctx, svc, f.tenantA, f.userA, "trade-callback-valid")
+	input := signedCallback(f.tenantA, order.OutTradeNo, "evt_callback_valid", "50.00000000")
 
 	result, err := svc.HandleCallback(ctx, input)
 	if err != nil {
@@ -32,10 +32,10 @@ func TestPostgresStoreHandleCallbackCompletesAndCreditsOnce(t *testing.T) {
 	if result.HTTPStatus != 200 {
 		t.Fatalf("HTTPStatus=%d want 200", result.HTTPStatus)
 	}
-	assertRechargeOrderStatus(t, ctx, pool, tenantID, order.ID, StatusCompleted)
-	assertUserBalanceText(t, ctx, pool, tenantID, userID, "50.00000000")
-	assertBalanceRechargedEventCount(t, ctx, pool, tenantID, order.ID, 1)
-	assertPaymentAuditReasonCount(t, ctx, pool, tenantID, order.ID, AuditReasonCompleted, 1)
+	assertPaymentOrderStatus(t, ctx, pool, f.tenantA, order.ID, StatusCompleted)
+	assertUserBalanceText(t, ctx, pool, f.tenantA, f.userA, "50.00000000")
+	assertPaymentCreditedEventCount(t, ctx, pool, f.tenantA, order.ID, 1)
+	assertPaymentAuditEventCount(t, ctx, pool, f.tenantA, order.ID, AuditCredited, 1)
 
 	replay, err := svc.HandleCallback(ctx, input)
 	if err != nil {
@@ -44,20 +44,20 @@ func TestPostgresStoreHandleCallbackCompletesAndCreditsOnce(t *testing.T) {
 	if !replay.Idempotent {
 		t.Fatal("replay Idempotent=false, want true")
 	}
-	assertRechargeOrderStatus(t, ctx, pool, tenantID, order.ID, StatusCompleted)
-	assertUserBalanceText(t, ctx, pool, tenantID, userID, "50.00000000")
-	assertBalanceRechargedEventCount(t, ctx, pool, tenantID, order.ID, 1)
+	assertPaymentOrderStatus(t, ctx, pool, f.tenantA, order.ID, StatusCompleted)
+	assertUserBalanceText(t, ctx, pool, f.tenantA, f.userA, "50.00000000")
+	assertPaymentCreditedEventCount(t, ctx, pool, f.tenantA, order.ID, 1)
 }
 
 func TestPostgresStoreHandleCallbackRejectsUnderpaymentAndAuditsMismatch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	pool := openPaymentPool(t, ctx)
-	tenantID, userID := seedPaymentUser(t, ctx, pool, "callback-underpay")
+	pool := openPaymentIntegrationPool(t, ctx)
+	f := newPaymentFixture(t, ctx, pool)
 
-	svc := NewService(NewPostgresStore(pool), WithExternalTradeNoGenerator(fixedExternalTradeNo("trade-callback-underpay")))
-	order := openCallbackOrder(t, ctx, svc, tenantID, userID, "trade-callback-underpay")
-	input := signedCallback(tenantID, order.ExternalTradeNo, "evt_callback_underpay", "5.00000000")
+	svc := NewService(NewPostgresStore(pool))
+	order := openCallbackOrder(t, ctx, svc, f.tenantA, f.userA, "trade-callback-underpay")
+	input := signedCallback(f.tenantA, order.OutTradeNo, "evt_callback_underpay", "5.00000000")
 
 	result, err := svc.HandleCallback(ctx, input)
 	if !errors.Is(err, ErrPaymentAmountMismatch) {
@@ -66,10 +66,10 @@ func TestPostgresStoreHandleCallbackRejectsUnderpaymentAndAuditsMismatch(t *test
 	if result.HTTPStatus != 200 {
 		t.Fatalf("HTTPStatus=%d want 200 for verified anti-tamper rejection", result.HTTPStatus)
 	}
-	assertRechargeOrderStatus(t, ctx, pool, tenantID, order.ID, StatusPending)
-	assertNoUserBalance(t, ctx, pool, tenantID, userID)
-	assertBalanceRechargedEventCount(t, ctx, pool, tenantID, order.ID, 0)
-	assertPaymentAuditReasonCount(t, ctx, pool, tenantID, order.ID, AuditReasonAmountMismatch, 1)
+	assertPaymentOrderStatus(t, ctx, pool, f.tenantA, order.ID, StatusPending)
+	assertNoUserBalance(t, ctx, pool, f.tenantA, f.userA)
+	assertPaymentCreditedEventCount(t, ctx, pool, f.tenantA, order.ID, 0)
+	assertPaymentAuditReasonCount(t, ctx, pool, f.tenantA, order.ID, AuditReasonAmountMismatch, 1)
 }
 
 func openCallbackOrder(t *testing.T, ctx context.Context, svc *Service, tenantID, userID int64, tradeNo string) Order {
@@ -78,7 +78,7 @@ func openCallbackOrder(t *testing.T, ctx context.Context, svc *Service, tenantID
 		TenantID:          tenantID,
 		UserID:            userID,
 		ExternalTradeNo:   tradeNo,
-		Provider:          "mock",
+		Provider:          "hmacpay",
 		Amount:            decimal.RequireFromString("50.00000000"),
 		CurrencyCode:      "USD",
 		MaxPendingPerUser: 3,
@@ -94,7 +94,7 @@ func openCallbackOrder(t *testing.T, ctx context.Context, svc *Service, tenantID
 func signedCallback(tenantID int64, tradeNo, eventID, amount string) CallbackInput {
 	input := CallbackInput{
 		TenantID:        tenantID,
-		Provider:        "mock",
+		Provider:        "hmacpay",
 		ExternalTradeNo: tradeNo,
 		ProviderEventID: eventID,
 		PaidAmount:      decimal.RequireFromString(amount),
@@ -106,16 +106,16 @@ func signedCallback(tenantID int64, tradeNo, eventID, amount string) CallbackInp
 	return input
 }
 
-func assertRechargeOrderStatus(t *testing.T, ctx context.Context, pool queryPool, tenantID, orderID int64, want Status) {
+func assertPaymentOrderStatus(t *testing.T, ctx context.Context, pool queryPool, tenantID, orderID int64, want OrderStatus) {
 	t.Helper()
 	var status string
 	if err := pool.QueryRow(ctx,
-		`SELECT status FROM recharge_orders WHERE tenant_id=$1 AND id=$2`,
+		`SELECT status FROM payment_orders WHERE tenant_id=$1 AND id=$2`,
 		tenantID, orderID,
 	).Scan(&status); err != nil {
-		t.Fatalf("read recharge order status: %v", err)
+		t.Fatalf("read payment order status: %v", err)
 	}
-	if Status(status) != want {
+	if OrderStatus(status) != want {
 		t.Fatalf("order status=%q want %q", status, want)
 	}
 }
@@ -148,17 +148,38 @@ func assertNoUserBalance(t *testing.T, ctx context.Context, pool queryPool, tena
 	}
 }
 
-func assertBalanceRechargedEventCount(t *testing.T, ctx context.Context, pool queryPool, tenantID, orderID int64, want int) {
+func assertPaymentCreditedEventCount(t *testing.T, ctx context.Context, pool queryPool, tenantID, orderID int64, want int) {
 	t.Helper()
 	var count int
 	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM billing_events WHERE tenant_id=$1 AND recharge_order_id=$2 AND event_type='balance_recharged'`,
+		`SELECT count(*)
+FROM billing_events be
+JOIN payment_credits pc
+  ON pc.tenant_id = be.tenant_id
+ AND pc.id = be.payment_credit_id
+WHERE be.tenant_id=$1
+  AND pc.payment_order_id=$2
+  AND be.event_type='payment_credited'`,
 		tenantID, orderID,
 	).Scan(&count); err != nil {
-		t.Fatalf("count balance_recharged events: %v", err)
+		t.Fatalf("count payment_credited events: %v", err)
 	}
 	if count != want {
-		t.Fatalf("balance_recharged events=%d want %d", count, want)
+		t.Fatalf("payment_credited events=%d want %d", count, want)
+	}
+}
+
+func assertPaymentAuditEventCount(t *testing.T, ctx context.Context, pool queryPool, tenantID, orderID int64, eventType string, want int) {
+	t.Helper()
+	var count int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM payment_audit_events WHERE tenant_id=$1 AND payment_order_id=$2 AND event_type=$3`,
+		tenantID, orderID, eventType,
+	).Scan(&count); err != nil {
+		t.Fatalf("count payment audit event %s: %v", eventType, err)
+	}
+	if count != want {
+		t.Fatalf("payment audit event %s count=%d want %d", eventType, count, want)
 	}
 }
 
@@ -166,7 +187,12 @@ func assertPaymentAuditReasonCount(t *testing.T, ctx context.Context, pool query
 	t.Helper()
 	var count int
 	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM payment_audit_log WHERE tenant_id=$1 AND recharge_order_id=$2 AND reason=$3`,
+		`SELECT count(*)
+FROM payment_audit_events
+WHERE tenant_id=$1
+  AND payment_order_id=$2
+  AND event_type='fulfillment_failed'
+  AND reason_class=$3`,
 		tenantID, orderID, reason,
 	).Scan(&count); err != nil {
 		t.Fatalf("count payment audit reason %s: %v", reason, err)

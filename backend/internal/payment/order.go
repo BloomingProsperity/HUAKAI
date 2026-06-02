@@ -13,101 +13,9 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-type Status string
-
-const (
-	StatusPending   Status = "PENDING"
-	StatusPaid      Status = "PAID"
-	StatusCrediting Status = "CREDITING"
-	StatusCompleted Status = "COMPLETED"
-	StatusFailed    Status = "FAILED"
-	StatusExpired   Status = "EXPIRED"
-	StatusCancelled Status = "CANCELLED"
-)
-
-const (
-	defaultPaymentProvider = "mock"
-
-	AuditOutcomeAccepted = "ACCEPTED"
-	AuditOutcomeRejected = "REJECTED"
-	AuditOutcomeReplay   = "REPLAY_NOOP"
-
-	AuditReasonCompleted        = "PAYMENT_COMPLETED"
-	AuditReasonReplay           = "PAYMENT_REPLAY"
-	AuditReasonAmountMismatch   = "PAYMENT_AMOUNT_MISMATCH"
-	AuditReasonProviderMismatch = "PAYMENT_PROVIDER_MISMATCH"
-	AuditReasonOrderNotFound    = "PAYMENT_ORDER_NOT_FOUND"
-	AuditReasonStateMismatch    = "PAYMENT_ORDER_STATE_MISMATCH"
-)
-
-var (
-	ErrInvalidInput            = errors.New("payment: invalid input")
-	ErrStoreNotConfigured      = errors.New("payment: store not configured")
-	ErrUserNotFound            = errors.New("payment: user not found")
-	ErrAccountInactive         = errors.New("payment: account inactive")
-	ErrPendingLimit            = errors.New("payment: pending order limit reached")
-	ErrDailyAmountLimit        = errors.New("payment: daily amount limit reached")
-	ErrExternalTradeConflict   = errors.New("payment: external trade conflict")
-	ErrAdminDebitNotSupported  = errors.New("payment: admin debit not supported")
-	ErrInvalidSignature        = errors.New("payment: invalid callback signature")
-	ErrPaymentAmountMismatch   = errors.New("payment: callback amount mismatch")
-	ErrPaymentProviderMismatch = errors.New("payment: callback provider mismatch")
-	ErrOrderNotFound           = errors.New("payment: order not found")
-	ErrOrderStateConflict      = errors.New("payment: order state conflict")
-)
-
-var moneyNumericUpperBound = decimal.NewFromInt(1_000_000_000_000)
+const defaultPaymentProvider = "test"
 
 type ExternalTradeNoGenerator func(context.Context) (string, error)
-
-type Store interface {
-	OpenRecharge(context.Context, OpenInput) (Order, error)
-}
-
-type Service struct {
-	store       Store
-	tradeNoGen  ExternalTradeNoGenerator
-	maxAttempts int
-}
-
-type Option func(*Service)
-
-func WithExternalTradeNoGenerator(gen ExternalTradeNoGenerator) Option {
-	return func(s *Service) {
-		if gen != nil {
-			s.tradeNoGen = gen
-		}
-	}
-}
-
-func NewService(store Store, opts ...Option) *Service {
-	s := &Service{
-		store:       store,
-		tradeNoGen:  randomExternalTradeNo,
-		maxAttempts: 3,
-	}
-	for _, opt := range opts {
-		opt(s)
-	}
-	if s.tradeNoGen == nil {
-		s.tradeNoGen = randomExternalTradeNo
-	}
-	return s
-}
-
-type Order struct {
-	ID              int64
-	TenantID        int64
-	UserID          int64
-	ExternalTradeNo string
-	RechargeRef     string
-	Status          Status
-	CreditedAmount  decimal.Decimal
-	CurrencyCode    string
-	Provider        string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-}
 
 type OpenInput struct {
 	TenantID          int64
@@ -125,39 +33,92 @@ type OpenResult struct {
 	Order Order
 }
 
+// OpenRecharge 是 Slice-A 用户开单兼容入口。它不再写旧 recharge_orders,
+// 而是映射到 quota 支付底座的 payment_orders topup 订单。
 func (s *Service) OpenRecharge(ctx context.Context, input OpenInput) (OpenResult, error) {
 	if s == nil || s.store == nil {
 		return OpenResult{}, ErrStoreNotConfigured
 	}
 	input = normalizeOpenInput(input)
-	if err := validateOpenInput(input, false); err != nil {
+	if input.CurrencyCode != "USD" {
+		return OpenResult{}, ErrInvalidInput
+	}
+	amountCents, err := decimalAmountToCents(input.Amount)
+	if err != nil {
 		return OpenResult{}, err
 	}
-	if strings.TrimSpace(input.ExternalTradeNo) != "" {
-		order, err := s.store.OpenRecharge(ctx, input)
-		return OpenResult{Order: order}, err
+	if input.TenantID <= 0 || input.UserID <= 0 {
+		return OpenResult{}, ErrInvalidInput
+	}
+	if input.ExternalTradeNo == "" {
+		generated, err := s.generateExternalTradeNo(ctx)
+		if err != nil {
+			return OpenResult{}, err
+		}
+		input.ExternalTradeNo = generated
+	}
+	if input.MaxPendingPerUser > 0 {
+		pending, err := countPendingOrders(ctx, s.store, input.TenantID, input.UserID)
+		if err != nil {
+			return OpenResult{}, err
+		}
+		if pending >= input.MaxPendingPerUser {
+			return OpenResult{}, ErrPendingLimit
+		}
+	}
+	if input.DailyAmountLimit.IsPositive() {
+		used, err := sumTodayOrderAmount(ctx, s.store, input.TenantID, input.UserID, input.Now)
+		if err != nil {
+			return OpenResult{}, err
+		}
+		if used.Add(input.Amount).GreaterThan(input.DailyAmountLimit) {
+			return OpenResult{}, ErrDailyAmountLimit
+		}
+	}
+	res, err := s.CreateOrder(ctx, CreateOrderInput{
+		TenantID:           input.TenantID,
+		UserID:             input.UserID,
+		AmountCents:        amountCents,
+		CurrencyCode:       input.CurrencyCode,
+		OutTradeNo:         input.ExternalTradeNo,
+		ProviderKind:       providerKindFromHTTP(input.Provider),
+		RequestFingerprint: "http_provider:" + normalizeProvider(input.Provider),
+		ActorKind:          ActorKindUser,
+		ActorID:            input.UserID,
+		OrderKind:          OrderKindTopup,
+		RequestID:          rechargeRef(input.TenantID, input.UserID, input.ExternalTradeNo),
+	})
+	if errorsIsIdempotencyConflict(err) {
+		return OpenResult{}, ErrExternalTradeConflict
+	}
+	if err != nil {
+		return OpenResult{}, err
+	}
+	return OpenResult{Order: res.Order}, nil
+}
+
+func (s *Service) generateExternalTradeNo(ctx context.Context) (string, error) {
+	gen := s.tradeNoGen
+	if gen == nil {
+		gen = randomExternalTradeNo
 	}
 	attempts := s.maxAttempts
 	if attempts <= 0 {
 		attempts = 1
 	}
+	var lastErr error
 	for i := 0; i < attempts; i++ {
-		tradeNo, err := s.tradeNoGen(ctx)
+		tradeNo, err := gen(ctx)
 		if err != nil {
-			return OpenResult{}, fmt.Errorf("payment: generate external trade no: %w", err)
+			return "", fmt.Errorf("payment: generate external trade no: %w", err)
 		}
-		next := input
-		next.ExternalTradeNo = strings.TrimSpace(tradeNo)
-		if err := validateOpenInput(next, true); err != nil {
-			return OpenResult{}, err
+		tradeNo = strings.TrimSpace(tradeNo)
+		if tradeNo != "" {
+			return tradeNo, nil
 		}
-		order, err := s.store.OpenRecharge(ctx, next)
-		if errors.Is(err, ErrExternalTradeConflict) {
-			continue
-		}
-		return OpenResult{Order: order}, err
+		lastErr = ErrInvalidInput
 	}
-	return OpenResult{}, ErrExternalTradeConflict
+	return "", lastErr
 }
 
 func normalizeOpenInput(input OpenInput) OpenInput {
@@ -178,42 +139,25 @@ func normalizeOpenInput(input OpenInput) OpenInput {
 	return input
 }
 
-func validateOpenInput(input OpenInput, requireExternal bool) error {
-	if input.TenantID <= 0 || input.UserID <= 0 || !input.Amount.IsPositive() || input.MaxPendingPerUser <= 0 {
-		return ErrInvalidInput
+func decimalAmountToCents(amount decimal.Decimal) (int64, error) {
+	if !amount.IsPositive() {
+		return 0, ErrInvalidAmount
 	}
-	if !fitsMoneyColumn(input.Amount) {
-		return ErrInvalidInput
+	if !amount.Equal(amount.Truncate(2)) {
+		return 0, ErrInvalidInput
 	}
-	if len(input.CurrencyCode) != 3 {
-		return ErrInvalidInput
+	cents := amount.Mul(decimal.NewFromInt(100))
+	if !cents.Equal(cents.Truncate(0)) {
+		return 0, ErrInvalidInput
 	}
-	if input.CurrencyCode != "USD" {
-		return ErrInvalidInput
+	if cents.GreaterThan(decimal.NewFromInt(maxAmountCents)) {
+		return 0, ErrInvalidInput
 	}
-	if input.Provider == "" {
-		return ErrInvalidInput
-	}
-	if input.DailyAmountLimit.IsNegative() {
-		return ErrInvalidInput
-	}
-	if input.DailyAmountLimit.IsPositive() && !fitsMoneyColumn(input.DailyAmountLimit) {
-		return ErrInvalidInput
-	}
-	if requireExternal && input.ExternalTradeNo == "" {
-		return ErrInvalidInput
-	}
-	return nil
+	return cents.IntPart(), nil
 }
 
-func fitsMoneyColumn(value decimal.Decimal) bool {
-	if value.IsNegative() {
-		return false
-	}
-	if !value.Equal(value.Truncate(8)) {
-		return false
-	}
-	return value.Abs().LessThan(moneyNumericUpperBound)
+func centsToDecimal(cents int64) decimal.Decimal {
+	return decimal.NewFromInt(cents).Div(decimal.NewFromInt(100))
 }
 
 func rechargeRef(tenantID, userID int64, externalTradeNo string) string {
@@ -227,4 +171,66 @@ func randomExternalTradeNo(context.Context) (string, error) {
 		return "", err
 	}
 	return "rech_" + hex.EncodeToString(b[:]), nil
+}
+
+func normalizeProvider(provider string) string {
+	return strings.ToLower(strings.TrimSpace(provider))
+}
+
+func providerKindFromHTTP(provider string) ProviderKind {
+	switch normalizeProvider(provider) {
+	case "manual":
+		return ProviderManual
+	case "test", "mock":
+		return ProviderTest
+	default:
+		return ProviderHMAC
+	}
+}
+
+func errorsIsIdempotencyConflict(err error) bool {
+	return errors.Is(err, ErrIdempotencyConflict)
+}
+
+func countPendingOrders(ctx context.Context, store Store, tenantID, userID int64) (int, error) {
+	if caps, ok := store.(RechargeCapStore); ok {
+		return caps.CountPendingOrders(ctx, tenantID, userID)
+	}
+	orders, err := store.ListOrdersByUser(ctx, tenantID, userID, 0)
+	if err != nil {
+		return 0, err
+	}
+	var n int
+	for _, order := range orders {
+		if order.Status == StatusPending {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func sumTodayOrderAmount(ctx context.Context, store Store, tenantID, userID int64, now time.Time) (decimal.Decimal, error) {
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	if caps, ok := store.(RechargeCapStore); ok {
+		cents, err := caps.SumRechargeAmountSince(ctx, tenantID, userID, start)
+		if err != nil {
+			return decimal.Decimal{}, err
+		}
+		return centsToDecimal(cents), nil
+	}
+	orders, err := store.ListOrdersByUser(ctx, tenantID, userID, 0)
+	if err != nil {
+		return decimal.Decimal{}, err
+	}
+	sum := decimal.Zero
+	for _, order := range orders {
+		if order.CreatedAt.Before(start) {
+			continue
+		}
+		switch order.Status {
+		case StatusPending, StatusPaid, StatusRecharging, StatusCompleted:
+			sum = sum.Add(centsToDecimal(order.AmountCents))
+		}
+	}
+	return sum, nil
 }

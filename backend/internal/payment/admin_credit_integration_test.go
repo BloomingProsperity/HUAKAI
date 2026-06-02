@@ -14,13 +14,13 @@ import (
 func TestPostgresStoreAdminAdjustBalanceCreditsAuditsAndRejectsDebitWithoutBalanceMutation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	pool := openPaymentPool(t, ctx)
-	tenantID, userID := seedPaymentUser(t, ctx, pool, "admin-credit")
+	pool := openPaymentIntegrationPool(t, ctx)
+	f := newPaymentFixture(t, ctx, pool)
 
 	svc := NewService(NewPostgresStore(pool))
 	credit, err := svc.AdminAdjustBalance(ctx, AdminBalanceAdjustmentInput{
-		TenantID:        tenantID,
-		UserID:          userID,
+		TenantID:        f.tenantA,
+		UserID:          f.userA,
 		Amount:          decimal.RequireFromString("200.00000000"),
 		CurrencyCode:    "USD",
 		ActorID:         "admin-11",
@@ -37,13 +37,13 @@ func TestPostgresStoreAdminAdjustBalanceCreditsAuditsAndRejectsDebitWithoutBalan
 	if credit.RechargeOrderID == 0 {
 		t.Fatal("positive admin recharge must create a recharge order for billing_events correlation")
 	}
-	assertUserBalanceText(t, ctx, pool, tenantID, userID, "200.00000000")
-	assertManualAuditCodeCount(t, ctx, pool, tenantID, userID, "RECHARGE_SUCCESS", 1)
-	assertBalanceRechargedEventCount(t, ctx, pool, tenantID, credit.RechargeOrderID, 1)
+	assertUserBalanceText(t, ctx, pool, f.tenantA, f.userA, "200.00000000")
+	assertPaymentAuditEventCount(t, ctx, pool, f.tenantA, credit.RechargeOrderID, AuditCredited, 1)
+	assertPaymentCreditedEventCount(t, ctx, pool, f.tenantA, credit.RechargeOrderID, 1)
 
 	_, err = svc.AdminAdjustBalance(ctx, AdminBalanceAdjustmentInput{
-		TenantID:        tenantID,
-		UserID:          userID,
+		TenantID:        f.tenantA,
+		UserID:          f.userA,
 		Amount:          decimal.RequireFromString("-50.00000000"),
 		CurrencyCode:    "USD",
 		ActorID:         "admin-11",
@@ -54,11 +54,11 @@ func TestPostgresStoreAdminAdjustBalanceCreditsAuditsAndRejectsDebitWithoutBalan
 	if !errors.Is(err, ErrExternalTradeConflict) {
 		t.Fatalf("AdminAdjustBalance debit with credited key err=%v want ErrExternalTradeConflict", err)
 	}
-	assertUserBalanceText(t, ctx, pool, tenantID, userID, "200.00000000")
+	assertUserBalanceText(t, ctx, pool, f.tenantA, f.userA, "200.00000000")
 
 	_, err = svc.AdminAdjustBalance(ctx, AdminBalanceAdjustmentInput{
-		TenantID:        tenantID,
-		UserID:          userID,
+		TenantID:        f.tenantA,
+		UserID:          f.userA,
 		Amount:          decimal.RequireFromString("-250.00000000"),
 		CurrencyCode:    "USD",
 		ActorID:         "admin-11",
@@ -69,21 +69,21 @@ func TestPostgresStoreAdminAdjustBalanceCreditsAuditsAndRejectsDebitWithoutBalan
 	if !errors.Is(err, ErrAdminDebitNotSupported) {
 		t.Fatalf("AdminAdjustBalance -250 err=%v want ErrAdminDebitNotSupported", err)
 	}
-	assertUserBalanceText(t, ctx, pool, tenantID, userID, "200.00000000")
-	assertManualAuditCodeCount(t, ctx, pool, tenantID, userID, "MANUAL_BALANCE_ADJUSTMENT", 0)
+	assertUserBalanceText(t, ctx, pool, f.tenantA, f.userA, "200.00000000")
+	assertAdminAdjustmentOrderCount(t, ctx, pool, f.tenantA, "admin-debit-250", 0)
 }
 
 func TestPostgresStoreAdminAdjustBalanceReplaysLegacyDebitBeforeGate(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	pool := openPaymentPool(t, ctx)
-	tenantID, userID := seedPaymentUser(t, ctx, pool, "admin-legacy-debit")
+	pool := openPaymentIntegrationPool(t, ctx)
+	f := newPaymentFixture(t, ctx, pool)
 	now := time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC)
 
 	if _, err := pool.Exec(ctx, `
 INSERT INTO user_balances (tenant_id, user_id, balance, held, version, updated_at)
 VALUES ($1, $2, $3, 0, 1, $4)`,
-		tenantID, userID, decimal.RequireFromString("150.00000000"), now,
+		f.tenantA, f.userA, decimal.RequireFromString("150.00000000"), now,
 	); err != nil {
 		t.Fatalf("seed legacy balance: %v", err)
 	}
@@ -97,7 +97,7 @@ INSERT INTO payment_audit_log (
 	$5, $6, $7, $8, $8,
 	$9, jsonb_build_object('audit_code', $5::text), $10
 )`,
-		tenantID, userID, adminPaymentProvider, "legacy-admin-debit-50",
+		f.tenantA, f.userA, adminPaymentProvider, "legacy-admin-debit-50",
 		adminAuditAdjustment, AuditOutcomeAccepted, AuditReasonCompleted,
 		decimal.RequireFromString("-50.00000000"), "USD", now,
 	); err != nil {
@@ -106,8 +106,8 @@ INSERT INTO payment_audit_log (
 
 	svc := NewService(NewPostgresStore(pool))
 	replay, err := svc.AdminAdjustBalance(ctx, AdminBalanceAdjustmentInput{
-		TenantID:        tenantID,
-		UserID:          userID,
+		TenantID:        f.tenantA,
+		UserID:          f.userA,
 		Amount:          decimal.RequireFromString("-50.00000000"),
 		CurrencyCode:    "USD",
 		ActorID:         "admin-11",
@@ -121,20 +121,20 @@ INSERT INTO payment_audit_log (
 	if !replay.NewBalance.Equal(decimal.RequireFromString("150.00000000")) {
 		t.Fatalf("legacy debit replay NewBalance=%s want 150.00000000", replay.NewBalance)
 	}
-	assertUserBalanceText(t, ctx, pool, tenantID, userID, "150.00000000")
-	assertManualAuditCodeCount(t, ctx, pool, tenantID, userID, "MANUAL_BALANCE_ADJUSTMENT", 1)
+	assertUserBalanceText(t, ctx, pool, f.tenantA, f.userA, "150.00000000")
+	assertLegacyManualAuditCodeCount(t, ctx, pool, f.tenantA, f.userA, "MANUAL_BALANCE_ADJUSTMENT", 1)
 }
 
 func TestPostgresStoreAdminAdjustBalanceIsIdempotentByExternalTradeNo(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	pool := openPaymentPool(t, ctx)
-	tenantID, userID := seedPaymentUser(t, ctx, pool, "admin-idempotent")
+	pool := openPaymentIntegrationPool(t, ctx)
+	f := newPaymentFixture(t, ctx, pool)
 
 	svc := NewService(NewPostgresStore(pool))
 	creditInput := AdminBalanceAdjustmentInput{
-		TenantID:        tenantID,
-		UserID:          userID,
+		TenantID:        f.tenantA,
+		UserID:          f.userA,
 		Amount:          decimal.RequireFromString("200.00000000"),
 		CurrencyCode:    "USD",
 		ActorID:         "admin-11",
@@ -154,13 +154,13 @@ func TestPostgresStoreAdminAdjustBalanceIsIdempotentByExternalTradeNo(t *testing
 		!secondCredit.NewBalance.Equal(decimal.RequireFromString("200.00000000")) {
 		t.Fatalf("credit retry balances first=%s second=%s want both 200", firstCredit.NewBalance, secondCredit.NewBalance)
 	}
-	assertUserBalanceText(t, ctx, pool, tenantID, userID, "200.00000000")
-	assertManualAuditCodeCount(t, ctx, pool, tenantID, userID, "RECHARGE_SUCCESS", 1)
-	assertBalanceRechargedEventCount(t, ctx, pool, tenantID, firstCredit.RechargeOrderID, 1)
+	assertUserBalanceText(t, ctx, pool, f.tenantA, f.userA, "200.00000000")
+	assertPaymentAuditEventCount(t, ctx, pool, f.tenantA, firstCredit.RechargeOrderID, AuditCredited, 1)
+	assertPaymentCreditedEventCount(t, ctx, pool, f.tenantA, firstCredit.RechargeOrderID, 1)
 
 	debitInput := AdminBalanceAdjustmentInput{
-		TenantID:        tenantID,
-		UserID:          userID,
+		TenantID:        f.tenantA,
+		UserID:          f.userA,
 		Amount:          decimal.RequireFromString("-50.00000000"),
 		CurrencyCode:    "USD",
 		ActorID:         "admin-11",
@@ -174,11 +174,11 @@ func TestPostgresStoreAdminAdjustBalanceIsIdempotentByExternalTradeNo(t *testing
 	if _, err := svc.AdminAdjustBalance(ctx, debitInput); !errors.Is(err, ErrAdminDebitNotSupported) {
 		t.Fatalf("second AdminAdjustBalance debit err=%v want ErrAdminDebitNotSupported", err)
 	}
-	assertUserBalanceText(t, ctx, pool, tenantID, userID, "200.00000000")
-	assertManualAuditCodeCount(t, ctx, pool, tenantID, userID, "MANUAL_BALANCE_ADJUSTMENT", 0)
+	assertUserBalanceText(t, ctx, pool, f.tenantA, f.userA, "200.00000000")
+	assertAdminAdjustmentOrderCount(t, ctx, pool, f.tenantA, "admin-idem-debit-50", 0)
 }
 
-func assertManualAuditCodeCount(t *testing.T, ctx context.Context, pool queryPool, tenantID, userID int64, code string, want int) {
+func assertLegacyManualAuditCodeCount(t *testing.T, ctx context.Context, pool queryPool, tenantID, userID int64, code string, want int) {
 	t.Helper()
 	var count int
 	if err := pool.QueryRow(ctx, `
@@ -194,5 +194,19 @@ WHERE tenant_id=$1
 	}
 	if count != want {
 		t.Fatalf("payment audit code %s count=%d want %d", code, count, want)
+	}
+}
+
+func assertAdminAdjustmentOrderCount(t *testing.T, ctx context.Context, pool queryPool, tenantID int64, outTradeNo string, want int) {
+	t.Helper()
+	var count int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM payment_orders WHERE tenant_id=$1 AND out_trade_no=$2`,
+		tenantID, outTradeNo,
+	).Scan(&count); err != nil {
+		t.Fatalf("count admin adjustment order %s: %v", outTradeNo, err)
+	}
+	if count != want {
+		t.Fatalf("admin adjustment order %s count=%d want %d", outTradeNo, count, want)
 	}
 }
