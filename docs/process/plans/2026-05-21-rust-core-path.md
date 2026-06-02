@@ -8,6 +8,12 @@
   - 借鉴项目调研 4 份: L2 HTTP/2(wreq/http2 fork)、SSE 抽 usage(new-api/one-api/sub2api/litellm)、防打爆(envoy-ai-gateway/litellm/kong/llmgateway/helicone)、CLIProxyAPI 全链路
 - 状态: 已合成,待 Owner 批准后进入执行
 
+> 【2026-06-02 已更新】本文是旧 `core_gateway` C档加固历史计划。当前数据面方向已定为 C:
+> Go `gatewayhttp` 是生产大脑,Rust 已重定位为高性能 + 强伪装出站传输 sidecar；旧
+> `core_gateway` 的 listener / RouteService / route_client / mock_control_plane 口径按 C 退役。
+> 当前可用状态以 `tls-sidecar`、Go `transport.Factory` sidecar socket 接线和
+> `sidecar_client.go` 为准；下文 Wave A/B/C/D 保留为历史风险与资产清单,不是当前生产数据面状态。
+
 ## 1. 目标与成功标准
 
 把 Rust 数据面核心请求链路(listener → account_planner → proxy_engine → stream_pipeline → attempt_reporter)做到:性能无浪费热点、别人部署不被流量打爆宿主、HTTP/2 层指纹与 L1 TLS 伪装对齐。每项有源码级修法 + 测试,`cargo test -p core_gateway` 全绿,codex per-commit review 无 HIGH。

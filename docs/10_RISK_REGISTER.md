@@ -80,6 +80,11 @@ Each high or release-blocking risk must map to mitigation, test coverage, and re
 
 - **R-SIDECAR-001 (boring sigalgs 10/26 IDs gap, S2, DEFERRED)**：tls-sidecar profile.rs anthropic_cli_mimicry_v1 sigalgs 字符串仅 10 项标准 sigalg 名,真抓包 wire 26 个数字 ID。boring `SSL_CTX_set_sigalgs_list` API 接受字符串 + 已知算法表校验,无 raw 16-bit setter。R-3-A-fix-6 调研 (docs/process/plans/2026-05-25-r3a-fix6-sigalgs-raw-api-investigation.md) 推荐方案 A: 0.5-1 day vendor C 加 `SSL_CTX_set_sigalgs_raw` 窄 setter + Rust wrapper + extension 13 wire parser。Phase 4 ECH / Phase 5 PQ wire proof **不阻塞**;**生产 sidecar exact-fidelity 接通前必修**。Last triage 2026-05-25 commit `b38a34c`。下一步:Owner 确认 raw setter 命名 + 是否进 Phase 5C 实施 slice。
 
+> 【2026-06-02 已更新】下面 R-SIDECAR-002 中“sidecar 未接通生产”是 2026-05-25 历史。
+> Go 端已通过 `HUAKAI_TRANSPORT_SIDECAR_SOCKET` / `Factory.SidecarSocketPath`
+> 可配置接到 Rust/BoringSSL sidecar；当前风险应读作“任何生产 sidecar 配置启用前，
+> ALPN=h2 raw tunnel 与 H2 framing 必须验证/修复或通过 profile 限制规避”。以下为历史 triage 原文。
+
 - **R-SIDECAR-002 (Phase 3 H2 ALPN raw tunnel 边界, S2, DEFERRED)**：tls-sidecar connect.rs raw tunnel TLS handshake 后即使 ALPN=h2 仍返 raw TLS。Go sidecar transport (HTTP/1.1 only, `ForceAttemptHTTP2:false`) 后续发 HTTP/1.1 request → 服务端按 H2 解 → 协议错乱。sidecar **未接通生产** (`Factory.SidecarSocketPath` 默认空),当前 no-impact。修复路径 3 选项 (Go-Rust 接通切片同期决): (A) raw tunnel ALPN=h2 时 fail / 转 H2 path / (B) Rust own 完整 H2 framing (重大重构) / (C) sidecar profile 强制 ALPN=http/1.1。Last triage 2026-05-25 commit `44bf875`,DEFERRED-sidecar-raw-tunnel-h2-alpn.md。
 
 - **R-VEND-001 (6 vendor operator-config OAuth endpoint 缺, S1, OPEN-PENDING-OWNER)**：cursor/windsurf/openai_codex/kiro/gemini/antigravity 6 vendor RefreshAdapter operator-config endpoint/client/scope 缺。Owner 真账号抓包后才能填入 `HUAKAI_<VENDOR>_OAUTH_{AUTH_URL,TOKEN_URL,CLIENT_ID,CLIENT_SECRET,SCOPE}` env。**当前 fail-closed**:TokenURL 空 → `WithVendorRefresher` 不注入 → vendor 自动 skip,不 crash。Owner-side action:per [[feedback_owner_local_verification]] Owner 本机抓 cursor/windsurf/codex CLI/kiro/gemini Advanced/antigravity OAuth flow。Last triage 2026-05-25 commit `e1af326`。

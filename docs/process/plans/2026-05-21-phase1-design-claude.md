@@ -1,5 +1,10 @@
 # Phase 1 详细实施设计 — 洞 ②⑥ 单请求内重试 / failover / 跨池(Claude 独立稿)
 
+> 【2026-06-02 已更新】本 Phase 1 设计稿中的 `AttemptSeq:1` 硬编码和单 attempt
+> 状态是 2026-05-21 历史；当前 `router.DefaultRouter` 已生成多 attempt plan，
+> `chatExecution` 已执行 attempt loop、失败账号排除、交付前 retry/failover 与一次最终结算。
+> 以下为历史设计稿。
+
 - 日期: 2026-05-21
 - 范围: 方向 1 Phase 1 —— 洞 ② 单请求内重试 + 账号 failover、洞 ⑥ 跨池多候选编排
 - 平行纪律: 按 CLAUDE.md #10 独立起草, 未读 codex 平行稿(`2026-05-21-phase1-design-codex.md`)

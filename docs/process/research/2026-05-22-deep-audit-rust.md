@@ -4,6 +4,12 @@
 
 约束记录：本轮只读调查 HUAKAI 内部代码，未读取 reference-project 源码，未运行 `git`，未修改业务代码。本文不重复上一轮已确认的 8 项问题：L2 cache key 缺 client protocol、buffered path 上游错误体泄漏、storm-controller 生产 panic、真实流量标成 EvidenceMock、SSE 错误头丢失、`err.Error()` 泄漏、Rust dead metric、RoutePlan cache disabled。
 
+> 【2026-06-02 已更新】本文 D-01..D-10 是旧 `core_gateway` 探索数据面缺陷清单。
+> 当前方向已定为 C：旧 `core_gateway` 控制面/入口路线退役为 legacy；Rust 当前主线价值是
+> `crates/tls-sidecar` 的 BoringSSL + H2 出站传输 sidecar，并已被 Go
+> `transport.Factory` / `HUAKAI_TRANSPORT_SIDECAR_SOCKET` 接线。以下 findings
+> 仍可作为未来恢复旧 `core_gateway` 时的历史风险清单，但不能再代表当前 tls-sidecar 接通状态。
+
 ## Findings
 
 ### 1. HIGH - 路由规划使用可伪造 header，而不是请求体中的真实 model/stream
@@ -154,4 +160,3 @@
 具体失败场景：生产构建启用 `mimicry-boring` 后，原本应由 `backend_intent()` 判定为 unsupported/known-gap 的 vendor profile 可以直接被允许走 Boring。结果是未完成 R-D 验证的 TLS/header mimicry profile 进入生产 dispatch，控制面的 fail-closed 保障被编译特性绕开。
 
 修复方向：`resolve_profile_mimicry_backend` 应先执行 `backend_intent()` 并尊重 unsupported/known-gap 阻断；只有明确支持 Boring 且通过验证的 profile 才能返回 Boring，同时补齐 feature matrix 测试。
-

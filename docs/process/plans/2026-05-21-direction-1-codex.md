@@ -14,6 +14,12 @@
 | Decision points | gRPC over UDS 是否批准、新运行依赖是否批准、Rust 不可用时默认 fallback 还是 fail-fast、凭据是否允许穿过本机 UDS、caller limit 是否先做内存版还是直接做持久/分布式版。 |
 | Pre-execution checklist | 1. Owner 批准方向 1 合成计划；2. 明确 Go/Rust 契约传输；3. 明确 sidecar fallback 策略；4. 明确 billing source of truth；5. 明确 Docker 拓扑；6. 对高风险 schema/auth/billing/quota 变更单独开确认。 |
 
+> 【2026-06-02 已更新】本 Codex 独立稿是 2026-05-21 的历史输入。当前 C 方向已锁定并推进：
+> ②⑥ retry/failover/跨池、③ Anthropic buffered、transport mimicry/sidecar
+> 接线已落地；旧 `RouteService` / `route_client` / `mock_control_plane` 路线按 C
+> 退役为 legacy。本文关于 `ApplyMimicryPlan` 未接生产 dispatch 的判断，本轮全仓搜索仍未发现
+> 非测试 caller，因此不更新为已闭；以下为历史草案。
+
 ## 0. 战略结论
 
 方向 1 的核心判断是：**Go `gatewayhttp` 是账号转 API 大脑，Rust `core_gateway` 不再承担账号规划、凭据选择、控制面路由或 client-facing API 入口。**

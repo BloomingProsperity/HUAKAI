@@ -4,6 +4,17 @@
 Lane: claude-lane M-rust-10
 工作范围: 探索性 fork，不接入主线
 
+> 【2026-06-02 已更新】本报告评估的是 2026-05-09 旧 `core_gateway`
+> shadow-readiness；当前数据面方向已定为 C：Go `gatewayhttp` 是账号转
+> API 大脑，旧 `RouteService` / `route_client` / `mock_control_plane`
+> 按 C 方向退役为 legacy。Rust 新 `crates/tls-sidecar` 已落
+> BoringSSL Phase 1-3 基础能力，H2 SETTINGS 逐字段控制见
+> `crates/tls-sidecar/src/h2_settings.rs`，Go 侧 sidecar 接线见
+> `backend/internal/transport/mimicry/sidecar_client.go` 与
+> `backend/cmd/gateway/wiring.go`。但任何生产 sidecar 启用前仍必须处理
+> R-SIDECAR-001 raw sigalgs 10/26 gap 与 R-SIDECAR-002 ALPN=h2 raw tunnel/H2 framing，
+> 并完成更多 vendor 指纹 profile 与真上游验证；以下旧 `core_gateway` NO-GO / 未接主线判断为历史。
+
 ---
 
 ## 1. 评估范围

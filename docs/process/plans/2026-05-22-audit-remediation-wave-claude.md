@@ -4,6 +4,13 @@
 > 执行前还需 codex 交叉评审(`feedback_plans_codex_cross_review`)。
 > Owner 决策:"先深挖全仓再一次补"(2026-05-22)。
 
+> 【2026-06-02 已更新】本文 §0 的 “Go `gatewayhttp` 是唯一生产链路 /
+> Rust `core_gateway` 控制面未接通生产”是 2026-05-22 对旧 `core_gateway`
+> 的分层口径。当前数据面方向已定为 C:Go `gatewayhttp` 仍是生产大脑,Rust 侧当前接通形态为
+> `tls-sidecar` 出站传输 sidecar；Go `transport.Factory` 已有 sidecar socket 接线。
+> D 区 findings 仍保留为旧 Rust 探索路径若复活时的历史补救清单,不代表当前 `tls-sidecar`
+> 是否接通。
+
 ## §0 来源与口径
 
 | 区 | 范围 | 审计方 | 文档 | findings |

@@ -6,6 +6,11 @@
 >
 > 独立性风险披露：一次全仓 `rg` 排除规则未拦住绝对路径，输出中带出 `docs/process/plans/2026-05-21-full-audit-claude.md` 的两行摘要。发现后已停止读取任何 Claude 草案；本文件后续判断只使用我自己读取的 HUAKAI 代码、HUAKAI docs、以及已存在的 source-cited research 文件。Owner 可决定是否要求 Codex 重做一份完全隔离稿。
 
+> 【2026-06-02 已更新】本文是 2026-05-21 全面自查计划历史稿。当前 Rust 口径已从旧
+> `core_gateway` NO-GO 并列数据面，更新为 C 方向下的出站传输 sidecar：旧控制面路线退役，
+> `tls-sidecar` + Go `transport.Factory` / `HUAKAI_TRANSPORT_SIDECAR_SOCKET`
+> 接线已存在。以下为历史计划口径。
+
 ## 1. 树结构独立评估
 
 ### 1.1 总体结论

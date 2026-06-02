@@ -6,6 +6,13 @@
 - CLAUDE.md 条款: #10 (parallel) / #11 (clean-room) / #12 (源码必读) / #13 (包结构) / #14 (测试质量) / #15 (Owner 决策对照)
 - 范围声明:transport 技术(uTLS/rquest/curl_cffi/BoringSSL)选型不在本 plan 决策,引用 [[project_l1_tls_boringssl]] 现状,本 plan 只决定如何接入,不决定选哪个
 
+> 【2026-06-02 已更新】本文中 G-3 “生产数据面没接 / L2 H2 0 生产能力 /
+> Rust core_gateway 未接通”是 2026-05-24 历史。当前 transport mimicry 已按 provider
+> mode 在 `gatewayhttp` 选择，`transport.Factory` 支持 sidecar branch，`HUAKAI_TRANSPORT_SIDECAR_SOCKET`
+> 可把 Go 出站接到 Rust/BoringSSL sidecar；`tls-sidecar` 已有 H2 SETTINGS 逐字段控制。
+> 但应用层 `ApplyMimicryPlan` 本轮未观察到非测试 caller，body-level cloaking 不标为已闭；
+> 以下为历史计划。
+
 ## §1 目标与范围
 
 Owner 在战略快照里点了 4 个生产级缺口,本 plan 围绕这 4 块闭环:

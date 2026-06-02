@@ -11,6 +11,12 @@
 | Blast radius | 业务请求入口、control-plane route 查询频率、SSE 流解析、proxy relay 超时、HTTP server 接入层。 |
 | Decision points | 是否允许启用 `hyper-util` 的 `server-auto/server-graceful/service` features 来替换 `axum::serve`；是否把 route cache 默认保持 0ms 关闭；是否允许新增少量资源保护配置项。 |
 
+> 【2026-06-02 已更新】本文是旧 `core_gateway` 独立计划稿,表中 Scope /
+> Blast radius 指向 2026-05-21 的 Rust core gateway 探索路径。当前数据面方向已定为 C:
+> Go `gatewayhttp` 是生产大脑,Rust 侧重定位为 `tls-sidecar` 出站传输 sidecar；Go
+> transport factory 已有 sidecar socket 接线。旧 RouteService / route_client /
+> mock_control_plane 路径按 C 退役,以下作为历史风险与实现资产保留。
+
 ## 源码核实结论
 
 1. OpenAI SSE 解析判断准确，但措辞需收窄：每个非空、非 `[DONE]` 的 OpenAI SSE data 帧都会先透传 `Data`，再调用 `extract_usage_from_json_bytes(data)`；该函数用 `serde_json::from_slice::<Value>` 解析整棵 DOM 后只取 `usage`。证据：`stream_pipeline/openai.rs:45-46`、`stream_pipeline/openai.rs:62-64`、`stream_pipeline/openai.rs:67-86`。
@@ -414,4 +420,3 @@
 Agent: Codex / GPT-5
 
 UTC timestamp: 2026-05-21T02:53:45Z
-
