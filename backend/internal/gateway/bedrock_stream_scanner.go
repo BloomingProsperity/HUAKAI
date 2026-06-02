@@ -7,14 +7,14 @@
 // 行为概要：
 //   - 循环读 binary frame
 //   - 按 :message-type / :event-type header 分支
-//     * "event" + "chunk" → payload 是 {"bytes":"<base64>"}，解 base64 得
-//       内层 Anthropic event JSON → 提取 {"type":"..."} → emit 为
-//       SSEEvent{Type: 内层 type, Data: 原 JSON 字节}
-//     * "exception" / "error" → emit 为 protocol-level error
-//       SSEEvent（Type="error", Data=原 payload），随后 yield ErrBedrockException
-//       结束流（R4 决策：当 protocol-level error 处理）
-//     * Bedrock response exception event-types / unknown message-type →
-//       protocol-level error；明确的 control event 才可跳过
+//   - "event" + "chunk" → payload 是 {"bytes":"<base64>"}，解 base64 得
+//     内层 Anthropic event JSON → 提取 {"type":"..."} → emit 为
+//     SSEEvent{Type: 内层 type, Data: 原 JSON 字节}
+//   - "exception" / "error" → emit 为 protocol-level error
+//     SSEEvent（Type="error", Data=原 payload），随后 yield ErrBedrockException
+//     结束流（R4 决策：当 protocol-level error 处理）
+//   - Bedrock response exception event-types / unknown message-type →
+//     protocol-level error；明确的 control event 才可跳过
 //   - decoder 错误传播为 (SSEEvent{}, err)，scanner 退出
 //
 // 设计约束（与 codex_session 同条款）：
@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/bedrock/eventstream"
+	"github.com/BloomingProsperity/HUAKAI/internal/redact"
 )
 
 // ErrBedrockException 表示 Bedrock 后端发回了 :message-type=exception 帧。
@@ -157,7 +158,7 @@ func yieldBedrockProtocolError(kind, value string, payload []byte, yield func(SS
 	if !yield(SSEEvent{Type: "error", Data: payload, ObservedAt: time.Now()}, nil) {
 		return false
 	}
-	yield(SSEEvent{}, fmt.Errorf("%w: %s=%q payload=%s", ErrBedrockException, kind, value, string(payload)))
+	yield(SSEEvent{}, fmt.Errorf("%w: %s=%q payload_summary=%s", ErrBedrockException, kind, value, redact.SafePayloadLogSummary(payload)))
 	return false
 }
 
