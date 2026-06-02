@@ -38,6 +38,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
+	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
@@ -107,6 +108,7 @@ type deps struct {
 	refundQueue              *auditreceipt.MismatchRefundQueue
 	rateTableSource          billing.RateTableSource
 	modelRegistry            *registry.PostgresRegistry
+	modelSync                *modelsync.Service
 	routePlanner             *router.DefaultRouter
 	adminAuth                *admin.AdminResolver
 	adminIssuer              *admin.KeyIssuer
@@ -151,6 +153,7 @@ type runtimeOptions struct {
 	selector      *runtimeconfig.PoolSelectorConfig
 	obsDLQ        *runtimeconfig.ObsDLQConfig
 	eventBus      *runtimeconfig.EventBusConfig
+	modelSync     *runtimeconfig.ModelSyncConfig
 	outboxRuntime obsoutbox.RuntimeConfig
 	responseCache l2cache.Store
 }
@@ -515,6 +518,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, fmt.Errorf("build payment provider bindings: %w", err)
 	}
+	modelRegistry := registry.NewPostgresRegistry(pgPool, nil)
+	modelSyncService := buildModelSyncService(opts.modelSync, modelRegistry)
 
 	d := &deps{
 		cfg:                   cfg,
@@ -562,7 +567,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		receiptFormatter:         receiptFormatter,
 		refundQueue:              refundQueue,
 		rateTableSource:          rateTableSource,
-		modelRegistry:            registry.NewPostgresRegistry(pgPool, nil),
+		modelRegistry:            modelRegistry,
+		modelSync:                modelSyncService,
 		routePlanner:             router.NewDefaultRouter(),
 		adminAuth:                admin.NewAdminResolver(adminQueries),
 		adminIssuer:              admin.NewKeyIssuer(pgPool),
@@ -625,6 +631,13 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		dlqWorker.Start(ctx)
 	}
 	outboxWorker.Start(ctx)
+	if opts.modelSync != nil && opts.modelSync.Enabled && modelSyncService != nil {
+		scheduler := modelsync.NewScheduler(modelSyncService, modelsync.SchedulerConfig{
+			Interval:   opts.modelSync.Interval,
+			RunOnStart: true,
+		})
+		rt.modelSyncStop = scheduler.Start(ctx)
+	}
 
 	rt.deps = d
 	rt.credentialScheduler = credentialScheduler
@@ -633,6 +646,44 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	rt.obsDLQEnabled = opts.obsDLQ.Enabled
 	ready = true
 	return rt, nil
+}
+
+func buildModelSyncService(cfg *runtimeconfig.ModelSyncConfig, store *registry.PostgresRegistry) *modelsync.Service {
+	if cfg == nil || store == nil {
+		return nil
+	}
+	fetchers := make([]modelsync.Fetcher, 0, 3)
+	if cfg.OpenAI.Configured() {
+		fetchers = append(fetchers, modelsync.NewHTTPFetcher(modelsync.HTTPFetcherConfig{
+			Vendor:  modelsync.VendorOpenAI,
+			URL:     cfg.OpenAI.URL,
+			APIKey:  cfg.OpenAI.APIKey,
+			Timeout: cfg.Timeout,
+		}))
+	}
+	if cfg.Anthropic.Configured() {
+		fetchers = append(fetchers, modelsync.NewHTTPFetcher(modelsync.HTTPFetcherConfig{
+			Vendor:  modelsync.VendorAnthropic,
+			URL:     cfg.Anthropic.URL,
+			APIKey:  cfg.Anthropic.APIKey,
+			Timeout: cfg.Timeout,
+		}))
+	}
+	if cfg.Gemini.Configured() {
+		fetchers = append(fetchers, modelsync.NewHTTPFetcher(modelsync.HTTPFetcherConfig{
+			Vendor:  modelsync.VendorGemini,
+			URL:     cfg.Gemini.URL,
+			APIKey:  cfg.Gemini.APIKey,
+			Timeout: cfg.Timeout,
+		}))
+	}
+	if len(fetchers) == 0 {
+		return nil
+	}
+	return modelsync.NewService(modelsync.ServiceConfig{
+		Fetchers: fetchers,
+		Store:    store,
+	})
 }
 
 func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.Service) (*hermeschat.Bridge, error) {
