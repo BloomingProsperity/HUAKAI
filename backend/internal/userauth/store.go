@@ -283,8 +283,50 @@ func (s *PostgresStore) CreatePasswordResetToken(ctx context.Context, challenge 
 	_, err := s.db.Exec(ctx, `
 INSERT INTO password_reset_tokens (id, tenant_id, user_id, token_hash, password_version, expires_at)
 VALUES ($1::uuid, $2, $3, $4, $5, $6)
-`, challenge.ID, challenge.TenantID, challenge.UserID, challenge.TokenHash, passwordVersion, challenge.ExpiresAt.UTC())
+	`, challenge.ID, challenge.TenantID, challenge.UserID, challenge.TokenHash, passwordVersion, challenge.ExpiresAt.UTC())
 	return err
+}
+
+func (s *PostgresStore) PreparePasswordResetTokenUser(ctx context.Context, tenantID int64, tokenHash []byte, now time.Time) (User, error) {
+	if s == nil || s.db == nil {
+		return User{}, ErrStoreNotConfigured
+	}
+	const q = `
+WITH candidate AS (
+    SELECT prt.user_id, prt.password_version
+    FROM password_reset_tokens prt
+    WHERE prt.tenant_id = $1
+      AND prt.token_hash = $2
+      AND prt.consumed_at IS NULL
+      AND prt.expires_at > $3
+), barrier AS (
+    UPDATE users u
+    SET status = CASE
+            WHEN u.status IN ('active', 'locked', 'pending_verification') THEN 'reset_required'
+            ELSE u.status
+        END,
+        updated_at = CASE
+            WHEN u.status IN ('active', 'locked', 'pending_verification') THEN NOW()
+            ELSE u.updated_at
+        END
+    FROM candidate c
+    WHERE u.tenant_id = $1
+      AND u.id = c.user_id
+      AND u.password_version = c.password_version
+      AND u.deleted_at IS NULL
+    RETURNING u.id, u.tenant_id, u.email, u.display_name, u.password_hash, u.email_verified,
+              u.invite_code_used, u.social_login_provider, u.status, u.password_version,
+              u.failed_login_count, u.locked_until, u.created_at, u.updated_at
+)
+SELECT u.id, u.tenant_id, u.email, u.display_name, u.password_hash, u.email_verified,
+       u.invite_code_used, u.social_login_provider, u.status, u.password_version,
+       u.failed_login_count, u.locked_until, u.created_at, u.updated_at
+FROM barrier u`
+	user, err := scanUser(s.db.QueryRow(ctx, q, tenantID, tokenHash, now.UTC()))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, ErrTokenInvalid
+	}
+	return user, err
 }
 
 func (s *PostgresStore) ConsumePasswordResetToken(ctx context.Context, tenantID int64, tokenHash []byte, passwordHash string, now time.Time) (User, error) {
