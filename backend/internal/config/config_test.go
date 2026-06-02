@@ -181,3 +181,38 @@ func TestVendorOAuthConfigsConfiguredSkipsBlankTokenURL(t *testing.T) {
 		t.Fatalf("windsurf configured=%+v, want trimmed config", windsurf)
 	}
 }
+
+func TestLoadIncludesPaymentProviderSecretsWithoutLoggingValues(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_PAYMENT_HMAC_SECRETS", " hmacpay = secret-one , second: secret-two ")
+	t.Setenv("HUAKAI_PAYMENT_ENABLE_MOCK", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PaymentHMACSecrets["hmacpay"] != "secret-one" || cfg.PaymentHMACSecrets["second"] != "secret-two" {
+		t.Fatalf("PaymentHMACSecrets=%+v, want trimmed provider secret map", cfg.PaymentHMACSecrets)
+	}
+	if !cfg.PaymentEnableMock {
+		t.Fatal("PaymentEnableMock=false want true from explicit env")
+	}
+}
+
+func TestLoadPaymentProviderSecretsRejectsMalformedEntries(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_PAYMENT_HMAC_SECRETS", "missing-delimiter")
+
+	err := loadOnlyError()
+	if err == nil {
+		t.Fatal("malformed HUAKAI_PAYMENT_HMAC_SECRETS was accepted")
+	}
+	if !strings.Contains(err.Error(), "HUAKAI_PAYMENT_HMAC_SECRETS") {
+		t.Fatalf("err=%v must name HUAKAI_PAYMENT_HMAC_SECRETS", err)
+	}
+}
+
+func loadOnlyError() error {
+	_, err := Load()
+	return err
+}

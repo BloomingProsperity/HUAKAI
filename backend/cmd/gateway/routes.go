@@ -19,6 +19,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/meusagehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkeyhttp"
 )
@@ -109,6 +110,12 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
 		gatewayhttp.MountVoucherUserRoutes(r, gatewayhttp.VoucherUserDeps{Service: d.voucherService, ClientIPResolver: d.clientIPResolver})
 	})
+	paymentDeps := paymenthttp.Deps{Service: d.paymentService, Providers: d.paymentProviders}
+	r.Group(func(r chi.Router) {
+		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
+		paymenthttp.MountUserRoutes(r, paymentDeps)
+	})
+	paymenthttp.MountWebhookRoutes(r, paymentDeps)
 	r.Route("/v1/api-keys", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
 		userkeyhttp.MountUserAPIKeyRoutes(r, userkeyhttp.Deps{Service: d.userKeyService})
