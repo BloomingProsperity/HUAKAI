@@ -164,6 +164,10 @@ func (s *MemoryStore) Redeem(_ context.Context, rec redeemRecord) (RedeemResult,
 		return RedeemResult{}, ErrVoucherNotFound
 	}
 	v := s.vouchers[voucherID]
+	if v.GrantKind == GrantKindSubscription {
+		// 订阅券激活依赖真订阅/配额表, 内存 store 不镜像 (见 P3b-3 计划 §5 D3); 真路径用 PG store。
+		return RedeemResult{}, ErrSubscriptionVoucherUnsupported
+	}
 	if err := evaluateVoucher(v, rec.UserID, now, s.userRedeemedLocked); err != nil {
 		if err == ErrVoucherExpired && v.Status == StatusActive {
 			v.Status = StatusExpired
@@ -241,6 +245,7 @@ func voucherFromCreate(rec createVoucherRecord, id int64) Voucher {
 		CodeFingerprint: rec.CodeFingerprint, AmountCents: rec.AmountCents, CurrencyCode: rec.CurrencyCode,
 		ValidFrom: rec.ValidFrom.UTC(), ValidUntil: rec.ValidUntil.UTC(), MaxRedemptions: rec.MaxRedemptions,
 		SingleUsePerUser: rec.SingleUsePerUser, EligibleUserID: cloneInt64Ptr(rec.EligibleUserID),
+		GrantKind: grantKindOrDefault(rec.GrantKind), SubscriptionPlanID: cloneInt64Ptr(rec.SubscriptionPlanID),
 		Status: status, CreatedByAdminID: rec.AdminID,
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -288,7 +293,8 @@ func (s *MemoryStore) userRedeemedLocked(v Voucher, userID int64) bool {
 func (s *MemoryStore) balanceLocked(tenantID, userID int64) int64 {
 	var total int64
 	for _, red := range s.redemptions {
-		if red.TenantID == tenantID && red.UserID == userID {
+		v := s.vouchers[red.VoucherID]
+		if red.TenantID == tenantID && red.UserID == userID && v.GrantKind != GrantKindSubscription {
 			total += red.AmountCents
 		}
 	}
@@ -306,6 +312,7 @@ func idempotencyKey(tenantID, userID int64, key string) string {
 func cloneVoucher(v Voucher) Voucher {
 	v.CodeHash = append([]byte(nil), v.CodeHash...)
 	v.EligibleUserID = cloneInt64Ptr(v.EligibleUserID)
+	v.SubscriptionPlanID = cloneInt64Ptr(v.SubscriptionPlanID)
 	return v
 }
 

@@ -19,7 +19,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/meusagehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/panelauthhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/routeadminhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkeyhttp"
 )
@@ -96,6 +99,9 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			AdminAuth:        d.adminAuth,
 			ClientIPResolver: d.clientIPResolver,
 		})
+		// GET /v1/auth/me 需已认证 session(同块的 login/register 等不需要), 故用 per-route session 中间件,
+		// 不另起 /v1/auth Route 组(chi 同前缀重复 Mount 会 panic)。
+		panelauthhttp.MountAuthMeRoutes(r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)), panelauthhttp.Deps{Resolver: d.panelAuthResolver})
 	})
 
 	r.Route("/v1/sessions", func(r chi.Router) {
@@ -116,6 +122,16 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		paymenthttp.MountUserRoutes(r, paymentDeps)
 	})
 	paymenthttp.MountWebhookRoutes(r, paymentDeps)
+	r.Route("/v1/users/me/payments", func(r chi.Router) {
+		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
+		paymenthttp.MountPaymentUserRoutes(r, paymenthttp.UserDeps{Service: d.paymentService})
+	})
+	r.Route("/v1/users/me/subscriptions", func(r chi.Router) {
+		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
+		subscriptionhttp.MountSubscriptionUserRoutes(r, subscriptionhttp.UserDeps{Service: d.subscriptionService})
+	})
+	// 公开支付回调端点 (P2a): 无 session/admin 中间件, 信任靠验签; 复用 d.paymentService。
+	paymenthttp.MountPaymentWebhookRoutes(r, paymenthttp.WebhookDeps{Service: d.paymentService})
 	r.Route("/v1/api-keys", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
 		userkeyhttp.MountUserAPIKeyRoutes(r, userkeyhttp.Deps{Service: d.userKeyService})
@@ -470,6 +486,25 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		gatewayhttp.MountVoucherAdminRoutes(r, gatewayhttp.VoucherAdminDeps{
 			Auth:    d.adminAuth,
 			Service: d.voucherService,
+		})
+	})
+	r.Route("/v1/admin/payments", func(r chi.Router) {
+		paymenthttp.MountPaymentAdminRoutes(r, paymenthttp.AdminDeps{
+			Auth:    d.adminAuth,
+			Service: d.paymentService,
+		})
+	})
+	r.Route("/v1/admin/subscriptions", func(r chi.Router) {
+		subscriptionhttp.MountSubscriptionAdminRoutes(r, subscriptionhttp.AdminDeps{
+			Auth:           d.adminAuth,
+			Service:        d.subscriptionService,
+			VoucherService: d.voucherService,
+		})
+	})
+	r.Route("/v1/admin/routes", func(r chi.Router) {
+		routeadminhttp.MountRouteAdminRoutes(r, routeadminhttp.AdminDeps{
+			Auth:    d.adminAuth,
+			Service: d.routeAdminService,
 		})
 	})
 	r.Get("/admin/v1/usage", gatewayhttp.NewUsageHandler(d))

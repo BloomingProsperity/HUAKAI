@@ -87,11 +87,14 @@ func TestHandleCallbackRejectsBadSignatureBeforeStore(t *testing.T) {
 }
 
 type callbackRecordingStore struct {
-	recordingStore
+	*MemoryStore
 	fulfillCalls int
 }
 
-func (s *callbackRecordingStore) FulfillCallback(context.Context, VerifiedCallback) (CallbackResult, error) {
+func (s *callbackRecordingStore) GetOrderByOutTradeNo(ctx context.Context, tenantID int64, outTradeNo string) (Order, error) {
 	s.fulfillCalls++
-	return CallbackResult{}, nil
+	if s.MemoryStore == nil {
+		s.MemoryStore = NewMemoryStore()
+	}
+	return s.MemoryStore.GetOrderByOutTradeNo(ctx, tenantID, outTradeNo)
 }
