@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -32,6 +33,11 @@ type Config struct {
 	// VendorOAuth holds operator-owned OAuth refresh settings for vendor
 	// refreshers. Empty TokenURL means that vendor refresher is not wired.
 	VendorOAuth VendorOAuthConfigs
+
+	// PaymentHMACSecrets maps payment provider name -> webhook HMAC secret.
+	// Values come from HUAKAI_PAYMENT_HMAC_SECRETS and must never be logged.
+	PaymentHMACSecrets map[string]string
+	PaymentEnableMock  bool
 }
 
 const (
@@ -70,6 +76,14 @@ var ErrMissingRequired = errors.New("config: missing required env var")
 // backed inbound auth (auth.APIKeyResolver). Rolling back to env-injected
 // auth requires a code revert (no build-tag escape hatch).
 func Load() (*Config, error) {
+	paymentHMACSecrets, err := loadPaymentHMACSecrets()
+	if err != nil {
+		return nil, err
+	}
+	paymentEnableMock, err := envBool("HUAKAI_PAYMENT_ENABLE_MOCK")
+	if err != nil {
+		return nil, err
+	}
 	cfg := &Config{
 		DatabaseURL:            os.Getenv("HUAKAI_DATABASE_URL"),
 		Listen:                 envDefault("HUAKAI_ADDR", ":8080"),
@@ -77,6 +91,8 @@ func Load() (*Config, error) {
 		RequestClass:           envDefault("HUAKAI_REQUEST_CLASS", "standard"),
 		TransportSidecarSocket: os.Getenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET"),
 		VendorOAuth:            loadVendorOAuthConfigs(),
+		PaymentHMACSecrets:     paymentHMACSecrets,
+		PaymentEnableMock:      paymentEnableMock,
 	}
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("%w: HUAKAI_DATABASE_URL", ErrMissingRequired)
@@ -141,4 +157,41 @@ func envDefault(name, fallback string) string {
 
 func envTrim(name string) string {
 	return strings.TrimSpace(os.Getenv(name))
+}
+
+func loadPaymentHMACSecrets() (map[string]string, error) {
+	raw := strings.TrimSpace(os.Getenv("HUAKAI_PAYMENT_HMAC_SECRETS"))
+	secrets := map[string]string{}
+	if raw == "" {
+		return secrets, nil
+	}
+	for _, item := range strings.Split(raw, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		name, secret, ok := strings.Cut(item, "=")
+		if !ok {
+			name, secret, ok = strings.Cut(item, ":")
+		}
+		name = strings.ToLower(strings.TrimSpace(name))
+		secret = strings.TrimSpace(secret)
+		if !ok || name == "" || secret == "" {
+			return nil, fmt.Errorf("HUAKAI_PAYMENT_HMAC_SECRETS entry %q must be provider=secret", item)
+		}
+		secrets[name] = secret
+	}
+	return secrets, nil
+}
+
+func envBool(name string) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return false, nil
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean, got %q: %w", name, raw, err)
+	}
+	return v, nil
 }
