@@ -2026,6 +2026,11 @@ paths:
       x-huakai-spec-source:
         - docs/specs/upstream-credential-management.md
       x-huakai-required-role: tenant_operator
+      parameters:
+        - name: confirm
+          in: query
+          description: Set to true only after operator review to confirm a high-risk mixed-channel account create.
+          schema: { type: boolean, default: false }
       requestBody:
         required: true
         content:
@@ -2037,7 +2042,14 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ProviderAccount' }
-        '400': { $ref: '#/components/responses/BadRequest' }
+        '400':
+          description: Malformed request or mixed-channel risk requiring explicit confirmation.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/MixedChannelRiskRequired'
 
   /admin/v1/provider-accounts/{id}:
     parameters:
@@ -4946,6 +4958,10 @@ components:
         auth_mode:
           type: string
           description: Optional credential-v2 auth mode. Must be supplied together with vendor.
+        confirm:
+          type: boolean
+          default: false
+          description: Set to true only after operator review to create despite high-risk mixed-channel source/vendor/credential-type differences.
         credentials:
           type: object
           additionalProperties: true
@@ -4957,6 +4973,41 @@ components:
         priority: { type: integer, default: 100 }
         model_allow_list: { type: array, items: { type: string } }
         capability_flags: { type: array, items: { type: string } }
+
+    MixedChannelRiskRequired:
+      x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
+      type: object
+      additionalProperties: false
+      required: [error, message, confirm_required, confirm_parameter, risks]
+      properties:
+        error:
+          type: string
+          enum: [mixed_channel_risk_confirmation_required]
+        message: { type: string }
+        confirm_required:
+          type: boolean
+          enum: [true]
+        confirm_parameter:
+          type: string
+          enum: ['confirm=true']
+        risks:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/MixedChannelRiskItem' }
+
+    MixedChannelRiskItem:
+      x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
+      type: object
+      additionalProperties: false
+      required: [dimension, existing_account_id, existing_value, candidate_value, message]
+      properties:
+        dimension:
+          type: string
+          enum: [source, vendor, credential_type]
+        existing_account_id: { type: integer, format: int64 }
+        existing_value: { type: string }
+        candidate_value: { type: string }
+        message: { type: string }
 
     ProviderAccountUpdate:
       x-huakai-spec-source:
