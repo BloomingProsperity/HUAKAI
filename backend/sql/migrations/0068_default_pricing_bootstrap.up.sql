@@ -27,7 +27,7 @@ SELECT
     '1.0',
     pricing_data,
     '2026-05-18T00:00:00Z'::timestamptz,
-    'migration:0066_default_pricing_bootstrap',
+    'migration:0068_default_pricing_bootstrap',
     true
 FROM bootstrap_pricing
 ON CONFLICT (tenant_id, version) DO UPDATE
@@ -35,8 +35,8 @@ SET pricing_data = EXCLUDED.pricing_data,
     is_public = true,
     created_by_actor = CASE
         WHEN billing_pricing_versions.is_public
-            THEN 'migration:0066_default_pricing_bootstrap:updated_empty_public_placeholder'
-        ELSE 'migration:0066_default_pricing_bootstrap:updated_empty_private_placeholder'
+            THEN 'migration:0068_default_pricing_bootstrap:updated_empty_public_placeholder'
+        ELSE 'migration:0068_default_pricing_bootstrap:updated_empty_private_placeholder'
     END
 WHERE billing_pricing_versions.pricing_data = '{}'::jsonb
   AND billing_pricing_versions.created_by_actor IS NULL;

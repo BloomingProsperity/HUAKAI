@@ -1,4 +1,4 @@
--- 0066_s1_020_proxy_backfill_validation.up.sql
+-- 0069_s1_020_proxy_backfill_validation.up.sql
 --
 -- Forward validator for databases that already applied the original 0038 before
 -- the S1-020 fail-closed preflight was added. 0038 dropped

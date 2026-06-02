@@ -19,7 +19,7 @@ reset_existing AS (
     SET pricing_data = '{}'::jsonb,
         created_by_actor = NULL,
         is_public = CASE
-            WHEN created_by_actor = 'migration:0066_default_pricing_bootstrap:updated_empty_private_placeholder'
+            WHEN created_by_actor = 'migration:0068_default_pricing_bootstrap:updated_empty_private_placeholder'
                 THEN false
             ELSE true
         END
@@ -27,8 +27,8 @@ reset_existing AS (
       AND version = '1.0'
       AND pricing_data = (SELECT pricing_data FROM bootstrap_pricing)
       AND created_by_actor IN (
-          'migration:0066_default_pricing_bootstrap:updated_empty_private_placeholder',
-          'migration:0066_default_pricing_bootstrap:updated_empty_public_placeholder'
+          'migration:0068_default_pricing_bootstrap:updated_empty_private_placeholder',
+          'migration:0068_default_pricing_bootstrap:updated_empty_public_placeholder'
       )
     RETURNING id
 )
@@ -36,6 +36,6 @@ DELETE FROM billing_pricing_versions
 WHERE tenant_id = 0
   AND version = '1.0'
   AND pricing_data = (SELECT pricing_data FROM bootstrap_pricing)
-  AND created_by_actor = 'migration:0066_default_pricing_bootstrap';
+  AND created_by_actor = 'migration:0068_default_pricing_bootstrap';
 
 COMMIT;
