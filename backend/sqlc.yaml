@@ -290,6 +290,31 @@ sql:
           key_group_id: KeyGroupID
           quota_policy_id: QuotaPolicyID
           group_id: GroupID
+  - engine: postgresql
+    schema: sql/migrations
+    queries:
+      - sql/queries/moderation.sql
+    gen:
+      go:
+        package: moderation
+        out: internal/db/moderation
+        sql_package: pgx/v5
+        emit_json_tags: true
+        emit_db_tags: true
+        emit_pointers_for_null_types: true
+        emit_interface: true
+        omit_unused_structs: true
+        emit_methods_with_db_argument: false
+        emit_prepared_queries: false
+        rename:
+          tenant_id: TenantID
+          api_key_id: APIKeyID
+          user_id: UserID
+          payload_hash: PayloadHash
+          request_id: RequestID
+          matched_keyword_id: MatchedKeywordID
+          matched_hash_id: MatchedHashID
+          billing_event_id: BillingEventID
 overrides:
   go:
     overrides:
@@ -320,6 +345,10 @@ overrides:
       - column: "balance_holds.amount"
         go_type: "github.com/shopspring/decimal.Decimal"
       - column: "balance_holds.captured"
+        go_type: "github.com/shopspring/decimal.Decimal"
+      - column: "moderation_config.violation_fee_usd"
+        go_type: "github.com/shopspring/decimal.Decimal"
+      - column: "moderation_log.violation_fee_usd"
         go_type: "github.com/shopspring/decimal.Decimal"
       - column: "pool_slot_acquisitions.acquisition_token"
         go_type: "github.com/google/uuid.UUID"
