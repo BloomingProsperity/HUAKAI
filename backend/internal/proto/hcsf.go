@@ -73,6 +73,9 @@ type CanonicalEvent struct {
 	Delta        *CanonicalContentDelta `json:"delta,omitempty"`
 	Usage        *CanonicalUsage        `json:"usage,omitempty"`
 	StopReason   CanonicalStopReason    `json:"stop_reason,omitempty"`
+	// NativeFinishReason preserves the upstream provider's raw streaming finish
+	// reason when it differs from or is more specific than CanonicalStopReason.
+	NativeFinishReason string `json:"native_finish_reason,omitempty"`
 
 	Passthrough *PassthroughEnvelope `json:"-"`
 }

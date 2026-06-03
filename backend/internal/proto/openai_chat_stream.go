@@ -199,6 +199,9 @@ func (o *OpenAIChatClient) CanonicalEventToClientChunk(ctx context.Context, cano
 		if finish != nil {
 			choice["finish_reason"] = *finish
 		}
+		if evt.NativeFinishReason != "" {
+			choice["native_finish_reason"] = evt.NativeFinishReason
+		}
 		chunk := s.openAIChunkBase()
 		chunk["choices"] = []any{choice}
 		body, _ := json.Marshal(chunk)

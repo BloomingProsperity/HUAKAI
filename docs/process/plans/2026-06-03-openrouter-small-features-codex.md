@@ -1,0 +1,9 @@
+# 2026-06-03 openrouter-small-features-codex
+| Owner directive | "实现 sonnet 从 OpenRouter 挖出的 3 个超低投入高回报小功能(都 land)...先读 /tmp/mine-openrouter.log 的清单(#1-9 有 file:line)。逐个先核实再改。" |
+| Scope | In: HUAKAI backend-only verification and small existing-file edits for OpenRouter request passthrough coverage, OpenAI-chat SSE native finish reason output, and upstream Retry-After response forwarding coverage/fix if missing. Out: OpenRouter source reads, schema changes, new runtime dependencies, new files in frozen packages, commits. |
+| Success criteria | Discriminating tests cover provider.sort/provider controls passthrough, native_finish_reason in client SSE output, and Retry-After forwarding from upstream 429; `cd backend && go build ./... && go vet ./... && go test ./internal/proto/... ./internal/gatewayhttp/... ./cmd/gateway/... 2>&1 | tail -18` runs and result is reported honestly. |
+| Time estimate | ~60-90 minutes wall clock in one Codex session. |
+| Blast radius | Existing OpenAI-compatible HCSF dispatch, OpenAI Chat streaming client projection, and gatewayhttp upstream-error response headers. |
+| Failure modes | Weak provider fixture could pass without sort: assert exact nested provider keys. Native finish field could be lost between upstream adapter and client adapter: test full provider-event-to-client-chunk path. Retry-After may already be implemented: first prove by test; only patch existing response path if the test is red. |
+| Decision points | Stop for Owner only if required fix touches high-risk auth/billing/quota/schema/secrets/LICENSE/deployment or requires adding files to frozen packages. None expected. |
+| Pre-execution checklist | Read `CLAUDE.md` and `AGENTS.md`; read `/tmp/mine-openrouter.log`; run `.coordination/check.sh`; claim files before mutation; verify real file locations with `rg`/`nl`; use TDD red-green; avoid logging secrets (CMB-5); do not commit. |
