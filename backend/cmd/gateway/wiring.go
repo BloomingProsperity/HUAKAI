@@ -52,6 +52,8 @@ import (
 	provideropenaicodex "github.com/BloomingProsperity/HUAKAI/internal/provider/openai_codex"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 	providerwindsurf "github.com/BloomingProsperity/HUAKAI/internal/provider/windsurf"
+	"github.com/BloomingProsperity/HUAKAI/internal/quota"
+	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	ratelimit "github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/routeadmin"
@@ -81,6 +83,7 @@ type deps struct {
 	modelCooldowns           *ratelimit.ModelCooldownService
 	claimGate                billing.ClaimGate
 	settler                  billing.Settler
+	quotaReserver            quotaenforce.Reserver
 	replayStore              billing.ReplayStore
 	forwarder                *gateway.StreamForwarder
 	credentialVault          provider.CredentialVault
@@ -212,6 +215,14 @@ func paymentServiceOptions(cfg *Config) []payment.Option {
 		return nil
 	}
 	return []payment.Option{payment.WithTestProvider()}
+}
+
+func buildQuotaEnforcement(cfg *Config, pgPool *pgxpool.Pool, plain billing.Settler) (billing.Settler, quotaenforce.Reserver) {
+	if cfg == nil || !cfg.QuotaEnforce {
+		return plain, nil
+	}
+	quotaService := quota.NewService(quota.NewPostgresStore(pgPool))
+	return quotaenforce.NewSettler(plain, quotaService), quotaService
 }
 
 // loadStormScopeConfigFromEnv parses the optional endpoint/global refresh-storm
@@ -486,6 +497,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, err
 	}
+	settler, quotaReserver := buildQuotaEnforcement(cfg, pgPool, settler)
 
 	// P2/P3 post-delivery settle 恢复:把 settler 注入 settlementrecovery
 	// handler,注册到 dlqService 让 worker 拿到 post_delivery_settlement
@@ -549,6 +561,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		modelCooldowns:        ratelimit.NewModelCooldownService(billingQueries),
 		claimGate:             billing.NewClaimGate(pgPool),
 		settler:               settler,
+		quotaReserver:         quotaReserver,
 		replayStore:           replayStore,
 		forwarder:             buildStreamForwarder(auditLedger, auditSigner, dlqService),
 		credentialVault:       provider.NewPostgresCredentialVaultWithStore(pgPool, credentialStore),

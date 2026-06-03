@@ -24,6 +24,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/protosse"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
@@ -40,6 +41,7 @@ type ChatHandlerDeps struct {
 	Registry              registry.Registry
 	Router                router.Router
 	ClaimGate             billing.ClaimGate
+	QuotaReserver         quotaenforce.Reserver
 	RateTables            billing.RateTableSource
 	Selector              pool.Selector
 	CredentialVault       provider.CredentialVault

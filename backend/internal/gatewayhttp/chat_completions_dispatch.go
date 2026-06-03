@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
@@ -21,6 +22,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
@@ -309,7 +311,45 @@ func (ex *chatExecution) reserveClaim(w http.ResponseWriter) bool {
 		return false
 	}
 	ex.reserveRes = reserveRes
+	if !ex.reserveQuota(w, reserveRes, predictedCost) {
+		return false
+	}
 	return true
+}
+
+func (ex *chatExecution) reserveQuota(w http.ResponseWriter, reserveRes *billing.ReserveResult, predictedCost decimal.Decimal) bool {
+	if ex.d.QuotaReserver == nil || reserveRes == nil {
+		return true
+	}
+	result, err := ex.d.QuotaReserver.Reserve(ex.ctx, quotaenforce.BuildReserveRequest(quotaenforce.ReserveInput{
+		TenantID:           ex.ident.TenantID,
+		UserID:             ex.ident.UserID,
+		APIKeyID:           ex.ident.APIKeyID,
+		ClaimID:            reserveRes.ClaimID,
+		PoolGroupID:        ex.attempt.PoolGroupID,
+		RequestFingerprint: ex.payloadHash,
+		RequestedModel:     ex.req.Model,
+		PredictedCost:      predictedCost,
+		At:                 time.Now().UTC(),
+	}))
+	if err == nil && result.Allowed {
+		return true
+	}
+	if quotaenforce.IsDenied(err) || (err == nil && !result.Allowed) {
+		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, reserveRes.ClaimID, "quota_denied", ex.requestID, 0, ex.protocolLoss)
+		if abortErr != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
+		}
+		logInternalError(ex.ctx, ex.requestID, clienterr.CodeInsufficientBalance, err)
+		writeInsufficientQuotaError(w)
+		return false
+	}
+	abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, reserveRes.ClaimID, "quota_reserve_error", ex.requestID, 0, ex.protocolLoss)
+	if abortErr != nil {
+		setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
+	}
+	writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, clienterr.CodeReserveError, err)
+	return false
 }
 
 func (ex *chatExecution) ensureIdempotencyState() {

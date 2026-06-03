@@ -361,7 +361,7 @@ func getFinalizationReservation(ctx context.Context, store PGStore, input finali
 	if err != nil {
 		return Reservation{}, err
 	}
-	if reservation.ID != input.ReservationID {
+	if input.ReservationID != 0 && reservation.ID != input.ReservationID {
 		auditErr := insertQuotaFinalizationAudit(ctx, store, quotaFinalizationAudit{
 			Reservation:  reservation,
 			Operation:    "reservation_mismatch",
@@ -733,8 +733,11 @@ func validateCacheHitRequest(req CacheHitRequest) error {
 }
 
 func validateFinalizationIDs(tenantID int64, claimID int64, reservationID int64) error {
-	if tenantID <= 0 || claimID <= 0 || reservationID <= 0 {
-		return fmt.Errorf("%w: tenant_id, claim_id, and reservation_id are required", ErrInvalidFinalization)
+	if tenantID <= 0 || claimID <= 0 {
+		return fmt.Errorf("%w: tenant_id and claim_id are required", ErrInvalidFinalization)
+	}
+	if reservationID < 0 {
+		return fmt.Errorf("%w: reservation_id must be non-negative", ErrInvalidFinalization)
 	}
 	return nil
 }

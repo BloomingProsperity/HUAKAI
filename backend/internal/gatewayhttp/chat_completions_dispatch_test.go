@@ -18,6 +18,7 @@ import (
 	protoanthropic "github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	provideranthropic "github.com/BloomingProsperity/HUAKAI/internal/provider/anthropic"
+	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
@@ -25,11 +26,18 @@ import (
 
 type recordingClaimGate struct {
 	endpointFamily string
+	req            billing.ReserveRequest
+	claimID        int64
 }
 
 func (g *recordingClaimGate) Reserve(_ context.Context, req billing.ReserveRequest) (*billing.ReserveResult, error) {
 	g.endpointFamily = req.EndpointFamily
-	return &billing.ReserveResult{ClaimID: 999}, nil
+	g.req = req
+	claimID := g.claimID
+	if claimID == 0 {
+		claimID = 999
+	}
+	return &billing.ReserveResult{ClaimID: claimID}, nil
 }
 
 type reserveClaimRaceClaimGate struct{}
@@ -405,6 +413,101 @@ func TestHandler_ReserveClaimRaceReturns409RetryAfterWithoutAbort(t *testing.T) 
 	}
 }
 
+func TestHandler_QuotaDenyAbortsBillingClaimAndReturns429(t *testing.T) {
+	// Mutation check: deleting the quota deny branch lets the request continue
+	// toward pool/provider handling, producing a non-429 and no quota_denied
+	// billing abort; both assertions below must turn red.
+	claimGate := &recordingClaimGate{claimID: 99001}
+	quotaReserver := &recordingQuotaReserver{
+		err: &quota.DenyError{Decision: quota.Decision{
+			Kind:   quota.DecisionDeny,
+			Code:   "quota_limit_exceeded",
+			Reason: "unit test deny",
+		}},
+	}
+	settler := &stubSettler{}
+	d := minimalDeps()
+	d.ClaimGate = claimGate
+	d.QuotaReserver = quotaReserver
+	d.Settler = settler
+
+	rec := invokeHandler(t, d, validBody())
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d body=%s; want 429 quota denial", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`"type":"insufficient_quota"`, `"code":"insufficient_balance"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body=%s missing %s", body, want)
+		}
+	}
+	if settler.abortCalls != 1 || settler.lastAbortClaimID != 99001 || settler.lastAbortReason != "quota_denied" {
+		t.Fatalf("abort calls/id/reason=%d/%d/%q; want 1/99001/quota_denied",
+			settler.abortCalls, settler.lastAbortClaimID, settler.lastAbortReason)
+	}
+	if quotaReserver.calls != 1 {
+		t.Fatalf("quota reserve calls=%d want 1", quotaReserver.calls)
+	}
+	if quotaReserver.req.TenantID != validIdentity().TenantID || quotaReserver.req.ClaimID != 99001 {
+		t.Fatalf("quota reserve identity=%+v want tenant=%d claim=99001", quotaReserver.req, validIdentity().TenantID)
+	}
+	if !quotaReserver.req.PredictedCost.Equal(claimGate.req.PredictedCost) {
+		t.Fatalf("quota predicted cost=%s want same billing predicted cost %s",
+			quotaReserver.req.PredictedCost, claimGate.req.PredictedCost)
+	}
+	if !hasQuotaScope(quotaReserver.req.Scopes, quota.ScopeGlobal, "*") {
+		t.Fatalf("quota scopes=%+v missing tenant-level global scope", quotaReserver.req.Scopes)
+	}
+	if !hasQuotaScope(quotaReserver.req.Scopes, quota.ScopeUser, "3") {
+		t.Fatalf("quota scopes=%+v missing user scope", quotaReserver.req.Scopes)
+	}
+	if !hasQuotaScope(quotaReserver.req.Scopes, quota.ScopeAPIKey, "11") {
+		t.Fatalf("quota scopes=%+v missing api-key scope", quotaReserver.req.Scopes)
+	}
+}
+
+func TestHandler_QuotaAllowProceedsToPoolSelection(t *testing.T) {
+	claimGate := &recordingClaimGate{claimID: 99002}
+	quotaReserver := &recordingQuotaReserver{result: quota.ReserveResult{Allowed: true}}
+	selector := &recordingSelectionRequestSelector{}
+	d := minimalDeps()
+	d.ClaimGate = claimGate
+	d.QuotaReserver = quotaReserver
+	d.Selector = selector
+
+	rec := invokeHandler(t, d, validBody())
+
+	if rec.Code == http.StatusTooManyRequests && strings.Contains(rec.Body.String(), "insufficient_quota") {
+		t.Fatalf("status=%d body=%s; allowed quota must not render quota denial", rec.Code, rec.Body.String())
+	}
+	if quotaReserver.calls != 1 {
+		t.Fatalf("quota reserve calls=%d want 1", quotaReserver.calls)
+	}
+	if selector.calls != 1 {
+		t.Fatalf("selector calls=%d want request to proceed after quota allow", selector.calls)
+	}
+	if selector.requests[0].ClaimID != 99002 {
+		t.Fatalf("selector ClaimID=%d want billing claim 99002", selector.requests[0].ClaimID)
+	}
+}
+
+func TestHandler_IdempotencyReplaySkipsQuotaReserve(t *testing.T) {
+	quotaReserver := &recordingQuotaReserver{result: quota.ReserveResult{Allowed: true}}
+	d := minimalDeps()
+	d.ClaimGate = replayClaimGate{claimID: 99003, hit: true}
+	d.QuotaReserver = quotaReserver
+
+	rec := invokeHandler(t, d, validBody())
+
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "replay_without_cache") {
+		t.Fatalf("status/body=%d/%s want replay_without_cache from idempotency path", rec.Code, rec.Body.String())
+	}
+	if quotaReserver.calls != 0 {
+		t.Fatalf("quota reserve calls=%d want 0 for idempotency replay", quotaReserver.calls)
+	}
+}
+
 func TestHandler_AttemptLoopPassesAttemptSeqAndEmptyExclusionsOnFirstSuccess(t *testing.T) {
 	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
 	dispatcher := &mockCanonicalBufferedDispatcher{}
@@ -482,6 +585,34 @@ func TestRouterResolvedModelFromRegistryMapsPerPoolModelOverrides(t *testing.T) 
 			t.Fatalf("PoolMetadata[%d]=%+v want %+v", i, got.PoolMetadata[i], want[i])
 		}
 	}
+}
+
+type recordingQuotaReserver struct {
+	calls  int
+	req    quota.ReserveRequest
+	result quota.ReserveResult
+	err    error
+}
+
+func (r *recordingQuotaReserver) Reserve(_ context.Context, req quota.ReserveRequest) (quota.ReserveResult, error) {
+	r.calls++
+	r.req = req
+	if r.err != nil {
+		return r.result, r.err
+	}
+	if !r.result.Allowed {
+		r.result.Allowed = true
+	}
+	return r.result, nil
+}
+
+func hasQuotaScope(scopes []quota.Scope, kind quota.ScopeKind, id string) bool {
+	for _, scope := range scopes {
+		if scope.Kind == kind && scope.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 type waitPlanSelector struct{}

@@ -29,8 +29,16 @@ func writeJSONError(w http.ResponseWriter, status int, code, message string) {
 }
 
 func writeInsufficientBalanceError(w http.ResponseWriter) {
+	writeInsufficientQuotaBody(w, http.StatusPaymentRequired)
+}
+
+func writeInsufficientQuotaError(w http.ResponseWriter) {
+	writeInsufficientQuotaBody(w, http.StatusTooManyRequests)
+}
+
+func writeInsufficientQuotaBody(w http.ResponseWriter, status int) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusPaymentRequired)
+	w.WriteHeader(status)
 	body, err := json.Marshal(map[string]map[string]string{
 		"error": {
 			"type":    "insufficient_quota",
