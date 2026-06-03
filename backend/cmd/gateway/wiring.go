@@ -120,6 +120,7 @@ type deps struct {
 	auditPubkeyRegistry      auditledger.PubkeyRegistry
 	receiptStore             *auditreceipt.PGXReceiptStorage
 	receiptFormatter         *auditreceipt.ReceiptFormatter
+	disputeStore             *auditreceipt.CostDisputeStore
 	refundQueue              *auditreceipt.MismatchRefundQueue
 	rateTableSource          billing.RateTableSource
 	modelRegistry            *registry.PostgresRegistry
@@ -503,6 +504,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, err
 	}
+	disputeStore, err := auditreceipt.NewPGXDisputeStore(pgPool)
+	if err != nil {
+		return nil, fmt.Errorf("build dispute storage: %w", err)
+	}
 	settler, quotaReserver := buildQuotaEnforcement(cfg, pgPool, settler)
 
 	// P2/P3 post-delivery settle 恢复:把 settler 注入 settlementrecovery
@@ -610,6 +615,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		auditPubkeyRegistry:      auditPubkeyRegistry,
 		receiptStore:             receiptStore,
 		receiptFormatter:         receiptFormatter,
+		disputeStore:             disputeStore,
 		refundQueue:              refundQueue,
 		rateTableSource:          rateTableSource,
 		modelRegistry:            modelRegistry,

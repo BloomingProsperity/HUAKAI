@@ -10,9 +10,12 @@ import (
 
 type Querier interface {
 	CountAuditLedgerEntries(ctx context.Context) (int64, error)
+	CreateCostDispute(ctx context.Context, arg CreateCostDisputeParams) (CostDispute, error)
 	GetAuditLedgerEntryByRequestID(ctx context.Context, requestID string) (GetAuditLedgerEntryByRequestIDRow, error)
 	GetLatestAuditLedgerMerkleRoot(ctx context.Context) ([]byte, error)
 	InsertAuditLedgerEntry(ctx context.Context, arg InsertAuditLedgerEntryParams) error
+	ListUserCostDisputes(ctx context.Context, arg ListUserCostDisputesParams) ([]CostDispute, error)
+	ResolveCostDispute(ctx context.Context, arg ResolveCostDisputeParams) (CostDispute, error)
 }
 
 var _ Querier = (*Queries)(nil)

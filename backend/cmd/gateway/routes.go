@@ -14,6 +14,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
+	"github.com/BloomingProsperity/HUAKAI/internal/disputehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeshttp"
@@ -86,14 +87,21 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		Signer:          d.auditSigner,
 		PubkeyRegistry:  d.auditPubkeyRegistry,
 	}
+	disputeUserDeps := disputehttp.UserDeps{
+		Receipts: d.receiptStore,
+		Store:    d.disputeStore,
+	}
 	r.Route("/v1/receipts", func(r chi.Router) {
 		r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Get("/{request_id}", gatewayhttp.NewCostReceiptGetHandler(receiptDeps))
 		r.Post("/{request_id}", http.NotFound)
+		r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Post("/{request_id}/disputes", disputehttp.NewCreateDisputeHandler(disputeUserDeps))
 		r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Post("/{request_id}/verify", gatewayhttp.NewCostReceiptVerifyHandler(receiptDeps))
 		r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Get("/{request_id_host}/{request_id_tail}", gatewayhttp.NewCostReceiptGetHandler(receiptDeps))
 		r.Post("/{request_id_host}/{request_id_tail}", http.NotFound)
+		r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Post("/{request_id_host}/{request_id_tail}/disputes", disputehttp.NewCreateDisputeHandler(disputeUserDeps))
 		r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Post("/{request_id_host}/{request_id_tail}/verify", gatewayhttp.NewCostReceiptVerifyHandler(receiptDeps))
 	})
+	r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Get("/v1/me/disputes", disputehttp.NewListUserDisputesHandler(disputeUserDeps))
 	r.Get("/v1/pricing/rate-table", gatewayhttp.NewPricingRateTableHandler(receiptDeps))
 	r.Get("/v1/pricing/snapshots", gatewayhttp.NewPricingSnapshotsHandler(receiptDeps))
 	r.Get("/v1/pricing/snapshots/{snapshot_id}", gatewayhttp.NewPricingSnapshotHandler(receiptDeps))
@@ -518,6 +526,12 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Service:        d.subscriptionService,
 			VoucherService: d.voucherService,
 		})
+	})
+	r.Route("/v1/admin/disputes", func(r chi.Router) {
+		r.Post("/{id}/resolve", disputehttp.NewAdminResolveDisputeHandler(disputehttp.AdminDeps{
+			Auth:  d.adminAuth,
+			Store: d.disputeStore,
+		}))
 	})
 	mountNotificationRoutes(r, d)
 	r.Route("/v1/admin/routes", func(r chi.Router) {

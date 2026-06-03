@@ -844,6 +844,110 @@ paths:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/receipts/{request_id}/disputes:
+    post:
+      tags: [user-audit]
+      summary: Open a cost dispute for one of the authenticated user's receipts
+      operationId: createCostDispute
+      x-huakai-spec-source: [docs/specs/user-consumption-transparency.md]
+      security:
+        - sessionBearerAuth: []
+      parameters:
+        - in: path
+          name: request_id
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 256 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateCostDisputeRequest' }
+      responses:
+        '201':
+          description: Dispute opened. This does not refund or mutate billing ledger rows.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [dispute]
+                properties:
+                  dispute: { $ref: '#/components/schemas/CostDispute' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: A dispute already exists for this tenant/user/request tuple.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/me/disputes:
+    get:
+      tags: [user-audit]
+      summary: List cost disputes for the authenticated user
+      operationId: listMyCostDisputes
+      x-huakai-spec-source: [docs/specs/user-consumption-transparency.md]
+      security:
+        - sessionBearerAuth: []
+      parameters:
+        - in: query
+          name: limit
+          required: false
+          schema: { type: integer, format: int32, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        '200':
+          description: Authenticated user's disputes only.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [disputes]
+                properties:
+                  disputes:
+                    type: array
+                    items: { $ref: '#/components/schemas/CostDispute' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/disputes/{id}/resolve:
+    post:
+      tags: [admin-audit]
+      summary: Resolve, reject, or mark a cost dispute under review
+      operationId: resolveCostDispute
+      x-huakai-spec-source: [docs/specs/user-consumption-transparency.md]
+      security:
+        - adminBearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResolveCostDisputeRequest' }
+      responses:
+        '200':
+          description: Updated dispute state. This endpoint does not issue refunds or mutate ledger rows.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [dispute]
+                properties:
+                  dispute: { $ref: '#/components/schemas/CostDispute' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/pricing/rate-table:
     get:
       tags: [pricing]
@@ -5651,6 +5755,45 @@ components:
           type: string
           description: Base64 ed25519 signature over canonical_hash bytes.
         pubkey_fingerprint: { type: string }
+
+    CreateCostDisputeRequest:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source: [docs/specs/user-consumption-transparency.md]
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 1, maxLength: 4000 }
+
+    ResolveCostDisputeRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/user-consumption-transparency.md]
+      required: [tenant_id, status, operator_note]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        status:
+          type: string
+          enum: [reviewing, resolved, rejected]
+        operator_note: { type: string, maxLength: 4000 }
+
+    CostDispute:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/user-consumption-transparency.md]
+      required: [id, dispute_id, tenant_id, user_id, request_id, reason, status, created_at]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        dispute_id: { type: string, minLength: 1 }
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        user_id: { type: integer, format: int64, minimum: 1 }
+        request_id: { type: string, minLength: 1, maxLength: 256 }
+        reason: { type: string, minLength: 1, maxLength: 4000 }
+        status:
+          type: string
+          enum: [open, reviewing, resolved, rejected]
+        operator_note: { type: string, maxLength: 4000 }
+        created_at: { type: string, format: date-time }
+        resolved_at: { type: [string, 'null'], format: date-time }
 
     ReceiptVerifyResponse:
       type: object
