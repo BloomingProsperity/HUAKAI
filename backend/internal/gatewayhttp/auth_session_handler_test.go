@@ -19,6 +19,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/captcha"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
@@ -87,6 +88,124 @@ func TestAuthAndSessionHandlersRegisterVerifyLoginRefreshList(t *testing.T) {
 		"tenant_id": 999, "user_id": int64(999999),
 	}, refreshResp.Session.SessionToken)
 	assertHTTPStatus(t, rec, http.StatusOK)
+}
+
+func TestAuthRegister_CaptchaFailureRejectsBeforeUserCreate(t *testing.T) {
+	now := time.Date(2026, 6, 3, 9, 0, 0, 0, time.UTC)
+	store := newGatewayMemoryAuthStore(now)
+	authSvc := userauth.NewService(store)
+	authSvc.PasswordPolicy = userauth.PasswordPolicy{
+		MemoryKiB: 64, Iterations: 1, Parallelism: 1,
+		SaltBytes: 8, KeyBytes: 16,
+	}
+	authSvc.Now = func() time.Time { return now }
+	gate := &authCaptchaStub{err: captcha.ErrTokenRequired}
+	r := chi.NewRouter()
+	r.Route("/v1/auth", func(r chi.Router) {
+		MountAuthRoutes(r, AuthHandlerDeps{Auth: authSvc, Captcha: gate})
+	})
+
+	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/register", map[string]any{
+		"tenant_id": 1, "email": "bot@example.test", "password": "secret",
+	})
+
+	assertHTTPStatus(t, rec, http.StatusForbidden)
+	if code := loginErrorCode(t, rec); code != "captcha_required" {
+		t.Fatalf("error code = %q want captcha_required", code)
+	}
+	if got := gate.calls(); got != 1 {
+		t.Fatalf("captcha calls = %d want 1", got)
+	}
+	if got := gate.lastToken(); got != "" {
+		t.Fatalf("captcha token = %q want empty", got)
+	}
+	_, err := store.GetUserByEmail(context.Background(), 1, "bot@example.test")
+	if !errors.Is(err, userauth.ErrUserNotFound) {
+		t.Fatalf("captcha failure must not create user, lookup err=%v", err)
+	}
+}
+
+func TestAuthRegister_CaptchaSuccessAllowsUserCreate(t *testing.T) {
+	now := time.Date(2026, 6, 3, 9, 5, 0, 0, time.UTC)
+	store := newGatewayMemoryAuthStore(now)
+	authSvc := userauth.NewService(store)
+	authSvc.PasswordPolicy = userauth.PasswordPolicy{
+		MemoryKiB: 64, Iterations: 1, Parallelism: 1,
+		SaltBytes: 8, KeyBytes: 16,
+	}
+	authSvc.Now = func() time.Time { return now }
+	gate := &authCaptchaStub{}
+	r := chi.NewRouter()
+	r.Route("/v1/auth", func(r chi.Router) {
+		MountAuthRoutes(r, AuthHandlerDeps{Auth: authSvc, Captcha: gate})
+	})
+
+	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/register", map[string]any{
+		"tenant_id": 1, "email": "human@example.test", "password": "secret",
+		"captcha_token": "valid-token",
+	})
+
+	assertHTTPStatus(t, rec, http.StatusCreated)
+	if got := gate.calls(); got != 1 {
+		t.Fatalf("captcha calls = %d want 1", got)
+	}
+	if got := gate.lastToken(); got != "valid-token" {
+		t.Fatalf("captcha token = %q want valid-token", got)
+	}
+	_, err := store.GetUserByEmail(context.Background(), 1, "human@example.test")
+	if err != nil {
+		t.Fatalf("captcha success should create user: %v", err)
+	}
+}
+
+func TestAuthLogin_CaptchaFailureRejectsBeforeAuthenticate(t *testing.T) {
+	now := time.Date(2026, 6, 3, 9, 10, 0, 0, time.UTC)
+	base := newGatewayMemoryAuthStore(now)
+	seedLoginUser(
+		t, base, "login@example.test", "secret",
+		userauth.UserStatusActive, true,
+	)
+	counting := &gatewayCountingAuthStore{gatewayMemoryAuthStore: base}
+	r := newAuthCaptchaLoginRouter(
+		t, now, counting,
+		&authCaptchaStub{err: captcha.ErrVerificationFailed},
+	)
+
+	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
+		"tenant_id": 1, "email": "login@example.test", "password": "secret",
+	})
+
+	assertHTTPStatus(t, rec, http.StatusForbidden)
+	if code := loginErrorCode(t, rec); code != "captcha_required" {
+		t.Fatalf("error code = %q want captcha_required", code)
+	}
+	if got := counting.calls(); got != 0 {
+		t.Fatalf("captcha failure must not reach Authenticate, lookups=%d", got)
+	}
+}
+
+func TestAuthLogin_CaptchaSuccessAllowsSessionCreate(t *testing.T) {
+	now := time.Date(2026, 6, 3, 9, 15, 0, 0, time.UTC)
+	base := newGatewayMemoryAuthStore(now)
+	seedLoginUser(
+		t, base, "login-ok@example.test", "secret",
+		userauth.UserStatusActive, true,
+	)
+	gate := &authCaptchaStub{}
+	r := newAuthCaptchaLoginRouter(t, now, base, gate)
+
+	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
+		"tenant_id": 1, "email": "login-ok@example.test", "password": "secret",
+		"captcha_token": "valid-token",
+	})
+
+	assertHTTPStatus(t, rec, http.StatusOK)
+	if got := gate.calls(); got != 1 {
+		t.Fatalf("captcha calls = %d want 1", got)
+	}
+	if got := gate.lastToken(); got != "valid-token" {
+		t.Fatalf("captcha token = %q want valid-token", got)
+	}
 }
 
 func TestAT_SESSION_001_004_HandlersRequireBearerAndIgnoreBodyUser(t *testing.T) {
@@ -619,6 +738,34 @@ func (s *captureAuthEventSink) RecordAuthEvent(_ context.Context, event AuthEven
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.events = append(s.events, event)
+}
+
+type authCaptchaStub struct {
+	mu     sync.Mutex
+	err    error
+	tokens []string
+	callsN int64
+}
+
+func (s *authCaptchaStub) Verify(_ context.Context, token, _ string) error {
+	atomic.AddInt64(&s.callsN, 1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tokens = append(s.tokens, token)
+	return s.err
+}
+
+func (s *authCaptchaStub) calls() int64 {
+	return atomic.LoadInt64(&s.callsN)
+}
+
+func (s *authCaptchaStub) lastToken() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.tokens) == 0 {
+		return ""
+	}
+	return s.tokens[len(s.tokens)-1]
 }
 
 func (s *captureAuthEventSink) SinkPayloads() map[string]any {
@@ -1206,6 +1353,36 @@ func newLoginTestHandler(t *testing.T, now time.Time, store userauth.Store, thro
 		})
 	})
 	return r, events
+}
+
+func newAuthCaptchaLoginRouter(
+	t *testing.T,
+	now time.Time,
+	store userauth.Store,
+	gate *authCaptchaStub,
+) http.Handler {
+	t.Helper()
+	authSvc := userauth.NewService(store)
+	authSvc.PasswordPolicy = userauth.PasswordPolicy{
+		MemoryKiB: 64, Iterations: 1, Parallelism: 1,
+		SaltBytes: 8, KeyBytes: 16,
+	}
+	authSvc.Now = func() time.Time { return now }
+	sessionSvc := usersession.NewService(usersession.NewMemoryStore())
+	sessionSvc.Now = func() time.Time { return now }
+	sessionSvc.SigningKey = testSessionSigningKey()
+	resolver, err := clientip.NewResolver(nil)
+	if err != nil {
+		t.Fatalf("client ip resolver: %v", err)
+	}
+	r := chi.NewRouter()
+	r.Route("/v1/auth", func(r chi.Router) {
+		MountAuthRoutes(r, AuthHandlerDeps{
+			Auth: authSvc, Sessions: sessionSvc,
+			ClientIPResolver: resolver, Captcha: gate,
+		})
+	})
+	return r
 }
 
 func loginErrorCode(t *testing.T, rec *httptest.ResponseRecorder) string {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/captcha"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/disputehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
@@ -113,7 +114,12 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			EmailSender:      d.authEmailSender,
 			AdminAuth:        d.adminAuth,
 			ClientIPResolver: d.clientIPResolver,
-			LoginThrottle:    d.loginThrottle,
+			Captcha: captcha.NewVerifier(
+				d.platformSettings,
+				captchaTurnstileSecret(),
+				&http.Client{Timeout: 10 * time.Second},
+			),
+			LoginThrottle: d.loginThrottle,
 		})
 		// GET /v1/auth/me 需已认证 session(同块的 login/register 等不需要), 故用 per-route session 中间件,
 		// 不另起 /v1/auth Route 组(chi 同前缀重复 Mount 会 panic)。
