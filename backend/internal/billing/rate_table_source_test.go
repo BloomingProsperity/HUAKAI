@@ -146,11 +146,18 @@ type rateTableQueryStub struct {
 	row      pgx.Row
 	queryErr error
 	versions []rateTableVersionStub
+	calls    []rateTableQueryCall
+}
+
+type rateTableQueryCall struct {
+	sql  string
+	args []any
 }
 
 func (s *rateTableQueryStub) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
 	s.sql = sql
 	s.args = append([]any(nil), args...)
+	s.calls = append(s.calls, rateTableQueryCall{sql: sql, args: append([]any(nil), args...)})
 	if len(s.versions) > 0 {
 		return s.lookupRow(sql, args...)
 	}
@@ -163,23 +170,35 @@ func (s *rateTableQueryStub) QueryRow(_ context.Context, sql string, args ...any
 func (s *rateTableQueryStub) Query(_ context.Context, sql string, args ...any) (pgx.Rows, error) {
 	s.sql = sql
 	s.args = append([]any(nil), args...)
+	s.calls = append(s.calls, rateTableQueryCall{sql: sql, args: append([]any(nil), args...)})
 	return nil, s.queryErr
 }
 
 func (s *rateTableQueryStub) lookupRow(sql string, args ...any) pgx.Row {
+	lowerSQL := strings.ToLower(sql)
 	usesPublicFlag := strings.Contains(sql, "is_public = true")
-	usesTenantFilter := strings.Contains(sql, "tenant_id")
+	tenantArg := -1
+	switch {
+	case strings.Contains(sql, "tenant_id = $1") || strings.Contains(sql, "tenant_id=$1"):
+		tenantArg = 0
+	case strings.Contains(sql, "tenant_id = $2") || strings.Contains(sql, "tenant_id=$2"):
+		tenantArg = 1
+	}
+	currentOnly := strings.Contains(lowerSQL, "effective_to is null")
 	for _, row := range s.versions {
 		if strings.Contains(sql, "version = $1") && (len(args) < 1 || args[0] != row.version) {
 			continue
 		}
-		if strings.Contains(sql, "id = $1") && (len(args) < 1 || args[0] != row.id) {
+		if strings.Contains(lowerSQL, "where id = $1") && (len(args) < 1 || args[0] != row.id) {
 			continue
 		}
-		if usesTenantFilter {
-			if len(args) < 2 || args[1] != row.tenantID {
+		if tenantArg >= 0 {
+			if len(args) <= tenantArg || args[tenantArg] != row.tenantID {
 				continue
 			}
+		}
+		if currentOnly && row.effectiveTo != nil {
+			continue
 		}
 		if usesPublicFlag && !row.isPublic {
 			continue

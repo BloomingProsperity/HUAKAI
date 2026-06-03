@@ -801,6 +801,7 @@ func TestPostgresRegistry_ListModelsDiscoverySurface(t *testing.T) {
 		canonicalID:     "openai/gpt-visible-" + f.suffix,
 		providerModelID: "gpt-visible",
 		protocolFamily:  "openai_chat",
+		contextWindow:   128000,
 	})
 	f.seedAlias(aliasOpts{
 		modelID:               visibleTenant,
@@ -829,6 +830,7 @@ func TestPostgresRegistry_ListModelsDiscoverySurface(t *testing.T) {
 		scope:           "global",
 		canonicalID:     "anthropic/claude-global-visible-" + f.suffix,
 		providerModelID: "claude-global-visible",
+		contextWindow:   200001,
 	})
 	f.seedAlias(aliasOpts{
 		scope:                 "global",
@@ -863,22 +865,30 @@ func TestPostgresRegistry_ListModelsDiscoverySurface(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)
 	}
-	ids := make(map[string]struct{}, len(got))
+	modelsByID := make(map[string]ListedModel, len(got))
 	for _, model := range got {
-		ids[model.ID] = struct{}{}
+		modelsByID[model.ID] = model
 		if model.CreatedAt.IsZero() {
 			t.Fatalf("model %q has zero created time", model.ID)
 		}
 	}
 
 	for _, want := range []string{"claude-global-visible-" + f.suffix, "gpt-visible-" + f.suffix} {
-		if _, ok := ids[want]; !ok {
-			t.Fatalf("ListModels ids=%v missing %q", ids, want)
+		if _, ok := modelsByID[want]; !ok {
+			t.Fatalf("ListModels ids=%v missing %q", modelsByID, want)
 		}
 	}
 	for _, notWant := range []string{"unbound-" + f.suffix, "disabled-" + f.suffix, "claude-shadowed-" + f.suffix} {
-		if _, ok := ids[notWant]; ok {
-			t.Fatalf("ListModels ids=%v unexpectedly includes %q", ids, notWant)
+		if _, ok := modelsByID[notWant]; ok {
+			t.Fatalf("ListModels ids=%v unexpectedly includes %q", modelsByID, notWant)
 		}
+	}
+	tenantModel := modelsByID["gpt-visible-"+f.suffix]
+	if tenantModel.CanonicalID != "openai/gpt-visible-"+f.suffix || tenantModel.ContextWindow != 128000 {
+		t.Fatalf("tenant model projection=%+v want canonical id and context window from tenant UNION arm", tenantModel)
+	}
+	globalModel := modelsByID["claude-global-visible-"+f.suffix]
+	if globalModel.CanonicalID != "anthropic/claude-global-visible-"+f.suffix || globalModel.ContextWindow != 200001 {
+		t.Fatalf("global model projection=%+v want canonical id and context window from global UNION arm", globalModel)
 	}
 }

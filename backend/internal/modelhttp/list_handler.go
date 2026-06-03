@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
 
@@ -18,9 +19,14 @@ type modelCatalog interface {
 	ListModels(context.Context, int64) ([]registry.ListedModel, error)
 }
 
+type modelPricer interface {
+	PublicModelPrices(context.Context, int64) (billing.PublicPriceTable, error)
+}
+
 type Deps struct {
 	Auth    authResolver
 	Catalog modelCatalog
+	Pricing modelPricer
 }
 
 type listResponse struct {
@@ -29,10 +35,17 @@ type listResponse struct {
 }
 
 type modelObject struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	OwnedBy string `json:"owned_by"`
+	ID            string        `json:"id"`
+	Object        string        `json:"object"`
+	Created       int64         `json:"created"`
+	OwnedBy       string        `json:"owned_by"`
+	ContextLength *int          `json:"context_length,omitempty"`
+	Pricing       *modelPricing `json:"pricing,omitempty"`
+}
+
+type modelPricing struct {
+	InputPerToken  string `json:"input_per_token,omitempty"`
+	OutputPerToken string `json:"output_per_token,omitempty"`
 }
 
 func NewListHandler(d Deps) http.HandlerFunc {
@@ -69,17 +82,39 @@ func NewListHandler(d Deps) http.HandlerFunc {
 			return
 		}
 
+		var prices billing.PublicPriceTable
+		if d.Pricing != nil {
+			if table, err := d.Pricing.PublicModelPrices(r.Context(), ident.TenantID); err == nil {
+				prices = table
+			}
+		}
+
 		out := listResponse{
 			Object: "list",
 			Data:   make([]modelObject, 0, len(models)),
 		}
 		for _, model := range models {
-			out.Data = append(out.Data, modelObject{
+			item := modelObject{
 				ID:      model.ID,
 				Object:  "model",
 				Created: model.CreatedAt.Unix(),
 				OwnedBy: model.OwnedBy,
-			})
+			}
+			if model.ContextWindow > 0 {
+				contextLength := model.ContextWindow
+				item.ContextLength = &contextLength
+			}
+			if price, ok := prices.Lookup(model.ID, model.CanonicalID); ok {
+				pricing := modelPricing{}
+				if price.HasInput {
+					pricing.InputPerToken = price.InputPerToken.String()
+				}
+				if price.HasOutput {
+					pricing.OutputPerToken = price.OutputPerToken.String()
+				}
+				item.Pricing = &pricing
+			}
+			out.Data = append(out.Data, item)
 		}
 		writeJSON(w, http.StatusOK, out)
 	}
