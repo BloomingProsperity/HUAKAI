@@ -151,6 +151,67 @@ func TestReceiptHookSettlerBestEffortDoesNotBlockSettle(t *testing.T) {
 	}
 }
 
+func TestReceiptHookSettlerQualifiesReferralAfterSuccessfulSettle(t *testing.T) {
+	ctx := context.Background()
+	requestID := "req-worker-referral-qualify"
+	hook, appender := receiptHookForReferralTest(t, requestID, 7001, 9001, 100)
+	qualifier := &statefulReferralQualifier{tenantID: 7, refereeUserID: 7001, status: "pending"}
+	inner := &recordingBillingSettler{result: &billing.SettleResult{
+		TenantID:       7,
+		UserID:         7001,
+		BillingEventID: 4242,
+	}}
+	settler := NewReceiptHookSettler(inner, hook, WithReceiptHookReferralQualifier(qualifier))
+
+	_, err := settler.Settle(ctx, billing.SettleRequest{
+		TenantID:       7,
+		UserID:         9999,
+		AuditRequestID: requestID,
+	})
+	if err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+	if appender.receipt == nil {
+		t.Fatal("receipt was not appended before referral qualification")
+	}
+	if len(qualifier.calls) != 1 {
+		t.Fatalf("qualifier calls=%d want 1; deleting the settle-time qualify call leaves referral pending", len(qualifier.calls))
+	}
+	got := qualifier.calls[0]
+	if got.tenantID != 7 || got.refereeUserID != 7001 || got.billingEventID != 4242 {
+		t.Fatalf("qualifier call=%+v want tenant=7 referee=7001 billing_event=4242", got)
+	}
+	if qualifier.status != "qualified" {
+		t.Fatalf("referral status=%q want qualified; deleting the qualify hook leaves status pending", qualifier.status)
+	}
+	if qualifier.firstBillingEventID != 4242 {
+		t.Fatalf("first_billing_event_id=%d want 4242", qualifier.firstBillingEventID)
+	}
+}
+
+func TestReceiptHookSettlerReferralQualifierErrorDoesNotBlockSettle(t *testing.T) {
+	ctx := context.Background()
+	requestID := "req-worker-referral-qualify-error"
+	hook, _ := receiptHookForReferralTest(t, requestID, 7001, 9001, 100)
+	wantErr := errors.New("qualifier unavailable")
+	var reported error
+	hook.onError = func(_ context.Context, _ string, err error) {
+		reported = err
+	}
+	settler := NewReceiptHookSettler(&recordingBillingSettler{result: &billing.SettleResult{
+		TenantID:       7,
+		UserID:         7001,
+		BillingEventID: 4242,
+	}}, hook, WithReceiptHookReferralQualifier(&recordingReferralQualifier{err: wantErr}))
+
+	if _, err := settler.Settle(ctx, billing.SettleRequest{TenantID: 7, AuditRequestID: requestID}); err != nil {
+		t.Fatalf("Settle must not fail on referral qualifier error: %v", err)
+	}
+	if !errors.Is(reported, wantErr) {
+		t.Fatalf("reported error=%v want qualifier error", reported)
+	}
+}
+
 func TestReceiptHookSettlerEnqueuesRecoveryOnHookErrorWithoutBlockingSettle(t *testing.T) {
 	ctx := context.Background()
 	requestID := "req-worker-recovery-enqueue"
@@ -573,11 +634,19 @@ func TestFinalReceiptIncludesRealCostAndTokens(t *testing.T) {
 }
 
 type recordingBillingSettler struct {
-	req billing.SettleRequest
+	req    billing.SettleRequest
+	result *billing.SettleResult
+	err    error
 }
 
 func (s *recordingBillingSettler) Settle(_ context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {
 	s.req = req
+	if s.err != nil {
+		return s.result, s.err
+	}
+	if s.result != nil {
+		return s.result, nil
+	}
 	return &billing.SettleResult{}, nil
 }
 
@@ -634,6 +703,82 @@ func (q *contextAwareReceiptRecoveryEnqueuer) Enqueue(ctx context.Context, e dlq
 	}
 	q.events = append(q.events, e)
 	return int64(len(q.events)), nil
+}
+
+type referralQualifierCall struct {
+	tenantID       int64
+	refereeUserID  int64
+	billingEventID int64
+}
+
+type recordingReferralQualifier struct {
+	calls []referralQualifierCall
+	err   error
+}
+
+func (q *recordingReferralQualifier) QualifyPendingReferral(_ context.Context, tenantID, refereeUserID, billingEventID int64) error {
+	q.calls = append(q.calls, referralQualifierCall{
+		tenantID:       tenantID,
+		refereeUserID:  refereeUserID,
+		billingEventID: billingEventID,
+	})
+	return q.err
+}
+
+type statefulReferralQualifier struct {
+	tenantID            int64
+	refereeUserID       int64
+	status              string
+	firstBillingEventID int64
+	calls               []referralQualifierCall
+}
+
+func (q *statefulReferralQualifier) QualifyPendingReferral(_ context.Context, tenantID, refereeUserID, billingEventID int64) error {
+	q.calls = append(q.calls, referralQualifierCall{
+		tenantID:       tenantID,
+		refereeUserID:  refereeUserID,
+		billingEventID: billingEventID,
+	})
+	if q.tenantID == tenantID && q.refereeUserID == refereeUserID && q.status == "pending" {
+		q.status = "qualified"
+		q.firstBillingEventID = billingEventID
+	}
+	return nil
+}
+
+func receiptHookForReferralTest(t *testing.T, requestID string, userID, claimID, costUSDMicros int64) (*ReceiptHookHandler, *recordingReceiptAppender) {
+	t.Helper()
+	signer := testAuditSigner(t, 72)
+	ledger, err := auditledger.NewMemoryLedger(signer)
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	if _, err := ledger.Append(context.Background(), mustPrepareAuditLedgerEntry(t, context.Background(), auditledger.LedgerEntry{
+		RequestID: requestID,
+		TenantID:  7,
+		ModelChain: &proto.ModelChain{
+			Requested: "gpt-4o",
+			Verdict:   "match",
+		},
+	})); err != nil {
+		t.Fatalf("append ledger: %v", err)
+	}
+	formatter, err := NewReceiptFormatter(ledger, nil, &staticReceiptSource{inputs: ReceiptInputs{
+		TenantID:            7,
+		UserID:              userID,
+		ClaimID:             claimID,
+		Model:               "gpt-4o",
+		InputTokens:         10,
+		OutputTokens:        3,
+		CostUSDMicros:       costUSDMicros,
+		RateTableSnapshotID: 4,
+		CreatedAt:           time.Date(2026, 5, 18, 10, 30, 0, 0, time.UTC),
+	}}, signer)
+	if err != nil {
+		t.Fatalf("formatter: %v", err)
+	}
+	appender := &recordingReceiptAppender{}
+	return NewReceiptHookHandler(formatter, appender, WithReceiptHookTrustSigner(testTrustReceiptSigner(t, 73))), appender
 }
 
 func testTrustReceiptSigner(t *testing.T, seed byte) *sign.Signer {

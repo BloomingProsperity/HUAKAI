@@ -22,6 +22,10 @@ type ReceiptRecoveryEnqueuer interface {
 	Enqueue(ctx context.Context, e dlq.Event) (int64, error)
 }
 
+type ReferralQualifier interface {
+	QualifyPendingReferral(ctx context.Context, tenantID, refereeUserID, billingEventID int64) error
+}
+
 type receiptFormatterService interface {
 	DeriveReceipt(ctx context.Context, requestID string) (*CostReceipt, error)
 	SignReceipt(ctx context.Context, receipt *CostReceipt) (*CostReceipt, error)
@@ -316,15 +320,33 @@ func receiptRecoveryEnqueueContext(ctx context.Context) (context.Context, contex
 // ReceiptHookSettler 包装真实 settler；账务成功后 fail-open 写 receipt,
 // 失败则交给 durable recovery 队列重放。
 type ReceiptHookSettler struct {
-	inner billing.Settler
-	hook  *ReceiptHookHandler
+	inner             billing.Settler
+	hook              *ReceiptHookHandler
+	referralQualifier ReferralQualifier
 }
 
-func NewReceiptHookSettler(inner billing.Settler, hook *ReceiptHookHandler) billing.Settler {
-	if hook == nil {
+type ReceiptHookSettlerOption func(*ReceiptHookSettler)
+
+func WithReceiptHookReferralQualifier(qualifier ReferralQualifier) ReceiptHookSettlerOption {
+	return func(s *ReceiptHookSettler) {
+		s.referralQualifier = qualifier
+	}
+}
+
+func NewReceiptHookSettler(inner billing.Settler, hook *ReceiptHookHandler, opts ...ReceiptHookSettlerOption) billing.Settler {
+	if hook == nil && len(opts) == 0 {
 		return inner
 	}
-	return &ReceiptHookSettler{inner: inner, hook: hook}
+	settler := &ReceiptHookSettler{inner: inner, hook: hook}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(settler)
+		}
+	}
+	if settler.hook == nil && settler.referralQualifier == nil {
+		return inner
+	}
+	return settler
 }
 
 func (s *ReceiptHookSettler) Settle(ctx context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {
@@ -340,7 +362,28 @@ func (s *ReceiptHookSettler) Settle(ctx context.Context, req billing.SettleReque
 			s.hook.report(ctx, req.AuditRequestID, hookErr)
 		}
 	}
+	s.qualifyReferral(ctx, req, res)
 	return res, nil
+}
+
+func (s *ReceiptHookSettler) qualifyReferral(ctx context.Context, req billing.SettleRequest, res *billing.SettleResult) {
+	if s == nil || s.referralQualifier == nil || res == nil || res.BillingEventID <= 0 {
+		return
+	}
+	tenantID := res.TenantID
+	if tenantID <= 0 {
+		tenantID = req.TenantID
+	}
+	refereeUserID := res.UserID
+	if refereeUserID <= 0 {
+		refereeUserID = req.UserID
+	}
+	if tenantID <= 0 || refereeUserID <= 0 {
+		return
+	}
+	if err := s.referralQualifier.QualifyPendingReferral(ctx, tenantID, refereeUserID, res.BillingEventID); err != nil && s.hook != nil {
+		s.hook.report(ctx, req.AuditRequestID, fmt.Errorf("audit: qualify referral after settle: %w", err))
+	}
 }
 
 func (s *ReceiptHookSettler) Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string, observedInputTokens int64, protocolLoss json.RawMessage) error {
