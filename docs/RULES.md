@@ -1,6 +1,6 @@
 # HUAKAI 规则清单（Rules Manifest）
 
-> **每次 PM session 开头必读这一份。** 70+ 份规则散文件不可能每次都加载，本文件是浓缩版"宪法"——每条 binding 规则一行 + 来源指针。规则原文以来源文件为权威；本文件是导航。最近刷新：**2026-04-28**。
+> **每次 PM session 开头必读这一份。** 70+ 份规则散文件不可能每次都加载，本文件是浓缩版"宪法"——每条 binding 规则一行 + 来源指针。规则原文以来源文件为权威；本文件是导航。最近刷新：**2026-06-04**。
 
 ## 0. 关于本文件
 
@@ -145,7 +145,44 @@
 | 2026-04-28 | MR-004 (互审 + reviewer 三方) | Claude (Phase 1 前 ~3 周零互审) | Owner 2026-04-28 直接指出 | fba4dcc |
 | 2026-04-28 | M-001 (每个 reference 必须有 inventory) | Claude (Phase 1.1 完了无 inventory) | Owner "整体读完了吗"指出 | 13c0700 |
 | 2026-04-28 | M-002 (prose decomposition not optional) | Claude (~30+ L1/L2 features 还只有 ledger 行) | Owner / Phase 1.2 mandate | 进行中 |
+| 2026-06-04 | CR-002 (implementer 只读 spec，不读源) | Claude (codex prompt 指向 /home/ubuntu/refs 源码) | Owner "牢记clean-room禁止copy" | 杀 codex 重派 clean-room 盲实现 |
 
 ## 14. 规则数量审计（每月）
 
 每月 PM 跑一次：本文件规则总数 vs 来源文件中的 binding 规则总数。差异 > 5 条 = 漏检红灯。
+
+## 15. Owner 2026-06-04 固化要求（本轮指令全集，与旧条冲突以本节为准）
+
+> 来源：Owner 2026-06-04 多条直接指令 + /goal。最高优先。
+
+### 模型分配（MA）
+| ID | 规则 |
+| --- | --- |
+| MA-001 | **sonnet 退役**：调研质量太差，**不再派 sonnet 做任何事**。("sonnet调研太差了，还是你和codex来! 多用codex") |
+| MA-002 | **Claude/opus（PM 本人）= 调研 + 设计 + 核验 + 评审 + 接线 + 决策**；每个功能动手前**亲自**读借鉴真源码。`/home/ubuntu/refs/` 有 new-api/one-api/sub2api/CLIProxyAPI 全量真源码 + `wt-notif/docs/decompositions`。 |
+| MA-003 | **codex = 实现**；**多用、尽量多开并行**。 |
+
+### 融合升级法（FU，核心，强化 §6 Deep Mining）
+| ID | 规则 |
+| --- | --- |
+| FU-001 | 做**每个**功能前，把四个借鉴项目同功能的**实现方法 / 逻辑 / 代码 / 算法**全部精读吃透——细致入微。 |
+| FU-002 | **融合各家所长 → 做成比他们都强**（parity-or-better+；不是单家照搬）。 |
+| FU-003 | 用融合法**回扫之前已做的功能模块**，逐个评估并升级到"更强"。(/goal 2026-06-04) |
+
+### Clean-Room 强化（重申 CR-002/003；本轮违规已登记 §13）
+| ID | 规则 |
+| --- | --- |
+| CR-R-001 | **实现者（codex）盲读**：PM 看过原码后用**自己的话**写 spec/分解，codex **只照 spec + HUAKAI 现有模式从零实现**；**codex prompt 严禁出现 `/home/ubuntu/refs` 路径或"读 XX 源码"指令**。 |
+| CR-R-002 | 评审时**比对 codex 产物 vs 原码**：字段名/函数名/结构/目录/注释雷同即打回重写。 |
+
+### 算力 / 执行（CP）
+| ID | 规则 |
+| --- | --- |
+| CP-001 | **算力拉满**：codex 多开并行 + PM 持续设计/审/接线，不空转。 |
+| CP-002 | **在服务器（kaifa）上执行**；能在服务器跑的就在服务器跑。 |
+
+### 合规边界（CB，PM 立场 + 待决）
+| ID | 规则 |
+| --- | --- |
+| CB-001 | **反检测/反封号规避工具不做**：冒充第一方客户端、绕过上游检测/访问控制（R7 `ApplyMimicryPlan` 请求体伪装）= **park**。D-R3-A 仍待 Owner 裁决；PM 立场为只走合规版（transport policy + 出站诊断，不做指纹复刻）。 |
+
