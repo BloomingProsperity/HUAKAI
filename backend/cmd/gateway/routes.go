@@ -26,6 +26,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfphttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/usageanalyticshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkeyhttp"
 )
 
@@ -56,6 +57,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		Catalog: d.modelRegistry,
 	}))
 	r.Get("/v1/me/usage", meusagehttp.NewHandler(meusagehttp.Deps{
+		Auth:  d.inboundAuth,
+		Store: d.billingQueries,
+	}))
+	r.Get("/v1/me/analytics/time-series", usageanalyticshttp.NewTimeSeriesHandler(usageanalyticshttp.Deps{
 		Auth:  d.inboundAuth,
 		Store: d.billingQueries,
 	}))

@@ -15,6 +15,17 @@ type Querier interface {
 	// 首次写入时目标行还不存在, FOR UPDATE 无法锁住空行; 先拿事务级顾问锁
 	// 按租户和设置键串行化同一设置的读改写, 提交或回滚后自动释放。
 	AcquireBillingSettingLock(ctx context.Context, arg AcquireBillingSettingLockParams) error
+	// Usage analytics: aggregation queries over settled usage_records.
+	// SELECT-only (CMB-7). Every query carries a non-nullable tenant_id predicate
+	// (CMB-5 cross-tenant prevention) and selects no credential columns.
+	// usage_records.settled_at is NOT NULL DEFAULT now() and indexed by
+	// idx_usage_records_tenant_settled (tenant_id, settled_at DESC), so these
+	// aggregations need no new index in the pre-launch first cut.
+	// Self-serve daily usage time-series for ONE API key: cost + token totals
+	// bucketed by UTC calendar day and requested_model. Always scoped by
+	// (tenant_id, api_key_id) so cross-key reads are structurally impossible —
+	// the handler passes ident.APIKeyID, never a client-supplied value.
+	AggregateMyUsageByDay(ctx context.Context, arg AggregateMyUsageByDayParams) ([]AggregateMyUsageByDayRow, error)
 	ApplyBalanceHoldCapture(ctx context.Context, arg ApplyBalanceHoldCaptureParams) (ApplyBalanceHoldCaptureRow, error)
 	ApplyBalanceHoldRelease(ctx context.Context, arg ApplyBalanceHoldReleaseParams) (ApplyBalanceHoldReleaseRow, error)
 	CaptureBalanceHold(ctx context.Context, arg CaptureBalanceHoldParams) (int64, error)
