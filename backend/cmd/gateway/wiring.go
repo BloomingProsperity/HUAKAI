@@ -97,6 +97,8 @@ type deps struct {
 	paymentProviders         map[string]paymenthttp.ProviderBinding
 	voucherService           *voucher.Service
 	subscriptionService      *subscription.Service
+	subExpiryWorker          *subscription.ExpiryWorker
+	subReminderWorker        *subscription.ReminderWorker
 	routeAdminService        *routeadmin.Service
 	panelAuthResolver        *panelauth.Resolver
 	invitationService        *communityinvitation.Service
@@ -672,6 +674,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		),
 	})
 	subscriptionReminderWorker.Start(ctx)
+	d.subExpiryWorker = subscriptionExpiryWorker
+	d.subReminderWorker = subscriptionReminderWorker
 
 	rt.deps = d
 	rt.credentialScheduler = credentialScheduler

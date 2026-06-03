@@ -137,9 +137,15 @@ func (f *fakeVoucherService) Create(_ context.Context, in voucher.CreateInput) (
 	return f.result, f.err
 }
 
-type fakeAdminAuth struct{ ident admin.AdminIdentity }
+type fakeAdminAuth struct {
+	ident admin.AdminIdentity
+	err   error
+}
 
 func (a fakeAdminAuth) Resolve(context.Context, *http.Request) (admin.AdminIdentity, error) {
+	if a.err != nil {
+		return admin.AdminIdentity{}, a.err
+	}
 	return a.ident, nil
 }
 
