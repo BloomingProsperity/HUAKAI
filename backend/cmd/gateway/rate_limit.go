@@ -207,11 +207,11 @@ func newRateLimiter(resolver *clientip.Resolver, logger *zap.Logger) *rateLimite
 	}
 
 	return &rateLimiter{
-		global:      newIPBucketRegistry(gRate, gBurst),
-		authStrict:  authStrict,
-		resolver:    resolver,
-		logger:      logger,
-		nowFn:       time.Now,
+		global:     newIPBucketRegistry(gRate, gBurst),
+		authStrict: authStrict,
+		resolver:   resolver,
+		logger:     logger,
+		nowFn:      time.Now,
 		// Global-tier Retry-After is derived from the configured rate so a tuned-down
 		// HUAKAI_RL_GLOBAL_RATE (e.g. 0.1 req/s) reports a realistic delay, not a
 		// stale 1s that would make honoring clients retry too early.
