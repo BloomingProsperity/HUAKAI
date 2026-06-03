@@ -467,6 +467,8 @@ func authReasonClass(err error) string {
 		return "oauth_provider_not_configured"
 	case errors.Is(err, userauth.ErrOAuthFlowNotFound), errors.Is(err, userauth.ErrOAuthFlowExpired):
 		return "oauth_flow_invalid"
+	case errors.Is(err, userauth.ErrOAuthPendingEmailRequired):
+		return "oauth_pending_email_required"
 	case errors.Is(err, userauth.ErrSocialLoginRejected):
 		return "social_login_rejected"
 	default:
@@ -526,6 +528,14 @@ func safeSocialProvider(provider string) (string, bool) {
 		return userauth.SocialProviderGoogle, true
 	case userauth.SocialProviderGitHub:
 		return userauth.SocialProviderGitHub, true
+	case userauth.SocialProviderWeChat:
+		return userauth.SocialProviderWeChat, true
+	case userauth.SocialProviderDingTalk:
+		return userauth.SocialProviderDingTalk, true
+	case userauth.SocialProviderLinuxDo:
+		return userauth.SocialProviderLinuxDo, true
+	case userauth.SocialProviderOIDC:
+		return userauth.SocialProviderOIDC, true
 	default:
 		return "", false
 	}
@@ -619,6 +629,8 @@ func writeAuthError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusServiceUnavailable, "oauth_provider_not_configured", "oauth provider is not configured")
 	case errors.Is(err, userauth.ErrOAuthFlowNotFound), errors.Is(err, userauth.ErrOAuthFlowExpired):
 		writeJSONError(w, http.StatusForbidden, "oauth_flow_invalid", "oauth state is invalid or expired")
+	case errors.Is(err, userauth.ErrOAuthPendingEmailRequired):
+		writeJSONError(w, http.StatusAccepted, "oauth_pending_email_required", "oauth email verification is required")
 	case errors.Is(err, userauth.ErrSocialLoginRejected):
 		writeJSONError(w, http.StatusForbidden, "social_login_rejected", "social identity claims are not sufficient")
 	default:
