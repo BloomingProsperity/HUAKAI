@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDefaultBillingPolicyVersionServesFreshDeploymentSeed(t *testing.T) {
@@ -165,6 +166,49 @@ func TestLoadQuotaEnforceFlag(t *testing.T) {
 	}
 	if !cfg.QuotaEnforce {
 		t.Fatal("QuotaEnforce=false want true from HUAKAI_QUOTA_ENFORCE")
+	}
+}
+
+func TestLoadIncludesCredentialAcqBootstrapTTLOverrides(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_CREDENTIAL_ACQ_BOOTSTRAP_SHORT_TTL_SECONDS", "1800")
+	t.Setenv("HUAKAI_CREDENTIAL_ACQ_BOOTSTRAP_LONG_TTL_SECONDS", "172800")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.CredentialAcqBootstrapShortTTL != 30*time.Minute {
+		t.Fatalf("short bootstrap ttl=%s want 30m", cfg.CredentialAcqBootstrapShortTTL)
+	}
+	if cfg.CredentialAcqBootstrapLongTTL != 48*time.Hour {
+		t.Fatalf("long bootstrap ttl=%s want 48h", cfg.CredentialAcqBootstrapLongTTL)
+	}
+}
+
+func TestLoadRejectsInvalidCredentialAcqBootstrapTTL(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		raw  string
+	}{
+		{name: "short non numeric", env: "HUAKAI_CREDENTIAL_ACQ_BOOTSTRAP_SHORT_TTL_SECONDS", raw: "soon"},
+		{name: "long zero", env: "HUAKAI_CREDENTIAL_ACQ_BOOTSTRAP_LONG_TTL_SECONDS", raw: "0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+			t.Setenv(tc.env, tc.raw)
+
+			err := loadOnlyError()
+
+			if err == nil {
+				t.Fatalf("invalid %s=%q was accepted", tc.env, tc.raw)
+			}
+			if !strings.Contains(err.Error(), tc.env) {
+				t.Fatalf("err=%v must name %s", err, tc.env)
+			}
+		})
 	}
 }
 

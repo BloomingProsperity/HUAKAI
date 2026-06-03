@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -478,6 +479,48 @@ func TestAdminChatGPTOAuthStartFlowIgnoresClientSecretFromRequest(t *testing.T) 
 	}
 }
 
+func TestAdminCredentialAcquisitionOAuthStartSelectsBootstrapTTL(t *testing.T) {
+	shortTTL := 30 * time.Minute
+	longTTL := 48 * time.Hour
+	cases := []struct {
+		name      string
+		longLived bool
+		wantTTL   time.Duration
+	}{
+		{name: "short requested false", longLived: false, wantTTL: shortTTL},
+		{name: "long requested true", longLived: true, wantTTL: longTTL},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newCredentialAcqHTTPFixtureWithBootstrapTTLs(t, adminPoolAdmin(), true, shortTTL, longTTL)
+			before := time.Now().UTC()
+			rec := fx.do(t, http.MethodPost, "/v1/admin/pool-accounts/101/credential-acquisitions",
+				`{"tenant_id":1,"vendor":"openai","auth_mode":"chatgpt_oauth","flow_kind":"oauth","long_lived_requested":`+strconv.FormatBool(tc.longLived)+`,"oauth_client":{"client_id":"client-id","auth_url":"https://auth.example.test/oauth","redirect_uri":"https://huakai.example.test/callback"}}`)
+			after := time.Now().UTC()
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("status=%d want 201 body=%s", rec.Code, rec.Body.String())
+			}
+			var body struct {
+				Flow credentialacq.Session `json:"flow"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode start response: %v body=%s", err, rec.Body.String())
+			}
+			if body.Flow.LongLivedRequested != tc.longLived {
+				t.Fatalf("long_lived_requested=%v want %v", body.Flow.LongLivedRequested, tc.longLived)
+			}
+			earliest := before.Add(tc.wantTTL)
+			latest := after.Add(tc.wantTTL)
+			if body.Flow.ExpiresAt.Before(earliest) || body.Flow.ExpiresAt.After(latest) {
+				t.Fatalf("expires_at=%s want between %s and %s", body.Flow.ExpiresAt, earliest, latest)
+			}
+			if tc.longLived && !body.Flow.ExpiresAt.After(after.Add(credentialacq.DefaultFlowTTL)) {
+				t.Fatalf("long-lived expires_at=%s still within fallback %s", body.Flow.ExpiresAt, credentialacq.DefaultFlowTTL)
+			}
+		})
+	}
+}
+
 func TestAdminClaudeAIOAuthRejectsFakeJSONCallback(t *testing.T) {
 	fx := newCredentialAcqHTTPFixtureWithDefaultExchangers(t, adminPoolAdmin())
 	fakeCode := `{"access_token":"FAKE"}`
@@ -575,6 +618,31 @@ func newCredentialAcqHTTPFixtureWithDefaultExchangers(t *testing.T, auth AdminCr
 }
 
 func newCredentialAcqHTTPFixtureWithRegistry(t *testing.T, auth AdminCredentialAuth, registry *credentialacq.ExchangerRegistry, exchanger *credentialAcqExchangerStub) *credentialAcqHTTPFixture {
+	return newCredentialAcqHTTPFixtureWithRegistryAndLongLived(t, auth, registry, exchanger, false)
+}
+
+func newCredentialAcqHTTPFixtureWithLongLivedSetupToken(t *testing.T, auth AdminCredentialAuth, allow bool) *credentialAcqHTTPFixture {
+	t.Helper()
+	return newCredentialAcqHTTPFixtureWithBootstrapTTLs(t, auth, allow, 0, 0)
+}
+
+func newCredentialAcqHTTPFixtureWithBootstrapTTLs(t *testing.T, auth AdminCredentialAuth, allow bool, shortTTL, longTTL time.Duration) *credentialAcqHTTPFixture {
+	t.Helper()
+	exchanger := &credentialAcqExchangerStub{
+		payload: []byte(`{"session_token":"registry-session","refresh_token":"registry-refresh"}`),
+	}
+	registry := credentialacq.NewExchangerRegistry()
+	if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth), exchanger); err != nil {
+		t.Fatal(err)
+	}
+	return newCredentialAcqHTTPFixtureWithRegistryAndBootstrapTTLs(t, auth, registry, exchanger, allow, shortTTL, longTTL)
+}
+
+func newCredentialAcqHTTPFixtureWithRegistryAndLongLived(t *testing.T, auth AdminCredentialAuth, registry *credentialacq.ExchangerRegistry, exchanger *credentialAcqExchangerStub, allow bool) *credentialAcqHTTPFixture {
+	return newCredentialAcqHTTPFixtureWithRegistryAndBootstrapTTLs(t, auth, registry, exchanger, allow, 0, 0)
+}
+
+func newCredentialAcqHTTPFixtureWithRegistryAndBootstrapTTLs(t *testing.T, auth AdminCredentialAuth, registry *credentialacq.ExchangerRegistry, exchanger *credentialAcqExchangerStub, allow bool, shortTTL, longTTL time.Duration) *credentialAcqHTTPFixture {
 	t.Helper()
 	now := time.Date(2026, 5, 16, 5, 0, 0, 0, time.UTC)
 	keys, err := credentialstore.NewStaticKeyProvider("test-v1", bytes.Repeat([]byte{9}, 32))
@@ -588,10 +656,13 @@ func newCredentialAcqHTTPFixtureWithRegistry(t *testing.T, auth AdminCredentialA
 	adminAudit := &adminPoolStoreStub{}
 	deps := AdminCredentialAcquisitionDeps{
 		Auth: auth, Sessions: store,
-		Credentials:     creator,
-		CredentialAudit: audit,
-		AuditStore:      adminAudit,
-		Exchangers:      registry,
+		Credentials:              creator,
+		CredentialAudit:          audit,
+		AuditStore:               adminAudit,
+		Exchangers:               registry,
+		AllowLongLivedSetupToken: allow,
+		BootstrapShortTTL:        shortTTL,
+		BootstrapLongTTL:         longTTL,
 	}
 	r := chi.NewRouter()
 	r.Route("/v1/admin/pool-accounts", func(r chi.Router) {

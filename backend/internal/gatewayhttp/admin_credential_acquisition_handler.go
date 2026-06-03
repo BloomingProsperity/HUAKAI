@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -26,6 +27,8 @@ type AdminCredentialAcquisitionDeps struct {
 	AuditStore               AdminPoolAccountStore
 	Exchangers               *credentialacq.ExchangerRegistry
 	AllowLongLivedSetupToken bool
+	BootstrapShortTTL        time.Duration
+	BootstrapLongTTL         time.Duration
 }
 
 type credentialAcqStartRequest struct {
@@ -364,6 +367,10 @@ func createOrStartCredentialAcqSession(ctx context.Context, d AdminCredentialAcq
 		IdempotencyKey: idem,
 	}
 	if start.Kind == credentialacq.FlowKindOAuth {
+		if start.ExpiresAt.IsZero() {
+			ttl := credentialacq.SelectBootstrapTTLWithDurations(start.LongLivedRequested, d.BootstrapShortTTL, d.BootstrapLongTTL)
+			start.ExpiresAt = time.Now().UTC().Add(ttl)
+		}
 		oauthReq := req.OAuthClient
 		clientSecret := oauthReq.ClientSecret
 		// Owner 2026-05-27：Gemini OAuth acquisition 的 client_secret
