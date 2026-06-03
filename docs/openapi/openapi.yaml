@@ -65,6 +65,8 @@ tags:
     description: Public provider payment webhook entrypoints with provider signature verification. F-PAY-001.
   - name: user-audit
     description: User-facing cost receipt and detached receipt verification. F-AUDIT-001.
+  - name: user-api-key-controls
+    description: Authenticated user controls for per-key quota policy and key group assignment.
   - name: pricing
     description: Public historical pricing tables for client-side receipt validation. F-AUDIT-001 + F-BILL-001.
   - name: audit
@@ -75,6 +77,8 @@ tags:
     description: Admin voucher creation, listing, batch creation, and revocation. F-BILL-002.
   - name: admin-email
     description: Tenant-scoped SMTP email delivery settings for F-AUTH-007.
+  - name: admin-platform-settings
+    description: Platform-admin global feature and runtime settings.
   - name: admin-api-keys
     description: API Key issuance / list / revoke. Slice 2 N+4b2; backed by admin_tokens + admin_audit_events.
   - name: admin-pools
@@ -89,6 +93,12 @@ tags:
     description: Usage Record query. F-OBS-001.
   - name: admin-billing
     description: Billing Ledger query + adjustments. F-OBS-001.
+  - name: admin-pricing
+    description: Tenant-scoped admin pricing ratio catalog for pool groups.
+  - name: admin-notifications
+    description: Platform-admin notification worker observability.
+  - name: admin-moderation
+    description: Admin content moderation keyword and configuration controls.
   - name: admin-audit
     description: Audit trail query (rate-limit + pool-routing + oauth-refresh). F-RATE-001 + F-POOL-001 + F-AUTH-005.
   - name: admin-cache
@@ -1234,6 +1244,90 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/platform-settings:
+    get:
+      tags: [admin-platform-settings]
+      summary: List allow-listed platform settings
+      operationId: listPlatformSettings
+      x-huakai-spec-source:
+        - backend/internal/platformsettingshttp/handler.go
+        - docs/process/plans/2026-06-03-platform-settings-slice1-codex.md
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: Persisted settings merged with safe defaults for unset keys.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlatformSettingListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/platform-settings/{key}:
+    parameters:
+      - in: path
+        name: key
+        required: true
+        schema:
+          type: string
+          enum:
+            - registration_enabled
+            - invitation_required
+            - captcha_enabled
+            - captcha_provider
+            - captcha_site_key
+            - oauth_providers_enabled
+            - promo_enabled
+            - stream_timeout_seconds
+            - cooldown_429_seconds
+            - cooldown_529_seconds
+    get:
+      tags: [admin-platform-settings]
+      summary: Read one allow-listed platform setting
+      operationId: getPlatformSetting
+      x-huakai-spec-source:
+        - backend/internal/platformsettingshttp/handler.go
+        - docs/process/plans/2026-06-03-platform-settings-slice1-codex.md
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: Persisted value or safe default for the requested key.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlatformSetting' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [admin-platform-settings]
+      summary: Update one allow-listed platform setting
+      operationId: updatePlatformSetting
+      x-huakai-spec-source:
+        - backend/internal/platformsettingshttp/handler.go
+        - docs/process/plans/2026-06-03-platform-settings-slice1-codex.md
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PlatformSettingUpdateRequest' }
+      responses:
+        '200':
+          description: Setting updated and audit metadata recorded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlatformSetting' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413':
+          description: Request body exceeds 64 KiB.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/auth/oauth-init:
     post:
       tags: [auth]
@@ -1522,6 +1616,106 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404':
           description: 不存在或不归当前用户 (响应不区分这两种,防 ID 枚举)。
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/api-keys/{id}/quota:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+    get:
+      tags: [user-api-key-controls]
+      summary: Read the authenticated user's quota policy for one API key
+      operationId: getUserAPIKeyQuota
+      x-huakai-spec-source:
+        - backend/internal/userkeycontrolshttp/quota_group_handlers.go
+        - docs/process/plans/2026-06-03-per-key-controls-slice1-codex.md
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: Per-key cost quota policy linked to this API key.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserAPIKeyQuotaResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [user-api-key-controls]
+      summary: Upsert the authenticated user's quota policy for one API key
+      operationId: setUserAPIKeyQuota
+      x-huakai-spec-source:
+        - backend/internal/userkeycontrolshttp/quota_group_handlers.go
+        - docs/process/plans/2026-06-03-per-key-controls-slice1-codex.md
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserAPIKeyQuotaUpdateRequest' }
+      responses:
+        '200':
+          description: Per-key cost quota policy upserted and linked to this API key.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserAPIKeyQuotaResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/api-keys/{id}/group:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+    get:
+      tags: [user-api-key-controls]
+      summary: Read the authenticated user's group assignment for one API key
+      operationId: getUserAPIKeyGroup
+      x-huakai-spec-source:
+        - backend/internal/userkeycontrolshttp/quota_group_handlers.go
+        - docs/process/plans/2026-06-03-per-key-controls-slice1-codex.md
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: Current key group assignment. `group_id` is absent when no group is assigned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserAPIKeyGroupResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [user-api-key-controls]
+      summary: Assign or clear the authenticated user's group for one API key
+      operationId: setUserAPIKeyGroup
+      x-huakai-spec-source:
+        - backend/internal/userkeycontrolshttp/quota_group_handlers.go
+        - docs/process/plans/2026-06-03-per-key-controls-slice1-codex.md
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserAPIKeyGroupUpdateRequest' }
+      responses:
+        '200':
+          description: Key group assignment updated. A null or omitted `group_id` clears the assignment.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserAPIKeyGroupResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/users/me/vouchers/redeem:
@@ -2295,6 +2489,25 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/notifications/worker-stats:
+    get:
+      tags: [admin-notifications]
+      summary: Read in-process subscription notification worker counters
+      operationId: getAdminNotificationWorkerStats
+      x-huakai-spec-source:
+        - backend/internal/subscriptionhttp/admin_worker_stats.go
+        - docs/process/plans/2026-06-03-notifications-worker-stats-codex.md
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: Current reminder and expiry worker counters.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminNotificationWorkerStats' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/admin/routes:
@@ -3853,6 +4066,110 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/pricing/ratios:
+    get:
+      tags: [admin-pricing]
+      summary: List tenant pool-group pricing ratios
+      operationId: listAdminPricingRatios
+      x-huakai-spec-source:
+        - backend/internal/pricingcataloghttp/pricing_ratio_handler.go
+        - docs/process/plans/2026-06-03-pricing-catalog-slice1-codex.md
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator callers may omit and use token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Paginated pricing ratios.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminPricingRatioListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/pricing/ratios/{pool_group_id}:
+    parameters:
+      - in: path
+        name: pool_group_id
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+      - in: query
+        name: tenant_id
+        required: false
+        description: Required for platform_admin; tenant_operator callers may omit and use token scope.
+        schema: { type: integer, format: int64, minimum: 1 }
+    get:
+      tags: [admin-pricing]
+      summary: Read one tenant pool-group pricing ratio
+      operationId: getAdminPricingRatio
+      x-huakai-spec-source:
+        - backend/internal/pricingcataloghttp/pricing_ratio_handler.go
+        - docs/process/plans/2026-06-03-pricing-catalog-slice1-codex.md
+      x-huakai-required-role: tenant_operator
+      responses:
+        '200':
+          description: Pricing ratio for the pool group.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminPricingRatio' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [admin-pricing]
+      summary: Upsert one tenant pool-group pricing ratio
+      operationId: upsertAdminPricingRatio
+      x-huakai-spec-source:
+        - backend/internal/pricingcataloghttp/pricing_ratio_handler.go
+        - docs/process/plans/2026-06-03-pricing-catalog-slice1-codex.md
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminPricingRatioRequest' }
+      responses:
+        '200':
+          description: Pricing ratio upserted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminPricingRatio' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    delete:
+      tags: [admin-pricing]
+      summary: Delete one tenant pool-group pricing ratio
+      operationId: deleteAdminPricingRatio
+      x-huakai-spec-source:
+        - backend/internal/pricingcataloghttp/pricing_ratio_handler.go
+        - docs/process/plans/2026-06-03-pricing-catalog-slice1-codex.md
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: Pricing ratio deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminPricingRatioDeleteResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/balances/adjustments:
     post:
       tags: [admin-billing]
@@ -3936,6 +4253,139 @@ paths:
                         disabled: { type: integer, minimum: 0 }
                         unchanged: { type: integer, minimum: 0 }
                         snapshot_bumps: { type: integer, minimum: 0 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/moderation/keywords:
+    get:
+      tags: [admin-moderation]
+      summary: List tenant moderation keyword rules
+      operationId: listModerationKeywords
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_keywords_handler.go
+        - docs/process/plans/2026-06-03-content-moderation-slice1-codex.md
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator callers may omit and use token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Paginated moderation keyword rules.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModerationKeywordListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-moderation]
+      summary: Create a tenant moderation keyword rule
+      operationId: createModerationKeyword
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_keywords_handler.go
+        - docs/process/plans/2026-06-03-content-moderation-slice1-codex.md
+      x-huakai-required-role: tenant_operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModerationKeywordCreateRequest' }
+      responses:
+        '201':
+          description: Moderation keyword rule created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModerationKeyword' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/moderation/keywords/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+      - in: query
+        name: tenant_id
+        required: false
+        description: Required for platform_admin; tenant_operator callers may omit and use token scope.
+        schema: { type: integer, format: int64, minimum: 1 }
+    delete:
+      tags: [admin-moderation]
+      summary: Soft-delete a tenant moderation keyword rule
+      operationId: deleteModerationKeyword
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_keywords_handler.go
+        - docs/process/plans/2026-06-03-content-moderation-slice1-codex.md
+      x-huakai-required-role: tenant_operator
+      responses:
+        '204':
+          description: Keyword rule deleted.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/moderation/config:
+    get:
+      tags: [admin-moderation]
+      summary: Read tenant moderation configuration
+      operationId: getModerationConfig
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_config_handler.go
+        - docs/process/plans/2026-06-03-content-moderation-slice1-codex.md
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator callers may omit and use token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Persisted moderation configuration or safe default.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModerationConfig' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [admin-moderation]
+      summary: Upsert tenant moderation configuration
+      operationId: updateModerationConfig
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_config_handler.go
+        - docs/process/plans/2026-06-03-content-moderation-slice1-codex.md
+      x-huakai-required-role: tenant_operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModerationConfigUpdateRequest' }
+      responses:
+        '200':
+          description: Moderation configuration upserted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModerationConfig' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -4680,6 +5130,314 @@ components:
         already_revoked:
           type: boolean
           description: 幂等命中 (此 key 此前已 revoked) 时为 true。
+
+    UserAPIKeyQuotaUpdateRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/userkeycontrolshttp/quota_group_handlers.go
+      required: [limit_usd]
+      properties:
+        limit_usd:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]{1,8})?$'
+          description: Non-negative USD cost cap stored as numeric(20,8).
+        window_kind:
+          type: string
+          enum: [fixed, calendar_day, calendar_week, calendar_month]
+          default: calendar_day
+        window_seconds:
+          type: integer
+          format: int32
+          minimum: 1
+          description: Required only when window_kind=fixed; omitted or zero for calendar windows.
+        mode:
+          type: string
+          enum: [enforce, observe, manual_first, disabled]
+          default: enforce
+
+    UserAPIKeyQuotaResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/userkeycontrols/types.go
+      required:
+        - api_key_id
+        - policy_id
+        - limit_usd
+        - scope_kind
+        - scope_id
+        - metric
+        - window_kind
+        - window_seconds
+        - mode
+        - valid_from
+      properties:
+        api_key_id: { type: integer, format: int64, minimum: 1 }
+        policy_id: { type: integer, format: int64, minimum: 1 }
+        limit_usd:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]{1,8})?$'
+        scope_kind:
+          type: string
+          enum: [api_key]
+        scope_id:
+          type: string
+          description: API key id rendered as a string scope identifier.
+        metric:
+          type: string
+          enum: [cost_usd]
+        window_kind:
+          type: string
+          enum: [fixed, calendar_day, calendar_week, calendar_month]
+        window_seconds: { type: integer, format: int32, minimum: 0 }
+        mode:
+          type: string
+          enum: [enforce, observe, manual_first, disabled]
+        valid_from: { type: string, format: date-time }
+
+    UserAPIKeyGroupUpdateRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/userkeycontrolshttp/quota_group_handlers.go
+      properties:
+        group_id:
+          type: [integer, 'null']
+          format: int64
+          minimum: 1
+          description: Positive group id assigns the key; null or omitted clears the assignment.
+
+    UserAPIKeyGroupResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/userkeycontrols/types.go
+      required: [api_key_id]
+      properties:
+        api_key_id: { type: integer, format: int64, minimum: 1 }
+        group_id: { type: integer, format: int64, minimum: 1 }
+        group_name: { type: string }
+        group_description: { type: string }
+        group_enabled: { type: boolean }
+
+    PlatformSetting:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/platformsettingshttp/handler.go
+      required: [key, value, source, updated_at, updated_by]
+      properties:
+        key:
+          type: string
+          enum:
+            - registration_enabled
+            - invitation_required
+            - captcha_enabled
+            - captcha_provider
+            - captcha_site_key
+            - oauth_providers_enabled
+            - promo_enabled
+            - stream_timeout_seconds
+            - cooldown_429_seconds
+            - cooldown_529_seconds
+        value: { type: string }
+        source:
+          type: string
+          enum: [default, db]
+        updated_at: { type: [string, 'null'], format: date-time }
+        updated_by: { type: [string, 'null'] }
+
+    PlatformSettingListResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/platformsettingshttp/handler.go
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/PlatformSetting' }
+
+    PlatformSettingUpdateRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/platformsettingshttp/handler.go
+      required: [value]
+      properties:
+        value:
+          type: string
+          description: Allow-listed setting value. Boolean settings use "true" or "false"; timeout settings use positive integer seconds.
+        reason:
+          type: string
+          description: Optional operator reason written to admin audit metadata.
+
+    AdminPricingRatioRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/pricingcataloghttp/pricing_ratio_handler.go
+      required: [ratio]
+      properties:
+        ratio:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]+)?$'
+          description: Positive decimal multiplier for the pool group.
+        public_ratio:
+          type: boolean
+          default: false
+
+    AdminPricingRatio:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/pricingcataloghttp/pricing_ratio_handler.go
+      required: [object, id, tenant_id, pool_group_id, ratio, public_ratio]
+      properties:
+        object: { type: string, enum: [pricing_ratio] }
+        id: { type: integer, format: int64, minimum: 1 }
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        pool_group_id: { type: integer, format: int64, minimum: 1 }
+        ratio: { type: string }
+        public_ratio: { type: boolean }
+        created_by: { type: string }
+        updated_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    AdminPricingRatioListResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/pricingcataloghttp/pricing_ratio_handler.go
+      required: [object, items, limit, offset]
+      properties:
+        object: { type: string, enum: [pricing_ratio_list] }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AdminPricingRatio' }
+        limit: { type: integer, format: int32, minimum: 1, maximum: 500 }
+        offset: { type: integer, format: int32, minimum: 0 }
+
+    AdminPricingRatioDeleteResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/pricingcataloghttp/pricing_ratio_handler.go
+      required: [object, tenant_id, pool_group_id]
+      properties:
+        object: { type: string, enum: [pricing_ratio_deleted] }
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        pool_group_id: { type: integer, format: int64, minimum: 1 }
+
+    AdminNotificationWorkerStats:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/subscriptionhttp/admin_worker_stats.go
+      required: [reminder, expiry]
+      properties:
+        reminder: { $ref: '#/components/schemas/AdminReminderWorkerStats' }
+        expiry: { $ref: '#/components/schemas/AdminExpiryWorkerStats' }
+
+    AdminReminderWorkerStats:
+      type: object
+      additionalProperties: false
+      required: [tick_count, sent_total, failed_ticks]
+      properties:
+        tick_count: { type: integer, format: int64, minimum: 0 }
+        sent_total: { type: integer, format: int64, minimum: 0 }
+        failed_ticks: { type: integer, format: int64, minimum: 0 }
+
+    AdminExpiryWorkerStats:
+      type: object
+      additionalProperties: false
+      required: [tick_count, expired_total, failed_ticks]
+      properties:
+        tick_count: { type: integer, format: int64, minimum: 0 }
+        expired_total: { type: integer, format: int64, minimum: 0 }
+        failed_ticks: { type: integer, format: int64, minimum: 0 }
+
+    ModerationKeywordCreateRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_keywords_handler.go
+      required: [tenant_id, keyword]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        keyword: { type: string, minLength: 1 }
+        reason_code: { type: string }
+        enabled:
+          type: boolean
+          default: true
+
+    ModerationKeyword:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_keywords_handler.go
+      required: [id, tenant_id, keyword, reason_code, enabled]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        keyword: { type: string }
+        reason_code: { type: string }
+        enabled: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ModerationKeywordListResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_keywords_handler.go
+      required: [object, items, limit, offset]
+      properties:
+        object: { type: string, enum: [moderation_keywords_list] }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ModerationKeyword' }
+        limit: { type: integer, format: int32, minimum: 1, maximum: 500 }
+        offset: { type: integer, format: int32, minimum: 0 }
+
+    ModerationConfigUpdateRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_config_handler.go
+      required: [tenant_id, enabled, fail_closed, sample_rate_pct, ban_threshold, ban_window_seconds]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        enabled: { type: boolean }
+        fail_closed: { type: boolean }
+        sample_rate_pct: { type: integer, format: int32, minimum: 0, maximum: 100 }
+        ban_threshold: { type: integer, format: int32, minimum: 0 }
+        ban_window_seconds: { type: integer, format: int32, minimum: 1 }
+        violation_fee_usd:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]+)?$'
+          default: "0"
+
+    ModerationConfig:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_config_handler.go
+      required: [tenant_id, enabled, fail_closed, sample_rate_pct, ban_threshold, ban_window_seconds, violation_fee_usd]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        enabled: { type: boolean }
+        fail_closed: { type: boolean }
+        sample_rate_pct: { type: integer, format: int32, minimum: 0, maximum: 100 }
+        ban_threshold: { type: integer, format: int32, minimum: 0 }
+        ban_window_seconds: { type: integer, format: int32, minimum: 1 }
+        violation_fee_usd:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]{1,8})?$'
+        updated_by: { type: string }
+        updated_at: { type: string, format: date-time }
 
     # ---- Gateway request/response schemas (permissive: additionalProperties: true) ----
 
