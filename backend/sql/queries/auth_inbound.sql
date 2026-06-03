@@ -22,6 +22,7 @@ SELECT
     ak.key_hash,
     ak.status        AS key_status,
     ak.expires_at,
+    ak.ip_allowlist,
     u.status         AS user_status,
     u.user_group     AS user_group,
     t.status         AS tenant_status

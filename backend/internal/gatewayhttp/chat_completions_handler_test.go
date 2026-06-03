@@ -142,6 +142,22 @@ func validBody() string {
 	return `{"model":"claude-opus-4-7","stream":true,"messages":[{"role":"user","content":"hi"}]}`
 }
 
+func TestHandler_AuthForbiddenReturns403(t *testing.T) {
+	// Mutation check: collapse ErrForbidden into the generic auth error path and
+	// this returns 401, hiding an authenticated key's IP policy denial from clients.
+	d := minimalDeps()
+	d.Auth = stubAuth{err: auth.ErrForbidden}
+
+	rec := invokeHandler(t, d, validBody())
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d want 403 body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"forbidden"`) {
+		t.Fatalf("body=%s want forbidden code", rec.Body.String())
+	}
+}
+
 func TestHandler_InsufficientBalanceReturnsClientParseable402(t *testing.T) {
 	// Mutation check: leaving the old reserve_error branch returns a generic
 	// body without type=insufficient_quota, code=insufficient_balance, and the

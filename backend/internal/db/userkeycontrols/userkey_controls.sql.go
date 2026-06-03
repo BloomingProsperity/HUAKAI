@@ -56,6 +56,35 @@ func (q *Queries) GetAPIKeyGroup(ctx context.Context, arg GetAPIKeyGroupParams) 
 	return i, err
 }
 
+const getAPIKeyIPAllowlist = `-- name: GetAPIKeyIPAllowlist :one
+SELECT
+    ak.id AS api_key_id,
+    ak.ip_allowlist
+FROM api_keys ak
+WHERE ak.id = $1::bigint
+  AND ak.tenant_id = $2::bigint
+  AND ak.user_id = $3::bigint
+  AND ak.deleted_at IS NULL
+`
+
+type GetAPIKeyIPAllowlistParams struct {
+	APIKeyID int64 `db:"api_key_id" json:"api_key_id"`
+	TenantID int64 `db:"tenant_id" json:"tenant_id"`
+	UserID   int64 `db:"user_id" json:"user_id"`
+}
+
+type GetAPIKeyIPAllowlistRow struct {
+	APIKeyID    int64   `db:"api_key_id" json:"api_key_id"`
+	IpAllowlist *string `db:"ip_allowlist" json:"ip_allowlist"`
+}
+
+func (q *Queries) GetAPIKeyIPAllowlist(ctx context.Context, arg GetAPIKeyIPAllowlistParams) (GetAPIKeyIPAllowlistRow, error) {
+	row := q.db.QueryRow(ctx, getAPIKeyIPAllowlist, arg.APIKeyID, arg.TenantID, arg.UserID)
+	var i GetAPIKeyIPAllowlistRow
+	err := row.Scan(&i.APIKeyID, &i.IpAllowlist)
+	return i, err
+}
+
 const getAPIKeyQuotaPolicy = `-- name: GetAPIKeyQuotaPolicy :one
 SELECT
     ak.id AS api_key_id,
@@ -152,6 +181,36 @@ type SetAPIKeyGroupIDParams struct {
 func (q *Queries) SetAPIKeyGroupID(ctx context.Context, arg SetAPIKeyGroupIDParams) (int64, error) {
 	result, err := q.db.Exec(ctx, setAPIKeyGroupID,
 		arg.KeyGroupID,
+		arg.APIKeyID,
+		arg.TenantID,
+		arg.UserID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const setAPIKeyIPAllowlist = `-- name: SetAPIKeyIPAllowlist :execrows
+UPDATE api_keys ak
+SET ip_allowlist = $1::text,
+    updated_at = NOW()
+WHERE ak.id = $2::bigint
+  AND ak.tenant_id = $3::bigint
+  AND ak.user_id = $4::bigint
+  AND ak.deleted_at IS NULL
+`
+
+type SetAPIKeyIPAllowlistParams struct {
+	IpAllowlist *string `db:"ip_allowlist" json:"ip_allowlist"`
+	APIKeyID    int64   `db:"api_key_id" json:"api_key_id"`
+	TenantID    int64   `db:"tenant_id" json:"tenant_id"`
+	UserID      int64   `db:"user_id" json:"user_id"`
+}
+
+func (q *Queries) SetAPIKeyIPAllowlist(ctx context.Context, arg SetAPIKeyIPAllowlistParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setAPIKeyIPAllowlist,
+		arg.IpAllowlist,
 		arg.APIKeyID,
 		arg.TenantID,
 		arg.UserID,

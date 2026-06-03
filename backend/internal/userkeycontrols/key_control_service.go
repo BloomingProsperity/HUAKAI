@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/apikeyipallow"
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 )
 
@@ -104,6 +105,56 @@ func (s *KeyControlService) GetKeyQuota(ctx context.Context, tenantID, userID, a
 		return KeyQuotaView{}, fmt.Errorf("%w: get quota policy: %v", ErrBackend, err)
 	}
 	return quotaResult(apiKeyID, row), nil
+}
+
+func (s *KeyControlService) SetKeyIPAllowlist(ctx context.Context, req SetKeyIPAllowlistRequest) (SetKeyIPAllowlistResult, error) {
+	if s == nil || s.store == nil {
+		return SetKeyIPAllowlistResult{}, fmt.Errorf("%w: store unset", ErrServiceMisconfig)
+	}
+	if req.TenantID <= 0 || req.UserID <= 0 || req.APIKeyID <= 0 {
+		return SetKeyIPAllowlistResult{}, ErrKeyNotFound
+	}
+	normalized, err := apikeyipallow.Normalize(req.IPAllowlist)
+	if err != nil {
+		return SetKeyIPAllowlistResult{}, ErrInvalidIPAllowlist
+	}
+	affected, err := s.store.SetAPIKeyIPAllowlist(ctx, ipAllowlistAssignment{
+		TenantID:    req.TenantID,
+		UserID:      req.UserID,
+		APIKeyID:    req.APIKeyID,
+		IPAllowlist: apikeyipallow.StorageText(normalized),
+	})
+	if err != nil {
+		return SetKeyIPAllowlistResult{}, fmt.Errorf("%w: set ip allowlist: %v", ErrBackend, err)
+	}
+	if affected == 0 {
+		return SetKeyIPAllowlistResult{}, ErrKeyNotFound
+	}
+	return SetKeyIPAllowlistResult{APIKeyID: req.APIKeyID, IPAllowlist: normalized}, nil
+}
+
+func (s *KeyControlService) GetKeyIPAllowlist(ctx context.Context, tenantID, userID, apiKeyID int64) (KeyIPAllowlistView, error) {
+	if s == nil || s.store == nil {
+		return KeyIPAllowlistView{}, fmt.Errorf("%w: store unset", ErrServiceMisconfig)
+	}
+	if tenantID <= 0 || userID <= 0 || apiKeyID <= 0 {
+		return KeyIPAllowlistView{}, ErrKeyNotFound
+	}
+	row, err := s.store.GetAPIKeyIPAllowlist(ctx, tenantID, userID, apiKeyID)
+	if err != nil {
+		if isNoRows(err) {
+			return KeyIPAllowlistView{}, ErrKeyNotFound
+		}
+		return KeyIPAllowlistView{}, fmt.Errorf("%w: get ip allowlist: %v", ErrBackend, err)
+	}
+	entries := []string{}
+	if row.IPAllowlist != nil {
+		entries, err = apikeyipallow.NormalizeCSV(*row.IPAllowlist)
+		if err != nil {
+			return KeyIPAllowlistView{}, ErrInvalidIPAllowlist
+		}
+	}
+	return KeyIPAllowlistView{APIKeyID: row.APIKeyID, IPAllowlist: entries}, nil
 }
 
 func validateQuotaRequest(req SetKeyQuotaRequest) error {

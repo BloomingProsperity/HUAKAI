@@ -128,6 +128,79 @@ func TestSetKeyGroup_ClearsWithNilGroupID(t *testing.T) {
 	}
 }
 
+func TestSetKeyIPAllowlist_NormalizesCIDRsAndBareIPs(t *testing.T) {
+	// Mutation check: store raw entries without parsing and this test sees the
+	// unmasked CIDR / bare IP; skip the store update and setIPAllowlistCalled is false.
+	store := newFakeStore()
+	svc := newServiceForTest(store, fixedNow)
+
+	res, err := svc.SetKeyIPAllowlist(context.Background(), SetKeyIPAllowlistRequest{
+		TenantID:    11,
+		UserID:      22,
+		APIKeyID:    333,
+		IPAllowlist: []string{" 10.1.2.3/8 ", "203.0.113.7"},
+	})
+	if err != nil {
+		t.Fatalf("SetKeyIPAllowlist: %v", err)
+	}
+	if !store.setIPAllowlistCalled {
+		t.Fatalf("SetKeyIPAllowlist must update api_keys.ip_allowlist")
+	}
+	if store.setIPAllowlistArg.IPAllowlist == nil {
+		t.Fatalf("non-empty allowlist must store non-null text")
+	}
+	if got, want := *store.setIPAllowlistArg.IPAllowlist, "10.0.0.0/8,203.0.113.7/32"; got != want {
+		t.Fatalf("stored ip_allowlist=%q want %q", got, want)
+	}
+	if got, want := strings.Join(res.IPAllowlist, ","), "10.0.0.0/8,203.0.113.7/32"; got != want {
+		t.Fatalf("result ip_allowlist=%q want %q", got, want)
+	}
+}
+
+func TestSetKeyIPAllowlist_EmptyClearsRestriction(t *testing.T) {
+	// Mutation check: persist an empty string instead of NULL and the store arg differs.
+	store := newFakeStore()
+	svc := newServiceForTest(store, fixedNow)
+
+	res, err := svc.SetKeyIPAllowlist(context.Background(), SetKeyIPAllowlistRequest{
+		TenantID:    11,
+		UserID:      22,
+		APIKeyID:    333,
+		IPAllowlist: []string{" ", ""},
+	})
+	if err != nil {
+		t.Fatalf("SetKeyIPAllowlist clear: %v", err)
+	}
+	if !store.setIPAllowlistCalled {
+		t.Fatalf("clear must update api_keys.ip_allowlist")
+	}
+	if store.setIPAllowlistArg.IPAllowlist != nil {
+		t.Fatalf("clear must bind NULL ip_allowlist, got %q", *store.setIPAllowlistArg.IPAllowlist)
+	}
+	if len(res.IPAllowlist) != 0 {
+		t.Fatalf("cleared result must be empty, got %+v", res.IPAllowlist)
+	}
+}
+
+func TestSetKeyIPAllowlist_RejectsInvalidCIDRBeforeStore(t *testing.T) {
+	// Mutation check: swallow parse errors and the invalid entry reaches the store.
+	store := newFakeStore()
+	svc := newServiceForTest(store, fixedNow)
+
+	_, err := svc.SetKeyIPAllowlist(context.Background(), SetKeyIPAllowlistRequest{
+		TenantID:    11,
+		UserID:      22,
+		APIKeyID:    333,
+		IPAllowlist: []string{"10.0.0.0/8", "not-an-ip"},
+	})
+	if !errors.Is(err, ErrInvalidIPAllowlist) {
+		t.Fatalf("SetKeyIPAllowlist err=%v want ErrInvalidIPAllowlist", err)
+	}
+	if store.setIPAllowlistCalled {
+		t.Fatalf("invalid CIDR must not update api_keys.ip_allowlist")
+	}
+}
+
 func TestSQLQueries_QuotaPolicyIsAPIKeyScopedAndIdempotent(t *testing.T) {
 	sql := readControlsSQL(t)
 	queries := namedQueryBodies(sql)
@@ -163,6 +236,18 @@ func TestSQLQueries_DoNotSelectBearerSecrets(t *testing.T) {
 			t.Fatalf("userkeycontrols SQL must not reference bearer material %q", forbidden)
 		}
 	}
+}
+
+func TestSQLQueries_IPAllowlistControlIsScopedAndReturnsOnlyPolicyText(t *testing.T) {
+	sql := readControlsSQL(t)
+	queries := namedQueryBodies(sql)
+	setBody := queries["SetAPIKeyIPAllowlist"]
+	getBody := queries["GetAPIKeyIPAllowlist"]
+	mustContain(t, setBody, "SET ip_allowlist = sqlc.narg(ip_allowlist)::text", "set IP allowlist must write only the policy column")
+	mustContain(t, setBody, "ak.tenant_id = sqlc.arg(tenant_id)::bigint", "set IP allowlist must scope by tenant")
+	mustContain(t, setBody, "ak.user_id = sqlc.arg(user_id)::bigint", "set IP allowlist must scope by user")
+	mustContain(t, getBody, "ak.ip_allowlist", "get IP allowlist must return policy text")
+	mustContain(t, getBody, "ak.user_id = sqlc.arg(user_id)::bigint", "get IP allowlist must scope by user")
 }
 
 func fixedNow() time.Time {
@@ -209,13 +294,16 @@ func namedQueryBodies(sql string) map[string]string {
 var errNoRows = pgx.ErrNoRows
 
 type fakeStore struct {
-	upsertArg        quotaPolicyWrite
-	linkQuotaArg     quotaPolicyLink
-	setGroupArg      groupAssignment
-	getQuotaErr      error
-	validateGroupErr error
-	linkQuotaCalled  bool
-	setGroupCalled   bool
+	upsertArg            quotaPolicyWrite
+	linkQuotaArg         quotaPolicyLink
+	setGroupArg          groupAssignment
+	setIPAllowlistArg    ipAllowlistAssignment
+	getQuotaErr          error
+	validateGroupErr     error
+	getIPAllowlistErr    error
+	linkQuotaCalled      bool
+	setGroupCalled       bool
+	setIPAllowlistCalled bool
 }
 
 func newFakeStore() *fakeStore {
@@ -271,4 +359,18 @@ func (s *fakeStore) SetAPIKeyGroupID(_ context.Context, arg groupAssignment) (in
 
 func (s *fakeStore) GetAPIKeyGroup(context.Context, int64, int64, int64) (keyGroupRow, error) {
 	return keyGroupRow{APIKeyID: 333}, nil
+}
+
+func (s *fakeStore) SetAPIKeyIPAllowlist(_ context.Context, arg ipAllowlistAssignment) (int64, error) {
+	s.setIPAllowlistCalled = true
+	s.setIPAllowlistArg = arg
+	return 1, nil
+}
+
+func (s *fakeStore) GetAPIKeyIPAllowlist(context.Context, int64, int64, int64) (keyIPAllowlistRow, error) {
+	if s.getIPAllowlistErr != nil {
+		return keyIPAllowlistRow{}, s.getIPAllowlistErr
+	}
+	value := "10.0.0.0/8"
+	return keyIPAllowlistRow{APIKeyID: 333, IPAllowlist: &value}, nil
 }

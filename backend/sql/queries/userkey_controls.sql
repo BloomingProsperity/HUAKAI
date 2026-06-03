@@ -93,6 +93,25 @@ WHERE ak.id = sqlc.arg(api_key_id)::bigint
   AND ak.user_id = sqlc.arg(user_id)::bigint
   AND ak.deleted_at IS NULL;
 
+-- name: SetAPIKeyIPAllowlist :execrows
+UPDATE api_keys ak
+SET ip_allowlist = sqlc.narg(ip_allowlist)::text,
+    updated_at = NOW()
+WHERE ak.id = sqlc.arg(api_key_id)::bigint
+  AND ak.tenant_id = sqlc.arg(tenant_id)::bigint
+  AND ak.user_id = sqlc.arg(user_id)::bigint
+  AND ak.deleted_at IS NULL;
+
+-- name: GetAPIKeyIPAllowlist :one
+SELECT
+    ak.id AS api_key_id,
+    ak.ip_allowlist
+FROM api_keys ak
+WHERE ak.id = sqlc.arg(api_key_id)::bigint
+  AND ak.tenant_id = sqlc.arg(tenant_id)::bigint
+  AND ak.user_id = sqlc.arg(user_id)::bigint
+  AND ak.deleted_at IS NULL;
+
 -- name: GetAPIKeyQuotaPolicy :one
 SELECT
     ak.id AS api_key_id,

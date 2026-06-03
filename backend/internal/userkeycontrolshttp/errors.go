@@ -13,6 +13,8 @@ func writeControlsError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_quota", "limit_usd must be a non-negative decimal")
 	case errors.Is(err, userkeycontrols.ErrInvalidGroup):
 		writeError(w, http.StatusBadRequest, "invalid_group_id", "group_id must be a positive int64 or null")
+	case errors.Is(err, userkeycontrols.ErrInvalidIPAllowlist):
+		writeError(w, http.StatusBadRequest, "invalid_ip_allowlist", "ip_allowlist entries must be CIDR or IP strings")
 	case errors.Is(err, userkeycontrols.ErrKeyNotFound):
 		writeError(w, http.StatusNotFound, "api_key_not_found", "api_key not found")
 	case errors.Is(err, userkeycontrols.ErrQuotaPolicyNotFound):

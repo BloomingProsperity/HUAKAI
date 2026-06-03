@@ -160,6 +160,10 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusServiceUnavailable, "auth_backend_error", "auth backend transient failure")
 			return
 		}
+		if errors.Is(err, auth.ErrForbidden) {
+			writeJSONError(w, http.StatusForbidden, "forbidden", "api key policy forbids this request")
+			return
+		}
 		if err != nil {
 			writeJSONError(w, http.StatusUnauthorized, "unauthorized", "invalid bearer")
 			return

@@ -51,6 +51,44 @@ func TestPutGroup_InvalidGroupID_400(t *testing.T) {
 	}
 }
 
+func TestPutIPAllowlist_UsesSessionScopeAndBodyList(t *testing.T) {
+	// Mutation check: take tenant/user/api_key from the body or skip the new
+	// route and the captured request/status assertions go red.
+	service := &stubService{}
+	rr := serveControls(t, Deps{Service: service}, http.MethodPut, "/123/ip-allowlist",
+		`{"ip_allowlist":["10.0.0.0/8","203.0.113.7"]}`, true)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rr.Code, rr.Body.String())
+	}
+	if service.setIPAllowlistCalls != 1 {
+		t.Fatalf("SetKeyIPAllowlist calls=%d want 1", service.setIPAllowlistCalls)
+	}
+	got := service.lastIPAllowlistReq
+	if got.TenantID != 11 || got.UserID != 22 || got.APIKeyID != 123 {
+		t.Fatalf("scope=%+v want tenant=11 user=22 api_key=123", got)
+	}
+	if strings.Join(got.IPAllowlist, ",") != "10.0.0.0/8,203.0.113.7" {
+		t.Fatalf("IPAllowlist=%+v want request body list", got.IPAllowlist)
+	}
+	if !strings.Contains(rr.Body.String(), `"ip_allowlist"`) {
+		t.Fatalf("body=%s must include ip_allowlist", rr.Body.String())
+	}
+}
+
+func TestPutIPAllowlist_InvalidEntry_400(t *testing.T) {
+	service := &stubService{setIPAllowlistErr: userkeycontrols.ErrInvalidIPAllowlist}
+	rr := serveControls(t, Deps{Service: service}, http.MethodPut, "/123/ip-allowlist",
+		`{"ip_allowlist":["not-an-ip"]}`, true)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400 body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "invalid_ip_allowlist") {
+		t.Fatalf("body=%s want invalid_ip_allowlist code", rr.Body.String())
+	}
+}
+
 func TestGetQuota_ServiceNil_503(t *testing.T) {
 	rr := serveControls(t, Deps{}, http.MethodGet, "/123/quota", ``, true)
 
@@ -89,9 +127,13 @@ func serveControls(t *testing.T, deps Deps, method, target, body string, withSes
 }
 
 type stubService struct {
-	setQuotaCalls int
-	setGroupCalls int
-	getGroupErr   error
+	setQuotaCalls       int
+	setGroupCalls       int
+	setIPAllowlistCalls int
+	lastIPAllowlistReq  userkeycontrols.SetKeyIPAllowlistRequest
+	getGroupErr         error
+	setIPAllowlistErr   error
+	getIPAllowlistErr   error
 }
 
 func (s *stubService) SetKeyQuota(_ context.Context, req userkeycontrols.SetKeyQuotaRequest) (userkeycontrols.SetKeyQuotaResult, error) {
@@ -131,4 +173,20 @@ func (s *stubService) GetKeyGroup(context.Context, int64, int64, int64) (userkey
 		return userkeycontrols.KeyGroupView{}, s.getGroupErr
 	}
 	return userkeycontrols.KeyGroupView{APIKeyID: 123}, nil
+}
+
+func (s *stubService) SetKeyIPAllowlist(_ context.Context, req userkeycontrols.SetKeyIPAllowlistRequest) (userkeycontrols.SetKeyIPAllowlistResult, error) {
+	s.setIPAllowlistCalls++
+	s.lastIPAllowlistReq = req
+	if s.setIPAllowlistErr != nil {
+		return userkeycontrols.SetKeyIPAllowlistResult{}, s.setIPAllowlistErr
+	}
+	return userkeycontrols.SetKeyIPAllowlistResult{APIKeyID: req.APIKeyID, IPAllowlist: req.IPAllowlist}, nil
+}
+
+func (s *stubService) GetKeyIPAllowlist(context.Context, int64, int64, int64) (userkeycontrols.KeyIPAllowlistView, error) {
+	if s.getIPAllowlistErr != nil {
+		return userkeycontrols.KeyIPAllowlistView{}, s.getIPAllowlistErr
+	}
+	return userkeycontrols.KeyIPAllowlistView{APIKeyID: 123, IPAllowlist: []string{"10.0.0.0/8"}}, nil
 }

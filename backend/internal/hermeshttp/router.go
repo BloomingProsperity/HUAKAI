@@ -83,6 +83,10 @@ func APIKeyMiddleware(resolver AuthResolver) func(http.Handler) http.Handler {
 					writeError(w, http.StatusServiceUnavailable, "hermes_auth_backend_error", "hermes auth backend transient failure")
 					return
 				}
+				if errors.Is(err, sessionauth.ErrForbidden) {
+					writeError(w, http.StatusForbidden, "forbidden", "api key policy forbids this request")
+					return
+				}
 				writeError(w, http.StatusUnauthorized, "hermes_unauthorized", "missing or invalid bearer token")
 				return
 			}
