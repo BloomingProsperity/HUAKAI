@@ -43,6 +43,34 @@ sql:
   - engine: postgresql
     schema: sql/migrations
     queries:
+      - sql/queries/platform_settings.sql
+    gen:
+      go:
+        package: platformsettings
+        out: internal/db/platformsettings
+        sql_package: pgx/v5
+        emit_json_tags: true
+        emit_db_tags: true
+        emit_pointers_for_null_types: true
+        emit_interface: true
+        omit_unused_structs: true
+        emit_methods_with_db_argument: false
+        emit_prepared_queries: false
+        rename:
+          tenant_id: TenantID
+          api_key_id: APIKeyID
+          provider_id: ProviderID
+          channel_id: ChannelID
+          pool_group_id: PoolGroupID
+          provider_account_id: ProviderAccountID
+          claim_id: ClaimID
+          acquisition_token: AcquisitionToken
+          dlq: DLQ
+          oauth_endpoint_health: OAuthEndpointHealth
+          openai_403_counter: OpenAI403Counter
+  - engine: postgresql
+    schema: sql/migrations
+    queries:
       - sql/queries/billing_claims.sql
       - sql/queries/billing_settings.sql
       - sql/queries/billing_settle.sql
