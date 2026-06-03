@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config is the typed snapshot of all settings the gateway needs at boot.
@@ -40,6 +41,11 @@ type Config struct {
 	// VendorOAuth holds operator-owned OAuth refresh settings for vendor
 	// refreshers. Empty TokenURL means that vendor refresher is not wired.
 	VendorOAuth VendorOAuthConfigs
+
+	// CredentialAcqBootstrap*TTL optionally override credential acquisition
+	// OAuth bootstrap windows. Zero means the credentialacq package default.
+	CredentialAcqBootstrapShortTTL time.Duration
+	CredentialAcqBootstrapLongTTL  time.Duration
 
 	// PaymentHMACSecrets maps payment provider name -> webhook HMAC secret.
 	// Values come from HUAKAI_PAYMENT_HMAC_SECRETS and must never be logged.
@@ -99,17 +105,27 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	credentialAcqBootstrapShortTTL, err := envOptionalDurationSeconds("HUAKAI_CREDENTIAL_ACQ_BOOTSTRAP_SHORT_TTL_SECONDS")
+	if err != nil {
+		return nil, err
+	}
+	credentialAcqBootstrapLongTTL, err := envOptionalDurationSeconds("HUAKAI_CREDENTIAL_ACQ_BOOTSTRAP_LONG_TTL_SECONDS")
+	if err != nil {
+		return nil, err
+	}
 	cfg := &Config{
-		DatabaseURL:              os.Getenv("HUAKAI_DATABASE_URL"),
-		Listen:                   envDefault("HUAKAI_ADDR", ":8080"),
-		BillingPolicyVersion:     envDefault("HUAKAI_BILLING_POLICY_VERSION", DefaultBillingPolicyVersion),
-		RequestClass:             envDefault("HUAKAI_REQUEST_CLASS", "standard"),
-		TransportSidecarSocket:   os.Getenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET"),
-		TransportSidecarFallback: transportSidecarFallback,
-		QuotaEnforce:             quotaEnforce,
-		VendorOAuth:              loadVendorOAuthConfigs(),
-		PaymentHMACSecrets:       paymentHMACSecrets,
-		PaymentEnableMock:        paymentEnableMock,
+		DatabaseURL:                    os.Getenv("HUAKAI_DATABASE_URL"),
+		Listen:                         envDefault("HUAKAI_ADDR", ":8080"),
+		BillingPolicyVersion:           envDefault("HUAKAI_BILLING_POLICY_VERSION", DefaultBillingPolicyVersion),
+		RequestClass:                   envDefault("HUAKAI_REQUEST_CLASS", "standard"),
+		TransportSidecarSocket:         os.Getenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET"),
+		TransportSidecarFallback:       transportSidecarFallback,
+		QuotaEnforce:                   quotaEnforce,
+		VendorOAuth:                    loadVendorOAuthConfigs(),
+		CredentialAcqBootstrapShortTTL: credentialAcqBootstrapShortTTL,
+		CredentialAcqBootstrapLongTTL:  credentialAcqBootstrapLongTTL,
+		PaymentHMACSecrets:             paymentHMACSecrets,
+		PaymentEnableMock:              paymentEnableMock,
 	}
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("%w: HUAKAI_DATABASE_URL", ErrMissingRequired)
@@ -211,4 +227,19 @@ func envBool(name string) (bool, error) {
 		return false, fmt.Errorf("%s must be a boolean, got %q: %w", name, raw, err)
 	}
 	return v, nil
+}
+
+func envOptionalDurationSeconds(name string) (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return 0, nil
+	}
+	seconds, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || seconds <= 0 {
+		if err != nil {
+			return 0, fmt.Errorf("%s must be positive seconds, got %q: %w", name, raw, err)
+		}
+		return 0, fmt.Errorf("%s must be positive seconds, got %q", name, raw)
+	}
+	return time.Duration(seconds) * time.Second, nil
 }
