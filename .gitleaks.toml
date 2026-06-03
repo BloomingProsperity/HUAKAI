@@ -1,0 +1,63 @@
+title = "HUAKAI gitleaks allowlist"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Only suppress verified fixture, vendored, documentation, and placeholder secret noise."
+paths = [
+  # Safe: exploratory redaction module embeds secret-shaped SAMPLE literals (sk-test-*, ya29.*, a demo JWT) inside #[cfg(test)] to prove the redactor strips them; Rust in-file unit tests are not *_test.rs so the test-path rule misses them. Not runtime credentials.
+  '''^exploratory/rust-core-gateway/.*/redaction\.rs$''',
+
+  # Safe: this file contains allowlist regex examples and known public placeholder literals, not runtime credentials.
+  '''^\.gitleaks\.toml$''',
+
+  # Safe: vendored BoringSSL contains upstream cryptographic conformance keys and parser fixtures, not HUAKAI secrets.
+  '''^exploratory/rust-core-gateway/vendor/''',
+
+  # Safe: unit/integration tests intentionally embed fake secret-shaped sentinels to prove redaction and rejection behavior.
+  '''(^|/)([^/]+_test\.(go|rs)|test_[^/]+\.(py|rs|sh)|tests?/|testdata/|fixtures?/)''',
+
+  # Safe: product docs and research artifacts contain protocol examples, public reference notes, and placeholder tokens only.
+  '''^(docs|docs_zh|reference_deep_dive)(/|$)''',
+
+  # Safe: root markdown files are documentation and contain example tokens or policy text, not deployable credentials.
+  '''^(README[^/]*|LEGAL|ROUND_[0-9]+_REPORT)\.md$''',
+
+  # Safe: tool markdown and *.example files are operator examples with placeholder values.
+  '''^tools/[^/]+/.*\.(md|example)$''',
+
+  # Safe: example config and local dev compose defaults use replace-me/dev-only placeholders.
+  '''(^|/)([^/]*\.example(\.[^/]*)?|config\.example\.ya?ml|docker-compose\.dev\.ya?ml)$''',
+]
+regexes = [
+  # Safe: Claude.ai OAuth *public* client_id (RFC 8252 native-app public client; declared as claudeAIOAuthPublicClientID). Public identifier, not a secret — same class as the public GOCSPX installed-app secret below.
+  '''\b9d1c250a-e61b-44d9-88ed-5944d1962f5e\b''',
+
+  # Safe: angle-bracket values are explicit copy/paste placeholders, not credential material.
+  '''(?i)<(?:paste|shared|owner|server|service|your|token|secret)[^>\n]{0,80}>''',
+
+  # Safe: these words mark intentionally fake/example secret strings used in docs, fixtures, and tests.
+  '''(?i)\b(?:fake|dummy|mock|test|dev|example|sample|placeholder|changeme|change-me|replace-me|your|xxxx+)[A-Za-z0-9_.:/@-]{0,80}(?:api[_-]?key|key|token|secret|password|credential|bearer)[A-Za-z0-9_.:/@-]*\b''',
+
+  # Safe: same placeholder vocabulary, but with the secret label first, as commonly used in env examples.
+  '''(?i)\b(?:api[_-]?key|key|token|secret|password|credential|bearer)[A-Za-z0-9_.:/@-]{0,80}(?:fake|dummy|mock|test|dev|example|sample|placeholder|changeme|change-me|replace-me|your|xxxx+)[A-Za-z0-9_.:/@-]*\b''',
+
+  # Safe: OpenAI-shaped sentinels are human-readable fake values used to test redaction, rejection, and no-leak behavior.
+  '''\bsk-(?:test|fake|secret|rawprompt|settle|eventbus|dlq|create|rotate|refresh|disabled|proxy|nested|should-not|very|super|live-secret-marker|alias|openrouter|cross-protocol|unknown|1234567890abcdef)[A-Za-z0-9_-]*\b''',
+
+  # Safe: redaction-test sample tokens (oauth/lease/jwt-shaped) embedded in the rust redaction unit test to prove stripping.
+  '''\b(?:ya29\.real-access-token-value|lease-token-value)\b''',
+
+  # Safe: HUAKAI example key prefixes use x's or smoke/test labels and are insufficient to authenticate.
+  '''\bhk_(?:your_api_key|live_x{4,}|test_x{4,}|admin_x{4,}|smoke_token|admin_test|test_smoke)\b''',
+
+  # Safe: canonical AWS documentation sample values are intentionally non-secret examples.
+  '''\b(?:AKIDEXAMPLE|AKIA\.\.\.|wJal\.\.\.|wJalrXUtnFEMI/K7MDENG\+bPxRfiCYEXAMPLEKEY)\b''',
+
+  # Safe: documented Google installed-app public client secret; it is not a HUAKAI-owned credential.
+  '''\bGOCSPX-4uHgMPm-1o7Sk-geV6Cu5clXFsxl\b''',
+
+  # Safe: explicit redaction marker used by tests and docs to show secret material has been removed.
+  '''\[(?:REDACTED|redacted)\]''',
+]
