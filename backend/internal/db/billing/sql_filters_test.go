@@ -106,6 +106,40 @@ func TestUsagePerformanceSQLUsesSafeLatencyThroughputAndErrorAggregates(t *testi
 	}
 }
 
+func TestUsageOverviewSQLUsesWindowDistinctSuccessAndDayBucket(t *testing.T) {
+	totalsSQL := strings.Join(strings.Fields(aggregateUsageOverviewTotals), " ")
+	for _, want := range []string{
+		"WHERE ur.settled_at >= $1::timestamptz",
+		"COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text AS total_cost",
+		"COALESCE(sum(ur.tokens_input::bigint + ur.tokens_output::bigint), 0)::bigint AS total_tokens",
+		"count(DISTINCT ur.user_id)::bigint AS active_users",
+		"count(DISTINCT ur.api_key_id)::bigint AS active_api_keys",
+		"count(*) FILTER (WHERE ur.end_class IN ('stream_end_graceful', 'non_streaming'))::bigint AS success_count",
+	} {
+		// Mutation checks: dropping the window admits old high-cost rows,
+		// changing DISTINCT to COUNT inflates active users/keys, and dropping
+		// the success end_class filter makes every request look successful.
+		if !strings.Contains(totalsSQL, want) {
+			t.Fatalf("overview totals SQL missing %q in %q", want, totalsSQL)
+		}
+	}
+
+	trendSQL := strings.Join(strings.Fields(aggregateUsageOverviewTrendByDay), " ")
+	for _, want := range []string{
+		"date_trunc('day', ur.settled_at AT TIME ZONE 'UTC')::timestamptz AS day",
+		"WHERE ur.settled_at >= $1::timestamptz",
+		"GROUP BY 1",
+		"ORDER BY 1 ASC",
+	} {
+		// Mutation checks: dropping UTC day bucketing collapses chart points,
+		// dropping the window admits old usage, and changing order destabilizes
+		// the overview trend contract.
+		if !strings.Contains(trendSQL, want) {
+			t.Fatalf("overview trend SQL missing %q in %q", want, trendSQL)
+		}
+	}
+}
+
 func TestMyUsageTimeSeriesSQLUsesRequestedGranularityAndCallerScope(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

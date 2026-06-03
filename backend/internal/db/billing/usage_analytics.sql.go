@@ -403,6 +403,81 @@ func (q *Queries) AggregateUsageLeaderboardByUser(ctx context.Context, arg Aggre
 	return items, nil
 }
 
+const aggregateUsageOverviewTotals = `-- name: AggregateUsageOverviewTotals :one
+SELECT
+    count(*)::bigint                                             AS request_count,
+    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost,
+    COALESCE(sum(ur.tokens_input::bigint + ur.tokens_output::bigint), 0)::bigint AS total_tokens,
+    count(DISTINCT ur.user_id)::bigint                           AS active_users,
+    count(DISTINCT ur.api_key_id)::bigint                        AS active_api_keys,
+    count(*) FILTER (WHERE ur.end_class IN ('stream_end_graceful', 'non_streaming'))::bigint AS success_count
+FROM usage_records ur
+WHERE ur.settled_at >= $1::timestamptz
+`
+
+type AggregateUsageOverviewTotalsRow struct {
+	RequestCount  int64  `db:"request_count" json:"request_count"`
+	TotalCost     string `db:"total_cost" json:"total_cost"`
+	TotalTokens   int64  `db:"total_tokens" json:"total_tokens"`
+	ActiveUsers   int64  `db:"active_users" json:"active_users"`
+	ActiveApiKeys int64  `db:"active_api_keys" json:"active_api_keys"`
+	SuccessCount  int64  `db:"success_count" json:"success_count"`
+}
+
+// Platform-admin overview totals across the recent settled usage window.
+// Operator surface: actual_cost is intentionally exposed as decimal text.
+func (q *Queries) AggregateUsageOverviewTotals(ctx context.Context, settledSince pgtype.Timestamptz) (AggregateUsageOverviewTotalsRow, error) {
+	row := q.db.QueryRow(ctx, aggregateUsageOverviewTotals, settledSince)
+	var i AggregateUsageOverviewTotalsRow
+	err := row.Scan(
+		&i.RequestCount,
+		&i.TotalCost,
+		&i.TotalTokens,
+		&i.ActiveUsers,
+		&i.ActiveApiKeys,
+		&i.SuccessCount,
+	)
+	return i, err
+}
+
+const aggregateUsageOverviewTrendByDay = `-- name: AggregateUsageOverviewTrendByDay :many
+SELECT
+    date_trunc('day', ur.settled_at AT TIME ZONE 'UTC')::timestamptz AS day,
+    count(*)::bigint                                             AS request_count,
+    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost
+FROM usage_records ur
+WHERE ur.settled_at >= $1::timestamptz
+GROUP BY 1
+ORDER BY 1 ASC
+`
+
+type AggregateUsageOverviewTrendByDayRow struct {
+	Day          pgtype.Timestamptz `db:"day" json:"day"`
+	RequestCount int64              `db:"request_count" json:"request_count"`
+	TotalCost    string             `db:"total_cost" json:"total_cost"`
+}
+
+// Platform-admin overview daily trend across the recent settled usage window.
+func (q *Queries) AggregateUsageOverviewTrendByDay(ctx context.Context, settledSince pgtype.Timestamptz) ([]AggregateUsageOverviewTrendByDayRow, error) {
+	rows, err := q.db.Query(ctx, aggregateUsageOverviewTrendByDay, settledSince)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AggregateUsageOverviewTrendByDayRow
+	for rows.Next() {
+		var i AggregateUsageOverviewTrendByDayRow
+		if err := rows.Scan(&i.Day, &i.RequestCount, &i.TotalCost); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const aggregateUsagePerformanceByModel = `-- name: AggregateUsagePerformanceByModel :many
 SELECT
     ur.requested_model                                           AS key,
