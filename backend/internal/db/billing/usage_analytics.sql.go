@@ -402,3 +402,132 @@ func (q *Queries) AggregateUsageLeaderboardByUser(ctx context.Context, arg Aggre
 	}
 	return items, nil
 }
+
+const aggregateUsagePerformanceByModel = `-- name: AggregateUsagePerformanceByModel :many
+SELECT
+    ur.requested_model                                           AS key,
+    COALESCE(
+        avg(EXTRACT(EPOCH FROM (ur.first_byte_at - ur.requested_at)) * 1000)
+            FILTER (WHERE ur.first_byte_at IS NOT NULL),
+        0
+    )::numeric(20,4)::text                                       AS avg_ttft_ms,
+    COALESCE(
+        avg(ur.tokens_output::numeric / NULLIF(EXTRACT(EPOCH FROM (ur.last_event_at - ur.first_byte_at)), 0))
+            FILTER (WHERE ur.last_event_at IS NOT NULL AND ur.first_byte_at IS NOT NULL AND ur.tokens_output > 0),
+        0
+    )::numeric(20,4)::text                                       AS avg_tps,
+    count(*)::bigint                                             AS request_count,
+    count(*) FILTER (WHERE ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))::bigint AS error_count
+FROM usage_records ur
+WHERE ur.settled_at >= $1::timestamptz
+GROUP BY ur.requested_model
+ORDER BY count(*) DESC, key ASC
+LIMIT $2::int
+`
+
+type AggregateUsagePerformanceByModelParams struct {
+	SettledSince pgtype.Timestamptz `db:"settled_since" json:"settled_since"`
+	RowLimit     int32              `db:"row_limit" json:"row_limit"`
+}
+
+type AggregateUsagePerformanceByModelRow struct {
+	Key          string `db:"key" json:"key"`
+	AvgTtftMs    string `db:"avg_ttft_ms" json:"avg_ttft_ms"`
+	AvgTps       string `db:"avg_tps" json:"avg_tps"`
+	RequestCount int64  `db:"request_count" json:"request_count"`
+	ErrorCount   int64  `db:"error_count" json:"error_count"`
+}
+
+// Platform-admin performance panel by requested_model. Read-only operator
+// surface: latency, throughput, and error rate inputs only; no cost fields.
+func (q *Queries) AggregateUsagePerformanceByModel(ctx context.Context, arg AggregateUsagePerformanceByModelParams) ([]AggregateUsagePerformanceByModelRow, error) {
+	rows, err := q.db.Query(ctx, aggregateUsagePerformanceByModel, arg.SettledSince, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AggregateUsagePerformanceByModelRow
+	for rows.Next() {
+		var i AggregateUsagePerformanceByModelRow
+		if err := rows.Scan(
+			&i.Key,
+			&i.AvgTtftMs,
+			&i.AvgTps,
+			&i.RequestCount,
+			&i.ErrorCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const aggregateUsagePerformanceByProviderAccount = `-- name: AggregateUsagePerformanceByProviderAccount :many
+SELECT
+    (CASE
+        WHEN ur.provider_account_id IS NULL THEN 'unassigned'
+        ELSE ur.provider_account_id::text
+     END)::text                                                  AS key,
+    COALESCE(
+        avg(EXTRACT(EPOCH FROM (ur.first_byte_at - ur.requested_at)) * 1000)
+            FILTER (WHERE ur.first_byte_at IS NOT NULL),
+        0
+    )::numeric(20,4)::text                                       AS avg_ttft_ms,
+    COALESCE(
+        avg(ur.tokens_output::numeric / NULLIF(EXTRACT(EPOCH FROM (ur.last_event_at - ur.first_byte_at)), 0))
+            FILTER (WHERE ur.last_event_at IS NOT NULL AND ur.first_byte_at IS NOT NULL AND ur.tokens_output > 0),
+        0
+    )::numeric(20,4)::text                                       AS avg_tps,
+    count(*)::bigint                                             AS request_count,
+    count(*) FILTER (WHERE ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))::bigint AS error_count
+FROM usage_records ur
+WHERE ur.settled_at >= $1::timestamptz
+GROUP BY ur.provider_account_id
+ORDER BY count(*) DESC, key ASC
+LIMIT $2::int
+`
+
+type AggregateUsagePerformanceByProviderAccountParams struct {
+	SettledSince pgtype.Timestamptz `db:"settled_since" json:"settled_since"`
+	RowLimit     int32              `db:"row_limit" json:"row_limit"`
+}
+
+type AggregateUsagePerformanceByProviderAccountRow struct {
+	Key          string `db:"key" json:"key"`
+	AvgTtftMs    string `db:"avg_ttft_ms" json:"avg_ttft_ms"`
+	AvgTps       string `db:"avg_tps" json:"avg_tps"`
+	RequestCount int64  `db:"request_count" json:"request_count"`
+	ErrorCount   int64  `db:"error_count" json:"error_count"`
+}
+
+// Platform-admin performance panel by provider_account_id. Provider-less
+// usage, such as cache-only settlement, is grouped under "unassigned".
+func (q *Queries) AggregateUsagePerformanceByProviderAccount(ctx context.Context, arg AggregateUsagePerformanceByProviderAccountParams) ([]AggregateUsagePerformanceByProviderAccountRow, error) {
+	rows, err := q.db.Query(ctx, aggregateUsagePerformanceByProviderAccount, arg.SettledSince, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AggregateUsagePerformanceByProviderAccountRow
+	for rows.Next() {
+		var i AggregateUsagePerformanceByProviderAccountRow
+		if err := rows.Scan(
+			&i.Key,
+			&i.AvgTtftMs,
+			&i.AvgTps,
+			&i.RequestCount,
+			&i.ErrorCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

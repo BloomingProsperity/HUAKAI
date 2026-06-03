@@ -81,6 +81,31 @@ func TestUsageLeaderboardSQLUsesWindowSortAndLimit(t *testing.T) {
 	}
 }
 
+func TestUsagePerformanceSQLUsesSafeLatencyThroughputAndErrorAggregates(t *testing.T) {
+	for name, sqlText := range map[string]string{
+		"model":            aggregateUsagePerformanceByModel,
+		"provider_account": aggregateUsagePerformanceByProviderAccount,
+	} {
+		sql := strings.Join(strings.Fields(sqlText), " ")
+		for _, want := range []string{
+			"WHERE ur.settled_at >= $1::timestamptz",
+			"avg(EXTRACT(EPOCH FROM (ur.first_byte_at - ur.requested_at)) * 1000) FILTER (WHERE ur.first_byte_at IS NOT NULL)",
+			"avg(ur.tokens_output::numeric / NULLIF(EXTRACT(EPOCH FROM (ur.last_event_at - ur.first_byte_at)), 0)) FILTER (WHERE ur.last_event_at IS NOT NULL AND ur.first_byte_at IS NOT NULL AND ur.tokens_output > 0)",
+			"count(*) FILTER (WHERE ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))::bigint AS error_count",
+			"ORDER BY count(*) DESC",
+			"LIMIT $2::int",
+		} {
+			// Mutation checks: dropping FILTER admits nil first-byte rows into
+			// TTFT, dropping NULLIF allows zero-duration TPS division, dropping
+			// the success end_class filter turns all successes into errors, and
+			// dropping request-count DESC/LIMIT misranks the ops panel.
+			if !strings.Contains(sql, want) {
+				t.Fatalf("%s performance SQL missing %q in %q", name, want, sql)
+			}
+		}
+	}
+}
+
 func TestMyUsageTimeSeriesSQLUsesRequestedGranularityAndCallerScope(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

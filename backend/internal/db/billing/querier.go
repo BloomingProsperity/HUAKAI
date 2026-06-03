@@ -46,6 +46,12 @@ type Querier interface {
 	// Platform-admin cost leaderboard by user_id. This is the operator surface:
 	// actual_cost is intentionally used to show real upstream spend.
 	AggregateUsageLeaderboardByUser(ctx context.Context, arg AggregateUsageLeaderboardByUserParams) ([]AggregateUsageLeaderboardByUserRow, error)
+	// Platform-admin performance panel by requested_model. Read-only operator
+	// surface: latency, throughput, and error rate inputs only; no cost fields.
+	AggregateUsagePerformanceByModel(ctx context.Context, arg AggregateUsagePerformanceByModelParams) ([]AggregateUsagePerformanceByModelRow, error)
+	// Platform-admin performance panel by provider_account_id. Provider-less
+	// usage, such as cache-only settlement, is grouped under "unassigned".
+	AggregateUsagePerformanceByProviderAccount(ctx context.Context, arg AggregateUsagePerformanceByProviderAccountParams) ([]AggregateUsagePerformanceByProviderAccountRow, error)
 	ApplyBalanceHoldCapture(ctx context.Context, arg ApplyBalanceHoldCaptureParams) (ApplyBalanceHoldCaptureRow, error)
 	ApplyBalanceHoldRelease(ctx context.Context, arg ApplyBalanceHoldReleaseParams) (ApplyBalanceHoldReleaseRow, error)
 	CaptureBalanceHold(ctx context.Context, arg CaptureBalanceHoldParams) (int64, error)

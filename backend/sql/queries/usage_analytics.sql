@@ -116,3 +116,52 @@ WHERE ur.settled_at >= sqlc.arg(settled_since)::timestamptz
 GROUP BY ur.provider_account_id
 ORDER BY sum(ur.actual_cost) DESC, key ASC
 LIMIT sqlc.arg(row_limit)::int;
+
+-- name: AggregateUsagePerformanceByModel :many
+-- Platform-admin performance panel by requested_model. Read-only operator
+-- surface: latency, throughput, and error rate inputs only; no cost fields.
+SELECT
+    ur.requested_model                                           AS key,
+    COALESCE(
+        avg(EXTRACT(EPOCH FROM (ur.first_byte_at - ur.requested_at)) * 1000)
+            FILTER (WHERE ur.first_byte_at IS NOT NULL),
+        0
+    )::numeric(20,4)::text                                       AS avg_ttft_ms,
+    COALESCE(
+        avg(ur.tokens_output::numeric / NULLIF(EXTRACT(EPOCH FROM (ur.last_event_at - ur.first_byte_at)), 0))
+            FILTER (WHERE ur.last_event_at IS NOT NULL AND ur.first_byte_at IS NOT NULL AND ur.tokens_output > 0),
+        0
+    )::numeric(20,4)::text                                       AS avg_tps,
+    count(*)::bigint                                             AS request_count,
+    count(*) FILTER (WHERE ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))::bigint AS error_count
+FROM usage_records ur
+WHERE ur.settled_at >= sqlc.arg(settled_since)::timestamptz
+GROUP BY ur.requested_model
+ORDER BY count(*) DESC, key ASC
+LIMIT sqlc.arg(row_limit)::int;
+
+-- name: AggregateUsagePerformanceByProviderAccount :many
+-- Platform-admin performance panel by provider_account_id. Provider-less
+-- usage, such as cache-only settlement, is grouped under "unassigned".
+SELECT
+    (CASE
+        WHEN ur.provider_account_id IS NULL THEN 'unassigned'
+        ELSE ur.provider_account_id::text
+     END)::text                                                  AS key,
+    COALESCE(
+        avg(EXTRACT(EPOCH FROM (ur.first_byte_at - ur.requested_at)) * 1000)
+            FILTER (WHERE ur.first_byte_at IS NOT NULL),
+        0
+    )::numeric(20,4)::text                                       AS avg_ttft_ms,
+    COALESCE(
+        avg(ur.tokens_output::numeric / NULLIF(EXTRACT(EPOCH FROM (ur.last_event_at - ur.first_byte_at)), 0))
+            FILTER (WHERE ur.last_event_at IS NOT NULL AND ur.first_byte_at IS NOT NULL AND ur.tokens_output > 0),
+        0
+    )::numeric(20,4)::text                                       AS avg_tps,
+    count(*)::bigint                                             AS request_count,
+    count(*) FILTER (WHERE ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))::bigint AS error_count
+FROM usage_records ur
+WHERE ur.settled_at >= sqlc.arg(settled_since)::timestamptz
+GROUP BY ur.provider_account_id
+ORDER BY count(*) DESC, key ASC
+LIMIT sqlc.arg(row_limit)::int;
