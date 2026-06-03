@@ -1424,6 +1424,8 @@ paths:
         response never reveals whether an account exists or its state (account-enumeration safe, S2-048).
         The real reason is recorded only in the operator-visible audit log. Requests are rate-limited per
         client IP BEFORE any password hashing; throttled requests get 429 with a coarse Retry-After.
+        When platform 2FA is enabled and the authenticated user has enabled TOTP, the password step
+        returns a 202 challenge instead of issuing a session.
       requestBody:
         required: true
         content:
@@ -1435,6 +1437,36 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AuthSessionResponse' }
+        '202':
+          description: Password accepted, but a TOTP or backup-code challenge must be completed before a session is issued.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthTwoFactorChallengeResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/auth/login/2fa:
+    post:
+      tags: [auth]
+      summary: Complete password-login two-factor challenge
+      operationId: authLoginTwoFactor
+      x-huakai-spec-source:
+        - backend/internal/gatewayhttp/auth_handler.go
+        - backend/internal/twofa/service.go
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthTwoFactorLoginRequest' }
+      responses:
+        '200':
+          description: Two-factor code accepted and platform session issued.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSessionOnlyResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '429': { $ref: '#/components/responses/RateLimited' }
@@ -1585,6 +1617,7 @@ paths:
             - registration_enabled
             - invitation_required
             - captcha_enabled
+            - two_factor_enabled
             - captcha_provider
             - captcha_site_key
             - oauth_providers_enabled
@@ -1725,6 +1758,123 @@ paths:
                   tenant_id: { type: integer, format: int64 }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/auth/2fa/setup:
+    post:
+      tags: [auth]
+      summary: Create a TOTP setup secret and one-time backup codes for the authenticated user
+      operationId: authTwoFactorSetup
+      x-huakai-spec-source:
+        - backend/internal/twofahttp/handler.go
+        - backend/internal/twofa/service.go
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthTwoFactorSetupRequest' }
+      responses:
+        '201':
+          description: One-time setup material. The secret and backup codes are never returned again.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthTwoFactorSetupResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/auth/2fa/enable:
+    post:
+      tags: [auth]
+      summary: Enable TOTP after proving the current setup code
+      operationId: authTwoFactorEnable
+      x-huakai-spec-source:
+        - backend/internal/twofahttp/handler.go
+        - backend/internal/twofa/service.go
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthTwoFactorCodeRequest' }
+      responses:
+        '200':
+          description: Two-factor authentication enabled.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthTwoFactorStatus' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/auth/2fa/status:
+    get:
+      tags: [auth]
+      summary: Read authenticated user's 2FA status and remaining backup-code count
+      operationId: authTwoFactorStatus
+      x-huakai-spec-source:
+        - backend/internal/twofahttp/handler.go
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: Status without setup secret or backup-code plaintext.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthTwoFactorStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/auth/2fa/disable:
+    post:
+      tags: [auth]
+      summary: Disable TOTP for the authenticated user
+      operationId: authTwoFactorDisable
+      x-huakai-spec-source:
+        - backend/internal/twofahttp/handler.go
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: Two-factor authentication disabled.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthTwoFactorDisableResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/auth/2fa/backup-codes/regenerate:
+    post:
+      tags: [auth]
+      summary: Regenerate one-time backup codes after a fresh 2FA proof
+      operationId: authTwoFactorRegenerateBackupCodes
+      x-huakai-spec-source:
+        - backend/internal/twofahttp/handler.go
+        - backend/internal/twofa/service.go
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthTwoFactorCodeRequest' }
+      responses:
+        '200':
+          description: New one-time backup codes. Previous unused codes are invalidated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthTwoFactorBackupCodesResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/sessions/refresh:
@@ -5052,6 +5202,106 @@ components:
         password: { type: string, format: password }
         device_info: { type: object, additionalProperties: true }
 
+    AuthTwoFactorLoginRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/gatewayhttp/auth_handler.go
+      required: [challenge_id, code]
+      properties:
+        challenge_id: { type: string, minLength: 1 }
+        code:
+          type: string
+          minLength: 1
+          description: Six-digit TOTP or one-time backup code.
+        device_info: { type: object, additionalProperties: true }
+
+    AuthTwoFactorChallengeResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/gatewayhttp/auth_handler.go
+      required: [user, two_factor_required, challenge_id, challenge_expires_at]
+      properties:
+        user: { $ref: '#/components/schemas/AuthUser' }
+        two_factor_required: { type: boolean, enum: [true] }
+        challenge_id: { type: string }
+        challenge_expires_at: { type: string, format: date-time }
+
+    AuthTwoFactorSetupRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/twofahttp/handler.go
+      properties:
+        account_name:
+          type: string
+          description: Optional authenticator account label.
+
+    AuthTwoFactorSetupResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/twofahttp/handler.go
+      required: [secret, qr_data, backup_codes]
+      properties:
+        secret:
+          type: string
+          description: Base32 TOTP secret returned once during setup.
+        qr_data:
+          type: string
+          description: otpauth URI for authenticator QR generation.
+        backup_codes:
+          type: array
+          description: One-time backup codes returned once during setup.
+          items: { type: string }
+
+    AuthTwoFactorCodeRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/twofahttp/handler.go
+      required: [code]
+      properties:
+        code:
+          type: string
+          minLength: 1
+          description: Six-digit TOTP or one-time backup code.
+
+    AuthTwoFactorStatus:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/twofahttp/handler.go
+      required: [available, enabled, backup_codes_remaining]
+      properties:
+        available: { type: boolean }
+        enabled: { type: boolean }
+        backup_codes_remaining: { type: integer, minimum: 0 }
+        locked_until: { type: [string, 'null'], format: date-time }
+        last_used_at: { type: [string, 'null'], format: date-time }
+
+    AuthTwoFactorDisableResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/twofahttp/handler.go
+      required: [enabled]
+      properties:
+        enabled: { type: boolean, enum: [false] }
+
+    AuthTwoFactorBackupCodesResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/twofahttp/handler.go
+      required: [backup_codes]
+      properties:
+        backup_codes:
+          type: array
+          description: Replacement one-time backup codes. Previous unused codes are invalidated.
+          items: { type: string }
+
     AuthVerifyEmailRequest:
       type: object
       additionalProperties: false
@@ -5164,6 +5414,15 @@ components:
       required: [user, session]
       properties:
         user: { $ref: '#/components/schemas/AuthUser' }
+        session: { $ref: '#/components/schemas/SessionTokenBundle' }
+
+    AuthSessionOnlyResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/gatewayhttp/auth_handler.go
+      required: [session]
+      properties:
         session: { $ref: '#/components/schemas/SessionTokenBundle' }
 
     SessionRefreshRequest:
@@ -5659,6 +5918,7 @@ components:
             - registration_enabled
             - invitation_required
             - captcha_enabled
+            - two_factor_enabled
             - captcha_provider
             - captcha_site_key
             - oauth_providers_enabled

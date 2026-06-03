@@ -25,6 +25,31 @@ func TestServiceGetAbsentKeyReturnsFailClosedDefault(t *testing.T) {
 	}
 }
 
+func TestTwoFactorSettingDefaultsOnAndValidatesBool(t *testing.T) {
+	store := NewMemoryStore()
+	svc := NewService(store, nil, WithNow(fixedNow))
+
+	got, err := svc.Get(context.Background(), KeyTwoFactorEnabled)
+	if err != nil {
+		t.Fatalf("Get two_factor_enabled: %v", err)
+	}
+	if got.Value != "true" || got.Source != SourceDefault {
+		t.Fatalf("two_factor_enabled default=%+v want true/default", got)
+	}
+	updated, err := svc.Upsert(context.Background(), UpsertInput{
+		Key: KeyTwoFactorEnabled, Value: "false", UpdatedBy: "test",
+	})
+	if err != nil {
+		t.Fatalf("Upsert false: %v", err)
+	}
+	if updated.Value != "false" || updated.Source != SourceDB {
+		t.Fatalf("two_factor_enabled override=%+v want false/db", updated)
+	}
+	if _, err := ValidateValue(KeyTwoFactorEnabled, "yes"); !errors.Is(err, ErrInvalidValue) {
+		t.Fatalf("ValidateValue yes err=%v want ErrInvalidValue", err)
+	}
+}
+
 func TestServiceGetPresentKeyUsesDBAndCache(t *testing.T) {
 	base := NewMemoryStore()
 	if _, err := base.Upsert(context.Background(), GlobalScope, string(KeyPromoEnabled), "true", "seed"); err != nil {

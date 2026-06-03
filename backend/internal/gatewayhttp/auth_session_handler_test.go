@@ -21,7 +21,10 @@ import (
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/captcha"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
+	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
+	"github.com/BloomingProsperity/HUAKAI/internal/twofa"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
@@ -206,6 +209,216 @@ func TestAuthLogin_CaptchaSuccessAllowsSessionCreate(t *testing.T) {
 	if got := gate.lastToken(); got != "valid-token" {
 		t.Fatalf("captcha token = %q want valid-token", got)
 	}
+}
+
+func TestAuthLogin_DefaultTwoFactorSettingRequiresOptedInUsersOnly(t *testing.T) {
+	now := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
+
+	t.Run("unbound user keeps password login unchanged", func(t *testing.T) {
+		base := newGatewayMemoryAuthStore(now)
+		seedLoginUser(t, base, "default-unbound@example.test", "secret", userauth.UserStatusActive, true)
+		user := mustGatewayUserByEmail(t, base, "default-unbound@example.test")
+		sessionSvc := newGatewayTestSessionService(now)
+		settings := platformsettings.NewService(platformsettings.NewMemoryStore(), nil)
+		twoFA := twofa.NewService(twofa.NewMemoryStore(), mustGatewayTwoFAKeyProvider(t), twofa.WithNow(func() time.Time { return now }))
+		events := &captureAuthEventSink{}
+		r := newTwoFALoginTestRouter(t, now, base, sessionSvc, twoFA, settings, events)
+
+		rec := serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
+			"tenant_id": 1, "email": "default-unbound@example.test", "password": "secret",
+		})
+		assertHTTPStatus(t, rec, http.StatusOK)
+		body := rec.Body.String()
+		if strings.Contains(body, "two_factor_required") {
+			t.Fatalf("unbound default login unexpectedly required 2FA: %s", body)
+		}
+		var loginResp struct {
+			Session usersession.IssuedTokens `json:"session"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &loginResp); err != nil {
+			t.Fatalf("decode login response: %v body=%s", err, body)
+		}
+		if loginResp.Session.RefreshToken == "" {
+			t.Fatal("unbound default password login did not issue a session")
+		}
+		assertGatewaySessionCount(t, sessionSvc, user.TenantID, user.ID, 1)
+	})
+
+	t.Run("bound user gets challenge before session", func(t *testing.T) {
+		base := newGatewayMemoryAuthStore(now)
+		seedLoginUser(t, base, "default-bound@example.test", "secret", userauth.UserStatusActive, true)
+		user := mustGatewayUserByEmail(t, base, "default-bound@example.test")
+		sessionSvc := newGatewayTestSessionService(now)
+		settings := platformsettings.NewService(platformsettings.NewMemoryStore(), nil)
+		twoFA := twofa.NewService(twofa.NewMemoryStore(), mustGatewayTwoFAKeyProvider(t), twofa.WithNow(func() time.Time { return now }))
+		enableGatewayTwoFA(t, twoFA, user.TenantID, user.ID, "default-bound@example.test", now)
+		events := &captureAuthEventSink{}
+		r := newTwoFALoginTestRouter(t, now, base, sessionSvc, twoFA, settings, events)
+
+		rec := serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
+			"tenant_id": 1, "email": "default-bound@example.test", "password": "secret",
+		})
+		assertHTTPStatus(t, rec, http.StatusAccepted)
+		challenge := decodeGatewayTwoFAChallenge(t, rec)
+		if !challenge.TwoFactorRequired || challenge.ChallengeID == "" {
+			t.Fatalf("bound default login did not return 2FA challenge: %+v body=%s", challenge, rec.Body.String())
+		}
+		if challenge.Session != nil {
+			t.Fatalf("bound default login must not issue session before 2FA: %+v", challenge.Session)
+		}
+		assertGatewaySessionCount(t, sessionSvc, user.TenantID, user.ID, 0)
+	})
+}
+
+func TestAuthLogin_TwoFactorKillSwitchLetsBoundUserLoginWithoutChallenge(t *testing.T) {
+	now := time.Date(2026, 6, 3, 10, 5, 0, 0, time.UTC)
+	base := newGatewayMemoryAuthStore(now)
+	seedLoginUser(t, base, "kill-switch@example.test", "secret", userauth.UserStatusActive, true)
+	user := mustGatewayUserByEmail(t, base, "kill-switch@example.test")
+	sessionSvc := newGatewayTestSessionService(now)
+	settings := platformsettings.NewService(platformsettings.NewMemoryStore(), nil)
+	if _, err := settings.Upsert(context.Background(), platformsettings.UpsertInput{
+		Key: platformsettings.KeyTwoFactorEnabled, Value: "false", UpdatedBy: "test",
+	}); err != nil {
+		t.Fatalf("disable platform 2FA setting: %v", err)
+	}
+	twoFA := twofa.NewService(twofa.NewMemoryStore(), mustGatewayTwoFAKeyProvider(t), twofa.WithNow(func() time.Time { return now }))
+	enableGatewayTwoFA(t, twoFA, user.TenantID, user.ID, "kill-switch@example.test", now)
+	events := &captureAuthEventSink{}
+	r := newTwoFALoginTestRouter(t, now, base, sessionSvc, twoFA, settings, events)
+
+	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
+		"tenant_id": 1, "email": "kill-switch@example.test", "password": "secret",
+	})
+	assertHTTPStatus(t, rec, http.StatusOK)
+	body := rec.Body.String()
+	if strings.Contains(body, "two_factor_required") {
+		t.Fatalf("kill-switch login unexpectedly required 2FA: %s", body)
+	}
+	var loginResp struct {
+		Session usersession.IssuedTokens `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &loginResp); err != nil {
+		t.Fatalf("decode login response: %v body=%s", err, body)
+	}
+	if loginResp.Session.RefreshToken == "" {
+		t.Fatal("kill-switch password login did not issue a session")
+	}
+	assertGatewaySessionCount(t, sessionSvc, user.TenantID, user.ID, 1)
+}
+
+func TestAuthLogin_TwoFactorEnabledRequiresChallengeBeforeSession(t *testing.T) {
+	now := time.Date(2026, 6, 3, 10, 15, 0, 0, time.UTC)
+	base := newGatewayMemoryAuthStore(now)
+	seedLoginUser(t, base, "mfa@example.test", "secret", userauth.UserStatusActive, true)
+	user := mustGatewayUserByEmail(t, base, "mfa@example.test")
+	sessionSvc := newGatewayTestSessionService(now)
+	settings := enabledTwoFAPlatformSettings(t)
+	twoFA := twofa.NewService(twofa.NewMemoryStore(), mustGatewayTwoFAKeyProvider(t), twofa.WithNow(func() time.Time { return now }))
+	setup := enableGatewayTwoFA(t, twoFA, user.TenantID, user.ID, "mfa@example.test", now)
+	events := &captureAuthEventSink{}
+	r := newTwoFALoginTestRouter(t, now, base, sessionSvc, twoFA, settings, events)
+
+	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
+		"tenant_id": 1, "email": "mfa@example.test", "password": "secret",
+	})
+	assertHTTPStatus(t, rec, http.StatusAccepted)
+	firstChallenge := decodeGatewayTwoFAChallenge(t, rec)
+	if !firstChallenge.TwoFactorRequired || firstChallenge.ChallengeID == "" {
+		t.Fatalf("password login did not return a 2FA challenge: %+v body=%s", firstChallenge, rec.Body.String())
+	}
+	if firstChallenge.Session != nil {
+		t.Fatalf("password login must not issue session before 2FA: %+v", firstChallenge.Session)
+	}
+	assertGatewaySessionCount(t, sessionSvc, user.TenantID, user.ID, 0)
+
+	rec = serveJSON(t, r, http.MethodPost, "/v1/auth/login/2fa", map[string]any{
+		"challenge_id": firstChallenge.ChallengeID,
+		"code":         "000000",
+	})
+	assertHTTPStatus(t, rec, http.StatusUnauthorized)
+	if code := loginErrorCode(t, rec); code != "two_factor_invalid" {
+		t.Fatalf("wrong 2FA error code=%q want two_factor_invalid", code)
+	}
+	assertGatewaySessionCount(t, sessionSvc, user.TenantID, user.ID, 0)
+
+	rec = serveJSON(t, r, http.MethodPost, "/v1/auth/login/2fa", map[string]any{
+		"challenge_id": firstChallenge.ChallengeID,
+		"code":         setup.BackupCodes[0],
+	})
+	assertHTTPStatus(t, rec, http.StatusOK)
+	var loginResp struct {
+		Session usersession.IssuedTokens `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &loginResp); err != nil {
+		t.Fatalf("decode 2FA login response: %v body=%s", err, rec.Body.String())
+	}
+	if loginResp.Session.RefreshToken == "" {
+		t.Fatal("2FA login did not issue a session after valid backup code")
+	}
+	assertGatewaySessionCount(t, sessionSvc, user.TenantID, user.ID, 1)
+
+	rec = serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
+		"tenant_id": 1, "email": "mfa@example.test", "password": "secret",
+	})
+	assertHTTPStatus(t, rec, http.StatusAccepted)
+	secondChallenge := decodeGatewayTwoFAChallenge(t, rec)
+	rec = serveJSON(t, r, http.MethodPost, "/v1/auth/login/2fa", map[string]any{
+		"challenge_id": secondChallenge.ChallengeID,
+		"code":         setup.BackupCodes[0],
+	})
+	assertHTTPStatus(t, rec, http.StatusUnauthorized)
+	if code := loginErrorCode(t, rec); code != "two_factor_invalid" {
+		t.Fatalf("reused backup code error code=%q want two_factor_invalid", code)
+	}
+	assertGatewaySessionCount(t, sessionSvc, user.TenantID, user.ID, 1)
+
+	if reason := lastAuthEventType(t, events); reason != "user_login_2fa_failed" {
+		t.Fatalf("last auth event=%q want user_login_2fa_failed", reason)
+	}
+}
+
+func TestAuthLogin_TwoFactorMaterialsAreNotLoggedOrReturned(t *testing.T) {
+	now := time.Date(2026, 6, 3, 10, 30, 0, 0, time.UTC)
+	base := newGatewayMemoryAuthStore(now)
+	seedLoginUser(t, base, "no-leak@example.test", "secret", userauth.UserStatusActive, true)
+	user := mustGatewayUserByEmail(t, base, "no-leak@example.test")
+	sessionSvc := newGatewayTestSessionService(now)
+	settings := enabledTwoFAPlatformSettings(t)
+	twoFA := twofa.NewService(twofa.NewMemoryStore(), mustGatewayTwoFAKeyProvider(t), twofa.WithNow(func() time.Time { return now }))
+	setup := enableGatewayTwoFA(t, twoFA, user.TenantID, user.ID, "no-leak@example.test", now)
+	events := &captureAuthEventSink{}
+	r := newTwoFALoginTestRouter(t, now, base, sessionSvc, twoFA, settings, events)
+
+	var systemLog bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&systemLog, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	scannedResponses := map[string]any{}
+	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
+		"tenant_id": 1, "email": "no-leak@example.test", "password": "secret",
+	})
+	assertHTTPStatus(t, rec, http.StatusAccepted)
+	scannedResponses["password_login_challenge"] = rec.Body.String()
+	challenge := decodeGatewayTwoFAChallenge(t, rec)
+
+	rec = serveJSON(t, r, http.MethodPost, "/v1/auth/login/2fa", map[string]any{
+		"challenge_id": challenge.ChallengeID,
+		"code":         "000000",
+	})
+	assertHTTPStatus(t, rec, http.StatusUnauthorized)
+	scannedResponses["wrong_2fa_response"] = rec.Body.String()
+
+	sentinels := append([]string{
+		setup.Secret,
+		gatewayTOTPCode(t, setup.Secret, now),
+	}, setup.BackupCodes...)
+	assertSentinelsAbsent(t, scannedResponses, sentinels)
+	assertSentinelsAbsent(t, map[string]any{
+		"system_logger_output": systemLog.String(),
+		"auth_event_sinks":     events.SinkPayloads(),
+	}, sentinels)
 }
 
 func TestAT_SESSION_001_004_HandlersRequireBearerAndIgnoreBodyUser(t *testing.T) {
@@ -1066,6 +1279,135 @@ func authTestKey(tenantID int64, value string) string {
 
 func testSessionSigningKey() []byte {
 	return []byte("0123456789abcdef0123456789abcdef")
+}
+
+type gatewayTwoFAChallengeResponse struct {
+	TwoFactorRequired  bool                      `json:"two_factor_required"`
+	ChallengeID        string                    `json:"challenge_id"`
+	ChallengeExpiresAt string                    `json:"challenge_expires_at"`
+	Session            *usersession.IssuedTokens `json:"session"`
+}
+
+func newGatewayTestSessionService(now time.Time) *usersession.Service {
+	sessionSvc := usersession.NewService(usersession.NewMemoryStore())
+	sessionSvc.Now = func() time.Time { return now }
+	sessionSvc.SigningKey = testSessionSigningKey()
+	return sessionSvc
+}
+
+func mustGatewayTwoFAKeyProvider(t *testing.T) credentialstore.KeyProvider {
+	t.Helper()
+	provider, err := credentialstore.NewStaticKeyProvider("twofa-gateway-test-key", []byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("NewStaticKeyProvider: %v", err)
+	}
+	return provider
+}
+
+func enabledTwoFAPlatformSettings(t *testing.T) *platformsettings.Service {
+	t.Helper()
+	settings := platformsettings.NewService(platformsettings.NewMemoryStore(), nil)
+	if _, err := settings.Upsert(context.Background(), platformsettings.UpsertInput{
+		Key: platformsettings.KeyTwoFactorEnabled, Value: "true", UpdatedBy: "test",
+	}); err != nil {
+		t.Fatalf("enable platform 2FA setting: %v", err)
+	}
+	return settings
+}
+
+func mustGatewayUserByEmail(t *testing.T, store *gatewayMemoryAuthStore, email string) userauth.User {
+	t.Helper()
+	user, err := store.GetUserByEmail(context.Background(), 1, email)
+	if err != nil {
+		t.Fatalf("GetUserByEmail(%q): %v", email, err)
+	}
+	return user
+}
+
+func enableGatewayTwoFA(t *testing.T, service *twofa.Service, tenantID, userID int64, accountName string, now time.Time) twofa.SetupResult {
+	t.Helper()
+	setup, err := service.Setup(context.Background(), twofa.SetupInput{
+		TenantID: tenantID, UserID: userID, AccountName: accountName,
+	})
+	if err != nil {
+		t.Fatalf("2FA Setup: %v", err)
+	}
+	if _, err := service.Enable(context.Background(), twofa.VerifyInput{
+		TenantID: tenantID, UserID: userID, Code: gatewayTOTPCode(t, setup.Secret, now),
+	}); err != nil {
+		t.Fatalf("2FA Enable: %v", err)
+	}
+	return setup
+}
+
+func gatewayTOTPCode(t *testing.T, encoded string, now time.Time) string {
+	t.Helper()
+	secret, err := twofa.DecodeSecret(encoded)
+	if err != nil {
+		t.Fatalf("DecodeSecret: %v", err)
+	}
+	code, err := twofa.GenerateTOTP(secret, now, twofa.DefaultTOTPDigits, twofa.DefaultTOTPStep)
+	if err != nil {
+		t.Fatalf("GenerateTOTP: %v", err)
+	}
+	return code
+}
+
+func newTwoFALoginTestRouter(
+	t *testing.T,
+	now time.Time,
+	store userauth.Store,
+	sessionSvc *usersession.Service,
+	twoFA *twofa.Service,
+	settings *platformsettings.Service,
+	events *captureAuthEventSink,
+) http.Handler {
+	t.Helper()
+	authSvc := userauth.NewService(store)
+	authSvc.PasswordPolicy = userauth.PasswordPolicy{MemoryKiB: 64, Iterations: 1, Parallelism: 1, SaltBytes: 8, KeyBytes: 16}
+	authSvc.Now = func() time.Time { return now }
+	resolver, err := clientip.NewResolver(nil)
+	if err != nil {
+		t.Fatalf("client ip resolver: %v", err)
+	}
+	r := chi.NewRouter()
+	r.Route("/v1/auth", func(r chi.Router) {
+		MountAuthRoutes(r, AuthHandlerDeps{
+			Auth: authSvc, Sessions: sessionSvc, EventSink: events,
+			ClientIPResolver: resolver, TwoFactor: twoFA, TwoFactorSettings: settings,
+		})
+	})
+	return r
+}
+
+func decodeGatewayTwoFAChallenge(t *testing.T, rec *httptest.ResponseRecorder) gatewayTwoFAChallengeResponse {
+	t.Helper()
+	var resp gatewayTwoFAChallengeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode 2FA challenge: %v body=%s", err, rec.Body.String())
+	}
+	return resp
+}
+
+func assertGatewaySessionCount(t *testing.T, sessions *usersession.Service, tenantID, userID int64, want int) {
+	t.Helper()
+	families, err := sessions.List(context.Background(), tenantID, userID)
+	if err != nil {
+		t.Fatalf("List sessions: %v", err)
+	}
+	if len(families) != want {
+		t.Fatalf("session count=%d want %d families=%+v", len(families), want, families)
+	}
+}
+
+func lastAuthEventType(t *testing.T, events *captureAuthEventSink) string {
+	t.Helper()
+	events.mu.Lock()
+	defer events.mu.Unlock()
+	if len(events.events) == 0 {
+		t.Fatal("no auth events recorded")
+	}
+	return events.events[len(events.events)-1].EventType
 }
 
 // flakyRevokeSessionStore embeds a working memory store but forces the first user-scope revoke to

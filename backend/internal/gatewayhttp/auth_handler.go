@@ -17,6 +17,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
 	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
+	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
+	"github.com/BloomingProsperity/HUAKAI/internal/twofa"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
@@ -32,6 +34,16 @@ type AuthAdminAuth interface {
 
 type AuthEventSink interface {
 	RecordAuthEvent(context.Context, AuthEvent)
+}
+
+type AuthTwoFactor interface {
+	LoginRequired(context.Context, int64, int64) (bool, error)
+	StartLoginChallenge(context.Context, int64, int64) (twofa.Challenge, error)
+	VerifyLoginChallenge(context.Context, twofa.ChallengeVerifyInput) (twofa.VerifyResult, error)
+}
+
+type AuthTwoFactorSettings interface {
+	Get(context.Context, platformsettings.SettingKey) (platformsettings.StoredSetting, error)
 }
 
 type AuthEvent struct {
@@ -54,13 +66,15 @@ func (NoopAuthEmailSender) SendPasswordReset(context.Context, userauth.User, str
 }
 
 type AuthHandlerDeps struct {
-	Auth             *userauth.Service
-	Sessions         *usersession.Service
-	EmailSender      AuthEmailSender
-	AdminAuth        AuthAdminAuth
-	EventSink        AuthEventSink
-	ClientIPResolver *clientip.Resolver
-	Captcha          captcha.CaptchaVerifier
+	Auth              *userauth.Service
+	Sessions          *usersession.Service
+	EmailSender       AuthEmailSender
+	AdminAuth         AuthAdminAuth
+	EventSink         AuthEventSink
+	ClientIPResolver  *clientip.Resolver
+	Captcha           captcha.CaptchaVerifier
+	TwoFactor         AuthTwoFactor
+	TwoFactorSettings AuthTwoFactorSettings
 	// LoginThrottle 是密码登录的「argon2 前置」IP 限流闸(S2-048)。nil = 不限流(测试/旧装配),
 	// 生产装配必须注入,否则未认证攻击者可对任意邮箱触发昂贵 argon2 放大 CPU。
 	LoginThrottle *loginthrottle.Limiter
@@ -81,6 +95,12 @@ type authLoginRequest struct {
 	Password     string         `json:"password"`
 	DeviceInfo   map[string]any `json:"device_info,omitempty"`
 	CaptchaToken string         `json:"captcha_token,omitempty"`
+}
+
+type authTwoFactorLoginRequest struct {
+	ChallengeID string         `json:"challenge_id"`
+	Code        string         `json:"code"`
+	DeviceInfo  map[string]any `json:"device_info,omitempty"`
 }
 
 type authVerifyEmailRequest struct {
@@ -120,6 +140,7 @@ type authSocialIdentityChangedRequest struct {
 func MountAuthRoutes(r chi.Router, d AuthHandlerDeps) {
 	r.Post("/register", newAuthRegisterHandler(d))
 	r.Post("/login", newAuthLoginHandler(d))
+	r.Post("/login/2fa", newAuthTwoFactorLoginHandler(d))
 	r.Post("/verify-email", newAuthVerifyEmailHandler(d))
 	r.Post("/reset-password", newAuthResetPasswordHandler(d))
 	r.Post("/oauth-init", newAuthOAuthInitHandler(d))
@@ -225,6 +246,36 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			return
 		}
 		lease.Success() // 登录凭据通过, 释放在途槽且不计失败(成功不消耗限流配额)
+		required, err := authTwoFactorRequired(r.Context(), d, user.TenantID, user.ID)
+		if err != nil {
+			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				EventType: "user_login_2fa_failed", TenantID: user.TenantID, UserID: user.ID, Outcome: "failure",
+				ReasonClass: twoFactorReasonClass(err), AuthMethod: "password",
+			})
+			writeTwoFactorLoginError(w, err)
+			return
+		}
+		if required {
+			challenge, err := d.TwoFactor.StartLoginChallenge(r.Context(), user.TenantID, user.ID)
+			if err != nil {
+				recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+					EventType: "user_login_2fa_failed", TenantID: user.TenantID, UserID: user.ID, Outcome: "failure",
+					ReasonClass: twoFactorReasonClass(err), AuthMethod: "password",
+				})
+				writeTwoFactorLoginError(w, err)
+				return
+			}
+			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				EventType: "user_login_2fa_required", TenantID: user.TenantID, UserID: user.ID, Outcome: "challenge", AuthMethod: "password",
+			})
+			writeAuditJSON(w, http.StatusAccepted, map[string]any{
+				"user":                 publicUser(user),
+				"two_factor_required":  true,
+				"challenge_id":         challenge.ID,
+				"challenge_expires_at": challenge.ExpiresAt,
+			})
+			return
+		}
 		tokens, err := d.Sessions.Create(r.Context(), usersession.CreateInput{
 			TenantID: user.TenantID, UserID: user.ID, DeviceInfo: req.DeviceInfo,
 			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: "password",
@@ -241,6 +292,94 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			EventType: "user_login_succeeded", TenantID: user.TenantID, UserID: user.ID, Outcome: "success", AuthMethod: "password",
 		})
 		writeAuditJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "session": tokens})
+	}
+}
+
+func newAuthTwoFactorLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.Sessions == nil || d.TwoFactor == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "auth/session dependency unset")
+			return
+		}
+		var req authTwoFactorLoginRequest
+		if !decodeAdminPoolJSON(w, r, &req) {
+			return
+		}
+		if strings.TrimSpace(req.ChallengeID) == "" || strings.TrimSpace(req.Code) == "" {
+			writeJSONError(w, http.StatusBadRequest, "invalid_two_factor_request", "challenge_id and code are required")
+			return
+		}
+		result, err := d.TwoFactor.VerifyLoginChallenge(r.Context(), twofa.ChallengeVerifyInput{
+			ChallengeID: req.ChallengeID,
+			Code:        req.Code,
+		})
+		if err != nil {
+			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				EventType: "user_login_2fa_failed", TenantID: result.TenantID, UserID: result.UserID,
+				Outcome: "failure", ReasonClass: twoFactorReasonClass(err), AuthMethod: "password+2fa",
+			})
+			writeTwoFactorLoginError(w, err)
+			return
+		}
+		authMethod := "password+" + result.Method
+		tokens, err := d.Sessions.Create(r.Context(), usersession.CreateInput{
+			TenantID: result.TenantID, UserID: result.UserID, DeviceInfo: req.DeviceInfo,
+			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: authMethod,
+		})
+		if err != nil {
+			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				EventType: "user_login_session_failed", TenantID: result.TenantID, UserID: result.UserID, Outcome: "failure",
+				ReasonClass: sessionReasonClass(err), AuthMethod: authMethod,
+			})
+			writeSessionError(w, err)
+			return
+		}
+		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			EventType: "user_login_succeeded", TenantID: result.TenantID, UserID: result.UserID, Outcome: "success", AuthMethod: authMethod,
+		})
+		writeAuditJSON(w, http.StatusOK, map[string]any{"session": tokens})
+	}
+}
+
+func authTwoFactorRequired(ctx context.Context, d AuthHandlerDeps, tenantID, userID int64) (bool, error) {
+	if d.TwoFactorSettings == nil {
+		return false, nil
+	}
+	setting, err := d.TwoFactorSettings.Get(ctx, platformsettings.KeyTwoFactorEnabled)
+	if err != nil || strings.TrimSpace(setting.Value) != "true" {
+		return false, nil
+	}
+	if d.TwoFactor == nil {
+		return false, twofa.ErrStoreNotConfigured
+	}
+	return d.TwoFactor.LoginRequired(ctx, tenantID, userID)
+}
+
+func writeTwoFactorLoginError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, twofa.ErrInvalidInput):
+		writeJSONError(w, http.StatusBadRequest, "invalid_two_factor_request", "two-factor request is invalid")
+	case errors.Is(err, twofa.ErrInvalidCode), errors.Is(err, twofa.ErrChallengeInvalid), errors.Is(err, twofa.ErrChallengeExpired):
+		writeJSONError(w, http.StatusUnauthorized, "two_factor_invalid", "two-factor challenge or code is invalid")
+	case errors.Is(err, twofa.ErrLocked):
+		writeJSONError(w, http.StatusTooManyRequests, "two_factor_locked", "two-factor verification is temporarily locked")
+	default:
+		writeJSONError(w, http.StatusServiceUnavailable, "two_factor_backend_error", "two-factor service unavailable")
+	}
+}
+
+func twoFactorReasonClass(err error) string {
+	switch {
+	case errors.Is(err, twofa.ErrInvalidCode):
+		return "two_factor_invalid"
+	case errors.Is(err, twofa.ErrLocked):
+		return "two_factor_locked"
+	case errors.Is(err, twofa.ErrChallengeInvalid), errors.Is(err, twofa.ErrChallengeExpired):
+		return "two_factor_challenge_invalid"
+	case errors.Is(err, twofa.ErrDisabled):
+		return "two_factor_disabled"
+	default:
+		return "two_factor_backend_error"
 	}
 }
 
