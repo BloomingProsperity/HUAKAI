@@ -308,7 +308,7 @@ func TestDispatchHCSFOpenRouterAliasPreservesProviderRoutingControls(t *testing.
 		UpstreamModelID: "openrouter/auto",
 		Account:         provider.AccountInfo{AccountID: 13, Platform: "openrouter", AccountType: "apikey"},
 		Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-openrouter-test"},
-		RawBody:         []byte(`{"model":"raw-openrouter-model","messages":[{"role":"user","content":"raw stale"}],"provider":{"order":["anthropic"],"allow_fallbacks":false},"transforms":["middle-out"],"route":"fallback"}`),
+		RawBody:         []byte(`{"model":"raw-openrouter-model","messages":[{"role":"user","content":"raw stale"}],"provider":{"order":["anthropic"],"allow_fallbacks":false,"sort":{"price":0.7,"latency":0.2,"throughput":0.1},"zdr":true,"only":["anthropic","openai"],"max_price":{"prompt":0.000001,"completion":0.000002},"preferred_min_throughput":80,"preferred_max_latency":1200,"data_collection":"deny","enforce_distillable_text":true},"transforms":["middle-out"],"route":"fallback"}`),
 	})
 	adapter := &stubAdapter{platform: "openrouter"}
 	doer := &stubDoer{respStatus: 200, respBody: openAIHCSFResponse}
@@ -336,6 +336,25 @@ func TestDispatchHCSFOpenRouterAliasPreservesProviderRoutingControls(t *testing.
 	order := providerBody["order"].([]any)
 	if order[0] != "anthropic" || providerBody["allow_fallbacks"] != false {
 		t.Fatalf("provider routing controls = %+v", providerBody)
+	}
+	sortControls, ok := providerBody["sort"].(map[string]any)
+	if !ok || sortControls["price"] != 0.7 || sortControls["latency"] != 0.2 || sortControls["throughput"] != 0.1 {
+		t.Fatalf("provider.sort controls missing or changed: %+v", providerBody["sort"])
+	}
+	only, ok := providerBody["only"].([]any)
+	if !ok || len(only) != 2 || only[0] != "anthropic" || only[1] != "openai" {
+		t.Fatalf("provider.only = %+v; want [anthropic openai]", providerBody["only"])
+	}
+	maxPrice, ok := providerBody["max_price"].(map[string]any)
+	if !ok || maxPrice["prompt"] != 0.000001 || maxPrice["completion"] != 0.000002 {
+		t.Fatalf("provider.max_price = %+v; want prompt/completion caps", providerBody["max_price"])
+	}
+	if providerBody["zdr"] != true ||
+		providerBody["preferred_min_throughput"] != float64(80) ||
+		providerBody["preferred_max_latency"] != float64(1200) ||
+		providerBody["data_collection"] != "deny" ||
+		providerBody["enforce_distillable_text"] != true {
+		t.Fatalf("openrouter provider policy/perf controls missing: %+v", providerBody)
 	}
 	transforms, ok := body["transforms"].([]any)
 	if !ok || transforms[0] != "middle-out" || body["route"] != "fallback" {

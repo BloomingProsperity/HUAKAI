@@ -318,9 +318,10 @@ func openAIChunkToCanonicalEvents(chunk openAIChatCompletionChunk, state *Upstre
 				state.UsageEmitted = true
 			}
 			events = append(events, proto.CanonicalEvent{
-				Type:       "message_delta",
-				Usage:      usage,
-				StopReason: state.LastStopReason,
+				Type:               "message_delta",
+				Usage:              usage,
+				StopReason:         state.LastStopReason,
+				NativeFinishReason: state.RawFinishReason,
 			})
 			losses = append(losses, openAIStopLoss(*choice.FinishReason)...)
 		}
@@ -471,7 +472,7 @@ func finalizeOpenAIState(state *UpstreamState, fromDone bool) ([]proto.Canonical
 
 func openAIUsageDeltaEvent(state *UpstreamState) proto.CanonicalEvent {
 	usage := state.AccumulatedUsage
-	return proto.CanonicalEvent{Type: "message_delta", Usage: &usage, StopReason: state.LastStopReason}
+	return proto.CanonicalEvent{Type: "message_delta", Usage: &usage, StopReason: state.LastStopReason, NativeFinishReason: state.RawFinishReason}
 }
 
 func updateOpenAIUsage(state *UpstreamState, usage *openAIUsage) bool {

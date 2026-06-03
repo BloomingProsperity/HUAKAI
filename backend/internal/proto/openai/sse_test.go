@@ -184,6 +184,41 @@ func TestOpenAIAdapterFinishReasonMappings(t *testing.T) {
 	}
 }
 
+func TestOpenAIAdapterNativeFinishReasonSurfacesInChatSSE(t *testing.T) {
+	upstream := &Adapter{}
+	upstreamState := &UpstreamState{}
+	out, losses, err := upstream.ProviderEventToCanonicalEvents(context.Background(),
+		[]byte(`{"id":"chatcmpl-native-finish","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"content_filter"}]}`),
+		upstreamState)
+	if err != nil {
+		t.Fatalf("ProviderEventToCanonicalEvents: %v", err)
+	}
+	if len(losses) != 0 {
+		t.Fatalf("content_filter finish reason should not emit provider losses: %+v", losses)
+	}
+
+	client := &proto.OpenAIChatClient{}
+	clientState := proto.NewOpenAIChatStreamState()
+	var chunks [][]byte
+	for _, ev := range anyToCanonicalEvents(t, out) {
+		next, _, err := client.CanonicalEventToClientChunk(context.Background(), &ev, clientState)
+		if err != nil {
+			t.Fatalf("CanonicalEventToClientChunk(%s): %v", ev.Type, err)
+		}
+		chunks = append(chunks, next...)
+	}
+
+	for _, chunk := range chunks {
+		if strings.Contains(string(chunk), `"finish_reason":"content_filter"`) {
+			if !strings.Contains(string(chunk), `"native_finish_reason":"content_filter"`) {
+				t.Fatalf("finish chunk missing native_finish_reason: %s", chunk)
+			}
+			return
+		}
+	}
+	t.Fatalf("finish chunk not emitted; chunks=%q", chunks)
+}
+
 func TestOpenAIAdapterEmptyStreamFinalize(t *testing.T) {
 	adapter := &Adapter{}
 	state := &UpstreamState{}
