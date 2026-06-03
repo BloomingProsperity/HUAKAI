@@ -80,3 +80,18 @@ func TestUsageLeaderboardSQLUsesWindowSortAndLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestGetUsageRecordByRequestIDSQLScopesToCaller(t *testing.T) {
+	sql := strings.Join(strings.Fields(getUsageRecordByRequestID), " ")
+	for _, want := range []string{
+		"ur.tenant_id = $1::bigint",
+		"ur.user_id = $2::bigint",
+		"blc.logical_request_id = $3::text",
+	} {
+		// Mutation: dropping user_id lets caller A read caller B's same-tenant
+		// request_id; dropping tenant/request filters widens the lookup.
+		if !strings.Contains(sql, want) {
+			t.Fatalf("GetUsageRecordByRequestID SQL missing caller scope %q in %q", want, sql)
+		}
+	}
+}

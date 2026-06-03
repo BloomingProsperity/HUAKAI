@@ -175,6 +175,113 @@ func (q *Queries) CountUsageRecords(ctx context.Context, arg CountUsageRecordsPa
 	return column_1, err
 }
 
+const getUsageRecordByRequestID = `-- name: GetUsageRecordByRequestID :one
+SELECT
+    ur.id, ur.tenant_id, ur.claim_id, ur.api_key_id, ur.user_id,
+    ur.provider_account_id, ur.attempt_seq, ur.tokens_input, ur.tokens_output,
+    ur.cache_creation_tokens, ur.cache_read_tokens, ur.actual_cost,
+    ur.end_class, ur.usage_source, ur.pending_reconciliation,
+    ur.stream_state, ur.delivered_token_count, ur.stream_terminated_reason,
+    ur.requested_at, ur.settled_at AS created_at, ur.requested_model,
+    ur.upstream_model, ur.stream, ur.settlement_source,
+    p.code AS provider, blc.pooling_group_id AS pool_id,
+    blc.logical_request_id AS request_id,
+    ale.ledger_id AS audit_ledger_id,
+    ale.pubkey_fingerprint AS audit_pubkey_fingerprint,
+    ale.hop_chain AS audit_hop_chain,
+    ale.model_chain AS audit_model_chain
+FROM usage_records ur
+JOIN billing_ledger_claims blc ON blc.id = ur.claim_id AND blc.tenant_id = ur.tenant_id
+LEFT JOIN provider_accounts pa ON pa.id = ur.provider_account_id AND pa.tenant_id = ur.tenant_id
+LEFT JOIN providers p ON p.id = pa.provider_id AND p.tenant_id = ur.tenant_id
+LEFT JOIN audit_ledger_entries ale ON ale.request_id = blc.logical_request_id
+    AND (ale.tenant_id IS NULL OR ale.tenant_id = ur.tenant_id)
+WHERE ur.tenant_id = $1::bigint
+  AND ur.user_id = $2::bigint
+  AND blc.logical_request_id = $3::text
+ORDER BY ur.settled_at DESC, ur.id DESC
+LIMIT 1
+`
+
+type GetUsageRecordByRequestIDParams struct {
+	TenantID  int64  `db:"tenant_id" json:"tenant_id"`
+	UserID    int64  `db:"user_id" json:"user_id"`
+	RequestID string `db:"request_id" json:"request_id"`
+}
+
+type GetUsageRecordByRequestIDRow struct {
+	ID                     int64              `db:"id" json:"id"`
+	TenantID               int64              `db:"tenant_id" json:"tenant_id"`
+	ClaimID                int64              `db:"claim_id" json:"claim_id"`
+	APIKeyID               int64              `db:"api_key_id" json:"api_key_id"`
+	UserID                 int64              `db:"user_id" json:"user_id"`
+	ProviderAccountID      *int64             `db:"provider_account_id" json:"provider_account_id"`
+	AttemptSeq             int32              `db:"attempt_seq" json:"attempt_seq"`
+	TokensInput            int32              `db:"tokens_input" json:"tokens_input"`
+	TokensOutput           int32              `db:"tokens_output" json:"tokens_output"`
+	CacheCreationTokens    int32              `db:"cache_creation_tokens" json:"cache_creation_tokens"`
+	CacheReadTokens        int32              `db:"cache_read_tokens" json:"cache_read_tokens"`
+	ActualCost             decimal.Decimal    `db:"actual_cost" json:"actual_cost"`
+	EndClass               string             `db:"end_class" json:"end_class"`
+	UsageSource            string             `db:"usage_source" json:"usage_source"`
+	PendingReconciliation  bool               `db:"pending_reconciliation" json:"pending_reconciliation"`
+	StreamState            int16              `db:"stream_state" json:"stream_state"`
+	DeliveredTokenCount    int64              `db:"delivered_token_count" json:"delivered_token_count"`
+	StreamTerminatedReason *string            `db:"stream_terminated_reason" json:"stream_terminated_reason"`
+	RequestedAt            pgtype.Timestamptz `db:"requested_at" json:"requested_at"`
+	CreatedAt              pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	RequestedModel         string             `db:"requested_model" json:"requested_model"`
+	UpstreamModel          *string            `db:"upstream_model" json:"upstream_model"`
+	Stream                 bool               `db:"stream" json:"stream"`
+	SettlementSource       string             `db:"settlement_source" json:"settlement_source"`
+	Provider               *string            `db:"provider" json:"provider"`
+	PoolID                 *int64             `db:"pool_id" json:"pool_id"`
+	RequestID              string             `db:"request_id" json:"request_id"`
+	AuditLedgerID          *string            `db:"audit_ledger_id" json:"audit_ledger_id"`
+	AuditPubkeyFingerprint *string            `db:"audit_pubkey_fingerprint" json:"audit_pubkey_fingerprint"`
+	AuditHopChain          []byte             `db:"audit_hop_chain" json:"audit_hop_chain"`
+	AuditModelChain        []byte             `db:"audit_model_chain" json:"audit_model_chain"`
+}
+
+func (q *Queries) GetUsageRecordByRequestID(ctx context.Context, arg GetUsageRecordByRequestIDParams) (GetUsageRecordByRequestIDRow, error) {
+	row := q.db.QueryRow(ctx, getUsageRecordByRequestID, arg.TenantID, arg.UserID, arg.RequestID)
+	var i GetUsageRecordByRequestIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.ClaimID,
+		&i.APIKeyID,
+		&i.UserID,
+		&i.ProviderAccountID,
+		&i.AttemptSeq,
+		&i.TokensInput,
+		&i.TokensOutput,
+		&i.CacheCreationTokens,
+		&i.CacheReadTokens,
+		&i.ActualCost,
+		&i.EndClass,
+		&i.UsageSource,
+		&i.PendingReconciliation,
+		&i.StreamState,
+		&i.DeliveredTokenCount,
+		&i.StreamTerminatedReason,
+		&i.RequestedAt,
+		&i.CreatedAt,
+		&i.RequestedModel,
+		&i.UpstreamModel,
+		&i.Stream,
+		&i.SettlementSource,
+		&i.Provider,
+		&i.PoolID,
+		&i.RequestID,
+		&i.AuditLedgerID,
+		&i.AuditPubkeyFingerprint,
+		&i.AuditHopChain,
+		&i.AuditModelChain,
+	)
+	return i, err
+}
+
 const listAuditEvents = `-- name: ListAuditEvents :many
 WITH audit_union AS (
     SELECT be.id, be.tenant_id, 'billing'::text AS event_class, be.event_type,

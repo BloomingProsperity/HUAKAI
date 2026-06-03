@@ -84,6 +84,7 @@ type Querier interface {
 	GetModelRoutingForGroup(ctx context.Context, arg GetModelRoutingForGroupParams) ([]GetModelRoutingForGroupRow, error)
 	GetPool(ctx context.Context, arg GetPoolParams) (PoolGroup, error)
 	GetStickyBinding(ctx context.Context, arg GetStickyBindingParams) (int64, error)
+	GetUsageRecordByRequestID(ctx context.Context, arg GetUsageRecordByRequestIDParams) (GetUsageRecordByRequestIDRow, error)
 	GetUserBalance(ctx context.Context, arg GetUserBalanceParams) (GetUserBalanceRow, error)
 	IncrementInFlightCount(ctx context.Context, arg IncrementInFlightCountParams) (int64, error)
 	// Spec §Tx2 step 13: audit-grade event row in same Tx; survives Usage Record

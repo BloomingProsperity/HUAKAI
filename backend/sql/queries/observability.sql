@@ -47,6 +47,33 @@ WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_i
 ORDER BY ur.settled_at DESC, ur.id DESC
 LIMIT sqlc.arg(page_limit)::integer;
 
+-- name: GetUsageRecordByRequestID :one
+SELECT
+    ur.id, ur.tenant_id, ur.claim_id, ur.api_key_id, ur.user_id,
+    ur.provider_account_id, ur.attempt_seq, ur.tokens_input, ur.tokens_output,
+    ur.cache_creation_tokens, ur.cache_read_tokens, ur.actual_cost,
+    ur.end_class, ur.usage_source, ur.pending_reconciliation,
+    ur.stream_state, ur.delivered_token_count, ur.stream_terminated_reason,
+    ur.requested_at, ur.settled_at AS created_at, ur.requested_model,
+    ur.upstream_model, ur.stream, ur.settlement_source,
+    p.code AS provider, blc.pooling_group_id AS pool_id,
+    blc.logical_request_id AS request_id,
+    ale.ledger_id AS audit_ledger_id,
+    ale.pubkey_fingerprint AS audit_pubkey_fingerprint,
+    ale.hop_chain AS audit_hop_chain,
+    ale.model_chain AS audit_model_chain
+FROM usage_records ur
+JOIN billing_ledger_claims blc ON blc.id = ur.claim_id AND blc.tenant_id = ur.tenant_id
+LEFT JOIN provider_accounts pa ON pa.id = ur.provider_account_id AND pa.tenant_id = ur.tenant_id
+LEFT JOIN providers p ON p.id = pa.provider_id AND p.tenant_id = ur.tenant_id
+LEFT JOIN audit_ledger_entries ale ON ale.request_id = blc.logical_request_id
+    AND (ale.tenant_id IS NULL OR ale.tenant_id = ur.tenant_id)
+WHERE ur.tenant_id = sqlc.arg(tenant_id)::bigint
+  AND ur.user_id = sqlc.arg(user_id)::bigint
+  AND blc.logical_request_id = sqlc.arg(request_id)::text
+ORDER BY ur.settled_at DESC, ur.id DESC
+LIMIT 1;
+
 -- name: CountUsageRecords :one
 SELECT count(*)::bigint
 FROM usage_records ur

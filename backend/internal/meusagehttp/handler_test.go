@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/shopspring/decimal"
 
@@ -70,6 +71,93 @@ func (s *usageStoreStub) filter(tenantID, apiKeyID *int64, fromTs, toTs pgtype.T
 		out = append(out, row)
 	}
 	return out
+}
+
+type generationStoreStub struct {
+	rows  []dbbilling.GetUsageRecordByRequestIDRow
+	err   error
+	arg   dbbilling.GetUsageRecordByRequestIDParams
+	calls int
+}
+
+func (s *generationStoreStub) GetUsageRecordByRequestID(_ context.Context, arg dbbilling.GetUsageRecordByRequestIDParams) (dbbilling.GetUsageRecordByRequestIDRow, error) {
+	s.arg = arg
+	s.calls++
+	if s.err != nil {
+		return dbbilling.GetUsageRecordByRequestIDRow{}, s.err
+	}
+	for _, row := range s.rows {
+		if row.TenantID == arg.TenantID && row.UserID == arg.UserID && row.RequestID == arg.RequestID {
+			return row, nil
+		}
+	}
+	return dbbilling.GetUsageRecordByRequestIDRow{}, pgx.ErrNoRows
+}
+
+// TestGenerationLookupScopesToAuthenticatedUserByRequestID guards the
+// OpenRouter-compatible single-request attribution path. Mutation check:
+// remove the SQL user_id predicate and the R_B lookup can return user B's row
+// to user A; this test's A-vs-B fixture must stay discriminating.
+func TestGenerationLookupScopesToAuthenticatedUserByRequestID(t *testing.T) {
+	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
+	userB := auth.Identity{TenantID: 7, APIKeyID: 31, UserID: 41}
+	rowA := generationUsageRow(1, userA.TenantID, userA.APIKeyID, userA.UserID, "R_A", "ledger-a", "anthropic")
+	rowB := generationUsageRow(2, userB.TenantID, userB.APIKeyID, userB.UserID, "R_B", "ledger-b", "openai")
+	rowA.TokensInput = 123
+	rowA.TokensOutput = 45
+	rowB.TokensInput = 999
+	rowB.TokensOutput = 888
+	store := &generationStoreStub{rows: []dbbilling.GetUsageRecordByRequestIDRow{rowA, rowB}}
+	h := NewGenerationHandler(GenerationDeps{Auth: authStub{identity: userA}, Store: store})
+
+	own := invokeGeneration(h, "/v1/generation?id=R_A")
+	assertMeStatus(t, own, http.StatusOK)
+	var item map[string]any
+	if err := json.Unmarshal(own.Body.Bytes(), &item); err != nil {
+		t.Fatalf("decode generation response: %v body=%s", err, own.Body.String())
+	}
+	assertStringField(t, item, "request_id", "R_A")
+	assertStringField(t, item, "ledger_id", "ledger-a")
+	assertStringField(t, item, "actual_cost", "0.01000000")
+	tokens, ok := item["tokens"].(map[string]any)
+	if !ok || tokens["input"] != float64(123) || tokens["output"] != float64(45) {
+		t.Fatalf("tokens=%v want input=123 output=45 body=%s", item["tokens"], own.Body.String())
+	}
+	if strings.Contains(own.Body.String(), "R_B") || strings.Contains(own.Body.String(), "ledger-b") {
+		t.Fatalf("generation response leaked another user's record: %s", own.Body.String())
+	}
+	if store.arg.TenantID != userA.TenantID || store.arg.UserID != userA.UserID || store.arg.RequestID != "R_A" {
+		t.Fatalf("lookup scope = tenant:%d user:%d request:%q want tenant:%d user:%d request:R_A",
+			store.arg.TenantID, store.arg.UserID, store.arg.RequestID, userA.TenantID, userA.UserID)
+	}
+	for _, key := range []string{"tenant_id", "api_key_id", "user_id", "body", "prompt", "messages"} {
+		if _, ok := item[key]; ok {
+			t.Fatalf("generation response must reuse me usage projection and not expose %q: %v", key, item)
+		}
+	}
+
+	otherUser := invokeGeneration(h, "/v1/generation?id=R_B")
+	assertMeStatus(t, otherUser, http.StatusNotFound)
+	if strings.Contains(otherUser.Body.String(), "R_B") || strings.Contains(otherUser.Body.String(), "ledger-b") {
+		t.Fatalf("404 body leaked existence of another user's request: %s", otherUser.Body.String())
+	}
+
+	missing := invokeGeneration(h, "/v1/generation?id=R_MISSING")
+	assertMeStatus(t, missing, http.StatusNotFound)
+}
+
+func TestGenerationRequiresRequestID(t *testing.T) {
+	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
+	store := &generationStoreStub{}
+	h := NewGenerationHandler(GenerationDeps{Auth: authStub{identity: userA}, Store: store})
+
+	for _, target := range []string{"/v1/generation", "/v1/generation?id=%20%20"} {
+		rec := invokeGeneration(h, target)
+		assertMeStatus(t, rec, http.StatusBadRequest)
+	}
+	if store.calls != 0 {
+		t.Fatalf("missing request id must fail before store lookup, calls=%d", store.calls)
+	}
 }
 
 func TestMeUsageScopesToAuthenticatedAPIKeyAndKeepsTrustFields(t *testing.T) {
@@ -221,6 +309,13 @@ func invokeMeUsage(h http.HandlerFunc, target string) *httptest.ResponseRecorder
 	return rec
 }
 
+func invokeGeneration(h http.HandlerFunc, target string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, target, strings.NewReader(""))
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	return rec
+}
+
 func assertMeStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
 	t.Helper()
 	if rec.Code != want {
@@ -257,6 +352,33 @@ func meUsageRow(id, tenantID, apiKeyID, userID int64, requestedModel, upstreamMo
 		UpstreamModel:         &upstreamModel,
 		Provider:              &provider,
 		RequestID:             "req-" + ledgerID,
+		AuditLedgerID:         &ledgerID,
+		PendingReconciliation: false,
+	}
+}
+
+func generationUsageRow(id, tenantID, apiKeyID, userID int64, requestID, ledgerID, provider string) dbbilling.GetUsageRecordByRequestIDRow {
+	providerAccountID := int64(50)
+	upstreamModel := "claude-opus-4-20260514"
+	created := time.Date(2026, 5, 14, 0, 0, int(id), 0, time.UTC)
+	requested := created.Add(-time.Second)
+	return dbbilling.GetUsageRecordByRequestIDRow{
+		ID:                    id,
+		TenantID:              tenantID,
+		ClaimID:               200 + id,
+		APIKeyID:              apiKeyID,
+		UserID:                userID,
+		ProviderAccountID:     &providerAccountID,
+		AttemptSeq:            1,
+		ActualCost:            decimal.RequireFromString("0.01000000"),
+		EndClass:              "non_streaming",
+		UsageSource:           "reported",
+		CreatedAt:             pgtype.Timestamptz{Time: created, Valid: true},
+		RequestedAt:           pgtype.Timestamptz{Time: requested, Valid: true},
+		RequestedModel:        "claude-opus-4",
+		UpstreamModel:         &upstreamModel,
+		Provider:              &provider,
+		RequestID:             requestID,
 		AuditLedgerID:         &ledgerID,
 		PendingReconciliation: false,
 	}
