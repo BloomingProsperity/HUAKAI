@@ -159,6 +159,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	mountUserKeyControlsRoutes(r, d)
 	mountPricingCatalogRoutes(r, d)
 	mountNotificationRoutes(r, d)
+	mountModerationAdminRoutes(r, d)
 	logger.Info("routes mounted")
 }
 
