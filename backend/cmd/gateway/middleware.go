@@ -22,6 +22,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
+	communityinvitation "github.com/BloomingProsperity/HUAKAI/internal/community/invitation"
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
@@ -310,7 +311,9 @@ func buildSettlementServices(_ context.Context, pgPool *pgxpool.Pool, auditSigne
 			)
 		}))
 	dlqService.Register(legacydlq.EventKindCostReceiptAppend, receiptHook.HandleReceiptRecovery)
-	settler := auditreceipt.NewReceiptHookSettler(baseSettler, receiptHook)
+	referralQualifier := communityinvitation.NewService(communityinvitation.NewPostgresStore(pgPool))
+	settler := auditreceipt.NewReceiptHookSettler(baseSettler, receiptHook,
+		auditreceipt.WithReceiptHookReferralQualifier(referralQualifier))
 	completionBus, err := buildCompletionEventBus(eventBusCfg, settler, dlqService, auditRefPolicy, logger)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("build completion eventbus: %w", err)
