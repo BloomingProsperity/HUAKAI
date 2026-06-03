@@ -30,6 +30,8 @@ type AuthResolver interface {
 
 type AnalyticsStore interface {
 	AggregateMyUsageByDay(context.Context, dbbilling.AggregateMyUsageByDayParams) ([]dbbilling.AggregateMyUsageByDayRow, error)
+	AggregateMyUsageByWeek(context.Context, dbbilling.AggregateMyUsageByWeekParams) ([]dbbilling.AggregateMyUsageByWeekRow, error)
+	AggregateMyUsageByMonth(context.Context, dbbilling.AggregateMyUsageByMonthParams) ([]dbbilling.AggregateMyUsageByMonthRow, error)
 }
 
 type Deps struct {
@@ -62,9 +64,28 @@ type timeSeriesResponse struct {
 	Period windowPeriod      `json:"period"`
 }
 
+type usageGranularity string
+
+const (
+	usageGranularityDay   usageGranularity = "day"
+	usageGranularityWeek  usageGranularity = "week"
+	usageGranularityMonth usageGranularity = "month"
+)
+
+type usageAggregateRow struct {
+	Day                      pgtype.Timestamptz
+	RequestedModel           string
+	TotalCost                string
+	TotalTokensInput         int64
+	TotalTokensOutput        int64
+	TotalCacheReadTokens     int64
+	TotalCacheCreationTokens int64
+	RequestCount             int64
+}
+
 // NewTimeSeriesHandler serves GET /v1/me/analytics/time-series: a self-serve
-// daily usage time-series (cost + token totals by UTC day and model) for the
-// authenticated API key. Scope is locked to ident.TenantID + ident.APIKeyID.
+// usage time-series (cost + token totals by UTC day/week/month and model) for
+// the authenticated API key. Scope is locked to ident.TenantID + ident.APIKeyID.
 func NewTimeSeriesHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if d.Auth == nil || d.Store == nil {
@@ -92,13 +113,12 @@ func NewTimeSeriesHandler(d Deps) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		granularity, ok := parseGranularity(w, r.URL)
+		if !ok {
+			return
+		}
 		// Scope is taken ONLY from the resolved identity — never the query string.
-		rows, err := d.Store.AggregateMyUsageByDay(r.Context(), dbbilling.AggregateMyUsageByDayParams{
-			TenantID: ident.TenantID,
-			APIKeyID: ident.APIKeyID,
-			FromTs:   pgtype.Timestamptz{Time: from, Valid: true},
-			ToTs:     pgtype.Timestamptz{Time: to, Valid: true},
-		})
+		rows, err := aggregateMyUsage(r.Context(), d.Store, granularity, ident, from, to)
 		if err != nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "analytics_query_failed", "analytics backend unavailable")
 			return
@@ -122,6 +142,102 @@ func NewTimeSeriesHandler(d Deps) http.HandlerFunc {
 			Items:  items,
 			Period: windowPeriod{From: from.Format(time.RFC3339), To: to.Format(time.RFC3339)},
 		})
+	}
+}
+
+func parseGranularity(w http.ResponseWriter, u *url.URL) (usageGranularity, bool) {
+	raw := strings.TrimSpace(u.Query().Get("granularity"))
+	switch raw {
+	case "", string(usageGranularityDay):
+		return usageGranularityDay, true
+	case string(usageGranularityWeek):
+		return usageGranularityWeek, true
+	case string(usageGranularityMonth):
+		return usageGranularityMonth, true
+	default:
+		writeJSONError(w, http.StatusBadRequest, "invalid_granularity", "granularity must be one of day, week, month")
+		return "", false
+	}
+}
+
+func aggregateMyUsage(ctx context.Context, store AnalyticsStore, granularity usageGranularity, ident auth.Identity, from, to time.Time) ([]usageAggregateRow, error) {
+	fromTs := pgtype.Timestamptz{Time: from, Valid: true}
+	toTs := pgtype.Timestamptz{Time: to, Valid: true}
+	switch granularity {
+	case usageGranularityDay:
+		rows, err := store.AggregateMyUsageByDay(ctx, dbbilling.AggregateMyUsageByDayParams{
+			TenantID: ident.TenantID,
+			APIKeyID: ident.APIKeyID,
+			FromTs:   fromTs,
+			ToTs:     toTs,
+		})
+		if err != nil {
+			return nil, err
+		}
+		out := make([]usageAggregateRow, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, usageAggregateRow{
+				Day:                      row.Day,
+				RequestedModel:           row.RequestedModel,
+				TotalCost:                row.TotalCost,
+				TotalTokensInput:         row.TotalTokensInput,
+				TotalTokensOutput:        row.TotalTokensOutput,
+				TotalCacheReadTokens:     row.TotalCacheReadTokens,
+				TotalCacheCreationTokens: row.TotalCacheCreationTokens,
+				RequestCount:             row.RequestCount,
+			})
+		}
+		return out, nil
+	case usageGranularityWeek:
+		rows, err := store.AggregateMyUsageByWeek(ctx, dbbilling.AggregateMyUsageByWeekParams{
+			TenantID: ident.TenantID,
+			APIKeyID: ident.APIKeyID,
+			FromTs:   fromTs,
+			ToTs:     toTs,
+		})
+		if err != nil {
+			return nil, err
+		}
+		out := make([]usageAggregateRow, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, usageAggregateRow{
+				Day:                      row.Day,
+				RequestedModel:           row.RequestedModel,
+				TotalCost:                row.TotalCost,
+				TotalTokensInput:         row.TotalTokensInput,
+				TotalTokensOutput:        row.TotalTokensOutput,
+				TotalCacheReadTokens:     row.TotalCacheReadTokens,
+				TotalCacheCreationTokens: row.TotalCacheCreationTokens,
+				RequestCount:             row.RequestCount,
+			})
+		}
+		return out, nil
+	case usageGranularityMonth:
+		rows, err := store.AggregateMyUsageByMonth(ctx, dbbilling.AggregateMyUsageByMonthParams{
+			TenantID: ident.TenantID,
+			APIKeyID: ident.APIKeyID,
+			FromTs:   fromTs,
+			ToTs:     toTs,
+		})
+		if err != nil {
+			return nil, err
+		}
+		out := make([]usageAggregateRow, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, usageAggregateRow{
+				Day:                      row.Day,
+				RequestedModel:           row.RequestedModel,
+				TotalCost:                row.TotalCost,
+				TotalTokensInput:         row.TotalTokensInput,
+				TotalTokensOutput:        row.TotalTokensOutput,
+				TotalCacheReadTokens:     row.TotalCacheReadTokens,
+				TotalCacheCreationTokens: row.TotalCacheCreationTokens,
+				RequestCount:             row.RequestCount,
+			})
+		}
+		return out, nil
+	default:
+		return nil, errors.New("unsupported analytics granularity")
 	}
 }
 

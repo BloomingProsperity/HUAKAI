@@ -356,16 +356,16 @@ paths:
   /v1/me/analytics/time-series:
     get:
       tags: [user-audit]
-      summary: End-user daily usage analytics time series
+      summary: End-user usage analytics time series
       operationId: getMyUsageTimeSeries
       x-huakai-spec-source:
         - backend/internal/usageanalyticshttp/handler.go
       description: |
-        Returns UTC daily cost, token, and request-count totals grouped by
-        requested_model for the authenticated inbound API key. Tenant and
-        API-key scope come only from bearer auth; query parameters cannot widen
-        the caller's scope. The window is required, RFC3339, and capped at 31
-        days by the runtime handler.
+        Returns UTC day, week, or month cost, token, and request-count totals
+        grouped by requested_model for the authenticated inbound API key.
+        Tenant and API-key scope come only from bearer auth; query parameters
+        cannot widen the caller's scope. The window is required, RFC3339, and
+        capped at 31 days by the runtime handler.
       parameters:
         - name: from
           in: query
@@ -375,9 +375,17 @@ paths:
           in: query
           required: true
           schema: { type: string, format: date-time }
+        - name: granularity
+          in: query
+          required: false
+          description: UTC bucket size; omitted keeps the historical daily response.
+          schema:
+            type: string
+            enum: [day, week, month]
+            default: day
       responses:
         '200':
-          description: Daily usage time-series rows for the caller's API key.
+          description: Usage time-series rows for the caller's API key.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MeUsageTimeSeriesResponse' }
@@ -7705,6 +7713,7 @@ components:
       properties:
         day:
           type: string
+          description: UTC bucket start date for the selected granularity.
           pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
         requested_model: { type: string }
         total_cost:

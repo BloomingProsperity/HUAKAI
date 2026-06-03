@@ -29,6 +29,50 @@ WHERE ur.tenant_id = sqlc.arg(tenant_id)::bigint
 GROUP BY 1, 2
 ORDER BY 1 DESC, 2 ASC;
 
+-- name: AggregateMyUsageByWeek :many
+-- Self-serve weekly usage time-series for ONE API key: cost + token totals
+-- bucketed by UTC week start and requested_model. Always scoped by
+-- (tenant_id, api_key_id) so cross-key reads are structurally impossible —
+-- the handler passes ident.APIKeyID, never a client-supplied value.
+SELECT
+    date_trunc('week', ur.settled_at AT TIME ZONE 'UTC')::timestamptz AS day,
+    ur.requested_model,
+    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text  AS total_cost,
+    COALESCE(sum(ur.tokens_input), 0)::bigint              AS total_tokens_input,
+    COALESCE(sum(ur.tokens_output), 0)::bigint             AS total_tokens_output,
+    COALESCE(sum(ur.cache_read_tokens), 0)::bigint         AS total_cache_read_tokens,
+    COALESCE(sum(ur.cache_creation_tokens), 0)::bigint     AS total_cache_creation_tokens,
+    count(*)::bigint                                       AS request_count
+FROM usage_records ur
+WHERE ur.tenant_id = sqlc.arg(tenant_id)::bigint
+  AND ur.api_key_id = sqlc.arg(api_key_id)::bigint
+  AND ur.settled_at >= sqlc.arg(from_ts)::timestamptz
+  AND ur.settled_at <  sqlc.arg(to_ts)::timestamptz
+GROUP BY 1, 2
+ORDER BY 1 DESC, 2 ASC;
+
+-- name: AggregateMyUsageByMonth :many
+-- Self-serve monthly usage time-series for ONE API key: cost + token totals
+-- bucketed by UTC month start and requested_model. Always scoped by
+-- (tenant_id, api_key_id) so cross-key reads are structurally impossible —
+-- the handler passes ident.APIKeyID, never a client-supplied value.
+SELECT
+    date_trunc('month', ur.settled_at AT TIME ZONE 'UTC')::timestamptz AS day,
+    ur.requested_model,
+    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text  AS total_cost,
+    COALESCE(sum(ur.tokens_input), 0)::bigint              AS total_tokens_input,
+    COALESCE(sum(ur.tokens_output), 0)::bigint             AS total_tokens_output,
+    COALESCE(sum(ur.cache_read_tokens), 0)::bigint         AS total_cache_read_tokens,
+    COALESCE(sum(ur.cache_creation_tokens), 0)::bigint     AS total_cache_creation_tokens,
+    count(*)::bigint                                       AS request_count
+FROM usage_records ur
+WHERE ur.tenant_id = sqlc.arg(tenant_id)::bigint
+  AND ur.api_key_id = sqlc.arg(api_key_id)::bigint
+  AND ur.settled_at >= sqlc.arg(from_ts)::timestamptz
+  AND ur.settled_at <  sqlc.arg(to_ts)::timestamptz
+GROUP BY 1, 2
+ORDER BY 1 DESC, 2 ASC;
+
 -- name: AggregateUsageLeaderboardByUser :many
 -- Platform-admin cost leaderboard by user_id. This is the operator surface:
 -- actual_cost is intentionally used to show real upstream spend.
