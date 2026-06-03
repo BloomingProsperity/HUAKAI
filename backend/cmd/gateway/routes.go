@@ -57,6 +57,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Get("/v1/models", modelhttp.NewListHandler(modelhttp.Deps{
 		Auth:    d.inboundAuth,
 		Catalog: d.modelRegistry,
+		Pricing: d.rateTableSource,
 	}))
 	r.Get("/v1/me/usage", meusagehttp.NewHandler(meusagehttp.Deps{
 		Auth:  d.inboundAuth,

@@ -123,7 +123,7 @@ type deps struct {
 	receiptFormatter         *auditreceipt.ReceiptFormatter
 	disputeStore             *auditreceipt.CostDisputeStore
 	refundQueue              *auditreceipt.MismatchRefundQueue
-	rateTableSource          billing.RateTableSource
+	rateTableSource          *billing.PGXRateTableSource
 	modelRegistry            *registry.PostgresRegistry
 	modelSync                *modelsync.Service
 	routePlanner             *router.DefaultRouter

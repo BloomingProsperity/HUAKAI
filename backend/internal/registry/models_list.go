@@ -9,9 +9,11 @@ import (
 // ListedModel is the minimal OpenAI-compatible discovery projection for a
 // model alias visible to a tenant.
 type ListedModel struct {
-	ID        string
-	CreatedAt time.Time
-	OwnedBy   string
+	ID            string
+	CreatedAt     time.Time
+	OwnedBy       string
+	ContextWindow int
+	CanonicalID   string
 }
 
 const listModelsQuery = `
@@ -21,7 +23,9 @@ WITH visible_aliases AS (
         a.public_alias_normalized AS sort_key,
         a.model_id,
         COALESCE(m.model_created_at, a.created_at) AS created_at,
-        COALESCE(NULLIF(BTRIM(m.model_owner), ''), 'HUAKAI') AS owned_by
+        COALESCE(NULLIF(BTRIM(m.model_owner), ''), 'HUAKAI') AS owned_by,
+        m.default_context_window AS context_window,
+        m.canonical_id AS canonical_id
     FROM model_aliases a
     INNER JOIN models m
         ON m.id = a.model_id
@@ -44,7 +48,9 @@ WITH visible_aliases AS (
         a.public_alias_normalized AS sort_key,
         a.model_id,
         COALESCE(m.model_created_at, a.created_at) AS created_at,
-        COALESCE(NULLIF(BTRIM(m.model_owner), ''), 'HUAKAI') AS owned_by
+        COALESCE(NULLIF(BTRIM(m.model_owner), ''), 'HUAKAI') AS owned_by,
+        m.default_context_window AS context_window,
+        m.canonical_id AS canonical_id
     FROM model_aliases a
     INNER JOIN models m
         ON m.id = a.model_id
@@ -72,7 +78,9 @@ WITH visible_aliases AS (
 SELECT
     id,
     created_at,
-    owned_by
+    owned_by,
+    context_window,
+    canonical_id
 FROM visible_aliases va
 WHERE EXISTS (
     SELECT 1
@@ -107,7 +115,7 @@ func (r *PostgresRegistry) ListModels(ctx context.Context, tenantID int64) ([]Li
 	models := make([]ListedModel, 0)
 	for rows.Next() {
 		var model ListedModel
-		if err := rows.Scan(&model.ID, &model.CreatedAt, &model.OwnedBy); err != nil {
+		if err := rows.Scan(&model.ID, &model.CreatedAt, &model.OwnedBy, &model.ContextWindow, &model.CanonicalID); err != nil {
 			return nil, fmt.Errorf("%w: scan model: %v", ErrRegistryBackend, err)
 		}
 		models = append(models, model)

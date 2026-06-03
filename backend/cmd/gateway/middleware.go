@@ -273,7 +273,7 @@ func buildOutboxWorker(outboxStore obsoutbox.Outbox, outboxRuntime obsoutbox.Run
 	return outboxWorker
 }
 
-func buildSettlementServices(_ context.Context, pgPool *pgxpool.Pool, auditSigner *sign.Signer, auditLedger auditledger.Ledger, dlqStore *legacydlq.Store, dlqService *legacydlq.Service, replicaTarget string, eventBusCfg *runtimeconfig.EventBusConfig, auditRefPolicy *eventbus.AuditRefPolicy, logger *zap.Logger) (billing.Settler, *auditreceipt.PGXReceiptStorage, *auditreceipt.ReceiptFormatter, *auditreceipt.MismatchRefundQueue, billing.RateTableSource, *eventbus.Bus, error) {
+func buildSettlementServices(_ context.Context, pgPool *pgxpool.Pool, auditSigner *sign.Signer, auditLedger auditledger.Ledger, dlqStore *legacydlq.Store, dlqService *legacydlq.Service, replicaTarget string, eventBusCfg *runtimeconfig.EventBusConfig, auditRefPolicy *eventbus.AuditRefPolicy, logger *zap.Logger) (billing.Settler, *auditreceipt.PGXReceiptStorage, *auditreceipt.ReceiptFormatter, *auditreceipt.MismatchRefundQueue, *billing.PGXRateTableSource, *eventbus.Bus, error) {
 	receiptStore, err := auditreceipt.NewPGXReceiptStorage(pgPool)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("build receipt storage: %w", err)
