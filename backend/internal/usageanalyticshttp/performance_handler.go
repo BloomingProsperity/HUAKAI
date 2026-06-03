@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,12 +13,15 @@ import (
 	"github.com/shopspring/decimal"
 
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/snapshotcache"
 )
 
 const (
 	defaultPerformanceBy = "model"
 	performanceByModel   = "model"
 )
+
+var performanceSnapshotTTL = 30 * time.Second
 
 type performanceQuery struct {
 	by           string
@@ -62,22 +66,47 @@ func NewPerformanceHandler(q Querier) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		rows, err := fetchPerformanceRows(r.Context(), q, query)
-		if err != nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "analytics_query_failed", "analytics backend unavailable")
-			return
-		}
-		entries, err := performanceEntries(rows)
-		if err != nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "analytics_query_failed", "analytics backend unavailable")
-			return
-		}
-		writeJSON(w, http.StatusOK, performanceResponse{
-			Window:  query.windowLabel,
-			By:      query.by,
-			Entries: entries,
+		value, hit, err := snapshotcache.GetOrLoad(performanceSnapshotCacheKey(query), performanceSnapshotTTL, func() (any, error) {
+			return loadPerformanceResponse(r.Context(), q, query)
 		})
+		if err != nil {
+			w.Header().Set(snapshotCacheHeader, "miss")
+			writeJSONError(w, http.StatusServiceUnavailable, "analytics_query_failed", "analytics backend unavailable")
+			return
+		}
+		response, ok := value.(performanceResponse)
+		if !ok {
+			w.Header().Set(snapshotCacheHeader, "miss")
+			writeJSONError(w, http.StatusServiceUnavailable, "analytics_query_failed", "analytics backend unavailable")
+			return
+		}
+		if hit {
+			w.Header().Set(snapshotCacheHeader, "hit")
+		} else {
+			w.Header().Set(snapshotCacheHeader, "miss")
+		}
+		writeJSON(w, http.StatusOK, response)
 	}
+}
+
+func loadPerformanceResponse(ctx context.Context, q Querier, query performanceQuery) (performanceResponse, error) {
+	rows, err := fetchPerformanceRows(ctx, q, query)
+	if err != nil {
+		return performanceResponse{}, err
+	}
+	entries, err := performanceEntries(rows)
+	if err != nil {
+		return performanceResponse{}, err
+	}
+	return performanceResponse{
+		Window:  query.windowLabel,
+		By:      query.by,
+		Entries: entries,
+	}, nil
+}
+
+func performanceSnapshotCacheKey(query performanceQuery) string {
+	return "admin_usage_performance:v1|by=" + query.by + "|window=" + query.windowLabel + "|limit=" + strconv.Itoa(int(query.limit))
 }
 
 func parsePerformanceQuery(w http.ResponseWriter, u *url.URL, now time.Time) (performanceQuery, bool) {

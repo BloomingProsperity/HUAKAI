@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,16 +27,25 @@ type leaderboardSeedEvent struct {
 }
 
 type leaderboardQueryStub struct {
+	mu          sync.Mutex
 	events      []leaderboardSeedEvent
 	called      string
+	calls       int
 	userArg     dbbilling.AggregateUsageLeaderboardByUserParams
 	modelArg    dbbilling.AggregateUsageLeaderboardByModelParams
 	providerArg dbbilling.AggregateUsageLeaderboardByProviderAccountParams
+	started     chan struct{}
+	release     chan struct{}
+	once        sync.Once
 }
 
 func (s *leaderboardQueryStub) AggregateUsageLeaderboardByUser(_ context.Context, arg dbbilling.AggregateUsageLeaderboardByUserParams) ([]dbbilling.AggregateUsageLeaderboardByUserRow, error) {
+	s.mu.Lock()
 	s.called = "user"
+	s.calls++
 	s.userArg = arg
+	s.mu.Unlock()
+	s.maybeBlock()
 	rows := s.aggregate(arg.SettledSince, arg.RowLimit, func(e leaderboardSeedEvent) string {
 		return strconv.FormatInt(e.userID, 10)
 	})
@@ -47,8 +57,12 @@ func (s *leaderboardQueryStub) AggregateUsageLeaderboardByUser(_ context.Context
 }
 
 func (s *leaderboardQueryStub) AggregateUsageLeaderboardByModel(_ context.Context, arg dbbilling.AggregateUsageLeaderboardByModelParams) ([]dbbilling.AggregateUsageLeaderboardByModelRow, error) {
+	s.mu.Lock()
 	s.called = "model"
+	s.calls++
 	s.modelArg = arg
+	s.mu.Unlock()
+	s.maybeBlock()
 	rows := s.aggregate(arg.SettledSince, arg.RowLimit, func(e leaderboardSeedEvent) string {
 		return e.model
 	})
@@ -60,8 +74,12 @@ func (s *leaderboardQueryStub) AggregateUsageLeaderboardByModel(_ context.Contex
 }
 
 func (s *leaderboardQueryStub) AggregateUsageLeaderboardByProviderAccount(_ context.Context, arg dbbilling.AggregateUsageLeaderboardByProviderAccountParams) ([]dbbilling.AggregateUsageLeaderboardByProviderAccountRow, error) {
+	s.mu.Lock()
 	s.called = "provider_account"
+	s.calls++
 	s.providerArg = arg
+	s.mu.Unlock()
+	s.maybeBlock()
 	rows := s.aggregate(arg.SettledSince, arg.RowLimit, func(e leaderboardSeedEvent) string {
 		if e.providerAccountID == nil {
 			return "unassigned"
@@ -73,6 +91,22 @@ func (s *leaderboardQueryStub) AggregateUsageLeaderboardByProviderAccount(_ cont
 		out = append(out, dbbilling.AggregateUsageLeaderboardByProviderAccountRow(row))
 	}
 	return out, nil
+}
+
+func (s *leaderboardQueryStub) maybeBlock() {
+	if s.started == nil || s.release == nil {
+		return
+	}
+	s.once.Do(func() {
+		close(s.started)
+	})
+	<-s.release
+}
+
+func (s *leaderboardQueryStub) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
 }
 
 func (s *leaderboardQueryStub) AggregateUsagePerformanceByModel(context.Context, dbbilling.AggregateUsagePerformanceByModelParams) ([]dbbilling.AggregateUsagePerformanceByModelRow, error) {
@@ -242,5 +276,126 @@ func TestLeaderboard_InvalidParamsDoNotQuery(t *testing.T) {
 				t.Fatalf("invalid request called %q query", store.called)
 			}
 		})
+	}
+}
+
+func TestLeaderboardSnapshotCacheHitsWithinTTLAndSetsHeader(t *testing.T) {
+	oldTTL := leaderboardSnapshotTTL
+	leaderboardSnapshotTTL = time.Minute
+	defer func() { leaderboardSnapshotTTL = oldTTL }()
+
+	store := &leaderboardQueryStub{events: []leaderboardSeedEvent{
+		{userID: 501, settledAt: time.Now().UTC().Add(-30 * time.Minute), cost: decimal.RequireFromString("2.00"), tokens: 20},
+	}}
+	h := NewLeaderboardHandler(store)
+	target := "/v1/admin/usage/leaderboard?by=user&window=41h&limit=3"
+	first := invoke(h, target)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first code=%d want 200 body=%s", first.Code, first.Body.String())
+	}
+	if first.Header().Get(snapshotCacheHeader) != "miss" {
+		t.Fatalf("first %s=%q want miss", snapshotCacheHeader, first.Header().Get(snapshotCacheHeader))
+	}
+	second := invoke(h, target)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second code=%d want 200 body=%s", second.Code, second.Body.String())
+	}
+	if got := store.callCount(); got != 1 {
+		t.Fatalf("query calls=%d want 1; mutation removing GetOrLoad calls backend twice", got)
+	}
+	if second.Header().Get(snapshotCacheHeader) != "hit" {
+		t.Fatalf("second %s=%q want hit; mutation without cache wrapper reports miss/empty and queries again", snapshotCacheHeader, second.Header().Get(snapshotCacheHeader))
+	}
+}
+
+func TestLeaderboardSnapshotCacheExpiresAfterTTL(t *testing.T) {
+	oldTTL := leaderboardSnapshotTTL
+	leaderboardSnapshotTTL = 15 * time.Millisecond
+	defer func() { leaderboardSnapshotTTL = oldTTL }()
+
+	store := &leaderboardQueryStub{}
+	h := NewLeaderboardHandler(store)
+	target := "/v1/admin/usage/leaderboard?by=model&window=42h&limit=4"
+	first := invoke(h, target)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first code=%d want 200 body=%s", first.Code, first.Body.String())
+	}
+	time.Sleep(25 * time.Millisecond)
+	second := invoke(h, target)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second code=%d want 200 body=%s", second.Code, second.Body.String())
+	}
+	if second.Header().Get(snapshotCacheHeader) != "miss" {
+		t.Fatalf("second %s=%q want miss after TTL expiry; mutation ignoring expiry returns stale hit", snapshotCacheHeader, second.Header().Get(snapshotCacheHeader))
+	}
+	if got := store.callCount(); got != 2 {
+		t.Fatalf("query calls=%d want 2 after TTL expiry", got)
+	}
+}
+
+func TestLeaderboardSnapshotCacheCoalescesConcurrentSameKeyMisses(t *testing.T) {
+	oldTTL := leaderboardSnapshotTTL
+	leaderboardSnapshotTTL = time.Minute
+	defer func() { leaderboardSnapshotTTL = oldTTL }()
+
+	store := &leaderboardQueryStub{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	h := NewLeaderboardHandler(store)
+	target := "/v1/admin/usage/leaderboard?by=provider_account&window=43h&limit=5"
+
+	const workers = 40
+	var wg sync.WaitGroup
+	results := make(chan int, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- invoke(h, target).Code
+		}()
+	}
+	<-store.started
+	time.Sleep(20 * time.Millisecond)
+	close(store.release)
+	wg.Wait()
+	close(results)
+	for code := range results {
+		if code != http.StatusOK {
+			t.Fatalf("code=%d want 200", code)
+		}
+	}
+	if got := store.callCount(); got != 1 {
+		t.Fatalf("query calls=%d want 1; mutation removing inflight coalescing stampedes backend", got)
+	}
+}
+
+func TestLeaderboardSnapshotCacheKeysSeparateByWindowLimitAndDimension(t *testing.T) {
+	oldTTL := leaderboardSnapshotTTL
+	leaderboardSnapshotTTL = time.Minute
+	defer func() { leaderboardSnapshotTTL = oldTTL }()
+
+	store := &leaderboardQueryStub{}
+	h := NewLeaderboardHandler(store)
+	targets := []string{
+		"/v1/admin/usage/leaderboard?by=user&window=44h&limit=1",
+		"/v1/admin/usage/leaderboard?by=user&window=44h&limit=2",
+		"/v1/admin/usage/leaderboard?by=user&window=45h&limit=1",
+		"/v1/admin/usage/leaderboard?by=model&window=44h&limit=1",
+	}
+	for i, target := range targets {
+		rec := invoke(h, target)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("target[%d] code=%d want 200 body=%s", i, rec.Code, rec.Body.String())
+		}
+		if rec.Header().Get(snapshotCacheHeader) != "miss" {
+			t.Fatalf("target[%d] %s=%q want miss; cache key must include by/window/limit", i, snapshotCacheHeader, rec.Header().Get(snapshotCacheHeader))
+		}
+	}
+	if got := store.callCount(); got != len(targets) {
+		t.Fatalf("query calls=%d want %d independent keys; mutation dropping by/window/limit aliases requests", got, len(targets))
+	}
+	if rec := invoke(h, targets[0]); rec.Header().Get(snapshotCacheHeader) != "hit" {
+		t.Fatalf("repeat base %s=%q want hit", snapshotCacheHeader, rec.Header().Get(snapshotCacheHeader))
 	}
 }

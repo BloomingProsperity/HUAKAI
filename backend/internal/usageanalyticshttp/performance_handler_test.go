@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,10 +29,15 @@ type performanceSeedEvent struct {
 }
 
 type performanceQueryStub struct {
+	mu          sync.Mutex
 	events      []performanceSeedEvent
 	called      string
+	calls       int
 	modelArg    dbbilling.AggregateUsagePerformanceByModelParams
 	providerArg dbbilling.AggregateUsagePerformanceByProviderAccountParams
+	started     chan struct{}
+	release     chan struct{}
+	once        sync.Once
 }
 
 func (s *performanceQueryStub) AggregateUsageLeaderboardByUser(context.Context, dbbilling.AggregateUsageLeaderboardByUserParams) ([]dbbilling.AggregateUsageLeaderboardByUserRow, error) {
@@ -47,8 +53,12 @@ func (s *performanceQueryStub) AggregateUsageLeaderboardByProviderAccount(contex
 }
 
 func (s *performanceQueryStub) AggregateUsagePerformanceByModel(_ context.Context, arg dbbilling.AggregateUsagePerformanceByModelParams) ([]dbbilling.AggregateUsagePerformanceByModelRow, error) {
+	s.mu.Lock()
 	s.called = "model"
+	s.calls++
 	s.modelArg = arg
+	s.mu.Unlock()
+	s.maybeBlock()
 	rows := s.aggregate(arg.SettledSince, arg.RowLimit, func(e performanceSeedEvent) string {
 		return e.model
 	})
@@ -60,8 +70,12 @@ func (s *performanceQueryStub) AggregateUsagePerformanceByModel(_ context.Contex
 }
 
 func (s *performanceQueryStub) AggregateUsagePerformanceByProviderAccount(_ context.Context, arg dbbilling.AggregateUsagePerformanceByProviderAccountParams) ([]dbbilling.AggregateUsagePerformanceByProviderAccountRow, error) {
+	s.mu.Lock()
 	s.called = "provider_account"
+	s.calls++
 	s.providerArg = arg
+	s.mu.Unlock()
+	s.maybeBlock()
 	rows := s.aggregate(arg.SettledSince, arg.RowLimit, func(e performanceSeedEvent) string {
 		if e.providerAccountID == nil {
 			return "unassigned"
@@ -73,6 +87,22 @@ func (s *performanceQueryStub) AggregateUsagePerformanceByProviderAccount(_ cont
 		out = append(out, dbbilling.AggregateUsagePerformanceByProviderAccountRow(row))
 	}
 	return out, nil
+}
+
+func (s *performanceQueryStub) maybeBlock() {
+	if s.started == nil || s.release == nil {
+		return
+	}
+	s.once.Do(func() {
+		close(s.started)
+	})
+	<-s.release
+}
+
+func (s *performanceQueryStub) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
 }
 
 func (s *performanceQueryStub) AggregateUsageOverviewTotals(context.Context, pgtype.Timestamptz) (dbbilling.AggregateUsageOverviewTotalsRow, error) {
@@ -295,5 +325,127 @@ func TestPerformance_InvalidParamsDoNotQuery(t *testing.T) {
 				t.Fatalf("invalid request called %q query", store.called)
 			}
 		})
+	}
+}
+
+func TestPerformanceSnapshotCacheHitsWithinTTLAndSetsHeader(t *testing.T) {
+	oldTTL := performanceSnapshotTTL
+	performanceSnapshotTTL = time.Minute
+	defer func() { performanceSnapshotTTL = oldTTL }()
+
+	now := time.Now().UTC()
+	store := &performanceQueryStub{events: []performanceSeedEvent{
+		{model: "cache-model", settledAt: now.Add(-30 * time.Minute), requestedAt: now, endClass: "non_streaming"},
+	}}
+	h := NewPerformanceHandler(store)
+	target := "/v1/admin/usage/performance?by=model&window=51h&limit=3"
+	first := invoke(h, target)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first code=%d want 200 body=%s", first.Code, first.Body.String())
+	}
+	if first.Header().Get(snapshotCacheHeader) != "miss" {
+		t.Fatalf("first %s=%q want miss", snapshotCacheHeader, first.Header().Get(snapshotCacheHeader))
+	}
+	second := invoke(h, target)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second code=%d want 200 body=%s", second.Code, second.Body.String())
+	}
+	if got := store.callCount(); got != 1 {
+		t.Fatalf("query calls=%d want 1; mutation removing GetOrLoad calls backend twice", got)
+	}
+	if second.Header().Get(snapshotCacheHeader) != "hit" {
+		t.Fatalf("second %s=%q want hit; mutation without cache wrapper reports miss/empty and queries again", snapshotCacheHeader, second.Header().Get(snapshotCacheHeader))
+	}
+}
+
+func TestPerformanceSnapshotCacheExpiresAfterTTL(t *testing.T) {
+	oldTTL := performanceSnapshotTTL
+	performanceSnapshotTTL = 15 * time.Millisecond
+	defer func() { performanceSnapshotTTL = oldTTL }()
+
+	store := &performanceQueryStub{}
+	h := NewPerformanceHandler(store)
+	target := "/v1/admin/usage/performance?by=provider_account&window=52h&limit=4"
+	first := invoke(h, target)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first code=%d want 200 body=%s", first.Code, first.Body.String())
+	}
+	time.Sleep(25 * time.Millisecond)
+	second := invoke(h, target)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second code=%d want 200 body=%s", second.Code, second.Body.String())
+	}
+	if second.Header().Get(snapshotCacheHeader) != "miss" {
+		t.Fatalf("second %s=%q want miss after TTL expiry; mutation ignoring expiry returns stale hit", snapshotCacheHeader, second.Header().Get(snapshotCacheHeader))
+	}
+	if got := store.callCount(); got != 2 {
+		t.Fatalf("query calls=%d want 2 after TTL expiry", got)
+	}
+}
+
+func TestPerformanceSnapshotCacheCoalescesConcurrentSameKeyMisses(t *testing.T) {
+	oldTTL := performanceSnapshotTTL
+	performanceSnapshotTTL = time.Minute
+	defer func() { performanceSnapshotTTL = oldTTL }()
+
+	store := &performanceQueryStub{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	h := NewPerformanceHandler(store)
+	target := "/v1/admin/usage/performance?by=model&window=53h&limit=5"
+
+	const workers = 40
+	var wg sync.WaitGroup
+	results := make(chan int, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- invoke(h, target).Code
+		}()
+	}
+	<-store.started
+	time.Sleep(20 * time.Millisecond)
+	close(store.release)
+	wg.Wait()
+	close(results)
+	for code := range results {
+		if code != http.StatusOK {
+			t.Fatalf("code=%d want 200", code)
+		}
+	}
+	if got := store.callCount(); got != 1 {
+		t.Fatalf("query calls=%d want 1; mutation removing inflight coalescing stampedes backend", got)
+	}
+}
+
+func TestPerformanceSnapshotCacheKeysSeparateByWindowLimitAndDimension(t *testing.T) {
+	oldTTL := performanceSnapshotTTL
+	performanceSnapshotTTL = time.Minute
+	defer func() { performanceSnapshotTTL = oldTTL }()
+
+	store := &performanceQueryStub{}
+	h := NewPerformanceHandler(store)
+	targets := []string{
+		"/v1/admin/usage/performance?by=model&window=54h&limit=1",
+		"/v1/admin/usage/performance?by=model&window=54h&limit=2",
+		"/v1/admin/usage/performance?by=model&window=55h&limit=1",
+		"/v1/admin/usage/performance?by=provider_account&window=54h&limit=1",
+	}
+	for i, target := range targets {
+		rec := invoke(h, target)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("target[%d] code=%d want 200 body=%s", i, rec.Code, rec.Body.String())
+		}
+		if rec.Header().Get(snapshotCacheHeader) != "miss" {
+			t.Fatalf("target[%d] %s=%q want miss; cache key must include by/window/limit", i, snapshotCacheHeader, rec.Header().Get(snapshotCacheHeader))
+		}
+	}
+	if got := store.callCount(); got != len(targets) {
+		t.Fatalf("query calls=%d want %d independent keys; mutation dropping by/window/limit aliases requests", got, len(targets))
+	}
+	if rec := invoke(h, targets[0]); rec.Header().Get(snapshotCacheHeader) != "hit" {
+		t.Fatalf("repeat base %s=%q want hit", snapshotCacheHeader, rec.Header().Get(snapshotCacheHeader))
 	}
 }
