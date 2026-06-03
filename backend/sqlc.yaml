@@ -83,6 +83,25 @@ sql:
   - engine: postgresql
     schema: sql/migrations
     queries:
+      - sql/queries/pricing_catalog.sql
+    gen:
+      go:
+        package: pricingcatalogdb
+        out: internal/db/pricingcatalog
+        sql_package: pgx/v5
+        emit_json_tags: true
+        emit_db_tags: true
+        emit_pointers_for_null_types: true
+        emit_interface: true
+        omit_unused_structs: true
+        emit_methods_with_db_argument: false
+        emit_prepared_queries: false
+        rename:
+          tenant_id: TenantID
+          pool_group_id: PoolGroupID
+  - engine: postgresql
+    schema: sql/migrations
+    queries:
       - sql/queries/auth_audit.sql
       - sql/queries/auth_credentials.sql
       - sql/queries/auth_inbound.sql
