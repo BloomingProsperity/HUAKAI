@@ -85,6 +85,37 @@ func TestCopyProxyResponseFlushesAfterEachChunk(t *testing.T) {
 	}
 }
 
+func TestCopyProxyResponseFiltersSensitiveUpstreamHeaders(t *testing.T) {
+	resp := &http.Response{
+		StatusCode: http.StatusBadGateway,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader("upstream error")),
+	}
+	resp.Header.Set("Set-Cookie", "session=redacted")
+	resp.Header.Set("Authorization", "Bearer redacted")
+	resp.Header.Set("CF-Ray", "edge-redacted")
+	resp.Header.Set("X-Amz-Request-Id", "aws-redacted")
+	resp.Header.Set("Content-Type", "text/plain")
+	resp.Header.Set("X-Runner-Trace", "keep")
+	rec := httptest.NewRecorder()
+
+	if err := copyProxyResponse(rec, resp); err != nil {
+		t.Fatalf("copyProxyResponse: %v", err)
+	}
+
+	for _, name := range []string{"Set-Cookie", "Authorization", "CF-Ray", "X-Amz-Request-Id"} {
+		if rec.Header().Get(name) != "" {
+			t.Fatalf("%s leaked through Hermes proxy response", name)
+		}
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/plain" {
+		t.Fatalf("Content-Type=%q want text/plain", got)
+	}
+	if got := rec.Header().Get("X-Runner-Trace"); got != "keep" {
+		t.Fatalf("X-Runner-Trace=%q want keep", got)
+	}
+}
+
 func TestWriteHermesErrorProfileInUse(t *testing.T) {
 	rec := httptest.NewRecorder()
 

@@ -44,6 +44,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/panelauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	providercopilot "github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
@@ -127,6 +128,7 @@ type deps struct {
 	adminIssuer              *admin.KeyIssuer
 	adminRevoker             *admin.KeyRevoker
 	billingAuditUpdater      gatewayhttp.AdminBillingSettingsAuditUpdater
+	platformSettings         *platformsettings.Service
 	hermesService            *hermes.Service
 	hermesRunner             *hermes.RunnerClient
 	hermesChatBridge         *hermeschat.Bridge
@@ -384,6 +386,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	adminQueries := admindb.New(pgPool)
 	authQueries := dbauth.New(pgPool)
 	billingQueries := dbbilling.New(pgPool)
+	platformSettingsService := platformsettings.NewService(platformsettings.NewPostgresStore(pgPool), nil)
 	hermesQueries := dbhermes.New(pgPool)
 	hermesKeyStore := hermes.NewKeyStore(hermesQueries)
 	hermesBootstrapIssuer, err := hermes.NewBootstrapIssuerFromEnv(hermesKeyStore)
@@ -512,7 +515,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	dlqService.Register(legacydlq.EventKindPostDeliverySettlement, settlementHandler.Handle)
 	var hermesChatBridge *hermeschat.Bridge
 	if hermesRunner != nil {
-		hermesChatBridge, err = buildHermesChatBridge(hermesService, dlqService)
+		hermesChatBridge, err = buildHermesChatBridge(hermesService, dlqService, platformSettingsService)
 		if err != nil {
 			return nil, err
 		}
@@ -614,6 +617,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		adminIssuer:              admin.NewKeyIssuer(pgPool),
 		adminRevoker:             admin.NewKeyRevoker(pgPool),
 		billingAuditUpdater:      gatewayhttp.NewAdminBillingSettingsAuditUpdater(pgPool),
+		platformSettings:         platformSettingsService,
 		hermesService:            hermesService,
 		hermesRunner:             hermesRunner,
 		hermesChatBridge:         hermesChatBridge,
@@ -747,7 +751,7 @@ func buildModelSyncService(cfg *runtimeconfig.ModelSyncConfig, store *registry.P
 	})
 }
 
-func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.Service) (*hermeschat.Bridge, error) {
+func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.Service, settings *platformsettings.Service) (*hermeschat.Bridge, error) {
 	if hermesService == nil {
 		return nil, nil
 	}
@@ -760,6 +764,7 @@ func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.
 		hermeschat.WithInternalTokenSecret([]byte(internalSecret)),
 		hermeschat.WithInternalBaseURL(envDefault(hermeschat.InternalBaseURLEnv, hermeschat.DefaultInternalBaseURL)),
 		hermeschat.WithAuditDLQ(dlqService),
+		hermeschat.WithResponseHeaderSettings(settings),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("build hermes chat bridge: %w", err)

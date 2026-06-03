@@ -12,7 +12,10 @@ func mountPlatformSettingsRoutes(r chi.Router, d *deps) {
 	var service platformsettingshttp.Service
 	if d != nil {
 		auth = d.adminAuth
-		service = platformsettings.NewService(platformsettings.NewPostgresStore(d.pgPool), nil)
+		service = d.platformSettings
+		if service == nil && d.pgPool != nil {
+			service = platformsettings.NewService(platformsettings.NewPostgresStore(d.pgPool), nil)
+		}
 	}
 	r.Route("/v1/admin/platform-settings", func(r chi.Router) {
 		platformsettingshttp.MountPlatformSettingsRoutes(r, platformsettingshttp.Deps{

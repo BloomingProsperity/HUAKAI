@@ -601,6 +601,48 @@ func TestBridgeDoesNotForwardRunnerFramingHeaders(t *testing.T) {
 	}
 }
 
+func TestBridgeStreamFiltersSensitiveRunnerHeaders(t *testing.T) {
+	// Regression: runner response headers must not smuggle credentials or infra metadata to clients.
+	store := newBridgeStore()
+	store.conversations[conversationKey{tenantID: 7, id: 77}] = dbhermes.HermesConversation{ID: 77, TenantID: 7, OwnerUserID: 42}
+	bridge := mustBridge(t, store)
+	prepared, err := bridge.PrepareRequest(context.Background(), Request{
+		TenantID: 7, UserID: 42, RequestID: "req-header-firewall",
+		Body: []byte(`{"conversation_id":77,"messages":[{"role":"user","content":"hi"}]}`),
+	})
+	if err != nil {
+		t.Fatalf("PrepareRequest: %v", err)
+	}
+	resp := sseResponse(
+		"event: token\n" +
+			"data: {\"delta\":\"ok\"}\n\n" +
+			"event: done\n" +
+			"data: {\"finish_reason\":\"stop\",\"total_tokens\":2}\n\n",
+	)
+	resp.Header.Set("Set-Cookie", "session=redacted")
+	resp.Header.Set("Authorization", "Bearer redacted")
+	resp.Header.Set("CF-Ray", "edge-redacted")
+	resp.Header.Set("X-Amz-Request-Id", "aws-redacted")
+	resp.Header.Set("X-Runner-Trace", "keep")
+
+	rec := httptest.NewRecorder()
+	if err := bridge.Stream(context.Background(), rec, resp, prepared); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	for _, name := range []string{"Set-Cookie", "Authorization", "CF-Ray", "X-Amz-Request-Id"} {
+		if rec.Header().Get(name) != "" {
+			t.Fatalf("%s leaked through Hermes chat bridge response", name)
+		}
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("Content-Type=%q want text/event-stream", got)
+	}
+	if got := rec.Header().Get("X-Runner-Trace"); got != "keep" {
+		t.Fatalf("X-Runner-Trace=%q want keep", got)
+	}
+}
+
 type conversationKey struct {
 	tenantID int64
 	id       int64
