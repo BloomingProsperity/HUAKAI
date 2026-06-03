@@ -549,6 +549,7 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 		}
 	}
 	draft.ActualCost = actualCost.Total
+	draft.CostSnapshot = actualCost.CostSnapshot
 	draft.CacheCreationCost = actualCost.CacheCreationCost
 	draft.CacheReadCost = actualCost.CacheReadCost
 	// 流式 token 交叉校验(镜像非流 nonStreamingUsageDraft,审计-only,不改成本/usage_source):
@@ -558,7 +559,7 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 	// pending 与上方缺 usage 的 pending 取并集,不互相覆盖(S2-163-fu;review R2)。
 	streamConfidence, streamPending := crossCheckAudit(draft.TokensOutput, draft.ReasoningTokens, draft.EstimatedOutputTokens, draft.EstimatedReasoningTokens, actualCost.Total.IsPositive())
 	draft.ConfidenceScore = &streamConfidence
-	if streamPending {
+	if streamPending || actualCost.PendingReconciliation {
 		draft.PendingReconciliation = true
 	}
 	return eventbus.RequestCompletionEvent{

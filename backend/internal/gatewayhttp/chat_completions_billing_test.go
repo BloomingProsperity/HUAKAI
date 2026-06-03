@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
@@ -60,6 +61,25 @@ func TestNonStreamingSettleRequestCarriesSchedulerOutboxIntent(t *testing.T) {
 	req := ex.nonStreamingSettleRequest(proto.NewEmptyEnvelope(), completionCostBreakdown{}, nil)
 	if !req.EmitSchedulerOutbox {
 		t.Fatal("provider-backed non-streaming settlement must carry scheduler outbox intent")
+	}
+}
+
+func TestNonStreamingUsageDraftCarriesCostSnapshot(t *testing.T) {
+	env := proto.NewEmptyEnvelope()
+	env.BufferedResponse = &proto.CanonicalResponse{
+		Usage: proto.CanonicalUsage{InputTokens: 2, OutputTokens: 3},
+	}
+	actualCost := completionCostBreakdown{
+		Total:        decimal.RequireFromString("0.0025"),
+		CostSnapshot: "tiered:vtest-policy",
+	}
+
+	draft := nonStreamingUsageDraft(env, actualCost, nil)
+
+	// Mutation: dropping the non-streaming draft CostSnapshot assignment leaves
+	// cost correct but loses auditability for the model that charged the row.
+	if draft.CostSnapshot != "tiered:vtest-policy" {
+		t.Fatalf("CostSnapshot=%q want tiered:vtest-policy", draft.CostSnapshot)
 	}
 }
 

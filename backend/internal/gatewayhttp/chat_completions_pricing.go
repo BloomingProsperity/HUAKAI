@@ -11,6 +11,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/pricingeval"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
 
@@ -43,9 +44,16 @@ type completionRateVector struct {
 }
 
 type completionCostBreakdown struct {
-	Total             decimal.Decimal
-	CacheCreationCost decimal.Decimal
-	CacheReadCost     decimal.Decimal
+	Total                 decimal.Decimal
+	CacheCreationCost     decimal.Decimal
+	CacheReadCost         decimal.Decimal
+	CostSnapshot          string
+	PendingReconciliation bool
+}
+
+type completionPricingSelection struct {
+	Raw   json.RawMessage
+	Rates completionRateVector
 }
 
 func (ex *chatExecution) predictedCompletionCost() (decimal.Decimal, error) {
@@ -87,11 +95,21 @@ func (ex *chatExecution) completionCost(usage completionUsageForCost) (completio
 		}
 		return completionCostBreakdown{}, pricingUnavailable(fmt.Sprintf("rate table version %q read failed: %v", version, err))
 	}
-	rates, err := rateVectorFromTable(table.PricingData, ex.providerForPricing(), ex.modelCandidatesForPricing())
+	selection, err := rateVectorFromTable(table.PricingData, ex.providerForPricing(), ex.modelCandidatesForPricing())
 	if err != nil {
 		return completionCostBreakdown{}, err
 	}
-	return rates.price(usage)
+	result, err := pricingeval.Resolve(ex.ctx, selection.Raw, pricingUsage(usage), selection.Rates.flatRateFallback(), version)
+	if err != nil {
+		return completionCostBreakdown{}, pricingUnavailable(err.Error())
+	}
+	return completionCostBreakdown{
+		Total:                 result.Total,
+		CacheCreationCost:     result.CacheCreationCost,
+		CacheReadCost:         result.CacheReadCost,
+		CostSnapshot:          result.CostSnapshot,
+		PendingReconciliation: result.PendingReconciliation,
+	}, nil
 }
 
 func (ex *chatExecution) providerForPricing() string {
@@ -151,6 +169,35 @@ func usageFromDraft(draft gateway.UsageRecordDraft) completionUsageForCost {
 	}
 }
 
+func pricingUsage(usage completionUsageForCost) pricingeval.Usage {
+	return pricingeval.Usage{
+		InputTokens:           int64(usage.InputTokens),
+		OutputTokens:          int64(usage.OutputTokens),
+		CacheCreationTokens:   int64(usage.CacheCreationTokens),
+		CacheCreation5mTokens: int64(usage.CacheCreation5mTokens),
+		CacheCreation1hTokens: int64(usage.CacheCreation1hTokens),
+		CacheReadTokens:       int64(usage.CacheReadTokens),
+	}
+}
+
+func (v completionRateVector) flatRateFallback() pricingeval.FlatRateFallback {
+	return pricingeval.FlatRateFallback{
+		Input:              v.Input,
+		Output:             v.Output,
+		CacheCreation:      v.CacheCreation,
+		CacheCreation5m:    v.CacheCreation5m,
+		CacheCreation1h:    v.CacheCreation1h,
+		CacheRead:          v.CacheRead,
+		Multiplier:         v.Multiplier,
+		HasInput:           v.HasInput,
+		HasOutput:          v.HasOutput,
+		HasCacheCreation:   v.HasCacheCreation,
+		HasCacheCreation5m: v.HasCacheCreation5m,
+		HasCacheCreation1h: v.HasCacheCreation1h,
+		HasCacheRead:       v.HasCacheRead,
+	}
+}
+
 func estimateInputTokens(body []byte) int {
 	n := len(strings.TrimSpace(string(body)))
 	if n <= 0 {
@@ -168,36 +215,44 @@ func estimateOutputTokens(req chatRequest) int {
 	return 1000
 }
 
-func rateVectorFromTable(raw json.RawMessage, provider string, models []string) (completionRateVector, error) {
+func rateVectorFromTable(raw json.RawMessage, provider string, models []string) (completionPricingSelection, error) {
 	var root map[string]json.RawMessage
 	if len(raw) == 0 {
-		return completionRateVector{}, pricingUnavailable("rate table pricing_data empty")
+		return completionPricingSelection{}, pricingUnavailable("rate table pricing_data empty")
 	}
 	if err := json.Unmarshal(raw, &root); err != nil {
-		return completionRateVector{}, pricingUnavailable(fmt.Sprintf("rate table pricing_data invalid: %v", err))
+		return completionPricingSelection{}, pricingUnavailable(fmt.Sprintf("rate table pricing_data invalid: %v", err))
 	}
 	if len(root) == 0 {
-		return completionRateVector{}, pricingUnavailable("rate table pricing_data has no models")
+		return completionPricingSelection{}, pricingUnavailable("rate table pricing_data has no models")
 	}
 	if providersRaw, ok := rawField(root, "providers"); ok {
 		if providerRaw, ok := namedRaw(providersRaw, []string{provider}); ok {
 			if rateRaw, ok := modelRaw(providerRaw, models); ok {
-				return parseRateVector(rateRaw)
+				return parseRateSelection(rateRaw)
 			}
 		}
 	}
 	if modelsRaw, ok := rawField(root, "models"); ok {
 		if rateRaw, ok := namedRaw(modelsRaw, models); ok {
-			return parseRateVector(rateRaw)
+			return parseRateSelection(rateRaw)
 		}
 	}
 	if rateRaw, ok := namedRaw(raw, models); ok {
-		return parseRateVector(rateRaw)
+		return parseRateSelection(rateRaw)
 	}
 	if looksLikeRateVector(root) {
-		return parseRateVector(raw)
+		return parseRateSelection(raw)
 	}
-	return completionRateVector{}, pricingUnavailable(fmt.Sprintf("rate table missing model %q", firstNonEmptyPricing(models)))
+	return completionPricingSelection{}, pricingUnavailable(fmt.Sprintf("rate table missing model %q", firstNonEmptyPricing(models)))
+}
+
+func parseRateSelection(raw json.RawMessage) (completionPricingSelection, error) {
+	rates, err := parseRateVector(raw)
+	if err != nil {
+		return completionPricingSelection{}, err
+	}
+	return completionPricingSelection{Raw: raw, Rates: rates}, nil
 }
 
 func modelRaw(raw json.RawMessage, models []string) (json.RawMessage, bool) {

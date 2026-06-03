@@ -14,6 +14,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/pricingeval"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
@@ -59,6 +60,87 @@ func TestSettleCompletion_UsesRateTableActualCost(t *testing.T) {
 	if !settler.calls[0].Draft.ActualCost.Equal(want) {
 		t.Fatalf("Draft.ActualCost=%s want %s", settler.calls[0].Draft.ActualCost, want)
 	}
+	if settler.calls[0].Draft.CostSnapshot != "flat" {
+		t.Fatalf("Draft.CostSnapshot=%q want flat", settler.calls[0].Draft.CostSnapshot)
+	}
+}
+
+func TestSettleCompletion_UsesTieredPricingDataWhenConfigured(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	settler := &recordingSettler{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.Settler = settler
+	d.RateTables = &rateTableSourceStub{table: billing.RateTable{
+		Version: "test-policy",
+		PricingData: json.RawMessage(`{"models":{"gpt-4o":{
+			"pricing_model":"tiered",
+			"input_micro_usd":1000,
+			"output_micro_usd":2000,
+			"output":[
+				{"up_to_tokens":2,"rate_micro_usd":"100"},
+				{"up_to_tokens":null,"rate_micro_usd":"300"}
+			]
+		}}}`),
+	}}
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1", len(settler.calls))
+	}
+	flatCost := decimal.RequireFromString("0.008")
+	want := decimal.RequireFromString("0.0025")
+	if settler.calls[0].ActualCost.Equal(flatCost) {
+		t.Fatalf("tiered branch not used: ActualCost=%s equals flat baseline", settler.calls[0].ActualCost)
+	}
+	assertDecimalEqual(t, "ActualCost", settler.calls[0].ActualCost, want)
+	if settler.calls[0].Draft.CostSnapshot != "tiered:vtest-policy" {
+		t.Fatalf("Draft.CostSnapshot=%q want tiered:vtest-policy", settler.calls[0].Draft.CostSnapshot)
+	}
+}
+
+func TestSettleCompletion_InvalidTieredPricingFallsBackToFlatAndSignals(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	settler := &recordingSettler{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.Settler = settler
+	d.RateTables = &rateTableSourceStub{table: billing.RateTable{
+		Version: "test-policy",
+		PricingData: json.RawMessage(`{"models":{"gpt-4o":{
+			"pricing_model":"tiered",
+			"input_micro_usd":1000,
+			"output_micro_usd":2000,
+			"output":[
+				{"up_to_tokens":3,"rate_micro_usd":"100"},
+				{"up_to_tokens":2,"rate_micro_usd":"300"}
+			]
+		}}}`),
+	}}
+	before := pricingeval.SnapshotSignals().TieredFallbackTotal
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1", len(settler.calls))
+	}
+	wantFlat := decimal.RequireFromString("0.008")
+	assertDecimalEqual(t, "ActualCost", settler.calls[0].ActualCost, wantFlat)
+	if settler.calls[0].Draft.CostSnapshot != "flat" {
+		t.Fatalf("Draft.CostSnapshot=%q want flat fallback model", settler.calls[0].Draft.CostSnapshot)
+	}
+	if !settler.calls[0].Draft.PendingReconciliation {
+		t.Fatal("Draft.PendingReconciliation=false want true for tiered fail-soft signal")
+	}
+	after := pricingeval.SnapshotSignals().TieredFallbackTotal
+	if after-before < 1 {
+		t.Fatalf("TieredFallbackTotal delta=%d want at least 1", after-before)
+	}
 }
 
 func TestStreamingCompletionEvent_NoUsageKeepsZeroCostPendingInferred(t *testing.T) {
@@ -98,6 +180,42 @@ func TestStreamingCompletionEvent_NoUsageKeepsZeroCostPendingInferred(t *testing
 	}
 	if !event.SettleRequest.Draft.PendingReconciliation {
 		t.Fatal("PendingReconciliation=false want true")
+	}
+}
+
+func TestStreamingCompletionEvent_CarriesCostSnapshotToDraft(t *testing.T) {
+	ex := &chatExecution{
+		ctx: context.Background(),
+		d: ChatHandlerDeps{
+			RateTables: &rateTableSourceStub{table: billing.RateTable{
+				Version:     "test-policy",
+				PricingData: json.RawMessage(`{"models":{"gpt-4o":{"input_micro_usd":1000,"output_micro_usd":2000}}}`),
+			}},
+			BillingPolicyVersion: "test-policy",
+		},
+		ident:             auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 13},
+		req:               chatRequest{Model: "gpt-4o", Stream: true},
+		requestID:         "req-stream-cost-snapshot",
+		reserveRes:        &billing.ReserveResult{ClaimID: 26},
+		acquiredAccountID: 29,
+		upstreamModelID:   "gpt-4o",
+		cacheVendor:       "openai",
+		plan:              router.RoutePlan{SnapshotVersion: "registry:7:9;router:test"},
+	}
+	draft := gateway.UsageRecordDraft{
+		TokensInput:           2,
+		TokensOutput:          3,
+		DeliveredTokenCount:   3,
+		PendingReconciliation: false,
+		UsageSource:           gateway.UsageSourceReported,
+	}
+
+	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 3}, auditledger.AuditLedgerResult{})
+
+	// Mutation: dropping the streaming draft CostSnapshot assignment leaves
+	// this empty while cost remains correct, hiding the audit regression.
+	if event.SettleRequest.Draft.CostSnapshot != "flat" {
+		t.Fatalf("Draft.CostSnapshot=%q want flat", event.SettleRequest.Draft.CostSnapshot)
 	}
 }
 

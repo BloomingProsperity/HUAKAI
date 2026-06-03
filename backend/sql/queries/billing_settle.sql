@@ -35,7 +35,7 @@ INSERT INTO usage_records (
     tokens_input, tokens_output,
     cache_creation_tokens, cache_read_tokens,
     cache_creation_5m_tokens, cache_creation_1h_tokens, image_output_tokens,
-    actual_cost, input_cost, output_cost,
+    actual_cost, cost_snapshot, input_cost, output_cost,
     cache_creation_cost, cache_read_cost, image_output_cost,
     end_class, usage_source, confidence_score, pending_reconciliation,
     stream_state, delivered_token_count, stream_terminated_reason,
@@ -48,13 +48,13 @@ INSERT INTO usage_records (
     $8, $9,
     $10, $11,
     $12, $13, $14,
-    $15, $16, $17,
-    $18, $19, $20,
-    $21, $22, $23, $24,
-    $25, $26, $27,
-    $28, $29, $30,
-    $31, $32, $33, $34, $35,
-    $36, $37, $38, $39, $40
+    $15, $16, $17, $18,
+    $19, $20, $21,
+    $22, $23, $24, $25,
+    $26, $27, $28,
+    $29, $30, $31,
+    $32, $33, $34, $35, $36,
+    $37, $38, $39, $40, $41
 )
 RETURNING id;
 

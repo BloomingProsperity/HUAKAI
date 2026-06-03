@@ -89,6 +89,7 @@ type UsageRecordDraft struct {
 	CacheCreation1hTokens   int             `json:"cache_creation_1h_tokens"`
 	CacheReadTokens         int             `json:"cache_read_tokens"`
 	ActualCost              decimal.Decimal `json:"actual_cost"`
+	CostSnapshot            string          `json:"cost_snapshot,omitempty"`
 	CacheCreationCost       decimal.Decimal `json:"cache_creation_cost"`
 	CacheReadCost           decimal.Decimal `json:"cache_read_cost"`
 	RoutingReason           []byte          `json:"routing_reason"`
