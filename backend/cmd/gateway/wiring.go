@@ -68,6 +68,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
+	"github.com/BloomingProsperity/HUAKAI/internal/twofa"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkey"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
@@ -102,6 +103,7 @@ type deps struct {
 	authEmailSender          gatewayhttp.AuthEmailSender
 	userAuth                 *userauth.Service
 	userSessions             *usersession.Service
+	twoFactor                *twofa.Service
 	loginThrottle            *loginthrottle.Limiter
 	userKeyService           *userkey.Service
 	paymentService           *payment.Service
@@ -525,6 +527,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, err
 	}
+	twoFactorService := twofa.NewService(twofa.NewPostgresStore(pgPool), credentialKeys)
 
 	auditSigner, auditLedger, auditPubkeyRegistry, err := buildAuditServices(ctx, pgPool, logger)
 	if err != nil {
@@ -646,6 +649,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		userAuth:              userAuthService,
 		pgPool:                pgPool,
 		userSessions:          userSessionService,
+		twoFactor:             twoFactorService,
 		loginThrottle:         loginThrottle,
 		userKeyService:        userkey.NewService(pgPool, nil),
 		paymentService:        payment.NewService(payment.NewPostgresStore(pgPool), paymentServiceOptions(cfg)...),

@@ -28,6 +28,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfphttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/twofahttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/usageanalyticshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkeyhttp"
 )
@@ -124,11 +125,17 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 				captchaTurnstileSecret(),
 				&http.Client{Timeout: 10 * time.Second},
 			),
-			LoginThrottle: d.loginThrottle,
+			LoginThrottle:     d.loginThrottle,
+			TwoFactor:         d.twoFactor,
+			TwoFactorSettings: d.platformSettings,
 		})
 		// GET /v1/auth/me 需已认证 session(同块的 login/register 等不需要), 故用 per-route session 中间件,
 		// 不另起 /v1/auth Route 组(chi 同前缀重复 Mount 会 panic)。
 		panelauthhttp.MountAuthMeRoutes(r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)), panelauthhttp.Deps{Resolver: d.panelAuthResolver})
+		r.Route("/2fa", func(r chi.Router) {
+			r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
+			twofahttp.MountRoutes(r, twofahttp.Deps{Service: d.twoFactor, Settings: d.platformSettings})
+		})
 	})
 
 	r.Route("/v1/sessions", func(r chi.Router) {

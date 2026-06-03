@@ -20,6 +20,7 @@ const (
 	KeyRegistrationEnabled         SettingKey = "registration_enabled"
 	KeyInvitationRequired          SettingKey = "invitation_required"
 	KeyCaptchaEnabled              SettingKey = "captcha_enabled"
+	KeyTwoFactorEnabled            SettingKey = "two_factor_enabled"
 	KeyCaptchaProvider             SettingKey = "captcha_provider"
 	KeyCaptchaSiteKey              SettingKey = "captcha_site_key"
 	KeyOAuthProvidersEnabled       SettingKey = "oauth_providers_enabled"
@@ -35,11 +36,12 @@ var (
 	ErrUnknownKey          = errors.New("platformsettings: unknown setting key")
 	ErrInvalidValue        = errors.New("platformsettings: invalid setting value")
 	ErrStoreNotConfigured  = errors.New("platformsettings: store not configured")
-	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride}
+	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride}
 	defaultSettingValueMap = map[SettingKey]string{
 		KeyRegistrationEnabled:         "false",
 		KeyInvitationRequired:          "true",
 		KeyCaptchaEnabled:              "false",
+		KeyTwoFactorEnabled:            "true",
 		KeyCaptchaProvider:             "",
 		KeyCaptchaSiteKey:              "",
 		KeyOAuthProvidersEnabled:       "",
@@ -86,7 +88,7 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 		return "", fmt.Errorf("%w: %s", ErrInvalidValue, key)
 	}
 	switch key {
-	case KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyPromoEnabled:
+	case KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled:
 		return validateBoolValue(key, value)
 	case KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds:
 		return validatePositiveIntValue(key, value)
