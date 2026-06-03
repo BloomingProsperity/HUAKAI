@@ -435,12 +435,14 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			AuditStore:  d.adminQueries,
 		})
 		gatewayhttp.MountAdminCredentialAcquisitionRoutes(r, gatewayhttp.AdminCredentialAcquisitionDeps{
-			Auth:            d.adminAuth,
-			Sessions:        d.credentialAcqStore,
-			Credentials:     d.credentialStore,
-			CredentialAudit: d.credentialStore,
-			AuditStore:      d.adminQueries,
-			Exchangers:      d.credentialExchangers,
+			Auth:              d.adminAuth,
+			Sessions:          d.credentialAcqStore,
+			Credentials:       d.credentialStore,
+			CredentialAudit:   d.credentialStore,
+			AuditStore:        d.adminQueries,
+			Exchangers:        d.credentialExchangers,
+			BootstrapShortTTL: d.cfg.CredentialAcqBootstrapShortTTL,
+			BootstrapLongTTL:  d.cfg.CredentialAcqBootstrapLongTTL,
 		})
 		gatewayhttp.MountChannelHealthAdminRoutes(r, gatewayhttp.ChannelHealthAdminDeps{
 			Auth:       d.adminAuth,
@@ -464,12 +466,14 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			AuditStore:  d.adminQueries,
 		})
 		gatewayhttp.MountAdminCredentialAcquisitionHelperRoutes(r, gatewayhttp.AdminCredentialAcquisitionDeps{
-			Auth:            d.adminAuth,
-			Sessions:        d.credentialAcqStore,
-			Credentials:     d.credentialStore,
-			CredentialAudit: d.credentialStore,
-			AuditStore:      d.adminQueries,
-			Exchangers:      d.credentialExchangers,
+			Auth:              d.adminAuth,
+			Sessions:          d.credentialAcqStore,
+			Credentials:       d.credentialStore,
+			CredentialAudit:   d.credentialStore,
+			AuditStore:        d.adminQueries,
+			Exchangers:        d.credentialExchangers,
+			BootstrapShortTTL: d.cfg.CredentialAcqBootstrapShortTTL,
+			BootstrapLongTTL:  d.cfg.CredentialAcqBootstrapLongTTL,
 		})
 	})
 	r.Route("/admin/v1/pools", func(r chi.Router) {
