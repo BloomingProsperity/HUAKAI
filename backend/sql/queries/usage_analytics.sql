@@ -165,3 +165,27 @@ WHERE ur.settled_at >= sqlc.arg(settled_since)::timestamptz
 GROUP BY ur.provider_account_id
 ORDER BY count(*) DESC, key ASC
 LIMIT sqlc.arg(row_limit)::int;
+
+-- name: AggregateUsageOverviewTotals :one
+-- Platform-admin overview totals across the recent settled usage window.
+-- Operator surface: actual_cost is intentionally exposed as decimal text.
+SELECT
+    count(*)::bigint                                             AS request_count,
+    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost,
+    COALESCE(sum(ur.tokens_input::bigint + ur.tokens_output::bigint), 0)::bigint AS total_tokens,
+    count(DISTINCT ur.user_id)::bigint                           AS active_users,
+    count(DISTINCT ur.api_key_id)::bigint                        AS active_api_keys,
+    count(*) FILTER (WHERE ur.end_class IN ('stream_end_graceful', 'non_streaming'))::bigint AS success_count
+FROM usage_records ur
+WHERE ur.settled_at >= sqlc.arg(settled_since)::timestamptz;
+
+-- name: AggregateUsageOverviewTrendByDay :many
+-- Platform-admin overview daily trend across the recent settled usage window.
+SELECT
+    date_trunc('day', ur.settled_at AT TIME ZONE 'UTC')::timestamptz AS day,
+    count(*)::bigint                                             AS request_count,
+    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost
+FROM usage_records ur
+WHERE ur.settled_at >= sqlc.arg(settled_since)::timestamptz
+GROUP BY 1
+ORDER BY 1 ASC;

@@ -83,6 +83,14 @@ func (s *leaderboardQueryStub) AggregateUsagePerformanceByProviderAccount(contex
 	return nil, nil
 }
 
+func (s *leaderboardQueryStub) AggregateUsageOverviewTotals(context.Context, pgtype.Timestamptz) (dbbilling.AggregateUsageOverviewTotalsRow, error) {
+	return dbbilling.AggregateUsageOverviewTotalsRow{}, nil
+}
+
+func (s *leaderboardQueryStub) AggregateUsageOverviewTrendByDay(context.Context, pgtype.Timestamptz) ([]dbbilling.AggregateUsageOverviewTrendByDayRow, error) {
+	return nil, nil
+}
+
 type leaderboardAggregateRow struct {
 	Key          string
 	TotalCost    string

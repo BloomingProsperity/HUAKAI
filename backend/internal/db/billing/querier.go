@@ -6,6 +6,8 @@ package billing
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
@@ -46,6 +48,11 @@ type Querier interface {
 	// Platform-admin cost leaderboard by user_id. This is the operator surface:
 	// actual_cost is intentionally used to show real upstream spend.
 	AggregateUsageLeaderboardByUser(ctx context.Context, arg AggregateUsageLeaderboardByUserParams) ([]AggregateUsageLeaderboardByUserRow, error)
+	// Platform-admin overview totals across the recent settled usage window.
+	// Operator surface: actual_cost is intentionally exposed as decimal text.
+	AggregateUsageOverviewTotals(ctx context.Context, settledSince pgtype.Timestamptz) (AggregateUsageOverviewTotalsRow, error)
+	// Platform-admin overview daily trend across the recent settled usage window.
+	AggregateUsageOverviewTrendByDay(ctx context.Context, settledSince pgtype.Timestamptz) ([]AggregateUsageOverviewTrendByDayRow, error)
 	// Platform-admin performance panel by requested_model. Read-only operator
 	// surface: latency, throughput, and error rate inputs only; no cost fields.
 	AggregateUsagePerformanceByModel(ctx context.Context, arg AggregateUsagePerformanceByModelParams) ([]AggregateUsagePerformanceByModelRow, error)

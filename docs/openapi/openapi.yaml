@@ -393,6 +393,58 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/usage/overview:
+    get:
+      tags: [admin]
+      summary: Platform-admin usage overview
+      operationId: getAdminUsageOverview
+      x-huakai-spec-source:
+        - backend/internal/usageanalyticshttp/overview_handler.go
+        - backend/cmd/gateway/routes_usageadmin.go
+        - backend/sql/queries/usage_analytics.sql
+      description: |
+        Platform-admin (adminGate RBAC) read-only overview for global settled
+        usage over a recent window. Totals include request count, actual_cost
+        spend, input+output token total, distinct active users, distinct active
+        API keys, and success rate where successful end classes are
+        stream_end_graceful and non_streaming. The daily trend is UTC-day
+        bucketed request count plus actual_cost spend, ordered oldest to newest.
+        Window is required (e.g. 24h, 7d, 30d) and capped at 90 days.
+      parameters:
+        - name: window
+          in: query
+          required: true
+          schema: { type: string, example: 7d }
+      responses:
+        '200':
+          description: Platform-wide admin usage overview for the requested window.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  window: { type: string }
+                  totals:
+                    type: object
+                    properties:
+                      requests: { type: integer, format: int64 }
+                      total_cost: { type: string }
+                      total_tokens: { type: integer, format: int64 }
+                      active_users: { type: integer, format: int64 }
+                      active_api_keys: { type: integer, format: int64 }
+                      success_rate: { type: string }
+                  trend:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        day: { type: string, format: date }
+                        requests: { type: integer, format: int64 }
+                        cost: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/admin/usage/leaderboard:
     get:
       tags: [admin]

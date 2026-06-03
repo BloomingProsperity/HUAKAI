@@ -75,6 +75,14 @@ func (s *performanceQueryStub) AggregateUsagePerformanceByProviderAccount(_ cont
 	return out, nil
 }
 
+func (s *performanceQueryStub) AggregateUsageOverviewTotals(context.Context, pgtype.Timestamptz) (dbbilling.AggregateUsageOverviewTotalsRow, error) {
+	return dbbilling.AggregateUsageOverviewTotalsRow{}, nil
+}
+
+func (s *performanceQueryStub) AggregateUsageOverviewTrendByDay(context.Context, pgtype.Timestamptz) ([]dbbilling.AggregateUsageOverviewTrendByDayRow, error) {
+	return nil, nil
+}
+
 type performanceAggregateRow struct {
 	Key          string
 	AvgTtftMs    string
