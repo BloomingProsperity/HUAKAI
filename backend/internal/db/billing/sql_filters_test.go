@@ -59,3 +59,24 @@ func TestBillingSettingsSQLTenantScoped(t *testing.T) {
 		t.Fatalf("UpsertBillingSetting must conflict on tenant_id and setting_key: %s", upsertBillingSetting)
 	}
 }
+
+func TestUsageLeaderboardSQLUsesWindowSortAndLimit(t *testing.T) {
+	for name, sqlText := range map[string]string{
+		"user":             aggregateUsageLeaderboardByUser,
+		"model":            aggregateUsageLeaderboardByModel,
+		"provider_account": aggregateUsageLeaderboardByProviderAccount,
+	} {
+		sql := strings.Join(strings.Fields(sqlText), " ")
+		for _, want := range []string{
+			"WHERE ur.settled_at >= $1::timestamptz",
+			"ORDER BY sum(ur.actual_cost) DESC",
+			"LIMIT $2::int",
+		} {
+			// Mutation checks: dropping the window admits old high-cost rows,
+			// dropping DESC misranks spend, and dropping LIMIT overreturns.
+			if !strings.Contains(sql, want) {
+				t.Fatalf("%s leaderboard SQL missing %q in %q", name, want, sql)
+			}
+		}
+	}
+}

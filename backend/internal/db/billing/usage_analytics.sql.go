@@ -50,8 +50,10 @@ type AggregateMyUsageByDayRow struct {
 }
 
 // Usage analytics: aggregation queries over settled usage_records.
-// SELECT-only (CMB-7). Every query carries a non-nullable tenant_id predicate
-// (CMB-5 cross-tenant prevention) and selects no credential columns.
+// SELECT-only (CMB-7). Self-serve queries carry a non-nullable tenant_id
+// predicate (CMB-5 cross-tenant prevention). Admin leaderboard queries are
+// platform-admin-only and intentionally aggregate across tenants for operator
+// cost visibility. No query selects credential columns.
 // usage_records.settled_at is NOT NULL DEFAULT now() and indexed by
 // idx_usage_records_tenant_settled (tenant_id, settled_at DESC), so these
 // aggregations need no new index in the pre-launch first cut.
@@ -81,6 +83,164 @@ func (q *Queries) AggregateMyUsageByDay(ctx context.Context, arg AggregateMyUsag
 			&i.TotalTokensOutput,
 			&i.TotalCacheReadTokens,
 			&i.TotalCacheCreationTokens,
+			&i.RequestCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const aggregateUsageLeaderboardByModel = `-- name: AggregateUsageLeaderboardByModel :many
+SELECT
+    ur.requested_model                                           AS key,
+    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost,
+    COALESCE(sum(ur.tokens_input::bigint + ur.tokens_output::bigint), 0)::bigint AS total_tokens,
+    count(*)::bigint                                             AS request_count
+FROM usage_records ur
+WHERE ur.settled_at >= $1::timestamptz
+GROUP BY ur.requested_model
+ORDER BY sum(ur.actual_cost) DESC, key ASC
+LIMIT $2::int
+`
+
+type AggregateUsageLeaderboardByModelParams struct {
+	SettledSince pgtype.Timestamptz `db:"settled_since" json:"settled_since"`
+	RowLimit     int32              `db:"row_limit" json:"row_limit"`
+}
+
+type AggregateUsageLeaderboardByModelRow struct {
+	Key          string `db:"key" json:"key"`
+	TotalCost    string `db:"total_cost" json:"total_cost"`
+	TotalTokens  int64  `db:"total_tokens" json:"total_tokens"`
+	RequestCount int64  `db:"request_count" json:"request_count"`
+}
+
+// Platform-admin cost leaderboard by requested_model.
+func (q *Queries) AggregateUsageLeaderboardByModel(ctx context.Context, arg AggregateUsageLeaderboardByModelParams) ([]AggregateUsageLeaderboardByModelRow, error) {
+	rows, err := q.db.Query(ctx, aggregateUsageLeaderboardByModel, arg.SettledSince, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AggregateUsageLeaderboardByModelRow
+	for rows.Next() {
+		var i AggregateUsageLeaderboardByModelRow
+		if err := rows.Scan(
+			&i.Key,
+			&i.TotalCost,
+			&i.TotalTokens,
+			&i.RequestCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const aggregateUsageLeaderboardByProviderAccount = `-- name: AggregateUsageLeaderboardByProviderAccount :many
+SELECT
+    (CASE
+        WHEN ur.provider_account_id IS NULL THEN 'unassigned'
+        ELSE ur.provider_account_id::text
+     END)::text                                                  AS key,
+    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost,
+    COALESCE(sum(ur.tokens_input::bigint + ur.tokens_output::bigint), 0)::bigint AS total_tokens,
+    count(*)::bigint                                             AS request_count
+FROM usage_records ur
+WHERE ur.settled_at >= $1::timestamptz
+GROUP BY ur.provider_account_id
+ORDER BY sum(ur.actual_cost) DESC, key ASC
+LIMIT $2::int
+`
+
+type AggregateUsageLeaderboardByProviderAccountParams struct {
+	SettledSince pgtype.Timestamptz `db:"settled_since" json:"settled_since"`
+	RowLimit     int32              `db:"row_limit" json:"row_limit"`
+}
+
+type AggregateUsageLeaderboardByProviderAccountRow struct {
+	Key          string `db:"key" json:"key"`
+	TotalCost    string `db:"total_cost" json:"total_cost"`
+	TotalTokens  int64  `db:"total_tokens" json:"total_tokens"`
+	RequestCount int64  `db:"request_count" json:"request_count"`
+}
+
+// Platform-admin cost leaderboard by provider_account_id. Provider-less
+// usage, such as cache-only settlement, is grouped under "unassigned".
+func (q *Queries) AggregateUsageLeaderboardByProviderAccount(ctx context.Context, arg AggregateUsageLeaderboardByProviderAccountParams) ([]AggregateUsageLeaderboardByProviderAccountRow, error) {
+	rows, err := q.db.Query(ctx, aggregateUsageLeaderboardByProviderAccount, arg.SettledSince, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AggregateUsageLeaderboardByProviderAccountRow
+	for rows.Next() {
+		var i AggregateUsageLeaderboardByProviderAccountRow
+		if err := rows.Scan(
+			&i.Key,
+			&i.TotalCost,
+			&i.TotalTokens,
+			&i.RequestCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const aggregateUsageLeaderboardByUser = `-- name: AggregateUsageLeaderboardByUser :many
+SELECT
+    ur.user_id::text                                             AS key,
+    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost,
+    COALESCE(sum(ur.tokens_input::bigint + ur.tokens_output::bigint), 0)::bigint AS total_tokens,
+    count(*)::bigint                                             AS request_count
+FROM usage_records ur
+WHERE ur.settled_at >= $1::timestamptz
+GROUP BY ur.user_id
+ORDER BY sum(ur.actual_cost) DESC, key ASC
+LIMIT $2::int
+`
+
+type AggregateUsageLeaderboardByUserParams struct {
+	SettledSince pgtype.Timestamptz `db:"settled_since" json:"settled_since"`
+	RowLimit     int32              `db:"row_limit" json:"row_limit"`
+}
+
+type AggregateUsageLeaderboardByUserRow struct {
+	Key          string `db:"key" json:"key"`
+	TotalCost    string `db:"total_cost" json:"total_cost"`
+	TotalTokens  int64  `db:"total_tokens" json:"total_tokens"`
+	RequestCount int64  `db:"request_count" json:"request_count"`
+}
+
+// Platform-admin cost leaderboard by user_id. This is the operator surface:
+// actual_cost is intentionally used to show real upstream spend.
+func (q *Queries) AggregateUsageLeaderboardByUser(ctx context.Context, arg AggregateUsageLeaderboardByUserParams) ([]AggregateUsageLeaderboardByUserRow, error) {
+	rows, err := q.db.Query(ctx, aggregateUsageLeaderboardByUser, arg.SettledSince, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AggregateUsageLeaderboardByUserRow
+	for rows.Next() {
+		var i AggregateUsageLeaderboardByUserRow
+		if err := rows.Scan(
+			&i.Key,
+			&i.TotalCost,
+			&i.TotalTokens,
 			&i.RequestCount,
 		); err != nil {
 			return nil, err
