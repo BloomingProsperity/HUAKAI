@@ -62,6 +62,29 @@ func TestSettlerSettleDoesNotFinalizeQuotaWhenBillingFails(t *testing.T) {
 	}
 }
 
+func TestSettlerSettleIgnoresMissingQuotaReservationAfterFailOpen(t *testing.T) {
+	// Mutation check: propagating quota.ErrReservationNotFound from quota
+	// settle makes this return an error after billing succeeds.
+	inner := &recordingBillingSettler{}
+	finalizer := &recordingQuotaFinalizer{settleErr: quota.ErrReservationNotFound}
+	settler := NewSettler(inner, finalizer)
+
+	result, err := settler.Settle(context.Background(), billing.SettleRequest{TenantID: 7, ClaimID: 9006})
+
+	if err != nil {
+		t.Fatalf("Settle with missing quota reservation after fail-open: %v", err)
+	}
+	if result == nil {
+		t.Fatal("Settle result is nil")
+	}
+	if got := inner.events; !reflect.DeepEqual(got, []string{"billing_settle"}) {
+		t.Fatalf("inner events=%v want billing settle first", got)
+	}
+	if got := finalizer.events; !reflect.DeepEqual(got, []string{"quota_settle"}) {
+		t.Fatalf("quota events=%v want quota settle attempt treated as no-op", got)
+	}
+}
+
 func TestSettlerAbortReleasesQuotaAfterBillingAbortSuccess(t *testing.T) {
 	inner := &recordingBillingSettler{}
 	finalizer := &recordingQuotaFinalizer{}
@@ -125,6 +148,24 @@ func TestSettlerCommitCacheHitFinalizesQuotaAsCacheHit(t *testing.T) {
 	}
 }
 
+func TestSettlerCommitCacheHitIgnoresMissingQuotaReservationAfterFailOpen(t *testing.T) {
+	inner := &recordingBillingSettler{}
+	finalizer := &recordingQuotaFinalizer{cacheErr: quota.ErrReservationNotFound}
+	settler := NewSettler(inner, finalizer)
+
+	err := settler.CommitCacheHit(context.Background(), billing.SettleRequest{TenantID: 7, ClaimID: 9007})
+
+	if err != nil {
+		t.Fatalf("CommitCacheHit with missing quota reservation after fail-open: %v", err)
+	}
+	if got := inner.events; !reflect.DeepEqual(got, []string{"billing_cache_hit"}) {
+		t.Fatalf("inner events=%v want billing cache hit first", got)
+	}
+	if got := finalizer.events; !reflect.DeepEqual(got, []string{"quota_cache_hit"}) {
+		t.Fatalf("quota events=%v want quota cache-hit attempt treated as no-op", got)
+	}
+}
+
 func TestNewSettlerNilQuotaIsPlainPassThrough(t *testing.T) {
 	inner := &recordingBillingSettler{}
 
@@ -170,13 +211,15 @@ type recordingQuotaFinalizer struct {
 	settleReq  quota.SettleRequest
 	releaseReq quota.ReleaseRequest
 	cacheReq   quota.CacheHitRequest
+	settleErr  error
 	releaseErr error
+	cacheErr   error
 }
 
 func (s *recordingQuotaFinalizer) Settle(_ context.Context, req quota.SettleRequest) (quota.SettleResult, error) {
 	s.events = append(s.events, "quota_settle")
 	s.settleReq = req
-	return quota.SettleResult{}, nil
+	return quota.SettleResult{}, s.settleErr
 }
 
 func (s *recordingQuotaFinalizer) Release(_ context.Context, req quota.ReleaseRequest) (quota.ReleaseResult, error) {
@@ -188,5 +231,5 @@ func (s *recordingQuotaFinalizer) Release(_ context.Context, req quota.ReleaseRe
 func (s *recordingQuotaFinalizer) CommitCacheHit(_ context.Context, req quota.CacheHitRequest) (quota.CacheHitResult, error) {
 	s.events = append(s.events, "quota_cache_hit")
 	s.cacheReq = req
-	return quota.CacheHitResult{}, nil
+	return quota.CacheHitResult{}, s.cacheErr
 }

@@ -110,6 +110,9 @@ func (s *Settler) Settle(ctx context.Context, req billing.SettleRequest) (*billi
 		ClaimID:    req.ClaimID,
 		ActualCost: actualCostForQuota(req),
 	})
+	if errors.Is(err, quota.ErrReservationNotFound) {
+		return result, nil
+	}
 	if err != nil {
 		return result, err
 	}
@@ -152,6 +155,9 @@ func (s *Settler) CommitCacheHit(ctx context.Context, req billing.SettleRequest)
 		ClaimID:     req.ClaimID,
 		CommittedAt: req.RequestedAt,
 	})
+	if errors.Is(err, quota.ErrReservationNotFound) {
+		return nil
+	}
 	return err
 }
 

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"expvar"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -27,6 +29,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
+
+var quotaReserveFailedOpenTotal = expvar.NewInt("quota_reserve_failed_open_total")
 
 func newChatExecution(d ChatHandlerDeps, r *http.Request, ident auth.Identity, validated chatValidatedRequest, startedAt time.Time) *chatExecution {
 	return &chatExecution{
@@ -344,12 +348,15 @@ func (ex *chatExecution) reserveQuota(w http.ResponseWriter, reserveRes *billing
 		writeInsufficientQuotaError(w)
 		return false
 	}
-	abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, reserveRes.ClaimID, "quota_reserve_error", ex.requestID, 0, ex.protocolLoss)
-	if abortErr != nil {
-		setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
-	}
-	writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, clienterr.CodeReserveError, err)
-	return false
+	quotaReserveFailedOpenTotal.Add(1)
+	slog.WarnContext(ex.ctx, "quota reserve failed open",
+		slog.String("request_id", ex.requestID),
+		slog.Int64("tenant_id", ex.ident.TenantID),
+		slog.Int64("claim_id", reserveRes.ClaimID),
+		slog.String("reason", "quota_reserve_infra_error"),
+		slog.String("error_type", fmt.Sprintf("%T", err)),
+	)
+	return true
 }
 
 func (ex *chatExecution) ensureIdempotencyState() {

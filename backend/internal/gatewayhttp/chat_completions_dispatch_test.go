@@ -3,6 +3,7 @@ package gatewayhttp
 import (
 	"context"
 	"errors"
+	"expvar"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -415,8 +416,9 @@ func TestHandler_ReserveClaimRaceReturns409RetryAfterWithoutAbort(t *testing.T) 
 
 func TestHandler_QuotaDenyAbortsBillingClaimAndReturns429(t *testing.T) {
 	// Mutation check: deleting the quota deny branch lets the request continue
-	// toward pool/provider handling, producing a non-429 and no quota_denied
-	// billing abort; both assertions below must turn red.
+	// through the buffered happy path, producing 200 and no quota_denied billing
+	// abort; both assertions below must turn red.
+	enableHCSFDispatchForTest(t)
 	claimGate := &recordingClaimGate{claimID: 99001}
 	quotaReserver := &recordingQuotaReserver{
 		err: &quota.DenyError{Decision: quota.Decision{
@@ -426,15 +428,20 @@ func TestHandler_QuotaDenyAbortsBillingClaimAndReturns429(t *testing.T) {
 		}},
 	}
 	settler := &stubSettler{}
-	d := minimalDeps()
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	d := clientAdapterDeps(t)
 	d.ClaimGate = claimGate
 	d.QuotaReserver = quotaReserver
 	d.Settler = settler
+	d.CanonicalDispatcher = dispatcher
 
-	rec := invokeHandler(t, d, validBody())
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
 
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("status=%d body=%s; want 429 quota denial", rec.Code, rec.Body.String())
+	}
+	if dispatcher.calls != 0 {
+		t.Fatalf("dispatcher calls=%d want 0 because genuine quota deny must not proceed", dispatcher.calls)
 	}
 	body := rec.Body.String()
 	for _, want := range []string{`"type":"insufficient_quota"`, `"code":"insufficient_balance"`} {
@@ -464,6 +471,43 @@ func TestHandler_QuotaDenyAbortsBillingClaimAndReturns429(t *testing.T) {
 	}
 	if !hasQuotaScope(quotaReserver.req.Scopes, quota.ScopeAPIKey, "11") {
 		t.Fatalf("quota scopes=%+v missing api-key scope", quotaReserver.req.Scopes)
+	}
+}
+
+func TestHandler_QuotaReserveInfraErrorFailsOpenAndKeepsBillingClaim(t *testing.T) {
+	// Mutation check: restoring the old quota_reserve_error abort+500 branch
+	// makes this return 500 and increments abortCalls, so the status and abort
+	// assertions must turn red.
+	enableHCSFDispatchForTest(t)
+	before := quotaReserveFailedOpenCount(t)
+	claimGate := &recordingClaimGate{claimID: 99004}
+	quotaReserver := &recordingQuotaReserver{err: errors.New("quota store unavailable")}
+	settler := &stubSettler{}
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	d := clientAdapterDeps(t)
+	d.ClaimGate = claimGate
+	d.QuotaReserver = quotaReserver
+	d.Settler = settler
+	d.CanonicalDispatcher = dispatcher
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s; want 200 fail-open on quota reserve infra error", rec.Code, rec.Body.String())
+	}
+	if settler.abortCalls != 0 {
+		t.Fatalf("billing abort calls=%d reason=%q; want 0 so claim remains for money settlement",
+			settler.abortCalls, settler.lastAbortReason)
+	}
+	if quotaReserver.calls != 1 {
+		t.Fatalf("quota reserve calls=%d want 1", quotaReserver.calls)
+	}
+	if dispatcher.calls != 1 {
+		t.Fatalf("dispatcher calls=%d want request to proceed after quota reserve infra error", dispatcher.calls)
+	}
+	after := quotaReserveFailedOpenCount(t)
+	if after != before+1 {
+		t.Fatalf("quota_reserve_failed_open_total before/after=%d/%d want +1", before, after)
 	}
 }
 
@@ -585,6 +629,19 @@ func TestRouterResolvedModelFromRegistryMapsPerPoolModelOverrides(t *testing.T) 
 			t.Fatalf("PoolMetadata[%d]=%+v want %+v", i, got.PoolMetadata[i], want[i])
 		}
 	}
+}
+
+func quotaReserveFailedOpenCount(t *testing.T) int64 {
+	t.Helper()
+	v := expvar.Get("quota_reserve_failed_open_total")
+	if v == nil {
+		return 0
+	}
+	iv, ok := v.(*expvar.Int)
+	if !ok {
+		t.Fatalf("quota_reserve_failed_open_total is %T want *expvar.Int", v)
+	}
+	return iv.Value()
 }
 
 type recordingQuotaReserver struct {
