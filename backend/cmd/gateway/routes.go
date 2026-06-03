@@ -63,6 +63,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		Auth:  d.inboundAuth,
 		Store: d.billingQueries,
 	}))
+	r.Get("/v1/generation", meusagehttp.NewGenerationHandler(meusagehttp.GenerationDeps{
+		Auth:  d.inboundAuth,
+		Store: d.billingQueries,
+	}))
 	r.Get("/v1/me/analytics/time-series", usageanalyticshttp.NewTimeSeriesHandler(usageanalyticshttp.Deps{
 		Auth:  d.inboundAuth,
 		Store: d.billingQueries,

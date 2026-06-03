@@ -205,6 +205,25 @@ func mapUsageRecord(row dbbilling.ListUsageRecordsRow, tenantID int64) usageReco
 	}
 }
 
+func mapGenerationUsageRecord(row dbbilling.GetUsageRecordByRequestIDRow, tenantID int64) usageRecord {
+	return mapUsageRecord(dbbilling.ListUsageRecordsRow{
+		RequestedModel:        row.RequestedModel,
+		UpstreamModel:         row.UpstreamModel,
+		ActualCost:            row.ActualCost,
+		TokensInput:           row.TokensInput,
+		TokensOutput:          row.TokensOutput,
+		CacheCreationTokens:   row.CacheCreationTokens,
+		CacheReadTokens:       row.CacheReadTokens,
+		Provider:              row.Provider,
+		ProviderAccountID:     row.ProviderAccountID,
+		AuditLedgerID:         row.AuditLedgerID,
+		CreatedAt:             row.CreatedAt,
+		EndClass:              row.EndClass,
+		PendingReconciliation: row.PendingReconciliation,
+		RequestID:             row.RequestID,
+	}, tenantID)
+}
+
 func buildVerifyHint(ledgerID, requestID string, tenantID int64) verifyHint {
 	hint := verifyHint{
 		LedgerID:          ledgerID,
