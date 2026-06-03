@@ -255,10 +255,11 @@ func TestAuthOAuthRejectsUnverifiedProviderClaims(t *testing.T) {
 	store := newMemoryAuthStore(now)
 	svc := NewService(store)
 	svc.Now = func() time.Time { return now }
-	svc.OAuth = NewOAuthService(&fakeOAuthProvider{
+	provider := &fakeOAuthProvider{
 		provider: SocialProviderGoogle,
 		identity: VerifiedIdentity{Provider: SocialProviderGoogle, Subject: "sub", Email: "unverified@example.test", EmailVerified: false},
-	})
+	}
+	svc.OAuth = NewOAuthService(provider)
 	init, err := svc.StartOAuth(ctx, OAuthInitInput{TenantID: 1, Provider: SocialProviderGoogle})
 	if err != nil {
 		t.Fatalf("StartOAuth: %v", err)
@@ -266,11 +267,115 @@ func TestAuthOAuthRejectsUnverifiedProviderClaims(t *testing.T) {
 	if _, err := svc.CompleteOAuth(ctx, OAuthCallbackInput{TenantID: 1, Provider: SocialProviderGoogle, State: "attacker-state", Code: "code"}); !errors.Is(err, ErrOAuthFlowNotFound) {
 		t.Fatalf("state mismatch = %v, want ErrOAuthFlowNotFound", err)
 	}
-	if _, err := svc.CompleteOAuth(ctx, OAuthCallbackInput{TenantID: 1, Provider: SocialProviderGoogle, State: init.State, Code: "code"}); !errors.Is(err, ErrSocialLoginRejected) {
-		t.Fatalf("unverified provider email = %v, want ErrSocialLoginRejected", err)
+	if provider.exchanges != 0 {
+		t.Fatalf("state mismatch exchanged provider code %d times; want 0", provider.exchanges)
+	}
+	if _, err := svc.CompleteOAuth(ctx, OAuthCallbackInput{TenantID: 1, Provider: SocialProviderGoogle, State: init.State, Code: "code"}); !errors.Is(err, ErrOAuthPendingEmailRequired) {
+		t.Fatalf("unverified provider email = %v, want ErrOAuthPendingEmailRequired", err)
 	}
 	if len(store.users) != 0 {
 		t.Fatalf("unverified social claim created users: %+v", store.users)
+	}
+}
+
+func TestNormalizeSocialProviderAcceptsMultiOAuthNames(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"wechat", " WeChat ", SocialProviderWeChat},
+		{"dingtalk", "DINGTALK", SocialProviderDingTalk},
+		{"linuxdo", "linuxdo", SocialProviderLinuxDo},
+		{"oidc", "OIDC", SocialProviderOIDC},
+		{"oidc_slug", "oidc:corp-sso", SocialProviderOIDC},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeSocialProvider(tc.in); got != tc.want {
+				t.Fatalf("normalizeSocialProvider(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStartOAuthOIDCSlugUsesStableProviderAndPKCENonce(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 3, 9, 0, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	svc := NewService(store)
+	svc.Now = func() time.Time { return now }
+	svc.OAuth = NewOAuthService(&fakeOAuthProvider{
+		provider: SocialProviderOIDC,
+		identity: VerifiedIdentity{
+			Provider: SocialProviderOIDC, Subject: "oidc-subject", Email: "oidc@example.test",
+			DisplayName: "OIDC User", EmailVerified: true,
+		},
+	})
+
+	init, err := svc.StartOAuth(ctx, OAuthInitInput{TenantID: 1, Provider: "oidc:corp-sso"})
+	if err != nil {
+		t.Fatalf("StartOAuth oidc slug: %v", err)
+	}
+	if init.Provider != SocialProviderOIDC {
+		t.Fatalf("init provider = %q, want %q", init.Provider, SocialProviderOIDC)
+	}
+	if !strings.Contains(init.AuthURL, "code_challenge=") || !strings.Contains(init.AuthURL, "nonce=") {
+		t.Fatalf("auth URL missing PKCE challenge or nonce: %s", init.AuthURL)
+	}
+	if len(store.oauthFlows) != 1 {
+		t.Fatalf("stored oauth flow count = %d, want 1", len(store.oauthFlows))
+	}
+	for _, flow := range store.oauthFlows {
+		if flow.Provider != SocialProviderOIDC {
+			t.Fatalf("stored provider = %q, want %q", flow.Provider, SocialProviderOIDC)
+		}
+		if len(flow.NonceHash) == 0 || strings.TrimSpace(flow.PKCEVerifier) == "" {
+			t.Fatalf("flow missing nonce hash or PKCE verifier: %+v", flow)
+		}
+	}
+
+	user, err := svc.CompleteOAuth(ctx, OAuthCallbackInput{
+		TenantID: 1, Provider: "OIDC:corp-sso", State: init.State, Code: "oidc-code",
+	})
+	if err != nil {
+		t.Fatalf("CompleteOAuth oidc slug: %v", err)
+	}
+	if user.TenantID != 1 || user.Email != "oidc@example.test" || user.SocialLoginProvider != SocialProviderOIDC {
+		t.Fatalf("oidc slug flow linked wrong user: %+v", user)
+	}
+}
+
+func TestApplyVerifiedSocialIdentityScopesNewProvidersByTenant(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 3, 9, 30, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	svc := NewService(store)
+	svc.Now = func() time.Time { return now }
+
+	first, err := svc.applyVerifiedSocialIdentity(ctx, 1, VerifiedIdentity{
+		Provider: SocialProviderLinuxDo, Subject: "shared-subject", Email: "first@example.test",
+		EmailVerified: true,
+	})
+	if err != nil {
+		t.Fatalf("apply linuxdo tenant 1: %v", err)
+	}
+	second, err := svc.applyVerifiedSocialIdentity(ctx, 2, VerifiedIdentity{
+		Provider: SocialProviderLinuxDo, Subject: "shared-subject", Email: "second@example.test",
+		EmailVerified: true,
+	})
+	if err != nil {
+		t.Fatalf("apply linuxdo tenant 2: %v", err)
+	}
+	if first.TenantID != 1 || second.TenantID != 2 || first.ID == second.ID {
+		t.Fatalf("tenant-scoped linuxdo identities crossed tenants: first=%+v second=%+v", first, second)
+	}
+	linkedSecond, err := store.GetUserBySocialIdentity(ctx, 2, SocialProviderLinuxDo, "shared-subject")
+	if err != nil {
+		t.Fatalf("lookup tenant 2 linuxdo identity: %v", err)
+	}
+	if linkedSecond.ID != second.ID {
+		t.Fatalf("tenant 2 identity resolved user %d, want %d", linkedSecond.ID, second.ID)
 	}
 }
 
@@ -431,6 +536,7 @@ type fakeOAuthProvider struct {
 	provider     string
 	identity     VerifiedIdentity
 	lastVerifier string
+	exchanges    int
 }
 
 func (p *fakeOAuthProvider) Provider() string { return p.provider }
@@ -442,6 +548,7 @@ func (p *fakeOAuthProvider) AuthorizationURL(challenge OAuthFlowChallenge) (stri
 }
 
 func (p *fakeOAuthProvider) ExchangeVerifiedIdentity(_ context.Context, flow OAuthFlowSession, code string) (VerifiedIdentity, error) {
+	p.exchanges++
 	if strings.TrimSpace(code) == "" || flow.PKCEVerifier == "" {
 		return VerifiedIdentity{}, ErrSocialLoginRejected
 	}
