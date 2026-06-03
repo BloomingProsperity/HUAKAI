@@ -50,6 +50,7 @@ sql:
       - sql/queries/idempotency_replay.sql
       - sql/queries/observability.sql
       - sql/queries/obs_queries.sql
+      - sql/queries/usage_analytics.sql
       - sql/queries/pool_accounts.sql
       - sql/queries/pool_audit.sql
       - sql/queries/pool_slot_acquisitions.sql
