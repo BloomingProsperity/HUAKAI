@@ -93,10 +93,10 @@ func (f *subVoucherFixture) seedPlan(name, group string, validityDays int, daily
 }
 
 // seedSubscriptionVoucher 直插一张订阅券 (grant_kind=subscription); admin 创建侧 API 是路标 (计划 §1)。
-func (f *subVoucherFixture) seedSubscriptionVoucher(planID int64, code string, maxRedemptions int) int64 {
+func (f *subVoucherFixture) seedSubscriptionVoucher(planID int64, code string, maxRedemptions int, now time.Time) int64 {
 	f.t.Helper()
 	hash, fp := CodeHash(f.tenantID, NormalizeCode(code))
-	now := time.Now().UTC()
+	now = now.UTC()
 	var id int64
 	if err := f.pool.QueryRow(f.ctx, `
 INSERT INTO voucher (tenant_id, code_hash, code_fingerprint, amount_cents, currency_code,
@@ -110,10 +110,10 @@ VALUES ($1,$2,$3,$4,'USD',$5,$6,$7,true,'active','subscription',$8) RETURNING id
 
 // seedBalanceVoucher 直插一张余额券 (grant_kind 默认 'balance')。直插而非走 CreateVoucher:
 // 隔离 pre-existing CreateVoucher-on-PG 的 $8 类型推断缺陷 (见 deferred), 聚焦 Redeem 余额路径本身。
-func (f *subVoucherFixture) seedBalanceVoucher(code string, amountCents int64) int64 {
+func (f *subVoucherFixture) seedBalanceVoucher(code string, amountCents int64, now time.Time) int64 {
 	f.t.Helper()
 	hash, fp := CodeHash(f.tenantID, NormalizeCode(code))
-	now := time.Now().UTC()
+	now = now.UTC()
 	var id int64
 	if err := f.pool.QueryRow(f.ctx, `
 INSERT INTO voucher (tenant_id, code_hash, code_fingerprint, amount_cents, currency_code,
@@ -153,10 +153,10 @@ func TestPG_RedeemSubscriptionVoucher_ActivatesZeroTouch(t *testing.T) {
 	f := newSubVoucherFixture(t, t.Context(), openSubPool(t, t.Context()))
 	plan := f.seedPlan("Pro", "premium", 30, capDec("10"))
 	code := "SUBV-" + f.suffix
-	f.seedSubscriptionVoucher(plan.ID, code, 1)
+	now := subscriptionVoucherIntegrationNow()
+	f.seedSubscriptionVoucher(plan.ID, code, 1, now)
 
 	beBefore := f.countInt(`SELECT count(*) FROM billing_events WHERE tenant_id=$1`, f.tenantID)
-	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	res, err := f.redeem(code, "idem-1", now)
 	if err != nil {
 		t.Fatalf("redeem subscription voucher: %v", err)
@@ -223,9 +223,9 @@ func TestPG_RedeemSubscriptionVoucher_IdempotentReplay(t *testing.T) {
 	f := newSubVoucherFixture(t, t.Context(), openSubPool(t, t.Context()))
 	plan := f.seedPlan("Pro", "premium", 30, capDec("10"))
 	code := "SUBV-" + f.suffix
-	f.seedSubscriptionVoucher(plan.ID, code, 5) // max>1, 幂等键才是去重闸
+	now := subscriptionVoucherIntegrationNow()
+	f.seedSubscriptionVoucher(plan.ID, code, 5, now) // max>1, 幂等键才是去重闸
 
-	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	r1, err := f.redeem(code, "idem-rep", now)
 	if err != nil {
 		t.Fatalf("first redeem: %v", err)
@@ -259,16 +259,16 @@ func TestPG_RedeemSubscriptionVoucher_DowngradeBlocked(t *testing.T) {
 	f := newSubVoucherFixture(t, t.Context(), openSubPool(t, t.Context()))
 	high := f.seedPlan("High", "premium", 30, capDec("100"))
 	low := f.seedPlan("Low", "premium", 30, capDec("10"))
-	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	now := subscriptionVoucherIntegrationNow()
 
 	highCode := "HIGH-" + f.suffix
-	f.seedSubscriptionVoucher(high.ID, highCode, 1)
+	f.seedSubscriptionVoucher(high.ID, highCode, 1, now)
 	if _, err := f.redeem(highCode, "idem-high", now); err != nil {
 		t.Fatalf("redeem high: %v", err)
 	}
 
 	lowCode := "LOW-" + f.suffix
-	lowVID := f.seedSubscriptionVoucher(low.ID, lowCode, 1)
+	lowVID := f.seedSubscriptionVoucher(low.ID, lowCode, 1, now)
 	_, err := f.redeem(lowCode, "idem-low", now.AddDate(0, 0, 1))
 	if !errors.Is(err, subscription.ErrDowngradeNotAllowed) {
 		t.Fatalf("downgrade err = %v, want ErrDowngradeNotAllowed", err)
@@ -291,8 +291,8 @@ func TestPG_RedeemSubscriptionVoucher_DowngradeBlocked(t *testing.T) {
 func TestPG_RedeemBalanceVoucher_Regression(t *testing.T) {
 	f := newSubVoucherFixture(t, t.Context(), openSubPool(t, t.Context()))
 	code := "BAL-" + f.suffix
-	f.seedBalanceVoucher(code, 500)
-	now := time.Now().UTC()
+	now := subscriptionVoucherIntegrationNow()
+	f.seedBalanceVoucher(code, 500, now)
 	res, err := f.redeem(code, "idem-bal", now)
 	if err != nil {
 		t.Fatalf("redeem balance voucher: %v", err)
@@ -309,4 +309,8 @@ func TestPG_RedeemBalanceVoucher_Regression(t *testing.T) {
 	if n := f.countInt(`SELECT count(*) FROM subscription_fulfillment_effects WHERE tenant_id=$1`, f.tenantID); n != 0 {
 		t.Fatalf("effect rows = %d, want 0 (balance voucher writes no subscription effect)", n)
 	}
+}
+
+func subscriptionVoucherIntegrationNow() time.Time {
+	return time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 }

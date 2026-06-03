@@ -18,9 +18,10 @@ func TestPostgresStoreHandleCallbackCompletesAndCreditsOnce(t *testing.T) {
 	pool := openPaymentIntegrationPool(t, ctx)
 	f := newPaymentFixture(t, ctx, pool)
 
-	svc := NewService(NewPostgresStore(pool))
-	order := openCallbackOrder(t, ctx, svc, f.tenantA, f.userA, "trade-callback-valid")
-	input := signedCallback(f.tenantA, order.OutTradeNo, "evt_callback_valid", "50.00000000")
+	now := callbackIntegrationNow()
+	svc := NewService(NewPostgresStore(pool), WithClock(func() time.Time { return now }))
+	order := openCallbackOrder(t, ctx, svc, f.tenantA, f.userA, "trade-callback-valid", now)
+	input := signedCallback(f.tenantA, order.OutTradeNo, "evt_callback_valid", "50.00000000", now)
 
 	result, err := svc.HandleCallback(ctx, input)
 	if err != nil {
@@ -55,9 +56,10 @@ func TestPostgresStoreHandleCallbackRejectsUnderpaymentAndAuditsMismatch(t *test
 	pool := openPaymentIntegrationPool(t, ctx)
 	f := newPaymentFixture(t, ctx, pool)
 
-	svc := NewService(NewPostgresStore(pool))
-	order := openCallbackOrder(t, ctx, svc, f.tenantA, f.userA, "trade-callback-underpay")
-	input := signedCallback(f.tenantA, order.OutTradeNo, "evt_callback_underpay", "5.00000000")
+	now := callbackIntegrationNow()
+	svc := NewService(NewPostgresStore(pool), WithClock(func() time.Time { return now }))
+	order := openCallbackOrder(t, ctx, svc, f.tenantA, f.userA, "trade-callback-underpay", now)
+	input := signedCallback(f.tenantA, order.OutTradeNo, "evt_callback_underpay", "5.00000000", now)
 
 	result, err := svc.HandleCallback(ctx, input)
 	if !errors.Is(err, ErrPaymentAmountMismatch) {
@@ -72,7 +74,7 @@ func TestPostgresStoreHandleCallbackRejectsUnderpaymentAndAuditsMismatch(t *test
 	assertPaymentAuditReasonCount(t, ctx, pool, f.tenantA, order.ID, AuditReasonAmountMismatch, 1)
 }
 
-func openCallbackOrder(t *testing.T, ctx context.Context, svc *Service, tenantID, userID int64, tradeNo string) Order {
+func openCallbackOrder(t *testing.T, ctx context.Context, svc *Service, tenantID, userID int64, tradeNo string, now time.Time) Order {
 	t.Helper()
 	res, err := svc.OpenRecharge(ctx, OpenInput{
 		TenantID:          tenantID,
@@ -83,7 +85,7 @@ func openCallbackOrder(t *testing.T, ctx context.Context, svc *Service, tenantID
 		CurrencyCode:      "USD",
 		MaxPendingPerUser: 3,
 		DailyAmountLimit:  decimal.RequireFromString("500.00000000"),
-		Now:               time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC),
+		Now:               now,
 	})
 	if err != nil {
 		t.Fatalf("OpenRecharge callback order: %v", err)
@@ -91,7 +93,7 @@ func openCallbackOrder(t *testing.T, ctx context.Context, svc *Service, tenantID
 	return res.Order
 }
 
-func signedCallback(tenantID int64, tradeNo, eventID, amount string) CallbackInput {
+func signedCallback(tenantID int64, tradeNo, eventID, amount string, now time.Time) CallbackInput {
 	input := CallbackInput{
 		TenantID:        tenantID,
 		Provider:        "hmacpay",
@@ -99,11 +101,15 @@ func signedCallback(tenantID int64, tradeNo, eventID, amount string) CallbackInp
 		ProviderEventID: eventID,
 		PaidAmount:      decimal.RequireFromString(amount),
 		CurrencyCode:    "USD",
-		Timestamp:       time.Unix(1_800_001_000, 0).UTC(),
+		Timestamp:       now,
 		Secret:          "mock-secret",
 	}
 	input.Signature = mockCallbackSignature(input, input.Secret)
 	return input
+}
+
+func callbackIntegrationNow() time.Time {
+	return time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
 }
 
 func assertPaymentOrderStatus(t *testing.T, ctx context.Context, pool queryPool, tenantID, orderID int64, want OrderStatus) {
