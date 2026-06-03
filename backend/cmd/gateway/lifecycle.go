@@ -64,6 +64,11 @@ func (rt *gatewayRuntime) close() {
 	if rt.modelSyncStop != nil {
 		rt.modelSyncStop()
 	}
+	if rt.deps != nil && rt.deps.otelShutdown != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = rt.deps.otelShutdown(ctx)
+		cancel()
+	}
 	if rt.pgPool != nil {
 		rt.pgPool.Close()
 	}
