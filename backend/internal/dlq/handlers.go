@@ -27,6 +27,7 @@ type UsageRecordPayload struct {
 	CacheCreation1hTokens  int32           `json:"cache_creation_1h_tokens"`
 	ImageOutputTokens      int32           `json:"image_output_tokens"`
 	ActualCost             string          `json:"actual_cost"`
+	CostSnapshot           *string         `json:"cost_snapshot,omitempty"`
 	InputCost              string          `json:"input_cost"`
 	OutputCost             string          `json:"output_cost"`
 	CacheCreationCost      string          `json:"cache_creation_cost"`
@@ -88,7 +89,7 @@ INSERT INTO usage_records (
 	tokens_input, tokens_output,
 	cache_creation_tokens, cache_read_tokens,
 	cache_creation_5m_tokens, cache_creation_1h_tokens, image_output_tokens,
-	actual_cost, input_cost, output_cost,
+	actual_cost, cost_snapshot, input_cost, output_cost,
 	cache_creation_cost, cache_read_cost, image_output_cost,
 	end_class, usage_source, confidence_score, pending_reconciliation,
 	stream_state, delivered_token_count, stream_terminated_reason,
@@ -102,13 +103,13 @@ SELECT
 	$8, $9,
 	$10, $11,
 	$12, $13, $14,
-	$15::numeric, $16::numeric, $17::numeric,
-	$18::numeric, $19::numeric, $20::numeric,
-	$21, $22, $23::numeric, $24,
-	$25, $26, $27,
-	$28, $29, $30,
-	$31, $32, $33, $34, $35,
-	$36, $37, $38, $39, $40
+	$15::numeric, $16, $17::numeric, $18::numeric,
+	$19::numeric, $20::numeric, $21::numeric,
+	$22, $23, $24::numeric, $25,
+	$26, $27, $28,
+	$29, $30, $31,
+	$32, $33, $34, $35, $36,
+	$37, $38, $39, $40, $41
 WHERE NOT EXISTS (
 	SELECT 1 FROM usage_records WHERE tenant_id = $1 AND claim_id = $2
 )`,
@@ -117,7 +118,7 @@ WHERE NOT EXISTS (
 			p.TokensInput, p.TokensOutput,
 			p.CacheCreationTokens, p.CacheReadTokens,
 			p.CacheCreation5mTokens, p.CacheCreation1hTokens, p.ImageOutputTokens,
-			p.ActualCost, p.InputCost, p.OutputCost,
+			p.ActualCost, p.CostSnapshot, p.InputCost, p.OutputCost,
 			p.CacheCreationCost, p.CacheReadCost, p.ImageOutputCost,
 			p.EndClass, p.UsageSource, p.ConfidenceScore, p.PendingReconciliation,
 			usagePayloadStreamState(p), p.DeliveredTokenCount, p.StreamTerminatedReason,

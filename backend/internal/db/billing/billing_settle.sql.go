@@ -185,7 +185,7 @@ INSERT INTO usage_records (
     tokens_input, tokens_output,
     cache_creation_tokens, cache_read_tokens,
     cache_creation_5m_tokens, cache_creation_1h_tokens, image_output_tokens,
-    actual_cost, input_cost, output_cost,
+    actual_cost, cost_snapshot, input_cost, output_cost,
     cache_creation_cost, cache_read_cost, image_output_cost,
     end_class, usage_source, confidence_score, pending_reconciliation,
     stream_state, delivered_token_count, stream_terminated_reason,
@@ -198,13 +198,13 @@ INSERT INTO usage_records (
     $8, $9,
     $10, $11,
     $12, $13, $14,
-    $15, $16, $17,
-    $18, $19, $20,
-    $21, $22, $23, $24,
-    $25, $26, $27,
-    $28, $29, $30,
-    $31, $32, $33, $34, $35,
-    $36, $37, $38, $39, $40
+    $15, $16, $17, $18,
+    $19, $20, $21,
+    $22, $23, $24, $25,
+    $26, $27, $28,
+    $29, $30, $31,
+    $32, $33, $34, $35, $36,
+    $37, $38, $39, $40, $41
 )
 RETURNING id
 `
@@ -225,6 +225,7 @@ type InsertUsageRecordParams struct {
 	CacheCreation1hTokens  int32              `db:"cache_creation_1h_tokens" json:"cache_creation_1h_tokens"`
 	ImageOutputTokens      int32              `db:"image_output_tokens" json:"image_output_tokens"`
 	ActualCost             decimal.Decimal    `db:"actual_cost" json:"actual_cost"`
+	CostSnapshot           *string            `db:"cost_snapshot" json:"cost_snapshot"`
 	InputCost              decimal.Decimal    `db:"input_cost" json:"input_cost"`
 	OutputCost             decimal.Decimal    `db:"output_cost" json:"output_cost"`
 	CacheCreationCost      decimal.Decimal    `db:"cache_creation_cost" json:"cache_creation_cost"`
@@ -272,6 +273,7 @@ func (q *Queries) InsertUsageRecord(ctx context.Context, arg InsertUsageRecordPa
 		arg.CacheCreation1hTokens,
 		arg.ImageOutputTokens,
 		arg.ActualCost,
+		arg.CostSnapshot,
 		arg.InputCost,
 		arg.OutputCost,
 		arg.CacheCreationCost,
