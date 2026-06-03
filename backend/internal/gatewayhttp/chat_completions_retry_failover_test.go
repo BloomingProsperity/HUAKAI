@@ -21,6 +21,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	provideropenai "github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
+	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
@@ -95,16 +96,18 @@ func TestPR5AbortFailureStopsRetryBeforeReReserve(t *testing.T) {
 
 func TestPR5NonStream429RecordsCooldownAndRetriesNextAccount(t *testing.T) {
 	enableHCSFDispatchForTest(t)
+	now := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
 	selector := newPR5Selector(t, 201, 202)
 	health := &recordingChannelHealth{}
 	dispatcher := &pr5CanonicalSequenceDispatcher{
 		steps: []pr5CanonicalStep{
-			{status: http.StatusTooManyRequests, body: `{"error":"rate limited"}`, headers: http.Header{"Retry-After": []string{"7"}}},
+			{status: http.StatusTooManyRequests, body: `{"error":"rate limited"}`, headers: http.Header{"Retry-After": []string{"3600"}}},
 			{successText: "success after rate limit"},
 		},
 	}
 	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88002}, &recordingSettler{}, dispatcher)
 	deps.ChannelHealth = health
+	deps.RateService = rate.NewUpstreamRateService(func() time.Time { return now }, time.Minute)
 
 	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
 	if rec.Code != http.StatusOK {
@@ -118,6 +121,19 @@ func TestPR5NonStream429RecordsCooldownAndRetriesNextAccount(t *testing.T) {
 	}
 	if sig := health.signals[0]; sig.Class != channelhealth.SignalRateLimit || sig.StatusCode != http.StatusTooManyRequests || sig.RateLimitResetAt == nil {
 		t.Fatalf("first health signal=%+v want 429 rate-limit cooldown", sig)
+	}
+	if len(health.forceCooldowns) != 1 {
+		t.Fatalf("ForceCooldown calls=%d want 1; calls=%+v", len(health.forceCooldowns), health.forceCooldowns)
+	}
+	forced := health.forceCooldowns[0]
+	if forced.key.ProviderAccountID != 201 || forced.key.AccountCredentialID != 9201 {
+		t.Fatalf("ForceCooldown key=%+v want first account 201 credential 9201", forced.key)
+	}
+	if forced.reason != string(rate.ReasonRateLimitRPM) {
+		t.Fatalf("ForceCooldown reason=%q want %q", forced.reason, rate.ReasonRateLimitRPM)
+	}
+	if !forced.until.Equal(now.Add(time.Hour)) {
+		t.Fatalf("ForceCooldown until=%s want %s", forced.until, now.Add(time.Hour))
 	}
 }
 

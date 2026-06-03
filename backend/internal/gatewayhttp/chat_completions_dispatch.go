@@ -25,6 +25,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
+	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
@@ -567,6 +568,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 			classifyBody = upstreamErr.Body
 			decision, classification, _ = gateway.ClassifyAttemptHTTPError(upstreamErr.StatusCode, upstreamErr.Header, upstreamErr.Body, ex.accInfo.Platform)
 			recordModelCooldownOnUpstream404(ex.ctx, ex.d, ex.ident.TenantID, ex.acquiredAccountID, ex.upstreamModelID, upstreamErr.StatusCode, ex.requestID)
+			ex.forceCooldownFromUpstreamRateLimit(upstreamErr)
 		} else {
 			classifyBody = []byte(err.Error())
 			classification, _ = gateway.Classify(0, nil, classifyBody, ex.accInfo.Platform)
@@ -594,6 +596,27 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		return nil, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr), false
 	}
 	return ex.finalizeBufferedEnvelope(w, bufferedEnv, 0, startedAt)
+}
+
+func (ex *chatExecution) forceCooldownFromUpstreamRateLimit(upstreamErr *gateway.UpstreamHTTPError) {
+	if upstreamErr == nil || ex.d.RateService == nil || ex.d.ChannelHealth == nil || !ex.healthKeyOK {
+		return
+	}
+	if upstreamErr.StatusCode != http.StatusTooManyRequests && upstreamErr.StatusCode != 529 {
+		return
+	}
+	if strings.TrimSpace(upstreamErr.RetryAfter()) == "" {
+		return
+	}
+	dec, err := ex.d.RateService.HandleUpstreamError(ex.ctx, ex.acquiredAccountID, upstreamErr.StatusCode, upstreamErr.Header, upstreamErr.Body)
+	if err != nil {
+		logInternalError(ex.ctx, ex.requestID, "upstream_rate_cooldown_decision_failed", err)
+		return
+	}
+	if dec.StateChange == rate.StateNoChange || dec.CooldownUntil.IsZero() {
+		return
+	}
+	_, _ = ex.d.ChannelHealth.ForceCooldown(ex.ctx, ex.healthKey, dec.CooldownUntil, string(dec.Reason))
 }
 
 func (ex *chatExecution) finalizeBufferedEnvelope(w http.ResponseWriter, env *proto.HCSF, statusCode int, startedAt time.Time) (*proto.HCSF, *classifiedAttemptFailure, bool) {

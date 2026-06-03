@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
@@ -121,12 +122,24 @@ func clientAdapterDeps(t *testing.T) ChatHandlerDeps {
 }
 
 type recordingChannelHealth struct {
-	signals []channelhealth.Signal
+	signals        []channelhealth.Signal
+	forceCooldowns []recordedForceCooldown
+}
+
+type recordedForceCooldown struct {
+	key    channelhealth.ChannelKey
+	until  time.Time
+	reason string
 }
 
 func (r *recordingChannelHealth) ApplySignal(_ context.Context, sig channelhealth.Signal) (channelhealth.Record, error) {
 	r.signals = append(r.signals, sig)
 	return channelhealth.Record{Key: sig.Key, State: channelhealth.StateActive}, nil
+}
+
+func (r *recordingChannelHealth) ForceCooldown(_ context.Context, key channelhealth.ChannelKey, until time.Time, reason string) (channelhealth.Record, error) {
+	r.forceCooldowns = append(r.forceCooldowns, recordedForceCooldown{key: key, until: until, reason: reason})
+	return channelhealth.Record{Key: key, State: channelhealth.StateCoolingDown, CooldownUntil: &until}, nil
 }
 
 func invokeHandlerPath(t *testing.T, deps ChatHandlerDeps, path, body string) *httptest.ResponseRecorder {
