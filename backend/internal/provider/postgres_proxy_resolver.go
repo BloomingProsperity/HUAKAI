@@ -8,9 +8,9 @@
 //   - account.proxy_id IS NULL                                   → 直连 (admin 显式选无代理)
 //   - account.proxy_id 指向 proxies 且 status='active' + 未软删   → 该代理 URL
 //   - account.proxy_id 指向 proxies 但 status != 'active' / 软删 → ErrProxyUnhealthy
-//                                                                  (调用方应拒绝出站, 强制
-//                                                                  admin 介入. 不静默走直连,
-//                                                                  避免破坏账号级 IP 隔离)
+//     (调用方应拒绝出站, 强制
+//     admin 介入. 不静默走直连,
+//     避免破坏账号级 IP 隔离)
 //   - account 行不存在                                            → ErrAccountNotFound
 //   - URL 重建后格式错误                                          → ErrProxyURLInvalid
 //   - DB 故障                                                    → 包装底层 pgx 错误
@@ -24,6 +24,8 @@ import (
 	"net/url"
 	"strconv"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/BloomingProsperity/HUAKAI/internal/proxysecret"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -43,6 +45,7 @@ var ErrProxyUnhealthy = errors.New("provider proxy resolver: 绑定的代理已 
 // Go 端用 url.UserPassword() 转义后构造 URL。
 type PostgresProxyResolver struct {
 	pool *pgxpool.Pool
+	keys credentialstore.KeyProvider
 }
 
 // 编译期接口合规断言。
@@ -53,8 +56,13 @@ func NewPostgresProxyResolver(pool *pgxpool.Pool) *PostgresProxyResolver {
 	return &PostgresProxyResolver{pool: pool}
 }
 
+func NewPostgresProxyResolverWithKeys(pool *pgxpool.Pool, keys credentialstore.KeyProvider) *PostgresProxyResolver {
+	return &PostgresProxyResolver{pool: pool, keys: keys}
+}
+
 // proxyRow 是 SQL JOIN 返回的中间值, 跟 Go *url.URL 构造解耦.
 type proxyRow struct {
+	tenantID       int64
 	accountExists  bool
 	hasProxyBound  bool   // account.proxy_id IS NOT NULL
 	proxyIsHealthy bool   // 绑定的代理同时满足 status='active' + 未软删
@@ -93,10 +101,11 @@ func (r *PostgresProxyResolver) Resolve(ctx context.Context, accountID int64) (*
 	// has_proxy_bound 区分 "无代理配置" vs "有代理但 unhealthy".
 	// proxy_is_healthy 仅当 JOIN 命中 + status='active' + 未软删 时 true.
 	const q = `
-        SELECT
-            TRUE AS account_exists,
-            pa.proxy_id IS NOT NULL                                    AS has_proxy_bound,
-            (p.id IS NOT NULL AND p.status = 'active' AND p.deleted_at IS NULL) AS proxy_is_healthy,
+	        SELECT
+	            pa.tenant_id                                                AS tenant_id,
+	            TRUE AS account_exists,
+	            pa.proxy_id IS NOT NULL                                    AS has_proxy_bound,
+	            (p.id IS NOT NULL AND p.status = 'active' AND p.deleted_at IS NULL) AS proxy_is_healthy,
             COALESCE(p.protocol, '')      AS protocol,
             COALESCE(p.host, '')          AS host,
             COALESCE(p.port, 0)           AS port,
@@ -108,6 +117,7 @@ func (r *PostgresProxyResolver) Resolve(ctx context.Context, accountID int64) (*
     `
 	var row proxyRow
 	if err := tx.QueryRow(ctx, q, accountID).Scan(
+		&row.tenantID,
 		&row.accountExists,
 		&row.hasProxyBound,
 		&row.proxyIsHealthy,
@@ -137,8 +147,24 @@ func (r *PostgresProxyResolver) Resolve(ctx context.Context, accountID int64) (*
 		return nil, fmt.Errorf("account %d: %w", accountID, ErrProxyUnhealthy)
 	}
 
+	if err := r.decryptRowAuthSecret(ctx, &row); err != nil {
+		return nil, fmt.Errorf("provider proxy resolver: decrypt auth secret: %w", err)
+	}
+
 	// 3. 健康 → 构造 URL (用 url.UserPassword 转义 user info, net.JoinHostPort 处理 host/port)
 	return buildProxyURL(row, accountID)
+}
+
+func (r *PostgresProxyResolver) decryptRowAuthSecret(ctx context.Context, row *proxyRow) error {
+	if row == nil || row.secret == nil || *row.secret == "" {
+		return nil
+	}
+	plaintext, err := proxysecret.Decode(ctx, r.keys, row.tenantID, *row.secret)
+	if err != nil {
+		return err
+	}
+	row.secret = &plaintext
+	return nil
 }
 
 // buildProxyURL 用 proxies 表字段构造 *url.URL。
