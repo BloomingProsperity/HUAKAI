@@ -65,6 +65,7 @@ type ChatHandlerDeps struct {
 	ChannelHealth        channelHealthRecorder
 	ModelCooldowns       modelRateLimitRecorder
 	RateService          rate.Service
+	RetryBudget          retryBudgetGate
 	BillingPolicyVersion string
 	RequestClass         string
 
@@ -81,6 +82,10 @@ type channelHealthRecorder interface {
 
 type modelRateLimitRecorder interface {
 	RecordModelRateLimit(context.Context, rate.ModelCooldownInput) error
+}
+
+type retryBudgetGate interface {
+	Allow(tenantID int64) bool
 }
 
 // HCSFDispatcher 是 non-streaming HCSF 主链路；默认开启，可由 env 开关关闭。
@@ -220,6 +225,10 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 			if outcome.Failure != nil {
 				retry, consumeAuthBudget := shouldRetryAttemptFailure(outcome.Failure, exec.plan, true, i+1 >= budget, authFailoverUsed)
 				if retry {
+					if exec.d.RetryBudget != nil && !exec.d.RetryBudget.Allow(exec.ident.TenantID) {
+						writeAttemptFailure(w, outcome.Failure)
+						return
+					}
 					if consumeAuthBudget {
 						authFailoverUsed = true
 					}

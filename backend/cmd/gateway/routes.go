@@ -399,6 +399,7 @@ func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 		ChannelHealth:         d.channelHealth,
 		ModelCooldowns:        d.modelCooldowns,
 		RateService:           d.upstreamRate,
+		RetryBudget:           d.retryBudget,
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
 		RequestClass:          d.cfg.RequestClass,
 	}

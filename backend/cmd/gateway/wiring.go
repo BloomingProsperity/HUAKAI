@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
@@ -59,6 +60,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	ratelimit "github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
+	"github.com/BloomingProsperity/HUAKAI/internal/retrybudget"
 	"github.com/BloomingProsperity/HUAKAI/internal/routeadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
@@ -85,6 +87,7 @@ type deps struct {
 	channelHealth            *channelhealth.Service
 	modelCooldowns           *ratelimit.ModelCooldownService
 	upstreamRate             ratelimit.Service
+	retryBudget              *retrybudget.Budget
 	claimGate                billing.ClaimGate
 	settler                  billing.Settler
 	quotaReserver            quotaenforce.Reserver
@@ -206,6 +209,8 @@ const (
 	stormEndpointBurstEnv = "HUAKAI_STORM_ENDPOINT_BURST"
 	stormGlobalRateEnv    = "HUAKAI_STORM_GLOBAL_RATE"
 	stormGlobalBurstEnv   = "HUAKAI_STORM_GLOBAL_BURST"
+	tenantRetryBudgetEnv  = "HUAKAI_TENANT_RETRY_BUDGET"
+	tenantRetryWindowEnv  = "HUAKAI_TENANT_RETRY_WINDOW"
 )
 
 func buildPaymentProviderBindings(cfg *Config) (map[string]paymenthttp.ProviderBinding, error) {
@@ -232,6 +237,48 @@ func buildQuotaEnforcement(cfg *Config, pgPool *pgxpool.Pool, plain billing.Sett
 	}
 	quotaService := quota.NewService(quota.NewPostgresStore(pgPool))
 	return quotaenforce.NewSettler(plain, quotaService), quotaService
+}
+
+func loadTenantRetryBudgetFromEnv() (*retrybudget.Budget, error) {
+	limit, err := parseTenantRetryBudgetLimit(tenantRetryBudgetEnv)
+	if err != nil {
+		return nil, err
+	}
+	window, err := parseTenantRetryBudgetWindow(tenantRetryWindowEnv, time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	return retrybudget.New(limit, window), nil
+}
+
+func parseTenantRetryBudgetLimit(name string) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return 0, nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s: invalid integer %q: %w", name, raw, err)
+	}
+	if v < 0 {
+		return 0, fmt.Errorf("%s: must be non-negative, got %d", name, v)
+	}
+	return v, nil
+}
+
+func parseTenantRetryBudgetWindow(name string, def time.Duration) (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return def, nil
+	}
+	window, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s: invalid duration %q: %w", name, raw, err)
+	}
+	if window <= 0 {
+		return 0, fmt.Errorf("%s: must be positive, got %s", name, raw)
+	}
+	return window, nil
 }
 
 // loadStormScopeConfigFromEnv parses the optional endpoint/global refresh-storm
@@ -567,6 +614,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, fmt.Errorf("load login throttle config: %w", err)
 	}
+	tenantRetryBudget, err := loadTenantRetryBudgetFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("load tenant retry budget: %w", err)
+	}
 
 	d := &deps{
 		cfg:                   cfg,
@@ -579,6 +630,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		channelHealth:         channelHealthService,
 		modelCooldowns:        ratelimit.NewModelCooldownService(billingQueries),
 		upstreamRate:          ratelimit.NewUpstreamRateService(nil, channelHealthService.Policy().DefaultRateLimitCooldown),
+		retryBudget:           tenantRetryBudget,
 		claimGate:             billing.NewClaimGate(pgPool),
 		settler:               settler,
 		quotaReserver:         quotaReserver,

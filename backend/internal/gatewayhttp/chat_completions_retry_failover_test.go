@@ -22,6 +22,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	provideropenai "github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
+	"github.com/BloomingProsperity/HUAKAI/internal/retrybudget"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
@@ -195,6 +196,101 @@ func TestPR5NonStreamAllAttemptsFailReturnsLastClassifiedError(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "upstream_upstream_rate_limited") {
 		t.Fatalf("body=%s want last classified rate-limit error", rec.Body.String())
+	}
+}
+
+func TestTenantRetryBudgetStopsBeforeThirdRetryAndKeepsTenantIsolation(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	budget := retrybudget.New(2, time.Minute)
+	route := pr5RoutePlan(
+		router.AttemptPlan{Index: 0, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "primary"},
+		router.AttemptPlan{Index: 1, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "retry_one"},
+		router.AttemptPlan{Index: 2, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "retry_two"},
+		router.AttemptPlan{Index: 3, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "must_not_reach"},
+	)
+
+	tenantASelector := newPR5Selector(t, 9011, 9012, 9013, 9014)
+	tenantADispatcher := &pr5CanonicalSequenceDispatcher{steps: []pr5CanonicalStep{
+		{status: http.StatusInternalServerError, body: `{"error":"a1"}`},
+		{status: http.StatusInternalServerError, body: `{"error":"a2"}`},
+		{status: http.StatusInternalServerError, body: `{"error":"a3"}`},
+		{successText: "mutation would reach forbidden third retry"},
+	}}
+	tenantADeps := pr5NonStreamDeps(t, tenantASelector, &pr5ClaimGate{claimID: 88901}, &recordingSettler{}, tenantADispatcher)
+	tenantADeps.Router = stubRouter{plan: route}
+	tenantADeps.RetryBudget = budget
+
+	tenantA := invokeHandlerPath(t, tenantADeps, "/v1/chat/completions", pr5NonStreamBody())
+	if tenantA.Code != http.StatusBadGateway {
+		t.Fatalf("tenant A status=%d body=%s; want last 5xx failure after only two retries", tenantA.Code, tenantA.Body.String())
+	}
+	if tenantADispatcher.calls != 3 || tenantASelector.calls != 3 {
+		t.Fatalf("tenant A dispatch/select calls=%d/%d want 3/3; removing Allow would reach the 4th success", tenantADispatcher.calls, tenantASelector.calls)
+	}
+
+	tenantBSelector := newPR5Selector(t, 9021, 9022, 9023)
+	tenantBDispatcher := &pr5CanonicalSequenceDispatcher{steps: []pr5CanonicalStep{
+		{status: http.StatusInternalServerError, body: `{"error":"b1"}`},
+		{status: http.StatusInternalServerError, body: `{"error":"b2"}`},
+		{successText: "tenant b still has retry budget"},
+	}}
+	tenantBDeps := pr5NonStreamDeps(t, tenantBSelector, &pr5ClaimGate{claimID: 88902}, &recordingSettler{}, tenantBDispatcher)
+	tenantBDeps.Router = stubRouter{plan: pr5RoutePlan(route.Attempts[:3]...)}
+	tenantBDeps.RetryBudget = budget
+	tenantBIdent := validIdentity()
+	tenantBIdent.TenantID = 8
+	tenantBDeps.Auth = stubAuth{identity: tenantBIdent}
+
+	tenantB := invokeHandlerPath(t, tenantBDeps, "/v1/chat/completions", pr5NonStreamBody())
+	if tenantB.Code != http.StatusOK {
+		t.Fatalf("tenant B status=%d body=%s; want success after two retries despite tenant A exhaustion", tenantB.Code, tenantB.Body.String())
+	}
+	if tenantBDispatcher.calls != 3 {
+		t.Fatalf("tenant B dispatch calls=%d want 3; tenant A budget must not bleed across tenants", tenantBDispatcher.calls)
+	}
+}
+
+func TestTenantRetryBudgetZeroPreservesLegacyUnlimitedRetryBehavior(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	selector := newPR5Selector(t, 9031, 9032, 9033, 9034)
+	dispatcher := &pr5CanonicalSequenceDispatcher{steps: []pr5CanonicalStep{
+		{status: http.StatusInternalServerError, body: `{"error":"first"}`},
+		{status: http.StatusInternalServerError, body: `{"error":"second"}`},
+		{status: http.StatusInternalServerError, body: `{"error":"third"}`},
+		{successText: "legacy retry budget zero reaches configured plan budget"},
+	}}
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88903}, &recordingSettler{}, dispatcher)
+	deps.Router = stubRouter{plan: pr5RoutePlan(
+		router.AttemptPlan{Index: 0, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "primary"},
+		router.AttemptPlan{Index: 1, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "retry_one"},
+		router.AttemptPlan{Index: 2, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "retry_two"},
+		router.AttemptPlan{Index: 3, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "retry_three"},
+	)}
+	deps.RetryBudget = retrybudget.New(0, time.Minute)
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s; want 200 because budget=0 must not cap retries", rec.Code, rec.Body.String())
+	}
+	if dispatcher.calls != 4 {
+		t.Fatalf("dispatch calls=%d want 4; budget=0 must preserve existing attempt budget behavior", dispatcher.calls)
+	}
+}
+
+func TestTenantRetryBudgetFirstAttemptDoesNotConsumeBudget(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	budget := retrybudget.New(1, time.Minute)
+	deps := pr5NonStreamDeps(t, newPR5Selector(t, 9041), &pr5ClaimGate{claimID: 88904}, &recordingSettler{}, &pr5CanonicalSequenceDispatcher{
+		steps: []pr5CanonicalStep{{successText: "first attempt success"}},
+	})
+	deps.RetryBudget = budget
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s; want first attempt success", rec.Code, rec.Body.String())
+	}
+	if !budget.Allow(validIdentity().TenantID) {
+		t.Fatal("first upstream attempt consumed retry budget; only retry attempts may be counted")
 	}
 }
 
