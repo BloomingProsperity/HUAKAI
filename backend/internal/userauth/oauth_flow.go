@@ -124,16 +124,16 @@ func NewOAuthHTTPProvider(cfg OAuthConfig, client *http.Client) (*OAuthHTTPProvi
 		{"auth_url", cfg.AuthURL}, {"token_url", cfg.TokenURL}, {"jwks_url", cfg.JWKSURL},
 		{"user_url", cfg.UserURL}, {"emails_url", cfg.EmailsURL},
 	} {
-		if err := validateOAuthEndpointURL(ep.label, ep.url); err != nil {
+		if err := ValidateOAuthEndpointURL(ep.label, ep.url); err != nil {
 			return nil, err
 		}
 	}
 	return &OAuthHTTPProvider{cfg: cfg, client: client, now: time.Now}, nil
 }
 
-// validateOAuthEndpointURL 校验一个出站 OAuth endpoint:空值跳过(表示不适用,如 GitHub 无 JWKS);
+// ValidateOAuthEndpointURL 校验一个出站 OAuth endpoint:空值跳过(表示不适用,如 GitHub 无 JWKS);
 // 非空则必须是 https 且 host 非字面私有/环回/链路本地/元数据 IP。
-func validateOAuthEndpointURL(label, raw string) error {
+func ValidateOAuthEndpointURL(label, raw string) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil
