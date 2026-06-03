@@ -80,6 +80,10 @@ func releaseMode() eventbus.ReleaseMode {
 	return eventbus.ReleaseModeDev
 }
 
+func captchaTurnstileSecret() string {
+	return strings.TrimSpace(os.Getenv("HUAKAI_CAPTCHA_TURNSTILE_SECRET"))
+}
+
 func loadUserRegistrationModeFromEnv() (userauth.RegistrationMode, error) {
 	raw := strings.TrimSpace(os.Getenv("HUAKAI_USER_REGISTRATION_MODE"))
 	if raw == "" {

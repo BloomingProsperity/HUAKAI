@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/captcha"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
 	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
@@ -59,24 +60,27 @@ type AuthHandlerDeps struct {
 	AdminAuth        AuthAdminAuth
 	EventSink        AuthEventSink
 	ClientIPResolver *clientip.Resolver
+	Captcha          captcha.CaptchaVerifier
 	// LoginThrottle 是密码登录的「argon2 前置」IP 限流闸(S2-048)。nil = 不限流(测试/旧装配),
 	// 生产装配必须注入,否则未认证攻击者可对任意邮箱触发昂贵 argon2 放大 CPU。
 	LoginThrottle *loginthrottle.Limiter
 }
 
 type authRegisterRequest struct {
-	TenantID    int64  `json:"tenant_id"`
-	Email       string `json:"email"`
-	DisplayName string `json:"display_name,omitempty"`
-	Password    string `json:"password"`
-	InviteCode  string `json:"invite_code,omitempty"`
+	TenantID     int64  `json:"tenant_id"`
+	Email        string `json:"email"`
+	DisplayName  string `json:"display_name,omitempty"`
+	Password     string `json:"password"`
+	InviteCode   string `json:"invite_code,omitempty"`
+	CaptchaToken string `json:"captcha_token,omitempty"`
 }
 
 type authLoginRequest struct {
-	TenantID   int64          `json:"tenant_id"`
-	Email      string         `json:"email"`
-	Password   string         `json:"password"`
-	DeviceInfo map[string]any `json:"device_info,omitempty"`
+	TenantID     int64          `json:"tenant_id"`
+	Email        string         `json:"email"`
+	Password     string         `json:"password"`
+	DeviceInfo   map[string]any `json:"device_info,omitempty"`
+	CaptchaToken string         `json:"captcha_token,omitempty"`
 }
 
 type authVerifyEmailRequest struct {
@@ -131,6 +135,15 @@ func newAuthRegisterHandler(d AuthHandlerDeps) http.HandlerFunc {
 		}
 		var req authRegisterRequest
 		if !decodeAdminPoolJSON(w, r, &req) {
+			return
+		}
+		if !verifyAuthCaptcha(
+			w, r, d,
+			req.TenantID,
+			req.CaptchaToken,
+			"user_register_failed",
+			"",
+		) {
 			return
 		}
 		result, err := d.Auth.Register(r.Context(), userauth.RegisterInput{
@@ -191,6 +204,16 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 				return
 			}
 		}
+		if !verifyAuthCaptcha(
+			w, r, d,
+			req.TenantID,
+			req.CaptchaToken,
+			"user_login_failed",
+			"password",
+		) {
+			lease.Failure()
+			return
+		}
 		user, err := d.Auth.Authenticate(r.Context(), userauth.LoginInput{TenantID: req.TenantID, Email: req.Email, Password: req.Password})
 		if err != nil {
 			lease.Failure() // nil-safe: 限流未装配时为 no-op
@@ -219,6 +242,33 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		})
 		writeAuditJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "session": tokens})
 	}
+}
+
+func verifyAuthCaptcha(
+	w http.ResponseWriter,
+	r *http.Request,
+	d AuthHandlerDeps,
+	tenantID int64,
+	token string,
+	eventType string,
+	authMethod string,
+) bool {
+	if d.Captcha == nil {
+		return true
+	}
+	if err := d.Captcha.Verify(
+		r.Context(),
+		token,
+		d.ClientIPResolver.ClientIP(r),
+	); err == nil {
+		return true
+	}
+	recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+		EventType: eventType, TenantID: tenantID, Outcome: "failure",
+		ReasonClass: "captcha_failed", AuthMethod: authMethod,
+	})
+	writeJSONError(w, http.StatusForbidden, "captcha_required", "captcha verification failed")
+	return false
 }
 
 func newAuthVerifyEmailHandler(d AuthHandlerDeps) http.HandlerFunc {
