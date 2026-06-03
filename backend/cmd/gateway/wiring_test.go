@@ -14,6 +14,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -31,6 +32,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/anthropicoauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
@@ -77,6 +79,32 @@ func TestWiring_BuildTransportFactoryInjectsSidecarSocket(t *testing.T) {
 	}
 }
 
+func TestWiring_QuotaEnforceDefaultOffLeavesPlainSettlerAndNilReserver(t *testing.T) {
+	plain := &wiringRecordingSettler{}
+
+	settler, reserver := buildQuotaEnforcement(&Config{}, nil, plain)
+
+	if settler != plain {
+		t.Fatalf("settler=%T want original plain settler when HUAKAI_QUOTA_ENFORCE default is off", settler)
+	}
+	if reserver != nil {
+		t.Fatalf("quota reserver=%T want nil when enforcement is off", reserver)
+	}
+}
+
+func TestWiring_QuotaEnforceOnWrapsSettlerAndProvidesReserver(t *testing.T) {
+	plain := &wiringRecordingSettler{}
+
+	settler, reserver := buildQuotaEnforcement(&Config{QuotaEnforce: true}, nil, plain)
+
+	if settler == plain {
+		t.Fatal("settler was not wrapped when QuotaEnforce=true")
+	}
+	if reserver == nil {
+		t.Fatal("quota reserver nil when QuotaEnforce=true")
+	}
+}
+
 func TestWiring_AnthropicClaudeAIOAuthKeepsCredentialAcqBuiltinProfile(t *testing.T) {
 	_, err := credentialacq.StartOAuthFlow(context.Background(), nil, credentialacq.StartInput{
 		TenantID: 1, ProviderAccountID: 101,
@@ -86,6 +114,24 @@ func TestWiring_AnthropicClaudeAIOAuthKeepsCredentialAcqBuiltinProfile(t *testin
 	if !errors.Is(err, credentialacq.ErrFeatureDisabled) {
 		t.Fatalf("err=%v want ErrFeatureDisabled from credentialacq built-in profile validation", err)
 	}
+}
+
+type wiringRecordingSettler struct{}
+
+func (s *wiringRecordingSettler) Settle(context.Context, billing.SettleRequest) (*billing.SettleResult, error) {
+	return &billing.SettleResult{}, nil
+}
+
+func (s *wiringRecordingSettler) Abort(context.Context, int64, int64, string, string, int64, json.RawMessage) error {
+	return nil
+}
+
+func (s *wiringRecordingSettler) CommitCacheHit(context.Context, billing.SettleRequest) error {
+	return nil
+}
+
+func (s *wiringRecordingSettler) Refund(context.Context, billing.RefundRequest) (*billing.RefundResult, error) {
+	return &billing.RefundResult{}, nil
 }
 
 // ANT-4: 生产 wiring 必须真的调用 installAnthropicClaudeAIOAuthMimicryExchanger

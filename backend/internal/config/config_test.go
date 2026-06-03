@@ -142,6 +142,46 @@ func TestLoadIncludesTransportSidecarFallbackFlag(t *testing.T) {
 	}
 }
 
+func TestLoadQuotaEnforceDefaultOff(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_QUOTA_ENFORCE", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.QuotaEnforce {
+		t.Fatal("QuotaEnforce=true want default false so dormant quota cannot change hot-path behavior without opt-in")
+	}
+}
+
+func TestLoadQuotaEnforceFlag(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_QUOTA_ENFORCE", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.QuotaEnforce {
+		t.Fatal("QuotaEnforce=false want true from HUAKAI_QUOTA_ENFORCE")
+	}
+}
+
+func TestLoadRejectsInvalidQuotaEnforceFlag(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_QUOTA_ENFORCE", "sometimes")
+
+	err := loadOnlyError()
+
+	if err == nil {
+		t.Fatal("invalid HUAKAI_QUOTA_ENFORCE was accepted")
+	}
+	if !strings.Contains(err.Error(), "HUAKAI_QUOTA_ENFORCE") {
+		t.Fatalf("err=%v must name HUAKAI_QUOTA_ENFORCE", err)
+	}
+}
+
 func TestLoadRejectsInvalidTransportSidecarFallbackFlag(t *testing.T) {
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
 	t.Setenv("HUAKAI_TRANSPORT_SIDECAR_FALLBACK", "sometimes")

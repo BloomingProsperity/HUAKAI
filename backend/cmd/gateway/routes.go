@@ -355,6 +355,7 @@ func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 		Registry:              d.modelRegistry,
 		Router:                d.routePlanner,
 		ClaimGate:             d.claimGate,
+		QuotaReserver:         d.quotaReserver,
 		RateTables:            d.rateTableSource,
 		Selector:              d.selector,
 		CredentialVault:       d.credentialVault,

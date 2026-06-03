@@ -230,6 +230,56 @@ func TestServiceReserve_RetryableTxConflictExhaustionReturnsRetryable(t *testing
 	}
 }
 
+func TestServiceSettle_ZeroReservationIDResolvesByClaim(t *testing.T) {
+	store := &claimFinalizationStore{reservation: Reservation{
+		TenantID: 1,
+		ID:       77,
+		ClaimID:  10,
+		Status:   ReservationSettled,
+	}}
+
+	result, err := NewService(store).Settle(context.Background(), SettleRequest{
+		TenantID:   1,
+		ClaimID:    10,
+		ActualCost: decimal.RequireFromString("0.25"),
+	})
+
+	if err != nil {
+		t.Fatalf("Settle with ReservationID=0: %v", err)
+	}
+	if !result.IdempotencyHit || result.Reservation.ID != 77 {
+		t.Fatalf("result=%+v want idempotent settled reservation 77 resolved by claim", result)
+	}
+	if store.getCalls != 1 {
+		t.Fatalf("GetReservationByClaimForUpdate calls=%d want 1", store.getCalls)
+	}
+}
+
+func TestServiceRelease_ZeroReservationIDResolvesByClaim(t *testing.T) {
+	store := &claimFinalizationStore{reservation: Reservation{
+		TenantID: 1,
+		ID:       78,
+		ClaimID:  11,
+		Status:   ReservationReleased,
+	}}
+
+	result, err := NewService(store).Release(context.Background(), ReleaseRequest{
+		TenantID: 1,
+		ClaimID:  11,
+		Reason:   "abort",
+	})
+
+	if err != nil {
+		t.Fatalf("Release with ReservationID=0: %v", err)
+	}
+	if !result.IdempotencyHit || result.Reservation.ID != 78 {
+		t.Fatalf("result=%+v want idempotent released reservation 78 resolved by claim", result)
+	}
+	if store.getCalls != 1 {
+		t.Fatalf("GetReservationByClaimForUpdate calls=%d want 1", store.getCalls)
+	}
+}
+
 type noTxReserveStore struct {
 	called bool
 }
@@ -434,6 +484,24 @@ func (s *claimConflictReplayStore) CompleteReconciliationJob(context.Context, in
 
 func (s *claimConflictReplayStore) FailReconciliationJob(context.Context, ReconciliationFailure) error {
 	return errors.New("unexpected FailReconciliationJob")
+}
+
+type claimFinalizationStore struct {
+	noTxReserveStore
+	reservation Reservation
+	getCalls    int
+}
+
+func (s *claimFinalizationStore) WithTx(ctx context.Context, fn func(PGStore) error) error {
+	return fn(s)
+}
+
+func (s *claimFinalizationStore) GetReservationByClaimForUpdate(_ context.Context, tenantID int64, claimID int64) (Reservation, error) {
+	s.getCalls++
+	if tenantID != s.reservation.TenantID || claimID != s.reservation.ClaimID {
+		return Reservation{}, pgx.ErrNoRows
+	}
+	return s.reservation, nil
 }
 
 type requestMetricReserveStore struct {

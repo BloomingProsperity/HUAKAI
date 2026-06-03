@@ -33,6 +33,10 @@ type Config struct {
 	// fail-closed when Rust sidecar is configured but unavailable.
 	TransportSidecarFallback bool
 
+	// QuotaEnforce wires the quota reservation/finalization path into chat
+	// admission. Default false leaves the hot path unchanged.
+	QuotaEnforce bool
+
 	// VendorOAuth holds operator-owned OAuth refresh settings for vendor
 	// refreshers. Empty TokenURL means that vendor refresher is not wired.
 	VendorOAuth VendorOAuthConfigs
@@ -91,6 +95,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	quotaEnforce, err := envBool("HUAKAI_QUOTA_ENFORCE")
+	if err != nil {
+		return nil, err
+	}
 	cfg := &Config{
 		DatabaseURL:              os.Getenv("HUAKAI_DATABASE_URL"),
 		Listen:                   envDefault("HUAKAI_ADDR", ":8080"),
@@ -98,6 +106,7 @@ func Load() (*Config, error) {
 		RequestClass:             envDefault("HUAKAI_REQUEST_CLASS", "standard"),
 		TransportSidecarSocket:   os.Getenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET"),
 		TransportSidecarFallback: transportSidecarFallback,
+		QuotaEnforce:             quotaEnforce,
 		VendorOAuth:              loadVendorOAuthConfigs(),
 		PaymentHMACSecrets:       paymentHMACSecrets,
 		PaymentEnableMock:        paymentEnableMock,
