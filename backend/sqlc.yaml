@@ -187,6 +187,7 @@ sql:
   - engine: postgresql
     schema: sql/migrations
     queries:
+      - sql/queries/cost_disputes.sql
       - sql/queries/trust_chain_ledger.sql
     gen:
       go:

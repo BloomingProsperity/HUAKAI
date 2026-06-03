@@ -3,3 +3,21 @@
 //   sqlc v1.27.0
 
 package audit
+
+import (
+	"github.com/jackc/pgx/v5/pgtype"
+)
+
+// F-AUDIT-001 user-initiated cost dispute records. Pure status workflow; no refund or ledger mutation in this slice.
+type CostDispute struct {
+	ID           int64              `db:"id" json:"id"`
+	DisputeID    string             `db:"dispute_id" json:"dispute_id"`
+	TenantID     int64              `db:"tenant_id" json:"tenant_id"`
+	UserID       int64              `db:"user_id" json:"user_id"`
+	RequestID    string             `db:"request_id" json:"request_id"`
+	Reason       string             `db:"reason" json:"reason"`
+	Status       string             `db:"status" json:"status"`
+	OperatorNote string             `db:"operator_note" json:"operator_note"`
+	CreatedAt    pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	ResolvedAt   pgtype.Timestamptz `db:"resolved_at" json:"resolved_at"`
+}
