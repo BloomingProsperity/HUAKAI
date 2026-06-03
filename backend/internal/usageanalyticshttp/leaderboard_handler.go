@@ -13,6 +13,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/snapshotcache"
 )
 
 const (
@@ -27,6 +28,8 @@ const (
 )
 
 var errInvalidDuration = errors.New("invalid duration")
+
+var leaderboardSnapshotTTL = 30 * time.Second
 
 type Querier interface {
 	AggregateUsageLeaderboardByUser(context.Context, dbbilling.AggregateUsageLeaderboardByUserParams) ([]dbbilling.AggregateUsageLeaderboardByUserRow, error)
@@ -79,22 +82,47 @@ func NewLeaderboardHandler(q Querier) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		rows, err := fetchLeaderboardRows(r.Context(), q, query)
-		if err != nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "analytics_query_failed", "analytics backend unavailable")
-			return
-		}
-		entries, err := leaderboardEntries(rows)
-		if err != nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "analytics_query_failed", "analytics backend unavailable")
-			return
-		}
-		writeJSON(w, http.StatusOK, leaderboardResponse{
-			Window:  query.windowLabel,
-			By:      query.by,
-			Entries: entries,
+		value, hit, err := snapshotcache.GetOrLoad(leaderboardSnapshotCacheKey(query), leaderboardSnapshotTTL, func() (any, error) {
+			return loadLeaderboardResponse(r.Context(), q, query)
 		})
+		if err != nil {
+			w.Header().Set(snapshotCacheHeader, "miss")
+			writeJSONError(w, http.StatusServiceUnavailable, "analytics_query_failed", "analytics backend unavailable")
+			return
+		}
+		response, ok := value.(leaderboardResponse)
+		if !ok {
+			w.Header().Set(snapshotCacheHeader, "miss")
+			writeJSONError(w, http.StatusServiceUnavailable, "analytics_query_failed", "analytics backend unavailable")
+			return
+		}
+		if hit {
+			w.Header().Set(snapshotCacheHeader, "hit")
+		} else {
+			w.Header().Set(snapshotCacheHeader, "miss")
+		}
+		writeJSON(w, http.StatusOK, response)
 	}
+}
+
+func loadLeaderboardResponse(ctx context.Context, q Querier, query leaderboardQuery) (leaderboardResponse, error) {
+	rows, err := fetchLeaderboardRows(ctx, q, query)
+	if err != nil {
+		return leaderboardResponse{}, err
+	}
+	entries, err := leaderboardEntries(rows)
+	if err != nil {
+		return leaderboardResponse{}, err
+	}
+	return leaderboardResponse{
+		Window:  query.windowLabel,
+		By:      query.by,
+		Entries: entries,
+	}, nil
+}
+
+func leaderboardSnapshotCacheKey(query leaderboardQuery) string {
+	return "admin_usage_leaderboard:v1|by=" + query.by + "|window=" + query.windowLabel + "|limit=" + strconv.Itoa(int(query.limit))
 }
 
 func parseLeaderboardQuery(w http.ResponseWriter, u *url.URL, now time.Time) (leaderboardQuery, bool) {
