@@ -316,6 +316,10 @@ type Alert struct {
 	CreatedAt   time.Time
 }
 
+type ForceCooldownController interface {
+	ForceCooldown(context.Context, ChannelKey, time.Time, string) (Record, error)
+}
+
 type Store interface {
 	Get(context.Context, ChannelKey) (Record, error)
 	ListChannelHealth(context.Context, int64, int, int) ([]ChannelHealthState, error)

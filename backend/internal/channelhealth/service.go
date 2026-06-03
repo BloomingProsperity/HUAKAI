@@ -248,6 +248,56 @@ func (s *Service) ForceActive(ctx context.Context, key ChannelKey, actorID, reas
 	return s.manualTransition(ctx, key, actorID, reason, StateActive, 0, []AuditEventType{EventManualOverride, EventRecovered}, "security")
 }
 
+func (s *Service) ForceCooldown(ctx context.Context, key ChannelKey, until time.Time, reason string) (Record, error) {
+	return s.withMutation(ctx, func(tx *Service) (Record, error) {
+		return tx.forceCooldownLocked(ctx, key, until, reason)
+	})
+}
+
+func (s *Service) forceCooldownLocked(ctx context.Context, key ChannelKey, until time.Time, reason string) (Record, error) {
+	if until.IsZero() {
+		return Record{}, errors.New("cooldown_until is required")
+	}
+	rec, err := s.recordForMutation(ctx, key)
+	if err != nil {
+		return Record{}, err
+	}
+	now := s.clock.Now()
+	until = until.UTC()
+	if !until.After(now) {
+		return Record{}, errors.New("cooldown_until must be in the future")
+	}
+	prev := rec.State
+	reasonClass := SignalClass(strings.TrimSpace(reason))
+	if reasonClass == "" {
+		reasonClass = SignalRateLimit
+	}
+	changed := prev != StateCoolingDown || rec.ReasonClass != reasonClass
+	if rec.CooldownUntil == nil || until.After(*rec.CooldownUntil) {
+		cooldownUntil := until
+		rec.CooldownUntil = &cooldownUntil
+		changed = true
+	}
+	if !changed {
+		return rec, nil
+	}
+	rec.State = StateCoolingDown
+	rec.ReasonClass = reasonClass
+	rec.Confidence = ConfidenceObserved
+	rec.RampStagePct = 0
+	rec.RampStartedAt = nil
+	rec.RecoveryBlockedReason = ""
+	rec.StateEnteredAt = now
+	rec.LastTransitionAt = now
+	rec.PolicyVersion = s.policy.Version
+	rec.UpdatedAt = now
+	rec, err = s.store.UpsertRecord(ctx, rec)
+	if err != nil {
+		return Record{}, err
+	}
+	return rec, s.emitTransitionEvents(ctx, prev, rec, "", "", decision{eventTypes: []AuditEventType{EventDisabled}})
+}
+
 func (s *Service) ListChannelHealth(ctx context.Context, tenantID int64, limit, offset int) ([]ChannelHealthState, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("channelhealth: service not configured")

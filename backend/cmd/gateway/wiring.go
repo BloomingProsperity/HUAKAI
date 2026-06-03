@@ -83,6 +83,7 @@ type deps struct {
 	selector                 pool.Selector
 	channelHealth            *channelhealth.Service
 	modelCooldowns           *ratelimit.ModelCooldownService
+	upstreamRate             ratelimit.Service
 	claimGate                billing.ClaimGate
 	settler                  billing.Settler
 	quotaReserver            quotaenforce.Reserver
@@ -569,6 +570,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		selector:              selector,
 		channelHealth:         channelHealthService,
 		modelCooldowns:        ratelimit.NewModelCooldownService(billingQueries),
+		upstreamRate:          ratelimit.NewUpstreamRateService(nil, channelHealthService.Policy().DefaultRateLimitCooldown),
 		claimGate:             billing.NewClaimGate(pgPool),
 		settler:               settler,
 		quotaReserver:         quotaReserver,

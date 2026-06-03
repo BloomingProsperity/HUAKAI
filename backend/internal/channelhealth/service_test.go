@@ -128,6 +128,37 @@ func TestChannelHealth_AT004_RateLimitCooldownUsesResetTimestamp(t *testing.T) {
 	}
 }
 
+func TestChannelHealth_ForceCooldownBypassesRateLimitSampleFloor(t *testing.T) {
+	ctx, svc, store, clock := testService()
+	key := testKey()
+	until := clock.Now().Add(time.Hour)
+
+	rec, err := svc.ApplySignal(ctx, Signal{Key: key, Class: SignalRateLimit, RateLimitResetAt: &until})
+	if err != nil {
+		t.Fatalf("ApplySignal: %v", err)
+	}
+	if rec.State != StateActive {
+		t.Fatalf("single rate-limit signal state=%s want active before ForceCooldown", rec.State)
+	}
+
+	rec, err = svc.ForceCooldown(ctx, key, until, "rate_limit_rpm")
+	if err != nil {
+		t.Fatalf("ForceCooldown: %v", err)
+	}
+	if rec.State != StateCoolingDown {
+		t.Fatalf("ForceCooldown state=%s want cooling_down", rec.State)
+	}
+	if rec.CooldownUntil == nil || !rec.CooldownUntil.Equal(until.UTC()) {
+		t.Fatalf("CooldownUntil=%v want %s", rec.CooldownUntil, until.UTC())
+	}
+	if rec.ReasonClass != SignalClass("rate_limit_rpm") {
+		t.Fatalf("ReasonClass=%s want rate_limit_rpm", rec.ReasonClass)
+	}
+	if !hasAudit(auditTypes(store.Audits()), EventDisabled) {
+		t.Fatalf("ForceCooldown audit missing EventDisabled: %+v", store.Audits())
+	}
+}
+
 func TestChannelHealth_AT005_BanSignalDisablesAndAlertsWithoutRawText(t *testing.T) {
 	ctx, svc, store, _ := testService()
 	key := testKey()

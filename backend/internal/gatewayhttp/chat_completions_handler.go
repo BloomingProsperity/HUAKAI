@@ -64,6 +64,7 @@ type ChatHandlerDeps struct {
 	Signer               *sign.Signer
 	ChannelHealth        channelHealthRecorder
 	ModelCooldowns       modelRateLimitRecorder
+	RateService          rate.Service
 	BillingPolicyVersion string
 	RequestClass         string
 
@@ -75,6 +76,7 @@ type ChatHandlerDeps struct {
 
 type channelHealthRecorder interface {
 	ApplySignal(context.Context, channelhealth.Signal) (channelhealth.Record, error)
+	ForceCooldown(context.Context, channelhealth.ChannelKey, time.Time, string) (channelhealth.Record, error)
 }
 
 type modelRateLimitRecorder interface {
