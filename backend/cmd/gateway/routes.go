@@ -142,6 +142,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Route("/v1/api-keys", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
 		userkeyhttp.MountUserAPIKeyRoutes(r, userkeyhttp.Deps{Service: d.userKeyService})
+		mountUserKeyControlsRoutes(r, d)
 	})
 	if d.hermesService != nil && d.hermesRunner != nil {
 		r.With(hermeshttp.APIKeyMiddleware(d.inboundAuth)).
@@ -384,6 +385,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Keys:  d.credentialKeys,
 		})
 	})
+	mountPlatformSettingsRoutes(r, d)
 	r.Route("/admin/v1/api-keys", func(r chi.Router) {
 		adminhttp.MountAPIKeyRoutes(r, adminhttp.AdminAPIKeysDeps{
 			Auth:    d.adminAuth,
@@ -477,6 +479,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			AuditUpdater:  d.billingAuditUpdater,
 		})
 	})
+	mountPricingCatalogRoutes(r, d)
 	r.Route("/admin/v1/balances", func(r chi.Router) {
 		adminhttp.MountBalanceCreditRoutes(r, adminhttp.AdminBalanceCreditDeps{
 			Auth:    d.adminAuth,
@@ -508,6 +511,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			VoucherService: d.voucherService,
 		})
 	})
+	mountNotificationRoutes(r, d)
 	r.Route("/v1/admin/routes", func(r chi.Router) {
 		routeadminhttp.MountRouteAdminRoutes(r, routeadminhttp.AdminDeps{
 			Auth:    d.adminAuth,
@@ -520,6 +524,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Service: tlsfpadmin.New(d.adminQueries),
 		})
 	})
+	mountModerationAdminRoutes(r, d)
 	r.Get("/admin/v1/usage", gatewayhttp.NewUsageHandler(d))
 	r.Get("/admin/v1/billing/claims", gatewayhttp.NewClaimsHandler(d))
 	r.Get("/admin/v1/audit-events", gatewayhttp.NewAuditEventsHandler(d))
