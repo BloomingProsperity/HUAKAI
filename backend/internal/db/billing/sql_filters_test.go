@@ -81,6 +81,37 @@ func TestUsageLeaderboardSQLUsesWindowSortAndLimit(t *testing.T) {
 	}
 }
 
+func TestMyUsageTimeSeriesSQLUsesRequestedGranularityAndCallerScope(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		sql    string
+		bucket string
+	}{
+		{name: "day", sql: aggregateMyUsageByDay, bucket: "day"},
+		{name: "week", sql: aggregateMyUsageByWeek, bucket: "week"},
+		{name: "month", sql: aggregateMyUsageByMonth, bucket: "month"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sql := strings.Join(strings.Fields(tc.sql), " ")
+			for _, want := range []string{
+				"date_trunc('" + tc.bucket + "', ur.settled_at AT TIME ZONE 'UTC')::timestamptz AS day",
+				"ur.tenant_id = $1::bigint",
+				"ur.api_key_id = $2::bigint",
+				"ur.settled_at >= $3::timestamptz",
+				"ur.settled_at < $4::timestamptz",
+				"GROUP BY 1, 2",
+			} {
+				// Mutation checks: using day for week/month returns two buckets
+				// for same-week usage; dropping tenant/api_key/window widens the
+				// caller's self-serve scope.
+				if !strings.Contains(sql, want) {
+					t.Fatalf("%s time-series SQL missing %q in %q", tc.name, want, sql)
+				}
+			}
+		})
+	}
+}
+
 func TestGetUsageRecordByRequestIDSQLScopesToCaller(t *testing.T) {
 	sql := strings.Join(strings.Fields(getUsageRecordByRequestID), " ")
 	for _, want := range []string{

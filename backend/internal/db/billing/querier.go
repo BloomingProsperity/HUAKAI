@@ -28,6 +28,16 @@ type Querier interface {
 	// (tenant_id, api_key_id) so cross-key reads are structurally impossible —
 	// the handler passes ident.APIKeyID, never a client-supplied value.
 	AggregateMyUsageByDay(ctx context.Context, arg AggregateMyUsageByDayParams) ([]AggregateMyUsageByDayRow, error)
+	// Self-serve monthly usage time-series for ONE API key: cost + token totals
+	// bucketed by UTC month start and requested_model. Always scoped by
+	// (tenant_id, api_key_id) so cross-key reads are structurally impossible —
+	// the handler passes ident.APIKeyID, never a client-supplied value.
+	AggregateMyUsageByMonth(ctx context.Context, arg AggregateMyUsageByMonthParams) ([]AggregateMyUsageByMonthRow, error)
+	// Self-serve weekly usage time-series for ONE API key: cost + token totals
+	// bucketed by UTC week start and requested_model. Always scoped by
+	// (tenant_id, api_key_id) so cross-key reads are structurally impossible —
+	// the handler passes ident.APIKeyID, never a client-supplied value.
+	AggregateMyUsageByWeek(ctx context.Context, arg AggregateMyUsageByWeekParams) ([]AggregateMyUsageByWeekRow, error)
 	// Platform-admin cost leaderboard by requested_model.
 	AggregateUsageLeaderboardByModel(ctx context.Context, arg AggregateUsageLeaderboardByModelParams) ([]AggregateUsageLeaderboardByModelRow, error)
 	// Platform-admin cost leaderboard by provider_account_id. Provider-less
