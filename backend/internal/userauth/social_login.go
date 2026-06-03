@@ -8,8 +8,12 @@ import (
 )
 
 const (
-	SocialProviderGoogle = "google"
-	SocialProviderGitHub = "github"
+	SocialProviderGoogle   = "google"
+	SocialProviderGitHub   = "github"
+	SocialProviderWeChat   = "wechat"
+	SocialProviderDingTalk = "dingtalk"
+	SocialProviderLinuxDo  = "linuxdo"
+	SocialProviderOIDC     = "oidc"
 )
 
 type OAuthConfig struct {
@@ -148,7 +152,7 @@ func (s *Service) applyVerifiedSocialIdentity(ctx context.Context, tenantID int6
 		return User{}, ErrInvalidInput
 	}
 	if !identity.EmailVerified {
-		return User{}, ErrSocialLoginRejected
+		return User{}, ErrOAuthPendingEmailRequired
 	}
 	if user, err := s.Store.GetUserBySocialIdentity(ctx, tenantID, provider, subject); err == nil {
 		if err := ensureSocialLoginUserAllowed(user); err != nil {
@@ -216,11 +220,20 @@ func ensureSocialLoginUserAllowed(user User) error {
 }
 
 func normalizeSocialProvider(provider string) string {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case SocialProviderGoogle:
+	p := strings.ToLower(strings.TrimSpace(provider))
+	switch {
+	case p == SocialProviderGoogle:
 		return SocialProviderGoogle
-	case "github":
+	case p == "github":
 		return SocialProviderGitHub
+	case p == SocialProviderWeChat:
+		return SocialProviderWeChat
+	case p == SocialProviderDingTalk:
+		return SocialProviderDingTalk
+	case p == SocialProviderLinuxDo:
+		return SocialProviderLinuxDo
+	case p == SocialProviderOIDC || strings.HasPrefix(p, SocialProviderOIDC+":"):
+		return SocialProviderOIDC
 	default:
 		return ""
 	}

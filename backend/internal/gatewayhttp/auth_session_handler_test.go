@@ -480,6 +480,42 @@ func TestAT_AUTH_007_009_SocialIdentityChangeRevokesExistingSessions(t *testing.
 	}
 }
 
+func TestSafeSocialProviderAcceptsMultiOAuthProviders(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{" WeChat ", userauth.SocialProviderWeChat},
+		{"DINGTALK", userauth.SocialProviderDingTalk},
+		{"linuxdo", userauth.SocialProviderLinuxDo},
+		{"OIDC", userauth.SocialProviderOIDC},
+	}
+	for _, tc := range tests {
+		t.Run(tc.want, func(t *testing.T) {
+			got, ok := safeSocialProvider(tc.in)
+			if !ok || got != tc.want {
+				t.Fatalf("safeSocialProvider(%q) = (%q, %v), want (%q, true)", tc.in, got, ok, tc.want)
+			}
+		})
+	}
+}
+
+func TestAuthReasonClassForPendingOAuth(t *testing.T) {
+	if got := authReasonClass(userauth.ErrOAuthPendingEmailRequired); got != "oauth_pending_email_required" {
+		t.Fatalf("authReasonClass(ErrOAuthPendingEmailRequired) = %q, want oauth_pending_email_required", got)
+	}
+}
+
+func TestWriteAuthErrorForPendingOAuthAvoidsBackendError(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeAuthError(rec, userauth.ErrOAuthPendingEmailRequired)
+	assertHTTPStatus(t, rec, http.StatusAccepted)
+	if strings.Contains(rec.Body.String(), "auth_backend_error") ||
+		!strings.Contains(rec.Body.String(), "oauth_pending_email_required") {
+		t.Fatalf("pending OAuth error body = %s, want pending reason and no backend fallback", rec.Body.String())
+	}
+}
+
 type captureAuthEmail struct {
 	verification string
 	reset        string
