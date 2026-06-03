@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -37,6 +38,34 @@ func TestOutputTokensForAttemptIgnoresDeliveredFrames(t *testing.T) {
 	}
 }
 
+func TestMarshalUsageRecordPayloadCarriesCostSnapshot(t *testing.T) {
+	payload, err := marshalUsageRecordPayload(dbbilling.InsertUsageRecordParams{
+		TenantID:         1,
+		ClaimID:          2,
+		APIKeyID:         3,
+		UserID:           4,
+		AttemptSeq:       1,
+		ActualCost:       decimal.RequireFromString("0.00250000"),
+		EndClass:         "non_streaming",
+		UsageSource:      "reported",
+		RequestedModel:   "gpt-4o",
+		SettlementSource: SettlementSourceProviderUpstream,
+		CostSnapshot:     stringPtrForTest("tiered:vtest-policy"),
+	})
+	if err != nil {
+		t.Fatalf("marshalUsageRecordPayload: %v", err)
+	}
+	var decoded struct {
+		CostSnapshot *string `json:"cost_snapshot"`
+	}
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if decoded.CostSnapshot == nil || *decoded.CostSnapshot != "tiered:vtest-policy" {
+		t.Fatalf("cost_snapshot=%v want tiered:vtest-policy", decoded.CostSnapshot)
+	}
+}
+
 func TestAT_AUDIT_001_060_RefundZeroReturnsSkippedCode(t *testing.T) {
 	tx := newRefundSettlerTestTx(
 		refundSettlerRow{err: pgx.ErrNoRows},
@@ -60,6 +89,10 @@ func TestAT_AUDIT_001_060_RefundZeroReturnsSkippedCode(t *testing.T) {
 	if strings.Contains(res.AdjustmentRef, "billing_refund:zero") {
 		t.Fatalf("zero refund adjustment ref kept ambiguous legacy code: %q", res.AdjustmentRef)
 	}
+}
+
+func stringPtrForTest(v string) *string {
+	return &v
 }
 
 func TestAT_AUDIT_001_062_RefundActualCostOverflowRejected(t *testing.T) {
