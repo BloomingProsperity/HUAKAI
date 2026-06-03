@@ -254,7 +254,13 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 	}
 
 	cachemetrics.ObserveStreamState(attempt.State.String(), req.Provider, coalesceString(req.UpstreamModel, req.RequestedModel))
-	return &SettleResult{NewUserBalance: snap.Balance, OutboxEventsEnqueued: outboxEvents}, nil
+	return &SettleResult{
+		NewUserBalance:       snap.Balance,
+		OutboxEventsEnqueued: outboxEvents,
+		TenantID:             claim.TenantID,
+		UserID:               claim.UserID,
+		BillingEventID:       billingEvent.ID,
+	}, nil
 }
 
 func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string, observedInputTokens int64, protocolLoss json.RawMessage) error {

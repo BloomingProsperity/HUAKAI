@@ -119,6 +119,9 @@ type SettleResult struct {
 	NewUserBalance       decimal.Decimal
 	APIKeyQuotaExhausted bool
 	OutboxEventsEnqueued int
+	TenantID             int64
+	UserID               int64
+	BillingEventID       int64
 }
 
 // RefundRequest 是 append-only 退款 / 修正请求。
