@@ -51,3 +51,18 @@ type SetKeyGroupResult struct {
 }
 
 type KeyGroupView = SetKeyGroupResult
+
+type SetKeyIPAllowlistRequest struct {
+	TenantID    int64
+	UserID      int64
+	APIKeyID    int64
+	IPAllowlist []string
+	RequestID   string
+}
+
+type SetKeyIPAllowlistResult struct {
+	APIKeyID    int64    `json:"api_key_id"`
+	IPAllowlist []string `json:"ip_allowlist"`
+}
+
+type KeyIPAllowlistView = SetKeyIPAllowlistResult

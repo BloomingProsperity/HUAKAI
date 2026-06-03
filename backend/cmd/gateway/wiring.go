@@ -612,7 +612,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 			TransportFactory: buildTransportFactory(cfg, mimicryRegistry),
 			ProxyResolver:    provider.NewPostgresProxyResolverWithKeys(pgPool, credentialKeys),
 		},
-		inboundAuth:              auth.NewAPIKeyResolver(authQueries),
+		inboundAuth:              auth.NewAPIKeyResolverWithClientIPResolver(authQueries, clientIPResolver),
 		auditLedger:              auditLedger,
 		auditSigner:              auditSigner,
 		auditPubkeyRegistry:      auditPubkeyRegistry,

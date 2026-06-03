@@ -23,6 +23,10 @@ type setGroupRequest struct {
 	GroupID *int64 `json:"group_id"`
 }
 
+type setIPAllowlistRequest struct {
+	IPAllowlist []string `json:"ip_allowlist"`
+}
+
 func newSetQuotaHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ident, ok := resolveSession(w, r, d.Service != nil)
@@ -122,6 +126,54 @@ func newGetGroupHandler(d Deps) http.HandlerFunc {
 			return
 		}
 		out, err := d.Service.GetKeyGroup(r.Context(), ident.TenantID, ident.UserID, apiKeyID)
+		if err != nil {
+			writeControlsError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+func newSetIPAllowlistHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, ok := resolveSession(w, r, d.Service != nil)
+		if !ok {
+			return
+		}
+		apiKeyID, ok := parsePathID(w, r)
+		if !ok {
+			return
+		}
+		var req setIPAllowlistRequest
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		out, err := d.Service.SetKeyIPAllowlist(r.Context(), userkeycontrols.SetKeyIPAllowlistRequest{
+			TenantID:    ident.TenantID,
+			UserID:      ident.UserID,
+			APIKeyID:    apiKeyID,
+			IPAllowlist: req.IPAllowlist,
+			RequestID:   requestIDFromReq(r),
+		})
+		if err != nil {
+			writeControlsError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+func newGetIPAllowlistHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, ok := resolveSession(w, r, d.Service != nil)
+		if !ok {
+			return
+		}
+		apiKeyID, ok := parsePathID(w, r)
+		if !ok {
+			return
+		}
+		out, err := d.Service.GetKeyIPAllowlist(r.Context(), ident.TenantID, ident.UserID, apiKeyID)
 		if err != nil {
 			writeControlsError(w, err)
 			return

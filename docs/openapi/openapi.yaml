@@ -1829,6 +1829,56 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/api-keys/{id}/ip-allowlist:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+    get:
+      tags: [user-api-key-controls]
+      summary: Read the authenticated user's IP allowlist for one API key
+      operationId: getUserAPIKeyIPAllowlist
+      x-huakai-spec-source:
+        - backend/internal/userkeycontrolshttp/quota_group_handlers.go
+        - docs/process/plans/2026-06-03-apikey-ip-allowlist-codex.md
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: Canonical CIDR entries for this key. Empty means no IP restriction.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserAPIKeyIPAllowlistResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [user-api-key-controls]
+      summary: Set or clear the authenticated user's IP allowlist for one API key
+      operationId: setUserAPIKeyIPAllowlist
+      x-huakai-spec-source:
+        - backend/internal/userkeycontrolshttp/quota_group_handlers.go
+        - docs/process/plans/2026-06-03-apikey-ip-allowlist-codex.md
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserAPIKeyIPAllowlistUpdateRequest' }
+      responses:
+        '200':
+          description: IP allowlist updated. Empty or omitted `ip_allowlist` clears the restriction.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserAPIKeyIPAllowlistResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/users/me/vouchers/redeem:
     post:
       tags: [user-vouchers]
@@ -5331,6 +5381,34 @@ components:
         group_name: { type: string }
         group_description: { type: string }
         group_enabled: { type: boolean }
+
+    UserAPIKeyIPAllowlistUpdateRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/userkeycontrolshttp/quota_group_handlers.go
+      properties:
+        ip_allowlist:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          description: CIDR or bare-IP entries. Empty or omitted list clears the restriction.
+
+    UserAPIKeyIPAllowlistResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/userkeycontrols/types.go
+      required: [api_key_id, ip_allowlist]
+      properties:
+        api_key_id: { type: integer, format: int64, minimum: 1 }
+        ip_allowlist:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          description: Canonical CIDR entries. Empty means no IP restriction.
 
     PlatformSetting:
       type: object

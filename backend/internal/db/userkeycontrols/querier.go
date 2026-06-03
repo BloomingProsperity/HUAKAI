@@ -10,8 +10,10 @@ import (
 
 type Querier interface {
 	GetAPIKeyGroup(ctx context.Context, arg GetAPIKeyGroupParams) (GetAPIKeyGroupRow, error)
+	GetAPIKeyIPAllowlist(ctx context.Context, arg GetAPIKeyIPAllowlistParams) (GetAPIKeyIPAllowlistRow, error)
 	GetAPIKeyQuotaPolicy(ctx context.Context, arg GetAPIKeyQuotaPolicyParams) (GetAPIKeyQuotaPolicyRow, error)
 	SetAPIKeyGroupID(ctx context.Context, arg SetAPIKeyGroupIDParams) (int64, error)
+	SetAPIKeyIPAllowlist(ctx context.Context, arg SetAPIKeyIPAllowlistParams) (int64, error)
 	SetAPIKeyQuotaPolicyID(ctx context.Context, arg SetAPIKeyQuotaPolicyIDParams) (int64, error)
 	// User-owned API key control queries.
 	// CMB-5: this file must not select bearer credential material.

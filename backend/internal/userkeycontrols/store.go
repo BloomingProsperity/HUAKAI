@@ -23,6 +23,8 @@ type controlsStore interface {
 	ValidateGroupBelongsToTenant(context.Context, int64, int64) (groupRow, error)
 	SetAPIKeyGroupID(context.Context, groupAssignment) (int64, error)
 	GetAPIKeyGroup(context.Context, int64, int64, int64) (keyGroupRow, error)
+	SetAPIKeyIPAllowlist(context.Context, ipAllowlistAssignment) (int64, error)
+	GetAPIKeyIPAllowlist(context.Context, int64, int64, int64) (keyIPAllowlistRow, error)
 }
 
 type quotaPolicyWrite struct {
@@ -83,6 +85,18 @@ type keyGroupRow struct {
 	GroupName        string
 	GroupDescription string
 	GroupEnabled     *bool
+}
+
+type ipAllowlistAssignment struct {
+	TenantID    int64
+	UserID      int64
+	APIKeyID    int64
+	IPAllowlist *string
+}
+
+type keyIPAllowlistRow struct {
+	APIKeyID    int64
+	IPAllowlist *string
 }
 
 type PostgresStore struct {
@@ -223,6 +237,33 @@ func (s *PostgresStore) GetAPIKeyGroup(ctx context.Context, tenantID, userID, ap
 	}
 	out.GroupEnabled = row.GroupEnabled
 	return out, nil
+}
+
+func (s *PostgresStore) SetAPIKeyIPAllowlist(ctx context.Context, arg ipAllowlistAssignment) (int64, error) {
+	if s == nil || s.q == nil {
+		return 0, fmt.Errorf("%w: queries unset", ErrServiceMisconfig)
+	}
+	return s.q.SetAPIKeyIPAllowlist(ctx, dbuserkeycontrols.SetAPIKeyIPAllowlistParams{
+		IpAllowlist: arg.IPAllowlist,
+		APIKeyID:    arg.APIKeyID,
+		TenantID:    arg.TenantID,
+		UserID:      arg.UserID,
+	})
+}
+
+func (s *PostgresStore) GetAPIKeyIPAllowlist(ctx context.Context, tenantID, userID, apiKeyID int64) (keyIPAllowlistRow, error) {
+	if s == nil || s.q == nil {
+		return keyIPAllowlistRow{}, fmt.Errorf("%w: queries unset", ErrServiceMisconfig)
+	}
+	row, err := s.q.GetAPIKeyIPAllowlist(ctx, dbuserkeycontrols.GetAPIKeyIPAllowlistParams{
+		APIKeyID: apiKeyID,
+		TenantID: tenantID,
+		UserID:   userID,
+	})
+	if err != nil {
+		return keyIPAllowlistRow{}, err
+	}
+	return keyIPAllowlistRow{APIKeyID: row.APIKeyID, IPAllowlist: row.IpAllowlist}, nil
 }
 
 func quotaPolicyFromUpsert(row dbuserkeycontrols.UpsertAPIKeyQuotaPolicyRow) (quotaPolicyRow, error) {

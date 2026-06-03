@@ -34,6 +34,8 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/apikeyipallow"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
 )
 
@@ -76,6 +78,11 @@ const lastUsedTouchTimeout = 100 * time.Millisecond
 // distinction in audit logs only.
 var ErrUnauthorized = errors.New("auth: unauthorized")
 
+// ErrForbidden is returned after a credential is valid but the authenticated
+// key's policy forbids the request, such as an IP allowlist miss. Handlers map
+// it to HTTP 403.
+var ErrForbidden = errors.New("auth: forbidden")
+
 // ErrAuthMisconfigured signals the resolver was constructed without a
 // valid dbauth.Queries handle. The handler maps this to HTTP 503 (D9).
 var ErrAuthMisconfigured = errors.New("auth: resolver not configured")
@@ -90,13 +97,23 @@ var ErrAuthBackend = errors.New("auth: backend datastore error")
 // APIKeyResolver authenticates inbound requests against the api_keys
 // table. Construct via NewAPIKeyResolver.
 type APIKeyResolver struct {
-	q *dbauth.Queries
+	q                apiKeyQueries
+	clientIPResolver *clientip.Resolver
+}
+
+type apiKeyQueries interface {
+	LookupAPIKeysByPrefix(context.Context, string) ([]dbauth.LookupAPIKeysByPrefixRow, error)
+	TouchAPIKeyLastUsed(context.Context, int64) error
 }
 
 // NewAPIKeyResolver wraps a sqlc.Queries handle. Pool/connection
 // lifecycle is the caller's responsibility.
 func NewAPIKeyResolver(q *dbauth.Queries) *APIKeyResolver {
 	return &APIKeyResolver{q: q}
+}
+
+func NewAPIKeyResolverWithClientIPResolver(q *dbauth.Queries, resolver *clientip.Resolver) *APIKeyResolver {
+	return &APIKeyResolver{q: q, clientIPResolver: resolver}
 }
 
 // Resolve parses the Authorization header and authenticates the request.
@@ -144,6 +161,17 @@ func (r *APIKeyResolver) Resolve(ctx context.Context, req *http.Request) (Identi
 		}
 		if err := bcrypt.CompareHashAndPassword([]byte(row.KeyHash), []byte(bearer)); err != nil {
 			continue
+		}
+		allowed, err := apikeyipallow.AllowsCSV(row.IpAllowlist, r.clientIPResolver.ClientIP(req))
+		if err != nil {
+			slog.WarnContext(ctx, "api_key_ip_allowlist_invalid",
+				"tenant_id", row.TenantID,
+				"api_key_id", row.ID,
+				"error", err)
+			return Identity{}, ErrForbidden
+		}
+		if !allowed {
+			return Identity{}, ErrForbidden
 		}
 		touchCtx, cancel := context.WithTimeout(ctx, lastUsedTouchTimeout)
 		touchErr := r.q.TouchAPIKeyLastUsed(touchCtx, row.ID)

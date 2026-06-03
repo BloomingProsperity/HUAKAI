@@ -50,6 +50,10 @@ func NewListHandler(d Deps) http.HandlerFunc {
 			writeError(w, http.StatusServiceUnavailable, "auth_backend_error", "auth backend transient failure")
 			return
 		}
+		if errors.Is(err, auth.ErrForbidden) {
+			writeError(w, http.StatusForbidden, "forbidden", "api key policy forbids this request")
+			return
+		}
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "invalid bearer")
 			return
