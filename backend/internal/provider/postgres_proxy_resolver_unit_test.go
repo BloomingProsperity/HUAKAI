@@ -3,13 +3,26 @@
 package provider
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/BloomingProsperity/HUAKAI/internal/proxysecret"
 )
 
 func strPtr(s string) *string { return &s }
+
+func testProxySecretKeys(t *testing.T) credentialstore.KeyProvider {
+	t.Helper()
+	keys, err := credentialstore.NewStaticKeyProvider("proxy-test", []byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("NewStaticKeyProvider: %v", err)
+	}
+	return keys
+}
 
 func TestParseProxyURLValue_NilIsDirectConnect(t *testing.T) {
 	got, err := parseProxyURLValue(nil, 7)
@@ -96,6 +109,47 @@ func TestPostgresProxyResolver_NilPoolReturnsMisconfigured(t *testing.T) {
 	_, err := r.Resolve(nil, 1) //nolint:staticcheck
 	if !errors.Is(err, ErrProxyResolverMisconfigured) {
 		t.Errorf("nil pool 应返回 ErrProxyResolverMisconfigured，得到 %v", err)
+	}
+}
+
+func TestPostgresProxyResolverDecryptsStoredAuthSecretBeforeURLBuild(t *testing.T) {
+	ctx := context.Background()
+	keys := testProxySecretKeys(t)
+	plaintext := "proxy-secret:with@reserved?chars"
+	stored, err := proxysecret.Encode(ctx, keys, 77, plaintext)
+	if err != nil {
+		t.Fatalf("Encode proxy secret: %v", err)
+	}
+	if stored == plaintext {
+		t.Fatal("test setup stored plaintext; need encrypted fixture")
+	}
+
+	username := "proxy-user"
+	row := proxyRow{
+		tenantID: 77,
+		protocol: "http",
+		host:     "proxy.example.com",
+		port:     3128,
+		username: &username,
+		secret:   &stored,
+	}
+	resolver := &PostgresProxyResolver{keys: keys}
+	if err := resolver.decryptRowAuthSecret(ctx, &row); err != nil {
+		t.Fatalf("decryptRowAuthSecret: %v", err)
+	}
+	if row.secret == nil || *row.secret != plaintext {
+		t.Fatalf("decrypted row secret=%v want original plaintext", row.secret)
+	}
+	u, err := buildProxyURL(row, 42)
+	if err != nil {
+		t.Fatalf("buildProxyURL: %v", err)
+	}
+	got, ok := u.User.Password()
+	if !ok || got != plaintext {
+		t.Fatalf("proxy URL password=%q ok=%v want decrypted original", got, ok)
+	}
+	if strings.Contains(u.String(), stored) {
+		t.Fatal("proxy URL contains encrypted envelope instead of decrypted credential")
 	}
 }
 
