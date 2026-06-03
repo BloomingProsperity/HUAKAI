@@ -444,6 +444,60 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/usage/performance:
+    get:
+      tags: [admin]
+      summary: Platform-admin usage performance panel
+      operationId: getAdminUsagePerformance
+      x-huakai-spec-source:
+        - backend/internal/usageanalyticshttp/performance_handler.go
+        - backend/cmd/gateway/routes_usageadmin.go
+        - backend/sql/queries/usage_analytics.sql
+      description: |
+        Platform-admin (adminGate RBAC) read-only performance panel ranking
+        usage by requested_model or provider_account over a recent window,
+        ordered by request_count. It exposes latency, throughput, request
+        count, and error rate only; no cost fields are selected or returned.
+        Window is required (e.g. 24h, 7d, 30d), capped at 90 days; limit
+        defaults to 20 and is capped at 100.
+      parameters:
+        - name: by
+          in: query
+          required: false
+          schema: { type: string, enum: [model, provider_account], default: model }
+        - name: window
+          in: query
+          required: true
+          schema: { type: string, example: 7d }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 20, maximum: 100 }
+      responses:
+        '200':
+          description: Ranked usage performance entries ordered by request_count desc.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  window: { type: string }
+                  by: { type: string }
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        rank: { type: integer }
+                        key: { type: string }
+                        avg_ttft_ms: { type: string }
+                        avg_tps: { type: string }
+                        request_count: { type: integer, format: int64 }
+                        error_rate: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/hermes/settings:
     get:
       tags: [hermes]

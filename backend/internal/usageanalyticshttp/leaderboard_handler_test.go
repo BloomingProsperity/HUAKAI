@@ -75,6 +75,14 @@ func (s *leaderboardQueryStub) AggregateUsageLeaderboardByProviderAccount(_ cont
 	return out, nil
 }
 
+func (s *leaderboardQueryStub) AggregateUsagePerformanceByModel(context.Context, dbbilling.AggregateUsagePerformanceByModelParams) ([]dbbilling.AggregateUsagePerformanceByModelRow, error) {
+	return nil, nil
+}
+
+func (s *leaderboardQueryStub) AggregateUsagePerformanceByProviderAccount(context.Context, dbbilling.AggregateUsagePerformanceByProviderAccountParams) ([]dbbilling.AggregateUsagePerformanceByProviderAccountRow, error) {
+	return nil, nil
+}
+
 type leaderboardAggregateRow struct {
 	Key          string
 	TotalCost    string
