@@ -83,6 +83,9 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 		adminResolver = d.adminAuth
 	}
 	router.Handle("/debug/vars", adminGate(adminResolver, expvar.Handler()))
+	if d.metricsHandler != nil {
+		router.Handle("/metrics", d.metricsHandler)
+	}
 	mountRoutes(router, d, logger)
 	return router
 }

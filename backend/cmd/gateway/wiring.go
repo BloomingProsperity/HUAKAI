@@ -41,6 +41,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
+	"github.com/BloomingProsperity/HUAKAI/internal/otelbridge"
 	"github.com/BloomingProsperity/HUAKAI/internal/panelauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
@@ -137,6 +138,8 @@ type deps struct {
 	hermesKeyStore           *hermes.KeyStore
 	hermesBootstrapIssuer    *hermes.BootstrapIssuer
 	hermesRunnerSharedSecret []byte
+	metricsHandler           http.Handler
+	otelShutdown             func(context.Context) error
 }
 
 type refundReceiptAppender interface {
@@ -633,6 +636,18 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		hermesBootstrapIssuer:    hermesBootstrapIssuer,
 		hermesRunnerSharedSecret: hermesRunnerSharedSecret,
 	}
+	rt.deps = d
+	metricsProvider, metricsHandler, otelShutdown, err := otelbridge.Setup(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("setup otel metrics bridge: %w", err)
+	}
+	if err := otelbridge.RegisterBridge(ctx, metricsProvider); err != nil {
+		_ = otelShutdown(ctx)
+		return nil, fmt.Errorf("register otel expvar bridge: %w", err)
+	}
+	d.metricsHandler = metricsHandler
+	d.otelShutdown = otelShutdown
+
 	if err := admin.MaybeBootstrap(ctx, pgPool, logger); err != nil {
 		return nil, fmt.Errorf("admin bootstrap: %w", err)
 	}
@@ -710,7 +725,6 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	d.subExpiryWorker = subscriptionExpiryWorker
 	d.subReminderWorker = subscriptionReminderWorker
 
-	rt.deps = d
 	rt.credentialScheduler = credentialScheduler
 	rt.dlqWorker = dlqWorker
 	rt.outboxWorker = outboxWorker

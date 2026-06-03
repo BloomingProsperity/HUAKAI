@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"go.uber.org/zap"
 )
 
 // fakeAdminResolver injects a fixed identity/error so the gate's RBAC is testable
@@ -104,6 +105,22 @@ func TestDebugVarsAuth_PlatformAdmin_ReachesMetrics(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "memstats") {
 		t.Errorf("platform_admin 应能读到 expvar 内容（memstats），实际 body 头: %.120s", rec.Body.String())
+	}
+}
+
+// F-OBS-002 default-off guard: when otelbridge.Setup returns a nil metrics
+// handler, newRouter must not mount /metrics at all. Mutation check: unconditionally
+// register router.Handle("/metrics", ...) and this flips from 404 to admin-gate
+// 503/401, proving the endpoint is unexpectedly exposed.
+func TestMetricsRoute_NotMountedWhenHandlerNil(t *testing.T) {
+	t.Setenv("HUAKAI_RL_DISABLE", "true")
+	router := newRouter(minimalDeps(), zap.NewNop())
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("default-off /metrics must be absent (404), got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
