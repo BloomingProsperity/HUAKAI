@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/headerfirewall"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
 )
@@ -25,9 +26,17 @@ type AuthResolver interface {
 type authContextKey struct{}
 
 type handler struct {
-	svc        *hermes.Service
-	runner     *hermes.RunnerClient
-	chatBridge *hermeschat.Bridge
+	svc            *hermes.Service
+	runner         *hermes.RunnerClient
+	chatBridge     *hermeschat.Bridge
+	headerSettings headerfirewall.PlatformSettings
+}
+
+type RouterDeps struct {
+	Service        *hermes.Service
+	Runner         *hermes.RunnerClient
+	Bridge         *hermeschat.Bridge
+	HeaderSettings headerfirewall.PlatformSettings
 }
 
 func NewRouter(svc *hermes.Service, runnerClient *hermes.RunnerClient, bridges ...*hermeschat.Bridge) http.Handler {
@@ -35,7 +44,16 @@ func NewRouter(svc *hermes.Service, runnerClient *hermes.RunnerClient, bridges .
 	if len(bridges) > 0 {
 		bridge = bridges[0]
 	}
-	h := handler{svc: svc, runner: runnerClient, chatBridge: bridge}
+	return NewRouterWithDeps(RouterDeps{Service: svc, Runner: runnerClient, Bridge: bridge})
+}
+
+func NewRouterWithDeps(d RouterDeps) http.Handler {
+	h := handler{
+		svc:            d.Service,
+		runner:         d.Runner,
+		chatBridge:     d.Bridge,
+		headerSettings: d.HeaderSettings,
+	}
 	r := chi.NewRouter()
 	r.Get("/settings", h.getSettings)
 	r.Post("/settings/enable", h.enableSettings)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -125,6 +126,68 @@ func TestServiceUpsertRejectsInvalidValuesBeforeStore(t *testing.T) {
 			}
 			if store.upsertCalls != 0 {
 				t.Fatalf("invalid value reached store upsert %d times", store.upsertCalls)
+			}
+		})
+	}
+}
+
+func TestResponseHeaderFirewallSettingsAllowEmptyAndValidateHeaderLists(t *testing.T) {
+	for _, key := range []SettingKey{KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride} {
+		t.Run(string(key)+"/default", func(t *testing.T) {
+			value, ok := DefaultValue(key)
+			if !ok || value != "" {
+				t.Fatalf("default value=%q ok=%v want empty default", value, ok)
+			}
+			got, err := ValidateValue(key, "")
+			if err != nil {
+				t.Fatalf("ValidateValue empty: %v", err)
+			}
+			if got != "" {
+				t.Fatalf("empty setting normalized to %q want empty", got)
+			}
+		})
+		t.Run(string(key)+"/valid", func(t *testing.T) {
+			got, err := ValidateValue(key, "X-Internal-,Server")
+			if err != nil {
+				t.Fatalf("ValidateValue valid list: %v", err)
+			}
+			if got != "X-Internal-,Server" {
+				t.Fatalf("normalized=%q want original comma list", got)
+			}
+		})
+	}
+}
+
+func TestResponseHeaderFirewallSettingsRejectMalformedHeaderLists(t *testing.T) {
+	longHeader := "X-" + strings.Repeat("A", 63)
+	tooMany := strings.Repeat("X-A,", 20) + "X-A"
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{name: "space", value: "X-Internal, X-Debug"},
+		{name: "empty item", value: "X-Internal,"},
+		{name: "slash", value: "X/Internal"},
+		{name: "too long", value: longHeader},
+		{name: "too many", value: tooMany},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &countingStore{Store: NewMemoryStore()}
+			svc := NewService(store, nil, WithNow(fixedNow))
+
+			_, err := svc.Upsert(context.Background(), UpsertInput{
+				Key:       KeyResponseHeaderDenyExtra,
+				Value:     tc.value,
+				UpdatedBy: "admin:1",
+				ActorID:   "admin:1",
+				ActorRole: "platform_admin",
+			})
+			if !errors.Is(err, ErrInvalidValue) {
+				t.Fatalf("err=%v want ErrInvalidValue", err)
+			}
+			if store.upsertCalls != 0 {
+				t.Fatalf("invalid response header list reached store upsert %d times", store.upsertCalls)
 			}
 		})
 	}

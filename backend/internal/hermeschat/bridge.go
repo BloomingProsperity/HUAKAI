@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/headerfirewall"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 )
 
@@ -64,6 +65,12 @@ func WithAuditDLQ(dlq auditDLQ) Option {
 	}
 }
 
+func WithResponseHeaderSettings(settings headerfirewall.PlatformSettings) Option {
+	return func(b *Bridge) {
+		b.headerSettings = settings
+	}
+}
+
 type Bridge struct {
 	tx                  txRunner
 	internalTokenSecret []byte
@@ -71,6 +78,7 @@ type Bridge struct {
 	now                 func() time.Time
 	logger              warningLogger
 	auditDLQ            auditDLQ
+	headerSettings      headerfirewall.PlatformSettings
 }
 
 func NewBridge(tx txRunner, opts ...Option) (*Bridge, error) {
@@ -99,7 +107,8 @@ func (b *Bridge) Stream(ctx context.Context, w http.ResponseWriter, resp *http.R
 		return hermes.ErrMisconfigured
 	}
 	defer resp.Body.Close()
-	copyResponseHeaders(w, resp.Header)
+	policy := headerfirewall.PolicyFromPlatformSettings(ctx, b.headerSettings)
+	copyResponseHeadersWithPolicy(w, resp.Header, policy)
 	if w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", "text/event-stream")
 	}
@@ -139,7 +148,12 @@ func (b *Bridge) Stream(ctx context.Context, w http.ResponseWriter, resp *http.R
 }
 
 func copyResponseHeaders(w http.ResponseWriter, header http.Header) {
-	for k, values := range header {
+	copyResponseHeadersWithPolicy(w, header, headerfirewall.Policy{})
+}
+
+func copyResponseHeadersWithPolicy(w http.ResponseWriter, header http.Header, policy headerfirewall.Policy) {
+	filtered := headerfirewall.FilterResponseHeaders(header, policy.ExtraDeny, policy.AllowOverride)
+	for k, values := range filtered {
 		if bridgeManagedHeader(k) {
 			continue
 		}

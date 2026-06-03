@@ -17,34 +17,38 @@ const (
 type SettingKey string
 
 const (
-	KeyRegistrationEnabled   SettingKey = "registration_enabled"
-	KeyInvitationRequired    SettingKey = "invitation_required"
-	KeyCaptchaEnabled        SettingKey = "captcha_enabled"
-	KeyCaptchaProvider       SettingKey = "captcha_provider"
-	KeyCaptchaSiteKey        SettingKey = "captcha_site_key"
-	KeyOAuthProvidersEnabled SettingKey = "oauth_providers_enabled"
-	KeyPromoEnabled          SettingKey = "promo_enabled"
-	KeyStreamTimeoutSeconds  SettingKey = "stream_timeout_seconds"
-	KeyCooldown429Seconds    SettingKey = "cooldown_429_seconds"
-	KeyCooldown529Seconds    SettingKey = "cooldown_529_seconds"
+	KeyRegistrationEnabled         SettingKey = "registration_enabled"
+	KeyInvitationRequired          SettingKey = "invitation_required"
+	KeyCaptchaEnabled              SettingKey = "captcha_enabled"
+	KeyCaptchaProvider             SettingKey = "captcha_provider"
+	KeyCaptchaSiteKey              SettingKey = "captcha_site_key"
+	KeyOAuthProvidersEnabled       SettingKey = "oauth_providers_enabled"
+	KeyPromoEnabled                SettingKey = "promo_enabled"
+	KeyStreamTimeoutSeconds        SettingKey = "stream_timeout_seconds"
+	KeyCooldown429Seconds          SettingKey = "cooldown_429_seconds"
+	KeyCooldown529Seconds          SettingKey = "cooldown_529_seconds"
+	KeyResponseHeaderDenyExtra     SettingKey = "response_header_deny_extra"
+	KeyResponseHeaderAllowOverride SettingKey = "response_header_allow_override"
 )
 
 var (
 	ErrUnknownKey          = errors.New("platformsettings: unknown setting key")
 	ErrInvalidValue        = errors.New("platformsettings: invalid setting value")
 	ErrStoreNotConfigured  = errors.New("platformsettings: store not configured")
-	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds}
+	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride}
 	defaultSettingValueMap = map[SettingKey]string{
-		KeyRegistrationEnabled:   "false",
-		KeyInvitationRequired:    "true",
-		KeyCaptchaEnabled:        "false",
-		KeyCaptchaProvider:       "",
-		KeyCaptchaSiteKey:        "",
-		KeyOAuthProvidersEnabled: "",
-		KeyPromoEnabled:          "false",
-		KeyStreamTimeoutSeconds:  "120",
-		KeyCooldown429Seconds:    "60",
-		KeyCooldown529Seconds:    "300",
+		KeyRegistrationEnabled:         "false",
+		KeyInvitationRequired:          "true",
+		KeyCaptchaEnabled:              "false",
+		KeyCaptchaProvider:             "",
+		KeyCaptchaSiteKey:              "",
+		KeyOAuthProvidersEnabled:       "",
+		KeyPromoEnabled:                "false",
+		KeyStreamTimeoutSeconds:        "120",
+		KeyCooldown429Seconds:          "60",
+		KeyCooldown529Seconds:          "300",
+		KeyResponseHeaderDenyExtra:     "",
+		KeyResponseHeaderAllowOverride: "",
 	}
 )
 
@@ -75,6 +79,9 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 		return "", fmt.Errorf("%w: %s", ErrUnknownKey, key)
 	}
 	value := strings.TrimSpace(raw)
+	if key == KeyResponseHeaderDenyExtra || key == KeyResponseHeaderAllowOverride {
+		return validateHeaderListValue(key, value)
+	}
 	if value == "" {
 		return "", fmt.Errorf("%w: %s", ErrInvalidValue, key)
 	}
@@ -123,4 +130,36 @@ func validatePublicTextValue(key SettingKey, value string) (string, error) {
 		}
 	}
 	return value, nil
+}
+
+func validateHeaderListValue(key SettingKey, value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	parts := strings.Split(value, ",")
+	if len(parts) > 20 {
+		return "", fmt.Errorf("%w: %s allows at most 20 header patterns", ErrInvalidValue, key)
+	}
+	for _, part := range parts {
+		if part == "" {
+			return "", fmt.Errorf("%w: %s contains empty header pattern", ErrInvalidValue, key)
+		}
+		if len(part) > 64 {
+			return "", fmt.Errorf("%w: %s header pattern too long", ErrInvalidValue, key)
+		}
+		if !validHeaderPattern(part) {
+			return "", fmt.Errorf("%w: %s contains invalid header pattern", ErrInvalidValue, key)
+		}
+	}
+	return strings.Join(parts, ","), nil
+}
+
+func validHeaderPattern(value string) bool {
+	for _, r := range value {
+		if r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }

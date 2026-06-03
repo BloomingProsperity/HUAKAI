@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/headerfirewall"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
 )
@@ -56,7 +57,8 @@ func (h handler) startChat(w http.ResponseWriter, r *http.Request) {
 			resp.Body.Close()
 			return
 		}
-		copyProxyResponse(w, resp)
+		policy := headerfirewall.PolicyFromPlatformSettings(r.Context(), h.headerSettings)
+		copyProxyResponseWithPolicy(w, resp, policy)
 		return
 	}
 	if !h.audit(w, r, ident, hermes.ActionChatStart, args, hermes.AuditResultSuccess) {
@@ -75,8 +77,13 @@ func writeHermesDisabled(w http.ResponseWriter) {
 }
 
 func copyProxyResponse(w http.ResponseWriter, resp *http.Response) error {
+	return copyProxyResponseWithPolicy(w, resp, headerfirewall.Policy{})
+}
+
+func copyProxyResponseWithPolicy(w http.ResponseWriter, resp *http.Response, policy headerfirewall.Policy) error {
 	defer resp.Body.Close()
-	for k, values := range resp.Header {
+	filtered := headerfirewall.FilterResponseHeaders(resp.Header, policy.ExtraDeny, policy.AllowOverride)
+	for k, values := range filtered {
 		if hopByHopHeader(k) {
 			continue
 		}
