@@ -352,6 +352,57 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/usage/leaderboard:
+    get:
+      tags: [admin]
+      summary: Platform-admin usage cost leaderboard
+      operationId: getAdminUsageLeaderboard
+      x-huakai-spec-source:
+        - backend/internal/usageanalyticshttp/leaderboard_handler.go
+        - backend/cmd/gateway/routes_usageadmin.go
+      description: |
+        Platform-admin (adminGate RBAC) read-only leaderboard ranking usage by
+        user, requested_model, or provider_account over a recent window, ordered
+        by real upstream spend (actual_cost). Operator surface: actual cost is
+        intentionally exposed. Window is required (e.g. 24h, 7d, 30d), capped at
+        90 days; limit defaults to 20 and is capped at 100.
+      parameters:
+        - name: by
+          in: query
+          required: false
+          schema: { type: string, enum: [user, model, provider_account], default: user }
+        - name: window
+          in: query
+          required: true
+          schema: { type: string, example: 7d }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 20, maximum: 100 }
+      responses:
+        '200':
+          description: Ranked usage leaderboard entries ordered by actual_cost desc.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  window: { type: string }
+                  by: { type: string }
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        rank: { type: integer }
+                        key: { type: string }
+                        total_cost: { type: string }
+                        total_tokens: { type: integer, format: int64 }
+                        request_count: { type: integer, format: int64 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/hermes/settings:
     get:
       tags: [hermes]

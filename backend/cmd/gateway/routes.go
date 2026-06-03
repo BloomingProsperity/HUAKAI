@@ -409,6 +409,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		})
 	})
 	mountPlatformSettingsRoutes(r, d)
+	mountUsageAdminRoutes(r, d)
 	r.Route("/admin/v1/api-keys", func(r chi.Router) {
 		adminhttp.MountAPIKeyRoutes(r, adminhttp.AdminAPIKeysDeps{
 			Auth:    d.adminAuth,

@@ -1,0 +1,13 @@
+# 2026-06-03 Admin Usage Leaderboard Codex Plan
+
+| Owner directive | "实现+验证。目标(new-api 摸排:管理员用量排行榜 / Top 消耗看板,只读运营面):新增 admin-only 端点 GET /v1/admin/usage/leaderboard" |
+| Scope | In: add static sqlc aggregate queries beside existing usage analytics SQL, add a non-routing handler in `backend/internal/usageanalyticshttp`, add discriminating handler tests, run requested backend gates. Out: schema migration, `cmd/gateway` routing, frozen packages `internal/{gatewayhttp,gateway,proto}`, auth/RBAC wiring, commits. |
+| Success criteria | Handler parses `by`, `window`, and `limit`; caps window at 90d and limit at 100; dispatches to user/model/provider-account aggregate queries; returns ranked JSON with decimal cost as string; mutation fixture catches missing window, missing descending cost order, and missing limit. |
+| Time estimate | 45-75 minutes wall clock, single Codex work unit. |
+| Blast radius | Low/medium: SELECT-only admin analytics code and generated sqlc interfaces. Build risk if generated sqlc types differ from assumptions. No write-path, auth core, billing ledger, quota enforcement, migration, secrets, or route table edits. |
+| Failure modes | sqlc not installed or generation differs; generated interface shape requires test stub adjustments; `go build ./...` may expose unrelated existing failures; concurrent edits may collide. Mitigations: use `.coordination`, keep edits scoped, report exact gate blockers. |
+| Decision points | Owner/PM confirmation required only if sqlc generation needs schema changes, new dependency, route wiring, or high-risk auth/billing/quota changes. Current plan avoids all four. |
+| Reference projects in scope | CLIProxyAPI + sub2api + new-api are the mandatory default mirrors per AGENTS.md. Codex implementer lane does not read non-MIT reference source here; this work consumes PM-provided clean-room requirements only and makes no new upstream behavior claims. |
+| Target packages/files | New files go only to non-frozen `backend/internal/usageanalyticshttp`. Generated updates stay in `backend/internal/db/billing`. No files added under frozen packages. |
+| Pre-execution checklist | 1. Read `CLAUDE.md`, `AGENTS.md`, and `docs/RULES.md`. 2. Check `.coordination` and claim target files. 3. Inspect existing usage analytics handler, tests, SQL, and sqlc generated code. 4. Write failing handler test first. 5. Add SQL + generate sqlc. 6. Add handler. 7. Run requested gates and report evidence. |
+| Concrete execution order | Test first in `leaderboard_handler_test.go`; run package test to confirm red; update `usage_analytics.sql`; run `sqlc generate`; implement `leaderboard_handler.go`; rerun package test; run full requested gate. |
