@@ -41,6 +41,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
 	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
+	"github.com/BloomingProsperity/HUAKAI/internal/notify"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/otelbridge"
 	"github.com/BloomingProsperity/HUAKAI/internal/panelauth"
@@ -113,6 +114,7 @@ type deps struct {
 	subscriptionService      *subscription.Service
 	subExpiryWorker          *subscription.ExpiryWorker
 	subReminderWorker        *subscription.ReminderWorker
+	notificationSettings     *notify.Service
 	routeAdminService        *routeadmin.Service
 	panelAuthResolver        *panelauth.Resolver
 	invitationService        *communityinvitation.Service
@@ -557,6 +559,16 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	dlqStore, dlqService, dlqWorker, replicaTarget, closeReplica := buildDLQRuntime(pgPool, opts.obsDLQ, auditLedger)
 	rt.closeReplica = closeReplica
 	outboxWorker := buildOutboxWorker(outboxStore, opts.outboxRuntime, emailSettingsStore, credentialKeys, channelHealthStore)
+	notificationStore := notify.NewPostgresStore(pgPool, credentialKeys)
+	notificationSettings := notify.NewService(notificationStore)
+	notificationEmailSender, err := mailinfra.BuildEmailSender(ctx, emailSettingsStore, credentialKeys, mailinfra.WithOutbox(outboxStore))
+	if err != nil {
+		return nil, fmt.Errorf("build notification email sender: %w", err)
+	}
+	notifier := notify.NewNotifier(notify.Config{
+		Store:       notificationStore,
+		EmailSender: notificationEmailSender,
+	})
 	settler, receiptStore, receiptFormatter, refundQueue, rateTableSource, completionBus, err := buildSettlementServices(
 		ctx, pgPool, auditSigner, auditLedger, dlqStore, dlqService, replicaTarget, opts.eventBus, auditRefPolicy, logger,
 	)
@@ -568,6 +580,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		return nil, fmt.Errorf("build dispute storage: %w", err)
 	}
 	settler, quotaReserver := buildQuotaEnforcement(cfg, pgPool, settler)
+	settler = notify.NewSettler(settler, notifier, notify.WithSettlerDeliveryErrorRecorder(func(err error) {
+		logger.Warn("low balance notification delivery failed", zap.Error(err))
+	}))
 
 	// P2/P3 post-delivery settle 恢复:把 settler 注入 settlementrecovery
 	// handler,注册到 dlqService 让 worker 拿到 post_delivery_settlement
@@ -664,6 +679,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		paymentProviders:      paymentProviders,
 		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool)),
 		subscriptionService:   subscription.NewService(subscription.NewPostgresStore(pgPool)),
+		notificationSettings:  notificationSettings,
 		routeAdminService:     routeadmin.NewService(routeadmin.NewPostgresStore(pgPool), nil),
 		panelAuthResolver:     panelauth.NewResolver(panelauth.NewPostgresRoleStore(pgPool)),
 		invitationService:     communityinvitation.NewService(communityinvitation.NewPostgresStore(pgPool)),
@@ -775,16 +791,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	subscriptionExpiryWorker := subscription.NewExpiryWorker(subscription.ExpiryWorkerConfig{Service: d.subscriptionService})
 	subscriptionExpiryWorker.Start(ctx)
 
-	// 订阅到期提醒 worker。auth email sender 是接口 (不暴露 SendTenantMessage), 这里单独构造一个
-	// 接好 DLQ outbox 的 concrete sender 给提醒复用 (瞬时失败入同一 DLQ 重试)。
-	reminderEmailSender, err := mailinfra.BuildEmailSender(ctx, emailSettingsStore, credentialKeys, mailinfra.WithOutbox(outboxStore))
-	if err != nil {
-		return nil, fmt.Errorf("build subscription reminder email sender: %w", err)
-	}
 	subscriptionReminderWorker := subscription.NewReminderWorker(subscription.ReminderWorkerConfig{
 		Service: subscription.NewReminderService(
 			subscription.NewPostgresStore(pgPool),
-			subscription.NewEmailReminderMailer(reminderEmailSender),
+			subscription.NewEmailReminderMailer(notificationEmailSender),
 		),
 	})
 	subscriptionReminderWorker.Start(ctx)

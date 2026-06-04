@@ -61,6 +61,8 @@ tags:
     description: User voucher redemption. F-BILL-002.
   - name: user-recharges
     description: Authenticated user wallet recharge order creation. F-PAY-001.
+  - name: user-notifications
+    description: Authenticated user notification delivery settings for balance alerts.
   - name: payment-webhooks
     description: Public provider payment webhook entrypoints with provider signature verification. F-PAY-001.
   - name: user-audit
@@ -96,7 +98,7 @@ tags:
   - name: admin-pricing
     description: Tenant-scoped admin pricing ratio catalog for pool groups.
   - name: admin-notifications
-    description: Platform-admin notification worker observability.
+    description: Notification worker observability and tenant-scoped user notification settings.
   - name: admin-moderation
     description: Admin content moderation keyword and configuration controls.
   - name: admin-audit
@@ -3052,6 +3054,107 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AdminNotificationWorkerStats' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/users/me/notifications:
+    get:
+      tags: [user-notifications]
+      summary: Read the authenticated user's notification settings
+      operationId: getMyNotificationSettings
+      x-huakai-spec-source:
+        - backend/internal/notify/notifyhttp/handler.go
+        - docs/process/plans/2026-06-04-notifications-slice2-codex.md
+      responses:
+        '200':
+          description: Current per-user notification settings; secrets are masked.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationSettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [user-notifications]
+      summary: Replace the authenticated user's notification settings
+      operationId: updateMyNotificationSettings
+      x-huakai-spec-source:
+        - backend/internal/notify/notifyhttp/handler.go
+        - docs/process/plans/2026-06-04-notifications-slice2-codex.md
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NotificationSettingsUpdate' }
+      responses:
+        '200':
+          description: Updated per-user notification settings; secrets are masked.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/users/{user_id}/notifications:
+    get:
+      tags: [admin-notifications]
+      summary: Read a user's notification settings
+      operationId: adminGetUserNotificationSettings
+      x-huakai-spec-source:
+        - backend/internal/notify/notifyhttp/handler.go
+        - docs/process/plans/2026-06-04-notifications-slice2-codex.md
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator defaults to its scoped tenant.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Current per-user notification settings; secrets are masked.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [admin-notifications]
+      summary: Replace a user's notification settings
+      operationId: adminUpdateUserNotificationSettings
+      x-huakai-spec-source:
+        - backend/internal/notify/notifyhttp/handler.go
+        - docs/process/plans/2026-06-04-notifications-slice2-codex.md
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator defaults to its scoped tenant.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NotificationSettingsUpdate' }
+      responses:
+        '200':
+          description: Updated per-user notification settings; secrets are masked.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
@@ -6050,6 +6153,78 @@ components:
         object: { type: string, enum: [pricing_ratio_deleted] }
         tenant_id: { type: integer, format: int64, minimum: 1 }
         pool_group_id: { type: integer, format: int64, minimum: 1 }
+
+    NotificationSettings:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/notify/notifyhttp/handler.go
+        - docs/process/plans/2026-06-04-notifications-slice2-codex.md
+      required: [tenant_id, user_id, notify_type, balance_threshold]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        user_id: { type: integer, format: int64, minimum: 1 }
+        notify_type:
+          type: string
+          enum: [none, email, webhook, bark, gotify]
+          description: none is the default and sends no notifications.
+        webhook_url: { type: string, format: uri }
+        webhook_secret_configured:
+          type: boolean
+          description: True when a webhook secret is stored; the secret is never returned.
+        notification_email: { type: string, format: email }
+        bark_url: { type: string, format: uri }
+        gotify_url: { type: string, format: uri }
+        gotify_token_configured:
+          type: boolean
+          description: True when a Gotify token is stored; the token is never returned.
+        gotify_priority:
+          type: integer
+          minimum: 0
+          maximum: 10
+          default: 5
+          description: Gotify alert priority; 0 is treated as the default priority.
+        balance_threshold:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]{1,8})?$'
+          description: Low-balance trigger threshold in numeric(20,8) decimal string form.
+        updated_at: { type: string, format: date-time }
+        updated_by: { type: string }
+
+    NotificationSettingsUpdate:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/notify/notifyhttp/handler.go
+        - docs/process/plans/2026-06-04-notifications-slice2-codex.md
+      required: [notify_type]
+      properties:
+        notify_type:
+          type: string
+          enum: [none, email, webhook, bark, gotify]
+          description: none disables delivery. Other values require their matching destination fields.
+        webhook_url: { type: string, format: uri }
+        webhook_secret:
+          type: string
+          format: password
+          writeOnly: true
+        notification_email: { type: string, format: email }
+        bark_url: { type: string, format: uri }
+        gotify_url: { type: string, format: uri }
+        gotify_token:
+          type: string
+          format: password
+          writeOnly: true
+        gotify_priority:
+          type: integer
+          minimum: 0
+          maximum: 10
+          default: 5
+          description: Gotify alert priority; 0 is treated as the default priority.
+        balance_threshold:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]{1,8})?$'
+          description: Defaults to 5.00000000 when omitted or zero.
 
     AdminNotificationWorkerStats:
       type: object
