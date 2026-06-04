@@ -350,3 +350,44 @@ func TestProviderChannelCatalogRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 		}
 	}
 }
+
+func TestModelCapabilitiesRouteAndOpenAPISchemaStayInSync(t *testing.T) {
+	r := buildTestRouter(t)
+	implOps := openapicheck.WalkChiOperations(r)
+	if !hasOperation(implOps, http.MethodPut, "/v1/admin/models/{id}/capabilities") {
+		t.Fatalf("runtime missing PUT /v1/admin/models/{id}/capabilities")
+	}
+
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	specOps, err := openapicheck.ParseSpecOperations(specAbs)
+	if err != nil {
+		t.Fatalf("解析 OpenAPI operations %s: %v", specAbs, err)
+	}
+	if !hasOperation(specOps, http.MethodPut, "/v1/admin/models/{id}/capabilities") {
+		t.Fatalf("OpenAPI missing PUT /v1/admin/models/{id}/capabilities")
+	}
+
+	raw, err := os.ReadFile(specAbs)
+	if err != nil {
+		t.Fatalf("read OpenAPI: %v", err)
+	}
+	spec := string(raw)
+	for _, snippet := range []string{
+		"ModelCapabilitiesUpdateRequest:",
+		"ModelCapabilitiesUpdateResponse:",
+		"capabilities:",
+		"max_output_tokens:",
+		"model_mode:",
+		"mode:",
+		"function_calling",
+		"response_schema",
+		"prompt_caching",
+	} {
+		if !strings.Contains(spec, snippet) {
+			t.Fatalf("OpenAPI model capabilities schema missing snippet %q", snippet)
+		}
+	}
+}

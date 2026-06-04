@@ -892,3 +892,57 @@ func TestPostgresRegistry_ListModelsDiscoverySurface(t *testing.T) {
 		t.Fatalf("global model projection=%+v want canonical id and context window from global UNION arm", globalModel)
 	}
 }
+
+func TestPostgresRegistry_UpdateModelCapabilitiesPersistsIntoListModels(t *testing.T) {
+	ctx := context.Background()
+	pool := openIntegrationPool(t, ctx)
+	f := newFixture(t, ctx, pool)
+
+	modelID := f.seedModel(modelOpts{
+		canonicalID:     "openai/capability-visible-" + f.suffix,
+		providerModelID: "capability-visible",
+		protocolFamily:  "openai_chat",
+		contextWindow:   128000,
+	})
+	f.seedAlias(aliasOpts{
+		modelID:               modelID,
+		publicAliasNormalized: "capability-visible-" + f.suffix,
+		publicAliasDisplay:    "capability-visible-" + f.suffix,
+	})
+	f.seedBinding(bindingOpts{modelID: modelID, poolGroupID: f.poolGroupID})
+
+	maxOutput := 8192
+	r := NewPostgresRegistry(pool, nil)
+	if _, err := r.UpdateModelCapabilities(ctx, UpdateModelCapabilitiesParams{
+		ModelID:         modelID,
+		Capabilities:    map[string]bool{"function_calling": true, "tool_choice": true, "vision": true},
+		MaxOutputTokens: &maxOutput,
+		ModelMode:       ptrString("chat"),
+	}); err != nil {
+		t.Fatalf("UpdateModelCapabilities: %v", err)
+	}
+
+	got, err := r.ListModels(ctx, f.tenantID)
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	var visible ListedModel
+	for _, model := range got {
+		if model.ID == "capability-visible-"+f.suffix {
+			visible = model
+			break
+		}
+	}
+	if visible.ID == "" {
+		t.Fatalf("ListModels missing updated model; got=%+v", got)
+	}
+	if !visible.Capabilities["vision"] || !visible.Capabilities["function_calling"] || !visible.Capabilities["tool_choice"] {
+		t.Fatalf("capabilities=%+v want persisted descriptor map", visible.Capabilities)
+	}
+	if visible.MaxOutputTokens == nil || *visible.MaxOutputTokens != 8192 {
+		t.Fatalf("max_output_tokens=%v want 8192", visible.MaxOutputTokens)
+	}
+	if visible.Mode != "chat" {
+		t.Fatalf("mode=%q want chat", visible.Mode)
+	}
+}
