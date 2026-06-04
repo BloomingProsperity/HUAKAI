@@ -18,7 +18,7 @@
 //   - decoder 错误传播为 (SSEEvent{}, err)，scanner 退出
 //
 // 设计约束（与 codex_session 同条款）：
-//   - clean-room：不读 aws-sdk-go EventStreamHandler / TranscribeAdapter
+// 不读 aws-sdk-go EventStreamHandler / TranscribeAdapter
 //     等 reference 实现；逻辑基于 AWS Bedrock 公开文档的 streaming response
 //     形态推导
 //   - 只支持 Anthropic-on-Bedrock 子集（chunk envelope = {"bytes": ...}）；

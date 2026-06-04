@@ -1,10 +1,10 @@
 // HUAKAI · iKun
 
 // Package panelauth 计算「已登录主体 → 面板归属」(管理面板 / 用户面板)。
-// 角色面板切换 S1a 数据/解析层(休眠, 无 HTTP/wiring)。二分模型(Owner 2026-05-30):
+// 角色面板切换 S1a 数据/解析层(休眠, 无 HTTP/wiring)。二分模型:
 // users.role='admin' → 管理面板; 其余一切(含 'user'/空/未知)→ 用户面板(deny-by-default,
 // 绝不因角色缺失或异常而误授管理面板)。既有 admin_tokens(hk_admin)是另一维度,
-// 由 admin.AdminResolver 处理; 本包只管「账号登录」这条线的面板归属, 不碰 admin 凭据世界(CMB-1)。
+// 由 admin.AdminResolver 处理; 本包只管「账号登录」这条线的面板归属, 不碰 admin 凭据世界。
 package panelauth
 
 import "errors"

@@ -1,12 +1,12 @@
 package proto
 
-// DataRetentionLabel 锁定 D12 的 5 词汇枚举（INV-10）。
+// DataRetentionLabel 锁定 5 词汇枚举。
 //
 //   - unknown：未声明
 //   - request_store_false：客户端请求 store=false（OpenAI Responses 等）
 //   - provider_contract_required：合同声明的 provider 不存储
 //   - regional_asserted：区域承诺（regional 数据驻留）
-//   - zdr_verified：ZDR Owner/vendor/account proof 已验证
+//   - zdr_verified：ZDR vendor/account proof 已验证
 type DataRetentionLabel string
 
 const (
@@ -26,12 +26,12 @@ var AllDataRetentionLabels = []DataRetentionLabel{
 	DataRetentionZDRVerified,
 }
 
-// DataRetentionValue 是 D12 5 词汇枚举别名（兼容 codex spec 中的命名）。
+// DataRetentionValue 是 5 词汇枚举别名。
 type DataRetentionValue = DataRetentionLabel
 
 // DataRetentionNode 是 data_retention capability 的 payload。
 type DataRetentionNode struct {
-	// Value 必填；只能取 D12 5 词汇之一（INV-10）。
+	// Value 必填；只能取 5 词汇之一。
 	Value DataRetentionLabel `json:"value"`
 
 	// Enforcement 必填；unknown/asserted/contract_required/verified。
@@ -46,7 +46,7 @@ type DataRetentionNode struct {
 	// NoTrain 可选；表达 no-train intent，不等同 ZDR proof。
 	NoTrain bool `json:"no_train,omitempty"`
 
-	// EvidenceRef 可选；zdr_verified 必须填 Owner 提供的 account/vendor proof ref。
+	// EvidenceRef 可选；zdr_verified 必须填 account/vendor proof ref。
 	EvidenceRef string `json:"evidence_ref,omitempty"`
 
 	// AuditLabel 必填；用于 native/policy audit 查询。

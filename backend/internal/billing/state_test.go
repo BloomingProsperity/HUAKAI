@@ -70,7 +70,7 @@ func TestAttemptFromGatewayDraftFailedNoCharge(t *testing.T) {
 	}
 }
 
-// TestAttemptFromGatewayDraftCacheOnlyStreamChargeable 守 S1-015-fu piece A:
+// TestAttemptFromGatewayDraftCacheOnlyStreamChargeable 守 piece A:
 // 成功结束(graceful)但 usage 仅含 cache 创建/读取 token、零 fresh input/output 的流,
 // 之前被判 Failed → CostForAttempt 把 cache 成本归零、不写 usage_record。现应判 Partial(可计费)。
 // self-proving: 同时跑 cache-only(可计费)与 no-cache(失败)两路并断言相异。

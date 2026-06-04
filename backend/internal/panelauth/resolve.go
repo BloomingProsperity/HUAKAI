@@ -13,7 +13,7 @@ func PanelForRole(role string) Panel {
 }
 
 // PanelForAdminToken 持有效 hk_admin token 的主体直接进管理面板
-// (保留既有 admin 凭据世界, CMB-1 隔离不动; 此分支由调用方在已验证 admin token 后调用)。
+// (保留既有 admin 凭据世界, 隔离不动; 此分支由调用方在已验证 admin token 后调用)。
 func PanelForAdminToken() Panel {
 	return PanelAdmin
 }

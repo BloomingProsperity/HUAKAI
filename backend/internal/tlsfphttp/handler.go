@@ -1,6 +1,5 @@
-// Package tlsfphttp exposes admin HTTP CRUD for TLS fingerprint profiles
-// (F-FP-POOL Phase 1.3). It is NOT in the frozen gatewayhttp package; it is
-// mounted by cmd/gateway/routes.go under /admin/v1/tls-fingerprint-profiles.
+// Package tlsfphttp exposes admin HTTP CRUD for TLS fingerprint profiles.
+// Routes are mounted by cmd/gateway/routes.go under /admin/v1/tls-fingerprint-profiles.
 // Only platform_admin may access. tenant_id for by-id operations is taken from
 // the ?tenant_id query parameter (consistent with routeadminhttp); create takes
 // tenant_id from the body. status changes go through POST /{id}/status only —
@@ -299,7 +298,7 @@ func writeJSONError(w http.ResponseWriter, status int, code, message string) {
 }
 
 // writeTLSFPError maps tlsfpadmin sentinels to HTTP status codes. It never echoes
-// the raw error (CMB-5): ErrBackend yields a fixed generic message.
+// the raw error: ErrBackend yields a fixed generic message.
 func writeTLSFPError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, tlsfpadmin.ErrInvalidInput):

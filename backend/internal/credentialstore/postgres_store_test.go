@@ -107,7 +107,7 @@ func TestResolveActiveRejectsCrossTenantCredentialJoin(t *testing.T) {
 }
 
 func TestLoadForRefreshQueryFiltersUnsafeProviderAccountHealth(t *testing.T) {
-	// S1-024 locked reread guard: LoadForRefresh is called before adapter work
+	// locked reread guard LoadForRefresh is called before adapter work
 	// and again inside the refresh transaction. Its SQL must refuse revoked and
 	// still-cooling provider accounts, otherwise a row revoked after the scan can
 	// still reach the upstream refresh adapter. Mutation check: delete the

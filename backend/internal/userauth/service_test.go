@@ -155,7 +155,7 @@ func TestAT_AUTH_007_006_007_OAuthFlowUsesVerifiedProviderClaims(t *testing.T) {
 		},
 	}
 	svc.OAuth = NewOAuthService(provider)
-	svc.AllowedRedirectURIs = []string{"https://huakai.example.test/callback"} // S2-009: 显式允许该 caller redirect
+	svc.AllowedRedirectURIs = []string{"https://huakai.example.test/callback"} // 显式允许该 caller redirect
 	existing, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "user@example.test", Password: "secret"})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
@@ -215,7 +215,7 @@ func TestAT_AUTH_007_006_007_OAuthFlowUsesVerifiedProviderClaims(t *testing.T) {
 	}
 }
 
-// TestStartOAuthRedirectAllowlist guards S2-009: a caller-supplied redirect_uri must be rejected
+// TestStartOAuthRedirectAllowlist guards a caller-supplied redirect_uri must be rejected
 // unless it exactly matches the configured allowlist (fail-closed); an empty redirect_uri is allowed
 // and falls back to the provider's server-side RedirectURI. Prevents open-redirect / authorization
 // -code hijack to attacker-controlled callbacks.

@@ -10,7 +10,7 @@ import (
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
-// TestDefaultProviderAccountHealthPolicyMapsAuditOutcomes guards S2-062: the three-way
+// TestDefaultProviderAccountHealthPolicyMapsAuditOutcomes guards the three-way
 // terminal / transient-cooldown / healthy taxonomy. The table is self-discriminating —
 // the terminal classes (auth_expired, risk_control_triggered, account_disabled) MUST carry a
 // nil HealthStateUntil so the eligibility SQL (health_state_until IS NOT NULL) and router gate
@@ -117,7 +117,7 @@ func TestSchedulerAuthExpiredMarksProviderAccountRevoked(t *testing.T) {
 	if got.HealthState != "revoked" {
 		t.Fatalf("health state=%q, want revoked", got.HealthState)
 	}
-	// S2-062: auth_expired is terminal — HealthStateUntil must be nil so neither the eligibility
+	// auth_expired is terminal — HealthStateUntil must be nil so neither the eligibility
 	// SQL nor the router gate auto-recovers the account on a timer. Mutation check: restore the
 	// now+cooldown deadline and this assertion goes red.
 	if got.HealthStateUntil != nil {

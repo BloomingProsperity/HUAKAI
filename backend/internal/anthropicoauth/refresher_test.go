@@ -186,7 +186,7 @@ func TestRefresherAppliesClockSkewGraceToSlightlyPastExpiresAt(t *testing.T) {
 	}
 }
 
-// ANT-3: Owner 2026-05-26 D-4=B — refresh 仅信 operator-supplied 配置或硬编
+// refresh 仅信 operator-supplied 配置或硬编
 // built-in profile,不接受 credential payload 里被人为篡改的 client_id 覆盖。
 // 自检 mutation: 把 refresher.refreshCredential clientID 计算回退到
 // firstNonEmpty(r.ClientID, mapString(cred, "client_id"), AnthropicPublicCLIClientID),

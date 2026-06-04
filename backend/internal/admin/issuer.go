@@ -7,11 +7,11 @@
 //	   2. InsertAdminAuditEvent (action='issue_api_key')
 //	-> commit -> return IssueResult{Plaintext, ...} ONCE.
 //
-// CMB-5: IssueResult.Plaintext is the only place plaintext appears.
+// IssueResult.Plaintext is the only place plaintext appears.
 // audit payload is written WITHOUT plaintext or hash. Caller MUST NOT
 // log IssueResult after handing it to the HTTP response.
 //
-// CMB-7: writes only to api_keys + admin_audit_events. No billing/pool/
+// writes only to api_keys + admin_audit_events. No billing/pool/
 // registry mutation.
 
 package admin
@@ -49,7 +49,7 @@ type IssueRequest struct {
 // the HTTP response; never logged, never persisted.
 type IssueResult struct {
 	APIKeyID  int64
-	Plaintext string // SECRET — see CMB-5; elided by String()
+	Plaintext string // SECRET — elided by String()
 	KeyPrefix string
 	Status    string
 	ExpiresAt *time.Time
@@ -205,7 +205,7 @@ func (i *KeyIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult, e
 		out.CreatedAt = row.CreatedAt.Time
 
 		// Audit payload: prefix + tenant + user + environment. NEVER
-		// includes plaintext bearer or hash (CMB-5).
+		// includes plaintext bearer or hash.
 		payloadBytes, _ := json.Marshal(map[string]any{
 			"key_prefix":  prefix,
 			"tenant_id":   req.TenantID,

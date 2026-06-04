@@ -1,9 +1,9 @@
 // Package tlsfpadmin provides the validation + error-mapping service layer for
-// admin CRUD of TLS fingerprint profiles (F-FP-POOL Phase 1.3). The sqlc/querier
+// admin CRUD of TLS fingerprint profiles. The sqlc/querier
 // layer in internal/db/admin already implements the SQL; this package adds input
 // validation, typed sentinel errors, and not-found detection for the `:exec`
 // SetStatus/SoftDelete queries (which return nil on zero rows) via a pre-flight
-// existence check. It imports no router/auth/gateway packages (CMB-1).
+// existence check. It imports no router/auth/gateway packages .
 package tlsfpadmin
 
 import (
@@ -23,7 +23,7 @@ var (
 
 // adminSettableStatuses are the status values a platform_admin may set via the
 // status endpoint. "drift_detected" is intentionally excluded — only the
-// drift-detection worker (Phase 3) sets it, writing through the sqlc layer
+// drift-detection worker sets it, writing through the sqlc layer
 // directly. Setting "active" on a drift_detected profile is the intentional
 // admin-override "clear drift" path (the SQL refreshes last_validated_at).
 var adminSettableStatuses = map[string]bool{"active": true, "disabled": true}

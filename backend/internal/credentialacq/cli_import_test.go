@@ -64,7 +64,7 @@ func TestCLIImportRejectsEmptyInput(t *testing.T) {
 	}
 }
 
-// TestCLIImportRejectsMalformedJSONLine guards S2-115: a line that clearly intends structured JSON
+// TestCLIImportRejectsMalformedJSONLine guards a line that clearly intends structured JSON
 // (starts with { or [) but fails to parse must be rejected, not silently stored as a raw session
 // token — which previously made imports "succeed" with unusable credential text.
 //

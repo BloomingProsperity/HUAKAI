@@ -78,7 +78,7 @@ func WriteHuakaiHeaders(h http.Header, requested string, env *proto.HCSF, result
 	case auditledger.LedgerResultStatePersisted:
 		WriteHuakaiLedgerHeaders(h, requestID, result.LedgerID, result.Fingerprint, tenantID)
 	case auditledger.LedgerResultStateDeferred:
-		// W5 Owner Bug #1 / synthesis §6 C3:Deferred ledger result 写 DLQ ref header
+		// Owner Bug / synthesis §6 C3:Deferred ledger result 写 DLQ ref header
 		// 与流式 trailer 语义对齐;客户端可拿这个 ref 后续问 admin DLQ replay 复理。
 		// Persisted 路径的 ledger id / verify url / signature 都没意义,故不写。
 		if result.DLQRef != "" {

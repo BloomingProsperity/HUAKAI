@@ -36,7 +36,7 @@ func (s *Service) ConfirmPaidByCallback(ctx context.Context, providerKind Provid
 		return FulfillResult{}, err // ErrOrderNotFound
 	}
 	// 一致性: 回调到 X 渠道端点, 订单也必须是 X 渠道所建; 且金额/币种须与本地单一致。
-	// 任一不符 = 验签通过但业务非法, 拒且零入账 (审计上靠订单停在原状态 + 无 paid_confirmed 体现; Owner 决策 A 不单建拒绝事件类型)。
+	// 任一不符 = 验签通过但业务非法, 拒且零入账 (审计上靠订单停在原状态 + 无 paid_confirmed 体现; 不单建拒绝事件类型)。
 	if order.ProviderKind != providerKind {
 		return FulfillResult{}, ErrCallbackRejected
 	}

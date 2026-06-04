@@ -1519,7 +1519,7 @@ func lastAuthEventType(t *testing.T, events *captureAuthEventSink) string {
 }
 
 // flakyRevokeSessionStore embeds a working memory store but forces the first user-scope revoke to
-// fail, driving the S1-028 "revoke failed before password change" path while proving the same reset
+// fail, driving the "revoke failed before password change" path while proving the same reset
 // token can be retried after the session backend recovers.
 type flakyRevokeSessionStore struct {
 	usersession.Store
@@ -1583,7 +1583,7 @@ func resetConfirmTestSetup(t *testing.T, sessions *usersession.Service) (http.Ha
 	return r, email, authSvc
 }
 
-// TestAuthPasswordResetConfirmFailsClosedWhenRevokeFails guards S1-028: reset-confirm must place
+// TestAuthPasswordResetConfirmFailsClosedWhenRevokeFails guards reset-confirm must place
 // the reset subject behind a login barrier, then refuse to consume the one-time token or change the
 // password unless old sessions were revoked first. The injected store fails ONLY the first
 // RevokeUser, then simulates an in-flight old-password login by creating a new active family after
@@ -1654,7 +1654,7 @@ func TestAuthPasswordResetConfirmFailsClosedWhenRevokeFails(t *testing.T) {
 }
 
 // TestAuthPasswordResetConfirmPostSweepFailureIsDegradedSuccess guards the committed-token half of
-// S1-028: once ResetPassword has changed the password and consumed the one-time token, a later
+// once ResetPassword has changed the password and consumed the one-time token, a later
 // post-commit sweep failure must be reported as a degraded reset success, not as a retryable 5xx.
 //
 // Mutation check: return writeSessionError after ResetPassword or always report "revoked"; the
@@ -1700,7 +1700,7 @@ func TestAuthPasswordResetConfirmPostSweepFailureIsDegradedSuccess(t *testing.T)
 	}
 }
 
-// TestAuthPasswordResetConfirmRequiresSessions guards S1-028: when no session store is wired,
+// TestAuthPasswordResetConfirmRequiresSessions guards when no session store is wired,
 // reset-confirm must refuse (it cannot revoke sessions) and must NOT change the password — the
 // guard runs BEFORE ResetPassword. The old code skipped revocation when Sessions==nil yet still
 // reset the password and reported success with SessionPolicy "revoked".
@@ -1727,7 +1727,7 @@ func TestAuthPasswordResetConfirmRequiresSessions(t *testing.T) {
 	}
 }
 
-// TestAuthPasswordResetConfirmRefusesWhenSessionStoreUnset guards S1-028 (codex round 2): a non-nil
+// TestAuthPasswordResetConfirmRefusesWhenSessionStoreUnset guards a non-nil
 // session Service whose backing Store is unset (NewService(nil)) must STILL be rejected before the
 // password is changed — a bare service-pointer check is insufficient, because Revoke would then fail
 // with ErrStoreNotConfigured only after the one-time token is consumed and the password changed.
@@ -1861,7 +1861,7 @@ func lastLoginFailedReason(t *testing.T, events *captureAuthEventSink) string {
 	return ""
 }
 
-// TestLogin_ThrottleBlocksBeforeKDF 是 S2-048 门1 的核心判别测: 限流命中时, 登录请求必须在调用
+// TestLogin_ThrottleBlocksBeforeKDF 是 门1 的核心判别测: 限流命中时, 登录请求必须在调用
 // Authenticate(查用户 + argon2)之前就被 429 挡掉。用「查用户次数」证明 pre-KDF 顺序: 被限流的那
 // 次请求绝不能再触发一次 GetUserByEmail(进而 argon2)。
 //
@@ -1897,7 +1897,7 @@ func TestLogin_ThrottleBlocksBeforeKDF(t *testing.T) {
 	}
 }
 
-// TestLogin_AccountStateFailuresAreGeneric 是 S2-048 门2 的判别测: 所有「账号存在性/状态」相关的
+// TestLogin_AccountStateFailuresAreGeneric 是 门2 的判别测: 所有「账号存在性/状态」相关的
 // 登录失败对外必须是同一个 generic 401 invalid_credentials(消状态码枚举 oracle), 但审计事件仍保留
 // 真实 reason_class(操作员可见)。
 //
@@ -1942,7 +1942,6 @@ func TestLogin_AccountStateFailuresAreGeneric(t *testing.T) {
 
 // TestLogin_ThrottleKeyedByIPNotTenant 钉住限流 key 的来源: 用可信 client IP, 不用未认证可伪造
 // 的 body tenant_id。否则攻击者只要每次换一个 tenant_id 就能绕过 CPU 防护(用任意值刷满 argon2)。
-// codex 复审点名补强。同一 IP 先在 tenant=1 失败一次打满窗口, 再用 tenant=2 请求必须仍被 429。
 //
 // mutation: 把限流 key 改成含 body tenant_id(如 fmt.Sprintf("%d|%s", tenantID, ip))→ tenant=2
 // 是新 key → 第二次不再 429(走到 Authenticate)→ 本测红。

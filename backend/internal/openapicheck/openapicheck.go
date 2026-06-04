@@ -45,10 +45,9 @@ type Operation struct {
 // 额外注册了 alias 形态。比对时把 alias 全部映射到 canonical 再 dedup。
 //
 // 维护：commit 这个 map 时要附 PR ref 说明为什么这条 alias 必要、
-// 删除窗口在哪。详见 cmd/gateway/main.go 的 TODO(post-Phase-6) 注释。
 var KnownAliases = map[string]string{
 	// 临时兼容：/v1/admin/pool-accounts/* → 规范路径
-	// /admin/v1/provider-accounts/*（main.go line 904 TODO 注释）。
+	// /admin/v1/provider-accounts/*。
 	"/v1/admin/pool-accounts": "/admin/v1/provider-accounts",
 	// 临时兼容：/v1/admin/provider-accounts 是 main.go 路径上的双注册
 	// （line 895-896）；spec 只暴露规范路径 /admin/v1/provider-accounts。

@@ -16,7 +16,7 @@ type Querier interface {
 	GetModerationConfig(ctx context.Context, tenantID int64) (ModerationConfig, error)
 	InsertModerationLog(ctx context.Context, arg InsertModerationLogParams) (int64, error)
 	// Content moderation sqlc queries.
-	// CMB-5: moderation_log writes metadata and payload_hash only; raw request
+	// moderation_log writes metadata and payload_hash only; raw request
 	// bodies, plaintext credentials, and key hashes never appear in this file.
 	ListEnabledModerationKeywords(ctx context.Context, tenantID int64) ([]ListEnabledModerationKeywordsRow, error)
 	ListModerationKeywords(ctx context.Context, arg ListModerationKeywordsParams) ([]ListModerationKeywordsRow, error)

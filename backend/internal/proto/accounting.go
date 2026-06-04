@@ -40,7 +40,7 @@ type Accounting struct {
 	Signature string `json:"signature,omitempty"`
 
 	// PubkeyFingerprint 可选；HUAKAI 信任链 T2：sha256(pubkey)[:16] hex；
-	// Signature 非空时本字段必须非空（INV-51，T2 落地时启用守门）。
+	// Signature 非空时本字段必须非空（T2 落地时启用守门）。
 	PubkeyFingerprint string `json:"pubkey_fp,omitempty"`
 }
 

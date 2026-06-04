@@ -378,7 +378,7 @@ func TestPackageCompiles(t *testing.T) {
 // TestVendorFromProtocolFamily 锁定 4-vendor 真实账号 metric 切片映射
 // (memory: project_real_vendor_account_scope)。 表驱动覆盖 gateway/
 // protocol_selector.go 当前注册的全部 ProtocolFamily, 防止再出现 prefix
-// 误判 (历史 bug: openai_codex 被 prefix "openai" 抢走, 导致 codex 切片
+// 误判 (历史 bug: openai_codex 被 prefix "openai" 抢走, 导致该场景
 // 永远 0、 openai 切片双重计数)。
 func TestVendorFromProtocolFamily(t *testing.T) {
 	cases := []struct {

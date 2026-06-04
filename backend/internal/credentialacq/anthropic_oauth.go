@@ -166,7 +166,7 @@ func validateBuiltinProfile(cfg OAuthClientConfig) error {
 	if strings.TrimSpace(cfg.TokenURL) != claudeAIOAuthTokenURL {
 		mismatches = append(mismatches, "token_url")
 	}
-	// S1-014: redirect_uri 此前只查非空,致使管理员 override 的任意 redirect(含攻击者 https host)能进
+	// redirect_uri 此前只查非空,致使管理员 override 的任意 redirect(含攻击者 https host)能进
 	// authorize URL 接走授权码。改为严格 loopback 校验,与 gemini/chatgpt 的 loopback 分支等强(不达标即
 	// 作 profile mismatch 拒绝)。claude_ai_oauth 是 claude.ai 固定 public client、只注册 loopback redirect,
 	// claude.ai 不会接受非 loopback;且 HTTPS admin server callback 还需把 flow_id 注入 redirect(本模式走
@@ -189,7 +189,7 @@ func validateBuiltinProfile(cfg OAuthClientConfig) error {
 
 // validateClaudeAIRedirectURI 严格校验 claude_ai_oauth 的 redirect_uri:仅接受 localhost loopback
 // (无 userinfo、显式端口 [1024,65535]、path 恰为 /callback)。claude.ai public client 只注册 loopback,
-// 非 loopback(含任意 https host)一律拒绝 —— 闭合 S1-014"redirect 只查非空,override 任意目标可接走授权码"。
+// 非 loopback(含任意 https host)一律拒绝 —— 闭合 "redirect 只查非空,override 任意目标可接走授权码"。
 func validateClaudeAIRedirectURI(raw string) error {
 	trimmed := strings.TrimSpace(raw)
 	parsed, err := url.Parse(trimmed)

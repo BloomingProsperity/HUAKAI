@@ -1,7 +1,7 @@
 // HUAKAI · iKun
 
 // Package subscriptionhttp 暴露订阅子系统 (Slice P3a) 的 admin / user HTTP 端点。
-// handler 不进冻结包 gatewayhttp; 由 cmd/gateway/routes.go 挂载。
+// handler 由 cmd/gateway/routes.go 挂载。
 package subscriptionhttp
 
 import (

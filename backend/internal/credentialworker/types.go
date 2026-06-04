@@ -17,7 +17,7 @@ type refreshQueries interface {
 	ListAccountsForRefresh(ctx context.Context, arg dbbilling.ListAccountsForRefreshParams) ([]dbbilling.ListAccountsForRefreshRow, error)
 }
 
-// stormAcquirer is the three-scope refresh-storm admission contract (S2-045).
+// stormAcquirer is the three-scope refresh-storm admission contract.
 // Acquire reserves the durable account slot (its returned func releases it).
 // AcquireProviderEndpoint / AcquireGlobal consume the in-memory endpoint/global
 // rate budgets; the func returned by AcquireProviderEndpoint refunds its token

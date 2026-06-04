@@ -92,7 +92,7 @@ func parsePasswordHash(encoded string) (PasswordPolicy, []byte, []byte, error) {
 		if err != nil {
 			return PasswordPolicy{}, nil, nil, ErrInvalidCredentials
 		}
-		// Owner 2026-05-27 抓 P2: parsePasswordHash 必须强制 hash header 里
+		// parsePasswordHash 必须强制 hash header 里
 		// m/t/p 是显式合法值, 不允许靠 normalizePasswordPolicy 把 0 兜底成
 		// default — 否则攻击者写恶意 hash header `m=0,t=0,p=0` 仍能让校验
 		// 静默走默认 params 而非 hash 实际声明值, hash 不变量被破坏。

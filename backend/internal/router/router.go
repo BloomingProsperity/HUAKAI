@@ -1,14 +1,14 @@
 // Package router is the HUAKAI Router Engine — the cross-pool / cross-model /
-// cross-cost / cross-policy decision tier. Per Owner directive 2026-04-30 +
+// cross-cost/cross-policy decision tier.
 // docs/specs/_invariants/cross-module-boundaries.md:
 //
 //   Router Engine    — decides which routes to try, in what order
 //   Resource Pool    — decides which resource within ONE route can be claimed
 //   Gateway Executor — runs the per-attempt loop (claim, forward, settle)
 //
-// This package MUST NOT import internal/auth (CMB-1: Router does not read
-// credentials), MUST NOT hold decimal fields (CMB-2: cost lives in Ledger),
-// and MUST NOT write to the database (CMB-7: Router writes nothing).
+// This package MUST NOT import internal/auth (Router does not read
+// credentials), MUST NOT hold decimal fields (cost lives in Ledger),
+// and MUST NOT write to the database (Router writes nothing).
 //
 // The package is import-pure: caller flows are
 //   Auth → Registry → Router.Plan(...) → Executor loop → Pool.Claim(...)

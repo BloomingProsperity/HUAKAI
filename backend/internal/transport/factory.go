@@ -1,6 +1,6 @@
 // 包 transport — RoundTripper 工厂：按 provider + mode 选具体 transport。
 //
-// R3 transport mimicry Phase A 已接入 uTLS dialer；diagnostics_only 仍保留
+// transport mimicry 已接入 uTLS dialer；diagnostics_only 仍保留
 // fail-loud 占位，避免调用方误以为诊断路径已经完整实现。
 package transport
 
@@ -20,7 +20,7 @@ import (
 )
 
 // ErrTransportNotImplemented 表示 (provider, mode) 组合策略允许但具体
-// RoundTripper 还没实现（R3 / diagnostics 还在路径上）。
+// RoundTripper 还没实现（diagnostics 还在路径上）。
 var ErrTransportNotImplemented = errors.New("transport: round-tripper not yet implemented for this mode")
 
 type TransportErrorClass string
@@ -85,7 +85,7 @@ type Factory struct {
 	standardCached http.RoundTripper
 	// mimicry 是测试或外部装配注入点。nil 时按 registry 查 per-mode 模板。
 	mimicry http.RoundTripper
-	// templateRegistry 保存 Phase B per-mode ClientHello 模板。
+	// templateRegistry 保存 per-mode ClientHello 模板。
 	templateRegistry *mimicry.TemplateRegistry
 	mimicryMu        sync.Mutex
 	mimicryByMode    map[TransportMode]http.RoundTripper
@@ -123,7 +123,7 @@ func (f *Factory) SetStandard(rt http.RoundTripper) {
 	f.standard = rt
 }
 
-// SetMimicry 注入 R3 transport mimicry RoundTripper，主要供测试和未来
+// SetMimicry 注入 transport mimicry RoundTripper，主要供测试和未来
 // per-mode 路由器使用。
 func (f *Factory) SetMimicry(rt http.RoundTripper) {
 	f.mimicry = rt
@@ -419,7 +419,7 @@ func (f *Factory) mimicryRoundTripper(mode TransportMode, tmpl *mimicry.ClientHe
 }
 
 // mimicryTemplate 返回 mode 对应的 per-mode 指纹模板; 缺失或 stub 时返
-// (nil, err) 让 caller fail-closed, 不回退到 Anthropic Phase A 默认模板。
+// (nil, err) 让 caller fail-closed, 不回退到 Anthropic 默认模板。
 // 否则 kiro / chatgpt / gemini_advanced 等模式会用 Anthropic JA3 出站,
 // 反检测目标完全失效。
 //

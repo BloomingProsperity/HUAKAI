@@ -35,7 +35,7 @@ type FailOpenObserver func(ctx context.Context, req poolrouter.SelectionRequest,
 // GroupPolicyGate 实现 poolrouter.Gate + poolrouter.SelectionGatePreparer, 在 pool 选择
 // 时按订阅档限制可用 pool_group。
 //
-// 白名单语义 (Owner 2026-05-30 拍板): 已配置档位必须显式绑定可用池。
+// 白名单语义 (拍板): 已配置档位必须显式绑定可用池。
 //   - user_group 空 / repo 未注入 → 放行 (无档 = 无限制 / 休眠安全)。
 //   - 该 (租户,档) 无任何有效路由 (Configured=false) → 放行 (兼容未配置分组路由的老租户)。
 //   - 有有效路由但本 model 未命中任何规则 (Allowed 空) → 拒 (白名单: 未授权该 model)。

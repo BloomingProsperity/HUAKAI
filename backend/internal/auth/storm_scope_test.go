@@ -97,7 +97,7 @@ func TestStormControllerGlobalScopeDeniesWhenExhausted(t *testing.T) {
 }
 
 // TestStormControllerSubUnitBurstTreatedAsDisabled: a burst < 1 can never admit a
-// whole token, so the layer treats the scope as OFF (admit-all) rather than blocking
+// whole token, so the layer treats the scope as OFF (admit-all) rather than
 // every refresh. Mutation: loosen endpointEnabled to accept burst>0 → acquires route
 // into a 0.5-token bucket and deny → red.
 func TestStormControllerSubUnitBurstTreatedAsDisabled(t *testing.T) {

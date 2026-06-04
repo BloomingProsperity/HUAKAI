@@ -1,7 +1,6 @@
 // Package main wiring tests guard the two production-mode env-gated
 // helpers (`buildAuditLedger` + `loadAuditSigner`) against silent
-// regressions surfaced by Owner deep-review on top of commit e961e5c
-// (F-PRIV-1 Wave 3 follow-up; Risk 5 + Risk 6 in d8996c4).
+// regressions.
 //
 // 不连真实 DB：production 模式下的 postgres 后端只验证 wiring 是否进入
 // 持久化分支（构造期错误 / 不会 silently fallback 到 memory），不要求
@@ -221,23 +220,22 @@ func (g *wiringClaimGate) Reserve(context.Context, billing.ReserveRequest) (*bil
 	return &billing.ReserveResult{ClaimID: 1}, nil
 }
 
-// ANT-4: 生产 wiring 必须真的调用 installAnthropicClaudeAIOAuthMimicryExchanger
+// 生产 wiring 必须真的调用 installAnthropicClaudeAIOAuthMimicryExchanger
 // 把 default registry 中 nil-client exchanger 替换成带显式 HTTP client 的版本。
 // 这个 test 走 helper 真实路径并注入 mock client, 锁住"如果 wiring.go 删
 // install 调用, 默认 registry 仍是 nil-client → mock 不被命中" 的回归。
 // 判别 mutation: 注释掉 wiring.go installAnthropicClaudeAIOAuthMimicryExchanger
 // 调用 后, 此 test 看到 default registry 走 nil httpClient → http.DefaultClient
 // → 不会命中 panic-DefaultTransport 但 mock client hits=0, 立即变红。
-// installAnthropicClaudeAIOAuthMimicryExchanger 是 ANT-4 wiring 的核心:
+// installAnthropicClaudeAIOAuthMimicryExchanger 是 wiring 的核心:
 // default registry 起手装 nil-client exchanger, install 必须真把它替换
 // 为带显式 client 的版本。否则生产仍跑 http.DefaultClient 退化 fingerprint。
 //
 // 判别 mutation: 在 wiring.go 注释掉 installAnthropicClaudeAIOAuthMimicryExchanger
 // 调用 — 此 test 看到 Lookup 返的 exchanger.httpClient 仍是 nil
 // (default registry 起手值), 立即变红。
-// 防御范围比 anthropicoauth.DefaultHTTPClient 自身 transport 类型断言
-// 更精准: codex R1 抓的就是"transport 类型测试通过, 但 wiring 不调用 install
-// 仍 PASS"的 false-negative。
+// 防御范围比 anthropicoauth.DefaultHTTPClient 自身 transport 类型断言更精准:
+// 同时确认 wiring 会调用 install。
 func TestWiring_InstallAnthropicClaudeAIOAuthMimicryExchangerReplacesDefault(t *testing.T) {
 	registry := credentialacq.DefaultExchangerRegistry()
 	modeKey := credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth)
@@ -270,8 +268,7 @@ func TestWiring_InstallAnthropicClaudeAIOAuthMimicryExchangerReplacesDefault(t *
 	}
 
 	// wiring 自检函数: 未 install 的 fresh registry 必报错, install 后返 nil。
-	// 这是 production-time fail-loud 防御 (codex R1 抓的 wiring 删 install
-	// 调用 unit test 抓不到), 调 buildGatewayRuntime 时执行。
+	// 这是 production-time fail-loud 防御, 调 buildGatewayRuntime 时执行。
 	freshRegistry := credentialacq.DefaultExchangerRegistry()
 	if err := assertAnthropicClaudeAIOAuthExchangerHasHTTPClient(freshRegistry); err == nil {
 		t.Fatal("wiring 自检对未 install 的 registry 必须返 error")
@@ -665,7 +662,7 @@ func TestWiring_LoadAuditSigner_DevModeEphemeral(t *testing.T) {
 	}
 }
 
-// production 模式 + 无 path → fail-fast，不退化为 ephemeral（Risk 5 回归门）。
+// production 模式 + 无 path → fail-fast，不退化为 ephemeral。
 func TestWiring_LoadAuditSigner_ProductionRequiresKeyPath(t *testing.T) {
 	t.Setenv("HUAKAI_RELEASE_MODE", "production")
 	t.Setenv("HUAKAI_AUDIT_PRIVATE_KEY_PATH", "")
@@ -678,7 +675,7 @@ func TestWiring_LoadAuditSigner_ProductionRequiresKeyPath(t *testing.T) {
 	if signer != nil {
 		t.Fatalf("fail-fast 返回必须 signer==nil，实际拿到 %v", signer)
 	}
-	// 友好错误信息应包含 env 变量名，便于 Owner 排错。
+	// 友好错误信息应包含 env 变量名，便于排错。
 	if !strings.Contains(err.Error(), "HUAKAI_AUDIT_PRIVATE_KEY_PATH") {
 		t.Fatalf("error message 必须提示 env 名，实际: %v", err)
 	}
@@ -768,7 +765,7 @@ func TestWiring_BuildAuditLedger_DevModeDefault(t *testing.T) {
 	}
 }
 
-// production 模式 + backend=memory (或空) → fail-fast，不退化为 memory（Risk 6 回归门）。
+// production 模式 + backend=memory (或空) → fail-fast，不退化为 memory。
 func TestWiring_BuildAuditLedger_ProductionRequiresPostgres(t *testing.T) {
 	cases := []struct {
 		name    string

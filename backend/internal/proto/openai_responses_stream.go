@@ -10,7 +10,7 @@ import (
 // OpenAIResponsesStreamState 是 openai_responses client adapter 的 per-stream 状态。
 // OpenAI Responses 用 named events，且 output_item / content_part 各自有 lifecycle。
 // 本片只完整实现 text 路径（output_item=message + content_part=output_text）；
-// tool_use 路径 emit warning loss + 不 emit chunk（D11.x 后续）。
+// tool_use 路径 emit warning loss + 不 emit chunk。
 //
 // 守门：
 //   - Started=false 时 inner 事件 reject。

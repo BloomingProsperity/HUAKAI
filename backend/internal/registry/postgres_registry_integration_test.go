@@ -106,7 +106,7 @@ func (f *registryFixture) cleanup() {
 	// Tenant-scoped rows: bindings always tenant-scoped.
 	_, _ = f.pool.Exec(c, `DELETE FROM model_pool_bindings WHERE tenant_id = $1`, f.tenantID)
 	// Capabilities/aliases/models: tenant-scoped + opt-in scope='global'
-	// rows seeded by tests that exercise inheritance (test #5/#6/#7).
+	// rows seeded by tests that exercise inheritance (test/).
 	_, _ = f.pool.Exec(c, `DELETE FROM model_registry_capabilities WHERE tenant_id = $1`, f.tenantID)
 	_, _ = f.pool.Exec(c, `DELETE FROM model_aliases WHERE tenant_id = $1`, f.tenantID)
 	_, _ = f.pool.Exec(c, `DELETE FROM models WHERE tenant_id = $1`, f.tenantID)

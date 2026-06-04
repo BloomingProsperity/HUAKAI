@@ -42,29 +42,29 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 	router := chi.NewRouter()
 	privacyRedactor := privacy.DefaultRedactor()
 	privacyLogger := privacy.NewStdoutSystemLogger(privacyRedactor)
-	// S2-141: security headers go FIRST so even early-exit responses (e.g. the
+	// Security headers go FIRST so even early-exit responses (e.g. the
 	// RequestIDLengthLimiter 400) carry the browser security-header contract.
 	router.Use(securityHeaders)
 	router.Use(middleware.RequestID)
 	router.Use(gatewayhttp.RequestIDLengthLimiter(gatewayhttp.MaxRequestIDLength))
-	// S2-141: explicit allowlist CORS, early (preflight answered before auth).
+	// Explicit allowlist CORS, early (preflight answered before auth).
 	// Allowlist via HUAKAI_CORS_ALLOWED_ORIGINS (comma-separated); empty = deny.
-	// It runs before the S2-057 limiter so a 429 to an allowlisted browser origin
+	// It runs before the limiter so a 429 to an allowlisted browser origin
 	// still carries Access-Control-Allow-Origin/Vary (the frontend sees the JSON
 	// 429 + Retry-After, not an opaque CORS failure), and an allowlisted preflight
 	// is answered 204 before the limiter even runs. corsMiddleware reads only
 	// Origin/Method, never RemoteAddr, so this is independent of RealIP ordering.
 	router.Use(corsMiddleware(parseAllowedOrigins(os.Getenv("HUAKAI_CORS_ALLOWED_ORIGINS"))))
-	// S2-057: always-on per-IP inbound rate limit. It runs BEFORE middleware.RealIP
+	// Always-on per-IP inbound rate limit. It runs BEFORE middleware.RealIP
 	// on purpose: chi's RealIP overwrites RemoteAddr from client-supplied
 	// True-Client-IP/X-Real-IP/X-Forwarded-For with NO trusted-proxy check, so a
 	// limiter keyed off the post-RealIP RemoteAddr would let an attacker mint fresh
 	// per-IP buckets by rotating those headers. Running before RealIP lets the
 	// gateway's fail-closed trusted-proxy resolver derive the key from the genuine
 	// socket peer (honoring forwarded hops only when the peer is an allowlisted
-	// proxy). Floods (including the expensive S2-048 argon2 auth path) are shed with
+	// proxy). Floods (including the expensive argon2 auth path) are shed with
 	// 429 before any route handler / quota / provider-account use. Additive: it does
-	// not change the S2-141 securityHeaders/corsMiddleware behavior, only slots in
+	// not change the securityHeaders/corsMiddleware behavior, only slots in
 	// after CORS. HUAKAI_RL_DISABLE turns it off.
 	if !rateLimitDisabled() {
 		router.Use(newRateLimiter(d.clientIPResolver, logger).middleware)
@@ -104,7 +104,7 @@ type adminIdentityResolver interface {
 // /debug/vars 暴露的是 PROCESS-GLOBAL metrics(clientid/cache/dispatcher 计数器,
 // 无租户过滤),所以 tenant_operator 即使持合法凭据也【不得】命中——只有
 // platform_admin 可以。原实现只验 auth、丢弃 Resolve 返回的身份(role),任何
-// 已认证 operator 都能读到全局进程指标 → 多租户信息泄漏(S2-075)。
+// 已认证 operator 都能读到全局进程指标 → 多租户信息泄漏。
 // resolver 为 nil 时 fail-closed 返 503,不允许 ops 暴露面裸奔。
 func adminGate(resolver adminIdentityResolver, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -124,7 +124,7 @@ func adminGate(resolver adminIdentityResolver, h http.Handler) http.Handler {
 				"admin_unauthorized", "missing or invalid admin credential")
 			return
 		}
-		// RBAC: 全局 ops 面是 platform-only。tenant_operator 已认证但未授权(S2-075)。
+		// RBAC: 全局 ops 面是 platform-only。tenant_operator 已认证但未授权。
 		if id.Role != admin.RolePlatformAdmin {
 			writeAdminGateError(w, http.StatusForbidden,
 				"admin_forbidden_scope", "platform_admin role required for global ops surface")
@@ -138,7 +138,7 @@ func writeAdminGateError(w http.ResponseWriter, status int, code, message string
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	// 与 gateway/admin 其它错误写入器一致:用 encoding/json 编码而非 fmt %q 手拼,避免控制字节产出
-	// 非法 JSON(S2-148)。本入口当前只传静态字面量,统一改法是纵深防御 + 防回归。
+	// 非法 JSON。本入口当前只传静态字面量,统一改法是纵深防御 + 防回归。
 	body, err := json.Marshal(map[string]map[string]string{
 		"error": {"code": code, "message": message},
 	})
@@ -161,7 +161,7 @@ func parseAllowedOrigins(raw string) map[string]struct{} {
 }
 
 // securityHeaders installs the browser security-header contract on every response
-// (S2-141). The gateway is a JSON API behind browser-facing /v1/auth, /v1/sessions,
+// The gateway is a JSON API behind browser-facing /v1/auth, /v1/sessions,
 // /v1/api-keys, /v1/admin routes that previously shipped zero security headers.
 // HSTS is only emitted when the edge is TLS (r.TLS or X-Forwarded-Proto=https) so
 // it is never wrongly asserted over plaintext.
@@ -184,7 +184,7 @@ func securityHeaders(next http.Handler) http.Handler {
 // an allowlisted Origin back (never "*"), so credentialed cross-origin requests are
 // scoped to vetted front-ends — the wildcard-with-credentials anti-pattern is
 // structurally impossible. A disallowed/absent Origin gets no CORS headers
-// (browser blocks). Preflight (OPTIONS) is answered 204 here, before auth. (S2-141)
+// (browser blocks). Preflight (OPTIONS) is answered 204 here, before auth.
 func corsMiddleware(allowed map[string]struct{}) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -255,7 +255,7 @@ func buildStreamForwarder(auditLedger auditledger.Ledger, auditSigner *sign.Sign
 	return &gateway.StreamForwarder{
 		ProtocolAdapters: gateway.BuildDefaultProtocolAdapterRegistry(),
 		Scanners:         gateway.BuildDefaultStreamScannerRegistry(),
-		// 流超时改为 env 可配 + 调大默认,适配长跑(codex/o1/agentic):旧硬编码 First=5s/Inter=10s/
+		// 流超时改为 env 可配 + 调大默认,适配长跑推理请求:旧硬编码 First=5s/Inter=10s/
 		// Total=60s 会在上游还在思考时就被 HUAKAI 自己掐断。配合 KeepAlive 心跳避开反代空闲超时。
 		Timeouts:         buildGatewayTimeoutConfig(),
 		ScannerBufferCap: 1 << 20,

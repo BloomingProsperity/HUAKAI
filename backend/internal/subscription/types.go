@@ -1,11 +1,10 @@
 // HUAKAI · iKun
 
-// Package subscription 实现 HUAKAI 订阅子系统 (Slice P3a)。
-// Owner 2026-05-29 决策: 订阅 = 只给配额套餐 (不充余额, 零碰 payment_credits/billing_events),
-// 每周期自动续, 首切片含用户分组升级/到期降级。
+// Package subscription 实现 HUAKAI 订阅子系统。
+// 订阅 = 只给配额套餐 (不充余额, 零碰 payment_credits/billing_events),
+// 每周期自动续, 包含用户分组升级/到期降级。
 // HUAKAI 订阅模型: 窗口化日/周/月 USD 上限 + 绑用户路由组 + validity 周期 + 到期降级。
-// (参照项目对照与 file:line 引用见 docs/process/plans/2026-05-29-payment-p3a-impl-claude.md 的 clean-room guard 内, 不在代码注释中复述。)
-// HUAKAI 升级 (见同文档 §0):
+// HUAKAI 订阅履约模型:
 //   - 上限按窗口装进统一 internal/quota 引擎 (daily->calendar_day / weekly->calendar_week /
 //     monthly->calendar_month 的 cost_usd 策略, valid_from=starts_at, valid_until=expires_at),
 //     而非订阅行内计数器; 日历窗口由引擎自动重置, 故无周期重置 worker, 只有到期 worker。

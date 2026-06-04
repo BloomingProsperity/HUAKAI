@@ -43,7 +43,7 @@ func (m *mockCanonicalBufferedDispatcher) DispatchHCSF(_ context.Context, reques
 	return env, nil
 }
 
-// protocolLossTestDispatcher 是 S1-025-fu item 2 用的可配置 buffered dispatcher。
+// protocolLossTestDispatcher 是 item 2 用的可配置 buffered dispatcher。
 // stopReason 默认 end_turn;设为 CanonicalStopUnknown 触发 client 响应转换损失
 // (stop_reason_unknown)。preserveRequestLoss 模拟真实 cloneHCSF
 // (upstream_dispatcher_hcsf.go:144/153)把请求侧 CapabilityGraph.ProtocolLoss 带入响应 env。
@@ -307,7 +307,7 @@ func TestChatCompletionsClientAdapter_NonStreamingInvalidRequestBody(t *testing.
 // marshalLossErrorDispatcher 模拟 DispatchHCSF 内 MarshalToProviderRequest 原地往
 // requestEnvelope.CapabilityGraph.ProtocolLoss 追加 canonical→upstream marshal 损失
 // (addMarshalLossRaw, hcsf_graph_marshal.go),随后上游 dispatch 失败(client.Do/非 2xx)。
-// 守 S1-025-fu review R1 finding 1: dispatch-error abort 必须携带 marshal 阶段证据。
+// 守 finding 1: dispatch-error abort 必须携带 marshal 阶段证据。
 type marshalLossErrorDispatcher struct {
 	calls int
 	code  string

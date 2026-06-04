@@ -325,7 +325,7 @@ type ReleaseSlotAndDecrementInFlightParams struct {
 	ReleaseReason    *string   `db:"release_reason" json:"release_reason"`
 }
 
-// Spec §Tx2 step 14: TRULY IDEMPOTENT in_flight decrement (codex P1 review fix).
+// TRULY IDEMPOTENT in_flight decrement.
 // Atomic CTE: flip pool_slot_acquisitions.status acquired -> released_success
 // AND ONLY THEN decrement provider_accounts.in_flight_count. If the token is
 // replayed (e.g. retry storm), the inner UPDATE returns 0 rows because status
@@ -375,7 +375,7 @@ type UpdateClaimCommittedParams struct {
 }
 
 // Spec §Tx2 step 15: claim status reserving → committed.
-// codex chunk7 P1#4: tenant_id 显式 caller 提供, 防全局 id 跨租户误 commit。
+// tenant_id 显式 caller 提供, 防全局 id 跨租户误 commit。
 func (q *Queries) UpdateClaimCommitted(ctx context.Context, arg UpdateClaimCommittedParams) (int64, error) {
 	result, err := q.db.Exec(ctx, updateClaimCommitted, arg.ID, arg.ActualCost, arg.TenantID)
 	if err != nil {

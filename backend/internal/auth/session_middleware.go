@@ -37,8 +37,8 @@ func SessionFromContext(ctx context.Context) (SessionIdentity, bool) {
 // context. The resolver derives the client IP used for session drift/anomaly checks; it MUST
 // be the same trusted-proxy-aware resolver used at login (usersession.Create) and refresh, or
 // behind a reverse proxy the stored baseline IP (real client) and the validation IP (proxy
-// socket) diverge and DetectDrift can falsely revoke a valid session (S2-109). A nil resolver
-// is safe and falls back to RemoteAddr — matching pre-S2-109 behavior for direct exposure.
+// socket) diverge and DetectDrift can falsely revoke a valid session. A nil resolver
+// is safe and falls back to RemoteAddr — matching previous behavior for direct exposure.
 func SessionMiddleware(validator SessionValidator, resolver *clientip.Resolver) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

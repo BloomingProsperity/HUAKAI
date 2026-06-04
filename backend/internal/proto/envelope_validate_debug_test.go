@@ -8,7 +8,7 @@ import (
 )
 
 // TestValidateEnvelopeDebug_DebugBuild 验证 -tags debug 编译时
-// ValidateEnvelopeDebug 转发到完整 ValidateEnvelope，能拿到 INV-0 / INV-4 等
+// ValidateEnvelopeDebug 转发到完整 ValidateEnvelope，能拿到校验错误/等
 // 完整诊断信息。
 //
 // 用法：go test -tags debug ./internal/proto/

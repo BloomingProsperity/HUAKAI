@@ -16,7 +16,7 @@ type Querier interface {
 	SetAPIKeyIPAllowlist(ctx context.Context, arg SetAPIKeyIPAllowlistParams) (int64, error)
 	SetAPIKeyQuotaPolicyID(ctx context.Context, arg SetAPIKeyQuotaPolicyIDParams) (int64, error)
 	// User-owned API key control queries.
-	// CMB-5: this file must not select bearer credential material.
+	// this file must not select bearer credential material.
 	// The live uniqueness surface is a partial unique index, so the executable
 	// clause names the same indexed columns and predicate directly.
 	UpsertAPIKeyQuotaPolicy(ctx context.Context, arg UpsertAPIKeyQuotaPolicyParams) (UpsertAPIKeyQuotaPolicyRow, error)

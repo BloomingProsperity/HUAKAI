@@ -48,7 +48,7 @@ type anthropicResponseCacheCreation struct {
 }
 
 // canonicalToAnthropicStopReason 映射 canonical stop reason → Anthropic stop_reason；
-// 不能表达时返回 nil + warning loss（INV-7 反 silent drop）。
+// 不能表达时返回 nil + warning loss（反 silent drop）。
 func canonicalToAnthropicStopReason(c CanonicalStopReason) (*string, []ProtocolLossEntry) {
 	switch c {
 	case CanonicalStopEndTurn:
@@ -79,7 +79,7 @@ func canonicalToAnthropicStopReason(c CanonicalStopReason) (*string, []ProtocolL
 
 // CanonicalToClientResponse 把 HCSF buffered envelope 序列化为 Anthropic Messages
 // response JSON（text + tool_use + usage + stop_reason map）。
-// 输入约束：canonical 必须是 buffered envelope（BufferedResponse != nil；INV-6）。
+// 输入约束：canonical 必须是 buffered envelope（BufferedResponse != nil；）。
 func (a *AnthropicMessagesClient) CanonicalToClientResponse(ctx context.Context, canonical *HCSF) ([]byte, []ProtocolLossEntry, error) {
 	if canonical == nil {
 		return nil, nil, errors.New("proto: anthropic_messages CanonicalToClientResponse nil envelope")

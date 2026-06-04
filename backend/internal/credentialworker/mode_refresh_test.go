@@ -130,7 +130,6 @@ func TestDefaultModeAdapterRegistryCodexFailsClosedWithoutOperatorConfig(t *test
 }
 
 func TestGeminiAntigravityRefreshIsFailClosedUntilReactivation(t *testing.T) {
-	// Owner 2026-05-27：gemini/antigravity refresh 暂停到 OCAW 重启前。
 	// 判别 mutation：把 registry 改回 legacy AntigravityRefresh 时会发生 HTTP 调用。
 	previousClient := http.DefaultClient
 	t.Cleanup(func() { http.DefaultClient = previousClient })
@@ -381,7 +380,7 @@ func TestMetadataTokenAdapterUsesStdlibMetadataRequest(t *testing.T) {
 // assertSSRFBlocksLoopbackEndpoint runs a credential-driven token adapter with NO injected client
 // (forcing the production fallback) against a real loopback HTTP server that WOULD hand back a usable
 // access_token if reached. The SSRF-protected fallback must refuse to dial 127.0.0.1, so run() must
-// return a dial error and never capture the token. This is the S1-011 discriminating fixture shared
+// return a dial error and never capture the token. This is the discriminating fixture shared
 // by the mock and metadata adapters.
 //
 // Mutation check: restore the bare `http.DefaultClient` fallback in either adapter — the request then
@@ -501,7 +500,7 @@ func jsonResponse(body string) *http.Response {
 	}
 }
 
-// TestRefreshLockedRecordSurfacesSaveFailureError guards S2-099: when persisting the refresh-failure
+// TestRefreshLockedRecordSurfacesSaveFailureError guards when persisting the refresh-failure
 // state itself fails, refreshLockedRecord must surface that error (joined with the cause), not drop
 // it with `_ =`. Otherwise the credential's failure state (cooldown / retry count / reason) is
 // silently lost and the scheduler keeps retrying on stale state.
@@ -543,7 +542,7 @@ func (s *recordingRefreshStore) WithRefreshTransaction(_ context.Context, fn fun
 type recordingRefreshTx struct {
 	calls          *[]string
 	rec            credentialstore.CredentialRecord
-	saveFailureErr error // 注入:让 SaveRefreshFailure 返回错误(S2-099 测试)
+	saveFailureErr error // 注入:让 SaveRefreshFailure 返回错误(测试)
 }
 
 func (tx *recordingRefreshTx) Exec(_ context.Context, _ string, args ...interface{}) (pgconn.CommandTag, error) {

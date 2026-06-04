@@ -13,7 +13,6 @@ import (
 // （web_search/code_interpreter 等）按 synthesis Q9 决策 D 走 native_required
 // + Mandatory Roadmap loss。
 //
-// D10/D11/D12 stub。
 
 type OpenAIResponsesClient struct{}
 

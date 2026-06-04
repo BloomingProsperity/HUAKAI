@@ -157,7 +157,7 @@ func TestLimiter_SuccessDoesNotAccumulate(t *testing.T) {
 
 // TestLimiter_SuccessDoesNotClearPriorFailures 钉住一个安全属性: 一次成功登录只释放在途槽,
 // 绝不清空该 IP 之前累计的失败 —— 否则攻击者用一个有效账号穿插登录即可重置风控窗口, 让暴力
-// 破解永不触发封禁。codex 复审点名补强。
+// 破解永不触发封禁。
 //
 // mutation: 让 Success 顺手清空 failures(误把成功当「洗白」)→ 成功后 failureCount 归零 +
 // 后续达不到窗口阈值 → 本测红。

@@ -88,7 +88,7 @@ func TestFixtures_AllValidate(t *testing.T) {
 }
 
 // TestFixtures_RoundTripStable 验证每个非负向 fixture：
-// marshal → unmarshal → marshal 字节序列稳定（INV-1 + INV-2 round-trip 不变）。
+// marshal → unmarshal → marshal 字节序列稳定（+ round-trip 不变）。
 func TestFixtures_RoundTripStable(t *testing.T) {
 	walkFixtures(t, func(t *testing.T, path string, raw []byte) {
 		if isInvalidFixture(path) {

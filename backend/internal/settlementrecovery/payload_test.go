@@ -156,7 +156,7 @@ func TestPayload_RoundTrip_SettleRequestFieldsByteIdentical(t *testing.T) {
 	if got.EmitSchedulerOutbox != original.EmitSchedulerOutbox {
 		t.Fatalf("EmitSchedulerOutbox=%v want %v", got.EmitSchedulerOutbox, original.EmitSchedulerOutbox)
 	}
-	// S1-025-fu item 1: protocol_loss 必须存活 DLQ replay round-trip,否则重放写 "[]"。
+	// item 1: protocol_loss 必须存活 DLQ replay round-trip,否则重放写 "[]"。
 	// Mutation: 删 FromCompletionEvent 或 ToSettleRequest 的 ProtocolLoss 赋值 → 空 → RED。
 	if !containsCode(lossCodes(t, got.ProtocolLoss), "dlq_protocol_loss_roundtrip") {
 		t.Fatalf("ProtocolLoss lost in round-trip: got codes=%v want contains dlq_protocol_loss_roundtrip (raw=%s)",
@@ -164,7 +164,6 @@ func TestPayload_RoundTrip_SettleRequestFieldsByteIdentical(t *testing.T) {
 	}
 }
 
-// TestPayload_ToSettleRequest_SchedulerOutboxIntentPreserved 守 S2-005:
 // outbox intent 必须是可 JSON 持久化的 bool,post-delivery settle replay 成功
 // 时才能补写原本应该跟 Tx2 同事务产生的 scheduler_outbox 行。
 //
@@ -237,7 +236,7 @@ func TestValidate_RejectsMissingTenantID(t *testing.T) {
 
 // TestPayload_FromCompletionEvent_NormalizesEmptyAuditRequestID
 //
-// Owner P2 finding (2026-05-24) 判别 fixture:event.RequestID 有值,但
+// 判别 fixture:event.RequestID 有值,但
 // SettleRequest.AuditRequestID 为空(stream 路径就是这样,见
 // chat_completions_stream.go:542 没填 AuditRequestID);settleCompletion
 // 在栈本地副本上补,recovery payload 取的是外层 event,会得到空 audit_request_id

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// TestApplyVerifiedSocialIdentity_HonorsInviteGate 守 S2-114: 社交 OAuth 首次注册必须和密码
+// TestApplyVerifiedSocialIdentity_HonorsInviteGate 验证 社交 OAuth 首次注册必须和密码
 // Register 受同一邀请闸约束。此前 applyVerifiedSocialIdentity 的新用户分支只看 SocialSignup,
 // 不看 InviteRequired —— 租户开启邀请注册时, 任意 Google/GitHub 账号能绕过 invite 闸直接开户。
 //

@@ -118,7 +118,7 @@ func TestEmitModelMismatchLoss_RouteEmpty(t *testing.T) {
 }
 
 func TestEmitModelMismatchLoss_AllLossesAreNonSilent(t *testing.T) {
-	// 防御：T0 INV-7 反 silent drop 守门 — 任何 loss 都必须 Severity + Reason 非空。
+	// 防御：T0 反 silent drop 守门 — 任何 loss 都必须 Severity + Reason 非空。
 	mc := &ModelChain{
 		Requested:        "x",
 		RouteDecided:     "y",

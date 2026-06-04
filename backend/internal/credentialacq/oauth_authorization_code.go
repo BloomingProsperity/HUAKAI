@@ -114,7 +114,7 @@ func (e authorizationCodeOAuthExchanger) exchangeAuthorizationCode(ctx context.C
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	client := e.client
 	if client == nil {
-		// P1 深层 SSRF / DNS-rebind 防御 (Owner 2026-05-27 抓出 真修, 非
+		// 深层 SSRF / DNS-rebind 防御
 		// DEFERRED 尾巴): 默认 (生产 wiring 未注入 custom client) 走
 		// SSRF-protected stdlib client — transport.Proxy=nil + DialContext
 		// 拨号校验目标 IP 非 loopback/private/link-local/metadata + CheckRedirect
@@ -241,7 +241,7 @@ func validateOperatorPKCEConfig(vendor, authMode string, cfg OAuthClientConfig) 
 	if len(missing) > 0 {
 		return fmt.Errorf("%w: %s/%s operator OAuth config missing %s", ErrFeatureDisabled, vendor, authMode, strings.Join(missing, ","))
 	}
-	// P1 SSRF / auth-leak 静态闸门 (Owner 2026-05-26 抓出): 拒绝任何 scheme
+	// SSRF / auth-leak 静态闸门: 拒绝任何 scheme
 	// 非 https 或 host 命中私网 / loopback / link-local / metadata 的 OAuth
 	// endpoint。深层 DialContext-level 防御参考 internal/auth.newSSRFProtectedOAuthClient,
 	// 留下一切片接入;此处先封静态层。

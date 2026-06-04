@@ -9,7 +9,7 @@ var (
 
 // ComputeWindow 只计算与 policy 无关的 UTC 窗口边界。
 // WindowNone 返回 ok=false; service 会用 policy.ValidFrom 构造累计窗口。
-// WindowManual 在 B2a 暂作单一开放窗口, admin 手动 reset 留到 B2b/admin。
+// WindowManual 在 暂作单一开放窗口, admin 手动 reset 留到 B2b/admin。
 func ComputeWindow(kind WindowKind, windowSeconds int64, at time.Time) (start time.Time, end time.Time, ok bool) {
 	at = at.UTC()
 	switch kind {

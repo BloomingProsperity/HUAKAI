@@ -3,9 +3,8 @@
 // via HUAKAI Canonical Stream Format (HCSF).
 //
 // See docs/specs/protocol-translation.md for the released spec.
-// Current slice has the shared protocol contracts plus an Anthropic streaming
-// adapter path used by the gateway smoke flow. Full HCSF and additional
-// provider/client adapters remain Phase E+ work.
+// The package has shared protocol contracts plus an Anthropic streaming
+// adapter path used by the gateway smoke flow.
 package proto
 
 import "context"
@@ -17,7 +16,7 @@ import "context"
 // P-0c-C 已修复历史 `&HCSF{}` 零值穿透问题（proto/openai/sse.go /
 // proto/gemini/sse.go），现统一返回至少 Version + BufferedResponse 的最小 envelope；adapter 边界处用
 // ValidateEnvelopeVersionGuard 做轻量守门，debug build 用 ValidateEnvelopeDebug
-// 触发完整 INV-3..INV-13 校验。
+// 触发完整 校验。
 type HCSF = HCSFEnvelope
 
 // ClientAdapter handles client-protocol ↔ canonical translation.
@@ -56,8 +55,3 @@ const (
 	DirectionUpstreamToCanonical Direction = "upstream_to_canonical"
 	DirectionCanonicalToClient   Direction = "canonical_to_client"
 )
-
-// TODO(phase-4): implement adapters for openai_chat / openai_responses /
-// anthropic_messages clients × anthropic / openai / gemini / bedrock /
-// antigravity upstreams. Capability matrix backing in protocol_capability_matrix
-// table per docs/schema/protocol-translation.sql.

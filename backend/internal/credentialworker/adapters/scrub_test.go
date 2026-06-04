@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// ANT-3 R2 S2 (Owner codex review 抓 defense-in-depth 缺口):
+// R2 S2 (Owner):
 // mergeTokenResponse 写回 store 前必须主动删 hostile credential 字段,
 // 防止 cred 残留攻击面被未来 refresh / ingest path 意外读取。
 //

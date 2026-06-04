@@ -3,11 +3,11 @@
 // revoke surface; later slices add /admin/v1/users, /admin/v1/pools, etc.
 //
 // Per CLAUDE.md + docs/specs/_invariants/cross-module-boundaries.md:
-//   - CMB-1: this package never imports internal/router or internal/auth.
+// this package never imports internal/router or internal/auth.
 //     The customer hot path is unaffected.
-//   - CMB-5: plaintext bearer is surfaced ONLY in the POST response body
+// plaintext bearer is surfaced ONLY in the POST response body
 //     for the operator. Never logged, never echoed in error responses.
-//   - CMB-7: writes go through internal/admin (admin_tokens / api_keys /
+// writes go through internal/admin (admin_tokens / api_keys /
 //     admin_audit_events). No billing/pool/registry mutation.
 
 package adminhttp
@@ -487,7 +487,7 @@ func writeAdminError(w http.ResponseWriter, err error) {
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	// 用 encoding/json 编码而非 fmt %q 手拼:%q 对部分控制字节会产出非法 JSON(S2-148)。本入口的
+	// 用 encoding/json 编码而非 fmt %q 手拼:%q 对部分控制字节会产出非法 JSON。本入口的
 	// default 分支会回显 err.Error(),可能携带控制字符,故必须用 JSON 编码器保证响应可被严格解析。
 	body, err := json.Marshal(map[string]map[string]string{
 		"error": {"code": code, "message": message},

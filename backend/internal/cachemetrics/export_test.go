@@ -4,7 +4,7 @@ package cachemetrics
 import "expvar"
 
 // resetForTesting 把 counter 清零供 tests 用。
-// 不导出, 不暴露到 production 二进制 (sonnet U6-C F1 模式)。
+// 不导出, 不暴露到 production 二进制。
 func resetForTesting() {
 	initCounters()
 	initL2Counters()

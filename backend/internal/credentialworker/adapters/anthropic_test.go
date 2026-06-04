@@ -12,7 +12,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/anthropicoauth"
 )
 
-// ANT-3 (Owner 2026-05-26 D-4=B): 即使 credential payload 写着
+// 即使 credential payload 写着
 // oauth_token_endpoint=http://attacker.test, refresh 出站只能打 operator
 // 配置 (r.Endpoint) 或 HUAKAI 硬编 defaultAnthropicTokenEndpoint。
 // 自检 mutation: 把 endpoint 选取改回

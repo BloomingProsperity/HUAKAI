@@ -121,7 +121,7 @@ func isPermanentEmailFailure(err error) bool {
 	// SMTP 回复码语义:5xx = 永久失败(不应重试),4xx = 临时失败(应进 DLQ 重试)。net/smtp 的命令
 	// 错误是 *textproto.Error(经 finishSMTP 的 %w 包装可由 errors.As 还原),用其数值码判定才准确。
 	// 旧实现用脆弱子串匹配,把任何含 " 4" 的文本(恰是临时 4xx 回复的常见形状)一律判永久,
-	// 导致临时 4xx 跳过重试 outbox 直接当永久失败返回(S2-079)。
+	// 导致临时 4xx 跳过重试 outbox 直接当永久失败返回。
 	var tperr *textproto.Error
 	if errors.As(err, &tperr) {
 		return tperr.Code >= 500 && tperr.Code < 600

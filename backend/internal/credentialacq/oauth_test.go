@@ -83,7 +83,7 @@ func TestCompleteOAuthCallbackRejectsCrossFlowStateReplay(t *testing.T) {
 	}
 	store := NewPostgresSessionStoreWithKeys(newTestSessionDB(now), keys).WithNow(func() time.Time { return now })
 
-	// S1-008: 用独立空 registry 起 flow,确保走通用 PKCE fallback(startPKCEOAuthFlow)。本测试验证的是
+	// 用独立空 registry 起 flow,确保走通用 PKCE fallback(startPKCEOAuthFlow)。本测试验证的是
 	// 跨 flow state-replay 防护这一通用机制,与具体 vendor 的生产 exchanger 解耦(copilot 现已 fail-closed)。
 	victim, err := StartOAuthFlowWithRegistry(context.Background(), store, StartInput{
 		TenantID: 1, ProviderAccountID: 101,
@@ -126,7 +126,7 @@ func TestCompleteOAuthCallbackRejectsCrossFlowStateReplay(t *testing.T) {
 	}
 }
 
-// TestCompleteOAuthCallbackRejectsTerminalFlows guards S1-012: the production CompleteOAuthCallback must
+// TestCompleteOAuthCallbackRejectsTerminalFlows guards the production CompleteOAuthCallback must
 // reject a callback landing on a terminal flow (cancelled/failed/expired-by-status) as ErrFlowReplay,
 // BEFORE running the state/expiry/PKCE checks — a dead flow cannot be resurrected back to
 // callback_received→validated by replaying the original state+code.
@@ -201,7 +201,7 @@ func TestStartOAuthFlowPKCEVerifierEncryptedAtRest(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := NewPostgresSessionStoreWithKeys(newTestSessionDB(now), keys).WithNow(func() time.Time { return now })
-	// S1-008: 独立空 registry → 通用 PKCE fallback。本测试验证 PKCE verifier 静态加密这一通用机制,
+	// 独立空 registry → 通用 PKCE fallback。本测试验证 PKCE verifier 静态加密这一通用机制,
 	// 与具体 vendor 的生产 exchanger 解耦(copilot 现已 fail-closed)。
 	result, err := StartOAuthFlowWithRegistry(context.Background(), store, StartInput{
 		TenantID: 1, ProviderAccountID: 2,
@@ -293,7 +293,7 @@ func TestOAuthCallbackExchangeSuccessAndFailure(t *testing.T) {
 }
 
 func TestWindsurfAcquisitionUsesTokenExchangeNotOAuthFake(t *testing.T) {
-	// S1-008: windsurf 的 ModePlan 是 FlowKindTokenExchange(types.go),其 acquisition 走
+	// windsurf 的 ModePlan 是 FlowKindTokenExchange(types.go),其 acquisition 走
 	// NewWindsurfCodeiumAuthTokenCandidate 直接构造 candidate,不经 OAuth callback registry.Exchange。
 	// 此前注册的 windsurf/oauth fake exchanger 属 orphaned dangerous wiring(会把任意 JSON 当 session 凭据
 	// 接受),已移除。断言:(1) 真实的 token-exchange acquisition 仍产出带 session 材料的 candidate;

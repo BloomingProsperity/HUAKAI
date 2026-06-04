@@ -75,6 +75,6 @@ func RequestCount(id Identity) int64 {
 }
 
 // ResetMetricsForTesting 已移到 export_test.go（仅测试 binary 可见）。
-// 生产代码无法调用——sonnet F1 SHOULD_FIX 修复:
+// 生产代码无法调用—
 //   - 防止外部包导入 clientid 后误调 ResetMetricsForTesting 清零生产 counter
 //   - 名义上"仅测试用"的 export 没有编译时屏障; _test.go 文件天然有屏障

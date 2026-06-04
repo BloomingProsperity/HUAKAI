@@ -346,7 +346,7 @@ func TestSettler_AbortWritesProtocolLossEvidence(t *testing.T) {
 }
 
 func TestSettler_SettleWritesProtocolLossEvidence(t *testing.T) {
-	// Mutation: settler hardcoding []byte("[]") (the pre-fix S1-025 bug) instead
+	// Mutation: settler hardcoding []byte("[]") (the pre-fix bug) instead
 	// of reading req.ProtocolLoss → Settle persists [] ≠ want → RED.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

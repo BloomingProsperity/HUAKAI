@@ -6,8 +6,8 @@
 //	(<= 5 candidates) -> bcrypt.CompareHashAndPassword on each -> check
 //	status + expires_at -> return AdminIdentity{TokenID, Role, ScopeTenantID}
 //
-// CMB-1: this resolver lives in internal/admin and is never imported from
-// internal/router or auth's hot path. CMB-5: errors NEVER include the
+// this resolver lives in internal/admin and is never imported from
+// internal/router or auth's hot path. errors NEVER include the
 // plaintext bearer or hash.
 
 package admin
@@ -96,7 +96,7 @@ func (r *AdminResolver) Resolve(ctx context.Context, req *http.Request) (AdminId
 }
 
 // parseAdminBearer extracts the token from "Authorization: Bearer <token>".
-// Same shape as auth.parseBearer but kept local to avoid CMB-1 import
+// Same shape as auth.parseBearer but kept local to avoid import
 // of internal/auth from this package.
 func parseAdminBearer(header string) (string, bool) {
 	const prefix = "Bearer "

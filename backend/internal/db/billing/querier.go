@@ -12,14 +12,14 @@ import (
 
 type Querier interface {
 	// Tx2 abort path: terminal upstream failure or AMBIGUOUS_USAGE end class.
-	// codex chunk7 P1#4: tenant_id 必须显式预先 caller 提供, 防全局 id 跨租户误改。
+	// tenant_id 必须显式预先 caller 提供, 防全局 id 跨租户误改。
 	AbortClaim(ctx context.Context, arg AbortClaimParams) (int64, error)
 	// 首次写入时目标行还不存在, FOR UPDATE 无法锁住空行; 先拿事务级顾问锁
 	// 按租户和设置键串行化同一设置的读改写, 提交或回滚后自动释放。
 	AcquireBillingSettingLock(ctx context.Context, arg AcquireBillingSettingLockParams) error
 	// Usage analytics: aggregation queries over settled usage_records.
-	// SELECT-only (CMB-7). Self-serve queries carry a non-nullable tenant_id
-	// predicate (CMB-5 cross-tenant prevention). Admin leaderboard queries are
+	// SELECT-only. Self-serve queries carry a non-nullable tenant_id
+	// predicate (cross-tenant prevention). Admin leaderboard queries are
 	// platform-admin-only and intentionally aggregate across tenants for operator
 	// cost visibility. No query selects credential columns.
 	// usage_records.settled_at is NOT NULL DEFAULT now() and indexed by
@@ -150,7 +150,7 @@ type Querier interface {
 	// cap_queue_sticky/fallback are returned so the selector can construct
 	// WaitPlan fallback when every eligible account is at concurrency cap.
 	//
-	// 2026-05-19 codex review P1 fix: 之前不过滤 model_allow_list /
+	// 之前不过滤 model_allow_list /
 	// capability_flags, production gate AllowAll 全过, request 能 reserve
 	// 到明确不被该 account 允许的 model / 缺能力。两个 filter 直接在 SQL
 	// 层做 (Postgres array @> 子集 + cardinality empty bypass):
@@ -163,11 +163,11 @@ type Querier interface {
 	ListOrphanedAcquisitions(ctx context.Context) ([]PoolSlotAcquisition, error)
 	ListPools(ctx context.Context, arg ListPoolsParams) ([]PoolGroup, error)
 	// F-OBS-001 read-only query surface for the admin/audit lane.
-	// Per docs/specs/_invariants/cross-module-boundaries.md CMB-7: this file
+	// Per docs/specs/_invariants/cross-module-boundaries.md: this file
 	// contains SELECT-only queries; the Repository wrapper enforces tenant
 	// scope on every call.
 	//
-	// Per CMB-5: NONE of these SELECTs include the `credentials` column from
+	// NONE of these SELECTs include the `credentials` column from
 	// provider_accounts (or any synonym). Audit views surface metadata only.
 	// Page through usage_records for one tenant. Most-recent-first.
 	ListUsageByTenant(ctx context.Context, arg ListUsageByTenantParams) ([]ListUsageByTenantRow, error)
@@ -182,7 +182,7 @@ type Querier interface {
 	ReReserveAbortedClaim(ctx context.Context, arg ReReserveAbortedClaimParams) (ReReserveAbortedClaimRow, error)
 	ReleaseBalanceHold(ctx context.Context, claimID int64) (int64, error)
 	ReleaseSlotAcquisition(ctx context.Context, arg ReleaseSlotAcquisitionParams) error
-	// Spec §Tx2 step 14: TRULY IDEMPOTENT in_flight decrement (codex P1 review fix).
+	// TRULY IDEMPOTENT in_flight decrement.
 	// Atomic CTE: flip pool_slot_acquisitions.status acquired -> released_success
 	// AND ONLY THEN decrement provider_accounts.in_flight_count. If the token is
 	// replayed (e.g. retry storm), the inner UPDATE returns 0 rows because status
@@ -199,7 +199,7 @@ type Querier interface {
 	// Tenant-scoped to prevent cross-tenant abort via stale claim id.
 	UpdateClaimAbortedWithReason(ctx context.Context, arg UpdateClaimAbortedWithReasonParams) (int64, error)
 	// Spec §Tx2 step 15: claim status reserving → committed.
-	// codex chunk7 P1#4: tenant_id 显式 caller 提供, 防全局 id 跨租户误 commit。
+	// tenant_id 显式 caller 提供, 防全局 id 跨租户误 commit。
 	UpdateClaimCommitted(ctx context.Context, arg UpdateClaimCommittedParams) (int64, error)
 	UpdatePool(ctx context.Context, arg UpdatePoolParams) (PoolGroup, error)
 	UpsertBalanceHold(ctx context.Context, arg UpsertBalanceHoldParams) error

@@ -330,7 +330,7 @@ func verifyAuditLedgerEntrySignature(ctx context.Context, registry auditledger.P
 }
 
 func signatureOutsideKeyWindow(ts time.Time, key *auditledger.Pubkey) bool {
-	// 委托到 auditledger 的共享实现(S1-032):receipt 验证路径与 audit-ledger 路径
+	// 委托到 auditledger 的共享实现:receipt 验证路径与 audit-ledger 路径
 	// 共用同一 key 有效窗口策略,单一真相源。
 	return auditledger.SignatureOutsideKeyWindow(ts, key)
 }

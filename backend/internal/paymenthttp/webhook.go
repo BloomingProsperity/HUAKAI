@@ -30,7 +30,7 @@ type WebhookDeps struct {
 
 // MountPaymentWebhookRoutes 挂载公开支付回调端点。
 // 公开无 session/admin 中间件 — provider 无法持有 HUAKAI 会话, 信任完全来自验签;
-// 生产未注册真实 provider 时端点 fail-closed (一切回调被拒), 直到 Owner-gated P-RealMoney。
+// 生产未注册真实 provider 时端点 fail-closed (一切回调被拒)。
 func MountPaymentWebhookRoutes(r chi.Router, d WebhookDeps) {
 	r.Post("/v1/payments/webhooks/{provider}", newWebhookHandler(d))
 }

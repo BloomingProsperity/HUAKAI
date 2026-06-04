@@ -17,7 +17,7 @@ func (v *ipCapturingValidator) Validate(_ context.Context, _ string, ip string, 
 	return usersession.ValidatedSession{TenantID: 1, UserID: 42, FamilyID: "fam", TokenID: "tok", Generation: 1}, nil
 }
 
-// TestSessionMiddlewareUsesTrustedProxyClientIP (S2-109 [codex P2]) proves the session validation
+// TestSessionMiddlewareUsesTrustedProxyClientIP proves the session validation
 // path derives its client IP from the same trusted-proxy-aware resolver used at login/refresh.
 // Otherwise login stores the real forwarded client IP while the middleware validates with the proxy
 // socket IP, and DetectDrift can falsely revoke a valid session behind a reverse proxy.
@@ -52,7 +52,7 @@ func TestSessionMiddlewareUsesTrustedProxyClientIP(t *testing.T) {
 }
 
 // TestSessionMiddlewareNilResolverFallsBackToRemoteAddr proves the nil-resolver path (direct
-// exposure / pre-S2-109 behavior) still validates with the socket peer.
+// exposure / previous behavior) still validates with the socket peer.
 func TestSessionMiddlewareNilResolverFallsBackToRemoteAddr(t *testing.T) {
 	v := &ipCapturingValidator{}
 	h := SessionMiddleware(v, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

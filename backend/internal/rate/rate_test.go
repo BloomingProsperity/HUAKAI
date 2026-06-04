@@ -1,11 +1,10 @@
 // Package rate 的合约保护测试。
 //
-// 现状（2026-05-17 e961e5c 之上）：rate.go 只声明了 Service interface +
-// Decision/StateChange/Reason 三个枚举集合，concrete 实现尚未落地（spec
-// §Phase A-G 的多平台 429 解析、handle403 dispatch、cascade 清理、OAuth
-// 401 force-refresh 在 Phase 4 才会着陆）。
+// rate.go 声明 Service interface 与 Decision/StateChange/Reason 枚举集合；
+// concrete 实现负责多平台 429 解析、handle403 dispatch、cascade 清理与
+// OAuth 401 force-refresh。
 //
-// 在 impl 缺位的窗口里，这套测试做两件事来防回归：
+// 这套测试做两件事来防回归：
 //   1) StateChange / Reason 枚举的稳定性 — 一旦有人改了 iota 顺序或删了
 //      Reason 字符串值，下游 audit / dashboard / metrics 的语义就会被静默
 //      破坏。
@@ -13,8 +12,7 @@
 //      method，证明 interface 形状（参数列表、返回值数量、context 位置、
 //      error 末位）没被无意改动；新加 method 必须显式更新此测试。
 //
-// 当 Phase 4 实现到位后，这套测试将被扩展为 token-bucket / sliding-window
-// 边界 + 并发安全 + tenant 隔离的功能测试。
+// 后续实现可扩展 token-bucket/sliding-window 边界、并发安全与 tenant 隔离测试。
 package rate
 
 import (

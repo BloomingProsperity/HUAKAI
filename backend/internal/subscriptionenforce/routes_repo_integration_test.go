@@ -192,7 +192,7 @@ func TestPG_GroupRoutes_ExcludesInvalidTargets(t *testing.T) {
 
 	pgValid := seedPoolGroupEx(t, ctx, pool, tenantID, "valid-"+suffix, true, false)
 	// pgCrossTenant: 有效池但属于另一租户 — 当前租户 route 指向它须被 JOIN 的
-	// pg.tenant_id = r.tenant_id 排除 (tenant isolation = 安全, codex review B S1)。
+	// pg.tenant_id = r.tenant_id 排除。
 	pgCrossTenant := seedPoolGroupEx(t, ctx, pool, otherTenantID, "crosspg-"+suffix, true, false)
 	pgDisabledTarget := seedPoolGroupEx(t, ctx, pool, tenantID, "disabledpg-"+suffix, false, false) // 目标池禁用
 	pgDeletedTarget := seedPoolGroupEx(t, ctx, pool, tenantID, "deletedpg-"+suffix, true, true)     // 目标池软删
@@ -227,7 +227,7 @@ func TestPG_GroupRoutes_ExcludesInvalidTargets(t *testing.T) {
 	assertSet(t, gold.Allowed)
 
 	// silver 档唯一路由指向他租户 pool → 被 JOIN 的 pg.tenant_id 排除, 视同未配置:
-	// Configured=false。这是 tenant isolation 安全关键判别 (codex review B S1)。
+	// Configured=false。这是 tenant isolation 安全关键判别。
 	// mutation: 删 SQL 的 `AND pg.tenant_id = r.tenant_id` → silver 会 Configured=true,
 	// 且上面 premium 的 Allowed 会泄入 pgCrossTenant → 两处断言红。
 	seedRouteEx(t, ctx, pool, tenantID, "r-silver-cross-"+suffix, "silver", "*", pgCrossTenant, true, false)

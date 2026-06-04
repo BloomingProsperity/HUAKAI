@@ -136,7 +136,7 @@ var liveModalitySet = map[string]struct{}{
 
 // protocolLossSeveritySet 覆盖 ProtocolLossSeverity 3 vocab（info/warning/error）。
 //
-// 用于 INV-45：所有 ProtocolLossEntry（node/edge/graph/projection 四处）的 Severity 字段
+// 用于校验：所有 ProtocolLossEntry（node/edge/graph/projection 四处）的 Severity 字段
 // 若非空必须落在该集合内。
 var protocolLossSeveritySet = map[ProtocolLossSeverity]struct{}{
 	ProtocolLossInfo:    {},

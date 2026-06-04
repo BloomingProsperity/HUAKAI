@@ -1,6 +1,6 @@
 // 包 provider — ProxyResolver 的 PostgreSQL 后端实现。
-// F-FP-POOL Phase 1.2 (2026-05-19): 代理资源迁出 provider_accounts.proxy_url
-// 单字符串列, 进 proxies 独立表 (tenant 范围化); provider_accounts 通过
+// 代理资源从 provider_accounts.proxy_url 单字符串列迁入 tenant-scoped
+// proxies 独立表; provider_accounts 通过
 // proxy_id FK 关联。本文件 JOIN proxies 表取出字段在 Go 端用 url.URL{} +
 // url.UserPassword() 构造代理 URL, 避免 SQL 字符串拼接破坏 URL 转义。
 //

@@ -54,7 +54,7 @@ func TestDBAuditWriter_NilQueriesReturnsErrAuditWriterMissing(t *testing.T) {
 }
 
 func TestAccountCredentialRefreshQueriesSQLFiltersUnsafeProviderAccountHealth(t *testing.T) {
-	// Non-PG guard for S1-024: production wiring uses
+	// Non-PG guard for: production wiring uses
 	// AccountCredentialRefreshQueries, so its scan SQL must carry the same
 	// provider-account health predicate as the real-PG fixture below. Mutation:
 	// remove the predicate from NewAccountCredentialRefreshQueries and this test
@@ -73,7 +73,7 @@ func TestAccountCredentialRefreshQueriesSQLFiltersUnsafeProviderAccountHealth(t 
 }
 
 func TestListAccountsForRefreshSkipsUnsafeProviderAccountHealthPG(t *testing.T) {
-	// S1-024: refresh scans must not hammer provider accounts already revoked
+	// refresh scans must not hammer provider accounts already revoked
 	// or still cooling down. Mutation check: remove the provider-account health
 	// predicate from either refresh list query and the revoked/future-cooldown
 	// IDs below appear in the result set, turning this test red. The expired
@@ -506,7 +506,7 @@ func TestRecordAudit_HealthStateTransitionRoundTripPG(t *testing.T) {
 	if err := s.recordAuditString(ctx, row, "auth_expired", "account", errors.New("expired refresh")); err != nil {
 		t.Fatalf("record auth_expired: %v", err)
 	}
-	// S2-062: auth_expired is terminal — it must persist health_state_until as NULL so the
+	// auth_expired is terminal — it must persist health_state_until as NULL so the
 	// eligibility CTE (which only normalizes rows WHERE health_state_until IS NOT NULL AND <= NOW)
 	// can never auto-recover a grant-loss account on a 30-minute timer. Mutation check: restore the
 	// now+cooldown deadline and the `until != nil` assertion below goes red.
@@ -538,7 +538,7 @@ func TestRecordAudit_HealthStateTransitionRoundTripPG(t *testing.T) {
 	}
 }
 
-// TestUpdateProviderAccountHealthTerminalStickyAgainstTransientPG guards S2-062 [codex P1]: a
+// TestUpdateProviderAccountHealthTerminalStickyAgainstTransientPG guards a
 // transient (throttled + deadline) health write must NOT downgrade an account that is already
 // terminally revoked (revoked + NULL deadline). Without the CASE guard in
 // updateProviderAccountHealthSQL, a stray rate_limit retry on a still-grant-lost account would

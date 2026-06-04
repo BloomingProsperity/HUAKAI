@@ -1,8 +1,8 @@
 //go:build integration_pg
 
-// Phase C Slice 4 — Reader integration tests against real PostgreSQL.
-// Validates CMB-7 (read-only — Reader writes nothing) by construction,
-// and CMB-1/-5 (no credential fields surface) by SQL coverage. Tenant
+// Reader integration tests run against real PostgreSQL.
+// Validates read-only — Reader writes nothing by construction,
+// and no credential fields surface by SQL coverage. Tenant
 // scope is enforced by every query's WHERE clause.
 
 package obs

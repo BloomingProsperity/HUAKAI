@@ -11,8 +11,7 @@
 //   - 决策来源 enum (path / route_config / identity / default)
 //   - 置信度 + 冲突标记 (用于 metrics + audit)
 //
-// 选择优先级（参 docs/process/plans/2026-05-08-upgrade6-u6d-synthesis.md 综合 codex
-// lane 的"path/route 优先"决策）：
+// 选择优先级：
 //   1. explicit path: /v1/chat/completions → OpenAIChat 等显式路径强 contract
 //   2. route_config: 显式路由配置中已声明的 ClientProtocol
 //   3. identity (仅当 IdentityAware=true 且 confidence ≥ MinConfidence):
@@ -47,7 +46,7 @@ const (
 )
 
 // MinIdentityConfidence 是 identity 信号被信任的最低 confidence 阈值。
-// codex synthesis：单一 threshold 不足，但作为 baseline 设 0.7；
+// 单一 threshold 不足，但作为 baseline 设 0.7；
 // 真正决策还要看 path consistency（与 path-derived 的 protocol 一致才信）。
 const MinIdentityConfidence = 0.7
 
@@ -93,7 +92,7 @@ type Decision struct {
 // Select 根据 Inputs 计算 ClientShape Decision。
 // 纯函数, 无副作用, 无 ctx 依赖。
 //
-// 优先级（synthesis "explicit path 优先"——sonnet 抓到 RouteConfig 不应
+// 优先级（synthesis "explicit path 优先"—
 // override well-known path 这一点）：
 //  1. 路径命中已知 wire-contract (如 /v1/chat/completions) → 走 path
 //  2. RouteConfig 显式声明（非空，且 path 未命中已知）→ 走 route_config

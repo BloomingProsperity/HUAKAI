@@ -6,7 +6,6 @@ import (
 	"testing"
 )
 
-// TestVerifyHandlerRejectsNonReceiptSignedPayload guards S1-031:
 // /v1/trust/verify must NOT certify "valid trust receipt" for arbitrary bytes that
 // merely happen to be signed by the shared audit signing key. The audit ledger signs
 // entry_hash bytes (and other trust.ledger.v1 payloads) with the same key family, so

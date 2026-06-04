@@ -2,7 +2,7 @@ package userauth
 
 import "testing"
 
-// TestNewOAuthHTTPProviderRejectsUnsafeEndpoints guards S2-009: social OAuth token-exchange / JWKS /
+// TestNewOAuthHTTPProviderRejectsUnsafeEndpoints guards social OAuth token-exchange/JWKS/
 // GitHub user&emails calls carry OAuth codes, client_secret and bearer tokens, so an
 // operator-configurable endpoint that is plain-http or points at a private/loopback/metadata literal
 // IP must be refused at construction — preventing those credentials from being dialed to
@@ -31,7 +31,7 @@ func TestNewOAuthHTTPProviderRejectsUnsafeEndpoints(t *testing.T) {
 		{"jwks_private", func(c *OAuthConfig) { c.JWKSURL = "https://10.0.0.5/certs" }},
 		{"auth_link_local", func(c *OAuthConfig) { c.AuthURL = "https://169.254.1.2/auth" }},
 		// special-use / non-public ranges that a naive loopback+private+link-local check misses but the
-		// shared auth.IsPublicOAuthIP policy denies (codex S2-009 P2): CGNAT 100.64/10 + benchmark 198.18/15.
+		// shared auth.IsPublicOAuthIP policy denies: CGNAT 100.64/10 + benchmark 198.18/15.
 		{"token_cgnat", func(c *OAuthConfig) { c.TokenURL = "https://100.100.100.200/token" }},
 		{"jwks_benchmark", func(c *OAuthConfig) { c.JWKSURL = "https://198.18.0.1/certs" }},
 	}

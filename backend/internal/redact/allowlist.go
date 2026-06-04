@@ -2,7 +2,7 @@
 // redactor，保证 SRE 用的 system_log 永远不含 prompt / completion / tool 内容 /
 // PII 等用户数据。
 //
-// Owner 2026-05-13 directive: "无用户数据保留日志 / 日志只做系统报错" —— 现有
+// "无用户数据保留日志/日志只做系统报错" —— 现有
 // gateway / proto / handler 暂时只用 stdlib，但等接 zap/zerolog/slog 时所有
 // 入口必须经过本包 IsSafeField + Redact 过滤。
 //

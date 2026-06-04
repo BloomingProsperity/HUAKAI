@@ -233,11 +233,11 @@ func TestReceiptVerifyMarksRevokedKeyAsUnverified(t *testing.T) {
 	}
 }
 
-// TestReceiptVerifyRejectsSignatureOutsideKeyWindow guards S1-032 on the cost-receipt
+// TestReceiptVerifyRejectsSignatureOutsideKeyWindow guards on the cost-receipt
 // path: /v1/receipts/{id}/verify must reject a stored receipt whose occurred_at is
 // outside the signing key's [EffectiveFrom, EffectiveTo] window — even with a valid
 // ed25519 signature. This is the leaked rotated-key attack mirrored on the user receipt
-// endpoint (the gap codex flagged on the trust-verify-only first pass).
+// endpoint.
 //
 // Mutation check: remove the SignatureOutsideKeyWindow branch in verifyReceiptTrustSignature
 // and the "outside" case flips to valid=true status="signed-only" → red. The in-window

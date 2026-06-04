@@ -22,7 +22,7 @@ func mustResolver(t *testing.T, cidrs ...string) *Resolver {
 	return r
 }
 
-// TestResolverClientIP is the S2-109 security core: forwarded headers are honored ONLY
+// TestResolverClientIP is the security core: forwarded headers are honored ONLY
 // when the immediate peer is a configured trusted proxy, and the real client is taken
 // as the RIGHTMOST untrusted hop (the address our outermost trusted proxy actually
 // observed) — never a client-controlled leftmost entry.

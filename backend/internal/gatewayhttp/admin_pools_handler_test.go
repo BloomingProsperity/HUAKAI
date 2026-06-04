@@ -478,7 +478,6 @@ func adminPoolsTenantOperator(tenantID int64) adminPoolAuthStub {
 // Mutation 自检:把 adapter CreatePoolWithAudit 改成 InsertPool 后单独
 // InsertAdminAuditEvent (非同事务) → audit 拒后 pool 行已落 → 本用例 red。
 //
-// gatewayhttp 是 frozen package (CLAUDE.md #13),不允许新建文件;故
 // 直接 append 到既有 _test.go,用 env-var 守卫而不是 build tag。
 // ------------------------------------------------------------------
 

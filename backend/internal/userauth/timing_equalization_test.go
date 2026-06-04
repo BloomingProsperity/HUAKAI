@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// TestAuthenticate_EqualWorkOnUserMiss 守 S2-048: 密码登录不得通过响应时延泄露某邮箱是否已注册。
+// TestAuthenticate_EqualWorkOnUserMiss 验证 密码登录不得通过响应时延泄露某邮箱是否已注册。
 // 修复让「邮箱不存在」也跑一次等价 argon2 校验。这里用**确定性**方式断言(不用易抖的 wall-clock):
 // 经 verifyPasswordFn hook 计口令校验次数 —— 不存在的邮箱必须仍恰好触发 1 次校验, 且被校验的 hash
 // 必须是真实可解析的 argon2id(确保是真 argon2 等工, 而非空串/no-op 的快速失败)。
@@ -63,7 +63,7 @@ func TestAuthenticate_EqualWorkOnUserMiss(t *testing.T) {
 	}
 
 	// (C) 存在但无本地口令(social-only): 密码登录也必须跑一次等价 argon2 —— 否则其「快速返回」
-	// 会与「不存在(已跑 dummy)」时延不同, 暴露该邮箱是已注册的 social 账号(S2-048 R1 codex 抓的漏)。
+	// 会与「不存在(已跑 dummy)」时延不同, 暴露该邮箱是已注册的 social 账号。
 	// mutation: 删掉 PasswordHash=="" 分支里的 dummy verify → calls==0 → 红。
 	if _, err := svc.applyVerifiedSocialIdentity(ctx, 1, VerifiedIdentity{
 		Provider: SocialProviderGoogle, Subject: "g-sub", Email: "social@example.test", EmailVerified: true,
@@ -85,7 +85,7 @@ func TestAuthenticate_EqualWorkOnUserMiss(t *testing.T) {
 	}
 }
 
-// TestAuthenticate_EqualWorkOnAccountStateBranches 守 S2-048 重修门2(时序维度): disabled / locked /
+// TestAuthenticate_EqualWorkOnAccountStateBranches 验证 disabled/locked/
 // reset / unverified 这些「因账号状态失败」的分支此前在 argon2 之前 early-return, 比「口令错」(跑
 // argon2)快得多 → 泄露「该邮箱存在且处于某状态」(时序枚举侧信道)。修复让每条状态分支返回前也跑
 // 一次等价 argon2(用用户真实 hash, 成本与口令校验一致)。本测断言每条恰好 1 次校验且仍返回各自

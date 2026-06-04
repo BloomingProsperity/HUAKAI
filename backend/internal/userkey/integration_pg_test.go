@@ -11,7 +11,7 @@
 //
 // 判别 fixture 关键:每个测试都种 user A + user B 各 1 个 key,然后从 A 的
 // session 调 service 试图操作 B 的 key — 反向期望必须出错。把 service 里
-// WHERE user_id = $? 删掉 → 测试集体 red,符合 CLAUDE.md #14 mutation 自检。
+// WHERE user_id = $? 删掉 → 测试集体 red,符合 mutation 自检。
 
 package userkey
 
@@ -149,7 +149,7 @@ func TestUserKey_Issue_PlaintextOnceOnly(t *testing.T) {
 		t.Fatalf("bcrypt mismatch: %v", err)
 	}
 
-	// Get + JSON 序列化必不含 plaintext (codex HIGH #3 修复 — 不能只靠
+	// Get + JSON 序列化必不含 plaintext (
 	// "KeyDescriptor 结构没字段" 隐式断言,要真正序列化 + grep)
 	gotGet, err := svc.Get(ctx, f.tenantID, f.userA, res.APIKeyID)
 	if err != nil {
@@ -445,7 +445,7 @@ func TestUserKey_Issue_RejectsBadInputs(t *testing.T) {
 
 // T10: cap 竞态防御 — 并发 N+5 个 Issue,**永远不**能让 active 数超过 MaxActiveKeysPerUser。
 //
-// codex HIGH #1 修复测试:advisory lock 把 cap 检查序列化;只 t.Parallel + serial issuance
+// advisory lock 把 cap 检查序列化;只 t.Parallel + serial issuance
 // 测不到这个 race;必须真起并发 goroutine。Mutation 自检:删 pg_advisory_xact_lock 行 →
 // 多 worker 同时读到 active < cap → 同时 INSERT → 最终 DB 里 active > cap → 测试 red。
 func TestUserKey_ActiveKeyCap_RaceLockedDown(t *testing.T) {
@@ -494,7 +494,7 @@ func TestUserKey_ActiveKeyCap_RaceLockedDown(t *testing.T) {
 
 // T11: 失活 tenant — List/Get/Revoke 必须 fail-closed (返空 / ErrNotFound)。
 //
-// codex HIGH #2 修复测试:stale session (tenant 已 disabled 但 token 还没过期)
+// stale session (tenant 已 disabled 但 token 还没过期)
 // 不应该让用户管 key。Mutation 自检:删 List/Get/Revoke 的 JOIN tenants/users → 失活
 // tenant 仍能 List 出 key / Get 拿到行 / Revoke 成功 → 测试 red。
 func TestUserKey_StaleParent_FailClosed(t *testing.T) {

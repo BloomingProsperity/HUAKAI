@@ -174,7 +174,7 @@ func TestAT_EMAIL_010_PasswordResetEmailCooldown(t *testing.T) {
 	}
 }
 
-// TestAuthSender_CooldownRolledBackOnHardFailure guards S2-079: a first send that fails hard
+// TestAuthSender_CooldownRolledBackOnHardFailure guards a first send that fails hard
 // (dispatch error, no outbox to queue a retry) must NOT consume the cooldown, so an immediate
 // second request actually attempts delivery again instead of being silently suppressed with a
 // misleading nil result.
@@ -211,7 +211,7 @@ func TestAuthSender_CooldownRolledBackOnHardFailure(t *testing.T) {
 	}
 }
 
-// TestAuthSender_CooldownHeldWhenQueuedForRetry guards the other half of S2-079: when the first
+// TestAuthSender_CooldownHeldWhenQueuedForRetry guards the other half of: when the first
 // send fails transiently but is durably enqueued to the DLQ outbox, the cooldown MUST be held so a
 // second immediate request is suppressed (no double-queue / double-send while a retry is pending).
 //
@@ -249,7 +249,7 @@ func TestAuthSender_CooldownHeldWhenQueuedForRetry(t *testing.T) {
 	}
 }
 
-// TestIsPermanentEmailFailure_SMTPCodeSemantics guards the S2-079 classifier fix: SMTP 4xx is a
+// TestIsPermanentEmailFailure_SMTPCodeSemantics guards the classifier fix: SMTP 4xx is a
 // TRANSIENT reply (must retry via DLQ), 5xx is PERMANENT (must not retry). The old rule matched the
 // substring " 4" and wrongly treated transient 4xx as permanent, so those skipped the retry outbox.
 //

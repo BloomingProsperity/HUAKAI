@@ -1,5 +1,5 @@
 // R7.2 mutator tests.
-// Lane: implementer-claude (CLAUDE.md #10 + 2026-05-04).
+// Lane: implementer-claude.
 package gateway
 
 import (

@@ -292,7 +292,7 @@ func mergeTokenResponse(cred map[string]any, resp tokenResponse) ([]byte, time.T
 	if strings.TrimSpace(resp.Scope) != "" {
 		cred["scope"] = resp.Scope
 	}
-	// ANT-3 R2 S2 defense-in-depth (Owner codex review 抓出): 写回 store 前
+	// R2 S2 defense-in-depth (Owner): 写回 store 前
 	// 主动 scrub hostile credential 字段, 防止 store 残留攻击面被未来代码
 	// 路径意外读取。本轮 refresh 出站 adapter (anthropic ANT-3 c201cb4 已修)
 	// 不再读这些, 但 cred 不清会让下次 refresh / future ingest path 仍可能

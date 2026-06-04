@@ -6,7 +6,6 @@
 // on this primitive in subsequent atomic commits. A07.4 wires it to F-AUTH-005.
 //
 // No IO, no network, no credential contact: pure algorithm + state.
-// Synthesis of two parallel-draft lanes (CLAUDE.md #10 + 2026-05-04 directive).
 package gateway
 
 import (

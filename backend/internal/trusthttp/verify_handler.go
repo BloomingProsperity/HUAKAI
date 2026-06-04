@@ -115,7 +115,7 @@ func (h *verifyHandler) verify(ctx context.Context, raw []byte) VerifyResponse {
 	if !ed25519.Verify(ed25519.PublicKey(key.PublicKey), canonical, sig) {
 		return VerifyResponse{Valid: false, Status: "mismatch", SignatureValid: false, KeyStatus: keyStatus, Reason: "signature_mismatch", CanonicalHash: canonicalHash, SchemaVersion: trustSchemaVersion}
 	}
-	// S1-031: 域分离 —— 签名有效 ≠「这是有效 HUAKAI trust receipt」。audit ledger 用
+	// 域分离 —— 签名有效 ≠「这是有效 HUAKAI trust receipt」。audit ledger 用
 	// 同一 key 家族签 entry_hash / trust.ledger.v1 等载荷;若不校验被签 canonical 字节
 	// 的语义域,任何被该 key 签过的 base64 字节都能拿到 signed-only=valid 的伪 receipt 判定。
 	// 验签通过后再要求 canonical 确为 trust.receipt.v1;object 分支已在
@@ -124,23 +124,23 @@ func (h *verifyHandler) verify(ctx context.Context, raw []byte) VerifyResponse {
 	occurredAt, perr := parseCanonicalTrustReceipt(canonical)
 	if perr != nil {
 		// reason 复用 OpenAPI TrustVerifyResponse.reason 已声明的 payload_invalid(契约内),
-		// status=unverified 表示「签名有效但载荷不是可验证的 trust receipt」(codex #8 P2:不引入未声明枚举值)。
+		// status=unverified 表示「签名有效但载荷不是可验证的 trust receipt」。
 		return VerifyResponse{Valid: false, Status: "unverified", SignatureValid: true, KeyStatus: keyStatus, Reason: "payload_invalid", CanonicalHash: canonicalHash, SchemaVersion: trustSchemaVersion}
 	}
 	// 撤销优先于窗口校验:若 key 已 CRL 撤销(泄漏/作废),即便同时落在有效窗口外,也要
-	// 如实报 revoked/key_revoked,保证撤销/泄漏对客户端与运维可见(codex #8 S1-032 Round2 P2)。
+	// 如实报 revoked/key_revoked,保证撤销/泄漏对客户端与运维可见。
 	if keyStatus == "revoked" {
 		if reason == "" {
 			reason = "key_revoked"
 		}
 		return VerifyResponse{Valid: false, Status: "unverified", SignatureValid: true, KeyStatus: keyStatus, Reason: reason, CanonicalHash: canonicalHash, SchemaVersion: trustSchemaVersion}
 	}
-	// S1-032: receipt 必须由签名时仍在有效窗口内的 key 签发。occurred_at 已知且落在 key
+	// receipt 必须由签名时仍在有效窗口内的 key 签发。occurred_at 已知且落在 key
 	// 有效窗口外 → 拒(堵泄漏旧 key 签新日期 receipt、未来 key 提前生效)。occurred_at 缺省
 	// (零值)无法判定签名时刻,豁免以免误伤无 occurred_at 的旧 receipt。
 	// 仅在使用真实 pubkey registry(带真实 EffectiveFrom/To)时强制窗口:signer-only 回退
 	// 无 registry,lookupKey 会用验证时刻 fabricate EffectiveFrom,据此否决会误杀正常历史
-	// receipt(codex #8 S1-032a P2)。
+	// receipt。
 	if h.deps.Registry != nil && !occurredAt.IsZero() && auditledger.SignatureOutsideKeyWindow(occurredAt, key) {
 		return VerifyResponse{Valid: false, Status: "unverified", SignatureValid: true, KeyStatus: key.Status(), Reason: "signature_outside_key_window", CanonicalHash: canonicalHash, SchemaVersion: trustSchemaVersion}
 	}
@@ -181,7 +181,7 @@ func (h *verifyHandler) lookupKey(ctx context.Context, fingerprint string) (*aud
 }
 
 // parseCanonicalTrustReceipt 确认 canonical 字节是一份 trust.receipt.v1,并提取
-// occurred_at 供 key 有效窗口校验使用(S1-031 域分离 + S1-032 窗口校验)。object 分支由
+// occurred_at 供 key 有效窗口校验使用(域分离 + 窗口校验)。object 分支由
 // trustReceiptFromJSONObject 校验 schema_version;base64 分支历史上直接放行任意被签
 // 字节,故在验签通过后调用此函数完成域分离。非 JSON(如 audit ledger 的 entry_hash
 // 原始字节)或 schema_version 非 trust.receipt.v1(如 trust.ledger.v1)一律返回 error。

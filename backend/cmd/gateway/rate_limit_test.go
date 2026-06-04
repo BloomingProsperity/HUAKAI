@@ -1,4 +1,4 @@
-// S2-057: per-IP inbound rate limit (token-bucket, two tiers).
+// Per-IP inbound rate limit (token-bucket, two tiers).
 //
 // Discriminating intent: these tests assert the SPECIFIC 429 exhaustion + per-IP
 // isolation behavior, not a status class the login path would already return.
@@ -79,7 +79,7 @@ func doLogin(rl *rateLimiter, remoteAddr string) int {
 //
 // Mutation check: remove `router.Use(newRateLimiter().middleware)` wiring OR
 // widen the login burst to a huge number and the "want 429" assertions below go
-// red — confirmed by the operator before landing (see commit body).
+// red.
 func TestRateLimit_AuthLogin_BurstThen429(t *testing.T) {
 	rl := fixedClockLimiter(t)
 

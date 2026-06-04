@@ -115,7 +115,7 @@ type CanonicalUsage struct {
 	// completion_tokens_details.reasoning_tokens）。它已被上游计入 OutputTokens，
 	// 但对客户端不可见、估算器无法从可见内容数出。token 交叉校验须从 OutputTokens
 	// 扣除它再与可见内容估算对比，否则推理重的合法响应会被误判为 usage 不一致
-	// （S2-163-fu；纯审计明细，不参与计费/落账）。
+	// （纯审计明细，不参与计费/落账）。
 	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 
 	// CacheCreationInputTokens: vendor 写入新缓存的 prompt token 数（首次见

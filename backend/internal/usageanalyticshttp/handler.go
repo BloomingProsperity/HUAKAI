@@ -1,6 +1,6 @@
 // Package usageanalyticshttp serves aggregated usage analytics over already-
-// settled usage_records. SELECT-only (CMB-7); never reads or logs credentials
-// (CMB-5). The self-serve surface is locked to the authenticated API key's
+// settled usage_records. SELECT-only; never reads or logs credentials
+// . The self-serve surface is locked to the authenticated API key's
 // (tenant_id, api_key_id) — the key scope is taken from the resolved identity,
 // never from the query string, so cross-key reads are structurally impossible.
 package usageanalyticshttp
@@ -21,7 +21,7 @@ import (
 )
 
 // maxAnalyticsWindow caps a self-serve query window so an unbounded full-history
-// scan cannot be requested by accident (design risk #4 mitigation).
+// scan cannot be requested by accident (design risk mitigation).
 const maxAnalyticsWindow = 31 * 24 * time.Hour
 
 type AuthResolver interface {

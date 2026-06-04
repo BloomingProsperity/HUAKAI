@@ -284,11 +284,11 @@ type ListUsageByTenantRow struct {
 }
 
 // F-OBS-001 read-only query surface for the admin/audit lane.
-// Per docs/specs/_invariants/cross-module-boundaries.md CMB-7: this file
+// Per docs/specs/_invariants/cross-module-boundaries.md: this file
 // contains SELECT-only queries; the Repository wrapper enforces tenant
 // scope on every call.
 //
-// Per CMB-5: NONE of these SELECTs include the `credentials` column from
+// NONE of these SELECTs include the `credentials` column from
 // provider_accounts (or any synonym). Audit views surface metadata only.
 // Page through usage_records for one tenant. Most-recent-first.
 func (q *Queries) ListUsageByTenant(ctx context.Context, arg ListUsageByTenantParams) ([]ListUsageByTenantRow, error) {

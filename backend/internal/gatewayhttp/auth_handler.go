@@ -75,7 +75,7 @@ type AuthHandlerDeps struct {
 	Captcha           captcha.CaptchaVerifier
 	TwoFactor         AuthTwoFactor
 	TwoFactorSettings AuthTwoFactorSettings
-	// LoginThrottle 是密码登录的「argon2 前置」IP 限流闸(S2-048)。nil = 不限流(测试/旧装配),
+	// LoginThrottle 是密码登录的「argon2 前置」IP 限流闸。nil = 不限流(测试/旧装配),
 	// 生产装配必须注入,否则未认证攻击者可对任意邮箱触发昂贵 argon2 放大 CPU。
 	LoginThrottle *loginthrottle.Limiter
 }
@@ -214,7 +214,7 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		if !decodeAdminPoolJSON(w, r, &req) {
 			return
 		}
-		// S2-048 门1: 在调用 Authenticate(会跑 argon2)之前先过 IP 限流闸。命中即 429, 绝不进 KDF ——
+		// 门1: 在调用 Authenticate(会跑 argon2)之前先过 IP 限流闸。命中即 429, 绝不进 KDF —
 		// 否则未认证攻击者可对任意邮箱触发昂贵 argon2(等工修复让 miss 也跑 argon2, 放大了这个面)。
 		// key 用可信 client IP(body 的 tenant_id 未认证可伪造, 不进 key)。lease 在登录结果回灌:
 		// 成功 Success(不计失败), 失败 Failure(累计/可能封禁); defer Cancel 兜底 panic/早退释放在途槽。
@@ -245,7 +245,7 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		user, err := d.Auth.Authenticate(r.Context(), userauth.LoginInput{TenantID: req.TenantID, Email: req.Email, Password: req.Password})
 		if err != nil {
 			lease.Failure() // nil-safe: 限流未装配时为 no-op
-			// 审计记录真实 reason(操作员可见), 但对外统一 generic, 杜绝状态码/消息枚举(S2-048 门2)。
+			// 审计记录真实 reason(操作员可见), 但对外统一 generic, 杜绝状态码/消息枚举(门2)。
 			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
 				EventType: "user_login_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: authReasonClass(err), AuthMethod: "password",
 			})
@@ -860,7 +860,7 @@ func addDevAuthToken(resp map[string]any, key string, token string) {
 }
 
 func devAuthReturnTokenEnabled() bool {
-	// 防御纵深(S1-018):即使误设 HUAKAI_DEV_AUTH_RETURN_TOKEN=true,生产模式下也绝不把明文
+	// 防御纵深:即使误设 HUAKAI_DEV_AUTH_RETURN_TOKEN=true,生产模式下也绝不把明文
 	// 验证/重置令牌回写进公开响应体。启动门控 validateDevAuthTokenFlag 是权威拦截(进程直接拒启),
 	// 这里在响应写出层再兜一道,确保即便运行期被改环境绕过启动检查也不泄露明文 secret。
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("HUAKAI_RELEASE_MODE")), "production") {
@@ -920,7 +920,7 @@ func writeAuthError(w http.ResponseWriter, err error) {
 	}
 }
 
-// writeLoginFailureGeneric 是密码登录专用的失败响应(S2-048 门2)。它把所有「与账号存在性/状态
+// writeLoginFailureGeneric 是密码登录专用的失败响应(门2)。它把所有「与账号存在性/状态
 // 相关」的认证失败 —— 口令错、账号停用、锁定、待邮箱验证、需重置 —— 对外统一成同一个 generic
 // 401 invalid_credentials, 杜绝攻击者借状态码/消息差异枚举用户是否存在及其状态。真实 reason 已在
 // 调用前写入审计事件(操作员可见, 用户不可见)。非枚举类错误(请求格式错/后端故障)保持区分, 不
@@ -942,7 +942,7 @@ func writeLoginFailureGeneric(w http.ResponseWriter, err error) {
 	}
 }
 
-// writeLoginThrottled 是限流命中(S2-048 门1)的响应: 429 + 粗粒度 Retry-After(秒, 已在 limiter
+// writeLoginThrottled 是限流命中(门1)的响应: 429 + 粗粒度 Retry-After(秒, 已在 limiter
 // 侧对齐), 不携带剩余次数/账号状态, 避免侧信道。
 func writeLoginThrottled(w http.ResponseWriter, retryAfter time.Duration) {
 	if retryAfter > 0 {

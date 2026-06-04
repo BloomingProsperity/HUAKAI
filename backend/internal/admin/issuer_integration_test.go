@@ -10,7 +10,7 @@
 //   6. Rate limit (30/h) blocks 31st issuance
 //   7. Audit payload jsonb NEVER contains plaintext bearer or key_hash
 //
-// Per CMB-5: assertion #7 is the security-critical regression test;
+// assertion is the security-critical regression test;
 // it grep's the persisted payload for the substring of the plaintext
 // that was issued.
 
@@ -248,7 +248,7 @@ func TestAdminRevoke_BlocksAuth(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Test 3 — AuditNeverContainsPlaintext (CMB-5 regression)
+// Test 3 — AuditNeverContainsPlaintext (regression)
 // -----------------------------------------------------------------------------
 
 func TestAdminIssue_AuditNeverContainsPlaintext(t *testing.T) {

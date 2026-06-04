@@ -80,7 +80,7 @@ func TestBindingCacheInterface_NoopSatisfies(t *testing.T) {
 	}
 }
 
-// TestBindingScope_Valid 守界 (sonnet F4): degenerate scope 应判 invalid，
+// TestBindingScope_Valid 守界: degenerate scope 应判 invalid，
 // caller 据此 fail-fast，不进入 noop miss 假阳。
 func TestBindingScope_Valid(t *testing.T) {
 	cases := []struct {

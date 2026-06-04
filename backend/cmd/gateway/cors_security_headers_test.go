@@ -1,4 +1,4 @@
-// S2-141: global CORS + browser security-header contract.
+// Global CORS + browser security-header contract.
 //
 // Discriminating intent (mutation checks called out per case): the gateway had
 // ZERO security headers and no CORS policy; these tests go red if a header is

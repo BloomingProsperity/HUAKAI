@@ -13,7 +13,7 @@ import (
 )
 
 // groupPolicyFailOpenTotal 暴露订阅分组路由 gate 因 routes 查询失败而 fail-open 放行的累计
-// 次数, 经 expvar /debug/vars 暴露给运维。R4: 持续 fail-open = routes DB 异常, 此时被限档
+// 次数, 经 expvar /debug/vars 暴露给运维。持续 fail-open = routes DB 异常, 此时被限档
 // 用户会越档放行, 该计数须可被告警监控 (仅 debug 日志不足以告警)。
 var groupPolicyFailOpenTotal = expvar.NewInt("group_policy_fail_open_total")
 

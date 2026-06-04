@@ -503,7 +503,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 	// 请求翻译损失之前被丢弃(_)。先快照供下方 dispatch-internal abort 携带证据;
 	// canonicalReq 非空时再折入其 CapabilityGraph —— DispatchHCSF 用 cloneHCSF 把请求侧
 	// ProtocolLoss 带进响应 env(upstream_dispatcher_hcsf.go:144/153),使成功路径的
-	// billing 快照也累积请求侧证据(S1-025-fu item 2;非流式 buffered 路径原本整段丢失)。
+	// billing 快照也累积请求侧证据(item 2;非流式 buffered 路径原本整段丢失)。
 	ex.protocolLoss = protocolLossJSONFromEntries(requestLosses)
 	if err != nil {
 		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
@@ -550,7 +550,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 	// DispatchHCSF 内 MarshalToProviderRequest 会原地往 canonicalReq.CapabilityGraph.ProtocolLoss
 	// 追加 canonical→upstream marshal 损失(addMarshalLossRaw)。下方 dispatch-error 与
 	// finalizeBufferedEnvelope 的 empty-response abort 都走 ex.protocolLoss 快照,必须在此刷新,
-	// 否则只剩 dispatch 前的请求翻译损失,marshal 证据整段丢失(S1-025-fu review R1)。
+	// 否则只剩 dispatch 前的请求翻译损失,marshal 证据整段丢失。
 	// 成功路径稍后由 billing 快照从 bufferedEnv(已含 marshal+resp 损失)覆盖,无重复累加。
 	ex.protocolLoss = protocolLossJSONFromEnv(canonicalReq)
 	if err != nil {

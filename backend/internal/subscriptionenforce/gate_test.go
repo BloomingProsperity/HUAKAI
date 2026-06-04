@@ -64,7 +64,7 @@ func TestGroupPolicyGate_RestrictsToAllowedPool(t *testing.T) {
 	}
 }
 
-// 守白名单核心(F1, Owner 2026-05-30): 该档配了有效路由、但本 model 没命中任何规则
+// 守白名单核心(F1): 该档配了有效路由、但本 model 没命中任何规则
 // (Configured=true 且 Allowed 空) → 拒, 而非放行。这是 HUAKAI 的越档拦截。
 // mutation: 把"配置了但本 model 未命中 → 拒"退回旧的"空集 → 放行" → 红
 // (premium 只配 claude-* 时, 请求 gemini 会越档溜进任意池)。

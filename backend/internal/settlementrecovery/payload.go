@@ -42,7 +42,7 @@ const (
 //
 // 设计:不直接 JSON marshal billing.SettleRequest。Payload 镜像
 // SettleRequest 所有可持久字段,worker 重 settle 时重构 SettleRequest。
-// S2-005 后 scheduler outbox 改为 bool intent,必须持久化,否则原 Tx2
+// 后 scheduler outbox 改为 bool intent,必须持久化,否则原 Tx2
 // 失败后 recovery 成功时会漏写 scheduler_outbox。
 type Payload struct {
 	Source            Source                 `json:"source"`
@@ -72,7 +72,7 @@ type settleRequestPersisted struct {
 	Provider            string                   `json:"provider"`
 	Stream              bool                     `json:"stream"`
 	Draft               gateway.UsageRecordDraft `json:"draft"`
-	// ProtocolLoss 镜像 billing.SettleRequest.ProtocolLoss(billing.go:99);S1-025-fu
+	// ProtocolLoss 镜像 billing.SettleRequest.ProtocolLoss(billing.go:99);
 	// 之前缺此字段 → settle 失败 DLQ replay 重放时 usage_records.protocol_loss 退化成 "[]"。
 	ProtocolLoss        json.RawMessage  `json:"protocol_loss,omitempty"`
 	StreamAttempt       *billing.Attempt `json:"stream_attempt,omitempty"`
@@ -91,7 +91,7 @@ var (
 
 // FromCompletionEvent 把 eventbus.RequestCompletionEvent 转 Payload。
 //
-// AuditRequestID 规范化兜底(Owner P2 finding 2026-05-24):上层 settleCompletion
+// AuditRequestID 规范化兜底(finding 2026 05 24):上层 settleCompletion
 // / Handler.Handle 都是在**栈本地副本**上把 SettleRequest.AuditRequestID 补成
 // event.RequestID,recovery payload 构造时拿到的是外层未规范化的原始 event ——
 // 不在此处兜底,worker 重放写 NULL audit_request_id,断 audit/receipt 关联。

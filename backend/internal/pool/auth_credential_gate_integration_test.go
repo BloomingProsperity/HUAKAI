@@ -18,8 +18,8 @@ import (
 
 // AT-XFEAT-001: malformed upstream token causes CredentialGate to reject
 // the holding account; pool selector falls over to the next eligible
-// account whose credential is valid. Validates F-POOL-001 §Phase B
-// CredentialGate ↔ F-AUTH-005 GetAccessToken contract.
+// account whose credential is valid. Validates the CredentialGate ↔
+// GetAccessToken contract.
 func TestATXFEAT_001_CredentialGateRejectsMalformedTokenAccount(t *testing.T) {
 	refreshClient := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		// 返回 malformed token, 触发 auth.ErrTokenMalformed, 但不在测试里监听本地端口。

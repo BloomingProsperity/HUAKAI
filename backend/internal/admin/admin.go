@@ -5,13 +5,13 @@
 //   - admin_audit_events writer
 //
 // Boundary contracts (docs/specs/_invariants/cross-module-boundaries.md):
-//   - CMB-1: this package MUST NOT be imported from internal/router or
+// this package MUST NOT be imported from internal/router or
 //     internal/auth's hot resolver path. The inbound resolver looks up
 //     api_keys; admin work writes to api_keys. Two different surfaces.
-//   - CMB-5: plaintext bearers are surfaced ONLY in IssueResult.Plaintext
+// plaintext bearers are surfaced ONLY in IssueResult.Plaintext
 //     for one-time response to the operator. NEVER stored, NEVER logged,
 //     NEVER persisted into admin_audit_events.payload.
-//   - CMB-7: this package writes to admin_tokens, api_keys, and
+// this package writes to admin_tokens, api_keys, and
 //     admin_audit_events. Never to billing, pool, or registry tables.
 //
 // Per docs/process/plans/2026-05-01-n4b-admin-keys.md.

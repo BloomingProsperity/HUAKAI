@@ -14,7 +14,7 @@ const HCSFVersion = "0.4"
 //   - StreamEvents != nil → event-replay envelope（fixture / replay 用途）
 //   - Native Passthrough → RequestMeta.NativePassthrough=true；route 实现见 P-4 决策
 //
-// BufferedResponse 与 StreamEvents 至多一个非 nil（见 INV-6）。
+// BufferedResponse 与 StreamEvents 至多一个非 nil（)。
 type HCSFEnvelope struct {
 	// Version 必填；锁定 "0.4"；envelope_validate 强校验。
 	Version string `json:"version"`
@@ -49,13 +49,13 @@ type HCSFEnvelope struct {
 	// Policy 必填；承接 data_retention、native passthrough auth/audit、redaction。
 	Policy Policy `json:"policy"`
 
-	// Extensions 可选；key 必须以 vendor: 或 experimental: 前缀（INV-12）。
+	// Extensions 可选；key 必须以 vendor: 或 experimental: 前缀。
 	// 不得用于隐藏 capability drop；任何 capability lossy 必须发 ProtocolLossEntry。
 	Extensions map[string]json.RawMessage `json:"extensions,omitempty"`
 }
 
 // NewEmptyEnvelope 构造一个最小合法 envelope，主要用于测试与 fixture 起点。
-// 所有 required slice 字段使用非 nil 空数组（INV-1 / round-trip 稳定性）。
+// 所有 required slice 字段使用非 nil 空数组（round-trip 稳定性）。
 func NewEmptyEnvelope() *HCSFEnvelope {
 	return &HCSFEnvelope{
 		Version:         HCSFVersion,

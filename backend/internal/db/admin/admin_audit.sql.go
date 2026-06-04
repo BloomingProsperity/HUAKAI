@@ -15,7 +15,7 @@ const acquireAdminBootstrapLock = `-- name: AcquireAdminBootstrapLock :exec
 SELECT pg_advisory_xact_lock(hashtextextended('admin_bootstrap'::text, 0))
 `
 
-// Codex N+4b2 pass-7 P2: serialize MaybeBootstrap across concurrently
+// serialize MaybeBootstrap across concurrently
 // starting gateway instances. Without this lock, two pods that both see
 // empty admin_tokens can each insert a fresh bootstrap row. The lock is
 // a constant key so all instances contend on the same one. Released
@@ -29,7 +29,7 @@ const acquireAdminIssuanceLock = `-- name: AcquireAdminIssuanceLock :exec
 SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 `
 
-// Codex N+4b2 pass-4 P1 fix: serialize per-actor issuance under a
+// serialize per-actor issuance under a
 // transaction-scoped advisory lock so concurrent POST /admin/v1/api-keys
 // from the same admin token cannot race past the 30/hour cap. The lock
 // is keyed on hash(actor_id) and released automatically on TX
@@ -58,7 +58,7 @@ type CountIssuanceInWindowParams struct {
 // this actor performed in the last `window_seconds`? Default cap = 30/hour
 // per token, enforced by the issuer service.
 //
-// Codex N+4b2 pass-10 P2: filter on target_id IS NOT NULL so denied
+// filter on target_id IS NOT NULL so denied
 // attempts (which write a deny audit row with target_id=0/NULL) are
 // excluded from the cap. Otherwise an actor that hits the cap keeps
 // refreshing the window with deny rows on every retry and never recovers.
@@ -106,7 +106,7 @@ type InsertAdminAuditEventRow struct {
 }
 
 // Slice 2 (N+4b2) admin_audit_events queries.
-// Per CMB-5 + CMB-7: these queries are append-only writes. NEVER store
+// these queries are append-only writes. NEVER store
 // plaintext bearer or key_hash inside the payload jsonb.
 // Append a single admin action audit row. Called inside the same TX as
 // the corresponding api_keys / admin_tokens write so the audit trail is

@@ -2,13 +2,12 @@
 // Spec: docs/specs/upstream-credential-management.md §A07 (Invariant 4) /
 // synthesis §1 A07.
 //
-// Foundation primitive #2 for the A07 three-scope refresh storm controller.
+// Foundation primitive for the A07 three-scope refresh storm controller.
 // A07.1 (TokenBucket) supplies the rate budget; this file supplies same-key
 // dedup so N concurrent callers don't all execute the keyed function.
 // A07.3 (3-scope policy compositor) wires both into the OAuth refresh flow.
 //
 // No IO, no network, no credential contact: pure concurrent control.
-// Synthesis of two parallel-draft lanes (CLAUDE.md #10 + 2026-05-04 directive).
 package gateway
 
 import (
@@ -93,7 +92,7 @@ func (sf *SingleFlight) Forget(key string) {
 }
 
 // InFlight reports whether a call for key is currently in progress.
-// Non-blocking.
+// Non-.
 func (sf *SingleFlight) InFlight(key string) bool {
 	sf.mu.Lock()
 	_, ok := sf.calls[key]

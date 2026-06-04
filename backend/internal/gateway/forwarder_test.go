@@ -416,7 +416,7 @@ func TestForwarderEmitsKeepaliveDuringLongTTFT(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), ": hk") {
 		t.Fatalf("expected SSE keepalive comments during long TTFT to keep the proxy connection alive; body=%q", rec.Body.String())
 	}
-	// codex #8 P1 fix: once a heartbeat has been written the response is committed (HTTP 200 +
+	// once a heartbeat has been written the response is committed (HTTP 200 +
 	// bytes on the wire), so deliveryTracker.started() flips true and the upstream caller can no
 	// longer turn the first-token timeout into a retryable failure / HTTP error status. To avoid
 	// handing the client a silent, comment-only 200 stream, Forward must emit an explicit in-band
@@ -443,14 +443,14 @@ func TestForwarderKeepaliveDisabledWhenIntervalZero(t *testing.T) {
 	}
 }
 
-// TestForwarderInterEventTimeoutFiresAfterFirstEvent guards codex #8 P1: adding the keepalive
+// TestForwarderInterEventTimeoutFiresAfterFirstEvent guards
 // select case must NOT cannibalise the inter-event-timeout case. After the upstream delivers its
 // first event and then stalls (sparse/stuck stream), InterEventTimeout must still fire on its own
 // short deadline — the heartbeat keeps the connection warm but must not reset interTimer or mask
 // the stall.
 //
-// Mutation check: remove the `case <-timerC(interTimer)` branch in Forward (the regression codex
-// caught). interTimer is still armed after the event but nothing selects on it, so the stall runs
+// Mutation check: remove the `case <-timerC(interTimer)` branch in Forward. interTimer is
+// still armed after the event but nothing selects on it, so the stall runs
 // to the much longer TotalStreamTimeout instead → err becomes ErrTotalStreamTimeout and this test
 // goes red on both assertions. Discriminating fixture: InterEventTimeout (50ms) is 40× shorter
 // than TotalStreamTimeout (2s), so the two outcomes are unambiguous.
@@ -1036,11 +1036,11 @@ func TestAT_GW_002_PF_03_UnknownProtocolFamilyReturnsError(t *testing.T) {
 }
 
 // =====================================================================
-// Retired S2-003 skip guards and forwarder-owned AT-GW-002 coverage
+// Retired skip guards and forwarder-owned AT-GW-002 coverage
 // =====================================================================
 
 func TestAT_GW_002_NoRetiredPlaceholderSkipsRemain(t *testing.T) {
-	// Risk killed: S2-003 found false-green AT-GW-002 acceptance placeholders
+	// Risk killed: found false-green AT-GW-002 acceptance placeholders
 	// implemented only as t.Skip. Mutation self-check: reintroducing t.Skip or
 	// t.Skipf in any retired AT function below makes this parser guard fail even
 	// though Go would otherwise report the skipped test file as PASS.

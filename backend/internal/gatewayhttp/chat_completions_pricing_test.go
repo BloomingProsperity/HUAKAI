@@ -353,7 +353,7 @@ func TestStreamingCompletionEvent_AmbiguousUsagePreservedNotInferred(t *testing.
 	}
 }
 
-// TestStreamingCompletionEvent_OutputTokenCrossCheckAnnotatesAuditFields 守 S2-163-fu 流式交叉校验:
+// TestStreamingCompletionEvent_OutputTokenCrossCheckAnnotatesAuditFields 守 流式交叉校验:
 // streamingCompletionEvent 在算出正成本后,用 forwarder 累加的可见输出估算(draft.EstimatedOutputTokens)
 // 与 reported OutputTokens(扣除隐藏 reasoning)比对,把 confidence_score/pending_reconciliation 标到
 // draft —— 审计-only,不改成本/usage_source。镜像非流。
@@ -397,7 +397,7 @@ func TestStreamingCompletionEvent_OutputTokenCrossCheckAnnotatesAuditFields(t *t
 			wantConfidence:       0.5,
 			wantPendingReconcile: true,
 		},
-		// S2-163-fu review R2: provider 把 thinking 以 ReasoningText 流出(estimatedReasoning>0)却
+		// review R2: provider 把 thinking 以 ReasoningText 流出(estimatedReasoning>0)却
 		// 不单列 ReasoningTokens(Anthropic 扩展思考 / Gemini thought)。reported OutputTokens 是否含
 		// thinking 因 provider 而异、canonical 无 folding 信号 → 跳过交叉校验保持满置信、不 pending。
 		// Mutation: 去掉 crossCheckAudit 的 `reasoningTokens==0 && estimatedReasoning>0` 跳过 →
@@ -472,7 +472,7 @@ func TestStreamingCompletionEvent_OutputTokenCrossCheckAnnotatesAuditFields(t *t
 	}
 }
 
-// TestStreamingCompletionEvent_MergesRequestAndStreamProtocolLoss 守 S1-025-fu item 4:
+// TestStreamingCompletionEvent_MergesRequestAndStreamProtocolLoss 守 item 4:
 // 流式 settle 必须合并请求翻译损失(ex.protocolLoss)与逐事件损失(draft.StreamProtocolLoss)。
 func TestStreamingCompletionEvent_MergesRequestAndStreamProtocolLoss(t *testing.T) {
 	ex := &chatExecution{
@@ -514,7 +514,7 @@ func TestStreamingCompletionEvent_MergesRequestAndStreamProtocolLoss(t *testing.
 	}
 }
 
-// TestRejectMoneyPathAuditRef_PreservesEventProtocolLoss 守 S1-025-fu item 3:
+// TestRejectMoneyPathAuditRef_PreservesEventProtocolLoss 守 item 3:
 // audit-ref-missing 的零成本 abort 必须带上 event.SettleRequest.ProtocolLoss(而非 nil)。
 func TestRejectMoneyPathAuditRef_PreservesEventProtocolLoss(t *testing.T) {
 	sentinel := json.RawMessage(`[{"severity":"warning","code":"audit_ref_abort_sentinel","reason":"audit-ref reject must preserve losses"}]`)
@@ -550,7 +550,7 @@ func TestRejectMoneyPathAuditRef_PreservesEventProtocolLoss(t *testing.T) {
 	}
 }
 
-// TestNonStreamingSettle_CapturesResponseConversionProtocolLoss 守 S1-025-fu item 2(c):
+// TestNonStreamingSettle_CapturesResponseConversionProtocolLoss 守 item 2(c):
 // CanonicalToClientResponse 的损失返回之前被丢弃;StopUnknown → stop_reason_unknown 必须进 settle。
 func TestNonStreamingSettle_CapturesResponseConversionProtocolLoss(t *testing.T) {
 	enableHCSFDispatchForTest(t)
@@ -576,7 +576,7 @@ func TestNonStreamingSettle_CapturesResponseConversionProtocolLoss(t *testing.T)
 	}
 }
 
-// TestNonStreamingSettle_CapturesRequestTranslationProtocolLoss 守 S1-025-fu item 2(a):
+// TestNonStreamingSettle_CapturesRequestTranslationProtocolLoss 守 item 2(a):
 // RequestToCanonical 的损失之前在非流式 buffered 路径整段丢弃;请求体带 metadata →
 // d5_metadata_field_pending 必须经 cloneHCSF 进 settle(preserveRequestLoss 模拟真实克隆)。
 func TestNonStreamingSettle_CapturesRequestTranslationProtocolLoss(t *testing.T) {
@@ -718,7 +718,7 @@ func TestNonStreamingUsageDraft_OutputTokenCrossCheckAnnotatesAuditFields(t *tes
 			wantConfidence:       0.5,
 			wantPendingReconcile: true,
 		},
-		// S2-163-fu 判别: o1/o3 隐藏 reasoning token 占 reported OutputTokens 大头。reported
+		// 判别: o1/o3 隐藏 reasoning token 占 reported OutputTokens 大头。reported
 		// = 可见估算 + 1000 reasoning；扣除 reasoning 后 visible == estimated -> OK -> 满信心。
 		// Mutation: billing.go 去掉 `- usage.ReasoningTokens` 扣减 -> visible=reported -> delta=1000
 		// >= 50 -> Fail20 -> 0.5/true -> RED。

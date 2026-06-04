@@ -363,7 +363,7 @@ func classifiedOAuthRefreshError(statusCode int, body []byte, sanitizer OAuthErr
 // 防御的 OAuth-grade client: transport.Proxy=nil, DialContext 拨号层
 // 校验目标 IP 不是 loopback / private / link-local / metadata; CheckRedirect
 // 禁 3xx (防 attacker redirect 把 client_secret/code 渗到自家 endpoint)。
-// 供 credentialacq 等包出站 OAuth token endpoint 时复用 — Owner 2026-05-27
+// 供 credentialacq 等包出站 OAuth token endpoint 时复用
 // P1 follow-up, 关闭 DNS-rebind 攻击面 (静态层在 39c66a3 已落地)。
 func NewSSRFProtectedOAuthClient(base *http.Client) *http.Client {
 	return newSSRFProtectedOAuthClient(base)

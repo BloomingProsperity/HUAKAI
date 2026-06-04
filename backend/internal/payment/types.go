@@ -1,9 +1,9 @@
 // HUAKAI · iKun
 
-// Package payment 实现 HUAKAI 内部支付/充值机器 (Slice P1)。
+// Package payment 实现 HUAKAI 内部支付/充值机器。
 // 入账走 voucher 同款 seam: 在 SERIALIZABLE 事务里写一条 billing_events(payment_credited),
 // 余额由 billing_events / payment_credits 派生 SUM, 不落独立可变余额表; 零 import internal/billing。
-// P1 只提供 manual / test provider, 真实支付渠道 SDK 留 Owner-gated 后续切片。
+// 当前只提供 manual/test provider；真实支付渠道 SDK 需要单独接入。
 package payment
 
 import (

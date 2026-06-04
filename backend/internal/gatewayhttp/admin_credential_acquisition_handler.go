@@ -373,7 +373,7 @@ func createOrStartCredentialAcqSession(ctx context.Context, d AdminCredentialAcq
 		}
 		oauthReq := req.OAuthClient
 		clientSecret := oauthReq.ClientSecret
-		// Owner 2026-05-27：Gemini OAuth acquisition 的 client_secret
+		// Gemini OAuth acquisition 的 client_secret
 		// 统一由生产 wiring 从 HUAKAI_GEMINI_OAUTH_CLIENT_SECRET 注入。
 		// ChatGPT OAuth 是 PKCE-only，同样忽略 request body 中的 client_secret。
 		vendor := credentialstore.Normalize(req.Vendor)

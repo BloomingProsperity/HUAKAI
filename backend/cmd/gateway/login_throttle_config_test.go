@@ -47,7 +47,7 @@ func TestLoginThrottleConfigFromEnv_ValidOverride(t *testing.T) {
 }
 
 // TestLoginThrottleConfigFromEnv_InvalidFailsFast 钉住:非法 env 必须 fail-fast(返回错误),
-// 绝不静默禁用限流 —— 这正是 codex 复审强调的「配错 silently disable throttle」风险。
+// 绝不静默禁用限流。
 // mutation: loader 吞掉解析错误 / 接受非正值 → 不返回错误 → 红(登录 DoS 防护被悄悄关掉)。
 func TestLoginThrottleConfigFromEnv_InvalidFailsFast(t *testing.T) {
 	cases := []struct {

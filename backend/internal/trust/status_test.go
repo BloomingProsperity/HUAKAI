@@ -10,7 +10,7 @@ import (
 
 // TestStatusVocabularyAcceptsOnlyTrustAWireValues
 //
-// 守 TRUST-A-1：wire status 只能是 5 个 Owner 批准值。Mutation 自检：
+// 守 TRUST-A-1：wire status 只能是 5 个。Mutation 自检：
 // 新增/拼错 wire 值或把 unknown 当合法状态，本测试会 red。
 func TestStatusVocabularyAcceptsOnlyTrustAWireValues(t *testing.T) {
 	for _, status := range []Status{StatusVerified, StatusSignedOnly, StatusUnverified, StatusMissing, StatusMismatch} {

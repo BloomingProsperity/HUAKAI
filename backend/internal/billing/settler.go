@@ -338,7 +338,7 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 		return err
 	}
 
-	// Audit-grade Usage Record on abort path (T2-INV-42): every Tx2 commit,
+	// Audit-grade Usage Record on abort path: every Tx2 commit,
 	// including aborted final disposition, produces a usage_record so aborts
 	// remain queryable consistently with committed requests.
 	// Only writable when Pool wrote back provider_account_id (NOT NULL on
@@ -681,10 +681,10 @@ WHERE tenant_id = $1 AND claim_id = $2 AND event_type = 'reconciliation_appended
 	if err != nil {
 		return nil, fmt.Errorf("billing: insert refund event: %w", err)
 	}
-	// opt-in 余额强制(Owner 2026-05-28 选 A):仅对已 provision user_balances 行的
+	// opt-in 余额强制:仅对已 provision user_balances 行的
 	// 用户回补退款。RowsAffected()==0 = 该用户未纳入余额强制(无行)→ 退款
 	// reconciliation 事件已记、无余额行可补,是合法 no-op(非静默假成功:此处显式
-	// 承认 RowsAffected,回应 #8 P2)。已 provision 用户(1 行)正常回补。
+	// 承认 RowsAffected,回应)。已 provision 用户(1 行)正常回补。
 	creditTag, err := tx.Exec(ctx,
 		`UPDATE user_balances
 		 SET balance = balance + $1, version = version + 1

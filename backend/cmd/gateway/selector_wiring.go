@@ -2,7 +2,7 @@
 // 装配 default / shadow / canary / pasr-primary / pasr-strict 5 mode 的具体
 // Selector 实现, 暴露给 deps.selector 用 (handler 看到的统一 pool.Selector 接口)。
 //
-// 关键不变量 (synthesis §3 + Owner D1-D6 全 A 决策):
+// 关键不变量:
 //   - default mode 完全等价现状 — 不构造 PASR / SegmentTable / AgingWorker /
 //     不注册 cache feedback observer; 主线零回归
 //   - 启动期失败 → fail-fast 让 main 退出 (LoadPoolSelector 已守门, 这里再一次
@@ -10,12 +10,12 @@
 //   - shadow / canary / pasr-* 模式才启动 PASR 基础设施: SegmentTable +
 //     AgingWorker (5 min ticker) + RegisterPASRCacheFeedback (cachemetrics
 //     全局 observer)
-//   - shadow 实例 Slots=nil + Claims=nil + ReadOnlySegments=true (D2 段表只读
+//   - shadow 实例 Slots=nil + Claims=nil + ReadOnlySegments=true (段表只读
 //   - 三层防御之一)
 //   - canary / pasr-* 实例: Slots = DBSlotManager + Claims = DBClaimGate
-//     (D1 强制 slot parity)
+//     (强制 slot parity)
 //   - cleanup 函数包 dispatcher.Stop + agingWorker.Stop, 由 caller defer
-//     在 srv.Shutdown 之前执行 (synthesis §9 rollback contract)
+//     在 srv.Shutdown 之前执行
 package main
 
 import (
@@ -107,7 +107,7 @@ func buildSelector(
 			Slots:    pool.NewDBSlotManager(pgPool),
 			Segments: segments,
 			Gates:    gates,
-			// RingProvider 不注入 — 走 M5 request-scoped ring (synthesis D3)
+			// RingProvider 不注入 — 走 request-scoped ring。
 		})
 		if err != nil {
 			agingWorker.Stop()
@@ -149,7 +149,7 @@ func buildSelector(
 // DefaultGateChain 基础上把 GroupPolicy 槽换成接 routes 的真订阅 gate, 并按需替换 Health。
 // 抽成独立函数便于单测直接验证激活接线: 漏接订阅 gate 时 GroupPolicy 退回 AllowAll, 单测
 // 必红 (TestBuildGroupRoutingGates_WiresRealGroupPolicyGate)。
-// fail-open observer: routes 查询失败时放行 + 累计 metric + WARN (R4 可告警)。
+// fail-open observer: routes 查询失败时放行 + 累计 metric + WARN。
 func buildGroupRoutingGates(routesRepo subscriptionenforce.RoutesRepo, healthService *channelhealth.Service, logger *zap.Logger) pool.GateChain {
 	gates := pool.DefaultGateChain()
 	if healthService != nil {
