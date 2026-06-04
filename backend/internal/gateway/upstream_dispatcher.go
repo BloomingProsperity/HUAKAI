@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
@@ -56,6 +57,10 @@ type DispatchInput struct {
 	// TransportMode 决定走 standard / mimicry / diagnostics RoundTripper。
 	// 零值 ("") 视为 TransportModeStandard。
 	TransportMode transport.TransportMode
+	// NonStreamingBuffered enables the non-streaming outbound hard timeouts.
+	// Streaming callers leave this false so stream-specific timeout axes stay
+	// owned by StreamForwarder.
+	NonStreamingBuffered bool
 }
 
 // DispatchResult 是 Dispatch 的产出。调用方读完 UpstreamReader 后必须
@@ -94,6 +99,8 @@ type UpstreamDispatcher struct {
 	// 未注册 account（ErrAccountNotFound）= 直连，不视为错误。
 	// 仅在 HTTPClient 为 nil 的生产路径生效。
 	ProxyResolver provider.ProxyResolver
+	// Timeouts applies only to non-streaming buffered dispatches.
+	Timeouts TimeoutConfig
 }
 
 // Dispatch 执行一次完整出站。失败时 result 可能为 nil；调用方按 err
@@ -154,7 +161,7 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 				return nil, fmt.Errorf("dispatcher: passthrough endpoint rejected: %w", err)
 			}
 		}
-		client = &http.Client{Transport: rt}
+		client = d.httpClientForRoundTripper(rt, in.NonStreamingBuffered)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -168,6 +175,33 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 		Headers:        resp.Header,
 		Close:          resp.Body.Close,
 	}, nil
+}
+
+func (d *UpstreamDispatcher) httpClientForRoundTripper(rt http.RoundTripper, nonStreaming bool) *http.Client {
+	if !nonStreaming {
+		return &http.Client{Transport: rt}
+	}
+	cfg := d.Timeouts
+	if cfg.HeaderToFirstByte > 0 {
+		rt = roundTripperWithResponseHeaderTimeout(rt, cfg.HeaderToFirstByte)
+	}
+	client := &http.Client{Transport: rt}
+	if cfg.RequestTotalTimeout > 0 {
+		client.Timeout = cfg.RequestTotalTimeout
+	}
+	return client
+}
+
+func roundTripperWithResponseHeaderTimeout(rt http.RoundTripper, timeout time.Duration) http.RoundTripper {
+	if timeout <= 0 {
+		return rt
+	}
+	if t, ok := rt.(*http.Transport); ok {
+		clone := t.Clone()
+		clone.ResponseHeaderTimeout = timeout
+		return clone
+	}
+	return rt
 }
 
 // applyProxy 按 ProxyResolver 决定是否给 rt 包上代理。

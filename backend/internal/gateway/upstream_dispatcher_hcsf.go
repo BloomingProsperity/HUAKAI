@@ -110,7 +110,7 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 				return nil, fmt.Errorf("dispatcher: passthrough endpoint rejected: %w", err)
 			}
 		}
-		client = &http.Client{Transport: rt}
+		client = d.httpClientForRoundTripper(rt, true)
 	}
 
 	resp, err := client.Do(req)

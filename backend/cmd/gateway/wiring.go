@@ -105,6 +105,7 @@ type deps struct {
 	credentialKeys           credentialstore.KeyProvider
 	credentialAcqStore       *credentialacq.PostgresSessionStore
 	credentialExchangers     *credentialacq.ExchangerRegistry
+	credentialScheduler      *credentialworker.Scheduler
 	emailSettings            *mailinfra.PostgresSettingsStore
 	authEmailSender          gatewayhttp.AuthEmailSender
 	userAuth                 *userauth.Service
@@ -748,6 +749,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 			Adapters:         registrydefault.Build(),
 			TransportFactory: buildTransportFactory(cfg, mimicryRegistry),
 			ProxyResolver:    provider.NewPostgresProxyResolverWithKeys(pgPool, credentialKeys),
+			Timeouts:         buildGatewayTimeoutConfig(),
 		},
 		inboundAuth:              auth.NewAPIKeyResolverWithClientIPResolver(authQueries, clientIPResolver),
 		auditLedger:              auditLedger,
@@ -833,6 +835,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err := credentialScheduler.Start(ctx); err != nil {
 		return nil, fmt.Errorf("start credential refresh scheduler: %w", err)
 	}
+	d.credentialScheduler = credentialScheduler
 	if opts.obsDLQ.Enabled {
 		dlqWorker.Start(ctx)
 	}
