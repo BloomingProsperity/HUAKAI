@@ -1,5 +1,5 @@
 // Package tlsfphttp exposes admin HTTP CRUD for TLS fingerprint profiles.
-// Routes are mounted by cmd/gateway/routes.go under /admin/v1/tls-fingerprint-profiles.
+// Routes are mounted by cmd/gateway/routes.go under /v1/admin/tls-fingerprint-profiles.
 // Only platform_admin may access. tenant_id for by-id operations is taken from
 // the ?tenant_id query parameter (consistent with routeadminhttp); create takes
 // tenant_id from the body. status changes go through POST /{id}/status only —
