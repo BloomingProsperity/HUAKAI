@@ -24,6 +24,7 @@ func TestListMessagesByConversationSQLHasOwnerAndActiveConversationJoin(t *testi
 		"INNER JOIN hermes_conversations c",
 		"AND c.deleted_at IS NULL",
 		"AND c.owner_user_id = $3::bigint",
+		"m.content_ciphertext",
 	} {
 		if !strings.Contains(listMessagesByConversation, required) {
 			t.Fatalf("ListMessagesByConversation SQL missing %q:\n%s", required, listMessagesByConversation)
@@ -34,6 +35,7 @@ func TestListMessagesByConversationSQLHasOwnerAndActiveConversationJoin(t *testi
 func TestAppendMessageSQLRequiresActiveParentConversation(t *testing.T) {
 	// Regression: stream completion after DELETE must not insert messages into a soft-deleted conversation.
 	for _, required := range []string{
+		"content_ciphertext",
 		"FROM hermes_conversations c",
 		"c.deleted_at IS NULL",
 	} {
@@ -47,5 +49,18 @@ func TestUpdateConversationLastMessageAtSQLRequiresActiveConversation(t *testing
 	// Regression: stream completion after DELETE must not touch last_message_at on a soft-deleted conversation.
 	if !strings.Contains(updateConversationLastMessageAt, "AND deleted_at IS NULL") {
 		t.Fatalf("UpdateConversationLastMessageAt SQL missing deleted_at guard:\n%s", updateConversationLastMessageAt)
+	}
+}
+
+func TestPurgeMessagesBeforeSQLHardDeletesExpiredRows(t *testing.T) {
+	// Regression: retention must be a true purge of expired message rows, not a parent soft-delete or no-op scan.
+	for _, required := range []string{
+		"DELETE FROM hermes_messages",
+		"created_at < $1::timestamptz",
+		"RETURNING id",
+	} {
+		if !strings.Contains(purgeMessagesBefore, required) {
+			t.Fatalf("PurgeMessagesBefore SQL missing %q:\n%s", required, purgeMessagesBefore)
+		}
 	}
 }

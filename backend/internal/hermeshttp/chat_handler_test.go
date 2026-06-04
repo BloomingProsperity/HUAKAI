@@ -190,7 +190,7 @@ func (s *chatStoreStub) ListConversationsByOwner(context.Context, dbhermes.ListC
 	return nil, nil
 }
 
-func (s *chatStoreStub) ListMessagesByConversation(context.Context, dbhermes.ListMessagesByConversationParams) ([]dbhermes.HermesMessage, error) {
+func (s *chatStoreStub) ListMessagesByConversation(context.Context, dbhermes.ListMessagesByConversationParams) ([]dbhermes.ListMessagesByConversationRow, error) {
 	return nil, nil
 }
 

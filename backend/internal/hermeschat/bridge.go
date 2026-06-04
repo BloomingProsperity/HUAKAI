@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/headerfirewall"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 )
@@ -71,6 +72,12 @@ func WithResponseHeaderSettings(settings headerfirewall.PlatformSettings) Option
 	}
 }
 
+func WithMessageContentKeys(keys credentialstore.KeyProvider) Option {
+	return func(b *Bridge) {
+		b.messageContentKeys = keys
+	}
+}
+
 type Bridge struct {
 	tx                  txRunner
 	internalTokenSecret []byte
@@ -79,6 +86,7 @@ type Bridge struct {
 	logger              warningLogger
 	auditDLQ            auditDLQ
 	headerSettings      headerfirewall.PlatformSettings
+	messageContentKeys  credentialstore.KeyProvider
 }
 
 func NewBridge(tx txRunner, opts ...Option) (*Bridge, error) {
@@ -98,6 +106,9 @@ func NewBridge(tx txRunner, opts ...Option) (*Bridge, error) {
 	}
 	if strings.TrimSpace(b.internalBaseURL) == "" {
 		return nil, fmt.Errorf("%w: %s is required", hermes.ErrMisconfigured, InternalBaseURLEnv)
+	}
+	if b.messageContentKeys == nil {
+		return nil, fmt.Errorf("%w: hermes message content encryption key provider is required", hermes.ErrMisconfigured)
 	}
 	return b, nil
 }

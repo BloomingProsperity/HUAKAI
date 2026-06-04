@@ -203,7 +203,7 @@ func (s *settingsStoreStub) ListConversationsByOwner(context.Context, dbhermes.L
 	return nil, nil
 }
 
-func (s *settingsStoreStub) ListMessagesByConversation(context.Context, dbhermes.ListMessagesByConversationParams) ([]dbhermes.HermesMessage, error) {
+func (s *settingsStoreStub) ListMessagesByConversation(context.Context, dbhermes.ListMessagesByConversationParams) ([]dbhermes.ListMessagesByConversationRow, error) {
 	return nil, nil
 }
 

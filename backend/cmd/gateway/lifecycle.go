@@ -17,6 +17,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
@@ -29,6 +30,7 @@ type gatewayRuntime struct {
 	pgPool                     *pgxpool.Pool
 	selectorCleanup            func()
 	replayJanitorStop          func()
+	hermesRetentionWorker      *hermes.MessageRetentionWorker
 	leaseSweepStop             func()
 	pendingReconcileStop       func()
 	modelSyncStop              func()
@@ -54,6 +56,9 @@ func (rt *gatewayRuntime) close() {
 	}
 	if rt.replayJanitorStop != nil {
 		rt.replayJanitorStop()
+	}
+	if rt.hermesRetentionWorker != nil {
+		rt.hermesRetentionWorker.Stop()
 	}
 	if rt.leaseSweepStop != nil {
 		rt.leaseSweepStop()
@@ -152,6 +157,9 @@ func shutdownGateway(srv *http.Server, rt *gatewayRuntime) error {
 	}
 	if rt.modelSyncStop != nil {
 		rt.modelSyncStop()
+	}
+	if rt.hermesRetentionWorker != nil {
+		rt.hermesRetentionWorker.Stop()
 	}
 	// 到期 worker 独立于 in-flight handler; Stop 在当前 tick 结束后立即返回 (非整周期等待)。
 	if rt.subscriptionExpiryWorker != nil {

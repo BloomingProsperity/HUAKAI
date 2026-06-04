@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	dbhermes "github.com/BloomingProsperity/HUAKAI/internal/db/hermes"
 )
 
@@ -133,7 +134,7 @@ type Store interface {
 	GetSettings(ctx context.Context, arg dbhermes.GetSettingsParams) (dbhermes.HermesSetting, error)
 	InsertAuditEvent(ctx context.Context, arg dbhermes.InsertAuditEventParams) (dbhermes.HermesAuditEvent, error)
 	ListConversationsByOwner(ctx context.Context, arg dbhermes.ListConversationsByOwnerParams) ([]dbhermes.HermesConversation, error)
-	ListMessagesByConversation(ctx context.Context, arg dbhermes.ListMessagesByConversationParams) ([]dbhermes.HermesMessage, error)
+	ListMessagesByConversation(ctx context.Context, arg dbhermes.ListMessagesByConversationParams) ([]dbhermes.ListMessagesByConversationRow, error)
 	ListProfilesByOwner(ctx context.Context, arg dbhermes.ListProfilesByOwnerParams) ([]dbhermes.HermesApiProfile, error)
 	ListProfilesByTenant(ctx context.Context, tenantID int64) ([]dbhermes.HermesApiProfile, error)
 	ProfileInUse(ctx context.Context, arg dbhermes.ProfileInUseParams) (bool, error)
@@ -151,8 +152,9 @@ type transactor interface {
 }
 
 type Service struct {
-	store Store
-	tx    transactor
+	store              Store
+	tx                 transactor
+	messageContentKeys credentialstore.KeyProvider
 }
 
 type sqlcTransactor struct {
@@ -170,6 +172,13 @@ func NewServiceWithTx(queries *dbhermes.Queries, beginner txBeginner) *Service {
 		service.tx = sqlcTransactor{queries: queries, beginner: beginner}
 	}
 	return service
+}
+
+func (s *Service) WithMessageContentKeys(keys credentialstore.KeyProvider) *Service {
+	if s != nil {
+		s.messageContentKeys = keys
+	}
+	return s
 }
 
 func (s *Service) withTx(ctx context.Context, fn func(Store) error) error {

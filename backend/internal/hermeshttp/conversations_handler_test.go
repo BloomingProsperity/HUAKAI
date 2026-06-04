@@ -133,7 +133,7 @@ func TestListConversationMessagesReadsPostgresWithOwner(t *testing.T) {
 			ID: 902, TenantID: 7, OwnerUserID: 42,
 			CreatedAt: httpTestPGTime(), UpdatedAt: httpTestPGTime(),
 		},
-		listMessagesRows: []dbhermes.HermesMessage{{
+		listMessagesRows: []dbhermes.ListMessagesByConversationRow{{
 			ID: 903, TenantID: 7, ConversationID: 902, Role: "assistant",
 			Content: []byte(`{"type":"text","text":"hi"}`), CreatedAt: httpTestPGTime(),
 		}},
@@ -268,7 +268,7 @@ type conversationHTTPStore struct {
 
 	listMessagesCalled bool
 	listMessagesArg    dbhermes.ListMessagesByConversationParams
-	listMessagesRows   []dbhermes.HermesMessage
+	listMessagesRows   []dbhermes.ListMessagesByConversationRow
 	listMessagesErr    error
 
 	softDeleteCalled bool
@@ -296,7 +296,7 @@ func (s *conversationHTTPStore) ListConversationsByOwner(_ context.Context, arg 
 	return s.listConversationsRows, nil
 }
 
-func (s *conversationHTTPStore) ListMessagesByConversation(_ context.Context, arg dbhermes.ListMessagesByConversationParams) ([]dbhermes.HermesMessage, error) {
+func (s *conversationHTTPStore) ListMessagesByConversation(_ context.Context, arg dbhermes.ListMessagesByConversationParams) ([]dbhermes.ListMessagesByConversationRow, error) {
 	s.listMessagesCalled = true
 	s.listMessagesArg = arg
 	if s.listMessagesErr != nil {

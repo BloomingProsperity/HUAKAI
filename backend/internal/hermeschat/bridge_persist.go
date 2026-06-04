@@ -27,12 +27,20 @@ func (b *Bridge) persistDone(ctx context.Context, prepared PreparedRequest, stat
 	if err != nil {
 		return err
 	}
+	// Hermes 允许保留用户主动聊天历史,但新写入只能落密文列;content 明文列写固定占位符。
+	contentCiphertext, err := hermes.EncodeMessageContent(ctx, b.messageContentKeys, prepared.TenantID, conversationID, content)
+	if err != nil {
+		return fmt.Errorf("encrypt hermes message content: %w", err)
+	}
 	now := b.now().UTC()
 	completedAt := pgtype.Timestamptz{Time: now, Valid: true}
 	err = b.tx.RunHermesTx(ctx, func(store hermes.Store) error {
 		_, err := store.AppendMessage(ctx, dbhermes.AppendMessageParams{
 			TenantID: prepared.TenantID, ConversationID: conversationID, Role: "assistant",
-			Content: content, TokenCount: totalTokensFromDone(doneData), CompletedAt: completedAt,
+			Content:           []byte(hermes.EncryptedMessageContentPlaceholder),
+			ContentCiphertext: contentCiphertext,
+			TokenCount:        totalTokensFromDone(doneData),
+			CompletedAt:       completedAt,
 		})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {

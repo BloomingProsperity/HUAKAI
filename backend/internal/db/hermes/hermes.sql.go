@@ -12,34 +12,37 @@ import (
 )
 
 const appendMessage = `-- name: AppendMessage :one
-INSERT INTO hermes_messages (tenant_id, conversation_id, role, content, token_count, completed_at)
+INSERT INTO hermes_messages (tenant_id, conversation_id, role, content, content_ciphertext, token_count, completed_at)
 SELECT
     c.tenant_id,
     c.id,
     $1::text,
     $2::jsonb,
-    $3::integer,
-    $4::timestamptz
+    $3::bytea,
+    $4::integer,
+    $5::timestamptz
 FROM hermes_conversations c
-WHERE c.id = $5::bigint
-  AND c.tenant_id = $6::bigint
+WHERE c.id = $6::bigint
+  AND c.tenant_id = $7::bigint
   AND c.deleted_at IS NULL
 RETURNING id
 `
 
 type AppendMessageParams struct {
-	Role           string             `db:"role" json:"role"`
-	Content        []byte             `db:"content" json:"content"`
-	TokenCount     *int32             `db:"token_count" json:"token_count"`
-	CompletedAt    pgtype.Timestamptz `db:"completed_at" json:"completed_at"`
-	ConversationID int64              `db:"conversation_id" json:"conversation_id"`
-	TenantID       int64              `db:"tenant_id" json:"tenant_id"`
+	Role              string             `db:"role" json:"role"`
+	Content           []byte             `db:"content" json:"content"`
+	ContentCiphertext []byte             `db:"content_ciphertext" json:"content_ciphertext"`
+	TokenCount        *int32             `db:"token_count" json:"token_count"`
+	CompletedAt       pgtype.Timestamptz `db:"completed_at" json:"completed_at"`
+	ConversationID    int64              `db:"conversation_id" json:"conversation_id"`
+	TenantID          int64              `db:"tenant_id" json:"tenant_id"`
 }
 
 func (q *Queries) AppendMessage(ctx context.Context, arg AppendMessageParams) (int64, error) {
 	row := q.db.QueryRow(ctx, appendMessage,
 		arg.Role,
 		arg.Content,
+		arg.ContentCiphertext,
 		arg.TokenCount,
 		arg.CompletedAt,
 		arg.ConversationID,
@@ -597,7 +600,7 @@ func (q *Queries) ListConversationsByOwner(ctx context.Context, arg ListConversa
 }
 
 const listMessagesByConversation = `-- name: ListMessagesByConversation :many
-SELECT m.id, m.tenant_id, m.conversation_id, m.role, m.content,
+SELECT m.id, m.tenant_id, m.conversation_id, m.role, m.content, m.content_ciphertext,
        m.token_count, m.completed_at, m.created_at
 FROM hermes_messages m
 INNER JOIN hermes_conversations c
@@ -620,7 +623,19 @@ type ListMessagesByConversationParams struct {
 	PageLimit      int32 `db:"page_limit" json:"page_limit"`
 }
 
-func (q *Queries) ListMessagesByConversation(ctx context.Context, arg ListMessagesByConversationParams) ([]HermesMessage, error) {
+type ListMessagesByConversationRow struct {
+	ID                int64              `db:"id" json:"id"`
+	TenantID          int64              `db:"tenant_id" json:"tenant_id"`
+	ConversationID    int64              `db:"conversation_id" json:"conversation_id"`
+	Role              string             `db:"role" json:"role"`
+	Content           []byte             `db:"content" json:"content"`
+	ContentCiphertext []byte             `db:"content_ciphertext" json:"content_ciphertext"`
+	TokenCount        *int32             `db:"token_count" json:"token_count"`
+	CompletedAt       pgtype.Timestamptz `db:"completed_at" json:"completed_at"`
+	CreatedAt         pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+func (q *Queries) ListMessagesByConversation(ctx context.Context, arg ListMessagesByConversationParams) ([]ListMessagesByConversationRow, error) {
 	rows, err := q.db.Query(ctx, listMessagesByConversation,
 		arg.TenantID,
 		arg.ConversationID,
@@ -632,15 +647,16 @@ func (q *Queries) ListMessagesByConversation(ctx context.Context, arg ListMessag
 		return nil, err
 	}
 	defer rows.Close()
-	var items []HermesMessage
+	var items []ListMessagesByConversationRow
 	for rows.Next() {
-		var i HermesMessage
+		var i ListMessagesByConversationRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TenantID,
 			&i.ConversationID,
 			&i.Role,
 			&i.Content,
+			&i.ContentCiphertext,
 			&i.TokenCount,
 			&i.CompletedAt,
 			&i.CreatedAt,
@@ -755,6 +771,32 @@ func (q *Queries) ProfileInUse(ctx context.Context, arg ProfileInUseParams) (boo
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const purgeMessagesBefore = `-- name: PurgeMessagesBefore :execrows
+WITH victims AS (
+    SELECT id
+    FROM hermes_messages
+    WHERE created_at < $1::timestamptz
+    ORDER BY created_at ASC, id ASC
+    LIMIT $2::integer
+)
+DELETE FROM hermes_messages
+WHERE id IN (SELECT id FROM victims)
+RETURNING id
+`
+
+type PurgeMessagesBeforeParams struct {
+	Cutoff     pgtype.Timestamptz `db:"cutoff" json:"cutoff"`
+	BatchLimit int32              `db:"batch_limit" json:"batch_limit"`
+}
+
+func (q *Queries) PurgeMessagesBefore(ctx context.Context, arg PurgeMessagesBeforeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, purgeMessagesBefore, arg.Cutoff, arg.BatchLimit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const revokeJWTKey = `-- name: RevokeJWTKey :execrows

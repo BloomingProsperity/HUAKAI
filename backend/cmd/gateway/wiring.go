@@ -541,6 +541,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, fmt.Errorf("load credential encryption key: %w", err)
 	}
+	if hermesService != nil {
+		hermesService.WithMessageContentKeys(credentialKeys)
+	}
 	credentialStore := credentialstore.NewStore(pgPool, credentialKeys, credentialstore.DefaultHandlerRegistry())
 	credentialAcqStore := credentialacq.NewPostgresSessionStoreWithKeys(pgPool, credentialKeys)
 	credentialExchangers := credentialacq.DefaultExchangerRegistry()
@@ -653,9 +656,24 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	dlqService.Register(legacydlq.EventKindPostDeliverySettlement, settlementHandler.Handle)
 	var hermesChatBridge *hermeschat.Bridge
 	if hermesRunner != nil {
-		hermesChatBridge, err = buildHermesChatBridge(hermesService, dlqService, platformSettingsService)
+		hermesChatBridge, err = buildHermesChatBridge(hermesService, dlqService, platformSettingsService, credentialKeys)
 		if err != nil {
 			return nil, err
+		}
+	}
+	if hermesService != nil {
+		retentionDays, err := hermes.MessageRetentionDaysFromEnv()
+		if err != nil {
+			return nil, err
+		}
+		// retention_days=0 是默认安全值：永久保留，运维显式配置正整数后才启动硬删 worker。
+		if retentionDays > 0 {
+			hermesRetentionWorker := hermes.NewMessageRetentionWorker(hermes.MessageRetentionWorkerConfig{
+				Store:         hermes.NewPostgresMessagePurgeStore(hermesQueries),
+				RetentionDays: retentionDays,
+			})
+			hermesRetentionWorker.Start(ctx)
+			rt.hermesRetentionWorker = hermesRetentionWorker
 		}
 	}
 
@@ -909,9 +927,12 @@ func buildModelSyncService(cfg *runtimeconfig.ModelSyncConfig, store *registry.P
 	})
 }
 
-func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.Service, settings *platformsettings.Service) (*hermeschat.Bridge, error) {
+func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.Service, settings *platformsettings.Service, keys credentialstore.KeyProvider) (*hermeschat.Bridge, error) {
 	if hermesService == nil {
 		return nil, nil
+	}
+	if keys == nil {
+		return nil, fmt.Errorf("%w: Hermes message content encryption key provider is required", hermes.ErrMisconfigured)
 	}
 	internalSecret := strings.TrimSpace(os.Getenv(hermeschat.InternalTokenSecretEnv))
 	if internalSecret == "" {
@@ -923,6 +944,7 @@ func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.
 		hermeschat.WithInternalBaseURL(envDefault(hermeschat.InternalBaseURLEnv, hermeschat.DefaultInternalBaseURL)),
 		hermeschat.WithAuditDLQ(dlqService),
 		hermeschat.WithResponseHeaderSettings(settings),
+		hermeschat.WithMessageContentKeys(keys),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("build hermes chat bridge: %w", err)
