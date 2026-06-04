@@ -89,7 +89,7 @@ func (s *AuthSender) SendVerification(ctx context.Context, user userauth.User, t
 	})
 	if err != nil {
 		// 硬失败(永久失败 / 无 outbox / enqueue 失败)= 既没发出也没入队重试 → 回滚 cooldown,
-		// 否则用户首发失败后,冷却窗口内的合法重发会被静默吞掉、返回 nil 却没发任何邮件(S2-079)。
+		// 否则用户首发失败后,冷却窗口内的合法重发会被静默吞掉、返回 nil 却没发任何邮件。
 		// 发送成功或已入 DLQ 重试时 sendForTenant 返回 nil,保留 cooldown,不重复发。
 		rollback()
 	}
@@ -114,7 +114,7 @@ func (s *AuthSender) SendPasswordReset(ctx context.Context, user userauth.User, 
 		HTMLBody: buildPasswordResetBody(token),
 	})
 	if err != nil {
-		// 见 SendVerification:硬失败回滚 cooldown,避免冷却窗口吞掉合法重发(S2-079)。
+		// 见 SendVerification:硬失败回滚 cooldown,避免冷却窗口吞掉合法重发。
 		rollback()
 	}
 	return err
@@ -168,7 +168,7 @@ func (s *AuthSender) sendForTenant(ctx context.Context, tenantID int64, msg Mess
 // reserveCooldown 原子地检查并占用冷却窗口。返回 (allowed, rollback):
 //   - allowed=false:仍在冷却期,应抑制本次发送(rollback 为 no-op)。
 //   - allowed=true:已占用窗口;调用方在发送"硬失败"(既未发出也未入队重试)时调用 rollback
-//     释放窗口,使下一次请求能真正发送,避免冷却窗口把首发失败后的合法重发静默吞掉(S2-079)。
+// 释放窗口,使下一次请求能真正发送,避免冷却窗口把首发失败后的合法重发静默吞掉。
 //
 // cooldown<=0 视为禁用冷却(始终 allowed,rollback 为 no-op)。
 func (s *AuthSender) reserveCooldown(kind string, tenantID int64, email string, cooldown time.Duration) (bool, func()) {

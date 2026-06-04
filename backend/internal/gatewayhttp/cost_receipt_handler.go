@@ -462,14 +462,14 @@ func receiptSignatureBytes(signature []byte) ([]byte, error) {
 }
 
 // receiptVerificationRejected 报告某 verification.Reason 是否表示「签名密码学有效但 receipt
-// 不被采信」——目前为 key 撤销与签名落在 key 有效窗口外(S1-032)。两个 verify 调用点据此
+// 不被采信」——目前为 key 撤销与签名落在 key 有效窗口外。两个 verify 调用点据此
 // 统一判为 unverified、valid=false。
 func receiptVerificationRejected(reason string) bool {
 	return reason == "key_revoked" || reason == "signature_outside_key_window"
 }
 
 // receiptOccurredAtFromCanonical 从 canonical trust.receipt.v1 字节解析 occurred_at,供 key
-// 有效窗口校验(S1-032)。缺省/不可解析返回 ok=false,调用方据此豁免窗口校验。
+// 有效窗口校验。缺省/不可解析返回 ok=false,调用方据此豁免窗口校验。
 func receiptOccurredAtFromCanonical(canonical []byte) (time.Time, bool) {
 	var probe struct {
 		OccurredAt string `json:"occurred_at"`
@@ -502,7 +502,7 @@ func verifyReceiptTrustSignature(ctx context.Context, d CostReceiptHandlerDeps, 
 		if err != nil || verification.Reason == "key_revoked" {
 			return verification, err
 		}
-		// S1-032: 强制签名 key 有效窗口。receipt 的 occurred_at(从 canonical trust.receipt.v1
+		// 强制签名 key 有效窗口。receipt 的 occurred_at(从 canonical trust.receipt.v1
 		// 解析)须落在签名 key 的 [EffectiveFrom, EffectiveTo] 内,堵泄漏旧 key 签新日期 receipt。
 		// 仅 registry 路径有真实窗口(signer-only 无 registry,见 trust verify 同款豁免);occurred_at
 		// 缺省则豁免。窗口外保持 Valid=true(签名密码学有效),靠 Reason 让 caller 判 unverified。

@@ -221,7 +221,7 @@ func TestClassifyAttemptHTTPErrorReadsBodyForIronCladSignals(t *testing.T) {
 				t.Fatalf("ClassifyAttemptHTTPError(status only): %v", err)
 			}
 			// 关键断言:body 必须改变分类结果。若两者相等,说明该 fixture
-			// 无法证明 body 被读取 —— 这正是 codex P3 评审指出的弱测试形态。
+			// 无法证明 body 被读取 —— 这正是
 			if withBody.Class == statusOnly.Class {
 				t.Fatalf("body did not change classification: with-body and status-only both produced %q; fixture cannot prove body-driven classification", withBody.Class)
 			}

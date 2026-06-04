@@ -67,7 +67,7 @@ func TestAuthPasswordResetDevModeReturnsResetToken(t *testing.T) {
 	}
 }
 
-// TestAuthRegisterDevTokenSuppressedInProduction guards S1-018 defense-in-depth: even if the dev
+// TestAuthRegisterDevTokenSuppressedInProduction guards defense-in-depth: even if the dev
 // echo flag is mistakenly left on, a production release mode must NOT leak the one-time verification
 // secret into the public register response (the startup gate is authoritative; this is the in-handler
 // backstop for a runtime-flipped env).

@@ -104,8 +104,8 @@ func TestMiddleware_IncrementsMetrics(t *testing.T) {
 	final := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
 	wrapped := mw(final)
 
-	// F3 BLOCKING fix: 包含一个 unrecognized UA case，让 IdentityUnknown
-	// 走真实 increment 路径，避免 vacuously-true 的 0 断言（sonnet 抓到的
+	// F3 fix: 包含一个 unrecognized UA case，让 IdentityUnknown
+	// 走真实 increment 路径，避免 vacuously-true 的 0 断言
 	// 测试逻辑漏洞——middleware 永远 increment 任意 id 包括 Unknown）。
 	cases := []struct {
 		ua string

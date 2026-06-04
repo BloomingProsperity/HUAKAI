@@ -19,7 +19,7 @@ type ResolvedModel struct {
 	ProviderModelID string   // upstream provider's id (may differ per provider)
 	ContextWindow   int      // max tokens
 	Capabilities    []string // "stream" / "tools" / "vision" / "json"
-	PricingClass    string   // free-form tag for Phase E pricing-table lookup; not a number
+	PricingClass    string   // free-form tag for pricing-table lookup; not a number
 	ProtocolFamily  string   // "openai_chat" / "anthropic_messages" / etc.
 
 	// PoolCandidates is the ordered list of pool_group_id values the
@@ -77,7 +77,6 @@ type RoutePlan struct {
 
 	// SnapshotVersion identifies the Registry/policy snapshot used to
 	// build this plan. Recorded on every usage_record/billing_event for
-	// audit-mode replay (codex B02).
 	SnapshotVersion string
 }
 

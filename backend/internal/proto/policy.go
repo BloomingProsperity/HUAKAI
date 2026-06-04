@@ -36,7 +36,7 @@ type AuditPolicy struct {
 
 // Policy 承接 envelope 的 data_retention / 认证 / 审计 / redaction 策略。
 type Policy struct {
-	// DataRetention 必填；锁定 D12 5 词汇（INV-10）。
+	// DataRetention 必填；锁定 D12 5 词汇。
 	DataRetention DataRetentionNode `json:"data_retention"`
 
 	// Auth 必填；D5 默认 standard。

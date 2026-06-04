@@ -83,7 +83,7 @@ func (a *AnthropicMessagesClient) RequestToCanonical(ctx context.Context, raw []
 
 	// Messages + CapabilityGraph
 	// toolCallIDToNodeID 记录 tool_use 节点 → tool_use canonical id 映射，便于
-	// 后续 tool_result 块 emit requires 边（INV-19）。
+	// 后续 tool_result 块 emit requires 边。
 	toolCallIDToNodeID := make(map[string]string)
 	nodeSeq := 0
 	edgeSeq := 0
@@ -179,7 +179,7 @@ func (a *AnthropicMessagesClient) RequestToCanonical(ctx context.Context, raw []
 				env.ProviderProjection.CapabilityResults = append(env.ProviderProjection.CapabilityResults, CapabilityProjection{
 					Capability: CapabilityToolResult, NodeID: nodeID, Verdict: ProjectionPreserved,
 				})
-				// emit requires 边：tool_result → tool_use（INV-19）
+				// emit requires 边：tool_result → tool_use
 				fromNodeID, ok := toolCallIDToNodeID[b.ToolUseID]
 				if !ok {
 					return nil, nil, fmt.Errorf("proto: anthropic_messages messages[%d] tool_result references unknown tool_use_id=%q", mi, b.ToolUseID)

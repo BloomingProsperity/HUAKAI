@@ -4,7 +4,7 @@ import (
 	"context"
 )
 
-// DefaultRouter 生成 Phase 1 保守路由计划：保留 registry 候选顺序，
+// DefaultRouter 生成保守路由计划：保留 registry 候选顺序，
 // 将 attempt 上限压到 3，并把账号选择与健康 gate 留给 executor/pool 层。
 type DefaultRouter struct {
 	// SnapshotVersion identifies the Router policy at planning time;

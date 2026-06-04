@@ -2,7 +2,7 @@ package main
 
 import "testing"
 
-// TestValidateStormScopePairRejectsHalfConfig (S2-045) proves a half-configured
+// TestValidateStormScopePairRejectsHalfConfig proves a half-configured
 // refresh-storm scope is a boot error, not a silently-disabled throttle: setting
 // only a rate (burst forgotten), only a burst, or a sub-unit burst must fail loud
 // so a typo cannot let a cross-account stampede through unthrottled. Both-unset
@@ -28,7 +28,7 @@ func TestValidateStormScopePairRejectsHalfConfig(t *testing.T) {
 	}
 }
 
-// TestLoadStormScopeConfigFromEnvParsesAndFailsLoud (S2-045) proves the env loader
+// TestLoadStormScopeConfigFromEnvParsesAndFailsLoud proves the env loader
 // parses a valid pair and fails loud on a half-configured scope. Mutation: drop the
 // validateStormScopePair calls in loadStormScopeConfigFromEnv → the half-config case
 // returns nil error → red.

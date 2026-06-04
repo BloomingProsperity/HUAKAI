@@ -15,7 +15,7 @@ const defaultAnthropicTokenEndpoint = "https://api.anthropic.com/v1/oauth/token"
 
 // AnthropicRefresh 用 Anthropic OAuth refresh_token grant 刷新 Claude 账号。
 //
-// 信任链 (ANT-3, Owner 2026-05-26 D-4=B): 出站 token endpoint 与 OAuth
+// 信任链 (ANT-3): 出站 token endpoint 与 OAuth
 // client_id 仅来自 operator-supplied 字段 (r.Endpoint, r.ClientID) 或 HUAKAI
 // 硬编 approved built-in profile (defaultAnthropicTokenEndpoint /
 // anthropicoauth.AnthropicPublicCLIClientID); 不接受任何来自 credential

@@ -73,7 +73,7 @@ func parseAnthropicTools(rawTools []json.RawMessage) ([]CanonicalTool, error) {
 }
 
 // parseAnthropicToolResultContent 解 tool_result.content 字段；string 或 array of
-// {type, text/source}。INV-18 要求 ToolResultNode.Content 非 nil。
+// {type, text/source}。要求 ToolResultNode.Content 非 nil。
 func parseAnthropicToolResultContent(raw json.RawMessage) ([]CanonicalContentBlock, []ProtocolLossEntry, error) {
 	if len(raw) == 0 {
 		return []CanonicalContentBlock{}, nil, nil
@@ -139,7 +139,7 @@ func buildAnthropicImageNode(src *anthropicImageSource, mi, bi int) (*ImageNode,
 }
 
 // maybeEmitAnthropicCacheControl 当 content block 携带 cache_control marker 时，
-// 新建一个 CacheControlNode（INV-26 breakpoint ref 指向刚生成的内容节点）。
+// 新建一个 CacheControlNode（breakpoint ref 指向刚生成的内容节点）。
 // edgeSeq / nodeSeq 走指针让调用方共享计数。
 func maybeEmitAnthropicCacheControl(env *HCSF, cc *anthropicCacheControl, targetNodeID string, mi, bi int, nodeSeq *int, edgeSeq *int) {
 	if cc == nil {

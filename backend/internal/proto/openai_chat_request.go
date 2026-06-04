@@ -14,7 +14,7 @@ import (
 // 范围（按 P-2 synthesis §5.1）：
 //   - 入：OpenAI Chat Completions HTTP body（JSON）
 //   - 出：HCSF v0.4 request envelope；含 Messages、CapabilityText/ToolUse/
-//     ToolResult 节点 + EdgeRequires（tool_result→tool_use；INV-19）。
+//     ToolResult 节点 + EdgeRequires（tool_result→tool_use；）。
 //   - image_url / input_audio / file 等 multimodal content part 暂 warning loss。
 //   - reasoning_effort / response_format json_schema 在 D5.x 后续小片。
 

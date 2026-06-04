@@ -8,17 +8,17 @@ import (
 )
 
 // verifyPasswordFn 是口令校验的可注入入口(生产即 VerifyPassword)。抽成变量是为了让测试
-// 能观察「邮箱不存在 / 存在但无本地口令」路径是否也跑了一次等价 argon2 校验 —— 这是 S2-048 时序等工的核心。
+// 能观察「邮箱不存在/存在但无本地口令」路径是否也跑了一次等价 argon2 校验，这是登录时序等工的核心。
 var verifyPasswordFn = VerifyPassword
 
 // timingEqualizationHash 是一个无人知晓口令的合法 argon2id hash(常量, 默认 policy 成本 m=64MiB,t=3)。
 // 仅用于 Authenticate 在「邮箱不存在」或「存在但无本地口令(social-only)」时做等工量 argon2 校验:
-// 否则「走 VerifyPassword 跑 argon2」与「直接返回」的响应时延差会泄露邮箱是否已注册(用户枚举侧信道, S2-048)。
-// 硬编码常量而非运行时生成, 杜绝生成失败时 fail-open 成快速 parse-fail(S2-048 R1 codex 跟进)。
+// 否则「走 VerifyPassword 跑 argon2」与「直接返回」的响应时延差会泄露邮箱是否已注册（用户枚举侧信道）。
+// 硬编码常量而非运行时生成, 杜绝生成失败时 fail-open 成快速 parse-fail。
 const timingEqualizationHash = "$argon2id$v=19$m=65536,t=3,p=1$0k8KjQ01TveJhg0daai5hw$m6FwG+zGw8X2YLWE1grPszMNN84IGcyd5xhFrEGMhIc"
 
 // equalizeLoginWork 跑一次与正常口令校验等价成本的 argon2(结果丢弃)。用于让「因不存在 / 账号状态 /
-// 无本地口令而提前返回」的登录失败路径与「口令错」路径耗时一致, 杜绝登录时序枚举侧信道(S2-048)。
+// 无本地口令而提前返回」的登录失败路径与「口令错」路径耗时一致, 杜绝登录时序枚举侧信道。
 // 有真实口令 hash 用真实 hash(成本与正常校验完全一致), 否则用硬编码的合法 dummy argon2id 常量。
 func (s *Service) equalizeLoginWork(passwordHash, attempted string) {
 	if passwordHash == "" {
@@ -68,7 +68,7 @@ type Service struct {
 	Now              func() time.Time
 	OAuth            *OAuthService
 	Verification     EmailVerificationPolicy
-	// AllowedRedirectURIs 是 social OAuth init 允许的 caller redirect_uri 精确白名单(S2-009)。空(默认)=
+	// AllowedRedirectURIs 是 social OAuth init 允许的 caller redirect_uri 精确白名单。空(默认)=
 	// 不接受任何 caller 提供的 redirect_uri,只能用各 provider 服务端配置的固定 RedirectURI,fail-closed 防
 	// open-redirect / 授权码外泄。
 	AllowedRedirectURIs []string
@@ -179,7 +179,7 @@ func (s *Service) Authenticate(ctx context.Context, in LoginInput) (User, error)
 	user, err := s.Store.GetUserByEmail(ctx, in.TenantID, email)
 	if err != nil {
 		if errors.Is(err, ErrUserNotFound) {
-			// S2-048 时序等工: 对不存在的邮箱也跑一次等价 argon2 校验再返回, 否则
+			// 时序等工: 对不存在的邮箱也跑一次等价 argon2 校验再返回, 否则
 			// 「存在(下面走 VerifyPassword 跑 argon2)」与「不存在(直接返回)」的响应时延差
 			// 会暴露该邮箱是否已注册(用户枚举侧信道)。比较结果丢弃, 一律返 ErrInvalidCredentials。
 			s.equalizeLoginWork("", in.Password)
@@ -187,7 +187,7 @@ func (s *Service) Authenticate(ctx context.Context, in LoginInput) (User, error)
 		}
 		return User{}, err
 	}
-	// S2-048 时序等工: 以下「因账号状态而失败」的分支若直接返回, 耗时会明显短于「口令错」(跑 argon2)
+	// 时序等工: 以下「因账号状态而失败」的分支若直接返回, 耗时会明显短于「口令错」(跑 argon2)
 	// 分支, 从而泄露「该邮箱存在且处于某状态」(时序枚举侧信道)。配合 handler 把这些状态对外统一成
 	// generic invalid_credentials(消状态码 oracle), service 这里负责消时序: 每条返回前都跑一次与口令
 	// 校验等价成本的 argon2。typed error 仍返回, 供 handler 审计归类真实 reason(对外不暴露)。
@@ -210,7 +210,7 @@ func (s *Service) Authenticate(ctx context.Context, in LoginInput) (User, error)
 		return User{}, ErrEmailUnverified
 	}
 	if user.PasswordHash == "" {
-		// S2-048 时序等工: 存在但无本地口令(social-only)的用户也跑一次等价 argon2 再返回,
+		// 时序等工: 存在但无本地口令(social-only)的用户也跑一次等价 argon2 再返回,
 		// 否则其「快速返回」会与「不存在(已跑 dummy)」「口令错(跑真 argon2)」的时延不同, 仍暴露
 		// 该邮箱已注册(social-only)。不 MarkLoginFailure(无本地口令可失败, 保留既有语义)。
 		s.equalizeLoginWork("", in.Password)

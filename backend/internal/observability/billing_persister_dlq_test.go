@@ -32,7 +32,6 @@ func TestBillingPersisterHandler_DLQKindIsPostDeliverySettlement(t *testing.T) {
 	}
 }
 
-// TestBillingPersisterHandler_DLQPayloadIsReplayable 守 codex D 决策:
 // DLQ 行 payload 必须是 settlementrecovery.Payload 编码,settlementrecovery
 // worker decode 后能拿到 SettleRequest 重调 Settler.Settle。
 //
@@ -96,7 +95,6 @@ func TestBillingPersisterHandler_DLQPayloadIsReplayable(t *testing.T) {
 	}
 }
 
-// TestBillingPersisterHandler_DLQPayload_NoOutboxEmitterPersisted 守 S2-005:
 // SettleRequest 不能再持久化 func 字段,但必须持久化 bool outbox intent,
 // 否则 post-delivery recovery 成功时会漏写 scheduler_outbox。
 //

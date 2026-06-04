@@ -119,7 +119,7 @@ func (s *PostgresSessionStore) CreateFromStart(ctx context.Context, in StartInpu
 	if in.Kind == "" {
 		return Session{}, ErrInvalidImportBody
 	}
-	// P0 闸门 (Owner 2026-05-26 抓出): 不能让 caller 用任意 flow_kind 绕开
+	// 闸门: 不能让 caller 用任意 flow_kind 绕开
 	// ModePlan.AllowedHelpers。例如 chatgpt_oauth / code_assist / google_one
 	// 这种 OAuth-only mode 不应被 POST /admin/v1/credentials/paste 手工
 	// finalize 替代;CreateFromStart 是 trust 根, 所有调用者 (admin handler /
@@ -269,7 +269,7 @@ func (s *PostgresSessionStore) UpdateStatus(ctx context.Context, id string, stat
 	if NormalizeFlowStatus(status) == "" {
 		return Session{}, ErrInvalidImportBody
 	}
-	// S1-012: terminal flow(finalized/cancelled/expired/failed)不可再被状态推进。无此 CAS predicate 时,
+	// terminal flow(finalized/cancelled/expired/failed)不可再被状态推进。无此 CAS predicate 时,
 	// Get 与状态写之间的并发 Cancel/expire 会被 TOCTOU 绕过 —— CompleteOAuthCallback 的 UpdateStatus(
 	// callback_received/validated)仍会落到一个已 cancelled 的 flow 上把它复活。terminal 行被排除后
 	// RETURNING 无行 → 下面 re-fetch 区分"终态(replay)"与"真不存在(not found)"。validated 不在终态集,
@@ -330,7 +330,7 @@ RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind
 		if getErr != nil {
 			return Session{}, getErr
 		}
-		// S1-012: 'failed' 亦为终态 —— 此前 NOT IN 漏了它,致使一个已 failed 的 flow 仍可被 Cancel 改写
+		// 'failed' 亦为终态 —— 此前 NOT IN 漏了它,致使一个已 failed 的 flow 仍可被 Cancel 改写
 		// 成 cancelled(终态→终态的虚假状态翻转)。终态一律返回 ErrFlowReplay,与 isTerminalStatus 同源。
 		if isTerminalStatus(existing.Status) {
 			return existing, ErrFlowReplay
@@ -378,12 +378,12 @@ RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind
 		_, _ = s.UpdateStatus(ctx, id, StatusExpired, "expired", "acquisition flow expired")
 		return existing, ErrFlowExpired
 	}
-	// S1-010: callback 式 OAuth flow(PKCE)必须先经 callback 校验(status=validated)才能 finalize。
+	// callback 式 OAuth flow(PKCE)必须先经 callback 校验(status=validated)才能 finalize。
 	// 被上面 predicate 排除而落到这里 —— 显式返回 ErrOAuthRequiresCallback,而非误当普通 replay,防止
 	// caller 跳过回调、用手写 credentials body 直接 finalize 注入任意凭据。device_code/sso flow 已豁免
 	// (其凭据来自轮询、不经 validated)。仅对仍处回调前的【活跃】状态(started/waiting_for_user/
 	// callback_received)报此错;已 cancelled/failed/expired 等终态不在此列,保持原 replay/terminal 语义,
-	// 避免把"已取消/已失败"掩盖成"需要回调"(codex round2 P2)。
+	// 避免把"已取消/已失败"掩盖成"需要回调"。
 	switch existing.Status {
 	case StatusStarted, StatusWaitingForUser, StatusCallbackReceived:
 		if RequiresCallbackValidation(existing.Kind, existing.AuthType) {

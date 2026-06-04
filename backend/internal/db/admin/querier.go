@@ -9,26 +9,26 @@ import (
 )
 
 type Querier interface {
-	// Codex N+4b2 pass-7 P2: serialize MaybeBootstrap across concurrently
+	// serialize MaybeBootstrap across concurrently
 	// starting gateway instances. Without this lock, two pods that both see
 	// empty admin_tokens can each insert a fresh bootstrap row. The lock is
 	// a constant key so all instances contend on the same one. Released
 	// automatically on TX commit/rollback.
 	AcquireAdminBootstrapLock(ctx context.Context) error
-	// Codex N+4b2 pass-4 P1 fix: serialize per-actor issuance under a
+	// serialize per-actor issuance under a
 	// transaction-scoped advisory lock so concurrent POST /admin/v1/api-keys
 	// from the same admin token cannot race past the 30/hour cap. The lock
 	// is keyed on hash(actor_id) and released automatically on TX
 	// commit/rollback. Must be called BEFORE CountIssuanceInWindow inside
 	// the same TX, otherwise the count→insert window remains racy.
 	AcquireAdminIssuanceLock(ctx context.Context, actorID string) error
-	// Codex N+4b2 pass-5 P2: validate the target (tenant, user) is active
+	// validate the target (tenant, user) is active
 	// and not soft-deleted BEFORE we mint a bearer + bcrypt-hash. Returning
 	// false → handler responds 400 (or 404), avoiding "the key was minted but
 	// the customer resolver immediately rejects it" + the unhelpful 503 that
 	// would result from leaning on the FK as our only validator.
 	AdminCheckIssuanceTarget(ctx context.Context, arg AdminCheckIssuanceTargetParams) (AdminCheckIssuanceTargetRow, error)
-	// Codex N+4b2 pass-8 P2: list endpoint must verify the tenant exists
+	// list endpoint must verify the tenant exists
 	// before writing the audit row, otherwise the admin_audit_events.tenant_id
 	// FK turns "tenant_id=<bogus>" into a 503 audit-write failure instead
 	// of a clean 404. Active OR disabled is fine — we just need a valid FK
@@ -42,7 +42,7 @@ type Querier interface {
 	// distinct from internal/auth's customer-facing LookupAPIKeysByPrefix:
 	// admin tooling MUST NOT use the prefix-only lookup that the customer
 	// hot path optimizes for (it's a different security surface).
-	// Codex N+4b2 pass-9 P2: insert is conditioned on tenant + user being
+	// insert is conditioned on tenant + user being
 	// active and not soft-deleted at the moment of write. INSERT ... SELECT
 	// WHERE EXISTS makes "target validity" atomic with the row creation, so
 	// a tenant/user that flips disabled between an external preflight and
@@ -54,14 +54,14 @@ type Querier interface {
 	// key_prefix is acceptable to expose (already public-safe per N+4a; 16
 	// chars insufficient to authenticate without bcrypt match).
 	AdminListAPIKeysForTenant(ctx context.Context, arg AdminListAPIKeysForTenantParams) ([]AdminListAPIKeysForTenantRow, error)
-	// Soft-revokes a tenant's api_keys row. Codex N+4b2 pass-6 P2: revoke
+	// Soft-revokes a tenant's api_keys row. revoke
 	// collapses ANY non-revoked status (active / disabled / expired) into
 	// 'revoked' — only an already-revoked row is the idempotent path.
 	// Returning 0 rows means "was already revoked".
 	AdminRevokeAPIKey(ctx context.Context, arg AdminRevokeAPIKeyParams) (int64, error)
 	// Used by bootstrap: env-var bootstrap MUST only insert when NO
 	// admin token row has ever been minted (regardless of current status).
-	// Codex N+4b2 pass-5 P1: an active-only count would let a stale env
+	// an active-only count would let a stale env
 	// var re-bootstrap after the operator disabled/revoked all tokens, which
 	// breaks the "one-shot" guarantee. Counting all non-deleted rows closes
 	// that hole; if you want to wipe and re-bootstrap, hard-delete the row.
@@ -70,7 +70,7 @@ type Querier interface {
 	// this actor performed in the last `window_seconds`? Default cap = 30/hour
 	// per token, enforced by the issuer service.
 	//
-	// Codex N+4b2 pass-10 P2: filter on target_id IS NOT NULL so denied
+	// filter on target_id IS NOT NULL so denied
 	// attempts (which write a deny audit row with target_id=0/NULL) are
 	// excluded from the cap. Otherwise an actor that hits the cap keeps
 	// refreshing the window with deny rows on every retry and never recovers.
@@ -88,7 +88,7 @@ type Querier interface {
 	// 单 profile 查询 (按 tenant + id 双过滤); admin UI 编辑 + resolver 走这条。
 	GetTLSFingerprintProfile(ctx context.Context, arg GetTLSFingerprintProfileParams) (GetTLSFingerprintProfileRow, error)
 	// Slice 2 (N+4b2) admin_audit_events queries.
-	// Per CMB-5 + CMB-7: these queries are append-only writes. NEVER store
+	// these queries are append-only writes. NEVER store
 	// plaintext bearer or key_hash inside the payload jsonb.
 	// Append a single admin action audit row. Called inside the same TX as
 	// the corresponding api_keys / admin_tokens write so the audit trail is
@@ -120,15 +120,15 @@ type Querier interface {
 	ListTLSFingerprintProfilesByTenant(ctx context.Context, tenantID int64) ([]ListTLSFingerprintProfilesByTenantRow, error)
 	// Slice 2 (N+4b2) admin_tokens queries.
 	// Per docs/process/plans/2026-05-01-n4b-admin-keys.md §Scope A.
-	// Per CMB-1: this file is consumed only by internal/admin and never by
-	// internal/auth (the inbound customer resolver). Per CMB-5: queries
+	// this file is consumed only by internal/admin and never by
+	// internal/auth (the inbound customer resolver). queries
 	// never SELECT key_hash for any purpose other than bcrypt comparison
 	// inside the resolver, and never join into log/trace fields.
 	// Returns active candidates whose key_prefix matches. Mirrors the
 	// LookupAPIKeysByPrefix shape from N+4a (LIMIT 5 caps bcrypt fanout DOS).
 	// Status is enforced here; deleted_at filters parent rows.
 	//
-	// Codex N+4b1 pass-3 P2-A fix: tenant_operator tokens MUST be rejected
+	// tenant_operator tokens MUST be rejected
 	// when their scoped tenant is disabled or soft-deleted. We LEFT JOIN
 	// tenants so platform_admin tokens (scope_tenant_id IS NULL) still
 	// resolve, but tenant_operator tokens whose tenant is disabled/deleted

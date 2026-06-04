@@ -21,7 +21,7 @@ const (
 // Reason 与 Severity。
 //
 // 任何 capability 在任何 provider projection 上有 lossy 表现 → 必须 emit 一条
-// ProtocolLossEntry；不可作为 silent drop（INV-7）。
+// ProtocolLossEntry；不可作为 silent drop。
 type ProtocolLossEntry struct {
 	// ---- v0.4 新字段 ----
 
@@ -80,7 +80,7 @@ type ProtocolLossEntry struct {
 //     仍判 silent drop —— v0.4 entry 必须有人读 Reason 或机器读 Code，仅 Verdict 不够
 //   - 其余情形（四字段全空）→ silent drop
 //
-// envelope_validate 用它来强制 INV-7。
+// envelope_validate 用它来强制。
 func (e ProtocolLossEntry) IsSilentDrop() bool {
 	hasReason := e.Reason != ""
 	hasNote := e.Note != ""

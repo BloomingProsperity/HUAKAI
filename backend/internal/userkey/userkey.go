@@ -222,7 +222,7 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (IssueResult, err
 	out := IssueResult{KeyPrefix: prefix, Status: "active", ExpiresAt: req.ExpiresAt}
 	err = s.tx(ctx, func(tx pgx.Tx) error {
 		// 拿 (tenant_id, user_id) 的 transaction-scoped advisory lock,保证并发 Issue
-		// 不会同时读到 cap 之下的 count 再各自 INSERT 越界 (codex review HIGH #1)。
+		// 不会同时读到 cap 之下的 count 再各自 INSERT 越界。
 		// PostgreSQL pg_advisory_xact_lock 单 bigint 签名;Go 端把 (tenant, user)
 		// 拼成 text 喂 hashtextextended,tx 结束自动释放。
 		lockKey := fmt.Sprintf("userkey:%d:%d", req.TenantID, req.UserID)
@@ -306,7 +306,7 @@ func (s *Service) List(ctx context.Context, req ListRequest) ([]KeyDescriptor, e
 	if offset < 0 {
 		offset = 0
 	}
-	// 与 tenants/users 双 JOIN 强制要求 active + 未软删除 (codex HIGH #2):
+	// 与 tenants/users 双 JOIN 强制要求 active + 未软删除:
 	// 即使有 stale session token 漏过 middleware,失活租户/用户的 key 元数据也读不到。
 	rows, err := s.pool.Query(ctx,
 		`SELECT k.id, k.name, k.key_prefix, k.status,
@@ -388,7 +388,7 @@ func (s *Service) Get(ctx context.Context, tenantID, userID, apiKeyID int64) (Ke
 		createdAt      pgtype.Timestamptz
 		updatedAt      pgtype.Timestamptz
 	)
-	// 与 List 同样的双 JOIN 防御 (codex HIGH #2):失活 tenant/user 拿不到 key。
+	// 与 List 同样的双 JOIN 防御:失活 tenant/user 拿不到 key。
 	err := s.pool.QueryRow(ctx,
 		`SELECT k.id, k.name, k.key_prefix, k.status,
 		        k.expires_at, k.last_used_at, k.revoked_at, k.revoked_reason,
@@ -452,7 +452,6 @@ func (s *Service) Revoke(ctx context.Context, req RevokeRequest) (RevokeResult, 
 	err := s.tx(ctx, func(tx pgx.Tx) error {
 		// 单点 owner+active-parent 校验:JOIN tenants/users 强制 active,
 		// SELECT FOR UPDATE 锁住 row 避免并发 Revoke 竞态。
-		// (codex HIGH #2 + HIGH #4 联合修复)
 		// 移除 UPDATE 的 user_id 冗余条件后,任何 ownership / parent-active 检查
 		// 缺失都会让这唯一 gate 失守,mutation 自检有判别力。
 		var status string

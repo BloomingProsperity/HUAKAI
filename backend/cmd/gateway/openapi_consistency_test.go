@@ -1,7 +1,7 @@
 // openapi_consistency_test 覆盖 P2.3：docs/openapi/openapi.yaml 与
 // cmd/gateway 实际 chi 路由的一致性检查。
 //
-// 验证目标（Owner deep-review 2026-05-17）：
+// 验证目标：
 //   - spec 中声明的 path 都能在 main.go mountRoutes 后真实命中
 //   - main.go 注册但 spec 未声明的 path 必须列出（用于触发文档补救）
 //
@@ -89,7 +89,7 @@ func TestOpenAPI_ImplementationConsistency(t *testing.T) {
 	// 主断言：spec 声明的每条 path 都必须有 impl 兜底。
 	// 这一条 fail 意味着前端 / 第三方按 OpenAPI 调用会撞 404。
 	// 软白名单（KnownSpecOnly）允许列出"spec 已声明但 impl 暂未落地"
-	// 的占位条目；目前为空。Owner / PM 添加时必须附 PR ref + 闭环 ETA。
+	// 的占位条目；目前为空。
 	knownSpecOnly := map[string]struct{}{}
 	residualSpecOnly := make([]string, 0, len(rep.SpecOnly))
 	for _, p := range rep.SpecOnly {

@@ -34,7 +34,6 @@ const (
 	// BindingKindAPIKeyInherited 表示该 binding 通过 api_key.user_id 继承自
 	// owner user 的绑定（U1-B schema 加 api_key_bindings 后，api_key 无显式
 	// 行时回退到 user 维度）。U1-A 预留枚举值防 U1-B 引入破坏性 enum 变更。
-	// （sonnet U1-A debug renew F2 finding）
 	BindingKindAPIKeyInherited BindingKind = "api_key_inherited"
 )
 
@@ -49,9 +48,8 @@ type BindingScope struct {
 	Model    string
 }
 
-// Valid 检查 scope 字段最小完整性 (sonnet U1-A debug renew F1 修复——
-// 当前 noop 总 miss，对 degenerate scope 静默；U1-B 真实现下 degenerate
-// scope 可能命中"全 tenant default"行造成 routing leak)。
+// Valid 检查 scope 字段最小完整性。当前 noop 总 miss，对 degenerate scope 静默；
+// U1-B 真实现下 degenerate scope 可能命中"全 tenant default"行造成 routing leak。
 //
 // 规则:
 //   - TenantID 必需 (>0)

@@ -6,7 +6,7 @@
 //   - 海外 vendor 路径走 SOCKS5 proxy 出站
 //   - 测试场景下账号级 IP 关联
 //
-// 合规中性 — 用代理是合法的，与 R3 transport mimicry（部分暂停）解耦。
+// 合规中性 — 用代理是合法的，与 transport mimicry 解耦。
 //
 // 复用既有 ErrAccountNotFound（声明在 vault.go）：vault Resolve 与
 // proxy Resolve 共享"未找到 account"语义。

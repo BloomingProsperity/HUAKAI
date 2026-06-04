@@ -3,11 +3,6 @@
 // 路由由 cmd/gateway/routes.go 在 session middleware 之内挂入 /v1/api-keys/*;
 // 没 session middleware 包裹本包 handler 必直接拒 503 — 防止有人误把它挂到
 // 公开路径上。
-//
-// 与 internal/gatewayhttp (frozen) 的差异:本包是按 CLAUDE.md #13 的"按职责
-// 组织"在 frozen package 拆分前新建,只承担 user-self-service api_keys 的 HTTP
-// 层。后续如有其他 user-facing CRUD (e.g. /v1/usage),按相同 pattern 起新包,
-// **绝不**回填进 gatewayhttp。
 package userkeyhttp
 
 import (

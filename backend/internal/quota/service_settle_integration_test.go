@@ -13,7 +13,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// TestServiceSettle_OverageIsBudgetOverrunNotEstimateMiss 守住 Owner 决策:
+// TestServiceSettle_OverageIsBudgetOverrunNotEstimateMiss 守住
 // overage 是窗口预算超支的边际增量, 不是 actual-predicted 的估算误差。
 // Mutation: 把公式换成 max(0, actual-predicted), A 会得 3 而不是 2, B 会得 2 而不是 0。
 func TestServiceSettle_OverageIsBudgetOverrunNotEstimateMiss(t *testing.T) {

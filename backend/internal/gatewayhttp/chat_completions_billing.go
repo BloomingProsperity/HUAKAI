@@ -37,14 +37,13 @@ const crossCheckMinAbsTokenDelta = 50
 // 仅在 hasPositiveCost(排除 cache-hit 零成本回放)且绝对偏差 >= 下限时才降级,避免短响应/
 // 估算噪声误报;estimated<=0(无可估内容)→ CrossCheck 返回 Unknown → 不降级。
 // 非流(nonStreamingUsageDraft)与流式(streamingCompletionEvent)共用,确保口径一致
-// (S2-163 + S2-163-fu)。
 func crossCheckAudit(reportedOutput, reasoningTokens, estimated, estimatedReasoning int, hasPositiveCost bool) (confidence float64, pending bool) {
 	confidence = 1.0
 	// reasoning 文本被流出(estimatedReasoning>0)却无对应 ReasoningTokens 单列时,无法判断
 	// reported OutputTokens 是否已含 thinking:Anthropic 扩展思考把 thinking 计入 output_tokens,
 	// 而 Gemini thought 不计入 candidatesTokenCount,canonical 层无此 folding 信号。任一方向的
 	// 加/减都会误判一类 provider,故此处跳过交叉校验(保持满置信、不 pending),宁可在 thinking 流上
-	// 少覆盖也不误报主路径 Claude thinking 流量(S2-163-fu review R2;reasoning-aware 校验见延后 spec)。
+	// 少覆盖也不误报主路径 Claude thinking 流量(reasoning-aware 校验见延后 spec)。
 	if reasoningTokens == 0 && estimatedReasoning > 0 {
 		return confidence, pending
 	}
@@ -90,7 +89,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 	ledgerResult, err := submitAuditLedgerEntry(ex.ctx, ex.d, bufferedEnv, ex.ident.TenantID, ex.requestID)
 	// 快照取在 submitAuditLedgerEntry 之后:它会向 env.CapabilityGraph.ProtocolLoss
 	// 追加 ledger/trust-chain 警告(appendTrustChainWarning),提前快照会漏掉这些证据,
-	// 使 audit_ledger_error abort 与成功 settle 的 protocol_loss 缺 ledger 侧损失(S1-025-fu item 2)。
+	// 使 audit_ledger_error abort 与成功 settle 的 protocol_loss 缺 ledger 侧损失(item 2)。
 	ex.protocolLoss = protocolLossJSONFromEnv(bufferedEnv)
 	if err != nil {
 		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "audit_ledger_error", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
@@ -103,7 +102,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 	seedCtx := proto.ContextWithRequestMetaSeed(ex.ctx, seed)
 	clientBody, clientLosses, err := ex.clientAdapter.CanonicalToClientResponse(seedCtx, bufferedEnv)
 	// 响应转换损失之前被丢弃(_);折入 env 并重新快照,使成功 settle 与
-	// canonical_response_error abort 都带上响应侧证据(S1-025-fu item 2)。
+	// canonical_response_error abort 都带上响应侧证据(item 2)。
 	if len(clientLosses) > 0 {
 		bufferedEnv.CapabilityGraph.ProtocolLoss = append(bufferedEnv.CapabilityGraph.ProtocolLoss, clientLosses...)
 		ex.protocolLoss = protocolLossJSONFromEnv(bufferedEnv)
@@ -211,7 +210,7 @@ func protocolLossJSONFromEntries(entries []proto.ProtocolLossEntry) json.RawMess
 }
 
 // mergeProtocolLossWithEntries 合并已序列化的 base(请求翻译损失)与追加的 typed
-// 条目(流式逐事件 provider/client 损失),一次性 marshal(S1-025-fu item 4)。
+// 条目(流式逐事件 provider/client 损失),一次性 marshal(item 4)。
 // 顺序:base 在前、entries 在后(请求 → 逐事件发射序);不去重(每条独立观测,审计全留)。
 // base 不可解析时退化为仅返回 base,绝不静默丢已有请求侧证据。
 func mergeProtocolLossWithEntries(base json.RawMessage, entries []proto.ProtocolLossEntry) json.RawMessage {
@@ -348,7 +347,7 @@ func rejectMoneyPathAuditRef(ctx context.Context, d ChatHandlerDeps, event event
 	if d.Settler != nil && event.ClaimID > 0 {
 		// 复用事件已携带的 protocol_loss 证据(event.SettleRequest.ProtocolLoss),
 		// 这条 audit-ref-missing 的零成本 abort 是该 claim 唯一持久行;之前传 nil
-		// 会丢失损失证据(S1-025-fu item 3)。不新增 eventbus 字段。
+		// 会丢失损失证据(item 3)。不新增 eventbus 字段。
 		abortErr = d.Settler.Abort(ctx, event.TenantID, event.ClaimID, clienterr.CodeAuditRefMissing, event.RequestID, 0, event.SettleRequest.ProtocolLoss)
 	}
 	logMoneyPathAuditRefError(ctx, event, validationErr, source, false)
@@ -657,7 +656,7 @@ func nonStreamingUsageDraft(env *proto.HCSF, actualCost completionCostBreakdown,
 		estimatedOutputTokens = tokencheck.HeuristicEstimator{}.Estimate(env.BufferedResponse.Content)
 	}
 	// 非流估算器(HeuristicEstimator.Estimate)对 buffered thinking 块已计入估算(estimateBlock
-	// 计 block.Thinking),与 reported 口径自洽,故 estimatedReasoning 传 0、不触发 folding-跳过(S2-163-fu)。
+	// 计 block.Thinking),与 reported 口径自洽,故 estimatedReasoning 传 0、不触发 folding-跳过。
 	confidence, pendingReconciliation := crossCheckAudit(usage.OutputTokens, usage.ReasoningTokens, estimatedOutputTokens, 0, actualCost.Total.IsPositive())
 	return gateway.UsageRecordDraft{
 		TokensInput:           usage.InputTokens,

@@ -159,7 +159,7 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 	keepaliveTimer := newTimer(f.Timeouts.KeepAliveInterval) // 0 = 关闭(永不触发)
 	// 用闭包在 return 时按变量"当前值"停表:interTimer / keepaliveTimer 会在循环里被 newTimer 重新赋值,
 	// 若用 `defer stopTimer(interTimer)` 形式会捕获最初的 timer 值,导致重新赋值后的活动 timer 在返回后
-	// 仍存活到下次触发——高频短流会累积一个 keepalive 间隔的悬挂 timer(codex #9 P2)。闭包按引用捕获变量,
+	// 仍存活到下次触发——高频短流会累积一个 keepalive 间隔的悬挂 timer。闭包按引用捕获变量,
 	// 停的是返回时刻真正在跑的那个 timer。
 	defer func() {
 		stopTimer(totalTimer)
@@ -189,7 +189,7 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 			} else {
 				// 心跳一旦写出即向客户端提交了 HTTP 200 响应头+字节:此后无法再改 HTTP 状态码或换上游重试。
 				// 记录"仅心跳已提交、尚无真实内容",以便首字节/inter/total 超时收尾时补发一个显式 SSE
-				// error 事件,而非静默关闭一个只含 ": hk" 注释的空 200 流(codex #8 P1)。
+				// error 事件,而非静默关闭一个只含 ": hk" 注释的空 200 流。
 				if !firstEmitted {
 					keepaliveCommitted = true
 				}
@@ -260,7 +260,7 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 		}
 		// 若此前仅用心跳向客户端提交了 200(尚无任何真实内容),而流以错误收尾:deliveryStarted 已为真,
 		// 上层"未交付→可重试/写 HTTP 错误状态"路径不再可走,必须在流内补发一个显式 error 事件,
-		// 否则客户端只收到 ": hk" 注释后被静默关闭、无从判断成败(codex #8 P1)。仅针对"心跳已提交且
+		// 否则客户端只收到 ": hk" 注释后被静默关闭、无从判断成败。仅针对"心跳已提交且
 		// 零真实交付"这一新引入情形;"已交付内容后再超时/断连"等既有路径行为不变。
 		if endErr != nil && keepaliveCommitted && !firstEmitted && draft.EndClass != ClientDisconnect {
 			_ = writeAndFlush(clientWriter, canonicalStreamErrorSSE())
@@ -325,10 +325,10 @@ func (f *StreamForwarder) handleEventWithAdapter(
 
 	canonicalEvents, providerLosses, err := adapter.ProviderEventToCanonicalEvents(ctx, evt.Data, upstreamState)
 	// 逐事件 provider→canonical 协议损失之前被丢弃(_);累积进 acc,
-	// finishDraft 拷入 draft,settle 路径合并(S1-025-fu item 4)。
+	// finishDraft 拷入 draft,settle 路径合并(item 4)。
 	// 部分 adapter 把 loss 连同 error 一起返回(如 anthropic 未知事件 →
 	// loss + ErrUnknownEventType, anthropic/sse.go:228),所以必须在 error 早返之前
-	// 累积,否则 AmbiguousUsage settle 行对未知/畸形上游事件无证据(S1-025-fu review R1)。
+	// 累积,否则 AmbiguousUsage settle 行对未知/畸形上游事件无证据。
 	if len(providerLosses) > 0 {
 		acc.StreamProtocolLoss = append(acc.StreamProtocolLoss, providerLosses...)
 	}
@@ -344,11 +344,11 @@ func (f *StreamForwarder) handleEventWithAdapter(
 			acc.Update(UsageSourceReported, usage)
 		}
 		// 逐事件累加可见输出 token 估算(排除隐藏 reasoning delta),settle 时与 reported
-		// OutputTokens 交叉校验。O(1) 内存、不滞留响应内容(S2-163-fu 流式交叉校验)。
+		// OutputTokens 交叉校验。O(1) 内存、不滞留响应内容(流式交叉校验)。
 		acc.EstimatedOutputTokens += canonicalVisibleEstimate(canonical)
 		// 单独累加可见 reasoning 文本估算:Anthropic 扩展思考 / Gemini thought 把 thinking 以
 		// ReasoningText 流出却不单列 ReasoningTokens,settle 时据此判断 reasoning-folding 是否可知,
-		// 不可知则跳过交叉校验以免误报主路径 thinking 流(S2-163-fu review R2)。
+		// 不可知则跳过交叉校验以免误报主路径 thinking 流。
 		acc.EstimatedReasoningTokens += canonicalReasoningEstimate(canonical)
 		if canonicalTerminal(canonical) {
 			terminalSeen = true
@@ -433,10 +433,10 @@ func (f *StreamForwarder) drainWithAdapter(
 				canonicalEvents, drainLosses, err := adapter.ProviderEventToCanonicalEvents(ctx, res.event.Data, upstreamState)
 				// loss 可能连同 error 一起返回(anthropic/sse.go:228 未知事件 → loss +
 				// ErrUnknownEventType),drain 阶段同样在 err 判断之前累积,否则 drain 期的
-				// 未知/畸形事件证据丢失;usage 仅在 err==nil 时可信(S1-025-fu review R1)。
+				// 未知/畸形事件证据丢失;usage 仅在 err==nil 时可信。
 				// loss 可能连同 error 一起返回(anthropic/sse.go:228 未知事件 → loss +
 				// ErrUnknownEventType),drain 阶段同样在 err 判断之前累积,否则 drain 期的
-				// 未知/畸形事件证据丢失;usage 仅在 err==nil 时可信(S1-025-fu review R1)。
+				// 未知/畸形事件证据丢失;usage 仅在 err==nil 时可信。
 				if len(drainLosses) > 0 {
 					acc.StreamProtocolLoss = append(acc.StreamProtocolLoss, drainLosses...)
 				}
@@ -448,7 +448,7 @@ func (f *StreamForwarder) drainWithAdapter(
 						// drain 阶段产生的可见输出也累加进估算:settle 比对的 reported
 						// OutputTokens 已含 drain 期 usage(上方 acc.Update),估算须同步含
 						// drain 期可见内容,否则断连后 drain 完成的长响应会因估算偏低被误判
-						// 假 pending_reconciliation(S2-163-fu review R2)。
+						// 假 pending_reconciliation。
 						acc.EstimatedOutputTokens += canonicalVisibleEstimate(canonical)
 						acc.EstimatedReasoningTokens += canonicalReasoningEstimate(canonical)
 					}
@@ -488,7 +488,7 @@ func (f *StreamForwarder) finishDraft(d UsageRecordDraft, acc UsageAccumulator, 
 	d.DeliveredTokenCount = acc.DeliveredTokenCount()
 	d.StreamProtocolLoss = acc.StreamProtocolLoss
 	// 流式 token 交叉校验信号(审计-only,settle 时在 gatewayhttp 比对):隐藏 reasoning、
-	// 逐事件累加的可见输出估算、以及可见 reasoning 文本估算(用于 folding-不可知时跳过)(S2-163-fu)。
+	// 逐事件累加的可见输出估算、以及可见 reasoning 文本估算(用于 folding-不可知时跳过)。
 	d.ReasoningTokens = acc.Usage.ReasoningTokens
 	d.EstimatedOutputTokens = acc.EstimatedOutputTokens
 	d.EstimatedReasoningTokens = acc.EstimatedReasoningTokens
@@ -513,7 +513,7 @@ func (f *StreamForwarder) finishDraft(d UsageRecordDraft, acc UsageAccumulator, 
 
 // newUpstreamState 构造上游协议状态对象。
 //
-// 修复 (sonnet F3 HIGH): 之前一律返回 *anthropic.UpstreamState — 但 openai.Adapter
+// 之前一律返回 *anthropic.UpstreamState — 但 openai.Adapter
 // 与 gemini.Adapter 在 ProviderEventToCanonicalEvents 内 type-assert 到
 // 各自的 state 类型, OpenAI/Gemini 流过来 type assertion 失败直接报错。
 // 当前按 ProtocolAdapters 注册的 adapter 实际类型选 state 类型.
@@ -666,7 +666,7 @@ func canonicalUsage(v any) (proto.CanonicalUsage, bool) {
 // delta(Delta.Text)+工具参数增量(Delta.PartialJSON)+初始可见文本与一次性 tool 参数
 // (ContentBlock.Text / ContentBlock.Input)。**排除** Delta.ReasoningText —— 思考/隐藏 reasoning
 // 由 canonicalReasoningEstimate 单独累加,交叉校验时按 reasoning-folding 是否可知分别处理
-// (S2-163-fu 流式交叉校验)。
+// (流式交叉校验)。
 func canonicalVisibleEstimate(v any) int {
 	evt, ok := v.(proto.CanonicalEvent)
 	if !ok {
@@ -680,7 +680,7 @@ func canonicalVisibleEstimate(v any) int {
 		// 计入 ContentBlock.Input —— 部分 provider(如 Gemini)在 content_block_start 一次性
 		// 发完整 tool call 参数而非 input_json_delta(PartialJSON)。用 delta 流式发参数的
 		// provider(如 Anthropic)其 content_block_start.Input 为空,不会与 PartialJSON 重复计数。
-		// 与非流估算器对 tool 节点的口径一致(S2-163-fu)。
+		// 与非流估算器对 tool 节点的口径一致。
 		total += tokencheck.EstimateStreamDelta(cb.Text, cb.Input)
 	}
 	return total
@@ -692,7 +692,6 @@ func canonicalVisibleEstimate(v any) int {
 // 而 reported OutputTokens 是否含 thinking 因 provider 而异(Anthropic 计入 output_tokens /
 // Gemini 不计入 candidatesTokenCount),canonical 层无此 folding 信号。crossCheckAudit 据此在
 // reasoning 文本流出但缺对应 ReasoningTokens 时跳过交叉校验,避免误报主路径 thinking 流
-// (S2-163-fu review R2)。
 func canonicalReasoningEstimate(v any) int {
 	evt, ok := v.(proto.CanonicalEvent)
 	if !ok {
@@ -705,7 +704,7 @@ func canonicalReasoningEstimate(v any) int {
 	if cb := evt.ContentBlock; cb != nil {
 		// 流式 Anthropic 当前不在 content_block_start 给 thinking(只 text/tool_use),
 		// 但计入 ContentBlock.Thinking 以保持与可见估算对 ContentBlock 的对称口径,兼容未来
-		// 在起始块直接携带思考文本的 provider(S2-163-fu)。
+		// 在起始块直接携带思考文本的 provider。
 		total += tokencheck.EstimateStreamDelta(cb.Thinking, nil)
 	}
 	return total

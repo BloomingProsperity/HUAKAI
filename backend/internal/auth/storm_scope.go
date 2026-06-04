@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// storm_scope.go is the in-memory endpoint + global rate layer of the S2-045
+// storm_scope.go is the in-memory endpoint + global rate layer of the
 // three-scope refresh-storm controller.
 //
 // The account scope (the critical same-account thundering-herd guard) stays

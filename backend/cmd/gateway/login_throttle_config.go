@@ -12,7 +12,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
 )
 
-// 登录限流(S2-048)的 env 配置键。未设则用 loginthrottle.DefaultConfig 的温和默认值;设了但非法
+// 登录限流的 env 配置键。未设则用 loginthrottle.DefaultConfig 的温和默认值;设了但非法
 // (无法解析 / 非正)则 fail-fast 返回错误,绝不静默禁用限流(否则等于把登录 DoS 防护关掉)。
 const (
 	loginThrottleInFlightEnv    = "HUAKAI_LOGIN_THROTTLE_INFLIGHT_LIMIT"

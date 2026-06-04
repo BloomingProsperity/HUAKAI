@@ -3,8 +3,7 @@
 //
 // Closely coupled with internal/billing for Tx2 atomic settlement.
 // See docs/specs/observability-billing.md for the released spec.
-// Current slice includes a sqlc-backed read-side Reader in repository.go.
-// Admin HTTP endpoints and DLQ replay orchestration remain Phase E+ work.
+// The package includes a sqlc-backed read-side Reader in repository.go.
 package obs
 
 import "context"
@@ -56,7 +55,7 @@ type PageMeta struct {
 
 // UsagePage / ClaimPage / AuditPage are paginated result envelopes.
 type UsagePage struct {
-	Items []byte // raw JSON array; typed shape generated from openapi.yaml in Phase 4
+	Items []byte // raw JSON array; typed shape generated from openapi.yaml
 	Page  PageMeta
 }
 
@@ -69,7 +68,3 @@ type AuditPage struct {
 	Items []byte
 	Page  PageMeta
 }
-
-// TODO(phase-e): expose Reader through admin HTTP endpoints, add DLQ replay,
-// reconciliation workers for pending_reconciliation usage records, and outbox
-// lag metrics.

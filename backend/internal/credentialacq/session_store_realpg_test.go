@@ -84,7 +84,7 @@ func seedCredentialAcqProviderAccount(t *testing.T, ctx context.Context, pool *p
 	return tenantID, paID
 }
 
-// TestCreateRejectsCrossTenantProviderAccountPG guards S2-010 against real Postgres:
+// TestCreateRejectsCrossTenantProviderAccountPG guards against real Postgres:
 // credential_acquisition_flow_sessions must enforce that its tenant_id matches the
 // referenced Provider Account's tenant. The broken schema used only
 // provider_account_id REFERENCES provider_accounts(id), so tenant A could create a
@@ -148,7 +148,7 @@ func TestCreateRejectsCrossTenantProviderAccountPG(t *testing.T) {
 	}
 }
 
-// TestBeginFinalizeCallbackOAuthGatePG guards S1-010 [codex P2] against real Postgres: it exercises the
+// TestBeginFinalizeCallbackOAuthGatePG guards against real Postgres: it exercises the
 // actual BeginFinalize SQL predicate
 //
 //	AND (flow_kind <> 'oauth' OR auth_type IN ('device_code', 'sso') OR status = 'validated')
@@ -214,12 +214,12 @@ func TestBeginFinalizeCallbackOAuthGatePG(t *testing.T) {
 	}
 }
 
-// TestUpdateStatusAndCancelRejectTerminalFlowsPG guards S1-012 against real Postgres: it proves the two
+// TestUpdateStatusAndCancelRejectTerminalFlowsPG guards against real Postgres: it proves the two
 // CAS predicates the fake test double cannot prove (the fake reimplements the rule in Go via
 // isTerminalStatus, so it stays green even if the SQL were deleted):
 //
 //	UpdateStatus: WHERE ... AND status NOT IN ('finalized','cancelled','expired','failed')
-//	Cancel:       WHERE ... AND status NOT IN ('finalized','cancelled','expired','failed')   // 'failed' added by S1-012
+// Cancel: WHERE... AND status NOT IN ('finalized','cancelled','expired','failed') // 'failed' added by
 //
 // Without these, the Get→write TOCTOU lets a concurrent Cancel/expire be overwritten — e.g.
 // CompleteOAuthCallback's UpdateStatus(callback_received/validated) would resurrect an already-cancelled
@@ -272,7 +272,7 @@ func TestUpdateStatusAndCancelRejectTerminalFlowsPG(t *testing.T) {
 		t.Fatalf("UpdateStatus on cancelled flow: err=%v want ErrFlowReplay", err)
 	}
 
-	// (c) a failed flow must not be Cancel-able (terminal→terminal flip blocked; 'failed' added by S1-012).
+	// (c) a failed flow must not be Cancel-able (terminal→terminal flip blocked; 'failed' added by).
 	failedID := mk(StatusStarted)
 	if _, err := store.MarkFailed(ctx, failedID, "exchange_failed", "redacted"); err != nil {
 		t.Fatalf("MarkFailed of started flow: %v", err)

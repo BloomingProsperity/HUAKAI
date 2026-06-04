@@ -79,9 +79,9 @@ func (db *testSessionDB) QueryRow(_ context.Context, sql string, args ...interfa
 	case strings.Contains(sql, "SET status = $2"):
 		id := stringArg(args[0])
 		row, ok := db.rows[id]
-		// S1-012: 镜像真 SQL 的 `AND status NOT IN ('finalized','cancelled','expired','failed')` CAS —— 终态
+		// 镜像真 SQL 的 `AND status NOT IN ('finalized','cancelled','expired','failed')` CAS —— 终态
 		// 行不可被状态推进,RETURNING 无行 → ErrNoRows(production 再 re-fetch 区分 replay/not-found)。
-		// 复用生产 isTerminalStatus,避免 fake 与真 SQL 漂移(S1-010 教训)。
+		// 复用生产 isTerminalStatus,避免 fake 与真 SQL 漂移(教训)。
 		if !ok || isTerminalStatus(row.Status) {
 			return testSessionRow{err: pgx.ErrNoRows}
 		}
@@ -94,7 +94,7 @@ func (db *testSessionDB) QueryRow(_ context.Context, sql string, args ...interfa
 	case strings.Contains(sql, "SET status = 'cancelled'"):
 		id := stringArg(args[0])
 		row, ok := db.rows[id]
-		// S1-012: Cancel 的 NOT IN 现含 'failed' —— 与 isTerminalStatus 同源,终态行不可再 Cancel。
+		// Cancel 的 NOT IN 现含 'failed' —— 与 isTerminalStatus 同源,终态行不可再 Cancel。
 		if !ok || isTerminalStatus(row.Status) {
 			return testSessionRow{err: pgx.ErrNoRows}
 		}
@@ -106,7 +106,7 @@ func (db *testSessionDB) QueryRow(_ context.Context, sql string, args ...interfa
 	case strings.Contains(sql, "SET consumed_at = NOW()"):
 		id := stringArg(args[0])
 		row, ok := db.rows[id]
-		// S1-010: 与真 SQL 的 BeginFinalize predicate 保持一致 —— callback 式 OAuth(非 device_code/sso)
+		// 与真 SQL 的 BeginFinalize predicate 保持一致 —— callback 式 OAuth(非 device_code/sso)
 		// 未到 validated 不可 finalize。复用生产 helper RequiresCallbackValidation,避免 fake 与真 SQL 漂移。
 		if !ok || !row.ConsumedAt.IsZero() || row.Status == StatusFinalized || row.Status == StatusCancelled || row.Status == StatusExpired || !row.ExpiresAt.After(db.now) ||
 			(RequiresCallbackValidation(row.Kind, row.AuthType) && row.Status != StatusValidated) {
@@ -402,7 +402,7 @@ func timeArg(value any) time.Time {
 	return time.Time{}
 }
 
-// TestBeginFinalizeRequiresCallbackValidationForCallbackOAuth guards S1-010: a callback-style OAuth
+// TestBeginFinalizeRequiresCallbackValidationForCallbackOAuth guards a callback-style OAuth
 // flow (PKCE) must NOT be finalizable while status is started/waiting_for_user — it must first pass
 // CompleteOAuthCallback (state check + code exchange) to reach validated. Otherwise an over-privileged
 // admin could skip the callback and finalize with a hand-written credentials body, injecting arbitrary
@@ -453,7 +453,7 @@ func TestBeginFinalizeRequiresCallbackValidationForCallbackOAuth(t *testing.T) {
 	if _, err := store.BeginFinalize(ctx, dc.ID); err != nil {
 		t.Fatalf("device_code flow must be exempt from callback-validation gate: %v", err)
 	}
-	// (d) [codex round2 P2] a terminal (cancelled) callback OAuth flow must surface the replay/terminal
+	// (d) a terminal (cancelled) callback OAuth flow must surface the replay/terminal
 	// error, NOT oauth_requires_callback — the gate is limited to active pre-validation statuses so it
 	// doesn't mask the real state. Mutation: drop the status switch (run the check on any non-validated
 	// status) and a cancelled flow reports ErrOAuthRequiresCallback → this assertion goes red.

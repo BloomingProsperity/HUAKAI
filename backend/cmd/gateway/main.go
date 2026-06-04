@@ -1,15 +1,4 @@
 // Package main is the HUAKAI gateway entry point.
-//
-// Phase C wiring per docs/process/plans/2026-04-30-phase-c-gateway-wiring.md.
-//
-// Released specs governing this binary:
-//   - docs/specs/pool-routing.md (F-POOL-001)
-//   - docs/specs/observability-billing.md (F-OBS-001 + F-BILL-001 framing)
-//   - docs/specs/streaming-forwarder.md (F-GW-002)
-//   - docs/specs/rate-limiting.md (F-RATE-001)
-//   - docs/specs/protocol-translation.md (F-PROTO-002)
-//   - docs/specs/upstream-credential-management.md (F-AUTH-005)
-//   - docs/specs/api-contract.md (Phase 2.2 contract lock)
 package main
 
 import (
@@ -45,11 +34,11 @@ func main() {
 }
 
 func run(logger *zap.Logger) error {
-	// S1-019: 启动即校验 release mode,拒绝遗漏或拼错 env 后静默跑 dev 的降级。
+	// 启动即校验 release mode,拒绝遗漏或拼错 env 后静默跑 dev 的降级。
 	if err := validateReleaseMode(); err != nil {
 		return err
 	}
-	// S1-018: 生产环境禁止开启 dev 令牌回显开关,否则注册/重置响应会泄露明文一次性令牌;带病配置直接拒启。
+	// 生产环境禁止开启 dev 令牌回显开关,否则注册/重置响应会泄露明文一次性令牌;带病配置直接拒启。
 	if err := validateDevAuthTokenFlag(); err != nil {
 		return err
 	}

@@ -92,7 +92,7 @@ func IsGeminiPublicCLIOAuthExchangerWithExplicitClient(exc Exchanger) bool {
 
 func (e geminiPublicCLIOAuthExchanger) StartOAuthFlow(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig) (OAuthStartResult, error) {
 	cfg = geminiBuiltinProfileConfig(cfg)
-	// Owner 2026-05-27：Gemini public CLI client_secret 只来自生产 wiring
+	// Gemini public CLI client_secret 只来自生产 wiring
 	// 注入的 HUAKAI_GEMINI_OAUTH_CLIENT_SECRET，忽略 caller/request body。
 	cfg.ClientSecret = strings.TrimSpace(e.clientSecret)
 	if err := e.validateBuiltinProfile(cfg); err != nil {

@@ -1,12 +1,10 @@
 // 包 transport 提供按 provider 路径选 RoundTripper 的策略层。
 //
 // 核心承诺：
-//   - mimicry transport（R3 强伪装层）只在 Anthropic 池化路径（Pro/Max
+//   - mimicry transport 只在 Anthropic 池化路径（Pro/Max
 //     OAuth）启用；OpenAI / Vertex / Bedrock / OpenRouter 等公开 API 路径
 //     永远走 standard transport
-//   - 这是"lane 一致项"（详见 docs/process/plans/2026-05-06-r3-transport-mimicry-
-//     synthesis.md §5）：不论 R3 最终是否上线，provider 路径隔离都需要
-//     有，避免跨 provider 配置污染
+//   - provider 路径隔离始终存在，避免跨 provider 配置污染
 //   - 不允许的 (provider, mode) 组合在配置加载阶段直接 reject，不留运行时
 //     fail-open 路径
 package transport
@@ -52,11 +50,10 @@ const (
 	// provider 默认。
 	TransportModeStandard TransportMode = "standard"
 	// 各 vendor 反转模式下的 mimicry transport 选项。每家伪装目标不同
-	// （TLS ClientHello + HTTP/2 SETTINGS + ALPN 等），由调用方在 R3
-	// 实施时按 fingerprint template 配置 utls dialer。
+	// （TLS ClientHello + HTTP/2 SETTINGS + ALPN 等），由调用方按
+	// fingerprint template 配置 utls dialer。
 	//
-	// Anthropic 路径（Owner 2026-05-06 directive 暂停反转），但 mode 常量
-	// 保留供未来重启用。
+	// Anthropic 路径的 mode 常量保留供未来重启用。
 	TransportModeMimicryClaudeCode TransportMode = "mimicry_claude_code"
 	// TransportModeMimicryChatGPT 伪装为 ChatGPT 网页 / Codex CLI 客户端。
 	// 仅 OpenAI provider 允许。
@@ -78,7 +75,7 @@ const (
 	TransportModeMimicryWindsurf TransportMode = "mimicry_windsurf"
 
 	// TransportModeDiagnosticsOnly 仅做出站连通性诊断（不发真请求体）。
-	// Safe Equivalent 路径，未来 R3 实施时回退用。
+	// Safe Equivalent 路径，供未来回退使用。
 	TransportModeDiagnosticsOnly TransportMode = "diagnostics_only"
 )
 
@@ -95,12 +92,12 @@ var ErrUnknownMode = errors.New("transport: unknown mode")
 // allowedModesByProvider 是 provider × mode 的允许矩阵。在此表外的组合一
 // 律 reject，避免任何"默认放行"的合规漏洞。
 //
-// Owner 2026-05-06 directive：仅 Anthropic 反转（含 ClaudeCode 传输层
-// 伪装）暂停；其它 vendor 的反转 + 对应 mimicry mode 正常允许。
+// Anthropic 仅允许 standard/diagnostics mode；其它 vendor 的反转 + 对应
+// mimicry mode 正常允许。
 var allowedModesByProvider = map[ProviderCode]map[TransportMode]bool{
 	ProviderAnthropic: {
 		TransportModeStandard:          true,
-		TransportModeMimicryClaudeCode: true, // Owner 2026-05-14 全 8 mode 解封 (R-3)
+		TransportModeMimicryClaudeCode: true, // 全 8 mode 解封
 		TransportModeDiagnosticsOnly:   true,
 	},
 	ProviderOpenAI: {

@@ -85,7 +85,7 @@ type NodeSourceRef struct {
 
 // CapabilityNode 是 tagged-union 形态：Kind 决定 14 个 nullable payload pointer 中哪一个非空。
 //
-// 一致性约束（INV-3）：Kind=="text" ⟺ Text!=nil ⟺ 其它 14 nullable pointer 全 nil。
+// 一致性约束：Kind=="text" ⟺ Text!=nil ⟺ 其它 14 nullable pointer 全 nil。
 // envelope_validate 严格执行。
 type CapabilityNode struct {
 	// ID 必填；envelope 内唯一；建议格式 n_<kind>_<seq>，不含 vendor 前缀。

@@ -13,12 +13,12 @@
 //	-> stamp snapshot version -> ResolvedModel
 //
 // Boundary contracts (docs/specs/_invariants/cross-module-boundaries.md):
-//   - CMB-1: registry NEVER reads provider_accounts.credentials, OAuth
+//   - registry NEVER reads provider_accounts.credentials, OAuth
 //     tokens, or api_keys.key_hash. Returns metadata only.
-//   - CMB-2: rate caps (rpm_limit/tpm_limit/max_parallel_requests) are
+//   - rate caps (rpm_limit/tpm_limit/max_parallel_requests) are
 //     integer counts NOT decimal cost. Pool still computes no cost.
-//   - CMB-7: PostgresRegistry.ResolveModel is SELECT-only. Admin writers
-//     (Phase E) bump model_registry_snapshots.version in their own TX,
+//   - PostgresRegistry.ResolveModel is SELECT-only. Admin writers
+//     bump model_registry_snapshots.version in their own TX,
 //     outside this package.
 
 package registry
@@ -36,7 +36,7 @@ type Registry interface {
 //
 // 为什么保留独立类型：router.ResolvedModel 是 router 输入契约，只携带
 // planner-safe 的 binding 元数据。Rate/quota 字段留在 registry 层，
-// 供 Phase E gate 消费，避免扩大 router 职责面。
+// 供 rate gate 消费，避免扩大 router 职责面。
 type Resolved struct {
 	// Identity (mapped into router.ResolvedModel.PublicAlias /
 	// InternalModelID / ProviderModelID).
@@ -64,7 +64,7 @@ type Resolved struct {
 }
 
 // BindingMetadata 映射一行 model_pool_bindings，供 downstream router
-// planning 与 Phase E rate gate 使用。
+// planning 与 rate gate 使用。
 type BindingMetadata struct {
 	BindingID               int64
 	PoolGroupID             int64

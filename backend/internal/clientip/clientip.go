@@ -1,7 +1,7 @@
 // Package clientip resolves the real client IP of an inbound HTTP request behind a
 // reverse proxy / CDN / load balancer, fail-closed against X-Forwarded-For spoofing.
 //
-// S2-109: IP-sensitive security paths (burst-limit keying, login anomaly evidence,
+// IP-sensitive security paths (burst-limit keying, login anomaly evidence,
 // voucher redeem source) previously read net/http.Request.RemoteAddr only. Behind a
 // shared ingress (CDN/LB) every user collapses to the same RemoteAddr, causing
 // false-positive burst blocks and useless anomaly evidence. The naive fix — trusting

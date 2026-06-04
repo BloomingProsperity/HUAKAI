@@ -1,7 +1,7 @@
 // HUAKAI · iKun
 
 // Package routeadminhttp 暴露订阅分组路由 (routes 表, F-POOL-001 §5.2) 的 admin HTTP 端点。
-// handler 不进冻结包 gatewayhttp; 由 cmd/gateway/routes.go 挂载。仅 platform_admin 可访问,
+// handler 由 cmd/gateway/routes.go 挂载。仅 platform_admin 可访问,
 // 租户范围来自请求体/查询参数, 审计归属的 adminID 一律取自已认证身份 (绝不取自请求体)。
 package routeadminhttp
 

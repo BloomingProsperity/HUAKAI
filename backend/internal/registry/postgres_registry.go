@@ -161,7 +161,7 @@ func (r *PostgresRegistry) ResolveModel(ctx context.Context, publicAlias string,
 		out.PoolCandidates = append(out.PoolCandidates, b.PoolGroupID)
 		// Binding-level provider model rename takes precedence over the
 		// model's default; first non-nil override wins for the primary
-		// candidate. (Slice 5 / Phase E may use per-attempt overrides.)
+		// candidate. Per-attempt overrides can replace this later.
 		if b.ProviderModelIDOverride != nil && len(out.PoolCandidates) == 1 {
 			out.ProviderModelID = *b.ProviderModelIDOverride
 		}

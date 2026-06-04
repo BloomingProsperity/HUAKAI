@@ -1,4 +1,4 @@
-// passthrough.go — Upgrade #7 U7-A atomic：upstream 字段透传容器
+// passthrough.go — Upgrade U7-A atomic：upstream 字段透传容器
 //
 // 解决问题：HUAKAI 上游适配器（OpenAI/Anthropic/Gemini/Bedrock）当前用
 // typed struct + json.Unmarshal，未识别字段静默丢失。vendor 加新字段（如

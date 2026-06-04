@@ -106,7 +106,7 @@ func TestHandle_SettleGenericErrPropagates(t *testing.T) {
 	}
 }
 
-// TestHandle_ClaimNotReserving_ProofTrue_Idempotent 守 codex D5:三证齐时
+// TestHandle_ClaimNotReserving_ProofTrue_Idempotent 验证 三证齐时
 // settle 视已成功,worker 标 delivered。
 // Mutation: 把 committed==true 路径改成继续返 err → 红(worker 永远重试已 committed claim)。
 func TestHandle_ClaimNotReserving_ProofTrue_Idempotent(t *testing.T) {

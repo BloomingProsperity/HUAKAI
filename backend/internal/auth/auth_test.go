@@ -864,7 +864,7 @@ func (s *casForcingStore) SaveRefreshedCredential(ctx context.Context, u Refresh
 }
 
 // =====================================================================
-// Storm controller (three scopes: DB account + in-memory endpoint/global, S2-045)
+// Storm controller (three scopes: DB account + in-memory endpoint/global)
 // =====================================================================
 
 // TestStormControllerSmoke verifies the constructor doesn't panic.

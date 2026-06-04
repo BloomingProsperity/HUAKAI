@@ -21,7 +21,6 @@
 // would re-open the storm window.
 //
 // No IO, no network, no credential contact: pure composition + admission.
-// Synthesis of two parallel-draft lanes (CLAUDE.md #10 + 2026-05-04 directive).
 package gateway
 
 import (

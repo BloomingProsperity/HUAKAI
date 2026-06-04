@@ -1,4 +1,4 @@
-// field_matrix.go — Upgrade #7 U7-E atomic：字段级 verdict matrix。
+// field_matrix.go — Upgrade U7-E atomic：字段级 verdict matrix。
 //
 // 与 capability_matrix.go 的 FeatureName matrix 互补：
 //   - CapabilityMatrix: feature-level (text_streaming / tool_use / 等粗粒度)

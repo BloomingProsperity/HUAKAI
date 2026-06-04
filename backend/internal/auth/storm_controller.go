@@ -13,7 +13,7 @@ var (
 	ErrStormControllerUnavailable = errors.New("auth: storm controller unavailable")
 )
 
-// StormController enforces refresh storm budgets across three scopes (S2-045):
+// StormController enforces refresh storm budgets across three scopes:
 //
 //   - account:           DB-durable concurrency budget (Postgres), survives
 //     restart and coordinates across replicas. Always active.
@@ -24,7 +24,7 @@ var (
 // StormScopeConfig); when unconfigured they admit, leaving the always-on account
 // budget as the sole guard — behaviorally identical to the prior account-only
 // slice. They are process-local; cross-replica endpoint/global budgets are future
-// work (docs/process/plans/2026-05-30-s2-045-three-scope-storm-wiring.md).
+// work.
 type StormController struct {
 	queries *dbauth.Queries
 	scope   *stormScopeLimiter // nil = endpoint/global scopes disabled (admit-all)

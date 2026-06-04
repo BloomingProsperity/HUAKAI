@@ -83,7 +83,7 @@ func (s *LeaseSweeper) sweepOnce(ctx context.Context) (int, error) {
 	}
 
 	// 逐 claim 容错:单个 claim 失败不中断整批(多副本/并发下其余孤儿仍需回收,
-	// 否则 #8-P2 早返回会让本批剩余过期 claim 拖到下个周期、非确定性部分清扫)。
+	// 否则 早返回会让本批剩余过期 claim 拖到下个周期、非确定性部分清扫)。
 	swept := 0
 	var errs []error
 	for _, claim := range claims {

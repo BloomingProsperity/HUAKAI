@@ -1,6 +1,6 @@
 // debug_vars_auth_test 覆盖 P2.1：/debug/vars admin auth gate。
 //
-// 验证目标（Owner deep-review 2026-05-17）：
+// 验证目标：
 //   - 未带 Bearer → 401 admin_unauthorized，body 不含 expvar 内容
 //   - resolver 未配置 → 503 admin_gate_not_configured（fail-closed）
 //   - 包到 expvar 上时 handler 链构造合法，go build 不破
@@ -26,7 +26,7 @@ import (
 )
 
 // fakeAdminResolver injects a fixed identity/error so the gate's RBAC is testable
-// without a real *admindb.Queries / pgxpool (S2-075 discriminating test).
+// without a real *admindb.Queries / pgxpool.
 type fakeAdminResolver struct {
 	id  admin.AdminIdentity
 	err error
@@ -66,7 +66,7 @@ func TestDebugVarsAuth_NoCredentials_Returns_503_When_Resolver_Nil(t *testing.T)
 	}
 }
 
-// S2-075: a tenant_operator is AUTHENTICATED but must NOT be AUTHORIZED to read
+// A tenant_operator is AUTHENTICATED but must NOT be AUTHORIZED to read
 // the process-global /debug/vars metrics — only platform_admin may. This is the
 // discriminating pair: same gate + handler, tenant denied (403, no expvar leak)
 // vs platform allowed (200, reaches expvar). Mutation check: drop the role check
@@ -91,7 +91,7 @@ func TestDebugVarsAuth_TenantOperator_Forbidden_NoLeak(t *testing.T) {
 	}
 }
 
-// S2-075 positive half: platform_admin reaches the metrics (proves the gate is
+// Positive half: platform_admin reaches the metrics (proves the gate is
 // not just blanket-denying — it discriminates by role).
 func TestDebugVarsAuth_PlatformAdmin_ReachesMetrics(t *testing.T) {
 	resolver := fakeAdminResolver{id: admin.AdminIdentity{Role: admin.RolePlatformAdmin}}
@@ -108,7 +108,7 @@ func TestDebugVarsAuth_PlatformAdmin_ReachesMetrics(t *testing.T) {
 	}
 }
 
-// F-OBS-002 default-off guard: when otelbridge.Setup returns a nil metrics
+// Default-off guard: when otelbridge.Setup returns a nil metrics
 // handler, newRouter must not mount /metrics at all. Mutation check: unconditionally
 // register router.Handle("/metrics", ...) and this flips from 404 to admin-gate
 // 503/401, proving the endpoint is unexpectedly exposed.
@@ -211,7 +211,7 @@ func TestWriteAdminGateError_OutputShape(t *testing.T) {
 	}
 }
 
-// TestWriteAdminGateErrorProducesValidJSONForControlChars guards S2-148 for the admin-gate error
+// TestWriteAdminGateErrorProducesValidJSONForControlChars guards the admin-gate error
 // writer. Today it is only called with static literals, but it shared the fmt %q hand-formatter,
 // so this locks the writer itself against re-introducing the invalid-JSON anti-pattern.
 // Mutation check: restore the fmt %q formatter and json.Valid goes false on the \x01 byte → red.

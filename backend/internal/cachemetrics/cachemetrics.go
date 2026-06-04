@@ -18,7 +18,7 @@
 //   - 如需 per-tenant, future U6+ 改 prometheus / 自定义 storage
 //
 // 为什么 stdlib expvar:
-//   - 与 clientid/metrics 同模式 (sonnet U6-C SHOULD_FIX 已挂 /debug/vars)
+// 与 clientid/metrics 同模式
 //   - 零新依赖
 package cachemetrics
 
@@ -42,7 +42,6 @@ var (
 	// expvar.Map 内部对单 key Get/Set 各自 thread-safe, 但 "Get-then-Set"
 	// 这种复合操作不是 atomic, 多 goroutine 同 accountID 首次观测时可能
 	// 都进入 nil 分支双 Set, 第一个 sub.Add 写到被覆盖的孤立 map → 计数丢失.
-	// (sonnet F1 MEDIUM 修复)
 	accountMu sync.Mutex
 )
 
@@ -66,17 +65,17 @@ func initCounters() {
 //
 // 防御:
 //   - 0/0 输入 (vendor 未启用 caching) 不应增 request_count, 避免 inflate 分母
-//   - **负数输入** (sonnet F6 LOW): vendor 不应该返回负数 token 但有种边界
+//   - **负数输入**: vendor 不应该返回负数 token 但有种边界
 //     情况 vendor cached_tokens=null → unmarshal 到 int=0; 但若 caller 把
 //     数据通过 int 转换有溢出, 显式 < 0 早返避免 silent-drop 后期歧义
 //
-// 已知 gap (sonnet F2 HIGH): TCP 连接在 message_start 之后、message_delta
+// 已知 gap: TCP 连接在 message_start 之后、message_delta
 // 之前断开 → AccumulatedUsage cache 字段为 0 → 静默 skip 本次观测。这是
 // 设计取舍——partial observation 比无观测更糟; cache 字段必须在 message_delta
 // 中累计才被记录, 没收到 message_delta 时无可信值可上报。
 func Observe(cacheCreation, cacheRead int64) {
 	initCounters()
-	// 防御负数 (sonnet F6 LOW)——理论上不应发生但 fail-fast 比 silent-drop 清晰
+	// 防御负数——理论上不应发生但 fail-fast 比 silent-drop 清晰
 	if cacheCreation < 0 || cacheRead < 0 {
 		return
 	}
@@ -133,7 +132,7 @@ func ObserveByAccount(cacheCreation, cacheRead int64, accountID int64) {
 	initCounters()
 
 	key := strconv.FormatInt(accountID, 10)
-	// sonnet F1 race 修复: lazy-init Get-then-Set 必须 atomic
+	// lazy-init Get-then-Set 必须 atomic
 	accountMu.Lock()
 	subVar := countersByAccount.Get(key)
 	if subVar == nil {

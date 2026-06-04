@@ -8,7 +8,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 )
 
-// TestVerifyHandlerRejectsReceiptSignedOutsideKeyWindow guards S1-032:
 // receipt verification must reject a receipt whose occurred_at falls outside the
 // signing key's [EffectiveFrom, EffectiveTo] window — even though the ed25519
 // signature is cryptographically valid. This is the leaked-rotated-key attack: an
@@ -58,7 +57,7 @@ func TestVerifyHandlerRejectsReceiptSignedOutsideKeyWindow(t *testing.T) {
 }
 
 // TestVerifyHandlerSignerOnlyDoesNotWindowRejectHistoricalReceipt guards the S1-032a
-// codex P2 regression fix: in signer-only mode (no registry), lookupKey fabricates the
+// in signer-only mode (no registry), lookupKey fabricates the
 // key with EffectiveFrom = verification time, so a naive window check would reject every
 // historical receipt (occurred_at < now). The fix only enforces the window when a real
 // registry is present. Here a receipt dated 2026-05-27 is verified at "now"=2026-06-01
@@ -85,7 +84,7 @@ func TestVerifyHandlerSignerOnlyDoesNotWindowRejectHistoricalReceipt(t *testing.
 	}
 }
 
-// TestVerifyHandlerRevocationTakesPrecedenceOverKeyWindow guards the S1-032 Round-2 codex
+// TestVerifyHandlerRevocationTakesPrecedenceOverKeyWindow guards the
 // P2 fix: when a key is BOTH CRL-revoked AND signed a receipt outside its effective window,
 // the response must report the REVOCATION (key_revoked / key_status=revoked), not mask it as
 // signature_outside_key_window — operators must still see that a compromised key was revoked.

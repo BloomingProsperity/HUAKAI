@@ -24,7 +24,7 @@ func (fakeGroupRepo) GroupRoutes(_ context.Context, _ int64, userGroup, _ string
 // buildSelector 用的 gate 链构造 (buildGroupRoutingGates) 必须把 GroupPolicy 接成接 routes
 // 的真订阅 gate, 而非保持 DefaultGateChain 的 AllowAllGate。
 // mutation: buildGroupRoutingGates 漏设 gates.GroupPolicy (退回 AllowAll) → default 越档不再
-// 被拒 → 下面 deny 断言红。这正是 selector_wiring 漏接 gate 的回归 (codex review C S1)。
+// 被拒 → 下面 deny 断言红, 防止 selector_wiring 漏接 gate 的回归。
 func TestBuildGroupRoutingGates_WiresRealGroupPolicyGate(t *testing.T) {
 	gates := buildGroupRoutingGates(fakeGroupRepo{}, nil, nil)
 

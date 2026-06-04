@@ -43,7 +43,6 @@ func TestSelect_ExplicitPathWins(t *testing.T) {
 }
 
 func TestSelect_PathBeatsRouteConfig_OnWellKnownPath(t *testing.T) {
-	// sonnet F1 修复 + synthesis "explicit path 优先":
 	// well-known path /v1/chat/completions 强 wire-contract，应优先于 route_config
 	d := Select(Inputs{
 		Path:              "/v1/chat/completions", // path 推断 OpenAIChat
@@ -218,7 +217,7 @@ func TestSelect_QueryStringStripped(t *testing.T) {
 	}
 }
 
-// TestSelect_IdentityAware_UnknownIdentity_FallsThroughToDefault sonnet F6 补:
+// TestSelect_IdentityAware_UnknownIdentity_FallsThroughToDefault:
 // IdentityAware=true + path 非已知 + Identity=Unknown
 // → clientFromIdentity 返回 false → 落到 default
 func TestSelect_IdentityAware_UnknownIdentity_FallsThroughToDefault(t *testing.T) {

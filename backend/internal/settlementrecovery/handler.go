@@ -26,7 +26,7 @@ type Handler struct {
 	Proof   CommittedProof
 }
 
-// ErrSettlerNil / ErrProofNil 是 handler wire 不完整的兜底,Owner runbook
+// ErrSettlerNil/ErrProofNil 是 handler wire 不完整的兜底,
 // 配合排查("启动时部署 wire 缺")。
 var (
 	ErrSettlerNil = errors.New("settlementrecovery: handler Settler not configured")

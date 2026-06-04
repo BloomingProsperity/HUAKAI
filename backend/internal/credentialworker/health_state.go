@@ -49,7 +49,7 @@ func (p ProviderAccountHealthPolicy) Transition(outcome auth.Outcome, now time.T
 	now = now.UTC()
 	switch outcome {
 	case auth.RefreshAuditOutcome("auth_expired"):
-		// S2-062: 刷新令牌被上游判定失效属终态,定时器无法自愈。HealthStateUntil 留 nil,
+		// 刷新令牌被上游判定失效属终态,定时器无法自愈。HealthStateUntil 留 nil,
 		// 使 eligibility SQL(health_state_until IS NOT NULL 谓词)与 router gate(until.IsZero
 		// 即不可用)都拒绝自动恢复——与 account_disabled 同范式。恢复只能由后续刷新成功
 		// (scanner 不按 health 过滤,仍会重试)或 operator 介入触发;Alert 通知 operator 需重新登录。
@@ -64,7 +64,7 @@ func (p ProviderAccountHealthPolicy) Transition(outcome auth.Outcome, now time.T
 			HealthStateUntil: timePtrValue(now.Add(p.ThrottledCooldown)),
 		}, true
 	case auth.RefreshAuditOutcome("risk_control_triggered"):
-		// S2-062: 风控触发同属终态。旧的定时自愈会在风控尚未解除时过早把账号投回路由,
+		// 风控触发同属终态。旧的定时自愈会在风控尚未解除时过早把账号投回路由,
 		// 请求被上游拒、浪费 attempt 并可能加重风控;改为终态(nil until),恢复同样由成功刷新
 		// 或 operator 驱动,Alert 维持以通知 operator 介入。
 		return ProviderAccountHealthChange{
@@ -113,7 +113,7 @@ func (s *Scheduler) providerAccountHealthChange(accountID, tenantID int64, outco
 }
 
 // updateProviderAccountHealthSQL 写回 health 状态。$5 (is_transient) 为 true 时表示本次是一个
-// 带冷却期的瞬态写入(目前仅 rate_limit_exceeded -> throttled)。S2-062: 瞬态写入绝不能降级一个
+// 带冷却期的瞬态写入(目前仅 rate_limit_exceeded -> throttled)。: 瞬态写入绝不能降级一个
 // 已经终态撤销(revoked + health_state_until IS NULL)的账号——否则一次偶发的 rate_limit 重试就会
 // 把因 auth_expired/risk_control 而终态的账号改写成 throttled+3min,重新打开终态本要关闭的定时自愈
 // 通道。CASE 让终态行在瞬态写入下保持原值(仅刷新 updated_at);成功刷新(healthy,无 deadline)与

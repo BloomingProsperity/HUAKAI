@@ -1,6 +1,6 @@
 // HUAKAI · iKun
 
-// Package loginthrottle 提供登录端点的「argon2 前置」限流闸(S2-048)。
+// Package loginthrottle 提供登录端点的「argon2 前置」限流闸。
 //
 // 它是 HUAKAI 融合三层防御里的 IP 维度两层:每 IP 并发 reservation 上限(挡住「N 个并发
 // 请求在任一记录失败前全部冲进 argon2」的瞬时 CPU 放大)+ 滑动窗口失败计数 + 失败过多后的

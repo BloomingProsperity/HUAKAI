@@ -9,7 +9,6 @@
 //
 //	InspectCacheControl(originalBody).Count + len(result.Applied)
 //
-// Parallel-draft lane: implementer-claude (CLAUDE.md #10 + 2026-05-04).
 package gateway
 
 import (

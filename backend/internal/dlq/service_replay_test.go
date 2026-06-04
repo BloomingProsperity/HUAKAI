@@ -43,7 +43,7 @@ func newReplayService(store recordStore, handler Handler) *Service {
 	}
 }
 
-// TestServiceReplaySurfacesMarkFailedError guards S2-096: when a manual replay's handler fails AND
+// TestServiceReplaySurfacesMarkFailedError guards when a manual replay's handler fails AND
 // the subsequent MarkFailed state write ALSO fails, Replay must SURFACE the persistence error
 // (matching the worker path ProcessClaim) instead of discarding it with `_ =`. Otherwise the DLQ
 // row can stay inflight with a stale manual lease / retry-count and the operator only ever sees the

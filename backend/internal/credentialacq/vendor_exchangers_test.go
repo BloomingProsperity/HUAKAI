@@ -180,7 +180,7 @@ func TestGeminiOperatorOAuthCallbackPostsAuthorizationCodeToConfiguredTokenEndpo
 	}
 }
 
-// TestValidateOAuthModeConsistencyAcceptsHealthyDefaults guards S1-008: the production default
+// TestValidateOAuthModeConsistencyAcceptsHealthyDefaults guards the production default
 // registry + mode plans must pass the boot consistency gate. Mutation: re-register any OAuth mode
 // with a fake (see the reject test) and this baseline goes red — proving the gate actually runs.
 func TestValidateOAuthModeConsistencyAcceptsHealthyDefaults(t *testing.T) {
@@ -189,7 +189,7 @@ func TestValidateOAuthModeConsistencyAcceptsHealthyDefaults(t *testing.T) {
 	}
 }
 
-// TestValidateOAuthModeConsistencyRejectsFakeExchanger guards S1-008: a fake exchanger on any
+// TestValidateOAuthModeConsistencyRejectsFakeExchanger guards a fake exchanger on any
 // FlowKindOAuth mode must be caught at boot and named. Mutation: delete the pkceFakeExchanger type
 // assertion in ValidateOAuthModeConsistency and this test goes red (the injected fake passes).
 func TestValidateOAuthModeConsistencyRejectsFakeExchanger(t *testing.T) {
@@ -207,7 +207,7 @@ func TestValidateOAuthModeConsistencyRejectsFakeExchanger(t *testing.T) {
 	}
 }
 
-// TestValidateOAuthModeConsistencyRejectsMissingExchanger guards S1-008: a FlowKindOAuth ModePlan
+// TestValidateOAuthModeConsistencyRejectsMissingExchanger guards a FlowKindOAuth ModePlan
 // with no registered exchanger must be caught at boot, not silently surface ErrOAuthExchangerMissing
 // only on a live callback.
 func TestValidateOAuthModeConsistencyRejectsMissingExchanger(t *testing.T) {
@@ -217,7 +217,7 @@ func TestValidateOAuthModeConsistencyRejectsMissingExchanger(t *testing.T) {
 	}
 }
 
-// TestGeminiAntigravityAcquisitionFailsClosedNotFake guards the S1-008 core trust-boundary fix:
+// TestGeminiAntigravityAcquisitionFailsClosedNotFake guards the core trust-boundary fix:
 // gemini/antigravity acquisition must NO LONGER accept a JSON-token-shaped callback code as a real
 // credential; it must fail-closed with ErrFeatureDisabled, consistent with the paused refresh side.
 // Mutation: restore NewPKCEFakeExchanger for this mode and the forged blob is accepted (err==nil) —
@@ -232,7 +232,7 @@ func TestGeminiAntigravityAcquisitionFailsClosedNotFake(t *testing.T) {
 	}
 }
 
-// TestCopilotOAuthAcquisitionFailsClosed guards S1-008: copilot/copilot_oauth is advertised as an
+// TestCopilotOAuthAcquisitionFailsClosed guards copilot/copilot_oauth is advertised as an
 // OAuth mode but its callback acquisition is unimplemented; it must fail-closed with a clear
 // ErrFeatureDisabled rather than the prior vague ErrOAuthExchangerMissing.
 func TestCopilotOAuthAcquisitionFailsClosed(t *testing.T) {
@@ -245,7 +245,7 @@ func TestCopilotOAuthAcquisitionFailsClosed(t *testing.T) {
 	}
 }
 
-// TestNoFakeExchangerRemainsInDefaultRegistry guards S1-008: no pkceFakeExchanger may remain
+// TestNoFakeExchangerRemainsInDefaultRegistry guards no pkceFakeExchanger may remain
 // reachable in the production default registry (orphaned cursor/windsurf fakes removed,
 // gemini/antigravity migrated to fail-closed). Mutation: restore any NewPKCEFakeExchanger
 // registration and this scan finds it → red.

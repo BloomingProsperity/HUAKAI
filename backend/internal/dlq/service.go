@@ -92,7 +92,7 @@ func (s *Service) Replay(ctx context.Context, id int64, actorID string) (*Record
 			// 与 worker 路径(ProcessClaim)一致:MarkFailed 写失败是独立的状态持久化故障,必须上抛。
 			// 否则 handler 失败且状态更新也失败时,行会停在 inflight(带 manual lease、陈旧 retry 计数、
 			// 未转 operator_review/dlq),操作员只看到 handler 错误,而"恢复系统连自身失败状态都没落盘"
-			// 这一事实被吞掉(S2-096)。errors.Join 同时保留 handler 错误与持久化错误,信息比 worker 更全。
+			// 这一事实被吞掉。errors.Join 同时保留 handler 错误与持久化错误,信息比 worker 更全。
 			return rec, errors.Join(err, markErr)
 		}
 		return rec, err

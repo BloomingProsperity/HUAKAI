@@ -75,7 +75,7 @@ func NewOAuthHTTPProvider(cfg OAuthConfig, client *http.Client) (*OAuthHTTPProvi
 	if strings.TrimSpace(cfg.TokenURL) == "" {
 		return nil, ErrInvalidInput
 	}
-	// S2-009: 静态出站 endpoint 门控。social OAuth 的 token 兑换 / JWKS / GitHub user&emails 都向运维可
+	// 静态出站 endpoint 门控。social OAuth 的 token 兑换/JWKS/GitHub user&emails 都向运维可
 	// 配置的 endpoint 发出(携带 OAuth code、client_secret、Bearer token)。这里在构造期拒绝非 https 或
 	// 字面私有/环回/链路本地(含 169.254 元数据)地址,堵住把凭据发往内网/metadata 的误配/投毒。域名解析
 	// 到私有 IP 的 DNS-rebind 由拨号期 SSRF 客户端再拦一层(buildOAuthProvider 注入)。
@@ -109,7 +109,7 @@ func ValidateOAuthEndpointURL(label, raw string) error {
 		return fmt.Errorf("%w: %s 缺少 host", ErrInvalidInput, label)
 	}
 	// 复用拨号期 SSRF guard 的同一套严格 IP deny 策略(环回/私有/链路本地/CGNAT 100.64/10/special-use/
-	// 组播/非全局单播),保证静态校验与拨号校验不漂移(codex S2-009)。
+	// 组播/非全局单播),保证静态校验与拨号校验不漂移。
 	if ip := net.ParseIP(host); ip != nil && !auth.IsPublicOAuthIP(ip) {
 		return fmt.Errorf("%w: %s 不能指向私有/环回/CGNAT/special-use/元数据地址", ErrInvalidInput, label)
 	}

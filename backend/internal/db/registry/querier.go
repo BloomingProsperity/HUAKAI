@@ -16,7 +16,6 @@ type Querier interface {
 	// Resolves the canonical model row, constrained to the requesting tenant
 	// (scope='tenant' AND tenant_id=$tenant) OR scope='global'. This blocks
 	// a misconfigured tenant alias from reaching another tenant's model row
-	// (codex N+5a P3 finding 2026-04-30 — defense in depth in addition to
 	// admin-write-time validation).
 	GetModelByID(ctx context.Context, arg GetModelByIDParams) (GetModelByIDRow, error)
 	GetProtocolPolicyByVersion(ctx context.Context, arg GetProtocolPolicyByVersionParams) (ProtocolPolicyVersion, error)
@@ -38,7 +37,7 @@ type Querier interface {
 	// Returns enabled bindings ordered by priority then id, filtered by the
 	// effective_from/until time window. ALWAYS tenant-scoped: pool_groups
 	// are tenant-owned so a global binding would leak pool_group ids across
-	// tenants (codex N+5a P1 finding 2026-04-30 — addressed by removing the
+	// tenants (addressed by removing the
 	// scope column from model_pool_bindings entirely; bindings are inherently
 	// tenant-local even for global models). Slice 2 emits all candidates;
 	// Router selects index 0 only at L0 (AttemptBudget=1).
@@ -48,14 +47,14 @@ type Querier interface {
 	LookupGlobalAlias(ctx context.Context, aliasLower string) (LookupGlobalAliasRow, error)
 	// Slice 2 (N+5a) Model Registry queries.
 	// Per docs/process/plans/2026-04-30-n5-model-registry.md.
-	// Per CMB-7: SELECT-only at request time. Snapshot version increments
+	// SELECT-only at request time. Snapshot version increments
 	// happen via a future Phase E admin writer outside this package.
-	// Per CMB-1: NEVER select credentials; this package never joins
+	// NEVER select credentials; this package never joins
 	// provider_accounts.credentials, OAuth tokens, or api_keys.key_hash.
 	// Step 1 of resolve. Returns the tenant-scoped alias row regardless of
 	// status (active/disabled/deleted-protected). The Go resolver checks
 	// status: tenant disabled is an EXPLICIT DENY that blocks global fallback
-	// per D3 invariant (integration test #5).
+	// per D3 invariant (integration test).
 	LookupTenantAlias(ctx context.Context, arg LookupTenantAliasParams) (LookupTenantAliasRow, error)
 	UpsertCapabilityCell(ctx context.Context, arg UpsertCapabilityCellParams) error
 }

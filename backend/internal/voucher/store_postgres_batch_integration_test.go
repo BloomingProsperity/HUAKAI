@@ -28,7 +28,7 @@ func openVoucherPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	return pool
 }
 
-// TestGetBatchReturnsAllVouchersBeyond1000NewerWindow guards S2-091: GetBatch must return the
+// TestGetBatchReturnsAllVouchersBeyond1000NewerWindow guards GetBatch must return the
 // COMPLETE voucher set of the requested batch, even when the tenant has >1000 newer vouchers in
 // other batches. The old implementation reused a tenant-wide list capped at LIMIT 1000 ordered by
 // id DESC and filtered in memory, so an older batch fell entirely outside the newest-1000 window

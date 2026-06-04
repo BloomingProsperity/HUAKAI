@@ -50,7 +50,7 @@ func TestHTTPFetcherParsesOpenAIModelListAndSendsBearer(t *testing.T) {
 	}
 }
 
-// S2-1 回归:携带 vendor key 的 fetch 不得跟随上游 3xx 重定向,否则 key 会被泄漏
+// 回归:携带 vendor key 的 fetch 不得跟随上游 3xx 重定向,否则 key 会被泄漏
 // 到重定向目标主机。Mutation:删掉 CheckRedirect → 默认 client 跟随 302 → leak
 // 服务器被命中 → 本测试变红。
 func TestHTTPFetcherRefusesRedirectToPreventKeyLeak(t *testing.T) {

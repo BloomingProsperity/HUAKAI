@@ -232,7 +232,7 @@ func TestChatCompletionResponseFailOpenWhenSignerNilInProduction(t *testing.T) {
 	}
 }
 
-// TestNonStreamingSettle_CapturesLedgerProtocolLoss 守 S1-025-fu item 2(b):
+// TestNonStreamingSettle_CapturesLedgerProtocolLoss 守 item 2(b):
 // submitAuditLedgerEntry 会向 env.CapabilityGraph.ProtocolLoss 追加 ledger/trust 警告
 // (signer nil fail-open → audit_signer_deferred);快照必须取在 ledger 之后,settle 才带得到。
 func TestNonStreamingSettle_CapturesLedgerProtocolLoss(t *testing.T) {
@@ -462,7 +462,7 @@ func TestWriteStreamBillingHeaders(t *testing.T) {
 
 // TestWriteHuakaiHeaders_NonStreamingDeferredWritesDLQRef
 //
-// W5 Owner Bug #1 / synthesis §6 C3 闭合用例:非流式 LedgerResultStateDeferred +
+// Owner Bug / synthesis §6 C3 闭合用例:非流式 LedgerResultStateDeferred +
 // 非空 DLQRef → response header 必须含 X-HUAKAI-Ledger-DLQ-Ref。流式 trailer 早
 // 已守这个语义(chat_completions_stream.go:608),非流式响应 header 之前直接 return,
 // 客户端拿不到 ref 复理 — 本用例守此 gap。

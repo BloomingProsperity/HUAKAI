@@ -71,7 +71,7 @@ func TestClaudeAIOAuthExchangerRejectsRuntimeEndpointOverride(t *testing.T) {
 	}
 }
 
-// S1-014: redirect_uri 此前只查非空,管理员 override 的任意 redirect 能进 authorize URL 接走授权码。
+// redirect_uri 此前只查非空,管理员 override 的任意 redirect 能进 authorize URL 接走授权码。
 // 判别 mutation: 把 validateClaudeAIBuiltinProfileWithHTTPSAdminAllowlist 的 redirect 校验改回
 // `strings.TrimSpace(cfg.RedirectURI) == ""` 时,本测试变红 —— 攻击者 redirect 通过校验并建出 flow。
 func TestClaudeAIOAuthExchangerRejectsRedirectOverride(t *testing.T) {
@@ -96,7 +96,7 @@ func TestClaudeAIOAuthExchangerRejectsRedirectOverride(t *testing.T) {
 
 // TestValidateClaudeAIRedirectURI:claude_ai_oauth 是 claude.ai 固定 public client,只注册 loopback
 // redirect,故 redirect_uri 仅接受严格 localhost loopback;任意 https host(含 admin callback path)一律
-// 拒绝 —— claude.ai 不会接受非 loopback,且 HTTPS admin server callback 缺 flow_id 注入(codex S1-014 P1),
+// 拒绝 —— claude.ai 不会接受非 loopback,且 HTTPS admin server callback 缺 flow_id 注入,
 // 放出即是一条无法完成的回调路径。HTTPS admin allowlist 对齐留 roadmap。
 // 判别 mutation: 删 http 分支任一约束(host/port/path),对应 reject 用例变绿、断言失败。
 func TestValidateClaudeAIRedirectURI(t *testing.T) {
@@ -373,7 +373,6 @@ func TestClaudeAIOAuthExchangerUsesInjectedHTTPClient(t *testing.T) {
 	}
 }
 
-// Owner 2026-05-27 抓出 P1 真修 (不接受 DEFERRED 当尾巴):
 // validateOAuthEndpointURL 只做字面 URL 检查, DNS-rebind 攻击 (https://attacker.example
 // 但 DNS 解到 127.0.0.1) 静态层抓不住。深层 dial-time guard 通过
 // auth.NewSSRFProtectedOAuthClient 在 transport.DialContext 校验目标 IP,
@@ -408,7 +407,6 @@ func TestAuthorizationCodeExchangeDeepDNSRebindIsBlocked(t *testing.T) {
 	}
 }
 
-// Owner 2026-05-26 抓出 P1 SSRF: operator-config 路径的 oauth endpoint URL
 // 校验只看非空,没 enforce scheme/host;caller 可写 http:// 或 127.0.0.1 或
 // metadata IP 让 client_secret/code/verifier 漏到攻击者地址。新加
 // validateOAuthEndpointURL 做静态闸门。
@@ -453,7 +451,6 @@ func TestOperatorOAuthConfigRejectsSSRFEndpoints(t *testing.T) {
 	}
 }
 
-// Owner 2026-05-26 抓出 P0: OAuth-only 模式 (chatgpt_oauth / code_assist /
 // google_one) 可被 caller 传 flow_kind=paste 直接 finalize 绕过 OAuth。
 // CreateFromStart 必须 enforce ModePlan.AllowedHelpers 白名单。
 // 判别 mutation: 删 CreateFromStart 中的 flowKindAllowed 检查, 该 test
@@ -470,7 +467,7 @@ func TestOAuthOnlyModeRejectsPasteSessionStart(t *testing.T) {
 		{name: "openai_chatgpt_oauth_cli_import", vendor: credentialstore.VendorOpenAI, authMode: credentialstore.AuthModeChatGPTOAuth, flowKind: FlowKindCLIImport},
 		{name: "gemini_code_assist_paste", vendor: credentialstore.VendorGemini, authMode: credentialstore.AuthModeCodeAssist, flowKind: FlowKindPaste},
 		{name: "gemini_google_one_json_import", vendor: credentialstore.VendorGemini, authMode: credentialstore.AuthModeGoogleOne, flowKind: FlowKindJSONImport},
-		// S1-014: claude_ai_oauth 现为 OAuth-only,paste 旁路必须被拒。
+		// claude_ai_oauth 现为 OAuth-only,paste 旁路必须被拒。
 		// 判别 mutation: 把 types.go 的 AllowedHelpers 改回 {FlowKindOAuth, FlowKindPaste},此用例立即变红
 		// (paste START 被接受,任意 Anthropic token 注入旁路复现)。
 		{name: "anthropic_claude_ai_oauth_paste", vendor: credentialstore.VendorAnthropic, authMode: credentialstore.AuthModeClaudeAIOAuth, flowKind: FlowKindPaste},

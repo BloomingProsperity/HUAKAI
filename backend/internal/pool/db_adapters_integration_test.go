@@ -1,6 +1,6 @@
 //go:build integration_pg
 
-// Phase C.2 adapters tested vs real PostgreSQL: DBClaimGate,
+// Postgres adapters tested vs real PostgreSQL: DBClaimGate,
 // DBSlotManager, DBAccountSource. The contract these enforce is the
 // production-time bridge from the selector to billing_ledger_claims +
 // pool_slot_acquisitions + provider_accounts.

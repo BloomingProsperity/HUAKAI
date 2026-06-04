@@ -5,17 +5,16 @@
 //   - per-client quota 切分（不同客户端按不同档计费）
 //   - abuse detection（同一客户端短时间高频 = 可疑）
 //   - 协议形态适配（Cursor 期望 OpenAI shape；Claude Code 期望 Anthropic shape）
-//   - 强伪装层（暂停，execution_boundary_c memory rule）
 //
 // 设计：
 //   - 输入: HTTP request 的 headers + path + 可选 body 字段名 hints
 //   - 输出: Identity enum + confidence (0.0-1.0)
-//   - 多信号融合: User-Agent / 自定义 header (X-Client-*) / Origin / path /
+// 多信号融合: User-Agent / 自定义 header (X-Client-*) / Origin / path /
 //     body fingerprint。任一信号都可能被 spoof，故多信号决策树投票
 //
 // 不做的事（U6-A 范围外）：
 //   - 不直接拒绝请求（误识别 fallback 到 IdentityUnknown，让 policy 决定）
-//   - 不实施反向行为模拟 / 强伪装层（execution_boundary_c memory rule）
+// 不实施反向行为模拟 / 强伪装层
 //   - 不持久化（per-request 检测）
 package clientid
 
@@ -65,8 +64,8 @@ type Signal struct {
 }
 
 // xClientCardinalityCap 限制 SignalFromRequest 收集 X-Client-* 等 header
-// 的数量上限，防异常请求 200+ header 导致 hot path 内存膨胀（sonnet
-// debugger F4 finding）。命中上限后 break，损失精度可接受。
+// 的数量上限，防异常请求 200+ header 导致 hot path 内存膨胀。命中上限后
+// break，损失精度可接受。
 const xClientCardinalityCap = 16
 
 // SignalFromRequest 从 *http.Request 抽取 Signal，便于 middleware 接入。
@@ -107,7 +106,7 @@ func SignalFromRequest(r *http.Request) Signal {
 //
 // confidence 含义:
 //   - 1.0: 显式 X-Client-Name 或多信号一致
-//   - 0.8-0.9: User-Agent 单信号匹配
+// 0.8-0.9: User-Agent 单信号匹配
 //   - 0.6-0.7: Origin/Referer 软推断
 //   - 0.5: 启发式 fallback
 func Detect(s Signal) (Identity, float64) {
@@ -116,7 +115,7 @@ func Detect(s Signal) (Identity, float64) {
 		return id, conf
 	}
 
-	// --- 2. User-Agent 子串匹配 ---
+	// 2. User-Agent 子串匹配 --
 	if id, conf, ok := detectFromUserAgent(s.UserAgent); ok {
 		return id, conf
 	}
@@ -138,8 +137,8 @@ func Detect(s Signal) (Identity, float64) {
 // 这是最可信的信号——客户端主动声明自己。
 // 返回 (identity, confidence, matched)。
 //
-// 显式优先级（从高到低，sonnet debugger F3 finding 对应修复——避免 Go map
-// 迭代顺序非确定性下的"哪个 prefix 先看到谁就赢"）：
+// 显式优先级（从高到低，避免 Go map 迭代顺序非确定性下的"哪个 prefix
+// 先看到谁就赢"）：
 //  1. X-Client-Name 显式声明（最强；客户端自报）
 //  2. X-Cursor-*  prefix（Cursor 特有 header）
 //  3. X-Cody-*    prefix（Cody 特有 header）
@@ -193,7 +192,6 @@ func detectFromUserAgent(ua string) (Identity, float64, bool) {
 // chatUIDomainSuffixes 是已知 chat UI 项目的固定域名尾缀。
 // 用 HasSuffix 而非 substring contains，避免误伤 "techsupport-chat.com" /
 // "chat.openai.com" 等含 "chat" 子串但实际不是 chat UI 项目的域名。
-// （sonnet debugger F1 BLOCKING finding 对应修复）
 var chatUIDomainSuffixes = []string{
 	"openwebui.com",
 	"lobechat.com",

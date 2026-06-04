@@ -212,9 +212,9 @@ const (
 	adminOAuthCallbackAllowlistEnv      = "HUAKAI_ADMIN_OAUTH_CALLBACK_ALLOWLIST"
 	userOAuthRedirectAllowlistEnv       = "HUAKAI_USER_OAUTH_REDIRECT_ALLOWLIST"
 	// trustedProxyCIDRsEnv lists the reverse-proxy / CDN CIDRs whose X-Forwarded-For
-	// is trusted for client-IP extraction (S2-109). Empty = direct exposure, RemoteAddr only.
+	// is trusted for client-IP extraction. Empty = direct exposure, RemoteAddr only.
 	trustedProxyCIDRsEnv = "HUAKAI_TRUSTED_PROXY_CIDRS"
-	// Refresh-storm endpoint/global token budgets (S2-045). Each scope needs BOTH
+	// Refresh-storm endpoint/global token budgets. Each scope needs BOTH
 	// a positive rate (tokens/sec) and a burst >= 1 to engage; all unset = account
 	// scope only. The account scope is always enforced (DB-durable), independent of these.
 	stormEndpointRateEnv  = "HUAKAI_STORM_ENDPOINT_RATE"
@@ -347,7 +347,7 @@ func parseTenantRetryBudgetWindow(name string, def time.Duration) (time.Duration
 }
 
 // loadStormScopeConfigFromEnv parses the optional endpoint/global refresh-storm
-// budgets (S2-045). A scope half-configured (only rate or only burst, or burst<1)
+// budgets. A scope half-configured (only rate or only burst, or burst<1)
 // is a boot error — fail loud rather than silently leaving the throttle off and
 // letting a cross-account stampede through. All four unset => account scope only.
 func loadStormScopeConfigFromEnv() (auth.StormScopeConfig, error) {
@@ -558,7 +558,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err := installChatGPTOAuthExchanger(credentialExchangers, auth.NewSSRFProtectedOAuthClient(http.DefaultClient), adminOAuthCallbackAllowlist); err != nil {
 		return nil, fmt.Errorf("register openai chatgpt_oauth exchanger: %w", err)
 	}
-	// ANT-4 fail-loud: wiring 启动时立即自检 install 真把 default registry
+	// Fail-loud: wiring 启动时立即自检 install 真把 default registry
 	// 中的 nil-client exchanger 替换为带显式 HTTP client 的版本。删除 install
 	// 调用或 helper 实现退化时这里直接 return error, 进程拒启动 (生产 fingerprint
 	// 失效是 S0 级事故, 不能 silently 退化)。
@@ -571,9 +571,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err := assertChatGPTOAuthExchangerHasHTTPClient(credentialExchangers); err != nil {
 		return nil, fmt.Errorf("openai chatgpt_oauth wiring self-check: %w", err)
 	}
-	// S1-008: OAuth ModePlan 自一致性闸。在全部 install 之后,对运行时真实使用的 registry 校验:
+	// OAuth ModePlan 自一致性闸。在全部 install 之后,对运行时真实使用的 registry 校验:
 	// 每个 Kind==FlowKindOAuth 的 ModePlan 必须映射到一个非-fake、非-缺失的 exchanger(显式 fail-closed
-	// 的暂停态视为合规)。若某 OAuth mode 仍是 fake(会把攻击者可影响的回调码当 JSON 凭据接受)或根本没
+	// 的显式不可用态视为合规)。若某 OAuth mode 仍是 fake(会把攻击者可影响的回调码当 JSON 凭据接受)或根本没
 	// 注册 exchanger(只在回调期才暴露 ErrOAuthExchangerMissing),进程在此拒启动 —— 把配置漂移在 boot
 	// 时变成 fatal,杜绝"暴露为可完成的 OAuth mode 实则映射 fake/缺失"这类信任边界回归。
 	if err := credentialacq.ValidateOAuthModeConsistency(credentialacq.DefaultModePlans(), credentialExchangers); err != nil {
@@ -792,9 +792,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err := admin.MaybeBootstrap(ctx, pgPool, logger); err != nil {
 		return nil, fmt.Errorf("admin bootstrap: %w", err)
 	}
-	// Production-required gate (RR-W5-002 步骤 3):credentialScheduler 必须装
+	// Production-required gate: credentialScheduler 必须装
 	// authQueries + auditLedger + pgPool + auditSigner,否则 audit/ledger 链
-	// 在 OAuth refresh 时静默失败,违 W5 D1/D4。Startup fail-fast 比 runtime
+	// 在 OAuth refresh 时静默失败。Startup fail-fast 比 runtime
 	// fail-closed 更早抓出 wiring 错配。
 	if authQueries == nil {
 		return nil, fmt.Errorf("credentialworker: production authQueries unset (audit fail-closed gate)")
@@ -942,8 +942,7 @@ func loadHermesInternalSharedSecret() ([]byte, error) {
 // 中 anthropic/claude_ai_oauth 条目替换成带显式 HTTP client 的版本。生产
 // wiring 传 anthropicoauth.DefaultHTTPClient() 接 mimicry uTLS sidecar
 // (profile anthropic_cli_mimicry_v1); 测试可注入 mock client 验证替换
-// 真正生效 — 这是 ANT-4 的判别 fixture, 防止"忘调用该函数"的回归 (codex
-// R1 抓出 wiring 直接 inline 时 wiring_test 杀不掉 mutation 的问题)。
+// 真正生效, 防止"忘调用该函数"的回归。
 func installAnthropicClaudeAIOAuthMimicryExchanger(registry *credentialacq.ExchangerRegistry, client *http.Client) error {
 	if registry == nil {
 		return fmt.Errorf("nil exchanger registry")
@@ -983,7 +982,7 @@ func loadAdminOAuthCallbackAllowlistFromEnv() []string {
 	return parseCSVAllowlistEnv(adminOAuthCallbackAllowlistEnv)
 }
 
-// loadUserOAuthRedirectAllowlistFromEnv 加载 social OAuth init 允许的 caller redirect_uri 白名单(S2-009);
+// loadUserOAuthRedirectAllowlistFromEnv 加载 social OAuth init 允许的 caller redirect_uri 白名单;
 // 空 = 不接受任何 caller redirect_uri,只用 provider 服务端固定 RedirectURI(fail-closed)。
 func loadUserOAuthRedirectAllowlistFromEnv() []string {
 	return parseCSVAllowlistEnv(userOAuthRedirectAllowlistEnv)

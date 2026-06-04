@@ -97,7 +97,7 @@ func (c *sourceIPCapturingVoucherService) GetBatch(context.Context, int64, int64
 	return voucher.GetBatchResult{}, nil
 }
 
-// TestVoucherUserRedeemUsesTrustedProxyClientIP (S2-109) proves the redeem handler routes the
+// TestVoucherUserRedeemUsesTrustedProxyClientIP proves the redeem handler routes the
 // request through the trusted-proxy-aware ClientIPResolver, not raw RemoteAddr. The socket peer
 // (10.1.2.3) is a trusted proxy and the real client (198.51.100.9) is in X-Forwarded-For, so the
 // SourceIP recorded for burst/anomaly purposes must be the forwarded client.

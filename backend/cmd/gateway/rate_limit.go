@@ -18,11 +18,11 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 )
 
-// Inbound rate limiting (S2-057).
+// Inbound rate limiting.
 //
 // Two always-on token-bucket tiers, keyed on the RealIP-derived client address,
 // stop request floods before any route handler / provider-account / quota use.
-// The S2-048 anti-enumeration argon2 path is expensive enough that an unbounded
+// The anti-enumeration argon2 path is expensive enough that an unbounded
 // /v1/auth/* flood is a self-amplifying DoS; the strict auth tier caps that.
 //
 // Tier 1 (global front door): one bucket per client IP, applied to EVERY request.

@@ -3,7 +3,7 @@
 package proto
 
 // ValidateEnvelopeDebug 在 debug build (-tags debug) 下转发到完整
-// ValidateEnvelope，触发 INV-3..INV-13 全量结构性 / 语义性校验。
+// ValidateEnvelope，触发校验错误 全量结构性/语义性校验。
 //
 // 用法：开发或 CI 环境用 `go test -tags debug ./...` 或
 // `go build -tags debug ./...` 跑出来 envelope 任何 INV 违规。

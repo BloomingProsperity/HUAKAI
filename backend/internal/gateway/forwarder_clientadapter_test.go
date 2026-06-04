@@ -51,7 +51,7 @@ func TestForwarderClientAdapterFinalizeCalledAndChunksWritten(t *testing.T) {
 	}
 }
 
-// TestForwardAccumulatesPerEventProtocolLoss 守 S1-025-fu item 4:
+// TestForwardAccumulatesPerEventProtocolLoss 守 item 4:
 // StreamForwarder 之前丢弃 ProviderEventToCanonicalEvents 与 CanonicalEventToClientChunk
 // 的逐事件协议损失;现在累积进 acc 并经 finishDraft 落到 draft.StreamProtocolLoss。
 func TestForwardAccumulatesPerEventProtocolLoss(t *testing.T) {
@@ -99,7 +99,7 @@ func forwarderLossHasCode(losses []proto.ProtocolLossEntry, code string) bool {
 	return false
 }
 
-// TestCanonicalVisibleEstimateExcludesReasoning 守 S2-163-fu 流式交叉校验:逐事件可见输出
+// TestCanonicalVisibleEstimateExcludesReasoning 守 流式交叉校验:逐事件可见输出
 // 估算计入 Delta.Text(+ PartialJSON / ContentBlock.Text),但**排除** Delta.ReasoningText ——
 // 隐藏推理已由 CanonicalUsage.ReasoningTokens 单列、交叉校验时从 reported 扣除。self-proving:
 // 同一可见文本、其一附带大段 reasoning delta,断言两者估算相等。
@@ -121,7 +121,7 @@ func TestCanonicalVisibleEstimateExcludesReasoning(t *testing.T) {
 	}
 }
 
-// TestCanonicalReasoningEstimateCountsOnlyReasoningText 守 S2-163-fu review R2 修复:
+// TestCanonicalReasoningEstimateCountsOnlyReasoningText 守 修复:
 // canonicalReasoningEstimate **只**统计可见 reasoning 文本(Delta.ReasoningText),不计可见输出
 // 文本(Delta.Text)—— 它与 canonicalVisibleEstimate 互补,供 crossCheckAudit 在 reasoning 文本
 // 流出但缺 ReasoningTokens 时跳过校验。self-proving:reasoning-only delta 估算为正,而 visible-only
@@ -143,7 +143,7 @@ func TestCanonicalReasoningEstimateCountsOnlyReasoningText(t *testing.T) {
 	}
 }
 
-// TestCanonicalVisibleEstimateCountsContentBlockInput 守 S2-163-fu review R2 finding 2:
+// TestCanonicalVisibleEstimateCountsContentBlockInput 守 finding 2:
 // 部分 provider(如 Gemini)在 content_block_start 一次性发完整 tool call 参数(ContentBlock.Input)
 // 而非 input_json_delta。估算须计入 cb.Input,否则 tool-only 流估算为 0 → CrossCheck Unknown 绕过审计。
 func TestCanonicalVisibleEstimateCountsContentBlockInput(t *testing.T) {
@@ -158,7 +158,7 @@ func TestCanonicalVisibleEstimateCountsContentBlockInput(t *testing.T) {
 	}
 }
 
-// TestDrainWithAdapterAccumulatesOutputEstimate 守 S2-163-fu review R2 finding 1:
+// TestDrainWithAdapterAccumulatesOutputEstimate 守 finding 1:
 // 客户端断连后 bounded drain 读完剩余流;drain 期产生的可见输出也须累加进估算,使其与
 // reported OutputTokens(含 drain 期 usage)同步,否则断连后 drain 完成的长响应被误判假 pending。
 func TestDrainWithAdapterAccumulatesOutputEstimate(t *testing.T) {
@@ -181,7 +181,7 @@ func TestDrainWithAdapterAccumulatesOutputEstimate(t *testing.T) {
 	}
 }
 
-// TestHandleEventWithAdapterAccumulatesLossOnErrorReturn 守 S1-025-fu review R1 finding 2:
+// TestHandleEventWithAdapterAccumulatesLossOnErrorReturn 守 finding 2:
 // 部分上游 adapter 把 ProtocolLossEntry 连同 error 一起返回(anthropic/sse.go:228 未知事件
 // → loss + ErrUnknownEventType)。handleEventWithAdapter 原先在 append providerLosses 之前
 // 就 error 早返,证据丢失;现在累积先于 error 返回。

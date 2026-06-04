@@ -7,7 +7,7 @@
 // with bootstrap=true. Operator uses this once to issue real admin
 // tokens, then rotates / disables the bootstrap row.
 //
-// Security posture (CMB-5 + Owner concerns):
+// Security posture:
 //   - The env var holds plaintext. Operators MUST treat it as a Secret
 //     (k8s Secret, sealed-secret, vault) — not a ConfigMap.
 //   - We intentionally accept ONLY when admin_tokens is empty. Setting

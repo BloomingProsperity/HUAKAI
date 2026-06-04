@@ -11,7 +11,7 @@
 //   router.Use(clientid.Middleware())  // <-- 在 Recoverer 之后即可
 //
 // 设计:
-//   - **不**因检测失败而拒绝请求（execution_boundary_c rule + IdentityUnknown
+//   - **不**因检测失败而拒绝请求（IdentityUnknown
 //     fallback 是正常路径）
 //   - **不**对 hot path 加锁；Detect 是 stateless / Signal 是 per-request 局部
 //   - 错误隔离: panic 不会上抛（即便 Detect 实现异常也不影响 forwarder）
@@ -29,7 +29,7 @@ import (
 // Middleware 返回 chi 兼容的 HTTP middleware：抽 Signal → Detect → 写 ctx。
 //
 // logger 可为 nil（静默模式）；非 nil 时按 DEBUG 级别 emit 一行结构化日志
-// 含 request_id + identity + confidence，便于运维审视误判（sonnet F5 SHOULD_FIX）。
+// 含 request_id + identity + confidence，便于运维审视误判。
 //
 // 返回 chi.Router.Use 接受的 func(http.Handler) http.Handler 形态。
 func Middleware(logger *zap.Logger) func(http.Handler) http.Handler {

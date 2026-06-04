@@ -26,7 +26,7 @@ const (
 	HopResponse HopHop = "response" // 最终回写 client
 )
 
-// HopAttestation 记录链路单跳证据；按 ts 单调递增（T2 落 INV-51）。
+// HopAttestation 记录链路单跳证据；按 ts 单调递增（T2 落）。
 //
 // 隐私守门：
 //   - AccountIDHash 是 SHA-1/SHA-256 hash，禁止直接放 account_id；
@@ -51,7 +51,7 @@ type HopAttestation struct {
 	// Hop 必填；闭集合枚举。
 	Hop HopHop `json:"hop,omitempty"`
 
-	// Timestamp 必填；RFC3339Nano；ts ↑ monotonic（INV-51）。
+	// Timestamp 必填；RFC3339Nano；ts ↑ monotonic。
 	Timestamp string `json:"ts,omitempty"`
 
 	// RequestID 可选；request_id 已在 RequestMeta 顶层；hop 内重复仅做 audit 自包含。

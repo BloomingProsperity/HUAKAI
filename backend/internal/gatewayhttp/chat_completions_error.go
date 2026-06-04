@@ -54,7 +54,7 @@ func writeInsufficientQuotaBody(w http.ResponseWriter, status int) {
 
 // encodeJSONErrorBody 用 encoding/json 编码 {"error":{"code","message"}},而非 fmt %q 手拼。
 // %q 是 Go 字符串字面量格式化器:对部分控制字节(如 \x01)会输出 \xNN —— 合法 Go 字面量却是
-// 非法 JSON,严格客户端/SDK/反代日志解析会失败(S2-148)。code 多为内部常量,但 message 可能携带
+// 非法 JSON,严格客户端/SDK/反代日志解析会失败。code 多为内部常量,但 message 可能携带
 // 用户可控内容(如 admin 创建账号时回显归一化后的 vendor)。json.Marshal 对 string 不会失败,
 // 兜底仍回退一个静态合法 JSON,绝不写出半截/非法响应。
 func encodeJSONErrorBody(code, message string) []byte {

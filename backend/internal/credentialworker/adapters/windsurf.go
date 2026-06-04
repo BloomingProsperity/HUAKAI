@@ -13,7 +13,7 @@ var (
 )
 
 // WindsurfManualTokenRefresh validates the stored manual token shape and then
-// reports that there is no automatic OAuth refresh path in this clean-room lane.
+// reports that there is no automatic OAuth refresh path in this.
 type WindsurfManualTokenRefresh struct{}
 
 func (WindsurfManualTokenRefresh) RefreshForProvider(_ context.Context, accountID int64, _ string, currentCredential []byte) ([]byte, time.Time, error) {

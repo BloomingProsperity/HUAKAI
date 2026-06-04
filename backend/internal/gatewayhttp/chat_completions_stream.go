@@ -251,7 +251,7 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	writeStreamBillingHeaders(w.Header(), streamAttempt)
 	// settle 条件三选一: 可计费 / 已向客户端交付内容 / 用量歧义需 audit 对账。
 	// 仅"上游真零交付"(非计费 且 零交付 且 非 AmbiguousUsage) 才 abort —— 对齐
-	// Owner 2026-05-20 计费策略,且避免 abort 已交付内容的流导致重试重复交付。
+	// 20 计费策略,且避免 abort 已交付内容的流导致重试重复交付。
 	settle := streamAttempt.State.Chargeable() ||
 		streamAttempt.DeliveredTokenCount > 0 ||
 		draft.EndClass == gateway.AmbiguousUsage
@@ -556,7 +556,7 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 	// forwarder 逐事件累加的可见输出估算(draft.EstimatedOutputTokens)与 reported OutputTokens
 	// (扣除隐藏 reasoning)比对。估算为 0(未捕获可估内容)→ Unknown → 不降级。reasoning 文本
 	// 流出但无 ReasoningTokens(Anthropic/Gemini thinking,folding 不可知)→ 跳过校验避免误报。
-	// pending 与上方缺 usage 的 pending 取并集,不互相覆盖(S2-163-fu;review R2)。
+	// pending 与上方缺 usage 的 pending 取并集,不互相覆盖。
 	streamConfidence, streamPending := crossCheckAudit(draft.TokensOutput, draft.ReasoningTokens, draft.EstimatedOutputTokens, draft.EstimatedReasoningTokens, actualCost.Total.IsPositive())
 	draft.ConfidenceScore = &streamConfidence
 	if streamPending || actualCost.PendingReconciliation {
@@ -592,7 +592,7 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 			Stream:            true,
 			ActualCost:        actualCost.Total,
 			// 合并请求翻译损失(ex.protocolLoss)与流式逐事件损失(draft.StreamProtocolLoss);
-			// 后者之前被 StreamForwarder 丢弃,只有初始(常为空)请求侧损失能到 settle(S1-025-fu item 4)。
+			// 后者之前被 StreamForwarder 丢弃,只有初始(常为空)请求侧损失能到 settle(item 4)。
 			ProtocolLoss:        mergeProtocolLossWithEntries(ex.protocolLoss, draft.StreamProtocolLoss),
 			Fingerprint:         ex.payloadHash,
 			Draft:               draft,

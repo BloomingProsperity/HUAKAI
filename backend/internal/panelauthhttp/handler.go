@@ -2,7 +2,7 @@
 
 // Package panelauthhttp 暴露 /v1/auth/me(whoami): 已登录用户查询自己的面板归属
 // (admin / user)。挂载在 session 中间件下, 角色来自后端解析(users.role), 绝不信前端。
-// handler 不进冻结包 gatewayhttp; 由 cmd/gateway/routes.go 挂载。
+// handler 由 cmd/gateway/routes.go 挂载。
 package panelauthhttp
 
 import (

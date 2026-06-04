@@ -703,7 +703,7 @@ type ListEligibleAccountsByPoolGroupRow struct {
 // cap_queue_sticky/fallback are returned so the selector can construct
 // WaitPlan fallback when every eligible account is at concurrency cap.
 //
-// 2026-05-19 codex review P1 fix: 之前不过滤 model_allow_list /
+// 之前不过滤 model_allow_list /
 // capability_flags, production gate AllowAll 全过, request 能 reserve
 // 到明确不被该 account 允许的 model / 缺能力。两个 filter 直接在 SQL
 // 层做 (Postgres array @> 子集 + cardinality empty bypass):

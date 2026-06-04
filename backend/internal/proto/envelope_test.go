@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// minimalValidEnvelope 构造一份恰好满足 INV-4/5/10/11 的最小 envelope。
+// minimalValidEnvelope 构造一份恰好满足要求的最小 envelope。
 func minimalValidEnvelope() *HCSFEnvelope {
 	env := NewEmptyEnvelope()
 	env.RequestMeta = RequestMeta{
@@ -230,7 +230,7 @@ func TestINV1_RoundTripDeepEqual(t *testing.T) {
 	}
 }
 
-// TestINV13_StreamPlanModeRequired 验证 INV-13：StreamPlan.Mode 必填。
+// TestINV13_StreamPlanModeRequired 验证 StreamPlan.Mode 必填。
 func TestINV13_StreamPlanModeRequired(t *testing.T) {
 	env := minimalValidEnvelope()
 	env.StreamPlan.Mode = ""
@@ -240,7 +240,7 @@ func TestINV13_StreamPlanModeRequired(t *testing.T) {
 	}
 }
 
-// TestINV13_StreamPlanModeBogus 验证 INV-13：StreamPlan.Mode 非合法枚举值被拒。
+// TestINV13_StreamPlanModeBogus 验证 StreamPlan.Mode 非合法枚举值被拒。
 func TestINV13_StreamPlanModeBogus(t *testing.T) {
 	env := minimalValidEnvelope()
 	env.StreamPlan.Mode = StreamMode("bogus_mode")
@@ -250,7 +250,7 @@ func TestINV13_StreamPlanModeBogus(t *testing.T) {
 	}
 }
 
-// TestINV13_StreamPlanModeAllowedValues 验证 INV-13：buffered/streaming/replay 全部通过。
+// TestINV13_StreamPlanModeAllowedValues 验证 buffered/streaming/replay 全部通过。
 func TestINV13_StreamPlanModeAllowedValues(t *testing.T) {
 	for _, mode := range []StreamMode{StreamModeBuffered, StreamModeStreaming, StreamModeReplay} {
 		t.Run(string(mode), func(t *testing.T) {
@@ -263,11 +263,11 @@ func TestINV13_StreamPlanModeAllowedValues(t *testing.T) {
 	}
 }
 
-// TestINV6_NilVsEmptyStreamEvents 验证 INV-6 区分 nil vs empty StreamEvents。
+// TestINV6_NilVsEmptyStreamEvents 验证 区分 nil vs empty StreamEvents。
 //
 //   - BufferedResponse + StreamEvents:nil → 通过（仅 buffered 形态）
 //   - BufferedResponse + StreamEvents:[] → 通过（显式空切片，非 replay payload）
-//   - BufferedResponse + StreamEvents:[event{...}] → 报 INV-6
+//   - BufferedResponse + StreamEvents:[event{...}] → 报错
 func TestINV6_NilVsEmptyStreamEvents(t *testing.T) {
 	t.Run("buffered + nil events passes", func(t *testing.T) {
 		env := minimalValidEnvelope()
@@ -494,7 +494,7 @@ func TestINV7_ProtocolLossEntryV04SilentDrop(t *testing.T) {
 
 // roundTripBytesStable 工具函数：marshal → unmarshal → marshal 字节稳定 + DeepEqual。
 //
-// 用于 M3 全集 INV-1 round-trip 校验：
+// 用于 M3 全集 round-trip 校验：
 //
 //   - json.Marshal(src) 必须 == json.Marshal(round)（字段顺序无关字节稳定）
 //   - reflect.DeepEqual(*src, round) 必须为 true
@@ -526,7 +526,7 @@ func roundTripBytesStable(t *testing.T, src *HCSFEnvelope) {
 
 // makeFullCapabilityNodes 构造 15 concrete CapabilityKind payload 的 node 集合。
 //
-// 每个 node 都满足 INV-3 tagged-union（恰好一个 payload 非 nil）；ID 命名 `n_<kind>_1`。
+// 每个 node 都满足 tagged-union（恰好一个 payload 非 nil）；ID 命名 `n_<kind>_1`。
 // 跨 15 capability：text / tool_use / tool_result / thinking / cache_control /
 // structured_output / computer_use / file / image / audio / video / live_session /
 // batch / mcp_server / data_retention（与 AllCapabilityKinds 同序）。
@@ -994,7 +994,7 @@ func TestINV1_StreamEventsRoundTrip(t *testing.T) {
 
 // TestINV1_ExtensionsRoundTrip 验证 Extensions（vendor: + experimental: 双 key + 嵌套 JSON）round-trip。
 //
-// INV-12 要求 key 前缀必须是 vendor: 或 experimental:；本测试覆盖三种典型 payload 形态：
+// 要求 key 前缀必须是 vendor: 或 experimental；本测试覆盖三种典型 payload 形态：
 //
 //   - 嵌套 object（vendor: prefix）
 //   - 嵌套数组（experimental: prefix）
@@ -1051,7 +1051,7 @@ func TestINV2_NilSliceCompat(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// P-1 D1：capability payload enum 守门（INV-14/16/18/23/39/41）
+// capability payload enum 守门
 // --------------------------------------------------------------------------
 
 // TestINV14_StreamReadyEnum 验证每个 node 的 StreamReady 必须在 {yes,no,partial} 内。
@@ -1267,7 +1267,7 @@ func TestINV39_ThinkingRedactionEnum(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// P-1 D2：复合 payload validator（INV-15/16 收口/17/18 收口/25/27/29/34/36/37 部分/39 收口）
+// 复合 payload validator（收口/17/18 收口/25/27/29/34/36/37 部分/39 收口）
 // --------------------------------------------------------------------------
 
 // TestINV15_TextNodePayload 验证 TextNode.Role + Block.Type。
@@ -1423,8 +1423,8 @@ func TestINV18_ToolResultRequiredAndIsError(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env := minimalValidEnvelope()
-			// 配合 D3 INV-19：ToolResult 节点必须有同 envelope 内的 ToolUse + requires edge。
-			// 仅当 tc.toolCallID 非空时建立配对，否则 ToolResult 单独存在以触发 INV-18 必填守门。
+			// 配合 D3 ToolResult 节点必须有同 envelope 内的 ToolUse + requires edge。
+			// 仅当 tc.toolCallID 非空时建立配对，否则 ToolResult 单独存在以触发校验错误 必填守门。
 			env.CapabilityGraph.Nodes = []CapabilityNode{}
 			if tc.toolCallID != "" {
 				env.CapabilityGraph.Nodes = append(env.CapabilityGraph.Nodes, CapabilityNode{
@@ -1462,7 +1462,7 @@ func TestINV18_ToolResultRequiredAndIsError(t *testing.T) {
 
 // TestINV25_CachePayload 验证 Cache.Scope enum + LocalityHint 白名单。
 //
-// Scope=block/message 在 INV-26 (D3 cross_ref.go) 要求 BreakpointRefs 非空 + 可解析；
+// Scope=block/message 要求 BreakpointRefs 非空 + 可解析；
 // 本测试用 helper 自动补 target 节点。
 func TestINV25_CachePayload(t *testing.T) {
 	cases := []struct {
@@ -1541,7 +1541,7 @@ func TestINV27_BatchPayload(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env := minimalValidEnvelope()
-			// 配合 D5 INV-28：BatchNode.InputRef 必须解析到 FileNode。
+			// 配合 D5 BatchNode.InputRef 必须解析到 FileNode。
 			env.CapabilityGraph.Nodes = []CapabilityNode{
 				{
 					ID: "n_file", Kind: CapabilityFile, StreamReady: StreamReadyNo,
@@ -1593,7 +1593,7 @@ func TestINV29_RetryPolicy(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env := minimalValidEnvelope()
-			// 配合 D5 INV-28：BatchNode.InputRef 必须解析到 FileNode。
+			// 配合 D5 BatchNode.InputRef 必须解析到 FileNode。
 			env.CapabilityGraph.Nodes = []CapabilityNode{
 				{
 					ID: "n_file", Kind: CapabilityFile, StreamReady: StreamReadyNo,
@@ -1797,7 +1797,7 @@ func TestINV39_ThinkingNumericNonNeg(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// P-1 D4：条件必填 + Policy/graph 一致性（INV-30/31/32/33/40/45）
+// 条件必填 + Policy/graph 一致性
 // --------------------------------------------------------------------------
 
 // drNode 是构造 data_retention 节点的辅助 helper（测试用）。
@@ -2044,7 +2044,7 @@ func TestINV45_ProtocolLossEntryFields(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// P-1 D3：跨 node / projection 引用完整性（INV-26/35/41 modalities/42/43/46）
+// 跨 node/projection 引用完整性（modalities/42/43/46）
 // --------------------------------------------------------------------------
 
 // TestINV26_CacheBreakpointRefs 验证 Cache.BreakpointRefs 解析 + Scope 条件。
@@ -2379,7 +2379,7 @@ func TestINV41_LiveSessionTransportEnum(t *testing.T) {
 
 // --------------------------------------------------------------------------
 // P-1 D5：fixture sweep + 剩余 strict cross-ref + 新枚举
-// （INV-19 strict / INV-23 Format / INV-28 / INV-41 ToolNodeIDs / INV-42 / INV-49）
+// （strict/Format/ToolNodeIDs/）
 // --------------------------------------------------------------------------
 
 // TestINV19_ToolResultRefStrict 验证 ToolResult.ToolCallID 必须匹配 ToolUse + requires edge。

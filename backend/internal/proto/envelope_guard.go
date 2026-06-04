@@ -10,7 +10,7 @@ import "fmt"
 //
 //   - 适用场景：forwarder / dispatcher / SSE adapter 等 hot path 在每次
 //     穿越 envelope 边界时调用，**避免**在请求处理路径上跑完整
-//     ValidateEnvelope 的 INV-3..INV-13 全部检查（图遍历 + projection
+//     ValidateEnvelope 的完整检查（图遍历 + projection
 //     枚举 + tagged-union nil 扫描成本不可忽略）。
 //   - 性能预期：单次调用 ~ 1-2 次指针解引 + 1 次字符串等值比较，
 //     纳秒级（无 map / slice / 反射），可放在 per-request 关键路径。
@@ -22,8 +22,8 @@ import "fmt"
 //
 // 返回值：
 //
-//   - env == nil → INV-0
-//   - env.Version != HCSFVersion → INV-4
+//   - env == nil → 校验错误
+//   - env.Version != HCSFVersion → 校验错误
 //   - 其它一切违规 → 不在本函数职责内（调用方若需要全量校验请直接用
 //     ValidateEnvelope，或在 debug build 下走 ValidateEnvelopeDebug）
 //

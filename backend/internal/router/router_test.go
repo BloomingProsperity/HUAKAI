@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// TestRouter_Plan_RejectsMissingRequestID enforces CMB-6: every request
+// TestRouter_Plan_RejectsMissingRequestID enforces every request
 // must carry a request_id by the time Router runs.
 func TestRouter_Plan_RejectsMissingRequestID(t *testing.T) {
 	r := NewDefaultRouter()
@@ -24,7 +24,7 @@ func TestRouter_Plan_RejectsMissingRequestID(t *testing.T) {
 	}
 }
 
-// TestRouter_Plan_RejectsMissingTenant enforces CMB-1 boundary: Router
+// TestRouter_Plan_RejectsMissingTenant enforces Router
 // must fail closed when Auth has not run.
 func TestRouter_Plan_RejectsMissingTenant(t *testing.T) {
 	r := NewDefaultRouter()

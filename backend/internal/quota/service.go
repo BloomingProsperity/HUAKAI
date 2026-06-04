@@ -258,7 +258,7 @@ func evaluatePolicies(ctx context.Context, store PGStore, req ReserveRequest, re
 	var out policyEvaluation
 	for _, policy := range resolved.Ordered {
 		if policy.Metric == MetricTokensEstimated {
-			// B2a 暂无 token 估算输入; enforce token 策略按 observe 路径跳过, 不阻断。
+			// 暂无 token 估算输入; enforce token 策略按 observe 路径跳过, 不阻断。
 			continue
 		}
 		if policy.Metric == MetricConcurrency && !req.NeedConcurrencySlot {

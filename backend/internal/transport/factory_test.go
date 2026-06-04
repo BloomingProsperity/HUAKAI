@@ -63,7 +63,7 @@ func TestFactory_StandardRoundTripperIgnoresEnvProxy(t *testing.T) {
 }
 
 // 默认 mimicry template 缺失 → fail-closed error,
-// 不回退 Anthropic Phase A 默认模板。
+// 不回退 Anthropic 默认模板。
 func TestFactory_For_MimicryWithoutRegistry_FailClosedByDefault(t *testing.T) {
 	f := NewFactory()
 	_, err := f.For(ProviderOpenAI, TransportModeMimicryChatGPT)
@@ -73,7 +73,7 @@ func TestFactory_For_MimicryWithoutRegistry_FailClosedByDefault(t *testing.T) {
 }
 
 func TestFactory_For_MimicryWithoutRegistryUsesPhaseADefault(t *testing.T) {
-	// Phase A fallback 现在默认 fail-closed, 需 opt-in env
+	// legacy fallback 默认 fail-closed, 需 opt-in env
 	t.Setenv("HUAKAI_TRANSPORT_PHASE_A_FALLBACK", "true")
 	f := NewFactory()
 	rt, err := f.For(ProviderAnthropic, TransportModeMimicryClaudeCode)

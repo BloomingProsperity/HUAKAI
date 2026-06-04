@@ -976,7 +976,7 @@ func TestAnthropicMessages_D4_FinalizeBeforeStartEmpty(t *testing.T) {
 
 func TestAnthropicMessagesClient_EnvelopeIsValidateReady(t *testing.T) {
 	// 检查 D1 产出的 envelope 通过 ValidateEnvelopeVersionGuard（adapter 边界轻量守门）。
-	// 完整 INV-3..49 由 -tags debug 测试覆盖。
+	// 完整校验由 -tags debug 测试覆盖。
 	adapter := &AnthropicMessagesClient{}
 	body := []byte(`{
 		"model":"claude-3","max_tokens":10,

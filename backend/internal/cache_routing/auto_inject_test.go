@@ -168,7 +168,7 @@ func TestAutoInject_MessagesUnchanged(t *testing.T) {
 	}
 }
 
-// codex BLOCKING B2 回归: system 数组含 null block 时不能 panic。
+// system 数组含 null block 时不能 panic。
 func TestAutoInject_ArrayWithNullBlock_NoPanic(t *testing.T) {
 	bigText := strings.Repeat("very long content. ", 200)
 	body, _ := json.Marshal(map[string]any{
@@ -188,7 +188,7 @@ func TestAutoInject_ArrayWithNullBlock_NoPanic(t *testing.T) {
 	}
 }
 
-// codex BLOCKING B2 变体: system 是 [null] 单 null 元素。
+// system 是 [null] 单 null 元素。
 func TestAutoInject_ArrayOnlyNull_NoPanic(t *testing.T) {
 	body := []byte(`{"system":[null]}`)
 	defer func() {
@@ -202,7 +202,7 @@ func TestAutoInject_ArrayOnlyNull_NoPanic(t *testing.T) {
 	}
 }
 
-// codex BLOCKING B2 变体: system 末块是 string ("plain text" 形态, 非 object)。
+// system 末块是 string ("plain text" 形态, 非 object)。
 func TestAutoInject_ArrayLastBlockNonObject_NoPanic(t *testing.T) {
 	bigText := strings.Repeat("a long string token. ", 250)
 	body, _ := json.Marshal(map[string]any{
@@ -222,7 +222,7 @@ func TestAutoInject_ArrayLastBlockNonObject_NoPanic(t *testing.T) {
 	}
 }
 
-// codex BLOCKING B3 加固: 任意 block 已有 cache_control → 全 body no-op,
+// 任意 block 已有 cache_control → 全 body no-op,
 // 不只末块。
 func TestAutoInject_EarlierBlockHasCC_FullSkip(t *testing.T) {
 	bigText := strings.Repeat("padding text. ", 500)

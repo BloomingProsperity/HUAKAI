@@ -46,7 +46,7 @@ func WithTestProvider() Option {
 }
 
 // WithTestProviderSecret 启用带指定 HMAC 验签密钥的 test provider (回调链路测试用)。
-// 真实渠道密钥走 Owner-gated P-RealMoney, 不经此 option。
+// 真实渠道密钥不经此 option。
 func WithTestProviderSecret(secret string) Option {
 	return func(s *Service) {
 		s.providers[ProviderTest] = NewTestProviderWithSecret(secret)

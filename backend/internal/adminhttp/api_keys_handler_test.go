@@ -375,7 +375,7 @@ func pgTimestamp(t time.Time) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: t, Valid: true}
 }
 
-// TestWriteErrorProducesValidJSONForControlChars guards S2-148 for the admin API-key error
+// TestWriteErrorProducesValidJSONForControlChars guards for the admin API-key error
 // writer: its default branch echoes err.Error() into message, which can carry control bytes.
 // The body must stay RFC-valid JSON. Mutation check: restore the fmt %q hand-formatter and
 // json.Valid goes false on the \x01 byte (plus the message no longer round-trips) → red.

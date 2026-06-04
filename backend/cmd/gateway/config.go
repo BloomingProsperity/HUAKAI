@@ -57,7 +57,7 @@ func releaseModeProduction() bool {
 }
 
 // validateReleaseMode 在启动时校验 HUAKAI_RELEASE_MODE。
-// S1-019:空/未设或拼错的值都会让 releaseModeProduction() 判 false,
+// 空/未设或拼错的值都会让 releaseModeProduction() 判 false,
 // 静默降级为 dev —— 绕过 postgres ledger / 持久私钥 / email / channelhealth signer 等全部
 // production fail-closed 门控。启动必须显式声明 production 或一个非生产模式,
 // 杜绝"部署遗漏 env 就跑在 dev"和"想上生产却因打错字静默跑在 dev"。
@@ -101,8 +101,8 @@ func loadUserRegistrationModeFromEnv() (userauth.RegistrationMode, error) {
 
 // validateDevAuthTokenFlag 在启动时 fail-closed:HUAKAI_DEV_AUTH_RETURN_TOKEN=true 会让公开的
 // 注册/密码重置接口把一次性明文 secret 直接回写进 JSON 响应体(addDevAuthToken),仅供本地/CI 调试。
-// 生产环境(HUAKAI_RELEASE_MODE=production)绝不能开启,否则每次注册/重置都会泄露令牌(S1-018)。
-// 与 S1-019 同族:把该 dev 开关纳入与 audit/email/channelhealth 一致的启动门控,带病配置直接拒启,
+// 生产环境(HUAKAI_RELEASE_MODE=production)绝不能开启,否则每次注册/重置都会泄露令牌。
+// 该 dev 开关纳入与 audit/email/channelhealth 一致的启动门控,带病配置直接拒启,
 // 而非此前仅打一条 warning 仍照常 boot 并泄露。
 func validateDevAuthTokenFlag() error {
 	if releaseModeProduction() && strings.EqualFold(strings.TrimSpace(os.Getenv("HUAKAI_DEV_AUTH_RETURN_TOKEN")), "true") {
@@ -250,7 +250,7 @@ func buildOAuthProvider(logger *zap.Logger, cfg userauth.OAuthConfig) userauth.O
 		}
 		return nil
 	}
-	// S2-009: 给 social OAuth 出站调用(token 兑换 / JWKS / GitHub user&emails)注入拨号期 SSRF 防护
+	// 给 social OAuth 出站调用(token 兑换 / JWKS / GitHub user&emails)注入拨号期 SSRF 防护
 	// 客户端,带私有/环回/元数据 IP 拦截 + Proxy=nil + 抑制 3xx,堵住凭据被发往内网/metadata/被 DNS-rebind。
 	p, err := userauth.NewOAuthHTTPProvider(cfg, auth.NewSSRFProtectedOAuthClient(http.DefaultClient))
 	if err != nil {

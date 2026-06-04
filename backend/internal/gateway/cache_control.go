@@ -21,7 +21,6 @@
 // SuggestBreakpoints accepts optional estimatedBlockTokens to skip blocks
 // below the per-model threshold.
 //
-// Synthesis of two parallel-draft lanes (CLAUDE.md #10 + 2026-05-04 directive).
 package gateway
 
 import (

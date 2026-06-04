@@ -1,12 +1,11 @@
 // Package obs is the read-only audit/observability surface for the
 // HUAKAI ledger. Per docs/specs/_invariants/cross-module-boundaries.md
-// CMB-7 this package writes nothing — every method is a SELECT. CMB-5
+// This package writes nothing — every method is a SELECT.
 // guarantees credentials never appear in returned rows by virtue of the
 // underlying SQL never selecting credential columns.
 //
-// Reader is what admin endpoints (Phase E) call to render usage,
-// claim, audit, and billing-event lists. Phase C smoke does not exercise
-// this package; integration tests do.
+// Reader renders usage, claim, audit, and billing-event lists for admin
+// endpoints. Integration tests exercise the SQL-backed implementation.
 
 package obs
 

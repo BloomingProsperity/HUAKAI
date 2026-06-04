@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// Owner 2026-05-27 抓出 P2: parsePasswordHash 把 `p=` 等参数 ParseUint 到
+// parsePasswordHash 把 `p=` 等参数 ParseUint 到
 // uint64, 再直接 uint8/uint32 截断, p=256 会 wrap 成 0 后被
 // normalizePasswordPolicy 静默拉回 default, 攻击者可借此让 hash 校验绕过
 // hash header 中声明的 parallelism。同时 m / t 缺上限可 DoS。
@@ -28,7 +28,7 @@ func TestParsePasswordHashRejectsOutOfRangeParams(t *testing.T) {
 		{name: "parallelism_huge_p_65535", encoded: "$argon2id$v=19$m=65536,t=3,p=65535$" + validSalt + "$" + validKey, wantErr: true},
 		{name: "memory_dos_above_1gib", encoded: "$argon2id$v=19$m=1048577,t=3,p=1$" + validSalt + "$" + validKey, wantErr: true},
 		{name: "iteration_dos_above_100", encoded: "$argon2id$v=19$m=65536,t=101,p=1$" + validSalt + "$" + validKey, wantErr: true},
-		// Owner 2026-05-27 二次抓: 0 值原本被 normalizePasswordPolicy 兜底成
+		// 0 值原本被 normalizePasswordPolicy 兜底成
 		// default, 攻击者可写 m=0/t=0/p=0 让 hash 校验静默走 default。修复
 		// 把 0 视为非法。
 		{name: "memory_zero_must_reject", encoded: "$argon2id$v=19$m=0,t=3,p=1$" + validSalt + "$" + validKey, wantErr: true},

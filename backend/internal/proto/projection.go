@@ -28,7 +28,7 @@ type CapabilityProjection struct {
 	// Verdict 必填；preserved/lossy/unsupported/native_required。
 	Verdict ProjectionVerdict `json:"verdict"`
 
-	// ProtocolLoss 可选；当 Verdict 非 preserved 时**必须**至少一条（INV-7）。
+	// ProtocolLoss 可选；当 Verdict 非 preserved 时**必须**至少一条。
 	ProtocolLoss []ProtocolLossEntry `json:"protocol_loss,omitempty"`
 
 	// NativePath 可选；native_required 时必填，如 /v1/native/openai/responses。

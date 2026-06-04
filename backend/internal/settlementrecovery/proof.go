@@ -16,7 +16,6 @@ import "context"
 //   - 缺 usage_records / billing_events:settle 同事务保证三者要么齐要么全无,
 //     缺一就是事务 corrupt,不能视已成功
 //
-// 设计依据:codex plan D5 三证 proof,money-path 不接受假阳性。
 type CommittedProof interface {
 	// IsCommitted 检查给定 (tenant, claim) 是否 fully committed。
 	// 返回 (true, nil) 才允许 worker 把 DLQ 标 delivered;

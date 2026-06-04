@@ -309,7 +309,7 @@ func TestAdminClaudeAIOAuthFullFlowEncryptsAndSavesCredential(t *testing.T) {
 	}))
 	defer restore()
 
-	// S1-014: claude_ai_oauth redirect_uri 现严格校验(loopback / 静态 allowlist 的 HTTPS admin)。
+	// claude_ai_oauth redirect_uri 现严格校验(loopback / 静态 allowlist 的 HTTPS admin)。
 	// 本全流程测试与 redirect 校验无关,用合法 built-in loopback 即可(回调由测试直接打服务端
 	// /admin/v1/credentials/oauth-callback 端点驱动,与 OAuth redirect_uri 取值无关)。
 	startRec := fx.do(t, http.MethodPost, "/admin/v1/credentials/oauth-init",
@@ -359,7 +359,7 @@ func TestAdminClaudeAIOAuthFullFlowEncryptsAndSavesCredential(t *testing.T) {
 
 func TestAdminGeminiCodeAssistFullFlowUsesEnvClientSecret(t *testing.T) {
 	// 缺陷：Gemini D-1=A 内置 profile 若继续信任 request client_secret，会绕过
-	// Owner 2026-05-27 env-only 决策。判别 mutation：让 exchanger 或 handler
+	// 让 exchanger 或 handler
 	// 使用 request secret 时，本测试必须变红。
 	tokenCalls := 0
 	client := &http.Client{Transport: adminCredentialAcqRoundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -433,7 +433,7 @@ func TestAdminGeminiCodeAssistFullFlowUsesEnvClientSecret(t *testing.T) {
 
 func TestGeminiAdminStartFlowIgnoresClientSecretFromRequest(t *testing.T) {
 	// 缺陷：admin API request body 的 client_secret 若继续传入 Gemini start config，
-	// 就绕过了 Owner 2026-05-27 env-only 决策。判别 mutation：恢复
+	// 就绕过了
 	// OAuthClientConfig.ClientSecret: oauthReq.ClientSecret 时，本测试必须变红。
 	guard := &geminiAdminStartConfigGuardExchanger{}
 	registry := credentialacq.NewExchangerRegistry()
@@ -984,7 +984,7 @@ func (db *credentialAcqSessionDB) QueryRow(_ context.Context, sql string, args .
 		return credentialAcqRow{session: row}
 	case strings.Contains(sql, "SET consumed_at = NOW()"):
 		row, ok := db.rows[argString(args[0])]
-		// S1-010 [codex round2 P2]: mirror BeginFinalize 的真 SQL predicate —— callback 式 OAuth(非
+		// mirror BeginFinalize 的真 SQL predicate —— callback 式 OAuth(非
 		// device_code/sso)未到 validated 不可 finalize。复用生产导出 helper credentialacq.RequiresCallbackValidation,
 		// 与真 SQL / credentialacq fake 同源,避免 handler 测试 double 漂移、给"started PKCE OAuth 可 finalize"假信心。
 		if !ok || !row.ConsumedAt.IsZero() || row.Status == credentialacq.StatusFinalized || row.Status == credentialacq.StatusCancelled || row.Status == credentialacq.StatusExpired || !row.ExpiresAt.After(db.now) ||

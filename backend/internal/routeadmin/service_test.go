@@ -44,7 +44,7 @@ func TestCreate_AcceptsValidPatterns(t *testing.T) {
 	}
 }
 
-// 守拒绝形态与 gate 语义对齐(R3): 被拒的 mid-string 通配, 若真落库, 会被
+// 守拒绝形态与 gate 语义对齐: 被拒的 mid-string 通配, 若真落库, 会被
 // subscriptionenforce.ModelPatternMatches 当精确串 → 对"看似该命中"的 model 失配。
 // 本测自证: 'a*b' 对 'axb' 不命中(证明拒绝是对的, 不是过度严格)。
 func TestRejectedPatternsWouldSilentlyMisbehaveInGate(t *testing.T) {

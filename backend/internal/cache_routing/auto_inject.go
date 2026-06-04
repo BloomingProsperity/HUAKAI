@@ -81,7 +81,7 @@ func AutoInjectSystemCacheControl(body []byte, minBytes int) []byte {
 			return body
 		}
 		top["system"] = newSys
-		// sonnet SHOULD_FIX: 不能丢 outer marshal err — 错误时 nil body 会
+		// 不能丢 outer marshal err — 错误时 nil body 会
 		// 让 SigV4 hash 空 payload，请求被拒。fail-safe 返回原 body。
 		out, err := json.Marshal(top)
 		if err != nil {
@@ -92,7 +92,7 @@ func AutoInjectSystemCacheControl(body []byte, minBytes int) []byte {
 
 	// case 2: system 是 array —— 最末 block 加 cache_control（除非已有）
 	//
-	// 用 []json.RawMessage 而不是 []map[...] 解，避免 codex BLOCKING B2
+	// 用 []json.RawMessage 而不是 []map[...] 解，避免
 	// 触发的 nil-map panic：`system: [{...long}, null]` unmarshal 后
 	// blocks[lastIdx] 是 nil map，赋值 cache_control 会 panic。
 	var blocks []json.RawMessage
@@ -102,7 +102,7 @@ func AutoInjectSystemCacheControl(body []byte, minBytes int) []byte {
 	if len(blocks) == 0 {
 		return body
 	}
-	// 任意已有 cache_control 标记都尊重 caller 意图（codex BLOCKING B3
+	// 任意已有 cache_control 标记都尊重 caller 意图
 	// 加固）：扫所有 block 而不只末块，避免破坏 caller 的整体缓存策略。
 	for _, rawBlock := range blocks {
 		if isJSONNullOrNonObject(rawBlock) {
@@ -130,7 +130,7 @@ func AutoInjectSystemCacheControl(body []byte, minBytes int) []byte {
 		return body
 	}
 	top["system"] = newSys
-	// sonnet SHOULD_FIX: 同上 — outer marshal 失败时返回原 body 而不是 nil。
+	// 同上 — outer marshal 失败时返回原 body 而不是 nil。
 	out, err := json.Marshal(top)
 	if err != nil {
 		return body
@@ -140,7 +140,7 @@ func AutoInjectSystemCacheControl(body []byte, minBytes int) []byte {
 
 // HasCacheControlMarker 是 body 是否含 cache_control marker 的快速 prefilter。
 //
-// **lossy heuristic, 不是正确性闸门**（codex SHOULD_FIX 1）：用户消息正文
+// **lossy heuristic, 不是正确性闸门**：用户消息正文
 // 字面含 "cache_control" 时会 false-positive，但只用作"是否值得跑完整
 // unmarshal/marshal" 的优化决策——false-positive 安全（多 skip 一次注入），
 // false-negative 才危险（多注入一次但 AutoInjectSystemCacheControl 内部仍有

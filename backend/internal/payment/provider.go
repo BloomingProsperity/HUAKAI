@@ -18,9 +18,9 @@ type PaymentIntent struct {
 }
 
 // Provider 抽象支付渠道行为, 不耦合任何真实 SDK 类型。
-// P1 仅 manual / test; 真实 Stripe/支付宝/微信/epay provider 留 Owner-gated 后续切片
-// (引入真实密钥 / webhook 验签 / 退款撤销语义 / SDK 供应链风险)。
-// Owner 2026-06-04: 真实 provider 暂不实现 (无商户号/SDK/沙箱密钥), 只保留框架; 接入指南见 PROVIDERS.md。
+// 当前内置 manual/test/HMAC provider；真实 Stripe/支付宝/微信/epay provider
+// 需要真实密钥、webhook 验签、退款撤销语义与 SDK 供应链审查。
+// 未注册真实 provider 时只保留框架; 接入指南见 PROVIDERS.md。
 type Provider interface {
 	Kind() ProviderKind
 	CreateIntent(ctx context.Context, order Order) (PaymentIntent, error)

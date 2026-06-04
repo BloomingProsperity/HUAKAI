@@ -209,7 +209,7 @@ func subCapsTriple(s UserSubscription) capsTriple {
 }
 
 // capsDominate 判断 newCaps 是否在每个窗口都 >= curCaps (即"只升不降")。
-// nil 视为无限大 (最宽松)。处处支配 ⇒ 切换到 newCaps 等价零降额, 满足 Owner only-up 信任链。
+// nil 视为无限大 (最宽松)。处处支配 ⇒ 切换到 newCaps 等价零降额, 满足 only-up 信任链。
 func capsDominate(newCaps, curCaps capsTriple) bool {
 	return windowDominates(newCaps.Daily, curCaps.Daily) &&
 		windowDominates(newCaps.Weekly, curCaps.Weekly) &&

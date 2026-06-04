@@ -80,8 +80,7 @@ func DefaultModeAdapterRegistry() *ModeAdapterRegistry {
 	register(credentialstore.VendorGemini, credentialstore.AuthModeVertexSA, metadataTokenAdapter{})
 	register(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist, newGeminiBuiltinClientOAuthModeAdapter("code_assist"))
 	register(credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne, newGeminiBuiltinClientOAuthModeAdapter("google_one"))
-	// Owner 2026-05-27：gemini/antigravity refresh 标 Mandatory Roadmap，
-	// 暂停并 fail-closed，直到 docs/process/decisions/DR-GEM-3-ANTIGRAVITY-PAUSED.md 的 OCAW 重新激活。
+	// gemini/antigravity refresh 标 Mandatory Roadmap，
 	register(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity, geminiAntigravityPausedAdapter{})
 	register(credentialstore.VendorGemini, credentialstore.AuthModeOAuth, operatorOAuthModeAdapter{
 		providerName: "gemini",
@@ -205,7 +204,7 @@ func (r *AccountCredentialRefresher) refreshLockedRecord(ctx context.Context, tx
 	adapter, ok := r.registry.Lookup(rec.Vendor, rec.AuthMode)
 	if !ok {
 		err := fmt.Errorf("%w: vendor=%s auth_mode=%s account_id=%d", ErrProviderAdapterMissing, rec.Vendor, rec.AuthMode, accountID)
-		// S2-099: 不得吞掉失败状态持久化错误。若 SaveRefreshFailure 写失败,凭据的 refresh-failure 状态
+		// 不得吞掉失败状态持久化错误。若 SaveRefreshFailure 写失败,凭据的 refresh-failure 状态
 		// (冷却/重试计数/失败原因)未落库,调度器会按陈旧状态反复重试或漏报;用 errors.Join 同时上抛
 		// adapter-missing 与持久化错误,与本包 anthropicoauth refresher 的处理对齐。
 		if saveErr := txStore.SaveRefreshFailure(ctx, rec, "adapter_missing", r.now().Add(time.Minute)); saveErr != nil {
@@ -222,7 +221,7 @@ func (r *AccountCredentialRefresher) refreshLockedRecord(ctx context.Context, tx
 			return nil
 		}
 		emitGeminiFallbackAudit(ctx, txStore, rec, err, false)
-		// S2-099: 见上,刷新失败时的状态持久化错误必须上抛,不能静默吞掉。
+		// 见上,刷新失败时的状态持久化错误必须上抛,不能静默吞掉。
 		if saveErr := txStore.SaveRefreshFailure(ctx, rec, classifyModeRefreshError(err), r.now().Add(time.Minute)); saveErr != nil {
 			return errors.Join(err, saveErr)
 		}
@@ -620,7 +619,7 @@ func (a mockTokenExchangeAdapter) httpClient() *http.Client {
 	if a.client != nil {
 		return a.client
 	}
-	// S1-011: mock_token_endpoint 取自凭据 payload(任意值),未注入 client 时的 fallback 必须走
+	// mock_token_endpoint 取自凭据 payload(任意值),未注入 client 时的 fallback 必须走
 	// SSRF 保护客户端,拨号期拒绝环回/内网/link-local 目标,防止被构造的凭据把 worker 导向内网
 	// 地址并窃取返回的 access_token。与 operator adapter 同范式。
 	return auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
@@ -649,7 +648,7 @@ func (a metadataTokenAdapter) RefreshCredential(ctx context.Context, in ModeRefr
 	req.Header.Set("Metadata-Flavor", "Google")
 	client := a.client
 	if client == nil {
-		// S1-011: metadata_token_endpoint 同为 payload 提供的任意值 —— HUAKAI 把它当普通可配置端点,
+		// metadata_token_endpoint 同为 payload 提供的任意值 —— HUAKAI 把它当普通可配置端点,
 		// 而非真实的 in-instance GCE metadata 调用,故 fallback 走 SSRF 保护客户端、拒绝 link-local
 		// 169.254 在此是正确的(不会破坏真实 GCE 元数据获取,因为本就不是那条路径)。
 		client = auth.NewSSRFProtectedOAuthClient(http.DefaultClient)

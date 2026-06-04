@@ -87,7 +87,7 @@ func (s *Service) StartOAuth(ctx context.Context, in OAuthInitInput) (OAuthInitR
 	if !ok {
 		return OAuthInitResult{}, ErrOAuthProviderMissing
 	}
-	// S2-009: fail-closed 校验 caller 提供的 redirect_uri,杜绝 open-redirect / 授权码被引导到攻击者地址。
+	// fail-closed 校验 caller 提供的 redirect_uri,杜绝 open-redirect/授权码被引导到攻击者地址。
 	if err := s.validateOAuthRedirectURI(in.RedirectURI); err != nil {
 		return OAuthInitResult{}, err
 	}
@@ -111,7 +111,7 @@ func (s *Service) StartOAuth(ctx context.Context, in OAuthInitInput) (OAuthInitR
 
 // validateOAuthRedirectURI fail-closed 校验 caller 提供的 redirect_uri:为空 → 允许(后续用各 provider
 // 服务端配置的固定 RedirectURI);非空 → 必须精确匹配管理员配置的 AllowedRedirectURIs 之一,否则拒绝。
-// 默认白名单为空 → 任何非空 caller redirect 都被拒,杜绝把授权码/回调引导到攻击者控制的地址(S2-009)。
+// 默认白名单为空 → 任何非空 caller redirect 都被拒,杜绝把授权码/回调引导到攻击者控制的地址。
 func (s *Service) validateOAuthRedirectURI(raw string) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -186,7 +186,7 @@ func (s *Service) applyVerifiedSocialIdentity(ctx context.Context, tenantID int6
 	if !s.SocialSignup {
 		return User{}, ErrSocialLoginRejected
 	}
-	// S2-012/S2-114: 走到这里说明是「全新用户首次社交注册」(社交身份与邮箱都查无既有用户)。社交流程
+	// 走到这里说明是「全新用户首次社交注册」(社交身份与邮箱都查无既有用户)。社交流程
 	// 没有邀请码输入通道, 必须与密码 Register 受同一公开注册/邀请闸约束。本检查只在新用户分支生效,
 	// 既有用户的社交登录/绑定走上面的 link 路径不受影响。
 	mode, err := s.registrationMode()

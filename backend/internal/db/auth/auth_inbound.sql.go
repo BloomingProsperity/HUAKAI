@@ -89,21 +89,20 @@ type LookupAPIKeysByPrefixRow struct {
 }
 
 // Phase L0 minimum inbound auth queries.
-// Per docs/specs/_invariants/cross-module-boundaries.md CMB-5:
+// Per docs/specs/_invariants/cross-module-boundaries.md:
 //
 //	queries here MUST NOT return key_hash to logs / traces; the resolver
 //	only uses key_hash for bcrypt comparison and discards it.
 //
-// Per CMB-7: resolver writes stay limited to best-effort auth telemetry;
+// resolver writes stay limited to best-effort auth telemetry;
 //
 //	failed telemetry updates must not reject otherwise valid credentials.
 //
 // Returns active candidates whose key_prefix matches. Capped at 5 to
-// bound bcrypt-verify-fanout DOS via colliding prefixes (codex
-// synthesized plan §risk matrix).
+// bound bcrypt-verify-fanout DOS via colliding prefixes.
 //
 // Joins tenants + users so the resolver can check all three status
-// fields in one DB roundtrip (codex pass3 P1: tenant status was missed
+// fields in one DB roundtrip
 // in the per-row check). INNER JOIN with deleted_at IS NULL on both
 // parent tables means soft-deleted tenants/users never surface a
 // candidate row at all.

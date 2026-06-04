@@ -52,6 +52,5 @@ const (
 	OutcomeMimicryApplied            Outcome = "mimicry_applied"
 )
 
-// TODO(phase-e): finish the provider-neutral refresh state machine, add
 // OpenAI/Gemini/Anthropic adapters, complete provider-endpoint/global storm
 // scopes, and wire mimicry policy enforcement.

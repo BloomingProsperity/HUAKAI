@@ -135,7 +135,7 @@ func (s *Service) Delete(ctx context.Context, tenantID, id int64) error {
 }
 
 // mapErr maps raw DB errors to sentinels. ErrBackend wraps the raw error for
-// internal logging; the HTTP layer must NOT echo it (CMB-5).
+// internal logging; the HTTP layer must NOT echo it .
 func mapErr(err error) error {
 	if err == nil {
 		return nil

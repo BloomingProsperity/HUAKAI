@@ -4,7 +4,7 @@ package payment
 
 import "time"
 
-// payment_audit_events 事件类型 (Owner 2026-05-29 决策 A: 独立领域审计表)。
+// payment_audit_events 事件类型 (决策 A 独立领域审计表)。
 // 与 billing_events 职责分离: billing_events 记成功入账的钱事实, 本表记操作轨迹。
 const (
 	AuditOrderCreated       = "order_created"

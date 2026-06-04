@@ -7,7 +7,6 @@
 // Enforced structurally by isIronCladDisable() — every code path that produces
 // HealthStateDisabled goes through that predicate.
 //
-// Synthesis of two parallel-draft lanes (CLAUDE.md #10 + 2026-05-04 directive).
 // Notes: docs/process/plans/2026-05-04-a22-codeparallel-synthesis.md.
 package gateway
 

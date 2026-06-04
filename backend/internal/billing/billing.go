@@ -146,5 +146,4 @@ type RefundResult struct {
 	BalanceCredited bool
 }
 
-// TODO(phase-e): replace placeholder pricing with complete versioned pricing
 // tables and add reconciliation workers for pending usage records.

@@ -116,7 +116,7 @@ func TestDetect_ChatUIByOriginAllowedDomain(t *testing.T) {
 		{"openwebui sub", "https://app.openwebui.com:8443/path", IdentityChatUI},
 		{"lobechat", "https://lobechat.com", IdentityChatUI},
 		{"jan.ai", "https://jan.ai", IdentityChatUI},
-		// F1 BLOCKING fix: 这两个含 "chat" 子串但不在 allowlist，不应误识别
+		// F1 fix: 这两个含 "chat" 子串但不在 allowlist，不应误识别
 		{"techsupport-chat NOT chat-ui", "https://techsupport-chat.com", IdentityUnknown},
 		{"chat.openai.com NOT chat-ui", "https://chat.openai.com", IdentityUnknown},
 		{"random domain", "https://example.com", IdentityUnknown},
@@ -135,7 +135,7 @@ func TestDetect_ChatUIByOriginAllowedDomain(t *testing.T) {
 	}
 }
 
-// TestDetect_DualXClientHeaders_DeterministicPrecedence F3 SHOULD_FIX 修复
+// TestDetect_DualXClientHeaders_DeterministicPrecedence F3 修复
 // 验证: 当 X-Cursor-* 与 X-Cody-* 同时出现时，X-Cursor 优先（不依赖 map
 // 迭代顺序）。同样：X-Client-Name 优先于 prefix headers。
 func TestDetect_DualXClientHeaders_DeterministicPrecedence(t *testing.T) {
@@ -161,7 +161,7 @@ func TestDetect_DualXClientHeaders_DeterministicPrecedence(t *testing.T) {
 	}
 }
 
-// TestSignalFromRequest_HeaderCardinalityCap F4 SHOULD_FIX 修复 — 200+ header
+// TestSignalFromRequest_HeaderCardinalityCap F4 修复 — 200+ header
 // 不应把 XClient map 灌爆，命中 xClientCardinalityCap 后 break。
 func TestSignalFromRequest_HeaderCardinalityCap(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, "https://api.example.com/v1/chat/completions", nil)

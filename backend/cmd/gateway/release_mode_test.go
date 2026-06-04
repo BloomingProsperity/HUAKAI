@@ -7,7 +7,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 )
 
-// TestValidateReleaseMode_RequiresExplicitMode guards S1-019: the gateway
+// TestValidateReleaseMode_RequiresExplicitMode guards that the gateway
 // must not boot with an omitted or unrecognized HUAKAI_RELEASE_MODE because
 // that silently selects the dev path with ephemeral keys, memory ledger, and
 // skipped release gates.
@@ -57,7 +57,7 @@ func TestValidateReleaseMode_TypoDoesNotEnableProduction(t *testing.T) {
 	}
 }
 
-// TestValidateDevAuthTokenFlag guards S1-018: HUAKAI_DEV_AUTH_RETURN_TOKEN=true echoes the raw
+// TestValidateDevAuthTokenFlag guards that HUAKAI_DEV_AUTH_RETURN_TOKEN=true echoes the raw
 // one-time verification/reset secret into the public register/reset JSON response. In production it
 // must FAIL CLOSED at startup, not merely log a warning and boot (the prior behavior).
 //
@@ -87,7 +87,7 @@ func TestValidateDevAuthTokenFlag(t *testing.T) {
 	})
 }
 
-// TestLoadUserRegistrationModeFromEnv guards S2-012: production startup must not leave public
+// TestLoadUserRegistrationModeFromEnv guards that production startup must not leave public
 // registration open just because no operator explicitly configured a registration policy. Dev/test keep
 // the historical open default, while production defaults to disabled until the operator opts into open
 // or invite-required registration.

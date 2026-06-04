@@ -170,7 +170,7 @@ func TestBalanceHold_ReleaseStateIdempotent(t *testing.T) {
 }
 
 func TestBalanceHold_MissingRowAllowsOptIn(t *testing.T) {
-	// opt-in 余额强制(Owner 2026-05-28 选 A):无 user_balances 行 = 用户未 provision
+	// opt-in 余额强制:无 user_balances 行 = 用户未 provision
 	// = 不纳入余额强制 → Reserve 放行(返 nil)且不建 hold 行。
 	// Mutation check: 若把无行当 ErrInsufficientBalance(旧 D4 严格语义),Reserve 返错
 	// → 本测试在 "expected allow" 处变红;或若误建 hold 行,count!=0 变红。

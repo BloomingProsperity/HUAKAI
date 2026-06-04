@@ -1,8 +1,8 @@
 // Package rate implements F-RATE-001: upstream rate-limit + cooldown.
 //
 // See docs/specs/rate-limiting.md for the released spec.
-// Current slice defines the rate/cooldown contract. Enforcement and provider-
-// specific classifiers remain Phase E+ work.
+// This package defines the rate/cooldown contract and provider-specific
+// classifier surface.
 package rate
 
 import (
@@ -11,18 +11,18 @@ import (
 	"time"
 )
 
-// Service runs the 7-phase decision tree per spec §Phase A-G.
+// Service runs the ordered upstream error decision tree.
 type Service interface {
 	// HandleUpstreamError applies the layered decision tree:
 	// pool-mode → custom-codes → temp-unsched rules → status branches.
 	HandleUpstreamError(ctx context.Context, accountID int64, statusCode int,
 		respHeaders http.Header, respBody []byte) (Decision, error)
 
-	// ClearCascade atomically clears all cooldown state per §Phase F:
+	// ClearCascade atomically clears all cooldown state:
 	// rate_limit, overload, temp_unsched, model_rate_limits, openai_403_counter.
 	ClearCascade(ctx context.Context, accountID int64, actorID string) error
 
-	// UpdateSessionWindow applies the recovery-signal handler per §Phase G.
+	// UpdateSessionWindow applies the recovery-signal handler.
 	UpdateSessionWindow(ctx context.Context, accountID int64, headers http.Header) error
 }
 
@@ -71,7 +71,3 @@ const (
 	ReasonAntigravityValidation Reason = "antigravity_403_validation"
 	ReasonCustomErrorCode      Reason = "custom_error_code"
 )
-
-// TODO(phase-4): implement multi-platform 429 reset extraction (Codex 5h/7d
-// headers, Anthropic per-window, body parse fallback), handle403 per-platform
-// dispatch, cascade clearing, OAuth 401 force-refresh interaction.

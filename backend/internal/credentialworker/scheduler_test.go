@@ -87,7 +87,7 @@ func TestSchedulerStormRejectsSkipsRefresh(t *testing.T) {
 }
 
 func TestSchedulerEndpointStormDenialSkipsRefreshAndAuditsScope(t *testing.T) {
-	// Regression killed (S2-045): an endpoint-scope storm denial must skip the
+	// Regression killed: an endpoint-scope storm denial must skip the
 	// refresh, release the account slot, NOT consult the global scope, and audit
 	// the denial under the "provider_endpoint" scope (not "account"). Mutation:
 	// drop the endpoint acquire in processAccount, or mislabel it "account" → the
@@ -119,7 +119,7 @@ func TestSchedulerEndpointStormDenialSkipsRefreshAndAuditsScope(t *testing.T) {
 }
 
 func TestSchedulerGlobalStormDenialRefundsEndpointAndAuditsScope(t *testing.T) {
-	// Regression killed (S2-045): a global-scope denial must refund the already-
+	// Regression killed: a global-scope denial must refund the already
 	// consumed endpoint token (a never-run attempt must not waste the endpoint
 	// budget), skip the refresh, and audit under the "global" scope. Mutation:
 	// remove the endpointRefund() call on the global-deny branch → endpointRefunds
@@ -148,7 +148,7 @@ func TestSchedulerGlobalStormDenialRefundsEndpointAndAuditsScope(t *testing.T) {
 }
 
 func TestSchedulerAllScopesAdmitConsultEachOnceThenRefresh(t *testing.T) {
-	// Regression killed (S2-045): the happy path must consult all three scopes
+	// Regression killed: the happy path must consult all three scopes
 	// (account, endpoint, global) exactly once and then refresh; a completed
 	// attempt must NOT refund the endpoint token (its budget stays consumed so a
 	// success cannot reopen the storm window). Mutation: skip the endpoint or

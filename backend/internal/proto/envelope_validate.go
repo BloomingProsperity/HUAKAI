@@ -7,9 +7,9 @@ import (
 	"strings"
 )
 
-// ValidationError 描述一次 envelope 校验失败；包含违反的 INV 编号便于定位。
+// ValidationError 描述一次 envelope 校验失败；包含违反的校验编号便于定位。
 type ValidationError struct {
-	Inv     string // 如 "INV-3"
+	Inv     string
 	Message string // 人读说明
 }
 
@@ -17,66 +17,65 @@ func (e *ValidationError) Error() string {
 	return fmt.Sprintf("envelope %s: %s", e.Inv, e.Message)
 }
 
-// ValidateEnvelope 对 HCSFEnvelope 做 INV-1..50 中所有结构性 / 语义性校验。
+// ValidateEnvelope 对 HCSFEnvelope 做所有结构性/语义性校验。
 //
-//   - INV-1 不在此校验（属于 marshal/unmarshal round-trip 不变量，由测试覆盖）
-//   - INV-2 同上（nil/empty slice 等价由 encoding/json + omitempty 自然满足）
-//   - INV-3 tagged-union 一致性
-//   - INV-4 Version=="0.4"
-//   - INV-5 RequestMeta 必填字段非空
-//   - INV-6 BufferedResponse + StreamEvents 至多一个非 nil
-//   - INV-7 ProtocolLoss 不可作为 silent drop（含 node / edge / projection 三层）
-//   - INV-8 Edge 必填 ID/Type/From/To；Type 必须在 AllEdgeTypes 中；From/To 必须命中 Nodes
-//   - INV-9 EdgeMutuallyExclusive 不可双向
-//   - INV-10 DataRetentionLabel 严格枚举
-//   - INV-11 MidStreamFallbackPolicy 默认 none
-//   - INV-12 Extensions key 前缀
-//   - INV-13 StreamPlan.Mode 必填且必须在 StreamMode 枚举内
+//   - marshal/unmarshal round-trip 不变量由测试覆盖
+//   - nil/empty slice 等价由 encoding/json + omitempty 自然满足
+//   - tagged-union 一致性
+//   - Version=="0.4"
+//   - RequestMeta 必填字段非空
+//   - BufferedResponse + StreamEvents 至多一个非 nil
+//   - ProtocolLoss 不可作为 silent drop（含 node/edge/projection 三层）
+//   - Edge 必填 ID/Type/From/To；Type 必须在 AllEdgeTypes 中；From/To 必须命中 Nodes
+//   - EdgeMutuallyExclusive 不可双向
+//   - DataRetentionLabel 严格枚举
+//   - MidStreamFallbackPolicy 默认 none
+//   - Extensions key 前缀
+//   - StreamPlan.Mode 必填且必须在 StreamMode 枚举内
 //
-// P-1 D1 + D2 扩展（capability payload enum + 必填 + 复合一致性）：
+// Payload enum、必填与复合一致性：
 //
-//   - INV-14 CapabilityNode.StreamReady ∈ {yes, no, partial}
-//   - INV-15 TextNode.Role ∈ {user, assistant, system, tool}; Block.Type == "text"
-//   - INV-16 ToolUseNode：Status enum + ToolCallID/Name 非空 + Input 必须 JSON object 或 null
-//   - INV-17 ToolUseNode.PartialInput 仅在 Status ∈ {pending, partial} 时允许出现
-//   - INV-18 ToolResultNode：Status ∈ {complete, error} + ToolCallID 非空 + Content 非 nil + IsError ↔ Status==error
-//   - INV-23 AudioNode.Transport ∈ {inline, file, url, stream}（仅 D1 enum 部分；D2 补 Format 白名单；D3 补 Transport↔Locator 映射）
-//   - INV-25 CacheControlNode：Scope ∈ {request, message, block, session, vendor}；LocalityHint 非空时 ∈ {account_pin, account_recent, global}
-//   - INV-27 BatchNode：JobID/Endpoint/InputRef 非空 + Validation ∈ {pending, validated, failed, complete}
-//   - INV-29 RetryPolicy：MaxAttempts >= 0 + Backoff 非空时 ∈ {fixed, exponential, provider_default}
-//   - INV-34 ComputerUseNode：Environment ∈ {browser, desktop, shell, mobile, other} + Action 非空 + Approval ∈ {required, granted, denied, not_required}
-//   - INV-36 StructuredOutputNode.Mode ∈ {json_mode, json_schema, tool_strategy, provider_native}
-//   - INV-37 StructuredOutputNode.Mode == json_schema 时 Schema 必须是 JSON object（D2 部分；D4 补 provider_native 关联）
-//   - INV-39 ThinkingNode：Redaction ∈ {public, redacted, hidden, provider_only} + BudgetTokens/HiddenTokens >= 0
-//   - INV-41 LiveSessionNode.Transport ∈ {wss, sse} + Modalities ⊂ {text, audio, video}（D5 补 ToolNodeIDs 引用解析）
+//   - CapabilityNode.StreamReady ∈ {yes, no, partial}
+//   - TextNode.Role ∈ {user, assistant, system, tool}; Block.Type == "text"
+//   - ToolUseNode：Status enum + ToolCallID/Name 非空 + Input 必须 JSON object 或 null
+//   - ToolUseNode.PartialInput 仅在 Status ∈ {pending, partial} 时允许出现
+//   - ToolResultNode：Status ∈ {complete, error} + ToolCallID 非空 + Content 非 nil + IsError ↔ Status==error
+//   - AudioNode.Transport ∈ {inline, file, url, stream}（仅 D1 enum 部分；D2 补 Format 白名单；D3 补 Transport↔Locator 映射）
+//   - CacheControlNode：Scope ∈ {request, message, block, session, vendor}；LocalityHint 非空时 ∈ {account_pin, account_recent, global}
+//   - BatchNode：JobID/Endpoint/InputRef 非空 + Validation ∈ {pending, validated, failed, complete}
+//   - RetryPolicy：MaxAttempts >= 0 + Backoff 非空时 ∈ {fixed, exponential, provider_default}
+//   - ComputerUseNode：Environment ∈ {browser, desktop, shell, mobile, other} + Action 非空 + Approval ∈ {required, granted, denied, not_required}
+//   - StructuredOutputNode.Mode ∈ {json_mode, json_schema, tool_strategy, provider_native}
+//   - StructuredOutputNode.Mode == json_schema 时 Schema 必须是 JSON object（D2 部分；D4 补 provider_native 关联）
+//   - ThinkingNode：Redaction ∈ {public, redacted, hidden, provider_only} + BudgetTokens/HiddenTokens >= 0
+//   - LiveSessionNode.Transport ∈ {wss, sse} + Modalities ⊂ {text, audio, video}（D5 补 ToolNodeIDs 引用解析）
 //
-// P-1 D3 扩展（跨 node / projection 引用完整性，cross_ref.go）：
+// 跨 node/projection 引用完整性：
 //
-//   - INV-26 CacheControl.BreakpointRefs 解析 + Scope=block/message 时非空
-//   - INV-35 ComputerUse.ScreenshotRef 解析到 image/file
-//   - INV-42 MCPServer.ServerLabel 必填（D5 补 InvocationNodeIDs/ResultNodeIDs 引用解析）
-//   - INV-43 ProviderProjection.CapabilityResults[i].NodeID 解析 + Capability == node.Kind
-//   - INV-46 NodeSourceRef MessageIndex/BlockIndex/EventIndex 非负 + 范围内
+//   - CacheControl.BreakpointRefs 解析 + Scope=block/message 时非空
+//   - ComputerUse.ScreenshotRef 解析到 image/file
+//   - MCPServer.ServerLabel 必填（D5 补 InvocationNodeIDs/ResultNodeIDs 引用解析）
+//   - ProviderProjection.CapabilityResults[i].NodeID 解析 + Capability == node.Kind
+//   - NodeSourceRef MessageIndex/BlockIndex/EventIndex 非负 + 范围内
 //
-// P-1 D4 扩展（条件必填 + 一致性）：
+// 条件必填与一致性：
 //
-//   - INV-30 DataRetention.Value=request_store_false 必须 RequestStore != nil 且 *RequestStore == false
-//   - INV-31 DataRetention.Value=regional_asserted → Region 非空；Value=zdr_verified → EvidenceRef + Enforcement=verified
-//   - INV-32 DataRetention.Value=provider_contract_required → Enforcement=contract_required + EvidenceRef
-//   - INV-33 graph DataRetentionNode 与 Policy.DataRetention 一致（P-1 仅 0/1 graph node）
-//   - INV-40 ThinkingNode.Redaction ∈ {hidden, provider_only} 时 Blocks 不得含 type=text 且 text 非空的块
-//   - INV-45 ProtocolLossEntry.Severity 非空时 ∈ enum；NodeID 非空时 resolve；Capability 非空时合法
+//   - DataRetention.Value=request_store_false 必须 RequestStore != nil 且 *RequestStore == false
+//   - DataRetention.Value=regional_asserted → Region 非空；Value=zdr_verified → EvidenceRef + Enforcement=verified
+//   - DataRetention.Value=provider_contract_required → Enforcement=contract_required + EvidenceRef
+//   - graph DataRetentionNode 与 Policy.DataRetention 一致（P-1 仅 0/1 graph node）
+//   - ThinkingNode.Redaction ∈ {hidden, provider_only} 时 Blocks 不得含 type=text 且 text 非空的块
+//   - ProtocolLossEntry.Severity 非空时 ∈ enum；NodeID 非空时 resolve；Capability 非空时合法
 //
-// P-1 D5 扩展（fixture sweep + 剩余 strict cross-ref + 新枚举）：
+// 剩余 cross-ref 与枚举检查：
 //
-//   - INV-19 ToolResult.ToolCallID 必须匹配同图 ToolUse + 存在 requires edge（cross_ref.go）
-//   - INV-23 AudioNode.Format 白名单 {wav,mp3,opus,pcm16,flac,m4a,webm}
-//   - INV-28 BatchNode.InputRef/OutputRef/ErrorRef 非空时必须解析到同图 FileNode（cross_ref.go）
-//   - INV-41 LiveSession.ToolNodeIDs 必须解析到 tool_use/computer_use/mcp_server node（cross_ref.go）
-//   - INV-42 MCPServer.InvocationNodeIDs/ResultNodeIDs 必须解析（cross_ref.go）
-//   - INV-49 VideoNode.TimeRange 单调：StartMillis/EndMillis >= 0 且 EndMillis > 0 时 EndMillis >= StartMillis
+//   - ToolResult.ToolCallID 必须匹配同图 ToolUse + 存在 requires edge（cross_ref.go）
+//   - AudioNode.Format 白名单 {wav,mp3,opus,pcm16,flac,m4a,webm}
+//   - BatchNode.InputRef/OutputRef/ErrorRef 非空时必须解析到同图 FileNode（cross_ref.go）
+//   - LiveSession.ToolNodeIDs 必须解析到 tool_use/computer_use/mcp_server node（cross_ref.go）
+//   - MCPServer.InvocationNodeIDs/ResultNodeIDs 必须解析（cross_ref.go）
+//   - VideoNode.TimeRange 单调：StartMillis/EndMillis >= 0 且 EndMillis > 0 时 EndMillis >= StartMillis
 //
-// 推迟下个 phase（P-2 客户端 adapter 落地时再决定）：INV-44 projection Severity 必填 / INV-48 CacheKeyHint 长度启发式 / INV-50 占位
 func ValidateEnvelope(env *HCSFEnvelope) error {
 	if env == nil {
 		return &ValidationError{Inv: "INV-0", Message: "envelope is nil"}
@@ -112,7 +111,6 @@ func ValidateEnvelope(env *HCSFEnvelope) error {
 	return nil
 }
 
-// validateVersion 校验 INV-4。
 func validateVersion(env *HCSFEnvelope) error {
 	if env.Version != HCSFVersion {
 		return &ValidationError{
@@ -123,7 +121,6 @@ func validateVersion(env *HCSFEnvelope) error {
 	return nil
 }
 
-// validateRequestMeta 校验 INV-5。
 func validateRequestMeta(m *RequestMeta) error {
 	if m.RequestID == "" {
 		return &ValidationError{Inv: "INV-5", Message: "RequestMeta.RequestID is required"}
@@ -143,12 +140,12 @@ func validateRequestMeta(m *RequestMeta) error {
 	return nil
 }
 
-// validateEnvelopeShape 校验 INV-6（BufferedResponse + StreamEvents 至多一个非 nil）。
+// validateEnvelopeShape 校验 BufferedResponse 与 StreamEvents 互斥关系。
 //
 // 形态推导规则（envelope.go:10-17）：StreamEvents non-nil 即视为 replay shape，包括
 // `[]CanonicalEvent{}` 显式空切片。BufferedResponse + StreamEvents:nil 合法；
 // BufferedResponse + StreamEvents:[] 合法（用户显式声明 buffered 形态、StreamEvents 不参与）；
-// BufferedResponse + StreamEvents:[event{...}] 违反 INV-6。
+// BufferedResponse + StreamEvents:[event{...}] 违反 shape 约束。
 //
 // 之前实现用 `len(StreamEvents) > 0` 与"non-nil 即 replay"语义不一致；现在改为只在
 // StreamEvents 至少包含一个事件时才判定冲突，让"显式空切片"侧路也保持稳定 round-trip。
@@ -164,7 +161,6 @@ func validateEnvelopeShape(env *HCSFEnvelope) error {
 	return nil
 }
 
-// validateCapabilityGraph 校验 INV-3 / INV-7 / INV-8 / INV-9。
 func validateCapabilityGraph(g *CapabilityGraph) error {
 	nodeIDs := make(map[string]CapabilityKind, len(g.Nodes))
 
@@ -286,7 +282,7 @@ func validateCapabilityGraph(g *CapabilityGraph) error {
 	return nil
 }
 
-// validateNodeTaggedUnion 校验 INV-3：Kind 必须与恰好一个 nullable payload pointer 对应。
+// validateNodeTaggedUnion 校验 Kind 必须与恰好一个 nullable payload pointer 对应。
 func validateNodeTaggedUnion(node CapabilityNode, idx int) error {
 	expected, supported := nodePayloadByKind(node)
 	if !supported {
@@ -415,11 +411,11 @@ func nonNilPayloads(node CapabilityNode) []string {
 	return names
 }
 
-// validateProviderProjection 校验 INV-7 / INV-3 在 projection 层的延伸：
+// validateProviderProjection 校验 projection 层规则：
 //
-//   - Capability 必填且必须在 AllCapabilityKinds 中（INV-3 capability enum）
+//   - Capability 必填且必须在 AllCapabilityKinds 中（capability enum）
 //   - Verdict 必填且必须在 AllProjectionVerdicts 中
-//   - Verdict != preserved 时 ProtocolLoss 至少一条且不能 silent drop（INV-7）
+//   - Verdict != preserved 时 ProtocolLoss 至少一条且不能 silent drop
 //   - Verdict == native_required 时 NativePath 必填
 func validateProviderProjection(p *ProviderProjection) error {
 	for i, cp := range p.CapabilityResults {
@@ -480,10 +476,10 @@ func isProjectionVerdict(v ProjectionVerdict) bool {
 	return false
 }
 
-// validateStreamPlan 校验 INV-11 与 INV-13：
+// validateStreamPlan 校验 StreamPlan mode 与 fallback 默认值：
 //
-//   - INV-13 StreamPlan.Mode 必填且必须在 StreamMode 枚举内（buffered/streaming/replay）
-//   - INV-11 P-0 默认 MidStreamFallbackNone；非 none 拒绝（D9 留位，P-8 才能改）
+//   - StreamPlan.Mode 必填且必须在 StreamMode 枚举内（buffered/streaming/replay）
+//   - 默认 MidStreamFallbackNone；非 none 拒绝（D9 留位，P-8 才能改）
 func validateStreamPlan(s *StreamPlan) error {
 	if s.Mode == "" {
 		return &ValidationError{Inv: "INV-13", Message: "StreamPlan.Mode is required"}
@@ -505,7 +501,7 @@ func validateStreamPlan(s *StreamPlan) error {
 	return nil
 }
 
-// validatePolicy 校验 INV-10（DataRetentionLabel 严格枚举）。
+// validatePolicy 校验 DataRetentionLabel 严格枚举。
 func validatePolicy(p *Policy) error {
 	v := p.DataRetention.Value
 	if v == "" {
@@ -522,7 +518,7 @@ func validatePolicy(p *Policy) error {
 	}
 }
 
-// validateExtensions 校验 INV-12（key 前缀必须 vendor: 或 experimental:）。
+// validateExtensions 校验 key 前缀必须 vendor: 或 experimental:。
 func validateExtensions(ext map[string]json.RawMessage) error {
 	if ext == nil {
 		return nil
@@ -538,7 +534,7 @@ func validateExtensions(ext map[string]json.RawMessage) error {
 	return nil
 }
 
-// validateCapabilityNodeMeta 校验 INV-14：CapabilityNode.StreamReady 必须在 StreamReadiness enum 内。
+// validateCapabilityNodeMeta 校验 CapabilityNode.StreamReady 必须在 StreamReadiness enum 内。
 //
 // StreamReady 是 node 顶层字段（与 payload 独立），所有 14 capability 通用。
 func validateCapabilityNodeMeta(node CapabilityNode, idx int) error {
@@ -555,7 +551,7 @@ func validateCapabilityNodeMeta(node CapabilityNode, idx int) error {
 //
 // P-1 D1 覆盖 5 个 enum 字段；D2 起补 TextNode/Cache/Structured/ComputerUse/Batch 与必填 +
 // JSON 形态守门；D3 起补跨 node ref；D4 起补条件必填 + 一致性。
-// Kind 在 INV-3 已守门，此处仅按命中分发，未命中（未来 Kind 新增）静默通过留给 INV-3 报错。
+// Kind 已守门，此处仅按命中分发，未命中（未来 Kind 新增）静默通过留给该校验报错。
 func validateCapabilityNodePayload(node CapabilityNode, idx int) error {
 	switch node.Kind {
 	case CapabilityText:
@@ -586,7 +582,7 @@ func validateCapabilityNodePayload(node CapabilityNode, idx int) error {
 	return nil
 }
 
-// validateTextPayload 校验 INV-15：TextNode.Role + Block.Type。
+// validateTextPayload 校验 TextNode.Role + Block.Type。
 func validateTextPayload(payload *TextNode, idx int) error {
 	if payload == nil {
 		return nil
@@ -606,11 +602,11 @@ func validateTextPayload(payload *TextNode, idx int) error {
 	return nil
 }
 
-// validateToolUsePayload 校验 INV-16（D1 + D2）+ INV-17（D2）。
+// validateToolUsePayload 校验 ToolUse payload enum、必填与 partial input 规则。
 //
-//   - INV-16 enum：Status 必须在 ToolNodeStatus enum 内
-//   - INV-16 必填：ToolCallID/Name 非空 + Input 必须是 JSON object 或 null
-//   - INV-17：PartialInput 仅在 Status ∈ {pending, partial} 时允许非空
+//   - enum：Status 必须在 ToolNodeStatus enum 内
+//   - 必填：ToolCallID/Name 非空 + Input 必须是 JSON object 或 null
+//   - PartialInput 仅在 Status ∈ {pending, partial} 时允许非空
 func validateToolUsePayload(payload *ToolUseNode, idx int) error {
 	if payload == nil {
 		return nil
@@ -653,7 +649,7 @@ func validateToolUsePayload(payload *ToolUseNode, idx int) error {
 	return nil
 }
 
-// validateToolResultPayload 校验 INV-18（D1 + D2）。
+// validateToolResultPayload 校验 ToolResult payload enum、必填与错误状态一致性。
 //
 //   - enum：Status 必须在 {complete, error} 内（pending/partial 在 ToolResult 上语义不成立）
 //   - 必填：ToolCallID 非空 + Content slice 非 nil（空数组合法，nil 不合法）
@@ -689,11 +685,11 @@ func validateToolResultPayload(payload *ToolResultNode, idx int) error {
 	return nil
 }
 
-// validateThinkingPayload 校验 INV-39（D1 + D2）+ INV-40（D4）。
+// validateThinkingPayload 校验 Thinking payload enum、非负数值与隐藏文本一致性。
 //
-//   - INV-39 enum：Redaction 必须在 RedactionClass enum 内
-//   - INV-39 数值非负：BudgetTokens/HiddenTokens >= 0
-//   - INV-40 Redaction ∈ {hidden, provider_only} 时 Blocks 不得含 type=text 且 text 非空的块
+//   - enum：Redaction 必须在 RedactionClass enum 内
+//   - 数值非负：BudgetTokens/HiddenTokens >= 0
+//   - Redaction ∈ {hidden, provider_only} 时 Blocks 不得含 type=text 且 text 非空的块
 //     （隐藏意图 + 可见文本 = 矛盾态，issue-mode "redaction bypass via blocks"）
 func validateThinkingPayload(payload *ThinkingNode, idx int) error {
 	if payload == nil {
@@ -730,18 +726,18 @@ func validateThinkingPayload(payload *ThinkingNode, idx int) error {
 	return nil
 }
 
-// validateDataRetentionPayload 校验 INV-30 / INV-31 / INV-32：DataRetention 条件必填。
+// validateDataRetentionPayload 校验 DataRetention 条件必填。
 //
-//   - INV-30 Value=request_store_false → RequestStore 非 nil 且 *RequestStore == false
-//   - INV-31 Value=regional_asserted → Region 非空；Value=zdr_verified → EvidenceRef + Enforcement="verified"
-//   - INV-32 Value=provider_contract_required → Enforcement="contract_required" + EvidenceRef
+//   - Value=request_store_false → RequestStore 非 nil 且 *RequestStore == false
+//   - Value=regional_asserted → Region 非空；Value=zdr_verified → EvidenceRef + Enforcement="verified"
+//   - Value=provider_contract_required → Enforcement="contract_required" + EvidenceRef
 //
-// Value enum 本身的守门由 INV-10（policy 层）+ payload 内 INV-10 风格 check 覆盖。
+// Value enum 本身的守门由 policy 层和 payload 内 check 共同覆盖。
 func validateDataRetentionPayload(payload *DataRetentionNode, idx int) error {
 	if payload == nil {
 		return nil
 	}
-	// Value enum 守门（与 INV-10 共用 AllDataRetentionLabels）
+	// Value enum 守门共用 AllDataRetentionLabels。
 	found := false
 	for _, v := range AllDataRetentionLabels {
 		if payload.Value == v {
@@ -806,7 +802,7 @@ func validateDataRetentionPayload(payload *DataRetentionNode, idx int) error {
 	return nil
 }
 
-// validateCachePayload 校验 INV-25：CacheControl.Scope enum + LocalityHint 白名单。
+// validateCachePayload 校验 CacheControl.Scope enum + LocalityHint 白名单。
 func validateCachePayload(payload *CacheControlNode, idx int) error {
 	if payload == nil {
 		return nil
@@ -828,7 +824,7 @@ func validateCachePayload(payload *CacheControlNode, idx int) error {
 	return nil
 }
 
-// validateStructuredPayload 校验 INV-36（Mode enum）+ INV-37 部分（json_schema 时 Schema 必须是 JSON object）。
+// validateStructuredPayload 校验 Mode enum 与 json_schema schema 形态。
 func validateStructuredPayload(payload *StructuredOutputNode, idx int) error {
 	if payload == nil {
 		return nil
@@ -850,7 +846,7 @@ func validateStructuredPayload(payload *StructuredOutputNode, idx int) error {
 	return nil
 }
 
-// validateComputerUsePayload 校验 INV-34：Environment 白名单 + Action 必填 + Approval enum。
+// validateComputerUsePayload 校验 Environment 白名单 + Action 必填 + Approval enum。
 func validateComputerUsePayload(payload *ComputerUseNode, idx int) error {
 	if payload == nil {
 		return nil
@@ -876,7 +872,7 @@ func validateComputerUsePayload(payload *ComputerUseNode, idx int) error {
 	return nil
 }
 
-// validateBatchPayload 校验 INV-27（必填 + Validation enum）+ INV-29（RetryPolicy 数值 + Backoff 白名单）。
+// validateBatchPayload 校验必填字段、Validation enum 与 RetryPolicy 白名单。
 func validateBatchPayload(payload *BatchNode, idx int) error {
 	if payload == nil {
 		return nil
@@ -924,7 +920,7 @@ func validateBatchPayload(payload *BatchNode, idx int) error {
 	return nil
 }
 
-// validateAudioPayload 校验 INV-23（D1 + D5）：Audio.Transport enum + Format 白名单。
+// validateAudioPayload 校验 Audio.Transport enum 与 Format 白名单。
 //
 //   - Transport ∈ {inline, file, url, stream}
 //   - Format 必须在 P-1 白名单 {wav,mp3,opus,pcm16,flac,m4a,webm}（只增不删）
@@ -955,7 +951,7 @@ func validateAudioPayload(payload *AudioNode, idx int) error {
 	return nil
 }
 
-// validateVideoPayload 校验 INV-49：VideoNode.TimeRange 单调。
+// validateVideoPayload 校验 VideoNode.TimeRange 单调。
 //
 //   - StartMillis / EndMillis 都必须 >= 0
 //   - EndMillis > 0 时（0 表示到结尾 / 未知）必须 >= StartMillis
@@ -987,7 +983,7 @@ func validateVideoPayload(payload *VideoNode, idx int) error {
 	return nil
 }
 
-// validateLiveSessionPayload 校验 INV-41（D1 部分）：Live.Transport enum。
+// validateLiveSessionPayload 校验 Live.Transport enum。
 func validateLiveSessionPayload(payload *LiveSessionNode, idx int) error {
 	if payload == nil {
 		return nil
@@ -1003,7 +999,7 @@ func validateLiveSessionPayload(payload *LiveSessionNode, idx int) error {
 
 // isJSONObjectOrNull 判定 raw 是否是合法 JSON object（{...}）或 JSON null。
 //
-// 用于 INV-16（ToolUse.Input 必须 JSON object 或 null）。空切片视为缺值，返回 false；
+// 用于校验（ToolUse.Input 必须 JSON object 或 null）。空切片视为缺值，返回 false；
 // 调用方需在前置必填检查里覆盖"缺字段"的情形。
 func isJSONObjectOrNull(raw json.RawMessage) bool {
 	if len(raw) == 0 {
@@ -1019,7 +1015,7 @@ func isJSONObjectOrNull(raw json.RawMessage) bool {
 	return len(s) > 0 && s[0] == '{'
 }
 
-// isJSONObject 判定 raw 是否是合法 JSON object（不含 null）。用于 INV-37 json_schema 模式。
+// isJSONObject 判定 raw 是否是合法 JSON object（不含 null）。用于校验 json_schema 模式。
 func isJSONObject(raw json.RawMessage) bool {
 	if len(raw) == 0 {
 		return false
@@ -1033,7 +1029,7 @@ func isJSONObject(raw json.RawMessage) bool {
 
 // hasJSONContent 判定 raw 是否携带语义内容（非空、非纯空白、非 JSON null）。
 //
-// 用于 INV-17：PartialInput 是否被 caller 显式设置；JSON null 视为"明示无值"，等价未设置。
+// 用于校验：PartialInput 是否被 caller 显式设置；JSON null 视为"明示无值"，等价未设置。
 func hasJSONContent(raw json.RawMessage) bool {
 	if len(raw) == 0 {
 		return false
@@ -1042,7 +1038,7 @@ func hasJSONContent(raw json.RawMessage) bool {
 	return s != "" && s != "null"
 }
 
-// jsonHintForError 给错误消息生成简短的 JSON 形态提示（截断、去空白），用于 INV-16/INV-37 报错。
+// jsonHintForError 给错误消息生成简短的 JSON 形态提示（截断、去空白），用于校验错误提示。
 func jsonHintForError(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return "<empty>"

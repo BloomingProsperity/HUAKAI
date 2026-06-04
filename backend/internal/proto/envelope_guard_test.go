@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestValidateEnvelopeVersionGuard_Nil 验证 INV-0：env==nil 必拒。
+// TestValidateEnvelopeVersionGuard_Nil 验证 env==nil 必拒。
 func TestValidateEnvelopeVersionGuard_Nil(t *testing.T) {
 	err := ValidateEnvelopeVersionGuard(nil)
 	if err == nil {
@@ -20,7 +20,7 @@ func TestValidateEnvelopeVersionGuard_Nil(t *testing.T) {
 	}
 }
 
-// TestValidateEnvelopeVersionGuard_BadVersion 验证 INV-4：Version != HCSFVersion 必拒。
+// TestValidateEnvelopeVersionGuard_BadVersion 验证 Version != HCSFVersion 必拒。
 func TestValidateEnvelopeVersionGuard_BadVersion(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -71,7 +71,7 @@ func TestValidateEnvelopeVersionGuard_NewEmptyEnvelope(t *testing.T) {
 // Build tag 'debug' 不开时本测试有效；debug build 由 envelope_validate_debug_test.go 覆盖。
 func TestValidateEnvelopeDebug_NoopOrFull(t *testing.T) {
 	// 不论 release 还是 debug，nil envelope 行为不同：release 返回 nil，
-	// debug 转发 ValidateEnvelope 会拿到 INV-0；这里只断言不 panic 且
+	// debug 转发 ValidateEnvelope 会拿到校验错误；这里只断言不 panic 且
 	// 函数可调用——具体 release vs debug 分支由各自 build tag 测试细化。
 	defer func() {
 		if r := recover(); r != nil {

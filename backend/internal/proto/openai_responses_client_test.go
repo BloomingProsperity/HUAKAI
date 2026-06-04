@@ -274,10 +274,8 @@ func TestOpenAIResponsesClient_Negative_MissingSeed(t *testing.T) {
 	}
 }
 
-// D11 / D12 tests below；旧 stub 期望已废弃。
 
 // --------------------------------------------------------------------------
-// D11 / D12 streaming tests
 // --------------------------------------------------------------------------
 
 func TestOpenAIResponses_D11_TextLifecycle(t *testing.T) {

@@ -207,7 +207,7 @@ type FinalizeResult struct {
 func DefaultModePlans() []ModePlan {
 	return []ModePlan{
 		apiKeyPlan(credentialstore.VendorAnthropic),
-		// S1-014: claude_ai_oauth 是交互式 OAuth(PKCE)模式,AllowedHelpers 必须仅含 FlowKindOAuth,
+		// claude_ai_oauth 是交互式 OAuth(PKCE)模式,AllowedHelpers 必须仅含 FlowKindOAuth,
 		// 与 chatgpt_oauth / code_assist / google_one 对齐。此前混入 FlowKindPaste 等于开了一扇手工旁路——
 		// 管理员可 START flow_kind=paste 再 finalize,用手写 credentials body 注入任意 Anthropic token,
 		// 完全绕过 callback/PKCE/state/授权码交换。需要粘贴既有 Anthropic OAuth 凭据者走 claude_code
@@ -387,7 +387,7 @@ func NormalizeFlowKind(kind FlowKind) FlowKind {
 // flowKindAllowed 判 candidate 是否落在 ModePlan.AllowedHelpers 白名单内。
 // 用于 P0 闸门 — OAuth-only 模式 (chatgpt_oauth / code_assist / google_one
 // 等 AllowedHelpers 仅含 FlowKindOAuth) 必须拒绝 paste / cli-import / json-import
-// 之类的手工绕过路径。Owner 2026-05-26 抓出, 详见 session_store.go CreateFromStart。
+// 之类的手工绕过路径。
 func flowKindAllowed(allowed []FlowKind, candidate FlowKind) bool {
 	candidate = NormalizeFlowKind(candidate)
 	for _, k := range allowed {
@@ -400,7 +400,7 @@ func flowKindAllowed(allowed []FlowKind, candidate FlowKind) bool {
 
 // RequiresCallbackValidation 报告某 acquisition flow 是否必须先经 OAuth 回调校验(status=validated)
 // 才能 finalize。callback 式 OAuth(PKCE,经 CompleteOAuthCallback 校验 state 并交换授权码)的 finalize
-// 不能仅凭 caller 手写 credentials body 完成,否则越权/恶意 admin 可绕过回调直接注入任意凭据(S1-010)。
+// 不能仅凭 caller 手写 credentials body 完成,否则越权/恶意 admin 可绕过回调直接注入任意凭据。
 // 但 device_code / sso 式 flow 的凭据来自轮询(PollDeviceCodeToken / PollSSOToken),其生命周期【不经】
 // validated 状态 —— 必须豁免,否则会永久阻断 device-code/sso 凭据获取(copilot/openai-codex/kiro)。
 // 故按 auth_type 精确区分:排除 device_code/sso,其余 OAuth(含 pkce 与 auth_type 未定的 callback flow)
@@ -412,10 +412,10 @@ func RequiresCallbackValidation(kind FlowKind, authType AuthType) bool {
 // isTerminalStatus 报告某 acquisition flow 是否已处终态(finalized/cancelled/expired/failed)。终态 flow 的
 // 状态机已结束:既不能再被 OAuth 回调重新驱动(CompleteOAuthCallback replay),也不能被 UpdateStatus 前推
 // 或被 Cancel。任何对终态行的状态写入都应作为 ErrFlowReplay 拒绝,迫使调用方开新 flow —— 否则攻击者/重放
-// 可把已 cancelled/failed/expired 的 flow 拉回 callback_received→validated 复活后注入凭据(S1-012)。
+// 可把已 cancelled/failed/expired 的 flow 拉回 callback_received→validated 复活后注入凭据。
 // 此前 finalized 单独被守(consumed_at + StatusFinalized),cancelled/expired/failed 三态无人守:既是
 // CompleteOAuthCallback 的提前 replay 闸,也是 UpdateStatus/Cancel SQL CAS predicate 的 Go 侧真相源,
-// 三处共用避免漂移(同 RequiresCallbackValidation 在 S1-010 的 fake-vs-真 SQL 教训)。
+// 三处共用避免漂移(同 RequiresCallbackValidation 在 的 fake-vs-真 SQL 教训)。
 func isTerminalStatus(status FlowStatus) bool {
 	switch status {
 	case StatusFinalized, StatusCancelled, StatusExpired, StatusFailed:

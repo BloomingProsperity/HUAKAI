@@ -1,5 +1,5 @@
 // cache_demo_test.go — 端到端 demo: 喂合成 Anthropic SSE 流给 adapter,
-// 打印 cachemetrics counter 变化。让 Owner 直接看到命中率管道通了。
+// 打印 cachemetrics counter 变化，展示命中率管道。
 //
 // 跑法:
 //

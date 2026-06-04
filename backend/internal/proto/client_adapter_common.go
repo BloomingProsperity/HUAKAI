@@ -13,11 +13,11 @@ import (
 //
 // 范围（按 P-2 ClientAdapter synthesis §5.1 Q5 决策 A）：
 //   - RequestMetaSeed + context 注入；client adapter 的 RequestToCanonical
-//     从 context 读 metadata 填充 HCSF RequestMeta 必填字段（INV-5）。
+//     从 context 读 metadata 填充 HCSF RequestMeta 必填字段。
 //   - ClientAdapterRegistry：client_protocol → adapter 映射。
 //   - SSE emit 辅助：拼装 SSE event/data/DONE。
 //   - 类型化 ProtocolLossEntry 构造器：强制 v0.4 Severity + Reason/Code 非空，
-//     避免 silent drop（INV-7）。
+//     避免 silent drop。
 //
 // 本文件不实现具体 vendor parsing；D1/D5/D9 各 client adapter 在其自身文件落具体逻辑。
 
@@ -81,7 +81,7 @@ var ErrMissingRequestMetaSeed = errors.New("proto: RequestMetaSeed not found in 
 // ApplyToRequestMeta 把 seed 必填字段写入 RequestMeta；Model / UpstreamProtocol /
 // UpstreamModel 由 adapter 解析 body + 查 registry 单独填。
 // 仅在 seed.RequestID / ClientProtocol / ProtocolFamily / IngressPath 全部非空
-// 时才返回 nil；否则返回明确错误，避免后续 ValidateEnvelope 报模糊 INV-5 错。
+// 时才返回 nil；否则返回明确错误，避免后续 ValidateEnvelope 报出模糊错误。
 func (s *RequestMetaSeed) ApplyToRequestMeta(meta *RequestMeta) error {
 	if s == nil {
 		return ErrMissingRequestMetaSeed
@@ -225,7 +225,7 @@ func EmitSSEDone() []byte {
 // ----------------------------------------------------------------------------
 
 // NewClientLossEntry 构造一条 v0.4 ProtocolLossEntry，强制 Severity + Reason
-// 至少一项非空，避免 silent drop（INV-7）。Code 推荐填稳定机器可读码。
+// 至少一项非空，避免 silent drop。Code 推荐填稳定机器可读码。
 // Direction 默认 client_to_canonical；调用方可在返回后覆盖。
 func NewClientLossEntry(severity ProtocolLossSeverity, reason, code string, capability CapabilityKind, nodeID string) (ProtocolLossEntry, error) {
 	if severity == "" {

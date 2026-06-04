@@ -36,7 +36,7 @@ func TestStreamDurationEnv(t *testing.T) {
 func TestBuildStreamForwarderHasLongDefaults(t *testing.T) {
 	// 钉死的是"默认值",所以必须把所有 HUAKAI_STREAM_* override 清空,否则在某些有意设了更短
 	// override 的开发/CI shell(如 HUAKAI_STREAM_TOTAL_TIMEOUT=60s)里会误红——那其实是 override
-	// 生效的正确行为,不是默认回退缺陷(codex #9 P3)。t.Setenv 在测试结束后自动还原。
+	// 生效的正确行为,不是默认回退缺陷。t.Setenv 在测试结束后自动还原。
 	for _, k := range []string{
 		"HUAKAI_STREAM_FIRST_TOKEN_TIMEOUT",
 		"HUAKAI_STREAM_INTER_EVENT_TIMEOUT",

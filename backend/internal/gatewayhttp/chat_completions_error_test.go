@@ -16,7 +16,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 )
 
-// TestWriteJSONErrorProducesValidJSONForControlChars guards S2-148: the gateway error writer must
+// TestWriteJSONErrorProducesValidJSONForControlChars guards the gateway error writer must
 // emit RFC-valid JSON even when code/message carry control bytes (an admin create with
 // vendor="\x01" flows err.Error() into message). The old hand-formatter used fmt %q, which emits
 // Go literal escapes like \x01 — valid Go, invalid JSON — so strict SDK/proxy/log parsers fail.

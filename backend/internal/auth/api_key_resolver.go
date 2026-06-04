@@ -8,12 +8,12 @@
 //	status + expires_at → return Identity{TenantID, APIKeyID, UserID}
 //
 // Boundary contracts (docs/specs/_invariants/cross-module-boundaries.md):
-//   - CMB-1: This is the Auth layer; the layered call order is
+// This is the Auth layer; the layered call order is
 //     Auth → Registry → Router. Resolver does NOT import router or call
 //     Pool/Adapter/Ledger.
-//   - CMB-5: Plaintext bearer is never logged. Errors return only the
+// Plaintext bearer is never logged. Errors return only the
 //     key_prefix (never the suffix or full token) for debugging.
-//   - CMB-7: The only write in this package is best-effort auth telemetry:
+// The only write in this package is best-effort auth telemetry:
 //     last_used_at is touched after successful verification, and touch
 //     failure must not reject otherwise valid credentials.
 //

@@ -89,7 +89,7 @@ func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	r.MustRegister("openai_responses", &openai.Adapter{})
 	// openai_codex 出站到 chatgpt.com/backend-api/codex/completions，
 	// 但响应 SSE 形态与 OpenAI Chat Completions 兼容（data: {"choices":[...]}）。
-	// 复用 openai.Adapter；若后续观测到形态差异再做专用 Codex session SSE adapter。
+	// 复用 openai.Adapter；若后续观测到形态差异再做专用 session SSE adapter。
 	r.MustRegister("openai_codex", &openai.Adapter{})
 	r.MustRegister("gemini_messages", &gemini.Adapter{})
 	// OpenRouter 是 OpenAI Chat Completions 兼容 meta-aggregator，SSE 形态同 OpenAI。

@@ -248,7 +248,7 @@ type ListEnabledModerationKeywordsRow struct {
 }
 
 // Content moderation sqlc queries.
-// CMB-5: moderation_log writes metadata and payload_hash only; raw request
+// moderation_log writes metadata and payload_hash only; raw request
 // bodies, plaintext credentials, and key hashes never appear in this file.
 func (q *Queries) ListEnabledModerationKeywords(ctx context.Context, tenantID int64) ([]ListEnabledModerationKeywordsRow, error) {
 	rows, err := q.db.Query(ctx, listEnabledModerationKeywords, tenantID)
