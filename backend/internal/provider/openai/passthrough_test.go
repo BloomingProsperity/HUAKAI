@@ -70,6 +70,28 @@ func TestPassthroughAdapter_BuildRequest_APIKey(t *testing.T) {
 	}
 }
 
+func TestPassthroughAdapter_BuildRequest_UsesInboundContentType(t *testing.T) {
+	a := &PassthroughAdapter{}
+	in := provider.BuildInput{
+		InboundBody:        []byte("--huakai-boundary\r\n"),
+		InboundContentType: "multipart/form-data; boundary=huakai-boundary",
+		EndpointPath:       "/v1/audio/transcriptions",
+		Credential:         provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-x"},
+		Account:            provider.AccountInfo{AccountID: 42, Platform: "openai", AccountType: "apikey"},
+		UpstreamModelID:    "whisper-1",
+	}
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Header.Get("Content-Type"); got != "multipart/form-data; boundary=huakai-boundary" {
+		t.Fatalf("Content-Type=%q want inbound multipart boundary", got)
+	}
+	if got := req.URL.Path; got != "/v1/audio/transcriptions" {
+		t.Fatalf("path=%q want /v1/audio/transcriptions", got)
+	}
+}
+
 func TestPassthroughAdapter_BuildRequest_OrgAndProject(t *testing.T) {
 	a := &PassthroughAdapter{}
 	in := provider.BuildInput{

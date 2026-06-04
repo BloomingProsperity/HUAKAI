@@ -81,7 +81,11 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		// upstream 模式下 Value 即是已格式化的 Authorization header 完整值
 		req.Header.Set("Authorization", in.Credential.Value)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	contentType := in.InboundContentType
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Accept", "application/json")
 
 	// 可选 vendor-specific header

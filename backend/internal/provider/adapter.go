@@ -200,6 +200,10 @@ type BuildInput struct {
 	// InboundBody 客户原始请求 body 字节（HUAKAI 协议入口已统一形态，
 	// 但每家 vendor 适配器决定是否 reshape）。
 	InboundBody []byte
+	// InboundContentType carries the caller's parsed Content-Type when the
+	// original body must be forwarded byte-for-byte, e.g. multipart audio.
+	// Empty keeps legacy JSON passthrough behavior.
+	InboundContentType string
 	// EndpointPath 可选覆盖 adapter 默认 endpoint path。空值保持 adapter
 	// 默认；OpenAI-compatible embeddings passthrough 使用 "/v1/embeddings"。
 	EndpointPath string
