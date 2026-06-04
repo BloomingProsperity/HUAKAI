@@ -21,6 +21,9 @@ SELECT
     default_request_timeout_ms,
     pricing_class,
     model_owner,
+    capabilities,
+    max_output_tokens,
+    model_mode,
     status
 FROM models
 WHERE id = $1::bigint
@@ -37,17 +40,20 @@ type GetModelByIDParams struct {
 }
 
 type GetModelByIDRow struct {
-	ID                      int64  `db:"id" json:"id"`
-	TenantID                *int64 `db:"tenant_id" json:"tenant_id"`
-	Scope                   string `db:"scope" json:"scope"`
-	CanonicalID             string `db:"canonical_id" json:"canonical_id"`
-	ProtocolFamily          string `db:"protocol_family" json:"protocol_family"`
-	DefaultProviderModelID  string `db:"default_provider_model_id" json:"default_provider_model_id"`
-	DefaultContextWindow    int32  `db:"default_context_window" json:"default_context_window"`
-	DefaultRequestTimeoutMs int32  `db:"default_request_timeout_ms" json:"default_request_timeout_ms"`
-	PricingClass            string `db:"pricing_class" json:"pricing_class"`
-	ModelOwner              string `db:"model_owner" json:"model_owner"`
-	Status                  string `db:"status" json:"status"`
+	ID                      int64   `db:"id" json:"id"`
+	TenantID                *int64  `db:"tenant_id" json:"tenant_id"`
+	Scope                   string  `db:"scope" json:"scope"`
+	CanonicalID             string  `db:"canonical_id" json:"canonical_id"`
+	ProtocolFamily          string  `db:"protocol_family" json:"protocol_family"`
+	DefaultProviderModelID  string  `db:"default_provider_model_id" json:"default_provider_model_id"`
+	DefaultContextWindow    int32   `db:"default_context_window" json:"default_context_window"`
+	DefaultRequestTimeoutMs int32   `db:"default_request_timeout_ms" json:"default_request_timeout_ms"`
+	PricingClass            string  `db:"pricing_class" json:"pricing_class"`
+	ModelOwner              string  `db:"model_owner" json:"model_owner"`
+	Capabilities            []byte  `db:"capabilities" json:"capabilities"`
+	MaxOutputTokens         *int32  `db:"max_output_tokens" json:"max_output_tokens"`
+	ModelMode               *string `db:"model_mode" json:"model_mode"`
+	Status                  string  `db:"status" json:"status"`
 }
 
 // Resolves the canonical model row, constrained to the requesting tenant
@@ -69,6 +75,9 @@ func (q *Queries) GetModelByID(ctx context.Context, arg GetModelByIDParams) (Get
 		&i.DefaultRequestTimeoutMs,
 		&i.PricingClass,
 		&i.ModelOwner,
+		&i.Capabilities,
+		&i.MaxOutputTokens,
+		&i.ModelMode,
 		&i.Status,
 	)
 	return i, err

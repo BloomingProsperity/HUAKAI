@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -9,11 +10,14 @@ import (
 // ListedModel is the minimal OpenAI-compatible discovery projection for a
 // model alias visible to a tenant.
 type ListedModel struct {
-	ID            string
-	CreatedAt     time.Time
-	OwnedBy       string
-	ContextWindow int
-	CanonicalID   string
+	ID              string
+	CreatedAt       time.Time
+	OwnedBy         string
+	ContextWindow   int
+	CanonicalID     string
+	Capabilities    map[string]bool
+	MaxOutputTokens *int
+	Mode            string
 }
 
 const listModelsQuery = `
@@ -25,7 +29,10 @@ WITH visible_aliases AS (
         COALESCE(m.model_created_at, a.created_at) AS created_at,
         COALESCE(NULLIF(BTRIM(m.model_owner), ''), 'HUAKAI') AS owned_by,
         m.default_context_window AS context_window,
-        m.canonical_id AS canonical_id
+        m.canonical_id AS canonical_id,
+        m.capabilities AS capabilities,
+        m.max_output_tokens AS max_output_tokens,
+        m.model_mode AS mode
     FROM model_aliases a
     INNER JOIN models m
         ON m.id = a.model_id
@@ -50,7 +57,10 @@ WITH visible_aliases AS (
         COALESCE(m.model_created_at, a.created_at) AS created_at,
         COALESCE(NULLIF(BTRIM(m.model_owner), ''), 'HUAKAI') AS owned_by,
         m.default_context_window AS context_window,
-        m.canonical_id AS canonical_id
+        m.canonical_id AS canonical_id,
+        m.capabilities AS capabilities,
+        m.max_output_tokens AS max_output_tokens,
+        m.model_mode AS mode
     FROM model_aliases a
     INNER JOIN models m
         ON m.id = a.model_id
@@ -80,7 +90,10 @@ SELECT
     created_at,
     owned_by,
     context_window,
-    canonical_id
+    canonical_id,
+    capabilities,
+    max_output_tokens,
+    mode
 FROM visible_aliases va
 WHERE EXISTS (
     SELECT 1
@@ -115,8 +128,32 @@ func (r *PostgresRegistry) ListModels(ctx context.Context, tenantID int64) ([]Li
 	models := make([]ListedModel, 0)
 	for rows.Next() {
 		var model ListedModel
-		if err := rows.Scan(&model.ID, &model.CreatedAt, &model.OwnedBy, &model.ContextWindow, &model.CanonicalID); err != nil {
+		var capabilities []byte
+		var maxOutputTokens *int32
+		var mode *string
+		if err := rows.Scan(
+			&model.ID,
+			&model.CreatedAt,
+			&model.OwnedBy,
+			&model.ContextWindow,
+			&model.CanonicalID,
+			&capabilities,
+			&maxOutputTokens,
+			&mode,
+		); err != nil {
 			return nil, fmt.Errorf("%w: scan model: %v", ErrRegistryBackend, err)
+		}
+		decoded, err := decodeListedModelCapabilities(capabilities)
+		if err != nil {
+			return nil, fmt.Errorf("%w: scan model capabilities: %v", ErrRegistryBackend, err)
+		}
+		model.Capabilities = decoded
+		if maxOutputTokens != nil {
+			v := int(*maxOutputTokens)
+			model.MaxOutputTokens = &v
+		}
+		if mode != nil {
+			model.Mode = *mode
 		}
 		models = append(models, model)
 	}
@@ -124,4 +161,18 @@ func (r *PostgresRegistry) ListModels(ctx context.Context, tenantID int64) ([]Li
 		return nil, fmt.Errorf("%w: rows: %v", ErrRegistryBackend, err)
 	}
 	return models, nil
+}
+
+func decodeListedModelCapabilities(raw []byte) (map[string]bool, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var out map[string]bool
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }

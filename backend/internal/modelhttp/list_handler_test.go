@@ -194,6 +194,77 @@ func TestListModelsEnrichesPublicPricingAndContextLengthWhenAvailable(t *testing
 	}
 }
 
+func TestListModelsEnrichesCapabilitiesMaxOutputAndModeWhenAvailable(t *testing.T) {
+	created := time.Unix(1704067200, 0).UTC()
+	maxOutput := 8192
+	authn := &authStub{ident: auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 23}}
+	catalog := &catalogStub{models: []registry.ListedModel{
+		{
+			ID:              "gpt-rich",
+			CanonicalID:     "openai/gpt-rich",
+			CreatedAt:       created,
+			OwnedBy:         "openai",
+			Capabilities:    map[string]bool{"function_calling": true, "tool_choice": true, "vision": true},
+			MaxOutputTokens: &maxOutput,
+			Mode:            "chat",
+		},
+		{
+			ID:          "plain",
+			CanonicalID: "openai/plain",
+			CreatedAt:   created.Add(time.Hour),
+			OwnedBy:     "HUAKAI",
+		},
+	}}
+	handler := NewListHandler(Deps{Auth: authn, Catalog: catalog})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Object string            `json:"object"`
+		Data   []json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, rec.Body.String())
+	}
+	if got.Object != "list" || len(got.Data) != 2 {
+		t.Fatalf("response=%+v want list with two models", got)
+	}
+
+	var rich struct {
+		ID              string          `json:"id"`
+		Capabilities    map[string]bool `json:"capabilities,omitempty"`
+		MaxOutputTokens *int            `json:"max_output_tokens,omitempty"`
+		Mode            string          `json:"mode,omitempty"`
+	}
+	if err := json.Unmarshal(got.Data[0], &rich); err != nil {
+		t.Fatalf("decode rich model: %v raw=%s", err, string(got.Data[0]))
+	}
+	if rich.ID != "gpt-rich" || !rich.Capabilities["vision"] || !rich.Capabilities["function_calling"] || !rich.Capabilities["tool_choice"] {
+		t.Fatalf("rich capabilities=%+v raw=%s", rich.Capabilities, string(got.Data[0]))
+	}
+	if rich.MaxOutputTokens == nil || *rich.MaxOutputTokens != 8192 {
+		t.Fatalf("max_output_tokens=%v want 8192", rich.MaxOutputTokens)
+	}
+	if rich.Mode != "chat" {
+		t.Fatalf("mode=%q want chat", rich.Mode)
+	}
+
+	var plain map[string]any
+	if err := json.Unmarshal(got.Data[1], &plain); err != nil {
+		t.Fatalf("decode plain model: %v raw=%s", err, string(got.Data[1]))
+	}
+	for _, forbidden := range []string{"capabilities", "max_output_tokens", "mode"} {
+		if _, ok := plain[forbidden]; ok {
+			t.Fatalf("plain model raw=%s unexpectedly includes %s", string(got.Data[1]), forbidden)
+		}
+	}
+}
+
 func TestListModelsAuthFailuresUseGatewayErrorContract(t *testing.T) {
 	catalog := &catalogStub{}
 	handler := NewListHandler(Deps{

@@ -63,6 +63,9 @@ SELECT
     default_request_timeout_ms,
     pricing_class,
     model_owner,
+    capabilities,
+    max_output_tokens,
+    model_mode,
     status
 FROM models
 WHERE id = sqlc.arg(id)::bigint

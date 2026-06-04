@@ -16,3 +16,18 @@ func TestListModelsQueryProjectsCanonicalIDAndContextWindow(t *testing.T) {
 		t.Fatalf("ListModels final projection missing %q", want)
 	}
 }
+
+func TestListModelsQueryProjectsCapabilityDescriptors(t *testing.T) {
+	for _, want := range []string{
+		"m.capabilities AS capabilities",
+		"m.max_output_tokens AS max_output_tokens",
+		"m.model_mode AS mode",
+	} {
+		if got := strings.Count(listModelsQuery, want); got != 2 {
+			t.Fatalf("listModelsQuery %q projections=%d want both tenant and global UNION arms", want, got)
+		}
+	}
+	if want := "canonical_id,\n    capabilities,\n    max_output_tokens,\n    mode"; !strings.Contains(listModelsQuery, want) {
+		t.Fatalf("ListModels final projection missing %q", want)
+	}
+}

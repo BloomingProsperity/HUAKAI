@@ -103,6 +103,8 @@ tags:
     description: Audit trail query (rate-limit + pool-routing + oauth-refresh). F-RATE-001 + F-POOL-001 + F-AUTH-005.
   - name: admin-cache
     description: L2 response cache inspection and operator eviction. F-CACHE-002.
+  - name: admin-models
+    description: Platform-admin public model discovery metadata controls.
   - name: admin-model-sync
     description: Platform-admin trigger for dynamic vendor model catalog synchronization.
   - name: admin-dlq
@@ -4617,6 +4619,42 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/models/{id}/capabilities:
+    put:
+      tags: [admin-models]
+      summary: Update public model discovery capability descriptors
+      operationId: putAdminModelCapabilities
+      description: |
+        Platform-admin only metadata writer for the public `/v1/models`
+        discovery surface. It updates capability flags, output-token ceiling,
+        and model mode only; it does not change routing, pricing, quota,
+        billing, credentials, or provider account state.
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-03-models-capabilities-codex.md
+      x-huakai-required-role: platform_admin
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Internal `models.id` row to update.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelCapabilitiesUpdateRequest' }
+      responses:
+        '200':
+          description: Public model discovery metadata was updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelCapabilitiesUpdateResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/moderation/keywords:
     get:
       tags: [admin-moderation]
@@ -5902,6 +5940,48 @@ components:
         object: { type: string, enum: [model] }
         created: { type: integer, format: int64, minimum: 0 }
         owned_by: { type: string, minLength: 1 }
+        capabilities:
+          type: object
+          additionalProperties: { type: boolean }
+          description: |
+            Public support flags for client discovery. Standard descriptors
+            include vision, function_calling, tool_choice, reasoning,
+            prompt_caching, and response_schema.
+        max_output_tokens: { type: integer, minimum: 1 }
+        mode:
+          type: string
+          description: Public model mode, for example chat or embedding.
+
+    ModelCapabilitiesUpdateRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/process/plans/2026-06-03-models-capabilities-codex.md]
+      properties:
+        capabilities:
+          type: object
+          additionalProperties: { type: boolean }
+          default: {}
+          description: |
+            Public capability flags such as vision, function_calling,
+            tool_choice, reasoning, prompt_caching, and response_schema.
+        max_output_tokens: { type: [integer, 'null'], minimum: 1 }
+        model_mode:
+          type: [string, 'null']
+          description: Public model mode to expose as `mode` on `/v1/models`.
+
+    ModelCapabilitiesUpdateResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/process/plans/2026-06-03-models-capabilities-codex.md]
+      required: [object, id, capabilities]
+      properties:
+        object: { type: string, enum: [model_capabilities] }
+        id: { type: integer, format: int64, minimum: 1 }
+        capabilities:
+          type: object
+          additionalProperties: { type: boolean }
+        max_output_tokens: { type: integer, minimum: 1 }
+        mode: { type: string }
 
     ResponsesRequest:
       type: object

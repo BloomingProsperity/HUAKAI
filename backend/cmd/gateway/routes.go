@@ -415,6 +415,14 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	})
 	mountPlatformSettingsRoutes(r, d)
 	mountUsageAdminRoutes(r, d)
+	var adminResolver adminIdentityResolver
+	if d.adminAuth != nil {
+		adminResolver = d.adminAuth
+	}
+	r.Method(http.MethodPut, "/v1/admin/models/{id}/capabilities",
+		adminGate(adminResolver, modelhttp.NewAdminCapabilitiesHandler(modelhttp.AdminCapabilitiesDeps{
+			Store: d.modelRegistry,
+		})))
 	r.Route("/admin/v1/api-keys", func(r chi.Router) {
 		adminhttp.MountAPIKeyRoutes(r, adminhttp.AdminAPIKeysDeps{
 			Auth:    d.adminAuth,

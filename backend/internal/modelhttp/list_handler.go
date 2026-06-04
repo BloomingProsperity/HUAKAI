@@ -35,12 +35,15 @@ type listResponse struct {
 }
 
 type modelObject struct {
-	ID            string        `json:"id"`
-	Object        string        `json:"object"`
-	Created       int64         `json:"created"`
-	OwnedBy       string        `json:"owned_by"`
-	ContextLength *int          `json:"context_length,omitempty"`
-	Pricing       *modelPricing `json:"pricing,omitempty"`
+	ID              string          `json:"id"`
+	Object          string          `json:"object"`
+	Created         int64           `json:"created"`
+	OwnedBy         string          `json:"owned_by"`
+	ContextLength   *int            `json:"context_length,omitempty"`
+	Capabilities    map[string]bool `json:"capabilities,omitempty"`
+	MaxOutputTokens *int            `json:"max_output_tokens,omitempty"`
+	Mode            string          `json:"mode,omitempty"`
+	Pricing         *modelPricing   `json:"pricing,omitempty"`
 }
 
 type modelPricing struct {
@@ -103,6 +106,15 @@ func NewListHandler(d Deps) http.HandlerFunc {
 			if model.ContextWindow > 0 {
 				contextLength := model.ContextWindow
 				item.ContextLength = &contextLength
+			}
+			if len(model.Capabilities) > 0 {
+				item.Capabilities = model.Capabilities
+			}
+			if model.MaxOutputTokens != nil {
+				item.MaxOutputTokens = model.MaxOutputTokens
+			}
+			if model.Mode != "" {
+				item.Mode = model.Mode
 			}
 			if price, ok := prices.Lookup(model.ID, model.CanonicalID); ok {
 				pricing := modelPricing{}
