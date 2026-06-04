@@ -308,6 +308,127 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/audio/speech:
+    post:
+      tags: [gateway]
+      summary: OpenAI Audio Speech compatible relay
+      operationId: postAudioSpeech
+      x-huakai-spec-source:
+        - backend/internal/audiohttp/handler.go
+        - docs/specs/observability-billing.md
+      description: |
+        Accept OpenAI-compatible text-to-speech JSON, route through HUAKAI
+        registry/router/pool, passthrough to `/v1/audio/speech`, and settle
+        deterministic per-character billing from UTF-8 rune count. Inputs over
+        4096 runes are rejected before reservation.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AudioSpeechRequest'
+      responses:
+        '200':
+          description: Successful upstream audio bytes.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+            audio/mpeg:
+              schema: { type: string, format: binary }
+            audio/wav:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/audio/transcriptions:
+    post:
+      tags: [gateway]
+      summary: OpenAI Audio Transcriptions compatible relay
+      operationId: postAudioTranscriptions
+      x-huakai-spec-source:
+        - backend/internal/audiohttp/handler.go
+        - docs/specs/observability-billing.md
+      description: |
+        Accept bounded multipart audio upload, preserve the original multipart
+        body and boundary for upstream `/v1/audio/transcriptions`, and reserve
+        from local duration estimation. WAV PCM duration is exact; compressed
+        formats use a conservative size-bound estimate and may be marked
+        pending reconciliation when upstream duration is absent.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AudioTranscriptionRequest'
+      responses:
+        '200':
+          description: Successful upstream transcription response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AudioTextResponse'
+            text/plain:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413':
+          description: Multipart body exceeds the 25MiB audio upload limit.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/audio/translations:
+    post:
+      tags: [gateway]
+      summary: OpenAI Audio Translations compatible relay
+      operationId: postAudioTranslations
+      x-huakai-spec-source:
+        - backend/internal/audiohttp/handler.go
+        - docs/specs/observability-billing.md
+      description: |
+        Same lifecycle and billing behavior as `/v1/audio/transcriptions`, but
+        passthrough endpoint path is `/v1/audio/translations`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AudioTranscriptionRequest'
+      responses:
+        '200':
+          description: Successful upstream translation response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AudioTextResponse'
+            text/plain:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413':
+          description: Multipart body exceeds the 25MiB audio upload limit.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/responses:
     post:
       tags: [gateway]
@@ -6536,6 +6657,52 @@ components:
           properties:
             prompt_tokens: { type: integer, minimum: 0 }
             total_tokens: { type: integer, minimum: 0 }
+
+    AudioSpeechRequest:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source: [backend/internal/audiohttp/handler.go]
+      required: [model, input]
+      properties:
+        model: { type: string, minLength: 1 }
+        input:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: HUAKAI enforces this limit by UTF-8 rune count, not byte length.
+        voice: { type: string }
+        response_format: { type: string }
+        speed: { type: number }
+        instructions: { type: string }
+
+    AudioTranscriptionRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/audiohttp/handler.go]
+      required: [model, file]
+      properties:
+        model: { type: string, minLength: 1 }
+        file:
+          type: string
+          format: binary
+          description: Single audio file part; request body limit is 25MiB.
+        language: { type: string }
+        prompt: { type: string }
+        response_format: { type: string }
+        temperature: { type: string }
+
+    AudioTextResponse:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source: [backend/internal/audiohttp/handler.go]
+      properties:
+        text: { type: string }
+        duration:
+          type: number
+          description: When present and positive in verbose_json, HUAKAI uses this provider duration for settlement.
+        usage:
+          type: object
+          additionalProperties: true
 
     ImageGenerationRequest:
       type: object

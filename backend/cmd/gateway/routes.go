@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/audiohttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/captcha"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
@@ -58,6 +59,9 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Post("/v1/images/generations", imageshttp.NewGenerationsHandler(imageHandlerDeps(d)))
 	r.Post("/v1/images/edits", imageshttp.NewEditsHandler(imageHandlerDeps(d)))
 	r.Post("/v1/images/variations", imageshttp.NewVariationsHandler(imageHandlerDeps(d)))
+	r.Post("/v1/audio/speech", audiohttp.NewSpeechHandler(audioHandlerDeps(d)))
+	r.Post("/v1/audio/transcriptions", audiohttp.NewTranscriptionHandler(audioHandlerDeps(d)))
+	r.Post("/v1/audio/translations", audiohttp.NewTranslationHandler(audioHandlerDeps(d)))
 	r.Post("/v1/responses", gatewayhttp.NewResponsesHandler(chatHandlerDeps(d)))
 	r.Post("/v1/messages", gatewayhttp.NewMessagesHandler(chatHandlerDeps(d)))
 	r.Get("/v1/realtime", handleRealtimeRoadmap)
@@ -442,6 +446,25 @@ func embeddingsHandlerDeps(d *deps) embeddingshttp.Deps {
 
 func imageHandlerDeps(d *deps) imageshttp.Deps {
 	return imageshttp.Deps{
+		Auth:                  d.inboundAuth,
+		Registry:              d.modelRegistry,
+		Router:                d.routePlanner,
+		ClaimGate:             d.claimGate,
+		QuotaReserver:         d.quotaReserver,
+		RateTables:            d.rateTableSource,
+		PricingRatioResolver:  d.pricingRatioResolver,
+		Selector:              d.selector,
+		CredentialVault:       d.credentialVault,
+		Dispatcher:            d.dispatcher,
+		Settler:               d.settler,
+		BillingPolicyResolver: d.billingPolicyResolver,
+		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
+		RequestClass:          d.cfg.RequestClass,
+	}
+}
+
+func audioHandlerDeps(d *deps) audiohttp.Deps {
+	return audiohttp.Deps{
 		Auth:                  d.inboundAuth,
 		Registry:              d.modelRegistry,
 		Router:                d.routePlanner,

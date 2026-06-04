@@ -134,6 +134,31 @@ func TestDispatcher_HappyPath(t *testing.T) {
 	}
 }
 
+func TestDispatcher_PassesInboundContentTypeToAdapter(t *testing.T) {
+	doer := &stubDoer{respStatus: 200, respBody: "{}"}
+	adapter := &stubAdapter{platform: "openai"}
+	d := newDispatcherForTest(adapter, doer)
+
+	_, err := d.Dispatch(context.Background(), DispatchInput{
+		ProtocolFamily:     "openai_chat",
+		EndpointPath:       "/v1/audio/transcriptions",
+		UpstreamModelID:    "whisper-1",
+		InboundBody:        []byte("--same-boundary\r\n"),
+		InboundContentType: "multipart/form-data; boundary=same-boundary",
+		Account:            provider.AccountInfo{AccountID: 7, Platform: "openai", AccountType: "apikey"},
+		Credential:         provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-x"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := adapter.lastInput.InboundContentType; got != "multipart/form-data; boundary=same-boundary" {
+		t.Fatalf("adapter InboundContentType=%q want inbound multipart boundary", got)
+	}
+	if got := adapter.lastInput.EndpointPath; got != "/v1/audio/transcriptions" {
+		t.Fatalf("adapter EndpointPath=%q want audio endpoint path", got)
+	}
+}
+
 func TestDispatcher_AdapterNotFound(t *testing.T) {
 	d := &UpstreamDispatcher{
 		Adapters:         &stubRegistry{err: provider.ErrAdapterNotRegistered},
