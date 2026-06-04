@@ -67,21 +67,34 @@ func TestWiring_AuditRefPolicySharedByBusConfigAndChatDeps(t *testing.T) {
 	}
 }
 
-func TestWiring_PricingRatioResolverSharedByChatAndEmbeddingsDeps(t *testing.T) {
+func TestWiring_PricingRatioResolverSharedByChatEmbeddingsAndImagesDeps(t *testing.T) {
 	resolver := pricingcatalog.NewRatioResolver(nil, 0)
+	rateTables := billing.NewPGXRateTableSource(nil)
+	claimGate := &wiringClaimGate{}
+	settler := &wiringRecordingSettler{}
 	d := &deps{
 		cfg:                  &Config{BillingPolicyVersion: "1.0", RequestClass: "standard"},
 		pricingRatioResolver: resolver,
+		rateTableSource:      rateTables,
+		claimGate:            claimGate,
+		settler:              settler,
 	}
 
 	chatDeps := chatHandlerDeps(d)
 	embeddingsDeps := embeddingsHandlerDeps(d)
+	imageDeps := imageHandlerDeps(d)
 
 	if chatDeps.PricingRatioResolver != resolver {
 		t.Fatalf("chat PricingRatioResolver=%p want shared resolver %p", chatDeps.PricingRatioResolver, resolver)
 	}
 	if embeddingsDeps.PricingRatioResolver != resolver {
 		t.Fatalf("embeddings PricingRatioResolver=%p want shared resolver %p", embeddingsDeps.PricingRatioResolver, resolver)
+	}
+	if imageDeps.PricingRatioResolver != resolver {
+		t.Fatalf("images PricingRatioResolver=%p want shared resolver %p", imageDeps.PricingRatioResolver, resolver)
+	}
+	if imageDeps.RateTables != rateTables || imageDeps.ClaimGate != claimGate || imageDeps.Settler != settler {
+		t.Fatal("image deps did not reuse shared money-path wiring")
 	}
 }
 
@@ -169,6 +182,12 @@ func (s *wiringRecordingSettler) CommitCacheHit(context.Context, billing.SettleR
 
 func (s *wiringRecordingSettler) Refund(context.Context, billing.RefundRequest) (*billing.RefundResult, error) {
 	return &billing.RefundResult{}, nil
+}
+
+type wiringClaimGate struct{}
+
+func (g *wiringClaimGate) Reserve(context.Context, billing.ReserveRequest) (*billing.ReserveResult, error) {
+	return &billing.ReserveResult{ClaimID: 1}, nil
 }
 
 // ANT-4: 生产 wiring 必须真的调用 installAnthropicClaudeAIOAuthMimicryExchanger

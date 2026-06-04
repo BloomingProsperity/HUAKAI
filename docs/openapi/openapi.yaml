@@ -205,6 +205,109 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/images/generations:
+    post:
+      tags: [gateway]
+      summary: OpenAI Images Generations compatible JSON relay
+      operationId: postImagesGenerations
+      x-huakai-spec-source:
+        - backend/internal/imageshttp/handler.go
+        - docs/specs/observability-billing.md
+      description: |
+        Accept OpenAI-compatible JSON image generation requests, route to a
+        Provider Account, passthrough the original JSON body to
+        `/v1/images/generations`, and settle billing from catalog-driven
+        per-image or token-image pricing. Multipart upload is not part of this
+        JSON-only slice.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageGenerationRequest'
+      responses:
+        '200':
+          description: Successful upstream-compatible image generation response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/images/edits:
+    post:
+      tags: [gateway]
+      summary: OpenAI Images Edits compatible JSON relay
+      operationId: postImagesEdits
+      x-huakai-spec-source:
+        - backend/internal/imageshttp/handler.go
+        - docs/specs/observability-billing.md
+      description: |
+        JSON-only image edit relay. Clients reference input images with
+        `image`, `images`, or `image_url`; binary multipart is parked for the
+        later passthrough-adapter slice.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageEditRequest'
+      responses:
+        '200':
+          description: Successful upstream-compatible image edit response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/images/variations:
+    post:
+      tags: [gateway]
+      summary: OpenAI Images Variations compatible JSON relay
+      operationId: postImagesVariations
+      x-huakai-spec-source:
+        - backend/internal/imageshttp/handler.go
+        - docs/specs/observability-billing.md
+      description: |
+        JSON-only image variation relay. Variations require an image reference
+        and do not accept a prompt in this slice.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageVariationRequest'
+      responses:
+        '200':
+          description: Successful upstream-compatible image variation response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/responses:
     post:
       tags: [gateway]
@@ -6433,6 +6536,96 @@ components:
           properties:
             prompt_tokens: { type: integer, minimum: 0 }
             total_tokens: { type: integer, minimum: 0 }
+
+    ImageGenerationRequest:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source: [backend/internal/imageshttp/handler.go]
+      required: [model, prompt]
+      properties:
+        model: { type: string }
+        prompt: { type: string, minLength: 1 }
+        n: { type: integer, minimum: 1 }
+        size: { type: string }
+        quality: { type: string }
+        response_format: { type: string }
+        style: { type: string }
+        user: { type: string }
+
+    ImageEditRequest:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source: [backend/internal/imageshttp/handler.go]
+      required: [model, prompt]
+      properties:
+        model: { type: string }
+        prompt: { type: string, minLength: 1 }
+        image:
+          description: JSON image reference for this slice; binary multipart is not declared here.
+          oneOf:
+            - type: string
+            - type: object
+              additionalProperties: true
+        images:
+          type: array
+          items:
+            oneOf:
+              - type: string
+              - type: object
+                additionalProperties: true
+        image_url: { type: string }
+        mask:
+          oneOf:
+            - type: string
+            - type: object
+              additionalProperties: true
+        n: { type: integer, minimum: 1 }
+        size: { type: string }
+        quality: { type: string }
+        response_format: { type: string }
+        user: { type: string }
+
+    ImageVariationRequest:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source: [backend/internal/imageshttp/handler.go]
+      required: [model]
+      properties:
+        model: { type: string }
+        image:
+          description: JSON image reference for this slice; binary multipart is not declared here.
+          oneOf:
+            - type: string
+            - type: object
+              additionalProperties: true
+        images:
+          type: array
+          items:
+            oneOf:
+              - type: string
+              - type: object
+                additionalProperties: true
+        image_url: { type: string }
+        n: { type: integer, minimum: 1 }
+        size: { type: string }
+        quality: { type: string }
+        response_format: { type: string }
+        user: { type: string }
+
+    ImageResponse:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source: [backend/internal/imageshttp/handler.go]
+      properties:
+        created: { type: integer }
+        data:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        usage:
+          type: object
+          additionalProperties: true
 
     ModelsListResponse:
       type: object
