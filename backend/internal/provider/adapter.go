@@ -132,6 +132,26 @@ func EndpointForCredential(adapterDefault string, cred Credential) (string, erro
 	return combined.String(), nil
 }
 
+// EndpointForBuildInput applies an optional endpoint path override before the
+// existing credential-specific endpoint selection. Empty EndpointPath preserves
+// legacy adapter behavior.
+func EndpointForBuildInput(adapterDefault string, in BuildInput) (string, error) {
+	defaultEndpoint := strings.TrimSpace(adapterDefault)
+	if path := strings.TrimSpace(in.EndpointPath); path != "" {
+		u, err := url.Parse(defaultEndpoint)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return "", fmt.Errorf("%w: invalid adapter default endpoint", ErrUnsafePassthroughEndpoint)
+		}
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		u.Path = path
+		u.RawPath = ""
+		defaultEndpoint = u.String()
+	}
+	return EndpointForCredential(defaultEndpoint, in.Credential)
+}
+
 // isAPIVersionSegment 判断单个 path 段是否是 API 版本号: 以 'v' 开头, 紧跟
 // 至少一个数字 (允许 v1 / v2 / v1beta / v1alpha 等)。
 func isAPIVersionSegment(seg string) bool {
@@ -180,6 +200,9 @@ type BuildInput struct {
 	// InboundBody 客户原始请求 body 字节（HUAKAI 协议入口已统一形态，
 	// 但每家 vendor 适配器决定是否 reshape）。
 	InboundBody []byte
+	// EndpointPath 可选覆盖 adapter 默认 endpoint path。空值保持 adapter
+	// 默认；OpenAI-compatible embeddings passthrough 使用 "/v1/embeddings"。
+	EndpointPath string
 	// Credential 凭据。
 	Credential Credential
 	// Account 池中选中的 account。

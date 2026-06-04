@@ -38,6 +38,10 @@ type AdapterRegistry interface {
 type DispatchInput struct {
 	// ProtocolFamily 决定选哪个 adapter。
 	ProtocolFamily string
+	// EndpointPath 可选覆盖 adapter 默认 endpoint path。空值保持既有
+	// protocol family 默认 endpoint；/v1/embeddings 等 OpenAI-compatible
+	// passthrough 端点可在不新增 protocol family 的情况下指定。
+	EndpointPath string
 	// UpstreamModelID 上游真实 model id（registry 解析后）。
 	UpstreamModelID string
 	// InboundBody 客户原始请求 body 字节。
@@ -114,6 +118,7 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 		InboundBody:     in.InboundBody,
 		Credential:      in.Credential,
 		Account:         in.Account,
+		EndpointPath:    in.EndpointPath,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: BuildRequest 失败: %w", err)
