@@ -2,6 +2,7 @@ package gatewayhttp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http/httptest"
 	"strings"
@@ -68,6 +69,26 @@ func TestPR4PrepareNextAttemptAfterAbortClearsReservationAndAcquisition(t *testi
 	}
 	if ex.healthKeyOK {
 		t.Fatal("healthKeyOK should be cleared for the next attempt")
+	}
+}
+
+func TestUpstreamInboundBodyUsesResolvedModelWithoutMutatingOriginal(t *testing.T) {
+	original := []byte(`{"model":"primary-model","messages":[{"role":"user","content":"hello"}]}`)
+	ex := &chatExecution{
+		upstreamModelID: "fallback-model",
+		body:            original,
+	}
+
+	out := ex.upstreamInboundBody(ex.body)
+	var parsed map[string]any
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("outbound body is not JSON: %v", err)
+	}
+	if parsed["model"] != "fallback-model" {
+		t.Fatalf("outbound model=%v want fallback-model body=%s", parsed["model"], string(out))
+	}
+	if string(ex.body) != string(original) {
+		t.Fatalf("original body mutated: got %s want %s", string(ex.body), string(original))
 	}
 }
 

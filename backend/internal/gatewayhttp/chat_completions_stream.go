@@ -118,7 +118,7 @@ func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptO
 	dispatchRes, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
 		ProtocolFamily:  ex.resolved.ProtocolFamily,
 		UpstreamModelID: ex.upstreamModelID,
-		InboundBody:     inboundBody,
+		InboundBody:     ex.upstreamInboundBody(inboundBody),
 		Account:         transportSelection.account,
 		Credential:      ex.cred,
 		TransportMode:   transportSelection.mode,

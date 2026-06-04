@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
@@ -20,6 +21,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/modelfallback"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/protosse"
@@ -60,14 +62,15 @@ type ChatHandlerDeps struct {
 	// 但 Tx2 settlement 未确认提交)的 durable 兜底 enqueue;nil 时 stream
 	// path 失败只 log,money path 灰区无可补救。生产部署必须 wire 上
 	// dlq.Service(见 cmd/gateway/routes.go SettleRecoveryDLQ: d.dlqService)。
-	SettleRecoveryDLQ    settlementrecovery.Enqueuer
-	Signer               *sign.Signer
-	ChannelHealth        channelHealthRecorder
-	ModelCooldowns       modelRateLimitRecorder
-	RateService          rate.Service
-	RetryBudget          retryBudgetGate
-	BillingPolicyVersion string
-	RequestClass         string
+	SettleRecoveryDLQ     settlementrecovery.Enqueuer
+	Signer                *sign.Signer
+	ChannelHealth         channelHealthRecorder
+	ModelCooldowns        modelRateLimitRecorder
+	RateService           rate.Service
+	RetryBudget           retryBudgetGate
+	ModelFallbackSettings modelfallback.SettingsReader
+	BillingPolicyVersion  string
+	RequestClass          string
 
 	// EndpointFamily 标记 billing 字段；空字符串退化为 "chat"。
 	// /v1/chat/completions: "chat"
@@ -145,6 +148,18 @@ type chatExecution struct {
 	protocolLoss json.RawMessage
 }
 
+type modelRunResult struct {
+	Success         *attemptOutcome
+	Failure         *classifiedAttemptFailure
+	DeliveryStarted bool
+	AllowFallback   bool
+}
+
+const (
+	headerHuakaiModelFallback    = "X-Huakai-Model-Fallback"
+	headerHuakaiFallbackAttempts = "X-Huakai-Fallback-Attempts"
+)
+
 func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -182,65 +197,134 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 		r = r.WithContext(ctx)
 		w.Header().Set(middleware.RequestIDHeader, validated.RequestID)
 		exec := newChatExecution(d, r, ident, validated, requestStartedAt)
-		if !exec.prepareRoute(w) {
+		exec.runWithModelFallback(newDeliveryTracker(w))
+	}
+}
+
+func (ex *chatExecution) runWithModelFallback(w *deliveryTracker) {
+	resolver := modelfallback.FromSettings(ex.ctx, ex.d.ModelFallbackSettings)
+	originalModel := ex.req.Model
+	triedModels := []string{originalModel}
+	baseLogicalRequestID := ""
+	fallbackAttempts := 0
+	for {
+		result := ex.runSingleModel(w, fallbackAttempts)
+		if result.Success != nil {
+			writeAttemptSuccess(w, *result.Success)
 			return
 		}
-		// 先 reserve (ClaimGate.Reserve 内部走
-		// uq_claims_idempotency 唯一约束做 idempotency-key + payload fingerprint
-		// 校验), 再查 cache。 否则 client reuse 同 idempotency-key 但 payload 变
-		// 时, cache 命中绕过 fingerprint conflict 检查。 reserve 不占 pool slot
-		// (selectPoolAccount 才占), 所以 cache 命中分支仍能避开 pool acquire。
-		if !exec.reserveClaim(w) {
+		if result.DeliveryStarted || w.started() {
 			return
 		}
-		if !exec.req.Stream {
-			// cache 命中时 serveL2CacheHit 内部已在写 200 body 之前 Settler.Abort
-			// 收尾 reserve 行。这里只需 return。
-			handled, proceed := exec.serveL2CacheIfAvailable(w)
-			if handled || !proceed {
-				return
-			}
+		clearModelFallbackHeaders(w)
+		if result.Failure == nil {
+			return
 		}
-		failedAccounts := make(map[int64]struct{})
-		authFailoverUsed := false
-		budget := effectiveAttemptBudget(exec.plan)
-		for i := 0; i < budget; i++ {
-			outcome := exec.runAttempt(w, attemptInput{
-				Plan:             exec.plan.Attempts[i],
-				AttemptSeq:       i + 1,
-				ExcludedAccounts: failedAccounts,
-				ReplayableBody:   true,
-				FinalAttempt:     i+1 >= budget,
-			})
-			if outcome.Success != nil {
-				writeAttemptSuccess(w, outcome)
-				return
-			}
-			if outcome.DeliveryStarted || (outcome.Failure != nil && outcome.Failure.DeliveredToClient) {
-				return
-			}
-			if outcome.AccountID != 0 && outcome.Failure != nil && outcome.Failure.Decision.SwitchAccount {
-				failedAccounts[outcome.AccountID] = struct{}{}
-			}
-			if outcome.Failure != nil {
-				retry, consumeAuthBudget := shouldRetryAttemptFailure(outcome.Failure, exec.plan, true, i+1 >= budget, authFailoverUsed)
-				if retry {
-					if exec.d.RetryBudget != nil && !exec.d.RetryBudget.Allow(exec.ident.TenantID) {
-						writeAttemptFailure(w, outcome.Failure)
-						return
-					}
-					if consumeAuthBudget {
-						authFailoverUsed = true
-					}
-					clearRetryableAttemptFailureHeaders(w)
-					exec.prepareNextAttemptAfterAbort()
-					continue
-				}
-				writeAttemptFailure(w, outcome.Failure)
-				return
-			}
+		if baseLogicalRequestID == "" {
+			baseLogicalRequestID = ex.logicalRequestID
+		}
+		if !result.AllowFallback || !resolver.Enabled() || fallbackAttempts >= resolver.MaxDepth() {
+			writeAttemptFailure(w, result.Failure)
+			return
+		}
+		class := modelfallback.ClassForFailure(result.Failure.ClientCode, result.Failure.EndClass, result.Failure.Classification.Class, result.Failure.AbortReason)
+		nextModel := resolver.Resolve(originalModel, class, triedModels)
+		if nextModel == "" {
+			writeAttemptFailure(w, result.Failure)
+			return
+		}
+		fallbackAttempts++
+		triedModels = append(triedModels, nextModel)
+		clearRetryableAttemptFailureHeaders(w)
+		ex.prepareNextModelFallback(nextModel, baseLogicalRequestID)
+	}
+}
+
+func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts int) modelRunResult {
+	if !ex.prepareRoute(w) {
+		return modelRunResult{DeliveryStarted: responseStarted(w)}
+	}
+	if !ex.reserveClaim(w) {
+		return modelRunResult{DeliveryStarted: responseStarted(w)}
+	}
+	if fallbackAttempts > 0 {
+		setModelFallbackHeaders(w, ex.req.Model, fallbackAttempts)
+	}
+	if !ex.req.Stream {
+		handled, proceed := ex.serveL2CacheIfAvailable(w)
+		if handled || !proceed {
+			return modelRunResult{DeliveryStarted: responseStarted(w)}
 		}
 	}
+	failedAccounts := make(map[int64]struct{})
+	authFailoverUsed := false
+	budget := effectiveAttemptBudget(ex.plan)
+	for i := 0; i < budget; i++ {
+		outcome := ex.runAttempt(w, attemptInput{
+			Plan:             ex.plan.Attempts[i],
+			AttemptSeq:       i + 1,
+			ExcludedAccounts: failedAccounts,
+			ReplayableBody:   true,
+			FinalAttempt:     i+1 >= budget,
+		})
+		if outcome.Success != nil {
+			return modelRunResult{Success: &outcome, DeliveryStarted: outcome.DeliveryStarted}
+		}
+		if outcome.DeliveryStarted || (outcome.Failure != nil && outcome.Failure.DeliveredToClient) {
+			return modelRunResult{DeliveryStarted: true}
+		}
+		if outcome.AccountID != 0 && outcome.Failure != nil && outcome.Failure.Decision.SwitchAccount {
+			failedAccounts[outcome.AccountID] = struct{}{}
+		}
+		if outcome.Failure == nil {
+			continue
+		}
+		retry, consumeAuthBudget := shouldRetryAttemptFailure(outcome.Failure, ex.plan, true, i+1 >= budget, authFailoverUsed)
+		if !retry {
+			return modelRunResult{Failure: outcome.Failure, AllowFallback: outcome.Failure.Decision.RetryableBeforeDelivery}
+		}
+		if ex.d.RetryBudget != nil && !ex.d.RetryBudget.Allow(ex.ident.TenantID) {
+			return modelRunResult{Failure: outcome.Failure}
+		}
+		if consumeAuthBudget {
+			authFailoverUsed = true
+		}
+		clearRetryableAttemptFailureHeaders(w)
+		ex.prepareNextAttemptAfterAbort()
+	}
+	return modelRunResult{}
+}
+
+func (ex *chatExecution) prepareNextModelFallback(model, baseLogicalRequestID string) {
+	ex.req.Model = model
+	ex.resolved = registry.Resolved{}
+	ex.plan = router.RoutePlan{}
+	ex.attempt = router.AttemptPlan{}
+	ex.routeID = ""
+	ex.currentAttemptSeq = 0
+	ex.logicalRequestID = modelfallback.DeriveLogicalRequestID(baseLogicalRequestID, model)
+	ex.reserveRes = nil
+	ex.cacheVendor = ""
+	ex.cacheKey = ""
+	ex.protocolLoss = nil
+	ex.prepareNextAttemptAfterAbort()
+}
+
+func responseStarted(w http.ResponseWriter) bool {
+	if tracker, ok := w.(*deliveryTracker); ok {
+		return tracker.started()
+	}
+	return false
+}
+
+func setModelFallbackHeaders(w http.ResponseWriter, model string, attempts int) {
+	w.Header().Set(headerHuakaiModelFallback, model)
+	w.Header().Set(headerHuakaiFallbackAttempts, strconv.Itoa(attempts))
+}
+
+func clearModelFallbackHeaders(w http.ResponseWriter) {
+	w.Header().Del(headerHuakaiModelFallback)
+	w.Header().Del(headerHuakaiFallbackAttempts)
 }
 
 func chatHandlerConfigured(d ChatHandlerDeps) bool {
@@ -295,7 +379,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 	dispatchRes, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
 		ProtocolFamily:  ex.resolved.ProtocolFamily,
 		UpstreamModelID: ex.upstreamModelID,
-		InboundBody:     ex.body,
+		InboundBody:     ex.upstreamInboundBody(ex.body),
 		Account:         transportSelection.account,
 		Credential:      ex.cred,
 		TransportMode:   transportSelection.mode,

@@ -17,11 +17,13 @@ import (
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	provideropenai "github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
+	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/retrybudget"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
@@ -636,6 +638,218 @@ func TestAT_GW_002_03_PreStreamRetryAnd13MidStreamRetryBlocked(t *testing.T) {
 	}
 }
 
+func TestModelFallback_PrimaryNoCapacityFallsBackAndSettlesOnlyFallbackModel(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	selector := &modelFallbackSelector{
+		noCapacity: map[string]bool{"gpt-4o": true},
+		accounts:   map[string]int64{"gpt-4o-mini": 2202},
+	}
+	claimGate := &modelFallbackClaimGate{nextClaimID: 91001}
+	settler := &recordingSettler{}
+	dispatcher := &pr5CanonicalSequenceDispatcher{steps: []pr5CanonicalStep{{successText: "fallback model success"}}}
+	deps := modelFallbackDeps(t, selector, claimGate, settler, dispatcher, `{
+		"enabled": true,
+		"max_depth": 2,
+		"general": {"gpt-4o":["gpt-4o-mini"]}
+	}`)
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s; want fallback success", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Huakai-Model-Fallback"); got != "gpt-4o-mini" {
+		t.Fatalf("fallback header=%q want gpt-4o-mini", got)
+	}
+	if got := rec.Header().Get("X-Huakai-Fallback-Attempts"); got != "1" {
+		t.Fatalf("fallback attempts header=%q want 1", got)
+	}
+	if got := reserveModels(claimGate.requests); strings.Join(got, ",") != "gpt-4o,gpt-4o-mini" {
+		t.Fatalf("reserve models=%v want primary then fallback", got)
+	}
+	if claimGate.requests[0].LogicalRequestID == claimGate.requests[1].LogicalRequestID {
+		t.Fatalf("fallback reserve reused primary logical_request_id=%q; models need separate idempotency scopes", claimGate.requests[0].LogicalRequestID)
+	}
+	if len(settler.aborts) != 1 || settler.aborts[0].claimID != 91001 || settler.aborts[0].reason != "pool_no_capacity" {
+		t.Fatalf("aborts=%+v want primary claim aborted once for no capacity", settler.aborts)
+	}
+	if len(settler.calls) != 1 || settler.calls[0].ClaimID != 91002 || settler.calls[0].RequestedModel != "gpt-4o-mini" {
+		t.Fatalf("settles=%+v want exactly fallback claim/model settled", settler.calls)
+	}
+	assertNoHangingModelFallbackClaims(t, claimGate, settler)
+}
+
+func TestModelFallback_AllModelsFailAbortsEveryReservedClaimAndReturnsLastError(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	selector := &modelFallbackSelector{
+		noCapacity: map[string]bool{"gpt-4o": true, "gpt-4o-mini": true},
+	}
+	claimGate := &modelFallbackClaimGate{nextClaimID: 92001}
+	settler := &recordingSettler{}
+	deps := modelFallbackDeps(t, selector, claimGate, settler, &pr5CanonicalSequenceDispatcher{}, `{
+		"enabled": true,
+		"max_depth": 2,
+		"general": {"gpt-4o":["gpt-4o-mini"]}
+	}`)
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s; want last no-capacity error", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("X-Huakai-Model-Fallback") != "" || rec.Header().Get("X-Huakai-Fallback-Attempts") != "" {
+		t.Fatalf("final error leaked fallback success headers: %v", rec.Header())
+	}
+	if len(settler.calls) != 0 {
+		t.Fatalf("settles=%+v want none when chain fails", settler.calls)
+	}
+	if len(settler.aborts) != 2 {
+		t.Fatalf("aborts=%+v want both model claims aborted", settler.aborts)
+	}
+	assertNoHangingModelFallbackClaims(t, claimGate, settler)
+}
+
+func TestModelFallback_FallbackRouteFailureDoesNotLeakSuccessHeadersOrReserveUnknown(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	selector := &modelFallbackSelector{
+		noCapacity: map[string]bool{"gpt-4o": true},
+	}
+	claimGate := &modelFallbackClaimGate{nextClaimID: 92501}
+	settler := &recordingSettler{}
+	deps := modelFallbackDeps(t, selector, claimGate, settler, &pr5CanonicalSequenceDispatcher{}, `{
+		"enabled": true,
+		"max_depth": 2,
+		"general": {"gpt-4o":["missing-fallback-model"]}
+	}`)
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s; want fallback route failure", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("X-Huakai-Model-Fallback") != "" || rec.Header().Get("X-Huakai-Fallback-Attempts") != "" {
+		t.Fatalf("route failure leaked fallback success headers: %v", rec.Header())
+	}
+	if got := reserveModels(claimGate.requests); strings.Join(got, ",") != "gpt-4o" {
+		t.Fatalf("reserve models=%v want only primary; unknown fallback must fail before reserve", got)
+	}
+	if len(settler.aborts) != 1 || len(settler.calls) != 0 {
+		t.Fatalf("aborts/settles=%+v/%+v want primary abort only", settler.aborts, settler.calls)
+	}
+	assertNoHangingModelFallbackClaims(t, claimGate, settler)
+}
+
+func TestModelFallback_NonRetryableClientErrorDoesNotFallback(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	selector := &modelFallbackSelector{accounts: map[string]int64{"gpt-4o": 2301, "gpt-4o-mini": 2302}}
+	claimGate := &modelFallbackClaimGate{nextClaimID: 93001}
+	settler := &recordingSettler{}
+	dispatcher := &pr5CanonicalSequenceDispatcher{
+		steps: []pr5CanonicalStep{{status: http.StatusBadRequest, body: `{"error":"invalid request"}`}, {successText: "must not fallback"}},
+	}
+	deps := modelFallbackDeps(t, selector, claimGate, settler, dispatcher, `{
+		"enabled": true,
+		"general": {"gpt-4o":["gpt-4o-mini"]}
+	}`)
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s; want original 400 without fallback", rec.Code, rec.Body.String())
+	}
+	if len(claimGate.requests) != 1 || dispatcher.calls != 1 {
+		t.Fatalf("reserves/dispatches=%d/%d want one primary attempt only", len(claimGate.requests), dispatcher.calls)
+	}
+	if len(settler.calls) != 0 || len(settler.aborts) != 1 {
+		t.Fatalf("settles/aborts=%+v/%+v want one abort and no settle", settler.calls, settler.aborts)
+	}
+}
+
+func TestModelFallback_PostDeliveryStreamErrorDoesNotFallback(t *testing.T) {
+	replayStore := billing.NewMemoryReplayStore()
+	settler := &recordingSettler{}
+	doer := &pr5SequentialStreamingDoer{
+		steps: []pr5StreamStep{
+			{body: io.NopCloser(strings.NewReader(openAIStreamingFixture()))},
+			{body: io.NopCloser(strings.NewReader(openAIStreamingFixture()))},
+		},
+	}
+	deps := streamingReplayDeps(t, 94001, false, "", replayStore)
+	deps.Dispatcher.HTTPClient = doer
+	deps.Router = stubRouter{plan: pr5RoutePlan(router.AttemptPlan{Index: 0, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "primary"})}
+	deps.Selector = newPR5Selector(t, 2401)
+	deps.CredentialVault = pr5CredentialVault(t, 2401)
+	deps.Settler = settler
+	deps.ModelFallbackSettings = modelFallbackSettings(t, `{
+		"enabled": true,
+		"general": {"gpt-4o":["gpt-4o-mini"]}
+	}`)
+	scanners := gateway.NewStaticStreamScannerRegistry()
+	scanners.MustRegister("openai_chat", scannerThenError{
+		event: partialOpenAIStreamingEventBeforeReadError(),
+		err:   errors.New("body idle timeout after first byte"),
+	})
+	deps.Forwarder.Scanners = scanners
+
+	rec := invokeWithIdempotencyKey(t, deps, openAIStreamingRequestBody(), "model-fallback-post-byte")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s; want delivered partial stream, not fallback JSON", rec.Code, rec.Body.String())
+	}
+	if doer.calls != 1 {
+		t.Fatalf("stream dispatch calls=%d want 1; delivery-started failure must not fallback", doer.calls)
+	}
+	if got := rec.Header().Get("X-Huakai-Model-Fallback"); got != "" {
+		t.Fatalf("fallback header=%q want empty after post-delivery failure", got)
+	}
+}
+
+func TestModelFallback_DefaultClosedDoesNotFallbackOrExtraReserve(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	selector := &modelFallbackSelector{
+		noCapacity: map[string]bool{"gpt-4o": true},
+		accounts:   map[string]int64{"gpt-4o-mini": 2502},
+	}
+	claimGate := &modelFallbackClaimGate{nextClaimID: 95001}
+	settler := &recordingSettler{}
+	deps := modelFallbackDeps(t, selector, claimGate, settler, &pr5CanonicalSequenceDispatcher{}, "")
+	deps.ModelFallbackSettings = nil
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s; want primary no-capacity error", rec.Code, rec.Body.String())
+	}
+	if len(claimGate.requests) != 1 {
+		t.Fatalf("reserve calls=%d want 1 when fallback disabled", len(claimGate.requests))
+	}
+	if len(settler.aborts) != 1 || len(settler.calls) != 0 {
+		t.Fatalf("aborts/settles=%+v/%+v want one abort and no settle", settler.aborts, settler.calls)
+	}
+}
+
+func TestModelFallback_MaxDepthStopsBeforeLongerChain(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	selector := &modelFallbackSelector{
+		noCapacity: map[string]bool{"gpt-4o": true, "gpt-4o-mini": true},
+		accounts:   map[string]int64{"gpt-4o-backup": 2603},
+	}
+	claimGate := &modelFallbackClaimGate{nextClaimID: 96001}
+	settler := &recordingSettler{}
+	dispatcher := &pr5CanonicalSequenceDispatcher{steps: []pr5CanonicalStep{{successText: "must not reach C"}}}
+	deps := modelFallbackDeps(t, selector, claimGate, settler, dispatcher, `{
+		"enabled": true,
+		"max_depth": 1,
+		"general": {"gpt-4o":["gpt-4o-mini","gpt-4o-backup"]}
+	}`)
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s; want B failure after max_depth=1", rec.Code, rec.Body.String())
+	}
+	if got := reserveModels(claimGate.requests); strings.Join(got, ",") != "gpt-4o,gpt-4o-mini" {
+		t.Fatalf("reserve models=%v want only A then B; C must be blocked by max_depth", got)
+	}
+	if dispatcher.calls != 0 {
+		t.Fatalf("dispatcher calls=%d want 0 because C success must not be attempted", dispatcher.calls)
+	}
+	assertNoHangingModelFallbackClaims(t, claimGate, settler)
+}
+
 func pr5NonStreamBody() string {
 	return `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
 }
@@ -737,6 +951,139 @@ func pr5CredentialVault(t *testing.T, accountIDs ...int64) provider.CredentialVa
 		}
 	}
 	return vault
+}
+
+func modelFallbackDeps(t *testing.T, selector *modelFallbackSelector, claimGate *modelFallbackClaimGate, settler *recordingSettler, dispatcher HCSFDispatcher, settingsJSON string) ChatHandlerDeps {
+	t.Helper()
+	deps := clientAdapterDeps(t)
+	deps.Registry = &modelFallbackRegistry{requests: make([]string, 0), models: map[string]registry.Resolved{
+		"gpt-4o":        modelFallbackResolved("gpt-4o", 42),
+		"gpt-4o-mini":   modelFallbackResolved("gpt-4o-mini", 43),
+		"gpt-4o-backup": modelFallbackResolved("gpt-4o-backup", 44),
+	}}
+	deps.Router = &modelFallbackRouter{plans: map[string]router.RoutePlan{
+		"gpt-4o":        pr5RoutePlan(router.AttemptPlan{Index: 0, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "primary"}),
+		"gpt-4o-mini":   pr5RoutePlan(router.AttemptPlan{Index: 0, PoolGroupID: 43, UpstreamModelID: "gpt-4o-mini", Reason: "model_fallback"}),
+		"gpt-4o-backup": pr5RoutePlan(router.AttemptPlan{Index: 0, PoolGroupID: 44, UpstreamModelID: "gpt-4o-backup", Reason: "model_fallback"}),
+	}}
+	deps.Selector = selector
+	deps.ClaimGate = claimGate
+	deps.Settler = settler
+	deps.CanonicalDispatcher = dispatcher
+	deps.CredentialVault = pr5CredentialVault(t, 2202, 2301, 2302, 2502, 2603)
+	if settingsJSON != "" {
+		deps.ModelFallbackSettings = modelFallbackSettings(t, settingsJSON)
+	}
+	return deps
+}
+
+func modelFallbackResolved(model string, poolGroupID int64) registry.Resolved {
+	return registry.Resolved{
+		PublicAlias:      model,
+		CanonicalModelID: "openai/" + model,
+		ProviderModelID:  model,
+		ProtocolFamily:   "openai_chat",
+		PoolCandidates:   []int64{poolGroupID},
+		SnapshotVersion:  "registry:7:model-fallback-test",
+	}
+}
+
+func modelFallbackSettings(t *testing.T, raw string) *platformsettings.Service {
+	t.Helper()
+	settings := platformsettings.NewService(platformsettings.NewMemoryStore(), nil)
+	if _, err := settings.Upsert(context.Background(), platformsettings.UpsertInput{
+		Key:       platformsettings.KeyModelFallbackChains,
+		Value:     raw,
+		UpdatedBy: "test",
+	}); err != nil {
+		t.Fatalf("model fallback settings upsert: %v", err)
+	}
+	return settings
+}
+
+type modelFallbackRegistry struct {
+	models   map[string]registry.Resolved
+	requests []string
+}
+
+func (r *modelFallbackRegistry) ResolveModel(_ context.Context, publicAlias string, _ int64) (registry.Resolved, error) {
+	r.requests = append(r.requests, publicAlias)
+	if resolved, ok := r.models[publicAlias]; ok {
+		return resolved, nil
+	}
+	return registry.Resolved{}, registry.ErrUnknownModel
+}
+
+type modelFallbackRouter struct {
+	plans map[string]router.RoutePlan
+}
+
+func (r *modelFallbackRouter) Plan(_ context.Context, in router.PlanInput) (router.RoutePlan, error) {
+	if plan, ok := r.plans[in.Model.PublicAlias]; ok {
+		return plan, nil
+	}
+	return router.RoutePlan{}, &router.PlanError{Code: "missing_test_plan", Message: in.Model.PublicAlias}
+}
+
+type modelFallbackSelector struct {
+	noCapacity map[string]bool
+	accounts   map[string]int64
+	requests   []pool.SelectionRequest
+}
+
+func (s *modelFallbackSelector) Select(_ context.Context, req pool.SelectionRequest) (*pool.SelectionResult, error) {
+	s.requests = append(s.requests, req)
+	if s.noCapacity[req.RequestedModel] {
+		return nil, pool.ErrNoEligibleAccount
+	}
+	accountID := s.accounts[req.RequestedModel]
+	if accountID == 0 {
+		return nil, pool.ErrNoEligibleAccount
+	}
+	return &pool.SelectionResult{
+		AccountID:         accountID,
+		AcquisitionToken:  uuid.New(),
+		RoutingReasonJSON: []byte(`{"test":"model_fallback"}`),
+	}, nil
+}
+
+type modelFallbackClaimGate struct {
+	nextClaimID int64
+	requests    []billing.ReserveRequest
+}
+
+func (g *modelFallbackClaimGate) Reserve(_ context.Context, req billing.ReserveRequest) (*billing.ReserveResult, error) {
+	g.requests = append(g.requests, req)
+	claimID := g.nextClaimID + int64(len(g.requests)) - 1
+	return &billing.ReserveResult{ClaimID: claimID}, nil
+}
+
+func reserveModels(reqs []billing.ReserveRequest) []string {
+	out := make([]string, 0, len(reqs))
+	for _, req := range reqs {
+		out = append(out, req.RequestedModel)
+	}
+	return out
+}
+
+func assertNoHangingModelFallbackClaims(t *testing.T, gate *modelFallbackClaimGate, settler *recordingSettler) {
+	t.Helper()
+	closed := make(map[int64]string, len(settler.calls)+len(settler.aborts))
+	for _, req := range settler.calls {
+		closed[req.ClaimID] = "settled"
+	}
+	for _, abort := range settler.aborts {
+		if existing := closed[abort.claimID]; existing != "" {
+			t.Fatalf("claim %d closed twice: first=%s second=aborted", abort.claimID, existing)
+		}
+		closed[abort.claimID] = "aborted"
+	}
+	for i := range gate.requests {
+		claimID := gate.nextClaimID + int64(i)
+		if closed[claimID] == "" {
+			t.Fatalf("claim %d for model %s is hanging; closed=%v", claimID, gate.requests[i].RequestedModel, closed)
+		}
+	}
 }
 
 type pr5CanonicalStep struct {

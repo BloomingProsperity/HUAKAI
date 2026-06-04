@@ -2,9 +2,11 @@ package gatewayhttp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -252,6 +254,26 @@ func (ex *chatExecution) prepareNextAttemptAfterAbort() {
 	ex.forwardReq = gateway.ForwardRequest{}
 	ex.healthKey = channelhealth.ChannelKey{}
 	ex.healthKeyOK = false
+}
+
+func (ex *chatExecution) upstreamInboundBody(body []byte) []byte {
+	if ex == nil || len(body) == 0 || strings.TrimSpace(ex.upstreamModelID) == "" {
+		return body
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return body
+	}
+	modelRaw, err := json.Marshal(ex.upstreamModelID)
+	if err != nil {
+		return body
+	}
+	obj["model"] = modelRaw
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 // markAttemptOutcomeDelivered 只用于已经写入客户端响应或明确不可进入
