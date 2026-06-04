@@ -1,9 +1,15 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 )
 
@@ -83,6 +89,77 @@ func TestValidateDevAuthTokenFlag(t *testing.T) {
 		t.Setenv("HUAKAI_DEV_AUTH_RETURN_TOKEN", "true")
 		if err := validateDevAuthTokenFlag(); err != nil {
 			t.Fatalf("dev mode with the flag must still boot (CI/local ergonomics); got %v", err)
+		}
+	})
+}
+
+// TestProductionCaptchaConfigWarnsAndMarksHealthWhenSecretMissing guards the
+// availability correction: a missing Turnstile secret must not fail production
+// boot, but it must produce an operator-visible WARN and degraded config status.
+// Mutation check: restore fail-boot, drop the WARN, or mark configuration OK;
+// this test goes red on the exact over-fix or silent-misconfig regression.
+func TestProductionCaptchaConfigWarnsAndMarksHealthWhenSecretMissing(t *testing.T) {
+	ctx := context.Background()
+	enabledSettings := platformsettings.NewService(platformsettings.NewMemoryStore(), nil)
+	if _, err := enabledSettings.Upsert(ctx, platformsettings.UpsertInput{
+		Key: platformsettings.KeyCaptchaEnabled, Value: "true", UpdatedBy: "test",
+	}); err != nil {
+		t.Fatalf("enable captcha setting: %v", err)
+	}
+	disabledSettings := platformsettings.NewService(platformsettings.NewMemoryStore(), nil)
+	if _, err := disabledSettings.Upsert(ctx, platformsettings.UpsertInput{
+		Key: platformsettings.KeyCaptchaEnabled, Value: "false", UpdatedBy: "test",
+	}); err != nil {
+		t.Fatalf("disable captcha setting: %v", err)
+	}
+
+	t.Run("production_enabled_empty_secret_warns_and_boots", func(t *testing.T) {
+		t.Setenv("HUAKAI_RELEASE_MODE", "production")
+		if err := validateProductionCaptchaConfig(ctx, enabledSettings, ""); err != nil {
+			t.Fatalf("production captcha_enabled=true with empty Turnstile secret must boot with warning, got %v", err)
+		}
+		status, err := captchaConfigurationStatus(ctx, enabledSettings, "")
+		if err != nil {
+			t.Fatalf("captchaConfigurationStatus: %v", err)
+		}
+		if status.ConfigurationOK || status.SecretConfigured || status.Issue != "turnstile_secret_missing" {
+			t.Fatalf("status=%+v want degraded missing-secret marker", status)
+		}
+		core, logs := observer.New(zapcore.WarnLevel)
+		logCaptchaConfig(ctx, zap.New(core), enabledSettings, "")
+		if logs.Len() != 1 {
+			t.Fatalf("warn logs=%d want 1: %+v", logs.Len(), logs.All())
+		}
+		entry := logs.All()[0]
+		fields := entry.ContextMap()
+		if entry.Level != zapcore.WarnLevel || fields["captcha_configuration_issue"] != "turnstile_secret_missing" ||
+			fields["captcha_configuration_ok"] != false || fields["turnstile_secret_configured"] != false {
+			t.Fatalf("warn entry level=%s fields=%+v", entry.Level, fields)
+		}
+	})
+	t.Run("production_enabled_secret_present_ok", func(t *testing.T) {
+		t.Setenv("HUAKAI_RELEASE_MODE", "production")
+		if err := validateProductionCaptchaConfig(ctx, enabledSettings, "secret"); err != nil {
+			t.Fatalf("production captcha with configured secret must boot: %v", err)
+		}
+		status, err := captchaConfigurationStatus(ctx, enabledSettings, "secret")
+		if err != nil {
+			t.Fatalf("captchaConfigurationStatus: %v", err)
+		}
+		if !status.ConfigurationOK || !status.SecretConfigured || status.Issue != "" {
+			t.Fatalf("status=%+v want healthy configured captcha", status)
+		}
+	})
+	t.Run("production_disabled_empty_secret_ok", func(t *testing.T) {
+		t.Setenv("HUAKAI_RELEASE_MODE", "production")
+		if err := validateProductionCaptchaConfig(ctx, disabledSettings, ""); err != nil {
+			t.Fatalf("production captcha disabled must keep missing-secret boot path: %v", err)
+		}
+	})
+	t.Run("dev_enabled_empty_secret_ok", func(t *testing.T) {
+		t.Setenv("HUAKAI_RELEASE_MODE", "dev")
+		if err := validateProductionCaptchaConfig(ctx, enabledSettings, ""); err != nil {
+			t.Fatalf("dev missing-secret noop path must remain available: %v", err)
 		}
 	})
 }

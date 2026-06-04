@@ -56,6 +56,44 @@ func (s *Service) Revoke(ctx context.Context, in RevokeInput) (int64, error) {
 	}
 }
 
+func (s *Service) RevokeOthers(ctx context.Context, in RevokeOthersInput) (int64, error) {
+	if s == nil || s.Store == nil {
+		return 0, ErrStoreNotConfigured
+	}
+	if in.TenantID <= 0 || in.UserID <= 0 || strings.TrimSpace(in.CurrentFamilyID) == "" {
+		return 0, ErrInvalidInput
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if reason == "" {
+		reason = "user_requested"
+	}
+	currentFamilyID := strings.TrimSpace(in.CurrentFamilyID)
+	families, err := s.Store.ListFamilies(ctx, in.TenantID, in.UserID)
+	if err != nil {
+		return 0, err
+	}
+	foundCurrent := false
+	var revoked int64
+	now := s.now()
+	for _, family := range families {
+		if family.ID == currentFamilyID {
+			foundCurrent = true
+			continue
+		}
+		if family.Status != FamilyStatusActive && family.Status != FamilyStatusSuspicious {
+			continue
+		}
+		if _, err := s.Store.RevokeFamily(ctx, in.TenantID, family.ID, reason, now); err != nil {
+			return revoked, err
+		}
+		revoked++
+	}
+	if !foundCurrent {
+		return 0, ErrFamilyNotFound
+	}
+	return revoked, nil
+}
+
 func (s *Service) List(ctx context.Context, tenantID, userID int64) ([]SessionFamily, error) {
 	if s == nil || s.Store == nil {
 		return nil, ErrStoreNotConfigured

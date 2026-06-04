@@ -13,6 +13,7 @@ import (
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/twofa"
+	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
 
 type Service interface {
@@ -21,15 +22,21 @@ type Service interface {
 	Disable(context.Context, int64, int64) error
 	Status(context.Context, int64, int64) (twofa.Status, error)
 	RegenerateBackupCodes(context.Context, twofa.VerifyInput) (twofa.BackupCodesResult, error)
+	VerifyLogin(context.Context, twofa.VerifyInput) (twofa.VerifyResult, error)
 }
 
 type Settings interface {
 	Get(context.Context, platformsettings.SettingKey) (platformsettings.StoredSetting, error)
 }
 
+type SessionRevoker interface {
+	RevokeOthers(context.Context, usersession.RevokeOthersInput) (int64, error)
+}
+
 type Deps struct {
 	Service  Service
 	Settings Settings
+	Sessions SessionRevoker
 }
 
 type setupRequest struct {
@@ -102,6 +109,10 @@ func newEnableHandler(d Deps) http.HandlerFunc {
 			writeTwoFAError(w, err)
 			return
 		}
+		if err := revokeSessionsAfterTwoFAChange(r.Context(), d.Sessions, ident); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "session_revoke_failed", "session revocation failed after two-factor state change")
+			return
+		}
 		writeJSON(w, http.StatusOK, status)
 	}
 }
@@ -147,8 +158,22 @@ func newDisableHandler(d Deps) http.HandlerFunc {
 			writeError(w, http.StatusServiceUnavailable, "two_factor_not_configured", "two-factor service dependency unset")
 			return
 		}
+		var req codeRequest
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		if _, err := d.Service.VerifyLogin(r.Context(), twofa.VerifyInput{
+			TenantID: ident.TenantID, UserID: ident.UserID, Code: req.Code,
+		}); err != nil {
+			writeTwoFAError(w, err)
+			return
+		}
 		if err := d.Service.Disable(r.Context(), ident.TenantID, ident.UserID); err != nil {
 			writeTwoFAError(w, err)
+			return
+		}
+		if err := revokeSessionsAfterTwoFAChange(r.Context(), d.Sessions, ident); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "session_revoke_failed", "session revocation failed after two-factor state change")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
@@ -199,6 +224,20 @@ func platformTwoFAEnabled(ctx context.Context, settings Settings) bool {
 	}
 	setting, err := settings.Get(ctx, platformsettings.KeyTwoFactorEnabled)
 	return err == nil && setting.Value == "true"
+}
+
+func revokeSessionsAfterTwoFAChange(ctx context.Context, revoker SessionRevoker, ident sessionauth.SessionIdentity) error {
+	if revoker == nil {
+		return nil
+	}
+	// 保留当前 family,避免用户完成 2FA 开关后被自己的操作登出。
+	_, err := revoker.RevokeOthers(ctx, usersession.RevokeOthersInput{
+		TenantID:        ident.TenantID,
+		UserID:          ident.UserID,
+		CurrentFamilyID: ident.FamilyID,
+		Reason:          "two_factor_state_changed",
+	})
+	return err
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, out any) bool {

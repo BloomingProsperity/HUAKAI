@@ -144,7 +144,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		panelauthhttp.MountAuthMeRoutes(r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)), panelauthhttp.Deps{Resolver: d.panelAuthResolver})
 		r.Route("/2fa", func(r chi.Router) {
 			r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
-			twofahttp.MountRoutes(r, twofahttp.Deps{Service: d.twoFactor, Settings: d.platformSettings})
+			twofahttp.MountRoutes(r, twofahttp.Deps{Service: d.twoFactor, Settings: d.platformSettings, Sessions: d.userSessions})
 		})
 	})
 

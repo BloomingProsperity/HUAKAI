@@ -526,6 +526,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err := platformSettingsService.RefreshAll(ctx); err != nil {
 		logger.Warn("platform settings prewarm failed", zap.Error(err))
 	}
+	captchaSecret := captchaTurnstileSecret()
+	if err := validateProductionCaptchaConfig(ctx, platformSettingsService, captchaSecret); err != nil {
+		return nil, err
+	}
+	logCaptchaConfig(ctx, logger, platformSettingsService, captchaSecret)
 	hermesQueries := dbhermes.New(pgPool)
 	hermesKeyStore := hermes.NewKeyStore(hermesQueries)
 	hermesBootstrapIssuer, err := hermes.NewBootstrapIssuerFromEnv(hermesKeyStore)
