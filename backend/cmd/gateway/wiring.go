@@ -48,6 +48,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	providercopilot "github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
 	providercursor "github.com/BloomingProsperity/HUAKAI/internal/provider/cursor"
@@ -129,6 +130,8 @@ type deps struct {
 	disputeStore             *auditreceipt.CostDisputeStore
 	refundQueue              *auditreceipt.MismatchRefundQueue
 	rateTableSource          *billing.PGXRateTableSource
+	pricingRatioStore        pricingcatalog.Store
+	pricingRatioResolver     *pricingcatalog.RatioResolver
 	modelRegistry            *registry.PostgresRegistry
 	modelSync                *modelsync.Service
 	routePlanner             *router.DefaultRouter
@@ -615,6 +618,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	}
 	modelRegistry := registry.NewPostgresRegistry(pgPool, nil)
 	modelSyncService := buildModelSyncService(opts.modelSync, modelRegistry)
+	pricingRatioStore := pricingcatalog.NewPostgresStore(pgPool)
+	pricingRatioResolver := pricingcatalog.NewRatioResolver(pricingRatioStore, 0)
 
 	loginThrottle, err := loadLoginThrottleFromEnv()
 	if err != nil {
@@ -680,6 +685,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		disputeStore:             disputeStore,
 		refundQueue:              refundQueue,
 		rateTableSource:          rateTableSource,
+		pricingRatioStore:        pricingRatioStore,
+		pricingRatioResolver:     pricingRatioResolver,
 		modelRegistry:            modelRegistry,
 		modelSync:                modelSyncService,
 		routePlanner:             router.NewDefaultRouter(),

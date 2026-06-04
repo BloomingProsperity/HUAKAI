@@ -69,6 +69,48 @@ func TestEmbeddingsHandler_SuccessSettlesPromptTokensAndForwardsPassthrough(t *t
 	}
 }
 
+func TestEmbeddingsHandler_GroupRatioDiscountsReserveAndActualCost(t *testing.T) {
+	body := `{"model":"embed-public","input":["alpha beta","gamma"],"encoding_format":"float","user":"u1"}`
+	upstream := upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"object":"list","data":[{"object":"embedding","embedding":[0.1,0.2],"index":0}],"model":"text-embedding-3-small","usage":{"prompt_tokens":7,"total_tokens":7}}`,
+	}
+	base := newEmbeddingsTestEnv(t, upstream)
+	baseRec := base.invoke(t, body)
+	if baseRec.Code != http.StatusOK {
+		t.Fatalf("baseline status=%d body=%s want 200", baseRec.Code, baseRec.Body.String())
+	}
+	if len(base.settler.settles) != 1 || len(base.claims.reserves) != 1 {
+		t.Fatalf("baseline settles/reserves=%d/%d want 1/1", len(base.settler.settles), len(base.claims.reserves))
+	}
+
+	discounted := newEmbeddingsTestEnv(t, upstream)
+	discounted.deps.PricingRatioResolver = &pricingRatioResolverStub{ratio: decimal.RequireFromString("0.8")}
+	discountedRec := discounted.invoke(t, body)
+	if discountedRec.Code != http.StatusOK {
+		t.Fatalf("discounted status=%d body=%s want 200", discountedRec.Code, discountedRec.Body.String())
+	}
+	if len(discounted.settler.settles) != 1 || len(discounted.claims.reserves) != 1 {
+		t.Fatalf("discounted settles/reserves=%d/%d want 1/1", len(discounted.settler.settles), len(discounted.claims.reserves))
+	}
+
+	ratio := decimal.RequireFromString("0.8")
+	wantActual := base.settler.settles[0].ActualCost.Mul(ratio)
+	wantPredicted := base.claims.reserves[0].req.PredictedCost.Mul(ratio)
+	assertEmbeddingsDecimal(t, "discounted ActualCost", discounted.settler.settles[0].ActualCost, wantActual)
+	assertEmbeddingsDecimal(t, "discounted Draft.ActualCost", discounted.settler.settles[0].Draft.ActualCost, wantActual)
+	assertEmbeddingsDecimal(t, "discounted reserve PredictedCost", discounted.claims.reserves[0].req.PredictedCost, wantPredicted)
+	if discounted.settler.settles[0].ActualCost.Equal(base.settler.settles[0].ActualCost) {
+		t.Fatalf("discounted ActualCost equals baseline %s; group ratio was not applied", base.settler.settles[0].ActualCost)
+	}
+	if discounted.claims.reserves[0].req.PredictedCost.Equal(base.claims.reserves[0].req.PredictedCost) {
+		t.Fatalf("discounted PredictedCost equals baseline %s; reserve ratio was not applied", base.claims.reserves[0].req.PredictedCost)
+	}
+	if !strings.Contains(discounted.settler.settles[0].Draft.CostSnapshot, "group_ratio=0.8") {
+		t.Fatalf("CostSnapshot=%q want group_ratio=0.8", discounted.settler.settles[0].Draft.CostSnapshot)
+	}
+}
+
 func TestEmbeddingsHandler_Upstream5xxAbortsReservedClaim(t *testing.T) {
 	env := newEmbeddingsTestEnv(t, upstreamResponse{
 		status: http.StatusInternalServerError,
@@ -306,6 +348,24 @@ func (s *recordingSettler) CommitCacheHit(context.Context, billing.SettleRequest
 
 func (s *recordingSettler) Refund(context.Context, billing.RefundRequest) (*billing.RefundResult, error) {
 	return nil, nil
+}
+
+type pricingRatioResolverStub struct {
+	ratio decimal.Decimal
+}
+
+func (s *pricingRatioResolverStub) Resolve(context.Context, int64, int64) decimal.Decimal {
+	if s == nil || s.ratio.IsZero() {
+		return decimal.NewFromInt(1)
+	}
+	return s.ratio
+}
+
+func assertEmbeddingsDecimal(t *testing.T, field string, got, want decimal.Decimal) {
+	t.Helper()
+	if !got.Equal(want) {
+		t.Fatalf("%s=%s want %s", field, got, want)
+	}
 }
 
 type recordingRoundTripper struct {

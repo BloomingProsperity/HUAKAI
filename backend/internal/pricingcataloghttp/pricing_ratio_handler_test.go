@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/shopspring/decimal"
@@ -92,6 +93,7 @@ func TestPricingRatioHandler_MoneyPrecisionRespondsWithExactDecimalString(t *tes
 			PoolGroupID: 9,
 			Ratio:       decimal.RequireFromString(exact),
 			RatioText:   exact,
+			PublicRatio: true,
 		}},
 	}, http.MethodPut, "/9?tenant_id=7", `{"ratio":"`+exact+`","public_ratio":true}`)
 
@@ -105,6 +107,64 @@ func TestPricingRatioHandler_MoneyPrecisionRespondsWithExactDecimalString(t *tes
 	if got, ok := body["ratio"].(string); !ok || got != exact {
 		t.Fatalf("ratio field=%#v want string %q", body["ratio"], exact)
 	}
+}
+
+func TestPricingRatioHandler_PublicRatioFalseHidesRatioInDisplay(t *testing.T) {
+	rec := doPricingRatioRequest(t, AdminPricingRatioDeps{
+		Auth: fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		Store: &fakeRatioStore{getRow: pricingcatalog.GroupPricingRatio{
+			ID:          1,
+			TenantID:    7,
+			PoolGroupID: 9,
+			Ratio:       decimal.RequireFromString("0.8"),
+			RatioText:   "0.8",
+			PublicRatio: false,
+		}},
+	}, http.MethodGet, "/9?tenant_id=7", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if _, ok := body["ratio"]; ok {
+		t.Fatalf("ratio field=%#v want omitted when public_ratio=false", body["ratio"])
+	}
+	if got, ok := body["public_ratio"].(bool); !ok || got {
+		t.Fatalf("public_ratio=%#v want false", body["public_ratio"])
+	}
+}
+
+func TestPricingRatioHandler_DisplayAndBillingResolverReadSameStoreValue(t *testing.T) {
+	store := &fakeRatioStore{getRow: pricingcatalog.GroupPricingRatio{
+		ID:          1,
+		TenantID:    7,
+		PoolGroupID: 9,
+		Ratio:       decimal.RequireFromString("0.8"),
+		RatioText:   "0.8",
+		PublicRatio: true,
+	}}
+	resolver := pricingcatalog.NewRatioResolver(store, time.Nanosecond)
+
+	firstDisplay := doPricingRatioRequest(t, AdminPricingRatioDeps{
+		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		Store: store,
+	}, http.MethodGet, "/9?tenant_id=7", "")
+	assertRatioField(t, firstDisplay, "0.8")
+	assertCatalogHTTPDecimal(t, "first resolver ratio", resolver.Resolve(context.Background(), 7, 9), "0.8")
+
+	store.getRow.Ratio = decimal.RequireFromString("1.2")
+	store.getRow.RatioText = "1.2"
+	time.Sleep(time.Millisecond)
+
+	secondDisplay := doPricingRatioRequest(t, AdminPricingRatioDeps{
+		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		Store: store,
+	}, http.MethodGet, "/9?tenant_id=7", "")
+	assertRatioField(t, secondDisplay, "1.2")
+	assertCatalogHTTPDecimal(t, "second resolver ratio", resolver.Resolve(context.Background(), 7, 9), "1.2")
 }
 
 func validPricingRatioDeps() AdminPricingRatioDeps {
@@ -139,6 +199,28 @@ func assertErrorCode(t *testing.T, rec *httptest.ResponseRecorder, want string) 
 	}
 }
 
+func assertRatioField(t *testing.T, rec *httptest.ResponseRecorder, want string) {
+	t.Helper()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got, ok := body["ratio"].(string); !ok || got != want {
+		t.Fatalf("ratio field=%#v want %q", body["ratio"], want)
+	}
+}
+
+func assertCatalogHTTPDecimal(t *testing.T, field string, got decimal.Decimal, want string) {
+	t.Helper()
+	wantDecimal := decimal.RequireFromString(want)
+	if !got.Equal(wantDecimal) {
+		t.Fatalf("%s=%s want %s", field, got, wantDecimal)
+	}
+}
+
 type fakeAdminAuth struct {
 	ident admin.AdminIdentity
 	err   error
@@ -150,11 +232,15 @@ func (f fakeAdminAuth) Resolve(context.Context, *http.Request) (admin.AdminIdent
 
 type fakeRatioStore struct {
 	upsertRow    pricingcatalog.GroupPricingRatio
+	getRow       pricingcatalog.GroupPricingRatio
 	upsertCalled bool
 	deleteErr    error
 }
 
 func (s *fakeRatioStore) GetRatio(context.Context, int64, int64) (pricingcatalog.GroupPricingRatio, error) {
+	if s.getRow.ID != 0 {
+		return s.getRow, nil
+	}
 	return pricingcatalog.GroupPricingRatio{}, errors.New("unexpected get")
 }
 

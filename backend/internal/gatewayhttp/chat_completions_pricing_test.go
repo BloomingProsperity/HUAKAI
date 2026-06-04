@@ -65,6 +65,65 @@ func TestSettleCompletion_UsesRateTableActualCost(t *testing.T) {
 	}
 }
 
+func TestSettleCompletion_GroupRatioDiscountsReserveAndActualCost(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
+
+	baseClaimGate := &recordingClaimGate{claimID: 7001}
+	baseSettler := &recordingSettler{}
+	baseDeps := clientAdapterDeps(t)
+	baseDeps.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	baseDeps.ClaimGate = baseClaimGate
+	baseDeps.Settler = baseSettler
+	baseDeps.RateTables = &rateTableSourceStub{table: billing.RateTable{
+		Version:     "test-policy",
+		PricingData: json.RawMessage(`{"models":{"gpt-4o":{"input_micro_usd":1000,"output_micro_usd":2000}}}`),
+	}}
+	baseRec := invokeHandlerPath(t, baseDeps, "/v1/chat/completions", body)
+	if baseRec.Code != http.StatusOK {
+		t.Fatalf("baseline status=%d want 200 body=%s", baseRec.Code, baseRec.Body.String())
+	}
+	if len(baseSettler.calls) != 1 {
+		t.Fatalf("baseline settle calls=%d want 1", len(baseSettler.calls))
+	}
+
+	discountedClaimGate := &recordingClaimGate{claimID: 7002}
+	discountedSettler := &recordingSettler{}
+	discountedDeps := clientAdapterDeps(t)
+	discountedDeps.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	discountedDeps.ClaimGate = discountedClaimGate
+	discountedDeps.Settler = discountedSettler
+	discountedDeps.PricingRatioResolver = &pricingRatioResolverStub{ratio: decimal.RequireFromString("0.8")}
+	discountedDeps.RateTables = &rateTableSourceStub{table: billing.RateTable{
+		Version:     "test-policy",
+		PricingData: json.RawMessage(`{"models":{"gpt-4o":{"input_micro_usd":1000,"output_micro_usd":2000}}}`),
+	}}
+
+	discountedRec := invokeHandlerPath(t, discountedDeps, "/v1/chat/completions", body)
+	if discountedRec.Code != http.StatusOK {
+		t.Fatalf("discounted status=%d want 200 body=%s", discountedRec.Code, discountedRec.Body.String())
+	}
+	if len(discountedSettler.calls) != 1 {
+		t.Fatalf("discounted settle calls=%d want 1", len(discountedSettler.calls))
+	}
+
+	ratio := decimal.RequireFromString("0.8")
+	wantActual := baseSettler.calls[0].ActualCost.Mul(ratio)
+	wantPredicted := baseClaimGate.req.PredictedCost.Mul(ratio)
+	assertDecimalEqual(t, "discounted ActualCost", discountedSettler.calls[0].ActualCost, wantActual)
+	assertDecimalEqual(t, "discounted Draft.ActualCost", discountedSettler.calls[0].Draft.ActualCost, wantActual)
+	assertDecimalEqual(t, "discounted reserve PredictedCost", discountedClaimGate.req.PredictedCost, wantPredicted)
+	if discountedSettler.calls[0].ActualCost.Equal(baseSettler.calls[0].ActualCost) {
+		t.Fatalf("discounted ActualCost equals baseline %s; group ratio was not applied", baseSettler.calls[0].ActualCost)
+	}
+	if discountedClaimGate.req.PredictedCost.Equal(baseClaimGate.req.PredictedCost) {
+		t.Fatalf("discounted PredictedCost equals baseline %s; reserve ratio was not applied", baseClaimGate.req.PredictedCost)
+	}
+	if !strings.Contains(discountedSettler.calls[0].Draft.CostSnapshot, "group_ratio=0.8") {
+		t.Fatalf("CostSnapshot=%q want group_ratio=0.8", discountedSettler.calls[0].Draft.CostSnapshot)
+	}
+}
+
 func TestSettleCompletion_UsesTieredPricingDataWhenConfigured(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	settler := &recordingSettler{}
@@ -743,4 +802,15 @@ func assertDecimalEqual(t *testing.T, field string, got, want decimal.Decimal) {
 	if !got.Equal(want) {
 		t.Fatalf("%s=%s want %s", field, got, want)
 	}
+}
+
+type pricingRatioResolverStub struct {
+	ratio decimal.Decimal
+}
+
+func (s *pricingRatioResolverStub) Resolve(context.Context, int64, int64) decimal.Decimal {
+	if s == nil || s.ratio.IsZero() {
+		return decimal.NewFromInt(1)
+	}
+	return s.ratio
 }

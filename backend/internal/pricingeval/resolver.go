@@ -32,6 +32,7 @@ type FlatRateFallback struct {
 	CacheCreation1h decimal.Decimal
 	CacheRead       decimal.Decimal
 	Multiplier      decimal.Decimal
+	GroupRatio      decimal.Decimal
 
 	HasInput           bool
 	HasOutput          bool
@@ -71,12 +72,16 @@ func Resolve(ctx context.Context, raw json.RawMessage, usage Usage, fallback Fla
 	if err != nil {
 		return failSoftToFlat(ctx, version, err, flat, flatErr)
 	}
+	groupRatio, err := pricingGroupRatio(fallback.GroupRatio)
+	if err != nil {
+		return Result{}, err
+	}
 	observeTieredCharged()
 	return Result{
-		Total:             eval.Total,
-		CacheCreationCost: eval.CacheCreationCost,
-		CacheReadCost:     eval.CacheReadCost,
-		CostSnapshot:      tieredSnapshot(version),
+		Total:             applyGroupRatio(eval.Total, groupRatio),
+		CacheCreationCost: applyGroupRatio(eval.CacheCreationCost, groupRatio),
+		CacheReadCost:     applyGroupRatio(eval.CacheReadCost, groupRatio),
+		CostSnapshot:      snapshotWithGroupRatio(tieredSnapshot(version), groupRatio),
 	}, nil
 }
 
@@ -104,11 +109,18 @@ func FlatCost(usage Usage, rates FlatRateFallback) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	groupRatio, err := pricingGroupRatio(rates.GroupRatio)
+	if err != nil {
+		return Result{}, err
+	}
+	totalCost := scaleMicros(totalMicros, multiplier)
+	cacheCreationCost := scaleMicros(cacheCreationMicros, multiplier)
+	cacheReadCost := scaleMicros(cacheReadMicros, multiplier)
 	return Result{
-		Total:             scaleMicros(totalMicros, multiplier),
-		CacheCreationCost: scaleMicros(cacheCreationMicros, multiplier),
-		CacheReadCost:     scaleMicros(cacheReadMicros, multiplier),
-		CostSnapshot:      "flat",
+		Total:             applyGroupRatio(totalCost, groupRatio),
+		CacheCreationCost: applyGroupRatio(cacheCreationCost, groupRatio),
+		CacheReadCost:     applyGroupRatio(cacheReadCost, groupRatio),
+		CostSnapshot:      snapshotWithGroupRatio("flat", groupRatio),
 	}, nil
 }
 
@@ -172,6 +184,27 @@ func flatMultiplier(multiplier decimal.Decimal) (decimal.Decimal, error) {
 	return multiplier, nil
 }
 
+func pricingGroupRatio(ratio decimal.Decimal) (decimal.Decimal, error) {
+	if ratio.IsZero() {
+		return decimal.NewFromInt(1), nil
+	}
+	if ratio.IsNegative() {
+		return decimal.Zero, errors.New("pricingeval: group_ratio must be positive")
+	}
+	return ratio, nil
+}
+
 func scaleMicros(micros decimal.Decimal, multiplier decimal.Decimal) decimal.Decimal {
 	return micros.Mul(multiplier).Div(microUSDDivisor)
+}
+
+func applyGroupRatio(cost decimal.Decimal, ratio decimal.Decimal) decimal.Decimal {
+	return cost.Mul(ratio)
+}
+
+func snapshotWithGroupRatio(snapshot string, ratio decimal.Decimal) string {
+	if ratio.Equal(decimal.NewFromInt(1)) {
+		return snapshot
+	}
+	return snapshot + ";group_ratio=" + ratio.String()
 }

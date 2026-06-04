@@ -36,7 +36,7 @@ type ratioResponseBody struct {
 	ID          int64  `json:"id"`
 	TenantID    int64  `json:"tenant_id"`
 	PoolGroupID int64  `json:"pool_group_id"`
-	Ratio       string `json:"ratio"`
+	Ratio       string `json:"ratio,omitempty"`
 	PublicRatio bool   `json:"public_ratio"`
 	CreatedBy   string `json:"created_by,omitempty"`
 	UpdatedBy   string `json:"updated_by,omitempty"`
@@ -206,18 +206,21 @@ func resolveRatioPage(w http.ResponseWriter, r *http.Request, d AdminPricingRati
 }
 
 func ratioResponse(row pricingcatalog.GroupPricingRatio) ratioResponseBody {
-	return ratioResponseBody{
+	out := ratioResponseBody{
 		Object:      "pricing_ratio",
 		ID:          row.ID,
 		TenantID:    row.TenantID,
 		PoolGroupID: row.PoolGroupID,
-		Ratio:       row.RatioString(),
 		PublicRatio: row.PublicRatio,
 		CreatedBy:   row.CreatedBy,
 		UpdatedBy:   row.UpdatedBy,
 		CreatedAt:   formatTime(row.CreatedAt),
 		UpdatedAt:   formatTime(row.UpdatedAt),
 	}
+	if row.PublicRatio {
+		out.Ratio = row.RatioString()
+	}
+	return out
 }
 
 func paginateRatios(rows []pricingcatalog.GroupPricingRatio, page catalogPage) []pricingcatalog.GroupPricingRatio {
