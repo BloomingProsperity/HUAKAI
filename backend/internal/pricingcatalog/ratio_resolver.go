@@ -3,6 +3,9 @@ package pricingcatalog
 import (
 	"context"
 	"errors"
+	"expvar"
+	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -12,6 +15,18 @@ import (
 const defaultRatioResolverTTL = 30 * time.Second
 
 var defaultGroupRatio = decimal.NewFromInt(1)
+
+const (
+	ratioResolverBackendErrorTotal = "backend_error_without_lkg_total"
+	ratioResolverStaleTotal        = "stale_on_backend_error_total"
+)
+
+var ratioResolverSignals = expvar.NewMap("pricing_ratio_resolver")
+
+func init() {
+	ratioResolverSignals.Add(ratioResolverBackendErrorTotal, 0)
+	ratioResolverSignals.Add(ratioResolverStaleTotal, 0)
+}
 
 type RatioResolver struct {
 	store Store
@@ -42,29 +57,51 @@ func NewRatioResolver(store Store, ttl time.Duration) *RatioResolver {
 	}
 }
 
-func (r *RatioResolver) Resolve(ctx context.Context, tenantID, poolGroupID int64) decimal.Decimal {
+func (r *RatioResolver) Resolve(ctx context.Context, tenantID, poolGroupID int64) (decimal.Decimal, error) {
+	ratio, _, err := r.ResolveWithSignal(ctx, tenantID, poolGroupID)
+	return ratio, err
+}
+
+func (r *RatioResolver) ResolveWithSignal(ctx context.Context, tenantID, poolGroupID int64) (decimal.Decimal, bool, error) {
 	if r == nil || r.store == nil || tenantID <= 0 || poolGroupID <= 0 {
-		return defaultGroupRatio
+		return defaultGroupRatio, false, nil
 	}
 	key := ratioCacheKey{tenantID: tenantID, poolGroupID: poolGroupID}
 	now := time.Now()
 	if ratio, ok := r.cached(key, now); ok {
-		return ratio
+		return ratio, false, nil
 	}
 
 	row, err := r.store.GetRatio(ctx, tenantID, poolGroupID)
 	if err == nil && row.Ratio.IsPositive() {
 		r.put(key, row.Ratio, now)
-		return row.Ratio
+		return row.Ratio, false, nil
+	}
+	if err == nil {
+		err = fmt.Errorf("%w: non-positive pricing ratio for tenant %d pool group %d", ErrBackend, tenantID, poolGroupID)
 	}
 	if errors.Is(err, ErrNotFound) {
 		r.put(key, defaultGroupRatio, now)
-		return defaultGroupRatio
+		return defaultGroupRatio, false, nil
 	}
 	if ratio, ok := r.lastKnownGood(key); ok {
-		return ratio
+		ratioResolverSignals.Add(ratioResolverStaleTotal, 1)
+		slog.WarnContext(ctx, "pricing ratio resolver served stale ratio after backend error",
+			"tenant_id", tenantID,
+			"pool_group_id", poolGroupID,
+			"error", err,
+		)
+		return ratio, false, nil
 	}
-	return defaultGroupRatio
+	ratioResolverSignals.Add(ratioResolverBackendErrorTotal, 1)
+	slog.ErrorContext(ctx, "pricing ratio resolver served default ratio after backend error without last-known-good",
+		"tenant_id", tenantID,
+		"pool_group_id", poolGroupID,
+		"default_group_ratio", defaultGroupRatio.String(),
+		"error", err,
+	)
+	// 可用性优先: 冷启且后端抖动时按 1.0 放行,同时把本次请求标记为待对账。
+	return defaultGroupRatio, true, nil
 }
 
 func (r *RatioResolver) cached(key ratioCacheKey, now time.Time) (decimal.Decimal, bool) {
@@ -86,6 +123,15 @@ func (r *RatioResolver) put(key ratioCacheKey, ratio decimal.Decimal, now time.T
 	}
 }
 
+func (r *RatioResolver) Invalidate(tenantID, poolGroupID int64) {
+	if r == nil || tenantID <= 0 || poolGroupID <= 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.cache, ratioCacheKey{tenantID: tenantID, poolGroupID: poolGroupID})
+}
+
 func (r *RatioResolver) lastKnownGood(key ratioCacheKey) (decimal.Decimal, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -94,4 +140,24 @@ func (r *RatioResolver) lastKnownGood(key ratioCacheKey) (decimal.Decimal, bool)
 		return decimal.Zero, false
 	}
 	return entry.ratio, true
+}
+
+type RatioResolverSignalSnapshot struct {
+	BackendErrorWithoutLKGTotal int64
+	StaleOnBackendErrorTotal    int64
+}
+
+func SnapshotRatioResolverSignals() RatioResolverSignalSnapshot {
+	return RatioResolverSignalSnapshot{
+		BackendErrorWithoutLKGTotal: ratioResolverSignalValue(ratioResolverBackendErrorTotal),
+		StaleOnBackendErrorTotal:    ratioResolverSignalValue(ratioResolverStaleTotal),
+	}
+}
+
+func ratioResolverSignalValue(key string) int64 {
+	v, ok := ratioResolverSignals.Get(key).(*expvar.Int)
+	if !ok {
+		return 0
+	}
+	return v.Value()
 }

@@ -203,7 +203,7 @@ SELECT
     signature,
     key_id
 FROM pricing_ratio_audit_log
-ORDER BY occurred_at ASC, id ASC`)
+ORDER BY id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("%w: query pricing ratio audit chain: %w", ErrBackend, err)
 	}

@@ -98,12 +98,16 @@ func (ex *execution) perImageCost(n int) (decimal.Decimal, string, bool, error) 
 	if err != nil {
 		return decimal.Zero, "", false, err
 	}
+	groupRatio, err := ex.groupPricingRatio()
+	if err != nil {
+		return decimal.Zero, "", false, err
+	}
 	result, err := pricingeval.Resolve(ex.ctx, json.RawMessage(`{}`), pricingeval.Usage{
 		BillableUnits: decimal.NewFromInt(int64(n)),
 	}, pricingeval.FlatRateFallback{
 		PerUnit:    perUnit,
 		Multiplier: decimal.NewFromInt(1),
-		GroupRatio: ex.groupPricingRatio(),
+		GroupRatio: groupRatio,
 		HasPerUnit: true,
 	}, strings.TrimSpace(ex.d.BillingPolicyVersion))
 	if err != nil {
@@ -129,6 +133,10 @@ func (ex *execution) tokenImageCost(usage tokenImageUsage) (decimal.Decimal, str
 	if err != nil {
 		return decimal.Zero, "", false, err
 	}
+	groupRatio, err := ex.groupPricingRatio()
+	if err != nil {
+		return decimal.Zero, "", false, err
+	}
 	result, err := pricingeval.Resolve(ex.ctx, rates.Raw, pricingeval.Usage{
 		InputTokens:  int64(usage.InputTokens),
 		OutputTokens: int64(usage.OutputTokens),
@@ -136,7 +144,7 @@ func (ex *execution) tokenImageCost(usage tokenImageUsage) (decimal.Decimal, str
 		Input:      rates.Input,
 		Output:     rates.Output,
 		Multiplier: rates.Multiplier,
-		GroupRatio: ex.groupPricingRatio(),
+		GroupRatio: groupRatio,
 		HasInput:   rates.HasInput,
 		HasOutput:  rates.HasOutput,
 	}, strings.TrimSpace(ex.d.BillingPolicyVersion))
@@ -146,9 +154,9 @@ func (ex *execution) tokenImageCost(usage tokenImageUsage) (decimal.Decimal, str
 	return result.Total, result.CostSnapshot, result.PendingReconciliation, nil
 }
 
-func (ex *execution) groupPricingRatio() decimal.Decimal {
+func (ex *execution) groupPricingRatio() (decimal.Decimal, error) {
 	if ex == nil || ex.d.PricingRatioResolver == nil {
-		return decimal.Zero
+		return decimal.Zero, nil
 	}
 	return ex.d.PricingRatioResolver.Resolve(ex.ctx, ex.ident.TenantID, ex.attempt.PoolGroupID)
 }

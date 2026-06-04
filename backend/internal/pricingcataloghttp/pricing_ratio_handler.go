@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -18,13 +19,25 @@ import (
 )
 
 type AdminPricingRatioDeps struct {
-	Auth  adminRatioAuth
-	Store pricingcatalog.Store
+	Auth     adminRatioAuth
+	Store    pricingcatalog.Store
+	Resolver ratioCacheInvalidator
 }
 
 type adminRatioAuth interface {
 	Resolve(context.Context, *http.Request) (admin.AdminIdentity, error)
 }
+
+type ratioCacheInvalidator interface {
+	Invalidate(tenantID, poolGroupID int64)
+}
+
+const pricingRatioMaxEnv = "HUAKAI_PRICING_RATIO_MAX"
+
+var (
+	pricingRatioMin        = decimal.RequireFromString("0.01")
+	defaultPricingRatioMax = decimal.NewFromInt(100)
+)
 
 type ratioRequestBody struct {
 	Ratio       string `json:"ratio"`
@@ -134,6 +147,7 @@ func newRatioUpsertHandler(d AdminPricingRatioDeps) http.HandlerFunc {
 			writeRatioStoreError(w, "pricing_ratio_upsert_failed", err)
 			return
 		}
+		invalidateRatioResolver(d, page.TenantID, poolGroupID)
 		writeJSON(w, http.StatusOK, ratioResponse(row))
 	}
 }
@@ -162,6 +176,7 @@ func newRatioDeleteHandler(d AdminPricingRatioDeps) http.HandlerFunc {
 			writeRatioStoreError(w, "pricing_ratio_delete_failed", err)
 			return
 		}
+		invalidateRatioResolver(d, page.TenantID, poolGroupID)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"object":        "pricing_ratio_deleted",
 			"tenant_id":     page.TenantID,
@@ -186,7 +201,32 @@ func parseRatioBody(w http.ResponseWriter, r *http.Request) (parsedRatioBody, bo
 		writeError(w, http.StatusBadRequest, "invalid_ratio", "ratio must be a positive decimal")
 		return parsedRatioBody{}, false
 	}
+	maxRatio := configuredPricingRatioMax()
+	if ratio.LessThan(pricingRatioMin) || ratio.GreaterThan(maxRatio) {
+		writeError(w, http.StatusUnprocessableEntity, "ratio_out_of_range", fmt.Sprintf("ratio must be between %s and %s", pricingRatioMin, maxRatio))
+		return parsedRatioBody{}, false
+	}
 	return parsedRatioBody{ratio: ratio, publicRatio: body.PublicRatio}, true
+}
+
+func configuredPricingRatioMax() decimal.Decimal {
+	raw := strings.TrimSpace(os.Getenv(pricingRatioMaxEnv))
+	if raw == "" {
+		return defaultPricingRatioMax
+	}
+	maxRatio, err := decimal.NewFromString(raw)
+	if err != nil || maxRatio.LessThan(pricingRatioMin) {
+		return defaultPricingRatioMax
+	}
+	return maxRatio
+}
+
+func invalidateRatioResolver(d AdminPricingRatioDeps, tenantID, poolGroupID int64) {
+	if d.Resolver == nil {
+		return
+	}
+	// ratio 写成功后必须精确失效, 否则 billing 热路径会在 TTL 内继续使用旧倍率。
+	d.Resolver.Invalidate(tenantID, poolGroupID)
 }
 
 func parsePoolGroupID(w http.ResponseWriter, r *http.Request) (int64, bool) {

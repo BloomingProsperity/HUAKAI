@@ -36,7 +36,7 @@ type authResolver interface {
 }
 
 type pricingRatioResolver interface {
-	Resolve(ctx context.Context, tenantID, poolGroupID int64) decimal.Decimal
+	Resolve(ctx context.Context, tenantID, poolGroupID int64) (decimal.Decimal, error)
 }
 
 type dispatcher interface {

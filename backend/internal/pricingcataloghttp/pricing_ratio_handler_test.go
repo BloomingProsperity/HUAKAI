@@ -59,6 +59,15 @@ func TestPricingRatioHandler_InvalidDecimalStringIs400(t *testing.T) {
 	assertErrorCode(t, rec, "invalid_ratio")
 }
 
+func TestPricingRatioHandler_ExtremeRatioIs422(t *testing.T) {
+	rec := doPricingRatioRequest(t, validPricingRatioDeps(), http.MethodPut, "/9?tenant_id=7", `{"ratio":"10000"}`)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%s want 422", rec.Code, rec.Body.String())
+	}
+	assertErrorCode(t, rec, "ratio_out_of_range")
+}
+
 func TestPricingRatioHandler_DeleteReturns404WhenMissing(t *testing.T) {
 	rec := doPricingRatioRequest(t, AdminPricingRatioDeps{
 		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
@@ -85,6 +94,7 @@ func TestPricingRatioHandler_TenantIsolationViaParseAdminCatalogPage(t *testing.
 
 func TestPricingRatioHandler_MoneyPrecisionRespondsWithExactDecimalString(t *testing.T) {
 	const exact = "123456789.12345678"
+	t.Setenv(pricingRatioMaxEnv, "200000000")
 	rec := doPricingRatioRequest(t, AdminPricingRatioDeps{
 		Auth: fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
 		Store: &fakeRatioStore{upsertRow: pricingcatalog.GroupPricingRatio{
@@ -186,7 +196,7 @@ func TestPricingRatioHandler_DisplayAndBillingResolverReadSameStoreValue(t *test
 		Store: store,
 	}, http.MethodGet, "/9?tenant_id=7", "")
 	assertRatioField(t, firstDisplay, "0.8")
-	assertCatalogHTTPDecimal(t, "first resolver ratio", resolver.Resolve(context.Background(), 7, 9), "0.8")
+	assertCatalogHTTPDecimal(t, "first resolver ratio", mustResolveHTTPRatio(t, resolver, 7, 9), "0.8")
 
 	store.getRow.Ratio = decimal.RequireFromString("1.2")
 	store.getRow.RatioText = "1.2"
@@ -197,7 +207,57 @@ func TestPricingRatioHandler_DisplayAndBillingResolverReadSameStoreValue(t *test
 		Store: store,
 	}, http.MethodGet, "/9?tenant_id=7", "")
 	assertRatioField(t, secondDisplay, "1.2")
-	assertCatalogHTTPDecimal(t, "second resolver ratio", resolver.Resolve(context.Background(), 7, 9), "1.2")
+	assertCatalogHTTPDecimal(t, "second resolver ratio", mustResolveHTTPRatio(t, resolver, 7, 9), "1.2")
+}
+
+func TestPricingRatioHandler_UpsertInvalidatesBillingResolverCache(t *testing.T) {
+	store := &fakeRatioStore{getRow: pricingcatalog.GroupPricingRatio{
+		ID:          1,
+		TenantID:    7,
+		PoolGroupID: 9,
+		Ratio:       decimal.RequireFromString("0.8"),
+		RatioText:   "0.8",
+		PublicRatio: true,
+	}}
+	resolver := pricingcatalog.NewRatioResolver(store, time.Hour)
+	assertCatalogHTTPDecimal(t, "warm resolver ratio", mustResolveHTTPRatio(t, resolver, 7, 9), "0.8")
+
+	rec := doPricingRatioRequest(t, AdminPricingRatioDeps{
+		Auth:     fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		Store:    store,
+		Resolver: resolver,
+	}, http.MethodPut, "/9?tenant_id=7", `{"ratio":"1.2","public_ratio":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+
+	// 判别性夹具: resolver TTL 是 1 小时, 没有精确 Invalidate 时这里仍会读到旧 0.8。
+	assertCatalogHTTPDecimal(t, "resolver ratio after upsert", mustResolveHTTPRatio(t, resolver, 7, 9), "1.2")
+}
+
+func TestPricingRatioHandler_DeleteInvalidatesBillingResolverCache(t *testing.T) {
+	store := &fakeRatioStore{getRow: pricingcatalog.GroupPricingRatio{
+		ID:          1,
+		TenantID:    7,
+		PoolGroupID: 9,
+		Ratio:       decimal.RequireFromString("0.8"),
+		RatioText:   "0.8",
+		PublicRatio: true,
+	}}
+	resolver := pricingcatalog.NewRatioResolver(store, time.Hour)
+	assertCatalogHTTPDecimal(t, "warm resolver ratio", mustResolveHTTPRatio(t, resolver, 7, 9), "0.8")
+
+	rec := doPricingRatioRequest(t, AdminPricingRatioDeps{
+		Auth:     fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		Store:    store,
+		Resolver: resolver,
+	}, http.MethodDelete, "/9?tenant_id=7", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+
+	// 判别性夹具: delete 后没有 Invalidate 会继续返回删除前的 0.8, 而不是明确缺省 1.0。
+	assertCatalogHTTPDecimal(t, "resolver ratio after delete", mustResolveHTTPRatio(t, resolver, 7, 9), "1")
 }
 
 func validPricingRatioDeps() AdminPricingRatioDeps {
@@ -254,6 +314,15 @@ func assertCatalogHTTPDecimal(t *testing.T, field string, got decimal.Decimal, w
 	}
 }
 
+func mustResolveHTTPRatio(t *testing.T, resolver *pricingcatalog.RatioResolver, tenantID, poolGroupID int64) decimal.Decimal {
+	t.Helper()
+	got, err := resolver.Resolve(context.Background(), tenantID, poolGroupID)
+	if err != nil {
+		t.Fatalf("Resolve() error=%v", err)
+	}
+	return got
+}
+
 type fakeAdminAuth struct {
 	ident admin.AdminIdentity
 	err   error
@@ -276,7 +345,7 @@ func (s *fakeRatioStore) GetRatio(context.Context, int64, int64) (pricingcatalog
 	if s.getRow.ID != 0 {
 		return s.getRow, nil
 	}
-	return pricingcatalog.GroupPricingRatio{}, errors.New("unexpected get")
+	return pricingcatalog.GroupPricingRatio{}, pricingcatalog.ErrNotFound
 }
 
 func (s *fakeRatioStore) ListRatios(context.Context, int64) ([]pricingcatalog.GroupPricingRatio, error) {
@@ -290,19 +359,25 @@ func (s *fakeRatioStore) UpsertRatio(_ context.Context, p pricingcatalog.UpsertR
 		return pricingcatalog.GroupPricingRatio{}, errors.New("test store received non-positive ratio")
 	}
 	if s.upsertRow.ID != 0 {
+		s.getRow = s.upsertRow
 		return s.upsertRow, nil
 	}
-	return pricingcatalog.GroupPricingRatio{
+	row := pricingcatalog.GroupPricingRatio{
 		ID:          1,
 		TenantID:    p.TenantID,
 		PoolGroupID: p.PoolGroupID,
 		Ratio:       p.Ratio,
 		RatioText:   p.Ratio.String(),
 		PublicRatio: p.PublicRatio,
-	}, nil
+	}
+	s.getRow = row
+	return row, nil
 }
 
 func (s *fakeRatioStore) DeleteRatio(_ context.Context, p pricingcatalog.DeleteRatioParams) error {
 	s.lastDelete = p
+	if s.deleteErr == nil {
+		s.getRow = pricingcatalog.GroupPricingRatio{}
+	}
 	return s.deleteErr
 }

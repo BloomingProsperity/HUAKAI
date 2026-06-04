@@ -28,7 +28,11 @@ func (ex *execution) inputCost(tokens int) (decimal.Decimal, string, bool, error
 		return decimal.Zero, "", false, err
 	}
 	fallback := selection.fallback()
-	fallback.GroupRatio = ex.groupPricingRatio()
+	groupRatio, err := ex.groupPricingRatio()
+	if err != nil {
+		return decimal.Zero, "", false, err
+	}
+	fallback.GroupRatio = groupRatio
 	result, err := pricingeval.Resolve(ex.ctx, selection.raw, pricingeval.Usage{InputTokens: int64(tokens)}, fallback, version)
 	if err != nil {
 		return decimal.Zero, "", false, err
@@ -36,9 +40,9 @@ func (ex *execution) inputCost(tokens int) (decimal.Decimal, string, bool, error
 	return result.Total, result.CostSnapshot, result.PendingReconciliation, nil
 }
 
-func (ex *execution) groupPricingRatio() decimal.Decimal {
+func (ex *execution) groupPricingRatio() (decimal.Decimal, error) {
 	if ex == nil || ex.d.PricingRatioResolver == nil {
-		return decimal.Zero
+		return decimal.Zero, nil
 	}
 	return ex.d.PricingRatioResolver.Resolve(ex.ctx, ex.ident.TenantID, ex.attempt.PoolGroupID)
 }
