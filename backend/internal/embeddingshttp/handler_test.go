@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -275,8 +276,9 @@ func (vaultStub) Resolve(context.Context, int64, int64) (provider.Credential, pr
 }
 
 type recordingSettler struct {
-	settles []billing.SettleRequest
-	aborts  []abortCall
+	settles   []billing.SettleRequest
+	aborts    []abortCall
+	settleErr error
 }
 
 type abortCall struct {
@@ -287,6 +289,9 @@ type abortCall struct {
 
 func (s *recordingSettler) Settle(_ context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {
 	s.settles = append(s.settles, req)
+	if s.settleErr != nil {
+		return nil, s.settleErr
+	}
 	return &billing.SettleResult{}, nil
 }
 
@@ -330,4 +335,28 @@ func (rt *recordingRoundTripper) RoundTrip(req *http.Request) (*http.Response, e
 		Body:       io.NopCloser(strings.NewReader(rt.resp.body)),
 		Request:    req,
 	}, nil
+}
+
+func TestEmbeddingsHandler_SettleErrorReturns500WithoutDoubleClose(t *testing.T) {
+	env := newEmbeddingsTestEnv(t, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"object":"list","data":[{"object":"embedding","embedding":[0.1],"index":0}],"model":"text-embedding-3-small","usage":{"prompt_tokens":5,"total_tokens":5}}`,
+	})
+	env.settler.settleErr = errors.New("settle backend down")
+
+	rec := env.invoke(t, `{"model":"embed-public","input":"settle fails after upstream success"}`)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s want 500 on settle error", rec.Code, rec.Body.String())
+	}
+	if got := len(env.settler.settles); got != 1 {
+		t.Fatalf("settle attempts=%d want 1", got)
+	}
+	// Settle-error path must NOT abort: aborting a claim whose Settle may have
+	// partially committed risks a double-close. The dangling reserve is instead
+	// reclaimed by claim lease-expiry + the reconciliation worker. Locks in the
+	// Owner-approved 2026-06-04 decision -- adding an abort here turns this RED.
+	if got := len(env.settler.aborts); got != 0 {
+		t.Fatalf("abort calls=%d want 0 -- settle-error must not double-close", got)
+	}
 }
