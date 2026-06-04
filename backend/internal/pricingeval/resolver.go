@@ -22,6 +22,7 @@ type Usage struct {
 	CacheCreation5mTokens int64
 	CacheCreation1hTokens int64
 	CacheReadTokens       int64
+	BillableUnits         decimal.Decimal
 }
 
 type FlatRateFallback struct {
@@ -31,6 +32,7 @@ type FlatRateFallback struct {
 	CacheCreation5m decimal.Decimal
 	CacheCreation1h decimal.Decimal
 	CacheRead       decimal.Decimal
+	PerUnit         decimal.Decimal
 	Multiplier      decimal.Decimal
 	GroupRatio      decimal.Decimal
 
@@ -40,6 +42,7 @@ type FlatRateFallback struct {
 	HasCacheCreation5m bool
 	HasCacheCreation1h bool
 	HasCacheRead       bool
+	HasPerUnit         bool
 }
 
 type Result struct {
@@ -105,6 +108,11 @@ func FlatCost(usage Usage, rates FlatRateFallback) (Result, error) {
 		return Result{}, err
 	}
 	totalMicros = totalMicros.Add(cacheReadMicros)
+	unitMicros, err := unitMicros(usage.BillableUnits, rates.PerUnit, rates.HasPerUnit)
+	if err != nil {
+		return Result{}, err
+	}
+	totalMicros = totalMicros.Add(unitMicros)
 	multiplier, err := flatMultiplier(rates.Multiplier)
 	if err != nil {
 		return Result{}, err
@@ -175,6 +183,22 @@ func tokenMicros(tokens int64, rate decimal.Decimal, hasRate bool, bucket string
 		return decimal.Zero, fmt.Errorf("pricingeval: %s rate negative", bucket)
 	}
 	return decimal.NewFromInt(tokens).Mul(rate), nil
+}
+
+func unitMicros(units decimal.Decimal, rate decimal.Decimal, hasRate bool) (decimal.Decimal, error) {
+	if units.IsZero() {
+		return decimal.Zero, nil
+	}
+	if units.IsNegative() {
+		return decimal.Zero, errors.New("pricingeval: billable_units must be non-negative")
+	}
+	if !hasRate {
+		return decimal.Zero, errors.New("pricingeval: per_unit rate missing")
+	}
+	if rate.IsNegative() {
+		return decimal.Zero, errors.New("pricingeval: per_unit rate negative")
+	}
+	return units.Mul(rate), nil
 }
 
 func flatMultiplier(multiplier decimal.Decimal) (decimal.Decimal, error) {

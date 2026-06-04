@@ -20,6 +20,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeshttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/imageshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/meusagehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/panelauthhttp"
@@ -54,6 +55,9 @@ func (d *deps) AdminDLQStore() gatewayhttp.AdminDLQStore {
 func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Post("/v1/chat/completions", gatewayhttp.NewChatCompletionsHandler(chatHandlerDeps(d)))
 	r.Post("/v1/embeddings", embeddingshttp.NewEmbeddingsHandler(embeddingsHandlerDeps(d)))
+	r.Post("/v1/images/generations", imageshttp.NewGenerationsHandler(imageHandlerDeps(d)))
+	r.Post("/v1/images/edits", imageshttp.NewEditsHandler(imageHandlerDeps(d)))
+	r.Post("/v1/images/variations", imageshttp.NewVariationsHandler(imageHandlerDeps(d)))
 	r.Post("/v1/responses", gatewayhttp.NewResponsesHandler(chatHandlerDeps(d)))
 	r.Post("/v1/messages", gatewayhttp.NewMessagesHandler(chatHandlerDeps(d)))
 	r.Get("/v1/realtime", handleRealtimeRoadmap)
@@ -419,6 +423,25 @@ func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 
 func embeddingsHandlerDeps(d *deps) embeddingshttp.Deps {
 	return embeddingshttp.Deps{
+		Auth:                  d.inboundAuth,
+		Registry:              d.modelRegistry,
+		Router:                d.routePlanner,
+		ClaimGate:             d.claimGate,
+		QuotaReserver:         d.quotaReserver,
+		RateTables:            d.rateTableSource,
+		PricingRatioResolver:  d.pricingRatioResolver,
+		Selector:              d.selector,
+		CredentialVault:       d.credentialVault,
+		Dispatcher:            d.dispatcher,
+		Settler:               d.settler,
+		BillingPolicyResolver: d.billingPolicyResolver,
+		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
+		RequestClass:          d.cfg.RequestClass,
+	}
+}
+
+func imageHandlerDeps(d *deps) imageshttp.Deps {
+	return imageshttp.Deps{
 		Auth:                  d.inboundAuth,
 		Registry:              d.modelRegistry,
 		Router:                d.routePlanner,

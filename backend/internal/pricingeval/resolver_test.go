@@ -199,6 +199,63 @@ func TestResolve_DefaultGroupRatioIsOneAndKeepsLegacySnapshot(t *testing.T) {
 	}
 }
 
+func TestFlatCost_PerUnitBillableUnitsAreAdditive(t *testing.T) {
+	got, err := FlatCost(Usage{
+		BillableUnits: decimal.NewFromInt(3),
+	}, FlatRateFallback{
+		PerUnit:    decimal.NewFromInt(2500),
+		Multiplier: decimal.NewFromInt(1),
+		HasPerUnit: true,
+	})
+	if err != nil {
+		t.Fatalf("FlatCost() error = %v", err)
+	}
+	assertPricingDecimal(t, "Total", got.Total, "0.0075")
+}
+
+func TestFlatCost_ZeroBillableUnitsKeepTokenOnlyBehavior(t *testing.T) {
+	got, err := FlatCost(Usage{
+		InputTokens:   4,
+		BillableUnits: decimal.Zero,
+	}, FlatRateFallback{
+		Input:      decimal.NewFromInt(1000),
+		PerUnit:    decimal.NewFromInt(999999),
+		Multiplier: decimal.NewFromInt(1),
+		HasInput:   true,
+		HasPerUnit: true,
+	})
+	if err != nil {
+		t.Fatalf("FlatCost() error = %v", err)
+	}
+	assertPricingDecimal(t, "Total", got.Total, "0.004")
+}
+
+func TestFlatCost_PerUnitRejectsNegativeUsageOrRate(t *testing.T) {
+	tests := []struct {
+		name  string
+		usage Usage
+		rates FlatRateFallback
+	}{
+		{
+			name:  "negative units",
+			usage: Usage{BillableUnits: decimal.NewFromInt(-1)},
+			rates: FlatRateFallback{PerUnit: decimal.NewFromInt(1000), Multiplier: decimal.NewFromInt(1), HasPerUnit: true},
+		},
+		{
+			name:  "negative rate",
+			usage: Usage{BillableUnits: decimal.NewFromInt(1)},
+			rates: FlatRateFallback{PerUnit: decimal.NewFromInt(-1000), Multiplier: decimal.NewFromInt(1), HasPerUnit: true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := FlatCost(tt.usage, tt.rates); err == nil {
+				t.Fatal("FlatCost() error = nil want negative per-unit error")
+			}
+		})
+	}
+}
+
 func assertPricingDecimal(t *testing.T, field string, got decimal.Decimal, want string) {
 	t.Helper()
 	wantDecimal := decimal.RequireFromString(want)
