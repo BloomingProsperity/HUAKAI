@@ -77,6 +77,124 @@ func TestServiceGetPresentKeyUsesDBAndCache(t *testing.T) {
 	}
 }
 
+func TestServiceGetStoreErrorReturnsLastKnownSetting(t *testing.T) {
+	base := NewMemoryStore()
+	if _, err := base.Upsert(context.Background(), GlobalScope, string(KeyCaptchaEnabled), "true", "seed"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	store := &failGetStore{Store: base}
+	now := fixedNow()
+	svc := NewService(store, nil, WithCacheTTL(time.Second), WithNow(func() time.Time { return now }))
+
+	warm, err := svc.Get(context.Background(), KeyCaptchaEnabled)
+	if err != nil {
+		t.Fatalf("warm Get: %v", err)
+	}
+	if warm.Value != "true" || warm.Source != SourceDB {
+		t.Fatalf("warm setting=%+v want db true", warm)
+	}
+
+	now = now.Add(2 * time.Second)
+	store.getErr = errors.New("transient db read failure")
+	got, err := svc.Get(context.Background(), KeyCaptchaEnabled)
+	if err != nil {
+		t.Fatalf("Get under store error: %v", err)
+	}
+	if got.Value != "true" || got.Source != SourceDB {
+		t.Fatalf("fallback setting=%+v want last-known db true, not default false", got)
+	}
+}
+
+func TestServiceGetStoreErrorWithoutLastKnownReturnsSafeDefault(t *testing.T) {
+	store := &failGetStore{Store: NewMemoryStore(), getErr: errors.New("transient db read failure")}
+	svc := NewService(store, nil, WithNow(fixedNow))
+
+	got, err := svc.Get(context.Background(), KeyTwoFactorEnabled)
+	if err != nil {
+		t.Fatalf("Get under store error: %v", err)
+	}
+	if got.Key != KeyTwoFactorEnabled || got.Value != "true" || got.Source != SourceDefault {
+		t.Fatalf("fallback setting=%+v want two_factor_enabled true/default", got)
+	}
+}
+
+func TestServiceUpsertSeedsLastKnownForStoreErrorFallback(t *testing.T) {
+	cases := []struct {
+		name   string
+		atomic bool
+	}{
+		{name: "non_atomic"},
+		{name: "atomic", atomic: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			now := fixedNow()
+			backing := &failGetStore{Store: NewMemoryStore()}
+			var store Store = backing
+			var atomicStore *atomicFailGetStore
+			if tc.atomic {
+				atomicStore = &atomicFailGetStore{failGetStore: backing}
+				store = atomicStore
+			}
+			svc := NewService(store, nil, WithCacheTTL(time.Second), WithNow(func() time.Time { return now }))
+
+			updated, err := svc.Upsert(context.Background(), UpsertInput{
+				Key:       KeyTwoFactorEnabled,
+				Value:     "false",
+				UpdatedBy: "admin:1",
+			})
+			if err != nil {
+				t.Fatalf("Upsert: %v", err)
+			}
+			if updated.Value != "false" || updated.Source != SourceDB {
+				t.Fatalf("updated=%+v want db false", updated)
+			}
+			if atomicStore != nil && atomicStore.atomicCalls != 1 {
+				t.Fatalf("atomic calls=%d want 1", atomicStore.atomicCalls)
+			}
+
+			now = now.Add(2 * time.Second)
+			backing.getErr = errors.New("transient db read failure")
+			got, err := svc.Get(context.Background(), KeyTwoFactorEnabled)
+			if err != nil {
+				t.Fatalf("Get under store error: %v", err)
+			}
+			if got.Value != "false" || got.Source != SourceDB {
+				t.Fatalf("fallback setting=%+v want upserted last-known db false, not default true", got)
+			}
+		})
+	}
+}
+
+func TestServiceRefreshAllSeedsLastKnownForStoreErrorFallback(t *testing.T) {
+	base := NewMemoryStore()
+	seeds := map[SettingKey]string{
+		KeyCaptchaEnabled:   "true",
+		KeyTwoFactorEnabled: "false",
+	}
+	for key, value := range seeds {
+		if _, err := base.Upsert(context.Background(), GlobalScope, string(key), value, "seed"); err != nil {
+			t.Fatalf("seed %s: %v", key, err)
+		}
+	}
+	store := &failGetStore{Store: base}
+	svc := NewService(store, nil, WithNow(fixedNow))
+
+	if err := svc.RefreshAll(context.Background()); err != nil {
+		t.Fatalf("RefreshAll: %v", err)
+	}
+	store.getErr = errors.New("transient db read failure")
+	for key, want := range seeds {
+		got, err := svc.Get(context.Background(), key)
+		if err != nil {
+			t.Fatalf("Get %s under store error: %v", key, err)
+		}
+		if got.Value != want || got.Source != SourceDB {
+			t.Fatalf("fallback %s=%+v want last-known db %s", key, got, want)
+		}
+	}
+}
+
 func TestServiceListIncludesAbsentKeysWithDefaults(t *testing.T) {
 	store := NewMemoryStore()
 	if _, err := store.Upsert(context.Background(), GlobalScope, string(KeyPromoEnabled), "true", "seed"); err != nil {
@@ -359,6 +477,28 @@ type atomicCountingStore struct {
 func (s *atomicCountingStore) UpsertWithAudit(ctx context.Context, in UpsertInput) (StoredSetting, error) {
 	s.atomicCalls++
 	return s.countingStore.Store.Upsert(ctx, GlobalScope, string(in.Key), in.Value, in.UpdatedBy)
+}
+
+type failGetStore struct {
+	Store
+	getErr error
+}
+
+func (s *failGetStore) Get(ctx context.Context, scope, key string) (StoredSetting, bool, error) {
+	if s.getErr != nil {
+		return StoredSetting{}, false, s.getErr
+	}
+	return s.Store.Get(ctx, scope, key)
+}
+
+type atomicFailGetStore struct {
+	*failGetStore
+	atomicCalls int
+}
+
+func (s *atomicFailGetStore) UpsertWithAudit(ctx context.Context, in UpsertInput) (StoredSetting, error) {
+	s.atomicCalls++
+	return s.failGetStore.Store.Upsert(ctx, GlobalScope, string(in.Key), in.Value, in.UpdatedBy)
 }
 
 type auditSpy struct {

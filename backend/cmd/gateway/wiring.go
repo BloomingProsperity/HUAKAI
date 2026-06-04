@@ -441,6 +441,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	authQueries := dbauth.New(pgPool)
 	billingQueries := dbbilling.New(pgPool)
 	platformSettingsService := platformsettings.NewService(platformsettings.NewPostgresStore(pgPool), nil)
+	if err := platformSettingsService.RefreshAll(ctx); err != nil {
+		logger.Warn("platform settings prewarm failed", zap.Error(err))
+	}
 	hermesQueries := dbhermes.New(pgPool)
 	hermesKeyStore := hermes.NewKeyStore(hermesQueries)
 	hermesBootstrapIssuer, err := hermes.NewBootstrapIssuerFromEnv(hermesKeyStore)
