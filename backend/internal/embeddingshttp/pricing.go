@@ -11,27 +11,27 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingeval"
 )
 
-func (ex *execution) inputCost(tokens int) (decimal.Decimal, string, error) {
+func (ex *execution) inputCost(tokens int) (decimal.Decimal, string, bool, error) {
 	if tokens <= 0 {
-		return decimal.Zero, "", fmt.Errorf("input tokens missing")
+		return decimal.Zero, "", false, fmt.Errorf("input tokens missing")
 	}
 	version := strings.TrimSpace(ex.d.BillingPolicyVersion)
 	if version == "" {
-		return decimal.Zero, "", fmt.Errorf("billing policy version empty")
+		return decimal.Zero, "", false, fmt.Errorf("billing policy version empty")
 	}
 	table, err := ex.d.RateTables.GetRateTable(ex.ctx, version)
 	if err != nil {
-		return decimal.Zero, "", err
+		return decimal.Zero, "", false, err
 	}
 	selection, err := inputRateFromTable(table.PricingData, ex.providerForPricing(), ex.modelCandidatesForPricing())
 	if err != nil {
-		return decimal.Zero, "", err
+		return decimal.Zero, "", false, err
 	}
 	result, err := pricingeval.Resolve(ex.ctx, selection.raw, pricingeval.Usage{InputTokens: int64(tokens)}, selection.fallback(), version)
 	if err != nil {
-		return decimal.Zero, "", err
+		return decimal.Zero, "", false, err
 	}
-	return result.Total, result.CostSnapshot, nil
+	return result.Total, result.CostSnapshot, result.PendingReconciliation, nil
 }
 
 func (ex *execution) providerForPricing() string {

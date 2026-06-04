@@ -8,8 +8,9 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/moderationhttp"
 )
 
-// mountModerationAdminRoutes is the slice-1 integration point. It is
-// intentionally not called from routes.go yet; the PM wires it after review.
+// mountModerationAdminRoutes is the slice-1 integration point. It IS wired
+// from mountRoutes (admin control-plane only). The screener is not yet in the
+// request path (deferred to slice-2).
 func mountModerationAdminRoutes(r chi.Router, d *deps) {
 	r.Route("/admin/v1/moderation", func(r chi.Router) {
 		store := moderation.NewSQLStore(dbmoderation.New(d.pgPool))

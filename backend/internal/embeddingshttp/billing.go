@@ -16,7 +16,7 @@ import (
 
 func (ex *execution) reserve(w http.ResponseWriter) bool {
 	ex.ensureIdempotency()
-	predictedCost, _, err := ex.inputCost(ex.inputEstimate)
+	predictedCost, _, _, err := ex.inputCost(ex.inputEstimate)
 	if err != nil {
 		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, clienterr.MessageFor(clienterr.CodePricingUnavailable))
 		return false
@@ -82,7 +82,7 @@ func (ex *execution) reserveQuota(w http.ResponseWriter, predictedCost decimal.D
 	return true
 }
 
-func (ex *execution) settleRequest(promptTokens int, cost decimal.Decimal, snapshot string, attemptSeq int) billing.SettleRequest {
+func (ex *execution) settleRequest(promptTokens int, cost decimal.Decimal, snapshot string, attemptSeq int, pending bool) billing.SettleRequest {
 	confidence := 1.0
 	return billing.SettleRequest{
 		ClaimID:           ex.reserveRes.ClaimID,
@@ -112,7 +112,7 @@ func (ex *execution) settleRequest(promptTokens int, cost decimal.Decimal, snaps
 			UsageSource:           gateway.UsageSourceReported,
 			ConfidenceScore:       &confidence,
 			DrainOutcome:          gateway.DrainNotDrained,
-			PendingReconciliation: false,
+			PendingReconciliation: pending,
 		},
 		EmitSchedulerOutbox: true,
 		SnapshotVersion:     ex.plan.SnapshotVersion,
