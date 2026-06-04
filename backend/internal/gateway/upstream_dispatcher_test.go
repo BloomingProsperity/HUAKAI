@@ -2,6 +2,7 @@
 package gateway
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
@@ -9,8 +10,10 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
@@ -194,6 +197,68 @@ func TestDispatcher_HTTPDoFails(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "HTTP Do 失败") {
 		t.Errorf("err=%v", err)
+	}
+}
+
+func TestDispatcherNonStreamingResponseHeaderTimeoutClassifiesUpstreamHeaderTimeout(t *testing.T) {
+	tf := transport.NewFactory()
+	tf.SetStandard(slowHeaderTransport(200*time.Millisecond, `{"ok":true}`))
+	d := &UpstreamDispatcher{
+		Adapters:         &stubRegistry{adapter: &stubAdapter{platform: "openai", endpoint: "http://upstream.test/v1/test"}},
+		TransportFactory: tf,
+		Timeouts: TimeoutConfig{
+			HeaderToFirstByte: 25 * time.Millisecond,
+		},
+	}
+	started := time.Now()
+	_, err := d.Dispatch(context.Background(), DispatchInput{
+		ProtocolFamily:       "openai_chat",
+		NonStreamingBuffered: true,
+		Account:              provider.AccountInfo{AccountID: 7, Platform: "openai", AccountType: "apikey"},
+		Credential:           provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-x"},
+	})
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("Dispatch succeeded; want response-header timeout")
+	}
+	decision := ClassifyAttemptDispatchError(err)
+	if decision.TransportClass != TransportErrorUpstreamHeaderTimeout {
+		t.Fatalf("transport class=%q err=%v want upstream_header_timeout", decision.TransportClass, err)
+	}
+	if elapsed > 150*time.Millisecond {
+		t.Fatalf("header timeout elapsed=%s, want fail before server writes headers", elapsed)
+	}
+}
+
+func slowHeaderTransport(delay time.Duration, body string) *http.Transport {
+	return &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) {
+		client, server := net.Pipe()
+		go writePipeHTTPResponse(server, delay, body)
+		return client, nil
+	}}
+}
+
+func writePipeHTTPResponse(conn net.Conn, delay time.Duration, body string) {
+	defer conn.Close()
+	if !drainPipeHTTPRequest(conn) {
+		return
+	}
+	time.Sleep(delay)
+	_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "+
+		strconv.Itoa(len(body))+"\r\n\r\n"+body)
+}
+
+func drainPipeHTTPRequest(conn net.Conn) bool {
+	reader := bufio.NewReader(conn)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return false
+		}
+		if line == "\r\n" {
+			go func() { _, _ = io.Copy(io.Discard, reader) }()
+			return true
+		}
 	}
 }
 

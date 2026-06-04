@@ -1,12 +1,17 @@
 package gatewayhttp
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -140,6 +145,50 @@ func TestPR5NonStream429RecordsCooldownAndRetriesNextAccount(t *testing.T) {
 	}
 }
 
+func TestPR5RawNonStreamHeaderTimeoutRetriesSecondAccount(t *testing.T) {
+	t.Setenv("HUAKAI_DISPATCH_HCSF", "0")
+	responseBody := `{"id":"chatcmpl-pr5","object":"chat.completion","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"second account raw success"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`
+	rt := pr5SequencedHeaderTransport([]time.Duration{200 * time.Millisecond, 0}, []string{responseBody, responseBody})
+	t.Cleanup(rt.CloseIdleConnections)
+	tf := transport.NewFactory()
+	tf.SetStandard(rt)
+	adapters := provider.NewStaticRegistry()
+	adapters.MustRegister("openai_chat", &provideropenai.PassthroughAdapter{Endpoint: "http://upstream.test/v1/chat/completions"})
+	selector := newPR5Selector(t, 331, 332)
+	settler := &recordingSettler{}
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88331}, settler, nil)
+	deps.Dispatcher = &gateway.UpstreamDispatcher{
+		Adapters:         adapters,
+		TransportFactory: tf,
+		Timeouts: gateway.TimeoutConfig{
+			HeaderToFirstByte:   25 * time.Millisecond,
+			RequestTotalTimeout: time.Second,
+		},
+	}
+
+	started := time.Now()
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	elapsed := time.Since(started)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s; want second account success after header timeout failover", rec.Code, rec.Body.String())
+	}
+	if elapsed > 150*time.Millisecond {
+		t.Fatalf("non-stream failover elapsed=%s; removing header timeout waits for slow first account", elapsed)
+	}
+	if selector.calls != 2 {
+		t.Fatalf("selector calls=%d want 2", selector.calls)
+	}
+	if _, excluded := selector.requests[1].ExcludedAccounts[331]; !excluded {
+		t.Fatalf("second attempt exclusions=%v want timed-out first account 331 excluded", selector.requests[1].ExcludedAccounts)
+	}
+	if len(settler.aborts) != 1 || settler.aborts[0].reason != "transport_upstream_header_timeout" {
+		t.Fatalf("aborts=%+v want one transport_upstream_header_timeout abort", settler.aborts)
+	}
+	if len(settler.calls) != 1 || settler.calls[0].AccountID != 332 {
+		t.Fatalf("settle calls=%+v want success on account 332", settler.calls)
+	}
+}
+
 func TestPR5NonStream401ConsumesOneAuthFailoverOnlyAndDoesNotRecordHealth(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	selector := newPR5Selector(t, 301, 302, 303)
@@ -175,6 +224,89 @@ func TestPR5NonStream401ConsumesOneAuthFailoverOnlyAndDoesNotRecordHealth(t *tes
 	}
 	if len(health.signals) != 0 {
 		t.Fatalf("401 health signals=%+v want none", health.signals)
+	}
+}
+
+func TestPR5NonStream401TriggersNonBlockingHotRefreshAndStillReturnsSecondAccount(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	selector := newPR5Selector(t, 311, 312)
+	settler := &recordingSettler{}
+	dispatcher := &pr5CanonicalSequenceDispatcher{
+		steps: []pr5CanonicalStep{
+			{status: http.StatusUnauthorized, body: `{"error":"invalid_grant"}`},
+			{successText: "second account wins while refresh keeps running"},
+		},
+	}
+	refresher := newBlockingHotRefreshSpy()
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88311}, settler, dispatcher)
+	deps.CredentialHotRefresher = refresher
+
+	done := make(chan *httptestResponse, 1)
+	go func() {
+		rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+		done <- &httptestResponse{code: rec.Code, body: rec.Body.String()}
+	}()
+
+	select {
+	case call := <-refresher.called:
+		if call.accountID != 311 || call.tenantID != 7 || call.vendor != "openai" {
+			t.Fatalf("hot refresh call=%+v, want tenant 7 account 311 vendor openai", call)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("hot refresh was not triggered for retryable OAuth auth failure")
+	}
+
+	select {
+	case rec := <-done:
+		if rec.code != http.StatusOK {
+			t.Fatalf("status=%d body=%s; want second account success while refresh is blocked", rec.code, rec.body)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("handler waited for hot refresh; refresh must be best-effort background work")
+	}
+	close(refresher.release)
+	if selector.calls != 2 || dispatcher.calls != 2 {
+		t.Fatalf("selector/dispatcher calls=%d/%d want 2/2", selector.calls, dispatcher.calls)
+	}
+	if len(settler.calls) != 1 || settler.calls[0].AccountID != 312 {
+		t.Fatalf("settle calls=%+v want success settled on second account 312", settler.calls)
+	}
+}
+
+func TestPR5NonStream401HotRefreshDedupesSameAccountWithinWindow(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	selector := newPR5Selector(t, 321, 322)
+	dispatcher := &pr5CanonicalSequenceDispatcher{
+		steps: []pr5CanonicalStep{
+			{status: http.StatusUnauthorized, body: `{"error":"invalid_grant"}`},
+			{successText: "first request success"},
+			{status: http.StatusUnauthorized, body: `{"error":"invalid_grant"}`},
+			{successText: "second request success"},
+		},
+	}
+	refresher := newRecordingHotRefreshSpy()
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88321}, &recordingSettler{}, dispatcher)
+	deps.CredentialHotRefresher = refresher
+	handler := NewChatCompletionsHandler(deps)
+
+	first := invokeExistingHandlerPath(handler, "/v1/chat/completions", pr5NonStreamBody())
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status=%d body=%s; want success after auth failover", first.Code, first.Body.String())
+	}
+	if got := refresher.waitForCall(t); got.accountID != 321 {
+		t.Fatalf("first hot refresh account=%d want 321", got.accountID)
+	}
+	second := invokeExistingHandlerPath(handler, "/v1/chat/completions", pr5NonStreamBody())
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status=%d body=%s; want success after auth failover", second.Code, second.Body.String())
+	}
+	select {
+	case call := <-refresher.called:
+		t.Fatalf("duplicate hot refresh call within dedupe window: %+v", call)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if calls := refresher.snapshot(); len(calls) != 1 || calls[0].accountID != 321 {
+		t.Fatalf("hot refresh calls=%+v want exactly one call for account 321", calls)
 	}
 }
 
@@ -1169,6 +1301,137 @@ func (d *pr5SequentialStreamingDoer) Do(req *http.Request) (*http.Response, erro
 		Header:     make(http.Header),
 		Body:       step.body,
 	}, nil
+}
+
+type httptestResponse struct {
+	code int
+	body string
+}
+
+func invokeExistingHandlerPath(h http.HandlerFunc, path, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	return rec
+}
+
+type hotRefreshCall struct {
+	tenantID  int64
+	accountID int64
+	vendor    string
+}
+
+type blockingHotRefreshSpy struct {
+	called  chan hotRefreshCall
+	release chan struct{}
+}
+
+func newBlockingHotRefreshSpy() *blockingHotRefreshSpy {
+	return &blockingHotRefreshSpy{
+		called:  make(chan hotRefreshCall, 1),
+		release: make(chan struct{}),
+	}
+}
+
+func (s *blockingHotRefreshSpy) RefreshHotPath(ctx context.Context, tenantID, accountID int64, vendor string) error {
+	s.called <- hotRefreshCall{tenantID: tenantID, accountID: accountID, vendor: vendor}
+	select {
+	case <-s.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+type recordingHotRefreshSpy struct {
+	mu     sync.Mutex
+	calls  []hotRefreshCall
+	called chan hotRefreshCall
+}
+
+func newRecordingHotRefreshSpy() *recordingHotRefreshSpy {
+	return &recordingHotRefreshSpy{called: make(chan hotRefreshCall, 4)}
+}
+
+func (s *recordingHotRefreshSpy) RefreshHotPath(_ context.Context, tenantID, accountID int64, vendor string) error {
+	call := hotRefreshCall{tenantID: tenantID, accountID: accountID, vendor: vendor}
+	s.mu.Lock()
+	s.calls = append(s.calls, call)
+	s.mu.Unlock()
+	s.called <- call
+	return nil
+}
+
+func (s *recordingHotRefreshSpy) waitForCall(t *testing.T) hotRefreshCall {
+	t.Helper()
+	select {
+	case call := <-s.called:
+		return call
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for hot refresh call")
+	}
+	return hotRefreshCall{}
+}
+
+func (s *recordingHotRefreshSpy) snapshot() []hotRefreshCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]hotRefreshCall(nil), s.calls...)
+}
+
+func pr5SequencedHeaderTransport(delays []time.Duration, bodies []string) *http.Transport {
+	var mu sync.Mutex
+	calls := 0
+	return &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) {
+		client, server := net.Pipe()
+		mu.Lock()
+		idx := calls
+		calls++
+		mu.Unlock()
+		delay := indexedDelay(delays, idx)
+		body := indexedBody(bodies, idx)
+		go pr5WritePipeHTTPResponse(server, delay, body)
+		return client, nil
+	}}
+}
+
+func indexedDelay(delays []time.Duration, idx int) time.Duration {
+	if idx >= 0 && idx < len(delays) {
+		return delays[idx]
+	}
+	return 0
+}
+
+func indexedBody(bodies []string, idx int) string {
+	if idx >= 0 && idx < len(bodies) {
+		return bodies[idx]
+	}
+	return bodies[len(bodies)-1]
+}
+
+func pr5WritePipeHTTPResponse(conn net.Conn, delay time.Duration, body string) {
+	defer conn.Close()
+	if !pr5DrainPipeHTTPRequest(conn) {
+		return
+	}
+	time.Sleep(delay)
+	_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "+
+		strconv.Itoa(len(body))+"\r\n\r\n"+body)
+}
+
+func pr5DrainPipeHTTPRequest(conn net.Conn) bool {
+	reader := bufio.NewReader(conn)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return false
+		}
+		if line == "\r\n" {
+			go func() { _, _ = io.Copy(io.Discard, reader) }()
+			return true
+		}
+	}
 }
 
 type firstAppendFailsThenPersistsLedger struct {

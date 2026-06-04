@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
@@ -70,15 +71,16 @@ type ChatHandlerDeps struct {
 	// 但 Tx2 settlement 未确认提交)的 durable 兜底 enqueue;nil 时 stream
 	// path 失败只 log,money path 灰区无可补救。生产部署必须 wire 上
 	// dlq.Service(见 cmd/gateway/routes.go SettleRecoveryDLQ: d.dlqService)。
-	SettleRecoveryDLQ     settlementrecovery.Enqueuer
-	Signer                *sign.Signer
-	ChannelHealth         channelHealthRecorder
-	ModelCooldowns        modelRateLimitRecorder
-	RateService           rate.Service
-	RetryBudget           retryBudgetGate
-	ModelFallbackSettings modelfallback.SettingsReader
-	BillingPolicyVersion  string
-	RequestClass          string
+	SettleRecoveryDLQ      settlementrecovery.Enqueuer
+	Signer                 *sign.Signer
+	ChannelHealth          channelHealthRecorder
+	ModelCooldowns         modelRateLimitRecorder
+	RateService            rate.Service
+	RetryBudget            retryBudgetGate
+	CredentialHotRefresher CredentialHotRefresher
+	ModelFallbackSettings  modelfallback.SettingsReader
+	BillingPolicyVersion   string
+	RequestClass           string
 
 	// EndpointFamily 标记 billing 字段；空字符串退化为 "chat"。
 	// /v1/chat/completions: "chat"
@@ -97,6 +99,10 @@ type modelRateLimitRecorder interface {
 
 type retryBudgetGate interface {
 	Allow(tenantID int64) bool
+}
+
+type CredentialHotRefresher interface {
+	RefreshHotPath(ctx context.Context, tenantID, accountID int64, vendorName string) error
 }
 
 // HCSFDispatcher 是 non-streaming HCSF 主链路；默认开启，可由 env 开关关闭。
@@ -169,7 +175,57 @@ const (
 	headerHuakaiFallbackAttempts = "X-Huakai-Fallback-Attempts"
 )
 
+const (
+	credentialHotRefreshDedupeWindow = 30 * time.Second
+	credentialHotRefreshTimeout      = 30 * time.Second
+)
+
+type credentialHotRefreshKey struct {
+	tenantID  int64
+	accountID int64
+}
+
+type dedupingCredentialHotRefresher struct {
+	inner  CredentialHotRefresher
+	window time.Duration
+	now    func() time.Time
+	mu     sync.Mutex
+	until  map[credentialHotRefreshKey]time.Time
+}
+
+func newDedupingCredentialHotRefresher(inner CredentialHotRefresher, window time.Duration) CredentialHotRefresher {
+	return &dedupingCredentialHotRefresher{
+		inner: inner, window: window, now: time.Now,
+		until: make(map[credentialHotRefreshKey]time.Time),
+	}
+}
+
+func (r *dedupingCredentialHotRefresher) RefreshHotPath(ctx context.Context, tenantID, accountID int64, vendorName string) error {
+	if r == nil || r.inner == nil || !r.admit(tenantID, accountID) {
+		return nil
+	}
+	return r.inner.RefreshHotPath(ctx, tenantID, accountID, vendorName)
+}
+
+func (r *dedupingCredentialHotRefresher) admit(tenantID, accountID int64) bool {
+	if tenantID == 0 || accountID == 0 {
+		return false
+	}
+	now := r.now()
+	key := credentialHotRefreshKey{tenantID: tenantID, accountID: accountID}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if until, ok := r.until[key]; ok && now.Before(until) {
+		return false
+	}
+	r.until[key] = now.Add(r.window)
+	return true
+}
+
 func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
+	if d.CredentialHotRefresher != nil {
+		d.CredentialHotRefresher = newDedupingCredentialHotRefresher(d.CredentialHotRefresher, credentialHotRefreshDedupeWindow)
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		requestStartedAt := time.Now()
@@ -285,8 +341,13 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 		if outcome.DeliveryStarted || (outcome.Failure != nil && outcome.Failure.DeliveredToClient) {
 			return modelRunResult{DeliveryStarted: true}
 		}
-		if outcome.AccountID != 0 && outcome.Failure != nil && outcome.Failure.Decision.SwitchAccount {
-			failedAccounts[outcome.AccountID] = struct{}{}
+		if outcome.AccountID != 0 && outcome.Failure != nil {
+			if outcome.Failure.Decision.RefreshIntent == gateway.RefreshOAuthHotPath {
+				ex.triggerCredentialHotRefresh(outcome.AccountID)
+			}
+			if outcome.Failure.Decision.SwitchAccount {
+				failedAccounts[outcome.AccountID] = struct{}{}
+			}
 		}
 		if outcome.Failure == nil {
 			continue
@@ -305,6 +366,26 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 		ex.prepareNextAttemptAfterAbort()
 	}
 	return modelRunResult{}
+}
+
+func (ex *chatExecution) triggerCredentialHotRefresh(accountID int64) {
+	if ex == nil || ex.d.CredentialHotRefresher == nil || accountID == 0 {
+		return
+	}
+	tenantID := ex.ident.TenantID
+	vendor := ex.accInfo.Platform
+	if vendor == "" {
+		vendor = pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily)
+	}
+	requestID := ex.requestID
+	refresher := ex.d.CredentialHotRefresher
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), credentialHotRefreshTimeout)
+		defer cancel()
+		if err := refresher.RefreshHotPath(ctx, tenantID, accountID, vendor); err != nil {
+			logInternalError(ctx, requestID, "credential_hot_refresh_failed", err)
+		}
+	}()
 }
 
 func (ex *chatExecution) screenModerationInput(w http.ResponseWriter) bool {
@@ -424,12 +505,13 @@ func readRawBufferedUpstreamBody(r io.Reader) ([]byte, error) {
 func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.RequestMetaSeed, seedCtx context.Context, startedAt time.Time) (*proto.HCSF, *classifiedAttemptFailure, bool) {
 	transportSelection := transportSelectionForDispatch(ex.accInfo, ex.resolved.ProtocolFamily)
 	dispatchRes, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
-		ProtocolFamily:  ex.resolved.ProtocolFamily,
-		UpstreamModelID: ex.upstreamModelID,
-		InboundBody:     ex.upstreamInboundBody(ex.body),
-		Account:         transportSelection.account,
-		Credential:      ex.cred,
-		TransportMode:   transportSelection.mode,
+		ProtocolFamily:       ex.resolved.ProtocolFamily,
+		UpstreamModelID:      ex.upstreamModelID,
+		InboundBody:          ex.upstreamInboundBody(ex.body),
+		Account:              transportSelection.account,
+		Credential:           ex.cred,
+		TransportMode:        transportSelection.mode,
+		NonStreamingBuffered: true,
 	})
 	if err != nil {
 		classification, _ := gateway.Classify(0, nil, []byte(err.Error()), ex.accInfo.Platform)
