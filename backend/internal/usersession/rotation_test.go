@@ -176,6 +176,51 @@ func TestAT_SESSION_001_004_PerTokenFamilyAndUserInvalidation(t *testing.T) {
 	}
 }
 
+// TestRevokeOthersKeepsCurrentFamilyAndRevokesOtherFamilies guards the 2FA UX
+// contract: sensitive state changes should kick out other browsers, not the one
+// that just proved possession. Mutation check: implement this via RevokeUser and
+// the current session validation goes red while the other-session assertion still
+// proves this is not a no-op.
+func TestRevokeOthersKeepsCurrentFamilyAndRevokesOtherFamilies(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 4, 11, 0, 0, 0, time.UTC)
+	svc := NewService(NewMemoryStore())
+	svc.Now = func() time.Time { return now }
+	svc.SigningKey = testSigningKey()
+
+	current, err := svc.Create(ctx, CreateInput{TenantID: 1, UserID: 21, IP: "10.1.1.1", UserAgent: "Chrome/1"})
+	if err != nil {
+		t.Fatalf("Create current: %v", err)
+	}
+	other, err := svc.Create(ctx, CreateInput{TenantID: 1, UserID: 21, IP: "10.2.1.1", UserAgent: "Firefox/1"})
+	if err != nil {
+		t.Fatalf("Create other: %v", err)
+	}
+	anotherUser, err := svc.Create(ctx, CreateInput{TenantID: 1, UserID: 99, IP: "10.3.1.1", UserAgent: "Safari/1"})
+	if err != nil {
+		t.Fatalf("Create another user: %v", err)
+	}
+
+	count, err := svc.RevokeOthers(ctx, RevokeOthersInput{
+		TenantID: 1, UserID: 21, CurrentFamilyID: current.Family.ID, Reason: "two_factor_state_changed",
+	})
+	if err != nil {
+		t.Fatalf("RevokeOthers: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("revoked families=%d want 1", count)
+	}
+	if _, err := svc.Validate(ctx, current.SessionToken, "10.1.1.1", "Chrome/1"); err != nil {
+		t.Fatalf("current session must survive revoke-others: %v", err)
+	}
+	if _, err := svc.Validate(ctx, other.SessionToken, "10.2.1.1", "Firefox/1"); !errors.Is(err, ErrFamilyRevoked) {
+		t.Fatalf("other session validate=%v want ErrFamilyRevoked", err)
+	}
+	if _, err := svc.Validate(ctx, anotherUser.SessionToken, "10.3.1.1", "Safari/1"); err != nil {
+		t.Fatalf("another user session must survive: %v", err)
+	}
+}
+
 func TestAT_SESSION_001_006_MultiDevicePolicy(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 5, 16, 13, 0, 0, 0, time.UTC)

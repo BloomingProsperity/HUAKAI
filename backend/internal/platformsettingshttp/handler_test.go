@@ -154,6 +154,73 @@ func TestHandlerPUTReasonOptionalWritesSetting(t *testing.T) {
 	}
 }
 
+// TestHandlerPUTCaptchaEnabledRequiresConfiguredSecret guards the new-api-like
+// config-time gate: operators may boot with a missing secret, but cannot turn on
+// CAPTCHA until this gateway process has the runtime secret configured. Mutation
+// check: delete the guard and the enable request reaches Upsert while the disable
+// request still proves the check is not a blanket write blocker.
+func TestHandlerPUTCaptchaEnabledRequiresConfiguredSecret(t *testing.T) {
+	svc := &serviceStub{
+		upsertResult: platformsettings.StoredSetting{
+			Key:    platformsettings.KeyCaptchaEnabled,
+			Value:  "false",
+			Source: platformsettings.SourceDB,
+		},
+	}
+	handler := newTestRouter(Deps{
+		Auth:                    authStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Service:                 svc,
+		CaptchaSecretConfigured: false,
+	})
+
+	rec := serveJSON(t, handler, http.MethodPut, "/v1/admin/platform-settings/captcha_enabled", map[string]any{
+		"value": "true",
+	})
+
+	assertStatus(t, rec, http.StatusBadRequest)
+	assertErrorCode(t, rec, "captcha_secret_required")
+	if svc.upsertCalls != 0 {
+		t.Fatalf("missing secret enable reached Upsert %d times", svc.upsertCalls)
+	}
+
+	rec = serveJSON(t, handler, http.MethodPut, "/v1/admin/platform-settings/captcha_enabled", map[string]any{
+		"value": "false",
+	})
+
+	assertStatus(t, rec, http.StatusOK)
+	if svc.upsertCalls != 1 || svc.lastUpsert.Key != platformsettings.KeyCaptchaEnabled || svc.lastUpsert.Value != "false" {
+		t.Fatalf("disable upsert calls=%d input=%+v", svc.upsertCalls, svc.lastUpsert)
+	}
+}
+
+// TestHandlerGETCaptchaEnabledShowsMissingSecretHealth gives admins the runtime
+// misconfiguration signal that replaced fail-boot. Mutation check: remove health
+// decoration and the response still returns the setting but lacks the degraded
+// missing-secret marker.
+func TestHandlerGETCaptchaEnabledShowsMissingSecretHealth(t *testing.T) {
+	svc := &serviceStub{
+		getResult: platformsettings.StoredSetting{
+			Key:    platformsettings.KeyCaptchaEnabled,
+			Value:  "true",
+			Source: platformsettings.SourceDB,
+		},
+	}
+	handler := newTestRouter(Deps{
+		Auth:                    authStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Service:                 svc,
+		CaptchaSecretConfigured: false,
+	})
+
+	rec := serveJSON(t, handler, http.MethodGet, "/v1/admin/platform-settings/captcha_enabled", nil)
+
+	assertStatus(t, rec, http.StatusOK)
+	got := decodeSettingResponse(t, rec)
+	if got.Health == nil || got.Health.Status != "degraded" ||
+		got.Health.Issue != "turnstile_secret_missing" || got.Health.CaptchaSecretConfigured {
+		t.Fatalf("captcha health=%+v want degraded missing-secret marker", got.Health)
+	}
+}
+
 func TestHandlerPUTLargeBodyRejectedWith413(t *testing.T) {
 	svc := &serviceStub{}
 	handler := newTestRouter(Deps{

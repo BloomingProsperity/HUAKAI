@@ -23,6 +23,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
+	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 )
@@ -82,6 +83,81 @@ func releaseMode() eventbus.ReleaseMode {
 
 func captchaTurnstileSecret() string {
 	return strings.TrimSpace(os.Getenv("HUAKAI_CAPTCHA_TURNSTILE_SECRET"))
+}
+
+type gatewayPlatformSettings interface {
+	Get(context.Context, platformsettings.SettingKey) (platformsettings.StoredSetting, error)
+}
+
+type captchaConfigStatus struct {
+	Enabled          bool
+	EnabledSource    string
+	SecretConfigured bool
+	ConfigurationOK  bool
+	Issue            string
+}
+
+func validateProductionCaptchaConfig(ctx context.Context, settings gatewayPlatformSettings, secret string) error {
+	if !releaseModeProduction() {
+		return nil
+	}
+	if _, err := captchaConfigurationStatus(ctx, settings, secret); err != nil {
+		return fmt.Errorf("read captcha_enabled for production CAPTCHA startup gate: %w", err)
+	}
+	return nil
+}
+
+func captchaConfigurationStatus(ctx context.Context, settings gatewayPlatformSettings, secret string) (captchaConfigStatus, error) {
+	status := captchaConfigStatus{
+		SecretConfigured: strings.TrimSpace(secret) != "",
+		ConfigurationOK:  true,
+	}
+	enabled, source, err := captchaEnabledSetting(ctx, settings)
+	if err != nil {
+		return captchaConfigStatus{}, err
+	}
+	status.Enabled = enabled
+	status.EnabledSource = source
+	if status.Enabled && !status.SecretConfigured {
+		status.ConfigurationOK = false
+		status.Issue = "turnstile_secret_missing"
+	}
+	return status, nil
+}
+
+func logCaptchaConfig(ctx context.Context, logger *zap.Logger, settings gatewayPlatformSettings, secret string) {
+	if logger == nil {
+		return
+	}
+	status, err := captchaConfigurationStatus(ctx, settings, secret)
+	fields := []zap.Field{}
+	if err != nil {
+		fields = append(fields, zap.Error(err))
+	} else {
+		fields = append(fields,
+			zap.Bool("turnstile_secret_configured", status.SecretConfigured),
+			zap.Bool("captcha_enabled", status.Enabled),
+			zap.String("captcha_enabled_source", status.EnabledSource),
+			zap.Bool("captcha_configuration_ok", status.ConfigurationOK),
+			zap.String("captcha_configuration_issue", status.Issue),
+		)
+	}
+	if err == nil && !status.ConfigurationOK {
+		logger.Warn("captcha configuration requires operator action", fields...)
+		return
+	}
+	logger.Info("captcha configuration loaded", fields...)
+}
+
+func captchaEnabledSetting(ctx context.Context, settings gatewayPlatformSettings) (bool, string, error) {
+	if settings == nil {
+		return false, "unconfigured", nil
+	}
+	setting, err := settings.Get(ctx, platformsettings.KeyCaptchaEnabled)
+	if err != nil {
+		return false, "", err
+	}
+	return strings.TrimSpace(setting.Value) == "true", strings.TrimSpace(setting.Source), nil
 }
 
 func loadUserRegistrationModeFromEnv() (userauth.RegistrationMode, error) {

@@ -111,6 +111,13 @@ type RevokeInput struct {
 	Reason       string `json:"reason,omitempty"`
 }
 
+type RevokeOthersInput struct {
+	TenantID        int64  `json:"tenant_id"`
+	UserID          int64  `json:"user_id"`
+	CurrentFamilyID string `json:"current_family_id"`
+	Reason          string `json:"reason,omitempty"`
+}
+
 type IssuedTokens struct {
 	SessionToken  string        `json:"session_token"`
 	RefreshToken  string        `json:"refresh_token"`

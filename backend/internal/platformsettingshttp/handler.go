@@ -28,8 +28,9 @@ type Service interface {
 }
 
 type Deps struct {
-	Auth    Auth
-	Service Service
+	Auth                    Auth
+	Service                 Service
+	CaptchaSecretConfigured bool
 }
 
 type putRequest struct {
@@ -38,11 +39,18 @@ type putRequest struct {
 }
 
 type settingResponse struct {
-	Key       string     `json:"key"`
-	Value     string     `json:"value"`
-	Source    string     `json:"source"`
-	UpdatedAt *time.Time `json:"updated_at"`
-	UpdatedBy *string    `json:"updated_by"`
+	Key       string         `json:"key"`
+	Value     string         `json:"value"`
+	Source    string         `json:"source"`
+	UpdatedAt *time.Time     `json:"updated_at"`
+	UpdatedBy *string        `json:"updated_by"`
+	Health    *settingHealth `json:"health,omitempty"`
+}
+
+type settingHealth struct {
+	Status                  string `json:"status"`
+	Issue                   string `json:"issue,omitempty"`
+	CaptchaSecretConfigured bool   `json:"captcha_secret_configured"`
 }
 
 type listResponse struct {
@@ -67,7 +75,7 @@ func newListHandler(d Deps) http.HandlerFunc {
 		}
 		out := make([]settingResponse, 0, len(items))
 		for _, item := range items {
-			out = append(out, settingResponseFromStored(item))
+			out = append(out, settingResponseFromStored(item, d))
 		}
 		writeJSON(w, http.StatusOK, listResponse{Items: out})
 	}
@@ -87,7 +95,7 @@ func newGetHandler(d Deps) http.HandlerFunc {
 			writeServiceError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, settingResponseFromStored(setting))
+		writeJSON(w, http.StatusOK, settingResponseFromStored(setting, d))
 	}
 }
 
@@ -109,6 +117,10 @@ func newPutHandler(d Deps) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "platform_setting_value_required", "value is required")
 			return
 		}
+		if key == platformsettings.KeyCaptchaEnabled && strings.TrimSpace(*req.Value) == "true" && !d.CaptchaSecretConfigured {
+			writeJSONError(w, http.StatusBadRequest, "captcha_secret_required", "cannot enable CAPTCHA until Turnstile secret is configured")
+			return
+		}
 		actorID := fmt.Sprintf("%d", ident.TokenID)
 		setting, err := d.Service.Upsert(r.Context(), platformsettings.UpsertInput{
 			Key:       key,
@@ -123,7 +135,7 @@ func newPutHandler(d Deps) http.HandlerFunc {
 			writeServiceError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, settingResponseFromStored(setting))
+		writeJSON(w, http.StatusOK, settingResponseFromStored(setting, d))
 	}
 }
 
@@ -173,11 +185,14 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	return true
 }
 
-func settingResponseFromStored(setting platformsettings.StoredSetting) settingResponse {
+func settingResponseFromStored(setting platformsettings.StoredSetting, d Deps) settingResponse {
 	resp := settingResponse{
 		Key:    string(setting.Key),
 		Value:  setting.Value,
 		Source: setting.Source,
+	}
+	if setting.Key == platformsettings.KeyCaptchaEnabled {
+		resp.Health = captchaHealth(setting, d)
 	}
 	if !setting.UpdatedAt.IsZero() {
 		updatedAt := setting.UpdatedAt.UTC()
@@ -187,6 +202,18 @@ func settingResponseFromStored(setting platformsettings.StoredSetting) settingRe
 		resp.UpdatedBy = &updatedBy
 	}
 	return resp
+}
+
+func captchaHealth(setting platformsettings.StoredSetting, d Deps) *settingHealth {
+	health := &settingHealth{
+		Status:                  "ok",
+		CaptchaSecretConfigured: d.CaptchaSecretConfigured,
+	}
+	if strings.TrimSpace(setting.Value) == "true" && !d.CaptchaSecretConfigured {
+		health.Status = "degraded"
+		health.Issue = "turnstile_secret_missing"
+	}
+	return health
 }
 
 func writeServiceError(w http.ResponseWriter, err error) {
