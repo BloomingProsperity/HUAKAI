@@ -46,6 +46,9 @@ type DispatchInput struct {
 	UpstreamModelID string
 	// InboundBody 客户原始请求 body 字节。
 	InboundBody []byte
+	// InboundContentType 是入口请求 Content-Type。空值保持 adapter 默认；
+	// multipart audio 透传时必须带原 boundary。
+	InboundContentType string
 	// Account 池中选中 account 摘要。
 	Account provider.AccountInfo
 	// Credential 出站凭据。
@@ -114,11 +117,12 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 
 	// 2. 构造出站请求
 	req, err := adapter.BuildRequest(ctx, provider.BuildInput{
-		UpstreamModelID: in.UpstreamModelID,
-		InboundBody:     in.InboundBody,
-		Credential:      in.Credential,
-		Account:         in.Account,
-		EndpointPath:    in.EndpointPath,
+		UpstreamModelID:    in.UpstreamModelID,
+		InboundBody:        in.InboundBody,
+		InboundContentType: in.InboundContentType,
+		Credential:         in.Credential,
+		Account:            in.Account,
+		EndpointPath:       in.EndpointPath,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: BuildRequest 失败: %w", err)
