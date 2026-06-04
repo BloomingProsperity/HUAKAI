@@ -137,6 +137,13 @@ type authSocialIdentityChangedRequest struct {
 	ChangeType string `json:"change_type,omitempty"`
 }
 
+const (
+	oauthStateCookieName   = "huakai_oauth_state"
+	oauthStateCookieMaxAge = 600
+	oauthInitRouteSuffix   = "/oauth-init"
+	oauthCallbackRoutePath = "/oauth-callback"
+)
+
 func MountAuthRoutes(r chi.Router, d AuthHandlerDeps) {
 	r.Post("/register", newAuthRegisterHandler(d))
 	r.Post("/login", newAuthLoginHandler(d))
@@ -553,6 +560,7 @@ func newAuthOAuthInitHandler(d AuthHandlerDeps) http.HandlerFunc {
 			writeAuthError(w, err)
 			return
 		}
+		setOAuthStateCookie(w, r, result.State)
 		writeAuditJSON(w, http.StatusCreated, result)
 	}
 }
@@ -565,6 +573,10 @@ func newAuthOAuthCallbackHandler(d AuthHandlerDeps) http.HandlerFunc {
 		}
 		var req authOAuthCallbackRequest
 		if !decodeAdminPoolJSON(w, r, &req) {
+			return
+		}
+		if err := requireOAuthStateCookie(w, r, req.State); err != nil {
+			writeAuthError(w, err)
 			return
 		}
 		user, err := d.Auth.CompleteOAuth(r.Context(), userauth.OAuthCallbackInput{
@@ -593,6 +605,56 @@ func newAuthOAuthCallbackHandler(d AuthHandlerDeps) http.HandlerFunc {
 		})
 		writeAuditJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "session": tokens})
 	}
+}
+
+func setOAuthStateCookie(w http.ResponseWriter, r *http.Request, state string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     oauthStateCookieName,
+		Value:    state,
+		Path:     oauthCallbackCookiePath(r),
+		MaxAge:   oauthStateCookieMaxAge,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func requireOAuthStateCookie(w http.ResponseWriter, r *http.Request, state string) error {
+	cookie, err := r.Cookie(oauthStateCookieName)
+	if err != nil || cookie.Value != state {
+		return userauth.ErrOAuthFlowNotFound
+	}
+	clearOAuthStateCookie(w, r)
+	return nil
+}
+
+func clearOAuthStateCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     oauthStateCookieName,
+		Value:    "",
+		Path:     oauthCallbackCookiePath(r),
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func oauthCallbackCookiePath(r *http.Request) string {
+	if r != nil && r.URL != nil {
+		path := r.URL.Path
+		if strings.HasSuffix(path, oauthInitRouteSuffix) {
+			base := strings.TrimSuffix(path, oauthInitRouteSuffix)
+			if base == "" {
+				return oauthCallbackRoutePath
+			}
+			return base + oauthCallbackRoutePath
+		}
+		if strings.HasSuffix(path, oauthCallbackRoutePath) {
+			return path
+		}
+	}
+	return "/v1/auth" + oauthCallbackRoutePath
 }
 
 func newAuthSocialIdentityChangedHandler(d AuthHandlerDeps) http.HandlerFunc {
@@ -744,10 +806,14 @@ func safeSocialProvider(provider string) (string, bool) {
 		return userauth.SocialProviderGoogle, true
 	case userauth.SocialProviderGitHub:
 		return userauth.SocialProviderGitHub, true
+	case userauth.SocialProviderQQ:
+		return userauth.SocialProviderQQ, true
 	case userauth.SocialProviderWeChat:
 		return userauth.SocialProviderWeChat, true
 	case userauth.SocialProviderDingTalk:
 		return userauth.SocialProviderDingTalk, true
+	case userauth.SocialProviderNodeSeek:
+		return userauth.SocialProviderNodeSeek, true
 	case userauth.SocialProviderLinuxDo:
 		return userauth.SocialProviderLinuxDo, true
 	case userauth.SocialProviderOIDC:
