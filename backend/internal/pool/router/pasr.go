@@ -289,13 +289,6 @@ func (p *PASRSelector) scheduleNoSegment(
 	ring *AccountRing, snapshots map[int64]*AccountSnapshot,
 	reason *RoutingReasonBuilder,
 ) (*SelectionResult, error) {
-	// 用 req.RequestedModel 作为弱 prefix, 至少在 model 维度有 cache locality
-	prefixKey := []byte(req.RequestedModel)
-	if len(prefixKey) == 0 {
-		// 完全无 hint, 用空 prefix - 所有请求会路由到 HRW 同一首选
-		// 这不是好情况但兜底, caller 应保证 SessionHash 或 RequestedModel 非空
-		prefixKey = []byte("__pasr_noprefix__")
-	}
 	return p.scheduleHRWFullRing(ctx, gates, req, ring, snapshots, [PASRSegmentSize]int64{}, selectionFailures{}, reason)
 }
 

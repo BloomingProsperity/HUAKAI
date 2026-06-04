@@ -43,7 +43,7 @@ const (
 
 	// Global front-door defaults: 180 requests / 180s per IP => sustained 1 req/s
 	// with a 180-request burst cushion.
-	defaultGlobalRate  = 180.0 / 180.0
+	defaultGlobalRate  = 1.0
 	defaultGlobalBurst = 180.0
 
 	// Per-class auth-strict defaults, expressed as requests-per-minute. Burst is
