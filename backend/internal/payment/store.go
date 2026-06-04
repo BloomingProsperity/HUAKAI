@@ -26,6 +26,18 @@ type RechargeCapStore interface {
 	SumRechargeAmountSince(ctx context.Context, tenantID, userID int64, since time.Time) (int64, error)
 }
 
+type subscriptionPlanPriceSnapshot struct {
+	TenantID     int64
+	PlanID       int64
+	AmountCents  int64
+	CurrencyCode string
+	Enabled      bool
+}
+
+type subscriptionPlanPriceStore interface {
+	GetSubscriptionPlanPriceSnapshot(ctx context.Context, tenantID, planID int64) (subscriptionPlanPriceSnapshot, error)
+}
+
 // beginFulfillOutcome 表示 BeginFulfill 后订单可继续 phase2 还是已完成。
 type beginFulfillOutcome int
 

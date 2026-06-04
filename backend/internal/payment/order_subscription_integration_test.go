@@ -35,11 +35,15 @@ func registerSubscriptionCleanup(f *paymentFixture) {
 	})
 }
 
-func seedSubPlan(f *paymentFixture, name, group string, validityDays int, daily *decimal.Decimal) subscription.Plan {
+func seedSubPlan(f *paymentFixture, name, group string, validityDays int, daily *decimal.Decimal, priceCentsOpt ...int64) subscription.Plan {
 	f.t.Helper()
+	priceCents := int64(999)
+	if len(priceCentsOpt) > 0 {
+		priceCents = priceCentsOpt[0]
+	}
 	p, err := subscription.NewService(subscription.NewPostgresStore(f.pool)).CreatePlan(f.ctx, subscription.CreatePlanInput{
 		TenantID: f.tenantA, Name: name, CurrencyCode: "USD", ValidityDays: validityDays,
-		GrantedGroup: group, DailyCapUSD: daily, ForSale: true,
+		PriceCents: priceCents, GrantedGroup: group, DailyCapUSD: daily, ForSale: true,
 	})
 	if err != nil {
 		f.t.Fatalf("seed plan %s: %v", name, err)
@@ -112,7 +116,8 @@ WHERE tenant_id=$1 AND scope_id=$2 AND metric='cost_usd' AND window_kind='calend
   AND enabled=true AND limit_value=$3`, f.tenantA, strconv.FormatInt(userID, 10), limit)
 }
 
-// createSubOrder 建一笔订阅单 (manual provider, pending)。
+// createSubOrder 建一笔订阅单 (manual provider, pending); amountCents 是 caller 报价,
+// 真正落单金额应由 service 从 plan price 派生。
 func (f *paymentFixture) createSubOrder(svc *Service, planID int64, outTradeNo string, amountCents int64) Order {
 	f.t.Helper()
 	res, err := svc.CreateOrder(f.ctx, CreateOrderInput{
@@ -133,11 +138,14 @@ func TestPG_OrderSubscription_ActivatesZeroTouch(t *testing.T) {
 	ctx := context.Background()
 	f := newPaymentFixture(t, ctx, openPaymentIntegrationPool(t, ctx))
 	registerSubscriptionCleanup(f)
-	plan := seedSubPlan(f, "Pro", "premium", 30, subDec("10"))
+	plan := seedSubPlan(f, "Pro", "premium", 30, subDec("10"), 4999)
 	svc := NewService(NewPostgresStore(f.pool))
 
 	beBefore := f.countInt(`SELECT count(*) FROM billing_events WHERE tenant_id=$1`, f.tenantA)
-	order := f.createSubOrder(svc, plan.ID, "sub-order-"+f.suffix, 999)
+	order := f.createSubOrder(svc, plan.ID, "sub-order-"+f.suffix, 99)
+	if order.AmountCents != 4999 || order.CurrencyCode != "USD" {
+		t.Fatalf("subscription order money = %d %s, want plan price snapshot 4999 USD", order.AmountCents, order.CurrencyCode)
+	}
 	res, err := svc.AdminConfirmPaid(ctx, AdminConfirmPaidInput{TenantID: f.tenantA, OrderID: order.ID, ActorAdminID: 1})
 	if err != nil {
 		t.Fatalf("confirm+fulfill subscription order: %v", err)

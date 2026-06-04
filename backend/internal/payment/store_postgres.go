@@ -147,6 +147,25 @@ func (s *PostgresStore) GetOrderByOutTradeNo(ctx context.Context, tenantID int64
 	return getOrderByOutTradeNoTx(ctx, tx, tenantID, outTradeNo)
 }
 
+func (s *PostgresStore) GetSubscriptionPlanPriceSnapshot(ctx context.Context, tenantID, planID int64) (subscriptionPlanPriceSnapshot, error) {
+	if s == nil || s.pool == nil {
+		return subscriptionPlanPriceSnapshot{}, ErrStoreNotConfigured
+	}
+	var snapshot subscriptionPlanPriceSnapshot
+	if err := s.pool.QueryRow(ctx, `
+	SELECT tenant_id, id, price_cents, currency_code, enabled
+	FROM subscription_plans WHERE tenant_id=$1 AND id=$2`, tenantID, planID).Scan(
+		&snapshot.TenantID, &snapshot.PlanID, &snapshot.AmountCents, &snapshot.CurrencyCode, &snapshot.Enabled,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return subscriptionPlanPriceSnapshot{}, subscription.ErrPlanNotFound
+		}
+		return subscriptionPlanPriceSnapshot{}, fmt.Errorf("payment: get subscription plan price snapshot: %w", err)
+	}
+	snapshot.CurrencyCode = strings.TrimSpace(snapshot.CurrencyCode)
+	return snapshot, nil
+}
+
 // ConfirmPaid CAS 把 pending 推进 paid; 已 paid/recharging/completed 幂等返回; 终态拒绝。
 func (s *PostgresStore) ConfirmPaid(ctx context.Context, rec confirmRecord) (Order, error) {
 	if s == nil || s.pool == nil {
