@@ -16,6 +16,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/captcha"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/disputehttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/embeddingshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeshttp"
@@ -52,6 +53,7 @@ func (d *deps) AdminDLQStore() gatewayhttp.AdminDLQStore {
 // mountRoutes wires the HTTP routes per docs/openapi/openapi.yaml.
 func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Post("/v1/chat/completions", gatewayhttp.NewChatCompletionsHandler(chatHandlerDeps(d)))
+	r.Post("/v1/embeddings", embeddingshttp.NewEmbeddingsHandler(embeddingsHandlerDeps(d)))
 	r.Post("/v1/responses", gatewayhttp.NewResponsesHandler(chatHandlerDeps(d)))
 	r.Post("/v1/messages", gatewayhttp.NewMessagesHandler(chatHandlerDeps(d)))
 	r.Get("/v1/realtime", handleRealtimeRoadmap)
@@ -407,6 +409,24 @@ func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 		ModelCooldowns:        d.modelCooldowns,
 		RateService:           d.upstreamRate,
 		RetryBudget:           d.retryBudget,
+		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
+		RequestClass:          d.cfg.RequestClass,
+	}
+}
+
+func embeddingsHandlerDeps(d *deps) embeddingshttp.Deps {
+	return embeddingshttp.Deps{
+		Auth:                  d.inboundAuth,
+		Registry:              d.modelRegistry,
+		Router:                d.routePlanner,
+		ClaimGate:             d.claimGate,
+		QuotaReserver:         d.quotaReserver,
+		RateTables:            d.rateTableSource,
+		Selector:              d.selector,
+		CredentialVault:       d.credentialVault,
+		Dispatcher:            d.dispatcher,
+		Settler:               d.settler,
+		BillingPolicyResolver: d.billingPolicyResolver,
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
 		RequestClass:          d.cfg.RequestClass,
 	}

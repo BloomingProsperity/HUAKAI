@@ -48,7 +48,7 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 	}
 
 	// upstream_passthrough 凭据自带 base_url 优先用之。
-	endpoint, err := provider.EndpointForCredential(endpoint, in.Credential)
+	endpoint, err := provider.EndpointForBuildInput(endpoint, in)
 	if err != nil {
 		return nil, fmt.Errorf("groqcloud passthrough: endpoint rejected: %w", err)
 	}

@@ -168,6 +168,41 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/embeddings:
+    post:
+      tags: [gateway]
+      summary: OpenAI Embeddings compatible relay
+      operationId: postEmbeddings
+      x-huakai-spec-source:
+        - backend/internal/embeddingshttp/handler.go
+        - docs/specs/observability-billing.md
+      description: |
+        Accept OpenAI-compatible embeddings requests, route to a Provider
+        Account through HUAKAI registry/router/pool, passthrough the request to
+        the upstream `/v1/embeddings` endpoint, and settle billing from
+        upstream-reported `usage.prompt_tokens` as input-only usage.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmbeddingsRequest'
+      responses:
+        '200':
+          description: Successful OpenAI-compatible embeddings response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbeddingsResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/responses:
     post:
       tags: [gateway]
@@ -6178,6 +6213,51 @@ components:
         model: { type: string }
         choices: { type: array, items: { type: object, additionalProperties: true } }
         usage: { $ref: '#/components/schemas/UsageBlock' }
+
+    EmbeddingsRequest:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source: [backend/internal/embeddingshttp/handler.go]
+      required: [model, input]
+      properties:
+        model: { type: string }
+        input:
+          oneOf:
+            - type: string
+            - type: array
+              items: { type: string }
+          description: String or array of strings. Empty strings and empty arrays are rejected.
+        encoding_format: { type: string, enum: [float, base64] }
+        dimensions: { type: integer, minimum: 1 }
+        user: { type: string }
+
+    EmbeddingsResponse:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source: [backend/internal/embeddingshttp/handler.go]
+      required: [object, data, model, usage]
+      properties:
+        object: { type: string, enum: [list] }
+        data:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+            required: [object, embedding, index]
+            properties:
+              object: { type: string, enum: [embedding] }
+              embedding:
+                type: array
+                items: { type: number }
+              index: { type: integer, minimum: 0 }
+        model: { type: string }
+        usage:
+          type: object
+          additionalProperties: true
+          required: [prompt_tokens]
+          properties:
+            prompt_tokens: { type: integer, minimum: 0 }
+            total_tokens: { type: integer, minimum: 0 }
 
     ModelsListResponse:
       type: object
