@@ -10,24 +10,31 @@ import (
 const (
 	SocialProviderGoogle   = "google"
 	SocialProviderGitHub   = "github"
+	SocialProviderQQ       = "qq"
 	SocialProviderWeChat   = "wechat"
 	SocialProviderDingTalk = "dingtalk"
+	SocialProviderNodeSeek = "nodeseek"
 	SocialProviderLinuxDo  = "linuxdo"
 	SocialProviderOIDC     = "oidc"
 )
 
 type OAuthConfig struct {
-	Provider     string
-	ClientID     string
-	ClientSecret string
-	AuthURL      string
-	TokenURL     string
-	RedirectURI  string
-	Scopes       []string
-	UserURL      string
-	EmailsURL    string
-	JWKSURL      string
-	Issuer       string
+	Provider           string
+	ClientID           string
+	ClientSecret       string
+	AuthURL            string
+	TokenURL           string
+	RedirectURI        string
+	Scopes             []string
+	UserURL            string
+	EmailsURL          string
+	OpenIDURL          string
+	JWKSURL            string
+	Issuer             string
+	SubjectField       string
+	EmailField         string
+	EmailVerifiedField string
+	DisplayNameField   string
 }
 
 type OAuthStart struct {
@@ -226,10 +233,14 @@ func normalizeSocialProvider(provider string) string {
 		return SocialProviderGoogle
 	case p == "github":
 		return SocialProviderGitHub
+	case p == SocialProviderQQ:
+		return SocialProviderQQ
 	case p == SocialProviderWeChat:
 		return SocialProviderWeChat
 	case p == SocialProviderDingTalk:
 		return SocialProviderDingTalk
+	case p == SocialProviderNodeSeek:
+		return SocialProviderNodeSeek
 	case p == SocialProviderLinuxDo:
 		return SocialProviderLinuxDo
 	case p == SocialProviderOIDC || strings.HasPrefix(p, SocialProviderOIDC+":"):

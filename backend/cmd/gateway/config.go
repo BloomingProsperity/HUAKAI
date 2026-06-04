@@ -170,7 +170,7 @@ func loadSessionSigningKey() ([]byte, error) {
 }
 
 func buildUserOAuthService(logger *zap.Logger) *userauth.OAuthService {
-	providers := make([]userauth.OAuthProvider, 0, 2)
+	providers := make([]userauth.OAuthProvider, 0, 5)
 	if p := buildOAuthProvider(logger, userauth.OAuthConfig{
 		Provider:     userauth.SocialProviderGoogle,
 		ClientID:     os.Getenv("HUAKAI_GOOGLE_OAUTH_CLIENT_ID"),
@@ -195,6 +195,45 @@ func buildUserOAuthService(logger *zap.Logger) *userauth.OAuthService {
 	}); p != nil {
 		providers = append(providers, p)
 	}
+	if p := buildOAuthProvider(logger, userauth.OAuthConfig{
+		Provider:     userauth.SocialProviderQQ,
+		ClientID:     os.Getenv("HUAKAI_QQ_OAUTH_CLIENT_ID"),
+		ClientSecret: os.Getenv("HUAKAI_QQ_OAUTH_CLIENT_SECRET"),
+		RedirectURI:  os.Getenv("HUAKAI_QQ_OAUTH_REDIRECT_URI"),
+		AuthURL:      os.Getenv("HUAKAI_QQ_OAUTH_AUTH_URL"),
+		TokenURL:     os.Getenv("HUAKAI_QQ_OAUTH_TOKEN_URL"),
+		OpenIDURL:    os.Getenv("HUAKAI_QQ_OAUTH_OPENID_URL"),
+		UserURL:      os.Getenv("HUAKAI_QQ_OAUTH_USER_URL"),
+	}); p != nil {
+		providers = append(providers, p)
+	}
+	if p := buildOAuthProvider(logger, userauth.OAuthConfig{
+		Provider:     userauth.SocialProviderDingTalk,
+		ClientID:     os.Getenv("HUAKAI_DINGTALK_OAUTH_CLIENT_ID"),
+		ClientSecret: os.Getenv("HUAKAI_DINGTALK_OAUTH_CLIENT_SECRET"),
+		RedirectURI:  os.Getenv("HUAKAI_DINGTALK_OAUTH_REDIRECT_URI"),
+		AuthURL:      os.Getenv("HUAKAI_DINGTALK_OAUTH_AUTH_URL"),
+		TokenURL:     os.Getenv("HUAKAI_DINGTALK_OAUTH_TOKEN_URL"),
+		UserURL:      os.Getenv("HUAKAI_DINGTALK_OAUTH_USER_URL"),
+	}); p != nil {
+		providers = append(providers, p)
+	}
+	if p := buildOAuthProvider(logger, userauth.OAuthConfig{
+		Provider:           userauth.SocialProviderNodeSeek,
+		ClientID:           os.Getenv("HUAKAI_NODESEEK_OAUTH_CLIENT_ID"),
+		ClientSecret:       os.Getenv("HUAKAI_NODESEEK_OAUTH_CLIENT_SECRET"),
+		RedirectURI:        os.Getenv("HUAKAI_NODESEEK_OAUTH_REDIRECT_URI"),
+		AuthURL:            os.Getenv("HUAKAI_NODESEEK_OAUTH_AUTH_URL"),
+		TokenURL:           os.Getenv("HUAKAI_NODESEEK_OAUTH_TOKEN_URL"),
+		UserURL:            os.Getenv("HUAKAI_NODESEEK_OAUTH_USERINFO_URL"),
+		SubjectField:       os.Getenv("HUAKAI_NODESEEK_OAUTH_SUBJECT_FIELD"),
+		EmailField:         os.Getenv("HUAKAI_NODESEEK_OAUTH_EMAIL_FIELD"),
+		EmailVerifiedField: os.Getenv("HUAKAI_NODESEEK_OAUTH_EMAIL_VERIFIED_FIELD"),
+		DisplayNameField:   os.Getenv("HUAKAI_NODESEEK_OAUTH_DISPLAY_NAME_FIELD"),
+		Scopes:             parseCSVAllowlistEnv("HUAKAI_NODESEEK_OAUTH_SCOPES"),
+	}); p != nil {
+		providers = append(providers, p)
+	}
 	return userauth.NewOAuthService(providers...)
 }
 
@@ -202,6 +241,12 @@ func buildOAuthProvider(logger *zap.Logger, cfg userauth.OAuthConfig) userauth.O
 	if strings.TrimSpace(cfg.ClientID) == "" {
 		if logger != nil {
 			logger.Info("user oauth provider disabled", zap.String("provider", cfg.Provider), zap.String("reason", "client_id_missing"))
+		}
+		return nil
+	}
+	if oauthProviderRequiresClientSecret(cfg.Provider) && strings.TrimSpace(cfg.ClientSecret) == "" {
+		if logger != nil {
+			logger.Info("user oauth provider disabled", zap.String("provider", cfg.Provider), zap.String("reason", "client_secret_missing"))
 		}
 		return nil
 	}
@@ -215,6 +260,15 @@ func buildOAuthProvider(logger *zap.Logger, cfg userauth.OAuthConfig) userauth.O
 		return nil
 	}
 	return p
+}
+
+func oauthProviderRequiresClientSecret(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case userauth.SocialProviderQQ, userauth.SocialProviderDingTalk, userauth.SocialProviderNodeSeek:
+		return true
+	default:
+		return false
+	}
 }
 
 func envDefault(key, fallback string) string {
