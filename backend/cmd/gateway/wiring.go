@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
@@ -19,8 +20,11 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/budget"
+	"github.com/BloomingProsperity/HUAKAI/internal/budgetenforce"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	"github.com/BloomingProsperity/HUAKAI/internal/circuitbreaker"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	communityinvitation "github.com/BloomingProsperity/HUAKAI/internal/community/invitation"
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
@@ -238,12 +242,65 @@ func paymentServiceOptions(cfg *Config) []payment.Option {
 	return []payment.Option{payment.WithTestProvider()}
 }
 
-func buildQuotaEnforcement(cfg *Config, pgPool *pgxpool.Pool, plain billing.Settler) (billing.Settler, quotaenforce.Reserver) {
+func buildQuotaEnforcement(cfg *Config, pgPool *pgxpool.Pool, plain billing.Settler, settings *platformsettings.Service) (billing.Settler, quotaenforce.Reserver) {
 	if cfg == nil || !cfg.QuotaEnforce {
-		return plain, nil
+		if cfg == nil || !cfg.Budget.Enabled {
+			return plain, nil
+		}
 	}
-	quotaService := quota.NewService(quota.NewPostgresStore(pgPool))
-	return quotaenforce.NewSettler(plain, quotaService), quotaService
+	var quotaService *quota.Service
+	var reserver quotaenforce.Reserver
+	settler := plain
+	if cfg != nil && cfg.QuotaEnforce {
+		quotaService = quota.NewService(quota.NewPostgresStore(pgPool))
+		reserver = quotaService
+		settler = quotaenforce.NewSettler(settler, quotaService)
+	}
+	budgetService := buildBudgetService(cfg, settings)
+	if budgetService != nil {
+		reserver = budgetenforce.NewReserver(budgetService, reserver)
+		settler = budgetenforce.NewSettler(settler, budgetService)
+	}
+	return settler, reserver
+}
+
+type budgetSettingsProvider struct {
+	settings *platformsettings.Service
+}
+
+func (p budgetSettingsProvider) BudgetLimitsJSON(ctx context.Context) (string, error) {
+	if p.settings == nil {
+		return "", nil
+	}
+	setting, err := p.settings.Get(ctx, platformsettings.KeyBudgetLimits)
+	if err != nil {
+		return "", err
+	}
+	return setting.Value, nil
+}
+
+func buildBudgetService(cfg *Config, settings *platformsettings.Service) budgetenforce.Budget {
+	if cfg == nil || !cfg.Budget.Enabled {
+		return nil
+	}
+	memory := budget.NewMemoryStore(nil)
+	store := budget.Store(memory)
+	if strings.TrimSpace(cfg.Budget.RedisURL) != "" {
+		if opts, err := redis.ParseURL(cfg.Budget.RedisURL); err == nil {
+			store = budget.NewBreakerStore(
+				budget.NewRedisStore(redis.NewClient(opts)),
+				circuitbreaker.New(circuitbreaker.Config{OpenCooldown: 10 * time.Second}),
+			)
+		}
+	}
+	limits := budget.StaticLimitsProvider{
+		Default: budget.LimitPair{RPM: cfg.Budget.DefaultRPM, TPM: cfg.Budget.DefaultTPM},
+	}
+	provider := budget.MergedLimitsProvider{Static: limits, Settings: budgetSettingsProvider{settings: settings}}
+	return budget.NewService(store, provider,
+		budget.WithFailMode(budget.FailMode(cfg.Budget.FailMode)),
+		budget.WithMemoryFallback(memory),
+	)
 }
 
 func loadTenantRetryBudgetFromEnv() (*retrybudget.Budget, error) {
@@ -579,7 +636,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, fmt.Errorf("build dispute storage: %w", err)
 	}
-	settler, quotaReserver := buildQuotaEnforcement(cfg, pgPool, settler)
+	settler, quotaReserver := buildQuotaEnforcement(cfg, pgPool, settler, platformSettingsService)
 	settler = notify.NewSettler(settler, notifier, notify.WithSettlerDeliveryErrorRecorder(func(err error) {
 		logger.Warn("low balance notification delivery failed", zap.Error(err))
 	}))

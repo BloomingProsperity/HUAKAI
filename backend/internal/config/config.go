@@ -37,6 +37,9 @@ type Config struct {
 	// QuotaEnforce wires the quota reservation/finalization path into chat
 	// admission. Default false leaves the hot path unchanged.
 	QuotaEnforce bool
+	// Budget wires per-minute RPM/TPM budget tracking. Default disabled keeps
+	// the hot path unchanged; fail mode defaults to memory_fallback when enabled.
+	Budget BudgetConfig
 
 	// VendorOAuth holds operator-owned OAuth refresh settings for vendor
 	// refreshers. Empty TokenURL means that vendor refresher is not wired.
@@ -51,6 +54,14 @@ type Config struct {
 	// Values come from HUAKAI_PAYMENT_HMAC_SECRETS and must never be logged.
 	PaymentHMACSecrets map[string]string
 	PaymentEnableMock  bool
+}
+
+type BudgetConfig struct {
+	Enabled    bool
+	FailMode   string
+	RedisURL   string
+	DefaultRPM int64
+	DefaultTPM int64
 }
 
 const (
@@ -105,6 +116,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	budgetCfg, err := loadBudgetConfig()
+	if err != nil {
+		return nil, err
+	}
 	credentialAcqBootstrapShortTTL, err := envOptionalDurationSeconds("HUAKAI_CREDENTIAL_ACQ_BOOTSTRAP_SHORT_TTL_SECONDS")
 	if err != nil {
 		return nil, err
@@ -121,6 +136,7 @@ func Load() (*Config, error) {
 		TransportSidecarSocket:         os.Getenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET"),
 		TransportSidecarFallback:       transportSidecarFallback,
 		QuotaEnforce:                   quotaEnforce,
+		Budget:                         budgetCfg,
 		VendorOAuth:                    loadVendorOAuthConfigs(),
 		CredentialAcqBootstrapShortTTL: credentialAcqBootstrapShortTTL,
 		CredentialAcqBootstrapLongTTL:  credentialAcqBootstrapLongTTL,
@@ -131,6 +147,37 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("%w: HUAKAI_DATABASE_URL", ErrMissingRequired)
 	}
 	return cfg, nil
+}
+
+func loadBudgetConfig() (BudgetConfig, error) {
+	enabled, err := envBool("HUAKAI_BUDGET_ENABLED")
+	if err != nil {
+		return BudgetConfig{}, err
+	}
+	failMode := strings.TrimSpace(os.Getenv("HUAKAI_BUDGET_FAIL_MODE"))
+	if failMode == "" {
+		failMode = "memory_fallback"
+	}
+	switch failMode {
+	case "open", "closed", "memory_fallback":
+	default:
+		return BudgetConfig{}, fmt.Errorf("HUAKAI_BUDGET_FAIL_MODE must be open, closed, or memory_fallback, got %q", failMode)
+	}
+	rpm, err := envNonNegativeInt64("HUAKAI_BUDGET_DEFAULT_RPM")
+	if err != nil {
+		return BudgetConfig{}, err
+	}
+	tpm, err := envNonNegativeInt64("HUAKAI_BUDGET_DEFAULT_TPM")
+	if err != nil {
+		return BudgetConfig{}, err
+	}
+	return BudgetConfig{
+		Enabled:    enabled,
+		FailMode:   failMode,
+		RedisURL:   firstNonEmptyEnv("HUAKAI_BUDGET_REDIS_URL", "HUAKAI_REDIS_URL"),
+		DefaultRPM: rpm,
+		DefaultTPM: tpm,
+	}, nil
 }
 
 func (configs VendorOAuthConfigs) Configured() VendorOAuthConfigs {
@@ -188,6 +235,15 @@ func envDefault(name, fallback string) string {
 	return fallback
 }
 
+func firstNonEmptyEnv(names ...string) string {
+	for _, name := range names {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func envTrim(name string) string {
 	return strings.TrimSpace(os.Getenv(name))
 }
@@ -242,4 +298,19 @@ func envOptionalDurationSeconds(name string) (time.Duration, error) {
 		return 0, fmt.Errorf("%s must be positive seconds, got %q", name, raw)
 	}
 	return time.Duration(seconds) * time.Second, nil
+}
+
+func envNonNegativeInt64(name string) (int64, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		if err != nil {
+			return 0, fmt.Errorf("%s must be non-negative integer, got %q: %w", name, raw, err)
+		}
+		return 0, fmt.Errorf("%s must be non-negative integer, got %q", name, raw)
+	}
+	return value, nil
 }

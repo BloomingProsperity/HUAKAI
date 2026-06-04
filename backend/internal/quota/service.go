@@ -48,6 +48,8 @@ type ReserveRequest struct {
 	ClaimID             int64
 	RequestFingerprint  string
 	Scopes              []Scope
+	RequestedModel      string
+	ReservedTokens      int64
 	PredictedCost       decimal.Decimal
 	NeedConcurrencySlot bool
 	LeaseExpiresAt      time.Time

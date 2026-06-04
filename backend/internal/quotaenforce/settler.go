@@ -34,6 +34,7 @@ type ReserveInput struct {
 	PoolGroupID        int64
 	RequestFingerprint string
 	RequestedModel     string
+	ReservedTokens     int64
 	PredictedCost      decimal.Decimal
 	At                 time.Time
 	LeaseExpiresAt     time.Time
@@ -69,6 +70,8 @@ func BuildReserveRequest(input ReserveInput) quota.ReserveRequest {
 		ClaimID:             input.ClaimID,
 		RequestFingerprint:  input.RequestFingerprint,
 		Scopes:              Scopes(input.TenantID, input.UserID, input.APIKeyID, input.PoolGroupID),
+		RequestedModel:      input.RequestedModel,
+		ReservedTokens:      input.ReservedTokens,
 		PredictedCost:       input.PredictedCost,
 		NeedConcurrencySlot: true,
 		LeaseExpiresAt:      leaseExpiresAt,

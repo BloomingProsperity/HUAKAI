@@ -169,6 +169,44 @@ func TestLoadQuotaEnforceFlag(t *testing.T) {
 	}
 }
 
+func TestLoadBudgetDefaultsOffWithMemoryFallback(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Budget.Enabled {
+		t.Fatal("Budget.Enabled=true want default false")
+	}
+	if cfg.Budget.FailMode != "memory_fallback" {
+		t.Fatalf("Budget.FailMode=%q want memory_fallback", cfg.Budget.FailMode)
+	}
+}
+
+func TestLoadBudgetFlagRedisAndDefaultLimits(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_BUDGET_ENABLED", "true")
+	t.Setenv("HUAKAI_BUDGET_FAIL_MODE", "closed")
+	t.Setenv("HUAKAI_BUDGET_REDIS_URL", "redis://localhost:6379/1")
+	t.Setenv("HUAKAI_BUDGET_DEFAULT_RPM", "60")
+	t.Setenv("HUAKAI_BUDGET_DEFAULT_TPM", "12000")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Budget.Enabled {
+		t.Fatal("Budget.Enabled=false want true")
+	}
+	if cfg.Budget.FailMode != "closed" || cfg.Budget.RedisURL != "redis://localhost:6379/1" {
+		t.Fatalf("budget fail_mode/redis=%q/%q", cfg.Budget.FailMode, cfg.Budget.RedisURL)
+	}
+	if cfg.Budget.DefaultRPM != 60 || cfg.Budget.DefaultTPM != 12000 {
+		t.Fatalf("budget defaults rpm/tpm=%d/%d want 60/12000", cfg.Budget.DefaultRPM, cfg.Budget.DefaultTPM)
+	}
+}
+
 func TestLoadIncludesCredentialAcqBootstrapTTLOverrides(t *testing.T) {
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
 	t.Setenv("HUAKAI_CREDENTIAL_ACQ_BOOTSTRAP_SHORT_TTL_SECONDS", "1800")
@@ -223,6 +261,34 @@ func TestLoadRejectsInvalidQuotaEnforceFlag(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "HUAKAI_QUOTA_ENFORCE") {
 		t.Fatalf("err=%v must name HUAKAI_QUOTA_ENFORCE", err)
+	}
+}
+
+func TestLoadRejectsInvalidBudgetConfig(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		raw  string
+	}{
+		{name: "enabled bool", env: "HUAKAI_BUDGET_ENABLED", raw: "sometimes"},
+		{name: "fail mode", env: "HUAKAI_BUDGET_FAIL_MODE", raw: "panic"},
+		{name: "rpm", env: "HUAKAI_BUDGET_DEFAULT_RPM", raw: "-1"},
+		{name: "tpm", env: "HUAKAI_BUDGET_DEFAULT_TPM", raw: "NaN"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+			t.Setenv(tc.env, tc.raw)
+
+			err := loadOnlyError()
+
+			if err == nil {
+				t.Fatalf("invalid %s=%q was accepted", tc.env, tc.raw)
+			}
+			if !strings.Contains(err.Error(), tc.env) {
+				t.Fatalf("err=%v must name %s", err, tc.env)
+			}
+		})
 	}
 }
 

@@ -32,13 +32,14 @@ const (
 	KeyResponseHeaderDenyExtra     SettingKey = "response_header_deny_extra"
 	KeyResponseHeaderAllowOverride SettingKey = "response_header_allow_override"
 	KeyModelFallbackChains         SettingKey = "model_fallback_chains"
+	KeyBudgetLimits                SettingKey = "budget_limits"
 )
 
 var (
 	ErrUnknownKey          = errors.New("platformsettings: unknown setting key")
 	ErrInvalidValue        = errors.New("platformsettings: invalid setting value")
 	ErrStoreNotConfigured  = errors.New("platformsettings: store not configured")
-	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains}
+	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits}
 	defaultSettingValueMap = map[SettingKey]string{
 		KeyRegistrationEnabled:         "false",
 		KeyInvitationRequired:          "true",
@@ -54,6 +55,7 @@ var (
 		KeyResponseHeaderDenyExtra:     "",
 		KeyResponseHeaderAllowOverride: "",
 		KeyModelFallbackChains:         "",
+		KeyBudgetLimits:                "",
 	}
 )
 
@@ -87,7 +89,7 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 	if key == KeyResponseHeaderDenyExtra || key == KeyResponseHeaderAllowOverride {
 		return validateHeaderListValue(key, value)
 	}
-	if key == KeyModelFallbackChains {
+	if key == KeyModelFallbackChains || key == KeyBudgetLimits {
 		return validateJSONObjectValue(key, value)
 	}
 	if value == "" {
