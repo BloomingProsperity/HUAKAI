@@ -102,12 +102,28 @@ INSERT INTO moderation_log (
 )
 RETURNING id;
 
+-- name: InsertModerationViolationEvent :one
+INSERT INTO moderation_violation_events (
+    tenant_id, api_key_id, user_id, request_id, payload_hash,
+    decision, reason_code, matched_keyword_id, matched_hash_id
+) VALUES (
+    sqlc.arg(tenant_id)::bigint,
+    sqlc.arg(api_key_id)::bigint,
+    sqlc.arg(user_id)::bigint,
+    sqlc.narg(request_id)::text,
+    sqlc.arg(payload_hash)::text,
+    sqlc.arg(decision)::text,
+    sqlc.arg(reason_code)::text,
+    sqlc.narg(matched_keyword_id)::bigint,
+    sqlc.narg(matched_hash_id)::bigint
+)
+RETURNING id;
+
 -- name: CountModerationBlocksInWindow :one
 SELECT count(*)::bigint
-FROM moderation_log
+FROM moderation_violation_events
 WHERE tenant_id = sqlc.arg(tenant_id)::bigint
   AND api_key_id = sqlc.arg(api_key_id)::bigint
-  AND decision IN ('block_keyword', 'block_hash')
   AND occurred_at >= now() - make_interval(secs => sqlc.arg(window_seconds)::integer);
 
 -- name: DisableModerationAPIKey :execrows

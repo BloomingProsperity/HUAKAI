@@ -915,26 +915,32 @@ func buildModelSyncService(cfg *runtimeconfig.ModelSyncConfig, store *registry.P
 	fetchers := make([]modelsync.Fetcher, 0, 3)
 	if cfg.OpenAI.Configured() {
 		fetchers = append(fetchers, modelsync.NewHTTPFetcher(modelsync.HTTPFetcherConfig{
-			Vendor:  modelsync.VendorOpenAI,
-			URL:     cfg.OpenAI.URL,
-			APIKey:  cfg.OpenAI.APIKey,
-			Timeout: cfg.Timeout,
+			Vendor:         modelsync.VendorOpenAI,
+			URL:            cfg.OpenAI.URL,
+			APIKey:         cfg.OpenAI.APIKey,
+			Timeout:        cfg.Timeout,
+			AllowedHosts:   cfg.AllowedHosts,
+			AllowUnsafeURL: cfg.AllowUnsafeURLs,
 		}))
 	}
 	if cfg.Anthropic.Configured() {
 		fetchers = append(fetchers, modelsync.NewHTTPFetcher(modelsync.HTTPFetcherConfig{
-			Vendor:  modelsync.VendorAnthropic,
-			URL:     cfg.Anthropic.URL,
-			APIKey:  cfg.Anthropic.APIKey,
-			Timeout: cfg.Timeout,
+			Vendor:         modelsync.VendorAnthropic,
+			URL:            cfg.Anthropic.URL,
+			APIKey:         cfg.Anthropic.APIKey,
+			Timeout:        cfg.Timeout,
+			AllowedHosts:   cfg.AllowedHosts,
+			AllowUnsafeURL: cfg.AllowUnsafeURLs,
 		}))
 	}
 	if cfg.Gemini.Configured() {
 		fetchers = append(fetchers, modelsync.NewHTTPFetcher(modelsync.HTTPFetcherConfig{
-			Vendor:  modelsync.VendorGemini,
-			URL:     cfg.Gemini.URL,
-			APIKey:  cfg.Gemini.APIKey,
-			Timeout: cfg.Timeout,
+			Vendor:         modelsync.VendorGemini,
+			URL:            cfg.Gemini.URL,
+			APIKey:         cfg.Gemini.APIKey,
+			Timeout:        cfg.Timeout,
+			AllowedHosts:   cfg.AllowedHosts,
+			AllowUnsafeURL: cfg.AllowUnsafeURLs,
 		}))
 	}
 	if len(fetchers) == 0 {

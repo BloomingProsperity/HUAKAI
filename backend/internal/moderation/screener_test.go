@@ -1,8 +1,12 @@
 package moderation
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"expvar"
+	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -137,6 +141,44 @@ func TestScreener_KeywordBoundaryDoesNotMatchInsideWord(t *testing.T) {
 	}
 }
 
+func TestScreener_KeywordMatchNoBoundaryScriptsBySubstring(t *testing.T) {
+	// 根因:中文/日文等无空格脚本会被 moderationTokens 合成一个长 token。
+	// Mutation:把 fallback 还原成纯 token 序列匹配时，"违规" 不会命中 "这是违规内容"。
+	cases := []struct {
+		name    string
+		keyword string
+		body    string
+	}{
+		{name: "chinese", keyword: "违规", body: `{"messages":[{"content":"这是违规内容"}]}`},
+		{name: "japanese", keyword: "禁止", body: `{"messages":[{"content":"これは禁止内容です"}]}`},
+		{name: "mixed_cjk_english", keyword: "违规GPT", body: `{"messages":[{"content":"这是违规GPT内容"}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewScreener(ScreenerDeps{
+				Config:   configStub{cfg: ModerationConfig{Enabled: true, FailClosed: true}},
+				Keywords: &keywordStoreStub{rules: []KeywordRule{{ID: 23, Keyword: tc.keyword}}},
+				Hashes:   hashStoreStub{},
+				Audit:    &auditSpy{},
+			})
+
+			res, err := s.Screen(context.Background(), ScreenRequest{
+				TenantID:    7,
+				APIKeyID:    11,
+				UserID:      13,
+				PayloadHash: "hash-no-boundary-" + tc.name,
+				Body:        []byte(tc.body),
+			})
+			if err != nil {
+				t.Fatalf("Screen returned error: %v", err)
+			}
+			if res.Decision != DecisionBlockKeyword {
+				t.Fatalf("decision=%q want keyword block for %q inside %q", res.Decision, tc.keyword, tc.body)
+			}
+		})
+	}
+}
+
 func TestScreener_KeywordMatchNormalizesNFKCAndZeroWidth(t *testing.T) {
 	// Mutation: deleting NFKC normalization or zero-width stripping leaves this
 	// visually obvious "attack" unblocked.
@@ -159,6 +201,54 @@ func TestScreener_KeywordMatchNormalizesNFKCAndZeroWidth(t *testing.T) {
 	}
 	if res.Decision != DecisionBlockKeyword {
 		t.Fatalf("decision=%q want keyword block after normalization", res.Decision)
+	}
+}
+
+func TestScreener_AuditAndAutoBanFailuresEmitWarnAndMetric(t *testing.T) {
+	// 根因:写审计和 auto-ban 失败被 `_ =` 吞掉，运维既看不到 WARN 也看不到失败 metric。
+	// Mutation:删掉 reportModerationFailure 调用时，block 决策仍返回，但日志/metric 断言会变红。
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	auditBefore := moderationFailureMetricValue("audit_write_failed")
+	banBefore := moderationFailureMetricValue("auto_ban_record_failed")
+	s := NewScreener(ScreenerDeps{
+		Config: configStub{cfg: ModerationConfig{
+			Enabled: true, FailClosed: true, SampleRatePct: 100,
+			BanThreshold: 3, BanWindowSeconds: 3600,
+		}},
+		Keywords: &keywordStoreStub{rules: []KeywordRule{{ID: 24, Keyword: "forbidden"}}},
+		Hashes:   hashStoreStub{},
+		Audit:    &auditSpy{err: errors.New("audit sink down")},
+		Ban:      &banCounterSpy{err: errors.New("ban store down")},
+	})
+
+	res, err := s.Screen(context.Background(), ScreenRequest{
+		TenantID:    7,
+		APIKeyID:    11,
+		UserID:      13,
+		RequestID:   "req-observe-failures",
+		PayloadHash: "hash-observe-failures",
+		Body:        []byte(`{"messages":[{"content":"forbidden"}]}`),
+	})
+	if err != nil {
+		t.Fatalf("Screen returned error: %v", err)
+	}
+	if res.Decision != DecisionBlockKeyword {
+		t.Fatalf("decision=%q want keyword block despite observer failures", res.Decision)
+	}
+	if got := moderationFailureMetricValue("audit_write_failed") - auditBefore; got != 1 {
+		t.Fatalf("audit failure metric delta=%d want 1", got)
+	}
+	if got := moderationFailureMetricValue("auto_ban_record_failed") - banBefore; got != 1 {
+		t.Fatalf("auto-ban failure metric delta=%d want 1", got)
+	}
+	logged := logs.String()
+	if !strings.Contains(logged, "moderation_audit_write_failed") ||
+		!strings.Contains(logged, "moderation_auto_ban_record_failed") {
+		t.Fatalf("missing WARN logs for audit/ban failures: %s", logged)
 	}
 }
 
@@ -325,4 +415,16 @@ func (s *banCounterSpy) RecordAndCheck(_ context.Context, event ModerationEvent,
 		return BanResult{}, s.err
 	}
 	return BanResult{Count: int64(s.calls)}, nil
+}
+
+func moderationFailureMetricValue(key string) int64 {
+	m, ok := expvar.Get("huakai_moderation_failure_total").(*expvar.Map)
+	if !ok || m == nil {
+		return 0
+	}
+	v, ok := m.Get(key).(*expvar.Int)
+	if !ok || v == nil {
+		return 0
+	}
+	return v.Value()
 }

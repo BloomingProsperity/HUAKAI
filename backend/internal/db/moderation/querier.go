@@ -15,6 +15,7 @@ type Querier interface {
 	FindEnabledModerationHash(ctx context.Context, arg FindEnabledModerationHashParams) (FindEnabledModerationHashRow, error)
 	GetModerationConfig(ctx context.Context, tenantID int64) (ModerationConfig, error)
 	InsertModerationLog(ctx context.Context, arg InsertModerationLogParams) (int64, error)
+	InsertModerationViolationEvent(ctx context.Context, arg InsertModerationViolationEventParams) (int64, error)
 	// Content moderation sqlc queries.
 	// moderation_log writes metadata and payload_hash only; raw request
 	// bodies, plaintext credentials, and key hashes never appear in this file.
