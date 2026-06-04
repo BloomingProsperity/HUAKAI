@@ -199,9 +199,6 @@ func normalizeQuotaRequest(req SetKeyQuotaRequest, now time.Time) SetKeyQuotaReq
 	if req.Mode == "" {
 		req.Mode = quota.ModeEnforce
 	}
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
 	return req
 }
 

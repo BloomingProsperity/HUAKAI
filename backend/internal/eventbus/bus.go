@@ -147,7 +147,6 @@ func (b *Bus) Stop(ctx context.Context) error {
 		select {
 		case <-drainCtx.Done():
 			timer.Stop()
-			break
 		case <-timer.C:
 		}
 		if drainCtx.Err() != nil {
