@@ -33,6 +33,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/anthropicoauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/budgetenforce"
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
@@ -132,7 +133,7 @@ func TestWiring_BuildTransportFactoryInjectsSidecarSocket(t *testing.T) {
 func TestWiring_QuotaEnforceDefaultOffLeavesPlainSettlerAndNilReserver(t *testing.T) {
 	plain := &wiringRecordingSettler{}
 
-	settler, reserver := buildQuotaEnforcement(&Config{}, nil, plain)
+	settler, reserver := buildQuotaEnforcement(&Config{}, nil, plain, nil)
 
 	if settler != plain {
 		t.Fatalf("settler=%T want original plain settler when HUAKAI_QUOTA_ENFORCE default is off", settler)
@@ -145,13 +146,36 @@ func TestWiring_QuotaEnforceDefaultOffLeavesPlainSettlerAndNilReserver(t *testin
 func TestWiring_QuotaEnforceOnWrapsSettlerAndProvidesReserver(t *testing.T) {
 	plain := &wiringRecordingSettler{}
 
-	settler, reserver := buildQuotaEnforcement(&Config{QuotaEnforce: true}, nil, plain)
+	settler, reserver := buildQuotaEnforcement(&Config{QuotaEnforce: true}, nil, plain, nil)
 
 	if settler == plain {
 		t.Fatal("settler was not wrapped when QuotaEnforce=true")
 	}
 	if reserver == nil {
 		t.Fatal("quota reserver nil when QuotaEnforce=true")
+	}
+}
+
+func TestWiring_BudgetWrapsOutsideQuotaWhenEnabled(t *testing.T) {
+	// Mutation check: wiring budget inside quota, or replacing quota entirely,
+	// changes the returned reserver type and loses durable quota enforcement.
+	plain := &wiringRecordingSettler{}
+
+	settler, reserver := buildQuotaEnforcement(&Config{
+		QuotaEnforce: true,
+		Budget: runtimeconfig.BudgetConfig{
+			Enabled:    true,
+			FailMode:   "memory_fallback",
+			DefaultRPM: 1,
+			DefaultTPM: 100,
+		},
+	}, nil, plain, nil)
+
+	if settler == plain {
+		t.Fatal("settler was not wrapped when budget is enabled")
+	}
+	if _, ok := reserver.(*budgetenforce.Reserver); !ok {
+		t.Fatalf("reserver=%T want budgetenforce.Reserver outside quota", reserver)
 	}
 }
 

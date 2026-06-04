@@ -21,6 +21,15 @@ cache:
   # Redis used for: token cache, sticky sessions, rate-limit hint, scheduler snapshot.
   url: "redis://localhost:6379/0"
 
+budget:
+  # Optional hot-path RPM/TPM budget tracking. Durable cost quota remains in quota/billing.
+  enabled: false
+  fail_mode: "memory_fallback" # open | closed | memory_fallback
+  redis_url: "redis://localhost:6379/0"
+  default:
+    rpm: 0 # 0 = unlimited
+    tpm: 0 # 0 = unlimited
+
 tenancy:
   # DR-001: MVP hard-codes a single default tenant.
   default_tenant_id: 1
