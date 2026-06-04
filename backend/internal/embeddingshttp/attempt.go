@@ -103,13 +103,13 @@ func (ex *execution) settleSuccessfulResponse(w http.ResponseWriter, res *gatewa
 		writeJSONError(w, http.StatusBadGateway, clienterr.CodeCanonicalResponseError, clienterr.MessageFor(clienterr.CodeCanonicalResponseError))
 		return false
 	}
-	actualCost, costSnapshot, err := ex.inputCost(promptTokens)
+	actualCost, costSnapshot, pending, err := ex.inputCost(promptTokens)
 	if err != nil {
 		ex.abort(w, "pricing_unavailable", int64(promptTokens))
 		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, clienterr.MessageFor(clienterr.CodePricingUnavailable))
 		return false
 	}
-	if _, err := ex.d.Settler.Settle(ex.ctx, ex.settleRequest(promptTokens, actualCost, costSnapshot, attemptSeq)); err != nil {
+	if _, err := ex.d.Settler.Settle(ex.ctx, ex.settleRequest(promptTokens, actualCost, costSnapshot, attemptSeq, pending)); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeSettleError, clienterr.MessageFor(clienterr.CodeSettleError))
 		return false
 	}
