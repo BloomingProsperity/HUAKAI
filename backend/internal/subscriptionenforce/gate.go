@@ -7,6 +7,7 @@ package subscriptionenforce
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	poolrouter "github.com/BloomingProsperity/HUAKAI/internal/pool/router"
@@ -29,22 +30,27 @@ type RoutesRepo interface {
 	GroupRoutes(ctx context.Context, tenantID int64, userGroup, model string) (GroupRoutes, error)
 }
 
-// FailOpenObserver 在 gate 因 repo 出错 fail-open 放行时被调用 (用于 metric/log 告警)。
+// FailOpenObserver 在 gate 因 repo 不可用 / 出错 fail-open 放行时被调用 (用于 metric/log 告警)。
 type FailOpenObserver func(ctx context.Context, req poolrouter.SelectionRequest, err error)
+
+// FailClosedObserver 保留给明确硬拒路径接入 metric/log 告警; transient repo 问题不走这里。
+type FailClosedObserver func(ctx context.Context, req poolrouter.SelectionRequest, err error)
+
+var errRoutesRepoUnavailable = errors.New("subscription group routes repo unavailable")
 
 // GroupPolicyGate 实现 poolrouter.Gate + poolrouter.SelectionGatePreparer, 在 pool 选择
 // 时按订阅档限制可用 pool_group。
 //
 // 白名单语义 (拍板): 已配置档位必须显式绑定可用池。
-//   - user_group 空 / repo 未注入 → 放行 (无档 = 无限制 / 休眠安全)。
+//   - user_group 空 → 放行 (无档 = 无限制)。
+//   - repo 未注入 / repo 出错 → fail-open 放行 + observer 告警 (保付费可用性, 不静默)。
 //   - 该 (租户,档) 无任何有效路由 (Configured=false) → 放行 (兼容未配置分组路由的老租户)。
 //   - 有有效路由但本 model 未命中任何规则 (Allowed 空) → 拒 (白名单: 未授权该 model)。
 //   - 有有效路由且候选池在允许集内 → 放行; 否则拒 (group_policy)。
-//   - repo 出错 → fail-open 放行 + 触发 observer: 路由档位是 entitlement 而非钱/安全闸,
-//     瞬时 DB 错不应拒掉付费用户的请求 (与配额闸 S3 的 fail-closed 区别对待)。
 type GroupPolicyGate struct {
-	repo       RoutesRepo
-	onFailOpen FailOpenObserver
+	repo         RoutesRepo
+	onFailOpen   FailOpenObserver
+	onFailClosed FailClosedObserver
 }
 
 // Option 配置 GroupPolicyGate。
@@ -55,7 +61,13 @@ func WithFailOpenObserver(fn FailOpenObserver) Option {
 	return func(g *GroupPolicyGate) { g.onFailOpen = fn }
 }
 
-// NewGroupPolicyGate 构造按 routes 限档的 gate。repo 为 nil 时 gate 恒放行。
+// WithFailClosedObserver 注入明确硬拒观测钩子 (nil 时硬拒路径不额外告警)。
+func WithFailClosedObserver(fn FailClosedObserver) Option {
+	return func(g *GroupPolicyGate) { g.onFailClosed = fn }
+}
+
+// NewGroupPolicyGate 构造按 routes 限档的 gate。repo 为 nil 时对非空档 fail-open 放行,
+// 并通过 observer 告警, 避免库抖动误拒付费用户。
 func NewGroupPolicyGate(repo RoutesRepo, opts ...Option) GroupPolicyGate {
 	g := GroupPolicyGate{repo: repo}
 	for _, o := range opts {
@@ -79,14 +91,22 @@ func (g GroupPolicyGate) PrepareForSelection(ctx context.Context, req poolrouter
 	return staticVerdictGate{allow: allow, reason: reason}
 }
 
-// verdict 查库并按白名单语义裁决。空档 / nil repo / repo 错均 fail-open 放行。
+// verdict 查库并按白名单语义裁决。routes repo 不可用属于 transient 控制面问题,
+// 默认 fail-open 保可用性并打 observer; 只有查到"已配置但不允许"才硬拒。
 func (g GroupPolicyGate) verdict(ctx context.Context, req poolrouter.SelectionRequest) (bool, poolrouter.GateFailureReason) {
-	if req.UserGroup == "" || g.repo == nil {
+	userGroup := strings.TrimSpace(req.UserGroup)
+	if userGroup == "" {
 		return true, ""
 	}
-	routes, err := g.repo.GroupRoutes(ctx, req.TenantID, req.UserGroup, req.RequestedModel)
+	req.UserGroup = userGroup
+	if g.repo == nil {
+		if g.onFailOpen != nil {
+			g.onFailOpen(ctx, req, errRoutesRepoUnavailable)
+		}
+		return true, ""
+	}
+	routes, err := g.repo.GroupRoutes(ctx, req.TenantID, userGroup, req.RequestedModel)
 	if err != nil {
-		// fail-open: 路由档位非钱非安全闸; 瞬时 DB 错放行优于拒付费用户。observer 用于告警。
 		if g.onFailOpen != nil {
 			g.onFailOpen(ctx, req, err)
 		}

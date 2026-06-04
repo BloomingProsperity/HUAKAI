@@ -110,34 +110,136 @@ func TestGroupPolicyGate_UnconfiguredGroupAllows(t *testing.T) {
 	}
 }
 
-// 守 repo 错 fail-open + 触发 observer: 路由档位非钱/安全闸, 瞬时 DB 错放行 (不拒付费用户),
-// 但必须触发观测钩子以便告警 (R4: 持续 fail-open 须可监控)。
-// mutation: 改成 fail-closed(err→拒) → 放行断言红; 漏调 observer → observed 断言红。
-func TestGroupPolicyGate_RepoErrorFailsOpenAndObserves(t *testing.T) {
+// 守付费可用性: premium 等非默认订阅档遇到 routes repo 瞬时错误时必须 fail-open 放行,
+// 但必须打 fail-open observer, 让运维看到"库抖动期间可能临时蹭池"而不是静默放行。
+// mutation: 把 repo 错改成 fail-closed → ok/reason/observer 断言红 (付费用户被误拒)。
+func TestGroupPolicyGate_PremiumRepoErrorFailsOpenAndObserves(t *testing.T) {
 	repo := &fakeRoutesRepo{err: errors.New("transient db error")}
-	var observed int
+	var failOpenObserved int
+	var failClosedObserved int
 	var gotErr error
-	g := NewGroupPolicyGate(repo, WithFailOpenObserver(func(_ context.Context, _ poolrouter.SelectionRequest, err error) {
-		observed++
-		gotErr = err
-	}))
+	g := NewGroupPolicyGate(repo,
+		WithFailOpenObserver(func(_ context.Context, _ poolrouter.SelectionRequest, err error) {
+			failOpenObserved++
+			gotErr = err
+		}),
+		WithFailClosedObserver(func(context.Context, poolrouter.SelectionRequest, error) {
+			failClosedObserved++
+		}),
+	)
 
-	if ok, _, err := g.Allow(context.Background(), nil, req("premium", 9)); err != nil || !ok {
-		t.Fatalf("repo error: ok=%v err=%v, want fail-open allow with no err", ok, err)
+	ok, reason, err := g.Allow(context.Background(), nil, req("premium", 9))
+	if err != nil {
+		t.Fatalf("repo error: unexpected err %v", err)
 	}
-	if observed != 1 {
-		t.Fatalf("fail-open observer called %d times, want 1", observed)
+	if !ok {
+		t.Fatal("premium repo transient error must fail-open to protect paid-user availability, got deny")
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty on fail-open", reason)
+	}
+	if failOpenObserved != 1 {
+		t.Fatalf("fail-open observer called %d times for premium repo error, want 1", failOpenObserved)
+	}
+	if failClosedObserved != 0 {
+		t.Fatalf("fail-closed observer called %d times for premium repo error, want 0", failClosedObserved)
 	}
 	if gotErr == nil {
-		t.Fatal("observer must receive the underlying repo error")
+		t.Fatal("fail-open observer must receive the underlying repo error")
 	}
 }
 
-// 守 nil repo 休眠安全: 字段已加但未注入 repo 时 gate 恒放行 (S1a 休眠态)。
-func TestGroupPolicyGate_NilRepoAllows(t *testing.T) {
+// 守免费/默认组兼容: default 组是 HUAKAI 当前低档机制, repo 瞬时错误不能扩大成免费流量停服。
+// mutation: 把全部 repo 错一律 fail-closed → default 放行断言红。
+func TestGroupPolicyGate_DefaultRepoErrorFailsOpenForFreeTraffic(t *testing.T) {
+	repo := &fakeRoutesRepo{err: errors.New("transient db error")}
+	var failOpenObserved int
+	var failClosedObserved int
+	g := NewGroupPolicyGate(repo,
+		WithFailOpenObserver(func(context.Context, poolrouter.SelectionRequest, error) {
+			failOpenObserved++
+		}),
+		WithFailClosedObserver(func(context.Context, poolrouter.SelectionRequest, error) {
+			failClosedObserved++
+		}),
+	)
+
+	if ok, _, err := g.Allow(context.Background(), nil, req("default", 9)); err != nil || !ok {
+		t.Fatalf("default repo error: ok=%v err=%v, want compatibility fail-open allow", ok, err)
+	}
+	if failOpenObserved != 1 {
+		t.Fatalf("fail-open observer called %d times, want 1", failOpenObserved)
+	}
+	if failClosedObserved != 0 {
+		t.Fatalf("fail-closed observer called %d times for default repo error, want 0", failClosedObserved)
+	}
+}
+
+// 守 selector 真实后果: premium repo 瞬时错误经 DefaultSelector 时也必须保可用性放行,
+// 不能把库抖动扩大成 ErrNoEligibleAccount。mutation: gate fail-closed → Select 报无账号, 本测试红。
+func TestGroupPolicyGate_PremiumRepoErrorAllowsDefaultSelectorDuringTransientRepoError(t *testing.T) {
+	repo := &fakeRoutesRepo{err: errors.New("transient db error")}
+	chain := poolrouter.DefaultGateChain()
+	chain.GroupPolicy = NewGroupPolicyGate(repo)
+	sel := poolrouter.NewDefaultSelector(
+		oneAccountSource{},
+		poolrouter.WithGateChain(chain),
+		poolrouter.WithSlotManager(grantingSlots{}),
+	)
+
+	res, err := sel.Select(context.Background(), poolrouter.SelectionRequest{
+		TenantID: 1, UserGroup: "premium", RequestedModel: "claude-3-5-sonnet", PoolGroupID: 5,
+	})
+	if err != nil {
+		t.Fatalf("premium repo transient error should fail-open through selector, got err=%v", err)
+	}
+	if res == nil || res.AccountID != 1 {
+		t.Fatalf("premium repo transient error selector result=%+v, want account 1", res)
+	}
+}
+
+// 守 repo 未注入/暂缺时的付费可用性: 非默认档无法校验 routes 时默认 fail-open,
+// 但必须触发 observer 告警, 避免静默扩大高级池风险。
+// mutation: nil repo fail-closed → ok/reason/observer 断言红。
+func TestGroupPolicyGate_PremiumNilRepoFailsOpenAndObserves(t *testing.T) {
+	var failOpenObserved int
+	var failClosedObserved int
+	var gotErr error
+	g := NewGroupPolicyGate(nil,
+		WithFailOpenObserver(func(_ context.Context, _ poolrouter.SelectionRequest, err error) {
+			failOpenObserved++
+			gotErr = err
+		}),
+		WithFailClosedObserver(func(context.Context, poolrouter.SelectionRequest, error) {
+			failClosedObserved++
+		}),
+	)
+	ok, reason, err := g.Allow(context.Background(), nil, req("premium", 9))
+	if err != nil {
+		t.Fatalf("nil repo premium: unexpected err %v", err)
+	}
+	if !ok {
+		t.Fatal("nil repo premium must fail-open with alert, got deny")
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty on fail-open", reason)
+	}
+	if failOpenObserved != 1 {
+		t.Fatalf("fail-open observer called %d times, want 1", failOpenObserved)
+	}
+	if failClosedObserved != 0 {
+		t.Fatalf("fail-closed observer called %d times for nil repo premium, want 0", failClosedObserved)
+	}
+	if gotErr == nil {
+		t.Fatal("fail-open observer must receive repo unavailable error")
+	}
+}
+
+// 守 default 休眠兼容: 低档/default 流量在 repo 未注入时仍放行, 避免免费流量被误停。
+func TestGroupPolicyGate_DefaultNilRepoAllows(t *testing.T) {
 	g := NewGroupPolicyGate(nil)
-	if ok, _, err := g.Allow(context.Background(), nil, req("premium", 9)); err != nil || !ok {
-		t.Fatalf("nil repo: ok=%v err=%v, want allow", ok, err)
+	if ok, _, err := g.Allow(context.Background(), nil, req("default", 9)); err != nil || !ok {
+		t.Fatalf("nil repo default: ok=%v err=%v, want allow", ok, err)
 	}
 }
 

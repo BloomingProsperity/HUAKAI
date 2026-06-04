@@ -34,6 +34,31 @@ func TestPrometheusExporterEnabledBridgesGroupPolicyFailOpen(t *testing.T) {
 	assertPromMetricValue(t, body, "huakai_group_policy_failopen_total", "3")
 }
 
+func TestPrometheusExporterEnabledBridgesGroupPolicyFailClosed(t *testing.T) {
+	t.Setenv("HUAKAI_METRICS_PROMETHEUS", "true")
+
+	mp, handler, shutdown, err := Setup(context.Background())
+	if err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
+	defer func() {
+		if err := shutdown(context.Background()); err != nil {
+			t.Fatalf("shutdown() error = %v", err)
+		}
+	}()
+	if handler == nil {
+		t.Fatalf("Setup() with HUAKAI_METRICS_PROMETHEUS=true returned nil handler")
+	}
+	if err := RegisterBridge(context.Background(), mp); err != nil {
+		t.Fatalf("RegisterBridge() error = %v", err)
+	}
+
+	setExpvarInt(t, "group_policy_fail_closed_total", 4)
+
+	body := scrapeMetrics(t, handler)
+	assertPromMetricValue(t, body, "huakai_group_policy_failclosed_total", "4")
+}
+
 func TestSetupDisabledReturnsNoopAndNoHandler(t *testing.T) {
 	t.Setenv("HUAKAI_METRICS_PROMETHEUS", "")
 
