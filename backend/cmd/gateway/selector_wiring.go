@@ -149,7 +149,8 @@ func buildSelector(
 // DefaultGateChain 基础上把 GroupPolicy 槽换成接 routes 的真订阅 gate, 并按需替换 Health。
 // 抽成独立函数便于单测直接验证激活接线: 漏接订阅 gate 时 GroupPolicy 退回 AllowAll, 单测
 // 必红 (TestBuildGroupRoutingGates_WiresRealGroupPolicyGate)。
-// fail-open observer: routes 查询失败时放行 + 累计 metric + WARN。
+// observer: routes repo 不可用 / 查询失败时 fail-open 保可用性并累计 metric + WARN;
+// 明确硬拒路径保留 fail-closed observer 接口, transient 控制面问题不误拒付费用户。
 func buildGroupRoutingGates(routesRepo subscriptionenforce.RoutesRepo, healthService *channelhealth.Service, logger *zap.Logger) pool.GateChain {
 	gates := pool.DefaultGateChain()
 	if healthService != nil {
@@ -158,6 +159,7 @@ func buildGroupRoutingGates(routesRepo subscriptionenforce.RoutesRepo, healthSer
 	gates.GroupPolicy = subscriptionenforce.NewGroupPolicyGate(
 		routesRepo,
 		subscriptionenforce.WithFailOpenObserver(newGroupPolicyFailOpenObserver(logger)),
+		subscriptionenforce.WithFailClosedObserver(newGroupPolicyFailClosedObserver(logger)),
 	)
 	return gates
 }

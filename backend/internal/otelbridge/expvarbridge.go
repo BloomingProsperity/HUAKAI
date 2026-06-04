@@ -115,6 +115,11 @@ func bridgeCounters() []bridgeCounter {
 			description: "Subscription group policy fail-open decisions.",
 			read:        func() int64 { return readExpvarInt("group_policy_fail_open_total") },
 		},
+		{
+			name:        "huakai_group_policy_failclosed_total",
+			description: "Subscription group policy fail-closed decisions.",
+			read:        func() int64 { return readExpvarInt("group_policy_fail_closed_total") },
+		},
 	}
 }
 
