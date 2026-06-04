@@ -148,12 +148,13 @@ func (s *overviewQueryStub) joinedCalls() string {
 
 func TestOverviewTotalsTrendWindowAndRatesAreDiscriminating(t *testing.T) {
 	now := time.Now().UTC()
+	recentDay := now.Truncate(24 * time.Hour).Add(-12 * time.Hour)
 	store := &overviewQueryStub{events: []overviewSeedEvent{
-		{userID: 101, apiKeyID: 1001, model: "gpt-fast", settledAt: now.Add(-1 * time.Hour), cost: decimal.RequireFromString("4.50"), tokensInput: 100, tokensOutput: 200, endClass: "stream_end_graceful"},
-		{userID: 101, apiKeyID: 1002, model: "gpt-fast", settledAt: now.Add(-2 * time.Hour), cost: decimal.RequireFromString("1.25"), tokensInput: 50, tokensOutput: 50, endClass: "upstream_5xx"},
-		{userID: 202, apiKeyID: 1002, model: "gpt-stable", settledAt: now.Add(-26 * time.Hour), cost: decimal.RequireFromString("3.25"), tokensInput: 250, tokensOutput: 150, endClass: "non_streaming"},
-		{userID: 202, apiKeyID: 1003, model: "gpt-stable", settledAt: now.Add(-27 * time.Hour), cost: decimal.RequireFromString("4.50"), tokensInput: 100, tokensOutput: 100, endClass: "stream_end_graceful"},
-		{userID: 303, apiKeyID: 1004, model: "old-expensive", settledAt: now.Add(-8 * 24 * time.Hour), cost: decimal.RequireFromString("90.00"), tokensInput: 4000, tokensOutput: 5000, endClass: "upstream_5xx"},
+		{userID: 101, apiKeyID: 1001, model: "gpt-fast", settledAt: recentDay, cost: decimal.RequireFromString("4.50"), tokensInput: 100, tokensOutput: 200, endClass: "stream_end_graceful"},
+		{userID: 101, apiKeyID: 1002, model: "gpt-fast", settledAt: recentDay.Add(time.Hour), cost: decimal.RequireFromString("1.25"), tokensInput: 50, tokensOutput: 50, endClass: "upstream_5xx"},
+		{userID: 202, apiKeyID: 1002, model: "gpt-stable", settledAt: recentDay.Add(-24 * time.Hour), cost: decimal.RequireFromString("3.25"), tokensInput: 250, tokensOutput: 150, endClass: "non_streaming"},
+		{userID: 202, apiKeyID: 1003, model: "gpt-stable", settledAt: recentDay.Add(-25 * time.Hour), cost: decimal.RequireFromString("4.50"), tokensInput: 100, tokensOutput: 100, endClass: "stream_end_graceful"},
+		{userID: 303, apiKeyID: 1004, model: "old-expensive", settledAt: recentDay.Add(-8 * 24 * time.Hour), cost: decimal.RequireFromString("90.00"), tokensInput: 4000, tokensOutput: 5000, endClass: "upstream_5xx"},
 	}}
 	rec := invoke(NewOverviewHandler(store), "/v1/admin/usage/overview?window=7d")
 	if rec.Code != http.StatusOK {
@@ -197,8 +198,8 @@ func TestOverviewTotalsTrendWindowAndRatesAreDiscriminating(t *testing.T) {
 		requests int64
 		cost     string
 	}{
-		dayLabel(now.Add(-26 * time.Hour)): {2, "7.75000000"},
-		dayLabel(now.Add(-1 * time.Hour)):  {2, "5.75000000"},
+		dayLabel(recentDay.Add(-24 * time.Hour)): {2, "7.75000000"},
+		dayLabel(recentDay):                      {2, "5.75000000"},
 	}
 	for _, point := range body.Trend {
 		want, ok := wantTrend[point.Day]
