@@ -1,11 +1,13 @@
 package hermes
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"testing"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	dbhermes "github.com/BloomingProsperity/HUAKAI/internal/db/hermes"
@@ -105,7 +107,7 @@ func TestListMessagesByConversationPassesOwnerToStore(t *testing.T) {
 			ID: 302, TenantID: 7, OwnerUserID: 42,
 			CreatedAt: testPGTime(), UpdatedAt: testPGTime(),
 		},
-		listMessagesRows: []dbhermes.HermesMessage{{
+		listMessagesRows: []dbhermes.ListMessagesByConversationRow{{
 			ID: 401, TenantID: 7, ConversationID: 302, Role: "assistant",
 			Content: []byte(`{"type":"text","text":"hello"}`), CreatedAt: testPGTime(),
 		}},
@@ -129,6 +131,54 @@ func TestListMessagesByConversationPassesOwnerToStore(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].ID != 401 || string(got[0].Content) != `{"type":"text","text":"hello"}` {
 		t.Fatalf("messages=%+v want persisted assistant content", got)
+	}
+}
+
+func TestListMessagesByConversationDecryptsCiphertextAndKeepsLegacyPlaintext(t *testing.T) {
+	// Regression: new Hermes rows must read from encrypted content, while pre-0091 plaintext rows remain readable until retention purges them.
+	keys := mustHermesContentKeys(t)
+	encryptedPlain := []byte(`{"type":"text","text":"HERMES_READ_SENTINEL_from_ciphertext"}`)
+	ciphertext, err := EncodeMessageContent(context.Background(), keys, 7, 302, encryptedPlain)
+	if err != nil {
+		t.Fatalf("EncodeMessageContent: %v", err)
+	}
+	if bytes.Contains(ciphertext, []byte("HERMES_READ_SENTINEL")) {
+		t.Fatalf("ciphertext contains plaintext sentinel: %q", ciphertext)
+	}
+	store := &hermesStoreSpy{
+		conversationRow: dbhermes.HermesConversation{
+			ID: 302, TenantID: 7, OwnerUserID: 42,
+			CreatedAt: testPGTime(), UpdatedAt: testPGTime(),
+		},
+		listMessagesRows: []dbhermes.ListMessagesByConversationRow{
+			{
+				ID: 401, TenantID: 7, ConversationID: 302, Role: "assistant",
+				Content: []byte(EncryptedMessageContentPlaceholder), ContentCiphertext: ciphertext, CreatedAt: testPGTime(),
+			},
+			{
+				ID: 402, TenantID: 7, ConversationID: 302, Role: "assistant",
+				Content: []byte(`{"type":"text","text":"legacy plaintext still readable"}`), CreatedAt: testPGTime(),
+			},
+		},
+	}
+	service := NewService(store).WithMessageContentKeys(keys)
+
+	got, err := service.ListMessagesByConversation(context.Background(), 7, 302, 42, 20, 0)
+	if err != nil {
+		t.Fatalf("ListMessagesByConversation: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("messages=%d want encrypted plus legacy", len(got))
+	}
+	if string(got[0].Content) != string(encryptedPlain) {
+		t.Fatalf("encrypted row content=%s want decrypted plaintext JSON", string(got[0].Content))
+	}
+	if string(got[1].Content) != `{"type":"text","text":"legacy plaintext still readable"}` {
+		t.Fatalf("legacy row content=%s", string(got[1].Content))
+	}
+	// Mutation check: if messageFromRow ignores content_ciphertext, row 401 returns the placeholder instead of encryptedPlain.
+	if string(got[0].Content) == EncryptedMessageContentPlaceholder {
+		t.Fatalf("encrypted row leaked placeholder instead of decrypted content")
 	}
 }
 
@@ -245,4 +295,13 @@ func (tx *conversationTxSpy) withTx(ctx context.Context, fn func(Store) error) e
 
 func stringPtrForTest(value string) *string {
 	return &value
+}
+
+func mustHermesContentKeys(t *testing.T) credentialstore.KeyProvider {
+	t.Helper()
+	keys, err := credentialstore.NewStaticKeyProvider("hermes-test", []byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("NewStaticKeyProvider: %v", err)
+	}
+	return keys
 }

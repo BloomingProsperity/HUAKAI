@@ -125,7 +125,11 @@ func (s *Service) ListMessagesByConversation(ctx context.Context, tenantID, conv
 	if err != nil {
 		return nil, fmt.Errorf("list hermes messages: %w", err)
 	}
-	return messagesFromRows(rows), nil
+	messages, err := s.messagesFromRows(ctx, rows)
+	if err != nil {
+		return nil, err
+	}
+	return messages, nil
 }
 
 func getConversationWithStore(ctx context.Context, store Store, tenantID, conversationID int64) (dbhermes.HermesConversation, error) {
@@ -174,20 +178,35 @@ func conversationFromRow(row dbhermes.HermesConversation) Conversation {
 	}
 }
 
-func messagesFromRows(rows []dbhermes.HermesMessage) []Message {
+func (s *Service) messagesFromRows(ctx context.Context, rows []dbhermes.ListMessagesByConversationRow) ([]Message, error) {
 	out := make([]Message, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, messageFromRow(row))
+		message, err := s.messageFromRow(ctx, row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, message)
 	}
-	return out
+	return out, nil
 }
 
-func messageFromRow(row dbhermes.HermesMessage) Message {
+func (s *Service) messageFromRow(ctx context.Context, row dbhermes.ListMessagesByConversationRow) (Message, error) {
+	content := row.Content
+	if len(row.ContentCiphertext) > 0 {
+		if s == nil || s.messageContentKeys == nil {
+			return Message{}, fmt.Errorf("%w: hermes message content key provider is required", ErrMisconfigured)
+		}
+		plain, err := DecodeMessageContent(ctx, s.messageContentKeys, row.TenantID, row.ConversationID, row.ContentCiphertext)
+		if err != nil {
+			return Message{}, fmt.Errorf("decrypt hermes message content: %w", err)
+		}
+		content = plain
+	}
 	return Message{
 		ID: row.ID, TenantID: row.TenantID, ConversationID: row.ConversationID,
-		Role: row.Role, Content: row.Content, TokenCount: row.TokenCount,
+		Role: row.Role, Content: content, TokenCount: row.TokenCount,
 		CompletedAt: pgTimePtr(row.CompletedAt), CreatedAt: row.CreatedAt.Time,
-	}
+	}, nil
 }
 
 func pgTimePtr(value pgtype.Timestamptz) *time.Time {

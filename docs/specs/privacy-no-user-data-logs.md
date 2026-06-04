@@ -15,8 +15,10 @@
 
 现有所有 AI gateway (sub2api / new-api / litellm / portkey / helicone / one-api 类) **默认 log user prompt + completion** — admin 后台可查全部用户对话内容. 即便 self-hosted operator 也是单方可见 user data.
 
+Owner 2026-06-04 裁决: Hermes 用户主动使用的聊天历史是 F-PRIV 例外,允许持久化,但必须满足 **静态加密 + 保留期 + 可删**. 除这个用户主动历史例外外,HUAKAI 不持久化 prompt / completion text.
+
 HUAKAI 6 大差异化 2 + 5:
-2. **无用户数据日志** — gateway 不存 user prompt / completion text
+2. **无用户数据日志** — 除用户主动使用的 Hermes 聊天历史 (静态加密 + 保留期 + 可删) 外,gateway 不存 user prompt / completion text
 5. **日志只系统报错** — 系统级 error log 跟 user data log 严格分离
 
 F-PRIV-001 实施 **2 + 5** = 严格 redaction allowlist + 全链路 compile-time enforce + 三通道 logger 分离.
@@ -27,7 +29,7 @@ F-PRIV-001 实施 **2 + 5** = 严格 redaction allowlist + 全链路 compile-tim
 
 | 标签 | 含义 | 例 |
 |---|---|---|
-| `NEVER_PERSIST` | 严禁进任何持久化 (DB / file / external sink); 仅 in-memory transit | prompt / completion / tool input / tool output / cookie / Authorization header / raw upstream body |
+| `NEVER_PERSIST` | 严禁进任何持久化 (DB / file / external sink); 仅 in-memory transit; Hermes 用户主动聊天历史是单独例外,必须静态加密并受保留期控制 | prompt / completion / tool input / tool output / cookie / Authorization header / raw upstream body |
 | `SECRET_MATERIAL` | 加密存 (KMS / KeyProvider AES-GCM); 解密仅 critical path memory + 用后 zeroize | API key / refresh token / OAuth token / credential bytes / proxy auth |
 | `SENSITIVE_PII` | 严禁默认进 log; 仅 audit-approved storage + tenant-scoped | email (full) / phone / 精确 IP geolocation / device serial |
 | `SAFE_METADATA` | 允许 audit / log / metric / ledger | request_id / ledger_id / tenant_scope_ref / model name / token count / cost / error class enum / latency bucket |
@@ -141,7 +143,9 @@ tenant_scope = <tenant_id internal> | <tenant_scope_ref external>
 
 ## 8. Storage
 
-**不引新表**. F-PRIV-001 是 cross-cutting policy + middleware. 约束已存表 writer pipeline (audit_ledger_entries / channel_health_audit_events / active_detection_events / pacing_session_traces / outbound_ip_burn_events / billing_events / usage_record / admin_audit_events).
+**不引新业务表**. F-PRIV-001 是 cross-cutting policy + middleware. 约束已存表 writer pipeline (audit_ledger_entries / channel_health_audit_events / active_detection_events / pacing_session_traces / outbound_ip_burn_events / billing_events / usage_record / admin_audit_events).
+
+Hermes 例外: `hermes_messages.content` 的 0091 低风险迁移新增 nullable `content_ciphertext BYTEA`; 新写入走 existing KeyProvider AES-GCM 信封静态加密,旧明文 `content` 行保持可读 fallback,不做大表 backfill,由保留期 purge 逐步淘汰. 用户硬删除与 admin 访问留痕列入 Hermes-B.
 
 ## 9. 实施 Phase (Phase PRIV-1)
 
@@ -155,7 +159,7 @@ tenant_scope = <tenant_id internal> | <tenant_scope_ref external>
 
 | 项目类别 | 隐私处理 | HUAKAI 升级 |
 |---|---|---|
-| operator-only audit gateway (sub2api / new-api 类) | 默认 log prompt + completion, admin 可见 | HUAKAI 默认 strip; 严格 allowlist; compile-time enforce |
+| operator-only audit gateway (sub2api / new-api 类) | 默认 log prompt + completion, admin 可见 | HUAKAI 默认 strip; Hermes 用户主动历史例外必须静态加密 + retention purge; 严格 allowlist; compile-time enforce |
 | observability tracing (litellm / portkey / helicone) | OTel trace 含 prompt sample, operator 可见 | HUAKAI 3 channel 严分; metadata-only observability; content 永不进 trace |
 | 云厂 gateway (Bedrock / Azure OpenAI / Vertex) | 上游 audit 含 prompt | HUAKAI 不存 prompt, 上游 audit 不可见到本端 |
 | AI privacy proxy (Cloak / Anon-LLM 类) | PII detection + redact, 仍 log redacted prompt | HUAKAI 不 log 任何 prompt-derived content; 包括 redacted version (除 OPT_IN_PROOF) |
@@ -185,7 +189,7 @@ tenant_scope = <tenant_id internal> | <tenant_scope_ref external>
 
 | Test ID | Scenario | Expected |
 |---|---|---|
-| AT-PRIV-001-001 | prompt/completion sentinel 全 sink 搜索 | 仅 metadata; sentinel 不存在 |
+| AT-PRIV-001-001 | prompt/completion sentinel 全 sink 搜索 | 仅 metadata; sentinel 不存在; Hermes 例外仅允许 encrypted ciphertext,DB 明文列不得包含新写入原文 |
 | AT-PRIV-001-002 | streaming failure partial chunk | usage record terminal class + token estimate; log 无 chunk text |
 | AT-PRIV-001-003 | tool I/O redaction (call + result 含 sentinel) | audit 仅 class/status/latency/count; 无 args/result |
 | AT-PRIV-001-004 | cookie/token/API key 不进日志 (auth/upstream/retry fail) | system log 仅 fingerprint/ref; 无 secret value/prefix/suffix |
@@ -232,4 +236,4 @@ tenant_scope = <tenant_id internal> | <tenant_scope_ref external>
 - 合并: 14 章 + Codex 加分类标签 + 3 channel logger; Claude cross-chain detail
 
 ### OWNER 中文摘要
-F-PRIV-001 隐私 / 无用户数据日志 synthesis spec 落档. 6 大差异化 2 + 5 实施. 关键设计 = 5 标签数据分类 (NEVER_PERSIST 等) + 严格 Redactor allowlist (compile-time interface 强制) + 3 channel logger 严分 (System / UserAction / Security) + forward-only transit boundary + DB schema review CI check + memory zeroize + cross-spec Redactor 共享 + external sink 必走 Redactor pipeline. 不引新表. Phase PRIV-1 (5 sub-phase 5-7 天 codex). 8 Owner OCAW. AT-PRIV-001-001..014. 风险表 12 项 (HIGH 6). 跟所有现有 gateway 差异 = HUAKAI 不存 prompt + compile-time enforce + 3 channel + external sink 必脱敏. Phase 6 商业基础 + Trust family 闭环.
+F-PRIV-001 隐私 / 无用户数据日志 synthesis spec 落档. 6 大差异化 2 + 5 实施. 关键设计 = 5 标签数据分类 (NEVER_PERSIST 等) + 严格 Redactor allowlist (compile-time interface 强制) + 3 channel logger 严分 (System / UserAction / Security) + forward-only transit boundary + DB schema review CI check + memory zeroize + cross-spec Redactor 共享 + external sink 必走 Redactor pipeline. Owner 2026-06-04 明确 Hermes 用户主动聊天历史为例外:可存,但必须静态加密 + 保留期 + 可删; 本 spec 其余 prompt/completion 仍按 NEVER_PERSIST. 不引新业务表; Hermes 0091 仅新增 nullable ciphertext 列. Phase PRIV-1 (5 sub-phase 5-7 天 codex). 8 Owner OCAW. AT-PRIV-001-001..014. 风险表 12 项 (HIGH 6). 跟所有现有 gateway 差异 = HUAKAI 不存普通 prompt + compile-time enforce + 3 channel + external sink 必脱敏; Hermes 例外比参考项目更强在静态加密与保留期 purge. Phase 6 商业基础 + Trust family 闭环.

@@ -21,6 +21,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	dbhermes "github.com/BloomingProsperity/HUAKAI/internal/db/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
@@ -247,16 +248,26 @@ func TestBuildHermesChatBridgeRequiresDedicatedInternalTokenSecret(t *testing.T)
 	// Regression: /chat must fail closed when the runner shared secret exists but the bridge token secret is absent.
 	t.Setenv(hermeschat.InternalTokenSecretEnv, "")
 
-	bridge, err := buildHermesChatBridge(hermes.NewService(&hermesAuditStoreSpy{}), nil, nil)
+	keys := mustGatewayHermesContentKeys(t)
+	bridge, err := buildHermesChatBridge(hermes.NewService(&hermesAuditStoreSpy{}), nil, nil, keys)
 	if !errors.Is(err, hermes.ErrMisconfigured) || bridge != nil {
 		t.Fatalf("bridge=%v err=%v want misconfigured nil bridge without %s", bridge, err, hermeschat.InternalTokenSecretEnv)
 	}
 
 	t.Setenv(hermeschat.InternalTokenSecretEnv, "dedicated-internal-token-secret")
-	bridge, err = buildHermesChatBridge(hermes.NewService(&hermesAuditStoreSpy{}), nil, nil)
+	bridge, err = buildHermesChatBridge(hermes.NewService(&hermesAuditStoreSpy{}), nil, nil, keys)
 	if err != nil || bridge == nil {
 		t.Fatalf("bridge=%v err=%v want bridge with explicit %s", bridge, err, hermeschat.InternalTokenSecretEnv)
 	}
+}
+
+func mustGatewayHermesContentKeys(t *testing.T) credentialstore.KeyProvider {
+	t.Helper()
+	keys, err := credentialstore.NewStaticKeyProvider("gateway-hermes-test", []byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("NewStaticKeyProvider: %v", err)
+	}
+	return keys
 }
 
 func signInternalRunnerRequest(req *http.Request, body []byte, secret string, now time.Time, tenant, user string) {
@@ -416,7 +427,7 @@ func (s *hermesAuditStoreSpy) ListConversationsByOwner(context.Context, dbhermes
 	return nil, nil
 }
 
-func (s *hermesAuditStoreSpy) ListMessagesByConversation(context.Context, dbhermes.ListMessagesByConversationParams) ([]dbhermes.HermesMessage, error) {
+func (s *hermesAuditStoreSpy) ListMessagesByConversation(context.Context, dbhermes.ListMessagesByConversationParams) ([]dbhermes.ListMessagesByConversationRow, error) {
 	return nil, nil
 }
 

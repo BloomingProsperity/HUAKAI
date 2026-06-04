@@ -53,17 +53,6 @@ type HermesJwtKey struct {
 	CreatedAt    pgtype.Timestamptz `db:"created_at" json:"created_at"`
 }
 
-type HermesMessage struct {
-	ID             int64              `db:"id" json:"id"`
-	TenantID       int64              `db:"tenant_id" json:"tenant_id"`
-	ConversationID int64              `db:"conversation_id" json:"conversation_id"`
-	Role           string             `db:"role" json:"role"`
-	Content        []byte             `db:"content" json:"content"`
-	TokenCount     *int32             `db:"token_count" json:"token_count"`
-	CompletedAt    pgtype.Timestamptz `db:"completed_at" json:"completed_at"`
-	CreatedAt      pgtype.Timestamptz `db:"created_at" json:"created_at"`
-}
-
 type HermesSetting struct {
 	TenantID  int64              `db:"tenant_id" json:"tenant_id"`
 	UserID    int64              `db:"user_id" json:"user_id"`

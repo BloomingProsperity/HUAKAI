@@ -177,12 +177,13 @@ WHERE id = sqlc.arg(id)::bigint
   AND deleted_at IS NULL;
 
 -- name: AppendMessage :one
-INSERT INTO hermes_messages (tenant_id, conversation_id, role, content, token_count, completed_at)
+INSERT INTO hermes_messages (tenant_id, conversation_id, role, content, content_ciphertext, token_count, completed_at)
 SELECT
     c.tenant_id,
     c.id,
     sqlc.arg(role)::text,
     sqlc.arg(content)::jsonb,
+    sqlc.narg(content_ciphertext)::bytea,
     sqlc.narg(token_count)::integer,
     sqlc.narg(completed_at)::timestamptz
 FROM hermes_conversations c
@@ -192,7 +193,7 @@ WHERE c.id = sqlc.arg(conversation_id)::bigint
 RETURNING id;
 
 -- name: ListMessagesByConversation :many
-SELECT m.id, m.tenant_id, m.conversation_id, m.role, m.content,
+SELECT m.id, m.tenant_id, m.conversation_id, m.role, m.content, m.content_ciphertext,
        m.token_count, m.completed_at, m.created_at
 FROM hermes_messages m
 INNER JOIN hermes_conversations c
@@ -205,6 +206,18 @@ WHERE m.tenant_id = sqlc.arg(tenant_id)::bigint
 ORDER BY m.created_at ASC, m.id ASC
 LIMIT sqlc.arg(page_limit)::integer
 OFFSET sqlc.arg(page_offset)::integer;
+
+-- name: PurgeMessagesBefore :execrows
+WITH victims AS (
+    SELECT id
+    FROM hermes_messages
+    WHERE created_at < sqlc.arg(cutoff)::timestamptz
+    ORDER BY created_at ASC, id ASC
+    LIMIT sqlc.arg(batch_limit)::integer
+)
+DELETE FROM hermes_messages
+WHERE id IN (SELECT id FROM victims)
+RETURNING id;
 
 -- name: UpdateMessageCompleted :execrows
 UPDATE hermes_messages

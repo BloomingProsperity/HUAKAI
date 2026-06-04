@@ -91,7 +91,7 @@ type hermesStoreSpy struct {
 
 	listMessagesCalled bool
 	listMessagesArg    dbhermes.ListMessagesByConversationParams
-	listMessagesRows   []dbhermes.HermesMessage
+	listMessagesRows   []dbhermes.ListMessagesByConversationRow
 	listMessagesErr    error
 
 	softDeleteCalled bool
@@ -211,7 +211,7 @@ func (s *hermesStoreSpy) ListConversationsByOwner(_ context.Context, arg dbherme
 	return s.listConversationsRows, nil
 }
 
-func (s *hermesStoreSpy) ListMessagesByConversation(_ context.Context, arg dbhermes.ListMessagesByConversationParams) ([]dbhermes.HermesMessage, error) {
+func (s *hermesStoreSpy) ListMessagesByConversation(_ context.Context, arg dbhermes.ListMessagesByConversationParams) ([]dbhermes.ListMessagesByConversationRow, error) {
 	s.listMessagesCalled = true
 	s.listMessagesArg = arg
 	if s.listMessagesErr != nil {

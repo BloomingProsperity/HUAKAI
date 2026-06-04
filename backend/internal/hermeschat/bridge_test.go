@@ -1,6 +1,7 @@
 package hermeschat
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	dbhermes "github.com/BloomingProsperity/HUAKAI/internal/db/hermes"
 	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
@@ -83,8 +85,12 @@ func TestBridgeDoneEventTriggersPersist(t *testing.T) {
 	if msg.TenantID != 7 || msg.ConversationID != 1001 || msg.Role != "assistant" {
 		t.Fatalf("message tenant/conversation/role=%d/%d/%s want 7/1001/assistant", msg.TenantID, msg.ConversationID, msg.Role)
 	}
+	plain, err := hermes.DecodeMessageContent(context.Background(), mustHermesChatContentKeys(t), msg.TenantID, msg.ConversationID, msg.ContentCiphertext)
+	if err != nil {
+		t.Fatalf("DecodeMessageContent: %v", err)
+	}
 	var content map[string]string
-	if err := json.Unmarshal(msg.Content, &content); err != nil {
+	if err := json.Unmarshal(plain, &content); err != nil {
 		t.Fatalf("message content json: %v", err)
 	}
 	if content["text"] != "hello" {
@@ -245,6 +251,51 @@ func TestBridgePersistDone_AuditInsertSuccessCommitsTransaction(t *testing.T) {
 	}
 	if store.auditWrites != 1 {
 		t.Fatalf("audit writes=%d want 1", store.auditWrites)
+	}
+}
+
+func TestBridgePersistDoneEncryptsMessageContentBeforeStore(t *testing.T) {
+	// Regression: Hermes is allowed to retain user-visible chat history, but new rows must not persist message text in plaintext.
+	store := newBridgeStore()
+	store.conversations[conversationKey{tenantID: 7, id: 77}] = dbhermes.HermesConversation{ID: 77, TenantID: 7, OwnerUserID: 42}
+	keys := mustHermesChatContentKeys(t)
+	bridge := mustBridgeWithOptions(t, store, WithMessageContentKeys(keys))
+	sentinel := "HERMES_PRIVACY_SENTINEL_plaintext_must_not_be_stored"
+	var state streamState
+	state.assistantText.WriteString(sentinel)
+	err := bridge.persistDone(context.Background(), PreparedRequest{
+		TenantID: 7, UserID: 42, ConversationID: 77, RequestID: "req-encrypt",
+	}, &state, []byte(`{"total_tokens":2}`))
+	if err != nil {
+		t.Fatalf("persistDone encrypted: %v", err)
+	}
+	if len(store.appended) != 1 {
+		t.Fatalf("persisted messages=%d want 1", len(store.appended))
+	}
+	msg := store.appended[0]
+	if len(msg.ContentCiphertext) == 0 {
+		t.Fatalf("content_ciphertext empty; mutation storing plaintext must fail this test")
+	}
+	if bytes.Contains(msg.ContentCiphertext, []byte(sentinel)) {
+		t.Fatalf("content_ciphertext contains plaintext sentinel: %q", msg.ContentCiphertext)
+	}
+	if bytes.Contains(msg.Content, []byte(sentinel)) {
+		t.Fatalf("content placeholder contains plaintext sentinel: %s", string(msg.Content))
+	}
+	if string(msg.Content) != hermes.EncryptedMessageContentPlaceholder {
+		t.Fatalf("content placeholder=%s want %s", string(msg.Content), hermes.EncryptedMessageContentPlaceholder)
+	}
+	plain, err := hermes.DecodeMessageContent(context.Background(), keys, msg.TenantID, msg.ConversationID, msg.ContentCiphertext)
+	if err != nil {
+		t.Fatalf("DecodeMessageContent: %v", err)
+	}
+	var content map[string]string
+	if err := json.Unmarshal(plain, &content); err != nil {
+		t.Fatalf("decrypted content json: %v", err)
+	}
+	// Mutation check: if persistDone writes plaintext or skips encryption, ciphertext is empty/plaintext and this exact round trip fails.
+	if content["text"] != sentinel {
+		t.Fatalf("decrypted text=%q want sentinel", content["text"])
 	}
 }
 
@@ -545,6 +596,7 @@ func mustBridgeWithOptions(t *testing.T, store *bridgeStore, opts ...Option) *Br
 		WithInternalTokenSecret([]byte(testInternalSecret)),
 		WithInternalBaseURL(testInternalBaseURL),
 		WithClock(func() time.Time { return time.Unix(1700000000, 0).UTC() }),
+		WithMessageContentKeys(mustHermesChatContentKeys(t)),
 	}
 	allOpts = append(allOpts, opts...)
 	bridge, err := NewBridge(store, allOpts...)
@@ -552,6 +604,15 @@ func mustBridgeWithOptions(t *testing.T, store *bridgeStore, opts ...Option) *Br
 		t.Fatalf("NewBridge: %v", err)
 	}
 	return bridge
+}
+
+func mustHermesChatContentKeys(t *testing.T) credentialstore.KeyProvider {
+	t.Helper()
+	keys, err := credentialstore.NewStaticKeyProvider("hermes-chat-test", []byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("NewStaticKeyProvider: %v", err)
+	}
+	return keys
 }
 
 func sseResponse(body string) *http.Response {
@@ -774,7 +835,7 @@ func (s *bridgeStore) ListConversationsByOwner(context.Context, dbhermes.ListCon
 	return nil, nil
 }
 
-func (s *bridgeStore) ListMessagesByConversation(context.Context, dbhermes.ListMessagesByConversationParams) ([]dbhermes.HermesMessage, error) {
+func (s *bridgeStore) ListMessagesByConversation(context.Context, dbhermes.ListMessagesByConversationParams) ([]dbhermes.ListMessagesByConversationRow, error) {
 	return nil, nil
 }
 
