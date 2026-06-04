@@ -3,6 +3,7 @@ package moderation
 import "context"
 
 type BanStore interface {
+	RecordModerationViolationEvent(context.Context, ModerationEvent) error
 	CountBlocksInWindow(context.Context, int64, int64, int32) (int64, error)
 	DisableAPIKey(context.Context, int64, int64) error
 }
@@ -26,6 +27,9 @@ func (c *DBBanCounter) RecordAndCheck(ctx context.Context, event ModerationEvent
 	}
 	if event.Decision != DecisionBlockKeyword && event.Decision != DecisionBlockHash {
 		return BanResult{}, nil
+	}
+	if err := c.store.RecordModerationViolationEvent(ctx, event); err != nil {
+		return BanResult{}, err
 	}
 	count, err := c.store.CountBlocksInWindow(ctx, event.TenantID, event.APIKeyID, cfg.BanWindowSeconds)
 	if err != nil {

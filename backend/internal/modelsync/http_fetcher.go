@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 )
 
 const (
@@ -23,7 +26,35 @@ const (
 	maxCatalogPages         = 16
 )
 
-var ErrPaginationLimit = errors.New("modelsync: vendor model-list pagination limit reached")
+var (
+	ErrPaginationLimit = errors.New("modelsync: vendor model-list pagination limit reached")
+	ErrUnsafeURL       = errors.New("modelsync: unsafe vendor model-list url")
+)
+
+var defaultAllowedHostsByVendor = map[Vendor][]string{
+	VendorOpenAI:    {"api.openai.com"},
+	VendorAnthropic: {"api.anthropic.com"},
+	VendorGemini:    {"generativelanguage.googleapis.com"},
+}
+
+type URLPolicy struct {
+	AllowedHosts   []string
+	AllowUnsafeURL bool
+}
+
+type URLCheck struct {
+	Vendor Vendor
+	RawURL string
+	Policy URLPolicy
+}
+
+func ValidateURL(check URLCheck) error {
+	rawURL := strings.TrimSpace(check.RawURL)
+	if rawURL == "" {
+		rawURL = DefaultURLForVendor(check.Vendor)
+	}
+	return validateURL(check.Vendor, rawURL, check.Policy)
+}
 
 type HTTPFetcherConfig struct {
 	Vendor           Vendor
@@ -32,6 +63,8 @@ type HTTPFetcherConfig struct {
 	Client           *http.Client
 	Timeout          time.Duration
 	AnthropicVersion string
+	AllowedHosts     []string
+	AllowUnsafeURL   bool
 }
 
 type HTTPFetcher struct {
@@ -41,6 +74,7 @@ type HTTPFetcher struct {
 	client           *http.Client
 	timeout          time.Duration
 	anthropicVersion string
+	policy           URLPolicy
 }
 
 func NewHTTPFetcher(cfg HTTPFetcherConfig) *HTTPFetcher {
@@ -48,18 +82,7 @@ func NewHTTPFetcher(cfg HTTPFetcherConfig) *HTTPFetcher {
 	if timeout <= 0 {
 		timeout = defaultFetchTimeout
 	}
-	client := cfg.Client
-	if client == nil {
-		client = &http.Client{Timeout: timeout}
-	}
-	// 安全:本 fetcher 携带 vendor API key(Gemini 在 query、其他在 header)。
-	// 拒绝跟随重定向 —— 防止恶意/被攻陷上游用 3xx 把 key 泄漏到攻击者主机。
-	// ErrUseLastResponse 让 3xx 原样返回(getJSON 按非 2xx 报错),key 永不外发。
-	if client.CheckRedirect == nil {
-		client.CheckRedirect = func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		}
-	}
+	client := modelSyncHTTPClient(cfg.Client, timeout, cfg.AllowUnsafeURL)
 	rawURL := strings.TrimSpace(cfg.URL)
 	if rawURL == "" {
 		rawURL = DefaultURLForVendor(cfg.Vendor)
@@ -75,6 +98,10 @@ func NewHTTPFetcher(cfg HTTPFetcherConfig) *HTTPFetcher {
 		client:           client,
 		timeout:          timeout,
 		anthropicVersion: version,
+		policy: URLPolicy{
+			AllowedHosts:   cfg.AllowedHosts,
+			AllowUnsafeURL: cfg.AllowUnsafeURL,
+		},
 	}
 }
 
@@ -252,6 +279,9 @@ func (f *HTTPFetcher) getJSON(ctx context.Context, rawURL string, customize func
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := validateURL(f.vendor, rawURL, f.policy); err != nil {
+		return err
+	}
 	reqCtx, cancel := context.WithTimeout(ctx, f.timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, rawURL, nil)
@@ -275,6 +305,91 @@ func (f *HTTPFetcher) getJSON(ctx context.Context, rawURL string, customize func
 		return fmt.Errorf("modelsync: %s decode failed: %w", f.vendor, err)
 	}
 	return nil
+}
+
+func modelSyncHTTPClient(base *http.Client, timeout time.Duration, allowUnsafe bool) *http.Client {
+	if base == nil {
+		base = &http.Client{Timeout: timeout}
+	}
+	if !allowUnsafe {
+		base = auth.NewSSRFProtectedOAuthClient(base)
+	} else {
+		clone := *base
+		base = &clone
+	}
+	if base.Timeout <= 0 {
+		clone := *base
+		clone.Timeout = timeout
+		base = &clone
+	}
+	// 安全:本 fetcher 携带 vendor API key(Gemini 在 query、其他在 header)。
+	// 拒绝跟随重定向，避免恶意/被攻陷上游用 3xx 把 key 泄漏到攻击者主机。
+	if base.CheckRedirect == nil {
+		clone := *base
+		clone.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+		base = &clone
+	}
+	return base
+}
+
+func validateURL(vendor Vendor, rawURL string, policy URLPolicy) error {
+	if policy.AllowUnsafeURL {
+		return nil
+	}
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("%w: %s url parse failed", ErrUnsafeURL, vendor)
+	}
+	if !strings.EqualFold(u.Scheme, "https") {
+		return fmt.Errorf("%w: %s requires https", ErrUnsafeURL, vendor)
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if host == "" {
+		return fmt.Errorf("%w: %s host required", ErrUnsafeURL, vendor)
+	}
+	// 静态层拒绝字面 IP 的内网/环回/link-local/metadata；域名 DNS 投毒由复用的
+	// auth.NewSSRFProtectedOAuthClient 在拨号层再次解析并拒绝，避免两套 SSRF 策略漂移。
+	if ip := net.ParseIP(host); ip != nil && !auth.IsPublicOAuthIP(ip) {
+		return fmt.Errorf("%w: %s host is not public", ErrUnsafeURL, vendor)
+	}
+	if !allowedModelSyncHost(vendor, host, policy.AllowedHosts) {
+		return fmt.Errorf("%w: %s host %q not allowed", ErrUnsafeURL, vendor, host)
+	}
+	return nil
+}
+
+func allowedModelSyncHost(vendor Vendor, host string, extra []string) bool {
+	host = normalizeModelSyncHost(host)
+	if host == "" {
+		return false
+	}
+	for _, allowed := range defaultAllowedHostsByVendor[vendor] {
+		if host == normalizeModelSyncHost(allowed) {
+			return true
+		}
+	}
+	for _, allowed := range extra {
+		if host == normalizeModelSyncHost(allowed) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeModelSyncHost(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if raw == "" {
+		return ""
+	}
+	if u, err := url.Parse(raw); err == nil && u.Hostname() != "" {
+		return strings.ToLower(u.Hostname())
+	}
+	if host, _, err := net.SplitHostPort(raw); err == nil {
+		return strings.ToLower(strings.Trim(host, "[]"))
+	}
+	return strings.Trim(raw, "[]")
 }
 
 func (f *HTTPFetcher) geminiURLWithKey(rawURL string) string {

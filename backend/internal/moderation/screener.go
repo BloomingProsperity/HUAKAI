@@ -2,12 +2,16 @@ package moderation
 
 import (
 	"context"
+	"expvar"
 	"fmt"
+	"log/slog"
 	"strings"
 	"unicode"
 
 	"golang.org/x/text/unicode/norm"
 )
+
+var moderationFailureMetrics = expvar.NewMap("huakai_moderation_failure_total")
 
 type ScreenerDeps struct {
 	Config   ConfigStore
@@ -56,7 +60,9 @@ func (s *storeScreener) Screen(ctx context.Context, req ScreenRequest) (ScreenRe
 		return keywordResult, err
 	}
 	result := ScreenResult{Decision: DecisionPass, ReasonCode: "clean"}
-	_ = s.writeAudit(ctx, req, result, cfg)
+	if err := s.writeAudit(ctx, req, result, cfg); err != nil {
+		reportModerationFailure(ctx, "audit_write_failed", req, result, err)
+	}
 	return result, nil
 }
 
@@ -87,8 +93,12 @@ func (s *storeScreener) checkHash(ctx context.Context, req ScreenRequest, cfg Mo
 		ReasonCode:    nonEmpty(match.ReasonCode, "hash_match"),
 		MatchedHashID: &match.ID,
 	}
-	_ = s.writeAudit(ctx, req, result, cfg)
-	_ = s.recordAutoBan(ctx, req, result, cfg)
+	if err := s.writeAudit(ctx, req, result, cfg); err != nil {
+		reportModerationFailure(ctx, "audit_write_failed", req, result, err)
+	}
+	if err := s.recordAutoBan(ctx, req, result, cfg); err != nil {
+		reportModerationFailure(ctx, "auto_ban_record_failed", req, result, err)
+	}
 	return result, nil
 }
 
@@ -100,9 +110,10 @@ func (s *storeScreener) checkKeywords(ctx context.Context, req ScreenRequest, cf
 	if err != nil {
 		return s.backendResult(cfg, "keyword_backend_error", err)
 	}
-	bodyTokens := moderationTokens(string(req.Body))
+	bodyText := string(req.Body)
+	bodyTokens := moderationTokens(bodyText)
 	for _, rule := range rules {
-		if !containsKeywordTokens(bodyTokens, rule.Keyword) {
+		if !containsKeyword(bodyText, bodyTokens, rule.Keyword) {
 			continue
 		}
 		id := rule.ID
@@ -111,11 +122,28 @@ func (s *storeScreener) checkKeywords(ctx context.Context, req ScreenRequest, cf
 			ReasonCode:       nonEmpty(rule.ReasonCode, "keyword_match"),
 			MatchedKeywordID: &id,
 		}
-		_ = s.writeAudit(ctx, req, result, cfg)
-		_ = s.recordAutoBan(ctx, req, result, cfg)
+		if err := s.writeAudit(ctx, req, result, cfg); err != nil {
+			reportModerationFailure(ctx, "audit_write_failed", req, result, err)
+		}
+		if err := s.recordAutoBan(ctx, req, result, cfg); err != nil {
+			reportModerationFailure(ctx, "auto_ban_record_failed", req, result, err)
+		}
 		return result, nil
 	}
 	return ScreenResult{}, nil
+}
+
+func containsKeyword(body string, bodyTokens []string, keyword string) bool {
+	if containsKeywordTokens(bodyTokens, keyword) {
+		return true
+	}
+	normalizedKeyword := normalizeModerationText(keyword)
+	if normalizedKeyword == "" || !containsNoBoundaryScript(normalizedKeyword) {
+		return false
+	}
+	// 中文/日文等无空格脚本不能只靠 token 边界，否则 "这是违规内容" 会被折成单 token。
+	// 仅当 keyword 自身含无词边界脚本时才回退 substring，保留英文关键词的整词匹配。
+	return strings.Contains(normalizeModerationText(body), normalizedKeyword)
 }
 
 func containsKeywordTokens(bodyTokens []string, keyword string) bool {
@@ -132,6 +160,24 @@ func containsKeywordTokens(bodyTokens []string, keyword string) bool {
 			}
 		}
 		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func containsNoBoundaryScript(value string) bool {
+	for _, r := range value {
+		if unicode.In(r,
+			unicode.Han,
+			unicode.Hiragana,
+			unicode.Katakana,
+			unicode.Hangul,
+			unicode.Thai,
+			unicode.Lao,
+			unicode.Khmer,
+			unicode.Myanmar,
+		) {
 			return true
 		}
 	}
@@ -200,6 +246,19 @@ func (s *storeScreener) recordAutoBan(ctx context.Context, req ScreenRequest, re
 	}
 	_, err := s.ban.RecordAndCheck(ctx, eventFromResult(req, res), cfg)
 	return err
+}
+
+func reportModerationFailure(ctx context.Context, kind string, req ScreenRequest, res ScreenResult, err error) {
+	moderationFailureMetrics.Add(kind, 1)
+	// 安全:WARN 只记录租户/key/request 元数据和错误类型，不写 raw body、payload_hash 或关键词。
+	slog.WarnContext(ctx, "moderation_"+kind,
+		slog.Int64("tenant_id", req.TenantID),
+		slog.Int64("api_key_id", req.APIKeyID),
+		slog.String("request_id", req.RequestID),
+		slog.String("decision", string(res.Decision)),
+		slog.String("reason_code", res.ReasonCode),
+		slog.String("error_type", fmt.Sprintf("%T", err)),
+	)
 }
 
 func eventFromResult(req ScreenRequest, res ScreenResult) ModerationEvent {

@@ -78,6 +78,21 @@ func (s *SQLStore) InsertModerationLog(ctx context.Context, event ModerationEven
 	})
 }
 
+func (s *SQLStore) RecordModerationViolationEvent(ctx context.Context, event ModerationEvent) error {
+	_, err := s.q.InsertModerationViolationEvent(ctx, dbmoderation.InsertModerationViolationEventParams{
+		TenantID:         event.TenantID,
+		APIKeyID:         event.APIKeyID,
+		UserID:           event.UserID,
+		RequestID:        stringPtr(event.RequestID),
+		PayloadHash:      event.PayloadHash,
+		Decision:         string(event.Decision),
+		ReasonCode:       safeReasonCode(event.ReasonCode, event.Decision),
+		MatchedKeywordID: event.MatchedKeywordID,
+		MatchedHashID:    event.MatchedHashID,
+	})
+	return err
+}
+
 func (s *SQLStore) CountBlocksInWindow(ctx context.Context, tenantID int64, apiKeyID int64, seconds int32) (int64, error) {
 	return s.q.CountModerationBlocksInWindow(ctx, dbmoderation.CountModerationBlocksInWindowParams{
 		TenantID:      tenantID,

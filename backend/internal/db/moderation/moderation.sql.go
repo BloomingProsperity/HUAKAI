@@ -13,10 +13,9 @@ import (
 
 const countModerationBlocksInWindow = `-- name: CountModerationBlocksInWindow :one
 SELECT count(*)::bigint
-FROM moderation_log
+FROM moderation_violation_events
 WHERE tenant_id = $1::bigint
   AND api_key_id = $2::bigint
-  AND decision IN ('block_keyword', 'block_hash')
   AND occurred_at >= now() - make_interval(secs => $3::integer)
 `
 
@@ -221,6 +220,53 @@ func (q *Queries) InsertModerationLog(ctx context.Context, arg InsertModerationL
 		arg.MatchedHashID,
 		arg.ViolationFeeUsd,
 		arg.BillingEventID,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const insertModerationViolationEvent = `-- name: InsertModerationViolationEvent :one
+INSERT INTO moderation_violation_events (
+    tenant_id, api_key_id, user_id, request_id, payload_hash,
+    decision, reason_code, matched_keyword_id, matched_hash_id
+) VALUES (
+    $1::bigint,
+    $2::bigint,
+    $3::bigint,
+    $4::text,
+    $5::text,
+    $6::text,
+    $7::text,
+    $8::bigint,
+    $9::bigint
+)
+RETURNING id
+`
+
+type InsertModerationViolationEventParams struct {
+	TenantID         int64   `db:"tenant_id" json:"tenant_id"`
+	APIKeyID         int64   `db:"api_key_id" json:"api_key_id"`
+	UserID           int64   `db:"user_id" json:"user_id"`
+	RequestID        *string `db:"request_id" json:"request_id"`
+	PayloadHash      string  `db:"payload_hash" json:"payload_hash"`
+	Decision         string  `db:"decision" json:"decision"`
+	ReasonCode       string  `db:"reason_code" json:"reason_code"`
+	MatchedKeywordID *int64  `db:"matched_keyword_id" json:"matched_keyword_id"`
+	MatchedHashID    *int64  `db:"matched_hash_id" json:"matched_hash_id"`
+}
+
+func (q *Queries) InsertModerationViolationEvent(ctx context.Context, arg InsertModerationViolationEventParams) (int64, error) {
+	row := q.db.QueryRow(ctx, insertModerationViolationEvent,
+		arg.TenantID,
+		arg.APIKeyID,
+		arg.UserID,
+		arg.RequestID,
+		arg.PayloadHash,
+		arg.Decision,
+		arg.ReasonCode,
+		arg.MatchedKeywordID,
+		arg.MatchedHashID,
 	)
 	var id int64
 	err := row.Scan(&id)

@@ -37,6 +37,7 @@ func TestLoadModelSyncParsesKeysURLsAndDurations(t *testing.T) {
 	t.Setenv("HUAKAI_MODEL_SYNC_GEMINI_API_KEY", "gemini-key")
 	t.Setenv("HUAKAI_MODEL_SYNC_INTERVAL_SECONDS", "120")
 	t.Setenv("HUAKAI_MODEL_SYNC_TIMEOUT_SECONDS", "7")
+	t.Setenv("HUAKAI_MODEL_SYNC_ALLOWED_HOSTS", "openai.example,anthropic.example,gemini.example")
 	t.Setenv("HUAKAI_MODEL_SYNC_OPENAI_URL", "https://openai.example/models")
 	t.Setenv("HUAKAI_MODEL_SYNC_ANTHROPIC_URL", "https://anthropic.example/models")
 	t.Setenv("HUAKAI_MODEL_SYNC_GEMINI_URL", "https://gemini.example/models")
@@ -57,6 +58,41 @@ func TestLoadModelSyncParsesKeysURLsAndDurations(t *testing.T) {
 	if cfg.Gemini.APIKey != "gemini-key" || cfg.Gemini.URL != "https://gemini.example/models" {
 		t.Fatalf("Gemini config mismatch: %+v", cfg.Gemini)
 	}
+	if len(cfg.AllowedHosts) != 3 || cfg.AllowUnsafeURLs {
+		t.Fatalf("model-sync URL policy mismatch: hosts=%v unsafe=%v", cfg.AllowedHosts, cfg.AllowUnsafeURLs)
+	}
+}
+
+func TestLoadModelSyncRejectsUnsafeURLWithoutOverride(t *testing.T) {
+	// 根因:env URL 以前不做出站安全校验。Mutation:移除 model-sync URL policy 时，
+	// 169.254 metadata URL 会被配置接受，后续 fetcher 可携带 key 出站。
+	clearModelSyncEnv(t)
+	t.Setenv("HUAKAI_MODEL_SYNC_ENABLED", "true")
+	t.Setenv("HUAKAI_MODEL_SYNC_OPENAI_API_KEY", "openai-key")
+	t.Setenv("HUAKAI_MODEL_SYNC_OPENAI_URL", "https://169.254.169.254/v1/models")
+
+	if _, err := LoadModelSync(); err == nil {
+		t.Fatalf("LoadModelSync accepted metadata model-sync URL without unsafe override")
+	}
+}
+
+func TestLoadModelSyncUnsafeOverrideAllowsExplicitTestEndpoint(t *testing.T) {
+	clearModelSyncEnv(t)
+	t.Setenv("HUAKAI_MODEL_SYNC_ENABLED", "true")
+	t.Setenv("HUAKAI_MODEL_SYNC_UNSAFE_ALLOW_URLS", "true")
+	t.Setenv("HUAKAI_MODEL_SYNC_OPENAI_API_KEY", "openai-key")
+	t.Setenv("HUAKAI_MODEL_SYNC_OPENAI_URL", "http://127.0.0.1:18080/v1/models")
+
+	cfg, err := LoadModelSync()
+	if err != nil {
+		t.Fatalf("LoadModelSync with explicit unsafe override: %v", err)
+	}
+	if cfg.OpenAI.URL != "http://127.0.0.1:18080/v1/models" {
+		t.Fatalf("OpenAI URL=%q want explicit test endpoint", cfg.OpenAI.URL)
+	}
+	if !cfg.AllowUnsafeURLs {
+		t.Fatalf("AllowUnsafeURLs=false want true from explicit unsafe override")
+	}
 }
 
 func clearModelSyncEnv(t *testing.T) {
@@ -71,6 +107,8 @@ func clearModelSyncEnv(t *testing.T) {
 		"HUAKAI_MODEL_SYNC_OPENAI_URL",
 		"HUAKAI_MODEL_SYNC_ANTHROPIC_URL",
 		"HUAKAI_MODEL_SYNC_GEMINI_URL",
+		"HUAKAI_MODEL_SYNC_ALLOWED_HOSTS",
+		"HUAKAI_MODEL_SYNC_UNSAFE_ALLOW_URLS",
 	} {
 		t.Setenv(key, "")
 	}
