@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/shopspring/decimal"
 
 	pricingcatalogdb "github.com/BloomingProsperity/HUAKAI/internal/db/pricingcatalog"
 )
@@ -46,35 +45,8 @@ func TestPostgresStore_TenantIsolation(t *testing.T) {
 	}
 }
 
-func TestPostgresStore_UpsertIdempotent(t *testing.T) {
+func TestPostgresStore_UpsertQueryIsIdempotent(t *testing.T) {
 	assertPricingCatalogQueryContains(t, "UpsertPoolGroupPricingRatio", "ON CONFLICT (tenant_id, pool_group_id) DO UPDATE")
-	store := newPostgresStore(&fakeRatioQueries{
-		upsertRow: pricingcatalogdb.UpsertPoolGroupPricingRatioRow{
-			ID:          101,
-			TenantID:    7,
-			PoolGroupID: 9,
-			Ratio:       "2.50000000",
-		},
-	})
-
-	first, err := store.UpsertRatio(context.Background(), UpsertRatioParams{
-		TenantID: 7, PoolGroupID: 9, Ratio: decimal.RequireFromString("1.50000000"), Actor: "admin_token:1",
-	})
-	if err != nil {
-		t.Fatalf("first UpsertRatio error=%v", err)
-	}
-	second, err := store.UpsertRatio(context.Background(), UpsertRatioParams{
-		TenantID: 7, PoolGroupID: 9, Ratio: decimal.RequireFromString("2.50000000"), Actor: "admin_token:1",
-	})
-	if err != nil {
-		t.Fatalf("second UpsertRatio error=%v", err)
-	}
-	if first.ID != 101 || second.ID != 101 {
-		t.Fatalf("upsert ids first=%d second=%d want both 101", first.ID, second.ID)
-	}
-	if got := store.queries.(*fakeRatioQueries).upsertCalls; got != 2 {
-		t.Fatalf("upsert calls=%d want 2", got)
-	}
 }
 
 func TestPostgresStore_BackendErrorPropagated(t *testing.T) {

@@ -128,6 +128,7 @@ func newRatioUpsertHandler(d AdminPricingRatioDeps) http.HandlerFunc {
 			Ratio:       body.ratio,
 			PublicRatio: body.publicRatio,
 			Actor:       actor,
+			ActorRole:   ident.Role,
 		})
 		if err != nil {
 			writeRatioStoreError(w, "pricing_ratio_upsert_failed", err)
@@ -151,7 +152,13 @@ func newRatioDeleteHandler(d AdminPricingRatioDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		if err := d.Store.DeleteRatio(r.Context(), page.TenantID, poolGroupID); err != nil {
+		actor := fmt.Sprintf("admin_token:%d", ident.TokenID)
+		if err := d.Store.DeleteRatio(r.Context(), pricingcatalog.DeleteRatioParams{
+			TenantID:    page.TenantID,
+			PoolGroupID: poolGroupID,
+			Actor:       actor,
+			ActorRole:   ident.Role,
+		}); err != nil {
 			writeRatioStoreError(w, "pricing_ratio_delete_failed", err)
 			return
 		}

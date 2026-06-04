@@ -109,6 +109,39 @@ func TestPricingRatioHandler_MoneyPrecisionRespondsWithExactDecimalString(t *tes
 	}
 }
 
+func TestPricingRatioHandler_UpsertPassesAuthenticatedActorForAudit(t *testing.T) {
+	store := &fakeRatioStore{}
+	rec := doPricingRatioRequest(t, AdminPricingRatioDeps{
+		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 77, Role: admin.RolePlatformAdmin}},
+		Store: store,
+	}, http.MethodPut, "/9?tenant_id=7", `{"ratio":"1.2","public_ratio":true,"actor_id":"body-spoof"}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+	if store.lastUpsert.Actor != "admin_token:77" || store.lastUpsert.ActorRole != admin.RolePlatformAdmin {
+		t.Fatalf("upsert actor=%q role=%q want authenticated platform admin", store.lastUpsert.Actor, store.lastUpsert.ActorRole)
+	}
+}
+
+func TestPricingRatioHandler_DeletePassesAuthenticatedActorForAudit(t *testing.T) {
+	store := &fakeRatioStore{}
+	rec := doPricingRatioRequest(t, AdminPricingRatioDeps{
+		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 88, Role: admin.RolePlatformAdmin}},
+		Store: store,
+	}, http.MethodDelete, "/9?tenant_id=7&actor_id=body-spoof", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+	if store.lastDelete.Actor != "admin_token:88" || store.lastDelete.ActorRole != admin.RolePlatformAdmin {
+		t.Fatalf("delete actor=%q role=%q want authenticated platform admin", store.lastDelete.Actor, store.lastDelete.ActorRole)
+	}
+	if store.lastDelete.TenantID != 7 || store.lastDelete.PoolGroupID != 9 {
+		t.Fatalf("delete scope tenant=%d group=%d want 7/9", store.lastDelete.TenantID, store.lastDelete.PoolGroupID)
+	}
+}
+
 func TestPricingRatioHandler_PublicRatioFalseHidesRatioInDisplay(t *testing.T) {
 	rec := doPricingRatioRequest(t, AdminPricingRatioDeps{
 		Auth: fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
@@ -234,6 +267,8 @@ type fakeRatioStore struct {
 	upsertRow    pricingcatalog.GroupPricingRatio
 	getRow       pricingcatalog.GroupPricingRatio
 	upsertCalled bool
+	lastUpsert   pricingcatalog.UpsertRatioParams
+	lastDelete   pricingcatalog.DeleteRatioParams
 	deleteErr    error
 }
 
@@ -250,6 +285,7 @@ func (s *fakeRatioStore) ListRatios(context.Context, int64) ([]pricingcatalog.Gr
 
 func (s *fakeRatioStore) UpsertRatio(_ context.Context, p pricingcatalog.UpsertRatioParams) (pricingcatalog.GroupPricingRatio, error) {
 	s.upsertCalled = true
+	s.lastUpsert = p
 	if !p.Ratio.IsPositive() {
 		return pricingcatalog.GroupPricingRatio{}, errors.New("test store received non-positive ratio")
 	}
@@ -266,6 +302,7 @@ func (s *fakeRatioStore) UpsertRatio(_ context.Context, p pricingcatalog.UpsertR
 	}, nil
 }
 
-func (s *fakeRatioStore) DeleteRatio(context.Context, int64, int64) error {
+func (s *fakeRatioStore) DeleteRatio(_ context.Context, p pricingcatalog.DeleteRatioParams) error {
+	s.lastDelete = p
 	return s.deleteErr
 }

@@ -95,7 +95,7 @@ func (s *ratioResolverStore) UpsertRatio(context.Context, UpsertRatioParams) (Gr
 	return GroupPricingRatio{}, errors.New("unexpected UpsertRatio")
 }
 
-func (s *ratioResolverStore) DeleteRatio(context.Context, int64, int64) error {
+func (s *ratioResolverStore) DeleteRatio(context.Context, DeleteRatioParams) error {
 	return errors.New("unexpected DeleteRatio")
 }
 
