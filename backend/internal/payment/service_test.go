@@ -176,6 +176,18 @@ func newCallbackService() *Service {
 	return NewService(NewMemoryStore(), WithTestProviderSecret(svcCallbackSecret), WithClock(func() time.Time { return fixed }))
 }
 
+type subscriptionPlanPricedStore struct {
+	*MemoryStore
+	snapshot subscriptionPlanPriceSnapshot
+}
+
+func (s *subscriptionPlanPricedStore) GetSubscriptionPlanPriceSnapshot(_ context.Context, tenantID, planID int64) (subscriptionPlanPriceSnapshot, error) {
+	if s.snapshot.TenantID != tenantID || s.snapshot.PlanID != planID {
+		return subscriptionPlanPriceSnapshot{}, ErrInvalidInput
+	}
+	return s.snapshot, nil
+}
+
 func signCallback(t *testing.T, env testCallbackEnvelope) ([]byte, string) {
 	t.Helper()
 	raw, err := json.Marshal(env)
@@ -183,6 +195,55 @@ func signCallback(t *testing.T, env testCallbackEnvelope) ([]byte, string) {
 		t.Fatalf("marshal: %v", err)
 	}
 	return raw, SignTestCallback(svcCallbackSecret, raw)
+}
+
+// TestService_SubscriptionOrderDerivesPlanAmountAndRejectsCallerUnderpay 守钱路径:
+// 订阅单最终金额必须来自 plan 快照, caller 低报 amount_cents 不能污染订单或回调校验。
+// mutation: CreateOrder 对订阅单继续使用 in.AmountCents → order.AmountCents=100,
+// 低额回调会越过金额校验并推进订单状态, 本测试在金额断言或 underpay 拒绝断言处变红。
+func TestService_SubscriptionOrderDerivesPlanAmountAndRejectsCallerUnderpay(t *testing.T) {
+	planID := int64(42)
+	store := &subscriptionPlanPricedStore{
+		MemoryStore: NewMemoryStore(),
+		snapshot: subscriptionPlanPriceSnapshot{
+			TenantID:     1,
+			PlanID:       planID,
+			AmountCents:  5000,
+			CurrencyCode: "USD",
+			Enabled:      true,
+		},
+	}
+	fixed := time.Date(2026, 5, 29, 0, 0, 0, 0, time.UTC)
+	svc := NewService(store, WithTestProviderSecret(svcCallbackSecret), WithClock(func() time.Time { return fixed }))
+	ctx := context.Background()
+
+	created, err := svc.CreateOrder(ctx, CreateOrderInput{
+		TenantID: 1, UserID: 2,
+		AmountCents:        100,
+		CurrencyCode:       "EUR",
+		OutTradeNo:         "sub-plan-price",
+		ProviderKind:       ProviderTest,
+		OrderKind:          OrderKindSubscription,
+		SubscriptionPlanID: &planID,
+	})
+	if err != nil {
+		t.Fatalf("create subscription order: %v", err)
+	}
+	if created.Order.AmountCents != 5000 || created.Order.CurrencyCode != "USD" {
+		t.Fatalf("subscription order money = %d %s, want plan snapshot 5000 USD", created.Order.AmountCents, created.Order.CurrencyCode)
+	}
+
+	raw, sig := signCallback(t, testCallbackEnvelope{TenantID: 1, OutTradeNo: "sub-plan-price", PaidAmountCents: 100, CurrencyCode: "USD"})
+	if _, err := svc.ConfirmPaidByCallback(ctx, ProviderTest, raw, sig); !errors.Is(err, ErrCallbackRejected) {
+		t.Fatalf("underpaid subscription callback err = %v, want ErrCallbackRejected", err)
+	}
+	got, err := svc.GetOrder(ctx, 1, created.Order.ID)
+	if err != nil {
+		t.Fatalf("get order after underpay: %v", err)
+	}
+	if got.Status != StatusPending {
+		t.Fatalf("underpaid callback status = %q, want pending (must not confirm low caller amount)", got.Status)
+	}
 }
 
 func TestService_ConfirmPaidByCallback_HappyPathSystemActor(t *testing.T) {

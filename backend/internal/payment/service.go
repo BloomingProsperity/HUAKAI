@@ -73,17 +73,6 @@ func (s *Service) CreateOrder(ctx context.Context, in CreateOrderInput) (CreateO
 	if in.TenantID <= 0 || in.UserID <= 0 {
 		return CreateOrderResult{}, ErrInvalidInput
 	}
-	// amount 必须为正且不超过账本可表示上限 (防 billing_events numeric(20,8) 溢出后卡单)。
-	if in.AmountCents <= 0 {
-		return CreateOrderResult{}, ErrInvalidAmount
-	}
-	if in.AmountCents > maxAmountCents {
-		return CreateOrderResult{}, ErrInvalidAmount
-	}
-	currency, err := normalizeCurrency(in.CurrencyCode)
-	if err != nil {
-		return CreateOrderResult{}, err
-	}
 	kind := providerKindOrDefault(in.ProviderKind)
 	provider, err := s.providers.resolve(kind)
 	if err != nil {
@@ -107,6 +96,32 @@ func (s *Service) CreateOrder(ctx context.Context, in CreateOrderInput) (CreateO
 		return CreateOrderResult{}, ErrInvalidInput
 	}
 
+	amountCents := in.AmountCents
+	currencyInput := in.CurrencyCode
+	if orderKind == OrderKindSubscription {
+		snapshot, err := s.subscriptionPlanPriceSnapshot(ctx, in.TenantID, *in.SubscriptionPlanID)
+		if err != nil {
+			return CreateOrderResult{}, err
+		}
+		if !snapshot.Enabled {
+			return CreateOrderResult{}, ErrInvalidInput
+		}
+		// 订阅单金额/币种只能来自套餐快照; caller 传的 amount/currency 是不可信报价。
+		amountCents = snapshot.AmountCents
+		currencyInput = snapshot.CurrencyCode
+	}
+	// amount 必须为正且不超过账本可表示上限 (防 billing_events numeric(20,8) 溢出后卡单)。
+	if amountCents <= 0 {
+		return CreateOrderResult{}, ErrInvalidAmount
+	}
+	if amountCents > maxAmountCents {
+		return CreateOrderResult{}, ErrInvalidAmount
+	}
+	currency, err := normalizeCurrency(currencyInput)
+	if err != nil {
+		return CreateOrderResult{}, err
+	}
+
 	now := s.now()
 	ttl := in.ExpiresIn
 	if ttl <= 0 {
@@ -116,7 +131,7 @@ func (s *Service) CreateOrder(ctx context.Context, in CreateOrderInput) (CreateO
 
 	intent, err := provider.CreateIntent(ctx, Order{
 		TenantID: in.TenantID, UserID: in.UserID, OutTradeNo: outTradeNo,
-		AmountCents: in.AmountCents, CurrencyCode: currency, ProviderKind: kind,
+		AmountCents: amountCents, CurrencyCode: currency, ProviderKind: kind,
 	})
 	if err != nil {
 		return CreateOrderResult{}, err
@@ -126,7 +141,7 @@ func (s *Service) CreateOrder(ctx context.Context, in CreateOrderInput) (CreateO
 		TenantID:           in.TenantID,
 		UserID:             in.UserID,
 		OutTradeNo:         outTradeNo,
-		AmountCents:        in.AmountCents,
+		AmountCents:        amountCents,
 		CurrencyCode:       currency,
 		ProviderKind:       kind,
 		ProviderOrderRef:   intent.OrderRef,
@@ -144,6 +159,21 @@ func (s *Service) CreateOrder(ctx context.Context, in CreateOrderInput) (CreateO
 		return CreateOrderResult{}, err
 	}
 	return CreateOrderResult{Order: order, Idempotent: replay}, nil
+}
+
+func (s *Service) subscriptionPlanPriceSnapshot(ctx context.Context, tenantID, planID int64) (subscriptionPlanPriceSnapshot, error) {
+	store, ok := s.store.(subscriptionPlanPriceStore)
+	if !ok {
+		return subscriptionPlanPriceSnapshot{}, ErrSubscriptionOrderRequiresPG
+	}
+	snapshot, err := store.GetSubscriptionPlanPriceSnapshot(ctx, tenantID, planID)
+	if err != nil {
+		return subscriptionPlanPriceSnapshot{}, err
+	}
+	if snapshot.TenantID != tenantID || snapshot.PlanID != planID {
+		return subscriptionPlanPriceSnapshot{}, ErrInvalidInput
+	}
+	return snapshot, nil
 }
 
 func createOrderActorKind(in CreateOrderInput) string {
