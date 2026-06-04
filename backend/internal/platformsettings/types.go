@@ -1,6 +1,7 @@
 package platformsettings
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -30,13 +31,14 @@ const (
 	KeyCooldown529Seconds          SettingKey = "cooldown_529_seconds"
 	KeyResponseHeaderDenyExtra     SettingKey = "response_header_deny_extra"
 	KeyResponseHeaderAllowOverride SettingKey = "response_header_allow_override"
+	KeyModelFallbackChains         SettingKey = "model_fallback_chains"
 )
 
 var (
 	ErrUnknownKey          = errors.New("platformsettings: unknown setting key")
 	ErrInvalidValue        = errors.New("platformsettings: invalid setting value")
 	ErrStoreNotConfigured  = errors.New("platformsettings: store not configured")
-	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride}
+	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains}
 	defaultSettingValueMap = map[SettingKey]string{
 		KeyRegistrationEnabled:         "false",
 		KeyInvitationRequired:          "true",
@@ -51,6 +53,7 @@ var (
 		KeyCooldown529Seconds:          "300",
 		KeyResponseHeaderDenyExtra:     "",
 		KeyResponseHeaderAllowOverride: "",
+		KeyModelFallbackChains:         "",
 	}
 )
 
@@ -83,6 +86,9 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 	value := strings.TrimSpace(raw)
 	if key == KeyResponseHeaderDenyExtra || key == KeyResponseHeaderAllowOverride {
 		return validateHeaderListValue(key, value)
+	}
+	if key == KeyModelFallbackChains {
+		return validateJSONObjectValue(key, value)
 	}
 	if value == "" {
 		return "", fmt.Errorf("%w: %s", ErrInvalidValue, key)
@@ -164,4 +170,18 @@ func validHeaderPattern(value string) bool {
 		return false
 	}
 	return true
+}
+
+func validateJSONObjectValue(key SettingKey, value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	var probe map[string]any
+	if err := json.Unmarshal([]byte(value), &probe); err != nil {
+		return "", fmt.Errorf("%w: %s must be a JSON object", ErrInvalidValue, key)
+	}
+	if probe == nil {
+		return "", fmt.Errorf("%w: %s must be a JSON object", ErrInvalidValue, key)
+	}
+	return value, nil
 }
