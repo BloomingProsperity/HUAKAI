@@ -231,6 +231,7 @@ func TestN4b1_BlocksCrossTenantClaimOnUsageRecord(t *testing.T) {
 	}
 
 	tenantB, apiKeyB, userB := seedTenant(t, ctx, pool, "n4b1-uB-"+uuid.NewString())
+	_, _, accountB := seedProviderGraph(t, ctx, pool, tenantB, "n4b1-acctB-"+uuid.NewString())
 	// Tenant B writes a usage_records row referencing tenant A's claim.
 	// Composite FK on (tenant_id, claim_id) rejects this; api_key/user
 	// FKs are satisfied by tenant B's own keys, so the only schema gate
@@ -241,10 +242,10 @@ func TestN4b1_BlocksCrossTenantClaimOnUsageRecord(t *testing.T) {
 			tenant_id, claim_id, api_key_id, user_id, provider_account_id,
 			acquisition_token, attempt_seq, end_class, requested_at, requested_model
 		 ) VALUES (
-			$1, $2, $3, $4, 1,
+			$1, $2, $3, $4, $6,
 			$5, 1, 'non_streaming', NOW(), 'gpt-4.1-mini'
 		 )`,
-		tenantB, claimAID, apiKeyB, userB, uuid.New(),
+		tenantB, claimAID, apiKeyB, userB, uuid.New(), accountB,
 	)
 	if err == nil {
 		t.Fatalf("composite FK MUST reject cross-tenant usage_records claim binding (tenantA=%d claim=%d -> tenantB=%d)", tenantA, claimAID, tenantB)
