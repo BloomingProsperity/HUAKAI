@@ -176,6 +176,43 @@ func TestSchedulerAllScopesAdmitConsultEachOnceThenRefresh(t *testing.T) {
 	}
 }
 
+func TestSchedulerHotPathUsesStormScopesAndVendorRefresher(t *testing.T) {
+	// Mutation: wiring the gateway hot path directly to Refresher.Refresh skips
+	// account/endpoint/global storm admission and routes through the wrong refresher.
+	storm := &stormSpy{}
+	defaultRef := &refresherSpy{}
+	anthropicRef := &refresherSpy{}
+	audit := &auditSpy{}
+	lister := &listSpy{}
+	s := newTestSchedulerWith(lister, storm, defaultRef,
+		WithVendorRefresher("anthropic", anthropicRef),
+		withAuditWriter(audit),
+		WithAuditLedger(&ledgerSpy{}),
+	)
+
+	if err := s.RefreshHotPath(context.Background(), 77, 44, "anthropic"); err != nil {
+		t.Fatalf("RefreshHotPath: %v", err)
+	}
+	if lister.calls != 0 {
+		t.Fatalf("hot path must not scan scheduled candidates; lister calls=%d", lister.calls)
+	}
+	if storm.calls != 1 || storm.endpointCalls != 1 || storm.globalCalls != 1 {
+		t.Fatalf("storm scopes account/endpoint/global=%d/%d/%d want 1/1/1", storm.calls, storm.endpointCalls, storm.globalCalls)
+	}
+	if len(anthropicRef.calls) != 1 || anthropicRef.calls[0] != 44 {
+		t.Fatalf("anthropic refresher calls=%v want [44]", anthropicRef.calls)
+	}
+	if len(defaultRef.calls) != 0 {
+		t.Fatalf("default refresher calls=%v want none for vendor-specific hot refresh", defaultRef.calls)
+	}
+	if storm.released != 1 {
+		t.Fatalf("account storm release calls=%d want 1", storm.released)
+	}
+	if got := audit.lastOutcome(); got != auth.OutcomeRefreshSucceeded {
+		t.Fatalf("audit outcome=%q want refresh_succeeded", got)
+	}
+}
+
 func TestSchedulerRefreshSuccessWritesAudit(t *testing.T) {
 	storm := &stormSpy{}
 	audit := &auditSpy{}

@@ -239,19 +239,25 @@ func streamDurationEnv(name string, fallback time.Duration) time.Duration {
 	return fallback
 }
 
+func buildGatewayTimeoutConfig() gateway.TimeoutConfig {
+	return gateway.TimeoutConfig{
+		FirstTokenTimeout:   streamDurationEnv("HUAKAI_STREAM_FIRST_TOKEN_TIMEOUT", 120*time.Second),
+		InterEventTimeout:   streamDurationEnv("HUAKAI_STREAM_INTER_EVENT_TIMEOUT", 60*time.Second),
+		TotalStreamTimeout:  streamDurationEnv("HUAKAI_STREAM_TOTAL_TIMEOUT", 600*time.Second),
+		DrainMaxSeconds:     streamDurationEnv("HUAKAI_STREAM_DRAIN_MAX", 15*time.Second),
+		KeepAliveInterval:   streamDurationEnv("HUAKAI_STREAM_KEEPALIVE_INTERVAL", 15*time.Second),
+		HeaderToFirstByte:   streamDurationEnv("HUAKAI_UPSTREAM_HEADER_TIMEOUT", 15*time.Second),
+		RequestTotalTimeout: streamDurationEnv("HUAKAI_UPSTREAM_REQUEST_TIMEOUT", 120*time.Second),
+	}
+}
+
 func buildStreamForwarder(auditLedger auditledger.Ledger, auditSigner *sign.Signer, auditLedgerDLQ auditledger.DLQEnqueuer) *gateway.StreamForwarder {
 	return &gateway.StreamForwarder{
 		ProtocolAdapters: gateway.BuildDefaultProtocolAdapterRegistry(),
 		Scanners:         gateway.BuildDefaultStreamScannerRegistry(),
 		// 流超时改为 env 可配 + 调大默认,适配长跑(codex/o1/agentic):旧硬编码 First=5s/Inter=10s/
 		// Total=60s 会在上游还在思考时就被 HUAKAI 自己掐断。配合 KeepAlive 心跳避开反代空闲超时。
-		Timeouts: gateway.TimeoutConfig{
-			FirstTokenTimeout:  streamDurationEnv("HUAKAI_STREAM_FIRST_TOKEN_TIMEOUT", 120*time.Second),
-			InterEventTimeout:  streamDurationEnv("HUAKAI_STREAM_INTER_EVENT_TIMEOUT", 60*time.Second),
-			TotalStreamTimeout: streamDurationEnv("HUAKAI_STREAM_TOTAL_TIMEOUT", 600*time.Second),
-			DrainMaxSeconds:    streamDurationEnv("HUAKAI_STREAM_DRAIN_MAX", 15*time.Second),
-			KeepAliveInterval:  streamDurationEnv("HUAKAI_STREAM_KEEPALIVE_INTERVAL", 15*time.Second),
-		},
+		Timeouts:         buildGatewayTimeoutConfig(),
 		ScannerBufferCap: 1 << 20,
 		AuditLedger:      auditLedger,
 		AuditLedgerDLQ:   auditLedgerDLQ,

@@ -171,6 +171,24 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 	return out
 }
 
+func (s *Scheduler) RefreshHotPath(ctx context.Context, tenantID, accountID int64, vendorName string) error {
+	switch {
+	case s == nil:
+		return errors.New("credentialworker: scheduler missing")
+	case s.acquirer == nil:
+		return errors.New("credentialworker: storm controller required")
+	case s.Refresher == nil:
+		return errors.New("credentialworker: refresher required")
+	case tenantID == 0 || accountID == 0:
+		return errors.New("credentialworker: hot refresh requires tenant and account")
+	}
+	return s.processAccount(ctx, dbbilling.ListAccountsForRefreshRow{
+		ID:         accountID,
+		TenantID:   tenantID,
+		VendorName: vendorName,
+	})
+}
+
 func (s *Scheduler) validate() error {
 	switch {
 	case s.queryer == nil:

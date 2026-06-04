@@ -43,6 +43,8 @@ func TestBuildStreamForwarderHasLongDefaults(t *testing.T) {
 		"HUAKAI_STREAM_TOTAL_TIMEOUT",
 		"HUAKAI_STREAM_DRAIN_MAX",
 		"HUAKAI_STREAM_KEEPALIVE_INTERVAL",
+		"HUAKAI_UPSTREAM_HEADER_TIMEOUT",
+		"HUAKAI_UPSTREAM_REQUEST_TIMEOUT",
 	} {
 		t.Setenv(k, "")
 	}
@@ -55,5 +57,23 @@ func TestBuildStreamForwarderHasLongDefaults(t *testing.T) {
 	}
 	if f.Timeouts.KeepAliveInterval <= 0 || f.Timeouts.KeepAliveInterval > 90*time.Second {
 		t.Fatalf("KeepAliveInterval default must be ON and under proxy idle timeout: %v", f.Timeouts.KeepAliveInterval)
+	}
+	if f.Timeouts.HeaderToFirstByte != 15*time.Second {
+		t.Fatalf("HeaderToFirstByte default=%v want 15s for non-streaming fast failover", f.Timeouts.HeaderToFirstByte)
+	}
+	if f.Timeouts.RequestTotalTimeout < 60*time.Second {
+		t.Fatalf("RequestTotalTimeout default too short for buffered AI request: %v", f.Timeouts.RequestTotalTimeout)
+	}
+}
+
+func TestBuildGatewayTimeoutConfigReadsNonStreamingEnv(t *testing.T) {
+	t.Setenv("HUAKAI_UPSTREAM_HEADER_TIMEOUT", "40ms")
+	t.Setenv("HUAKAI_UPSTREAM_REQUEST_TIMEOUT", "900ms")
+	cfg := buildGatewayTimeoutConfig()
+	if cfg.HeaderToFirstByte != 40*time.Millisecond {
+		t.Fatalf("HeaderToFirstByte=%v want 40ms override", cfg.HeaderToFirstByte)
+	}
+	if cfg.RequestTotalTimeout != 900*time.Millisecond {
+		t.Fatalf("RequestTotalTimeout=%v want 900ms override", cfg.RequestTotalTimeout)
 	}
 }
