@@ -561,11 +561,11 @@ type pricingRatioResolverStub struct {
 	ratio decimal.Decimal
 }
 
-func (s *pricingRatioResolverStub) Resolve(context.Context, int64, int64) decimal.Decimal {
+func (s *pricingRatioResolverStub) Resolve(context.Context, int64, int64) (decimal.Decimal, error) {
 	if s == nil || s.ratio.IsZero() {
-		return decimal.NewFromInt(1)
+		return decimal.NewFromInt(1), nil
 	}
-	return s.ratio
+	return s.ratio, nil
 }
 
 type recordingRoundTripper struct {

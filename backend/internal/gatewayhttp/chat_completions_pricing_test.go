@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/shopspring/decimal"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingeval"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
@@ -32,6 +34,46 @@ func TestSettleCompletion_RateTableMiss_FailsClosed(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "pricing_unavailable") {
 		t.Fatalf("body=%s want pricing_unavailable", rec.Body.String())
+	}
+}
+
+func TestSettleCompletion_PricingRatioBackendErrorServesAtDefaultRatioWithAlert(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	settler := &recordingSettler{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.Settler = settler
+	d.PricingRatioResolver = pricingcatalog.NewRatioResolver(&gatewayPricingRatioStore{err: pricingcatalog.ErrBackend}, time.Hour)
+	d.RateTables = &rateTableSourceStub{table: billing.RateTable{
+		Version:     "test-policy",
+		PricingData: json.RawMessage(`{"models":{"gpt-4o":{"input_micro_usd":1000,"output_micro_usd":2000}}}`),
+	}}
+	before := pricingcatalog.SnapshotRatioResolverSignals()
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+
+	// 判别性夹具: 旧实现会 503 且不 settle；静默吞错则缺 metric/pending_reconciliation。
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200 fail-open", rec.Code, rec.Body.String())
+	}
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1", len(settler.calls))
+	}
+	want := decimal.RequireFromString("0.008")
+	assertDecimalEqual(t, "ActualCost", settler.calls[0].ActualCost, want)
+	assertDecimalEqual(t, "Draft.ActualCost", settler.calls[0].Draft.ActualCost, want)
+	if !strings.Contains(settler.calls[0].Draft.CostSnapshot, "flat") {
+		t.Fatalf("Draft.CostSnapshot=%q want flat default-ratio snapshot", settler.calls[0].Draft.CostSnapshot)
+	}
+	if !strings.Contains(settler.calls[0].Draft.CostSnapshot, "pending_reconciliation") {
+		t.Fatalf("Draft.CostSnapshot=%q want pending_reconciliation marker", settler.calls[0].Draft.CostSnapshot)
+	}
+	if !settler.calls[0].Draft.PendingReconciliation {
+		t.Fatal("Draft.PendingReconciliation=false want true for backend-error default ratio")
+	}
+	after := pricingcatalog.SnapshotRatioResolverSignals()
+	if after.BackendErrorWithoutLKGTotal-before.BackendErrorWithoutLKGTotal != 1 {
+		t.Fatalf("backend error metric delta=%d want 1", after.BackendErrorWithoutLKGTotal-before.BackendErrorWithoutLKGTotal)
 	}
 }
 
@@ -806,11 +848,38 @@ func assertDecimalEqual(t *testing.T, field string, got, want decimal.Decimal) {
 
 type pricingRatioResolverStub struct {
 	ratio decimal.Decimal
+	err   error
 }
 
-func (s *pricingRatioResolverStub) Resolve(context.Context, int64, int64) decimal.Decimal {
-	if s == nil || s.ratio.IsZero() {
-		return decimal.NewFromInt(1)
+type gatewayPricingRatioStore struct {
+	err error
+}
+
+func (s *gatewayPricingRatioStore) GetRatio(context.Context, int64, int64) (pricingcatalog.GroupPricingRatio, error) {
+	if s != nil && s.err != nil {
+		return pricingcatalog.GroupPricingRatio{}, s.err
 	}
-	return s.ratio
+	return pricingcatalog.GroupPricingRatio{}, pricingcatalog.ErrNotFound
+}
+
+func (s *gatewayPricingRatioStore) ListRatios(context.Context, int64) ([]pricingcatalog.GroupPricingRatio, error) {
+	return nil, pricingcatalog.ErrBackend
+}
+
+func (s *gatewayPricingRatioStore) UpsertRatio(context.Context, pricingcatalog.UpsertRatioParams) (pricingcatalog.GroupPricingRatio, error) {
+	return pricingcatalog.GroupPricingRatio{}, pricingcatalog.ErrBackend
+}
+
+func (s *gatewayPricingRatioStore) DeleteRatio(context.Context, pricingcatalog.DeleteRatioParams) error {
+	return pricingcatalog.ErrBackend
+}
+
+func (s *pricingRatioResolverStub) Resolve(context.Context, int64, int64) (decimal.Decimal, error) {
+	if s != nil && s.err != nil {
+		return decimal.Zero, s.err
+	}
+	if s == nil || s.ratio.IsZero() {
+		return decimal.NewFromInt(1), nil
+	}
+	return s.ratio, nil
 }

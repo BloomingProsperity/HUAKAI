@@ -14,8 +14,9 @@ func mountPricingCatalogRoutes(r chi.Router, d *deps) {
 	}
 	r.Route("/admin/v1/pricing/ratios", func(r chi.Router) {
 		pricingcataloghttp.MountPricingRatioRoutes(r, pricingcataloghttp.AdminPricingRatioDeps{
-			Auth:  d.adminAuth,
-			Store: store,
+			Auth:     d.adminAuth,
+			Store:    store,
+			Resolver: d.pricingRatioResolver,
 		})
 	})
 }

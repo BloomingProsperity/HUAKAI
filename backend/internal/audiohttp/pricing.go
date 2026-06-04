@@ -67,12 +67,16 @@ func (ex *execution) preparePricing() error {
 }
 
 func (ex *execution) perUnitCost(units, perUnit decimal.Decimal) (decimal.Decimal, string, bool, error) {
+	groupRatio, err := ex.groupPricingRatio()
+	if err != nil {
+		return decimal.Zero, "", false, err
+	}
 	result, err := pricingeval.Resolve(ex.ctx, json.RawMessage(`{}`), pricingeval.Usage{
 		BillableUnits: units,
 	}, pricingeval.FlatRateFallback{
 		PerUnit:    perUnit,
 		Multiplier: decimal.NewFromInt(1),
-		GroupRatio: ex.groupPricingRatio(),
+		GroupRatio: groupRatio,
 		HasPerUnit: true,
 	}, strings.TrimSpace(ex.d.BillingPolicyVersion))
 	if err != nil {
@@ -86,6 +90,10 @@ func (ex *execution) tokenCost(usage audioTokenUsage) (decimal.Decimal, string, 
 	if err != nil {
 		return decimal.Zero, "", false, err
 	}
+	groupRatio, err := ex.groupPricingRatio()
+	if err != nil {
+		return decimal.Zero, "", false, err
+	}
 	result, err := pricingeval.Resolve(ex.ctx, rates.Raw, pricingeval.Usage{
 		InputTokens:  int64(usage.InputTokens),
 		OutputTokens: int64(usage.OutputTokens),
@@ -93,7 +101,7 @@ func (ex *execution) tokenCost(usage audioTokenUsage) (decimal.Decimal, string, 
 		Input:      rates.Input,
 		Output:     rates.Output,
 		Multiplier: rates.Multiplier,
-		GroupRatio: ex.groupPricingRatio(),
+		GroupRatio: groupRatio,
 		HasInput:   rates.HasInput,
 		HasOutput:  rates.HasOutput,
 	}, strings.TrimSpace(ex.d.BillingPolicyVersion))
@@ -113,9 +121,9 @@ func (ex *execution) reserveTokenUsage() audioTokenUsage {
 	return audioTokenUsage{InputTokens: 1}
 }
 
-func (ex *execution) groupPricingRatio() decimal.Decimal {
+func (ex *execution) groupPricingRatio() (decimal.Decimal, error) {
 	if ex == nil || ex.d.PricingRatioResolver == nil {
-		return decimal.Zero
+		return decimal.Zero, nil
 	}
 	return ex.d.PricingRatioResolver.Resolve(ex.ctx, ex.ident.TenantID, ex.attempt.PoolGroupID)
 }

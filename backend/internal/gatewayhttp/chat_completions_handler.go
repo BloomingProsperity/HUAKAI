@@ -42,7 +42,7 @@ type authResolver interface {
 }
 
 type pricingRatioResolver interface {
-	Resolve(ctx context.Context, tenantID, poolGroupID int64) decimal.Decimal
+	Resolve(ctx context.Context, tenantID, poolGroupID int64) (decimal.Decimal, error)
 }
 
 type ChatHandlerDeps struct {
@@ -154,6 +154,12 @@ type chatExecution struct {
 	upstreamModelID   string
 	cacheVendor       string
 	cacheKey          string
+
+	groupRatioCacheSet                   bool
+	groupRatioCacheTenantID              int64
+	groupRatioCachePoolGroupID           int64
+	groupRatioCache                      decimal.Decimal
+	groupRatioCachePendingReconciliation bool
 
 	cred         provider.Credential
 	accInfo      provider.AccountInfo

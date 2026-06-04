@@ -1,9 +1,11 @@
 package gatewayhttp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/shopspring/decimal"
@@ -56,6 +58,10 @@ type completionPricingSelection struct {
 	Rates completionRateVector
 }
 
+type pricingRatioResolverWithSignal interface {
+	ResolveWithSignal(ctx context.Context, tenantID, poolGroupID int64) (decimal.Decimal, bool, error)
+}
+
 func (ex *chatExecution) predictedCompletionCost() (decimal.Decimal, error) {
 	cost, err := ex.completionCost(completionUsageForCost{
 		InputTokens:  estimateInputTokens(ex.body),
@@ -100,10 +106,15 @@ func (ex *chatExecution) completionCost(usage completionUsageForCost) (completio
 		return completionCostBreakdown{}, err
 	}
 	fallback := selection.Rates.flatRateFallback()
-	fallback.GroupRatio = ex.groupPricingRatio()
+	groupRatio, ratioPendingReconciliation := ex.groupPricingRatio()
+	fallback.GroupRatio = groupRatio
 	result, err := pricingeval.Resolve(ex.ctx, selection.Raw, pricingUsage(usage), fallback, version)
 	if err != nil {
 		return completionCostBreakdown{}, pricingUnavailable(err.Error())
+	}
+	if ratioPendingReconciliation {
+		result.PendingReconciliation = true
+		result.CostSnapshot = snapshotWithPricingRatioPending(result.CostSnapshot)
 	}
 	return completionCostBreakdown{
 		Total:                 result.Total,
@@ -114,11 +125,57 @@ func (ex *chatExecution) completionCost(usage completionUsageForCost) (completio
 	}, nil
 }
 
-func (ex *chatExecution) groupPricingRatio() decimal.Decimal {
+func (ex *chatExecution) groupPricingRatio() (decimal.Decimal, bool) {
 	if ex == nil || ex.d.PricingRatioResolver == nil {
-		return decimal.Zero
+		return decimal.Zero, false
 	}
-	return ex.d.PricingRatioResolver.Resolve(ex.ctx, ex.ident.TenantID, ex.attempt.PoolGroupID)
+	tenantID := ex.ident.TenantID
+	poolGroupID := ex.attempt.PoolGroupID
+	if ex.groupRatioCacheSet && ex.groupRatioCacheTenantID == tenantID && ex.groupRatioCachePoolGroupID == poolGroupID {
+		return ex.groupRatioCache, ex.groupRatioCachePendingReconciliation
+	}
+	if resolver, ok := ex.d.PricingRatioResolver.(pricingRatioResolverWithSignal); ok {
+		ratio, pendingReconciliation, err := resolver.ResolveWithSignal(ex.ctx, tenantID, poolGroupID)
+		if err != nil {
+			return ex.cacheGroupPricingRatio(ex.defaultRatioAfterResolverError(err))
+		}
+		return ex.cacheGroupPricingRatio(ratio, pendingReconciliation)
+	}
+	ratio, err := ex.d.PricingRatioResolver.Resolve(ex.ctx, tenantID, poolGroupID)
+	if err != nil {
+		return ex.cacheGroupPricingRatio(ex.defaultRatioAfterResolverError(err))
+	}
+	return ex.cacheGroupPricingRatio(ratio, false)
+}
+
+func (ex *chatExecution) cacheGroupPricingRatio(ratio decimal.Decimal, pendingReconciliation bool) (decimal.Decimal, bool) {
+	ex.groupRatioCacheSet = true
+	ex.groupRatioCacheTenantID = ex.ident.TenantID
+	ex.groupRatioCachePoolGroupID = ex.attempt.PoolGroupID
+	ex.groupRatioCache = ratio
+	ex.groupRatioCachePendingReconciliation = pendingReconciliation
+	return ratio, pendingReconciliation
+}
+
+func (ex *chatExecution) defaultRatioAfterResolverError(err error) (decimal.Decimal, bool) {
+	slog.ErrorContext(ex.ctx, "pricing ratio resolver error served default ratio",
+		"tenant_id", ex.ident.TenantID,
+		"pool_group_id", ex.attempt.PoolGroupID,
+		"default_group_ratio", "1",
+		"error", err,
+	)
+	return decimal.NewFromInt(1), true
+}
+
+func snapshotWithPricingRatioPending(snapshot string) string {
+	const marker = "pending_reconciliation=pricing_ratio_backend_error"
+	if strings.TrimSpace(snapshot) == "" {
+		return marker
+	}
+	if strings.Contains(snapshot, "pending_reconciliation") {
+		return snapshot
+	}
+	return snapshot + ";" + marker
 }
 
 func (ex *chatExecution) providerForPricing() string {

@@ -3,11 +3,14 @@ package pricingcatalog
 import (
 	"bytes"
 	"context"
+	"errors"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
+	"github.com/jackc/pgx/v5"
 )
 
 func TestPricingRatioAuditSignedChainDetectsTamperAndDelete(t *testing.T) {
@@ -104,6 +107,55 @@ func TestPricingRatioAuditSignedChainDetectsTamperAndDelete(t *testing.T) {
 	}
 }
 
+func TestLoadPricingRatioAuditEntriesUsesAppendIDOrderForChainVerification(t *testing.T) {
+	ctx := context.Background()
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	firstAt := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	secondAt := firstAt.Add(-time.Minute)
+
+	first, err := signPricingRatioAuditEntry(ctx, signer, pricingRatioAuditEvent{
+		OccurredAt:  firstAt,
+		ActorID:     "admin_token:99",
+		ActorRole:   "platform_admin",
+		TenantID:    7,
+		PoolGroupID: 42,
+		Action:      RatioAuditActionUpsert,
+		NewRatio:    stringPtrForRatioAuditTest("1.25000000"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("sign first audit entry: %v", err)
+	}
+	second, err := signPricingRatioAuditEntry(ctx, signer, pricingRatioAuditEvent{
+		OccurredAt:  secondAt,
+		ActorID:     "admin_token:99",
+		ActorRole:   "platform_admin",
+		TenantID:    7,
+		PoolGroupID: 42,
+		Action:      RatioAuditActionUpsert,
+		OldRatio:    stringPtrForRatioAuditTest("1.25000000"),
+		NewRatio:    stringPtrForRatioAuditTest("1.50000000"),
+	}, first.EntryHash)
+	if err != nil {
+		t.Fatalf("sign second audit entry: %v", err)
+	}
+
+	entries, err := loadPricingRatioAuditEntries(ctx, &ratioAuditOrderQueryerForTest{rows: []PricingRatioAuditEntry{
+		withAuditRowIDForTest(first, 1),
+		withAuditRowIDForTest(second, 2),
+	}})
+	if err != nil {
+		t.Fatalf("loadPricingRatioAuditEntries: %v", err)
+	}
+
+	// 判别性夹具: row 2 的 occurred_at 早于 row 1, 旧的时间排序会把合法 id 链倒置成 prev_hash mismatch。
+	if result := VerifyPricingRatioAuditEntries(ctx, signer.PublicKey(), entries); !result.OK {
+		t.Fatalf("VerifyPricingRatioAuditEntries result=%+v want OK for append-id ordered chain", result)
+	}
+}
+
 func withAuditRowIDForTest(entry PricingRatioAuditEntry, id int64) PricingRatioAuditEntry {
 	entry.ID = id
 	return entry
@@ -128,4 +180,26 @@ func cloneAuditEntriesForTest(entries []PricingRatioAuditEntry) []PricingRatioAu
 
 func stringPtrForRatioAuditTest(v string) *string {
 	return &v
+}
+
+type ratioAuditOrderQueryerForTest struct {
+	rows []PricingRatioAuditEntry
+}
+
+func (q *ratioAuditOrderQueryerForTest) Query(_ context.Context, sql string, _ ...any) (pgx.Rows, error) {
+	rows := cloneAuditEntriesForTest(q.rows)
+	switch {
+	case strings.Contains(sql, "ORDER BY id ASC"):
+		sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+	case strings.Contains(sql, "ORDER BY occurred_at ASC, id ASC"):
+		sort.Slice(rows, func(i, j int) bool {
+			if rows[i].OccurredAt.Equal(rows[j].OccurredAt) {
+				return rows[i].ID < rows[j].ID
+			}
+			return rows[i].OccurredAt.Before(rows[j].OccurredAt)
+		})
+	default:
+		return nil, errors.New("pricing ratio audit query missing deterministic order")
+	}
+	return &ratioAuditRows{rows: rows}, nil
 }

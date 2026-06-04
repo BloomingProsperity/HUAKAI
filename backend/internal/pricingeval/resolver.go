@@ -143,7 +143,6 @@ func failSoftToFlat(ctx context.Context, version string, tierErr error, flat Res
 	}
 	observeFlatCharged()
 	flat.PendingReconciliation = true
-	flat.CostSnapshot = "flat"
 	return flat, nil
 }
 

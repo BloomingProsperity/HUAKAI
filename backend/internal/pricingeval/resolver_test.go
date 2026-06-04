@@ -113,6 +113,39 @@ func TestResolve_InvalidTieredExpressionFallsBackToFlatAndSignals(t *testing.T) 
 	}
 }
 
+func TestResolve_InvalidTieredFailSoftPreservesGroupRatioEvidence(t *testing.T) {
+	raw := json.RawMessage(`{
+		"pricing_model":"tiered",
+		"input_micro_usd":1000,
+		"input":[
+			{"up_to_tokens":200,"rate_micro_usd":"100"},
+			{"up_to_tokens":100,"rate_micro_usd":"300"}
+		]
+	}`)
+	flat := FlatRateFallback{
+		Input:      decimal.NewFromInt(1000),
+		Multiplier: decimal.NewFromInt(1),
+		GroupRatio: decimal.RequireFromString("0.8"),
+		HasInput:   true,
+	}
+
+	got, err := Resolve(context.Background(), raw, Usage{InputTokens: 150}, flat, "price-v7")
+	if err != nil {
+		t.Fatalf("Resolve() must fail soft to flat, got error %v", err)
+	}
+
+	assertPricingDecimal(t, "Total", got.Total, "0.12")
+	if got.Total.Equal(decimal.RequireFromString("0.15")) {
+		t.Fatalf("判别性失败: Total=%s 等于未乘 group_ratio 的 flat 成本", got.Total)
+	}
+	if !strings.Contains(got.CostSnapshot, "group_ratio=0.8") {
+		t.Fatalf("CostSnapshot=%q want charged fallback evidence with group_ratio=0.8", got.CostSnapshot)
+	}
+	if !got.PendingReconciliation {
+		t.Fatal("PendingReconciliation=false want true for tiered fail-soft signal")
+	}
+}
+
 func TestResolve_GroupRatioScalesFlatAndTieredTotalsOnce(t *testing.T) {
 	ratio := decimal.RequireFromString("0.8")
 	tests := []struct {
