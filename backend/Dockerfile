@@ -11,7 +11,7 @@
 #   可选: HUAKAI_ADDR (default :8080), OAuth client_id/secret 等
 # 缺关键 env 启动 fail-loud。
 
-FROM golang:1.25-alpine AS builder
+FROM golang:1.25.11-alpine AS builder
 WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download

@@ -1948,6 +1948,14 @@ paths:
       responses:
         '201':
           description: OAuth authorization URL plus opaque state.
+          headers:
+            Set-Cookie:
+              description: >
+                Sets the `huakai_oauth_state` cookie used by
+                `/v1/auth/oauth-callback`. Cookie attributes:
+                Path=/v1/auth/oauth-callback; Max-Age=600; HttpOnly; Secure;
+                SameSite=Lax.
+              schema: { type: string }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AuthOAuthInitResponse' }
@@ -1961,6 +1969,16 @@ paths:
       operationId: authOAuthCallback
       x-huakai-spec-source: [docs/specs/user-authentication.md, docs/specs/session-management.md]
       security: []
+      parameters:
+        - name: huakai_oauth_state
+          in: cookie
+          required: true
+          description: >
+            OAuth state cookie set by `/v1/auth/oauth-init`; the value must
+            match the request body `state`. Issued attributes:
+            Path=/v1/auth/oauth-callback; Max-Age=600; HttpOnly; Secure;
+            SameSite=Lax.
+          schema: { type: string }
       requestBody:
         required: true
         content:
