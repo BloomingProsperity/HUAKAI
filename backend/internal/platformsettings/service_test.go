@@ -301,6 +301,22 @@ func TestResponseHeaderFirewallSettingsAllowEmptyAndValidateHeaderLists(t *testi
 	}
 }
 
+func TestBudgetLimitsSettingIsNonSecretJSONObject(t *testing.T) {
+	// Mutation check: omitting the allow-list entry rejects the PM-approved
+	// non-secret budget_limits document before it reaches the settings store.
+	value := `{"default":{"rpm":60,"tpm":12000},"users":{"42":{"rpm":10}}}`
+	got, err := ValidateValue(KeyBudgetLimits, value)
+	if err != nil {
+		t.Fatalf("ValidateValue budget_limits: %v", err)
+	}
+	if got != value {
+		t.Fatalf("normalized=%q want original JSON object", got)
+	}
+	if def, ok := DefaultValue(KeyBudgetLimits); !ok || def != "" {
+		t.Fatalf("default=%q ok=%v want empty default", def, ok)
+	}
+}
+
 func TestResponseHeaderFirewallSettingsRejectMalformedHeaderLists(t *testing.T) {
 	longHeader := "X-" + strings.Repeat("A", 63)
 	tooMany := strings.Repeat("X-A,", 20) + "X-A"
