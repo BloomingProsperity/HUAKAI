@@ -124,6 +124,28 @@ func TestMetricsRoute_NotMountedWhenHandlerNil(t *testing.T) {
 	}
 }
 
+// /metrics enabled is process-global like /debug/vars, so it must reuse the
+// same admin gate. Mutation: mount d.metricsHandler directly and this request
+// flips to 200 with "huakai_secret_metric" in the body.
+func TestMetricsRoute_MountedHandlerRequiresAdminGate(t *testing.T) {
+	t.Setenv("HUAKAI_RL_DISABLE", "true")
+	d := minimalDeps()
+	d.metricsHandler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("huakai_secret_metric 1\n"))
+	})
+	router := newRouter(d, zap.NewNop())
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("enabled /metrics without admin resolver must fail closed through adminGate, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "huakai_secret_metric") {
+		t.Fatalf("/metrics leaked raw handler body without admin gate: %s", rec.Body.String())
+	}
+}
+
 // A resolver error (invalid/missing credential) still yields 401 — not 403/200.
 func TestDebugVarsAuth_ResolverError_Returns401(t *testing.T) {
 	resolver := fakeAdminResolver{err: errors.New("unauthorized")}

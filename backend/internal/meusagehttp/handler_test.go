@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -87,7 +88,7 @@ func (s *generationStoreStub) GetUsageRecordByRequestID(_ context.Context, arg d
 		return dbbilling.GetUsageRecordByRequestIDRow{}, s.err
 	}
 	for _, row := range s.rows {
-		if row.TenantID == arg.TenantID && row.UserID == arg.UserID && row.RequestID == arg.RequestID {
+		if row.TenantID == arg.TenantID && row.UserID == arg.UserID && row.APIKeyID == arg.APIKeyID && row.RequestID == arg.RequestID {
 			return row, nil
 		}
 	}
@@ -126,9 +127,9 @@ func TestGenerationLookupScopesToAuthenticatedUserByRequestID(t *testing.T) {
 	if strings.Contains(own.Body.String(), "R_B") || strings.Contains(own.Body.String(), "ledger-b") {
 		t.Fatalf("generation response leaked another user's record: %s", own.Body.String())
 	}
-	if store.arg.TenantID != userA.TenantID || store.arg.UserID != userA.UserID || store.arg.RequestID != "R_A" {
-		t.Fatalf("lookup scope = tenant:%d user:%d request:%q want tenant:%d user:%d request:R_A",
-			store.arg.TenantID, store.arg.UserID, store.arg.RequestID, userA.TenantID, userA.UserID)
+	if store.arg.TenantID != userA.TenantID || store.arg.UserID != userA.UserID || store.arg.APIKeyID != userA.APIKeyID || store.arg.RequestID != "R_A" {
+		t.Fatalf("lookup scope = tenant:%d user:%d api_key:%d request:%q want tenant:%d user:%d api_key:%d request:R_A",
+			store.arg.TenantID, store.arg.UserID, store.arg.APIKeyID, store.arg.RequestID, userA.TenantID, userA.UserID, userA.APIKeyID)
 	}
 	for _, key := range []string{"tenant_id", "api_key_id", "user_id", "body", "prompt", "messages"} {
 		if _, ok := item[key]; ok {
@@ -144,6 +145,24 @@ func TestGenerationLookupScopesToAuthenticatedUserByRequestID(t *testing.T) {
 
 	missing := invokeGeneration(h, "/v1/generation?id=R_MISSING")
 	assertMeStatus(t, missing, http.StatusNotFound)
+}
+
+func TestGenerationLookupScopesToAuthenticatedAPIKey(t *testing.T) {
+	// 同一 tenant/user 的不同 key 不能互查 generation。Mutation: store/SQL 只按
+	// tenant+user+request_id 查，这个 key-B fixture 会 200 泄漏 ledger-b。
+	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
+	rowB := generationUsageRow(2, userA.TenantID, 31, userA.UserID, "R_KEY_B", "ledger-b", "openai")
+	rowB.TokensInput = 999
+	rowB.TokensOutput = 888
+	store := &generationStoreStub{rows: []dbbilling.GetUsageRecordByRequestIDRow{rowB}}
+	h := NewGenerationHandler(GenerationDeps{Auth: authStub{identity: userA}, Store: store})
+
+	rec := invokeGeneration(h, "/v1/generation?id=R_KEY_B")
+
+	assertMeStatus(t, rec, http.StatusNotFound)
+	if strings.Contains(rec.Body.String(), "R_KEY_B") || strings.Contains(rec.Body.String(), "ledger-b") {
+		t.Fatalf("404 body leaked another api key's request: %s", rec.Body.String())
+	}
 }
 
 func TestGenerationRequiresRequestID(t *testing.T) {
@@ -357,6 +376,14 @@ func meUsageRow(id, tenantID, apiKeyID, userID int64, requestedModel, upstreamMo
 	}
 }
 
+func numericFromDecimal(value decimal.Decimal) pgtype.Numeric {
+	return pgtype.Numeric{
+		Int:   new(big.Int).Set(value.Coefficient()),
+		Exp:   value.Exponent(),
+		Valid: true,
+	}
+}
+
 func generationUsageRow(id, tenantID, apiKeyID, userID int64, requestID, ledgerID, provider string) dbbilling.GetUsageRecordByRequestIDRow {
 	providerAccountID := int64(50)
 	upstreamModel := "claude-opus-4-20260514"
@@ -370,7 +397,7 @@ func generationUsageRow(id, tenantID, apiKeyID, userID int64, requestID, ledgerI
 		UserID:                userID,
 		ProviderAccountID:     &providerAccountID,
 		AttemptSeq:            1,
-		ActualCost:            decimal.RequireFromString("0.01000000"),
+		ActualCost:            numericFromDecimal(decimal.RequireFromString("0.01000000")),
 		EndClass:              "non_streaming",
 		UsageSource:           "reported",
 		CreatedAt:             pgtype.Timestamptz{Time: created, Valid: true},

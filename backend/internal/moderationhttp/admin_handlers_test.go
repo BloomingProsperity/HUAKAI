@@ -96,6 +96,35 @@ func TestAdminKeywords_TenantOperatorCannotCrossTenant(t *testing.T) {
 	}
 }
 
+func TestAdminHashes_PostAddsHashAndFeedsHotPath(t *testing.T) {
+	// 判别 hash 封禁可运营:POST /hashes 后同一个 hash store 必须驱动热路径
+	// block_hash。Mutation:去掉 route 或只返回 201 不写 store,会 404 或 pass。
+	payloadHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	store := &adminStoreStub{
+		config: moderation.ModerationConfig{TenantID: 7, Enabled: true, FailClosed: true},
+		hashes: map[string]moderation.HashMatch{},
+	}
+	rec := invokeModerationAdmin(t, ModerationAdminDeps{
+		Auth:  adminAuthStub{ident: platformAdmin()},
+		Store: store,
+	}, http.MethodPost, "/admin/v1/moderation/hashes",
+		`{"tenant_id":7,"hash_hex":"`+payloadHash+`","reason_code":"known_bad_payload","enabled":true}`)
+
+	assertStatus(t, rec, http.StatusCreated)
+	screener := moderation.NewScreener(moderation.ScreenerDeps{
+		Config: store, Keywords: store, Hashes: store,
+	})
+	result, err := screener.Screen(context.Background(), moderation.ScreenRequest{
+		TenantID: 7, APIKeyID: 30, UserID: 40, RequestID: "req-hash", PayloadHash: payloadHash,
+	})
+	if err != nil {
+		t.Fatalf("screen returned error: %v", err)
+	}
+	if result.Decision != moderation.DecisionBlockHash || result.MatchedHashID == nil {
+		t.Fatalf("screen result=%+v want block_hash with matched hash id", result)
+	}
+}
+
 func invokeModerationAdmin(t *testing.T, deps ModerationAdminDeps, method string, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	r := chi.NewRouter()
@@ -163,6 +192,9 @@ type adminStoreStub struct {
 	config      moderation.ModerationConfig
 	upsertCalls int
 	upserted    moderation.ModerationConfig
+	hashes      map[string]moderation.HashMatch
+	hashRules   []moderation.HashRule
+	hashCreates int
 }
 
 func (s *adminStoreStub) CreateKeyword(_ context.Context, req moderation.CreateKeywordRequest) (moderation.KeywordRule, error) {
@@ -184,7 +216,39 @@ func (s *adminStoreStub) ListKeywords(context.Context, int64, int32, int32) ([]m
 	return nil, nil
 }
 
+func (s *adminStoreStub) ListEnabled(context.Context, int64) ([]moderation.KeywordRule, error) {
+	return nil, nil
+}
+
 func (s *adminStoreStub) DeleteKeyword(context.Context, int64, int64) error {
+	return nil
+}
+
+func (s *adminStoreStub) CreateHash(_ context.Context, req moderation.CreateHashRequest) (moderation.HashRule, error) {
+	s.hashCreates++
+	id := int64(70 + s.hashCreates)
+	row := moderation.HashRule{
+		ID:         id,
+		TenantID:   req.TenantID,
+		HashHex:    req.HashHex,
+		ReasonCode: req.ReasonCode,
+		Enabled:    req.Enabled,
+	}
+	s.hashRules = append(s.hashRules, row)
+	if s.hashes == nil {
+		s.hashes = map[string]moderation.HashMatch{}
+	}
+	if req.Enabled {
+		s.hashes[req.HashHex] = moderation.HashMatch{Matched: true, ID: id, ReasonCode: req.ReasonCode}
+	}
+	return row, nil
+}
+
+func (s *adminStoreStub) ListHashes(context.Context, int64, int32, int32) ([]moderation.HashRule, error) {
+	return s.hashRules, nil
+}
+
+func (s *adminStoreStub) DeleteHash(context.Context, int64, int64) error {
 	return nil
 }
 
@@ -199,4 +263,15 @@ func (s *adminStoreStub) UpsertConfig(_ context.Context, cfg moderation.Moderati
 	s.upsertCalls++
 	s.upserted = cfg
 	return cfg, nil
+}
+
+func (s *adminStoreStub) Contains(_ context.Context, tenantID int64, hashHex string) (moderation.HashMatch, error) {
+	if s.hashes == nil {
+		return moderation.HashMatch{}, nil
+	}
+	match := s.hashes[hashHex]
+	if !match.Matched {
+		return moderation.HashMatch{}, nil
+	}
+	return match, nil
 }

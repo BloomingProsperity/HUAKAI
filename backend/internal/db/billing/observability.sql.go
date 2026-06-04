@@ -176,36 +176,64 @@ func (q *Queries) CountUsageRecords(ctx context.Context, arg CountUsageRecordsPa
 }
 
 const getUsageRecordByRequestID = `-- name: GetUsageRecordByRequestID :one
+WITH scoped_usage_records AS (
+    SELECT
+        ur.id, ur.tenant_id, ur.claim_id, ur.api_key_id, ur.user_id,
+        ur.provider_account_id, ur.attempt_seq, ur.tokens_input, ur.tokens_output,
+        ur.cache_creation_tokens, ur.cache_read_tokens, ur.actual_cost,
+        ur.end_class, ur.usage_source, ur.pending_reconciliation,
+        ur.stream_state, ur.delivered_token_count, ur.stream_terminated_reason,
+        ur.requested_at, ur.settled_at AS created_at, ur.requested_model,
+        ur.upstream_model, ur.stream, ur.settlement_source,
+        p.code AS provider, blc.pooling_group_id AS pool_id,
+        blc.logical_request_id AS request_id,
+        ale.ledger_id AS audit_ledger_id,
+        ale.pubkey_fingerprint AS audit_pubkey_fingerprint,
+        ale.hop_chain AS audit_hop_chain,
+        ale.model_chain AS audit_model_chain,
+        row_number() OVER (ORDER BY ur.settled_at DESC, ur.id DESC) AS rn
+    FROM usage_records ur
+    JOIN billing_ledger_claims blc ON blc.id = ur.claim_id AND blc.tenant_id = ur.tenant_id
+    LEFT JOIN provider_accounts pa ON pa.id = ur.provider_account_id AND pa.tenant_id = ur.tenant_id
+    LEFT JOIN providers p ON p.id = pa.provider_id AND p.tenant_id = ur.tenant_id
+    LEFT JOIN audit_ledger_entries ale ON ale.request_id = blc.logical_request_id
+        AND (ale.tenant_id IS NULL OR ale.tenant_id = ur.tenant_id)
+    WHERE ur.tenant_id = $1::bigint
+      AND ur.user_id = $2::bigint
+      AND ur.api_key_id = $3::bigint
+      AND blc.logical_request_id = $4::text
+),
+request_totals AS (
+    SELECT
+        sum(tokens_input)::integer AS tokens_input,
+        sum(tokens_output)::integer AS tokens_output,
+        sum(cache_creation_tokens)::integer AS cache_creation_tokens,
+        sum(cache_read_tokens)::integer AS cache_read_tokens,
+        sum(actual_cost)::numeric AS actual_cost,
+        sum(delivered_token_count)::bigint AS delivered_token_count
+    FROM scoped_usage_records
+)
 SELECT
-    ur.id, ur.tenant_id, ur.claim_id, ur.api_key_id, ur.user_id,
-    ur.provider_account_id, ur.attempt_seq, ur.tokens_input, ur.tokens_output,
-    ur.cache_creation_tokens, ur.cache_read_tokens, ur.actual_cost,
-    ur.end_class, ur.usage_source, ur.pending_reconciliation,
-    ur.stream_state, ur.delivered_token_count, ur.stream_terminated_reason,
-    ur.requested_at, ur.settled_at AS created_at, ur.requested_model,
-    ur.upstream_model, ur.stream, ur.settlement_source,
-    p.code AS provider, blc.pooling_group_id AS pool_id,
-    blc.logical_request_id AS request_id,
-    ale.ledger_id AS audit_ledger_id,
-    ale.pubkey_fingerprint AS audit_pubkey_fingerprint,
-    ale.hop_chain AS audit_hop_chain,
-    ale.model_chain AS audit_model_chain
-FROM usage_records ur
-JOIN billing_ledger_claims blc ON blc.id = ur.claim_id AND blc.tenant_id = ur.tenant_id
-LEFT JOIN provider_accounts pa ON pa.id = ur.provider_account_id AND pa.tenant_id = ur.tenant_id
-LEFT JOIN providers p ON p.id = pa.provider_id AND p.tenant_id = ur.tenant_id
-LEFT JOIN audit_ledger_entries ale ON ale.request_id = blc.logical_request_id
-    AND (ale.tenant_id IS NULL OR ale.tenant_id = ur.tenant_id)
-WHERE ur.tenant_id = $1::bigint
-  AND ur.user_id = $2::bigint
-  AND blc.logical_request_id = $3::text
-ORDER BY ur.settled_at DESC, ur.id DESC
-LIMIT 1
+    s.id, s.tenant_id, s.claim_id, s.api_key_id, s.user_id,
+    s.provider_account_id, s.attempt_seq,
+    t.tokens_input, t.tokens_output, t.cache_creation_tokens, t.cache_read_tokens,
+    t.actual_cost,
+    s.end_class, s.usage_source, s.pending_reconciliation,
+    s.stream_state, t.delivered_token_count, s.stream_terminated_reason,
+    s.requested_at, s.created_at, s.requested_model,
+    s.upstream_model, s.stream, s.settlement_source,
+    s.provider, s.pool_id, s.request_id,
+    s.audit_ledger_id, s.audit_pubkey_fingerprint,
+    s.audit_hop_chain, s.audit_model_chain
+FROM scoped_usage_records s
+CROSS JOIN request_totals t
+WHERE s.rn = 1
 `
 
 type GetUsageRecordByRequestIDParams struct {
 	TenantID  int64  `db:"tenant_id" json:"tenant_id"`
 	UserID    int64  `db:"user_id" json:"user_id"`
+	APIKeyID  int64  `db:"api_key_id" json:"api_key_id"`
 	RequestID string `db:"request_id" json:"request_id"`
 }
 
@@ -221,7 +249,7 @@ type GetUsageRecordByRequestIDRow struct {
 	TokensOutput           int32              `db:"tokens_output" json:"tokens_output"`
 	CacheCreationTokens    int32              `db:"cache_creation_tokens" json:"cache_creation_tokens"`
 	CacheReadTokens        int32              `db:"cache_read_tokens" json:"cache_read_tokens"`
-	ActualCost             decimal.Decimal    `db:"actual_cost" json:"actual_cost"`
+	ActualCost             pgtype.Numeric     `db:"actual_cost" json:"actual_cost"`
 	EndClass               string             `db:"end_class" json:"end_class"`
 	UsageSource            string             `db:"usage_source" json:"usage_source"`
 	PendingReconciliation  bool               `db:"pending_reconciliation" json:"pending_reconciliation"`
@@ -244,7 +272,12 @@ type GetUsageRecordByRequestIDRow struct {
 }
 
 func (q *Queries) GetUsageRecordByRequestID(ctx context.Context, arg GetUsageRecordByRequestIDParams) (GetUsageRecordByRequestIDRow, error) {
-	row := q.db.QueryRow(ctx, getUsageRecordByRequestID, arg.TenantID, arg.UserID, arg.RequestID)
+	row := q.db.QueryRow(ctx, getUsageRecordByRequestID,
+		arg.TenantID,
+		arg.UserID,
+		arg.APIKeyID,
+		arg.RequestID,
+	)
 	var i GetUsageRecordByRequestIDRow
 	err := row.Scan(
 		&i.ID,

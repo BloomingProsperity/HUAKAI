@@ -139,8 +139,11 @@ func TestProviderAccountTestInvalidGrantDoesNotLeakSecretMarker(t *testing.T) {
 		t.Fatalf("audit events=%d want 1", len(accounts.auditEvents))
 	}
 	audit := accounts.auditEvents[0]
-	if audit.Action != "list_account_credentials" || audit.TargetID == nil || *audit.TargetID != 99 {
-		t.Fatalf("audit event=%+v, want provider account credential test action", audit)
+	if audit.Action == "list_account_credentials" {
+		t.Fatalf("dry-run credential test must not be mislabeled as credential listing: %+v", audit)
+	}
+	if audit.Action != "test_provider_account" || audit.TargetID == nil || *audit.TargetID != 99 {
+		t.Fatalf("audit event=%+v, want dedicated provider account test action", audit)
 	}
 	if strings.Contains(string(audit.Payload), secretMarker) || strings.Contains(string(audit.Payload), "upstream body") {
 		t.Fatalf("audit leaked raw upstream body/secret: %s", string(audit.Payload))

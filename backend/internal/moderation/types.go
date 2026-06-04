@@ -43,6 +43,16 @@ type KeywordRule struct {
 	UpdatedAt  time.Time
 }
 
+type HashRule struct {
+	ID         int64
+	TenantID   int64
+	HashHex    string
+	ReasonCode string
+	Enabled    bool
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
 type HashMatch struct {
 	Matched    bool
 	ID         int64
@@ -90,6 +100,14 @@ type ModerationEvent struct {
 type CreateKeywordRequest struct {
 	TenantID   int64
 	Keyword    string
+	ReasonCode string
+	Enabled    bool
+	UpdatedBy  string
+}
+
+type CreateHashRequest struct {
+	TenantID   int64
+	HashHex    string
 	ReasonCode string
 	Enabled    bool
 	UpdatedBy  string

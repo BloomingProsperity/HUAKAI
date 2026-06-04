@@ -85,7 +85,9 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 	}
 	router.Handle("/debug/vars", adminGate(adminResolver, expvar.Handler()))
 	if d.metricsHandler != nil {
-		router.Handle("/metrics", d.metricsHandler)
+		// Prometheus metrics 也是进程级观测面；启用后必须和 /debug/vars
+		// 共用 admin gate，避免 billing/dispatch 指标被公网裸读。
+		router.Handle("/metrics", adminGate(adminResolver, d.metricsHandler))
 	}
 	mountRoutes(router, d, logger)
 	return router

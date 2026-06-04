@@ -141,6 +141,8 @@ func writeModerationStoreError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, moderation.ErrKeywordExists):
 		writeError(w, http.StatusConflict, "moderation_keyword_exists", "keyword already exists")
+	case errors.Is(err, moderation.ErrHashExists):
+		writeError(w, http.StatusConflict, "moderation_hash_exists", "hash already exists")
 	case errors.Is(err, moderation.ErrNotFound):
 		writeError(w, http.StatusNotFound, "moderation_not_found", "moderation resource not found")
 	default:

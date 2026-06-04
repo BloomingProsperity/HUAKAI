@@ -95,6 +95,15 @@ func TestCreate_UnknownField_Returns400(t *testing.T) {
 	}
 }
 
+func TestCreate_TrailingJSONReturns400(t *testing.T) {
+	// 严格 JSON 只接受一个对象。Mutation:只 Decode 一次不验 EOF,这个 body
+	// 会创建成功并静默忽略第二个对象。
+	body := `{"tenant_id":1,"name":"x"}{"tenant_id":1,"name":"y"}`
+	if rec := do(adminDeps(mockSvc{profile: tlsfpadmin.Profile{ID: 42}}), "POST", "/", body); rec.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d; want 400 for trailing JSON body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 // PUT must not accept a status field (status goes through POST /{id}/status only).
 func TestUpdate_StatusInBody_Returns400(t *testing.T) {
 	if rec := do(adminDeps(mockSvc{}), "PUT", "/5?tenant_id=1", `{"name":"x","status":"disabled"}`); rec.Code != http.StatusBadRequest {

@@ -180,7 +180,7 @@ func writeProviderAccountTestAudit(ctx context.Context, r *http.Request, store p
 	}
 	_, err = store.InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
 		TenantID: &tenantID, ActorID: actorID, ActorRole: ident.Role,
-		Action: "list_account_credentials", TargetType: "provider_account", TargetID: &accountID,
+		Action: "test_provider_account", TargetType: "provider_account", TargetID: &accountID,
 		RequestID: &reqID, Reason: &reason, Payload: payload,
 	})
 	return err

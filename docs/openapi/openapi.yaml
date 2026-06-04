@@ -5269,6 +5269,90 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/moderation/hashes:
+    get:
+      tags: [admin-moderation]
+      summary: List tenant moderation hash rules
+      operationId: listModerationHashes
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_hashes_handler.go
+        - docs/process/plans/2026-06-04-fix-g1-security-codex.md
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator callers may omit and use token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Paginated moderation hash rules.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModerationHashListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-moderation]
+      summary: Create a tenant moderation hash rule
+      operationId: createModerationHash
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_hashes_handler.go
+        - docs/process/plans/2026-06-04-fix-g1-security-codex.md
+      x-huakai-required-role: tenant_operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModerationHashCreateRequest' }
+      responses:
+        '201':
+          description: Moderation hash rule created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModerationHash' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/moderation/hashes/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+      - in: query
+        name: tenant_id
+        required: false
+        description: Required for platform_admin; tenant_operator callers may omit and use token scope.
+        schema: { type: integer, format: int64, minimum: 1 }
+    delete:
+      tags: [admin-moderation]
+      summary: Soft-delete a tenant moderation hash rule
+      operationId: deleteModerationHash
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_hashes_handler.go
+        - docs/process/plans/2026-06-04-fix-g1-security-codex.md
+      x-huakai-required-role: tenant_operator
+      responses:
+        '204':
+          description: Hash rule deleted.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/moderation/config:
     get:
       tags: [admin-moderation]
@@ -6536,6 +6620,53 @@ components:
         items:
           type: array
           items: { $ref: '#/components/schemas/ModerationKeyword' }
+        limit: { type: integer, format: int32, minimum: 1, maximum: 500 }
+        offset: { type: integer, format: int32, minimum: 0 }
+
+    ModerationHashCreateRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_hashes_handler.go
+      required: [tenant_id, hash_hex]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        hash_hex:
+          type: string
+          pattern: '^[0-9a-fA-F]{64}$'
+        reason_code: { type: string }
+        enabled:
+          type: boolean
+          default: true
+
+    ModerationHash:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_hashes_handler.go
+      required: [id, tenant_id, hash_hex, reason_code, enabled]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        hash_hex:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        reason_code: { type: string }
+        enabled: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ModerationHashListResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_hashes_handler.go
+      required: [object, items, limit, offset]
+      properties:
+        object: { type: string, enum: [moderation_hashes_list] }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ModerationHash' }
         limit: { type: integer, format: int32, minimum: 1, maximum: 500 }
         offset: { type: integer, format: int32, minimum: 0 }
 

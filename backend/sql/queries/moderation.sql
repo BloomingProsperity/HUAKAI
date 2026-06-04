@@ -41,6 +41,37 @@ WHERE tenant_id = sqlc.arg(tenant_id)::bigint
   AND id = sqlc.arg(id)::bigint
   AND deleted_at IS NULL;
 
+-- name: ListModerationHashes :many
+SELECT id, tenant_id, hash_hex, reason_code, enabled, created_at, updated_at
+FROM moderation_hashes
+WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+  AND deleted_at IS NULL
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg(page_limit)::integer
+OFFSET sqlc.arg(page_offset)::integer;
+
+-- name: CreateModerationHash :one
+INSERT INTO moderation_hashes (
+    tenant_id, hash_hex, reason_code, enabled, created_by, updated_by
+) VALUES (
+    sqlc.arg(tenant_id)::bigint,
+    sqlc.arg(hash_hex)::text,
+    sqlc.arg(reason_code)::text,
+    sqlc.arg(enabled)::boolean,
+    sqlc.narg(updated_by)::text,
+    sqlc.narg(updated_by)::text
+)
+RETURNING id, tenant_id, hash_hex, reason_code, enabled, created_at, updated_at;
+
+-- name: SoftDeleteModerationHash :execrows
+UPDATE moderation_hashes
+SET enabled = false,
+    deleted_at = now(),
+    updated_at = now()
+WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+  AND id = sqlc.arg(id)::bigint
+  AND deleted_at IS NULL;
+
 -- name: FindEnabledModerationHash :one
 SELECT id, tenant_id, hash_hex, reason_code, enabled, created_at, updated_at
 FROM moderation_hashes
