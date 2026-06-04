@@ -618,7 +618,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	}
 	modelRegistry := registry.NewPostgresRegistry(pgPool, nil)
 	modelSyncService := buildModelSyncService(opts.modelSync, modelRegistry)
-	pricingRatioStore := pricingcatalog.NewPostgresStore(pgPool)
+	pricingRatioStore := pricingcatalog.NewPostgresStoreWithAuditSigner(pgPool, auditSigner)
 	pricingRatioResolver := pricingcatalog.NewRatioResolver(pricingRatioStore, 0)
 
 	loginThrottle, err := loadLoginThrottleFromEnv()

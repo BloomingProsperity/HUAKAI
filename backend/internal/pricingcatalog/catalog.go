@@ -10,9 +10,11 @@ import (
 )
 
 var (
-	ErrNotFound     = errors.New("pricingcatalog: not found")
-	ErrBackend      = errors.New("pricingcatalog: backend error")
-	ErrInvalidInput = errors.New("pricingcatalog: invalid input")
+	ErrNotFound           = errors.New("pricingcatalog: not found")
+	ErrBackend            = errors.New("pricingcatalog: backend error")
+	ErrInvalidInput       = errors.New("pricingcatalog: invalid input")
+	ErrAuditSignerMissing = errors.New("pricingcatalog: audit signer missing")
+	ErrAuditTxMissing     = errors.New("pricingcatalog: audit transaction missing")
 )
 
 type GroupPricingRatio struct {
@@ -41,11 +43,19 @@ type UpsertRatioParams struct {
 	Ratio       decimal.Decimal
 	PublicRatio bool
 	Actor       string
+	ActorRole   string
+}
+
+type DeleteRatioParams struct {
+	TenantID    int64
+	PoolGroupID int64
+	Actor       string
+	ActorRole   string
 }
 
 type Store interface {
 	GetRatio(ctx context.Context, tenantID, poolGroupID int64) (GroupPricingRatio, error)
 	ListRatios(ctx context.Context, tenantID int64) ([]GroupPricingRatio, error)
 	UpsertRatio(ctx context.Context, p UpsertRatioParams) (GroupPricingRatio, error)
-	DeleteRatio(ctx context.Context, tenantID, poolGroupID int64) error
+	DeleteRatio(ctx context.Context, p DeleteRatioParams) error
 }
