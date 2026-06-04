@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"strings"
+
 	"github.com/go-chi/chi/v5"
 
 	dbmoderation "github.com/BloomingProsperity/HUAKAI/internal/db/moderation"
@@ -8,9 +11,9 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/moderationhttp"
 )
 
-// mountModerationAdminRoutes is the slice-1 integration point. It IS wired
-// from mountRoutes (admin control-plane only). The screener is not yet in the
-// request path (deferred to slice-2).
+const contentModerationEnabledEnv = "HUAKAI_CONTENT_MODERATION_ENABLED"
+
+// mountModerationAdminRoutes wires the moderation admin control plane.
 func mountModerationAdminRoutes(r chi.Router, d *deps) {
 	r.Route("/admin/v1/moderation", func(r chi.Router) {
 		store := moderation.NewSQLStore(dbmoderation.New(d.pgPool))
@@ -19,4 +22,28 @@ func mountModerationAdminRoutes(r chi.Router, d *deps) {
 			Store: store,
 		})
 	})
+}
+
+func moderationScreener(d *deps) moderation.Screener {
+	if !contentModerationRuntimeEnabled() || d == nil || d.pgPool == nil {
+		return nil
+	}
+	store := moderation.NewSQLStore(dbmoderation.New(d.pgPool))
+	cacheOpts := moderation.CacheOptions{}
+	return moderation.NewScreener(moderation.ScreenerDeps{
+		Config:   store,
+		Keywords: moderation.NewKeywordStore(store, cacheOpts),
+		Hashes:   moderation.NewHashStore(store, cacheOpts),
+		Audit:    moderation.NewAuditLogger(store),
+		Ban:      moderation.NewBanCounter(store),
+	})
+}
+
+func contentModerationRuntimeEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(contentModerationEnabledEnv))) {
+	case "1", "true":
+		return true
+	default:
+		return false
+	}
 }

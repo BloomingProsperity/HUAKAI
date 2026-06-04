@@ -23,6 +23,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelfallback"
+	"github.com/BloomingProsperity/HUAKAI/internal/moderation"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/protosse"
@@ -64,6 +65,7 @@ type ChatHandlerDeps struct {
 	AuditRefPolicy        *eventbus.AuditRefPolicy
 	AuditLedger           auditledger.Ledger
 	AuditLedgerDLQ        auditledger.DLQEnqueuer
+	ModerationScreener    moderation.Screener
 	// SettleRecoveryDLQ 是 post-delivery settle 失败(流式响应已发给客户端
 	// 但 Tx2 settlement 未确认提交)的 durable 兜底 enqueue;nil 时 stream
 	// path 失败只 log,money path 灰区无可补救。生产部署必须 wire 上
@@ -135,6 +137,7 @@ type chatExecution struct {
 	payloadHash                      string
 	promptHash                       string
 	sessionHash                      string
+	moderationScreened               bool
 	reserveRes                       *billing.ReserveResult
 	streamInputOnlyInterruptedPolicy billing.StreamInputOnlyInterruptedPolicy
 	balanceEnforcementMode           billing.BalanceEnforcementMode
@@ -250,6 +253,9 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 	if !ex.prepareRoute(w) {
 		return modelRunResult{DeliveryStarted: responseStarted(w)}
 	}
+	if !ex.screenModerationInput(w) {
+		return modelRunResult{DeliveryStarted: responseStarted(w)}
+	}
 	if !ex.reserveClaim(w) {
 		return modelRunResult{DeliveryStarted: responseStarted(w)}
 	}
@@ -299,6 +305,41 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 		ex.prepareNextAttemptAfterAbort()
 	}
 	return modelRunResult{}
+}
+
+func (ex *chatExecution) screenModerationInput(w http.ResponseWriter) bool {
+	if ex == nil || ex.d.ModerationScreener == nil || ex.moderationScreened {
+		return true
+	}
+	ex.ensureIdempotencyState()
+	res, err := ex.d.ModerationScreener.Screen(ex.ctx, moderation.ScreenRequest{
+		TenantID:    ex.ident.TenantID,
+		APIKeyID:    ex.ident.APIKeyID,
+		UserID:      ex.ident.UserID,
+		RequestID:   ex.requestID,
+		PayloadHash: ex.payloadHash,
+		Body:        ex.body,
+	})
+	if err != nil {
+		logInternalError(ex.ctx, ex.requestID, clienterr.CodeContentPolicyViolation, err)
+	}
+	if err != nil || moderationDecisionBlocks(res.Decision) {
+		writeJSONError(w, http.StatusForbidden, clienterr.CodeContentPolicyViolation, clienterr.MessageFor(clienterr.CodeContentPolicyViolation))
+		return false
+	}
+	ex.moderationScreened = true
+	return true
+}
+
+func moderationDecisionBlocks(decision moderation.Decision) bool {
+	switch decision {
+	case "", moderation.DecisionPass:
+		return false
+	case moderation.DecisionBlockKeyword, moderation.DecisionBlockHash, moderation.DecisionBlockBackend:
+		return true
+	default:
+		return true
+	}
 }
 
 func (ex *chatExecution) prepareNextModelFallback(model, baseLogicalRequestID string) {

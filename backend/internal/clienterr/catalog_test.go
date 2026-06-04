@@ -25,6 +25,7 @@ func TestMessageForKnownCodesAndFallback(t *testing.T) {
 		{CodeQueueWait, "request is queued; retry later"},
 		{CodeAuditRefMissing, "Audit reference missing for money-path operation."},
 		{CodeStreamForwardError, "upstream stream failed before delivery"},
+		{CodeContentPolicyViolation, "request violates content policy"},
 		{CodeAbortFailed, "internal settlement failed"},
 		{"unknown_future_code", "request failed"},
 	}

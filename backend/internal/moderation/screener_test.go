@@ -8,8 +8,12 @@ import (
 
 func TestScreener_KeywordMatchRejectsRequest(t *testing.T) {
 	audit := &auditSpy{}
+	ban := &banCounterSpy{}
 	s := NewScreener(ScreenerDeps{
-		Config: configStub{cfg: ModerationConfig{Enabled: true, FailClosed: true, SampleRatePct: 100}},
+		Config: configStub{cfg: ModerationConfig{
+			Enabled: true, FailClosed: true, SampleRatePct: 100,
+			BanThreshold: 3, BanWindowSeconds: 3600,
+		}},
 		Keywords: &keywordStoreStub{rules: []KeywordRule{{
 			ID:         17,
 			Keyword:    "forbidden",
@@ -17,6 +21,7 @@ func TestScreener_KeywordMatchRejectsRequest(t *testing.T) {
 		}}},
 		Hashes: hashStoreStub{},
 		Audit:  audit,
+		Ban:    ban,
 	})
 
 	res, err := s.Screen(context.Background(), ScreenRequest{
@@ -41,6 +46,15 @@ func TestScreener_KeywordMatchRejectsRequest(t *testing.T) {
 	}
 	if audit.events[0].ReasonCode == "forbidden" {
 		t.Fatalf("audit reason leaked raw keyword: %+v", audit.events[0])
+	}
+	if ban.calls != 1 {
+		t.Fatalf("auto-ban calls=%d want 1 for keyword block", ban.calls)
+	}
+	if ban.events[0].TenantID != 7 || ban.events[0].APIKeyID != 11 || ban.events[0].UserID != 13 {
+		t.Fatalf("auto-ban identity mismatch: %+v", ban.events[0])
+	}
+	if ban.cfgs[0].BanThreshold != 3 || ban.cfgs[0].BanWindowSeconds != 3600 {
+		t.Fatalf("auto-ban config mismatch: %+v", ban.cfgs[0])
 	}
 }
 
@@ -95,6 +109,56 @@ func TestScreener_AllowsCleanRequest(t *testing.T) {
 	}
 	if res.Decision != DecisionPass {
 		t.Fatalf("decision=%q want %q", res.Decision, DecisionPass)
+	}
+}
+
+func TestScreener_KeywordBoundaryDoesNotMatchInsideWord(t *testing.T) {
+	// Mutation: restoring substring matching makes "ass" match "passage",
+	// turning this clean request into a false positive block.
+	s := NewScreener(ScreenerDeps{
+		Config:   configStub{cfg: ModerationConfig{Enabled: true, FailClosed: true}},
+		Keywords: &keywordStoreStub{rules: []KeywordRule{{ID: 21, Keyword: "ass"}}},
+		Hashes:   hashStoreStub{},
+		Audit:    &auditSpy{},
+	})
+
+	res, err := s.Screen(context.Background(), ScreenRequest{
+		TenantID:    7,
+		APIKeyID:    11,
+		UserID:      13,
+		PayloadHash: "hash-passage",
+		Body:        []byte(`{"messages":[{"content":"read this passage carefully"}]}`),
+	})
+	if err != nil {
+		t.Fatalf("Screen returned error: %v", err)
+	}
+	if res.Decision != DecisionPass {
+		t.Fatalf("decision=%q want pass; keyword must respect token boundary", res.Decision)
+	}
+}
+
+func TestScreener_KeywordMatchNormalizesNFKCAndZeroWidth(t *testing.T) {
+	// Mutation: deleting NFKC normalization or zero-width stripping leaves this
+	// visually obvious "attack" unblocked.
+	s := NewScreener(ScreenerDeps{
+		Config:   configStub{cfg: ModerationConfig{Enabled: true, FailClosed: true}},
+		Keywords: &keywordStoreStub{rules: []KeywordRule{{ID: 22, Keyword: "attack"}}},
+		Hashes:   hashStoreStub{},
+		Audit:    &auditSpy{},
+	})
+
+	res, err := s.Screen(context.Background(), ScreenRequest{
+		TenantID:    7,
+		APIKeyID:    11,
+		UserID:      13,
+		PayloadHash: "hash-normalized",
+		Body:        []byte("{\"messages\":[{\"content\":\"\uff41t\u200bt\uff41ck\"}]}"),
+	})
+	if err != nil {
+		t.Fatalf("Screen returned error: %v", err)
+	}
+	if res.Decision != DecisionBlockKeyword {
+		t.Fatalf("decision=%q want keyword block after normalization", res.Decision)
 	}
 }
 
@@ -244,4 +308,21 @@ func (s *auditSpy) Log(_ context.Context, event ModerationEvent, _ ModerationCon
 	}
 	s.events = append(s.events, event)
 	return nil
+}
+
+type banCounterSpy struct {
+	calls  int
+	events []ModerationEvent
+	cfgs   []ModerationConfig
+	err    error
+}
+
+func (s *banCounterSpy) RecordAndCheck(_ context.Context, event ModerationEvent, cfg ModerationConfig) (BanResult, error) {
+	s.calls++
+	s.events = append(s.events, event)
+	s.cfgs = append(s.cfgs, cfg)
+	if s.err != nil {
+		return BanResult{}, s.err
+	}
+	return BanResult{Count: int64(s.calls)}, nil
 }

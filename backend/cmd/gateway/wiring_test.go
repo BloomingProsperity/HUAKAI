@@ -85,6 +85,24 @@ func TestWiring_PricingRatioResolverSharedByChatAndEmbeddingsDeps(t *testing.T) 
 	}
 }
 
+func TestContentModerationRuntimeEnabledDefaultsOff(t *testing.T) {
+	// Mutation: defaulting the moderation request-path gate to enabled wires a
+	// DB-backed screener into chat and adds moderation lookup latency to every
+	// unconfigured tenant request.
+	t.Setenv(contentModerationEnabledEnv, "")
+	if contentModerationRuntimeEnabled() {
+		t.Fatal("content moderation runtime gate enabled by default; want opt-in")
+	}
+	t.Setenv(contentModerationEnabledEnv, "true")
+	if !contentModerationRuntimeEnabled() {
+		t.Fatal("content moderation runtime gate false for explicit true")
+	}
+	t.Setenv(contentModerationEnabledEnv, "1")
+	if !contentModerationRuntimeEnabled() {
+		t.Fatal("content moderation runtime gate false for explicit 1")
+	}
+}
+
 func TestWiring_BuildTransportFactoryInjectsSidecarSocket(t *testing.T) {
 	cfg := &Config{TransportSidecarSocket: "/tmp/huakai-tls-sidecar.sock", TransportSidecarFallback: true}
 
