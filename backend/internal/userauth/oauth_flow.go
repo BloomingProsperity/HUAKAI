@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto"
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -23,17 +22,6 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/google/uuid"
-)
-
-const (
-	defaultGoogleAuthURL  = "https://accounts.google.com/o/oauth2/v2/auth"
-	defaultGoogleTokenURL = "https://oauth2.googleapis.com/token"
-	defaultGoogleJWKSURL  = "https://www.googleapis.com/oauth2/v3/certs"
-	defaultGoogleIssuer   = "https://accounts.google.com"
-	defaultGitHubAuthURL  = "https://github.com/login/oauth/authorize"
-	defaultGitHubTokenURL = "https://github.com/login/oauth/access_token"
-	defaultGitHubUserURL  = "https://api.github.com/user"
-	defaultGitHubEmailURL = "https://api.github.com/user/emails"
 )
 
 func NewOAuthFlowChallenge(tenantID int64, provider, redirectURI string, ttl time.Duration, now time.Time) (OAuthFlowChallenge, error) {
@@ -79,39 +67,10 @@ func NewOAuthHTTPProvider(cfg OAuthConfig, client *http.Client) (*OAuthHTTPProvi
 	if client == nil {
 		client = http.DefaultClient
 	}
-	switch cfg.Provider {
-	case SocialProviderGoogle:
-		if cfg.AuthURL == "" {
-			cfg.AuthURL = defaultGoogleAuthURL
-		}
-		if cfg.TokenURL == "" {
-			cfg.TokenURL = defaultGoogleTokenURL
-		}
-		if cfg.JWKSURL == "" {
-			cfg.JWKSURL = defaultGoogleJWKSURL
-		}
-		if cfg.Issuer == "" {
-			cfg.Issuer = defaultGoogleIssuer
-		}
-		if len(cfg.Scopes) == 0 {
-			cfg.Scopes = []string{"openid", "email", "profile"}
-		}
-	case SocialProviderGitHub:
-		if cfg.AuthURL == "" {
-			cfg.AuthURL = defaultGitHubAuthURL
-		}
-		if cfg.TokenURL == "" {
-			cfg.TokenURL = defaultGitHubTokenURL
-		}
-		if cfg.UserURL == "" {
-			cfg.UserURL = defaultGitHubUserURL
-		}
-		if cfg.EmailsURL == "" {
-			cfg.EmailsURL = defaultGitHubEmailURL
-		}
-		if len(cfg.Scopes) == 0 {
-			cfg.Scopes = []string{"read:user", "user:email"}
-		}
+	var err error
+	cfg, err = applyOAuthProviderDefaults(cfg)
+	if err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(cfg.TokenURL) == "" {
 		return nil, ErrInvalidInput
@@ -122,7 +81,7 @@ func NewOAuthHTTPProvider(cfg OAuthConfig, client *http.Client) (*OAuthHTTPProvi
 	// 到私有 IP 的 DNS-rebind 由拨号期 SSRF 客户端再拦一层(buildOAuthProvider 注入)。
 	for _, ep := range []struct{ label, url string }{
 		{"auth_url", cfg.AuthURL}, {"token_url", cfg.TokenURL}, {"jwks_url", cfg.JWKSURL},
-		{"user_url", cfg.UserURL}, {"emails_url", cfg.EmailsURL},
+		{"user_url", cfg.UserURL}, {"emails_url", cfg.EmailsURL}, {"openid_url", cfg.OpenIDURL},
 	} {
 		if err := ValidateOAuthEndpointURL(ep.label, ep.url); err != nil {
 			return nil, err
@@ -186,6 +145,9 @@ func (p *OAuthHTTPProvider) AuthorizationURL(challenge OAuthFlowChallenge) (stri
 	if len(p.cfg.Scopes) > 0 {
 		q.Set("scope", strings.Join(p.cfg.Scopes, " "))
 	}
+	if p.cfg.Provider == SocialProviderDingTalk {
+		q.Set("prompt", "consent")
+	}
 	u.RawQuery = q.Encode()
 	return u.String(), nil
 }
@@ -193,6 +155,9 @@ func (p *OAuthHTTPProvider) AuthorizationURL(challenge OAuthFlowChallenge) (stri
 func (p *OAuthHTTPProvider) ExchangeVerifiedIdentity(ctx context.Context, flow OAuthFlowSession, code string) (VerifiedIdentity, error) {
 	if p == nil {
 		return VerifiedIdentity{}, ErrOAuthProviderMissing
+	}
+	if p.cfg.Provider == SocialProviderDingTalk {
+		return p.dingTalkIdentity(ctx, flow, code)
 	}
 	resp, err := p.exchangeCode(ctx, flow, code)
 	if err != nil {
@@ -203,6 +168,10 @@ func (p *OAuthHTTPProvider) ExchangeVerifiedIdentity(ctx context.Context, flow O
 		return p.googleIdentity(ctx, flow, resp)
 	case SocialProviderGitHub:
 		return p.githubIdentity(ctx, resp.AccessToken)
+	case SocialProviderQQ:
+		return p.qqIdentity(ctx, resp.AccessToken)
+	case SocialProviderNodeSeek:
+		return p.genericUserInfoIdentity(ctx, resp.AccessToken)
 	default:
 		return VerifiedIdentity{}, ErrOAuthProviderMissing
 	}
@@ -211,6 +180,7 @@ func (p *OAuthHTTPProvider) ExchangeVerifiedIdentity(ctx context.Context, flow O
 type oauthTokenResponse struct {
 	AccessToken string `json:"access_token"`
 	TokenType   string `json:"token_type"`
+	AccessCamel string `json:"accessToken"`
 	IDToken     string `json:"id_token"`
 	Error       string `json:"error"`
 	ErrorDesc   string `json:"error_description"`
@@ -226,6 +196,9 @@ func (p *OAuthHTTPProvider) exchangeCode(ctx context.Context, flow OAuthFlowSess
 	}
 	form.Set("redirect_uri", firstNonEmpty(flow.RedirectURI, p.cfg.RedirectURI))
 	form.Set("code_verifier", flow.PKCEVerifier)
+	if p.cfg.Provider == SocialProviderQQ {
+		form.Set("fmt", "json")
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.cfg.TokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return oauthTokenResponse{}, err
@@ -241,16 +214,46 @@ func (p *OAuthHTTPProvider) exchangeCode(ctx context.Context, flow OAuthFlowSess
 	if err != nil {
 		return oauthTokenResponse{}, err
 	}
-	var out oauthTokenResponse
-	if err := json.Unmarshal(body, &out); err != nil {
+	out, err := decodeOAuthTokenResponse(body)
+	if err != nil {
 		return oauthTokenResponse{}, err
 	}
+	if out.AccessToken == "" {
+		out.AccessToken = out.AccessCamel
+	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 || out.Error != "" {
+		logOAuthProviderUpstreamError(ctx, p.cfg.Provider, res.StatusCode, oauthProviderErrorDetails{
+			Code: out.Error, Message: out.ErrorDesc,
+		})
 		return oauthTokenResponse{}, fmt.Errorf("%w: oauth exchange failed", ErrSocialLoginRejected)
 	}
 	if out.AccessToken == "" && out.IDToken == "" {
 		return oauthTokenResponse{}, ErrSocialLoginRejected
 	}
+	return out, nil
+}
+
+func decodeOAuthTokenResponse(body []byte) (oauthTokenResponse, error) {
+	var out oauthTokenResponse
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return out, ErrSocialLoginRejected
+	}
+	if bytes.HasPrefix(trimmed, []byte("{")) {
+		if err := json.Unmarshal(trimmed, &out); err != nil {
+			return out, err
+		}
+		return out, nil
+	}
+	values, err := url.ParseQuery(string(trimmed))
+	if err != nil {
+		return out, err
+	}
+	out.AccessToken = values.Get("access_token")
+	out.TokenType = values.Get("token_type")
+	out.IDToken = values.Get("id_token")
+	out.Error = values.Get("error")
+	out.ErrorDesc = values.Get("error_description")
 	return out, nil
 }
 
@@ -439,10 +442,16 @@ func (p *OAuthHTTPProvider) getBearerJSON(ctx context.Context, endpoint, accessT
 		return err
 	}
 	defer res.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if err != nil {
+		return err
+	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		logOAuthProviderUpstreamError(ctx, p.cfg.Provider, res.StatusCode,
+			oauthProviderErrorFromJSON(body, []string{"error", "code"}, []string{"error_description", "message"}))
 		return ErrSocialLoginRejected
 	}
-	return json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(dst)
+	return json.Unmarshal(body, dst)
 }
 
 func parseJWT(raw string) (map[string]any, map[string]any, string, []byte, error) {
@@ -494,15 +503,4 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func GenerateRandomBytes(n int) ([]byte, error) {
-	if n <= 0 {
-		return nil, ErrInvalidInput
-	}
-	raw := make([]byte, n)
-	if _, err := rand.Read(raw); err != nil {
-		return nil, err
-	}
-	return raw, nil
 }

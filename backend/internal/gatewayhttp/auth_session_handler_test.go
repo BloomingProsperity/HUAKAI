@@ -755,9 +755,10 @@ func TestAT_AUTH_007_009_SocialIdentityChangeRevokesExistingSessions(t *testing.
 	if err := json.Unmarshal(rec.Body.Bytes(), &initResp); err != nil {
 		t.Fatalf("decode oauth init: %v", err)
 	}
-	rec = serveJSON(t, allowedRouter, http.MethodPost, "/v1/auth/oauth-callback", map[string]any{
+	stateCookie := findOAuthStateCookie(t, rec.Result().Cookies(), initResp.State)
+	rec = serveJSONWithCookies(t, allowedRouter, http.MethodPost, "/v1/auth/oauth-callback", map[string]any{
 		"tenant_id": 1, "provider": userauth.SocialProviderGoogle, "state": initResp.State, "code": "provider-code",
-	})
+	}, []*http.Cookie{stateCookie})
 	assertHTTPStatus(t, rec, http.StatusOK)
 	var callbackResp struct {
 		User    map[string]any           `json:"user"`
@@ -815,13 +816,80 @@ func TestAT_AUTH_007_009_SocialIdentityChangeRevokesExistingSessions(t *testing.
 	}
 }
 
+// Mutation guard: deleting the callback cookie-state check lets the mismatched
+// callback exchange the provider code; omitting the cleanup leaves the state
+// cookie reusable after a successful callback.
+func TestOAuthCallbackRequiresStateCookieBeforeProviderExchange(t *testing.T) {
+	now := time.Date(2026, 6, 4, 14, 0, 0, 0, time.UTC)
+	authStore := newGatewayMemoryAuthStore(now)
+	authSvc := userauth.NewService(authStore)
+	provider := &gatewayFakeOAuthProvider{
+		provider: userauth.SocialProviderGoogle,
+		identity: userauth.VerifiedIdentity{
+			Provider: userauth.SocialProviderGoogle, Subject: "google-state-cookie-subject",
+			Email: "state-cookie@example.test", DisplayName: "State Cookie", EmailVerified: true,
+		},
+	}
+	authSvc.OAuth = userauth.NewOAuthService(provider)
+	sessionSvc := usersession.NewService(usersession.NewMemoryStore())
+	sessionSvc.Now = func() time.Time { return now }
+	sessionSvc.SigningKey = testSessionSigningKey()
+
+	router := chi.NewRouter()
+	router.Route("/v1/auth", func(r chi.Router) {
+		MountAuthRoutes(r, AuthHandlerDeps{Auth: authSvc, Sessions: sessionSvc})
+	})
+
+	initRec := serveJSON(t, router, http.MethodPost, "/v1/auth/oauth-init", map[string]any{
+		"tenant_id": 1, "provider": userauth.SocialProviderGoogle,
+	})
+	assertHTTPStatus(t, initRec, http.StatusCreated)
+	var initResp userauth.OAuthInitResult
+	if err := json.Unmarshal(initRec.Body.Bytes(), &initResp); err != nil {
+		t.Fatalf("decode oauth init: %v", err)
+	}
+	stateCookie := findOAuthStateCookie(t, initRec.Result().Cookies(), initResp.State)
+	if !stateCookie.HttpOnly || !stateCookie.Secure ||
+		stateCookie.SameSite != http.SameSiteLaxMode ||
+		stateCookie.Path != "/v1/auth/oauth-callback" ||
+		stateCookie.MaxAge < 590 || stateCookie.MaxAge > 600 {
+		t.Fatalf("oauth state cookie attributes = %+v", stateCookie)
+	}
+
+	badRec := serveJSONWithCookies(t, router, http.MethodPost, "/v1/auth/oauth-callback", map[string]any{
+		"tenant_id": 1, "provider": userauth.SocialProviderGoogle,
+		"state": initResp.State, "code": "provider-code",
+	}, []*http.Cookie{{
+		Name: stateCookie.Name, Value: "attacker-state", Path: stateCookie.Path,
+	}})
+	assertHTTPStatus(t, badRec, http.StatusForbidden)
+	if provider.exchanges != 0 {
+		t.Fatalf("mismatched cookie exchanged provider code %d times; want 0", provider.exchanges)
+	}
+
+	okRec := serveJSONWithCookies(t, router, http.MethodPost, "/v1/auth/oauth-callback", map[string]any{
+		"tenant_id": 1, "provider": userauth.SocialProviderGoogle,
+		"state": initResp.State, "code": "provider-code",
+	}, []*http.Cookie{stateCookie})
+	assertHTTPStatus(t, okRec, http.StatusOK)
+	if provider.exchanges != 1 {
+		t.Fatalf("matched cookie exchanged provider code %d times; want 1", provider.exchanges)
+	}
+	clearCookie := findCookieByName(t, okRec.Result().Cookies(), stateCookie.Name)
+	if clearCookie.Path != stateCookie.Path || clearCookie.MaxAge >= 0 {
+		t.Fatalf("oauth state cookie cleanup = %+v, want same path and MaxAge < 0", clearCookie)
+	}
+}
+
 func TestSafeSocialProviderAcceptsMultiOAuthProviders(t *testing.T) {
 	tests := []struct {
 		in   string
 		want string
 	}{
+		{"QQ", userauth.SocialProviderQQ},
 		{" WeChat ", userauth.SocialProviderWeChat},
 		{"DINGTALK", userauth.SocialProviderDingTalk},
+		{"nodeseek", userauth.SocialProviderNodeSeek},
 		{"linuxdo", userauth.SocialProviderLinuxDo},
 		{"OIDC", userauth.SocialProviderOIDC},
 	}
@@ -891,6 +959,44 @@ func serveJSONWithHeaders(t *testing.T, h http.Handler, method, target string, b
 	return rec
 }
 
+func serveJSONWithCookies(t *testing.T, h http.Handler, method, target string, body any, cookies []*http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(method, target, bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	for _, cookie := range cookies {
+		req.AddCookie(cookie)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func findOAuthStateCookie(t *testing.T, cookies []*http.Cookie, state string) *http.Cookie {
+	t.Helper()
+	for _, cookie := range cookies {
+		if cookie.Value == state {
+			return cookie
+		}
+	}
+	t.Fatalf("oauth init did not set state cookie matching returned state; cookies=%+v", cookies)
+	return nil
+}
+
+func findCookieByName(t *testing.T, cookies []*http.Cookie, name string) *http.Cookie {
+	t.Helper()
+	for _, cookie := range cookies {
+		if cookie.Name == name {
+			return cookie
+		}
+	}
+	t.Fatalf("response did not set cookie %q; cookies=%+v", name, cookies)
+	return nil
+}
+
 func assertHTTPStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
 	t.Helper()
 	if rec.Code != want {
@@ -925,8 +1031,9 @@ func (a authAdminStub) Resolve(context.Context, *http.Request) (admin.AdminIdent
 }
 
 type gatewayFakeOAuthProvider struct {
-	provider string
-	identity userauth.VerifiedIdentity
+	provider  string
+	identity  userauth.VerifiedIdentity
+	exchanges int
 }
 
 func (p *gatewayFakeOAuthProvider) Provider() string { return p.provider }
@@ -936,6 +1043,7 @@ func (p *gatewayFakeOAuthProvider) AuthorizationURL(challenge userauth.OAuthFlow
 }
 
 func (p *gatewayFakeOAuthProvider) ExchangeVerifiedIdentity(_ context.Context, flow userauth.OAuthFlowSession, code string) (userauth.VerifiedIdentity, error) {
+	p.exchanges++
 	if strings.TrimSpace(code) == "" || flow.PKCEVerifier == "" {
 		return userauth.VerifiedIdentity{}, userauth.ErrSocialLoginRejected
 	}
