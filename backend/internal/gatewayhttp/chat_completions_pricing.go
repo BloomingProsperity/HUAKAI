@@ -99,7 +99,9 @@ func (ex *chatExecution) completionCost(usage completionUsageForCost) (completio
 	if err != nil {
 		return completionCostBreakdown{}, err
 	}
-	result, err := pricingeval.Resolve(ex.ctx, selection.Raw, pricingUsage(usage), selection.Rates.flatRateFallback(), version)
+	fallback := selection.Rates.flatRateFallback()
+	fallback.GroupRatio = ex.groupPricingRatio()
+	result, err := pricingeval.Resolve(ex.ctx, selection.Raw, pricingUsage(usage), fallback, version)
 	if err != nil {
 		return completionCostBreakdown{}, pricingUnavailable(err.Error())
 	}
@@ -110,6 +112,13 @@ func (ex *chatExecution) completionCost(usage completionUsageForCost) (completio
 		CostSnapshot:          result.CostSnapshot,
 		PendingReconciliation: result.PendingReconciliation,
 	}, nil
+}
+
+func (ex *chatExecution) groupPricingRatio() decimal.Decimal {
+	if ex == nil || ex.d.PricingRatioResolver == nil {
+		return decimal.Zero
+	}
+	return ex.d.PricingRatioResolver.Resolve(ex.ctx, ex.ident.TenantID, ex.attempt.PoolGroupID)
 }
 
 func (ex *chatExecution) providerForPricing() string {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
@@ -31,6 +32,10 @@ type authResolver interface {
 	Resolve(context.Context, *http.Request) (auth.Identity, error)
 }
 
+type pricingRatioResolver interface {
+	Resolve(ctx context.Context, tenantID, poolGroupID int64) decimal.Decimal
+}
+
 type dispatcher interface {
 	Dispatch(context.Context, gateway.DispatchInput) (*gateway.DispatchResult, error)
 }
@@ -42,6 +47,7 @@ type Deps struct {
 	ClaimGate             billing.ClaimGate
 	QuotaReserver         quotaenforce.Reserver
 	RateTables            billing.RateTableSource
+	PricingRatioResolver  pricingRatioResolver
 	Selector              pool.Selector
 	CredentialVault       provider.CredentialVault
 	Dispatcher            dispatcher

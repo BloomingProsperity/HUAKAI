@@ -27,11 +27,20 @@ func (ex *execution) inputCost(tokens int) (decimal.Decimal, string, bool, error
 	if err != nil {
 		return decimal.Zero, "", false, err
 	}
-	result, err := pricingeval.Resolve(ex.ctx, selection.raw, pricingeval.Usage{InputTokens: int64(tokens)}, selection.fallback(), version)
+	fallback := selection.fallback()
+	fallback.GroupRatio = ex.groupPricingRatio()
+	result, err := pricingeval.Resolve(ex.ctx, selection.raw, pricingeval.Usage{InputTokens: int64(tokens)}, fallback, version)
 	if err != nil {
 		return decimal.Zero, "", false, err
 	}
 	return result.Total, result.CostSnapshot, result.PendingReconciliation, nil
+}
+
+func (ex *execution) groupPricingRatio() decimal.Decimal {
+	if ex == nil || ex.d.PricingRatioResolver == nil {
+		return decimal.Zero
+	}
+	return ex.d.PricingRatioResolver.Resolve(ex.ctx, ex.ident.TenantID, ex.attempt.PoolGroupID)
 }
 
 func (ex *execution) providerForPricing() string {

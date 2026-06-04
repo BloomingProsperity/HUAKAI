@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
@@ -38,6 +39,10 @@ type authResolver interface {
 	Resolve(ctx context.Context, req *http.Request) (auth.Identity, error)
 }
 
+type pricingRatioResolver interface {
+	Resolve(ctx context.Context, tenantID, poolGroupID int64) decimal.Decimal
+}
+
 type ChatHandlerDeps struct {
 	Auth                  authResolver
 	Registry              registry.Registry
@@ -45,6 +50,7 @@ type ChatHandlerDeps struct {
 	ClaimGate             billing.ClaimGate
 	QuotaReserver         quotaenforce.Reserver
 	RateTables            billing.RateTableSource
+	PricingRatioResolver  pricingRatioResolver
 	Selector              pool.Selector
 	CredentialVault       provider.CredentialVault
 	Dispatcher            *gateway.UpstreamDispatcher

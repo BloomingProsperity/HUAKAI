@@ -37,6 +37,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
+	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
 )
 
 // ---------------------------------------------------------------
@@ -63,6 +64,24 @@ func TestWiring_AuditRefPolicySharedByBusConfigAndChatDeps(t *testing.T) {
 	policy.AllowMissingMoneyRef = true
 	if !busCfg.AuditRefPolicy.AllowMissingMoneyRef || !chatDeps.AuditRefPolicy.AllowMissingMoneyRef {
 		t.Fatalf("policy mutation was not visible through both wiring surfaces")
+	}
+}
+
+func TestWiring_PricingRatioResolverSharedByChatAndEmbeddingsDeps(t *testing.T) {
+	resolver := pricingcatalog.NewRatioResolver(nil, 0)
+	d := &deps{
+		cfg:                  &Config{BillingPolicyVersion: "1.0", RequestClass: "standard"},
+		pricingRatioResolver: resolver,
+	}
+
+	chatDeps := chatHandlerDeps(d)
+	embeddingsDeps := embeddingsHandlerDeps(d)
+
+	if chatDeps.PricingRatioResolver != resolver {
+		t.Fatalf("chat PricingRatioResolver=%p want shared resolver %p", chatDeps.PricingRatioResolver, resolver)
+	}
+	if embeddingsDeps.PricingRatioResolver != resolver {
+		t.Fatalf("embeddings PricingRatioResolver=%p want shared resolver %p", embeddingsDeps.PricingRatioResolver, resolver)
 	}
 }
 
