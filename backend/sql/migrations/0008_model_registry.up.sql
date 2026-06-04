@@ -1,8 +1,7 @@
--- Slice 2 (N+5a): Model Registry.
--- See docs/process/plans/2026-04-30-n5-model-registry.md for synthesized rationale.
--- Per CMB-1 (cross-module-boundaries.md): NO credential field anywhere here.
--- Per CMB-7: registry layer is read-only at request time. Admin writers
--- (Phase E scope) MUST UPDATE model_registry_snapshots.version IN THE SAME
+-- Model Registry.
+-- NO credential field anywhere here.
+-- Registry layer is read-only at request time. Admin writers
+-- MUST UPDATE model_registry_snapshots.version IN THE SAME
 -- TRANSACTION as any change to models/aliases/bindings/capabilities.
 
 BEGIN;
@@ -10,16 +9,15 @@ BEGIN;
 -- ----------------------------------------------------------------------------
 -- One-time additive index needed for the composite FK
 -- (tenant_id, pool_group_id) on model_pool_bindings.
--- Mirrors N+4a's uq_users_tenant_id_id pattern (codex synthesized §2.4.4).
 -- ----------------------------------------------------------------------------
 CREATE UNIQUE INDEX IF NOT EXISTS uq_pool_groups_tenant_id_id
     ON pool_groups (tenant_id, id);
 
 -- ----------------------------------------------------------------------------
 -- Table: model_registry_snapshots
--- Per-tenant monotonic version counter. Phase E admin writer increments in
+-- Per-tenant monotonic version counter. Admin writers increment in
 -- the same TX as any registry change so RoutePlan.SnapshotVersion can
--- deterministically replay registry state at audit time (D6).
+-- deterministically replay registry state at audit time.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS model_registry_snapshots (
     tenant_id        bigint      PRIMARY KEY REFERENCES tenants(id),
@@ -33,7 +31,7 @@ COMMENT ON TABLE model_registry_snapshots IS
 
 -- ----------------------------------------------------------------------------
 -- Table: model_registry_tenant_policies
--- Explicit global-catalog inheritance switch (D3). Replaces the
+-- Explicit global-catalog inheritance switch. Replaces the
 -- "tenant_id=0 sentinel" anti-pattern. Default is opt-in: false.
 -- Tenant-scoped DISABLED rows ALWAYS block global fallback (explicit deny;
 -- enforced in ResolveModelByAlias query).
@@ -50,7 +48,7 @@ COMMENT ON TABLE model_registry_tenant_policies IS
 -- ----------------------------------------------------------------------------
 -- Table: models
 -- Canonical model identities. tenant_id NULL iff scope='global' (D20).
--- Pricing math is NOT here (CMB-2 carve-out: pricing_class is a string
+-- Pricing math is NOT here: pricing_class is a string
 -- tag; decimal pricing lives in billing tables).
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS models (
@@ -85,7 +83,7 @@ CREATE UNIQUE INDEX uq_models_tenant_canonical
 CREATE UNIQUE INDEX uq_models_global_canonical
     ON models (canonical_id)
     WHERE deleted_at IS NULL AND scope = 'global';
--- Composite FK target (mirrors N+4a uq_users_tenant_id_id pattern).
+-- Composite FK target.
 CREATE UNIQUE INDEX uq_models_tenant_id_id
     ON models (tenant_id, id) WHERE tenant_id IS NOT NULL;
 COMMENT ON TABLE models IS
@@ -94,7 +92,7 @@ COMMENT ON TABLE models IS
 -- ----------------------------------------------------------------------------
 -- Table: model_aliases
 -- Public alias -> model. Lookup uses public_alias_normalized (lower); the
--- as-seeded display string is preserved for audit (D14).
+-- as-seeded display string is preserved for audit.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS model_aliases (
     id                       bigserial PRIMARY KEY,
@@ -128,41 +126,23 @@ COMMENT ON TABLE model_aliases IS
 -- Table: model_pool_bindings
 -- Ordered model -> pool_group binding. ALWAYS tenant-scoped: pool_groups
 -- are tenant-owned, so a "global binding" cannot exist without leaking one
--- tenant's pool_group_id to another tenant's resolver (codex N+5a P1
--- finding 2026-04-30 — addressed by removing the scope column entirely
--- and making tenant_id NOT NULL).
+-- tenant's pool_group_id to another tenant's resolver. Bindings are
+-- tenant-local even for global models.
 --
 -- Inheritance flow for a global model: tenant T sets up its OWN
 -- model_pool_bindings row pointing at T's pool_group + the shared global
 -- model_id. The global alias resolves through inherit_global_catalog;
 -- routing is always per-tenant.
 --
--- Reference-derived columns (citations preserved for audit):
---   - rpm_limit/tpm_limit/max_parallel_requests:
---       LiteLLM proxy/_types.py @ 850fe59 KeyRequestBase.rpm_limit /
---       tpm_limit / GenerateRequestBase.max_parallel_requests
---       (WebFetch 2026-04-30T09:50Z).
---   - selection_mode: Portkey config.ts @ 9d9a37a strategy.mode
---       (WebFetch 2026-04-30T09:35Z).
---   - provider_model_id_override: one-api model/channel.go @ 3915ce9
---       ModelMapping (WebFetch 2026-04-30T09:35Z).
---   - weight + priority: envoy ai_gateway_route.go @ v0.5.0
---       AIGatewayRouteRuleBackendRef (WebFetch 2026-04-30T09:35Z).
---   - fallback_class: LiteLLM router.py @ 850fe59
---       fallbacks / context_window_fallbacks / content_policy_fallbacks
---       (WebFetch 2026-04-30T09:50Z).
---
--- L0 ENFORCEMENT: rpm_limit/tpm_limit/max_parallel_requests are
--- store-only at L0; Phase E rate gate enforces. selection_mode is
--- always honored as strict_priority at L0 regardless of column value;
--- weighted execution lands in Slice 5.
+-- rpm_limit/tpm_limit/max_parallel_requests are store-only here; request-time
+-- rate gates enforce them. selection_mode is honored as strict_priority until
+-- weighted execution is enabled.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS model_pool_bindings (
     id                          bigserial PRIMARY KEY,
     tenant_id                   bigint      NOT NULL REFERENCES tenants(id),
-    -- FK to models(id) prevents orphaned bindings (codex N+5a P2-A pass2
-    -- finding 2026-04-30): a binding with a typo'd model_id used to write
-    -- successfully but never resolve, surfacing as ErrTenantNoAccess.
+    -- FK to models(id) prevents orphaned bindings: a binding with a typo'd
+    -- model_id cannot write successfully and then fail resolution.
     -- Tenant cross-check (binding.tenant must match model.tenant for
     -- scope='tenant' models) is enforced at admin-write time / resolver
     -- query; the simple FK here covers the orphan case.
@@ -195,9 +175,8 @@ CREATE TABLE IF NOT EXISTS model_pool_bindings (
     created_at                  timestamptz NOT NULL DEFAULT now(),
     updated_at                  timestamptz NOT NULL DEFAULT now(),
     deleted_at                  timestamptz,
-    -- Composite FK defends cross-tenant pool_group misbinding (D21 +
-    -- N+4a uq_users_tenant_id_id pattern). Tenant_id is NOT NULL so this
-    -- FK fires for every row.
+    -- Composite FK defends cross-tenant pool_group misbinding. Tenant_id is
+    -- NOT NULL so this FK fires for every row.
     FOREIGN KEY (tenant_id, pool_group_id) REFERENCES pool_groups(tenant_id, id)
 );
 CREATE UNIQUE INDEX uq_bindings_tenant_model_pool
@@ -211,8 +190,8 @@ COMMENT ON TABLE model_pool_bindings IS
 
 -- ----------------------------------------------------------------------------
 -- Table: model_registry_capabilities
--- Per-model capability rows (D15). capability_params jsonb supports
--- parameterized capabilities like reasoning_effort levels (E-NAI-004).
+-- Per-model capability rows. capability_params jsonb supports
+-- parameterized capabilities like reasoning_effort levels.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS model_registry_capabilities (
     id                bigserial PRIMARY KEY,
@@ -247,10 +226,9 @@ COMMENT ON TABLE model_registry_capabilities IS
 -- ----------------------------------------------------------------------------
 -- ALTER usage_records: add snapshot_version column.
 -- Records the registry/router snapshot active at billing time so audit
--- replay can re-derive routing decisions deterministically (D6).
+-- replay can re-derive routing decisions deterministically.
 -- Format: "registry:<tenant_id>:<version>;router:<router_policy_version>".
--- Nullable for backwards compatibility with rows written before Slice 2;
--- new writes from Settler in N+5b populate it.
+-- Nullable for backwards compatibility with existing rows; new writes populate it.
 -- ----------------------------------------------------------------------------
 ALTER TABLE usage_records
     ADD COLUMN IF NOT EXISTS snapshot_version text;

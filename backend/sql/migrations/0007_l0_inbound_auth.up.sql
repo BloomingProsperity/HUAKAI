@@ -1,8 +1,7 @@
--- Phase L0 minimum (N+4a): table-backed inbound auth.
+-- Table-backed inbound auth.
 -- Replaces the SmokeAuthResolver env-injected single bearer pattern.
--- Per docs/process/plans/2026-04-30-n4-l0-minimum.md (synthesized) D1-D10.
 --
--- Out of scope here (deferred to N+4b): adding FKs from
+-- This migration does not add FKs from
 -- billing_ledger_claims / usage_records / pool_slot_acquisitions back to
 -- api_keys(id) / users(id). Existing fixtures use synthetic ids
 -- (apiKeyID = tenantID*100+1) and would break under those FKs.
@@ -28,7 +27,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 -- Composite uniqueness so api_keys can FK on (tenant_id, id) — defeats
--- cross-tenant binding (codex synthesized plan §2.4.4).
+-- cross-tenant binding.
 CREATE UNIQUE INDEX uq_users_tenant_id_id ON users (tenant_id, id);
 
 CREATE INDEX idx_users_tenant_status ON users (tenant_id, status)
@@ -45,7 +44,7 @@ COMMENT ON TABLE users IS 'L0 minimum (2026-04-30 N+4a) end-user identity. No pa
 -- Table: api_keys
 -- Inbound bearer-token storage. key_hash is bcrypt; key_prefix is the
 -- first 16 chars of the plaintext for indexed lookup (no plaintext stored).
--- last_used_at is updated only by the DR-010 bounded best-effort telemetry
+-- last_used_at is updated only by bounded best-effort telemetry
 -- carve-out after successful inbound bearer verification.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS api_keys (
@@ -65,14 +64,14 @@ CREATE TABLE IF NOT EXISTS api_keys (
     updated_at      timestamptz NOT NULL DEFAULT now(),
     deleted_at      timestamptz,
     -- Composite FK to users — same tenant_id; defends cross-tenant
-    -- user_id misbinding (codex synthesized plan §2.4.4).
+    -- user_id misbinding.
     FOREIGN KEY (tenant_id, user_id) REFERENCES users (tenant_id, id)
 );
 
 -- Hot-path resolver lookup: prefix-only (resolver doesn't know tenant_id
--- at lookup time — that's what it's resolving). Codex N+4a P2 finding:
--- a (tenant_id, key_prefix) composite index can't service prefix-only
--- queries efficiently as the api_keys table grows.
+-- at lookup time — that's what it's resolving). A (tenant_id, key_prefix)
+-- composite index can't service prefix-only queries efficiently as the
+-- api_keys table grows.
 CREATE INDEX idx_api_keys_prefix_active ON api_keys (key_prefix)
     WHERE deleted_at IS NULL AND status = 'active';
 
@@ -84,7 +83,7 @@ CREATE INDEX idx_api_keys_tenant_prefix ON api_keys (tenant_id, key_prefix)
 CREATE INDEX idx_api_keys_user_status ON api_keys (tenant_id, user_id, status)
     WHERE deleted_at IS NULL;
 
--- Background expiry sweep (Phase E worker).
+-- Background expiry sweep.
 CREATE INDEX idx_api_keys_expires_at ON api_keys (expires_at)
     WHERE expires_at IS NOT NULL AND deleted_at IS NULL;
 

@@ -1,6 +1,6 @@
 -- 0066 adds cost_receipt_append to usage_record_dlq.event_kind CHECK.
 --
--- S2-005: Tx2 may commit successfully while the post-settle receipt append
+-- Tx2 may commit successfully while the post-settle receipt append
 -- hook fails. The primary response must remain fail-open, but the missing
 -- user_cost_receipts proof must be durable replay work instead of a log-only
 -- warning.

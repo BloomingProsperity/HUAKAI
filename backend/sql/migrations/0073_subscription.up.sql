@@ -1,17 +1,14 @@
--- HUAKAI 订阅子系统 Slice P3a schema。
--- Owner 2026-05-29 决策: 订阅 = 只给配额套餐 (不充余额, 不碰 payment_credits/billing_events 钱表),
---   每周期自动续 (窗口化重置), 首切片含用户分组升级/到期降级。
+-- HUAKAI 订阅子系统 schema。
+-- 订阅只给配额套餐 (不充余额, 不碰 payment_credits/billing_events 钱表),
+--   每周期自动续 (窗口化重置), 含用户分组升级/到期降级。
 -- HUAKAI 订阅模型: 计划绑用户路由组 + 窗口化日/周/月 USD 花费上限 + validity 周期 + 到期降级。
---   (参照项目对照与 file:line 引用见 docs/process/plans/2026-05-29-payment-p3a-impl-claude.md 的 clean-room guard 内, 不在 SQL 注释中复述。)
--- HUAKAI 升级 (fusion delta, 见同文档 §0):
+-- HUAKAI 订阅行为:
 --   1) 上限不在订阅行里另存计数器, 而是激活时按窗口装进统一 internal/quota 引擎
 --      (cost_usd 策略: daily_cap->calendar_day / weekly_cap->calendar_week / monthly_cap->calendar_month,
 --       valid_from=starts_at, valid_until=expires_at)。引擎按日历边界自动重置 -> 不需周期 worker。
 --   2) subscription_policy_links 记录订阅与其 quota 策略的所有权, 到期/取消时关闭对应策略。
 --   3) PRIMARY entitlement = users.user_group (路由访问); cap 是 guardrail; 到期降级 = 真正停服。
 -- 所有表以 tenant_id 隔离; 金额上限用 numeric(20,8) USD (对齐 quota_policies.limit_value)。
--- 与新机协调点: 本 migration ALTER users 加 user_group 列 (核心身份表, 加列为 additive 默认 'default');
---   主线合并前确认新机未并发改 users。不碰 payment_credits/billing_events (quota-only, 无钱表协调)。
 
 BEGIN;
 
@@ -30,7 +27,7 @@ CREATE TABLE IF NOT EXISTS subscription_plans (
     tenant_id         bigint      NOT NULL REFERENCES tenants(id),
     name              text        NOT NULL,
     description       text        NOT NULL DEFAULT '',
-    -- 目录价 (quota-only 下仅展示 / P3b 支付购买用; 不入余额账本)
+    -- 目录价 (quota-only 下仅展示 / 支付购买用; 不入余额账本)
     price_cents       bigint      NOT NULL DEFAULT 0 CHECK (price_cents >= 0),
     currency_code     char(3)     NOT NULL DEFAULT 'USD',
     -- 订阅有效期天数

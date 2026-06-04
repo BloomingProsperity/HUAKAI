@@ -1,6 +1,6 @@
 -- Usage analytics: aggregation queries over settled usage_records.
--- SELECT-only (CMB-7). Self-serve queries carry a non-nullable tenant_id
--- predicate (CMB-5 cross-tenant prevention). Admin leaderboard queries are
+-- SELECT-only. Self-serve queries carry a non-nullable tenant_id
+-- predicate (cross-tenant prevention). Admin leaderboard queries are
 -- platform-admin-only and intentionally aggregate across tenants for operator
 -- cost visibility. No query selects credential columns.
 -- usage_records.settled_at is NOT NULL DEFAULT now() and indexed by
