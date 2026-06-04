@@ -33,6 +33,7 @@ package clienterr
 // body_read_error | 400 | request body could not be read | TestReadChatRequestBodyErrorDoesNotLeakReaderError
 // replay_lookup_failed | 503 | idempotency replay is unavailable | TestMessageForKnownCodesAndFallback
 // attempt_failed | 502 | request attempt failed | TestMessageForKnownCodesAndFallback
+// content_policy_violation | 403 | request violates content policy | TestMessageForKnownCodesAndFallback
 // abort_failed | header | internal settlement failed | TestDegradeFailureIfAbortFailedUsesSafeAbortReasonAndLogsRawError
 // forward_failed | header | stream forwarding failed | TestStreamingForwardSettleAndAbortErrorsAreLoggedNotHeaders
 // settle_failed | header | request settlement failed | TestStreamingForwardSettleAndAbortErrorsAreLoggedNotHeaders
@@ -67,6 +68,7 @@ const (
 	CodeBodyReadError                   = "body_read_error"
 	CodeReplayLookupFailed              = "replay_lookup_failed"
 	CodeAttemptFailed                   = "attempt_failed"
+	CodeContentPolicyViolation          = "content_policy_violation"
 	CodeAbortFailed                     = "abort_failed"
 	CodeForwardFailed                   = "forward_failed"
 	CodeSettleFailed                    = "settle_failed"
@@ -103,6 +105,7 @@ var messages = map[string]string{
 	CodeBodyReadError:                   "request body could not be read",
 	CodeReplayLookupFailed:              "idempotency replay is unavailable",
 	CodeAttemptFailed:                   "request attempt failed",
+	CodeContentPolicyViolation:          "request violates content policy",
 	CodeAbortFailed:                     "internal settlement failed",
 	CodeForwardFailed:                   "stream forwarding failed",
 	CodeSettleFailed:                    "request settlement failed",

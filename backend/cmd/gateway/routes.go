@@ -404,6 +404,7 @@ func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 		AuditRefPolicy:        d.auditRefPolicy,
 		AuditLedger:           d.auditLedger,
 		AuditLedgerDLQ:        d.dlqService,
+		ModerationScreener:    moderationScreener(d),
 		SettleRecoveryDLQ:     d.dlqService,
 		Signer:                d.auditSigner,
 		ChannelHealth:         d.channelHealth,

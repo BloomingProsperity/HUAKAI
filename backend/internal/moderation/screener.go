@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 type ScreenerDeps struct {
@@ -11,6 +14,7 @@ type ScreenerDeps struct {
 	Keywords KeywordStore
 	Hashes   HashStore
 	Audit    AuditLogger
+	Ban      AutoBanCounter
 }
 
 type storeScreener struct {
@@ -18,6 +22,11 @@ type storeScreener struct {
 	keywords KeywordStore
 	hashes   HashStore
 	audit    AuditLogger
+	ban      AutoBanCounter
+}
+
+type AutoBanCounter interface {
+	RecordAndCheck(context.Context, ModerationEvent, ModerationConfig) (BanResult, error)
 }
 
 func NewScreener(deps ScreenerDeps) Screener {
@@ -26,6 +35,7 @@ func NewScreener(deps ScreenerDeps) Screener {
 		keywords: deps.Keywords,
 		hashes:   deps.Hashes,
 		audit:    deps.Audit,
+		ban:      deps.Ban,
 	}
 }
 
@@ -78,6 +88,7 @@ func (s *storeScreener) checkHash(ctx context.Context, req ScreenRequest, cfg Mo
 		MatchedHashID: &match.ID,
 	}
 	_ = s.writeAudit(ctx, req, result, cfg)
+	_ = s.recordAutoBan(ctx, req, result, cfg)
 	return result, nil
 }
 
@@ -89,10 +100,9 @@ func (s *storeScreener) checkKeywords(ctx context.Context, req ScreenRequest, cf
 	if err != nil {
 		return s.backendResult(cfg, "keyword_backend_error", err)
 	}
-	body := strings.ToLower(string(req.Body))
+	bodyTokens := moderationTokens(string(req.Body))
 	for _, rule := range rules {
-		keyword := strings.TrimSpace(strings.ToLower(rule.Keyword))
-		if keyword == "" || !strings.Contains(body, keyword) {
+		if !containsKeywordTokens(bodyTokens, rule.Keyword) {
 			continue
 		}
 		id := rule.ID
@@ -102,9 +112,71 @@ func (s *storeScreener) checkKeywords(ctx context.Context, req ScreenRequest, cf
 			MatchedKeywordID: &id,
 		}
 		_ = s.writeAudit(ctx, req, result, cfg)
+		_ = s.recordAutoBan(ctx, req, result, cfg)
 		return result, nil
 	}
 	return ScreenResult{}, nil
+}
+
+func containsKeywordTokens(bodyTokens []string, keyword string) bool {
+	keywordTokens := moderationTokens(keyword)
+	if len(keywordTokens) == 0 || len(keywordTokens) > len(bodyTokens) {
+		return false
+	}
+	for i := 0; i <= len(bodyTokens)-len(keywordTokens); i++ {
+		matched := true
+		for j := range keywordTokens {
+			if bodyTokens[i+j] != keywordTokens[j] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func moderationTokens(value string) []string {
+	value = normalizeModerationText(value)
+	var tokens []string
+	var token strings.Builder
+	for _, r := range value {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			token.WriteRune(r)
+			continue
+		}
+		if token.Len() > 0 {
+			tokens = append(tokens, token.String())
+			token.Reset()
+		}
+	}
+	if token.Len() > 0 {
+		tokens = append(tokens, token.String())
+	}
+	return tokens
+}
+
+func normalizeModerationText(value string) string {
+	// NFKC + zero-width stripping catches common width and invisible-character
+	// evasions. This remains token matching, not semantic filtering; cross-script
+	// confusables and language-specific segmentation need later classifiers.
+	return strings.Map(func(r rune) rune {
+		if isZeroWidthRune(r) {
+			return -1
+		}
+		return unicode.ToLower(r)
+	}, norm.NFKC.String(value))
+}
+
+func isZeroWidthRune(r rune) bool {
+	switch r {
+	case '\u200b', '\u200c', '\u200d', '\ufeff', '\u2060':
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *storeScreener) backendResult(cfg ModerationConfig, reason string, err error) (ScreenResult, error) {
@@ -120,6 +192,14 @@ func (s *storeScreener) writeAudit(ctx context.Context, req ScreenRequest, res S
 		return nil
 	}
 	return s.audit.Log(ctx, eventFromResult(req, res), cfg)
+}
+
+func (s *storeScreener) recordAutoBan(ctx context.Context, req ScreenRequest, res ScreenResult, cfg ModerationConfig) error {
+	if s.ban == nil {
+		return nil
+	}
+	_, err := s.ban.RecordAndCheck(ctx, eventFromResult(req, res), cfg)
+	return err
 }
 
 func eventFromResult(req ScreenRequest, res ScreenResult) ModerationEvent {

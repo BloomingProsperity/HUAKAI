@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/moderation"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
@@ -185,4 +187,211 @@ func TestHandler_InsufficientBalanceReturnsClientParseable402(t *testing.T) {
 			t.Fatalf("body=%s leaked generic reserve error marker %q", body, bad)
 		}
 	}
+}
+
+func TestHandler_ModerationBlockReturns403BeforeReserveAndAutoBanUsesIdentity(t *testing.T) {
+	// Mutation: moving/removing the moderation hook lets the forbidden request
+	// reserve a billing claim and reach dispatch; the call-count assertions go red.
+	enableHCSFDispatchForTest(t)
+	claimGate := &moderationClaimGateSpy{}
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	audit := &chatModerationAuditSpy{}
+	ban := &chatModerationBanSpy{}
+	d := clientAdapterDeps(t)
+	d.ClaimGate = claimGate
+	d.CanonicalDispatcher = dispatcher
+	d.ModerationScreener = moderation.NewScreener(moderation.ScreenerDeps{
+		Config: chatModerationConfigStore{cfg: moderation.ModerationConfig{
+			Enabled: true, FailClosed: true, SampleRatePct: 100,
+			BanThreshold: 1, BanWindowSeconds: 3600,
+		}},
+		Keywords: &chatModerationKeywordStore{rules: []moderation.KeywordRule{{ID: 77, Keyword: "forbidden"}}},
+		Audit:    audit,
+		Ban:      ban,
+	})
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions",
+		`{"model":"gpt-4o","stream":false,"api_key_id":999999,"messages":[{"role":"user","content":"forbidden"}]}`)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d want 403 body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), clienterr.CodeContentPolicyViolation) {
+		t.Fatalf("body=%s want content policy code", rec.Body.String())
+	}
+	if claimGate.calls != 0 {
+		t.Fatalf("reserve calls=%d want 0 for blocked moderation request", claimGate.calls)
+	}
+	if dispatcher.calls != 0 {
+		t.Fatalf("dispatcher calls=%d want 0 for blocked moderation request", dispatcher.calls)
+	}
+	if len(audit.events) != 1 {
+		t.Fatalf("audit events=%d want 1", len(audit.events))
+	}
+	if audit.events[0].PayloadHash == "" || audit.events[0].ReasonCode == "forbidden" {
+		t.Fatalf("audit event leaked raw keyword or missed hash: %+v", audit.events[0])
+	}
+	if ban.calls != 1 {
+		t.Fatalf("auto-ban calls=%d want 1", ban.calls)
+	}
+	if ban.events[0].APIKeyID != validIdentity().APIKeyID {
+		t.Fatalf("auto-ban APIKeyID=%d want authenticated identity %d; body spoof must be ignored",
+			ban.events[0].APIKeyID, validIdentity().APIKeyID)
+	}
+}
+
+func TestHandler_ModerationCleanInputProceedsToReserveAndDispatch(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	claimGate := &moderationClaimGateSpy{}
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	ban := &chatModerationBanSpy{}
+	d := clientAdapterDeps(t)
+	d.ClaimGate = claimGate
+	d.CanonicalDispatcher = dispatcher
+	d.ModerationScreener = moderation.NewScreener(moderation.ScreenerDeps{
+		Config:   chatModerationConfigStore{cfg: moderation.ModerationConfig{Enabled: true, FailClosed: true}},
+		Keywords: &chatModerationKeywordStore{rules: []moderation.KeywordRule{{ID: 77, Keyword: "forbidden"}}},
+		Ban:      ban,
+	})
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions",
+		`{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"clean request"}]}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if claimGate.calls != 1 {
+		t.Fatalf("reserve calls=%d want 1 for clean request", claimGate.calls)
+	}
+	if dispatcher.calls != 1 {
+		t.Fatalf("dispatcher calls=%d want 1 for clean request", dispatcher.calls)
+	}
+	if ban.calls != 0 {
+		t.Fatalf("auto-ban calls=%d want 0 for clean request", ban.calls)
+	}
+}
+
+func TestHandler_ModerationBackendErrorFailsClosedBeforeReserve(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	claimGate := &moderationClaimGateSpy{}
+	d := clientAdapterDeps(t)
+	d.ClaimGate = claimGate
+	d.ModerationScreener = moderation.NewScreener(moderation.ScreenerDeps{
+		Config:   chatModerationConfigStore{cfg: moderation.ModerationConfig{Enabled: true, FailClosed: true}},
+		Keywords: &chatModerationKeywordStore{err: errors.New("keyword backend down")},
+	})
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions",
+		`{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"clean request"}]}`)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d want fail-closed 403 body=%s", rec.Code, rec.Body.String())
+	}
+	if claimGate.calls != 0 {
+		t.Fatalf("reserve calls=%d want 0 on fail-closed moderation backend error", claimGate.calls)
+	}
+}
+
+func TestHandler_ModerationBackendErrorFailOpenProceeds(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	claimGate := &moderationClaimGateSpy{}
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	d := clientAdapterDeps(t)
+	d.ClaimGate = claimGate
+	d.CanonicalDispatcher = dispatcher
+	d.ModerationScreener = moderation.NewScreener(moderation.ScreenerDeps{
+		Config:   chatModerationConfigStore{cfg: moderation.ModerationConfig{Enabled: true, FailClosed: false}},
+		Keywords: &chatModerationKeywordStore{err: errors.New("keyword backend down")},
+	})
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions",
+		`{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"clean request"}]}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 fail-open body=%s", rec.Code, rec.Body.String())
+	}
+	if claimGate.calls != 1 || dispatcher.calls != 1 {
+		t.Fatalf("reserve/dispatch calls=%d/%d want 1/1 fail-open", claimGate.calls, dispatcher.calls)
+	}
+}
+
+func TestHandler_ModerationDefaultOffWithoutScreenerPreservesChatPath(t *testing.T) {
+	// Mutation: making moderation mandatory in chatHandlerConfigured or calling
+	// a nil/default screener changes this already-valid chat path.
+	enableHCSFDispatchForTest(t)
+	claimGate := &moderationClaimGateSpy{}
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	d := clientAdapterDeps(t)
+	d.ClaimGate = claimGate
+	d.CanonicalDispatcher = dispatcher
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions",
+		`{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"forbidden but moderation not configured"}]}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want existing 200 path when moderation screener is nil; body=%s", rec.Code, rec.Body.String())
+	}
+	if claimGate.calls != 1 || dispatcher.calls != 1 {
+		t.Fatalf("reserve/dispatch calls=%d/%d want 1/1 with moderation absent", claimGate.calls, dispatcher.calls)
+	}
+}
+
+type moderationClaimGateSpy struct {
+	calls   int
+	claimID int64
+	reqs    []billing.ReserveRequest
+}
+
+func (g *moderationClaimGateSpy) Reserve(_ context.Context, req billing.ReserveRequest) (*billing.ReserveResult, error) {
+	g.calls++
+	g.reqs = append(g.reqs, req)
+	claimID := g.claimID
+	if claimID == 0 {
+		claimID = 999
+	}
+	return &billing.ReserveResult{ClaimID: claimID}, nil
+}
+
+type chatModerationConfigStore struct {
+	cfg moderation.ModerationConfig
+	err error
+}
+
+func (s chatModerationConfigStore) GetConfig(context.Context, int64) (moderation.ModerationConfig, error) {
+	if s.err != nil {
+		return moderation.ModerationConfig{}, s.err
+	}
+	return s.cfg, nil
+}
+
+type chatModerationKeywordStore struct {
+	rules []moderation.KeywordRule
+	err   error
+}
+
+func (s *chatModerationKeywordStore) ListEnabled(context.Context, int64) ([]moderation.KeywordRule, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.rules, nil
+}
+
+type chatModerationAuditSpy struct {
+	events []moderation.ModerationEvent
+}
+
+func (s *chatModerationAuditSpy) Log(_ context.Context, event moderation.ModerationEvent, _ moderation.ModerationConfig) error {
+	s.events = append(s.events, event)
+	return nil
+}
+
+type chatModerationBanSpy struct {
+	calls  int
+	events []moderation.ModerationEvent
+}
+
+func (s *chatModerationBanSpy) RecordAndCheck(_ context.Context, event moderation.ModerationEvent, _ moderation.ModerationConfig) (moderation.BanResult, error) {
+	s.calls++
+	s.events = append(s.events, event)
+	return moderation.BanResult{Count: int64(s.calls)}, nil
 }
