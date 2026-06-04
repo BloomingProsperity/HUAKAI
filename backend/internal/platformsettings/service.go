@@ -11,11 +11,12 @@ import (
 const defaultCacheTTL = 30 * time.Second
 
 type Service struct {
-	store    Store
-	audit    AuditSink
-	cache    sync.Map
-	cacheTTL time.Duration
-	now      func() time.Time
+	store     Store
+	audit     AuditSink
+	cache     sync.Map
+	lastKnown sync.Map
+	cacheTTL  time.Duration
+	now       func() time.Time
 }
 
 type Option func(*Service)
@@ -61,9 +62,10 @@ func (s *Service) Get(ctx context.Context, key SettingKey) (StoredSetting, error
 	}
 	setting, err := s.readFresh(ctx, key)
 	if err != nil {
-		return StoredSetting{}, err
+		return s.lastKnownOrDefault(key), nil
 	}
 	s.cacheSetting(setting)
+	s.rememberLastKnown(setting)
 	return setting, nil
 }
 
@@ -120,6 +122,7 @@ func (s *Service) Upsert(ctx context.Context, in UpsertInput) (StoredSetting, er
 			return StoredSetting{}, err
 		}
 		s.cacheSetting(updated)
+		s.rememberLastKnown(updated)
 		return updated, nil
 	}
 	oldSetting, err := s.readFresh(ctx, key)
@@ -141,7 +144,22 @@ func (s *Service) Upsert(ctx context.Context, in UpsertInput) (StoredSetting, er
 		}
 	}
 	s.cacheSetting(updated)
+	s.rememberLastKnown(updated)
 	return updated, nil
+}
+
+func (s *Service) RefreshAll(ctx context.Context) error {
+	if s == nil || s.store == nil {
+		return ErrStoreNotConfigured
+	}
+	for _, key := range orderedSettingKeys {
+		setting, err := s.readFresh(ctx, key)
+		if err != nil {
+			continue
+		}
+		s.rememberLastKnown(setting)
+	}
+	return nil
 }
 
 type cachedSetting struct {
@@ -167,6 +185,23 @@ func (s *Service) cacheSetting(setting StoredSetting) {
 		value:     setting,
 		expiresAt: s.now().Add(s.cacheTTL),
 	})
+}
+
+func (s *Service) rememberLastKnown(setting StoredSetting) {
+	s.lastKnown.Store(setting.Key, setting)
+}
+
+func (s *Service) lastKnownOrDefault(key SettingKey) StoredSetting {
+	raw, ok := s.lastKnown.Load(key)
+	if !ok {
+		return defaultSetting(key)
+	}
+	setting, ok := raw.(StoredSetting)
+	if !ok {
+		s.lastKnown.Delete(key)
+		return defaultSetting(key)
+	}
+	return setting
 }
 
 func (s *Service) readFresh(ctx context.Context, key SettingKey) (StoredSetting, error) {
