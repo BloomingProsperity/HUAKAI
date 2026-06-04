@@ -1,5 +1,5 @@
 -- User-owned API key control queries.
--- CMB-5: this file must not select bearer credential material.
+-- This file must not select bearer credential material.
 
 -- name: UpsertAPIKeyQuotaPolicy :one
 INSERT INTO quota_policies (

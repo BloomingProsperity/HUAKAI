@@ -1,16 +1,15 @@
--- Slice 2 (N+4b2) admin_tokens queries.
--- Per docs/process/plans/2026-05-01-n4b-admin-keys.md §Scope A.
--- Per CMB-1: this file is consumed only by internal/admin and never by
--- internal/auth (the inbound customer resolver). Per CMB-5: queries
+-- Admin token queries.
+-- This file is consumed only by internal/admin and never by
+-- internal/auth (the inbound customer resolver). Queries
 -- never SELECT key_hash for any purpose other than bcrypt comparison
 -- inside the resolver, and never join into log/trace fields.
 
 -- name: LookupAdminTokenByPrefix :many
 -- Returns active candidates whose key_prefix matches. Mirrors the
--- LookupAPIKeysByPrefix shape from N+4a (LIMIT 5 caps bcrypt fanout DOS).
+-- customer API key lookup shape (LIMIT 5 caps bcrypt fanout DOS).
 -- Status is enforced here; deleted_at filters parent rows.
 --
--- Codex N+4b1 pass-3 P2-A fix: tenant_operator tokens MUST be rejected
+-- tenant_operator tokens MUST be rejected
 -- when their scoped tenant is disabled or soft-deleted. We LEFT JOIN
 -- tenants so platform_admin tokens (scope_tenant_id IS NULL) still
 -- resolve, but tenant_operator tokens whose tenant is disabled/deleted
@@ -57,7 +56,7 @@ RETURNING id;
 -- name: CountAdminTokensIncludingInactive :one
 -- Used by bootstrap: env-var bootstrap MUST only insert when NO
 -- admin token row has ever been minted (regardless of current status).
--- Codex N+4b2 pass-5 P1: an active-only count would let a stale env
+-- An active-only count would let a stale env
 -- var re-bootstrap after the operator disabled/revoked all tokens, which
 -- breaks the "one-shot" guarantee. Counting all non-deleted rows closes
 -- that hole; if you want to wipe and re-bootstrap, hard-delete the row.

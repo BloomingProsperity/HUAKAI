@@ -1,8 +1,8 @@
--- S2-010: credential acquisition flow sessions must bind Provider Account
+-- Credential acquisition flow sessions must bind Provider Account
 -- ownership at the database layer, not only during later credential finalization.
 --
 -- 0040 already creates provider_accounts_tenant_id_id_key, so this migration can
--- replace the old single-column FK with the DR-001 composite FK directly.
+-- replace the old single-column FK with the tenant-scoped composite FK directly.
 -- Existing cross-tenant/orphan flow rows fail fast and must be cleaned before
 -- applying this migration.
 

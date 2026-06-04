@@ -1,6 +1,6 @@
--- HUAKAI 角色面板切换 S1a: users 表增加 role 列。
--- 二分角色(Owner 2026-05-30 决策): 'admin' 登录后进管理面板, 'user' 进用户面板(员工亦为 user)。
--- 既有 admin_tokens(hk_admin programmatic 凭据)保持独立, CMB-1 隔离不动;
+-- HUAKAI 角色面板切换: users 表增加 role 列。
+-- 二分角色: 'admin' 登录后进管理面板, 'user' 进用户面板(员工亦为 user)。
+-- 既有 admin_tokens(hk_admin programmatic 凭据)保持独立;
 -- 本列只服务「账号登录 → 面板归属」, 与 admin_tokens.role(platform_admin/tenant_operator)是不同维度。
 BEGIN;
 

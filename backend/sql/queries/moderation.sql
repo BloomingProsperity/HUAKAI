@@ -1,5 +1,5 @@
 -- Content moderation sqlc queries.
--- CMB-5: moderation_log writes metadata and payload_hash only; raw request
+-- moderation_log writes metadata and payload_hash only; raw request
 -- bodies, plaintext credentials, and key hashes never appear in this file.
 
 -- name: ListEnabledModerationKeywords :many

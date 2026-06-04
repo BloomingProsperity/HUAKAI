@@ -1,5 +1,4 @@
--- 0037_tls_fingerprint_profiles.up.sql
--- HUAKAI F-FP-POOL Phase 1: TLS ClientHello 模板表。Admin 后台 CRUD,
+-- TLS ClientHello 模板表。Admin 后台 CRUD,
 -- provider_accounts 通过 tls_fingerprint_profile_id 单 FK 绑定 (NULL =
 -- 走 HUAKAI builtin 默认 profile)。
 --
@@ -7,20 +6,14 @@
 -- gateway 出站时反映 — 全 1000 请求共享一个 ja3 会被检测系统标聚类。
 -- 本表存多套 ClientHello 字段, runtime 按 account 选择对应 profile。
 --
--- HUAKAI-native deltas (vs 现成 gateway 实现 — 多源参考分析见 docs/
--- decompositions/sub2api/ + docs/decompositions/litellm/ + portkey gateway):
+-- 行为:
 --
 --   1. **tenant 范围化**: 每行 tenant_id NOT NULL, 不同租户的 profile 互不见。
---      DR-001/TS-006 要求 (docs/RULES.md §109). 同名 profile 在不同 tenant
---      下并存。
+--      同名 profile 在不同 tenant 下并存。
 --   2. **expected_ja3_hash + last_validated_at**: drift detection worker
---      (F-FP-POOL Phase 3) 周期 wire-emit smoke 后写回, runtime 跟当前
+--      周期 wire-emit smoke 后写回, runtime 跟当前
 --      wire ja3 比对失败则 status='drift_detected', resolver 跳过该 profile。
---      这层在外部 gateway 项目里没有先例 (sub2api/litellm/portkey 均无)。
 --   3. **status='drift_detected' 状态**: admin UI 看红, 提示重抓样本。
---
--- 字段命名: HUAKAI 内部惯例 — snake_case, _enabled 后缀的 bool 列。
--- 不与任何上游 ORM/schema field 字面对齐 (clean-room policy)。
 
 BEGIN;
 
@@ -42,7 +35,7 @@ CREATE TABLE tls_fingerprint_profiles (
     psk_modes               integer[]   NOT NULL DEFAULT ARRAY[]::integer[],
     extensions_order        integer[]   NOT NULL DEFAULT ARRAY[]::integer[],
 
-    -- HUAKAI delta: drift detection metadata
+    -- Drift detection metadata
     expected_ja3_hash       text        NOT NULL DEFAULT '',
     last_validated_at       timestamptz,
 

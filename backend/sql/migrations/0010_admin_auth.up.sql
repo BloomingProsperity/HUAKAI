@@ -1,17 +1,15 @@
--- Slice 2 (N+4b2): Admin auth surface.
--- Per docs/process/plans/2026-05-01-n4b-admin-keys.md §Scope A + D1/D5.
+-- Admin auth surface.
 --
 -- Purpose:
 --   * admin_tokens: bcrypt-hashed operator credentials, separate from
 --     api_keys. Mirrors api_keys shape so reviewers don't learn a new
 --     pattern, but kept on its own table to prevent the hot inbound
 --     resolver from accidentally treating an admin token as a customer
---     bearer (CMB-1).
+--     bearer.
 --   * admin_audit_events: append-only audit row for every admin action
 --     (issue / revoke / list / login). Shape aligns with existing
 --     domain-scoped audit tables (oauth_refresh_audit_events,
---     rate_limit_audit_events) and the OpenAPI AuditEvent schema at
---     docs/openapi/openapi.yaml.
+--     rate_limit_audit_events) and the OpenAPI AuditEvent schema.
 --
 -- Migration is additive; no existing rows are touched.
 
@@ -70,7 +68,7 @@ CREATE TABLE IF NOT EXISTS admin_audit_events (
     tenant_id    bigint      REFERENCES tenants(id),  -- NULL for cross-tenant platform actions
     actor_id     text        NOT NULL,
     actor_role   text        NOT NULL CHECK (actor_role IN ('platform_admin', 'tenant_operator')),
-    -- Codex N+4b1 pass-3 P2-B: action and target_type are CHECK-bounded.
+    -- action and target_type are CHECK-bounded.
     -- Open-ended TEXT lets a typo silently bypass the rate-limit window
     -- (CountIssuanceInWindow keys on action='issue_api_key'). New actions
     -- must be added to BOTH the CHECK constraint AND any rate-limit
@@ -91,7 +89,7 @@ CREATE TABLE IF NOT EXISTS admin_audit_events (
 CREATE INDEX idx_admin_audit_events_tenant_time
     ON admin_audit_events (tenant_id, occurred_at DESC);
 
--- Used by the issuance rate-limit window (D4: 30 issues / hour / actor).
+-- Used by the issuance rate-limit window (30 issues / hour / actor).
 CREATE INDEX idx_admin_audit_events_actor_action_time
     ON admin_audit_events (actor_id, action, occurred_at DESC);
 

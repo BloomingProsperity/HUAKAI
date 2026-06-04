@@ -1,26 +1,17 @@
--- Slice 2 (N+4b1): Ledger FK backfill.
--- Per docs/process/plans/2026-05-01-n4b-admin-keys.md §Scope B + DB1.
---
--- N+4a (commit 121db58) added users + api_keys tables behind APIKeyResolver
--- but explicitly deferred the FKs from billing_ledger_claims / usage_records /
--- billing_ledger_archive / pool_slot_acquisitions — synthetic test fixtures
--- using `apiKeyID = tenantID*100 + 1` would have broken under the FKs.
--- This migration closes those gaps. Test fixtures rewritten to seed real
--- rows in the same N+4b1 commit.
+-- Ledger FK backfill.
+-- This migration adds the tenant-scoped FKs from billing_ledger_claims,
+-- usage_records, billing_ledger_archive, and pool_slot_acquisitions to
+-- api_keys/users.
 --
 -- All FKs are composite (tenant_id, X) -> (tenant_id, id) where the parent
--- supports it, mirroring N+4a's uq_users_tenant_id_id pattern (codex
--- synthesized N+4 plan §2.4.4) so cross-tenant misbinding is rejected at
--- the schema layer.
+-- supports it, so cross-tenant misbinding is rejected at the schema layer.
 --
 -- ON DELETE RESTRICT for all six FKs: billing tables are money-grade audit
 -- ledgers; deleting an api_keys/users row referenced from them must fail
--- (per F-OBS-001 §Invariant 4). Operators must use status='revoked', not
+-- Operators must use status='revoked', not
 -- DELETE.
 --
--- Pattern: ADD CONSTRAINT NOT VALID + VALIDATE in same TX. HUAKAI is
--- pre-L0 per blueprint v0.2 (no production data), but the pattern is
--- the production-safe norm and L1 will need it anyway.
+-- Pattern: ADD CONSTRAINT NOT VALID + VALIDATE in same TX.
 
 BEGIN;
 
@@ -28,9 +19,7 @@ BEGIN;
 -- Composite uniq indexes: required as FK targets.
 --   - api_keys.(tenant_id, id) — referenced by claims/usage/archive
 --   - billing_ledger_claims.(tenant_id, id) — referenced by
---     pool_slot_acquisitions for cross-tenant defense (codex N+4b1
---     pass-1 P1: single-column claim_id FK still allowed tenant B to
---     bind a slot to tenant A's claim).
+--     pool_slot_acquisitions for cross-tenant defense.
 -- Mirrors uq_users_tenant_id_id from migration 0007.
 -- ----------------------------------------------------------------------------
 CREATE UNIQUE INDEX IF NOT EXISTS uq_api_keys_tenant_id_id
@@ -86,13 +75,8 @@ ALTER TABLE billing_ledger_archive
 
 -- ----------------------------------------------------------------------------
 -- pool_slot_acquisitions.(tenant_id, claim_id) -> billing_ledger_claims.
--- The original migration 0001 marked this FK as deferred (line 178 comment
--- "FK to billing_ledger_claims (locked once F-BILL-001 Released)"). N+4b1
--- closes it.
---
--- Codex N+4b1 pass-1 P1: COMPOSITE FK (not single-column). A tenant B
--- slot row binding to tenant A's claim_id is just as broken as a
--- cross-tenant api_key reference; defend at the schema layer.
+-- A tenant B slot row binding to tenant A's claim_id is just as broken as
+-- a cross-tenant api_key reference; defend at the schema layer.
 -- ----------------------------------------------------------------------------
 ALTER TABLE pool_slot_acquisitions
     ADD CONSTRAINT fk_psa_claim
@@ -103,9 +87,9 @@ ALTER TABLE pool_slot_acquisitions
 
 -- ----------------------------------------------------------------------------
 -- Replace single-column claim_id FKs on tenant-scoped ledger tables with
--- composite (tenant_id, claim_id) FKs. Codex N+4b1 pass-2 P1: the existing
--- usage_records/billing_events/usage_record_dlq/billing_ledger_adjustments
--- claim_id FKs only verify "claim_id exists somewhere"; a row with
+-- composite (tenant_id, claim_id) FKs. The existing usage_records,
+-- billing_events, usage_record_dlq, and billing_ledger_adjustments claim_id
+-- FKs only verify "claim_id exists somewhere"; a row with
 -- (tenant_id=B, claim_id=A's_claim) satisfies them and corrupts tenant
 -- isolation for immutable billing data. Same composite defense as
 -- pool_slot_acquisitions above.
@@ -144,10 +128,9 @@ ALTER TABLE billing_ledger_adjustments
         NOT VALID;
 
 -- ----------------------------------------------------------------------------
--- VALIDATE all six in this same TX. Pre-L0 means no production data to
--- walk; if dev DB has stale rows from synthetic-id fixtures, this will
--- ROLLBACK and the operator must clean up — that's the desired behavior
--- (loud failure beats silent corruption).
+-- VALIDATE all constraints in this same TX. If stale cross-tenant rows exist,
+-- this will ROLLBACK and the operator must clean up; loud failure beats
+-- silent corruption.
 -- ----------------------------------------------------------------------------
 ALTER TABLE billing_ledger_claims      VALIDATE CONSTRAINT fk_claims_api_key;
 ALTER TABLE billing_ledger_claims      VALIDATE CONSTRAINT fk_claims_user;
