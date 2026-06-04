@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
@@ -209,7 +210,7 @@ func mapGenerationUsageRecord(row dbbilling.GetUsageRecordByRequestIDRow, tenant
 	return mapUsageRecord(dbbilling.ListUsageRecordsRow{
 		RequestedModel:        row.RequestedModel,
 		UpstreamModel:         row.UpstreamModel,
-		ActualCost:            row.ActualCost,
+		ActualCost:            decimalFromNumeric(row.ActualCost),
 		TokensInput:           row.TokensInput,
 		TokensOutput:          row.TokensOutput,
 		CacheCreationTokens:   row.CacheCreationTokens,
@@ -222,6 +223,13 @@ func mapGenerationUsageRecord(row dbbilling.GetUsageRecordByRequestIDRow, tenant
 		PendingReconciliation: row.PendingReconciliation,
 		RequestID:             row.RequestID,
 	}, tenantID)
+}
+
+func decimalFromNumeric(value pgtype.Numeric) decimal.Decimal {
+	if !value.Valid || value.Int == nil {
+		return decimal.Zero
+	}
+	return decimal.NewFromBigInt(value.Int, value.Exp)
 }
 
 func buildVerifyHint(ledgerID, requestID string, tenantID int64) verifyHint {

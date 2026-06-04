@@ -52,6 +52,7 @@ func NewGenerationHandler(d GenerationDeps) http.HandlerFunc {
 		row, err := d.Store.GetUsageRecordByRequestID(r.Context(), dbbilling.GetUsageRecordByRequestIDParams{
 			TenantID:  ident.TenantID,
 			UserID:    ident.UserID,
+			APIKeyID:  ident.APIKeyID,
 			RequestID: requestID,
 		})
 		if errors.Is(err, pgx.ErrNoRows) {

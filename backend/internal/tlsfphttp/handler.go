@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -282,6 +283,12 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "request body is not valid JSON or contains unknown fields")
+		return false
+	}
+	var extra struct{}
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		// 和 twofahttp 对齐:只接受单个 JSON 对象，尾随对象不能被静默忽略。
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "request body must contain exactly one JSON object")
 		return false
 	}
 	return true

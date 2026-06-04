@@ -10,6 +10,7 @@ import (
 
 type Querier interface {
 	CountModerationBlocksInWindow(ctx context.Context, arg CountModerationBlocksInWindowParams) (int64, error)
+	CreateModerationHash(ctx context.Context, arg CreateModerationHashParams) (CreateModerationHashRow, error)
 	CreateModerationKeyword(ctx context.Context, arg CreateModerationKeywordParams) (CreateModerationKeywordRow, error)
 	DisableModerationAPIKey(ctx context.Context, arg DisableModerationAPIKeyParams) (int64, error)
 	FindEnabledModerationHash(ctx context.Context, arg FindEnabledModerationHashParams) (FindEnabledModerationHashRow, error)
@@ -20,7 +21,9 @@ type Querier interface {
 	// moderation_log writes metadata and payload_hash only; raw request
 	// bodies, plaintext credentials, and key hashes never appear in this file.
 	ListEnabledModerationKeywords(ctx context.Context, tenantID int64) ([]ListEnabledModerationKeywordsRow, error)
+	ListModerationHashes(ctx context.Context, arg ListModerationHashesParams) ([]ListModerationHashesRow, error)
 	ListModerationKeywords(ctx context.Context, arg ListModerationKeywordsParams) ([]ListModerationKeywordsRow, error)
+	SoftDeleteModerationHash(ctx context.Context, arg SoftDeleteModerationHashParams) (int64, error)
 	SoftDeleteModerationKeyword(ctx context.Context, arg SoftDeleteModerationKeywordParams) (int64, error)
 	UpsertModerationConfig(ctx context.Context, arg UpsertModerationConfigParams) (ModerationConfig, error)
 }

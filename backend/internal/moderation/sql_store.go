@@ -156,6 +156,53 @@ func (s *SQLStore) DeleteKeyword(ctx context.Context, tenantID int64, id int64) 
 	return nil
 }
 
+func (s *SQLStore) CreateHash(ctx context.Context, req CreateHashRequest) (HashRule, error) {
+	row, err := s.q.CreateModerationHash(ctx, dbmoderation.CreateModerationHashParams{
+		TenantID:   req.TenantID,
+		HashHex:    req.HashHex,
+		ReasonCode: nonEmpty(req.ReasonCode, "hash_match"),
+		Enabled:    req.Enabled,
+		UpdatedBy:  stringPtr(req.UpdatedBy),
+	})
+	if isUniqueViolation(err) {
+		return HashRule{}, ErrHashExists
+	}
+	if err != nil {
+		return HashRule{}, err
+	}
+	return hashFromCreateRow(row), nil
+}
+
+func (s *SQLStore) ListHashes(ctx context.Context, tenantID int64, limit int32, offset int32) ([]HashRule, error) {
+	rows, err := s.q.ListModerationHashes(ctx, dbmoderation.ListModerationHashesParams{
+		TenantID:   tenantID,
+		PageLimit:  limit,
+		PageOffset: offset,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]HashRule, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, hashFromListRow(row))
+	}
+	return out, nil
+}
+
+func (s *SQLStore) DeleteHash(ctx context.Context, tenantID int64, id int64) error {
+	rows, err := s.q.SoftDeleteModerationHash(ctx, dbmoderation.SoftDeleteModerationHashParams{
+		TenantID: tenantID,
+		ID:       id,
+	})
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *SQLStore) UpsertConfig(ctx context.Context, cfg ModerationConfig) (ModerationConfig, error) {
 	row, err := s.q.UpsertModerationConfig(ctx, dbmoderation.UpsertModerationConfigParams{
 		TenantID:         cfg.TenantID,
@@ -219,6 +266,30 @@ func keywordFromListRow(row dbmoderation.ListModerationKeywordsRow) KeywordRule 
 		ID:         row.ID,
 		TenantID:   row.TenantID,
 		Keyword:    row.Keyword,
+		ReasonCode: row.ReasonCode,
+		Enabled:    row.Enabled,
+		CreatedAt:  timeFromPG(row.CreatedAt),
+		UpdatedAt:  timeFromPG(row.UpdatedAt),
+	}
+}
+
+func hashFromCreateRow(row dbmoderation.CreateModerationHashRow) HashRule {
+	return HashRule{
+		ID:         row.ID,
+		TenantID:   row.TenantID,
+		HashHex:    row.HashHex,
+		ReasonCode: row.ReasonCode,
+		Enabled:    row.Enabled,
+		CreatedAt:  timeFromPG(row.CreatedAt),
+		UpdatedAt:  timeFromPG(row.UpdatedAt),
+	}
+}
+
+func hashFromListRow(row dbmoderation.ListModerationHashesRow) HashRule {
+	return HashRule{
+		ID:         row.ID,
+		TenantID:   row.TenantID,
+		HashHex:    row.HashHex,
 		ReasonCode: row.ReasonCode,
 		Enabled:    row.Enabled,
 		CreatedAt:  timeFromPG(row.CreatedAt),

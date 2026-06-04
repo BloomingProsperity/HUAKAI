@@ -176,12 +176,34 @@ func TestGetUsageRecordByRequestIDSQLScopesToCaller(t *testing.T) {
 	for _, want := range []string{
 		"ur.tenant_id = $1::bigint",
 		"ur.user_id = $2::bigint",
-		"blc.logical_request_id = $3::text",
+		"ur.api_key_id = $3::bigint",
+		"blc.logical_request_id = $4::text",
 	} {
-		// Mutation: dropping user_id lets caller A read caller B's same-tenant
-		// request_id; dropping tenant/request filters widens the lookup.
+		// Mutation: dropping api_key_id lets one key read another key's
+		// same-user request; dropping tenant/user/request widens the lookup.
 		if !strings.Contains(sql, want) {
 			t.Fatalf("GetUsageRecordByRequestID SQL missing caller scope %q in %q", want, sql)
 		}
+	}
+}
+
+func TestGetUsageRecordByRequestIDSQLAggregatesLogicalRequest(t *testing.T) {
+	sql := strings.Join(strings.Fields(getUsageRecordByRequestID), " ")
+	for _, want := range []string{
+		"row_number() OVER",
+		"sum(tokens_input)::integer AS tokens_input",
+		"sum(tokens_output)::integer AS tokens_output",
+		"sum(cache_creation_tokens)::integer AS cache_creation_tokens",
+		"sum(cache_read_tokens)::integer AS cache_read_tokens",
+		"sum(actual_cost)::numeric AS actual_cost",
+	} {
+		// Mutation: reverting to ORDER BY ... LIMIT 1 reports one settlement row
+		// instead of the logical request total, so these aggregate markers vanish.
+		if !strings.Contains(sql, want) {
+			t.Fatalf("GetUsageRecordByRequestID SQL missing aggregate marker %q in %q", want, sql)
+		}
+	}
+	if strings.Contains(strings.ToUpper(sql), "LIMIT 1") {
+		t.Fatalf("GetUsageRecordByRequestID SQL must not collapse a logical request with LIMIT 1: %q", sql)
 	}
 }
