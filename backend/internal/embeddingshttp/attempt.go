@@ -49,7 +49,14 @@ func (ex *execution) resolveCredential(w http.ResponseWriter) bool {
 	return true
 }
 
-func (ex *execution) dispatchAndSettle(w http.ResponseWriter, attemptSeq int) bool {
+// embedAttemptDone = 成功交付或已写终态错误;embedAttemptRetryable = 投递前网络层失败,
+// claim 已 abort、未写响应,可换账号重试。
+const (
+	embedAttemptDone = iota
+	embedAttemptRetryable
+)
+
+func (ex *execution) dispatchAndSettle(w http.ResponseWriter, attemptSeq int) int {
 	res, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
 		ProtocolFamily:  ex.resolved.ProtocolFamily,
 		EndpointPath:    upstreamEmbeddingsPath,
@@ -60,20 +67,19 @@ func (ex *execution) dispatchAndSettle(w http.ResponseWriter, attemptSeq int) bo
 	})
 	if err != nil {
 		ex.abort(w, "upstream_dispatch_error", 0)
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamDispatchError, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError))
-		return false
+		return embedAttemptRetryable
 	}
 	if res == nil || res.UpstreamReader == nil {
 		ex.abort(w, "upstream_empty_response", 0)
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamEmptyResponse, clienterr.MessageFor(clienterr.CodeUpstreamEmptyResponse))
-		return false
+		return embedAttemptRetryable
 	}
 	defer func() {
 		if res.Close != nil {
 			_ = res.Close()
 		}
 	}()
-	return ex.finishUpstreamResponse(w, res, attemptSeq)
+	_ = ex.finishUpstreamResponse(w, res, attemptSeq)
+	return embedAttemptDone
 }
 
 func (ex *execution) finishUpstreamResponse(w http.ResponseWriter, res *gateway.DispatchResult, attemptSeq int) bool {

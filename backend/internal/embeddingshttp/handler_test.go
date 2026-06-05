@@ -420,3 +420,78 @@ func TestEmbeddingsHandler_SettleErrorReturns500WithoutDoubleClose(t *testing.T)
 		t.Fatalf("abort calls=%d want 0 -- settle-error must not double-close", got)
 	}
 }
+
+// twoAttemptRouter 给 2 个 attempt,AttemptBudget=2,用于验证 dispatch 失败后的换账号重试。
+type twoAttemptRouter struct{}
+
+func (twoAttemptRouter) Plan(context.Context, router.PlanInput) (router.RoutePlan, error) {
+	return router.RoutePlan{
+		Attempts: []router.AttemptPlan{
+			{Index: 0, PoolGroupID: 101, Reason: "primary", UpstreamModelID: "text-embedding-3-small"},
+			{Index: 1, PoolGroupID: 101, Reason: "failover", UpstreamModelID: "text-embedding-3-small"},
+		},
+		AttemptBudget:   2,
+		SnapshotVersion: "registry:7:1;router:retry-test",
+	}, nil
+}
+
+// failThenSucceedRT: 第 1 次 RoundTrip 网络失败,第 2 次成功。
+type failThenSucceedRT struct {
+	calls int
+	body  string
+}
+
+func (rt *failThenSucceedRT) RoundTrip(_ *http.Request) (*http.Response, error) {
+	rt.calls++
+	if rt.calls == 1 {
+		return nil, errors.New("dial tcp 203.0.113.7:443: connect: connection refused")
+	}
+	h := make(http.Header)
+	h.Set("Content-Type", "application/json")
+	return &http.Response{StatusCode: http.StatusOK, Header: h, Body: io.NopCloser(strings.NewReader(rt.body))}, nil
+}
+
+// 守 BUG2:embeddings AttemptBudget=2 时,attempt 1 dispatch 网络失败必须重试 attempt 2。
+// Mutation: run() 改回无条件 return → 只 1 次 RoundTrip + 错误响应 → 本测试红。
+func TestEmbeddings_AttemptBudgetRetriesAfterDispatchFailure(t *testing.T) {
+	claims := &recordingClaimGate{nextClaimID: 9101}
+	settler := &recordingSettler{}
+	rt := &failThenSucceedRT{body: `{"object":"list","data":[{"object":"embedding","embedding":[0.1],"index":0}],"model":"text-embedding-3-small","usage":{"prompt_tokens":3,"total_tokens":3}}`}
+	adapters := provider.NewStaticRegistry()
+	adapters.MustRegister("openai_chat", &openai.PassthroughAdapter{})
+	tf := transport.NewFactory()
+	tf.SetStandard(rt)
+	deps := Deps{
+		Auth:                  authStub{ident: auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 13, UserGroup: "pro"}},
+		Registry:              registryStub{},
+		Router:                twoAttemptRouter{},
+		ClaimGate:             claims,
+		RateTables:            rateTableStub{},
+		Selector:              selectorStub{},
+		CredentialVault:       vaultStub{},
+		Dispatcher:            &gateway.UpstreamDispatcher{Adapters: adapters, TransportFactory: tf},
+		Settler:               settler,
+		BillingPolicyResolver: billing.NewPolicyResolver(nil, 0),
+		BillingPolicyVersion:  "test-policy",
+		RequestClass:          "standard",
+	}
+	h := middleware.RequestID(NewEmbeddingsHandler(deps))
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewBufferString(`{"model":"embed-public","input":"alpha"}`))
+	req.Header.Set("Authorization", "Bearer hk-test")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rt.calls != 2 {
+		t.Fatalf("RoundTrip calls=%d want 2 (attempt1 fails, attempt2 retries)", rt.calls)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200 (retry succeeded)", rec.Code, rec.Body.String())
+	}
+	if got := len(settler.settles); got != 1 {
+		t.Fatalf("settles=%d want 1 (only the successful retry settles)", got)
+	}
+	if got := len(settler.aborts); got != 1 {
+		t.Fatalf("aborts=%d want 1 (attempt1 claim aborted before retry)", got)
+	}
+}

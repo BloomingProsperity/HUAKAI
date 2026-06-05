@@ -38,9 +38,12 @@ func NewLeaseSweeper(pool *pgxpool.Pool, settler Settler, batch int32) *LeaseSwe
 }
 
 func (s *LeaseSweeper) Start(ctx context.Context) {
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s == nil || s.pool == nil || s.settler == nil || s.running {
+	if s.pool == nil || s.settler == nil || s.running {
 		return
 	}
 	s.stop = make(chan struct{})
@@ -110,6 +113,9 @@ func (s *LeaseSweeper) sweepOnce(ctx context.Context) (int, error) {
 }
 
 func (s *LeaseSweeper) Stop() {
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	if !s.running {
 		s.mu.Unlock()
