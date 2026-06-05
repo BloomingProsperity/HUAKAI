@@ -395,3 +395,16 @@ func (s *chatModerationBanSpy) RecordAndCheck(_ context.Context, event moderatio
 	s.events = append(s.events, event)
 	return moderation.BanResult{Count: int64(s.calls)}, nil
 }
+
+// 守:dedup until map 必须惰性回收已过期项,否则高账号 churn 下无限增长。window=0 让每个
+// 条目立即过期;填满超阈值后再 admit 触发清理。Mutation: 去掉 purge → size 仍 > threshold,红。
+func TestDedupingCredentialHotRefresher_PurgesExpiredEntries(t *testing.T) {
+	r := newDedupingCredentialHotRefresher(nil, 0).(*dedupingCredentialHotRefresher)
+	for i := int64(1); i <= int64(credentialHotRefreshPurgeThreshold)+5; i++ {
+		r.admit(1, i)
+	}
+	r.admit(1, 999999) // 触发清理
+	if got := len(r.until); got > credentialHotRefreshPurgeThreshold {
+		t.Fatalf("until size=%d after purge, want <= %d (unbounded growth defect)", got, credentialHotRefreshPurgeThreshold)
+	}
+}
