@@ -125,19 +125,30 @@ func (ex *execution) settleAndStreamSpeech(w http.ResponseWriter, res *gateway.D
 		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamReadError, clienterr.MessageFor(clienterr.CodeUpstreamReadError))
 		return false
 	}
-	if _, err := ex.d.Settler.Settle(ex.ctx, ex.settleRequest(audioTokenUsage{}, ex.predictedCost, ex.costSnapshot, attemptSeq, ex.pending)); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeSettleError, clienterr.MessageFor(clienterr.CodeSettleError))
-		return false
-	}
 	copyAllowedHeaders(w.Header(), res.Headers)
 	if w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
 	w.WriteHeader(http.StatusOK)
 	if n > 0 {
-		_, _ = w.Write(first[:n])
+		if _, werr := w.Write(first[:n]); werr != nil {
+			// 交付失败 → abort 不扣费(响应头已发,无法再返回 JSON 错误)。
+			ex.abort(w, "client_delivery_failed", 0)
+			return false
+		}
 	}
-	_, _ = io.Copy(w, res.UpstreamReader)
+	if _, cerr := io.Copy(w, res.UpstreamReader); cerr != nil {
+		ex.abort(w, "client_delivery_failed", 0)
+		return false
+	}
+	// 音频完整交付后才结算,避免二进制断流误扣费(F1);结算走 billingCtx 防客户端断连取消(F2)。
+	bctx, cancel := ex.billingCtx()
+	defer cancel()
+	if _, err := ex.d.Settler.Settle(bctx, ex.settleRequest(audioTokenUsage{}, ex.predictedCost, ex.costSnapshot, attemptSeq, ex.pending)); err != nil {
+		// 交付后结算失败:响应已发出,无法回 500;响亮告警让对账可见(防静默漏记)。
+		ex.logSettleAfterDeliveryFailure(err)
+		return false
+	}
 	return true
 }
 
@@ -178,7 +189,9 @@ func (ex *execution) settleSuccessfulResponse(w http.ResponseWriter, res *gatewa
 			return false
 		}
 	}
-	if _, err := ex.d.Settler.Settle(ex.ctx, ex.settleRequest(usage, actualCost, costSnapshot, attemptSeq, pending)); err != nil {
+	sbctx, scancel := ex.billingCtx()
+	defer scancel()
+	if _, err := ex.d.Settler.Settle(sbctx, ex.settleRequest(usage, actualCost, costSnapshot, attemptSeq, pending)); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeSettleError, clienterr.MessageFor(clienterr.CodeSettleError))
 		return false
 	}
