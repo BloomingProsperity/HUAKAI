@@ -59,6 +59,12 @@ type AdminDeps struct {
 // UserDeps 用户路由依赖。
 type UserDeps struct {
 	Service Service
+	// Payment 用于订阅自助购买 (POST /purchase): 复用支付建单, 造一张 subscription 类型订单,
+	// 待 confirm/webhook 履约后才真正 grant 订阅。nil 时该端点回 503, 不影响只读端点。
+	Payment PaymentOrderService
+	// TradeNoGen 生成 tenant-routable 外部交易号 (默认 paymenthttp.ExternalTradeNoForTenant);
+	// 注入点便于测试。nil 时 purchase 端点回 503。
+	TradeNoGen func(tenantID int64) (string, error)
 }
 
 // ---- 请求体 ----
@@ -243,10 +249,12 @@ func MountSubscriptionAdminRoutes(r chi.Router, d AdminDeps) {
 	r.Post("/vouchers", newAdminCreateSubscriptionVoucherHandler(d))
 }
 
-// MountSubscriptionUserRoutes 挂载用户订阅端点 (自己的订阅 / 可购套餐)。
+// MountSubscriptionUserRoutes 挂载用户订阅端点 (当前订阅 / 可购套餐 / 自助购买)。
 func MountSubscriptionUserRoutes(r chi.Router, d UserDeps) {
 	r.Get("/", newUserListSubscriptionsHandler(d))
+	r.Get("/me", newUserCurrentSubscriptionHandler(d))
 	r.Get("/plans", newUserListPlansHandler(d))
+	r.Post("/purchase", newUserPurchaseHandler(d))
 }
 
 // ---- admin handlers ----
