@@ -32,6 +32,7 @@ type AdminDeps struct {
 	Auth           AdminAuth
 	Service        Service
 	ProviderConfig ProviderRuntimeConfigService
+	RefundRequests RefundRequestRecorder
 }
 
 // UserDeps 用户路由依赖。
@@ -188,6 +189,9 @@ func MountPaymentAdminRoutes(r chi.Router, d AdminDeps) {
 	r.Get("/dashboard", newAdminDashboardHandler(d))
 	r.Get("/providers/{provider}/config", newAdminGetProviderConfigHandler(d))
 	r.Put("/providers/{provider}/config", newAdminPutProviderConfigHandler(d))
+	r.Get("/refund-requests", newAdminListRefundRequestsHandler(d))
+	r.Post("/refund-requests/{id}/approve", newAdminApproveRefundRequestHandler(d))
+	r.Post("/refund-requests/{id}/reject", newAdminRejectRefundRequestHandler(d))
 	r.Get("/{id}/audit", newAdminAuditHandler(d))
 	r.Post("/{id}/retry", newAdminRetryHandler(d))
 	r.Get("/{id}", newAdminGetOrderHandler(d))

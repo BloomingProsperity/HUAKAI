@@ -37,6 +37,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
+	"github.com/BloomingProsperity/HUAKAI/internal/payment"
+	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
 )
 
@@ -182,6 +184,14 @@ func TestWiring_BudgetWrapsOutsideQuotaWhenEnabled(t *testing.T) {
 	}
 	if _, ok := reserver.(*budgetenforce.Reserver); !ok {
 		t.Fatalf("reserver=%T want budgetenforce.Reserver outside quota", reserver)
+	}
+}
+
+func TestWiring_PaymentRefundRequestsUsePostgresRecorder(t *testing.T) {
+	recorder := buildPaymentRefundRequestRecorder(nil, payment.NewService(payment.NewMemoryStore()))
+
+	if _, ok := recorder.(*paymenthttp.PostgresRefundRequestRecorder); !ok {
+		t.Fatalf("payment refund requests recorder=%T want *paymenthttp.PostgresRefundRequestRecorder", recorder)
 	}
 }
 
