@@ -2560,6 +2560,7 @@ paths:
 
   /v1/payment/webhooks/{provider}:
     post:
+      deprecated: true
       tags: [payment-webhooks]
       summary: Accept a signed payment provider webhook
       operationId: acceptPaymentWebhook
