@@ -191,6 +191,10 @@ type credentialHotRefreshKey struct {
 	accountID int64
 }
 
+// credentialHotRefreshPurgeThreshold 触发惰性清理的 until map 大小阈值,防高账号 churn 下
+// 已过期项无限堆积。
+const credentialHotRefreshPurgeThreshold = 1024
+
 type dedupingCredentialHotRefresher struct {
 	inner  CredentialHotRefresher
 	window time.Duration
@@ -221,6 +225,14 @@ func (r *dedupingCredentialHotRefresher) admit(tenantID, accountID int64) bool {
 	key := credentialHotRefreshKey{tenantID: tenantID, accountID: accountID}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if len(r.until) > credentialHotRefreshPurgeThreshold {
+		// 惰性清理已过期项(map 超阈值时才扫,均摊 O(1)),防无限增长。
+		for k, t := range r.until {
+			if !now.Before(t) {
+				delete(r.until, k)
+			}
+		}
+	}
 	if until, ok := r.until[key]; ok && now.Before(until) {
 		return false
 	}
