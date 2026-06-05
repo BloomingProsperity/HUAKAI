@@ -642,6 +642,12 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Service: d.paymentService,
 		})
 	})
+	r.Route("/v1/admin/cache-price-overrides", func(r chi.Router) {
+		paymenthttp.MountCacheOverrideAdminRoutes(r, paymenthttp.CacheOverrideAdminDeps{
+			Auth:  d.adminAuth,
+			Store: d.cacheOverrideStore,
+		})
+	})
 	r.Route("/v1/admin/subscriptions", func(r chi.Router) {
 		subscriptionhttp.MountSubscriptionAdminRoutes(r, subscriptionhttp.AdminDeps{
 			Auth:           d.adminAuth,
