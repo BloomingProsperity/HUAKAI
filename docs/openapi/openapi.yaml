@@ -2800,6 +2800,92 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/cache-price-overrides:
+    get:
+      tags: [admin-payments]
+      summary: List cache-price override multipliers (global / per-model / per-tenant)
+      operationId: adminListCachePriceOverrides
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: Current cache-price override multipliers. Scopes not listed bill at the official price (multiplier 1.0).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  overrides: { type: array, items: { type: object } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+  /v1/admin/cache-price-overrides/{scope}:
+    parameters:
+      - in: path
+        name: scope
+        required: true
+        schema: { type: string, enum: [global, model, tenant] }
+    put:
+      tags: [admin-payments]
+      summary: Set a cache-price override multiplier for one scope
+      operationId: adminSetCachePriceOverride
+      description: Multiplier is relative to the official cache price. Priority when billing is tenant > model > global > official. model scope requires ?model=, tenant scope requires ?tenant_id=. Changes are recorded on a signed audit hash-chain.
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: model
+          schema: { type: string }
+        - in: query
+          name: tenant_id
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [multiplier]
+              properties:
+                multiplier: { type: string, description: Positive decimal multiplier relative to official price, e.g. "1.5". }
+      responses:
+        '200':
+          description: Override applied.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  override: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    delete:
+      tags: [admin-payments]
+      summary: Clear a cache-price override (revert the scope to the official price)
+      operationId: adminDeleteCachePriceOverride
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: model
+          schema: { type: string }
+        - in: query
+          name: tenant_id
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Override cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/admin/payments:
     get:
       tags: [admin-payments]
