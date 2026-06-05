@@ -424,3 +424,63 @@ func TestChatCompletionsIdempotentHitMissReturns409(t *testing.T) {
 		t.Fatalf("body=%q want replay_without_cache", rec.Body.String())
 	}
 }
+
+// tamperL2Store 嵌入真实 MemoryStore: Set 时捕获条目; 一旦 poisonTenant 被设, Get 返回
+// 捕获条目但把 TenantID 改成 poisonTenant(模拟 key 被弱化/缓存被污染取到别租户条目)。
+type tamperL2Store struct {
+	*l2cache.MemoryStore
+	captured     l2cache.Entry
+	hasCaptured  bool
+	poisonTenant int64
+}
+
+func (s *tamperL2Store) Set(ctx context.Context, e l2cache.Entry) bool {
+	s.captured = e
+	s.hasCaptured = true
+	return s.MemoryStore.Set(ctx, e)
+}
+
+func (s *tamperL2Store) Get(ctx context.Context, key string) (l2cache.Entry, bool) {
+	if s.poisonTenant != 0 && s.hasCaptured {
+		e := s.captured
+		e.TenantID = s.poisonTenant
+		return e, true
+	}
+	return s.MemoryStore.Get(ctx, key)
+}
+
+// 守 缓存-P0a(纵深防御): 即使 Get 取到一条 TenantID 与请求租户不符的缓存条目(key 被弱化/
+// 污染), 也必须**拒绝 serve**, 走正常上游, 绝不把别租户的响应交付出去。
+// Mutation: 去掉 serveL2CacheIfAvailable 里的 cached.TenantID!=ident.TenantID 断言 -> 毒化条目
+// 被 serve -> dispatcher 仅被调 1 次(第二次命中毒化缓存)-> 断言红。
+func TestChatCompletionsL2RejectsTenantMismatchedEntry(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	tamper := &tamperL2Store{MemoryStore: l2cache.NewMemoryStore(1<<20, time.Minute)}
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = dispatcher
+	d.ResponseCache = tamper
+
+	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
+	// 首次: miss -> 上游 -> 捕获存入条目
+	first := invokeHandlerPath(t, d, "/v1/chat/completions", body)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+	}
+	if !tamper.hasCaptured {
+		t.Fatal("first request did not store an L2 entry")
+	}
+	// 毒化: 同一条(含合法 envelope)但 TenantID 改成别租户
+	tamper.poisonTenant = tamper.captured.TenantID + 99999
+	// 二次: Get 返回毒化条目 -> 必须被拒 -> 再次走上游
+	second := invokeHandlerPath(t, d, "/v1/chat/completions", body)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status=%d body=%s", second.Code, second.Body.String())
+	}
+	if dispatcher.calls != 2 {
+		t.Fatalf("dispatcher calls=%d want 2 (tenant-mismatched cache entry must NOT be served; 2nd request must hit upstream)", dispatcher.calls)
+	}
+	if got := second.Header().Get("X-HUAKAI-Cache-L2"); got == "hit" {
+		t.Fatalf("served a tenant-mismatched cache entry (X-HUAKAI-Cache-L2=hit); defense-in-depth tenant assertion missing")
+	}
+}
