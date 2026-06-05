@@ -22,8 +22,8 @@ type Store interface {
 }
 
 type RechargeCapStore interface {
-	CountPendingOrders(ctx context.Context, tenantID, userID int64) (int, error)
-	SumRechargeAmountSince(ctx context.Context, tenantID, userID int64, since time.Time) (int64, error)
+	CountPendingOrders(ctx context.Context, tenantID, userID int64, now time.Time) (int, error)
+	SumRechargeAmountSince(ctx context.Context, tenantID, userID int64, since, now time.Time) (int64, error)
 }
 
 type subscriptionPlanPriceSnapshot struct {
