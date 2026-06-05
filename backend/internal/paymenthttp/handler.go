@@ -35,6 +35,7 @@ type Service interface {
 	ListAuditEvents(context.Context, int64, int64) ([]payment.AuditEvent, error)
 	GetBalance(context.Context, int64, int64) (payment.Balance, error)
 	ListOrders(context.Context, int64, int64, int) ([]payment.Order, error)
+	CancelOrder(context.Context, payment.CancelOrderInput) (payment.Order, error)
 }
 
 // AdminDeps 管理员路由依赖。
@@ -63,6 +64,11 @@ type createOrderRequest struct {
 type confirmRequest struct {
 	TenantID      int64  `json:"tenant_id"`
 	ConfirmReason string `json:"confirm_reason,omitempty"`
+}
+
+type cancelRequest struct {
+	TenantID int64  `json:"tenant_id"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 // orderView 是面向用户的订单 DTO — 仅公开字段, snake_case, 不暴露任何内部/管理字段。
@@ -196,12 +202,78 @@ func MountPaymentAdminRoutes(r chi.Router, d AdminDeps) {
 	r.Get("/", newAdminListOrdersHandler(d))
 	r.Get("/{id}", newAdminGetOrderHandler(d))
 	r.Post("/{id}/confirm", newAdminConfirmHandler(d))
+	r.Post("/{id}/cancel", newAdminCancelHandler(d))
+}
+
+// newAdminCancelHandler 管理员取消任意 pending 订单(运营撤单)。
+func newAdminCancelHandler(d AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, ok := resolveAdmin(w, r, d)
+		if !ok {
+			return
+		}
+		id, ok := parsePathID(w, r)
+		if !ok {
+			return
+		}
+		var req cancelRequest
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		order, err := d.Service.CancelOrder(r.Context(), payment.CancelOrderInput{
+			TenantID:  req.TenantID,
+			OrderID:   id,
+			UserID:    0,
+			ActorKind: payment.ActorKindAdmin,
+			ActorID:   ident.TokenID,
+			Reason:    req.Reason,
+			RequestID: requestID(r),
+		})
+		if err != nil {
+			writePaymentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"order": toAdminOrderView(order)})
+	}
 }
 
 // MountPaymentUserRoutes 挂载用户支付端点 (自己的订单 / 余额)。
 func MountPaymentUserRoutes(r chi.Router, d UserDeps) {
 	r.Get("/orders", newUserListOrdersHandler(d))
+	r.Post("/orders/{id}/cancel", newUserCancelHandler(d))
 	r.Get("/balance", newUserBalanceHandler(d))
+}
+
+// newUserCancelHandler 用户自助取消自己的 pending 订单(扫码/淘宝下单前可撤)。
+func newUserCancelHandler(d UserDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.Service == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "payment dependency unset")
+			return
+		}
+		ident, ok := sessionauth.SessionFromContext(r.Context())
+		if !ok {
+			writeJSONError(w, http.StatusUnauthorized, "session_token_required", "session bearer token is required")
+			return
+		}
+		id, ok := parsePathID(w, r)
+		if !ok {
+			return
+		}
+		order, err := d.Service.CancelOrder(r.Context(), payment.CancelOrderInput{
+			TenantID:  ident.TenantID,
+			OrderID:   id,
+			UserID:    ident.UserID,
+			ActorKind: payment.ActorKindUser,
+			ActorID:   ident.UserID,
+			RequestID: requestID(r),
+		})
+		if err != nil {
+			writePaymentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"order": toUserOrderViews([]payment.Order{order})[0]})
+	}
 }
 
 func newAdminCreateOrderHandler(d AdminDeps) http.HandlerFunc {
@@ -461,6 +533,8 @@ func writePaymentError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusConflict, "out_trade_no_conflict", "out_trade_no reused with different order fields")
 	case errors.Is(err, payment.ErrOrderNotConfirmable):
 		writeJSONError(w, http.StatusConflict, "order_not_confirmable", "order is not in a confirmable state")
+	case errors.Is(err, payment.ErrOrderNotCancelable):
+		writeJSONError(w, http.StatusConflict, "order_not_cancelable", "order is not in a cancelable state")
 	case errors.Is(err, payment.ErrOrderNotFulfillable):
 		writeJSONError(w, http.StatusConflict, "order_not_fulfillable", "order is not in a fulfillable state")
 	case errors.Is(err, payment.ErrSubscriptionOrderRequiresPG):
