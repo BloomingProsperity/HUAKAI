@@ -112,6 +112,7 @@ func (ex *chatExecution) completionCost(usage completionUsageForCost) (completio
 	if err != nil {
 		return completionCostBreakdown{}, pricingUnavailable(err.Error())
 	}
+	result = ex.applyCacheCostOverride(result)
 	if ratioPendingReconciliation {
 		result.PendingReconciliation = true
 		result.CostSnapshot = snapshotWithPricingRatioPending(result.CostSnapshot)
@@ -123,6 +124,19 @@ func (ex *chatExecution) completionCost(usage completionUsageForCost) (completio
 		CostSnapshot:          result.CostSnapshot,
 		PendingReconciliation: result.PendingReconciliation,
 	}, nil
+}
+
+func (ex *chatExecution) applyCacheCostOverride(result pricingeval.Result) pricingeval.Result {
+	if ex == nil || ex.d.CacheOverrideStore == nil {
+		return result
+	}
+	override := pricingeval.CacheCostOverride{
+		Multiplier: ex.d.CacheOverrideStore.ResolveMultiplier(ex.ident.TenantID, ex.req.Model),
+	}
+	if override.IsIdentity() {
+		return result
+	}
+	return pricingeval.ApplyCacheCostOverride(result, override)
 }
 
 func (ex *chatExecution) groupPricingRatio() (decimal.Decimal, bool) {
