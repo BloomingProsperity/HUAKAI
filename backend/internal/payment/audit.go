@@ -15,6 +15,7 @@ const (
 	AuditIdempotentReplay   = "idempotent_replay"
 	AuditOrderExpired       = "order_expired"
 	AuditOrderCancelled     = "order_cancelled"
+	AuditOrderRefunded      = "order_refunded"
 )
 
 const (

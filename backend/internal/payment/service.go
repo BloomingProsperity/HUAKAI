@@ -215,6 +215,31 @@ func (s *Service) CancelOrder(ctx context.Context, in CancelOrderInput) (Order, 
 	})
 }
 
+// RefundOrder 管理员退款已入账充值订单。幂等键必填; 重放返回既有退款, 不重复扣减。
+func (s *Service) RefundOrder(ctx context.Context, in RefundOrderInput) (RefundResult, error) {
+	if in.TenantID <= 0 || in.OrderID <= 0 {
+		return RefundResult{}, ErrInvalidInput
+	}
+	if in.AmountCents <= 0 || in.AmountCents > maxAmountCents {
+		return RefundResult{}, ErrInvalidAmount
+	}
+	key := strings.TrimSpace(in.IdempotencyKey)
+	if key == "" {
+		return RefundResult{}, ErrInvalidInput
+	}
+	return s.store.RefundOrder(ctx, refundRecord{
+		TenantID:       in.TenantID,
+		OrderID:        in.OrderID,
+		AmountCents:    in.AmountCents,
+		IdempotencyKey: key,
+		Reason:         strings.TrimSpace(in.Reason),
+		ActorKind:      in.ActorKind,
+		ActorID:        in.ActorID,
+		RequestID:      in.RequestID,
+		Now:            s.now(),
+	})
+}
+
 func (s *Service) AdminConfirmPaid(ctx context.Context, in AdminConfirmPaidInput) (FulfillResult, error) {
 	if in.TenantID <= 0 || in.OrderID <= 0 {
 		return FulfillResult{}, ErrInvalidInput

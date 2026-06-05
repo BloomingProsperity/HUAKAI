@@ -67,10 +67,11 @@ func (f *paymentFixture) seedTenantUser(label string) (int64, int64) {
 func (f *paymentFixture) cleanup() {
 	ctx := context.Background()
 	for _, tenantID := range []int64{f.tenantA, f.tenantB} {
-		// FK 顺序: audit→orders, billing_events→payment_credits, credits→orders, orders→users。
+		// FK 顺序: audit→orders, billing_events→payment_credits/payment_refunds, money facts→orders, orders→users。
 		_, _ = f.pool.Exec(ctx, `DELETE FROM payment_audit_events WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM payment_audit_log WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM billing_events WHERE tenant_id=$1`, tenantID)
+		_, _ = f.pool.Exec(ctx, `DELETE FROM payment_refunds WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM payment_credits WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM payment_orders WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM user_balances WHERE tenant_id=$1`, tenantID)

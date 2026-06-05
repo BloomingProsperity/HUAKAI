@@ -112,6 +112,9 @@ type captureService struct {
 	gotCancel  payment.CancelOrderInput
 	cancelRes  payment.Order
 	cancelErr  error
+	gotRefund  payment.RefundOrderInput
+	refundRes  payment.RefundResult
+	refundErr  error
 }
 
 func (s *captureService) CreateOrder(_ context.Context, in payment.CreateOrderInput) (payment.CreateOrderResult, error) {
@@ -139,6 +142,11 @@ func (s *captureService) ListOrders(_ context.Context, _, _ int64, _ int) ([]pay
 func (s *captureService) CancelOrder(_ context.Context, in payment.CancelOrderInput) (payment.Order, error) {
 	s.gotCancel = in
 	return s.cancelRes, s.cancelErr
+}
+
+func (s *captureService) RefundOrder(_ context.Context, in payment.RefundOrderInput) (payment.RefundResult, error) {
+	s.gotRefund = in
+	return s.refundRes, s.refundErr
 }
 
 type fakeAdminAuth struct{ ident admin.AdminIdentity }
@@ -302,5 +310,77 @@ func TestAdminCancelOrderRouteWiresService(t *testing.T) {
 	}
 	if svc.gotCancel.OrderID != 7 || svc.gotCancel.TenantID != 5 || svc.gotCancel.UserID != 0 || svc.gotCancel.ActorKind != payment.ActorKindAdmin {
 		t.Fatalf("admin cancel did not wire input correctly: %+v", svc.gotCancel)
+	}
+}
+
+// 守 C1 refund: admin refund 路由把 path id / tenant / amount / idempotency_key / actor / request_id 传给 service,
+// 并返回 refund + balance。Mutation: 漏传 key 或 actor → 捕获断言红; 响应漏 balance → 红。
+func TestAdminRefundOrderRouteWiresService(t *testing.T) {
+	svc := &captureService{refundRes: payment.RefundResult{
+		Order:        payment.Order{ID: 7, Status: payment.StatusRefunded},
+		Refund:       payment.RefundRecord{ID: 3, AmountCents: 250, CurrencyCode: "USD", IdempotencyKey: "refund-http"},
+		BalanceCents: 750,
+	}}
+	router := newAdminTestRouter(svc)
+	body, _ := json.Marshal(refundRequest{TenantID: 5, AmountCents: 250, IdempotencyKey: "refund-http", Reason: "ops refund"})
+	req := httptest.NewRequest(http.MethodPost, "/orders/7/refund", bytes.NewReader(body))
+	req.Header.Set("X-Request-Id", "req-http-refund")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if svc.gotRefund.OrderID != 7 || svc.gotRefund.TenantID != 5 || svc.gotRefund.AmountCents != 250 ||
+		svc.gotRefund.IdempotencyKey != "refund-http" || svc.gotRefund.ActorKind != payment.ActorKindAdmin ||
+		svc.gotRefund.ActorID != 99 || svc.gotRefund.RequestID != "req-http-refund" {
+		t.Fatalf("admin refund did not wire input correctly: %+v", svc.gotRefund)
+	}
+	var resp map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if _, ok := resp["refund"]; !ok {
+		t.Fatalf("refund response missing refund object: %s", rec.Body.String())
+	}
+	if string(resp["balance_cents"]) != "750" {
+		t.Fatalf("balance_cents=%s want 750; body=%s", resp["balance_cents"], rec.Body.String())
+	}
+}
+
+// 守 C1 refund 错误映射: 非可退款状态是 409 专属 code, 不支持订单种类是 422 专属 code。
+// Mutation: 两者落 default/invalid request 会返回不同 code 或状态, 本测试变红。
+func TestRefundErrorsMapToDistinctCodes(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{"not refundable", payment.ErrOrderNotRefundable, http.StatusConflict, "order_not_refundable"},
+		{"unsupported kind", payment.ErrRefundUnsupportedKind, http.StatusUnprocessableEntity, "refund_unsupported_kind"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			svc := &captureService{refundErr: c.err}
+			router := newAdminTestRouter(svc)
+			body, _ := json.Marshal(refundRequest{TenantID: 5, AmountCents: 250, IdempotencyKey: "refund-err"})
+			req := httptest.NewRequest(http.MethodPost, "/orders/7/refund", bytes.NewReader(body))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != c.wantStatus {
+				t.Fatalf("status=%d want %d; body=%s", rec.Code, c.wantStatus, rec.Body.String())
+			}
+			var resp struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("decode error body: %v", err)
+			}
+			if resp.Error.Code != c.wantCode {
+				t.Fatalf("code=%q want %q; body=%s", resp.Error.Code, c.wantCode, rec.Body.String())
+			}
+		})
 	}
 }

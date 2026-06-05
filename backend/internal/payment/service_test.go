@@ -138,6 +138,105 @@ func TestService_DoubleConfirmCreditsOnce(t *testing.T) {
 	}
 }
 
+func TestService_RefundOrderSubtractsFromDerivedBalanceAndAudits(t *testing.T) {
+	svc := newTestService()
+	ctx := context.Background()
+	r, err := svc.CreateOrder(ctx, CreateOrderInput{TenantID: 1, UserID: 2, AmountCents: 1500, OutTradeNo: "trade-refund", ActorAdminID: 9})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	credited, err := svc.AdminConfirmPaid(ctx, AdminConfirmPaidInput{TenantID: 1, OrderID: r.Order.ID, ActorAdminID: 9})
+	if err != nil {
+		t.Fatalf("confirm+fulfill: %v", err)
+	}
+	if credited.BalanceCents != 1500 {
+		t.Fatalf("pre-refund balance=%d want 1500", credited.BalanceCents)
+	}
+
+	refunded, err := svc.RefundOrder(ctx, RefundOrderInput{
+		TenantID:       1,
+		OrderID:        r.Order.ID,
+		AmountCents:    400,
+		IdempotencyKey: "refund-key-1",
+		Reason:         "operator refund",
+		ActorKind:      ActorKindAdmin,
+		ActorID:        9,
+		RequestID:      "req-refund-1",
+	})
+	if err != nil {
+		t.Fatalf("refund: %v", err)
+	}
+	if refunded.Order.Status != StatusRefunded || refunded.Refund.AmountCents != 400 || refunded.BalanceCents != 1100 || refunded.Idempotent {
+		t.Fatalf("refund result=%+v want status refunded, amount 400, balance 1100, non-idempotent", refunded)
+	}
+
+	bal, err := svc.GetBalance(ctx, 1, 2)
+	if err != nil {
+		t.Fatalf("get balance: %v", err)
+	}
+	// 判别性: 若 balanceLocked/UserBalanceCents 漏掉 -refund, 这里会得到 1500 而不是 1100。
+	if bal.AmountCents != 1100 {
+		t.Fatalf("balance after refund=%d want 1100 (credit 1500 - refund 400)", bal.AmountCents)
+	}
+	events, _ := svc.ListAuditEvents(ctx, 1, r.Order.ID)
+	got := map[string]bool{}
+	for _, ev := range events {
+		got[ev.EventType] = true
+	}
+	if !got[AuditOrderRefunded] {
+		t.Fatalf("missing refund audit event (got %v)", got)
+	}
+}
+
+func TestService_RefundOrderIdempotencyKeyDoesNotDoubleDeduct(t *testing.T) {
+	svc := newTestService()
+	ctx := context.Background()
+	r, err := svc.CreateOrder(ctx, CreateOrderInput{TenantID: 1, UserID: 2, AmountCents: 1200, OutTradeNo: "trade-refund-dupe", ActorAdminID: 9})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := svc.AdminConfirmPaid(ctx, AdminConfirmPaidInput{TenantID: 1, OrderID: r.Order.ID, ActorAdminID: 9}); err != nil {
+		t.Fatalf("confirm+fulfill: %v", err)
+	}
+	first, err := svc.RefundOrder(ctx, RefundOrderInput{TenantID: 1, OrderID: r.Order.ID, AmountCents: 300, IdempotencyKey: "refund-dupe", ActorKind: ActorKindAdmin, ActorID: 9})
+	if err != nil || first.Idempotent {
+		t.Fatalf("first refund: res=%+v err=%v", first, err)
+	}
+	second, err := svc.RefundOrder(ctx, RefundOrderInput{TenantID: 1, OrderID: r.Order.ID, AmountCents: 999, IdempotencyKey: "refund-dupe", ActorKind: ActorKindAdmin, ActorID: 9})
+	if err != nil {
+		t.Fatalf("second refund replay: %v", err)
+	}
+	if !second.Idempotent || second.Refund.ID != first.Refund.ID || second.Refund.AmountCents != 300 {
+		t.Fatalf("second refund should replay stored refund, got %+v first=%+v", second, first)
+	}
+	bal, _ := svc.GetBalance(ctx, 1, 2)
+	if bal.AmountCents != 900 {
+		t.Fatalf("balance after replay=%d want 900 (refund only once)", bal.AmountCents)
+	}
+}
+
+func TestService_RefundOrderRejectsPendingWithoutWrites(t *testing.T) {
+	svc := newTestService()
+	ctx := context.Background()
+	r, err := svc.CreateOrder(ctx, CreateOrderInput{TenantID: 1, UserID: 2, AmountCents: 700, OutTradeNo: "trade-refund-pending", ActorAdminID: 9})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := svc.RefundOrder(ctx, RefundOrderInput{TenantID: 1, OrderID: r.Order.ID, AmountCents: 200, IdempotencyKey: "refund-pending", ActorKind: ActorKindAdmin, ActorID: 9}); !errors.Is(err, ErrOrderNotRefundable) {
+		t.Fatalf("refund pending err=%v want ErrOrderNotRefundable", err)
+	}
+	bal, _ := svc.GetBalance(ctx, 1, 2)
+	if bal.AmountCents != 0 {
+		t.Fatalf("pending refund changed balance=%d want 0", bal.AmountCents)
+	}
+	events, _ := svc.ListAuditEvents(ctx, 1, r.Order.ID)
+	for _, ev := range events {
+		if ev.EventType == AuditOrderRefunded {
+			t.Fatalf("pending refund wrote refund audit event: %+v", ev)
+		}
+	}
+}
+
 func TestService_ExpiredOrderNotConfirmable(t *testing.T) {
 	store := NewMemoryStore()
 	ctx := context.Background()

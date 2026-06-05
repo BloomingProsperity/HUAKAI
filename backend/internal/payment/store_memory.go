@@ -18,9 +18,12 @@ type MemoryStore struct {
 	orders        map[int64]*Order
 	byTrade       map[string]int64
 	credits       map[int64]*CreditRecord // key = order id
+	refunds       map[int64]*RefundRecord // key = order id
+	refundsByKey  map[string]int64        // key = tenant|idempotency_key, value = order id
 	audits        []AuditEvent
 	nextOrderID   int64
 	nextCreditID  int64
+	nextRefundID  int64
 	nextBillingID int64
 	nextAuditID   int64
 }
@@ -28,9 +31,11 @@ type MemoryStore struct {
 // NewMemoryStore 构造内存存储。
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		orders:  map[int64]*Order{},
-		byTrade: map[string]int64{},
-		credits: map[int64]*CreditRecord{},
+		orders:       map[int64]*Order{},
+		byTrade:      map[string]int64{},
+		credits:      map[int64]*CreditRecord{},
+		refunds:      map[int64]*RefundRecord{},
+		refundsByKey: map[string]int64{},
 	}
 }
 
@@ -154,6 +159,69 @@ func (m *MemoryStore) CancelOrder(_ context.Context, rec cancelRecord) (Order, e
 		return Order{}, ErrOrderNotCancelable
 	}
 	return *o, nil
+}
+
+func (m *MemoryStore) RefundOrder(_ context.Context, rec refundRecord) (RefundResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if strings.TrimSpace(rec.IdempotencyKey) == "" {
+		return RefundResult{}, ErrInvalidInput
+	}
+	o := m.orders[rec.OrderID]
+	if o == nil || o.TenantID != rec.TenantID {
+		return RefundResult{}, ErrOrderNotFound
+	}
+	key := stringJoin(rec.TenantID, rec.IdempotencyKey)
+	if existingOrderID, ok := m.refundsByKey[key]; ok {
+		refund := m.refunds[existingOrderID]
+		if refund == nil {
+			return RefundResult{}, ErrOrderNotFound
+		}
+		if refund.OrderID != rec.OrderID {
+			return RefundResult{}, ErrIdempotencyConflict
+		}
+		order := m.orders[refund.OrderID]
+		if order == nil {
+			return RefundResult{}, ErrOrderNotFound
+		}
+		return RefundResult{Order: *order, Refund: *refund, BalanceCents: m.balanceLocked(rec.TenantID, refund.UserID), Idempotent: true}, nil
+	}
+	if o.OrderKind != OrderKindTopup {
+		return RefundResult{}, ErrRefundUnsupportedKind
+	}
+	if o.Status != StatusCompleted {
+		return RefundResult{}, ErrOrderNotRefundable
+	}
+	credit := m.credits[o.ID]
+	if credit == nil {
+		return RefundResult{}, ErrOrderNotRefundable
+	}
+	if rec.AmountCents <= 0 || rec.AmountCents > credit.AmountCents {
+		return RefundResult{}, ErrInvalidAmount
+	}
+
+	m.nextRefundID++
+	m.nextBillingID++
+	refund := &RefundRecord{
+		ID:             m.nextRefundID,
+		TenantID:       rec.TenantID,
+		OrderID:        o.ID,
+		UserID:         o.UserID,
+		AmountCents:    rec.AmountCents,
+		CurrencyCode:   o.CurrencyCode,
+		IdempotencyKey: rec.IdempotencyKey,
+		Reason:         rec.Reason,
+		ActorKind:      actorKindOrDefault(rec.ActorKind),
+		ActorID:        rec.ActorID,
+		BillingEventID: m.nextBillingID,
+		CreatedAt:      rec.Now,
+	}
+	m.refunds[o.ID] = refund
+	m.refundsByKey[key] = o.ID
+	o.Status = StatusRefunded
+	o.UpdatedAt = rec.Now
+	m.appendAudit(rec.TenantID, o.ID, AuditOrderRefunded, refund.ActorKind, rec.ActorID, rec.Reason, rec.RequestID)
+	return RefundResult{Order: *o, Refund: *refund, BalanceCents: m.balanceLocked(rec.TenantID, o.UserID), Idempotent: false}, nil
 }
 
 func (m *MemoryStore) BeginFulfill(_ context.Context, rec fulfillRecord) (Order, beginFulfillOutcome, error) {
@@ -326,6 +394,11 @@ func (m *MemoryStore) balanceLocked(tenantID, userID int64) int64 {
 	for _, c := range m.credits {
 		if c.TenantID == tenantID && c.UserID == userID {
 			sum += c.AmountCents
+		}
+	}
+	for _, r := range m.refunds {
+		if r.TenantID == tenantID && r.UserID == userID {
+			sum -= r.AmountCents
 		}
 	}
 	return sum
