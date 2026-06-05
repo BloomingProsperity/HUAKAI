@@ -37,6 +37,7 @@ type Service interface {
 	DisablePlan(context.Context, int64, int64) error
 	AssignSubscription(context.Context, subscription.AssignSubscriptionInput) (subscription.AssignResult, error)
 	CancelSubscription(context.Context, int64, int64, int64, string) (subscription.UserSubscription, error)
+	SetAutoRenew(context.Context, int64, int64, bool) (subscription.UserSubscription, error)
 	GetSubscription(context.Context, int64, int64) (subscription.UserSubscription, error)
 	ListUserSubscriptions(context.Context, int64, int64) ([]subscription.UserSubscription, error)
 	ListAuditEvents(context.Context, int64, int64) ([]subscription.AuditEvent, error)
@@ -254,6 +255,7 @@ func MountSubscriptionUserRoutes(r chi.Router, d UserDeps) {
 	r.Get("/", newUserListSubscriptionsHandler(d))
 	r.Get("/me", newUserCurrentSubscriptionHandler(d))
 	r.Get("/plans", newUserListPlansHandler(d))
+	r.Post("/cancel-renew", newUserCancelRenewHandler(d))
 	r.Post("/purchase", newUserPurchaseHandler(d))
 }
 

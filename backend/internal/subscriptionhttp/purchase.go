@@ -38,8 +38,7 @@ type purchaseOrderView struct {
 	SubscriptionPlanID *int64 `json:"subscription_plan_id,omitempty"`
 }
 
-// currentSubscriptionView GET /me 响应: 当前生效订阅 + auto_renew 自助续订状态。
-// auto_renew 当前恒 false 且只读 (调度自动续订 / 关续订尚未落地, 见 C5 blocked); 暴露字段保前端契约稳定。
+// currentSubscriptionView GET /me 与 cancel-renew 响应: 当前生效订阅 + auto_renew 自助续订状态。
 type currentSubscriptionView struct {
 	Subscription *subscriptionView `json:"subscription"`
 	AutoRenew    bool              `json:"auto_renew"`
@@ -75,7 +74,7 @@ func currentActiveSubscription(subs []subscription.UserSubscription, now time.Ti
 
 // ---- handlers ----
 
-// newUserCurrentSubscriptionHandler GET /me: 当前生效订阅 + auto_renew (只读)。
+// newUserCurrentSubscriptionHandler GET /me: 当前生效订阅 + 持久化 auto_renew。
 func newUserCurrentSubscriptionHandler(d UserDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ident, ok := resolveSession(w, r, d)
@@ -91,8 +90,26 @@ func newUserCurrentSubscriptionHandler(d UserDeps) http.HandlerFunc {
 		if cur := currentActiveSubscription(subs, time.Now().UTC()); cur != nil {
 			v := toSubscriptionView(*cur)
 			out.Subscription = &v
+			out.AutoRenew = cur.AutoRenew
 		}
 		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+// newUserCancelRenewHandler POST /cancel-renew: 只关闭自动续订, 不取消当前已生效权益。
+func newUserCancelRenewHandler(d UserDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, ok := resolveSession(w, r, d)
+		if !ok {
+			return
+		}
+		sub, err := d.Service.SetAutoRenew(r.Context(), ident.TenantID, ident.UserID, false)
+		if err != nil {
+			writeSubscriptionError(w, err)
+			return
+		}
+		v := toSubscriptionView(sub)
+		writeJSON(w, http.StatusOK, currentSubscriptionView{Subscription: &v, AutoRenew: sub.AutoRenew})
 	}
 }
 

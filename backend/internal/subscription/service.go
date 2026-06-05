@@ -150,6 +150,14 @@ func (s *Service) ListUserSubscriptions(ctx context.Context, tenantID, userID in
 	return s.store.ListUserSubscriptions(ctx, tenantID, userID)
 }
 
+// SetAutoRenew 设置某用户当前 active 订阅的续订开关; false 只关续订, 不取消当前权益。
+func (s *Service) SetAutoRenew(ctx context.Context, tenantID, userID int64, autoRenew bool) (UserSubscription, error) {
+	if tenantID <= 0 || userID <= 0 {
+		return UserSubscription{}, ErrInvalidInput
+	}
+	return s.store.SetAutoRenew(ctx, tenantID, userID, autoRenew)
+}
+
 // ListAuditEvents 列某订阅操作审计轨迹。
 func (s *Service) ListAuditEvents(ctx context.Context, tenantID, subscriptionID int64) ([]AuditEvent, error) {
 	if tenantID <= 0 || subscriptionID <= 0 {
