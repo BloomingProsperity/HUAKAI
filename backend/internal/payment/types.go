@@ -138,6 +138,18 @@ type AdminConfirmPaidInput struct {
 	ConfirmReason string
 }
 
+// CancelOrderInput 取消订单入参。UserID>0 = 用户自助取消(校验订单归属, 防越权);
+// UserID=0 = 管理员取消(不限用户)。只有 pending 单可取消; 已取消幂等。
+type CancelOrderInput struct {
+	TenantID  int64
+	OrderID   int64
+	UserID    int64
+	ActorKind string // user / admin
+	ActorID   int64
+	Reason    string
+	RequestID string
+}
+
 // FulfillInput 履约输入。
 type FulfillInput struct {
 	TenantID  int64
@@ -171,6 +183,7 @@ var (
 	ErrInvalidInput        = errors.New("payment: invalid input")
 	ErrOrderNotConfirmable = errors.New("payment: order not in a confirmable state")
 	ErrOrderNotFulfillable = errors.New("payment: order not in a fulfillable state")
+	ErrOrderNotCancelable  = errors.New("payment: order not in a cancelable state")
 	// ErrSubscriptionOrderRequiresPG: 订阅单履约依赖真订阅/配额表, 内存 store 不镜像 (P3b-4 计划 §5 D3); 真路径 PG-only。
 	ErrSubscriptionOrderRequiresPG = errors.New("payment: subscription order fulfillment requires postgres store")
 	ErrIdempotencyConflict         = errors.New("payment: out_trade_no reused with different order fields")

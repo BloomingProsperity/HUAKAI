@@ -14,6 +14,7 @@ type Store interface {
 	GetOrder(ctx context.Context, tenantID, orderID int64) (Order, error)
 	GetOrderByOutTradeNo(ctx context.Context, tenantID int64, outTradeNo string) (Order, error)
 	ConfirmPaid(ctx context.Context, rec confirmRecord) (Order, error)
+	CancelOrder(ctx context.Context, rec cancelRecord) (Order, error)
 	BeginFulfill(ctx context.Context, rec fulfillRecord) (Order, beginFulfillOutcome, error)
 	CompleteFulfill(ctx context.Context, rec fulfillRecord) (FulfillResult, error)
 	ListOrdersByUser(ctx context.Context, tenantID, userID int64, limit int) ([]Order, error)
@@ -80,6 +81,17 @@ type confirmRecord struct {
 	ConfirmReason string
 	RequestID     string
 	Now           time.Time
+}
+
+type cancelRecord struct {
+	TenantID  int64
+	OrderID   int64
+	UserID    int64 // >0: 用户自助取消(校验归属); 0: admin 取消(不限用户)。
+	ActorKind string
+	ActorID   int64
+	Reason    string
+	RequestID string
+	Now       time.Time
 }
 
 type fulfillRecord struct {

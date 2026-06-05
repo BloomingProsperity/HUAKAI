@@ -133,6 +133,29 @@ func (m *MemoryStore) ConfirmPaid(_ context.Context, rec confirmRecord) (Order, 
 	return *o, nil
 }
 
+func (m *MemoryStore) CancelOrder(_ context.Context, rec cancelRecord) (Order, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	o := m.orders[rec.OrderID]
+	if o == nil || o.TenantID != rec.TenantID {
+		return Order{}, ErrOrderNotFound
+	}
+	if rec.UserID > 0 && o.UserID != rec.UserID {
+		return Order{}, ErrOrderNotFound
+	}
+	switch o.Status {
+	case StatusPending:
+		o.Status = StatusCancelled
+		o.UpdatedAt = rec.Now
+		m.appendAudit(rec.TenantID, o.ID, AuditOrderCancelled, actorKindOrDefault(rec.ActorKind), rec.ActorID, rec.Reason, rec.RequestID)
+	case StatusCancelled:
+		// 幂等
+	default:
+		return Order{}, ErrOrderNotCancelable
+	}
+	return *o, nil
+}
+
 func (m *MemoryStore) BeginFulfill(_ context.Context, rec fulfillRecord) (Order, beginFulfillOutcome, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

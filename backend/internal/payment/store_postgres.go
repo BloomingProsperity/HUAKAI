@@ -167,6 +167,57 @@ func (s *PostgresStore) GetSubscriptionPlanPriceSnapshot(ctx context.Context, te
 }
 
 // ConfirmPaid CAS 把 pending 推进 paid; 已 paid/recharging/completed 幂等返回; 终态拒绝。
+func (s *PostgresStore) CancelOrder(ctx context.Context, rec cancelRecord) (Order, error) {
+	if s == nil || s.pool == nil {
+		return Order{}, ErrStoreNotConfigured
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return Order{}, fmt.Errorf("payment: begin cancel: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	order, err := getOrderForUpdateTx(ctx, tx, rec.TenantID, rec.OrderID)
+	if err != nil {
+		return Order{}, err
+	}
+	// 用户自助取消: 校验订单归属(防越权取消他人订单); 不符当作不存在, 不泄露存在性。
+	if rec.UserID > 0 && order.UserID != rec.UserID {
+		return Order{}, ErrOrderNotFound
+	}
+	switch order.Status {
+	case StatusPending:
+		row := tx.QueryRow(ctx, `
+UPDATE payment_orders
+SET status='cancelled', updated_at=$3
+WHERE tenant_id=$1 AND id=$2
+RETURNING`+orderSelectColumns, rec.TenantID, rec.OrderID, rec.Now)
+		order, err = scanOrder(row)
+		if err != nil {
+			return Order{}, fmt.Errorf("payment: cancel update: %w", err)
+		}
+		if err := insertAuditTx(ctx, tx, auditInsert{
+			TenantID:    rec.TenantID,
+			OrderID:     order.ID,
+			EventType:   AuditOrderCancelled,
+			ActorKind:   actorKindOrDefault(rec.ActorKind),
+			ActorID:     rec.ActorID,
+			ReasonClass: rec.Reason,
+			RequestID:   rec.RequestID,
+			Now:         rec.Now,
+		}); err != nil {
+			return Order{}, err
+		}
+	case StatusCancelled:
+		// 幂等: 已取消, 返回当前状态, 不重复审计。
+	default: // paid / recharging / completed / expired / failed
+		return Order{}, ErrOrderNotCancelable
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Order{}, fmt.Errorf("payment: commit cancel: %w", err)
+	}
+	return order, nil
+}
+
 func (s *PostgresStore) ConfirmPaid(ctx context.Context, rec confirmRecord) (Order, error) {
 	if s == nil || s.pool == nil {
 		return Order{}, ErrStoreNotConfigured
