@@ -166,6 +166,81 @@ func TestSettleCompletion_GroupRatioDiscountsReserveAndActualCost(t *testing.T) 
 	}
 }
 
+func TestSettleCompletion_CacheOverrideScalesOnlyCacheCosts(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
+	usage := proto.CanonicalUsage{
+		InputTokens:              2,
+		OutputTokens:             3,
+		CacheCreationInputTokens: 5,
+		CacheReadInputTokens:     7,
+	}
+	table := billing.RateTable{
+		Version: "test-policy",
+		PricingData: json.RawMessage(`{"models":{"gpt-4o":{
+			"input_micro_usd":1000,
+			"output_micro_usd":2000,
+			"cache_creation_micro_usd":1000,
+			"cache_read_micro_usd":2000
+		}}}`),
+	}
+
+	officialSettler := &recordingSettler{}
+	officialDeps := clientAdapterDeps(t)
+	officialDeps.CanonicalDispatcher = &cacheUsageBufferedDispatcher{usage: usage}
+	officialDeps.Settler = officialSettler
+	officialDeps.RateTables = &rateTableSourceStub{table: table}
+
+	officialRec := invokeHandlerPath(t, officialDeps, "/v1/chat/completions", body)
+	if officialRec.Code != http.StatusOK {
+		t.Fatalf("official status=%d want 200 body=%s", officialRec.Code, officialRec.Body.String())
+	}
+	if len(officialSettler.calls) != 1 {
+		t.Fatalf("official settle calls=%d want 1", len(officialSettler.calls))
+	}
+	assertDecimalEqual(t, "official ActualCost", officialSettler.calls[0].ActualCost, decimal.RequireFromString("0.027"))
+	assertDecimalEqual(t, "official CacheCreationCost", officialSettler.calls[0].Draft.CacheCreationCost, decimal.RequireFromString("0.005"))
+	assertDecimalEqual(t, "official CacheReadCost", officialSettler.calls[0].Draft.CacheReadCost, decimal.RequireFromString("0.014"))
+
+	overrideResolver := &cacheOverrideResolverStub{
+		tenantID:   7,
+		model:      "gpt-4o",
+		multiplier: decimal.NewFromInt(2),
+	}
+	overrideSettler := &recordingSettler{}
+	overrideDeps := clientAdapterDeps(t)
+	overrideDeps.CanonicalDispatcher = &cacheUsageBufferedDispatcher{usage: usage}
+	overrideDeps.Settler = overrideSettler
+	overrideDeps.RateTables = &rateTableSourceStub{table: table}
+	overrideDeps.CacheOverrideStore = overrideResolver
+
+	overrideRec := invokeHandlerPath(t, overrideDeps, "/v1/chat/completions", body)
+	if overrideRec.Code != http.StatusOK {
+		t.Fatalf("override status=%d want 200 body=%s", overrideRec.Code, overrideRec.Body.String())
+	}
+	if len(overrideSettler.calls) != 1 {
+		t.Fatalf("override settle calls=%d want 1", len(overrideSettler.calls))
+	}
+	if overrideResolver.calls != 2 {
+		t.Fatalf("cache override resolver calls=%d want 2 (reserve prediction + settle actual)", overrideResolver.calls)
+	}
+	if overrideResolver.lastTenantID != 7 || overrideResolver.lastModel != "gpt-4o" {
+		t.Fatalf("cache override resolver saw tenant/model=%d/%q want 7/gpt-4o", overrideResolver.lastTenantID, overrideResolver.lastModel)
+	}
+	assertDecimalEqual(t, "override ActualCost", overrideSettler.calls[0].ActualCost, decimal.RequireFromString("0.046"))
+	assertDecimalEqual(t, "override Draft.ActualCost", overrideSettler.calls[0].Draft.ActualCost, decimal.RequireFromString("0.046"))
+	assertDecimalEqual(t, "override CacheCreationCost", overrideSettler.calls[0].Draft.CacheCreationCost, decimal.RequireFromString("0.010"))
+	assertDecimalEqual(t, "override CacheReadCost", overrideSettler.calls[0].Draft.CacheReadCost, decimal.RequireFromString("0.028"))
+
+	officialNonCache := officialSettler.calls[0].ActualCost.
+		Sub(officialSettler.calls[0].Draft.CacheCreationCost).
+		Sub(officialSettler.calls[0].Draft.CacheReadCost)
+	overrideNonCache := overrideSettler.calls[0].ActualCost.
+		Sub(overrideSettler.calls[0].Draft.CacheCreationCost).
+		Sub(overrideSettler.calls[0].Draft.CacheReadCost)
+	assertDecimalEqual(t, "non-cache cost after override", overrideNonCache, officialNonCache)
+}
+
 func TestSettleCompletion_UsesTieredPricingDataWhenConfigured(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	settler := &recordingSettler{}
@@ -844,6 +919,44 @@ func assertDecimalEqual(t *testing.T, field string, got, want decimal.Decimal) {
 	if !got.Equal(want) {
 		t.Fatalf("%s=%s want %s", field, got, want)
 	}
+}
+
+type cacheUsageBufferedDispatcher struct {
+	usage proto.CanonicalUsage
+}
+
+func (m *cacheUsageBufferedDispatcher) DispatchHCSF(_ context.Context, requestEnvelope *proto.HCSF) (*proto.HCSF, error) {
+	env := proto.NewEmptyEnvelope()
+	env.RequestMeta = requestEnvelope.RequestMeta
+	env.BufferedResponse = &proto.CanonicalResponse{
+		ID:         "chatcmpl-cache-override-test",
+		Model:      requestEnvelope.RequestMeta.UpstreamModel,
+		Content:    []proto.CanonicalContentBlock{{Type: "text", Text: "cache priced response"}},
+		Usage:      m.usage,
+		StopReason: proto.CanonicalStopEndTurn,
+	}
+	env.Accounting.Usage = env.BufferedResponse.Usage
+	env.Accounting.EvidenceLabel = proto.EvidenceMock
+	return env, nil
+}
+
+type cacheOverrideResolverStub struct {
+	tenantID     int64
+	model        string
+	multiplier   decimal.Decimal
+	calls        int
+	lastTenantID int64
+	lastModel    string
+}
+
+func (s *cacheOverrideResolverStub) ResolveMultiplier(tenantID int64, model string) decimal.Decimal {
+	s.calls++
+	s.lastTenantID = tenantID
+	s.lastModel = model
+	if s != nil && tenantID == s.tenantID && model == s.model {
+		return s.multiplier
+	}
+	return decimal.NewFromInt(1)
 }
 
 type pricingRatioResolverStub struct {
