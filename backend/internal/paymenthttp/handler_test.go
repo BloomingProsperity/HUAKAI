@@ -104,17 +104,36 @@ func TestOrderViewRendersKind(t *testing.T) {
 }
 
 type captureService struct {
-	gotCreate  payment.CreateOrderInput
-	createRes  payment.CreateOrderResult
-	createErr  error
-	confirmRes payment.FulfillResult
-	confirmErr error
-	gotCancel  payment.CancelOrderInput
-	cancelRes  payment.Order
-	cancelErr  error
-	gotRefund  payment.RefundOrderInput
-	refundRes  payment.RefundResult
-	refundErr  error
+	gotCreate             payment.CreateOrderInput
+	createRes             payment.CreateOrderResult
+	createErr             error
+	confirmRes            payment.FulfillResult
+	confirmErr            error
+	gotAdminList          payment.OrderListFilter
+	adminListRes          []payment.Order
+	adminListErr          error
+	gotDashboard          payment.DashboardFilter
+	dashboardRes          payment.DashboardStats
+	dashboardErr          error
+	gotAuditTenantID      int64
+	gotAuditOrderID       int64
+	auditEvents           []payment.AuditEvent
+	auditErr              error
+	gotRetry              payment.RetryFulfillmentInput
+	retryRes              payment.FulfillResult
+	retryErr              error
+	gotProviderConfigKind payment.ProviderKind
+	providerConfigRes     payment.ProviderRuntimeConfig
+	providerConfigErr     error
+	gotSetProviderConfig  payment.ProviderRuntimeConfigInput
+	setProviderConfigRes  payment.ProviderRuntimeConfig
+	setProviderConfigErr  error
+	gotCancel             payment.CancelOrderInput
+	cancelRes             payment.Order
+	cancelErr             error
+	gotRefund             payment.RefundOrderInput
+	refundRes             payment.RefundResult
+	refundErr             error
 }
 
 func (s *captureService) CreateOrder(_ context.Context, in payment.CreateOrderInput) (payment.CreateOrderResult, error) {
@@ -129,14 +148,36 @@ func (s *captureService) AdminConfirmPaid(_ context.Context, _ payment.AdminConf
 func (s *captureService) GetOrder(_ context.Context, _, _ int64) (payment.Order, error) {
 	return payment.Order{}, nil
 }
-func (s *captureService) ListAuditEvents(_ context.Context, _, _ int64) ([]payment.AuditEvent, error) {
-	return nil, nil
+func (s *captureService) ListAuditEvents(_ context.Context, tenantID, orderID int64) ([]payment.AuditEvent, error) {
+	s.gotAuditTenantID = tenantID
+	s.gotAuditOrderID = orderID
+	return s.auditEvents, s.auditErr
 }
 func (s *captureService) GetBalance(_ context.Context, _, _ int64) (payment.Balance, error) {
 	return payment.Balance{}, nil
 }
 func (s *captureService) ListOrders(_ context.Context, _, _ int64, _ int) ([]payment.Order, error) {
 	return nil, nil
+}
+func (s *captureService) AdminListOrders(_ context.Context, in payment.OrderListFilter) ([]payment.Order, error) {
+	s.gotAdminList = in
+	return s.adminListRes, s.adminListErr
+}
+func (s *captureService) DashboardStats(_ context.Context, in payment.DashboardFilter) (payment.DashboardStats, error) {
+	s.gotDashboard = in
+	return s.dashboardRes, s.dashboardErr
+}
+func (s *captureService) RetryFulfillment(_ context.Context, in payment.RetryFulfillmentInput) (payment.FulfillResult, error) {
+	s.gotRetry = in
+	return s.retryRes, s.retryErr
+}
+func (s *captureService) GetProviderRuntimeConfig(_ context.Context, kind payment.ProviderKind) (payment.ProviderRuntimeConfig, error) {
+	s.gotProviderConfigKind = kind
+	return s.providerConfigRes, s.providerConfigErr
+}
+func (s *captureService) SetProviderRuntimeConfig(_ context.Context, in payment.ProviderRuntimeConfigInput) (payment.ProviderRuntimeConfig, error) {
+	s.gotSetProviderConfig = in
+	return s.setProviderConfigRes, s.setProviderConfigErr
 }
 
 func (s *captureService) CancelOrder(_ context.Context, in payment.CancelOrderInput) (payment.Order, error) {

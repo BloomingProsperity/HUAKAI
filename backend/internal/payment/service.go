@@ -5,16 +5,19 @@ package payment
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 )
 
 // Service 支付外观: 规范化输入 / 校验 / 编排订单状态机 / 解析 provider。
 type Service struct {
-	store       Store
-	providers   providerRegistry
-	now         func() time.Time
-	tradeNoGen  ExternalTradeNoGenerator
-	maxAttempts int
+	store           Store
+	providers       providerRegistry
+	providerMu      sync.RWMutex
+	providerConfigs map[ProviderKind]ProviderRuntimeConfig
+	now             func() time.Time
+	tradeNoGen      ExternalTradeNoGenerator
+	maxAttempts     int
 }
 
 // Option 配置 Service。
@@ -56,15 +59,17 @@ func WithTestProviderSecret(secret string) Option {
 // NewService 构造支付 service。默认只注册 manual provider。
 func NewService(store Store, opts ...Option) *Service {
 	s := &Service{
-		store:       store,
-		providers:   newProviderRegistry(NewManualProvider(), NewHMACProvider()),
-		now:         func() time.Time { return time.Now().UTC() },
-		tradeNoGen:  randomExternalTradeNo,
-		maxAttempts: 3,
+		store:           store,
+		providers:       newProviderRegistry(NewManualProvider(), NewHMACProvider()),
+		providerConfigs: map[ProviderKind]ProviderRuntimeConfig{},
+		now:             func() time.Time { return time.Now().UTC() },
+		tradeNoGen:      randomExternalTradeNo,
+		maxAttempts:     3,
 	}
 	for _, o := range opts {
 		o(s)
 	}
+	s.refreshProviderRuntimeConfigs()
 	return s
 }
 
@@ -74,7 +79,7 @@ func (s *Service) CreateOrder(ctx context.Context, in CreateOrderInput) (CreateO
 		return CreateOrderResult{}, ErrInvalidInput
 	}
 	kind := providerKindOrDefault(in.ProviderKind)
-	provider, err := s.providers.resolve(kind)
+	provider, err := s.resolveProvider(kind)
 	if err != nil {
 		return CreateOrderResult{}, err
 	}

@@ -2889,9 +2889,11 @@ paths:
   /v1/admin/payments:
     get:
       tags: [admin-payments]
-      summary: List a tenant user's payment orders
+      summary: List tenant payment orders with admin filters
       operationId: adminListPaymentOrders
-      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p1-synthesis.md]
+      x-huakai-spec-source:
+        - docs/process/plans/2026-05-29-payment-p1-synthesis.md
+        - docs/process/plans/2026-06-05-admin-payment-panel-codex.md
       x-huakai-required-role: platform_admin
       parameters:
         - in: query
@@ -2900,11 +2902,22 @@ paths:
           schema: { type: integer, format: int64, minimum: 1 }
         - in: query
           name: user_id
-          required: true
           schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: status
+          schema: { type: string, enum: [pending, paid, recharging, completed, refunded, expired, cancelled, failed] }
+        - in: query
+          name: created_from
+          schema: { type: string, format: date-time }
+        - in: query
+          name: created_to
+          schema: { type: string, format: date-time }
         - in: query
           name: limit
           schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
       responses:
         '200':
           description: Tenant user's payment orders.
@@ -2937,7 +2950,7 @@ paths:
                 amount_cents: { type: integer, format: int64, minimum: 1, maximum: 100000000000 }
                 currency_code: { type: string, enum: [USD], default: USD }
                 out_trade_no: { type: string, description: Caller-stable idempotency key; required so retries collapse instead of creating duplicate orders. }
-                provider_kind: { type: string, enum: [manual, test] }
+                provider_kind: { type: string, enum: [manual, taobao, test] }
       responses:
         '201':
           description: Payment order created.
@@ -2961,6 +2974,112 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/payments/dashboard:
+    get:
+      tags: [admin-payments]
+      summary: Payment operations dashboard stats
+      operationId: adminGetPaymentDashboard
+      x-huakai-spec-source: [docs/process/plans/2026-06-05-admin-payment-panel-codex.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: created_from
+          schema: { type: string, format: date-time }
+        - in: query
+          name: created_to
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Tenant-scoped payment totals and daily series.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_amount_cents: { type: integer, format: int64 }
+                  total_count: { type: integer }
+                  today_count: { type: integer }
+                  average_amount_cents: { type: integer, format: int64 }
+                  daily_series:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date: { type: string, format: date }
+                        order_count: { type: integer }
+                        amount_cents: { type: integer, format: int64 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/payments/providers/{provider}/config:
+    parameters:
+      - name: provider
+        in: path
+        required: true
+        schema: { type: string, enum: [manual, taobao] }
+    get:
+      tags: [admin-payments]
+      summary: Get payment provider runtime config
+      operationId: adminGetPaymentProviderConfig
+      x-huakai-spec-source: [docs/process/plans/2026-06-05-admin-payment-panel-codex.md]
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: Current non-secret provider runtime config.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  provider:
+                    type: object
+                    properties:
+                      provider_kind: { type: string, enum: [manual, taobao] }
+                      enabled: { type: boolean }
+                      checkout_url: { type: string }
+                      source: { type: string }
+                      updated_by: { type: string }
+                      updated_at: { type: string, format: date-time }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [admin-payments]
+      summary: Update payment provider runtime config
+      operationId: adminPutPaymentProviderConfig
+      x-huakai-spec-source: [docs/process/plans/2026-06-05-admin-payment-panel-codex.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+                checkout_url: { type: string, description: Required when enabling taobao; forbidden for manual. }
+      responses:
+        '200':
+          description: Provider config persisted and applied to the running payment service.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  provider: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/admin/payments/{id}:
@@ -2987,6 +3106,44 @@ paths:
                 properties:
                   order: { type: object }
                   audit_events: { type: array, items: { type: object } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/payments/{id}/audit:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    get:
+      tags: [admin-payments]
+      summary: List a payment order's audit events
+      operationId: adminListPaymentOrderAuditEvents
+      x-huakai-spec-source: [docs/process/plans/2026-06-05-admin-payment-panel-codex.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Order audit events in chronological order.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  audit_events:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        event_type: { type: string }
+                        actor_kind: { type: string }
+                        actor_id: { type: integer, format: int64 }
+                        reason_class: { type: string }
+                        occurred_at: { type: string, format: date-time }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -3022,6 +3179,44 @@ paths:
                 properties:
                   order: { type: object }
                   credit: { type: object }
+                  balance_cents: { type: integer, format: int64 }
+                  idempotent: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/payments/{id}/retry:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-payments]
+      summary: Retry fulfillment for a paid or recharging payment order
+      operationId: adminRetryPaymentOrderFulfillment
+      x-huakai-spec-source: [docs/process/plans/2026-06-05-admin-payment-panel-codex.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Fulfillment completed or returned as an idempotent replay.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order: { type: object }
+                  credit: { type: object }
+                  subscription: { type: object }
                   balance_cents: { type: integer, format: int64 }
                   idempotent: { type: boolean }
         '400': { $ref: '#/components/responses/BadRequest' }

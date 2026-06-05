@@ -33,13 +33,14 @@ const (
 	KeyResponseHeaderAllowOverride SettingKey = "response_header_allow_override"
 	KeyModelFallbackChains         SettingKey = "model_fallback_chains"
 	KeyBudgetLimits                SettingKey = "budget_limits"
+	KeyPaymentProviderConfig       SettingKey = "payment_provider_config"
 )
 
 var (
 	ErrUnknownKey          = errors.New("platformsettings: unknown setting key")
 	ErrInvalidValue        = errors.New("platformsettings: invalid setting value")
 	ErrStoreNotConfigured  = errors.New("platformsettings: store not configured")
-	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits}
+	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig}
 	defaultSettingValueMap = map[SettingKey]string{
 		KeyRegistrationEnabled:         "false",
 		KeyInvitationRequired:          "true",
@@ -56,6 +57,7 @@ var (
 		KeyResponseHeaderAllowOverride: "",
 		KeyModelFallbackChains:         "",
 		KeyBudgetLimits:                "",
+		KeyPaymentProviderConfig:       `{"manual":{"enabled":true,"checkout_url":""},"taobao":{"enabled":false,"checkout_url":""}}`,
 	}
 )
 
@@ -88,6 +90,9 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 	value := strings.TrimSpace(raw)
 	if key == KeyResponseHeaderDenyExtra || key == KeyResponseHeaderAllowOverride {
 		return validateHeaderListValue(key, value)
+	}
+	if key == KeyPaymentProviderConfig {
+		return validatePaymentProviderConfigValue(key, value)
 	}
 	if key == KeyModelFallbackChains || key == KeyBudgetLimits {
 		return validateJSONObjectValue(key, value)
@@ -184,6 +189,30 @@ func validateJSONObjectValue(key SettingKey, value string) (string, error) {
 	}
 	if probe == nil {
 		return "", fmt.Errorf("%w: %s must be a JSON object", ErrInvalidValue, key)
+	}
+	return value, nil
+}
+
+func validatePaymentProviderConfigValue(key SettingKey, value string) (string, error) {
+	type providerConfig struct {
+		Enabled     *bool  `json:"enabled"`
+		CheckoutURL string `json:"checkout_url"`
+	}
+	var doc struct {
+		Manual *providerConfig `json:"manual"`
+		Taobao *providerConfig `json:"taobao"`
+	}
+	if err := json.Unmarshal([]byte(value), &doc); err != nil {
+		return "", fmt.Errorf("%w: %s must be a JSON object", ErrInvalidValue, key)
+	}
+	if doc.Manual == nil || doc.Taobao == nil || doc.Manual.Enabled == nil || doc.Taobao.Enabled == nil {
+		return "", fmt.Errorf("%w: %s requires manual and taobao enabled flags", ErrInvalidValue, key)
+	}
+	if strings.TrimSpace(doc.Manual.CheckoutURL) != "" {
+		return "", fmt.Errorf("%w: manual checkout_url must be empty", ErrInvalidValue)
+	}
+	if *doc.Taobao.Enabled && strings.TrimSpace(doc.Taobao.CheckoutURL) == "" {
+		return "", fmt.Errorf("%w: enabled taobao requires checkout_url", ErrInvalidValue)
 	}
 	return value, nil
 }

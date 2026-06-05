@@ -20,6 +20,8 @@ type Store interface {
 	BeginFulfill(ctx context.Context, rec fulfillRecord) (Order, beginFulfillOutcome, error)
 	CompleteFulfill(ctx context.Context, rec fulfillRecord) (FulfillResult, error)
 	ListOrdersByUser(ctx context.Context, tenantID, userID int64, limit int) ([]Order, error)
+	AdminListOrders(ctx context.Context, filter OrderListFilter) ([]Order, error)
+	DashboardStats(ctx context.Context, filter DashboardFilter, now time.Time) (DashboardStats, error)
 	UserBalanceCents(ctx context.Context, tenantID, userID int64) (int64, error)
 	ListAuditEvents(ctx context.Context, tenantID, orderID int64) ([]AuditEvent, error)
 }

@@ -27,22 +27,11 @@ type AdminAuth interface {
 	Resolve(context.Context, *http.Request) (admin.AdminIdentity, error)
 }
 
-// Service 是 handler 依赖的支付能力子集 (由 *payment.Service 实现)。
-type Service interface {
-	CreateOrder(context.Context, payment.CreateOrderInput) (payment.CreateOrderResult, error)
-	AdminConfirmPaid(context.Context, payment.AdminConfirmPaidInput) (payment.FulfillResult, error)
-	GetOrder(context.Context, int64, int64) (payment.Order, error)
-	ListAuditEvents(context.Context, int64, int64) ([]payment.AuditEvent, error)
-	GetBalance(context.Context, int64, int64) (payment.Balance, error)
-	ListOrders(context.Context, int64, int64, int) ([]payment.Order, error)
-	CancelOrder(context.Context, payment.CancelOrderInput) (payment.Order, error)
-	RefundOrder(context.Context, payment.RefundOrderInput) (payment.RefundResult, error)
-}
-
 // AdminDeps 管理员路由依赖。
 type AdminDeps struct {
-	Auth    AdminAuth
-	Service Service
+	Auth           AdminAuth
+	Service        Service
+	ProviderConfig ProviderRuntimeConfigService
 }
 
 // UserDeps 用户路由依赖。
@@ -191,6 +180,11 @@ func toAuditEventViews(events []payment.AuditEvent) []auditEventView {
 func MountPaymentAdminRoutes(r chi.Router, d AdminDeps) {
 	r.Post("/", newAdminCreateOrderHandler(d))
 	r.Get("/", newAdminListOrdersHandler(d))
+	r.Get("/dashboard", newAdminDashboardHandler(d))
+	r.Get("/providers/{provider}/config", newAdminGetProviderConfigHandler(d))
+	r.Put("/providers/{provider}/config", newAdminPutProviderConfigHandler(d))
+	r.Get("/{id}/audit", newAdminAuditHandler(d))
+	r.Post("/{id}/retry", newAdminRetryHandler(d))
 	r.Get("/{id}", newAdminGetOrderHandler(d))
 	r.Post("/{id}/confirm", newAdminConfirmHandler(d))
 	r.Post("/{id}/cancel", newAdminCancelHandler(d))
@@ -294,28 +288,6 @@ func newAdminGetOrderHandler(d AdminDeps) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"order": toAdminOrderView(order), "audit_events": toAuditEventViews(events)})
-	}
-}
-
-func newAdminListOrdersHandler(d AdminDeps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := resolveAdmin(w, r, d); !ok {
-			return
-		}
-		tenantID, ok := parsePositiveQuery(w, r, "tenant_id")
-		if !ok {
-			return
-		}
-		userID, ok := parsePositiveQuery(w, r, "user_id")
-		if !ok {
-			return
-		}
-		orders, err := d.Service.ListOrders(r.Context(), tenantID, userID, parseLimit(r))
-		if err != nil {
-			writePaymentError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"orders": toAdminOrderViews(orders)})
 	}
 }
 
