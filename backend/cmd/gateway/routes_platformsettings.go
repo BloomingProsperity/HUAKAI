@@ -21,6 +21,8 @@ func mountPlatformSettingsRoutes(r chi.Router, d *deps) {
 	})
 }
 
+// platformSettingsRouteService 用具体指针判空:nil *platformsettings.Service 赋给接口会变 typed-nil
+// (!=nil),会让 pgPool 兜底永不触发。必须先判具体指针,再决定用它还是兜底/nil。
 func platformSettingsRouteService(d *deps) platformsettingshttp.Service {
 	if d == nil {
 		return nil
