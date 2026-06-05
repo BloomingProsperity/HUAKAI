@@ -25,8 +25,6 @@ import (
 	communityinvitation "github.com/BloomingProsperity/HUAKAI/internal/community/invitation"
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
-	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
-	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker/adapters"
 	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
@@ -222,14 +220,6 @@ func corsMiddleware(allowed map[string]struct{}) func(http.Handler) http.Handler
 	}
 }
 
-func notImplemented(label string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotImplemented)
-		_, _ = fmt.Fprintf(w, `{"error":{"code":"NOT_IMPLEMENTED","message":"%s — not implemented in the current Phase C / N+5b slice"}}`, label)
-	}
-}
-
 // streamDurationEnv 读取 time.ParseDuration 格式(如 "120s"、"10m")的流超时配置;空或非法回退默认。
 // 允许运维按需调整,避免把长跑推理/agentic 请求写死掐断。
 func streamDurationEnv(name string, fallback time.Duration) time.Duration {
@@ -390,30 +380,6 @@ func logAuditRefEscapeFlag(policy *eventbus.AuditRefPolicy, logger *zap.Logger) 
 		zap.String("release_mode", string(policy.ReleaseMode)),
 		zap.Bool("allow_missing_money_ref", true),
 	)
-}
-
-func registerCredentialRefreshAdapters(registry *credentialworker.AdapterRegistry) error {
-	registrations := []struct {
-		name    string
-		adapter credentialworker.RefreshAdapter
-	}{
-		{name: "anthropic", adapter: adapters.AnthropicRefresh{}},
-		{name: "openai", adapter: adapters.OpenAIRefresh{}},
-		{name: "gemini", adapter: adapters.GeminiRefresh{}},
-		{name: "codex", adapter: adapters.CodexRefresh{}},
-		{name: "antigravity", adapter: adapters.AntigravityRefresh{}},
-	}
-	for _, item := range registrations {
-		if err := registry.Register(item.name, item.adapter); err != nil {
-			return err
-		}
-	}
-	for _, name := range credentialworker.MockOnlyProviders {
-		if err := registry.Register(name, credentialworker.MockOnlyAdapter{}); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // aiAwareTimeout 套连接级总超时,但豁免 AI 数据面 relay 路径。chi middleware.Timeout 会给
