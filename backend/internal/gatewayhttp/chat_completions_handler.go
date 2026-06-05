@@ -45,6 +45,10 @@ type pricingRatioResolver interface {
 	Resolve(ctx context.Context, tenantID, poolGroupID int64) (decimal.Decimal, error)
 }
 
+type cacheOverrideResolver interface {
+	ResolveMultiplier(tenantID int64, model string) decimal.Decimal
+}
+
 type ChatHandlerDeps struct {
 	Auth                  authResolver
 	Registry              registry.Registry
@@ -53,6 +57,7 @@ type ChatHandlerDeps struct {
 	QuotaReserver         quotaenforce.Reserver
 	RateTables            billing.RateTableSource
 	PricingRatioResolver  pricingRatioResolver
+	CacheOverrideStore    cacheOverrideResolver
 	Selector              pool.Selector
 	CredentialVault       provider.CredentialVault
 	Dispatcher            *gateway.UpstreamDispatcher
