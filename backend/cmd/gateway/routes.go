@@ -154,7 +154,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	paymenthttp.MountWebhookRoutes(r, paymentDeps)
 	r.Route("/v1/users/me/payments", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
-		paymenthttp.MountPaymentUserRoutes(r, paymenthttp.UserDeps{Service: d.paymentService})
+		paymenthttp.MountPaymentUserRoutes(r, paymenthttp.UserDeps{
+			Service:        d.paymentService,
+			RefundRequests: d.paymentRefundRequests,
+		})
 	})
 	r.Route("/v1/users/me/subscriptions", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))

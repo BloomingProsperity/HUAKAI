@@ -48,6 +48,11 @@ type AdminDeps struct {
 // UserDeps 用户路由依赖。
 type UserDeps struct {
 	Service Service
+	// Portal 用户支付门户运行时配置 (可充金额范围 + 启用渠道); 零值回落安全默认。
+	Portal PortalConfig
+	// RefundRequests 退款申请记录器 (用户发起 pending 退款申请, 待 admin 审批)。
+	// nil 时退款申请端点回 503 (而非默默吞掉用户意图)。
+	RefundRequests RefundRequestRecorder
 }
 
 type createOrderRequest struct {
@@ -197,11 +202,15 @@ func MountPaymentAdminRoutes(r chi.Router, d AdminDeps) {
 	r.Post("/{id}/refund", newAdminRefundHandler(d))
 }
 
-// MountPaymentUserRoutes 挂载用户支付端点 (自己的订单 / 余额)。
+// MountPaymentUserRoutes 挂载用户支付端点 (自己的订单 / 余额 / 门户充值 / 退款申请)。
 func MountPaymentUserRoutes(r chi.Router, d UserDeps) {
 	r.Get("/orders", newUserListOrdersHandler(d))
+	r.Post("/orders", newPortalCreateTopupHandler(d))
+	r.Get("/orders/{id}", newPortalGetOrderHandler(d))
 	r.Post("/orders/{id}/cancel", newUserCancelHandler(d))
+	r.Post("/orders/{id}/refund-request", newPortalRefundRequestHandler(d))
 	r.Get("/balance", newUserBalanceHandler(d))
+	r.Get("/config", newPortalConfigHandler(d))
 }
 
 // newUserCancelHandler 用户自助取消自己的 pending 订单(扫码/淘宝下单前可撤)。
