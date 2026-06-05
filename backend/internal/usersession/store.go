@@ -28,6 +28,7 @@ type Store interface {
 	RotateRefreshToken(context.Context, RefreshToken, RefreshToken, time.Time) (SessionFamily, error)
 	RevokeToken(context.Context, int64, []byte, string, time.Time) error
 	RevokeFamily(context.Context, int64, string, string, time.Time) (SessionFamily, error)
+	FamilyBelongsToUser(context.Context, int64, int64, string) (bool, error)
 	RevokeUser(context.Context, int64, int64, string, time.Time) (int64, error)
 	ListFamilies(context.Context, int64, int64) ([]SessionFamily, error)
 }
@@ -281,6 +282,33 @@ WHERE tenant_id = $1 AND token_hash = $2 AND status = 'active'
 		_ = s.cache.RevokeToken(ctx, tenantID, tokenHash, reason, now)
 	}
 	return err
+}
+
+func (s *PostgresStore) FamilyBelongsToUser(ctx context.Context, tenantID, userID int64, familyID string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, ErrStoreNotConfigured
+	}
+	familyID = strings.TrimSpace(familyID)
+	if familyID == "" {
+		return false, nil
+	}
+	if _, err := uuid.Parse(familyID); err != nil {
+		return false, nil
+	}
+	var exists bool
+	err := s.db.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM session_families
+    WHERE tenant_id = $1 AND user_id = $2 AND id = $3::uuid
+)
+`, tenantID, userID, familyID).Scan(&exists)
+	if err != nil {
+		if s.cache != nil {
+			return s.cache.FamilyBelongsToUser(ctx, tenantID, userID, familyID)
+		}
+		return false, err
+	}
+	return exists, nil
 }
 
 func (s *PostgresStore) RevokeFamily(ctx context.Context, tenantID int64, familyID, reason string, now time.Time) (SessionFamily, error) {
@@ -652,6 +680,23 @@ func (s *MemoryStore) RevokeUser(_ context.Context, tenantID, userID int64, reas
 		}
 	}
 	return count, nil
+}
+
+func (s *MemoryStore) FamilyBelongsToUser(_ context.Context, tenantID, userID int64, familyID string) (bool, error) {
+	if s == nil {
+		return false, ErrStoreNotConfigured
+	}
+	familyID = strings.TrimSpace(familyID)
+	if familyID == "" {
+		return false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	family, ok := s.families[familyID]
+	if !ok {
+		return false, nil
+	}
+	return family.TenantID == tenantID && family.UserID == userID, nil
 }
 
 func (s *MemoryStore) ListFamilies(_ context.Context, tenantID, userID int64) ([]SessionFamily, error) {
