@@ -133,6 +133,7 @@ type deps struct {
 	inboundAuth              *auth.APIKeyResolver
 	auditLedger              auditledger.Ledger
 	auditSigner              *sign.Signer
+	cacheOverrideStore       *billing.CacheOverrideStore
 	auditPubkeyRegistry      auditledger.PubkeyRegistry
 	receiptStore             *auditreceipt.PGXReceiptStorage
 	receiptFormatter         *auditreceipt.ReceiptFormatter
@@ -807,6 +808,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		inboundAuth:              auth.NewAPIKeyResolverWithClientIPResolver(authQueries, clientIPResolver),
 		auditLedger:              auditLedger,
 		auditSigner:              auditSigner,
+		cacheOverrideStore:       billing.NewCacheOverrideStore(auditSigner, nil),
 		auditPubkeyRegistry:      auditPubkeyRegistry,
 		receiptStore:             receiptStore,
 		receiptFormatter:         receiptFormatter,
