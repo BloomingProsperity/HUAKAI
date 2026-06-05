@@ -182,10 +182,18 @@ func (ex *execution) run(w http.ResponseWriter) {
 		if !ex.reserve(w) || !ex.selectAccount(w, i+1) || !ex.resolveCredential(w) {
 			return
 		}
-		if ex.dispatchAndSettle(w, i+1) {
+		// dispatch 网络层失败(投递前、未写响应) → 可重试:还有 attempt 就换账号重试,耗尽才写错误。
+		// 已读响应/HTTP错误/结算失败是终态,由 dispatchAndSettle 自己写响应。
+		switch ex.dispatchAndSettle(w, i+1) {
+		case embedAttemptDone:
+			return
+		case embedAttemptRetryable:
+			if i+1 < budget {
+				continue
+			}
+			writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamDispatchError, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError))
 			return
 		}
-		return
 	}
 }
 
