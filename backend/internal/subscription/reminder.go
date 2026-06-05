@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,8 +26,8 @@ const (
 var DefaultReminderOffsetsDays = []int{7, 3, 1}
 
 // 提醒投递结果状态 (与 0074 subscription_expiry_reminders.status CHECK 对齐)。
-// 只有"终态"才 durably 记账: sent (已投递/已入 DLQ) 与 skipped_no_recipient (无收件邮箱)。
-// 发送失败一律当可重试, 不记账 (见 ReminderRetry), 避免可恢复失败被永久抑制。
+// sent 现在代表"该档位已被一个副本 claim 并尝试发送"; claim 是跨副本发送闸门。
+// 若 claim 后发送失败, 保留该行并记录失败 tick, 采用 at-most-once: 宁可漏一封也不重复轰炸。
 const (
 	ReminderStatusSent               = "sent"
 	ReminderStatusSkippedNoRecipient = "skipped_no_recipient"
@@ -38,12 +39,10 @@ type ReminderOutcome int
 const (
 	// ReminderSent 已投递或已入 DLQ 待重试 (均视为已就该档位处理, 记 sent 去重)。
 	ReminderSent ReminderOutcome = iota
-	// ReminderSkippedUnconfigured 租户未配 SMTP / 提醒关闭 → 不记账, 配好后下个 tick 重试。
+	// ReminderSkippedUnconfigured 租户未配 SMTP / 提醒关闭; claim 已落库, 上层记录失败 tick 后不重发同档。
 	ReminderSkippedUnconfigured
-	// ReminderRetry 发送失败 (配置无效 / 瞬时 / 无 DLQ 吸收) → 不记账, 下个 tick 重试。
-	// 不区分"坏收件人"等真永久失败 (email 包的 permanent 判定未导出, 无法干净识别),
-	// 故一律可重试: 宁可对坏地址每 tick 重试一次 (有界、无害), 不可静默永久丢提醒。
-	// 真瞬时失败在 sender 内部已入 DLQ 返 nil=Sent, 不会走到这里。
+	// ReminderRetry 发送失败 (配置无效 / 瞬时 / 无 DLQ 吸收); claim 已落库, 上层记录失败 tick。
+	// 真瞬时失败若已被 sender 内部 DLQ 吸收会返 nil=Sent, 不会走到这里。
 	ReminderRetry
 )
 
@@ -92,7 +91,7 @@ type ReminderStore interface {
 	RecordReminder(ctx context.Context, rec reminderRecord) (bool, error)
 }
 
-// ReminderService 编排到期提醒: 扫描 → 分档 → 去重 → 发送 → 记账。
+// ReminderService 编排到期提醒: 扫描 → 分档 → 去重 → claim → 发送。
 type ReminderService struct {
 	store       ReminderStore
 	mailer      ReminderMailer
@@ -140,15 +139,12 @@ func NewReminderService(store ReminderStore, mailer ReminderMailer, opts ...Remi
 }
 
 // ProcessDueReminders 扫整个提醒窗口 (一次 tick 翻完), 对每条订阅发其当前档位的提醒 (去重)。
-// 返回实际发送条数。单条失败不阻断其余 (记 lastErr 返回), 下个 tick 重试。
+// 返回实际发送条数。单条失败不阻断其余 (记 lastErr 返回)。
 // 翻页按"已取行" (游标) 推进, 不以发送数当进度 —— 否则已记录/已跳过的最早一页会反复占住
 // LIMIT, 窗口里更靠后的订阅永远扫不到 (饿死)。
 //
-// 去重边界 = 发送前查 SentReminderKeys + 发送后 RecordReminder 唯一索引。
-// 已知限制 (P3b-1 单实例假设): worker 是进程内 ticker, 同进程靠 running-guard 防并发。
-// 多 gateway 副本各跑一个 worker 时, 两副本可能都查到档位未记录 → 都发 → 唯一索引只挡第二条
-// 账本不挡第二封邮件 (重复提醒)。本切片偏向"发送优先" (send-first): 宁可多副本下偶发重复, 不可
-// claim-first 崩溃窗口漏发。多副本去重 (claim-first/advisory-lock/leader-election) 列后续切片。
+// 去重边界 = RecordReminder 唯一索引先 claim, claim 成功的副本才允许发邮件。
+// claim 后发送失败不回滚, 采用 at-most-once: 这是非 money 提醒, 用户体验上避免重复轰炸优先。
 func (r *ReminderService) ProcessDueReminders(ctx context.Context, limit int) (int, error) {
 	if r == nil || r.store == nil || r.mailer == nil {
 		return 0, ErrStoreNotConfigured
@@ -185,7 +181,7 @@ func (r *ReminderService) ProcessDueReminders(ctx context.Context, limit int) (i
 	return sent, lastErr
 }
 
-// processCandidate 评估单条订阅: 算当前档位 → 去重 → 发送 → 记账。返回是否实际发送 (0/1)。
+// processCandidate 评估单条订阅: 算当前档位 → 去重 → claim → 发送。返回是否实际发送 (0/1)。
 func (r *ReminderService) processCandidate(ctx context.Context, now time.Time, c ReminderCandidate) (int, error) {
 	tier, ok := currentReminderTier(c.ExpiresAt.Sub(now), r.offsetsDays)
 	if !ok {
@@ -214,28 +210,45 @@ func (r *ReminderService) processCandidate(ctx context.Context, now time.Time, c
 		return 0, err
 	}
 
+	inserted, err := r.store.RecordReminder(ctx, reminderRecord{
+		TenantID:       c.TenantID,
+		SubscriptionID: c.SubscriptionID,
+		ReminderKey:    key,
+		Status:         ReminderStatusSent,
+		Recipient:      c.RecipientEmail,
+		ExpiresAt:      c.ExpiresAt,
+	})
+	if err != nil {
+		return 0, err
+	}
+	if !inserted {
+		return 0, nil
+	}
+
 	subject, body := renderReminderEmail(c.PlanName, c.ExpiresAt, tier)
-	switch r.mailer.SendReminder(ctx, c.TenantID, c.RecipientEmail, subject, body) {
+	outcome := r.mailer.SendReminder(ctx, c.TenantID, c.RecipientEmail, subject, body)
+	if outcome == ReminderSent {
+		return 1, nil
+	}
+	outcomeName := reminderOutcomeName(outcome)
+	slog.WarnContext(ctx, "subscription reminder send failed after durable claim",
+		"tenant_id", c.TenantID,
+		"user_subscription_id", c.SubscriptionID,
+		"reminder_key", key,
+		"outcome", outcomeName)
+	return 0, fmt.Errorf("subscription: reminder send failed after durable claim: %s", outcomeName)
+}
+
+func reminderOutcomeName(outcome ReminderOutcome) string {
+	switch outcome {
 	case ReminderSent:
-		inserted, err := r.store.RecordReminder(ctx, reminderRecord{
-			TenantID:       c.TenantID,
-			SubscriptionID: c.SubscriptionID,
-			ReminderKey:    key,
-			Status:         ReminderStatusSent,
-			Recipient:      c.RecipientEmail,
-			ExpiresAt:      c.ExpiresAt,
-		})
-		if err != nil {
-			return 0, err
-		}
-		if inserted {
-			return 1, nil
-		}
-		return 0, nil
+		return "sent"
+	case ReminderSkippedUnconfigured:
+		return "skipped_unconfigured"
+	case ReminderRetry:
+		return "retry"
 	default:
-		// ReminderSkippedUnconfigured / ReminderRetry: 均不记账, 下个 tick 重试。
-		// 不durably记任何失败 -> 配置修好 / provider 恢复后提醒不会被永久抑制。
-		return 0, nil
+		return "unknown"
 	}
 }
 
