@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"expvar"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -19,10 +21,14 @@ import (
 const (
 	maxRechargeBodyBytes = 16 << 10
 	maxWebhookBodyBytes  = 256 << 10
+
+	legacyPaymentWebhookPath    = "/v1/payment/webhooks/{provider}"
+	canonicalPaymentWebhookPath = "/v1/payments/webhooks/{provider}"
 )
 
 var (
-	defaultDailyAmountLimit = decimal.RequireFromString("500.00000000")
+	defaultDailyAmountLimit             = decimal.RequireFromString("500.00000000")
+	legacyPaymentWebhookDeprecatedTotal = expvar.NewInt("payment_webhook_legacy_path_deprecated_total")
 )
 
 type PaymentService interface {
@@ -80,7 +86,7 @@ func MountUserRoutes(r chi.Router, d Deps) {
 }
 
 func MountWebhookRoutes(r chi.Router, d Deps) {
-	r.Post("/v1/payment/webhooks/{provider}", newLegacyWebhookHandler(d))
+	r.Post(legacyPaymentWebhookPath, newLegacyWebhookHandler(d))
 }
 
 func newCreateRechargeHandler(d Deps) http.HandlerFunc {
@@ -147,6 +153,7 @@ func newCreateRechargeHandler(d Deps) http.HandlerFunc {
 func newLegacyWebhookHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		providerName := normalizeProviderName(chi.URLParam(r, "provider"))
+		recordLegacyWebhookDeprecation(r.Context(), providerName)
 		binding, ok := d.Providers[providerName]
 		if !ok || binding.Provider == nil {
 			writeError(w, http.StatusNotFound, "payment_provider_not_found", "payment provider is not configured")
@@ -193,6 +200,16 @@ func newLegacyWebhookHandler(d Deps) http.HandlerFunc {
 		}
 		writeJSON(w, status, webhookResultView(result))
 	}
+}
+
+func recordLegacyWebhookDeprecation(ctx context.Context, providerName string) {
+	legacyPaymentWebhookDeprecatedTotal.Add(1)
+	slog.WarnContext(ctx, "payment webhook legacy path used",
+		slog.String("event", "payment_webhook_legacy_path_deprecated"),
+		slog.String("legacy_path", legacyPaymentWebhookPath),
+		slog.String("canonical_path", canonicalPaymentWebhookPath),
+		slog.String("provider", providerName),
+	)
 }
 
 func decodeStrictJSON(w http.ResponseWriter, r *http.Request, limit int64, dst any) bool {
