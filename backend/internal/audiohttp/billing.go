@@ -1,6 +1,7 @@
 package audiohttp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 )
 
@@ -115,11 +117,43 @@ func (ex *execution) settleRequest(usage audioTokenUsage, cost decimal.Decimal, 
 	}
 }
 
+// billingCtx 返回脱离请求取消的结算上下文。客户端断连不应取消"已决定"的扣费/退费:
+// settle 在交付完成后被请求 ctx 取消会漏记收入,abort 被取消会让额度 hold 卡住。用
+// context.WithoutCancel 摘掉取消信号,再加 5s 上界防结算调用无限挂起。
+func (ex *execution) billingCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ex.ctx), 5*time.Second)
+}
+
+// logSettleAfterDeliveryFailure 在响应已完整交付后 settle 仍失败时响亮告警。此刻无法再
+// 返回错误码,这条 error 级系统日志是对账发现"已交付未入账"的唯一线索(防静默漏记)。
+func (ex *execution) logSettleAfterDeliveryFailure(err error) {
+	bctx, cancel := ex.billingCtx()
+	defer cancel()
+	claimID := int64(0)
+	if ex.reserveRes != nil {
+		claimID = ex.reserveRes.ClaimID
+	}
+	_ = privacy.LogSystem(bctx, privacy.SystemEvent{
+		Severity:   privacy.SeverityError,
+		Component:  "audiohttp.settle_after_delivery",
+		RequestID:  ex.requestID,
+		ErrorClass: privacy.ErrorClassFor(bctx, err),
+		Attrs: map[string]any{
+			"event_class": "settle_after_delivery_failed",
+			"tenant_id":   ex.ident.TenantID,
+			"claim_id":    claimID,
+			"endpoint":    string(ex.endpoint),
+		},
+	})
+}
+
 func (ex *execution) abort(w http.ResponseWriter, reason string, observedInputTokens int64) {
 	if ex.reserveRes == nil {
 		return
 	}
-	if err := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens, nil); err != nil {
+	bctx, cancel := ex.billingCtx()
+	defer cancel()
+	if err := ex.d.Settler.Abort(bctx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens, nil); err != nil {
 		w.Header().Set("X-Huakai-Abort-Failed", clienterr.CodeAbortFailed)
 	}
 }

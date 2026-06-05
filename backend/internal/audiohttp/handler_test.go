@@ -302,20 +302,71 @@ func TestAudioSpeech_GroupRatioDiscountsReserveAndSettle(t *testing.T) {
 	}
 }
 
-func TestAudioSpeech_SettleErrorReturns500WithoutAbort(t *testing.T) {
+// 交付后结算失败:响应头早已发出(settle-after-delivery),所以是 200 已交付 + 不 abort,
+// 而非旧的 500。Mutation: settle 改回交付前 → 会变 500,本断言变红(守 F1)。
+func TestAudioSpeech_SettleErrorAfterDeliveryKeeps200AndDoesNotAbort(t *testing.T) {
 	env := newAudioTestEnv(t, audioEndpointSpeech, upstreamResponse{status: http.StatusOK, body: "audio"})
 	env.settler.settleErr = errors.New("settle backend down")
 
 	rec := env.invokeJSON(t, `{"model":"tts-1","input":"héllo","voice":"alloy"}`)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status=%d body=%s want 500", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200 (response delivered before settle)", rec.Code, rec.Body.String())
 	}
 	if got := len(env.settler.settles); got != 1 {
-		t.Fatalf("settle calls=%d want 1", got)
+		t.Fatalf("settle calls=%d want 1 (settle attempted after delivery)", got)
 	}
 	if got := len(env.settler.aborts); got != 0 {
-		t.Fatalf("abort calls=%d want 0 on settle backend error", got)
+		t.Fatalf("abort calls=%d want 0 (cannot abort an already-delivered response)", got)
+	}
+}
+
+// failingWriter 在 WriteHeader 之后的 Write 一律失败,模拟客户端断连。
+type failingWriter struct {
+	hdr  http.Header
+	code int
+}
+
+func (f *failingWriter) Header() http.Header {
+	if f.hdr == nil {
+		f.hdr = http.Header{}
+	}
+	return f.hdr
+}
+func (f *failingWriter) WriteHeader(c int) {
+	f.code = c
+}
+func (f *failingWriter) Write(_ []byte) (int, error) {
+	return 0, errors.New("client gone")
+}
+
+// F1 判别测试:交付失败 → abort 不扣费。Mutation: settle 改回交付前 → settle 会被调用
+// (settles=1),本断言变红。
+func TestAudioSpeech_DeliveryFailureAbortsWithoutSettle(t *testing.T) {
+	env := newAudioTestEnv(t, audioEndpointSpeech, upstreamResponse{status: http.StatusOK, body: "audiodata"})
+	req := httptest.NewRequest(http.MethodPost, env.endpoint.Path(), bytes.NewBufferString(`{"model":"tts-1","input":"hi","voice":"alloy"}`))
+	req.Header.Set("Authorization", "Bearer hk-test")
+	req.Header.Set("Content-Type", "application/json")
+	w := &failingWriter{}
+	middleware.RequestID(env.handler()).ServeHTTP(w, req)
+
+	if got := len(env.settler.settles); got != 0 {
+		t.Fatalf("settle calls=%d want 0 — must not charge undelivered audio", got)
+	}
+	if got := len(env.settler.aborts); got != 1 {
+		t.Fatalf("abort calls=%d want 1 on delivery failure", got)
+	}
+}
+
+// F2 判别测试:billingCtx 脱离请求取消。Mutation: 改回返回 ex.ctx → bctx.Err()==Canceled,变红。
+func TestBillingCtxDetachesFromRequestCancellation(t *testing.T) {
+	reqCtx, cancel := context.WithCancel(context.Background())
+	cancel() // 客户端断连
+	ex := &execution{ctx: reqCtx}
+	bctx, bcancel := ex.billingCtx()
+	defer bcancel()
+	if bctx.Err() != nil {
+		t.Fatalf("billingCtx must detach from request cancellation, got err=%v", bctx.Err())
 	}
 }
 
