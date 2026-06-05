@@ -248,6 +248,32 @@ func TestScrubInactiveFieldsClearsGotifyPriorityOutsideGotify(t *testing.T) {
 	}
 }
 
+func TestNotifyTypeNoneShortCircuitsRepeatDBReads(t *testing.T) {
+	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
+	store := &countingStore{settings: DefaultSettings(7, 42)}
+	httpCalls := &recordingRoundTripper{status: http.StatusNoContent}
+	notifier := NewNotifier(Config{
+		Store:              store,
+		HTTPClient:         &http.Client{Transport: httpCalls},
+		Now:                func() time.Time { return now },
+		NotifyTypeCacheTTL: time.Minute,
+	})
+
+	const settlements = 50
+	for i := 0; i < settlements; i++ {
+		if err := notifier.NotifyLowBalance(context.Background(), 7, 42, decimal.RequireFromString("1.00000000"), int64(i)); err != nil {
+			t.Fatalf("NotifyLowBalance iteration %d: %v", i, err)
+		}
+	}
+
+	if got := store.Calls(); got != 1 {
+		t.Fatalf("GetSettings DB reads=%d want 1; MUTATION: dropping the notify_type short-circuit makes the hot path read the DB on every settlement (=%d)", got, settlements)
+	}
+	if got := len(httpCalls.Requests()); got != 0 {
+		t.Fatalf("http calls=%d want 0 for notify_type=none", got)
+	}
+}
+
 func webhookSignature(secret string, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write(body)
@@ -361,4 +387,34 @@ func (s *fakeSettler) CommitCacheHit(context.Context, billing.SettleRequest) err
 
 func (s *fakeSettler) Refund(context.Context, billing.RefundRequest) (*billing.RefundResult, error) {
 	return nil, nil
+}
+
+type countingStore struct {
+	settings Settings
+	err      error
+	mu       sync.Mutex
+	calls    int
+}
+
+func (s *countingStore) GetSettings(context.Context, int64, int64) (Settings, error) {
+	s.mu.Lock()
+	s.calls++
+	s.mu.Unlock()
+	if s.err != nil {
+		return Settings{}, s.err
+	}
+	return s.settings, nil
+}
+
+func (s *countingStore) UpsertSettings(context.Context, Settings) (Settings, error) {
+	if s.err != nil {
+		return Settings{}, s.err
+	}
+	return s.settings, nil
+}
+
+func (s *countingStore) Calls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
 }
