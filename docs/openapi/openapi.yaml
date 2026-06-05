@@ -2777,6 +2777,29 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/users/me/payments/orders/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [user-payments]
+      summary: Cancel your own pending payment order
+      operationId: cancelMyPaymentOrder
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: Order cancelled (idempotent if already cancelled).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order: { type: object }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/admin/payments:
     get:
       tags: [admin-payments]
@@ -2915,6 +2938,40 @@ paths:
                   credit: { type: object }
                   balance_cents: { type: integer, format: int64 }
                   idempotent: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/payments/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-payments]
+      summary: Cancel a pending payment order (operator)
+      operationId: adminCancelPaymentOrder
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                reason: { type: string }
+      responses:
+        '200':
+          description: Order cancelled (idempotent if already cancelled).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order: { type: object }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
