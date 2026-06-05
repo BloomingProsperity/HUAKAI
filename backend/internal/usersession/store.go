@@ -30,6 +30,7 @@ type Store interface {
 	RevokeFamily(context.Context, int64, string, string, time.Time) (SessionFamily, error)
 	FamilyBelongsToUser(context.Context, int64, int64, string) (bool, error)
 	RevokeUser(context.Context, int64, int64, string, time.Time) (int64, error)
+	ListActiveFamiliesForDevicePolicy(context.Context, int64, int64, int) ([]SessionFamily, error)
 	ListFamilies(context.Context, int64, int64) ([]SessionFamily, error)
 }
 
