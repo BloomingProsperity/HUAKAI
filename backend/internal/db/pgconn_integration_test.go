@@ -1,9 +1,12 @@
 //go:build integration_pg
 
 // Real PostgreSQL connection smoke test. Requires:
-//   make db-up && make db-migrate
+//
+//	make db-up && make db-migrate
+//
 // then:
-//   make test-integration
+//
+//	make test-integration
 //
 // Skipped in the default suite (no //go:build => standard build tag).
 package db
@@ -12,6 +15,11 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"sort"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -46,7 +54,7 @@ func TestPgConnect(t *testing.T) {
 	}
 }
 
-// TestPgSchemaApplied confirms the 6 migrations landed and the key
+// TestPgSchemaApplied confirms the migrations landed and the key
 // money-path tables (claim ledger + usage records + outbox) exist.
 // If this fails, run `make db-migrate`.
 func TestPgSchemaApplied(t *testing.T) {
@@ -81,7 +89,11 @@ func TestPgSchemaApplied(t *testing.T) {
 		}
 	}
 
-	// schema_migrations sanity: golang-migrate sets version=6 dirty=false after Phase B.3.
+	// schema_migrations sanity: the applied version must match the highest
+	// migration file on disk. Derived from sql/migrations so this assertion
+	// auto-fails the moment a new migration is added without re-running
+	// `make db-migrate` (no hardcoded version to drift).
+	want := latestMigrationVersion(t)
 	var version int
 	var dirty bool
 	if err := pool.QueryRow(ctx, "SELECT version, dirty FROM schema_migrations").Scan(&version, &dirty); err != nil {
@@ -90,9 +102,47 @@ func TestPgSchemaApplied(t *testing.T) {
 	if dirty {
 		t.Fatalf("schema_migrations is DIRTY at version %d; previous migration failed mid-flight", version)
 	}
-	if version < 6 {
-		t.Fatalf("schema_migrations version=%d, expected >=6 (run `make db-migrate`)", version)
+	if version != want {
+		t.Fatalf("schema_migrations version=%d, expected %d (latest on-disk migration); run `make db-migrate`", version, want)
 	}
+}
+
+// latestMigrationVersion returns the highest numeric prefix among the
+// *.up.sql files in sql/migrations. The directory is located relative to
+// this test source file so the result is independent of the working dir.
+func latestMigrationVersion(t *testing.T) int {
+	t.Helper()
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed; cannot locate migrations dir")
+	}
+	// thisFile = <repo>/backend/internal/db/pgconn_integration_test.go
+	migDir := filepath.Join(filepath.Dir(thisFile), "..", "..", "sql", "migrations")
+	entries, err := os.ReadDir(migDir)
+	if err != nil {
+		t.Fatalf("read migrations dir %s: %v", migDir, err)
+	}
+	re := regexp.MustCompile(`^(\d+)_.*\.up\.sql$`)
+	var versions []int
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		m := re.FindStringSubmatch(e.Name())
+		if m == nil {
+			continue
+		}
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			continue
+		}
+		versions = append(versions, n)
+	}
+	if len(versions) == 0 {
+		t.Fatalf("no *.up.sql migrations found in %s", migDir)
+	}
+	sort.Ints(versions)
+	return versions[len(versions)-1]
 }
 
 // TestOpenWithoutDSN proves the contract from plan §F: "If a function

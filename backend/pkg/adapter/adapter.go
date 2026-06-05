@@ -6,13 +6,12 @@
 // Each upstream adapter (anthropic / openai / gemini / bedrock / antigravity)
 // implements internal/proto.UpstreamAdapter.
 //
-// Current slice keeps this package as the adapter registry boundary. Concrete
-// registration across OpenAI/Gemini/Bedrock/Antigravity remains Phase E+ work.
+// This package defines the adapter registry boundary for the proto hub.
+// Concrete vendor adapters are registered at startup by
+// internal/provider/registrydefault (Build()), which cmd/gateway/wiring.go
+// wires into the running gateway; see that package for the live mapping of
+// protocol family to upstream adapter.
 //
-// Each concrete adapter lives in a sub-package, e.g. pkg/adapter/openaichat,
-// pkg/adapter/anthropicupstream, etc. Implementation in Phase 4 vertical slices.
+// Concrete vendor adapters live under internal/provider/<vendor> (anthropic, openai,
+// gemini, bedrock, ...), wired via internal/provider/registrydefault.Build().
 package adapter
-
-// TODO(phase-4): import + register adapter map per client_protocol /
-// upstream_protocol in HUAKAI's adapter registry (per F-PROTO-002 §9 +
-// Codex Portkey cross-verify P1).
