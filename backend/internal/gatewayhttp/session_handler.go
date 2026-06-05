@@ -153,17 +153,7 @@ func newSessionRevokeHandler(d SessionHandlerDeps) http.HandlerFunc {
 }
 
 func sessionFamilyBelongsToCurrentUser(r *http.Request, sessions *usersession.Service, ident sessionauth.SessionIdentity, familyID string) (bool, error) {
-	families, err := sessions.List(r.Context(), ident.TenantID, ident.UserID)
-	if err != nil {
-		return false, err
-	}
-	familyID = strings.TrimSpace(familyID)
-	for _, family := range families {
-		if family.ID == familyID {
-			return true, nil
-		}
-	}
-	return false, nil
+	return sessions.FamilyBelongsToUser(r.Context(), ident.TenantID, ident.UserID, familyID)
 }
 
 func newSessionListHandler(d SessionHandlerDeps) http.HandlerFunc {
