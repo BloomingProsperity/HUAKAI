@@ -591,7 +591,7 @@ WHERE tenant_id=$1
 	return sum, nil
 }
 
-// UserBalanceCents 用户支付来源余额 = payment_credits 派生 SUM (tenant-scoped)。
+// UserBalanceCents 用户支付来源余额 = payment_credits - payment_refunds 派生净额 (tenant-scoped)。
 func (s *PostgresStore) UserBalanceCents(ctx context.Context, tenantID, userID int64) (int64, error) {
 	if s == nil || s.pool == nil {
 		return 0, ErrStoreNotConfigured
@@ -802,8 +802,18 @@ RETURNING id`, order.TenantID, amount, fingerprint, credit.ID).Scan(&billingID);
 func userBalanceTx(ctx context.Context, tx pgx.Tx, tenantID, userID int64) (int64, error) {
 	var balance int64
 	if err := tx.QueryRow(ctx, `
-SELECT COALESCE(SUM(amount_cents), 0)::bigint
-FROM payment_credits WHERE tenant_id=$1 AND user_id=$2`, tenantID, userID).Scan(&balance); err != nil {
+WITH credits AS (
+	SELECT COALESCE(SUM(amount_cents), 0)::bigint AS total
+	FROM payment_credits
+	WHERE tenant_id=$1 AND user_id=$2
+),
+refunds AS (
+	SELECT COALESCE(SUM(amount_cents), 0)::bigint AS total
+	FROM payment_refunds
+	WHERE tenant_id=$1 AND user_id=$2
+)
+SELECT credits.total - refunds.total
+FROM credits, refunds`, tenantID, userID).Scan(&balance); err != nil {
 		return 0, fmt.Errorf("payment: read balance: %w", err)
 	}
 	return balance, nil
@@ -811,6 +821,13 @@ FROM payment_credits WHERE tenant_id=$1 AND user_id=$2`, tenantID, userID).Scan(
 
 func syncLegacyUserBalanceTx(ctx context.Context, tx pgx.Tx, tenantID, userID, amountCents int64, now time.Time) error {
 	if amountCents <= 0 {
+		return ErrInvalidAmount
+	}
+	return syncLegacyUserBalanceDeltaTx(ctx, tx, tenantID, userID, amountCents, now)
+}
+
+func syncLegacyUserBalanceDeltaTx(ctx context.Context, tx pgx.Tx, tenantID, userID, amountCents int64, now time.Time) error {
+	if amountCents == 0 {
 		return ErrInvalidAmount
 	}
 	amount := decimalFromCents(amountCents)

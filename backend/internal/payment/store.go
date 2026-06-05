@@ -15,6 +15,7 @@ type Store interface {
 	GetOrderByOutTradeNo(ctx context.Context, tenantID int64, outTradeNo string) (Order, error)
 	ConfirmPaid(ctx context.Context, rec confirmRecord) (Order, error)
 	CancelOrder(ctx context.Context, rec cancelRecord) (Order, error)
+	RefundOrder(ctx context.Context, rec refundRecord) (RefundResult, error)
 	ExpireStalePendingOrders(ctx context.Context, now time.Time, limit int) (expired int, err error)
 	BeginFulfill(ctx context.Context, rec fulfillRecord) (Order, beginFulfillOutcome, error)
 	CompleteFulfill(ctx context.Context, rec fulfillRecord) (FulfillResult, error)
@@ -93,6 +94,18 @@ type cancelRecord struct {
 	Reason    string
 	RequestID string
 	Now       time.Time
+}
+
+type refundRecord struct {
+	TenantID       int64
+	OrderID        int64
+	AmountCents    int64
+	IdempotencyKey string
+	Reason         string
+	ActorKind      string
+	ActorID        int64
+	RequestID      string
+	Now            time.Time
 }
 
 type fulfillRecord struct {

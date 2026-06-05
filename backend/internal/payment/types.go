@@ -20,7 +20,7 @@ const maxAmountCents = 100_000_000_000
 
 // OrderStatus 订单状态机:
 //
-//	pending -> paid -> recharging -> completed
+//	pending -> paid -> recharging -> completed -> refunded
 //
 // 旁路: expired / cancelled / failed。recharging 是显式可崩溃恢复断点。
 type OrderStatus string
@@ -30,6 +30,7 @@ const (
 	StatusPaid       OrderStatus = "paid"
 	StatusRecharging OrderStatus = "recharging"
 	StatusCompleted  OrderStatus = "completed"
+	StatusRefunded   OrderStatus = "refunded"
 	StatusExpired    OrderStatus = "expired"
 	StatusCancelled  OrderStatus = "cancelled"
 	StatusFailed     OrderStatus = "failed"
@@ -103,6 +104,22 @@ type CreditRecord struct {
 	CreatedAt      time.Time
 }
 
+// RefundRecord 一次订单退款事实。一张订单最多一条; 幂等键 tenant-scoped。
+type RefundRecord struct {
+	ID             int64
+	TenantID       int64
+	OrderID        int64
+	UserID         int64
+	AmountCents    int64
+	CurrencyCode   string
+	IdempotencyKey string
+	Reason         string
+	ActorKind      string
+	ActorID        int64
+	BillingEventID int64
+	CreatedAt      time.Time
+}
+
 // CreateOrderInput service 层建单输入。
 type CreateOrderInput struct {
 	TenantID     int64
@@ -150,6 +167,18 @@ type CancelOrderInput struct {
 	RequestID string
 }
 
+// RefundOrderInput 管理员退款输入。IdempotencyKey 必填, 防止重试双扣。
+type RefundOrderInput struct {
+	TenantID       int64
+	OrderID        int64
+	AmountCents    int64
+	IdempotencyKey string
+	Reason         string
+	ActorKind      string
+	ActorID        int64
+	RequestID      string
+}
+
 // FulfillInput 履约输入。
 type FulfillInput struct {
 	TenantID  int64
@@ -169,6 +198,14 @@ type FulfillResult struct {
 	Subscription *SubscriptionGrant
 }
 
+// RefundResult 退款结果。Idempotent=true 表示命中既有退款, 未重复扣减。
+type RefundResult struct {
+	Order        Order
+	Refund       RefundRecord
+	BalanceCents int64
+	Idempotent   bool
+}
+
 // Balance 用户支付来源余额 (来自 payment_credits 派生 SUM)。
 type Balance struct {
 	TenantID    int64
@@ -177,13 +214,15 @@ type Balance struct {
 }
 
 var (
-	ErrStoreNotConfigured  = errors.New("payment: store not configured")
-	ErrOrderNotFound       = errors.New("payment: order not found")
-	ErrInvalidAmount       = errors.New("payment: amount must be positive")
-	ErrInvalidInput        = errors.New("payment: invalid input")
-	ErrOrderNotConfirmable = errors.New("payment: order not in a confirmable state")
-	ErrOrderNotFulfillable = errors.New("payment: order not in a fulfillable state")
-	ErrOrderNotCancelable  = errors.New("payment: order not in a cancelable state")
+	ErrStoreNotConfigured    = errors.New("payment: store not configured")
+	ErrOrderNotFound         = errors.New("payment: order not found")
+	ErrInvalidAmount         = errors.New("payment: amount must be positive")
+	ErrInvalidInput          = errors.New("payment: invalid input")
+	ErrOrderNotConfirmable   = errors.New("payment: order not in a confirmable state")
+	ErrOrderNotFulfillable   = errors.New("payment: order not in a fulfillable state")
+	ErrOrderNotCancelable    = errors.New("payment: order not in a cancelable state")
+	ErrOrderNotRefundable    = errors.New("payment: order not in a refundable state")
+	ErrRefundUnsupportedKind = errors.New("payment: refund unsupported for order kind")
 	// ErrSubscriptionOrderRequiresPG: 订阅单履约依赖真订阅/配额表, 内存 store 不镜像 (P3b-4 计划 §5 D3); 真路径 PG-only。
 	ErrSubscriptionOrderRequiresPG = errors.New("payment: subscription order fulfillment requires postgres store")
 	ErrIdempotencyConflict         = errors.New("payment: out_trade_no reused with different order fields")

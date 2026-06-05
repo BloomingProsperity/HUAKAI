@@ -1,0 +1,73 @@
+// HUAKAI · iKun
+
+package paymenthttp
+
+import (
+	"net/http"
+	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/payment"
+)
+
+type refundRequest struct {
+	TenantID       int64  `json:"tenant_id"`
+	AmountCents    int64  `json:"amount_cents"`
+	IdempotencyKey string `json:"idempotency_key"`
+	Reason         string `json:"reason,omitempty"`
+}
+
+type refundView struct {
+	ID             int64     `json:"id"`
+	AmountCents    int64     `json:"amount_cents"`
+	CurrencyCode   string    `json:"currency_code"`
+	IdempotencyKey string    `json:"idempotency_key"`
+	Reason         string    `json:"reason,omitempty"`
+	BillingEventID int64     `json:"billing_event_id,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+func toRefundView(r payment.RefundRecord) refundView {
+	return refundView{
+		ID: r.ID, AmountCents: r.AmountCents, CurrencyCode: r.CurrencyCode,
+		IdempotencyKey: r.IdempotencyKey, Reason: r.Reason,
+		BillingEventID: r.BillingEventID, CreatedAt: r.CreatedAt,
+	}
+}
+
+// newAdminRefundHandler 管理员退款已入账充值订单。
+func newAdminRefundHandler(d AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, ok := resolveAdmin(w, r, d)
+		if !ok {
+			return
+		}
+		id, ok := parsePathID(w, r)
+		if !ok {
+			return
+		}
+		var req refundRequest
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		res, err := d.Service.RefundOrder(r.Context(), payment.RefundOrderInput{
+			TenantID:       req.TenantID,
+			OrderID:        id,
+			AmountCents:    req.AmountCents,
+			IdempotencyKey: req.IdempotencyKey,
+			Reason:         req.Reason,
+			ActorKind:      payment.ActorKindAdmin,
+			ActorID:        ident.TokenID,
+			RequestID:      requestID(r),
+		})
+		if err != nil {
+			writePaymentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"order":         toAdminOrderView(res.Order),
+			"refund":        toRefundView(res.Refund),
+			"balance_cents": res.BalanceCents,
+			"idempotent":    res.Idempotent,
+		})
+	}
+}

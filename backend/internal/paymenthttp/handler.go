@@ -36,6 +36,7 @@ type Service interface {
 	GetBalance(context.Context, int64, int64) (payment.Balance, error)
 	ListOrders(context.Context, int64, int64, int) ([]payment.Order, error)
 	CancelOrder(context.Context, payment.CancelOrderInput) (payment.Order, error)
+	RefundOrder(context.Context, payment.RefundOrderInput) (payment.RefundResult, error)
 }
 
 // AdminDeps 管理员路由依赖。
@@ -59,16 +60,6 @@ type createOrderRequest struct {
 	// OrderKind 省略=充值 (topup); subscription 时 SubscriptionPlanID 必填 (service 层校验)。
 	OrderKind          string `json:"order_kind,omitempty"`
 	SubscriptionPlanID *int64 `json:"subscription_plan_id,omitempty"`
-}
-
-type confirmRequest struct {
-	TenantID      int64  `json:"tenant_id"`
-	ConfirmReason string `json:"confirm_reason,omitempty"`
-}
-
-type cancelRequest struct {
-	TenantID int64  `json:"tenant_id"`
-	Reason   string `json:"reason,omitempty"`
 }
 
 // orderView 是面向用户的订单 DTO — 仅公开字段, snake_case, 不暴露任何内部/管理字段。
@@ -203,38 +194,7 @@ func MountPaymentAdminRoutes(r chi.Router, d AdminDeps) {
 	r.Get("/{id}", newAdminGetOrderHandler(d))
 	r.Post("/{id}/confirm", newAdminConfirmHandler(d))
 	r.Post("/{id}/cancel", newAdminCancelHandler(d))
-}
-
-// newAdminCancelHandler 管理员取消任意 pending 订单(运营撤单)。
-func newAdminCancelHandler(d AdminDeps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ident, ok := resolveAdmin(w, r, d)
-		if !ok {
-			return
-		}
-		id, ok := parsePathID(w, r)
-		if !ok {
-			return
-		}
-		var req cancelRequest
-		if !decodeJSON(w, r, &req) {
-			return
-		}
-		order, err := d.Service.CancelOrder(r.Context(), payment.CancelOrderInput{
-			TenantID:  req.TenantID,
-			OrderID:   id,
-			UserID:    0,
-			ActorKind: payment.ActorKindAdmin,
-			ActorID:   ident.TokenID,
-			Reason:    req.Reason,
-			RequestID: requestID(r),
-		})
-		if err != nil {
-			writePaymentError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"order": toAdminOrderView(order)})
-	}
+	r.Post("/{id}/refund", newAdminRefundHandler(d))
 }
 
 // MountPaymentUserRoutes 挂载用户支付端点 (自己的订单 / 余额)。
@@ -307,47 +267,6 @@ func newAdminCreateOrderHandler(d AdminDeps) http.HandlerFunc {
 			status = http.StatusOK
 		}
 		writeJSON(w, status, map[string]any{"order": toAdminOrderView(res.Order), "idempotent": res.Idempotent})
-	}
-}
-
-func newAdminConfirmHandler(d AdminDeps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ident, ok := resolveAdmin(w, r, d)
-		if !ok {
-			return
-		}
-		id, ok := parsePathID(w, r)
-		if !ok {
-			return
-		}
-		var req confirmRequest
-		if !decodeJSON(w, r, &req) {
-			return
-		}
-		res, err := d.Service.AdminConfirmPaid(r.Context(), payment.AdminConfirmPaidInput{
-			TenantID:      req.TenantID,
-			OrderID:       id,
-			ActorAdminID:  ident.TokenID,
-			ConfirmReason: req.ConfirmReason,
-			RequestID:     requestID(r),
-		})
-		if err != nil {
-			writePaymentError(w, err)
-			return
-		}
-		resp := map[string]any{
-			"order":      toAdminOrderView(res.Order),
-			"idempotent": res.Idempotent,
-		}
-		// 订阅单: 表订阅授予, 零入账 → 不渲染 credit/balance (避免误导出零值入账)。
-		// 充值单: 渲染入账 credit + 派生余额。
-		if res.Subscription != nil {
-			resp["subscription"] = toSubscriptionGrantView(res.Subscription)
-		} else {
-			resp["credit"] = toCreditView(res.Credit)
-			resp["balance_cents"] = res.BalanceCents
-		}
-		writeJSON(w, http.StatusOK, resp)
 	}
 }
 
@@ -535,6 +454,10 @@ func writePaymentError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusConflict, "order_not_confirmable", "order is not in a confirmable state")
 	case errors.Is(err, payment.ErrOrderNotCancelable):
 		writeJSONError(w, http.StatusConflict, "order_not_cancelable", "order is not in a cancelable state")
+	case errors.Is(err, payment.ErrOrderNotRefundable):
+		writeJSONError(w, http.StatusConflict, "order_not_refundable", "order is not in a refundable state")
+	case errors.Is(err, payment.ErrRefundUnsupportedKind):
+		writeJSONError(w, http.StatusUnprocessableEntity, "refund_unsupported_kind", "refund is not supported for this order kind")
 	case errors.Is(err, payment.ErrOrderNotFulfillable):
 		writeJSONError(w, http.StatusConflict, "order_not_fulfillable", "order is not in a fulfillable state")
 	case errors.Is(err, payment.ErrSubscriptionOrderRequiresPG):
