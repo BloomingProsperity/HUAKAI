@@ -247,7 +247,7 @@ func TestQualifyPendingReferralRejectsUnsafeRewardConfigBeforeStore(t *testing.T
 }
 
 func TestReferralRewardMigrationContracts(t *testing.T) {
-	raw, err := os.ReadFile("../../../sql/migrations/0094_referral_reward_issuance.up.sql")
+	raw, err := os.ReadFile("../../../sql/migrations/0095_referral_reward_issuance.up.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestReferralRewardMigrationContracts(t *testing.T) {
 		"'REWARD_ISSUED', 'REWARD_FAILED', 'REWARD_SKIPPED'",
 	} {
 		if !strings.Contains(sql, want) {
-			t.Fatalf("0094 migration missing %q", want)
+			t.Fatalf("0095 migration missing %q", want)
 		}
 	}
 }

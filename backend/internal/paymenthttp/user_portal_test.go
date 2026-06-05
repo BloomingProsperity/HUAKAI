@@ -67,6 +67,26 @@ func (s *portalService) CancelOrder(context.Context, payment.CancelOrderInput) (
 }
 
 // RefundOrder: 门户绝不该走资金退款路径。被调用即记账, 测试据此判用户自助退钱。
+func (s *portalService) AdminListOrders(context.Context, payment.OrderListFilter) ([]payment.Order, error) {
+	return nil, nil
+}
+
+func (s *portalService) DashboardStats(context.Context, payment.DashboardFilter) (payment.DashboardStats, error) {
+	return payment.DashboardStats{}, nil
+}
+
+func (s *portalService) RetryFulfillment(context.Context, payment.RetryFulfillmentInput) (payment.FulfillResult, error) {
+	return payment.FulfillResult{}, nil
+}
+
+func (s *portalService) GetProviderRuntimeConfig(context.Context, payment.ProviderKind) (payment.ProviderRuntimeConfig, error) {
+	return payment.ProviderRuntimeConfig{}, nil
+}
+
+func (s *portalService) SetProviderRuntimeConfig(context.Context, payment.ProviderRuntimeConfigInput) (payment.ProviderRuntimeConfig, error) {
+	return payment.ProviderRuntimeConfig{}, nil
+}
+
 func (s *portalService) RefundOrder(_ context.Context, in payment.RefundOrderInput) (payment.RefundResult, error) {
 	s.refundCalled = true
 	s.refundOrderID = in.OrderID
