@@ -3211,6 +3211,106 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/payments/refund-requests:
+    get:
+      tags: [admin-payments]
+      summary: List pending payment refund requests
+      operationId: adminListPaymentRefundRequests
+      description: Tenant-scoped operator queue of pending user refund requests.
+      x-huakai-spec-source: [docs/process/plans/2026-06-05-refund-approval-codex.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Pending refund requests for the tenant.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  refund_requests:
+                    type: array
+                    items: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/payments/refund-requests/{id}/approve:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-payments]
+      summary: Approve a pending refund request and execute the refund
+      operationId: adminApprovePaymentRefundRequest
+      description: Approves a pending user request and calls the payment refund path with a stable request-derived idempotency key.
+      x-huakai-spec-source: [docs/process/plans/2026-06-05-refund-approval-codex.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Refund request approved, or prior decision returned idempotently.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  refund_request: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/payments/refund-requests/{id}/reject:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-payments]
+      summary: Reject a pending refund request without moving money
+      operationId: adminRejectPaymentRefundRequest
+      description: Records an admin rejection decision. This endpoint does not call the payment refund path.
+      x-huakai-spec-source: [docs/process/plans/2026-06-05-refund-approval-codex.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                reason: { type: string }
+      responses:
+        '200':
+          description: Refund request rejected, or prior decision returned idempotently.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  refund_request: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/admin/payments/{id}:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
