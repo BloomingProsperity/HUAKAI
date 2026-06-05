@@ -238,10 +238,17 @@ func buildPaymentProviderBindings(cfg *Config) (map[string]paymenthttp.ProviderB
 }
 
 func paymentServiceOptions(cfg *Config) []payment.Option {
-	if cfg == nil || !cfg.PaymentEnableMock {
+	if cfg == nil {
 		return nil
 	}
-	return []payment.Option{payment.WithTestProvider()}
+	var opts []payment.Option
+	if cfg.PaymentEnableMock {
+		opts = append(opts, payment.WithTestProvider())
+	}
+	if cfg.PaymentTaobaoEnabled {
+		opts = append(opts, payment.WithTaobaoProvider(cfg.PaymentTaobaoCheckoutURL))
+	}
+	return opts
 }
 
 func buildQuotaEnforcement(cfg *Config, pgPool *pgxpool.Pool, plain billing.Settler, settings *platformsettings.Service) (billing.Settler, quotaenforce.Reserver) {

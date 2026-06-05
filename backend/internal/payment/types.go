@@ -42,6 +42,9 @@ const (
 	ProviderManual ProviderKind = "manual"
 	ProviderTest   ProviderKind = "test"
 	ProviderHMAC   ProviderKind = "hmac"
+	// ProviderTaobao 淘宝/闲鱼 manual-redirect: 用户到淘宝/闲鱼扫码/点链接下单付款,
+	// 管理员手动确认入账(无程序回调)。默认关闭。
+	ProviderTaobao ProviderKind = "taobao"
 )
 
 // Order 支付订单。金额用 amount_cents (对齐 voucher_redemption), currency_code 三位币种。
