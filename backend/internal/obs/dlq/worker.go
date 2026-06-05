@@ -18,6 +18,8 @@ type Worker struct {
 	cfg      WorkerConfig
 	handlers map[string]Handler
 	now      func() time.Time
+	// instanceID 每个 Worker 唯一(进程级), 使 owner 租约令牌跨进程可区分。
+	instanceID string
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -43,10 +45,11 @@ func NewWorker(outbox Outbox, cfg WorkerConfig, opts ...WorkerOption) *Worker {
 	}
 	cfg.RetryPolicy = cfg.RetryPolicy.normalized()
 	w := &Worker{
-		outbox:   outbox,
-		cfg:      cfg,
-		handlers: make(map[string]Handler),
-		now:      func() time.Time { return time.Now().UTC() },
+		outbox:     outbox,
+		instanceID: newEventID(),
+		cfg:        cfg,
+		handlers:   make(map[string]Handler),
+		now:        func() time.Time { return time.Now().UTC() },
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -127,15 +130,15 @@ func (w *Worker) RunOnce(ctx context.Context, priority Priority, workerID string
 	if err := w.handle(ctx, ev); err != nil {
 		delay, dead := w.cfg.RetryPolicy.NextDelay(ev.AttemptCount)
 		if dead {
-			return true, w.outbox.MarkFailedDead(ctx, ev.ID, err.Error())
+			return true, w.outbox.MarkFailedDead(ctx, ev.ID, workerID, err.Error())
 		}
-		return true, w.outbox.MarkFailedRetry(ctx, ev.ID, err.Error(), w.now().Add(delay))
+		return true, w.outbox.MarkFailedRetry(ctx, ev.ID, workerID, err.Error(), w.now().Add(delay))
 	}
-	return true, w.outbox.MarkCompleted(ctx, ev.ID)
+	return true, w.outbox.MarkCompleted(ctx, ev.ID, workerID)
 }
 
 func (w *Worker) runLane(ctx context.Context, priority Priority) {
-	workerID := fmt.Sprintf("obsdlq-%s", priority)
+	workerID := fmt.Sprintf("obsdlq-%s-%s", priority, w.instanceID)
 	for {
 		select {
 		case <-ctx.Done():

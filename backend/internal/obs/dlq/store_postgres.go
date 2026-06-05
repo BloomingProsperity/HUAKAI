@@ -105,14 +105,16 @@ RETURNING q.id, q.tenant_id, q.event_type, q.priority, q.payload, q.created_at,
 	return ev, true, nil
 }
 
-func (p *PostgresOutbox) MarkCompleted(ctx context.Context, id string) error {
+func (p *PostgresOutbox) MarkCompleted(ctx context.Context, id, owner string) error {
 	if p == nil || p.pool == nil {
 		return ErrOutboxNotConfigured
 	}
+	// owner 围栏: 仅当行的 processing 租约仍属本 worker 时才完成(防超时被他 worker 重领后,
+	// 本 stale worker 迟到的 mark 覆盖对方状态)。owner='' 跳过围栏。
 	tag, err := p.pool.Exec(ctx, `
 UPDATE outbox_events
 SET status = 'completed', failure_reason = NULL
-WHERE id = $1`, id)
+WHERE id = $1 AND ($2 = '' OR failure_reason = 'processing:' || $2)`, id, owner)
 	if err != nil {
 		return fmt.Errorf("obsdlq: mark completed: %w", err)
 	}
@@ -122,17 +124,18 @@ WHERE id = $1`, id)
 	return nil
 }
 
-func (p *PostgresOutbox) MarkFailedRetry(ctx context.Context, id, reason string, next time.Time) error {
+func (p *PostgresOutbox) MarkFailedRetry(ctx context.Context, id, owner, reason string, next time.Time) error {
 	if p == nil || p.pool == nil {
 		return ErrOutboxNotConfigured
 	}
+	// owner 围栏同 MarkCompleted; WHERE 比对的是更新前的 failure_reason(processing 租约令牌)。
 	tag, err := p.pool.Exec(ctx, `
 UPDATE outbox_events
 SET status = 'failed_retry',
     attempt_count = attempt_count + 1,
     next_retry_at = $2,
     failure_reason = $3
-WHERE id = $1`, id, next.UTC(), RedactString(reason))
+WHERE id = $1 AND ($4 = '' OR failure_reason = 'processing:' || $4)`, id, next.UTC(), RedactString(reason), owner)
 	if err != nil {
 		return fmt.Errorf("obsdlq: mark failed retry: %w", err)
 	}
@@ -142,7 +145,7 @@ WHERE id = $1`, id, next.UTC(), RedactString(reason))
 	return nil
 }
 
-func (p *PostgresOutbox) MarkFailedDead(ctx context.Context, id, reason string) error {
+func (p *PostgresOutbox) MarkFailedDead(ctx context.Context, id, owner, reason string) error {
 	if p == nil || p.pool == nil {
 		return ErrOutboxNotConfigured
 	}
@@ -158,10 +161,10 @@ UPDATE outbox_events
 SET status = 'failed_dead',
     attempt_count = attempt_count + 1,
     failure_reason = $2
-WHERE id = $1
+WHERE id = $1 AND ($3 = '' OR failure_reason = 'processing:' || $3)
 RETURNING id, tenant_id, event_type, priority, payload, created_at,
           attempt_count, next_retry_at, status, COALESCE(failure_reason, '')`,
-		id, reason,
+		id, reason, owner,
 	).Scan(&ev.ID, &ev.TenantID, &ev.EventType, &ev.Priority, &ev.Payload, &ev.CreatedAt,
 		&ev.AttemptCount, &ev.NextRetryAt, &ev.Status, &ev.FailureReason)
 	if err == pgx.ErrNoRows {
