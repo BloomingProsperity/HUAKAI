@@ -66,6 +66,10 @@ type Config struct {
 	// Values come from HUAKAI_PAYMENT_HMAC_SECRETS and must never be logged.
 	PaymentHMACSecrets map[string]string
 	PaymentEnableMock  bool
+	// 淘宝/闲鱼 manual-redirect 支付: 默认关闭。启用后下单返回 checkout_url + 订单号,
+	// 用户到淘宝/闲鱼扫码/点链接付款, 管理员手动确认入账(无程序回调)。
+	PaymentTaobaoEnabled     bool
+	PaymentTaobaoCheckoutURL string
 }
 
 type BudgetConfig struct {
@@ -120,6 +124,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	paymentTaobaoEnabled, err := envBool("HUAKAI_PAYMENT_TAOBAO_ENABLED")
+	if err != nil {
+		return nil, err
+	}
 	transportSidecarFallback, err := envBool("HUAKAI_TRANSPORT_SIDECAR_FALLBACK")
 	if err != nil {
 		return nil, err
@@ -170,6 +178,8 @@ func Load() (*Config, error) {
 		CredentialAcqBootstrapLongTTL:  credentialAcqBootstrapLongTTL,
 		PaymentHMACSecrets:             paymentHMACSecrets,
 		PaymentEnableMock:              paymentEnableMock,
+		PaymentTaobaoEnabled:           paymentTaobaoEnabled,
+		PaymentTaobaoCheckoutURL:       strings.TrimSpace(os.Getenv("HUAKAI_PAYMENT_TAOBAO_CHECKOUT_URL")),
 		DBMaxConns:                     dbMaxConns,
 		DBMinConns:                     dbMinConns,
 		DBMaxConnLifetime:              dbMaxConnLifetime,

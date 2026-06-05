@@ -56,6 +56,43 @@ func (manualProvider) CreateIntent(_ context.Context, _ Order) (PaymentIntent, e
 	return PaymentIntent{}, nil
 }
 
+// taobaoProvider 淘宝/闲鱼 manual-redirect provider: CreateIntent 返回运营配置的淘宝/闲鱼
+// 商品链接(供前端渲染二维码 / 用户点击跳转)+ 订单号(让用户在淘宝/闲鱼下单备注里填写,
+// 运营据此对账)。它**不接触任何真实商户密钥, 不实现 CallbackVerifier** —— 淘宝/闲鱼没有
+// 程序回调, 付款后由管理员手动确认入账(走与 manual provider 相同的确认路径)。
+type taobaoProvider struct{ checkoutURL string }
+
+// NewTaobaoProvider 返回淘宝/闲鱼 manual-redirect provider。checkoutURL 为运营配置的
+// 淘宝/闲鱼商品/店铺链接。
+func NewTaobaoProvider(checkoutURL string) Provider {
+	return taobaoProvider{checkoutURL: strings.TrimSpace(checkoutURL)}
+}
+
+func (taobaoProvider) Kind() ProviderKind { return ProviderTaobao }
+
+func (p taobaoProvider) CreateIntent(_ context.Context, order Order) (PaymentIntent, error) {
+	return PaymentIntent{
+		OrderRef: order.OutTradeNo,
+		Snapshot: map[string]any{
+			"marketplace":  "taobao_xianyu",
+			"checkout_url": p.checkoutURL,
+			"qr_content":   p.checkoutURL, // 前端据此渲染二维码
+			"out_trade_no": order.OutTradeNo,
+			"amount_cents": order.AmountCents,
+			"currency":     order.CurrencyCode,
+			"confirm_mode": "manual",
+			"instructions": "扫码或点击链接前往淘宝/闲鱼下单付款, 务必在备注/留言填写订单号 " + order.OutTradeNo + ", 付款后等待管理员核对入账。",
+		},
+	}, nil
+}
+
+// WithTaobaoProvider 启用淘宝/闲鱼 manual-redirect provider (默认关闭, 由配置开关控制)。
+func WithTaobaoProvider(checkoutURL string) Option {
+	return func(s *Service) {
+		s.providers[ProviderTaobao] = NewTaobaoProvider(checkoutURL)
+	}
+}
+
 type hmacProvider struct{}
 
 // NewHMACProvider 返回 HTTP HMAC 桥接 provider。它不自己验签; 回调由 paymenthttp
