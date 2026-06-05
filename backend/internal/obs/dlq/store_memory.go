@@ -14,6 +14,8 @@ type MemoryOutbox struct {
 	order  []string
 	dead   []DeadEvent
 	now    func() time.Time
+	// processingOwner[id] = dequeue 时的 worker 租约令牌; 用于 Mark* owner 围栏。
+	processingOwner map[string]string
 }
 
 type MemoryOption func(*MemoryOutbox)
@@ -28,8 +30,9 @@ func WithMemoryClock(now func() time.Time) MemoryOption {
 
 func NewMemoryOutbox(opts ...MemoryOption) *MemoryOutbox {
 	m := &MemoryOutbox{
-		events: make(map[string]OutboxEvent),
-		now:    func() time.Time { return time.Now().UTC() },
+		events:          make(map[string]OutboxEvent),
+		processingOwner: make(map[string]string),
+		now:             func() time.Time { return time.Now().UTC() },
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -68,6 +71,10 @@ func (m *MemoryOutbox) Dequeue(_ context.Context, opts DequeueOptions) (OutboxEv
 	if visibility <= 0 {
 		visibility = 15 * time.Minute
 	}
+	workerID := opts.WorkerID
+	if workerID == "" {
+		workerID = "obsdlq-worker"
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	candidates := make([]OutboxEvent, 0, len(m.events))
@@ -105,18 +112,22 @@ func (m *MemoryOutbox) Dequeue(_ context.Context, opts DequeueOptions) (OutboxEv
 	ev.Status = StatusProcessing
 	ev.NextRetryAt = now.Add(visibility)
 	m.events[ev.ID] = ev
+	if m.processingOwner == nil {
+		m.processingOwner = make(map[string]string)
+	}
+	m.processingOwner[ev.ID] = workerID
 	return ev.clone(), true, nil
 }
 
-func (m *MemoryOutbox) MarkCompleted(_ context.Context, id string) error {
-	return m.update(id, func(ev *OutboxEvent) {
+func (m *MemoryOutbox) MarkCompleted(_ context.Context, id, owner string) error {
+	return m.update(id, owner, func(ev *OutboxEvent) {
 		ev.Status = StatusCompleted
 		ev.FailureReason = ""
 	})
 }
 
-func (m *MemoryOutbox) MarkFailedRetry(_ context.Context, id, reason string, next time.Time) error {
-	return m.update(id, func(ev *OutboxEvent) {
+func (m *MemoryOutbox) MarkFailedRetry(_ context.Context, id, owner, reason string, next time.Time) error {
+	return m.update(id, owner, func(ev *OutboxEvent) {
 		ev.AttemptCount++
 		ev.Status = StatusFailedRetry
 		ev.FailureReason = RedactString(reason)
@@ -124,7 +135,7 @@ func (m *MemoryOutbox) MarkFailedRetry(_ context.Context, id, reason string, nex
 	})
 }
 
-func (m *MemoryOutbox) MarkFailedDead(_ context.Context, id, reason string) error {
+func (m *MemoryOutbox) MarkFailedDead(_ context.Context, id, owner, reason string) error {
 	if m == nil {
 		return ErrOutboxNotConfigured
 	}
@@ -133,6 +144,9 @@ func (m *MemoryOutbox) MarkFailedDead(_ context.Context, id, reason string) erro
 	ev, ok := m.events[id]
 	if !ok {
 		return ErrEventNotFound
+	}
+	if owner != "" && m.processingOwner[id] != owner {
+		return ErrEventNotFound // 租约已被他 worker 重领, stale dead-letter 不可覆盖
 	}
 	reason = RedactString(reason)
 	ev.AttemptCount++
@@ -147,6 +161,7 @@ func (m *MemoryOutbox) MarkFailedDead(_ context.Context, id, reason string) erro
 		DeadAt:        m.now(),
 		DeadReason:    reason,
 	})
+	delete(m.processingOwner, id)
 	return nil
 }
 
@@ -174,7 +189,7 @@ func (m *MemoryOutbox) DeadEvents() []DeadEvent {
 	return out
 }
 
-func (m *MemoryOutbox) update(id string, fn func(*OutboxEvent)) error {
+func (m *MemoryOutbox) update(id, owner string, fn func(*OutboxEvent)) error {
 	if m == nil {
 		return ErrOutboxNotConfigured
 	}
@@ -184,7 +199,11 @@ func (m *MemoryOutbox) update(id string, fn func(*OutboxEvent)) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrEventNotFound, id)
 	}
+	if owner != "" && m.processingOwner[id] != owner {
+		return fmt.Errorf("%w: %s (lease lost)", ErrEventNotFound, id)
+	}
 	fn(&ev)
 	m.events[id] = ev
+	delete(m.processingOwner, id)
 	return nil
 }

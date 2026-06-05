@@ -165,7 +165,7 @@ func TestAT_OBS_005_007_DLQRowRedaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
-	if err := box.MarkFailedDead(ctx, ev.ID, "token=sk-testsecret prompt=raw"); err != nil {
+	if err := box.MarkFailedDead(ctx, ev.ID, "", "token=sk-testsecret prompt=raw"); err != nil {
 		t.Fatalf("mark dead: %v", err)
 	}
 	got := box.Snapshot()[0]
