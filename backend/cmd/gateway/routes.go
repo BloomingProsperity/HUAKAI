@@ -124,21 +124,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Get("/v1/pricing/snapshots/{snapshot_id}", gatewayhttp.NewPricingSnapshotHandler(receiptDeps))
 
 	r.Route("/v1/auth", func(r chi.Router) {
-		gatewayhttp.MountAuthRoutes(r, gatewayhttp.AuthHandlerDeps{
-			Auth:             d.userAuth,
-			Sessions:         d.userSessions,
-			EmailSender:      d.authEmailSender,
-			AdminAuth:        d.adminAuth,
-			ClientIPResolver: d.clientIPResolver,
-			Captcha: captcha.NewVerifier(
-				d.platformSettings,
-				captchaTurnstileSecret(),
-				&http.Client{Timeout: 10 * time.Second},
-			),
-			LoginThrottle:     d.loginThrottle,
-			TwoFactor:         d.twoFactor,
-			TwoFactorSettings: d.platformSettings,
-		})
+		gatewayhttp.MountAuthRoutes(r, authHandlerDeps(d, logger))
 		// GET /v1/auth/me 需已认证 session(同块的 login/register 等不需要), 故用 per-route session 中间件,
 		// 不另起 /v1/auth Route 组(chi 同前缀重复 Mount 会 panic)。
 		panelauthhttp.MountAuthMeRoutes(r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)), panelauthhttp.Deps{Resolver: d.panelAuthResolver})
@@ -149,7 +135,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	})
 
 	r.Route("/v1/sessions", func(r chi.Router) {
-		sessionDeps := gatewayhttp.SessionHandlerDeps{Sessions: d.userSessions, ClientIPResolver: d.clientIPResolver}
+		sessionDeps := sessionHandlerDeps(d, logger)
 		gatewayhttp.MountSessionRefreshRoute(r, sessionDeps)
 		r.Group(func(r chi.Router) {
 			r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
@@ -389,6 +375,38 @@ func writeInternalJSON(w http.ResponseWriter, status int, payload any) {
 
 func writeInternalError(w http.ResponseWriter, status int, code string) {
 	writeInternalJSON(w, status, map[string]string{"error": code})
+}
+
+// authHandlerDeps 装配 /v1/auth handlers 的依赖。关键: EventSink 接生产
+// zap sink(newAuthEventSink), 否则登录失败/注册/重置/OAuth/social 等安全
+// 事件在 recordAuthEvent 处因 sink==nil 被静默丢弃。
+func authHandlerDeps(d *deps, logger *zap.Logger) gatewayhttp.AuthHandlerDeps {
+	return gatewayhttp.AuthHandlerDeps{
+		Auth:             d.userAuth,
+		Sessions:         d.userSessions,
+		EmailSender:      d.authEmailSender,
+		AdminAuth:        d.adminAuth,
+		EventSink:        newAuthEventSink(logger),
+		ClientIPResolver: d.clientIPResolver,
+		Captcha: captcha.NewVerifier(
+			d.platformSettings,
+			captchaTurnstileSecret(),
+			&http.Client{Timeout: 10 * time.Second},
+		),
+		LoginThrottle:     d.loginThrottle,
+		TwoFactor:         d.twoFactor,
+		TwoFactorSettings: d.platformSettings,
+	}
+}
+
+// sessionHandlerDeps 装配 /v1/sessions handlers 的依赖, 同样接生产 EventSink
+// 以记录 session_refresh_failed / session_refreshed 安全事件。
+func sessionHandlerDeps(d *deps, logger *zap.Logger) gatewayhttp.SessionHandlerDeps {
+	return gatewayhttp.SessionHandlerDeps{
+		Sessions:         d.userSessions,
+		EventSink:        newAuthEventSink(logger),
+		ClientIPResolver: d.clientIPResolver,
+	}
 }
 
 func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
