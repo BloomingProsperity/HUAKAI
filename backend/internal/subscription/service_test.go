@@ -101,6 +101,69 @@ func TestService_AssignIdempotentByGroup(t *testing.T) {
 	}
 }
 
+func TestService_SetAutoRenewUpdatesCurrentActiveSubscription(t *testing.T) {
+	now := time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC)
+	svc, store := newTestService(&now)
+	ctx := context.Background()
+	store.seedUser(1, 42, "default")
+	plan, _ := svc.CreatePlan(ctx, CreatePlanInput{TenantID: 1, Name: "p", ValidityDays: 30, GrantedGroup: "premium"})
+	assigned, err := svc.AssignSubscription(ctx, AssignSubscriptionInput{TenantID: 1, UserID: 42, PlanID: plan.ID})
+	if err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	if !assigned.Subscription.AutoRenew {
+		t.Fatal("new active subscription AutoRenew = false, want default true")
+	}
+
+	updated, err := svc.SetAutoRenew(ctx, 1, 42, false)
+	if err != nil {
+		t.Fatalf("set auto_renew=false: %v", err)
+	}
+	if updated.ID != assigned.Subscription.ID {
+		t.Fatalf("updated subscription id = %d, want %d", updated.ID, assigned.Subscription.ID)
+	}
+	if updated.AutoRenew {
+		t.Fatal("updated AutoRenew = true, want false")
+	}
+	if updated.Status != StatusActive {
+		t.Fatalf("status = %q, want active (cancel-renew must not cancel entitlement)", updated.Status)
+	}
+	if !updated.ExpiresAt.Equal(assigned.Subscription.ExpiresAt) {
+		t.Fatalf("expires_at changed from %v to %v; cancel-renew must preserve active term", assigned.Subscription.ExpiresAt, updated.ExpiresAt)
+	}
+	persisted, err := svc.GetSubscription(ctx, 1, assigned.Subscription.ID)
+	if err != nil {
+		t.Fatalf("get persisted subscription: %v", err)
+	}
+	if persisted.AutoRenew {
+		t.Fatal("persisted AutoRenew = true, want false (SetAutoRenew must write through store)")
+	}
+}
+
+func TestService_SetAutoRenewRejectsCrossUserNoOp(t *testing.T) {
+	now := time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC)
+	svc, store := newTestService(&now)
+	ctx := context.Background()
+	store.seedUser(1, 42, "default")
+	store.seedUser(1, 43, "default")
+	plan, _ := svc.CreatePlan(ctx, CreatePlanInput{TenantID: 1, Name: "p", ValidityDays: 30, GrantedGroup: "premium"})
+	assigned, err := svc.AssignSubscription(ctx, AssignSubscriptionInput{TenantID: 1, UserID: 42, PlanID: plan.ID})
+	if err != nil {
+		t.Fatalf("assign user 42: %v", err)
+	}
+
+	if _, err := svc.SetAutoRenew(ctx, 1, 43, false); !errors.Is(err, ErrSubscriptionNotFound) {
+		t.Fatalf("set auto_renew for user without active subscription err=%v, want ErrSubscriptionNotFound", err)
+	}
+	persisted, err := svc.GetSubscription(ctx, 1, assigned.Subscription.ID)
+	if err != nil {
+		t.Fatalf("get user 42 subscription: %v", err)
+	}
+	if !persisted.AutoRenew {
+		t.Fatal("cross-user no-op changed user 42 AutoRenew to false")
+	}
+}
+
 func TestService_ExpiryDowngradeGuard(t *testing.T) {
 	now := time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC)
 	svc, store := newTestService(&now)

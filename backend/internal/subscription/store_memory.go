@@ -180,7 +180,7 @@ func (m *memoryStore) AssignSubscription(_ context.Context, rec assignRecord) (A
 		ID: m.subSeq, TenantID: rec.TenantID, UserID: rec.UserID, PlanID: plan.ID,
 		GrantedGroup: plan.GrantedGroup, DailyCapUSD: plan.DailyCapUSD, WeeklyCapUSD: plan.WeeklyCapUSD,
 		MonthlyCapUSD: plan.MonthlyCapUSD, Status: StatusActive, Source: SourceAdmin,
-		AssignedByAdminID: rec.ActorAdminID, PrevUserGroup: prevGroup,
+		AutoRenew: true, AssignedByAdminID: rec.ActorAdminID, PrevUserGroup: prevGroup,
 		StartsAt: rec.Now.UTC(), ExpiresAt: rec.Now.AddDate(0, 0, plan.ValidityDays).UTC(),
 		CreatedAt: rec.Now.UTC(), UpdatedAt: rec.Now.UTC(),
 	}
@@ -232,6 +232,19 @@ func (m *memoryStore) ListUserSubscriptions(_ context.Context, tenantID, userID 
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
 	return out, nil
+}
+
+func (m *memoryStore) SetAutoRenew(_ context.Context, tenantID, userID int64, autoRenew bool) (UserSubscription, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sub, found := m.currentActiveSubscriptionLocked(tenantID, userID)
+	if !found {
+		return UserSubscription{}, ErrSubscriptionNotFound
+	}
+	sub.AutoRenew = autoRenew
+	sub.UpdatedAt = time.Now().UTC()
+	m.subs[subKey{tenantID, sub.ID}] = sub
+	return sub, nil
 }
 
 func (m *memoryStore) CancelSubscription(_ context.Context, rec lifecycleRecord) (UserSubscription, error) {
@@ -437,6 +450,21 @@ func (m *memoryStore) findActiveByGroup(tenantID, userID int64, group string) (U
 		}
 	}
 	return UserSubscription{}, false
+}
+
+func (m *memoryStore) currentActiveSubscriptionLocked(tenantID, userID int64) (UserSubscription, bool) {
+	var best UserSubscription
+	found := false
+	for k, sub := range m.subs {
+		if k.tenant != tenantID || sub.UserID != userID || sub.Status != StatusActive {
+			continue
+		}
+		if !found || sub.ExpiresAt.After(best.ExpiresAt) || (sub.ExpiresAt.Equal(best.ExpiresAt) && sub.ID > best.ID) {
+			best = sub
+			found = true
+		}
+	}
+	return best, found
 }
 
 func (m *memoryStore) appendAudit(subID int64, ev AuditEvent) {

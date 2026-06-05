@@ -114,6 +114,9 @@ func (f *fakeSubscriptionService) AssignSubscription(context.Context, subscripti
 func (f *fakeSubscriptionService) CancelSubscription(context.Context, int64, int64, int64, string) (subscription.UserSubscription, error) {
 	return subscription.UserSubscription{}, nil
 }
+func (f *fakeSubscriptionService) SetAutoRenew(context.Context, int64, int64, bool) (subscription.UserSubscription, error) {
+	return subscription.UserSubscription{}, nil
+}
 func (f *fakeSubscriptionService) GetSubscription(context.Context, int64, int64) (subscription.UserSubscription, error) {
 	return subscription.UserSubscription{}, nil
 }
