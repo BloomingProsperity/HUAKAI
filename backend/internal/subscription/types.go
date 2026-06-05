@@ -107,6 +107,7 @@ type UserSubscription struct {
 	MonthlyCapUSD     *decimal.Decimal
 	Status            SubscriptionStatus
 	Source            Source
+	AutoRenew         bool // false = self-service cancel-renew; active entitlement remains until expires_at
 	AssignedByAdminID int64
 	PrevUserGroup     string // 到期降级还原用
 	StartsAt          time.Time

@@ -160,6 +160,7 @@ func TestUserCurrentSubscriptionViewAndAutoRenew(t *testing.T) {
 	active.Status = subscription.StatusActive
 	active.StartsAt = now.Add(-time.Hour)
 	active.ExpiresAt = now.Add(720 * time.Hour)
+	active.AutoRenew = true
 	svc := &fakeListSubscriptionsService{subs: []subscription.UserSubscription{active}}
 	router := newSubUserTestRouter(UserDeps{Service: svc})
 
@@ -179,8 +180,62 @@ func TestUserCurrentSubscriptionViewAndAutoRenew(t *testing.T) {
 	if !bytes.Contains([]byte(js), []byte(`"auto_renew"`)) {
 		t.Fatalf("GET /me must report auto_renew flag: %s", js)
 	}
+	if !bytes.Contains([]byte(js), []byte(`"auto_renew":true`)) {
+		t.Fatalf("GET /me auto_renew = false, want true from current active subscription: %s", js)
+	}
 	if !bytes.Contains([]byte(js), []byte(`"plan_id"`)) {
 		t.Fatalf("GET /me must include current subscription plan_id: %s", js)
+	}
+}
+
+func TestUserCancelRenewUsesSessionAndKeepsEntitlementActive(t *testing.T) {
+	now := time.Now().UTC()
+	active := sampleSubscription()
+	active.Status = subscription.StatusActive
+	active.StartsAt = now.Add(-time.Hour)
+	active.ExpiresAt = now.Add(720 * time.Hour)
+	active.AutoRenew = false
+	svc := &fakeSetAutoRenewService{returnSub: active}
+	router := newSubUserTestRouter(UserDeps{Service: svc})
+
+	req := httptest.NewRequest(http.MethodPost, "/subs/cancel-renew", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if !svc.called {
+		t.Fatal("SetAutoRenew not called")
+	}
+	if svc.gotTenantID != 5 || svc.gotUserID != 7 {
+		t.Fatalf("SetAutoRenew tenant/user = %d/%d, want session 5/7", svc.gotTenantID, svc.gotUserID)
+	}
+	if svc.gotAutoRenew {
+		t.Fatal("SetAutoRenew autoRenew = true, want false for cancel-renew")
+	}
+	js := rec.Body.String()
+	if !bytes.Contains([]byte(js), []byte(`"auto_renew":false`)) {
+		t.Fatalf("cancel-renew response must expose auto_renew=false: %s", js)
+	}
+	if !bytes.Contains([]byte(js), []byte(`"status":"active"`)) {
+		t.Fatalf("cancel-renew must keep subscription active through paid term: %s", js)
+	}
+}
+
+func TestUserCancelRenewRejectsCallerWithoutActiveSubscription(t *testing.T) {
+	svc := &fakeSetAutoRenewService{err: subscription.ErrSubscriptionNotFound}
+	router := newSubUserTestRouter(UserDeps{Service: svc})
+
+	req := httptest.NewRequest(http.MethodPost, "/subs/cancel-renew", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for caller with no active subscription; body=%s", rec.Code, rec.Body.String())
+	}
+	if svc.gotTenantID != 5 || svc.gotUserID != 7 {
+		t.Fatalf("SetAutoRenew tenant/user = %d/%d, want session 5/7 (no client-selected target)", svc.gotTenantID, svc.gotUserID)
 	}
 }
 
@@ -192,4 +247,22 @@ type fakeListSubscriptionsService struct {
 
 func (f *fakeListSubscriptionsService) ListUserSubscriptions(context.Context, int64, int64) ([]subscription.UserSubscription, error) {
 	return f.subs, nil
+}
+
+type fakeSetAutoRenewService struct {
+	fakeSubscriptionService
+	called       bool
+	gotTenantID  int64
+	gotUserID    int64
+	gotAutoRenew bool
+	returnSub    subscription.UserSubscription
+	err          error
+}
+
+func (f *fakeSetAutoRenewService) SetAutoRenew(_ context.Context, tenantID, userID int64, autoRenew bool) (subscription.UserSubscription, error) {
+	f.called = true
+	f.gotTenantID = tenantID
+	f.gotUserID = userID
+	f.gotAutoRenew = autoRenew
+	return f.returnSub, f.err
 }

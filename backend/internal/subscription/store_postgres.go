@@ -32,7 +32,7 @@ const planSelectColumns = `
 const subscriptionSelectColumns = `
 	id, tenant_id, user_id, plan_id, granted_group,
 	daily_cap_usd, weekly_cap_usd, monthly_cap_usd,
-	status, source, assigned_by_admin_id, prev_user_group,
+	status, source, auto_renew, assigned_by_admin_id, prev_user_group,
 	starts_at, expires_at, cancelled_at, created_at, updated_at`
 
 // PostgresStore 订阅权威存储。配额策略写入共享的 quota_policies 表 (不 import internal/quota,
@@ -219,6 +219,7 @@ func (s *PostgresStore) assignOnce(ctx context.Context, rec assignRecord) (Assig
 		MonthlyCapUSD:     plan.MonthlyCapUSD,
 		Status:            StatusActive,
 		Source:            SourceAdmin,
+		AutoRenew:         true,
 		AssignedByAdminID: rec.ActorAdminID,
 		PrevUserGroup:     prevGroup,
 		StartsAt:          rec.Now,
@@ -344,6 +345,32 @@ ORDER BY created_at DESC, id DESC`, tenantID, userID)
 		out = append(out, sub)
 	}
 	return out, rows.Err()
+}
+
+func (s *PostgresStore) SetAutoRenew(ctx context.Context, tenantID, userID int64, autoRenew bool) (UserSubscription, error) {
+	if s == nil || s.pool == nil {
+		return UserSubscription{}, ErrStoreNotConfigured
+	}
+	row := s.pool.QueryRow(ctx, `
+WITH target AS (
+	SELECT id FROM user_subscriptions
+	WHERE tenant_id=$1 AND user_id=$2 AND status='active'
+	ORDER BY expires_at DESC, id DESC
+	LIMIT 1
+)
+UPDATE user_subscriptions s
+SET auto_renew=$3, updated_at=now()
+FROM target
+WHERE s.tenant_id=$1 AND s.id=target.id
+RETURNING`+subscriptionSelectColumns, tenantID, userID, autoRenew)
+	sub, err := scanSubscription(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return UserSubscription{}, ErrSubscriptionNotFound
+	}
+	if err != nil {
+		return UserSubscription{}, fmt.Errorf("subscription: set auto renew: %w", err)
+	}
+	return sub, nil
 }
 
 // ---- 生命周期: 取消 / 到期 (共用 closeSubscriptionOnce) ----
@@ -702,13 +729,13 @@ func insertSubscriptionTx(ctx context.Context, tx pgx.Tx, sub UserSubscription, 
 INSERT INTO user_subscriptions (
 	tenant_id, user_id, plan_id, granted_group,
 	daily_cap_usd, weekly_cap_usd, monthly_cap_usd,
-	status, source, assigned_by_admin_id, prev_user_group,
+	status, source, auto_renew, assigned_by_admin_id, prev_user_group,
 	starts_at, expires_at, created_at, updated_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $15)
 RETURNING`+subscriptionSelectColumns,
 		sub.TenantID, sub.UserID, sub.PlanID, sub.GrantedGroup,
 		daily, weekly, monthly,
-		string(sub.Status), string(sub.Source), nullableInt64(sub.AssignedByAdminID), sub.PrevUserGroup,
+		string(sub.Status), string(sub.Source), sub.AutoRenew, nullableInt64(sub.AssignedByAdminID), sub.PrevUserGroup,
 		sub.StartsAt, sub.ExpiresAt, now)
 	return scanSubscription(row)
 }
@@ -961,7 +988,7 @@ func scanSubscription(row rowScanner) (UserSubscription, error) {
 	if err := row.Scan(
 		&s.ID, &s.TenantID, &s.UserID, &s.PlanID, &s.GrantedGroup,
 		&daily, &weekly, &monthly,
-		&status, &source, &assignedBy, &s.PrevUserGroup,
+		&status, &source, &s.AutoRenew, &assignedBy, &s.PrevUserGroup,
 		&s.StartsAt, &s.ExpiresAt, &cancelledAt, &s.CreatedAt, &s.UpdatedAt,
 	); err != nil {
 		return UserSubscription{}, err
