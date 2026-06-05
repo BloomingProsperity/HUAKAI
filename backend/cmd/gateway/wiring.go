@@ -54,6 +54,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	providercopilot "github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
 	providercursor "github.com/BloomingProsperity/HUAKAI/internal/provider/cursor"
@@ -285,14 +286,16 @@ func buildBudgetService(cfg *Config, settings *platformsettings.Service) budgete
 		return nil
 	}
 	memory := budget.NewMemoryStore(nil)
-	store := budget.Store(memory)
-	if strings.TrimSpace(cfg.Budget.RedisURL) != "" {
-		if opts, err := redis.ParseURL(cfg.Budget.RedisURL); err == nil {
-			store = budget.NewBreakerStore(
-				budget.NewRedisStore(redis.NewClient(opts)),
-				circuitbreaker.New(circuitbreaker.Config{OpenCooldown: 10 * time.Second}),
-			)
-		}
+	store, err := buildBudgetStore(cfg, memory)
+	if err != nil {
+		// 配置了 RedisURL 但解析失败:不静默退回单进程内存(多副本下每副本独立限额 =
+		// 限额×副本数,等于变相放开预算)。响亮告警让运维发现配置错误。
+		_ = privacy.LogSystem(context.Background(), privacy.SystemEvent{
+			Severity:   privacy.SeverityError,
+			Component:  "budget.redis_config",
+			ErrorClass: privacy.ErrorClassFor(context.Background(), err),
+			Attrs:      map[string]any{"event_class": "budget_redis_url_invalid_fallback_to_memory"},
+		})
 	}
 	limits := budget.StaticLimitsProvider{
 		Default: budget.LimitPair{RPM: cfg.Budget.DefaultRPM, TPM: cfg.Budget.DefaultTPM},
@@ -302,6 +305,22 @@ func buildBudgetService(cfg *Config, settings *platformsettings.Service) budgete
 		budget.WithFailMode(budget.FailMode(cfg.Budget.FailMode)),
 		budget.WithMemoryFallback(memory),
 	)
+}
+
+// buildBudgetStore 构造预算计数后端。配置了 RedisURL 但解析失败时返回 (memory, error),
+// 让上层响亮告警而非静默退回单进程内存。空 RedisURL 直接用内存(无错误)。
+func buildBudgetStore(cfg *Config, memory *budget.MemoryStore) (budget.Store, error) {
+	if cfg == nil || strings.TrimSpace(cfg.Budget.RedisURL) == "" {
+		return memory, nil
+	}
+	opts, err := redis.ParseURL(cfg.Budget.RedisURL)
+	if err != nil {
+		return memory, fmt.Errorf("budget redis url invalid: %w", err)
+	}
+	return budget.NewBreakerStore(
+		budget.NewRedisStore(redis.NewClient(opts)),
+		circuitbreaker.New(circuitbreaker.Config{OpenCooldown: 10 * time.Second}),
+	), nil
 }
 
 func loadTenantRetryBudgetFromEnv() (*retrybudget.Budget, error) {
