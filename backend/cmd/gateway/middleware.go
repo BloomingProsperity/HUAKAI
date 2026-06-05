@@ -71,7 +71,7 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 	}
 	router.Use(middleware.RealIP)
 	router.Use(privacy.Recoverer(privacyLogger))
-	router.Use(middleware.Timeout(60 * time.Second))
+	router.Use(aiAwareTimeout(60 * time.Second))
 	router.Use(privacy.Middleware(8 << 20))
 	// U6-B: 把 client identity 写入 request ctx，必须早于后续 auth/quota/billing。
 	router.Use(clientid.Middleware(logger))
@@ -414,4 +414,43 @@ func registerCredentialRefreshAdapters(registry *credentialworker.AdapterRegistr
 		}
 	}
 	return nil
+}
+
+// aiAwareTimeout 套连接级总超时,但豁免 AI 数据面 relay 路径。chi middleware.Timeout 会给
+// r.Context() 加一个总 deadline;对长流(SSE 推理/agent)与长非流推理,这会在 forwarder 自己
+// 的 first-token/inter-event/total 预算之前把合法长响应砍断(并误判为 TotalStreamTimeout)。
+// new-api / sub2api / CLIProxyAPI 与 OpenAI 官方在数据面都不设这种连接级总超时——只靠
+// first-byte + inter-token 空闲超时 + 客户端断连。故 relay 路径不套总 deadline(仍保留
+// r.Context() 的客户端断连取消),控制面/admin 路径保留 60s(无 AI relay,长挂死应被砍)。
+func aiAwareTimeout(timeout time.Duration) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if isAIRelayPath(r.URL.Path) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), timeout)
+			defer cancel()
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// isAIRelayPath 标识上游 AI relay 数据面端点(流式/长跑),豁免连接级总超时。
+func isAIRelayPath(p string) bool {
+	switch p {
+	case "/v1/chat/completions",
+		"/v1/responses",
+		"/v1/messages",
+		"/v1/embeddings",
+		"/v1/images/generations",
+		"/v1/images/edits",
+		"/v1/images/variations",
+		"/v1/audio/speech",
+		"/v1/audio/transcriptions",
+		"/v1/audio/translations":
+		return true
+	default:
+		return false
+	}
 }
