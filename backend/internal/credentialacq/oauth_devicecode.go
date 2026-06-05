@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
@@ -165,7 +166,7 @@ func startOpenAICodexDeviceAuthorization(ctx context.Context, store *PostgresSes
 	if store == nil {
 		return OAuthStartResult{}, errors.New("credentialacq: session store not configured")
 	}
-	client := http.DefaultClient
+	client := defaultDeviceCodeHTTPClient()
 	if cfg.HTTPClient != nil {
 		client = cfg.HTTPClient
 	}
@@ -257,7 +258,7 @@ func startDeviceAuthorization(ctx context.Context, store *PostgresSessionStore, 
 	if deviceURL == "" || tokenURL == "" {
 		return OAuthStartResult{}, fmt.Errorf("%w: fake %s endpoints required", ErrFeatureDisabled, authType)
 	}
-	client := http.DefaultClient
+	client := defaultDeviceCodeHTTPClient()
 	if cfg.HTTPClient != nil {
 		client = cfg.HTTPClient
 	}
@@ -345,7 +346,7 @@ func normalizeDeviceStartResponse(resp deviceAuthorizationStartResponse, tokenUR
 }
 
 func pollDeviceAuthorizationToken(ctx context.Context, session Session, cfg OAuthClientConfig, authType AuthType, opts ...DeviceCodeOption) (CredentialCandidate, error) {
-	options := deviceCodeOptions{client: http.DefaultClient, now: time.Now, sleep: sleepDeviceContext}
+	options := deviceCodeOptions{client: defaultDeviceCodeHTTPClient(), now: time.Now, sleep: sleepDeviceContext}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&options)
@@ -411,7 +412,7 @@ func pollDeviceAuthorizationToken(ctx context.Context, session Session, cfg OAut
 }
 
 func pollOpenAICodexDeviceAuthorizationToken(ctx context.Context, session Session, cfg OAuthClientConfig, opts ...DeviceCodeOption) (CredentialCandidate, error) {
-	options := deviceCodeOptions{client: http.DefaultClient, now: time.Now, sleep: sleepDeviceContext}
+	options := deviceCodeOptions{client: defaultDeviceCodeHTTPClient(), now: time.Now, sleep: sleepDeviceContext}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&options)
@@ -552,7 +553,7 @@ func postJSONStatus(ctx context.Context, client *http.Client, url string, body m
 
 func postFormJSON(ctx context.Context, client *http.Client, rawURL string, form url.Values, out any) (int, error) {
 	if client == nil {
-		client = http.DefaultClient
+		client = defaultDeviceCodeHTTPClient()
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -674,4 +675,11 @@ func resolveOpenAICodexOAuthTokenURL(deviceTokenURL string) string {
 	u.RawQuery = ""
 	u.Fragment = ""
 	return u.String()
+}
+
+// defaultDeviceCodeHTTPClient 返回 device-code OAuth 默认 HTTP client。必须是 SSRF-protected
+// (拦截 169.254.169.254 / 内网 / loopback),因为 auth_url/token_url 是运维/admin 提供的,裸
+// http.DefaultClient 会让恶意端点把请求打到内网/元数据服务。与 oauth_authorization_code.go 一致。
+func defaultDeviceCodeHTTPClient() *http.Client {
+	return auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
 }
