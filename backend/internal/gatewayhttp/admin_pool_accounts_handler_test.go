@@ -532,6 +532,49 @@ func TestAdminPoolAccounts_CrossTenantBodyRejected(t *testing.T) {
 	}
 }
 
+func TestAdminPoolAccounts_GlobalAdminWithTenantQueryOperatesTargetTenant(t *testing.T) {
+	// Global platform_admin (no implicit scope) names tenant 9 via ?tenant_id=9
+	// and the list must run against tenant 9 — NOT silently fall back to tenant 1.
+	store := &adminPoolStoreStub{list: []admindb.AdminProviderAccountRow{adminProviderRow(77, 9)}}
+	rec := invokeAdminPool(t, store, adminPoolAdmin(), http.MethodGet,
+		"/admin/v1/provider-accounts?tenant_id=9", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if store.listArg == nil || store.listArg.TenantID != 9 {
+		t.Fatalf("global admin tenant_id=9 must scope list to tenant 9, got %+v", store.listArg)
+	}
+}
+
+func TestAdminPoolAccounts_GlobalAdminWithoutTenantQueryRejected(t *testing.T) {
+	// Without an explicit tenant_id a global platform_admin must be rejected
+	// (no silent default to tenant 1) and the store must stay untouched.
+	store := &adminPoolStoreStub{list: []admindb.AdminProviderAccountRow{adminProviderRow(77, 1)}}
+	rec := invokeAdminPool(t, store, adminPoolAdmin(), http.MethodGet,
+		"/admin/v1/provider-accounts", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing tenant_id must be 400, got status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if store.listArg != nil {
+		t.Fatalf("rejected request must not query the store, got %+v", store.listArg)
+	}
+}
+
+func TestAdminPoolAccounts_GlobalAdminCreateScopesToQueryTenant(t *testing.T) {
+	// Global platform_admin creates into the tenant named by ?tenant_id=9
+	// (body tenant_id must agree); the insert must land in tenant 9, not 1.
+	store := &adminPoolStoreStub{insertID: 77}
+	rec := invokeAdminPool(t, store, adminPoolAdmin(), http.MethodPost,
+		"/admin/v1/provider-accounts?tenant_id=9",
+		`{"tenant_id":9,"provider_id":8,"channel_id":9,"name":"acct","account_type":"api_key","credentials":{"api_key":"sk-live"}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if store.insert == nil || store.insert.TenantID != 9 {
+		t.Fatalf("global admin create must insert into tenant 9, got %+v", store.insert)
+	}
+}
+
 func adminPoolAdmin() adminPoolAuthStub {
 	return adminPoolAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}}
 }

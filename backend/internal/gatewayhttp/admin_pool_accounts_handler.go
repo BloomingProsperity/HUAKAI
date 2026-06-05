@@ -25,10 +25,9 @@ import (
 )
 
 const (
-	defaultAdminProviderAccountTenantID = int64(1)
-	defaultAdminProviderAccountLimit    = int32(50)
-	maxAdminProviderAccountLimit        = int32(200)
-	providerAccountCursorPrefix         = "provider_account_id:"
+	defaultAdminProviderAccountLimit = int32(50)
+	maxAdminProviderAccountLimit     = int32(200)
+	providerAccountCursorPrefix      = "provider_account_id:"
 )
 
 var (
@@ -642,9 +641,22 @@ func resolveProviderAccountAdmin(w http.ResponseWriter, r *http.Request, d Admin
 		}
 		return ident, ident.ScopeTenantID, true
 	case admin.RolePlatformAdmin:
-		tenantID := ident.ScopeTenantID
-		if tenantID <= 0 {
-			tenantID = defaultAdminProviderAccountTenantID
+		// Global platform_admin holds no implicit tenant scope: it MUST name the
+		// target tenant explicitly via ?tenant_id=N. Silently defaulting to
+		// tenant 1 both (a) blocked global admins from ever reaching tenant>1
+		// (the body tenant_id guard rejected anything != 1) and (b) risked
+		// mutating tenant 1's accounts by accident. This mirrors the explicit
+		// tenant-scope requirement in provider/channel catalog + api-keys.
+		if ident.ScopeTenantID > 0 {
+			return ident, ident.ScopeTenantID, true
+		}
+		tenantID, okTenant := parsePositiveQueryInt(w, r, "tenant_id")
+		if !okTenant {
+			return admin.AdminIdentity{}, 0, false
+		}
+		if err := ident.CanIssueForTenant(tenantID); err != nil {
+			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant scope not permitted")
+			return admin.AdminIdentity{}, 0, false
 		}
 		return ident, tenantID, true
 	default:
