@@ -109,6 +109,9 @@ type captureService struct {
 	createErr  error
 	confirmRes payment.FulfillResult
 	confirmErr error
+	gotCancel  payment.CancelOrderInput
+	cancelRes  payment.Order
+	cancelErr  error
 }
 
 func (s *captureService) CreateOrder(_ context.Context, in payment.CreateOrderInput) (payment.CreateOrderResult, error) {
@@ -131,6 +134,11 @@ func (s *captureService) GetBalance(_ context.Context, _, _ int64) (payment.Bala
 }
 func (s *captureService) ListOrders(_ context.Context, _, _ int64, _ int) ([]payment.Order, error) {
 	return nil, nil
+}
+
+func (s *captureService) CancelOrder(_ context.Context, in payment.CancelOrderInput) (payment.Order, error) {
+	s.gotCancel = in
+	return s.cancelRes, s.cancelErr
 }
 
 type fakeAdminAuth struct{ ident admin.AdminIdentity }
@@ -277,5 +285,22 @@ func TestConfirmTopupOrderSurfacesCreditNoSubscription(t *testing.T) {
 	}
 	if _, leaked := resp["subscription"]; leaked {
 		t.Fatalf("topup confirm must not render subscription grant: %s", rec.Body.String())
+	}
+}
+
+// 守 C1: admin cancel 路由把 {id}/tenant/actor=admin 正确传给 service, 返回 200 + cancelled 视图。
+// Mutation: handler 不传 ActorKind 或漏 {id} -> 断言红。
+func TestAdminCancelOrderRouteWiresService(t *testing.T) {
+	svc := &captureService{cancelRes: payment.Order{ID: 7, Status: payment.StatusCancelled}}
+	router := newAdminTestRouter(svc)
+	body, _ := json.Marshal(cancelRequest{TenantID: 5, Reason: "ops cancel"})
+	req := httptest.NewRequest(http.MethodPost, "/orders/7/cancel", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if svc.gotCancel.OrderID != 7 || svc.gotCancel.TenantID != 5 || svc.gotCancel.UserID != 0 || svc.gotCancel.ActorKind != payment.ActorKindAdmin {
+		t.Fatalf("admin cancel did not wire input correctly: %+v", svc.gotCancel)
 	}
 }
