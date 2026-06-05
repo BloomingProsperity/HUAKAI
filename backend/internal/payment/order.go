@@ -58,7 +58,7 @@ func (s *Service) OpenRecharge(ctx context.Context, input OpenInput) (OpenResult
 		input.ExternalTradeNo = generated
 	}
 	if input.MaxPendingPerUser > 0 {
-		pending, err := countPendingOrders(ctx, s.store, input.TenantID, input.UserID)
+		pending, err := countPendingOrders(ctx, s.store, input.TenantID, input.UserID, input.Now)
 		if err != nil {
 			return OpenResult{}, err
 		}
@@ -192,9 +192,9 @@ func errorsIsIdempotencyConflict(err error) bool {
 	return errors.Is(err, ErrIdempotencyConflict)
 }
 
-func countPendingOrders(ctx context.Context, store Store, tenantID, userID int64) (int, error) {
+func countPendingOrders(ctx context.Context, store Store, tenantID, userID int64, now time.Time) (int, error) {
 	if caps, ok := store.(RechargeCapStore); ok {
-		return caps.CountPendingOrders(ctx, tenantID, userID)
+		return caps.CountPendingOrders(ctx, tenantID, userID, now)
 	}
 	orders, err := store.ListOrdersByUser(ctx, tenantID, userID, 0)
 	if err != nil {
@@ -212,7 +212,7 @@ func countPendingOrders(ctx context.Context, store Store, tenantID, userID int64
 func sumTodayOrderAmount(ctx context.Context, store Store, tenantID, userID int64, now time.Time) (decimal.Decimal, error) {
 	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	if caps, ok := store.(RechargeCapStore); ok {
-		cents, err := caps.SumRechargeAmountSince(ctx, tenantID, userID, start)
+		cents, err := caps.SumRechargeAmountSince(ctx, tenantID, userID, start, now)
 		if err != nil {
 			return decimal.Decimal{}, err
 		}

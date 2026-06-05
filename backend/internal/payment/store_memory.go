@@ -216,19 +216,19 @@ func (m *MemoryStore) ListOrdersByUser(_ context.Context, tenantID, userID int64
 	return out, nil
 }
 
-func (m *MemoryStore) CountPendingOrders(_ context.Context, tenantID, userID int64) (int, error) {
+func (m *MemoryStore) CountPendingOrders(_ context.Context, tenantID, userID int64, now time.Time) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var count int
 	for _, o := range m.orders {
-		if o.TenantID == tenantID && o.UserID == userID && o.Status == StatusPending {
+		if o.TenantID == tenantID && o.UserID == userID && o.Status == StatusPending && !paymentOrderExpired(o, now) {
 			count++
 		}
 	}
 	return count, nil
 }
 
-func (m *MemoryStore) SumRechargeAmountSince(_ context.Context, tenantID, userID int64, since time.Time) (int64, error) {
+func (m *MemoryStore) SumRechargeAmountSince(_ context.Context, tenantID, userID int64, since, now time.Time) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var sum int64
@@ -237,7 +237,11 @@ func (m *MemoryStore) SumRechargeAmountSince(_ context.Context, tenantID, userID
 			continue
 		}
 		switch o.Status {
-		case StatusPending, StatusPaid, StatusRecharging, StatusCompleted:
+		case StatusPending:
+			if !paymentOrderExpired(o, now) {
+				sum += o.AmountCents
+			}
+		case StatusPaid, StatusRecharging, StatusCompleted:
 			sum += o.AmountCents
 		}
 	}
@@ -308,4 +312,10 @@ func auditActorID(rec createOrderRecord) int64 {
 		return rec.CreatedByAdminID
 	}
 	return 0
+}
+
+// paymentOrderExpired 判定 pending 单是否已过期(用于把过期未付单排除出 pending 数/日额上限,
+// 否则用户的过期废单会一直占名额、堵正常充值)。
+func paymentOrderExpired(o *Order, now time.Time) bool {
+	return o != nil && o.ExpiresAt != nil && !o.ExpiresAt.After(now)
 }
