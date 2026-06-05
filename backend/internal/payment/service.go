@@ -197,6 +197,24 @@ func createOrderActorID(in CreateOrderInput) int64 {
 }
 
 // AdminConfirmPaid 管理员手动确认支付并触发履约 (CAS pending->paid, 然后 Fulfill)。
+// CancelOrder 取消一个 pending 订单。用户自助取消传自己的 UserID(校验归属);
+// 管理员取消传 UserID=0。只有 pending 可取消; 已取消幂等; 其它状态 ErrOrderNotCancelable。
+func (s *Service) CancelOrder(ctx context.Context, in CancelOrderInput) (Order, error) {
+	if in.TenantID <= 0 || in.OrderID <= 0 {
+		return Order{}, ErrInvalidInput
+	}
+	return s.store.CancelOrder(ctx, cancelRecord{
+		TenantID:  in.TenantID,
+		OrderID:   in.OrderID,
+		UserID:    in.UserID,
+		ActorKind: in.ActorKind,
+		ActorID:   in.ActorID,
+		Reason:    in.Reason,
+		RequestID: in.RequestID,
+		Now:       s.now(),
+	})
+}
+
 func (s *Service) AdminConfirmPaid(ctx context.Context, in AdminConfirmPaidInput) (FulfillResult, error) {
 	if in.TenantID <= 0 || in.OrderID <= 0 {
 		return FulfillResult{}, ErrInvalidInput
