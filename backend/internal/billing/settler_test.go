@@ -67,9 +67,10 @@ func TestMarshalUsageRecordPayloadCarriesCostSnapshot(t *testing.T) {
 }
 
 func TestAT_AUDIT_001_060_RefundZeroReturnsSkippedCode(t *testing.T) {
+	// 锁前置后顺序: rows[0]=claim 锁(committed), rows[1]=幂等 SELECT(无既往退款)。
 	tx := newRefundSettlerTestTx(
-		refundSettlerRow{err: pgx.ErrNoRows},
 		refundSettlerRow{values: []any{"fp-zero", "committed", decimal.RequireFromString("0.02000000"), int64(901)}},
+		refundSettlerRow{err: pgx.ErrNoRows},
 	)
 	settler := &DefaultSettler{q: dbbilling.New(tx)}
 
@@ -96,9 +97,10 @@ func stringPtrForTest(v string) *string {
 }
 
 func TestAT_AUDIT_001_062_RefundActualCostOverflowRejected(t *testing.T) {
+	// 锁前置后顺序: rows[0]=claim 锁(committed), rows[1]=幂等 SELECT(无既往退款)。
 	tx := newRefundSettlerTestTx(
-		refundSettlerRow{err: pgx.ErrNoRows},
 		refundSettlerRow{values: []any{"fp-overflow", "committed", decimal.RequireFromString("9223372036854.775808"), int64(901)}},
+		refundSettlerRow{err: pgx.ErrNoRows},
 	)
 	settler := &DefaultSettler{q: dbbilling.New(tx)}
 

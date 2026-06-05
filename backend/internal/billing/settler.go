@@ -580,30 +580,9 @@ func (s *DefaultSettler) RefundInTx(ctx context.Context, tx pgx.Tx, req RefundRe
 		reason = "refund"
 	}
 
-	var existingID int64
-	err := tx.QueryRow(ctx, `
-SELECT id
-FROM billing_events
-WHERE tenant_id = $1
-  AND claim_id = $2
-  AND event_type = 'reconciliation_appended'
-  AND audit_request_id = $3
-ORDER BY id ASC
-LIMIT 1`,
-		req.TenantID, req.ClaimID, auditRequestID,
-	).Scan(&existingID)
-	if err == nil {
-		return &RefundResult{
-			RefundMicroUSD: req.AmountMicroUSD,
-			BillingEventID: existingID,
-			AdjustmentRef:  billingAdjustmentRef(existingID),
-			Idempotent:     true,
-		}, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("billing: lookup existing refund: %w", err)
-	}
-
+	// 先锁 claim 行(FOR UPDATE),再查幂等:原顺序(先幂等 SELECT 后锁)下两个并发退款都先过
+	// 幂等检查(都看不到对方未提交的插入)再都插入 → 双退款。锁前置后,第二个退款必等第一个
+	// 提交、看到其 reconciliation 事件 → 正确幂等。
 	var (
 		fingerprint string
 		status      string
@@ -622,6 +601,40 @@ FOR UPDATE`,
 		}
 		return nil, fmt.Errorf("billing: get claim for refund: %w", err)
 	}
+
+	// 幂等检查(已持 claim 锁,串行化):同 audit_request_id 的退款已记则返回**存储的**退款额
+	// (actual_cost_signed 取反 → micros),而非调用方传入的 req.AmountMicroUSD —— 否则不同金额
+	// 重放会返回错误的假幂等结果。actual_cost_signed < 0 限定只匹配退款事件(与下方 SUM 一致)。
+	var (
+		existingID         int64
+		existingSignedCost decimal.Decimal
+	)
+	if err := tx.QueryRow(ctx, `
+SELECT id, actual_cost_signed
+FROM billing_events
+WHERE tenant_id = $1
+  AND claim_id = $2
+  AND event_type = 'reconciliation_appended'
+  AND audit_request_id = $3
+  AND actual_cost_signed < 0
+ORDER BY id ASC
+LIMIT 1`,
+		req.TenantID, req.ClaimID, auditRequestID,
+	).Scan(&existingID, &existingSignedCost); err == nil {
+		storedMicros, cerr := costUSDToMicros(existingSignedCost.Neg())
+		if cerr != nil {
+			return nil, cerr
+		}
+		return &RefundResult{
+			RefundMicroUSD: storedMicros,
+			BillingEventID: existingID,
+			AdjustmentRef:  billingAdjustmentRef(existingID),
+			Idempotent:     true,
+		}, nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("billing: lookup existing refund: %w", err)
+	}
+
 	if status != "committed" {
 		return nil, ErrClaimNotReserving
 	}

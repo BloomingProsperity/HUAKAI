@@ -13,6 +13,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/relaybody"
 )
 
 func (ex *execution) selectAccount(w http.ResponseWriter, attemptSeq int) bool {
@@ -57,12 +58,14 @@ func (ex *execution) resolveCredential(w http.ResponseWriter) bool {
 }
 
 func (ex *execution) dispatchAndSettle(w http.ResponseWriter, attemptSeq int) bool {
+	// 把出站 body 的 model 改写成解析后的上游 id(JSON/multipart 皆可);multipart 会带新 boundary。
+	inboundBody, inboundCT, _ := relaybody.RewriteModel(ex.body, ex.contentType, ex.upstreamModelID)
 	res, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
 		ProtocolFamily:     ex.resolved.ProtocolFamily,
 		EndpointPath:       ex.endpoint.Path(),
 		UpstreamModelID:    ex.upstreamModelID,
-		InboundBody:        ex.body,
-		InboundContentType: ex.contentType,
+		InboundBody:        inboundBody,
+		InboundContentType: inboundCT,
 		Account:            ex.accInfo,
 		Credential:         ex.cred,
 	})

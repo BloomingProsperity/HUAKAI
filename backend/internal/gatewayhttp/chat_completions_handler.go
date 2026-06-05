@@ -345,13 +345,21 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 	failedAccounts := make(map[int64]struct{})
 	authFailoverUsed := false
 	budget := effectiveAttemptBudget(ex.plan)
-	for i := 0; i < budget; i++ {
+	maxAttempts := len(ex.plan.Attempts)
+	// attemptCap 起始=普通 attempt 预算; 当 401 的 auth-failover 子预算落在本应最后的 slot 时 +1,
+	// 给 auth-failover 一个独立额外 attempt(至多一次, 由 !authFailoverUsed 限定)。
+	attemptCap := budget
+	for i := 0; i < attemptCap; i++ {
+		planIdx := i
+		if planIdx >= maxAttempts {
+			planIdx = maxAttempts - 1 // auth-failover 额外 slot 复用最后一个 pool plan(池排除已 401 账号选新号)
+		}
 		outcome := ex.runAttempt(w, attemptInput{
-			Plan:             ex.plan.Attempts[i],
+			Plan:             ex.plan.Attempts[planIdx],
 			AttemptSeq:       i + 1,
 			ExcludedAccounts: failedAccounts,
 			ReplayableBody:   true,
-			FinalAttempt:     i+1 >= budget,
+			FinalAttempt:     i+1 >= attemptCap,
 		})
 		if outcome.Success != nil {
 			return modelRunResult{Success: &outcome, DeliveryStarted: outcome.DeliveryStarted}
@@ -370,7 +378,7 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 		if outcome.Failure == nil {
 			continue
 		}
-		retry, consumeAuthBudget := shouldRetryAttemptFailure(outcome.Failure, ex.plan, true, i+1 >= budget, authFailoverUsed)
+		retry, consumeAuthBudget := shouldRetryAttemptFailure(outcome.Failure, ex.plan, true, i+1 >= attemptCap, authFailoverUsed)
 		if !retry {
 			return modelRunResult{Failure: outcome.Failure, AllowFallback: outcome.Failure.Decision.RetryableBeforeDelivery}
 		}
@@ -379,6 +387,9 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 		}
 		if consumeAuthBudget {
 			authFailoverUsed = true
+			if i+1 >= attemptCap {
+				attemptCap++ // auth-failover 落在本应最后的 slot: 额外给一次换号重试(独立子预算)
+			}
 		}
 		clearRetryableAttemptFailureHeaders(w)
 		ex.prepareNextAttemptAfterAbort()
