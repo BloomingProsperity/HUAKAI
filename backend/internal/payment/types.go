@@ -214,15 +214,16 @@ type Balance struct {
 }
 
 var (
-	ErrStoreNotConfigured    = errors.New("payment: store not configured")
-	ErrOrderNotFound         = errors.New("payment: order not found")
-	ErrInvalidAmount         = errors.New("payment: amount must be positive")
-	ErrInvalidInput          = errors.New("payment: invalid input")
-	ErrOrderNotConfirmable   = errors.New("payment: order not in a confirmable state")
-	ErrOrderNotFulfillable   = errors.New("payment: order not in a fulfillable state")
-	ErrOrderNotCancelable    = errors.New("payment: order not in a cancelable state")
-	ErrOrderNotRefundable    = errors.New("payment: order not in a refundable state")
-	ErrRefundUnsupportedKind = errors.New("payment: refund unsupported for order kind")
+	ErrStoreNotConfigured     = errors.New("payment: store not configured")
+	ErrOrderNotFound          = errors.New("payment: order not found")
+	ErrInvalidAmount          = errors.New("payment: amount must be positive")
+	ErrInvalidInput           = errors.New("payment: invalid input")
+	ErrOrderNotConfirmable    = errors.New("payment: order not in a confirmable state")
+	ErrOrderNotFulfillable    = errors.New("payment: order not in a fulfillable state")
+	ErrOrderNotCancelable     = errors.New("payment: order not in a cancelable state")
+	ErrOrderNotRefundable     = errors.New("payment: order not in a refundable state")
+	ErrRefundExceedsAvailable = errors.New("payment: refund exceeds available balance")
+	ErrRefundUnsupportedKind  = errors.New("payment: refund unsupported for order kind")
 	// ErrSubscriptionOrderRequiresPG: 订阅单履约依赖真订阅/配额表, 内存 store 不镜像 (P3b-4 计划 §5 D3); 真路径 PG-only。
 	ErrSubscriptionOrderRequiresPG = errors.New("payment: subscription order fulfillment requires postgres store")
 	ErrIdempotencyConflict         = errors.New("payment: out_trade_no reused with different order fields")

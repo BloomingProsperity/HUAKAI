@@ -72,6 +72,38 @@ func TestPostgresRefundRequestApproveRejectListAndTenantIsolation(t *testing.T) 
 	}
 }
 
+// Reject must not be able to overwrite a pending request after its refund fact exists.
+// This simulates the crash window where RefundOrder committed but ApproveRefundRequest
+// had not yet updated payment_refund_requests.status.
+func TestPostgresRefundRequestRejectAfterRefundFactIsRefused(t *testing.T) {
+	ctx := context.Background()
+	pool := openPaymentHTTPPool(t, ctx)
+	tenantID, userID := seedPaymentHTTPUser(t, ctx, pool, "refund-request-resolved")
+	svc := payment.NewService(payment.NewPostgresStore(pool))
+	recorder := NewPostgresRefundRequestRecorder(pool, svc)
+
+	order := createCompletedTopupForRefundRequest(t, ctx, svc, tenantID, userID, 1100, "pg-resolved")
+	req := createRefundRequestForAdminTest(t, ctx, recorder, tenantID, userID, order.ID, "refund then crash")
+	if _, err := svc.RefundOrder(ctx, payment.RefundOrderInput{
+		TenantID:       tenantID,
+		OrderID:        order.ID,
+		AmountCents:    order.AmountCents,
+		IdempotencyKey: refundRequestIdempotencyKey(req.ID),
+		Reason:         req.Reason,
+		ActorKind:      payment.ActorKindAdmin,
+		ActorID:        99,
+	}); err != nil {
+		t.Fatalf("seed refund fact: %v", err)
+	}
+
+	_, err := recorder.RejectRefundRequest(ctx, tenantID, req.ID, "operator changed mind", 77)
+	if !errors.Is(err, ErrRefundRequestAlreadyResolved) {
+		t.Fatalf("reject after refund fact err=%v want ErrRefundRequestAlreadyResolved", err)
+	}
+	assertPGRefundRequestStatus(t, ctx, pool, tenantID, req.ID, RefundRequestPending)
+	assertPGCount(t, ctx, pool, `SELECT count(*) FROM payment_refunds WHERE tenant_id=$1 AND idempotency_key=$2`, 1, tenantID, refundRequestIdempotencyKey(req.ID))
+}
+
 func assertPGCount(t *testing.T, ctx context.Context, pool pgQueryer, query string, want int64, args ...any) {
 	t.Helper()
 	var n int64
@@ -85,4 +117,15 @@ func assertPGCount(t *testing.T, ctx context.Context, pool pgQueryer, query stri
 
 type pgQueryer interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func assertPGRefundRequestStatus(t *testing.T, ctx context.Context, pool pgQueryer, tenantID, requestID int64, want RefundRequestStatus) {
+	t.Helper()
+	var status RefundRequestStatus
+	if err := pool.QueryRow(ctx, `SELECT status FROM payment_refund_requests WHERE tenant_id=$1 AND id=$2`, tenantID, requestID).Scan(&status); err != nil {
+		t.Fatalf("read refund request status: %v", err)
+	}
+	if status != want {
+		t.Fatalf("refund request status=%q want %q", status, want)
+	}
 }

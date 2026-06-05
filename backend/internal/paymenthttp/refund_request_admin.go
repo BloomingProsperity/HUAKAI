@@ -15,9 +15,10 @@ import (
 )
 
 var (
-	ErrRefundRequestNotFound     = errors.New("paymenthttp: refund request not found")
-	ErrRefundRequestInvalidInput = errors.New("paymenthttp: invalid refund request input")
-	ErrRefundRequestUnavailable  = errors.New("paymenthttp: refund request recorder unavailable")
+	ErrRefundRequestNotFound        = errors.New("paymenthttp: refund request not found")
+	ErrRefundRequestInvalidInput    = errors.New("paymenthttp: invalid refund request input")
+	ErrRefundRequestUnavailable     = errors.New("paymenthttp: refund request recorder unavailable")
+	ErrRefundRequestAlreadyResolved = errors.New("paymenthttp: refund request already has refund fact")
 )
 
 type refundRequestMoneyService interface {
@@ -220,6 +221,8 @@ func writeRefundRequestError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_refund_request", "refund request input is invalid")
 	case errors.Is(err, ErrRefundRequestNotFound):
 		writeJSONError(w, http.StatusNotFound, "refund_request_not_found", "refund request not found")
+	case errors.Is(err, ErrRefundRequestAlreadyResolved):
+		writeJSONError(w, http.StatusConflict, "refund_request_already_resolved", "refund request already has a refund")
 	case errors.Is(err, ErrRefundRequestUnavailable):
 		writeJSONError(w, http.StatusServiceUnavailable, "refund_requests_unavailable", "refund request backend unavailable")
 	default:

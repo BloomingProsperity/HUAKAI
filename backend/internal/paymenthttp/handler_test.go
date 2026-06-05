@@ -304,6 +304,28 @@ func TestConfirmSubscriptionOrderRequiresPGMapsTo503(t *testing.T) {
 	}
 }
 
+// 守退款可用余额错误映射: 金额有效但可用余额不足应是专属 409, 不能落 default 503。
+func TestRefundExceedsAvailableMapsTo409(t *testing.T) {
+	rec := httptest.NewRecorder()
+
+	writePaymentError(rec, payment.ErrRefundExceedsAvailable)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if resp.Error.Code != "refund_exceeds_available" {
+		t.Fatalf("error code = %q, want refund_exceeds_available", resp.Error.Code)
+	}
+}
+
 // 守充值单未回退: 充值单 confirm 仍渲染 credit + balance, 不渲染 subscription。
 // mutation: handler 把分支反了 → 充值单丢 credit / 误加 subscription → 红。
 func TestConfirmTopupOrderSurfacesCreditNoSubscription(t *testing.T) {
