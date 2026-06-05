@@ -2,6 +2,7 @@ package modelsync
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -15,9 +16,18 @@ type SchedulerConfig struct {
 	RunOnStart bool
 }
 
+type SchedulerStatus struct {
+	LastRunAt     time.Time
+	LastSuccessAt time.Time
+	LastErr       string
+}
+
 type Scheduler struct {
 	service Syncer
 	cfg     SchedulerConfig
+
+	statusMu sync.Mutex
+	status   SchedulerStatus
 
 	stopOnce sync.Once
 	cancel   context.CancelFunc
@@ -45,6 +55,15 @@ func (s *Scheduler) Start(ctx context.Context) func() {
 	return s.Stop
 }
 
+func (s *Scheduler) Status() SchedulerStatus {
+	if s == nil {
+		return SchedulerStatus{}
+	}
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	return s.status
+}
+
 func (s *Scheduler) Stop() {
 	if s == nil {
 		return
@@ -62,7 +81,7 @@ func (s *Scheduler) Stop() {
 func (s *Scheduler) run(ctx context.Context) {
 	defer close(s.done)
 	if s.cfg.RunOnStart {
-		_, _ = s.service.Sync(ctx, "startup")
+		s.runSync(ctx, "startup")
 	}
 	ticker := time.NewTicker(s.cfg.Interval)
 	defer ticker.Stop()
@@ -71,7 +90,31 @@ func (s *Scheduler) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_, _ = s.service.Sync(ctx, "periodic")
+			s.runSync(ctx, "periodic")
 		}
 	}
+}
+
+func (s *Scheduler) runSync(ctx context.Context, reason string) {
+	_, err := s.service.Sync(ctx, reason)
+	if err != nil {
+		slog.WarnContext(ctx, "model catalog sync failed",
+			"component", "model_sync_scheduler",
+			"reason", reason,
+			"error", err.Error())
+	}
+	s.recordStatus(err)
+}
+
+func (s *Scheduler) recordStatus(err error) {
+	now := time.Now().UTC()
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.status.LastRunAt = now
+	if err != nil {
+		s.status.LastErr = err.Error()
+		return
+	}
+	s.status.LastErr = ""
+	s.status.LastSuccessAt = now
 }
