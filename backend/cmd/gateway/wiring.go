@@ -116,6 +116,7 @@ type deps struct {
 	userKeyService           *userkey.Service
 	paymentService           *payment.Service
 	paymentProviders         map[string]paymenthttp.ProviderBinding
+	paymentRefundRequests    paymenthttp.RefundRequestRecorder
 	voucherService           *voucher.Service
 	subscriptionService      *subscription.Service
 	subExpiryWorker          *subscription.ExpiryWorker
@@ -788,6 +789,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		userKeyService:        userkey.NewService(pgPool, nil),
 		paymentService:        payment.NewService(paymentStore, paymentServiceOptions(cfg)...),
 		paymentProviders:      paymentProviders,
+		paymentRefundRequests: paymenthttp.NewMemoryRefundRequestRecorder(),
 		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool)),
 		subscriptionService:   subscription.NewService(subscription.NewPostgresStore(pgPool)),
 		notificationSettings:  notificationSettings,
