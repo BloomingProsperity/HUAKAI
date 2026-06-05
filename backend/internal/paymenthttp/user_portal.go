@@ -109,6 +109,8 @@ type RefundRequest struct {
 	Status    RefundRequestStatus `json:"status"`
 	Reason    string              `json:"reason,omitempty"`
 	CreatedAt time.Time           `json:"created_at"`
+	DecidedAt *time.Time          `json:"decided_at,omitempty"`
+	DecidedBy int64               `json:"decided_by,omitempty"`
 }
 
 // RefundRequestInput 建退款申请入参 (身份字段全部来自 session)。
@@ -124,14 +126,19 @@ type RefundRequestInput struct {
 // Create 只写一条 pending 记录, 实现方绝不触碰资金账本。
 type RefundRequestRecorder interface {
 	CreateRefundRequest(ctx context.Context, in RefundRequestInput) (RefundRequest, error)
+	ListPendingRefundRequests(ctx context.Context, tenantID int64) ([]RefundRequest, error)
+	ApproveRefundRequest(ctx context.Context, tenantID, requestID, adminActorID int64) (RefundRequest, error)
+	RejectRefundRequest(ctx context.Context, tenantID, requestID int64, reason string, adminActorID int64) (RefundRequest, error)
 }
 
 // memoryRefundRequestRecorder 进程内退款申请记录 (MVP 兜底)。
-// 一张订单同一用户至多一条 open(pending) 申请, 重复申请返回既有 pending (幂等, 不重复建)。
+// 一张订单同一租户至多一条申请, 重复申请返回既有记录 (幂等, 不重复建)。
 type memoryRefundRequestRecorder struct {
 	mu     sync.Mutex
 	nextID int64
 	byKey  map[refundRequestKey]RefundRequest
+	byID   map[int64]RefundRequest
+	refund refundRequestMoneyService
 }
 
 type refundRequestKey struct {
@@ -141,14 +148,23 @@ type refundRequestKey struct {
 
 // NewMemoryRefundRequestRecorder 构造进程内退款申请记录器 (MVP / 测试默认)。
 func NewMemoryRefundRequestRecorder() RefundRequestRecorder {
-	return &memoryRefundRequestRecorder{byKey: map[refundRequestKey]RefundRequest{}}
+	return NewMemoryRefundRequestRecorderWithRefunds(nil)
+}
+
+// NewMemoryRefundRequestRecorderWithRefunds 构造可执行 admin approve 的内存记录器。
+func NewMemoryRefundRequestRecorderWithRefunds(refund refundRequestMoneyService) RefundRequestRecorder {
+	return &memoryRefundRequestRecorder{
+		byKey:  map[refundRequestKey]RefundRequest{},
+		byID:   map[int64]RefundRequest{},
+		refund: refund,
+	}
 }
 
 func (m *memoryRefundRequestRecorder) CreateRefundRequest(_ context.Context, in RefundRequestInput) (RefundRequest, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := refundRequestKey{tenantID: in.TenantID, orderID: in.OrderID}
-	if existing, ok := m.byKey[key]; ok && existing.Status == RefundRequestPending {
+	if existing, ok := m.byKey[key]; ok {
 		return existing, nil
 	}
 	m.nextID++
@@ -166,6 +182,7 @@ func (m *memoryRefundRequestRecorder) CreateRefundRequest(_ context.Context, in 
 		CreatedAt: now.UTC(),
 	}
 	m.byKey[key] = rec
+	m.byID[rec.ID] = rec
 	return rec, nil
 }
 
@@ -190,20 +207,33 @@ type portalConfigView struct {
 
 type refundRequestView struct {
 	ID        int64  `json:"id"`
+	TenantID  int64  `json:"tenant_id,omitempty"`
+	UserID    int64  `json:"user_id,omitempty"`
 	OrderID   int64  `json:"order_id"`
 	Status    string `json:"status"`
 	Reason    string `json:"reason,omitempty"`
 	CreatedAt string `json:"created_at"`
+	DecidedAt string `json:"decided_at,omitempty"`
+	DecidedBy int64  `json:"decided_by,omitempty"`
 }
 
 func toRefundRequestView(rr RefundRequest) refundRequestView {
-	return refundRequestView{
+	view := refundRequestView{
 		ID:        rr.ID,
+		TenantID:  rr.TenantID,
+		UserID:    rr.UserID,
 		OrderID:   rr.OrderID,
 		Status:    string(rr.Status),
 		Reason:    rr.Reason,
 		CreatedAt: rr.CreatedAt.UTC().Format(time.RFC3339Nano),
 	}
+	if rr.DecidedAt != nil {
+		view.DecidedAt = rr.DecidedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if rr.DecidedBy > 0 {
+		view.DecidedBy = rr.DecidedBy
+	}
+	return view
 }
 
 type portalRefundRequestBody struct {

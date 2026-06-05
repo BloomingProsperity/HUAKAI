@@ -793,7 +793,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		userKeyService:        userkey.NewService(pgPool, nil),
 		paymentService:        paymentService,
 		paymentProviders:      paymentProviders,
-		paymentRefundRequests: paymenthttp.NewMemoryRefundRequestRecorder(),
+		paymentRefundRequests: buildPaymentRefundRequestRecorder(pgPool, paymentService),
 		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool)),
 		subscriptionService:   subscription.NewService(subscription.NewPostgresStore(pgPool)),
 		notificationSettings:  notificationSettings,
