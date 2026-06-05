@@ -50,12 +50,22 @@ func (ex *chatExecution) serveL2CacheIfAvailable(w http.ResponseWriter) (bool, b
 		return false, false
 	}
 	if cached, ok := ex.d.ResponseCache.Get(ex.ctx, ex.cacheKey); ok {
-		cachemetrics.ObserveL2Hit(ex.cacheVendor, ex.upstreamModelID)
-		if serveL2CacheHit(ex.ctx, w, ex.r, ex.d, ex.cacheHitInput(cached)) {
-			return true, false
+		if cached.TenantID != ex.ident.TenantID {
+			// 纵深防御: 物理 key 已把 TenantID 哈希进去(cache/key.go), 正常绝不会取到别租户
+			// 条目; 若发生说明 key 被弱化或缓存被污染 —— 绝不跨租户 serve。删除该条目、记录,
+			// 当作 miss 走正常上游。
+			logInternalError(ex.ctx, ex.requestID, "l2_cache_tenant_mismatch",
+				fmt.Errorf("cached entry tenant_id=%d != request tenant_id=%d", cached.TenantID, ex.ident.TenantID))
+			ex.d.ResponseCache.Delete(ex.ctx, ex.cacheKey)
+			syncL2SizeMetrics(ex.d.ResponseCache)
+		} else {
+			cachemetrics.ObserveL2Hit(ex.cacheVendor, ex.upstreamModelID)
+			if serveL2CacheHit(ex.ctx, w, ex.r, ex.d, ex.cacheHitInput(cached)) {
+				return true, false
+			}
+			ex.d.ResponseCache.Delete(ex.ctx, ex.cacheKey)
+			syncL2SizeMetrics(ex.d.ResponseCache)
 		}
-		ex.d.ResponseCache.Delete(ex.ctx, ex.cacheKey)
-		syncL2SizeMetrics(ex.d.ResponseCache)
 	}
 	cachemetrics.ObserveL2Miss(ex.cacheVendor, ex.upstreamModelID)
 	return false, true
