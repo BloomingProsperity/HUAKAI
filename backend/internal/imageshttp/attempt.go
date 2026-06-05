@@ -8,6 +8,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/imagepricing"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/relaybody"
 )
 
 func (ex *execution) selectAccount(w http.ResponseWriter, attemptSeq int) bool {
@@ -52,14 +53,21 @@ func (ex *execution) resolveCredential(w http.ResponseWriter) bool {
 }
 
 func (ex *execution) dispatchAndSettle(w http.ResponseWriter, attemptSeq int) bool {
-	res, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
+	// 把出站 body 的 model 改写成解析后的上游 id。JSON 只改 body 不动 CT(保持原行为=adapter默认);
+	// multipart(edits/variations)才设 InboundContentType(顺带补上 image 原先缺失的 CT)。
+	inboundBody, inboundCT, isMultipart := relaybody.RewriteModel(ex.body, ex.r.Header.Get("Content-Type"), ex.upstreamModelID)
+	dispatchInput := gateway.DispatchInput{
 		ProtocolFamily:  ex.resolved.ProtocolFamily,
 		EndpointPath:    ex.endpoint.Path(),
 		UpstreamModelID: ex.upstreamModelID,
-		InboundBody:     ex.body,
+		InboundBody:     inboundBody,
 		Account:         ex.accInfo,
 		Credential:      ex.cred,
-	})
+	}
+	if isMultipart {
+		dispatchInput.InboundContentType = inboundCT
+	}
+	res, err := ex.d.Dispatcher.Dispatch(ex.ctx, dispatchInput)
 	if err != nil {
 		ex.abort(w, "upstream_dispatch_error", 0)
 		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamDispatchError, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError))
