@@ -72,6 +72,15 @@ type Config struct {
 	PaymentTaobaoCheckoutURL     string
 	PaymentExpireSweepInterval   time.Duration
 	PaymentExpireSweepBatchLimit int
+
+	// CacheAnthropicAutoBreakpoints opts into automatic cache_control
+	// breakpoint planning on the live Anthropic Messages egress path
+	// (HUAKAI_CACHE_ANTHROPIC_AUTO_BREAKPOINTS). Default false keeps the
+	// outbound body byte-for-byte. When true the dispatcher injects ephemeral
+	// breakpoints only for anthropic_messages requests that carry no
+	// client-supplied cache_control; clients managing their own caching are
+	// never touched.
+	CacheAnthropicAutoBreakpoints bool
 }
 
 type BudgetConfig struct {
@@ -148,6 +157,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	cacheAnthropicAutoBreakpoints, err := envBool("HUAKAI_CACHE_ANTHROPIC_AUTO_BREAKPOINTS")
+	if err != nil {
+		return nil, err
+	}
 	budgetCfg, err := loadBudgetConfig()
 	if err != nil {
 		return nil, err
@@ -194,6 +207,7 @@ func Load() (*Config, error) {
 		PaymentTaobaoCheckoutURL:       strings.TrimSpace(os.Getenv("HUAKAI_PAYMENT_TAOBAO_CHECKOUT_URL")),
 		PaymentExpireSweepInterval:     paymentExpireSweepInterval,
 		PaymentExpireSweepBatchLimit:   paymentExpireSweepBatchLimit,
+		CacheAnthropicAutoBreakpoints:  cacheAnthropicAutoBreakpoints,
 		DBMaxConns:                     dbMaxConns,
 		DBMinConns:                     dbMinConns,
 		DBMaxConnLifetime:              dbMaxConnLifetime,

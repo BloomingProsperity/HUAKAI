@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/cacheplan"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
@@ -101,6 +102,16 @@ type UpstreamDispatcher struct {
 	ProxyResolver provider.ProxyResolver
 	// Timeouts applies only to non-streaming buffered dispatches.
 	Timeouts TimeoutConfig
+	// AnthropicAutoBreakpoints opts into automatic cache_control breakpoint
+	// planning on the live Anthropic Messages egress path. Default false keeps
+	// the body byte-for-byte. When true, a request whose protocol family is
+	// "anthropic_messages" AND that carries no client-supplied cache_control
+	// gets ephemeral breakpoints injected at planner-chosen positions just
+	// before BuildRequest. A client that brings its own cache_control is never
+	// touched. Any planning/serialization error is swallowed and the original
+	// body is used unchanged — caching is an optimization, never a hard
+	// dependency of a live request.
+	AnthropicAutoBreakpoints bool
 }
 
 // Dispatch 执行一次完整出站。失败时 result 可能为 nil；调用方按 err
@@ -121,6 +132,11 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: 取 adapter 失败 (protocol=%q): %w", in.ProtocolFamily, err)
 	}
+
+	// 1.5 Optional Anthropic cache_control breakpoint planning. Replaces the
+	// local inbound body only for the anthropic_messages family and only when
+	// opted in; see maybeInjectAnthropicBreakpoints.
+	in.InboundBody = d.maybeInjectAnthropicBreakpoints(in.ProtocolFamily, in.InboundBody)
 
 	// 2. 构造出站请求
 	req, err := adapter.BuildRequest(ctx, provider.BuildInput{
@@ -240,4 +256,49 @@ func validatePassthroughEndpointTarget(ctx context.Context, cred provider.Creden
 		return fmt.Errorf("dispatcher: passthrough endpoint rejected: %w", err)
 	}
 	return nil
+}
+
+// maybeInjectAnthropicBreakpoints plans and applies ephemeral cache_control
+// breakpoints on an Anthropic Messages request body just before it is built
+// into an outbound HTTP request. It is a no-op (returns body unchanged) when
+// any of these hold:
+//   - AnthropicAutoBreakpoints is not enabled on the dispatcher;
+//   - the protocol family is not "anthropic_messages";
+//   - the client already supplied at least one cache_control field anywhere
+//     in the request (system / message content / tools) — we never override
+//     a client that manages its own caching;
+//   - the planner produces no positions, or any inspect/plan/apply step
+//     errors. Caching is an optimization; a planning failure must never
+//     break a live request, so on error the original body is returned.
+//
+// The returned slice is either the original body (untouched) or a freshly
+// allocated, re-serialized body from ApplyBreakpoints; the caller's slice is
+// never mutated in place.
+func (d *UpstreamDispatcher) maybeInjectAnthropicBreakpoints(protocolFamily string, body []byte) []byte {
+	if d == nil || !d.AnthropicAutoBreakpoints {
+		return body
+	}
+	if protocolFamily != "anthropic_messages" {
+		return body
+	}
+	if len(body) == 0 {
+		return body
+	}
+	// Client already brought its own cache_control: leave the body verbatim.
+	if cacheplan.HasAnyCacheControl(body) {
+		return body
+	}
+	snapshot, err := InspectCacheControl(body)
+	if err != nil {
+		return body
+	}
+	suggestion, err := SuggestBreakpoints(body, snapshot, nil)
+	if err != nil || len(suggestion.Add) == 0 {
+		return body
+	}
+	result, err := ApplyBreakpoints(body, suggestion)
+	if err != nil || len(result.Applied) == 0 || len(result.Body) == 0 {
+		return body
+	}
+	return result.Body
 }
