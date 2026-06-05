@@ -68,8 +68,10 @@ type Config struct {
 	PaymentEnableMock  bool
 	// 淘宝/闲鱼 manual-redirect 支付: 默认关闭。启用后下单返回 checkout_url + 订单号,
 	// 用户到淘宝/闲鱼扫码/点链接付款, 管理员手动确认入账(无程序回调)。
-	PaymentTaobaoEnabled     bool
-	PaymentTaobaoCheckoutURL string
+	PaymentTaobaoEnabled         bool
+	PaymentTaobaoCheckoutURL     string
+	PaymentExpireSweepInterval   time.Duration
+	PaymentExpireSweepBatchLimit int
 }
 
 type BudgetConfig struct {
@@ -81,17 +83,19 @@ type BudgetConfig struct {
 }
 
 const (
-	DefaultBillingPolicyVersion = "1.0"
-	VendorOAuthCursor           = "cursor"
-	VendorOAuthWindsurf         = "windsurf"
-	VendorOAuthOpenAICodex      = "openai_codex"
-	VendorOAuthKiro             = "kiro"
-	VendorOAuthGemini           = "gemini"
-	vendorOAuthAuthURL          = "AUTH_URL"
-	vendorOAuthTokenURL         = "TOKEN_URL"
-	vendorOAuthClientID         = "CLIENT_ID"
-	vendorOAuthClientSecret     = "CLIENT_SECRET"
-	vendorOAuthScope            = "SCOPE"
+	DefaultBillingPolicyVersion         = "1.0"
+	VendorOAuthCursor                   = "cursor"
+	VendorOAuthWindsurf                 = "windsurf"
+	VendorOAuthOpenAICodex              = "openai_codex"
+	VendorOAuthKiro                     = "kiro"
+	VendorOAuthGemini                   = "gemini"
+	DefaultPaymentExpireSweepInterval   = time.Minute
+	DefaultPaymentExpireSweepBatchLimit = 200
+	vendorOAuthAuthURL                  = "AUTH_URL"
+	vendorOAuthTokenURL                 = "TOKEN_URL"
+	vendorOAuthClientID                 = "CLIENT_ID"
+	vendorOAuthClientSecret             = "CLIENT_SECRET"
+	vendorOAuthScope                    = "SCOPE"
 )
 
 // VendorOAuth is one operator-provided OAuth client configuration.
@@ -125,6 +129,14 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	paymentTaobaoEnabled, err := envBool("HUAKAI_PAYMENT_TAOBAO_ENABLED")
+	if err != nil {
+		return nil, err
+	}
+	paymentExpireSweepInterval, err := envOptionalDuration("HUAKAI_PAYMENT_EXPIRE_SWEEP_INTERVAL")
+	if err != nil {
+		return nil, err
+	}
+	paymentExpireSweepBatchLimit, err := envPositiveIntDefault("HUAKAI_PAYMENT_EXPIRE_SWEEP_BATCH_LIMIT", DefaultPaymentExpireSweepBatchLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -180,6 +192,8 @@ func Load() (*Config, error) {
 		PaymentEnableMock:              paymentEnableMock,
 		PaymentTaobaoEnabled:           paymentTaobaoEnabled,
 		PaymentTaobaoCheckoutURL:       strings.TrimSpace(os.Getenv("HUAKAI_PAYMENT_TAOBAO_CHECKOUT_URL")),
+		PaymentExpireSweepInterval:     paymentExpireSweepInterval,
+		PaymentExpireSweepBatchLimit:   paymentExpireSweepBatchLimit,
 		DBMaxConns:                     dbMaxConns,
 		DBMinConns:                     dbMinConns,
 		DBMaxConnLifetime:              dbMaxConnLifetime,
@@ -342,6 +356,27 @@ func envOptionalDurationSeconds(name string) (time.Duration, error) {
 	return time.Duration(seconds) * time.Second, nil
 }
 
+func envOptionalDuration(name string) (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" || raw == "0" {
+		return 0, nil
+	}
+	if d, err := time.ParseDuration(raw); err == nil {
+		if d < 0 {
+			return 0, fmt.Errorf("%s must be non-negative duration, got %q", name, raw)
+		}
+		return d, nil
+	}
+	seconds, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a duration like 60s or positive seconds, got %q: %w", name, raw, err)
+	}
+	if seconds < 0 {
+		return 0, fmt.Errorf("%s must be non-negative duration, got %q", name, raw)
+	}
+	return time.Duration(seconds) * time.Second, nil
+}
+
 func envNonNegativeInt64(name string) (int64, error) {
 	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {
@@ -353,6 +388,21 @@ func envNonNegativeInt64(name string) (int64, error) {
 			return 0, fmt.Errorf("%s must be non-negative integer, got %q: %w", name, raw, err)
 		}
 		return 0, fmt.Errorf("%s must be non-negative integer, got %q", name, raw)
+	}
+	return value, nil
+}
+
+func envPositiveIntDefault(name string, fallback int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		if err != nil {
+			return 0, fmt.Errorf("%s must be positive integer, got %q: %w", name, raw, err)
+		}
+		return 0, fmt.Errorf("%s must be positive integer, got %q", name, raw)
 	}
 	return value, nil
 }

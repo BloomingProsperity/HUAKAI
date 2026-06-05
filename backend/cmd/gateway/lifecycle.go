@@ -32,6 +32,7 @@ type gatewayRuntime struct {
 	replayJanitorStop          func()
 	hermesRetentionWorker      *hermes.MessageRetentionWorker
 	leaseSweepStop             func()
+	paymentExpireSweepStop     func()
 	pendingReconcileStop       func()
 	modelSyncStop              func()
 	closeReplica               func()
@@ -62,6 +63,9 @@ func (rt *gatewayRuntime) close() {
 	}
 	if rt.leaseSweepStop != nil {
 		rt.leaseSweepStop()
+	}
+	if rt.paymentExpireSweepStop != nil {
+		rt.paymentExpireSweepStop()
 	}
 	if rt.pendingReconcileStop != nil {
 		rt.pendingReconcileStop()

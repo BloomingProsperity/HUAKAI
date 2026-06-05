@@ -289,6 +289,38 @@ func (m *MemoryStore) ListAuditEvents(_ context.Context, tenantID, orderID int64
 	return out, nil
 }
 
+func (m *MemoryStore) ExpireStalePendingOrders(_ context.Context, now time.Time, limit int) (int, error) {
+	if m == nil {
+		return 0, ErrStoreNotConfigured
+	}
+	if limit <= 0 {
+		return 0, nil
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ids := make([]int64, 0, len(m.orders))
+	for id, o := range m.orders {
+		if o == nil || o.Status != StatusPending || o.ExpiresAt == nil || !o.ExpiresAt.Before(now) {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	if len(ids) > limit {
+		ids = ids[:limit]
+	}
+	for _, id := range ids {
+		o := m.orders[id]
+		o.Status = StatusExpired
+		o.UpdatedAt = now
+		m.appendAudit(o.TenantID, o.ID, AuditOrderExpired, ActorKindSystem, 0, "", "")
+	}
+	return len(ids), nil
+}
+
 func (m *MemoryStore) balanceLocked(tenantID, userID int64) int64 {
 	var sum int64
 	for _, c := range m.credits {
