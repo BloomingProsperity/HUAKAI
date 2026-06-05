@@ -33,7 +33,7 @@ generate: ## Run sqlc codegen (requires sqlc installed).
 migrate-up: ## Apply database migrations (requires golang-migrate).
 	migrate -path sql/migrations -database "$(DATABASE_URL)" up
 
-migrate-down: ## Roll back one migration step (requires .down.sql files; Phase 4 task).
+migrate-down: ## Roll back one migration step (.down.sql files are paired; rollback is dev/test only).
 	migrate -path sql/migrations -database "$(DATABASE_URL)" down 1
 
 run: build ## Build and run the gateway.

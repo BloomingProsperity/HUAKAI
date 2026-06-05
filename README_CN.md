@@ -132,7 +132,7 @@ parity，且保持 MIT 兼容。参考项目仅作行为证据来源；任何参
 - 资源池选择 + claim 回写（`backend/internal/pool`）
 - 流式转发器 + 用量草稿提取（`backend/internal/gateway`）
 - Tx1/Tx2 计费 + 可观测结算（`backend/internal/billing`）
-- PostgreSQL 迁移到 `0008_model_registry`
+- PostgreSQL 迁移到 `0093_billing_ledger_claims_listing_index`
 - R7 应用层伪装原子（system rewrite / cache_control breakpoints / tool-name
   obfuscation / metadata user_id rewrite / 6-step composer）位于
   `backend/internal/gateway/`

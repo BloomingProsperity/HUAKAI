@@ -159,7 +159,7 @@ Implemented:
 - Resource pool selection and claim writeback in `backend/internal/pool`.
 - Streaming forwarder and usage draft extraction in `backend/internal/gateway`.
 - Tx1/Tx2 billing and observability settlement in `backend/internal/billing`.
-- PostgreSQL migrations through `0008_model_registry`.
+- PostgreSQL migrations through `0093_billing_ledger_claims_listing_index`.
 - R7 application-layer mimicry primitives (system rewrite, cache_control breakpoints,
   tool-name obfuscation, metadata user_id rewrite, 6-step composer) in
   `backend/internal/gateway/`.

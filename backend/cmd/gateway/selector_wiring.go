@@ -8,7 +8,7 @@
 //   - 启动期失败 → fail-fast 让 main 退出 (LoadPoolSelector 已守门, 这里再一次
 //     Validate; misconfigure 不允许 silent 退化)
 //   - shadow / canary / pasr-* 模式才启动 PASR 基础设施: SegmentTable +
-//     AgingWorker (5 min ticker) + RegisterPASRCacheFeedback (cachemetrics
+//     AgingWorker (1 min ticker) + RegisterPASRCacheFeedback (cachemetrics
 //     全局 observer)
 //   - shadow 实例 Slots=nil + Claims=nil + ReadOnlySegments=true (段表只读
 //   - 三层防御之一)
