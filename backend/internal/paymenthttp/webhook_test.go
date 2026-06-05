@@ -116,6 +116,41 @@ func TestWebhookHandler_UnverifiedResponseIsGeneric(t *testing.T) {
 	}
 }
 
+func TestWebhookHandler_UnsignedCallbackRejected(t *testing.T) {
+	fake := &fakeWebhookService{err: payment.ErrCallbackUnverified}
+	rec := postWebhook(mountWebhook(fake), "test", []byte(`{}`), "")
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unsigned canonical webhook status=%d body=%s want 401", rec.Code, rec.Body.String())
+	}
+	if !fake.called {
+		t.Fatal("service must receive unsigned callback so provider verifier can reject it")
+	}
+	if fake.gotSig != "" {
+		t.Fatalf("unsigned callback signature forwarded as %q, want empty string", fake.gotSig)
+	}
+}
+
+func TestWebhookHandler_ProviderMismatchRejected(t *testing.T) {
+	fake := &fakeWebhookService{err: payment.ErrCallbackRejected}
+	rec := postWebhook(mountWebhook(fake), "test", []byte(`{"provider":"other"}`), "sig")
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("provider mismatch status=%d body=%s want 409", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode provider mismatch body: %v", err)
+	}
+	if body.Error.Code != "callback_rejected" {
+		t.Fatalf("provider mismatch error code = %q, want callback_rejected", body.Error.Code)
+	}
+}
+
 // body 超 1 MiB 上限 → 400, 且 service 绝不被调用 (mutation: 去掉 MaxBytesReader → service 被调 → 红)。
 func TestWebhookHandler_BodyCapEnforced(t *testing.T) {
 	fake := &fakeWebhookService{res: payment.FulfillResult{Order: payment.Order{Status: payment.StatusCompleted}}}
