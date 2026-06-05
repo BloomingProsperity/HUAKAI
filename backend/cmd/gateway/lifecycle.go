@@ -263,6 +263,7 @@ func loadRuntimeOptions(logger *zap.Logger) (*runtimeOptions, error) {
 		modelSync:     modelSyncCfg,
 		outboxRuntime: outboxRuntime,
 		responseCache: responseCache,
+		cacheScope:    cacheCfg.Scope,
 	}, nil
 }
 

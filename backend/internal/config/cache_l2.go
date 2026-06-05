@@ -12,18 +12,22 @@ import (
 const (
 	defaultL2CacheSizeBytes = int64(64 << 20)
 	defaultL2CacheTTL       = 60 * time.Second
+	defaultL2CacheScope     = "apikey"
 )
 
 var (
-	ErrInvalidL2CacheBool = errors.New("config: invalid L2 cache enabled flag")
-	ErrInvalidL2CacheSize = errors.New("config: invalid L2 cache size bytes")
-	ErrInvalidL2CacheTTL  = errors.New("config: invalid L2 cache ttl seconds")
+	ErrInvalidL2CacheBool  = errors.New("config: invalid L2 cache enabled flag")
+	ErrInvalidL2CacheSize  = errors.New("config: invalid L2 cache size bytes")
+	ErrInvalidL2CacheTTL   = errors.New("config: invalid L2 cache ttl seconds")
+	ErrInvalidL2CacheScope = errors.New("config: invalid L2 cache scope")
 )
 
 type L2CacheConfig struct {
 	Enabled   bool
 	SizeBytes int64
 	TTL       time.Duration
+	// Scope 决定缓存键 principal 隔离粒度: tenant|apikey|user (默认 apikey, 安全)。
+	Scope string
 }
 
 func LoadL2Cache() (*L2CacheConfig, error) {
@@ -31,6 +35,7 @@ func LoadL2Cache() (*L2CacheConfig, error) {
 		Enabled:   false,
 		SizeBytes: defaultL2CacheSizeBytes,
 		TTL:       defaultL2CacheTTL,
+		Scope:     defaultL2CacheScope,
 	}
 	if raw := strings.TrimSpace(os.Getenv("HUAKAI_CACHE_L2_ENABLED")); raw != "" {
 		enabled, err := parseL2Enabled(raw)
@@ -52,6 +57,14 @@ func LoadL2Cache() (*L2CacheConfig, error) {
 			return nil, fmt.Errorf("%w: HUAKAI_CACHE_L2_TTL_SECONDS=%q", ErrInvalidL2CacheTTL, raw)
 		}
 		cfg.TTL = time.Duration(seconds) * time.Second
+	}
+	if raw := strings.TrimSpace(os.Getenv("HUAKAI_CACHE_L2_SCOPE")); raw != "" {
+		switch strings.ToLower(raw) {
+		case "tenant", "apikey", "user":
+			cfg.Scope = strings.ToLower(raw)
+		default:
+			return nil, fmt.Errorf("%w: HUAKAI_CACHE_L2_SCOPE=%q", ErrInvalidL2CacheScope, raw)
+		}
 	}
 	return cfg, nil
 }

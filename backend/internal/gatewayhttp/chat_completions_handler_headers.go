@@ -324,6 +324,7 @@ func cacheEntry(ex *chatExecution, cacheKey string, clientBody, cacheEnvelope []
 	return l2cache.Entry{
 		Key:      cacheKey,
 		TenantID: ex.ident.TenantID,
+		ScopeID:  ex.cacheScopeID(),
 		Vendor:   ex.cacheVendor,
 		Model:    ex.upstreamModelID,
 		Status:   http.StatusOK,
