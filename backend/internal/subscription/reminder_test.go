@@ -24,6 +24,50 @@ type fakeSend struct {
 	body     string
 }
 
+type reminderResult struct {
+	sent int
+	err  error
+}
+
+type sentKeyBarrierStore struct {
+	ReminderStore
+
+	mu      sync.Mutex
+	needed  int
+	waiting int
+	release chan struct{}
+}
+
+func newSentKeyBarrierStore(inner ReminderStore, needed int) *sentKeyBarrierStore {
+	return &sentKeyBarrierStore{
+		ReminderStore: inner,
+		needed:        needed,
+		release:       make(chan struct{}),
+	}
+}
+
+func (s *sentKeyBarrierStore) SentReminderKeys(ctx context.Context, tenantID, subscriptionID int64) (map[string]struct{}, error) {
+	keys, err := s.ReminderStore.SentReminderKeys(ctx, tenantID, subscriptionID)
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	s.waiting++
+	if s.waiting == s.needed {
+		close(s.release)
+	}
+	release := s.release
+	s.mu.Unlock()
+
+	select {
+	case <-release:
+		return keys, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func (f *fakeMailer) SendReminder(_ context.Context, tenantID int64, to, subject, body string) ReminderOutcome {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -128,6 +172,53 @@ func TestReminder_DedupAcrossTicks(t *testing.T) {
 	}
 }
 
+// TestReminder_ConcurrentReplicasClaimBeforeSend forces two reminder services to
+// race the same subscription tier after both have observed no existing reminder.
+// 判别性: 把 claim 移回 SendReminder 之后时, 两个副本都会先发邮件, mailer calls=2 -> 红。
+func TestReminder_ConcurrentReplicasClaimBeforeSend(t *testing.T) {
+	assignNow := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	var reminderNow time.Time
+	mailer := &fakeMailer{outcome: ReminderSent}
+	svc, _, store := reminderHarness(&assignNow, &reminderNow, mailer, nil)
+	subID := assignSubExpiringIn(t, svc, store, &assignNow, &reminderNow, 1, 43, "u@example.com", 2*day)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	barrierStore := newSentKeyBarrierStore(store, 2)
+	opts := []ReminderOption{WithReminderClock(func() time.Time { return reminderNow })}
+	replicas := []*ReminderService{
+		NewReminderService(barrierStore, mailer, opts...),
+		NewReminderService(barrierStore, mailer, opts...),
+	}
+	results := make(chan reminderResult, len(replicas))
+	for _, replica := range replicas {
+		go func(rsvc *ReminderService) {
+			sent, err := rsvc.ProcessDueReminders(ctx, 100)
+			results <- reminderResult{sent: sent, err: err}
+		}(replica)
+	}
+
+	totalSent := 0
+	for range replicas {
+		res := <-results
+		if res.err != nil {
+			t.Fatalf("concurrent reminder process err=%v", res.err)
+		}
+		totalSent += res.sent
+	}
+	if totalSent != 1 {
+		t.Fatalf("sent total = %d, want 1 durable claim winner", totalSent)
+	}
+	if c := mailer.count(); c != 1 {
+		t.Fatalf("mailer calls = %d, want 1 cross-replica send", c)
+	}
+	keys, _ := store.SentReminderKeys(context.Background(), 1, subID)
+	if _, ok := keys["3"]; !ok {
+		t.Fatalf("expected tier '3' recorded, got %v", keys)
+	}
+}
+
 // TestReminder_DistinctTiersFireSeparately 进入不同档位各发一次。
 func TestReminder_DistinctTiersFireSeparately(t *testing.T) {
 	assignNow := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
@@ -183,9 +274,9 @@ func TestReminder_MissingRecipientSkippedNotSent(t *testing.T) {
 	}
 }
 
-// TestReminder_UnconfiguredNotRecordedRetries 未配 SMTP -> 不记账, 配好后重试。
-// 判别性: 若把 Unconfigured 也记账, 配好后那 tick 会被去重跳过 -> 永不发 -> 红。
-func TestReminder_UnconfiguredNotRecordedRetries(t *testing.T) {
+// TestReminder_UnconfiguredClaimedAtMostOnce 未配 SMTP 也保留 claim 并记录失败 tick, 后续不重发同档。
+// 判别性: 若失败后删除/跳过 claim, 配好后第二 tick 会再发 -> mailer calls=2 -> 红。
+func TestReminder_UnconfiguredClaimedAtMostOnce(t *testing.T) {
 	assignNow := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	var reminderNow time.Time
 	mailer := &fakeMailer{outcome: ReminderSkippedUnconfigured}
@@ -193,23 +284,29 @@ func TestReminder_UnconfiguredNotRecordedRetries(t *testing.T) {
 	subID := assignSubExpiringIn(t, svc, store, &assignNow, &reminderNow, 1, 9, "u@example.com", 2*day)
 	ctx := context.Background()
 
-	if sent, _ := rsvc.ProcessDueReminders(ctx, 100); sent != 0 {
-		t.Fatalf("unconfigured tick sent=%d, want 0", sent)
+	if sent, err := rsvc.ProcessDueReminders(ctx, 100); sent != 0 || err == nil {
+		t.Fatalf("unconfigured tick sent=%d err=%v, want sent=0 with failure error", sent, err)
 	}
 	keys, _ := store.SentReminderKeys(ctx, 1, subID)
-	if len(keys) != 0 {
-		t.Fatalf("unconfigured must not record, got %v", keys)
+	if _, ok := keys["3"]; !ok {
+		t.Fatalf("unconfigured attempt must claim tier '3', got %v", keys)
 	}
-	// SMTP 配好后 -> 重试应真发。
+	if c := mailer.count(); c != 1 {
+		t.Fatalf("unconfigured mailer calls=%d, want 1 initial attempt", c)
+	}
+	// SMTP 配好后仍不重发同档: claim 已经代表一次尝试。
 	mailer.outcome = ReminderSent
-	if sent, _ := rsvc.ProcessDueReminders(ctx, 100); sent != 1 {
-		t.Fatalf("after configured, sent=%d, want 1 (retry)", sent)
+	if sent, err := rsvc.ProcessDueReminders(ctx, 100); sent != 0 || err != nil {
+		t.Fatalf("after configured sent=%d err=%v, want dedup skip", sent, err)
+	}
+	if c := mailer.count(); c != 1 {
+		t.Fatalf("after configured mailer calls=%d, want still 1", c)
 	}
 }
 
-// TestReminder_RetryableFailureNotSuppressed 发送失败不 durably 记账 -> 修好后能补发。
-// 判别性: 若失败被记成永久 (旧 permanent_failed 行为), 修好后该档会被去重跳过 -> 补发 sent=0 -> 红。
-func TestReminder_RetryableFailureNotSuppressed(t *testing.T) {
+// TestReminder_RetryableFailureClaimedAtMostOnce 发送失败保留 claim, 避免多副本/多 tick 重复轰炸。
+// 判别性: 若失败后不保留 claim, provider 恢复后第二 tick 会再发 -> mailer calls=2 -> 红。
+func TestReminder_RetryableFailureClaimedAtMostOnce(t *testing.T) {
 	assignNow := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	var reminderNow time.Time
 	mailer := &fakeMailer{outcome: ReminderRetry}
@@ -217,18 +314,24 @@ func TestReminder_RetryableFailureNotSuppressed(t *testing.T) {
 	subID := assignSubExpiringIn(t, svc, store, &assignNow, &reminderNow, 1, 10, "u@example.com", 2*day)
 	ctx := context.Background()
 
-	// 第一次失败: 不记账。
-	if sent, _ := rsvc.ProcessDueReminders(ctx, 100); sent != 0 {
-		t.Fatalf("failing tick sent=%d, want 0", sent)
+	// 第一次失败: claim 保留, err 让 worker failedTicks/日志可见。
+	if sent, err := rsvc.ProcessDueReminders(ctx, 100); sent != 0 || err == nil {
+		t.Fatalf("failing tick sent=%d err=%v, want sent=0 with failure error", sent, err)
 	}
 	keys, _ := store.SentReminderKeys(ctx, 1, subID)
-	if len(keys) != 0 {
-		t.Fatalf("retryable failure must not be durably recorded, got %v", keys)
+	if _, ok := keys["3"]; !ok {
+		t.Fatalf("retryable failure must claim tier '3', got %v", keys)
 	}
-	// provider 恢复后: 应补发, 不被永久抑制。
+	if c := mailer.count(); c != 1 {
+		t.Fatalf("failing tick mailer calls=%d, want 1 initial attempt", c)
+	}
+	// provider 恢复后: at-most-once 跳过该档, 不重复提醒。
 	mailer.outcome = ReminderSent
-	if sent, _ := rsvc.ProcessDueReminders(ctx, 100); sent != 1 {
-		t.Fatalf("after recovery sent=%d, want 1 (must not be permanently suppressed)", sent)
+	if sent, err := rsvc.ProcessDueReminders(ctx, 100); sent != 0 || err != nil {
+		t.Fatalf("after recovery sent=%d err=%v, want dedup skip", sent, err)
+	}
+	if c := mailer.count(); c != 1 {
+		t.Fatalf("after recovery mailer calls=%d, want still 1", c)
 	}
 }
 
