@@ -65,7 +65,7 @@ func TestATPRIV001IntegrationSentinelInjectionAcrossSinks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("outbox enqueue: %v", err)
 	}
-	if err := outbox.MarkFailedDead(ctx, ev.ID, "upstream body "+sentinel); err != nil {
+	if err := outbox.MarkFailedDead(ctx, ev.ID, "", "upstream body "+sentinel); err != nil {
 		t.Fatalf("outbox dead: %v", err)
 	}
 	for _, item := range outbox.Snapshot() {

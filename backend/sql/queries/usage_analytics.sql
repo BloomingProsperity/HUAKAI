@@ -13,7 +13,7 @@
 -- (tenant_id, api_key_id) so cross-key reads are structurally impossible —
 -- the handler passes ident.APIKeyID, never a client-supplied value.
 SELECT
-    date_trunc('day', ur.settled_at AT TIME ZONE 'UTC')::timestamptz AS day,
+    date_trunc('day', ur.settled_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS day,
     ur.requested_model,
     COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text  AS total_cost,
     COALESCE(sum(ur.tokens_input), 0)::bigint              AS total_tokens_input,
@@ -35,7 +35,7 @@ ORDER BY 1 DESC, 2 ASC;
 -- (tenant_id, api_key_id) so cross-key reads are structurally impossible —
 -- the handler passes ident.APIKeyID, never a client-supplied value.
 SELECT
-    date_trunc('week', ur.settled_at AT TIME ZONE 'UTC')::timestamptz AS day,
+    date_trunc('week', ur.settled_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS day,
     ur.requested_model,
     COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text  AS total_cost,
     COALESCE(sum(ur.tokens_input), 0)::bigint              AS total_tokens_input,
@@ -57,7 +57,7 @@ ORDER BY 1 DESC, 2 ASC;
 -- (tenant_id, api_key_id) so cross-key reads are structurally impossible —
 -- the handler passes ident.APIKeyID, never a client-supplied value.
 SELECT
-    date_trunc('month', ur.settled_at AT TIME ZONE 'UTC')::timestamptz AS day,
+    date_trunc('month', ur.settled_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS day,
     ur.requested_model,
     COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text  AS total_cost,
     COALESCE(sum(ur.tokens_input), 0)::bigint              AS total_tokens_input,
@@ -182,7 +182,7 @@ WHERE ur.settled_at >= sqlc.arg(settled_since)::timestamptz;
 -- name: AggregateUsageOverviewTrendByDay :many
 -- Platform-admin overview daily trend across the recent settled usage window.
 SELECT
-    date_trunc('day', ur.settled_at AT TIME ZONE 'UTC')::timestamptz AS day,
+    date_trunc('day', ur.settled_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS day,
     count(*)::bigint                                             AS request_count,
     COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost
 FROM usage_records ur

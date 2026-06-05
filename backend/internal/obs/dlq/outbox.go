@@ -15,9 +15,11 @@ import (
 type Outbox interface {
 	Enqueue(context.Context, OutboxEvent) (OutboxEvent, error)
 	Dequeue(context.Context, DequeueOptions) (OutboxEvent, bool, error)
-	MarkCompleted(context.Context, string) error
-	MarkFailedRetry(context.Context, string, string, time.Time) error
-	MarkFailedDead(context.Context, string, string) error
+	// Mark* 第二参 owner 是 dequeue 时的 worker 租约令牌; 非空时做 owner 围栏
+	// (仅当行仍由该 owner 持有时才改), 空串=跳过围栏(直接 dead-letter 等用例)。
+	MarkCompleted(ctx context.Context, id, owner string) error
+	MarkFailedRetry(ctx context.Context, id, owner, reason string, next time.Time) error
+	MarkFailedDead(ctx context.Context, id, owner, reason string) error
 }
 
 type Handler func(context.Context, OutboxEvent) error
