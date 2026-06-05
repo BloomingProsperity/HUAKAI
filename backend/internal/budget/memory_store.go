@@ -41,11 +41,12 @@ type Store interface {
 }
 
 type MemoryStore struct {
-	mu       sync.Mutex
-	now      func() time.Time
-	counters map[memoryCounterKey]int64
-	claims   map[memoryClaimKey]struct{}
-	ledger   map[claimKey]StoredReservation
+	mu        sync.Mutex
+	now       func() time.Time
+	counters  map[memoryCounterKey]int64
+	claims    map[memoryClaimKey]struct{}
+	ledger    map[claimKey]StoredReservation
+	lastSweep int64
 }
 
 type memoryCounterKey struct {
@@ -88,6 +89,7 @@ func (s *MemoryStore) CheckAndIncrement(_ context.Context, req CounterRequest) (
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.evictStale(minute)
 
 	claimKey := memoryClaimKey{scope: scope, minute: minute, claim: req.ClaimID}
 	if _, ok := s.claims[claimKey]; ok {
@@ -107,6 +109,27 @@ func (s *MemoryStore) CheckAndIncrement(_ context.Context, req CounterRequest) (
 	s.counters[tKey] = currentTPM + tpmInc
 	s.claims[claimKey] = struct{}{}
 	return CounterResult{Allowed: true, Minute: minute, Current: s.counters[rKey], Limit: limits.RPM}, nil
+}
+
+// evictStale 删除早于 minute-1 的计数/claim 分钟桶(对齐 Redis 端 120s TTL,保留当前+上一
+// 分钟),防 memory_fallback 长时间运行时 map 无限增长。lastSweep 门控:每分钟最多扫一次。
+// 调用方必须已持有 s.mu。
+func (s *MemoryStore) evictStale(minute int64) {
+	if minute <= s.lastSweep {
+		return
+	}
+	s.lastSweep = minute
+	cutoff := minute - 1
+	for k := range s.counters {
+		if k.minute < cutoff {
+			delete(s.counters, k)
+		}
+	}
+	for k := range s.claims {
+		if k.minute < cutoff {
+			delete(s.claims, k)
+		}
+	}
 }
 
 func (s *MemoryStore) Adjust(_ context.Context, req AdjustRequest) error {
