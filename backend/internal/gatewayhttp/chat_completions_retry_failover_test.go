@@ -1480,3 +1480,41 @@ func (r *delayedReadCloser) Read(_ []byte) (int, error) {
 func (r *delayedReadCloser) Close() error {
 	return nil
 }
+
+// 守 wave-2 P2(429/529 无 Retry-After 仍冷却): 上游 429 不带 Retry-After 头时, 仍必须按
+// RateService 默认冷却把被限流账号 ForceCooldown(否则该账号被持续命中)。
+// Mutation: 还原 forceCooldownFromUpstreamRateLimit 中 RetryAfter()=="" 早退 -> ForceCooldown
+// 不被调用 -> len(forceCooldowns)==0 -> 红。
+func TestPR5NonStream429NoRetryAfterStillCooldowns(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	now := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
+	selector := newPR5Selector(t, 201, 202)
+	health := &recordingChannelHealth{}
+	dispatcher := &pr5CanonicalSequenceDispatcher{
+		steps: []pr5CanonicalStep{
+			{status: http.StatusTooManyRequests, body: `{"error":"rate limited"}`}, // 故意无 Retry-After 头
+			{successText: "success after rate limit"},
+		},
+	}
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88003}, &recordingSettler{}, dispatcher)
+	deps.ChannelHealth = health
+	deps.RateService = rate.NewUpstreamRateService(func() time.Time { return now }, time.Minute)
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s; want 200 after 429 failover", rec.Code, rec.Body.String())
+	}
+	if selector.calls != 2 {
+		t.Fatalf("selector calls=%d want 2 (failover to 2nd account)", selector.calls)
+	}
+	if len(health.forceCooldowns) != 1 {
+		t.Fatalf("ForceCooldown calls=%d want 1 (429 w/o Retry-After must still cooldown via default)", len(health.forceCooldowns))
+	}
+	forced := health.forceCooldowns[0]
+	if forced.reason != string(rate.ReasonRateLimitRPM) {
+		t.Fatalf("ForceCooldown reason=%q want %q", forced.reason, rate.ReasonRateLimitRPM)
+	}
+	if !forced.until.Equal(now.Add(time.Minute)) {
+		t.Fatalf("ForceCooldown until=%s want %s (default cooldown, not skipped)", forced.until, now.Add(time.Minute))
+	}
+}

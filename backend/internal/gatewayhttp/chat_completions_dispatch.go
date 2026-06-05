@@ -604,9 +604,9 @@ func (ex *chatExecution) forceCooldownFromUpstreamRateLimit(upstreamErr *gateway
 	if upstreamErr.StatusCode != http.StatusTooManyRequests && upstreamErr.StatusCode != 529 {
 		return
 	}
-	if strings.TrimSpace(upstreamErr.RetryAfter()) == "" {
-		return
-	}
+	// 不再因缺 Retry-After 头而早退:很多 provider 的 429/529 不带该头,HandleUpstreamError 对
+	// 无头情形会施加默认冷却(defaultCooldown)。早退会让被限流账号永不冷却、被持续命中。
+	// 若上游带了 Retry-After,HandleUpstreamError 内部(retryAfterCooldown)会解析并采用。
 	dec, err := ex.d.RateService.HandleUpstreamError(ex.ctx, ex.acquiredAccountID, upstreamErr.StatusCode, upstreamErr.Header, upstreamErr.Body)
 	if err != nil {
 		logInternalError(ex.ctx, ex.requestID, "upstream_rate_cooldown_decision_failed", err)
