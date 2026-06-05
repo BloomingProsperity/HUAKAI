@@ -1,6 +1,3 @@
-// 注意：本文件是 PATCH 提案文件（_patch.go 后缀），不参与 Go build。
-// 将此文件内容合并到 backend/internal/gateway/forwarder_test.go 后删除本文件。
-//
 // 变更摘要：
 //  1. newForwarder() 改为注入 BuildDefaultProtocolAdapterRegistry()，删除 UpstreamAdapter 字段。
 //  2. 所有 ForwardRequest{} 构造补充 ProtocolFamily: "anthropic_messages"。

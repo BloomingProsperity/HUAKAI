@@ -1,6 +1,3 @@
-// 注意：本文件是 PATCH 提案文件（_patch.go 后缀），不参与 Go build。
-// 将 ForwardRequest 的修改部分合并到 backend/internal/gateway/forwarder_types.go。
-//
 // 唯一变更：ForwardRequest 新增 ProtocolFamily 字段。
 // 其余所有字段（TenantID / AccountID / AcquisitionToken / RouteID /
 // UpstreamProtocol / ClientProtocol / Model / RoutingReasonPayload）原样保留。

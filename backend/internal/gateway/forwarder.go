@@ -1,5 +1,4 @@
-// 注意：本文件是 PATCH 提案文件（_patch.go 后缀），不参与 Go build。
-// 将此文件内容合并到 backend/internal/gateway/forwarder.go 后删除本文件。
+// stream forwarder: SSE 流式上游转发(超时/取消/审计)。本文件参与 Go build。
 package gateway
 
 import (
