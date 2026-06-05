@@ -14,7 +14,7 @@ import (
 const aggregateMyUsageByDay = `-- name: AggregateMyUsageByDay :many
 
 SELECT
-    date_trunc('day', ur.settled_at AT TIME ZONE 'UTC')::timestamptz AS day,
+    date_trunc('day', ur.settled_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS day,
     ur.requested_model,
     COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text  AS total_cost,
     COALESCE(sum(ur.tokens_input), 0)::bigint              AS total_tokens_input,
@@ -97,7 +97,7 @@ func (q *Queries) AggregateMyUsageByDay(ctx context.Context, arg AggregateMyUsag
 
 const aggregateMyUsageByMonth = `-- name: AggregateMyUsageByMonth :many
 SELECT
-    date_trunc('month', ur.settled_at AT TIME ZONE 'UTC')::timestamptz AS day,
+    date_trunc('month', ur.settled_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS day,
     ur.requested_model,
     COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text  AS total_cost,
     COALESCE(sum(ur.tokens_input), 0)::bigint              AS total_tokens_input,
@@ -172,7 +172,7 @@ func (q *Queries) AggregateMyUsageByMonth(ctx context.Context, arg AggregateMyUs
 
 const aggregateMyUsageByWeek = `-- name: AggregateMyUsageByWeek :many
 SELECT
-    date_trunc('week', ur.settled_at AT TIME ZONE 'UTC')::timestamptz AS day,
+    date_trunc('week', ur.settled_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS day,
     ur.requested_model,
     COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text  AS total_cost,
     COALESCE(sum(ur.tokens_input), 0)::bigint              AS total_tokens_input,
@@ -442,7 +442,7 @@ func (q *Queries) AggregateUsageOverviewTotals(ctx context.Context, settledSince
 
 const aggregateUsageOverviewTrendByDay = `-- name: AggregateUsageOverviewTrendByDay :many
 SELECT
-    date_trunc('day', ur.settled_at AT TIME ZONE 'UTC')::timestamptz AS day,
+    date_trunc('day', ur.settled_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS day,
     count(*)::bigint                                             AS request_count,
     COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost
 FROM usage_records ur
