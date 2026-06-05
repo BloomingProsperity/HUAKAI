@@ -18,6 +18,18 @@ type Config struct {
 	// DatabaseURL is the PostgreSQL DSN. Required.
 	DatabaseURL string
 
+	// DBMaxConns optionally overrides the Postgres pool max connections.
+	// Zero keeps the db package default (16); operator-tunable for scaling.
+	DBMaxConns int32
+	// DBMinConns optionally overrides the pool min connections. Zero keeps default (2).
+	DBMinConns int32
+	// DBMaxConnLifetime optionally overrides pool conn max lifetime
+	// (HUAKAI_DB_MAX_CONN_LIFETIME_SECONDS). Zero keeps default (30m).
+	DBMaxConnLifetime time.Duration
+	// DBMaxConnIdleTime optionally overrides pool conn max idle time
+	// (HUAKAI_DB_MAX_CONN_IDLE_TIME_SECONDS). Zero keeps default (5m).
+	DBMaxConnIdleTime time.Duration
+
 	// Listen is the HTTP bind address (e.g. ":8080" or ":0" for tests).
 	Listen string
 
@@ -128,6 +140,22 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	dbMaxConns, err := envOptionalInt32("HUAKAI_DB_MAX_CONNS")
+	if err != nil {
+		return nil, err
+	}
+	dbMinConns, err := envOptionalInt32("HUAKAI_DB_MIN_CONNS")
+	if err != nil {
+		return nil, err
+	}
+	dbMaxConnLifetime, err := envOptionalDurationSeconds("HUAKAI_DB_MAX_CONN_LIFETIME_SECONDS")
+	if err != nil {
+		return nil, err
+	}
+	dbMaxConnIdleTime, err := envOptionalDurationSeconds("HUAKAI_DB_MAX_CONN_IDLE_TIME_SECONDS")
+	if err != nil {
+		return nil, err
+	}
 	cfg := &Config{
 		DatabaseURL:                    os.Getenv("HUAKAI_DATABASE_URL"),
 		Listen:                         envDefault("HUAKAI_ADDR", ":8080"),
@@ -142,6 +170,10 @@ func Load() (*Config, error) {
 		CredentialAcqBootstrapLongTTL:  credentialAcqBootstrapLongTTL,
 		PaymentHMACSecrets:             paymentHMACSecrets,
 		PaymentEnableMock:              paymentEnableMock,
+		DBMaxConns:                     dbMaxConns,
+		DBMinConns:                     dbMinConns,
+		DBMaxConnLifetime:              dbMaxConnLifetime,
+		DBMaxConnIdleTime:              dbMaxConnIdleTime,
 	}
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("%w: HUAKAI_DATABASE_URL", ErrMissingRequired)
@@ -313,4 +345,22 @@ func envNonNegativeInt64(name string) (int64, error) {
 		return 0, fmt.Errorf("%s must be non-negative integer, got %q", name, raw)
 	}
 	return value, nil
+}
+
+// envOptionalInt32 parses a non-negative int32 from env. Unset/empty -> 0 so the
+// caller treats 0 as "use the package default". Invalid or out-of-range -> typed
+// error so a misconfiguration fails loudly at boot instead of silently degrading.
+func envOptionalInt32(name string) (int32, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return 0, nil
+	}
+	v, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer, got %q: %w", name, raw, err)
+	}
+	if v < 0 {
+		return 0, fmt.Errorf("%s must be non-negative, got %d", name, v)
+	}
+	return int32(v), nil
 }

@@ -488,7 +488,7 @@ func buildVendorRefresherOptions(bindings []vendorRefresherBinding) []credential
 }
 
 func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimicry.TemplateRegistry, logger *zap.Logger) (*gatewayRuntime, error) {
-	pgPool, err := db.Open(ctx, db.PoolConfig{DSN: cfg.DatabaseURL})
+	pgPool, err := db.Open(ctx, dbPoolConfig(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
@@ -1095,5 +1095,18 @@ func buildAuditRefPolicy(cfg *runtimeconfig.EventBusConfig) *eventbus.AuditRefPo
 	return &eventbus.AuditRefPolicy{
 		ReleaseMode:          releaseMode(),
 		AllowMissingMoneyRef: allowMissing,
+	}
+}
+
+// dbPoolConfig maps operator-tunable pool overrides from Config into db.PoolConfig.
+// Unset overrides stay zero so the db package keeps its defaults (16/2/30m/5m),
+// preserving existing deployment behavior while allowing scale tuning.
+func dbPoolConfig(cfg *Config) db.PoolConfig {
+	return db.PoolConfig{
+		DSN:             cfg.DatabaseURL,
+		MaxConns:        cfg.DBMaxConns,
+		MinConns:        cfg.DBMinConns,
+		MaxConnLifetime: cfg.DBMaxConnLifetime,
+		MaxConnIdleTime: cfg.DBMaxConnIdleTime,
 	}
 }

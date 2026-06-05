@@ -396,3 +396,53 @@ func loadOnlyError() error {
 	_, err := Load()
 	return err
 }
+
+func TestLoadDBPoolDefaultsZeroWhenUnset(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_DB_MAX_CONNS", "")
+	t.Setenv("HUAKAI_DB_MIN_CONNS", "")
+	t.Setenv("HUAKAI_DB_MAX_CONN_LIFETIME_SECONDS", "")
+	t.Setenv("HUAKAI_DB_MAX_CONN_IDLE_TIME_SECONDS", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// Default-preserving contract: unset pool envs leave all fields zero so the
+	// db package keeps its defaults (16/2/30m/5m).
+	if cfg.DBMaxConns != 0 || cfg.DBMinConns != 0 || cfg.DBMaxConnLifetime != 0 || cfg.DBMaxConnIdleTime != 0 {
+		t.Fatalf("expected zero overrides when unset, got %d/%d/%s/%s", cfg.DBMaxConns, cfg.DBMinConns, cfg.DBMaxConnLifetime, cfg.DBMaxConnIdleTime)
+	}
+}
+
+func TestLoadDBPoolReadsEnv(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_DB_MAX_CONNS", "64")
+	t.Setenv("HUAKAI_DB_MIN_CONNS", "8")
+	t.Setenv("HUAKAI_DB_MAX_CONN_LIFETIME_SECONDS", "2700")
+	t.Setenv("HUAKAI_DB_MAX_CONN_IDLE_TIME_SECONDS", "120")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DBMaxConns != 64 {
+		t.Fatalf("DBMaxConns = %d, want 64", cfg.DBMaxConns)
+	}
+	if cfg.DBMinConns != 8 {
+		t.Fatalf("DBMinConns = %d, want 8", cfg.DBMinConns)
+	}
+	if cfg.DBMaxConnLifetime != 45*time.Minute {
+		t.Fatalf("DBMaxConnLifetime = %s, want 45m", cfg.DBMaxConnLifetime)
+	}
+	if cfg.DBMaxConnIdleTime != 2*time.Minute {
+		t.Fatalf("DBMaxConnIdleTime = %s, want 2m", cfg.DBMaxConnIdleTime)
+	}
+}
+
+func TestLoadDBMaxConnsInvalidIsError(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_DB_MAX_CONNS", "abc")
+	// Fail-loud: a malformed pool size aborts boot, not silently default.
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error for invalid HUAKAI_DB_MAX_CONNS, got nil")
+	}
+}
