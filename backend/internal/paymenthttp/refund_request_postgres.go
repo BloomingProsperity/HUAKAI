@@ -160,6 +160,16 @@ func (s *PostgresRefundRequestRecorder) RejectRefundRequest(ctx context.Context,
 		}
 		return req, nil
 	}
+	// Closes the visible split-transaction approval window: if money already moved,
+	// a still-pending request must not be relabeled rejected. Full approve atomicity
+	// needs a future RefundOrder external-transaction refactor.
+	alreadyRefunded, err := refundRequestHasRefundFactTx(ctx, tx, req)
+	if err != nil {
+		return RefundRequest{}, err
+	}
+	if alreadyRefunded {
+		return RefundRequest{}, ErrRefundRequestAlreadyResolved
+	}
 	if trimmed := strings.TrimSpace(reason); trimmed != "" {
 		req.Reason = trimmed
 	}
@@ -171,6 +181,27 @@ func (s *PostgresRefundRequestRecorder) RejectRefundRequest(ctx context.Context,
 		return RefundRequest{}, fmt.Errorf("paymenthttp: commit reject refund request: %w", err)
 	}
 	return req, nil
+}
+
+func refundRequestHasRefundFactTx(ctx context.Context, tx pgx.Tx, req RefundRequest) (bool, error) {
+	key := refundRequestIdempotencyKey(req.ID)
+	var exists bool
+	if err := tx.QueryRow(ctx, `
+SELECT EXISTS (
+	SELECT 1
+	FROM payment_refunds
+	WHERE tenant_id=$1
+	  AND (idempotency_key=$2 OR order_id=$3)
+) OR EXISTS (
+	SELECT 1
+	FROM payment_orders
+	WHERE tenant_id=$1
+	  AND id=$3
+	  AND status='refunded'
+)`, req.TenantID, key, req.OrderID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("paymenthttp: check refund request refund fact: %w", err)
+	}
+	return exists, nil
 }
 
 func getRefundRequestForUpdateTx(ctx context.Context, tx pgx.Tx, tenantID, requestID int64) (RefundRequest, error) {

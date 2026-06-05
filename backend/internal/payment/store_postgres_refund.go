@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
@@ -63,6 +64,9 @@ func (s *PostgresStore) refundOrderTx(ctx context.Context, tx pgx.Tx, rec refund
 	if rec.AmountCents <= 0 || rec.AmountCents > credit.AmountCents {
 		return RefundResult{}, ErrInvalidAmount
 	}
+	if err := debitAvailableRefundBalanceTx(ctx, tx, order.TenantID, order.UserID, rec.AmountCents, rec.Now); err != nil {
+		return RefundResult{}, err
+	}
 	refund, err := insertPaymentRefundTx(ctx, tx, order, rec, key)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -75,9 +79,6 @@ func (s *PostgresStore) refundOrderTx(ctx context.Context, tx pgx.Tx, rec refund
 		return RefundResult{}, err
 	}
 	refund.BillingEventID = billingID
-	if err := syncLegacyUserBalanceDeltaTx(ctx, tx, refund.TenantID, refund.UserID, -refund.AmountCents, rec.Now); err != nil {
-		return RefundResult{}, err
-	}
 	row := tx.QueryRow(ctx, `
 UPDATE payment_orders SET status='refunded', updated_at=$3
 WHERE tenant_id=$1 AND id=$2
@@ -104,6 +105,28 @@ RETURNING`+orderSelectColumns, rec.TenantID, rec.OrderID, rec.Now)
 		return RefundResult{}, err
 	}
 	return RefundResult{Order: order, Refund: refund, BalanceCents: balance}, nil
+}
+
+func debitAvailableRefundBalanceTx(ctx context.Context, tx pgx.Tx, tenantID, userID, amountCents int64, now time.Time) error {
+	if amountCents <= 0 {
+		return ErrInvalidAmount
+	}
+	amount := decimalFromCents(amountCents)
+	tag, err := tx.Exec(ctx, `
+UPDATE user_balances
+SET balance = balance - $3,
+    version = version + 1,
+    updated_at = $4
+WHERE tenant_id=$1
+  AND user_id=$2
+  AND balance - held >= $3`, tenantID, userID, amount, now)
+	if err != nil {
+		return fmt.Errorf("payment: debit refund balance: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrRefundExceedsAvailable
+	}
+	return nil
 }
 
 func validateRefundableTopupOrderTx(ctx context.Context, tx pgx.Tx, order Order) (CreditRecord, error) {

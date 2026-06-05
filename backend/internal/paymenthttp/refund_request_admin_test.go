@@ -97,6 +97,27 @@ func TestAdminRefundRequestsListOnlyPending(t *testing.T) {
 	}
 }
 
+func TestRefundRequestAlreadyResolvedMapsTo409(t *testing.T) {
+	rec := httptest.NewRecorder()
+
+	writeRefundRequestError(rec, ErrRefundRequestAlreadyResolved)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status=%d want 409; body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(bytes.NewReader(rec.Body.Bytes())).Decode(&body); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if body.Error.Code != "refund_request_already_resolved" {
+		t.Fatalf("error code=%q want refund_request_already_resolved", body.Error.Code)
+	}
+}
+
 func TestAdminRefundRequestTenantIsolation(t *testing.T) {
 	ctx := context.Background()
 	refunds := &countingRefundService{}

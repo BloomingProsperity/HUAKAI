@@ -183,6 +183,7 @@ func seedPaymentHTTPUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 		_, _ = pool.Exec(c, `DELETE FROM payment_audit_log WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM payment_refund_requests WHERE tenant_id=$1`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM payment_refunds WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM payment_credits WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM payment_orders WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM user_balances WHERE tenant_id=$1`, tenantID)

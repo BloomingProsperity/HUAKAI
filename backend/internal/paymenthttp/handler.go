@@ -441,6 +441,8 @@ func writePaymentError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusConflict, "order_not_cancelable", "order is not in a cancelable state")
 	case errors.Is(err, payment.ErrOrderNotRefundable):
 		writeJSONError(w, http.StatusConflict, "order_not_refundable", "order is not in a refundable state")
+	case errors.Is(err, payment.ErrRefundExceedsAvailable):
+		writeJSONError(w, http.StatusConflict, "refund_exceeds_available", "refund exceeds available balance")
 	case errors.Is(err, payment.ErrRefundUnsupportedKind):
 		writeJSONError(w, http.StatusUnprocessableEntity, "refund_unsupported_kind", "refund is not supported for this order kind")
 	case errors.Is(err, payment.ErrOrderNotFulfillable):
