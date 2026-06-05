@@ -158,7 +158,11 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	})
 	r.Route("/v1/users/me/subscriptions", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
-		subscriptionhttp.MountSubscriptionUserRoutes(r, subscriptionhttp.UserDeps{Service: d.subscriptionService})
+		subscriptionhttp.MountSubscriptionUserRoutes(r, subscriptionhttp.UserDeps{
+			Service:    d.subscriptionService,
+			Payment:    d.paymentService,
+			TradeNoGen: paymenthttp.ExternalTradeNoForTenant,
+		})
 	})
 	// 公开支付回调端点 (P2a): 无 session/admin 中间件, 信任靠验签; 复用 d.paymentService。
 	paymenthttp.MountPaymentWebhookRoutes(r, paymenthttp.WebhookDeps{Service: d.paymentService})

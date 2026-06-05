@@ -3907,6 +3907,82 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/users/me/subscriptions/me:
+    get:
+      tags: [user-subscriptions]
+      summary: Get the authenticated User's current active subscription
+      operationId: getMyCurrentSubscription
+      description: |
+        Returns the caller's currently-effective subscription (status=active and
+        now within [starts_at, expires_at)), or null if none, plus the auto_renew
+        self-service flag. auto_renew is read-only and currently always false;
+        scheduled auto-renewal and cancel-renew are not yet implemented.
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: Current subscription and auto-renew status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscription: { type: object, nullable: true }
+                  auto_renew: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/users/me/subscriptions/purchase:
+    post:
+      tags: [user-subscriptions]
+      summary: Purchase a subscription plan (creates a subscription payment order)
+      operationId: purchaseSubscription
+      description: |
+        Creates a subscription-kind payment order for the given plan. The
+        subscription is granted only after the order is confirmed (admin confirm
+        or provider webhook); this endpoint returns the order and a payment
+        instruction, never an active subscription. Amount and currency are taken
+        from the plan snapshot, not the client.
+      x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan_id]
+              properties:
+                plan_id: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '201':
+          description: Subscription payment order created (pending payment).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order: { type: object }
+                  idempotent: { type: boolean }
+                  payment_instruction: { type: string }
+        '200':
+          description: Idempotent replay of an existing subscription order.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order: { type: object }
+                  idempotent: { type: boolean }
+                  payment_instruction: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   # ==========================================================================
   # Admin: API Keys (Slice 2 N+4b2)
   # ==========================================================================
