@@ -564,3 +564,114 @@ func TestDispatcher_ProxyConsultedInDispatchPath(t *testing.T) {
 		t.Errorf("ProxyResolver 应在生产路径被调用 accountID=73，实际 calls=%v", res.calls)
 	}
 }
+
+// anthropic auto-breakpoint injection tests (cache-p0b)
+//
+// These drive the full Dispatch path and assert on the exact bytes that reach
+// the adapter's BuildRequest (stubAdapter.lastInput.InboundBody), which is the
+// real outbound body. They are discriminating: removing the
+// "client already brought cache_control → skip" guard turns
+// TestDispatcher_AnthropicAutoBreakpoints_ClientAlreadyHas red.
+
+func anthropicDispatchInput(body string) DispatchInput {
+	return DispatchInput{
+		ProtocolFamily:  "anthropic_messages",
+		UpstreamModelID: "claude-opus-4-5",
+		InboundBody:     []byte(body),
+		Account: provider.AccountInfo{
+			AccountID: 9, Platform: "anthropic", AccountType: "apikey",
+		},
+		Credential: provider.Credential{
+			Type: provider.CredentialTypeAPIKey, Value: "sk-ant",
+		},
+	}
+}
+
+// (1) opt-in ON + client sent no cache_control → outbound body is injected.
+func TestDispatcher_AnthropicAutoBreakpoints_InjectsWhenAbsent(t *testing.T) {
+	doer := &stubDoer{respStatus: 200, respBody: "data: ok\n\n"}
+	adapter := &stubAdapter{platform: "anthropic"}
+	d := newDispatcherForTest(adapter, doer)
+	d.AnthropicAutoBreakpoints = true
+
+	body := `{"model":"claude-opus-4-5","system":[{"type":"text","text":"sys"}],` +
+		`"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`
+	if _, err := d.Dispatch(context.Background(), anthropicDispatchInput(body)); err != nil {
+		t.Fatal(err)
+	}
+	got := string(adapter.lastInput.InboundBody)
+	if !strings.Contains(got, "cache_control") {
+		t.Fatalf("expected cache_control injected into outbound body, got=%s", got)
+	}
+	snap, err := InspectCacheControl(adapter.lastInput.InboundBody)
+	if err != nil {
+		t.Fatalf("inspect injected body: %v", err)
+	}
+	if snap.Count < 1 {
+		t.Fatalf("expected >=1 cache_control breakpoint, got %d", snap.Count)
+	}
+}
+
+// (2) opt-in ON + client already carries cache_control → outbound body is
+// byte-for-byte identical to the inbound body (planner must not run).
+func TestDispatcher_AnthropicAutoBreakpoints_ClientAlreadyHas(t *testing.T) {
+	doer := &stubDoer{respStatus: 200, respBody: "data: ok\n\n"}
+	adapter := &stubAdapter{platform: "anthropic"}
+	d := newDispatcherForTest(adapter, doer)
+	d.AnthropicAutoBreakpoints = true
+
+	body := `{"model":"claude-opus-4-5","system":[{"type":"text","text":"sys"}],` +
+		`"messages":[{"role":"user","content":[{"type":"text","text":"hi",` +
+		`"cache_control":{"type":"ephemeral"}}]}]}`
+	if _, err := d.Dispatch(context.Background(), anthropicDispatchInput(body)); err != nil {
+		t.Fatal(err)
+	}
+	if string(adapter.lastInput.InboundBody) != body {
+		t.Fatalf("client-supplied cache_control body must pass through unchanged.\n want=%s\n got =%s",
+			body, string(adapter.lastInput.InboundBody))
+	}
+	snap, err := InspectCacheControl(adapter.lastInput.InboundBody)
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if snap.Count != 1 {
+		t.Fatalf("expected exactly the client's 1 cache_control (no extras), got %d", snap.Count)
+	}
+}
+
+// (3) opt-in OFF → planner never runs, body passes through unchanged even with
+// no client cache_control.
+func TestDispatcher_AnthropicAutoBreakpoints_DisabledNeverInjects(t *testing.T) {
+	doer := &stubDoer{respStatus: 200, respBody: "data: ok\n\n"}
+	adapter := &stubAdapter{platform: "anthropic"}
+	d := newDispatcherForTest(adapter, doer)
+	// AnthropicAutoBreakpoints left at zero value (false).
+
+	body := `{"model":"claude-opus-4-5","system":[{"type":"text","text":"sys"}],` +
+		`"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`
+	if _, err := d.Dispatch(context.Background(), anthropicDispatchInput(body)); err != nil {
+		t.Fatal(err)
+	}
+	if string(adapter.lastInput.InboundBody) != body {
+		t.Fatalf("opt-in disabled: body must be unchanged.\n want=%s\n got =%s",
+			body, string(adapter.lastInput.InboundBody))
+	}
+}
+
+// (bonus) opt-in ON but non-anthropic family → never injected.
+func TestDispatcher_AnthropicAutoBreakpoints_OnlyAnthropicFamily(t *testing.T) {
+	doer := &stubDoer{respStatus: 200, respBody: "data: ok\n\n"}
+	adapter := &stubAdapter{platform: "openai"}
+	d := newDispatcherForTest(adapter, doer)
+	d.AnthropicAutoBreakpoints = true
+
+	body := `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`
+	in := anthropicDispatchInput(body)
+	in.ProtocolFamily = "openai_chat"
+	if _, err := d.Dispatch(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if string(adapter.lastInput.InboundBody) != body {
+		t.Fatalf("non-anthropic family must be untouched, got=%s", string(adapter.lastInput.InboundBody))
+	}
+}
