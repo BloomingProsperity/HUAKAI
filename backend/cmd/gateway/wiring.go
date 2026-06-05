@@ -744,6 +744,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	modelSyncService := buildModelSyncService(opts.modelSync, modelRegistry)
 	pricingRatioStore := pricingcatalog.NewPostgresStoreWithAuditSigner(pgPool, auditSigner)
 	pricingRatioResolver := pricingcatalog.NewRatioResolver(pricingRatioStore, 0)
+	paymentStore := payment.NewPostgresStore(pgPool)
 
 	loginThrottle, err := loadLoginThrottleFromEnv()
 	if err != nil {
@@ -784,7 +785,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		twoFactor:             twoFactorService,
 		loginThrottle:         loginThrottle,
 		userKeyService:        userkey.NewService(pgPool, nil),
-		paymentService:        payment.NewService(payment.NewPostgresStore(pgPool), paymentServiceOptions(cfg)...),
+		paymentService:        payment.NewService(paymentStore, paymentServiceOptions(cfg)...),
 		paymentProviders:      paymentProviders,
 		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool)),
 		subscriptionService:   subscription.NewService(subscription.NewPostgresStore(pgPool)),
@@ -830,6 +831,16 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		hermesRunnerSharedSecret: hermesRunnerSharedSecret,
 	}
 	rt.deps = d
+	if cfg.PaymentExpireSweepInterval > 0 {
+		paymentExpireSweeper := payment.NewExpireSweeper(payment.ExpireSweeperConfig{
+			Store:      paymentStore,
+			Interval:   cfg.PaymentExpireSweepInterval,
+			BatchLimit: cfg.PaymentExpireSweepBatchLimit,
+			Logger:     logger,
+		})
+		paymentExpireSweeper.Start(ctx)
+		rt.paymentExpireSweepStop = paymentExpireSweeper.Stop
+	}
 	metricsProvider, metricsHandler, otelShutdown, err := otelbridge.Setup(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("setup otel metrics bridge: %w", err)

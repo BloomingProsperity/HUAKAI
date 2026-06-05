@@ -15,6 +15,7 @@ type Store interface {
 	GetOrderByOutTradeNo(ctx context.Context, tenantID int64, outTradeNo string) (Order, error)
 	ConfirmPaid(ctx context.Context, rec confirmRecord) (Order, error)
 	CancelOrder(ctx context.Context, rec cancelRecord) (Order, error)
+	ExpireStalePendingOrders(ctx context.Context, now time.Time, limit int) (expired int, err error)
 	BeginFulfill(ctx context.Context, rec fulfillRecord) (Order, beginFulfillOutcome, error)
 	CompleteFulfill(ctx context.Context, rec fulfillRecord) (FulfillResult, error)
 	ListOrdersByUser(ctx context.Context, tenantID, userID int64, limit int) ([]Order, error)

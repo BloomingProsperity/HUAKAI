@@ -379,6 +379,69 @@ func TestLoadIncludesPaymentProviderSecretsWithoutLoggingValues(t *testing.T) {
 	}
 }
 
+func TestLoadPaymentExpireSweepDefaultsDisabledWithBatchDefault(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_PAYMENT_EXPIRE_SWEEP_INTERVAL", "")
+	t.Setenv("HUAKAI_PAYMENT_EXPIRE_SWEEP_BATCH_LIMIT", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PaymentExpireSweepInterval != 0 {
+		t.Fatalf("PaymentExpireSweepInterval=%s want 0 so empty env keeps worker disabled", cfg.PaymentExpireSweepInterval)
+	}
+	if cfg.PaymentExpireSweepBatchLimit != DefaultPaymentExpireSweepBatchLimit {
+		t.Fatalf("PaymentExpireSweepBatchLimit=%d want %d", cfg.PaymentExpireSweepBatchLimit, DefaultPaymentExpireSweepBatchLimit)
+	}
+}
+
+func TestLoadPaymentExpireSweepReadsEnv(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_PAYMENT_EXPIRE_SWEEP_INTERVAL", "45s")
+	t.Setenv("HUAKAI_PAYMENT_EXPIRE_SWEEP_BATCH_LIMIT", "37")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PaymentExpireSweepInterval != 45*time.Second {
+		t.Fatalf("PaymentExpireSweepInterval=%s want 45s", cfg.PaymentExpireSweepInterval)
+	}
+	if cfg.PaymentExpireSweepBatchLimit != 37 {
+		t.Fatalf("PaymentExpireSweepBatchLimit=%d want 37", cfg.PaymentExpireSweepBatchLimit)
+	}
+}
+
+func TestLoadRejectsInvalidPaymentExpireSweepConfig(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		raw  string
+	}{
+		{name: "interval garbage", env: "HUAKAI_PAYMENT_EXPIRE_SWEEP_INTERVAL", raw: "soon"},
+		{name: "interval negative", env: "HUAKAI_PAYMENT_EXPIRE_SWEEP_INTERVAL", raw: "-1s"},
+		{name: "batch zero", env: "HUAKAI_PAYMENT_EXPIRE_SWEEP_BATCH_LIMIT", raw: "0"},
+		{name: "batch negative", env: "HUAKAI_PAYMENT_EXPIRE_SWEEP_BATCH_LIMIT", raw: "-1"},
+		{name: "batch garbage", env: "HUAKAI_PAYMENT_EXPIRE_SWEEP_BATCH_LIMIT", raw: "many"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+			t.Setenv(tc.env, tc.raw)
+
+			err := loadOnlyError()
+
+			if err == nil {
+				t.Fatalf("invalid %s=%q was accepted", tc.env, tc.raw)
+			}
+			if !strings.Contains(err.Error(), tc.env) {
+				t.Fatalf("err=%v must name %s", err, tc.env)
+			}
+		})
+	}
+}
+
 func TestLoadPaymentProviderSecretsRejectsMalformedEntries(t *testing.T) {
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
 	t.Setenv("HUAKAI_PAYMENT_HMAC_SECRETS", "missing-delimiter")
