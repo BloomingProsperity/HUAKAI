@@ -646,8 +646,9 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	})
 	r.Route("/v1/admin/payments", func(r chi.Router) {
 		paymenthttp.MountPaymentAdminRoutes(r, paymenthttp.AdminDeps{
-			Auth:    d.adminAuth,
-			Service: d.paymentService,
+			Auth:           d.adminAuth,
+			Service:        d.paymentService,
+			ProviderConfig: paymentProviderConfigRouteService(d),
 		})
 	})
 	r.Route("/v1/admin/cache-price-overrides", func(r chi.Router) {

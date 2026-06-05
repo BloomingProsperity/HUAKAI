@@ -17,7 +17,7 @@ import (
 //   - 验签通过但金额/币种/渠道与本地单不符 → 拒, 零入账 (验签≠授权入任意额)。
 //   - 重放安全靠 P1 三重幂等 (out_trade_no 唯一 + ConfirmPaid CAS + 一单一 credit): 同一回调多次 → 仅入账一次。
 func (s *Service) ConfirmPaidByCallback(ctx context.Context, providerKind ProviderKind, rawBody []byte, signature string) (FulfillResult, error) {
-	provider, err := s.providers.resolve(providerKind)
+	provider, err := s.resolveProvider(providerKind)
 	if err != nil {
 		return FulfillResult{}, err // ErrProviderUnknown
 	}

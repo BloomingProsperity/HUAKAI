@@ -747,6 +747,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	pricingRatioStore := pricingcatalog.NewPostgresStoreWithAuditSigner(pgPool, auditSigner)
 	pricingRatioResolver := pricingcatalog.NewRatioResolver(pricingRatioStore, 0)
 	paymentStore := payment.NewPostgresStore(pgPool)
+	paymentService := payment.NewService(paymentStore, paymentServiceOptions(cfg)...)
+	if err := applyStoredPaymentProviderConfig(ctx, platformSettingsService, paymentService); err != nil {
+		logger.Warn("payment provider runtime config prewarm failed", zap.Error(err))
+	}
 
 	loginThrottle, err := loadLoginThrottleFromEnv()
 	if err != nil {
@@ -787,7 +791,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		twoFactor:             twoFactorService,
 		loginThrottle:         loginThrottle,
 		userKeyService:        userkey.NewService(pgPool, nil),
-		paymentService:        payment.NewService(paymentStore, paymentServiceOptions(cfg)...),
+		paymentService:        paymentService,
 		paymentProviders:      paymentProviders,
 		paymentRefundRequests: paymenthttp.NewMemoryRefundRequestRecorder(),
 		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool)),
