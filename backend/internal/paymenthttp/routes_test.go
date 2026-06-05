@@ -1,11 +1,16 @@
 package paymenthttp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"expvar"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -79,6 +84,59 @@ func TestWebhookBadSignatureRejectedBeforeMoneyService(t *testing.T) {
 	}
 }
 
+func TestLegacyWebhookUnsignedCallbackRejectedBeforeMoneyService(t *testing.T) {
+	now := time.Date(2026, 6, 2, 8, 32, 0, 0, time.UTC)
+	service := &paymentServiceStub{}
+	mux := mountPaymentRoutes(t, service, now)
+	raw := []byte(`{"provider":"hmacpay","external_trade_no":"` + externalTradeNoForTenant(7, "unsigned") + `","provider_event_id":"evt_unsigned","amount":"50.00000000","currency":"USD"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/payment/webhooks/hmacpay", strings.NewReader(string(raw)))
+	rec := httptest.NewRecorder()
+
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unsigned legacy webhook status=%d body=%s want 400", rec.Code, rec.Body.String())
+	}
+	if len(service.fulfillCalls) != 0 {
+		t.Fatalf("unsigned legacy webhook reached money fulfillment: %+v", service.fulfillCalls)
+	}
+}
+
+func TestLegacyWebhookEmitsDeprecationSignal(t *testing.T) {
+	now := time.Date(2026, 6, 2, 8, 34, 0, 0, time.UTC)
+	service := &paymentServiceStub{}
+	mux := mountPaymentRoutes(t, service, now)
+	raw := []byte(`{"provider":"hmacpay","external_trade_no":"` + externalTradeNoForTenant(7, "deprecated") + `","provider_event_id":"evt_deprecated","amount":"50.00000000","currency":"USD"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/payment/webhooks/hmacpay", strings.NewReader(string(raw)))
+
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	before := legacyWebhookDeprecatedMetric(t)
+	rec := httptest.NewRecorder()
+
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("legacy deprecated webhook status=%d body=%s want 400", rec.Code, rec.Body.String())
+	}
+	if after := legacyWebhookDeprecatedMetric(t); after != before+1 {
+		t.Fatalf("legacy deprecation metric = %d, want %d", after, before+1)
+	}
+	logLine := logs.String()
+	for _, want := range []string{
+		`"event":"payment_webhook_legacy_path_deprecated"`,
+		`"legacy_path":"/v1/payment/webhooks/{provider}"`,
+		`"canonical_path":"/v1/payments/webhooks/{provider}"`,
+		`"provider":"hmacpay"`,
+	} {
+		if !strings.Contains(logLine, want) {
+			t.Fatalf("legacy deprecation log %s missing %s", logLine, want)
+		}
+	}
+}
+
 func TestWebhookVerifiedMismatchReturns200WithoutCompletion(t *testing.T) {
 	now := time.Date(2026, 6, 2, 8, 40, 0, 0, time.UTC)
 	service := &paymentServiceStub{
@@ -133,6 +191,22 @@ func TestWebhookRouteProviderMustMatchVerifiedBodyProvider(t *testing.T) {
 	decodeBody(t, rec, &body)
 	if body.AuditReason != payment.AuditReasonProviderMismatch || body.Completed || body.Idempotent {
 		t.Fatalf("cross-provider response=%+v want provider mismatch audit-only", body)
+	}
+}
+
+func TestOpenAPIMarksLegacyWebhookDeprecatedOnly(t *testing.T) {
+	raw, err := os.ReadFile("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("read openapi: %v", err)
+	}
+	doc := string(raw)
+	legacy := openAPIPathBlock(t, doc, "/v1/payment/webhooks/{provider}:")
+	if !strings.Contains(legacy, "deprecated: true") {
+		t.Fatalf("legacy payment webhook OpenAPI block must be deprecated:\n%s", legacy)
+	}
+	canonical := openAPIPathBlock(t, doc, "/v1/payments/webhooks/{provider}:")
+	if strings.Contains(canonical, "deprecated: true") {
+		t.Fatalf("canonical payment webhook OpenAPI block must not be deprecated:\n%s", canonical)
 	}
 }
 
@@ -239,6 +313,37 @@ func decodeBody(t *testing.T, rec *httptest.ResponseRecorder, dst any) {
 	if err := json.NewDecoder(rec.Body).Decode(dst); err != nil {
 		t.Fatalf("decode body=%s: %v", rec.Body.String(), err)
 	}
+}
+
+func legacyWebhookDeprecatedMetric(t *testing.T) int64 {
+	t.Helper()
+	v := expvar.Get("payment_webhook_legacy_path_deprecated_total")
+	if v == nil {
+		return 0
+	}
+	iv, ok := v.(*expvar.Int)
+	if !ok {
+		t.Fatalf("payment_webhook_legacy_path_deprecated_total is %T, want *expvar.Int", v)
+	}
+	n, err := strconv.ParseInt(iv.String(), 10, 64)
+	if err != nil {
+		t.Fatalf("parse legacy deprecation metric %q: %v", iv.String(), err)
+	}
+	return n
+}
+
+func openAPIPathBlock(t *testing.T, doc, path string) string {
+	t.Helper()
+	start := strings.Index(doc, "  "+path)
+	if start < 0 {
+		t.Fatalf("openapi path %s missing", path)
+	}
+	rest := doc[start+len("  "+path):]
+	next := strings.Index(rest, "\n  /")
+	if next < 0 {
+		return rest
+	}
+	return rest[:next]
 }
 
 type paymentServiceStub struct {
