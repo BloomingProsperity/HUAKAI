@@ -50,12 +50,12 @@ func (ex *chatExecution) serveL2CacheIfAvailable(w http.ResponseWriter) (bool, b
 		return false, false
 	}
 	if cached, ok := ex.d.ResponseCache.Get(ex.ctx, ex.cacheKey); ok {
-		if cached.TenantID != ex.ident.TenantID {
-			// 纵深防御: 物理 key 已把 TenantID 哈希进去(cache/key.go), 正常绝不会取到别租户
-			// 条目; 若发生说明 key 被弱化或缓存被污染 —— 绝不跨租户 serve。删除该条目、记录,
-			// 当作 miss 走正常上游。
-			logInternalError(ex.ctx, ex.requestID, "l2_cache_tenant_mismatch",
-				fmt.Errorf("cached entry tenant_id=%d != request tenant_id=%d", cached.TenantID, ex.ident.TenantID))
+		if cached.TenantID != ex.ident.TenantID || cached.ScopeID != ex.cacheScopeID() {
+			// 纵深防御: 物理 key 已把 TenantID + scope principal 哈希进去(cache/key.go), 正常绝不会
+			// 取到别租户/别 principal 条目; 若发生说明 key 被弱化或缓存被污染 —— 绝不跨租户/跨
+			// principal serve。删除该条目、记录, 当作 miss 走正常上游。
+			logInternalError(ex.ctx, ex.requestID, "l2_cache_principal_mismatch",
+				fmt.Errorf("cached entry tenant=%d scope_id=%d != request tenant=%d scope_id=%d", cached.TenantID, cached.ScopeID, ex.ident.TenantID, ex.cacheScopeID()))
 			ex.d.ResponseCache.Delete(ex.ctx, ex.cacheKey)
 			syncL2SizeMetrics(ex.d.ResponseCache)
 		} else {
@@ -74,12 +74,27 @@ func (ex *chatExecution) serveL2CacheIfAvailable(w http.ResponseWriter) (bool, b
 func (ex *chatExecution) l2CacheKeyForModel(model string) (string, error) {
 	key, _, err := l2cache.BuildKey(l2cache.KeyInput{
 		TenantID:       ex.ident.TenantID,
+		Scope:          l2cache.Scope(ex.d.effectiveCacheScope()),
+		APIKeyID:       ex.ident.APIKeyID,
+		UserID:         ex.ident.UserID,
 		Vendor:         ex.cacheVendor,
 		Model:          model,
 		EndpointFamily: ex.d.effectiveEndpointFamily(),
 		Body:           ex.body,
 	})
 	return key, err
+}
+
+// cacheScopeID 返回当前 scope 下用于 L2 缓存 principal 围栏的 id (tenant=0, apikey=APIKeyID, user=UserID)。
+func (ex *chatExecution) cacheScopeID() int64 {
+	switch l2cache.NormalizeScope(ex.d.effectiveCacheScope()) {
+	case l2cache.ScopeAPIKey:
+		return ex.ident.APIKeyID
+	case l2cache.ScopeUser:
+		return ex.ident.UserID
+	default:
+		return 0
+	}
 }
 
 func (ex *chatExecution) cacheHitInput(entry l2cache.Entry) l2CacheHitInput {

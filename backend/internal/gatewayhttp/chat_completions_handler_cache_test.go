@@ -484,3 +484,61 @@ func TestChatCompletionsL2RejectsTenantMismatchedEntry(t *testing.T) {
 		t.Fatalf("served a tenant-mismatched cache entry (X-HUAKAI-Cache-L2=hit); defense-in-depth tenant assertion missing")
 	}
 }
+
+// 守 缓存-P0c(principal-scope, 默认 apikey): 同租户不同 api-key 在 apikey scope 下**不共享**缓存
+// (堵死红队中危: reseller 同租户跨用户共享响应/探针)。Mutation: 把 principal 移出 key(退回 tenant)
+// -> 第二个 api-key 命中第一个的缓存 -> dispatcher 仅 1 次 -> 红。
+func TestChatCompletionsL2ApikeyScopeIsolatesCrossApiKey(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	store := l2cache.NewMemoryStore(1<<20, time.Minute)
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = dispatcher
+	d.ResponseCache = store
+	d.CacheScope = "apikey"
+	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
+	d.Auth = stubAuth{identity: auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 3}}
+	first := invokeHandlerPath(t, d, "/v1/chat/completions", body)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+	}
+	d.Auth = stubAuth{identity: auth.Identity{TenantID: 7, APIKeyID: 22, UserID: 4}}
+	second := invokeHandlerPath(t, d, "/v1/chat/completions", body)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status=%d body=%s", second.Code, second.Body.String())
+	}
+	if dispatcher.calls != 2 {
+		t.Fatalf("dispatcher calls=%d want 2 (apikey scope: different api-key must NOT share tenant-mate cache)", dispatcher.calls)
+	}
+	if got := second.Header().Get("X-HUAKAI-Cache-L2"); got == "hit" {
+		t.Fatalf("cross-apikey cache hit under apikey scope (header=hit); principal isolation broken")
+	}
+}
+
+// 守: tenant scope(显式配)下同租户跨 api-key 仍共享(最大命中)—— 确认 HUAKAI_CACHE_L2_SCOPE knob 生效。
+func TestChatCompletionsL2TenantScopeSharesAcrossApiKey(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	store := l2cache.NewMemoryStore(1<<20, time.Minute)
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = dispatcher
+	d.ResponseCache = store
+	d.CacheScope = "tenant"
+	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
+	d.Auth = stubAuth{identity: auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 3}}
+	first := invokeHandlerPath(t, d, "/v1/chat/completions", body)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+	}
+	d.Auth = stubAuth{identity: auth.Identity{TenantID: 7, APIKeyID: 22, UserID: 4}}
+	second := invokeHandlerPath(t, d, "/v1/chat/completions", body)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status=%d body=%s", second.Code, second.Body.String())
+	}
+	if dispatcher.calls != 1 {
+		t.Fatalf("dispatcher calls=%d want 1 (tenant scope: api-keys in same tenant SHARE cache)", dispatcher.calls)
+	}
+	if got := second.Header().Get("X-HUAKAI-Cache-L2"); got != "hit" {
+		t.Fatalf("tenant scope cross-apikey should hit; header=%q", got)
+	}
+}

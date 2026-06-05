@@ -405,6 +405,7 @@ func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 		Dispatcher:             d.dispatcher,
 		Forwarder:              d.forwarder,
 		ResponseCache:          d.responseCache,
+		CacheScope:             d.cacheScope,
 		Settler:                d.settler,
 		ReplayStore:            d.replayStore,
 		BillingPolicyResolver:  d.billingPolicyResolver,

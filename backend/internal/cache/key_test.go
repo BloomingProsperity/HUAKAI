@@ -57,7 +57,7 @@ func TestBuildKeyIncludesTenantVendorAndModel(t *testing.T) {
 	}
 }
 
-func TestBuildKeyIncludesEndpointFamilyAndV2Version(t *testing.T) {
+func TestBuildKeyIncludesEndpointFamilyAndV3Version(t *testing.T) {
 	body := []byte(`{"model":"gpt","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
 	chat, _, err := BuildKey(KeyInput{
 		TenantID:       7,
@@ -82,8 +82,8 @@ func TestBuildKeyIncludesEndpointFamilyAndV2Version(t *testing.T) {
 	if chat == messages {
 		t.Fatalf("GW-01: identical tenant/vendor/model/body across endpoint families reused L2 key %q", chat)
 	}
-	if !strings.HasPrefix(chat, "l2:v2:") || !strings.HasPrefix(messages, "l2:v2:") {
-		t.Fatalf("keys must carry l2:v2 version: chat=%q messages=%q", chat, messages)
+	if !strings.HasPrefix(chat, "l2:v3:") || !strings.HasPrefix(messages, "l2:v3:") {
+		t.Fatalf("keys must carry l2:v3 version: chat=%q messages=%q", chat, messages)
 	}
 	chatAgain, _, err := BuildKey(KeyInput{
 		TenantID:       7,
@@ -100,7 +100,7 @@ func TestBuildKeyIncludesEndpointFamilyAndV2Version(t *testing.T) {
 	}
 }
 
-func TestBuildKeyV2CannotCollideWithLegacyV1Key(t *testing.T) {
+func TestBuildKeyV3CannotCollideWithLegacyV1Key(t *testing.T) {
 	body := []byte(`{"model":"gpt","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
 	input := KeyInput{
 		TenantID:       7,
@@ -117,7 +117,7 @@ func TestBuildKeyV2CannotCollideWithLegacyV1Key(t *testing.T) {
 	if legacy == current {
 		t.Fatalf("GW-01: v1 key collided with v2 key: %q", current)
 	}
-	if !strings.HasPrefix(legacy, "l2:v1:") || !strings.HasPrefix(current, "l2:v2:") {
+	if !strings.HasPrefix(legacy, "l2:v1:") || !strings.HasPrefix(current, "l2:v3:") {
 		t.Fatalf("unexpected key versions: legacy=%q current=%q", legacy, current)
 	}
 }
