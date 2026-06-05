@@ -30,16 +30,9 @@ func (s *Service) Revoke(ctx context.Context, in RevokeInput) (int64, error) {
 		return 1, nil
 	case strings.TrimSpace(in.FamilyID) != "":
 		if in.UserID > 0 {
-			allowed := false
-			families, err := s.Store.ListFamilies(ctx, in.TenantID, in.UserID)
+			allowed, err := s.Store.FamilyBelongsToUser(ctx, in.TenantID, in.UserID, in.FamilyID)
 			if err != nil {
 				return 0, err
-			}
-			for _, family := range families {
-				if family.ID == strings.TrimSpace(in.FamilyID) {
-					allowed = true
-					break
-				}
 			}
 			if !allowed {
 				return 0, ErrFamilyNotFound
@@ -102,4 +95,17 @@ func (s *Service) List(ctx context.Context, tenantID, userID int64) ([]SessionFa
 		return nil, ErrInvalidInput
 	}
 	return s.Store.ListFamilies(ctx, tenantID, userID)
+}
+
+// FamilyBelongsToUser reports whether the given session family is owned by
+// (tenantID, userID). It uses an index-backed store lookup instead of
+// materializing the user's entire family list.
+func (s *Service) FamilyBelongsToUser(ctx context.Context, tenantID, userID int64, familyID string) (bool, error) {
+	if s == nil || s.Store == nil {
+		return false, ErrStoreNotConfigured
+	}
+	if tenantID <= 0 || userID <= 0 || strings.TrimSpace(familyID) == "" {
+		return false, ErrInvalidInput
+	}
+	return s.Store.FamilyBelongsToUser(ctx, tenantID, userID, familyID)
 }
