@@ -84,6 +84,9 @@ type ChatHandlerDeps struct {
 	// /v1/chat/completions: "chat"
 	// /v1/messages:         "messages"
 	EndpointFamily string
+
+	// CacheScope 决定 L2 缓存键 principal 隔离粒度(tenant|apikey|user); 空 → "apikey"。
+	CacheScope string
 }
 
 type channelHealthRecorder interface {
@@ -110,6 +113,14 @@ func (d ChatHandlerDeps) effectiveEndpointFamily() string {
 		return "chat"
 	}
 	return d.EndpointFamily
+}
+
+// effectiveCacheScope 返回 d.CacheScope 若非空，否则安全默认 "apikey"。
+func (d ChatHandlerDeps) effectiveCacheScope() string {
+	if d.CacheScope == "" {
+		return "apikey"
+	}
+	return d.CacheScope
 }
 
 type chatExecution struct {

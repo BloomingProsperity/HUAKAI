@@ -9,9 +9,31 @@ import (
 	"io"
 	"sort"
 	"strconv"
+	"strings"
 )
 
-const keyVersion = "l2:v2"
+const keyVersion = "l2:v3"
+
+// Scope 决定 L2 缓存键的 principal 隔离粒度: tenant(同租户共享)/apikey/user。
+type Scope string
+
+const (
+	ScopeTenant Scope = "tenant"
+	ScopeAPIKey Scope = "apikey"
+	ScopeUser   Scope = "user"
+)
+
+// NormalizeScope 把任意字符串归一为合法 Scope; 非法/空 → 安全默认 apikey。
+func NormalizeScope(s string) Scope {
+	switch Scope(strings.ToLower(strings.TrimSpace(s))) {
+	case ScopeTenant:
+		return ScopeTenant
+	case ScopeUser:
+		return ScopeUser
+	default:
+		return ScopeAPIKey
+	}
+}
 
 var ignoredTopLevelFields = map[string]struct{}{
 	"metadata":  {},
@@ -22,10 +44,25 @@ var ignoredTopLevelFields = map[string]struct{}{
 // KeyInput 是 L2 exact response cache 的物理 key 输入。
 type KeyInput struct {
 	TenantID       int64
+	Scope          Scope
+	APIKeyID       int64
+	UserID         int64
 	Vendor         string
 	Model          string
 	EndpointFamily string
 	Body           []byte
+}
+
+// ScopePrincipalID 返回按 scope 烧进 key 的 principal id (tenant=0, apikey=APIKeyID, user=UserID)。
+func (in KeyInput) ScopePrincipalID() int64 {
+	switch NormalizeScope(string(in.Scope)) {
+	case ScopeAPIKey:
+		return in.APIKeyID
+	case ScopeUser:
+		return in.UserID
+	default:
+		return 0
+	}
 }
 
 // BuildKey 计算包含 tenant 隔离边界的稳定物理 key。
@@ -38,6 +75,10 @@ func BuildKey(in KeyInput) (string, []byte, error) {
 	preimage.WriteString(keyVersion)
 	preimage.WriteByte(0)
 	preimage.WriteString(strconv.FormatInt(in.TenantID, 10))
+	preimage.WriteByte(0)
+	preimage.WriteString(string(NormalizeScope(string(in.Scope))))
+	preimage.WriteByte(0)
+	preimage.WriteString(strconv.FormatInt(in.ScopePrincipalID(), 10))
 	preimage.WriteByte(0)
 	preimage.WriteString(in.Vendor)
 	preimage.WriteByte(0)

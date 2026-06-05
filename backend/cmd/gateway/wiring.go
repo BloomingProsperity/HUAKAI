@@ -120,6 +120,7 @@ type deps struct {
 	invitationService        *communityinvitation.Service
 	dispatcher               *gateway.UpstreamDispatcher
 	responseCache            l2cache.Store
+	cacheScope               string
 	dlqService               *legacydlq.Service
 	completionBus            *eventbus.Bus
 	auditRefPolicy           *eventbus.AuditRefPolicy
@@ -186,6 +187,7 @@ type runtimeOptions struct {
 	modelSync     *runtimeconfig.ModelSyncConfig
 	outboxRuntime obsoutbox.RuntimeConfig
 	responseCache l2cache.Store
+	cacheScope    string
 }
 
 func buildTransportFactory(cfg *Config, mimicryRegistry *mimicry.TemplateRegistry) *transport.Factory {
@@ -684,6 +686,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		panelAuthResolver:     panelauth.NewResolver(panelauth.NewPostgresRoleStore(pgPool)),
 		invitationService:     communityinvitation.NewService(communityinvitation.NewPostgresStore(pgPool)),
 		responseCache:         opts.responseCache,
+		cacheScope:            opts.cacheScope,
 		dlqService:            dlqService,
 		completionBus:         completionBus,
 		auditRefPolicy:        auditRefPolicy,

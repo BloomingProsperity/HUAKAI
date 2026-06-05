@@ -11,6 +11,7 @@ import (
 type Entry struct {
 	Key       string
 	TenantID  int64
+	ScopeID   int64
 	Vendor    string
 	Model     string
 	Status    int
