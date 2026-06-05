@@ -291,27 +291,16 @@ func (s *Service) enforceDevicePolicy(ctx context.Context, tenantID, userID int6
 	if s.MaxActiveFamilies <= 0 {
 		return nil
 	}
-	families, err := s.Store.ListFamilies(ctx, tenantID, userID)
+	families, err := s.Store.ListActiveFamiliesForDevicePolicy(ctx, tenantID, userID, s.MaxActiveFamilies)
 	if err != nil {
 		return err
 	}
-	active := make([]SessionFamily, 0, len(families))
-	for _, family := range families {
-		if family.Status == FamilyStatusActive || family.Status == FamilyStatusSuspicious {
-			active = append(active, family)
-		}
-	}
-	if len(active) < s.MaxActiveFamilies {
+	if len(families) < s.MaxActiveFamilies {
 		return nil
 	}
 	switch strings.TrimSpace(s.DevicePolicy) {
 	case "revoke_oldest":
-		oldest := active[0]
-		for _, family := range active[1:] {
-			if family.LastActiveAt.Before(oldest.LastActiveAt) {
-				oldest = family
-			}
-		}
+		oldest := families[0]
 		_, err := s.Store.RevokeFamily(ctx, tenantID, oldest.ID, "device_limit_revoke_oldest", s.now())
 		return err
 	case "confirm":
