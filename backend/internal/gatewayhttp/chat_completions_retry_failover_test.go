@@ -1518,3 +1518,36 @@ func TestPR5NonStream429NoRetryAfterStillCooldowns(t *testing.T) {
 		t.Fatalf("ForceCooldown until=%s want %s (default cooldown, not skipped)", forced.until, now.Add(time.Minute))
 	}
 }
+
+// 守 wave-2 P2(401 最终 attempt 仍获 auth-failover): budget=1 的计划里, 唯一(也是最后)的普通
+// attempt 收到 401 时, 仍必须获得一次换号 auth-failover 重试(设计: gateway/attempt_error.go
+// "401 可交付前换一次号")。原 bug: shouldRetryAttemptFailure 的 finalAttempt 门在最前, 把最终
+// attempt 的 auth-failover 也短路了。
+// Mutation: 还原 finalAttempt 前置门 / 移除 loop 的 attemptCap+1 -> 仅 1 次 attempt -> rec.Code==401,
+// selector.calls==1 -> 红。
+func TestPR5NonStream401FinalAttemptStillGetsAuthFailover(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	selector := newPR5Selector(t, 501, 502)
+	settler := &recordingSettler{}
+	health := &recordingChannelHealth{}
+	dispatcher := &pr5CanonicalSequenceDispatcher{
+		steps: []pr5CanonicalStep{
+			{status: http.StatusUnauthorized, body: `{"error":"invalid_grant"}`}, // attempt0(唯一/最终普通): 401
+			{successText: "auth failover success on second account"},             // attempt1: auth-failover 额外 slot
+		},
+	}
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88004}, settler, dispatcher)
+	deps.ChannelHealth = health
+	// budget=1: 单 attempt plan -> 401 落在唯一(最终)普通 attempt 上。
+	deps.Router = stubRouter{plan: pr5RoutePlan(
+		router.AttemptPlan{Index: 0, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "primary"},
+	)}
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s; want 200 (auth-failover retry on final-attempt 401)", rec.Code, rec.Body.String())
+	}
+	if selector.calls != 2 || dispatcher.calls != 2 {
+		t.Fatalf("selector/dispatcher calls=%d/%d want 2/2 (one auth failover beyond budget=1)", selector.calls, dispatcher.calls)
+	}
+}
