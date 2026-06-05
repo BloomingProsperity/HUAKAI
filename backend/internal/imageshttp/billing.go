@@ -1,6 +1,7 @@
 package imageshttp
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
@@ -114,11 +115,19 @@ func (ex *execution) settleRequest(tokens tokenImageUsage, cost decimal.Decimal,
 	}
 }
 
+// billingCtx 返回脱离请求取消的结算上下文(同 audiohttp):客户端断连不应取消已决定的
+// 扣费/退费,否则 settle 漏记收入、abort 卡住额度 hold。5s 上界防挂起。
+func (ex *execution) billingCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ex.ctx), 5*time.Second)
+}
+
 func (ex *execution) abort(w http.ResponseWriter, reason string, observedInputTokens int64) {
 	if ex.reserveRes == nil {
 		return
 	}
-	if err := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens, nil); err != nil {
+	bctx, cancel := ex.billingCtx()
+	defer cancel()
+	if err := ex.d.Settler.Abort(bctx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens, nil); err != nil {
 		w.Header().Set("X-Huakai-Abort-Failed", clienterr.CodeAbortFailed)
 	}
 }
