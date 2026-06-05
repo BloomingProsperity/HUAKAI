@@ -486,7 +486,7 @@ ORDER BY created_at DESC, id DESC LIMIT $3`, tenantID, userID, limit)
 	return out, rows.Err()
 }
 
-func (s *PostgresStore) CountPendingOrders(ctx context.Context, tenantID, userID int64) (int, error) {
+func (s *PostgresStore) CountPendingOrders(ctx context.Context, tenantID, userID int64, now time.Time) (int, error) {
 	if s == nil || s.pool == nil {
 		return 0, ErrStoreNotConfigured
 	}
@@ -494,14 +494,15 @@ func (s *PostgresStore) CountPendingOrders(ctx context.Context, tenantID, userID
 	if err := s.pool.QueryRow(ctx, `
 SELECT COUNT(*)::int
 FROM payment_orders
-WHERE tenant_id=$1 AND user_id=$2 AND status='pending'`,
-		tenantID, userID).Scan(&count); err != nil {
+WHERE tenant_id=$1 AND user_id=$2 AND status='pending'
+  AND (expires_at IS NULL OR expires_at > $3)`,
+		tenantID, userID, now).Scan(&count); err != nil {
 		return 0, fmt.Errorf("payment: count pending orders: %w", err)
 	}
 	return count, nil
 }
 
-func (s *PostgresStore) SumRechargeAmountSince(ctx context.Context, tenantID, userID int64, since time.Time) (int64, error) {
+func (s *PostgresStore) SumRechargeAmountSince(ctx context.Context, tenantID, userID int64, since, now time.Time) (int64, error) {
 	if s == nil || s.pool == nil {
 		return 0, ErrStoreNotConfigured
 	}
@@ -512,8 +513,9 @@ FROM payment_orders
 WHERE tenant_id=$1
   AND user_id=$2
   AND created_at >= $3
-  AND status IN ('pending', 'paid', 'recharging', 'completed')`,
-		tenantID, userID, since).Scan(&sum); err != nil {
+  AND (status IN ('paid', 'recharging', 'completed')
+       OR (status = 'pending' AND (expires_at IS NULL OR expires_at > $4)))`,
+		tenantID, userID, since, now).Scan(&sum); err != nil {
 		return 0, fmt.Errorf("payment: sum recharge orders: %w", err)
 	}
 	return sum, nil

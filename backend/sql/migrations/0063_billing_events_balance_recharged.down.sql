@@ -5,6 +5,17 @@
 
 BEGIN;
 
+-- 拒绝销毁 money 账本:仍有 balance_recharged 事件时,本 DEV-only 回滚会删掉 append-only
+-- 充值账本证据。直接 RAISE 让迁移失败(事务回滚),逼运维先导出/处理,而不是静默删钱。
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM billing_events WHERE event_type = 'balance_recharged') THEN
+        RAISE EXCEPTION 'refusing down 0063: % balance_recharged money events present (would delete append-only ledger); export/handle them first',
+            (SELECT count(*) FROM billing_events WHERE event_type = 'balance_recharged');
+    END IF;
+END
+$$;
+
 ALTER TABLE billing_events
     DROP CONSTRAINT IF EXISTS fk_billing_events_recharge_order;
 
