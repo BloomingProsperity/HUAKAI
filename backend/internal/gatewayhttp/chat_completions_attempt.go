@@ -190,14 +190,20 @@ func (ex *chatExecution) baseAttemptOutcome() attemptOutcome {
 }
 
 func shouldRetryAttemptFailure(failure *classifiedAttemptFailure, plan router.RoutePlan, replayableBody bool, finalAttempt bool, authFailoverUsed bool) (bool, bool) {
-	if failure == nil || failure.DeliveredToClient || finalAttempt || !replayableBody {
+	if failure == nil || failure.DeliveredToClient || !replayableBody {
 		return false, false
 	}
-	normalRetry := failure.Decision.RetryableBeforeDelivery && retryableEndClassAllowed(plan.RetryableEndClasses, failure.EndClass)
+	// auth-failover 子预算独立于普通 attempt 预算: 401(可交付前)即使发生在最后一次普通 attempt,
+	// 也应获得一次换号重试(设计见 gateway/attempt_error.go: "401 可交付前换一次号")。
+	// !authFailoverUsed 限定至多一次; finalAttempt 门只挡普通重试。
 	authRetry := failure.Decision.CountsAgainstAuthFailoverBudget && !authFailoverUsed
 	if authRetry {
 		return true, true
 	}
+	if finalAttempt {
+		return false, false
+	}
+	normalRetry := failure.Decision.RetryableBeforeDelivery && retryableEndClassAllowed(plan.RetryableEndClasses, failure.EndClass)
 	if normalRetry {
 		return true, false
 	}
