@@ -39,6 +39,11 @@ type Config struct {
 	HTTPClient  HTTPDoer
 	RateLimiter *RateLimiter
 	Now         func() time.Time
+	// NotifyTypeCacheTTL bounds the in-process notify_type cache that lets the
+	// settlement hot path skip the GetSettings DB read while notifications are
+	// disabled. Zero selects DefaultNotifyTypeCacheTTL; negative disables the
+	// cache (every call reads the DB).
+	NotifyTypeCacheTTL time.Duration
 }
 
 type Notifier struct {
@@ -47,6 +52,7 @@ type Notifier struct {
 	httpClient  HTTPDoer
 	limiter     *RateLimiter
 	now         func() time.Time
+	typeCache   *notifyTypeCache
 }
 
 func NewNotifier(cfg Config) *Notifier {
@@ -62,12 +68,17 @@ func NewNotifier(cfg Config) *Notifier {
 	if limiter == nil {
 		limiter = NewRateLimiter(time.Hour)
 	}
+	cacheTTL := cfg.NotifyTypeCacheTTL
+	if cacheTTL == 0 {
+		cacheTTL = DefaultNotifyTypeCacheTTL
+	}
 	return &Notifier{
 		store:       cfg.Store,
 		emailSender: cfg.EmailSender,
 		httpClient:  httpClient,
 		limiter:     limiter,
 		now:         now,
+		typeCache:   newNotifyTypeCache(cacheTTL),
 	}
 }
 
@@ -75,11 +86,18 @@ func (n *Notifier) NotifyLowBalance(ctx context.Context, tenantID, userID int64,
 	if n == nil || n.store == nil {
 		return nil
 	}
+	// Cheap in-process short-circuit first: when a fresh cache entry says this
+	// (tenant,user) has notifications disabled, skip the GetSettings DB read so
+	// the common notify_type=none settlement never touches the shared DB pool.
+	if n.typeCache.disabled(tenantID, userID, n.now()) {
+		return nil
+	}
 	settings, err := n.store.GetSettings(ctx, tenantID, userID)
 	if err != nil {
 		return err
 	}
 	settings = settings.normalized()
+	n.typeCache.store(tenantID, userID, settings.NotifyType, n.now())
 	if settings.NotifyType == TypeNone {
 		return nil
 	}
