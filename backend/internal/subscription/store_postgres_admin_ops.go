@@ -235,6 +235,112 @@ RETURNING`+subscriptionSelectColumns, rec.TenantID, sub.ID, rec.Now)
 	return sub, nil
 }
 
+func (s *PostgresStore) ChangePlan(ctx context.Context, rec changePlanRecord) (UserSubscription, error) {
+	if s == nil || s.pool == nil {
+		return UserSubscription{}, ErrStoreNotConfigured
+	}
+	var lastErr error
+	for attempt := 0; attempt < subscriptionTxRetryAttempts; attempt++ {
+		sub, err := s.changePlanOnce(ctx, rec)
+		if err == nil {
+			return sub, nil
+		}
+		if isPgRetryableTxConflict(err) {
+			lastErr = err
+			continue
+		}
+		return UserSubscription{}, err
+	}
+	return UserSubscription{}, fmt.Errorf("subscription: change plan exhausted retries: %w", lastErr)
+}
+
+func (s *PostgresStore) changePlanOnce(ctx context.Context, rec changePlanRecord) (UserSubscription, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return UserSubscription{}, fmt.Errorf("subscription: begin change plan: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	sub, err := resolveChangePlanTargetTx(ctx, tx, rec)
+	if err != nil {
+		return UserSubscription{}, err
+	}
+	if ok, err := hasSubAuditRequestTx(ctx, tx, rec.TenantID, sub.ID, AuditSubscriptionRenewed, rec.RequestID); err != nil {
+		return UserSubscription{}, err
+	} else if ok {
+		if err := tx.Commit(ctx); err != nil {
+			return UserSubscription{}, fmt.Errorf("subscription: commit idempotent change plan: %w", err)
+		}
+		return sub, nil
+	}
+	if sub.Status != StatusActive || !sub.ExpiresAt.After(rec.Now) {
+		return UserSubscription{}, ErrSubscriptionNotActive
+	}
+
+	plan, err := getPlanTx(ctx, tx, rec.TenantID, rec.NewPlanID)
+	if err != nil {
+		return UserSubscription{}, err
+	}
+	if !plan.Enabled {
+		return UserSubscription{}, ErrPlanDisabled
+	}
+	if !rec.AllowDowngrade && !capsDominate(planCapsTriple(plan), subCapsTriple(sub)) {
+		return UserSubscription{}, ErrDowngradeNotAllowed
+	}
+
+	currentGroup, err := lockUserGroupTx(ctx, tx, rec.TenantID, sub.UserID)
+	if err != nil {
+		return UserSubscription{}, err
+	}
+	prevGroup := sub.GrantedGroup
+	prevPlanID := sub.PlanID
+	prevExpires := sub.ExpiresAt
+	base := rec.Now
+	if sub.ExpiresAt.After(base) {
+		base = sub.ExpiresAt
+	}
+	newExpires := capExpiry(base.AddDate(0, 0, plan.ValidityDays))
+
+	updated, err := renewSubscriptionTx(ctx, tx, sub, plan, newExpires, rec.Now)
+	if err != nil {
+		return UserSubscription{}, err
+	}
+	if err := closeCapsTx(ctx, tx, rec.TenantID, sub.ID, rec.Now); err != nil {
+		return UserSubscription{}, err
+	}
+	if err := installCapsTx(ctx, tx, updated, rec.Now); err != nil {
+		return UserSubscription{}, err
+	}
+
+	actorKind, actorID := changePlanActor(rec, sub)
+	if err := maybeAuditGroupChangeTx(ctx, tx, rec, sub, plan, currentGroup, prevGroup, actorKind, actorID); err != nil {
+		return UserSubscription{}, err
+	}
+	if err := insertSubAuditTx(ctx, tx, subAuditInsert{
+		TenantID:           rec.TenantID,
+		UserSubscriptionID: updated.ID,
+		EventType:          AuditSubscriptionRenewed,
+		ActorKind:          actorKind,
+		ActorID:            actorID,
+		RequestID:          rec.RequestID,
+		Payload: map[string]any{
+			"source":          "change_plan",
+			"from_plan_id":    prevPlanID,
+			"to_plan_id":      plan.ID,
+			"from_expires":    prevExpires.UTC(),
+			"to_expires":      newExpires.UTC(),
+			"allow_downgrade": rec.AllowDowngrade,
+		},
+		Now: rec.Now,
+	}); err != nil {
+		return UserSubscription{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return UserSubscription{}, fmt.Errorf("subscription: commit change plan: %w", err)
+	}
+	return updated, nil
+}
+
 func (s *PostgresStore) RevokeSubscription(ctx context.Context, rec revokeRecord) (UserSubscription, error) {
 	if s == nil || s.pool == nil {
 		return UserSubscription{}, ErrStoreNotConfigured
@@ -317,6 +423,67 @@ RETURNING`+subscriptionSelectColumns,
 		return UserSubscription{}, fmt.Errorf("subscription: commit revoke: %w", err)
 	}
 	return sub, nil
+}
+
+func resolveChangePlanTargetTx(ctx context.Context, tx pgx.Tx, rec changePlanRecord) (UserSubscription, error) {
+	if rec.SubscriptionID > 0 {
+		return getSubscriptionForUpdateTx(ctx, tx, rec.TenantID, rec.SubscriptionID)
+	}
+	return getCurrentActiveByUserForUpdateTx(ctx, tx, rec.TenantID, rec.UserID)
+}
+
+func changePlanActor(rec changePlanRecord, sub UserSubscription) (string, int64) {
+	if rec.ActorAdminID > 0 {
+		return ActorKindAdmin, rec.ActorAdminID
+	}
+	return ActorKindUser, sub.UserID
+}
+
+func maybeAuditGroupChangeTx(ctx context.Context, tx pgx.Tx, rec changePlanRecord, before UserSubscription, plan Plan, currentGroup, prevGroup, actorKind string, actorID int64) error {
+	if plan.GrantedGroup == prevGroup {
+		return nil
+	}
+	currentOwnedByTarget := false
+	if prevGroup != "" {
+		currentOwnedByTarget = currentGroup == prevGroup
+	} else {
+		currentOwnedByTarget = currentGroup == DefaultUserGroup
+	}
+	if !currentOwnedByTarget {
+		return nil
+	}
+	targetGroup := plan.GrantedGroup
+	if targetGroup == "" {
+		var err error
+		targetGroup, err = resolveGroupFromActiveTx(ctx, tx, rec.TenantID, before.UserID)
+		if err != nil {
+			return err
+		}
+	}
+	if targetGroup == currentGroup {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `UPDATE users SET user_group=$3 WHERE tenant_id=$1 AND id=$2`,
+		rec.TenantID, before.UserID, targetGroup); err != nil {
+		return fmt.Errorf("subscription: change plan user group: %w", err)
+	}
+	eventType := AuditGroupUpgraded
+	if targetGroup == DefaultUserGroup || !capsDominate(planCapsTriple(plan), subCapsTriple(before)) {
+		eventType = AuditGroupDowngraded
+	}
+	if err := insertSubAuditTx(ctx, tx, subAuditInsert{
+		TenantID:           rec.TenantID,
+		UserSubscriptionID: before.ID,
+		EventType:          eventType,
+		ActorKind:          actorKind,
+		ActorID:            actorID,
+		RequestID:          rec.RequestID,
+		Payload:            map[string]any{"from": currentGroup, "to": targetGroup},
+		Now:                rec.Now,
+	}); err != nil {
+		return err
+	}
+	return nil
 }
 
 func updateActiveCapsValidUntilTx(ctx context.Context, tx pgx.Tx, tenantID, subscriptionID int64, newExpires, now time.Time) error {

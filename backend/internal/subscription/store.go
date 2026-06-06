@@ -35,6 +35,8 @@ type Store interface {
 	ExtendSubscription(ctx context.Context, rec extendRecord) (UserSubscription, error)
 	// ResetQuota: 关闭旧 subscription-owned quota policies 并按订阅快照重装, 清空当前 quota_windows 消耗。
 	ResetQuota(ctx context.Context, rec lifecycleRecord) (UserSubscription, error)
+	// ChangePlan: active/non-expired 订阅原地切换套餐快照 + 关闭旧策略 + 安装新策略 + 审计, 单事务。
+	ChangePlan(ctx context.Context, rec changePlanRecord) (UserSubscription, error)
 	// RevokeSubscription: 标 revoked + 关闭 quota 策略 + 降级 users.user_group (受 downgrade 守卫), 单事务。
 	RevokeSubscription(ctx context.Context, rec revokeRecord) (UserSubscription, error)
 
@@ -119,6 +121,17 @@ type extendRecord struct {
 	RequestID      string
 	Days           int
 	Until          *time.Time
+	Now            time.Time
+}
+
+type changePlanRecord struct {
+	TenantID       int64
+	SubscriptionID int64
+	UserID         int64
+	NewPlanID      int64
+	AllowDowngrade bool
+	ActorAdminID   int64
+	RequestID      string
 	Now            time.Time
 }
 

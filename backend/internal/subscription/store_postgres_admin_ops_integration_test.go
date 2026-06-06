@@ -143,6 +143,234 @@ func TestSubscriptionPostgres_AdminResetQuota(t *testing.T) {
 	}
 }
 
+func TestSubscriptionPostgres_ChangePlanSwapsCapsAndPolicy(t *testing.T) {
+	ctx := context.Background()
+	pool := openIntegrationPool(t, ctx)
+	f := newSubFixture(t, ctx, pool)
+	clk := &fakeClock{t: baseTime()}
+	svc := NewService(NewPostgresStore(pool), WithClock(clk.now))
+	basic, err := svc.CreatePlan(ctx, CreatePlanInput{
+		TenantID: f.tenantA, Name: "basic", ValidityDays: 30, GrantedGroup: "premium", MonthlyCapUSD: dec("10"),
+	})
+	if err != nil {
+		t.Fatalf("create basic plan: %v", err)
+	}
+	premium, err := svc.CreatePlan(ctx, CreatePlanInput{
+		TenantID: f.tenantA, Name: "premium", ValidityDays: 30, GrantedGroup: "premium", MonthlyCapUSD: dec("25"),
+	})
+	if err != nil {
+		t.Fatalf("create premium plan: %v", err)
+	}
+	assigned, err := svc.AssignSubscription(ctx, AssignSubscriptionInput{
+		TenantID: f.tenantA, UserID: f.userA, PlanID: basic.ID, ActorAdminID: 7,
+	})
+	if err != nil {
+		t.Fatalf("assign basic: %v", err)
+	}
+	oldPolicy := f.activeSubPolicyID(assigned.Subscription.ID, string(CapWindowMonthly))
+
+	// MUTATION that makes this RED: skip old-policy-close on change, leaving two active policies/links.
+	changed, err := svc.ChangePlan(ctx, ChangePlanInput{
+		TenantID: f.tenantA, SubscriptionID: assigned.Subscription.ID, NewPlanID: premium.ID,
+		AllowDowngrade: false, ActorAdminID: 7, RequestID: "change-swap",
+	})
+	if err != nil {
+		t.Fatalf("change plan: %v", err)
+	}
+	if changed.PlanID != premium.ID || changed.MonthlyCapUSD == nil || !changed.MonthlyCapUSD.Equal(*dec("25")) {
+		t.Fatalf("changed subscription = %+v, want premium snapshot", changed)
+	}
+	if enabled := f.countInt(`SELECT count(*) FROM quota_policies WHERE tenant_id=$1 AND id=$2 AND enabled=true`, f.tenantA, oldPolicy); enabled != 0 {
+		t.Fatalf("old policy enabled count=%d, want 0", enabled)
+	}
+	if active := f.countInt(`SELECT count(*) FROM subscription_policy_links
+		WHERE tenant_id=$1 AND user_subscription_id=$2 AND status='active'`,
+		f.tenantA, assigned.Subscription.ID); active != 1 {
+		t.Fatalf("active policy link count=%d, want 1 after swap", active)
+	}
+	newPolicy := f.activeSubPolicyID(assigned.Subscription.ID, string(CapWindowMonthly))
+	if newPolicy == oldPolicy {
+		t.Fatalf("change plan reused old policy id=%d; want fresh policy", newPolicy)
+	}
+	if got := f.policyLimit(newPolicy); !got.Equal(decimal.NewFromInt(25)) {
+		t.Fatalf("active policy limit=%s, want 25", got.String())
+	}
+	if n := f.countInt(`SELECT count(*) FROM subscription_audit_events
+		WHERE tenant_id=$1 AND user_subscription_id=$2 AND event_type=$3`,
+		f.tenantA, assigned.Subscription.ID, AuditSubscriptionRenewed); n != 1 {
+		t.Fatalf("subscription_renewed audit count=%d, want 1", n)
+	}
+}
+
+func TestSubscriptionPostgres_ChangePlanDowngradeGuard(t *testing.T) {
+	ctx := context.Background()
+	pool := openIntegrationPool(t, ctx)
+	f := newSubFixture(t, ctx, pool)
+	clk := &fakeClock{t: baseTime()}
+	svc := NewService(NewPostgresStore(pool), WithClock(clk.now))
+	high, err := svc.CreatePlan(ctx, CreatePlanInput{
+		TenantID: f.tenantA, Name: "high", ValidityDays: 30, GrantedGroup: "premium", MonthlyCapUSD: dec("20"),
+	})
+	if err != nil {
+		t.Fatalf("create high plan: %v", err)
+	}
+	low, err := svc.CreatePlan(ctx, CreatePlanInput{
+		TenantID: f.tenantA, Name: "low", ValidityDays: 30, GrantedGroup: "premium", MonthlyCapUSD: dec("5"),
+	})
+	if err != nil {
+		t.Fatalf("create low plan: %v", err)
+	}
+	assigned, err := svc.AssignSubscription(ctx, AssignSubscriptionInput{
+		TenantID: f.tenantA, UserID: f.userA, PlanID: high.ID, ActorAdminID: 7,
+	})
+	if err != nil {
+		t.Fatalf("assign high: %v", err)
+	}
+	oldPolicy := f.activeSubPolicyID(assigned.Subscription.ID, string(CapWindowMonthly))
+
+	// MUTATION that makes this RED: ignore the guard and allow lower caps with AllowDowngrade=false.
+	if _, err := svc.ChangePlan(ctx, ChangePlanInput{
+		TenantID: f.tenantA, SubscriptionID: assigned.Subscription.ID, NewPlanID: low.ID,
+		AllowDowngrade: false, ActorAdminID: 7, RequestID: "downgrade-denied",
+	}); !errors.Is(err, ErrDowngradeNotAllowed) {
+		t.Fatalf("disallowed downgrade err=%v, want ErrDowngradeNotAllowed", err)
+	}
+	unchanged, err := svc.GetSubscription(ctx, f.tenantA, assigned.Subscription.ID)
+	if err != nil {
+		t.Fatalf("get unchanged: %v", err)
+	}
+	if unchanged.PlanID != high.ID {
+		t.Fatalf("plan after denied downgrade=%d, want high plan %d", unchanged.PlanID, high.ID)
+	}
+	if active := f.activeSubPolicyID(assigned.Subscription.ID, string(CapWindowMonthly)); active != oldPolicy {
+		t.Fatalf("active policy after denied downgrade=%d, want original %d", active, oldPolicy)
+	}
+	if n := f.countInt(`SELECT count(*) FROM subscription_audit_events
+		WHERE tenant_id=$1 AND user_subscription_id=$2 AND event_type=$3`,
+		f.tenantA, assigned.Subscription.ID, AuditSubscriptionRenewed); n != 0 {
+		t.Fatalf("subscription_renewed audit count after denied downgrade=%d, want 0", n)
+	}
+
+	if _, err := svc.ChangePlan(ctx, ChangePlanInput{
+		TenantID: f.tenantA, SubscriptionID: assigned.Subscription.ID, NewPlanID: low.ID,
+		AllowDowngrade: true, ActorAdminID: 7, RequestID: "downgrade-allowed",
+	}); err != nil {
+		t.Fatalf("allowed downgrade: %v", err)
+	}
+	got, err := svc.GetSubscription(ctx, f.tenantA, assigned.Subscription.ID)
+	if err != nil {
+		t.Fatalf("get downgraded: %v", err)
+	}
+	if got.PlanID != low.ID || got.MonthlyCapUSD == nil || !got.MonthlyCapUSD.Equal(*dec("5")) {
+		t.Fatalf("downgraded subscription=%+v, want low plan snapshot", got)
+	}
+}
+
+func TestSubscriptionPostgres_ChangePlanIdempotent(t *testing.T) {
+	ctx := context.Background()
+	pool := openIntegrationPool(t, ctx)
+	f := newSubFixture(t, ctx, pool)
+	clk := &fakeClock{t: baseTime()}
+	svc := NewService(NewPostgresStore(pool), WithClock(clk.now))
+	basic, err := svc.CreatePlan(ctx, CreatePlanInput{
+		TenantID: f.tenantA, Name: "basic", ValidityDays: 30, GrantedGroup: "premium", MonthlyCapUSD: dec("10"),
+	})
+	if err != nil {
+		t.Fatalf("create basic plan: %v", err)
+	}
+	premium, err := svc.CreatePlan(ctx, CreatePlanInput{
+		TenantID: f.tenantA, Name: "premium", ValidityDays: 30, GrantedGroup: "premium", MonthlyCapUSD: dec("30"),
+	})
+	if err != nil {
+		t.Fatalf("create premium plan: %v", err)
+	}
+	assigned, err := svc.AssignSubscription(ctx, AssignSubscriptionInput{
+		TenantID: f.tenantA, UserID: f.userA, PlanID: basic.ID, ActorAdminID: 7,
+	})
+	if err != nil {
+		t.Fatalf("assign basic: %v", err)
+	}
+	originalExpires := assigned.Subscription.ExpiresAt
+
+	// MUTATION that makes this RED: drop idempotency lookup by request_id, causing double renewal and extra audit.
+	for i := 0; i < 2; i++ {
+		if _, err := svc.ChangePlan(ctx, ChangePlanInput{
+			TenantID: f.tenantA, SubscriptionID: assigned.Subscription.ID, NewPlanID: premium.ID,
+			AllowDowngrade: false, ActorAdminID: 7, RequestID: "change-once",
+		}); err != nil {
+			t.Fatalf("change attempt %d: %v", i+1, err)
+		}
+	}
+	got, err := svc.GetSubscription(ctx, f.tenantA, assigned.Subscription.ID)
+	if err != nil {
+		t.Fatalf("get subscription: %v", err)
+	}
+	if want := originalExpires.AddDate(0, 0, 30); !got.ExpiresAt.Equal(want) {
+		t.Fatalf("expires_at=%v, want %v exactly once", got.ExpiresAt, want)
+	}
+	if active := f.countInt(`SELECT count(*) FROM subscription_policy_links
+		WHERE tenant_id=$1 AND user_subscription_id=$2 AND status='active'`,
+		f.tenantA, assigned.Subscription.ID); active != 1 {
+		t.Fatalf("active policy link count=%d, want 1", active)
+	}
+	if n := f.countInt(`SELECT count(*) FROM subscription_audit_events
+		WHERE tenant_id=$1 AND user_subscription_id=$2 AND event_type=$3`,
+		f.tenantA, assigned.Subscription.ID, AuditSubscriptionRenewed); n != 1 {
+		t.Fatalf("subscription_renewed audit count=%d, want 1", n)
+	}
+}
+
+func TestSubscriptionPostgres_ChangePlanRejectsNonActive(t *testing.T) {
+	ctx := context.Background()
+	pool := openIntegrationPool(t, ctx)
+	f := newSubFixture(t, ctx, pool)
+	clk := &fakeClock{t: baseTime()}
+	store := NewPostgresStore(pool)
+	svc := NewService(store, WithClock(clk.now))
+	plan := createPremiumPlan(t, ctx, svc, f.tenantA, "premium")
+	upgrade, err := svc.CreatePlan(ctx, CreatePlanInput{
+		TenantID: f.tenantA, Name: "upgrade", ValidityDays: 30, GrantedGroup: "premium", MonthlyCapUSD: dec("25"),
+	})
+	if err != nil {
+		t.Fatalf("create upgrade plan: %v", err)
+	}
+	cancelled, err := svc.AssignSubscription(ctx, AssignSubscriptionInput{
+		TenantID: f.tenantA, UserID: f.userA, PlanID: plan.ID, ActorAdminID: 7,
+	})
+	if err != nil {
+		t.Fatalf("assign cancelled candidate: %v", err)
+	}
+	if _, err := svc.CancelSubscription(ctx, f.tenantA, cancelled.Subscription.ID, 7, "cancel-before-change"); err != nil {
+		t.Fatalf("cancel candidate: %v", err)
+	}
+	// MUTATION that makes this RED: update cancelled/expired rows without active status guard.
+	if _, err := svc.ChangePlan(ctx, ChangePlanInput{
+		TenantID: f.tenantA, SubscriptionID: cancelled.Subscription.ID, NewPlanID: upgrade.ID,
+		ActorAdminID: 7, RequestID: "change-cancelled",
+	}); !errors.Is(err, ErrSubscriptionNotActive) {
+		t.Fatalf("change cancelled err=%v, want ErrSubscriptionNotActive", err)
+	}
+
+	expiredUser := f.seedUser(f.tenantA, "expired-change")
+	expired, err := svc.AssignSubscription(ctx, AssignSubscriptionInput{
+		TenantID: f.tenantA, UserID: expiredUser, PlanID: plan.ID, ActorAdminID: 7,
+	})
+	if err != nil {
+		t.Fatalf("assign expired candidate: %v", err)
+	}
+	if _, err := store.ExpireSubscription(ctx, lifecycleRecord{
+		TenantID: f.tenantA, SubscriptionID: expired.Subscription.ID, ActorKind: ActorKindSystem, Now: clk.now(),
+	}); err != nil {
+		t.Fatalf("expire candidate: %v", err)
+	}
+	if _, err := svc.ChangePlan(ctx, ChangePlanInput{
+		TenantID: f.tenantA, SubscriptionID: expired.Subscription.ID, NewPlanID: upgrade.ID,
+		ActorAdminID: 7, RequestID: "change-expired",
+	}); !errors.Is(err, ErrSubscriptionNotActive) {
+		t.Fatalf("change expired err=%v, want ErrSubscriptionNotActive", err)
+	}
+}
+
 func TestSubscriptionPostgres_AdminBulkAssignPartialFailure(t *testing.T) {
 	ctx := context.Background()
 	pool := openIntegrationPool(t, ctx)

@@ -4710,6 +4710,47 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/subscriptions/assignments/{id}/change-plan:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-subscriptions]
+      summary: Change an active subscription assignment to another plan
+      operationId: adminChangeSubscriptionPlan
+      description: |
+        Swaps the active assignment to a new plan snapshot in one transaction:
+        the old subscription-owned quota policies are closed, new policies are
+        installed from the target plan caps, and the change is audited. When
+        allow_downgrade is false, lower caps are rejected.
+      x-huakai-spec-source: [docs/process/plans/2026-06-06-subscription-change-plan-codex.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, new_plan_id]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                new_plan_id: { type: integer, format: int64, minimum: 1 }
+                allow_downgrade: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Subscription plan changed once per request id.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscription: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/admin/subscriptions/assignments/{id}/revoke:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
@@ -5439,6 +5480,42 @@ paths:
                   auto_renew: { type: boolean, enum: [false] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/users/me/subscriptions/change-plan:
+    post:
+      tags: [user-subscriptions]
+      summary: Change the authenticated User's current subscription plan
+      operationId: changeMySubscriptionPlan
+      description: |
+        Self-service plan change targets the caller's current active
+        subscription and is upgrade-only. Lower caps are rejected with 409;
+        administrator override is available through the admin assignment route.
+      x-huakai-spec-source: [docs/process/plans/2026-06-06-subscription-change-plan-codex.md]
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_plan_id]
+              properties:
+                new_plan_id: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Current subscription changed to the new plan once per request id.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscription: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/users/me/subscriptions/purchase:

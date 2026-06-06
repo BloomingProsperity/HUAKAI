@@ -121,3 +121,136 @@ func TestService_ExtendSubscriptionIdempotentByRequestID(t *testing.T) {
 		t.Fatalf("expires first=%v second=%v, want exactly once %v", first.ExpiresAt, second.ExpiresAt, want)
 	}
 }
+
+func TestService_ChangePlanDowngradeGuard(t *testing.T) {
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	svc, store := newTestService(&now)
+	ctx := context.Background()
+	store.seedUser(1, 42, "default")
+	high, err := svc.CreatePlan(ctx, CreatePlanInput{
+		TenantID: 1, Name: "high", ValidityDays: 30, GrantedGroup: "premium", MonthlyCapUSD: capPtr("20"),
+	})
+	if err != nil {
+		t.Fatalf("create high plan: %v", err)
+	}
+	low, err := svc.CreatePlan(ctx, CreatePlanInput{
+		TenantID: 1, Name: "low", ValidityDays: 30, GrantedGroup: "premium", MonthlyCapUSD: capPtr("5"),
+	})
+	if err != nil {
+		t.Fatalf("create low plan: %v", err)
+	}
+	assigned, err := svc.AssignSubscription(ctx, AssignSubscriptionInput{
+		TenantID: 1, UserID: 42, PlanID: high.ID, ActorAdminID: 7,
+	})
+	if err != nil {
+		t.Fatalf("assign high: %v", err)
+	}
+
+	// MUTATION that makes this RED: ignore AllowDowngrade=false and apply lower caps anyway.
+	if _, err := svc.ChangePlan(ctx, ChangePlanInput{
+		TenantID: 1, SubscriptionID: assigned.Subscription.ID, NewPlanID: low.ID,
+		AllowDowngrade: false, ActorAdminID: 7, RequestID: "change-denied",
+	}); !errors.Is(err, ErrDowngradeNotAllowed) {
+		t.Fatalf("disallowed downgrade err=%v, want ErrDowngradeNotAllowed", err)
+	}
+	unchanged, err := svc.GetSubscription(ctx, 1, assigned.Subscription.ID)
+	if err != nil {
+		t.Fatalf("get unchanged subscription: %v", err)
+	}
+	if unchanged.PlanID != high.ID || unchanged.MonthlyCapUSD == nil || !unchanged.MonthlyCapUSD.Equal(*capPtr("20")) {
+		t.Fatalf("subscription changed after denied downgrade: %+v", unchanged)
+	}
+
+	changed, err := svc.ChangePlan(ctx, ChangePlanInput{
+		TenantID: 1, SubscriptionID: assigned.Subscription.ID, NewPlanID: low.ID,
+		AllowDowngrade: true, ActorAdminID: 7, RequestID: "change-allowed",
+	})
+	if err != nil {
+		t.Fatalf("allowed downgrade: %v", err)
+	}
+	if changed.PlanID != low.ID || changed.MonthlyCapUSD == nil || !changed.MonthlyCapUSD.Equal(*capPtr("5")) {
+		t.Fatalf("changed subscription = %+v, want low plan cap", changed)
+	}
+}
+
+func TestService_ChangePlanIdempotentByRequestID(t *testing.T) {
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	svc, store := newTestService(&now)
+	ctx := context.Background()
+	store.seedUser(1, 42, "default")
+	basic, _ := svc.CreatePlan(ctx, CreatePlanInput{
+		TenantID: 1, Name: "basic", ValidityDays: 30, GrantedGroup: "premium", MonthlyCapUSD: capPtr("10"),
+	})
+	premium, _ := svc.CreatePlan(ctx, CreatePlanInput{
+		TenantID: 1, Name: "premium", ValidityDays: 30, GrantedGroup: "premium", MonthlyCapUSD: capPtr("30"),
+	})
+	assigned, err := svc.AssignSubscription(ctx, AssignSubscriptionInput{
+		TenantID: 1, UserID: 42, PlanID: basic.ID, ActorAdminID: 7,
+	})
+	if err != nil {
+		t.Fatalf("assign basic: %v", err)
+	}
+	originalExpires := assigned.Subscription.ExpiresAt
+
+	// MUTATION that makes this RED: drop request_id audit replay and renew/install caps on every retry.
+	for i := 0; i < 2; i++ {
+		if _, err := svc.ChangePlan(ctx, ChangePlanInput{
+			TenantID: 1, SubscriptionID: assigned.Subscription.ID, NewPlanID: premium.ID,
+			ActorAdminID: 7, RequestID: "change-once",
+		}); err != nil {
+			t.Fatalf("change attempt %d: %v", i+1, err)
+		}
+	}
+	got, err := svc.GetSubscription(ctx, 1, assigned.Subscription.ID)
+	if err != nil {
+		t.Fatalf("get changed subscription: %v", err)
+	}
+	wantExpires := originalExpires.AddDate(0, 0, 30)
+	if got.PlanID != premium.ID || !got.ExpiresAt.Equal(wantExpires) {
+		t.Fatalf("changed subscription plan/expires = plan %d expires %v, want plan %d expires %v",
+			got.PlanID, got.ExpiresAt, premium.ID, wantExpires)
+	}
+	events, err := svc.ListAuditEvents(ctx, 1, assigned.Subscription.ID)
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	renewed := 0
+	for _, ev := range events {
+		if ev.EventType == AuditSubscriptionRenewed {
+			renewed++
+		}
+	}
+	if renewed != 1 {
+		t.Fatalf("subscription_renewed audit count=%d, want 1", renewed)
+	}
+}
+
+func TestService_ChangePlanRejectsNonActive(t *testing.T) {
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	svc, store := newTestService(&now)
+	ctx := context.Background()
+	store.seedUser(1, 42, "default")
+	basic, _ := svc.CreatePlan(ctx, CreatePlanInput{
+		TenantID: 1, Name: "basic", ValidityDays: 30, GrantedGroup: "premium", MonthlyCapUSD: capPtr("10"),
+	})
+	premium, _ := svc.CreatePlan(ctx, CreatePlanInput{
+		TenantID: 1, Name: "premium", ValidityDays: 30, GrantedGroup: "premium", MonthlyCapUSD: capPtr("30"),
+	})
+	assigned, err := svc.AssignSubscription(ctx, AssignSubscriptionInput{
+		TenantID: 1, UserID: 42, PlanID: basic.ID, ActorAdminID: 7,
+	})
+	if err != nil {
+		t.Fatalf("assign basic: %v", err)
+	}
+	if _, err := svc.CancelSubscription(ctx, 1, assigned.Subscription.ID, 7, "cancel-before-change"); err != nil {
+		t.Fatalf("cancel before change: %v", err)
+	}
+
+	// MUTATION that makes this RED: update by id without status/expires_at guard.
+	if _, err := svc.ChangePlan(ctx, ChangePlanInput{
+		TenantID: 1, SubscriptionID: assigned.Subscription.ID, NewPlanID: premium.ID,
+		ActorAdminID: 7, RequestID: "change-cancelled",
+	}); !errors.Is(err, ErrSubscriptionNotActive) {
+		t.Fatalf("change cancelled err=%v, want ErrSubscriptionNotActive", err)
+	}
+}

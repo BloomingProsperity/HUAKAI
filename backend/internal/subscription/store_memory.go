@@ -416,6 +416,115 @@ func (m *memoryStore) ResetQuota(_ context.Context, rec lifecycleRecord) (UserSu
 	return sub, nil
 }
 
+func (m *memoryStore) ChangePlan(_ context.Context, rec changePlanRecord) (UserSubscription, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sub, ok := UserSubscription{}, false
+	if rec.SubscriptionID > 0 {
+		sub, ok = m.subs[subKey{rec.TenantID, rec.SubscriptionID}]
+	} else {
+		sub, ok = m.currentActiveSubscriptionLocked(rec.TenantID, rec.UserID)
+	}
+	if !ok {
+		return UserSubscription{}, ErrSubscriptionNotFound
+	}
+	if rec.RequestID != "" && m.hasAuditRequestLocked(sub.ID, AuditSubscriptionRenewed, rec.RequestID) {
+		return sub, nil
+	}
+	if sub.Status != StatusActive || !sub.ExpiresAt.After(rec.Now) {
+		return UserSubscription{}, ErrSubscriptionNotActive
+	}
+	plan, ok := m.plans[planKey{rec.TenantID, rec.NewPlanID}]
+	if !ok {
+		return UserSubscription{}, ErrPlanNotFound
+	}
+	if !plan.Enabled {
+		return UserSubscription{}, ErrPlanDisabled
+	}
+	if !rec.AllowDowngrade && !capsDominate(planCapsTriple(plan), subCapsTriple(sub)) {
+		return UserSubscription{}, ErrDowngradeNotAllowed
+	}
+
+	prevPlanID := sub.PlanID
+	prevExpires := sub.ExpiresAt
+	prevGroup := sub.GrantedGroup
+	before := sub
+	uk := userKey{rec.TenantID, sub.UserID}
+	currentGroup := m.userGroupOf(uk)
+	base := rec.Now
+	if sub.ExpiresAt.After(base) {
+		base = sub.ExpiresAt
+	}
+	newExpires := capExpiry(base.AddDate(0, 0, plan.ValidityDays))
+
+	for i := range m.links[sub.ID] {
+		if m.links[sub.ID][i].Status == "active" {
+			m.links[sub.ID][i].Status = "closed"
+			t := rec.Now.UTC()
+			m.links[sub.ID][i].ClosedAt = &t
+		}
+	}
+	sub.PlanID = plan.ID
+	sub.GrantedGroup = plan.GrantedGroup
+	sub.DailyCapUSD = plan.DailyCapUSD
+	sub.WeeklyCapUSD = plan.WeeklyCapUSD
+	sub.MonthlyCapUSD = plan.MonthlyCapUSD
+	sub.ExpiresAt = newExpires.UTC()
+	sub.UpdatedAt = rec.Now.UTC()
+	m.subs[subKey{rec.TenantID, sub.ID}] = sub
+	for _, cap := range sub.Caps() {
+		m.policySeq++
+		m.links[sub.ID] = append(m.links[sub.ID], PolicyLink{
+			ID: m.policySeq, TenantID: rec.TenantID, UserSubscriptionID: sub.ID,
+			QuotaPolicyID: m.policySeq, WindowKind: string(cap.Window), Status: "active",
+			CreatedAt: rec.Now.UTC(),
+		})
+	}
+
+	actorKind, actorID := changePlanActor(rec, sub)
+	if plan.GrantedGroup != prevGroup {
+		currentOwnedByTarget := false
+		if prevGroup != "" {
+			currentOwnedByTarget = currentGroup == prevGroup
+		} else {
+			currentOwnedByTarget = currentGroup == DefaultUserGroup
+		}
+		if currentOwnedByTarget {
+			targetGroup := plan.GrantedGroup
+			if targetGroup == "" {
+				targetGroup = m.resolveGroupFromActive(rec.TenantID, sub.UserID)
+			}
+			if targetGroup != currentGroup {
+				m.userGroups[uk] = targetGroup
+				eventType := AuditGroupUpgraded
+				if targetGroup == DefaultUserGroup || !capsDominate(planCapsTriple(plan), subCapsTriple(before)) {
+					eventType = AuditGroupDowngraded
+				}
+				m.appendAudit(sub.ID, AuditEvent{
+					TenantID: rec.TenantID, UserSubscriptionID: sub.ID, EventType: eventType,
+					ActorKind: actorKind, ActorID: actorID, RequestID: rec.RequestID,
+					Payload: map[string]any{"from": currentGroup, "to": targetGroup}, OccurredAt: rec.Now.UTC(),
+				})
+			}
+		}
+	}
+	m.appendAudit(sub.ID, AuditEvent{
+		TenantID: rec.TenantID, UserSubscriptionID: sub.ID, EventType: AuditSubscriptionRenewed,
+		ActorKind: actorKind, ActorID: actorID, RequestID: rec.RequestID,
+		Payload: map[string]any{
+			"source":          "change_plan",
+			"from_plan_id":    prevPlanID,
+			"to_plan_id":      plan.ID,
+			"from_expires":    prevExpires.UTC(),
+			"to_expires":      newExpires.UTC(),
+			"allow_downgrade": rec.AllowDowngrade,
+		},
+		OccurredAt: rec.Now.UTC(),
+	})
+	return sub, nil
+}
+
 func (m *memoryStore) RevokeSubscription(_ context.Context, rec revokeRecord) (UserSubscription, error) {
 	return m.closeMemWithAudit(lifecycleRecord{
 		TenantID: rec.TenantID, SubscriptionID: rec.SubscriptionID, ActorKind: ActorKindAdmin,

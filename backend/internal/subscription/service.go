@@ -250,6 +250,30 @@ func (s *Service) ResetQuota(ctx context.Context, in ResetQuotaInput) (UserSubsc
 	})
 }
 
+// ChangePlan swaps an active subscription to a new plan snapshot. Admin callers
+// target a concrete subscription id; self-service callers target the current
+// active subscription by user id and always leave AllowDowngrade=false.
+func (s *Service) ChangePlan(ctx context.Context, in ChangePlanInput) (UserSubscription, error) {
+	if in.TenantID <= 0 || in.NewPlanID <= 0 {
+		return UserSubscription{}, ErrInvalidInput
+	}
+	hasSubscription := in.SubscriptionID > 0
+	hasUser := in.UserID > 0
+	if hasSubscription == hasUser {
+		return UserSubscription{}, ErrInvalidInput
+	}
+	return s.store.ChangePlan(ctx, changePlanRecord{
+		TenantID:       in.TenantID,
+		SubscriptionID: in.SubscriptionID,
+		UserID:         in.UserID,
+		NewPlanID:      in.NewPlanID,
+		AllowDowngrade: in.AllowDowngrade,
+		ActorAdminID:   in.ActorAdminID,
+		RequestID:      strings.TrimSpace(in.RequestID),
+		Now:            s.now(),
+	})
+}
+
 // RevokeSubscription hard-ends an active assignment and closes entitlements.
 func (s *Service) RevokeSubscription(ctx context.Context, in RevokeSubscriptionInput) (UserSubscription, error) {
 	if in.TenantID <= 0 || in.SubscriptionID <= 0 {
