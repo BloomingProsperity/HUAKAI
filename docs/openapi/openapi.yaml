@@ -1662,6 +1662,98 @@ paths:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/me/referrals:
+    get:
+      tags: [invitations]
+      summary: List the authenticated user's referrals
+      operationId: listMyReferrals
+      x-huakai-spec-source:
+        - backend/internal/referralhttp/handler.go
+        - backend/internal/community/invitation/referral_records.go
+      parameters:
+        - in: query
+          name: limit
+          required: false
+          schema: { type: integer }
+        - in: query
+          name: offset
+          required: false
+          schema: { type: integer }
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: Paginated list of the authenticated user's referrals (referee + status + timestamps).
+          content:
+            application/json:
+              schema: { type: object }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+  /v1/me/referrals/rewards:
+    get:
+      tags: [invitations]
+      summary: List the authenticated user's referral reward ledger
+      operationId: listMyReferralRewards
+      x-huakai-spec-source:
+        - backend/internal/referralhttp/handler.go
+        - backend/internal/community/invitation/referral_records.go
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: The authenticated user's referral reward ledger with USD totals.
+          content:
+            application/json:
+              schema: { type: object }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+  /v1/admin/referrals:
+    get:
+      tags: [admin]
+      summary: Admin list of referral records (optional status filter)
+      operationId: listAdminReferrals
+      x-huakai-spec-source:
+        - backend/internal/referralhttp/handler.go
+        - backend/internal/community/invitation/referral_records_store.go
+      x-huakai-required-role: tenant_scoped_admin
+      parameters:
+        - in: query
+          name: status
+          required: false
+          schema: { type: string, enum: [pending, qualified, rewarded, rejected] }
+        - in: query
+          name: limit
+          required: false
+          schema: { type: integer }
+        - in: query
+          name: offset
+          required: false
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Paginated tenant-scoped referral records.
+          content:
+            application/json:
+              schema: { type: object }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+  /v1/admin/referrals/overview:
+    get:
+      tags: [admin]
+      summary: Admin referral overview (counts by status + total rewards)
+      operationId: getAdminReferralOverview
+      x-huakai-spec-source:
+        - backend/internal/referralhttp/handler.go
+        - backend/internal/community/invitation/referral_records_store.go
+      x-huakai-required-role: tenant_scoped_admin
+      responses:
+        '200':
+          description: Counts by referral status plus total reward USD for the tenant.
+          content:
+            application/json:
+              schema: { type: object }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
   /v1/me/invitations:
     get:
       tags: [invitations]
