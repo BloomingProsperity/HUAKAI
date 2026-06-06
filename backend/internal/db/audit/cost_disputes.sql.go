@@ -61,6 +61,60 @@ func (q *Queries) CreateCostDispute(ctx context.Context, arg CreateCostDisputePa
 	return i, err
 }
 
+const listDisputesForAdmin = `-- name: ListDisputesForAdmin :many
+SELECT id, dispute_id, tenant_id, user_id, request_id, reason, status,
+       operator_note, created_at, resolved_at
+FROM cost_disputes
+WHERE tenant_id = $1
+  AND ($2::text = '' OR status = $2::text)
+ORDER BY created_at DESC, id DESC
+LIMIT $4
+OFFSET $3
+`
+
+type ListDisputesForAdminParams struct {
+	TenantID     int64  `db:"tenant_id" json:"tenant_id"`
+	StatusFilter string `db:"status_filter" json:"status_filter"`
+	OffsetRows   int32  `db:"offset_rows" json:"offset_rows"`
+	LimitRows    int32  `db:"limit_rows" json:"limit_rows"`
+}
+
+func (q *Queries) ListDisputesForAdmin(ctx context.Context, arg ListDisputesForAdminParams) ([]CostDispute, error) {
+	rows, err := q.db.Query(ctx, listDisputesForAdmin,
+		arg.TenantID,
+		arg.StatusFilter,
+		arg.OffsetRows,
+		arg.LimitRows,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CostDispute
+	for rows.Next() {
+		var i CostDispute
+		if err := rows.Scan(
+			&i.ID,
+			&i.DisputeID,
+			&i.TenantID,
+			&i.UserID,
+			&i.RequestID,
+			&i.Reason,
+			&i.Status,
+			&i.OperatorNote,
+			&i.CreatedAt,
+			&i.ResolvedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUserCostDisputes = `-- name: ListUserCostDisputes :many
 SELECT id, dispute_id, tenant_id, user_id, request_id, reason, status,
        operator_note, created_at, resolved_at

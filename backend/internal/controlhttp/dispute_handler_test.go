@@ -141,6 +141,135 @@ func TestAdminResolveTenantOperatorCannotCrossTenant(t *testing.T) {
 	}
 }
 
+// Mutation: reuse ListUserDisputes or otherwise pass a user_id filter for admin list.
+// A tenant admin must see disputes from multiple users in the same tenant.
+func TestAdminListDisputesSeesMultipleUsersInTenant(t *testing.T) {
+	store := &disputeFakeStore{rows: []audit.CostDispute{
+		dispute(1, 7, 42, "req-user-a", audit.DisputeStatusOpen),
+		dispute(2, 7, 99, "req-user-b", audit.DisputeStatusReviewing),
+		dispute(3, 8, 42, "req-other-tenant", audit.DisputeStatusOpen),
+	}}
+	router := disputeAdminRouter(DisputeAdminDeps{
+		Auth:  disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 91, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		Store: store,
+	})
+
+	rec := doDisputeJSON(router, http.MethodGet, "/v1/admin/disputes?limit=10", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if !store.adminListCalled {
+		t.Fatal("ListForAdmin not called")
+	}
+	if store.adminListTenantID != 7 || store.adminListStatus != "" ||
+		store.adminListLimit != 10 || store.adminListOffset != 0 {
+		t.Fatalf("admin list args tenant=%d status=%q limit=%d offset=%d, want tenant=7 status='' limit=10 offset=0",
+			store.adminListTenantID, store.adminListStatus, store.adminListLimit, store.adminListOffset)
+	}
+	var body struct {
+		Disputes []struct {
+			RequestID string `json:"request_id"`
+			UserID    int64  `json:"user_id"`
+			TenantID  int64  `json:"tenant_id"`
+		} `json:"disputes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
+	}
+	if len(body.Disputes) != 2 {
+		t.Fatalf("disputes=%+v, want two tenant 7 rows across users", body.Disputes)
+	}
+	got := map[string]int64{}
+	for _, row := range body.Disputes {
+		got[row.RequestID] = row.UserID
+		if row.TenantID != 7 {
+			t.Fatalf("tenant leak row=%+v", row)
+		}
+	}
+	if got["req-user-a"] != 42 || got["req-user-b"] != 99 {
+		t.Fatalf("disputes=%+v, want req-user-a user 42 and req-user-b user 99", body.Disputes)
+	}
+}
+
+// Mutation: ignore status query parameter before calling the store.
+// The fake store filters by the supplied status; an empty status would return open and resolved rows.
+func TestAdminListDisputesStatusFilter(t *testing.T) {
+	store := &disputeFakeStore{rows: []audit.CostDispute{
+		dispute(1, 7, 42, "req-open", audit.DisputeStatusOpen),
+		dispute(2, 7, 99, "req-resolved", audit.DisputeStatusResolved),
+		dispute(3, 7, 100, "req-rejected", audit.DisputeStatusRejected),
+	}}
+	router := disputeAdminRouter(DisputeAdminDeps{
+		Auth:  disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 92, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		Store: store,
+	})
+
+	rec := doDisputeJSON(router, http.MethodGet, "/v1/admin/disputes?status=resolved", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if store.adminListStatus != audit.DisputeStatusResolved {
+		t.Fatalf("status filter=%q want resolved", store.adminListStatus)
+	}
+	var body struct {
+		Disputes []struct {
+			RequestID string `json:"request_id"`
+			Status    string `json:"status"`
+		} `json:"disputes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
+	}
+	if len(body.Disputes) != 1 || body.Disputes[0].RequestID != "req-resolved" || body.Disputes[0].Status != audit.DisputeStatusResolved {
+		t.Fatalf("disputes=%+v, want only resolved req-resolved", body.Disputes)
+	}
+}
+
+// Mutation: do not cap limit or ignore offset.
+// The handler must send capped limit=500 and offset=2 to the store.
+func TestAdminListDisputesPaginationCapsLimitAndPassesOffset(t *testing.T) {
+	store := &disputeFakeStore{rows: []audit.CostDispute{
+		dispute(1, 7, 42, "req-0", audit.DisputeStatusOpen),
+		dispute(2, 7, 42, "req-1", audit.DisputeStatusOpen),
+		dispute(3, 7, 42, "req-2", audit.DisputeStatusOpen),
+		dispute(4, 7, 42, "req-3", audit.DisputeStatusOpen),
+	}}
+	router := disputeAdminRouter(DisputeAdminDeps{
+		Auth:  disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 93, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		Store: store,
+	})
+
+	rec := doDisputeJSON(router, http.MethodGet, "/v1/admin/disputes?limit=999&offset=2", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if store.adminListLimit != 500 || store.adminListOffset != 2 {
+		t.Fatalf("pagination limit=%d offset=%d, want capped limit=500 offset=2", store.adminListLimit, store.adminListOffset)
+	}
+}
+
+// Mutation: skip admin role validation after auth resolves an unsupported role.
+// A resolved but non-admin role must be rejected before the store runs.
+func TestAdminListDisputesAuthRequired(t *testing.T) {
+	store := &disputeFakeStore{}
+	router := disputeAdminRouter(DisputeAdminDeps{
+		Auth:  disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 94, Role: "viewer", ScopeTenantID: 7}},
+		Store: store,
+	})
+
+	rec := doDisputeJSON(router, http.MethodGet, "/v1/admin/disputes/?tenant_id=7", "")
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d want 403 body=%s", rec.Code, rec.Body.String())
+	}
+	if store.adminListCalled {
+		t.Fatal("ListForAdmin must not run for non-admin role")
+	}
+}
+
 func disputeUserRouter(d DisputeUserDeps, ident sessionauth.SessionIdentity) http.Handler {
 	r := chi.NewRouter()
 	r.Use(func(next http.Handler) http.Handler {
@@ -156,6 +285,8 @@ func disputeUserRouter(d DisputeUserDeps, ident sessionauth.SessionIdentity) htt
 
 func disputeAdminRouter(d DisputeAdminDeps) http.Handler {
 	r := chi.NewRouter()
+	r.Get("/v1/admin/disputes", NewAdminListDisputesHandler(d))
+	r.Get("/v1/admin/disputes/", NewAdminListDisputesHandler(d))
 	r.Post("/v1/admin/disputes/{id}/resolve", NewAdminResolveDisputeHandler(d))
 	return r
 }
@@ -198,6 +329,12 @@ type disputeFakeStore struct {
 	listTenantID int64
 	listUserID   int64
 
+	adminListCalled   bool
+	adminListTenantID int64
+	adminListStatus   string
+	adminListLimit    int32
+	adminListOffset   int32
+
 	resolveCalled bool
 	resolveArg    audit.ResolveCostDisputeInput
 	resolveReturn audit.CostDispute
@@ -224,6 +361,34 @@ func (f *disputeFakeStore) ListUserDisputes(_ context.Context, tenantID, userID 
 		if row.TenantID == tenantID && row.UserID == userID {
 			out = append(out, row)
 		}
+	}
+	return out, nil
+}
+
+func (f *disputeFakeStore) ListForAdmin(_ context.Context, tenantID int64, status string, limit, offset int32) ([]audit.CostDispute, error) {
+	f.adminListCalled = true
+	f.adminListTenantID = tenantID
+	f.adminListStatus = status
+	f.adminListLimit = limit
+	f.adminListOffset = offset
+	out := make([]audit.CostDispute, 0, len(f.rows))
+	for _, row := range f.rows {
+		if row.TenantID != tenantID {
+			continue
+		}
+		if status != "" && row.Status != status {
+			continue
+		}
+		out = append(out, row)
+	}
+	if offset > 0 {
+		if int(offset) >= len(out) {
+			return nil, nil
+		}
+		out = out[offset:]
+	}
+	if limit > 0 && int(limit) < len(out) {
+		out = out[:limit]
 	}
 	return out, nil
 }
