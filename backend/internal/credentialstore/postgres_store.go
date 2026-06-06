@@ -19,6 +19,7 @@ const RefreshWindow = 15 * time.Minute
 
 var (
 	ErrCredentialNotFound         = errors.New("credentialstore: account credential not found")
+	ErrCredentialNotActive        = errors.New("credentialstore: account credential not active")
 	ErrCredentialAmbiguous        = errors.New("credentialstore: ambiguous active credential modes")
 	ErrCredentialAuditWriteFailed = errors.New("credentialstore: audit write failed")
 )
@@ -596,23 +597,15 @@ RETURNING vendor, auth_mode, credential_version`
 	})
 }
 
-func (s *Store) ResolveActive(ctx context.Context, tenantID, providerAccountID int64) (CredentialRecord, error) {
-	if err := s.validateReady(); err != nil {
-		return CredentialRecord{}, err
-	}
-	// DR-001 防御: caller 必须显式传 tenantID; 即使 caller 误传他租户的
-	// providerAccountID, 这里也用 pa.tenant_id=$2 + ac.tenant_id=$2 双侧绑死。
-	if tenantID == 0 {
-		return CredentialRecord{}, fmt.Errorf("%w: tenantID required", ErrInvalidPayload)
-	}
-	const q = `
+const resolveActiveQuery = `
+WITH scoped_credentials AS (
 	SELECT ac.id, ac.tenant_id, ac.provider_account_id, ac.vendor, ac.auth_mode, ac.state,
 	       ac.credential_version, ac.encrypted_payload, ac.encryption_scheme, ac.key_id,
 	       ac.nonce, ac.aad_hash, ac.payload_fingerprint, ac.refresh_token_fingerprint,
 	       ac.access_expires_at, ac.refresh_expires_at, ac.refresh_before_at, ac.grace_until,
 	       ac.last_refresh_at, ac.last_refresh_outcome, ac.failure_class, ac.failure_count,
 	       ac.next_attempt_at, ac.created_at, ac.updated_at, ac.deleted_at,
-	       COUNT(*) OVER () AS active_mode_count
+	       pa.enabled AS provider_account_enabled
 		FROM account_credentials ac
 		JOIN provider_accounts pa
 		  ON pa.id = ac.provider_account_id
@@ -622,29 +615,104 @@ func (s *Store) ResolveActive(ctx context.Context, tenantID, providerAccountID i
 	  AND pa.tenant_id = $2
 	  AND ac.deleted_at IS NULL
 	  AND pa.deleted_at IS NULL
-  AND pa.enabled
-  AND (
-      ac.state = 'active'
-      OR (ac.state = 'refreshing_with_grace' AND (ac.grace_until IS NULL OR ac.grace_until > NOW()))
-	  )
-	ORDER BY CASE ac.state WHEN 'active' THEN 0 ELSE 1 END, ac.updated_at DESC
-	LIMIT 1`
+	),
+	serving_credentials AS (
+		SELECT id, tenant_id, provider_account_id, vendor, auth_mode, state,
+		       credential_version, encrypted_payload, encryption_scheme, key_id,
+		       nonce, aad_hash, payload_fingerprint, refresh_token_fingerprint,
+		       access_expires_at, refresh_expires_at, refresh_before_at, grace_until,
+		       last_refresh_at, last_refresh_outcome, failure_class, failure_count,
+		       next_attempt_at, created_at, updated_at, deleted_at,
+		       COUNT(*) OVER () AS active_mode_count
+		FROM scoped_credentials
+		WHERE provider_account_enabled
+		  AND (
+		      state = 'active'
+		      OR (state = 'refreshing_with_grace' AND (grace_until IS NULL OR grace_until > NOW()))
+		  )
+	),
+	selected_credential AS (
+		SELECT id, tenant_id, provider_account_id, vendor, auth_mode, state,
+		       credential_version, encrypted_payload, encryption_scheme, key_id,
+		       nonce, aad_hash, payload_fingerprint, refresh_token_fingerprint,
+		       access_expires_at, refresh_expires_at, refresh_before_at, grace_until,
+		       last_refresh_at, last_refresh_outcome, failure_class, failure_count,
+		       next_attempt_at, created_at, updated_at, deleted_at,
+		       active_mode_count,
+		       (SELECT COUNT(*) FROM scoped_credentials) AS credential_row_count,
+		       FALSE AS no_serving_credential
+		FROM serving_credentials
+		ORDER BY CASE state WHEN 'active' THEN 0 ELSE 1 END, updated_at DESC
+		LIMIT 1
+	),
+	no_serving_credential AS (
+		SELECT 0::bigint AS id, $2::bigint AS tenant_id, $1::bigint AS provider_account_id,
+		       ''::text AS vendor, ''::text AS auth_mode, ''::text AS state,
+		       0::integer AS credential_version, decode('', 'hex') AS encrypted_payload,
+		       ''::text AS encryption_scheme, ''::text AS key_id, decode('', 'hex') AS nonce,
+		       ''::text AS aad_hash, NULL::text AS payload_fingerprint,
+		       NULL::text AS refresh_token_fingerprint, NULL::timestamptz AS access_expires_at,
+		       NULL::timestamptz AS refresh_expires_at, NULL::timestamptz AS refresh_before_at,
+		       NULL::timestamptz AS grace_until, NULL::timestamptz AS last_refresh_at,
+		       NULL::text AS last_refresh_outcome, NULL::text AS failure_class,
+		       0::integer AS failure_count, NULL::timestamptz AS next_attempt_at,
+		       NULL::timestamptz AS created_at, NULL::timestamptz AS updated_at,
+		       NULL::timestamptz AS deleted_at, 0::bigint AS active_mode_count,
+		       (SELECT COUNT(*) FROM scoped_credentials) AS credential_row_count,
+		       TRUE AS no_serving_credential
+		WHERE NOT EXISTS (SELECT 1 FROM selected_credential)
+	)
+	SELECT id, tenant_id, provider_account_id, vendor, auth_mode, state,
+	       credential_version, encrypted_payload, encryption_scheme, key_id,
+	       nonce, aad_hash, payload_fingerprint, refresh_token_fingerprint,
+	       access_expires_at, refresh_expires_at, refresh_before_at, grace_until,
+	       last_refresh_at, last_refresh_outcome, failure_class, failure_count,
+	       next_attempt_at, created_at, updated_at, deleted_at,
+	       active_mode_count, credential_row_count, no_serving_credential
+	FROM selected_credential
+	UNION ALL
+	SELECT id, tenant_id, provider_account_id, vendor, auth_mode, state,
+	       credential_version, encrypted_payload, encryption_scheme, key_id,
+	       nonce, aad_hash, payload_fingerprint, refresh_token_fingerprint,
+	       access_expires_at, refresh_expires_at, refresh_before_at, grace_until,
+	       last_refresh_at, last_refresh_outcome, failure_class, failure_count,
+	       next_attempt_at, created_at, updated_at, deleted_at,
+	       active_mode_count, credential_row_count, no_serving_credential
+		FROM no_serving_credential`
+
+func (s *Store) ResolveActive(ctx context.Context, tenantID, providerAccountID int64) (CredentialRecord, error) {
+	if err := s.validateReady(); err != nil {
+		return CredentialRecord{}, err
+	}
+	// DR-001 防御: caller 必须显式传 tenantID; 即使 caller 误传他租户的
+	// providerAccountID, 这里也用 pa.tenant_id=$2 + ac.tenant_id=$2 双侧绑死。
+	if tenantID == 0 {
+		return CredentialRecord{}, fmt.Errorf("%w: tenantID required", ErrInvalidPayload)
+	}
 	var rec CredentialRecord
-	var activeModeCount int64
+	var activeModeCount, credentialRowCount int64
+	var noServingCredential bool
 	var accessExp, refreshExp, refreshBefore, graceUntil, lastRefresh, nextAttempt, createdAt, updatedAt, deletedAt pgtype.Timestamptz
-	err := s.db.QueryRow(ctx, q, providerAccountID, tenantID).Scan(
+	err := s.db.QueryRow(ctx, resolveActiveQuery, providerAccountID, tenantID).Scan(
 		&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State,
 		&rec.CredentialVersion, &rec.EncryptedPayload, &rec.EncryptionScheme, &rec.KeyID,
 		&rec.Nonce, &rec.AADHash, &rec.PayloadFingerprint, &rec.RefreshTokenFingerprint,
 		&accessExp, &refreshExp, &refreshBefore, &graceUntil,
 		&lastRefresh, &rec.LastRefreshOutcome, &rec.FailureClass, &rec.FailureCount,
-		&nextAttempt, &createdAt, &updatedAt, &deletedAt, &activeModeCount,
+		&nextAttempt, &createdAt, &updatedAt, &deletedAt,
+		&activeModeCount, &credentialRowCount, &noServingCredential,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return CredentialRecord{}, ErrCredentialNotFound
 		}
 		return CredentialRecord{}, err
+	}
+	if noServingCredential {
+		if credentialRowCount > 0 {
+			return CredentialRecord{}, ErrCredentialNotActive
+		}
+		return CredentialRecord{}, ErrCredentialNotFound
 	}
 	if activeModeCount > 1 {
 		return CredentialRecord{}, fmt.Errorf("%w: tenant_id=%d provider_account_id=%d active_modes=%d",

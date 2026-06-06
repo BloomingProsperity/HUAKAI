@@ -106,6 +106,61 @@ func TestResolveActiveRejectsCrossTenantCredentialJoin(t *testing.T) {
 	}
 }
 
+func TestResolveActiveReturnsNotActiveWhenCredentialRowsExistButNoneServing(t *testing.T) {
+	calls := 0
+	db := &credentialStoreDBStub{
+		queryRow: func(_ context.Context, sql string, args ...interface{}) pgx.Row {
+			calls++
+			for _, required := range []string{
+				"credential_row_count",
+				"ac.deleted_at IS NULL",
+				"pa.tenant_id = ac.tenant_id",
+				"WHERE ac.provider_account_id = $1",
+				"AND ac.tenant_id = $2",
+			} {
+				if !strings.Contains(sql, required) {
+					t.Fatalf("ResolveActive SQL missing %q:\n%s", required, sql)
+				}
+			}
+			if len(args) != 2 || args[0] != int64(42) || args[1] != int64(7) {
+				t.Fatalf("ResolveActive args=%#v, want account=42 tenant=7", args)
+			}
+			return credentialStoreRowValuesStub{values: resolveInactiveRecordValues(1)}
+		},
+	}
+	store := NewStore(db, mustTestKeyProvider(t), DefaultHandlerRegistry())
+
+	_, err := store.ResolveActive(context.Background(), 7, 42)
+	if !errors.Is(err, ErrCredentialNotActive) {
+		t.Fatalf("ResolveActive err=%v, want %v", err, ErrCredentialNotActive)
+	}
+	if calls != 1 {
+		t.Fatalf("ResolveActive QueryRow calls=%d, want 1 atomic query", calls)
+	}
+}
+
+func TestResolveActiveReturnsNotFoundWhenNoCredentialRowsExist(t *testing.T) {
+	calls := 0
+	db := &credentialStoreDBStub{
+		queryRow: func(_ context.Context, sql string, _ ...interface{}) pgx.Row {
+			calls++
+			if !strings.Contains(sql, "credential_row_count") {
+				t.Fatalf("ResolveActive SQL missing credential_row_count:\n%s", sql)
+			}
+			return credentialStoreRowValuesStub{values: resolveInactiveRecordValues(0)}
+		},
+	}
+	store := NewStore(db, mustTestKeyProvider(t), DefaultHandlerRegistry())
+
+	_, err := store.ResolveActive(context.Background(), 7, 42)
+	if !errors.Is(err, ErrCredentialNotFound) {
+		t.Fatalf("ResolveActive err=%v, want %v", err, ErrCredentialNotFound)
+	}
+	if calls != 1 {
+		t.Fatalf("ResolveActive QueryRow calls=%d, want 1 atomic query", calls)
+	}
+}
+
 func TestLoadForRefreshQueryFiltersUnsafeProviderAccountHealth(t *testing.T) {
 	// locked reread guard LoadForRefresh is called before adapter work
 	// and again inside the refresh transaction. Its SQL must refuse revoked and
@@ -294,6 +349,11 @@ func (r credentialStoreRowValuesStub) Scan(dest ...interface{}) error {
 }
 
 func resolveActiveRecordValues(activeModeCount int64) []any {
+	values := credentialRecordBaseValues()
+	return append(values, activeModeCount, int64(1), false)
+}
+
+func credentialRecordBaseValues() []any {
 	return []any{
 		int64(301), int64(7), int64(42), VendorGemini, AuthModeAIStudioAPIKey, StateActive,
 		int32(1), []byte("ciphertext"), "aes-256-gcm", "test-key",
@@ -301,13 +361,23 @@ func resolveActiveRecordValues(activeModeCount int64) []any {
 		pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{},
 		pgtype.Timestamptz{}, (*string)(nil), (*string)(nil), int32(0),
 		pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{},
-		activeModeCount,
+	}
+}
+
+func resolveInactiveRecordValues(credentialRowCount int64) []any {
+	return []any{
+		int64(0), int64(7), int64(42), "", "", "",
+		int32(0), []byte{}, "", "",
+		[]byte{}, "", (*string)(nil), (*string)(nil),
+		pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{},
+		pgtype.Timestamptz{}, (*string)(nil), (*string)(nil), int32(0),
+		pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{},
+		int64(0), credentialRowCount, true,
 	}
 }
 
 func providerAccountTestRecordValues(testModeCount int64) []any {
-	values := resolveActiveRecordValues(1)
-	return append(values[:len(values)-1], testModeCount)
+	return append(credentialRecordBaseValues(), testModeCount)
 }
 
 func setScanValue(dest any, value any) error {
