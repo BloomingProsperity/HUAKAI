@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strings"
 )
 
@@ -17,6 +18,18 @@ type PaymentIntent struct {
 	Snapshot map[string]any
 }
 
+var ErrProviderOperationNotSupported = errors.New("payment: provider operation not supported")
+
+type ProviderOrderState struct {
+	Status string
+	Raw    map[string]string
+}
+
+type ProviderRefundResult struct {
+	ProviderRefundID string
+	Status           string
+}
+
 // Provider 抽象支付渠道行为, 不耦合任何真实 SDK 类型。
 // 当前内置 manual/test/HMAC provider；真实 Stripe/支付宝/微信/epay provider
 // 需要真实密钥、webhook 验签、退款撤销语义与 SDK 供应链审查。
@@ -24,6 +37,9 @@ type PaymentIntent struct {
 type Provider interface {
 	Kind() ProviderKind
 	CreateIntent(ctx context.Context, order Order) (PaymentIntent, error)
+	QueryOrder(ctx context.Context, order Order) (ProviderOrderState, error)
+	Refund(ctx context.Context, order Order, amountCents int64) (ProviderRefundResult, error)
+	Cancel(ctx context.Context, order Order) error
 }
 
 // CallbackResult 是 provider 对一条回调验签通过后, 归一化出的可信字段。
@@ -56,6 +72,18 @@ func (manualProvider) CreateIntent(_ context.Context, _ Order) (PaymentIntent, e
 	return PaymentIntent{}, nil
 }
 
+func (manualProvider) QueryOrder(_ context.Context, _ Order) (ProviderOrderState, error) {
+	return ProviderOrderState{}, ErrProviderOperationNotSupported
+}
+
+func (manualProvider) Refund(_ context.Context, _ Order, _ int64) (ProviderRefundResult, error) {
+	return ProviderRefundResult{}, ErrProviderOperationNotSupported
+}
+
+func (manualProvider) Cancel(_ context.Context, _ Order) error {
+	return ErrProviderOperationNotSupported
+}
+
 // taobaoProvider 淘宝/闲鱼 manual-redirect provider: CreateIntent 返回运营配置的淘宝/闲鱼
 // 商品链接(供前端渲染二维码 / 用户点击跳转)+ 订单号(让用户在淘宝/闲鱼下单备注里填写,
 // 运营据此对账)。它**不接触任何真实商户密钥, 不实现 CallbackVerifier** —— 淘宝/闲鱼没有
@@ -86,6 +114,18 @@ func (p taobaoProvider) CreateIntent(_ context.Context, order Order) (PaymentInt
 	}, nil
 }
 
+func (taobaoProvider) QueryOrder(_ context.Context, _ Order) (ProviderOrderState, error) {
+	return ProviderOrderState{}, ErrProviderOperationNotSupported
+}
+
+func (taobaoProvider) Refund(_ context.Context, _ Order, _ int64) (ProviderRefundResult, error) {
+	return ProviderRefundResult{}, ErrProviderOperationNotSupported
+}
+
+func (taobaoProvider) Cancel(_ context.Context, _ Order) error {
+	return ErrProviderOperationNotSupported
+}
+
 // WithTaobaoProvider 启用淘宝/闲鱼 manual-redirect provider (默认关闭, 由配置开关控制)。
 func WithTaobaoProvider(checkoutURL string) Option {
 	return func(s *Service) {
@@ -105,6 +145,18 @@ func (hmacProvider) CreateIntent(_ context.Context, order Order) (PaymentIntent,
 	return PaymentIntent{OrderRef: "hmac-ref-" + order.OutTradeNo}, nil
 }
 
+func (hmacProvider) QueryOrder(_ context.Context, _ Order) (ProviderOrderState, error) {
+	return ProviderOrderState{}, ErrProviderOperationNotSupported
+}
+
+func (hmacProvider) Refund(_ context.Context, _ Order, _ int64) (ProviderRefundResult, error) {
+	return ProviderRefundResult{}, ErrProviderOperationNotSupported
+}
+
+func (hmacProvider) Cancel(_ context.Context, _ Order) error {
+	return ErrProviderOperationNotSupported
+}
+
 // defaultTestProviderSecret 是 NewTestProvider() 缺省 HMAC 密钥; 仅测试/本地, 永不用于真实渠道。
 const defaultTestProviderSecret = "huakai-test-provider-secret"
 
@@ -121,6 +173,18 @@ func (testProvider) Kind() ProviderKind { return ProviderTest }
 
 func (testProvider) CreateIntent(_ context.Context, order Order) (PaymentIntent, error) {
 	return PaymentIntent{OrderRef: "test-ref-" + order.OutTradeNo}, nil
+}
+
+func (testProvider) QueryOrder(_ context.Context, _ Order) (ProviderOrderState, error) {
+	return ProviderOrderState{}, ErrProviderOperationNotSupported
+}
+
+func (testProvider) Refund(_ context.Context, _ Order, _ int64) (ProviderRefundResult, error) {
+	return ProviderRefundResult{}, ErrProviderOperationNotSupported
+}
+
+func (testProvider) Cancel(_ context.Context, _ Order) error {
+	return ErrProviderOperationNotSupported
 }
 
 // 编译期断言: test provider 必须满足回调验签契约。
