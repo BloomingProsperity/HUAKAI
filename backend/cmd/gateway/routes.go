@@ -796,6 +796,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Service: tlsfpadmin.New(d.adminQueries),
 		})
 	})
+	mountAlertingAdminRoutes(r, d)
 	mountModerationAdminRoutes(r, d)
 	r.Get("/admin/v1/usage", gatewayhttp.NewUsageHandler(d))
 	r.Get("/admin/v1/billing/claims", gatewayhttp.NewClaimsHandler(d))
