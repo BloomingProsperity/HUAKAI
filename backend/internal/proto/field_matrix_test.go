@@ -204,3 +204,28 @@ func TestFieldMatrix_TransformedEntriesAlwaysHaveTransformKind(t *testing.T) {
 		}
 	}
 }
+
+var benchmarkFieldMatrixEntry FieldMatrixEntry
+
+func BenchmarkFieldMatrixLookup(b *testing.B) {
+	m := DefaultFieldMatrix()
+	lookups := []struct {
+		client   ClientProtocol
+		upstream UpstreamProtocol
+		field    string
+	}{
+		{ClientProtocolOpenAIChat, UpstreamProtocolOpenAI, "id"},
+		{ClientProtocolOpenAIChat, UpstreamProtocolOpenAI, "finish_reason"},
+		{ClientProtocolOpenAIChat, UpstreamProtocolOpenAI, "future_field_2027"},
+		{ClientProtocolAnthropicMessages, UpstreamProtocolAnthropic, "stop_reason"},
+		{ClientProtocolAnthropicMessages, UpstreamProtocolBedrock, "cache_read_input_tokens"},
+		{ClientProtocolAnthropicMessages, UpstreamProtocolOpenAI, "unregistered_pair_field"},
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tc := lookups[i%len(lookups)]
+		benchmarkFieldMatrixEntry = m.Lookup(tc.client, tc.upstream, tc.field)
+	}
+}
