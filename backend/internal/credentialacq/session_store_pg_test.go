@@ -94,8 +94,8 @@ func (db *testSessionDB) QueryRow(_ context.Context, sql string, args ...interfa
 	case strings.Contains(sql, "SET status = 'cancelled'"):
 		id := stringArg(args[0])
 		row, ok := db.rows[id]
-		// Cancel 的 NOT IN 现含 'failed' —— 与 isTerminalStatus 同源,终态行不可再 Cancel。
-		if !ok || isTerminalStatus(row.Status) {
+		// Cancel 的 NOT IN 现含 'failed' 且 consumed 行不可再 Cancel —— 与真 SQL CAS 同步。
+		if !ok || isTerminalStatus(row.Status) || !row.ConsumedAt.IsZero() {
 			return testSessionRow{err: pgx.ErrNoRows}
 		}
 		row.Status = StatusCancelled
@@ -119,7 +119,7 @@ func (db *testSessionDB) QueryRow(_ context.Context, sql string, args ...interfa
 	case strings.Contains(sql, "SET status = 'finalized'"):
 		id := stringArg(args[0])
 		row, ok := db.rows[id]
-		if !ok {
+		if !ok || !row.CancelledAt.IsZero() || row.Status == StatusCancelled || row.Status == StatusExpired || row.Status == StatusFailed {
 			return testSessionRow{err: pgx.ErrNoRows}
 		}
 		row.Status = StatusFinalized
