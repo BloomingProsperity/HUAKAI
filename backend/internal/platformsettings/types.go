@@ -37,13 +37,18 @@ const (
 	KeyCheckinEnabled              SettingKey = "checkin_enabled"
 	KeyCheckinMinCents             SettingKey = "checkin_min_cents"
 	KeyCheckinMaxCents             SettingKey = "checkin_max_cents"
+	KeyPasskeyEnabled              SettingKey = "passkey_enabled"
+	KeyPasskeyRegistrationEnabled  SettingKey = "passkey_registration_enabled"
+	KeyPasskeyRPID                 SettingKey = "passkey_rp_id"
+	KeyPasskeyRPDisplayName        SettingKey = "passkey_rp_display_name"
+	KeyPasskeyRPOrigins            SettingKey = "passkey_rp_origins"
 )
 
 var (
 	ErrUnknownKey          = errors.New("platformsettings: unknown setting key")
 	ErrInvalidValue        = errors.New("platformsettings: invalid setting value")
 	ErrStoreNotConfigured  = errors.New("platformsettings: store not configured")
-	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents}
+	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins}
 	defaultSettingValueMap = map[SettingKey]string{
 		KeyRegistrationEnabled:         "false",
 		KeyInvitationRequired:          "true",
@@ -64,6 +69,11 @@ var (
 		KeyCheckinEnabled:              "false",
 		KeyCheckinMinCents:             "1",
 		KeyCheckinMaxCents:             "20",
+		KeyPasskeyEnabled:              "false",
+		KeyPasskeyRegistrationEnabled:  "false",
+		KeyPasskeyRPID:                 "",
+		KeyPasskeyRPDisplayName:        "HUAKAI",
+		KeyPasskeyRPOrigins:            "[]",
 	}
 )
 
@@ -100,6 +110,12 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 	if key == KeyPaymentProviderConfig {
 		return validatePaymentProviderConfigValue(key, value)
 	}
+	if key == KeyPasskeyRPOrigins {
+		return validateStringArrayValue(key, value)
+	}
+	if key == KeyPasskeyRPID {
+		return validateOptionalPublicTextValue(key, value)
+	}
 	if key == KeyModelFallbackChains || key == KeyBudgetLimits {
 		return validateJSONObjectValue(key, value)
 	}
@@ -108,6 +124,7 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 	}
 	switch key {
 	case KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled, KeyCheckinEnabled:
+	case KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled:
 		return validateBoolValue(key, value)
 	case KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyCheckinMinCents, KeyCheckinMaxCents:
 		return validatePositiveIntValue(key, value)
@@ -116,6 +133,35 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 	default:
 		return validatePublicTextValue(key, value)
 	}
+}
+
+func validateOptionalPublicTextValue(key SettingKey, value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	return validatePublicTextValue(key, value)
+}
+
+func validateStringArrayValue(key SettingKey, value string) (string, error) {
+	if value == "" {
+		return "[]", nil
+	}
+	var items []string
+	if err := json.Unmarshal([]byte(value), &items); err != nil {
+		return "", fmt.Errorf("%w: %s must be a JSON string array", ErrInvalidValue, key)
+	}
+	if len(items) > 20 {
+		return "", fmt.Errorf("%w: %s allows at most 20 values", ErrInvalidValue, key)
+	}
+	for _, item := range items {
+		if strings.TrimSpace(item) == "" {
+			return "", fmt.Errorf("%w: %s contains empty value", ErrInvalidValue, key)
+		}
+		if _, err := validatePublicTextValue(key, item); err != nil {
+			return "", err
+		}
+	}
+	return value, nil
 }
 
 func validateBoolValue(key SettingKey, value string) (string, error) {
