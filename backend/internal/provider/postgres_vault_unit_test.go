@@ -5,10 +5,16 @@
 package provider
 
 import (
+	"context"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 func TestMapCredential_SessionHappyPath(t *testing.T) {
@@ -82,4 +88,119 @@ func TestMapRuntimeMaterialFromAccountCredentials(t *testing.T) {
 	if cred.Extra["auth_header"] != "Authorization" {
 		t.Fatalf("extra=%v", cred.Extra)
 	}
+}
+
+func TestPostgresCredentialVaultResolveBlocksLegacyFallbackWhenV2CredentialNotActive(t *testing.T) {
+	calls := 0
+	storeDB := &vaultCredentialStoreDBStub{
+		queryRow: func(_ context.Context, sql string, args ...interface{}) pgx.Row {
+			calls++
+			if !strings.Contains(sql, "credential_row_count") {
+				t.Fatalf("ResolveActive SQL missing credential_row_count:\n%s", sql)
+			}
+			if len(args) != 2 || args[0] != int64(42) || args[1] != int64(7) {
+				t.Fatalf("ResolveActive args=%#v, want account=42 tenant=7", args)
+			}
+			return vaultCredentialStoreRowValuesStub{values: vaultInactiveCredentialRecordValues(1)}
+		},
+	}
+	store := credentialstore.NewStore(storeDB, mustVaultTestKeyProvider(t), credentialstore.DefaultHandlerRegistry())
+	vault := NewPostgresCredentialVaultWithStore(nil, store)
+
+	_, _, err := vault.Resolve(context.Background(), 7, 42)
+	if !errors.Is(err, ErrAccountDisabled) {
+		t.Fatalf("Resolve err=%v, want %v", err, ErrAccountDisabled)
+	}
+	if calls != 1 {
+		t.Fatalf("ResolveActive QueryRow calls=%d, want 1 atomic query", calls)
+	}
+}
+
+func mustVaultTestKeyProvider(t *testing.T) credentialstore.KeyProvider {
+	t.Helper()
+	provider, err := credentialstore.NewStaticKeyProvider("test-key", []byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("key provider: %v", err)
+	}
+	return provider
+}
+
+type vaultCredentialStoreDBStub struct {
+	queryRow func(context.Context, string, ...interface{}) pgx.Row
+}
+
+func (s *vaultCredentialStoreDBStub) Exec(context.Context, string, ...interface{}) (pgconn.CommandTag, error) {
+	return pgconn.CommandTag{}, errors.New("unexpected Exec")
+}
+
+func (s *vaultCredentialStoreDBStub) Query(context.Context, string, ...interface{}) (pgx.Rows, error) {
+	return nil, errors.New("unexpected Query")
+}
+
+func (s *vaultCredentialStoreDBStub) QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row {
+	if s.queryRow == nil {
+		return vaultCredentialStoreRowStub{err: pgx.ErrNoRows}
+	}
+	return s.queryRow(ctx, sql, args...)
+}
+
+type vaultCredentialStoreRowStub struct {
+	err error
+}
+
+func (r vaultCredentialStoreRowStub) Scan(...interface{}) error {
+	if r.err != nil {
+		return r.err
+	}
+	return nil
+}
+
+type vaultCredentialStoreRowValuesStub struct {
+	values []any
+}
+
+func (r vaultCredentialStoreRowValuesStub) Scan(dest ...interface{}) error {
+	if len(dest) != len(r.values) {
+		return errors.New("scan destination count mismatch")
+	}
+	for i := range dest {
+		if err := vaultSetScanValue(dest[i], r.values[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func vaultInactiveCredentialRecordValues(credentialRowCount int64) []any {
+	return []any{
+		int64(0), int64(7), int64(42), "", "", "",
+		int32(0), []byte{}, "", "",
+		[]byte{}, "", (*string)(nil), (*string)(nil),
+		pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{},
+		pgtype.Timestamptz{}, (*string)(nil), (*string)(nil), int32(0),
+		pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{},
+		int64(0), credentialRowCount, true,
+	}
+}
+
+func vaultSetScanValue(dest any, value any) error {
+	target := reflect.ValueOf(dest)
+	if target.Kind() != reflect.Ptr || target.IsNil() {
+		return errors.New("scan destination is not a non-nil pointer")
+	}
+	elem := target.Elem()
+	if value == nil {
+		elem.Set(reflect.Zero(elem.Type()))
+		return nil
+	}
+	source := reflect.ValueOf(value)
+	if source.Type().AssignableTo(elem.Type()) {
+		elem.Set(source)
+		return nil
+	}
+	if source.Type().ConvertibleTo(elem.Type()) {
+		elem.Set(source.Convert(elem.Type()))
+		return nil
+	}
+	return errors.New("scan destination type mismatch")
 }
