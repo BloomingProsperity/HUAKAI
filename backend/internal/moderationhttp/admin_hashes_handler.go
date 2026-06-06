@@ -137,13 +137,5 @@ func hashFromRule(row moderation.HashRule) hashResponse {
 }
 
 func isSHA256Hex(value string) bool {
-	if len(value) != 64 {
-		return false
-	}
-	for _, ch := range value {
-		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
-			return false
-		}
-	}
-	return true
+	return moderation.ValidSHA256Hex(value)
 }

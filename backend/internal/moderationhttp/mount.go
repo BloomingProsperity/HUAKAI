@@ -21,9 +21,11 @@ type adminAuth interface {
 
 type adminStore interface {
 	CreateKeyword(context.Context, moderation.CreateKeywordRequest) (moderation.KeywordRule, error)
+	BulkCreateKeywords(context.Context, moderation.BulkCreateKeywordsRequest) (moderation.BulkCreateResult, error)
 	ListKeywords(context.Context, int64, int32, int32) ([]moderation.KeywordRule, error)
 	DeleteKeyword(context.Context, int64, int64) error
 	CreateHash(context.Context, moderation.CreateHashRequest) (moderation.HashRule, error)
+	BulkCreateHashes(context.Context, moderation.BulkCreateHashesRequest) (moderation.BulkCreateResult, error)
 	ListHashes(context.Context, int64, int32, int32) ([]moderation.HashRule, error)
 	DeleteHash(context.Context, int64, int64) error
 	GetConfig(context.Context, int64) (moderation.ModerationConfig, error)
@@ -36,9 +38,11 @@ type adminStore interface {
 func MountModerationAdminRoutes(r chi.Router, deps ModerationAdminDeps) {
 	r.Get("/keywords", newKeywordListHandler(deps))
 	r.Post("/keywords", newKeywordCreateHandler(deps))
+	r.Post("/keywords/bulk", newKeywordBulkCreateHandler(deps))
 	r.Delete("/keywords/{id}", newKeywordDeleteHandler(deps))
 	r.Get("/hashes", newHashListHandler(deps))
 	r.Post("/hashes", newHashCreateHandler(deps))
+	r.Post("/hashes/bulk", newHashBulkCreateHandler(deps))
 	r.Delete("/hashes/{id}", newHashDeleteHandler(deps))
 	r.Get("/config", newConfigGetHandler(deps))
 	r.Put("/config", newConfigPutHandler(deps))
