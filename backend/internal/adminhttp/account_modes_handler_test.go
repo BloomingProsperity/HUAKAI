@@ -10,7 +10,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/accountmode"
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
@@ -38,7 +37,7 @@ func TestAccountModesHandlerReturnsCatalogForPlatformAndTenantOperators(t *testi
 		}, http.MethodGet, "/admin/v1/account-modes")
 
 		assertAccountModeStatus(t, rec, http.StatusOK)
-		var body accountmode.Catalog
+		var body Catalog
 		decodeAccountModeBody(t, rec, &body)
 		if len(body.Modes) != 1 || body.Modes[0].Vendor != "openai" || body.Modes[0].AuthMode != "api_key" {
 			t.Fatalf("catalog response mismatch: %+v", body)
@@ -47,7 +46,7 @@ func TestAccountModesHandlerReturnsCatalogForPlatformAndTenantOperators(t *testi
 }
 
 func TestAccountModesHandlerDoesNotLeakSecretsOrUnavailableModes(t *testing.T) {
-	catalog := accountmode.Catalog{Modes: []accountmode.Mode{{
+	catalog := Catalog{Modes: []Mode{{
 		Vendor:         "openai",
 		AuthMode:       "api_key",
 		FlowKind:       credentialacq.FlowKindPaste,
@@ -75,7 +74,7 @@ func TestAccountModesHandlerDoesNotLeakSecretsOrUnavailableModes(t *testing.T) {
 		}
 	}
 	var parsed struct {
-		Modes []accountmode.Mode `json:"modes"`
+		Modes []Mode `json:"modes"`
 	}
 	decodeAccountModeBody(t, rec, &parsed)
 	if len(parsed.Modes) != 1 {
@@ -86,8 +85,8 @@ func TestAccountModesHandlerDoesNotLeakSecretsOrUnavailableModes(t *testing.T) {
 	}
 }
 
-func safeAccountModeCatalog() accountmode.Catalog {
-	return accountmode.Catalog{Modes: []accountmode.Mode{{
+func safeAccountModeCatalog() Catalog {
+	return Catalog{Modes: []Mode{{
 		Vendor:               credentialstore.VendorOpenAI,
 		AuthMode:             credentialstore.AuthModeAPIKey,
 		FlowKind:             credentialacq.FlowKindPaste,
@@ -118,15 +117,15 @@ func (s accountModeAuthStub) Resolve(context.Context, *http.Request) (admin.Admi
 }
 
 type accountModeProviderStub struct {
-	catalog accountmode.Catalog
+	catalog Catalog
 	err     error
 	called  bool
 }
 
-func (s *accountModeProviderStub) Catalog(context.Context) (accountmode.Catalog, error) {
+func (s *accountModeProviderStub) Catalog(context.Context) (Catalog, error) {
 	s.called = true
 	if s.err != nil {
-		return accountmode.Catalog{}, s.err
+		return Catalog{}, s.err
 	}
 	return s.catalog, nil
 }

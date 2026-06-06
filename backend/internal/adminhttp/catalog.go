@@ -1,7 +1,7 @@
-// Package accountmode builds the reviewed account-mode catalog exposed to
+// Package adminhttp builds the reviewed account-mode catalog exposed to
 // admin UI. It derives visibility from credentialacq ModePlan plus
 // credentialstore finalizer support and fails closed on incomplete modes.
-package accountmode
+package adminhttp
 
 import (
 	"context"

@@ -1,4 +1,4 @@
-package accountmode
+package adminhttp
 
 import (
 	"encoding/json"
