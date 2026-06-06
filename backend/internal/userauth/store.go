@@ -141,6 +141,27 @@ WHERE tenant_id = $1
 	return user, err
 }
 
+func (s *PostgresStore) UpdateDisplayName(ctx context.Context, tenantID, userID int64, displayName string) (User, error) {
+	if s == nil || s.db == nil {
+		return User{}, ErrStoreNotConfigured
+	}
+	const q = `
+UPDATE users
+SET display_name = $3,
+    updated_at = NOW()
+WHERE tenant_id = $1
+  AND id = $2
+  AND deleted_at IS NULL
+RETURNING id, tenant_id, email, display_name, password_hash, email_verified,
+          invite_code_used, social_login_provider, status, password_version,
+          failed_login_count, locked_until, created_at, updated_at`
+	user, err := scanUser(s.db.QueryRow(ctx, q, tenantID, userID, displayName))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, ErrUserNotFound
+	}
+	return user, err
+}
+
 func (s *PostgresStore) MarkLoginSuccess(ctx context.Context, tenantID, userID int64) error {
 	if s == nil || s.db == nil {
 		return ErrStoreNotConfigured
