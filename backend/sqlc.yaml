@@ -11,6 +11,7 @@ sql:
       - sql/queries/admin_proxies.sql
       - sql/queries/admin_tls_fingerprint_profiles.sql
       - sql/queries/admin_tokens.sql
+      - sql/queries/admin_users.sql
     gen:
       go:
         package: admin

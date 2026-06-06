@@ -36,6 +36,7 @@ type Querier interface {
 	AdminCheckTenantExists(ctx context.Context, tenantID int64) (bool, error)
 	// Tenant-scoped read for revocation flow + audit lookup.
 	AdminGetAPIKeyByID(ctx context.Context, arg AdminGetAPIKeyByIDParams) (AdminGetAPIKeyByIDRow, error)
+	AdminGetUserForTenant(ctx context.Context, arg AdminGetUserForTenantParams) (AdminGetUserForTenantRow, error)
 	// Slice 2 (N+4b2) admin-side api_keys queries.
 	// Per docs/process/plans/2026-05-01-n4b-admin-keys.md §Scope A.
 	// These queries are issued by internal/admin (operator-facing) and are
@@ -54,6 +55,11 @@ type Querier interface {
 	// key_prefix is acceptable to expose (already public-safe per N+4a; 16
 	// chars insufficient to authenticate without bcrypt match).
 	AdminListAPIKeysForTenant(ctx context.Context, arg AdminListAPIKeysForTenantParams) ([]AdminListAPIKeysForTenantRow, error)
+	AdminListUserBalanceHistoryForTenant(ctx context.Context, arg AdminListUserBalanceHistoryForTenantParams) ([]AdminListUserBalanceHistoryForTenantRow, error)
+	// Admin user read-only queries.
+	// Tenant predicates are mandatory on every query. These queries never return
+	// password hashes, API key hashes, or other credential material.
+	AdminListUsersForTenant(ctx context.Context, arg AdminListUsersForTenantParams) ([]AdminListUsersForTenantRow, error)
 	// Soft-revokes a tenant's api_keys row. Codex N+4b2 pass-6 P2: revoke
 	// collapses ANY non-revoked status (active / disabled / expired) into
 	// 'revoked' — only an already-revoked row is the idempotent path.

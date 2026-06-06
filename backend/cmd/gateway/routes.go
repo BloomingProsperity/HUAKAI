@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminuserhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/announcementhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/audiohttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
@@ -641,6 +642,14 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Revoker: d.adminRevoker,
 			Queries: d.adminQueries,
 		})
+	})
+	adminUserDeps := adminuserhttp.Deps{
+		Auth:  d.adminAuth,
+		Store: d.adminQueries,
+	}
+	r.Get("/admin/v1/users", adminuserhttp.NewListHandler(adminUserDeps))
+	r.Route("/admin/v1/users", func(r chi.Router) {
+		adminuserhttp.MountRoutes(r, adminUserDeps)
 	})
 	r.Get("/admin/v1/account-modes", adminhttp.NewAccountModeListHandler(adminhttp.AdminAccountModesDeps{
 		Auth: d.adminAuth,
