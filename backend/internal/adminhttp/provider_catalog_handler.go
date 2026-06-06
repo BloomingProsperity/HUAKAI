@@ -17,6 +17,7 @@ import (
 type AdminProviderCatalogDeps struct {
 	Auth    adminCatalogAuth
 	Queries adminProviderCatalogQueries
+	Store   adminProviderCatalogStore
 }
 
 type adminCatalogAuth interface {
@@ -25,6 +26,13 @@ type adminCatalogAuth interface {
 
 type adminProviderCatalogQueries interface {
 	ListAdminProvidersByTenant(context.Context, admindb.ListAdminProvidersByTenantParams) ([]admindb.ListAdminProvidersByTenantRow, error)
+}
+
+type adminProviderCatalogStore interface {
+	adminProviderCatalogQueries
+	CreateProviderCatalogWithAudit(context.Context, providerCatalogCreateParams, admindb.InsertAdminAuditEventParams) (providerCatalogItem, error)
+	UpdateProviderCatalogWithAudit(context.Context, providerCatalogUpdateParams, admindb.InsertAdminAuditEventParams) (providerCatalogItem, error)
+	DeleteProviderCatalogWithAudit(context.Context, providerCatalogDeleteParams, admindb.InsertAdminAuditEventParams) (providerCatalogItem, error)
 }
 
 type providerCatalogListResponse struct {
@@ -55,7 +63,8 @@ func NewProviderCatalogListHandler(d AdminProviderCatalogDeps) http.HandlerFunc 
 
 func newProviderCatalogListHandler(d AdminProviderCatalogDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if d.Auth == nil || d.Queries == nil {
+		queries := providerCatalogReader(d)
+		if d.Auth == nil || queries == nil {
 			writeError(w, http.StatusServiceUnavailable, "gateway_not_configured",
 				"admin provider catalog dependency unset")
 			return
@@ -70,7 +79,7 @@ func newProviderCatalogListHandler(d AdminProviderCatalogDeps) http.HandlerFunc 
 			return
 		}
 
-		rows, err := d.Queries.ListAdminProvidersByTenant(r.Context(), admindb.ListAdminProvidersByTenantParams{
+		rows, err := queries.ListAdminProvidersByTenant(r.Context(), admindb.ListAdminProvidersByTenantParams{
 			TenantID:   page.TenantID,
 			PageLimit:  page.Limit,
 			PageOffset: page.Offset,
@@ -99,6 +108,26 @@ func newProviderCatalogListHandler(d AdminProviderCatalogDeps) http.HandlerFunc 
 			Offset: page.Offset,
 		})
 	}
+}
+
+func providerCatalogReader(d AdminProviderCatalogDeps) adminProviderCatalogQueries {
+	if d.Queries != nil {
+		return d.Queries
+	}
+	if d.Store != nil {
+		return d.Store
+	}
+	return nil
+}
+
+func providerCatalogStore(d AdminProviderCatalogDeps) adminProviderCatalogStore {
+	if d.Store != nil {
+		return d.Store
+	}
+	if store, ok := d.Queries.(adminProviderCatalogStore); ok {
+		return store
+	}
+	return nil
 }
 
 func parseAdminCatalogPage(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity) (adminCatalogPage, bool) {

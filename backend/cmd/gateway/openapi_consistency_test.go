@@ -340,6 +340,18 @@ func TestProviderChannelCatalogRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 			t.Fatalf("runtime missing GET %s", path)
 		}
 	}
+	for _, op := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/admin/v1/providers"},
+		{http.MethodPut, "/admin/v1/providers/{code}"},
+		{http.MethodDelete, "/admin/v1/providers/{code}"},
+	} {
+		if !hasOperation(implOps, op.method, op.path) {
+			t.Fatalf("runtime missing %s %s", op.method, op.path)
+		}
+	}
 
 	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
 	if err != nil {
@@ -354,6 +366,18 @@ func TestProviderChannelCatalogRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 			t.Fatalf("OpenAPI missing GET %s", path)
 		}
 	}
+	for _, op := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/admin/v1/providers"},
+		{http.MethodPut, "/admin/v1/providers/{code}"},
+		{http.MethodDelete, "/admin/v1/providers/{code}"},
+	} {
+		if !hasOperation(specOps, op.method, op.path) {
+			t.Fatalf("OpenAPI missing %s %s", op.method, op.path)
+		}
+	}
 
 	raw, err := os.ReadFile(specAbs)
 	if err != nil {
@@ -363,7 +387,11 @@ func TestProviderChannelCatalogRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 	for _, snippet := range []string{
 		"AdminProviderCatalogList:",
 		"AdminProviderCatalogItem:",
+		"AdminProviderCatalogCreateRequest:",
+		"AdminProviderCatalogUpdateRequest:",
+		"AdminProviderCatalogDeleteResponse:",
 		"admin_providers_list",
+		"admin_provider_deleted",
 		"code:",
 		"display_name:",
 		"upstream_protocol:",
