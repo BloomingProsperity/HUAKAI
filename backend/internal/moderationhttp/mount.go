@@ -28,6 +28,9 @@ type adminStore interface {
 	DeleteHash(context.Context, int64, int64) error
 	GetConfig(context.Context, int64) (moderation.ModerationConfig, error)
 	UpsertConfig(context.Context, moderation.ModerationConfig) (moderation.ModerationConfig, error)
+	ListModerationLogs(context.Context, int64, *int64, int32, int32) ([]moderation.ModerationLog, error)
+	ListBannedAPIKeys(context.Context, int64, int32, int32) ([]moderation.BannedAPIKey, error)
+	UnbanAPIKey(context.Context, moderation.UnbanAPIKeyRequest) (moderation.UnbanAPIKeyResult, error)
 }
 
 func MountModerationAdminRoutes(r chi.Router, deps ModerationAdminDeps) {
@@ -39,4 +42,7 @@ func MountModerationAdminRoutes(r chi.Router, deps ModerationAdminDeps) {
 	r.Delete("/hashes/{id}", newHashDeleteHandler(deps))
 	r.Get("/config", newConfigGetHandler(deps))
 	r.Put("/config", newConfigPutHandler(deps))
+	r.Get("/logs", newLogListHandler(deps))
+	r.Get("/banned", newBannedListHandler(deps))
+	r.Post("/api-keys/{id}/unban", newAPIKeyUnbanHandler(deps))
 }

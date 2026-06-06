@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -78,6 +79,23 @@ func (s *SQLStore) InsertModerationLog(ctx context.Context, event ModerationEven
 	})
 }
 
+func (s *SQLStore) ListModerationLogs(ctx context.Context, tenantID int64, apiKeyID *int64, limit int32, offset int32) ([]ModerationLog, error) {
+	rows, err := s.q.ListModerationLog(ctx, dbmoderation.ListModerationLogParams{
+		TenantID:   tenantID,
+		APIKeyID:   apiKeyID,
+		PageLimit:  limit,
+		PageOffset: offset,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ModerationLog, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, moderationLogFromDB(row))
+	}
+	return out, nil
+}
+
 func (s *SQLStore) RecordModerationViolationEvent(ctx context.Context, event ModerationEvent) error {
 	_, err := s.q.InsertModerationViolationEvent(ctx, dbmoderation.InsertModerationViolationEventParams{
 		TenantID:         event.TenantID,
@@ -107,6 +125,44 @@ func (s *SQLStore) DisableAPIKey(ctx context.Context, tenantID int64, apiKeyID i
 		APIKeyID: apiKeyID,
 	})
 	return err
+}
+
+func (s *SQLStore) ListBannedAPIKeys(ctx context.Context, tenantID int64, limit int32, offset int32) ([]BannedAPIKey, error) {
+	rows, err := s.q.ListBannedKeys(ctx, dbmoderation.ListBannedKeysParams{
+		TenantID:   tenantID,
+		PageLimit:  limit,
+		PageOffset: offset,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]BannedAPIKey, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, bannedAPIKeyFromDB(row))
+	}
+	return out, nil
+}
+
+func (s *SQLStore) UnbanAPIKey(ctx context.Context, req UnbanAPIKeyRequest) (UnbanAPIKeyResult, error) {
+	row, err := s.q.EnableModerationAPIKey(ctx, dbmoderation.EnableModerationAPIKeyParams{
+		TenantID:       req.TenantID,
+		APIKeyID:       req.APIKeyID,
+		AuditRequestID: adminUnbanAuditRequestID(req.ActorID),
+		ReasonCode:     adminUnbanReasonCode(req.Reason),
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return UnbanAPIKeyResult{}, ErrNotFound
+	}
+	if err != nil {
+		return UnbanAPIKeyResult{}, err
+	}
+	return UnbanAPIKeyResult{
+		APIKeyID:   row.APIKeyID,
+		TenantID:   row.TenantID,
+		Status:     row.Status,
+		AuditLogID: row.AuditLogID,
+		UpdatedAt:  timeFromPG(row.UpdatedAt),
+	}, nil
 }
 
 func (s *SQLStore) CreateKeyword(ctx context.Context, req CreateKeywordRequest) (KeywordRule, error) {
@@ -237,6 +293,42 @@ func configFromDB(row dbmoderation.ModerationConfig) ModerationConfig {
 	return cfg
 }
 
+func moderationLogFromDB(row dbmoderation.ModerationLog) ModerationLog {
+	log := ModerationLog{
+		ID:               row.ID,
+		TenantID:         row.TenantID,
+		APIKeyID:         row.APIKeyID,
+		UserID:           row.UserID,
+		PayloadHash:      row.PayloadHash,
+		Decision:         Decision(row.Decision),
+		ReasonCode:       row.ReasonCode,
+		MatchedKeywordID: row.MatchedKeywordID,
+		MatchedHashID:    row.MatchedHashID,
+		ViolationFeeUSD:  row.ViolationFeeUsd,
+		BillingEventID:   row.BillingEventID,
+		OccurredAt:       timeFromPG(row.OccurredAt),
+	}
+	if row.RequestID != nil {
+		log.RequestID = *row.RequestID
+	}
+	return log
+}
+
+func bannedAPIKeyFromDB(row dbmoderation.ListBannedKeysRow) BannedAPIKey {
+	return BannedAPIKey{
+		ID:              row.ID,
+		TenantID:        row.TenantID,
+		UserID:          row.UserID,
+		Name:            row.Name,
+		KeyPrefix:       row.KeyPrefix,
+		Status:          row.Status,
+		ViolationCount:  row.ViolationCount,
+		LastViolationAt: timeFromPG(row.LastViolationAt),
+		CreatedAt:       timeFromPG(row.CreatedAt),
+		UpdatedAt:       timeFromPG(row.UpdatedAt),
+	}
+}
+
 func keywordFromEnabledRow(row dbmoderation.ListEnabledModerationKeywordsRow) KeywordRule {
 	return KeywordRule{
 		ID:         row.ID,
@@ -317,6 +409,22 @@ func stringPtr(value string) *string {
 		return nil
 	}
 	return &value
+}
+
+func adminUnbanAuditRequestID(actorID string) string {
+	actorID = strings.TrimSpace(actorID)
+	if actorID == "" {
+		actorID = "unknown"
+	}
+	return "admin_unban_actor:" + actorID
+}
+
+func adminUnbanReasonCode(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return "admin_unban"
+	}
+	return safeReasonCode("admin_unban:"+reason, DecisionPass)
 }
 
 func isUniqueViolation(err error) bool {

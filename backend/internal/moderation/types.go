@@ -120,6 +120,50 @@ type ModerationEvent struct {
 	BillingEventID   *int64
 }
 
+type ModerationLog struct {
+	ID               int64
+	TenantID         int64
+	APIKeyID         int64
+	UserID           int64
+	RequestID        string
+	PayloadHash      string
+	Decision         Decision
+	ReasonCode       string
+	MatchedKeywordID *int64
+	MatchedHashID    *int64
+	ViolationFeeUSD  decimal.Decimal
+	BillingEventID   *int64
+	OccurredAt       time.Time
+}
+
+type BannedAPIKey struct {
+	ID              int64
+	TenantID        int64
+	UserID          int64
+	Name            string
+	KeyPrefix       string
+	Status          string
+	ViolationCount  int64
+	LastViolationAt time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type UnbanAPIKeyRequest struct {
+	TenantID int64
+	APIKeyID int64
+	ActorID  string
+	Reason   string
+}
+
+type UnbanAPIKeyResult struct {
+	APIKeyID   int64
+	TenantID   int64
+	Status     string
+	AuditLogID int64
+	UpdatedAt  time.Time
+}
+
 type CreateKeywordRequest struct {
 	TenantID   int64
 	Keyword    string
