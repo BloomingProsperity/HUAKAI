@@ -49,12 +49,9 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           "$(go env GOPATH)/bin/govulncheck" ./...
 
-      - name: staticcheck (informational baseline; flip to fail-on-new after baseline cleanup)
+      - name: quality gate (staticcheck + deadcode, blocking on NEW findings vs baseline)
         working-directory: backend
-        continue-on-error: true
-        run: |
-          go install honnef.co/go/tools/cmd/staticcheck@2025.1.1
-          "$(go env GOPATH)/bin/staticcheck" ./... || true
+        run: bash scripts/quality-gate.sh
 
       - name: Install golang-migrate
         run: |
