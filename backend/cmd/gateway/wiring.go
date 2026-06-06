@@ -85,6 +85,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/twofa"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkey"
+	"github.com/BloomingProsperity/HUAKAI/internal/usernotice"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
 )
@@ -132,6 +133,7 @@ type deps struct {
 	subReminderWorker        *subscription.ReminderWorker
 	notificationSettings     *notify.Service
 	announcementService      *announcement.Service
+	userNoticeService        *usernotice.Service
 	mediaTaskService         *mediatask.Service
 	mediaTaskWorker          *mediatask.Worker
 	routeAdminService        *routeadmin.Service
@@ -707,6 +709,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	notificationStore := notify.NewPostgresStore(pgPool, credentialKeys)
 	notificationSettings := notify.NewService(notificationStore)
 	announcementService := announcement.NewService(announcement.NewPostgresStore(pgPool))
+	userNoticeService := usernotice.NewService(usernotice.NewPostgresStore(pgPool))
 	notificationEmailSender, err := mailinfra.BuildEmailSender(ctx, emailSettingsStore, credentialKeys, mailinfra.WithOutbox(outboxStore))
 	if err != nil {
 		return nil, fmt.Errorf("build notification email sender: %w", err)
@@ -869,6 +872,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		subscriptionService:   subscription.NewService(subscription.NewPostgresStore(pgPool)),
 		notificationSettings:  notificationSettings,
 		announcementService:   announcementService,
+		userNoticeService:     userNoticeService,
 		mediaTaskService:      mediaTaskService,
 		mediaTaskWorker:       mediaTaskWorker,
 		routeAdminService:     routeadmin.NewService(routeadmin.NewPostgresStore(pgPool), nil),

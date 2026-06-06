@@ -66,7 +66,7 @@ tags:
   - name: user-checkin
     description: Opt-in authenticated user daily check-in balance rewards.
   - name: user-notifications
-    description: Authenticated user notification delivery settings for balance alerts.
+    description: Authenticated user notification inbox and delivery settings for balance alerts.
   - name: announcements
     description: Tenant-scoped active announcement board visible to users or public tenant-scoped readers.
   - name: payment-webhooks
@@ -106,7 +106,7 @@ tags:
   - name: admin-pricing
     description: Tenant-scoped admin pricing ratio catalog for pool groups.
   - name: admin-notifications
-    description: Notification worker observability and tenant-scoped user notification settings.
+    description: Admin broadcast notifications, worker observability, and tenant-scoped user notification settings.
   - name: admin-announcements
     description: Admin announcement CRUD for tenant-scoped operator messages.
   - name: admin-alerting
@@ -5079,6 +5079,108 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/notifications/broadcast:
+    post:
+      tags: [admin-notifications]
+      summary: Broadcast a notification into every active user's tenant inbox
+      operationId: adminBroadcastNotification
+      x-huakai-spec-source:
+        - backend/internal/usernoticehttp/handlers.go
+        - backend/internal/usernotice/postgres_store.go
+        - docs/process/plans/2026-06-06-notif-broadcast-codex.md
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserNotificationBroadcastRequest' }
+      responses:
+        '201':
+          description: Broadcast accepted and one inbox row inserted per active recipient.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserNotificationBroadcastResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/notifications:
+    get:
+      tags: [user-notifications]
+      summary: List the authenticated user's notification inbox
+      operationId: listMyNotifications
+      x-huakai-spec-source:
+        - backend/internal/usernoticehttp/handlers.go
+        - backend/internal/usernotice/postgres_store.go
+        - docs/process/plans/2026-06-06-notif-broadcast-codex.md
+      parameters:
+        - in: query
+          name: unread_only
+          required: false
+          schema: { type: boolean, default: false }
+        - in: query
+          name: limit
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - in: query
+          name: offset
+          required: false
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Authenticated user's inbox rows, newest first.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserNotificationListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/notifications/unread-count:
+    get:
+      tags: [user-notifications]
+      summary: Count unread notifications for the authenticated user
+      operationId: getMyNotificationUnreadCount
+      x-huakai-spec-source:
+        - backend/internal/usernoticehttp/handlers.go
+        - backend/internal/usernotice/postgres_store.go
+        - docs/process/plans/2026-06-06-notif-broadcast-codex.md
+      responses:
+        '200':
+          description: Current unread notification count.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserNotificationUnreadCountResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/notifications/{id}/read:
+    post:
+      tags: [user-notifications]
+      summary: Mark one authenticated-user notification as read
+      operationId: markMyNotificationRead
+      x-huakai-spec-source:
+        - backend/internal/usernoticehttp/handlers.go
+        - backend/internal/usernotice/postgres_store.go
+        - docs/process/plans/2026-06-06-notif-broadcast-codex.md
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Notification marked read.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserNotification' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/users/me/notifications:
     get:
       tags: [user-notifications]
@@ -9676,6 +9778,86 @@ components:
           type: string
           format: date-time
           description: Must be later than starts_at.
+
+    UserNotification:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/usernotice/types.go
+        - backend/internal/usernoticehttp/handlers.go
+        - docs/process/plans/2026-06-06-notif-broadcast-codex.md
+      required: [id, tenant_id, user_id, title, body, severity, created_at]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        user_id: { type: integer, format: int64, minimum: 1 }
+        title: { type: string, minLength: 1 }
+        body: { type: string, minLength: 1 }
+        severity:
+          type: string
+          enum: [info, warning, critical]
+        read_at: { type: string, format: date-time }
+        created_by_admin: { type: integer, format: int64, minimum: 1 }
+        created_at: { type: string, format: date-time }
+
+    UserNotificationListResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/usernoticehttp/handlers.go
+        - docs/process/plans/2026-06-06-notif-broadcast-codex.md
+      required: [object, items, limit, offset]
+      properties:
+        object: { type: string, enum: [notification_list] }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/UserNotification' }
+        limit: { type: integer, minimum: 1, maximum: 100 }
+        offset: { type: integer, minimum: 0 }
+
+    UserNotificationBroadcastRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/usernoticehttp/handlers.go
+        - backend/internal/usernotice/service.go
+        - docs/process/plans/2026-06-06-notif-broadcast-codex.md
+      required: [title, body]
+      properties:
+        tenant_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Required for platform_admin; tenant_operator may omit only when using its scoped tenant.
+        title: { type: string, minLength: 1 }
+        body: { type: string, minLength: 1 }
+        severity:
+          type: string
+          enum: [info, warning, critical]
+          default: info
+
+    UserNotificationBroadcastResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/usernoticehttp/handlers.go
+        - docs/process/plans/2026-06-06-notif-broadcast-codex.md
+      required: [object, tenant_id, inserted]
+      properties:
+        object: { type: string, enum: [notification_broadcast] }
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        inserted: { type: integer, format: int64, minimum: 0 }
+
+    UserNotificationUnreadCountResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/usernoticehttp/handlers.go
+        - docs/process/plans/2026-06-06-notif-broadcast-codex.md
+      required: [object, count]
+      properties:
+        object: { type: string, enum: [notification_unread_count] }
+        count: { type: integer, format: int64, minimum: 0 }
 
     NotificationSettings:
       type: object
