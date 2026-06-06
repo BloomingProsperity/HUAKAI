@@ -1,0 +1,220 @@
+package alertinghttp
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/alerting"
+)
+
+func TestAlertRuleAdminCRUD(t *testing.T) {
+	// MUTATION: create/update/delete/list are not wired to the same tenant-scoped service; disabled update or post-delete list assertions fail.
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	svc := alerting.NewService(alerting.NewMemoryStore(), alerting.WithClock(func() time.Time { return now }))
+	auth := fakeAdminAuth{identity: admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}}
+
+	create := `{"tenant_id":7,"name":"request spike","metric":"gateway.requests","comparator":"gte","threshold":100,"severity":"critical","window_seconds":60}`
+	rec := serveAlerting(t, svc, auth, http.MethodPost, "/v1/admin/alert-rules", []byte(create))
+	assertStatus(t, rec, http.StatusCreated)
+	var created ruleResponse
+	decodeJSON(t, rec, &created)
+	if created.ID <= 0 || created.TenantID != 7 || created.Name != "request spike" || !created.Enabled {
+		t.Fatalf("created=%+v want persisted enabled rule", created)
+	}
+
+	rec = serveAlerting(t, svc, auth, http.MethodGet, "/v1/admin/alert-rules?tenant_id=7", nil)
+	assertStatus(t, rec, http.StatusOK)
+	var list ruleListResponse
+	decodeJSON(t, rec, &list)
+	if len(list.Items) != 1 || list.Items[0].ID != created.ID {
+		t.Fatalf("list=%+v want created rule id %d", list.Items, created.ID)
+	}
+
+	disabled := `{"enabled":false,"threshold":250}`
+	rec = serveAlerting(t, svc, auth, http.MethodPut, "/v1/admin/alert-rules/"+strconv.FormatInt(created.ID, 10)+"?tenant_id=7", []byte(disabled))
+	assertStatus(t, rec, http.StatusOK)
+	var updated ruleResponse
+	decodeJSON(t, rec, &updated)
+	if updated.Enabled || updated.Threshold != 250 || updated.Name != "request spike" {
+		t.Fatalf("updated=%+v want disabled threshold 250 with name preserved", updated)
+	}
+
+	rec = serveAlerting(t, svc, auth, http.MethodDelete, "/v1/admin/alert-rules/"+strconv.FormatInt(created.ID, 10)+"?tenant_id=8", nil)
+	assertStatus(t, rec, http.StatusNotFound)
+	rec = serveAlerting(t, svc, auth, http.MethodDelete, "/v1/admin/alert-rules/"+strconv.FormatInt(created.ID, 10)+"?tenant_id=7", nil)
+	assertStatus(t, rec, http.StatusNoContent)
+
+	rec = serveAlerting(t, svc, auth, http.MethodGet, "/v1/admin/alert-rules?tenant_id=7", nil)
+	assertStatus(t, rec, http.StatusOK)
+	decodeJSON(t, rec, &list)
+	if len(list.Items) != 0 {
+		t.Fatalf("list after delete=%+v want empty", list.Items)
+	}
+}
+
+func TestAlertRuleAdminValidation(t *testing.T) {
+	// MUTATION: bypass HTTP/service validation; invalid comparator or severity returns 201 instead of 400.
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	svc := alerting.NewService(alerting.NewMemoryStore(), alerting.WithClock(func() time.Time { return now }))
+	auth := fakeAdminAuth{identity: admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}}
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "bad comparator", body: `{"tenant_id":7,"name":"bad","metric":"gateway.requests","comparator":"eq","threshold":100,"severity":"critical","window_seconds":60}`},
+		{name: "bad severity", body: `{"tenant_id":7,"name":"bad","metric":"gateway.requests","comparator":"gte","threshold":100,"severity":"emergency","window_seconds":60}`},
+		{name: "bad window", body: `{"tenant_id":7,"name":"bad","metric":"gateway.requests","comparator":"gte","threshold":100,"severity":"critical","window_seconds":0}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := serveAlerting(t, svc, auth, http.MethodPost, "/v1/admin/alert-rules", []byte(tt.body))
+			assertStatus(t, rec, http.StatusBadRequest)
+		})
+	}
+}
+
+func TestAlertEventsAndSilencesAdmin(t *testing.T) {
+	// MUTATION: ignore rule_id/state event filters or silence delete tenant predicate; filtered list or post-delete silence list is wrong.
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	svc := alerting.NewService(alerting.NewMemoryStore(), alerting.WithClock(func() time.Time { return now }))
+	auth := fakeAdminAuth{identity: admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}}
+	rule := mustCreateHTTPRule(t, svc, alerting.CreateRuleInput{
+		TenantID:      7,
+		Name:          "request spike",
+		Metric:        "gateway.requests",
+		Comparator:    alerting.ComparatorGTE,
+		Threshold:     100,
+		Severity:      alerting.SeverityCritical,
+		WindowSeconds: 60,
+	})
+	if err := svc.EvaluateRules(context.Background(), 7, map[string]float64{"gateway.requests": 150}); err != nil {
+		t.Fatalf("EvaluateRules: %v", err)
+	}
+
+	rec := serveAlerting(t, svc, auth, http.MethodGet, "/v1/admin/alert-events?tenant_id=7&rule_id="+strconv.FormatInt(rule.ID, 10)+"&state=firing", nil)
+	assertStatus(t, rec, http.StatusOK)
+	var events eventListResponse
+	decodeJSON(t, rec, &events)
+	if len(events.Items) != 1 || events.Items[0].RuleID != rule.ID || events.Items[0].State != "firing" {
+		t.Fatalf("events=%+v want one firing event for rule", events.Items)
+	}
+	rec = serveAlerting(t, svc, auth, http.MethodGet, "/v1/admin/alert-events?tenant_id=7&state=resolved", nil)
+	assertStatus(t, rec, http.StatusOK)
+	decodeJSON(t, rec, &events)
+	if len(events.Items) != 0 {
+		t.Fatalf("resolved events=%+v want none", events.Items)
+	}
+
+	silenceBody := `{"tenant_id":7,"rule_id":` + strconv.FormatInt(rule.ID, 10) + `,"reason":"maintenance","starts_at":"2026-06-06T11:59:00Z","ends_at":"2026-06-06T12:30:00Z"}`
+	rec = serveAlerting(t, svc, auth, http.MethodPost, "/v1/admin/alert-silences", []byte(silenceBody))
+	assertStatus(t, rec, http.StatusCreated)
+	var silence silenceResponse
+	decodeJSON(t, rec, &silence)
+	if silence.ID <= 0 || silence.RuleID == nil || *silence.RuleID != rule.ID {
+		t.Fatalf("silence=%+v want rule-specific silence", silence)
+	}
+
+	rec = serveAlerting(t, svc, auth, http.MethodGet, "/v1/admin/alert-silences?tenant_id=7", nil)
+	assertStatus(t, rec, http.StatusOK)
+	var silences silenceListResponse
+	decodeJSON(t, rec, &silences)
+	if len(silences.Items) != 1 || silences.Items[0].ID != silence.ID {
+		t.Fatalf("silences=%+v want created silence", silences.Items)
+	}
+	rec = serveAlerting(t, svc, auth, http.MethodDelete, "/v1/admin/alert-silences/"+strconv.FormatInt(silence.ID, 10)+"?tenant_id=8", nil)
+	assertStatus(t, rec, http.StatusNotFound)
+	rec = serveAlerting(t, svc, auth, http.MethodDelete, "/v1/admin/alert-silences/"+strconv.FormatInt(silence.ID, 10)+"?tenant_id=7", nil)
+	assertStatus(t, rec, http.StatusNoContent)
+}
+
+func TestAlertAdminTenantScope(t *testing.T) {
+	// MUTATION: trust tenant_id body/query without admin identity scope; tenant_operator for tenant 7 can create tenant 8 rules.
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	svc := alerting.NewService(alerting.NewMemoryStore(), alerting.WithClock(func() time.Time { return now }))
+	auth := fakeAdminAuth{identity: admin.AdminIdentity{TokenID: 99, Role: admin.RoleTenantOperator, ScopeTenantID: 7}}
+
+	createWrongTenant := `{"tenant_id":8,"name":"bad","metric":"gateway.requests","comparator":"gte","threshold":100,"severity":"critical","window_seconds":60}`
+	rec := serveAlerting(t, svc, auth, http.MethodPost, "/v1/admin/alert-rules", []byte(createWrongTenant))
+	assertStatus(t, rec, http.StatusForbidden)
+
+	createScoped := `{"name":"scoped","metric":"gateway.requests","comparator":"gte","threshold":100,"severity":"critical","window_seconds":60}`
+	rec = serveAlerting(t, svc, auth, http.MethodPost, "/v1/admin/alert-rules", []byte(createScoped))
+	assertStatus(t, rec, http.StatusCreated)
+	var created ruleResponse
+	decodeJSON(t, rec, &created)
+	if created.TenantID != 7 {
+		t.Fatalf("created tenant=%d want operator scope tenant 7", created.TenantID)
+	}
+
+	rec = serveAlerting(t, svc, auth, http.MethodGet, "/v1/admin/alert-rules", nil)
+	assertStatus(t, rec, http.StatusOK)
+	var list ruleListResponse
+	decodeJSON(t, rec, &list)
+	if len(list.Items) != 1 || list.Items[0].TenantID != 7 {
+		t.Fatalf("list=%+v want tenant operator scoped row", list.Items)
+	}
+}
+
+type fakeAdminAuth struct {
+	identity admin.AdminIdentity
+	err      error
+}
+
+func (a fakeAdminAuth) Resolve(context.Context, *http.Request) (admin.AdminIdentity, error) {
+	if a.err != nil {
+		return admin.AdminIdentity{}, a.err
+	}
+	return a.identity, nil
+}
+
+func serveAlerting(t *testing.T, svc *alerting.Service, auth AdminAuth, method, target string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	router := chi.NewRouter()
+	MountAdminRoutes(router, AdminDeps{Auth: auth, Service: svc})
+	var reader *bytes.Reader
+	if body == nil {
+		reader = bytes.NewReader(nil)
+	} else {
+		reader = bytes.NewReader(body)
+	}
+	req := httptest.NewRequest(method, target, reader)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
+func mustCreateHTTPRule(t *testing.T, svc *alerting.Service, in alerting.CreateRuleInput) alerting.AlertRule {
+	t.Helper()
+	rule, err := svc.CreateRule(context.Background(), in)
+	if err != nil {
+		t.Fatalf("CreateRule %q: %v", in.Name, err)
+	}
+	return rule
+}
+
+func assertStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
+	t.Helper()
+	if rec.Code != want {
+		t.Fatalf("status=%d body=%s want %d", rec.Code, rec.Body.String(), want)
+	}
+}
+
+func decodeJSON(t *testing.T, rec *httptest.ResponseRecorder, dst any) {
+	t.Helper()
+	if err := json.Unmarshal(rec.Body.Bytes(), dst); err != nil {
+		t.Fatalf("decode json: %v body=%s", err, rec.Body.String())
+	}
+}
