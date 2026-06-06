@@ -1,4 +1,4 @@
-package modelhttp
+package controlhttp
 
 import (
 	"context"
@@ -16,38 +16,38 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-type authStub struct {
+type modelListAuthStub struct {
 	ident auth.Identity
 	err   error
 	calls int
 }
 
-func (s *authStub) Resolve(_ context.Context, _ *http.Request) (auth.Identity, error) {
+func (s *modelListAuthStub) Resolve(_ context.Context, _ *http.Request) (auth.Identity, error) {
 	s.calls++
 	return s.ident, s.err
 }
 
-type catalogStub struct {
+type modelListCatalogStub struct {
 	models   []registry.ListedModel
 	err      error
 	tenantID int64
 	calls    int
 }
 
-func (s *catalogStub) ListModels(_ context.Context, tenantID int64) ([]registry.ListedModel, error) {
+func (s *modelListCatalogStub) ListModels(_ context.Context, tenantID int64) ([]registry.ListedModel, error) {
 	s.calls++
 	s.tenantID = tenantID
 	return s.models, s.err
 }
 
-type pricerStub struct {
+type modelListPricerStub struct {
 	table    billing.PublicPriceTable
 	err      error
 	tenantID int64
 	calls    int
 }
 
-func (s *pricerStub) PublicModelPrices(_ context.Context, tenantID int64) (billing.PublicPriceTable, error) {
+func (s *modelListPricerStub) PublicModelPrices(_ context.Context, tenantID int64) (billing.PublicPriceTable, error) {
 	s.calls++
 	s.tenantID = tenantID
 	return s.table, s.err
@@ -55,12 +55,12 @@ func (s *pricerStub) PublicModelPrices(_ context.Context, tenantID int64) (billi
 
 func TestListModelsReturnsOpenAIModelObjectsForAuthenticatedTenant(t *testing.T) {
 	created := time.Unix(1704067200, 0).UTC()
-	authn := &authStub{ident: auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 23}}
-	catalog := &catalogStub{models: []registry.ListedModel{
+	authn := &modelListAuthStub{ident: auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 23}}
+	catalog := &modelListCatalogStub{models: []registry.ListedModel{
 		{ID: "gpt-4o", CreatedAt: created, OwnedBy: "openai"},
 		{ID: "claude-sonnet", CreatedAt: created.Add(time.Hour), OwnedBy: "anthropic"},
 	}}
-	handler := NewListHandler(Deps{Auth: authn, Catalog: catalog})
+	handler := NewModelListHandler(ModelListDeps{Auth: authn, Catalog: catalog})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
@@ -97,8 +97,8 @@ func TestListModelsReturnsOpenAIModelObjectsForAuthenticatedTenant(t *testing.T)
 
 func TestListModelsEnrichesPublicPricingAndContextLengthWhenAvailable(t *testing.T) {
 	created := time.Unix(1704067200, 0).UTC()
-	authn := &authStub{ident: auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 23}}
-	catalog := &catalogStub{models: []registry.ListedModel{
+	authn := &modelListAuthStub{ident: auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 23}}
+	catalog := &modelListCatalogStub{models: []registry.ListedModel{
 		{
 			ID:            "Claude Opus Public",
 			CanonicalID:   "anthropic/claude-opus-4",
@@ -114,7 +114,7 @@ func TestListModelsEnrichesPublicPricingAndContextLengthWhenAvailable(t *testing
 			OwnedBy:       "HUAKAI",
 		},
 	}}
-	pricer := &pricerStub{table: billing.NewPublicPriceTable("public-v1", map[string]billing.PublicPrice{
+	pricer := &modelListPricerStub{table: billing.NewPublicPriceTable("public-v1", map[string]billing.PublicPrice{
 		"anthropic/claude-opus-4": {
 			InputPerToken:  decimal.RequireFromString("0.0000004"),
 			OutputPerToken: decimal.RequireFromString("0.0000016"),
@@ -122,7 +122,7 @@ func TestListModelsEnrichesPublicPricingAndContextLengthWhenAvailable(t *testing
 			HasOutput:      true,
 		},
 	})}
-	handler := NewListHandler(Deps{Auth: authn, Catalog: catalog, Pricing: pricer})
+	handler := NewModelListHandler(ModelListDeps{Auth: authn, Catalog: catalog, Pricing: pricer})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
@@ -197,8 +197,8 @@ func TestListModelsEnrichesPublicPricingAndContextLengthWhenAvailable(t *testing
 func TestListModelsEnrichesCapabilitiesMaxOutputAndModeWhenAvailable(t *testing.T) {
 	created := time.Unix(1704067200, 0).UTC()
 	maxOutput := 8192
-	authn := &authStub{ident: auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 23}}
-	catalog := &catalogStub{models: []registry.ListedModel{
+	authn := &modelListAuthStub{ident: auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 23}}
+	catalog := &modelListCatalogStub{models: []registry.ListedModel{
 		{
 			ID:              "gpt-rich",
 			CanonicalID:     "openai/gpt-rich",
@@ -215,7 +215,7 @@ func TestListModelsEnrichesCapabilitiesMaxOutputAndModeWhenAvailable(t *testing.
 			OwnedBy:     "HUAKAI",
 		},
 	}}
-	handler := NewListHandler(Deps{Auth: authn, Catalog: catalog})
+	handler := NewModelListHandler(ModelListDeps{Auth: authn, Catalog: catalog})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
@@ -266,9 +266,9 @@ func TestListModelsEnrichesCapabilitiesMaxOutputAndModeWhenAvailable(t *testing.
 }
 
 func TestListModelsAuthFailuresUseGatewayErrorContract(t *testing.T) {
-	catalog := &catalogStub{}
-	handler := NewListHandler(Deps{
-		Auth:    &authStub{err: auth.ErrUnauthorized},
+	catalog := &modelListCatalogStub{}
+	handler := NewModelListHandler(ModelListDeps{
+		Auth:    &modelListAuthStub{err: auth.ErrUnauthorized},
 		Catalog: catalog,
 	})
 
@@ -282,13 +282,13 @@ func TestListModelsAuthFailuresUseGatewayErrorContract(t *testing.T) {
 	if catalog.calls != 0 {
 		t.Fatalf("catalog calls=%d want 0 when auth fails", catalog.calls)
 	}
-	assertErrorCode(t, rec.Body.Bytes(), "unauthorized")
+	assertModelListErrorCode(t, rec.Body.Bytes(), "unauthorized")
 }
 
 func TestListModelsRegistryBackendErrorIsServiceUnavailable(t *testing.T) {
-	handler := NewListHandler(Deps{
-		Auth:    &authStub{ident: auth.Identity{TenantID: 7}},
-		Catalog: &catalogStub{err: registry.ErrRegistryBackend},
+	handler := NewModelListHandler(ModelListDeps{
+		Auth:    &modelListAuthStub{ident: auth.Identity{TenantID: 7}},
+		Catalog: &modelListCatalogStub{err: registry.ErrRegistryBackend},
 	})
 
 	rec := httptest.NewRecorder()
@@ -298,13 +298,13 @@ func TestListModelsRegistryBackendErrorIsServiceUnavailable(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d body=%s want 503", rec.Code, rec.Body.String())
 	}
-	assertErrorCode(t, rec.Body.Bytes(), "registry_backend_error")
+	assertModelListErrorCode(t, rec.Body.Bytes(), "registry_backend_error")
 }
 
 func TestListModelsUnexpectedCatalogErrorIsInternalError(t *testing.T) {
-	handler := NewListHandler(Deps{
-		Auth:    &authStub{ident: auth.Identity{TenantID: 7}},
-		Catalog: &catalogStub{err: errors.New("boom")},
+	handler := NewModelListHandler(ModelListDeps{
+		Auth:    &modelListAuthStub{ident: auth.Identity{TenantID: 7}},
+		Catalog: &modelListCatalogStub{err: errors.New("boom")},
 	})
 
 	rec := httptest.NewRecorder()
@@ -314,10 +314,10 @@ func TestListModelsUnexpectedCatalogErrorIsInternalError(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status=%d body=%s want 500", rec.Code, rec.Body.String())
 	}
-	assertErrorCode(t, rec.Body.Bytes(), "registry_unknown_error")
+	assertModelListErrorCode(t, rec.Body.Bytes(), "registry_unknown_error")
 }
 
-func assertErrorCode(t *testing.T, body []byte, want string) {
+func assertModelListErrorCode(t *testing.T, body []byte, want string) {
 	t.Helper()
 	var got struct {
 		Error struct {

@@ -1,4 +1,4 @@
-package notifyhttp
+package controlhttp
 
 import (
 	"bytes"
@@ -18,9 +18,9 @@ import (
 )
 
 func TestUserPutSettingsUsesSessionScopeAndMasksSecret(t *testing.T) {
-	service := &recordingSettingsService{}
+	service := &notifyRecordingSettingsService{}
 	router := chi.NewRouter()
-	MountUserRoutes(router, UserDeps{Service: service})
+	MountNotifyUserRoutes(router, NotifyUserDeps{Service: service})
 	body := `{
 		"notify_type":"webhook",
 		"webhook_url":"https://hooks.example.test/low-balance",
@@ -45,7 +45,7 @@ func TestUserPutSettingsUsesSessionScopeAndMasksSecret(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "plain-secret") {
 		t.Fatalf("response leaked webhook_secret: %s", rec.Body.String())
 	}
-	var resp settingsResponse
+	var resp notifySettingsResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("response json: %v", err)
 	}
@@ -55,10 +55,10 @@ func TestUserPutSettingsUsesSessionScopeAndMasksSecret(t *testing.T) {
 }
 
 func TestAdminTenantOperatorDefaultsToScopedTenant(t *testing.T) {
-	service := &recordingSettingsService{}
+	service := &notifyRecordingSettingsService{}
 	router := chi.NewRouter()
-	MountAdminRoutes(router, AdminDeps{
-		Auth: fakeAdminAuth{identity: admin.AdminIdentity{
+	MountNotifyAdminRoutes(router, NotifyAdminDeps{
+		Auth: notifyFakeAdminAuth{identity: admin.AdminIdentity{
 			TokenID:       99,
 			Role:          admin.RoleTenantOperator,
 			ScopeTenantID: 7,
@@ -83,10 +83,10 @@ func TestAdminTenantOperatorDefaultsToScopedTenant(t *testing.T) {
 }
 
 func TestAdminTenantOperatorCannotCrossTenant(t *testing.T) {
-	service := &recordingSettingsService{}
+	service := &notifyRecordingSettingsService{}
 	router := chi.NewRouter()
-	MountAdminRoutes(router, AdminDeps{
-		Auth: fakeAdminAuth{identity: admin.AdminIdentity{
+	MountNotifyAdminRoutes(router, NotifyAdminDeps{
+		Auth: notifyFakeAdminAuth{identity: admin.AdminIdentity{
 			TokenID:       99,
 			Role:          admin.RoleTenantOperator,
 			ScopeTenantID: 7,
@@ -107,9 +107,9 @@ func TestAdminTenantOperatorCannotCrossTenant(t *testing.T) {
 }
 
 func TestUserPutGotifyDefaultsPriorityWhenOmitted(t *testing.T) {
-	service := &recordingSettingsService{}
+	service := &notifyRecordingSettingsService{}
 	router := chi.NewRouter()
-	MountUserRoutes(router, UserDeps{Service: service})
+	MountNotifyUserRoutes(router, NotifyUserDeps{Service: service})
 	body := `{
 		"notify_type":"gotify",
 		"gotify_url":"https://gotify.example.test/message",
@@ -131,7 +131,7 @@ func TestUserPutGotifyDefaultsPriorityWhenOmitted(t *testing.T) {
 	if service.saved.GotifyPriority != 5 {
 		t.Fatalf("saved gotify_priority=%d want default 5; MUTATION: omitting request defaulting should leave this 0", service.saved.GotifyPriority)
 	}
-	var resp settingsResponse
+	var resp notifySettingsResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("response json: %v", err)
 	}
@@ -144,9 +144,9 @@ func TestUserPutGotifyDefaultsPriorityWhenOmitted(t *testing.T) {
 }
 
 func TestUserPutGotifyRejectsOutOfRangePriority(t *testing.T) {
-	service := &recordingSettingsService{}
+	service := &notifyRecordingSettingsService{}
 	router := chi.NewRouter()
-	MountUserRoutes(router, UserDeps{Service: service})
+	MountNotifyUserRoutes(router, NotifyUserDeps{Service: service})
 	body := `{
 		"notify_type":"gotify",
 		"gotify_url":"https://gotify.example.test/message",
@@ -171,16 +171,16 @@ func TestUserPutGotifyRejectsOutOfRangePriority(t *testing.T) {
 	}
 }
 
-type recordingSettingsService struct {
+type notifyRecordingSettingsService struct {
 	saved   notify.Settings
 	upserts int
 }
 
-func (s *recordingSettingsService) GetSettings(context.Context, int64, int64) (notify.Settings, error) {
+func (s *notifyRecordingSettingsService) GetSettings(context.Context, int64, int64) (notify.Settings, error) {
 	return s.saved, nil
 }
 
-func (s *recordingSettingsService) UpsertSettings(_ context.Context, settings notify.Settings) (notify.Settings, error) {
+func (s *notifyRecordingSettingsService) UpsertSettings(_ context.Context, settings notify.Settings) (notify.Settings, error) {
 	normalized, err := notify.ValidateSettings(settings)
 	if err != nil {
 		return notify.Settings{}, err
@@ -191,12 +191,12 @@ func (s *recordingSettingsService) UpsertSettings(_ context.Context, settings no
 	return normalized, nil
 }
 
-type fakeAdminAuth struct {
+type notifyFakeAdminAuth struct {
 	identity admin.AdminIdentity
 	err      error
 }
 
-func (a fakeAdminAuth) Resolve(context.Context, *http.Request) (admin.AdminIdentity, error) {
+func (a notifyFakeAdminAuth) Resolve(context.Context, *http.Request) (admin.AdminIdentity, error) {
 	if a.err != nil {
 		return admin.AdminIdentity{}, a.err
 	}

@@ -1,4 +1,4 @@
-package notifyhttp
+package controlhttp
 
 import (
 	"context"
@@ -17,25 +17,25 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/notify"
 )
 
-type SettingsService interface {
+type NotifySettingsService interface {
 	GetSettings(context.Context, int64, int64) (notify.Settings, error)
 	UpsertSettings(context.Context, notify.Settings) (notify.Settings, error)
 }
 
-type AdminAuth interface {
+type NotifyAdminAuth interface {
 	Resolve(context.Context, *http.Request) (admin.AdminIdentity, error)
 }
 
-type UserDeps struct {
-	Service SettingsService
+type NotifyUserDeps struct {
+	Service NotifySettingsService
 }
 
-type AdminDeps struct {
-	Auth    AdminAuth
-	Service SettingsService
+type NotifyAdminDeps struct {
+	Auth    NotifyAdminAuth
+	Service NotifySettingsService
 }
 
-type settingsRequest struct {
+type notifySettingsRequest struct {
 	NotifyType        string           `json:"notify_type"`
 	WebhookURL        string           `json:"webhook_url,omitempty"`
 	WebhookSecret     string           `json:"webhook_secret,omitempty"`
@@ -47,7 +47,7 @@ type settingsRequest struct {
 	BalanceThreshold  *decimal.Decimal `json:"balance_threshold,omitempty"`
 }
 
-type settingsResponse struct {
+type notifySettingsResponse struct {
 	TenantID                int64           `json:"tenant_id"`
 	UserID                  int64           `json:"user_id"`
 	NotifyType              string          `json:"notify_type"`
@@ -63,24 +63,24 @@ type settingsResponse struct {
 	UpdatedBy               string          `json:"updated_by,omitempty"`
 }
 
-func MountUserRoutes(r chi.Router, d UserDeps) {
-	h := userHandler{deps: d}
+func MountNotifyUserRoutes(r chi.Router, d NotifyUserDeps) {
+	h := notifyUserHandler{deps: d}
 	r.Get("/v1/users/me/notifications", h.get)
 	r.Put("/v1/users/me/notifications", h.put)
 }
 
-func MountAdminRoutes(r chi.Router, d AdminDeps) {
-	h := adminHandler{deps: d}
+func MountNotifyAdminRoutes(r chi.Router, d NotifyAdminDeps) {
+	h := notifyAdminHandler{deps: d}
 	r.Get("/v1/admin/users/{user_id}/notifications", h.get)
 	r.Put("/v1/admin/users/{user_id}/notifications", h.put)
 }
 
-type userHandler struct {
-	deps UserDeps
+type notifyUserHandler struct {
+	deps NotifyUserDeps
 }
 
-func (h userHandler) get(w http.ResponseWriter, r *http.Request) {
-	ident, ok := sessionIdentity(w, r, h.deps.Service)
+func (h notifyUserHandler) get(w http.ResponseWriter, r *http.Request) {
+	ident, ok := notifySessionIdentity(w, r, h.deps.Service)
 	if !ok {
 		return
 	}
@@ -89,37 +89,37 @@ func (h userHandler) get(w http.ResponseWriter, r *http.Request) {
 		writeNotifyError(w, err, "notification_settings_read_failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, responseFromSettings(settings))
+	notifyWriteJSON(w, http.StatusOK, notifyResponseFromSettings(settings))
 }
 
-func (h userHandler) put(w http.ResponseWriter, r *http.Request) {
-	ident, ok := sessionIdentity(w, r, h.deps.Service)
+func (h notifyUserHandler) put(w http.ResponseWriter, r *http.Request) {
+	ident, ok := notifySessionIdentity(w, r, h.deps.Service)
 	if !ok {
 		return
 	}
-	var req settingsRequest
-	if !decodeSettingsRequest(w, r, &req) {
+	var req notifySettingsRequest
+	if !decodeNotifySettingsRequest(w, r, &req) {
 		return
 	}
-	settings := requestToSettings(req, ident.TenantID, ident.UserID, fmt.Sprintf("user:%d", ident.UserID))
+	settings := notifyRequestToSettings(req, ident.TenantID, ident.UserID, fmt.Sprintf("user:%d", ident.UserID))
 	saved, err := h.deps.Service.UpsertSettings(r.Context(), settings)
 	if err != nil {
 		writeNotifyError(w, err, "notification_settings_update_failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, responseFromSettings(saved))
+	notifyWriteJSON(w, http.StatusOK, notifyResponseFromSettings(saved))
 }
 
-type adminHandler struct {
-	deps AdminDeps
+type notifyAdminHandler struct {
+	deps NotifyAdminDeps
 }
 
-func (h adminHandler) get(w http.ResponseWriter, r *http.Request) {
-	ident, ok := adminIdentity(w, r, h.deps)
+func (h notifyAdminHandler) get(w http.ResponseWriter, r *http.Request) {
+	ident, ok := notifyAdminIdentity(w, r, h.deps)
 	if !ok {
 		return
 	}
-	tenantID, userID, ok := adminTarget(w, r, ident)
+	tenantID, userID, ok := notifyAdminTarget(w, r, ident)
 	if !ok {
 		return
 	}
@@ -128,103 +128,103 @@ func (h adminHandler) get(w http.ResponseWriter, r *http.Request) {
 		writeNotifyError(w, err, "notification_settings_read_failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, responseFromSettings(settings))
+	notifyWriteJSON(w, http.StatusOK, notifyResponseFromSettings(settings))
 }
 
-func (h adminHandler) put(w http.ResponseWriter, r *http.Request) {
-	ident, ok := adminIdentity(w, r, h.deps)
+func (h notifyAdminHandler) put(w http.ResponseWriter, r *http.Request) {
+	ident, ok := notifyAdminIdentity(w, r, h.deps)
 	if !ok {
 		return
 	}
-	tenantID, userID, ok := adminTarget(w, r, ident)
+	tenantID, userID, ok := notifyAdminTarget(w, r, ident)
 	if !ok {
 		return
 	}
-	var req settingsRequest
-	if !decodeSettingsRequest(w, r, &req) {
+	var req notifySettingsRequest
+	if !decodeNotifySettingsRequest(w, r, &req) {
 		return
 	}
-	settings := requestToSettings(req, tenantID, userID, fmt.Sprintf("admin:%d", ident.TokenID))
+	settings := notifyRequestToSettings(req, tenantID, userID, fmt.Sprintf("admin:%d", ident.TokenID))
 	saved, err := h.deps.Service.UpsertSettings(r.Context(), settings)
 	if err != nil {
 		writeNotifyError(w, err, "notification_settings_update_failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, responseFromSettings(saved))
+	notifyWriteJSON(w, http.StatusOK, notifyResponseFromSettings(saved))
 }
 
-func sessionIdentity(w http.ResponseWriter, r *http.Request, service SettingsService) (sessionauth.SessionIdentity, bool) {
+func notifySessionIdentity(w http.ResponseWriter, r *http.Request, service NotifySettingsService) (sessionauth.SessionIdentity, bool) {
 	if service == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "notification settings dependency unset")
+		notifyWriteJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "notification settings dependency unset")
 		return sessionauth.SessionIdentity{}, false
 	}
 	ident, ok := sessionauth.SessionFromContext(r.Context())
 	if !ok || ident.TenantID <= 0 || ident.UserID <= 0 {
-		writeJSONError(w, http.StatusUnauthorized, "session_required", "user session is required")
+		notifyWriteJSONError(w, http.StatusUnauthorized, "session_required", "user session is required")
 		return sessionauth.SessionIdentity{}, false
 	}
 	return ident, true
 }
 
-func adminIdentity(w http.ResponseWriter, r *http.Request, d AdminDeps) (admin.AdminIdentity, bool) {
+func notifyAdminIdentity(w http.ResponseWriter, r *http.Request, d NotifyAdminDeps) (admin.AdminIdentity, bool) {
 	if d.Auth == nil || d.Service == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "notification settings dependency unset")
+		notifyWriteJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "notification settings dependency unset")
 		return admin.AdminIdentity{}, false
 	}
 	ident, err := d.Auth.Resolve(r.Context(), r)
 	if err != nil {
 		if errors.Is(err, admin.ErrAdminBackend) {
-			writeJSONError(w, http.StatusServiceUnavailable, "admin_backend_error", "admin auth backend transient failure")
+			notifyWriteJSONError(w, http.StatusServiceUnavailable, "admin_backend_error", "admin auth backend transient failure")
 		} else {
-			writeJSONError(w, http.StatusUnauthorized, "admin_unauthorized", "missing or invalid admin credential")
+			notifyWriteJSONError(w, http.StatusUnauthorized, "admin_unauthorized", "missing or invalid admin credential")
 		}
 		return admin.AdminIdentity{}, false
 	}
 	if ident.Role != admin.RolePlatformAdmin && ident.Role != admin.RoleTenantOperator {
-		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant scope required")
+		notifyWriteJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant scope required")
 		return admin.AdminIdentity{}, false
 	}
 	return ident, true
 }
 
-func adminTarget(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity) (int64, int64, bool) {
+func notifyAdminTarget(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity) (int64, int64, bool) {
 	rawUserID := strings.TrimSpace(chi.URLParam(r, "user_id"))
 	userID, err := strconv.ParseInt(rawUserID, 10, 64)
 	if err != nil || userID <= 0 {
-		writeJSONError(w, http.StatusBadRequest, "user_id_required", "user_id path parameter must be positive")
+		notifyWriteJSONError(w, http.StatusBadRequest, "user_id_required", "user_id path parameter must be positive")
 		return 0, 0, false
 	}
 	rawTenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
 	if rawTenantID == "" && ident.Role == admin.RoleTenantOperator {
 		if ident.ScopeTenantID <= 0 {
-			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant scope required")
+			notifyWriteJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant scope required")
 			return 0, 0, false
 		}
 		return ident.ScopeTenantID, userID, true
 	}
 	tenantID, err := strconv.ParseInt(rawTenantID, 10, 64)
 	if err != nil || tenantID <= 0 {
-		writeJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id query parameter must be positive")
+		notifyWriteJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id query parameter must be positive")
 		return 0, 0, false
 	}
 	if ident.Role == admin.RoleTenantOperator && ident.ScopeTenantID != tenantID {
-		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot act on this tenant scope")
+		notifyWriteJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot act on this tenant scope")
 		return 0, 0, false
 	}
 	return tenantID, userID, true
 }
 
-func decodeSettingsRequest(w http.ResponseWriter, r *http.Request, dst *settingsRequest) bool {
+func decodeNotifySettingsRequest(w http.ResponseWriter, r *http.Request, dst *notifySettingsRequest) bool {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dst); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+		notifyWriteJSONError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
 		return false
 	}
 	return true
 }
 
-func requestToSettings(req settingsRequest, tenantID, userID int64, actor string) notify.Settings {
+func notifyRequestToSettings(req notifySettingsRequest, tenantID, userID int64, actor string) notify.Settings {
 	out := notify.Settings{
 		TenantID:          tenantID,
 		UserID:            userID,
@@ -248,8 +248,8 @@ func requestToSettings(req settingsRequest, tenantID, userID int64, actor string
 	return out
 }
 
-func responseFromSettings(settings notify.Settings) settingsResponse {
-	resp := settingsResponse{
+func notifyResponseFromSettings(settings notify.Settings) notifySettingsResponse {
+	resp := notifySettingsResponse{
 		TenantID:                settings.TenantID,
 		UserID:                  settings.UserID,
 		NotifyType:              string(settings.NotifyType),
@@ -272,20 +272,20 @@ func responseFromSettings(settings notify.Settings) settingsResponse {
 func writeNotifyError(w http.ResponseWriter, err error, code string) {
 	switch {
 	case errors.Is(err, notify.ErrInvalidSettings), errors.Is(err, notify.ErrUnsafeEndpoint), errors.Is(err, notify.ErrHeaderInjection):
-		writeJSONError(w, http.StatusBadRequest, code, "notification settings are invalid")
+		notifyWriteJSONError(w, http.StatusBadRequest, code, "notification settings are invalid")
 	default:
-		writeJSONError(w, http.StatusServiceUnavailable, code, "notification settings dependency failed")
+		notifyWriteJSONError(w, http.StatusServiceUnavailable, code, "notification settings dependency failed")
 	}
 }
 
-func writeJSON(w http.ResponseWriter, status int, value any) {
+func notifyWriteJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
 }
 
-func writeJSONError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, map[string]any{
+func notifyWriteJSONError(w http.ResponseWriter, status int, code, message string) {
+	notifyWriteJSON(w, status, map[string]any{
 		"error": map[string]string{
 			"code":    code,
 			"message": message,

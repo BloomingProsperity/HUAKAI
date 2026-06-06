@@ -1,4 +1,4 @@
-package twofahttp
+package controlhttp
 
 import (
 	"context"
@@ -16,7 +16,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
 
-type Service interface {
+type TwoFAService interface {
 	Setup(context.Context, twofa.SetupInput) (twofa.SetupResult, error)
 	Enable(context.Context, twofa.VerifyInput) (twofa.Status, error)
 	Disable(context.Context, int64, int64) error
@@ -25,29 +25,29 @@ type Service interface {
 	VerifyLogin(context.Context, twofa.VerifyInput) (twofa.VerifyResult, error)
 }
 
-type Settings interface {
+type TwoFASettings interface {
 	Get(context.Context, platformsettings.SettingKey) (platformsettings.StoredSetting, error)
 }
 
-type SessionRevoker interface {
+type TwoFASessionRevoker interface {
 	RevokeOthers(context.Context, usersession.RevokeOthersInput) (int64, error)
 }
 
-type Deps struct {
-	Service  Service
-	Settings Settings
-	Sessions SessionRevoker
+type TwoFADeps struct {
+	Service  TwoFAService
+	Settings TwoFASettings
+	Sessions TwoFASessionRevoker
 }
 
-type setupRequest struct {
+type twoFASetupRequest struct {
 	AccountName string `json:"account_name"`
 }
 
-type codeRequest struct {
+type twoFACodeRequest struct {
 	Code string `json:"code"`
 }
 
-func MountRoutes(r chi.Router, d Deps) {
+func MountTwoFARoutes(r chi.Router, d TwoFADeps) {
 	r.Post("/setup", newSetupHandler(d))
 	r.Post("/enable", newEnableHandler(d))
 	r.Get("/status", newStatusHandler(d))
@@ -55,22 +55,22 @@ func MountRoutes(r chi.Router, d Deps) {
 	r.Post("/backup-codes/regenerate", newRegenerateBackupCodesHandler(d))
 }
 
-func newSetupHandler(d Deps) http.HandlerFunc {
+func newSetupHandler(d TwoFADeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ident, ok := sessionIdentity(w, r)
+		ident, ok := twoFASessionIdentity(w, r)
 		if !ok {
 			return
 		}
 		if !platformTwoFAEnabled(r.Context(), d.Settings) {
-			writeError(w, http.StatusForbidden, "two_factor_disabled", "two-factor authentication is disabled")
+			twoFAWriteError(w, http.StatusForbidden, "two_factor_disabled", "two-factor authentication is disabled")
 			return
 		}
 		if d.Service == nil {
-			writeError(w, http.StatusServiceUnavailable, "two_factor_not_configured", "two-factor service dependency unset")
+			twoFAWriteError(w, http.StatusServiceUnavailable, "two_factor_not_configured", "two-factor service dependency unset")
 			return
 		}
-		var req setupRequest
-		if !decodeOptionalJSON(w, r, &req) {
+		var req twoFASetupRequest
+		if !twoFADecodeOptionalJSON(w, r, &req) {
 			return
 		}
 		result, err := d.Service.Setup(r.Context(), twofa.SetupInput{
@@ -80,26 +80,26 @@ func newSetupHandler(d Deps) http.HandlerFunc {
 			writeTwoFAError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, result)
+		twoFAWriteJSON(w, http.StatusCreated, result)
 	}
 }
 
-func newEnableHandler(d Deps) http.HandlerFunc {
+func newEnableHandler(d TwoFADeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ident, ok := sessionIdentity(w, r)
+		ident, ok := twoFASessionIdentity(w, r)
 		if !ok {
 			return
 		}
 		if !platformTwoFAEnabled(r.Context(), d.Settings) {
-			writeError(w, http.StatusForbidden, "two_factor_disabled", "two-factor authentication is disabled")
+			twoFAWriteError(w, http.StatusForbidden, "two_factor_disabled", "two-factor authentication is disabled")
 			return
 		}
 		if d.Service == nil {
-			writeError(w, http.StatusServiceUnavailable, "two_factor_not_configured", "two-factor service dependency unset")
+			twoFAWriteError(w, http.StatusServiceUnavailable, "two_factor_not_configured", "two-factor service dependency unset")
 			return
 		}
-		var req codeRequest
-		if !decodeJSON(w, r, &req) {
+		var req twoFACodeRequest
+		if !twoFADecodeJSON(w, r, &req) {
 			return
 		}
 		status, err := d.Service.Enable(r.Context(), twofa.VerifyInput{
@@ -110,21 +110,21 @@ func newEnableHandler(d Deps) http.HandlerFunc {
 			return
 		}
 		if err := revokeSessionsAfterTwoFAChange(r.Context(), d.Sessions, ident); err != nil {
-			writeError(w, http.StatusServiceUnavailable, "session_revoke_failed", "session revocation failed after two-factor state change")
+			twoFAWriteError(w, http.StatusServiceUnavailable, "session_revoke_failed", "session revocation failed after two-factor state change")
 			return
 		}
-		writeJSON(w, http.StatusOK, status)
+		twoFAWriteJSON(w, http.StatusOK, status)
 	}
 }
 
-func newStatusHandler(d Deps) http.HandlerFunc {
+func newStatusHandler(d TwoFADeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ident, ok := sessionIdentity(w, r)
+		ident, ok := twoFASessionIdentity(w, r)
 		if !ok {
 			return
 		}
 		if d.Service == nil {
-			writeError(w, http.StatusServiceUnavailable, "two_factor_not_configured", "two-factor service dependency unset")
+			twoFAWriteError(w, http.StatusServiceUnavailable, "two_factor_not_configured", "two-factor service dependency unset")
 			return
 		}
 		available := platformTwoFAEnabled(r.Context(), d.Settings)
@@ -144,22 +144,22 @@ func newStatusHandler(d Deps) http.HandlerFunc {
 		if status.LastUsedAt != nil {
 			resp["last_used_at"] = status.LastUsedAt
 		}
-		writeJSON(w, http.StatusOK, resp)
+		twoFAWriteJSON(w, http.StatusOK, resp)
 	}
 }
 
-func newDisableHandler(d Deps) http.HandlerFunc {
+func newDisableHandler(d TwoFADeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ident, ok := sessionIdentity(w, r)
+		ident, ok := twoFASessionIdentity(w, r)
 		if !ok {
 			return
 		}
 		if d.Service == nil {
-			writeError(w, http.StatusServiceUnavailable, "two_factor_not_configured", "two-factor service dependency unset")
+			twoFAWriteError(w, http.StatusServiceUnavailable, "two_factor_not_configured", "two-factor service dependency unset")
 			return
 		}
-		var req codeRequest
-		if !decodeJSON(w, r, &req) {
+		var req twoFACodeRequest
+		if !twoFADecodeJSON(w, r, &req) {
 			return
 		}
 		if _, err := d.Service.VerifyLogin(r.Context(), twofa.VerifyInput{
@@ -173,29 +173,29 @@ func newDisableHandler(d Deps) http.HandlerFunc {
 			return
 		}
 		if err := revokeSessionsAfterTwoFAChange(r.Context(), d.Sessions, ident); err != nil {
-			writeError(w, http.StatusServiceUnavailable, "session_revoke_failed", "session revocation failed after two-factor state change")
+			twoFAWriteError(w, http.StatusServiceUnavailable, "session_revoke_failed", "session revocation failed after two-factor state change")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+		twoFAWriteJSON(w, http.StatusOK, map[string]any{"enabled": false})
 	}
 }
 
-func newRegenerateBackupCodesHandler(d Deps) http.HandlerFunc {
+func newRegenerateBackupCodesHandler(d TwoFADeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ident, ok := sessionIdentity(w, r)
+		ident, ok := twoFASessionIdentity(w, r)
 		if !ok {
 			return
 		}
 		if !platformTwoFAEnabled(r.Context(), d.Settings) {
-			writeError(w, http.StatusForbidden, "two_factor_disabled", "two-factor authentication is disabled")
+			twoFAWriteError(w, http.StatusForbidden, "two_factor_disabled", "two-factor authentication is disabled")
 			return
 		}
 		if d.Service == nil {
-			writeError(w, http.StatusServiceUnavailable, "two_factor_not_configured", "two-factor service dependency unset")
+			twoFAWriteError(w, http.StatusServiceUnavailable, "two_factor_not_configured", "two-factor service dependency unset")
 			return
 		}
-		var req codeRequest
-		if !decodeJSON(w, r, &req) {
+		var req twoFACodeRequest
+		if !twoFADecodeJSON(w, r, &req) {
 			return
 		}
 		result, err := d.Service.RegenerateBackupCodes(r.Context(), twofa.VerifyInput{
@@ -205,20 +205,20 @@ func newRegenerateBackupCodesHandler(d Deps) http.HandlerFunc {
 			writeTwoFAError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, result)
+		twoFAWriteJSON(w, http.StatusOK, result)
 	}
 }
 
-func sessionIdentity(w http.ResponseWriter, r *http.Request) (sessionauth.SessionIdentity, bool) {
+func twoFASessionIdentity(w http.ResponseWriter, r *http.Request) (sessionauth.SessionIdentity, bool) {
 	ident, ok := sessionauth.SessionFromContext(r.Context())
 	if !ok || ident.TenantID <= 0 || ident.UserID <= 0 {
-		writeError(w, http.StatusUnauthorized, "session_token_required", "session bearer token is required")
+		twoFAWriteError(w, http.StatusUnauthorized, "session_token_required", "session bearer token is required")
 		return sessionauth.SessionIdentity{}, false
 	}
 	return ident, true
 }
 
-func platformTwoFAEnabled(ctx context.Context, settings Settings) bool {
+func platformTwoFAEnabled(ctx context.Context, settings TwoFASettings) bool {
 	if settings == nil {
 		return false
 	}
@@ -226,7 +226,7 @@ func platformTwoFAEnabled(ctx context.Context, settings Settings) bool {
 	return err == nil && setting.Value == "true"
 }
 
-func revokeSessionsAfterTwoFAChange(ctx context.Context, revoker SessionRevoker, ident sessionauth.SessionIdentity) error {
+func revokeSessionsAfterTwoFAChange(ctx context.Context, revoker TwoFASessionRevoker, ident sessionauth.SessionIdentity) error {
 	if revoker == nil {
 		return nil
 	}
@@ -240,19 +240,19 @@ func revokeSessionsAfterTwoFAChange(ctx context.Context, revoker SessionRevoker,
 	return err
 }
 
-func decodeJSON(w http.ResponseWriter, r *http.Request, out any) bool {
+func twoFADecodeJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 	defer r.Body.Close()
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(out); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_two_factor_request", "invalid JSON body")
+		twoFAWriteError(w, http.StatusBadRequest, "invalid_two_factor_request", "invalid JSON body")
 		return false
 	}
 	return true
 }
 
-func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, out any) bool {
+func twoFADecodeOptionalJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 	defer r.Body.Close()
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(out); err != nil && !errors.Is(err, io.EOF) {
-		writeError(w, http.StatusBadRequest, "invalid_two_factor_request", "invalid JSON body")
+		twoFAWriteError(w, http.StatusBadRequest, "invalid_two_factor_request", "invalid JSON body")
 		return false
 	}
 	return true
@@ -261,30 +261,30 @@ func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 func writeTwoFAError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, twofa.ErrInvalidInput):
-		writeError(w, http.StatusBadRequest, "invalid_two_factor_request", "two-factor request is invalid")
+		twoFAWriteError(w, http.StatusBadRequest, "invalid_two_factor_request", "two-factor request is invalid")
 	case errors.Is(err, twofa.ErrInvalidCode):
-		writeError(w, http.StatusUnauthorized, "two_factor_invalid", "two-factor code is invalid")
+		twoFAWriteError(w, http.StatusUnauthorized, "two_factor_invalid", "two-factor code is invalid")
 	case errors.Is(err, twofa.ErrLocked):
-		writeError(w, http.StatusTooManyRequests, "two_factor_locked", "two-factor verification is temporarily locked")
+		twoFAWriteError(w, http.StatusTooManyRequests, "two_factor_locked", "two-factor verification is temporarily locked")
 	case errors.Is(err, twofa.ErrDisabled):
-		writeError(w, http.StatusForbidden, "two_factor_disabled", "two-factor authentication is disabled")
+		twoFAWriteError(w, http.StatusForbidden, "two_factor_disabled", "two-factor authentication is disabled")
 	case errors.Is(err, twofa.ErrNotSetup):
-		writeError(w, http.StatusNotFound, "two_factor_not_setup", "two-factor authentication is not setup")
+		twoFAWriteError(w, http.StatusNotFound, "two_factor_not_setup", "two-factor authentication is not setup")
 	case errors.Is(err, twofa.ErrAlreadyEnabled):
-		writeError(w, http.StatusConflict, "two_factor_already_enabled", "two-factor authentication is already enabled")
+		twoFAWriteError(w, http.StatusConflict, "two_factor_already_enabled", "two-factor authentication is already enabled")
 	default:
-		writeError(w, http.StatusServiceUnavailable, "two_factor_backend_error", "two-factor service unavailable")
+		twoFAWriteError(w, http.StatusServiceUnavailable, "two_factor_backend_error", "two-factor service unavailable")
 	}
 }
 
-func writeJSON(w http.ResponseWriter, status int, payload any) {
+func twoFAWriteJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
-func writeError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, map[string]any{
+func twoFAWriteError(w http.ResponseWriter, status int, code, message string) {
+	twoFAWriteJSON(w, status, map[string]any{
 		"error": map[string]string{
 			"code":    strings.TrimSpace(code),
 			"message": strings.TrimSpace(message),

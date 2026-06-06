@@ -1,4 +1,4 @@
-package platformsettingshttp
+package controlhttp
 
 import (
 	"bytes"
@@ -18,56 +18,56 @@ import (
 )
 
 func TestHandlerGETListTenantOperatorGets403(t *testing.T) {
-	svc := &serviceStub{}
-	handler := newTestRouter(Deps{
-		Auth:    authStub{ident: admin.AdminIdentity{TokenID: 22, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+	svc := &platformSettingsServiceStub{}
+	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
+		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 22, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
 		Service: svc,
 	})
 
-	rec := serveJSON(t, handler, http.MethodGet, "/v1/admin/platform-settings/", nil)
+	rec := servePlatformSettingsJSON(t, handler, http.MethodGet, "/v1/admin/platform-settings/", nil)
 
-	assertStatus(t, rec, http.StatusForbidden)
-	assertErrorCode(t, rec, "admin_forbidden")
+	assertPlatformSettingsStatus(t, rec, http.StatusForbidden)
+	assertPlatformSettingsErrorCode(t, rec, "admin_forbidden")
 	if svc.listCalls != 0 {
 		t.Fatalf("tenant operator reached service List %d times", svc.listCalls)
 	}
 }
 
 func TestHandlerPUTTenantOperatorGets403(t *testing.T) {
-	svc := &serviceStub{}
-	handler := newTestRouter(Deps{
-		Auth:    authStub{ident: admin.AdminIdentity{TokenID: 22, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+	svc := &platformSettingsServiceStub{}
+	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
+		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 22, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
 		Service: svc,
 	})
 
-	rec := serveJSON(t, handler, http.MethodPut, "/v1/admin/platform-settings/promo_enabled", map[string]any{
+	rec := servePlatformSettingsJSON(t, handler, http.MethodPut, "/v1/admin/platform-settings/promo_enabled", map[string]any{
 		"value": "true",
 	})
 
-	assertStatus(t, rec, http.StatusForbidden)
-	assertErrorCode(t, rec, "admin_forbidden")
+	assertPlatformSettingsStatus(t, rec, http.StatusForbidden)
+	assertPlatformSettingsErrorCode(t, rec, "admin_forbidden")
 	if svc.upsertCalls != 0 {
 		t.Fatalf("tenant operator reached service Upsert %d times", svc.upsertCalls)
 	}
 }
 
 func TestHandlerGETSingleAbsentKeyReturnsDefault(t *testing.T) {
-	svc := &serviceStub{
+	svc := &platformSettingsServiceStub{
 		getResult: platformsettings.StoredSetting{
 			Key:    platformsettings.KeyRegistrationEnabled,
 			Value:  "false",
 			Source: platformsettings.SourceDefault,
 		},
 	}
-	handler := newTestRouter(Deps{
-		Auth:    authStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
+		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
 		Service: svc,
 	})
 
-	rec := serveJSON(t, handler, http.MethodGet, "/v1/admin/platform-settings/registration_enabled", nil)
+	rec := servePlatformSettingsJSON(t, handler, http.MethodGet, "/v1/admin/platform-settings/registration_enabled", nil)
 
-	assertStatus(t, rec, http.StatusOK)
-	got := decodeSettingResponse(t, rec)
+	assertPlatformSettingsStatus(t, rec, http.StatusOK)
+	got := decodePlatformSettingsResponse(t, rec)
 	if got.Key != "registration_enabled" || got.Value != "false" || got.Source != "default" {
 		t.Fatalf("response=%+v want registration_enabled false/default", got)
 	}
@@ -84,36 +84,36 @@ func TestHandlerGETSingleAbsentKeyReturnsDefault(t *testing.T) {
 }
 
 func TestHandlerPUTUnknownKeyGets400BeforeService(t *testing.T) {
-	svc := &serviceStub{}
-	handler := newTestRouter(Deps{
-		Auth:    authStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+	svc := &platformSettingsServiceStub{}
+	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
+		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
 		Service: svc,
 	})
 
-	rec := serveJSON(t, handler, http.MethodPut, "/v1/admin/platform-settings/smtp_password", map[string]any{
+	rec := servePlatformSettingsJSON(t, handler, http.MethodPut, "/v1/admin/platform-settings/smtp_password", map[string]any{
 		"value": "do-not-store",
 	})
 
-	assertStatus(t, rec, http.StatusBadRequest)
-	assertErrorCode(t, rec, "platform_setting_unknown_key")
+	assertPlatformSettingsStatus(t, rec, http.StatusBadRequest)
+	assertPlatformSettingsErrorCode(t, rec, "platform_setting_unknown_key")
 	if svc.upsertCalls != 0 {
 		t.Fatalf("unknown key reached service Upsert %d times", svc.upsertCalls)
 	}
 }
 
 func TestHandlerPUTMissingValueFieldGets400(t *testing.T) {
-	svc := &serviceStub{}
-	handler := newTestRouter(Deps{
-		Auth:    authStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+	svc := &platformSettingsServiceStub{}
+	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
+		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
 		Service: svc,
 	})
 
-	rec := serveJSON(t, handler, http.MethodPut, "/v1/admin/platform-settings/promo_enabled", map[string]any{
+	rec := servePlatformSettingsJSON(t, handler, http.MethodPut, "/v1/admin/platform-settings/promo_enabled", map[string]any{
 		"reason": "missing value",
 	})
 
-	assertStatus(t, rec, http.StatusBadRequest)
-	assertErrorCode(t, rec, "platform_setting_value_required")
+	assertPlatformSettingsStatus(t, rec, http.StatusBadRequest)
+	assertPlatformSettingsErrorCode(t, rec, "platform_setting_value_required")
 	if svc.upsertCalls != 0 {
 		t.Fatalf("missing value reached service Upsert %d times", svc.upsertCalls)
 	}
@@ -121,7 +121,7 @@ func TestHandlerPUTMissingValueFieldGets400(t *testing.T) {
 
 func TestHandlerPUTReasonOptionalWritesSetting(t *testing.T) {
 	updatedAt := time.Date(2026, 6, 3, 5, 6, 7, 0, time.UTC)
-	svc := &serviceStub{
+	svc := &platformSettingsServiceStub{
 		upsertResult: platformsettings.StoredSetting{
 			Key:       platformsettings.KeyPromoEnabled,
 			Value:     "true",
@@ -130,16 +130,16 @@ func TestHandlerPUTReasonOptionalWritesSetting(t *testing.T) {
 			UpdatedBy: "11",
 		},
 	}
-	handler := newTestRouter(Deps{
-		Auth:    authStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
+		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
 		Service: svc,
 	})
 
-	rec := serveJSON(t, handler, http.MethodPut, "/v1/admin/platform-settings/promo_enabled", map[string]any{
+	rec := servePlatformSettingsJSON(t, handler, http.MethodPut, "/v1/admin/platform-settings/promo_enabled", map[string]any{
 		"value": "true",
 	})
 
-	assertStatus(t, rec, http.StatusOK)
+	assertPlatformSettingsStatus(t, rec, http.StatusOK)
 	if svc.upsertCalls != 1 {
 		t.Fatalf("upsert calls=%d want 1", svc.upsertCalls)
 	}
@@ -148,7 +148,7 @@ func TestHandlerPUTReasonOptionalWritesSetting(t *testing.T) {
 		svc.lastUpsert.ActorRole != admin.RolePlatformAdmin || svc.lastUpsert.Reason != "" {
 		t.Fatalf("upsert input=%+v", svc.lastUpsert)
 	}
-	got := decodeSettingResponse(t, rec)
+	got := decodePlatformSettingsResponse(t, rec)
 	if got.Value != "true" || got.Source != "db" || got.UpdatedAt == nil || *got.UpdatedBy != "11" {
 		t.Fatalf("response=%+v want db true with metadata", got)
 	}
@@ -160,34 +160,34 @@ func TestHandlerPUTReasonOptionalWritesSetting(t *testing.T) {
 // check: delete the guard and the enable request reaches Upsert while the disable
 // request still proves the check is not a blanket write blocker.
 func TestHandlerPUTCaptchaEnabledRequiresConfiguredSecret(t *testing.T) {
-	svc := &serviceStub{
+	svc := &platformSettingsServiceStub{
 		upsertResult: platformsettings.StoredSetting{
 			Key:    platformsettings.KeyCaptchaEnabled,
 			Value:  "false",
 			Source: platformsettings.SourceDB,
 		},
 	}
-	handler := newTestRouter(Deps{
-		Auth:                    authStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
+		Auth:                    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
 		Service:                 svc,
 		CaptchaSecretConfigured: false,
 	})
 
-	rec := serveJSON(t, handler, http.MethodPut, "/v1/admin/platform-settings/captcha_enabled", map[string]any{
+	rec := servePlatformSettingsJSON(t, handler, http.MethodPut, "/v1/admin/platform-settings/captcha_enabled", map[string]any{
 		"value": "true",
 	})
 
-	assertStatus(t, rec, http.StatusBadRequest)
-	assertErrorCode(t, rec, "captcha_secret_required")
+	assertPlatformSettingsStatus(t, rec, http.StatusBadRequest)
+	assertPlatformSettingsErrorCode(t, rec, "captcha_secret_required")
 	if svc.upsertCalls != 0 {
 		t.Fatalf("missing secret enable reached Upsert %d times", svc.upsertCalls)
 	}
 
-	rec = serveJSON(t, handler, http.MethodPut, "/v1/admin/platform-settings/captcha_enabled", map[string]any{
+	rec = servePlatformSettingsJSON(t, handler, http.MethodPut, "/v1/admin/platform-settings/captcha_enabled", map[string]any{
 		"value": "false",
 	})
 
-	assertStatus(t, rec, http.StatusOK)
+	assertPlatformSettingsStatus(t, rec, http.StatusOK)
 	if svc.upsertCalls != 1 || svc.lastUpsert.Key != platformsettings.KeyCaptchaEnabled || svc.lastUpsert.Value != "false" {
 		t.Fatalf("disable upsert calls=%d input=%+v", svc.upsertCalls, svc.lastUpsert)
 	}
@@ -198,23 +198,23 @@ func TestHandlerPUTCaptchaEnabledRequiresConfiguredSecret(t *testing.T) {
 // decoration and the response still returns the setting but lacks the degraded
 // missing-secret marker.
 func TestHandlerGETCaptchaEnabledShowsMissingSecretHealth(t *testing.T) {
-	svc := &serviceStub{
+	svc := &platformSettingsServiceStub{
 		getResult: platformsettings.StoredSetting{
 			Key:    platformsettings.KeyCaptchaEnabled,
 			Value:  "true",
 			Source: platformsettings.SourceDB,
 		},
 	}
-	handler := newTestRouter(Deps{
-		Auth:                    authStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
+		Auth:                    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
 		Service:                 svc,
 		CaptchaSecretConfigured: false,
 	})
 
-	rec := serveJSON(t, handler, http.MethodGet, "/v1/admin/platform-settings/captcha_enabled", nil)
+	rec := servePlatformSettingsJSON(t, handler, http.MethodGet, "/v1/admin/platform-settings/captcha_enabled", nil)
 
-	assertStatus(t, rec, http.StatusOK)
-	got := decodeSettingResponse(t, rec)
+	assertPlatformSettingsStatus(t, rec, http.StatusOK)
+	got := decodePlatformSettingsResponse(t, rec)
 	if got.Health == nil || got.Health.Status != "degraded" ||
 		got.Health.Issue != "turnstile_secret_missing" || got.Health.CaptchaSecretConfigured {
 		t.Fatalf("captcha health=%+v want degraded missing-secret marker", got.Health)
@@ -222,9 +222,9 @@ func TestHandlerGETCaptchaEnabledShowsMissingSecretHealth(t *testing.T) {
 }
 
 func TestHandlerPUTLargeBodyRejectedWith413(t *testing.T) {
-	svc := &serviceStub{}
-	handler := newTestRouter(Deps{
-		Auth:    authStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+	svc := &platformSettingsServiceStub{}
+	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
+		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
 		Service: svc,
 	})
 	body := bytes.NewBufferString(`{"value":"` + strings.Repeat("x", 70<<10) + `"}`)
@@ -234,22 +234,22 @@ func TestHandlerPUTLargeBodyRejectedWith413(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	assertStatus(t, rec, http.StatusRequestEntityTooLarge)
-	assertErrorCode(t, rec, "body_too_large")
+	assertPlatformSettingsStatus(t, rec, http.StatusRequestEntityTooLarge)
+	assertPlatformSettingsErrorCode(t, rec, "body_too_large")
 	if svc.upsertCalls != 0 {
 		t.Fatalf("oversize body reached service Upsert %d times", svc.upsertCalls)
 	}
 }
 
 func TestHandlerNilServiceReturns503(t *testing.T) {
-	handler := newTestRouter(Deps{
-		Auth: authStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
+		Auth: platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
 	})
 
-	rec := serveJSON(t, handler, http.MethodGet, "/v1/admin/platform-settings/", nil)
+	rec := servePlatformSettingsJSON(t, handler, http.MethodGet, "/v1/admin/platform-settings/", nil)
 
-	assertStatus(t, rec, http.StatusServiceUnavailable)
-	assertErrorCode(t, rec, "gateway_not_configured")
+	assertPlatformSettingsStatus(t, rec, http.StatusServiceUnavailable)
+	assertPlatformSettingsErrorCode(t, rec, "gateway_not_configured")
 }
 
 func TestHandlerGETListReturnsAllDefinedKeys(t *testing.T) {
@@ -263,21 +263,21 @@ func TestHandlerGETListReturnsAllDefinedKeys(t *testing.T) {
 		}
 		items = append(items, platformsettings.StoredSetting{Key: key, Value: value, Source: source})
 	}
-	handler := newTestRouter(Deps{
-		Auth: authStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
-		Service: &serviceStub{
+	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
+		Auth: platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Service: &platformSettingsServiceStub{
 			listResult: items,
 		},
 	})
 
-	rec := serveJSON(t, handler, http.MethodGet, "/v1/admin/platform-settings/", nil)
+	rec := servePlatformSettingsJSON(t, handler, http.MethodGet, "/v1/admin/platform-settings/", nil)
 
-	assertStatus(t, rec, http.StatusOK)
-	got := decodeListResponse(t, rec)
+	assertPlatformSettingsStatus(t, rec, http.StatusOK)
+	got := decodePlatformSettingsListResponse(t, rec)
 	if len(got.Items) != len(platformsettings.AllKeys()) {
 		t.Fatalf("items=%d want %d: %+v", len(got.Items), len(platformsettings.AllKeys()), got.Items)
 	}
-	seen := map[string]settingResponse{}
+	seen := map[string]platformSettingsResponse{}
 	for _, item := range got.Items {
 		seen[item.Key] = item
 	}
@@ -289,19 +289,19 @@ func TestHandlerGETListReturnsAllDefinedKeys(t *testing.T) {
 	}
 }
 
-type authStub struct {
+type platformSettingsAuthStub struct {
 	ident admin.AdminIdentity
 	err   error
 }
 
-func (s authStub) Resolve(context.Context, *http.Request) (admin.AdminIdentity, error) {
+func (s platformSettingsAuthStub) Resolve(context.Context, *http.Request) (admin.AdminIdentity, error) {
 	if s.err != nil {
 		return admin.AdminIdentity{}, s.err
 	}
 	return s.ident, nil
 }
 
-type serviceStub struct {
+type platformSettingsServiceStub struct {
 	getCalls    int
 	listCalls   int
 	upsertCalls int
@@ -314,7 +314,7 @@ type serviceStub struct {
 	err          error
 }
 
-func (s *serviceStub) Get(_ context.Context, key platformsettings.SettingKey) (platformsettings.StoredSetting, error) {
+func (s *platformSettingsServiceStub) Get(_ context.Context, key platformsettings.SettingKey) (platformsettings.StoredSetting, error) {
 	s.getCalls++
 	s.lastGetKey = key
 	if s.err != nil {
@@ -323,7 +323,7 @@ func (s *serviceStub) Get(_ context.Context, key platformsettings.SettingKey) (p
 	return s.getResult, nil
 }
 
-func (s *serviceStub) List(context.Context) ([]platformsettings.StoredSetting, error) {
+func (s *platformSettingsServiceStub) List(context.Context) ([]platformsettings.StoredSetting, error) {
 	s.listCalls++
 	if s.err != nil {
 		return nil, s.err
@@ -331,7 +331,7 @@ func (s *serviceStub) List(context.Context) ([]platformsettings.StoredSetting, e
 	return append([]platformsettings.StoredSetting(nil), s.listResult...), nil
 }
 
-func (s *serviceStub) Upsert(_ context.Context, in platformsettings.UpsertInput) (platformsettings.StoredSetting, error) {
+func (s *platformSettingsServiceStub) Upsert(_ context.Context, in platformsettings.UpsertInput) (platformsettings.StoredSetting, error) {
 	s.upsertCalls++
 	s.lastUpsert = in
 	if s.err != nil {
@@ -340,7 +340,7 @@ func (s *serviceStub) Upsert(_ context.Context, in platformsettings.UpsertInput)
 	return s.upsertResult, nil
 }
 
-func newTestRouter(d Deps) http.Handler {
+func newPlatformSettingsTestRouter(d PlatformSettingsDeps) http.Handler {
 	r := chi.NewRouter()
 	r.Route("/v1/admin/platform-settings", func(r chi.Router) {
 		MountPlatformSettingsRoutes(r, d)
@@ -348,7 +348,7 @@ func newTestRouter(d Deps) http.Handler {
 	return r
 }
 
-func serveJSON(t *testing.T, handler http.Handler, method, path string, body any) *httptest.ResponseRecorder {
+func servePlatformSettingsJSON(t *testing.T, handler http.Handler, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	var reader *bytes.Reader
 	if body == nil {
@@ -367,14 +367,14 @@ func serveJSON(t *testing.T, handler http.Handler, method, path string, body any
 	return rec
 }
 
-func assertStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
+func assertPlatformSettingsStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
 	t.Helper()
 	if rec.Code != want {
 		t.Fatalf("status=%d want %d body=%s", rec.Code, want, rec.Body.String())
 	}
 }
 
-func assertErrorCode(t *testing.T, rec *httptest.ResponseRecorder, want string) {
+func assertPlatformSettingsErrorCode(t *testing.T, rec *httptest.ResponseRecorder, want string) {
 	t.Helper()
 	var body struct {
 		Error struct {
@@ -389,24 +389,24 @@ func assertErrorCode(t *testing.T, rec *httptest.ResponseRecorder, want string) 
 	}
 }
 
-func decodeSettingResponse(t *testing.T, rec *httptest.ResponseRecorder) settingResponse {
+func decodePlatformSettingsResponse(t *testing.T, rec *httptest.ResponseRecorder) platformSettingsResponse {
 	t.Helper()
-	var body settingResponse
+	var body platformSettingsResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode setting response: %v body=%s", err, rec.Body.String())
 	}
 	return body
 }
 
-func decodeListResponse(t *testing.T, rec *httptest.ResponseRecorder) listResponse {
+func decodePlatformSettingsListResponse(t *testing.T, rec *httptest.ResponseRecorder) platformSettingsListResponse {
 	t.Helper()
-	var body listResponse
+	var body platformSettingsListResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode list response: %v body=%s", err, rec.Body.String())
 	}
 	return body
 }
 
-var _ Auth = authStub{}
-var _ Service = (*serviceStub)(nil)
+var _ PlatformSettingsAuth = platformSettingsAuthStub{}
+var _ PlatformSettingsService = (*platformSettingsServiceStub)(nil)
 var _ = errors.Is

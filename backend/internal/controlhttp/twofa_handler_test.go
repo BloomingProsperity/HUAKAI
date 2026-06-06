@@ -1,4 +1,4 @@
-package twofahttp
+package controlhttp
 
 import (
 	"bytes"
@@ -163,7 +163,7 @@ func TestTwoFAStateChangesRevokeOtherSessions(t *testing.T) {
 		t.Fatalf("Setup: %v", err)
 	}
 	revoker := &recordingSessionRevoker{}
-	router := twoFATestRouterWithDepsAndIdent(Deps{Service: service, Settings: settings, Sessions: revoker}, sessionauth.SessionIdentity{
+	router := twoFATestRouterWithDepsAndIdent(TwoFADeps{Service: service, Settings: settings, Sessions: revoker}, sessionauth.SessionIdentity{
 		TenantID: 1, UserID: 1001, FamilyID: "current-family",
 	})
 
@@ -222,7 +222,7 @@ func TestDisableKeepsCurrentSessionAndRevokesOtherSessions(t *testing.T) {
 	router := chi.NewRouter()
 	router.Route("/v1/auth/2fa", func(r chi.Router) {
 		r.Use(sessionauth.SessionMiddleware(sessionSvc, nil))
-		MountRoutes(r, Deps{Service: service, Settings: settings, Sessions: sessionSvc})
+		MountTwoFARoutes(r, TwoFADeps{Service: service, Settings: settings, Sessions: sessionSvc})
 	})
 
 	rec := serveTwoFAJSONWithBearer(t, router, http.MethodPost, "/v1/auth/2fa/disable", map[string]any{
@@ -239,16 +239,16 @@ func TestDisableKeepsCurrentSessionAndRevokesOtherSessions(t *testing.T) {
 }
 
 func twoFATestRouter(service *twofa.Service, settings *platformsettings.Service) http.Handler {
-	return twoFATestRouterWithDeps(Deps{Service: service, Settings: settings})
+	return twoFATestRouterWithDeps(TwoFADeps{Service: service, Settings: settings})
 }
 
-func twoFATestRouterWithDeps(d Deps) http.Handler {
+func twoFATestRouterWithDeps(d TwoFADeps) http.Handler {
 	return twoFATestRouterWithDepsAndIdent(d, sessionauth.SessionIdentity{
 		TenantID: 1, UserID: 1001, FamilyID: "test-family",
 	})
 }
 
-func twoFATestRouterWithDepsAndIdent(d Deps, ident sessionauth.SessionIdentity) http.Handler {
+func twoFATestRouterWithDepsAndIdent(d TwoFADeps, ident sessionauth.SessionIdentity) http.Handler {
 	r := chi.NewRouter()
 	r.Route("/v1/auth/2fa", func(r chi.Router) {
 		r.Use(func(next http.Handler) http.Handler {
@@ -256,7 +256,7 @@ func twoFATestRouterWithDepsAndIdent(d Deps, ident sessionauth.SessionIdentity) 
 				next.ServeHTTP(w, req.WithContext(sessionauth.ContextWithSession(req.Context(), ident)))
 			})
 		})
-		MountRoutes(r, d)
+		MountTwoFARoutes(r, d)
 	})
 	return r
 }
@@ -294,7 +294,7 @@ func TestTwoFAStateChangeReportsSessionRevokeFailure(t *testing.T) {
 		t.Fatalf("Setup: %v", err)
 	}
 	revoker := &recordingSessionRevoker{err: errors.New("session store down")}
-	router := twoFATestRouterWithDeps(Deps{Service: service, Settings: settings, Sessions: revoker})
+	router := twoFATestRouterWithDeps(TwoFADeps{Service: service, Settings: settings, Sessions: revoker})
 
 	rec := serveTwoFAJSON(t, router, http.MethodPost, "/v1/auth/2fa/enable", map[string]any{
 		"code": httpCodeFromSecret(t, setup.Secret, now),

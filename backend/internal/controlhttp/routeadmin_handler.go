@@ -1,9 +1,9 @@
 // HUAKAI · iKun
 
-// Package routeadminhttp 暴露订阅分组路由 (routes 表, F-POOL-001 §5.2) 的 admin HTTP 端点。
+// Package controlhttp 暴露订阅分组路由 (routes 表, F-POOL-001 §5.2) 的 admin HTTP 端点。
 // handler 由 cmd/gateway/routes.go 挂载。仅 platform_admin 可访问,
 // 租户范围来自请求体/查询参数, 审计归属的 adminID 一律取自已认证身份 (绝不取自请求体)。
-package routeadminhttp
+package controlhttp
 
 import (
 	"context"
@@ -20,25 +20,25 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/routeadmin"
 )
 
-const maxBodyBytes = 1 << 20 // 1 MiB
+const routeAdminMaxBodyBytes = 1 << 20 // 1 MiB
 
-// AdminAuth 解析入站 admin 凭据。
-type AdminAuth interface {
+// RouteAdminAuth 解析入站 admin 凭据。
+type RouteAdminAuth interface {
 	Resolve(context.Context, *http.Request) (admin.AdminIdentity, error)
 }
 
-// Service 是 handler 依赖的 routes 管理能力子集 (由 *routeadmin.Service 实现)。
-type Service interface {
+// RouteAdminService 是 handler 依赖的 routes 管理能力子集 (由 *routeadmin.RouteAdminService 实现)。
+type RouteAdminService interface {
 	Create(context.Context, routeadmin.CreateInput) (routeadmin.Route, error)
 	List(context.Context, int64) ([]routeadmin.Route, error)
 	Get(context.Context, int64, int64) (routeadmin.Route, error)
 	Delete(context.Context, int64, int64, int64) (routeadmin.Route, error)
 }
 
-// AdminDeps 管理员路由依赖。
-type AdminDeps struct {
-	Auth    AdminAuth
-	Service Service
+// RouteAdminDeps 管理员路由依赖。
+type RouteAdminDeps struct {
+	Auth    RouteAdminAuth
+	Service RouteAdminService
 }
 
 type createRouteRequest struct {
@@ -64,7 +64,7 @@ type routeView struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
-func toRouteView(r routeadmin.Route) routeView {
+func routeAdminToRouteView(r routeadmin.Route) routeView {
 	return routeView{
 		ID: r.ID, TenantID: r.TenantID, Name: r.Name, UserGroupMatch: r.UserGroupMatch,
 		ModelPatternMatch: r.ModelPatternMatch, PoolGroupID: r.PoolGroupID, MatchPriority: r.MatchPriority,
@@ -72,30 +72,30 @@ func toRouteView(r routeadmin.Route) routeView {
 	}
 }
 
-func toRouteViews(routes []routeadmin.Route) []routeView {
+func routeAdminToRouteViews(routes []routeadmin.Route) []routeView {
 	out := make([]routeView, 0, len(routes))
 	for _, r := range routes {
-		out = append(out, toRouteView(r))
+		out = append(out, routeAdminToRouteView(r))
 	}
 	return out
 }
 
 // MountRouteAdminRoutes 挂载管理员分组路由端点 (建 / 列 / 查 / 软删)。
-func MountRouteAdminRoutes(r chi.Router, d AdminDeps) {
-	r.Post("/", newAdminCreateRouteHandler(d))
-	r.Get("/", newAdminListRoutesHandler(d))
-	r.Get("/{id}", newAdminGetRouteHandler(d))
-	r.Delete("/{id}", newAdminDeleteRouteHandler(d))
+func MountRouteAdminRoutes(r chi.Router, d RouteAdminDeps) {
+	r.Post("/", newRouteAdminCreateHandler(d))
+	r.Get("/", newRouteAdminListHandler(d))
+	r.Get("/{id}", newRouteAdminGetHandler(d))
+	r.Delete("/{id}", newRouteAdminDeleteHandler(d))
 }
 
-func newAdminCreateRouteHandler(d AdminDeps) http.HandlerFunc {
+func newRouteAdminCreateHandler(d RouteAdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ident, ok := resolveAdmin(w, r, d)
+		ident, ok := routeAdminResolveAdmin(w, r, d)
 		if !ok {
 			return
 		}
 		var req createRouteRequest
-		if !decodeJSON(w, r, &req) {
+		if !routeAdminDecodeJSON(w, r, &req) {
 			return
 		}
 		route, err := d.Service.Create(r.Context(), routeadmin.CreateInput{
@@ -108,151 +108,141 @@ func newAdminCreateRouteHandler(d AdminDeps) http.HandlerFunc {
 			AdminID:           ident.TokenID, // 审计归属取自已认证身份, 非请求体
 		})
 		if err != nil {
-			writeRouteError(w, err)
+			routeAdminWriteRouteError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]any{"route": toRouteView(route)})
+		controlWriteJSON(w, http.StatusCreated, map[string]any{"route": routeAdminToRouteView(route)})
 	}
 }
 
-func newAdminListRoutesHandler(d AdminDeps) http.HandlerFunc {
+func newRouteAdminListHandler(d RouteAdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := resolveAdmin(w, r, d); !ok {
+		if _, ok := routeAdminResolveAdmin(w, r, d); !ok {
 			return
 		}
-		tenantID, ok := parsePositiveQuery(w, r, "tenant_id")
+		tenantID, ok := routeAdminParsePositiveQuery(w, r, "tenant_id")
 		if !ok {
 			return
 		}
 		routes, err := d.Service.List(r.Context(), tenantID)
 		if err != nil {
-			writeRouteError(w, err)
+			routeAdminWriteRouteError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"routes": toRouteViews(routes)})
+		controlWriteJSON(w, http.StatusOK, map[string]any{"routes": routeAdminToRouteViews(routes)})
 	}
 }
 
-func newAdminGetRouteHandler(d AdminDeps) http.HandlerFunc {
+func newRouteAdminGetHandler(d RouteAdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := resolveAdmin(w, r, d); !ok {
+		if _, ok := routeAdminResolveAdmin(w, r, d); !ok {
 			return
 		}
-		tenantID, ok := parsePositiveQuery(w, r, "tenant_id")
+		tenantID, ok := routeAdminParsePositiveQuery(w, r, "tenant_id")
 		if !ok {
 			return
 		}
-		id, ok := parsePathID(w, r)
+		id, ok := routeAdminParsePathID(w, r)
 		if !ok {
 			return
 		}
 		route, err := d.Service.Get(r.Context(), tenantID, id)
 		if err != nil {
-			writeRouteError(w, err)
+			routeAdminWriteRouteError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"route": toRouteView(route)})
+		controlWriteJSON(w, http.StatusOK, map[string]any{"route": routeAdminToRouteView(route)})
 	}
 }
 
-func newAdminDeleteRouteHandler(d AdminDeps) http.HandlerFunc {
+func newRouteAdminDeleteHandler(d RouteAdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ident, ok := resolveAdmin(w, r, d)
+		ident, ok := routeAdminResolveAdmin(w, r, d)
 		if !ok {
 			return
 		}
-		tenantID, ok := parsePositiveQuery(w, r, "tenant_id")
+		tenantID, ok := routeAdminParsePositiveQuery(w, r, "tenant_id")
 		if !ok {
 			return
 		}
-		id, ok := parsePathID(w, r)
+		id, ok := routeAdminParsePathID(w, r)
 		if !ok {
 			return
 		}
 		route, err := d.Service.Delete(r.Context(), tenantID, id, ident.TokenID)
 		if err != nil {
-			writeRouteError(w, err)
+			routeAdminWriteRouteError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"route": toRouteView(route)})
+		controlWriteJSON(w, http.StatusOK, map[string]any{"route": routeAdminToRouteView(route)})
 	}
 }
 
-func resolveAdmin(w http.ResponseWriter, r *http.Request, d AdminDeps) (admin.AdminIdentity, bool) {
+func routeAdminResolveAdmin(w http.ResponseWriter, r *http.Request, d RouteAdminDeps) (admin.AdminIdentity, bool) {
 	if d.Auth == nil || d.Service == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "route admin dependency unset")
+		controlWriteJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "route admin dependency unset")
 		return admin.AdminIdentity{}, false
 	}
 	ident, err := d.Auth.Resolve(r.Context(), r)
 	if err != nil {
 		if errors.Is(err, admin.ErrAdminBackend) {
-			writeJSONError(w, http.StatusServiceUnavailable, "admin_backend_error", "admin auth backend transient failure")
+			controlWriteJSONError(w, http.StatusServiceUnavailable, "admin_backend_error", "admin auth backend transient failure")
 		} else {
-			writeJSONError(w, http.StatusUnauthorized, "admin_unauthorized", "missing or invalid admin credential")
+			controlWriteJSONError(w, http.StatusUnauthorized, "admin_unauthorized", "missing or invalid admin credential")
 		}
 		return admin.AdminIdentity{}, false
 	}
 	if ident.Role != admin.RolePlatformAdmin {
-		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "platform_admin role required")
+		controlWriteJSONError(w, http.StatusForbidden, "admin_forbidden", "platform_admin role required")
 		return admin.AdminIdentity{}, false
 	}
 	return ident, true
 }
 
-func parsePathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+func routeAdminParsePathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil || id <= 0 {
-		writeJSONError(w, http.StatusBadRequest, "invalid_route_id", "route id must be a positive int64")
+		controlWriteJSONError(w, http.StatusBadRequest, "invalid_route_id", "route id must be a positive int64")
 		return 0, false
 	}
 	return id, true
 }
 
-func parsePositiveQuery(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
+func routeAdminParsePositiveQuery(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
 	raw := strings.TrimSpace(r.URL.Query().Get(name))
 	n, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || n <= 0 {
-		writeJSONError(w, http.StatusBadRequest, name+"_required", name+" query parameter must be positive")
+		controlWriteJSONError(w, http.StatusBadRequest, name+"_required", name+" query parameter must be positive")
 		return 0, false
 	}
 	return n, true
 }
 
-func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+func routeAdminDecodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, routeAdminMaxBodyBytes)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_route_request", "request body is not valid JSON")
+		controlWriteJSONError(w, http.StatusBadRequest, "invalid_route_request", "request body is not valid JSON")
 		return false
 	}
 	return true
 }
 
-func writeJSON(w http.ResponseWriter, status int, body any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
-}
-
-func writeJSONError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
-}
-
-// writeRouteError 把 routeadmin 服务层错误哨兵映射为 HTTP 状态码。
-func writeRouteError(w http.ResponseWriter, err error) {
+// routeAdminWriteRouteError 把 routeadmin 服务层错误哨兵映射为 HTTP 状态码。
+func routeAdminWriteRouteError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, routeadmin.ErrInvalidModelPattern):
-		writeJSONError(w, http.StatusBadRequest, "invalid_model_pattern", "model_pattern_match wildcard '*' only allowed as whole pattern or trailing suffix")
+		controlWriteJSONError(w, http.StatusBadRequest, "invalid_model_pattern", "model_pattern_match wildcard '*' only allowed as whole pattern or trailing suffix")
 	case errors.Is(err, routeadmin.ErrInvalidInput):
-		writeJSONError(w, http.StatusBadRequest, "invalid_route_request", "route request is invalid")
+		controlWriteJSONError(w, http.StatusBadRequest, "invalid_route_request", "route request is invalid")
 	case errors.Is(err, routeadmin.ErrRouteNotFound):
-		writeJSONError(w, http.StatusNotFound, "route_not_found", "route not found for tenant")
+		controlWriteJSONError(w, http.StatusNotFound, "route_not_found", "route not found for tenant")
 	case errors.Is(err, routeadmin.ErrPoolGroupNotFound):
-		writeJSONError(w, http.StatusNotFound, "pool_group_not_found", "target pool_group not found for tenant")
+		controlWriteJSONError(w, http.StatusNotFound, "pool_group_not_found", "target pool_group not found for tenant")
 	case errors.Is(err, routeadmin.ErrDuplicateName):
-		writeJSONError(w, http.StatusConflict, "route_name_conflict", "route name already exists for tenant")
+		controlWriteJSONError(w, http.StatusConflict, "route_name_conflict", "route name already exists for tenant")
 	default:
-		writeJSONError(w, http.StatusServiceUnavailable, "route_admin_backend_error", "route admin service unavailable")
+		controlWriteJSONError(w, http.StatusServiceUnavailable, "route_admin_backend_error", "route admin service unavailable")
 	}
 }

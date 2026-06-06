@@ -1,4 +1,4 @@
-package disputehttp
+package controlhttp
 
 import (
 	"bytes"
@@ -20,11 +20,11 @@ import (
 // Mutation: skip GetReceiptForUser or call it with the wrong user_id.
 // User A would be able to create a dispute for user B's receipt; this must go red.
 func TestCreateDisputeRejectsReceiptOwnedByAnotherUser(t *testing.T) {
-	receipts := &fakeReceiptReader{err: audit.ErrReceiptNotFound}
-	store := &fakeDisputeStore{}
-	router := userRouter(UserDeps{Receipts: receipts, Store: store}, sessionauth.SessionIdentity{TenantID: 7, UserID: 42})
+	receipts := &disputeFakeReceiptReader{err: audit.ErrReceiptNotFound}
+	store := &disputeFakeStore{}
+	router := disputeUserRouter(DisputeUserDeps{Receipts: receipts, Store: store}, sessionauth.SessionIdentity{TenantID: 7, UserID: 42})
 
-	rec := doJSON(router, http.MethodPost, "/v1/receipts/req-user-b/disputes", `{"reason":"not my charge"}`)
+	rec := doDisputeJSON(router, http.MethodPost, "/v1/receipts/req-user-b/disputes", `{"reason":"not my charge"}`)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status=%d want 404 body=%s", rec.Code, rec.Body.String())
@@ -41,11 +41,11 @@ func TestCreateDisputeRejectsReceiptOwnedByAnotherUser(t *testing.T) {
 // Mutation: take tenant_id/user_id from JSON or query instead of session.
 // The created dispute would be scoped to attacker-supplied identity.
 func TestCreateDisputeUsesSessionScopeAndRejectsDuplicate(t *testing.T) {
-	receipts := &fakeReceiptReader{receipt: &audit.CostReceipt{TenantID: 7, UserID: 42, RequestID: "req-own"}}
-	store := &fakeDisputeStore{createErr: audit.ErrDisputeDuplicate}
-	router := userRouter(UserDeps{Receipts: receipts, Store: store}, sessionauth.SessionIdentity{TenantID: 7, UserID: 42})
+	receipts := &disputeFakeReceiptReader{receipt: &audit.CostReceipt{TenantID: 7, UserID: 42, RequestID: "req-own"}}
+	store := &disputeFakeStore{createErr: audit.ErrDisputeDuplicate}
+	router := disputeUserRouter(DisputeUserDeps{Receipts: receipts, Store: store}, sessionauth.SessionIdentity{TenantID: 7, UserID: 42})
 
-	rec := doJSON(router, http.MethodPost, "/v1/receipts/req-own/disputes", `{"reason":"charged twice","tenant_id":99,"user_id":99}`)
+	rec := doDisputeJSON(router, http.MethodPost, "/v1/receipts/req-own/disputes", `{"reason":"charged twice","tenant_id":99,"user_id":99}`)
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status=%d want 409 duplicate body=%s", rec.Code, rec.Body.String())
@@ -58,17 +58,17 @@ func TestCreateDisputeUsesSessionScopeAndRejectsDuplicate(t *testing.T) {
 	}
 }
 
-// Mutation: handler passes zero/wrong user_id to Store.ListUserDisputes.
+// Mutation: handler passes zero/wrong user_id to DisputeStore.ListUserDisputes.
 // The fake store filters by the supplied args; wrong scope leaks or drops the discriminating row.
 func TestListMyDisputesIsScopedToSessionUser(t *testing.T) {
-	store := &fakeDisputeStore{rows: []audit.CostDispute{
+	store := &disputeFakeStore{rows: []audit.CostDispute{
 		dispute(1, 7, 42, "req-a", audit.DisputeStatusOpen),
 		dispute(2, 7, 99, "req-b", audit.DisputeStatusResolved),
 		dispute(3, 8, 42, "req-c", audit.DisputeStatusOpen),
 	}}
-	router := userRouter(UserDeps{Store: store}, sessionauth.SessionIdentity{TenantID: 7, UserID: 42})
+	router := disputeUserRouter(DisputeUserDeps{Store: store}, sessionauth.SessionIdentity{TenantID: 7, UserID: 42})
 
-	rec := doJSON(router, http.MethodGet, "/v1/me/disputes?tenant_id=8&user_id=99", "")
+	rec := doDisputeJSON(router, http.MethodGet, "/v1/me/disputes?tenant_id=8&user_id=99", "")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
@@ -93,15 +93,15 @@ func TestListMyDisputesIsScopedToSessionUser(t *testing.T) {
 // Mutation: resolve handler ignores status/operator_note or keeps old status.
 // Operator recovery must persist the state transition visibly.
 func TestAdminResolveDisputeChangesStatusAndNote(t *testing.T) {
-	store := &fakeDisputeStore{
+	store := &disputeFakeStore{
 		resolveReturn: disputeResolved(55, 7, 42, "req-r", audit.DisputeStatusResolved, "receipt checked"),
 	}
-	router := adminRouter(AdminDeps{
-		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 77, Role: admin.RolePlatformAdmin}},
+	router := disputeAdminRouter(DisputeAdminDeps{
+		Auth:  disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 77, Role: admin.RolePlatformAdmin}},
 		Store: store,
 	})
 
-	rec := doJSON(router, http.MethodPost, "/v1/admin/disputes/55/resolve",
+	rec := doDisputeJSON(router, http.MethodPost, "/v1/admin/disputes/55/resolve",
 		`{"tenant_id":7,"status":"resolved","operator_note":"receipt checked"}`)
 
 	if rec.Code != http.StatusOK {
@@ -124,13 +124,13 @@ func TestAdminResolveDisputeChangesStatusAndNote(t *testing.T) {
 // Mutation: omit ident.CanIssueForTenant before resolve.
 // A tenant operator for tenant 7 could resolve tenant 8 disputes.
 func TestAdminResolveTenantOperatorCannotCrossTenant(t *testing.T) {
-	store := &fakeDisputeStore{}
-	router := adminRouter(AdminDeps{
-		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 88, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+	store := &disputeFakeStore{}
+	router := disputeAdminRouter(DisputeAdminDeps{
+		Auth:  disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 88, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
 		Store: store,
 	})
 
-	rec := doJSON(router, http.MethodPost, "/v1/admin/disputes/55/resolve",
+	rec := doDisputeJSON(router, http.MethodPost, "/v1/admin/disputes/55/resolve",
 		`{"tenant_id":8,"status":"rejected","operator_note":"wrong tenant"}`)
 
 	if rec.Code != http.StatusForbidden {
@@ -141,7 +141,7 @@ func TestAdminResolveTenantOperatorCannotCrossTenant(t *testing.T) {
 	}
 }
 
-func userRouter(d UserDeps, ident sessionauth.SessionIdentity) http.Handler {
+func disputeUserRouter(d DisputeUserDeps, ident sessionauth.SessionIdentity) http.Handler {
 	r := chi.NewRouter()
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -154,13 +154,13 @@ func userRouter(d UserDeps, ident sessionauth.SessionIdentity) http.Handler {
 	return r
 }
 
-func adminRouter(d AdminDeps) http.Handler {
+func disputeAdminRouter(d DisputeAdminDeps) http.Handler {
 	r := chi.NewRouter()
 	r.Post("/v1/admin/disputes/{id}/resolve", NewAdminResolveDisputeHandler(d))
 	return r
 }
 
-func doJSON(h http.Handler, method, target, body string) *httptest.ResponseRecorder {
+func doDisputeJSON(h http.Handler, method, target, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, target, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -168,7 +168,7 @@ func doJSON(h http.Handler, method, target, body string) *httptest.ResponseRecor
 	return rec
 }
 
-type fakeReceiptReader struct {
+type disputeFakeReceiptReader struct {
 	receipt *audit.CostReceipt
 	err     error
 
@@ -177,7 +177,7 @@ type fakeReceiptReader struct {
 	gotUserID    int64
 }
 
-func (f *fakeReceiptReader) GetReceiptForUser(_ context.Context, requestID string, tenantID, userID int64) (*audit.CostReceipt, error) {
+func (f *disputeFakeReceiptReader) GetReceiptForUser(_ context.Context, requestID string, tenantID, userID int64) (*audit.CostReceipt, error) {
 	f.gotRequestID = requestID
 	f.gotTenantID = tenantID
 	f.gotUserID = userID
@@ -187,7 +187,7 @@ func (f *fakeReceiptReader) GetReceiptForUser(_ context.Context, requestID strin
 	return f.receipt, nil
 }
 
-type fakeDisputeStore struct {
+type disputeFakeStore struct {
 	rows []audit.CostDispute
 
 	createCalled bool
@@ -204,7 +204,7 @@ type fakeDisputeStore struct {
 	resolveErr    error
 }
 
-func (f *fakeDisputeStore) CreateDispute(_ context.Context, in audit.CreateCostDisputeInput) (audit.CostDispute, error) {
+func (f *disputeFakeStore) CreateDispute(_ context.Context, in audit.CreateCostDisputeInput) (audit.CostDispute, error) {
 	f.createCalled = true
 	f.createArg = in
 	if f.createErr != nil {
@@ -216,7 +216,7 @@ func (f *fakeDisputeStore) CreateDispute(_ context.Context, in audit.CreateCostD
 	return dispute(10, in.TenantID, in.UserID, in.RequestID, audit.DisputeStatusOpen), nil
 }
 
-func (f *fakeDisputeStore) ListUserDisputes(_ context.Context, tenantID, userID int64, _ int32) ([]audit.CostDispute, error) {
+func (f *disputeFakeStore) ListUserDisputes(_ context.Context, tenantID, userID int64, _ int32) ([]audit.CostDispute, error) {
 	f.listTenantID = tenantID
 	f.listUserID = userID
 	out := make([]audit.CostDispute, 0, len(f.rows))
@@ -228,7 +228,7 @@ func (f *fakeDisputeStore) ListUserDisputes(_ context.Context, tenantID, userID 
 	return out, nil
 }
 
-func (f *fakeDisputeStore) ResolveDispute(_ context.Context, in audit.ResolveCostDisputeInput) (audit.CostDispute, error) {
+func (f *disputeFakeStore) ResolveDispute(_ context.Context, in audit.ResolveCostDisputeInput) (audit.CostDispute, error) {
 	f.resolveCalled = true
 	f.resolveArg = in
 	if f.resolveErr != nil {
@@ -237,12 +237,12 @@ func (f *fakeDisputeStore) ResolveDispute(_ context.Context, in audit.ResolveCos
 	return f.resolveReturn, nil
 }
 
-type fakeAdminAuth struct {
+type disputeFakeAdminAuth struct {
 	ident admin.AdminIdentity
 	err   error
 }
 
-func (f fakeAdminAuth) Resolve(context.Context, *http.Request) (admin.AdminIdentity, error) {
+func (f disputeFakeAdminAuth) Resolve(context.Context, *http.Request) (admin.AdminIdentity, error) {
 	if f.err != nil {
 		return admin.AdminIdentity{}, f.err
 	}

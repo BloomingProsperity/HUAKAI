@@ -1,4 +1,4 @@
-package modelhttp
+package controlhttp
 
 import (
 	"context"
@@ -39,7 +39,7 @@ type capabilitiesResponseBody struct {
 func NewAdminCapabilitiesHandler(d AdminCapabilitiesDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if d.Store == nil {
-			writeError(w, http.StatusServiceUnavailable, "gateway_not_configured", "model capabilities dependency unset")
+			modelWriteError(w, http.StatusServiceUnavailable, "gateway_not_configured", "model capabilities dependency unset")
 			return
 		}
 		modelID, ok := parseModelIDParam(w, r)
@@ -61,14 +61,14 @@ func NewAdminCapabilitiesHandler(d AdminCapabilitiesDeps) http.HandlerFunc {
 			writeCapabilitiesStoreError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, capabilitiesResponse(row))
+		modelWriteJSON(w, http.StatusOK, capabilitiesResponse(row))
 	}
 }
 
 func parseModelIDParam(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	modelID, err := strconv.ParseInt(strings.TrimSpace(chi.URLParam(r, "id")), 10, 64)
 	if err != nil || modelID <= 0 {
-		writeError(w, http.StatusBadRequest, "invalid_model_id", "model id must be a positive int64")
+		modelWriteError(w, http.StatusBadRequest, "invalid_model_id", "model id must be a positive int64")
 		return 0, false
 	}
 	return modelID, true
@@ -77,24 +77,24 @@ func parseModelIDParam(w http.ResponseWriter, r *http.Request) (int64, bool) {
 func parseCapabilitiesBody(w http.ResponseWriter, r *http.Request) (capabilitiesRequestBody, bool) {
 	var body capabilitiesRequestBody
 	if r.Body == nil {
-		writeError(w, http.StatusBadRequest, "invalid_json", "request body required")
+		modelWriteError(w, http.StatusBadRequest, "invalid_json", "request body required")
 		return capabilitiesRequestBody{}, false
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<14)).Decode(&body); err != nil {
 		if errors.Is(err, io.EOF) {
-			writeError(w, http.StatusBadRequest, "invalid_json", "request body required")
+			modelWriteError(w, http.StatusBadRequest, "invalid_json", "request body required")
 			return capabilitiesRequestBody{}, false
 		}
-		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		modelWriteError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return capabilitiesRequestBody{}, false
 	}
 	if body.MaxOutputTokens != nil && *body.MaxOutputTokens <= 0 {
-		writeError(w, http.StatusBadRequest, "invalid_max_output_tokens", "max_output_tokens must be positive when set")
+		modelWriteError(w, http.StatusBadRequest, "invalid_max_output_tokens", "max_output_tokens must be positive when set")
 		return capabilitiesRequestBody{}, false
 	}
 	for key := range body.Capabilities {
 		if strings.TrimSpace(key) == "" {
-			writeError(w, http.StatusBadRequest, "invalid_capabilities", "capability keys must be non-empty")
+			modelWriteError(w, http.StatusBadRequest, "invalid_capabilities", "capability keys must be non-empty")
 			return capabilitiesRequestBody{}, false
 		}
 	}
@@ -121,8 +121,8 @@ func capabilitiesResponse(row registry.ModelCapabilityUpdate) capabilitiesRespon
 
 func writeCapabilitiesStoreError(w http.ResponseWriter, err error) {
 	if errors.Is(err, registry.ErrUnknownModel) {
-		writeError(w, http.StatusNotFound, "model_not_found", "model not found")
+		modelWriteError(w, http.StatusNotFound, "model_not_found", "model not found")
 		return
 	}
-	writeError(w, http.StatusServiceUnavailable, "model_capabilities_update_failed", "model capabilities backend unavailable")
+	modelWriteError(w, http.StatusServiceUnavailable, "model_capabilities_update_failed", "model capabilities backend unavailable")
 }
