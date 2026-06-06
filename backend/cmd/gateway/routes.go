@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/announcementhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/audiohttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/captcha"
@@ -141,6 +142,11 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Get("/v1/pricing/rate-table", gatewayhttp.NewPricingRateTableHandler(receiptDeps))
 	r.Get("/v1/pricing/snapshots", gatewayhttp.NewPricingSnapshotsHandler(receiptDeps))
 	r.Get("/v1/pricing/snapshots/{snapshot_id}", gatewayhttp.NewPricingSnapshotHandler(receiptDeps))
+	announcementhttp.MountUserRoutes(r, announcementhttp.UserDeps{
+		Service:          d.announcementService,
+		Sessions:         d.userSessions,
+		ClientIPResolver: d.clientIPResolver,
+	})
 
 	r.Route("/v1/auth", func(r chi.Router) {
 		gatewayhttp.MountAuthRoutes(r, authHandlerDeps(d, logger))
@@ -774,6 +780,10 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		r.Post("/{id}/resolve", controlhttp.NewAdminResolveDisputeHandler(disputeAdminDeps))
 	})
 	mountNotificationRoutes(r, d)
+	announcementhttp.MountAdminRoutes(r, announcementhttp.AdminDeps{
+		Auth:    d.adminAuth,
+		Service: d.announcementService,
+	})
 	r.Route("/v1/admin/routes", func(r chi.Router) {
 		controlhttp.MountRouteAdminRoutes(r, controlhttp.RouteAdminDeps{
 			Auth:    d.adminAuth,

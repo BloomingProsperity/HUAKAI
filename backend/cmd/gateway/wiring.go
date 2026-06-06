@@ -15,6 +15,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/announcement"
 	"github.com/BloomingProsperity/HUAKAI/internal/anthropicoauth"
 	auditreceipt "github.com/BloomingProsperity/HUAKAI/internal/audit"
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
@@ -127,6 +128,7 @@ type deps struct {
 	subExpiryWorker          *subscription.ExpiryWorker
 	subReminderWorker        *subscription.ReminderWorker
 	notificationSettings     *notify.Service
+	announcementService      *announcement.Service
 	mediaTaskService         *mediatask.Service
 	mediaTaskWorker          *mediatask.Worker
 	routeAdminService        *routeadmin.Service
@@ -669,6 +671,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	outboxWorker := buildOutboxWorker(outboxStore, opts.outboxRuntime, emailSettingsStore, credentialKeys, channelHealthStore)
 	notificationStore := notify.NewPostgresStore(pgPool, credentialKeys)
 	notificationSettings := notify.NewService(notificationStore)
+	announcementService := announcement.NewService(announcement.NewPostgresStore(pgPool))
 	notificationEmailSender, err := mailinfra.BuildEmailSender(ctx, emailSettingsStore, credentialKeys, mailinfra.WithOutbox(outboxStore))
 	if err != nil {
 		return nil, fmt.Errorf("build notification email sender: %w", err)
@@ -830,6 +833,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool)),
 		subscriptionService:   subscription.NewService(subscription.NewPostgresStore(pgPool)),
 		notificationSettings:  notificationSettings,
+		announcementService:   announcementService,
 		mediaTaskService:      mediaTaskService,
 		mediaTaskWorker:       mediaTaskWorker,
 		routeAdminService:     routeadmin.NewService(routeadmin.NewPostgresStore(pgPool), nil),
