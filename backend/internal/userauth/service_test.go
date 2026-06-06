@@ -99,6 +99,100 @@ func (p staticVerificationPolicy) EmailVerificationEnabled(context.Context, int6
 	return bool(p), nil
 }
 
+func TestUpdateProfile_SelfScoped(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 6, 9, 0, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	svc := NewService(store)
+	svc.RequireVerified = false
+	svc.PasswordPolicy = PasswordPolicy{MemoryKiB: 64, Iterations: 1, Parallelism: 1, SaltBytes: 8, KeyBytes: 16}
+
+	userA, err := store.CreateUser(ctx, CreateUserParams{TenantID: 7, Email: "a@example.test", DisplayName: "Alice", Status: UserStatusActive})
+	if err != nil {
+		t.Fatalf("create user A: %v", err)
+	}
+	userB, err := store.CreateUser(ctx, CreateUserParams{TenantID: 7, Email: "b@example.test", DisplayName: "Bob", Status: UserStatusActive})
+	if err != nil {
+		t.Fatalf("create user B: %v", err)
+	}
+
+	updated, err := svc.UpdateProfile(ctx, 7, userA.ID, " Alice Updated ")
+	if err != nil {
+		t.Fatalf("UpdateProfile: %v", err)
+	}
+	if updated.DisplayName != "Alice Updated" {
+		t.Fatalf("updated display_name=%q want trimmed Alice Updated", updated.DisplayName)
+	}
+	gotA, err := store.GetUserByID(ctx, 7, userA.ID)
+	if err != nil {
+		t.Fatalf("read user A: %v", err)
+	}
+	gotB, err := store.GetUserByID(ctx, 7, userB.ID)
+	if err != nil {
+		t.Fatalf("read user B: %v", err)
+	}
+	if gotA.DisplayName != "Alice Updated" || gotB.DisplayName != "Bob" {
+		t.Fatalf("scope leak after update: A=%q B=%q; MUTATION: updating any user other than the requested self user should turn this red", gotA.DisplayName, gotB.DisplayName)
+	}
+}
+
+func TestUpdateProfile_Validation(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 6, 9, 0, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	svc := NewService(store)
+	user, err := store.CreateUser(ctx, CreateUserParams{TenantID: 7, Email: "valid@example.test", DisplayName: "Stable", Status: UserStatusActive})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	tooLong := strings.Repeat("a", MaxDisplayNameLength+1)
+	cases := []struct {
+		name        string
+		displayName string
+	}{
+		{name: "empty_after_trim", displayName: "   "},
+		{name: "too_long", displayName: tooLong},
+		{name: "control_char", displayName: "bad\nname"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := svc.UpdateProfile(ctx, 7, user.ID, tc.displayName); !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("UpdateProfile err=%v want ErrInvalidInput; MUTATION: skipping display_name validation should write", err)
+			}
+			got, err := store.GetUserByID(ctx, 7, user.ID)
+			if err != nil {
+				t.Fatalf("read user after rejected update: %v", err)
+			}
+			if got.DisplayName != "Stable" {
+				t.Fatalf("display_name changed to %q after rejected input, want Stable", got.DisplayName)
+			}
+		})
+	}
+}
+
+func TestUpdateProfile_TenantScoped(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 6, 9, 0, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	svc := NewService(store)
+	user, err := store.CreateUser(ctx, CreateUserParams{TenantID: 7, Email: "tenant@example.test", DisplayName: "Tenant Seven", Status: UserStatusActive})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	if _, err := svc.UpdateProfile(ctx, 8, user.ID, "Wrong Tenant"); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("cross-tenant update err=%v want ErrUserNotFound; MUTATION: dropping tenant scope in UPDATE should write", err)
+	}
+	got, err := store.GetUserByID(ctx, 7, user.ID)
+	if err != nil {
+		t.Fatalf("read user: %v", err)
+	}
+	if got.DisplayName != "Tenant Seven" {
+		t.Fatalf("cross-tenant update changed display_name to %q", got.DisplayName)
+	}
+}
+
 func TestAT_AUTH_007_005_LockoutAndResetRequired(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
@@ -644,6 +738,19 @@ func (s *memoryAuthStore) GetUserByID(_ context.Context, tenantID, userID int64)
 	if !ok || user.TenantID != tenantID {
 		return User{}, ErrUserNotFound
 	}
+	return user, nil
+}
+
+func (s *memoryAuthStore) UpdateDisplayName(_ context.Context, tenantID, userID int64, displayName string) (User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	user, ok := s.users[userID]
+	if !ok || user.TenantID != tenantID {
+		return User{}, ErrUserNotFound
+	}
+	user.DisplayName = displayName
+	user.UpdatedAt = s.now
+	s.users[user.ID] = user
 	return user, nil
 }
 

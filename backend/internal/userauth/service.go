@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // verifyPasswordFn 是口令校验的可注入入口(生产即 VerifyPassword)。抽成变量是为了让测试
@@ -16,6 +18,8 @@ var verifyPasswordFn = VerifyPassword
 // 否则「走 VerifyPassword 跑 argon2」与「直接返回」的响应时延差会泄露邮箱是否已注册（用户枚举侧信道）。
 // 硬编码常量而非运行时生成, 杜绝生成失败时 fail-open 成快速 parse-fail。
 const timingEqualizationHash = "$argon2id$v=19$m=65536,t=3,p=1$0k8KjQ01TveJhg0daai5hw$m6FwG+zGw8X2YLWE1grPszMNN84IGcyd5xhFrEGMhIc"
+
+const MaxDisplayNameLength = 100
 
 // equalizeLoginWork 跑一次与正常口令校验等价成本的 argon2(结果丢弃)。用于让「因不存在 / 账号状态 /
 // 无本地口令而提前返回」的登录失败路径与「口令错」路径耗时一致, 杜绝登录时序枚举侧信道。
@@ -48,6 +52,10 @@ type Store interface {
 
 type passwordResetPreparationStore interface {
 	PreparePasswordResetTokenUser(context.Context, int64, []byte, time.Time) (User, error)
+}
+
+type profileUpdateStore interface {
+	UpdateDisplayName(context.Context, int64, int64, string) (User, error)
 }
 
 type EmailVerificationPolicy interface {
@@ -90,6 +98,47 @@ func NewService(store Store) *Service {
 
 func NormalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
+}
+
+func NormalizeDisplayName(displayName string) (string, error) {
+	displayName = strings.TrimSpace(displayName)
+	if displayName == "" || !utf8.ValidString(displayName) || utf8.RuneCountInString(displayName) > MaxDisplayNameLength {
+		return "", ErrInvalidInput
+	}
+	for _, r := range displayName {
+		if unicode.IsControl(r) {
+			return "", ErrInvalidInput
+		}
+	}
+	return displayName, nil
+}
+
+func (s *Service) GetProfile(ctx context.Context, tenantID, userID int64) (User, error) {
+	if s == nil || s.Store == nil {
+		return User{}, ErrStoreNotConfigured
+	}
+	if tenantID <= 0 || userID <= 0 {
+		return User{}, ErrInvalidInput
+	}
+	return s.Store.GetUserByID(ctx, tenantID, userID)
+}
+
+func (s *Service) UpdateProfile(ctx context.Context, tenantID, userID int64, displayName string) (User, error) {
+	if s == nil || s.Store == nil {
+		return User{}, ErrStoreNotConfigured
+	}
+	if tenantID <= 0 || userID <= 0 {
+		return User{}, ErrInvalidInput
+	}
+	normalized, err := NormalizeDisplayName(displayName)
+	if err != nil {
+		return User{}, err
+	}
+	updater, ok := s.Store.(profileUpdateStore)
+	if !ok {
+		return User{}, ErrStoreNotConfigured
+	}
+	return updater.UpdateDisplayName(ctx, tenantID, userID, normalized)
 }
 
 func (s *Service) Register(ctx context.Context, in RegisterInput) (RegistrationResult, error) {
