@@ -161,6 +161,74 @@ func (q *Queries) DisableModerationAPIKey(ctx context.Context, arg DisableModera
 	return result.RowsAffected(), nil
 }
 
+const enableModerationAPIKey = `-- name: EnableModerationAPIKey :one
+WITH enabled_key AS (
+    UPDATE api_keys ak
+    SET status = 'active',
+        updated_at = now()
+    WHERE ak.tenant_id = $1::bigint
+      AND ak.id = $2::bigint
+      AND ak.status = 'disabled'
+      AND ak.deleted_at IS NULL
+      AND EXISTS (
+          SELECT 1
+          FROM moderation_violation_events v
+          WHERE v.tenant_id = ak.tenant_id
+            AND v.api_key_id = ak.id
+            AND v.occurred_at >= ak.updated_at - interval '1 minute'
+            AND v.occurred_at <= ak.updated_at + interval '1 second'
+      )
+    RETURNING ak.id, ak.tenant_id, ak.user_id, ak.status, ak.updated_at
+),
+audit_row AS (
+    INSERT INTO moderation_log (
+        tenant_id, api_key_id, user_id, request_id, payload_hash,
+        decision, reason_code, violation_fee_usd
+    )
+    SELECT tenant_id, id, user_id, $3::text,
+           'admin_unban_no_payload', 'pass', $4::text, 0
+    FROM enabled_key
+    RETURNING id
+)
+SELECT enabled_key.id AS api_key_id, enabled_key.tenant_id, enabled_key.status,
+       enabled_key.updated_at, audit_row.id AS audit_log_id
+FROM enabled_key
+JOIN audit_row ON true
+`
+
+type EnableModerationAPIKeyParams struct {
+	TenantID       int64  `db:"tenant_id" json:"tenant_id"`
+	APIKeyID       int64  `db:"api_key_id" json:"api_key_id"`
+	AuditRequestID string `db:"audit_request_id" json:"audit_request_id"`
+	ReasonCode     string `db:"reason_code" json:"reason_code"`
+}
+
+type EnableModerationAPIKeyRow struct {
+	APIKeyID   int64              `db:"api_key_id" json:"api_key_id"`
+	TenantID   int64              `db:"tenant_id" json:"tenant_id"`
+	Status     string             `db:"status" json:"status"`
+	UpdatedAt  pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	AuditLogID int64              `db:"audit_log_id" json:"audit_log_id"`
+}
+
+func (q *Queries) EnableModerationAPIKey(ctx context.Context, arg EnableModerationAPIKeyParams) (EnableModerationAPIKeyRow, error) {
+	row := q.db.QueryRow(ctx, enableModerationAPIKey,
+		arg.TenantID,
+		arg.APIKeyID,
+		arg.AuditRequestID,
+		arg.ReasonCode,
+	)
+	var i EnableModerationAPIKeyRow
+	err := row.Scan(
+		&i.APIKeyID,
+		&i.TenantID,
+		&i.Status,
+		&i.UpdatedAt,
+		&i.AuditLogID,
+	)
+	return i, err
+}
+
 const findEnabledModerationHash = `-- name: FindEnabledModerationHash :one
 SELECT id, tenant_id, hash_hex, reason_code, enabled, created_at, updated_at
 FROM moderation_hashes
@@ -326,6 +394,77 @@ func (q *Queries) InsertModerationViolationEvent(ctx context.Context, arg Insert
 	return id, err
 }
 
+const listBannedKeys = `-- name: ListBannedKeys :many
+SELECT ak.id, ak.tenant_id, ak.user_id, ak.name, ak.key_prefix, ak.status,
+       ak.created_at, ak.updated_at,
+       count(v.id)::bigint AS violation_count,
+       max(v.occurred_at)::timestamptz AS last_violation_at
+FROM api_keys ak
+JOIN moderation_violation_events v
+  ON v.tenant_id = ak.tenant_id
+ AND v.api_key_id = ak.id
+ AND v.occurred_at >= ak.updated_at - interval '1 minute'
+ AND v.occurred_at <= ak.updated_at + interval '1 second'
+WHERE ak.tenant_id = $1::bigint
+  AND ak.status = 'disabled'
+  AND ak.deleted_at IS NULL
+GROUP BY ak.id, ak.tenant_id, ak.user_id, ak.name, ak.key_prefix, ak.status,
+         ak.created_at, ak.updated_at
+ORDER BY last_violation_at DESC, ak.id DESC
+LIMIT $3::integer
+OFFSET $2::integer
+`
+
+type ListBannedKeysParams struct {
+	TenantID   int64 `db:"tenant_id" json:"tenant_id"`
+	PageOffset int32 `db:"page_offset" json:"page_offset"`
+	PageLimit  int32 `db:"page_limit" json:"page_limit"`
+}
+
+type ListBannedKeysRow struct {
+	ID              int64              `db:"id" json:"id"`
+	TenantID        int64              `db:"tenant_id" json:"tenant_id"`
+	UserID          int64              `db:"user_id" json:"user_id"`
+	Name            string             `db:"name" json:"name"`
+	KeyPrefix       string             `db:"key_prefix" json:"key_prefix"`
+	Status          string             `db:"status" json:"status"`
+	CreatedAt       pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	ViolationCount  int64              `db:"violation_count" json:"violation_count"`
+	LastViolationAt pgtype.Timestamptz `db:"last_violation_at" json:"last_violation_at"`
+}
+
+func (q *Queries) ListBannedKeys(ctx context.Context, arg ListBannedKeysParams) ([]ListBannedKeysRow, error) {
+	rows, err := q.db.Query(ctx, listBannedKeys, arg.TenantID, arg.PageOffset, arg.PageLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListBannedKeysRow
+	for rows.Next() {
+		var i ListBannedKeysRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.UserID,
+			&i.Name,
+			&i.KeyPrefix,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ViolationCount,
+			&i.LastViolationAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listEnabledModerationKeywords = `-- name: ListEnabledModerationKeywords :many
 
 SELECT id, tenant_id, keyword, reason_code, enabled, created_at, updated_at
@@ -474,6 +613,67 @@ func (q *Queries) ListModerationKeywords(ctx context.Context, arg ListModeration
 			&i.Enabled,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listModerationLog = `-- name: ListModerationLog :many
+SELECT id, tenant_id, api_key_id, user_id, request_id, payload_hash,
+       decision, reason_code, matched_keyword_id, matched_hash_id,
+       violation_fee_usd, billing_event_id, occurred_at
+FROM moderation_log
+WHERE tenant_id = $1::bigint
+  AND (
+    $2::bigint IS NULL
+    OR api_key_id = $2::bigint
+  )
+ORDER BY occurred_at DESC, id DESC
+LIMIT $4::integer
+OFFSET $3::integer
+`
+
+type ListModerationLogParams struct {
+	TenantID   int64  `db:"tenant_id" json:"tenant_id"`
+	APIKeyID   *int64 `db:"api_key_id" json:"api_key_id"`
+	PageOffset int32  `db:"page_offset" json:"page_offset"`
+	PageLimit  int32  `db:"page_limit" json:"page_limit"`
+}
+
+func (q *Queries) ListModerationLog(ctx context.Context, arg ListModerationLogParams) ([]ModerationLog, error) {
+	rows, err := q.db.Query(ctx, listModerationLog,
+		arg.TenantID,
+		arg.APIKeyID,
+		arg.PageOffset,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ModerationLog
+	for rows.Next() {
+		var i ModerationLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.APIKeyID,
+			&i.UserID,
+			&i.RequestID,
+			&i.PayloadHash,
+			&i.Decision,
+			&i.ReasonCode,
+			&i.MatchedKeywordID,
+			&i.MatchedHashID,
+			&i.ViolationFeeUsd,
+			&i.BillingEventID,
+			&i.OccurredAt,
 		); err != nil {
 			return nil, err
 		}

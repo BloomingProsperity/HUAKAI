@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -125,6 +126,121 @@ func TestAdminHashes_PostAddsHashAndFeedsHotPath(t *testing.T) {
 	}
 }
 
+func TestAdminModerationLogs_ListPassesTenantFilterAndPage(t *testing.T) {
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	store := &adminStoreStub{
+		moderationLogs: []moderation.ModerationLog{{
+			ID:          90,
+			TenantID:    7,
+			APIKeyID:    30,
+			UserID:      40,
+			RequestID:   "req-visible",
+			PayloadHash: "payload-hash-visible",
+			Decision:    moderation.DecisionBlockKeyword,
+			ReasonCode:  "policy_keyword",
+			OccurredAt:  now,
+		}},
+	}
+	rec := invokeModerationAdmin(t, ModerationAdminDeps{
+		Auth:  adminAuthStub{ident: platformAdmin()},
+		Store: store,
+	}, http.MethodGet, "/admin/v1/moderation/logs?tenant_id=7&api_key_id=30&limit=2&offset=1", nil)
+
+	assertStatus(t, rec, http.StatusOK)
+	if store.listLogTenantID != 7 || store.listLogAPIKeyID == nil || *store.listLogAPIKeyID != 30 ||
+		store.listLogLimit != 2 || store.listLogOffset != 1 {
+		t.Fatalf("list log params mismatch tenant=%d api_key=%v limit=%d offset=%d",
+			store.listLogTenantID, store.listLogAPIKeyID, store.listLogLimit, store.listLogOffset)
+	}
+	var body moderationLogListResponse
+	decodeBody(t, rec, &body)
+	if body.Object != "moderation_logs_list" || len(body.Items) != 1 ||
+		body.Items[0].ID != 90 || body.Items[0].PayloadHash != "payload-hash-visible" {
+		t.Fatalf("moderation logs response mismatch: %+v", body)
+	}
+}
+
+func TestAdminModerationBannedKeys_ListUsesTenantPage(t *testing.T) {
+	now := time.Date(2026, 6, 6, 12, 5, 0, 0, time.UTC)
+	store := &adminStoreStub{
+		bannedKeys: []moderation.BannedAPIKey{{
+			ID:              30,
+			TenantID:        7,
+			UserID:          40,
+			Name:            "risk-key",
+			KeyPrefix:       "hk_test_risk",
+			Status:          "disabled",
+			ViolationCount:  3,
+			LastViolationAt: now,
+			UpdatedAt:       now,
+		}},
+	}
+	rec := invokeModerationAdmin(t, ModerationAdminDeps{
+		Auth:  adminAuthStub{ident: platformAdmin()},
+		Store: store,
+	}, http.MethodGet, "/admin/v1/moderation/banned?tenant_id=7&limit=10&offset=5", nil)
+
+	assertStatus(t, rec, http.StatusOK)
+	if store.listBannedTenantID != 7 || store.listBannedLimit != 10 || store.listBannedOffset != 5 {
+		t.Fatalf("list banned params mismatch tenant=%d limit=%d offset=%d",
+			store.listBannedTenantID, store.listBannedLimit, store.listBannedOffset)
+	}
+	var body bannedAPIKeyListResponse
+	decodeBody(t, rec, &body)
+	if body.Object != "moderation_banned_keys_list" || len(body.Items) != 1 ||
+		body.Items[0].ID != 30 || body.Items[0].Status != "disabled" || body.Items[0].KeyPrefix == "" {
+		t.Fatalf("banned keys response mismatch: %+v", body)
+	}
+}
+
+func TestAdminModerationUnban_PassesActorReasonAndReturnsAudit(t *testing.T) {
+	now := time.Date(2026, 6, 6, 12, 10, 0, 0, time.UTC)
+	store := &adminStoreStub{
+		unbanResult: moderation.UnbanAPIKeyResult{
+			APIKeyID:   30,
+			TenantID:   7,
+			Status:     "active",
+			AuditLogID: 77,
+			UpdatedAt:  now,
+		},
+	}
+	rec := invokeModerationAdmin(t, ModerationAdminDeps{
+		Auth:  adminAuthStub{ident: platformAdmin()},
+		Store: store,
+	}, http.MethodPost, "/admin/v1/moderation/api-keys/30/unban",
+		`{"tenant_id":7,"reason":"manual review cleared"}`)
+
+	assertStatus(t, rec, http.StatusOK)
+	if store.unbanCalls != 1 {
+		t.Fatalf("unban calls=%d want 1", store.unbanCalls)
+	}
+	if store.unbanReq.TenantID != 7 || store.unbanReq.APIKeyID != 30 ||
+		store.unbanReq.ActorID != "1" || store.unbanReq.Reason != "manual review cleared" {
+		t.Fatalf("unban request mismatch: %+v", store.unbanReq)
+	}
+	var body unbanAPIKeyResponse
+	decodeBody(t, rec, &body)
+	if body.APIKeyID != 30 || body.Status != "active" || body.AuditLogID != 77 {
+		t.Fatalf("unban response mismatch: %+v", body)
+	}
+}
+
+func TestAdminModerationUnban_AdminAuthRequired(t *testing.T) {
+	// Mutation: bypass resolveAdmin and call Store.UnbanAPIKey directly; this test
+	// would return 200 and increment unbanCalls instead of preserving the 403.
+	store := &adminStoreStub{}
+	rec := invokeModerationAdmin(t, ModerationAdminDeps{
+		Auth:  adminAuthStub{err: admin.ErrAdminForbidden},
+		Store: store,
+	}, http.MethodPost, "/admin/v1/moderation/api-keys/30/unban",
+		`{"tenant_id":7,"reason":"manual review cleared"}`)
+
+	assertStatus(t, rec, http.StatusForbidden)
+	if store.unbanCalls != 0 {
+		t.Fatalf("non-admin request touched unban store: calls=%d", store.unbanCalls)
+	}
+}
+
 func invokeModerationAdmin(t *testing.T, deps ModerationAdminDeps, method string, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	r := chi.NewRouter()
@@ -195,6 +311,22 @@ type adminStoreStub struct {
 	hashes      map[string]moderation.HashMatch
 	hashRules   []moderation.HashRule
 	hashCreates int
+
+	moderationLogs  []moderation.ModerationLog
+	listLogTenantID int64
+	listLogAPIKeyID *int64
+	listLogLimit    int32
+	listLogOffset   int32
+
+	bannedKeys         []moderation.BannedAPIKey
+	listBannedTenantID int64
+	listBannedLimit    int32
+	listBannedOffset   int32
+
+	unbanCalls  int
+	unbanReq    moderation.UnbanAPIKeyRequest
+	unbanResult moderation.UnbanAPIKeyResult
+	unbanErr    error
 }
 
 func (s *adminStoreStub) CreateKeyword(_ context.Context, req moderation.CreateKeywordRequest) (moderation.KeywordRule, error) {
@@ -263,6 +395,30 @@ func (s *adminStoreStub) UpsertConfig(_ context.Context, cfg moderation.Moderati
 	s.upsertCalls++
 	s.upserted = cfg
 	return cfg, nil
+}
+
+func (s *adminStoreStub) ListModerationLogs(_ context.Context, tenantID int64, apiKeyID *int64, limit int32, offset int32) ([]moderation.ModerationLog, error) {
+	s.listLogTenantID = tenantID
+	s.listLogAPIKeyID = apiKeyID
+	s.listLogLimit = limit
+	s.listLogOffset = offset
+	return s.moderationLogs, nil
+}
+
+func (s *adminStoreStub) ListBannedAPIKeys(_ context.Context, tenantID int64, limit int32, offset int32) ([]moderation.BannedAPIKey, error) {
+	s.listBannedTenantID = tenantID
+	s.listBannedLimit = limit
+	s.listBannedOffset = offset
+	return s.bannedKeys, nil
+}
+
+func (s *adminStoreStub) UnbanAPIKey(_ context.Context, req moderation.UnbanAPIKeyRequest) (moderation.UnbanAPIKeyResult, error) {
+	s.unbanCalls++
+	s.unbanReq = req
+	if s.unbanErr != nil {
+		return moderation.UnbanAPIKeyResult{}, s.unbanErr
+	}
+	return s.unbanResult, nil
 }
 
 func (s *adminStoreStub) Contains(_ context.Context, tenantID int64, hashHex string) (moderation.HashMatch, error) {

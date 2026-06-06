@@ -20,3 +20,20 @@ type ModerationConfig struct {
 	UpdatedBy        *string            `db:"updated_by" json:"updated_by"`
 	UpdatedAt        pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
+
+// Content moderation audit. Stores payload hashes and match metadata only; raw request bodies and credentials are forbidden.
+type ModerationLog struct {
+	ID               int64              `db:"id" json:"id"`
+	TenantID         int64              `db:"tenant_id" json:"tenant_id"`
+	APIKeyID         int64              `db:"api_key_id" json:"api_key_id"`
+	UserID           int64              `db:"user_id" json:"user_id"`
+	RequestID        *string            `db:"request_id" json:"request_id"`
+	PayloadHash      string             `db:"payload_hash" json:"payload_hash"`
+	Decision         string             `db:"decision" json:"decision"`
+	ReasonCode       string             `db:"reason_code" json:"reason_code"`
+	MatchedKeywordID *int64             `db:"matched_keyword_id" json:"matched_keyword_id"`
+	MatchedHashID    *int64             `db:"matched_hash_id" json:"matched_hash_id"`
+	ViolationFeeUsd  decimal.Decimal    `db:"violation_fee_usd" json:"violation_fee_usd"`
+	BillingEventID   *int64             `db:"billing_event_id" json:"billing_event_id"`
+	OccurredAt       pgtype.Timestamptz `db:"occurred_at" json:"occurred_at"`
+}
