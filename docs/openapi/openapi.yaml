@@ -814,6 +814,74 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/me/usage/export.csv:
+    get:
+      tags: [user-audit]
+      summary: Export my usage records
+      operationId: exportMyUsageCSV
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-06-user-usage-export-codex.md
+        - backend/internal/meexporthttp/handler.go
+        - backend/internal/meusagehttp/handler.go
+      description: |
+        Read-only self-service export for the authenticated session user. The
+        tenant and user scope come only from the validated session identity;
+        tenant_id, api_key_id, and user_id query parameters are ignored and
+        cannot widen the export. CSV string cells are guarded against
+        spreadsheet formula injection, and exports are capped at 100000 rows
+        with `X-Truncated: true` plus a trailing notice row when capped.
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: format
+          in: query
+          required: false
+          description: Defaults to CSV. `json` returns the same self-scoped export rows as JSON.
+          schema: { type: string, enum: [csv, json], default: csv }
+      responses:
+        '200':
+          description: Self-scoped usage export for the authenticated session user.
+          headers:
+            Content-Disposition:
+              description: Attachment filename for CSV browser/download clients.
+              schema: { type: string, example: 'attachment; filename="me-usage-export.csv"' }
+            X-Truncated:
+              description: Present and `true` when the export hit the row cap.
+              schema: { type: string, enum: ['true'] }
+          content:
+            text/csv:
+              schema: { type: string }
+              example: |
+                request_id,model,tokens_input,tokens_output,cost_usd,created_at,status
+                req_123,claude-opus-4,12,34,0.00012345,2026-06-01T12:30:00Z,non_streaming
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        request_id: { type: string }
+                        model: { type: string }
+                        tokens_input: { type: integer, format: int32 }
+                        tokens_output: { type: integer, format: int32 }
+                        cost_usd: { type: string }
+                        created_at: { type: string, format: date-time }
+                        status: { type: string }
+                  truncated: { type: boolean }
+                  row_limit: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/me/analytics/time-series:
     get:
       tags: [user-audit]
