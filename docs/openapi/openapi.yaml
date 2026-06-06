@@ -1957,6 +1957,57 @@ paths:
                 items: { $ref: '#/components/schemas/PublicPricingPageItem' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/public/rankings:
+    get:
+      tags: [public]
+      summary: Fetch unauthenticated public model usage rankings
+      operationId: getPublicRankings
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-06-public-rankings-codex.md
+        - backend/internal/publicrankinghttp/handler.go
+      security: []
+      description: |
+        Returns a customer-safe public ranking of platform-wide model usage.
+        This endpoint requires no bearer token or session and exposes only
+        relative usage volume: model name, rank, request_count, token_total,
+        and request_share. It never exposes actual_cost, total_cost, user_id,
+        api_key_id, provider_account_id, tenant identity, provider account
+        identity, or admin cost leaderboard fields.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of ranked models to return. Values above 100 are clamped to 100.
+          schema: { type: integer, minimum: 1, default: 20, maximum: 100 }
+      responses:
+        '200':
+          description: Public model usage rankings ordered by request_count descending.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [scope, metric, rankings]
+                properties:
+                  scope: { type: string, enum: [platform] }
+                  metric: { type: string, enum: [request_count] }
+                  rankings:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [rank, model, request_count, token_total, request_share]
+                      properties:
+                        rank: { type: integer, minimum: 1 }
+                        model: { type: string }
+                        request_count: { type: integer, format: int64, minimum: 0 }
+                        token_total: { type: integer, format: int64, minimum: 0 }
+                        request_share:
+                          type: string
+                          description: Fixed six-decimal fraction of returned request_count volume, from 0.000000 to 1.000000.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/pricing/rate-table:
     get:
       tags: [pricing]
