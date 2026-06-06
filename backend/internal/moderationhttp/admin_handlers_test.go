@@ -241,6 +241,41 @@ func TestAdminModerationUnban_AdminAuthRequired(t *testing.T) {
 	}
 }
 
+func TestBulkAdminAuthRequired(t *testing.T) {
+	// Mutation: mount bulk handlers outside resolveAdmin or call Store before
+	// auth; these requests return 200 and increment bulk store calls instead of 403.
+	for _, tc := range []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			name: "keywords",
+			path: "/admin/v1/moderation/keywords/bulk",
+			body: `{"tenant_id":7,"items":[{"keyword":"forbidden","enabled":true}]}`,
+		},
+		{
+			name: "hashes",
+			path: "/admin/v1/moderation/hashes/bulk",
+			body: `{"tenant_id":7,"items":[{"hash_hex":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","enabled":true}]}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &adminStoreStub{}
+			rec := invokeModerationAdmin(t, ModerationAdminDeps{
+				Auth:  adminAuthStub{err: admin.ErrAdminForbidden},
+				Store: store,
+			}, http.MethodPost, tc.path, tc.body)
+
+			assertStatus(t, rec, http.StatusForbidden)
+			if store.bulkKeywordCalls != 0 || store.bulkHashCalls != 0 {
+				t.Fatalf("non-admin request touched bulk store: keyword_calls=%d hash_calls=%d",
+					store.bulkKeywordCalls, store.bulkHashCalls)
+			}
+		})
+	}
+}
+
 func invokeModerationAdmin(t *testing.T, deps ModerationAdminDeps, method string, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	r := chi.NewRouter()
@@ -302,15 +337,23 @@ func tenantOperator(tenantID int64) admin.AdminIdentity {
 }
 
 type adminStoreStub struct {
-	createCalls int
-	created     moderation.CreateKeywordRequest
-	createErr   error
-	config      moderation.ModerationConfig
-	upsertCalls int
-	upserted    moderation.ModerationConfig
-	hashes      map[string]moderation.HashMatch
-	hashRules   []moderation.HashRule
-	hashCreates int
+	createCalls      int
+	created          moderation.CreateKeywordRequest
+	createErr        error
+	config           moderation.ModerationConfig
+	upsertCalls      int
+	upserted         moderation.ModerationConfig
+	hashes           map[string]moderation.HashMatch
+	hashRules        []moderation.HashRule
+	hashCreates      int
+	bulkKeywordCalls int
+	bulkKeywordReq   moderation.BulkCreateKeywordsRequest
+	bulkKeywordRes   moderation.BulkCreateResult
+	bulkKeywordErr   error
+	bulkHashCalls    int
+	bulkHashReq      moderation.BulkCreateHashesRequest
+	bulkHashRes      moderation.BulkCreateResult
+	bulkHashErr      error
 
 	moderationLogs  []moderation.ModerationLog
 	listLogTenantID int64
@@ -344,6 +387,15 @@ func (s *adminStoreStub) CreateKeyword(_ context.Context, req moderation.CreateK
 	}, nil
 }
 
+func (s *adminStoreStub) BulkCreateKeywords(_ context.Context, req moderation.BulkCreateKeywordsRequest) (moderation.BulkCreateResult, error) {
+	s.bulkKeywordCalls++
+	s.bulkKeywordReq = req
+	if s.bulkKeywordErr != nil {
+		return moderation.BulkCreateResult{}, s.bulkKeywordErr
+	}
+	return s.bulkKeywordRes, nil
+}
+
 func (s *adminStoreStub) ListKeywords(context.Context, int64, int32, int32) ([]moderation.KeywordRule, error) {
 	return nil, nil
 }
@@ -374,6 +426,15 @@ func (s *adminStoreStub) CreateHash(_ context.Context, req moderation.CreateHash
 		s.hashes[req.HashHex] = moderation.HashMatch{Matched: true, ID: id, ReasonCode: req.ReasonCode}
 	}
 	return row, nil
+}
+
+func (s *adminStoreStub) BulkCreateHashes(_ context.Context, req moderation.BulkCreateHashesRequest) (moderation.BulkCreateResult, error) {
+	s.bulkHashCalls++
+	s.bulkHashReq = req
+	if s.bulkHashErr != nil {
+		return moderation.BulkCreateResult{}, s.bulkHashErr
+	}
+	return s.bulkHashRes, nil
 }
 
 func (s *adminStoreStub) ListHashes(context.Context, int64, int32, int32) ([]moderation.HashRule, error) {

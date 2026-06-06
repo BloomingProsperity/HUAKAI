@@ -180,6 +180,43 @@ type CreateHashRequest struct {
 	UpdatedBy  string
 }
 
+const BulkImportMaxItems = 1000
+
+type BulkCreateKeywordItem struct {
+	Keyword    string
+	ReasonCode string
+	Enabled    bool
+}
+
+type BulkCreateHashItem struct {
+	HashHex    string
+	ReasonCode string
+	Enabled    bool
+}
+
+type BulkCreateKeywordsRequest struct {
+	TenantID  int64
+	Items     []BulkCreateKeywordItem
+	UpdatedBy string
+}
+
+type BulkCreateHashesRequest struct {
+	TenantID  int64
+	Items     []BulkCreateHashItem
+	UpdatedBy string
+}
+
+type BulkItemError struct {
+	Index  int    `json:"index"`
+	Reason string `json:"reason"`
+}
+
+type BulkCreateResult struct {
+	Accepted         int             `json:"accepted"`
+	SkippedDuplicate int             `json:"skipped_duplicate"`
+	Errors           []BulkItemError `json:"errors"`
+}
+
 type ConfigStore interface {
 	GetConfig(context.Context, int64) (ModerationConfig, error)
 }

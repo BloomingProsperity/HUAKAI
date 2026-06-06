@@ -11,6 +11,146 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const bulkCreateModerationHashes = `-- name: BulkCreateModerationHashes :many
+INSERT INTO moderation_hashes (
+    tenant_id, hash_hex, reason_code, enabled, created_by, updated_by
+)
+SELECT
+    $1::bigint,
+    h.hash_hex,
+    r.reason_code,
+    e.enabled,
+    $2::text,
+    $2::text
+FROM unnest($3::text[]) WITH ORDINALITY AS h(hash_hex, ord)
+JOIN unnest($4::text[]) WITH ORDINALITY AS r(reason_code, ord) USING (ord)
+JOIN unnest($5::boolean[]) WITH ORDINALITY AS e(enabled, ord) USING (ord)
+ON CONFLICT (tenant_id, hash_hex) WHERE deleted_at IS NULL DO NOTHING
+RETURNING id, tenant_id, hash_hex, reason_code, enabled, created_at, updated_at
+`
+
+type BulkCreateModerationHashesParams struct {
+	TenantID      int64    `db:"tenant_id" json:"tenant_id"`
+	UpdatedBy     *string  `db:"updated_by" json:"updated_by"`
+	HashHexes     []string `db:"hash_hexes" json:"hash_hexes"`
+	ReasonCodes   []string `db:"reason_codes" json:"reason_codes"`
+	EnabledValues []bool   `db:"enabled_values" json:"enabled_values"`
+}
+
+type BulkCreateModerationHashesRow struct {
+	ID         int64              `db:"id" json:"id"`
+	TenantID   int64              `db:"tenant_id" json:"tenant_id"`
+	HashHex    string             `db:"hash_hex" json:"hash_hex"`
+	ReasonCode string             `db:"reason_code" json:"reason_code"`
+	Enabled    bool               `db:"enabled" json:"enabled"`
+	CreatedAt  pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt  pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
+func (q *Queries) BulkCreateModerationHashes(ctx context.Context, arg BulkCreateModerationHashesParams) ([]BulkCreateModerationHashesRow, error) {
+	rows, err := q.db.Query(ctx, bulkCreateModerationHashes,
+		arg.TenantID,
+		arg.UpdatedBy,
+		arg.HashHexes,
+		arg.ReasonCodes,
+		arg.EnabledValues,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BulkCreateModerationHashesRow
+	for rows.Next() {
+		var i BulkCreateModerationHashesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.HashHex,
+			&i.ReasonCode,
+			&i.Enabled,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const bulkCreateModerationKeywords = `-- name: BulkCreateModerationKeywords :many
+INSERT INTO moderation_keywords (
+    tenant_id, keyword, reason_code, enabled, created_by, updated_by
+)
+SELECT
+    $1::bigint,
+    k.keyword,
+    r.reason_code,
+    e.enabled,
+    $2::text,
+    $2::text
+FROM unnest($3::text[]) WITH ORDINALITY AS k(keyword, ord)
+JOIN unnest($4::text[]) WITH ORDINALITY AS r(reason_code, ord) USING (ord)
+JOIN unnest($5::boolean[]) WITH ORDINALITY AS e(enabled, ord) USING (ord)
+ON CONFLICT (tenant_id, lower(keyword)) WHERE deleted_at IS NULL DO NOTHING
+RETURNING id, tenant_id, keyword, reason_code, enabled, created_at, updated_at
+`
+
+type BulkCreateModerationKeywordsParams struct {
+	TenantID      int64    `db:"tenant_id" json:"tenant_id"`
+	UpdatedBy     *string  `db:"updated_by" json:"updated_by"`
+	Keywords      []string `db:"keywords" json:"keywords"`
+	ReasonCodes   []string `db:"reason_codes" json:"reason_codes"`
+	EnabledValues []bool   `db:"enabled_values" json:"enabled_values"`
+}
+
+type BulkCreateModerationKeywordsRow struct {
+	ID         int64              `db:"id" json:"id"`
+	TenantID   int64              `db:"tenant_id" json:"tenant_id"`
+	Keyword    string             `db:"keyword" json:"keyword"`
+	ReasonCode string             `db:"reason_code" json:"reason_code"`
+	Enabled    bool               `db:"enabled" json:"enabled"`
+	CreatedAt  pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt  pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
+func (q *Queries) BulkCreateModerationKeywords(ctx context.Context, arg BulkCreateModerationKeywordsParams) ([]BulkCreateModerationKeywordsRow, error) {
+	rows, err := q.db.Query(ctx, bulkCreateModerationKeywords,
+		arg.TenantID,
+		arg.UpdatedBy,
+		arg.Keywords,
+		arg.ReasonCodes,
+		arg.EnabledValues,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BulkCreateModerationKeywordsRow
+	for rows.Next() {
+		var i BulkCreateModerationKeywordsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Keyword,
+			&i.ReasonCode,
+			&i.Enabled,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countModerationBlocksInWindow = `-- name: CountModerationBlocksInWindow :one
 SELECT count(*)::bigint
 FROM moderation_violation_events

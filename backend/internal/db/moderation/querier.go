@@ -9,6 +9,8 @@ import (
 )
 
 type Querier interface {
+	BulkCreateModerationHashes(ctx context.Context, arg BulkCreateModerationHashesParams) ([]BulkCreateModerationHashesRow, error)
+	BulkCreateModerationKeywords(ctx context.Context, arg BulkCreateModerationKeywordsParams) ([]BulkCreateModerationKeywordsRow, error)
 	CountModerationBlocksInWindow(ctx context.Context, arg CountModerationBlocksInWindowParams) (int64, error)
 	CreateModerationHash(ctx context.Context, arg CreateModerationHashParams) (CreateModerationHashRow, error)
 	CreateModerationKeyword(ctx context.Context, arg CreateModerationKeywordParams) (CreateModerationKeywordRow, error)

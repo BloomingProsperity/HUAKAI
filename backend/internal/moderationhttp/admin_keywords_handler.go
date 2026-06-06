@@ -145,6 +145,8 @@ func writeModerationStoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "moderation_hash_exists", "hash already exists")
 	case errors.Is(err, moderation.ErrNotFound):
 		writeError(w, http.StatusNotFound, "moderation_not_found", "moderation resource not found")
+	case errors.Is(err, moderation.ErrBulkImportTooLarge):
+		writeError(w, http.StatusBadRequest, "bulk_import_too_large", "items must contain at most 1000 rows")
 	default:
 		writeError(w, http.StatusServiceUnavailable, "moderation_backend_error", err.Error())
 	}

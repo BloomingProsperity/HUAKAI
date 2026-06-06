@@ -32,6 +32,23 @@ INSERT INTO moderation_keywords (
 )
 RETURNING id, tenant_id, keyword, reason_code, enabled, created_at, updated_at;
 
+-- name: BulkCreateModerationKeywords :many
+INSERT INTO moderation_keywords (
+    tenant_id, keyword, reason_code, enabled, created_by, updated_by
+)
+SELECT
+    sqlc.arg(tenant_id)::bigint,
+    k.keyword,
+    r.reason_code,
+    e.enabled,
+    sqlc.narg(updated_by)::text,
+    sqlc.narg(updated_by)::text
+FROM unnest(sqlc.arg(keywords)::text[]) WITH ORDINALITY AS k(keyword, ord)
+JOIN unnest(sqlc.arg(reason_codes)::text[]) WITH ORDINALITY AS r(reason_code, ord) USING (ord)
+JOIN unnest(sqlc.arg(enabled_values)::boolean[]) WITH ORDINALITY AS e(enabled, ord) USING (ord)
+ON CONFLICT (tenant_id, lower(keyword)) WHERE deleted_at IS NULL DO NOTHING
+RETURNING id, tenant_id, keyword, reason_code, enabled, created_at, updated_at;
+
 -- name: SoftDeleteModerationKeyword :execrows
 UPDATE moderation_keywords
 SET enabled = false,
@@ -61,6 +78,23 @@ INSERT INTO moderation_hashes (
     sqlc.narg(updated_by)::text,
     sqlc.narg(updated_by)::text
 )
+RETURNING id, tenant_id, hash_hex, reason_code, enabled, created_at, updated_at;
+
+-- name: BulkCreateModerationHashes :many
+INSERT INTO moderation_hashes (
+    tenant_id, hash_hex, reason_code, enabled, created_by, updated_by
+)
+SELECT
+    sqlc.arg(tenant_id)::bigint,
+    h.hash_hex,
+    r.reason_code,
+    e.enabled,
+    sqlc.narg(updated_by)::text,
+    sqlc.narg(updated_by)::text
+FROM unnest(sqlc.arg(hash_hexes)::text[]) WITH ORDINALITY AS h(hash_hex, ord)
+JOIN unnest(sqlc.arg(reason_codes)::text[]) WITH ORDINALITY AS r(reason_code, ord) USING (ord)
+JOIN unnest(sqlc.arg(enabled_values)::boolean[]) WITH ORDINALITY AS e(enabled, ord) USING (ord)
+ON CONFLICT (tenant_id, hash_hex) WHERE deleted_at IS NULL DO NOTHING
 RETURNING id, tenant_id, hash_hex, reason_code, enabled, created_at, updated_at;
 
 -- name: SoftDeleteModerationHash :execrows

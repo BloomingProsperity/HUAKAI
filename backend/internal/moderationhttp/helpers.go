@@ -62,7 +62,11 @@ func tenantFromQuery(w http.ResponseWriter, r *http.Request, ident admin.AdminId
 }
 
 func readJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<16))
+	return readJSONLimit(w, r, dst, 1<<16)
+}
+
+func readJSONLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) bool {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "body_read_error", err.Error())
 		return false
