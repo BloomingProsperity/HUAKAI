@@ -163,7 +163,10 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 	if key == KeyMediaTaskDefaultEstimatedCents {
 		return validateMediaTaskDefaultEstimatedCentsValue(key, value)
 	}
-	if key == KeyModelFallbackChains || key == KeyBudgetLimits {
+	if key == KeyModelFallbackChains {
+		return validateModelFallbackChainsValue(key, value)
+	}
+	if key == KeyBudgetLimits {
 		return validateJSONObjectValue(key, value)
 	}
 	if value == "" {
