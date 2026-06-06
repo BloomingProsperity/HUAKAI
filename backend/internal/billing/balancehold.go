@@ -1,4 +1,4 @@
-package balancehold
+package billing
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
-var ErrInsufficientBalance = errors.New("balancehold: insufficient balance")
+var ErrBalanceHoldInsufficientBalance = errors.New("balancehold: insufficient balance")
 
 type EnforcementMode string
 
@@ -68,10 +68,10 @@ func Reserve(ctx context.Context, tx pgx.Tx, p ReserveParams) (Snapshot, error) 
 				return zero, fmt.Errorf("check balance row existence: %w", exErr)
 			}
 			if exists {
-				return zero, ErrInsufficientBalance
+				return zero, ErrBalanceHoldInsufficientBalance
 			}
 			if p.EnforcementMode.effective() == EnforcementModeMandatory {
-				return zero, ErrInsufficientBalance
+				return zero, ErrBalanceHoldInsufficientBalance
 			}
 			// opt-in 未 provision 余额行 → 不纳入余额强制 → 放行(返 nil,
 			// 不建 hold);后续 settle 的 Capture 因无 hold 行而 no-op。

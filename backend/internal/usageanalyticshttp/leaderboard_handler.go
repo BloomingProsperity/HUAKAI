@@ -13,7 +13,6 @@ import (
 	"github.com/shopspring/decimal"
 
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
-	"github.com/BloomingProsperity/HUAKAI/internal/snapshotcache"
 )
 
 const (
@@ -82,7 +81,7 @@ func NewLeaderboardHandler(q Querier) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		value, hit, err := snapshotcache.GetOrLoad(leaderboardSnapshotCacheKey(query), leaderboardSnapshotTTL, func() (any, error) {
+		value, hit, err := GetOrLoad(leaderboardSnapshotCacheKey(query), leaderboardSnapshotTTL, func() (any, error) {
 			return loadLeaderboardResponse(r.Context(), q, query)
 		})
 		if err != nil {

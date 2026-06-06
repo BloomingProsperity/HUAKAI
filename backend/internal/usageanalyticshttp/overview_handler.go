@@ -11,7 +11,6 @@ import (
 	"github.com/shopspring/decimal"
 
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
-	"github.com/BloomingProsperity/HUAKAI/internal/snapshotcache"
 )
 
 const snapshotCacheHeader = "X-Snapshot-Cache"
@@ -57,7 +56,7 @@ func NewOverviewHandler(q Querier) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		value, hit, err := snapshotcache.GetOrLoad(overviewSnapshotCacheKey(query), overviewSnapshotTTL, func() (any, error) {
+		value, hit, err := GetOrLoad(overviewSnapshotCacheKey(query), overviewSnapshotTTL, func() (any, error) {
 			return loadOverviewResponse(r.Context(), q, query)
 		})
 		if err != nil {

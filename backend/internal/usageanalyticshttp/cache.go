@@ -1,4 +1,4 @@
-package snapshotcache
+package usageanalyticshttp
 
 import (
 	"errors"

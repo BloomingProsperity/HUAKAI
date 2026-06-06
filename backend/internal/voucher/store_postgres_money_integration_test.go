@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/balancehold"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 )
@@ -1125,23 +1124,23 @@ func seedVoucherMoneyClaim(t *testing.T, ctx context.Context, pool *pgxpool.Pool
 	return claim
 }
 
-func reserveVoucherMoney(ctx context.Context, pool *pgxpool.Pool, tenantID, userID, claimID int64, cost decimal.Decimal) (balancehold.Snapshot, error) {
+func reserveVoucherMoney(ctx context.Context, pool *pgxpool.Pool, tenantID, userID, claimID int64, cost decimal.Decimal) (billing.Snapshot, error) {
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
-		return balancehold.Snapshot{}, err
+		return billing.Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	snap, err := balancehold.Reserve(ctx, tx, balancehold.ReserveParams{
+	snap, err := billing.Reserve(ctx, tx, billing.ReserveParams{
 		TenantID: tenantID,
 		UserID:   userID,
 		ClaimID:  claimID,
 		Cost:     cost,
 	})
 	if err != nil {
-		return balancehold.Snapshot{}, err
+		return billing.Snapshot{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return balancehold.Snapshot{}, err
+		return billing.Snapshot{}, err
 	}
 	return snap, nil
 }

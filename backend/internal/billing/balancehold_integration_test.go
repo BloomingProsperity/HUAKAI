@@ -1,6 +1,6 @@
 //go:build integration_pg
 
-package balancehold
+package billing
 
 import (
 	"context"
@@ -50,7 +50,7 @@ func TestBalanceHold_ConcurrentOverspendDiscriminating(t *testing.T) {
 			defer wg.Done()
 			snap, err := reserveWithRetry(ctx, pool, tenantID, userID, claims[i], decimal.NewFromInt(3), 10)
 			if err != nil {
-				if errors.Is(err, ErrInsufficientBalance) {
+				if errors.Is(err, ErrBalanceHoldInsufficientBalance) {
 					mu.Lock()
 					insufficient++
 					mu.Unlock()
@@ -172,7 +172,7 @@ func TestBalanceHold_ReleaseStateIdempotent(t *testing.T) {
 func TestBalanceHold_MissingRowAllowsOptIn(t *testing.T) {
 	// opt-in 余额强制:无 user_balances 行 = 用户未 provision
 	// = 不纳入余额强制 → Reserve 放行(返 nil)且不建 hold 行。
-	// Mutation check: 若把无行当 ErrInsufficientBalance(旧 D4 严格语义),Reserve 返错
+	// Mutation check: 若把无行当 ErrBalanceHoldInsufficientBalance(旧 D4 严格语义),Reserve 返错
 	// → 本测试在 "expected allow" 处变红;或若误建 hold 行,count!=0 变红。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -195,7 +195,7 @@ func TestBalanceHold_MissingRowAllowsOptIn(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// 无余额行 → 放行(nil),不是 ErrInsufficientBalance。
+	// 无余额行 → 放行(nil),不是 ErrBalanceHoldInsufficientBalance。
 	if _, err := Reserve(ctx, tx, ReserveParams{
 		TenantID: tenantID, UserID: userID, ClaimID: claimID, Cost: decimal.NewFromInt(1),
 		EnforcementMode: EnforcementModeOptIn,
@@ -218,7 +218,7 @@ func TestBalanceHold_MissingRowAllowsOptIn(t *testing.T) {
 
 func TestBalanceHold_MissingRowMandatoryRejects(t *testing.T) {
 	// Mutation check: treating mandatory the same as opt-in lets a no-balance
-	// user through and fails both the ErrInsufficientBalance assertion and the
+	// user through and fails both the ErrBalanceHoldInsufficientBalance assertion and the
 	// "no hold row" guard.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -245,8 +245,8 @@ func TestBalanceHold_MissingRowMandatoryRejects(t *testing.T) {
 		TenantID: tenantID, UserID: userID, ClaimID: claimID, Cost: decimal.NewFromInt(1),
 		EnforcementMode: EnforcementModeMandatory,
 	})
-	if !errors.Is(err, ErrInsufficientBalance) {
-		t.Fatalf("mandatory missing balance row err=%v want %v", err, ErrInsufficientBalance)
+	if !errors.Is(err, ErrBalanceHoldInsufficientBalance) {
+		t.Fatalf("mandatory missing balance row err=%v want %v", err, ErrBalanceHoldInsufficientBalance)
 	}
 
 	var holdRows int
@@ -261,7 +261,7 @@ func TestBalanceHold_MissingRowMandatoryRejects(t *testing.T) {
 func TestBalanceHold_BackfillHistoricalVoucherUserCanReserveMandatory(t *testing.T) {
 	// Mutation check: deleting the 0065 voucher_redemption backfill statement,
 	// filtering out USD redemptions, or forgetting cents->USD conversion leaves
-	// no usable $100 balance and Reserve returns ErrInsufficientBalance.
+	// no usable $100 balance and Reserve returns ErrBalanceHoldInsufficientBalance.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
