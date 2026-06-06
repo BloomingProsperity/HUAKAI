@@ -324,6 +324,44 @@ func TestChannelHealth_AT013_LatencyCooldownThenRecoveryWithoutDisable(t *testin
 	}
 }
 
+func TestChannelHealthSummaryMemory_CountsByStateTenantScopeAndOldestCooldown(t *testing.T) {
+	// MUTATION: count every row under one state, ignore zero-count states, or include another tenant; exact counts and total go RED.
+	ctx := context.Background()
+	store := NewMemoryStore()
+	svc := NewService(store, testPolicy(), &fixedClock{now: time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)})
+	olderCooldown := time.Date(2026, 6, 6, 12, 30, 0, 0, time.UTC)
+	newerCooldown := time.Date(2026, 6, 6, 13, 30, 0, 0, time.UTC)
+	upsertSummaryRecord(t, store, 7, "openai", 101, 9001, StateActive, nil)
+	upsertSummaryRecord(t, store, 7, "anthropic", 102, 9002, StateActive, nil)
+	upsertSummaryRecord(t, store, 7, "gemini", 103, 9003, StateCoolingDown, &newerCooldown)
+	upsertSummaryRecord(t, store, 7, "openai", 104, 9004, StateDisabled, &olderCooldown)
+	upsertSummaryRecord(t, store, 8, "openai", 201, 9901, StateManualPaused, nil)
+
+	summary, err := svc.SummarizeChannelHealth(ctx, 7)
+	if err != nil {
+		t.Fatalf("SummarizeChannelHealth: %v", err)
+	}
+	if summary.Total != 4 {
+		t.Fatalf("total=%d want 4", summary.Total)
+	}
+	want := map[HealthState]int64{
+		StateActive:       2,
+		StateDegraded:     0,
+		StateCoolingDown:  1,
+		StateRamping:      0,
+		StateDisabled:     1,
+		StateManualPaused: 0,
+	}
+	for state, count := range want {
+		if summary.ByState[state] != count {
+			t.Fatalf("by_state[%s]=%d want %d; all=%+v", state, summary.ByState[state], count, summary.ByState)
+		}
+	}
+	if summary.OldestCooldownAt == nil || !summary.OldestCooldownAt.Equal(olderCooldown) {
+		t.Fatalf("oldest=%v want %s", summary.OldestCooldownAt, olderCooldown.Format(time.RFC3339))
+	}
+}
+
 func TestChannelHealth_AuditFailureRollsBackStateMutation(t *testing.T) {
 	ctx := context.Background()
 	store := &failingAuditStore{MemoryStore: NewMemoryStore()}
@@ -359,6 +397,33 @@ func testService() (context.Context, *Service, *MemoryStore, *fixedClock) {
 	store := NewMemoryStore()
 	clock := &fixedClock{now: time.Date(2026, 5, 16, 8, 0, 0, 0, time.UTC)}
 	return ctx, NewService(store, testPolicy(), clock), store, clock
+}
+
+func upsertSummaryRecord(t *testing.T, store *MemoryStore, tenantID int64, vendor string, providerAccountID, credentialID int64, state HealthState, cooldownUntil *time.Time) {
+	t.Helper()
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	_, err := store.UpsertRecord(context.Background(), Record{
+		Key: ChannelKey{
+			TenantID:            tenantID,
+			Vendor:              vendor,
+			ProviderAccountID:   providerAccountID,
+			AccountCredentialID: credentialID,
+			CredentialVersion:   1,
+		},
+		State:            state,
+		Score:            100,
+		ReasonClass:      SignalNone,
+		Confidence:       ConfidenceObserved,
+		CooldownUntil:    cooldownUntil,
+		PolicyVersion:    "channel-health-v1",
+		StateEnteredAt:   now.Add(-time.Minute),
+		LastTransitionAt: now.Add(-time.Minute),
+		CreatedAt:        now.Add(-time.Hour),
+		UpdatedAt:        now,
+	})
+	if err != nil {
+		t.Fatalf("upsert summary record: %v", err)
+	}
 }
 
 func auditTypes(events []AuditEvent) []AuditEventType {

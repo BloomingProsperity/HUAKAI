@@ -7190,6 +7190,31 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/channel-health/summary:
+    get:
+      tags: [admin-channel-health]
+      summary: Summarize channel health fleet state
+      operationId: summarizeChannelHealth
+      x-huakai-spec-source:
+        - docs/specs/channel-health-auto-disable.md
+        - docs/specs/privacy-no-user-data-logs.md
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Tenant-scoped channel health fleet summary.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChannelHealthSummaryResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/admin/channel-health/{channel_id}:
     parameters:
       - in: path
@@ -12160,6 +12185,29 @@ components:
           items: { $ref: '#/components/schemas/ChannelHealthState' }
         limit: { type: integer, minimum: 1, maximum: 200 }
         offset: { type: integer, minimum: 0 }
+
+    ChannelHealthSummaryByState:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/channel-health-auto-disable.md]
+      required: [active, degraded, cooling_down, ramping, disabled, manual_paused]
+      properties:
+        active: { type: integer, format: int64, minimum: 0 }
+        degraded: { type: integer, format: int64, minimum: 0 }
+        cooling_down: { type: integer, format: int64, minimum: 0 }
+        ramping: { type: integer, format: int64, minimum: 0 }
+        disabled: { type: integer, format: int64, minimum: 0 }
+        manual_paused: { type: integer, format: int64, minimum: 0 }
+
+    ChannelHealthSummaryResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/channel-health-auto-disable.md]
+      required: [by_state, total]
+      properties:
+        by_state: { $ref: '#/components/schemas/ChannelHealthSummaryByState' }
+        total: { type: integer, format: int64, minimum: 0 }
+        oldest_cooldown_at: { type: [string, 'null'], format: date-time }
 
     ChannelHealthDetailResponse:
       type: object

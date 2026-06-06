@@ -106,6 +106,27 @@ func (s *MemoryStore) GetChannelHealth(_ context.Context, tenantID int64, channe
 	return rec, events, nil
 }
 
+func (s *MemoryStore) SummarizeChannelHealth(_ context.Context, tenantID int64) (ChannelHealthSummary, error) {
+	if s == nil {
+		return ChannelHealthSummary{}, ErrNotFound
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	summary := newChannelHealthSummary()
+	for _, rec := range s.records {
+		if rec.Key.TenantID != tenantID {
+			continue
+		}
+		summary.ByState[rec.State]++
+		summary.Total++
+		if rec.CooldownUntil != nil && (summary.OldestCooldownAt == nil || rec.CooldownUntil.Before(*summary.OldestCooldownAt)) {
+			oldest := rec.CooldownUntil.UTC()
+			summary.OldestCooldownAt = &oldest
+		}
+	}
+	return summary, nil
+}
+
 func (s *MemoryStore) LatestByProviderAccount(_ context.Context, tenantID, providerAccountID int64) (Record, error) {
 	if s == nil {
 		return Record{}, ErrNotFound

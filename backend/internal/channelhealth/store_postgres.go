@@ -208,6 +208,43 @@ LIMIT 50`,
 	return rec, events, nil
 }
 
+func (s *PostgresStore) SummarizeChannelHealth(ctx context.Context, tenantID int64) (ChannelHealthSummary, error) {
+	if s == nil || s.db == nil {
+		return ChannelHealthSummary{}, errors.New("channelhealth: postgres store not configured")
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT state, COUNT(*)::bigint, MIN(cooldown_until)
+FROM channel_health_state
+WHERE tenant_id = $1
+GROUP BY state`,
+		tenantID)
+	if err != nil {
+		return ChannelHealthSummary{}, err
+	}
+	defer rows.Close()
+	summary := newChannelHealthSummary()
+	for rows.Next() {
+		var (
+			state          string
+			count          int64
+			oldestCooldown *time.Time
+		)
+		if err := rows.Scan(&state, &count, &oldestCooldown); err != nil {
+			return ChannelHealthSummary{}, err
+		}
+		summary.ByState[HealthState(state)] = count
+		summary.Total += count
+		if oldestCooldown != nil && (summary.OldestCooldownAt == nil || oldestCooldown.Before(*summary.OldestCooldownAt)) {
+			oldest := oldestCooldown.UTC()
+			summary.OldestCooldownAt = &oldest
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return ChannelHealthSummary{}, err
+	}
+	return summary, nil
+}
+
 func (s *PostgresStore) UpsertRecord(ctx context.Context, rec Record) (Record, error) {
 	if s == nil || s.db == nil {
 		return Record{}, errors.New("channelhealth: postgres store not configured")
