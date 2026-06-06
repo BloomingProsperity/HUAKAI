@@ -1,6 +1,7 @@
 package registrydefault
 
 import (
+	"context"
 	"errors"
 	"sort"
 	"testing"
@@ -96,6 +97,50 @@ func TestBuild_PlatformIDsCorrect(t *testing.T) {
 		if got := a.Platform(); got != wantPlatform {
 			t.Errorf("%q Platform=%q want %q", pf, got, wantPlatform)
 		}
+	}
+}
+
+func TestBuild_OpenAICompatChatRegistrationsPreservePlatformAndEndpoint(t *testing.T) {
+	t.Setenv(placeholderSessionAdaptersEnv, "")
+	clearPlaceholderSessionAdapterEnvs(t)
+	r := Build()
+	cases := []struct {
+		protocol string
+		platform string
+		endpoint string
+	}{
+		{ProtocolOpenRouterChat, "openrouter", "https://openrouter.ai/api/v1/chat/completions"},
+		{ProtocolGrokChat, "grok", "https://api.x.ai/v1/chat/completions"},
+		{ProtocolDeepSeekChat, "deepseek", "https://api.deepseek.com/v1/chat/completions"},
+		{ProtocolMistralChat, "mistral", "https://api.mistral.ai/v1/chat/completions"},
+		{ProtocolGroqCloudChat, "groqcloud", "https://api.groq.com/openai/v1/chat/completions"},
+		{ProtocolTogetherChat, "together", "https://api.together.xyz/v1/chat/completions"},
+		{ProtocolPerplexityChat, "perplexity", "https://api.perplexity.ai/chat/completions"},
+		{ProtocolFireworksChat, "fireworks", "https://api.fireworks.ai/inference/v1/chat/completions"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.protocol, func(t *testing.T) {
+			a, err := r.For(tc.protocol)
+			if err != nil {
+				t.Fatalf("For(%q) err=%v", tc.protocol, err)
+			}
+			if got := a.Platform(); got != tc.platform {
+				t.Fatalf("%q Platform=%q want %q", tc.protocol, got, tc.platform)
+			}
+			req, err := a.BuildRequest(context.Background(), provider.BuildInput{
+				InboundBody: []byte(`{}`),
+				Credential: provider.Credential{
+					Type:  provider.CredentialTypeAPIKey,
+					Value: "test-key",
+				},
+			})
+			if err != nil {
+				t.Fatalf("%q BuildRequest err=%v", tc.protocol, err)
+			}
+			if got := req.URL.String(); got != tc.endpoint {
+				t.Fatalf("%q endpoint=%q want %q", tc.protocol, got, tc.endpoint)
+			}
+		})
 	}
 }
 

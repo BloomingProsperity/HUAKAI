@@ -42,17 +42,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/bedrock"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/cursor"
-	"github.com/BloomingProsperity/HUAKAI/internal/provider/deepseek"
-	"github.com/BloomingProsperity/HUAKAI/internal/provider/fireworks"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/gemini"
-	"github.com/BloomingProsperity/HUAKAI/internal/provider/grok"
-	"github.com/BloomingProsperity/HUAKAI/internal/provider/groqcloud"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/kiro"
-	"github.com/BloomingProsperity/HUAKAI/internal/provider/mistral"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openrouter"
-	"github.com/BloomingProsperity/HUAKAI/internal/provider/perplexity"
-	"github.com/BloomingProsperity/HUAKAI/internal/provider/together"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/windsurf"
 )
 
@@ -128,15 +121,35 @@ func Build() *provider.StaticRegistry {
 	r.MustRegister(ProtocolBedrockInvoke, &bedrock.PassthroughAdapter{
 		AutoTranslateAnthropicAPIBody: true,
 	})
-	r.MustRegister(ProtocolGrokChat, &grok.PassthroughAdapter{})
-
-	// 以下 6 家为 OpenAI Chat Completions 兼容直通 API key 路径。
-	r.MustRegister(ProtocolDeepSeekChat, &deepseek.PassthroughAdapter{})
-	r.MustRegister(ProtocolMistralChat, &mistral.PassthroughAdapter{})
-	r.MustRegister(ProtocolGroqCloudChat, &groqcloud.PassthroughAdapter{})
-	r.MustRegister(ProtocolTogetherChat, &together.PassthroughAdapter{})
-	r.MustRegister(ProtocolPerplexityChat, &perplexity.PassthroughAdapter{})
-	r.MustRegister(ProtocolFireworksChat, &fireworks.PassthroughAdapter{})
+	// 以下 7 家为 OpenAI Chat Completions 兼容直通 API key 路径。
+	r.MustRegister(ProtocolGrokChat, &provider.OpenAICompatPassthroughAdapter{
+		PlatformName: "grok",
+		Endpoint:     "https://api.x.ai/v1/chat/completions",
+	})
+	r.MustRegister(ProtocolDeepSeekChat, &provider.OpenAICompatPassthroughAdapter{
+		PlatformName: "deepseek",
+		Endpoint:     "https://api.deepseek.com/v1/chat/completions",
+	})
+	r.MustRegister(ProtocolMistralChat, &provider.OpenAICompatPassthroughAdapter{
+		PlatformName: "mistral",
+		Endpoint:     "https://api.mistral.ai/v1/chat/completions",
+	})
+	r.MustRegister(ProtocolGroqCloudChat, &provider.OpenAICompatPassthroughAdapter{
+		PlatformName: "groqcloud",
+		Endpoint:     "https://api.groq.com/openai/v1/chat/completions",
+	})
+	r.MustRegister(ProtocolTogetherChat, &provider.OpenAICompatPassthroughAdapter{
+		PlatformName: "together",
+		Endpoint:     "https://api.together.xyz/v1/chat/completions",
+	})
+	r.MustRegister(ProtocolPerplexityChat, &provider.OpenAICompatPassthroughAdapter{
+		PlatformName: "perplexity",
+		Endpoint:     "https://api.perplexity.ai/chat/completions",
+	})
+	r.MustRegister(ProtocolFireworksChat, &provider.OpenAICompatPassthroughAdapter{
+		PlatformName: "fireworks",
+		Endpoint:     "https://api.fireworks.ai/inference/v1/chat/completions",
+	})
 
 	// 6 家订阅 session 反转路径仍含未验证 placeholder endpoint。
 	// 默认不注册，避免把真实 session credential 发到未确认上游；实验环境
