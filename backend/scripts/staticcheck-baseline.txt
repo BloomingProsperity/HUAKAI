@@ -10,7 +10,6 @@
 		upstream: UpstreamProtocolBedrock,
 		upstream: UpstreamProtocolGemini,
 		upstream: UpstreamProtocolOpenAI,
-	internal/binding/binding_test.go:  the lhs of the comparison gets its value from here and has a concrete type
 	internal/email/sender_factory_test.go:  the lhs of the comparison gets its value from here and has a concrete type
 	internal/gatewayhttp/chat_completions_pricing_test.go:  this check suggests that the pointer can be nil
 	{
@@ -21,7 +20,7 @@ cmd/gateway/wiring.go:  func refundReceiptSink.GetReceiptBySequence is unused (U
 cmd/gateway/wiring.go:  type refundReceiptAppender is unused (U1000)
 cmd/gateway/wiring.go:  type refundReceiptSequenceReader is unused (U1000)
 cmd/gateway/wiring.go:  type refundReceiptSink is unused (U1000)
-internal/accountmode/catalog.go:  func enabledChannel is unused (U1000)
+internal/adminhttp/catalog.go:  func enabledChannel is unused (U1000)
 internal/audit/refund_worker.go:  func (*MismatchRefundWorker).existingRefundReceipt is unused (U1000)
 internal/audit/refund_worker.go:  func validateExistingRefundReceipt is unused (U1000)
 internal/audit/refund_worker.go:  type refundReceiptSequenceReader is unused (U1000)
@@ -29,8 +28,6 @@ internal/auditledger/acceptance_test.go:  identical expressions on the left and 
 internal/auditledger/prepared_json_test.go:  struct type 'github.com/BloomingProsperity/HUAKAI/internal/auditledger.PreparedEntry' doesn't have any exported fields, nor custom marshaling (SA9005)
 internal/auth/antigravity_token_provider.go:  transport.DialTLS has been deprecated since Go 1.14: Use DialTLSContext instead, which allows the transport to cancel dials as soon as they are no longer needed. If both are set, DialTLSContext takes priority.  (SA1019)
 internal/auth/auth_test.go:  transport.DialTLS has been deprecated since Go 1.14: Use DialTLSContext instead, which allows the transport to cancel dials as soon as they are no longer needed. If both are set, DialTLSContext takes priority.  (SA1019)
-internal/binding/binding_test.go:  do not pass a nil Context, even if a function permits it; pass context.TODO if you are unsure about which Context to use (SA1012)
-internal/binding/binding_test.go:  this comparison is never true (SA4023)
 internal/budget/redis_store.go:  const redisCounterTTLSeconds is unused (U1000)
 internal/cache_routing/auto_inject_test.go:  should omit nil check; len() for nil slices is defined as zero (S1009)
 internal/channelhealth/store_postgres_audit_required_test.go:  should convert r (type auditAppendErrBatchResults) to auditAppendErrRow instead of using struct literal (S1016)
