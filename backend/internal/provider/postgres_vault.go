@@ -72,28 +72,9 @@ func (v *PostgresCredentialVault) Resolve(ctx context.Context, tenantID, account
 		return Credential{}, AccountInfo{}, fmt.Errorf("account %d: tenantID required: %w", accountID, ErrAccountNotFound)
 	}
 	if v.store != nil {
-		rec, err := v.store.ResolveActive(ctx, tenantID, accountID)
-		if err == nil {
-			defer privacy.Zeroize(rec.PlaintextPayload)
-			handler, err := v.store.HandlerRegistry().MustLookup(rec.Vendor, rec.AuthMode)
-			if err != nil {
-				return Credential{}, AccountInfo{}, err
-			}
-			material, err := handler.RuntimeMaterial(rec.PlaintextPayload)
-			if err != nil {
-				return Credential{}, AccountInfo{}, err
-			}
-			return mapRuntimeMaterial(material), AccountInfo{
-				AccountID:           rec.ProviderAccountID,
-				TenantID:            rec.TenantID,
-				Platform:            rec.Vendor,
-				AccountType:         rec.AuthMode,
-				AccountCredentialID: rec.ID,
-				CredentialVersion:   int(rec.CredentialVersion),
-			}, nil
-		}
-		if !errors.Is(err, credentialstore.ErrCredentialNotFound) {
-			return Credential{}, AccountInfo{}, err
+		cred, info, handled, err := v.resolveFromStore(ctx, tenantID, accountID)
+		if handled {
+			return cred, info, err
 		}
 	}
 
@@ -145,6 +126,39 @@ func (v *PostgresCredentialVault) Resolve(ctx context.Context, tenantID, account
 	}
 
 	return cred, info, nil
+}
+
+func (v *PostgresCredentialVault) resolveFromStore(
+	ctx context.Context,
+	tenantID, accountID int64,
+) (Credential, AccountInfo, bool, error) {
+	rec, err := v.store.ResolveActive(ctx, tenantID, accountID)
+	if err != nil {
+		if errors.Is(err, credentialstore.ErrCredentialNotActive) {
+			return Credential{}, AccountInfo{}, true, fmt.Errorf("account %d: %w", accountID, ErrAccountDisabled)
+		}
+		if errors.Is(err, credentialstore.ErrCredentialNotFound) {
+			return Credential{}, AccountInfo{}, false, nil
+		}
+		return Credential{}, AccountInfo{}, true, err
+	}
+	defer privacy.Zeroize(rec.PlaintextPayload)
+	handler, err := v.store.HandlerRegistry().MustLookup(rec.Vendor, rec.AuthMode)
+	if err != nil {
+		return Credential{}, AccountInfo{}, true, err
+	}
+	material, err := handler.RuntimeMaterial(rec.PlaintextPayload)
+	if err != nil {
+		return Credential{}, AccountInfo{}, true, err
+	}
+	return mapRuntimeMaterial(material), AccountInfo{
+		AccountID:           rec.ProviderAccountID,
+		TenantID:            rec.TenantID,
+		Platform:            rec.Vendor,
+		AccountType:         rec.AuthMode,
+		AccountCredentialID: rec.ID,
+		CredentialVersion:   int(rec.CredentialVersion),
+	}, true, nil
 }
 
 func mapRuntimeMaterial(m credentialstore.RuntimeMaterial) Credential {

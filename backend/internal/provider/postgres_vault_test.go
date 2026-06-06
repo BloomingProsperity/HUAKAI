@@ -152,6 +152,10 @@ func insertProviderAccount(
 // cleanupFixture 删除测试插入的所有行（顺序：子表先删）。
 func cleanupFixture(ctx context.Context, t *testing.T, db *pgxpool.Pool, f testFixture) {
 	t.Helper()
+	if f.tenantID != 0 {
+		_, _ = db.Exec(ctx, `DELETE FROM credential_audit_events WHERE tenant_id = $1`, f.tenantID)
+		_, _ = db.Exec(ctx, `DELETE FROM account_credentials WHERE tenant_id = $1`, f.tenantID)
+	}
 	if f.providerAccountID != 0 {
 		_, _ = db.Exec(ctx, `DELETE FROM provider_accounts WHERE id = $1`, f.providerAccountID)
 	}
