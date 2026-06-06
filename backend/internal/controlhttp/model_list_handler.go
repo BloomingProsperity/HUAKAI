@@ -1,4 +1,4 @@
-package modelhttp
+package controlhttp
 
 import (
 	"context"
@@ -23,13 +23,13 @@ type modelPricer interface {
 	PublicModelPrices(context.Context, int64) (billing.PublicPriceTable, error)
 }
 
-type Deps struct {
+type ModelListDeps struct {
 	Auth    authResolver
 	Catalog modelCatalog
 	Pricing modelPricer
 }
 
-type listResponse struct {
+type modelListResponse struct {
 	Object string        `json:"object"`
 	Data   []modelObject `json:"data"`
 }
@@ -51,37 +51,37 @@ type modelPricing struct {
 	OutputPerToken string `json:"output_per_token,omitempty"`
 }
 
-func NewListHandler(d Deps) http.HandlerFunc {
+func NewModelListHandler(d ModelListDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if d.Auth == nil || d.Catalog == nil {
-			writeError(w, http.StatusServiceUnavailable, "gateway_not_configured", "models handler dependency unset")
+			modelWriteError(w, http.StatusServiceUnavailable, "gateway_not_configured", "models handler dependency unset")
 			return
 		}
 		ident, err := d.Auth.Resolve(r.Context(), r)
 		if errors.Is(err, auth.ErrAuthMisconfigured) {
-			writeError(w, http.StatusServiceUnavailable, "gateway_not_configured", "auth tables unavailable")
+			modelWriteError(w, http.StatusServiceUnavailable, "gateway_not_configured", "auth tables unavailable")
 			return
 		}
 		if errors.Is(err, auth.ErrAuthBackend) {
-			writeError(w, http.StatusServiceUnavailable, "auth_backend_error", "auth backend transient failure")
+			modelWriteError(w, http.StatusServiceUnavailable, "auth_backend_error", "auth backend transient failure")
 			return
 		}
 		if errors.Is(err, auth.ErrForbidden) {
-			writeError(w, http.StatusForbidden, "forbidden", "api key policy forbids this request")
+			modelWriteError(w, http.StatusForbidden, "forbidden", "api key policy forbids this request")
 			return
 		}
 		if err != nil {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "invalid bearer")
+			modelWriteError(w, http.StatusUnauthorized, "unauthorized", "invalid bearer")
 			return
 		}
 
 		models, err := d.Catalog.ListModels(r.Context(), ident.TenantID)
 		if errors.Is(err, registry.ErrRegistryBackend) {
-			writeError(w, http.StatusServiceUnavailable, "registry_backend_error", "registry backend transient failure")
+			modelWriteError(w, http.StatusServiceUnavailable, "registry_backend_error", "registry backend transient failure")
 			return
 		}
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "registry_unknown_error", "model registry failed")
+			modelWriteError(w, http.StatusInternalServerError, "registry_unknown_error", "model registry failed")
 			return
 		}
 
@@ -92,7 +92,7 @@ func NewListHandler(d Deps) http.HandlerFunc {
 			}
 		}
 
-		out := listResponse{
+		out := modelListResponse{
 			Object: "list",
 			Data:   make([]modelObject, 0, len(models)),
 		}
@@ -128,18 +128,18 @@ func NewListHandler(d Deps) http.HandlerFunc {
 			}
 			out.Data = append(out.Data, item)
 		}
-		writeJSON(w, http.StatusOK, out)
+		modelWriteJSON(w, http.StatusOK, out)
 	}
 }
 
-func writeJSON(w http.ResponseWriter, status int, payload any) {
+func modelWriteJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
-func writeError(w http.ResponseWriter, status int, code string, message string) {
-	writeJSON(w, status, map[string]any{
+func modelWriteError(w http.ResponseWriter, status int, code string, message string) {
+	modelWriteJSON(w, status, map[string]any{
 		"error": map[string]any{
 			"code":    code,
 			"message": message,

@@ -15,23 +15,19 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/audiohttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/captcha"
+	"github.com/BloomingProsperity/HUAKAI/internal/controlhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
-	"github.com/BloomingProsperity/HUAKAI/internal/disputehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/embeddingshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/imageshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/meusagehttp"
-	"github.com/BloomingProsperity/HUAKAI/internal/modelhttp"
-	"github.com/BloomingProsperity/HUAKAI/internal/panelauthhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
-	"github.com/BloomingProsperity/HUAKAI/internal/routeadminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfphttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
-	"github.com/BloomingProsperity/HUAKAI/internal/twofahttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/usageanalyticshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkeyhttp"
 )
@@ -65,7 +61,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Post("/v1/responses", gatewayhttp.NewResponsesHandler(chatHandlerDeps(d)))
 	r.Post("/v1/messages", gatewayhttp.NewMessagesHandler(chatHandlerDeps(d)))
 	r.Get("/v1/realtime", handleRealtimeRoadmap)
-	r.Get("/v1/models", modelhttp.NewListHandler(modelhttp.Deps{
+	r.Get("/v1/models", controlhttp.NewModelListHandler(controlhttp.ModelListDeps{
 		Auth:    d.inboundAuth,
 		Catalog: d.modelRegistry,
 		Pricing: d.rateTableSource,
@@ -104,21 +100,21 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		Signer:          d.auditSigner,
 		PubkeyRegistry:  d.auditPubkeyRegistry,
 	}
-	disputeUserDeps := disputehttp.UserDeps{
+	disputeUserDeps := controlhttp.DisputeUserDeps{
 		Receipts: d.receiptStore,
 		Store:    d.disputeStore,
 	}
 	r.Route("/v1/receipts", func(r chi.Router) {
 		r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Get("/{request_id}", gatewayhttp.NewCostReceiptGetHandler(receiptDeps))
 		r.Post("/{request_id}", http.NotFound)
-		r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Post("/{request_id}/disputes", disputehttp.NewCreateDisputeHandler(disputeUserDeps))
+		r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Post("/{request_id}/disputes", controlhttp.NewCreateDisputeHandler(disputeUserDeps))
 		r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Post("/{request_id}/verify", gatewayhttp.NewCostReceiptVerifyHandler(receiptDeps))
 		r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Get("/{request_id_host}/{request_id_tail}", gatewayhttp.NewCostReceiptGetHandler(receiptDeps))
 		r.Post("/{request_id_host}/{request_id_tail}", http.NotFound)
-		r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Post("/{request_id_host}/{request_id_tail}/disputes", disputehttp.NewCreateDisputeHandler(disputeUserDeps))
+		r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Post("/{request_id_host}/{request_id_tail}/disputes", controlhttp.NewCreateDisputeHandler(disputeUserDeps))
 		r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Post("/{request_id_host}/{request_id_tail}/verify", gatewayhttp.NewCostReceiptVerifyHandler(receiptDeps))
 	})
-	r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Get("/v1/me/disputes", disputehttp.NewListUserDisputesHandler(disputeUserDeps))
+	r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Get("/v1/me/disputes", controlhttp.NewListUserDisputesHandler(disputeUserDeps))
 	r.Get("/v1/pricing/rate-table", gatewayhttp.NewPricingRateTableHandler(receiptDeps))
 	r.Get("/v1/pricing/snapshots", gatewayhttp.NewPricingSnapshotsHandler(receiptDeps))
 	r.Get("/v1/pricing/snapshots/{snapshot_id}", gatewayhttp.NewPricingSnapshotHandler(receiptDeps))
@@ -127,10 +123,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		gatewayhttp.MountAuthRoutes(r, authHandlerDeps(d, logger))
 		// GET /v1/auth/me 需已认证 session(同块的 login/register 等不需要), 故用 per-route session 中间件,
 		// 不另起 /v1/auth Route 组(chi 同前缀重复 Mount 会 panic)。
-		panelauthhttp.MountAuthMeRoutes(r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)), panelauthhttp.Deps{Resolver: d.panelAuthResolver})
+		controlhttp.MountAuthMeRoutes(r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)), controlhttp.AuthMeDeps{Resolver: d.panelAuthResolver})
 		r.Route("/2fa", func(r chi.Router) {
 			r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
-			twofahttp.MountRoutes(r, twofahttp.Deps{Service: d.twoFactor, Settings: d.platformSettings, Sessions: d.userSessions})
+			controlhttp.MountTwoFARoutes(r, controlhttp.TwoFADeps{Service: d.twoFactor, Settings: d.platformSettings, Sessions: d.userSessions})
 		})
 	})
 
@@ -525,7 +521,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		adminResolver = d.adminAuth
 	}
 	r.Method(http.MethodPut, "/v1/admin/models/{id}/capabilities",
-		adminGate(adminResolver, modelhttp.NewAdminCapabilitiesHandler(modelhttp.AdminCapabilitiesDeps{
+		adminGate(adminResolver, controlhttp.NewAdminCapabilitiesHandler(controlhttp.AdminCapabilitiesDeps{
 			Store: d.modelRegistry,
 		})))
 	r.Route("/admin/v1/api-keys", func(r chi.Router) {
@@ -666,14 +662,14 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		})
 	})
 	r.Route("/v1/admin/disputes", func(r chi.Router) {
-		r.Post("/{id}/resolve", disputehttp.NewAdminResolveDisputeHandler(disputehttp.AdminDeps{
+		r.Post("/{id}/resolve", controlhttp.NewAdminResolveDisputeHandler(controlhttp.DisputeAdminDeps{
 			Auth:  d.adminAuth,
 			Store: d.disputeStore,
 		}))
 	})
 	mountNotificationRoutes(r, d)
 	r.Route("/v1/admin/routes", func(r chi.Router) {
-		routeadminhttp.MountRouteAdminRoutes(r, routeadminhttp.AdminDeps{
+		controlhttp.MountRouteAdminRoutes(r, controlhttp.RouteAdminDeps{
 			Auth:    d.adminAuth,
 			Service: d.routeAdminService,
 		})

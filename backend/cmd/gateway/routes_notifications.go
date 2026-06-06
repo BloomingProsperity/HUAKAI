@@ -5,14 +5,14 @@ import (
 
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
-	"github.com/BloomingProsperity/HUAKAI/internal/notify/notifyhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/controlhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
 )
 
 func mountNotificationRoutes(r chi.Router, d *deps) {
 	var adminAuth subscriptionhttp.AdminAuth
 	var reader subscriptionhttp.WorkerStatsReader
-	var settings notifyhttp.SettingsService
+	var settings controlhttp.NotifySettingsService
 	var sessions sessionauth.SessionValidator
 	var clientIPResolver *clientip.Resolver
 	if d != nil {
@@ -28,9 +28,9 @@ func mountNotificationRoutes(r chi.Router, d *deps) {
 	}))
 	r.Group(func(r chi.Router) {
 		r.Use(sessionauth.SessionMiddleware(sessions, clientIPResolver))
-		notifyhttp.MountUserRoutes(r, notifyhttp.UserDeps{Service: settings})
+		controlhttp.MountNotifyUserRoutes(r, controlhttp.NotifyUserDeps{Service: settings})
 	})
-	notifyhttp.MountAdminRoutes(r, notifyhttp.AdminDeps{
+	controlhttp.MountNotifyAdminRoutes(r, controlhttp.NotifyAdminDeps{
 		Auth:    adminAuth,
 		Service: settings,
 	})
