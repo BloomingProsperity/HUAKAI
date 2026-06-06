@@ -22,7 +22,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -67,6 +69,48 @@ func TestWiring_AuditRefPolicySharedByBusConfigAndChatDeps(t *testing.T) {
 	if !busCfg.AuditRefPolicy.AllowMissingMoneyRef || !chatDeps.AuditRefPolicy.AllowMissingMoneyRef {
 		t.Fatalf("policy mutation was not visible through both wiring surfaces")
 	}
+}
+
+func TestWiring_AlertingEvaluatorDefaultDisabled(t *testing.T) {
+	// MUTATION: start the alerting evaluator regardless of cfg.AlertingEvalEnabled; this observes an unexpected Run call.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runner := newWiringAlertingRunner()
+
+	stop := startAlertingEvaluator(ctx, &Config{}, runner, zaptest.NewLogger(t))
+
+	if stop != nil {
+		stop()
+		t.Fatal("default-disabled alerting evaluator returned a stop hook")
+	}
+	select {
+	case <-runner.started:
+		t.Fatal("default-disabled alerting evaluator started")
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func TestWiring_AlertingEvaluatorEnabledStopsWithRuntime(t *testing.T) {
+	// MUTATION: start with context.Background instead of the runtime ctx; stop does not cancel the scheduler.
+	runner := newWiringAlertingRunner()
+	stop := startAlertingEvaluator(context.Background(), &Config{AlertingEvalEnabled: true}, runner, zaptest.NewLogger(t))
+	if stop == nil {
+		t.Fatal("enabled alerting evaluator did not return stop hook")
+	}
+	select {
+	case <-runner.started:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("enabled alerting evaluator did not start")
+	}
+
+	stop()
+
+	select {
+	case <-runner.stopped:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("enabled alerting evaluator did not stop")
+	}
+	stop()
 }
 
 func TestWiring_PricingRatioResolverSharedByChatEmbeddingsRerankImagesAndAudioDeps(t *testing.T) {
@@ -119,6 +163,27 @@ func TestWiring_PricingRatioResolverSharedByChatEmbeddingsRerankImagesAndAudioDe
 	if audioDeps.RateTables != rateTables || audioDeps.ClaimGate != claimGate || audioDeps.Settler != settler {
 		t.Fatal("audio deps did not reuse shared money-path wiring")
 	}
+}
+
+type wiringAlertingRunner struct {
+	started   chan struct{}
+	stopped   chan struct{}
+	startOnce sync.Once
+	stopOnce  sync.Once
+}
+
+func newWiringAlertingRunner() *wiringAlertingRunner {
+	return &wiringAlertingRunner{
+		started: make(chan struct{}),
+		stopped: make(chan struct{}),
+	}
+}
+
+func (r *wiringAlertingRunner) Run(ctx context.Context) error {
+	r.startOnce.Do(func() { close(r.started) })
+	<-ctx.Done()
+	r.stopOnce.Do(func() { close(r.stopped) })
+	return nil
 }
 
 func TestContentModerationRuntimeEnabledDefaultsOff(t *testing.T) {

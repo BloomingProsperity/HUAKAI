@@ -413,6 +413,70 @@ func TestLoadPaymentExpireSweepReadsEnv(t *testing.T) {
 	}
 }
 
+func TestLoadAlertingEvalDefaultsDisabled(t *testing.T) {
+	// MUTATION: default AlertingEvalEnabled to true; fresh installs start the alert evaluator without operator opt-in.
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_ALERTING_EVAL_ENABLED", "")
+	t.Setenv("HUAKAI_ALERTING_EVAL_INTERVAL_SECONDS", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AlertingEvalEnabled {
+		t.Fatal("AlertingEvalEnabled=true want default false")
+	}
+	if cfg.AlertingEvalInterval != time.Minute {
+		t.Fatalf("AlertingEvalInterval=%s want 1m default bounded ticker", cfg.AlertingEvalInterval)
+	}
+}
+
+func TestLoadAlertingEvalReadsEnv(t *testing.T) {
+	// MUTATION: ignore HUAKAI_ALERTING_EVAL_* env; operator opt-in never starts the evaluator at the requested cadence.
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_ALERTING_EVAL_ENABLED", "true")
+	t.Setenv("HUAKAI_ALERTING_EVAL_INTERVAL_SECONDS", "15")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.AlertingEvalEnabled {
+		t.Fatal("AlertingEvalEnabled=false want true from env")
+	}
+	if cfg.AlertingEvalInterval != 15*time.Second {
+		t.Fatalf("AlertingEvalInterval=%s want 15s", cfg.AlertingEvalInterval)
+	}
+}
+
+func TestLoadRejectsInvalidAlertingEvalConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  string
+		raw  string
+	}{
+		{name: "enabled garbage", env: "HUAKAI_ALERTING_EVAL_ENABLED", raw: "sometimes"},
+		{name: "interval zero", env: "HUAKAI_ALERTING_EVAL_INTERVAL_SECONDS", raw: "0"},
+		{name: "interval negative", env: "HUAKAI_ALERTING_EVAL_INTERVAL_SECONDS", raw: "-1"},
+		{name: "interval garbage", env: "HUAKAI_ALERTING_EVAL_INTERVAL_SECONDS", raw: "soon"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// MUTATION: accept malformed alert eval env; boot silently runs with an unintended lifecycle.
+			t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+			t.Setenv(tc.env, tc.raw)
+
+			err := loadOnlyError()
+
+			if err == nil {
+				t.Fatalf("invalid %s=%q was accepted", tc.env, tc.raw)
+			}
+			if !strings.Contains(err.Error(), tc.env) {
+				t.Fatalf("err=%v must name %s", err, tc.env)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsInvalidPaymentExpireSweepConfig(t *testing.T) {
 	cases := []struct {
 		name string

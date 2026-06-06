@@ -132,6 +132,30 @@ ORDER BY id ASC`, tenantID)
 	return scanRules(rows)
 }
 
+func (s *PostgresStore) ListTenantsWithEnabledRules(ctx context.Context) ([]int64, error) {
+	if s == nil || s.pool == nil {
+		return nil, ErrStoreNotConfigured
+	}
+	rows, err := s.pool.Query(ctx, `
+SELECT DISTINCT tenant_id
+FROM alert_rules
+WHERE enabled=true
+ORDER BY tenant_id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []int64{}
+	for rows.Next() {
+		var tenantID int64
+		if err := rows.Scan(&tenantID); err != nil {
+			return nil, err
+		}
+		out = append(out, tenantID)
+	}
+	return out, rows.Err()
+}
+
 func (s *PostgresStore) UpsertFiringEvent(ctx context.Context, tenantID, ruleID int64, observed float64, now time.Time) (AlertEvent, error) {
 	if s == nil || s.pool == nil {
 		return AlertEvent{}, ErrStoreNotConfigured

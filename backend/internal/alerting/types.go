@@ -122,6 +122,7 @@ type Store interface {
 	GetRule(context.Context, int64, int64) (AlertRule, error)
 	ListRules(context.Context, ListRulesInput) ([]AlertRule, error)
 	ListEnabledRules(context.Context, int64) ([]AlertRule, error)
+	ListTenantsWithEnabledRules(context.Context) ([]int64, error)
 
 	UpsertFiringEvent(context.Context, int64, int64, float64, time.Time) (AlertEvent, error)
 	ResolveFiringEvent(context.Context, int64, int64, time.Time) (AlertEvent, bool, error)
