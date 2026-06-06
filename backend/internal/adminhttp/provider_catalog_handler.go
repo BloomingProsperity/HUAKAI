@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
@@ -48,10 +47,6 @@ type adminCatalogPage struct {
 	TenantID int64
 	Limit    int32
 	Offset   int32
-}
-
-func MountProviderCatalogRoutes(r chi.Router, d AdminProviderCatalogDeps) {
-	r.Get("/", NewProviderCatalogListHandler(d))
 }
 
 func NewProviderCatalogListHandler(d AdminProviderCatalogDeps) http.HandlerFunc {

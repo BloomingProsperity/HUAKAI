@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
-
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
@@ -33,10 +31,6 @@ type channelCatalogItem struct {
 	FailoverStatusCodes []int32 `json:"failover_status_codes"`
 	Enabled             bool    `json:"enabled"`
 	CreatedAt           string  `json:"created_at"`
-}
-
-func MountChannelCatalogRoutes(r chi.Router, d AdminChannelCatalogDeps) {
-	r.Get("/", NewChannelCatalogListHandler(d))
 }
 
 func NewChannelCatalogListHandler(d AdminChannelCatalogDeps) http.HandlerFunc {

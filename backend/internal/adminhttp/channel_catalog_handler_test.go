@@ -187,9 +187,7 @@ func sliceChannelCatalogRows(rows []admindb.ListAdminChannelsByTenantRow, limit,
 func invokeChannelCatalog(t *testing.T, deps AdminChannelCatalogDeps, target string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := chi.NewRouter()
-	r.Route("/admin/v1/channels", func(r chi.Router) {
-		MountChannelCatalogRoutes(r, deps)
-	})
+	r.Get("/admin/v1/channels", NewChannelCatalogListHandler(deps))
 	req := httptest.NewRequest(http.MethodGet, target, nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
