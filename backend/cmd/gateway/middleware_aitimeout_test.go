@@ -28,6 +28,9 @@ func TestAIAwareTimeout_ExemptsRelayPathsFromTotalTimeout(t *testing.T) {
 	if hasDeadline("POST", "/v1/audio/speech") {
 		t.Fatal("/v1/audio/speech must NOT carry a total-timeout deadline")
 	}
+	if hasDeadline("POST", "/v1/rerank") {
+		t.Fatal("/v1/rerank must NOT carry a total-timeout deadline")
+	}
 	if !hasDeadline("GET", "/v1/admin/pools") {
 		t.Fatal("control-plane path must keep the total-timeout deadline")
 	}
