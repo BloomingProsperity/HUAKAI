@@ -18,6 +18,7 @@ import (
 	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
+	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
@@ -41,6 +42,7 @@ type gatewayRuntime struct {
 	outboxWorker               *obsoutbox.Worker
 	subscriptionExpiryWorker   *subscription.ExpiryWorker
 	subscriptionReminderWorker *subscription.ReminderWorker
+	mediaTaskWorker            *mediatask.Worker
 	obsDLQEnabled              bool
 	outboxRuntime              obsoutbox.RuntimeConfig
 }
@@ -69,6 +71,9 @@ func (rt *gatewayRuntime) close() {
 	}
 	if rt.pendingReconcileStop != nil {
 		rt.pendingReconcileStop()
+	}
+	if rt.mediaTaskWorker != nil {
+		rt.mediaTaskWorker.Stop()
 	}
 	if rt.modelSyncStop != nil {
 		rt.modelSyncStop()
@@ -172,6 +177,9 @@ func shutdownGateway(srv *http.Server, rt *gatewayRuntime) error {
 	// 提醒 worker 同理独立, 优雅停止。
 	if rt.subscriptionReminderWorker != nil {
 		rt.subscriptionReminderWorker.Stop()
+	}
+	if rt.mediaTaskWorker != nil {
+		rt.mediaTaskWorker.Stop()
 	}
 
 	// 合并错误一并返回, 不让前面 step 的失败遮盖后面 step。

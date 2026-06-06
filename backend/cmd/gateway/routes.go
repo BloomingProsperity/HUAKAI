@@ -23,6 +23,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/imageshttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/mediataskhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/meusagehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/passkeyhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
@@ -167,6 +168,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			Service:        d.paymentService,
 			RefundRequests: d.paymentRefundRequests,
 		})
+	})
+	r.Group(func(r chi.Router) {
+		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
+		mediataskhttp.MountRoutes(r, mediataskhttp.Deps{Service: d.mediaTaskService})
 	})
 	r.Route("/v1/users/me/subscriptions", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
