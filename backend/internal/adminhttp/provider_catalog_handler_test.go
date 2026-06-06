@@ -187,9 +187,7 @@ func sliceProviderCatalogRows(rows []admindb.ListAdminProvidersByTenantRow, limi
 func invokeProviderCatalog(t *testing.T, deps AdminProviderCatalogDeps, target string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := chi.NewRouter()
-	r.Route("/admin/v1/providers", func(r chi.Router) {
-		MountProviderCatalogRoutes(r, deps)
-	})
+	r.Get("/admin/v1/providers", NewProviderCatalogListHandler(deps))
 	req := httptest.NewRequest(http.MethodGet, target, nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
