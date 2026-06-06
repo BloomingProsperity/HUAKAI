@@ -407,6 +407,99 @@ func TestProviderChannelCatalogRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 	}
 }
 
+func TestAdminUsersReadRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
+	r := buildTestRouter(t)
+	implOps := openapicheck.WalkChiOperations(r)
+	readOps := []string{
+		"/admin/v1/users",
+		"/admin/v1/users/{id}",
+		"/admin/v1/users/{id}/balance-history",
+	}
+	for _, path := range readOps {
+		if !hasOperationEquivalent(implOps, http.MethodGet, path) {
+			t.Fatalf("runtime missing GET %s", path)
+		}
+	}
+	for _, op := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/admin/v1/users"},
+		{http.MethodPatch, "/admin/v1/users/{id}"},
+		{http.MethodPut, "/admin/v1/users/{id}"},
+		{http.MethodDelete, "/admin/v1/users/{id}"},
+		{http.MethodPost, "/admin/v1/users/{id}/balance-history"},
+		{http.MethodPatch, "/admin/v1/users/{id}/balance-history"},
+		{http.MethodDelete, "/admin/v1/users/{id}/balance-history"},
+	} {
+		if hasOperationEquivalent(implOps, op.method, op.path) {
+			t.Fatalf("runtime unexpectedly exposes read-only slice mutation %s %s", op.method, op.path)
+		}
+	}
+
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	specOps, err := openapicheck.ParseSpecOperations(specAbs)
+	if err != nil {
+		t.Fatalf("解析 OpenAPI operations %s: %v", specAbs, err)
+	}
+	for _, path := range readOps {
+		if !hasOperation(specOps, http.MethodGet, path) {
+			t.Fatalf("OpenAPI missing GET %s", path)
+		}
+	}
+	for _, op := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/admin/v1/users"},
+		{http.MethodPatch, "/admin/v1/users/{id}"},
+		{http.MethodPut, "/admin/v1/users/{id}"},
+		{http.MethodDelete, "/admin/v1/users/{id}"},
+		{http.MethodPost, "/admin/v1/users/{id}/balance-history"},
+		{http.MethodPatch, "/admin/v1/users/{id}/balance-history"},
+		{http.MethodDelete, "/admin/v1/users/{id}/balance-history"},
+	} {
+		if hasOperation(specOps, op.method, op.path) {
+			t.Fatalf("OpenAPI unexpectedly declares read-only slice mutation %s %s", op.method, op.path)
+		}
+	}
+
+	raw, err := os.ReadFile(specAbs)
+	if err != nil {
+		t.Fatalf("read OpenAPI: %v", err)
+	}
+	spec := string(raw)
+	for _, snippet := range []string{
+		"AdminUserList:",
+		"AdminUser:",
+		"AdminUserBalanceHistoryList:",
+		"AdminUserBalanceHistoryItem:",
+		"listAdminUsers",
+		"getAdminUser",
+		"listAdminUserBalanceHistory",
+		"balance-history",
+		"source_type:",
+		"fingerprint:",
+	} {
+		if !strings.Contains(spec, snippet) {
+			t.Fatalf("OpenAPI admin users schema missing snippet %q", snippet)
+		}
+	}
+}
+
+func hasOperationEquivalent(ops []openapicheck.Operation, method, path string) bool {
+	if hasOperation(ops, method, path) {
+		return true
+	}
+	if strings.HasSuffix(path, "/") {
+		return false
+	}
+	return hasOperation(ops, method, path+"/")
+}
+
 func TestModelCapabilitiesRouteAndOpenAPISchemaStayInSync(t *testing.T) {
 	r := buildTestRouter(t)
 	implOps := openapicheck.WalkChiOperations(r)
