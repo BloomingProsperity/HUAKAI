@@ -16,12 +16,14 @@ import (
 )
 
 type channelHealthControllerStub struct {
-	key      channelhealth.ChannelKey
-	actorID  string
-	reason   string
-	called   string
-	response channelhealth.Record
-	err      error
+	key             channelhealth.ChannelKey
+	actorID         string
+	reason          string
+	called          string
+	response        channelhealth.Record
+	summary         channelhealth.ChannelHealthSummary
+	summaryTenantID int64
+	err             error
 }
 
 func (s *channelHealthControllerStub) ListChannelHealth(context.Context, int64, int, int) ([]channelhealth.ChannelHealthState, error) {
@@ -30,6 +32,11 @@ func (s *channelHealthControllerStub) ListChannelHealth(context.Context, int64, 
 
 func (s *channelHealthControllerStub) GetChannelHealth(context.Context, int64, string) (channelhealth.ChannelHealthState, []channelhealth.AuditEvent, error) {
 	return channelhealth.ChannelHealthState{}, nil, channelhealth.ErrNotFound
+}
+
+func (s *channelHealthControllerStub) SummarizeChannelHealth(_ context.Context, tenantID int64) (channelhealth.ChannelHealthSummary, error) {
+	s.called, s.summaryTenantID = "summary", tenantID
+	return s.summary, s.err
 }
 
 func (s *channelHealthControllerStub) ManualPause(_ context.Context, key channelhealth.ChannelKey, actorID, reason string) (channelhealth.Record, error) {
@@ -121,6 +128,69 @@ func TestAT_CH_002_014_ChannelHealthListPaginationTenantScope(t *testing.T) {
 	}
 }
 
+func TestChannelHealthSummaryHandler_CountsByState(t *testing.T) {
+	// MUTATION: register /summary after /{channel_id}, group by the wrong field, or collapse all rows into one state; exact uneven counts and total go RED.
+	store := channelhealth.NewMemoryStore()
+	svc := channelhealth.NewService(store, channelhealth.DefaultPolicy(), nil)
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	olderCooldown := now.Add(30 * time.Minute)
+	newerCooldown := now.Add(90 * time.Minute)
+	upsertChannelHealthRecordWithState(t, store, 7, "openai", 101, 9001, 1, channelhealth.StateActive, now.Add(-time.Minute), nil)
+	upsertChannelHealthRecordWithState(t, store, 7, "anthropic", 102, 9002, 1, channelhealth.StateActive, now.Add(-2*time.Minute), nil)
+	upsertChannelHealthRecordWithState(t, store, 7, "gemini", 103, 9003, 1, channelhealth.StateCoolingDown, now.Add(-3*time.Minute), &olderCooldown)
+	upsertChannelHealthRecordWithState(t, store, 7, "openai", 104, 9004, 1, channelhealth.StateDisabled, now.Add(-4*time.Minute), &newerCooldown)
+	upsertChannelHealthRecordWithState(t, store, 7, "anthropic", 105, 9005, 1, channelhealth.StateManualPaused, now.Add(-5*time.Minute), nil)
+
+	rec := invokeChannelHealthReadAdmin(t, svc, adminPoolAdmin(), http.MethodGet,
+		"/v1/admin/channel-health/summary?tenant_id=7")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		ByState          map[string]int64 `json:"by_state"`
+		Total            int64            `json:"total"`
+		OldestCooldownAt *time.Time       `json:"oldest_cooldown_at"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode summary response: %v", err)
+	}
+	want := map[string]int64{
+		"active":        2,
+		"degraded":      0,
+		"cooling_down":  1,
+		"ramping":       0,
+		"disabled":      1,
+		"manual_paused": 1,
+	}
+	if body.Total != 5 {
+		t.Fatalf("total=%d want 5; body=%+v", body.Total, body)
+	}
+	for state, count := range want {
+		if body.ByState[state] != count {
+			t.Fatalf("by_state[%s]=%d want %d; all=%+v", state, body.ByState[state], count, body.ByState)
+		}
+	}
+	if body.OldestCooldownAt == nil || !body.OldestCooldownAt.Equal(olderCooldown) {
+		t.Fatalf("oldest_cooldown_at=%v want %s", body.OldestCooldownAt, olderCooldown.Format(time.RFC3339))
+	}
+}
+
+func TestChannelHealthSummary_AdminAuthRequired(t *testing.T) {
+	// MUTATION: allow tenant_operator/non-admin roles or call the summary controller before auth; this returns 200 or records a controller call.
+	ctrl := &channelHealthControllerStub{summary: channelhealth.ChannelHealthSummary{
+		ByState: map[channelhealth.HealthState]int64{channelhealth.StateActive: 1},
+		Total:   1,
+	}}
+	rec := invokeChannelHealthReadAdmin(t, ctrl, adminPoolAuthStub{ident: admin.AdminIdentity{TokenID: 12, Role: admin.RoleTenantOperator}}, http.MethodGet,
+		"/v1/admin/channel-health/summary?tenant_id=7")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if ctrl.called != "" {
+		t.Fatalf("non-admin reached controller: %+v", ctrl)
+	}
+}
+
 func TestAT_CH_002_015_ChannelHealthDetailWithRedactedAuditEvents(t *testing.T) {
 	store := channelhealth.NewMemoryStore()
 	svc := channelhealth.NewService(store, channelhealth.DefaultPolicy(), nil)
@@ -203,6 +273,11 @@ func invokeChannelHealthReadAdmin(t *testing.T, ctrl ChannelHealthController, au
 
 func upsertChannelHealthRecord(t *testing.T, store *channelhealth.MemoryStore, tenantID int64, vendor string, providerAccountID, credentialID int64, credentialVersion int, updatedAt time.Time) channelhealth.Record {
 	t.Helper()
+	return upsertChannelHealthRecordWithState(t, store, tenantID, vendor, providerAccountID, credentialID, credentialVersion, channelhealth.StateActive, updatedAt, nil)
+}
+
+func upsertChannelHealthRecordWithState(t *testing.T, store *channelhealth.MemoryStore, tenantID int64, vendor string, providerAccountID, credentialID int64, credentialVersion int, state channelhealth.HealthState, updatedAt time.Time, cooldownUntil *time.Time) channelhealth.Record {
+	t.Helper()
 	key := channelhealth.ChannelKey{
 		TenantID:            tenantID,
 		Vendor:              vendor,
@@ -212,10 +287,11 @@ func upsertChannelHealthRecord(t *testing.T, store *channelhealth.MemoryStore, t
 	}
 	rec, err := store.UpsertRecord(context.Background(), channelhealth.Record{
 		Key:              key,
-		State:            channelhealth.StateActive,
+		State:            state,
 		Score:            100,
 		ReasonClass:      channelhealth.SignalNone,
 		Confidence:       channelhealth.ConfidenceObserved,
+		CooldownUntil:    cooldownUntil,
 		PolicyVersion:    "channel-health-v1",
 		StateEnteredAt:   updatedAt.Add(-time.Minute),
 		LastTransitionAt: updatedAt.Add(-time.Minute),

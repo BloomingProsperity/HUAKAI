@@ -294,6 +294,12 @@ type Record struct {
 
 type ChannelHealthState = Record
 
+type ChannelHealthSummary struct {
+	ByState          map[HealthState]int64
+	Total            int64
+	OldestCooldownAt *time.Time
+}
+
 type AuditEvent struct {
 	Type          AuditEventType
 	Key           ChannelKey
@@ -324,6 +330,7 @@ type Store interface {
 	Get(context.Context, ChannelKey) (Record, error)
 	ListChannelHealth(context.Context, int64, int, int) ([]ChannelHealthState, error)
 	GetChannelHealth(context.Context, int64, string) (ChannelHealthState, []AuditEvent, error)
+	SummarizeChannelHealth(context.Context, int64) (ChannelHealthSummary, error)
 	UpsertRecord(context.Context, Record) (Record, error)
 	LatestByProviderAccount(context.Context, int64, int64) (Record, error)
 	AppendAudit(context.Context, AuditEvent) error
@@ -339,3 +346,29 @@ type Clock interface {
 type realClock struct{}
 
 func (realClock) Now() time.Time { return time.Now().UTC() }
+
+func newChannelHealthSummary() ChannelHealthSummary {
+	return ChannelHealthSummary{ByState: map[HealthState]int64{
+		StateActive:       0,
+		StateDegraded:     0,
+		StateCoolingDown:  0,
+		StateRamping:      0,
+		StateDisabled:     0,
+		StateManualPaused: 0,
+	}}
+}
+
+func normalizeChannelHealthSummary(summary ChannelHealthSummary) ChannelHealthSummary {
+	normalized := newChannelHealthSummary()
+	for state, count := range summary.ByState {
+		normalized.ByState[state] = count
+		if summary.Total == 0 {
+			normalized.Total += count
+		}
+	}
+	if summary.Total != 0 {
+		normalized.Total = summary.Total
+	}
+	normalized.OldestCooldownAt = summary.OldestCooldownAt
+	return normalized
+}

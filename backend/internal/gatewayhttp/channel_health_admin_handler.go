@@ -26,6 +26,7 @@ type ChannelHealthAdminAuth interface {
 type ChannelHealthController interface {
 	ListChannelHealth(context.Context, int64, int, int) ([]channelhealth.ChannelHealthState, error)
 	GetChannelHealth(context.Context, int64, string) (channelhealth.ChannelHealthState, []channelhealth.AuditEvent, error)
+	SummarizeChannelHealth(context.Context, int64) (channelhealth.ChannelHealthSummary, error)
 	ManualPause(context.Context, channelhealth.ChannelKey, string, string) (channelhealth.Record, error)
 	ManualResume(context.Context, channelhealth.ChannelKey, string, string) (channelhealth.Record, error)
 	ForceActive(context.Context, channelhealth.ChannelKey, string, string) (channelhealth.Record, error)
@@ -52,6 +53,7 @@ func MountChannelHealthAdminRoutes(r chi.Router, d ChannelHealthAdminDeps) {
 
 func MountChannelHealthReadAdminRoutes(r chi.Router, d ChannelHealthAdminDeps) {
 	r.Get("/", newChannelHealthListHandler(d))
+	r.Get("/summary", newChannelHealthSummaryHandler(d))
 	r.Get("/{channel_id}", newChannelHealthDetailHandler(d))
 }
 
@@ -82,6 +84,24 @@ func newChannelHealthListHandler(d ChannelHealthAdminDeps) http.HandlerFunc {
 			"limit":  limit,
 			"offset": offset,
 		})
+	}
+}
+
+func newChannelHealthSummaryHandler(d ChannelHealthAdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := resolveChannelHealthAdmin(w, r, d); !ok {
+			return
+		}
+		tenantID, ok := parsePositiveQueryInt(w, r, "tenant_id")
+		if !ok {
+			return
+		}
+		summary, err := d.Controller.SummarizeChannelHealth(r.Context(), tenantID)
+		if err != nil {
+			writeChannelHealthReadError(w, err, "channel_health_summary_failed")
+			return
+		}
+		writeAuditJSON(w, http.StatusOK, channelHealthSummaryResponse(summary))
 	}
 }
 
@@ -255,6 +275,17 @@ func channelHealthResponse(rec channelhealth.Record) map[string]any {
 	}
 	if rec.RampStartedAt != nil {
 		resp["ramp_started_at"] = rec.RampStartedAt.UTC()
+	}
+	return resp
+}
+
+func channelHealthSummaryResponse(summary channelhealth.ChannelHealthSummary) map[string]any {
+	resp := map[string]any{
+		"by_state": summary.ByState,
+		"total":    summary.Total,
+	}
+	if summary.OldestCooldownAt != nil {
+		resp["oldest_cooldown_at"] = summary.OldestCooldownAt.UTC()
 	}
 	return resp
 }
