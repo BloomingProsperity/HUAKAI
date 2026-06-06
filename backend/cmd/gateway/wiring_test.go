@@ -69,7 +69,7 @@ func TestWiring_AuditRefPolicySharedByBusConfigAndChatDeps(t *testing.T) {
 	}
 }
 
-func TestWiring_PricingRatioResolverSharedByChatEmbeddingsImagesAndAudioDeps(t *testing.T) {
+func TestWiring_PricingRatioResolverSharedByChatEmbeddingsRerankImagesAndAudioDeps(t *testing.T) {
 	resolver := pricingcatalog.NewRatioResolver(nil, 0)
 	rateTables := billing.NewPGXRateTableSource(nil)
 	claimGate := &wiringClaimGate{}
@@ -84,6 +84,7 @@ func TestWiring_PricingRatioResolverSharedByChatEmbeddingsImagesAndAudioDeps(t *
 
 	chatDeps := chatHandlerDeps(d)
 	embeddingsDeps := embeddingsHandlerDeps(d)
+	rerankDeps := rerankHandlerDeps(d)
 	imageDeps := imageHandlerDeps(d)
 	audioDeps := audioHandlerDeps(d)
 
@@ -93,6 +94,9 @@ func TestWiring_PricingRatioResolverSharedByChatEmbeddingsImagesAndAudioDeps(t *
 	if embeddingsDeps.PricingRatioResolver != resolver {
 		t.Fatalf("embeddings PricingRatioResolver=%p want shared resolver %p", embeddingsDeps.PricingRatioResolver, resolver)
 	}
+	if rerankDeps.PricingRatioResolver != resolver {
+		t.Fatalf("rerank PricingRatioResolver=%p want shared resolver %p", rerankDeps.PricingRatioResolver, resolver)
+	}
 	if imageDeps.PricingRatioResolver != resolver {
 		t.Fatalf("images PricingRatioResolver=%p want shared resolver %p", imageDeps.PricingRatioResolver, resolver)
 	}
@@ -101,6 +105,9 @@ func TestWiring_PricingRatioResolverSharedByChatEmbeddingsImagesAndAudioDeps(t *
 	}
 	if imageDeps.RateTables != rateTables || imageDeps.ClaimGate != claimGate || imageDeps.Settler != settler {
 		t.Fatal("image deps did not reuse shared money-path wiring")
+	}
+	if rerankDeps.RateTables != rateTables || rerankDeps.ClaimGate != claimGate || rerankDeps.Settler != settler {
+		t.Fatal("rerank deps did not reuse shared money-path wiring")
 	}
 	if audioDeps.RateTables != rateTables || audioDeps.ClaimGate != claimGate || audioDeps.Settler != settler {
 		t.Fatal("audio deps did not reuse shared money-path wiring")
