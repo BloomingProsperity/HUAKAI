@@ -29,6 +29,30 @@ func (m *MemoryStore) AdminListOrders(_ context.Context, filter OrderListFilter)
 	return out, nil
 }
 
+func (m *MemoryStore) AdminExportOrders(_ context.Context, filter OrderExportFilter) ([]Order, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	listFilter := OrderListFilter{
+		TenantID: filter.TenantID,
+		Status:   filter.Status,
+		From:     filter.From,
+		To:       filter.To,
+		Limit:    filter.Limit,
+	}
+	var out []Order
+	for _, o := range m.orders {
+		if !orderMatchesListFilter(o, listFilter) {
+			continue
+		}
+		out = append(out, *o)
+	}
+	sortOrdersForAdmin(out)
+	if len(out) > filter.Limit {
+		out = out[:filter.Limit]
+	}
+	return out, nil
+}
+
 func (m *MemoryStore) DashboardStats(_ context.Context, filter DashboardFilter, now time.Time) (DashboardStats, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

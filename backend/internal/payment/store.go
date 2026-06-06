@@ -31,6 +31,10 @@ type RechargeCapStore interface {
 	SumRechargeAmountSince(ctx context.Context, tenantID, userID int64, since, now time.Time) (int64, error)
 }
 
+type adminOrderExportStore interface {
+	AdminExportOrders(ctx context.Context, filter OrderExportFilter) ([]Order, error)
+}
+
 type subscriptionPlanPriceSnapshot struct {
 	TenantID     int64
 	PlanID       int64
