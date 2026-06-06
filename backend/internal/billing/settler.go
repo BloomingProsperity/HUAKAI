@@ -14,7 +14,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/balancehold"
 	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
@@ -244,7 +243,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 	if rows == 0 {
 		return nil, ErrClaimNotReserving
 	}
-	snap, err := balancehold.Capture(ctx, tx, claim.ID, actualCost)
+	snap, err := Capture(ctx, tx, claim.ID, actualCost)
 	if err != nil {
 		return nil, fmt.Errorf("billing: capture hold: %w", err)
 	}
@@ -309,7 +308,7 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 	if rows == 0 {
 		return ErrClaimNotReserving
 	}
-	if _, err := balancehold.Release(ctx, tx, claimID); err != nil {
+	if _, err := Release(ctx, tx, claimID); err != nil {
 		return fmt.Errorf("billing: release hold: %w", err)
 	}
 	abortEndClass := "unknown_termination"
@@ -454,7 +453,7 @@ func (s *DefaultSettler) CommitCacheHit(ctx context.Context, req SettleRequest) 
 	if rows == 0 {
 		return ErrClaimNotReserving
 	}
-	if _, err := balancehold.Capture(ctx, tx, req.ClaimID, decimal.Zero); err != nil {
+	if _, err := Capture(ctx, tx, req.ClaimID, decimal.Zero); err != nil {
 		return fmt.Errorf("billing: capture hold for cache hit: %w", err)
 	}
 

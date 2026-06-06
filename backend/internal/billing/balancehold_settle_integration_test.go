@@ -12,8 +12,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
-
-	"github.com/BloomingProsperity/HUAKAI/internal/balancehold"
 )
 
 func TestSettler_SettleAppliesCaptureAndReturnsUpdatedBalance(t *testing.T) {
@@ -356,7 +354,7 @@ func reserveAndCommitBalanceHold(ctx context.Context, t *testing.T, pool *pgxpoo
 	defer func() {
 		_ = tx.Rollback(ctx)
 	}()
-	if _, err := balancehold.Reserve(ctx, tx, balancehold.ReserveParams{TenantID: tenantID, UserID: userID, ClaimID: claimID, Cost: cost}); err != nil {
+	if _, err := Reserve(ctx, tx, ReserveParams{TenantID: tenantID, UserID: userID, ClaimID: claimID, Cost: cost}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

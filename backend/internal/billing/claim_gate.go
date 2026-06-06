@@ -15,7 +15,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/balancehold"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
@@ -115,14 +114,14 @@ func (g *DefaultClaimGate) Reserve(ctx context.Context, req ReserveRequest) (*Re
 			if err != nil {
 				return nil, fmt.Errorf("billing: re-reserve aborted claim: %w", err)
 			}
-			if _, err := balancehold.Reserve(ctx, tx, balancehold.ReserveParams{
+			if _, err := Reserve(ctx, tx, ReserveParams{
 				TenantID:        req.TenantID,
 				UserID:          req.UserID,
 				ClaimID:         row.ID,
 				Cost:            req.PredictedCost,
 				EnforcementMode: balanceHoldEnforcementMode(req.BalanceEnforcementMode),
 			}); err != nil {
-				if errors.Is(err, balancehold.ErrInsufficientBalance) {
+				if errors.Is(err, ErrBalanceHoldInsufficientBalance) {
 					return nil, ErrInsufficientBalance
 				}
 				return nil, fmt.Errorf("billing: hold for re-reserve: %w", err)
@@ -179,14 +178,14 @@ func (g *DefaultClaimGate) Reserve(ctx context.Context, req ReserveRequest) (*Re
 		}
 		return nil, fmt.Errorf("billing: insert claim: %w", err)
 	}
-	if _, err := balancehold.Reserve(ctx, tx, balancehold.ReserveParams{
+	if _, err := Reserve(ctx, tx, ReserveParams{
 		TenantID:        req.TenantID,
 		UserID:          req.UserID,
 		ClaimID:         inserted.ID,
 		Cost:            req.PredictedCost,
 		EnforcementMode: balanceHoldEnforcementMode(req.BalanceEnforcementMode),
 	}); err != nil {
-		if errors.Is(err, balancehold.ErrInsufficientBalance) {
+		if errors.Is(err, ErrBalanceHoldInsufficientBalance) {
 			return nil, ErrInsufficientBalance
 		}
 		return nil, fmt.Errorf("billing: hold for new claim: %w", err)
@@ -241,11 +240,11 @@ func nullableInt64(v int64) *int64 {
 	return &v
 }
 
-func balanceHoldEnforcementMode(mode BalanceEnforcementMode) balancehold.EnforcementMode {
+func balanceHoldEnforcementMode(mode BalanceEnforcementMode) EnforcementMode {
 	if mode == BalanceEnforcementModeOptIn {
-		return balancehold.EnforcementModeOptIn
+		return EnforcementModeOptIn
 	}
-	return balancehold.EnforcementModeMandatory
+	return EnforcementModeMandatory
 }
 
 // Compile-time interface check — DefaultClaimGate must satisfy ClaimGate.

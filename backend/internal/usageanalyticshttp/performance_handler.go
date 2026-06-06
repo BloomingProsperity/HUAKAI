@@ -13,7 +13,6 @@ import (
 	"github.com/shopspring/decimal"
 
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
-	"github.com/BloomingProsperity/HUAKAI/internal/snapshotcache"
 )
 
 const (
@@ -66,7 +65,7 @@ func NewPerformanceHandler(q Querier) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		value, hit, err := snapshotcache.GetOrLoad(performanceSnapshotCacheKey(query), performanceSnapshotTTL, func() (any, error) {
+		value, hit, err := GetOrLoad(performanceSnapshotCacheKey(query), performanceSnapshotTTL, func() (any, error) {
 			return loadPerformanceResponse(r.Context(), q, query)
 		})
 		if err != nil {
