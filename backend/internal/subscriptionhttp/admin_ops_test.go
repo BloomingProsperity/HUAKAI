@@ -21,6 +21,7 @@ type adminOpsServiceStub struct {
 	gotUpdate subscription.UpdatePlanInput
 	gotExtend subscription.ExtendSubscriptionInput
 	gotReset  subscription.ResetQuotaInput
+	gotChange subscription.ChangePlanInput
 	gotBulk   subscription.BulkAssignInput
 	gotRevoke subscription.RevokeSubscriptionInput
 	bulk      subscription.BulkAssignResult
@@ -48,6 +49,14 @@ func (s *adminOpsServiceStub) ResetQuota(_ context.Context, in subscription.Rese
 	s.gotReset = in
 	sub := sampleSubscription()
 	sub.ID = in.SubscriptionID
+	return sub, nil
+}
+
+func (s *adminOpsServiceStub) ChangePlan(_ context.Context, in subscription.ChangePlanInput) (subscription.UserSubscription, error) {
+	s.gotChange = in
+	sub := sampleSubscription()
+	sub.ID = in.SubscriptionID
+	sub.PlanID = in.NewPlanID
 	return sub, nil
 }
 
@@ -144,6 +153,19 @@ func TestAdminAssignmentLifecycleRoutesPassRequestIDAndReason(t *testing.T) {
 				if svc.gotReset.SubscriptionID != 9 || svc.gotReset.ActorAdminID != 77 ||
 					svc.gotReset.RequestID != "ops-route" {
 					t.Fatalf("reset input mismatch: %+v", svc.gotReset)
+				}
+			},
+			status: http.StatusOK,
+		},
+		{
+			name: "change-plan", path: "/subs/assignments/9/change-plan",
+			body: `{"tenant_id":5,"new_plan_id":42,"allow_downgrade":true}`,
+			check: func(t *testing.T) {
+				if svc.gotChange.TenantID != 5 || svc.gotChange.SubscriptionID != 9 ||
+					svc.gotChange.UserID != 0 || svc.gotChange.NewPlanID != 42 ||
+					!svc.gotChange.AllowDowngrade || svc.gotChange.ActorAdminID != 77 ||
+					svc.gotChange.RequestID != "ops-route" {
+					t.Fatalf("change-plan input mismatch: %+v", svc.gotChange)
 				}
 			},
 			status: http.StatusOK,

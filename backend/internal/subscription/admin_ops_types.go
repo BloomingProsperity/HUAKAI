@@ -48,6 +48,20 @@ type ResetQuotaInput struct {
 	RequestID      string
 }
 
+// ChangePlanInput swaps an active subscription to another plan snapshot.
+// Exactly one of SubscriptionID or UserID must be set: admin calls target a
+// concrete assignment id, while self-service calls target the caller's current
+// active subscription by user id.
+type ChangePlanInput struct {
+	TenantID       int64
+	SubscriptionID int64
+	UserID         int64
+	NewPlanID      int64
+	AllowDowngrade bool
+	ActorAdminID   int64
+	RequestID      string
+}
+
 // BulkAssignInput grants the same plan to many users, collecting per-user errors.
 type BulkAssignInput struct {
 	TenantID     int64

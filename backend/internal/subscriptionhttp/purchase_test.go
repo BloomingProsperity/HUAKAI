@@ -239,6 +239,66 @@ func TestUserCancelRenewRejectsCallerWithoutActiveSubscription(t *testing.T) {
 	}
 }
 
+func TestUserChangePlanUsesSessionAndUpgradeOnly(t *testing.T) {
+	now := time.Now().UTC()
+	changed := sampleSubscription()
+	changed.PlanID = 42
+	changed.Status = subscription.StatusActive
+	changed.StartsAt = now.Add(-time.Hour)
+	changed.ExpiresAt = now.Add(720 * time.Hour)
+	svc := &fakeChangePlanService{returnSub: changed}
+	router := newSubUserTestRouter(UserDeps{Service: svc})
+
+	req := httptest.NewRequest(http.MethodPost, "/subs/change-plan", bytes.NewReader([]byte(`{"new_plan_id":42}`)))
+	req.Header.Set("X-Request-Id", "user-change")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if !svc.called {
+		t.Fatal("ChangePlan not called")
+	}
+	if svc.got.TenantID != 5 || svc.got.UserID != 7 || svc.got.SubscriptionID != 0 {
+		t.Fatalf("ChangePlan target = tenant %d user %d sub %d, want session user target",
+			svc.got.TenantID, svc.got.UserID, svc.got.SubscriptionID)
+	}
+	if svc.got.NewPlanID != 42 || svc.got.AllowDowngrade || svc.got.ActorAdminID != 0 ||
+		svc.got.RequestID != "user-change" {
+		t.Fatalf("ChangePlan input mismatch: %+v", svc.got)
+	}
+	js := rec.Body.String()
+	for _, leaked := range []string{"prev_user_group", "assigned_by_admin_id", "\"source\"", "\"user_id\""} {
+		if bytes.Contains([]byte(js), []byte(leaked)) {
+			t.Fatalf("POST /change-plan leaked internal field %q: %s", leaked, js)
+		}
+	}
+	if !bytes.Contains([]byte(js), []byte(`"plan_id":42`)) {
+		t.Fatalf("change-plan response missing changed plan_id: %s", js)
+	}
+}
+
+func TestUserChangePlanDowngradeRejectedAsConflict(t *testing.T) {
+	svc := &fakeChangePlanService{err: subscription.ErrDowngradeNotAllowed}
+	router := newSubUserTestRouter(UserDeps{Service: svc})
+
+	// MUTATION that makes this RED: user route allows downgrades or maps the guard to 503.
+	req := httptest.NewRequest(http.MethodPost, "/subs/change-plan", bytes.NewReader([]byte(`{"new_plan_id":4}`)))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 for self-service downgrade guard; body=%s", rec.Code, rec.Body.String())
+	}
+	if svc.got.AllowDowngrade {
+		t.Fatalf("user ChangePlan AllowDowngrade = true, want false")
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("downgrade_not_allowed")) {
+		t.Fatalf("response missing downgrade_not_allowed code: %s", rec.Body.String())
+	}
+}
+
 // fakeListSubscriptionsService 让 ListUserSubscriptions 返回固定集 (其余方法走 fakeSubscriptionService 零实现)。
 type fakeListSubscriptionsService struct {
 	fakeSubscriptionService
@@ -264,5 +324,19 @@ func (f *fakeSetAutoRenewService) SetAutoRenew(_ context.Context, tenantID, user
 	f.gotTenantID = tenantID
 	f.gotUserID = userID
 	f.gotAutoRenew = autoRenew
+	return f.returnSub, f.err
+}
+
+type fakeChangePlanService struct {
+	fakeSubscriptionService
+	called    bool
+	got       subscription.ChangePlanInput
+	returnSub subscription.UserSubscription
+	err       error
+}
+
+func (f *fakeChangePlanService) ChangePlan(_ context.Context, in subscription.ChangePlanInput) (subscription.UserSubscription, error) {
+	f.called = true
+	f.got = in
 	return f.returnSub, f.err
 }

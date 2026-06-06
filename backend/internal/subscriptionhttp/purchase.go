@@ -27,6 +27,10 @@ type purchaseRequest struct {
 	PlanID int64 `json:"plan_id"`
 }
 
+type userChangePlanRequest struct {
+	NewPlanID int64 `json:"new_plan_id"`
+}
+
 // purchaseOrderView 订阅购买订单摘要 (面向用户, snake_case, 不暴露内部/管理字段)。
 type purchaseOrderView struct {
 	ID                 int64  `json:"id"`
@@ -110,6 +114,34 @@ func newUserCancelRenewHandler(d UserDeps) http.HandlerFunc {
 		}
 		v := toSubscriptionView(sub)
 		writeJSON(w, http.StatusOK, currentSubscriptionView{Subscription: &v, AutoRenew: sub.AutoRenew})
+	}
+}
+
+// newUserChangePlanHandler POST /change-plan {new_plan_id}: self-service
+// plan change is upgrade-only; downgrades require an admin override.
+func newUserChangePlanHandler(d UserDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, ok := resolveSession(w, r, d)
+		if !ok {
+			return
+		}
+		var req userChangePlanRequest
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		if req.NewPlanID <= 0 {
+			writeJSONError(w, http.StatusBadRequest, "invalid_plan", "new_plan_id must be positive")
+			return
+		}
+		sub, err := d.Service.ChangePlan(r.Context(), subscription.ChangePlanInput{
+			TenantID: ident.TenantID, UserID: ident.UserID, NewPlanID: req.NewPlanID,
+			AllowDowngrade: false, RequestID: requestID(r),
+		})
+		if err != nil {
+			writeSubscriptionError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"subscription": toSubscriptionView(sub)})
 	}
 }
 

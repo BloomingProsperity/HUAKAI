@@ -27,6 +27,12 @@ type revokeAssignmentRequest struct {
 	Reason   string `json:"reason"`
 }
 
+type changePlanRequest struct {
+	TenantID       int64 `json:"tenant_id"`
+	NewPlanID      int64 `json:"new_plan_id"`
+	AllowDowngrade bool  `json:"allow_downgrade,omitempty"`
+}
+
 type bulkAssignUserView struct {
 	UserID       int64                  `json:"user_id"`
 	OK           bool                   `json:"ok"`
@@ -154,6 +160,32 @@ func newAdminResetQuotaHandler(d AdminDeps) http.HandlerFunc {
 		}
 		sub, err := d.Service.ResetQuota(r.Context(), subscription.ResetQuotaInput{
 			TenantID: req.TenantID, SubscriptionID: id, ActorAdminID: ident.TokenID, RequestID: requestID(r),
+		})
+		if err != nil {
+			writeSubscriptionError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"subscription": toAdminSubscriptionView(sub)})
+	}
+}
+
+func newAdminChangePlanHandler(d AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, ok := resolveAdmin(w, r, d)
+		if !ok {
+			return
+		}
+		id, ok := parsePathID(w, r)
+		if !ok {
+			return
+		}
+		var req changePlanRequest
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		sub, err := d.Service.ChangePlan(r.Context(), subscription.ChangePlanInput{
+			TenantID: req.TenantID, SubscriptionID: id, NewPlanID: req.NewPlanID,
+			AllowDowngrade: req.AllowDowngrade, ActorAdminID: ident.TokenID, RequestID: requestID(r),
 		})
 		if err != nil {
 			writeSubscriptionError(w, err)

@@ -41,6 +41,7 @@ type Service interface {
 	CancelSubscription(context.Context, int64, int64, int64, string) (subscription.UserSubscription, error)
 	ExtendSubscription(context.Context, subscription.ExtendSubscriptionInput) (subscription.UserSubscription, error)
 	ResetQuota(context.Context, subscription.ResetQuotaInput) (subscription.UserSubscription, error)
+	ChangePlan(context.Context, subscription.ChangePlanInput) (subscription.UserSubscription, error)
 	RevokeSubscription(context.Context, subscription.RevokeSubscriptionInput) (subscription.UserSubscription, error)
 	SetAutoRenew(context.Context, int64, int64, bool) (subscription.UserSubscription, error)
 	GetSubscription(context.Context, int64, int64) (subscription.UserSubscription, error)
@@ -257,6 +258,7 @@ func MountSubscriptionAdminRoutes(r chi.Router, d AdminDeps) {
 	r.Post("/assignments/{id}/cancel", newAdminCancelHandler(d))
 	r.Post("/assignments/{id}/extend", newAdminExtendHandler(d))
 	r.Post("/assignments/{id}/reset-quota", newAdminResetQuotaHandler(d))
+	r.Post("/assignments/{id}/change-plan", newAdminChangePlanHandler(d))
 	r.Post("/assignments/{id}/revoke", newAdminRevokeHandler(d))
 	r.Post("/vouchers", newAdminCreateSubscriptionVoucherHandler(d))
 }
@@ -267,6 +269,7 @@ func MountSubscriptionUserRoutes(r chi.Router, d UserDeps) {
 	r.Get("/me", newUserCurrentSubscriptionHandler(d))
 	r.Get("/plans", newUserListPlansHandler(d))
 	r.Post("/cancel-renew", newUserCancelRenewHandler(d))
+	r.Post("/change-plan", newUserChangePlanHandler(d))
 	r.Post("/purchase", newUserPurchaseHandler(d))
 }
 
@@ -681,6 +684,8 @@ func writeSubscriptionError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusNotFound, "subscription_not_found", "subscription not found")
 	case errors.Is(err, subscription.ErrSubscriptionNotActive):
 		writeJSONError(w, http.StatusConflict, "subscription_not_active", "subscription is not active")
+	case errors.Is(err, subscription.ErrDowngradeNotAllowed):
+		writeJSONError(w, http.StatusConflict, "downgrade_not_allowed", "subscription plan change would downgrade entitlement")
 	case errors.Is(err, subscription.ErrQuotaInstallFailed):
 		writeJSONError(w, http.StatusServiceUnavailable, "quota_install_failed", "failed to install subscription quota")
 	default:

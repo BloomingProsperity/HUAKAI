@@ -126,6 +126,9 @@ func (f *fakeSubscriptionService) ExtendSubscription(context.Context, subscripti
 func (f *fakeSubscriptionService) ResetQuota(context.Context, subscription.ResetQuotaInput) (subscription.UserSubscription, error) {
 	return subscription.UserSubscription{}, nil
 }
+func (f *fakeSubscriptionService) ChangePlan(context.Context, subscription.ChangePlanInput) (subscription.UserSubscription, error) {
+	return subscription.UserSubscription{}, nil
+}
 func (f *fakeSubscriptionService) RevokeSubscription(context.Context, subscription.RevokeSubscriptionInput) (subscription.UserSubscription, error) {
 	return subscription.UserSubscription{}, nil
 }

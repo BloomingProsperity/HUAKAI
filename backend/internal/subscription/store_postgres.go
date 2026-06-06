@@ -712,6 +712,23 @@ FROM user_subscriptions WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, tenantID, subs
 	return sub, nil
 }
 
+func getCurrentActiveByUserForUpdateTx(ctx context.Context, tx pgx.Tx, tenantID, userID int64) (UserSubscription, error) {
+	row := tx.QueryRow(ctx, `SELECT`+subscriptionSelectColumns+`
+FROM user_subscriptions
+WHERE tenant_id=$1 AND user_id=$2 AND status='active'
+ORDER BY expires_at DESC, id DESC
+LIMIT 1
+FOR UPDATE`, tenantID, userID)
+	sub, err := scanSubscription(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return UserSubscription{}, ErrSubscriptionNotFound
+	}
+	if err != nil {
+		return UserSubscription{}, fmt.Errorf("subscription: lock current subscription: %w", err)
+	}
+	return sub, nil
+}
+
 func insertSubscriptionTx(ctx context.Context, tx pgx.Tx, sub UserSubscription, now time.Time) (UserSubscription, error) {
 	daily, err := capParam(sub.DailyCapUSD)
 	if err != nil {
@@ -791,7 +808,7 @@ WHERE tenant_id=$1 AND user_subscription_id=$2 AND status='active'`,
 	return nil
 }
 
-// renewSubscriptionTx 把同组 active 订阅续期: 覆盖 plan/caps 为新套餐, 延长 expires_at。
+// renewSubscriptionTx 把 active 订阅续期/换档: 覆盖 plan/group/caps 为新套餐, 延长 expires_at。
 // 调用方负责 close 旧 caps 策略 + install 新策略 (基于返回的更新后订阅)。
 func renewSubscriptionTx(ctx context.Context, tx pgx.Tx, existing UserSubscription, plan Plan, newExpires, now time.Time) (UserSubscription, error) {
 	daily, err := capParam(plan.DailyCapUSD)
@@ -808,10 +825,10 @@ func renewSubscriptionTx(ctx context.Context, tx pgx.Tx, existing UserSubscripti
 	}
 	row := tx.QueryRow(ctx, `
 UPDATE user_subscriptions
-SET plan_id=$3, daily_cap_usd=$4, weekly_cap_usd=$5, monthly_cap_usd=$6, expires_at=$7, updated_at=$8
+SET plan_id=$3, granted_group=$4, daily_cap_usd=$5, weekly_cap_usd=$6, monthly_cap_usd=$7, expires_at=$8, updated_at=$9
 WHERE tenant_id=$1 AND id=$2 AND status='active'
 RETURNING`+subscriptionSelectColumns,
-		existing.TenantID, existing.ID, plan.ID, daily, weekly, monthly, newExpires, now)
+		existing.TenantID, existing.ID, plan.ID, plan.GrantedGroup, daily, weekly, monthly, newExpires, now)
 	sub, err := scanSubscription(row)
 	if err != nil {
 		return UserSubscription{}, fmt.Errorf("subscription: renew update: %w", err)
