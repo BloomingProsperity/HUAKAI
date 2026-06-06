@@ -10,20 +10,22 @@ import (
 type Decision string
 
 const (
-	DecisionPass         Decision = "pass"
-	DecisionBlockKeyword Decision = "block_keyword"
-	DecisionBlockHash    Decision = "block_hash"
-	DecisionBlockBackend Decision = "block_backend"
-	DecisionFeeCharged   Decision = "fee_charged"
+	DecisionPass          Decision = "pass"
+	DecisionBlockKeyword  Decision = "block_keyword"
+	DecisionBlockHash     Decision = "block_hash"
+	DecisionBlockExternal Decision = "block_external"
+	DecisionBlockBackend  Decision = "block_backend"
+	DecisionFeeCharged    Decision = "fee_charged"
 )
 
 type ScreenRequest struct {
-	TenantID    int64
-	APIKeyID    int64
-	UserID      int64
-	RequestID   string
-	PayloadHash string
-	Body        []byte
+	TenantID      int64
+	APIKeyID      int64
+	UserID        int64
+	RequestID     string
+	PayloadHash   string
+	Body          []byte
+	ImageDataURLs []string
 }
 
 type ScreenResult struct {
@@ -67,8 +69,28 @@ type ModerationConfig struct {
 	BanThreshold     int32
 	BanWindowSeconds int32
 	ViolationFeeUSD  decimal.Decimal
+	External         ExternalModerationConfig
 	UpdatedBy        string
 	UpdatedAt        time.Time
+}
+
+type ExternalModerationConfig struct {
+	Enabled      bool
+	BaseURL      string
+	APIKeys      []string
+	Model        string
+	Thresholds   map[string]float64
+	TimeoutMS    int
+	RetryCount   int
+	ImageEnabled bool
+}
+
+type ExternalModerationResult struct {
+	Blocked    bool
+	ReasonCode string
+	Category   string
+	Score      float64
+	Threshold  float64
 }
 
 func DefaultConfig(tenantID int64) ModerationConfig {
@@ -80,6 +102,7 @@ func DefaultConfig(tenantID int64) ModerationConfig {
 		BanThreshold:     3,
 		BanWindowSeconds: 3600,
 		ViolationFeeUSD:  decimal.Zero,
+		External:         DefaultExternalModerationConfig(),
 	}
 }
 
@@ -127,6 +150,10 @@ type HashStore interface {
 
 type AuditLogger interface {
 	Log(context.Context, ModerationEvent, ModerationConfig) error
+}
+
+type ExternalModerator interface {
+	ScreenExternal(context.Context, ScreenRequest, ExternalModerationConfig) (ExternalModerationResult, error)
 }
 
 type Screener interface {

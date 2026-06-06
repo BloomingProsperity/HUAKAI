@@ -29,13 +29,15 @@ func moderationScreener(d *deps) moderation.Screener {
 		return nil
 	}
 	store := moderation.NewSQLStore(dbmoderation.New(d.pgPool))
+	configStore := moderation.NewExternalSettingsConfigStore(store, d.platformSettings)
 	cacheOpts := moderation.CacheOptions{}
 	return moderation.NewScreener(moderation.ScreenerDeps{
-		Config:   store,
+		Config:   configStore,
 		Keywords: moderation.NewKeywordStore(store, cacheOpts),
 		Hashes:   moderation.NewHashStore(store, cacheOpts),
 		Audit:    moderation.NewAuditLogger(store),
 		Ban:      moderation.NewBanCounter(store),
+		External: moderation.NewExternalModerator(moderation.ExternalModeratorDeps{}),
 	})
 }
 

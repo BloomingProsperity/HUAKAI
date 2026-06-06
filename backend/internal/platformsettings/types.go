@@ -51,13 +51,21 @@ const (
 	KeyMediaTaskPollIntervalSecs      SettingKey = "mediatask_poll_interval_seconds"
 	KeyMediaTaskTimeoutSecs           SettingKey = "mediatask_task_timeout_seconds"
 	KeyMediaTaskDefaultEstimatedCents SettingKey = "mediatask_default_estimated_cents"
+	KeyModerationExternalEnabled      SettingKey = "moderation_external_enabled"
+	KeyModerationExternalBaseURL      SettingKey = "moderation_external_base_url"
+	KeyModerationExternalAPIKeys      SettingKey = "moderation_external_api_keys"
+	KeyModerationExternalModel        SettingKey = "moderation_external_model"
+	KeyModerationExternalThresholds   SettingKey = "moderation_external_thresholds"
+	KeyModerationExternalTimeoutMS    SettingKey = "moderation_external_timeout_ms"
+	KeyModerationExternalRetryCount   SettingKey = "moderation_external_retry_count"
+	KeyModerationExternalImageEnabled SettingKey = "moderation_external_image_enabled"
 )
 
 var (
 	ErrUnknownKey          = errors.New("platformsettings: unknown setting key")
 	ErrInvalidValue        = errors.New("platformsettings: invalid setting value")
 	ErrStoreNotConfigured  = errors.New("platformsettings: store not configured")
-	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents}
+	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents, KeyModerationExternalEnabled, KeyModerationExternalBaseURL, KeyModerationExternalAPIKeys, KeyModerationExternalModel, KeyModerationExternalThresholds, KeyModerationExternalTimeoutMS, KeyModerationExternalRetryCount, KeyModerationExternalImageEnabled}
 	defaultSettingValueMap = map[SettingKey]string{
 		KeyRegistrationEnabled:            "false",
 		KeyInvitationRequired:             "true",
@@ -90,6 +98,14 @@ var (
 		KeyMediaTaskPollIntervalSecs:      "5",
 		KeyMediaTaskTimeoutSecs:           "900",
 		KeyMediaTaskDefaultEstimatedCents: `{"image_generation":100,"video_generation":1000}`,
+		KeyModerationExternalEnabled:      "false",
+		KeyModerationExternalBaseURL:      "",
+		KeyModerationExternalAPIKeys:      "[]",
+		KeyModerationExternalModel:        "omni-moderation-latest",
+		KeyModerationExternalThresholds:   "{}",
+		KeyModerationExternalTimeoutMS:    "3000",
+		KeyModerationExternalRetryCount:   "2",
+		KeyModerationExternalImageEnabled: "false",
 	}
 )
 
@@ -126,14 +142,23 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 	if key == KeyPaymentProviderConfig {
 		return validatePaymentProviderConfigValue(key, value)
 	}
-	if key == KeyPasskeyRPOrigins {
+	if key == KeyPasskeyRPOrigins || key == KeyModerationExternalAPIKeys {
 		return validateStringArrayValue(key, value)
 	}
 	if key == KeyPasskeyRPID {
 		return validateOptionalPublicTextValue(key, value)
 	}
-	if key == KeyMediaTaskProviderBaseURL {
+	if key == KeyMediaTaskProviderBaseURL || key == KeyModerationExternalBaseURL {
 		return validateOptionalHTTPURLValue(key, value)
+	}
+	if key == KeyModerationExternalThresholds {
+		return validateModerationExternalThresholdsValue(key, value)
+	}
+	if key == KeyModerationExternalTimeoutMS {
+		return validateBoundedNonNegativeIntValue(key, value, 30000, "milliseconds")
+	}
+	if key == KeyModerationExternalRetryCount {
+		return validateBoundedNonNegativeIntValue(key, value, 5, "retries")
 	}
 	if key == KeyMediaTaskDefaultEstimatedCents {
 		return validateMediaTaskDefaultEstimatedCentsValue(key, value)
@@ -145,7 +170,7 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 		return "", fmt.Errorf("%w: %s", ErrInvalidValue, key)
 	}
 	switch key {
-	case KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled, KeyCheckinEnabled, KeyReferralRewardEnabled, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyMediaTaskEnabled:
+	case KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled, KeyCheckinEnabled, KeyReferralRewardEnabled, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyMediaTaskEnabled, KeyModerationExternalEnabled, KeyModerationExternalImageEnabled:
 		return validateBoolValue(key, value)
 	case KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyCheckinMinCents, KeyCheckinMaxCents, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs:
 		return validatePositiveIntValue(key, value)
@@ -212,6 +237,14 @@ func validateNonNegativeIntValue(key SettingKey, value string) (string, error) {
 	return strconv.Itoa(parsed), nil
 }
 
+func validateBoundedNonNegativeIntValue(key SettingKey, value string, max int, unit string) (string, error) {
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 || parsed > max {
+		return "", fmt.Errorf("%w: %s must be non-negative integer %s no greater than %d", ErrInvalidValue, key, unit, max)
+	}
+	return strconv.Itoa(parsed), nil
+}
+
 func validateCaptchaProvider(value string) (string, error) {
 	switch value {
 	case "turnstile":
@@ -274,6 +307,35 @@ func validateJSONObjectValue(key SettingKey, value string) (string, error) {
 		return "", fmt.Errorf("%w: %s must be a JSON object", ErrInvalidValue, key)
 	}
 	return value, nil
+}
+
+func validateModerationExternalThresholdsValue(key SettingKey, value string) (string, error) {
+	if value == "" {
+		return "{}", nil
+	}
+	dec := json.NewDecoder(bytes.NewReader([]byte(value)))
+	dec.UseNumber()
+	var doc map[string]json.Number
+	if err := dec.Decode(&doc); err != nil || doc == nil {
+		return "", fmt.Errorf("%w: %s must be a JSON object of category thresholds", ErrInvalidValue, key)
+	}
+	normalized := make(map[string]float64, len(doc))
+	for category, raw := range doc {
+		category = strings.TrimSpace(category)
+		if category == "" {
+			return "", fmt.Errorf("%w: %s contains empty category", ErrInvalidValue, key)
+		}
+		threshold, err := strconv.ParseFloat(raw.String(), 64)
+		if err != nil || threshold < 0 || threshold > 1 {
+			return "", fmt.Errorf("%w: %s contains threshold outside [0,1]", ErrInvalidValue, key)
+		}
+		normalized[category] = threshold
+	}
+	out, err := json.Marshal(normalized)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
 
 func validatePaymentProviderConfigValue(key SettingKey, value string) (string, error) {

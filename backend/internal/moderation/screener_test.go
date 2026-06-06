@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"expvar"
+	"io"
 	"log/slog"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -113,6 +115,147 @@ func TestScreener_AllowsCleanRequest(t *testing.T) {
 	}
 	if res.Decision != DecisionPass {
 		t.Fatalf("decision=%q want %q", res.Decision, DecisionPass)
+	}
+}
+
+func TestScreener_ExternalBlocksOverThreshold(t *testing.T) {
+	// Mutation: changing threshold comparison from >= to >, or ignoring
+	// category thresholds and trusting only flagged, leaves this exact-boundary
+	// violation unblocked and makes the decision/audit assertions red.
+	audit := &auditSpy{}
+	ban := &banCounterSpy{}
+	provider := NewExternalModerator(ExternalModeratorDeps{
+		HTTPClient: &http.Client{Transport: moderationRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if got := r.Header.Get("Authorization"); got != "Bearer screen-key" {
+				t.Fatalf("authorization header=%q want Bearer screen-key", got)
+			}
+			body := `{"results":[{"flagged":true,"categories":{"violence":true},"category_scores":{"violence":0.73}}]}`
+			return moderationHTTPResponse(http.StatusOK, body), nil
+		})},
+	})
+	s := NewScreener(ScreenerDeps{
+		Config: configStub{cfg: ModerationConfig{
+			Enabled: true, FailClosed: true, SampleRatePct: 100,
+			BanThreshold: 3, BanWindowSeconds: 3600,
+			External: ExternalModerationConfig{
+				Enabled:    true,
+				BaseURL:    "https://moderation.example.test/v1/moderations",
+				APIKeys:    []string{"screen-key"},
+				Model:      "omni-moderation-latest",
+				Thresholds: map[string]float64{"violence": 0.73},
+			},
+		}},
+		Keywords: &keywordStoreStub{},
+		Hashes:   hashStoreStub{},
+		Audit:    audit,
+		Ban:      ban,
+		External: provider,
+	})
+
+	res, err := s.Screen(context.Background(), ScreenRequest{
+		TenantID:    7,
+		APIKeyID:    11,
+		UserID:      13,
+		RequestID:   "req-external-block",
+		PayloadHash: "hash-external-block",
+		Body:        []byte(`{"messages":[{"content":"external threshold fixture"}]}`),
+	})
+	if err != nil {
+		t.Fatalf("Screen returned error: %v", err)
+	}
+	if res.Decision != DecisionBlockExternal {
+		t.Fatalf("decision=%q want %q", res.Decision, DecisionBlockExternal)
+	}
+	if res.ReasonCode != "external_moderation:violence" {
+		t.Fatalf("reason=%q want external_moderation:violence", res.ReasonCode)
+	}
+	if len(audit.events) != 1 || audit.events[0].Decision != DecisionBlockExternal ||
+		audit.events[0].ReasonCode != "external_moderation:violence" {
+		t.Fatalf("external block audit mismatch: %+v", audit.events)
+	}
+	if ban.calls != 1 || ban.events[0].Decision != DecisionBlockExternal {
+		t.Fatalf("external block must feed auto-ban: calls=%d events=%+v", ban.calls, ban.events)
+	}
+}
+
+func TestScreener_ExternalDisabledNoCall(t *testing.T) {
+	// Mutation: calling the external screener when External.Enabled=false
+	// increments the spy and turns this default-off regression red.
+	external := &externalModeratorStub{err: errors.New("must not call external")}
+	s := NewScreener(ScreenerDeps{
+		Config: configStub{cfg: ModerationConfig{
+			Enabled: true, FailClosed: true,
+			External: ExternalModerationConfig{
+				Enabled: false,
+				BaseURL: "https://moderation.example.test/v1/moderations",
+				APIKeys: []string{"disabled-key"},
+			},
+		}},
+		Keywords: &keywordStoreStub{},
+		Hashes:   hashStoreStub{},
+		Audit:    &auditSpy{},
+		External: external,
+	})
+
+	res, err := s.Screen(context.Background(), ScreenRequest{
+		TenantID: 7, APIKeyID: 11, UserID: 13,
+		PayloadHash: "hash-external-disabled",
+		Body:        []byte(`{"messages":[{"content":"ordinary request"}]}`),
+	})
+	if err != nil {
+		t.Fatalf("Screen returned error: %v", err)
+	}
+	if res.Decision != DecisionPass {
+		t.Fatalf("decision=%q want pass", res.Decision)
+	}
+	if external.calls != 0 {
+		t.Fatalf("external calls=%d want 0 while external disabled", external.calls)
+	}
+}
+
+func TestScreener_ExternalFailOpenOnErrorAudits(t *testing.T) {
+	// Mutation: treating external provider outage as fail-closed, or returning
+	// pass without an audit event, makes the decision/audit assertions red.
+	audit := &auditSpy{}
+	ban := &banCounterSpy{}
+	external := &externalModeratorStub{err: errors.New("upstream moderation down")}
+	s := NewScreener(ScreenerDeps{
+		Config: configStub{cfg: ModerationConfig{
+			Enabled: true, FailClosed: true, SampleRatePct: 100,
+			BanThreshold: 3, BanWindowSeconds: 3600,
+			External: ExternalModerationConfig{
+				Enabled: true,
+				BaseURL: "https://moderation.example.test/v1/moderations",
+				APIKeys: []string{"fail-open-key"},
+			},
+		}},
+		Keywords: &keywordStoreStub{},
+		Hashes:   hashStoreStub{},
+		Audit:    audit,
+		Ban:      ban,
+		External: external,
+	})
+
+	res, err := s.Screen(context.Background(), ScreenRequest{
+		TenantID:    7,
+		APIKeyID:    11,
+		UserID:      13,
+		RequestID:   "req-external-error",
+		PayloadHash: "hash-external-error",
+		Body:        []byte(`{"messages":[{"content":"ordinary request"}]}`),
+	})
+	if err != nil {
+		t.Fatalf("external fail-open Screen returned error: %v", err)
+	}
+	if res.Decision != DecisionPass || res.ReasonCode != "external_moderation_error" {
+		t.Fatalf("result=%+v want pass external_moderation_error", res)
+	}
+	if len(audit.events) != 1 || audit.events[0].Decision != DecisionPass ||
+		audit.events[0].ReasonCode != "external_moderation_error" {
+		t.Fatalf("fail-open audit mismatch: %+v", audit.events)
+	}
+	if ban.calls != 0 {
+		t.Fatalf("fail-open pass must not feed auto-ban: calls=%d", ban.calls)
 	}
 }
 
@@ -415,6 +558,38 @@ func (s *banCounterSpy) RecordAndCheck(_ context.Context, event ModerationEvent,
 		return BanResult{}, s.err
 	}
 	return BanResult{Count: int64(s.calls)}, nil
+}
+
+type externalModeratorStub struct {
+	calls  int
+	reqs   []ScreenRequest
+	cfgs   []ExternalModerationConfig
+	result ExternalModerationResult
+	err    error
+}
+
+func (s *externalModeratorStub) ScreenExternal(_ context.Context, req ScreenRequest, cfg ExternalModerationConfig) (ExternalModerationResult, error) {
+	s.calls++
+	s.reqs = append(s.reqs, req)
+	s.cfgs = append(s.cfgs, cfg)
+	if s.err != nil {
+		return ExternalModerationResult{}, s.err
+	}
+	return s.result, nil
+}
+
+type moderationRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f moderationRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func moderationHTTPResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
 }
 
 func moderationFailureMetricValue(key string) int64 {

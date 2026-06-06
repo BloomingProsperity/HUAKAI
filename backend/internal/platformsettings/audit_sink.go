@@ -56,11 +56,18 @@ func (s *AdminAuditSink) WriteAdminAudit(ctx context.Context, params AuditParams
 func platformSettingAuditPayload(params AuditParams) ([]byte, error) {
 	return json.Marshal(map[string]string{
 		"setting_key":     string(params.Key),
-		"previous_value":  params.OldValue,
+		"previous_value":  auditValueForSetting(params.Key, params.OldValue),
 		"previous_source": params.OldSource,
-		"new_value":       params.NewValue,
+		"new_value":       auditValueForSetting(params.Key, params.NewValue),
 		"new_source":      SourceDB,
 	})
+}
+
+func auditValueForSetting(key SettingKey, value string) string {
+	if key == KeyModerationExternalAPIKeys && strings.TrimSpace(value) != "" {
+		return "[redacted]"
+	}
+	return value
 }
 
 var _ AuditSink = (*AdminAuditSink)(nil)

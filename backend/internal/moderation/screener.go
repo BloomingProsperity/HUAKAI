@@ -19,6 +19,7 @@ type ScreenerDeps struct {
 	Hashes   HashStore
 	Audit    AuditLogger
 	Ban      AutoBanCounter
+	External ExternalModerator
 }
 
 type storeScreener struct {
@@ -27,6 +28,7 @@ type storeScreener struct {
 	hashes   HashStore
 	audit    AuditLogger
 	ban      AutoBanCounter
+	external ExternalModerator
 }
 
 type AutoBanCounter interface {
@@ -40,6 +42,7 @@ func NewScreener(deps ScreenerDeps) Screener {
 		hashes:   deps.Hashes,
 		audit:    deps.Audit,
 		ban:      deps.Ban,
+		external: deps.External,
 	}
 }
 
@@ -58,6 +61,10 @@ func (s *storeScreener) Screen(ctx context.Context, req ScreenRequest) (ScreenRe
 	keywordResult, err := s.checkKeywords(ctx, req, cfg)
 	if err != nil || keywordResult.Decision != "" {
 		return keywordResult, err
+	}
+	externalResult, err := s.checkExternal(ctx, req, cfg)
+	if err != nil || externalResult.Decision != "" {
+		return externalResult, err
 	}
 	result := ScreenResult{Decision: DecisionPass, ReasonCode: "clean"}
 	if err := s.writeAudit(ctx, req, result, cfg); err != nil {
@@ -131,6 +138,35 @@ func (s *storeScreener) checkKeywords(ctx context.Context, req ScreenRequest, cf
 		return result, nil
 	}
 	return ScreenResult{}, nil
+}
+
+func (s *storeScreener) checkExternal(ctx context.Context, req ScreenRequest, cfg ModerationConfig) (ScreenResult, error) {
+	if s.external == nil || !cfg.External.Enabled {
+		return ScreenResult{}, nil
+	}
+	externalResult, err := s.external.ScreenExternal(ctx, req, cfg.External)
+	if err != nil {
+		result := ScreenResult{Decision: DecisionPass, ReasonCode: "external_moderation_error"}
+		if auditErr := s.writeAudit(ctx, req, result, cfg); auditErr != nil {
+			reportModerationFailure(ctx, "audit_write_failed", req, result, auditErr)
+		}
+		reportModerationFailure(ctx, "external_moderation_failed", req, result, err)
+		return result, nil
+	}
+	if !externalResult.Blocked {
+		return ScreenResult{}, nil
+	}
+	result := ScreenResult{
+		Decision:   DecisionBlockExternal,
+		ReasonCode: nonEmpty(externalResult.ReasonCode, "external_moderation"),
+	}
+	if err := s.writeAudit(ctx, req, result, cfg); err != nil {
+		reportModerationFailure(ctx, "audit_write_failed", req, result, err)
+	}
+	if err := s.recordAutoBan(ctx, req, result, cfg); err != nil {
+		reportModerationFailure(ctx, "auto_ban_record_failed", req, result, err)
+	}
+	return result, nil
 }
 
 func containsKeyword(body string, bodyTokens []string, keyword string) bool {
