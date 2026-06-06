@@ -108,10 +108,25 @@ func (f *fakeSubscriptionService) ListPlans(context.Context, int64, bool) ([]sub
 	return nil, nil
 }
 func (f *fakeSubscriptionService) DisablePlan(context.Context, int64, int64) error { return nil }
+func (f *fakeSubscriptionService) UpdatePlan(context.Context, subscription.UpdatePlanInput) (subscription.Plan, error) {
+	return subscription.Plan{}, nil
+}
 func (f *fakeSubscriptionService) AssignSubscription(context.Context, subscription.AssignSubscriptionInput) (subscription.AssignResult, error) {
 	return subscription.AssignResult{}, nil
 }
+func (f *fakeSubscriptionService) BulkAssign(context.Context, subscription.BulkAssignInput) (subscription.BulkAssignResult, error) {
+	return subscription.BulkAssignResult{}, nil
+}
 func (f *fakeSubscriptionService) CancelSubscription(context.Context, int64, int64, int64, string) (subscription.UserSubscription, error) {
+	return subscription.UserSubscription{}, nil
+}
+func (f *fakeSubscriptionService) ExtendSubscription(context.Context, subscription.ExtendSubscriptionInput) (subscription.UserSubscription, error) {
+	return subscription.UserSubscription{}, nil
+}
+func (f *fakeSubscriptionService) ResetQuota(context.Context, subscription.ResetQuotaInput) (subscription.UserSubscription, error) {
+	return subscription.UserSubscription{}, nil
+}
+func (f *fakeSubscriptionService) RevokeSubscription(context.Context, subscription.RevokeSubscriptionInput) (subscription.UserSubscription, error) {
 	return subscription.UserSubscription{}, nil
 }
 func (f *fakeSubscriptionService) SetAutoRenew(context.Context, int64, int64, bool) (subscription.UserSubscription, error) {

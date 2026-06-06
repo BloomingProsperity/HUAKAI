@@ -4121,6 +4121,86 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [admin-subscriptions]
+      summary: Update mutable subscription plan fields
+      operationId: adminUpdateSubscriptionPlan
+      x-huakai-spec-source: [docs/process/plans/2026-06-06-subscription-admin-ops-codex.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, name, validity_days, for_sale]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                name: { type: string }
+                description: { type: string }
+                price_cents: { type: integer, format: int64, minimum: 0 }
+                currency_code: { type: string, default: USD }
+                validity_days: { type: integer, minimum: 1 }
+                granted_group: { type: string }
+                daily_cap_usd: { type: string }
+                weekly_cap_usd: { type: string }
+                monthly_cap_usd: { type: string }
+                for_sale: { type: boolean }
+                sort_order: { type: integer }
+      responses:
+        '200':
+          description: Plan updated; existing subscription snapshots are unchanged.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-subscriptions]
+      summary: Update mutable subscription plan fields
+      operationId: adminUpdateSubscriptionPlanPost
+      x-huakai-spec-source: [docs/process/plans/2026-06-06-subscription-admin-ops-codex.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, name, validity_days, for_sale]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                name: { type: string }
+                description: { type: string }
+                price_cents: { type: integer, format: int64, minimum: 0 }
+                currency_code: { type: string, default: USD }
+                validity_days: { type: integer, minimum: 1 }
+                granted_group: { type: string }
+                daily_cap_usd: { type: string }
+                weekly_cap_usd: { type: string }
+                monthly_cap_usd: { type: string }
+                for_sale: { type: boolean }
+                sort_order: { type: integer }
+      responses:
+        '200':
+          description: Plan updated; existing subscription snapshots are unchanged.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/admin/subscriptions/plans/{id}/disable:
     parameters:
@@ -4227,6 +4307,40 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/subscriptions/assignments/bulk:
+    post:
+      tags: [admin-subscriptions]
+      summary: Assign one plan to many users with per-user results
+      operationId: adminBulkAssignSubscriptions
+      x-huakai-spec-source: [docs/process/plans/2026-06-06-subscription-admin-ops-codex.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, user_ids, plan_id]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                user_ids:
+                  type: array
+                  items: { type: integer, format: int64, minimum: 1 }
+                plan_id: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Per-user assignment results; individual failures do not roll back successes.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results: { type: array, items: { type: object } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/admin/subscriptions/assignments/{id}:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
@@ -4288,6 +4402,114 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/subscriptions/assignments/{id}/extend:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-subscriptions]
+      summary: Extend an active subscription assignment
+      operationId: adminExtendSubscription
+      x-huakai-spec-source: [docs/process/plans/2026-06-06-subscription-admin-ops-codex.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                days: { type: integer, minimum: 1, description: Extend from current expires_at by this many days. }
+                until: { type: string, format: date-time, description: Extend to this absolute expiry. }
+              oneOf:
+                - required: [days]
+                - required: [until]
+      responses:
+        '200':
+          description: Subscription extended once per request id.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscription: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/subscriptions/assignments/{id}/reset-quota:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-subscriptions]
+      summary: Reset subscription-owned quota consumption to its plan baseline
+      operationId: adminResetSubscriptionQuota
+      x-huakai-spec-source: [docs/process/plans/2026-06-06-subscription-admin-ops-codex.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Subscription quota policies rebuilt from the subscription snapshot.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscription: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/subscriptions/assignments/{id}/revoke:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-subscriptions]
+      summary: Hard-revoke a subscription assignment
+      operationId: adminRevokeSubscription
+      x-huakai-spec-source: [docs/process/plans/2026-06-06-subscription-admin-ops-codex.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, reason]
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                reason: { type: string }
+      responses:
+        '200':
+          description: Subscription revoked; quota policies closed and user group downgraded when guarded conditions match.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscription: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/admin/subscriptions/vouchers:

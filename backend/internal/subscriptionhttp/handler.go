@@ -34,9 +34,14 @@ type Service interface {
 	CreatePlan(context.Context, subscription.CreatePlanInput) (subscription.Plan, error)
 	GetPlan(context.Context, int64, int64) (subscription.Plan, error)
 	ListPlans(context.Context, int64, bool) ([]subscription.Plan, error)
+	UpdatePlan(context.Context, subscription.UpdatePlanInput) (subscription.Plan, error)
 	DisablePlan(context.Context, int64, int64) error
 	AssignSubscription(context.Context, subscription.AssignSubscriptionInput) (subscription.AssignResult, error)
+	BulkAssign(context.Context, subscription.BulkAssignInput) (subscription.BulkAssignResult, error)
 	CancelSubscription(context.Context, int64, int64, int64, string) (subscription.UserSubscription, error)
+	ExtendSubscription(context.Context, subscription.ExtendSubscriptionInput) (subscription.UserSubscription, error)
+	ResetQuota(context.Context, subscription.ResetQuotaInput) (subscription.UserSubscription, error)
+	RevokeSubscription(context.Context, subscription.RevokeSubscriptionInput) (subscription.UserSubscription, error)
 	SetAutoRenew(context.Context, int64, int64, bool) (subscription.UserSubscription, error)
 	GetSubscription(context.Context, int64, int64) (subscription.UserSubscription, error)
 	ListUserSubscriptions(context.Context, int64, int64) ([]subscription.UserSubscription, error)
@@ -242,11 +247,17 @@ func MountSubscriptionAdminRoutes(r chi.Router, d AdminDeps) {
 	r.Post("/plans", newAdminCreatePlanHandler(d))
 	r.Get("/plans", newAdminListPlansHandler(d))
 	r.Get("/plans/{id}", newAdminGetPlanHandler(d))
+	r.Put("/plans/{id}", newAdminUpdatePlanHandler(d))
+	r.Post("/plans/{id}", newAdminUpdatePlanHandler(d))
 	r.Post("/plans/{id}/disable", newAdminDisablePlanHandler(d))
 	r.Post("/assignments", newAdminAssignHandler(d))
+	r.Post("/assignments/bulk", newAdminBulkAssignHandler(d))
 	r.Get("/assignments", newAdminListAssignmentsHandler(d))
 	r.Get("/assignments/{id}", newAdminGetAssignmentHandler(d))
 	r.Post("/assignments/{id}/cancel", newAdminCancelHandler(d))
+	r.Post("/assignments/{id}/extend", newAdminExtendHandler(d))
+	r.Post("/assignments/{id}/reset-quota", newAdminResetQuotaHandler(d))
+	r.Post("/assignments/{id}/revoke", newAdminRevokeHandler(d))
 	r.Post("/vouchers", newAdminCreateSubscriptionVoucherHandler(d))
 }
 
@@ -668,6 +679,8 @@ func writeSubscriptionError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusConflict, "plan_disabled", "subscription plan is disabled")
 	case errors.Is(err, subscription.ErrSubscriptionNotFound):
 		writeJSONError(w, http.StatusNotFound, "subscription_not_found", "subscription not found")
+	case errors.Is(err, subscription.ErrSubscriptionNotActive):
+		writeJSONError(w, http.StatusConflict, "subscription_not_active", "subscription is not active")
 	case errors.Is(err, subscription.ErrQuotaInstallFailed):
 		writeJSONError(w, http.StatusServiceUnavailable, "quota_install_failed", "failed to install subscription quota")
 	default:

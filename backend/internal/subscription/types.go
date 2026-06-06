@@ -18,13 +18,14 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// SubscriptionStatus 订阅实例状态机: active -> expired / cancelled。
+// SubscriptionStatus 订阅实例状态机: active -> expired / cancelled / revoked。
 type SubscriptionStatus string
 
 const (
 	StatusActive    SubscriptionStatus = "active"
 	StatusExpired   SubscriptionStatus = "expired"
 	StatusCancelled SubscriptionStatus = "cancelled"
+	StatusRevoked   SubscriptionStatus = "revoked"
 )
 
 // Source 订阅来源。admin=管理员分配; order=支付订单购买; voucher=兑换码购买。
@@ -169,15 +170,20 @@ type AuditEvent struct {
 	OccurredAt         time.Time
 }
 
-// 审计事件类型 (与 subscription_audit_events.event_type CHECK 对齐; renewed 由 0075 放开)。
+// 审计事件类型 (实例事件与 subscription_audit_events.event_type CHECK 对齐;
+// plan 事件与 subscription_plan_audit_events.event_type CHECK 对齐)。
 const (
-	AuditSubscriptionCreated = "subscription_created"
-	AuditSubscriptionRenewed = "subscription_renewed"
-	AuditExpired             = "expired"
-	AuditCancelled           = "cancelled"
-	AuditGroupUpgraded       = "group_upgraded"
-	AuditGroupDowngraded     = "group_downgraded"
-	AuditIdempotentReplay    = "idempotent_replay"
+	AuditSubscriptionCreated     = "subscription_created"
+	AuditSubscriptionRenewed     = "subscription_renewed"
+	AuditSubscriptionPlanUpdated = "subscription_plan_updated"
+	AuditSubscriptionExtended    = "subscription_extended"
+	AuditSubscriptionQuotaReset  = "subscription_quota_reset"
+	AuditSubscriptionRevoked     = "subscription_revoked"
+	AuditExpired                 = "expired"
+	AuditCancelled               = "cancelled"
+	AuditGroupUpgraded           = "group_upgraded"
+	AuditGroupDowngraded         = "group_downgraded"
+	AuditIdempotentReplay        = "idempotent_replay"
 )
 
 // FulfillmentEffect 订阅履约效果账本一行 (subscription_fulfillment_effects)。
@@ -239,13 +245,14 @@ type AssignResult struct {
 }
 
 var (
-	ErrStoreNotConfigured   = errors.New("subscription: store not configured")
-	ErrInvalidInput         = errors.New("subscription: invalid input")
-	ErrPlanNotFound         = errors.New("subscription: plan not found")
-	ErrPlanDisabled         = errors.New("subscription: plan is disabled")
-	ErrPlanInvalid          = errors.New("subscription: plan fields invalid")
-	ErrSubscriptionNotFound = errors.New("subscription: subscription not found")
-	ErrQuotaInstallFailed   = errors.New("subscription: quota policy install failed")
+	ErrStoreNotConfigured    = errors.New("subscription: store not configured")
+	ErrInvalidInput          = errors.New("subscription: invalid input")
+	ErrPlanNotFound          = errors.New("subscription: plan not found")
+	ErrPlanDisabled          = errors.New("subscription: plan is disabled")
+	ErrPlanInvalid           = errors.New("subscription: plan fields invalid")
+	ErrSubscriptionNotFound  = errors.New("subscription: subscription not found")
+	ErrSubscriptionNotActive = errors.New("subscription: subscription is not active")
+	ErrQuotaInstallFailed    = errors.New("subscription: quota policy install failed")
 	// ErrDowngradeNotAllowed 自助购买 (订单/兑换码) 同组叠买时新套餐额度低于当前 (往低), 拒绝;
 	// 降档仅管理员手动 (EnforceUpgradeOnly=false) 可行。
 	ErrDowngradeNotAllowed = errors.New("subscription: self-service downgrade not allowed")
