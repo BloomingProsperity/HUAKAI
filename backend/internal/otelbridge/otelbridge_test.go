@@ -105,6 +105,24 @@ func TestBillingMetricBridgeInOutput(t *testing.T) {
 	assertPromMetricValue(t, body, "huakai_billing_resolver_db_fail_total", "5")
 }
 
+func TestExpvarMetricSourceSnapshotsBridgeMetrics(t *testing.T) {
+	// MUTATION: build the alerting snapshot from a stale hard-coded map or wrong key names; rules never see the live bridged metric value.
+	setExpvarMapInt(t, "billing_settings", "resolver_db_read_fail_total", 11)
+	setExpvarInt(t, "group_policy_fail_open_total", 4)
+
+	source := NewExpvarMetricSource()
+	snapshot, err := source.Snapshot(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if got := snapshot["huakai_billing_resolver_db_fail_total"]; got != 11 {
+		t.Fatalf("huakai_billing_resolver_db_fail_total=%v want 11", got)
+	}
+	if got := snapshot["huakai_group_policy_failopen_total"]; got != 4 {
+		t.Fatalf("huakai_group_policy_failopen_total=%v want 4", got)
+	}
+}
+
 func scrapeMetrics(t *testing.T, handler http.Handler) string {
 	t.Helper()
 

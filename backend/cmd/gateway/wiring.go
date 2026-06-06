@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,6 +17,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/alerting"
 	"github.com/BloomingProsperity/HUAKAI/internal/announcement"
 	"github.com/BloomingProsperity/HUAKAI/internal/anthropicoauth"
 	auditreceipt "github.com/BloomingProsperity/HUAKAI/internal/audit"
@@ -214,6 +217,38 @@ func buildTransportFactory(cfg *Config, mimicryRegistry *mimicry.TemplateRegistr
 		factory.SidecarFallbackEnabled = cfg.TransportSidecarFallback
 	}
 	return factory
+}
+
+type alertingEvaluatorRunner interface {
+	Run(context.Context) error
+}
+
+func startAlertingEvaluator(ctx context.Context, cfg *Config, runner alertingEvaluatorRunner, logger *zap.Logger) func() {
+	if cfg == nil || !cfg.AlertingEvalEnabled || runner == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := runner.Run(runCtx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Warn("alerting evaluator stopped with error", zap.Error(err))
+		}
+	}()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			cancel()
+			<-done
+		})
+	}
 }
 
 type vendorRefresherBinding struct {
@@ -899,6 +934,15 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	}
 	d.metricsHandler = metricsHandler
 	d.otelShutdown = otelShutdown
+	alertingStore := alerting.NewPostgresStore(pgPool)
+	alertingService := alerting.NewService(alertingStore)
+	alertingScheduler := alerting.NewScheduler(alerting.SchedulerConfig{
+		Evaluator:    alertingService,
+		Store:        alertingStore,
+		MetricSource: otelbridge.NewExpvarMetricSource(),
+		Interval:     cfg.AlertingEvalInterval,
+	})
+	rt.alertingEvalStop = startAlertingEvaluator(ctx, cfg, alertingScheduler, logger)
 
 	if err := admin.MaybeBootstrap(ctx, pgPool, logger); err != nil {
 		return nil, fmt.Errorf("admin bootstrap: %w", err)

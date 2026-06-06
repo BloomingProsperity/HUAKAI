@@ -36,6 +36,7 @@ type gatewayRuntime struct {
 	paymentExpireSweepStop     func()
 	pendingReconcileStop       func()
 	modelSyncStop              func()
+	alertingEvalStop           func()
 	closeReplica               func()
 	credentialScheduler        *credentialworker.Scheduler
 	dlqWorker                  *legacydlq.Worker
@@ -77,6 +78,9 @@ func (rt *gatewayRuntime) close() {
 	}
 	if rt.modelSyncStop != nil {
 		rt.modelSyncStop()
+	}
+	if rt.alertingEvalStop != nil {
+		rt.alertingEvalStop()
 	}
 	if rt.deps != nil && rt.deps.otelShutdown != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -166,6 +170,9 @@ func shutdownGateway(srv *http.Server, rt *gatewayRuntime) error {
 	}
 	if rt.modelSyncStop != nil {
 		rt.modelSyncStop()
+	}
+	if rt.alertingEvalStop != nil {
+		rt.alertingEvalStop()
 	}
 	if rt.hermesRetentionWorker != nil {
 		rt.hermesRetentionWorker.Stop()

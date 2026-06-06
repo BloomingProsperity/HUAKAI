@@ -81,6 +81,13 @@ type Config struct {
 	// client-supplied cache_control; clients managing their own caching are
 	// never touched.
 	CacheAnthropicAutoBreakpoints bool
+
+	// AlertingEvalEnabled wires the alert-rule evaluator background loop.
+	// Default false keeps the newly-created alerting engine CRUD-only until an
+	// operator explicitly opts into live evaluation.
+	AlertingEvalEnabled bool
+	// AlertingEvalInterval bounds the evaluator ticker. Default 60s.
+	AlertingEvalInterval time.Duration
 }
 
 type BudgetConfig struct {
@@ -161,6 +168,17 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	alertingEvalEnabled, err := envBool("HUAKAI_ALERTING_EVAL_ENABLED")
+	if err != nil {
+		return nil, err
+	}
+	alertingEvalInterval, err := envOptionalDurationSeconds("HUAKAI_ALERTING_EVAL_INTERVAL_SECONDS")
+	if err != nil {
+		return nil, err
+	}
+	if alertingEvalInterval == 0 {
+		alertingEvalInterval = time.Minute
+	}
 	budgetCfg, err := loadBudgetConfig()
 	if err != nil {
 		return nil, err
@@ -208,6 +226,8 @@ func Load() (*Config, error) {
 		PaymentExpireSweepInterval:     paymentExpireSweepInterval,
 		PaymentExpireSweepBatchLimit:   paymentExpireSweepBatchLimit,
 		CacheAnthropicAutoBreakpoints:  cacheAnthropicAutoBreakpoints,
+		AlertingEvalEnabled:            alertingEvalEnabled,
+		AlertingEvalInterval:           alertingEvalInterval,
 		DBMaxConns:                     dbMaxConns,
 		DBMinConns:                     dbMinConns,
 		DBMaxConnLifetime:              dbMaxConnLifetime,

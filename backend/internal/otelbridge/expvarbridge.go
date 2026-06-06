@@ -63,6 +63,30 @@ func RegisterBridge(_ context.Context, mp otelmetric.MeterProvider) error {
 	return nil
 }
 
+type ExpvarMetricSource struct{}
+
+func NewExpvarMetricSource() ExpvarMetricSource {
+	return ExpvarMetricSource{}
+}
+
+func (ExpvarMetricSource) Snapshot(ctx context.Context, _ int64) (map[string]float64, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
+	specs := bridgeCounters()
+	out := make(map[string]float64, len(specs))
+	for _, spec := range specs {
+		value := spec.read()
+		if value < 0 {
+			value = 0
+		}
+		out[spec.name] = float64(value)
+	}
+	return out, nil
+}
+
 func bridgeCounters() []bridgeCounter {
 	return []bridgeCounter{
 		{

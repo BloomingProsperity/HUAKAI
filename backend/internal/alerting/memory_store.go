@@ -120,6 +120,26 @@ func (s *MemoryStore) ListEnabledRules(_ context.Context, tenantID int64) ([]Ale
 	return out, nil
 }
 
+func (s *MemoryStore) ListTenantsWithEnabledRules(_ context.Context) ([]int64, error) {
+	if s == nil {
+		return nil, ErrStoreNotConfigured
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := map[int64]struct{}{}
+	for _, rule := range s.rules {
+		if rule.Enabled {
+			seen[rule.TenantID] = struct{}{}
+		}
+	}
+	out := make([]int64, 0, len(seen))
+	for tenantID := range seen {
+		out = append(out, tenantID)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out, nil
+}
+
 func (s *MemoryStore) UpsertFiringEvent(_ context.Context, tenantID, ruleID int64, observed float64, now time.Time) (AlertEvent, error) {
 	if s == nil {
 		return AlertEvent{}, ErrStoreNotConfigured
