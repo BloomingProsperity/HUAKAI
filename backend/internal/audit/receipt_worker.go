@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
+	"github.com/BloomingProsperity/HUAKAI/internal/payment"
+	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/trustreceipt"
 )
@@ -24,6 +27,14 @@ type ReceiptRecoveryEnqueuer interface {
 
 type ReferralQualifier interface {
 	QualifyPendingReferral(ctx context.Context, tenantID, refereeUserID, billingEventID int64) error
+}
+
+type ReferralRewardIssuer interface {
+	ApplyReferralReward(ctx context.Context, input payment.ReferralRewardInput) (payment.ReferralRewardResult, error)
+}
+
+type ReferralRewardSettings interface {
+	Get(context.Context, platformsettings.SettingKey) (platformsettings.StoredSetting, error)
 }
 
 type receiptFormatterService interface {
@@ -320,9 +331,11 @@ func receiptRecoveryEnqueueContext(ctx context.Context) (context.Context, contex
 // ReceiptHookSettler 包装真实 settler；账务成功后 fail-open 写 receipt,
 // 失败则交给 durable recovery 队列重放。
 type ReceiptHookSettler struct {
-	inner             billing.Settler
-	hook              *ReceiptHookHandler
-	referralQualifier ReferralQualifier
+	inner                  billing.Settler
+	hook                   *ReceiptHookHandler
+	referralQualifier      ReferralQualifier
+	referralRewardIssuer   ReferralRewardIssuer
+	referralRewardSettings ReferralRewardSettings
 }
 
 type ReceiptHookSettlerOption func(*ReceiptHookSettler)
@@ -330,6 +343,18 @@ type ReceiptHookSettlerOption func(*ReceiptHookSettler)
 func WithReceiptHookReferralQualifier(qualifier ReferralQualifier) ReceiptHookSettlerOption {
 	return func(s *ReceiptHookSettler) {
 		s.referralQualifier = qualifier
+	}
+}
+
+func WithReceiptHookReferralRewardIssuer(issuer ReferralRewardIssuer) ReceiptHookSettlerOption {
+	return func(s *ReceiptHookSettler) {
+		s.referralRewardIssuer = issuer
+	}
+}
+
+func WithReceiptHookReferralRewardSettings(settings ReferralRewardSettings) ReceiptHookSettlerOption {
+	return func(s *ReceiptHookSettler) {
+		s.referralRewardSettings = settings
 	}
 }
 
@@ -343,7 +368,7 @@ func NewReceiptHookSettler(inner billing.Settler, hook *ReceiptHookHandler, opts
 			opt(settler)
 		}
 	}
-	if settler.hook == nil && settler.referralQualifier == nil {
+	if settler.hook == nil && settler.referralQualifier == nil && settler.referralRewardIssuer == nil {
 		return inner
 	}
 	return settler
@@ -367,7 +392,7 @@ func (s *ReceiptHookSettler) Settle(ctx context.Context, req billing.SettleReque
 }
 
 func (s *ReceiptHookSettler) qualifyReferral(ctx context.Context, req billing.SettleRequest, res *billing.SettleResult) {
-	if s == nil || s.referralQualifier == nil || res == nil || res.BillingEventID <= 0 {
+	if s == nil || (s.referralQualifier == nil && s.referralRewardIssuer == nil) || res == nil || res.BillingEventID <= 0 {
 		return
 	}
 	tenantID := res.TenantID
@@ -381,8 +406,72 @@ func (s *ReceiptHookSettler) qualifyReferral(ctx context.Context, req billing.Se
 	if tenantID <= 0 || refereeUserID <= 0 {
 		return
 	}
+	if s.applyReferralRewardIfEnabled(ctx, req, tenantID, refereeUserID, res.BillingEventID) {
+		return
+	}
+	if s.referralQualifier == nil {
+		return
+	}
 	if err := s.referralQualifier.QualifyPendingReferral(ctx, tenantID, refereeUserID, res.BillingEventID); err != nil && s.hook != nil {
 		s.hook.report(ctx, req.AuditRequestID, fmt.Errorf("audit: qualify referral after settle: %w", err))
+	}
+}
+
+func (s *ReceiptHookSettler) applyReferralRewardIfEnabled(ctx context.Context, req billing.SettleRequest, tenantID, refereeUserID, billingEventID int64) bool {
+	if s == nil || s.referralRewardIssuer == nil || s.referralRewardSettings == nil {
+		return false
+	}
+	enabled, rewardCents, err := s.referralRewardConfig(ctx)
+	if err != nil {
+		if s.hook != nil {
+			s.hook.report(ctx, req.AuditRequestID, fmt.Errorf("audit: referral reward config: %w", err))
+		}
+		return false
+	}
+	if !enabled || rewardCents <= 0 {
+		return false
+	}
+	if _, err := s.referralRewardIssuer.ApplyReferralReward(ctx, payment.ReferralRewardInput{
+		TenantID:       tenantID,
+		RefereeUserID:  refereeUserID,
+		BillingEventID: billingEventID,
+		RewardCents:    rewardCents,
+		CurrencyCode:   "USD",
+		Now:            time.Now().UTC(),
+	}); err != nil && s.hook != nil {
+		s.hook.report(ctx, req.AuditRequestID, fmt.Errorf("audit: issue referral reward after settle: %w", err))
+	}
+	return true
+}
+
+func (s *ReceiptHookSettler) referralRewardConfig(ctx context.Context) (bool, int64, error) {
+	enabledRow, err := s.referralRewardSettings.Get(ctx, platformsettings.KeyReferralRewardEnabled)
+	if err != nil {
+		return false, 0, err
+	}
+	enabled, err := parseReferralRewardBool(enabledRow.Value)
+	if err != nil || !enabled {
+		return enabled, 0, err
+	}
+	centsRow, err := s.referralRewardSettings.Get(ctx, platformsettings.KeyReferralRewardCents)
+	if err != nil {
+		return false, 0, err
+	}
+	cents, err := strconv.ParseInt(strings.TrimSpace(centsRow.Value), 10, 64)
+	if err != nil || cents < 0 {
+		return false, 0, platformsettings.ErrInvalidValue
+	}
+	return true, cents, nil
+}
+
+func parseReferralRewardBool(raw string) (bool, error) {
+	switch strings.TrimSpace(raw) {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, platformsettings.ErrInvalidValue
 	}
 }
 

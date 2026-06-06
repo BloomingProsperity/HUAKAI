@@ -39,6 +39,8 @@ const (
 	KeyCheckinEnabled                 SettingKey = "checkin_enabled"
 	KeyCheckinMinCents                SettingKey = "checkin_min_cents"
 	KeyCheckinMaxCents                SettingKey = "checkin_max_cents"
+	KeyReferralRewardEnabled          SettingKey = "referral_reward_enabled"
+	KeyReferralRewardCents            SettingKey = "referral_reward_cents"
 	KeyPasskeyEnabled                 SettingKey = "passkey_enabled"
 	KeyPasskeyRegistrationEnabled     SettingKey = "passkey_registration_enabled"
 	KeyPasskeyRPID                    SettingKey = "passkey_rp_id"
@@ -55,7 +57,7 @@ var (
 	ErrUnknownKey          = errors.New("platformsettings: unknown setting key")
 	ErrInvalidValue        = errors.New("platformsettings: invalid setting value")
 	ErrStoreNotConfigured  = errors.New("platformsettings: store not configured")
-	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents}
+	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents}
 	defaultSettingValueMap = map[SettingKey]string{
 		KeyRegistrationEnabled:            "false",
 		KeyInvitationRequired:             "true",
@@ -76,6 +78,8 @@ var (
 		KeyCheckinEnabled:                 "false",
 		KeyCheckinMinCents:                "1",
 		KeyCheckinMaxCents:                "20",
+		KeyReferralRewardEnabled:          "false",
+		KeyReferralRewardCents:            "50",
 		KeyPasskeyEnabled:                 "false",
 		KeyPasskeyRegistrationEnabled:     "false",
 		KeyPasskeyRPID:                    "",
@@ -141,10 +145,12 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 		return "", fmt.Errorf("%w: %s", ErrInvalidValue, key)
 	}
 	switch key {
-	case KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled, KeyCheckinEnabled, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyMediaTaskEnabled:
+	case KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled, KeyCheckinEnabled, KeyReferralRewardEnabled, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyMediaTaskEnabled:
 		return validateBoolValue(key, value)
 	case KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyCheckinMinCents, KeyCheckinMaxCents, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs:
 		return validatePositiveIntValue(key, value)
+	case KeyReferralRewardCents:
+		return validateNonNegativeIntValue(key, value)
 	case KeyCaptchaProvider:
 		return validateCaptchaProvider(value)
 	default:
@@ -194,6 +200,14 @@ func validatePositiveIntValue(key SettingKey, value string) (string, error) {
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed <= 0 {
 		return "", fmt.Errorf("%w: %s must be positive integer seconds", ErrInvalidValue, key)
+	}
+	return strconv.Itoa(parsed), nil
+}
+
+func validateNonNegativeIntValue(key SettingKey, value string) (string, error) {
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
+		return "", fmt.Errorf("%w: %s must be non-negative integer cents", ErrInvalidValue, key)
 	}
 	return strconv.Itoa(parsed), nil
 }

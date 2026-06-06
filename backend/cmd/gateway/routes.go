@@ -121,6 +121,9 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Route("/v1/me", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
 		checkinhttp.MountRoutes(r, checkinhttp.Deps{Service: d.checkinService})
+		r.Get("/invitations", gatewayhttp.NewInvitationSummaryHandler(gatewayhttp.InvitationDeps{
+			Service: d.invitationService,
+		}))
 	})
 	r.Get("/v1/pricing/rate-table", gatewayhttp.NewPricingRateTableHandler(receiptDeps))
 	r.Get("/v1/pricing/snapshots", gatewayhttp.NewPricingSnapshotsHandler(receiptDeps))

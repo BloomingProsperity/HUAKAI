@@ -172,6 +172,30 @@ WHERE tenant_id=$1 AND created_at >= $2`, tenantID, since).Scan(&count); err != 
 	return count, nil
 }
 
+func (s *PostgresStore) GetReferralSummary(ctx context.Context, tenantID, referrerUserID int64) (ReferralSummary, error) {
+	if s == nil || s.pool == nil {
+		return ReferralSummary{}, ErrStoreNotConfigured
+	}
+	if tenantID <= 0 || referrerUserID <= 0 {
+		return ReferralSummary{}, ErrInvalidInput
+	}
+	var summary ReferralSummary
+	if err := s.pool.QueryRow(ctx, `
+SELECT
+	COUNT(*) FILTER (WHERE r.status='qualified')::bigint,
+	COUNT(*) FILTER (WHERE r.status='rewarded')::bigint,
+	(COALESCE(SUM(rr.amount_usd_micros), 0)::bigint / 10000)::bigint
+FROM referrals r
+LEFT JOIN referral_rewards rr
+  ON rr.tenant_id=r.tenant_id AND rr.referral_id=r.id
+WHERE r.tenant_id=$1 AND r.referrer_user_id=$2`,
+		tenantID, referrerUserID,
+	).Scan(&summary.QualifiedCount, &summary.RewardedCount, &summary.RewardsEarnedCents); err != nil {
+		return ReferralSummary{}, fmt.Errorf("invitation: referral summary: %w", err)
+	}
+	return summary, nil
+}
+
 func scanInvitation(row pgx.Row) (Invitation, error) {
 	var inv Invitation
 	var expiresAt sql.NullTime

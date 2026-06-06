@@ -33,3 +33,35 @@ func TestCheckinSettingsValidateTypes(t *testing.T) {
 		t.Fatalf("checkin_max_cents 20 got=%q err=%v", got, err)
 	}
 }
+
+func TestReferralRewardSettingDefaultsAreOptIn(t *testing.T) {
+	if got, _ := DefaultValue(KeyReferralRewardEnabled); got != "false" {
+		t.Fatalf("referral_reward_enabled default=%q want false", got)
+	}
+	if got, _ := DefaultValue(KeyReferralRewardCents); got != "50" {
+		t.Fatalf("referral_reward_cents default=%q want 50", got)
+	}
+	for _, key := range []SettingKey{KeyReferralRewardEnabled, KeyReferralRewardCents} {
+		if !IsAllowedKey(key) {
+			t.Fatalf("%s missing from allowed platform settings", key)
+		}
+	}
+}
+
+func TestReferralRewardSettingsValidateTypes(t *testing.T) {
+	if _, err := ValidateValue(KeyReferralRewardEnabled, "yes"); err == nil {
+		t.Fatal("referral_reward_enabled accepted non-bool value")
+	}
+	if got, err := ValidateValue(KeyReferralRewardEnabled, "true"); err != nil || got != "true" {
+		t.Fatalf("referral_reward_enabled true got=%q err=%v", got, err)
+	}
+	if _, err := ValidateValue(KeyReferralRewardCents, "-1"); err == nil {
+		t.Fatal("referral_reward_cents accepted negative reward")
+	}
+	if got, err := ValidateValue(KeyReferralRewardCents, "0"); err != nil || got != "0" {
+		t.Fatalf("referral_reward_cents 0 got=%q err=%v", got, err)
+	}
+	if got, err := ValidateValue(KeyReferralRewardCents, "50"); err != nil || got != "50" {
+		t.Fatalf("referral_reward_cents 50 got=%q err=%v", got, err)
+	}
+}
