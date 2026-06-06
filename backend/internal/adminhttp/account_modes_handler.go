@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
-
 	"github.com/BloomingProsperity/HUAKAI/internal/accountmode"
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 )
@@ -19,10 +17,6 @@ type AdminAccountModesDeps struct {
 
 type adminAccountModesAuth interface {
 	Resolve(context.Context, *http.Request) (admin.AdminIdentity, error)
-}
-
-func MountAccountModeRoutes(r chi.Router, d AdminAccountModesDeps) {
-	r.Get("/", NewAccountModeListHandler(d))
 }
 
 func NewAccountModeListHandler(d AdminAccountModesDeps) http.HandlerFunc {
