@@ -15,6 +15,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/audiohttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/captcha"
+	"github.com/BloomingProsperity/HUAKAI/internal/checkinhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/controlhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/embeddingshttp"
@@ -115,6 +116,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Post("/{request_id_host}/{request_id_tail}/verify", gatewayhttp.NewCostReceiptVerifyHandler(receiptDeps))
 	})
 	r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Get("/v1/me/disputes", controlhttp.NewListUserDisputesHandler(disputeUserDeps))
+	r.Route("/v1/me", func(r chi.Router) {
+		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
+		checkinhttp.MountRoutes(r, checkinhttp.Deps{Service: d.checkinService})
+	})
 	r.Get("/v1/pricing/rate-table", gatewayhttp.NewPricingRateTableHandler(receiptDeps))
 	r.Get("/v1/pricing/snapshots", gatewayhttp.NewPricingSnapshotsHandler(receiptDeps))
 	r.Get("/v1/pricing/snapshots/{snapshot_id}", gatewayhttp.NewPricingSnapshotHandler(receiptDeps))

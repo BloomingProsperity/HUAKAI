@@ -24,6 +24,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/budgetenforce"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	"github.com/BloomingProsperity/HUAKAI/internal/checkin"
 	"github.com/BloomingProsperity/HUAKAI/internal/circuitbreaker"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	communityinvitation "github.com/BloomingProsperity/HUAKAI/internal/community/invitation"
@@ -115,6 +116,7 @@ type deps struct {
 	loginThrottle            *loginthrottle.Limiter
 	userKeyService           *userkey.Service
 	paymentService           *payment.Service
+	checkinService           *checkin.Service
 	paymentProviders         map[string]paymenthttp.ProviderBinding
 	paymentRefundRequests    paymenthttp.RefundRequestRecorder
 	voucherService           *voucher.Service
@@ -748,6 +750,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	pricingRatioResolver := pricingcatalog.NewRatioResolver(pricingRatioStore, 0)
 	paymentStore := payment.NewPostgresStore(pgPool)
 	paymentService := payment.NewService(paymentStore, paymentServiceOptions(cfg)...)
+	checkinService := checkin.NewService(checkin.Deps{
+		Store:    checkin.NewPostgresStore(pgPool),
+		Payment:  paymentService,
+		Settings: platformSettingsService,
+	})
 	if err := applyStoredPaymentProviderConfig(ctx, platformSettingsService, paymentService); err != nil {
 		logger.Warn("payment provider runtime config prewarm failed", zap.Error(err))
 	}
@@ -792,6 +799,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		loginThrottle:         loginThrottle,
 		userKeyService:        userkey.NewService(pgPool, nil),
 		paymentService:        paymentService,
+		checkinService:        checkinService,
 		paymentProviders:      paymentProviders,
 		paymentRefundRequests: buildPaymentRefundRequestRecorder(pgPool, paymentService),
 		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool)),

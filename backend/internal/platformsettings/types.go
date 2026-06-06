@@ -34,13 +34,16 @@ const (
 	KeyModelFallbackChains         SettingKey = "model_fallback_chains"
 	KeyBudgetLimits                SettingKey = "budget_limits"
 	KeyPaymentProviderConfig       SettingKey = "payment_provider_config"
+	KeyCheckinEnabled              SettingKey = "checkin_enabled"
+	KeyCheckinMinCents             SettingKey = "checkin_min_cents"
+	KeyCheckinMaxCents             SettingKey = "checkin_max_cents"
 )
 
 var (
 	ErrUnknownKey          = errors.New("platformsettings: unknown setting key")
 	ErrInvalidValue        = errors.New("platformsettings: invalid setting value")
 	ErrStoreNotConfigured  = errors.New("platformsettings: store not configured")
-	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig}
+	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents}
 	defaultSettingValueMap = map[SettingKey]string{
 		KeyRegistrationEnabled:         "false",
 		KeyInvitationRequired:          "true",
@@ -58,6 +61,9 @@ var (
 		KeyModelFallbackChains:         "",
 		KeyBudgetLimits:                "",
 		KeyPaymentProviderConfig:       `{"manual":{"enabled":true,"checkout_url":""},"taobao":{"enabled":false,"checkout_url":""}}`,
+		KeyCheckinEnabled:              "false",
+		KeyCheckinMinCents:             "1",
+		KeyCheckinMaxCents:             "20",
 	}
 )
 
@@ -101,9 +107,9 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 		return "", fmt.Errorf("%w: %s", ErrInvalidValue, key)
 	}
 	switch key {
-	case KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled:
+	case KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled, KeyCheckinEnabled:
 		return validateBoolValue(key, value)
-	case KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds:
+	case KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyCheckinMinCents, KeyCheckinMaxCents:
 		return validatePositiveIntValue(key, value)
 	case KeyCaptchaProvider:
 		return validateCaptchaProvider(value)
