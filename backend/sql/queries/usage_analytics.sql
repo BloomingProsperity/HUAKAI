@@ -117,6 +117,22 @@ GROUP BY ur.provider_account_id
 ORDER BY sum(ur.actual_cost) DESC, key ASC
 LIMIT sqlc.arg(row_limit)::int;
 
+-- name: AggregateUsageLeaderboardByApiKey :many
+-- Platform-admin cost leaderboard by api_key_id. Passing tenant_id=0 keeps
+-- the existing global admin leaderboard behavior; a positive tenant_id narrows
+-- the read-only rollup to that tenant for tenant-focused ops drilldown.
+SELECT
+    ur.api_key_id::text                                          AS key,
+    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost,
+    COALESCE(sum(ur.tokens_input::bigint + ur.tokens_output::bigint), 0)::bigint AS total_tokens,
+    count(*)::bigint                                             AS request_count
+FROM usage_records ur
+WHERE ur.settled_at >= sqlc.arg(settled_since)::timestamptz
+  AND (sqlc.arg(tenant_id)::bigint = 0 OR ur.tenant_id = sqlc.arg(tenant_id)::bigint)
+GROUP BY ur.api_key_id
+ORDER BY sum(ur.actual_cost) DESC, key ASC
+LIMIT sqlc.arg(row_limit)::int;
+
 -- name: AggregateUsagePerformanceByModel :many
 -- Platform-admin performance panel by requested_model. Read-only operator
 -- surface: latency, throughput, and error rate inputs only; no cost fields.

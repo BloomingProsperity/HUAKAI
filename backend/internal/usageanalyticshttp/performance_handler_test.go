@@ -52,6 +52,10 @@ func (s *performanceQueryStub) AggregateUsageLeaderboardByProviderAccount(contex
 	return nil, nil
 }
 
+func (s *performanceQueryStub) AggregateUsageLeaderboardByApiKey(context.Context, dbbilling.AggregateUsageLeaderboardByApiKeyParams) ([]dbbilling.AggregateUsageLeaderboardByApiKeyRow, error) {
+	return nil, nil
+}
+
 func (s *performanceQueryStub) AggregateUsagePerformanceByModel(_ context.Context, arg dbbilling.AggregateUsagePerformanceByModelParams) ([]dbbilling.AggregateUsagePerformanceByModelRow, error) {
 	s.mu.Lock()
 	s.called = "model"

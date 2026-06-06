@@ -18,6 +18,8 @@ import (
 )
 
 type leaderboardSeedEvent struct {
+	tenantID          int64
+	apiKeyID          int64
 	userID            int64
 	model             string
 	providerAccountID *int64
@@ -34,6 +36,7 @@ type leaderboardQueryStub struct {
 	userArg     dbbilling.AggregateUsageLeaderboardByUserParams
 	modelArg    dbbilling.AggregateUsageLeaderboardByModelParams
 	providerArg dbbilling.AggregateUsageLeaderboardByProviderAccountParams
+	apiKeyArg   dbbilling.AggregateUsageLeaderboardByApiKeyParams
 	started     chan struct{}
 	release     chan struct{}
 	once        sync.Once
@@ -93,6 +96,23 @@ func (s *leaderboardQueryStub) AggregateUsageLeaderboardByProviderAccount(_ cont
 	return out, nil
 }
 
+func (s *leaderboardQueryStub) AggregateUsageLeaderboardByApiKey(_ context.Context, arg dbbilling.AggregateUsageLeaderboardByApiKeyParams) ([]dbbilling.AggregateUsageLeaderboardByApiKeyRow, error) {
+	s.mu.Lock()
+	s.called = "api_key"
+	s.calls++
+	s.apiKeyArg = arg
+	s.mu.Unlock()
+	s.maybeBlock()
+	rows := s.aggregateScoped(arg.SettledSince, arg.RowLimit, arg.TenantID, func(e leaderboardSeedEvent) string {
+		return strconv.FormatInt(e.apiKeyID, 10)
+	})
+	out := make([]dbbilling.AggregateUsageLeaderboardByApiKeyRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, dbbilling.AggregateUsageLeaderboardByApiKeyRow(row))
+	}
+	return out, nil
+}
+
 func (s *leaderboardQueryStub) maybeBlock() {
 	if s.started == nil || s.release == nil {
 		return
@@ -133,6 +153,10 @@ type leaderboardAggregateRow struct {
 }
 
 func (s *leaderboardQueryStub) aggregate(since pgtype.Timestamptz, limit int32, keyFor func(leaderboardSeedEvent) string) []leaderboardAggregateRow {
+	return s.aggregateScoped(since, limit, 0, keyFor)
+}
+
+func (s *leaderboardQueryStub) aggregateScoped(since pgtype.Timestamptz, limit int32, tenantID int64, keyFor func(leaderboardSeedEvent) string) []leaderboardAggregateRow {
 	type agg struct {
 		cost     decimal.Decimal
 		tokens   int64
@@ -141,6 +165,9 @@ func (s *leaderboardQueryStub) aggregate(since pgtype.Timestamptz, limit int32, 
 	byKey := map[string]agg{}
 	for _, event := range s.events {
 		if since.Valid && event.settledAt.Before(since.Time) {
+			continue
+		}
+		if tenantID > 0 && event.tenantID != tenantID {
 			continue
 		}
 		key := keyFor(event)
@@ -228,6 +255,92 @@ func TestLeaderboard_UserWindowOrderAndLimitAreDiscriminating(t *testing.T) {
 	}
 }
 
+func TestLeaderboardByApiKey_Aggregates(t *testing.T) {
+	now := time.Now().UTC()
+	store := &leaderboardQueryStub{events: []leaderboardSeedEvent{
+		{tenantID: 1, apiKeyID: 9001, userID: 42, settledAt: now.Add(-1 * time.Hour), cost: decimal.RequireFromString("10"), tokens: 100},
+		{tenantID: 1, apiKeyID: 9001, userID: 42, settledAt: now.Add(-2 * time.Hour), cost: decimal.RequireFromString("2"), tokens: 20},
+		{tenantID: 1, apiKeyID: 9002, userID: 42, settledAt: now.Add(-3 * time.Hour), cost: decimal.RequireFromString("7"), tokens: 70},
+		{tenantID: 1, apiKeyID: 9003, userID: 42, settledAt: now.Add(-25 * time.Hour), cost: decimal.RequireFromString("999"), tokens: 999},
+	}}
+	rec := invoke(NewLeaderboardHandler(store), "/v1/admin/usage/leaderboard?by=api_key&window=24h&limit=10")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		By      string `json:"by"`
+		Entries []struct {
+			Rank         int    `json:"rank"`
+			Key          string `json:"key"`
+			TotalCost    string `json:"total_cost"`
+			TotalTokens  int64  `json:"total_tokens"`
+			RequestCount int64  `json:"request_count"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body=%s err=%v", rec.Body.String(), err)
+	}
+	if body.By != "api_key" {
+		t.Fatalf("by=%q want api_key", body.By)
+	}
+	if len(body.Entries) != 2 {
+		t.Fatalf("entries=%v want two api-key buckets; mutation GROUP BY user_id merges the same-user keys, mutation dropping window admits old key 9003", body.Entries)
+	}
+	want := []struct {
+		rank     int
+		key      string
+		cost     string
+		tokens   int64
+		requests int64
+	}{
+		{1, "9001", "12.00000000", 120, 2},
+		{2, "9002", "7.00000000", 70, 1},
+	}
+	for i, entry := range body.Entries {
+		if entry.Rank != want[i].rank || entry.Key != want[i].key || entry.TotalCost != want[i].cost ||
+			entry.TotalTokens != want[i].tokens || entry.RequestCount != want[i].requests {
+			t.Fatalf("entry[%d]=%+v want rank/key/cost/tokens/requests=%d/%s/%s/%d/%d; mutation GROUP BY user_id or summing only one row is caught here",
+				i, entry, want[i].rank, want[i].key, want[i].cost, want[i].tokens, want[i].requests)
+		}
+	}
+	if store.called != "api_key" {
+		t.Fatalf("called=%q want api_key", store.called)
+	}
+}
+
+func TestLeaderboardByApiKey_TenantScoped(t *testing.T) {
+	now := time.Now().UTC()
+	store := &leaderboardQueryStub{events: []leaderboardSeedEvent{
+		{tenantID: 7001, apiKeyID: 9101, userID: 51, settledAt: now.Add(-1 * time.Hour), cost: decimal.RequireFromString("6"), tokens: 60},
+		{tenantID: 7001, apiKeyID: 9102, userID: 52, settledAt: now.Add(-2 * time.Hour), cost: decimal.RequireFromString("4"), tokens: 40},
+		{tenantID: 7002, apiKeyID: 9201, userID: 53, settledAt: now.Add(-1 * time.Hour), cost: decimal.RequireFromString("99"), tokens: 990},
+	}}
+	rec := invoke(NewLeaderboardHandler(store), "/v1/admin/usage/leaderboard?by=api_key&window=24h&limit=10&tenant_id=7001")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Entries []struct {
+			Key       string `json:"key"`
+			TotalCost string `json:"total_cost"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body=%s err=%v", rec.Body.String(), err)
+	}
+	if store.apiKeyArg.TenantID != 7001 {
+		t.Fatalf("tenant arg=%d want 7001; mutation dropping tenant_id parse passes zero to SQL", store.apiKeyArg.TenantID)
+	}
+	if len(body.Entries) != 2 {
+		t.Fatalf("entries=%v want only tenant 7001 keys; mutation dropping tenant filter admits tenant 7002 key 9201", body.Entries)
+	}
+	for _, entry := range body.Entries {
+		if entry.Key == "9201" || entry.TotalCost == "99.00000000" {
+			t.Fatalf("entry=%+v leaked tenant 7002; mutation dropping SQL tenant filter is caught", entry)
+		}
+	}
+}
+
 func TestLeaderboard_ByDispatchAndCaps(t *testing.T) {
 	for _, tc := range []struct {
 		target string
@@ -236,6 +349,7 @@ func TestLeaderboard_ByDispatchAndCaps(t *testing.T) {
 		{"/v1/admin/usage/leaderboard?window=7d", "user"},
 		{"/v1/admin/usage/leaderboard?by=model&window=7d", "model"},
 		{"/v1/admin/usage/leaderboard?by=provider_account&window=120d&limit=999", "provider_account"},
+		{"/v1/admin/usage/leaderboard?by=api_key&window=7d", "api_key"},
 	} {
 		t.Run(tc.want, func(t *testing.T) {
 			store := &leaderboardQueryStub{}
@@ -261,7 +375,8 @@ func TestLeaderboard_ByDispatchAndCaps(t *testing.T) {
 
 func TestLeaderboard_InvalidParamsDoNotQuery(t *testing.T) {
 	for _, target := range []string{
-		"/v1/admin/usage/leaderboard?by=api_key&window=24h",
+		"/v1/admin/usage/leaderboard?by=credential&window=24h",
+		"/v1/admin/usage/leaderboard?by=api_key&window=24h&tenant_id=abc",
 		"/v1/admin/usage/leaderboard?by=user",
 		"/v1/admin/usage/leaderboard?by=user&window=-1h",
 		"/v1/admin/usage/leaderboard?by=user&window=24h&limit=abc",

@@ -51,6 +51,10 @@ func (s *overviewQueryStub) AggregateUsageLeaderboardByProviderAccount(context.C
 	return nil, nil
 }
 
+func (s *overviewQueryStub) AggregateUsageLeaderboardByApiKey(context.Context, dbbilling.AggregateUsageLeaderboardByApiKeyParams) ([]dbbilling.AggregateUsageLeaderboardByApiKeyRow, error) {
+	return nil, nil
+}
+
 func (s *overviewQueryStub) AggregateUsagePerformanceByModel(context.Context, dbbilling.AggregateUsagePerformanceByModelParams) ([]dbbilling.AggregateUsagePerformanceByModelRow, error) {
 	return nil, nil
 }
