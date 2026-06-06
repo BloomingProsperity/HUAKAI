@@ -123,8 +123,7 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 		return "", fmt.Errorf("%w: %s", ErrInvalidValue, key)
 	}
 	switch key {
-	case KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled, KeyCheckinEnabled:
-	case KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled:
+	case KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled, KeyCheckinEnabled, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled:
 		return validateBoolValue(key, value)
 	case KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyCheckinMinCents, KeyCheckinMaxCents:
 		return validatePositiveIntValue(key, value)
