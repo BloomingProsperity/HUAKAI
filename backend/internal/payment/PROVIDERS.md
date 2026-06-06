@@ -22,7 +22,7 @@ HUAKAI 支付框架已完整，**比 sub2api/new-api 更全**（含幂等/审计
 
 参考 sub2api 成熟模式（**clean-room：学方法，不抄码**）：
 
-1. 在非冻结包实现 `Provider` 接口（`Kind()` / `CreateIntent()`）+ `CallbackVerifier`（验签）。
+1. 在非冻结包实现 `Provider` 接口（`Kind()` / `CreateIntent()` / `QueryOrder()` / `Refund()` / `Cancel()`；不支持的 PSP 操作返回 `ErrProviderOperationNotSupported`）+ `CallbackVerifier`（验签）。
 2. 该 provider 内部：
    - **CreatePayment / CreateIntent**：调该平台 API（或官方 Go SDK，由 PM 用直连 ssh `go get` 引入——codex 沙箱无网络），返回支付 URL / 二维码 / 跳转参数。
    - **VerifyNotification**：从 webhook 头取签名，用商户密钥重算并**常量时间比较**，通过才归一化出可信字段。
