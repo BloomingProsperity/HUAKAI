@@ -58,6 +58,11 @@ type exportRange struct {
 	to   time.Time
 }
 
+type Range struct {
+	From time.Time
+	To   time.Time
+}
+
 func MountRoutes(r chi.Router, d Deps) {
 	r.Get("/v1/admin/payments/export.csv", NewPaymentsExportHandler(d))
 	r.Get("/v1/admin/usage/export.csv", NewUsageExportHandler(d))
@@ -250,6 +255,14 @@ func parseExportRange(w http.ResponseWriter, r *http.Request) (exportRange, bool
 	return exportRange{from: from, to: to}, true
 }
 
+func ParseExportRange(w http.ResponseWriter, r *http.Request) (Range, bool) {
+	window, ok := parseExportRange(w, r)
+	if !ok {
+		return Range{}, false
+	}
+	return Range{From: window.from, To: window.to}, true
+}
+
 func parseRequiredTime(w http.ResponseWriter, raw, name string) (time.Time, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -270,6 +283,10 @@ func setCSVHeaders(w http.ResponseWriter, filename string, truncated bool) {
 	if truncated {
 		w.Header().Set("X-Truncated", "true")
 	}
+}
+
+func SetCSVHeaders(w http.ResponseWriter, filename string, truncated bool) {
+	setCSVHeaders(w, filename, truncated)
 }
 
 func writeCSVRecord(w http.ResponseWriter, writer *csv.Writer, record []string) bool {
@@ -310,6 +327,10 @@ func flushCSVPeriodically(w http.ResponseWriter, writer *csv.Writer, written, ev
 	}
 }
 
+func FlushCSVPeriodically(w http.ResponseWriter, writer *csv.Writer, written, every int) {
+	flushCSVPeriodically(w, writer, written, every)
+}
+
 func paymentOrderRecord(order payment.Order) []string {
 	return []string{
 		strconv.FormatInt(order.ID, 10),
@@ -346,6 +367,10 @@ func truncationNotice(width, maxRows int) []string {
 		record[2] = strconv.Itoa(maxRows)
 	}
 	return record
+}
+
+func TruncationNotice(width, maxRows int) []string {
+	return truncationNotice(width, maxRows)
 }
 
 func centsToAmount(cents int64) string {
