@@ -9,7 +9,7 @@ import (
 )
 
 // newGatewayHTTPTestServer 在禁用本地监听的 sandbox 中跳过网络 smoke。
-func newGatewayHTTPTestServer(t *testing.T, h http.Handler) *httptest.Server {
+func newGatewayHTTPTestServer(t testing.TB, h http.Handler) *httptest.Server {
 	t.Helper()
 	var server *httptest.Server
 	func() {

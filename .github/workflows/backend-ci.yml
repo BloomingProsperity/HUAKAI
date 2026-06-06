@@ -72,7 +72,14 @@ jobs:
         working-directory: backend
         env:
           HUAKAI_TEST_DATABASE_URL: postgres://huakai:huakai@localhost:5432/huakai_test?sslmode=disable
+          HUAKAI_SKIP_PERF_LATENCY_GATE: "1"
         run: go test -race -count=1 -timeout 5m ./...
+
+      - name: perf gate v2 (mixed-load blocking, benchmarks informational)
+        working-directory: backend
+        env:
+          HUAKAI_TEST_DATABASE_URL: postgres://huakai:huakai@localhost:5432/huakai_test?sslmode=disable
+        run: bash scripts/perf-gate.sh
 
 # 注:首版 CI 只跑 test + race + migration round-trip。
 # golangci-lint 后续加(需先有 .golangci.yml 配置避免一次性 N 千警告)。

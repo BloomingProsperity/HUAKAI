@@ -1,4 +1,4 @@
-.PHONY: build test fmt vet tidy generate migrate-up migrate-down run docker-build clean help \
+.PHONY: build test perf fmt vet tidy generate migrate-up migrate-down run docker-build clean help \
 	db-up db-down db-reset db-migrate db-psql test-integration
 
 GO          ?= go
@@ -17,6 +17,9 @@ build: ## Build the gateway binary.
 
 test: ## Run all tests.
 	$(GO) test ./... -race -count=1
+
+perf: ## Run performance gate v2 and informational benchmarks.
+	GO="$(GO)" bash scripts/perf-gate.sh
 
 fmt: ## Format Go source.
 	$(GO) fmt ./...

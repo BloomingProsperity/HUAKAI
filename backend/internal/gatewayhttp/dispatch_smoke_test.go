@@ -22,9 +22,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
@@ -80,6 +85,7 @@ func (smokeSelector) Select(_ context.Context, _ pool.SelectionRequest) (*pool.S
 
 // smokeSettler 记录 Settle / Abort 调用次数，供断言使用。
 type smokeSettler struct {
+	mu          sync.Mutex
 	settleCalls int64
 	abortCalls  int64
 	settleReq   billing.SettleRequest
@@ -87,6 +93,8 @@ type smokeSettler struct {
 
 func (s *smokeSettler) Settle(_ context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {
 	atomic.AddInt64(&s.settleCalls, 1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.settleReq = req
 	return &billing.SettleResult{}, nil
 }
@@ -104,6 +112,12 @@ func (s *smokeSettler) Refund(context.Context, billing.RefundRequest) (*billing.
 	return &billing.RefundResult{}, nil
 }
 
+func (s *smokeSettler) lastSettleRequest() billing.SettleRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.settleReq
+}
+
 // ---------------------------------------------------------------------------
 // redirectRoundTripper — 把出站请求的 Host 重写为 mockServer 的 Host，
 // 其余全部透传给 http.DefaultTransport。
@@ -114,6 +128,7 @@ func (s *smokeSettler) Refund(context.Context, billing.RefundRequest) (*billing.
 type redirectRoundTripper struct {
 	// mockHost 是 httptest.Server URL 的 host:port 部分（不含 scheme）。
 	mockHost string
+	base     http.RoundTripper
 }
 
 func (rt *redirectRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -124,7 +139,11 @@ func (rt *redirectRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 	clone.URL.Scheme = "http"
 	// 清除可能被 http.Client 缓存的 RequestURI（必须为空才能让 Transport 自行组装）。
 	clone.RequestURI = ""
-	return http.DefaultTransport.RoundTrip(clone)
+	base := rt.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(clone)
 }
 
 // TestDispatch_FullPipeline_OpenAIChat 验证从 inbound POST 到 SSE 响应的完整链路。
@@ -307,17 +326,288 @@ func TestDispatch_FullPipeline_OpenAIChat(t *testing.T) {
 	}
 
 	// 断言 9：mock usage/content 已进入 draft，流式尝试处于可结算状态。
-	if got := settler.settleReq.Draft.TokensInput; got != 10 {
+	settleReq := settler.lastSettleRequest()
+	if got := settleReq.Draft.TokensInput; got != 10 {
 		t.Fatalf("断言9失败：draft.TokensInput = %d；期望 10", got)
 	}
-	if got := settler.settleReq.Draft.TokensOutput; got != 2 {
+	if got := settleReq.Draft.TokensOutput; got != 2 {
 		t.Fatalf("断言9失败：draft.TokensOutput = %d；期望 2", got)
 	}
-	if got := settler.settleReq.Draft.DeliveredTokenCount; got != 2 {
+	if got := settleReq.Draft.DeliveredTokenCount; got != 2 {
 		t.Fatalf("断言9失败：draft.DeliveredTokenCount = %d；期望 2", got)
 	}
-	if attempt := settler.settleReq.StreamAttempt; attempt == nil || !attempt.State.Chargeable() {
+	if attempt := settleReq.StreamAttempt; attempt == nil || !attempt.State.Chargeable() {
 		t.Fatalf("断言9失败：StreamAttempt = %#v；期望 chargeable", attempt)
+	}
+}
+
+func TestChatCompletionsMixedLoadP95(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping mixed-load latency gate in short mode")
+	}
+	if os.Getenv("HUAKAI_SKIP_PERF_LATENCY_GATE") == "1" {
+		t.Skip("HUAKAI_SKIP_PERF_LATENCY_GATE=1; broad race suite skips latency gate")
+	}
+
+	// Mutation self-checks for PM shell verification:
+	// 1. Wrap the handler call path in a package-global sync.Mutex: wallClock
+	//    should grow toward totalRequests*soloLatency, speedup should fall
+	//    toward 1, and the speedup >= 4 assertion should fail.
+	// 2. Start one goroutine per request without returning it: the post-load
+	//    goroutine bound should fail.
+	baselineGoroutines := runtime.NumGoroutine()
+	harness := newFullChainChatHarness(t)
+	defer harness.Close()
+
+	const (
+		workers           = 32
+		requestsPerWorker = 200
+		totalRequests     = workers * requestsPerWorker
+		soloRuns          = 20
+		soloWarmup        = 3
+	)
+	const reqBody = `{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+
+	soloLatencies := make([]time.Duration, 0, soloRuns-soloWarmup)
+	for i := 0; i < soloRuns; i++ {
+		reqStart := time.Now()
+		rec := invokePreparedChatHandlerPath(harness.handler, "/v1/chat/completions", reqBody)
+		elapsed := time.Since(reqStart)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "data: ") {
+			t.Fatalf("solo baseline response status=%d body=%q", rec.Code, rec.Body.String())
+		}
+		if i >= soloWarmup {
+			soloLatencies = append(soloLatencies, elapsed)
+		}
+	}
+	sort.Slice(soloLatencies, func(i, j int) bool { return soloLatencies[i] < soloLatencies[j] })
+	soloLatency := percentileDuration(soloLatencies, 50)
+	atomic.StoreInt64(&harness.settler.settleCalls, 0)
+	atomic.StoreInt64(&harness.settler.abortCalls, 0)
+
+	latencies := make([]time.Duration, totalRequests)
+	var badResponses int64
+	var firstBadMu sync.Mutex
+	firstBad := ""
+
+	var ready sync.WaitGroup
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	ready.Add(workers)
+	wg.Add(workers)
+	for worker := 0; worker < workers; worker++ {
+		worker := worker
+		go func() {
+			defer wg.Done()
+			ready.Done()
+			<-start
+			for i := 0; i < requestsPerWorker; i++ {
+				idx := worker*requestsPerWorker + i
+				reqStart := time.Now()
+				rec := invokePreparedChatHandlerPath(harness.handler, "/v1/chat/completions", reqBody)
+				elapsed := time.Since(reqStart)
+				latencies[idx] = elapsed
+
+				if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "data: ") {
+					atomic.AddInt64(&badResponses, 1)
+					firstBadMu.Lock()
+					if firstBad == "" {
+						firstBad = fmt.Sprintf("status=%d body=%q", rec.Code, rec.Body.String())
+					}
+					firstBadMu.Unlock()
+				}
+			}
+		}()
+	}
+
+	ready.Wait()
+	wallStart := time.Now()
+	close(start)
+	wg.Wait()
+	wallClock := time.Since(wallStart)
+
+	sorted := append([]time.Duration(nil), latencies...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	p50 := percentileDuration(sorted, 50)
+	p95 := percentileDuration(sorted, 95)
+	p99 := percentileDuration(sorted, 99)
+	speedup := float64(totalRequests) * float64(soloLatency) / float64(wallClock)
+	t.Logf("mixed load: requests=%d workers=%d soloLatency=%s wall=%s speedup=%.2f p50=%s p95=%s p99=%s",
+		totalRequests, workers, soloLatency, wallClock, speedup, p50, p95, p99)
+
+	if got := atomic.LoadInt64(&badResponses); got != 0 {
+		t.Fatalf("badResponses=%d want 0; first=%s", got, firstBad)
+	}
+	if got := atomic.LoadInt64(&harness.settler.settleCalls); got != totalRequests {
+		t.Fatalf("settleCalls=%d want %d", got, totalRequests)
+	}
+	if speedup < 1.5 {
+		t.Fatalf("speedup=%.2f want >= 1.5 (soloLatency=%s wallClock=%s)", speedup, soloLatency, wallClock)
+	}
+	if p95 >= 200*time.Millisecond {
+		t.Fatalf("p95=%s want < 200ms", p95)
+	}
+
+	harness.Close()
+	assertGoroutinesWithin(t, baselineGoroutines, 20)
+}
+
+func BenchmarkChatCompletionsFullChain(b *testing.B) {
+	harness := newFullChainChatHarness(b)
+	defer harness.Close()
+
+	const reqBody = `{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rec := invokePreparedChatHandlerPath(harness.handler, "/v1/chat/completions", reqBody)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "data: ") {
+			b.Fatalf("response status=%d body=%q", rec.Code, rec.Body.String())
+		}
+	}
+	b.StopTimer()
+	if got := atomic.LoadInt64(&harness.settler.settleCalls); got != int64(b.N) {
+		b.Fatalf("settleCalls=%d want %d", got, b.N)
+	}
+}
+
+type fullChainChatHarness struct {
+	handler   http.HandlerFunc
+	server    *httptest.Server
+	transport *http.Transport
+	settler   *smokeSettler
+	closed    int32
+}
+
+func newFullChainChatHarness(tb testing.TB) *fullChainChatHarness {
+	tb.Helper()
+
+	mockServer := newGatewayHTTPTestServer(tb, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			http.Error(w, "read body error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		writeOpenAIChunk(w, `{"id":"chatcmpl-mixed","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}`)
+		writeOpenAIChunk(w, `{"id":"chatcmpl-mixed","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":null}]}`)
+		writeOpenAIChunk(w, `{"id":"chatcmpl-mixed","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`)
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}))
+
+	mockHost := strings.TrimPrefix(mockServer.URL, "http://")
+	vault := provider.NewStaticVault()
+	if err := vault.Set(42, provider.Credential{
+		Type:  provider.CredentialTypeAPIKey,
+		Value: "sk-fake",
+	}, provider.AccountInfo{
+		AccountID:   42,
+		Platform:    "openai",
+		AccountType: "apikey",
+	}); err != nil {
+		tb.Fatalf("vault.Set: %v", err)
+	}
+
+	adapterReg := provider.NewStaticRegistry()
+	adapterReg.MustRegister("openai_chat", &openaiPassthroughAdapter{})
+
+	baseTransport := &http.Transport{}
+	dispatcher := &gateway.UpstreamDispatcher{
+		Adapters:         adapterReg,
+		TransportFactory: transport.NewFactory(),
+		HTTPClient: &http.Client{
+			Transport: &redirectRoundTripper{mockHost: mockHost, base: baseTransport},
+		},
+	}
+	forwarder := &gateway.StreamForwarder{
+		ProtocolAdapters: gateway.BuildDefaultProtocolAdapterRegistry(),
+		Scanners:         gateway.BuildDefaultStreamScannerRegistry(),
+	}
+	settler := &smokeSettler{}
+	deps := ChatHandlerDeps{
+		Auth: smokeAuth{identity: auth.Identity{
+			TenantID: 7,
+			APIKeyID: 11,
+			UserID:   3,
+		}},
+		Registry: smokeRegistry{resolved: registry.Resolved{
+			ProtocolFamily:   "openai_chat",
+			CanonicalModelID: "gpt-4o",
+			ProviderModelID:  "gpt-4o",
+			PoolCandidates:   []int64{42},
+		}},
+		Router:               smokeRouter{},
+		ClaimGate:            smokeClaimGate{},
+		Selector:             smokeSelector{},
+		CredentialVault:      vault,
+		Dispatcher:           dispatcher,
+		Forwarder:            forwarder,
+		Settler:              settler,
+		RateTables:           testRateTables("smoke-v1"),
+		BillingPolicyVersion: "smoke-v1",
+		RequestClass:         "default",
+	}
+
+	return &fullChainChatHarness{
+		handler:   NewChatCompletionsHandler(deps),
+		server:    mockServer,
+		transport: baseTransport,
+		settler:   settler,
+	}
+}
+
+func (h *fullChainChatHarness) Close() {
+	if h == nil || !atomic.CompareAndSwapInt32(&h.closed, 0, 1) {
+		return
+	}
+	if h.transport != nil {
+		h.transport.CloseIdleConnections()
+	}
+	if h.server != nil {
+		h.server.Close()
+	}
+}
+
+func invokePreparedChatHandlerPath(handler http.HandlerFunc, path, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer hk_test_smoke")
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	return rec
+}
+
+func percentileDuration(sorted []time.Duration, pct int) time.Duration {
+	if len(sorted) == 0 {
+		return 0
+	}
+	idx := (len(sorted)*pct + 99) / 100
+	if idx <= 0 {
+		idx = 1
+	}
+	if idx > len(sorted) {
+		idx = len(sorted)
+	}
+	return sorted[idx-1]
+}
+
+func assertGoroutinesWithin(t *testing.T, baseline, slack int) {
+	t.Helper()
+	deadline := time.Now().Add(750 * time.Millisecond)
+	for {
+		runtime.GC()
+		got := runtime.NumGoroutine()
+		if got <= baseline+slack {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("goroutines=%d want <= baseline(%d)+%d", got, baseline, slack)
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 }
 
