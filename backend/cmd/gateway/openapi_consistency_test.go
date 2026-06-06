@@ -144,6 +144,32 @@ func TestOpenAPI_ChatCompletionsMethodMatchesRuntimePOST(t *testing.T) {
 	}
 }
 
+func TestOpenAPI_CompletionsAndCountTokensMountedAndDocumented(t *testing.T) {
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	specOps, err := openapicheck.ParseSpecOperations(specAbs)
+	if err != nil {
+		t.Fatalf("解析 OpenAPI operations %s: %v", specAbs, err)
+	}
+
+	r := buildTestRouter(t)
+	implOps := openapicheck.WalkChiOperations(r)
+
+	for _, path := range []string{"/v1/completions", "/v1/messages/count_tokens"} {
+		if !hasOperation(implOps, http.MethodPost, path) {
+			t.Fatalf("runtime missing POST %s; relay endpoint must be mounted", path)
+		}
+		if !hasOperation(specOps, http.MethodPost, path) {
+			t.Fatalf("OpenAPI missing POST %s; generated clients would not see mounted relay", path)
+		}
+		if hasOperation(implOps, http.MethodGet, path) || hasOperation(specOps, http.MethodGet, path) {
+			t.Fatalf("%s must be POST-only in runtime and OpenAPI", path)
+		}
+	}
+}
+
 func hasOperation(ops []openapicheck.Operation, method, path string) bool {
 	for _, op := range ops {
 		if op.Method == method && op.Path == path {
@@ -240,7 +266,9 @@ func TestOpenAPI_ParserSmoke(t *testing.T) {
 	// 抽样断言几个 anchor path 必须能解析出。
 	mustHave := []string{
 		"/v1/chat/completions",
+		"/v1/completions",
 		"/v1/messages",
+		"/v1/messages/count_tokens",
 		"/admin/v1/api-keys",
 		"/admin/v1/usage",
 	}
