@@ -33,6 +33,54 @@ WHERE tenant_id = sqlc.arg(tenant_id)::bigint
 ORDER BY priority ASC, id ASC
 FOR UPDATE;
 
+-- name: ListCurrentQuotaWindowsForScope :many
+-- Subscription progress read projection: active cost_usd policies for one tenant/scope plus the current window counters.
+SELECT
+    qp.tenant_id,
+    qp.id AS policy_id,
+    qp.scope_kind,
+    qp.scope_id,
+    qp.metric,
+    qp.window_kind,
+    qp.window_seconds,
+    qp.limit_value,
+    qp.burst_value,
+    qp.mode,
+    qp.priority,
+    qp.valid_from,
+    qp.valid_until,
+    COALESCE(qw.id, 0)::bigint AS window_id,
+    qw.window_start,
+    qw.window_end,
+    COALESCE(qw.reserved_value, 0)::numeric(20,8) AS reserved_value,
+    COALESCE(qw.settled_value, 0)::numeric(20,8) AS settled_value,
+    COALESCE(qw.overage_value, 0)::numeric(20,8) AS overage_value,
+    COALESCE(qw.request_count, 0)::bigint AS request_count,
+    COALESCE(qw.version, 0)::integer AS version
+FROM quota_policies qp
+LEFT JOIN quota_windows qw
+  ON qw.tenant_id = qp.tenant_id
+ AND qw.policy_id = qp.id
+ AND qw.window_start <= sqlc.arg(at_time)::timestamptz
+ AND qw.window_end > sqlc.arg(at_time)::timestamptz
+WHERE qp.tenant_id = sqlc.arg(tenant_id)::bigint
+  AND qp.enabled = true
+  AND qp.mode <> 'disabled'
+  AND qp.scope_kind = sqlc.arg(scope_kind)::text
+  AND qp.scope_id = sqlc.arg(scope_id)::text
+  AND qp.metric = 'cost_usd'
+  AND qp.valid_from <= sqlc.arg(at_time)::timestamptz
+  AND (qp.valid_until IS NULL OR qp.valid_until > sqlc.arg(at_time)::timestamptz)
+ORDER BY
+    CASE qp.window_kind
+        WHEN 'calendar_day' THEN 1
+        WHEN 'calendar_week' THEN 2
+        WHEN 'calendar_month' THEN 3
+        ELSE 100
+    END,
+    qp.priority ASC,
+    qp.id ASC;
+
 -- name: UpsertQuotaWindow :one
 -- 为 policy/window_start 建立或复用窗口行; 唯一键为 (tenant_id, policy_id, window_start)。
 WITH upserted AS (

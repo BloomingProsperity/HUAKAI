@@ -840,6 +840,133 @@ func (q *Queries) ListActiveQuotaPoliciesForScopes(ctx context.Context, arg List
 	return items, nil
 }
 
+const listCurrentQuotaWindowsForScope = `-- name: ListCurrentQuotaWindowsForScope :many
+SELECT
+    qp.tenant_id,
+    qp.id AS policy_id,
+    qp.scope_kind,
+    qp.scope_id,
+    qp.metric,
+    qp.window_kind,
+    qp.window_seconds,
+    qp.limit_value,
+    qp.burst_value,
+    qp.mode,
+    qp.priority,
+    qp.valid_from,
+    qp.valid_until,
+    COALESCE(qw.id, 0)::bigint AS window_id,
+    qw.window_start,
+    qw.window_end,
+    COALESCE(qw.reserved_value, 0)::numeric(20,8) AS reserved_value,
+    COALESCE(qw.settled_value, 0)::numeric(20,8) AS settled_value,
+    COALESCE(qw.overage_value, 0)::numeric(20,8) AS overage_value,
+    COALESCE(qw.request_count, 0)::bigint AS request_count,
+    COALESCE(qw.version, 0)::integer AS version
+FROM quota_policies qp
+LEFT JOIN quota_windows qw
+  ON qw.tenant_id = qp.tenant_id
+ AND qw.policy_id = qp.id
+ AND qw.window_start <= $1::timestamptz
+ AND qw.window_end > $1::timestamptz
+WHERE qp.tenant_id = $2::bigint
+  AND qp.enabled = true
+  AND qp.mode <> 'disabled'
+  AND qp.scope_kind = $3::text
+  AND qp.scope_id = $4::text
+  AND qp.metric = 'cost_usd'
+  AND qp.valid_from <= $1::timestamptz
+  AND (qp.valid_until IS NULL OR qp.valid_until > $1::timestamptz)
+ORDER BY
+    CASE qp.window_kind
+        WHEN 'calendar_day' THEN 1
+        WHEN 'calendar_week' THEN 2
+        WHEN 'calendar_month' THEN 3
+        ELSE 100
+    END,
+    qp.priority ASC,
+    qp.id ASC
+`
+
+type ListCurrentQuotaWindowsForScopeParams struct {
+	AtTime    pgtype.Timestamptz `db:"at_time" json:"at_time"`
+	TenantID  int64              `db:"tenant_id" json:"tenant_id"`
+	ScopeKind string             `db:"scope_kind" json:"scope_kind"`
+	ScopeID   string             `db:"scope_id" json:"scope_id"`
+}
+
+type ListCurrentQuotaWindowsForScopeRow struct {
+	TenantID      int64              `db:"tenant_id" json:"tenant_id"`
+	PolicyID      int64              `db:"policy_id" json:"policy_id"`
+	ScopeKind     string             `db:"scope_kind" json:"scope_kind"`
+	ScopeID       string             `db:"scope_id" json:"scope_id"`
+	Metric        string             `db:"metric" json:"metric"`
+	WindowKind    string             `db:"window_kind" json:"window_kind"`
+	WindowSeconds int32              `db:"window_seconds" json:"window_seconds"`
+	LimitValue    pgtype.Numeric     `db:"limit_value" json:"limit_value"`
+	BurstValue    pgtype.Numeric     `db:"burst_value" json:"burst_value"`
+	Mode          string             `db:"mode" json:"mode"`
+	Priority      int32              `db:"priority" json:"priority"`
+	ValidFrom     pgtype.Timestamptz `db:"valid_from" json:"valid_from"`
+	ValidUntil    pgtype.Timestamptz `db:"valid_until" json:"valid_until"`
+	WindowID      int64              `db:"window_id" json:"window_id"`
+	WindowStart   pgtype.Timestamptz `db:"window_start" json:"window_start"`
+	WindowEnd     pgtype.Timestamptz `db:"window_end" json:"window_end"`
+	ReservedValue pgtype.Numeric     `db:"reserved_value" json:"reserved_value"`
+	SettledValue  pgtype.Numeric     `db:"settled_value" json:"settled_value"`
+	OverageValue  pgtype.Numeric     `db:"overage_value" json:"overage_value"`
+	RequestCount  int64              `db:"request_count" json:"request_count"`
+	Version       int32              `db:"version" json:"version"`
+}
+
+// Subscription progress read projection: active cost_usd policies for one tenant/scope plus the current window counters.
+func (q *Queries) ListCurrentQuotaWindowsForScope(ctx context.Context, arg ListCurrentQuotaWindowsForScopeParams) ([]ListCurrentQuotaWindowsForScopeRow, error) {
+	rows, err := q.db.Query(ctx, listCurrentQuotaWindowsForScope,
+		arg.AtTime,
+		arg.TenantID,
+		arg.ScopeKind,
+		arg.ScopeID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCurrentQuotaWindowsForScopeRow
+	for rows.Next() {
+		var i ListCurrentQuotaWindowsForScopeRow
+		if err := rows.Scan(
+			&i.TenantID,
+			&i.PolicyID,
+			&i.ScopeKind,
+			&i.ScopeID,
+			&i.Metric,
+			&i.WindowKind,
+			&i.WindowSeconds,
+			&i.LimitValue,
+			&i.BurstValue,
+			&i.Mode,
+			&i.Priority,
+			&i.ValidFrom,
+			&i.ValidUntil,
+			&i.WindowID,
+			&i.WindowStart,
+			&i.WindowEnd,
+			&i.ReservedValue,
+			&i.SettledValue,
+			&i.OverageValue,
+			&i.RequestCount,
+			&i.Version,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDueQuotaReconciliationJobs = `-- name: ListDueQuotaReconciliationJobs :many
 SELECT
     tenant_id,

@@ -66,6 +66,9 @@ type AdminDeps struct {
 // UserDeps 用户路由依赖。
 type UserDeps struct {
 	Service Service
+	// Quota is used only by GET /me/progress to read the caller's current subscription usage.
+	// nil is tolerated for routes that do not expose usage; an active progress request returns 503.
+	Quota QuotaProgressStore
 	// Payment 用于订阅自助购买 (POST /purchase): 复用支付建单, 造一张 subscription 类型订单,
 	// 待 confirm/webhook 履约后才真正 grant 订阅。nil 时该端点回 503, 不影响只读端点。
 	Payment PaymentOrderService
@@ -266,6 +269,7 @@ func MountSubscriptionAdminRoutes(r chi.Router, d AdminDeps) {
 // MountSubscriptionUserRoutes 挂载用户订阅端点 (当前订阅 / 可购套餐 / 自助购买)。
 func MountSubscriptionUserRoutes(r chi.Router, d UserDeps) {
 	r.Get("/", newUserListSubscriptionsHandler(d))
+	r.Get("/me/progress", newUserSubscriptionProgressHandler(d))
 	r.Get("/me", newUserCurrentSubscriptionHandler(d))
 	r.Get("/plans", newUserListPlansHandler(d))
 	r.Post("/cancel-renew", newUserCancelRenewHandler(d))

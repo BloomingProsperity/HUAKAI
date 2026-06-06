@@ -20,6 +20,7 @@ type quotaQueries interface {
 	InsertQuotaAuditEvent(ctx context.Context, arg dbquota.InsertQuotaAuditEventParams) (dbquota.InsertQuotaAuditEventRow, error)
 	InsertQuotaReservation(ctx context.Context, arg dbquota.InsertQuotaReservationParams) (dbquota.InsertQuotaReservationRow, error)
 	ListActiveQuotaPoliciesForScopes(ctx context.Context, arg dbquota.ListActiveQuotaPoliciesForScopesParams) ([]dbquota.ListActiveQuotaPoliciesForScopesRow, error)
+	ListCurrentQuotaWindowsForScope(ctx context.Context, arg dbquota.ListCurrentQuotaWindowsForScopeParams) ([]dbquota.ListCurrentQuotaWindowsForScopeRow, error)
 	ListDueQuotaReconciliationJobs(ctx context.Context, arg dbquota.ListDueQuotaReconciliationJobsParams) ([]dbquota.ListDueQuotaReconciliationJobsRow, error)
 	MarkQuotaReconciliationJobRunning(ctx context.Context, arg dbquota.MarkQuotaReconciliationJobRunningParams) (int64, error)
 	MarkQuotaReservationReconciliationNeeded(ctx context.Context, arg dbquota.MarkQuotaReservationReconciliationNeededParams) (int64, error)

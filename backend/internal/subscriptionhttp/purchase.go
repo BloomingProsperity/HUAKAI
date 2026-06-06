@@ -9,9 +9,13 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
+	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
 )
 
@@ -19,6 +23,11 @@ import (
 // 只暴露建单 — 履约 (confirm/webhook) 仍走既有支付路由, 不在此重复。
 type PaymentOrderService interface {
 	CreateOrder(context.Context, payment.CreateOrderInput) (payment.CreateOrderResult, error)
+}
+
+// QuotaProgressStore exposes the read-only quota projection needed by the self-scoped progress endpoint.
+type QuotaProgressStore interface {
+	ListCurrentWindowsForScope(ctx context.Context, tenantID int64, scopeKind quota.ScopeKind, scopeID string, at time.Time) ([]quota.CurrentWindowRead, error)
 }
 
 // ---- 请求 / DTO ----
@@ -46,6 +55,22 @@ type purchaseOrderView struct {
 type currentSubscriptionView struct {
 	Subscription *subscriptionView `json:"subscription"`
 	AutoRenew    bool              `json:"auto_renew"`
+}
+
+type subscriptionProgressResponse struct {
+	Subscription *subscriptionView          `json:"subscription"`
+	Progress     []subscriptionProgressView `json:"progress"`
+}
+
+type subscriptionProgressView struct {
+	WindowKind   string    `json:"window_kind"`
+	Cap          string    `json:"cap"`
+	Consumed     string    `json:"consumed"`
+	Remaining    string    `json:"remaining"`
+	Overage      string    `json:"overage"`
+	RequestCount int64     `json:"request_count"`
+	WindowStart  time.Time `json:"window_start"`
+	WindowEnd    time.Time `json:"window_end"`
 }
 
 func toPurchaseOrderView(o payment.Order) purchaseOrderView {
@@ -76,6 +101,37 @@ func currentActiveSubscription(subs []subscription.UserSubscription, now time.Ti
 	return best
 }
 
+func toSubscriptionProgressView(w quota.CurrentWindowRead) subscriptionProgressView {
+	consumed := w.SettledValue.Add(w.ReservedValue)
+	remaining := w.LimitValue.Sub(consumed)
+	if remaining.IsNegative() {
+		remaining = decimal.Zero
+	}
+	return subscriptionProgressView{
+		WindowKind:   string(w.Window.Kind),
+		Cap:          w.LimitValue.String(),
+		Consumed:     consumed.String(),
+		Remaining:    remaining.String(),
+		Overage:      w.OverageValue.String(),
+		RequestCount: w.RequestCount,
+		WindowStart:  w.Window.Start,
+		WindowEnd:    w.Window.End,
+	}
+}
+
+func subscriptionAllowsProgressWindow(s subscription.UserSubscription, kind quota.WindowKind) bool {
+	switch kind {
+	case quota.WindowCalendarDay:
+		return s.DailyCapUSD != nil
+	case quota.WindowCalendarWeek:
+		return s.WeeklyCapUSD != nil
+	case quota.WindowCalendarMonth:
+		return s.MonthlyCapUSD != nil
+	default:
+		return false
+	}
+}
+
 // ---- handlers ----
 
 // newUserCurrentSubscriptionHandler GET /me: 当前生效订阅 + 持久化 auto_renew。
@@ -95,6 +151,52 @@ func newUserCurrentSubscriptionHandler(d UserDeps) http.HandlerFunc {
 			v := toSubscriptionView(*cur)
 			out.Subscription = &v
 			out.AutoRenew = cur.AutoRenew
+		}
+		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+// newUserSubscriptionProgressHandler GET /me/progress: current subscription cap usage by quota window.
+func newUserSubscriptionProgressHandler(d UserDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, ok := resolveSession(w, r, d)
+		if !ok {
+			return
+		}
+		subs, err := d.Service.ListUserSubscriptions(r.Context(), ident.TenantID, ident.UserID)
+		if err != nil {
+			writeSubscriptionError(w, err)
+			return
+		}
+		out := subscriptionProgressResponse{Progress: []subscriptionProgressView{}}
+		now := time.Now().UTC()
+		cur := currentActiveSubscription(subs, now)
+		if cur == nil {
+			writeJSON(w, http.StatusOK, out)
+			return
+		}
+		v := toSubscriptionView(*cur)
+		out.Subscription = &v
+		if d.Quota == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "quota_progress_unavailable", "subscription quota progress dependency unset")
+			return
+		}
+		rows, err := d.Quota.ListCurrentWindowsForScope(
+			r.Context(),
+			ident.TenantID,
+			quota.ScopeUser,
+			strconv.FormatInt(ident.UserID, 10),
+			now,
+		)
+		if err != nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "quota_progress_unavailable", "subscription quota progress unavailable")
+			return
+		}
+		for _, row := range rows {
+			if !subscriptionAllowsProgressWindow(*cur, row.Window.Kind) {
+				continue
+			}
+			out.Progress = append(out.Progress, toSubscriptionProgressView(row))
 		}
 		writeJSON(w, http.StatusOK, out)
 	}
