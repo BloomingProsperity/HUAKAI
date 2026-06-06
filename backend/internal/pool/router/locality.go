@@ -1,4 +1,4 @@
-package scoring
+package router
 
 const (
 	LocalityWeight  = 1.0
