@@ -28,6 +28,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/meusagehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/passkeyhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/referralhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/rerankhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpadmin"
@@ -127,6 +128,12 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
 		checkinhttp.MountRoutes(r, checkinhttp.Deps{Service: d.checkinService})
 		r.Get("/invitations", gatewayhttp.NewInvitationSummaryHandler(gatewayhttp.InvitationDeps{
+			Service: d.invitationService,
+		}))
+		r.Get("/referrals", referralhttp.NewUserReferralsHandler(referralhttp.Deps{
+			Service: d.invitationService,
+		}))
+		r.Get("/referrals/rewards", referralhttp.NewUserReferralRewardsHandler(referralhttp.Deps{
 			Service: d.invitationService,
 		}))
 	})
@@ -742,6 +749,14 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			VoucherService: d.voucherService,
 		})
 	})
+	r.Get("/v1/admin/referrals", referralhttp.NewAdminReferralsHandler(referralhttp.Deps{
+		Service:   d.invitationService,
+		AdminAuth: d.adminAuth,
+	}))
+	r.Get("/v1/admin/referrals/overview", referralhttp.NewAdminReferralOverviewHandler(referralhttp.Deps{
+		Service:   d.invitationService,
+		AdminAuth: d.adminAuth,
+	}))
 	r.Route("/v1/admin/disputes", func(r chi.Router) {
 		r.Post("/{id}/resolve", controlhttp.NewAdminResolveDisputeHandler(controlhttp.DisputeAdminDeps{
 			Auth:  d.adminAuth,

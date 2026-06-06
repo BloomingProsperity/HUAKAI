@@ -1,0 +1,13 @@
+# 2026-06-06 Referral Records Codex Plan
+
+| Owner directive | "TASK: Add referral/affiliate RECORDS + LEDGER read endpoints to HUAKAI (branch fix/referral-records)." |
+| Scope | In: read-only referral record and reward ledger service/store methods in `backend/internal/community/invitation`, HTTP handlers in new package `backend/internal/referralhttp`, route mounting in `backend/cmd/gateway/routes.go`, OpenAPI route contract updates, focused unit/integration tests. Out: migrations, writes, commits, `/home/ubuntu/refs`, frozen-package new files, payment/auth/quota/billing core changes. |
+| Success criteria | `/v1/me/referrals`, `/v1/me/referrals/rewards`, `/v1/admin/referrals`, and `/v1/admin/referrals/overview` are mounted, tenant scoped, user scoped where applicable, paginated, status-filtered for admin records, and covered by discriminating tests. |
+| Time estimate | 2-3 hours wall clock, single Codex session. |
+| Blast radius | Read-only SQL over existing `invitations`, `referrals`, and `referral_rewards`; route mounting can affect gateway build and route table; handler package is new and isolated. |
+| Failure modes | Missing tenant/user predicates can leak records; wrong micros conversion can misreport money; admin platform scope can accidentally read all tenants; pagination cap can be ignored; route wiring can miss middleware. Mitigation: integration_pg tests seed cross-user and cross-tenant rows, handler tests assert auth/scope, route tests assert non-404 gated mounts. |
+| Decision points | No Owner confirmation needed unless implementation requires migration, auth-core changes, billing/quota changes, new runtime dependency, or frozen-package new files. |
+| Pre-execution checklist | 1. Do not read `/home/ubuntu/refs`. 2. Confirm no new files in frozen packages `gatewayhttp`, `gateway`, `proto`. 3. Reuse `internal/community/invitation` store/service patterns. 4. Put HTTP in `internal/referralhttp`. 5. Write tests before implementation. 6. Run available build/vet/unit checks; note integration_pg not runnable in sandbox. |
+| Concrete execution order | 1. Add failing integration_pg tests for invitation store/service read methods. 2. Add failing referralhttp unit tests for user auth, scoping arguments, admin tenant derivation, pagination, status filter, and amount JSON. 3. Add read model/input types and service methods. 4. Add PostgreSQL read queries with explicit tenant and user predicates. 5. Add referralhttp handlers. 6. Mount routes in `cmd/gateway/routes.go`. 7. Add route smoke tests and OpenAPI path definitions. 8. Run scoped tests, build, and vet. |
+
+Clean-room note: implementation uses only PM-provided behavior semantics and HUAKAI-local schema/code. No reference source is read or copied.
