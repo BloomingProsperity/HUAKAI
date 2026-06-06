@@ -50,6 +50,37 @@ func TestTwoFactorSettingDefaultsOnAndValidatesBool(t *testing.T) {
 	}
 }
 
+func TestMediaTaskSettingsDefaultDisabledAndValidate(t *testing.T) {
+	store := NewMemoryStore()
+	svc := NewService(store, nil, WithNow(fixedNow))
+
+	enabled, err := svc.Get(context.Background(), KeyMediaTaskEnabled)
+	if err != nil {
+		t.Fatalf("Get media task enabled: %v", err)
+	}
+	if enabled.Value != "false" || enabled.Source != SourceDefault {
+		t.Fatalf("mediatask_enabled default=%+v want false/default", enabled)
+	}
+
+	baseURL, err := svc.Get(context.Background(), KeyMediaTaskProviderBaseURL)
+	if err != nil {
+		t.Fatalf("Get media task base URL: %v", err)
+	}
+	if baseURL.Value != "" || baseURL.Source != SourceDefault {
+		t.Fatalf("base URL default=%+v want empty/default", baseURL)
+	}
+
+	if _, err := ValidateValue(KeyMediaTaskProviderBaseURL, "ftp://provider.example"); !errors.Is(err, ErrInvalidValue) {
+		t.Fatalf("ftp base URL err=%v want ErrInvalidValue", err)
+	}
+	if _, err := ValidateValue(KeyMediaTaskDefaultEstimatedCents, `{"image_generation":123,"video_generation":999}`); err != nil {
+		t.Fatalf("default cents valid JSON: %v", err)
+	}
+	if _, err := ValidateValue(KeyMediaTaskDefaultEstimatedCents, `{"image_generation":-1}`); !errors.Is(err, ErrInvalidValue) {
+		t.Fatalf("negative cents err=%v want ErrInvalidValue", err)
+	}
+}
+
 func TestServiceGetPresentKeyUsesDBAndCache(t *testing.T) {
 	base := NewMemoryStore()
 	if _, err := base.Upsert(context.Background(), GlobalScope, string(KeyPromoEnabled), "true", "seed"); err != nil {

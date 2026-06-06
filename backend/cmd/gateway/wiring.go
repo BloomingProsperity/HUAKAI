@@ -45,6 +45,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
 	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
+	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
 	"github.com/BloomingProsperity/HUAKAI/internal/notify"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
@@ -126,6 +127,8 @@ type deps struct {
 	subExpiryWorker          *subscription.ExpiryWorker
 	subReminderWorker        *subscription.ReminderWorker
 	notificationSettings     *notify.Service
+	mediaTaskService         *mediatask.Service
+	mediaTaskWorker          *mediatask.Worker
 	routeAdminService        *routeadmin.Service
 	panelAuthResolver        *panelauth.Resolver
 	invitationService        *communityinvitation.Service
@@ -775,13 +778,27 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		return nil, fmt.Errorf("load tenant retry budget: %w", err)
 	}
 
+	billingPolicyStore := billing.NewPolicyStore(pgPool)
+	billingPolicyResolver := billing.NewPolicyResolver(billingPolicyStore, 0)
+	mediaTaskConfig := mediatask.NewPlatformConfigSource(platformSettingsService, cfg.BillingPolicyVersion, cfg.RequestClass)
+	mediaTaskStore := mediatask.NewPostgresStore(pgPool, mediatask.PostgresStoreConfig{
+		BillingPolicyVersion: cfg.BillingPolicyVersion,
+		RequestClass:         cfg.RequestClass,
+		BalanceModeResolver:  billingPolicyResolver,
+	})
+	mediaTaskProviders := mediatask.NewHTTPProviderRegistry(mediaTaskConfig, http.DefaultClient)
+	mediaTaskService := mediatask.NewService(mediaTaskStore, mediaTaskConfig, mediaTaskProviders)
+	mediaTaskWorker := mediatask.NewWorker(mediaTaskStore, mediaTaskConfig, mediaTaskProviders, mediatask.WorkerOptions{})
+	mediaTaskWorker.Start(ctx)
+	rt.mediaTaskWorker = mediaTaskWorker
+
 	d := &deps{
 		cfg:                   cfg,
 		clientIPResolver:      clientIPResolver,
 		adminQueries:          adminQueries,
 		billingQueries:        billingQueries,
-		billingPolicyStore:    billing.NewPolicyStore(pgPool),
-		billingPolicyResolver: billing.NewPolicyResolver(billing.NewPolicyStore(pgPool), 0),
+		billingPolicyStore:    billingPolicyStore,
+		billingPolicyResolver: billingPolicyResolver,
 		selector:              selector,
 		channelHealth:         channelHealthService,
 		modelCooldowns:        ratelimit.NewModelCooldownService(billingQueries),
@@ -813,6 +830,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool)),
 		subscriptionService:   subscription.NewService(subscription.NewPostgresStore(pgPool)),
 		notificationSettings:  notificationSettings,
+		mediaTaskService:      mediaTaskService,
+		mediaTaskWorker:       mediaTaskWorker,
 		routeAdminService:     routeadmin.NewService(routeadmin.NewPostgresStore(pgPool), nil),
 		panelAuthResolver:     panelauth.NewResolver(panelauth.NewPostgresRoleStore(pgPool)),
 		invitationService:     communityinvitation.NewService(communityinvitation.NewPostgresStore(pgPool)),

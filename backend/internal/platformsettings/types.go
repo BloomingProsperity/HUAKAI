@@ -1,9 +1,11 @@
 package platformsettings
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"unicode"
@@ -18,62 +20,72 @@ const (
 type SettingKey string
 
 const (
-	KeyRegistrationEnabled         SettingKey = "registration_enabled"
-	KeyInvitationRequired          SettingKey = "invitation_required"
-	KeyCaptchaEnabled              SettingKey = "captcha_enabled"
-	KeyTwoFactorEnabled            SettingKey = "two_factor_enabled"
-	KeyCaptchaProvider             SettingKey = "captcha_provider"
-	KeyCaptchaSiteKey              SettingKey = "captcha_site_key"
-	KeyOAuthProvidersEnabled       SettingKey = "oauth_providers_enabled"
-	KeyPromoEnabled                SettingKey = "promo_enabled"
-	KeyStreamTimeoutSeconds        SettingKey = "stream_timeout_seconds"
-	KeyCooldown429Seconds          SettingKey = "cooldown_429_seconds"
-	KeyCooldown529Seconds          SettingKey = "cooldown_529_seconds"
-	KeyResponseHeaderDenyExtra     SettingKey = "response_header_deny_extra"
-	KeyResponseHeaderAllowOverride SettingKey = "response_header_allow_override"
-	KeyModelFallbackChains         SettingKey = "model_fallback_chains"
-	KeyBudgetLimits                SettingKey = "budget_limits"
-	KeyPaymentProviderConfig       SettingKey = "payment_provider_config"
-	KeyCheckinEnabled              SettingKey = "checkin_enabled"
-	KeyCheckinMinCents             SettingKey = "checkin_min_cents"
-	KeyCheckinMaxCents             SettingKey = "checkin_max_cents"
-	KeyPasskeyEnabled              SettingKey = "passkey_enabled"
-	KeyPasskeyRegistrationEnabled  SettingKey = "passkey_registration_enabled"
-	KeyPasskeyRPID                 SettingKey = "passkey_rp_id"
-	KeyPasskeyRPDisplayName        SettingKey = "passkey_rp_display_name"
-	KeyPasskeyRPOrigins            SettingKey = "passkey_rp_origins"
+	KeyRegistrationEnabled            SettingKey = "registration_enabled"
+	KeyInvitationRequired             SettingKey = "invitation_required"
+	KeyCaptchaEnabled                 SettingKey = "captcha_enabled"
+	KeyTwoFactorEnabled               SettingKey = "two_factor_enabled"
+	KeyCaptchaProvider                SettingKey = "captcha_provider"
+	KeyCaptchaSiteKey                 SettingKey = "captcha_site_key"
+	KeyOAuthProvidersEnabled          SettingKey = "oauth_providers_enabled"
+	KeyPromoEnabled                   SettingKey = "promo_enabled"
+	KeyStreamTimeoutSeconds           SettingKey = "stream_timeout_seconds"
+	KeyCooldown429Seconds             SettingKey = "cooldown_429_seconds"
+	KeyCooldown529Seconds             SettingKey = "cooldown_529_seconds"
+	KeyResponseHeaderDenyExtra        SettingKey = "response_header_deny_extra"
+	KeyResponseHeaderAllowOverride    SettingKey = "response_header_allow_override"
+	KeyModelFallbackChains            SettingKey = "model_fallback_chains"
+	KeyBudgetLimits                   SettingKey = "budget_limits"
+	KeyPaymentProviderConfig          SettingKey = "payment_provider_config"
+	KeyCheckinEnabled                 SettingKey = "checkin_enabled"
+	KeyCheckinMinCents                SettingKey = "checkin_min_cents"
+	KeyCheckinMaxCents                SettingKey = "checkin_max_cents"
+	KeyPasskeyEnabled                 SettingKey = "passkey_enabled"
+	KeyPasskeyRegistrationEnabled     SettingKey = "passkey_registration_enabled"
+	KeyPasskeyRPID                    SettingKey = "passkey_rp_id"
+	KeyPasskeyRPDisplayName           SettingKey = "passkey_rp_display_name"
+	KeyPasskeyRPOrigins               SettingKey = "passkey_rp_origins"
+	KeyMediaTaskEnabled               SettingKey = "mediatask_enabled"
+	KeyMediaTaskProviderBaseURL       SettingKey = "mediatask_provider_base_url"
+	KeyMediaTaskPollIntervalSecs      SettingKey = "mediatask_poll_interval_seconds"
+	KeyMediaTaskTimeoutSecs           SettingKey = "mediatask_task_timeout_seconds"
+	KeyMediaTaskDefaultEstimatedCents SettingKey = "mediatask_default_estimated_cents"
 )
 
 var (
 	ErrUnknownKey          = errors.New("platformsettings: unknown setting key")
 	ErrInvalidValue        = errors.New("platformsettings: invalid setting value")
 	ErrStoreNotConfigured  = errors.New("platformsettings: store not configured")
-	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins}
+	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents}
 	defaultSettingValueMap = map[SettingKey]string{
-		KeyRegistrationEnabled:         "false",
-		KeyInvitationRequired:          "true",
-		KeyCaptchaEnabled:              "false",
-		KeyTwoFactorEnabled:            "true",
-		KeyCaptchaProvider:             "",
-		KeyCaptchaSiteKey:              "",
-		KeyOAuthProvidersEnabled:       "",
-		KeyPromoEnabled:                "false",
-		KeyStreamTimeoutSeconds:        "120",
-		KeyCooldown429Seconds:          "60",
-		KeyCooldown529Seconds:          "300",
-		KeyResponseHeaderDenyExtra:     "",
-		KeyResponseHeaderAllowOverride: "",
-		KeyModelFallbackChains:         "",
-		KeyBudgetLimits:                "",
-		KeyPaymentProviderConfig:       `{"manual":{"enabled":true,"checkout_url":""},"taobao":{"enabled":false,"checkout_url":""}}`,
-		KeyCheckinEnabled:              "false",
-		KeyCheckinMinCents:             "1",
-		KeyCheckinMaxCents:             "20",
-		KeyPasskeyEnabled:              "false",
-		KeyPasskeyRegistrationEnabled:  "false",
-		KeyPasskeyRPID:                 "",
-		KeyPasskeyRPDisplayName:        "HUAKAI",
-		KeyPasskeyRPOrigins:            "[]",
+		KeyRegistrationEnabled:            "false",
+		KeyInvitationRequired:             "true",
+		KeyCaptchaEnabled:                 "false",
+		KeyTwoFactorEnabled:               "true",
+		KeyCaptchaProvider:                "",
+		KeyCaptchaSiteKey:                 "",
+		KeyOAuthProvidersEnabled:          "",
+		KeyPromoEnabled:                   "false",
+		KeyStreamTimeoutSeconds:           "120",
+		KeyCooldown429Seconds:             "60",
+		KeyCooldown529Seconds:             "300",
+		KeyResponseHeaderDenyExtra:        "",
+		KeyResponseHeaderAllowOverride:    "",
+		KeyModelFallbackChains:            "",
+		KeyBudgetLimits:                   "",
+		KeyPaymentProviderConfig:          `{"manual":{"enabled":true,"checkout_url":""},"taobao":{"enabled":false,"checkout_url":""}}`,
+		KeyCheckinEnabled:                 "false",
+		KeyCheckinMinCents:                "1",
+		KeyCheckinMaxCents:                "20",
+		KeyPasskeyEnabled:                 "false",
+		KeyPasskeyRegistrationEnabled:     "false",
+		KeyPasskeyRPID:                    "",
+		KeyPasskeyRPDisplayName:           "HUAKAI",
+		KeyPasskeyRPOrigins:               "[]",
+		KeyMediaTaskEnabled:               "false",
+		KeyMediaTaskProviderBaseURL:       "",
+		KeyMediaTaskPollIntervalSecs:      "5",
+		KeyMediaTaskTimeoutSecs:           "900",
+		KeyMediaTaskDefaultEstimatedCents: `{"image_generation":100,"video_generation":1000}`,
 	}
 )
 
@@ -116,6 +128,12 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 	if key == KeyPasskeyRPID {
 		return validateOptionalPublicTextValue(key, value)
 	}
+	if key == KeyMediaTaskProviderBaseURL {
+		return validateOptionalHTTPURLValue(key, value)
+	}
+	if key == KeyMediaTaskDefaultEstimatedCents {
+		return validateMediaTaskDefaultEstimatedCentsValue(key, value)
+	}
 	if key == KeyModelFallbackChains || key == KeyBudgetLimits {
 		return validateJSONObjectValue(key, value)
 	}
@@ -123,9 +141,9 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 		return "", fmt.Errorf("%w: %s", ErrInvalidValue, key)
 	}
 	switch key {
-	case KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled, KeyCheckinEnabled, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled:
+	case KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled, KeyCheckinEnabled, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyMediaTaskEnabled:
 		return validateBoolValue(key, value)
-	case KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyCheckinMinCents, KeyCheckinMaxCents:
+	case KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyCheckinMinCents, KeyCheckinMaxCents, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs:
 		return validatePositiveIntValue(key, value)
 	case KeyCaptchaProvider:
 		return validateCaptchaProvider(value)
@@ -266,4 +284,50 @@ func validatePaymentProviderConfigValue(key SettingKey, value string) (string, e
 		return "", fmt.Errorf("%w: enabled taobao requires checkout_url", ErrInvalidValue)
 	}
 	return value, nil
+}
+
+func validateOptionalHTTPURLValue(key SettingKey, value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	if _, err := validatePublicTextValue(key, value); err != nil {
+		return "", err
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", fmt.Errorf("%w: %s must be http(s) URL", ErrInvalidValue, key)
+	}
+	return value, nil
+}
+
+func validateMediaTaskDefaultEstimatedCentsValue(key SettingKey, value string) (string, error) {
+	if value == "" {
+		return "", fmt.Errorf("%w: %s must be a JSON object", ErrInvalidValue, key)
+	}
+	dec := json.NewDecoder(bytes.NewReader([]byte(value)))
+	dec.UseNumber()
+	var doc map[string]json.Number
+	if err := dec.Decode(&doc); err != nil || doc == nil {
+		return "", fmt.Errorf("%w: %s must be a JSON object of non-negative integer cents", ErrInvalidValue, key)
+	}
+	if len(doc) == 0 {
+		return "", fmt.Errorf("%w: %s must not be empty", ErrInvalidValue, key)
+	}
+	normalized := make(map[string]int64, len(doc))
+	for taskType, raw := range doc {
+		taskType = strings.TrimSpace(taskType)
+		if taskType == "" {
+			return "", fmt.Errorf("%w: %s contains empty task type", ErrInvalidValue, key)
+		}
+		cents, err := strconv.ParseInt(raw.String(), 10, 64)
+		if err != nil || cents < 0 {
+			return "", fmt.Errorf("%w: %s contains invalid cents", ErrInvalidValue, key)
+		}
+		normalized[taskType] = cents
+	}
+	out, err := json.Marshal(normalized)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
