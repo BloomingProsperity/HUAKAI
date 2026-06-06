@@ -243,6 +243,65 @@ func (l *PostgresLedger) GetByRequestIDAndTenantScope(ctx context.Context, reque
 	return getByRequestIDAndTenantScope(ctx, requestID, tenantScopeRef, l.GetByRequestID)
 }
 
+// ListByRange returns tenant-scoped ledger entries in append order for the
+// supplied time range. The public tenant scope is resolved to the historical
+// tenant_id from ledger rows, then the final query constrains tenant_id.
+func (l *PostgresLedger) ListByRange(ctx context.Context, tenantScopeRef string, from, to time.Time, limit int) ([]LedgerEntry, error) {
+	tenantScopeRef = strings.TrimSpace(tenantScopeRef)
+	if tenantScopeRef == "" || limit <= 0 {
+		return nil, nil
+	}
+	tenantID, ok, err := l.tenantIDForScopeInRange(ctx, tenantScopeRef, from, to)
+	if err != nil || !ok {
+		return nil, err
+	}
+	rows, err := l.pool.Query(ctx,
+		`SELECT ledger_id, occurred_at, request_id, tenant_id,
+		        hop_chain, model_chain, prev_merkle_root, merkle_root,
+		        pubkey_fingerprint, signature
+		 FROM audit_ledger_entries
+		 WHERE tenant_id = $1
+		   AND occurred_at >= $2
+		   AND occurred_at <= $3
+		 ORDER BY id ASC
+		 LIMIT $4`,
+		tenantID, from.UTC(), to.UTC(), limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return scanLedgerEntries(rows)
+}
+
+// ListByRequestIDs returns requested tenant-scoped ledger entries in append
+// order. Unknown ids and ids belonging to other tenants are omitted.
+func (l *PostgresLedger) ListByRequestIDs(ctx context.Context, tenantScopeRef string, requestIDs []string, limit int) ([]LedgerEntry, error) {
+	tenantScopeRef = strings.TrimSpace(tenantScopeRef)
+	requestIDs = normalizeRequestIDs(requestIDs)
+	if tenantScopeRef == "" || len(requestIDs) == 0 || limit <= 0 {
+		return nil, nil
+	}
+	tenantID, ok, err := l.tenantIDForScopeInRequestIDs(ctx, tenantScopeRef, requestIDs)
+	if err != nil || !ok {
+		return nil, err
+	}
+	rows, err := l.pool.Query(ctx,
+		`SELECT ledger_id, occurred_at, request_id, tenant_id,
+		        hop_chain, model_chain, prev_merkle_root, merkle_root,
+		        pubkey_fingerprint, signature
+		 FROM audit_ledger_entries
+		 WHERE tenant_id = $1
+		   AND request_id = ANY($2::text[])
+		 ORDER BY id ASC
+		 LIMIT $3`,
+		tenantID, requestIDs, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return scanLedgerEntries(rows)
+}
+
 func getByRequestIDAndTenantScope(
 	ctx context.Context,
 	requestID, tenantScopeRef string,
@@ -265,6 +324,86 @@ func getByRequestIDAndTenantScope(
 		return LedgerEntry{}, ErrLedgerEntryNotFound
 	}
 	return entry, nil
+}
+
+func (l *PostgresLedger) tenantIDForScopeInRange(ctx context.Context, tenantScopeRef string, from, to time.Time) (int64, bool, error) {
+	rows, err := l.pool.Query(ctx,
+		`SELECT DISTINCT tenant_id
+		 FROM audit_ledger_entries
+		 WHERE tenant_id IS NOT NULL
+		   AND occurred_at >= $1
+		   AND occurred_at <= $2`,
+		from.UTC(), to.UTC(),
+	)
+	if err != nil {
+		return 0, false, err
+	}
+	defer rows.Close()
+	return scanTenantIDForScope(rows, tenantScopeRef)
+}
+
+func (l *PostgresLedger) tenantIDForScopeInRequestIDs(ctx context.Context, tenantScopeRef string, requestIDs []string) (int64, bool, error) {
+	rows, err := l.pool.Query(ctx,
+		`SELECT DISTINCT tenant_id
+		 FROM audit_ledger_entries
+		 WHERE tenant_id IS NOT NULL
+		   AND request_id = ANY($1::text[])`,
+		requestIDs,
+	)
+	if err != nil {
+		return 0, false, err
+	}
+	defer rows.Close()
+	return scanTenantIDForScope(rows, tenantScopeRef)
+}
+
+func scanTenantIDForScope(rows pgx.Rows, tenantScopeRef string) (int64, bool, error) {
+	for rows.Next() {
+		var tenantID int64
+		if err := rows.Scan(&tenantID); err != nil {
+			return 0, false, err
+		}
+		if TenantScopeRef(tenantID) == tenantScopeRef {
+			return tenantID, true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, false, err
+	}
+	return 0, false, nil
+}
+
+func scanLedgerEntries(rows pgx.Rows) ([]LedgerEntry, error) {
+	defer rows.Close()
+	out := make([]LedgerEntry, 0)
+	for rows.Next() {
+		entry, err := scanLedgerEntry(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func normalizeRequestIDs(requestIDs []string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(requestIDs))
+	for _, requestID := range requestIDs {
+		requestID = strings.TrimSpace(requestID)
+		if requestID == "" {
+			continue
+		}
+		if _, ok := seen[requestID]; ok {
+			continue
+		}
+		seen[requestID] = struct{}{}
+		out = append(out, requestID)
+	}
+	return out
 }
 
 // LatestMerkleRoot 返回最新链尾 root；空 ledger 返回 ZeroRoot。

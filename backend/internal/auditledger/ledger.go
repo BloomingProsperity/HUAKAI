@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 )
@@ -64,6 +65,16 @@ func (NoopLedger) GetByRequestID(ctx context.Context, requestID string) (LedgerE
 // GetByRequestIDAndTenantScope 永远返回 not found。
 func (NoopLedger) GetByRequestIDAndTenantScope(ctx context.Context, requestID, tenantScopeRef string) (LedgerEntry, error) {
 	return LedgerEntry{}, ErrLedgerEntryNotFound
+}
+
+// ListByRange returns no rows for a disabled ledger.
+func (NoopLedger) ListByRange(ctx context.Context, tenantScopeRef string, from, to time.Time, limit int) ([]LedgerEntry, error) {
+	return nil, nil
+}
+
+// ListByRequestIDs returns no rows for a disabled ledger.
+func (NoopLedger) ListByRequestIDs(ctx context.Context, tenantScopeRef string, requestIDs []string, limit int) ([]LedgerEntry, error) {
+	return nil, nil
 }
 
 // LatestMerkleRoot 永远返回 ZeroRoot。
@@ -208,6 +219,60 @@ func (m *MemoryLedger) GetByRequestIDAndTenantScope(ctx context.Context, request
 	return entry, nil
 }
 
+// ListByRange returns tenant-scoped entries whose timestamp is inside
+// [from, to], preserving append order and stopping at limit rows.
+func (m *MemoryLedger) ListByRange(ctx context.Context, tenantScopeRef string, from, to time.Time, limit int) ([]LedgerEntry, error) {
+	tenantScopeRef = strings.TrimSpace(tenantScopeRef)
+	if tenantScopeRef == "" || limit <= 0 {
+		return nil, nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]LedgerEntry, 0)
+	for _, entry := range m.chain {
+		if !tenantScopeMatches(entry, tenantScopeRef) {
+			continue
+		}
+		inRange, err := ledgerEntryInTimeRange(entry, from, to)
+		if err != nil {
+			return nil, err
+		}
+		if !inRange {
+			continue
+		}
+		out = append(out, entry)
+		if len(out) >= limit {
+			return out, nil
+		}
+	}
+	return out, nil
+}
+
+// ListByRequestIDs returns tenant-scoped request ids in append order.
+func (m *MemoryLedger) ListByRequestIDs(ctx context.Context, tenantScopeRef string, requestIDs []string, limit int) ([]LedgerEntry, error) {
+	tenantScopeRef = strings.TrimSpace(tenantScopeRef)
+	wanted := requestIDSet(requestIDs)
+	if tenantScopeRef == "" || len(wanted) == 0 || limit <= 0 {
+		return nil, nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]LedgerEntry, 0)
+	for _, entry := range m.chain {
+		if _, ok := wanted[entry.RequestID]; !ok {
+			continue
+		}
+		if !tenantScopeMatches(entry, tenantScopeRef) {
+			continue
+		}
+		out = append(out, entry)
+		if len(out) >= limit {
+			return out, nil
+		}
+	}
+	return out, nil
+}
+
 func tenantScopeMatches(entry LedgerEntry, tenantScopeRef string) bool {
 	if tenantScopeRef == "" {
 		return false
@@ -217,6 +282,33 @@ func tenantScopeMatches(entry LedgerEntry, tenantScopeRef string) bool {
 		entryScope = TenantScopeRef(entry.TenantID)
 	}
 	return entryScope == tenantScopeRef
+}
+
+func ledgerEntryInTimeRange(entry LedgerEntry, from, to time.Time) (bool, error) {
+	ts, err := time.Parse(time.RFC3339Nano, entry.Timestamp)
+	if err != nil {
+		return false, corruptLedgerEntryError("timestamp", err)
+	}
+	ts = ts.UTC()
+	if !from.IsZero() && ts.Before(from.UTC()) {
+		return false, nil
+	}
+	if !to.IsZero() && ts.After(to.UTC()) {
+		return false, nil
+	}
+	return true, nil
+}
+
+func requestIDSet(requestIDs []string) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, requestID := range requestIDs {
+		requestID = strings.TrimSpace(requestID)
+		if requestID == "" {
+			continue
+		}
+		out[requestID] = struct{}{}
+	}
+	return out
 }
 
 // LatestMerkleRoot 返回当前链尾的 Merkle root。

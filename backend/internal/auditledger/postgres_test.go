@@ -181,6 +181,69 @@ func TestAT_SECURITY_W1_B14_PostgresLedgerTenantScopedLookup(t *testing.T) {
 	}
 }
 
+func TestPostgresLedger_ListByRangeTenantScopedAndBounded(t *testing.T) {
+	// Mutation: remove the SQL tenant_id predicate after resolving tenant scope;
+	// this test fails because tenant B's in-range request leaks into tenant A.
+	pool := openTestPool(t)
+	defer pool.Close()
+	truncateLedger(t, pool)
+
+	suffix := uuid.NewString()
+	tenantA := seedLedgerTenant(t, pool, "ledger-range-a-"+suffix)
+	tenantB := seedLedgerTenant(t, pool, "ledger-range-b-"+suffix)
+	signer, _ := sign.GenerateKey()
+	l, _ := NewPostgresLedger(pool, signer)
+	ctx := context.Background()
+	_, _ = l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "req_pg_before_" + suffix, TenantID: tenantA, Timestamp: "2026-06-01T00:00:00Z"}))
+	_, _ = l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "req_pg_a_1_" + suffix, TenantID: tenantA, Timestamp: "2026-06-02T00:00:00Z"}))
+	_, _ = l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "req_pg_a_2_" + suffix, TenantID: tenantA, Timestamp: "2026-06-03T00:00:00Z"}))
+	_, _ = l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "req_pg_b_" + suffix, TenantID: tenantB, Timestamp: "2026-06-02T12:00:00Z"}))
+
+	from := time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 6, 3, 23, 59, 59, 0, time.UTC)
+	rows, err := l.ListByRange(ctx, TenantScopeRef(tenantA), from, to, 10)
+	if err != nil {
+		t.Fatalf("ListByRange: %v", err)
+	}
+	if got, want := ledgerRequestIDs(rows), []string{"req_pg_a_1_" + suffix, "req_pg_a_2_" + suffix}; !equalStrings(got, want) {
+		t.Fatalf("range request ids=%v want %v", got, want)
+	}
+
+	limited, err := l.ListByRange(ctx, TenantScopeRef(tenantA), from, to, 1)
+	if err != nil {
+		t.Fatalf("ListByRange limited: %v", err)
+	}
+	if got, want := ledgerRequestIDs(limited), []string{"req_pg_a_1_" + suffix}; !equalStrings(got, want) {
+		t.Fatalf("limited range request ids=%v want %v", got, want)
+	}
+}
+
+func TestPostgresLedger_ListByRequestIDsTenantScoped(t *testing.T) {
+	// Mutation: remove tenant_id filtering from ListByRequestIDs; this test fails
+	// because a requested tenant B row leaks into tenant A's audit bundle.
+	pool := openTestPool(t)
+	defer pool.Close()
+	truncateLedger(t, pool)
+
+	suffix := uuid.NewString()
+	tenantA := seedLedgerTenant(t, pool, "ledger-ids-a-"+suffix)
+	tenantB := seedLedgerTenant(t, pool, "ledger-ids-b-"+suffix)
+	signer, _ := sign.GenerateKey()
+	l, _ := NewPostgresLedger(pool, signer)
+	ctx := context.Background()
+	_, _ = l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "req_pg_id_a_1_" + suffix, TenantID: tenantA}))
+	_, _ = l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "req_pg_id_a_2_" + suffix, TenantID: tenantA}))
+	_, _ = l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "req_pg_id_b_" + suffix, TenantID: tenantB}))
+
+	rows, err := l.ListByRequestIDs(ctx, TenantScopeRef(tenantA), []string{"req_pg_id_b_" + suffix, "req_pg_id_a_2_" + suffix, "missing", "req_pg_id_a_1_" + suffix}, 10)
+	if err != nil {
+		t.Fatalf("ListByRequestIDs: %v", err)
+	}
+	if got, want := ledgerRequestIDs(rows), []string{"req_pg_id_a_1_" + suffix, "req_pg_id_a_2_" + suffix}; !equalStrings(got, want) {
+		t.Fatalf("request id rows=%v want %v", got, want)
+	}
+}
+
 func TestPostgresLedger_ChainContinuity(t *testing.T) {
 	pool := openTestPool(t)
 	defer pool.Close()

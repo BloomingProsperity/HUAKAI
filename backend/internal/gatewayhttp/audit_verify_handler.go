@@ -158,6 +158,10 @@ func auditEntryMatchesTenantScope(entry auditledger.LedgerEntry, tenantScopeRef 
 	return entryScope != "" && entryScope == tenantScopeRef
 }
 
+func AuditEntryMatchesTenantScope(entry auditledger.LedgerEntry, tenantScopeRef string) bool {
+	return auditEntryMatchesTenantScope(entry, tenantScopeRef)
+}
+
 func auditVerifyRequestFromHTTP(w http.ResponseWriter, r *http.Request) (AuditVerifyRequest, bool) {
 	switch r.Method {
 	case http.MethodGet:
@@ -276,6 +280,10 @@ func auditVerifyResponseWithRegistry(ctx context.Context, entry auditledger.Ledg
 	resp.ChainProof.KeyStatus = verification.KeyStatus
 	resp.ChainProof.Reason = verification.Reason
 	return resp
+}
+
+func AuditVerifyResponseForEntry(ctx context.Context, entry auditledger.LedgerEntry, registry auditledger.PubkeyRegistry) AuditVerifyResponse {
+	return auditVerifyResponseWithRegistry(ctx, entry, registry)
 }
 
 func auditVerifyResponse(entry auditledger.LedgerEntry) AuditVerifyResponse {
