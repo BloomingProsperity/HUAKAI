@@ -41,6 +41,54 @@ func TestCostDisputesQueryListScopesTenantAndUser(t *testing.T) {
 	}
 }
 
+// Mutation: remove tenant_id from ListDisputesForAdmin WHERE.
+// The admin endpoint would leak another tenant's disputes; this query text check catches that.
+func TestCostDisputesQueryAdminListScopesTenantAndDoesNotScopeUser(t *testing.T) {
+	raw, err := os.ReadFile("../../sql/queries/cost_disputes.sql")
+	if err != nil {
+		t.Fatalf("read query: %v", err)
+	}
+	sql := strings.ToLower(strings.Join(strings.Fields(string(raw)), " "))
+	start := strings.Index(sql, "-- name: listdisputesforadmin :many")
+	if start < 0 {
+		t.Fatalf("ListDisputesForAdmin query missing; query=%s", sql)
+	}
+	end := strings.Index(sql[start+1:], "-- name:")
+	adminSQL := sql[start:]
+	if end >= 0 {
+		adminSQL = sql[start : start+1+end]
+	}
+	if !strings.Contains(adminSQL, "where tenant_id = sqlc.arg(tenant_id)") {
+		t.Fatalf("ListDisputesForAdmin must filter by tenant_id; query=%s", adminSQL)
+	}
+	if strings.Contains(adminSQL, "user_id = sqlc.arg(user_id)") {
+		t.Fatalf("ListDisputesForAdmin must not apply user_id scope; query=%s", adminSQL)
+	}
+}
+
+// Mutation: ignore status_filter, limit_rows, or offset_rows in ListDisputesForAdmin.
+// Admin operations need status narrowing and stable pagination over tenant-scoped rows.
+func TestCostDisputesQueryAdminListSupportsStatusAndPagination(t *testing.T) {
+	raw, err := os.ReadFile("../../sql/queries/cost_disputes.sql")
+	if err != nil {
+		t.Fatalf("read query: %v", err)
+	}
+	sql := strings.ToLower(strings.Join(strings.Fields(string(raw)), " "))
+	start := strings.Index(sql, "-- name: listdisputesforadmin :many")
+	if start < 0 {
+		t.Fatalf("ListDisputesForAdmin query missing; query=%s", sql)
+	}
+	adminSQL := sql[start:]
+	if !strings.Contains(adminSQL, "sqlc.arg(status_filter)") ||
+		!strings.Contains(adminSQL, "status = sqlc.arg(status_filter)") {
+		t.Fatalf("ListDisputesForAdmin must apply optional status_filter; query=%s", adminSQL)
+	}
+	if !strings.Contains(adminSQL, "limit sqlc.arg(limit_rows)") ||
+		!strings.Contains(adminSQL, "offset sqlc.arg(offset_rows)") {
+		t.Fatalf("ListDisputesForAdmin must apply limit_rows and offset_rows; query=%s", adminSQL)
+	}
+}
+
 // Mutation: drop the 23505 mapping in Store.CreateDispute.
 // The handler would return a backend 503 instead of duplicate 409.
 func TestDisputeStoreMapsUserRequestDuplicate(t *testing.T) {
@@ -78,6 +126,43 @@ func TestDisputeStoreListUserDisputesPassesTenantAndUserScope(t *testing.T) {
 	}
 }
 
+// Mutation: pass zero/wrong tenant_id, ignore status, or fail to cap limit before sqlc ListDisputesForAdmin.
+// The fake records exact args, so the test fails when admin scope/filter/pagination drift.
+func TestDisputeStoreListForAdminPassesTenantStatusAndPagination(t *testing.T) {
+	q := &fakeDisputeQueries{adminListRows: []dbaudit.CostDispute{
+		dbCostDispute(1, 7, 42, "req-a", DisputeStatusResolved, ""),
+	}}
+	store := NewCostDisputeStoreFromQueries(q)
+	got, err := store.ListForAdmin(context.Background(), 7, DisputeStatusResolved, 999, 2)
+	if err != nil {
+		t.Fatalf("ListForAdmin: %v", err)
+	}
+	if q.adminListArg.TenantID != 7 ||
+		q.adminListArg.StatusFilter != DisputeStatusResolved ||
+		q.adminListArg.LimitRows != maxDisputeListLimit ||
+		q.adminListArg.OffsetRows != 2 {
+		t.Fatalf("admin list arg=%+v, want tenant=7 status=resolved capped-limit=%d offset=2",
+			q.adminListArg, maxDisputeListLimit)
+	}
+	if len(got) != 1 || got[0].TenantID != 7 || got[0].UserID != 42 || got[0].RequestID != "req-a" {
+		t.Fatalf("admin list result=%+v, want tenant 7 user 42 req-a", got)
+	}
+}
+
+// Mutation: accept an unknown status before querying.
+// Invalid filters must fail closed instead of becoming a broad tenant list.
+func TestDisputeStoreListForAdminRejectsInvalidStatus(t *testing.T) {
+	q := &fakeDisputeQueries{}
+	store := NewCostDisputeStoreFromQueries(q)
+	_, err := store.ListForAdmin(context.Background(), 7, "settled", 25, 0)
+	if !errors.Is(err, ErrDisputeInvalid) {
+		t.Fatalf("ListForAdmin invalid status err=%v, want ErrDisputeInvalid", err)
+	}
+	if q.adminListCalled {
+		t.Fatal("ListDisputesForAdmin must not run for invalid status")
+	}
+}
+
 // Mutation: make ResolveDispute keep the old status/operator note.
 // Operator recovery must visibly move state and persist the note.
 func TestDisputeStoreResolveUpdatesStatusAndNote(t *testing.T) {
@@ -107,6 +192,11 @@ type fakeDisputeQueries struct {
 	listErr  error
 	listArg  dbaudit.ListUserCostDisputesParams
 
+	adminListRows   []dbaudit.CostDispute
+	adminListErr    error
+	adminListArg    dbaudit.ListDisputesForAdminParams
+	adminListCalled bool
+
 	resolveRow dbaudit.CostDispute
 	resolveErr error
 	resolveArg dbaudit.ResolveCostDisputeParams
@@ -120,6 +210,12 @@ func (f *fakeDisputeQueries) CreateCostDispute(_ context.Context, arg dbaudit.Cr
 func (f *fakeDisputeQueries) ListUserCostDisputes(_ context.Context, arg dbaudit.ListUserCostDisputesParams) ([]dbaudit.CostDispute, error) {
 	f.listArg = arg
 	return f.listRows, f.listErr
+}
+
+func (f *fakeDisputeQueries) ListDisputesForAdmin(_ context.Context, arg dbaudit.ListDisputesForAdminParams) ([]dbaudit.CostDispute, error) {
+	f.adminListCalled = true
+	f.adminListArg = arg
+	return f.adminListRows, f.adminListErr
 }
 
 func (f *fakeDisputeQueries) ResolveCostDispute(_ context.Context, arg dbaudit.ResolveCostDisputeParams) (dbaudit.CostDispute, error) {

@@ -763,11 +763,15 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		Service:   d.invitationService,
 		AdminAuth: d.adminAuth,
 	}))
+	disputeAdminDeps := controlhttp.DisputeAdminDeps{
+		Auth:  d.adminAuth,
+		Store: d.disputeStore,
+	}
+	adminListDisputesHandler := controlhttp.NewAdminListDisputesHandler(disputeAdminDeps)
+	r.Get("/v1/admin/disputes", adminListDisputesHandler)
 	r.Route("/v1/admin/disputes", func(r chi.Router) {
-		r.Post("/{id}/resolve", controlhttp.NewAdminResolveDisputeHandler(controlhttp.DisputeAdminDeps{
-			Auth:  d.adminAuth,
-			Store: d.disputeStore,
-		}))
+		r.Get("/", adminListDisputesHandler)
+		r.Post("/{id}/resolve", controlhttp.NewAdminResolveDisputeHandler(disputeAdminDeps))
 	})
 	mountNotificationRoutes(r, d)
 	r.Route("/v1/admin/routes", func(r chi.Router) {

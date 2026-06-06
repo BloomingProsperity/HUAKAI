@@ -17,7 +17,12 @@ import (
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 )
 
-const disputeMaxBodyBytes = 64 << 10
+const (
+	disputeMaxBodyBytes      = 64 << 10
+	disputeDefaultListLimit  = int32(100)
+	disputeMaxListLimit      = int32(500)
+	disputeDefaultListOffset = int32(0)
+)
 
 type DisputeReceiptReader interface {
 	GetReceiptForUser(ctx context.Context, requestID string, tenantID, userID int64) (*audit.CostReceipt, error)
@@ -25,6 +30,7 @@ type DisputeReceiptReader interface {
 
 type DisputeStore interface {
 	CreateDispute(context.Context, audit.CreateCostDisputeInput) (audit.CostDispute, error)
+	ListForAdmin(context.Context, int64, string, int32, int32) ([]audit.CostDispute, error)
 	ListUserDisputes(context.Context, int64, int64, int32) ([]audit.CostDispute, error)
 	ResolveDispute(context.Context, audit.ResolveCostDisputeInput) (audit.CostDispute, error)
 }
@@ -130,6 +136,39 @@ func NewListUserDisputesHandler(d DisputeUserDeps) http.HandlerFunc {
 	}
 }
 
+func NewAdminListDisputesHandler(d DisputeAdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.Auth == nil || d.Store == nil {
+			controlWriteJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "dispute admin dependency unset")
+			return
+		}
+		ident, err := d.Auth.Resolve(r.Context(), r)
+		if err != nil {
+			disputeWriteAdminError(w, err)
+			return
+		}
+		tenantID, ok := disputeAdminTenantFromQuery(w, r, ident)
+		if !ok {
+			return
+		}
+		limit, offset, ok := parseAdminDisputePagination(w, r)
+		if !ok {
+			return
+		}
+		statusFilter := strings.TrimSpace(r.URL.Query().Get("status"))
+		rows, err := d.Store.ListForAdmin(r.Context(), tenantID, statusFilter, limit, offset)
+		if err != nil {
+			writeDisputeError(w, err)
+			return
+		}
+		out := make([]disputeView, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, disputeToView(row))
+		}
+		controlWriteJSON(w, http.StatusOK, map[string]any{"disputes": out})
+	}
+}
+
 func NewAdminResolveDisputeHandler(d DisputeAdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if d.Auth == nil || d.Store == nil {
@@ -212,6 +251,83 @@ func parseLimit(w http.ResponseWriter, r *http.Request) (int32, bool) {
 		return 0, false
 	}
 	return int32(n), true
+}
+
+func disputeAdminTenantFromQuery(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity) (int64, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	switch ident.Role {
+	case admin.RoleTenantOperator:
+		if ident.ScopeTenantID <= 0 {
+			controlWriteJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant scope required")
+			return 0, false
+		}
+		if raw == "" {
+			return ident.ScopeTenantID, true
+		}
+		tenantID, ok := parsePositiveInt64QueryValue(w, raw, "tenant_id")
+		if !ok {
+			return 0, false
+		}
+		if tenantID != ident.ScopeTenantID {
+			controlWriteJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot act on this tenant scope")
+			return 0, false
+		}
+		return tenantID, true
+	case admin.RolePlatformAdmin:
+		if raw == "" && ident.ScopeTenantID > 0 {
+			return ident.ScopeTenantID, true
+		}
+		if raw == "" {
+			controlWriteJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id query parameter must be positive")
+			return 0, false
+		}
+		tenantID, ok := parsePositiveInt64QueryValue(w, raw, "tenant_id")
+		if !ok {
+			return 0, false
+		}
+		if err := ident.CanIssueForTenant(tenantID); err != nil {
+			disputeWriteAdminError(w, err)
+			return 0, false
+		}
+		return tenantID, true
+	default:
+		controlWriteJSONError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
+		return 0, false
+	}
+}
+
+func parsePositiveInt64QueryValue(w http.ResponseWriter, raw, name string) (int64, bool) {
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n <= 0 {
+		controlWriteJSONError(w, http.StatusBadRequest, "invalid_"+name, name+" query parameter must be positive")
+		return 0, false
+	}
+	return n, true
+}
+
+func parseAdminDisputePagination(w http.ResponseWriter, r *http.Request) (int32, int32, bool) {
+	limit := disputeDefaultListLimit
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil || n <= 0 {
+			controlWriteJSONError(w, http.StatusBadRequest, "invalid_limit", "limit must be positive")
+			return 0, 0, false
+		}
+		limit = int32(n)
+		if limit > disputeMaxListLimit {
+			limit = disputeMaxListLimit
+		}
+	}
+	offset := disputeDefaultListOffset
+	if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil || n < 0 {
+			controlWriteJSONError(w, http.StatusBadRequest, "invalid_offset", "offset must be non-negative")
+			return 0, 0, false
+		}
+		offset = int32(n)
+	}
+	return limit, offset, true
 }
 
 func disputeParsePathID(w http.ResponseWriter, r *http.Request) (int64, bool) {

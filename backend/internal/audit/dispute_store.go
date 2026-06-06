@@ -63,6 +63,7 @@ type ResolveCostDisputeInput struct {
 
 type costDisputeQueries interface {
 	CreateCostDispute(context.Context, dbaudit.CreateCostDisputeParams) (dbaudit.CostDispute, error)
+	ListDisputesForAdmin(context.Context, dbaudit.ListDisputesForAdminParams) ([]dbaudit.CostDispute, error)
 	ListUserCostDisputes(context.Context, dbaudit.ListUserCostDisputesParams) ([]dbaudit.CostDispute, error)
 	ResolveCostDispute(context.Context, dbaudit.ResolveCostDisputeParams) (dbaudit.CostDispute, error)
 }
@@ -119,6 +120,42 @@ func (s *CostDisputeStore) ListUserDisputes(ctx context.Context, tenantID, userI
 		TenantID:  tenantID,
 		UserID:    userID,
 		LimitRows: limit,
+	})
+	if err != nil {
+		return nil, mapCostDisputeError(err)
+	}
+	out := make([]CostDispute, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, costDisputeFromDB(row))
+	}
+	return out, nil
+}
+
+func (s *CostDisputeStore) ListForAdmin(ctx context.Context, tenantID int64, statusFilter string, limit, offset int32) ([]CostDispute, error) {
+	if s == nil || s.q == nil {
+		return nil, ErrDisputeStoreRequired
+	}
+	statusFilter = strings.TrimSpace(statusFilter)
+	if tenantID <= 0 {
+		return nil, ErrDisputeInvalid
+	}
+	if statusFilter != "" && !validDisputeStatus(statusFilter) {
+		return nil, fmt.Errorf("%w: invalid status", ErrDisputeInvalid)
+	}
+	if limit <= 0 {
+		limit = defaultDisputeListLimit
+	}
+	if limit > maxDisputeListLimit {
+		limit = maxDisputeListLimit
+	}
+	if offset < 0 {
+		return nil, fmt.Errorf("%w: offset must be non-negative", ErrDisputeInvalid)
+	}
+	rows, err := s.q.ListDisputesForAdmin(ctx, dbaudit.ListDisputesForAdminParams{
+		TenantID:     tenantID,
+		StatusFilter: statusFilter,
+		LimitRows:    limit,
+		OffsetRows:   offset,
 	})
 	if err != nil {
 		return nil, mapCostDisputeError(err)

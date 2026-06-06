@@ -1609,6 +1609,54 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/disputes:
+    get:
+      tags: [admin-audit]
+      summary: List cost disputes for an admin-authorized tenant
+      operationId: listAdminCostDisputes
+      x-huakai-spec-source:
+        - docs/specs/user-consumption-transparency.md
+        - docs/process/plans/2026-06-06-dispute-admin-list-codex.md
+      security:
+        - adminBearerAuth: []
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin callers without an implicit tenant scope. Tenant operators default to their scoped tenant when omitted.
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: status
+          required: false
+          schema:
+            type: string
+            enum: [open, reviewing, resolved, rejected]
+        - in: query
+          name: limit
+          required: false
+          schema: { type: integer, format: int32, minimum: 1, maximum: 500, default: 100 }
+        - in: query
+          name: offset
+          required: false
+          schema: { type: integer, format: int32, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Tenant-scoped dispute rows across users. This endpoint is read-only and does not refund or mutate billing ledger rows.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [disputes]
+                properties:
+                  disputes:
+                    type: array
+                    items: { $ref: '#/components/schemas/CostDispute' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/me/checkin:
     get:
       tags: [user-checkin]
