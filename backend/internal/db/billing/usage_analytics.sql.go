@@ -245,6 +245,61 @@ func (q *Queries) AggregateMyUsageByWeek(ctx context.Context, arg AggregateMyUsa
 	return items, nil
 }
 
+const aggregateUsageLeaderboardByApiKey = `-- name: AggregateUsageLeaderboardByApiKey :many
+SELECT
+    ur.api_key_id::text                                          AS key,
+    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost,
+    COALESCE(sum(ur.tokens_input::bigint + ur.tokens_output::bigint), 0)::bigint AS total_tokens,
+    count(*)::bigint                                             AS request_count
+FROM usage_records ur
+WHERE ur.settled_at >= $1::timestamptz
+  AND ($2::bigint = 0 OR ur.tenant_id = $2::bigint)
+GROUP BY ur.api_key_id
+ORDER BY sum(ur.actual_cost) DESC, key ASC
+LIMIT $3::int
+`
+
+type AggregateUsageLeaderboardByApiKeyParams struct {
+	SettledSince pgtype.Timestamptz `db:"settled_since" json:"settled_since"`
+	TenantID     int64              `db:"tenant_id" json:"tenant_id"`
+	RowLimit     int32              `db:"row_limit" json:"row_limit"`
+}
+
+type AggregateUsageLeaderboardByApiKeyRow struct {
+	Key          string `db:"key" json:"key"`
+	TotalCost    string `db:"total_cost" json:"total_cost"`
+	TotalTokens  int64  `db:"total_tokens" json:"total_tokens"`
+	RequestCount int64  `db:"request_count" json:"request_count"`
+}
+
+// Platform-admin cost leaderboard by api_key_id. Passing tenant_id=0 keeps
+// the existing global admin leaderboard behavior; a positive tenant_id narrows
+// the read-only rollup to that tenant for tenant-focused ops drilldown.
+func (q *Queries) AggregateUsageLeaderboardByApiKey(ctx context.Context, arg AggregateUsageLeaderboardByApiKeyParams) ([]AggregateUsageLeaderboardByApiKeyRow, error) {
+	rows, err := q.db.Query(ctx, aggregateUsageLeaderboardByApiKey, arg.SettledSince, arg.TenantID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AggregateUsageLeaderboardByApiKeyRow
+	for rows.Next() {
+		var i AggregateUsageLeaderboardByApiKeyRow
+		if err := rows.Scan(
+			&i.Key,
+			&i.TotalCost,
+			&i.TotalTokens,
+			&i.RequestCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const aggregateUsageLeaderboardByModel = `-- name: AggregateUsageLeaderboardByModel :many
 SELECT
     ur.requested_model                                           AS key,

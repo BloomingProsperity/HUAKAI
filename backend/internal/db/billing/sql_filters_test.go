@@ -81,6 +81,28 @@ func TestUsageLeaderboardSQLUsesWindowSortAndLimit(t *testing.T) {
 	}
 }
 
+func TestUsageLeaderboardByApiKeySQLGroupsAndScopes(t *testing.T) {
+	sql := strings.Join(strings.Fields(aggregateUsageLeaderboardByApiKey), " ")
+	for _, want := range []string{
+		"ur.api_key_id::text AS key",
+		"WHERE ur.settled_at >= $1::timestamptz",
+		"($2::bigint = 0 OR ur.tenant_id = $2::bigint)",
+		"GROUP BY ur.api_key_id",
+		"ORDER BY sum(ur.actual_cost) DESC",
+		"LIMIT $3::int",
+	} {
+		// Mutation checks: GROUP BY user_id merges distinct keys owned by the
+		// same user, dropping the tenant predicate leaks cross-tenant keys,
+		// dropping DESC misranks spend, and dropping LIMIT overreturns.
+		if !strings.Contains(sql, want) {
+			t.Fatalf("api_key leaderboard SQL missing %q in %q", want, sql)
+		}
+	}
+	if strings.Contains(sql, "GROUP BY ur.user_id") {
+		t.Fatalf("api_key leaderboard SQL must not group by user_id: %q", sql)
+	}
+}
+
 func TestUsagePerformanceSQLUsesSafeLatencyThroughputAndErrorAggregates(t *testing.T) {
 	for name, sqlText := range map[string]string{
 		"model":            aggregateUsagePerformanceByModel,

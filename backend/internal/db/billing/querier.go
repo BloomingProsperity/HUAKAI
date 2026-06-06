@@ -40,6 +40,10 @@ type Querier interface {
 	// (tenant_id, api_key_id) so cross-key reads are structurally impossible —
 	// the handler passes ident.APIKeyID, never a client-supplied value.
 	AggregateMyUsageByWeek(ctx context.Context, arg AggregateMyUsageByWeekParams) ([]AggregateMyUsageByWeekRow, error)
+	// Platform-admin cost leaderboard by api_key_id. Passing tenant_id=0 keeps
+	// the existing global admin leaderboard behavior; a positive tenant_id narrows
+	// the read-only rollup to that tenant for tenant-focused ops drilldown.
+	AggregateUsageLeaderboardByApiKey(ctx context.Context, arg AggregateUsageLeaderboardByApiKeyParams) ([]AggregateUsageLeaderboardByApiKeyRow, error)
 	// Platform-admin cost leaderboard by requested_model.
 	AggregateUsageLeaderboardByModel(ctx context.Context, arg AggregateUsageLeaderboardByModelParams) ([]AggregateUsageLeaderboardByModelRow, error)
 	// Platform-admin cost leaderboard by provider_account_id. Provider-less

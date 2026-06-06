@@ -20,6 +20,7 @@ const (
 	leaderboardByUser        = "user"
 	leaderboardByModel       = "model"
 	leaderboardByProvider    = "provider_account"
+	leaderboardByApiKey      = "api_key"
 	defaultLeaderboardLimit  = 20
 	maxLeaderboardLimit      = 100
 	maxLeaderboardWindow     = 90 * 24 * time.Hour
@@ -34,6 +35,7 @@ type Querier interface {
 	AggregateUsageLeaderboardByUser(context.Context, dbbilling.AggregateUsageLeaderboardByUserParams) ([]dbbilling.AggregateUsageLeaderboardByUserRow, error)
 	AggregateUsageLeaderboardByModel(context.Context, dbbilling.AggregateUsageLeaderboardByModelParams) ([]dbbilling.AggregateUsageLeaderboardByModelRow, error)
 	AggregateUsageLeaderboardByProviderAccount(context.Context, dbbilling.AggregateUsageLeaderboardByProviderAccountParams) ([]dbbilling.AggregateUsageLeaderboardByProviderAccountRow, error)
+	AggregateUsageLeaderboardByApiKey(context.Context, dbbilling.AggregateUsageLeaderboardByApiKeyParams) ([]dbbilling.AggregateUsageLeaderboardByApiKeyRow, error)
 	AggregateUsagePerformanceByModel(context.Context, dbbilling.AggregateUsagePerformanceByModelParams) ([]dbbilling.AggregateUsagePerformanceByModelRow, error)
 	AggregateUsagePerformanceByProviderAccount(context.Context, dbbilling.AggregateUsagePerformanceByProviderAccountParams) ([]dbbilling.AggregateUsagePerformanceByProviderAccountRow, error)
 	AggregateUsageOverviewTotals(context.Context, pgtype.Timestamptz) (dbbilling.AggregateUsageOverviewTotalsRow, error)
@@ -44,6 +46,7 @@ type leaderboardQuery struct {
 	by           string
 	windowLabel  string
 	settledSince pgtype.Timestamptz
+	tenantID     int64
 	limit        int32
 }
 
@@ -121,7 +124,7 @@ func loadLeaderboardResponse(ctx context.Context, q Querier, query leaderboardQu
 }
 
 func leaderboardSnapshotCacheKey(query leaderboardQuery) string {
-	return "admin_usage_leaderboard:v1|by=" + query.by + "|window=" + query.windowLabel + "|limit=" + strconv.Itoa(int(query.limit))
+	return "admin_usage_leaderboard:v1|by=" + query.by + "|window=" + query.windowLabel + "|tenant=" + strconv.FormatInt(query.tenantID, 10) + "|limit=" + strconv.Itoa(int(query.limit))
 }
 
 func parseLeaderboardQuery(w http.ResponseWriter, u *url.URL, now time.Time) (leaderboardQuery, bool) {
@@ -130,8 +133,8 @@ func parseLeaderboardQuery(w http.ResponseWriter, u *url.URL, now time.Time) (le
 	if by == "" {
 		by = defaultLeaderboardBy
 	}
-	if by != leaderboardByUser && by != leaderboardByModel && by != leaderboardByProvider {
-		writeJSONError(w, http.StatusBadRequest, "invalid_by", "by must be user, model, or provider_account")
+	if by != leaderboardByUser && by != leaderboardByModel && by != leaderboardByProvider && by != leaderboardByApiKey {
+		writeJSONError(w, http.StatusBadRequest, "invalid_by", "by must be user, model, provider_account, or api_key")
 		return leaderboardQuery{}, false
 	}
 	window, label, err := parseLeaderboardWindow(values.Get("window"))
@@ -144,10 +147,19 @@ func parseLeaderboardQuery(w http.ResponseWriter, u *url.URL, now time.Time) (le
 		writeJSONError(w, http.StatusBadRequest, "invalid_limit", "limit must be a positive integer")
 		return leaderboardQuery{}, false
 	}
+	var tenantID int64
+	if by == leaderboardByApiKey {
+		tenantID, err = parseLeaderboardTenantID(values.Get("tenant_id"))
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_tenant_id", "tenant_id must be a positive integer")
+			return leaderboardQuery{}, false
+		}
+	}
 	return leaderboardQuery{
 		by:           by,
 		windowLabel:  label,
 		settledSince: pgtype.Timestamptz{Time: now.Add(-window), Valid: true},
+		tenantID:     tenantID,
 		limit:        int32(limit),
 	}, true
 }
@@ -193,6 +205,18 @@ func parseLeaderboardLimit(raw string) (int, error) {
 	return limit, nil
 }
 
+func parseLeaderboardTenantID(raw string) (int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	tenantID, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || tenantID <= 0 {
+		return 0, errors.New("invalid tenant_id")
+	}
+	return tenantID, nil
+}
+
 func fetchLeaderboardRows(ctx context.Context, q Querier, query leaderboardQuery) ([]leaderboardRow, error) {
 	switch query.by {
 	case leaderboardByUser:
@@ -213,6 +237,13 @@ func fetchLeaderboardRows(ctx context.Context, q Querier, query leaderboardQuery
 			RowLimit:     query.limit,
 		})
 		return providerLeaderboardRows(rows), err
+	case leaderboardByApiKey:
+		rows, err := q.AggregateUsageLeaderboardByApiKey(ctx, dbbilling.AggregateUsageLeaderboardByApiKeyParams{
+			SettledSince: query.settledSince,
+			TenantID:     query.tenantID,
+			RowLimit:     query.limit,
+		})
+		return apiKeyLeaderboardRows(rows), err
 	default:
 		return nil, errors.New("unsupported leaderboard dimension")
 	}
@@ -235,6 +266,14 @@ func modelLeaderboardRows(rows []dbbilling.AggregateUsageLeaderboardByModelRow) 
 }
 
 func providerLeaderboardRows(rows []dbbilling.AggregateUsageLeaderboardByProviderAccountRow) []leaderboardRow {
+	out := make([]leaderboardRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, leaderboardRow{key: row.Key, totalCost: row.TotalCost, totalTokens: row.TotalTokens, requestCount: row.RequestCount})
+	}
+	return out
+}
+
+func apiKeyLeaderboardRows(rows []dbbilling.AggregateUsageLeaderboardByApiKeyRow) []leaderboardRow {
 	out := make([]leaderboardRow, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, leaderboardRow{key: row.Key, totalCost: row.TotalCost, totalTokens: row.TotalTokens, requestCount: row.RequestCount})
