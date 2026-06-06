@@ -84,6 +84,27 @@ func seedCredentialAcqProviderAccount(t *testing.T, ctx context.Context, pool *p
 	return tenantID, paID
 }
 
+func seedCredentialAcqAccountCredential(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID, paID int64) int64 {
+	t.Helper()
+	var credentialID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO account_credentials (
+			tenant_id, provider_account_id, vendor, auth_mode, encrypted_payload, key_id, nonce, aad_hash
+		 )
+		 VALUES ($1, $2, 'openai', 'api_key', $3, 'credential-acq-test-key', $4, 'credential-acq-test-aad')
+		 RETURNING id`,
+		tenantID, paID, []byte{1, 2, 3}, []byte{4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
+	).Scan(&credentialID); err != nil {
+		t.Fatalf("seed account_credential: %v", err)
+	}
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = pool.Exec(c, `DELETE FROM credential_acquisition_flow_sessions WHERE result_account_credential_id = $1`, credentialID)
+		_, _ = pool.Exec(c, `DELETE FROM account_credentials WHERE id = $1`, credentialID)
+	})
+	return credentialID
+}
+
 // TestCreateRejectsCrossTenantProviderAccountPG guards against real Postgres:
 // credential_acquisition_flow_sessions must enforce that its tenant_id matches the
 // referenced Provider Account's tenant. The broken schema used only
@@ -219,6 +240,7 @@ func TestBeginFinalizeCallbackOAuthGatePG(t *testing.T) {
 // isTerminalStatus, so it stays green even if the SQL were deleted):
 //
 //	UpdateStatus: WHERE ... AND status NOT IN ('finalized','cancelled','expired','failed')
+//
 // Cancel: WHERE... AND status NOT IN ('finalized','cancelled','expired','failed') // 'failed' added by
 //
 // Without these, the Get→write TOCTOU lets a concurrent Cancel/expire be overwritten — e.g.
@@ -289,5 +311,95 @@ func TestUpdateStatusAndCancelRejectTerminalFlowsPG(t *testing.T) {
 	}
 	if waiting.Status != StatusWaitingForUser {
 		t.Fatalf("UpdateStatus(started→waiting).Status=%q want waiting_for_user", waiting.Status)
+	}
+}
+
+// TestCancelFinalizeRaceGuardsPG guards the real SQL CAS predicates for a finalize/cancel race:
+// once BeginFinalize has consumed a flow, Cancel must not flip it to cancelled while the credential
+// is being created; and once a flow is already cancelled, MarkFinalized must not overwrite it with a
+// credential id. Normal finalize and same-credential idempotent finalize remain allowed.
+//
+// Mutation checks:
+//   - delete `AND consumed_at IS NULL` from Cancel SQL → case (a) cancels the consumed row, so the
+//     ErrFlowReplay assertion goes red.
+//   - delete `AND status NOT IN ('cancelled', 'expired', 'failed')` from MarkFinalized SQL → case
+//     (b) overwrites cancelled as finalized, so the ErrFlowReplay/status/result assertions go red.
+func TestCancelFinalizeRaceGuardsPG(t *testing.T) {
+	ctx := context.Background()
+	pool := openCredentialAcqTestPool(t, ctx)
+	now := time.Now().UTC()
+	store := NewPostgresSessionStore(pool).WithNow(func() time.Time { return now })
+	tenantID, paID := seedCredentialAcqProviderAccount(t, ctx, pool, uuid.NewString())
+	credID := seedCredentialAcqAccountCredential(t, ctx, pool, tenantID, paID)
+
+	mk := func(label string) string {
+		id := uuid.NewString()
+		if _, err := store.Create(ctx, Session{
+			ID: id, TenantID: tenantID, ProviderAccountID: paID, Vendor: "openai", AuthMode: "api_key",
+			Kind: FlowKindPaste, Status: StatusStarted, ActorID: "admin-1", ActorRole: "platform_admin",
+			ClientIdentitySource: ClientSourceNone,
+			RequestedScopes:      []string{},
+			RedactedContext:      map[string]any{"case": label},
+			ExpiresAt:            now.Add(10 * time.Minute),
+		}); err != nil {
+			t.Fatalf("Create %s: %v", label, err)
+		}
+		return id
+	}
+
+	// (a) BeginFinalize consumes the flow; a concurrent Cancel must be rejected as replay.
+	consumedID := mk("consumed_then_cancel")
+	if _, err := store.BeginFinalize(ctx, consumedID); err != nil {
+		t.Fatalf("BeginFinalize consumed_then_cancel: %v", err)
+	}
+	if _, err := store.Cancel(ctx, consumedID); !errors.Is(err, ErrFlowReplay) {
+		t.Fatalf("Cancel after BeginFinalize: err=%v want ErrFlowReplay", err)
+	}
+	finalized, err := store.MarkFinalized(ctx, consumedID, credID)
+	if err != nil {
+		t.Fatalf("MarkFinalized after rejected Cancel: %v", err)
+	}
+	if finalized.Status != StatusFinalized || finalized.ResultAccountCredentialID != credID {
+		t.Fatalf("finalized consumed flow=(status=%q credential=%d), want finalized/%d", finalized.Status, finalized.ResultAccountCredentialID, credID)
+	}
+
+	// (b) A flow cancelled before finalize must not be overwritten as finalized.
+	cancelledID := mk("cancelled_then_finalize")
+	cancelled, err := store.Cancel(ctx, cancelledID)
+	if err != nil {
+		t.Fatalf("Cancel before finalize: %v", err)
+	}
+	if cancelled.Status != StatusCancelled || cancelled.ResultAccountCredentialID != 0 {
+		t.Fatalf("Cancel returned=(status=%q credential=%d), want cancelled/0", cancelled.Status, cancelled.ResultAccountCredentialID)
+	}
+	if _, err := store.MarkFinalized(ctx, cancelledID, credID); !errors.Is(err, ErrFlowReplay) {
+		t.Fatalf("MarkFinalized on cancelled flow: err=%v want ErrFlowReplay", err)
+	}
+	reloaded, err := store.Get(ctx, cancelledID)
+	if err != nil {
+		t.Fatalf("Get cancelled flow: %v", err)
+	}
+	if reloaded.Status != StatusCancelled || reloaded.ResultAccountCredentialID != 0 {
+		t.Fatalf("cancelled flow after MarkFinalized=(status=%q credential=%d), want cancelled/0", reloaded.Status, reloaded.ResultAccountCredentialID)
+	}
+
+	// (c) Normal BeginFinalize -> MarkFinalized still succeeds; same-credential retry is accepted.
+	normalID := mk("normal_finalize")
+	if _, err := store.BeginFinalize(ctx, normalID); err != nil {
+		t.Fatalf("BeginFinalize normal: %v", err)
+	}
+	normal, err := store.MarkFinalized(ctx, normalID, credID)
+	if err != nil {
+		t.Fatalf("MarkFinalized normal: %v", err)
+	}
+	if normal.Status != StatusFinalized || normal.ResultAccountCredentialID != credID {
+		t.Fatalf("normal finalized=(status=%q credential=%d), want finalized/%d", normal.Status, normal.ResultAccountCredentialID, credID)
+	}
+	retry, err := store.MarkFinalized(ctx, normalID, credID)
+	if err != nil {
+		t.Fatalf("MarkFinalized idempotent retry: %v", err)
+	}
+	if retry.Status != StatusFinalized || retry.ResultAccountCredentialID != credID {
+		t.Fatalf("retry finalized=(status=%q credential=%d), want finalized/%d", retry.Status, retry.ResultAccountCredentialID, credID)
 	}
 }

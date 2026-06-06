@@ -317,6 +317,7 @@ SET status = 'cancelled',
     updated_at = NOW()
 WHERE id = $1::uuid
   AND status NOT IN ('finalized', 'cancelled', 'expired', 'failed')
+  AND consumed_at IS NULL
 RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind, status,
           actor_id, actor_role, state_hash, nonce_hash, encrypted_pkce_verifier,
           client_identity_source, auth_type, device_code_payload,
@@ -330,9 +331,10 @@ RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind
 		if getErr != nil {
 			return Session{}, getErr
 		}
-		// 'failed' 亦为终态 —— 此前 NOT IN 漏了它,致使一个已 failed 的 flow 仍可被 Cancel 改写
-		// 成 cancelled(终态→终态的虚假状态翻转)。终态一律返回 ErrFlowReplay,与 isTerminalStatus 同源。
 		if isTerminalStatus(existing.Status) {
+			return existing, ErrFlowReplay
+		}
+		if !existing.ConsumedAt.IsZero() {
 			return existing, ErrFlowReplay
 		}
 		return existing, ErrFlowNotFound
@@ -379,11 +381,7 @@ RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind
 		return existing, ErrFlowExpired
 	}
 	// callback 式 OAuth flow(PKCE)必须先经 callback 校验(status=validated)才能 finalize。
-	// 被上面 predicate 排除而落到这里 —— 显式返回 ErrOAuthRequiresCallback,而非误当普通 replay,防止
-	// caller 跳过回调、用手写 credentials body 直接 finalize 注入任意凭据。device_code/sso flow 已豁免
-	// (其凭据来自轮询、不经 validated)。仅对仍处回调前的【活跃】状态(started/waiting_for_user/
-	// callback_received)报此错;已 cancelled/failed/expired 等终态不在此列,保持原 replay/terminal 语义,
-	// 避免把"已取消/已失败"掩盖成"需要回调"。
+	// 仅对回调前的活跃状态报 ErrOAuthRequiresCallback;终态保持 replay 语义。
 	switch existing.Status {
 	case StatusStarted, StatusWaitingForUser, StatusCallbackReceived:
 		if RequiresCallbackValidation(existing.Kind, existing.AuthType) {
@@ -406,6 +404,8 @@ SET status = 'finalized',
     error_message_redacted = NULL,
     updated_at = NOW()
 WHERE id = $1::uuid
+  AND cancelled_at IS NULL
+  AND status NOT IN ('cancelled', 'expired', 'failed')
 RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind, status,
           actor_id, actor_role, state_hash, nonce_hash, encrypted_pkce_verifier,
           client_identity_source, auth_type, device_code_payload,
@@ -415,6 +415,13 @@ RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind
           created_at, updated_at`
 	row, err := scanSession(s.db.QueryRow(ctx, q, strings.TrimSpace(id), credentialID))
 	if errors.Is(err, pgx.ErrNoRows) {
+		existing, getErr := s.Get(ctx, id)
+		if getErr != nil {
+			return Session{}, getErr
+		}
+		if isTerminalStatus(existing.Status) || !existing.CancelledAt.IsZero() {
+			return existing, ErrFlowReplay
+		}
 		return Session{}, ErrFlowNotFound
 	}
 	return row, err
