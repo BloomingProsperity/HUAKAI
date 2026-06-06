@@ -25,7 +25,7 @@ func (c *DBBanCounter) RecordAndCheck(ctx context.Context, event ModerationEvent
 	if c == nil || c.store == nil || cfg.BanThreshold <= 0 {
 		return BanResult{}, nil
 	}
-	if event.Decision != DecisionBlockKeyword && event.Decision != DecisionBlockHash {
+	if event.Decision != DecisionBlockKeyword && event.Decision != DecisionBlockHash && event.Decision != DecisionBlockExternal {
 		return BanResult{}, nil
 	}
 	if err := c.store.RecordModerationViolationEvent(ctx, event); err != nil {
