@@ -79,6 +79,7 @@ func (f *subFixture) cleanup() {
 		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_fulfillment_effects WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM payment_orders WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_expiry_reminders WHERE tenant_id=$1`, tenantID)
+		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_plan_audit_events WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_audit_events WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_policy_links WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM user_subscriptions WHERE tenant_id=$1`, tenantID)
@@ -121,6 +122,42 @@ func (f *subFixture) countInt(query string, args ...any) int64 {
 		f.t.Fatalf("count query %q: %v", query, err)
 	}
 	return n
+}
+
+func (f *subFixture) activeSubPolicyID(subscriptionID int64, windowKind string) int64 {
+	f.t.Helper()
+	var id int64
+	if err := f.pool.QueryRow(f.ctx, `
+SELECT quota_policy_id FROM subscription_policy_links
+WHERE tenant_id=$1 AND user_subscription_id=$2 AND window_kind=$3 AND status='active'
+ORDER BY id DESC LIMIT 1`, f.tenantA, subscriptionID, windowKind).Scan(&id); err != nil {
+		f.t.Fatalf("read active subscription policy: %v", err)
+	}
+	return id
+}
+
+func (f *subFixture) seedQuotaWindow(policyID int64, at time.Time, reserved, settled string, requestCount int64) {
+	f.t.Helper()
+	start := at.UTC().Truncate(24 * time.Hour)
+	end := start.Add(24 * time.Hour)
+	if _, err := f.pool.Exec(f.ctx, `
+INSERT INTO quota_windows (
+	tenant_id, policy_id, window_start, window_end,
+	reserved_value, settled_value, request_count
+) VALUES ($1, $2, $3, $4, $5::numeric, $6::numeric, $7)`,
+		f.tenantA, policyID, start, end, reserved, settled, requestCount); err != nil {
+		f.t.Fatalf("seed quota window: %v", err)
+	}
+}
+
+func (f *subFixture) policyLimit(policyID int64) decimal.Decimal {
+	f.t.Helper()
+	var raw string
+	if err := f.pool.QueryRow(f.ctx, `SELECT limit_value::text FROM quota_policies WHERE tenant_id=$1 AND id=$2`,
+		f.tenantA, policyID).Scan(&raw); err != nil {
+		f.t.Fatalf("read policy limit: %v", err)
+	}
+	return decimal.RequireFromString(raw)
 }
 
 func dec(s string) *decimal.Decimal {

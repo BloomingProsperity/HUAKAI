@@ -1,0 +1,418 @@
+// HUAKAI · iKun
+
+package subscription
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/shopspring/decimal"
+)
+
+func (s *PostgresStore) UpdatePlan(ctx context.Context, rec updatePlanRecord) (Plan, error) {
+	if s == nil || s.pool == nil {
+		return Plan{}, ErrStoreNotConfigured
+	}
+	daily, err := capParam(rec.DailyCapUSD)
+	if err != nil {
+		return Plan{}, ErrInvalidInput
+	}
+	weekly, err := capParam(rec.WeeklyCapUSD)
+	if err != nil {
+		return Plan{}, ErrInvalidInput
+	}
+	monthly, err := capParam(rec.MonthlyCapUSD)
+	if err != nil {
+		return Plan{}, ErrInvalidInput
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return Plan{}, fmt.Errorf("subscription: begin update plan: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	row := tx.QueryRow(ctx, `
+UPDATE subscription_plans
+SET name=$3, description=$4, price_cents=$5, currency_code=$6, validity_days=$7,
+	granted_group=$8, daily_cap_usd=$9, weekly_cap_usd=$10, monthly_cap_usd=$11,
+	for_sale=$12, sort_order=$13, updated_at=$14
+WHERE tenant_id=$1 AND id=$2
+RETURNING`+planSelectColumns,
+		rec.TenantID, rec.PlanID, rec.Name, rec.Description, rec.PriceCents, rec.CurrencyCode, rec.ValidityDays,
+		rec.GrantedGroup, daily, weekly, monthly, rec.ForSale, rec.SortOrder, rec.Now)
+	plan, err := scanPlan(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Plan{}, ErrPlanNotFound
+	}
+	if err != nil {
+		return Plan{}, fmt.Errorf("subscription: update plan: %w", err)
+	}
+	if err := insertPlanAuditTx(ctx, tx, planAuditInsert{
+		TenantID: rec.TenantID, PlanID: plan.ID, EventType: AuditSubscriptionPlanUpdated,
+		ActorKind: ActorKindAdmin, ActorID: rec.ActorAdminID, RequestID: rec.RequestID,
+		Payload: map[string]any{
+			"name":            plan.Name,
+			"price_cents":     plan.PriceCents,
+			"validity_days":   plan.ValidityDays,
+			"granted_group":   plan.GrantedGroup,
+			"daily_cap_usd":   capAuditString(plan.DailyCapUSD),
+			"weekly_cap_usd":  capAuditString(plan.WeeklyCapUSD),
+			"monthly_cap_usd": capAuditString(plan.MonthlyCapUSD),
+			"for_sale":        plan.ForSale,
+			"sort_order":      plan.SortOrder,
+		},
+		Now: rec.Now,
+	}); err != nil {
+		return Plan{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Plan{}, fmt.Errorf("subscription: commit update plan: %w", err)
+	}
+	return plan, nil
+}
+
+func (s *PostgresStore) ExtendSubscription(ctx context.Context, rec extendRecord) (UserSubscription, error) {
+	if s == nil || s.pool == nil {
+		return UserSubscription{}, ErrStoreNotConfigured
+	}
+	var lastErr error
+	for attempt := 0; attempt < subscriptionTxRetryAttempts; attempt++ {
+		sub, err := s.extendSubscriptionOnce(ctx, rec)
+		if err == nil {
+			return sub, nil
+		}
+		if isPgRetryableTxConflict(err) {
+			lastErr = err
+			continue
+		}
+		return UserSubscription{}, err
+	}
+	return UserSubscription{}, fmt.Errorf("subscription: extend exhausted retries: %w", lastErr)
+}
+
+func (s *PostgresStore) extendSubscriptionOnce(ctx context.Context, rec extendRecord) (UserSubscription, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return UserSubscription{}, fmt.Errorf("subscription: begin extend: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	sub, err := getSubscriptionForUpdateTx(ctx, tx, rec.TenantID, rec.SubscriptionID)
+	if err != nil {
+		return UserSubscription{}, err
+	}
+	if ok, err := hasSubAuditRequestTx(ctx, tx, rec.TenantID, sub.ID, AuditSubscriptionExtended, rec.RequestID); err != nil {
+		return UserSubscription{}, err
+	} else if ok {
+		if err := tx.Commit(ctx); err != nil {
+			return UserSubscription{}, fmt.Errorf("subscription: commit idempotent extend: %w", err)
+		}
+		return sub, nil
+	}
+	if sub.Status != StatusActive || !sub.ExpiresAt.After(rec.Now) {
+		return UserSubscription{}, ErrSubscriptionNotActive
+	}
+	newExpires := time.Time{}
+	if rec.Until != nil {
+		newExpires = rec.Until.UTC()
+	} else {
+		newExpires = sub.ExpiresAt.AddDate(0, 0, rec.Days)
+	}
+	newExpires = capExpiry(newExpires)
+	if !newExpires.After(sub.ExpiresAt) {
+		return UserSubscription{}, ErrInvalidInput
+	}
+	prev := sub.ExpiresAt
+	row := tx.QueryRow(ctx, `
+UPDATE user_subscriptions
+SET expires_at=$3, updated_at=$4
+WHERE tenant_id=$1 AND id=$2 AND status='active'
+RETURNING`+subscriptionSelectColumns,
+		rec.TenantID, sub.ID, newExpires, rec.Now)
+	sub, err = scanSubscription(row)
+	if err != nil {
+		return UserSubscription{}, fmt.Errorf("subscription: extend update: %w", err)
+	}
+	if err := updateActiveCapsValidUntilTx(ctx, tx, rec.TenantID, sub.ID, newExpires, rec.Now); err != nil {
+		return UserSubscription{}, err
+	}
+	if err := insertSubAuditTx(ctx, tx, subAuditInsert{
+		TenantID:           rec.TenantID,
+		UserSubscriptionID: sub.ID,
+		EventType:          AuditSubscriptionExtended,
+		ActorKind:          ActorKindAdmin,
+		ActorID:            rec.ActorAdminID,
+		RequestID:          rec.RequestID,
+		Payload: map[string]any{
+			"from_expires": prev.UTC(),
+			"to_expires":   newExpires.UTC(),
+		},
+		Now: rec.Now,
+	}); err != nil {
+		return UserSubscription{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return UserSubscription{}, fmt.Errorf("subscription: commit extend: %w", err)
+	}
+	return sub, nil
+}
+
+func (s *PostgresStore) ResetQuota(ctx context.Context, rec lifecycleRecord) (UserSubscription, error) {
+	if s == nil || s.pool == nil {
+		return UserSubscription{}, ErrStoreNotConfigured
+	}
+	var lastErr error
+	for attempt := 0; attempt < subscriptionTxRetryAttempts; attempt++ {
+		sub, err := s.resetQuotaOnce(ctx, rec)
+		if err == nil {
+			return sub, nil
+		}
+		if isPgRetryableTxConflict(err) {
+			lastErr = err
+			continue
+		}
+		return UserSubscription{}, err
+	}
+	return UserSubscription{}, fmt.Errorf("subscription: reset quota exhausted retries: %w", lastErr)
+}
+
+func (s *PostgresStore) resetQuotaOnce(ctx context.Context, rec lifecycleRecord) (UserSubscription, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return UserSubscription{}, fmt.Errorf("subscription: begin reset quota: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	sub, err := getSubscriptionForUpdateTx(ctx, tx, rec.TenantID, rec.SubscriptionID)
+	if err != nil {
+		return UserSubscription{}, err
+	}
+	if ok, err := hasSubAuditRequestTx(ctx, tx, rec.TenantID, sub.ID, AuditSubscriptionQuotaReset, rec.RequestID); err != nil {
+		return UserSubscription{}, err
+	} else if ok {
+		if err := tx.Commit(ctx); err != nil {
+			return UserSubscription{}, fmt.Errorf("subscription: commit idempotent reset quota: %w", err)
+		}
+		return sub, nil
+	}
+	if sub.Status != StatusActive || !sub.ExpiresAt.After(rec.Now) {
+		return UserSubscription{}, ErrSubscriptionNotActive
+	}
+	if err := closeCapsTx(ctx, tx, rec.TenantID, sub.ID, rec.Now); err != nil {
+		return UserSubscription{}, err
+	}
+	if err := installCapsTx(ctx, tx, sub, rec.Now); err != nil {
+		return UserSubscription{}, err
+	}
+	row := tx.QueryRow(ctx, `
+UPDATE user_subscriptions
+SET updated_at=$3
+WHERE tenant_id=$1 AND id=$2
+RETURNING`+subscriptionSelectColumns, rec.TenantID, sub.ID, rec.Now)
+	sub, err = scanSubscription(row)
+	if err != nil {
+		return UserSubscription{}, fmt.Errorf("subscription: reset quota touch subscription: %w", err)
+	}
+	if err := insertSubAuditTx(ctx, tx, subAuditInsert{
+		TenantID:           rec.TenantID,
+		UserSubscriptionID: sub.ID,
+		EventType:          AuditSubscriptionQuotaReset,
+		ActorKind:          actorKindOrDefault(rec.ActorKind),
+		ActorID:            rec.ActorID,
+		RequestID:          rec.RequestID,
+		Payload:            assignAuditPayload(sub),
+		Now:                rec.Now,
+	}); err != nil {
+		return UserSubscription{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return UserSubscription{}, fmt.Errorf("subscription: commit reset quota: %w", err)
+	}
+	return sub, nil
+}
+
+func (s *PostgresStore) RevokeSubscription(ctx context.Context, rec revokeRecord) (UserSubscription, error) {
+	if s == nil || s.pool == nil {
+		return UserSubscription{}, ErrStoreNotConfigured
+	}
+	var lastErr error
+	for attempt := 0; attempt < subscriptionTxRetryAttempts; attempt++ {
+		sub, err := s.revokeSubscriptionOnce(ctx, rec)
+		if err == nil {
+			return sub, nil
+		}
+		if isPgRetryableTxConflict(err) {
+			lastErr = err
+			continue
+		}
+		return UserSubscription{}, err
+	}
+	return UserSubscription{}, fmt.Errorf("subscription: revoke exhausted retries: %w", lastErr)
+}
+
+func (s *PostgresStore) revokeSubscriptionOnce(ctx context.Context, rec revokeRecord) (UserSubscription, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return UserSubscription{}, fmt.Errorf("subscription: begin revoke: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	sub, err := getSubscriptionForUpdateTx(ctx, tx, rec.TenantID, rec.SubscriptionID)
+	if err != nil {
+		return UserSubscription{}, err
+	}
+	if sub.Status == StatusRevoked {
+		if err := tx.Commit(ctx); err != nil {
+			return UserSubscription{}, fmt.Errorf("subscription: commit idempotent revoke: %w", err)
+		}
+		return sub, nil
+	}
+	if ok, err := hasSubAuditRequestTx(ctx, tx, rec.TenantID, sub.ID, AuditSubscriptionRevoked, rec.RequestID); err != nil {
+		return UserSubscription{}, err
+	} else if ok {
+		if err := tx.Commit(ctx); err != nil {
+			return UserSubscription{}, fmt.Errorf("subscription: commit idempotent revoke audit: %w", err)
+		}
+		return sub, nil
+	}
+	if sub.Status != StatusActive || !sub.ExpiresAt.After(rec.Now) {
+		return UserSubscription{}, ErrSubscriptionNotActive
+	}
+	row := tx.QueryRow(ctx, `
+UPDATE user_subscriptions SET status=$3, updated_at=$4
+WHERE tenant_id=$1 AND id=$2 AND status='active'
+RETURNING`+subscriptionSelectColumns,
+		rec.TenantID, rec.SubscriptionID, string(StatusRevoked), rec.Now)
+	sub, err = scanSubscription(row)
+	if err != nil {
+		return UserSubscription{}, fmt.Errorf("subscription: revoke update: %w", err)
+	}
+	if err := closeCapsTx(ctx, tx, rec.TenantID, sub.ID, rec.Now); err != nil {
+		return UserSubscription{}, err
+	}
+	if err := downgradeAfterCloseTx(ctx, tx, lifecycleRecord{
+		TenantID: rec.TenantID, SubscriptionID: rec.SubscriptionID, ActorKind: ActorKindAdmin,
+		ActorID: rec.ActorAdminID, RequestID: rec.RequestID, Now: rec.Now,
+	}, sub); err != nil {
+		return UserSubscription{}, err
+	}
+	if err := insertSubAuditTx(ctx, tx, subAuditInsert{
+		TenantID:           rec.TenantID,
+		UserSubscriptionID: sub.ID,
+		EventType:          AuditSubscriptionRevoked,
+		ActorKind:          ActorKindAdmin,
+		ActorID:            rec.ActorAdminID,
+		ReasonClass:        rec.Reason,
+		RequestID:          rec.RequestID,
+		Payload:            map[string]any{"reason": rec.Reason},
+		Now:                rec.Now,
+	}); err != nil {
+		return UserSubscription{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return UserSubscription{}, fmt.Errorf("subscription: commit revoke: %w", err)
+	}
+	return sub, nil
+}
+
+func updateActiveCapsValidUntilTx(ctx context.Context, tx pgx.Tx, tenantID, subscriptionID int64, newExpires, now time.Time) error {
+	if _, err := tx.Exec(ctx, `
+UPDATE quota_policies SET valid_until=$3, last_modified_by_actor=$4, updated_at=$5
+WHERE tenant_id=$1 AND id IN (
+	SELECT quota_policy_id FROM subscription_policy_links
+	WHERE tenant_id=$1 AND user_subscription_id=$2 AND status='active'
+)`, tenantID, subscriptionID, newExpires, fmt.Sprintf("subscription:%d", subscriptionID), now); err != nil {
+		return fmt.Errorf("subscription: extend quota policies: %w", err)
+	}
+	return nil
+}
+
+func hasSubAuditRequestTx(ctx context.Context, tx pgx.Tx, tenantID, subscriptionID int64, eventType, requestID string) (bool, error) {
+	if requestID == "" {
+		return false, nil
+	}
+	var exists bool
+	if err := tx.QueryRow(ctx, `
+SELECT EXISTS (
+	SELECT 1 FROM subscription_audit_events
+	WHERE tenant_id=$1 AND user_subscription_id=$2 AND event_type=$3 AND request_id=$4
+)`, tenantID, subscriptionID, eventType, requestID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("subscription: check audit request: %w", err)
+	}
+	return exists, nil
+}
+
+func downgradeAfterCloseTx(ctx context.Context, tx pgx.Tx, rec lifecycleRecord, sub UserSubscription) error {
+	if sub.GrantedGroup == "" {
+		return nil
+	}
+	currentGroup, err := lockUserGroupTx(ctx, tx, rec.TenantID, sub.UserID)
+	if err != nil {
+		return err
+	}
+	if currentGroup != sub.GrantedGroup {
+		return nil
+	}
+	targetGroup, err := resolveGroupFromActiveTx(ctx, tx, rec.TenantID, sub.UserID)
+	if err != nil {
+		return err
+	}
+	if targetGroup == currentGroup {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `UPDATE users SET user_group=$3 WHERE tenant_id=$1 AND id=$2`,
+		rec.TenantID, sub.UserID, targetGroup); err != nil {
+		return fmt.Errorf("subscription: downgrade user group: %w", err)
+	}
+	if err := insertSubAuditTx(ctx, tx, subAuditInsert{
+		TenantID:           rec.TenantID,
+		UserSubscriptionID: sub.ID,
+		EventType:          AuditGroupDowngraded,
+		ActorKind:          actorKindOrDefault(rec.ActorKind),
+		ActorID:            rec.ActorID,
+		RequestID:          rec.RequestID,
+		Payload:            map[string]any{"from": currentGroup, "to": targetGroup},
+		Now:                rec.Now,
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+type planAuditInsert struct {
+	TenantID  int64
+	PlanID    int64
+	EventType string
+	ActorKind string
+	ActorID   int64
+	RequestID string
+	Payload   map[string]any
+	Now       time.Time
+}
+
+func insertPlanAuditTx(ctx context.Context, tx pgx.Tx, ev planAuditInsert) error {
+	var raw []byte
+	if len(ev.Payload) > 0 {
+		raw, _ = json.Marshal(ev.Payload)
+	}
+	if _, err := tx.Exec(ctx, `
+INSERT INTO subscription_plan_audit_events (
+	tenant_id, plan_id, event_type, actor_kind, actor_id, request_id, redacted_payload, occurred_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		ev.TenantID, ev.PlanID, ev.EventType, actorKindOrDefault(ev.ActorKind),
+		nullableInt64(ev.ActorID), nullableText(ev.RequestID), nullableJSON(raw), ev.Now); err != nil {
+		return fmt.Errorf("subscription: insert plan audit event: %w", err)
+	}
+	return nil
+}
+
+func capAuditString(d *decimal.Decimal) any {
+	if d == nil {
+		return nil
+	}
+	return d.String()
+}

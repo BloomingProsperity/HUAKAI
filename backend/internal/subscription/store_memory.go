@@ -148,6 +148,30 @@ func (m *memoryStore) DisablePlan(_ context.Context, tenantID, planID int64) err
 	return nil
 }
 
+func (m *memoryStore) UpdatePlan(_ context.Context, rec updatePlanRecord) (Plan, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := planKey{rec.TenantID, rec.PlanID}
+	plan, ok := m.plans[k]
+	if !ok {
+		return Plan{}, ErrPlanNotFound
+	}
+	plan.Name = rec.Name
+	plan.Description = rec.Description
+	plan.PriceCents = rec.PriceCents
+	plan.CurrencyCode = rec.CurrencyCode
+	plan.ValidityDays = rec.ValidityDays
+	plan.GrantedGroup = rec.GrantedGroup
+	plan.DailyCapUSD = rec.DailyCapUSD
+	plan.WeeklyCapUSD = rec.WeeklyCapUSD
+	plan.MonthlyCapUSD = rec.MonthlyCapUSD
+	plan.ForSale = rec.ForSale
+	plan.SortOrder = rec.SortOrder
+	plan.UpdatedAt = rec.Now.UTC()
+	m.plans[k] = plan
+	return plan, nil
+}
+
 func (m *memoryStore) AssignSubscription(_ context.Context, rec assignRecord) (AssignResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -256,6 +280,10 @@ func (m *memoryStore) ExpireSubscription(_ context.Context, rec lifecycleRecord)
 }
 
 func (m *memoryStore) closeMem(rec lifecycleRecord, terminal SubscriptionStatus, event string) (UserSubscription, error) {
+	return m.closeMemWithAudit(rec, terminal, event, "", nil, false)
+}
+
+func (m *memoryStore) closeMemWithAudit(rec lifecycleRecord, terminal SubscriptionStatus, event, reason string, payload map[string]any, revokeStrict bool) (UserSubscription, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	k := subKey{rec.TenantID, rec.SubscriptionID}
@@ -264,7 +292,13 @@ func (m *memoryStore) closeMem(rec lifecycleRecord, terminal SubscriptionStatus,
 		return UserSubscription{}, ErrSubscriptionNotFound
 	}
 	if sub.Status != StatusActive {
+		if revokeStrict && sub.Status != StatusRevoked {
+			return UserSubscription{}, ErrSubscriptionNotActive
+		}
 		return sub, nil // 幂等
+	}
+	if revokeStrict && !sub.ExpiresAt.After(rec.Now) {
+		return UserSubscription{}, ErrSubscriptionNotActive
 	}
 	sub.Status = terminal
 	sub.UpdatedAt = rec.Now.UTC()
@@ -301,9 +335,92 @@ func (m *memoryStore) closeMem(rec lifecycleRecord, terminal SubscriptionStatus,
 	m.appendAudit(sub.ID, AuditEvent{
 		TenantID: rec.TenantID, UserSubscriptionID: sub.ID, EventType: event,
 		ActorKind: actorKindOrDefault(rec.ActorKind), ActorID: rec.ActorID, RequestID: rec.RequestID,
+		ReasonClass: reason, Payload: payload, OccurredAt: rec.Now.UTC(),
+	})
+	return sub, nil
+}
+
+func (m *memoryStore) ExtendSubscription(_ context.Context, rec extendRecord) (UserSubscription, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := subKey{rec.TenantID, rec.SubscriptionID}
+	sub, ok := m.subs[k]
+	if !ok {
+		return UserSubscription{}, ErrSubscriptionNotFound
+	}
+	if rec.RequestID != "" && m.hasAuditRequestLocked(sub.ID, AuditSubscriptionExtended, rec.RequestID) {
+		return sub, nil
+	}
+	if sub.Status != StatusActive || !sub.ExpiresAt.After(rec.Now) {
+		return UserSubscription{}, ErrSubscriptionNotActive
+	}
+	newExpires := time.Time{}
+	if rec.Until != nil {
+		newExpires = rec.Until.UTC()
+	} else {
+		newExpires = sub.ExpiresAt.AddDate(0, 0, rec.Days)
+	}
+	newExpires = capExpiry(newExpires)
+	if !newExpires.After(sub.ExpiresAt) {
+		return UserSubscription{}, ErrInvalidInput
+	}
+	prev := sub.ExpiresAt
+	sub.ExpiresAt = newExpires.UTC()
+	sub.UpdatedAt = rec.Now.UTC()
+	m.subs[k] = sub
+	m.appendAudit(sub.ID, AuditEvent{
+		TenantID: rec.TenantID, UserSubscriptionID: sub.ID, EventType: AuditSubscriptionExtended,
+		ActorKind: ActorKindAdmin, ActorID: rec.ActorAdminID, RequestID: rec.RequestID,
+		Payload:    map[string]any{"from_expires": prev.UTC(), "to_expires": newExpires.UTC()},
 		OccurredAt: rec.Now.UTC(),
 	})
 	return sub, nil
+}
+
+func (m *memoryStore) ResetQuota(_ context.Context, rec lifecycleRecord) (UserSubscription, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := subKey{rec.TenantID, rec.SubscriptionID}
+	sub, ok := m.subs[k]
+	if !ok {
+		return UserSubscription{}, ErrSubscriptionNotFound
+	}
+	if rec.RequestID != "" && m.hasAuditRequestLocked(sub.ID, AuditSubscriptionQuotaReset, rec.RequestID) {
+		return sub, nil
+	}
+	if sub.Status != StatusActive || !sub.ExpiresAt.After(rec.Now) {
+		return UserSubscription{}, ErrSubscriptionNotActive
+	}
+	for i := range m.links[sub.ID] {
+		if m.links[sub.ID][i].Status == "active" {
+			m.links[sub.ID][i].Status = "closed"
+			t := rec.Now.UTC()
+			m.links[sub.ID][i].ClosedAt = &t
+		}
+	}
+	for _, cap := range sub.Caps() {
+		m.policySeq++
+		m.links[sub.ID] = append(m.links[sub.ID], PolicyLink{
+			ID: m.policySeq, TenantID: rec.TenantID, UserSubscriptionID: sub.ID,
+			QuotaPolicyID: m.policySeq, WindowKind: string(cap.Window), Status: "active",
+			CreatedAt: rec.Now.UTC(),
+		})
+	}
+	sub.UpdatedAt = rec.Now.UTC()
+	m.subs[k] = sub
+	m.appendAudit(sub.ID, AuditEvent{
+		TenantID: rec.TenantID, UserSubscriptionID: sub.ID, EventType: AuditSubscriptionQuotaReset,
+		ActorKind: actorKindOrDefault(rec.ActorKind), ActorID: rec.ActorID, RequestID: rec.RequestID,
+		OccurredAt: rec.Now.UTC(),
+	})
+	return sub, nil
+}
+
+func (m *memoryStore) RevokeSubscription(_ context.Context, rec revokeRecord) (UserSubscription, error) {
+	return m.closeMemWithAudit(lifecycleRecord{
+		TenantID: rec.TenantID, SubscriptionID: rec.SubscriptionID, ActorKind: ActorKindAdmin,
+		ActorID: rec.ActorAdminID, RequestID: rec.RequestID, Now: rec.Now,
+	}, StatusRevoked, AuditSubscriptionRevoked, rec.Reason, map[string]any{"reason": rec.Reason}, true)
 }
 
 func (m *memoryStore) ListDueExpiry(_ context.Context, now time.Time, limit int) ([]UserSubscription, error) {
@@ -471,4 +588,13 @@ func (m *memoryStore) appendAudit(subID int64, ev AuditEvent) {
 	m.auditSeq++
 	ev.ID = m.auditSeq
 	m.audits[subID] = append(m.audits[subID], ev)
+}
+
+func (m *memoryStore) hasAuditRequestLocked(subID int64, eventType, requestID string) bool {
+	for _, ev := range m.audits[subID] {
+		if ev.EventType == eventType && ev.RequestID == requestID {
+			return true
+		}
+	}
+	return false
 }

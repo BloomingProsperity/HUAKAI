@@ -19,6 +19,7 @@ type Store interface {
 	CreatePlan(ctx context.Context, rec createPlanRecord) (Plan, error)
 	GetPlan(ctx context.Context, tenantID, planID int64) (Plan, error)
 	ListPlans(ctx context.Context, tenantID int64, onlyForSale bool) ([]Plan, error)
+	UpdatePlan(ctx context.Context, rec updatePlanRecord) (Plan, error)
 	DisablePlan(ctx context.Context, tenantID, planID int64) error
 
 	// --- 订阅实例 ---
@@ -30,6 +31,12 @@ type Store interface {
 	SetAutoRenew(ctx context.Context, tenantID, userID int64, autoRenew bool) (UserSubscription, error)
 	// CancelSubscription: 标 cancelled + 关闭 quota 策略 + 降级 users.user_group (受 downgrade 守卫), 单事务。
 	CancelSubscription(ctx context.Context, rec lifecycleRecord) (UserSubscription, error)
+	// ExtendSubscription: active/non-expired 订阅延长 expires_at + 同步 quota policy valid_until + 审计, 单事务。
+	ExtendSubscription(ctx context.Context, rec extendRecord) (UserSubscription, error)
+	// ResetQuota: 关闭旧 subscription-owned quota policies 并按订阅快照重装, 清空当前 quota_windows 消耗。
+	ResetQuota(ctx context.Context, rec lifecycleRecord) (UserSubscription, error)
+	// RevokeSubscription: 标 revoked + 关闭 quota 策略 + 降级 users.user_group (受 downgrade 守卫), 单事务。
+	RevokeSubscription(ctx context.Context, rec revokeRecord) (UserSubscription, error)
 
 	// --- worker ---
 	// ListDueExpiry: 扫到点的 active 订阅 (tenant 内, 限量, 供 worker 批处理)。
@@ -66,6 +73,25 @@ type createPlanRecord struct {
 	Now           time.Time
 }
 
+type updatePlanRecord struct {
+	TenantID      int64
+	PlanID        int64
+	Name          string
+	Description   string
+	PriceCents    int64
+	CurrencyCode  string
+	ValidityDays  int
+	GrantedGroup  string
+	DailyCapUSD   *decimal.Decimal
+	WeeklyCapUSD  *decimal.Decimal
+	MonthlyCapUSD *decimal.Decimal
+	ForSale       bool
+	SortOrder     int
+	ActorAdminID  int64
+	RequestID     string
+	Now           time.Time
+}
+
 // assignRecord 分配订阅的事务输入。
 type assignRecord struct {
 	TenantID     int64
@@ -82,6 +108,25 @@ type lifecycleRecord struct {
 	SubscriptionID int64
 	ActorKind      string
 	ActorID        int64
+	RequestID      string
+	Now            time.Time
+}
+
+type extendRecord struct {
+	TenantID       int64
+	SubscriptionID int64
+	ActorAdminID   int64
+	RequestID      string
+	Days           int
+	Until          *time.Time
+	Now            time.Time
+}
+
+type revokeRecord struct {
+	TenantID       int64
+	SubscriptionID int64
+	ActorAdminID   int64
+	Reason         string
 	RequestID      string
 	Now            time.Time
 }
