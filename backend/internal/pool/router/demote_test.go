@@ -1,4 +1,4 @@
-package scoring
+package router
 
 import "testing"
 

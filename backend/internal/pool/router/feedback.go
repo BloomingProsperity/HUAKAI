@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
-	"github.com/BloomingProsperity/HUAKAI/internal/pool/scoring"
 )
 
 // PASRCacheFeedback 是 cachemetrics observer 的封装, 由 selector + 段表
@@ -100,7 +99,7 @@ func (f *PASRCacheFeedback) handle(obs cachemetrics.CacheObservation) {
 		// 累计 miss 计数, 达阈值 → demote (清 hasCache bit, 给其他成员机会)
 		IncMissObs()
 		count := seg.RecordMiss(idx)
-		if scoring.ShouldDemote(count, PASRDemoteThreshold) {
+		if ShouldDemote(count, PASRDemoteThreshold) {
 			seg.Demote(idx)
 			IncDemote()
 		}
