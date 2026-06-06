@@ -16,6 +16,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/captcha"
 	"github.com/BloomingProsperity/HUAKAI/internal/checkinhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/completionshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/controlhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/embeddingshttp"
@@ -55,6 +56,7 @@ func (d *deps) AdminDLQStore() gatewayhttp.AdminDLQStore {
 // mountRoutes wires the HTTP routes per docs/openapi/openapi.yaml.
 func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Post("/v1/chat/completions", gatewayhttp.NewChatCompletionsHandler(chatHandlerDeps(d)))
+	r.Post("/v1/completions", completionshttp.NewCompletionsHandler(completionsHandlerDeps(d)))
 	r.Post("/v1/embeddings", embeddingshttp.NewEmbeddingsHandler(embeddingsHandlerDeps(d)))
 	r.Post("/v1/rerank", rerankhttp.NewRerankHandler(rerankHandlerDeps(d)))
 	r.Post("/v1/images/generations", imageshttp.NewGenerationsHandler(imageHandlerDeps(d)))
@@ -65,6 +67,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Post("/v1/audio/translations", audiohttp.NewTranslationHandler(audioHandlerDeps(d)))
 	r.Post("/v1/responses", gatewayhttp.NewResponsesHandler(chatHandlerDeps(d)))
 	r.Post("/v1/messages", gatewayhttp.NewMessagesHandler(chatHandlerDeps(d)))
+	r.Post("/v1/messages/count_tokens", completionshttp.NewCountTokensHandler(completionsHandlerDeps(d)))
 	r.Get("/v1/realtime", handleRealtimeRoadmap)
 	r.Get("/v1/models", controlhttp.NewModelListHandler(controlhttp.ModelListDeps{
 		Auth:    d.inboundAuth,
@@ -491,6 +494,25 @@ func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 
 func embeddingsHandlerDeps(d *deps) embeddingshttp.Deps {
 	return embeddingshttp.Deps{
+		Auth:                  d.inboundAuth,
+		Registry:              d.modelRegistry,
+		Router:                d.routePlanner,
+		ClaimGate:             d.claimGate,
+		QuotaReserver:         d.quotaReserver,
+		RateTables:            d.rateTableSource,
+		PricingRatioResolver:  d.pricingRatioResolver,
+		Selector:              d.selector,
+		CredentialVault:       d.credentialVault,
+		Dispatcher:            d.dispatcher,
+		Settler:               d.settler,
+		BillingPolicyResolver: d.billingPolicyResolver,
+		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
+		RequestClass:          d.cfg.RequestClass,
+	}
+}
+
+func completionsHandlerDeps(d *deps) completionshttp.Deps {
+	return completionshttp.Deps{
 		Auth:                  d.inboundAuth,
 		Registry:              d.modelRegistry,
 		Router:                d.routePlanner,

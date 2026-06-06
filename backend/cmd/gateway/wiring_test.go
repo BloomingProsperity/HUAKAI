@@ -83,6 +83,7 @@ func TestWiring_PricingRatioResolverSharedByChatEmbeddingsRerankImagesAndAudioDe
 	}
 
 	chatDeps := chatHandlerDeps(d)
+	completionsDeps := completionsHandlerDeps(d)
 	embeddingsDeps := embeddingsHandlerDeps(d)
 	rerankDeps := rerankHandlerDeps(d)
 	imageDeps := imageHandlerDeps(d)
@@ -93,6 +94,9 @@ func TestWiring_PricingRatioResolverSharedByChatEmbeddingsRerankImagesAndAudioDe
 	}
 	if embeddingsDeps.PricingRatioResolver != resolver {
 		t.Fatalf("embeddings PricingRatioResolver=%p want shared resolver %p", embeddingsDeps.PricingRatioResolver, resolver)
+	}
+	if completionsDeps.PricingRatioResolver != resolver {
+		t.Fatalf("completions PricingRatioResolver=%p want shared resolver %p", completionsDeps.PricingRatioResolver, resolver)
 	}
 	if rerankDeps.PricingRatioResolver != resolver {
 		t.Fatalf("rerank PricingRatioResolver=%p want shared resolver %p", rerankDeps.PricingRatioResolver, resolver)
@@ -105,6 +109,9 @@ func TestWiring_PricingRatioResolverSharedByChatEmbeddingsRerankImagesAndAudioDe
 	}
 	if imageDeps.RateTables != rateTables || imageDeps.ClaimGate != claimGate || imageDeps.Settler != settler {
 		t.Fatal("image deps did not reuse shared money-path wiring")
+	}
+	if completionsDeps.RateTables != rateTables || completionsDeps.ClaimGate != claimGate || completionsDeps.Settler != settler {
+		t.Fatal("completions deps did not reuse shared money-path wiring")
 	}
 	if rerankDeps.RateTables != rateTables || rerankDeps.ClaimGate != claimGate || rerankDeps.Settler != settler {
 		t.Fatal("rerank deps did not reuse shared money-path wiring")
