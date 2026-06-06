@@ -135,6 +135,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
 		meexporthttp.MountRoutes(r, meexporthttp.Deps{Store: d.billingQueries})
 		checkinhttp.MountRoutes(r, checkinhttp.Deps{Service: d.checkinService})
+		r.Get("/keys/{id}/usage-summary", usageanalyticshttp.NewKeyUsageSummaryHandler(usageanalyticshttp.KeyUsageSummaryDeps{
+			Keys:  d.userKeyService,
+			Store: d.billingQueries,
+		}))
 		r.Get("/invitations", gatewayhttp.NewInvitationSummaryHandler(gatewayhttp.InvitationDeps{
 			Service: d.invitationService,
 		}))

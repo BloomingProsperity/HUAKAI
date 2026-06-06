@@ -40,6 +40,11 @@ type Querier interface {
 	// (tenant_id, api_key_id) so cross-key reads are structurally impossible —
 	// the handler passes ident.APIKeyID, never a client-supplied value.
 	AggregateMyUsageByWeek(ctx context.Context, arg AggregateMyUsageByWeekParams) ([]AggregateMyUsageByWeekRow, error)
+	// Self-serve single-row usage totals for one caller-owned API key. The handler
+	// first verifies (tenant_id, user_id, api_key_id) ownership through userkey
+	// service; this query still carries tenant_id + api_key_id predicates so a
+	// handler bug cannot widen the read to another tenant or another key.
+	AggregateMyUsageTotals(ctx context.Context, arg AggregateMyUsageTotalsParams) (AggregateMyUsageTotalsRow, error)
 	// Platform-admin cost leaderboard by api_key_id. Passing tenant_id=0 keeps
 	// the existing global admin leaderboard behavior; a positive tenant_id narrows
 	// the read-only rollup to that tenant for tenant-focused ops drilldown.

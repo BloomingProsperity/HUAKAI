@@ -245,6 +245,60 @@ func (q *Queries) AggregateMyUsageByWeek(ctx context.Context, arg AggregateMyUsa
 	return items, nil
 }
 
+const aggregateMyUsageTotals = `-- name: AggregateMyUsageTotals :one
+SELECT
+    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text  AS total_cost,
+    COALESCE(sum(ur.tokens_input), 0)::bigint              AS total_tokens_input,
+    COALESCE(sum(ur.tokens_output), 0)::bigint             AS total_tokens_output,
+    COALESCE(sum(ur.cache_read_tokens), 0)::bigint         AS total_cache_read_tokens,
+    COALESCE(sum(ur.cache_creation_tokens), 0)::bigint     AS total_cache_creation_tokens,
+    count(*)::bigint                                       AS request_count
+FROM usage_records ur
+WHERE ur.tenant_id = $1::bigint
+  AND ur.api_key_id = $2::bigint
+  AND ($3::timestamptz IS NULL OR ur.settled_at >= $3::timestamptz)
+  AND ($4::timestamptz IS NULL OR ur.settled_at < $4::timestamptz)
+`
+
+type AggregateMyUsageTotalsParams struct {
+	TenantID int64              `db:"tenant_id" json:"tenant_id"`
+	APIKeyID int64              `db:"api_key_id" json:"api_key_id"`
+	FromTs   pgtype.Timestamptz `db:"from_ts" json:"from_ts"`
+	ToTs     pgtype.Timestamptz `db:"to_ts" json:"to_ts"`
+}
+
+type AggregateMyUsageTotalsRow struct {
+	TotalCost                string `db:"total_cost" json:"total_cost"`
+	TotalTokensInput         int64  `db:"total_tokens_input" json:"total_tokens_input"`
+	TotalTokensOutput        int64  `db:"total_tokens_output" json:"total_tokens_output"`
+	TotalCacheReadTokens     int64  `db:"total_cache_read_tokens" json:"total_cache_read_tokens"`
+	TotalCacheCreationTokens int64  `db:"total_cache_creation_tokens" json:"total_cache_creation_tokens"`
+	RequestCount             int64  `db:"request_count" json:"request_count"`
+}
+
+// Self-serve single-row usage totals for one caller-owned API key. The handler
+// first verifies (tenant_id, user_id, api_key_id) ownership through userkey
+// service; this query still carries tenant_id + api_key_id predicates so a
+// handler bug cannot widen the read to another tenant or another key.
+func (q *Queries) AggregateMyUsageTotals(ctx context.Context, arg AggregateMyUsageTotalsParams) (AggregateMyUsageTotalsRow, error) {
+	row := q.db.QueryRow(ctx, aggregateMyUsageTotals,
+		arg.TenantID,
+		arg.APIKeyID,
+		arg.FromTs,
+		arg.ToTs,
+	)
+	var i AggregateMyUsageTotalsRow
+	err := row.Scan(
+		&i.TotalCost,
+		&i.TotalTokensInput,
+		&i.TotalTokensOutput,
+		&i.TotalCacheReadTokens,
+		&i.TotalCacheCreationTokens,
+		&i.RequestCount,
+	)
+	return i, err
+}
+
 const aggregateUsageLeaderboardByApiKey = `-- name: AggregateUsageLeaderboardByApiKey :many
 SELECT
     ur.api_key_id::text                                          AS key,

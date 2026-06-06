@@ -193,6 +193,32 @@ func TestMyUsageTimeSeriesSQLUsesRequestedGranularityAndCallerScope(t *testing.T
 	}
 }
 
+func TestMyUsageTotalsSQLUsesCallerSelectedKeyScope(t *testing.T) {
+	sql := strings.Join(strings.Fields(aggregateMyUsageTotals), " ")
+	for _, want := range []string{
+		"ur.tenant_id = $1::bigint",
+		"ur.api_key_id = $2::bigint",
+		"($3::timestamptz IS NULL OR ur.settled_at >= $3::timestamptz)",
+		"($4::timestamptz IS NULL OR ur.settled_at < $4::timestamptz)",
+		"COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text AS total_cost",
+		"COALESCE(sum(ur.tokens_input), 0)::bigint AS total_tokens_input",
+		"COALESCE(sum(ur.tokens_output), 0)::bigint AS total_tokens_output",
+		"COALESCE(sum(ur.cache_read_tokens), 0)::bigint AS total_cache_read_tokens",
+		"COALESCE(sum(ur.cache_creation_tokens), 0)::bigint AS total_cache_creation_tokens",
+		"count(*)::bigint AS request_count",
+	} {
+		// Mutation checks: dropping tenant_id leaks cross-tenant usage, dropping
+		// api_key_id aggregates all of the user's keys, and making from/to
+		// mandatory breaks the full-history summary contract.
+		if !strings.Contains(sql, want) {
+			t.Fatalf("my usage totals SQL missing %q in %q", want, sql)
+		}
+	}
+	if strings.Contains(sql, "GROUP BY") {
+		t.Fatalf("my usage totals must return one totals row, not grouped buckets: %q", sql)
+	}
+}
+
 func TestGetUsageRecordByRequestIDSQLScopesToCaller(t *testing.T) {
 	sql := strings.Join(strings.Fields(getUsageRecordByRequestID), " ")
 	for _, want := range []string{

@@ -73,6 +73,24 @@ WHERE ur.tenant_id = sqlc.arg(tenant_id)::bigint
 GROUP BY 1, 2
 ORDER BY 1 DESC, 2 ASC;
 
+-- name: AggregateMyUsageTotals :one
+-- Self-serve single-row usage totals for one caller-owned API key. The handler
+-- first verifies (tenant_id, user_id, api_key_id) ownership through userkey
+-- service; this query still carries tenant_id + api_key_id predicates so a
+-- handler bug cannot widen the read to another tenant or another key.
+SELECT
+    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text  AS total_cost,
+    COALESCE(sum(ur.tokens_input), 0)::bigint              AS total_tokens_input,
+    COALESCE(sum(ur.tokens_output), 0)::bigint             AS total_tokens_output,
+    COALESCE(sum(ur.cache_read_tokens), 0)::bigint         AS total_cache_read_tokens,
+    COALESCE(sum(ur.cache_creation_tokens), 0)::bigint     AS total_cache_creation_tokens,
+    count(*)::bigint                                       AS request_count
+FROM usage_records ur
+WHERE ur.tenant_id = sqlc.arg(tenant_id)::bigint
+  AND ur.api_key_id = sqlc.arg(api_key_id)::bigint
+  AND (sqlc.narg(from_ts)::timestamptz IS NULL OR ur.settled_at >= sqlc.narg(from_ts)::timestamptz)
+  AND (sqlc.narg(to_ts)::timestamptz IS NULL OR ur.settled_at < sqlc.narg(to_ts)::timestamptz);
+
 -- name: AggregateUsageLeaderboardByUser :many
 -- Platform-admin cost leaderboard by user_id. This is the operator surface:
 -- actual_cost is intentionally used to show real upstream spend.
