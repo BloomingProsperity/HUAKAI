@@ -6,13 +6,12 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/accountmode"
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 )
 
 type AdminAccountModesDeps struct {
 	Auth    adminAccountModesAuth
-	Catalog accountmode.Provider
+	Catalog Provider
 }
 
 type adminAccountModesAuth interface {
@@ -42,7 +41,7 @@ func newAccountModeListHandler(d AdminAccountModesDeps) http.HandlerFunc {
 
 		provider := d.Catalog
 		if provider == nil {
-			provider = accountmode.DefaultProvider()
+			provider = DefaultProvider()
 		}
 		catalog, err := provider.Catalog(r.Context())
 		if err != nil {

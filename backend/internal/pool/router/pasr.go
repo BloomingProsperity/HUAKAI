@@ -24,8 +24,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
-	"github.com/BloomingProsperity/HUAKAI/internal/pool/scoring"
 )
 
 // pasrPostMutationReleaseTimeout 给 post-mutation 失败时的 slot release 留独立
@@ -249,7 +247,7 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 	//     剩余并发容量, 避免把请求堆到已经爆满的 hot steward 上
 	//   - score 相等时 LastUsedAt 最久未用胜 (round-robin 兜底, 保留之前行为)
 	score := func(c candidate) float64 {
-		return scoring.Blend(scoring.Candidate{
+		return Blend(Candidate{
 			HasCache: c.hasCache,
 			LoadRate: c.snapshot.LoadRate,
 			Degraded: c.health.State == HealthStateDegraded,
