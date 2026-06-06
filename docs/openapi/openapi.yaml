@@ -6005,6 +6005,116 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-provider-catalog]
+      summary: Create a tenant-scoped provider catalog entry
+      operationId: createAdminProvider
+      description: |
+        Creates a provider/vendor catalog row for the selected tenant. The
+        `code` is unique per tenant among non-deleted providers. platform_admin
+        callers must pass tenant_id; tenant_operator callers may omit it and
+        are scoped to their admin token tenant. Successful mutations write an
+        admin audit event.
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminProviderCatalogCreateRequest' }
+      responses:
+        '201':
+          description: Created provider catalog entry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminProviderCatalogItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/providers/{code}:
+    put:
+      tags: [admin-provider-catalog]
+      summary: Update a tenant-scoped provider catalog entry
+      operationId: updateAdminProvider
+      description: |
+        Updates display name, upstream protocol, and enabled state for a
+        provider selected by tenant scope plus path `code`. Successful
+        mutations write an admin audit event.
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: code
+          required: true
+          schema: { type: string, minLength: 1 }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminProviderCatalogUpdateRequest' }
+      responses:
+        '200':
+          description: Updated provider catalog entry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminProviderCatalogItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    delete:
+      tags: [admin-provider-catalog]
+      summary: Soft-delete a tenant-scoped provider catalog entry
+      operationId: deleteAdminProvider
+      description: |
+        Soft-deletes a provider selected by tenant scope plus path `code`.
+        The operation is guarded: providers with enabled, non-deleted provider
+        accounts are rejected with conflict so account references are not
+        silently orphaned. Successful mutations write an admin audit event.
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: code
+          required: true
+          schema: { type: string, minLength: 1 }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminProviderCatalogDeleteRequest' }
+      responses:
+        '200':
+          description: Provider catalog entry was soft-deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminProviderCatalogDeleteResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/channels:
     get:
@@ -10929,6 +11039,82 @@ components:
         upstream_protocol: { type: string }
         enabled: { type: boolean }
         created_at: { type: string, format: date-time }
+
+    AdminProviderCatalogCreateRequest:
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      type: object
+      additionalProperties: false
+      required: [code, display_name, upstream_protocol, enabled]
+      properties:
+        code: { type: string, minLength: 1 }
+        display_name: { type: string, minLength: 1 }
+        upstream_protocol: { $ref: '#/components/schemas/AdminProviderUpstreamProtocol' }
+        enabled: { type: boolean }
+        reason:
+          type: string
+          description: Optional operator-visible audit reason.
+
+    AdminProviderCatalogUpdateRequest:
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      type: object
+      additionalProperties: false
+      required: [display_name, upstream_protocol, enabled]
+      properties:
+        display_name: { type: string, minLength: 1 }
+        upstream_protocol: { $ref: '#/components/schemas/AdminProviderUpstreamProtocol' }
+        enabled: { type: boolean }
+        reason:
+          type: string
+          description: Optional operator-visible audit reason.
+
+    AdminProviderCatalogDeleteRequest:
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      type: object
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+          description: Optional operator-visible audit reason.
+
+    AdminProviderCatalogDeleteResponse:
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      type: object
+      additionalProperties: false
+      required: [object, id, code, deleted]
+      properties:
+        object: { type: string, enum: [admin_provider_deleted] }
+        id: { type: integer, format: int64 }
+        code: { type: string }
+        deleted: { type: boolean, enum: [true] }
+
+    AdminProviderUpstreamProtocol:
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      type: string
+      enum:
+        - anthropic_messages
+        - openai_chat
+        - openai_responses
+        - openai_codex
+        - gemini
+        - gemini_messages
+        - bedrock
+        - bedrock_invoke
+        - openrouter_chat
+        - grok_chat
+        - deepseek_chat
+        - mistral_chat
+        - groqcloud_chat
+        - together_chat
+        - perplexity_chat
+        - fireworks_chat
+        - anthropic_claude_session
+        - cursor_session
+        - copilot_session
+        - gemini_advanced_session
+        - antigravity
+        - antigravity_session
+        - kiro_session
+        - windsurf_session
 
     AdminProviderCatalogList:
       x-huakai-spec-source: [docs/specs/pool-routing.md]

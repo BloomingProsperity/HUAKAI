@@ -11,6 +11,85 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countActiveProviderAccountsForProvider = `-- name: CountActiveProviderAccountsForProvider :one
+SELECT count(*)::bigint
+FROM provider_accounts pa
+INNER JOIN providers p
+    ON p.id = pa.provider_id
+   AND p.tenant_id = pa.tenant_id
+WHERE p.tenant_id = $1::bigint
+  AND p.code = $2::text
+  AND p.deleted_at IS NULL
+  AND pa.deleted_at IS NULL
+  AND pa.enabled = true
+`
+
+type CountActiveProviderAccountsForProviderParams struct {
+	TenantID int64  `db:"tenant_id" json:"tenant_id"`
+	Code     string `db:"code" json:"code"`
+}
+
+func (q *Queries) CountActiveProviderAccountsForProvider(ctx context.Context, arg CountActiveProviderAccountsForProviderParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveProviderAccountsForProvider, arg.TenantID, arg.Code)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const insertProvider = `-- name: InsertProvider :one
+INSERT INTO providers (
+    tenant_id,
+    code,
+    display_name,
+    upstream_protocol,
+    enabled
+) VALUES (
+    $1::bigint,
+    $2::text,
+    $3::text,
+    $4::text,
+    $5::boolean
+)
+RETURNING id, code, display_name, upstream_protocol, enabled, created_at
+`
+
+type InsertProviderParams struct {
+	TenantID         int64  `db:"tenant_id" json:"tenant_id"`
+	Code             string `db:"code" json:"code"`
+	DisplayName      string `db:"display_name" json:"display_name"`
+	UpstreamProtocol string `db:"upstream_protocol" json:"upstream_protocol"`
+	Enabled          bool   `db:"enabled" json:"enabled"`
+}
+
+type InsertProviderRow struct {
+	ID               int64              `db:"id" json:"id"`
+	Code             string             `db:"code" json:"code"`
+	DisplayName      string             `db:"display_name" json:"display_name"`
+	UpstreamProtocol string             `db:"upstream_protocol" json:"upstream_protocol"`
+	Enabled          bool               `db:"enabled" json:"enabled"`
+	CreatedAt        pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+func (q *Queries) InsertProvider(ctx context.Context, arg InsertProviderParams) (InsertProviderRow, error) {
+	row := q.db.QueryRow(ctx, insertProvider,
+		arg.TenantID,
+		arg.Code,
+		arg.DisplayName,
+		arg.UpstreamProtocol,
+		arg.Enabled,
+	)
+	var i InsertProviderRow
+	err := row.Scan(
+		&i.ID,
+		&i.Code,
+		&i.DisplayName,
+		&i.UpstreamProtocol,
+		&i.Enabled,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const listAdminChannelsByTenant = `-- name: ListAdminChannelsByTenant :many
 SELECT
     id,
@@ -129,4 +208,102 @@ func (q *Queries) ListAdminProvidersByTenant(ctx context.Context, arg ListAdminP
 		return nil, err
 	}
 	return items, nil
+}
+
+const softDeleteProvider = `-- name: SoftDeleteProvider :one
+UPDATE providers p
+SET
+    deleted_at = COALESCE(p.deleted_at, NOW()),
+    updated_at = NOW(),
+    enabled = false
+WHERE p.tenant_id = $1::bigint
+  AND p.code = $2::text
+  AND p.deleted_at IS NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM provider_accounts pa
+      WHERE pa.tenant_id = p.tenant_id
+        AND pa.provider_id = p.id
+        AND pa.deleted_at IS NULL
+        AND pa.enabled = true
+  )
+RETURNING id, code, display_name, upstream_protocol, enabled, created_at
+`
+
+type SoftDeleteProviderParams struct {
+	TenantID int64  `db:"tenant_id" json:"tenant_id"`
+	Code     string `db:"code" json:"code"`
+}
+
+type SoftDeleteProviderRow struct {
+	ID               int64              `db:"id" json:"id"`
+	Code             string             `db:"code" json:"code"`
+	DisplayName      string             `db:"display_name" json:"display_name"`
+	UpstreamProtocol string             `db:"upstream_protocol" json:"upstream_protocol"`
+	Enabled          bool               `db:"enabled" json:"enabled"`
+	CreatedAt        pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+func (q *Queries) SoftDeleteProvider(ctx context.Context, arg SoftDeleteProviderParams) (SoftDeleteProviderRow, error) {
+	row := q.db.QueryRow(ctx, softDeleteProvider, arg.TenantID, arg.Code)
+	var i SoftDeleteProviderRow
+	err := row.Scan(
+		&i.ID,
+		&i.Code,
+		&i.DisplayName,
+		&i.UpstreamProtocol,
+		&i.Enabled,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const updateProvider = `-- name: UpdateProvider :one
+UPDATE providers
+SET
+    display_name = $1::text,
+    upstream_protocol = $2::text,
+    enabled = $3::boolean,
+    updated_at = NOW()
+WHERE tenant_id = $4::bigint
+  AND code = $5::text
+  AND deleted_at IS NULL
+RETURNING id, code, display_name, upstream_protocol, enabled, created_at
+`
+
+type UpdateProviderParams struct {
+	DisplayName      string `db:"display_name" json:"display_name"`
+	UpstreamProtocol string `db:"upstream_protocol" json:"upstream_protocol"`
+	Enabled          bool   `db:"enabled" json:"enabled"`
+	TenantID         int64  `db:"tenant_id" json:"tenant_id"`
+	Code             string `db:"code" json:"code"`
+}
+
+type UpdateProviderRow struct {
+	ID               int64              `db:"id" json:"id"`
+	Code             string             `db:"code" json:"code"`
+	DisplayName      string             `db:"display_name" json:"display_name"`
+	UpstreamProtocol string             `db:"upstream_protocol" json:"upstream_protocol"`
+	Enabled          bool               `db:"enabled" json:"enabled"`
+	CreatedAt        pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+func (q *Queries) UpdateProvider(ctx context.Context, arg UpdateProviderParams) (UpdateProviderRow, error) {
+	row := q.db.QueryRow(ctx, updateProvider,
+		arg.DisplayName,
+		arg.UpstreamProtocol,
+		arg.Enabled,
+		arg.TenantID,
+		arg.Code,
+	)
+	var i UpdateProviderRow
+	err := row.Scan(
+		&i.ID,
+		&i.Code,
+		&i.DisplayName,
+		&i.UpstreamProtocol,
+		&i.Enabled,
+		&i.CreatedAt,
+	)
+	return i, err
 }
