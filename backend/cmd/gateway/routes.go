@@ -30,6 +30,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/meusagehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/passkeyhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/pricingpublichttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/referralhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/rerankhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
@@ -140,6 +141,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		}))
 	})
 	r.Get("/v1/pricing/rate-table", gatewayhttp.NewPricingRateTableHandler(receiptDeps))
+	r.Get("/v1/pricing/page", pricingpublichttp.NewHandler(pricingpublichttp.Deps{
+		Catalog: d.modelRegistry,
+		Pricing: d.rateTableSource,
+	}))
 	r.Get("/v1/pricing/snapshots", gatewayhttp.NewPricingSnapshotsHandler(receiptDeps))
 	r.Get("/v1/pricing/snapshots/{snapshot_id}", gatewayhttp.NewPricingSnapshotHandler(receiptDeps))
 	announcementhttp.MountUserRoutes(r, announcementhttp.UserDeps{
