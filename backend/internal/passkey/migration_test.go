@@ -2,9 +2,17 @@ package passkey
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+// collapseWS normalizes runs of whitespace to a single space so the structural
+// assertions below tolerate cosmetic SQL column alignment (e.g. "JSONB   NOT
+// NULL") while still detecting removal of the actual constraint/index/CHECK.
+func collapseWS(s string) string {
+	return strings.TrimSpace(regexp.MustCompile(`\s+`).ReplaceAllString(s, " "))
+}
 
 func TestMigration0098PasskeyCredentialsShape(t *testing.T) {
 	// Mutation killed: removing the tenant-scoped credential uniqueness or
@@ -13,7 +21,7 @@ func TestMigration0098PasskeyCredentialsShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read migration up: %v", err)
 	}
-	raw := string(up)
+	raw := collapseWS(string(up))
 	required := []string{
 		"CREATE TABLE IF NOT EXISTS passkey_credentials",
 		"UNIQUE (tenant_id, credential_id)",
@@ -21,11 +29,11 @@ func TestMigration0098PasskeyCredentialsShape(t *testing.T) {
 		"ON passkey_credentials (tenant_id, user_id)",
 		"CREATE TABLE IF NOT EXISTS webauthn_session",
 		"session_data JSONB NOT NULL",
-		"expires_at   TIMESTAMPTZ NOT NULL",
+		"expires_at TIMESTAMPTZ NOT NULL",
 		"CHECK (purpose IN ('register', 'login'))",
 	}
 	for _, needle := range required {
-		if !strings.Contains(raw, needle) {
+		if !strings.Contains(raw, collapseWS(needle)) {
 			t.Fatalf("migration missing %q", needle)
 		}
 	}
@@ -38,8 +46,8 @@ func TestMigration0098RollbackRefusesCredentialData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read migration down: %v", err)
 	}
-	raw := string(down)
-	if !strings.Contains(raw, "IF EXISTS (SELECT 1 FROM passkey_credentials)") {
+	raw := collapseWS(string(down))
+	if !strings.Contains(raw, collapseWS("IF EXISTS (SELECT 1 FROM passkey_credentials)")) {
 		t.Fatalf("down migration must refuse rollback when passkey credentials exist:\n%s", raw)
 	}
 	if !strings.Contains(raw, "Owner-gated account-security data plan") {
