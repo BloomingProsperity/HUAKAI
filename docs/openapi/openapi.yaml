@@ -774,6 +774,45 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/me/keys/{id}/usage-summary:
+    get:
+      tags: [user-audit]
+      summary: End-user usage totals for one owned API key
+      operationId: getMyAPIKeyUsageSummary
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-06-apikey-usage-summary-codex.md
+        - backend/internal/usageanalyticshttp/key_summary_handler.go
+        - backend/sql/queries/usage_analytics.sql
+      security:
+        - sessionBearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      description: |
+        Returns a single totals object for one API key owned by the authenticated
+        session user. The path id is verified against the session tenant and
+        user before usage aggregation; a missing key, another user's key, and a
+        key in another tenant all return 404 without revealing existence.
+        Optional `from` and `to` bounds restrict `usage_records.settled_at`;
+        when omitted, totals cover the owned key's full settled history.
+      responses:
+        '200':
+          description: Usage totals for the caller-owned API key.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MeAPIKeyUsageSummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/me/usage:
     get:
       tags: [user-audit]
@@ -12575,6 +12614,36 @@ components:
       properties:
         from: { type: string, format: date-time }
         to: { type: string, format: date-time }
+
+    MeAPIKeyUsageSummary:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/usageanalyticshttp/key_summary_handler.go
+        - backend/sql/queries/usage_analytics.sql
+      required:
+        - api_key_id
+        - total_cost
+        - total_tokens_input
+        - total_tokens_output
+        - total_cache_read_tokens
+        - total_cache_creation_tokens
+        - request_count
+        - from
+        - to
+      properties:
+        api_key_id: { type: integer, format: int64, minimum: 1 }
+        total_cost:
+          type: string
+          description: 'numeric(20,8) aggregate cost rendered as string for client BigNumber safety.'
+          pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
+        total_tokens_input: { type: integer, format: int64, minimum: 0 }
+        total_tokens_output: { type: integer, format: int64, minimum: 0 }
+        total_cache_read_tokens: { type: integer, format: int64, minimum: 0 }
+        total_cache_creation_tokens: { type: integer, format: int64, minimum: 0 }
+        request_count: { type: integer, format: int64, minimum: 0 }
+        from: { type: [string, 'null'], format: date-time }
+        to: { type: [string, 'null'], format: date-time }
 
     MeUsageListResponse:
       type: object
