@@ -38,6 +38,10 @@ type PGStore interface {
 	FailReconciliationJob(ctx context.Context, input ReconciliationFailure) error
 }
 
+type ProgressReadStore interface {
+	ListCurrentWindowsForScope(ctx context.Context, tenantID int64, scopeKind ScopeKind, scopeID string, at time.Time) ([]CurrentWindowRead, error)
+}
+
 type PolicyFilter struct {
 	TenantID  int64
 	Scopes    []Scope

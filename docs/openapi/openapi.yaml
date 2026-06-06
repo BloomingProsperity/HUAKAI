@@ -5884,6 +5884,46 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/users/me/subscriptions/me/progress:
+    get:
+      tags: [user-subscriptions]
+      summary: Get the authenticated User's current subscription quota progress
+      operationId: getMySubscriptionProgress
+      description: |
+        Returns the caller's currently-effective subscription, or null if none,
+        plus read-only consumed-vs-cap quota progress for that subscription's
+        active daily, weekly, and monthly cost windows.
+      x-huakai-spec-source: [docs/process/plans/2026-06-06-subscription-progress-codex.md]
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: Current subscription progress by quota window.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscription: { type: object, nullable: true }
+                  progress:
+                    type: array
+                    items:
+                      type: object
+                      required: [window_kind, cap, consumed, remaining, overage, request_count, window_start, window_end]
+                      properties:
+                        window_kind:
+                          type: string
+                          enum: [calendar_day, calendar_week, calendar_month]
+                        cap: { type: string, description: Decimal USD cap from quota_policies.limit_value. }
+                        consumed: { type: string, description: Decimal USD settled plus reserved. }
+                        remaining: { type: string, description: Decimal USD max(0, cap - consumed). }
+                        overage: { type: string, description: Decimal USD overage tracked on the quota window. }
+                        request_count: { type: integer, format: int64 }
+                        window_start: { type: string, format: date-time }
+                        window_end: { type: string, format: date-time }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/users/me/subscriptions/cancel-renew:
     post:
       tags: [user-subscriptions]

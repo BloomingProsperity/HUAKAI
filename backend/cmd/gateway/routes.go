@@ -34,6 +34,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingpublichttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/publicrankinghttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 	"github.com/BloomingProsperity/HUAKAI/internal/referralhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/rerankhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
@@ -215,6 +216,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
 		subscriptionhttp.MountSubscriptionUserRoutes(r, subscriptionhttp.UserDeps{
 			Service:    d.subscriptionService,
+			Quota:      quota.NewPostgresStore(d.pgPool),
 			Payment:    d.paymentService,
 			TradeNoGen: paymenthttp.ExternalTradeNoForTenant,
 		})

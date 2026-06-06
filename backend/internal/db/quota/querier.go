@@ -38,6 +38,8 @@ type Querier interface {
 	// 约束: 所有读写定位都显式带 tenant_id, 防跨租户误读/误改。
 	// Reserve 前按租户、scope、metric 取当前可用策略; scopes 为 [{"kind": "...", "id": "..."}]。
 	ListActiveQuotaPoliciesForScopes(ctx context.Context, arg ListActiveQuotaPoliciesForScopesParams) ([]ListActiveQuotaPoliciesForScopesRow, error)
+	// Subscription progress read projection: active cost_usd policies for one tenant/scope plus the current window counters.
+	ListCurrentQuotaWindowsForScope(ctx context.Context, arg ListCurrentQuotaWindowsForScopeParams) ([]ListCurrentQuotaWindowsForScopeRow, error)
 	// 租户内领取到期 job; 后续切片 B 决定 worker 调度粒度。
 	ListDueQuotaReconciliationJobs(ctx context.Context, arg ListDueQuotaReconciliationJobsParams) ([]ListDueQuotaReconciliationJobsRow, error)
 	// worker 领取 job 后标记 running; 超过 15 分钟的 running 视为可回收 lease。

@@ -221,6 +221,50 @@ func windowCounterFromGet(row dbquota.GetQuotaWindowForUpdateRow) WindowCounter 
 	}
 }
 
+func currentWindowReadFromDB(row dbquota.ListCurrentQuotaWindowsForScopeRow, at time.Time) CurrentWindowRead {
+	policy := Policy{
+		TenantID: row.TenantID,
+		ID:       row.PolicyID,
+		Scope: Scope{
+			TenantID: row.TenantID,
+			Kind:     ScopeKind(row.ScopeKind),
+			ID:       row.ScopeID,
+		},
+		Metric: Metric(row.Metric),
+		Window: Window{
+			Kind:    WindowKind(row.WindowKind),
+			Seconds: int64(row.WindowSeconds),
+		},
+		LimitValue: decimalFromPG(row.LimitValue),
+		BurstValue: decimalFromPG(row.BurstValue),
+		Mode:       Mode(row.Mode),
+		Priority:   int(row.Priority),
+		ValidFrom:  pgTime(row.ValidFrom),
+		ValidUntil: pgTimePtr(row.ValidUntil),
+	}
+	window := resolvePolicyWindow(policy, at)
+	read := CurrentWindowRead{
+		TenantID:   row.TenantID,
+		PolicyID:   row.PolicyID,
+		WindowID:   row.WindowID,
+		Scope:      policy.Scope,
+		Metric:     policy.Metric,
+		Window:     window,
+		LimitValue: policy.LimitValue,
+		Version:    int(row.Version),
+	}
+	storedStart := pgTime(row.WindowStart)
+	storedEnd := pgTime(row.WindowEnd)
+	if row.WindowID == 0 || !storedStart.Equal(window.Start) || !storedEnd.Equal(window.End) {
+		return read
+	}
+	read.ReservedValue = decimalFromPG(row.ReservedValue)
+	read.SettledValue = decimalFromPG(row.SettledValue)
+	read.OverageValue = decimalFromPG(row.OverageValue)
+	read.RequestCount = row.RequestCount
+	return read
+}
+
 func windowCounterFromReserve(row dbquota.IncrementQuotaWindowReservedRow) WindowCounter {
 	return WindowCounter{
 		TenantID:      row.TenantID,

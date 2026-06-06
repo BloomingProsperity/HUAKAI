@@ -152,6 +152,22 @@ type WindowCounter struct {
 	Version       int
 }
 
+// CurrentWindowRead is the read-only subscription/admin projection for a policy's current window.
+type CurrentWindowRead struct {
+	TenantID      int64
+	PolicyID      int64
+	WindowID      int64
+	Scope         Scope
+	Metric        Metric
+	Window        Window
+	LimitValue    decimal.Decimal
+	ReservedValue decimal.Decimal
+	SettledValue  decimal.Decimal
+	OverageValue  decimal.Decimal
+	RequestCount  int64
+	Version       int
+}
+
 // ConcurrencySlot 是本地 scope 并发槽。provider-account in-flight 不由本包维护。
 type ConcurrencySlot struct {
 	TenantID       int64
