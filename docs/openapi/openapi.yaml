@@ -61,6 +61,8 @@ tags:
     description: User voucher redemption. F-BILL-002.
   - name: user-recharges
     description: Authenticated user wallet recharge order creation. F-PAY-001.
+  - name: user-checkin
+    description: Opt-in authenticated user daily check-in balance rewards.
   - name: user-notifications
     description: Authenticated user notification delivery settings for balance alerts.
   - name: payment-webhooks
@@ -1372,6 +1374,59 @@ paths:
                     items: { $ref: '#/components/schemas/CostDispute' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/me/checkin:
+    get:
+      tags: [user-checkin]
+      summary: Get authenticated user's daily check-in status
+      operationId: getMyDailyCheckinStatus
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-06-daily-checkin-codex.md
+      security:
+        - sessionBearerAuth: []
+      parameters:
+        - in: query
+          name: month
+          required: false
+          schema:
+            type: string
+            pattern: '^[0-9]{4}-[0-9]{2}$'
+          description: UTC calendar month; defaults to the current UTC month.
+      responses:
+        '200':
+          description: Current check-in configuration and user's month records.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DailyCheckinStatusResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [user-checkin]
+      summary: Claim authenticated user's UTC daily check-in reward
+      operationId: claimMyDailyCheckinReward
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-06-daily-checkin-codex.md
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: Reward credited exactly once for the UTC calendar day.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DailyCheckinClaimResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: Daily check-in is disabled for this deployment.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '409':
+          description: Reward was already claimed for this UTC calendar day.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/admin/disputes/{id}/resolve:
@@ -8254,6 +8309,75 @@ components:
       properties:
         key: { type: string }
         deleted: { type: boolean }
+
+    DailyCheckinRecord:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-06-daily-checkin-codex.md
+      required: [checkin_date, reward_cents, currency_code, created_at]
+      properties:
+        checkin_date:
+          type: string
+          format: date
+          description: UTC calendar date credited at most once.
+        reward_cents:
+          type: integer
+          format: int64
+          minimum: 0
+        currency_code:
+          type: string
+          enum: [USD]
+        billing_event_id:
+          type: integer
+          format: int64
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+
+    DailyCheckinStatusResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-06-daily-checkin-codex.md
+      required: [enabled, min_cents, max_cents, month, checked_in_today, records]
+      properties:
+        enabled: { type: boolean }
+        min_cents:
+          type: integer
+          format: int64
+          minimum: 1
+        max_cents:
+          type: integer
+          format: int64
+          minimum: 1
+        month:
+          type: string
+          pattern: '^[0-9]{4}-[0-9]{2}$'
+        checked_in_today: { type: boolean }
+        records:
+          type: array
+          items: { $ref: '#/components/schemas/DailyCheckinRecord' }
+
+    DailyCheckinClaimResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-06-daily-checkin-codex.md
+      required: [reward_cents, checkin_date, new_balance]
+      properties:
+        reward_cents:
+          type: integer
+          format: int64
+          minimum: 1
+        checkin_date:
+          type: string
+          format: date
+        new_balance:
+          type: integer
+          format: int64
+          description: Payment-source balance in USD cents after the reward credit.
 
     ErrorResponse:
       type: object
