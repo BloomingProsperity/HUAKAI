@@ -24,6 +24,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/imageshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/meusagehttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/passkeyhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpadmin"
@@ -126,6 +127,9 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 
 	r.Route("/v1/auth", func(r chi.Router) {
 		gatewayhttp.MountAuthRoutes(r, authHandlerDeps(d, logger))
+		r.Route("/passkey", func(r chi.Router) {
+			passkeyhttp.MountLoginRoutes(r, passkeyHandlerDeps(d))
+		})
 		// GET /v1/auth/me 需已认证 session(同块的 login/register 等不需要), 故用 per-route session 中间件,
 		// 不另起 /v1/auth Route 组(chi 同前缀重复 Mount 会 panic)。
 		controlhttp.MountAuthMeRoutes(r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)), controlhttp.AuthMeDeps{Resolver: d.panelAuthResolver})
@@ -133,6 +137,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
 			controlhttp.MountTwoFARoutes(r, controlhttp.TwoFADeps{Service: d.twoFactor, Settings: d.platformSettings, Sessions: d.userSessions})
 		})
+	})
+	r.Route("/v1/me/passkeys", func(r chi.Router) {
+		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
+		passkeyhttp.MountUserRoutes(r, passkeyHandlerDeps(d))
 	})
 
 	r.Route("/v1/sessions", func(r chi.Router) {
@@ -413,6 +421,23 @@ func sessionHandlerDeps(d *deps, logger *zap.Logger) gatewayhttp.SessionHandlerD
 	return gatewayhttp.SessionHandlerDeps{
 		Sessions:         d.userSessions,
 		EventSink:        newAuthEventSink(logger),
+		ClientIPResolver: d.clientIPResolver,
+	}
+}
+
+func passkeyHandlerDeps(d *deps) passkeyhttp.Deps {
+	if d == nil {
+		return passkeyhttp.Deps{}
+	}
+	var users passkeyhttp.UserStore
+	if d.userAuth != nil {
+		users = d.userAuth.Store
+	}
+	return passkeyhttp.Deps{
+		Passkeys:         d.passkeys,
+		Sessions:         d.userSessions,
+		Users:            users,
+		StepUp:           passkeyhttp.NewLocalStepUpVerifier(users, d.twoFactor),
 		ClientIPResolver: d.clientIPResolver,
 	}
 }

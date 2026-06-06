@@ -50,6 +50,7 @@ import (
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/otelbridge"
 	"github.com/BloomingProsperity/HUAKAI/internal/panelauth"
+	"github.com/BloomingProsperity/HUAKAI/internal/passkey"
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
@@ -112,6 +113,7 @@ type deps struct {
 	authEmailSender          gatewayhttp.AuthEmailSender
 	userAuth                 *userauth.Service
 	userSessions             *usersession.Service
+	passkeys                 *passkey.Service
 	twoFactor                *twofa.Service
 	loginThrottle            *loginthrottle.Limiter
 	userKeyService           *userkey.Service
@@ -634,6 +636,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		return nil, err
 	}
 	twoFactorService := twofa.NewService(twofa.NewPostgresStore(pgPool), credentialKeys)
+	passkeyService := passkey.NewService(
+		passkey.NewPostgresStore(pgPool),
+		userAuthService.Store,
+		passkey.NewPlatformSettingsConfigSource(platformSettingsService),
+	)
 
 	auditSigner, auditLedger, auditPubkeyRegistry, err := buildAuditServices(ctx, pgPool, logger)
 	if err != nil {
@@ -795,6 +802,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		userAuth:              userAuthService,
 		pgPool:                pgPool,
 		userSessions:          userSessionService,
+		passkeys:              passkeyService,
 		twoFactor:             twoFactorService,
 		loginThrottle:         loginThrottle,
 		userKeyService:        userkey.NewService(pgPool, nil),

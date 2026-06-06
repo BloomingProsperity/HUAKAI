@@ -53,6 +53,8 @@ tags:
     description: Internal Hermes runner bootstrap, JWT refresh, and public-key sync endpoints.
   - name: auth
     description: HUAKAI platform User authentication. F-AUTH-007.
+  - name: user-passkeys
+    description: Authenticated User passkey registration, listing, and deletion.
   - name: sessions
     description: HUAKAI platform User session management. F-SESSION-001.
   - name: invitations
@@ -1788,6 +1790,65 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/auth/passkey/login/begin:
+    post:
+      tags: [auth]
+      summary: Start discoverable passkey login
+      operationId: authPasskeyLoginBegin
+      x-huakai-spec-source:
+        - backend/internal/passkeyhttp/handler.go
+        - backend/internal/passkey/service.go
+      security: []
+      description: |
+        Starts a WebAuthn discoverable-credential login ceremony using the configured RP ID and
+        allowed origins. The challenge is stored server-side and expires after the configured TTL.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasskeyLoginBeginRequest' }
+      responses:
+        '201':
+          description: PublicKeyCredentialRequestOptions plus server-side ceremony id.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PasskeyBeginResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/auth/passkey/login/finish:
+    post:
+      tags: [auth]
+      summary: Complete discoverable passkey login
+      operationId: authPasskeyLoginFinish
+      x-huakai-spec-source:
+        - backend/internal/passkeyhttp/handler.go
+        - backend/internal/passkey/service.go
+        - docs/specs/session-management.md
+      security: []
+      description: |
+        Consumes the server-side ceremony session exactly once, validates the authenticator
+        assertion against configured RP/origin policy, rejects sign-count regression, and issues
+        the same HUAKAI session token bundle used by password login.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasskeyLoginFinishRequest' }
+      responses:
+        '200':
+          description: Authenticated user plus newly issued session tokens.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSessionResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/auth/verify-email:
     post:
       tags: [auth]
@@ -1941,6 +2002,11 @@ paths:
             - stream_timeout_seconds
             - cooldown_429_seconds
             - cooldown_529_seconds
+            - passkey_enabled
+            - passkey_registration_enabled
+            - passkey_rp_id
+            - passkey_rp_display_name
+            - passkey_rp_origins
     get:
       tags: [admin-platform-settings]
       summary: Read one allow-listed platform setting
@@ -2209,6 +2275,121 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/me/passkeys:
+    get:
+      tags: [user-passkeys]
+      summary: List the authenticated user's passkeys
+      operationId: listMyPasskeys
+      x-huakai-spec-source:
+        - backend/internal/passkeyhttp/handler.go
+        - backend/internal/passkey/service.go
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: Tenant/user-scoped passkey summaries.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PasskeyListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/me/passkeys/register/begin:
+    post:
+      tags: [user-passkeys]
+      summary: Start passkey registration for the authenticated user
+      operationId: beginMyPasskeyRegistration
+      x-huakai-spec-source:
+        - backend/internal/passkeyhttp/handler.go
+        - backend/internal/passkey/service.go
+      security:
+        - sessionBearerAuth: []
+      description: |
+        Requires a recent password or two-factor step-up proof. The WebAuthn challenge is stored
+        server-side and bound to the authenticated tenant/user until finish or expiry.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasskeyRegisterBeginRequest' }
+      responses:
+        '201':
+          description: PublicKeyCredentialCreationOptions plus server-side ceremony id.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PasskeyBeginResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/me/passkeys/register/finish:
+    post:
+      tags: [user-passkeys]
+      summary: Complete passkey registration for the authenticated user
+      operationId: finishMyPasskeyRegistration
+      x-huakai-spec-source:
+        - backend/internal/passkeyhttp/handler.go
+        - backend/internal/passkey/service.go
+      security:
+        - sessionBearerAuth: []
+      description: |
+        Consumes the server-side registration ceremony exactly once and stores the validated
+        credential in the caller's tenant/user scope.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasskeyRegisterFinishRequest' }
+      responses:
+        '201':
+          description: Stored passkey summary.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PasskeyResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/me/passkeys/{id}:
+    delete:
+      tags: [user-passkeys]
+      summary: Delete one of the authenticated user's passkeys
+      operationId: deleteMyPasskey
+      x-huakai-spec-source:
+        - backend/internal/passkeyhttp/handler.go
+        - backend/internal/passkey/service.go
+      security:
+        - sessionBearerAuth: []
+      description: Requires a recent password or two-factor step-up proof.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasskeyDeleteRequest' }
+      responses:
+        '200':
+          description: Passkey deleted from the caller's own tenant/user scope.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [deleted]
+                properties:
+                  deleted: { type: boolean, enum: [true] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/sessions/refresh:
@@ -6658,6 +6839,134 @@ components:
       properties:
         session: { $ref: '#/components/schemas/SessionTokenBundle' }
 
+    WebAuthnPublicKeyOptions:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source:
+        - backend/internal/passkey/webauthn.go
+      description: Browser WebAuthn PublicKeyCredentialCreationOptions or PublicKeyCredentialRequestOptions.
+
+    WebAuthnCredentialJSON:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source:
+        - backend/internal/passkey/webauthn.go
+      description: Browser JSON form of a WebAuthn PublicKeyCredential response.
+
+    PasskeyStepUpProof:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/passkeyhttp/stepup.go
+      description: One recent secure proof is required for passkey registration and deletion.
+      properties:
+        password: { type: string, format: password }
+        two_factor_code:
+          type: string
+          minLength: 1
+          description: Six-digit TOTP or one-time backup code.
+
+    PasskeyRegisterBeginRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/passkeyhttp/handler.go
+      required: [step_up]
+      properties:
+        name: { type: string, maxLength: 120 }
+        step_up: { $ref: '#/components/schemas/PasskeyStepUpProof' }
+
+    PasskeyRegisterFinishRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/passkeyhttp/handler.go
+      required: [session_id, credential, step_up]
+      properties:
+        session_id: { type: string, minLength: 1 }
+        name: { type: string, maxLength: 120 }
+        step_up: { $ref: '#/components/schemas/PasskeyStepUpProof' }
+        credential: { $ref: '#/components/schemas/WebAuthnCredentialJSON' }
+
+    PasskeyLoginBeginRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/passkeyhttp/handler.go
+      required: [tenant_id]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+
+    PasskeyLoginFinishRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/passkeyhttp/handler.go
+      required: [tenant_id, session_id, credential]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        session_id: { type: string, minLength: 1 }
+        credential: { $ref: '#/components/schemas/WebAuthnCredentialJSON' }
+        device_info: { type: object, additionalProperties: true }
+
+    PasskeyDeleteRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/passkeyhttp/handler.go
+      required: [step_up]
+      properties:
+        step_up: { $ref: '#/components/schemas/PasskeyStepUpProof' }
+
+    PasskeyBeginResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/passkey/types.go
+      required: [session_id, public_key, expires_at]
+      properties:
+        session_id: { type: string }
+        public_key: { $ref: '#/components/schemas/WebAuthnPublicKeyOptions' }
+        expires_at: { type: string, format: date-time }
+
+    PasskeyCredentialSummary:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/passkey/types.go
+      required: [id, clone_warning, sign_count, created_at]
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        transports:
+          type: array
+          items: { type: string }
+        attestation_type: { type: string }
+        clone_warning: { type: boolean }
+        sign_count: { type: integer, minimum: 0 }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: [string, 'null'], format: date-time }
+
+    PasskeyResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/passkeyhttp/handler.go
+      required: [passkey]
+      properties:
+        passkey: { $ref: '#/components/schemas/PasskeyCredentialSummary' }
+
+    PasskeyListResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/passkeyhttp/handler.go
+      required: [passkeys]
+      properties:
+        passkeys:
+          type: array
+          items: { $ref: '#/components/schemas/PasskeyCredentialSummary' }
+
     SessionRefreshRequest:
       type: object
       additionalProperties: false
@@ -7143,6 +7452,7 @@ components:
       additionalProperties: false
       x-huakai-spec-source:
         - backend/internal/platformsettingshttp/handler.go
+        - backend/internal/platformsettings/types.go
       required: [key, value, source, updated_at, updated_by]
       properties:
         key:
@@ -7159,6 +7469,11 @@ components:
             - stream_timeout_seconds
             - cooldown_429_seconds
             - cooldown_529_seconds
+            - passkey_enabled
+            - passkey_registration_enabled
+            - passkey_rp_id
+            - passkey_rp_display_name
+            - passkey_rp_origins
         value: { type: string }
         source:
           type: string
