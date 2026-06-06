@@ -164,6 +164,79 @@ func TestAT_SECURITY_W1_B14_MemoryLedgerTenantScopedLookup(t *testing.T) {
 	}
 }
 
+func TestMemoryLedger_ListByRangeTenantScopedAndBounded(t *testing.T) {
+	// Mutation: remove the tenant_scope_ref comparison inside ListByRange; this
+	// test fails because tenant B's request appears in tenant A's export rows.
+	signer, _ := sign.GenerateKey()
+	l, _ := NewMemoryLedger(signer)
+	ctx := context.Background()
+	_, _ = l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "req_a_before", TenantID: 7, Timestamp: "2026-06-01T00:00:00Z"}))
+	_, _ = l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "req_a_in_1", TenantID: 7, Timestamp: "2026-06-02T00:00:00Z"}))
+	_, _ = l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "req_a_in_2", TenantID: 7, Timestamp: "2026-06-03T00:00:00Z"}))
+	_, _ = l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "req_b_in", TenantID: 8, Timestamp: "2026-06-02T12:00:00Z"}))
+
+	from := time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 6, 3, 23, 59, 59, 0, time.UTC)
+	rows, err := l.ListByRange(ctx, TenantScopeRef(7), from, to, 10)
+	if err != nil {
+		t.Fatalf("ListByRange: %v", err)
+	}
+	got := ledgerRequestIDs(rows)
+	want := []string{"req_a_in_1", "req_a_in_2"}
+	if !equalStrings(got, want) {
+		t.Fatalf("range request ids=%v want %v", got, want)
+	}
+
+	limited, err := l.ListByRange(ctx, TenantScopeRef(7), from, to, 1)
+	if err != nil {
+		t.Fatalf("ListByRange limited: %v", err)
+	}
+	if got := ledgerRequestIDs(limited); !equalStrings(got, []string{"req_a_in_1"}) {
+		t.Fatalf("limited range request ids=%v want [req_a_in_1]", got)
+	}
+}
+
+func TestMemoryLedger_ListByRequestIDsTenantScoped(t *testing.T) {
+	// Mutation: drop tenant filtering in ListByRequestIDs; this test fails
+	// because req_b leaks into tenant A's selected proof entries.
+	signer, _ := sign.GenerateKey()
+	l, _ := NewMemoryLedger(signer)
+	ctx := context.Background()
+	_, _ = l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "req_a_1", TenantID: 7}))
+	_, _ = l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "req_a_2", TenantID: 7}))
+	_, _ = l.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "req_b", TenantID: 8}))
+
+	rows, err := l.ListByRequestIDs(ctx, TenantScopeRef(7), []string{"req_b", "req_a_2", "missing", "req_a_1"}, 10)
+	if err != nil {
+		t.Fatalf("ListByRequestIDs: %v", err)
+	}
+	got := ledgerRequestIDs(rows)
+	want := []string{"req_a_1", "req_a_2"}
+	if !equalStrings(got, want) {
+		t.Fatalf("request id rows=%v want %v", got, want)
+	}
+}
+
+func ledgerRequestIDs(entries []LedgerEntry) []string {
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, entry.RequestID)
+	}
+	return out
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestMemoryLedger_SnapshotIsDeepCopy(t *testing.T) {
 	signer, _ := sign.GenerateKey()
 	l, _ := NewMemoryLedger(signer)

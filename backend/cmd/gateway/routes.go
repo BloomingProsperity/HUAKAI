@@ -15,6 +15,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/adminuserhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/announcementhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/audiohttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/auditexporthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/captcha"
 	"github.com/BloomingProsperity/HUAKAI/internal/checkinhttp"
@@ -106,6 +107,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		r.Get("/verify", gatewayhttp.NewAuditVerifyHandler(auditVerifyDeps))
 		r.Post("/verify", gatewayhttp.NewAuditVerifyHandler(auditVerifyDeps))
 		r.Get("/merkle-tree.json", gatewayhttp.NewAuditMerkleTreeHandler(auditVerifyDeps))
+		auditexporthttp.MountRoutes(r, auditexporthttp.Deps{
+			Ledger:   auditExportLedgerFrom(d.auditLedger),
+			Registry: d.auditPubkeyRegistry,
+		})
 	})
 
 	receiptDeps := gatewayhttp.CostReceiptHandlerDeps{
@@ -250,6 +255,11 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 
 	mountAdminRoutes(r, d)
 	logger.Info("routes mounted")
+}
+
+func auditExportLedgerFrom(ledger any) auditexporthttp.Ledger {
+	out, _ := ledger.(auditexporthttp.Ledger)
+	return out
 }
 
 func handleRealtimeRoadmap(w http.ResponseWriter, _ *http.Request) {
