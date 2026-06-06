@@ -68,6 +68,10 @@ func (f *paymentFixture) cleanup() {
 	ctx := context.Background()
 	for _, tenantID := range []int64{f.tenantA, f.tenantB} {
 		// FK 顺序: audit→orders, billing_events→payment_credits/payment_refunds, money facts→orders, orders→users。
+		_, _ = f.pool.Exec(ctx, `DELETE FROM referral_reward_audit_events WHERE tenant_id=$1`, tenantID)
+		_, _ = f.pool.Exec(ctx, `DELETE FROM referral_rewards WHERE tenant_id=$1`, tenantID)
+		_, _ = f.pool.Exec(ctx, `DELETE FROM referrals WHERE tenant_id=$1`, tenantID)
+		_, _ = f.pool.Exec(ctx, `DELETE FROM invitations WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM daily_checkin WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM payment_audit_events WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM payment_audit_log WHERE tenant_id=$1`, tenantID)

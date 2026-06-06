@@ -677,8 +677,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		Store:       notificationStore,
 		EmailSender: notificationEmailSender,
 	})
+	paymentStore := payment.NewPostgresStore(pgPool)
+	paymentService := payment.NewService(paymentStore, paymentServiceOptions(cfg)...)
 	settler, receiptStore, receiptFormatter, refundQueue, rateTableSource, completionBus, err := buildSettlementServices(
-		ctx, pgPool, auditSigner, auditLedger, dlqStore, dlqService, replicaTarget, opts.eventBus, auditRefPolicy, logger,
+		ctx, pgPool, auditSigner, auditLedger, dlqStore, dlqService, replicaTarget, opts.eventBus, auditRefPolicy, logger, paymentService, platformSettingsService,
 	)
 	if err != nil {
 		return nil, err
@@ -758,8 +760,6 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	modelSyncService := buildModelSyncService(opts.modelSync, modelRegistry)
 	pricingRatioStore := pricingcatalog.NewPostgresStoreWithAuditSigner(pgPool, auditSigner)
 	pricingRatioResolver := pricingcatalog.NewRatioResolver(pricingRatioStore, 0)
-	paymentStore := payment.NewPostgresStore(pgPool)
-	paymentService := payment.NewService(paymentStore, paymentServiceOptions(cfg)...)
 	checkinService := checkin.NewService(checkin.Deps{
 		Store:    checkin.NewPostgresStore(pgPool),
 		Payment:  paymentService,

@@ -2,9 +2,7 @@ package invitation
 
 import (
 	"context"
-	"errors"
 	"os"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -80,11 +78,8 @@ func TestQualifyPendingReferralAlreadyQualifiedIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestQualifyPendingReferralIssuesRewardCreditTierAndAudit(t *testing.T) {
-	t.Setenv("HUAKAI_REFERRAL_REWARD_USD_MICROS", "1250000")
-	t.Setenv("HUAKAI_REFERRAL_TIER_SILVER_THRESHOLD", "1")
-	t.Setenv("HUAKAI_REFERRAL_TIER_GOLD_THRESHOLD", "2")
-	t.Setenv("HUAKAI_REFERRAL_TIER_PLATINUM_THRESHOLD", "3")
+func TestQualifyPendingReferralRemainsQualifyOnly(t *testing.T) {
+	// Mutation: calling the old invitation-local reward path from QualifyPendingReferral makes rewardCalls nonzero.
 	store := &qualificationStore{
 		referrals: []qualificationReferral{{
 			id:             91,
@@ -102,201 +97,52 @@ func TestQualifyPendingReferralIssuesRewardCreditTierAndAudit(t *testing.T) {
 	}))
 
 	if err := service.QualifyPendingReferral(context.Background(), 7, 7001, 4242); err != nil {
-		t.Fatalf("QualifyPendingReferral reward: %v", err)
+		t.Fatalf("QualifyPendingReferral: %v", err)
 	}
 
 	got := store.referral(7, 7001)
-	if got.status != "rewarded" {
-		t.Fatalf("referral status=%q want rewarded after positive reward", got.status)
-	}
-	if len(store.rewards) != 1 {
-		t.Fatalf("rewards=%d want 1; removing reward issuance leaves this at zero", len(store.rewards))
-	}
-	reward := store.rewards[0]
-	if reward.referralID != 91 || reward.referrerUserID != 42 || reward.amountUSDMicros != 1250000 {
-		t.Fatalf("reward=%+v want referral=91 referrer=42 amount=1250000", reward)
-	}
-	if got := store.referrerBalances[42]; got != 1250000 {
-		t.Fatalf("referrer balance micros=%d want 1250000", got)
-	}
-	progress := store.tierProgress[42]
-	if progress.totalQualifiedReferrals != 1 || progress.currentTier != "silver" {
-		t.Fatalf("tier progress=%+v want total=1 current=silver", progress)
-	}
-	if len(store.rewardAudits) != 1 || store.rewardAudits[0].eventType != "REWARD_ISSUED" {
-		t.Fatalf("reward audits=%+v want one REWARD_ISSUED", store.rewardAudits)
-	}
-}
-
-func TestQualifyPendingReferralRewardReplayIsSingleIssue(t *testing.T) {
-	t.Setenv("HUAKAI_REFERRAL_REWARD_USD_MICROS", "2500000")
-	store := &qualificationStore{
-		referrals: []qualificationReferral{{
-			id:             92,
-			tenantID:       7,
-			refereeUserID:  7002,
-			referrerUserID: 43,
-			status:         "pending",
-		}},
-		rewardedReferralIDs: map[int64]bool{},
-		referrerBalances:    map[int64]int64{},
-		tierProgress:        map[int64]qualificationTierProgress{},
-	}
-	service := NewService(store)
-
-	if err := service.QualifyPendingReferral(context.Background(), 7, 7002, 4243); err != nil {
-		t.Fatalf("first QualifyPendingReferral reward: %v", err)
-	}
-	if err := service.QualifyPendingReferral(context.Background(), 7, 7002, 4243); err != nil {
-		t.Fatalf("replay QualifyPendingReferral reward: %v", err)
-	}
-
-	if len(store.rewards) != 1 {
-		t.Fatalf("rewards=%d want 1; deleting the reward idempotency guard double-issues", len(store.rewards))
-	}
-	if got := store.referrerBalances[43]; got != 2500000 {
-		t.Fatalf("referrer balance micros=%d want one 2500000 credit", got)
-	}
-	if progress := store.tierProgress[43]; progress.totalQualifiedReferrals != 1 {
-		t.Fatalf("tier progress total=%d want 1 after replay", progress.totalQualifiedReferrals)
-	}
-}
-
-func TestQualifyPendingReferralRewardZeroQualifiesAndSkipsMoney(t *testing.T) {
-	t.Setenv("HUAKAI_REFERRAL_REWARD_USD_MICROS", "0")
-	store := &qualificationStore{
-		referrals: []qualificationReferral{{
-			id:             93,
-			tenantID:       7,
-			refereeUserID:  7003,
-			referrerUserID: 44,
-			status:         "pending",
-		}},
-		rewardedReferralIDs: map[int64]bool{},
-		referrerBalances:    map[int64]int64{},
-		tierProgress:        map[int64]qualificationTierProgress{},
-	}
-	service := NewService(store)
-
-	if err := service.QualifyPendingReferral(context.Background(), 7, 7003, 4244); err != nil {
-		t.Fatalf("QualifyPendingReferral reward disabled: %v", err)
-	}
-
-	got := store.referral(7, 7003)
 	if got.status != "qualified" {
-		t.Fatalf("referral status=%q want qualified when reward amount is zero", got.status)
+		t.Fatalf("referral status=%q want qualified", got.status)
 	}
-	if len(store.rewards) != 0 || store.referrerBalances[44] != 0 {
-		t.Fatalf("disabled reward touched money: rewards=%+v balances=%+v", store.rewards, store.referrerBalances)
-	}
-	if progress := store.tierProgress[44]; progress.totalQualifiedReferrals != 0 || progress.currentTier != "" {
-		t.Fatalf("disabled reward advanced tier: %+v", progress)
-	}
-	if len(store.rewardAudits) != 1 || store.rewardAudits[0].eventType != "REWARD_SKIPPED" {
-		t.Fatalf("reward audits=%+v want one REWARD_SKIPPED", store.rewardAudits)
+	if store.rewardCalls != 0 || len(store.rewards) != 0 || store.referrerBalances[42] != 0 {
+		t.Fatalf("qualify-only touched reward path: rewardCalls=%d rewards=%+v balances=%+v", store.rewardCalls, store.rewards, store.referrerBalances)
 	}
 }
 
-func TestQualifyPendingReferralRewardTenantScoped(t *testing.T) {
-	t.Setenv("HUAKAI_REFERRAL_REWARD_USD_MICROS", "3000000")
-	store := &qualificationStore{
-		referrals: []qualificationReferral{
-			{id: 94, tenantID: 7, refereeUserID: 7004, referrerUserID: 45, status: "pending"},
-			{id: 95, tenantID: 8, refereeUserID: 8004, referrerUserID: 46, status: "pending"},
-		},
-		rewardedReferralIDs: map[int64]bool{},
-		referrerBalances:    map[int64]int64{},
-		tierProgress:        map[int64]qualificationTierProgress{},
-	}
+func TestReferralSummaryCountsQualifiedRewardedAndRewardCents(t *testing.T) {
+	store := &summaryStore{summary: ReferralSummary{
+		QualifiedCount:     2,
+		RewardedCount:      1,
+		RewardsEarnedCents: 73,
+	}}
 	service := NewService(store)
 
-	if err := service.QualifyPendingReferral(context.Background(), 7, 7004, 4245); err != nil {
-		t.Fatalf("QualifyPendingReferral tenant A: %v", err)
+	got, err := service.ReferralSummary(context.Background(), 7, 42)
+	if err != nil {
+		t.Fatalf("ReferralSummary: %v", err)
 	}
-
-	if got := store.referral(7, 7004).status; got != "rewarded" {
-		t.Fatalf("tenant A status=%q want rewarded", got)
+	if store.tenantID != 7 || store.referrerUserID != 42 {
+		t.Fatalf("summary scope=(tenant=%d, referrer=%d) want (7,42)", store.tenantID, store.referrerUserID)
 	}
-	if got := store.referral(8, 8004).status; got != "pending" {
-		t.Fatalf("tenant B status=%q want pending; tenant scope leaked", got)
-	}
-	if store.referrerBalances[45] != 3000000 || store.referrerBalances[46] != 0 {
-		t.Fatalf("balances=%+v want only tenant A referrer credited", store.referrerBalances)
-	}
-}
-
-func TestQualifyPendingReferralRejectsUnsafeRewardConfigBeforeStore(t *testing.T) {
-	t.Setenv("HUAKAI_REFERRAL_REWARD_USD_MICROS", "-1")
-	store := &qualificationStore{
-		referrals: []qualificationReferral{{
-			id:             96,
-			tenantID:       7,
-			refereeUserID:  7005,
-			referrerUserID: 47,
-			status:         "pending",
-		}},
-	}
-	service := NewService(store)
-
-	err := service.QualifyPendingReferral(context.Background(), 7, 7005, 4246)
-	if !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("QualifyPendingReferral err=%v want ErrInvalidInput for negative reward config", err)
-	}
-	if store.rewardCalls != 0 {
-		t.Fatalf("invalid reward config reached store %d times", store.rewardCalls)
+	if got.QualifiedCount != 2 || got.RewardedCount != 1 || got.RewardsEarnedCents != 73 {
+		t.Fatalf("summary=%+v want qualified=2 rewarded=1 rewards_cents=73", got)
 	}
 }
 
 func TestReferralRewardMigrationContracts(t *testing.T) {
-	raw, err := os.ReadFile("../../../sql/migrations/0095_referral_reward_issuance.up.sql")
+	raw, err := os.ReadFile("../../../sql/migrations/0100_referral_reward_issuance.up.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	sql := string(raw)
 	for _, want := range []string{
-		"CREATE UNIQUE INDEX IF NOT EXISTS uq_referral_rewards_referral",
-		"ON referral_rewards (tenant_id, referral_id)",
 		"ALTER COLUMN receipt_id DROP NOT NULL",
-		"'referral_reward'",
-		"CREATE TABLE IF NOT EXISTS referral_reward_audit_events",
-		"'REWARD_ISSUED', 'REWARD_FAILED', 'REWARD_SKIPPED'",
+		"ADD COLUMN IF NOT EXISTS billing_event_id BIGINT",
+		"ADD COLUMN IF NOT EXISTS currency_code TEXT NOT NULL DEFAULT 'USD'",
+		"referral_rewards_tenant_referral_unique UNIQUE (tenant_id, referral_id)",
 	} {
 		if !strings.Contains(sql, want) {
-			t.Fatalf("0095 migration missing %q", want)
-		}
-	}
-}
-
-func TestReferralRewardSQLContainsIdempotencyGuards(t *testing.T) {
-	raw, err := os.ReadFile("referral_reward_store.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := string(raw)
-	guards := []struct {
-		name    string
-		pattern *regexp.Regexp
-	}{
-		{
-			name:    "pending referral qualification status guard",
-			pattern: regexp.MustCompile(`AND\s+status\s*=\s*'pending'`),
-		},
-		{
-			name:    "referral reward insert conflict guard",
-			pattern: regexp.MustCompile(`ON\s+CONFLICT\s*\(\s*tenant_id\s*,\s*referral_id\s*\)\s+DO\s+NOTHING`),
-		},
-		{
-			name:    "rewarded referral status update guard",
-			pattern: regexp.MustCompile(`UPDATE\s+referrals\s+SET\s+status\s*=\s*'rewarded'`),
-		},
-		{
-			name:    "payment order out_trade_no uniqueness guard",
-			pattern: regexp.MustCompile(`uq_payment_orders_out_trade_no`),
-		},
-	}
-	for _, guard := range guards {
-		if !guard.pattern.MatchString(src) {
-			t.Fatalf("referral reward implementation missing idempotency guard %q matching %q", guard.name, guard.pattern.String())
+			t.Fatalf("0100 migration missing %q", want)
 		}
 	}
 }
@@ -335,6 +181,38 @@ type qualificationRewardAudit struct {
 type qualificationTierProgress struct {
 	totalQualifiedReferrals int
 	currentTier             string
+}
+
+type summaryStore struct {
+	summary        ReferralSummary
+	tenantID       int64
+	referrerUserID int64
+}
+
+func (s *summaryStore) Generate(context.Context, generateRecord) (Invitation, error) {
+	return Invitation{}, ErrStoreNotConfigured
+}
+
+func (s *summaryStore) GetByCode(context.Context, string) (Invitation, error) {
+	return Invitation{}, ErrStoreNotConfigured
+}
+
+func (s *summaryStore) GetByClientIdempotencyKey(context.Context, int64, string) (Invitation, error) {
+	return Invitation{}, ErrStoreNotConfigured
+}
+
+func (s *summaryStore) Preview(context.Context, int64, string) (InvitationPreview, error) {
+	return InvitationPreview{}, ErrStoreNotConfigured
+}
+
+func (s *summaryStore) CountTenantInvitationsSince(context.Context, int64, time.Time) (int, error) {
+	return 0, ErrStoreNotConfigured
+}
+
+func (s *summaryStore) GetReferralSummary(_ context.Context, tenantID, referrerUserID int64) (ReferralSummary, error) {
+	s.tenantID = tenantID
+	s.referrerUserID = referrerUserID
+	return s.summary, nil
 }
 
 func (s *qualificationStore) Generate(context.Context, generateRecord) (Invitation, error) {

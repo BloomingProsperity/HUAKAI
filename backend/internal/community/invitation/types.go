@@ -59,6 +59,12 @@ type InvitationPreview struct {
 	MaxUsage      int        `json:"max_usage"`
 }
 
+type ReferralSummary struct {
+	QualifiedCount     int64 `json:"qualified_count"`
+	RewardedCount      int64 `json:"rewarded_count"`
+	RewardsEarnedCents int64 `json:"rewards_earned_cents"`
+}
+
 type generateRecord struct {
 	TenantID             int64
 	InviterUserID        int64

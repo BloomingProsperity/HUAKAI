@@ -271,7 +271,7 @@ func buildOutboxWorker(outboxStore obsoutbox.Outbox, outboxRuntime obsoutbox.Run
 	return outboxWorker
 }
 
-func buildSettlementServices(_ context.Context, pgPool *pgxpool.Pool, auditSigner *sign.Signer, auditLedger auditledger.Ledger, dlqStore *legacydlq.Store, dlqService *legacydlq.Service, replicaTarget string, eventBusCfg *runtimeconfig.EventBusConfig, auditRefPolicy *eventbus.AuditRefPolicy, logger *zap.Logger) (billing.Settler, *auditreceipt.PGXReceiptStorage, *auditreceipt.ReceiptFormatter, *auditreceipt.MismatchRefundQueue, *billing.PGXRateTableSource, *eventbus.Bus, error) {
+func buildSettlementServices(_ context.Context, pgPool *pgxpool.Pool, auditSigner *sign.Signer, auditLedger auditledger.Ledger, dlqStore *legacydlq.Store, dlqService *legacydlq.Service, replicaTarget string, eventBusCfg *runtimeconfig.EventBusConfig, auditRefPolicy *eventbus.AuditRefPolicy, logger *zap.Logger, referralRewardIssuer auditreceipt.ReferralRewardIssuer, referralRewardSettings auditreceipt.ReferralRewardSettings) (billing.Settler, *auditreceipt.PGXReceiptStorage, *auditreceipt.ReceiptFormatter, *auditreceipt.MismatchRefundQueue, *billing.PGXRateTableSource, *eventbus.Bus, error) {
 	receiptStore, err := auditreceipt.NewPGXReceiptStorage(pgPool)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("build receipt storage: %w", err)
@@ -311,7 +311,9 @@ func buildSettlementServices(_ context.Context, pgPool *pgxpool.Pool, auditSigne
 	dlqService.Register(legacydlq.EventKindCostReceiptAppend, receiptHook.HandleReceiptRecovery)
 	referralQualifier := communityinvitation.NewService(communityinvitation.NewPostgresStore(pgPool))
 	settler := auditreceipt.NewReceiptHookSettler(baseSettler, receiptHook,
-		auditreceipt.WithReceiptHookReferralQualifier(referralQualifier))
+		auditreceipt.WithReceiptHookReferralQualifier(referralQualifier),
+		auditreceipt.WithReceiptHookReferralRewardIssuer(referralRewardIssuer),
+		auditreceipt.WithReceiptHookReferralRewardSettings(referralRewardSettings))
 	completionBus, err := buildCompletionEventBus(eventBusCfg, settler, dlqService, auditRefPolicy, logger)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("build completion eventbus: %w", err)

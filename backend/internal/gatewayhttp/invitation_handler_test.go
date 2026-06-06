@@ -85,11 +85,39 @@ func TestInvitationCreateHandlerRejectsInvalidBody(t *testing.T) {
 	}
 }
 
+func TestInvitationSummaryHandlerUsesSessionScope(t *testing.T) {
+	stub := &invitationServiceStub{summary: invitation.ReferralSummary{
+		QualifiedCount:     2,
+		RewardedCount:      1,
+		RewardsEarnedCents: 73,
+	}}
+	req := httptest.NewRequest(http.MethodGet, "/v1/me/invitations", nil)
+	req = req.WithContext(auth.ContextWithSession(req.Context(), auth.SessionIdentity{TenantID: 7, UserID: 42}))
+	rec := httptest.NewRecorder()
+
+	NewInvitationSummaryHandler(InvitationDeps{Service: stub}).ServeHTTP(rec, req)
+	assertInvitationStatus(t, rec, http.StatusOK)
+
+	if stub.summaryTenantID != 7 || stub.summaryReferrerUserID != 42 {
+		t.Fatalf("summary scope=(tenant=%d, referrer=%d) want (7,42)", stub.summaryTenantID, stub.summaryReferrerUserID)
+	}
+	var body invitationSummaryResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.QualifiedCount != 2 || body.RewardedCount != 1 || body.RewardsEarnedCents != 73 {
+		t.Fatalf("summary body=%+v want qualified=2 rewarded=1 rewards_cents=73", body)
+	}
+}
+
 type invitationServiceStub struct {
-	out    invitation.GenerateInvitationOutput
-	err    error
-	in     invitation.GenerateInvitationParams
-	called int
+	out                   invitation.GenerateInvitationOutput
+	summary               invitation.ReferralSummary
+	err                   error
+	in                    invitation.GenerateInvitationParams
+	called                int
+	summaryTenantID       int64
+	summaryReferrerUserID int64
 }
 
 func (s *invitationServiceStub) Generate(_ context.Context, in invitation.GenerateInvitationParams) (invitation.GenerateInvitationOutput, error) {
@@ -99,6 +127,15 @@ func (s *invitationServiceStub) Generate(_ context.Context, in invitation.Genera
 		return invitation.GenerateInvitationOutput{}, s.err
 	}
 	return s.out, nil
+}
+
+func (s *invitationServiceStub) ReferralSummary(_ context.Context, tenantID, referrerUserID int64) (invitation.ReferralSummary, error) {
+	s.summaryTenantID = tenantID
+	s.summaryReferrerUserID = referrerUserID
+	if s.err != nil {
+		return invitation.ReferralSummary{}, s.err
+	}
+	return s.summary, nil
 }
 
 type invitationValidatorStub struct{}

@@ -15,6 +15,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
+	"github.com/BloomingProsperity/HUAKAI/internal/payment"
+	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/trustreceipt"
@@ -186,6 +188,78 @@ func TestReceiptHookSettlerQualifiesReferralAfterSuccessfulSettle(t *testing.T) 
 	}
 	if qualifier.firstBillingEventID != 4242 {
 		t.Fatalf("first_billing_event_id=%d want 4242", qualifier.firstBillingEventID)
+	}
+}
+
+func TestReceiptHookSettlerReferralRewardEnabledUsesPaymentIssuer(t *testing.T) {
+	// Mutation: ignoring referral_reward_enabled or reward_cents and always calling the bare qualifier leaves issuer.calls at zero or amount != 73.
+	ctx := context.Background()
+	requestID := "req-worker-referral-reward-enabled"
+	hook, _ := receiptHookForReferralTest(t, requestID, 7001, 9001, 100)
+	qualifier := &recordingReferralQualifier{}
+	issuer := &recordingReferralRewardIssuer{}
+	settings := &referralRewardSettingsStub{values: map[platformsettings.SettingKey]string{
+		platformsettings.KeyReferralRewardEnabled: "true",
+		platformsettings.KeyReferralRewardCents:   "73",
+	}}
+	settler := NewReceiptHookSettler(&recordingBillingSettler{result: &billing.SettleResult{
+		TenantID:       7,
+		UserID:         7001,
+		BillingEventID: 4242,
+	}}, hook,
+		WithReceiptHookReferralQualifier(qualifier),
+		WithReceiptHookReferralRewardIssuer(issuer),
+		WithReceiptHookReferralRewardSettings(settings),
+	)
+
+	if _, err := settler.Settle(ctx, billing.SettleRequest{TenantID: 7, AuditRequestID: requestID}); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+	if len(issuer.calls) != 1 {
+		t.Fatalf("reward issuer calls=%d want 1", len(issuer.calls))
+	}
+	got := issuer.calls[0]
+	if got.TenantID != 7 || got.RefereeUserID != 7001 || got.BillingEventID != 4242 || got.RewardCents != 73 || got.CurrencyCode != "USD" {
+		t.Fatalf("reward input=%+v want tenant=7 referee=7001 billing_event=4242 reward_cents=73 USD", got)
+	}
+	if len(qualifier.calls) != 0 {
+		t.Fatalf("bare qualifier calls=%d want 0 when reward issuer is enabled", len(qualifier.calls))
+	}
+}
+
+func TestReceiptHookSettlerReferralRewardDisabledFallsBackToQualifyOnly(t *testing.T) {
+	// Mutation: calling ApplyReferralReward when referral_reward_enabled=false makes issuer.calls nonzero and would create referral_rewards rows in PG.
+	ctx := context.Background()
+	requestID := "req-worker-referral-reward-disabled"
+	hook, _ := receiptHookForReferralTest(t, requestID, 7001, 9001, 100)
+	qualifier := &recordingReferralQualifier{}
+	issuer := &recordingReferralRewardIssuer{}
+	settings := &referralRewardSettingsStub{values: map[platformsettings.SettingKey]string{
+		platformsettings.KeyReferralRewardEnabled: "false",
+		platformsettings.KeyReferralRewardCents:   "73",
+	}}
+	settler := NewReceiptHookSettler(&recordingBillingSettler{result: &billing.SettleResult{
+		TenantID:       7,
+		UserID:         7001,
+		BillingEventID: 4242,
+	}}, hook,
+		WithReceiptHookReferralQualifier(qualifier),
+		WithReceiptHookReferralRewardIssuer(issuer),
+		WithReceiptHookReferralRewardSettings(settings),
+	)
+
+	if _, err := settler.Settle(ctx, billing.SettleRequest{TenantID: 7, AuditRequestID: requestID}); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+	if len(issuer.calls) != 0 {
+		t.Fatalf("reward issuer calls=%d want 0 when disabled", len(issuer.calls))
+	}
+	if len(qualifier.calls) != 1 {
+		t.Fatalf("bare qualifier calls=%d want 1 when disabled", len(qualifier.calls))
+	}
+	got := qualifier.calls[0]
+	if got.tenantID != 7 || got.refereeUserID != 7001 || got.billingEventID != 4242 {
+		t.Fatalf("qualifier call=%+v want tenant=7 referee=7001 billing_event=4242", got)
 	}
 }
 
@@ -723,6 +797,35 @@ func (q *recordingReferralQualifier) QualifyPendingReferral(_ context.Context, t
 		billingEventID: billingEventID,
 	})
 	return q.err
+}
+
+type recordingReferralRewardIssuer struct {
+	calls []payment.ReferralRewardInput
+	err   error
+}
+
+func (i *recordingReferralRewardIssuer) ApplyReferralReward(_ context.Context, in payment.ReferralRewardInput) (payment.ReferralRewardResult, error) {
+	i.calls = append(i.calls, in)
+	if i.err != nil {
+		return payment.ReferralRewardResult{}, i.err
+	}
+	return payment.ReferralRewardResult{Rewarded: true, BillingEventID: 9999}, nil
+}
+
+type referralRewardSettingsStub struct {
+	values map[platformsettings.SettingKey]string
+	err    error
+}
+
+func (s *referralRewardSettingsStub) Get(_ context.Context, key platformsettings.SettingKey) (platformsettings.StoredSetting, error) {
+	if s.err != nil {
+		return platformsettings.StoredSetting{}, s.err
+	}
+	value, ok := s.values[key]
+	if !ok {
+		value, _ = platformsettings.DefaultValue(key)
+	}
+	return platformsettings.StoredSetting{Key: key, Value: value, Source: platformsettings.SourceDB}, nil
 }
 
 type statefulReferralQualifier struct {

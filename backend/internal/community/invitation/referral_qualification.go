@@ -9,10 +9,6 @@ type referralQualificationStore interface {
 	qualifyPendingReferral(context.Context, int64, int64, int64, time.Time) error
 }
 
-type referralRewardQualificationStore interface {
-	qualifyPendingReferralWithReward(context.Context, qualifyReferralInput) error
-}
-
 type qualifyReferralInput struct {
 	TenantID        int64
 	RefereeUserID   int64
@@ -40,20 +36,6 @@ func (s *Service) QualifyPendingReferral(ctx context.Context, tenantID, refereeU
 	if s == nil || s.store == nil {
 		return ErrStoreNotConfigured
 	}
-	cfg, err := referralRewardConfigFromEnv()
-	if err != nil {
-		return err
-	}
-	if store, ok := s.store.(referralRewardQualificationStore); ok {
-		return store.qualifyPendingReferralWithReward(ctx, qualifyReferralInput{
-			TenantID:        tenantID,
-			RefereeUserID:   refereeUserID,
-			BillingEventID:  billingEventID,
-			RewardUSDMicros: cfg.RewardUSDMicros,
-			QualifiedAt:     s.now().UTC(),
-			TierThresholds:  cfg.TierThresholds,
-		})
-	}
 	store, ok := s.store.(referralQualificationStore)
 	if !ok {
 		return ErrStoreNotConfigured
@@ -68,16 +50,16 @@ func (s *PostgresStore) qualifyPendingReferral(ctx context.Context, tenantID, re
 	if s == nil || s.pool == nil {
 		return ErrStoreNotConfigured
 	}
-	cfg, err := referralRewardConfigFromEnv()
+	_, err := s.pool.Exec(ctx, `
+UPDATE referrals
+SET status='qualified',
+    qualified_at=$4,
+    first_billing_event_id=$3
+WHERE tenant_id=$1
+  AND referee_user_id=$2
+  AND status='pending'`, tenantID, refereeUserID, billingEventID, qualifiedAt.UTC())
 	if err != nil {
 		return err
 	}
-	return s.qualifyPendingReferralWithReward(ctx, qualifyReferralInput{
-		TenantID:        tenantID,
-		RefereeUserID:   refereeUserID,
-		BillingEventID:  billingEventID,
-		RewardUSDMicros: cfg.RewardUSDMicros,
-		QualifiedAt:     qualifiedAt,
-		TierThresholds:  cfg.TierThresholds,
-	})
+	return nil
 }

@@ -18,6 +18,10 @@ type Store interface {
 	CountTenantInvitationsSince(context.Context, int64, time.Time) (int, error)
 }
 
+type referralSummaryStore interface {
+	GetReferralSummary(context.Context, int64, int64) (ReferralSummary, error)
+}
+
 type Service struct {
 	store     Store
 	generator CodeGenerator
@@ -101,6 +105,20 @@ func (s *Service) Generate(ctx context.Context, params GenerateInvitationParams)
 		}
 	}
 	return GenerateInvitationOutput{}, ErrDuplicateCode
+}
+
+func (s *Service) ReferralSummary(ctx context.Context, tenantID, referrerUserID int64) (ReferralSummary, error) {
+	if s == nil || s.store == nil {
+		return ReferralSummary{}, ErrStoreNotConfigured
+	}
+	if tenantID <= 0 || referrerUserID <= 0 {
+		return ReferralSummary{}, ErrInvalidInput
+	}
+	store, ok := s.store.(referralSummaryStore)
+	if !ok {
+		return ReferralSummary{}, ErrStoreNotConfigured
+	}
+	return store.GetReferralSummary(ctx, tenantID, referrerUserID)
 }
 
 func normalizeGenerateParams(params GenerateInvitationParams, fallbackNow time.Time) GenerateInvitationParams {
