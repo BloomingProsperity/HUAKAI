@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -190,7 +191,27 @@ func sameIdempotentTask(existing Task, input CreateTaskInput) bool {
 	return existing.UserID == input.UserID &&
 		existing.TaskType == input.TaskType &&
 		existing.Provider == input.Provider &&
-		bytes.Equal(existing.InputParams, input.InputParams)
+		jsonCanonicalEqual(existing.InputParams, input.InputParams)
+}
+
+// jsonCanonicalEqual compares two JSON payloads by value, tolerating the
+// representation changes PostgreSQL JSONB applies on round-trip (e.g. a space
+// after the key colon, key reordering). Falls back to byte equality for
+// non-JSON input.
+func jsonCanonicalEqual(a, b []byte) bool {
+	var av, bv any
+	if err := json.Unmarshal(a, &av); err != nil {
+		return bytes.Equal(a, b)
+	}
+	if err := json.Unmarshal(b, &bv); err != nil {
+		return false
+	}
+	ab, err1 := json.Marshal(av)
+	bb, err2 := json.Marshal(bv)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return bytes.Equal(ab, bb)
 }
 
 func scanTask(row pgx.Row) (Task, error) {
