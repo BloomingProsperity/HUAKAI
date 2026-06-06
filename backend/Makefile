@@ -74,3 +74,6 @@ db-psql: ## Open a psql shell against dev PG.
 
 test-integration: ## Run integration tests (requires db-up + db-migrate first).
 	HUAKAI_DATABASE_URL="$(DATABASE_URL)" $(GO) test -tags=integration_pg -race -count=1 ./...
+
+quality-gate: ## Block new staticcheck findings + new deadcode (ratchet vs baseline).
+	bash scripts/quality-gate.sh
