@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -272,14 +273,30 @@ func TestReferralRewardSQLContainsIdempotencyGuards(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := string(raw)
-	for _, want := range []string{
-		"AND status = 'pending'",
-		"ON CONFLICT (tenant_id, referral_id) DO NOTHING",
-		"UPDATE referrals\nSET status = 'rewarded'",
-		"uq_payment_orders_out_trade_no",
-	} {
-		if !strings.Contains(src, want) {
-			t.Fatalf("referral reward implementation missing idempotency guard %q", want)
+	guards := []struct {
+		name    string
+		pattern *regexp.Regexp
+	}{
+		{
+			name:    "pending referral qualification status guard",
+			pattern: regexp.MustCompile(`AND\s+status\s*=\s*'pending'`),
+		},
+		{
+			name:    "referral reward insert conflict guard",
+			pattern: regexp.MustCompile(`ON\s+CONFLICT\s*\(\s*tenant_id\s*,\s*referral_id\s*\)\s+DO\s+NOTHING`),
+		},
+		{
+			name:    "rewarded referral status update guard",
+			pattern: regexp.MustCompile(`UPDATE\s+referrals\s+SET\s+status\s*=\s*'rewarded'`),
+		},
+		{
+			name:    "payment order out_trade_no uniqueness guard",
+			pattern: regexp.MustCompile(`uq_payment_orders_out_trade_no`),
+		},
+	}
+	for _, guard := range guards {
+		if !guard.pattern.MatchString(src) {
+			t.Fatalf("referral reward implementation missing idempotency guard %q matching %q", guard.name, guard.pattern.String())
 		}
 	}
 }
