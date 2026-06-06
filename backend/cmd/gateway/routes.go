@@ -20,6 +20,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/controlhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/embeddingshttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/exporthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeshttp"
@@ -727,6 +728,11 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Auth:    d.adminAuth,
 			Service: d.voucherService,
 		})
+	})
+	exporthttp.MountRoutes(r, exporthttp.Deps{
+		Auth:     d.adminAuth,
+		Payments: d.paymentService,
+		Usage:    d.billingQueries,
 	})
 	r.Route("/v1/admin/payments", func(r chi.Router) {
 		paymenthttp.MountPaymentAdminRoutes(r, paymenthttp.AdminDeps{

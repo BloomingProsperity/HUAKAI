@@ -900,6 +900,49 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/usage/export.csv:
+    get:
+      tags: [admin-usage]
+      summary: Export tenant usage records as CSV
+      operationId: adminExportUsageCSV
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-06-financial-export-codex.md
+        - backend/internal/exporthttp/export.go
+        - backend/internal/db/billing/observability.sql.go
+      x-huakai-required-role: tenant_scoped_admin
+      description: |
+        Read-only tenant-scoped CSV export for finance/reconciliation. The
+        tenant scope is derived from the resolved admin identity, not from a
+        query parameter. CSV string cells are guarded against spreadsheet
+        formula injection, and exports are capped at 100000 rows with
+        `X-Truncated: true` plus a trailing notice row when capped.
+      parameters:
+        - in: query
+          name: from
+          required: true
+          schema: { type: string, format: date-time }
+        - in: query
+          name: to
+          required: true
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: CSV with header `request_id,user_id,model,tokens_input,tokens_output,cost_usd,created_at`.
+          headers:
+            Content-Disposition:
+              description: Attachment filename for browser/download clients.
+              schema: { type: string, example: 'attachment; filename="usage-export.csv"' }
+            X-Truncated:
+              description: Present and `true` when the export hit the row cap.
+              schema: { type: string, enum: ['true'] }
+          content:
+            text/csv:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/admin/usage/leaderboard:
     get:
       tags: [admin]
@@ -3546,6 +3589,52 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/payments/export.csv:
+    get:
+      tags: [admin-payments]
+      summary: Export tenant payment orders as CSV
+      operationId: adminExportPaymentOrdersCSV
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-06-financial-export-codex.md
+        - backend/internal/exporthttp/export.go
+        - backend/internal/payment/admin_panel.go
+      x-huakai-required-role: tenant_scoped_admin
+      description: |
+        Read-only tenant-scoped CSV export for finance/reconciliation. The
+        tenant scope is derived from the resolved admin identity, not from a
+        query parameter. CSV string cells are guarded against spreadsheet
+        formula injection, and exports are capped at 100000 rows with
+        `X-Truncated: true` plus a trailing notice row when capped.
+      parameters:
+        - in: query
+          name: from
+          required: true
+          schema: { type: string, format: date-time }
+        - in: query
+          name: to
+          required: true
+          schema: { type: string, format: date-time }
+        - in: query
+          name: status
+          schema: { type: string, enum: [pending, paid, recharging, completed, refunded, expired, cancelled, failed] }
+      responses:
+        '200':
+          description: CSV with header `order_id,user_id,provider,status,amount,currency,created_at,out_trade_no,order_kind`.
+          headers:
+            Content-Disposition:
+              description: Attachment filename for browser/download clients.
+              schema: { type: string, example: 'attachment; filename="payments-export.csv"' }
+            X-Truncated:
+              description: Present and `true` when the export hit the row cap.
+              schema: { type: string, enum: ['true'] }
+          content:
+            text/csv:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/admin/payments/dashboard:

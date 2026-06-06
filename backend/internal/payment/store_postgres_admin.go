@@ -34,6 +34,36 @@ ORDER BY created_at DESC, id DESC LIMIT $`+fmt.Sprint(limitPos)+` OFFSET $`+fmt.
 	return out, rows.Err()
 }
 
+func (s *PostgresStore) AdminExportOrders(ctx context.Context, filter OrderExportFilter) ([]Order, error) {
+	if s == nil || s.pool == nil {
+		return nil, ErrStoreNotConfigured
+	}
+	where, args := adminOrderWhere(OrderListFilter{
+		TenantID: filter.TenantID,
+		Status:   filter.Status,
+		From:     filter.From,
+		To:       filter.To,
+	})
+	args = append(args, filter.Limit)
+	limitPos := len(args)
+	rows, err := s.pool.Query(ctx, `SELECT`+orderSelectColumns+`
+FROM payment_orders `+where+`
+ORDER BY created_at DESC, id DESC LIMIT $`+fmt.Sprint(limitPos), args...)
+	if err != nil {
+		return nil, fmt.Errorf("payment: admin export orders: %w", err)
+	}
+	defer rows.Close()
+	var out []Order
+	for rows.Next() {
+		order, err := scanOrder(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, order)
+	}
+	return out, rows.Err()
+}
+
 func (s *PostgresStore) DashboardStats(ctx context.Context, filter DashboardFilter, now time.Time) (DashboardStats, error) {
 	if s == nil || s.pool == nil {
 		return DashboardStats{}, ErrStoreNotConfigured

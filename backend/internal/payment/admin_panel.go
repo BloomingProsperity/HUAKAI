@@ -9,9 +9,11 @@ import (
 )
 
 const (
-	defaultAdminOrderLimit = 50
-	maxAdminOrderLimit     = 200
-	maxDashboardDays       = 366
+	defaultAdminOrderLimit       = 50
+	maxAdminOrderLimit           = 200
+	defaultAdminOrderExportLimit = 100000
+	maxAdminOrderExportLimit     = 100001
+	maxDashboardDays             = 366
 )
 
 type OrderListFilter struct {
@@ -22,6 +24,14 @@ type OrderListFilter struct {
 	To       *time.Time
 	Limit    int
 	Offset   int
+}
+
+type OrderExportFilter struct {
+	TenantID int64
+	Status   OrderStatus
+	From     *time.Time
+	To       *time.Time
+	Limit    int
 }
 
 type DashboardFilter struct {
@@ -73,6 +83,21 @@ func (s *Service) AdminListOrders(ctx context.Context, filter OrderListFilter) (
 		return nil, err
 	}
 	return s.store.AdminListOrders(ctx, filter)
+}
+
+func (s *Service) ExportOrders(ctx context.Context, filter OrderExportFilter) ([]Order, error) {
+	if s == nil || s.store == nil {
+		return nil, ErrStoreNotConfigured
+	}
+	filter, err := normalizeOrderExportFilter(filter)
+	if err != nil {
+		return nil, err
+	}
+	store, ok := s.store.(adminOrderExportStore)
+	if !ok {
+		return nil, ErrStoreNotConfigured
+	}
+	return store.AdminExportOrders(ctx, filter)
 }
 
 func (s *Service) DashboardStats(ctx context.Context, filter DashboardFilter) (DashboardStats, error) {
@@ -173,6 +198,20 @@ func normalizeOrderListFilter(filter OrderListFilter) (OrderListFilter, error) {
 	return filter, nil
 }
 
+func normalizeOrderExportFilter(filter OrderExportFilter) (OrderExportFilter, error) {
+	if filter.TenantID <= 0 {
+		return OrderExportFilter{}, ErrInvalidInput
+	}
+	if filter.Status != "" && !validOrderStatus(filter.Status) {
+		return OrderExportFilter{}, ErrInvalidInput
+	}
+	if filter.From != nil && filter.To != nil && filter.From.After(*filter.To) {
+		return OrderExportFilter{}, ErrInvalidInput
+	}
+	filter.Limit = normalizeAdminExportLimit(filter.Limit)
+	return filter, nil
+}
+
 func (s *Service) normalizeDashboardFilter(filter DashboardFilter) (DashboardFilter, error) {
 	if filter.TenantID <= 0 {
 		return DashboardFilter{}, ErrInvalidInput
@@ -197,6 +236,16 @@ func normalizeAdminLimit(limit int) int {
 	}
 	if limit > maxAdminOrderLimit {
 		return maxAdminOrderLimit
+	}
+	return limit
+}
+
+func normalizeAdminExportLimit(limit int) int {
+	if limit <= 0 {
+		return defaultAdminOrderExportLimit
+	}
+	if limit > maxAdminOrderExportLimit {
+		return maxAdminOrderExportLimit
 	}
 	return limit
 }
