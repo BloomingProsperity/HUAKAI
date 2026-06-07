@@ -4,6 +4,7 @@ package adminuserhttp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 )
 
 func TestAdminListUsers_TenantScoped(t *testing.T) {
@@ -151,6 +153,72 @@ func TestTwoFAStats_TenantScoped(t *testing.T) {
 	}
 }
 
+func TestPGAdminUnlockUser(t *testing.T) {
+	ctx := context.Background()
+	pool := openAdminUsersPool(t, ctx)
+	f := newAdminUsersFixture(t, ctx, pool)
+	userID, email := f.seedPasswordUser("unlock", "correct-secret")
+
+	authSvc := userauth.NewService(userauth.NewPostgresStore(pool))
+	authSvc.LockoutThreshold = 2
+	authSvc.RequireVerified = true
+	authSvc.PasswordPolicy = userauth.PasswordPolicy{MemoryKiB: 64, Iterations: 1, Parallelism: 1, SaltBytes: 8, KeyBytes: 16}
+
+	if _, err := authSvc.Authenticate(ctx, userauth.LoginInput{TenantID: f.tenantID, Email: email, Password: "wrong-secret"}); !errors.Is(err, userauth.ErrInvalidCredentials) {
+		t.Fatalf("first failed login err=%v want ErrInvalidCredentials", err)
+	}
+	if _, err := authSvc.Authenticate(ctx, userauth.LoginInput{TenantID: f.tenantID, Email: email, Password: "wrong-secret"}); !errors.Is(err, userauth.ErrInvalidCredentials) {
+		t.Fatalf("second failed login err=%v want ErrInvalidCredentials", err)
+	}
+	if _, err := authSvc.Authenticate(ctx, userauth.LoginInput{TenantID: f.tenantID, Email: email, Password: "correct-secret"}); !errors.Is(err, userauth.ErrUserLocked) {
+		t.Fatalf("locked login err=%v want ErrUserLocked", err)
+	}
+
+	rec := invokeAdminUsers(t, Deps{
+		Auth:        usersAuthStub{ident: tenantOperator(f.tenantID)},
+		Store:       admindb.New(pool),
+		UnlockAudit: NewPostgresUnlockAuditStore(pool),
+	}, http.MethodPost, fmt.Sprintf("/admin/v1/users/%d/unlock", userID), nil)
+
+	assertStatus(t, rec, http.StatusOK)
+	var body struct {
+		ID     int64  `json:"id"`
+		Status string `json:"status"`
+	}
+	decodeBody(t, rec, &body)
+	if body.ID != userID || body.Status != "active" {
+		t.Fatalf("unlock response mismatch: %+v", body)
+	}
+
+	var status string
+	var failed int
+	var lockedUntil *time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT status, failed_login_count, locked_until FROM users WHERE tenant_id=$1 AND id=$2`,
+		f.tenantID, userID,
+	).Scan(&status, &failed, &lockedUntil); err != nil {
+		t.Fatalf("read unlocked user: %v", err)
+	}
+	if status != "active" || failed != 0 || lockedUntil != nil {
+		t.Fatalf("db lockout state = status:%q failed:%d locked_until:%v, want active/0/nil", status, failed, lockedUntil)
+	}
+	if _, err := authSvc.Authenticate(ctx, userauth.LoginInput{TenantID: f.tenantID, Email: email, Password: "correct-secret"}); err != nil {
+		t.Fatalf("login after admin unlock: %v", err)
+	}
+	var auditAction, auditTarget string
+	if err := pool.QueryRow(ctx,
+		`SELECT action, target_type FROM admin_audit_events
+		 WHERE tenant_id=$1 AND actor_id=$2 AND target_id=$3
+		 ORDER BY id DESC LIMIT 1`,
+		f.tenantID, "12", userID,
+	).Scan(&auditAction, &auditTarget); err != nil {
+		t.Fatalf("read unlock audit: %v", err)
+	}
+	if auditAction != "unlock_user" || auditTarget != "user" {
+		t.Fatalf("audit event = action:%q target:%q want unlock_user/user", auditAction, auditTarget)
+	}
+}
+
 func openAdminUsersPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("HUAKAI_DATABASE_URL")
@@ -182,6 +250,7 @@ func newAdminUsersFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool)
 	t.Cleanup(func() {
 		c := context.Background()
 		for _, tenantID := range []int64{f.tenantID, f.otherTenantID} {
+			_, _ = pool.Exec(c, `DELETE FROM admin_audit_events WHERE tenant_id=$1`, tenantID)
 			_, _ = pool.Exec(c, `DELETE FROM two_factor_settings WHERE tenant_id=$1`, tenantID)
 			_, _ = pool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1`, tenantID)
 			_, _ = pool.Exec(c, `DELETE FROM payment_credits WHERE tenant_id=$1`, tenantID)
@@ -209,6 +278,32 @@ func (f *adminUsersFixture) seedTenant(label string) int64 {
 
 func (f *adminUsersFixture) seedUser(label, status, role, balance string) int64 {
 	return f.seedUserInTenant(f.tenantID, label, status, role, balance)
+}
+
+func (f *adminUsersFixture) seedPasswordUser(label, password string) (int64, string) {
+	f.t.Helper()
+	hash, err := userauth.HashPassword(password, userauth.PasswordPolicy{MemoryKiB: 64, Iterations: 1, Parallelism: 1, SaltBytes: 8, KeyBytes: 16})
+	if err != nil {
+		f.t.Fatalf("hash password: %v", err)
+	}
+	email := fmt.Sprintf("%s-%s@example.test", label, f.suffix)
+	var userID int64
+	if err := f.pool.QueryRow(f.ctx,
+		`INSERT INTO users (tenant_id, email, display_name, password_hash, status, role, email_verified)
+		 VALUES ($1, $2, $3, $4, 'active', 'user', true)
+		 RETURNING id`,
+		f.tenantID, email, label, hash,
+	).Scan(&userID); err != nil {
+		f.t.Fatalf("seed password user %s: %v", label, err)
+	}
+	if _, err := f.pool.Exec(f.ctx,
+		`INSERT INTO user_balances (tenant_id, user_id, balance, held, version)
+		 VALUES ($1, $2, 0, 0, 1)`,
+		f.tenantID, userID,
+	); err != nil {
+		f.t.Fatalf("seed password user balance %s: %v", label, err)
+	}
+	return userID, email
 }
 
 func (f *adminUsersFixture) seedOtherTenantUser(label, status, role, balance string) int64 {

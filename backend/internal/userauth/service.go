@@ -37,6 +37,7 @@ type Store interface {
 	CreateUser(context.Context, CreateUserParams) (User, error)
 	GetUserByEmail(context.Context, int64, string) (User, error)
 	GetUserByID(context.Context, int64, int64) (User, error)
+	ClearLockout(context.Context, int64, int64) (User, error)
 	MarkLoginSuccess(context.Context, int64, int64) error
 	MarkLoginFailure(context.Context, int64, int64, int) error
 	GetUserBySocialIdentity(context.Context, int64, string, string) (User, error)
@@ -154,6 +155,16 @@ func (s *Service) UpdateProfile(ctx context.Context, tenantID, userID int64, dis
 		return User{}, ErrStoreNotConfigured
 	}
 	return updater.UpdateDisplayName(ctx, tenantID, userID, normalized)
+}
+
+func (s *Service) UnlockUser(ctx context.Context, tenantID, userID int64) (User, error) {
+	if s == nil || s.Store == nil {
+		return User{}, ErrStoreNotConfigured
+	}
+	if tenantID <= 0 || userID <= 0 {
+		return User{}, ErrInvalidInput
+	}
+	return s.Store.ClearLockout(ctx, tenantID, userID)
 }
 
 func (s *Service) Register(ctx context.Context, in RegisterInput) (RegistrationResult, error) {

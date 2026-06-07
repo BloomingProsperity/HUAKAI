@@ -390,6 +390,49 @@ func TestAT_AUTH_007_005_LockoutAndResetRequired(t *testing.T) {
 	}
 }
 
+func TestUnlockUserClearsLockout(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	svc := NewService(store)
+	svc.RequireVerified = false
+	svc.LockoutThreshold = 2
+	svc.PasswordPolicy = cheapPasswordPolicy()
+	svc.Now = func() time.Time { return now }
+
+	registered, err := svc.Register(ctx, RegisterInput{TenantID: 7, Email: "unlock@example.test", Password: "secret"})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if _, err := svc.Authenticate(ctx, LoginInput{TenantID: 7, Email: "unlock@example.test", Password: "bad"}); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("first bad password = %v, want ErrInvalidCredentials", err)
+	}
+	if _, err := svc.Authenticate(ctx, LoginInput{TenantID: 7, Email: "unlock@example.test", Password: "bad"}); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("second bad password = %v, want ErrInvalidCredentials", err)
+	}
+	if _, err := svc.Authenticate(ctx, LoginInput{TenantID: 7, Email: "unlock@example.test", Password: "secret"}); !errors.Is(err, ErrUserLocked) {
+		t.Fatalf("locked login = %v, want ErrUserLocked", err)
+	}
+
+	unlocked, err := svc.UnlockUser(ctx, 7, registered.User.ID)
+	if err != nil {
+		t.Fatalf("UnlockUser: %v", err)
+	}
+	if unlocked.Status != UserStatusActive || unlocked.FailedLoginCount != 0 || unlocked.LockedUntil != nil {
+		t.Fatalf("unlocked state = status:%s failed:%d locked_until:%v, want active/0/nil",
+			unlocked.Status, unlocked.FailedLoginCount, unlocked.LockedUntil)
+	}
+	if _, err := svc.Authenticate(ctx, LoginInput{TenantID: 7, Email: "unlock@example.test", Password: "secret"}); err != nil {
+		t.Fatalf("login after admin unlock: %v", err)
+	}
+	if _, err := svc.UnlockUser(ctx, 8, registered.User.ID); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("cross-tenant unlock err=%v want ErrUserNotFound", err)
+	}
+	if _, err := svc.UnlockUser(ctx, 7, 0); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("invalid unlock id err=%v want ErrInvalidInput", err)
+	}
+}
+
 func TestAT_AUTH_007_006_007_OAuthFlowUsesVerifiedProviderClaims(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 5, 16, 10, 30, 0, 0, time.UTC)
@@ -1044,6 +1087,24 @@ func (s *memoryAuthStore) MarkLoginSuccess(_ context.Context, tenantID, userID i
 	}
 	return nil
 }
+
+func (s *memoryAuthStore) ClearLockout(_ context.Context, tenantID, userID int64) (User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	user, ok := s.users[userID]
+	if !ok || user.TenantID != tenantID {
+		return User{}, ErrUserNotFound
+	}
+	user.FailedLoginCount = 0
+	user.LockedUntil = nil
+	if user.Status == UserStatusLocked {
+		user.Status = UserStatusActive
+	}
+	user.UpdatedAt = s.now
+	s.users[userID] = user
+	return user, nil
+}
+
 func (s *memoryAuthStore) MarkLoginFailure(_ context.Context, tenantID, userID int64, threshold int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
