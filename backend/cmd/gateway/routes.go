@@ -44,6 +44,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfphttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/usageanalyticshttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/userauditloghttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkeyhttp"
 )
 
@@ -142,6 +143,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
 		meexporthttp.MountRoutes(r, meexporthttp.Deps{Store: d.billingQueries})
 		checkinhttp.MountRoutes(r, checkinhttp.Deps{Service: d.checkinService})
+		userauditloghttp.MountRoutes(r, userauditloghttp.Deps{Store: d.userAuditStore})
 		r.Get("/keys/{id}/usage-summary", usageanalyticshttp.NewKeyUsageSummaryHandler(usageanalyticshttp.KeyUsageSummaryDeps{
 			Keys:  d.userKeyService,
 			Store: d.billingQueries,
