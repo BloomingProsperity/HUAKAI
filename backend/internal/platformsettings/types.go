@@ -287,7 +287,7 @@ func validateBoundedNonNegativeIntValue(key SettingKey, value string, max int, u
 
 func validateCaptchaProvider(value string) (string, error) {
 	switch value {
-	case "turnstile":
+	case "turnstile", "recaptcha", "hcaptcha":
 		return value, nil
 	default:
 		return "", fmt.Errorf("%w: captcha_provider", ErrInvalidValue)

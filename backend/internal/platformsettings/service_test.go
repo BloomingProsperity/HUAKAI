@@ -310,7 +310,7 @@ func TestServiceUpsertRejectsInvalidValuesBeforeStore(t *testing.T) {
 		{name: "empty", key: KeyPromoEnabled, value: "  "},
 		{name: "invalid bool", key: KeyRegistrationEnabled, value: "yes"},
 		{name: "non-positive int", key: KeyStreamTimeoutSeconds, value: "0"},
-		{name: "unsupported captcha provider", key: KeyCaptchaProvider, value: "hcaptcha"},
+		{name: "unsupported captcha provider", key: KeyCaptchaProvider, value: "arkose"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -329,6 +329,29 @@ func TestServiceUpsertRejectsInvalidValuesBeforeStore(t *testing.T) {
 			}
 			if store.upsertCalls != 0 {
 				t.Fatalf("invalid value reached store upsert %d times", store.upsertCalls)
+			}
+		})
+	}
+}
+
+func TestServiceUpsertAcceptsCaptchaProviderAlternatives(t *testing.T) {
+	for _, provider := range []string{"turnstile", "recaptcha", "hcaptcha"} {
+		t.Run(provider, func(t *testing.T) {
+			store := &countingStore{Store: NewMemoryStore()}
+			svc := NewService(store, nil, WithNow(fixedNow))
+
+			got, err := svc.Upsert(context.Background(), UpsertInput{
+				Key:       KeyCaptchaProvider,
+				Value:     provider,
+				UpdatedBy: "admin:1",
+				ActorID:   "admin:1",
+				ActorRole: "platform_admin",
+			})
+			if err != nil {
+				t.Fatalf("Upsert returned %v", err)
+			}
+			if got.Value != provider {
+				t.Fatalf("provider value = %q want %q", got.Value, provider)
 			}
 		})
 	}

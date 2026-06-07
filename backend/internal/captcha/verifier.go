@@ -16,6 +16,14 @@ import (
 
 const defaultTurnstileSiteVerifyURL = "https://challenges.cloudflare.com" +
 	"/turnstile/v0/siteverify"
+const defaultRecaptchaSiteVerifyURL = "https://www.google.com/recaptcha/api/siteverify"
+const defaultHCaptchaSiteVerifyURL = "https://hcaptcha.com/siteverify"
+
+const (
+	captchaProviderTurnstile = "turnstile"
+	captchaProviderRecaptcha = "recaptcha"
+	captchaProviderHCaptcha  = "hcaptcha"
+)
 
 var (
 	ErrTokenRequired      = errors.New("captcha: token required")
@@ -51,11 +59,12 @@ func NewVerifier(
 	if secret == "" {
 		return noopVerifier{}
 	}
-	return NewTurnstileVerifier(TurnstileConfig{
-		Settings: settings,
-		Secret:   secret,
-		Client:   client,
-	})
+	return settingsProviderVerifier{
+		settings:  settings,
+		secret:    secret,
+		client:    captchaHTTPClient(client),
+		providers: defaultSiteVerifyProviders(),
+	}
 }
 
 func NewTurnstileVerifier(cfg TurnstileConfig) CaptchaVerifier {
@@ -67,14 +76,10 @@ func NewTurnstileVerifier(cfg TurnstileConfig) CaptchaVerifier {
 	if endpoint == "" {
 		endpoint = defaultTurnstileSiteVerifyURL
 	}
-	client := cfg.Client
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
-	}
 	return turnstileVerifier{
 		settings: cfg.Settings,
 		secret:   secret,
-		client:   client,
+		client:   captchaHTTPClient(cfg.Client),
 		endpoint: endpoint,
 	}
 }
@@ -92,6 +97,18 @@ type turnstileVerifier struct {
 	endpoint string
 }
 
+type siteVerifyProvider struct {
+	id       string
+	endpoint string
+}
+
+type settingsProviderVerifier struct {
+	settings  SettingsReader
+	secret    string
+	client    *http.Client
+	providers []siteVerifyProvider
+}
+
 func (v turnstileVerifier) Verify(
 	ctx context.Context,
 	token string,
@@ -100,12 +117,35 @@ func (v turnstileVerifier) Verify(
 	if !v.enabled(ctx) {
 		return nil
 	}
+	return verifySiteToken(ctx, v.client, v.endpoint, v.secret, token, remoteIP)
+}
+
+func (v settingsProviderVerifier) Verify(
+	ctx context.Context,
+	token string,
+	remoteIP string,
+) error {
+	endpoint, ok := v.enabledEndpoint(ctx)
+	if !ok {
+		return nil
+	}
+	return verifySiteToken(ctx, v.client, endpoint, v.secret, token, remoteIP)
+}
+
+func verifySiteToken(
+	ctx context.Context,
+	client *http.Client,
+	endpoint string,
+	secret string,
+	token string,
+	remoteIP string,
+) error {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return ErrTokenRequired
 	}
 	form := url.Values{}
-	form.Set("secret", v.secret)
+	form.Set("secret", secret)
 	form.Set("response", token)
 	if remoteIP = strings.TrimSpace(remoteIP); remoteIP != "" {
 		form.Set("remoteip", remoteIP)
@@ -113,7 +153,7 @@ func (v turnstileVerifier) Verify(
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		v.endpoint,
+		endpoint,
 		strings.NewReader(form.Encode()),
 	)
 	if err != nil {
@@ -121,7 +161,7 @@ func (v turnstileVerifier) Verify(
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := v.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("%w: request failed", ErrVerificationFailed)
 	}
@@ -147,16 +187,49 @@ func (v turnstileVerifier) Verify(
 }
 
 func (v turnstileVerifier) enabled(ctx context.Context) bool {
-	if v.settings == nil {
-		return false
+	provider, ok := runtimeCaptchaProvider(ctx, v.settings)
+	return ok && provider == captchaProviderTurnstile
+}
+
+func (v settingsProviderVerifier) enabledEndpoint(ctx context.Context) (string, bool) {
+	provider, ok := runtimeCaptchaProvider(ctx, v.settings)
+	if !ok {
+		return "", false
 	}
-	enabled, err := v.settings.Get(ctx, platformsettings.KeyCaptchaEnabled)
+	for _, candidate := range v.providers {
+		if provider == candidate.id {
+			return candidate.endpoint, true
+		}
+	}
+	return "", false
+}
+
+func runtimeCaptchaProvider(ctx context.Context, settings SettingsReader) (string, bool) {
+	if settings == nil {
+		return "", false
+	}
+	enabled, err := settings.Get(ctx, platformsettings.KeyCaptchaEnabled)
 	if err != nil || strings.TrimSpace(enabled.Value) != "true" {
-		return false
+		return "", false
 	}
-	provider, err := v.settings.Get(ctx, platformsettings.KeyCaptchaProvider)
+	provider, err := settings.Get(ctx, platformsettings.KeyCaptchaProvider)
 	if err != nil {
-		return false
+		return "", false
 	}
-	return strings.TrimSpace(provider.Value) == "turnstile"
+	return strings.TrimSpace(provider.Value), true
+}
+
+func defaultSiteVerifyProviders() []siteVerifyProvider {
+	return []siteVerifyProvider{
+		{id: captchaProviderTurnstile, endpoint: defaultTurnstileSiteVerifyURL},
+		{id: captchaProviderRecaptcha, endpoint: defaultRecaptchaSiteVerifyURL},
+		{id: captchaProviderHCaptcha, endpoint: defaultHCaptchaSiteVerifyURL},
+	}
+}
+
+func captchaHTTPClient(client *http.Client) *http.Client {
+	if client != nil {
+		return client
+	}
+	return &http.Client{Timeout: 10 * time.Second}
 }
